@@ -514,7 +514,7 @@ export interface DesktopV3RoutedStartRequest extends DesktopV3RoutedWorkspaceAut
   input: string
   client_request_id: string
   idempotency_key: string
-  agent_name?: string
+  agent_name: string
   metadata?: Record<string, unknown>
   managed_worktree_requested: boolean
   plan_mode_requested: boolean
@@ -603,7 +603,7 @@ export interface CreateDesktopV3RoutedStartOperationInput {
   workspace: DesktopV3RoutedWorkspaceAuthority
   prompt?: string
   snapshot?: DesktopV3RoutedComposerSnapshot
-  agentName?: string
+  agentName: string
   metadata?: Record<string, unknown>
   media?: DesktopV3RoutedMediaInput[]
   selectedAction?: unknown | null
@@ -735,6 +735,8 @@ export function createDesktopV3RoutedStartOperation(
     throw new Error('Routed Desktop operation identity is invalid')
   }
   const authority = normalizeDesktopV3RoutedWorkspaceAuthority(input.workspace)
+  const agentName = input.agentName.trim()
+  if (!agentName) throw new Error('Routed Desktop start requires agent_name')
   return {
     version: 2,
     operationId,
@@ -745,7 +747,7 @@ export function createDesktopV3RoutedStartOperation(
       input: requestInput,
       client_request_id: clientRequestID,
       idempotency_key: clientRequestID,
-      ...(input.agentName?.trim() ? { agent_name: input.agentName.trim() } : {}),
+      agent_name: agentName,
       metadata: input.metadata ? { ...input.metadata } : undefined,
       managed_worktree_requested: snapshot.worktreePrimed,
       plan_mode_requested: snapshot.planModeRequested,
@@ -789,7 +791,7 @@ function isStoredDesktopV3RoutedStartOperation(value: unknown): value is Desktop
   const snapshot = operation.snapshot
   if (!isStoredDesktopV3RoutedComposerSnapshot(snapshot)) return false
   const request = operation.request
-  if (!request || !request.input?.trim() || !request.client_request_id?.trim()) return false
+  if (!request || !request.input?.trim() || !request.client_request_id?.trim() || !request.agent_name?.trim()) return false
   try {
     normalizeDesktopV3RoutedWorkspaceAuthority(request)
   } catch {

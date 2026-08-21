@@ -1459,6 +1459,7 @@ export interface DesktopV3ExistingConversationPaneProps {
   agentSettingsOpenSignal?: number;
   agentSettingsInitialAgent?: string;
   composerFocusSignal?: number;
+  composerDraftRequest?: { id: number; draft: string };
   onCompactingChange?: (sessionId: string, startedAt: number | null) => void;
   onArchivePlanSession?: (sessionId: string) => void;
   onOpenPlan?: () => void;
@@ -1466,6 +1467,9 @@ export interface DesktopV3ExistingConversationPaneProps {
   planSidebarBelowActions?: ReactNode;
   artifactSelectionRequest?: DesktopV3ArtifactMessageSelection | null;
   onArtifactSelectionRequestHandled?: () => void;
+  /** Reuse the canonical conversation as a constrained embedded surface. */
+  presentation?: "page" | "sidebar";
+  onMessageSent?: () => void;
 }
 
 export function completeDesktopV3ExistingMessage(input: {
@@ -1496,6 +1500,7 @@ type DesktopV3ExistingConversationComposerProps = Omit<
   hasStoredOperation: boolean;
   canSubmitWithoutDraft: boolean;
   controllerRef: MutableRefObject<DesktopV3ExistingComposerController | null>;
+  draftRequest?: { id: number; draft: string };
   onSubmit: ComponentProps<typeof DesktopV3AgenticComposer>['onSubmit'];
 };
 
@@ -1504,10 +1509,18 @@ export function DesktopV3ExistingConversationComposer({
   hasStoredOperation,
   canSubmitWithoutDraft,
   controllerRef,
+  draftRequest,
   onSubmit,
   ...composerProps
 }: DesktopV3ExistingConversationComposerProps) {
   const [draft, setDraft] = useState(initialDraft);
+  const handledDraftRequestRef = useRef(0);
+
+  useEffect(() => {
+    if (!draftRequest || draftRequest.id === handledDraftRequestRef.current) return;
+    handledDraftRequestRef.current = draftRequest.id;
+    setDraft(draftRequest.draft);
+  }, [draftRequest]);
 
   useLayoutEffect(() => {
     const controller: DesktopV3ExistingComposerController = { setDraft };
@@ -1549,6 +1562,7 @@ export function DesktopV3ExistingConversationPane({
   agentSettingsOpenSignal = 0,
   agentSettingsInitialAgent = "",
   composerFocusSignal = 0,
+  composerDraftRequest,
   onCompactingChange,
   onArchivePlanSession,
   onOpenPlan,
@@ -1556,6 +1570,8 @@ export function DesktopV3ExistingConversationPane({
   planSidebarBelowActions,
   artifactSelectionRequest = null,
   onArtifactSelectionRequestHandled,
+  presentation = "page",
+  onMessageSent,
 }: DesktopV3ExistingConversationPaneProps) {
   const normalizedSessionId = sessionId.trim();
   const navigate = useNavigate();
@@ -1647,7 +1663,7 @@ export function DesktopV3ExistingConversationPane({
   const [planAgentMobileOpen, setPlanAgentMobileOpen] = useState(false);
   const [resolvingPlanPermissionId, setResolvingPlanPermissionId] = useState("");
   const heldPlanPermissionRef = useRef<DesktopPermissionRecord | null>(null);
-  const planSidebarViewport = usePlanSidebarViewport();
+  const planSidebarViewport = usePlanSidebarViewport() && presentation !== "sidebar";
   useEffect(() => {
     setPlanAgentMobileOpen(false);
   }, [pendingPlanPermission?.id]);
@@ -2078,6 +2094,7 @@ export function DesktopV3ExistingConversationPane({
   const hasSessionArtifacts = sessionArtifacts.length > 0;
   const hasPendingVisualSwarm = desktopV3HasPendingVisualSwarm(sessionArtifacts);
   const showConversationSidebar = showPlanSidebar || hasSessionArtifacts;
+  const showConversationSidebarColumn = showConversationSidebar && presentation !== "sidebar";
   useEffect(() => {
     if (artifactSidebarSessionRef.current !== normalizedSessionId) return;
     const previousCount = priorSessionArtifactCountRef.current;
@@ -2662,6 +2679,7 @@ export function DesktopV3ExistingConversationPane({
         },
         setDraft: (nextDraft) => composerControllerRef.current?.setDraft(nextDraft),
       });
+      onMessageSent?.();
     } catch (error) {
       if (mountedRef.current) {
         setSendError(error instanceof Error ? error.message : String(error));
@@ -2988,6 +3006,7 @@ export function DesktopV3ExistingConversationPane({
     <div
       className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-[var(--app-bg)]"
       data-desktop-chat-drop-zone
+      data-desktop-chat-presentation={presentation}
       data-testid="desktop-v3-existing-conversation-pane"
     >
       <DesktopV3ChatHeader
@@ -3006,13 +3025,13 @@ export function DesktopV3ExistingConversationPane({
         ref={planSidebarGridRef}
         className={cn(
           "grid min-h-0 min-w-0 flex-1 grid-cols-[minmax(0,1fr)] overflow-hidden",
-          showConversationSidebar && planSidebarDisplayMode === "full"
+          showConversationSidebarColumn && planSidebarDisplayMode === "full"
             ? "min-[1300px]:grid-cols-[minmax(0,1fr)_360px]"
             : "",
-          showConversationSidebar && planSidebarDisplayMode === "compact"
+          showConversationSidebarColumn && planSidebarDisplayMode === "compact"
             ? "min-[1300px]:grid-cols-[minmax(0,1fr)_280px]"
             : "",
-          showConversationSidebar && planSidebarDisplayMode === "thin"
+          showConversationSidebarColumn && planSidebarDisplayMode === "thin"
             ? "min-[1300px]:grid-cols-[minmax(0,1fr)_56px]"
             : "",
         )}
@@ -3030,7 +3049,10 @@ export function DesktopV3ExistingConversationPane({
               {/* Match the composer's 70rem frame, then double its 16/24px frame padding so both message edges sit exactly 16/24px inside the outlined composer. */}
               <div
                 ref={contentRef}
-                className="mx-auto flex min-h-full w-full min-w-0 max-w-[70rem] flex-col gap-5 px-8 [&>*:not(:last-child)]:[overflow-anchor:none] sm:px-12"
+                className={cn(
+                  "mx-auto flex min-h-full w-full min-w-0 max-w-[70rem] flex-col gap-5 [&>*:not(:last-child)]:[overflow-anchor:none]",
+                  presentation === "sidebar" ? "px-4" : "px-8 sm:px-12",
+                )}
               >
                 {showConversationLoading ? (
                   <DesktopV3ConversationLoadingSpinner />
@@ -3231,6 +3253,7 @@ export function DesktopV3ExistingConversationPane({
             hasStoredOperation={hasStoredOperation}
             canSubmitWithoutDraft={canSubmitWithoutDraft}
             controllerRef={composerControllerRef}
+            draftRequest={composerDraftRequest}
             placeholder="Message Swarm…"
             inputLabel="Continue Desktop V3 conversation"
             disabled={sending || compacting}
@@ -3314,7 +3337,7 @@ export function DesktopV3ExistingConversationPane({
           />
         </div>
 
-        {showConversationSidebar ? (
+        {showConversationSidebarColumn ? (
           <div
             className={stablePlanDocument
               ? "contents min-[1300px]:flex min-[1300px]:min-h-0 min-[1300px]:min-w-0 min-[1300px]:flex-col min-[1300px]:overflow-hidden"

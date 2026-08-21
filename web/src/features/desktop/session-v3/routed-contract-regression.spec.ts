@@ -58,17 +58,18 @@ test('routed contract exposes only local composer intent before canonical resolu
   })
   const operation = createDesktopV3RoutedStartOperation({
     workspace: workspaceAuthority,
+    agentName: 'swarm',
     snapshot,
     metadata: { source: 'desktop-v3' },
   })
 
   assert.deepEqual(Object.keys(operation.request).sort(), [
-    'client_request_id', 'host_workspace_path', 'idempotency_key', 'input', 'managed_worktree_requested', 'media', 'metadata', 'plan_mode_requested',
-    'runtime_workspace_path', 'swarm_id', 'target_kind', 'target_relationship', 'workspace_binding_id', 'workspace_path',
+    'agent_name', 'artifact_selections', 'client_request_id', 'host_workspace_path', 'idempotency_key', 'input', 'managed_worktree_requested', 'media', 'metadata',
+    'model_profile', 'plan_mode_requested', 'runtime_workspace_path', 'swarm_id', 'target_kind', 'target_relationship', 'video_attachments', 'workspace_binding_id', 'workspace_path',
   ])
   for (const forbidden of [
     'session_id', 'title', 'mode',
-    'preference', 'model', 'model_profile', 'worktree_name', 'worktree_branch_name',
+    'preference', 'model', 'worktree_name', 'worktree_branch_name',
   ]) {
     assert.equal(Object.hasOwn(operation.request, forbidden), false, `routed request must not preselect ${forbidden}`)
   }
@@ -97,7 +98,7 @@ test('routed pending shell remains local and failure restores exact controls for
       return routedResult('canonical-session')
     }, createDesktopV3RoutedDraftState(initialSnapshot.prompt, initialSnapshot))
 
-    const pending = controller.submit({ workspace: workspaceAuthority, snapshot: initialSnapshot })
+    const pending = controller.submit({ workspace: workspaceAuthority, agentName: 'swarm', snapshot: initialSnapshot })
     const routing = controller.getState()
     assert.equal(routing.phase, 'routing')
     assert.equal('result' in routing, false)
@@ -126,9 +127,9 @@ test('routed pending shell remains local and failure restores exact controls for
 test('new-session pane keeps resolved authority behind pending shell until activation and restores failed controls', async () => {
   const source = await readFile(new URL('../chat/components/desktop-v3-new-session-pane.tsx', import.meta.url), 'utf8')
 
-  assert.match(source, /const pendingState = routedState\.phase === 'resolved' \? 'routing' : routedState\.phase/)
+  assert.match(source, /const pendingState = routedState\.phase === 'failed' \|\| routedState\.phase === 'worktree-primed'/)
   assert.match(source, /routedState\.phase === 'failed'[\s\S]*setDraft\(routedState\.snapshot\.prompt\)[\s\S]*setMode\(routedState\.snapshot\.planModeRequested \? 'plan' : 'auto'\)[\s\S]*setWorktreeIntent\(createDesktopRoutedWorktreeIntent\(routedState\.snapshot\.worktreePrimed\)\)[\s\S]*setRestoredSnapshot\(routedState\.snapshot\)/)
   assert.match(source, /routedState\.phase !== 'resolved'[\s\S]*resolvedCallbackRef\.current\(routedState\.result, routedState\.operation\.request\)/)
-  assert.match(source, /showComposer = routedState\.phase === 'draft' \|\| routedState\.phase === 'worktree-primed' \|\| routedState\.phase === 'failed'/)
+  assert.match(source, /const activationPending = initialCommandStarting[\s\S]*routedState\.phase === 'routing'[\s\S]*routedState\.phase === 'resolved'/)
   assert.doesNotMatch(source, /dispatchDesktopV3Cache|selectSession|ensureSessionConnected|navigate\(/)
 })

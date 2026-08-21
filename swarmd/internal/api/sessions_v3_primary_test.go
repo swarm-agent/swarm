@@ -367,6 +367,24 @@ func TestSessionsV3PrimaryCreateResponseIsMinimalMutationResult(t *testing.T) {
 	}
 }
 
+func TestSessionsV3PrimaryCreateRequiresAgentNameBeforeSessionMutation(t *testing.T) {
+	server, sessions, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	bindingID := seedSessionsV3PrimaryAuthority(t, server, "/workspace/video")
+	body := `{"session_id":"video-missing-agent","client_request_id":"video-missing-agent","swarm_id":"host-swarm-id","workspace_binding_id":"` + bindingID + `","title":"Video Session","mode":"auto","metadata":{"experience":"video_studio"}}`
+	req := httptest.NewRequest(http.MethodPost, "/v3/sessions", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "agent_name is required") {
+		t.Fatalf("body missing agent_name requirement: %s", rec.Body.String())
+	}
+	if _, ok, err := sessions.GetSession("video-missing-agent"); err != nil || ok {
+		t.Fatalf("missing-agent request must not create a session: ok=%t err=%v", ok, err)
+	}
+}
+
 func TestSessionsV3PrimaryRegularSessionPersistsCurrentBranch(t *testing.T) {
 	workspacePath := filepath.Join(t.TempDir(), "repo")
 	if output, err := exec.Command("git", "init", "-b", "dev", workspacePath).CombinedOutput(); err != nil {

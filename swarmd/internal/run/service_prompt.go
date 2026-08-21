@@ -740,6 +740,9 @@ func buildInput(messages []pebblestore.MessageSnapshot) []map[string]any {
 			if shouldDropSensitiveConversationMessage(message) {
 				continue
 			}
+			if videoContext := videoStudioMessageContextForProvider(message.Metadata); videoContext != "" {
+				content = strings.TrimSpace(content + "\n\n" + videoContext)
+			}
 			if len(message.VideoAttachments) > 0 {
 				if videoContext := attachedVideoReferencesForProvider(message.VideoAttachments); videoContext != "" {
 					content = strings.TrimSpace(content + "\n\n" + videoContext)
@@ -762,6 +765,42 @@ func buildInput(messages []pebblestore.MessageSnapshot) []map[string]any {
 }
 
 const maxProviderArtifactSelections = 16
+
+func videoStudioMessageContextForProvider(metadata map[string]any) string {
+	if !strings.EqualFold(strings.TrimSpace(mapString(metadata, "creative_mode")), "video") {
+		return ""
+	}
+	projectID := truncateUTF8Bytes(strings.TrimSpace(mapString(metadata, "video_project_id")), 256)
+	revisionID := truncateUTF8Bytes(strings.TrimSpace(mapString(metadata, "video_revision_id")), 256)
+	anchorClipID := truncateUTF8Bytes(strings.TrimSpace(mapString(metadata, "video_anchor_clip_id")), 256)
+	playheadMs := int64(0)
+	switch raw := metadata["video_playhead_ms"].(type) {
+	case float64:
+		playheadMs = int64(raw)
+	case int:
+		playheadMs = int64(raw)
+	case int64:
+		playheadMs = raw
+	}
+	if playheadMs < 0 {
+		playheadMs = 0
+	}
+	lines := []string{"Video Studio selection (UI context only; verify durable state with manage_video before proposing edits):"}
+	if projectID != "" {
+		lines = append(lines, "- selected_project_id="+projectID)
+	}
+	if revisionID != "" {
+		lines = append(lines, "- selected_revision_id="+revisionID)
+	}
+	if anchorClipID != "" {
+		lines = append(lines, "- selected_step_anchor="+anchorClipID)
+	}
+	if _, present := metadata["video_playhead_ms"]; present {
+		lines = append(lines, fmt.Sprintf("- selected_playhead_ms=%d", playheadMs))
+	}
+	lines = append(lines, "Video plans are visual review objects, never prose-only storyboards or detached HTML/Markdown deliverables. Verify the durable project with manage_video and ensure it has an empty base revision when needed. In the same run, design and publish one actual ready 16:9 image slide for every planned part, then call manage_video create_edit_proposal exactly once with plan.kind=initial and every ordered stable-id part carrying duration_ms, narration, on-screen text, visual direction, transition guidance, and the complete exact ready visual reference. Do not claim the plan is complete until every part has a ready visual and the durable proposal succeeds. The user reviews the real visuals inline and accepts the initial plan as one object. Acceptance places those visuals directly into the canonical player timeline. For feedback targeting an accepted part or stable step, inspect the accepted plan and exact current visual, create only the requested replacement visual while preserving the stable part id, then submit plan.kind=revision with the changed parts only. The user can select which proposed replacement parts to accept; unselected accepted parts remain unchanged. Never accept on the user's behalf. When source video is available, browse or inspect its opaque references, transcribe/index it when useful, and use later typed source_video operations against the exact accepted revision. Preserve supplied stable step anchors and selected playhead context. Do not mutate source media or start a final render.")
+	return strings.Join(lines, "\n")
+}
 
 func attachedVideoReferencesForProvider(references []pebblestore.SessionVideoAttachmentReference) string {
 	if len(references) == 0 || len(references) > pebblestore.SessionVideoAttachmentMaxCount {

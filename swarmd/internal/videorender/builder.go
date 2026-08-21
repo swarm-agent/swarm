@@ -27,22 +27,26 @@ type TimelinePlan struct {
 }
 
 type MaterializedInput struct {
-	Index        int
-	ClipID       string
-	FilePath     string
-	IsVideo      bool
-	IsImage      bool
-	IsAudio      bool
-	IsSynthetic  bool
-	HasAudio     bool
-	DurationMs   int64
-	Volume       float64
-	Muted        bool
-	StartMs      int64
-	EndMs        int64
-	OverlayMode  string
-	Captions     []pebblestore.VideoTextOverlay
-	DesignInputs []MaterializedInput
+	Index           int
+	ClipID          string
+	FilePath        string
+	IsVideo         bool
+	IsImage         bool
+	IsAudio         bool
+	IsSynthetic     bool
+	HasAudio        bool
+	DurationMs      int64
+	Volume          float64
+	Muted           bool
+	StartMs         int64
+	EndMs           int64
+	Track           int
+	Layer           int
+	TimelineStartMs int64
+	TimelineEndMs   int64
+	OverlayMode     string
+	Captions        []pebblestore.VideoTextOverlay
+	DesignInputs    []MaterializedInput
 }
 
 // ResolveDimensions derives target pixel dimensions from timeline settings and preset.
@@ -109,6 +113,7 @@ func BuildFFmpegCommandLine(timeline pebblestore.VideoProjectTimeline, inputs []
 
 	clipDurations := make([]int64, len(inputs))
 	var totalDurationMs int64
+	layeredTimeline := false
 	for i, in := range inputs {
 		dur := in.EndMs - in.StartMs
 		if dur <= 0 {
@@ -119,14 +124,47 @@ func BuildFFmpegCommandLine(timeline pebblestore.VideoProjectTimeline, inputs []
 		}
 		clipDurations[i] = dur
 		totalDurationMs += dur
+		if in.Track != 0 || in.Layer != 0 {
+			layeredTimeline = true
+		}
 	}
-	transitions, overlapMs, err := resolveRenderTransitions(timeline, inputs, clipDurations)
+	primaryInputIndexes := make([]int, 0, len(inputs))
+	for index, input := range inputs {
+		if !layeredTimeline || input.Track == 0 {
+			primaryInputIndexes = append(primaryInputIndexes, index)
+		}
+	}
+	if len(primaryInputIndexes) == 0 {
+		return nil, errors.New("video render requires at least one visible primary-track clip")
+	}
+	primaryInputs := make([]MaterializedInput, 0, len(primaryInputIndexes))
+	primaryDurations := make([]int64, 0, len(primaryInputIndexes))
+	for _, index := range primaryInputIndexes {
+		primaryInputs = append(primaryInputs, inputs[index])
+		primaryDurations = append(primaryDurations, clipDurations[index])
+	}
+	transitions, overlapMs, err := resolveRenderTransitions(timeline, primaryInputs, primaryDurations)
 	if err != nil {
 		return nil, err
 	}
-	totalDurationMs -= overlapMs
-	if timeline.TotalDurationMs > 0 && timeline.TotalDurationMs < totalDurationMs {
+	if layeredTimeline {
 		totalDurationMs = timeline.TotalDurationMs
+		if totalDurationMs <= 0 {
+			for _, input := range inputs {
+				endMs := input.TimelineEndMs
+				if endMs <= input.TimelineStartMs {
+					endMs = input.TimelineStartMs + input.DurationMs
+				}
+				if endMs > totalDurationMs {
+					totalDurationMs = endMs
+				}
+			}
+		}
+	} else {
+		totalDurationMs -= overlapMs
+		if timeline.TotalDurationMs > 0 && timeline.TotalDurationMs < totalDurationMs {
+			totalDurationMs = timeline.TotalDurationMs
+		}
 	}
 
 	plan := &TimelinePlan{
@@ -220,20 +258,22 @@ func BuildFFmpegCommandLine(timeline pebblestore.VideoProjectTimeline, inputs []
 		}
 	}
 
-	// Fold clips in timeline order. Cuts concatenate streams, while the two
-	// launch dissolve modes use server-selected xfade/acrossfade filters only.
-	plan.VideoMap = videoStreams[0]
-	plan.AudioMap = audioStreams[0]
-	accumulatedMs := clipDurations[0]
-	for i := 1; i < len(videoStreams); i++ {
-		transition := transitions[i-1]
-		videoOut := fmt.Sprintf("[v_join_%d]", i)
-		audioOut := fmt.Sprintf("[a_join_%d]", i)
+	// Fold primary-track clips in timeline order. Cuts concatenate streams,
+	// while launch dissolve modes use server-selected xfade/acrossfade filters.
+	firstPrimary := primaryInputIndexes[0]
+	plan.VideoMap = videoStreams[firstPrimary]
+	plan.AudioMap = audioStreams[firstPrimary]
+	accumulatedMs := clipDurations[firstPrimary]
+	for orderIndex := 1; orderIndex < len(primaryInputIndexes); orderIndex++ {
+		inputIndex := primaryInputIndexes[orderIndex]
+		transition := transitions[orderIndex-1]
+		videoOut := fmt.Sprintf("[v_join_%d]", inputIndex)
+		audioOut := fmt.Sprintf("[a_join_%d]", inputIndex)
 		switch transition.Kind {
 		case pebblestore.VideoTransitionKindCut:
 			filterParts = append(filterParts,
-				fmt.Sprintf("%s%sconcat=n=2:v=1:a=0%s", plan.VideoMap, videoStreams[i], videoOut),
-				fmt.Sprintf("%s%sconcat=n=2:v=0:a=1%s", plan.AudioMap, audioStreams[i], audioOut),
+				fmt.Sprintf("%s%sconcat=n=2:v=1:a=0%s", plan.VideoMap, videoStreams[inputIndex], videoOut),
+				fmt.Sprintf("%s%sconcat=n=2:v=0:a=1%s", plan.AudioMap, audioStreams[inputIndex], audioOut),
 			)
 		case pebblestore.VideoTransitionKindCrossfade, pebblestore.VideoTransitionKindFadeThroughBlack,
 			pebblestore.VideoTransitionKindFadeToBlack, pebblestore.VideoTransitionKindFadeFromBlack:
@@ -244,14 +284,45 @@ func BuildFFmpegCommandLine(timeline pebblestore.VideoProjectTimeline, inputs []
 				xfadeKind = "fadeblack"
 			}
 			filterParts = append(filterParts,
-				fmt.Sprintf("%s%sxfade=transition=%s:duration=%.3f:offset=%.3f%s", plan.VideoMap, videoStreams[i], xfadeKind, durationSec, offsetSec, videoOut),
-				fmt.Sprintf("%s%sacrossfade=d=%.3f:c1=tri:c2=tri%s", plan.AudioMap, audioStreams[i], durationSec, audioOut),
+				fmt.Sprintf("%s%sxfade=transition=%s:duration=%.3f:offset=%.3f%s", plan.VideoMap, videoStreams[inputIndex], xfadeKind, durationSec, offsetSec, videoOut),
+				fmt.Sprintf("%s%sacrossfade=d=%.3f:c1=tri:c2=tri%s", plan.AudioMap, audioStreams[inputIndex], durationSec, audioOut),
 			)
 			accumulatedMs -= transition.DurationMs
 		}
-		accumulatedMs += clipDurations[i]
+		accumulatedMs += clipDurations[inputIndex]
 		plan.VideoMap = videoOut
 		plan.AudioMap = audioOut
+	}
+
+	if layeredTimeline {
+		for inputIndex, input := range inputs {
+			if input.Track == 0 {
+				continue
+			}
+			startSec := float64(input.TimelineStartMs) / 1000
+			endMs := input.TimelineEndMs
+			if endMs <= input.TimelineStartMs {
+				endMs = input.TimelineStartMs + clipDurations[inputIndex]
+			}
+			endSec := float64(endMs) / 1000
+			shiftedVideo := fmt.Sprintf("[v_layer_shift_%d]", inputIndex)
+			videoOut := fmt.Sprintf("[v_layer_%d]", inputIndex)
+			filterParts = append(filterParts,
+				fmt.Sprintf("%ssetpts=PTS-STARTPTS+%.3f/TB%s", videoStreams[inputIndex], startSec, shiftedVideo),
+				fmt.Sprintf("%s%soverlay=eof_action=pass:enable='between(t,%.3f,%.3f)'%s", plan.VideoMap, shiftedVideo, startSec, endSec, videoOut),
+			)
+			plan.VideoMap = videoOut
+			if input.HasAudio && !input.Muted {
+				shiftedAudio := fmt.Sprintf("[a_layer_shift_%d]", inputIndex)
+				audioOut := fmt.Sprintf("[a_layer_%d]", inputIndex)
+				delayMs := max(input.TimelineStartMs, 0)
+				filterParts = append(filterParts,
+					fmt.Sprintf("%sadelay=%d|%d%s", audioStreams[inputIndex], delayMs, delayMs, shiftedAudio),
+					fmt.Sprintf("%s%samix=inputs=2:duration=first:dropout_transition=0%s", plan.AudioMap, shiftedAudio, audioOut),
+				)
+				plan.AudioMap = audioOut
+			}
+		}
 	}
 
 	plan.FilterComplex = strings.Join(filterParts, ";")

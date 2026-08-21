@@ -36,7 +36,7 @@ type routedSessionStartRequest struct {
 	Input                    string                                          `json:"input"`
 	ClientRequestID          string                                          `json:"client_request_id,omitempty"`
 	IdempotencyKey           string                                          `json:"idempotency_key,omitempty"`
-	AgentName                string                                          `json:"agent_name,omitempty"`
+	AgentName                string                                          `json:"agent_name"`
 	Metadata                 map[string]any                                  `json:"metadata,omitempty"`
 	ManagedWorktreeRequested *bool                                           `json:"managed_worktree_requested"`
 	PlanModeRequested        *bool                                           `json:"plan_mode_requested"`
@@ -390,7 +390,8 @@ func (s *Server) handleRoutedSessionStart(w http.ResponseWriter, r *http.Request
 	req.TargetKind = strings.TrimSpace(req.TargetKind)
 	req.TargetRelationship = strings.TrimSpace(req.TargetRelationship)
 	if req.AgentName == "" {
-		req.AgentName = "swarm"
+		writeError(w, http.StatusBadRequest, errors.New("agent_name is required"))
+		return
 	}
 	media, stagingIDs, err := normalizeRoutedSessionMedia(req)
 	if err != nil {

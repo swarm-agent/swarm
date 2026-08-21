@@ -122,6 +122,7 @@ type VideoTimelineClip struct {
 	SourceKind      string                             `json:"source_kind"` // "source_video", "managed_artifact", "color", "text"
 	SourceRef       string                             `json:"source_ref,omitempty"`
 	ArtifactRef     *SessionArtifactSelectionReference `json:"artifact_ref,omitempty"`
+	MediaType       string                             `json:"media_type,omitempty"`
 	SourceStartMs   int64                              `json:"source_start_ms"`
 	SourceEndMs     int64                              `json:"source_end_ms"`
 	TimelineStartMs int64                              `json:"timeline_start_ms"`
@@ -202,6 +203,33 @@ type VideoProjectRevisionSnapshot struct {
 	EventSeq               uint64               `json:"event_seq,omitempty"`
 }
 
+// VideoPlanPart is one stable pre-production section with the exact ready visual
+// that the viewer will see. Stable IDs carry the part through later revisions.
+type VideoPlanPart struct {
+	ID              string                             `json:"id"`
+	Title           string                             `json:"title"`
+	DurationMs      int64                              `json:"duration_ms"`
+	Narration       string                             `json:"narration,omitempty"`
+	OnScreenText    string                             `json:"on_screen_text,omitempty"`
+	VisualDirection string                             `json:"visual_direction,omitempty"`
+	TransitionIn    string                             `json:"transition_in,omitempty"`
+	Visual          *SessionArtifactSelectionReference `json:"visual"`
+	VisualMediaType string                             `json:"visual_media_type,omitempty"`
+}
+
+const (
+	VideoPlanKindInitial  = "initial"
+	VideoPlanKindRevision = "revision"
+)
+
+// VideoPlanProposal is a visual review object. Initial plans are accepted as one
+// complete structure; revision plans may replace selected stable parts.
+type VideoPlanProposal struct {
+	Kind    string          `json:"kind,omitempty"`
+	Summary string          `json:"summary,omitempty"`
+	Parts   []VideoPlanPart `json:"parts"`
+}
+
 // VideoEditOperation is a bounded typed change. Exactly the payload required by Type is used.
 type VideoEditOperation struct {
 	ID           string                   `json:"id"`
@@ -231,8 +259,10 @@ type VideoEditProposalSnapshot struct {
 	Status               string               `json:"status"`
 	Title                string               `json:"title,omitempty"`
 	Rationale            string               `json:"rationale,omitempty"`
-	Operations           []VideoEditOperation `json:"operations"`
+	Plan                 *VideoPlanProposal   `json:"plan,omitempty"`
+	Operations           []VideoEditOperation `json:"operations,omitempty"`
 	AffectedRanges       []VideoTimelineRange `json:"affected_ranges,omitempty"`
+	RejectionFeedback    string               `json:"rejection_feedback,omitempty"`
 	AcceptedOperationIDs []string             `json:"accepted_operation_ids,omitempty"`
 	AcceptedRevisionID   string               `json:"accepted_revision_id,omitempty"`
 	CreatedAt            int64                `json:"created_at"`
@@ -409,7 +439,27 @@ func normalizeV3VideoProjectMutation(input *V3SessionMutationInput) {
 		p.Status = strings.ToLower(strings.TrimSpace(p.Status))
 		p.Title = strings.TrimSpace(p.Title)
 		p.Rationale = strings.TrimSpace(p.Rationale)
+		p.RejectionFeedback = strings.TrimSpace(p.RejectionFeedback)
 		p.AcceptedRevisionID = strings.TrimSpace(p.AcceptedRevisionID)
+		if p.Plan != nil {
+			p.Plan.Kind = strings.ToLower(strings.TrimSpace(p.Plan.Kind))
+			p.Plan.Summary = strings.TrimSpace(p.Plan.Summary)
+			for i := range p.Plan.Parts {
+				part := &p.Plan.Parts[i]
+				part.ID = strings.TrimSpace(part.ID)
+				part.Title = strings.TrimSpace(part.Title)
+				part.Narration = strings.TrimSpace(part.Narration)
+				part.OnScreenText = strings.TrimSpace(part.OnScreenText)
+				part.VisualDirection = strings.TrimSpace(part.VisualDirection)
+				part.TransitionIn = strings.TrimSpace(part.TransitionIn)
+				part.VisualMediaType = strings.ToLower(strings.TrimSpace(part.VisualMediaType))
+				if part.Visual != nil {
+					part.Visual.SessionID = strings.TrimSpace(part.Visual.SessionID)
+					part.Visual.CollectionID = strings.TrimSpace(part.Visual.CollectionID)
+					part.Visual.VariantID = strings.TrimSpace(part.Visual.VariantID)
+				}
+			}
+		}
 		for i := range p.Operations {
 			op := &p.Operations[i]
 			op.ID = strings.TrimSpace(op.ID)
@@ -646,7 +696,14 @@ func validateV3VideoProjectMutationInput(input V3SessionMutationInput) error {
 			if proposal.Status != VideoEditProposalStatusPending {
 				return errors.New("new video edit proposal must be pending")
 			}
-			if err := validateVideoEditOperations(proposal.Operations); err != nil {
+			if proposal.Plan != nil {
+				if len(proposal.Operations) != 0 {
+					return errors.New("video plan proposal must be one atomic plan object without timeline operations")
+				}
+				if err := validateVideoPlanProposal(*proposal.Plan); err != nil {
+					return err
+				}
+			} else if err := validateVideoEditOperations(proposal.Operations); err != nil {
 				return err
 			}
 		} else if input.Kind == V3SessionMutationAcceptVideoEditProposal {
@@ -812,6 +869,173 @@ func validateVideoTimelineRanges(ranges []VideoTimelineRange, durationMs int64) 
 		}
 	}
 	return nil
+}
+
+func validateVideoPlanProposal(plan VideoPlanProposal) error {
+	if len(plan.Parts) == 0 || len(plan.Parts) > MaxClipsPerTimeline {
+		return errors.New("video plan parts must be non-empty and bounded")
+	}
+	if plan.Kind != VideoPlanKindInitial && plan.Kind != VideoPlanKindRevision {
+		return errors.New("video plan kind must be initial or revision")
+	}
+	seen := make(map[string]struct{}, len(plan.Parts))
+	for index, part := range plan.Parts {
+		if part.ID == "" || part.Title == "" {
+			return fmt.Errorf("video plan part at index %d requires id and title", index)
+		}
+		if part.DurationMs <= 0 || part.DurationMs > MaxVideoTimelineDurationMs {
+			return fmt.Errorf("video plan part %q requires a positive bounded duration_ms", part.ID)
+		}
+		if part.Visual == nil || part.Visual.SessionID == "" || part.Visual.CollectionID == "" || part.Visual.VariantID == "" || part.Visual.EventSeq == 0 {
+			return fmt.Errorf("video plan part %q requires one complete exact ready visual reference", part.ID)
+		}
+		if !strings.HasPrefix(part.VisualMediaType, "image/") {
+			return fmt.Errorf("video plan part %q visual must resolve to an image slide", part.ID)
+		}
+		if _, exists := seen[part.ID]; exists {
+			return fmt.Errorf("duplicate video plan part id %q", part.ID)
+		}
+		seen[part.ID] = struct{}{}
+		for _, value := range []string{part.Title, part.Narration, part.OnScreenText, part.VisualDirection, part.TransitionIn} {
+			if len(value) > MaxTextOverlayLength {
+				return fmt.Errorf("video plan part %q field exceeds maximum %d characters", part.ID, MaxTextOverlayLength)
+			}
+		}
+	}
+	return nil
+}
+
+func acceptedVideoPlanFromTimeline(timeline VideoProjectTimeline) (*VideoPlanProposal, error) {
+	raw := timeline.Metadata["accepted_video_plan"]
+	if raw == nil {
+		return nil, nil
+	}
+	encoded, err := json.Marshal(raw)
+	if err != nil {
+		return nil, fmt.Errorf("encode accepted video plan: %w", err)
+	}
+	var plan VideoPlanProposal
+	if err := json.Unmarshal(encoded, &plan); err != nil {
+		return nil, fmt.Errorf("decode accepted video plan: %w", err)
+	}
+	return &plan, nil
+}
+
+func mergeAcceptedVideoPlan(accepted *VideoPlanProposal, proposed VideoPlanProposal, selected []string) (VideoPlanProposal, error) {
+	if accepted == nil {
+		if proposed.Kind != VideoPlanKindInitial {
+			return VideoPlanProposal{}, errors.New("the first visual video plan must have kind initial")
+		}
+		if len(selected) != 0 {
+			return VideoPlanProposal{}, errors.New("the initial visual video plan must be accepted as one object")
+		}
+		return proposed, nil
+	}
+	if proposed.Kind != VideoPlanKindRevision {
+		return VideoPlanProposal{}, errors.New("an accepted visual video plan can only be changed by a revision plan")
+	}
+	wanted := make(map[string]struct{}, len(selected))
+	for _, id := range selected {
+		id = strings.TrimSpace(id)
+		if id != "" {
+			wanted[id] = struct{}{}
+		}
+	}
+	if len(wanted) == 0 {
+		return VideoPlanProposal{}, errors.New("select at least one proposed visual plan part")
+	}
+	proposedByID := make(map[string]VideoPlanPart, len(proposed.Parts))
+	for _, part := range proposed.Parts {
+		proposedByID[part.ID] = part
+	}
+	merged := *accepted
+	merged.Kind = VideoPlanKindInitial
+	merged.Parts = append([]VideoPlanPart(nil), accepted.Parts...)
+	for index, part := range merged.Parts {
+		if _, ok := wanted[part.ID]; !ok {
+			continue
+		}
+		replacement, exists := proposedByID[part.ID]
+		if !exists {
+			return VideoPlanProposal{}, fmt.Errorf("selected visual plan part %q is absent from the proposal", part.ID)
+		}
+		merged.Parts[index] = replacement
+		delete(wanted, part.ID)
+	}
+	if len(wanted) != 0 {
+		for id := range wanted {
+			return VideoPlanProposal{}, fmt.Errorf("visual plan revision cannot add unknown part %q", id)
+		}
+	}
+	if proposed.Summary != "" {
+		merged.Summary = proposed.Summary
+	}
+	return merged, nil
+}
+
+func visualVideoPlanTimeline(base VideoProjectTimeline, plan VideoPlanProposal) VideoProjectTimeline {
+	timeline := base
+	if timeline.Width <= 0 || timeline.Height <= 0 {
+		timeline.Width, timeline.Height = 1920, 1080
+	}
+	if timeline.FPS <= 0 {
+		timeline.FPS = 30
+	}
+	if timeline.OutputPreset == "" {
+		timeline.OutputPreset = VideoPresetLandscape1080p
+	}
+	planPartIDs := make(map[string]struct{}, len(plan.Parts))
+	for _, part := range plan.Parts {
+		planPartIDs[part.ID] = struct{}{}
+	}
+	preservedClips := make([]VideoTimelineClip, 0, len(base.Clips))
+	for _, clip := range base.Clips {
+		if _, isPlanPart := planPartIDs[clip.ID]; !isPlanPart {
+			preservedClips = append(preservedClips, clip)
+		}
+	}
+	preservedTransitions := make([]VideoTimelineTransition, 0, len(base.Transitions))
+	for _, transition := range base.Transitions {
+		_, fromPlanPart := planPartIDs[transition.FromClipID]
+		_, toPlanPart := planPartIDs[transition.ToClipID]
+		if !fromPlanPart || !toPlanPart {
+			preservedTransitions = append(preservedTransitions, transition)
+		}
+	}
+	timeline.Clips = make([]VideoTimelineClip, 0, len(plan.Parts)+len(preservedClips))
+	timeline.Transitions = nil
+	startMs := int64(0)
+	for index, part := range plan.Parts {
+		endMs := startMs + part.DurationMs
+		caption := VideoTextOverlay{ID: part.ID + "-caption", Text: part.OnScreenText, Position: "center", StartMs: startMs, EndMs: endMs}
+		clip := VideoTimelineClip{
+			ID: part.ID, Name: part.Title + " | Narration: " + part.Narration + " | Planned still: " + part.VisualDirection,
+			Track: 0, Sequence: index, SourceKind: VideoClipSourceKindManagedArtifact, ArtifactRef: part.Visual,
+			MediaType: part.VisualMediaType, TimelineStartMs: startMs, TimelineEndMs: endMs, DurationMs: part.DurationMs,
+			SourceStartMs: 0, SourceEndMs: part.DurationMs, Visible: true,
+		}
+		if part.OnScreenText != "" {
+			clip.Captions = []VideoTextOverlay{caption}
+		}
+		timeline.Clips = append(timeline.Clips, clip)
+		if index > 0 {
+			timeline.Transitions = append(timeline.Transitions, VideoTimelineTransition{ID: "transition-" + part.ID, Kind: VideoTransitionKindCrossfade, FromClipID: plan.Parts[index-1].ID, ToClipID: part.ID, DurationMs: 300})
+		}
+		startMs = endMs
+	}
+	timeline.Clips = append(timeline.Clips, preservedClips...)
+	timeline.Transitions = append(timeline.Transitions, preservedTransitions...)
+	for _, clip := range preservedClips {
+		endMs := clip.TimelineEndMs
+		if endMs == 0 {
+			endMs = clip.TimelineStartMs + clip.DurationMs
+		}
+		if endMs > startMs {
+			startMs = endMs
+		}
+	}
+	timeline.TotalDurationMs = startMs
+	return timeline
 }
 
 func validateVideoEditOperations(operations []VideoEditOperation) error {
@@ -1127,6 +1351,29 @@ func (s *SessionStore) prepareV3VideoProjectMutation(input V3SessionMutationInpu
 		if project.CurrentRevisionID != proposal.BaseRevisionID {
 			return preparedV3VideoProjectMutation{}, errors.New("video edit proposal base revision must be the current project revision")
 		}
+		if proposal.Plan != nil {
+			acceptedPlan, planErr := acceptedVideoPlanFromTimeline(base.Timeline)
+			if planErr != nil {
+				return preparedV3VideoProjectMutation{}, planErr
+			}
+			if acceptedPlan == nil && proposal.Plan.Kind != VideoPlanKindInitial {
+				return preparedV3VideoProjectMutation{}, errors.New("the first visual video plan must have kind initial")
+			}
+			if acceptedPlan != nil {
+				if proposal.Plan.Kind != VideoPlanKindRevision {
+					return preparedV3VideoProjectMutation{}, errors.New("an accepted visual video plan requires kind revision")
+				}
+				acceptedIDs := make(map[string]struct{}, len(acceptedPlan.Parts))
+				for _, part := range acceptedPlan.Parts {
+					acceptedIDs[part.ID] = struct{}{}
+				}
+				for _, part := range proposal.Plan.Parts {
+					if _, exists := acceptedIDs[part.ID]; !exists {
+						return preparedV3VideoProjectMutation{}, fmt.Errorf("visual plan revision cannot add unknown part %q", part.ID)
+					}
+				}
+			}
+		}
 		if err := validateVideoTimelineRanges(proposal.AffectedRanges, base.Timeline.TotalDurationMs); err != nil {
 			return preparedV3VideoProjectMutation{}, err
 		}
@@ -1169,9 +1416,32 @@ func (s *SessionStore) prepareV3VideoProjectMutation(input V3SessionMutationInpu
 		if err != nil || !ok {
 			return preparedV3VideoProjectMutation{}, errors.New("proposal base revision not found")
 		}
-		timeline, err := applyVideoEditOperations(base.Timeline, proposal.Operations, input.VideoProject.SelectedOperationIDs)
-		if err != nil {
-			return preparedV3VideoProjectMutation{}, err
+		timeline := base.Timeline
+		if proposal.Plan != nil {
+			acceptedPlan, planErr := acceptedVideoPlanFromTimeline(base.Timeline)
+			if planErr != nil {
+				return preparedV3VideoProjectMutation{}, planErr
+			}
+			mergedPlan, mergeErr := mergeAcceptedVideoPlan(acceptedPlan, *proposal.Plan, input.VideoProject.SelectedOperationIDs)
+			if mergeErr != nil {
+				return preparedV3VideoProjectMutation{}, mergeErr
+			}
+			timeline = visualVideoPlanTimeline(base.Timeline, mergedPlan)
+			metadata := make(map[string]any, len(timeline.Metadata)+2)
+			for key, value := range timeline.Metadata {
+				metadata[key] = value
+			}
+			metadata["accepted_video_plan"] = mergedPlan
+			metadata["accepted_video_plan_proposal_id"] = proposal.ID
+			timeline.Metadata = metadata
+		} else {
+			timeline, err = applyVideoEditOperations(base.Timeline, proposal.Operations, input.VideoProject.SelectedOperationIDs)
+			if err != nil {
+				return preparedV3VideoProjectMutation{}, err
+			}
+		}
+		if err := validateVideoTimeline(timeline); err != nil {
+			return preparedV3VideoProjectMutation{}, fmt.Errorf("accepted video timeline validation failed: %w", err)
 		}
 		revision := *input.VideoProject.Revision
 		revision.AccountScopeID = input.AccountScopeID
@@ -1213,6 +1483,7 @@ func (s *SessionStore) prepareV3VideoProjectMutation(input V3SessionMutationInpu
 			return preparedV3VideoProjectMutation{}, fmt.Errorf("video edit proposal is %s", proposal.Status)
 		}
 		proposal.Status = VideoEditProposalStatusRejected
+		proposal.RejectionFeedback = incoming.RejectionFeedback
 		proposal.UpdatedAt = now
 		return preparedV3VideoProjectMutation{EditProposal: &proposal, Projection: V3VideoProjectProjection{ProjectID: proposal.ProjectID, RevisionID: proposal.BaseRevisionID, ProposalID: proposal.ID, Status: proposal.Status}}, nil
 
@@ -1585,6 +1856,7 @@ func (s *SessionStore) ListVideoProjects(accountScopeID, sessionID string, limit
 
 type CreateVideoEditProposalInput struct {
 	AccountScopeID, UserID, SessionID, ProjectID, ProposalID, BaseRevisionID, Title, Rationale, ClientRequestID string
+	Plan                                                                                                        *VideoPlanProposal
 	Operations                                                                                                  []VideoEditOperation
 	AffectedRanges                                                                                              []VideoTimelineRange
 	NowUnixMs                                                                                                   int64
@@ -1598,7 +1870,7 @@ func (s *SessionStore) CreateVideoEditProposal(input CreateVideoEditProposalInpu
 	if now == 0 {
 		now = time.Now().UnixMilli()
 	}
-	proposal := VideoEditProposalSnapshot{ID: input.ProposalID, ProjectID: input.ProjectID, BaseRevisionID: input.BaseRevisionID, AccountScopeID: input.AccountScopeID, UserID: input.UserID, SessionID: input.SessionID, Status: VideoEditProposalStatusPending, Title: input.Title, Rationale: input.Rationale, Operations: input.Operations, AffectedRanges: input.AffectedRanges, CreatedAt: now, UpdatedAt: now}
+	proposal := VideoEditProposalSnapshot{ID: input.ProposalID, ProjectID: input.ProjectID, BaseRevisionID: input.BaseRevisionID, AccountScopeID: input.AccountScopeID, UserID: input.UserID, SessionID: input.SessionID, Status: VideoEditProposalStatusPending, Title: input.Title, Rationale: input.Rationale, Plan: input.Plan, Operations: input.Operations, AffectedRanges: input.AffectedRanges, CreatedAt: now, UpdatedAt: now}
 	clientID := input.ClientRequestID
 	if clientID == "" {
 		clientID = "create_video_edit_proposal:" + proposal.ID
@@ -1661,6 +1933,7 @@ type ResolveVideoEditProposalInput struct {
 	AccountScopeID, UserID, SessionID, ProjectID, ProposalID, RevisionID, Description, ChangeSummary, AuthorPrincipal, ClientRequestID string
 	SelectedOperationIDs                                                                                                               []string
 	Reject                                                                                                                             bool
+	RejectionFeedback                                                                                                                  string
 	NowUnixMs                                                                                                                          int64
 }
 
@@ -1682,6 +1955,7 @@ func (s *SessionStore) ResolveVideoEditProposal(input ResolveVideoEditProposalIn
 	if input.Reject {
 		kind = V3SessionMutationRejectVideoEditProposal
 		proposal.Status = VideoEditProposalStatusRejected
+		proposal.RejectionFeedback = strings.TrimSpace(input.RejectionFeedback)
 	} else {
 		revision = &VideoProjectRevisionSnapshot{ID: input.RevisionID, ProjectID: input.ProjectID, AccountScopeID: input.AccountScopeID, UserID: input.UserID, SessionID: input.SessionID, Description: input.Description, ChangeSummary: input.ChangeSummary, AuthorPrincipal: input.AuthorPrincipal}
 	}
@@ -1689,7 +1963,7 @@ func (s *SessionStore) ResolveVideoEditProposal(input ResolveVideoEditProposalIn
 	if clientID == "" {
 		clientID = fmt.Sprintf("resolve_video_edit_proposal:%s:%s", proposal.ID, kind)
 	}
-	payload, _ := json.Marshal(map[string]any{"proposal_id": proposal.ID, "kind": kind, "selected": input.SelectedOperationIDs})
+	payload, _ := json.Marshal(map[string]any{"proposal_id": proposal.ID, "kind": kind, "selected": input.SelectedOperationIDs, "feedback": strings.TrimSpace(input.RejectionFeedback)})
 	sum := sha256.Sum256(payload)
 	_, err = s.ApplyV3SessionMutation(V3SessionMutationInput{SessionID: input.SessionID, UserID: input.UserID, AccountScopeID: input.AccountScopeID, ClientRequestID: clientID, IdempotencyKey: clientID, PayloadHash: hex.EncodeToString(sum[:]), Kind: kind, VideoProject: &V3VideoProjectMutation{EditProposal: &proposal, Revision: revision, SelectedOperationIDs: input.SelectedOperationIDs}, NowUnixMs: now})
 	if err != nil {

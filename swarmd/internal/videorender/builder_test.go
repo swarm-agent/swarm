@@ -248,6 +248,47 @@ func TestBuildFFmpegCommandLineTransitions(t *testing.T) {
 	}
 }
 
+func TestBuildFFmpegCommandLinePlacesLayeredClipAtRequestedTimelineRange(t *testing.T) {
+	timeline := pebblestore.VideoProjectTimeline{
+		TotalDurationMs: 20000,
+		Clips: []pebblestore.VideoTimelineClip{
+			{ID: "step-1", Track: 0, Sequence: 0, TimelineStartMs: 0, TimelineEndMs: 6000, DurationMs: 6000, Visible: true},
+			{ID: "step-2", Track: 0, Sequence: 1, TimelineStartMs: 6000, TimelineEndMs: 13000, DurationMs: 7000, Visible: true},
+			{ID: "step-3", Track: 0, Sequence: 2, TimelineStartMs: 13000, TimelineEndMs: 20000, DurationMs: 7000, Visible: true},
+			{ID: "step-1-footage", Track: 1, Sequence: 0, Layer: 1, TimelineStartMs: 0, TimelineEndMs: 1000, DurationMs: 1000, Visible: true, Muted: true},
+		},
+	}
+	inputs := []MaterializedInput{
+		{Index: 0, ClipID: "step-1", FilePath: "step-1.jpg", IsImage: true, DurationMs: 6000, TimelineEndMs: 6000},
+		{Index: 1, ClipID: "step-2", FilePath: "step-2.jpg", IsImage: true, DurationMs: 7000, TimelineStartMs: 6000, TimelineEndMs: 13000},
+		{Index: 2, ClipID: "step-3", FilePath: "step-3.jpg", IsImage: true, DurationMs: 7000, TimelineStartMs: 13000, TimelineEndMs: 20000},
+		{Index: 3, ClipID: "step-1-footage", FilePath: "footage.mp4", IsVideo: true, DurationMs: 1000, EndMs: 1000, Track: 1, Layer: 1, TimelineEndMs: 1000, Muted: true},
+	}
+
+	plan, err := BuildFFmpegCommandLine(timeline, inputs, "output.mp4")
+	if err != nil {
+		t.Fatalf("BuildFFmpegCommandLine() error = %v", err)
+	}
+	if plan.TotalDurationMs != 20000 {
+		t.Fatalf("TotalDurationMs = %d, want 20000", plan.TotalDurationMs)
+	}
+	for _, want := range []string{
+		"[v2][v3]", // guard against accidentally appending the overlay after step 3
+		"[v3]setpts=PTS-STARTPTS+0.000/TB[v_layer_shift_3]",
+		"overlay=eof_action=pass:enable='between(t,0.000,1.000)'[v_layer_3]",
+	} {
+		if want == "[v2][v3]" {
+			if strings.Contains(plan.FilterComplex, want+"concat") {
+				t.Fatalf("overlay was appended after step 3: %s", plan.FilterComplex)
+			}
+			continue
+		}
+		if !strings.Contains(plan.FilterComplex, want) {
+			t.Errorf("filter complex missing %q: %s", want, plan.FilterComplex)
+		}
+	}
+}
+
 func TestBuildFFmpegCommandLineRejectsInvalidTransitionOverlap(t *testing.T) {
 	inputs := []MaterializedInput{
 		{Index: 0, ClipID: "one", FilePath: "one.mp4", DurationMs: 1000, HasAudio: true},

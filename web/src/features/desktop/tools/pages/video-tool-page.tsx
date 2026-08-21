@@ -17,7 +17,7 @@ import { buildDesktopChatRouteOptions, getDesktopSessionCreateTarget, type Deskt
 import type { WorkspaceBrowseResult, WorkspaceEntry } from '../../../workspaces/launcher/types/workspace'
 import type { WorkspaceOverviewSwarmTarget } from '../../../workspaces/launcher/types/workspace-overview'
 import { SwarmToolSidebar } from '../components/swarm-tool-sidebar'
-import { VIDEO_TRANSITION_KINDS, VideoProposalReview, VideoSessionAISidecar, renderedVideoArtifactUrl, requestVideoRenderCancellation, transitionLabel, type VideoTransitionKind, type VideoTransitionWire } from '../video-studio/video-studio-surface'
+import { VIDEO_TRANSITION_KINDS, VideoProposalReview, VideoSessionAISidecar, renderedVideoArtifactUrl, requestVideoRenderCancellation, transitionLabel, videoPlanPartMessageSelection, videoProposalFocusClipId, videoStepEditRequest, type VideoEditProposalWire, type VideoPlanProposalWire, type VideoTransitionKind, type VideoTransitionWire } from '../video-studio/video-studio-surface'
 
 export type VideoClip = {
   id: string
@@ -44,6 +44,16 @@ export type VideoTimelineClipWire = {
   layer?: number
   volume?: number
   muted?: boolean
+  artifact_ref?: { session_id?: string; collection_id: string; variant_id: string; event_seq?: number; media_type?: string }
+  media_type?: string
+  design_input?: { session_id?: string; collection_id: string; variant_id: string; event_seq?: number; media_type?: string }
+  captions?: Array<{
+    id: string
+    text: string
+    position?: string
+    start_ms?: number
+    end_ms?: number
+  }>
 }
 
 export type VideoProjectTimelineWire = {
@@ -70,6 +80,7 @@ export type VideoProjectSnapshotWire = {
   revision_count?: number
   active_render_job_id?: string
   project_kind?: string
+  metadata?: Record<string, unknown>
   created_at: number
   updated_at: number
 }
@@ -92,6 +103,43 @@ export type VideoProjectRevisionSnapshotWire = {
 export type VideoProjectDetailWire = {
   project: VideoProjectSnapshotWire
   current_revision?: VideoProjectRevisionSnapshotWire
+}
+
+export function acceptedVideoPlan(timeline: VideoProjectTimelineWire): VideoPlanProposalWire | null {
+  const candidate = timeline.metadata?.accepted_video_plan
+  if (!candidate || typeof candidate !== 'object') return null
+  const plan = candidate as Partial<VideoPlanProposalWire>
+  if (!Array.isArray(plan.parts) || plan.parts.length === 0) return null
+  const parts = plan.parts.filter((part) => part && typeof part.id === 'string' && typeof part.title === 'string' && typeof part.duration_ms === 'number' && Boolean(part.visual?.session_id && part.visual.collection_id && part.visual.variant_id && part.visual.event_seq))
+  const kind = plan.kind === 'revision' ? 'revision' : 'initial'
+  return parts.length > 0 ? { kind, summary: typeof plan.summary === 'string' ? plan.summary : undefined, parts } : null
+}
+
+export function preferredVisibleVideoProject(projects: VideoProjectSnapshotWire[]): VideoProjectSnapshotWire | undefined {
+  return projects.find((project) => project.metadata?.reviewable_plan === true && Boolean(project.current_revision_id))
+    ?? projects.find((project) => project.project_kind === 'video_tool' && Boolean(project.current_revision_id))
+    ?? projects.find((project) => Boolean(project.current_revision_id))
+    ?? projects.find((project) => project.project_kind === 'video_tool')
+    ?? projects[0]
+}
+
+export function videoPlanClipDetails(clip: VideoTimelineClipWire): {
+  timing: string
+  title: string
+  narration: string
+  still: string
+  onScreenText: string
+} {
+  const parts = String(clip.name ?? '').split(' | ').map((part) => part.trim())
+  const heading = parts[0] ?? ''
+  const headingParts = heading.split(' — ')
+  return {
+    timing: headingParts[0]?.trim() || `${formatTimelineTime((clip.timeline_start_ms ?? 0) / 1000)}–${formatTimelineTime((clip.timeline_end_ms ?? 0) / 1000)}`,
+    title: headingParts.slice(1).join(' — ').trim() || `Section ${(clip.sequence ?? 0) + 1}`,
+    narration: (parts.find((part) => part.startsWith('Narration:')) ?? '').replace(/^Narration:\s*/, ''),
+    still: (parts.find((part) => part.startsWith('Planned still:')) ?? '').replace(/^Planned still:\s*/, ''),
+    onScreenText: clip.captions?.map((caption) => caption.text.trim()).filter(Boolean).join(' · ') ?? '',
+  }
 }
 
 export type VideoRenderJobSnapshotWire = {
@@ -174,9 +222,17 @@ type VideoThreadWire = {
 
 export type TimelineSegment = {
   id: string
-  type: 'video'
+  type: 'video' | 'image' | 'frame'
   clipId: string
   src: string
+  sourceKind?: string
+  title?: string
+  onScreenText?: string
+  frameDirection?: string
+  track?: number
+  sequence?: number
+  layer?: number
+  timelinePositioned?: boolean
   start: number
   sourceStart: number
   duration: number
@@ -192,6 +248,7 @@ type TimelineLayoutSegment = TimelineSegment & {
 const TIMELINE_METADATA_KEY = 'timelineSegments'
 const VIDEO_TOOL_BLACK_MODE_STORAGE_KEY = 'swarm.videoTool.blackMode'
 const DEFAULT_VIDEO_SESSION_TITLE = 'Swarm launch video'
+export const VIDEO_STUDIO_AGENT_NAME = 'swarm'
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object'
@@ -382,6 +439,7 @@ function buildTimelineSegments(thread: VideoThreadRecord | null, clips: VideoCli
       type: 'video',
       clipId,
       src: clipMediaUrl(thread.id, clipId),
+      sourceKind: 'source_video',
       start: 0,
       sourceStart,
       duration: mediaDuration > 0 ? Math.max(0, mediaDuration - sourceStart) : 0,
@@ -399,6 +457,7 @@ function buildTimelineSegments(thread: VideoThreadRecord | null, clips: VideoCli
       type: 'video',
       clipId: clip.id,
       src: clipMediaUrl(thread.id, clip.id),
+      sourceKind: 'source_video',
       start: 0,
       sourceStart: 0,
       duration: clipDuration(clipDurations, clip.id),
@@ -421,18 +480,26 @@ function transitionOverlapSeconds(transition: VideoTransitionWire | undefined, p
   return Math.max(0, finiteNonNegative(transition.duration_ms, 0) / 1000)
 }
 
-function layoutTimelineSegments(segments: TimelineSegment[]): TimelineLayoutSegment[] {
-  let timelineEnd = 0
-  let previousVisible: TimelineSegment | null = null
+export function layoutTimelineSegments(segments: TimelineSegment[]): TimelineLayoutSegment[] {
+  const trackEnds = new Map<number, number>()
+  const previousVisibleByTrack = new Map<number, TimelineSegment>()
   return segments.map((segment) => {
+    const track = segment.track ?? 0
+    const trackEnd = trackEnds.get(track) ?? 0
     if (!segment.visible || segment.duration <= 0) {
-      return { ...segment, start: timelineEnd, timelineStart: timelineEnd, timelineEnd }
+      const timelineStart = segment.timelinePositioned ? Math.max(0, segment.start) : trackEnd
+      return { ...segment, start: timelineStart, timelineStart, timelineEnd: timelineStart }
     }
+    const previousVisible = previousVisibleByTrack.get(track) ?? null
     const overlap = previousVisible ? Math.min(transitionOverlapSeconds(segment.transitionIn, previousVisible.id), previousVisible.duration, segment.duration) : 0
-    const timelineStart = Math.max(0, timelineEnd - overlap)
+    const timelineStart = previousVisible
+      ? Math.max(0, trackEnd - overlap)
+      : segment.timelinePositioned
+        ? Math.max(0, segment.start)
+        : trackEnd
     const laidOut = { ...segment, start: timelineStart, timelineStart, timelineEnd: timelineStart + segment.duration }
-    timelineEnd = laidOut.timelineEnd
-    previousVisible = segment
+    trackEnds.set(track, laidOut.timelineEnd)
+    previousVisibleByTrack.set(track, segment)
     return laidOut
   })
 }
@@ -448,12 +515,30 @@ function timelineTrackWidth(duration: number): number {
   return Math.max(720, Math.ceil(duration * 24))
 }
 
-function activeTimelineSegment(layout: TimelineLayoutSegment[], playhead: number): TimelineLayoutSegment | null {
+function activeTimelineSegments(layout: TimelineLayoutSegment[], playhead: number): TimelineLayoutSegment[] {
   const visible = layout.filter((segment) => segment.visible && segment.duration > 0 && segment.timelineEnd > segment.timelineStart)
-  if (visible.length === 0) {
-    return null
+  if (visible.length === 0) return []
+  const active = visible.filter((segment) => playhead >= segment.timelineStart && playhead < segment.timelineEnd)
+  if (active.length > 0) return active.sort((left, right) => (left.layer ?? left.track ?? 0) - (right.layer ?? right.track ?? 0) || (left.track ?? 0) - (right.track ?? 0))
+  const ended = visible.filter((segment) => playhead >= segment.timelineEnd).sort((left, right) => right.timelineEnd - left.timelineEnd)
+  return ended.length > 0 ? [ended[0]] : []
+}
+
+function activeTimelineSegment(layout: TimelineLayoutSegment[], playhead: number): TimelineLayoutSegment | null {
+  const active = activeTimelineSegments(layout, playhead)
+  return active[active.length - 1] ?? null
+}
+
+function transitionPreviewOpacity(segments: TimelineLayoutSegment[], index: number, playhead: number): number {
+  if (segments.length < 2) return 1
+  const incoming = segments[segments.length - 1]
+  const transition = incoming.transitionIn
+  if (!transition || transition.kind === 'cut' || !transition.duration_ms) return 1
+  const progress = Math.max(0, Math.min(1, (playhead - incoming.timelineStart) / (transition.duration_ms / 1000)))
+  if (transition.kind === 'fade_through_black' || transition.kind === 'fade_to_black' || transition.kind === 'fade_from_black') {
+    return index === 0 ? Math.max(0, 1 - progress * 2) : Math.max(0, (progress - 0.5) * 2)
   }
-  return visible.find((segment) => playhead >= segment.timelineStart && playhead < segment.timelineEnd) ?? visible[visible.length - 1] ?? null
+  return index === 0 ? 1 : progress
 }
 
 async function scanVideoFolder(workspacePath: string, folderPath: string): Promise<{ folderPath: string; clips: VideoClip[] }> {
@@ -518,7 +603,7 @@ export function resolveVideoStudioSessionRoute(
   }) ?? null
 }
 
-async function createVideoThread(input: {
+export async function createVideoThread(input: {
   title: string
   workspacePath: string
   workspaceName: string
@@ -532,6 +617,7 @@ async function createVideoThread(input: {
     workspacePath: input.workspacePath,
     workspaceName: input.workspaceName,
     mode: 'auto',
+    agentName: VIDEO_STUDIO_AGENT_NAME,
     preference: preference.preference,
     route: input.route,
     metadata: videoStudioSessionMetadata(),
@@ -624,6 +710,107 @@ export function timelineSegmentsToProjectTimeline(
   }
 }
 
+function visualPlanTimeline(accepted: VideoProjectTimelineWire, plan: VideoPlanProposalWire, proposalId: string): VideoProjectTimelineWire {
+  const currentPlan = acceptedVideoPlan(accepted)
+  const parts = plan.kind === 'revision' && currentPlan
+    ? currentPlan.parts.map((part) => plan.parts.find((replacement) => replacement.id === part.id) ?? part)
+    : plan.parts
+  let startMs = 0
+  const planClips = parts.map((part, index): VideoTimelineClipWire => {
+    const endMs = startMs + part.duration_ms
+    const clip = {
+      id: part.id,
+      name: `${part.title} | Narration: ${part.narration ?? ''} | Planned still: ${part.visual_direction ?? ''}`,
+      track: 0,
+      sequence: index,
+      source_kind: 'managed_artifact',
+      artifact_ref: part.visual,
+      media_type: part.visual_media_type,
+      timeline_start_ms: startMs,
+      timeline_end_ms: endMs,
+      duration_ms: part.duration_ms,
+      visible: true,
+      captions: part.on_screen_text ? [{ id: `${part.id}-caption`, text: part.on_screen_text, position: 'center', start_ms: startMs, end_ms: endMs }] : [],
+    }
+    startMs = endMs
+    return clip
+  })
+  const planPartIds = new Set(parts.map((part) => part.id))
+  const auxiliaryClips = accepted.clips.filter((clip) => !planPartIds.has(clip.id))
+  const clips = [...planClips, ...auxiliaryClips]
+  const transitions = [
+    ...parts.slice(1).map((part, index): VideoTransitionWire => ({
+      id: `transition-${part.id}`,
+      kind: 'crossfade',
+      from_clip_id: parts[index].id,
+      to_clip_id: part.id,
+      duration_ms: 300,
+    })),
+    ...(accepted.transitions ?? []).filter((transition) => !planPartIds.has(transition.from_clip_id) || !planPartIds.has(transition.to_clip_id)),
+  ]
+  const totalDurationMs = auxiliaryClips.reduce((duration, clip) => Math.max(duration, clip.timeline_end_ms ?? ((clip.timeline_start_ms ?? 0) + (clip.duration_ms ?? 0))), startMs)
+  const mergedPlan: VideoPlanProposalWire = { kind: 'initial', summary: plan.summary || currentPlan?.summary, parts }
+  return {
+    ...accepted,
+    total_duration_ms: totalDurationMs,
+    clips,
+    transitions,
+    metadata: { ...(accepted.metadata ?? {}), accepted_video_plan: mergedPlan, shadow_proposal_id: proposalId },
+  }
+}
+
+export function applyPendingVideoProposal(
+  accepted: VideoProjectTimelineWire,
+  proposal: VideoEditProposalWire,
+): VideoProjectTimelineWire {
+  if (proposal.plan) return visualPlanTimeline(accepted, proposal.plan, proposal.id)
+  const timeline: VideoProjectTimelineWire = {
+    ...accepted,
+    clips: accepted.clips.map((clip) => ({ ...clip, captions: clip.captions?.map((caption) => ({ ...caption })) })),
+    transitions: (accepted.transitions ?? []).map((transition) => ({ ...transition })),
+    metadata: { ...(accepted.metadata ?? {}), shadow_proposal_id: proposal.id },
+  }
+  for (const operation of proposal.operations) {
+    switch (operation.type) {
+      case 'add_clip':
+        if (operation.clip) {
+          const clip = operation.clip as VideoTimelineClipWire
+          const existing = timeline.clips.findIndex((candidate) => candidate.id === clip.id)
+          if (existing >= 0) timeline.clips[existing] = { ...timeline.clips[existing], ...clip }
+          else timeline.clips.push({ ...clip })
+        }
+        break
+      case 'update_clip':
+        if (operation.clip) {
+          const clip = operation.clip as VideoTimelineClipWire
+          const existing = timeline.clips.findIndex((candidate) => candidate.id === clip.id)
+          if (existing >= 0) timeline.clips[existing] = { ...timeline.clips[existing], ...clip }
+        }
+        break
+      case 'remove_clip':
+        timeline.clips = timeline.clips.filter((clip) => clip.id !== operation.clip_id)
+        timeline.transitions = (timeline.transitions ?? []).filter((transition) => transition.from_clip_id !== operation.clip_id && transition.to_clip_id !== operation.clip_id)
+        break
+      case 'add_transition':
+      case 'update_transition':
+        if (operation.transition) {
+          const existing = (timeline.transitions ?? []).findIndex((candidate) => candidate.id === operation.transition?.id)
+          if (existing >= 0) timeline.transitions![existing] = { ...operation.transition }
+          else timeline.transitions = [...(timeline.transitions ?? []), { ...operation.transition }]
+        }
+        break
+      case 'remove_transition':
+        timeline.transitions = (timeline.transitions ?? []).filter((transition) => transition.id !== operation.transition_id)
+        break
+    }
+  }
+  timeline.clips = timeline.clips
+    .map((clip, index) => ({ ...clip, sequence: typeof clip.sequence === 'number' ? clip.sequence : index }))
+    .sort((left, right) => (left.track ?? 0) - (right.track ?? 0) || (left.sequence ?? 0) - (right.sequence ?? 0))
+  timeline.total_duration_ms = timeline.clips.reduce((duration, clip) => Math.max(duration, clip.timeline_end_ms ?? ((clip.timeline_start_ms ?? 0) + (clip.duration_ms ?? 0))), 0)
+  return timeline
+}
+
 export function projectTimelineToTimelineSegments(
   timeline: VideoProjectTimelineWire,
   clipDurations: Record<string, number>,
@@ -640,29 +827,49 @@ export function projectTimelineToTimelineSegments(
     if (!transitionsByDestination.has(transition.to_clip_id)) transitionsByDestination.set(transition.to_clip_id, transition)
   }
   let previewStartSec = 0
-  return timeline.clips.map((clipWire) => {
+  return timeline.clips.map((clipWire, originalIndex): TimelineSegment => {
     const sourceClip = clipsBySourceRef.get(String(clipWire.source_ref ?? '')) ?? clipsById.get(clipWire.id)
     const clipId = sourceClip?.id ?? clipWire.id
     const sourceStartSec = (clipWire.source_start_ms ?? 0) / 1000
     const durationSec = (clipWire.duration_ms ?? 0) / 1000 || clipDuration(clipDurations, clipId)
     const transitionIn = transitionsByDestination.get(clipWire.id)
     const explicitStartMs = clipWire.timeline_start_ms
-    const start = typeof explicitStartMs === 'number' && explicitStartMs > 0
+    const start = typeof explicitStartMs === 'number' && explicitStartMs >= 0
       ? explicitStartMs / 1000
       : Math.max(0, previewStartSec - ((transitionIn?.duration_ms ?? 0) / 1000))
     if (clipWire.visible !== false) previewStartSec = start + durationSec
+    const details = videoPlanClipDetails(clipWire)
+    const videoSource = clipWire.source_kind === 'source_video' && Boolean(clipWire.source_ref || sourceClip)
+    const sourceRef = String(clipWire.source_ref ?? '').trim()
+    const artifactRef = clipWire.artifact_ref ?? clipWire.design_input
+    const artifactSessionId = String(artifactRef?.session_id || threadId).trim()
+    const artifactId = String(artifactRef?.variant_id ?? '').trim()
+    const artifactSource = clipWire.source_kind === 'managed_artifact' && Boolean(artifactSessionId && artifactId)
+    const artifactMediaType = String(clipWire.media_type ?? artifactRef?.media_type ?? '').trim()
+    const artifactVideo = artifactSource && artifactMediaType.startsWith('video/')
     return {
       id: clipWire.id,
-      type: 'video',
+      type: videoSource || artifactVideo ? 'video' : artifactSource ? 'image' : 'frame',
       clipId,
-      src: threadId ? clipMediaUrl(threadId, clipId) : `/v1/workspace/video/threads/media?clip_id=${encodeURIComponent(clipId)}`,
+      src: videoSource ? (sourceClip && threadId ? clipMediaUrl(threadId, clipId) : threadId && sourceRef ? `/v3/sessions/${encodeURIComponent(threadId)}/video/sources/media?source_ref=${encodeURIComponent(sourceRef)}` : `/v1/workspace/video/threads/media?clip_id=${encodeURIComponent(clipId)}`) : artifactSource ? `/v3/sessions/${encodeURIComponent(artifactSessionId)}/artifacts/${encodeURIComponent(artifactId)}` : '',
+      sourceKind: clipWire.source_kind,
+      title: details.title,
+      onScreenText: details.onScreenText,
+      frameDirection: details.still,
+      track: clipWire.track ?? 0,
+      sequence: clipWire.sequence ?? originalIndex,
+      layer: clipWire.layer ?? clipWire.track ?? 0,
+      timelinePositioned: typeof explicitStartMs === 'number' && explicitStartMs >= 0,
       start,
       sourceStart: sourceStartSec,
       duration: durationSec,
       visible: clipWire.visible !== false,
       transitionIn,
     }
-  })
+  }).sort((left, right) => left.start - right.start
+    || (left.layer ?? left.track ?? 0) - (right.layer ?? right.track ?? 0)
+    || (left.track ?? 0) - (right.track ?? 0)
+    || (left.sequence ?? 0) - (right.sequence ?? 0))
 }
 
 export async function fetchPrimaryVideoProject(sessionId: string): Promise<VideoProjectDetailWire> {
@@ -673,12 +880,62 @@ export async function fetchPrimaryVideoProject(sessionId: string): Promise<Video
   return { project: response.project, current_revision: response.current_revision }
 }
 
+export async function listVideoProjects(sessionId: string): Promise<VideoProjectSnapshotWire[]> {
+  const response = await requestJson<{ projects?: VideoProjectSnapshotWire[] }>(
+    `/v3/sessions/${encodeURIComponent(sessionId)}/video/projects?limit=32`,
+  )
+  return Array.isArray(response.projects) ? response.projects : []
+}
+
+export async function fetchVideoProject(sessionId: string, projectId: string): Promise<VideoProjectDetailWire> {
+  const response = await requestJson<{ project?: VideoProjectSnapshotWire; current_revision?: VideoProjectRevisionSnapshotWire }>(
+    `/v3/sessions/${encodeURIComponent(sessionId)}/video/projects/${encodeURIComponent(projectId)}`,
+  )
+  if (!response.project) throw new Error('Video project response returned no project')
+  return { project: response.project, current_revision: response.current_revision }
+}
+
+export async function createAdditionalVideoProject(sessionId: string, title: string, outputPreset = 'landscape_1080p'): Promise<VideoProjectDetailWire> {
+  const response = await requestJson<{ project?: VideoProjectSnapshotWire; revision?: VideoProjectRevisionSnapshotWire }>(
+    `/v3/sessions/${encodeURIComponent(sessionId)}/video/projects`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        title,
+        output_preset: outputPreset,
+        initial_timeline: {
+          schema_version: 1,
+          output_preset: outputPreset,
+          width: outputPreset.startsWith('portrait') ? 1080 : 1920,
+          height: outputPreset.startsWith('portrait') ? 1920 : 1080,
+          fps: 30,
+          total_duration_ms: 0,
+          clips: [],
+          transitions: [],
+        },
+      }),
+    },
+  )
+  if (!response.project) throw new Error('Video project create returned no project')
+  return { project: response.project, current_revision: response.revision }
+}
+
 export async function ensurePrimaryVideoProject(sessionId: string, title: string, initialTimeline?: VideoProjectTimelineWire): Promise<VideoProjectDetailWire> {
+  const timeline = initialTimeline ?? {
+    schema_version: 1,
+    output_preset: 'landscape_1080p',
+    width: 1920,
+    height: 1080,
+    fps: 30,
+    total_duration_ms: 0,
+    clips: [],
+    transitions: [],
+  }
   const response = await requestJson<{ project?: VideoProjectSnapshotWire; revision?: VideoProjectRevisionSnapshotWire; current_revision?: VideoProjectRevisionSnapshotWire }>(
     `/v3/sessions/${encodeURIComponent(sessionId)}/video/projects/primary`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ title, output_preset: initialTimeline?.output_preset ?? 'landscape_1080p', initial_timeline: initialTimeline }),
+      body: JSON.stringify({ title, output_preset: timeline.output_preset, initial_timeline: timeline }),
     },
   )
   if (!response.project) throw new Error('Primary video project create returned no project')
@@ -781,23 +1038,21 @@ export async function exportRenderedVideo(
   return { destination_path: response.destination_path }
 }
 
-function moveItem<T>(items: T[], fromIndex: number, toIndex: number): T[] {
-  if (fromIndex < 0 || toIndex < 0 || fromIndex >= items.length || toIndex >= items.length || fromIndex === toIndex) {
-    return items
-  }
-  const next = [...items]
-  const [moved] = next.splice(fromIndex, 1)
-  next.splice(toIndex, 0, moved)
-  return next
-}
-
 export function VideoToolPage() {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const matchRoute = useMatchRoute()
   const workspaceStudioMatch = matchRoute({ to: '/$workspaceSlug/studio', fuzzy: false })
   const workspaceVideoToolMatch = matchRoute({ to: '/$workspaceSlug/tools/video', fuzzy: false })
-  const routeWorkspaceSlug = (workspaceStudioMatch ? workspaceStudioMatch.workspaceSlug : workspaceVideoToolMatch ? workspaceVideoToolMatch.workspaceSlug : '').trim()
+  const workspaceVideoSessionMatch = matchRoute({ to: '/$workspaceSlug/video/$videoSessionId', fuzzy: false })
+  const routeWorkspaceSlug = (workspaceVideoSessionMatch
+    ? workspaceVideoSessionMatch.workspaceSlug
+    : workspaceStudioMatch
+      ? workspaceStudioMatch.workspaceSlug
+      : workspaceVideoToolMatch
+        ? workspaceVideoToolMatch.workspaceSlug
+        : '').trim()
+  const routeVideoSessionId = (workspaceVideoSessionMatch ? workspaceVideoSessionMatch.videoSessionId : '').trim()
   const [pickerOpen, setPickerOpen] = useState(false)
   const [browser, setBrowser] = useState<WorkspaceBrowseResult | null>(null)
   const [browserLoading, setBrowserLoading] = useState(false)
@@ -812,13 +1067,19 @@ export function VideoToolPage() {
   const [selectedThreadId, setSelectedThreadId] = useState<string | null>(null)
   const [selectedClipId, setSelectedClipId] = useState<string | null>(null)
   const [reordering, setReordering] = useState(false)
+  const [videoProjects, setVideoProjects] = useState<VideoProjectSnapshotWire[]>([])
+  const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null)
   const [videoProject, setVideoProject] = useState<VideoProjectSnapshotWire | null>(null)
   const [currentRevision, setCurrentRevision] = useState<VideoProjectRevisionSnapshotWire | null>(null)
   const [projectRevisions, setProjectRevisions] = useState<VideoProjectRevisionSnapshotWire[]>([])
   const [projectLoading, setProjectLoading] = useState(false)
+  const [creatingProject, setCreatingProject] = useState(false)
   const [restoringRevisionId, setRestoringRevisionId] = useState<string | null>(null)
   const [transitionKind, setTransitionKind] = useState<VideoTransitionKind>('cut')
   const [aiRefreshKey, setAIRefreshKey] = useState(0)
+  const [pendingProposal, setPendingProposal] = useState<VideoEditProposalWire | null>(null)
+  const [composerDraftRequest, setComposerDraftRequest] = useState<{ id: number; draft: string } | undefined>()
+  const [stepRequestBusyId, setStepRequestBusyId] = useState('')
   const [revealingStorage, setRevealingStorage] = useState(false)
   const [rendering, setRendering] = useState(false)
   const [renderJob, setRenderJob] = useState<VideoRenderJobSnapshotWire | null>(null)
@@ -838,6 +1099,7 @@ export function VideoToolPage() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const timelineScrollRef = useRef<HTMLDivElement | null>(null)
   const videoElementsRef = useRef<Map<string, HTMLVideoElement>>(new Map())
+  const imageElementsRef = useRef<Map<string, HTMLImageElement>>(new Map())
   const playheadRef = useRef(0)
   const playbackStartRef = useRef(0)
   const playbackStartPlayheadRef = useRef(0)
@@ -874,13 +1136,17 @@ export function VideoToolPage() {
   const videoThreads = videoThreadsQuery.data ?? []
 
   useEffect(() => {
+    if (routeVideoSessionId && videoThreads.some((thread) => thread.id === routeVideoSessionId)) {
+      setSelectedThreadId(routeVideoSessionId)
+      return
+    }
     if (!selectedThreadId) {
       return
     }
     if (!videoThreads.some((thread) => thread.id === selectedThreadId)) {
       setSelectedThreadId(null)
     }
-  }, [selectedThreadId, videoThreads])
+  }, [routeVideoSessionId, selectedThreadId, videoThreads])
 
   const selectedThread = useMemo(() => {
     if (!selectedThreadId) {
@@ -892,9 +1158,15 @@ export function VideoToolPage() {
   const selectedClips = useMemo(() => orderedClips(selectedThread), [selectedThread])
   const selectedFolderPath = threadFolderPath(selectedThread)
   const legacyTimelineSegments = useMemo(() => buildTimelineSegments(selectedThread, selectedClips, clipDurations), [clipDurations, selectedClips, selectedThread])
-  const timelineSegments = useMemo(() => currentRevision
+  const acceptedTimelineSegments = useMemo(() => currentRevision
     ? projectTimelineToTimelineSegments(currentRevision.timeline, clipDurations, selectedClips, selectedThread?.id ?? '')
     : legacyTimelineSegments, [clipDurations, currentRevision, legacyTimelineSegments, selectedClips, selectedThread?.id])
+  const shadowTimeline = useMemo(() => pendingProposal && currentRevision && pendingProposal.base_revision_id === currentRevision.id
+    ? applyPendingVideoProposal(currentRevision.timeline, pendingProposal)
+    : null, [currentRevision, pendingProposal])
+  const timelineSegments = useMemo(() => shadowTimeline
+    ? projectTimelineToTimelineSegments(shadowTimeline, clipDurations, selectedClips, selectedThread?.id ?? '')
+    : acceptedTimelineSegments, [acceptedTimelineSegments, clipDurations, selectedClips, selectedThread?.id, shadowTimeline])
   const timelineLayout = useMemo(() => layoutTimelineSegments(timelineSegments), [timelineSegments])
   const timelineLayoutByClipId = useMemo(() => new Map(timelineLayout.map((segment) => [segment.clipId, segment])), [timelineLayout])
   const visibleTimelineLayout = useMemo(() => timelineLayout.filter((segment) => segment.visible && segment.duration > 0), [timelineLayout])
@@ -903,6 +1175,8 @@ export function VideoToolPage() {
   const timelineTrackWidthPx = useMemo(() => timelineTrackWidth(movieDuration), [movieDuration])
   const playheadX = movieDuration > 0 ? Math.min(timelineTrackWidthPx, Math.max(0, (playhead / movieDuration) * timelineTrackWidthPx)) : 0
   const activeSegment = useMemo(() => activeTimelineSegment(timelineLayout, playhead), [playhead, timelineLayout])
+  const acceptedPlan = useMemo(() => currentRevision ? acceptedVideoPlan(currentRevision.timeline) : null, [currentRevision])
+  const hasUnresolvedPlanFrames = timelineSegments.some((segment) => segment.sourceKind === 'text' || (segment.sourceKind === 'managed_artifact' && !segment.src))
   const selectedClip = selectedClips.find((clip) => clip.id === selectedClipId) ?? selectedClips[0] ?? null
 
   useEffect(() => {
@@ -917,31 +1191,28 @@ export function VideoToolPage() {
 
   useEffect(() => {
     let cancelled = false
+    setVideoProjects([])
+    setSelectedProjectId(null)
     setVideoProject(null)
     setCurrentRevision(null)
     setProjectRevisions([])
+    setPendingProposal(null)
     setRenderJob(null)
     if (!selectedThread) return
     setProjectLoading(true)
     void (async () => {
       try {
-        let detail: VideoProjectDetailWire
-        try {
-          detail = await fetchPrimaryVideoProject(selectedThread.id)
-        } catch {
-          detail = await ensurePrimaryVideoProject(selectedThread.id, selectedThread.title || 'Video Tool project')
+        let projects = await listVideoProjects(selectedThread.id)
+        let preferred = preferredVisibleVideoProject(projects)
+        if (projects.length === 0 || (preferred?.project_kind === 'video_tool' && !preferred.current_revision_id)) {
+          const ensured = await ensurePrimaryVideoProject(selectedThread.id, selectedThread.title || 'Video Tool project')
+          projects = await listVideoProjects(selectedThread.id)
+          if (projects.length === 0) projects = [ensured.project]
+          preferred = preferredVisibleVideoProject(projects)
         }
         if (cancelled) return
-        let currentRevision = detail.current_revision ?? null
-        if (!currentRevision && detail.project.current_revision_id) {
-          const current = await requestJson<{ revision?: VideoProjectRevisionSnapshotWire }>(
-            `/v3/sessions/${encodeURIComponent(selectedThread.id)}/video/projects/${encodeURIComponent(detail.project.id)}/revisions/${encodeURIComponent(detail.project.current_revision_id)}`,
-          )
-          currentRevision = current.revision ?? null
-        }
-        setVideoProject(detail.project)
-        setCurrentRevision(currentRevision)
-        setProjectRevisions(await listVideoProjectRevisions(selectedThread.id, detail.project.id))
+        setVideoProjects(projects)
+        setSelectedProjectId(preferred?.id ?? null)
       } catch (error) {
         if (!cancelled) setCreateError(error instanceof Error ? error.message : String(error))
       } finally {
@@ -950,6 +1221,71 @@ export function VideoToolPage() {
     })()
     return () => { cancelled = true }
   }, [selectedThread?.id])
+
+  useEffect(() => {
+    let cancelled = false
+    setVideoProject(null)
+    setCurrentRevision(null)
+    setProjectRevisions([])
+    setPendingProposal(null)
+    setRenderJob(null)
+    if (!selectedThread || !selectedProjectId) return
+    setProjectLoading(true)
+    void (async () => {
+      try {
+        const detail = await fetchVideoProject(selectedThread.id, selectedProjectId)
+        let selectedRevision = detail.current_revision ?? null
+        if (!selectedRevision && detail.project.current_revision_id) {
+          const current = await requestJson<{ revision?: VideoProjectRevisionSnapshotWire }>(
+            `/v3/sessions/${encodeURIComponent(selectedThread.id)}/video/projects/${encodeURIComponent(detail.project.id)}/revisions/${encodeURIComponent(detail.project.current_revision_id)}`,
+          )
+          selectedRevision = current.revision ?? null
+        }
+        if (cancelled) return
+        setVideoProject(detail.project)
+        setCurrentRevision(selectedRevision)
+        setProjectRevisions(await listVideoProjectRevisions(selectedThread.id, detail.project.id))
+      } catch (error) {
+        if (!cancelled) setCreateError(error instanceof Error ? error.message : String(error))
+      } finally {
+        if (!cancelled) setProjectLoading(false)
+      }
+    })()
+    return () => { cancelled = true }
+  }, [selectedProjectId, selectedThread?.id])
+
+  const refreshSelectedVideoProject = useCallback(async () => {
+    if (!selectedThread) return
+    const projects = await listVideoProjects(selectedThread.id)
+    const preferred = preferredVisibleVideoProject(projects)
+    const projectId = preferred?.id ?? selectedProjectId
+    setVideoProjects(projects)
+    if (!projectId) return
+    const [detail, revisions] = await Promise.all([
+      fetchVideoProject(selectedThread.id, projectId),
+      listVideoProjectRevisions(selectedThread.id, projectId),
+    ])
+    setSelectedProjectId(projectId)
+    setVideoProject(detail.project)
+    setCurrentRevision(detail.current_revision ?? null)
+    setProjectRevisions(revisions)
+  }, [selectedProjectId, selectedThread])
+
+  const handleCreateAdditionalProject = useCallback(async () => {
+    if (!selectedThread || creatingProject) return
+    setCreatingProject(true)
+    setCreateError(null)
+    try {
+      const title = `Video ${videoProjects.length + 1}`
+      const detail = await createAdditionalVideoProject(selectedThread.id, title, videoProject?.output_preset)
+      setVideoProjects(await listVideoProjects(selectedThread.id))
+      setSelectedProjectId(detail.project.id)
+    } catch (error) {
+      setCreateError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setCreatingProject(false)
+    }
+  }, [creatingProject, selectedThread, videoProject?.output_preset, videoProjects.length])
 
   useEffect(() => {
     if (!selectedThread) {
@@ -987,9 +1323,9 @@ export function VideoToolPage() {
 
   useEffect(() => {
     const cache = videoElementsRef.current
-    const activeClipIds = new Set(selectedClips.map((clip) => clip.id))
+    const mediaByClipId = new Map(timelineSegments.filter((segment) => segment.type === 'video' && segment.src).map((segment) => [segment.clipId, segment.src]))
     for (const [clipId, video] of cache.entries()) {
-      if (!activeClipIds.has(clipId)) {
+      if (!mediaByClipId.has(clipId)) {
         video.pause()
         video.removeAttribute('src')
         video.load()
@@ -997,36 +1333,40 @@ export function VideoToolPage() {
       }
     }
     setClipDurations((current) => {
-      const next = Object.fromEntries(Object.entries(current).filter(([clipId]) => activeClipIds.has(clipId)))
+      const next = Object.fromEntries(Object.entries(current).filter(([clipId]) => mediaByClipId.has(clipId)))
       return Object.keys(next).length === Object.keys(current).length ? current : next
     })
-    for (const clip of selectedClips) {
-      if (cache.has(clip.id) || !selectedThread) {
-        continue
-      }
+    for (const [clipId, src] of mediaByClipId) {
+      if (cache.has(clipId)) continue
       const video = document.createElement('video')
-      video.src = clipMediaUrl(selectedThread.id, clip.id)
+      video.src = src
       video.preload = 'metadata'
       video.muted = true
       video.playsInline = true
       const updateDuration = () => {
         const duration = video.duration
-        if (!Number.isFinite(duration) || duration <= 0) {
-          return
-        }
-        setClipDurations((current) => {
-          if (Math.abs((current[clip.id] ?? 0) - duration) < 0.001) {
-            return current
-          }
-          return { ...current, [clip.id]: duration }
-        })
+        if (!Number.isFinite(duration) || duration <= 0) return
+        setClipDurations((current) => Math.abs((current[clipId] ?? 0) - duration) < 0.001 ? current : { ...current, [clipId]: duration })
       }
       video.addEventListener('loadedmetadata', updateDuration)
       video.addEventListener('durationchange', updateDuration)
       video.load()
-      cache.set(clip.id, video)
+      cache.set(clipId, video)
     }
-  }, [selectedClips, selectedThread])
+  }, [timelineSegments])
+
+  useEffect(() => {
+    const cache = imageElementsRef.current
+    const mediaByClipId = new Map(timelineSegments.filter((segment) => segment.type === 'image' && segment.src).map((segment) => [segment.clipId, segment.src]))
+    for (const clipId of cache.keys()) if (!mediaByClipId.has(clipId)) cache.delete(clipId)
+    for (const [clipId, src] of mediaByClipId) {
+      if (cache.has(clipId)) continue
+      const image = new Image()
+      image.decoding = 'async'
+      image.src = src
+      cache.set(clipId, image)
+    }
+  }, [timelineSegments])
 
   useEffect(() => {
     const canvas = canvasRef.current
@@ -1052,45 +1392,68 @@ export function VideoToolPage() {
 
       context.fillStyle = 'black'
       context.fillRect(0, 0, canvas.width, canvas.height)
-      const segment = activeTimelineSegment(timelineLayout, nextPlayhead)
-      if (!segment) {
+      const activeSegments = activeTimelineSegments(timelineLayout, nextPlayhead)
+      if (activeSegments.length === 0) {
         for (const cachedVideo of videoElementsRef.current.values()) {
-          if (!cachedVideo.paused) {
-            cachedVideo.pause()
+          if (!cachedVideo.paused) cachedVideo.pause()
+        }
+        frame = window.requestAnimationFrame(render)
+        return
+      }
+      const activeClipIds = new Set(activeSegments.map((segment) => segment.clipId))
+      for (const [clipId, cachedVideo] of videoElementsRef.current.entries()) {
+        if (!activeClipIds.has(clipId) && !cachedVideo.paused) cachedVideo.pause()
+      }
+      for (const [segmentIndex, segment] of activeSegments.entries()) {
+        const opacity = transitionPreviewOpacity(activeSegments, segmentIndex, nextPlayhead)
+        if (segment.type === 'image') {
+          const image = imageElementsRef.current.get(segment.clipId)
+          if (!image?.complete || image.naturalWidth <= 0) continue
+          const scale = Math.min(canvas.width / image.naturalWidth, canvas.height / image.naturalHeight)
+          const drawWidth = Math.max(1, image.naturalWidth * scale)
+          const drawHeight = Math.max(1, image.naturalHeight * scale)
+          context.save()
+          context.globalAlpha = opacity
+          context.drawImage(image, (canvas.width - drawWidth) / 2, (canvas.height - drawHeight) / 2, drawWidth, drawHeight)
+          context.restore()
+          continue
+        }
+        if (segment.type === 'frame') {
+          context.save()
+          context.globalAlpha = opacity
+          context.fillStyle = segment.sourceKind === 'text' ? '#0b1020' : '#161616'
+          context.fillRect(0, 0, canvas.width, canvas.height)
+          context.textAlign = 'center'
+          context.textBaseline = 'middle'
+          context.fillStyle = '#f8fafc'
+          context.font = '600 78px system-ui, sans-serif'
+          context.fillText(segment.onScreenText || segment.title || 'Planned frame', canvas.width / 2, canvas.height / 2 - 32, canvas.width * 0.78)
+          context.fillStyle = '#94a3b8'
+          context.font = '34px system-ui, sans-serif'
+          context.fillText(segment.frameDirection || `${(segment.sourceKind || 'frame').replace(/_/g, ' ')} · pending preview`, canvas.width / 2, canvas.height / 2 + 70, canvas.width * 0.72)
+          context.restore()
+          continue
+        }
+        const video = videoElementsRef.current.get(segment.clipId)
+        if (!video) continue
+        const sourceTime = segment.sourceStart + Math.max(0, nextPlayhead - segment.timelineStart)
+        if (Number.isFinite(sourceTime) && Math.abs(video.currentTime - sourceTime) > 0.08) {
+          try {
+            video.currentTime = sourceTime
+          } catch {
+            // Browser may reject seeks before metadata is ready; the next frame retries.
           }
         }
-        frame = window.requestAnimationFrame(render)
-        return
-      }
-      for (const [clipId, cachedVideo] of videoElementsRef.current.entries()) {
-        if (clipId !== segment.clipId && !cachedVideo.paused) {
-          cachedVideo.pause()
-        }
-      }
-      const video = videoElementsRef.current.get(segment.clipId)
-      if (!video) {
-        frame = window.requestAnimationFrame(render)
-        return
-      }
-      const sourceTime = segment.sourceStart + Math.max(0, nextPlayhead - segment.timelineStart)
-      if (Number.isFinite(sourceTime) && Math.abs(video.currentTime - sourceTime) > 0.08) {
-        try {
-          video.currentTime = sourceTime
-        } catch {
-          // Browser may reject seeks before metadata is ready; the next frame retries.
-        }
-      }
-      if (isPlaying && video.paused) {
-        void video.play().catch(() => undefined)
-      }
-      if (!isPlaying && !video.paused) {
-        video.pause()
-      }
-      if (video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
+        if (isPlaying && video.paused) void video.play().catch(() => undefined)
+        if (!isPlaying && !video.paused) video.pause()
+        if (video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) continue
         const scale = Math.min(canvas.width / Math.max(1, video.videoWidth), canvas.height / Math.max(1, video.videoHeight))
         const drawWidth = Math.max(1, video.videoWidth * scale)
         const drawHeight = Math.max(1, video.videoHeight * scale)
+        context.save()
+        context.globalAlpha = opacity
         context.drawImage(video, (canvas.width - drawWidth) / 2, (canvas.height - drawHeight) / 2, drawWidth, drawHeight)
+        context.restore()
       }
       frame = window.requestAnimationFrame(render)
     }
@@ -1279,13 +1642,16 @@ export function VideoToolPage() {
       setSelectedThreadId(createdThread.id)
       setSelectedClipId(null)
       setNewSessionTitle('')
+      const workspaceSlug = workspaceSlugByPath.get(selectedWorkspacePath)
+        ?? workspaceRouteSlugBase({ path: selectedWorkspacePath, workspaceName: selectedWorkspaceName })
+      void navigate({ to: '/$workspaceSlug/video/$videoSessionId', params: { workspaceSlug, videoSessionId: createdThread.id } })
       await queryClient.invalidateQueries({ queryKey: ['video-tool-threads', selectedWorkspacePath] })
     } catch (error) {
       setCreateError(error instanceof Error ? error.message : String(error))
     } finally {
       setCreatingBlankSession(false)
     }
-  }, [newSessionTitle, queryClient, selectedSessionRoute, selectedWorkspaceName, selectedWorkspacePath, workspaceOverviewQuery.error, workspaceOverviewQuery.isError, workspaceOverviewQuery.isPending])
+  }, [navigate, newSessionTitle, queryClient, selectedSessionRoute, selectedWorkspaceName, selectedWorkspacePath, workspaceOverviewQuery.error, workspaceOverviewQuery.isError, workspaceOverviewQuery.isPending, workspaceSlugByPath])
 
   const handleAddFolder = useCallback(async (folderPath: string) => {
     if (!selectedWorkspacePath || !selectedWorkspaceName) {
@@ -1417,33 +1783,14 @@ export function VideoToolPage() {
     if (addedClips.length === 0 || addedClips.some((clip) => clipDuration(clipDurations, clip.id) <= 0)) return
     const appended = [...timelineSegments, ...addedClips.map((clip) => ({
       id: timelineSegmentId(clip.id), type: 'video' as const, clipId: clip.id,
-      src: clipMediaUrl(selectedThread.id, clip.id), start: 0, sourceStart: 0,
+      src: clipMediaUrl(selectedThread.id, clip.id), sourceKind: 'source_video', start: 0, sourceStart: 0,
       duration: clipDuration(clipDurations, clip.id), visible: true,
     }))]
     void persistTimelineSegments(appended)
   }, [clipDurations, currentRevision, persistTimelineSegments, projectLoading, selectedClips, selectedThread, timelineSegments])
 
-  const handleMoveClip = useCallback(async (direction: -1 | 1, clipId: string) => {
-    const index = timelineSegments.findIndex((segment) => segment.clipId === clipId)
-    const nextIndex = index + direction
-    if (index < 0 || nextIndex < 0 || nextIndex >= timelineSegments.length) {
-      return
-    }
-    const reordered = moveItem(timelineSegments, index, nextIndex)
-    await persistTimelineSegments(reordered)
-  }, [persistTimelineSegments, timelineSegments])
-
   const handleToggleSegment = useCallback(async (clipId: string) => {
     const next = timelineSegments.map((segment) => segment.clipId === clipId ? { ...segment, visible: !segment.visible } : segment)
-    await persistTimelineSegments(next)
-  }, [persistTimelineSegments, timelineSegments])
-
-  const handleTrimSegment = useCallback(async (clipId: string, edge: 'in' | 'out', amount: number) => {
-    const next = timelineSegments.map((segment) => {
-      if (segment.clipId !== clipId) return segment
-      if (edge === 'in') return { ...segment, sourceStart: Math.max(0, segment.sourceStart + amount), duration: Math.max(0.1, segment.duration - amount) }
-      return { ...segment, duration: Math.max(0.1, segment.duration + amount) }
-    })
     await persistTimelineSegments(next)
   }, [persistTimelineSegments, timelineSegments])
 
@@ -1487,6 +1834,48 @@ export function VideoToolPage() {
     playbackStartPlayheadRef.current = next
     playbackStartRef.current = performance.now()
   }, [movieDuration])
+
+  const handleFocusStep = useCallback((clipId: string, playheadMs: number) => {
+    const segment = timelineLayout.find((candidate) => candidate.id === clipId || candidate.clipId === clipId)
+    setSelectedClipId(segment?.clipId ?? clipId)
+    handleSeek(segment?.timelineStart ?? playheadMs / 1000)
+  }, [handleSeek, timelineLayout])
+
+  const handlePendingProposalChange = useCallback((proposal: VideoEditProposalWire | null) => {
+    setPendingProposal(proposal)
+    if (!proposal) return
+    const clipId = videoProposalFocusClipId(proposal)
+    const operation = [...proposal.operations].reverse().find((candidate) => String(candidate.clip?.id ?? candidate.clip_id ?? candidate.transition?.to_clip_id ?? '').trim() === clipId)
+    const playheadMs = typeof operation?.clip?.timeline_start_ms === 'number' ? operation.clip.timeline_start_ms : proposal.affected_ranges?.[0]?.start_ms ?? 0
+    if (clipId) handleFocusStep(clipId, playheadMs)
+  }, [handleFocusStep])
+
+  const handleRequestStepEdit = useCallback(async (action: 'visual' | 'transition' | 'source' | 'move_earlier' | 'move_later', segment: TimelineLayoutSegment) => {
+    if (!selectedThread || !videoProject || !currentRevision || stepRequestBusyId) return
+    setStepRequestBusyId(`${segment.id}:${action}`)
+    setCreateError(null)
+    try {
+      const acceptedPart = acceptedPlan?.parts.find((part) => part.id === segment.id || part.id === segment.clipId)
+      const prompt = videoStepEditRequest({ action, clipId: segment.id, playheadMs: segment.timelineStart * 1000, visual: acceptedPart?.visual })
+      await continueDesktopV3Conversation(createDesktopV3ExistingMessageOperation({
+        sessionId: selectedThread.id,
+        prompt,
+        artifactSelections: action === 'visual' && acceptedPart ? [videoPlanPartMessageSelection(acceptedPart)] : undefined,
+        metadata: {
+          creative_mode: 'video',
+          video_project_id: videoProject.id,
+          video_revision_id: currentRevision.id,
+          video_anchor_clip_id: segment.id,
+          video_playhead_ms: Math.round(segment.timelineStart * 1000),
+        },
+      }))
+      handleFocusStep(segment.id, segment.timelineStart * 1000)
+    } catch (error) {
+      setCreateError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setStepRequestBusyId('')
+    }
+  }, [acceptedPlan, currentRevision, handleFocusStep, selectedThread, stepRequestBusyId, videoProject])
 
   const handleTimelinePointer = useCallback((event: PointerEvent<HTMLDivElement>) => {
     if (movieDuration <= 0) {
@@ -1581,20 +1970,41 @@ export function VideoToolPage() {
                 subtitle: String(thread.videoClips.length) + ' clip' + (thread.videoClips.length === 1 ? '' : 's') + ' · ' + formatStartedAt(thread.createdAt),
               }))}
               selectedSessionId={selectedThread?.id ?? null}
-              onSelectSession={setSelectedThreadId}
+              onSelectSession={(sessionId) => {
+                setSelectedThreadId(sessionId)
+                const workspaceSlug = routeWorkspaceSlug
+                  || workspaceSlugByPath.get(selectedWorkspacePath)
+                  || workspaceRouteSlugBase({ path: selectedWorkspacePath, workspaceName: selectedWorkspaceName })
+                if (!workspaceSlug) return
+                void navigate({ to: '/$workspaceSlug/video/$videoSessionId', params: { workspaceSlug, videoSessionId: sessionId } })
+              }}
               emptySessionsMessage="No video sessions yet. Start session to get started."
               defaultSessionTitle="Video Thread"
               actions={[
                 { id: 'add-folder', label: 'Add folder', icon: <FolderOpen size={14} />, suffix: 'source', onClick: handleOpenPicker, disabled: !selectedThread },
                 { id: 'show-files', label: revealingStorage ? 'Opening…' : 'Show files', icon: <FolderOpen size={14} />, suffix: 'local', onClick: () => void handleRevealVideoStorage(), disabled: !selectedThread || revealingStorage },
-                { id: 'session-ai', label: 'Session AI', icon: <Sparkles size={14} />, suffix: 'same session', onClick: () => setAIRefreshKey((value) => value + 1), disabled: !selectedThread },
               ]}
             >
               {selectedThread ? (
                 <div className="mt-4 min-h-0 flex-1 overflow-y-auto">
-                  <p className="mb-2 px-2 text-[10px] uppercase tracking-[0.18em] text-[var(--app-text-subtle)]">Current movie</p>
+                  <p className="mb-2 px-2 text-[10px] uppercase tracking-[0.18em] text-[var(--app-text-subtle)]">Videos in this session</p>
+                  <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-2 px-2">
+                    <select
+                      value={selectedProjectId ?? ''}
+                      onChange={(event) => setSelectedProjectId(event.currentTarget.value || null)}
+                      disabled={projectLoading || videoProjects.length === 0}
+                      className="h-8 min-w-0 border border-[var(--app-border)] bg-[var(--app-bg)] px-2 text-xs text-[var(--app-text)]"
+                      aria-label="Selected video project"
+                    >
+                      {videoProjects.map((project) => <option key={project.id} value={project.id}>{project.title || 'Untitled video'} · r{project.current_revision_number ?? 0}</option>)}
+                    </select>
+                    <Button variant="outline" className="h-8 px-2 text-xs" onClick={() => void handleCreateAdditionalProject()} disabled={creatingProject || projectLoading}>
+                      {creatingProject ? <Loader2 size={12} className="animate-spin" /> : '+'} Video
+                    </Button>
+                  </div>
+                  <p className="mb-2 mt-4 px-2 text-[10px] uppercase tracking-[0.18em] text-[var(--app-text-subtle)]">Current movie</p>
                   <div className="border border-[var(--app-border)] bg-[var(--app-bg)] p-3">
-                    <h2 className="truncate text-sm font-semibold text-[var(--app-text)]">{selectedThread.title || 'Video thread'}</h2>
+                    <h2 className="truncate text-sm font-semibold text-[var(--app-text)]">{videoProject?.title || selectedThread.title || 'Video project'}</h2>
                     <p className="mt-2 break-all text-[11px] leading-5 text-[var(--app-text-subtle)]">{selectedFolderPath || 'No source folder yet'}</p>
                     <div className="mt-4 grid grid-cols-2 gap-2 text-[11px]">
                       <div className="border border-[var(--app-border)] bg-[var(--app-surface)] p-2"><div className="text-[10px] uppercase text-[var(--app-text-subtle)]">Length</div><div className="mt-1 tabular-nums text-[var(--app-text)]">{formatTimelineTime(movieDuration)}</div></div>
@@ -1666,6 +2076,7 @@ export function VideoToolPage() {
                 <>
               <div className="relative aspect-video min-h-[360px] overflow-hidden border border-[var(--app-border)] bg-black lg:min-h-[480px]">
                 <canvas ref={canvasRef} width={1920} height={1080} className="h-full w-full bg-black object-contain" />
+                {pendingProposal ? <div className="pointer-events-none absolute right-4 top-4 border border-amber-300/50 bg-amber-950/80 px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-amber-200">Shadow cut · pending · accepted r{pendingProposal.base_revision_number} unchanged</div> : null}
                 {timelineSegments.length === 0 ? (
                   <div className="absolute inset-0 grid place-items-center text-center"><div><Film className="mx-auto text-white/45" size={42} strokeWidth={1.5} /><p className="mt-3 text-sm font-medium text-white/80">No clips in this timeline</p></div></div>
                 ) : null}
@@ -1689,8 +2100,8 @@ export function VideoToolPage() {
                     ) : renderJob?.status === 'ready' ? (
                       <span className="text-xs text-green-500"><Film size={13} className="inline" /> Render ready for playback and export</span>
                     ) : (
-                      <Button variant="outline" className="h-8 rounded-xl px-3 text-xs" onClick={() => void handleStartRender()} disabled={movieDuration <= 0 || rendering || projectLoading || !currentRevision}>
-                        <Sparkles size={13} /> Render Video
+                      <Button variant="outline" className="h-8 rounded-xl px-3 text-xs" onClick={() => void handleStartRender()} disabled={movieDuration <= 0 || rendering || projectLoading || !currentRevision || Boolean(pendingProposal) || hasUnresolvedPlanFrames}>
+                        <Sparkles size={13} /> {pendingProposal ? 'Accept or reject shadow cut first' : hasUnresolvedPlanFrames ? 'Replace planned frames with sources' : 'Render Video'}
                       </Button>
                     )}
                   </div>
@@ -1712,7 +2123,7 @@ export function VideoToolPage() {
                   <select className="h-8 border border-[var(--app-border)] bg-[var(--app-bg)] px-2 text-xs" value={transitionKind} onChange={(event) => setTransitionKind(event.target.value as VideoTransitionKind)}>
                     {VIDEO_TRANSITION_KINDS.map((kind) => <option key={kind} value={kind}>{transitionLabel(kind)}</option>)}
                   </select>
-                  <Button variant="outline" className="h-8 px-3 text-xs" disabled={timelineSegments.length < 2 || reordering} onClick={() => void persistTimelineSegments(timelineSegments.map((segment) => ({ ...segment })), { transitionKind })}>Apply separately</Button>
+                  <Button variant="outline" className="h-8 px-3 text-xs" disabled={timelineSegments.length < 2 || reordering || Boolean(pendingProposal)} onClick={() => void persistTimelineSegments(timelineSegments.map((segment) => ({ ...segment })), { transitionKind })}>Apply separately</Button>
                 </div>
                 <div className="border-y border-[var(--app-border)] py-4">
                   <div className="mb-3 flex justify-between text-[10px] uppercase tracking-[0.18em] text-[var(--app-text-subtle)]"><span>00:00</span><span>{formatTimelineTime(movieDuration)}</span></div>
@@ -1724,7 +2135,7 @@ export function VideoToolPage() {
                           const left = movieDuration > 0 ? (segment.timelineStart / movieDuration) * timelineTrackWidthPx : 0
                           const width = movieDuration > 0 ? (segment.duration / movieDuration) * timelineTrackWidthPx : 0
                           return (
-                            <button key={segment.id} type="button" onPointerDown={(event) => event.stopPropagation()} onClick={() => { setSelectedClipId(segment.clipId); handleSeek(segment.timelineStart) }} className={`absolute top-0 h-full overflow-hidden border-r border-black/30 bg-[var(--app-surface)] text-left transition hover:bg-[color-mix(in_srgb,var(--app-primary)_10%,var(--app-surface))] ${selectedClip?.id === segment.clipId ? 'outline outline-1 outline-[var(--app-primary)]' : ''}`} style={{ left: `${left}px`, width: `${Math.max(1, width)}px` }}>
+                            <button key={segment.id} type="button" onPointerDown={(event) => event.stopPropagation()} onClick={() => { setSelectedClipId(segment.clipId); handleSeek(segment.timelineStart) }} className={`absolute top-0 h-full overflow-hidden border-r border-black/30 text-left transition hover:bg-[color-mix(in_srgb,var(--app-primary)_10%,var(--app-surface))] ${pendingProposal ? 'bg-amber-950/30' : 'bg-[var(--app-surface)]'} ${selectedClip?.id === segment.clipId ? 'outline outline-1 outline-[var(--app-primary)]' : ''}`} style={{ left: `${left}px`, width: `${Math.max(1, width)}px` }}>
                               <div className="flex h-full flex-col justify-between px-2 py-2"><div className="flex items-center justify-between gap-2 text-[10px] text-[var(--app-text-subtle)]"><span>{String(visibleIndex + 1).padStart(2, '0')}</span><span className="tabular-nums">{formatTimelineTime(segment.duration)}</span></div><div className="min-w-0"><p className="truncate text-xs font-medium text-[var(--app-text)]">{clip?.name ?? segment.clipId}</p><p className="truncate text-[10px] text-[var(--app-text-muted)]">{formatTimelineTime(segment.timelineStart)} – {formatTimelineTime(segment.timelineEnd)}</p></div></div>
                             </button>
                           )
@@ -1735,13 +2146,14 @@ export function VideoToolPage() {
                         {timelineLayout.map((segment, index) => {
                           const clip = selectedClips.find((candidate) => candidate.id === segment.clipId)
                           return (
-                            <div key={`${segment.id}-controls`} className={`flex min-w-[190px] max-w-[280px] items-center gap-2 border px-2 py-2 text-xs ${segment.visible ? 'border-[var(--app-border)] bg-[var(--app-surface)]' : 'border-dashed border-[var(--app-border)] bg-transparent opacity-60'}`}>
-                              <button type="button" onClick={() => { setSelectedClipId(segment.clipId); if (segment.visible) handleSeek(segment.timelineStart) }} className="min-w-0 flex-1 text-left"><span className="block truncate font-medium text-[var(--app-text)]">{clip?.name ?? segment.clipId}</span><span className="block text-[10px] text-[var(--app-text-muted)]">{segment.visible ? 'Included' : 'Hidden'} · {formatTimelineTime(segment.duration)}</span></button>
-                              <Button variant={segment.visible ? 'outline' : 'ghost'} className="h-7 rounded-lg px-2 text-xs" onClick={() => void handleToggleSegment(segment.clipId)} disabled={reordering}>{segment.visible ? <Eye size={13} /> : <EyeOff size={13} />}</Button>
-                              <Button variant="outline" className="h-7 rounded-lg px-2 text-[10px]" onClick={() => void handleTrimSegment(segment.clipId, 'in', 0.5)} disabled={reordering || segment.duration <= 0.6}>Trim in</Button>
-                              <Button variant="outline" className="h-7 rounded-lg px-2 text-[10px]" onClick={() => void handleTrimSegment(segment.clipId, 'out', -0.5)} disabled={reordering || segment.duration <= 0.6}>Trim out</Button>
-                              <Button variant="outline" className="h-7 rounded-lg px-2 text-xs" onClick={() => void handleMoveClip(-1, segment.clipId)} disabled={reordering || index === 0}>←</Button>
-                              <Button variant="outline" className="h-7 rounded-lg px-2 text-xs" onClick={() => void handleMoveClip(1, segment.clipId)} disabled={reordering || index === timelineSegments.length - 1}>→</Button>
+                            <div key={`${segment.id}-controls`} className={`flex min-w-[320px] max-w-[440px] flex-wrap items-center gap-2 border px-2 py-2 text-xs ${segment.visible ? 'border-[var(--app-border)] bg-[var(--app-surface)]' : 'border-dashed border-[var(--app-border)] bg-transparent opacity-60'}`}>
+                              <button type="button" onClick={() => handleFocusStep(segment.id, segment.timelineStart * 1000)} className="min-w-[160px] flex-1 text-left"><span className="block truncate font-medium text-[var(--app-text)]">{segment.title || clip?.name || segment.clipId}</span><span className="block truncate font-mono text-[10px] text-[var(--app-text-muted)]">{pendingProposal ? 'Pending shadow' : segment.visible ? 'Included' : 'Hidden'} · {segment.id} · {formatTimelineTime(segment.duration)}</span></button>
+                              <Button variant="outline" className="h-7 rounded-lg px-2 text-[10px]" onClick={() => void handleRequestStepEdit('visual', segment)} disabled={Boolean(stepRequestBusyId)}>Visual</Button>
+                              <Button variant="outline" className="h-7 rounded-lg px-2 text-[10px]" onClick={() => void handleRequestStepEdit('transition', segment)} disabled={Boolean(stepRequestBusyId)}>Transition</Button>
+                              <Button variant="outline" className="h-7 rounded-lg px-2 text-[10px]" onClick={() => void handleRequestStepEdit('source', segment)} disabled={Boolean(stepRequestBusyId)}>Source</Button>
+                              <Button variant="outline" className="h-7 rounded-lg px-2 text-[10px]" onClick={() => void handleRequestStepEdit('move_earlier', segment)} disabled={index === 0}>AI ←</Button>
+                              <Button variant="outline" className="h-7 rounded-lg px-2 text-[10px]" onClick={() => void handleRequestStepEdit('move_later', segment)} disabled={index === timelineSegments.length - 1}>AI →</Button>
+                              <Button variant={segment.visible ? 'outline' : 'ghost'} className="h-7 rounded-lg px-2 text-xs" onClick={() => void handleToggleSegment(segment.clipId)} disabled={reordering || Boolean(pendingProposal)}>{segment.visible ? <Eye size={13} /> : <EyeOff size={13} />}</Button>
                             </div>
                           )
                         })}
@@ -1751,7 +2163,42 @@ export function VideoToolPage() {
                 </div>
               </section>
 
-              {videoProject && currentRevision ? <VideoProposalReview key={`${currentRevision.id}:${aiRefreshKey}`} sessionId={selectedThread.id} projectId={videoProject.id} currentRevisionId={currentRevision.id} onAccepted={async () => { const detail = await fetchPrimaryVideoProject(selectedThread.id); setVideoProject(detail.project); setCurrentRevision(detail.current_revision ?? null); setProjectRevisions(await listVideoProjectRevisions(selectedThread.id, detail.project.id)) }} onFeedback={async (message) => { await continueDesktopV3Conversation(createDesktopV3ExistingMessageOperation({ sessionId: selectedThread.id, prompt: message, metadata: { creative_mode: 'video', video_revision_id: currentRevision.id } })) }} /> : null}
+              {acceptedPlan ? (
+                <section className="mt-6 border border-[var(--app-border)] bg-[var(--app-surface)] p-4" aria-label="Accepted video plan">
+                  <div className="mb-4 flex items-start justify-between gap-4"><div><div className="flex items-center gap-2"><Sparkles size={16} className="text-[var(--app-primary)]" /><h2 className="text-sm font-semibold text-[var(--app-text)]">Accepted video plan</h2></div><p className="mt-1 text-xs text-[var(--app-text-muted)]">This structure is the source of truth for the next AI proposals. Timing and source media can be filled in later.</p></div><span className="shrink-0 border border-[var(--app-primary)] px-2 py-1 text-[10px] uppercase tracking-[0.14em] text-[var(--app-primary)]">Accepted</span></div>
+                  {acceptedPlan.summary ? <p className="mb-3 text-xs leading-5 text-[var(--app-text-muted)]">{acceptedPlan.summary}</p> : null}
+                  <ol className="grid gap-3 xl:grid-cols-2">{acceptedPlan.parts.map((part, index) => <li key={part.id} className="border border-[var(--app-border)] bg-[var(--app-bg)] p-4"><div className="flex items-center justify-between"><span className="text-[10px] uppercase tracking-[0.14em] text-[var(--app-primary)]">Part {index + 1}</span><span className="font-mono text-[10px] text-[var(--app-text-subtle)]">{part.id}</span></div><h3 className="mt-2 text-sm font-semibold text-[var(--app-text)]">{part.title}</h3><p className="mt-2 text-xs leading-5 text-[var(--app-text-muted)]">{part.narration || part.on_screen_text || part.visual_direction || 'Ready for source and timing work.'}</p></li>)}</ol>
+                </section>
+              ) : null}
+
+              {currentRevision?.timeline.clips.some((clip) => clip.source_kind === 'text') ? (
+                <section className="mt-6 border border-[var(--app-border)] bg-[var(--app-surface)] p-4" aria-label="Still production plan">
+                  <div className="mb-4 flex items-start justify-between gap-4">
+                    <div>
+                      <div className="flex items-center gap-2"><Sparkles size={16} className="text-[var(--app-primary)]" /><h2 className="text-sm font-semibold text-[var(--app-text)]">Still production plan</h2></div>
+                      <p className="mt-1 text-xs text-[var(--app-text-muted)]">Review timing, narration, on-screen text, and frame direction before generating any stills.</p>
+                    </div>
+                    <span className="shrink-0 border border-[var(--app-border)] bg-[var(--app-bg)] px-2 py-1 text-[10px] uppercase tracking-[0.14em] text-[var(--app-text-subtle)]">Pre-production</span>
+                  </div>
+                  <div className="grid gap-3 xl:grid-cols-2">
+                    {currentRevision.timeline.clips.filter((clip) => clip.source_kind === 'text').map((clip) => {
+                      const details = videoPlanClipDetails(clip)
+                      return (
+                        <article key={`${clip.id}-plan`} className="border border-[var(--app-border)] bg-[var(--app-bg)] p-4">
+                          <div className="flex items-baseline justify-between gap-3"><h3 className="text-sm font-semibold text-[var(--app-text)]">{details.title}</h3><span className="shrink-0 text-xs tabular-nums text-[var(--app-primary)]">{details.timing}</span></div>
+                          <dl className="mt-3 grid gap-3 text-xs leading-5">
+                            <div><dt className="font-medium uppercase tracking-[0.12em] text-[var(--app-text-subtle)]">Narration</dt><dd className="mt-1 text-[var(--app-text-muted)]">{details.narration || 'No narration specified.'}</dd></div>
+                            <div><dt className="font-medium uppercase tracking-[0.12em] text-[var(--app-text-subtle)]">On-screen text</dt><dd className="mt-1 text-[var(--app-text-muted)]">{details.onScreenText || 'No on-screen text specified.'}</dd></div>
+                            <div><dt className="font-medium uppercase tracking-[0.12em] text-[var(--app-text-subtle)]">Proposed still / frame</dt><dd className="mt-1 text-[var(--app-text-muted)]">{details.still || 'No frame direction specified.'}</dd></div>
+                          </dl>
+                        </article>
+                      )
+                    })}
+                  </div>
+                </section>
+              ) : null}
+
+              {videoProject && currentRevision ? <VideoProposalReview key={`${currentRevision.id}:${aiRefreshKey}`} sessionId={selectedThread.id} projectId={videoProject.id} currentRevisionId={currentRevision.id} acceptedPlan={acceptedPlan} acceptedClips={currentRevision.timeline.clips} onAccepted={refreshSelectedVideoProject} onPendingChange={handlePendingProposalChange} onFocusStep={handleFocusStep} onFeedback={(message) => { setComposerDraftRequest({ id: Date.now(), draft: message }) }} /> : null}
 
               <section className="mt-6">
                 <div className="mb-3 flex items-center justify-between gap-3"><div className="flex items-center gap-2"><ListVideo size={16} className="text-[var(--app-primary)]" /><h2 className="text-sm font-semibold text-[var(--app-text)]">Playlist sources</h2></div>{reordering ? <span className="text-xs text-[var(--app-text-subtle)]">Saving…</span> : null}</div>
@@ -1772,7 +2219,7 @@ export function VideoToolPage() {
               </>
               )}
             </section>
-            {selectedThread && currentRevision ? <VideoSessionAISidecar key={`${selectedThread.id}:${aiRefreshKey}`} sessionId={selectedThread.id} revisionId={currentRevision.id} onSent={() => setAIRefreshKey((value) => value + 1)} /> : null}
+            {selectedThread ? <VideoSessionAISidecar key={selectedThread.id} sessionId={selectedThread.id} projectId={videoProject?.id} revisionId={currentRevision?.id} anchorClipId={activeSegment?.id} playheadMs={playhead * 1000} routeOptions={selectedSessionRoute ? [selectedSessionRoute] : []} draftRequest={composerDraftRequest} onActivity={() => { setAIRefreshKey((value) => value + 1); void refreshSelectedVideoProject().catch(() => undefined) }} /> : null}
           </main>
       </div>
 

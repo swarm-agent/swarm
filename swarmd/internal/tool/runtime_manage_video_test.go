@@ -504,6 +504,43 @@ func TestManageVideoChildSessionUsesParentVideoProject(t *testing.T) {
 	}
 }
 
+func TestManageVideoStudioCreatesAdditionalProjectWithExplicitID(t *testing.T) {
+	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "manage-video-multiple-projects.pebble"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	principal := identity.Principal{Type: identity.PrincipalTypeUser, SessionID: "studio", UserID: "user-1", AccountScopeID: "account-1"}
+	sessionStore := pebblestore.NewSessionStore(store)
+	if err := sessionStore.CreateSession(pebblestore.SessionSnapshot{ID: "studio", UserID: principal.UserID, AccountScopeID: principal.AccountScopeID, WorkspacePath: "/ws", Mode: "auto", Metadata: map[string]any{"lineage_kind": "video_project"}}); err != nil {
+		t.Fatal(err)
+	}
+	events, err := pebblestore.NewEventLog(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime := NewRuntime(1)
+	runtime.sessions = sessionruntime.NewService(sessionStore, events)
+	runtime.videoProjects = videoproject.NewService(sessionStore)
+	ctx := WithVideoRunContext(context.Background(), VideoRunContext{SessionID: "studio", RunID: "run-1"})
+	scope := WorkspaceScope{SessionID: "studio", Principal: principal}
+	for _, call := range []Call{
+		{CallID: "primary", Name: "manage_video", Arguments: `{"action":"create_project","title":"Primary"}`},
+		{CallID: "second", Name: "manage_video", Arguments: `{"action":"create_project","project_id":"project_two","title":"Second"}`},
+	} {
+		if _, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, call); err != nil {
+			t.Fatal(err)
+		}
+	}
+	projects, err := runtime.videoProjects.ListProjects(principal, "studio", 10)
+	if err != nil || len(projects) != 2 {
+		t.Fatalf("projects=%+v err=%v", projects, err)
+	}
+	if _, ok, err := runtime.videoProjects.GetProject(principal, "studio", "project_two"); err != nil || !ok {
+		t.Fatalf("explicit project missing ok=%v err=%v", ok, err)
+	}
+}
+
 func TestManageVideoStudioCreatesProposalWithoutAdvancingRevision(t *testing.T) {
 	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "manage-video-proposal.pebble"))
 	if err != nil {
@@ -586,5 +623,65 @@ func TestManageVideoProjectAuthAndSessionOwnership(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "ownership") {
 		t.Fatalf("expected session ownership rejection, got: %v", err)
+	}
+}
+
+func TestManageVideoStudioCreatesAtomicVisualPlanProposal(t *testing.T) {
+	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "manage-video-plan.pebble"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	principal := identity.Principal{Type: identity.PrincipalTypeUser, SessionID: "studio", UserID: "user-1", AccountScopeID: "account-1"}
+	sessionStore := pebblestore.NewSessionStore(store)
+	if err := sessionStore.CreateSession(pebblestore.SessionSnapshot{ID: "studio", UserID: principal.UserID, AccountScopeID: principal.AccountScopeID, WorkspacePath: "/ws", Mode: "auto", Metadata: map[string]any{"lineage_kind": "video_project"}}); err != nil {
+		t.Fatal(err)
+	}
+	events, err := pebblestore.NewEventLog(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime := NewRuntime(1)
+	runtime.sessions = sessionruntime.NewService(sessionStore, events)
+	runtime.videoProjects = videoproject.NewService(sessionStore)
+	ctx := WithVideoRunContext(context.Background(), VideoRunContext{SessionID: "studio", RunID: "run-1"})
+	scope := WorkspaceScope{SessionID: "studio", Principal: principal}
+	created, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, Call{CallID: "create", Name: "manage_video", Arguments: `{"action":"create_project","title":"Studio","initial_timeline":{"output_preset":"landscape_1080p","clips":[]}}`})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var create struct {
+		ProjectID  string `json:"project_id"`
+		RevisionID string `json:"revision_id"`
+	}
+	if err := json.Unmarshal([]byte(created), &create); err != nil {
+		t.Fatal(err)
+	}
+	collection := pebblestore.SessionArtifactCollection{Version: pebblestore.SessionArtifactVersion, ID: "slides", AccountScopeID: principal.AccountScopeID, SessionID: "studio", Status: pebblestore.SessionArtifactStatusReady, Name: "Slides", VariantCount: 1, ReadyCount: 1, EventSeq: 99}
+	variant := pebblestore.SessionArtifactVariant{Version: pebblestore.SessionArtifactVersion, ID: "slide", CollectionID: collection.ID, AccountScopeID: principal.AccountScopeID, SessionID: "studio", Status: pebblestore.SessionArtifactStatusReady, Filename: "slide.png", MediaType: "image/png", EventSeq: 99}
+	if err := store.PutJSON(pebblestore.KeySessionArtifactCollection(principal.AccountScopeID, "studio", collection.ID), collection); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.PutJSON(pebblestore.KeySessionArtifactVariant(principal.AccountScopeID, "studio", collection.ID, variant.ID), variant); err != nil {
+		t.Fatal(err)
+	}
+	visual := map[string]any{"session_id": "studio", "collection_id": "slides", "variant_id": "slide", "event_seq": 99}
+	arguments, _ := json.Marshal(map[string]any{
+		"action": "create_edit_proposal", "project_id": create.ProjectID, "base_revision_id": create.RevisionID,
+		"title": "Six-part launch video", "plan": map[string]any{"kind": "initial", "summary": "Review before production", "parts": []map[string]any{
+			{"id": "part-1", "title": "Hook", "duration_ms": 1000, "visual": visual}, {"id": "part-2", "title": "Problem", "duration_ms": 1000, "visual": visual}, {"id": "part-3", "title": "Idea", "duration_ms": 1000, "visual": visual},
+			{"id": "part-4", "title": "Demo", "duration_ms": 1000, "visual": visual}, {"id": "part-5", "title": "Proof", "duration_ms": 1000, "visual": visual}, {"id": "part-6", "title": "Close", "duration_ms": 1000, "visual": visual},
+		}},
+	})
+	payload, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, Call{CallID: "plan", Name: "manage_video", Arguments: string(arguments)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(payload, `"proposal_status":"pending"`) || !strings.Contains(payload, `"title":"Close"`) || strings.Contains(payload, `"operations":[`) {
+		t.Fatalf("atomic plan payload=%s", payload)
+	}
+	project, ok, err := runtime.videoProjects.GetProject(principal, "studio", create.ProjectID)
+	if err != nil || !ok || project.CurrentRevisionID != create.RevisionID || project.RevisionCount != 1 {
+		t.Fatalf("pending plan advanced project: %+v ok=%v err=%v", project, ok, err)
 	}
 }

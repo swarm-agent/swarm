@@ -290,6 +290,7 @@ export function DesktopV3NewSessionPane({
       return controller.submit({
         workspace: workspaceAuthority,
         snapshot: captured,
+        agentName: 'swarm',
         metadata: encodeDesktopRoutedWorktreeIntentMetadata(
           createDesktopRoutedWorktreeIntent(captured.worktreePrimed),
           { source: 'desktop-v3' },

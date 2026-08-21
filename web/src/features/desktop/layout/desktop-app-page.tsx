@@ -2621,25 +2621,21 @@ export function DesktopAppPage() {
   const matchRoute = useMatchRoute()
   const workspaceTaskMatch = matchRoute({ to: '/$workspaceSlug/task', fuzzy: false })
   const workspaceWorktreeMatch = matchRoute({ to: '/$workspaceSlug/worktree', fuzzy: false })
-  const workspaceVideoSessionMatch = matchRoute({ to: '/$workspaceSlug/video/$videoSessionId', fuzzy: false })
   const workspaceSessionMatch = matchRoute({ to: '/$workspaceSlug/$sessionId', fuzzy: false })
   const workspaceMatch = matchRoute({ to: '/$workspaceSlug', fuzzy: false })
   const routeWorkspaceSlug = (workspaceTaskMatch
     ? workspaceTaskMatch.workspaceSlug
     : workspaceWorktreeMatch
       ? workspaceWorktreeMatch.workspaceSlug
-      : workspaceVideoSessionMatch
-        ? workspaceVideoSessionMatch.workspaceSlug
-        : workspaceSessionMatch
-          ? workspaceSessionMatch.workspaceSlug
-          : workspaceMatch
+      : workspaceSessionMatch
+        ? workspaceSessionMatch.workspaceSlug
+        : workspaceMatch
           ? workspaceMatch.workspaceSlug
           : '').trim()
   const mobileCreationPage = workspaceTaskMatch ? 'task' : workspaceWorktreeMatch ? 'worktree' : null
-  const videoStudioRoute = Boolean(workspaceVideoSessionMatch)
   const routeSessionId = mobileCreationPage
     ? ''
-    : (workspaceVideoSessionMatch ? workspaceVideoSessionMatch.videoSessionId : workspaceSessionMatch ? workspaceSessionMatch.sessionId : '').trim()
+    : (workspaceSessionMatch ? workspaceSessionMatch.sessionId : '').trim()
   const pwaDebugEnabled = typeof window !== 'undefined' && new URLSearchParams(window.location.search).has(PWA_DEBUG_QUERY_PARAM)
   const { workspaces, loading: launcherWorkspacesLoading, setWorkspaceIcon } = useWorkspaceLauncher({ applyDocumentTheme: false, autoRefresh: false, browseDuringRefresh: false })
   const [sidebarDisplayMode, setSidebarDisplayModeState] = useState<DesktopMainSidebarMode>(() => loadDesktopMainSidebarMode())
@@ -3128,13 +3124,13 @@ export function DesktopAppPage() {
   }, [navigate, routeSessionNavigationHidden, routeWorkspaceSlug])
 
   useEffect(() => {
-    if (!routeSessionId || !routeWorkspaceSlug || !routeSessionIsVideoStudio || videoStudioRoute) return
+    if (!routeSessionId || !routeWorkspaceSlug || !routeSessionIsVideoStudio) return
     void navigate({
       to: '/$workspaceSlug/video/$videoSessionId',
       params: { workspaceSlug: routeWorkspaceSlug, videoSessionId: routeSessionId },
       replace: true,
     })
-  }, [navigate, routeSessionId, routeSessionIsVideoStudio, routeWorkspaceSlug, videoStudioRoute])
+  }, [navigate, routeSessionId, routeSessionIsVideoStudio, routeWorkspaceSlug])
 
   useEffect(() => {
     if (routeSessionId.trim()) return
@@ -5256,7 +5252,7 @@ export function DesktopAppPage() {
                               }}
                               className={cn(
                                 'flex min-h-8 items-center gap-2 rounded-md border px-2.5 py-1.5 text-[12px] text-[var(--app-text-muted)] transition-colors hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]',
-                                videoStudioRoute && routeSessionId === session.id
+                                routeSessionId === session.id
                                   ? 'border-[var(--app-border-accent)] bg-[var(--app-surface)] text-[var(--app-text)]'
                                   : 'border-transparent bg-[var(--app-surface)]/45',
                               )}
@@ -5397,21 +5393,6 @@ export function DesktopAppPage() {
           </div>
         ) : routeSessionId ? (
           <div className="flex min-h-0 flex-1 flex-col">
-            {videoStudioRoute ? (
-              <div className="flex min-h-10 shrink-0 items-center justify-between gap-3 border-b border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-3 text-xs">
-                <span className="inline-flex min-w-0 items-center gap-2 font-semibold text-[var(--app-text)]">
-                  <Film size={14} className="shrink-0 text-[var(--app-primary)]" aria-hidden="true" />
-                  <span className="truncate">Video Studio</span>
-                </span>
-                <Link
-                  to="/$workspaceSlug"
-                  params={{ workspaceSlug: routeWorkspaceSlug }}
-                  className="shrink-0 rounded-md px-2 py-1 font-medium text-[var(--app-primary)] hover:bg-[var(--app-selection-bg)]"
-                >
-                  Back to Workspace
-                </Link>
-              </div>
-            ) : null}
           <DesktopV3ExistingConversationPane
             key={`existing:${routeSessionId}`}
             sessionId={routeSessionId}

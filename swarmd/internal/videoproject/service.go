@@ -77,6 +77,7 @@ type RestoreRevisionInput struct {
 
 type CreateEditProposalInput struct {
 	SessionID, ProjectID, ProposalID, BaseRevisionID, Title, Rationale string
+	Plan                                                               *pebblestore.VideoPlanProposal
 	Operations                                                         []pebblestore.VideoEditOperation
 	AffectedRanges                                                     []pebblestore.VideoTimelineRange
 	NowUnixMs                                                          int64
@@ -98,7 +99,12 @@ func (s *Service) CreateEditProposal(ctx context.Context, principal identity.Pri
 	if err != nil || !ok || (project.UserID != "" && project.UserID != principal.UserID) {
 		return pebblestore.VideoEditProposalSnapshot{}, errors.New("video project not found")
 	}
-	return s.sessions.CreateVideoEditProposal(pebblestore.CreateVideoEditProposalInput{AccountScopeID: principal.AccountScopeID, UserID: principal.UserID, SessionID: input.SessionID, ProjectID: input.ProjectID, ProposalID: input.ProposalID, BaseRevisionID: input.BaseRevisionID, Title: input.Title, Rationale: input.Rationale, Operations: input.Operations, AffectedRanges: input.AffectedRanges, NowUnixMs: input.NowUnixMs})
+	if input.Plan != nil {
+		if err := s.normalizeVisualPlanArtifacts(principal, input.SessionID, input.Plan); err != nil {
+			return pebblestore.VideoEditProposalSnapshot{}, err
+		}
+	}
+	return s.sessions.CreateVideoEditProposal(pebblestore.CreateVideoEditProposalInput{AccountScopeID: principal.AccountScopeID, UserID: principal.UserID, SessionID: input.SessionID, ProjectID: input.ProjectID, ProposalID: input.ProposalID, BaseRevisionID: input.BaseRevisionID, Title: input.Title, Rationale: input.Rationale, Plan: input.Plan, Operations: input.Operations, AffectedRanges: input.AffectedRanges, NowUnixMs: input.NowUnixMs})
 }
 func (s *Service) GetEditProposal(principal identity.Principal, sessionID, projectID, proposalID string) (pebblestore.VideoEditProposalSnapshot, bool, error) {
 	if !principal.Valid() {
@@ -149,14 +155,14 @@ func (s *Service) AcceptEditProposal(ctx context.Context, principal identity.Pri
 	}
 	return proposal, *revision, *project, nil
 }
-func (s *Service) RejectEditProposal(ctx context.Context, principal identity.Principal, sessionID, projectID, proposalID string, now int64) (pebblestore.VideoEditProposalSnapshot, error) {
+func (s *Service) RejectEditProposal(ctx context.Context, principal identity.Principal, sessionID, projectID, proposalID, feedback string, now int64) (pebblestore.VideoEditProposalSnapshot, error) {
 	if s == nil || s.sessions == nil {
 		return pebblestore.VideoEditProposalSnapshot{}, errors.New("videoproject service is not configured")
 	}
 	if !principal.Valid() {
 		return pebblestore.VideoEditProposalSnapshot{}, errors.New("authenticated principal is required")
 	}
-	proposal, _, _, err := s.sessions.ResolveVideoEditProposal(pebblestore.ResolveVideoEditProposalInput{AccountScopeID: principal.AccountScopeID, UserID: principal.UserID, SessionID: sessionID, ProjectID: projectID, ProposalID: proposalID, Reject: true, NowUnixMs: now})
+	proposal, _, _, err := s.sessions.ResolveVideoEditProposal(pebblestore.ResolveVideoEditProposalInput{AccountScopeID: principal.AccountScopeID, UserID: principal.UserID, SessionID: sessionID, ProjectID: projectID, ProposalID: proposalID, Reject: true, RejectionFeedback: feedback, NowUnixMs: now})
 	return proposal, err
 }
 
@@ -243,6 +249,21 @@ func (s *Service) GetOrCreatePrimaryVideoToolProject(ctx context.Context, princi
 	} else if ok {
 		if project.UserID != "" && project.UserID != principal.UserID {
 			return pebblestore.VideoProjectSnapshot{}, nil, errors.New("video project ownership does not match authenticated principal")
+		}
+		if project.CurrentRevisionID == "" && input.InitialTimeline != nil {
+			revision, updated, createErr := s.CreateRevision(ctx, principal, CreateRevisionInput{
+				SessionID:       input.SessionID,
+				ProjectID:       project.ID,
+				Description:     "Initial revision",
+				ChangeSummary:   "Initialized video timeline",
+				Timeline:        *input.InitialTimeline,
+				AuthorPrincipal: principal.UserID,
+				NowUnixMs:       input.NowUnixMs,
+			})
+			if createErr != nil {
+				return pebblestore.VideoProjectSnapshot{}, nil, createErr
+			}
+			return updated, &revision, nil
 		}
 		return project, nil, nil
 	}
@@ -339,6 +360,17 @@ func (s *Service) StartRenderJob(ctx context.Context, principal identity.Princip
 	}
 	if revID == "" {
 		return pebblestore.VideoRenderJobSnapshot{}, errors.New("video project has no revision to render")
+	}
+	revision, ok, err := s.sessions.GetVideoProjectRevision(principal.AccountScopeID, input.SessionID, input.ProjectID, revID)
+	if err != nil || !ok {
+		return pebblestore.VideoRenderJobSnapshot{}, errors.New("video project revision not found")
+	}
+	if revision.Timeline.Metadata["accepted_video_plan"] != nil {
+		for _, clip := range revision.Timeline.Clips {
+			if clip.SourceKind == pebblestore.VideoClipSourceKindText || (clip.SourceKind == pebblestore.VideoClipSourceKindManagedArtifact && clip.ArtifactRef == nil) {
+				return pebblestore.VideoRenderJobSnapshot{}, errors.New("accepted video plan still contains unresolved sections; replace them with renderable sources before rendering")
+			}
+		}
 	}
 
 	return s.sessions.CreateVideoRenderJob(pebblestore.CreateVideoRenderJobInput{
@@ -532,6 +564,43 @@ func (s *Service) ListRenderJobs(principal identity.Principal, sessionID, projec
 		return nil, errors.New("video project not found")
 	}
 	return s.sessions.ListVideoRenderJobs(principal.AccountScopeID, sessionID, projectID, limit)
+}
+
+func (s *Service) normalizeVisualPlanArtifacts(principal identity.Principal, sessionID string, plan *pebblestore.VideoPlanProposal) error {
+	for index := range plan.Parts {
+		part := &plan.Parts[index]
+		if part.Visual == nil {
+			return fmt.Errorf("video plan part %q is missing its actual visual", part.ID)
+		}
+		ref := part.Visual
+		targetSessionID := strings.TrimSpace(ref.SessionID)
+		if targetSessionID == "" {
+			targetSessionID = sessionID
+			ref.SessionID = sessionID
+		}
+		sourceSession, owned, err := s.sessions.GetSession(targetSessionID)
+		if err != nil || !owned || sourceSession.AccountScopeID != principal.AccountScopeID || sourceSession.UserID != principal.UserID {
+			return fmt.Errorf("visual artifact source session %q is not owned by the authenticated principal", targetSessionID)
+		}
+		variant, ok, err := s.sessions.GetSessionArtifactVariant(principal.AccountScopeID, targetSessionID, ref.CollectionID, ref.VariantID)
+		if err != nil || !ok {
+			if err == nil {
+				err = fmt.Errorf("visual artifact variant %q in collection %q was not found", ref.VariantID, ref.CollectionID)
+			}
+			return err
+		}
+		if variant.Status != pebblestore.SessionArtifactStatusReady {
+			return fmt.Errorf("visual artifact variant %q is not ready", variant.ID)
+		}
+		if ref.EventSeq == 0 || ref.EventSeq != variant.EventSeq {
+			return fmt.Errorf("visual artifact variant %q event sequence is stale or missing", variant.ID)
+		}
+		if !strings.HasPrefix(variant.MediaType, "image/") {
+			return fmt.Errorf("visual artifact variant %q must be an image slide", variant.ID)
+		}
+		part.VisualMediaType = variant.MediaType
+	}
+	return nil
 }
 
 func (s *Service) validateTimelineArtifacts(principal identity.Principal, sessionID string, timeline pebblestore.VideoProjectTimeline) error {

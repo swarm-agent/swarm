@@ -502,16 +502,20 @@ func (s *Service) materializeTimelineInputs(ctx context.Context, principal ident
 		}
 
 		input := MaterializedInput{
-			Index:      len(inputs),
-			ClipID:     clip.ID,
-			Volume:     clip.Volume,
-			Muted:      clip.Muted,
-			StartMs:    clip.SourceStartMs,
-			EndMs:      clip.SourceEndMs,
-			DurationMs: clip.DurationMs,
-			Captions:   clip.Captions,
-			IsVideo:    true,
-			HasAudio:   true,
+			Index:           len(inputs),
+			ClipID:          clip.ID,
+			Volume:          clip.Volume,
+			Muted:           clip.Muted,
+			StartMs:         clip.SourceStartMs,
+			EndMs:           clip.SourceEndMs,
+			DurationMs:      clip.DurationMs,
+			Track:           clip.Track,
+			Layer:           clip.Layer,
+			TimelineStartMs: clip.TimelineStartMs,
+			TimelineEndMs:   clip.TimelineEndMs,
+			Captions:        clip.Captions,
+			IsVideo:         true,
+			HasAudio:        true,
 		}
 
 		switch clip.SourceKind {

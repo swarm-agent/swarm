@@ -48,7 +48,7 @@ type sessionsV3CreateRequest struct {
 	HostWorkspacePath        string                        `json:"host_workspace_path,omitempty"`
 	RuntimeWorkspacePath     string                        `json:"runtime_workspace_path,omitempty"`
 	Mode                     string                        `json:"mode,omitempty"`
-	AgentName                string                        `json:"agent_name,omitempty"`
+	AgentName                string                        `json:"agent_name"`
 	Preference               pebblestore.ModelPreference   `json:"preference,omitempty"`
 	WorktreeMode             string                        `json:"worktree_mode,omitempty"`
 	WorktreeUseCurrentBranch *bool                         `json:"worktree_use_current_branch,omitempty"`

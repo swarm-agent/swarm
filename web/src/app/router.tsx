@@ -236,7 +236,7 @@ const workspaceVideoSessionRoute = createRoute({
   path: '/$workspaceSlug/video/$videoSessionId',
   parseParams: validateWorkspaceVideoSessionParams,
   loader: ({ params }) => ({ sessionId: params.videoSessionId.trim() }),
-  component: DesktopAppPage,
+  component: VideoToolPage,
 })
 
 const workspaceTaskRoute = createRoute({

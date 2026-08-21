@@ -1,13 +1,23 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { VIDEO_TRANSITION_KINDS, transitionLabel } from '../video-studio/video-studio-surface'
+import { VIDEO_TRANSITION_KINDS, loadLatestVideoEditProposals, proposedVideoPlanClipDetails, rejectVideoEditProposal, transitionLabel, videoProposalFocusClipId, videoProposalProjectionSequence, videoStepEditRequest, type VideoEditProposalWire } from '../video-studio/video-studio-surface'
 
 import {
+  acceptedVideoPlan,
+  applyPendingVideoProposal,
+  createAdditionalVideoProject,
+  preferredVisibleVideoProject,
+  createVideoThread,
+  ensurePrimaryVideoProject,
+  listVideoProjects,
+  layoutTimelineSegments,
   projectTimelineToTimelineSegments,
   resolveVideoStudioSessionRoute,
   serializeVideoClipForRequest,
   timelineSegmentsToProjectTimeline,
+  videoPlanClipDetails,
+  VIDEO_STUDIO_AGENT_NAME,
   videoChildSessionMetadata,
   videoStudioSessionMetadata,
   type VideoClip,
@@ -63,6 +73,140 @@ const videoStudioSelfRoute: WorkspaceOverviewTopologyRoute = {
   updatedAt: 1,
 }
 
+test('Video Studio reads an accepted visual plan from canonical revision metadata', () => {
+  const visual = { session_id: 'session-1', collection_id: 'slides', variant_id: 'slide-1', event_seq: 9 }
+  assert.deepEqual(acceptedVideoPlan({
+    clips: [],
+    metadata: { accepted_video_plan: { kind: 'initial', summary: 'Visual launch video', parts: [{ id: 'part-1', title: 'Hook', duration_ms: 5000, visual }] } },
+  }), {
+    kind: 'initial',
+    summary: 'Visual launch video',
+    parts: [{ id: 'part-1', title: 'Hook', duration_ms: 5000, visual }],
+  })
+})
+
+test('Video Creator selects an accepted reviewable plan ahead of an empty primary project', () => {
+  const selected = preferredVisibleVideoProject([
+    { id: 'primary', session_id: 'session-1', title: 'Empty', project_kind: 'video_tool', created_at: 1, updated_at: 1 },
+    { id: 'plan', session_id: 'session-1', title: 'Plan', current_revision_id: 'revision-1', metadata: { reviewable_plan: true }, created_at: 2, updated_at: 2 },
+  ])
+
+  assert.equal(selected?.id, 'plan')
+})
+
+test('Video Creator exposes every still-plan field from text clips', () => {
+  assert.deepEqual(videoPlanClipDetails({
+    id: 'section-1',
+    sequence: 0,
+    source_kind: 'text',
+    name: '00:00–00:05 — One idea | Narration: Every story begins with one simple idea. | Planned still: A blank notebook in morning light.',
+    captions: [{ id: 'caption-1', text: 'One idea.' }],
+  }), {
+    timing: '00:00–00:05',
+    title: 'One idea',
+    narration: 'Every story begins with one simple idea.',
+    still: 'A blank notebook in morning light.',
+    onScreenText: 'One idea.',
+  })
+})
+
+test('Video Studio rejects a plan with durable editable feedback instead of sending a replacement automatically', async () => {
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    assert.equal(String(input), '/v3/sessions/session-1/video/projects/project-1/edit-proposals/proposal-1/reject')
+    assert.equal(init?.method, 'POST')
+    assert.equal(new Headers(init?.headers).get('Content-Type'), 'application/json')
+    assert.deepEqual(JSON.parse(String(init?.body)), { feedback: 'Please make part two more visual.' })
+    return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+  }) as typeof fetch
+  try {
+    await rejectVideoEditProposal('session-1', 'project-1', 'proposal-1', 'Please make part two more visual.')
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('Video Studio observes only authoritative video-project events for live pending proposals', () => {
+  assert.equal(videoProposalProjectionSequence({
+    eventsBySession: {
+      'session-1': [
+        { id: 'message', session_id: 'session-1', seq: 41, event_type: 'session.message.created', payload: {}, ts_unix_ms: 1 },
+        { id: 'proposal', session_id: 'session-1', seq: 42, event_type: 'session.video_project.edit_proposal.created', payload: {}, ts_unix_ms: 2 },
+        { id: 'run', session_id: 'session-1', seq: 43, event_type: 'session.run.completed', payload: {}, ts_unix_ms: 3 },
+      ],
+    },
+  }, 'session-1'), 42)
+  assert.equal(videoProposalProjectionSequence({ eventsBySession: {} }, 'session-1'), 0)
+})
+
+test('Video Studio ignores a stale proposal reload that finishes after the realtime reload', async () => {
+  const accepted: VideoEditProposalWire = {
+    id: 'accepted', project_id: 'project-1', base_revision_id: 'revision-1', base_revision_number: 1,
+    status: 'accepted', operations: [], created_at: 1, updated_at: 1,
+  }
+  const pending: VideoEditProposalWire = {
+    id: 'pending-live', project_id: 'project-1', base_revision_id: 'revision-1', base_revision_number: 1,
+    status: 'pending', operations: [], created_at: 2, updated_at: 2,
+  }
+  const resolvers: Array<(proposals: VideoEditProposalWire[]) => void> = []
+  const loader = () => new Promise<VideoEditProposalWire[]>((resolve) => resolvers.push(resolve))
+  const requestSequence = { current: 0 }
+  let rendered: VideoEditProposalWire[] = []
+  const load = () => loadLatestVideoEditProposals({
+    sessionId: 'session-1',
+    projectId: 'project-1',
+    requestSequence,
+    loader,
+    onLoaded: (proposals) => { rendered = proposals },
+    onError: (error) => assert.equal(error, null),
+  })
+
+  const initialLoad = load()
+  const realtimeLoad = load()
+  resolvers[1]([pending])
+  await realtimeLoad
+  assert.deepEqual(rendered.map((proposal) => proposal.id), ['pending-live'])
+
+  resolvers[0]([accepted])
+  await initialLoad
+  assert.deepEqual(rendered.map((proposal) => proposal.id), ['pending-live'])
+})
+
+test('Video Studio creates stable visual revision requests and focuses the newest changed step', () => {
+  const proposal = {
+    id: 'proposal-1', project_id: 'project-1', base_revision_id: 'revision-1', base_revision_number: 1,
+    status: 'pending' as const, created_at: 1, updated_at: 1,
+    operations: [
+      { id: 'change-1', type: 'update_clip' as const, clip: { id: 'step-1' } },
+      { id: 'change-2', type: 'add_transition' as const, transition: { id: 'transition-1', kind: 'crossfade' as const, from_clip_id: 'step-1', to_clip_id: 'step-2' } },
+    ],
+  }
+  assert.equal(videoProposalFocusClipId(proposal), 'step-2')
+  const request = videoStepEditRequest({ action: 'visual', clipId: 'step-2', playheadMs: 12500 })
+  assert.match(request, /stable step "step-2" at 12500ms/)
+  assert.match(request, /plan\.kind=revision proposal/)
+})
+
+test('Video Creator classifies proposed opening and transition stills before acceptance', () => {
+  assert.deepEqual(proposedVideoPlanClipDetails({
+    id: 'title-card',
+    source_kind: 'text',
+    name: '00:00–00:03 — Opening title card | Narration: Here’s how to make dubstep. | Planned still: Bold title on a dark studio background.',
+    captions: [{ id: 'title', text: 'How to make dubstep in 3 steps' }],
+  }), {
+    timing: '00:00–00:03',
+    title: 'Opening title card',
+    narration: 'Here’s how to make dubstep.',
+    still: 'Bold title on a dark studio background.',
+    onScreenText: 'How to make dubstep in 3 steps',
+    kind: 'title',
+  })
+
+  assert.equal(proposedVideoPlanClipDetails({
+    name: '00:09–00:11 — Transition still | Planned still: A section divider between content clips.',
+  }).kind, 'transition')
+})
+
 test('Video Studio resolves V3 create authority from workspace overview', () => {
   const route = resolveVideoStudioSessionRoute(videoStudioWorkspace(videoStudioSelfRoute), videoStudioSwarmTarget)
 
@@ -75,6 +219,152 @@ test('Video Studio resolves V3 create authority from workspace overview', () => 
     launch_source: 'video_tool',
     lineage_kind: 'video_project',
   })
+})
+
+test('Start new video session completes through the canonical V3 session API with required agent_name', async () => {
+  const route = resolveVideoStudioSessionRoute(videoStudioWorkspace(videoStudioSelfRoute), videoStudioSwarmTarget)
+  assert.ok(route)
+
+  const calls: Array<{ input: RequestInfo | URL; init?: RequestInit }> = []
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    calls.push({ input, init })
+    const url = String(input)
+    if (url === '/v1/model') {
+      return new Response(JSON.stringify({
+        preference: { provider: 'codex', model: 'gpt-5.6-sol', thinking: 'high' },
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    }
+    if (url === '/v3/sessions') {
+      const body = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>
+      assert.equal(body.agent_name, VIDEO_STUDIO_AGENT_NAME)
+      assert.equal(body.swarm_id, 'host-swarm')
+      assert.equal(body.workspace_binding_id, 'binding-video')
+      assert.deepEqual(body.metadata, videoStudioSessionMetadata())
+      assert.equal(String(init?.method), 'POST')
+      return new Response(JSON.stringify({
+        ok: true,
+        session: {
+          id: 'video-session-1',
+          title: String(body.title ?? ''),
+          workspace_path: '/workspace/video',
+          workspace_name: 'video',
+          mode: 'auto',
+          metadata: { agent_name: VIDEO_STUDIO_AGENT_NAME, ...videoStudioSessionMetadata() },
+          session_api: 'v3',
+          last_event_seq: 1,
+          projection_high_watermark_seq: 1,
+          created_at: 1,
+          updated_at: 1,
+        },
+        projection: { session_id: 'video-session-1', last_event_seq: 1, projection_high_watermark_seq: 1, updated_at: 1 },
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    }
+    if (url === '/v1/workspace/video/threads') {
+      const body = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>
+      assert.equal(body.session_id, 'video-session-1')
+      assert.equal(body.workspace_path, '/workspace/video')
+      return new Response(JSON.stringify({
+        ok: true,
+        thread: {
+          id: body.session_id,
+          title: body.title,
+          workspace_path: body.workspace_path,
+          workspace_name: body.workspace_name,
+          video_folders: [],
+          video_clips: [],
+          video_clip_order: [],
+          created_at: 1,
+          updated_at: 1,
+        },
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    }
+    throw new Error(`unexpected fetch: ${url}`)
+  }) as typeof fetch
+
+  try {
+    const thread = await createVideoThread({
+      title: 'Launch video',
+      workspacePath: '/workspace/video',
+      workspaceName: 'video',
+      route,
+      clips: [],
+    })
+    assert.equal(thread.id, 'video-session-1')
+    assert.equal(thread.title, 'Launch video')
+    assert.deepEqual(calls.map((call) => String(call.input)), [
+      '/v1/model',
+      '/v3/sessions',
+      '/v1/workspace/video/threads',
+    ])
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('Video Studio initializes the primary project with an empty durable base revision', async () => {
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input)
+    assert.equal(url, '/v3/sessions/session-1/video/projects/primary')
+    assert.equal(init?.method, 'POST')
+    const body = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>
+    const timeline = body.initial_timeline as Record<string, unknown>
+    assert.equal(timeline.schema_version, 1)
+    assert.equal(timeline.output_preset, 'landscape_1080p')
+    assert.deepEqual(timeline.clips, [])
+    assert.deepEqual(timeline.transitions, [])
+    return new Response(JSON.stringify({
+      project: { id: 'project-1', session_id: 'session-1', title: 'Video', current_revision_id: 'revision-1', current_revision_number: 1, project_kind: 'video_tool', created_at: 1, updated_at: 1 },
+      revision: { id: 'revision-1', project_id: 'project-1', session_id: 'session-1', revision_number: 1, timeline, created_at: 1 },
+    }), { status: 201, headers: { 'Content-Type': 'application/json' } })
+  }) as typeof fetch
+
+  try {
+    const detail = await ensurePrimaryVideoProject('session-1', 'Video')
+    assert.equal(detail.project.current_revision_id, 'revision-1')
+    assert.equal(detail.current_revision?.timeline.clips.length, 0)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('Video Studio creates and lists multiple durable projects in one session', async () => {
+  const originalFetch = globalThis.fetch
+  const calls: string[] = []
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input)
+    calls.push(url)
+    if (url === '/v3/sessions/session-1/video/projects' && init?.method === 'POST') {
+      const body = JSON.parse(String(init.body ?? '{}')) as Record<string, unknown>
+      assert.equal(body.title, 'Video 2')
+      assert.equal((body.initial_timeline as { clips?: unknown[] }).clips?.length, 0)
+      return new Response(JSON.stringify({
+        project: { id: 'project-2', session_id: 'session-1', title: 'Video 2', current_revision_id: 'revision-1', current_revision_number: 1, created_at: 1, updated_at: 1 },
+        revision: { id: 'revision-1', project_id: 'project-2', session_id: 'session-1', revision_number: 1, timeline: body.initial_timeline, created_at: 1 },
+      }), { status: 201, headers: { 'Content-Type': 'application/json' } })
+    }
+    if (url === '/v3/sessions/session-1/video/projects?limit=32') {
+      return new Response(JSON.stringify({ projects: [
+        { id: 'project-1', session_id: 'session-1', title: 'Video 1', created_at: 1, updated_at: 1 },
+        { id: 'project-2', session_id: 'session-1', title: 'Video 2', created_at: 2, updated_at: 2 },
+      ] }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    }
+    throw new Error(`unexpected fetch: ${url}`)
+  }) as typeof fetch
+
+  try {
+    const created = await createAdditionalVideoProject('session-1', 'Video 2')
+    assert.equal(created.project.id, 'project-2')
+    assert.equal(created.current_revision?.id, 'revision-1')
+    assert.equal((await listVideoProjects('session-1')).length, 2)
+    assert.deepEqual(calls, [
+      '/v3/sessions/session-1/video/projects',
+      '/v3/sessions/session-1/video/projects?limit=32',
+    ])
+  } finally {
+    globalThis.fetch = originalFetch
+  }
 })
 
 test('Video Studio reports route unavailable only without a primary self V3 authority', () => {
@@ -198,6 +488,96 @@ test('timelineSegmentsToProjectTimeline builds structured V3 VideoProject timeli
   })
 })
 
+test('pending selective still revision preserves accepted auxiliary footage in the live shadow cut', () => {
+  const accepted: VideoProjectTimelineWire = {
+    schema_version: 1,
+    total_duration_ms: 20000,
+    clips: [
+      { id: 'step-1', track: 0, sequence: 0, source_kind: 'managed_artifact', duration_ms: 6000, timeline_start_ms: 0, timeline_end_ms: 6000, visible: true },
+      { id: 'step-2', track: 0, sequence: 1, source_kind: 'managed_artifact', duration_ms: 7000, timeline_start_ms: 6000, timeline_end_ms: 13000, visible: true },
+      { id: 'step-3', track: 0, sequence: 2, source_kind: 'managed_artifact', duration_ms: 7000, timeline_start_ms: 13000, timeline_end_ms: 20000, visible: true },
+      { id: 'step-1-footage', track: 1, sequence: 0, layer: 1, source_kind: 'source_video', source_ref: 'videosrc_step_1', duration_ms: 1000, timeline_start_ms: 0, timeline_end_ms: 1000, visible: true },
+    ],
+    transitions: [],
+    metadata: {
+      accepted_video_plan: {
+        kind: 'initial',
+        parts: [
+          { id: 'step-1', title: 'Step 1', duration_ms: 6000, visual: { session_id: 'session-1', collection_id: 'slides', variant_id: 'old-1', event_seq: 1 } },
+          { id: 'step-2', title: 'Step 2', duration_ms: 7000, visual: { session_id: 'session-1', collection_id: 'slides', variant_id: 'old-2', event_seq: 2 } },
+          { id: 'step-3', title: 'Step 3', duration_ms: 7000, visual: { session_id: 'session-1', collection_id: 'slides', variant_id: 'old-3', event_seq: 3 } },
+        ],
+      },
+    },
+  }
+  const shadow = applyPendingVideoProposal(accepted, {
+    id: 'proposal-visual', project_id: 'project-1', base_revision_id: 'revision-1', base_revision_number: 1,
+    status: 'pending', created_at: 1, updated_at: 1, operations: [],
+    plan: {
+      kind: 'revision',
+      parts: [{ id: 'step-2', title: 'Step 2', duration_ms: 7000, visual: { session_id: 'session-1', collection_id: 'slides', variant_id: 'new-2', event_seq: 4 } }],
+    },
+  })
+
+  assert.equal(shadow.clips.find((clip) => clip.id === 'step-2')?.artifact_ref?.variant_id, 'new-2')
+  assert.deepEqual(shadow.clips.find((clip) => clip.id === 'step-1-footage'), accepted.clips[3])
+  assert.equal(shadow.total_duration_ms, 20000)
+})
+
+test('pending overlay footage stays synchronized with step 1 without mutating the accepted timeline', () => {
+  const accepted: VideoProjectTimelineWire = {
+    schema_version: 1,
+    total_duration_ms: 20000,
+    clips: [
+      { id: 'step-1', track: 0, sequence: 0, source_kind: 'managed_artifact', duration_ms: 6000, timeline_start_ms: 0, timeline_end_ms: 6000, visible: true },
+      { id: 'step-2', track: 0, sequence: 1, source_kind: 'managed_artifact', duration_ms: 7000, timeline_start_ms: 6000, timeline_end_ms: 13000, visible: true },
+      { id: 'step-3', track: 0, sequence: 2, source_kind: 'managed_artifact', duration_ms: 7000, timeline_start_ms: 13000, timeline_end_ms: 20000, visible: true },
+    ],
+    transitions: [],
+  }
+  const shadow = applyPendingVideoProposal(accepted, {
+    id: 'proposal-1', project_id: 'project-1', base_revision_id: 'revision-1', base_revision_number: 1,
+    status: 'pending', created_at: 1, updated_at: 1,
+    affected_ranges: [{ start_ms: 0, end_ms: 1000 }],
+    operations: [{
+      id: 'add-step-1-footage',
+      type: 'add_clip',
+      clip: {
+        id: 'step-1-footage',
+        track: 1,
+        sequence: 0,
+        layer: 1,
+        source_kind: 'source_video',
+        source_ref: 'videosrc_step_1',
+        source_start_ms: 0,
+        source_end_ms: 1000,
+        duration_ms: 1000,
+        timeline_start_ms: 0,
+        timeline_end_ms: 1000,
+        visible: true,
+      },
+    }],
+  })
+
+  assert.equal(accepted.clips.length, 3)
+  assert.deepEqual(accepted.clips.map((clip) => clip.id), ['step-1', 'step-2', 'step-3'])
+  assert.equal(accepted.total_duration_ms, 20000)
+  assert.equal(shadow.clips.length, 4)
+  assert.equal(shadow.total_duration_ms, 20000)
+  assert.equal(shadow.metadata?.shadow_proposal_id, 'proposal-1')
+
+  const segments = projectTimelineToTimelineSegments(shadow, {})
+  assert.deepEqual(segments.map((segment) => segment.id), ['step-1', 'step-1-footage', 'step-2', 'step-3'])
+  const layout = layoutTimelineSegments(segments)
+  const step1 = layout.find((segment) => segment.id === 'step-1')
+  const footage = layout.find((segment) => segment.id === 'step-1-footage')
+  const step3 = layout.find((segment) => segment.id === 'step-3')
+  assert.deepEqual([step1?.timelineStart, step1?.timelineEnd], [0, 6])
+  assert.deepEqual([footage?.timelineStart, footage?.timelineEnd], [0, 1])
+  assert.deepEqual([footage?.track, footage?.layer], [1, 1])
+  assert.deepEqual([step3?.timelineStart, step3?.timelineEnd], [13, 20])
+})
+
 test('projectTimelineToTimelineSegments reconstructs timeline segments from V3 project timeline', () => {
   const timeline: VideoProjectTimelineWire = {
     schema_version: 1,
@@ -226,6 +606,29 @@ test('projectTimelineToTimelineSegments reconstructs timeline segments from V3 p
   assert.equal(segments[0].sourceStart, 2.0)
   assert.equal(segments[0].duration, 5.0)
   assert.equal(segments[0].visible, true)
+})
+
+test('projectTimelineToTimelineSegments uses the canonical variant artifact endpoint for managed stills', () => {
+  const timeline: VideoProjectTimelineWire = {
+    schema_version: 1,
+    clips: [{
+      id: 'slide-1',
+      source_kind: 'managed_artifact',
+      artifact_ref: {
+        session_id: 'session-1',
+        collection_id: 'collection-1',
+        variant_id: 'variant-1',
+        event_seq: 42,
+      },
+      duration_ms: 3000,
+      visible: true,
+    }],
+  }
+
+  const [segment] = projectTimelineToTimelineSegments(timeline, {}, [], 'session-fallback')
+
+  assert.equal(segment.type, 'image')
+  assert.equal(segment.src, '/v3/sessions/session-1/artifacts/variant-1')
 })
 
 test('project timeline transitions round-trip and normalize preview duration to render overlap', () => {

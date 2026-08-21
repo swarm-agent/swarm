@@ -59,7 +59,7 @@ type manageVideoRenderService interface {
 func manageVideoDefinition() Definition {
 	return Definition{
 		Type: "function", Name: "manage_video",
-		Description: "Inspect trusted video sources, transcripts, and the accepted immutable cut; create typed edit proposals against one exact base revision; and report proposal or render status. In Video Studio sessions AI may propose edits and recommend render settings, but cannot accept a proposal or start a final render. Existing non-Studio project and render actions remain compatible. Arbitrary paths, provider URIs, credentials, and provider payloads are never accepted or returned.",
+		Description: "Inspect trusted video sources, browse registered source-video folders, inspect triggering-message attachments, transcribe selected opaque video references, inspect transcripts and the accepted immutable cut, create atomic visual video-plan proposals with one exact ready image slide per part or typed edit proposals against one exact base revision, and report proposal or render status. Initial visual plans are whole-plan review objects; later stable-part revisions support selective acceptance. In Video Studio sessions AI may propose edits and recommend render settings, but cannot accept a proposal or start a final render. Existing non-Studio project and render actions remain compatible. Arbitrary paths, provider URIs, credentials, and provider payloads are never accepted or returned.",
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -93,6 +93,7 @@ func manageVideoDefinition() Definition {
 				"proposal_id":        map[string]any{"type": "string", "description": "Opaque edit proposal identifier."},
 				"base_revision_id":   map[string]any{"type": "string", "description": "Required exact immutable revision on which an edit proposal is based."},
 				"rationale":          map[string]any{"type": "string", "description": "Concise rationale for the proposed edit."},
+				"plan":               map[string]any{"type": "object", "description": "Atomic visual video-plan proposal. Every part must include the exact ready image slide the viewer will see. Use kind=initial for the first whole-plan review and kind=revision with stable existing part IDs for selectable replacements.", "properties": map[string]any{"kind": map[string]any{"type": "string", "enum": []string{pebblestore.VideoPlanKindInitial, pebblestore.VideoPlanKindRevision}}, "summary": map[string]any{"type": "string"}, "parts": map[string]any{"type": "array", "minItems": 1, "maxItems": pebblestore.MaxClipsPerTimeline, "items": map[string]any{"type": "object", "properties": map[string]any{"id": map[string]any{"type": "string"}, "title": map[string]any{"type": "string"}, "duration_ms": map[string]any{"type": "integer", "minimum": 1, "maximum": pebblestore.MaxVideoTimelineDurationMs}, "narration": map[string]any{"type": "string"}, "on_screen_text": map[string]any{"type": "string"}, "visual_direction": map[string]any{"type": "string"}, "transition_in": map[string]any{"type": "string"}, "visual": map[string]any{"type": "object", "description": "Complete exact ready managed visual reference returned by manage_artifact.", "properties": map[string]any{"session_id": map[string]any{"type": "string"}, "collection_id": map[string]any{"type": "string"}, "variant_id": map[string]any{"type": "string"}, "event_seq": map[string]any{"type": "integer", "minimum": 1}}, "required": []string{"session_id", "collection_id", "variant_id", "event_seq"}, "additionalProperties": false}}, "required": []string{"id", "title", "duration_ms", "visual"}, "additionalProperties": false}}}, "required": []string{"kind", "parts"}, "additionalProperties": false},
 				"operations":         map[string]any{"type": "array", "maxItems": pebblestore.MaxVideoEditProposalOperations, "items": map[string]any{"type": "object"}, "description": "Bounded typed clip and transition operations."},
 				"affected_ranges":    map[string]any{"type": "array", "maxItems": pebblestore.MaxVideoEditProposalOperations, "items": map[string]any{"type": "object", "properties": map[string]any{"start_ms": map[string]any{"type": "integer", "minimum": 0}, "end_ms": map[string]any{"type": "integer", "minimum": 1}}, "required": []string{"start_ms", "end_ms"}, "additionalProperties": false}},
 				"max_clips":          map[string]any{"type": "integer", "minimum": 1, "maximum": pebblestore.MaxClipsPerTimeline, "description": "Bounded accepted-cut clip count."},
@@ -374,7 +375,7 @@ func (r *Runtime) executeManageVideo(ctx context.Context, scope WorkspaceScope, 
 		}
 		var project pebblestore.VideoProjectSnapshot
 		var revision *pebblestore.VideoProjectRevisionSnapshot
-		if primaryProject {
+		if primaryProject && projectID == "" {
 			project, revision, err = r.videoProjects.GetOrCreatePrimaryVideoToolProject(ctx, scope.Principal, createInput)
 		} else {
 			project, revision, err = r.videoProjects.CreateProject(ctx, scope.Principal, createInput)
@@ -503,15 +504,24 @@ func (r *Runtime) executeManageVideo(ctx context.Context, scope WorkspaceScope, 
 		if projectID == "" || baseRevisionID == "" {
 			return "", errors.New("create_edit_proposal requires project_id and exact base_revision_id")
 		}
-		operations, err := parseVideoEditOperations(args["operations"])
+		plan, err := parseVideoPlanProposal(args["plan"])
 		if err != nil {
 			return "", err
+		}
+		var operations []pebblestore.VideoEditOperation
+		if plan == nil {
+			operations, err = parseVideoEditOperations(args["operations"])
+			if err != nil {
+				return "", err
+			}
+		} else if args["operations"] != nil {
+			return "", errors.New("create_edit_proposal accepts either one atomic plan or timeline operations, not both")
 		}
 		affectedRanges, err := parseVideoTimelineRanges(args["affected_ranges"])
 		if err != nil {
 			return "", err
 		}
-		proposal, err := r.videoProjects.CreateEditProposal(ctx, scope.Principal, videoproject.CreateEditProposalInput{SessionID: projectSessionID, ProjectID: projectID, ProposalID: strings.TrimSpace(asString(args["proposal_id"])), BaseRevisionID: baseRevisionID, Title: strings.TrimSpace(asString(args["title"])), Rationale: strings.TrimSpace(asString(args["rationale"])), Operations: operations, AffectedRanges: affectedRanges})
+		proposal, err := r.videoProjects.CreateEditProposal(ctx, scope.Principal, videoproject.CreateEditProposalInput{SessionID: projectSessionID, ProjectID: projectID, ProposalID: strings.TrimSpace(asString(args["proposal_id"])), BaseRevisionID: baseRevisionID, Title: strings.TrimSpace(asString(args["title"])), Rationale: strings.TrimSpace(asString(args["rationale"])), Plan: plan, Operations: operations, AffectedRanges: affectedRanges})
 		if err != nil {
 			return "", err
 		}
@@ -894,6 +904,27 @@ func singleManageVideoSourceName(names []string) string {
 	return ""
 }
 
+func parseVideoPlanProposal(raw any) (*pebblestore.VideoPlanProposal, error) {
+	if raw == nil {
+		return nil, nil
+	}
+	encoded, err := json.Marshal(raw)
+	if err != nil {
+		return nil, fmt.Errorf("marshal plan: %w", err)
+	}
+	if text, ok := raw.(string); ok {
+		encoded = []byte(strings.TrimSpace(text))
+	}
+	var plan pebblestore.VideoPlanProposal
+	if err := json.Unmarshal(encoded, &plan); err != nil {
+		return nil, fmt.Errorf("invalid plan payload: %w", err)
+	}
+	if len(plan.Parts) == 0 || len(plan.Parts) > pebblestore.MaxClipsPerTimeline {
+		return nil, errors.New("plan parts must be non-empty and bounded")
+	}
+	return &plan, nil
+}
+
 func parseVideoEditOperations(raw any) ([]pebblestore.VideoEditOperation, error) {
 	if raw == nil {
 		return nil, errors.New("create_edit_proposal requires operations")
@@ -937,7 +968,7 @@ func parseVideoTimelineRanges(raw any) ([]pebblestore.VideoTimelineRange, error)
 }
 
 func safeVideoEditProposal(proposal pebblestore.VideoEditProposalSnapshot) map[string]any {
-	return map[string]any{"id": proposal.ID, "project_id": proposal.ProjectID, "base_revision_id": proposal.BaseRevisionID, "base_revision_number": proposal.BaseRevisionNumber, "status": proposal.Status, "title": proposal.Title, "rationale": proposal.Rationale, "operations": proposal.Operations, "affected_ranges": proposal.AffectedRanges, "accepted_operation_ids": proposal.AcceptedOperationIDs, "accepted_revision_id": proposal.AcceptedRevisionID, "created_at": proposal.CreatedAt, "updated_at": proposal.UpdatedAt}
+	return map[string]any{"id": proposal.ID, "project_id": proposal.ProjectID, "base_revision_id": proposal.BaseRevisionID, "base_revision_number": proposal.BaseRevisionNumber, "status": proposal.Status, "title": proposal.Title, "rationale": proposal.Rationale, "plan": proposal.Plan, "operations": proposal.Operations, "affected_ranges": proposal.AffectedRanges, "accepted_operation_ids": proposal.AcceptedOperationIDs, "accepted_revision_id": proposal.AcceptedRevisionID, "rejection_feedback": proposal.RejectionFeedback, "created_at": proposal.CreatedAt, "updated_at": proposal.UpdatedAt}
 }
 
 func parseTimeline(raw any) (*pebblestore.VideoProjectTimeline, error) {

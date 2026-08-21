@@ -30,7 +30,7 @@ export interface DesktopV3CreateSessionRequest {
   host_workspace_path?: string
   runtime_workspace_path?: string
   mode?: DesktopSessionMode
-  agent_name?: string
+  agent_name: string
   metadata?: Record<string, unknown>
   preference?: {
     provider?: string
@@ -130,7 +130,7 @@ export interface DesktopV3RoutedSessionStartRequest extends DesktopV3RoutedWorks
   input: string
   client_request_id: string
   idempotency_key?: string
-  agent_name?: string
+  agent_name: string
   metadata?: Record<string, unknown>
   managed_worktree_requested: boolean
   plan_mode_requested: boolean
@@ -281,8 +281,10 @@ export async function postDesktopV3RoutedSessionStart(
   const userInput = input.input.trim()
   const clientRequestId = input.client_request_id.trim()
   const idempotencyKey = input.idempotency_key?.trim() || clientRequestId
+  const agentName = input.agent_name.trim()
   if (!userInput && !(input.video_attachments?.length) && !(input.artifact_selections?.length)) throw new Error('Desktop V3 routed start requires input, video attachment, or artifact selection')
   if (!clientRequestId) throw new Error('Desktop V3 routed start requires client_request_id')
+  if (!agentName) throw new Error('Desktop V3 routed start requires agent_name')
   if (idempotencyKey !== clientRequestId) {
     throw new Error('Desktop V3 routed start requires one stable client_request_id/idempotency identity')
   }
@@ -306,7 +308,7 @@ export async function postDesktopV3RoutedSessionStart(
     input: userInput || 'Please review the selected artifact(s).',
     client_request_id: clientRequestId,
     idempotency_key: clientRequestId,
-    ...(input.agent_name?.trim() ? { agent_name: input.agent_name.trim() } : {}),
+    agent_name: agentName,
     ...(input.metadata ? { metadata: input.metadata } : {}),
     managed_worktree_requested: input.managed_worktree_requested,
     plan_mode_requested: input.plan_mode_requested,
@@ -412,10 +414,12 @@ function requiredString(value: unknown, field: string): string {
 export async function postDesktopV3CreateSession(
   input: DesktopV3CreateSessionRequest,
 ): Promise<SessionCreateMutationResponse | SessionMutationErrorResponse> {
+  const agentName = input.agent_name.trim()
+  if (!agentName) throw new Error('Desktop V3 session create requires agent_name')
   return requestJson('/v3/sessions', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(input),
+    body: JSON.stringify({ ...input, agent_name: agentName }),
   })
 }
 

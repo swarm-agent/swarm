@@ -248,6 +248,22 @@ func (f *fakeSessionStore) GetSessionArtifactVariant(accountScopeID, sessionID, 
 	return v, ok, nil
 }
 
+func TestCreateEditProposalNormalizesAndValidatesVisualPlanReferences(t *testing.T) {
+	store := newFakeSessionStore()
+	svc := NewService(store)
+	principal := identity.Principal{Type: identity.PrincipalTypeUser, AccountScopeID: "acc", UserID: "user"}
+	store.sessions["session"] = pebblestore.SessionSnapshot{ID: "session", AccountScopeID: principal.AccountScopeID, UserID: principal.UserID}
+	store.projects["project"] = pebblestore.VideoProjectSnapshot{ID: "project", AccountScopeID: principal.AccountScopeID, UserID: principal.UserID, SessionID: "session"}
+	store.artifacts["acc/session/slides/slide-1"] = pebblestore.SessionArtifactVariant{ID: "slide-1", CollectionID: "slides", SessionID: "session", AccountScopeID: "acc", Status: pebblestore.SessionArtifactStatusReady, MediaType: "image/png", EventSeq: 7}
+	plan := &pebblestore.VideoPlanProposal{Kind: pebblestore.VideoPlanKindInitial, Parts: []pebblestore.VideoPlanPart{{ID: "part-1", Title: "Hook", DurationMs: 3000, Visual: &pebblestore.SessionArtifactSelectionReference{CollectionID: "slides", VariantID: "slide-1", EventSeq: 7}}}}
+	if _, err := svc.CreateEditProposal(context.Background(), principal, CreateEditProposalInput{SessionID: "session", ProjectID: "project", Plan: plan}); err != nil {
+		t.Fatalf("create visual plan proposal: %v", err)
+	}
+	if plan.Parts[0].Visual.SessionID != "session" || plan.Parts[0].VisualMediaType != "image/png" {
+		t.Fatalf("visual plan reference was not normalized: %+v", plan.Parts[0])
+	}
+}
+
 func TestVideoprojectServiceWorkflow(t *testing.T) {
 	store := newFakeSessionStore()
 	svc := NewService(store)

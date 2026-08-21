@@ -48,8 +48,13 @@ type sessionV3CreateVideoEditProposalRequest struct {
 	BaseRevisionID string                           `json:"base_revision_id"`
 	Title          string                           `json:"title"`
 	Rationale      string                           `json:"rationale"`
+	Plan           *pebblestore.VideoPlanProposal   `json:"plan"`
 	Operations     []pebblestore.VideoEditOperation `json:"operations"`
 	AffectedRanges []pebblestore.VideoTimelineRange `json:"affected_ranges"`
+}
+
+type sessionV3RejectVideoEditProposalRequest struct {
+	Feedback string `json:"feedback"`
 }
 
 type sessionV3AcceptVideoEditProposalRequest struct {
@@ -332,7 +337,7 @@ func (s *Server) handleSessionV3VideoProjectDetail(w http.ResponseWriter, r *htt
 				writeError(w, http.StatusBadRequest, err)
 				return
 			}
-			proposal, err := s.videoProjects.CreateEditProposal(r.Context(), principal, videoproject.CreateEditProposalInput{SessionID: sessionID, ProjectID: projectID, ProposalID: req.ProposalID, BaseRevisionID: req.BaseRevisionID, Title: req.Title, Rationale: req.Rationale, Operations: req.Operations, AffectedRanges: req.AffectedRanges, NowUnixMs: time.Now().UnixMilli()})
+			proposal, err := s.videoProjects.CreateEditProposal(r.Context(), principal, videoproject.CreateEditProposalInput{SessionID: sessionID, ProjectID: projectID, ProposalID: req.ProposalID, BaseRevisionID: req.BaseRevisionID, Title: req.Title, Rationale: req.Rationale, Plan: req.Plan, Operations: req.Operations, AffectedRanges: req.AffectedRanges, NowUnixMs: time.Now().UnixMilli()})
 			if err != nil {
 				writeError(w, http.StatusBadRequest, err)
 				return
@@ -451,7 +456,14 @@ func (s *Server) handleSessionV3VideoProjectDetail(w http.ResponseWriter, r *htt
 				writeJSON(w, http.StatusCreated, map[string]any{"ok": true, "proposal": proposal, "revision": revision, "project": project})
 				return
 			case "reject":
-				proposal, err := s.videoProjects.RejectEditProposal(r.Context(), principal, sessionID, projectID, proposalID, time.Now().UnixMilli())
+				var req sessionV3RejectVideoEditProposalRequest
+				if r.Body != nil && r.ContentLength > 0 {
+					if err := decodeJSON(r, &req); err != nil {
+						writeError(w, http.StatusBadRequest, err)
+						return
+					}
+				}
+				proposal, err := s.videoProjects.RejectEditProposal(r.Context(), principal, sessionID, projectID, proposalID, req.Feedback, time.Now().UnixMilli())
 				if err != nil {
 					writeError(w, http.StatusConflict, err)
 					return
