@@ -1,7 +1,7 @@
 import { type CSSProperties, type PointerEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useMatchRoute, useNavigate } from '@tanstack/react-router'
-import { ArrowLeft, Download, Eye, EyeOff, Film, FolderOpen, ListVideo, Loader2, MessageSquare, Moon, Pause, Play, RotateCcw, Sparkles } from 'lucide-react'
+import { Download, Eye, EyeOff, Film, FolderOpen, ListVideo, Loader2, MessageSquare, Moon, Pause, Play, RotateCcw, Sparkles } from 'lucide-react'
 import { Button } from '../../../../components/ui/button'
 import { Dialog, DialogBackdrop, DialogPanel } from '../../../../components/ui/dialog'
 import { ModalCloseButton } from '../../../../components/ui/modal-close-button'
@@ -1617,14 +1617,6 @@ export function VideoToolPage() {
     }
   }, [navigate, routeWorkspaceSlug])
 
-  const handleBackToTools = useCallback(() => {
-    if (routeWorkspaceSlug) {
-      void navigate({ to: '/$workspaceSlug/tools', params: { workspaceSlug: routeWorkspaceSlug } })
-      return
-    }
-    void navigate({ to: '/tools' })
-  }, [navigate, routeWorkspaceSlug])
-
   const handleSelectVideoSession = useCallback((sessionId: string) => {
     const normalizedSessionId = sessionId.trim()
     if (!normalizedSessionId) return
@@ -2092,25 +2084,8 @@ export function VideoToolPage() {
   }, [movieDuration, playheadX])
 
   return (
-    <div className="absolute inset-0 overflow-hidden bg-[var(--app-bg)] text-[var(--app-text)]">
-      <div className="flex min-h-dvh flex-col px-5 pt-[calc(var(--app-safe-area-top)+24px)] pb-[calc(var(--app-safe-area-bottom)+24px)] lg:hidden">
-        <button type="button" onClick={handleBackToTools} className="mb-6 inline-flex h-10 items-center gap-2 self-start rounded-xl px-2 text-sm text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]">
-          <ArrowLeft size={16} />
-          Tools
-        </button>
-        <div className="grid flex-1 place-items-center text-center">
-          <div className="max-w-sm rounded-[2rem] border border-[var(--app-border)] bg-[var(--app-surface)] px-6 py-8 shadow-[var(--shadow-panel)]">
-            <span className="mx-auto grid h-14 w-14 place-items-center rounded-2xl border border-[color-mix(in_srgb,var(--app-primary)_38%,var(--app-border))] bg-[color-mix(in_srgb,var(--app-primary)_12%,transparent)] text-[var(--app-primary)]">
-              <Film size={26} strokeWidth={1.7} />
-            </span>
-            <p className="mt-6 text-[11px] font-medium uppercase tracking-[0.24em] text-[var(--app-text-subtle)]">Video Tool</p>
-            <h1 className="mt-2 text-2xl font-semibold tracking-[-0.05em] text-[var(--app-text)]">Coming soon for mobile</h1>
-            <p className="mt-3 text-sm leading-6 text-[var(--app-text-muted)]">Video editing is desktop only for now.</p>
-          </div>
-        </div>
-      </div>
-      <div className="hidden h-full w-full flex-col lg:flex">
-        <header className="flex h-[60px] shrink-0 items-center justify-between gap-4 border-b border-[var(--app-border)] bg-[var(--app-surface)] px-4">
+    <div className="absolute inset-0 flex min-h-0 flex-col overflow-hidden bg-[var(--app-bg)] text-[var(--app-text)]">
+        <header className="flex min-h-[60px] shrink-0 items-center justify-between gap-3 border-b border-[var(--app-border)] bg-[var(--app-surface)] px-3 pb-2 pt-[calc(var(--app-safe-area-top)+0.5rem)] sm:h-[60px] sm:px-4 sm:py-0">
           <div className="inline-flex min-w-0 items-center gap-2">
             <Film size={17} className="shrink-0 text-[var(--app-primary)]" aria-hidden="true" />
             <span className="truncate text-sm font-semibold">Video Studio</span>
@@ -2127,7 +2102,7 @@ export function VideoToolPage() {
               data-testid="video-studio-session-toggle"
             >
               <MessageSquare size={15} aria-hidden="true" />
-              <span>Session</span>
+              <span>Chat</span>
             </button>
           ) : null}
         </header>
@@ -2137,7 +2112,8 @@ export function VideoToolPage() {
           </div>
         ) : null}
 
-        <main className="flex min-h-0 flex-1 overflow-hidden">
+        <main className="flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-contain lg:flex-row lg:overflow-hidden">
+          <div className="hidden lg:contents">
             <SwarmToolSidebar
               backLabel={routeWorkspaceSlug ? 'Workspace' : 'Launcher'}
               onBack={handleBackToWorkspace}
@@ -2257,15 +2233,12 @@ export function VideoToolPage() {
                 </div>
               ) : null}
             </SwarmToolSidebar>
+          </div>
 
-            <section className="flex min-w-0 flex-1 flex-col overflow-y-auto">
-              <div className="mb-4 flex items-center justify-between gap-3 lg:hidden">
-                <Button variant="ghost" className="h-9 rounded-xl px-3 text-[var(--app-text-muted)]" onClick={handleBackToWorkspace}><ArrowLeft size={15} />{routeWorkspaceSlug ? 'Workspace' : 'Launcher'}</Button>
-                <div className="flex items-center gap-2">
-                  <Button variant="outline" style={darkOverrideButtonStyle} className={`h-8 w-8 rounded-xl px-0 ${blackModeEnabled ? 'border-[var(--video-tool-user-theme-accent)] bg-[var(--video-tool-user-theme-surface)] text-[var(--video-tool-user-theme-text)] hover:bg-[var(--video-tool-user-theme-surface-hover)]' : ''}`} onClick={() => setBlackModeEnabled((enabled) => !enabled)} aria-label="Toggle dark mode override for this page" aria-pressed={blackModeEnabled} title="Toggle dark mode override for this page"><Moon size={14} aria-hidden="true" /></Button>
-                  <Button variant="ghost" className="h-8 rounded-xl px-2 text-xs text-[var(--app-text-muted)]" onClick={handleOpenPicker} disabled={!selectedThread}><FolderOpen size={14} />Add folder</Button>
-                  <span className="text-xs text-[var(--app-text-subtle)]">Video Studio</span>
-                </div>
+            <section className="flex min-w-0 shrink-0 flex-col px-3 py-4 sm:px-4 lg:min-h-0 lg:flex-1 lg:shrink lg:overflow-y-auto lg:px-0 lg:py-0">
+              <div className="mb-4 flex items-center justify-end gap-2 lg:hidden">
+                <Button variant="outline" style={darkOverrideButtonStyle} className={`h-9 w-9 rounded-xl px-0 ${blackModeEnabled ? 'border-[var(--video-tool-user-theme-accent)] bg-[var(--video-tool-user-theme-surface)] text-[var(--video-tool-user-theme-text)] hover:bg-[var(--video-tool-user-theme-surface-hover)]' : ''}`} onClick={() => setBlackModeEnabled((enabled) => !enabled)} aria-label="Toggle dark mode override for this page" aria-pressed={blackModeEnabled} title="Toggle dark mode override for this page"><Moon size={14} aria-hidden="true" /></Button>
+                <Button variant="outline" className="h-9 rounded-xl px-3 text-xs" onClick={handleOpenPicker} disabled={!selectedThread}><FolderOpen size={14} />Add source</Button>
               </div>
 
               {!selectedThread ? (
@@ -2280,7 +2253,7 @@ export function VideoToolPage() {
                 </div>
               ) : (
                 <>
-              <div className="relative aspect-video min-h-[360px] overflow-hidden border border-[var(--app-border)] bg-black lg:min-h-[480px]">
+              <div className="relative aspect-video min-h-0 overflow-hidden rounded-xl border border-[var(--app-border)] bg-black sm:min-h-[360px] lg:min-h-[480px] lg:rounded-none">
                 <canvas ref={canvasRef} width={1920} height={1080} className="h-full w-full bg-black object-contain" />
                 {previewRevision ? <div className="pointer-events-none absolute right-4 top-4 border border-sky-300/50 bg-sky-950/80 px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-sky-200">History preview · r{previewRevision.revision_number} · kept r{confirmedRevision?.revision_number} unchanged</div> : pendingProposal ? <div className="pointer-events-none absolute right-4 top-4 border border-amber-300/50 bg-amber-950/80 px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-amber-200">New change added · working r{pendingProposal.working_revision_number ?? currentRevision?.revision_number} · confirm when ready</div> : null}
                 {timelineSegments.length === 0 ? (
@@ -2324,7 +2297,7 @@ export function VideoToolPage() {
                   </div>
                 ) : null}
 
-                <div className="mb-3 flex items-center gap-2 border border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-2">
+                <div className="mb-3 flex flex-wrap items-center gap-2 border border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-2">
                   <span className="text-xs text-[var(--app-text-muted)]">Transition between clips</span>
                   <select className="h-8 border border-[var(--app-border)] bg-[var(--app-bg)] px-2 text-xs" value={transitionKind} onChange={(event) => setTransitionKind(event.target.value as VideoTransitionKind)}>
                     {VIDEO_TRANSITION_KINDS.map((kind) => <option key={kind} value={kind}>{transitionLabel(kind)}</option>)}
@@ -2352,7 +2325,7 @@ export function VideoToolPage() {
                         {timelineLayout.map((segment, index) => {
                           const clip = selectedClips.find((candidate) => candidate.id === segment.clipId)
                           return (
-                            <div key={`${segment.id}-controls`} className={`flex min-w-[320px] max-w-[440px] flex-wrap items-center gap-2 border px-2 py-2 text-xs ${segment.visible ? 'border-[var(--app-border)] bg-[var(--app-surface)]' : 'border-dashed border-[var(--app-border)] bg-transparent opacity-60'}`}>
+                            <div key={`${segment.id}-controls`} className={`flex min-w-[280px] max-w-[440px] flex-wrap items-center gap-2 border px-2 py-2 text-xs sm:min-w-[320px] ${segment.visible ? 'border-[var(--app-border)] bg-[var(--app-surface)]' : 'border-dashed border-[var(--app-border)] bg-transparent opacity-60'}`}>
                               <button type="button" onClick={() => handleFocusStep(segment.id, segment.timelineStart * 1000)} className="min-w-[160px] flex-1 text-left"><span className="block truncate font-medium text-[var(--app-text)]">{segment.title || clip?.name || segment.clipId}</span><span className="block truncate font-mono text-[10px] text-[var(--app-text-muted)]">{pendingProposal ? 'Working change' : segment.visible ? 'Included' : 'Hidden'} · {segment.id} · {formatTimelineTime(segment.duration)}</span></button>
                               <Button variant="outline" className="h-7 rounded-lg px-2 text-[10px]" onClick={() => handleRequestStepEdit('visual', segment)}>Visual</Button>
                               <Button variant="outline" className="h-7 rounded-lg px-2 text-[10px]" onClick={() => handleRequestStepEdit('transition', segment)}>Transition</Button>
@@ -2427,7 +2400,6 @@ export function VideoToolPage() {
             </section>
             {selectedThread ? <VideoSessionAISidecar key={selectedThread.id} sessionId={selectedThread.id} projectId={videoProject?.id} revisionId={studioComposerContext?.revisionId ?? currentRevision?.id} anchorClipId={studioComposerContext?.anchorClipId ?? activeSegment?.id} playheadMs={studioComposerContext?.playheadMs ?? playhead * 1000} selectionKind={studioComposerContext?.selectionKind} transition={studioComposerContext?.transition} routeOptions={selectedSessionRoute ? [selectedSessionRoute] : []} draftRequest={composerDraftRequest} artifactSelectionRequest={studioArtifactSelectionRequest} contextChip={studioComposerContext ? { id: `${studioComposerContext.selectionKind}:${studioComposerContext.revisionId}:${studioComposerContext.anchorClipId}:${studioComposerContext.transition?.id ?? ''}`, label: studioComposerContext.selectionKind === 'transition' ? `Transition · ${studioComposerContext.label}` : studioComposerContext.label, kind: studioComposerContext.selectionKind, description: studioComposerContext.transition ? `${studioComposerContext.transition.kind}; ${studioComposerContext.transition.duration_ms ?? 0}ms` : `Stable part ${studioComposerContext.anchorClipId}` } : null} onContextChipRemove={() => setStudioComposerContext(null)} onArtifactSelectionRequestHandled={() => setStudioArtifactSelectionRequest(null)} onActivity={() => { setStudioComposerContext(null); setAIRefreshKey((value) => value + 1); void refreshSelectedVideoProject().catch(() => undefined) }} /> : null}
           </main>
-      </div>
 
       {pickerOpen ? (
         <Dialog role="dialog" aria-modal="true" aria-label="Choose a video folder" className="z-[80] p-4 sm:p-6">

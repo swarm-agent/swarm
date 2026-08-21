@@ -651,11 +651,11 @@ export function ImageToolPage() {
   const handleBackToTools = useMemo(() => {
     if (routeWorkspaceSlug) {
       return () => {
-        void navigate({ to: '/$workspaceSlug/tools', params: { workspaceSlug: routeWorkspaceSlug } })
+        void navigate({ to: '/$workspaceSlug', params: { workspaceSlug: routeWorkspaceSlug } })
       }
     }
     return () => {
-      void navigate({ to: '/tools' })
+      void navigate({ to: '/' })
     }
   }, [navigate, routeWorkspaceSlug])
 
@@ -1067,7 +1067,7 @@ export function ImageToolPage() {
         <main className="flex min-h-0 min-w-0 flex-1 overflow-hidden overflow-x-hidden py-0 lg:py-5">
           <div className={showMobileSessionLauncher ? 'flex min-h-dvh w-full flex-col overflow-hidden px-4 pb-[calc(var(--app-safe-area-bottom)+1rem)] pt-[calc(var(--app-safe-area-top)+0.75rem)] lg:contents lg:p-0' : 'hidden lg:contents'}>
           <SwarmToolSidebar
-            backLabel="Tools"
+            backLabel={routeWorkspaceSlug ? 'Workspace' : 'Launcher'}
             onBack={handleBackToTools}
             topSecondaryLabel={routeWorkspaceSlug ? 'Workspace' : 'Launcher'}
             onTopSecondary={handleBackToLauncher}
@@ -1206,7 +1206,7 @@ export function ImageToolPage() {
           <section className={showMobileSessionLauncher ? 'hidden min-w-0 flex-1 flex-col overflow-y-auto lg:flex xl:overflow-hidden' : 'flex h-[100dvh] min-h-0 w-full max-w-[100dvw] min-w-0 flex-1 flex-col overflow-hidden overflow-x-hidden px-3 pt-[calc(var(--app-safe-area-top)+0.75rem)] max-[400px]:px-2 max-[400px]:pt-[calc(var(--app-safe-area-top)+0.5rem)] lg:h-auto lg:max-w-full lg:px-0 lg:pt-0 lg:overflow-y-auto xl:overflow-hidden'}>
             <div className="mb-3 flex shrink-0 items-center justify-between gap-2 max-[400px]:mb-1.5 lg:hidden">
               <div className="flex min-w-0 items-center gap-2">
-                <Button variant="ghost" className="h-9 rounded-xl px-3 text-[var(--app-text-muted)] max-[400px]:h-7 max-[400px]:px-2" onClick={handleBackToTools}><ArrowLeft size={15} />Tools</Button>
+                <Button variant="ghost" className="h-9 rounded-xl px-3 text-[var(--app-text-muted)] max-[400px]:h-7 max-[400px]:px-2" onClick={handleBackToTools}><ArrowLeft size={15} />{routeWorkspaceSlug ? 'Workspace' : 'Launcher'}</Button>
                 <Button variant="ghost" className="h-9 rounded-xl px-3 text-[var(--app-text-subtle)] max-[400px]:h-7 max-[400px]:px-2" onClick={handleBackToLauncher}>{routeWorkspaceSlug ? 'Workspace' : 'Launcher'}</Button>
               </div>
               <Button variant="outline" style={darkOverrideButtonStyle} className={`h-11 w-11 rounded-2xl px-0 max-[400px]:h-9 max-[400px]:w-9 ${blackModeEnabled ? 'border-[var(--image-tool-user-theme-accent)] bg-[var(--image-tool-user-theme-surface)] text-[var(--image-tool-user-theme-text)] hover:bg-[var(--image-tool-user-theme-surface-hover)]' : ''}`} onClick={() => setBlackModeEnabled((enabled) => !enabled)} aria-label="Toggle dark mode override for this page" aria-pressed={blackModeEnabled} title="Toggle dark mode override for this page"><Moon aria-hidden="true" strokeWidth={2.2} className="shrink-0" style={{ width: 22, height: 22, minWidth: 22, minHeight: 22 }} /></Button>

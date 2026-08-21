@@ -1,4 +1,4 @@
-import { createRootRoute, createRoute, createRouter, lazyRouteComponent, useNavigate } from '@tanstack/react-router'
+import { createRootRoute, createRoute, createRouter, lazyRouteComponent, redirect, useNavigate } from '@tanstack/react-router'
 import { useEffect } from 'react'
 import { DesktopDocumentTitleController } from '../features/desktop/runtime/desktop-document-title-controller'
 import { DesktopVaultShell } from '../features/desktop/vault/components/desktop-vault-shell'
@@ -10,7 +10,6 @@ const importDesktopAppPage = () => import('../features/desktop/layout/desktop-ap
 const DesktopAppPage = lazyRouteComponent(importDesktopAppPage, 'DesktopAppPage')
 const DesktopSettingsPage = lazyRouteComponent(() => import('../features/desktop/settings/components/desktop-settings-page'), 'DesktopSettingsPage')
 const IntegrationsPage = lazyRouteComponent(() => import('../features/desktop/integrations/pages/integrations-page'), 'IntegrationsPage')
-const SwarmToolsPage = lazyRouteComponent(() => import('../features/desktop/tools/pages/swarm-tools-page'), 'SwarmToolsPage')
 const VideoToolPage = lazyRouteComponent(() => import('../features/desktop/tools/pages/video-tool-page'), 'VideoToolPage')
 const ImageToolPage = lazyRouteComponent(() => import('../features/desktop/tools/pages/image-tool-page'), 'ImageToolPage')
 const ROOT_RESERVED_ROUTE_SEGMENTS = new Set(['settings', 'integrations', 'tools', 'agents', 'studio'])
@@ -184,7 +183,9 @@ const integrationSessionRoute = createRoute({
 const toolsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/tools',
-  component: SwarmToolsPage,
+  beforeLoad: () => {
+    throw redirect({ to: '/studio', replace: true })
+  },
 })
 
 const studioRoute = createRoute({
@@ -196,7 +197,9 @@ const studioRoute = createRoute({
 const videoToolRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/tools/video',
-  component: VideoToolPage,
+  beforeLoad: () => {
+    throw redirect({ to: '/studio', replace: true })
+  },
 })
 
 const imageToolRoute = createRoute({
@@ -269,7 +272,9 @@ const workspaceToolsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/$workspaceSlug/tools',
   parseParams: validateWorkspaceParams,
-  component: SwarmToolsPage,
+  beforeLoad: ({ params }) => {
+    throw redirect({ to: '/$workspaceSlug/studio', params: { workspaceSlug: params.workspaceSlug }, replace: true })
+  },
 })
 
 const workspaceStudioRoute = createRoute({
@@ -290,7 +295,9 @@ const workspaceVideoToolRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/$workspaceSlug/tools/video',
   parseParams: validateWorkspaceParams,
-  component: VideoToolPage,
+  beforeLoad: ({ params }) => {
+    throw redirect({ to: '/$workspaceSlug/studio', params: { workspaceSlug: params.workspaceSlug }, replace: true })
+  },
 })
 
 const workspaceImageToolRoute = createRoute({

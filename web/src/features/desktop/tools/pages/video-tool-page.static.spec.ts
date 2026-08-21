@@ -9,8 +9,10 @@ const desktopPageSourceUrl = new URL('../../layout/desktop-app-page.tsx', import
 test('Video Studio fills the app surface without an inset page wrapper', async () => {
   const source = await readFile(pageSourceUrl, 'utf8')
 
-  assert.match(source, /<div className="hidden h-full w-full flex-col lg:flex">/)
-  assert.match(source, /<main className="flex min-h-0 flex-1 overflow-hidden">/)
+  assert.match(source, /<div className="absolute inset-0 flex min-h-0 flex-col overflow-hidden/)
+  assert.match(source, /<main className="flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-contain lg:flex-row lg:overflow-hidden">/)
+  assert.match(source, /lg:hidden/)
+  assert.doesNotMatch(source, /Coming soon for mobile/)
   assert.doesNotMatch(source, /mx-auto hidden h-full w-full max-w-none flex-col px-4 py-4/)
 })
 
@@ -52,11 +54,10 @@ test('Video Studio keeps a route-backed video selection and exposes session mode
   assert.match(source, /data-testid="video-studio-session-toggle"/)
   assert.match(source, /aria-label="Switch to session mode"/)
   assert.match(desktopSource, />Video sessions</)
-  assert.match(desktopSource, /childLabel="video child"/)
+  assert.match(desktopSource, /childLabel=""/)
   assert.match(desktopSource, /selectionGroup="video"/)
   assert.match(desktopSource, /archiveDesktopV3Sessions\(ids\)/)
   assert.doesNotMatch(desktopSource, /routeSessionIsVideoStudio \|\| videoStudioRoute/)
-  assert.doesNotMatch(desktopSource, /to: '\/\$workspaceSlug\/video\/\$videoSessionId',[\s\S]*replace: true/)
   assert.match(desktopSource, /routeSessionHasVideoProject = routeSessionIsVideoStudio \|\| routeSessionVideoProjectQuery\.data === true/)
   assert.match(desktopSource, /sessionVideoProjectPresenceKey\(routeSessionId, routeSessionVideoProjectSequence\)/)
   assert.match(desktopSource, /studioMode=\{routeSessionHasVideoProject \? 'session' : null\}/)

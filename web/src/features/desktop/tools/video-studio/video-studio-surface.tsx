@@ -488,7 +488,7 @@ export function VideoSessionAISidecar(props: {
   }, [props.onActivity, renderedMessages.committed, renderedMessages.liveRuns])
 
   return (
-    <aside className="flex min-h-0 w-[440px] min-w-[360px] max-w-[42vw] shrink-0 border-l border-[var(--app-border)] bg-[var(--app-bg)]" aria-label="Video session AI">
+    <aside className="flex min-h-[70dvh] w-full min-w-0 shrink-0 border-t border-[var(--app-border)] bg-[var(--app-bg)] lg:min-h-0 lg:w-[440px] lg:min-w-[360px] lg:max-w-[42vw] lg:border-l lg:border-t-0" aria-label="Video session AI">
       <DesktopV3ExistingConversationPane
         sessionId={props.sessionId}
         initialHydrateStatus={hydrateError ? 'error' : hydrating ? 'loading' : messagesLoaded ? 'ready' : 'cached'}

@@ -57,10 +57,11 @@ test('video session header exposes a bidirectional Studio switch', () => {
   )
 
   assert.match(sessionMarkup, /aria-label="Switch to Video Studio"/)
-  assert.match(sessionMarkup, />Studio on</)
-  assert.match(sessionMarkup, /border-transparent bg-transparent/)
+  assert.match(sessionMarkup, />Studio</)
+  assert.match(sessionMarkup, /sm:inline-flex/)
+  assert.match(sessionMarkup, /sm:hidden/)
   assert.match(studioMarkup, /aria-label="Switch to session mode"/)
-  assert.match(studioMarkup, />Session</)
+  assert.match(studioMarkup, />Chat</)
 })
 
 test('ordinary session header does not expose the Studio switch', () => {
