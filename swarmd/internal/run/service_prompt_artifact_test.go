@@ -65,6 +65,24 @@ func TestBuildInputProjectsSelectedVideoStepAndPlayheadContext(t *testing.T) {
 	}
 }
 
+func TestBuildInputProjectsSelectedVideoTransitionContext(t *testing.T) {
+	input := buildInput([]pebblestore.MessageSnapshot{{
+		Role: "user", Content: "Make this transition slower.", Metadata: map[string]any{
+			"creative_mode": "video", "video_project_id": "vproj_selected", "video_revision_id": "vrev_selected",
+			"video_anchor_clip_id": "step-2", "video_playhead_ms": float64(9000), "video_selection_kind": "transition",
+			"video_transition_id": "transition-1", "video_transition_kind": "crossfade",
+			"video_transition_from_clip_id": "step-1", "video_transition_to_clip_id": "step-2",
+			"video_transition_duration_ms": float64(350),
+		},
+	}})
+	content := input[0]["content"].([]map[string]any)[0]["text"].(string)
+	for _, want := range []string{"selected_context_kind=transition", "selected_transition_id=transition-1", "selected_transition_kind=crossfade", "selected_transition_from_step=step-1", "selected_transition_to_step=step-2", "selected_transition_duration_ms=350"} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("provider content missing %q: %s", want, content)
+		}
+	}
+}
+
 func TestMasterHarnessPromptGuidesPriorArtifactWorkspaceWorkflow(t *testing.T) {
 	prompt := masterHarnessPrompt("/workspace")
 	for _, want := range []string{

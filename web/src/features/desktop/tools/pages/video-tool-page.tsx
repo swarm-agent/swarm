@@ -12,12 +12,11 @@ import { normalizeGlobalThemeSettings } from '../../settings/swarm/types/swarm-s
 import { browseWorkspacePath } from '../../../workspaces/launcher/queries/browse-workspace-path'
 import { buildWorkspaceRouteSlugMap, resolveWorkspaceBySlug, workspaceRouteSlugBase } from '../../../workspaces/launcher/services/workspace-route'
 import { applyWorkspaceTheme, createWorkspaceThemeStyle } from '../../../workspaces/launcher/services/workspace-theme'
-import { createDesktopV3ExistingMessageOperation, continueDesktopV3Conversation } from '../../session-v3/existing-session-flow'
 import { buildDesktopChatRouteOptions, getDesktopSessionCreateTarget, type DesktopChatRoute } from '../../chat/services/chat-routing'
 import type { WorkspaceBrowseResult, WorkspaceEntry } from '../../../workspaces/launcher/types/workspace'
 import type { WorkspaceOverviewSwarmTarget } from '../../../workspaces/launcher/types/workspace-overview'
 import { SwarmToolSidebar } from '../components/swarm-tool-sidebar'
-import { VIDEO_TRANSITION_KINDS, VideoProposalReview, VideoSessionAISidecar, renderedVideoArtifactUrl, requestVideoRenderCancellation, transitionLabel, videoPlanPartMessageSelection, videoProposalFocusClipId, videoProposalProjectionSequence, videoStepEditRequest, type VideoEditProposalWire, type VideoPlanProposalWire, type VideoTransitionKind, type VideoTransitionWire } from '../video-studio/video-studio-surface'
+import { VIDEO_TRANSITION_KINDS, VideoProposalReview, VideoSessionAISidecar, renderedVideoArtifactUrl, requestVideoRenderCancellation, transitionLabel, videoPlanPartMessageSelection, videoPlanTransitionMessageSelection, videoProposalFocusClipId, videoProposalProjectionSequence, type VideoEditProposalWire, type VideoPlanProposalWire, type VideoStepEditAction, type VideoTransitionKind, type VideoTransitionWire } from '../video-studio/video-studio-surface'
 import { useDesktopV3CacheSelector } from '../../state/desktop-v3-cache-store'
 
 export type VideoClip = {
@@ -1153,7 +1152,8 @@ export function VideoToolPage() {
   const [pendingProposal, setPendingProposal] = useState<VideoEditProposalWire | null>(null)
   const [pendingSelectedChangeIds, setPendingSelectedChangeIds] = useState<string[]>([])
   const [composerDraftRequest, setComposerDraftRequest] = useState<{ id: number; draft: string } | undefined>()
-  const [stepRequestBusyId, setStepRequestBusyId] = useState('')
+  const [studioArtifactSelectionRequest, setStudioArtifactSelectionRequest] = useState<ReturnType<typeof videoPlanPartMessageSelection> | null>(null)
+  const [studioComposerContext, setStudioComposerContext] = useState<{ revisionId: string; anchorClipId: string; playheadMs: number; selectionKind: 'visual' | 'transition'; transition: VideoTransitionWire | null } | null>(null)
   const [revealingStorage, setRevealingStorage] = useState(false)
   const [rendering, setRendering] = useState(false)
   const [renderJob, setRenderJob] = useState<VideoRenderJobSnapshotWire | null>(null)
@@ -1278,7 +1278,6 @@ export function VideoToolPage() {
   const playheadX = movieDuration > 0 ? Math.min(timelineTrackWidthPx, Math.max(0, (playhead / movieDuration) * timelineTrackWidthPx)) : 0
   const activeSegment = useMemo(() => activeTimelineSegment(timelineLayout, playhead), [playhead, timelineLayout])
   const acceptedPlan = useMemo(() => confirmedRevision ? acceptedVideoPlan(confirmedRevision.timeline) : null, [confirmedRevision])
-  const workingPlan = useMemo(() => currentRevision ? acceptedVideoPlan(currentRevision.timeline) : null, [currentRevision])
   const hasUnresolvedPlanFrames = timelineSegments.some((segment) => segment.sourceKind === 'text' || (segment.sourceKind === 'managed_artifact' && !segment.src))
   const selectedClip = selectedClips.find((clip) => clip.id === selectedClipId) ?? selectedClips[0] ?? null
 
@@ -1997,32 +1996,36 @@ export function VideoToolPage() {
     if (clipId) handleFocusStep(clipId, playheadMs)
   }, [handleFocusStep])
 
-  const handleRequestStepEdit = useCallback(async (action: 'visual' | 'transition' | 'source' | 'move_earlier' | 'move_later', segment: TimelineLayoutSegment) => {
-    if (!selectedThread || !videoProject || !currentRevision || stepRequestBusyId) return
-    setStepRequestBusyId(`${segment.id}:${action}`)
+  const handleRequestStepEdit = useCallback((action: VideoStepEditAction, segment: TimelineLayoutSegment) => {
+    if (!videoProject || !currentRevision) return
     setCreateError(null)
+    const acceptedPart = acceptedPlan?.parts.find((part) => part.id === segment.id || part.id === segment.clipId)
+    const acceptedTransition = keptRevision?.timeline.transitions?.find((transition) => transition.to_clip_id === segment.id || transition.to_clip_id === segment.clipId)
     try {
-      const acceptedPart = workingPlan?.parts.find((part) => part.id === segment.id || part.id === segment.clipId)
-      const prompt = videoStepEditRequest({ action, clipId: segment.id, playheadMs: segment.timelineStart * 1000, visual: acceptedPart?.visual })
-      await continueDesktopV3Conversation(createDesktopV3ExistingMessageOperation({
-        sessionId: selectedThread.id,
-        prompt,
-        artifactSelections: action === 'visual' && acceptedPart ? [videoPlanPartMessageSelection(acceptedPart)] : undefined,
-        metadata: {
-          creative_mode: 'video',
-          video_project_id: videoProject.id,
-          video_revision_id: playerRevision?.id ?? currentRevision.id,
-          video_anchor_clip_id: segment.id,
-          video_playhead_ms: Math.round(segment.timelineStart * 1000),
-        },
-      }))
+      if (action === 'visual' || action === 'transition') {
+        if (!acceptedPart) throw new Error('This step has no accepted visual to attach')
+        setStudioComposerContext({
+          revisionId: confirmedRevision?.id ?? currentRevision.id,
+          anchorClipId: segment.id,
+          playheadMs: Math.round(segment.timelineStart * 1000),
+          selectionKind: action,
+          transition: action === 'transition' ? acceptedTransition ?? null : null,
+        })
+        setStudioArtifactSelectionRequest(action === 'transition'
+          ? videoPlanTransitionMessageSelection(acceptedPart, acceptedTransition)
+          : videoPlanPartMessageSelection(acceptedPart))
+      } else {
+        setStudioComposerContext(null)
+        const draft = action === 'source' ? 'Change this source'
+          : action === 'move_earlier' ? 'Move this step earlier'
+            : 'Move this step later'
+        setComposerDraftRequest({ id: Date.now(), draft })
+      }
       handleFocusStep(segment.id, segment.timelineStart * 1000)
     } catch (error) {
       setCreateError(error instanceof Error ? error.message : String(error))
-    } finally {
-      setStepRequestBusyId('')
     }
-  }, [currentRevision, handleFocusStep, selectedThread, stepRequestBusyId, videoProject, workingPlan])
+  }, [acceptedPlan, confirmedRevision, currentRevision, handleFocusStep, keptRevision, videoProject])
 
   const handleTimelinePointer = useCallback((event: PointerEvent<HTMLDivElement>) => {
     if (movieDuration <= 0) {
@@ -2313,9 +2316,9 @@ export function VideoToolPage() {
                           return (
                             <div key={`${segment.id}-controls`} className={`flex min-w-[320px] max-w-[440px] flex-wrap items-center gap-2 border px-2 py-2 text-xs ${segment.visible ? 'border-[var(--app-border)] bg-[var(--app-surface)]' : 'border-dashed border-[var(--app-border)] bg-transparent opacity-60'}`}>
                               <button type="button" onClick={() => handleFocusStep(segment.id, segment.timelineStart * 1000)} className="min-w-[160px] flex-1 text-left"><span className="block truncate font-medium text-[var(--app-text)]">{segment.title || clip?.name || segment.clipId}</span><span className="block truncate font-mono text-[10px] text-[var(--app-text-muted)]">{pendingProposal ? 'Working change' : segment.visible ? 'Included' : 'Hidden'} · {segment.id} · {formatTimelineTime(segment.duration)}</span></button>
-                              <Button variant="outline" className="h-7 rounded-lg px-2 text-[10px]" onClick={() => void handleRequestStepEdit('visual', segment)} disabled={Boolean(stepRequestBusyId)}>Visual</Button>
-                              <Button variant="outline" className="h-7 rounded-lg px-2 text-[10px]" onClick={() => void handleRequestStepEdit('transition', segment)} disabled={Boolean(stepRequestBusyId)}>Transition</Button>
-                              <Button variant="outline" className="h-7 rounded-lg px-2 text-[10px]" onClick={() => void handleRequestStepEdit('source', segment)} disabled={Boolean(stepRequestBusyId)}>Source</Button>
+                              <Button variant="outline" className="h-7 rounded-lg px-2 text-[10px]" onClick={() => handleRequestStepEdit('visual', segment)}>Visual</Button>
+                              <Button variant="outline" className="h-7 rounded-lg px-2 text-[10px]" onClick={() => handleRequestStepEdit('transition', segment)}>Transition</Button>
+                              <Button variant="outline" className="h-7 rounded-lg px-2 text-[10px]" onClick={() => handleRequestStepEdit('source', segment)}>Source</Button>
                               <Button variant="outline" className="h-7 rounded-lg px-2 text-[10px]" onClick={() => void handleRequestStepEdit('move_earlier', segment)} disabled={index === 0}>AI ←</Button>
                               <Button variant="outline" className="h-7 rounded-lg px-2 text-[10px]" onClick={() => void handleRequestStepEdit('move_later', segment)} disabled={index === timelineSegments.length - 1}>AI →</Button>
                               <Button variant={segment.visible ? 'outline' : 'ghost'} className="h-7 rounded-lg px-2 text-xs" onClick={() => void handleToggleSegment(segment.clipId)} disabled={reordering || Boolean(pendingProposal)}>{segment.visible ? <Eye size={13} /> : <EyeOff size={13} />}</Button>
@@ -2384,7 +2387,7 @@ export function VideoToolPage() {
               </>
               )}
             </section>
-            {selectedThread ? <VideoSessionAISidecar key={selectedThread.id} sessionId={selectedThread.id} projectId={videoProject?.id} revisionId={currentRevision?.id} anchorClipId={activeSegment?.id} playheadMs={playhead * 1000} routeOptions={selectedSessionRoute ? [selectedSessionRoute] : []} draftRequest={composerDraftRequest} onActivity={() => { setAIRefreshKey((value) => value + 1); void refreshSelectedVideoProject().catch(() => undefined) }} /> : null}
+            {selectedThread ? <VideoSessionAISidecar key={selectedThread.id} sessionId={selectedThread.id} projectId={videoProject?.id} revisionId={studioComposerContext?.revisionId ?? currentRevision?.id} anchorClipId={studioComposerContext?.anchorClipId ?? activeSegment?.id} playheadMs={studioComposerContext?.playheadMs ?? playhead * 1000} selectionKind={studioComposerContext?.selectionKind} transition={studioComposerContext?.transition} routeOptions={selectedSessionRoute ? [selectedSessionRoute] : []} draftRequest={composerDraftRequest} artifactSelectionRequest={studioArtifactSelectionRequest} onArtifactSelectionRequestHandled={() => setStudioArtifactSelectionRequest(null)} onActivity={() => { setStudioComposerContext(null); setAIRefreshKey((value) => value + 1); void refreshSelectedVideoProject().catch(() => undefined) }} /> : null}
           </main>
       </div>
 

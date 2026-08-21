@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { VIDEO_TRANSITION_KINDS, loadLatestVideoEditProposals, proposedVideoPlanClipDetails, rejectVideoEditProposal, selectedVideoProposalChangeIDs, transitionLabel, videoProposalFocusClipId, videoProposalProjectionSequence, videoStepEditRequest, type VideoEditProposalWire } from '../video-studio/video-studio-surface'
+import { VIDEO_TRANSITION_KINDS, loadLatestVideoEditProposals, proposedVideoPlanClipDetails, rejectVideoEditProposal, selectedVideoProposalChangeIDs, transitionLabel, videoPlanPartMessageSelection, videoPlanTransitionMessageSelection, videoProposalFocusClipId, videoProposalProjectionSequence, type VideoEditProposalWire } from '../video-studio/video-studio-surface'
 
 import {
   acceptedVideoPlan,
@@ -212,7 +212,7 @@ test('Video Studio ignores a stale proposal reload that finishes after the realt
   assert.deepEqual(rendered.map((proposal) => proposal.id), ['pending-live'])
 })
 
-test('Video Studio creates stable visual revision requests and focuses the newest changed step', () => {
+test('Video Studio attaches the selected visual as message metadata', () => {
   const proposal = {
     id: 'proposal-1', project_id: 'project-1', base_revision_id: 'revision-1', base_revision_number: 1,
     status: 'pending' as const, created_at: 1, updated_at: 1,
@@ -222,9 +222,22 @@ test('Video Studio creates stable visual revision requests and focuses the newes
     ],
   }
   assert.equal(videoProposalFocusClipId(proposal), 'step-2')
-  const request = videoStepEditRequest({ action: 'visual', clipId: 'step-2', playheadMs: 12500 })
-  assert.match(request, /stable step "step-2" at 12500ms/)
-  assert.match(request, /plan\.kind=revision proposal/)
+  const part = {
+    id: 'step-2', title: 'Install and launch', duration_ms: 2500,
+    visual: { session_id: 'session-1', collection_id: 'collection-1', variant_id: 'variant-1', event_seq: 7 },
+  }
+  assert.deepEqual(videoPlanPartMessageSelection(part), {
+    session_id: 'session-1', collection_id: 'collection-1', variant_id: 'variant-1', event_seq: 7,
+    label: 'Install and launch', description: undefined, action: 'select',
+  })
+  assert.deepEqual(videoPlanTransitionMessageSelection(part, {
+    id: 'transition-1', kind: 'crossfade', from_clip_id: 'step-1', to_clip_id: 'step-2', duration_ms: 350,
+  }), {
+    session_id: 'session-1', collection_id: 'collection-1', variant_id: 'variant-1', event_seq: 7,
+    label: 'Transition · Install and launch',
+    description: 'Stable part step-2. Current transition: crossfade; 350ms; step-1 → step-2.',
+    action: 'select',
+  })
 })
 
 test('Video Creator classifies proposed opening and transition stills before acceptance', () => {

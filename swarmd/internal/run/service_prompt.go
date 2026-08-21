@@ -773,6 +773,11 @@ func videoStudioMessageContextForProvider(metadata map[string]any) string {
 	projectID := truncateUTF8Bytes(strings.TrimSpace(mapString(metadata, "video_project_id")), 256)
 	revisionID := truncateUTF8Bytes(strings.TrimSpace(mapString(metadata, "video_revision_id")), 256)
 	anchorClipID := truncateUTF8Bytes(strings.TrimSpace(mapString(metadata, "video_anchor_clip_id")), 256)
+	selectionKind := truncateUTF8Bytes(strings.TrimSpace(mapString(metadata, "video_selection_kind")), 64)
+	transitionID := truncateUTF8Bytes(strings.TrimSpace(mapString(metadata, "video_transition_id")), 256)
+	transitionKind := truncateUTF8Bytes(strings.TrimSpace(mapString(metadata, "video_transition_kind")), 64)
+	transitionFromClipID := truncateUTF8Bytes(strings.TrimSpace(mapString(metadata, "video_transition_from_clip_id")), 256)
+	transitionToClipID := truncateUTF8Bytes(strings.TrimSpace(mapString(metadata, "video_transition_to_clip_id")), 256)
 	playheadMs := int64(0)
 	switch raw := metadata["video_playhead_ms"].(type) {
 	case float64:
@@ -784,6 +789,18 @@ func videoStudioMessageContextForProvider(metadata map[string]any) string {
 	}
 	if playheadMs < 0 {
 		playheadMs = 0
+	}
+	transitionDurationMs := int64(0)
+	switch raw := metadata["video_transition_duration_ms"].(type) {
+	case float64:
+		transitionDurationMs = int64(raw)
+	case int:
+		transitionDurationMs = int64(raw)
+	case int64:
+		transitionDurationMs = raw
+	}
+	if transitionDurationMs < 0 {
+		transitionDurationMs = 0
 	}
 	lines := []string{"Video Studio selection (UI context only; verify durable state with manage_video before proposing edits):"}
 	if projectID != "" {
@@ -797,6 +814,18 @@ func videoStudioMessageContextForProvider(metadata map[string]any) string {
 	}
 	if _, present := metadata["video_playhead_ms"]; present {
 		lines = append(lines, fmt.Sprintf("- selected_playhead_ms=%d", playheadMs))
+	}
+	if selectionKind != "" {
+		lines = append(lines, "- selected_context_kind="+selectionKind)
+	}
+	if transitionID != "" || transitionKind != "" || transitionFromClipID != "" || transitionToClipID != "" {
+		lines = append(lines, "- selected_transition_id="+transitionID)
+		lines = append(lines, "- selected_transition_kind="+transitionKind)
+		lines = append(lines, "- selected_transition_from_step="+transitionFromClipID)
+		lines = append(lines, "- selected_transition_to_step="+transitionToClipID)
+		if _, present := metadata["video_transition_duration_ms"]; present {
+			lines = append(lines, fmt.Sprintf("- selected_transition_duration_ms=%d", transitionDurationMs))
+		}
 	}
 	lines = append(lines, "Video plans are visual review objects, never prose-only storyboards or detached HTML/Markdown deliverables. Verify the durable project with manage_video and ensure it has an empty base revision when needed. In the same run, design and publish one actual ready 16:9 image slide for every planned part, then call manage_video create_edit_proposal exactly once with plan.kind=initial and every ordered stable-id part carrying duration_ms, narration, on-screen text, visual direction, transition guidance, and the complete exact ready visual reference. Do not claim the plan is complete until every part has a ready visual and the durable proposal succeeds. The user reviews the real visuals inline and accepts the initial plan as one object. Acceptance places those visuals directly into the canonical player timeline. For feedback targeting an accepted part or stable step, inspect the accepted plan and exact current visual, create only the requested replacement visual while preserving the stable part id, then submit plan.kind=revision with the changed parts only. The user can select which proposed replacement parts to accept; unselected accepted parts remain unchanged. Never accept on the user's behalf. When source video is available, browse or inspect its opaque references, transcribe/index it when useful, and use later typed source_video operations against the exact accepted revision. Preserve supplied stable step anchors and selected playhead context. Do not mutate source media or start a final render.")
 	return strings.Join(lines, "\n")

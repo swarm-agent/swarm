@@ -101,7 +101,19 @@ export function videoPlanPartMessageSelection(part: VideoPlanPartWire): DesktopV
     event_seq: part.visual.event_seq,
     label: part.visual.label || part.title,
     description: part.visual.description || part.visual_direction || undefined,
-    action: 'use',
+    action: 'select',
+  }
+}
+
+export function videoPlanTransitionMessageSelection(part: VideoPlanPartWire, transition?: VideoTransitionWire): DesktopV3ArtifactMessageSelection {
+  const selection = videoPlanPartMessageSelection(part)
+  const transitionSummary = transition
+    ? `${transition.kind}; ${typeof transition.duration_ms === 'number' ? `${Math.max(0, Math.round(transition.duration_ms))}ms` : 'default duration'}; ${transition.from_clip_id} → ${transition.to_clip_id}`
+    : `none into ${part.id}`
+  return {
+    ...selection,
+    label: `Transition · ${part.title}`,
+    description: `Stable part ${part.id}. Current transition: ${transitionSummary}.`,
   }
 }
 
@@ -205,21 +217,7 @@ export function videoProposalFocusClipId(proposal: VideoEditProposalWire): strin
   return ''
 }
 
-export function videoStepEditRequest(input: {
-  action: 'visual' | 'transition' | 'source' | 'move_earlier' | 'move_later'
-  clipId: string
-  playheadMs: number
-  visual?: VideoPlanVisualWire
-}): string {
-  const target = `stable step ${JSON.stringify(input.clipId)} at ${Math.max(0, Math.round(input.playheadMs))}ms`
-  switch (input.action) {
-    case 'visual': return `At ${target}, replace the actual visual for this accepted video-plan part. Inspect the attached current visual, preserve the stable part id, create one new ready visual, and return a plan.kind=revision proposal containing this part only. Do not accept or render it.`
-    case 'transition': return `At ${target}, add or revise the transition into this step. Keep the step anchor stable and return a new pending edit proposal without accepting or rendering it.`
-    case 'source': return `At ${target}, change the source used by this step. Keep the step anchor stable and return a new pending edit proposal without accepting or rendering it.`
-    case 'move_earlier': return `Move ${target} one addressable step earlier. Preserve its stable anchor and return a new pending edit proposal without accepting or rendering it.`
-    case 'move_later': return `Move ${target} one addressable step later. Preserve its stable anchor and return a new pending edit proposal without accepting or rendering it.`
-  }
-}
+export type VideoStepEditAction = 'visual' | 'transition' | 'source' | 'move_earlier' | 'move_later'
 
 export function proposedVideoPlanClipDetails(clip: Record<string, unknown>): {
   timing: string
@@ -449,8 +447,12 @@ export function VideoSessionAISidecar(props: {
   revisionId?: string
   anchorClipId?: string
   playheadMs?: number
+  selectionKind?: 'visual' | 'transition'
+  transition?: VideoTransitionWire | null
   routeOptions?: DesktopChatRoute[]
   draftRequest?: { id: number; draft: string }
+  artifactSelectionRequest?: DesktopV3ArtifactMessageSelection | null
+  onArtifactSelectionRequestHandled?: () => void
   onActivity?: () => void
 }) {
   const [hydrateError, setHydrateError] = useState(false)
@@ -498,9 +500,17 @@ export function VideoSessionAISidecar(props: {
           ...(props.revisionId ? { video_revision_id: props.revisionId } : {}),
           ...(props.anchorClipId ? { video_anchor_clip_id: props.anchorClipId } : {}),
           ...(typeof props.playheadMs === 'number' ? { video_playhead_ms: Math.max(0, Math.round(props.playheadMs)) } : {}),
+          ...(props.selectionKind ? { video_selection_kind: props.selectionKind } : {}),
+          ...(props.transition?.id ? { video_transition_id: props.transition.id } : {}),
+          ...(props.transition?.kind ? { video_transition_kind: props.transition.kind } : {}),
+          ...(props.transition?.from_clip_id ? { video_transition_from_clip_id: props.transition.from_clip_id } : {}),
+          ...(props.transition?.to_clip_id ? { video_transition_to_clip_id: props.transition.to_clip_id } : {}),
+          ...(typeof props.transition?.duration_ms === 'number' ? { video_transition_duration_ms: Math.max(0, Math.round(props.transition.duration_ms)) } : {}),
         }}
         presentation="sidebar"
         composerDraftRequest={props.draftRequest}
+        artifactSelectionRequest={props.artifactSelectionRequest}
+        onArtifactSelectionRequestHandled={props.onArtifactSelectionRequestHandled}
         onMessageSent={props.onActivity}
       />
     </aside>
