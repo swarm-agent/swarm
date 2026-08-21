@@ -3157,6 +3157,9 @@ func (s *Service) buildTaskLaunchPermissionPayload(sessionID, sessionMode string
 		}
 		parsed.Launches[i].TargetWorkspacePath = targetWorkspacePath
 		launch.TargetWorkspacePath = targetWorkspacePath
+		if parsed.Program != nil && i < len(parsed.Program.Jobs) {
+			parsed.Program.Jobs[i].TargetWorkspacePath = targetWorkspacePath
+		}
 		requested := strings.TrimSpace(launch.RequestedSubagentType)
 		if requested == "" {
 			return taskLaunchManifest{}, fmt.Errorf("task launches[%d] requires subagent_type, agent, or purpose", i)

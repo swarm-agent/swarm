@@ -227,18 +227,6 @@ func (p *taskProgramScheduler) runCohort(indexes []int) error {
 		executionLaunches[index] = launch
 	}
 
-	running := make([]pebblestore.TaskProgramJobTransition, 0, len(indexes))
-	for _, index := range indexes {
-		job := p.record.Jobs[index]
-		running = append(running, pebblestore.TaskProgramJobTransition{JobID: job.JobID, ExpectedState: pebblestore.TaskProgramJobDeclared, State: pebblestore.TaskProgramJobRunning, AttemptNumber: job.AttemptNumber + 1})
-	}
-	state, next := pebblestore.TaskProgramStateRunning, "await_running_jobs"
-	var err error
-	p.record, _, err = p.service.sessions.TransitionTaskProgram(p.parentSession.ID, p.record.ProgramID, pebblestore.TaskProgramTransition{ExpectedRevision: p.record.Revision, MutationID: fmt.Sprintf("running:%d", p.record.Revision), State: &state, NextAction: &next, Jobs: running})
-	if err != nil {
-		return err
-	}
-	p.emitProgramProgress("cohort.running", fmt.Sprintf("Stage %s is running", p.record.ActiveStageID))
 	cohort := p.parsed
 	// Each cohort uses the ordinary launch executor after this new program's
 	// scheduler selects its dependency-ready declared jobs.
@@ -255,9 +243,26 @@ func (p *taskProgramScheduler) runCohort(indexes []int) error {
 		var err error
 		approved, err = taskProgramApprovedCohort(p.req.ApprovedArguments, p.parsed.Launches, cohort.Launches)
 		if err != nil {
-			return err
+			return p.failUnlaunchedCohort(indexes, err)
 		}
 	}
+
+	// Do not advertise durable running work until the exact cohort has passed
+	// launch authorization. A manifest validation failure happens before any
+	// child lineage exists, so persisting running first creates an unrecoverable
+	// zombie program with no child session to recall or integrate.
+	running := make([]pebblestore.TaskProgramJobTransition, 0, len(indexes))
+	for _, index := range indexes {
+		job := p.record.Jobs[index]
+		running = append(running, pebblestore.TaskProgramJobTransition{JobID: job.JobID, ExpectedState: pebblestore.TaskProgramJobDeclared, State: pebblestore.TaskProgramJobRunning, AttemptNumber: job.AttemptNumber + 1})
+	}
+	state, next := pebblestore.TaskProgramStateRunning, "await_running_jobs"
+	var err error
+	p.record, _, err = p.service.sessions.TransitionTaskProgram(p.parentSession.ID, p.record.ProgramID, pebblestore.TaskProgramTransition{ExpectedRevision: p.record.Revision, MutationID: fmt.Sprintf("running:%d", p.record.Revision), State: &state, NextAction: &next, Jobs: running})
+	if err != nil {
+		return err
+	}
+	p.emitProgramProgress("cohort.running", fmt.Sprintf("Stage %s is running", p.record.ActiveStageID))
 	cohortCall := p.call
 	// Cohorts are an internal capacity detail. Every child update retains the
 	// durable parent task call identity so clients never render separate cards.
@@ -377,6 +382,45 @@ func (p *taskProgramScheduler) runCohort(indexes []int) error {
 	}
 	p.emitProgramProgress("cohort.completed", fmt.Sprintf("Stage %s cohort completed", p.record.ActiveStageID))
 	return runErr
+}
+
+func (p *taskProgramScheduler) failUnlaunchedCohort(indexes []int, launchErr error) error {
+	updates := make([]pebblestore.TaskProgramJobTransition, 0, len(indexes))
+	blockerCode := taskProgramErrorCode(launchErr)
+	_, next := taskProgramBlockerActions(blockerCode)
+	failedJobID := ""
+	for _, index := range indexes {
+		if index < 0 || index >= len(p.record.Jobs) {
+			continue
+		}
+		job := p.record.Jobs[index]
+		if failedJobID == "" {
+			failedJobID = job.JobID
+		}
+		updates = append(updates, pebblestore.TaskProgramJobTransition{
+			JobID: job.JobID, ExpectedState: pebblestore.TaskProgramJobDeclared,
+			State: pebblestore.TaskProgramJobFailed, AttemptNumber: job.AttemptNumber + 1,
+			IntegrationState: "launch_rejected",
+			Blocker: &pebblestore.TaskProgramBlocker{
+				Code: blockerCode, Message: launchErr.Error(), NextAction: next,
+			},
+		})
+	}
+	state := pebblestore.TaskProgramStateFailed
+	blocker := p.structuredBlocker(blockerCode, launchErr, next, failedJobID)
+	record, _, err := p.service.sessions.TransitionTaskProgram(p.parentSession.ID, p.record.ProgramID, pebblestore.TaskProgramTransition{
+		ExpectedRevision: p.record.Revision,
+		MutationID:       fmt.Sprintf("launch-rejected:%d", p.record.Revision),
+		State:            &state,
+		NextAction:       &next,
+		Blocker:          &blocker,
+		Jobs:             updates,
+	})
+	if err != nil {
+		return err
+	}
+	p.record = record
+	return launchErr
 }
 
 func (p *taskProgramScheduler) finderHandoffsForJob(jobIndex int) (string, error) {
