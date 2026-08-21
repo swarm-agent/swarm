@@ -1947,14 +1947,14 @@ export function VideoToolPage() {
           </div>
         </div>
       </div>
-      <div className="mx-auto hidden h-full w-full max-w-none flex-col px-4 py-4 sm:px-5 sm:py-5 lg:flex">
+      <div className="hidden h-full w-full flex-col lg:flex">
         {createError ? (
           <div className="mb-4 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] px-4 py-3 text-sm text-[var(--app-text)]">
             {createError}
           </div>
         ) : null}
 
-        <main className="flex min-h-0 flex-1 overflow-hidden py-5">
+        <main className="flex min-h-0 flex-1 overflow-hidden">
             <SwarmToolSidebar
               backLabel={routeWorkspaceSlug ? 'Workspace' : 'Launcher'}
               onBack={handleBackToWorkspace}
