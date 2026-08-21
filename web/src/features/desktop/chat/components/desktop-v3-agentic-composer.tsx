@@ -153,6 +153,8 @@ export interface DesktopV3AgenticComposerProps {
   error?: string | null
   initialArtifactSelections?: readonly DesktopV3ArtifactMessageSelection[]
   artifactSelectionRequest?: DesktopV3ArtifactMessageSelection | readonly DesktopV3ArtifactMessageSelection[] | null
+  contextChip?: { id: string; label: string; kind: string; description?: string } | null
+  onContextChipRemove?: () => void
   onArtifactSelectionRequestHandled?: () => void
   onSubmit: (draft: string, attachments: DesktopV3MediaReference[], artifactSelections: DesktopV3ArtifactMessageSelection[], videoAttachments: DesktopVideoSourceAttachment[]) => void | Promise<void>
   onRoutedSubmit?: (snapshot: DesktopV3RoutedComposerSnapshot) => Promise<DesktopV3RoutedNewSessionState>
@@ -256,6 +258,8 @@ export function DesktopV3AgenticComposer({
   error,
   initialArtifactSelections = [],
   artifactSelectionRequest = null,
+  contextChip = null,
+  onContextChipRemove,
   onArtifactSelectionRequestHandled,
   onSubmit,
   onRoutedSubmit,
@@ -1370,7 +1374,7 @@ export function DesktopV3AgenticComposer({
               />
             </div>
           </div>
-          {attachments.length > 0 || videoAttachments.length > 0 || artifactSelections.length > 0 || routedStagedAttachments.length > 0 || textAttachments.length > 0 || selectedWorkspaceSkill ? (
+          {attachments.length > 0 || videoAttachments.length > 0 || artifactSelections.length > 0 || routedStagedAttachments.length > 0 || textAttachments.length > 0 || selectedWorkspaceSkill || contextChip ? (
             <div className="flex flex-wrap gap-2 border-t border-[var(--app-border)] px-4 py-2" data-testid="desktop-media-attachments">
               {selectedWorkspaceSkill ? (
                 <span className="inline-flex max-w-full items-center gap-2 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-2 py-1 text-xs text-[var(--app-text)]" data-testid="desktop-composer-selected-skill">
@@ -1378,6 +1382,14 @@ export function DesktopV3AgenticComposer({
                   <span className="max-w-48 truncate font-medium" title={selectedWorkspaceSkill.description || selectedWorkspaceSkill.name}>{selectedWorkspaceSkill.name}</span>
                   <span className="rounded bg-[var(--app-bg-alt)] px-1.5 py-0.5 font-mono text-[10px] uppercase text-[var(--app-text-muted)]">Skill</span>
                   <button type="button" aria-label={`Remove ${selectedWorkspaceSkill.name} skill`} onClick={() => setSelectedWorkspaceSkill(null)}><X size={13} /></button>
+                </span>
+              ) : null}
+              {contextChip ? (
+                <span className="inline-flex max-w-full items-center gap-2 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-2 py-1 text-xs text-[var(--app-text)]" data-testid="desktop-composer-context-chip">
+                  <Video size={13} className="shrink-0 text-[var(--app-primary)]" aria-hidden="true" />
+                  <span className="max-w-48 truncate font-medium" title={contextChip.description || contextChip.label}>{contextChip.label}</span>
+                  <span className="rounded bg-[var(--app-bg-alt)] px-1.5 py-0.5 font-mono text-[10px] uppercase text-[var(--app-text-muted)]">{contextChip.kind}</span>
+                  <button type="button" aria-label={`Remove ${contextChip.label} context`} onClick={onContextChipRemove}><X size={13} /></button>
                 </span>
               ) : null}
               {artifactSelections.map((selection) => (

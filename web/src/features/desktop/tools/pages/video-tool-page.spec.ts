@@ -24,6 +24,7 @@ import {
   videoStudioSessionMetadata,
   type VideoClip,
   type VideoProjectTimelineWire,
+  type VideoTimelineClipWire,
 } from './video-tool-page'
 import type { WorkspaceEntry } from '../../../workspaces/launcher/types/workspace'
 import type { WorkspaceOverviewSwarmTarget, WorkspaceOverviewTopologyRoute } from '../../../workspaces/launcher/types/workspace-overview'
@@ -96,6 +97,17 @@ test('Video Studio disposes cached video media when a stable clip source changes
   assert.equal(replacement.replaced, true)
   assert.equal(replacement.entry.element, second)
   assert.deepEqual(calls, ['pause', 'remove:src', 'load'])
+})
+
+test('Video Studio preserves a timeline clip exact artifact reference for composer attachment fallback', () => {
+  const artifactRef: NonNullable<VideoTimelineClipWire['artifact_ref']> = {
+    session_id: 'session-1', collection_id: 'slides', variant_id: 'slide-1', event_seq: 9, media_type: 'image/png',
+  }
+  const [segment] = projectTimelineToTimelineSegments({ clips: [{
+    id: 'part-1', source_kind: 'managed_artifact', artifact_ref: artifactRef, duration_ms: 2500,
+  }] }, {}, [], 'session-1')
+
+  assert.deepEqual(segment.artifactRef, artifactRef)
 })
 
 test('Video Studio reads an accepted visual plan from canonical revision metadata', () => {

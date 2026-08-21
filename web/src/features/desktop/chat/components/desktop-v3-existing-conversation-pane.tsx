@@ -1539,6 +1539,8 @@ export interface DesktopV3ExistingConversationPaneProps {
   onOpenActionSettings?: () => void;
   planSidebarBelowActions?: ReactNode;
   artifactSelectionRequest?: DesktopV3ArtifactMessageSelection | null;
+  contextChip?: { id: string; label: string; kind: string; description?: string } | null;
+  onContextChipRemove?: () => void;
   onArtifactSelectionRequestHandled?: () => void;
   /** Reuse the canonical conversation as a constrained embedded surface. */
   presentation?: "page" | "sidebar";
@@ -1644,6 +1646,8 @@ export function DesktopV3ExistingConversationPane({
   onOpenActionSettings,
   planSidebarBelowActions,
   artifactSelectionRequest = null,
+  contextChip = null,
+  onContextChipRemove,
   onArtifactSelectionRequestHandled,
   presentation = "page",
   onMessageSent,
@@ -3317,6 +3321,8 @@ export function DesktopV3ExistingConversationPane({
             canStop={Boolean(currentRun)}
             error={sendError}
             artifactSelectionRequest={galleryArtifactSelectionRequest}
+            contextChip={contextChip}
+            onContextChipRemove={onContextChipRemove}
             onArtifactSelectionRequestHandled={handleGalleryArtifactSelectionRequest}
             mediaCapability={mediaCapability}
             onUploadAttachment={async (file, signal) => {

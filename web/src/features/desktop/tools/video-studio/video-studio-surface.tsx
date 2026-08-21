@@ -452,6 +452,8 @@ export function VideoSessionAISidecar(props: {
   routeOptions?: DesktopChatRoute[]
   draftRequest?: { id: number; draft: string }
   artifactSelectionRequest?: DesktopV3ArtifactMessageSelection | null
+  contextChip?: { id: string; label: string; kind: string; description?: string } | null
+  onContextChipRemove?: () => void
   onArtifactSelectionRequestHandled?: () => void
   onActivity?: () => void
 }) {
@@ -510,6 +512,8 @@ export function VideoSessionAISidecar(props: {
         presentation="sidebar"
         composerDraftRequest={props.draftRequest}
         artifactSelectionRequest={props.artifactSelectionRequest}
+        contextChip={props.contextChip}
+        onContextChipRemove={props.onContextChipRemove}
         onArtifactSelectionRequestHandled={props.onArtifactSelectionRequestHandled}
         onMessageSent={props.onActivity}
       />

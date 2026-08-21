@@ -5,7 +5,7 @@ import { ArrowLeft, Download, Eye, EyeOff, Film, FolderOpen, ListVideo, Loader2,
 import { Button } from '../../../../components/ui/button'
 import { Dialog, DialogBackdrop, DialogPanel } from '../../../../components/ui/dialog'
 import { ModalCloseButton } from '../../../../components/ui/modal-close-button'
-import { requestJson } from '../../../../app/api'
+import { ensureDesktopSession, requestJson } from '../../../../app/api'
 import { createSession, fetchDraftModelPreference } from '../../chat/queries/chat-queries'
 import { uiSettingsQueryOptions, workspaceOverviewQueryOptions } from '../../../queries/query-options'
 import { normalizeGlobalThemeSettings } from '../../settings/swarm/types/swarm-settings'
@@ -263,6 +263,7 @@ export type TimelineSegment = {
   type: 'video' | 'image' | 'frame'
   clipId: string
   src: string
+  artifactRef?: VideoTimelineClipWire['artifact_ref']
   sourceKind?: string
   title?: string
   onScreenText?: string
@@ -911,6 +912,7 @@ export function projectTimelineToTimelineSegments(
       type: videoSource || artifactVideo ? 'video' : artifactSource ? 'image' : 'frame',
       clipId,
       src: videoSource ? (sourceClip && threadId ? clipMediaUrl(threadId, clipId) : threadId && sourceRef ? `/v3/sessions/${encodeURIComponent(threadId)}/video/sources/media?source_ref=${encodeURIComponent(sourceRef)}` : `/v1/workspace/video/threads/media?clip_id=${encodeURIComponent(clipId)}`) : artifactSource ? `/v3/sessions/${encodeURIComponent(artifactSessionId)}/artifacts/${encodeURIComponent(artifactId)}` : '',
+      artifactRef: artifactRef ? { ...artifactRef, session_id: artifactSessionId || undefined, media_type: artifactMediaType || undefined } : undefined,
       sourceKind: clipWire.source_kind,
       title: details.title,
       onScreenText: details.onScreenText,
@@ -1153,7 +1155,7 @@ export function VideoToolPage() {
   const [pendingSelectedChangeIds, setPendingSelectedChangeIds] = useState<string[]>([])
   const [composerDraftRequest, setComposerDraftRequest] = useState<{ id: number; draft: string } | undefined>()
   const [studioArtifactSelectionRequest, setStudioArtifactSelectionRequest] = useState<ReturnType<typeof videoPlanPartMessageSelection> | null>(null)
-  const [studioComposerContext, setStudioComposerContext] = useState<{ revisionId: string; anchorClipId: string; playheadMs: number; selectionKind: 'visual' | 'transition'; transition: VideoTransitionWire | null } | null>(null)
+  const [studioComposerContext, setStudioComposerContext] = useState<{ revisionId: string; anchorClipId: string; label: string; playheadMs: number; selectionKind: 'visual' | 'transition'; transition: VideoTransitionWire | null } | null>(null)
   const [revealingStorage, setRevealingStorage] = useState(false)
   const [rendering, setRendering] = useState(false)
   const [renderJob, setRenderJob] = useState<VideoRenderJobSnapshotWire | null>(null)
@@ -1473,8 +1475,20 @@ export function VideoToolPage() {
         if (!Number.isFinite(duration) || duration <= 0) return
         setClipDurations((current) => Math.abs((current[clipId] ?? 0) - duration) < 0.001 ? current : { ...current, [clipId]: duration })
       }
+      let authRetryPending = false
+      let authRetryAttempted = false
+      const retryAfterAuth = () => {
+        if (authRetryPending || authRetryAttempted) return
+        authRetryPending = true
+        authRetryAttempted = true
+        void ensureDesktopSession(true).then(() => {
+          video.src = src
+          video.load()
+        }).catch(() => undefined).finally(() => { authRetryPending = false })
+      }
       video.addEventListener('loadedmetadata', updateDuration)
       video.addEventListener('durationchange', updateDuration)
+      video.addEventListener('error', retryAfterAuth)
       video.load()
     }
   }, [timelineSegments])
@@ -1487,6 +1501,14 @@ export function VideoToolPage() {
       const { entry, replaced } = replaceCachedImageMedia(cache, clipId, src, () => new Image())
       if (!replaced && entry.element.src) continue
       entry.element.decoding = 'async'
+      let authRetryPending = false
+      let authRetryAttempted = false
+      entry.element.addEventListener('error', () => {
+        if (authRetryPending || authRetryAttempted) return
+        authRetryPending = true
+        authRetryAttempted = true
+        void ensureDesktopSession(true).then(() => { entry.element.src = src }).catch(() => undefined).finally(() => { authRetryPending = false })
+      })
       entry.element.src = src
     }
   }, [timelineSegments])
@@ -2001,19 +2023,35 @@ export function VideoToolPage() {
     setCreateError(null)
     const acceptedPart = acceptedPlan?.parts.find((part) => part.id === segment.id || part.id === segment.clipId)
     const acceptedTransition = keptRevision?.timeline.transitions?.find((transition) => transition.to_clip_id === segment.id || transition.to_clip_id === segment.clipId)
+    const visualPart = acceptedPart ?? (segment.artifactRef?.collection_id && segment.artifactRef.variant_id && segment.artifactRef.event_seq
+      ? {
+          id: segment.id,
+          title: segment.title || segment.id,
+          duration_ms: Math.round(segment.duration * 1000),
+          visual_media_type: segment.artifactRef.media_type,
+          visual: {
+            session_id: segment.artifactRef.session_id || selectedThread?.id || '',
+            collection_id: segment.artifactRef.collection_id,
+            variant_id: segment.artifactRef.variant_id,
+            event_seq: segment.artifactRef.event_seq,
+          },
+        }
+      : null)
     try {
       if (action === 'visual' || action === 'transition') {
-        if (!acceptedPart) throw new Error('This step has no accepted visual to attach')
         setStudioComposerContext({
           revisionId: confirmedRevision?.id ?? currentRevision.id,
           anchorClipId: segment.id,
+          label: segment.title || segment.id,
           playheadMs: Math.round(segment.timelineStart * 1000),
           selectionKind: action,
           transition: action === 'transition' ? acceptedTransition ?? null : null,
         })
-        setStudioArtifactSelectionRequest(action === 'transition'
-          ? videoPlanTransitionMessageSelection(acceptedPart, acceptedTransition)
-          : videoPlanPartMessageSelection(acceptedPart))
+        setStudioArtifactSelectionRequest(visualPart
+          ? action === 'transition'
+            ? videoPlanTransitionMessageSelection(visualPart, acceptedTransition)
+            : videoPlanPartMessageSelection(visualPart)
+          : null)
       } else {
         setStudioComposerContext(null)
         const draft = action === 'source' ? 'Change this source'
@@ -2025,7 +2063,7 @@ export function VideoToolPage() {
     } catch (error) {
       setCreateError(error instanceof Error ? error.message : String(error))
     }
-  }, [acceptedPlan, confirmedRevision, currentRevision, handleFocusStep, keptRevision, videoProject])
+  }, [acceptedPlan, confirmedRevision, currentRevision, handleFocusStep, keptRevision, selectedThread?.id, videoProject])
 
   const handleTimelinePointer = useCallback((event: PointerEvent<HTMLDivElement>) => {
     if (movieDuration <= 0) {
@@ -2387,7 +2425,7 @@ export function VideoToolPage() {
               </>
               )}
             </section>
-            {selectedThread ? <VideoSessionAISidecar key={selectedThread.id} sessionId={selectedThread.id} projectId={videoProject?.id} revisionId={studioComposerContext?.revisionId ?? currentRevision?.id} anchorClipId={studioComposerContext?.anchorClipId ?? activeSegment?.id} playheadMs={studioComposerContext?.playheadMs ?? playhead * 1000} selectionKind={studioComposerContext?.selectionKind} transition={studioComposerContext?.transition} routeOptions={selectedSessionRoute ? [selectedSessionRoute] : []} draftRequest={composerDraftRequest} artifactSelectionRequest={studioArtifactSelectionRequest} onArtifactSelectionRequestHandled={() => setStudioArtifactSelectionRequest(null)} onActivity={() => { setStudioComposerContext(null); setAIRefreshKey((value) => value + 1); void refreshSelectedVideoProject().catch(() => undefined) }} /> : null}
+            {selectedThread ? <VideoSessionAISidecar key={selectedThread.id} sessionId={selectedThread.id} projectId={videoProject?.id} revisionId={studioComposerContext?.revisionId ?? currentRevision?.id} anchorClipId={studioComposerContext?.anchorClipId ?? activeSegment?.id} playheadMs={studioComposerContext?.playheadMs ?? playhead * 1000} selectionKind={studioComposerContext?.selectionKind} transition={studioComposerContext?.transition} routeOptions={selectedSessionRoute ? [selectedSessionRoute] : []} draftRequest={composerDraftRequest} artifactSelectionRequest={studioArtifactSelectionRequest} contextChip={studioComposerContext ? { id: `${studioComposerContext.selectionKind}:${studioComposerContext.revisionId}:${studioComposerContext.anchorClipId}:${studioComposerContext.transition?.id ?? ''}`, label: studioComposerContext.selectionKind === 'transition' ? `Transition · ${studioComposerContext.label}` : studioComposerContext.label, kind: studioComposerContext.selectionKind, description: studioComposerContext.transition ? `${studioComposerContext.transition.kind}; ${studioComposerContext.transition.duration_ms ?? 0}ms` : `Stable part ${studioComposerContext.anchorClipId}` } : null} onContextChipRemove={() => setStudioComposerContext(null)} onArtifactSelectionRequestHandled={() => setStudioArtifactSelectionRequest(null)} onActivity={() => { setStudioComposerContext(null); setAIRefreshKey((value) => value + 1); void refreshSelectedVideoProject().catch(() => undefined) }} /> : null}
           </main>
       </div>
 
