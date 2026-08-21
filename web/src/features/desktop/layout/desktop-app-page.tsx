@@ -76,7 +76,7 @@ import { desktopV3CacheReducer } from '../state/desktop-v3-cache-reducer'
 import { requireDesktopV3RealtimeControllerReady } from '../realtime/v3-realtime-controller'
 import { bootstrapDesktopV3SidebarMetadataOnly } from '../state/desktop-v3-bootstrap-controller'
 import { normalizeDesktopV3RoutedSessionStartResponse, postDesktopV3BackgroundRouterSessionStart, type DesktopV3RoutedSessionStartResponse } from '../session-v3/write-api'
-import { isDesktopV3NavigationHiddenRecord, isDesktopV3VideoStudioRecord } from '../state/desktop-v3-session-visibility'
+import { isDesktopV3NavigationHiddenRecord, isDesktopV3VideoStudioMetadata, isDesktopV3VideoStudioRecord } from '../state/desktop-v3-session-visibility'
 import { clearNotifications, updateNotification } from '../notifications/api'
 import { DesktopNotificationsModal } from '../notifications/components/desktop-notifications-modal'
 import { DESKTOP_V3_RUN_TIMER_TOOLTIP } from '../chat/components/desktop-v3-run-status'
@@ -1601,7 +1601,7 @@ function sessionSidebarRowType(session: DesktopSessionRecord): 'plan_session' | 
 }
 
 type SidebarBaseSessionGroupID = 'needs_review' | 'in_progress' | 'active_chats' | 'archived'
-type SidebarSessionGroupID = SidebarBaseSessionGroupID | 'pinned'
+type SidebarSessionGroupID = SidebarBaseSessionGroupID | 'pinned' | 'video'
 
 function sessionSidebarGroup(session: DesktopSessionRecord): SidebarBaseSessionGroupID {
   const group = metadataText(session, 'swarm_v3_sidebar_group')
@@ -1993,6 +1993,7 @@ interface SessionRowProps {
   childLabel?: string | null
   childAssignmentLabel?: string | null
   childKind?: SidebarSessionNode['kind']
+  selectionEligible?: boolean
   agentSummary: SessionAgentSummary
   agentsExpanded: boolean
   compactingStartedAt?: number | null
@@ -2010,7 +2011,7 @@ interface SessionRowProps {
   onRename: (sessionId: string, title: string) => Promise<void>
 }
 
-const SessionRow = memo(function SessionRow({ active, now, session: initialSession, workspaceSlug, depth = 0, childAssignmentLabel = null, agentSummary, agentsExpanded, compactingStartedAt = null, pendingAction = null, selectionMode = false, selectionGroup, selected = false, onSelect, onEnterSelectionMode, onToggleSelected, onPrefetch, onToggleAgents, onTogglePinned, onArchive, onRename }: SessionRowProps) {
+const SessionRow = memo(function SessionRow({ active, now, session: initialSession, workspaceSlug, depth = 0, childLabel = null, childAssignmentLabel = null, childKind = 'root', selectionEligible: selectionEligibleOverride, agentSummary, agentsExpanded, compactingStartedAt = null, pendingAction = null, selectionMode = false, selectionGroup, selected = false, onSelect, onEnterSelectionMode, onToggleSelected, onPrefetch, onToggleAgents, onTogglePinned, onArchive, onRename }: SessionRowProps) {
   const session = initialSession
   const compactingActive = typeof compactingStartedAt === 'number' && compactingStartedAt > 0
   const activeSession = compactingActive || sessionIsActive(session)
@@ -2023,7 +2024,11 @@ const SessionRow = memo(function SessionRow({ active, now, session: initialSessi
   const compactingTimer = compactingActive && compactingStartedAt !== null ? formatDurationCompact(now - compactingStartedAt) : ''
   const tooltip = [sessionStatusTooltip(session), sessionTimerTooltip(session)].filter(Boolean).join('\n')
   const isNestedSession = depth > 0
+  const selectionEligible = selectionEligibleOverride ?? depth === 0
   const nestedAssignmentTitle = isNestedSession && childAssignmentLabel ? childAssignmentLabel : ''
+  const childIdentityLabel = isNestedSession
+    ? (childLabel === '' ? '' : childLabel || (childKind === 'subagent' ? '@subagent' : 'child'))
+    : ''
   const rowTitle = nestedAssignmentTitle || session.title || 'New conversation'
   const hasAgentChildren = agentSummary.total > 0
   const workspaceLabel = sessionWorkspaceLabel(session)
@@ -2155,7 +2160,7 @@ const SessionRow = memo(function SessionRow({ active, now, session: initialSessi
       {pendingAction === 'archive' ? <LoaderCircle size={12} className="animate-spin" aria-hidden="true" /> : <Archive size={12} aria-hidden="true" />}
     </button>
   )
-  const selectActionControl = depth === 0 && selectionGroup && onEnterSelectionMode ? (
+  const selectActionControl = selectionEligible && selectionGroup && onEnterSelectionMode ? (
     <button
       type="button"
       className={actionButtonBaseClass}
@@ -2251,7 +2256,7 @@ const SessionRow = memo(function SessionRow({ active, now, session: initialSessi
       params={{ workspaceSlug: rowWorkspaceSlug, sessionId: session.id }}
       onClick={(event) => {
         if (event.defaultPrevented || event.button !== 0) return
-        if (selectionMode && depth === 0) {
+        if (selectionMode && selectionEligible) {
           event.preventDefault()
           onToggleSelected?.(session.id, event.shiftKey)
           return
@@ -2263,7 +2268,7 @@ const SessionRow = memo(function SessionRow({ active, now, session: initialSessi
       onKeyDown={(event) => {
         if (event.key === ' ') {
           event.preventDefault()
-          if (selectionMode && depth === 0) {
+          if (selectionMode && selectionEligible) {
             onToggleSelected?.(session.id, event.shiftKey)
             return
           }
@@ -2290,7 +2295,7 @@ const SessionRow = memo(function SessionRow({ active, now, session: initialSessi
         <div className="flex min-w-0 flex-1 items-start gap-2">
           <div className="min-w-0 flex-1">
             <div className="flex min-w-0 items-center">
-              {selectionMode && depth === 0 ? (
+              {selectionMode && selectionEligible ? (
                 <input
                   type="checkbox"
                   checked={selected}
@@ -2390,6 +2395,12 @@ const SessionRow = memo(function SessionRow({ active, now, session: initialSessi
       </div>
       <div className="mt-0.5 flex min-w-0 items-center justify-between gap-2 text-[10px] leading-4 text-[var(--app-text-subtle)]">
         <span className="flex min-w-0 items-center gap-1.5">
+          {childIdentityLabel ? (
+            <>
+              <span className="shrink-0 font-medium text-[var(--app-primary)]">↳ {childIdentityLabel}</span>
+              <span aria-hidden="true">·</span>
+            </>
+          ) : null}
           <span className="min-w-0 truncate">{workspaceLabel}</span>
           {showBranchLabel ? (
             <>
@@ -2474,6 +2485,19 @@ export function sidebarShouldRenderSelectionToolbar(
   group: SidebarSessionGroupID,
 ): boolean {
   return selectionMode && masterGroup === group
+}
+
+export function activeVideoSidebarRows(rows: readonly DesktopV3SidebarRow[]): DesktopV3SidebarRow[] {
+  return rows.filter((row) => row.sidebarGroup !== 'archived')
+}
+
+export function videoSidebarSessionIDsForArchive(
+  sessions: readonly DesktopSessionRecord[],
+  selectedIDs: ReadonlySet<string>,
+): string[] {
+  return sessions
+    .map((session) => session.id.trim())
+    .filter((sessionID) => sessionID !== '' && selectedIDs.has(sessionID))
 }
 
 export function sidebarShouldShowReviewAction(group: SidebarSessionGroupID, selectionMode: boolean): boolean {
@@ -2590,7 +2614,7 @@ function renderSidebarSessionGroups(input: RenderSidebarSessionGroupsInput): JSX
             agentsExpanded={Boolean(input.expandedAgentSessions[node.session.id]) || nodeContainsDescendantSession(node, input.routeSessionId || undefined)}
             compactingStartedAt={input.compactingSession?.sessionId === node.session.id ? input.compactingSession.startedAt : null}
             pendingAction={input.pendingActions[node.session.id] ?? null}
-            selectionMode={input.selectionMode}
+            selectionMode={input.selectionMode && input.masterSelectionGroup === group.id}
             selectionGroup={group.id}
             selected={input.selectedRootIDs.has(node.session.id)}
             onSelect={input.onSelect}
@@ -3108,8 +3132,22 @@ export function DesktopAppPage() {
     [desktopSidebarRows, desktopVideoStudioRows],
   )
   const videoStudioSessions = useMemo<DesktopSessionRecord[]>(
-    () => desktopVideoStudioRows.map(desktopSessionRecordFromV3SidebarRow),
+    () => activeVideoSidebarRows(desktopVideoStudioRows).map(desktopSessionRecordFromV3SidebarRow),
     [desktopVideoStudioRows],
+  )
+  const videoStudioSessionNodes = useMemo<SidebarSessionNode[]>(
+    () => videoStudioSessions
+      .slice()
+      .sort((left, right) => compareSidebarSessions(left, right, sidebarNow))
+      .map((session) => ({
+        session,
+        children: [],
+        depth: 1,
+        kind: 'background',
+        label: null,
+        assignmentLabel: null,
+      })),
+    [sidebarNow, videoStudioSessions],
   )
   useEffect(() => {
     const sessionId = routeSessionId.trim()
@@ -3156,8 +3194,10 @@ export function DesktopAppPage() {
     [globalFlattenedSessionNodes],
   )
   const visibleSidebarRootIDs = useMemo(
-    () => sidebarRootIDsForSelectionGroup(filteredSidebarTrees.nodes, null),
-    [filteredSidebarTrees.nodes],
+    () => sidebarMasterSelectionGroup === 'video'
+      ? videoStudioSessions.map((session) => session.id)
+      : sidebarRootIDsForSelectionGroup(filteredSidebarTrees.nodes, sidebarMasterSelectionGroup),
+    [filteredSidebarTrees.nodes, sidebarMasterSelectionGroup, videoStudioSessions],
   )
   const sidebarAgentSummaries = useMemo(
     () => new Map(globalFlattenedSessionNodes.map((node) => [node.session.id, summarizeSubagentDescendants(node)] as const)),
@@ -3512,6 +3552,21 @@ export function DesktopAppPage() {
 
 
 
+  const handleSelectVideoSidebarSession = useCallback((sessionId: string) => {
+    const normalizedSessionId = sessionId.trim()
+    const session = sessionById.get(normalizedSessionId)
+    if (!session) return false
+    handleClearSidebarSelection()
+    void selectAndHydrateDesktopV3Session(normalizedSessionId)
+    const workspaceSlug = globalSessionWorkspaceSlug(session)
+    setMobileSidebarOpen(false)
+    void navigate({
+      to: '/$workspaceSlug/video/$videoSessionId',
+      params: { workspaceSlug, videoSessionId: normalizedSessionId },
+    })
+    return true
+  }, [globalSessionWorkspaceSlug, handleClearSidebarSelection, navigate, sessionById])
+
   const handleSelectSession = useCallback((sessionId: string) => {
     const normalizedSessionId = sessionId.trim()
     handleClearSidebarSelection()
@@ -3729,7 +3784,13 @@ export function DesktopAppPage() {
   }, [sidebarSessionActions])
 
   const handleEnterSidebarSelectionMode = useCallback((group: SidebarSessionGroupID) => {
-    setSidebarMasterSelectionGroup((current) => current ?? group)
+    setSidebarMasterSelectionGroup((current) => {
+      if (current && current !== group) {
+        setSelectedSidebarRootIDs(new Set())
+        lastSelectedSidebarRootIDRef.current = null
+      }
+      return group
+    })
     setSidebarSelectionMode(true)
   }, [])
 
@@ -3751,13 +3812,20 @@ export function DesktopAppPage() {
   }, [visibleSidebarRootIDs])
 
   const handleBulkArchiveSidebar = useCallback(async () => {
-    const roots = globalSidebarSessionNodes.filter((node) => selectedSidebarRootIDs.has(node.session.id))
-    const ids = Array.from(new Set(roots.flatMap(sidebarNodeSessionIDs)))
+    const videoSelection = sidebarMasterSelectionGroup === 'video'
+    const roots = videoSelection
+      ? videoStudioSessionNodes.filter((node) => selectedSidebarRootIDs.has(node.session.id))
+      : globalSidebarSessionNodes.filter((node) => selectedSidebarRootIDs.has(node.session.id))
+    const ids = videoSelection
+      ? videoSidebarSessionIDsForArchive(videoStudioSessions, selectedSidebarRootIDs)
+      : Array.from(new Set(roots.flatMap(sidebarNodeSessionIDs)))
     if (ids.length === 0) return
     setBulkArchivePending(true)
     try {
       await archiveDesktopV3Sessions(ids)
-      setDesktopToast({ message: `Archived ${roots.length} conversation${roots.length === 1 ? '' : 's'} (${ids.length} sessions).`, tone: 'success' })
+      setDesktopToast({ message: videoSelection
+        ? `Archived ${ids.length} video session${ids.length === 1 ? '' : 's'}.`
+        : `Archived ${roots.length} conversation${roots.length === 1 ? '' : 's'} (${ids.length} sessions).`, tone: 'success' })
       const selectedRouteArchived = ids.includes(routeSessionId)
       setSelectedSidebarRootIDs(new Set())
       setSidebarSelectionMode(false)
@@ -3770,7 +3838,7 @@ export function DesktopAppPage() {
     } finally {
       setBulkArchivePending(false)
     }
-  }, [globalSidebarSessionNodes, handleArchivePlanSession, routeSessionId, selectedSidebarRootIDs])
+  }, [globalSidebarSessionNodes, handleArchivePlanSession, routeSessionId, selectedSidebarRootIDs, sidebarMasterSelectionGroup, videoStudioSessionNodes, videoStudioSessions])
 
   const handleSidebarThresholdChange = useCallback(async (hours: number | null) => {
     setSidebarThresholdSaving(true)
@@ -5223,36 +5291,65 @@ export function DesktopAppPage() {
                       <GitBranch size={13} strokeWidth={1.8} className="shrink-0" />
                     </button>
                   </div>
-                  {videoStudioSessions.length > 0 ? (
-                    <section className="grid content-start gap-1.5" aria-labelledby="desktop-video-sessions-heading">
+                  {videoStudioSessionNodes.length > 0 ? (
+                    <section className="group/video-section grid content-start gap-1.5" aria-labelledby="desktop-video-sessions-heading">
                       <div className="flex min-h-6 items-center gap-1 px-1 pt-1 text-[9px] font-semibold uppercase tracking-[0.16em] text-[var(--app-text-subtle)]">
                         <Film size={11} aria-hidden="true" />
-                        <span id="desktop-video-sessions-heading">Video</span>
-                      </div>
-                      <div className="grid gap-1">
-                        {videoStudioSessions.map((session) => {
-                          const workspaceSlug = globalSessionWorkspaceSlug(session)
-                          return (
-                            <Link
-                              key={session.id}
-                              to="/$workspaceSlug/video/$videoSessionId"
-                              params={{ workspaceSlug, videoSessionId: session.id }}
-                              onClick={() => {
-                                setMobileSidebarOpen(false)
-                                void selectAndHydrateDesktopV3Session(session.id)
-                              }}
-                              className={cn(
-                                'flex min-h-8 items-center gap-2 rounded-md border px-2.5 py-1.5 text-[12px] text-[var(--app-text-muted)] transition-colors hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]',
-                                routeSessionId === session.id
-                                  ? 'border-[var(--app-border-accent)] bg-[var(--app-surface)] text-[var(--app-text)]'
-                                  : 'border-transparent bg-[var(--app-surface)]/45',
-                              )}
+                        <span id="desktop-video-sessions-heading">Video sessions</span>
+                        <div className="ml-auto flex items-center gap-1 normal-case tracking-normal">
+                          {sidebarSelectionMode && sidebarMasterSelectionGroup === 'video' ? (
+                            <>
+                              <span>{selectedSidebarRootIDs.size} selected</span>
+                              <button type="button" onClick={handleClearSidebarSelection}>Clear</button>
+                              <button
+                                type="button"
+                                disabled={bulkArchivePending || selectedSidebarRootIDs.size === 0}
+                                className="rounded bg-[var(--app-primary)] px-1.5 py-0.5 text-[var(--app-primary-text)] disabled:opacity-50"
+                                onClick={() => { void handleBulkArchiveSidebar() }}
+                              >
+                                Archive
+                              </button>
+                            </>
+                          ) : (
+                            <button
+                              type="button"
+                              className="rounded px-1.5 py-0.5 opacity-0 transition-opacity hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] group-hover/video-section:opacity-100 group-focus-within/video-section:opacity-100"
+                              onClick={() => handleEnterSidebarSelectionMode('video')}
                             >
-                              <Film size={12} className="shrink-0 text-[var(--app-primary)]" aria-hidden="true" />
-                              <span className="min-w-0 flex-1 truncate">{session.title || 'Untitled video'}</span>
-                            </Link>
-                          )
-                        })}
+                              Select
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                      <div className="grid gap-1 pl-2">
+                        {videoStudioSessionNodes.map((node) => (
+                          <SessionRow
+                            key={node.session.id}
+                            active={routeSessionId === node.session.id}
+                            now={sidebarNow}
+                            session={node.session}
+                            workspaceSlug={globalSessionWorkspaceSlug}
+                            depth={1}
+                            childLabel=""
+                            childKind="background"
+                            selectionEligible
+                            agentSummary={EMPTY_SESSION_AGENT_SUMMARY}
+                            agentsExpanded={false}
+                            compactingStartedAt={compactingSession?.sessionId === node.session.id ? compactingSession.startedAt : null}
+                            pendingAction={sidebarSessionActions[node.session.id] ?? null}
+                            selectionMode={sidebarSelectionMode && sidebarMasterSelectionGroup === 'video'}
+                            selectionGroup="video"
+                            selected={selectedSidebarRootIDs.has(node.session.id)}
+                            onSelect={handleSelectVideoSidebarSession}
+                            onEnterSelectionMode={handleEnterSidebarSelectionMode}
+                            onToggleSelected={handleToggleSidebarSelected}
+                            onPrefetch={handlePrefetchSession}
+                            onToggleAgents={handleToggleAgentSessions}
+                            onTogglePinned={handleToggleSidebarPinned}
+                            onArchive={handleArchiveSidebarSession}
+                            onRename={handleRenameSidebarSession}
+                          />
+                        ))}
                       </div>
                     </section>
                   ) : null}
@@ -5384,22 +5481,6 @@ export function DesktopAppPage() {
           </div>
         ) : routeSessionId ? (
           <div className="flex min-h-0 flex-1 flex-col">
-            {routeSessionIsVideoStudio ? (
-              <div className="flex min-h-10 shrink-0 items-center justify-between gap-3 border-b border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-3 text-xs">
-                <span className="inline-flex min-w-0 items-center gap-2 font-semibold text-[var(--app-text)]">
-                  <MessageSquare size={14} className="shrink-0 text-[var(--app-primary)]" aria-hidden="true" />
-                  <span className="truncate">Session mode</span>
-                </span>
-                <Link
-                  to="/$workspaceSlug/studio/$videoSessionId"
-                  params={{ workspaceSlug: routeWorkspaceSlug, videoSessionId: routeSessionId }}
-                  className="inline-flex shrink-0 items-center gap-1.5 rounded-md px-2 py-1 font-medium text-[var(--app-primary)] hover:bg-[var(--app-selection-bg)]"
-                >
-                  <Film size={13} aria-hidden="true" />
-                  Video mode
-                </Link>
-              </div>
-            ) : null}
           <DesktopV3ExistingConversationPane
             key={`existing:${routeSessionId}`}
             sessionId={routeSessionId}
@@ -5429,13 +5510,17 @@ export function DesktopAppPage() {
               if (!workspaceSlug) return
               void selectAndHydrateDesktopV3Session(sessionId)
               const childSession = sessionById.get(sessionId)
-              if (childSession?.metadata?.experience === 'video_studio' && childSession.metadata.launch_source === 'video_tool') {
+              if (isDesktopV3VideoStudioMetadata(childSession?.metadata)) {
                 void navigate({ to: '/$workspaceSlug/video/$videoSessionId', params: { workspaceSlug, videoSessionId: sessionId } })
               } else {
                 void navigate({ to: '/$workspaceSlug/$sessionId', params: { workspaceSlug, sessionId } })
               }
             }}
             sessionActions={activeRouteSessionActions}
+            studioMode={routeSessionIsVideoStudio ? 'session' : null}
+            onToggleStudioMode={routeSessionIsVideoStudio ? () => {
+              void navigate({ to: '/$workspaceSlug/studio/$videoSessionId', params: { workspaceSlug: routeWorkspaceSlug, videoSessionId: routeSessionId } })
+            } : undefined}
             onCompactingChange={handleCompactingSessionChange}
             onArchivePlanSession={handleArchivePlanSession}
             onNewSession={() => {

@@ -4,7 +4,7 @@ import assert from 'node:assert/strict'
 import { createEmptyDesktopV3CacheState, applyHydrateSnapshot, applyReconnectSnapshot, applySnapshot, applyWorksetSessionDiscovered, applyWorksetSessionUpdated } from './desktop-v3-cache-reducer'
 import { selectDesktopSidebarRows, selectDesktopVideoStudioRows } from './desktop-v3-cache-selectors'
 import { hydrateSnapshotFixture, reconnectFixture, sessionA, sessionB, snapshotFixture } from './desktop-v3-cache.backend-fixtures'
-import { isDesktopV3NavigationHiddenSession, isDesktopV3VideoStudioSession } from './desktop-v3-session-visibility'
+import { isDesktopV3NavigationHiddenSession, isDesktopV3VideoStudioMetadata, isDesktopV3VideoStudioSession } from './desktop-v3-session-visibility'
 
 const hiddenSession = {
   ...sessionA,
@@ -21,11 +21,13 @@ test('navigation-hidden predicate recognizes every supported backend marker', ()
   assert.equal(isDesktopV3NavigationHiddenSession(sessionA), false)
 })
 
-test('Video Studio classification requires the stable creative-mode metadata pair', () => {
+test('Video Studio classification recognizes dedicated-tool and AI-created project contracts', () => {
   const videoSession = { ...sessionA, metadata: { experience: ' VIDEO_STUDIO ', launch_source: 'VIDEO_TOOL' } }
   assert.equal(isDesktopV3VideoStudioSession(videoSession), true)
   assert.equal(isDesktopV3VideoStudioSession({ ...videoSession, metadata: { experience: 'video_studio' } }), false)
   assert.equal(isDesktopV3VideoStudioSession({ ...videoSession, metadata: { launch_source: 'video_tool' } }), false)
+  assert.equal(isDesktopV3VideoStudioSession({ ...videoSession, metadata: { lineage_kind: ' VIDEO_PROJECT ' } }), true)
+  assert.equal(isDesktopV3VideoStudioMetadata({ lineage_kind: 'video_child' }), false)
 })
 
 test('ordinary and Video selectors partition canonical V3 sessions without dropping hydration authority', () => {

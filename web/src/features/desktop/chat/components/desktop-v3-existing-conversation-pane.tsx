@@ -1523,6 +1523,8 @@ export interface DesktopV3ExistingConversationPaneProps {
   onNewSession?: () => void;
   onOpenChildSession?: (sessionId: string, workspacePath: string) => void;
   sessionActions?: DesktopV3ChatHeaderSessionActions | null;
+  studioMode?: 'session' | 'studio' | null;
+  onToggleStudioMode?: () => void;
   onSlashCommand?: (
     command: DesktopSlashCommand,
     draft: string,
@@ -1629,6 +1631,8 @@ export function DesktopV3ExistingConversationPane({
   onNewSession,
   onOpenChildSession,
   sessionActions = null,
+  studioMode = null,
+  onToggleStudioMode,
   onSlashCommand,
   agentSettingsOpenSignal = 0,
   agentSettingsInitialAgent = "",
@@ -3088,6 +3092,8 @@ export function DesktopV3ExistingConversationPane({
         onOpenChats={onOpenChats}
         onNewSession={onNewSession}
         sessionActions={headerSessionActions}
+        studioMode={presentation === "page" ? studioMode : null}
+        onToggleStudioMode={presentation === "page" ? onToggleStudioMode : undefined}
       />
       <div
         ref={planSidebarGridRef}

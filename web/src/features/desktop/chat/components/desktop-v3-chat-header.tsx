@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Archive, Clipboard, Download, LoaderCircle, MessageSquare, MessageSquareText, MoreVertical, Pin } from 'lucide-react'
+import { Archive, Clipboard, Download, Film, LoaderCircle, MessageSquare, MessageSquareText, MoreVertical, Pin } from 'lucide-react'
 import { DesktopV3RunStatusPill, formatDesktopV3RunTimerLabel, type DesktopV3RunStatusModel } from './desktop-v3-run-status'
 
 export interface DesktopV3ChatHeaderSessionActions {
@@ -21,6 +21,8 @@ export interface DesktopV3ChatHeaderProps {
   runStatus?: DesktopV3RunStatusModel | null
   runStatusNow?: number
   sessionActions?: DesktopV3ChatHeaderSessionActions | null
+  studioMode?: 'session' | 'studio' | null
+  onToggleStudioMode?: () => void
   onOpenChats?: () => void
   onNewSession?: () => void
   hideMobileIdentity?: boolean
@@ -47,6 +49,8 @@ export function DesktopV3ChatHeader({
   runStatus = null,
   runStatusNow: controlledRunStatusNow,
   sessionActions = null,
+  studioMode = null,
+  onToggleStudioMode,
   onOpenChats,
   onNewSession,
   hideMobileIdentity = false,
@@ -187,6 +191,21 @@ export function DesktopV3ChatHeader({
         <div className="hidden sm:block">
           <DesktopV3RunStatusPill model={runStatus} now={runStatusNow} />
         </div>
+
+        {studioMode && onToggleStudioMode ? (
+          <button
+            type="button"
+            className="inline-flex h-9 shrink-0 touch-manipulation items-center gap-1.5 rounded-xl border border-transparent bg-transparent px-2 text-xs font-medium text-[var(--app-text-muted)] transition duration-150 hover:bg-[var(--app-surface-subtle)] hover:text-[var(--app-text)] active:bg-[var(--app-surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-focus-ring)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--app-bg)]"
+            onClick={onToggleStudioMode}
+            aria-label={studioMode === 'studio' ? 'Switch to session mode' : 'Switch to Video Studio'}
+            aria-pressed={studioMode === 'studio'}
+            title={studioMode === 'studio' ? 'Video Studio is on. Switch to session mode.' : 'Open this video session in Video Studio.'}
+            data-testid="desktop-v3-video-studio-toggle"
+          >
+            {studioMode === 'studio' ? <MessageSquare size={15} aria-hidden="true" /> : <Film size={15} aria-hidden="true" />}
+            <span>{studioMode === 'studio' ? 'Session' : 'Studio on'}</span>
+          </button>
+        ) : null}
 
         {onNewSession ? (
           <button

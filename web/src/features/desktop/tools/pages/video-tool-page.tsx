@@ -2040,6 +2040,27 @@ export function VideoToolPage() {
         </div>
       </div>
       <div className="hidden h-full w-full flex-col lg:flex">
+        <header className="flex h-[60px] shrink-0 items-center justify-between gap-4 border-b border-[var(--app-border)] bg-[var(--app-surface)] px-4">
+          <div className="inline-flex min-w-0 items-center gap-2">
+            <Film size={17} className="shrink-0 text-[var(--app-primary)]" aria-hidden="true" />
+            <span className="truncate text-sm font-semibold">Video Studio</span>
+            {selectedThread ? <span className="truncate text-xs text-[var(--app-text-muted)]">/ {selectedThread.title || 'Video session'}</span> : null}
+          </div>
+          {selectedThread && routeWorkspaceSlug ? (
+            <button
+              type="button"
+              className="inline-flex h-9 shrink-0 items-center gap-1.5 rounded-xl border border-transparent bg-transparent px-2 text-xs font-medium text-[var(--app-text-muted)] transition hover:bg-[var(--app-surface-subtle)] hover:text-[var(--app-text)] active:bg-[var(--app-surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-focus-ring)]"
+              onClick={handleOpenSessionMode}
+              aria-label="Switch to session mode"
+              aria-pressed="true"
+              title="Video Studio is on. Switch back to the session chat."
+              data-testid="video-studio-session-toggle"
+            >
+              <MessageSquare size={15} aria-hidden="true" />
+              <span>Session</span>
+            </button>
+          ) : null}
+        </header>
         {createError ? (
           <div className="mb-4 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] px-4 py-3 text-sm text-[var(--app-text)]">
             {createError}

@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises'
 import test from 'node:test'
 
 import type { DesktopSessionRecord } from '../types/realtime'
+import type { DesktopV3SidebarRow } from '../state/desktop-v3-cache-selectors'
 import { DESKTOP_V3_SIDEBAR_PINNED_METADATA_KEY } from '../session-v3/api'
 import {
   SIDEBAR_SESSION_GROUPS,
@@ -23,7 +24,39 @@ import {
   sidebarRootIDsForSelectionGroup,
   sidebarShouldRenderSelectionToolbar,
   sidebarShouldShowReviewAction,
+  activeVideoSidebarRows,
+  videoSidebarSessionIDsForArchive,
 } from './desktop-app-page'
+
+test('video sidebar excludes archived tombstones from active archive controls', () => {
+  const active = { sessionId: 'video-active', sidebarGroup: 'active_chats' } as DesktopV3SidebarRow
+  const archived = { sessionId: 'video-archived', sidebarGroup: 'archived' } as DesktopV3SidebarRow
+
+  assert.deepEqual(activeVideoSidebarRows([active, archived]).map((row) => row.sessionId), ['video-active'])
+})
+
+test('video sidebar bulk archive selects only the requested durable video sessions', () => {
+  const sessions = [
+    { id: 'video-a' },
+    { id: 'video-b' },
+    { id: 'video-c' },
+  ] as DesktopSessionRecord[]
+
+  assert.deepEqual(videoSidebarSessionIDsForArchive(sessions, new Set(['video-a', 'video-c', 'ordinary-chat'])), ['video-a', 'video-c'])
+  assert.deepEqual(videoSidebarSessionIDsForArchive(sessions, new Set()), [])
+})
+
+test('outer sidebar renders video sessions as selectable child rows with canonical archive controls', async () => {
+  const source = await readFile(new URL('./desktop-app-page.tsx', import.meta.url), 'utf8')
+
+  assert.match(source, />Video sessions</)
+  assert.match(source, /childLabel=""/)
+  assert.doesNotMatch(source, /video child/)
+  assert.match(source, /selectionGroup="video"/)
+  assert.match(source, /selectionEligible/)
+  assert.match(source, /onArchive=\{handleArchiveSidebarSession\}/)
+  assert.match(source, /videoSidebarSessionIDsForArchive\(videoStudioSessions, selectedSidebarRootIDs\)/)
+})
 
 test('sidebar workspace context shows the Git branch before the workspace name', () => {
   assert.equal(sidebarWorkspaceContextLabel('swarm-go', 'dev'), 'dev · swarm-go')

@@ -66,14 +66,30 @@ func (s *Server) handleWorkspaceVideoThreads(w http.ResponseWriter, r *http.Requ
 			writeError(w, http.StatusInternalServerError, err)
 			return
 		}
+		visible := threads[:0]
 		for i := range threads {
+			session, found, sessionErr := s.sessions.GetSession(threads[i].ID)
+			if sessionErr != nil {
+				writeError(w, http.StatusInternalServerError, sessionErr)
+				return
+			}
+			if !found {
+				// The durable V3 session is the visibility authority. Archived sessions
+				// retain their video thread for restoration but leave the active Studio list.
+				continue
+			}
+			threads[i].Title = strings.TrimSpace(session.Title)
+			if session.UpdatedAt > threads[i].UpdatedAt {
+				threads[i].UpdatedAt = session.UpdatedAt
+			}
 			migrated, migrateErr := s.migrateLegacyVideoThreadProject(r.Context(), principal, threads[i])
 			if migrateErr != nil {
 				writeError(w, http.StatusBadRequest, migrateErr)
 				return
 			}
-			threads[i] = migrated
+			visible = append(visible, migrated)
 		}
+		threads = visible
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "threads": threads})
 	case http.MethodPost:
 		var req videoThreadCreateRequest
@@ -201,7 +217,12 @@ func (s *Server) handleWorkspaceVideoThread(w http.ResponseWriter, r *http.Reque
 			return
 		}
 		if req.Title != nil {
-			thread.Title = strings.TrimSpace(*req.Title)
+			title := strings.TrimSpace(*req.Title)
+			if title == "" {
+				writeError(w, http.StatusBadRequest, errors.New("video session title cannot be blank"))
+				return
+			}
+			thread.Title = title
 		}
 		if req.VideoFolders != nil {
 			if storagePath, ok := thread.Metadata["tool_storage_path"].(string); ok && strings.TrimSpace(storagePath) != "" {
