@@ -1258,6 +1258,11 @@ export function DesktopV3AgenticComposer({
           if (!draft.trim()) onDraftChange('Use this design.')
           setArtifactViewerOpen(false)
         }}
+        onExportVideoStills={({ label, description, selection }, prompt) => {
+          setArtifactSelections((current) => appendDesktopV3ArtifactMessageSelections(current, [{ ...selection, label, description, action: 'select' }]))
+          onDraftChange(prompt)
+          setArtifactViewerOpen(false)
+        }}
       />
       {fileDropZone && filesDraggingOverChat ? createPortal(
         <div className="pointer-events-none absolute inset-3 z-50 grid place-items-center rounded-2xl border-2 border-dashed border-[var(--app-primary)] bg-[color-mix(in_srgb,var(--app-primary)_10%,var(--app-bg))] p-6 shadow-xl" data-testid="desktop-chat-file-drop-overlay" role="status" aria-live="polite">

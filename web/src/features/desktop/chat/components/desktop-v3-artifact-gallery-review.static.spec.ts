@@ -64,6 +64,24 @@ test('gallery chat actions emit opaque references and persist use before callbac
   assert.doesNotMatch(gallery, /arrayBuffer\(\).*onAddToChat/)
 })
 
+test('gallery exposes the exact-reference HTML-to-video-stills bridge without browser capture or render authority', async () => {
+  const gallery = await readFile(galleryURL, 'utf8')
+
+  assert.match(gallery, /data-artifact-export-video-stills/)
+  assert.match(gallery, /Video stills/)
+  assert.match(gallery, /desktopV3ArtifactCanExportHTMLStills\(selected\)/)
+  assert.match(gallery, /desktopV3ArtifactSelection\(selected\)/)
+  assert.match(gallery, /DESKTOP_V3_HTML_STILL_EXPORT_PROMPT/)
+  assert.match(gallery, /refreshOpenDesktopV3ArtifactCatalogs\(\)/)
+  assert.match(gallery, /The managed PNGs will appear here when ready/)
+  assert.match(gallery, /setActionPending\('export-video-stills'\)/)
+  assert.match(gallery, /setActionError\(error instanceof Error \? error\.message : 'Could not request video-ready still export'\)/)
+  assert.doesNotMatch(gallery, /html2canvas/)
+  assert.doesNotMatch(gallery, /drawImage\(.*iframe/)
+  assert.doesNotMatch(gallery, /accept.*proposal/i)
+  assert.doesNotMatch(gallery, /start.*render/i)
+})
+
 test('mobile gallery reserves a stable middle generation viewport between selectors and actions', async () => {
   const gallery = await readFile(galleryURL, 'utf8')
 

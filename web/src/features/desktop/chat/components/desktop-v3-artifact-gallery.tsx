@@ -23,6 +23,8 @@ import { cn } from '../../../../lib/cn'
 import { ChatMarkdown } from './chat-markdown'
 import {
   DESKTOP_V3_ARTIFACT_MESSAGE_SELECTION_MAX_COUNT,
+  DESKTOP_V3_HTML_STILL_EXPORT_PROMPT,
+  desktopV3ArtifactCanExportHTMLStills,
   desktopV3ArtifactCatalogEntryForKey,
   desktopV3ArtifactCatalogEntryKey,
   desktopV3ArtifactDownloadName,
@@ -44,6 +46,7 @@ import {
   type DesktopV3ArtifactCollectionProgress,
   type DesktopV3ArtifactSelection,
 } from '../../session-v3/artifact-api'
+import { refreshOpenDesktopV3ArtifactCatalogs } from '../../session-v3/artifact-catalog-refresh'
 import { useDesktopV3OpenArtifactCatalogRefresh } from '../../session-v3/use-artifact-catalog-refresh'
 import { useDesktopV3ArtifactPreviewVisibility } from './desktop-v3-artifact-preview-thumbnail'
 
@@ -62,6 +65,7 @@ export interface DesktopV3ArtifactGalleryProps {
   onOpenChange?: (open: boolean) => void
   onAddToChat?: (artifacts: DesktopV3ArtifactChatSelection[]) => void | Promise<void>
   onUseThisDesign?: (artifact: DesktopV3ArtifactChatSelection) => void | Promise<void>
+  onExportVideoStills?: (artifact: DesktopV3ArtifactChatSelection, prompt: string) => void | Promise<void>
   onSelectionPersisted?: () => void | Promise<void>
   showTrigger?: boolean
   loading?: boolean
@@ -186,6 +190,7 @@ export function DesktopV3ArtifactGallery({
   onOpenChange,
   onAddToChat,
   onUseThisDesign,
+  onExportVideoStills,
   onSelectionPersisted,
   showTrigger = true,
   loading: catalogLoading = false,
@@ -212,7 +217,7 @@ export function DesktopV3ArtifactGallery({
   const [previewError, setPreviewError] = useState('')
   const [previewLoading, setPreviewLoading] = useState(false)
   const [previewRetry, setPreviewRetry] = useState(0)
-  const [actionPending, setActionPending] = useState<'add' | 'use' | 'download-collection' | 'reveal-artifact' | 'reveal-collection' | ''>('')
+  const [actionPending, setActionPending] = useState<'add' | 'use' | 'export-video-stills' | 'download-collection' | 'reveal-artifact' | 'reveal-collection' | ''>('')
   const [actionError, setActionError] = useState('')
   const [actionConfirmation, setActionConfirmation] = useState('')
   const [query, setQuery] = useState('')
@@ -263,6 +268,7 @@ export function DesktopV3ArtifactGallery({
   const canonicalSelectedId = durableSelectedId || (persistedSelectedArtifact ? artifactSelectionKey(persistedSelectedArtifact) : '')
   const selectedIsCanonical = Boolean(selected && artifactSelectionKey(selected) === canonicalSelectedId)
   const selectedCanAttach = selected?.status === 'ready' && Boolean(selected.collectionId) && (selected.eventSeq ?? 0) > 0
+  const selectedCanExportVideoStills = Boolean(selected && desktopV3ArtifactCanExportHTMLStills(selected))
   const selectedIsQueuedForChat = Boolean(selected && chatSelectedIds.includes(artifactSelectionKey(selected)))
   const selectedRequirementLabel = formatDesktopV3ArtifactOutputRequirements(selected?.outputRequirements)
   const selectedAnimationLabel = formatDesktopV3ArtifactAnimationProfile(selected?.animationProfile)
@@ -539,6 +545,23 @@ export function DesktopV3ArtifactGallery({
     }
   }
 
+  const requestVideoStillExport = async () => {
+    if (!selected || !onExportVideoStills || !desktopV3ArtifactCanExportHTMLStills(selected)) return
+    try {
+      setActionPending('export-video-stills')
+      setActionError('')
+      setActionConfirmation('')
+      const messageSelection = desktopV3ArtifactMessageSelection(selected, 'select')
+      await onExportVideoStills({ label: messageSelection.label, description: messageSelection.description, selection: desktopV3ArtifactSelection(selected) }, DESKTOP_V3_HTML_STILL_EXPORT_PROMPT)
+      await refreshOpenDesktopV3ArtifactCatalogs()
+      setActionConfirmation('Video-still export request added to chat. The managed PNGs will appear here when ready.')
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : 'Could not request video-ready still export')
+    } finally {
+      setActionPending('')
+    }
+  }
+
   const persistAndUseDesign = async () => {
     if (!selected || !onUseThisDesign) return
     try {
@@ -741,8 +764,9 @@ export function DesktopV3ArtifactGallery({
                   {!previewLoading && !previewError && selectedAnimationActive && selected.mediaType === 'text/markdown' && previewText ? <div className="mx-auto max-w-4xl rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] p-5"><ChatMarkdown content={previewText} /></div> : null}
                   {!previewLoading && !previewError && selectedAnimationActive && selected.mediaType === 'text/plain' && previewText ? <pre className="mx-auto max-w-4xl whitespace-pre-wrap break-words rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] p-5 font-mono text-xs leading-5">{previewText}</pre> : null}
                 </div>
-                <footer className="grid shrink-0 grid-cols-3 gap-1.5 border-t border-[var(--app-border)] bg-[var(--app-surface)] px-2 py-2 md:flex md:flex-wrap md:items-center md:justify-between md:gap-2 md:px-4 md:py-3" aria-live="polite" data-mobile-generation-actions>
+                <footer className={cn('grid shrink-0 gap-1.5 border-t border-[var(--app-border)] bg-[var(--app-surface)] px-2 py-2 md:flex md:flex-wrap md:items-center md:justify-between md:gap-2 md:px-4 md:py-3', selectedCanExportVideoStills && onExportVideoStills ? 'grid-cols-4' : 'grid-cols-3')} aria-live="polite" data-mobile-generation-actions>
                   <div className="hidden min-w-0 flex-1 text-xs md:block">{actionError ? <span className="text-[var(--app-danger)]">{actionError}</span> : actionConfirmation ? <span className="text-[var(--app-success)]">{actionConfirmation}</span> : chatSelectedIds.length > 0 ? <span className="text-[var(--app-text-subtle)]">{chatSelectedIds.length} ready variant{chatSelectedIds.length === 1 ? '' : 's'} selected for chat. {pendingChatArtifacts.some((artifact) => artifact.mediaType.startsWith('image/')) ? 'Ask for changes to remix the exact selected image.' : 'This does not change the durable selected design.'}</span> : selectedIsCanonical ? <span className="inline-flex items-center gap-1.5 text-[var(--app-success)]"><Check className="size-3.5" />This is the durable selected design for the collection.</span> : <span className="text-[var(--app-text-subtle)]">Attach a reference for changes without changing the selected design, or select and use it.</span>}</div>
+                  {selectedCanExportVideoStills && onExportVideoStills ? <button type="button" className="inline-flex h-10 min-w-0 items-center justify-center gap-1 rounded-lg border border-[var(--app-primary)] bg-[var(--app-primary-soft)] px-2 text-[10px] font-semibold text-[var(--app-primary)] hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 md:h-9 md:px-3 md:text-xs" disabled={Boolean(actionPending)} title="Export declared capture states as managed 1920 × 1080 PNGs, then prepare a pending video plan" onClick={() => void requestVideoStillExport()} data-artifact-export-video-stills>{actionPending === 'export-video-stills' ? <Loader2 className="size-4 shrink-0 animate-spin" /> : <Sparkles className="size-4 shrink-0" />}<span className="truncate">Video stills</span></button> : null}
                   <button type="button" className={cn('inline-flex h-10 min-w-0 items-center justify-center gap-1 rounded-lg border px-2 text-[10px] font-semibold transition disabled:cursor-not-allowed disabled:opacity-50 md:h-9 md:px-3 md:text-xs', selectedIsQueuedForChat ? 'border-[var(--app-primary)] bg-[var(--app-primary-soft)] text-[var(--app-primary)]' : 'border-[var(--app-border)] bg-[var(--app-surface)] hover:bg-[var(--app-surface-hover)]')} disabled={!selectedCanAttach || Boolean(actionPending)} aria-pressed={selectedIsQueuedForChat} onClick={() => selected && toggleChatSelection(selected)}>{selectedIsQueuedForChat ? <Check className="size-4 shrink-0" /> : <MessageSquarePlus className="size-4 shrink-0" />}<span className="truncate md:hidden">{selectedIsQueuedForChat ? 'Selected' : 'Select'}</span><span className="hidden md:inline">{selectedIsQueuedForChat ? 'Queued for chat' : 'Select this iteration'}</span></button><button type="button" className="inline-flex h-10 min-w-0 items-center justify-center gap-1 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-2 text-[10px] font-semibold hover:bg-[var(--app-surface-hover)] disabled:cursor-not-allowed disabled:opacity-50 md:h-9 md:px-3 md:text-xs" disabled={pendingChatArtifacts.length === 0 || !onAddToChat || Boolean(actionPending)} title={pendingChatArtifacts.length === 0 ? 'Only ready managed variants can be attached' : undefined} onClick={() => void emitAddToChat()}>{actionPending === 'add' ? <Loader2 className="size-4 shrink-0 animate-spin" /> : <MessageSquarePlus className="size-4 shrink-0" />}<span className="truncate">Attach{pendingChatArtifacts.length > 1 ? ` ${pendingChatArtifacts.length}` : ''}<span className="hidden md:inline"> for changes</span></span></button><button type="button" className="inline-flex h-10 min-w-0 items-center justify-center gap-1 rounded-lg bg-[var(--app-primary)] px-2 text-[10px] font-semibold text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 md:h-9 md:px-3 md:text-xs" disabled={!selectedCanAttach || !onUseThisDesign || Boolean(actionPending)} title={!selectedCanAttach ? 'Only ready managed variants can be used' : undefined} onClick={() => void persistAndUseDesign()}>{actionPending === 'use' ? <Loader2 className="size-4 shrink-0 animate-spin" /> : <Sparkles className="size-4 shrink-0" />}<span className="truncate">Use<span className="hidden md:inline"> this design</span></span></button>
                 </footer>
               </> : null}
@@ -758,9 +782,10 @@ export interface DesktopV3ArtifactCatalogGalleryProps {
   onOpenChange: (open: boolean) => void
   onAddToChat?: DesktopV3ArtifactGalleryProps['onAddToChat']
   onUseThisDesign?: DesktopV3ArtifactGalleryProps['onUseThisDesign']
+  onExportVideoStills?: DesktopV3ArtifactGalleryProps['onExportVideoStills']
 }
 
-export function DesktopV3ArtifactCatalogGallery({ open, onOpenChange, onAddToChat, onUseThisDesign }: DesktopV3ArtifactCatalogGalleryProps) {
+export function DesktopV3ArtifactCatalogGallery({ open, onOpenChange, onAddToChat, onUseThisDesign, onExportVideoStills }: DesktopV3ArtifactCatalogGalleryProps) {
   const [artifacts, setArtifacts] = useState<DesktopV3ArtifactCatalogEntry[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
@@ -785,5 +810,5 @@ export function DesktopV3ArtifactCatalogGallery({ open, onOpenChange, onAddToCha
     void refreshCatalog()
   }, [open, refreshCatalog])
 
-  return <DesktopV3ArtifactGallery artifacts={artifacts} open={open} onOpenChange={onOpenChange} onAddToChat={onAddToChat} onUseThisDesign={onUseThisDesign} onSelectionPersisted={refreshCatalog} showTrigger={false} loading={loading} error={error} title="Artifact review" />
+  return <DesktopV3ArtifactGallery artifacts={artifacts} open={open} onOpenChange={onOpenChange} onAddToChat={onAddToChat} onUseThisDesign={onUseThisDesign} onExportVideoStills={onExportVideoStills} onSelectionPersisted={refreshCatalog} showTrigger={false} loading={loading} error={error} title="Artifact review" />
 }

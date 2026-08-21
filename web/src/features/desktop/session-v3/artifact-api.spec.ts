@@ -5,6 +5,8 @@ import {
   appendDesktopV3ArtifactMessageSelection,
   appendDesktopV3ArtifactMessageSelections,
   DESKTOP_V3_ARTIFACT_MESSAGE_SELECTION_MAX_COUNT,
+  DESKTOP_V3_HTML_STILL_EXPORT_PROMPT,
+  desktopV3ArtifactCanExportHTMLStills,
   desktopV3ArtifactCatalogEntryForKey,
   desktopV3ArtifactCatalogEntryForViewerLocation,
   desktopV3ArtifactCatalogEntryKey,
@@ -208,6 +210,48 @@ test('historical artifacts omit requirements and malformed nested requirements f
     assert.ok(entry)
     assert.equal(entry.outputRequirements, undefined)
   }
+})
+
+test('video-still export compatibility requires one exact ready managed HTML source', () => {
+  const html = normalizeDesktopV3ArtifactCatalogEntry(managedCatalogWire)
+  const htmlPackage = normalizeDesktopV3ArtifactCatalogEntry({ ...managedCatalogWire, media_type: 'application/zip', kind: 'html' })
+  const image = normalizeDesktopV3ArtifactCatalogEntry({ ...managedCatalogWire, media_type: 'image/png', kind: 'image' })
+  assert.ok(html)
+  assert.ok(htmlPackage)
+  assert.ok(image)
+  assert.equal(desktopV3ArtifactCanExportHTMLStills(html), true)
+  assert.equal(desktopV3ArtifactCanExportHTMLStills(htmlPackage), true)
+  assert.equal(desktopV3ArtifactCanExportHTMLStills({ ...html, status: 'staging' }), false)
+  assert.equal(desktopV3ArtifactCanExportHTMLStills({ ...html, eventSeq: 0 }), false)
+  assert.equal(desktopV3ArtifactCanExportHTMLStills(image), false)
+  assert.match(DESKTOP_V3_HTML_STILL_EXPORT_PROMPT, /pending video plan/)
+  assert.match(DESKTOP_V3_HTML_STILL_EXPORT_PROMPT, /Do not accept the proposal or start final rendering/)
+})
+
+test('exported PNG catalog entries remain normal exact-reference chat and video visuals', () => {
+  const exported = normalizeDesktopV3ArtifactCatalogEntry({
+    ...managedCatalogWire,
+    artifact_id: 'capture-opening',
+    collection_id: 'html-video-stills',
+    filename: 'capture-opening.png',
+    media_type: 'image/png',
+    kind: 'image',
+    event_seq: 84,
+    selected: false,
+    output_requirements: {
+      preset_id: 'landscape_video', width: 1920, height: 1080, aspect_ratio: '16:9', orientation: 'landscape',
+      resolution_source: 'preset', registry_version: '2026-08-14.v2',
+    },
+  })
+  assert.ok(exported)
+  assert.deepEqual(desktopV3ArtifactSelection(exported), {
+    session_id: 'session-1', collection_id: 'html-video-stills', variant_id: 'capture-opening', event_seq: 84,
+  })
+  assert.deepEqual(desktopV3ArtifactMessageSelection(exported, 'select'), {
+    session_id: 'session-1', collection_id: 'html-video-stills', variant_id: 'capture-opening', event_seq: 84,
+    label: 'Homepage', description: 'Iteration 2 of 3', action: 'select',
+  })
+  assert.equal(formatDesktopV3ArtifactOutputRequirements(exported.outputRequirements), 'Landscape video · 1920 × 1080 · 16:9')
 })
 
 test('artifact selection actions target the canonical variant selection route', () => {

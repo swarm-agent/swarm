@@ -3152,6 +3152,12 @@ export function DesktopV3ExistingConversationPane({
                   setArtifactGalleryOpenFromViewer(false);
                   setArtifactComposerFocusSignal((current) => current + 1);
                 }}
+                onExportVideoStills={({ label, description, selection }, prompt) => {
+                  queueGalleryArtifactSelections([{ ...selection, label, description, action: "select" }]);
+                  composerControllerRef.current?.setDraft(prompt);
+                  setArtifactGalleryOpenFromViewer(false);
+                  setArtifactComposerFocusSignal((current) => current + 1);
+                }}
                 onSelectionPersisted={refreshSessionArtifacts}
               />
             ) : null}
@@ -3504,6 +3510,12 @@ export function DesktopV3ExistingConversationPane({
         }}
         onUseThisDesign={({ label, description, selection }) => {
           queueGalleryArtifactSelections([{ ...selection, label, description, action: "use" }]);
+          setArtifactGalleryOpenFromViewer(false);
+          setArtifactComposerFocusSignal((current) => current + 1);
+        }}
+        onExportVideoStills={({ label, description, selection }, prompt) => {
+          queueGalleryArtifactSelections([{ ...selection, label, description, action: "select" }]);
+          composerControllerRef.current?.setDraft(prompt);
           setArtifactGalleryOpenFromViewer(false);
           setArtifactComposerFocusSignal((current) => current + 1);
         }}

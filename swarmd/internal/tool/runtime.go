@@ -32,6 +32,7 @@ import (
 	"swarm/packages/swarmd/internal/discovery"
 	"swarm/packages/swarmd/internal/fff"
 	"swarm/packages/swarmd/internal/gitenv"
+	"swarm/packages/swarmd/internal/htmlcapture"
 	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/imagegen"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -164,6 +165,7 @@ type Runtime struct {
 	themeWorkspace       manageThemeWorkspaceService
 	artifacts            *artifact.Registry
 	artifactAuthority    ArtifactAuthority
+	htmlCapture          htmlcapture.Renderer
 	imageGeneration      ManagedImageGenerationService
 	video                manageVideoService
 	videoSources         *videosource.Service
@@ -470,6 +472,12 @@ func (r *Runtime) ArtifactRegistry() *artifact.Registry {
 func (r *Runtime) SetArtifactAuthority(authority ArtifactAuthority) {
 	if r != nil {
 		r.artifactAuthority = authority
+	}
+}
+
+func (r *Runtime) SetHTMLCaptureRenderer(renderer htmlcapture.Renderer) {
+	if r != nil {
+		r.htmlCapture = renderer
 	}
 }
 

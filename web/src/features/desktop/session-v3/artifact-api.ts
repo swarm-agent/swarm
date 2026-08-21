@@ -138,6 +138,18 @@ export interface DesktopV3ArtifactCatalogResult {
   localRevealAvailable: boolean
 }
 
+export const DESKTOP_V3_HTML_STILL_EXPORT_PROMPT = 'Export this HTML concept\'s declared capture states as video-ready stills, then use the returned exact PNG references in a pending video plan. Do not accept the proposal or start final rendering.'
+
+/** The server remains authoritative for manifest validation; this gates only the explicit gallery bridge. */
+export function desktopV3ArtifactCanExportHTMLStills(
+  artifact: Pick<DesktopV3ArtifactCatalogEntry, 'collectionId' | 'eventSeq' | 'kind' | 'mediaType' | 'previewable' | 'status'>,
+): boolean {
+  const mediaType = artifact.mediaType.split(';', 1)[0]?.trim().toLowerCase()
+  const kind = artifact.kind.trim().toLowerCase()
+  const compatibleSource = mediaType === 'text/html' || (mediaType === 'application/zip' && (artifact.previewable || kind === 'html' || kind === 'package'))
+  return compatibleSource && artifact.status === 'ready' && Boolean(artifact.collectionId) && (artifact.eventSeq ?? 0) > 0
+}
+
 function artifactCatalogRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null
 }

@@ -102,6 +102,26 @@ func TestMasterHarnessPromptGuidesPriorArtifactWorkspaceWorkflow(t *testing.T) {
 	}
 }
 
+func TestMasterHarnessPromptGuidesNormalizedHTMLStillExportAndPendingVideoPlan(t *testing.T) {
+	prompt := masterHarnessPrompt("/workspace")
+	for _, want := range []string{
+		"normalized swarm.capture/v1 contract",
+		"id swarm-capture-manifest",
+		"globalThis.__SWARM_CAPTURE_V1__",
+		"data-swarm-capture-ui",
+		"data-swarm-capture-blocking",
+		"action=export_html_stills",
+		"complete exact session_id, collection_id, variant_id, and event_seq",
+		"managed image/png variants",
+		"manage_video propose_plan part.visual values",
+		"never accept it or start final rendering for the user",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("master prompt missing HTML still workflow guidance %q", want)
+		}
+	}
+}
+
 func TestAttachedArtifactSelectionsRejectsIncompleteOrUnboundedMetadata(t *testing.T) {
 	if got := attachedArtifactSelectionsForProvider(map[string]any{"artifact_selections": []any{map[string]any{"session_id": "source-session", "variant_id": "variant-1"}}}); got != "" {
 		t.Fatalf("incomplete selection projected: %q", got)
