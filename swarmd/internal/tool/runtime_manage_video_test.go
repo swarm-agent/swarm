@@ -213,7 +213,7 @@ func TestManageVideoDefinitionExposesProjectAndRenderWorkflow(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(raw)
-	for _, action := range []string{"create_project", "read_project", "get_project", "list_projects", "create_revision", "restore_revision", "start_render", "render_status", "cancel_render"} {
+	for _, action := range []string{"create_project", "read_project", "get_project", "list_projects", "create_edit_proposal", "propose_plan", "create_revision", "restore_revision", "start_render", "render_status", "cancel_render"} {
 		if !strings.Contains(text, `"`+action+`"`) {
 			t.Fatalf("schema lacks video project/render action %q", action)
 		}

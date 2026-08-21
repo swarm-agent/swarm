@@ -63,7 +63,7 @@ func manageVideoDefinition() Definition {
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"action":             map[string]any{"type": "string", "enum": []string{"list_source_roots", "browse_source", "inspect_attachments", "start_transcription", "status", "cancel", "read_transcript", "create_project", "read_project", "get_project", "list_projects", "inspect_accepted_cut", "create_edit_proposal", "proposal_status", "recommend_render_settings", "create_revision", "restore_revision", "start_render", "render_status", "cancel_render"}},
+				"action":             map[string]any{"type": "string", "enum": []string{"list_source_roots", "browse_source", "inspect_attachments", "start_transcription", "status", "cancel", "read_transcript", "create_project", "read_project", "get_project", "list_projects", "inspect_accepted_cut", "create_edit_proposal", "propose_plan", "proposal_status", "recommend_render_settings", "create_revision", "restore_revision", "start_render", "render_status", "cancel_render"}},
 				"source_root_ref":    map[string]any{"type": "string", "description": "Opaque root reference returned by list_source_roots."},
 				"relative_path":      map[string]any{"type": "string", "description": "Bounded path under source_root_ref; use directory relative_path values returned by browse_source."},
 				"video_refs":         map[string]any{"type": "array", "maxItems": pebblestore.SessionVideoAttachmentMaxCount, "items": map[string]any{"type": "string"}, "description": "Opaque video references returned by browse_source. With start_transcription, these are transcribed without needing a message attachment."},
@@ -111,6 +111,12 @@ func (r *Runtime) executeManageVideo(ctx context.Context, scope WorkspaceScope, 
 		return "", errors.New("manage_video requires authenticated session run context")
 	}
 	action := strings.ToLower(strings.TrimSpace(asString(args["action"])))
+	if action == "propose_plan" {
+		// Compatibility alias for providers that name the atomic visual-plan
+		// operation directly. It has the exact create_edit_proposal contract and
+		// still produces only a pending, explicitly reviewable proposal.
+		action = "create_edit_proposal"
+	}
 	run, ok := VideoRunContextFromContext(ctx)
 	if !ok || run.SessionID != scope.SessionID {
 		return "", errors.New("manage_video requires trusted run authority")
