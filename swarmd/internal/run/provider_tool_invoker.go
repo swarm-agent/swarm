@@ -385,6 +385,19 @@ func providerManagedCheckpointBoundaryCall(call tool.Call) bool {
 	return strings.EqualFold(strings.TrimSpace(mapString(args, "action")), sessionruntime.CheckpointBoundaryTransitionAction)
 }
 
+func (s *Service) providerManagedVideoStudioImageGeneration(config providerToolInvokerConfig) bool {
+	if s == nil || s.sessions == nil || !config.providerManagedV3 || strings.TrimSpace(config.sessionID) == "" {
+		return false
+	}
+	session, ok, err := s.sessions.GetSession(strings.TrimSpace(config.sessionID))
+	if err != nil || !ok {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(mapString(session.Metadata, "experience")), "video_studio") &&
+		strings.EqualFold(strings.TrimSpace(mapString(session.Metadata, "launch_source")), "video_tool") &&
+		strings.EqualFold(strings.TrimSpace(mapString(session.Metadata, "lineage_kind")), "video_project")
+}
+
 func providerManagedToolRequiresTurnRestart(call tool.Call, result tool.Result) bool {
 	payload := decodeToolPayload(strings.TrimSpace(result.Output))
 	if payload == nil {
@@ -473,18 +486,30 @@ func (s *Service) executeProviderManagedToolCall(ctx context.Context, config pro
 	if permissionSessionID == "" {
 		permissionSessionID = strings.TrimSpace(config.sessionID)
 	}
-	if agentruntime.IsImageAgentName(config.agentProfile.Name) && canonicalToolName(call.Name) == "manage_artifact" && permission.ShouldApproveManageArtifactGenerateImage(call.Arguments) {
-		if config.artifactRunContext == nil || strings.TrimSpace(config.artifactRunContext.TaskCallID) == "" || strings.TrimSpace(config.artifactRunContext.CollectionID) == "" || strings.TrimSpace(config.artifactRunContext.VariantID) == "" {
-			return tool.Result{}, 0, errors.New("managed Image generation requires a trusted task artifact destination")
+	if canonicalToolName(call.Name) == "manage_artifact" && permission.ShouldApproveManageArtifactGenerateImage(call.Arguments) {
+		autoAllowImageGeneration := false
+		if agentruntime.IsImageAgentName(config.agentProfile.Name) {
+			if config.artifactRunContext == nil || strings.TrimSpace(config.artifactRunContext.TaskCallID) == "" || strings.TrimSpace(config.artifactRunContext.CollectionID) == "" || strings.TrimSpace(config.artifactRunContext.VariantID) == "" {
+				return tool.Result{}, 0, errors.New("managed Image generation requires a trusted task artifact destination")
+			}
+			// The parent task launch is the user-approved billed operation. Compile a
+			// one-call allow rule into this child invocation so the generated worker
+			// cannot trigger a second approval prompt after the wave has already begun.
+			autoAllowImageGeneration = true
+		} else if s.providerManagedVideoStudioImageGeneration(config) {
+			// Starting a creative request inside the code-owned Video Studio is the
+			// user gesture authorizing its still generation. The resulting visuals
+			// remain private session artifacts and manage_video still creates only a
+			// pending project proposal that requires explicit review.
+			autoAllowImageGeneration = true
 		}
-		// The parent task launch is the user-approved billed operation. Compile a
-		// one-call allow rule into this child invocation so the generated worker
-		// cannot trigger a second approval prompt after the wave has already begun.
-		trustedImagePolicy := permission.NormalizePolicy(permission.Policy{Version: 1, Rules: []permission.PolicyRule{{
-			Kind: permission.PolicyRuleKindTool, Decision: permission.PolicyDecisionAllow, Tool: "manage_artifact",
-		}}})
-		merged := mergePermissionPolicies(config.policy, &trustedImagePolicy)
-		config.policy = &merged
+		if autoAllowImageGeneration {
+			trustedImagePolicy := permission.NormalizePolicy(permission.Policy{Version: 1, Rules: []permission.PolicyRule{{
+				Kind: permission.PolicyRuleKindTool, Decision: permission.PolicyDecisionAllow, Tool: "manage_artifact",
+			}}})
+			merged := mergePermissionPolicies(config.policy, &trustedImagePolicy)
+			config.policy = &merged
+		}
 	}
 
 	gatedResults := []tool.Result{{CallID: call.CallID, Name: call.Name}}

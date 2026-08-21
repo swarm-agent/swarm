@@ -283,6 +283,64 @@ func TestProviderManagedV3ToolCallBypassesPermissionRequests(t *testing.T) {
 	}
 }
 
+func TestProviderManagedVideoStudioImageGenerationSkipsDuplicatePermissionPrompt(t *testing.T) {
+	workspace := t.TempDir()
+	svc, sessionID, permissions, cleanup := newProviderManagedV3PermissionTestServiceWithMetadata(t, workspace, map[string]any{
+		"experience":    "video_studio",
+		"launch_source": "video_tool",
+		"lineage_kind":  "video_project",
+	})
+	defer cleanup()
+
+	config := providerToolInvokerConfig{
+		sessionID:            sessionID,
+		permissionSessionID:  sessionID,
+		runID:                "run-video-studio-image",
+		step:                 1,
+		sessionMode:          sessionruntime.ModeAuto,
+		workspacePath:        workspace,
+		workspaceRoots:       []string{workspace},
+		workspaceOriginPath:  workspace,
+		workspaceOriginRoots: []string{workspace},
+		workspaceName:        "workspace",
+		applySessionMutation: providerManagedV3NoopMutation,
+		providerManagedV3:    true,
+	}
+	if !svc.providerManagedVideoStudioImageGeneration(config) {
+		t.Fatal("expected code-owned Video Studio session to authorize still generation")
+	}
+
+	invoker := svc.newProviderToolInvoker(config)
+	ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
+	defer cancel()
+	result, err := invoker.ExecuteTool(ctx, toolInvocation("call-video-still", "manage_artifact", `{"action":"generate_image","prompt":"one still"}`))
+	if err != nil {
+		t.Fatalf("execute Video Studio image call: %v", err)
+	}
+	if result.PermissionWaitMS != 0 {
+		t.Fatalf("Video Studio image call permission wait = %dms, want 0", result.PermissionWaitMS)
+	}
+	if strings.Contains(strings.ToLower(result.Error), "permission") || strings.Contains(strings.ToLower(result.Output), "permission") {
+		t.Fatalf("Video Studio image call unexpectedly stopped at the permission gate: %+v", result)
+	}
+	pending, err := permissions.ListPending(sessionID, 10)
+	if err != nil {
+		t.Fatalf("list pending permissions: %v", err)
+	}
+	if len(pending) != 0 {
+		t.Fatalf("Video Studio still authorization created permission records: %#v", pending)
+	}
+}
+
+func TestProviderManagedOrdinarySessionDoesNotAuthorizeImageGeneration(t *testing.T) {
+	workspace := t.TempDir()
+	svc, sessionID, _, cleanup := newProviderManagedV3PermissionTestService(t, workspace)
+	defer cleanup()
+	if svc.providerManagedVideoStudioImageGeneration(providerToolInvokerConfig{sessionID: sessionID, providerManagedV3: true}) {
+		t.Fatal("ordinary session unexpectedly authorized image generation")
+	}
+}
+
 func TestProviderManagedToolCallRefreshesTemporaryWorkspaceRoots(t *testing.T) {
 	workspace := t.TempDir()
 	outside := t.TempDir()
@@ -813,6 +871,10 @@ func TestProviderManagedArtifactRunContextUsesTrustedRunIntentLineage(t *testing
 }
 
 func newProviderManagedV3PermissionTestService(t testing.TB, workspace string) (*Service, string, *permission.Service, func()) {
+	return newProviderManagedV3PermissionTestServiceWithMetadata(t, workspace, nil)
+}
+
+func newProviderManagedV3PermissionTestServiceWithMetadata(t testing.TB, workspace string, metadata map[string]any) (*Service, string, *permission.Service, func()) {
 	t.Helper()
 	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "state.pebble"))
 	if err != nil {
@@ -835,6 +897,7 @@ func newProviderManagedV3PermissionTestService(t testing.TB, workspace string) (
 			Model:    "test-model",
 			Thinking: "off",
 		},
+		Metadata: metadata,
 	})
 	if err != nil {
 		cleanup()
