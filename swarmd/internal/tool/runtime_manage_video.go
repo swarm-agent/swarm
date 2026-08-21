@@ -59,11 +59,11 @@ type manageVideoRenderService interface {
 func manageVideoDefinition() Definition {
 	return Definition{
 		Type: "function", Name: "manage_video",
-		Description: "Inspect trusted video sources, browse registered source-video folders, inspect triggering-message attachments, transcribe selected opaque video references, inspect transcripts and the accepted immutable cut, create atomic visual video-plan proposals with one exact ready image slide per part or typed edit proposals against one exact base revision, and report proposal or render status. Initial visual plans are whole-plan review objects; later stable-part revisions support selective acceptance. In Video Studio sessions AI may propose edits and recommend render settings, but cannot accept a proposal or start a final render. Existing non-Studio project and render actions remain compatible. Arbitrary paths, provider URIs, credentials, and provider payloads are never accepted or returned.",
+		Description: "Inspect trusted video sources, browse registered source-video folders, inspect triggering-message attachments, transcribe selected opaque video references, inspect transcripts and the accepted immutable cut, create a project, and submit atomic visual video-plan proposals with one exact ready image slide per part or typed edit proposals against one exact base revision. One-shot initial-plan workflow: call create_project without initial_timeline, use the returned project_id and revision_id, then call propose_plan with base_revision_id set to that revision and plan.kind=initial. propose_plan creates only a pending whole-plan review object; it never accepts or applies the plan. Later stable-part revisions support selective acceptance. In Video Studio sessions AI may propose edits and recommend render settings, but cannot accept a proposal or start a final render. Existing non-Studio project and render actions remain compatible. Arbitrary paths, provider URIs, credentials, and provider payloads are never accepted or returned.",
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"action":             map[string]any{"type": "string", "enum": []string{"list_source_roots", "browse_source", "inspect_attachments", "start_transcription", "status", "cancel", "read_transcript", "create_project", "read_project", "get_project", "list_projects", "inspect_accepted_cut", "create_edit_proposal", "propose_plan", "proposal_status", "recommend_render_settings", "create_revision", "restore_revision", "start_render", "render_status", "cancel_render"}},
+				"action":             map[string]any{"type": "string", "enum": []string{"list_source_roots", "browse_source", "inspect_attachments", "start_transcription", "status", "cancel", "read_transcript", "create_project", "read_project", "get_project", "list_projects", "inspect_accepted_cut", "create_edit_proposal", "propose_plan", "proposal_status", "recommend_render_settings", "create_revision", "restore_revision", "start_render", "render_status", "cancel_render"}, "description": "Use create_project to create or load the session's project; it always returns project_id and an exact revision_id, even when initial_timeline is omitted. Use propose_plan only for an atomic visual plan and pass that revision_id as base_revision_id. Use create_edit_proposal for typed timeline operations."},
 				"source_root_ref":    map[string]any{"type": "string", "description": "Opaque root reference returned by list_source_roots."},
 				"relative_path":      map[string]any{"type": "string", "description": "Bounded path under source_root_ref; use directory relative_path values returned by browse_source."},
 				"video_refs":         map[string]any{"type": "array", "maxItems": pebblestore.SessionVideoAttachmentMaxCount, "items": map[string]any{"type": "string"}, "description": "Opaque video references returned by browse_source. With start_transcription, these are transcribed without needing a message attachment."},
@@ -88,10 +88,10 @@ func manageVideoDefinition() Definition {
 				"output_preset":      map[string]any{"type": "string", "description": "Target video format preset (e.g. landscape_1080p, landscape_720p, portrait_1080p, portrait_720p, square_1080p, landscape_video, portrait_video, x_header)."},
 				"change_summary":     map[string]any{"type": "string", "description": "Summary of changes made in this revision."},
 				"timeline":           map[string]any{"type": "object", "description": "Structured video project timeline with clips, captions, and audio policy."},
-				"initial_timeline":   map[string]any{"type": "object", "description": "Initial structured timeline when creating a video project."},
+				"initial_timeline":   map[string]any{"type": "object", "description": "Optional initial structured timeline when creating a video project. Omit it for a new visual plan; create_project still creates and returns an empty exact base revision."},
 				"metadata":           map[string]any{"type": "object", "description": "Optional unstructured metadata for the video project."},
 				"proposal_id":        map[string]any{"type": "string", "description": "Opaque edit proposal identifier."},
-				"base_revision_id":   map[string]any{"type": "string", "description": "Required exact immutable revision on which an edit proposal is based."},
+				"base_revision_id":   map[string]any{"type": "string", "description": "Required exact immutable revision for propose_plan or create_edit_proposal. For a new visual plan, copy revision_id directly from create_project."},
 				"rationale":          map[string]any{"type": "string", "description": "Concise rationale for the proposed edit."},
 				"plan":               map[string]any{"type": "object", "description": "Atomic visual video-plan proposal. Every part must include the exact ready image slide the viewer will see. Use kind=initial for the first whole-plan review and kind=revision with stable existing part IDs for selectable replacements.", "properties": map[string]any{"kind": map[string]any{"type": "string", "enum": []string{pebblestore.VideoPlanKindInitial, pebblestore.VideoPlanKindRevision}}, "summary": map[string]any{"type": "string"}, "parts": map[string]any{"type": "array", "minItems": 1, "maxItems": pebblestore.MaxClipsPerTimeline, "items": map[string]any{"type": "object", "properties": map[string]any{"id": map[string]any{"type": "string"}, "title": map[string]any{"type": "string"}, "duration_ms": map[string]any{"type": "integer", "minimum": 1, "maximum": pebblestore.MaxVideoTimelineDurationMs}, "narration": map[string]any{"type": "string"}, "on_screen_text": map[string]any{"type": "string"}, "visual_direction": map[string]any{"type": "string"}, "transition_in": map[string]any{"type": "string"}, "visual": map[string]any{"type": "object", "description": "Complete exact ready managed visual reference returned by manage_artifact.", "properties": map[string]any{"session_id": map[string]any{"type": "string"}, "collection_id": map[string]any{"type": "string"}, "variant_id": map[string]any{"type": "string"}, "event_seq": map[string]any{"type": "integer", "minimum": 1}}, "required": []string{"session_id", "collection_id", "variant_id", "event_seq"}, "additionalProperties": false}}, "required": []string{"id", "title", "duration_ms", "visual"}, "additionalProperties": false}}}, "required": []string{"kind", "parts"}, "additionalProperties": false},
 				"operations":         map[string]any{"type": "array", "maxItems": pebblestore.MaxVideoEditProposalOperations, "items": map[string]any{"type": "object"}, "description": "Bounded typed clip and transition operations."},
@@ -111,10 +111,10 @@ func (r *Runtime) executeManageVideo(ctx context.Context, scope WorkspaceScope, 
 		return "", errors.New("manage_video requires authenticated session run context")
 	}
 	action := strings.ToLower(strings.TrimSpace(asString(args["action"])))
+	requestedAction := action
 	if action == "propose_plan" {
-		// Compatibility alias for providers that name the atomic visual-plan
-		// operation directly. It has the exact create_edit_proposal contract and
-		// still produces only a pending, explicitly reviewable proposal.
+		// Providers get a purpose-specific action for atomic visual plans while
+		// storage continues to use the revision-gated edit proposal authority.
 		action = "create_edit_proposal"
 	}
 	run, ok := VideoRunContextFromContext(ctx)
@@ -514,6 +514,9 @@ func (r *Runtime) executeManageVideo(ctx context.Context, scope WorkspaceScope, 
 		if err != nil {
 			return "", err
 		}
+		if requestedAction == "propose_plan" && plan == nil {
+			return "", errors.New("propose_plan requires one atomic plan")
+		}
 		var operations []pebblestore.VideoEditOperation
 		if plan == nil {
 			operations, err = parseVideoEditOperations(args["operations"])
@@ -533,6 +536,9 @@ func (r *Runtime) executeManageVideo(ctx context.Context, scope WorkspaceScope, 
 		}
 		response["proposal"] = safeVideoEditProposal(proposal)
 		response["proposal_id"], response["project_id"], response["revision_id"] = proposal.ID, proposal.ProjectID, proposal.BaseRevisionID
+		if requestedAction == "propose_plan" {
+			response["action"] = requestedAction
+		}
 		response["proposal_status"], response["stale_base"] = proposal.Status, false
 
 	case "proposal_status":
@@ -786,7 +792,11 @@ func (r *Runtime) executeManageVideo(ctx context.Context, scope WorkspaceScope, 
 	default:
 		return "", fmt.Errorf("unsupported manage_video action %q", action)
 	}
-	response["presentation"] = manageVideoPresentation(action, args, response)
+	presentationAction := action
+	if requestedAction == "propose_plan" {
+		presentationAction = requestedAction
+	}
+	response["presentation"] = manageVideoPresentation(presentationAction, args, response)
 	encoded, err := json.Marshal(response)
 	return string(encoded), err
 }
@@ -806,6 +816,7 @@ func manageVideoPresentation(action string, args, response map[string]any) map[s
 		"list_projects":             {"Video projects loaded", "Loading video projects"},
 		"inspect_accepted_cut":      {"Accepted cut loaded", "Inspecting accepted cut"},
 		"create_edit_proposal":      {"Edit proposal ready", "Preparing video edit proposal"},
+		"propose_plan":              {"Video plan ready for review", "Preparing visual video plan"},
 		"proposal_status":           {"Proposal status updated", "Checking edit proposal"},
 		"recommend_render_settings": {"Render settings recommended", "Reviewing render settings"},
 		"create_revision":           {"Video edit saved", "Saving video edit"},

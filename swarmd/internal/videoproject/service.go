@@ -211,10 +211,9 @@ func (s *Service) CreateProject(ctx context.Context, principal identity.Principa
 		return pebblestore.VideoProjectSnapshot{}, nil, errors.New("session ownership does not match authenticated principal")
 	}
 
-	if input.InitialTimeline != nil {
-		if err := s.validateTimelineArtifacts(principal, input.SessionID, *input.InitialTimeline); err != nil {
-			return pebblestore.VideoProjectSnapshot{}, nil, err
-		}
+	ensureInitialVideoProjectTimeline(&input)
+	if err := s.validateTimelineArtifacts(principal, input.SessionID, *input.InitialTimeline); err != nil {
+		return pebblestore.VideoProjectSnapshot{}, nil, err
 	}
 
 	return s.sessions.CreateVideoProject(pebblestore.CreateVideoProjectInput{
@@ -244,13 +243,14 @@ func (s *Service) GetOrCreatePrimaryVideoToolProject(ctx context.Context, princi
 	if input.SessionID == "" {
 		return pebblestore.VideoProjectSnapshot{}, nil, errors.New("session id is required")
 	}
+	ensureInitialVideoProjectTimeline(&input)
 	if project, ok, err := s.sessions.GetPrimaryVideoToolProject(principal.AccountScopeID, input.SessionID); err != nil {
 		return pebblestore.VideoProjectSnapshot{}, nil, err
 	} else if ok {
 		if project.UserID != "" && project.UserID != principal.UserID {
 			return pebblestore.VideoProjectSnapshot{}, nil, errors.New("video project ownership does not match authenticated principal")
 		}
-		if project.CurrentRevisionID == "" && input.InitialTimeline != nil {
+		if project.CurrentRevisionID == "" {
 			revision, updated, createErr := s.CreateRevision(ctx, principal, CreateRevisionInput{
 				SessionID:       input.SessionID,
 				ProjectID:       project.ID,
@@ -265,10 +265,28 @@ func (s *Service) GetOrCreatePrimaryVideoToolProject(ctx context.Context, princi
 			}
 			return updated, &revision, nil
 		}
-		return project, nil, nil
+		revision, revisionOK, revisionErr := s.sessions.GetVideoProjectRevision(principal.AccountScopeID, input.SessionID, project.ID, project.CurrentRevisionID)
+		if revisionErr != nil {
+			return pebblestore.VideoProjectSnapshot{}, nil, revisionErr
+		}
+		if !revisionOK {
+			return pebblestore.VideoProjectSnapshot{}, nil, errors.New("current video project revision not found")
+		}
+		return project, &revision, nil
 	}
 	input.ProjectKind = pebblestore.VideoProjectKindVideoTool
 	return s.CreateProject(ctx, principal, input)
+}
+
+func ensureInitialVideoProjectTimeline(input *CreateProjectInput) {
+	if input == nil || input.InitialTimeline != nil {
+		return
+	}
+	input.InitialTimeline = &pebblestore.VideoProjectTimeline{
+		OutputPreset: strings.TrimSpace(input.OutputPreset),
+		Clips:        []pebblestore.VideoTimelineClip{},
+		Transitions:  []pebblestore.VideoTimelineTransition{},
+	}
 }
 
 func (s *Service) CreateRevision(ctx context.Context, principal identity.Principal, input CreateRevisionInput) (pebblestore.VideoProjectRevisionSnapshot, pebblestore.VideoProjectSnapshot, error) {

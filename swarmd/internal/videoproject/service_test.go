@@ -45,9 +45,9 @@ func (f *fakeSessionStore) CreateVideoProject(input pebblestore.CreateVideoProje
 		Description:           input.Description,
 		OutputPreset:          input.OutputPreset,
 		ProjectKind:           input.ProjectKind,
-		CurrentRevisionID:     "vrev_1",
-		CurrentRevisionNumber: 1,
-		RevisionCount:         1,
+		CurrentRevisionID:     "",
+		CurrentRevisionNumber: 0,
+		RevisionCount:         0,
 		CreatedAt:             100,
 		UpdatedAt:             100,
 	}
@@ -69,6 +69,10 @@ func (f *fakeSessionStore) CreateVideoProject(input pebblestore.CreateVideoProje
 			f.revisions[p.ID] = make(map[string]pebblestore.VideoProjectRevisionSnapshot)
 		}
 		f.revisions[p.ID][r.ID] = r
+		p.CurrentRevisionID = r.ID
+		p.CurrentRevisionNumber = 1
+		p.RevisionCount = 1
+		f.projects[p.ID] = p
 		rev = &r
 	}
 	return p, rev, nil
@@ -246,6 +250,26 @@ func (f *fakeSessionStore) GetSessionArtifactVariant(accountScopeID, sessionID, 
 	key := fmt.Sprintf("%s/%s/%s/%s", accountScopeID, sessionID, collectionID, variantID)
 	v, ok := f.artifacts[key]
 	return v, ok, nil
+}
+
+func TestCreateProjectWithoutTimelineCreatesEmptyBaseRevision(t *testing.T) {
+	store := newFakeSessionStore()
+	svc := NewService(store)
+	principal := identity.Principal{Type: identity.PrincipalTypeUser, AccountScopeID: "acc", UserID: "user"}
+	store.sessions["session"] = pebblestore.SessionSnapshot{ID: "session", AccountScopeID: principal.AccountScopeID, UserID: principal.UserID}
+
+	project, revision, err := svc.CreateProject(context.Background(), principal, CreateProjectInput{
+		SessionID: "session", ProjectID: "project", Title: "How to make dubstep music", OutputPreset: pebblestore.VideoPresetLandscape1080p,
+	})
+	if err != nil {
+		t.Fatalf("create project without timeline: %v", err)
+	}
+	if revision == nil || revision.ID == "" || project.CurrentRevisionID != revision.ID || project.RevisionCount != 1 {
+		t.Fatalf("project did not receive exact empty base revision: project=%+v revision=%+v", project, revision)
+	}
+	if revision.Timeline.OutputPreset != pebblestore.VideoPresetLandscape1080p || len(revision.Timeline.Clips) != 0 || len(revision.Timeline.Transitions) != 0 {
+		t.Fatalf("unexpected initial timeline: %+v", revision.Timeline)
+	}
 }
 
 func TestCreateEditProposalNormalizesAndValidatesVisualPlanReferences(t *testing.T) {

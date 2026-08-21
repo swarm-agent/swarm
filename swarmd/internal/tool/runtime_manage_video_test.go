@@ -208,6 +208,11 @@ func (*fakeManageVideoService) SourceName(identity.Principal, string, string) (s
 
 func TestManageVideoDefinitionExposesProjectAndRenderWorkflow(t *testing.T) {
 	definition := manageVideoDefinition()
+	for _, required := range []string{"One-shot initial-plan workflow", "create_project without initial_timeline", "propose_plan creates only a pending whole-plan review object"} {
+		if !strings.Contains(definition.Description, required) {
+			t.Fatalf("manage_video description lacks %q: %s", required, definition.Description)
+		}
+	}
 	raw, err := json.Marshal(definition.Parameters)
 	if err != nil {
 		t.Fatal(err)
@@ -629,7 +634,7 @@ func TestManageVideoProjectAuthAndSessionOwnership(t *testing.T) {
 	}
 }
 
-func TestManageVideoStudioCreatesAtomicVisualPlanProposal(t *testing.T) {
+func TestManageVideoStudioCreatesThreePartInitialPlanWithoutInitialTimeline(t *testing.T) {
 	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "manage-video-plan.pebble"))
 	if err != nil {
 		t.Fatal(err)
@@ -649,7 +654,7 @@ func TestManageVideoStudioCreatesAtomicVisualPlanProposal(t *testing.T) {
 	runtime.videoProjects = videoproject.NewService(sessionStore)
 	ctx := WithVideoRunContext(context.Background(), VideoRunContext{SessionID: "studio", RunID: "run-1"})
 	scope := WorkspaceScope{SessionID: "studio", Principal: principal}
-	created, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, Call{CallID: "create", Name: "manage_video", Arguments: `{"action":"create_project","title":"Studio","initial_timeline":{"output_preset":"landscape_1080p","clips":[]}}`})
+	created, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, Call{CallID: "create", Name: "manage_video", Arguments: `{"action":"create_project","title":"How to make dubstep music"}`})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -659,6 +664,20 @@ func TestManageVideoStudioCreatesAtomicVisualPlanProposal(t *testing.T) {
 	}
 	if err := json.Unmarshal([]byte(created), &create); err != nil {
 		t.Fatal(err)
+	}
+	if create.ProjectID == "" || create.RevisionID == "" {
+		t.Fatalf("create_project without initial_timeline must return exact project and revision ids: %s", created)
+	}
+	createdAgain, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, Call{CallID: "create-again", Name: "manage_video", Arguments: `{"action":"create_project","title":"How to make dubstep music"}`})
+	if err != nil {
+		t.Fatalf("load existing project: %v", err)
+	}
+	var createAgain struct {
+		ProjectID  string `json:"project_id"`
+		RevisionID string `json:"revision_id"`
+	}
+	if err := json.Unmarshal([]byte(createdAgain), &createAgain); err != nil || createAgain.ProjectID != create.ProjectID || createAgain.RevisionID != create.RevisionID {
+		t.Fatalf("existing project did not return its exact base revision: first=%s second=%s err=%v", created, createdAgain, err)
 	}
 	collection := pebblestore.SessionArtifactCollection{Version: pebblestore.SessionArtifactVersion, ID: "slides", AccountScopeID: principal.AccountScopeID, SessionID: "studio", Status: pebblestore.SessionArtifactStatusReady, Name: "Slides", VariantCount: 1, ReadyCount: 1, EventSeq: 99}
 	variant := pebblestore.SessionArtifactVariant{Version: pebblestore.SessionArtifactVersion, ID: "slide", CollectionID: collection.ID, AccountScopeID: principal.AccountScopeID, SessionID: "studio", Status: pebblestore.SessionArtifactStatusReady, Filename: "slide.png", MediaType: "image/png", EventSeq: 99}
@@ -670,21 +689,25 @@ func TestManageVideoStudioCreatesAtomicVisualPlanProposal(t *testing.T) {
 	}
 	visual := map[string]any{"session_id": "studio", "collection_id": "slides", "variant_id": "slide", "event_seq": 99}
 	arguments, _ := json.Marshal(map[string]any{
-		"action": "create_edit_proposal", "project_id": create.ProjectID, "base_revision_id": create.RevisionID,
-		"title": "Six-part launch video", "plan": map[string]any{"kind": "initial", "summary": "Review before production", "parts": []map[string]any{
-			{"id": "part-1", "title": "Hook", "duration_ms": 1000, "visual": visual}, {"id": "part-2", "title": "Problem", "duration_ms": 1000, "visual": visual}, {"id": "part-3", "title": "Idea", "duration_ms": 1000, "visual": visual},
-			{"id": "part-4", "title": "Demo", "duration_ms": 1000, "visual": visual}, {"id": "part-5", "title": "Proof", "duration_ms": 1000, "visual": visual}, {"id": "part-6", "title": "Close", "duration_ms": 1000, "visual": visual},
+		"action": "propose_plan", "project_id": create.ProjectID, "base_revision_id": create.RevisionID,
+		"title": "How to make dubstep music", "plan": map[string]any{"kind": "initial", "summary": "Review before production", "parts": []map[string]any{
+			{"id": "part-1", "title": "Build the beat", "duration_ms": 1000, "visual": visual},
+			{"id": "part-2", "title": "Design the bass", "duration_ms": 1000, "visual": visual},
+			{"id": "part-3", "title": "Arrange the drop", "duration_ms": 1000, "visual": visual},
 		}},
 	})
 	payload, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, Call{CallID: "plan", Name: "manage_video", Arguments: string(arguments)})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(payload, `"proposal_status":"pending"`) || !strings.Contains(payload, `"title":"Close"`) || strings.Contains(payload, `"operations":[`) {
+	if !strings.Contains(payload, `"action":"propose_plan"`) || !strings.Contains(payload, `"proposal_status":"pending"`) || !strings.Contains(payload, `"title":"Arrange the drop"`) || strings.Contains(payload, `"operations":[`) {
 		t.Fatalf("atomic plan payload=%s", payload)
 	}
 	project, ok, err := runtime.videoProjects.GetProject(principal, "studio", create.ProjectID)
 	if err != nil || !ok || project.CurrentRevisionID != create.RevisionID || project.RevisionCount != 1 {
 		t.Fatalf("pending plan advanced project: %+v ok=%v err=%v", project, ok, err)
+	}
+	if project.Title != "How to make dubstep music" {
+		t.Fatalf("unexpected project title: %+v", project)
 	}
 }
