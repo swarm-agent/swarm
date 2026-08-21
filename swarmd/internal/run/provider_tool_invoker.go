@@ -486,6 +486,7 @@ func (s *Service) executeProviderManagedToolCall(ctx context.Context, config pro
 	if permissionSessionID == "" {
 		permissionSessionID = strings.TrimSpace(config.sessionID)
 	}
+	videoStudioRequest := s.providerManagedVideoStudioImageGeneration(config)
 	if canonicalToolName(call.Name) == "manage_artifact" && permission.ShouldApproveManageArtifactGenerateImage(call.Arguments) {
 		autoAllowImageGeneration := false
 		if agentruntime.IsImageAgentName(config.agentProfile.Name) {
@@ -496,7 +497,7 @@ func (s *Service) executeProviderManagedToolCall(ctx context.Context, config pro
 			// one-call allow rule into this child invocation so the generated worker
 			// cannot trigger a second approval prompt after the wave has already begun.
 			autoAllowImageGeneration = true
-		} else if s.providerManagedVideoStudioImageGeneration(config) {
+		} else if videoStudioRequest {
 			// Starting a creative request inside the code-owned Video Studio is the
 			// user gesture authorizing its still generation. The resulting visuals
 			// remain private session artifacts and manage_video still creates only a
@@ -510,6 +511,16 @@ func (s *Service) executeProviderManagedToolCall(ctx context.Context, config pro
 			merged := mergePermissionPolicies(config.policy, &trustedImagePolicy)
 			config.policy = &merged
 		}
+	}
+	if videoStudioRequest && canonicalToolName(call.Name) == "manage_video" {
+		// Video Studio owns project proposal construction. The assistant can create
+		// or revise only durable pending proposals; accepting them and starting a
+		// final render remain explicit Studio UI operations.
+		trustedVideoPolicy := permission.NormalizePolicy(permission.Policy{Version: 1, Rules: []permission.PolicyRule{{
+			Kind: permission.PolicyRuleKindTool, Decision: permission.PolicyDecisionAllow, Tool: "manage_video",
+		}}})
+		merged := mergePermissionPolicies(config.policy, &trustedVideoPolicy)
+		config.policy = &merged
 	}
 
 	gatedResults := []tool.Result{{CallID: call.CallID, Name: call.Name}}

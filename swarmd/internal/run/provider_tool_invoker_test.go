@@ -323,12 +323,22 @@ func TestProviderManagedVideoStudioImageGenerationSkipsDuplicatePermissionPrompt
 	if strings.Contains(strings.ToLower(result.Error), "permission") || strings.Contains(strings.ToLower(result.Output), "permission") {
 		t.Fatalf("Video Studio image call unexpectedly stopped at the permission gate: %+v", result)
 	}
+	videoResult, err := invoker.ExecuteTool(ctx, toolInvocation("call-video-project", "manage_video", `{"action":"create_project","title":"Pending video"}`))
+	if err != nil {
+		t.Fatalf("execute Video Studio project call: %v", err)
+	}
+	if videoResult.PermissionWaitMS != 0 {
+		t.Fatalf("Video Studio project call permission wait = %dms, want 0", videoResult.PermissionWaitMS)
+	}
+	if strings.Contains(strings.ToLower(videoResult.Error), "permission") || strings.Contains(strings.ToLower(videoResult.Output), "permission") {
+		t.Fatalf("Video Studio project call unexpectedly stopped at the permission gate: %+v", videoResult)
+	}
 	pending, err := permissions.ListPending(sessionID, 10)
 	if err != nil {
 		t.Fatalf("list pending permissions: %v", err)
 	}
 	if len(pending) != 0 {
-		t.Fatalf("Video Studio still authorization created permission records: %#v", pending)
+		t.Fatalf("Video Studio still/project authorization created permission records: %#v", pending)
 	}
 }
 
