@@ -573,7 +573,8 @@ func (r *Runtime) manageSessionsGit(ctx context.Context, scope WorkspaceScope, a
 			results = append(results, map[string]any{"session_id": id, "status": "error", "error": e.Error()})
 			continue
 		}
-		results = append(results, map[string]any{"session_id": id, "title": s.Title, "status": "available", "branch": snap.Branch, "base_branch": s.WorktreeBaseBranch, "clean": snap.Clean, "dirty_count": snap.DirtyCount, "staged_count": snap.StagedCount, "modified_count": snap.ModifiedCount, "untracked_count": snap.UntrackedCount, "conflict_count": snap.ConflictCount, "ahead": snap.AheadCount, "behind": snap.BehindCount, "head_oid": snap.HeadOID, "repo_root": snap.RepoRoot, "files": snap.Files, "recent_commits": snap.RecentCommits})
+		baseCommit := strings.TrimSpace(mapString(s.Metadata, "base_commit"))
+		results = append(results, map[string]any{"session_id": id, "title": s.Title, "status": "available", "branch": snap.Branch, "base_branch": s.WorktreeBaseBranch, "base_commit": baseCommit, "clean": snap.Clean, "dirty_count": snap.DirtyCount, "staged_count": snap.StagedCount, "modified_count": snap.ModifiedCount, "untracked_count": snap.UntrackedCount, "conflict_count": snap.ConflictCount, "ahead": snap.AheadCount, "behind": snap.BehindCount, "head_oid": snap.HeadOID, "repo_root": snap.RepoRoot, "worktree_path": path, "worktree_enabled": s.WorktreeEnabled, "recoverable": s.WorktreeEnabled && !snap.Clean, "files": snap.Files, "recent_commits": snap.RecentCommits})
 	}
 	return marshalManageSessions(map[string]any{"action": "git_status", "items": results})
 }

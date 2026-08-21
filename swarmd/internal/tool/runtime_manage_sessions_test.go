@@ -379,7 +379,7 @@ func TestManageSessionsGitStatusAllowsLinkedManagedWorktree(t *testing.T) {
 	service := &gitManageSessionService{sessions: map[string]pebblestore.SessionSnapshot{"session-1": {
 		ID: "session-1", AccountScopeID: principal.AccountScopeID, UserID: principal.UserID,
 		WorkspacePath: worktree, WorktreeEnabled: true, WorktreeRootPath: worktree,
-		WorktreeBaseBranch: "master", WorktreeBranch: "agent/test",
+		WorktreeBaseBranch: "master", WorktreeBranch: "agent/test", Metadata: map[string]any{"base_commit": strings.TrimSpace(runManageSessionsGitCommandOutput(t, repo, "rev-parse", "HEAD"))},
 	}}}
 	runtime := &Runtime{sessions: service}
 	output, err := runtime.executeManageSessions(context.Background(), WorkspaceScope{PrimaryPath: repo, Roots: []string{repo}, Principal: principal}, map[string]any{"action": "git_status", "session_id": "session-1"})
@@ -391,13 +391,17 @@ func TestManageSessionsGitStatusAllowsLinkedManagedWorktree(t *testing.T) {
 			Clean         bool             `json:"clean"`
 			DirtyCount    int              `json:"dirty_count"`
 			ModifiedCount int              `json:"modified_count"`
+			BaseCommit    string           `json:"base_commit"`
+			HeadOID       string           `json:"head_oid"`
+			WorktreePath  string           `json:"worktree_path"`
+			Recoverable   bool             `json:"recoverable"`
 			Files         []map[string]any `json:"files"`
 		} `json:"items"`
 	}
 	if err := json.Unmarshal([]byte(output), &response); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if len(response.Items) != 1 || response.Items[0].Clean || response.Items[0].DirtyCount != 1 || response.Items[0].ModifiedCount != 1 || len(response.Items[0].Files) != 1 {
+	if len(response.Items) != 1 || response.Items[0].Clean || response.Items[0].DirtyCount != 1 || response.Items[0].ModifiedCount != 1 || response.Items[0].BaseCommit == "" || response.Items[0].HeadOID == "" || response.Items[0].WorktreePath != worktree || !response.Items[0].Recoverable || len(response.Items[0].Files) != 1 {
 		t.Fatalf("git response = %s", output)
 	}
 }
@@ -491,11 +495,18 @@ func TestManageSessionsGitStatusRejectsUnrelatedManagedRepository(t *testing.T) 
 
 func runManageSessionsGitCommand(t *testing.T, dir string, args ...string) {
 	t.Helper()
+	_ = runManageSessionsGitCommandOutput(t, dir, args...)
+}
+
+func runManageSessionsGitCommandOutput(t *testing.T, dir string, args ...string) string {
+	t.Helper()
 	cmd := exec.Command("git", args...)
 	cmd.Dir = dir
-	if output, err := cmd.CombinedOutput(); err != nil {
+	output, err := cmd.CombinedOutput()
+	if err != nil {
 		t.Fatalf("git %v: %v\n%s", args, err, output)
 	}
+	return string(output)
 }
 
 func TestManageSessionWorkspaceSlugMatchesDesktopUTF16Hash(t *testing.T) {

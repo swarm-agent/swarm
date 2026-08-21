@@ -188,6 +188,8 @@ type WorkspaceScope struct {
 	WorktreeEnabled     bool
 	WorktreeRootPath    string
 	WorktreeBranch      string
+	WorktreeBaseBranch  string
+	WorktreeBaseCommit  string
 	SourceWorkspacePath string
 }
 
@@ -2107,18 +2109,24 @@ func executeGitCommandWithTimeout(parent context.Context, scope WorkspaceScope, 
 	if len(argv) == 0 {
 		return "", errors.New("git command is required")
 	}
+	tempDir, err := os.MkdirTemp("", "swarm-git-")
+	if err != nil {
+		return "", fmt.Errorf("create private Git temp directory: %w", err)
+	}
+	defer os.RemoveAll(tempDir)
+
 	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, "git", argv...)
 	cmd.Dir = scope.PrimaryPath
-	cmd.Env = gitenv.FilterIdentityOverrides(os.Environ())
+	cmd.Env = privateTempEnvironment(gitenv.FilterIdentityOverrides(os.Environ()), tempDir)
 
 	capture := newCappedBuffer(maxCommandOutput)
 	cmd.Stdout = capture
 	cmd.Stderr = capture
 
-	err := cmd.Run()
+	err = cmd.Run()
 	timedOut := errors.Is(ctx.Err(), context.DeadlineExceeded)
 	wasTruncated := capture.Truncated()
 	rawOutput := capture.Bytes()
@@ -2152,6 +2160,7 @@ func executeGitCommandWithTimeout(parent context.Context, scope WorkspaceScope, 
 		"prompt_injection_tag": "tool_output_untrusted",
 		"safety":               buildUntrustedSafety(combined),
 	}
+	addManagedWorktreeGitEvidence(response, scope, exitCode, combined, tempDir)
 	encoded, marshalErr := json.Marshal(response)
 	if marshalErr != nil {
 		return "", marshalErr
@@ -2160,6 +2169,66 @@ func executeGitCommandWithTimeout(parent context.Context, scope WorkspaceScope, 
 		return string(encoded), fmt.Errorf("%s execution failed: %w", toolName, err)
 	}
 	return string(encoded), nil
+}
+
+func addManagedWorktreeGitEvidence(response map[string]any, scope WorkspaceScope, exitCode int, output, tempDir string) {
+	if !scope.WorktreeEnabled {
+		return
+	}
+	if root := strings.TrimSpace(scope.WorktreeRootPath); root != "" {
+		response["worktree_path"] = root
+	}
+	if branch := strings.TrimSpace(scope.WorktreeBranch); branch != "" {
+		response["branch"] = branch
+	}
+	if baseBranch := strings.TrimSpace(scope.WorktreeBaseBranch); baseBranch != "" {
+		response["base_branch"] = baseBranch
+	}
+	if baseCommit := strings.TrimSpace(scope.WorktreeBaseCommit); baseCommit != "" {
+		response["base_commit"] = baseCommit
+	}
+	evidenceEnv := privateTempEnvironment(gitenv.FilterIdentityOverrides(os.Environ()), tempDir)
+	if head, err := gitOutputForEvidence(scope.PrimaryPath, evidenceEnv, "rev-parse", "HEAD"); err == nil && head != "" {
+		response["head_oid"] = head
+	}
+	if status, err := gitOutputForEvidence(scope.PrimaryPath, evidenceEnv, "status", "--short"); err == nil {
+		files := taskChangedFilesFromStatus(status)
+		response["clean"] = len(files) == 0
+		response["dirty_count"] = len(files)
+		response["files"] = files
+	}
+	if exitCode != 0 {
+		response["failure_evidence"] = map[string]any{
+			"exit_code":                 exitCode,
+			"output":                    output,
+			"recover_existing_worktree": true,
+		}
+	}
+}
+
+func gitOutputForEvidence(dir string, env []string, argv ...string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), defaultGitTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", argv...)
+	cmd.Dir = dir
+	cmd.Env = env
+	output, err := cmd.Output()
+	return strings.TrimSpace(string(output)), err
+}
+
+func taskChangedFilesFromStatus(status string) []map[string]any {
+	files := make([]map[string]any, 0)
+	for _, line := range strings.Split(status, "\n") {
+		if len(line) < 3 {
+			continue
+		}
+		path := strings.TrimSpace(line[3:])
+		if path == "" {
+			continue
+		}
+		files = append(files, map[string]any{"path": path, "xy": line[:2]})
+	}
+	return files
 }
 
 func gitCommandSummary(toolName string, argv []string, exitCode int, timedOut, truncated, binarySuppressed bool) string {

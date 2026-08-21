@@ -59,6 +59,8 @@ func (s *Service) resolveRunWorkspaceScope(session pebblestore.SessionSnapshot, 
 			WorktreeEnabled:     true,
 			WorktreeRootPath:    resolvedPath,
 			WorktreeBranch:      strings.TrimSpace(session.WorktreeBranch),
+			WorktreeBaseBranch:  strings.TrimSpace(session.WorktreeBaseBranch),
+			WorktreeBaseCommit:  strings.TrimSpace(mapString(session.Metadata, "base_commit")),
 			SourceWorkspacePath: strings.TrimSpace(mapString(session.Metadata, "swarm_v3_source_workspace_path")),
 		}, nil
 	}

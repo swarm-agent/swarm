@@ -76,10 +76,12 @@ func TestRunWorkspaceScopeUsesManagedWorktreeAsPrimaryAndPromptsToolRoot(t *test
 		TemporaryWorkspaceRoots: []string{linked},
 		WorktreeEnabled:         true,
 		WorktreeRootPath:        worktree,
+		WorktreeBaseBranch:      "dev",
 		WorktreeBranch:          "agent/plan-worktree",
 		Metadata: map[string]any{
 			"swarm_v3_source_workspace_path":  source,
 			"swarm_v3_runtime_workspace_path": worktree,
+			"base_commit":                     strings.Repeat("a", 40),
 		},
 	}
 
@@ -87,7 +89,7 @@ func TestRunWorkspaceScopeUsesManagedWorktreeAsPrimaryAndPromptsToolRoot(t *test
 	if err != nil {
 		t.Fatalf("resolve managed worktree scope: %v", err)
 	}
-	if scope.PrimaryPath != worktree || !scope.WorktreeEnabled || scope.WorktreeRootPath != worktree || scope.WorktreeBranch != session.WorktreeBranch || scope.SourceWorkspacePath != source {
+	if scope.PrimaryPath != worktree || !scope.WorktreeEnabled || scope.WorktreeRootPath != worktree || scope.WorktreeBranch != session.WorktreeBranch || scope.WorktreeBaseBranch != session.WorktreeBaseBranch || scope.WorktreeBaseCommit != strings.Repeat("a", 40) || scope.SourceWorkspacePath != source {
 		t.Fatalf("managed worktree scope = %+v", scope)
 	}
 	assertStringSliceContains(t, scope.Roots, worktree)

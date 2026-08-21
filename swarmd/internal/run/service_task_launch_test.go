@@ -1305,7 +1305,7 @@ func TestApprovedCoderAllocatesFromSelectedSharedWorkspace(t *testing.T) {
 	if len(stub.allocatedPaths) != 1 || stub.allocatedPaths[0] != targetPath {
 		t.Fatalf("allocated paths = %#v, want %q", stub.allocatedPaths, targetPath)
 	}
-	if metadataStringForTest(launch.ChildSession.Metadata, "swarm_v3_source_workspace_path") != targetPath || metadataStringForTest(launch.ChildSession.Metadata, "swarm_v3_runtime_workspace_path") != clonePath {
+	if metadataStringForTest(launch.ChildSession.Metadata, "swarm_v3_source_workspace_path") != targetPath || metadataStringForTest(launch.ChildSession.Metadata, "swarm_v3_runtime_workspace_path") != clonePath || metadataStringForTest(launch.ChildSession.Metadata, "base_commit") != taskBase.BaseCommit {
 		t.Fatalf("shared workspace metadata = %#v", launch.ChildSession.Metadata)
 	}
 }
@@ -1339,7 +1339,7 @@ func TestApprovedCoderAllocatesIsolatedWorktreeScope(t *testing.T) {
 		t.Fatalf("prepare approved Coder: %v", err)
 	}
 	child := launch.ChildSession
-	if stub.allocations != 1 || child.WorkspacePath != clonePath || child.WorktreeRootPath != clonePath || !child.WorktreeEnabled {
+	if stub.allocations != 1 || child.WorkspacePath != clonePath || child.WorktreeRootPath != clonePath || !child.WorktreeEnabled || metadataStringForTest(child.Metadata, "base_commit") != taskBase.BaseCommit {
 		t.Fatalf("Coder isolation facts: allocations=%d child=%#v", stub.allocations, child)
 	}
 	if len(child.TemporaryWorkspaceRoots) != 0 {

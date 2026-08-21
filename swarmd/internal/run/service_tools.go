@@ -1204,6 +1204,11 @@ func (s *Service) prepareDelegatedSubagentLaunchWithProfile(parentSession pebble
 		childMetadata["worktree_path"] = childWorktreeRootPath
 		childMetadata["child_branch"] = childWorktreeBranch
 		childMetadata["worktree_base_branch"] = childWorktreeBaseBranch
+		if launch.TaskBase != nil {
+			childMetadata["repository_root"] = strings.TrimSpace(launch.TaskBase.RepoRoot)
+			childMetadata["parent_branch"] = strings.TrimSpace(launch.TaskBase.ParentBranch)
+			childMetadata["base_commit"] = strings.TrimSpace(launch.TaskBase.BaseCommit)
+		}
 	}
 	nowMS := time.Now().UnixMilli()
 	childSession := pebblestore.SessionSnapshot{

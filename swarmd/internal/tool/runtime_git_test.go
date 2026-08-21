@@ -34,6 +34,78 @@ func TestExecuteGitCommitUsesConfiguredIdentityAndIgnoresEnvironmentOverrides(t 
 	}
 }
 
+func TestExecuteGitCommitProvidesPrivateTempEnvironmentAndRecoveryEvidence(t *testing.T) {
+	repo := t.TempDir()
+	runGitTestCommand(t, repo, "init")
+	runGitTestCommand(t, repo, "config", "user.name", "Test User")
+	runGitTestCommand(t, repo, "config", "user.email", "test@example.invalid")
+	if err := os.WriteFile(filepath.Join(repo, "note.txt"), []byte("changed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGitTestCommand(t, repo, "add", "note.txt")
+	hooks := filepath.Join(repo, ".git", "hooks")
+	tempDirRecord := filepath.Join(t.TempDir(), "hook-tmpdir")
+	hook := "#!/usr/bin/env bash\nset -euo pipefail\ntest -n \"$TMPDIR\"\ntest \"$TMPDIR\" = \"$TMP\"\ntest \"$TMPDIR\" = \"$TEMP\"\ntest -d \"$TMPDIR\"\nprintf '%s' \"$TMPDIR\" > \"" + tempDirRecord + "\"\n"
+	if err := os.WriteFile(filepath.Join(hooks, "pre-commit"), []byte(hook), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	scope := WorkspaceScope{PrimaryPath: repo, WorktreeEnabled: true, WorktreeRootPath: repo, WorktreeBranch: "agent/test", WorktreeBaseBranch: "dev", WorktreeBaseCommit: strings.Repeat("a", 40)}
+	output, err := executeGitCommit(context.Background(), scope, map[string]any{"message": "private temp"})
+	if err != nil {
+		t.Fatalf("executeGitCommit() error = %v output=%s", err, output)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(output), &payload); err != nil {
+		t.Fatalf("decode output: %v", err)
+	}
+	if payload["branch"] != "agent/test" || payload["base_commit"] != strings.Repeat("a", 40) || payload["head_oid"] == "" || payload["clean"] != true {
+		t.Fatalf("managed worktree evidence = %s", output)
+	}
+	tempDirBytes, err := os.ReadFile(tempDirRecord)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(string(tempDirBytes)); !os.IsNotExist(err) {
+		t.Fatalf("private Git temp directory was not removed: %q err=%v", tempDirBytes, err)
+	}
+}
+
+func TestExecuteGitCommitFailurePreservesDirtyRecoveryEvidence(t *testing.T) {
+	repo := t.TempDir()
+	runGitTestCommand(t, repo, "init")
+	runGitTestCommand(t, repo, "config", "user.name", "Test User")
+	runGitTestCommand(t, repo, "config", "user.email", "test@example.invalid")
+	if err := os.WriteFile(filepath.Join(repo, "note.txt"), []byte("changed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGitTestCommand(t, repo, "add", "note.txt")
+	hook := "#!/usr/bin/env bash\necho hook rejected commit >&2\nexit 1\n"
+	if err := os.WriteFile(filepath.Join(repo, ".git", "hooks", "pre-commit"), []byte(hook), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	output, err := executeGitCommit(context.Background(), WorkspaceScope{PrimaryPath: repo, WorktreeEnabled: true, WorktreeRootPath: repo, WorktreeBranch: "agent/test"}, map[string]any{"message": "blocked"})
+	if err != nil {
+		t.Fatalf("ordinary Git exit should be represented in tool output: %v", err)
+	}
+	var payload struct {
+		ExitCode        int  `json:"exit_code"`
+		Clean           bool `json:"clean"`
+		DirtyCount      int  `json:"dirty_count"`
+		FailureEvidence struct {
+			Recover bool   `json:"recover_existing_worktree"`
+			Output  string `json:"output"`
+		} `json:"failure_evidence"`
+	}
+	if err := json.Unmarshal([]byte(output), &payload); err != nil {
+		t.Fatalf("decode output: %v", err)
+	}
+	if payload.ExitCode == 0 || payload.Clean || payload.DirtyCount != 1 || !payload.FailureEvidence.Recover || !strings.Contains(payload.FailureEvidence.Output, "hook rejected commit") {
+		t.Fatalf("failure recovery evidence = %s", output)
+	}
+}
+
 func TestExecuteGitAddTreatsLeadingDashPathspecAsAPath(t *testing.T) {
 	repo := t.TempDir()
 	runGitTestCommand(t, repo, "init")
