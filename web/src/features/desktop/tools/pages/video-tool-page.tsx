@@ -606,6 +606,26 @@ async function fetchVideoThreads(workspacePath: string): Promise<VideoThreadReco
     .filter((thread): thread is VideoThreadRecord => Boolean(thread))
 }
 
+function videoThreadFromSessionProject(
+  sessionId: string,
+  workspace: WorkspaceEntry | null,
+  session?: { title?: string; created_at?: number; updated_at?: number },
+): VideoThreadRecord | null {
+  const id = sessionId.trim()
+  if (!id || !workspace) return null
+  return {
+    id,
+    title: String(session?.title ?? '').trim() || 'Video session',
+    workspacePath: workspace.path,
+    workspaceName: workspace.workspaceName,
+    videoFolders: [],
+    videoClips: [],
+    videoClipOrder: [],
+    createdAt: typeof session?.created_at === 'number' ? session.created_at : 0,
+    updatedAt: typeof session?.updated_at === 'number' ? session.updated_at : 0,
+  }
+}
+
 export function videoStudioSessionMetadata(): Record<string, unknown> {
   return {
     experience: 'video_studio',
@@ -1188,7 +1208,16 @@ export function VideoToolPage() {
     enabled: selectedWorkspacePath.trim() !== '',
     staleTime: 15_000,
   })
-  const videoThreads = videoThreadsQuery.data ?? []
+  const routeVideoSession = useDesktopV3CacheSelector((state) => {
+    const record = routeVideoSessionId ? state.sessionsById[routeVideoSessionId] : undefined
+    return record?.kind === 'full' ? record.session : undefined
+  })
+  const videoThreads = useMemo(() => {
+    const threads = videoThreadsQuery.data ?? []
+    if (!routeVideoSessionId || threads.some((thread) => thread.id === routeVideoSessionId)) return threads
+    const routed = videoThreadFromSessionProject(routeVideoSessionId, selectedWorkspace, routeVideoSession)
+    return routed ? [routed, ...threads] : threads
+  }, [routeVideoSession, routeVideoSessionId, selectedWorkspace, videoThreadsQuery.data])
 
   useEffect(() => {
     if (routeVideoSessionId && routeVideoSessionId !== selectedThreadId) {

@@ -14,7 +14,7 @@ test('Video Studio has editor and canonical video routes separate from Video Too
 
 test('Video Studio session view preserves canonical V3 hydration without forcing video mode', () => {
   assert.match(desktopSource, /selectAndHydrateDesktopV3Session\(sessionId\)/)
-  assert.match(desktopSource, /routeSessionIsVideoStudio \? \(/)
+  assert.match(desktopSource, /routeSessionHasVideoProject = routeSessionIsVideoStudio \|\| routeSessionVideoProjectQuery\.data === true/)
   assert.match(desktopSource, /to="\/\$workspaceSlug\/studio\/\$videoSessionId"/)
   assert.match(desktopSource, /Video mode/)
   assert.match(desktopSource, /selectDesktopVideoStudioRows/)

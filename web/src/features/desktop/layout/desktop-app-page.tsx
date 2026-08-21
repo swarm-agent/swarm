@@ -68,6 +68,7 @@ import { messageMutationResponseToAction, selectSession, sessionCreateResponseTo
 import { selectAndHydrateDesktopV3Session } from '../state/desktop-v3-session-hydrator'
 import type { DesktopV3SidebarRow, RenderedSessionMessages } from '../state/desktop-v3-cache-selectors'
 import { fetchAndApplyDesktopV3PlanSnapshot } from '../state/desktop-v3-session-api'
+import { sessionHasVideoProject, sessionVideoProjectPresenceKey, videoProposalProjectionSequence } from '../tools/video-studio/video-project-presence'
 import { archiveDesktopV3Sessions } from '../session-v3/plan-execution-api'
 import { DESKTOP_V3_SIDEBAR_PINNED_METADATA_KEY, updateAndApplySessionV3DesktopSidebarPinned, updateSessionV3Title } from '../session-v3/api'
 import { sessionWorkspaceBindingId } from '../services/session-workspace'
@@ -3116,6 +3117,16 @@ export function DesktopAppPage() {
   const routeSessionIsVideoStudio = useDesktopV3CacheSelector((state) => (
     routeSessionId ? isDesktopV3VideoStudioRecord(state.sessionsById[routeSessionId]) : false
   ))
+  const routeSessionVideoProjectSequence = useDesktopV3CacheSelector((state) => (
+    routeSessionId ? videoProposalProjectionSequence(state, routeSessionId) : 0
+  ))
+  const routeSessionVideoProjectQuery = useQuery({
+    queryKey: sessionVideoProjectPresenceKey(routeSessionId, routeSessionVideoProjectSequence),
+    queryFn: () => sessionHasVideoProject(routeSessionId),
+    enabled: routeSessionId.trim() !== '' && !routeSessionIsVideoStudio,
+    staleTime: 15_000,
+  })
+  const routeSessionHasVideoProject = routeSessionIsVideoStudio || routeSessionVideoProjectQuery.data === true
   const selectedDesktopV3Messages = useDesktopV3CacheSelector((state) => (
     routeSessionId ? selectRenderedSessionMessages(state, routeSessionId) : EMPTY_DESKTOP_V3_RENDERED_MESSAGES
   ), desktopV3RenderedMessagesEqual)
@@ -5517,8 +5528,8 @@ export function DesktopAppPage() {
               }
             }}
             sessionActions={activeRouteSessionActions}
-            studioMode={routeSessionIsVideoStudio ? 'session' : null}
-            onToggleStudioMode={routeSessionIsVideoStudio ? () => {
+            studioMode={routeSessionHasVideoProject ? 'session' : null}
+            onToggleStudioMode={routeSessionHasVideoProject ? () => {
               void navigate({ to: '/$workspaceSlug/studio/$videoSessionId', params: { workspaceSlug: routeWorkspaceSlug, videoSessionId: routeSessionId } })
             } : undefined}
             onCompactingChange={handleCompactingSessionChange}
