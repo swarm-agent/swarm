@@ -136,7 +136,11 @@ export async function listVideoEditProposals(sessionId: string, projectId: strin
     `/v3/sessions/${encodeURIComponent(sessionId)}/video/projects/${encodeURIComponent(projectId)}/edit-proposals`,
   )
   return Array.isArray(response.proposals)
-    ? response.proposals.map((proposal) => ({ ...proposal, operations: Array.isArray(proposal.operations) ? proposal.operations : [] }))
+    ? response.proposals.map((proposal) => ({
+      ...proposal,
+      operations: Array.isArray(proposal.operations) ? proposal.operations : [],
+      plan: proposal.plan && Array.isArray(proposal.plan.parts) ? proposal.plan : undefined,
+    }))
     : []
 }
 
@@ -304,7 +308,7 @@ export function VideoProposalReview(props: {
           const stale = proposal.base_revision_id !== props.currentRevisionId
           const isPlan = Boolean(proposal.plan)
           const isPlanRevision = proposal.plan?.kind === 'revision'
-          const selectedPlanPartIds = proposal.plan?.parts.filter((part) => selected[`${proposal.id}:part:${part.id}`] !== false).map((part) => part.id) ?? []
+          const selectedPlanPartIds = (proposal.plan?.parts ?? []).filter((part) => selected[`${proposal.id}:part:${part.id}`] !== false).map((part) => part.id)
           const selectedIds = proposal.operations.filter((operation) => selected[`${proposal.id}:${operation.id}`] !== false).map((operation) => operation.id)
           const planOperations = proposal.operations.filter((operation) => (operation.type === 'add_clip' || operation.type === 'update_clip') && operation.clip?.source_kind === 'text')
           const supportingOperations = proposal.operations.filter((operation) => !planOperations.includes(operation))

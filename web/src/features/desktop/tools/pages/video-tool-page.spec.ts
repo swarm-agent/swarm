@@ -139,6 +139,21 @@ test('Video Studio observes only authoritative video-project events for live pen
   assert.equal(videoProposalProjectionSequence({ eventsBySession: {} }, 'session-1'), 0)
 })
 
+test('Video Studio normalizes nullable proposal arrays from durable wire state', async () => {
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = (async () => new Response(JSON.stringify({ proposals: [{
+    id: 'proposal-null', project_id: 'project-1', base_revision_id: 'revision-1', base_revision_number: 1,
+    status: 'pending', operations: null, plan: { kind: 'initial', parts: null }, created_at: 1, updated_at: 1,
+  }] }), { status: 200, headers: { 'Content-Type': 'application/json' } })) as typeof fetch
+  try {
+    const proposals = await import('../video-studio/video-studio-surface').then(({ listVideoEditProposals }) => listVideoEditProposals('session-1', 'project-1'))
+    assert.deepEqual(proposals[0].operations, [])
+    assert.equal(proposals[0].plan, undefined)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
 test('Video Studio ignores a stale proposal reload that finishes after the realtime reload', async () => {
   const accepted: VideoEditProposalWire = {
     id: 'accepted', project_id: 'project-1', base_revision_id: 'revision-1', base_revision_number: 1,
