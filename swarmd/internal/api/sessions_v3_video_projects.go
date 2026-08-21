@@ -1,12 +1,14 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
 	"mime"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -135,6 +137,8 @@ func (s *Server) handleSessionV3VideoProjects(w http.ResponseWriter, r *http.Req
 	}
 }
 
+const videoSourcePreviewTimeout = 5 * time.Minute
+
 func (s *Server) handleSessionV3VideoSourceMedia(w http.ResponseWriter, r *http.Request, principal identity.Principal, sessionID string) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		methodNotAllowed(w)
@@ -184,17 +188,132 @@ func (s *Server) handleSessionV3VideoSourceMedia(w http.ResponseWriter, r *http.
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
-	disposition := mime.FormatMediaType("inline", map[string]string{"filename": record.DisplayName})
+	if videoSourceNeedsBrowserPreview(record) {
+		preview, previewInfo, previewErr := s.ensureVideoSourceBrowserPreview(r.Context(), record, file)
+		if previewErr != nil {
+			writeError(w, http.StatusUnprocessableEntity, previewErr)
+			return
+		}
+		defer preview.Close()
+		serveVideoSourceContent(w, r, strings.TrimSuffix(record.DisplayName, filepath.Ext(record.DisplayName))+"-preview.mp4", "video/mp4", previewInfo, preview)
+		return
+	}
+	serveVideoSourceContent(w, r, record.DisplayName, record.MIMEType, info, file)
+}
+
+func videoSourceNeedsBrowserPreview(record pebblestore.VideoSourceRecord) bool {
+	extension := strings.ToLower(filepath.Ext(record.DisplayName))
+	return extension == ".mkv" || strings.EqualFold(strings.TrimSpace(record.MIMEType), "video/x-matroska")
+}
+
+func (s *Server) ensureVideoSourceBrowserPreview(ctx context.Context, record pebblestore.VideoSourceRecord, source *os.File) (*os.File, os.FileInfo, error) {
+	if strings.TrimSpace(s.dataDir) == "" {
+		return nil, nil, errors.New("video source preview storage is not configured")
+	}
+	previewDir := filepath.Join(s.dataDir, "video-source-previews")
+	if err := os.MkdirAll(previewDir, 0o700); err != nil {
+		return nil, nil, fmt.Errorf("create video source preview storage: %w", err)
+	}
+	previewPath := filepath.Join(previewDir, strings.TrimPrefix(record.Ref, "videosrc_")+"-"+record.SourceFingerprint+".mp4")
+	if preview, info, err := openVideoSourcePreview(previewPath); err == nil {
+		return preview, info, nil
+	}
+	temporary, err := os.CreateTemp(previewDir, ".video-source-preview-*.mp4")
+	if err != nil {
+		return nil, nil, fmt.Errorf("create video source preview: %w", err)
+	}
+	temporaryPath := temporary.Name()
+	if closeErr := temporary.Close(); closeErr != nil {
+		_ = os.Remove(temporaryPath)
+		return nil, nil, fmt.Errorf("close video source preview target: %w", closeErr)
+	}
+	defer os.Remove(temporaryPath)
+
+	if _, err := source.Seek(0, io.SeekStart); err != nil {
+		return nil, nil, fmt.Errorf("rewind video source: %w", err)
+	}
+	transcodeCtx, cancel := context.WithTimeout(ctx, videoSourcePreviewTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(transcodeCtx, "ffmpeg",
+		"-hide_banner", "-loglevel", "error", "-nostdin",
+		"-i", "pipe:0", "-map", "0:v:0", "-an",
+		"-c:v", "libx264", "-preset", "veryfast", "-crf", "22", "-pix_fmt", "yuv420p",
+		"-movflags", "+faststart", "-y", temporaryPath,
+	)
+	cmd.Stdin = source
+	var stderr strings.Builder
+	cmd.Stderr = &boundedVideoPreviewError{writer: &stderr, remaining: 16 << 10}
+	if err := cmd.Run(); err != nil {
+		if errors.Is(transcodeCtx.Err(), context.DeadlineExceeded) {
+			return nil, nil, errors.New("browser-compatible video source preview timed out")
+		}
+		detail := strings.TrimSpace(stderr.String())
+		if detail == "" {
+			detail = err.Error()
+		}
+		return nil, nil, fmt.Errorf("create browser-compatible video source preview: %s", detail)
+	}
+	if err := os.Chmod(temporaryPath, 0o600); err != nil {
+		return nil, nil, fmt.Errorf("secure video source preview: %w", err)
+	}
+	if err := os.Rename(temporaryPath, previewPath); err != nil {
+		if preview, info, openErr := openVideoSourcePreview(previewPath); openErr == nil {
+			return preview, info, nil
+		}
+		return nil, nil, fmt.Errorf("install video source preview: %w", err)
+	}
+	preview, info, err := openVideoSourcePreview(previewPath)
+	if err != nil {
+		return nil, nil, fmt.Errorf("open video source preview: %w", err)
+	}
+	return preview, info, nil
+}
+
+func openVideoSourcePreview(path string) (*os.File, os.FileInfo, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, nil, err
+	}
+	info, err := file.Stat()
+	if err != nil || !info.Mode().IsRegular() || info.Size() <= 0 {
+		file.Close()
+		if err == nil {
+			err = errors.New("video source preview is empty")
+		}
+		return nil, nil, err
+	}
+	return file, info, nil
+}
+
+func serveVideoSourceContent(w http.ResponseWriter, r *http.Request, displayName, mediaType string, info os.FileInfo, file *os.File) {
+	disposition := mime.FormatMediaType("inline", map[string]string{"filename": displayName})
 	if disposition == "" {
 		disposition = "inline"
 	}
-	w.Header().Set("Content-Type", record.MIMEType)
+	w.Header().Set("Content-Type", mediaType)
 	w.Header().Set("Content-Disposition", disposition)
 	w.Header().Set("X-Content-Type-Options", "nosniff")
-	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Cache-Control", "private, no-cache")
 	w.Header().Set("Accept-Ranges", "bytes")
 	w.Header().Set("Referrer-Policy", "no-referrer")
-	http.ServeContent(w, r, record.DisplayName, info.ModTime(), file)
+	http.ServeContent(w, r, displayName, info.ModTime(), file)
+}
+
+type boundedVideoPreviewError struct {
+	writer    io.Writer
+	remaining int
+}
+
+func (w *boundedVideoPreviewError) Write(payload []byte) (int, error) {
+	original := len(payload)
+	if len(payload) > w.remaining {
+		payload = payload[:w.remaining]
+	}
+	if len(payload) > 0 {
+		_, _ = w.writer.Write(payload)
+		w.remaining -= len(payload)
+	}
+	return original, nil
 }
 
 func (s *Server) handleSessionV3VideoSubpath(w http.ResponseWriter, r *http.Request, principal identity.Principal, sessionID, subpath string) {
