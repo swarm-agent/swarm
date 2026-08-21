@@ -3957,7 +3957,11 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 			return "", fmt.Errorf("task launches[%d] workspace target: %w", i, targetErr)
 		}
 		launchSpecs[i].TargetWorkspacePath = targetPath
+		if parsed.Program != nil && i < len(parsed.Program.Jobs) {
+			parsed.Program.Jobs[i].TargetWorkspacePath = targetPath
+		}
 	}
+	parsed.Launches = append([]taskLaunchSpec(nil), launchSpecs...)
 	taskCallID := strings.TrimSpace(call.CallID)
 	if taskCallID == "" {
 		taskCallID = fmt.Sprintf("task_%d", time.Now().UnixMilli())
@@ -4121,7 +4125,8 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 	if len(coderIndexes) > 1 {
 		for left := 0; left < len(coderIndexes); left++ {
 			for right := left + 1; right < len(coderIndexes); right++ {
-				if taskOwnedScopesOverlap(launchSpecs[coderIndexes[left]].OwnedScope, launchSpecs[coderIndexes[right]].OwnedScope) {
+				leftSpec, rightSpec := launchSpecs[coderIndexes[left]], launchSpecs[coderIndexes[right]]
+				if strings.TrimSpace(leftSpec.TargetWorkspacePath) == strings.TrimSpace(rightSpec.TargetWorkspacePath) && taskOwnedScopesOverlap(leftSpec.OwnedScope, rightSpec.OwnedScope) {
 					collisionWarnings = append(collisionWarnings, fmt.Sprintf("owned scopes overlap between launches[%d] and launches[%d]; integrate these child commits sequentially and resolve conflicts explicitly", coderIndexes[left], coderIndexes[right]))
 				}
 			}

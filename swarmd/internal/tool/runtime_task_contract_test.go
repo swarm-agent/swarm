@@ -133,8 +133,10 @@ func TestTaskDefinitionKeepsProviderSchemaSimpleAndDocumentsRuntimeRequirements(
 	if !ok {
 		t.Fatalf("task program job item schema missing: %#v", jobArray)
 	}
-	if _, ok := itemsProperty(jobItems, "animation_profile"); !ok {
-		t.Fatalf("task program job schema missing animation_profile: %#v", jobItems)
+	for _, key := range []string{"animation_profile", "workspace_path"} {
+		if _, ok := itemsProperty(jobItems, key); !ok {
+			t.Fatalf("task program job schema missing %s: %#v", key, jobItems)
+		}
 	}
 	if !definitionTextContains(taskDefinition, "ideally three words") || !definitionTextContains(taskDefinition, "full instructive") {
 		t.Fatalf("task definition must separate concise cosmetic titles from full child instructions: %#v", taskDefinition)

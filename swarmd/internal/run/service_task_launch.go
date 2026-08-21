@@ -43,16 +43,17 @@ const (
 var taskProgramIDPattern = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,63}$`)
 
 type taskCallArguments struct {
-	Action          string
-	Description     string
-	Prompt          string
-	Mode            string
-	Swarm           *taskSwarmSpec
-	Program         *taskProgramSpec
-	ProgramID       string
-	PlannedProgram  bool
-	Launches        []taskLaunchSpec
-	SourceArguments map[string]any
+	Action               string
+	Description          string
+	Prompt               string
+	Mode                 string
+	ProgramWorkspacePath string
+	Swarm                *taskSwarmSpec
+	Program              *taskProgramSpec
+	ProgramID            string
+	PlannedProgram       bool
+	Launches             []taskLaunchSpec
+	SourceArguments      map[string]any
 }
 
 type taskProgramSpec struct {
@@ -73,6 +74,7 @@ type taskProgramJob struct {
 	StageID               string                                         `json:"stage_id"`
 	DependsOn             []string                                       `json:"depends_on,omitempty"`
 	RequestedSubagentType string                                         `json:"agent_type"`
+	TargetWorkspacePath   string                                         `json:"workspace_path,omitempty"`
 	MetaPrompt            string                                         `json:"meta_prompt"`
 	AssignmentLabel       string                                         `json:"title"`
 	Deliverable           string                                         `json:"deliverable"`
@@ -464,18 +466,19 @@ func parseTaskCallArguments(arguments string) (taskCallArguments, error) {
 		}
 		return taskCallArguments{
 			Action: action, Description: description, Prompt: prompt, Mode: mode,
-			Program: program, ProgramID: program.ID, Launches: launches, SourceArguments: args,
+			ProgramWorkspacePath: strings.TrimSpace(mapString(args, "workspace_path")),
+			Program:              program, ProgramID: program.ID, Launches: launches, SourceArguments: args,
 		}, nil
 	}
 	if action == taskProgramActionStart && !hasProgram {
 		for key := range args {
 			switch key {
-			case "action", "description", "prompt", "message", "mode":
+			case "action", "description", "prompt", "message", "mode", "workspace_path":
 			default:
 				return taskCallArguments{}, fmt.Errorf("planned task program start contains unsupported field %q", key)
 			}
 		}
-		return taskCallArguments{Action: action, Description: description, Prompt: prompt, Mode: mode, PlannedProgram: true, SourceArguments: args}, nil
+		return taskCallArguments{Action: action, Description: description, Prompt: prompt, Mode: mode, ProgramWorkspacePath: strings.TrimSpace(mapString(args, "workspace_path")), PlannedProgram: true, SourceArguments: args}, nil
 	}
 	if action == taskProgramActionStatus {
 		if !taskProgramIDPattern.MatchString(programID) {
@@ -568,7 +571,7 @@ func parseTaskCallArguments(arguments string) (taskCallArguments, error) {
 func parseTaskProgram(args map[string]any, prompt string) (*taskProgramSpec, []taskLaunchSpec, error) {
 	for key := range args {
 		switch key {
-		case "action", "description", "prompt", "message", "mode", "program":
+		case "action", "description", "prompt", "message", "mode", "workspace_path", "program":
 		default:
 			return nil, nil, fmt.Errorf("task program start contains unsupported field %q", key)
 		}
@@ -660,7 +663,7 @@ func parseTaskProgram(args map[string]any, prompt string) (*taskProgramSpec, []t
 		}
 		for key := range row {
 			switch key {
-			case "id", "stage_id", "depends_on", "agent_type", "subagent_type", "meta_prompt", "title", "deliverable", "owned_scope", "output_mode", "output_requirements", "animation_profile", "acceptance_criteria", "dependency_evidence":
+			case "id", "stage_id", "depends_on", "agent_type", "subagent_type", "meta_prompt", "title", "deliverable", "workspace_path", "owned_scope", "output_mode", "output_requirements", "animation_profile", "acceptance_criteria", "dependency_evidence":
 			default:
 				return nil, nil, fmt.Errorf("task program jobs[%d] contains unsupported field %q", i, key)
 			}
@@ -673,6 +676,7 @@ func parseTaskProgram(args map[string]any, prompt string) (*taskProgramSpec, []t
 		job := taskProgramJob{
 			ID: strings.TrimSpace(mapString(row, "id")), StageID: strings.TrimSpace(mapString(row, "stage_id")),
 			RequestedSubagentType: strings.TrimSpace(firstNonEmptyString(agentType, subagentType)),
+			TargetWorkspacePath:   strings.TrimSpace(mapString(row, "workspace_path")),
 			MetaPrompt:            strings.TrimSpace(mapString(row, "meta_prompt")), AssignmentLabel: strings.TrimSpace(mapString(row, "title")),
 			Deliverable: strings.TrimSpace(mapString(row, "deliverable")), DependencyEvidence: strings.TrimSpace(mapString(row, "dependency_evidence")),
 		}
@@ -696,6 +700,12 @@ func parseTaskProgram(args map[string]any, prompt string) (*taskProgramSpec, []t
 		default:
 			return nil, nil, fmt.Errorf("task program jobs[%d] agent_type must be coder, finder, or designer", i)
 		}
+		if job.TargetWorkspacePath == "" && (job.RequestedSubagentType == "coder" || job.RequestedSubagentType == "finder") {
+			job.TargetWorkspacePath = strings.TrimSpace(mapString(args, "workspace_path"))
+		}
+		if job.TargetWorkspacePath != "" && job.RequestedSubagentType == "designer" {
+			return nil, nil, fmt.Errorf("task program jobs[%d] workspace_path is supported only for Coder or Finder", i)
+		}
 		if job.MetaPrompt == "" || job.AssignmentLabel == "" || job.Deliverable == "" || job.DependencyEvidence == "" {
 			return nil, nil, fmt.Errorf("task program jobs[%d] requires meta_prompt, title, deliverable, and dependency_evidence", i)
 		}
@@ -709,7 +719,7 @@ func parseTaskProgram(args map[string]any, prompt string) (*taskProgramSpec, []t
 			return nil, nil, err
 		}
 		job.OwnedScope = ownedScope
-		launch := taskLaunchSpec{RequestedSubagentType: job.RequestedSubagentType, OwnedScope: append([]string(nil), ownedScope...)}
+		launch := taskLaunchSpec{RequestedSubagentType: job.RequestedSubagentType, TargetWorkspacePath: job.TargetWorkspacePath, OwnedScope: append([]string(nil), ownedScope...)}
 		if err := applyTaskDesignerOutputMode(&launch, mapString(row, "output_mode"), fmt.Sprintf("task program jobs[%d]", i)); err != nil {
 			return nil, nil, err
 		}
@@ -766,6 +776,9 @@ func parseTaskProgram(args map[string]any, prompt string) (*taskProgramSpec, []t
 		stageJobCounts[job.StageID]++
 		program.Jobs = append(program.Jobs, job)
 		sourceArguments := map[string]any{"program_id": program.ID, "program_job_id": job.ID, "program_stage_id": job.StageID, "acceptance_criteria": append([]string(nil), job.AcceptanceCriteria...), "depends_on": append([]string(nil), job.DependsOn...)}
+		if job.TargetWorkspacePath != "" {
+			sourceArguments["workspace_path"] = job.TargetWorkspacePath
+		}
 		if job.OutputRequirements != nil {
 			sourceArguments["output_requirements"] = cloneTaskOutputRequirements(job.OutputRequirements)
 		}
@@ -773,7 +786,7 @@ func parseTaskProgram(args map[string]any, prompt string) (*taskProgramSpec, []t
 			sourceArguments["animation_profile"] = cloneTaskAnimationProfile(job.AnimationProfile)
 		}
 		launches = append(launches, taskLaunchSpec{
-			RequestedSubagentType: job.RequestedSubagentType, MetaPrompt: job.MetaPrompt, AssignmentLabel: job.AssignmentLabel,
+			RequestedSubagentType: job.RequestedSubagentType, TargetWorkspacePath: job.TargetWorkspacePath, MetaPrompt: job.MetaPrompt, AssignmentLabel: job.AssignmentLabel,
 			Deliverable: job.Deliverable, OwnedScope: append([]string(nil), job.OwnedScope...), OutputMode: job.OutputMode, OutputRequirements: cloneTaskOutputRequirements(job.OutputRequirements), AnimationProfile: cloneTaskAnimationProfile(job.AnimationProfile), DependencyEvidence: job.DependencyEvidence,
 			SourceArguments: sourceArguments,
 		})
@@ -789,13 +802,16 @@ func parseTaskProgram(args map[string]any, prompt string) (*taskProgramSpec, []t
 			if left.StageID != right.StageID {
 				continue
 			}
-			if left.RequestedSubagentType == "coder" && right.RequestedSubagentType == "coder" && taskOwnedScopesOverlap(left.OwnedScope, right.OwnedScope) {
+			if left.RequestedSubagentType == "coder" && right.RequestedSubagentType == "coder" && strings.TrimSpace(left.TargetWorkspacePath) == strings.TrimSpace(right.TargetWorkspacePath) && taskOwnedScopesOverlap(left.OwnedScope, right.OwnedScope) {
 				return nil, nil, fmt.Errorf("task program concurrent Coder owned scopes overlap between jobs %q and %q", left.ID, right.ID)
 			}
 			if left.RequestedSubagentType == "designer" && right.RequestedSubagentType == "designer" && left.OutputMode == taskOutputModeWorkspace && right.OutputMode == taskOutputModeWorkspace && taskOwnedScopesOverlap(left.OwnedScope, right.OwnedScope) {
 				return nil, nil, fmt.Errorf("task program concurrent workspace Designer owned scopes overlap between jobs %q and %q", left.ID, right.ID)
 			}
 		}
+	}
+	if err := validateTaskProgramCoderWorkspaceTargets(program.Jobs); err != nil {
+		return nil, nil, err
 	}
 	if program.MaxConcurrency != nil && *program.MaxConcurrency > len(program.Jobs) {
 		return nil, nil, errors.New("task program max_concurrency cannot exceed total job count")
@@ -805,6 +821,25 @@ func parseTaskProgram(args map[string]any, prompt string) (*taskProgramSpec, []t
 	}
 	_ = prompt // The parent prompt remains a manifest field; each job assignment is authoritative for child execution.
 	return program, launches, nil
+}
+
+func validateTaskProgramCoderWorkspaceTargets(jobs []taskProgramJob) error {
+	target := ""
+	found := false
+	for _, job := range jobs {
+		if !agentruntime.IsCoderAgentName(job.RequestedSubagentType) {
+			continue
+		}
+		jobTarget := strings.TrimSpace(job.TargetWorkspacePath)
+		if !found {
+			target, found = jobTarget, true
+			continue
+		}
+		if jobTarget != target {
+			return errors.New("task program Coder jobs must target one workspace so staged integration has one durable parent Git history")
+		}
+	}
+	return nil
 }
 
 func taskProgramStringArray(raw map[string]any, key, label string, required bool) ([]string, error) {
@@ -3274,15 +3309,19 @@ func (s *Service) buildTaskLaunchPermissionPayload(sessionID, sessionMode string
 	if ok {
 		if parsed.Program != nil {
 			hasCoder := false
+			coderWorkspacePath := ""
 			for _, job := range parsed.Program.Jobs {
-				hasCoder = hasCoder || agentruntime.IsCoderAgentName(job.RequestedSubagentType)
+				if agentruntime.IsCoderAgentName(job.RequestedSubagentType) {
+					hasCoder = true
+					coderWorkspacePath = strings.TrimSpace(firstNonEmptyString(job.TargetWorkspacePath, parent.WorkspacePath))
+				}
 			}
 			if hasCoder {
 				if s.worktrees == nil {
 					return taskLaunchManifest{}, errors.New("task program Coder jobs require separate worktree isolation")
 				}
-				if _, baseErr := s.worktrees.ResolveTaskBase(parent.WorkspacePath); baseErr != nil {
-					return taskLaunchManifest{}, fmt.Errorf("validate task program parent Git state: %w", baseErr)
+				if _, baseErr := s.worktrees.ResolveTaskBase(coderWorkspacePath); baseErr != nil {
+					return taskLaunchManifest{}, fmt.Errorf("validate task program target Git state for %q: %w", coderWorkspacePath, baseErr)
 				}
 			}
 		}

@@ -78,6 +78,7 @@ type TaskProgramJobSpec struct {
 	StageID            string                             `json:"stage_id"`
 	DependsOn          []string                           `json:"depends_on,omitempty"`
 	AgentType          string                             `json:"agent_type"`
+	WorkspacePath      string                             `json:"workspace_path,omitempty"`
 	Title              string                             `json:"title"`
 	MetaPrompt         string                             `json:"meta_prompt"`
 	Deliverable        string                             `json:"deliverable"`
@@ -430,7 +431,7 @@ func validateTaskProgramRecord(record TaskProgramRecord) error {
 		}
 	}
 	for _, job := range record.Definition.Jobs {
-		if len(job.OwnedScope) > maxTaskProgramScopeRows || len(job.AcceptanceCriteria) > maxTaskProgramScopeRows || len([]rune(job.MetaPrompt)) > maxTaskProgramTextRunes || len([]rune(job.Deliverable)) > maxTaskProgramTextRunes {
+		if len(job.OwnedScope) > maxTaskProgramScopeRows || len(job.AcceptanceCriteria) > maxTaskProgramScopeRows || len([]rune(job.WorkspacePath)) > maxTaskProgramTextRunes || len([]rune(job.MetaPrompt)) > maxTaskProgramTextRunes || len([]rune(job.Deliverable)) > maxTaskProgramTextRunes {
 			return fmt.Errorf("task program job %q exceeds bounded definition limits", job.ID)
 		}
 		mode := strings.TrimSpace(job.OutputMode)

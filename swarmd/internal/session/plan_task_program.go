@@ -74,6 +74,9 @@ func ValidatePlanTaskProgramDefinition(program *pebblestore.TaskProgramDefinitio
 		if agentType != "coder" && agentType != "finder" && agentType != "designer" {
 			return fmt.Errorf("jobs[%d].agent_type must be coder, finder, or designer", i)
 		}
+		if strings.TrimSpace(job.WorkspacePath) != "" && agentType != "coder" && agentType != "finder" {
+			return fmt.Errorf("jobs[%d].workspace_path is supported only for Coder or Finder", i)
+		}
 		if strings.TrimSpace(job.MetaPrompt) == "" || strings.TrimSpace(job.Title) == "" || strings.TrimSpace(job.Deliverable) == "" || strings.TrimSpace(job.DependencyEvidence) == "" {
 			return fmt.Errorf("jobs[%d] requires meta_prompt, title, deliverable, and dependency_evidence", i)
 		}
@@ -123,13 +126,28 @@ func ValidatePlanTaskProgramDefinition(program *pebblestore.TaskProgramDefinitio
 			return fmt.Errorf("stages[%d] %q has no jobs", i, stage.ID)
 		}
 	}
+	coderWorkspacePath := ""
+	coderWorkspaceFound := false
+	for _, job := range program.Jobs {
+		if !strings.EqualFold(strings.TrimSpace(job.AgentType), "coder") {
+			continue
+		}
+		workspacePath := strings.TrimSpace(job.WorkspacePath)
+		if !coderWorkspaceFound {
+			coderWorkspacePath, coderWorkspaceFound = workspacePath, true
+			continue
+		}
+		if workspacePath != coderWorkspacePath {
+			return fmt.Errorf("Coder jobs must target one workspace so staged integration has one durable parent Git history")
+		}
+	}
 	for i := range program.Jobs {
 		for j := i + 1; j < len(program.Jobs); j++ {
 			left, right := program.Jobs[i], program.Jobs[j]
 			if strings.TrimSpace(left.StageID) != strings.TrimSpace(right.StageID) {
 				continue
 			}
-			if strings.EqualFold(left.AgentType, "coder") && strings.EqualFold(right.AgentType, "coder") && planTaskProgramScopesOverlap(left.OwnedScope, right.OwnedScope) {
+			if strings.EqualFold(left.AgentType, "coder") && strings.EqualFold(right.AgentType, "coder") && taskProgramJobsShareWorkspace(left, right) && planTaskProgramScopesOverlap(left.OwnedScope, right.OwnedScope) {
 				return fmt.Errorf("concurrent Coder owned scopes overlap between jobs %q and %q", left.ID, right.ID)
 			}
 			if strings.EqualFold(left.AgentType, "designer") && strings.EqualFold(right.AgentType, "designer") && strings.EqualFold(left.OutputMode, "workspace") && strings.EqualFold(right.OutputMode, "workspace") && planTaskProgramScopesOverlap(left.OwnedScope, right.OwnedScope) {
@@ -138,6 +156,10 @@ func ValidatePlanTaskProgramDefinition(program *pebblestore.TaskProgramDefinitio
 		}
 	}
 	return nil
+}
+
+func taskProgramJobsShareWorkspace(left, right pebblestore.TaskProgramJobSpec) bool {
+	return strings.TrimSpace(left.WorkspacePath) == strings.TrimSpace(right.WorkspacePath)
 }
 
 func validatePlanTaskProgramScope(scope string) error {

@@ -68,10 +68,14 @@ func (s *Service) resolveApprovedCheckpointTaskProgram(sessionID string, parsed 
 		"mode":        taskModeRegular,
 		"program":     programObject,
 	}
+	if workspacePath := strings.TrimSpace(parsed.ProgramWorkspacePath); workspacePath != "" {
+		args["workspace_path"] = workspacePath
+	}
 	resolvedProgram, launches, err := parseTaskProgram(args, prompt)
 	if err != nil {
 		return taskCallArguments{}, fmt.Errorf("approved checkpoint task_program failed launch validation: %w", err)
 	}
+	parsed.ProgramWorkspacePath = strings.TrimSpace(mapString(args, "workspace_path"))
 	parsed.Program = resolvedProgram
 	parsed.ProgramID = resolvedProgram.ID
 	parsed.Launches = launches

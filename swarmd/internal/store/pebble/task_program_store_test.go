@@ -28,6 +28,21 @@ func taskProgramStoreFixture(sessionID, programID, hash string) TaskProgramRecor
 	}
 }
 
+func TestTaskProgramStorePreservesDefinitionWorkspacePath(t *testing.T) {
+	store := openTaskProgramTestStore(t)
+	sessions := NewSessionStore(store)
+	fixture := taskProgramStoreFixture("parent-targeted", "targeted", "hash-targeted")
+	fixture.Definition.Jobs[0].WorkspacePath = "/shared/repo"
+	created, fresh, err := sessions.CreateTaskProgram(fixture)
+	if err != nil || !fresh || created.Definition.Jobs[0].WorkspacePath != "/shared/repo" {
+		t.Fatalf("create targeted definition=%#v fresh=%v err=%v", created.Definition.Jobs, fresh, err)
+	}
+	stored, found, err := sessions.GetTaskProgram("parent-targeted", "targeted")
+	if err != nil || !found || stored.Definition.Jobs[0].WorkspacePath != "/shared/repo" {
+		t.Fatalf("stored targeted definition=%#v found=%v err=%v", stored.Definition.Jobs, found, err)
+	}
+}
+
 func TestTaskProgramStoreScopesCreationAndStatusToParentSession(t *testing.T) {
 	store := openTaskProgramTestStore(t)
 	sessions := NewSessionStore(store)

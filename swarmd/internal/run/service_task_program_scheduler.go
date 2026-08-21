@@ -655,13 +655,23 @@ func taskProgramErrorsFromPayload(payload map[string]any, fallback error, count 
 	return out
 }
 
+func (p *taskProgramScheduler) programWorkspacePath() string {
+	for _, definition := range p.record.Definition.Jobs {
+		if agentruntime.IsCoderAgentName(definition.AgentType) {
+			return strings.TrimSpace(firstNonEmptyString(definition.WorkspacePath, p.parentSession.WorkspacePath))
+		}
+	}
+	return strings.TrimSpace(p.parentSession.WorkspacePath)
+}
+
 func (p *taskProgramScheduler) integrateStage(stageIndex int) error {
 	stageID := p.record.Definition.Stages[stageIndex].ID
+	programWorkspacePath := p.programWorkspacePath()
 	children := make([]worktreeruntime.TaskIntegrationChild, 0)
 	updates := make([]pebblestore.TaskProgramJobTransition, 0)
 	expectedHead := strings.TrimSpace(p.record.ParentHead)
 	if expectedHead == "" && p.service.worktrees != nil {
-		if base, err := p.service.worktrees.ResolveTaskBase(p.parentSession.WorkspacePath); err == nil {
+		if base, err := p.service.worktrees.ResolveTaskBase(programWorkspacePath); err == nil {
 			expectedHead = strings.TrimSpace(base.BaseCommit)
 		}
 	}
@@ -699,11 +709,11 @@ func (p *taskProgramScheduler) integrateStage(stageIndex int) error {
 		if !ok {
 			return errors.New("worktree service does not support canonical task integration")
 		}
-		plan, err := integrator.PrepareTaskIntegration(p.parentSession.WorkspacePath, expectedHead, children)
+		plan, err := integrator.PrepareTaskIntegration(programWorkspacePath, expectedHead, children)
 		if err != nil {
 			return err
 		}
-		result, err := integrator.ApplyTaskIntegration(p.parentSession.WorkspacePath, plan)
+		result, err := integrator.ApplyTaskIntegration(programWorkspacePath, plan)
 		if err != nil {
 			return err
 		}
@@ -747,7 +757,7 @@ func (p *taskProgramScheduler) cleanupIntegratedStageWorktrees(stageID string) e
 		}
 		integrationState := "integrated_worktree_removed"
 		if cleanupErr := cleaner.RemoveIntegratedTaskWorkspace(
-			p.parentSession.WorkspacePath,
+			p.programWorkspacePath(),
 			job.WorkspacePath,
 			firstNonEmptyString(job.CurrentSessionID, job.ChildSessionID),
 			job.WorktreeBranch,

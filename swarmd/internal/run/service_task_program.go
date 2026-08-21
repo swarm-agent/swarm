@@ -27,7 +27,8 @@ func taskProgramDefinitionFromSpec(spec *taskProgramSpec) (pebblestore.TaskProgr
 	for _, job := range spec.Jobs {
 		definition.Jobs = append(definition.Jobs, pebblestore.TaskProgramJobSpec{
 			ID: job.ID, StageID: job.StageID, DependsOn: append([]string(nil), job.DependsOn...), AgentType: job.RequestedSubagentType,
-			Title: job.AssignmentLabel, MetaPrompt: job.MetaPrompt, Deliverable: job.Deliverable,
+			WorkspacePath: job.TargetWorkspacePath,
+			Title:         job.AssignmentLabel, MetaPrompt: job.MetaPrompt, Deliverable: job.Deliverable,
 			OwnedScope: append([]string(nil), job.OwnedScope...), OutputMode: job.OutputMode, OutputRequirements: cloneTaskOutputRequirements(job.OutputRequirements), AnimationProfile: cloneTaskAnimationProfile(job.AnimationProfile), AcceptanceCriteria: append([]string(nil), job.AcceptanceCriteria...), DependencyEvidence: job.DependencyEvidence,
 		})
 	}

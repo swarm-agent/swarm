@@ -62,6 +62,22 @@ func TestValidateExecutablePlanDocumentRejectsSemanticallyInvalidTaskProgram(t *
 	}
 }
 
+func TestValidatePlanTaskProgramDefinitionAcceptsTargetedCoderAndRejectsDesignerWorkspacePath(t *testing.T) {
+	program := &pebblestore.TaskProgramDefinition{
+		ID:     "targeted_program",
+		Stages: []pebblestore.TaskProgramStageSpec{{ID: "build", DependencyEvidence: "Ready"}},
+		Jobs:   []pebblestore.TaskProgramJobSpec{{ID: "job", StageID: "build", AgentType: "coder", WorkspacePath: "/shared/repo", Title: "Build", MetaPrompt: "Build", Deliverable: "Change", OwnedScope: []string{"swarmd/internal/run/**"}, AcceptanceCriteria: []string{"Done"}, DependencyEvidence: "Ready"}},
+	}
+	if err := ValidatePlanTaskProgramDefinition(program); err != nil {
+		t.Fatalf("targeted Coder program rejected: %v", err)
+	}
+	program.Jobs[0].AgentType = "designer"
+	program.Jobs[0].OwnedScope = nil
+	if err := ValidatePlanTaskProgramDefinition(program); err == nil || !strings.Contains(err.Error(), "workspace_path is supported only for Coder or Finder") {
+		t.Fatalf("Designer workspace_path error = %v", err)
+	}
+}
+
 func TestValidateExecutablePlanDocumentAcceptsCompleteDocumentWithoutMutation(t *testing.T) {
 	doc := &pebblestore.SessionPlanDocument{
 		Title: "Executable plan",

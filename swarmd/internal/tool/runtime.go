@@ -1419,7 +1419,7 @@ func (r *Runtime) Definitions() []Definition {
 					},
 					"deliverable":         map[string]any{"type": "string", "description": "Specific child output the parent will verify."},
 					"concurrency_reason":  map[string]any{"type": "string", "description": "Regular-mode single-launch shorthand only: why this scope is useful and safe to delegate now. Omit in mode=swarm; swarm concurrency is defined by count."},
-					"workspace_path":      map[string]any{"type": "string", "description": "Regular Coder/Finder single-launch target. May select an authorized linked/shared workspace root; omitted uses the parent workspace. Coder worktrees are based on the selected target repository HEAD."},
+					"workspace_path":      map[string]any{"type": "string", "description": "Regular Coder/Finder single-launch target or default target for every Coder/Finder job in a Task Program start. May select an authorized linked/shared workspace root; omitted uses the parent workspace. Coder worktrees are based on the selected target repository HEAD."},
 					"owned_scope":         map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Declared files, directories, or output target owned by the child. Required as a concrete clean workspace-relative path for workspace-mode Designer and forbidden for managed Designer; an omitted Coder scope safely defaults to its entire isolated worktree."},
 					"dependency_evidence": map[string]any{"type": "string", "description": "Evidence that the launch does not depend on unfinished child work."},
 					"launches": map[string]any{
@@ -1481,6 +1481,7 @@ func taskProgramDefinitionToolSchema(description string) map[string]any {
 					"depends_on":          map[string]any{"type": "array", "items": id, "description": "Earlier-stage job IDs whose accepted/integrated handoffs are required."},
 					"agent_type":          map[string]any{"type": "string", "enum": []string{"coder", "finder", "designer"}},
 					"subagent_type":       map[string]any{"type": "string", "enum": []string{"coder", "finder", "designer"}, "description": "Alias for agent_type."},
+					"workspace_path":      map[string]any{"type": "string", "description": "Optional authorized linked/shared workspace target for this Coder or Finder job. Overrides the Task Program start workspace_path. Coder jobs in one program must resolve to one target workspace so staged integration has one parent Git history."},
 					"meta_prompt":         map[string]any{"type": "string", "minLength": 1, "description": "Complete distinguished assignment; broad copies of the parent objective are invalid program design."},
 					"title":               map[string]any{"type": "string", "minLength": 1},
 					"deliverable":         map[string]any{"type": "string", "minLength": 1},

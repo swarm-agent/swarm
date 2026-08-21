@@ -74,6 +74,54 @@ func TestParseTaskProgramValidatesCompleteStagedContract(t *testing.T) {
 	}
 }
 
+func TestParseTaskProgramPreservesWorkspacePathAtStartAndJobLevels(t *testing.T) {
+	args := taskProgramFixture(nil)
+	args["workspace_path"] = "/shared/default"
+	jobs := args["program"].(map[string]any)["jobs"].([]any)
+	jobs[2].(map[string]any)["workspace_path"] = "/shared/default"
+
+	parsed, err := parseTaskCallArguments(mustJSON(t, args))
+	if err != nil {
+		t.Fatalf("parse targeted Task Program: %v", err)
+	}
+	if parsed.ProgramWorkspacePath != "/shared/default" {
+		t.Fatalf("program workspace path = %q", parsed.ProgramWorkspacePath)
+	}
+	for i := range parsed.Program.Jobs {
+		if parsed.Program.Jobs[i].TargetWorkspacePath != "/shared/default" || parsed.Launches[i].TargetWorkspacePath != "/shared/default" {
+			t.Fatalf("job %d workspace target not preserved: job=%#v launch=%#v", i, parsed.Program.Jobs[i], parsed.Launches[i])
+		}
+	}
+	definition, _, err := taskProgramDefinitionFromSpec(parsed.Program)
+	if err != nil {
+		t.Fatalf("build durable targeted definition: %v", err)
+	}
+	for i, job := range definition.Jobs {
+		if job.WorkspacePath != "/shared/default" {
+			t.Fatalf("durable job %d workspace path = %q", i, job.WorkspacePath)
+		}
+	}
+}
+
+func TestParseTaskProgramRejectsDesignerAndSplitCoderWorkspaceTargets(t *testing.T) {
+	designer := taskProgramFixture(nil)
+	designerProgram := designer["program"].(map[string]any)
+	designerProgram["stages"] = []any{map[string]any{"id": "build", "dependency_evidence": "Ready."}}
+	designerProgram["jobs"] = []any{map[string]any{"id": "design", "stage_id": "build", "agent_type": "designer", "workspace_path": "/shared/design", "title": "Design", "meta_prompt": "Create design.", "deliverable": "Design", "acceptance_criteria": []any{"Done"}, "dependency_evidence": "Ready."}}
+	if _, err := parseTaskCallArguments(mustJSON(t, designer)); err == nil || !strings.Contains(err.Error(), "workspace_path is supported only for Coder or Finder") {
+		t.Fatalf("Designer workspace target error = %v", err)
+	}
+
+	split := taskProgramFixture(nil)
+	splitJobs := split["program"].(map[string]any)["jobs"].([]any)
+	splitJobs[0].(map[string]any)["workspace_path"] = "/shared/one"
+	splitJobs[1].(map[string]any)["workspace_path"] = "/shared/two"
+	splitJobs[2].(map[string]any)["workspace_path"] = "/shared/one"
+	if _, err := parseTaskCallArguments(mustJSON(t, split)); err == nil || !strings.Contains(err.Error(), "must target one workspace") {
+		t.Fatalf("split Coder workspace target error = %v", err)
+	}
+}
+
 func TestParseTaskProgramDesignerOutputModesAreExplicitAndDurable(t *testing.T) {
 	args := taskProgramFixture(nil)
 	program := args["program"].(map[string]any)
@@ -471,7 +519,7 @@ func TestTaskProgramSchedulerRecordsIntegratedWorktreeCleanupOutcome(t *testing.
 				Definition: pebblestore.TaskProgramDefinition{
 					Stages: []pebblestore.TaskProgramStageSpec{{ID: "build", DependencyEvidence: "ready"}},
 					Jobs: []pebblestore.TaskProgramJobSpec{
-						{ID: "api", StageID: "build", AgentType: "coder", DependencyEvidence: "ready"},
+						{ID: "api", StageID: "build", AgentType: "coder", WorkspacePath: "/shared/repo", DependencyEvidence: "ready"},
 						{ID: "recoverable", StageID: "build", AgentType: "coder", DependencyEvidence: "ready"},
 						{ID: "failed", StageID: "build", AgentType: "coder", DependencyEvidence: "ready"},
 					},
@@ -494,8 +542,8 @@ func TestTaskProgramSchedulerRecordsIntegratedWorktreeCleanupOutcome(t *testing.
 			if err := scheduler.cleanupIntegratedStageWorktrees("build"); err != nil {
 				t.Fatalf("cleanup integrated stage: %v", err)
 			}
-			if len(stub.cleanupCalls) != 1 || stub.cleanupCalls[0] != "/worktrees/child-api" {
-				t.Fatalf("cleanup calls = %v", stub.cleanupCalls)
+			if len(stub.cleanupCalls) != 1 || stub.cleanupCalls[0] != "/worktrees/child-api" || len(stub.cleanupParentPaths) != 1 || stub.cleanupParentPaths[0] != "/shared/repo" {
+				t.Fatalf("cleanup calls = %v parent paths = %v", stub.cleanupCalls, stub.cleanupParentPaths)
 			}
 			if scheduler.record.Jobs[0].State != pebblestore.TaskProgramJobIntegrated || scheduler.record.Jobs[0].IntegrationState != tc.wantIntegration {
 				t.Fatalf("cleanup job state = %#v", scheduler.record.Jobs[0])
@@ -506,6 +554,12 @@ func TestTaskProgramSchedulerRecordsIntegratedWorktreeCleanupOutcome(t *testing.
 
 type taskProgramCleanupWorktreeStub struct {
 	taskLaunchWorktreeStub
+	cleanupParentPaths []string
+}
+
+func (s *taskProgramCleanupWorktreeStub) RemoveIntegratedTaskWorkspace(parentPath, childPath, sessionID, branchName, baseCommit, headCommit string) error {
+	s.cleanupParentPaths = append(s.cleanupParentPaths, parentPath)
+	return s.taskLaunchWorktreeStub.RemoveIntegratedTaskWorkspace(parentPath, childPath, sessionID, branchName, baseCommit, headCommit)
 }
 
 func (s *taskProgramCleanupWorktreeStub) PrepareTaskIntegration(_ string, expectedParentHead string, children []worktreeruntime.TaskIntegrationChild) (worktreeruntime.TaskIntegrationPlan, error) {
@@ -905,8 +959,8 @@ func TestTaskProgramStatusExposesBoundedReadyArtifactReferences(t *testing.T) {
 }
 
 func TestParseTaskProgramStartWithoutDefinitionSelectsApprovedCheckpointProgram(t *testing.T) {
-	parsed, err := parseTaskCallArguments(`{"action":"start"}`)
-	if err != nil || !parsed.PlannedProgram || parsed.Program != nil || parsed.Action != taskProgramActionStart {
+	parsed, err := parseTaskCallArguments(`{"action":"start","workspace_path":"/shared/repo"}`)
+	if err != nil || !parsed.PlannedProgram || parsed.Program != nil || parsed.Action != taskProgramActionStart || parsed.ProgramWorkspacePath != "/shared/repo" {
 		t.Fatalf("planned start = %#v err=%v", parsed, err)
 	}
 }
@@ -928,7 +982,7 @@ func TestResolveApprovedCheckpointTaskProgramUsesCanonicalDefinition(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	parsed, err := parseTaskCallArguments(`{"action":"start"}`)
+	parsed, err := parseTaskCallArguments(`{"action":"start","workspace_path":"/shared/repo"}`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -936,7 +990,7 @@ func TestResolveApprovedCheckpointTaskProgramUsesCanonicalDefinition(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resolved.Program == nil || resolved.Program.ID != program.ID || len(resolved.Launches) != 1 || resolved.Launches[0].AssignmentLabel != "API Work" {
+	if resolved.Program == nil || resolved.Program.ID != program.ID || len(resolved.Launches) != 1 || resolved.Launches[0].AssignmentLabel != "API Work" || resolved.Launches[0].TargetWorkspacePath != "/shared/repo" || resolved.Program.Jobs[0].TargetWorkspacePath != "/shared/repo" {
 		t.Fatalf("resolved program = %#v", resolved)
 	}
 }
