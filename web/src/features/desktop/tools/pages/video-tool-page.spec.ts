@@ -503,6 +503,16 @@ test('timelineSegmentsToProjectTimeline builds structured V3 VideoProject timeli
   })
 })
 
+test('pending visual plan tolerates an empty legacy base revision', () => {
+  const shadow = applyPendingVideoProposal({ schema_version: 1, clips: null as unknown as [], transitions: null as unknown as [] }, {
+    id: 'proposal-empty-base', project_id: 'project-1', base_revision_id: 'revision-1', base_revision_number: 1,
+    status: 'pending', created_at: 1, updated_at: 1, operations: [],
+    plan: { kind: 'initial', parts: [{ id: 'step-1', title: 'Launch', duration_ms: 4000, visual: { session_id: 'session-1', collection_id: 'slides', variant_id: 'still-1', event_seq: 1 } }] },
+  })
+  assert.equal(shadow.clips.length, 1)
+  assert.equal(shadow.clips[0].artifact_ref?.variant_id, 'still-1')
+})
+
 test('pending selective still revision preserves accepted auxiliary footage in the live shadow cut', () => {
   const accepted: VideoProjectTimelineWire = {
     schema_version: 1,

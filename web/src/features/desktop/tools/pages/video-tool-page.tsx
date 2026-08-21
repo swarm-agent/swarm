@@ -737,7 +737,7 @@ function visualPlanTimeline(accepted: VideoProjectTimelineWire, plan: VideoPlanP
     return clip
   })
   const planPartIds = new Set(parts.map((part) => part.id))
-  const auxiliaryClips = accepted.clips.filter((clip) => !planPartIds.has(clip.id))
+  const auxiliaryClips = (accepted.clips ?? []).filter((clip) => !planPartIds.has(clip.id))
   const clips = [...planClips, ...auxiliaryClips]
   const transitions = [
     ...parts.slice(1).map((part, index): VideoTransitionWire => ({
@@ -767,7 +767,7 @@ export function applyPendingVideoProposal(
   if (proposal.plan) return visualPlanTimeline(accepted, proposal.plan, proposal.id)
   const timeline: VideoProjectTimelineWire = {
     ...accepted,
-    clips: accepted.clips.map((clip) => ({ ...clip, captions: clip.captions?.map((caption) => ({ ...caption })) })),
+    clips: (accepted.clips ?? []).map((clip) => ({ ...clip, captions: clip.captions?.map((caption) => ({ ...caption })) })),
     transitions: (accepted.transitions ?? []).map((transition) => ({ ...transition })),
     metadata: { ...(accepted.metadata ?? {}), shadow_proposal_id: proposal.id },
   }
