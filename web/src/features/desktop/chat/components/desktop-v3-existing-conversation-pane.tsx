@@ -517,6 +517,77 @@ function pendingPermissionsEqual(
   return true;
 }
 
+type IsolatedPlanExecutionSidebarProps = Omit<
+  ComponentProps<typeof DesktopPlanExecutionSidebar>,
+  "view" | "taskChildren"
+> & {
+  sessionId: string;
+  taskRows?: TaskToolRow[];
+};
+
+function isolatedPlanExecutionStatus(view: DesktopPlanExecutionView | null): string {
+  if (!view) return "Ready";
+  if (view.reviewRequired) return "Waiting review";
+  if (view.completed) return "Completed";
+  if (view.paused) return "Paused";
+  if (view.blocked) return "Blocked";
+  if (view.failed) return "Failed";
+  const status = view.activeCheckpoint?.status || view.status || "ready";
+  return status.replace(/[-_]+/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+const IsolatedPlanExecutionSummary = memo(function IsolatedPlanExecutionSummary({
+  sessionId,
+}: {
+  sessionId: string;
+}) {
+  const selectPlanView = useCallback(
+    (state: DesktopV3CacheState) => selectDesktopPlanExecutionView(state, sessionId),
+    [sessionId],
+  );
+  const view = useDesktopV3CacheSelector(selectPlanView, planExecutionViewsEqual);
+
+  return (
+    <>
+      <span className="flex min-w-0 flex-1 items-center gap-2.5">
+        <span className="shrink-0 text-[10px] font-semibold uppercase tracking-[0.16em] text-[var(--app-text-subtle)]">Plan</span>
+        <span className="min-w-0 truncate text-xs font-medium text-[var(--app-text)]">
+          {view?.activeCheckpoint?.title || view?.plan.title || "Plan execution"}
+        </span>
+      </span>
+      {view?.policyMode !== "automatic" ? (
+        <span className="shrink-0 text-[10px] font-semibold uppercase tracking-[0.1em] text-[var(--app-primary)]">Review each</span>
+      ) : null}
+      <span className="hidden shrink-0 text-[10px] font-medium text-[var(--app-primary)] sm:inline">
+        {isolatedPlanExecutionStatus(view)}
+      </span>
+    </>
+  );
+});
+
+const IsolatedPlanExecutionSidebar = memo(function IsolatedPlanExecutionSidebar({
+  sessionId,
+  taskRows = [],
+  ...props
+}: IsolatedPlanExecutionSidebarProps) {
+  const selectPlanView = useCallback(
+    (state: DesktopV3CacheState) => selectDesktopPlanExecutionView(state, sessionId),
+    [sessionId],
+  );
+  const view = useDesktopV3CacheSelector(selectPlanView, planExecutionViewsEqual);
+  const taskChildren = useDesktopV3CacheSelector((state) =>
+    taskRows.map((row) => ({ row, view: selectDesktopV3TaskChildViewModel(state, row) })),
+  );
+
+  return (
+    <DesktopPlanExecutionSidebar
+      {...props}
+      view={view}
+      taskChildren={taskChildren}
+    />
+  );
+});
+
 function permissionSavedRuleEqual(
   left: DesktopPermissionRecord["savedRule"],
   right: DesktopPermissionRecord["savedRule"],
@@ -1597,9 +1668,9 @@ export function DesktopV3ExistingConversationPane({
   const thinkingTagsEnabled = normalizeThinkingTagsEnabled(
     uiSettingsQuery.data,
   );
-  const selectPlanExecutionViewForSession = useCallback(
+  const selectPlanPresenceForSession = useCallback(
     (state: DesktopV3CacheState) =>
-      selectDesktopPlanExecutionView(state, normalizedSessionId),
+      Boolean(state.plansBySession[normalizedSessionId] && selectDesktopPlanExecutionView(state, normalizedSessionId)?.plan.document),
     [normalizedSessionId],
   );
   const sessionMediaCapability = useDesktopV3CacheSelector(
@@ -1614,9 +1685,8 @@ export function DesktopV3ExistingConversationPane({
   const cachedAgentModelPolicy = useDesktopV3CacheSelector(
     (state) => state.agentModelPolicyBySession[normalizedSessionId],
   );
-  const planExecutionView = useDesktopV3CacheSelector(
-    selectPlanExecutionViewForSession,
-    planExecutionViewsEqual,
+  const showPlanExecutionSidebar = useDesktopV3CacheSelector(
+    selectPlanPresenceForSession,
   );
   const cachedPreference = useMemo(
     () => normalizePreference(rawCachedPreference),
@@ -2008,7 +2078,6 @@ export function DesktopV3ExistingConversationPane({
     for (const row of rows) bySession.set(row.childSessionId || row.launchKey || String(row.launchIndex), row);
     return [...bySession.values()];
   }, [renderItems]);
-  const taskChildren = useDesktopV3CacheSelector((state) => taskChildRows.map((row) => ({ row, view: selectDesktopV3TaskChildViewModel(state, row) })));
   const scrollFollowKey = useMemo(
     () =>
       [
@@ -2072,7 +2141,6 @@ export function DesktopV3ExistingConversationPane({
     !messagesLoaded &&
     !hasMessages &&
     !hasStoredOperation;
-  const showPlanExecutionSidebar = Boolean(planExecutionView?.plan.document);
   const heldPlanPermission = resolvingPlanPermissionId
     ? heldPlanPermissionRef.current
     : null;
@@ -3189,33 +3257,15 @@ export function DesktopV3ExistingConversationPane({
             </div>
           ) : null}
 
-          {!stablePlanDocument && showPlanExecutionSidebar && planExecutionView ? (
+          {!stablePlanDocument && showPlanExecutionSidebar ? (
             <div
               className="shrink-0 border-t border-[var(--app-border)] bg-[var(--app-surface)] min-[1300px]:hidden"
               data-testid="desktop-plan-execution-composer-region"
             >
               <details className="group mx-auto w-full max-w-[70rem] px-4 sm:px-6">
                 <summary className="flex min-h-12 cursor-pointer list-none items-center gap-3 py-2.5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--app-primary)] [&::-webkit-details-marker]:hidden">
-                  <span className="flex min-w-0 flex-1 items-center gap-2.5">
-                    <span className="shrink-0 text-[10px] font-semibold uppercase tracking-[0.16em] text-[var(--app-text-subtle)]">
-                      Plan
-                    </span>
-                    <span className="min-w-0 truncate text-xs font-medium text-[var(--app-text)]">
-                      {planExecutionView.activeCheckpoint?.title || planExecutionView.plan.title || "Plan execution"}
-                    </span>
-                  </span>
-                  {planExecutionView.policyMode !== "automatic" ? (
-                    <span className="shrink-0 text-[10px] font-semibold uppercase tracking-[0.1em] text-[var(--app-primary)]">
-                      Review each
-                    </span>
-                  ) : null}
-                  <span className="hidden shrink-0 text-[10px] font-medium capitalize text-[var(--app-text-muted)] sm:inline">
-                    {(planExecutionView.activeCheckpoint?.status || planExecutionView.status || "ready").replace(/_/g, " ")}
-                  </span>
-                  <ChevronDown
-                    aria-hidden="true"
-                    className="size-4 shrink-0 text-[var(--app-text-muted)] transition-transform group-open:rotate-180"
-                  />
+                  <IsolatedPlanExecutionSummary sessionId={normalizedSessionId} />
+                  <ChevronDown aria-hidden="true" className="size-4 shrink-0 text-[var(--app-text-muted)] transition-transform group-open:rotate-180" />
                 </summary>
                 <div className="max-h-[min(46vh,30rem)] overflow-y-auto border-t border-[var(--app-border)] py-4">
                   {hasSessionArtifacts ? (
@@ -3227,8 +3277,8 @@ export function DesktopV3ExistingConversationPane({
                   {activeSidebarView === "artifacts" ? (
                     <DesktopV3ArtifactSidebar artifacts={sessionArtifacts} displayMode="full" loading={sessionArtifactsLoading} error={sessionArtifactsError} embedded artifactHref={artifactViewerHref} onOpenArtifact={openArtifactFullView} onAddToChat={(artifacts) => queueGalleryArtifactSelections(artifacts.map((artifact) => desktopV3ArtifactMessageSelection(artifact, "select")))} />
                   ) : (
-                    <DesktopPlanExecutionSidebar
-                      view={planExecutionView}
+                    <IsolatedPlanExecutionSidebar
+                      sessionId={normalizedSessionId}
                       embedded
                       busyAction={planExecutionBusyAction}
                       canStop={Boolean(currentRun)}
@@ -3365,9 +3415,9 @@ export function DesktopV3ExistingConversationPane({
                   modelLabel={displayedPreference.model}
                   displayMode={planSidebarDisplayMode}
                 />
-              ) : showPlanExecutionSidebar && planExecutionView ? (
-                <DesktopPlanExecutionSidebar
-                  view={planExecutionView}
+              ) : showPlanExecutionSidebar ? (
+                <IsolatedPlanExecutionSidebar
+                  sessionId={normalizedSessionId}
                   busyAction={planExecutionBusyAction}
                   canStop={Boolean(currentRun)}
                   onAction={stablePlanExecutionAction}
@@ -3375,7 +3425,7 @@ export function DesktopV3ExistingConversationPane({
                   onEditPlan={stableOpenPlan}
                   belowActions={planSidebarBelowActions}
                   displayMode={planSidebarDisplayMode}
-                  taskChildren={taskChildren}
+                  taskRows={taskChildRows}
                   taskChildActions={taskChildActions}
                 />
               ) : null}

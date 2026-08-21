@@ -1,7 +1,7 @@
 import { type CSSProperties, type PointerEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useMatchRoute, useNavigate } from '@tanstack/react-router'
-import { ArrowLeft, Download, Eye, EyeOff, Film, FolderOpen, ListVideo, Loader2, Moon, Pause, Play, RotateCcw, Sparkles } from 'lucide-react'
+import { ArrowLeft, Download, Eye, EyeOff, Film, FolderOpen, ListVideo, Loader2, MessageSquare, Moon, Pause, Play, RotateCcw, Sparkles } from 'lucide-react'
 import { Button } from '../../../../components/ui/button'
 import { Dialog, DialogBackdrop, DialogPanel } from '../../../../components/ui/dialog'
 import { ModalCloseButton } from '../../../../components/ui/modal-close-button'
@@ -247,6 +247,7 @@ type TimelineLayoutSegment = TimelineSegment & {
 
 const TIMELINE_METADATA_KEY = 'timelineSegments'
 const VIDEO_TOOL_BLACK_MODE_STORAGE_KEY = 'swarm.videoTool.blackMode'
+const VIDEO_STUDIO_LAST_SESSION_STORAGE_KEY = 'swarm.videoStudio.lastSession'
 const DEFAULT_VIDEO_SESSION_TITLE = 'Swarm launch video'
 export const VIDEO_STUDIO_AGENT_NAME = 'swarm'
 
@@ -1042,17 +1043,24 @@ export function VideoToolPage() {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const matchRoute = useMatchRoute()
+  const workspaceStudioSessionMatch = matchRoute({ to: '/$workspaceSlug/studio/$videoSessionId', fuzzy: false })
   const workspaceStudioMatch = matchRoute({ to: '/$workspaceSlug/studio', fuzzy: false })
   const workspaceVideoToolMatch = matchRoute({ to: '/$workspaceSlug/tools/video', fuzzy: false })
   const workspaceVideoSessionMatch = matchRoute({ to: '/$workspaceSlug/video/$videoSessionId', fuzzy: false })
-  const routeWorkspaceSlug = (workspaceVideoSessionMatch
-    ? workspaceVideoSessionMatch.workspaceSlug
-    : workspaceStudioMatch
-      ? workspaceStudioMatch.workspaceSlug
-      : workspaceVideoToolMatch
-        ? workspaceVideoToolMatch.workspaceSlug
-        : '').trim()
-  const routeVideoSessionId = (workspaceVideoSessionMatch ? workspaceVideoSessionMatch.videoSessionId : '').trim()
+  const routeWorkspaceSlug = (workspaceStudioSessionMatch
+    ? workspaceStudioSessionMatch.workspaceSlug
+    : workspaceVideoSessionMatch
+      ? workspaceVideoSessionMatch.workspaceSlug
+      : workspaceStudioMatch
+        ? workspaceStudioMatch.workspaceSlug
+        : workspaceVideoToolMatch
+          ? workspaceVideoToolMatch.workspaceSlug
+          : '').trim()
+  const routeVideoSessionId = (workspaceStudioSessionMatch
+    ? workspaceStudioSessionMatch.videoSessionId
+    : workspaceVideoSessionMatch
+      ? workspaceVideoSessionMatch.videoSessionId
+      : '').trim()
   const [pickerOpen, setPickerOpen] = useState(false)
   const [browser, setBrowser] = useState<WorkspaceBrowseResult | null>(null)
   const [browserLoading, setBrowserLoading] = useState(false)
@@ -1064,7 +1072,11 @@ export function VideoToolPage() {
   const [createError, setCreateError] = useState<string | null>(null)
   const [newSessionTitle, setNewSessionTitle] = useState('')
   const [creatingBlankSession, setCreatingBlankSession] = useState(false)
-  const [selectedThreadId, setSelectedThreadId] = useState<string | null>(null)
+  const [selectedThreadId, setSelectedThreadId] = useState<string | null>(() => {
+    if (routeVideoSessionId) return routeVideoSessionId
+    if (typeof window === 'undefined') return null
+    return window.localStorage.getItem(`${VIDEO_STUDIO_LAST_SESSION_STORAGE_KEY}:${routeWorkspaceSlug}`)?.trim() || null
+  })
   const [selectedClipId, setSelectedClipId] = useState<string | null>(null)
   const [reordering, setReordering] = useState(false)
   const [videoProjects, setVideoProjects] = useState<VideoProjectSnapshotWire[]>([])
@@ -1136,17 +1148,18 @@ export function VideoToolPage() {
   const videoThreads = videoThreadsQuery.data ?? []
 
   useEffect(() => {
-    if (routeVideoSessionId && videoThreads.some((thread) => thread.id === routeVideoSessionId)) {
+    if (routeVideoSessionId && routeVideoSessionId !== selectedThreadId) {
       setSelectedThreadId(routeVideoSessionId)
       return
     }
-    if (!selectedThreadId) {
-      return
-    }
-    if (!videoThreads.some((thread) => thread.id === selectedThreadId)) {
-      setSelectedThreadId(null)
-    }
-  }, [routeVideoSessionId, selectedThreadId, videoThreads])
+    if (!selectedThreadId || videoThreadsQuery.isLoading || !videoThreadsQuery.isFetched) return
+    if (!videoThreads.some((thread) => thread.id === selectedThreadId)) setSelectedThreadId(null)
+  }, [routeVideoSessionId, selectedThreadId, videoThreads, videoThreadsQuery.isFetched, videoThreadsQuery.isLoading])
+
+  useEffect(() => {
+    if (!selectedThreadId || typeof window === 'undefined') return
+    window.localStorage.setItem(`${VIDEO_STUDIO_LAST_SESSION_STORAGE_KEY}:${routeWorkspaceSlug}`, selectedThreadId)
+  }, [routeWorkspaceSlug, selectedThreadId])
 
   const selectedThread = useMemo(() => {
     if (!selectedThreadId) {
@@ -1480,6 +1493,22 @@ export function VideoToolPage() {
     void navigate({ to: '/tools' })
   }, [navigate, routeWorkspaceSlug])
 
+  const handleSelectVideoSession = useCallback((sessionId: string) => {
+    const normalizedSessionId = sessionId.trim()
+    if (!normalizedSessionId) return
+    setSelectedThreadId(normalizedSessionId)
+    const workspaceSlug = routeWorkspaceSlug
+      || workspaceSlugByPath.get(selectedWorkspacePath)
+      || workspaceRouteSlugBase({ path: selectedWorkspacePath, workspaceName: selectedWorkspaceName })
+    if (!workspaceSlug) return
+    void navigate({ to: '/$workspaceSlug/studio/$videoSessionId', params: { workspaceSlug, videoSessionId: normalizedSessionId } })
+  }, [navigate, routeWorkspaceSlug, selectedWorkspaceName, selectedWorkspacePath, workspaceSlugByPath])
+
+  const handleOpenSessionMode = useCallback(() => {
+    if (!selectedThread || !routeWorkspaceSlug) return
+    void navigate({ to: '/$workspaceSlug/$sessionId', params: { workspaceSlug: routeWorkspaceSlug, sessionId: selectedThread.id } })
+  }, [navigate, routeWorkspaceSlug, selectedThread])
+
   const handleSelectWorkspace = useCallback((workspacePath: string) => {
     const workspace = workspaces.find((candidate) => candidate.path === workspacePath)
     if (!workspace) return
@@ -1639,19 +1668,16 @@ export function VideoToolPage() {
         const withoutCreated = current.filter((thread) => thread.id !== createdThread.id)
         return [createdThread, ...withoutCreated]
       })
-      setSelectedThreadId(createdThread.id)
+      handleSelectVideoSession(createdThread.id)
       setSelectedClipId(null)
       setNewSessionTitle('')
-      const workspaceSlug = workspaceSlugByPath.get(selectedWorkspacePath)
-        ?? workspaceRouteSlugBase({ path: selectedWorkspacePath, workspaceName: selectedWorkspaceName })
-      void navigate({ to: '/$workspaceSlug/video/$videoSessionId', params: { workspaceSlug, videoSessionId: createdThread.id } })
       await queryClient.invalidateQueries({ queryKey: ['video-tool-threads', selectedWorkspacePath] })
     } catch (error) {
       setCreateError(error instanceof Error ? error.message : String(error))
     } finally {
       setCreatingBlankSession(false)
     }
-  }, [navigate, newSessionTitle, queryClient, selectedSessionRoute, selectedWorkspaceName, selectedWorkspacePath, workspaceOverviewQuery.error, workspaceOverviewQuery.isError, workspaceOverviewQuery.isPending, workspaceSlugByPath])
+  }, [handleSelectVideoSession, newSessionTitle, queryClient, selectedSessionRoute, selectedWorkspaceName, selectedWorkspacePath, workspaceOverviewQuery.error, workspaceOverviewQuery.isError, workspaceOverviewQuery.isPending])
 
   const handleAddFolder = useCallback(async (folderPath: string) => {
     if (!selectedWorkspacePath || !selectedWorkspaceName) {
@@ -1696,7 +1722,7 @@ export function VideoToolPage() {
           metadata,
         })
         queryClient.setQueryData<VideoThreadRecord[]>(['video-tool-threads', selectedWorkspacePath], (current = []) => current.map((thread) => thread.id === updatedThread.id ? updatedThread : thread))
-        setSelectedThreadId(updatedThread.id)
+        handleSelectVideoSession(updatedThread.id)
         setSelectedClipId(clipsToAdd[0]?.id ?? updatedThread.videoClipOrder[0] ?? updatedThread.videoClips[0]?.id ?? null)
         setPickerOpen(false)
         await queryClient.invalidateQueries({ queryKey: ['video-tool-threads', selectedWorkspacePath] })
@@ -1715,7 +1741,7 @@ export function VideoToolPage() {
         const withoutCreated = current.filter((thread) => thread.id !== createdThread.id)
         return [createdThread, ...withoutCreated]
       })
-      setSelectedThreadId(createdThread.id)
+      handleSelectVideoSession(createdThread.id)
       setSelectedClipId(createdThread.videoClipOrder[0] ?? createdThread.videoClips[0]?.id ?? null)
       setPickerOpen(false)
       await queryClient.invalidateQueries({ queryKey: ['video-tool-threads', selectedWorkspacePath] })
@@ -1724,7 +1750,7 @@ export function VideoToolPage() {
     } finally {
       setAddingFolderPath(null)
     }
-  }, [queryClient, selectedSessionRoute, selectedThread, selectedWorkspaceName, selectedWorkspacePath, workspaceOverviewQuery.error, workspaceOverviewQuery.isError, workspaceOverviewQuery.isPending])
+  }, [handleSelectVideoSession, queryClient, selectedSessionRoute, selectedThread, selectedWorkspaceName, selectedWorkspacePath, workspaceOverviewQuery.error, workspaceOverviewQuery.isError, workspaceOverviewQuery.isPending])
 
   const persistTimelineSegments = useCallback(async (segments: TimelineSegment[], options?: { migration?: boolean; transitionKind?: VideoTransitionKind }) => {
     if (!selectedThread) return
@@ -1970,19 +1996,13 @@ export function VideoToolPage() {
                 subtitle: String(thread.videoClips.length) + ' clip' + (thread.videoClips.length === 1 ? '' : 's') + ' · ' + formatStartedAt(thread.createdAt),
               }))}
               selectedSessionId={selectedThread?.id ?? null}
-              onSelectSession={(sessionId) => {
-                setSelectedThreadId(sessionId)
-                const workspaceSlug = routeWorkspaceSlug
-                  || workspaceSlugByPath.get(selectedWorkspacePath)
-                  || workspaceRouteSlugBase({ path: selectedWorkspacePath, workspaceName: selectedWorkspaceName })
-                if (!workspaceSlug) return
-                void navigate({ to: '/$workspaceSlug/video/$videoSessionId', params: { workspaceSlug, videoSessionId: sessionId } })
-              }}
+              onSelectSession={handleSelectVideoSession}
               emptySessionsMessage="No video sessions yet. Start session to get started."
               defaultSessionTitle="Video Thread"
               actions={[
                 { id: 'add-folder', label: 'Add folder', icon: <FolderOpen size={14} />, suffix: 'source', onClick: handleOpenPicker, disabled: !selectedThread },
                 { id: 'show-files', label: revealingStorage ? 'Opening…' : 'Show files', icon: <FolderOpen size={14} />, suffix: 'local', onClick: () => void handleRevealVideoStorage(), disabled: !selectedThread || revealingStorage },
+                { id: 'session-mode', label: 'Open session mode', icon: <MessageSquare size={14} />, suffix: 'chat', onClick: handleOpenSessionMode, disabled: !selectedThread || !routeWorkspaceSlug },
               ]}
             >
               {selectedThread ? (

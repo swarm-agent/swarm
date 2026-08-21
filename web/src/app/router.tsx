@@ -73,6 +73,10 @@ function validateWorkspaceVideoSessionParams(params: Record<string, unknown>): {
   return { workspaceSlug, videoSessionId }
 }
 
+function validateWorkspaceStudioSessionParams(params: Record<string, unknown>): { workspaceSlug: string; videoSessionId: string } {
+  return validateWorkspaceVideoSessionParams(params)
+}
+
 function validateWorkspaceSessionParams(params: Record<string, unknown>): { workspaceSlug: string; sessionId: string } {
   const workspaceSlug = typeof params.workspaceSlug === 'string' ? params.workspaceSlug.trim() : ''
   const sessionId = typeof params.sessionId === 'string' ? params.sessionId.trim() : ''
@@ -275,6 +279,13 @@ const workspaceStudioRoute = createRoute({
   component: VideoToolPage,
 })
 
+const workspaceStudioSessionRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/$workspaceSlug/studio/$videoSessionId',
+  parseParams: validateWorkspaceStudioSessionParams,
+  component: VideoToolPage,
+})
+
 const workspaceVideoToolRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/$workspaceSlug/tools/video',
@@ -315,6 +326,7 @@ const routeTree = rootRoute.addChildren([
   workspaceSettingsRoute,
   workspaceToolsRoute,
   workspaceStudioRoute,
+  workspaceStudioSessionRoute,
   workspaceVideoToolRoute,
   workspaceImageToolRoute,
   workspaceImageToolSessionRoute,

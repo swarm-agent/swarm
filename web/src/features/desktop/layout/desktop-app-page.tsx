@@ -3124,15 +3124,6 @@ export function DesktopAppPage() {
   }, [navigate, routeSessionNavigationHidden, routeWorkspaceSlug])
 
   useEffect(() => {
-    if (!routeSessionId || !routeWorkspaceSlug || !routeSessionIsVideoStudio) return
-    void navigate({
-      to: '/$workspaceSlug/video/$videoSessionId',
-      params: { workspaceSlug: routeWorkspaceSlug, videoSessionId: routeSessionId },
-      replace: true,
-    })
-  }, [navigate, routeSessionId, routeSessionIsVideoStudio, routeWorkspaceSlug])
-
-  useEffect(() => {
     if (routeSessionId.trim()) return
     if (!routeWorkspace?.path) return
 
@@ -5393,6 +5384,22 @@ export function DesktopAppPage() {
           </div>
         ) : routeSessionId ? (
           <div className="flex min-h-0 flex-1 flex-col">
+            {routeSessionIsVideoStudio ? (
+              <div className="flex min-h-10 shrink-0 items-center justify-between gap-3 border-b border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-3 text-xs">
+                <span className="inline-flex min-w-0 items-center gap-2 font-semibold text-[var(--app-text)]">
+                  <MessageSquare size={14} className="shrink-0 text-[var(--app-primary)]" aria-hidden="true" />
+                  <span className="truncate">Session mode</span>
+                </span>
+                <Link
+                  to="/$workspaceSlug/studio/$videoSessionId"
+                  params={{ workspaceSlug: routeWorkspaceSlug, videoSessionId: routeSessionId }}
+                  className="inline-flex shrink-0 items-center gap-1.5 rounded-md px-2 py-1 font-medium text-[var(--app-primary)] hover:bg-[var(--app-selection-bg)]"
+                >
+                  <Film size={13} aria-hidden="true" />
+                  Video mode
+                </Link>
+              </div>
+            ) : null}
           <DesktopV3ExistingConversationPane
             key={`existing:${routeSessionId}`}
             sessionId={routeSessionId}
