@@ -17,7 +17,7 @@ The render engine can preserve and mix audio already embedded in accepted video 
 | Desired capability | Status | Current behavior |
 | --- | --- | --- |
 | AI creates animated HTML artifacts | Implemented | Managed artifacts support animation profiles for CSS/WAAPI/SVG, pinned Three.js, imported vector playback, and final MP4 playback. |
-| Convert HTML artifact into video input | Partial | `export_html_stills` captures 1–16 declared stable states as 1920×1080 PNGs. It does not capture animation over time. |
+| Convert HTML artifact into video input | Implemented | `export_html_stills` captures 1–16 stable PNG states; the separate `export_html_animation` path samples a bounded deterministic `swarm.animation/v1` timeline and publishes a silent managed MP4. |
 | AI makes a visual video plan from those outputs | Implemented | Exact ready PNG references can be used directly as `manage_video` plan-part visuals. Plans are durable pending review objects. |
 | Assemble stills and video clips, captions, transitions | Implemented | Timeline supports source videos, managed artifacts, synthetic color/text, captions, tracks/layers, and a bounded transition set. |
 | Render reviewed timeline to MP4 | Implemented | FFmpeg render jobs create managed `video/mp4` output; Desktop can start, preview, and export it. |
@@ -217,19 +217,11 @@ After P0, the sentence “take this song and overlay it onto the video while we 
 - loudness normalization and peak limiting with documented targets;
 - tests proving preview/export/render use the same accepted audio policy.
 
-### P2 — real HTML animation-to-video
+### P2 — real HTML animation-to-video (implemented)
 
-Add a separate contract rather than weakening `export_html_stills`:
+The separate `swarm.animation/v1` / `export_html_animation` contract is documented in `docs/checkpoints/html-video-animation-capture-contract.md`. It accepts an exact ready HTML/package source with a reviewed animation profile, uses a renderer-controlled deterministic clock under fixed duration/FPS/frame limits, blocks external network and HTML audio, publishes a managed `video/mp4` with exact source lineage, and feeds the existing timeline as a managed artifact clip.
 
-- exact ready HTML/package input with a reviewed animation profile;
-- deterministic timeline clock controlled by the renderer;
-- declared duration and FPS under fixed limits;
-- frame capture or trusted browser-to-video recording with no external network;
-- audio disabled in HTML capture unless separately designed;
-- output as a managed `video/mp4` artifact with exact source lineage;
-- direct use as a managed video timeline clip.
-
-Do not repurpose the still-capture action. Keep stable storyboard capture and time-based animation capture as separate, auditable operations.
+The still-capture action remains unchanged: stable storyboard capture and time-based animation capture are separate, auditable operations.
 
 ### P3 — music-video intelligence
 

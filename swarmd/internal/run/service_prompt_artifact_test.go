@@ -122,6 +122,25 @@ func TestMasterHarnessPromptGuidesNormalizedHTMLStillExportAndPendingVideoPlan(t
 	}
 }
 
+func TestMasterHarnessPromptGuidesDeterministicHTMLAnimationExport(t *testing.T) {
+	prompt := masterHarnessPrompt("/workspace")
+	for _, want := range []string{
+		"separate swarm.animation/v1 HTML contract",
+		"#swarm-animation-manifest",
+		"globalThis.__SWARM_ANIMATION_V1__",
+		"ready()",
+		"seek(timeMs)",
+		"action=export_html_animation",
+		"renderer samples canonical timestamps",
+		"silent managed video/mp4",
+		"managed_artifact video timeline clip",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("master prompt missing HTML animation workflow guidance %q", want)
+		}
+	}
+}
+
 func TestAttachedArtifactSelectionsRejectsIncompleteOrUnboundedMetadata(t *testing.T) {
 	if got := attachedArtifactSelectionsForProvider(map[string]any{"artifact_selections": []any{map[string]any{"session_id": "source-session", "variant_id": "variant-1"}}}); got != "" {
 		t.Fatalf("incomplete selection projected: %q", got)

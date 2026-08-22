@@ -234,13 +234,20 @@ func BuildFFmpegCommandLine(timeline pebblestore.VideoProjectTimeline, inputs []
 			// never be referenced through an ffmpeg video stream selector.
 			var vFilters []string
 			if startSec > 0 || (input.EndMs > input.StartMs && input.EndMs > 0) {
-				vFilters = append(vFilters, fmt.Sprintf("trim=start=%.3f:duration=%.3f,setpts=PTS-STARTPTS", startSec, durSec))
+				vFilters = append(vFilters, fmt.Sprintf("trim=start=%.3f:duration=%.3f", startSec, durSec))
 			}
 			vFilters = append(vFilters,
 				fmt.Sprintf("scale=%d:%d:force_original_aspect_ratio=decrease", dims.Width, dims.Height),
 				fmt.Sprintf("pad=%d:%d:(ow-iw)/2:(oh-ih)/2:black", dims.Width, dims.Height),
 				"setsar=1",
 				fmt.Sprintf("fps=%.2f", fps),
+				"format=pix_fmts=yuv420p",
+				// concat emits AVTB (1/1000000) while fps commonly emits 1/FPS.
+				// Normalize every source before any join so a cut followed by xfade
+				// cannot feed xfade mismatched timebases. Reset timestamps for source
+				// files whose first decoded frame does not begin at zero as well.
+				"settb=AVTB",
+				"setpts=PTS-STARTPTS",
 			)
 
 			for _, caption := range input.Captions {
@@ -262,9 +269,13 @@ func BuildFFmpegCommandLine(timeline pebblestore.VideoProjectTimeline, inputs []
 			}
 			var aFilters []string
 			if startSec > 0 || (input.EndMs > input.StartMs && input.EndMs > 0) {
-				aFilters = append(aFilters, fmt.Sprintf("atrim=start=%.3f:duration=%.3f,asetpts=PTS-STARTPTS", startSec, durSec))
+				aFilters = append(aFilters, fmt.Sprintf("atrim=start=%.3f:duration=%.3f", startSec, durSec))
 			}
-			aFilters = append(aFilters, fmt.Sprintf("volume=%.2f", vol), "aformat=sample_rates=48000:channel_layouts=stereo")
+			aFilters = append(aFilters,
+				"asetpts=PTS-STARTPTS",
+				fmt.Sprintf("volume=%.2f", vol),
+				"aformat=sample_rates=48000:channel_layouts=stereo",
+			)
 			filterParts = append(filterParts, fmt.Sprintf("%s%s%s", aIn, strings.Join(aFilters, ","), aOut))
 			audioStreams = append(audioStreams, aOut)
 		} else {

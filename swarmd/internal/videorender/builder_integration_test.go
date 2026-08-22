@@ -9,6 +9,51 @@ import (
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
+func TestFFmpegRenderMixedTimebasesAcrossCutThenCrossfade(t *testing.T) {
+	ffmpeg, err := exec.LookPath("ffmpeg")
+	if err != nil {
+		t.Skip("requires local ffmpeg runtime")
+	}
+
+	dir := t.TempDir()
+	inputPaths := []string{
+		filepath.Join(dir, "microsecond.mp4"),
+		filepath.Join(dir, "thirty-fps-a.mp4"),
+		filepath.Join(dir, "thirty-fps-b.mp4"),
+	}
+	fixtureCommands := [][]string{
+		{"-v", "error", "-f", "lavfi", "-i", "color=c=red:s=320x240:r=30:d=1.2", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-video_track_timescale", "1000000", inputPaths[0]},
+		{"-v", "error", "-f", "lavfi", "-i", "color=c=green:s=320x240:r=30:d=1.2", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-video_track_timescale", "30", inputPaths[1]},
+		{"-v", "error", "-f", "lavfi", "-i", "color=c=blue:s=320x240:r=30:d=1.2", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-video_track_timescale", "30", inputPaths[2]},
+	}
+	for _, command := range fixtureCommands {
+		if output, commandErr := exec.Command(ffmpeg, command...).CombinedOutput(); commandErr != nil {
+			t.Fatalf("fixture generation failed: %v: %s", commandErr, output)
+		}
+	}
+
+	outputPath := filepath.Join(dir, "mixed-timebases.mp4")
+	plan, err := BuildFFmpegCommandLine(pebblestore.VideoProjectTimeline{
+		Width:  320,
+		Height: 240,
+		FPS:    30,
+		Transitions: []pebblestore.VideoTimelineTransition{
+			{ID: "cut", Kind: pebblestore.VideoTransitionKindCut, FromClipID: "one", ToClipID: "two"},
+			{ID: "dissolve", Kind: pebblestore.VideoTransitionKindCrossfade, FromClipID: "two", ToClipID: "three", DurationMs: 200},
+		},
+	}, []MaterializedInput{
+		{Index: 0, ClipID: "one", FilePath: inputPaths[0], IsVideo: true, DurationMs: 1200},
+		{Index: 1, ClipID: "two", FilePath: inputPaths[1], IsVideo: true, DurationMs: 1200},
+		{Index: 2, ClipID: "three", FilePath: inputPaths[2], IsVideo: true, DurationMs: 1200},
+	}, outputPath)
+	if err != nil {
+		t.Fatalf("BuildFFmpegCommandLine() error = %v", err)
+	}
+	if output, commandErr := exec.Command(ffmpeg, plan.FFmpegArgs...).CombinedOutput(); commandErr != nil {
+		t.Fatalf("ffmpeg render failed for mixed timebases: %v: %s\nfilter=%s", commandErr, output, plan.FilterComplex)
+	}
+}
+
 func TestFFmpegRenderStillWithDeterministicSoundtrack(t *testing.T) {
 	ffmpeg, err := exec.LookPath("ffmpeg")
 	if err != nil {

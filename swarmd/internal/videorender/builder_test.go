@@ -248,6 +248,30 @@ func TestBuildFFmpegCommandLineTransitions(t *testing.T) {
 	}
 }
 
+func TestBuildFFmpegCommandLineNormalizesTransitionInputs(t *testing.T) {
+	inputs := []MaterializedInput{
+		{Index: 0, ClipID: "one", FilePath: "one.mp4", DurationMs: 1200},
+		{Index: 1, ClipID: "two", FilePath: "two.mp4", DurationMs: 1200},
+		{Index: 2, ClipID: "three", FilePath: "three.mp4", DurationMs: 1200},
+	}
+	timeline := pebblestore.VideoProjectTimeline{FPS: 30, Transitions: []pebblestore.VideoTimelineTransition{
+		{ID: "cut", Kind: pebblestore.VideoTransitionKindCut, FromClipID: "one", ToClipID: "two"},
+		{ID: "dissolve", Kind: pebblestore.VideoTransitionKindCrossfade, FromClipID: "two", ToClipID: "three", DurationMs: 200},
+	}}
+
+	plan, err := BuildFFmpegCommandLine(timeline, inputs, "output.mp4")
+	if err != nil {
+		t.Fatalf("BuildFFmpegCommandLine() error = %v", err)
+	}
+	const normalizedTail = "fps=30.00,format=pix_fmts=yuv420p,settb=AVTB,setpts=PTS-STARTPTS"
+	if got := strings.Count(plan.FilterComplex, normalizedTail); got != len(inputs) {
+		t.Fatalf("normalized video input count = %d, want %d: %s", got, len(inputs), plan.FilterComplex)
+	}
+	if !strings.Contains(plan.FilterComplex, "[v_join_1][v2]xfade=") {
+		t.Fatalf("test graph does not cover concat followed by xfade: %s", plan.FilterComplex)
+	}
+}
+
 func TestBuildFFmpegCommandLineOrdersPrimaryClipsByTimelinePosition(t *testing.T) {
 	timeline := pebblestore.VideoProjectTimeline{
 		TotalDurationMs: 6000,

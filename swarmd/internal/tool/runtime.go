@@ -166,6 +166,7 @@ type Runtime struct {
 	artifacts            *artifact.Registry
 	artifactAuthority    ArtifactAuthority
 	htmlCapture          htmlcapture.Renderer
+	htmlAnimationCapture htmlcapture.AnimationRenderer
 	imageGeneration      ManagedImageGenerationService
 	video                manageVideoService
 	videoSources         *videosource.Service
@@ -478,6 +479,15 @@ func (r *Runtime) SetArtifactAuthority(authority ArtifactAuthority) {
 func (r *Runtime) SetHTMLCaptureRenderer(renderer htmlcapture.Renderer) {
 	if r != nil {
 		r.htmlCapture = renderer
+		if animationRenderer, ok := renderer.(htmlcapture.AnimationRenderer); ok {
+			r.htmlAnimationCapture = animationRenderer
+		}
+	}
+}
+
+func (r *Runtime) SetHTMLAnimationRenderer(renderer htmlcapture.AnimationRenderer) {
+	if r != nil {
+		r.htmlAnimationCapture = renderer
 	}
 }
 
