@@ -17,7 +17,9 @@ import {
   replaceCachedImageMedia,
   replaceCachedVideoMedia,
   resolveVideoStudioSessionRoute,
+  scanVideoFolder,
   serializeVideoClipForRequest,
+  soundtrackTimelineClip,
   timelineSegmentsToProjectTimeline,
   videoPlanClipDetails,
   VIDEO_STUDIO_AGENT_NAME,
@@ -106,6 +108,39 @@ test('Video Studio disposes cached video media when a stable clip source changes
   assert.equal(replacement.replaced, true)
   assert.equal(replacement.entry.element, second)
   assert.deepEqual(calls, ['pause', 'remove:src', 'load'])
+})
+
+test('Video Studio scans authenticated audio references without accepting host paths', async () => {
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    assert.equal(String(input), '/v1/workspace/video/scan')
+    assert.deepEqual(JSON.parse(String(init?.body)), { workspace_path: '/workspace/video', root_path: '/workspace/video/media' })
+    return new Response(JSON.stringify({ root_path: '/workspace/video/media', clips: [], audio_clips: [{ ref: 'audiosrc_exact', name: 'theme.wav', extension: '.wav', mime_type: 'audio/wav', size_bytes: 42, modified_at: 1, source_fingerprint: 'fingerprint', fingerprint_version: 'v1', path: '/forbidden.wav' }] }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+  }) as typeof fetch
+  try {
+    const result = await scanVideoFolder('/workspace/video', '/workspace/video/media')
+    assert.deepEqual(result.audioClips, [{ ref: 'audiosrc_exact', name: 'theme.wav', extension: '.wav', mime_type: 'audio/wav', size_bytes: 42, modified_at: 1, source_fingerprint: 'fingerprint', fingerprint_version: 'v1' }])
+    assert.equal('path' in result.audioClips[0], false)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('Video Studio builds a bounded durable soundtrack clip for a pending proposal', () => {
+  const clip = soundtrackTimelineClip({ audio: { ref: 'audiosrc_exact', name: 'theme.wav', extension: '.wav', mime_type: 'audio/wav', size_bytes: 42, modified_at: 1, source_fingerprint: 'fingerprint', fingerprint_version: 'v1' }, durationMs: 5500 })
+  assert.equal(clip.source_kind, 'source_audio')
+  assert.equal(clip.visible, false)
+  assert.equal(clip.audio_source?.ref, 'audiosrc_exact')
+  assert.deepEqual([clip.source_start_ms, clip.source_end_ms, clip.timeline_start_ms, clip.timeline_end_ms], [0, 5500, 0, 5500])
+  assert.equal('path' in (clip.audio_source ?? {}), false)
+})
+
+test('Video Studio maps accepted and pending source audio into its dedicated preview lane', () => {
+  const timeline: VideoProjectTimelineWire = { schema_version: 1, clips: [{ id: 'visual', source_kind: 'color', duration_ms: 5000, timeline_start_ms: 0, timeline_end_ms: 5000, visible: true }, { id: 'soundtrack', name: 'theme.wav', source_kind: 'source_audio', audio_source: { ref: 'audiosrc_exact', name: 'theme.wav', mime_type: 'audio/wav', size_bytes: 42, source_fingerprint: 'fingerprint', fingerprint_version: 'v1' }, duration_ms: 3000, source_start_ms: 500, source_end_ms: 3500, timeline_start_ms: 1000, timeline_end_ms: 4000, volume: 0.65, muted: false }] }
+  const segments = projectTimelineToTimelineSegments(timeline, {}, [], 'session-1')
+  assert.equal(segments[1].type, 'audio')
+  assert.equal(segments[1].src, '/v3/sessions/session-1/video/sources/media?source_ref=audiosrc_exact')
+  assert.deepEqual([segments[1].start, segments[1].sourceStart, segments[1].duration, segments[1].volume, segments[1].muted], [1, 0.5, 3, 0.65, false])
 })
 
 test('Video Studio preserves a timeline clip exact artifact reference for composer attachment fallback', () => {

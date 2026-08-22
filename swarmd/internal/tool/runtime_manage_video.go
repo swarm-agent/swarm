@@ -59,7 +59,7 @@ type manageVideoRenderService interface {
 func manageVideoDefinition() Definition {
 	return Definition{
 		Type: "function", Name: "manage_video",
-		Description: "Inspect trusted video sources, browse registered source-video folders, inspect triggering-message attachments, transcribe selected opaque video references, inspect transcripts and the accepted immutable cut, create a project, and submit atomic visual video-plan proposals with one exact ready image slide per part or typed edit proposals against one exact base revision. Exact ready image/png references returned by manage_artifact export_html_stills are valid visual inputs without download, materialization, or workspace duplication. One-shot initial-plan workflow: call create_project without initial_timeline, use the returned project_id and revision_id, then call propose_plan with base_revision_id set to that revision and plan.kind=initial. propose_plan creates only a pending whole-plan review object; it never accepts or applies the plan. Later stable-part revisions support selective acceptance. An owned chat session with an attached video project is durably upgraded to Video Studio when it first proposes an edit, regardless of whether it was entered from Chat or Studio. AI may propose edits and recommend render settings, but cannot accept a proposal or start a final render. Existing non-Studio project and render actions remain compatible. Arbitrary paths, provider URIs, credentials, and provider payloads are never accepted or returned.",
+		Description: "Inspect trusted video and audio sources, browse registered source-media folders, inspect triggering-message video attachments, transcribe selected opaque video references, inspect transcripts and the accepted immutable cut, create a project, and submit atomic visual video-plan proposals with one exact ready image slide per part or typed edit proposals against one exact base revision. Exact ready image/png references returned by manage_artifact export_html_stills are valid visual inputs without download, materialization, or workspace duplication. One-shot initial-plan workflow: call create_project without initial_timeline, use the returned project_id and revision_id, then call propose_plan with base_revision_id set to that revision and plan.kind=initial. propose_plan creates only a pending whole-plan review object; it never accepts or applies the plan. Later stable-part revisions support selective acceptance. An owned chat session with an attached video project is durably upgraded to Video Studio when it first proposes an edit, regardless of whether it was entered from Chat or Studio. For a soundtrack, browse a registered source-media folder, copy the complete exact audio object into a source_audio clip, and submit add_clip, update_clip, replace_clip, or remove_clip operations with affected_ranges against the exact base revision. AI may propose edits and recommend render settings, but cannot accept a proposal or start a final render. Existing non-Studio project and render actions remain compatible. Arbitrary paths, provider URIs, credentials, and provider payloads are never accepted or returned.",
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -94,12 +94,54 @@ func manageVideoDefinition() Definition {
 				"base_revision_id":   map[string]any{"type": "string", "description": "Required exact immutable revision for propose_plan or create_edit_proposal. For a new visual plan, copy revision_id directly from create_project."},
 				"rationale":          map[string]any{"type": "string", "description": "Concise rationale for the proposed edit."},
 				"plan":               map[string]any{"type": "object", "description": "Atomic visual video-plan proposal. Every part must include the exact ready image slide the viewer will see. Use kind=initial for the first whole-plan review and kind=revision with stable existing part IDs for selectable replacements.", "properties": map[string]any{"kind": map[string]any{"type": "string", "enum": []string{pebblestore.VideoPlanKindInitial, pebblestore.VideoPlanKindRevision}}, "summary": map[string]any{"type": "string"}, "parts": map[string]any{"type": "array", "minItems": 1, "maxItems": pebblestore.MaxClipsPerTimeline, "items": map[string]any{"type": "object", "properties": map[string]any{"id": map[string]any{"type": "string"}, "title": map[string]any{"type": "string"}, "duration_ms": map[string]any{"type": "integer", "minimum": 1, "maximum": pebblestore.MaxVideoTimelineDurationMs}, "narration": map[string]any{"type": "string"}, "on_screen_text": map[string]any{"type": "string"}, "visual_direction": map[string]any{"type": "string"}, "transition_in": map[string]any{"type": "string"}, "visual": map[string]any{"type": "object", "description": "Complete exact ready managed image reference returned by manage_artifact, including export_html_stills output; copy all four fields from one returned reference without preview/download substitution.", "properties": map[string]any{"session_id": map[string]any{"type": "string"}, "collection_id": map[string]any{"type": "string"}, "variant_id": map[string]any{"type": "string"}, "event_seq": map[string]any{"type": "integer", "minimum": 1}}, "required": []string{"session_id", "collection_id", "variant_id", "event_seq"}, "additionalProperties": false}}, "required": []string{"id", "title", "duration_ms", "visual"}, "additionalProperties": false}}}, "required": []string{"kind", "parts"}, "additionalProperties": false},
-				"operations":         map[string]any{"type": "array", "maxItems": pebblestore.MaxVideoEditProposalOperations, "items": map[string]any{"type": "object"}, "description": "Bounded typed clip and transition operations."},
+				"operations":         manageVideoEditOperationsSchema(),
 				"affected_ranges":    map[string]any{"type": "array", "maxItems": pebblestore.MaxVideoEditProposalOperations, "items": map[string]any{"type": "object", "properties": map[string]any{"start_ms": map[string]any{"type": "integer", "minimum": 0}, "end_ms": map[string]any{"type": "integer", "minimum": 1}}, "required": []string{"start_ms", "end_ms"}, "additionalProperties": false}},
 				"max_clips":          map[string]any{"type": "integer", "minimum": 1, "maximum": pebblestore.MaxClipsPerTimeline, "description": "Bounded accepted-cut clip count."},
 			},
 			"required": []string{"action"}, "additionalProperties": false,
 		},
+	}
+}
+
+func manageVideoEditOperationsSchema() map[string]any {
+	return map[string]any{
+		"type": "array", "minItems": 1, "maxItems": pebblestore.MaxVideoEditProposalOperations,
+		"description": "Bounded typed add, update, replace, and remove operations. Soundtracks use source_audio clips carrying one complete exact audio_source reference returned by browse_source; arbitrary paths are rejected.",
+		"items": map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"id":            map[string]any{"type": "string"},
+				"type":          map[string]any{"type": "string", "enum": []string{pebblestore.VideoEditOperationAddClip, pebblestore.VideoEditOperationUpdateClip, pebblestore.VideoEditOperationReplaceClip, pebblestore.VideoEditOperationRemoveClip, pebblestore.VideoEditOperationAddTransition, pebblestore.VideoEditOperationUpdateTransition, pebblestore.VideoEditOperationRemoveTransition}},
+				"clip_id":       map[string]any{"type": "string", "description": "Existing clip ID required by replace_clip and remove_clip."},
+				"clip":          manageVideoTimelineClipSchema(),
+				"transition_id": map[string]any{"type": "string"},
+				"transition": map[string]any{"type": "object", "properties": map[string]any{
+					"id": map[string]any{"type": "string"}, "kind": map[string]any{"type": "string"}, "from_clip_id": map[string]any{"type": "string"}, "to_clip_id": map[string]any{"type": "string"}, "duration_ms": map[string]any{"type": "integer", "minimum": 0},
+				}, "additionalProperties": false},
+			},
+			"required": []string{"id", "type"}, "additionalProperties": false,
+		},
+	}
+}
+
+func manageVideoTimelineClipSchema() map[string]any {
+	return map[string]any{
+		"type":        "object",
+		"description": "Typed timeline clip. A soundtrack sets source_kind=source_audio, visible=false, a bounded source/timeline range, gain/mute, and the complete exact audio_source object from browse_source.",
+		"properties": map[string]any{
+			"id": map[string]any{"type": "string"}, "name": map[string]any{"type": "string"},
+			"track": map[string]any{"type": "integer", "minimum": 0}, "sequence": map[string]any{"type": "integer", "minimum": 0}, "layer": map[string]any{"type": "integer", "minimum": 0},
+			"source_kind": map[string]any{"type": "string", "enum": []string{pebblestore.VideoClipSourceKindSourceVideo, pebblestore.VideoClipSourceKindSourceAudio, pebblestore.VideoClipSourceKindManagedArtifact, pebblestore.VideoClipSourceKindColor, pebblestore.VideoClipSourceKindText}},
+			"source_ref":  map[string]any{"type": "string"},
+			"audio_source": map[string]any{"type": "object", "description": "Complete exact trusted audio reference returned by browse_source; never substitute a path.", "properties": map[string]any{
+				"ref": map[string]any{"type": "string"}, "name": map[string]any{"type": "string"}, "mime_type": map[string]any{"type": "string"}, "size_bytes": map[string]any{"type": "integer", "minimum": 1}, "source_fingerprint": map[string]any{"type": "string"}, "fingerprint_version": map[string]any{"type": "string"},
+			}, "required": []string{"ref", "name", "mime_type", "size_bytes", "source_fingerprint", "fingerprint_version"}, "additionalProperties": false},
+			"artifact_ref": map[string]any{"type": "object"}, "design_input": map[string]any{"type": "object"}, "media_type": map[string]any{"type": "string"},
+			"source_start_ms": map[string]any{"type": "integer", "minimum": 0}, "source_end_ms": map[string]any{"type": "integer", "minimum": 0},
+			"timeline_start_ms": map[string]any{"type": "integer", "minimum": 0}, "timeline_end_ms": map[string]any{"type": "integer", "minimum": 0}, "duration_ms": map[string]any{"type": "integer", "minimum": 1},
+			"visible": map[string]any{"type": "boolean"}, "volume": map[string]any{"type": "number", "minimum": 0, "maximum": 2}, "muted": map[string]any{"type": "boolean"}, "captions": map[string]any{"type": "array", "maxItems": pebblestore.MaxCaptionsPerClip, "items": map[string]any{"type": "object"}},
+		},
+		"required": []string{"id", "track", "sequence", "source_kind", "duration_ms", "timeline_start_ms", "timeline_end_ms", "visible"}, "additionalProperties": false,
 	}
 }
 
@@ -171,8 +213,8 @@ func (r *Runtime) executeManageVideo(ctx context.Context, scope WorkspaceScope, 
 			return "", err
 		}
 		response["workspace_id"], response["source_root_ref"], response["relative_path"] = result.WorkspaceID, result.RootRef, result.RelativePath
-		response["directories"], response["videos"] = result.Directories, result.Clips
-		response["directory_count"], response["video_count"] = len(result.Directories), len(result.Clips)
+		response["directories"], response["videos"], response["audio"] = result.Directories, result.Clips, result.AudioClips
+		response["directory_count"], response["video_count"], response["audio_count"] = len(result.Directories), len(result.Clips), len(result.AudioClips)
 	case "inspect_attachments":
 		attachments := make([]map[string]any, 0, len(message.VideoAttachments))
 		for _, attachment := range message.VideoAttachments {
@@ -553,6 +595,7 @@ func (r *Runtime) executeManageVideo(ctx context.Context, scope WorkspaceScope, 
 			response["action"] = requestedAction
 		}
 		response["proposal_status"], response["stale_base"] = proposal.Status, false
+		response["requires_user_acceptance"] = true
 		response["working_revision_id"], response["working_revision_number"] = proposal.WorkingRevisionID, proposal.WorkingRevisionNumber
 		response["change_notice"] = "A new change was added to the working cut. Review it in the player, restore any sections you do not want, then confirm when ready."
 
@@ -818,8 +861,8 @@ func (r *Runtime) executeManageVideo(ctx context.Context, scope WorkspaceScope, 
 
 func manageVideoPresentation(action string, args, response map[string]any) map[string]any {
 	copyByAction := map[string][2]string{
-		"list_source_roots":         {"Video sources ready", "Finding video sources"},
-		"browse_source":             {"Video source opened", "Browsing video sources"},
+		"list_source_roots":         {"Media sources ready", "Finding media sources"},
+		"browse_source":             {"Media source opened", "Browsing media sources"},
 		"inspect_attachments":       {"Video attachments checked", "Checking video attachments"},
 		"start_transcription":       {"Transcription started", "Starting video transcription"},
 		"status":                    {"Transcription status checked", "Checking transcription progress"},
@@ -853,6 +896,15 @@ func manageVideoPresentation(action string, args, response map[string]any) map[s
 	}
 	project, _ := response["project"].(map[string]any)
 	sourceNames := manageVideoSourceNameSlice(response)
+	if action == "browse_source" {
+		if audio, ok := response["audio"].([]videosource.AudioClip); ok {
+			for _, clip := range audio {
+				if name := strings.TrimSpace(clip.Name); name != "" {
+					sourceNames = append(sourceNames, name)
+				}
+			}
+		}
+	}
 	subject := strings.TrimSpace(firstNonEmptyString(asString(project["title"]), asString(args["title"]), singleManageVideoSourceName(sourceNames), asString(response["relative_path"]), asString(args["output_preset"])))
 	if subject != "" {
 		presentation["subject"] = subject
@@ -860,7 +912,7 @@ func manageVideoPresentation(action string, args, response map[string]any) map[s
 	if len(sourceNames) > 0 {
 		presentation["source_names"] = sourceNames
 	}
-	for _, key := range []string{"project_id", "revision_id", "proposal_id", "proposal_status", "working_revision_id", "working_revision_number", "change_notice", "stale_base", "job_id", "progress", "count"} {
+	for _, key := range []string{"project_id", "revision_id", "proposal_id", "proposal_status", "requires_user_acceptance", "working_revision_id", "working_revision_number", "change_notice", "stale_base", "job_id", "progress", "count"} {
 		if value, ok := response[key]; ok {
 			presentation[key] = value
 		}
@@ -969,7 +1021,9 @@ func parseVideoEditOperations(raw any) ([]pebblestore.VideoEditOperation, error)
 	if text, ok := raw.(string); ok {
 		encoded = []byte(strings.TrimSpace(text))
 	}
-	if err := json.Unmarshal(encoded, &operations); err != nil {
+	decoder := json.NewDecoder(strings.NewReader(string(encoded)))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&operations); err != nil {
 		return nil, fmt.Errorf("invalid operations payload: %w", err)
 	}
 	if len(operations) == 0 || len(operations) > pebblestore.MaxVideoEditProposalOperations {

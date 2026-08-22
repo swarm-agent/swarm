@@ -252,6 +252,10 @@ func (f *fakeSessionStore) GetSessionArtifactVariant(accountScopeID, sessionID, 
 	return v, ok, nil
 }
 
+func (f *fakeSessionStore) GetAudioSourceRecord(accountScopeID, workspaceID, ref string) (pebblestore.AudioSourceRecord, bool, error) {
+	return pebblestore.AudioSourceRecord{}, false, nil
+}
+
 func TestCreateProjectWithoutTimelineCreatesEmptyBaseRevision(t *testing.T) {
 	store := newFakeSessionStore()
 	svc := NewService(store)

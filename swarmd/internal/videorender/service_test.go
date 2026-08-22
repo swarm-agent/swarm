@@ -15,6 +15,7 @@ import (
 	"swarm/packages/swarmd/internal/artifact"
 	"swarm/packages/swarmd/internal/identity"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
+	workspaceruntime "swarm/packages/swarmd/internal/workspace"
 )
 
 type fakeCommandRunner struct {
@@ -84,18 +85,20 @@ type fakeSessionStore struct {
 	revisions     map[string]pebblestore.VideoProjectRevisionSnapshot
 	jobs          map[string]pebblestore.VideoRenderJobSnapshot
 	sources       map[string]pebblestore.VideoSourceRecord
+	audioSources  map[string]pebblestore.AudioSourceRecord
 	variants      map[string]pebblestore.SessionArtifactVariant
 	updateJobHook func(input pebblestore.UpdateVideoRenderJobInput)
 }
 
 func newFakeSessionStore() *fakeSessionStore {
 	return &fakeSessionStore{
-		sessions:  make(map[string]pebblestore.SessionSnapshot),
-		projects:  make(map[string]pebblestore.VideoProjectSnapshot),
-		revisions: make(map[string]pebblestore.VideoProjectRevisionSnapshot),
-		jobs:      make(map[string]pebblestore.VideoRenderJobSnapshot),
-		sources:   make(map[string]pebblestore.VideoSourceRecord),
-		variants:  make(map[string]pebblestore.SessionArtifactVariant),
+		sessions:     make(map[string]pebblestore.SessionSnapshot),
+		projects:     make(map[string]pebblestore.VideoProjectSnapshot),
+		revisions:    make(map[string]pebblestore.VideoProjectRevisionSnapshot),
+		jobs:         make(map[string]pebblestore.VideoRenderJobSnapshot),
+		sources:      make(map[string]pebblestore.VideoSourceRecord),
+		audioSources: make(map[string]pebblestore.AudioSourceRecord),
+		variants:     make(map[string]pebblestore.SessionArtifactVariant),
 	}
 }
 
@@ -188,6 +191,14 @@ func (f *fakeSessionStore) GetVideoSourceRecord(accountScopeID, workspaceID, ref
 	return s, true, nil
 }
 
+func (f *fakeSessionStore) GetAudioSourceRecord(accountScopeID, workspaceID, ref string) (pebblestore.AudioSourceRecord, bool, error) {
+	s, ok := f.audioSources[ref]
+	if !ok || s.AccountScopeID != accountScopeID || s.WorkspaceID != workspaceID {
+		return pebblestore.AudioSourceRecord{}, false, nil
+	}
+	return s, true, nil
+}
+
 func (f *fakeSessionStore) GetSessionArtifactVariant(accountScopeID, sessionID, collectionID, variantID string) (pebblestore.SessionArtifactVariant, bool, error) {
 	key := fmt.Sprintf("%s/%s/%s/%s", accountScopeID, sessionID, collectionID, variantID)
 	v, ok := f.variants[key]
@@ -251,6 +262,61 @@ func (f *fakeArtifactAuthority) CreateFromFile(ctx context.Context, principal ar
 func testVideoFingerprint(root, relative string, size, modAt int64) string {
 	sum := sha256.Sum256([]byte(fmt.Sprintf("%s\x00%s\x00%d\x00%d", root, relative, size, modAt)))
 	return hex.EncodeToString(sum[:])
+}
+
+func testAudioSourceRecord(accountScopeID, workspaceID, root, relative string, size, modAt int64) pebblestore.AudioSourceRecord {
+	fingerprint := testVideoFingerprint(root, relative, size, modAt)
+	sum := sha256.Sum256([]byte(strings.Join([]string{accountScopeID, workspaceID, root, relative, fingerprint}, "\x00")))
+	return pebblestore.AudioSourceRecord{
+		Version: pebblestore.AudioSourceRecordVersion, Ref: "audiosrc_" + hex.EncodeToString(sum[:]),
+		AccountScopeID: accountScopeID, WorkspaceID: workspaceID, RootPath: root, RelativePath: relative,
+		DisplayName: filepath.Base(relative), MIMEType: "audio/wav", SizeBytes: size, ModifiedAt: modAt,
+		SourceFingerprint: fingerprint, FingerprintVersion: pebblestore.AudioSourceFingerprintV1,
+	}
+}
+
+type fakeWorkspaceAuthority struct {
+	resolution workspaceruntime.Resolution
+}
+
+func (f fakeWorkspaceAuthority) ListSourceMediaDirectoriesForPrincipal(identity.Principal, string) (workspaceruntime.Resolution, error) {
+	return f.resolution, nil
+}
+
+func TestMaterializeTimelineInputsResolvesExactAudioSource(t *testing.T) {
+	root := t.TempDir()
+	audioPath := filepath.Join(root, "soundtrack.wav")
+	wav := append([]byte("RIFF\x24\x00\x00\x00WAVEfmt "), make([]byte, 64)...)
+	if err := os.WriteFile(audioPath, wav, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(audioPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	principal := identity.Principal{Type: identity.PrincipalTypeUser, AccountScopeID: "acc", UserID: "user"}
+	record := testAudioSourceRecord(principal.AccountScopeID, "ws", root, "soundtrack.wav", info.Size(), info.ModTime().UnixMilli())
+	store := newFakeSessionStore()
+	store.audioSources[record.Ref] = record
+	svc := NewService(Config{}, store, nil, nil, fakeWorkspaceAuthority{resolution: workspaceruntime.Resolution{
+		WorkspaceID: "ws", SourceMediaDirectories: []string{root},
+	}}, &fakeCommandRunner{})
+	timeline := pebblestore.VideoProjectTimeline{Clips: []pebblestore.VideoTimelineClip{{
+		ID: "music", SourceKind: pebblestore.VideoClipSourceKindSourceAudio, AudioSource: &pebblestore.AudioSourceReference{
+			Ref: record.Ref, Name: record.DisplayName, MIMEType: record.MIMEType, SizeBytes: record.SizeBytes,
+			SourceFingerprint: record.SourceFingerprint, FingerprintVersion: record.FingerprintVersion,
+		}, SourceStartMs: 0, SourceEndMs: 1000, TimelineStartMs: 500, TimelineEndMs: 1500, DurationMs: 1000,
+	}}}
+	inputs, err := svc.materializeTimelineInputs(context.Background(), principal, pebblestore.SessionSnapshot{ID: "session"}, "/workspace", t.TempDir(), timeline)
+	if err != nil {
+		t.Fatalf("materializeTimelineInputs() error = %v", err)
+	}
+	if len(inputs) != 1 || !inputs[0].IsAudio || inputs[0].IsVideo || !inputs[0].HasAudio {
+		t.Fatalf("materialized input = %+v", inputs)
+	}
+	if data, err := os.ReadFile(inputs[0].FilePath); err != nil || string(data) != string(wav) {
+		t.Fatalf("materialized audio mismatch: bytes=%d err=%v", len(data), err)
+	}
 }
 
 func TestRenderJobSuccessfulFlow(t *testing.T) {
@@ -400,8 +466,14 @@ func TestRenderJobSuccessfulFlow(t *testing.T) {
 	if result.OutputArtifact == nil || result.OutputArtifact.VariantID == "" {
 		t.Fatalf("expected non-nil output artifact reference, got: %+v", result.OutputArtifact)
 	}
-	if len(runner.calls) != 1 {
-		t.Fatalf("expected 1 ffmpeg call, got: %d", len(runner.calls))
+	var ffmpegCalls int
+	for _, call := range runner.calls {
+		if len(call) > 0 && call[0] == "ffmpeg" {
+			ffmpegCalls++
+		}
+	}
+	if ffmpegCalls != 1 {
+		t.Fatalf("expected 1 ffmpeg call, got: %d (%v)", ffmpegCalls, runner.calls)
 	}
 }
 

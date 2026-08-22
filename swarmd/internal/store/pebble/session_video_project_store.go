@@ -41,6 +41,7 @@ const (
 	VideoProjectKindVideoTool = "video_tool"
 
 	VideoClipSourceKindSourceVideo     = "source_video"
+	VideoClipSourceKindSourceAudio     = "source_audio"
 	VideoClipSourceKindManagedArtifact = "managed_artifact"
 	VideoClipSourceKindColor           = "color"
 	VideoClipSourceKindText            = "text"
@@ -57,6 +58,7 @@ const (
 
 	VideoEditOperationAddClip          = "add_clip"
 	VideoEditOperationUpdateClip       = "update_clip"
+	VideoEditOperationReplaceClip      = "replace_clip"
 	VideoEditOperationRemoveClip       = "remove_clip"
 	VideoEditOperationAddTransition    = "add_transition"
 	VideoEditOperationUpdateTransition = "update_transition"
@@ -105,12 +107,10 @@ type VideoDesignInputReference struct {
 	OverlayMode  string `json:"overlay_mode,omitempty"` // "pip", "full", "intro", "outro", "watermark"
 }
 
-// VideoAudioPolicy contains structured volume, muting, and ducking rules.
+// VideoAudioPolicy contains the timeline-level audio controls honored by the renderer.
 type VideoAudioPolicy struct {
-	MasterVolume    float64 `json:"master_volume,omitempty"` // 0.0 - 2.0 (default 1.0)
-	Muted           bool    `json:"muted,omitempty"`
-	DuckOtherTracks bool    `json:"duck_other_tracks,omitempty"`
-	DuckingLevel    float64 `json:"ducking_level,omitempty"` // 0.0 - 1.0
+	MasterVolume float64 `json:"master_volume,omitempty"` // 0.0 means default 1.0; supported range is (0, 2.0].
+	Muted        bool    `json:"muted,omitempty"`
 }
 
 // VideoTimelineClip represents one ordered clip in the video timeline.
@@ -119,8 +119,9 @@ type VideoTimelineClip struct {
 	Name            string                             `json:"name,omitempty"`
 	Track           int                                `json:"track"`
 	Sequence        int                                `json:"sequence"`
-	SourceKind      string                             `json:"source_kind"` // "source_video", "managed_artifact", "color", "text"
+	SourceKind      string                             `json:"source_kind"` // "source_video", "source_audio", "managed_artifact", "color", "text"
 	SourceRef       string                             `json:"source_ref,omitempty"`
+	AudioSource     *AudioSourceReference              `json:"audio_source,omitempty"`
 	ArtifactRef     *SessionArtifactSelectionReference `json:"artifact_ref,omitempty"`
 	MediaType       string                             `json:"media_type,omitempty"`
 	SourceStartMs   int64                              `json:"source_start_ms"`
@@ -132,7 +133,6 @@ type VideoTimelineClip struct {
 	Layer           int                                `json:"layer,omitempty"`
 	Volume          float64                            `json:"volume,omitempty"`
 	Muted           bool                               `json:"muted,omitempty"`
-	AudioPolicy     *VideoAudioPolicy                  `json:"audio_policy,omitempty"`
 	Captions        []VideoTextOverlay                 `json:"captions,omitempty"`
 	DesignInput     *VideoDesignInputReference         `json:"design_input,omitempty"`
 }
@@ -569,6 +569,9 @@ func normalizeVideoTimeline(timeline *VideoProjectTimeline) {
 	if timeline.SchemaVersion == 0 {
 		timeline.SchemaVersion = VideoTimelineSchemaVersion
 	}
+	if timeline.AudioPolicy != nil && timeline.AudioPolicy.MasterVolume == 0 && !timeline.AudioPolicy.Muted {
+		timeline.AudioPolicy.MasterVolume = 1.0
+	}
 	var totalDuration int64
 	for i := range timeline.Transitions {
 		normalizeVideoTransition(&timeline.Transitions[i])
@@ -579,6 +582,17 @@ func normalizeVideoTimeline(timeline *VideoProjectTimeline) {
 		clip.Name = strings.TrimSpace(clip.Name)
 		clip.SourceKind = strings.ToLower(strings.TrimSpace(clip.SourceKind))
 		clip.SourceRef = strings.TrimSpace(clip.SourceRef)
+		clip.MediaType = strings.ToLower(strings.TrimSpace(clip.MediaType))
+		if clip.AudioSource != nil {
+			clip.AudioSource.Ref = strings.TrimSpace(clip.AudioSource.Ref)
+			clip.AudioSource.Name = strings.TrimSpace(clip.AudioSource.Name)
+			clip.AudioSource.MIMEType = strings.ToLower(strings.TrimSpace(clip.AudioSource.MIMEType))
+			clip.AudioSource.SourceFingerprint = strings.ToLower(strings.TrimSpace(clip.AudioSource.SourceFingerprint))
+			clip.AudioSource.FingerprintVersion = strings.TrimSpace(clip.AudioSource.FingerprintVersion)
+			if clip.MediaType == "" {
+				clip.MediaType = clip.AudioSource.MIMEType
+			}
+		}
 		if clip.Volume <= 0 && !clip.Muted {
 			clip.Volume = 1.0
 		} else if clip.Volume > 2.0 {
@@ -786,6 +800,9 @@ func validateVideoTimeline(timeline VideoProjectTimeline) error {
 	if len(timeline.Transitions) > MaxTransitionsPerTimeline {
 		return fmt.Errorf("timeline transition count %d exceeds maximum %d", len(timeline.Transitions), MaxTransitionsPerTimeline)
 	}
+	if timeline.AudioPolicy != nil && (timeline.AudioPolicy.MasterVolume < 0 || timeline.AudioPolicy.MasterVolume > 2) {
+		return errors.New("timeline master volume must be between 0 and 2")
+	}
 	seenClipIDs := make(map[string]struct{}, len(timeline.Clips))
 	for i, clip := range timeline.Clips {
 		if clip.ID == "" {
@@ -807,6 +824,13 @@ func validateVideoTimeline(timeline VideoProjectTimeline) error {
 			if clip.SourceStartMs < 0 || clip.SourceEndMs <= clip.SourceStartMs {
 				return fmt.Errorf("clip %q has invalid source range [%d, %d]", clip.ID, clip.SourceStartMs, clip.SourceEndMs)
 			}
+			if clip.AudioSource != nil {
+				return fmt.Errorf("source_video clip %q cannot carry an audio_source", clip.ID)
+			}
+		case VideoClipSourceKindSourceAudio:
+			if err := validateAudioTimelineClip(clip); err != nil {
+				return err
+			}
 		case VideoClipSourceKindManagedArtifact:
 			if clip.ArtifactRef == nil && clip.DesignInput == nil {
 				return fmt.Errorf("managed_artifact clip %q requires artifact_ref or design_input", clip.ID)
@@ -818,6 +842,9 @@ func validateVideoTimeline(timeline VideoProjectTimeline) error {
 		}
 		if clip.DurationMs <= 0 {
 			return fmt.Errorf("clip %q duration must be positive", clip.ID)
+		}
+		if clip.SourceKind != VideoClipSourceKindSourceAudio && clip.AudioSource != nil {
+			return fmt.Errorf("clip %q can only carry audio_source for source_audio", clip.ID)
 		}
 		if clip.TimelineStartMs < 0 || clip.TimelineEndMs <= clip.TimelineStartMs {
 			return fmt.Errorf("clip %q has invalid timeline range [%d, %d]", clip.ID, clip.TimelineStartMs, clip.TimelineEndMs)
@@ -849,6 +876,11 @@ func validateVideoTimeline(timeline VideoProjectTimeline) error {
 		if _, ok := seenClipIDs[transition.ToClipID]; !ok {
 			return fmt.Errorf("transition %q references missing to clip %q", transition.ID, transition.ToClipID)
 		}
+		for _, clip := range timeline.Clips {
+			if (clip.ID == transition.FromClipID || clip.ID == transition.ToClipID) && clip.SourceKind == VideoClipSourceKindSourceAudio {
+				return fmt.Errorf("transition %q cannot reference audio-only clip %q", transition.ID, clip.ID)
+			}
+		}
 		if transition.FromClipID == transition.ToClipID {
 			return fmt.Errorf("transition %q must connect distinct clips", transition.ID)
 		}
@@ -864,6 +896,46 @@ func validateVideoTimeline(timeline VideoProjectTimeline) error {
 		default:
 			return fmt.Errorf("transition %q has unsupported kind %q", transition.ID, transition.Kind)
 		}
+	}
+	return nil
+}
+
+func validateAudioTimelineClip(clip VideoTimelineClip) error {
+	if clip.AudioSource == nil {
+		return fmt.Errorf("source_audio clip %q requires audio_source", clip.ID)
+	}
+	ref := clip.AudioSource
+	if clip.SourceRef != "" || clip.ArtifactRef != nil || clip.DesignInput != nil {
+		return fmt.Errorf("source_audio clip %q must use only its exact audio_source reference", clip.ID)
+	}
+	refDigest := strings.TrimPrefix(ref.Ref, "audiosrc_")
+	_, refDigestErr := hex.DecodeString(refDigest)
+	_, fingerprintErr := hex.DecodeString(ref.SourceFingerprint)
+	if !strings.HasPrefix(ref.Ref, "audiosrc_") || len(refDigest) != 64 || refDigestErr != nil ||
+		ref.Name == "" || !strings.HasPrefix(ref.MIMEType, "audio/") || ref.SizeBytes <= 0 ||
+		len(ref.SourceFingerprint) != 64 || fingerprintErr != nil || ref.FingerprintVersion != AudioSourceFingerprintV1 {
+		return fmt.Errorf("source_audio clip %q requires a complete exact audio_source reference", clip.ID)
+	}
+	if clip.MediaType != "" && !strings.EqualFold(clip.MediaType, ref.MIMEType) {
+		return fmt.Errorf("source_audio clip %q media_type does not match audio_source", clip.ID)
+	}
+	if clip.SourceStartMs < 0 || clip.SourceEndMs <= clip.SourceStartMs {
+		return fmt.Errorf("source_audio clip %q has invalid source range [%d, %d]", clip.ID, clip.SourceStartMs, clip.SourceEndMs)
+	}
+	if clip.DurationMs != clip.SourceEndMs-clip.SourceStartMs {
+		return fmt.Errorf("source_audio clip %q duration must match its source trim", clip.ID)
+	}
+	if clip.DurationMs != clip.TimelineEndMs-clip.TimelineStartMs {
+		return fmt.Errorf("source_audio clip %q duration must match its timeline range", clip.ID)
+	}
+	if clip.Visible {
+		return fmt.Errorf("source_audio clip %q must not be visible", clip.ID)
+	}
+	if len(clip.Captions) != 0 {
+		return fmt.Errorf("source_audio clip %q cannot carry visual captions", clip.ID)
+	}
+	if clip.Volume < 0 || clip.Volume > 2 {
+		return fmt.Errorf("source_audio clip %q gain must be between 0 and 2", clip.ID)
 	}
 	return nil
 }
@@ -1109,6 +1181,10 @@ func validateVideoEditOperations(operations []VideoEditOperation) error {
 			if op.Clip == nil || op.Clip.ID == "" {
 				return fmt.Errorf("operation %q requires clip payload with id", op.ID)
 			}
+		case VideoEditOperationReplaceClip:
+			if op.ClipID == "" || op.Clip == nil || op.Clip.ID == "" {
+				return fmt.Errorf("operation %q requires clip_id and replacement clip payload with id", op.ID)
+			}
 		case VideoEditOperationRemoveClip:
 			if op.ClipID == "" {
 				return fmt.Errorf("operation %q requires clip_id", op.ID)
@@ -1155,6 +1231,28 @@ func applyVideoEditOperations(base VideoProjectTimeline, operations []VideoEditO
 			}
 			if !found {
 				return VideoProjectTimeline{}, fmt.Errorf("clip %q not found", op.Clip.ID)
+			}
+		case VideoEditOperationReplaceClip:
+			found := false
+			for i := range base.Clips {
+				if base.Clips[i].ID == op.ClipID {
+					base.Clips[i] = *op.Clip
+					found = true
+					break
+				}
+			}
+			if !found {
+				return VideoProjectTimeline{}, fmt.Errorf("clip %q not found", op.ClipID)
+			}
+			if op.Clip.ID != op.ClipID {
+				for i := range base.Transitions {
+					if base.Transitions[i].FromClipID == op.ClipID {
+						base.Transitions[i].FromClipID = op.Clip.ID
+					}
+					if base.Transitions[i].ToClipID == op.ClipID {
+						base.Transitions[i].ToClipID = op.Clip.ID
+					}
+				}
 			}
 		case VideoEditOperationRemoveClip:
 			found := false

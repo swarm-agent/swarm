@@ -30,6 +30,7 @@ type SessionStore interface {
 	ListVideoRenderJobs(accountScopeID, sessionID, projectID string, limit int) ([]pebblestore.VideoRenderJobSnapshot, error)
 	ListRecoverableVideoRenderJobs(limit int) ([]pebblestore.VideoRenderJobSnapshot, error)
 	GetSessionArtifactVariant(accountScopeID, sessionID, collectionID, variantID string) (pebblestore.SessionArtifactVariant, bool, error)
+	GetAudioSourceRecord(accountScopeID, workspaceID, ref string) (pebblestore.AudioSourceRecord, bool, error)
 }
 
 type Service struct {
@@ -104,6 +105,14 @@ func (s *Service) CreateEditProposal(ctx context.Context, principal identity.Pri
 			return pebblestore.VideoEditProposalSnapshot{}, err
 		}
 	}
+	for _, operation := range input.Operations {
+		if operation.Clip == nil {
+			continue
+		}
+		if err := s.validateTimelineSources(principal, input.SessionID, pebblestore.VideoProjectTimeline{Clips: []pebblestore.VideoTimelineClip{*operation.Clip}}); err != nil {
+			return pebblestore.VideoEditProposalSnapshot{}, err
+		}
+	}
 	return s.sessions.CreateVideoEditProposal(pebblestore.CreateVideoEditProposalInput{AccountScopeID: principal.AccountScopeID, UserID: principal.UserID, SessionID: input.SessionID, ProjectID: input.ProjectID, ProposalID: input.ProposalID, BaseRevisionID: input.BaseRevisionID, Title: input.Title, Rationale: input.Rationale, Plan: input.Plan, Operations: input.Operations, AffectedRanges: input.AffectedRanges, NowUnixMs: input.NowUnixMs})
 }
 func (s *Service) GetEditProposal(principal identity.Principal, sessionID, projectID, proposalID string) (pebblestore.VideoEditProposalSnapshot, bool, error) {
@@ -145,7 +154,7 @@ func (s *Service) AcceptEditProposal(ctx context.Context, principal identity.Pri
 		if _, ok := selected[operation.ID]; !ok || operation.Clip == nil {
 			continue
 		}
-		if err := s.validateTimelineArtifacts(principal, input.SessionID, pebblestore.VideoProjectTimeline{Clips: []pebblestore.VideoTimelineClip{*operation.Clip}}); err != nil {
+		if err := s.validateTimelineSources(principal, input.SessionID, pebblestore.VideoProjectTimeline{Clips: []pebblestore.VideoTimelineClip{*operation.Clip}}); err != nil {
 			return pebblestore.VideoEditProposalSnapshot{}, pebblestore.VideoProjectRevisionSnapshot{}, pebblestore.VideoProjectSnapshot{}, err
 		}
 	}
@@ -212,7 +221,7 @@ func (s *Service) CreateProject(ctx context.Context, principal identity.Principa
 	}
 
 	ensureInitialVideoProjectTimeline(&input)
-	if err := s.validateTimelineArtifacts(principal, input.SessionID, *input.InitialTimeline); err != nil {
+	if err := s.validateTimelineSources(principal, input.SessionID, *input.InitialTimeline); err != nil {
 		return pebblestore.VideoProjectSnapshot{}, nil, err
 	}
 
@@ -302,7 +311,7 @@ func (s *Service) CreateRevision(ctx context.Context, principal identity.Princip
 		return pebblestore.VideoProjectRevisionSnapshot{}, pebblestore.VideoProjectSnapshot{}, errors.New("session id and project id are required")
 	}
 
-	if err := s.validateTimelineArtifacts(principal, input.SessionID, input.Timeline); err != nil {
+	if err := s.validateTimelineSources(principal, input.SessionID, input.Timeline); err != nil {
 		return pebblestore.VideoProjectRevisionSnapshot{}, pebblestore.VideoProjectSnapshot{}, err
 	}
 
@@ -340,7 +349,7 @@ func (s *Service) RestoreRevision(ctx context.Context, principal identity.Princi
 		}
 		return pebblestore.VideoProjectRevisionSnapshot{}, pebblestore.VideoProjectSnapshot{}, err
 	}
-	if err := s.validateTimelineArtifacts(principal, input.SessionID, source.Timeline); err != nil {
+	if err := s.validateTimelineSources(principal, input.SessionID, source.Timeline); err != nil {
 		return pebblestore.VideoProjectRevisionSnapshot{}, pebblestore.VideoProjectSnapshot{}, err
 	}
 	return s.sessions.CreateVideoProjectRevision(pebblestore.CreateVideoProjectRevisionInput{
@@ -619,6 +628,49 @@ func (s *Service) normalizeVisualPlanArtifacts(principal identity.Principal, ses
 		part.VisualMediaType = variant.MediaType
 	}
 	return nil
+}
+
+func (s *Service) validateTimelineSources(principal identity.Principal, sessionID string, timeline pebblestore.VideoProjectTimeline) error {
+	session, ok, err := s.sessions.GetSession(sessionID)
+	if err != nil || !ok || session.AccountScopeID != principal.AccountScopeID || (session.UserID != "" && session.UserID != principal.UserID) {
+		return errors.New("video project session not found")
+	}
+	for _, clip := range timeline.Clips {
+		if clip.SourceKind != pebblestore.VideoClipSourceKindSourceAudio {
+			continue
+		}
+		if clip.AudioSource == nil {
+			return fmt.Errorf("source_audio clip %q requires audio_source", clip.ID)
+		}
+		matched := false
+		for _, workspaceID := range pebblestore.SessionVideoWorkspaceIDs(session) {
+			record, found, readErr := s.sessions.GetAudioSourceRecord(principal.AccountScopeID, workspaceID, clip.AudioSource.Ref)
+			if readErr != nil {
+				return readErr
+			}
+			if !found {
+				continue
+			}
+			if err := pebblestore.ValidateAudioSourceRecord(record); err != nil {
+				return fmt.Errorf("audio source %q is stale or unavailable: %w", clip.AudioSource.Ref, err)
+			}
+			if !strings.HasPrefix(strings.ToLower(strings.TrimSpace(clip.AudioSource.MIMEType)), "audio/") {
+				return fmt.Errorf("audio source %q has unsupported media type %q", clip.AudioSource.Ref, clip.AudioSource.MIMEType)
+			}
+			if record.SourceFingerprint != clip.AudioSource.SourceFingerprint || record.FingerprintVersion != clip.AudioSource.FingerprintVersion {
+				return fmt.Errorf("audio source %q fingerprint mismatch: exact reference is stale", clip.AudioSource.Ref)
+			}
+			if record.DisplayName != clip.AudioSource.Name || record.MIMEType != clip.AudioSource.MIMEType || record.SizeBytes != clip.AudioSource.SizeBytes {
+				return fmt.Errorf("audio source %q exact reference metadata is stale or inconsistent", clip.AudioSource.Ref)
+			}
+			matched = true
+			break
+		}
+		if !matched {
+			return fmt.Errorf("audio source %q is not registered in the video project workspace scope", clip.AudioSource.Ref)
+		}
+	}
+	return s.validateTimelineArtifacts(principal, sessionID, timeline)
 }
 
 func (s *Service) validateTimelineArtifacts(principal identity.Principal, sessionID string, timeline pebblestore.VideoProjectTimeline) error {

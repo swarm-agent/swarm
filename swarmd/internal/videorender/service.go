@@ -137,6 +137,7 @@ type SessionStore interface {
 	GetVideoRenderJob(accountScopeID, sessionID, jobID string) (pebblestore.VideoRenderJobSnapshot, bool, error)
 	UpdateVideoRenderJob(input pebblestore.UpdateVideoRenderJobInput) (pebblestore.VideoRenderJobSnapshot, error)
 	GetVideoSourceRecord(accountScopeID, workspaceID, ref string) (pebblestore.VideoSourceRecord, bool, error)
+	GetAudioSourceRecord(accountScopeID, workspaceID, ref string) (pebblestore.AudioSourceRecord, bool, error)
 	GetSessionArtifactVariant(accountScopeID, sessionID, collectionID, variantID string) (pebblestore.SessionArtifactVariant, bool, error)
 	ListVideoRenderJobs(accountScopeID, sessionID, projectID string, limit int) ([]pebblestore.VideoRenderJobSnapshot, error)
 	ListRecoverableVideoRenderJobs(limit int) ([]pebblestore.VideoRenderJobSnapshot, error)
@@ -522,7 +523,7 @@ func (s *Service) materializeTimelineInputs(ctx context.Context, principal ident
 	}
 
 	for i, clip := range timeline.Clips {
-		if !clip.Visible {
+		if !clip.Visible && clip.SourceKind != pebblestore.VideoClipSourceKindSourceAudio {
 			continue
 		}
 
@@ -589,6 +590,59 @@ func (s *Service) materializeTimelineInputs(ctx context.Context, principal ident
 			if err != nil {
 				return nil, fmt.Errorf("probe source clip %d audio streams: %w", i, err)
 			}
+
+		case pebblestore.VideoClipSourceKindSourceAudio:
+			if clip.AudioSource == nil {
+				return nil, fmt.Errorf("clip %d is source_audio but missing audio_source", i)
+			}
+			ref := strings.TrimSpace(clip.AudioSource.Ref)
+			wsIDs := sessionVideoWorkspaceIDs(session)
+			if workspaceID != "" {
+				wsIDs = append([]string{workspaceID}, wsIDs...)
+			}
+			var record pebblestore.AudioSourceRecord
+			var found bool
+			for _, wsID := range wsIDs {
+				r, ok, readErr := s.store.GetAudioSourceRecord(principal.AccountScopeID, wsID, ref)
+				if readErr != nil {
+					return nil, fmt.Errorf("resolve source audio clip %d: %w", i, readErr)
+				}
+				if ok {
+					record = r
+					found = true
+					break
+				}
+			}
+			if !found {
+				return nil, fmt.Errorf("clip %d referenced audio source %q not found in workspace scope", i, ref)
+			}
+			if registeredRoots != nil {
+				if _, ok := registeredRoots[filepath.Clean(record.RootPath)]; !ok {
+					return nil, fmt.Errorf("clip %d referenced audio source %q no longer belongs to registered source root", i, ref)
+				}
+			}
+			if record.DisplayName != clip.AudioSource.Name || record.MIMEType != clip.AudioSource.MIMEType ||
+				record.SizeBytes != clip.AudioSource.SizeBytes || record.SourceFingerprint != clip.AudioSource.SourceFingerprint ||
+				record.FingerprintVersion != clip.AudioSource.FingerprintVersion {
+				return nil, fmt.Errorf("clip %d audio source %q exact metadata is stale or inconsistent", i, ref)
+			}
+			if err := pebblestore.ValidateAudioSourceRecord(record); err != nil {
+				return nil, fmt.Errorf("clip %d source audio fingerprint mismatch or invalid: %w", i, err)
+			}
+			srcFile, err := pebblestore.OpenValidatedAudioSource(record)
+			if err != nil {
+				return nil, fmt.Errorf("open validated source audio clip %d: %w", i, err)
+			}
+			destPath := filepath.Join(jobDir, fmt.Sprintf("input_%d_%s", input.Index, filepath.Base(record.RelativePath)))
+			if err := copyBoundedFile(destPath, srcFile, record.SizeBytes); err != nil {
+				srcFile.Close()
+				return nil, fmt.Errorf("materialize source audio clip %d: %w", i, err)
+			}
+			srcFile.Close()
+			input.FilePath = destPath
+			input.IsVideo = false
+			input.IsAudio = true
+			input.HasAudio = true
 
 		case pebblestore.VideoClipSourceKindManagedArtifact:
 			var targetRef *pebblestore.SessionArtifactSelectionReference

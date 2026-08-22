@@ -55,6 +55,18 @@ type sessionV3CreateVideoEditProposalRequest struct {
 	AffectedRanges []pebblestore.VideoTimelineRange `json:"affected_ranges"`
 }
 
+// sessionV3CreateVideoEditProposalResponse is the reviewed API contract:
+// creation can only return a pending proposal/working revision. Acceptance and
+// final render remain separate explicit user-triggered endpoints.
+type sessionV3CreateVideoEditProposalResponse struct {
+	OK                     bool                                  `json:"ok"`
+	Proposal               pebblestore.VideoEditProposalSnapshot `json:"proposal"`
+	ProposalStatus         string                                `json:"proposal_status"`
+	RequiresUserAcceptance bool                                  `json:"requires_user_acceptance"`
+	WorkingRevisionID      string                                `json:"working_revision_id,omitempty"`
+	WorkingRevisionNumber  int                                   `json:"working_revision_number,omitempty"`
+}
+
 type sessionV3RejectVideoEditProposalRequest struct {
 	Feedback string `json:"feedback"`
 }
@@ -162,6 +174,37 @@ func (s *Server) handleSessionV3VideoSourceMedia(w http.ResponseWriter, r *http.
 		writeError(w, http.StatusBadRequest, errors.New("source_ref is required"))
 		return
 	}
+	if strings.HasPrefix(sourceRef, "audiosrc_") {
+		var record pebblestore.AudioSourceRecord
+		for _, workspaceID := range pebblestore.SessionVideoWorkspaceIDs(session) {
+			record, found, err = s.sessions.Store().GetAudioSourceRecord(principal.AccountScopeID, workspaceID, sourceRef)
+			if err != nil || found {
+				break
+			}
+		}
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		if !found {
+			writeError(w, http.StatusNotFound, errors.New("audio source not found in the session workspace scope"))
+			return
+		}
+		file, openErr := pebblestore.OpenValidatedAudioSource(record)
+		if openErr != nil {
+			writeError(w, http.StatusNotFound, errors.New("audio source is stale or unavailable"))
+			return
+		}
+		defer file.Close()
+		info, statErr := file.Stat()
+		if statErr != nil {
+			writeError(w, http.StatusInternalServerError, statErr)
+			return
+		}
+		serveVideoSourceContent(w, r, record.DisplayName, record.MIMEType, info, file)
+		return
+	}
+
 	var record pebblestore.VideoSourceRecord
 	for _, workspaceID := range pebblestore.SessionVideoWorkspaceIDs(session) {
 		record, found, err = s.sessions.Store().GetVideoSourceRecord(principal.AccountScopeID, workspaceID, sourceRef)
@@ -470,7 +513,7 @@ func (s *Server) handleSessionV3VideoProjectDetail(w http.ResponseWriter, r *htt
 				writeError(w, http.StatusBadRequest, err)
 				return
 			}
-			writeJSON(w, http.StatusCreated, map[string]any{"ok": true, "proposal": proposal})
+			writeJSON(w, http.StatusCreated, sessionV3CreateVideoEditProposalResponse{OK: true, Proposal: proposal, ProposalStatus: proposal.Status, RequiresUserAcceptance: true, WorkingRevisionID: proposal.WorkingRevisionID, WorkingRevisionNumber: proposal.WorkingRevisionNumber})
 		default:
 			methodNotAllowed(w)
 		}

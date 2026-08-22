@@ -27,6 +27,15 @@ var acceptedVideoExtensions = map[string]struct{}{
 	".avi": {}, ".m4v": {}, ".mkv": {}, ".mov": {}, ".mp4": {}, ".mpeg": {}, ".mpg": {}, ".webm": {},
 }
 
+var acceptedAudioExtensions = map[string]struct{}{
+	".aac": {}, ".flac": {}, ".m4a": {}, ".mp3": {}, ".oga": {}, ".ogg": {}, ".opus": {}, ".wav": {},
+}
+
+const (
+	MediaKindVideo = "video"
+	MediaKindAudio = "audio"
+)
+
 type WorkspaceAuthority interface {
 	ListSourceMediaDirectoriesForPrincipal(identity.Principal, string) (workspaceruntime.Resolution, error)
 }
@@ -47,14 +56,28 @@ type Directory struct {
 }
 
 type Clip struct {
-	Ref               string `json:"ref"`
-	Name              string `json:"name"`
-	Extension         string `json:"extension"`
-	MIMEType          string `json:"mime_type"`
-	SizeBytes         int64  `json:"size_bytes"`
-	ModifiedAt        int64  `json:"modified_at"`
-	SourceFingerprint string `json:"source_fingerprint"`
-	TranscriptRef     string `json:"transcript_ref,omitempty"`
+	Ref                string `json:"ref"`
+	Name               string `json:"name"`
+	MediaKind          string `json:"media_kind"`
+	Extension          string `json:"extension"`
+	MIMEType           string `json:"mime_type"`
+	SizeBytes          int64  `json:"size_bytes"`
+	ModifiedAt         int64  `json:"modified_at"`
+	SourceFingerprint  string `json:"source_fingerprint"`
+	FingerprintVersion string `json:"fingerprint_version,omitempty"`
+	TranscriptRef      string `json:"transcript_ref,omitempty"`
+}
+
+type AudioClip struct {
+	Ref                string `json:"ref"`
+	Name               string `json:"name"`
+	MediaKind          string `json:"media_kind"`
+	Extension          string `json:"extension"`
+	MIMEType           string `json:"mime_type"`
+	SizeBytes          int64  `json:"size_bytes"`
+	ModifiedAt         int64  `json:"modified_at"`
+	SourceFingerprint  string `json:"source_fingerprint"`
+	FingerprintVersion string `json:"fingerprint_version"`
 }
 
 type BrowseResult struct {
@@ -64,6 +87,7 @@ type BrowseResult struct {
 	RelativePath string
 	Directories  []Directory
 	Clips        []Clip
+	AudioClips   []AudioClip
 }
 
 func NewService(workspace WorkspaceAuthority, store *pebblestore.SessionStore) *Service {
@@ -120,7 +144,7 @@ func (s *Service) BrowsePath(principal identity.Principal, workspacePath, reques
 	}
 	rootRef, ok := roots[requestedRoot]
 	if !ok {
-		return BrowseResult{}, errors.New("video folder is not a registered source-media root for this workspace")
+		return BrowseResult{}, errors.New("media folder is not a registered source-media root for this workspace")
 	}
 	return s.browseResolved(principal, resolution.WorkspaceID, requestedRoot, rootRef, relativePath)
 }
@@ -166,9 +190,52 @@ func (s *Service) ResolveClips(principal identity.Principal, workspacePath strin
 	return resolution.WorkspaceID, records, nil
 }
 
+// ResolveAudioClips resolves exact opaque audio references while revalidating
+// their registered-root membership and private source fingerprint.
+func (s *Service) ResolveAudioClips(principal identity.Principal, workspacePath string, refs []string) (string, []pebblestore.AudioSourceRecord, error) {
+	if len(refs) == 0 || len(refs) > pebblestore.SessionVideoAttachmentMaxCount {
+		return "", nil, fmt.Errorf("audio_refs requires between 1 and %d exact references", pebblestore.SessionVideoAttachmentMaxCount)
+	}
+	resolution, roots, err := s.registeredRoots(principal, workspacePath)
+	if err != nil {
+		return "", nil, err
+	}
+	registered := make(map[string]struct{}, len(roots))
+	for path := range roots {
+		registered[path] = struct{}{}
+	}
+	seen := make(map[string]struct{}, len(refs))
+	records := make([]pebblestore.AudioSourceRecord, 0, len(refs))
+	for _, ref := range refs {
+		ref = strings.TrimSpace(ref)
+		if _, duplicate := seen[ref]; duplicate {
+			continue
+		}
+		seen[ref] = struct{}{}
+		record, found, readErr := s.store.GetAudioSourceRecord(principal.AccountScopeID, resolution.WorkspaceID, ref)
+		if readErr != nil || !found {
+			if readErr == nil {
+				readErr = errors.New("audio reference is not registered in the authenticated workspace")
+			}
+			return "", nil, readErr
+		}
+		if _, ok := registered[filepath.Clean(record.RootPath)]; !ok {
+			return "", nil, errors.New("audio reference no longer belongs to a registered source-media root")
+		}
+		if err := pebblestore.ValidateAudioSourceRecord(record); err != nil {
+			return "", nil, fmt.Errorf("audio source is stale or unavailable: %w", err)
+		}
+		records = append(records, record)
+	}
+	if len(records) == 0 {
+		return "", nil, errors.New("audio_refs contains no unique references")
+	}
+	return resolution.WorkspaceID, records, nil
+}
+
 func (s *Service) registeredRoots(principal identity.Principal, workspacePath string) (workspaceruntime.Resolution, map[string]string, error) {
 	if s == nil || s.workspace == nil || s.store == nil || !principal.Valid() {
-		return workspaceruntime.Resolution{}, nil, errors.New("video source service requires authenticated workspace authority")
+		return workspaceruntime.Resolution{}, nil, errors.New("source-media service requires authenticated workspace authority")
 	}
 	resolution, err := s.workspace.ListSourceMediaDirectoriesForPrincipal(principal, workspacePath)
 	if err != nil {
@@ -202,17 +269,18 @@ func (s *Service) browseResolved(principal identity.Principal, workspaceID, root
 	defer directory.Close()
 	info, err := directory.Stat()
 	if err != nil || !info.IsDir() {
-		return BrowseResult{}, errors.New("video browse target is not a directory")
+		return BrowseResult{}, errors.New("media browse target is not a directory")
 	}
 	entries, err := directory.ReadDir(BrowseMaxEntries + 1)
 	if err != nil {
 		return BrowseResult{}, err
 	}
 	if len(entries) > BrowseMaxEntries {
-		return BrowseResult{}, fmt.Errorf("video folder contains more than %d entries; choose a narrower folder", BrowseMaxEntries)
+		return BrowseResult{}, fmt.Errorf("media folder contains more than %d entries; choose a narrower folder", BrowseMaxEntries)
 	}
 	directories := make([]Directory, 0)
 	clips := make([]Clip, 0)
+	audioClips := make([]AudioClip, 0)
 	for _, entry := range entries {
 		name := strings.TrimSpace(entry.Name())
 		if name == "" || strings.HasPrefix(name, ".") || entry.Type()&os.ModeSymlink != 0 {
@@ -228,11 +296,34 @@ func (s *Service) browseResolved(principal identity.Principal, workspaceID, root
 			continue
 		}
 		extension := strings.ToLower(filepath.Ext(name))
-		if _, ok := acceptedVideoExtensions[extension]; !ok {
+		_, isVideo := acceptedVideoExtensions[extension]
+		_, isAudio := acceptedAudioExtensions[extension]
+		if !isVideo && !isAudio {
 			continue
 		}
 		file, openErr := root.Open(entryRelative)
 		if openErr != nil {
+			continue
+		}
+		if isAudio {
+			mimeType, mimeErr := pebblestore.DetectSupportedAudioMIME(file, extension)
+			_ = file.Close()
+			if mimeErr != nil {
+				continue
+			}
+			record, putErr := s.store.PutAudioSourceRecord(pebblestore.AudioSourceRecord{
+				AccountScopeID: principal.AccountScopeID, WorkspaceID: workspaceID, RootPath: rootPath,
+				RelativePath: entryRelative, DisplayName: name, MIMEType: mimeType,
+				SizeBytes: entryInfo.Size(), ModifiedAt: entryInfo.ModTime().UnixMilli(),
+			})
+			if putErr != nil {
+				return BrowseResult{}, putErr
+			}
+			audioClips = append(audioClips, AudioClip{
+				Ref: record.Ref, Name: record.DisplayName, MediaKind: MediaKindAudio, Extension: extension,
+				MIMEType: record.MIMEType, SizeBytes: record.SizeBytes, ModifiedAt: record.ModifiedAt,
+				SourceFingerprint: record.SourceFingerprint, FingerprintVersion: record.FingerprintVersion,
+			})
 			continue
 		}
 		mimeType, mimeErr := videoMIMEForFile(file, extension)
@@ -248,7 +339,7 @@ func (s *Service) browseResolved(principal identity.Principal, workspaceID, root
 		if putErr != nil {
 			return BrowseResult{}, putErr
 		}
-		clip := Clip{Ref: record.Ref, Name: record.DisplayName, Extension: extension, MIMEType: record.MIMEType, SizeBytes: record.SizeBytes, ModifiedAt: record.ModifiedAt, SourceFingerprint: record.SourceFingerprint}
+		clip := Clip{Ref: record.Ref, Name: record.DisplayName, MediaKind: MediaKindVideo, Extension: extension, MIMEType: record.MIMEType, SizeBytes: record.SizeBytes, ModifiedAt: record.ModifiedAt, SourceFingerprint: record.SourceFingerprint}
 		if transcript, found, lookupErr := s.store.FindNormalizedTranscriptBySourceFingerprint(principal.AccountScopeID, principal.UserID, workspaceID, record.SourceFingerprint); lookupErr != nil {
 			return BrowseResult{}, lookupErr
 		} else if found {
@@ -260,7 +351,8 @@ func (s *Service) browseResolved(principal identity.Principal, workspaceID, root
 		return strings.ToLower(directories[i].Name) < strings.ToLower(directories[j].Name)
 	})
 	sort.SliceStable(clips, func(i, j int) bool { return strings.ToLower(clips[i].Name) < strings.ToLower(clips[j].Name) })
-	return BrowseResult{WorkspaceID: workspaceID, RootPath: rootPath, RootRef: rootRef, RelativePath: relativePath, Directories: directories, Clips: clips}, nil
+	sort.SliceStable(audioClips, func(i, j int) bool { return strings.ToLower(audioClips[i].Name) < strings.ToLower(audioClips[j].Name) })
+	return BrowseResult{WorkspaceID: workspaceID, RootPath: rootPath, RootRef: rootRef, RelativePath: relativePath, Directories: directories, Clips: clips, AudioClips: audioClips}, nil
 }
 
 func ResolveRootPath(value string) (string, error) {
@@ -288,16 +380,21 @@ func IsAcceptedVideoExtension(extension string) bool {
 	return ok
 }
 
+func IsAcceptedAudioExtension(extension string) bool {
+	_, ok := acceptedAudioExtensions[strings.ToLower(strings.TrimSpace(extension))]
+	return ok
+}
+
 func CleanRelativePath(value string) (string, error) {
 	value = filepath.Clean(strings.TrimSpace(value))
 	if value == "" || value == "." {
 		return ".", nil
 	}
 	if filepath.IsAbs(value) || value == ".." || strings.HasPrefix(value, ".."+string(filepath.Separator)) {
-		return "", errors.New("video browse path escapes the registered root")
+		return "", errors.New("media browse path escapes the registered root")
 	}
 	if depth := len(strings.Split(value, string(filepath.Separator))); depth > BrowseMaxDepth {
-		return "", fmt.Errorf("video browse depth exceeds %d", BrowseMaxDepth)
+		return "", fmt.Errorf("media browse depth exceeds %d", BrowseMaxDepth)
 	}
 	return value, nil
 }

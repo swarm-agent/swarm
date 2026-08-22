@@ -23,7 +23,7 @@ export type VideoTransitionWire = {
 
 export type VideoEditOperationWire = {
   id: string
-  type: 'add_clip' | 'update_clip' | 'remove_clip' | 'add_transition' | 'update_transition' | 'remove_transition'
+  type: 'add_clip' | 'update_clip' | 'replace_clip' | 'remove_clip' | 'add_transition' | 'update_transition' | 'remove_transition'
   clip_id?: string
   clip?: Record<string, unknown>
   transition_id?: string
@@ -175,6 +175,30 @@ export async function loadLatestVideoEditProposals(input: {
     if (requestId !== input.requestSequence.current) return
     input.onError(cause instanceof Error ? cause.message : String(cause))
   }
+}
+
+export async function createVideoEditProposal(input: {
+  sessionId: string
+  projectId: string
+  baseRevisionId: string
+  title: string
+  rationale?: string
+  operations: VideoEditOperationWire[]
+  affectedRanges: Array<{ start_ms: number; end_ms: number }>
+}): Promise<VideoEditProposalWire> {
+  const response = await requestJson<{ proposal?: VideoEditProposalWire }>(`/v3/sessions/${encodeURIComponent(input.sessionId)}/video/projects/${encodeURIComponent(input.projectId)}/edit-proposals`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      base_revision_id: input.baseRevisionId,
+      title: input.title,
+      rationale: input.rationale,
+      operations: input.operations,
+      affected_ranges: input.affectedRanges,
+    }),
+  })
+  if (!response.proposal) throw new Error('Video edit proposal response returned no proposal')
+  return response.proposal
 }
 
 export async function acceptVideoEditProposal(input: {

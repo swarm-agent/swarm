@@ -124,13 +124,18 @@ func BuildFFmpegCommandLine(timeline pebblestore.VideoProjectTimeline, inputs []
 			dur = 1000
 		}
 		clipDurations[i] = dur
-		totalDurationMs += dur
-		if in.Track != 0 || in.Layer != 0 {
+		if !in.IsAudio {
+			totalDurationMs += dur
+		}
+		if in.IsAudio || in.Track != 0 || in.Layer != 0 {
 			layeredTimeline = true
 		}
 	}
 	primaryInputIndexes := make([]int, 0, len(inputs))
 	for index, input := range inputs {
+		if input.IsAudio {
+			continue
+		}
 		if !layeredTimeline || input.Track == 0 {
 			primaryInputIndexes = append(primaryInputIndexes, index)
 		}
@@ -222,27 +227,32 @@ func BuildFFmpegCommandLine(timeline pebblestore.VideoProjectTimeline, inputs []
 			startSec = 0
 		}
 
-		// Video filter chain for this input
-		var vFilters []string
-		if startSec > 0 || (input.EndMs > input.StartMs && input.EndMs > 0) {
-			vFilters = append(vFilters, fmt.Sprintf("trim=start=%.3f:duration=%.3f,setpts=PTS-STARTPTS", startSec, durSec))
-		}
-		vFilters = append(vFilters,
-			fmt.Sprintf("scale=%d:%d:force_original_aspect_ratio=decrease", dims.Width, dims.Height),
-			fmt.Sprintf("pad=%d:%d:(ow-iw)/2:(oh-ih)/2:black", dims.Width, dims.Height),
-			"setsar=1",
-			fmt.Sprintf("fps=%.2f", fps),
-		)
-
-		for _, caption := range input.Captions {
-			drawFilter := formatCaptionFilter(caption, dims)
-			if drawFilter != "" {
-				vFilters = append(vFilters, drawFilter)
+		if input.IsAudio {
+			videoStreams = append(videoStreams, "")
+		} else {
+			// Video filter chain for visual inputs only. Audio-only inputs must
+			// never be referenced through an ffmpeg video stream selector.
+			var vFilters []string
+			if startSec > 0 || (input.EndMs > input.StartMs && input.EndMs > 0) {
+				vFilters = append(vFilters, fmt.Sprintf("trim=start=%.3f:duration=%.3f,setpts=PTS-STARTPTS", startSec, durSec))
 			}
-		}
+			vFilters = append(vFilters,
+				fmt.Sprintf("scale=%d:%d:force_original_aspect_ratio=decrease", dims.Width, dims.Height),
+				fmt.Sprintf("pad=%d:%d:(ow-iw)/2:(oh-ih)/2:black", dims.Width, dims.Height),
+				"setsar=1",
+				fmt.Sprintf("fps=%.2f", fps),
+			)
 
-		filterParts = append(filterParts, fmt.Sprintf("%s%s%s", vIn, strings.Join(vFilters, ","), vOut))
-		videoStreams = append(videoStreams, vOut)
+			for _, caption := range input.Captions {
+				drawFilter := formatCaptionFilter(caption, dims)
+				if drawFilter != "" {
+					vFilters = append(vFilters, drawFilter)
+				}
+			}
+
+			filterParts = append(filterParts, fmt.Sprintf("%s%s%s", vIn, strings.Join(vFilters, ","), vOut))
+			videoStreams = append(videoStreams, vOut)
+		}
 
 		// Audio filter chain for this input
 		if input.HasAudio && !input.Muted {
@@ -303,7 +313,7 @@ func BuildFFmpegCommandLine(timeline pebblestore.VideoProjectTimeline, inputs []
 
 	if layeredTimeline {
 		for inputIndex, input := range inputs {
-			if input.Track == 0 {
+			if input.Track == 0 && !input.IsAudio {
 				continue
 			}
 			startSec := float64(input.TimelineStartMs) / 1000
@@ -311,26 +321,40 @@ func BuildFFmpegCommandLine(timeline pebblestore.VideoProjectTimeline, inputs []
 			if endMs <= input.TimelineStartMs {
 				endMs = input.TimelineStartMs + clipDurations[inputIndex]
 			}
-			endSec := float64(endMs) / 1000
-			shiftedVideo := fmt.Sprintf("[v_layer_shift_%d]", inputIndex)
-			videoOut := fmt.Sprintf("[v_layer_%d]", inputIndex)
-			filterParts = append(filterParts,
-				fmt.Sprintf("%ssetpts=PTS-STARTPTS+%.3f/TB%s", videoStreams[inputIndex], startSec, shiftedVideo),
-				fmt.Sprintf("%s%soverlay=eof_action=pass:enable='between(t,%.3f,%.3f)'%s", plan.VideoMap, shiftedVideo, startSec, endSec, videoOut),
-			)
-			plan.VideoMap = videoOut
+			if !input.IsAudio {
+				endSec := float64(endMs) / 1000
+				shiftedVideo := fmt.Sprintf("[v_layer_shift_%d]", inputIndex)
+				videoOut := fmt.Sprintf("[v_layer_%d]", inputIndex)
+				filterParts = append(filterParts,
+					fmt.Sprintf("%ssetpts=PTS-STARTPTS+%.3f/TB%s", videoStreams[inputIndex], startSec, shiftedVideo),
+					fmt.Sprintf("%s%soverlay=eof_action=pass:enable='between(t,%.3f,%.3f)'%s", plan.VideoMap, shiftedVideo, startSec, endSec, videoOut),
+				)
+				plan.VideoMap = videoOut
+			}
 			if input.HasAudio && !input.Muted {
 				shiftedAudio := fmt.Sprintf("[a_layer_shift_%d]", inputIndex)
 				audioOut := fmt.Sprintf("[a_layer_%d]", inputIndex)
 				delayMs := max(input.TimelineStartMs, 0)
 				filterParts = append(filterParts,
 					fmt.Sprintf("%sadelay=%d|%d%s", audioStreams[inputIndex], delayMs, delayMs, shiftedAudio),
-					fmt.Sprintf("%s%samix=inputs=2:duration=first:dropout_transition=0%s", plan.AudioMap, shiftedAudio, audioOut),
+					fmt.Sprintf("%s%samix=inputs=2:duration=first:dropout_transition=0:normalize=0%s", plan.AudioMap, shiftedAudio, audioOut),
 				)
 				plan.AudioMap = audioOut
 			}
 		}
 	}
+
+	masterVolume := 1.0
+	if timeline.AudioPolicy != nil {
+		if timeline.AudioPolicy.Muted {
+			masterVolume = 0
+		} else if timeline.AudioPolicy.MasterVolume > 0 {
+			masterVolume = timeline.AudioPolicy.MasterVolume
+		}
+	}
+	masterAudioOut := "[a_master]"
+	filterParts = append(filterParts, fmt.Sprintf("%svolume=%.2f,atrim=duration=%.3f%s", plan.AudioMap, masterVolume, float64(totalDurationMs)/1000, masterAudioOut))
+	plan.AudioMap = masterAudioOut
 
 	plan.FilterComplex = strings.Join(filterParts, ";")
 

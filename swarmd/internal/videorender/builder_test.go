@@ -315,6 +315,62 @@ func TestBuildFFmpegCommandLinePlacesLayeredClipAtRequestedTimelineRange(t *test
 	}
 }
 
+func TestBuildFFmpegCommandLineMixesAudioOnlyInputWithoutVideoFilter(t *testing.T) {
+	timeline := pebblestore.VideoProjectTimeline{
+		TotalDurationMs: 4000,
+		AudioPolicy:     &pebblestore.VideoAudioPolicy{MasterVolume: 0.8},
+	}
+	inputs := []MaterializedInput{
+		{Index: 0, ClipID: "visual", FilePath: "visual.png", IsImage: true, DurationMs: 4000, TimelineEndMs: 4000},
+		{Index: 1, ClipID: "music", FilePath: "music.wav", IsAudio: true, HasAudio: true, StartMs: 500, EndMs: 2500, DurationMs: 2000, Track: 1, TimelineStartMs: 1000, TimelineEndMs: 3000, Volume: 0.6},
+	}
+
+	plan, err := BuildFFmpegCommandLine(timeline, inputs, "output.mp4")
+	if err != nil {
+		t.Fatalf("BuildFFmpegCommandLine() error = %v", err)
+	}
+	for _, forbidden := range []string{"[1:v]", "[v1]", "v_layer_shift_1"} {
+		if strings.Contains(plan.FilterComplex, forbidden) {
+			t.Fatalf("audio-only input entered video filter chain via %q: %s", forbidden, plan.FilterComplex)
+		}
+	}
+	for _, want := range []string{
+		"[1:a]atrim=start=0.500:duration=2.000,asetpts=PTS-STARTPTS,volume=0.60",
+		"[a1]adelay=1000|1000[a_layer_shift_1]",
+		"amix=inputs=2:duration=first:dropout_transition=0:normalize=0",
+		"volume=0.80,atrim=duration=4.000[a_master]",
+	} {
+		if !strings.Contains(plan.FilterComplex, want) {
+			t.Errorf("filter complex missing %q: %s", want, plan.FilterComplex)
+		}
+	}
+	if plan.TotalDurationMs != 4000 {
+		t.Fatalf("TotalDurationMs = %d, want 4000", plan.TotalDurationMs)
+	}
+}
+
+func TestBuildFFmpegCommandLineMutesSoundtrackAndTimelineMaster(t *testing.T) {
+	timeline := pebblestore.VideoProjectTimeline{
+		TotalDurationMs: 3000,
+		AudioPolicy:     &pebblestore.VideoAudioPolicy{Muted: true},
+	}
+	inputs := []MaterializedInput{
+		{Index: 0, ClipID: "visual", FilePath: "visual-with-audio.mp4", IsVideo: true, HasAudio: true, DurationMs: 3000, TimelineEndMs: 3000, Volume: 0.5},
+		{Index: 1, ClipID: "music", FilePath: "music.wav", IsAudio: true, HasAudio: true, DurationMs: 3000, EndMs: 3000, Track: 1, TimelineEndMs: 3000, Muted: true},
+	}
+
+	plan, err := BuildFFmpegCommandLine(timeline, inputs, "output.mp4")
+	if err != nil {
+		t.Fatalf("BuildFFmpegCommandLine() error = %v", err)
+	}
+	if strings.Contains(plan.FilterComplex, "adelay=") || strings.Contains(plan.FilterComplex, "amix=") {
+		t.Fatalf("muted soundtrack unexpectedly entered mix: %s", plan.FilterComplex)
+	}
+	if !strings.Contains(plan.FilterComplex, "[a0]volume=0.00,atrim=duration=3.000[a_master]") {
+		t.Fatalf("timeline master mute was not applied: %s", plan.FilterComplex)
+	}
+}
+
 func TestBuildFFmpegCommandLineRejectsInvalidTransitionOverlap(t *testing.T) {
 	inputs := []MaterializedInput{
 		{Index: 0, ClipID: "one", FilePath: "one.mp4", DurationMs: 1000, HasAudio: true},

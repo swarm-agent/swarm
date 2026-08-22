@@ -1,7 +1,7 @@
 import { type CSSProperties, type PointerEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useMatchRoute, useNavigate } from '@tanstack/react-router'
-import { Download, Eye, EyeOff, Film, FolderOpen, ListVideo, Loader2, MessageSquare, Moon, Pause, Play, RotateCcw, Sparkles } from 'lucide-react'
+import { Download, Eye, EyeOff, Film, FolderOpen, ListVideo, Loader2, MessageSquare, Moon, Music, Pause, Play, RotateCcw, Sparkles, Trash2, Volume2, VolumeX } from 'lucide-react'
 import { Button } from '../../../../components/ui/button'
 import { Dialog, DialogBackdrop, DialogPanel } from '../../../../components/ui/dialog'
 import { ModalCloseButton } from '../../../../components/ui/modal-close-button'
@@ -16,7 +16,7 @@ import { buildDesktopChatRouteOptions, getDesktopSessionCreateTarget, type Deskt
 import type { WorkspaceBrowseResult, WorkspaceEntry } from '../../../workspaces/launcher/types/workspace'
 import type { WorkspaceOverviewSwarmTarget } from '../../../workspaces/launcher/types/workspace-overview'
 import { SwarmToolSidebar } from '../components/swarm-tool-sidebar'
-import { VIDEO_TRANSITION_KINDS, VideoIterationSidebar, VideoSessionAISidecar, renderedVideoArtifactUrl, requestVideoRenderCancellation, transitionLabel, videoPlanPartMessageSelection, videoPlanTransitionMessageSelection, videoProposalProjectionSequence, type VideoEditProposalWire, type VideoIterationComposerContext, type VideoPlanProposalWire, type VideoStepEditAction, type VideoTransitionKind, type VideoTransitionWire } from '../video-studio/video-studio-surface'
+import { VIDEO_TRANSITION_KINDS, VideoIterationSidebar, VideoSessionAISidecar, createVideoEditProposal, renderedVideoArtifactUrl, requestVideoRenderCancellation, transitionLabel, videoPlanPartMessageSelection, videoPlanTransitionMessageSelection, videoProposalProjectionSequence, type VideoEditProposalWire, type VideoIterationComposerContext, type VideoPlanProposalWire, type VideoStepEditAction, type VideoTransitionKind, type VideoTransitionWire } from '../video-studio/video-studio-surface'
 import { useDesktopV3CacheSelector } from '../../state/desktop-v3-cache-store'
 
 export type VideoClip = {
@@ -28,6 +28,20 @@ export type VideoClip = {
   modifiedAt: number
 }
 
+export type AudioSourceWire = {
+  ref: string
+  name: string
+  mime_type: string
+  size_bytes: number
+  source_fingerprint: string
+  fingerprint_version: string
+}
+
+export type AudioClip = AudioSourceWire & {
+  extension: string
+  modified_at: number
+}
+
 export type VideoTimelineClipWire = {
   id: string
   name?: string
@@ -35,6 +49,7 @@ export type VideoTimelineClipWire = {
   sequence?: number
   source_kind: string
   source_ref?: string
+  audio_source?: AudioSourceWire
   source_start_ms?: number
   source_end_ms?: number
   timeline_start_ms?: number
@@ -248,7 +263,9 @@ type VideoScanResponse = {
   ok?: boolean
   workspace_path?: string
   folder_path?: string
+  root_path?: string
   clips?: VideoClipWire[]
+  audio_clips?: Array<Partial<AudioClip> & { ref?: string; name?: string; mime_type?: string; size_bytes?: number; modified_at?: number; source_fingerprint?: string; fingerprint_version?: string }>
 }
 
 type VideoThreadWire = {
@@ -266,7 +283,7 @@ type VideoThreadWire = {
 
 export type TimelineSegment = {
   id: string
-  type: 'video' | 'image' | 'frame'
+  type: 'video' | 'audio' | 'image' | 'frame'
   clipId: string
   src: string
   artifactRef?: VideoTimelineClipWire['artifact_ref']
@@ -282,6 +299,9 @@ export type TimelineSegment = {
   sourceStart: number
   duration: number
   visible: boolean
+  volume?: number
+  muted?: boolean
+  audioSource?: AudioSourceWire
   transitionIn?: VideoTransitionWire
 }
 
@@ -583,7 +603,41 @@ function transitionPreviewOpacity(segments: TimelineLayoutSegment[], index: numb
   return index === 0 ? 1 : progress
 }
 
-async function scanVideoFolder(workspacePath: string, folderPath: string): Promise<{ folderPath: string; clips: VideoClip[] }> {
+export function soundtrackTimelineClip(input: {
+  audio: AudioClip
+  durationMs: number
+  existing?: VideoTimelineClipWire | null
+}): VideoTimelineClipWire {
+  const durationMs = Math.max(1, Math.round(input.durationMs))
+  const sourceStartMs = Math.max(0, Math.round(input.existing?.source_start_ms ?? 0))
+  return {
+    id: input.existing?.id || `soundtrack-${input.audio.ref.slice(-12)}`,
+    name: input.audio.name,
+    track: input.existing?.track ?? 1,
+    layer: input.existing?.layer ?? 1,
+    sequence: input.existing?.sequence ?? 0,
+    source_kind: 'source_audio',
+    audio_source: {
+      ref: input.audio.ref,
+      name: input.audio.name,
+      mime_type: input.audio.mime_type,
+      size_bytes: input.audio.size_bytes,
+      source_fingerprint: input.audio.source_fingerprint,
+      fingerprint_version: input.audio.fingerprint_version,
+    },
+    media_type: input.audio.mime_type,
+    source_start_ms: sourceStartMs,
+    source_end_ms: sourceStartMs + durationMs,
+    timeline_start_ms: Math.max(0, Math.round(input.existing?.timeline_start_ms ?? 0)),
+    timeline_end_ms: Math.max(0, Math.round(input.existing?.timeline_start_ms ?? 0)) + durationMs,
+    duration_ms: durationMs,
+    visible: false,
+    volume: typeof input.existing?.volume === 'number' ? input.existing.volume : 1,
+    muted: input.existing?.muted === true,
+  }
+}
+
+export async function scanVideoFolder(workspacePath: string, folderPath: string): Promise<{ folderPath: string; clips: VideoClip[]; audioClips: AudioClip[] }> {
   const response = await requestJson<VideoScanResponse>('/v1/workspace/video/scan', {
     method: 'POST',
     headers: {
@@ -591,12 +645,13 @@ async function scanVideoFolder(workspacePath: string, folderPath: string): Promi
     },
     body: JSON.stringify({
       workspace_path: workspacePath,
-      folder_path: folderPath,
+      root_path: folderPath,
     }),
   })
   return {
-    folderPath: String(response.folder_path ?? folderPath).trim(),
+    folderPath: String(response.root_path ?? response.folder_path ?? folderPath).trim(),
     clips: metadataClips(response.clips),
+    audioClips: Array.isArray(response.audio_clips) ? response.audio_clips.flatMap((clip): AudioClip[] => clip?.ref && clip.name && clip.mime_type && clip.source_fingerprint && clip.fingerprint_version ? [{ ref: clip.ref, name: clip.name, mime_type: clip.mime_type, size_bytes: clip.size_bytes ?? 0, modified_at: clip.modified_at ?? 0, source_fingerprint: clip.source_fingerprint, fingerprint_version: clip.fingerprint_version, extension: clip.extension ?? '' }] : []) : [],
   }
 }
 
@@ -843,6 +898,7 @@ export function applyPendingVideoProposal(
         }
         break
       case 'update_clip':
+      case 'replace_clip':
         if (operation.clip) {
           const clip = operation.clip as VideoTimelineClipWire
           const existing = timeline.clips.findIndex((candidate) => candidate.id === clip.id)
@@ -901,6 +957,7 @@ export function projectTimelineToTimelineSegments(
       : Math.max(0, previewStartSec - ((transitionIn?.duration_ms ?? 0) / 1000))
     if (clipWire.visible !== false) previewStartSec = start + durationSec
     const details = videoPlanClipDetails(clipWire)
+    const audioSource = clipWire.source_kind === 'source_audio' && Boolean(clipWire.audio_source?.ref)
     const videoSource = clipWire.source_kind === 'source_video' && Boolean(clipWire.source_ref || sourceClip)
     const sourceRef = String(clipWire.source_ref ?? '').trim()
     const artifactRef = clipWire.artifact_ref ?? clipWire.design_input
@@ -911,9 +968,9 @@ export function projectTimelineToTimelineSegments(
     const artifactVideo = artifactSource && artifactMediaType.startsWith('video/')
     return {
       id: clipWire.id,
-      type: videoSource || artifactVideo ? 'video' : artifactSource ? 'image' : 'frame',
+      type: audioSource ? 'audio' : videoSource || artifactVideo ? 'video' : artifactSource ? 'image' : 'frame',
       clipId,
-      src: videoSource ? (sourceClip && threadId ? clipMediaUrl(threadId, clipId) : threadId && sourceRef ? `/v3/sessions/${encodeURIComponent(threadId)}/video/sources/media?source_ref=${encodeURIComponent(sourceRef)}` : `/v1/workspace/video/threads/media?clip_id=${encodeURIComponent(clipId)}`) : artifactSource ? `/v3/sessions/${encodeURIComponent(artifactSessionId)}/artifacts/${encodeURIComponent(artifactId)}` : '',
+      src: audioSource && threadId ? `/v3/sessions/${encodeURIComponent(threadId)}/video/sources/media?source_ref=${encodeURIComponent(clipWire.audio_source!.ref)}` : videoSource ? (sourceClip && threadId ? clipMediaUrl(threadId, clipId) : threadId && sourceRef ? `/v3/sessions/${encodeURIComponent(threadId)}/video/sources/media?source_ref=${encodeURIComponent(sourceRef)}` : `/v1/workspace/video/threads/media?clip_id=${encodeURIComponent(clipId)}`) : artifactSource ? `/v3/sessions/${encodeURIComponent(artifactSessionId)}/artifacts/${encodeURIComponent(artifactId)}` : '',
       artifactRef: artifactRef ? { ...artifactRef, session_id: artifactSessionId || undefined, media_type: artifactMediaType || undefined } : undefined,
       sourceKind: clipWire.source_kind,
       title: details.title,
@@ -926,7 +983,10 @@ export function projectTimelineToTimelineSegments(
       start,
       sourceStart: sourceStartSec,
       duration: durationSec,
-      visible: clipWire.visible !== false,
+      visible: audioSource ? true : clipWire.visible !== false,
+      volume: typeof clipWire.volume === 'number' ? clipWire.volume : 1,
+      muted: clipWire.muted === true,
+      audioSource: clipWire.audio_source,
       transitionIn,
     }
   }).sort((left, right) => left.start - right.start
@@ -1128,6 +1188,7 @@ export function VideoToolPage() {
   const [browserLoading, setBrowserLoading] = useState(false)
   const [browserError, setBrowserError] = useState<string | null>(null)
   const [browserClips, setBrowserClips] = useState<VideoClip[]>([])
+  const [browserAudioClips, setBrowserAudioClips] = useState<AudioClip[]>([])
   const [browserScanLoading, setBrowserScanLoading] = useState(false)
   const [browserScanError, setBrowserScanError] = useState<string | null>(null)
   const [addingFolderPath, setAddingFolderPath] = useState<string | null>(null)
@@ -1155,6 +1216,9 @@ export function VideoToolPage() {
   const [aiRefreshKey, setAIRefreshKey] = useState(0)
   const [pendingProposal, setPendingProposal] = useState<VideoEditProposalWire | null>(null)
   const [pendingSelectedChangeIds, setPendingSelectedChangeIds] = useState<string[]>([])
+  const [soundtrackPickerOpen, setSoundtrackPickerOpen] = useState(false)
+  const [soundtrackDraft, setSoundtrackDraft] = useState<VideoTimelineClipWire | null>(null)
+  const [soundtrackProposalBusy, setSoundtrackProposalBusy] = useState(false)
   const [composerDraftRequest, setComposerDraftRequest] = useState<{ id: number; draft: string } | undefined>()
   const [studioArtifactSelectionRequest, setStudioArtifactSelectionRequest] = useState<ReturnType<typeof videoPlanPartMessageSelection> | null>(null)
   const [studioArtifactReviewPortalTarget, setStudioArtifactReviewPortalTarget] = useState<HTMLDivElement | null>(null)
@@ -1180,6 +1244,7 @@ export function VideoToolPage() {
   const timelineScrollRef = useRef<HTMLDivElement | null>(null)
   const videoElementsRef = useRef<Map<string, CachedVideoMedia>>(new Map())
   const imageElementsRef = useRef<Map<string, CachedImageMedia>>(new Map())
+  const audioElementsRef = useRef<Map<string, HTMLAudioElement>>(new Map())
   const playheadRef = useRef(0)
   const playbackStartRef = useRef(0)
   const playbackStartPlayheadRef = useRef(0)
@@ -1276,8 +1341,10 @@ export function VideoToolPage() {
     : acceptedTimelineSegments, [acceptedTimelineSegments, clipDurations, selectedClips, selectedThread?.id, shadowTimeline])
   const timelineLayout = useMemo(() => layoutTimelineSegments(timelineSegments), [timelineSegments])
   const timelineLayoutByClipId = useMemo(() => new Map(timelineLayout.map((segment) => [segment.clipId, segment])), [timelineLayout])
-  const visibleTimelineLayout = useMemo(() => timelineLayout.filter((segment) => segment.visible && segment.duration > 0), [timelineLayout])
-  const hiddenTimelineLayout = useMemo(() => timelineLayout.filter((segment) => !segment.visible), [timelineLayout])
+  const visualTimelineLayout = useMemo(() => timelineLayout.filter((segment) => segment.type !== 'audio'), [timelineLayout])
+  const audioTimelineLayout = useMemo(() => timelineLayout.filter((segment) => segment.type === 'audio'), [timelineLayout])
+  const visibleTimelineLayout = useMemo(() => visualTimelineLayout.filter((segment) => segment.visible && segment.duration > 0), [visualTimelineLayout])
+  const hiddenTimelineLayout = useMemo(() => visualTimelineLayout.filter((segment) => !segment.visible), [visualTimelineLayout])
   const movieDuration = useMemo(() => timelineDuration(timelineLayout), [timelineLayout])
   const timelineTrackWidthPx = useMemo(() => timelineTrackWidth(movieDuration), [movieDuration])
   const playheadX = movieDuration > 0 ? Math.min(timelineTrackWidthPx, Math.max(0, (playhead / movieDuration) * timelineTrackWidthPx)) : 0
@@ -1285,6 +1352,8 @@ export function VideoToolPage() {
   const acceptedPlan = useMemo(() => confirmedRevision ? acceptedVideoPlan(confirmedRevision.timeline) : null, [confirmedRevision])
   const hasUnresolvedPlanFrames = timelineSegments.some((segment) => segment.sourceKind === 'text' || (segment.sourceKind === 'managed_artifact' && !segment.src))
   const selectedClip = selectedClips.find((clip) => clip.id === selectedClipId) ?? selectedClips[0] ?? null
+  const acceptedSoundtrack = useMemo(() => (keptRevision?.timeline.clips ?? []).find((clip) => clip.source_kind === 'source_audio') ?? null, [keptRevision])
+  const workingSoundtrack = useMemo(() => (shadowTimeline?.clips ?? []).find((clip) => clip.source_kind === 'source_audio') ?? acceptedSoundtrack, [acceptedSoundtrack, shadowTimeline])
 
   useEffect(() => {
     if (typeof window !== 'undefined') {
@@ -1497,6 +1566,34 @@ export function VideoToolPage() {
   }, [timelineSegments])
 
   useEffect(() => {
+    const cache = audioElementsRef.current
+    const mediaByClipId = new Map(timelineSegments.filter((segment) => segment.type === 'audio' && segment.src).map((segment) => [segment.clipId, segment]))
+    for (const [clipId, audio] of cache.entries()) {
+      if (mediaByClipId.has(clipId)) continue
+      audio.pause()
+      audio.removeAttribute('src')
+      audio.load()
+      cache.delete(clipId)
+    }
+    for (const [clipId, segment] of mediaByClipId) {
+      let audio = cache.get(clipId)
+      if (!audio) {
+        audio = document.createElement('audio')
+        audio.preload = 'auto'
+        audio.src = segment.src
+        audio.load()
+        cache.set(clipId, audio)
+      } else if (audio.src !== new URL(segment.src, window.location.href).href) {
+        audio.pause()
+        audio.src = segment.src
+        audio.load()
+      }
+      audio.volume = Math.max(0, Math.min(1, segment.volume ?? 1))
+      audio.muted = segment.muted === true
+    }
+  }, [timelineSegments])
+
+  useEffect(() => {
     const cache = imageElementsRef.current
     const mediaByClipId = new Map(timelineSegments.filter((segment) => segment.type === 'image' && segment.src).map((segment) => [segment.clipId, segment.src]))
     for (const clipId of cache.keys()) if (!mediaByClipId.has(clipId)) cache.delete(clipId)
@@ -1541,19 +1638,37 @@ export function VideoToolPage() {
       context.fillStyle = 'black'
       context.fillRect(0, 0, canvas.width, canvas.height)
       const activeSegments = activeTimelineSegments(timelineLayout, nextPlayhead)
-      if (activeSegments.length === 0) {
+      const activeAudioSegments = activeSegments.filter((segment) => segment.type === 'audio')
+      const activeVisualSegments = activeSegments.filter((segment) => segment.type !== 'audio')
+      const activeAudioClipIds = new Set(activeAudioSegments.map((segment) => segment.clipId))
+      for (const [clipId, audio] of audioElementsRef.current.entries()) {
+        if (!activeAudioClipIds.has(clipId) && !audio.paused) audio.pause()
+      }
+      for (const segment of activeAudioSegments) {
+        const audio = audioElementsRef.current.get(segment.clipId)
+        if (!audio) continue
+        audio.volume = Math.max(0, Math.min(1, segment.volume ?? 1))
+        audio.muted = segment.muted === true
+        const sourceTime = segment.sourceStart + Math.max(0, nextPlayhead - segment.timelineStart)
+        if (Number.isFinite(sourceTime) && Math.abs(audio.currentTime - sourceTime) > 0.12) {
+          try { audio.currentTime = sourceTime } catch { /* Retry on the next frame after metadata loads. */ }
+        }
+        if (isPlaying && audio.paused) void audio.play().catch(() => undefined)
+        if (!isPlaying && !audio.paused) audio.pause()
+      }
+      if (activeVisualSegments.length === 0) {
         for (const cachedVideo of videoElementsRef.current.values()) {
           if (!cachedVideo.element.paused) cachedVideo.element.pause()
         }
         frame = window.requestAnimationFrame(render)
         return
       }
-      const activeClipIds = new Set(activeSegments.map((segment) => segment.clipId))
+      const activeClipIds = new Set(activeVisualSegments.map((segment) => segment.clipId))
       for (const [clipId, cachedVideo] of videoElementsRef.current.entries()) {
         if (!activeClipIds.has(clipId) && !cachedVideo.element.paused) cachedVideo.element.pause()
       }
-      for (const [segmentIndex, segment] of activeSegments.entries()) {
-        const opacity = transitionPreviewOpacity(activeSegments, segmentIndex, nextPlayhead)
+      for (const [segmentIndex, segment] of activeVisualSegments.entries()) {
+        const opacity = transitionPreviewOpacity(activeVisualSegments, segmentIndex, nextPlayhead)
         if (segment.type === 'image') {
           const image = imageElementsRef.current.get(segment.clipId)?.element
           if (!image?.complete || image.naturalWidth <= 0) continue
@@ -1650,6 +1765,7 @@ export function VideoToolPage() {
     setBrowserLoading(true)
     setBrowserError(null)
     setBrowserClips([])
+    setBrowserAudioClips([])
     setBrowserScanError(null)
     try {
       const next = await browseWorkspacePath(path)
@@ -1659,6 +1775,7 @@ export function VideoToolPage() {
         try {
           const scanned = await scanVideoFolder(selectedWorkspacePath, next.resolvedPath)
           setBrowserClips(scanned.clips)
+          setBrowserAudioClips(scanned.audioClips)
         } catch (scanError) {
           setBrowserScanError(scanError instanceof Error ? scanError.message : String(scanError))
         } finally {
@@ -1766,6 +1883,7 @@ export function VideoToolPage() {
     setBrowser(null)
     setBrowserError(null)
     setBrowserClips([])
+    setBrowserAudioClips([])
     setBrowserScanError(null)
     setPickerOpen(true)
   }, [])
@@ -2014,6 +2132,44 @@ export function VideoToolPage() {
     setPendingSelectedChangeIds(selectedChangeIds)
     if (proposal) setPreviewRevisionId(null)
   }, [])
+
+  const submitSoundtrackProposal = useCallback(async (type: 'add_clip' | 'update_clip' | 'replace_clip' | 'remove_clip', clip?: VideoTimelineClipWire) => {
+    if (!selectedThread || !videoProject || !currentRevision || pendingProposal) return
+    const target = clip ?? acceptedSoundtrack
+    if (!target) return
+    setSoundtrackProposalBusy(true)
+    setCreateError(null)
+    try {
+      const rangeStart = Math.max(0, target.timeline_start_ms ?? 0)
+      const rangeEnd = Math.max(rangeStart + 1, target.timeline_end_ms ?? (rangeStart + (target.duration_ms ?? 1)))
+      await createVideoEditProposal({
+        sessionId: selectedThread.id,
+        projectId: videoProject.id,
+        baseRevisionId: currentRevision.id,
+        title: type === 'add_clip' ? `Add soundtrack · ${target.name || 'audio'}` : type === 'replace_clip' ? `Replace soundtrack · ${target.name || 'audio'}` : type === 'remove_clip' ? 'Remove soundtrack' : `Adjust soundtrack · ${target.name || 'audio'}`,
+        rationale: 'Requested in Video Studio. This remains pending until explicitly confirmed.',
+        operations: [{
+          id: `${type}-${target.id}-${Date.now()}`,
+          type,
+          ...(type === 'remove_clip' ? { clip_id: target.id } : type === 'replace_clip' ? { clip_id: acceptedSoundtrack?.id ?? target.id, clip: target as unknown as Record<string, unknown> } : { clip: target as unknown as Record<string, unknown> }),
+        }],
+        affectedRanges: [{ start_ms: rangeStart, end_ms: rangeEnd }],
+      })
+      setSoundtrackDraft(null)
+      setSoundtrackPickerOpen(false)
+      setAIRefreshKey((value) => value + 1)
+      await refreshSelectedVideoProject()
+    } catch (error) {
+      setCreateError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setSoundtrackProposalBusy(false)
+    }
+  }, [acceptedSoundtrack, currentRevision, pendingProposal, refreshSelectedVideoProject, selectedThread, videoProject])
+
+  const handleSelectSoundtrack = useCallback((audio: AudioClip) => {
+    const clip = soundtrackTimelineClip({ audio, durationMs: Math.max(1, Math.round(movieDuration * 1000)), existing: acceptedSoundtrack })
+    setSoundtrackDraft(clip)
+  }, [acceptedSoundtrack, movieDuration])
 
   const handleRequestStepEdit = useCallback((action: VideoStepEditAction, segment: TimelineLayoutSegment) => {
     if (!videoProject || !currentRevision) return
@@ -2284,6 +2440,20 @@ export function VideoToolPage() {
                   </div>
                 ) : null}
 
+                <section className="mb-3 border border-[var(--app-border)] bg-[var(--app-surface)] p-3" aria-label="Soundtrack controls">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div className="flex min-w-0 items-center gap-2"><Music size={15} className="text-[var(--app-primary)]" /><div className="min-w-0"><p className="truncate text-xs font-medium text-[var(--app-text)]">{workingSoundtrack?.name || 'No soundtrack'}</p><p className="text-[10px] text-[var(--app-text-muted)]">{pendingProposal ? 'Pending proposal preview — accepted revision unchanged' : workingSoundtrack ? `${formatTimelineTime((workingSoundtrack.timeline_start_ms ?? 0) / 1000)} · ${formatTimelineTime((workingSoundtrack.duration_ms ?? 0) / 1000)} · ${Math.round((workingSoundtrack.volume ?? 1) * 100)}%${workingSoundtrack.muted ? ' · muted' : ''}` : 'Choose trusted local audio to create a pending proposal.'}</p></div></div>
+                    <Button variant="outline" className="h-8 px-3 text-xs" disabled={!currentRevision || Boolean(pendingProposal) || soundtrackProposalBusy} onClick={() => { setSoundtrackDraft(acceptedSoundtrack); setSoundtrackPickerOpen(true); if (!browser && !browserLoading) void loadBrowser(selectedWorkspacePath || '') }}>{acceptedSoundtrack ? 'Replace' : 'Choose audio'}</Button>
+                  </div>
+                  {acceptedSoundtrack ? <div className="mt-3 grid gap-3 sm:grid-cols-[1fr_1fr_1.4fr_auto_auto] sm:items-end">
+                    <label className="text-[10px] uppercase tracking-[0.12em] text-[var(--app-text-subtle)]">Start (s)<input aria-label="Soundtrack timeline start seconds" type="number" min="0" step="0.1" className="mt-1 h-8 w-full border border-[var(--app-border)] bg-[var(--app-bg)] px-2 text-xs" value={(soundtrackDraft ?? acceptedSoundtrack).timeline_start_ms! / 1000} onChange={(event) => { const draft = { ...(soundtrackDraft ?? acceptedSoundtrack) }; const start = Math.max(0, Number(event.target.value) || 0) * 1000; draft.timeline_start_ms = Math.round(start); draft.timeline_end_ms = Math.round(start + (draft.duration_ms ?? 1)); setSoundtrackDraft(draft) }} /></label>
+                    <label className="text-[10px] uppercase tracking-[0.12em] text-[var(--app-text-subtle)]">Trim in (s)<input aria-label="Soundtrack source trim seconds" type="number" min="0" step="0.1" className="mt-1 h-8 w-full border border-[var(--app-border)] bg-[var(--app-bg)] px-2 text-xs" value={(soundtrackDraft ?? acceptedSoundtrack).source_start_ms! / 1000} onChange={(event) => { const draft = { ...(soundtrackDraft ?? acceptedSoundtrack) }; const start = Math.max(0, Number(event.target.value) || 0) * 1000; draft.source_start_ms = Math.round(start); draft.source_end_ms = Math.round(start + (draft.duration_ms ?? 1)); setSoundtrackDraft(draft) }} /></label>
+                    <label className="text-[10px] uppercase tracking-[0.12em] text-[var(--app-text-subtle)]">Volume <input aria-label="Soundtrack volume" type="range" min="0" max="2" step="0.05" className="mt-2 w-full" value={(soundtrackDraft ?? acceptedSoundtrack).volume ?? 1} onChange={(event) => setSoundtrackDraft({ ...(soundtrackDraft ?? acceptedSoundtrack), volume: Number(event.target.value) })} /></label>
+                    <Button variant="outline" className="h-8 px-2 text-xs" disabled={Boolean(pendingProposal) || soundtrackProposalBusy} onClick={() => setSoundtrackDraft({ ...(soundtrackDraft ?? acceptedSoundtrack), muted: !(soundtrackDraft ?? acceptedSoundtrack).muted })}>{(soundtrackDraft ?? acceptedSoundtrack).muted ? <VolumeX size={13} /> : <Volume2 size={13} />}{(soundtrackDraft ?? acceptedSoundtrack).muted ? 'Muted' : 'Mute'}</Button>
+                    <Button variant="ghost" className="h-8 px-2 text-xs text-red-400" disabled={Boolean(pendingProposal) || soundtrackProposalBusy} onClick={() => void submitSoundtrackProposal('remove_clip')}><Trash2 size={13} />Remove</Button>
+                    {soundtrackDraft && JSON.stringify(soundtrackDraft) !== JSON.stringify(acceptedSoundtrack) ? <Button className="h-8 px-3 text-xs sm:col-span-5" disabled={Boolean(pendingProposal) || soundtrackProposalBusy} onClick={() => void submitSoundtrackProposal('update_clip', soundtrackDraft)}>Propose placement / trim / volume change</Button> : null}
+                  </div> : null}
+                </section>
                 <div className="mb-3 flex flex-wrap items-center gap-2 border border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-2">
                   <span className="text-xs text-[var(--app-text-muted)]">Transition between clips</span>
                   <select className="h-8 border border-[var(--app-border)] bg-[var(--app-bg)] px-2 text-xs" value={transitionKind} onChange={(event) => setTransitionKind(event.target.value as VideoTransitionKind)}>
@@ -2308,8 +2478,15 @@ export function VideoToolPage() {
                         })}
                         <div className="pointer-events-none absolute top-0 h-full w-0.5 bg-[var(--app-primary)] shadow-[0_0_0_1px_rgba(0,0,0,0.35)]" style={{ left: `${playheadX}px` }} />
                       </div>
-                      <div className="absolute inset-x-0 top-36 flex items-center gap-2">
-                        {timelineLayout.map((segment, index) => {
+                      <div className="absolute inset-x-0 top-32 h-10 border border-violet-400/30 bg-violet-950/20" aria-label="Soundtrack lane">
+                        {audioTimelineLayout.length === 0 ? <div className="flex h-full items-center px-3 text-[10px] uppercase tracking-[0.14em] text-violet-300/70"><Music size={12} className="mr-2" />Soundtrack lane · empty</div> : audioTimelineLayout.map((segment) => {
+                          const left = movieDuration > 0 ? (segment.timelineStart / movieDuration) * timelineTrackWidthPx : 0
+                          const width = movieDuration > 0 ? (segment.duration / movieDuration) * timelineTrackWidthPx : 0
+                          return <div key={`${segment.id}-audio-lane`} className={`absolute inset-y-0 overflow-hidden border-r border-violet-300/30 px-2 py-1 text-violet-100 ${pendingProposal ? 'bg-amber-900/45' : 'bg-violet-700/40'}`} style={{ left: `${left}px`, width: `${Math.max(2, width)}px` }}><p className="truncate text-[10px] font-medium">{segment.title || segment.audioSource?.name || 'Soundtrack'}</p><p className="truncate text-[9px] opacity-70">{segment.muted ? 'muted' : `${Math.round((segment.volume ?? 1) * 100)}%`} · {formatTimelineTime(segment.duration)}</p></div>
+                        })}
+                      </div>
+                      <div className="absolute inset-x-0 top-44 flex items-center gap-2">
+                        {visualTimelineLayout.map((segment, index) => {
                           const clip = selectedClips.find((candidate) => candidate.id === segment.clipId)
                           return (
                             <div key={`${segment.id}-controls`} className={`flex min-w-[280px] max-w-[440px] flex-wrap items-center gap-2 border px-2 py-2 text-xs sm:min-w-[320px] ${segment.visible ? 'border-[var(--app-border)] bg-[var(--app-surface)]' : 'border-dashed border-[var(--app-border)] bg-transparent opacity-60'}`}>
@@ -2318,7 +2495,7 @@ export function VideoToolPage() {
                               <Button variant="outline" className="h-7 rounded-lg px-2 text-[10px]" onClick={() => handleRequestStepEdit('transition', segment)}>Transition</Button>
                               <Button variant="outline" className="h-7 rounded-lg px-2 text-[10px]" onClick={() => handleRequestStepEdit('source', segment)}>Source</Button>
                               <Button variant="outline" className="h-7 rounded-lg px-2 text-[10px]" onClick={() => void handleRequestStepEdit('move_earlier', segment)} disabled={index === 0}>AI ←</Button>
-                              <Button variant="outline" className="h-7 rounded-lg px-2 text-[10px]" onClick={() => void handleRequestStepEdit('move_later', segment)} disabled={index === timelineSegments.length - 1}>AI →</Button>
+                              <Button variant="outline" className="h-7 rounded-lg px-2 text-[10px]" onClick={() => void handleRequestStepEdit('move_later', segment)} disabled={index === visualTimelineLayout.length - 1}>AI →</Button>
                               <Button variant={segment.visible ? 'outline' : 'ghost'} className="h-7 rounded-lg px-2 text-xs" onClick={() => void handleToggleSegment(segment.clipId)} disabled={reordering || Boolean(pendingProposal)}>{segment.visible ? <Eye size={13} /> : <EyeOff size={13} />}</Button>
                             </div>
                           )
@@ -2377,6 +2554,21 @@ export function VideoToolPage() {
             </section>
             {selectedThread ? <VideoSessionAISidecar key={selectedThread.id} sessionId={selectedThread.id} projectId={videoProject?.id} revisionId={studioComposerContext?.revisionId ?? currentRevision?.id} anchorClipId={studioComposerContext?.anchorClipId ?? activeSegment?.id} playheadMs={studioComposerContext?.playheadMs ?? playhead * 1000} selectionKind={studioComposerContext?.selectionKind} transition={studioComposerContext?.transition} iterationContext={studioComposerContext?.iteration} routeOptions={selectedSessionRoute ? [selectedSessionRoute] : []} draftRequest={composerDraftRequest} artifactSelectionRequest={studioArtifactSelectionRequest} artifactReviewPortalTarget={studioArtifactReviewPortalTarget} contextChip={studioComposerContext ? { id: `${studioComposerContext.selectionKind}:${studioComposerContext.revisionId}:${studioComposerContext.anchorClipId}:${studioComposerContext.iteration?.changeId ?? studioComposerContext.transition?.id ?? ''}`, label: studioComposerContext.selectionKind === 'transition' ? `Transition · ${studioComposerContext.label}` : studioComposerContext.label, kind: studioComposerContext.selectionKind, description: studioComposerContext.iteration ? `Iteration ${studioComposerContext.iteration.proposalId} · change ${studioComposerContext.iteration.changeId} · ${studioComposerContext.iteration.startMs}–${studioComposerContext.iteration.endMs}ms` : studioComposerContext.transition ? `${studioComposerContext.transition.kind}; ${studioComposerContext.transition.duration_ms ?? 0}ms` : `Stable part ${studioComposerContext.anchorClipId}` } : null} onContextChipRemove={() => setStudioComposerContext(null)} onArtifactSelectionRequestHandled={() => setStudioArtifactSelectionRequest(null)} onActivity={() => { setStudioComposerContext(null); setAIRefreshKey((value) => value + 1); void refreshSelectedVideoProject().catch(() => undefined) }} /> : null}
           </main>
+
+      {soundtrackPickerOpen ? (
+        <Dialog role="dialog" aria-modal="true" aria-label="Choose trusted soundtrack" className="z-[85] p-4 sm:p-6">
+          <DialogBackdrop onClick={() => setSoundtrackPickerOpen(false)} />
+          <DialogPanel className="mx-auto mt-[8vh] flex max-h-[80vh] w-[min(760px,calc(100vw-24px))] flex-col overflow-hidden rounded-3xl border border-[var(--app-border-strong)] bg-[var(--app-surface)] shadow-[var(--shadow-panel)]">
+            <div className="flex items-start justify-between gap-4 border-b border-[var(--app-border)] px-5 py-4"><div><p className="text-[11px] uppercase tracking-[0.2em] text-[var(--app-text-subtle)]">Trusted local audio</p><h2 className="mt-1 text-xl font-semibold text-[var(--app-text)]">Choose soundtrack</h2><p className="mt-2 text-sm text-[var(--app-text-muted)]">Audio is discovered only from registered source-media folders and stays an exact authenticated reference.</p></div><ModalCloseButton onClick={() => setSoundtrackPickerOpen(false)} aria-label="Close soundtrack picker" /></div>
+            <div className="overflow-y-auto p-5">
+              <Button variant="outline" className="mb-4 h-8 px-3 text-xs" onClick={() => void loadBrowser(browser?.resolvedPath ?? selectedWorkspacePath)} disabled={browserLoading}>{browserLoading ? <Loader2 size={13} className="animate-spin" /> : <FolderOpen size={13} />}Scan selected folder</Button>
+              {browserScanError ? <p className="mb-3 text-sm text-red-400">{browserScanError}</p> : null}
+              {browserAudioClips.length === 0 ? <p className="border border-dashed border-[var(--app-border)] p-5 text-sm text-[var(--app-text-muted)]">No supported audio in the selected folder. Use Add folder to browse another registered source-media folder.</p> : <div className="grid gap-2">{browserAudioClips.map((audio) => <button key={audio.ref} type="button" onClick={() => handleSelectSoundtrack(audio)} className={`flex items-center gap-3 border px-3 py-3 text-left ${soundtrackDraft?.audio_source?.ref === audio.ref ? 'border-[var(--app-primary)] bg-[color-mix(in_srgb,var(--app-primary)_8%,transparent)]' : 'border-[var(--app-border)] bg-[var(--app-bg)]'}`}><Music size={16} className="text-violet-300" /><span className="min-w-0 flex-1"><span className="block truncate text-sm font-medium">{audio.name}</span><span className="block truncate text-xs text-[var(--app-text-muted)]">{audio.mime_type} · {formatBytes(audio.size_bytes)}</span></span></button>)}</div>}
+              {soundtrackDraft?.audio_source ? <Button className="mt-4 w-full" disabled={soundtrackProposalBusy || Boolean(pendingProposal) || movieDuration <= 0} onClick={() => void submitSoundtrackProposal(acceptedSoundtrack ? 'replace_clip' : 'add_clip', soundtrackDraft)}>{soundtrackProposalBusy ? <Loader2 size={13} className="animate-spin" /> : <Music size={13} />}Create pending {acceptedSoundtrack ? 'replacement' : 'soundtrack'} proposal</Button> : null}
+            </div>
+          </DialogPanel>
+        </Dialog>
+      ) : null}
 
       {pickerOpen ? (
         <Dialog role="dialog" aria-modal="true" aria-label="Choose a video folder" className="z-[80] p-4 sm:p-6">

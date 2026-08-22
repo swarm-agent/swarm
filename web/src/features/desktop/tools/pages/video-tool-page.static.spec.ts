@@ -58,6 +58,20 @@ test('Video Studio reviews nested selective iterations in the sidebar and keeps 
   assert.match(proposalSource, /video_iteration_range_end_ms/)
 })
 
+test('Video Studio exposes only the implemented soundtrack contract and an explicit audio lane', async () => {
+  const source = await readFile(pageSourceUrl, 'utf8')
+  const proposalSource = await readFile(new URL('../video-studio/video-studio-surface.tsx', import.meta.url), 'utf8')
+
+  assert.match(source, /aria-label="Soundtrack controls"/)
+  assert.match(source, /aria-label="Soundtrack lane"/)
+  assert.match(source, /aria-label="Choose trusted soundtrack"/)
+  assert.match(source, /Pending proposal preview — accepted revision unchanged/)
+  assert.match(source, /source_kind: 'source_audio'/)
+  assert.match(source, /Propose placement \/ trim \/ volume change/)
+  assert.match(proposalSource, /'replace_clip'/)
+  assert.doesNotMatch(source, /Waveform|Fade in|Fade out|Loop soundtrack|Duck narration|Beat sync/)
+})
+
 test('Video Studio keeps a route-backed video selection and exposes session mode', async () => {
   const [source, routerSource, desktopSource] = await Promise.all([
     readFile(pageSourceUrl, 'utf8'),

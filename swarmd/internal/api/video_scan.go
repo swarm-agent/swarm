@@ -38,6 +38,7 @@ func (s *Server) handleWorkspaceVideoScan(w http.ResponseWriter, r *http.Request
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok": true, "workspace_id": result.WorkspaceID, "root_path": result.RootPath,
-		"relative_path": result.RelativePath, "directories": result.Directories, "clips": result.Clips,
+		"relative_path": result.RelativePath, "directories": result.Directories,
+		"clips": result.Clips, "audio_clips": result.AudioClips,
 	})
 }

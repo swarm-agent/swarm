@@ -53,7 +53,7 @@ func TestManageVideoDefinitionExposesAdaptiveJobInstructions(t *testing.T) {
 
 func TestManageVideoDefinitionExposesSourceNavigationWorkflow(t *testing.T) {
 	definition := manageVideoDefinition()
-	if !strings.Contains(definition.Description, "registered source-video folders") || !strings.Contains(definition.Description, "selected opaque video references") || !strings.Contains(definition.Description, "inspect triggering-message attachments") {
+	if !strings.Contains(definition.Description, "trusted video and audio sources") || !strings.Contains(definition.Description, "registered source-media folders") || !strings.Contains(definition.Description, "selected opaque video references") || !strings.Contains(definition.Description, "triggering-message video attachments") {
 		t.Fatalf("description does not expose source workflow: %s", definition.Description)
 	}
 	raw, err := json.Marshal(definition.Parameters)
@@ -84,6 +84,9 @@ func TestManageVideoListsRegisteredSourcesWithoutTriggerAttachment(t *testing.T)
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(mediaPath, "clip.mp4"), []byte("synthetic video"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(mediaPath, "soundtrack.mp3"), append([]byte("ID3"), make([]byte, 16)...), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	sessionStore := pebblestore.NewSessionStore(store)
@@ -122,11 +125,21 @@ func TestManageVideoListsRegisteredSourcesWithoutTriggerAttachment(t *testing.T)
 	}
 	var browseResponse struct {
 		Videos []struct {
-			Ref string `json:"ref"`
+			Ref       string `json:"ref"`
+			MediaKind string `json:"media_kind"`
 		} `json:"videos"`
+		Audio []struct {
+			Ref                string `json:"ref"`
+			MediaKind          string `json:"media_kind"`
+			SourceFingerprint  string `json:"source_fingerprint"`
+			FingerprintVersion string `json:"fingerprint_version"`
+		} `json:"audio"`
 	}
-	if err := json.Unmarshal([]byte(payload), &browseResponse); err != nil || len(browseResponse.Videos) != 1 {
+	if err := json.Unmarshal([]byte(payload), &browseResponse); err != nil || len(browseResponse.Videos) != 1 || len(browseResponse.Audio) != 1 {
 		t.Fatalf("decode browse payload=%s err=%v", payload, err)
+	}
+	if browseResponse.Videos[0].MediaKind != videosource.MediaKindVideo || browseResponse.Audio[0].MediaKind != videosource.MediaKindAudio || !strings.HasPrefix(browseResponse.Audio[0].Ref, "audiosrc_") || browseResponse.Audio[0].SourceFingerprint == "" || browseResponse.Audio[0].FingerprintVersion != pebblestore.AudioSourceFingerprintV1 {
+		t.Fatalf("browse source metadata=%+v", browseResponse)
 	}
 	focusNotes := "Silent software demo; narrate each visible cursor action and UI state change"
 	startArgs, _ := json.Marshal(map[string]any{"action": "start_transcription", "video_refs": []string{browseResponse.Videos[0].Ref}, "focus_notes": focusNotes})

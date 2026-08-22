@@ -1,0 +1,60 @@
+package videorender
+
+import (
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	pebblestore "swarm/packages/swarmd/internal/store/pebble"
+)
+
+func TestFFmpegRenderStillWithDeterministicSoundtrack(t *testing.T) {
+	ffmpeg, err := exec.LookPath("ffmpeg")
+	if err != nil {
+		t.Skip("requires local ffmpeg runtime")
+	}
+	ffprobe, err := exec.LookPath("ffprobe")
+	if err != nil {
+		t.Skip("requires local ffprobe runtime")
+	}
+
+	dir := t.TempDir()
+	stillPath := filepath.Join(dir, "still.ppm")
+	audioPath := filepath.Join(dir, "soundtrack.wav")
+	outputPath := filepath.Join(dir, "output.mp4")
+	for _, command := range [][]string{
+		{"-v", "error", "-f", "lavfi", "-i", "color=c=blue:s=320x240", "-frames:v", "1", stillPath},
+		{"-v", "error", "-f", "lavfi", "-i", "sine=frequency=880:sample_rate=48000:duration=2", "-c:a", "pcm_s16le", audioPath},
+	} {
+		if output, commandErr := exec.Command(ffmpeg, command...).CombinedOutput(); commandErr != nil {
+			t.Fatalf("fixture generation failed: %v: %s", commandErr, output)
+		}
+	}
+
+	timeline := pebblestore.VideoProjectTimeline{
+		Width: 320, Height: 240, FPS: 10, TotalDurationMs: 3000,
+		AudioPolicy: &pebblestore.VideoAudioPolicy{MasterVolume: 0.8},
+	}
+	plan, err := BuildFFmpegCommandLine(timeline, []MaterializedInput{
+		{Index: 0, ClipID: "still", FilePath: stillPath, IsImage: true, DurationMs: 3000, TimelineEndMs: 3000},
+		{Index: 1, ClipID: "soundtrack", FilePath: audioPath, IsAudio: true, HasAudio: true, StartMs: 250, EndMs: 1750, DurationMs: 1500, Track: 1, TimelineStartMs: 750, TimelineEndMs: 2250, Volume: 0.6},
+	}, outputPath)
+	if err != nil {
+		t.Fatalf("BuildFFmpegCommandLine() error = %v", err)
+	}
+	if output, commandErr := exec.Command(ffmpeg, plan.FFmpegArgs...).CombinedOutput(); commandErr != nil {
+		t.Fatalf("ffmpeg render failed: %v: %s\nfilter=%s", commandErr, output, plan.FilterComplex)
+	}
+
+	probe, err := exec.Command(ffprobe, "-v", "error", "-show_entries", "stream=codec_name,codec_type", "-show_entries", "format=duration", "-of", "default=nw=1", outputPath).CombinedOutput()
+	if err != nil {
+		t.Fatalf("ffprobe failed: %v: %s", err, probe)
+	}
+	got := string(probe)
+	for _, want := range []string{"codec_name=h264", "codec_type=video", "codec_name=aac", "codec_type=audio", "duration=3.000000"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("ffprobe output missing %q: %s", want, got)
+		}
+	}
+}
