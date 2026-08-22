@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,10 +16,15 @@ import (
 )
 
 const (
-	TranscriptionAttachmentSchemaVersion = 1
+	TranscriptionAttachmentSchemaVersion = 2
+	TranscriptionAttachmentLegacyVersion = 1
 	TranscriptionJobSchemaVersion        = 2
-	NormalizedTranscriptSchemaVersion    = "normalized_transcript.v2"
+	NormalizedTranscriptSchemaVersion    = "normalized_transcript.v3"
+	NormalizedTranscriptMultimodalLegacy = "normalized_transcript.v2"
 	NormalizedTranscriptLegacyVersion    = "normalized_transcript.v1"
+
+	TranscriptionMediaVideo = "video"
+	TranscriptionMediaAudio = "audio"
 	ContentEmptyVideoDescription         = "No meaningful visual or auditory content was detected."
 
 	TranscriptionJobQueued     = "queued"
@@ -42,14 +48,18 @@ const (
 	maxTranscriptRetention     = 365 * 24 * time.Hour
 	maxTranscriptTextBytes     = 2 << 20
 	maxTranscriptSegments      = 10_000
+	maxTranscriptWords         = 50_000
+	maxTranscriptWordBytes     = 1 << 10
 	maxTranscriptSegmentBytes  = 16 << 10
 )
 
 // TranscriptionAttachmentRecord is the durable, message-scoped authority for a
-// registered video. It stores only opaque source identity and fingerprint data;
-// the registered source record remains the private path authority.
+// registered video or audio source. It stores only opaque source identity and
+// fingerprint data; the registered source record remains private path authority.
+// Legacy schema-v1 records omit MediaKind and are interpreted as video.
 type TranscriptionAttachmentRecord struct {
 	SchemaVersion      int    `json:"schema_version"`
+	MediaKind         string `json:"media_kind,omitempty"`
 	Ref                string `json:"ref"`
 	AccountScopeID     string `json:"account_scope_id"`
 	UserID             string `json:"user_id,omitempty"`
@@ -107,6 +117,14 @@ type NormalizedTranscriptSegment struct {
 	Text         string `json:"text"`
 }
 
+type NormalizedTranscriptWord struct {
+	Text       string   `json:"text"`
+	StartMs    int64    `json:"start_ms"`
+	EndMs      int64    `json:"end_ms"`
+	Confidence *float64 `json:"confidence,omitempty"`
+	Provenance string   `json:"provenance,omitempty"`
+}
+
 type NormalizedTranscriptMetadata struct {
 	Language          string `json:"language,omitempty"`
 	DurationMs        int64  `json:"duration_ms,omitempty"`
@@ -141,6 +159,7 @@ type NormalizedTranscript struct {
 	ModelGenerated    bool                          `json:"model_generated"`
 	Text              string                        `json:"text"`
 	Segments          []NormalizedTranscriptSegment `json:"segments"`
+	Words             []NormalizedTranscriptWord    `json:"words,omitempty"`
 	Metadata          NormalizedTranscriptMetadata  `json:"metadata"`
 	Validation        TranscriptValidation          `json:"validation"`
 	ContentDigest     string                        `json:"content_digest"`
@@ -167,6 +186,16 @@ type BindVideoTranscriptionAttachmentInput struct {
 	MessageID       string
 	VideoThreadID   string
 	VideoClipID     string
+	ClientRequestID string
+	NowUnixMs       int64
+}
+
+type BindAudioTranscriptionAttachmentInput struct {
+	AccountScopeID  string
+	UserID          string
+	SessionID       string
+	MessageID       string
+	AudioSourceRef  string
 	ClientRequestID string
 	NowUnixMs       int64
 }
@@ -206,6 +235,7 @@ type CommitNormalizedTranscriptInput struct {
 	SessionID      string
 	JobRef         string
 	Segments       []NormalizedTranscriptSegment
+	Words          []NormalizedTranscriptWord
 	Language       string
 	DurationMs     int64
 	Summary        string
@@ -262,6 +292,51 @@ func (s *SessionStore) BindVideoTranscriptionAttachment(input BindVideoTranscrip
 		return TranscriptionAttachmentRecord{}, false, err
 	}
 	record, err := s.buildVideoTranscriptionAttachment(session, input.MessageID, input.VideoThreadID, input.VideoClipID, input.NowUnixMs)
+	if err != nil {
+		return TranscriptionAttachmentRecord{}, false, err
+	}
+	if stored, exists, readErr := s.GetTranscriptionAttachment(input.AccountScopeID, input.SessionID, record.Ref); readErr != nil {
+		return TranscriptionAttachmentRecord{}, false, readErr
+	} else if exists {
+		if !sameTranscriptionAttachmentSource(stored, record) {
+			return TranscriptionAttachmentRecord{}, false, errors.New("transcription attachment authority is inconsistent")
+		}
+		return stored, true, nil
+	}
+	if input.ClientRequestID == "" {
+		input.ClientRequestID = "bind:" + record.Ref
+	}
+	mutation := V3SessionMutationInput{
+		SessionID: input.SessionID, UserID: input.UserID, AccountScopeID: input.AccountScopeID,
+		ClientRequestID: input.ClientRequestID, Kind: V3SessionMutationBindTranscriptionAttachment,
+		Transcription: &V3TranscriptionMutation{Attachment: &record}, NowUnixMs: input.NowUnixMs,
+	}
+	mutation.PayloadHash = transcriptionMutationHash(mutation.Kind, mutation.Transcription)
+	result, err := s.ApplyV3SessionMutation(mutation)
+	if err != nil {
+		return TranscriptionAttachmentRecord{}, false, err
+	}
+	stored, ok, err := s.GetTranscriptionAttachment(input.AccountScopeID, input.SessionID, record.Ref)
+	return stored, result.Replayed, firstTranscriptionReadError(ok, err, "transcription attachment")
+}
+
+func (s *SessionStore) BindAudioTranscriptionAttachment(input BindAudioTranscriptionAttachmentInput) (TranscriptionAttachmentRecord, bool, error) {
+	input.AccountScopeID = strings.TrimSpace(input.AccountScopeID)
+	input.UserID = strings.TrimSpace(input.UserID)
+	input.SessionID = strings.TrimSpace(input.SessionID)
+	input.MessageID = strings.TrimSpace(input.MessageID)
+	input.AudioSourceRef = strings.TrimSpace(input.AudioSourceRef)
+	session, ok, err := s.GetSession(input.SessionID)
+	if err != nil || !ok {
+		if err == nil {
+			err = errors.New("session not found")
+		}
+		return TranscriptionAttachmentRecord{}, false, err
+	}
+	if err := validateTranscriptionSessionOwnership(session, input.AccountScopeID, input.UserID); err != nil {
+		return TranscriptionAttachmentRecord{}, false, err
+	}
+	record, err := s.buildAudioTranscriptionAttachment(session, input.MessageID, input.AudioSourceRef, input.NowUnixMs)
 	if err != nil {
 		return TranscriptionAttachmentRecord{}, false, err
 	}
@@ -431,6 +506,7 @@ func (s *SessionStore) CommitNormalizedTranscript(input CommitNormalizedTranscri
 		SchemaVersion: job.TranscriptSchema, Ref: job.TranscriptRef, JobRef: job.Ref, AccountScopeID: job.AccountScopeID,
 		WorkspaceID: job.WorkspaceID, SessionID: job.SessionID, MessageID: job.MessageID, AttachmentRef: job.AttachmentRef,
 		SourceFingerprint: job.SourceFingerprint, ModelGenerated: true, Segments: append([]NormalizedTranscriptSegment(nil), input.Segments...),
+		Words: append([]NormalizedTranscriptWord(nil), input.Words...),
 		Metadata:   NormalizedTranscriptMetadata{Language: input.Language, DurationMs: input.DurationMs, Summary: input.Summary, ContentEmpty: input.ContentEmpty, ProviderID: job.ProviderID, Model: job.Model, ModelSnapshot: job.ModelSnapshot, MediaSettingsHash: job.MediaSettingsHash, GeneratedAt: input.GeneratedAt},
 		Validation: TranscriptValidation{State: TranscriptValidationValidated, ValidatedAt: now}, CreatedAt: now,
 	}
@@ -475,6 +551,15 @@ func (s *SessionStore) GetTranscriptionAttachment(accountScopeID, sessionID, ref
 	}
 	if record.AccountScopeID != accountScopeID || record.SessionID != sessionID || record.Ref != ref {
 		return TranscriptionAttachmentRecord{}, false, errors.New("transcription attachment ownership metadata is inconsistent")
+	}
+	if record.SchemaVersion == TranscriptionAttachmentLegacyVersion && strings.TrimSpace(record.MediaKind) == "" {
+		record.MediaKind = TranscriptionMediaVideo
+	}
+	if record.SchemaVersion != TranscriptionAttachmentSchemaVersion && record.SchemaVersion != TranscriptionAttachmentLegacyVersion {
+		return TranscriptionAttachmentRecord{}, false, errors.New("transcription attachment schema is unsupported")
+	}
+	if record.MediaKind != TranscriptionMediaVideo && record.MediaKind != TranscriptionMediaAudio {
+		return TranscriptionAttachmentRecord{}, false, errors.New("transcription attachment media kind is invalid")
 	}
 	return record, true, nil
 }
@@ -652,7 +737,7 @@ func (s *SessionStore) buildVideoTranscriptionAttachment(session SessionSnapshot
 			now = time.Now().UnixMilli()
 		}
 		return TranscriptionAttachmentRecord{
-			SchemaVersion: TranscriptionAttachmentSchemaVersion, Ref: ref, AccountScopeID: session.AccountScopeID, UserID: session.UserID,
+			SchemaVersion: TranscriptionAttachmentSchemaVersion, MediaKind: TranscriptionMediaVideo, Ref: ref, AccountScopeID: session.AccountScopeID, UserID: session.UserID,
 			WorkspaceID: workspaceID, SessionID: session.ID, MessageID: messageID, SourceRecordRef: sourceRecordRef,
 			SourceThreadID: "registered-source", SourceClipID: record.Ref, SourceFingerprint: record.SourceFingerprint, FingerprintVersion: "sha256-root-relative-size-mtime.v1",
 			MIMEType: record.MIMEType, SizeBytes: record.SizeBytes, CreatedAt: now,
@@ -687,10 +772,50 @@ func (s *SessionStore) buildVideoTranscriptionAttachment(session SessionSnapshot
 		now = time.Now().UnixMilli()
 	}
 	return TranscriptionAttachmentRecord{
-		SchemaVersion: TranscriptionAttachmentSchemaVersion, Ref: ref, AccountScopeID: session.AccountScopeID, UserID: session.UserID,
+		SchemaVersion: TranscriptionAttachmentSchemaVersion, MediaKind: TranscriptionMediaVideo, Ref: ref, AccountScopeID: session.AccountScopeID, UserID: session.UserID,
 		WorkspaceID: workspaceID, SessionID: session.ID, MessageID: messageID, SourceRecordRef: sourceRecordRef,
 		SourceThreadID: threadID, SourceClipID: clipID, SourceFingerprint: fingerprint, FingerprintVersion: "sha256-path-size-mtime.v1",
 		MIMEType: videoMIMEFromExtension(clip.Extension), SizeBytes: clip.SizeBytes, CreatedAt: now,
+	}, nil
+}
+
+func (s *SessionStore) buildAudioTranscriptionAttachment(session SessionSnapshot, messageID, sourceRef string, now int64) (TranscriptionAttachmentRecord, error) {
+	messageID, sourceRef = strings.TrimSpace(messageID), strings.TrimSpace(sourceRef)
+	if messageID == "" || !strings.HasPrefix(sourceRef, "audiosrc_") {
+		return TranscriptionAttachmentRecord{}, errors.New("message and valid audio source reference are required")
+	}
+	if _, ok, err := s.findV3MessageByID(session, messageID); err != nil || !ok {
+		if err == nil {
+			err = errors.New("triggering message not found in authenticated session scope")
+		}
+		return TranscriptionAttachmentRecord{}, err
+	}
+	workspaceID := transcriptionWorkspaceID(session)
+	record, ok, err := s.GetAudioSourceRecord(session.AccountScopeID, workspaceID, sourceRef)
+	if err != nil || !ok {
+		if err == nil {
+			err = errors.New("registered audio source not found in authenticated session scope")
+		}
+		return TranscriptionAttachmentRecord{}, err
+	}
+	file, err := OpenValidatedAudioSource(record)
+	if err != nil {
+		return TranscriptionAttachmentRecord{}, err
+	}
+	if err := file.Close(); err != nil {
+		return TranscriptionAttachmentRecord{}, err
+	}
+	ref := "vatt_" + transcriptionDigest(strings.Join([]string{session.AccountScopeID, workspaceID, session.ID, messageID, record.Ref, record.SourceFingerprint}, "\x00"))
+	if now == 0 {
+		now = time.Now().UnixMilli()
+	}
+	return TranscriptionAttachmentRecord{
+		SchemaVersion: TranscriptionAttachmentSchemaVersion, MediaKind: TranscriptionMediaAudio, Ref: ref,
+		AccountScopeID: session.AccountScopeID, UserID: session.UserID, WorkspaceID: workspaceID,
+		SessionID: session.ID, MessageID: messageID, SourceRecordRef: record.Ref,
+		SourceThreadID: "registered-audio-source", SourceClipID: record.Ref,
+		SourceFingerprint: record.SourceFingerprint, FingerprintVersion: record.FingerprintVersion,
+		MIMEType: record.MIMEType, SizeBytes: record.SizeBytes, CreatedAt: now,
 	}, nil
 }
 
@@ -718,6 +843,19 @@ func (s *SessionStore) OpenTranscriptionAttachmentSource(accountScopeID, session
 			err = errors.New("transcription attachment session authority is unavailable")
 		}
 		return nil, err
+	}
+	if attachment.MediaKind == TranscriptionMediaAudio {
+		record, found, readErr := s.GetAudioSourceRecord(attachment.AccountScopeID, attachment.WorkspaceID, attachment.SourceRecordRef)
+		if readErr != nil {
+			return nil, readErr
+		}
+		if !found {
+			return nil, errors.New("transcription audio source is unavailable in the session workspace scope")
+		}
+		if record.SourceFingerprint != attachment.SourceFingerprint || record.FingerprintVersion != attachment.FingerprintVersion || record.MIMEType != attachment.MIMEType || record.SizeBytes != attachment.SizeBytes {
+			return nil, errors.New("transcription source fingerprint is stale")
+		}
+		return OpenValidatedAudioSource(record)
 	}
 	for _, workspaceID := range SessionVideoWorkspaceIDs(session) {
 		record, found, readErr := s.GetVideoSourceRecord(attachment.AccountScopeID, workspaceID, attachment.SourceRecordRef)
@@ -774,12 +912,21 @@ func (s *SessionStore) prepareV3TranscriptionMutation(input V3SessionMutationInp
 			return preparedV3TranscriptionMutation{}, errors.New("attachment bind requires exactly one attachment")
 		}
 		record := *input.Transcription.Attachment
-		expected, err := s.buildVideoTranscriptionAttachment(session, record.MessageID, record.SourceThreadID, record.SourceClipID, record.CreatedAt)
+		var expected TranscriptionAttachmentRecord
+		var err error
+		switch record.MediaKind {
+		case TranscriptionMediaVideo:
+			expected, err = s.buildVideoTranscriptionAttachment(session, record.MessageID, record.SourceThreadID, record.SourceClipID, record.CreatedAt)
+		case TranscriptionMediaAudio:
+			expected, err = s.buildAudioTranscriptionAttachment(session, record.MessageID, record.SourceRecordRef, record.CreatedAt)
+		default:
+			err = errors.New("transcription attachment media kind is invalid")
+		}
 		if err != nil {
 			return preparedV3TranscriptionMutation{}, err
 		}
 		if !equalTranscriptionAttachmentAuthority(record, expected) {
-			return preparedV3TranscriptionMutation{}, errors.New("transcription attachment does not match trusted video source authority")
+			return preparedV3TranscriptionMutation{}, errors.New("transcription attachment does not match trusted media source authority")
 		}
 		return preparedV3TranscriptionMutation{Attachment: &record, Projection: V3TranscriptionProjection{AttachmentRef: record.Ref}}, nil
 	case V3SessionMutationCreateTranscriptionJob:
@@ -904,8 +1051,11 @@ func normalizeAndValidateTranscript(transcript NormalizedTranscript) (Normalized
 	}
 	transcript.Validation.State = strings.ToLower(strings.TrimSpace(transcript.Validation.State))
 	transcript.Validation.Reason = boundedTranscriptionField(transcript.Validation.Reason, 512)
-	if (transcript.SchemaVersion != NormalizedTranscriptSchemaVersion && transcript.SchemaVersion != NormalizedTranscriptLegacyVersion) || !transcript.ModelGenerated {
+	if (transcript.SchemaVersion != NormalizedTranscriptSchemaVersion && transcript.SchemaVersion != NormalizedTranscriptMultimodalLegacy && transcript.SchemaVersion != NormalizedTranscriptLegacyVersion) || !transcript.ModelGenerated {
 		return NormalizedTranscript{}, errors.New("normalized transcript schema and model-generated marker are required")
+	}
+	if (transcript.SchemaVersion == NormalizedTranscriptLegacyVersion || transcript.SchemaVersion == NormalizedTranscriptMultimodalLegacy) && len(transcript.Words) > 0 {
+		return NormalizedTranscript{}, errors.New("legacy normalized transcript schemas cannot contain word timing")
 	}
 	if transcript.SchemaVersion == NormalizedTranscriptLegacyVersion && (len(transcript.Text) == 0 || len(transcript.Text) > maxTranscriptTextBytes) {
 		return NormalizedTranscript{}, errors.New("normalized transcript text is empty or exceeds the bounded limit")
@@ -924,7 +1074,7 @@ func normalizeAndValidateTranscript(transcript NormalizedTranscript) (Normalized
 			return NormalizedTranscript{}, fmt.Errorf("normalized transcript segment %d modality exceeds the bounded limit", index)
 		}
 		segment.Text = strings.TrimSpace(segment.Text)
-		if transcript.SchemaVersion == NormalizedTranscriptSchemaVersion {
+		if transcript.SchemaVersion == NormalizedTranscriptSchemaVersion || transcript.SchemaVersion == NormalizedTranscriptMultimodalLegacy {
 			if segment.Speech == "" && segment.Audio == "" && segment.Visual == "" && segment.OnScreenText == "" {
 				return NormalizedTranscript{}, fmt.Errorf("normalized transcript segment %d has no multimodal content", index)
 			}
@@ -935,7 +1085,29 @@ func normalizeAndValidateTranscript(transcript NormalizedTranscript) (Normalized
 		}
 		previousEnd = segment.EndMs
 	}
-	if transcript.SchemaVersion == NormalizedTranscriptSchemaVersion {
+	if len(transcript.Words) > maxTranscriptWords {
+		return NormalizedTranscript{}, errors.New("normalized transcript words exceed the bounded limit")
+	}
+	previousWordStart := int64(-1)
+	for index := range transcript.Words {
+		word := &transcript.Words[index]
+		word.Text = strings.TrimSpace(word.Text)
+		word.Provenance = strings.ToLower(strings.TrimSpace(word.Provenance))
+		if word.Text == "" || len(word.Text) > maxTranscriptWordBytes || word.StartMs < 0 || word.EndMs <= word.StartMs || word.StartMs < previousWordStart {
+			return NormalizedTranscript{}, fmt.Errorf("normalized transcript word %d is invalid", index)
+		}
+		if word.Confidence != nil && (math.IsNaN(*word.Confidence) || math.IsInf(*word.Confidence, 0) || *word.Confidence < 0 || *word.Confidence > 1) {
+			return NormalizedTranscript{}, fmt.Errorf("normalized transcript word %d confidence is invalid", index)
+		}
+		if word.Provenance == "" || len(word.Provenance) > 128 {
+			return NormalizedTranscript{}, fmt.Errorf("normalized transcript word %d provenance is invalid", index)
+		}
+		previousWordStart = word.StartMs
+	}
+	if transcript.Metadata.DurationMs > 0 && len(transcript.Words) > 0 && transcript.Words[len(transcript.Words)-1].EndMs > transcript.Metadata.DurationMs+1000 {
+		return NormalizedTranscript{}, errors.New("normalized transcript words exceed declared duration")
+	}
+	if transcript.SchemaVersion == NormalizedTranscriptSchemaVersion || transcript.SchemaVersion == NormalizedTranscriptMultimodalLegacy {
 		for _, segment := range transcript.Segments {
 			if len(ReadableVideoSegmentText(segment)) > maxTranscriptSegmentBytes {
 				return NormalizedTranscript{}, errors.New("normalized transcript derived segment text exceeds the bounded limit")
@@ -946,13 +1118,13 @@ func normalizeAndValidateTranscript(transcript NormalizedTranscript) (Normalized
 			return NormalizedTranscript{}, errors.New("normalized transcript text is empty or exceeds the bounded limit")
 		}
 	}
-	if transcript.SchemaVersion == NormalizedTranscriptSchemaVersion && transcript.Metadata.DurationMs <= 0 {
+	if (transcript.SchemaVersion == NormalizedTranscriptSchemaVersion || transcript.SchemaVersion == NormalizedTranscriptMultimodalLegacy) && transcript.Metadata.DurationMs <= 0 {
 		return NormalizedTranscript{}, errors.New("normalized multimodal transcript requires a positive duration")
 	}
 	if transcript.Metadata.DurationMs > 0 && previousEnd > transcript.Metadata.DurationMs+1000 {
 		return NormalizedTranscript{}, errors.New("normalized transcript segments exceed declared duration")
 	}
-	if transcript.SchemaVersion == NormalizedTranscriptSchemaVersion && transcript.Metadata.ContentEmpty {
+	if (transcript.SchemaVersion == NormalizedTranscriptSchemaVersion || transcript.SchemaVersion == NormalizedTranscriptMultimodalLegacy) && transcript.Metadata.ContentEmpty {
 		if len(transcript.Segments) != 1 {
 			return NormalizedTranscript{}, errors.New("content-empty transcript must contain exactly one timeline segment")
 		}
@@ -968,8 +1140,9 @@ func normalizeAndValidateTranscript(transcript NormalizedTranscript) (Normalized
 		SchemaVersion string                        `json:"schema_version"`
 		Text          string                        `json:"text"`
 		Segments      []NormalizedTranscriptSegment `json:"segments"`
+		Words         []NormalizedTranscriptWord    `json:"words,omitempty"`
 		Metadata      NormalizedTranscriptMetadata  `json:"metadata"`
-	}{transcript.SchemaVersion, transcript.Text, transcript.Segments, transcript.Metadata}
+	}{transcript.SchemaVersion, transcript.Text, transcript.Segments, transcript.Words, transcript.Metadata}
 	payload, err := json.Marshal(content)
 	if err != nil {
 		return NormalizedTranscript{}, err
@@ -1015,6 +1188,10 @@ func normalizeV3TranscriptionMutation(input *V3SessionMutationInput) {
 	input.Transcription.ExpectedStatus = strings.ToLower(strings.TrimSpace(input.Transcription.ExpectedStatus))
 	if input.Transcription.Attachment != nil {
 		record := input.Transcription.Attachment
+		record.MediaKind = strings.ToLower(strings.TrimSpace(record.MediaKind))
+		if record.SchemaVersion == TranscriptionAttachmentLegacyVersion && record.MediaKind == "" {
+			record.MediaKind = TranscriptionMediaVideo
+		}
 		record.Ref = strings.TrimSpace(record.Ref)
 		record.AccountScopeID = strings.TrimSpace(record.AccountScopeID)
 		record.UserID = strings.TrimSpace(record.UserID)
@@ -1064,7 +1241,7 @@ func validateV3TranscriptionMutationInput(input V3SessionMutationInput) error {
 		if err := validateV3MutationEmbeddedOwnership(input, "transcription attachment", record.SessionID, record.UserID, record.AccountScopeID); err != nil {
 			return err
 		}
-		if !validOpaqueTranscriptionRef(record.Ref, "vatt_") || !validFingerprint(record.SourceFingerprint) || record.WorkspaceID == "" || record.MessageID == "" {
+		if !validOpaqueTranscriptionRef(record.Ref, "vatt_") || !validFingerprint(record.SourceFingerprint) || record.WorkspaceID == "" || record.MessageID == "" || (record.MediaKind != TranscriptionMediaVideo && record.MediaKind != TranscriptionMediaAudio) {
 			return errors.New("transcription attachment has invalid durable identity")
 		}
 	}
@@ -1097,7 +1274,7 @@ func validateJobMatchesAttachment(job TranscriptionJob, attachment Transcription
 }
 
 func equalTranscriptionAttachmentAuthority(left, right TranscriptionAttachmentRecord) bool {
-	return left.SchemaVersion == right.SchemaVersion && left.Ref == right.Ref && left.AccountScopeID == right.AccountScopeID && left.UserID == right.UserID && left.WorkspaceID == right.WorkspaceID && left.SessionID == right.SessionID && left.MessageID == right.MessageID && left.SourceRecordRef == right.SourceRecordRef && left.SourceThreadID == right.SourceThreadID && left.SourceClipID == right.SourceClipID && left.SourceFingerprint == right.SourceFingerprint && left.FingerprintVersion == right.FingerprintVersion && left.MIMEType == right.MIMEType && left.SizeBytes == right.SizeBytes
+	return left.SchemaVersion == right.SchemaVersion && left.MediaKind == right.MediaKind && left.Ref == right.Ref && left.AccountScopeID == right.AccountScopeID && left.UserID == right.UserID && left.WorkspaceID == right.WorkspaceID && left.SessionID == right.SessionID && left.MessageID == right.MessageID && left.SourceRecordRef == right.SourceRecordRef && left.SourceThreadID == right.SourceThreadID && left.SourceClipID == right.SourceClipID && left.SourceFingerprint == right.SourceFingerprint && left.FingerprintVersion == right.FingerprintVersion && left.MIMEType == right.MIMEType && left.SizeBytes == right.SizeBytes
 }
 
 func equalTranscriptionJobAuthority(left, right TranscriptionJob) bool {
@@ -1145,6 +1322,7 @@ func transcriptionWorkspaceID(session SessionSnapshot) string {
 
 func sameTranscriptionAttachmentSource(left, right TranscriptionAttachmentRecord) bool {
 	return left.Ref == right.Ref &&
+		left.MediaKind == right.MediaKind &&
 		left.AccountScopeID == right.AccountScopeID &&
 		left.UserID == right.UserID &&
 		left.WorkspaceID == right.WorkspaceID &&

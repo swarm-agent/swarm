@@ -102,6 +102,58 @@ func TestTranscriptionContractBindsTrustedSourceAndFailsClosedAcrossScope(t *tes
 	}
 }
 
+func TestAudioTranscriptionBindsRegisteredSourceAndRevalidatesOpen(t *testing.T) {
+	_, sessions, session, message := setupTranscriptionContractTest(t)
+	root := t.TempDir()
+	path := filepath.Join(root, "speech.wav")
+	payload := append([]byte("RIFF\x24\x00\x00\x00WAVEfmt "), make([]byte, 64)...)
+	if err := os.WriteFile(path, payload, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source, err := sessions.PutAudioSourceRecord(AudioSourceRecord{AccountScopeID: session.AccountScopeID, WorkspaceID: "workspace", RootPath: root, RelativePath: "speech.wav", DisplayName: "speech.wav", MIMEType: "audio/wav", SizeBytes: info.Size(), ModifiedAt: info.ModTime().UnixMilli()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	attachment, replayed, err := sessions.BindAudioTranscriptionAttachment(BindAudioTranscriptionAttachmentInput{AccountScopeID: session.AccountScopeID, UserID: session.UserID, SessionID: session.ID, MessageID: message.ID, AudioSourceRef: source.Ref, ClientRequestID: "bind-audio", NowUnixMs: 100})
+	if err != nil || replayed || attachment.MediaKind != TranscriptionMediaAudio || attachment.SourceRecordRef != source.Ref {
+		t.Fatalf("attachment=%+v replayed=%v err=%v", attachment, replayed, err)
+	}
+	file, err := sessions.OpenTranscriptionAttachmentSource(session.AccountScopeID, session.ID, attachment.Ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = file.Close()
+	if err := os.WriteFile(path, append(payload, 1), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sessions.OpenTranscriptionAttachmentSource(session.AccountScopeID, session.ID, attachment.Ref); err == nil {
+		t.Fatal("expected changed audio source rejection")
+	}
+}
+
+func TestNormalizedTranscriptWordTimingIsStableAndBounded(t *testing.T) {
+	confidence := .91
+	transcript := NormalizedTranscript{SchemaVersion: NormalizedTranscriptSchemaVersion, Ref: "transcript_" + transcriptionDigest("words"), JobRef: "trjob_" + transcriptionDigest("words-job"), AccountScopeID: "account", WorkspaceID: "workspace", SessionID: "session", MessageID: "message", AttachmentRef: "vatt_" + transcriptionDigest("words-att"), SourceFingerprint: transcriptionDigest("words-source"), ModelGenerated: true, Segments: []NormalizedTranscriptSegment{{StartMs: 0, EndMs: 1000, Speech: "hello world"}}, Words: []NormalizedTranscriptWord{{Text: "hello", StartMs: 10, EndMs: 250, Confidence: &confidence, Provenance: "google-stt"}, {Text: "world", StartMs: 300, EndMs: 700, Provenance: "google-stt"}}, Metadata: NormalizedTranscriptMetadata{DurationMs: 1000, ProviderID: "google", Model: "stt", ModelSnapshot: "snapshot", MediaSettingsHash: "settings"}, Validation: TranscriptValidation{State: TranscriptValidationValidated, ValidatedAt: 1}, CreatedAt: 1}
+	normalized, err := normalizeAndValidateTranscript(transcript)
+	if err != nil || len(normalized.Words) != 2 || normalized.Words[0].StartMs != 10 {
+		t.Fatalf("normalized=%+v err=%v", normalized, err)
+	}
+	digest := normalized.ContentDigest
+	normalizedAgain, err := normalizeAndValidateTranscript(normalized)
+	if err != nil || normalizedAgain.ContentDigest != digest {
+		t.Fatalf("digest=%s normalized=%+v err=%v", digest, normalizedAgain, err)
+	}
+	bad := transcript
+	bad.Words = []NormalizedTranscriptWord{{Text: "bad", StartMs: 900, EndMs: 800, Provenance: "provider"}}
+	if _, err := normalizeAndValidateTranscript(bad); err == nil {
+		t.Fatal("expected invalid word timing rejection")
+	}
+}
+
 func TestTranscriptionReadyRequiresDurableValidatedReadBack(t *testing.T) {
 	_, sessions, session, message := setupTranscriptionContractTest(t)
 	attachment, _, err := sessions.BindVideoTranscriptionAttachment(BindVideoTranscriptionAttachmentInput{
