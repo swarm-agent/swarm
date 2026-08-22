@@ -4,245 +4,132 @@ Date: 2026-08-22
 
 ## Executive answer
 
-**Partially.** Swarm has a working, AI-accessible pipeline for creating HTML animation artifacts, freezing declared HTML states into managed PNG stills, arranging those stills or existing videos in a durable video project, reviewing AI-proposed changes, and rendering an MP4.
+**Implemented for the reviewed baseline.** Swarm can create deterministic HTML animation artifacts, export them as silent managed MP4 clips, register trusted local audio sources, transcribe and analyze selected audio, propose audio-only soundtrack edits against an exact video-project revision, preview pending soundtrack changes in Video Studio, and render accepted visuals and audio to MP4.
 
-Swarm **does not yet have the end-to-end flow** implied by:
-
-> “Take this song and overlay it onto the video while we keep building the animated music video.”
-
-The render engine can preserve and mix audio already embedded in accepted video inputs, including layered tracks, but there is no first-class song/audio source, upload/attachment flow, audio-only timeline clip, AI tool contract, or Video Studio music controls. HTML is converted to **stable stills**, not recorded as a continuously animated video clip.
+The user-authority boundaries remain unchanged: AI can propose soundtrack and visual edits, but only the user can accept a proposal or start final rendering. Direct chat audio uploads, fades, looping, ducking, and automatic beat-synced editing remain outside this baseline.
 
 ## Capability matrix
 
 | Desired capability | Status | Current behavior |
 | --- | --- | --- |
-| AI creates animated HTML artifacts | Implemented | Managed artifacts support animation profiles for CSS/WAAPI/SVG, pinned Three.js, imported vector playback, and final MP4 playback. |
-| Convert HTML artifact into video input | Implemented | `export_html_stills` captures 1–16 stable PNG states; the separate `export_html_animation` path samples a bounded deterministic `swarm.animation/v1` timeline and publishes a silent managed MP4. |
-| AI makes a visual video plan from those outputs | Implemented | Exact ready PNG references can be used directly as `manage_video` plan-part visuals. Plans are durable pending review objects. |
-| Assemble stills and video clips, captions, transitions | Implemented | Timeline supports source videos, managed artifacts, synthetic color/text, captions, tracks/layers, and a bounded transition set. |
-| Render reviewed timeline to MP4 | Implemented | FFmpeg render jobs create managed `video/mp4` output; Desktop can start, preview, and export it. |
-| Preserve audio from source videos | Implemented | Renderer probes input media for audio and includes existing audio streams. |
-| Mix audio from layered video clips | Implemented, basic | Delayed secondary-track audio is combined with `amix`; primary cuts concatenate audio and dissolve transitions use `acrossfade`. |
-| Add a supplied MP3/WAV/M4A as a soundtrack | Missing | Source browser accepts video extensions only; timeline source kinds have no audio-only source. |
-| AI command to overlay a selected song | Missing | `manage_video` accepts video references and image visuals, not an exact audio reference or soundtrack operation. |
-| Music volume, fade, loop, ducking, beat sync | Mostly missing | Per-clip volume/mute is rendered. `VideoAudioPolicy` declares master volume and ducking fields, but the renderer does not consume the policy. No envelopes, fades, loop, beat markers, or tempo analysis exist. |
-| Preview/edit music in Video Studio | Missing | Frontend wire types expose clip volume/mute, but current Video Tool has no soundtrack lane, audio picker, waveform, mixer, or volume controls. |
+| AI creates animated HTML artifacts | Implemented | Managed artifacts support reviewed animation profiles for CSS/WAAPI/SVG, pinned Three.js, and licensed vector playback. |
+| Convert HTML artifact into video input | Implemented | `export_html_stills` captures stable PNG states; `export_html_animation` samples a bounded deterministic `swarm.animation/v1` timeline and publishes a silent managed MP4. |
+| Assemble and render visuals | Implemented | Durable projects support exact managed artifacts, source videos, stills, text, captions, tracks, layers, and reviewed transitions. |
+| Add MP3/WAV/M4A and other supported audio | Implemented for registered sources | Registered source-media folders expose supported audio through opaque exact references. Direct chat audio upload remains deferred. |
+| AI command to overlay selected audio | Implemented | `manage_video` accepts exact audio references and typed add/update/replace/remove `source_audio` clip proposals against an exact base revision. |
+| Preview/edit music in Video Studio | Implemented baseline | Video Studio provides a trusted-audio picker, soundtrack lane, pending-proposal preview, placement/trim, gain/mute, replacement, and removal. |
+| Speech transcription and timing | Implemented | Registered audio can be transcribed with bounded word timing and durable normalized transcript evidence. |
+| Waveform and music analysis | Implemented baseline | Deterministic PCM analysis provides bounded levels, onsets, tempo, beat timestamps, and energy sections when confidence permits. |
+| Fades, looping, ducking, and automatic beat sync | Deferred | Clip gain/mute and timeline master volume/mute are rendered; advanced envelopes and automatic edits are not part of this contract. |
 
-## What is implemented
+## Implemented contracts
 
-### 1. Managed animated artifacts
+### Deterministic HTML animation capture
 
-Swarm has explicit animation profiles in `swarmd/internal/artifact/animation_profile.go`:
+`swarm.animation/v1` is the time-based companion to stable `swarm.capture/v1` still capture. A compatible exact ready HTML artifact:
 
-- `motion_ui` — native CSS, WAAPI, SVG;
-- `spatial_3d` — pinned Three.js/WebGL;
-- `vector_playback` — imported dotLottie/Rive playback;
-- `final_render` — MP4 playback.
+1. declares bounded `duration_ms` and `fps` in `#swarm-animation-manifest`;
+2. installs `globalThis.__SWARM_ANIMATION_V1__` before `DOMContentLoaded`;
+3. returns exact metadata from `ready()` and stable timestamp state from `seek(timeMs)`;
+4. is sampled only at renderer-selected timestamps in trusted Chrome;
+5. is encoded as a silent managed H.264 MP4 with exact source lineage.
 
-These profiles govern artifact preview/runtime safety and budgets. They do not themselves render animation into a new MP4.
-
-### 2. HTML-to-video-still bridge
-
-The normalized `swarm.capture/v1` flow is implemented and documented in `docs/checkpoints/html-video-still-capture-contract.md`.
-
-A compatible ready HTML artifact or HTML package:
-
-1. declares 1–16 states in `#swarm-capture-manifest`;
-2. implements `globalThis.__SWARM_CAPTURE_V1__.select(stateId)` and `.ready(stateId)`;
-3. is passed by exact managed reference to `manage_artifact` action `export_html_stills`;
-4. is rendered in trusted Chrome at 1920×1080;
-5. produces one immutable managed PNG per declared state.
-
-The renderer deliberately disables/cancels animation and verifies two identical pixel samples. This is a **state-to-still** contract. It explicitly says HTML does not become a video clip.
+The renderer owns dimensions, timing, browser, encoder, frame limits, and network isolation. HTML audio is blocked. The resulting exact managed MP4 can be used as a visible video timeline clip while a separate `source_audio` clip supplies the soundtrack.
 
 Relevant implementation:
 
-- `swarmd/internal/tool/runtime_manage_artifact_capture.go`
-- `swarmd/internal/htmlcapture/renderer.go`
-- `docs/checkpoints/html-video-still-capture-contract.md`
+- `swarmd/internal/htmlcapture/animation.go`
+- `swarmd/internal/tool/runtime_manage_artifact_animation.go`
+- `swarmd/internal/videorender/html_animation_soundtrack_integration_test.go`
+- `docs/checkpoints/html-video-animation-capture-contract.md`
 
-### 3. AI visual planning and review
+### Trusted registered audio
 
-`manage_video` supports:
+Source-media browsing recognizes reviewed audio extensions and validates media content before returning it. The browser returns an opaque `audiosrc_…` reference plus display name, media type, bounded size, source fingerprint, and fingerprint version; host paths are not returned through the AI tool contract.
 
-- source discovery and video transcription;
-- project creation and immutable revisions;
-- atomic visual plans where every part has one exact ready image;
-- typed timeline edit proposals;
-- proposal status and accepted-cut inspection;
-- render-setting recommendations.
-
-The expected initial workflow is:
-
-1. `create_project` without an initial timeline;
-2. use its exact `project_id` and `revision_id`;
-3. `propose_plan` with `plan.kind=initial` and one ready image per part;
-4. user reviews and accepts the proposal through the Video Studio/API boundary;
-5. user explicitly starts the final render.
-
-AI cannot accept its own proposal or start the final Video Studio render. That is an intentional user-authority boundary.
+Exact references are revalidated against the authenticated workspace, registered root, file metadata, fingerprint, and supported media type before transcription, analysis, project edits, media reads, or rendering. A changed or moved source fails stale or unavailable rather than silently reading different bytes.
 
 Relevant implementation:
 
+- `swarmd/internal/videosource/service.go`
+- `swarmd/internal/store/pebble/session_audio_source_store.go`
+- `swarmd/internal/api/audio_transcription.go`
+- `docs/checkpoints/trusted-audio-source-manual-check.md`
+
+### Audio transcription and deterministic analysis
+
+Registered audio transcription uses a private bounded preparation step. Semantic speech and non-speech output is normalized onto the source millisecond playhead. Separately, deterministic 16 kHz mono PCM is the timing authority for:
+
+- bounded waveform RMS and peak levels;
+- onset events;
+- tempo and beat timestamps when confidence is sufficient;
+- conservative energy sections.
+
+Analysis snapshots are durable, workspace-scoped, fingerprint-bound, immutable, and exposed through bounded range reads. Provider payloads, raw PCM, private storage paths, and unbounded arrays are not returned.
+
+Relevant implementation:
+
+- `swarmd/internal/videotranscription/audio_analysis.go`
+- `swarmd/internal/videotranscription/service.go`
+- `swarmd/internal/store/pebble/audio_analysis_store.go`
 - `swarmd/internal/tool/runtime_manage_video.go`
+
+### Reviewed soundtrack proposals
+
+The durable timeline supports invisible `source_audio` clips carrying one complete exact audio reference. Validation requires coherent source and timeline ranges, a bounded gain, no visual captions, and no arbitrary source path or artifact substitution.
+
+AI-safe edit operations are the existing typed `add_clip`, `update_clip`, `replace_clip`, and `remove_clip` operations. Every proposal includes affected ranges and an exact base revision. Proposals remain pending until user acceptance; AI cannot accept a proposal or start final rendering.
+
+Video Studio provides:
+
+- a registered-audio picker;
+- a dedicated soundtrack lane;
+- pending-proposal preview while the accepted revision remains unchanged;
+- start, trim, gain, mute, replace, and remove controls.
+
+Relevant implementation:
+
 - `swarmd/internal/store/pebble/session_video_project_store.go`
+- `swarmd/internal/videoproject/service.go`
+- `swarmd/internal/tool/runtime_manage_video.go`
 - `swarmd/internal/api/sessions_v3_video_projects.go`
-- `web/src/features/desktop/tools/video-studio/video-studio-surface.tsx`
+- `web/src/features/desktop/tools/pages/video-tool-page.tsx`
+- `docs/checkpoints/video-studio-soundtrack-manual-walkthrough.md`
 
-### 4. Video timeline and FFmpeg render
+### Deterministic final rendering
 
-The durable timeline supports:
+Audio-only inputs are materialized without requiring a video stream. The FFmpeg plan trims and normalizes audio, applies clip gain/mute, delays soundtrack placement onto the project timeline, mixes it with accepted source-video audio, and applies timeline master volume/mute before producing H.264/AAC MP4.
 
-- `source_video`, `managed_artifact`, `color`, and `text` clip source kinds;
-- exact managed artifact references;
-- tracks/layers, timeline placement, source trimming, volume and mute;
-- captions;
-- cut, crossfade, and fade-through/to/from-black transitions;
-- bounded 1–60 FPS and common landscape/portrait/square presets.
-
-The FFmpeg builder:
-
-- loops still images for clip duration;
-- scales and pads media;
-- trims video/audio;
-- applies per-input volume;
-- concatenates or crossfades primary audio;
-- delays and `amix`es audio from layered clips;
-- outputs H.264/AAC MP4.
+The integration test exercises deterministic HTML animation capture, a local generated audio fixture, audio-only timeline materialization, and final video-plus-audio output. Test media remains temporary and is not committed.
 
 Relevant implementation:
 
 - `swarmd/internal/videorender/builder.go`
 - `swarmd/internal/videorender/service.go`
-- `swarmd/internal/videoproject/service.go`
-- `web/src/features/desktop/tools/pages/video-tool-page.tsx`
+- `swarmd/internal/videorender/html_animation_soundtrack_integration_test.go`
 
-## Why the requested song-overlay flow does not work yet
+## Current limits
 
-### Gap 1: no audio source authority
+- Audio files must come from registered source-media folders; direct audio chat attachments are not supported.
+- HTML-originated audio is blocked; soundtracks use a separate exact audio source.
+- Soundtrack fades, envelopes, looping/fill, ducking, loudness normalization, and limiting are not implemented.
+- Video Studio does not yet show a waveform or advanced mixer.
+- Deterministic onset/tempo/beat evidence is readable, but automatic beat-snapped edits are not implemented.
+- `swarm.animation/v1` requires stable random-access rendering through `seek(timeMs)` and is capped by the trusted renderer's fixed duration, FPS, and frame limits.
 
-`videosource.Service` only indexes video containers with these extensions:
+## Reviewed end-to-end flow
 
-- AVI, M4V, MKV, MOV, MP4, MPEG/MPG, WebM.
-
-There is no authenticated audio source catalog for MP3, WAV, M4A/AAC, FLAC, or OGG and no audio attachment contract comparable to video attachments.
-
-Result: a user cannot select “this song” as an exact trusted source for the video project.
-
-### Gap 2: no audio-only timeline clip
-
-The timeline has no `source_audio`/`managed_audio` source kind. Its validated source kinds are video, managed artifact, color, and text. Render materialization initializes every visible clip as video, and FFmpeg expects a video stream for every input before it processes audio.
-
-The `MaterializedInput.IsAudio` field exists but is unused. An audio-only file would currently fail because the builder constructs `[N:v]` for every input.
-
-Result: a song cannot occupy a dedicated music track while image/video clips continue to define the visuals.
-
-### Gap 3: no AI soundtrack operation
-
-`manage_video` has no fields or actions for:
-
-- audio refs;
-- add/replace/remove soundtrack;
-- soundtrack start offset or trim range;
-- looping to timeline duration;
-- music gain/fade envelopes;
-- ducking beneath narration;
-- beat/tempo analysis or sync.
-
-Generic `add_clip` could only express this after the durable timeline gains an audio source kind and trusted exact-reference resolver.
-
-### Gap 4: declared audio policy is not executed
-
-`VideoAudioPolicy` contains:
-
-- `master_volume`;
-- `muted`;
-- `duck_other_tracks`;
-- `ducking_level`.
-
-Search of the render implementation shows these fields are not consumed. Only the clip-level `Volume` and `Muted` fields affect FFmpeg today.
-
-Result: the schema suggests more control than the renderer actually delivers. This should either be implemented end-to-end or narrowed until it is real.
-
-### Gap 5: no music editing UI or preview
-
-The Video Tool wire type includes `volume` and `muted`, but timeline creation hard-codes volume to `1.0`, and the visible editor provides no music/audio picker, audio lane, waveform, mute/solo, gain, trim, fade, or ducking controls.
-
-Result: even renderer-supported per-clip gain is not a usable music workflow in Video Studio.
-
-### Gap 6: HTML animation is not captured over time
-
-The HTML capture contract enforces reduced motion, cancels animation, and exports stable frames. This is correct for reliable storyboard slides, but it cannot produce a continuous animated sequence.
-
-Result: an “animated music video” can currently be approximated with multiple declared still states, image durations, captions, and crossfades. It cannot preserve authored CSS/WAAPI/Three.js animation timing as moving video.
-
-## Recommended implementation order
-
-### P0 — first-class soundtrack overlay
-
-This is the minimum required to support the exact target request.
-
-1. **Create audio source authority**
-   - Register trusted workspace audio folders/files with opaque references and fingerprints.
-   - Support a reviewed allowlist such as MP3, WAV, M4A/AAC, FLAC, and OGG.
-   - Add triggering-message audio attachments if upload/chat attachment is required.
-
-2. **Extend the durable timeline**
-   - Add `source_audio` (and optionally exact managed audio artifact) source kinds.
-   - Define audio clip source range, timeline range, track, gain, mute, and loop behavior.
-   - Validate audio clips independently from visible video clips.
-
-3. **Extend render materialization and FFmpeg planning**
-   - Do not require `[N:v]` for audio-only inputs.
-   - Delay/trim/pad/loop music to the accepted timeline range.
-   - Mix it with source video audio using deterministic gain rules.
-   - Apply timeline master volume/mute and make `VideoAudioPolicy` real.
-
-4. **Add AI-safe soundtrack operations**
-   - Exact audio reference only; no arbitrary paths.
-   - Typed add/replace/remove/update operations with affected ranges.
-   - AI proposes; user reviews/accepts; user starts final render.
-
-5. **Add Video Studio controls**
-   - Music picker, dedicated audio lane, start/trim/end, volume, mute, fade in/out, and preview.
-
-After P0, the sentence “take this song and overlay it onto the video while we work” should create a pending soundtrack edit against the current exact revision, while visual work continues as later proposals.
-
-### P1 — practical launch-video mixing
-
-- narration-vs-music ducking with explicit threshold/attack/release or a simpler deterministic sidechain policy;
-- volume envelopes and fades;
-- loop/crop/fill-to-project-duration options;
-- waveform thumbnails and scrub-synchronized audio preview;
-- loudness normalization and peak limiting with documented targets;
-- tests proving preview/export/render use the same accepted audio policy.
-
-### P2 — real HTML animation-to-video (implemented)
-
-The separate `swarm.animation/v1` / `export_html_animation` contract is documented in `docs/checkpoints/html-video-animation-capture-contract.md`. It accepts an exact ready HTML/package source with a reviewed animation profile, uses a renderer-controlled deterministic clock under fixed duration/FPS/frame limits, blocks external network and HTML audio, publishes a managed `video/mp4` with exact source lineage, and feeds the existing timeline as a managed artifact clip.
-
-The still-capture action remains unchanged: stable storyboard capture and time-based animation capture are separate, auditable operations.
-
-### P3 — music-video intelligence
-
-- beat, onset, bar, tempo, and section analysis stored as durable evidence;
-- snap cuts/keyframes/transitions to musical markers;
-- lyric/transcript alignment where licensed and user-supplied;
-- AI proposals that cite exact music ranges and preserve user review boundaries.
-
-## Target future flow
-
-A complete product flow should be:
-
-1. User supplies or selects a song from an authenticated audio source.
-2. Swarm creates/loads the Video Studio project and exact current revision.
-3. AI proposes an `add_audio_clip` soundtrack operation with exact source, range, gain, loop/fill, and fade settings.
-4. The working preview plays the song under the current visual cut without changing the accepted revision.
-5. User accepts the soundtrack proposal.
-6. AI and the user continue making HTML/still/video visual iterations against later exact revisions.
-7. Optional beat analysis provides durable markers for animation timing and cuts.
-8. User explicitly starts the final MP4 render.
+1. Register or select a trusted source-media folder containing licensed audio.
+2. Browse it through Video Studio or `manage_video` and retain the complete exact audio reference.
+3. Optionally start transcription and inspect bounded transcript/audio-analysis evidence.
+4. Create or load a video project and read its exact current revision.
+5. Export compatible HTML motion through `export_html_animation` or use other accepted visual sources.
+6. Propose an exact `source_audio` add/update/replace/remove operation against the base revision.
+7. Preview the pending soundtrack in Video Studio while the accepted revision remains unchanged.
+8. User accepts the proposal.
+9. Continue visual or soundtrack iterations against later exact revisions.
+10. User explicitly starts the final render.
 
 ## Conclusion
 
-Swarm already has the durable project/revision/proposal/render foundation and the HTML-to-still visual bridge needed for an AI-assisted launch-video workflow. The missing product boundary is **first-class audio media and audio-only timeline editing**. Implement that before deeper music intelligence. Separately, add a deterministic HTML-animation-to-MP4 contract if the launch video must preserve authored animation rather than use storyboard states and transitions.
+Swarm now has the reviewed baseline needed to combine deterministic authored HTML motion with trusted local audio under durable project, exact-reference, proposal, and user-acceptance boundaries. Future work should focus on direct persistent audio ingestion, advanced mixing, waveform UX, and optional analysis-driven edit proposals without weakening those authorities.

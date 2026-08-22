@@ -12,6 +12,9 @@ Release entries are the source checkpoint for public docs verification. Each ent
 - Added Git-aware workspace controls, worktree integration improvements, AI commit commands, and final handoff links to public pull requests.
 - Added account-scoped model favorites and richer model controls, including complete catalog pagination, provider service-tier metadata, and current Google Gemini thinking support.
 - Added first-run onboarding support for accepting initial provider credentials.
+- Added deterministic `swarm.animation/v1` HTML animation capture that publishes silent managed MP4 artifacts with exact source lineage.
+- Added trusted registered audio sources, durable speech transcription, and bounded deterministic waveform, onset, tempo, beat, and energy-section analysis.
+- Added reviewed Video Studio soundtrack editing with exact `source_audio` clips, typed pending proposals, accepted-cut preview, and deterministic audio/video rendering.
 
 ### Changed
 
@@ -24,6 +27,7 @@ Release entries are the source checkpoint for public docs verification. Each ent
 - Changed worktree-name conflict retries to use random five-digit identifiers.
 - Hid the redundant `Automatic` plan execution badge while keeping the `Review each` policy indicator visible.
 - Refreshed the release candidate metadata to validate the updated in-app update workflow.
+- Improved Desktop sidebar responsiveness and Video Studio timeline ordering, rendering efficiency, and editing performance.
 
 ### Fixed
 
@@ -54,7 +58,8 @@ Release entries are the source checkpoint for public docs verification. Each ent
 - Public provider docs must not list Copilot as currently supported or runnable.
 - Public command docs should describe `/voice` as experimental terminal voice input only, not as a fully supported voice product.
 - Public TUI workspace guidance should explain that `/workspace save` saves and switches to an unsaved Git launch directory.
-- Docs impact: none for the Tailscale host-update authorization correction or plan execution badge cleanup.
+- Public video documentation should cover deterministic HTML animation export, trusted registered audio sources, transcription and deterministic audio analysis, reviewed soundtrack proposals, and the current no-fades/no-looping/no-ducking limits.
+- Docs impact: none for the Tailscale host-update authorization correction, plan execution badge cleanup, or Desktop sidebar responsiveness refinements.
 
 ## v0.1.19 - 2026-05-01
 
