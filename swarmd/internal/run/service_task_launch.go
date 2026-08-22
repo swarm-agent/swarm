@@ -53,6 +53,7 @@ type taskCallArguments struct {
 	ProgramID            string
 	PlannedProgram       bool
 	Launches             []taskLaunchSpec
+	SourceArtifact       *pebblestore.SessionArtifactSelectionReference
 	SourceArguments      map[string]any
 }
 
@@ -139,6 +140,7 @@ type taskLaunchSpec struct {
 	OutputMode            string
 	OutputRequirements    *pebblestore.SessionArtifactOutputRequirements
 	AnimationProfile      *pebblestore.SessionArtifactAnimationProfile
+	SourceArtifact        *pebblestore.SessionArtifactSelectionReference
 	DependencyEvidence    string
 	StreamKey             string
 	SwarmMode             bool
@@ -272,6 +274,7 @@ type taskLaunchManifestRow struct {
 	OutputMode            string                                         `json:"output_mode,omitempty"`
 	OutputRequirements    *pebblestore.SessionArtifactOutputRequirements `json:"output_requirements,omitempty"`
 	AnimationProfile      *pebblestore.SessionArtifactAnimationProfile   `json:"animation_profile,omitempty"`
+	SourceArtifact        *pebblestore.SessionArtifactSelectionReference `json:"source_artifact,omitempty"`
 	DependencyEvidence    string                                         `json:"dependency_evidence,omitempty"`
 	SubagentProvider      string                                         `json:"subagent_provider,omitempty"`
 	SubagentModel         string                                         `json:"subagent_model,omitempty"`
@@ -383,10 +386,6 @@ func parseTaskCallArguments(arguments string) (taskCallArguments, error) {
 	if (hasProgram || action == taskProgramActionStatus) && mode != taskModeRegular {
 		return taskCallArguments{}, errors.New("task program lifecycle supports only mode=regular")
 	}
-	if _, supplied := args["source_artifact"]; supplied && mode != taskModeSwarm {
-		return taskCallArguments{}, errors.New("task source_artifact is supported only for Designer or direct image Iteration Swarms")
-	}
-
 	parseLaunchSpec := func(raw map[string]any, label string) (taskLaunchSpec, error) {
 		if err := rejectTaskLaunchTrustFields(raw, label); err != nil {
 			return taskLaunchSpec{}, err
@@ -501,7 +500,7 @@ func parseTaskCallArguments(arguments string) (taskCallArguments, error) {
 		}
 		return taskCallArguments{
 			Action: action, Description: description, Prompt: prompt, Mode: mode,
-			Swarm: swarm, Launches: launches, SourceArguments: args,
+			Swarm: swarm, Launches: launches, SourceArtifact: cloneTaskImageSourceArtifact(swarm.SourceArtifact), SourceArguments: args,
 		}, nil
 	}
 
@@ -557,6 +556,23 @@ func parseTaskCallArguments(arguments string) (taskCallArguments, error) {
 	if err := validateTaskDesignerScopes(launches); err != nil {
 		return taskCallArguments{}, err
 	}
+	var sourceArtifact *pebblestore.SessionArtifactSelectionReference
+	if rawSourceArtifact, supplied := args["source_artifact"]; supplied {
+		if rawSourceArtifact == nil {
+			return taskCallArguments{}, errors.New("task source_artifact must be an exact ready artifact reference object")
+		}
+		sourceArtifact, err = parseTaskImageSourceArtifact(rawSourceArtifact)
+		if err != nil {
+			return taskCallArguments{}, err
+		}
+		for i := range launches {
+			if !agentruntime.IsDesignerAgentName(launches[i].RequestedSubagentType) || launches[i].OutputMode != taskOutputModeManaged {
+				return taskCallArguments{}, errors.New("task regular source_artifact requires every launch to be a managed Designer")
+			}
+			launches[i].SourceArtifact = cloneTaskImageSourceArtifact(sourceArtifact)
+		}
+		args["source_artifact"] = cloneTaskImageSourceArtifact(sourceArtifact)
+	}
 
 	return taskCallArguments{
 		Action:          action,
@@ -564,6 +580,7 @@ func parseTaskCallArguments(arguments string) (taskCallArguments, error) {
 		Prompt:          prompt,
 		Mode:            mode,
 		Launches:        launches,
+		SourceArtifact:  cloneTaskImageSourceArtifact(sourceArtifact),
 		SourceArguments: args,
 	}, nil
 }
@@ -1085,7 +1102,7 @@ func parseTaskSwarmArguments(args map[string]any, prompt, description string) (*
 			Deliverable: outputContract, ConcurrencyReason: "Independent Iteration Swarm alternative", OutputMode: outputMode, OutputRequirements: cloneTaskOutputRequirements(outputRequirements), AnimationProfile: cloneTaskAnimationProfile(animationProfile),
 			DependencyEvidence: "The shared parent brief is complete before this task swarm wave starts.",
 			StreamKey:          fmt.Sprintf("swarm:%d", index), SwarmMode: true, SwarmStrategy: strategy,
-			SourceArguments: sourceArguments,
+			SourceArtifact: cloneTaskImageSourceArtifact(sourceArtifact), SourceArguments: sourceArguments,
 		}
 		applyCanonicalCoderOwnedScope(&launches[i])
 	}
@@ -3016,6 +3033,9 @@ func parseApprovedTaskLaunchManifest(approved string, launchSpecs []taskLaunchSp
 		if !reflect.DeepEqual(row.AnimationProfile, launchSpecs[i].AnimationProfile) {
 			return taskLaunchManifest{}, fmt.Errorf("approved task manifest launch %d animation profile mismatch", i)
 		}
+		if !equalTaskImageSourceArtifact(row.SourceArtifact, launchSpecs[i].SourceArtifact) {
+			return taskLaunchManifest{}, fmt.Errorf("approved task manifest launch %d source artifact mismatch", i)
+		}
 		if row.SourceArguments != nil {
 			row.SourceArguments = cloneGenericMap(row.SourceArguments)
 			if launchSpecs[i].OutputRequirements != nil {
@@ -3233,6 +3253,7 @@ func (s *Service) buildTaskLaunchPermissionPayload(sessionID, sessionMode string
 			OutputMode:            strings.TrimSpace(launch.OutputMode),
 			OutputRequirements:    cloneTaskOutputRequirements(launch.OutputRequirements),
 			AnimationProfile:      cloneTaskAnimationProfile(launch.AnimationProfile),
+			SourceArtifact:        cloneTaskImageSourceArtifact(launch.SourceArtifact),
 			DependencyEvidence:    strings.TrimSpace(launch.DependencyEvidence),
 			SubagentProvider:      strings.TrimSpace(preference.Provider),
 			SubagentModel:         strings.TrimSpace(preference.Model),

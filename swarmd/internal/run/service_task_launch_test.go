@@ -222,6 +222,40 @@ func TestParseTaskCallArgumentsSupportsCompiledTaskAgentsAndAppliesCanonicalCode
 	}
 }
 
+func TestParseTaskCallArgumentsRegularManagedDesignerAcceptsExactSourceArtifact(t *testing.T) {
+	source := map[string]any{"session_id": "source-session", "collection_id": "source-collection", "variant_id": "source-variant", "event_seq": 9}
+	parsed, err := parseTaskCallArguments(mustJSON(t, map[string]any{
+		"mode":            "regular",
+		"prompt":          "refine the selected artifact",
+		"source_artifact": source,
+		"launches": []any{
+			map[string]any{"subagent_type": "designer", "meta_prompt": "create the focused managed revision"},
+		},
+	}))
+	if err != nil {
+		t.Fatalf("parse regular managed Designer source artifact: %v", err)
+	}
+	want := &pebblestore.SessionArtifactSelectionReference{SessionID: "source-session", CollectionID: "source-collection", VariantID: "source-variant", EventSeq: 9}
+	if !equalTaskImageSourceArtifact(parsed.SourceArtifact, want) || len(parsed.Launches) != 1 || !equalTaskImageSourceArtifact(parsed.Launches[0].SourceArtifact, want) {
+		t.Fatalf("regular managed Designer source artifact = parsed %#v launch %#v", parsed.SourceArtifact, parsed.Launches)
+	}
+	if parsed.Launches[0].OutputMode != taskOutputModeManaged {
+		t.Fatalf("regular Designer output mode = %q", parsed.Launches[0].OutputMode)
+	}
+}
+
+func TestParseTaskCallArgumentsRegularSourceArtifactRejectsUnsupportedLaunches(t *testing.T) {
+	tests := []map[string]any{
+		{"prompt": "inspect", "source_artifact": map[string]any{"session_id": "s", "collection_id": "c", "variant_id": "v", "event_seq": 1}, "subagent_type": "finder", "meta_prompt": "inspect"},
+		{"prompt": "edit", "source_artifact": map[string]any{"session_id": "s", "collection_id": "c", "variant_id": "v", "event_seq": 1}, "subagent_type": "designer", "meta_prompt": "edit", "output_mode": "workspace", "owned_scope": []any{"design.html"}},
+	}
+	for _, args := range tests {
+		if _, err := parseTaskCallArguments(mustJSON(t, args)); err == nil || !strings.Contains(err.Error(), "requires every launch to be a managed Designer") {
+			t.Fatalf("unsupported regular source-artifact launch error = %v", err)
+		}
+	}
+}
+
 func TestParseTaskCallArgumentsDefaultsDesignerToManagedOutput(t *testing.T) {
 	parsed, err := parseTaskCallArguments(mustJSON(t, map[string]any{
 		"prompt": "create two variants",

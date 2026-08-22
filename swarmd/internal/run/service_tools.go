@@ -4016,10 +4016,7 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 		}
 	}
 
-	var sourceArtifact *pebblestore.SessionArtifactSelectionReference
-	if parsed.Swarm != nil {
-		sourceArtifact = cloneTaskImageSourceArtifact(parsed.Swarm.SourceArtifact)
-	}
+	sourceArtifact := cloneTaskImageSourceArtifact(parsed.SourceArtifact)
 	if sourceArtifact != nil {
 		if s.tools == nil || s.tools.ArtifactAuthority() == nil {
 			return "", errors.New("task source_artifact requires the authenticated artifact authority")
@@ -4178,7 +4175,7 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 			IntegrationContract:  strings.TrimSpace(spec.IntegrationContract),
 			IntegrationRequired:  strings.EqualFold(strings.TrimSpace(spec.SwarmStrategy), taskSwarmStrategyAssembly),
 			ArtifactRunContext:   managedArtifactContext,
-			SourceArtifact:       cloneTaskImageSourceArtifact(sourceArtifact),
+			SourceArtifact:       cloneTaskImageSourceArtifact(spec.SourceArtifact),
 			LogicalTaskID:        taskCallID + ":" + fmt.Sprint(i+1),
 			TaskCallID:           taskCallID,
 			ParentRunID:          req.RunID,
