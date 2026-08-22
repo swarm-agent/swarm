@@ -1,12 +1,13 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { VIDEO_TRANSITION_KINDS, loadLatestVideoEditProposals, proposedVideoPlanClipDetails, rejectVideoEditProposal, selectedVideoProposalChangeIDs, transitionLabel, videoPlanPartMessageSelection, videoPlanTransitionMessageSelection, videoProposalFocusClipId, videoProposalProjectionSequence, type VideoEditProposalWire } from '../video-studio/video-studio-surface'
+import { VIDEO_TRANSITION_KINDS, buildVideoIterationTimeline, loadLatestVideoEditProposals, proposedVideoPlanClipDetails, rejectVideoEditProposal, renderedVideoArtifactUrl, selectedVideoProposalChangeIDs, transitionLabel, videoPlanPartMessageSelection, videoPlanTransitionMessageSelection, videoProposalFocusClipId, videoProposalProjectionSequence, type VideoEditProposalWire } from '../video-studio/video-studio-surface'
 
 import {
   acceptedVideoPlan,
   applyPendingVideoProposal,
   createAdditionalVideoProject,
+  defaultRenderedVideoExportPath,
   preferredVisibleVideoProject,
   createVideoThread,
   ensurePrimaryVideoProject,
@@ -75,6 +76,14 @@ const videoStudioSelfRoute: WorkspaceOverviewTopologyRoute = {
   createdAt: 1,
   updatedAt: 1,
 }
+
+test('Video Studio builds the canonical rendered artifact URL', () => {
+  assert.equal(renderedVideoArtifactUrl('session/a', { output_artifact: { collection_id: 'collection', variant_id: 'variant/b' } }), '/v3/sessions/session%2Fa/artifacts/variant%2Fb')
+})
+
+test('Video Studio provides a workspace-local default MP4 export path', () => {
+  assert.equal(defaultRenderedVideoExportPath('/workspace/video/', 'Swarm Onboarding!', 11), '/workspace/video/exports/swarm-onboarding-r11.mp4')
+})
 
 test('Video Studio replaces cached image media when a stable clip source changes', () => {
   const first = { src: '', decoding: 'auto' } as unknown as HTMLImageElement
@@ -752,7 +761,50 @@ test('projectTimelineToTimelineSegments resolves durable source refs back to Vid
   assert.equal(segment.src, '/v1/workspace/video/threads/session-1/clips/media?clip_id=clip-local-id')
 })
 
-test('Video Studio keeps all changed sections by default and restores unchecked sections', () => {
+test('Video Studio nests stable changed parts beneath their parent and candidate iteration identity', () => {
+  const proposal = {
+    id: 'change-1', project_id: 'project-1', base_revision_id: 'revision-1', base_revision_number: 1,
+    accepted_revision_id: 'revision-2', status: 'accepted', operations: [], created_at: 20, updated_at: 21,
+    title: 'Tighten the launch story',
+    plan: {
+      kind: 'revision',
+      parts: [
+        { id: 'hook', title: 'Hook', duration_ms: 1000, visual: { session_id: 'session-1', collection_id: 'slides', variant_id: 'hook-2', event_seq: 8 } },
+        { id: 'close', title: 'Close', duration_ms: 2000 },
+      ],
+    },
+  } satisfies VideoEditProposalWire
+
+  const [iteration] = buildVideoIterationTimeline([proposal], [{
+    id: 'revision-2', revision_number: 2, parent_revision_id: 'revision-1', origin_proposal_id: 'change-1', change_summary: 'Accepted selected launch changes', created_at: 22,
+  }])
+
+  assert.equal(iteration.id, 'proposal:change-1')
+  assert.equal(iteration.parentRevisionId, 'revision-1')
+  assert.equal(iteration.candidateRevisionId, 'revision-2')
+  assert.equal(iteration.candidateRevisionNumber, 2)
+  assert.deepEqual(iteration.changes.map((change) => ({ id: change.id, clipId: change.clipId, range: [change.startMs, change.endMs] })), [
+    { id: 'hook', clipId: 'hook', range: [0, 1000] },
+    { id: 'close', clipId: 'close', range: [1000, 3000] },
+  ])
+  assert.equal(iteration.changes[0].artifact?.variant_id, 'hook-2')
+})
+
+test('Video Studio shows only selectively accepted changes inside accepted iterations', () => {
+  const proposal = {
+    id: 'change-1', project_id: 'project-1', base_revision_id: 'revision-1', base_revision_number: 1,
+    accepted_revision_id: 'revision-2', accepted_operation_ids: ['hook'], status: 'accepted', operations: [], created_at: 20, updated_at: 21,
+    plan: { kind: 'revision', parts: [{ id: 'hook', title: 'Hook', duration_ms: 1000 }, { id: 'close', title: 'Close', duration_ms: 2000 }] },
+  } satisfies VideoEditProposalWire
+
+  const [iteration] = buildVideoIterationTimeline([proposal], [{
+    id: 'revision-2', revision_number: 2, parent_revision_id: 'revision-1', origin_proposal_id: 'change-1', created_at: 22,
+  }])
+
+  assert.deepEqual(iteration.changes.map((change) => change.id), ['hook'])
+})
+
+test('Video Studio keeps all changed sections enabled by default and omits disabled changes from selective confirmation', () => {
   const proposal = {
     id: 'change-1', project_id: 'project-1', base_revision_id: 'revision-1', base_revision_number: 1,
     status: 'pending', operations: [], created_at: 1, updated_at: 1,

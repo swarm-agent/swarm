@@ -248,6 +248,32 @@ func TestBuildFFmpegCommandLineTransitions(t *testing.T) {
 	}
 }
 
+func TestBuildFFmpegCommandLineOrdersPrimaryClipsByTimelinePosition(t *testing.T) {
+	timeline := pebblestore.VideoProjectTimeline{
+		TotalDurationMs: 6000,
+		Transitions: []pebblestore.VideoTimelineTransition{
+			{ID: "one-to-two", Kind: pebblestore.VideoTransitionKindCut, FromClipID: "one", ToClipID: "two"},
+			{ID: "two-to-three", Kind: pebblestore.VideoTransitionKindCut, FromClipID: "two", ToClipID: "three"},
+		},
+	}
+	inputs := []MaterializedInput{
+		{Index: 0, ClipID: "one", FilePath: "one.mp4", DurationMs: 1000, TimelineStartMs: 0, TimelineEndMs: 1000},
+		{Index: 1, ClipID: "three", FilePath: "three.mp4", DurationMs: 3000, TimelineStartMs: 3000, TimelineEndMs: 6000},
+		{Index: 2, ClipID: "two", FilePath: "two.mp4", DurationMs: 2000, TimelineStartMs: 1000, TimelineEndMs: 3000},
+	}
+
+	plan, err := BuildFFmpegCommandLine(timeline, inputs, "output.mp4")
+	if err != nil {
+		t.Fatalf("BuildFFmpegCommandLine() error = %v", err)
+	}
+	if !strings.Contains(plan.FilterComplex, "[v0][v2]concat=n=2:v=1:a=0[v_join_2]") {
+		t.Fatalf("first timeline boundary was not rendered first: %s", plan.FilterComplex)
+	}
+	if !strings.Contains(plan.FilterComplex, "[v_join_2][v1]concat=n=2:v=1:a=0[v_join_1]") {
+		t.Fatalf("second timeline boundary was not rendered second: %s", plan.FilterComplex)
+	}
+}
+
 func TestBuildFFmpegCommandLinePlacesLayeredClipAtRequestedTimelineRange(t *testing.T) {
 	timeline := pebblestore.VideoProjectTimeline{
 		TotalDurationMs: 20000,

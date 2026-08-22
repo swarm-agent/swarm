@@ -70,6 +70,31 @@ func (r *osCommandRunner) RunCommand(ctx context.Context, name string, args ...s
 	return stdout.Bytes(), nil
 }
 
+func (r *osCommandRunner) probeAudioStream(ctx context.Context, filePath string) (bool, error) {
+	var stdout bytes.Buffer
+	stderr := &boundedBuffer{remaining: DefaultCommandErrorLimit}
+	cmd := exec.CommandContext(ctx, "ffprobe",
+		"-v", "error",
+		"-select_streams", "a",
+		"-show_entries", "stream=index",
+		"-of", "csv=p=0",
+		filePath,
+	)
+	cmd.Stdout = &stdout
+	cmd.Stderr = stderr
+	if err := cmd.Run(); err != nil {
+		if ctx.Err() != nil {
+			return false, ctx.Err()
+		}
+		detail := strings.TrimSpace(stderr.String())
+		if detail == "" {
+			return false, errors.New("ffprobe failed")
+		}
+		return false, fmt.Errorf("ffprobe failed: %s", detail)
+	}
+	return strings.TrimSpace(stdout.String()) != "", nil
+}
+
 type boundedBuffer struct {
 	mu        sync.Mutex
 	buffer    bytes.Buffer
@@ -515,7 +540,6 @@ func (s *Service) materializeTimelineInputs(ctx context.Context, principal ident
 			TimelineEndMs:   clip.TimelineEndMs,
 			Captions:        clip.Captions,
 			IsVideo:         true,
-			HasAudio:        true,
 		}
 
 		switch clip.SourceKind {
@@ -561,6 +585,10 @@ func (s *Service) materializeTimelineInputs(ctx context.Context, principal ident
 			}
 			srcFile.Close()
 			input.FilePath = destPath
+			input.HasAudio, err = probeInputHasAudio(ctx, s.runner, destPath)
+			if err != nil {
+				return nil, fmt.Errorf("probe source clip %d audio streams: %w", i, err)
+			}
 
 		case pebblestore.VideoClipSourceKindManagedArtifact:
 			var targetRef *pebblestore.SessionArtifactSelectionReference
@@ -611,6 +639,11 @@ func (s *Service) materializeTimelineInputs(ctx context.Context, principal ident
 				input.IsImage = true
 				input.IsVideo = false
 				input.HasAudio = false
+			} else {
+				input.HasAudio, err = probeInputHasAudio(ctx, s.runner, destPath)
+				if err != nil {
+					return nil, fmt.Errorf("probe artifact clip %d audio streams: %w", i, err)
+				}
 			}
 
 		case pebblestore.VideoClipSourceKindColor:
@@ -665,6 +698,31 @@ func (s *Service) materializeTimelineInputs(ctx context.Context, principal ident
 	}
 
 	return inputs, nil
+}
+
+func probeInputHasAudio(ctx context.Context, runner CommandRunner, filePath string) (bool, error) {
+	if runner == nil {
+		return false, errors.New("video command runner is not configured")
+	}
+	if _, err := runner.LookPath("ffprobe"); err != nil {
+		return false, fmt.Errorf("ffprobe is required to inspect input streams: %w", err)
+	}
+	if prober, ok := runner.(interface {
+		probeAudioStream(context.Context, string) (bool, error)
+	}); ok {
+		return prober.probeAudioStream(ctx, filePath)
+	}
+	output, err := runner.RunCommand(ctx, "ffprobe",
+		"-v", "error",
+		"-select_streams", "a",
+		"-show_entries", "stream=index",
+		"-of", "csv=p=0",
+		filePath,
+	)
+	if err != nil {
+		return false, err
+	}
+	return strings.TrimSpace(string(output)) != "", nil
 }
 
 // StartRenderJob starts a tracked background render. Callers that own service

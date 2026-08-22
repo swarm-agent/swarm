@@ -16,7 +16,7 @@ import { buildDesktopChatRouteOptions, getDesktopSessionCreateTarget, type Deskt
 import type { WorkspaceBrowseResult, WorkspaceEntry } from '../../../workspaces/launcher/types/workspace'
 import type { WorkspaceOverviewSwarmTarget } from '../../../workspaces/launcher/types/workspace-overview'
 import { SwarmToolSidebar } from '../components/swarm-tool-sidebar'
-import { VIDEO_TRANSITION_KINDS, VideoProposalReview, VideoSessionAISidecar, renderedVideoArtifactUrl, requestVideoRenderCancellation, transitionLabel, videoPlanPartMessageSelection, videoPlanTransitionMessageSelection, videoProposalFocusClipId, videoProposalProjectionSequence, type VideoEditProposalWire, type VideoPlanProposalWire, type VideoStepEditAction, type VideoTransitionKind, type VideoTransitionWire } from '../video-studio/video-studio-surface'
+import { VIDEO_TRANSITION_KINDS, VideoIterationSidebar, VideoSessionAISidecar, renderedVideoArtifactUrl, requestVideoRenderCancellation, transitionLabel, videoPlanPartMessageSelection, videoPlanTransitionMessageSelection, videoProposalProjectionSequence, type VideoEditProposalWire, type VideoIterationComposerContext, type VideoPlanProposalWire, type VideoStepEditAction, type VideoTransitionKind, type VideoTransitionWire } from '../video-studio/video-studio-surface'
 import { useDesktopV3CacheSelector } from '../../state/desktop-v3-cache-store'
 
 export type VideoClip = {
@@ -151,6 +151,12 @@ export function acceptedVideoPlan(timeline: VideoProjectTimelineWire): VideoPlan
   const parts = plan.parts.filter((part) => part && typeof part.id === 'string' && typeof part.title === 'string' && typeof part.duration_ms === 'number' && Boolean(part.visual?.session_id && part.visual.collection_id && part.visual.variant_id && part.visual.event_seq))
   const kind = plan.kind === 'revision' ? 'revision' : 'initial'
   return parts.length > 0 ? { kind, summary: typeof plan.summary === 'string' ? plan.summary : undefined, parts } : null
+}
+
+export function defaultRenderedVideoExportPath(workspacePath: string, title: string, revisionNumber: number): string {
+  const safeTitle = title.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'video'
+  const root = workspacePath.replace(/\/+$/, '')
+  return root ? `${root}/exports/${safeTitle}-r${Math.max(1, revisionNumber)}.mp4` : ''
 }
 
 export function preferredVisibleVideoProject(projects: VideoProjectSnapshotWire[]): VideoProjectSnapshotWire | undefined {
@@ -394,10 +400,6 @@ function formatFolderLabel(path: string): string {
 function videoSessionTitle(folderPath: string): string {
   const label = formatFolderLabel(folderPath)
   return label ? `Video: ${label}` : 'Video Session'
-}
-
-function threadFolderPath(thread: VideoThreadRecord | null): string {
-  return thread?.videoFolders[0] || thread?.workspacePath || ''
 }
 
 function formatStartedAt(value: number): string {
@@ -1156,13 +1158,14 @@ export function VideoToolPage() {
   const [composerDraftRequest, setComposerDraftRequest] = useState<{ id: number; draft: string } | undefined>()
   const [studioArtifactSelectionRequest, setStudioArtifactSelectionRequest] = useState<ReturnType<typeof videoPlanPartMessageSelection> | null>(null)
   const [studioArtifactReviewPortalTarget, setStudioArtifactReviewPortalTarget] = useState<HTMLDivElement | null>(null)
-  const [studioComposerContext, setStudioComposerContext] = useState<{ revisionId: string; anchorClipId: string; label: string; playheadMs: number; selectionKind: 'visual' | 'transition'; transition: VideoTransitionWire | null } | null>(null)
+  const [studioComposerContext, setStudioComposerContext] = useState<{ revisionId: string; anchorClipId: string; label: string; playheadMs: number; selectionKind: 'visual' | 'transition' | 'iteration'; transition: VideoTransitionWire | null; iteration?: VideoIterationComposerContext } | null>(null)
   const [revealingStorage, setRevealingStorage] = useState(false)
   const [rendering, setRendering] = useState(false)
   const [renderJob, setRenderJob] = useState<VideoRenderJobSnapshotWire | null>(null)
   const [renderProgress, setRenderProgress] = useState(0)
   const [renderError, setRenderError] = useState<string | null>(null)
   const [exportPath, setExportPath] = useState('')
+  const [exportedPath, setExportedPath] = useState('')
   const [exporting, setExporting] = useState(false)
   const [blackModeEnabled, setBlackModeEnabled] = useState(() => {
     if (typeof window === 'undefined') {
@@ -1248,7 +1251,6 @@ export function VideoToolPage() {
   }, [selectedThreadId, videoThreads])
 
   const selectedClips = useMemo(() => orderedClips(selectedThread), [selectedThread])
-  const selectedFolderPath = threadFolderPath(selectedThread)
   const legacyTimelineSegments = useMemo(() => buildTimelineSegments(selectedThread, selectedClips, clipDurations), [clipDurations, selectedClips, selectedThread])
   const previewRevision = useMemo(() => projectRevisions.find((revision) => revision.id === previewRevisionId) ?? null, [previewRevisionId, projectRevisions])
   const previewRevisionIndex = previewRevision ? projectRevisions.findIndex((revision) => revision.id === previewRevision.id) : -1
@@ -1712,8 +1714,11 @@ export function VideoToolPage() {
     if (!selectedThread || !videoProject || !renderJob || renderJob.status !== 'ready' || !exportPath.trim()) return
     setExporting(true)
     setRenderError(null)
+    setExportedPath('')
     try {
-      await exportRenderedVideo(selectedThread.id, videoProject.id, exportPath.trim(), renderJob.id)
+      const exported = await exportRenderedVideo(selectedThread.id, videoProject.id, exportPath.trim(), renderJob.id)
+      setExportPath(exported.destination_path)
+      setExportedPath(exported.destination_path)
     } catch (error) {
       setRenderError(error instanceof Error ? error.message : String(error))
     } finally {
@@ -1737,6 +1742,10 @@ export function VideoToolPage() {
           if (updated.status === 'ready' || updated.status === 'failed' || updated.status === 'cancelled') {
             window.clearInterval(pollInterval)
             setRendering(false)
+            if (updated.status === 'ready') {
+              setExportPath((current) => current.trim() || defaultRenderedVideoExportPath(selectedWorkspacePath, videoProject.title || selectedThread.title, updated.revision_number))
+              setExportedPath('')
+            }
             if (updated.status === 'failed') {
               setRenderError(updated.failure_reason || updated.failure_code || 'Render failed')
             }
@@ -1750,7 +1759,7 @@ export function VideoToolPage() {
       setRenderError(error instanceof Error ? error.message : String(error))
       setRendering(false)
     }
-  }, [selectedThread, videoProject])
+  }, [selectedThread, selectedWorkspacePath, videoProject])
 
   const handleOpenPicker = useCallback(() => {
     setCreateError(null)
@@ -1946,7 +1955,7 @@ export function VideoToolPage() {
     await persistTimelineSegments(next)
   }, [persistTimelineSegments, timelineSegments])
 
-  const handlePreviewRevision = useCallback((revisionId: string) => {
+  const handlePreviewRevision = useCallback((revisionId: string | null) => {
     setPreviewRevisionId(revisionId)
     setPlayhead(0)
   }, [])
@@ -2003,13 +2012,8 @@ export function VideoToolPage() {
   const handlePendingProposalChange = useCallback((proposal: VideoEditProposalWire | null, selectedChangeIds: string[]) => {
     setPendingProposal(proposal)
     setPendingSelectedChangeIds(selectedChangeIds)
-    if (!proposal) return
-    setPreviewRevisionId(null)
-    const clipId = videoProposalFocusClipId(proposal)
-    const operation = [...proposal.operations].reverse().find((candidate) => String(candidate.clip?.id ?? candidate.clip_id ?? candidate.transition?.to_clip_id ?? '').trim() === clipId)
-    const playheadMs = typeof operation?.clip?.timeline_start_ms === 'number' ? operation.clip.timeline_start_ms : proposal.affected_ranges?.[0]?.start_ms ?? 0
-    if (clipId) handleFocusStep(clipId, playheadMs)
-  }, [handleFocusStep])
+    if (proposal) setPreviewRevisionId(null)
+  }, [])
 
   const handleRequestStepEdit = useCallback((action: VideoStepEditAction, segment: TimelineLayoutSegment) => {
     if (!videoProject || !currentRevision) return
@@ -2114,8 +2118,11 @@ export function VideoToolPage() {
         ) : null}
 
         <main className="flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-contain lg:flex-row lg:overflow-hidden">
-          <div className="hidden lg:contents">
+          <div className="contents">
             <SwarmToolSidebar
+              layoutClassName="flex max-h-[48dvh] min-h-0 w-full shrink-0 flex-col overflow-hidden border-b border-[var(--app-border)] px-3 py-2 font-mono text-[12px] text-[var(--app-text-muted)] lg:mr-5 lg:max-h-none lg:w-[300px] lg:flex-none lg:border-b-0 lg:border-r lg:px-0 lg:py-5 lg:pl-3 lg:pr-4"
+              childrenClassName="mt-3 min-h-0 flex-1 overflow-y-auto"
+              compactSelectedSession={Boolean(selectedThread)}
               backLabel={routeWorkspaceSlug ? 'Workspace' : 'Launcher'}
               onBack={handleBackToWorkspace}
               darkModeEnabled={blackModeEnabled}
@@ -2166,8 +2173,8 @@ export function VideoToolPage() {
               ]}
             >
               {selectedThread ? (
-                <div className="mt-4 min-h-0 flex-1 overflow-y-auto">
-                  <p className="mb-2 px-2 text-[10px] uppercase tracking-[0.18em] text-[var(--app-text-subtle)]">Videos in this session</p>
+                <div className="min-h-0">
+                  <p className="mb-2 px-2 text-[10px] uppercase tracking-[0.18em] text-[var(--app-text-subtle)]">Video workspace</p>
                   <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-2 px-2">
                     <select
                       value={selectedProjectId ?? ''}
@@ -2182,42 +2189,18 @@ export function VideoToolPage() {
                       {creatingProject ? <Loader2 size={12} className="animate-spin" /> : '+'} Video
                     </Button>
                   </div>
-                  <p className="mb-2 mt-4 px-2 text-[10px] uppercase tracking-[0.18em] text-[var(--app-text-subtle)]">Current movie</p>
-                  <div className="border border-[var(--app-border)] bg-[var(--app-bg)] p-3">
-                    <h2 className="truncate text-sm font-semibold text-[var(--app-text)]">{videoProject?.title || selectedThread.title || 'Video project'}</h2>
-                    <p className="mt-2 break-all text-[11px] leading-5 text-[var(--app-text-subtle)]">{selectedFolderPath || 'No source folder yet'}</p>
-                    <div className="mt-4 grid grid-cols-2 gap-2 text-[11px]">
-                      <div className="border border-[var(--app-border)] bg-[var(--app-surface)] p-2"><div className="text-[10px] uppercase text-[var(--app-text-subtle)]">Length</div><div className="mt-1 tabular-nums text-[var(--app-text)]">{formatTimelineTime(movieDuration)}</div></div>
-                      <div className="border border-[var(--app-border)] bg-[var(--app-surface)] p-2"><div className="text-[10px] uppercase text-[var(--app-text-subtle)]">Revision</div><div className="mt-1 text-[var(--app-text)]">{projectLoading ? 'Loading…' : currentRevision ? `r${currentRevision.revision_number}` : 'Unsaved'}</div></div>
+                  <div className="mt-3 flex items-start justify-between gap-2 border border-[var(--app-border)] bg-[var(--app-bg)] p-2">
+                    <div className="min-w-0">
+                      <p className="truncate text-[11px] font-medium text-[var(--app-text)]">{videoProject?.title || selectedThread.title || 'Video project'}</p>
+                      <p className="mt-1 truncate text-[9px] text-[var(--app-text-subtle)]">{formatTimelineTime(movieDuration)} · {projectLoading ? 'loading revision' : currentRevision ? `r${currentRevision.revision_number}` : 'unsaved'}</p>
                     </div>
-                    <Button variant="outline" className="mt-3 h-8 w-full rounded-xl px-3 text-xs" onClick={() => void handleRevealVideoStorage()} disabled={revealingStorage}>
-                      <FolderOpen size={13} />{revealingStorage ? 'Opening…' : 'Show stored files'}
-                    </Button>
+                    <button type="button" className="shrink-0 p-1 text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]" onClick={() => void handleRevealVideoStorage()} disabled={revealingStorage} aria-label="Show stored files" title="Show stored files"><FolderOpen size={13} /></button>
                   </div>
 
-                  {projectRevisions.length > 0 ? (
-                    <>
-                      <p className="mb-2 mt-4 px-2 text-[10px] uppercase tracking-[0.18em] text-[var(--app-text-subtle)]">Revision history</p>
-                      <div className="flex max-h-40 flex-col gap-1 overflow-y-auto">
-                        {projectRevisions.map((revision) => {
-                          const current = revision.id === currentRevision?.id
-                          const kept = revision.id === keptRevision?.id
-                          const previewing = revision.id === previewRevisionId
-                          return (
-                            <button key={revision.id} type="button" onClick={() => current ? setPreviewRevisionId(null) : handlePreviewRevision(revision.id)} className={`flex items-center gap-2 px-2 py-1.5 text-left text-[11px] hover:bg-[var(--app-surface-hover)] ${previewing ? 'bg-amber-950/30 text-amber-200' : current ? 'bg-[var(--app-surface-active)] text-[var(--app-text)]' : 'text-[var(--app-text-muted)]'}`}>
-                              <Play size={11} />
-                              <span className="min-w-0 flex-1 truncate">r{revision.revision_number} · {revision.change_summary || 'Timeline revision'}</span>
-                              {previewing ? <span className="text-[10px] text-amber-300">preview</span> : kept ? <span className="text-[10px] text-[var(--app-primary)]">kept</span> : current ? <span className="text-[10px] text-amber-300">working</span> : null}
-                            </button>
-                          )
-                        })}
-                      </div>
-                      {previewRevision ? <div className="mt-2 grid gap-2 px-2"><p className="text-[10px] text-amber-300">Previewing r{previewRevision.revision_number}; your kept version is still r{keptRevision?.revision_number}.</p><div className="grid grid-cols-2 gap-2"><Button variant="outline" className="h-7 px-2 text-[10px]" disabled={previewRevisionIndex <= 0} onClick={() => handlePreviewRevision(projectRevisions[previewRevisionIndex - 1].id)}>Previous</Button><Button variant="outline" className="h-7 px-2 text-[10px]" disabled={previewRevisionIndex < 0 || previewRevisionIndex >= projectRevisions.length - 1} onClick={() => handlePreviewRevision(projectRevisions[previewRevisionIndex + 1].id)}>Next</Button></div><Button variant="outline" className="h-7 px-2 text-[10px]" onClick={() => setPreviewRevisionId(null)}>Return to kept version</Button><Button className="h-7 px-2 text-[10px]" disabled={Boolean(restoringRevisionId)} onClick={() => void handleRestoreRevision(previewRevision.id)}>{restoringRevisionId === previewRevision.id ? <Loader2 size={11} className="animate-spin" /> : <RotateCcw size={11} />}Restore this as a new version</Button></div> : null}
-                      {currentRevision?.restored_from_revision_id ? <p className="mt-2 px-2 text-[10px] text-[var(--app-primary)]">This kept version was restored forward from an earlier revision.</p> : null}
-                    </>
-                  ) : null}
+                  {videoProject && currentRevision ? <VideoIterationSidebar key={`${videoProject.id}:${aiRefreshKey}`} sessionId={selectedThread.id} projectId={videoProject.id} currentRevisionId={currentRevision.id} revisions={projectRevisions} onAccepted={refreshSelectedVideoProject} onFeedback={(message) => setComposerDraftRequest({ id: Date.now(), draft: message })} onPreviewProposal={handlePendingProposalChange} onPreviewRevision={handlePreviewRevision} onFocusChange={handleFocusStep} onAttachChange={(context) => { setStudioComposerContext({ revisionId: context.candidateRevisionId || context.parentRevisionId || currentRevision.id, anchorClipId: context.anchorClipId, label: context.label, playheadMs: context.startMs, selectionKind: 'iteration', transition: null, iteration: context }); setStudioArtifactSelectionRequest(context.artifact ? { session_id: context.artifact.session_id, collection_id: context.artifact.collection_id, variant_id: context.artifact.variant_id, event_seq: context.artifact.event_seq, label: context.artifact.label || context.label, description: context.artifact.description, action: 'select' } : null) }} /> : null}
+                  {previewRevision ? <div className="mt-2 grid gap-2 px-2"><p className="text-[10px] text-amber-300">Previewing r{previewRevision.revision_number}; kept r{keptRevision?.revision_number} is unchanged.</p><div className="grid grid-cols-2 gap-2"><Button variant="outline" className="h-7 px-2 text-[10px]" disabled={previewRevisionIndex <= 0} onClick={() => handlePreviewRevision(projectRevisions[previewRevisionIndex - 1].id)}>Previous</Button><Button variant="outline" className="h-7 px-2 text-[10px]" disabled={previewRevisionIndex < 0 || previewRevisionIndex >= projectRevisions.length - 1} onClick={() => handlePreviewRevision(projectRevisions[previewRevisionIndex + 1].id)}>Next</Button></div><Button variant="outline" className="h-7 px-2 text-[10px]" onClick={() => setPreviewRevisionId(null)}>Return to kept version</Button><Button className="h-7 px-2 text-[10px]" disabled={Boolean(restoringRevisionId)} onClick={() => void handleRestoreRevision(previewRevision.id)}>{restoringRevisionId === previewRevision.id ? <Loader2 size={11} className="animate-spin" /> : <RotateCcw size={11} />}Restore as new version</Button></div> : null}
 
-                  <p className="mb-2 mt-4 px-2 text-[10px] uppercase tracking-[0.18em] text-[var(--app-text-subtle)]">Sources</p>
+                  <p className="mb-2 mt-3 px-2 text-[10px] uppercase tracking-[0.18em] text-[var(--app-text-subtle)]">Sources</p>
                   <div className="flex flex-col gap-1">
                     {timelineSegments.length === 0 ? <div className="px-2 py-3 text-[11px] text-[var(--app-text-subtle)]">No clips yet.</div> : timelineSegments.map((segment, index) => {
                       const clip = selectedClips.find((candidate) => candidate.id === segment.clipId)
@@ -2289,8 +2272,10 @@ export function VideoToolPage() {
                 </div>
                 {renderJob?.status === 'ready' ? (
                   <div className="mb-3 grid gap-2 border border-[var(--app-border)] bg-[var(--app-surface)] p-3">
-                    {renderedVideoArtifactUrl(selectedThread.id, renderJob) ? <video controls className="max-h-72 w-full bg-black" src={renderedVideoArtifactUrl(selectedThread.id, renderJob)} /> : <p className="text-xs text-[var(--app-text-muted)]">Rendered artifact is ready; use Export MP4 to copy it to a workspace path.</p>}
-                    <div className="flex gap-2"><input className="h-8 min-w-0 flex-1 border border-[var(--app-border)] bg-[var(--app-bg)] px-2 text-xs" value={exportPath} onChange={(event) => setExportPath(event.target.value)} placeholder="Absolute destination path for MP4" /><Button variant="outline" className="h-8 px-3 text-xs" disabled={exporting || !exportPath.trim()} onClick={() => void handleExportRender()}>{exporting ? <Loader2 size={13} className="animate-spin" /> : <Download size={13} />}Export MP4</Button></div>
+                    {renderedVideoArtifactUrl(selectedThread.id, renderJob) ? <video controls preload="metadata" className="max-h-72 w-full bg-black" src={renderedVideoArtifactUrl(selectedThread.id, renderJob)} /> : <p className="text-xs text-[var(--app-text-muted)]">Rendered artifact is ready, but its exact output reference is unavailable.</p>}
+                    <p className="text-[11px] text-[var(--app-text-muted)]">The finished render is already stored as a managed video artifact. Export copies it into this workspace:</p>
+                    <div className="flex gap-2"><input aria-label="MP4 export destination" className="h-8 min-w-0 flex-1 border border-[var(--app-border)] bg-[var(--app-bg)] px-2 text-xs" value={exportPath} onChange={(event) => { setExportPath(event.target.value); setExportedPath('') }} placeholder="Workspace destination for MP4" /><Button className="h-8 px-3 text-xs" disabled={exporting || !exportPath.trim()} onClick={() => void handleExportRender()}>{exporting ? <Loader2 size={13} className="animate-spin" /> : <Download size={13} />}Export MP4</Button></div>
+                    {exportedPath ? <p className="break-all text-[11px] text-emerald-400">Exported MP4 to {exportedPath}</p> : null}
                   </div>
                 ) : null}
                 {renderError ? (
@@ -2344,14 +2329,6 @@ export function VideoToolPage() {
                 </div>
               </section>
 
-              {acceptedPlan ? (
-                <section className="mt-6 border border-[var(--app-border)] bg-[var(--app-surface)] p-4" aria-label="Kept video plan">
-                  <div className="mb-4 flex items-start justify-between gap-4"><div><div className="flex items-center gap-2"><Sparkles size={16} className="text-[var(--app-primary)]" /><h2 className="text-sm font-semibold text-[var(--app-text)]">Kept video plan</h2></div><p className="mt-1 text-xs text-[var(--app-text-muted)]">This is the confirmed checkpoint. New AI changes can build on the visible working revision before you confirm again.</p></div><span className="shrink-0 border border-[var(--app-primary)] px-2 py-1 text-[10px] uppercase tracking-[0.14em] text-[var(--app-primary)]">Kept</span></div>
-                  {acceptedPlan.summary ? <p className="mb-3 text-xs leading-5 text-[var(--app-text-muted)]">{acceptedPlan.summary}</p> : null}
-                  <ol className="grid gap-3 xl:grid-cols-2">{acceptedPlan.parts.map((part, index) => <li key={part.id} className="border border-[var(--app-border)] bg-[var(--app-bg)] p-4"><div className="flex items-center justify-between"><span className="text-[10px] uppercase tracking-[0.14em] text-[var(--app-primary)]">Part {index + 1}</span><span className="font-mono text-[10px] text-[var(--app-text-subtle)]">{part.id}</span></div><h3 className="mt-2 text-sm font-semibold text-[var(--app-text)]">{part.title}</h3><p className="mt-2 text-xs leading-5 text-[var(--app-text-muted)]">{part.narration || part.on_screen_text || part.visual_direction || 'Ready for source and timing work.'}</p></li>)}</ol>
-                </section>
-              ) : null}
-
               {currentRevision?.timeline.clips?.some((clip) => clip.source_kind === 'text') ? (
                 <section className="mt-6 border border-[var(--app-border)] bg-[var(--app-surface)] p-4" aria-label="Still production plan">
                   <div className="mb-4 flex items-start justify-between gap-4">
@@ -2379,8 +2356,6 @@ export function VideoToolPage() {
                 </section>
               ) : null}
 
-              {videoProject && currentRevision ? <VideoProposalReview key={`${currentRevision.id}:${aiRefreshKey}`} sessionId={selectedThread.id} projectId={videoProject.id} currentRevisionId={currentRevision.id} acceptedPlan={acceptedPlan} acceptedClips={(confirmedRevision ?? currentRevision).timeline.clips} onAccepted={refreshSelectedVideoProject} onPendingChange={handlePendingProposalChange} onFocusStep={handleFocusStep} onFeedback={(message) => { setComposerDraftRequest({ id: Date.now(), draft: message }) }} /> : null}
-
               <section className="mt-6">
                 <div className="mb-3 flex items-center justify-between gap-3"><div className="flex items-center gap-2"><ListVideo size={16} className="text-[var(--app-primary)]" /><h2 className="text-sm font-semibold text-[var(--app-text)]">Playlist sources</h2></div>{reordering ? <span className="text-xs text-[var(--app-text-subtle)]">Saving…</span> : null}</div>
                 <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
@@ -2400,7 +2375,7 @@ export function VideoToolPage() {
               </>
               )}
             </section>
-            {selectedThread ? <VideoSessionAISidecar key={selectedThread.id} sessionId={selectedThread.id} projectId={videoProject?.id} revisionId={studioComposerContext?.revisionId ?? currentRevision?.id} anchorClipId={studioComposerContext?.anchorClipId ?? activeSegment?.id} playheadMs={studioComposerContext?.playheadMs ?? playhead * 1000} selectionKind={studioComposerContext?.selectionKind} transition={studioComposerContext?.transition} routeOptions={selectedSessionRoute ? [selectedSessionRoute] : []} draftRequest={composerDraftRequest} artifactSelectionRequest={studioArtifactSelectionRequest} artifactReviewPortalTarget={studioArtifactReviewPortalTarget} contextChip={studioComposerContext ? { id: `${studioComposerContext.selectionKind}:${studioComposerContext.revisionId}:${studioComposerContext.anchorClipId}:${studioComposerContext.transition?.id ?? ''}`, label: studioComposerContext.selectionKind === 'transition' ? `Transition · ${studioComposerContext.label}` : studioComposerContext.label, kind: studioComposerContext.selectionKind, description: studioComposerContext.transition ? `${studioComposerContext.transition.kind}; ${studioComposerContext.transition.duration_ms ?? 0}ms` : `Stable part ${studioComposerContext.anchorClipId}` } : null} onContextChipRemove={() => setStudioComposerContext(null)} onArtifactSelectionRequestHandled={() => setStudioArtifactSelectionRequest(null)} onActivity={() => { setStudioComposerContext(null); setAIRefreshKey((value) => value + 1); void refreshSelectedVideoProject().catch(() => undefined) }} /> : null}
+            {selectedThread ? <VideoSessionAISidecar key={selectedThread.id} sessionId={selectedThread.id} projectId={videoProject?.id} revisionId={studioComposerContext?.revisionId ?? currentRevision?.id} anchorClipId={studioComposerContext?.anchorClipId ?? activeSegment?.id} playheadMs={studioComposerContext?.playheadMs ?? playhead * 1000} selectionKind={studioComposerContext?.selectionKind} transition={studioComposerContext?.transition} iterationContext={studioComposerContext?.iteration} routeOptions={selectedSessionRoute ? [selectedSessionRoute] : []} draftRequest={composerDraftRequest} artifactSelectionRequest={studioArtifactSelectionRequest} artifactReviewPortalTarget={studioArtifactReviewPortalTarget} contextChip={studioComposerContext ? { id: `${studioComposerContext.selectionKind}:${studioComposerContext.revisionId}:${studioComposerContext.anchorClipId}:${studioComposerContext.iteration?.changeId ?? studioComposerContext.transition?.id ?? ''}`, label: studioComposerContext.selectionKind === 'transition' ? `Transition · ${studioComposerContext.label}` : studioComposerContext.label, kind: studioComposerContext.selectionKind, description: studioComposerContext.iteration ? `Iteration ${studioComposerContext.iteration.proposalId} · change ${studioComposerContext.iteration.changeId} · ${studioComposerContext.iteration.startMs}–${studioComposerContext.iteration.endMs}ms` : studioComposerContext.transition ? `${studioComposerContext.transition.kind}; ${studioComposerContext.transition.duration_ms ?? 0}ms` : `Stable part ${studioComposerContext.anchorClipId}` } : null} onContextChipRemove={() => setStudioComposerContext(null)} onArtifactSelectionRequestHandled={() => setStudioArtifactSelectionRequest(null)} onActivity={() => { setStudioComposerContext(null); setAIRefreshKey((value) => value + 1); void refreshSelectedVideoProject().catch(() => undefined) }} /> : null}
           </main>
 
       {pickerOpen ? (

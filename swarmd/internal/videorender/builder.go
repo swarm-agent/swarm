@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -137,6 +138,12 @@ func BuildFFmpegCommandLine(timeline pebblestore.VideoProjectTimeline, inputs []
 	if len(primaryInputIndexes) == 0 {
 		return nil, errors.New("video render requires at least one visible primary-track clip")
 	}
+	// Materialization follows the durable clip slice, but edit proposals may append
+	// a clip whose timeline position belongs between existing clips. Render and
+	// transition adjacency must follow the timeline, not mutation/storage order.
+	sort.SliceStable(primaryInputIndexes, func(i, j int) bool {
+		return inputs[primaryInputIndexes[i]].TimelineStartMs < inputs[primaryInputIndexes[j]].TimelineStartMs
+	})
 	primaryInputs := make([]MaterializedInput, 0, len(primaryInputIndexes))
 	primaryDurations := make([]int64, 0, len(primaryInputIndexes))
 	for _, index := range primaryInputIndexes {

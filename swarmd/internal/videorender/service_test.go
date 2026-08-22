@@ -46,6 +46,38 @@ func (f *fakeCommandRunner) RunCommand(ctx context.Context, name string, args ..
 	return []byte("ok"), nil
 }
 
+func TestProbeInputHasAudioUsesFFprobeStreamResult(t *testing.T) {
+	runner := &fakeCommandRunner{runHook: func(_ context.Context, name string, args ...string) ([]byte, error) {
+		if name != "ffprobe" {
+			t.Fatalf("command = %q, want ffprobe", name)
+		}
+		return []byte("1\n"), nil
+	}}
+	hasAudio, err := probeInputHasAudio(context.Background(), runner, "clip.mkv")
+	if err != nil {
+		t.Fatalf("probeInputHasAudio() error = %v", err)
+	}
+	if !hasAudio {
+		t.Fatal("probeInputHasAudio() = false, want true")
+	}
+
+	runner.runHook = func(_ context.Context, _ string, _ ...string) ([]byte, error) { return nil, nil }
+	hasAudio, err = probeInputHasAudio(context.Background(), runner, "silent.mkv")
+	if err != nil {
+		t.Fatalf("probeInputHasAudio() silent error = %v", err)
+	}
+	if hasAudio {
+		t.Fatal("probeInputHasAudio() = true for silent input")
+	}
+}
+
+func TestProbeInputHasAudioRequiresFFprobe(t *testing.T) {
+	_, err := probeInputHasAudio(context.Background(), &fakeCommandRunner{lookPathErr: errors.New("missing")}, "clip.mkv")
+	if err == nil || !strings.Contains(err.Error(), "ffprobe is required") {
+		t.Fatalf("probeInputHasAudio() error = %v, want ffprobe requirement", err)
+	}
+}
+
 type fakeSessionStore struct {
 	sessions      map[string]pebblestore.SessionSnapshot
 	projects      map[string]pebblestore.VideoProjectSnapshot

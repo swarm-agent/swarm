@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Check, X } from 'lucide-react'
+import { Check, ChevronDown, ChevronRight, Paperclip, RotateCcw } from 'lucide-react'
 import { Button } from '../../../../components/ui/button'
 import { requestJson } from '../../../../app/api'
 import { DesktopV3ExistingConversationPane } from '../../chat/components/desktop-v3-existing-conversation-pane'
@@ -8,7 +8,6 @@ import { useDesktopV3CacheSelector } from '../../state/desktop-v3-cache-store'
 import type { DesktopV3CacheState } from '../../state/desktop-v3-cache-types'
 import { selectAndHydrateDesktopV3Session } from '../../state/desktop-v3-session-hydrator'
 import type { DesktopChatRoute } from '../../chat/services/chat-routing'
-import { DesktopV3ArtifactPreviewThumbnail } from '../../chat/components/desktop-v3-artifact-preview-thumbnail'
 import type { DesktopV3ArtifactCatalogEntry, DesktopV3ArtifactMessageSelection } from '../../session-v3/artifact-api'
 
 export const VIDEO_TRANSITION_KINDS = ['cut', 'fade_through_black', 'crossfade', 'fade_to_black', 'fade_from_black'] as const
@@ -120,7 +119,7 @@ export function videoPlanTransitionMessageSelection(part: VideoPlanPartWire, tra
 export function renderedVideoArtifactUrl(sessionId: string, job: { output_artifact?: { collection_id: string; variant_id: string } }): string {
   const reference = job.output_artifact
   if (!reference?.collection_id || !reference.variant_id) return ''
-  return `/v3/sessions/${encodeURIComponent(sessionId)}/artifacts/collections/${encodeURIComponent(reference.collection_id)}/variants/${encodeURIComponent(reference.variant_id)}/content/output.mp4`
+  return `/v3/sessions/${encodeURIComponent(sessionId)}/artifacts/${encodeURIComponent(reference.variant_id)}`
 }
 
 export function transitionLabel(kind: VideoTransitionKind): string {
@@ -248,188 +247,201 @@ export function proposedVideoPlanClipDetails(clip: Record<string, unknown>): {
 }
 
 function operationLabel(operation: VideoEditOperationWire): string {
-  if (operation.transition) {
-    const duration = typeof operation.transition.duration_ms === 'number' ? ` · ${operation.transition.duration_ms}ms` : ''
-    return `${operation.type.replace(/_/g, ' ')} · ${transitionLabel(operation.transition.kind)} · ${operation.transition.from_clip_id} → ${operation.transition.to_clip_id}${duration}`
-  }
+  if (operation.transition) return `${operation.type.replace(/_/g, ' ')} · ${transitionLabel(operation.transition.kind)} · ${operation.transition.from_clip_id} → ${operation.transition.to_clip_id}`
   if (operation.transition_id) return `${operation.type.replace(/_/g, ' ')} · transition ${operation.transition_id}`
-  const clip = operation.clip
-  const subject = String(clip?.name || clip?.id || operation.clip_id || 'timeline')
-  const sourceStart = typeof clip?.source_start_ms === 'number' ? clip.source_start_ms : null
-  const sourceEnd = typeof clip?.source_end_ms === 'number' ? clip.source_end_ms : null
-  const range = sourceStart !== null && sourceEnd !== null ? ` · source ${sourceStart}–${sourceEnd}ms` : ''
-  return `${operation.type.replace(/_/g, ' ')} · ${subject}${range}`
+  return `${operation.type.replace(/_/g, ' ')} · ${String(operation.clip?.name || operation.clip?.id || operation.clip_id || 'timeline')}`
 }
 
 export function selectedVideoProposalChangeIDs(proposal: VideoEditProposalWire, selected: Record<string, boolean>): string[] {
   if (proposal.plan?.kind === 'initial') return []
-  if (proposal.plan) return proposal.plan.parts
-    .filter((part) => selected[`${proposal.id}:part:${part.id}`] !== false)
-    .map((part) => part.id)
-  return proposal.operations
-    .filter((operation) => selected[`${proposal.id}:${operation.id}`] !== false)
-    .map((operation) => operation.id)
+  if (proposal.plan) return proposal.plan.parts.filter((part) => selected[`${proposal.id}:part:${part.id}`] !== false).map((part) => part.id)
+  return proposal.operations.filter((operation) => selected[`${proposal.id}:${operation.id}`] !== false).map((operation) => operation.id)
 }
 
-export function VideoProposalReview(props: {
+export type VideoIterationRevisionWire = {
+  id: string
+  revision_number: number
+  parent_revision_id?: string
+  origin_proposal_id?: string
+  change_summary?: string
+  created_at: number
+}
+
+export type VideoIterationChange = {
+  id: string
+  key: string
+  label: string
+  clipId: string
+  startMs: number
+  endMs: number
+  artifact: VideoPlanVisualWire | null
+  planPart?: VideoPlanPartWire
+  operation?: VideoEditOperationWire
+}
+
+export type VideoIterationEntry = {
+  id: string
+  proposal: VideoEditProposalWire | null
+  parentRevisionId: string
+  candidateRevisionId: string
+  candidateRevisionNumber?: number
+  status: VideoEditProposalWire['status'] | 'revision'
+  title: string
+  createdAt: number
+  changes: VideoIterationChange[]
+}
+
+export type VideoIterationComposerContext = {
+  proposalId: string
+  parentRevisionId: string
+  candidateRevisionId: string
+  changeId: string
+  anchorClipId: string
+  startMs: number
+  endMs: number
+  label: string
+  artifact: VideoPlanVisualWire | null
+}
+
+function proposalChanges(proposal: VideoEditProposalWire): VideoIterationChange[] {
+  const plan = proposal.plan
+  const changes = plan
+    ? (() => {
+      let cursor = 0
+      return plan.parts.map((part) => {
+        const startMs = cursor
+        cursor += Math.max(0, part.duration_ms)
+        return { id: part.id, key: `${proposal.id}:part:${part.id}`, label: `Changed clip · ${part.title}`, clipId: part.id, startMs, endMs: cursor, artifact: part.visual ?? null, planPart: part }
+      })
+    })()
+    : proposal.operations.map((operation, index) => {
+      const clip = operation.clip ?? {}
+      const fallback = proposal.affected_ranges?.[Math.min(index, (proposal.affected_ranges?.length ?? 1) - 1)] ?? proposal.affected_ranges?.[0]
+      const startMs = typeof clip.timeline_start_ms === 'number' ? clip.timeline_start_ms : fallback?.start_ms ?? 0
+      const endMs = typeof clip.timeline_end_ms === 'number' ? clip.timeline_end_ms : fallback?.end_ms ?? startMs
+      const clipId = String(clip.id ?? operation.clip_id ?? operation.transition?.to_clip_id ?? operation.transition_id ?? '').trim()
+      return { id: operation.id, key: `${proposal.id}:${operation.id}`, label: `Changed clip · ${operationLabel(operation)}`, clipId, startMs, endMs, artifact: null, operation }
+    })
+  if (proposal.status !== 'accepted' || !proposal.accepted_operation_ids?.length) return changes
+  const acceptedIds = new Set(proposal.accepted_operation_ids)
+  return changes.filter((change) => acceptedIds.has(change.id))
+}
+
+export function buildVideoIterationTimeline(proposals: VideoEditProposalWire[], revisions: VideoIterationRevisionWire[]): VideoIterationEntry[] {
+  const revisionByProposal = new Map<string, VideoIterationRevisionWire>()
+  for (const revision of revisions) if (revision.origin_proposal_id) revisionByProposal.set(revision.origin_proposal_id, revision)
+  const proposalIds = new Set(proposals.map((proposal) => proposal.id))
+  const proposalEntries = proposals.map((proposal): VideoIterationEntry => {
+    const acceptedRevision = revisionByProposal.get(proposal.id)
+    return {
+      id: `proposal:${proposal.id}`,
+      proposal,
+      parentRevisionId: proposal.base_revision_id,
+      candidateRevisionId: proposal.accepted_revision_id || acceptedRevision?.id || proposal.working_revision_id || '',
+      candidateRevisionNumber: acceptedRevision?.revision_number ?? proposal.working_revision_number,
+      status: proposal.status,
+      title: proposal.title || proposal.plan?.summary || proposal.rationale || 'AI video iteration',
+      createdAt: proposal.created_at,
+      changes: proposalChanges(proposal),
+    }
+  })
+  const revisionEntries = revisions.filter((revision) => !revision.origin_proposal_id || !proposalIds.has(revision.origin_proposal_id)).map((revision): VideoIterationEntry => ({
+    id: `revision:${revision.id}`,
+    proposal: null,
+    parentRevisionId: revision.parent_revision_id || '',
+    candidateRevisionId: revision.id,
+    candidateRevisionNumber: revision.revision_number,
+    status: 'revision',
+    title: revision.change_summary || `Revision ${revision.revision_number}`,
+    createdAt: revision.created_at,
+    changes: [],
+  }))
+  return [...proposalEntries, ...revisionEntries].sort((left, right) => right.createdAt - left.createdAt || right.id.localeCompare(left.id))
+}
+
+function rangeLabel(startMs: number, endMs: number): string {
+  const seconds = (value: number) => `${Math.max(0, value / 1000).toFixed(1)}s`
+  return `${seconds(startMs)}–${seconds(endMs)}`
+}
+
+export function VideoIterationSidebar(props: {
   sessionId: string
   projectId: string
   currentRevisionId: string
-  acceptedPlan?: VideoPlanProposalWire | null
-  acceptedClips?: Array<Record<string, unknown>>
+  revisions: VideoIterationRevisionWire[]
   onAccepted: () => Promise<void> | void
   onFeedback: (message: string) => Promise<void> | void
-  onPendingChange?: (proposal: VideoEditProposalWire | null, selectedChangeIds: string[]) => void
-  onFocusStep?: (clipId: string, playheadMs: number) => void
+  onPreviewProposal: (proposal: VideoEditProposalWire | null, selectedChangeIds: string[]) => void
+  onPreviewRevision: (revisionId: string | null) => void
+  onFocusChange: (clipId: string, playheadMs: number) => void
+  onAttachChange: (context: VideoIterationComposerContext) => void
 }) {
   const [proposals, setProposals] = useState<VideoEditProposalWire[]>([])
   const [selected, setSelected] = useState<Record<string, boolean>>({})
-  const [busy, setBusy] = useState(false)
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({})
+  const [previewId, setPreviewId] = useState<string | null>(null)
+  const [busyId, setBusyId] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const loadRequestSequence = useRef(0)
-  const projectionSequence = useDesktopV3CacheSelector(
-    useCallback((state) => videoProposalProjectionSequence(state, props.sessionId), [props.sessionId]),
-  )
-
-  const load = useCallback(async () => {
-    await loadLatestVideoEditProposals({
-      sessionId: props.sessionId,
-      projectId: props.projectId,
-      requestSequence: loadRequestSequence,
-      onLoaded: setProposals,
-      onError: setError,
-    })
-  }, [props.projectId, props.sessionId])
-
+  const projectionSequence = useDesktopV3CacheSelector(useCallback((state) => videoProposalProjectionSequence(state, props.sessionId), [props.sessionId]))
+  const load = useCallback(async () => loadLatestVideoEditProposals({ sessionId: props.sessionId, projectId: props.projectId, requestSequence: loadRequestSequence, onLoaded: setProposals, onError: setError }), [props.projectId, props.sessionId])
   useEffect(() => { void load() }, [load, projectionSequence])
-  const pending = useMemo(() => proposals
-    .filter((proposal) => proposal.status === 'pending')
-    .sort((left, right) => left.created_at - right.created_at || left.id.localeCompare(right.id)), [proposals])
-  const [previewProposalId, setPreviewProposalId] = useState<string | null>(null)
-  const previewProposal = useMemo(() => pending.find((proposal) => proposal.id === previewProposalId) ?? null, [pending, previewProposalId])
-  useEffect(() => {
-    if (pending.length === 0) {
-      if (previewProposalId) setPreviewProposalId(null)
-      return
-    }
-    if (!previewProposalId || !pending.some((proposal) => proposal.id === previewProposalId)) {
-      setPreviewProposalId(pending[pending.length - 1].id)
-    }
-  }, [pending, previewProposalId])
-  const previewSelectedChangeIds = useMemo(() => previewProposal ? selectedVideoProposalChangeIDs(previewProposal, selected) : [], [previewProposal, selected])
-  useEffect(() => { props.onPendingChange?.(previewProposal, previewSelectedChangeIds) }, [previewProposal, previewSelectedChangeIds, props.onPendingChange])
+  const iterations = useMemo(() => buildVideoIterationTimeline(proposals, props.revisions), [proposals, props.revisions])
+  const newestPendingIterationId = useMemo(() => iterations.find((iteration) => iteration.proposal?.status === 'pending')?.id ?? null, [iterations])
 
-  if (pending.length === 0 && !error) return null
-  return (
-    <section className="mt-5 border border-[var(--app-border)] bg-[var(--app-surface)] p-4" aria-label="AI edit proposals">
-      <div className="flex items-center justify-between gap-3">
-        <div><p className="text-[10px] uppercase tracking-[0.18em] text-[var(--app-primary)]">New change added</p><h2 className="mt-1 text-sm font-semibold">Working changes</h2><p className="mt-1 text-xs text-[var(--app-text-muted)]">The newest change is already visible. Keep everything, or restore only the sections you do not want.</p></div>
-        <Button variant="ghost" className="h-8 px-2 text-xs" onClick={() => void load()} disabled={busy}>Refresh</Button>
-      </div>
-      {error ? <p className="mt-3 text-xs text-red-400">{error}</p> : null}
-      <div className="mt-3 grid gap-3">
-        {pending.map((proposal) => {
-          const stale = Boolean(proposal.working_revision_id) && proposal.working_revision_id !== props.currentRevisionId
-          const isPlan = Boolean(proposal.plan)
-          const isPlanRevision = proposal.plan?.kind === 'revision'
-          const selectedPlanPartIds = proposal.plan ? selectedVideoProposalChangeIDs(proposal, selected) : []
-          const selectedIds = proposal.plan ? [] : selectedVideoProposalChangeIDs(proposal, selected)
-          const planOperations = proposal.operations.filter((operation) => (operation.type === 'add_clip' || operation.type === 'update_clip') && operation.clip?.source_kind === 'text')
-          const supportingOperations = proposal.operations.filter((operation) => !planOperations.includes(operation))
-          const changedClipOperations = proposal.operations.filter((operation) => (operation.type === 'add_clip' || operation.type === 'update_clip') && operation.clip)
-          const acceptedById = new Map((props.acceptedClips ?? []).map((clip) => [String(clip.id ?? ''), clip]))
-          const rejectionDraft = `I rejected “${proposal.title || (isPlan ? 'the video plan' : 'the edit proposal')}”. Preserve the stable part IDs and current accepted visuals. Create new ready replacement visuals only for the parts I name, then return one plan.kind=revision proposal. Requested changes: `
-          const previewing = proposal.id === previewProposalId
-          return <article key={proposal.id} className={`border bg-[var(--app-bg)] p-3 ${previewing ? 'border-amber-300 ring-1 ring-amber-300/40' : 'border-[var(--app-border)]'}`}>
-            <div className="flex items-start justify-between gap-3"><div><p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-amber-400">Working · visible now</p><h3 className="mt-1 text-sm font-medium">{proposal.title || (isPlan ? 'Video plan change' : planOperations.length > 0 ? 'Script + still change' : 'Timeline changes')}</h3><p className="mt-1 text-xs leading-5 text-[var(--app-text-muted)]">{proposal.rationale || 'This change is already in the working player. Confirmation makes your selected sections the kept checkpoint.'}</p></div><span className={`shrink-0 text-[10px] ${stale ? 'text-amber-400' : 'text-[var(--app-primary)]'}`}>{stale ? 'older working change' : `working r${proposal.working_revision_number ?? proposal.base_revision_number} · kept from r${proposal.base_revision_number}`}</span></div>
-            {proposal.plan ? (
-              <div className="mt-4" aria-label="Atomic video plan proposal">
-                <div className="mb-3 flex items-center justify-between gap-3"><div><p className="text-xs font-semibold text-[var(--app-text)]">{isPlanRevision ? 'Changed sections' : 'Working visual plan'} · {proposal.plan.parts.length} parts</p><p className="mt-1 text-[11px] text-[var(--app-text-muted)]">{isPlanRevision ? 'All replacements are kept by default. Uncheck any section to restore its prior version when you confirm.' : 'The complete plan is already visible. Confirm it to establish the first kept checkpoint.'}</p></div><span className="text-[10px] uppercase tracking-[0.12em] text-amber-400">Visible in player</span></div>
-                {proposal.plan.summary ? <p className="mb-3 border border-[var(--app-border)] bg-[var(--app-surface)] p-3 text-xs leading-5 text-[var(--app-text-muted)]">{proposal.plan.summary}</p> : null}
-                <ol className="grid max-h-[34rem] gap-3 overflow-y-auto pr-1 xl:grid-cols-2">
-                  {proposal.plan.parts.map((part, index) => <li key={part.id} className="border border-[var(--app-border)] bg-[var(--app-surface)] p-3">
-                    <div className="flex items-center justify-between gap-3"><span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-[var(--app-primary)]">Part {index + 1}</span><span className="font-mono text-[10px] text-[var(--app-text-subtle)]">{part.id}</span></div>
-                    {isPlanRevision ? <label className="mt-2 flex items-center gap-2 text-[11px] text-[var(--app-text-muted)]"><input type="checkbox" checked={selected[`${proposal.id}:part:${part.id}`] !== false} onChange={(event) => setSelected((current) => ({ ...current, [`${proposal.id}:part:${part.id}`]: event.target.checked }))} />{selected[`${proposal.id}:part:${part.id}`] !== false ? 'Keep changed section' : 'Restore prior section'}</label> : null}
-                    {isPlanRevision && props.acceptedPlan?.parts.some((acceptedPart) => acceptedPart.id === part.id) ? <div className="mt-3 grid gap-3 md:grid-cols-2"><div><p className="mb-1 text-[10px] uppercase tracking-[0.12em] text-[var(--app-text-subtle)]">Prior kept section</p>{videoPlanPartArtifact(props.acceptedPlan.parts.find((acceptedPart) => acceptedPart.id === part.id)!) ? <DesktopV3ArtifactPreviewThumbnail artifact={videoPlanPartArtifact(props.acceptedPlan.parts.find((acceptedPart) => acceptedPart.id === part.id)!)!} presentation="wide" /> : null}</div><div><p className="mb-1 text-[10px] uppercase tracking-[0.12em] text-amber-300">Working replacement</p>{videoPlanPartArtifact(part) ? <DesktopV3ArtifactPreviewThumbnail artifact={videoPlanPartArtifact(part)!} presentation="wide" /> : null}</div></div> : <div className="mt-3">{videoPlanPartArtifact(part) ? <DesktopV3ArtifactPreviewThumbnail artifact={videoPlanPartArtifact(part)!} presentation="wide" /> : <div className="grid aspect-video place-items-center border border-red-400/40 bg-red-950/20 px-4 text-center text-xs text-red-300">This legacy proposal has no attached visual and cannot satisfy the visual-plan contract.</div>}</div>}
-                    <h4 className="mt-3 text-sm font-semibold text-[var(--app-text)]">{part.title}</h4>
-                    <p className="mt-1 text-[10px] tabular-nums text-[var(--app-primary)]">{Math.round(part.duration_ms / 100) / 10}s</p>
-                    <dl className="mt-3 grid gap-2 text-xs leading-5">
-                      <div><dt className="uppercase tracking-[0.1em] text-[var(--app-text-subtle)]">Narration / purpose</dt><dd className="text-[var(--app-text-muted)]">{part.narration || 'To be developed after approval.'}</dd></div>
-                      <div><dt className="uppercase tracking-[0.1em] text-[var(--app-text-subtle)]">On-screen text</dt><dd className="text-[var(--app-text-muted)]">{part.on_screen_text || 'Not set.'}</dd></div>
-                      <div><dt className="uppercase tracking-[0.1em] text-[var(--app-text-subtle)]">Visual direction</dt><dd className="text-[var(--app-text-muted)]">{part.visual_direction || 'To be matched with source media.'}</dd></div>
-                      {part.transition_in ? <div><dt className="uppercase tracking-[0.1em] text-amber-400">Proposed transition · review only</dt><dd className="text-[var(--app-text-muted)]">{part.transition_in}</dd></div> : null}
-                    </dl>
-                  </li>)}
-                </ol>
-              </div>
-            ) : null}
-            {planOperations.length > 0 ? (
-              <div className="mt-4">
-                <div className="mb-2 flex items-center justify-between gap-3"><p className="text-xs font-medium text-[var(--app-text)]">Script structure and planned stills</p><span className="text-[10px] text-[var(--app-text-subtle)]">Accept selected to make this the current cut</span></div>
-                <div className="grid max-h-[34rem] gap-3 overflow-y-auto pr-1 xl:grid-cols-2">
-                  {planOperations.map((operation) => {
-                    const details = proposedVideoPlanClipDetails(operation.clip ?? {})
-                    const clipId = String(operation.clip?.id ?? operation.clip_id ?? '').trim()
-                    const playheadMs = typeof operation.clip?.timeline_start_ms === 'number' ? operation.clip.timeline_start_ms : proposal.affected_ranges?.[0]?.start_ms ?? 0
-                    return <label key={operation.id} className="block cursor-pointer border border-[var(--app-border)] bg-[var(--app-surface)] p-3">
-                      <div className="flex items-start gap-3">
-                        <input className="mt-1" type="checkbox" checked={selected[`${proposal.id}:${operation.id}`] !== false} onChange={(event) => setSelected((current) => ({ ...current, [`${proposal.id}:${operation.id}`]: event.target.checked }))} />
-                        <div className="min-w-0 flex-1">
-                          <div className="flex flex-wrap items-baseline justify-between gap-2"><div className="flex items-center gap-2"><span className="border border-[var(--app-border)] bg-[var(--app-bg)] px-1.5 py-0.5 text-[9px] uppercase tracking-[0.12em] text-[var(--app-primary)]">{details.kind === 'title' ? 'Opening title still' : details.kind === 'transition' ? 'Transition still' : 'Content section'}</span><h4 className="text-xs font-semibold text-[var(--app-text)]">{details.title}</h4></div><span className="text-[10px] tabular-nums text-[var(--app-primary)]">{details.timing}</span></div>
-                          <div className="mt-2 flex flex-wrap items-center gap-2 text-[10px]">
-                            <button type="button" className="border border-[var(--app-border)] bg-[var(--app-bg)] px-2 py-1 font-mono text-[var(--app-primary)]" onClick={(event) => { event.preventDefault(); event.stopPropagation(); props.onFocusStep?.(clipId, playheadMs) }}>anchor · {clipId}</button>
-                            <span className="uppercase tracking-[0.12em] text-amber-400">{operation.type === 'add_clip' ? 'pending add' : 'pending change'}</span>
-                          </div>
-                          <dl className="mt-3 grid gap-2 text-xs leading-5">
-                            <div><dt className="font-medium uppercase tracking-[0.1em] text-[var(--app-text-subtle)]">Narration</dt><dd className="text-[var(--app-text-muted)]">{details.narration || 'No narration specified.'}</dd></div>
-                            <div><dt className="font-medium uppercase tracking-[0.1em] text-[var(--app-text-subtle)]">On-screen text</dt><dd className="font-medium text-[var(--app-text)]">{details.onScreenText || 'No on-screen text specified.'}</dd></div>
-                            <div><dt className="font-medium uppercase tracking-[0.1em] text-[var(--app-text-subtle)]">Planned still / frame</dt><dd className="text-[var(--app-text-muted)]">{details.still || 'No frame direction specified.'}</dd></div>
-                          </dl>
-                        </div>
-                      </div>
-                    </label>
-                  })}
+  useEffect(() => {
+    const selectedIteration = previewId ? iterations.find((iteration) => iteration.id === previewId) : null
+    if (selectedIteration?.proposal?.status === 'pending') return
+    if (!previewId || !selectedIteration) setPreviewId(newestPendingIterationId)
+  }, [iterations, newestPendingIterationId, previewId])
+
+  const previewProposal = useMemo(() => {
+    const proposal = iterations.find((iteration) => iteration.id === previewId)?.proposal
+    return proposal?.status === 'pending' ? proposal : null
+  }, [iterations, previewId])
+  const selectedChangeIds = useMemo(() => previewProposal ? selectedVideoProposalChangeIDs(previewProposal, selected) : [], [previewProposal, selected])
+  useEffect(() => { props.onPreviewProposal(previewProposal, selectedChangeIds) }, [previewProposal, selectedChangeIds, props.onPreviewProposal])
+
+  return <section className="mt-4 min-h-0 border-t border-[var(--app-border)] pt-3" aria-label="Video iterations">
+    <div className="mb-2 flex items-center justify-between px-2"><p className="text-[10px] uppercase tracking-[0.18em] text-[var(--app-text-subtle)]">Iterations</p><button type="button" className="text-[10px] hover:text-[var(--app-text)]" onClick={() => void load()}>Refresh</button></div>
+    {error ? <p className="px-2 py-2 text-[10px] text-red-400">{error}</p> : null}
+    {iterations.length === 0 ? <p className="px-2 py-3 text-[11px] text-[var(--app-text-subtle)]">No AI iterations yet.</p> : null}
+    <div className="max-h-[42vh] space-y-1 overflow-y-auto pr-1 lg:max-h-none">
+      {iterations.map((iteration) => {
+        const open = expanded[iteration.id] ?? iteration.status === 'pending'
+        const previewing = previewId === iteration.id
+        const proposal = iteration.proposal
+        const stale = Boolean(proposal?.working_revision_id) && proposal?.working_revision_id !== props.currentRevisionId
+        const enabledIds = proposal ? selectedVideoProposalChangeIDs(proposal, selected) : []
+        return <article key={iteration.id} className={`border ${previewing ? 'border-amber-300 bg-amber-950/20' : 'border-[var(--app-border)] bg-[var(--app-bg)]'}`}>
+          <div className="flex items-start gap-1 p-2">
+            <button type="button" className="mt-0.5 shrink-0 p-0.5 disabled:cursor-default disabled:opacity-30" disabled={iteration.changes.length === 0} onClick={() => setExpanded((current) => ({ ...current, [iteration.id]: !open }))} aria-label={`${open ? 'Collapse' : 'Expand'} ${iteration.title}`}>{open ? <ChevronDown size={12} /> : <ChevronRight size={12} />}</button>
+            <button type="button" className="min-w-0 flex-1 text-left" onClick={() => { if (proposal?.status === 'pending') { setPreviewId(iteration.id); setExpanded((current) => ({ ...current, [iteration.id]: true })) } else if (iteration.candidateRevisionId) { setPreviewId(iteration.id); props.onPreviewProposal(null, []); props.onPreviewRevision(iteration.candidateRevisionId === props.currentRevisionId ? null : iteration.candidateRevisionId) } }}>
+              <span className="block truncate text-[11px] font-medium text-[var(--app-text)]">{iteration.title}</span>
+              <span className="mt-1 block truncate text-[9px] text-[var(--app-text-subtle)]">{iteration.candidateRevisionId === props.currentRevisionId ? 'current' : iteration.status} · parent {iteration.parentRevisionId || 'none'} · candidate {iteration.candidateRevisionId || 'working'}</span>
+            </button>
+            <span className={`shrink-0 text-[9px] uppercase ${iteration.status === 'pending' ? 'text-amber-300' : iteration.status === 'accepted' ? 'text-green-400' : 'text-[var(--app-text-subtle)]'}`}>{iteration.candidateRevisionNumber ? `r${iteration.candidateRevisionNumber}` : iteration.status}</span>
+          </div>
+          {open ? <div className="border-t border-[var(--app-border)] px-2 pb-2">
+            {iteration.changes.map((change) => {
+              const enabled = !proposal || proposal.plan?.kind === 'initial' || selected[change.key] !== false
+              return <div key={change.key} className={`mt-2 border-l-2 pl-2 ${enabled ? 'border-[var(--app-primary)]' : 'border-[var(--app-border)] opacity-55'}`}>
+                <div className="flex items-start gap-2">
+                  {proposal?.status === 'pending' && proposal.plan?.kind !== 'initial' ? <input className="mt-0.5" type="checkbox" checked={enabled} aria-label={`Enable ${change.label}`} onChange={(event) => { setSelected((current) => ({ ...current, [change.key]: event.target.checked })); setPreviewId(iteration.id) }} /> : null}
+                  <button type="button" className="min-w-0 flex-1 text-left" onClick={() => props.onFocusChange(change.clipId, change.startMs)}><span className="block truncate text-[10px] text-[var(--app-text)]">{change.label}</span><span className="mt-0.5 block font-mono text-[9px] text-[var(--app-text-subtle)]">{change.id} · {rangeLabel(change.startMs, change.endMs)}</span></button>
+                  {proposal ? <button type="button" className="shrink-0 p-1 text-[var(--app-primary)] hover:bg-[var(--app-surface-hover)]" aria-label={`Attach ${change.label} to AI composer`} onClick={() => { props.onFocusChange(change.clipId, change.startMs); props.onAttachChange({ proposalId: proposal.id, parentRevisionId: iteration.parentRevisionId, candidateRevisionId: iteration.candidateRevisionId, changeId: change.id, anchorClipId: change.clipId, startMs: change.startMs, endMs: change.endMs, label: change.label, artifact: change.artifact }) }}><Paperclip size={12} /></button> : null}
                 </div>
               </div>
-            ) : null}
-            {changedClipOperations.length > 0 ? (
-              <div className="mt-4 grid gap-3" aria-label="Prior and proposed slide comparison">
-                {changedClipOperations.map((operation) => {
-                  const proposed = operation.clip ?? {}
-                  const clipId = String(proposed.id ?? operation.clip_id ?? '').trim()
-                  const prior = acceptedById.get(clipId)
-                  const priorDetails = prior ? proposedVideoPlanClipDetails(prior) : null
-                  const proposedDetails = proposedVideoPlanClipDetails(proposed)
-                  const playheadMs = typeof proposed.timeline_start_ms === 'number' ? proposed.timeline_start_ms : proposal.affected_ranges?.[0]?.start_ms ?? 0
-                  return <div key={`${operation.id}-comparison`} className="border border-[var(--app-border)] bg-[var(--app-surface)] p-3">
-                    <div className="flex items-center justify-between gap-3"><button type="button" className="font-mono text-[10px] text-[var(--app-primary)]" onClick={() => props.onFocusStep?.(clipId, playheadMs)}>slide · {clipId}</button><span className="text-[10px] uppercase tracking-[0.12em] text-amber-400">Confirm this iteration</span></div>
-                    <div className="mt-3 grid gap-3 md:grid-cols-2">
-                      <div className="border border-[var(--app-border)] bg-[var(--app-bg)] p-3"><p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-[var(--app-text-subtle)]">Prior · accepted r{proposal.base_revision_number}</p><p className="mt-2 text-xs font-medium text-[var(--app-text)]">{priorDetails?.title || String(prior?.name ?? 'No prior slide')}</p><p className="mt-1 text-[11px] leading-5 text-[var(--app-text-muted)]">{priorDetails?.onScreenText || String(prior?.source_kind ?? 'This is a new slide.')}</p></div>
-                      <div className="border border-amber-300/40 bg-amber-950/20 p-3"><p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-amber-300">Proposed · pending</p><p className="mt-2 text-xs font-medium text-[var(--app-text)]">{proposedDetails.title || String(proposed.name ?? 'Updated slide')}</p><p className="mt-1 text-[11px] leading-5 text-[var(--app-text-muted)]">{proposedDetails.onScreenText || String(proposed.source_kind ?? 'Updated content')}</p></div>
-                    </div>
-                  </div>
-                })}
-              </div>
-            ) : null}
-            {supportingOperations.length > 0 ? (
-              <details className="mt-3 border border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-2">
-                <summary className="cursor-pointer text-xs text-[var(--app-text-muted)]">Supporting timeline changes ({supportingOperations.length})</summary>
-                <div className="mt-2 grid gap-1">
-                  {supportingOperations.map((operation) => <label key={operation.id} className="flex items-center gap-2 border border-[var(--app-border)] bg-[var(--app-bg)] px-2 py-2 text-xs"><input type="checkbox" checked={selected[`${proposal.id}:${operation.id}`] !== false} onChange={(event) => setSelected((current) => ({ ...current, [`${proposal.id}:${operation.id}`]: event.target.checked }))} /><span>{operationLabel(operation)}</span></label>)}
-                </div>
-              </details>
-            ) : null}
-            <div className="mt-3 flex flex-wrap gap-2">
-              <Button variant={previewing ? 'outline' : 'ghost'} className="h-8 px-3 text-xs" disabled={busy || stale} aria-pressed={previewing} onClick={() => setPreviewProposalId(proposal.id)}>{previewing ? 'Showing working change' : 'Show this change'}</Button>
-              <Button className="h-8 px-3 text-xs" disabled={busy || stale || (isPlanRevision ? selectedPlanPartIds.length === 0 : !isPlan && selectedIds.length === 0)} onClick={() => void (async () => { setBusy(true); try { await acceptVideoEditProposal({ sessionId: props.sessionId, projectId: props.projectId, proposalId: proposal.id, selectedOperationIds: isPlanRevision ? selectedPlanPartIds : isPlan ? [] : selectedIds, changeSummary: proposal.title || proposal.plan?.summary || proposal.rationale }); setPreviewProposalId(null); await props.onAccepted(); await load() } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)) } finally { setBusy(false) } })()}><Check size={13} />{isPlanRevision ? 'Confirm selected sections' : isPlan ? 'Confirm working plan' : 'Confirm selected changes'}</Button>
-              {!isPlan ? <Button variant="outline" className="h-8 px-3 text-xs" disabled={busy || stale} onClick={() => { for (const operation of proposal.operations) setSelected((current) => ({ ...current, [`${proposal.id}:${operation.id}`]: true })) }}>Select all</Button> : null}
-              <Button variant="ghost" className="h-8 px-3 text-xs" disabled={busy} onClick={() => void (async () => { setBusy(true); try { await rejectVideoEditProposal(props.sessionId, props.projectId, proposal.id, rejectionDraft); if (previewProposalId === proposal.id) setPreviewProposalId(null); await props.onFeedback(rejectionDraft); await load() } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)) } finally { setBusy(false) } })()}><X size={13} />Restore prior version and ask again</Button>
-            </div>
-          </article>
-        })}
-      </div>
-    </section>
-  )
+            })}
+            {proposal?.status === 'pending' ? <div className="mt-3 grid gap-1">
+              <Button className="h-7 px-2 text-[10px]" disabled={Boolean(busyId) || stale || (proposal.plan?.kind !== 'initial' && enabledIds.length === 0)} onClick={() => void (async () => { setBusyId(proposal.id); try { await acceptVideoEditProposal({ sessionId: props.sessionId, projectId: props.projectId, proposalId: proposal.id, selectedOperationIds: enabledIds, changeSummary: proposal.title || proposal.plan?.summary || proposal.rationale }); setPreviewId(null); await props.onAccepted(); await load() } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)) } finally { setBusyId(null) } })()}><Check size={12} />Confirm enabled changes</Button>
+              <Button variant="ghost" className="h-7 px-2 text-[10px]" disabled={Boolean(busyId)} onClick={() => void (async () => { const feedback = `Restore the accepted parent of iteration ${proposal.id} and revise only the changes I describe: `; setBusyId(proposal.id); try { await rejectVideoEditProposal(props.sessionId, props.projectId, proposal.id, feedback); setPreviewId(null); await props.onFeedback(feedback); await load() } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)) } finally { setBusyId(null) } })()}><RotateCcw size={12} />Restore parent and revise</Button>
+            </div> : null}
+          </div> : null}
+        </article>
+      })}
+    </div>
+  </section>
 }
 
 function videoSessionRenderedMessagesEqual(left: RenderedSessionMessages, right: RenderedSessionMessages): boolean {
@@ -447,8 +459,9 @@ export function VideoSessionAISidecar(props: {
   revisionId?: string
   anchorClipId?: string
   playheadMs?: number
-  selectionKind?: 'visual' | 'transition'
+  selectionKind?: 'visual' | 'transition' | 'iteration'
   transition?: VideoTransitionWire | null
+  iterationContext?: VideoIterationComposerContext | null
   routeOptions?: DesktopChatRoute[]
   draftRequest?: { id: number; draft: string }
   artifactSelectionRequest?: DesktopV3ArtifactMessageSelection | null
@@ -509,6 +522,14 @@ export function VideoSessionAISidecar(props: {
           ...(props.transition?.from_clip_id ? { video_transition_from_clip_id: props.transition.from_clip_id } : {}),
           ...(props.transition?.to_clip_id ? { video_transition_to_clip_id: props.transition.to_clip_id } : {}),
           ...(typeof props.transition?.duration_ms === 'number' ? { video_transition_duration_ms: Math.max(0, Math.round(props.transition.duration_ms)) } : {}),
+          ...(props.iterationContext ? {
+            video_iteration_proposal_id: props.iterationContext.proposalId,
+            video_iteration_parent_revision_id: props.iterationContext.parentRevisionId,
+            video_iteration_candidate_revision_id: props.iterationContext.candidateRevisionId,
+            video_iteration_change_id: props.iterationContext.changeId,
+            video_iteration_range_start_ms: props.iterationContext.startMs,
+            video_iteration_range_end_ms: props.iterationContext.endMs,
+          } : {}),
         }}
         presentation="sidebar"
         artifactReviewPresentation="embedded"
