@@ -402,16 +402,21 @@ func (r *Runtime) executeManageVideo(ctx context.Context, scope WorkspaceScope, 
 		if endMs == 0 { endMs = analysis.DurationMs }
 		if startMs < 0 || endMs <= startMs || endMs > analysis.DurationMs { return "", errors.New("read_audio_analysis requires a valid bounded start_ms/end_ms range") }
 		resolution := int64(asInt(args["waveform_resolution_ms"], 0))
+		if resolution < 0 || resolution > 60_000 { return "", errors.New("waveform_resolution_ms must be between 1 and 60000 when supplied") }
 		levels := boundedAudioLevels(analysis.Levels, startMs, endMs, resolution)
 		onsets := boundedAudioOnsets(analysis.Onsets, startMs, endMs)
 		beats := boundedAudioBeats(analysis.Beats, startMs, endMs)
 		sections := boundedAudioSections(analysis.Sections, startMs, endMs)
-		truncated := len(levels) > manageVideoMaxAnalysisPoints || len(onsets) > manageVideoMaxAnalysisPoints || len(beats) > manageVideoMaxAnalysisPoints
-		if len(levels) > manageVideoMaxAnalysisPoints { levels = levels[:manageVideoMaxAnalysisPoints] }
-		if len(onsets) > manageVideoMaxAnalysisPoints { onsets = onsets[:manageVideoMaxAnalysisPoints] }
-		if len(beats) > manageVideoMaxAnalysisPoints { beats = beats[:manageVideoMaxAnalysisPoints] }
-		response["analysis"] = map[string]any{"ref": analysis.Ref, "schema_version": analysis.SchemaVersion, "source_ref": analysis.SourceRef, "source_fingerprint": analysis.SourceFingerprint, "analyzer_version": analysis.AnalyzerVersion, "duration_ms": analysis.DurationMs, "sample_interval_ms": analysis.SampleIntervalMs, "start_ms": startMs, "end_ms": endMs, "levels": levels, "onsets": onsets, "tempo": analysis.Tempo, "beats": beats, "sections": sections, "timing_authority": "deterministic_pcm_dsp", "model_generated": false, "content_digest": analysis.ContentDigest}
-		response["details_truncated"] = truncated
+		levelsTruncated := len(levels) > manageVideoMaxAnalysisPoints
+		onsetsTruncated := len(onsets) > manageVideoMaxAnalysisPoints
+		beatsTruncated := len(beats) > manageVideoMaxAnalysisPoints
+		sectionsTruncated := len(sections) > manageVideoMaxAnalysisPoints
+		if levelsTruncated { levels = levels[:manageVideoMaxAnalysisPoints] }
+		if onsetsTruncated { onsets = onsets[:manageVideoMaxAnalysisPoints] }
+		if beatsTruncated { beats = beats[:manageVideoMaxAnalysisPoints] }
+		if sectionsTruncated { sections = sections[:manageVideoMaxAnalysisPoints] }
+		response["analysis"] = map[string]any{"ref": analysis.Ref, "schema_version": analysis.SchemaVersion, "source_ref": analysis.SourceRef, "source_fingerprint": analysis.SourceFingerprint, "analyzer_version": analysis.AnalyzerVersion, "duration_ms": analysis.DurationMs, "sample_interval_ms": analysis.SampleIntervalMs, "start_ms": startMs, "end_ms": endMs, "levels": levels, "onsets": onsets, "tempo": analysis.Tempo, "beats": beats, "sections": sections, "timing_authority": "deterministic_pcm_dsp", "model_generated": false, "content_digest": analysis.ContentDigest, "levels_truncated": levelsTruncated, "onsets_truncated": onsetsTruncated, "beats_truncated": beatsTruncated, "sections_truncated": sectionsTruncated}
+		response["details_truncated"] = levelsTruncated || onsetsTruncated || beatsTruncated || sectionsTruncated
 
 	case "create_project":
 		if r.videoProjects == nil {

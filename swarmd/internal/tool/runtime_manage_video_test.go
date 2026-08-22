@@ -173,6 +173,35 @@ func TestBoundedAudioAnalysisSlicesAndAggregates(t *testing.T) {
 	if len(beats) != 1 || beats[0].TimeMs != 100 { t.Fatalf("bounded beats=%+v", beats) }
 }
 
+func TestManageVideoReadsBoundedDeterministicAudioAnalysis(t *testing.T) {
+	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "manage-video-audio-analysis.pebble"))
+	if err != nil { t.Fatal(err) }
+	defer store.Close()
+	principal := identity.Principal{Type: identity.PrincipalTypeUser, SessionID: "session-1", UserID: "user-1", AccountScopeID: "account-1"}
+	sessionStore := pebblestore.NewSessionStore(store)
+	if err := sessionStore.CreateSession(pebblestore.SessionSnapshot{ID: "session-1", UserID: principal.UserID, AccountScopeID: principal.AccountScopeID, WorkspacePath: "/workspace", Mode: "auto", Metadata: map[string]any{"workspace_id": "workspace-1"}}); err != nil { t.Fatal(err) }
+	events, err := pebblestore.NewEventLog(store)
+	if err != nil { t.Fatal(err) }
+	runtime := NewRuntime(1)
+	runtime.sessions = sessionruntime.NewService(sessionStore, events)
+	runtime.video = &fakeManageVideoService{audioAnalysis: pebblestore.AudioAnalysisSnapshot{
+		Ref: "audanalysis_test", SchemaVersion: pebblestore.AudioAnalysisSchemaVersion, SourceRef: "audiosrc_test", SourceFingerprint: strings.Repeat("a", 64),
+		AnalyzerVersion: videotranscription.AudioAnalyzerVersion, DurationMs: 1_000, SampleIntervalMs: 100,
+		Levels: []pebblestore.AudioAnalysisLevel{{StartMs: 0, EndMs: 100, RMS: .2, Peak: .4}}, Onsets: []pebblestore.AudioAnalysisOnset{{TimeMs: 50, Strength: .8}}, Beats: []pebblestore.AudioAnalysisBeat{{TimeMs: 50, Confidence: .7, BarBeat: 1}}, Sections: []pebblestore.AudioAnalysisSection{{StartMs: 0, EndMs: 1_000, Label: "moderate", Confidence: .65}},
+	}}
+	ctx := WithVideoRunContext(context.Background(), VideoRunContext{SessionID: "session-1", RunID: "run-1"})
+	scope := WorkspaceScope{SessionID: "session-1", Principal: principal}
+	if _, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, Call{CallID: "bad", Name: "manage_video", Arguments: `{"action":"read_audio_analysis","analysis_ref":"audanalysis_test","waveform_resolution_ms":60001}`}); err == nil || !strings.Contains(err.Error(), "waveform_resolution_ms") {
+		t.Fatalf("invalid resolution error=%v", err)
+	}
+	payload, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, Call{CallID: "read", Name: "manage_video", Arguments: `{"action":"read_audio_analysis","analysis_ref":"audanalysis_test","start_ms":0,"end_ms":500}`})
+	if err != nil { t.Fatal(err) }
+	for _, want := range []string{`"timing_authority":"deterministic_pcm_dsp"`, `"model_generated":false`, `"levels_truncated":false`, `"sections_truncated":false`, `"end_ms":500`} {
+		if !strings.Contains(payload, want) { t.Fatalf("analysis payload lacks %s: %s", want, payload) }
+	}
+	if strings.Contains(payload, "/workspace") { t.Fatalf("analysis response leaked private workspace path: %s", payload) }
+}
+
 func TestManageVideoRequiresTrustedRunContext(t *testing.T) {
 	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "manage-video.pebble"))
 	if err != nil {
@@ -208,6 +237,7 @@ type fakeManageVideoService struct {
 	focusNotes       string
 	sourceCount      int
 	audioSourceCount int
+	audioAnalysis    pebblestore.AudioAnalysisSnapshot
 }
 
 func (f *fakeManageVideoService) StartRegisteredSources(_ context.Context, _ identity.Principal, _ string, sources []pebblestore.SessionVideoAttachmentReference, focusNotes string) (videotranscription.StartResult, error) {
@@ -238,8 +268,8 @@ func (*fakeManageVideoService) ReadByWorkspace(identity.Principal, string, strin
 func (*fakeManageVideoService) ReadBySourceFingerprint(identity.Principal, string, string) (pebblestore.NormalizedTranscript, error) {
 	return pebblestore.NormalizedTranscript{}, nil
 }
-func (*fakeManageVideoService) ReadAudioAnalysisByWorkspace(identity.Principal, string, string, string) (pebblestore.AudioAnalysisSnapshot, error) {
-	return pebblestore.AudioAnalysisSnapshot{}, nil
+func (f *fakeManageVideoService) ReadAudioAnalysisByWorkspace(identity.Principal, string, string, string) (pebblestore.AudioAnalysisSnapshot, error) {
+	return f.audioAnalysis, nil
 }
 func (*fakeManageVideoService) Cancel(identity.Principal, string, string) (pebblestore.TranscriptionJob, error) {
 	return pebblestore.TranscriptionJob{}, nil
