@@ -35,6 +35,15 @@ func TestTaskDefinitionKeepsProviderSchemaSimpleAndDocumentsRuntimeRequirements(
 			t.Fatalf("task schema missing regular/swarm field boundary %q: %#v", want, taskDefinition)
 		}
 	}
+	for _, want := range []string{
+		"Every spawn call, including an inline Task Program start, requires a non-empty top-level prompt",
+		"meta_prompt, description, launches, and program do not replace it",
+		"Only status calls and starts that load the canonical task_program from the active approved checkpoint may omit prompt",
+	} {
+		if !definitionTextContains(taskDefinition, want) {
+			t.Fatalf("task schema missing top-level prompt requirement %q: %#v", want, taskDefinition)
+		}
+	}
 	if _, ok := properties["owned_scope_template"]; ok {
 		t.Fatal("task schema must not expose workspace target templates for Iteration Swarms")
 	}

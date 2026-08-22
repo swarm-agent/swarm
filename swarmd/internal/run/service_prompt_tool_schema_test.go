@@ -44,6 +44,19 @@ func TestConvertToolDefinitionsPreservesEmptyRequiredArrayForWebsearch(t *testin
 	}
 }
 
+func TestMasterHarnessPromptRequiresTopLevelTaskPrompt(t *testing.T) {
+	prompt := masterHarnessPrompt("/workspace")
+	for _, want := range []string{
+		"Every task spawn call—including regular launches, single-launch shorthand, Iteration Swarms, and new inline Task Program starts—requires a non-empty top-level `prompt`",
+		"Do not assume `meta_prompt`, `description`, `launches`, or `program` replaces it",
+		`task (staged Task Program for a multi-subsystem build): {"action":"start","prompt":"`,
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("master harness prompt missing task prompt guidance %q", want)
+		}
+	}
+}
+
 func TestTaskToolSchemaExposesOnlyDesignerOutputModeSelection(t *testing.T) {
 	definitions := tool.NewRuntime(1).Definitions()
 	var properties map[string]any

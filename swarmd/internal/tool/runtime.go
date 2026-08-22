@@ -1386,7 +1386,7 @@ func (r *Runtime) Definitions() []Definition {
 		{
 			Type:        "function",
 			Name:        "task",
-			Description: "Delegate normal heavy work through explicit Finder, Coder, or Designer launches, optionally submit one staged Task Program, or set mode=swarm for an Iteration Swarm. Swarm mode generates its wave from agent_type and count: omit launches and regular-launch fields such as concurrency_reason, meta_prompt, deliverable, dependency_evidence, and owned_scope. Coder swarms launch Router-hydrated workers. Designer swarms launch Router-hydrated workers into managed parent-owned artifacts only; repository Designer work uses regular launches. Image swarms use a distinct direct format: Router independently hydrates the parent brief plus each base theme, then orchestration sends each prompt straight to the account image model without agent sessions. Idea Swarms repeat the same question directly.",
+			Description: "Delegate normal heavy work through explicit Finder, Coder, or Designer launches, optionally submit one staged Task Program, or set mode=swarm for an Iteration Swarm. Every spawn call, including an inline Task Program start, requires a non-empty top-level prompt; meta_prompt, description, launches, and program do not replace it. Only status calls and starts that load the canonical task_program from the active approved checkpoint may omit prompt. Swarm mode generates its wave from agent_type and count: omit launches and regular-launch fields such as concurrency_reason, meta_prompt, deliverable, dependency_evidence, and owned_scope. Coder swarms launch Router-hydrated workers. Designer swarms launch Router-hydrated workers into managed parent-owned artifacts only; repository Designer work uses regular launches. Image swarms use a distinct direct format: Router independently hydrates the parent brief plus each base theme, then orchestration sends each prompt straight to the account image model without agent sessions. Idea Swarms repeat the same question directly.",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -1430,7 +1430,7 @@ func (r *Runtime) Definitions() []Definition {
 					},
 					"prompt": map[string]any{
 						"type":        "string",
-						"description": "Shared authoritative parent task. In Coder/Designer/image swarm mode, Router may elaborate execution detail but cannot add, remove, weaken, or reinterpret its requirements. In regular mode, pair it with explicit launches. In Idea swarm mode, this exact question is sent unchanged to every one-shot Idea.",
+						"description": "Required non-empty top-level task for every spawn call, including regular launches, single-launch shorthand, Iteration Swarms, and inline Task Program starts. meta_prompt, description, launches, and program do not replace it. Only action=status and action=start that loads the canonical task_program from the active approved checkpoint may omit it. In Coder/Designer/image swarm mode, Router may elaborate execution detail but cannot add, remove, weaken, or reinterpret its requirements. In regular mode, pair it with explicit launches. In Idea swarm mode, this exact question is sent unchanged to every one-shot Idea.",
 					},
 					"subagent_type": map[string]any{
 						"type":        "string",
