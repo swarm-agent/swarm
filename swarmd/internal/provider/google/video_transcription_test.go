@@ -175,6 +175,20 @@ func TestParseGoogleTranscriptNormalizesMultimodalTimeline(t *testing.T) {
 	}
 }
 
+func TestParseGoogleTranscriptNormalizesWordMilliseconds(t *testing.T) {
+	payload := []byte(`{"candidates":[{"content":{"parts":[{"text":"{\"summary\":\"Greeting\",\"language\":\"en\",\"duration_ms\":1000,\"content_empty\":false,\"segments\":[{\"start_ms\":0,\"end_ms\":1000,\"speech\":\"hello world\",\"audio\":\"\",\"visual\":\"\",\"on_screen_text\":\"\"}],\"words\":[{\"text\":\"hello\",\"start_ms\":25,\"end_ms\":400,\"confidence\":0.9},{\"text\":\"world\",\"start_ms\":450,\"end_ms\":900}]}"}]}}]}`)
+	transcript, err := parseGoogleAudioTranscript(payload)
+	if err != nil { t.Fatal(err) }
+	if transcript.Partial || len(transcript.Words) != 2 || transcript.Words[0].StartMs != 25 || transcript.Words[1].EndMs != 900 || transcript.Words[0].Provenance != "google_audio_semantic.v1" { t.Fatalf("transcript = %#v", transcript) }
+}
+
+func TestDeterministicAudioPromptSeparatesSemanticAndDSPTiming(t *testing.T) {
+	prompt := deterministicAudioPrompt(2000, "")
+	for _, required := range []string{"every spoken word", "start_ms", "end_ms", "deterministic local DSP owns those timelines", "empty words array"} {
+		if !strings.Contains(prompt, required) { t.Fatalf("prompt missing %q: %s", required, prompt) }
+	}
+}
+
 func TestParseGoogleTranscriptAcceptsSilentVisualOnlyVideo(t *testing.T) {
 	payload := []byte(`{"candidates":[{"content":{"parts":[{"text":"{\"summary\":\"A silent UI demo.\",\"language\":\"\",\"duration_ms\":2000,\"content_empty\":false,\"segments\":[{\"start_ms\":0,\"end_ms\":2000,\"speech\":\"\",\"audio\":\"\",\"visual\":\"A cursor opens Settings\",\"on_screen_text\":\"Media\"}]}"}]}}]}`)
 	transcript, err := parseGoogleTranscript(payload)

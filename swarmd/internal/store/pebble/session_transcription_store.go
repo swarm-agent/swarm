@@ -781,21 +781,22 @@ func (s *SessionStore) buildVideoTranscriptionAttachment(session SessionSnapshot
 
 func (s *SessionStore) buildAudioTranscriptionAttachment(session SessionSnapshot, messageID, sourceRef string, now int64) (TranscriptionAttachmentRecord, error) {
 	messageID, sourceRef = strings.TrimSpace(messageID), strings.TrimSpace(sourceRef)
-	if messageID == "" || !strings.HasPrefix(sourceRef, "audiosrc_") {
-		return TranscriptionAttachmentRecord{}, errors.New("message and valid audio source reference are required")
+	if messageID != "" || !strings.HasPrefix(sourceRef, "audiosrc_") {
+		return TranscriptionAttachmentRecord{}, errors.New("registered audio transcription requires a valid source reference without a forged message")
 	}
-	if _, ok, err := s.findV3MessageByID(session, messageID); err != nil || !ok {
-		if err == nil {
-			err = errors.New("triggering message not found in authenticated session scope")
+	var record AudioSourceRecord
+	var workspaceID string
+	var ok bool
+	var err error
+	for _, candidateWorkspaceID := range SessionVideoWorkspaceIDs(session) {
+		record, ok, err = s.GetAudioSourceRecord(session.AccountScopeID, candidateWorkspaceID, sourceRef)
+		if err != nil || ok {
+			workspaceID = candidateWorkspaceID
+			break
 		}
-		return TranscriptionAttachmentRecord{}, err
 	}
-	workspaceID := transcriptionWorkspaceID(session)
-	record, ok, err := s.GetAudioSourceRecord(session.AccountScopeID, workspaceID, sourceRef)
 	if err != nil || !ok {
-		if err == nil {
-			err = errors.New("registered audio source not found in authenticated session scope")
-		}
+		if err == nil { err = errors.New("registered audio source not found in authenticated session scope") }
 		return TranscriptionAttachmentRecord{}, err
 	}
 	file, err := OpenValidatedAudioSource(record)
@@ -805,7 +806,7 @@ func (s *SessionStore) buildAudioTranscriptionAttachment(session SessionSnapshot
 	if err := file.Close(); err != nil {
 		return TranscriptionAttachmentRecord{}, err
 	}
-	ref := "vatt_" + transcriptionDigest(strings.Join([]string{session.AccountScopeID, workspaceID, session.ID, messageID, record.Ref, record.SourceFingerprint}, "\x00"))
+	ref := "vatt_" + transcriptionDigest(strings.Join([]string{session.AccountScopeID, workspaceID, session.ID, record.Ref, record.SourceFingerprint}, "\x00"))
 	if now == 0 {
 		now = time.Now().UnixMilli()
 	}

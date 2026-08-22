@@ -136,7 +136,7 @@ func (a *VideoTranscriptionAdapter) AnalyzeAudio(ctx context.Context, request vi
 	if err != nil {
 		return videotranscription.GeneratedTranscript{}, err
 	}
-	return parseGoogleTranscript(payload)
+	return parseGoogleAudioTranscript(payload)
 }
 
 func (a *VideoTranscriptionAdapter) authorizedAPIKey(ctx context.Context, accountScopeID string) (string, error) {
@@ -518,7 +518,7 @@ func deterministicFramePrompt(focusNotes string, frameIDs []string) string {
 }
 
 func deterministicAudioPrompt(durationMs int64, focusNotes string) string {
-	prompt := fmt.Sprintf(`Analyze only the supplied audio track. Return only JSON with this exact shape: {"summary":"brief factual audio overview or empty","language":"BCP-47 for speech or empty","duration_ms":%d,"content_empty":false,"segments":[{"start_ms":0,"end_ms":1000,"speech":"spoken dialogue or empty","audio":"meaningful non-speech audio or empty","visual":"","on_screen_text":""}]}. Use integer milliseconds, chronological non-overlapping segments, empty visual and on_screen_text fields, and do not infer visual events. If no meaningful audio exists, return one duration-spanning segment with visual exactly %q and content_empty=true.`, durationMs, pebblestore.ContentEmptyVideoDescription)
+	prompt := fmt.Sprintf(`Analyze only the supplied audio track. Return only JSON with this exact shape: {"summary":"brief factual audio overview or empty","language":"BCP-47 for speech or empty","duration_ms":%d,"content_empty":false,"segments":[{"start_ms":0,"end_ms":1000,"speech":"spoken dialogue or empty","audio":"meaningful non-speech audio or empty","visual":"","on_screen_text":""}],"words":[{"text":"exact spoken word","start_ms":0,"end_ms":250,"confidence":0.95}]}. Use integer milliseconds, chronological non-overlapping segments and words, empty visual and on_screen_text fields, and do not infer visual events. Include every spoken word with its exact observed start and end time. Word confidence is optional and must be from 0 to 1. Do not describe beats, onsets, tempo, or waveform timing; deterministic local DSP owns those timelines. If there is no speech return an empty words array. If no meaningful audio exists, return one duration-spanning segment with visual exactly %q, content_empty=true, and an empty words array.`, durationMs, pebblestore.ContentEmptyVideoDescription)
 	if notes, err := videotranscription.NormalizeFocusNotes(focusNotes); err == nil && notes != "" {
 		prompt += "\nSubordinate focus guidance: " + notes
 	}
@@ -578,6 +578,14 @@ func parseGoogleFrameObservations(payload []byte) ([]videotranscription.FrameObs
 }
 
 func parseGoogleTranscript(payload []byte) (videotranscription.GeneratedTranscript, error) {
+	return parseGoogleTranscriptWithWords(payload, false)
+}
+
+func parseGoogleAudioTranscript(payload []byte) (videotranscription.GeneratedTranscript, error) {
+	return parseGoogleTranscriptWithWords(payload, true)
+}
+
+func parseGoogleTranscriptWithWords(payload []byte, wordProvenance bool) (videotranscription.GeneratedTranscript, error) {
 	text, err := parseGoogleCandidateText(payload)
 	if err != nil {
 		return videotranscription.GeneratedTranscript{}, err
@@ -595,6 +603,12 @@ func parseGoogleTranscript(payload []byte) (videotranscription.GeneratedTranscri
 			Visual       string `json:"visual"`
 			OnScreenText string `json:"on_screen_text"`
 		} `json:"segments"`
+		Words []struct {
+			Text string `json:"text"`
+			StartMs int64 `json:"start_ms"`
+			EndMs int64 `json:"end_ms"`
+			Confidence *float64 `json:"confidence,omitempty"`
+		} `json:"words,omitempty"`
 	}
 	decoder := json.NewDecoder(strings.NewReader(text))
 	decoder.DisallowUnknownFields()
@@ -612,8 +626,14 @@ func parseGoogleTranscript(payload []byte) (videotranscription.GeneratedTranscri
 			Audio: segment.Audio, Visual: segment.Visual, OnScreenText: segment.OnScreenText,
 		}
 	}
+	words := make([]pebblestore.NormalizedTranscriptWord, len(structured.Words))
+	for index, word := range structured.Words {
+		provenance := ""
+		if wordProvenance { provenance = "google_audio_semantic.v1" }
+		words[index] = pebblestore.NormalizedTranscriptWord{Text: word.Text, StartMs: word.StartMs, EndMs: word.EndMs, Confidence: word.Confidence, Provenance: provenance}
+	}
 	return videotranscription.NormalizeGeneratedTranscript(videotranscription.GeneratedTranscript{
-		Segments: segments, Language: structured.Language, DurationMs: structured.DurationMs,
+		Segments: segments, Words: words, Language: structured.Language, DurationMs: structured.DurationMs,
 		Summary: structured.Summary, ContentEmpty: structured.ContentEmpty,
 	})
 }

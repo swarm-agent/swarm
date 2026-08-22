@@ -103,7 +103,7 @@ func TestTranscriptionContractBindsTrustedSourceAndFailsClosedAcrossScope(t *tes
 }
 
 func TestAudioTranscriptionBindsRegisteredSourceAndRevalidatesOpen(t *testing.T) {
-	_, sessions, session, message := setupTranscriptionContractTest(t)
+	_, sessions, session, _ := setupTranscriptionContractTest(t)
 	root := t.TempDir()
 	path := filepath.Join(root, "speech.wav")
 	payload := append([]byte("RIFF\x24\x00\x00\x00WAVEfmt "), make([]byte, 64)...)
@@ -118,7 +118,7 @@ func TestAudioTranscriptionBindsRegisteredSourceAndRevalidatesOpen(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	attachment, replayed, err := sessions.BindAudioTranscriptionAttachment(BindAudioTranscriptionAttachmentInput{AccountScopeID: session.AccountScopeID, UserID: session.UserID, SessionID: session.ID, MessageID: message.ID, AudioSourceRef: source.Ref, ClientRequestID: "bind-audio", NowUnixMs: 100})
+	attachment, replayed, err := sessions.BindAudioTranscriptionAttachment(BindAudioTranscriptionAttachmentInput{AccountScopeID: session.AccountScopeID, UserID: session.UserID, SessionID: session.ID, MessageID: "", AudioSourceRef: source.Ref, ClientRequestID: "bind-audio", NowUnixMs: 100})
 	if err != nil || replayed || attachment.MediaKind != TranscriptionMediaAudio || attachment.SourceRecordRef != source.Ref {
 		t.Fatalf("attachment=%+v replayed=%v err=%v", attachment, replayed, err)
 	}
