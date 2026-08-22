@@ -148,14 +148,22 @@ func (s *Service) StartRegisteredAudioSources(ctx context.Context, principal ide
 	}
 	session, ok, err := s.sessions.GetSession(strings.TrimSpace(sessionID))
 	if err != nil || !ok {
-		if err == nil { err = errors.New("session not found") }
+		if err == nil {
+			err = errors.New("session not found")
+		}
 		return StartResult{}, err
 	}
-	if err := validatePrincipal(principal, session); err != nil { return StartResult{}, err }
+	if err := validatePrincipal(principal, session); err != nil {
+		return StartResult{}, err
+	}
 	focusNotes, err = NormalizeFocusNotes(focusNotes)
-	if err != nil { return StartResult{}, err }
+	if err != nil {
+		return StartResult{}, err
+	}
 	model, snapshot, settingsHash, err := s.resolveModel(principal.AccountScopeID)
-	if err != nil { return StartResult{}, err }
+	if err != nil {
+		return StartResult{}, err
+	}
 	workspaceIDs := pebblestore.SessionVideoWorkspaceIDs(session)
 	fingerprints := make([]string, 0, len(sources))
 	for _, source := range sources {
@@ -164,9 +172,16 @@ func (s *Service) StartRegisteredAudioSources(ctx context.Context, principal ide
 		var readErr error
 		for _, workspaceID := range workspaceIDs {
 			record, found, readErr = s.sessions.GetAudioSourceRecord(principal.AccountScopeID, workspaceID, strings.TrimSpace(source.Ref))
-			if readErr != nil || found { break }
+			if readErr != nil || found {
+				break
+			}
 		}
-		if readErr != nil || !found { if readErr == nil { readErr = errors.New("registered audio source not found") }; return StartResult{}, readErr }
+		if readErr != nil || !found {
+			if readErr == nil {
+				readErr = errors.New("registered audio source not found")
+			}
+			return StartResult{}, readErr
+		}
 		if record.DisplayName != strings.TrimSpace(source.Name) || record.MIMEType != strings.TrimSpace(source.MIMEType) || record.SizeBytes != source.SizeBytes || record.SourceFingerprint != strings.TrimSpace(source.SourceFingerprint) || record.FingerprintVersion != strings.TrimSpace(source.FingerprintVersion) {
 			return StartResult{}, errors.New("registered audio source reference is stale or inconsistent")
 		}
@@ -180,12 +195,16 @@ func (s *Service) StartRegisteredAudioSources(ctx context.Context, principal ide
 			AccountScopeID: principal.AccountScopeID, UserID: principal.UserID, SessionID: session.ID, MessageID: "",
 			AudioSourceRef: source.Ref, ClientRequestID: fmt.Sprintf("audio-transcription-attachment:%s:%d", requestID, index),
 		})
-		if bindErr != nil { return StartResult{}, fmt.Errorf("bind audio attachment %d: %w", index, bindErr) }
+		if bindErr != nil {
+			return StartResult{}, fmt.Errorf("bind audio attachment %d: %w", index, bindErr)
+		}
 		job, _, createErr := s.sessions.CreateTranscriptionJob(pebblestore.CreateTranscriptionJobInput{
 			AccountScopeID: principal.AccountScopeID, UserID: principal.UserID, SessionID: session.ID, AttachmentRef: attachment.Ref,
 			ProviderID: "google", Model: model, ModelSnapshot: snapshot, MediaSettingsHash: settingsHash, FocusNotes: focusNotes, TranscriptSchema: pebblestore.NormalizedTranscriptSchemaVersion,
 		})
-		if createErr != nil { return StartResult{}, fmt.Errorf("create audio transcription job %d: %w", index, createErr) }
+		if createErr != nil {
+			return StartResult{}, fmt.Errorf("create audio transcription job %d: %w", index, createErr)
+		}
 		jobs = append(jobs, job)
 		s.resume(principal, job)
 	}
@@ -353,7 +372,9 @@ func (s *Service) ReadAudioAnalysisByWorkspace(principal identity.Principal, wor
 	}
 	snapshot, ok, err := s.sessions.FindAudioAnalysisSnapshot(principal.AccountScopeID, strings.TrimSpace(workspaceID), strings.TrimSpace(analysisRef), strings.TrimSpace(sourceFingerprint))
 	if err != nil || !ok {
-		if err == nil { err = errors.New("deterministic audio analysis not found in authenticated workspace scope") }
+		if err == nil {
+			err = errors.New("deterministic audio analysis not found in authenticated workspace scope")
+		}
 		return pebblestore.AudioAnalysisSnapshot{}, err
 	}
 	return snapshot, nil
@@ -366,7 +387,9 @@ func (s *Service) ReadAudioAnalysis(principal identity.Principal, workspaceID st
 	workspaceID = strings.TrimSpace(workspaceID)
 	record, found, err := s.sessions.GetAudioSourceRecord(principal.AccountScopeID, workspaceID, strings.TrimSpace(source.Ref))
 	if err != nil || !found {
-		if err == nil { err = errors.New("registered audio source not found in authenticated workspace scope") }
+		if err == nil {
+			err = errors.New("registered audio source not found in authenticated workspace scope")
+		}
 		return pebblestore.AudioAnalysisSnapshot{}, err
 	}
 	if record.DisplayName != strings.TrimSpace(source.Name) || record.MIMEType != strings.TrimSpace(source.MIMEType) || record.SizeBytes != source.SizeBytes || record.SourceFingerprint != strings.TrimSpace(source.SourceFingerprint) || record.FingerprintVersion != strings.TrimSpace(source.FingerprintVersion) {
@@ -374,7 +397,9 @@ func (s *Service) ReadAudioAnalysis(principal identity.Principal, workspaceID st
 	}
 	snapshot, ok, err := s.sessions.GetAudioAnalysisSnapshot(principal.AccountScopeID, workspaceID, record.SourceFingerprint, AudioAnalyzerVersion)
 	if err != nil || !ok {
-		if err == nil { err = errors.New("deterministic audio analysis is not ready") }
+		if err == nil {
+			err = errors.New("deterministic audio analysis is not ready")
+		}
 		return pebblestore.AudioAnalysisSnapshot{}, err
 	}
 	return snapshot, nil
@@ -413,12 +438,19 @@ func (s *Service) SourceName(principal identity.Principal, sessionID, attachment
 	}
 	if attachment.MediaKind == pebblestore.TranscriptionMediaAudio {
 		record, ok, err := s.sessions.GetAudioSourceRecord(principal.AccountScopeID, attachment.WorkspaceID, attachment.SourceRecordRef)
-		if err != nil || !ok { if err == nil { err = errors.New("audio transcription source not found") }; return "", err }
+		if err != nil || !ok {
+			if err == nil {
+				err = errors.New("audio transcription source not found")
+			}
+			return "", err
+		}
 		return strings.TrimSpace(record.DisplayName), nil
 	}
 	record, ok, err := s.sessions.GetVideoSourceRecord(principal.AccountScopeID, attachment.WorkspaceID, attachment.SourceRecordRef)
 	if err != nil || !ok {
-		if err == nil { err = errors.New("video transcription source not found") }
+		if err == nil {
+			err = errors.New("video transcription source not found")
+		}
 		return "", err
 	}
 	return strings.TrimSpace(record.DisplayName), nil
@@ -501,7 +533,11 @@ func (s *Service) process(ctx context.Context, principal identity.Principal, ini
 	defer file.Close()
 	var generated GeneratedTranscript
 	if attachment.MediaKind == pebblestore.TranscriptionMediaAudio {
-		if s.deterministic == nil { err = errors.New("registered audio processing requires deterministic analysis support") } else { generated, err = s.transcribeRegisteredAudio(ctx, principal, job, attachment, file) }
+		if s.deterministic == nil {
+			err = errors.New("registered audio processing requires deterministic analysis support")
+		} else {
+			generated, err = s.transcribeRegisteredAudio(ctx, principal, job, attachment, file)
+		}
 	} else if s.deterministic != nil {
 		generated, err = s.transcribeDeterministically(ctx, principal, job, file, attachment.SizeBytes)
 	} else {
@@ -553,20 +589,35 @@ func (s *Service) process(ctx context.Context, principal identity.Principal, ini
 
 func (s *Service) transcribeRegisteredAudio(ctx context.Context, principal identity.Principal, job pebblestore.TranscriptionJob, attachment pebblestore.TranscriptionAttachmentRecord, source io.ReadSeeker) (GeneratedTranscript, error) {
 	prepared, err := PrepareRegisteredAudio(ctx, source, attachment.SizeBytes)
-	if err != nil { return GeneratedTranscript{}, err }
+	if err != nil {
+		return GeneratedTranscript{}, err
+	}
 	defer prepared.Close()
 	generated, err := s.deterministic.AnalyzeAudio(ctx, AudioAnalysisRequest{
 		AccountScopeID: principal.AccountScopeID, Model: job.Model, MIMEType: "audio/flac", PrivatePath: prepared.FLACPath,
 		SizeBytes: prepared.FLACBytes, DurationMs: prepared.DurationMs, FocusNotes: job.FocusNotes,
 	})
-	if err != nil { return GeneratedTranscript{}, err }
-	if generated.DurationMs != prepared.DurationMs && abs64(generated.DurationMs-prepared.DurationMs) > 1000 { return GeneratedTranscript{}, errors.New("semantic audio duration does not match deterministic PCM timeline") }
+	if err != nil {
+		return GeneratedTranscript{}, err
+	}
+	if generated.DurationMs != prepared.DurationMs && abs64(generated.DurationMs-prepared.DurationMs) > 1000 {
+		return GeneratedTranscript{}, errors.New("semantic audio duration does not match deterministic PCM timeline")
+	}
 	record, found, err := s.sessions.GetAudioSourceRecord(principal.AccountScopeID, attachment.WorkspaceID, attachment.SourceRecordRef)
-	if err != nil || !found { if err == nil { err = errors.New("registered audio source became unavailable") }; return GeneratedTranscript{}, err }
+	if err != nil || !found {
+		if err == nil {
+			err = errors.New("registered audio source became unavailable")
+		}
+		return GeneratedTranscript{}, err
+	}
 	analysis, err := AnalyzePreparedAudio(prepared, principal.AccountScopeID, attachment.WorkspaceID, pebblestore.AudioSourceReference{Ref: record.Ref, Name: record.DisplayName, MIMEType: record.MIMEType, SizeBytes: record.SizeBytes, SourceFingerprint: record.SourceFingerprint, FingerprintVersion: record.FingerprintVersion})
-	if err != nil { return GeneratedTranscript{}, err }
+	if err != nil {
+		return GeneratedTranscript{}, err
+	}
 	analysis.CreatedAt = time.Now().UnixMilli()
-	if _, _, err = s.sessions.PutAudioAnalysisSnapshot(analysis); err != nil { return GeneratedTranscript{}, err }
+	if _, _, err = s.sessions.PutAudioAnalysisSnapshot(analysis); err != nil {
+		return GeneratedTranscript{}, err
+	}
 	generated.DurationMs = prepared.DurationMs
 	return NormalizeGeneratedTranscript(generated)
 }

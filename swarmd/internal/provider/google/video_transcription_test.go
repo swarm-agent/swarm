@@ -47,6 +47,41 @@ func TestGenerateUsesPortableJSONModeForVideo(t *testing.T) {
 	}
 }
 
+func TestGenerateAudioUsesStructuredResponseSchema(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1beta/models/gemini-audio:generateContent" {
+			t.Fatalf("path = %q", r.URL.Path)
+		}
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		config, _ := body["generationConfig"].(map[string]any)
+		if config["responseMimeType"] != "application/json" {
+			t.Fatalf("generationConfig = %#v", config)
+		}
+		schema, _ := config["responseSchema"].(map[string]any)
+		properties, _ := schema["properties"].(map[string]any)
+		if schema["type"] != "OBJECT" || properties["segments"] == nil || properties["words"] == nil {
+			t.Fatalf("responseSchema = %#v", schema)
+		}
+		contents, _ := body["contents"].([]any)
+		content, _ := contents[0].(map[string]any)
+		parts, _ := content["parts"].([]any)
+		fileData, _ := parts[0].(map[string]any)["file_data"].(map[string]any)
+		if fileData["mime_type"] != "audio/flac" || fileData["file_uri"] != "https://example.invalid/audio" {
+			t.Fatalf("file_data = %#v", fileData)
+		}
+		_, _ = w.Write([]byte(`{"candidates":[{"finishReason":"STOP","content":{"parts":[{"text":"{}"}]}}]}`))
+	}))
+	defer server.Close()
+
+	adapter := &VideoTranscriptionAdapter{baseURL: server.URL, httpClient: server.Client()}
+	if _, err := adapter.generateAudio(context.Background(), "test-key", "gemini-audio", "audio/flac", "https://example.invalid/audio", "transcribe"); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestGeneratePartsUsesGeminiInlineImageShape(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body map[string]any
@@ -178,14 +213,20 @@ func TestParseGoogleTranscriptNormalizesMultimodalTimeline(t *testing.T) {
 func TestParseGoogleTranscriptNormalizesWordMilliseconds(t *testing.T) {
 	payload := []byte(`{"candidates":[{"content":{"parts":[{"text":"{\"summary\":\"Greeting\",\"language\":\"en\",\"duration_ms\":1000,\"content_empty\":false,\"segments\":[{\"start_ms\":0,\"end_ms\":1000,\"speech\":\"hello world\",\"audio\":\"\",\"visual\":\"\",\"on_screen_text\":\"\"}],\"words\":[{\"text\":\"hello\",\"start_ms\":25,\"end_ms\":400,\"confidence\":0.9},{\"text\":\"world\",\"start_ms\":450,\"end_ms\":900}]}"}]}}]}`)
 	transcript, err := parseGoogleAudioTranscript(payload)
-	if err != nil { t.Fatal(err) }
-	if transcript.Partial || len(transcript.Words) != 2 || transcript.Words[0].StartMs != 25 || transcript.Words[1].EndMs != 900 || transcript.Words[0].Provenance != "google_audio_semantic.v1" { t.Fatalf("transcript = %#v", transcript) }
+	if err != nil {
+		t.Fatal(err)
+	}
+	if transcript.Partial || len(transcript.Words) != 2 || transcript.Words[0].StartMs != 25 || transcript.Words[1].EndMs != 900 || transcript.Words[0].Provenance != "google_audio_semantic.v1" {
+		t.Fatalf("transcript = %#v", transcript)
+	}
 }
 
 func TestDeterministicAudioPromptSeparatesSemanticAndDSPTiming(t *testing.T) {
 	prompt := deterministicAudioPrompt(2000, "")
 	for _, required := range []string{"every spoken word", "start_ms", "end_ms", "deterministic local DSP owns those timelines", "empty words array"} {
-		if !strings.Contains(prompt, required) { t.Fatalf("prompt missing %q: %s", required, prompt) }
+		if !strings.Contains(prompt, required) {
+			t.Fatalf("prompt missing %q: %s", required, prompt)
+		}
 	}
 }
 
@@ -248,5 +289,28 @@ func TestParseGoogleTranscriptRejectsMalformedProviderPayloadWithoutEcho(t *test
 	_, err := parseGoogleTranscript([]byte(`{"unexpected":"` + secret + `"}`))
 	if err == nil || strings.Contains(err.Error(), secret) {
 		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestParseGoogleCandidateTextReportsSanitizedPromptBlock(t *testing.T) {
+	secret := "synthetic-secret"
+	_, err := parseGoogleCandidateText([]byte(`{"promptFeedback":{"blockReason":"SAFETY","blockReasonMessage":"authorization: Bearer ` + secret + `"}}`))
+	if err == nil || !strings.Contains(err.Error(), "prompt_block_reason=SAFETY") || !strings.Contains(err.Error(), "Bearer [redacted]") || strings.Contains(err.Error(), secret) {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestParseGoogleCandidateTextReportsSanitizedFinishDetails(t *testing.T) {
+	secret := "synthetic-secret"
+	_, err := parseGoogleCandidateText([]byte(`{"candidates":[{"finishReason":"MAX_TOKENS","finishMessage":"authorization: Bearer ` + secret + `","content":{"parts":[]}}]}`))
+	if err == nil || !strings.Contains(err.Error(), "finish_reason=MAX_TOKENS") || !strings.Contains(err.Error(), "Bearer [redacted]") || strings.Contains(err.Error(), secret) {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestParseGoogleCandidateTextUsesLaterTextCandidate(t *testing.T) {
+	text, err := parseGoogleCandidateText([]byte(`{"candidates":[{"finishReason":"SAFETY","content":{"parts":[]}},{"finishReason":"STOP","content":{"parts":[{"text":"{\"ok\":true}"}]}}]}`))
+	if err != nil || text != `{"ok":true}` {
+		t.Fatalf("text=%q err=%v", text, err)
 	}
 }

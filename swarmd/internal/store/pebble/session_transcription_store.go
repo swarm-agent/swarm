@@ -23,9 +23,9 @@ const (
 	NormalizedTranscriptMultimodalLegacy = "normalized_transcript.v2"
 	NormalizedTranscriptLegacyVersion    = "normalized_transcript.v1"
 
-	TranscriptionMediaVideo = "video"
-	TranscriptionMediaAudio = "audio"
-	ContentEmptyVideoDescription         = "No meaningful visual or auditory content was detected."
+	TranscriptionMediaVideo      = "video"
+	TranscriptionMediaAudio      = "audio"
+	ContentEmptyVideoDescription = "No meaningful visual or auditory content was detected."
 
 	TranscriptionJobQueued     = "queued"
 	TranscriptionJobUploading  = "uploading"
@@ -59,7 +59,7 @@ const (
 // Legacy schema-v1 records omit MediaKind and are interpreted as video.
 type TranscriptionAttachmentRecord struct {
 	SchemaVersion      int    `json:"schema_version"`
-	MediaKind         string `json:"media_kind,omitempty"`
+	MediaKind          string `json:"media_kind,omitempty"`
 	Ref                string `json:"ref"`
 	AccountScopeID     string `json:"account_scope_id"`
 	UserID             string `json:"user_id,omitempty"`
@@ -506,7 +506,7 @@ func (s *SessionStore) CommitNormalizedTranscript(input CommitNormalizedTranscri
 		SchemaVersion: job.TranscriptSchema, Ref: job.TranscriptRef, JobRef: job.Ref, AccountScopeID: job.AccountScopeID,
 		WorkspaceID: job.WorkspaceID, SessionID: job.SessionID, MessageID: job.MessageID, AttachmentRef: job.AttachmentRef,
 		SourceFingerprint: job.SourceFingerprint, ModelGenerated: true, Segments: append([]NormalizedTranscriptSegment(nil), input.Segments...),
-		Words: append([]NormalizedTranscriptWord(nil), input.Words...),
+		Words:      append([]NormalizedTranscriptWord(nil), input.Words...),
 		Metadata:   NormalizedTranscriptMetadata{Language: input.Language, DurationMs: input.DurationMs, Summary: input.Summary, ContentEmpty: input.ContentEmpty, ProviderID: job.ProviderID, Model: job.Model, ModelSnapshot: job.ModelSnapshot, MediaSettingsHash: job.MediaSettingsHash, GeneratedAt: input.GeneratedAt},
 		Validation: TranscriptValidation{State: TranscriptValidationValidated, ValidatedAt: now}, CreatedAt: now,
 	}
@@ -796,7 +796,9 @@ func (s *SessionStore) buildAudioTranscriptionAttachment(session SessionSnapshot
 		}
 	}
 	if err != nil || !ok {
-		if err == nil { err = errors.New("registered audio source not found in authenticated session scope") }
+		if err == nil {
+			err = errors.New("registered audio source not found in authenticated session scope")
+		}
 		return TranscriptionAttachmentRecord{}, err
 	}
 	file, err := OpenValidatedAudioSource(record)
@@ -1242,7 +1244,8 @@ func validateV3TranscriptionMutationInput(input V3SessionMutationInput) error {
 		if err := validateV3MutationEmbeddedOwnership(input, "transcription attachment", record.SessionID, record.UserID, record.AccountScopeID); err != nil {
 			return err
 		}
-		if !validOpaqueTranscriptionRef(record.Ref, "vatt_") || !validFingerprint(record.SourceFingerprint) || record.WorkspaceID == "" || record.MessageID == "" || (record.MediaKind != TranscriptionMediaVideo && record.MediaKind != TranscriptionMediaAudio) {
+		validMediaIdentity := (record.MediaKind == TranscriptionMediaVideo && record.MessageID != "") || (record.MediaKind == TranscriptionMediaAudio && record.MessageID == "" && strings.HasPrefix(record.SourceRecordRef, "audiosrc_"))
+		if !validOpaqueTranscriptionRef(record.Ref, "vatt_") || !validFingerprint(record.SourceFingerprint) || record.WorkspaceID == "" || !validMediaIdentity {
 			return errors.New("transcription attachment has invalid durable identity")
 		}
 	}
@@ -1250,7 +1253,7 @@ func validateV3TranscriptionMutationInput(input V3SessionMutationInput) error {
 		if err := validateV3MutationEmbeddedOwnership(input, "transcription job", job.SessionID, job.UserID, job.AccountScopeID); err != nil {
 			return err
 		}
-		if !validOpaqueTranscriptionRef(job.Ref, "trjob_") || !validOpaqueTranscriptionRef(job.TranscriptRef, "transcript_") || !validOpaqueTranscriptionRef(job.AttachmentRef, "vatt_") || !validFingerprint(job.SourceFingerprint) || job.WorkspaceID == "" || job.MessageID == "" || len(job.FocusNotes) > 500 {
+		if !validOpaqueTranscriptionRef(job.Ref, "trjob_") || !validOpaqueTranscriptionRef(job.TranscriptRef, "transcript_") || !validOpaqueTranscriptionRef(job.AttachmentRef, "vatt_") || !validFingerprint(job.SourceFingerprint) || job.WorkspaceID == "" || len(job.FocusNotes) > 500 {
 			return errors.New("transcription job has invalid durable identity or focus notes")
 		}
 	}

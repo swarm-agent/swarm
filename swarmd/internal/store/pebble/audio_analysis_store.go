@@ -131,15 +131,25 @@ func (s *SessionStore) FindAudioAnalysisSnapshot(accountScopeID, workspaceID, an
 	var scanned int
 	err := s.store.IteratePrefix(prefix, 10_001, func(_ string, value []byte) error {
 		scanned++
-		if scanned > 10_000 { return errors.New("audio analysis lookup exceeded the bounded record limit") }
+		if scanned > 10_000 {
+			return errors.New("audio analysis lookup exceeded the bounded record limit")
+		}
 		var candidate AudioAnalysisSnapshot
-		if err := json.Unmarshal(value, &candidate); err != nil { return err }
-		if (analysisRef != "" && candidate.Ref != analysisRef) || (sourceFingerprint != "" && candidate.SourceFingerprint != sourceFingerprint) { return nil }
-		if found.Ref != "" && found.Ref != candidate.Ref { return errors.New("audio analysis lookup is ambiguous") }
+		if err := json.Unmarshal(value, &candidate); err != nil {
+			return err
+		}
+		if (analysisRef != "" && candidate.Ref != analysisRef) || (sourceFingerprint != "" && candidate.SourceFingerprint != sourceFingerprint) {
+			return nil
+		}
+		if found.Ref != "" && found.Ref != candidate.Ref {
+			return errors.New("audio analysis lookup is ambiguous")
+		}
 		found = candidate
 		return nil
 	})
-	if err != nil || found.Ref == "" { return AudioAnalysisSnapshot{}, false, err }
+	if err != nil || found.Ref == "" {
+		return AudioAnalysisSnapshot{}, false, err
+	}
 	return s.GetAudioAnalysisSnapshot(accountScopeID, workspaceID, found.SourceFingerprint, found.AnalyzerVersion)
 }
 
@@ -233,17 +243,17 @@ func normalizeAudioAnalysisSnapshot(snapshot AudioAnalysisSnapshot) (AudioAnalys
 	identity := strings.Join([]string{snapshot.AccountScopeID, snapshot.WorkspaceID, snapshot.SourceFingerprint, snapshot.AnalyzerVersion}, "\x00")
 	snapshot.Ref = "audanalysis_" + audioAnalysisDigest(identity)
 	content := struct {
-		SchemaVersion string                 `json:"schema_version"`
-		SourceRef string                     `json:"source_ref"`
-		SourceFingerprint string             `json:"source_fingerprint"`
-		AnalyzerVersion string               `json:"analyzer_version"`
-		DurationMs int64                     `json:"duration_ms"`
-		SampleIntervalMs int64               `json:"sample_interval_ms"`
-		Levels []AudioAnalysisLevel          `json:"levels"`
-		Onsets []AudioAnalysisOnset          `json:"onsets,omitempty"`
-		Tempo *AudioAnalysisTempo            `json:"tempo,omitempty"`
-		Beats []AudioAnalysisBeat            `json:"beats,omitempty"`
-		Sections []AudioAnalysisSection      `json:"sections,omitempty"`
+		SchemaVersion     string                 `json:"schema_version"`
+		SourceRef         string                 `json:"source_ref"`
+		SourceFingerprint string                 `json:"source_fingerprint"`
+		AnalyzerVersion   string                 `json:"analyzer_version"`
+		DurationMs        int64                  `json:"duration_ms"`
+		SampleIntervalMs  int64                  `json:"sample_interval_ms"`
+		Levels            []AudioAnalysisLevel   `json:"levels"`
+		Onsets            []AudioAnalysisOnset   `json:"onsets,omitempty"`
+		Tempo             *AudioAnalysisTempo    `json:"tempo,omitempty"`
+		Beats             []AudioAnalysisBeat    `json:"beats,omitempty"`
+		Sections          []AudioAnalysisSection `json:"sections,omitempty"`
 	}{snapshot.SchemaVersion, snapshot.SourceRef, snapshot.SourceFingerprint, snapshot.AnalyzerVersion, snapshot.DurationMs, snapshot.SampleIntervalMs, snapshot.Levels, snapshot.Onsets, snapshot.Tempo, snapshot.Beats, snapshot.Sections}
 	payload, err := json.Marshal(content)
 	if err != nil {

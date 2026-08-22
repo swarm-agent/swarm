@@ -156,7 +156,9 @@ func TestManageVideoListsRegisteredSourcesWithoutTriggerAttachment(t *testing.T)
 	if _, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, WorkspaceScope{SessionID: "session-1", Principal: principal}, Call{CallID: "call-4", Name: "manage_video", Arguments: string(audioArgs)}); err != nil {
 		t.Fatal(err)
 	}
-	if videoService.audioSourceCount != 1 { t.Fatalf("selected audio source count=%d, want 1", videoService.audioSourceCount) }
+	if videoService.audioSourceCount != 1 {
+		t.Fatalf("selected audio source count=%d, want 1", videoService.audioSourceCount)
+	}
 	mixedArgs, _ := json.Marshal(map[string]any{"action": "start_transcription", "video_refs": []string{browseResponse.Videos[0].Ref}, "audio_refs": []string{browseResponse.Audio[0].Ref}})
 	if _, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, WorkspaceScope{SessionID: "session-1", Principal: principal}, Call{CallID: "call-5", Name: "manage_video", Arguments: string(mixedArgs)}); err == nil || !strings.Contains(err.Error(), "mixed") {
 		t.Fatalf("mixed media error=%v", err)
@@ -170,18 +172,26 @@ func TestBoundedAudioAnalysisSlicesAndAggregates(t *testing.T) {
 		t.Fatalf("aggregated levels=%+v", got)
 	}
 	beats := boundedAudioBeats([]pebblestore.AudioAnalysisBeat{{TimeMs: 50}, {TimeMs: 100}, {TimeMs: 250}}, 100, 250)
-	if len(beats) != 1 || beats[0].TimeMs != 100 { t.Fatalf("bounded beats=%+v", beats) }
+	if len(beats) != 1 || beats[0].TimeMs != 100 {
+		t.Fatalf("bounded beats=%+v", beats)
+	}
 }
 
 func TestManageVideoReadsBoundedDeterministicAudioAnalysis(t *testing.T) {
 	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "manage-video-audio-analysis.pebble"))
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer store.Close()
 	principal := identity.Principal{Type: identity.PrincipalTypeUser, SessionID: "session-1", UserID: "user-1", AccountScopeID: "account-1"}
 	sessionStore := pebblestore.NewSessionStore(store)
-	if err := sessionStore.CreateSession(pebblestore.SessionSnapshot{ID: "session-1", UserID: principal.UserID, AccountScopeID: principal.AccountScopeID, WorkspacePath: "/workspace", Mode: "auto", Metadata: map[string]any{"workspace_id": "workspace-1"}}); err != nil { t.Fatal(err) }
+	if err := sessionStore.CreateSession(pebblestore.SessionSnapshot{ID: "session-1", UserID: principal.UserID, AccountScopeID: principal.AccountScopeID, WorkspacePath: "/workspace", Mode: "auto", Metadata: map[string]any{"workspace_id": "workspace-1"}}); err != nil {
+		t.Fatal(err)
+	}
 	events, err := pebblestore.NewEventLog(store)
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	runtime := NewRuntime(1)
 	runtime.sessions = sessionruntime.NewService(sessionStore, events)
 	runtime.video = &fakeManageVideoService{audioAnalysis: pebblestore.AudioAnalysisSnapshot{
@@ -195,11 +205,17 @@ func TestManageVideoReadsBoundedDeterministicAudioAnalysis(t *testing.T) {
 		t.Fatalf("invalid resolution error=%v", err)
 	}
 	payload, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, Call{CallID: "read", Name: "manage_video", Arguments: `{"action":"read_audio_analysis","analysis_ref":"audanalysis_test","start_ms":0,"end_ms":500}`})
-	if err != nil { t.Fatal(err) }
-	for _, want := range []string{`"timing_authority":"deterministic_pcm_dsp"`, `"model_generated":false`, `"levels_truncated":false`, `"sections_truncated":false`, `"end_ms":500`} {
-		if !strings.Contains(payload, want) { t.Fatalf("analysis payload lacks %s: %s", want, payload) }
+	if err != nil {
+		t.Fatal(err)
 	}
-	if strings.Contains(payload, "/workspace") { t.Fatalf("analysis response leaked private workspace path: %s", payload) }
+	for _, want := range []string{`"timing_authority":"deterministic_pcm_dsp"`, `"model_generated":false`, `"levels_truncated":false`, `"sections_truncated":false`, `"end_ms":500`} {
+		if !strings.Contains(payload, want) {
+			t.Fatalf("analysis payload lacks %s: %s", want, payload)
+		}
+	}
+	if strings.Contains(payload, "/workspace") {
+		t.Fatalf("analysis response leaked private workspace path: %s", payload)
+	}
 }
 
 func TestManageVideoRequiresTrustedRunContext(t *testing.T) {

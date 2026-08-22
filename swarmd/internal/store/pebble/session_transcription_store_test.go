@@ -119,8 +119,15 @@ func TestAudioTranscriptionBindsRegisteredSourceAndRevalidatesOpen(t *testing.T)
 		t.Fatal(err)
 	}
 	attachment, replayed, err := sessions.BindAudioTranscriptionAttachment(BindAudioTranscriptionAttachmentInput{AccountScopeID: session.AccountScopeID, UserID: session.UserID, SessionID: session.ID, MessageID: "", AudioSourceRef: source.Ref, ClientRequestID: "bind-audio", NowUnixMs: 100})
-	if err != nil || replayed || attachment.MediaKind != TranscriptionMediaAudio || attachment.SourceRecordRef != source.Ref {
+	if err != nil || replayed || attachment.MediaKind != TranscriptionMediaAudio || attachment.SourceRecordRef != source.Ref || attachment.MessageID != "" {
 		t.Fatalf("attachment=%+v replayed=%v err=%v", attachment, replayed, err)
+	}
+	job, replayed, err := sessions.CreateTranscriptionJob(CreateTranscriptionJobInput{
+		AccountScopeID: session.AccountScopeID, UserID: session.UserID, SessionID: session.ID, AttachmentRef: attachment.Ref,
+		ProviderID: "google", Model: "gemini", ModelSnapshot: "snapshot", MediaSettingsHash: "settings",
+	})
+	if err != nil || replayed || job.MessageID != "" || job.AttachmentRef != attachment.Ref {
+		t.Fatalf("job=%+v replayed=%v err=%v", job, replayed, err)
 	}
 	file, err := sessions.OpenTranscriptionAttachmentSource(session.AccountScopeID, session.ID, attachment.Ref)
 	if err != nil {

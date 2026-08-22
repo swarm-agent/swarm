@@ -12,11 +12,24 @@ import (
 )
 
 const (
-	directAudioTranscriptMaxWords    = 10_000
-	directAudioAnalysisMaxLevels     = 10_000
-	directAudioAnalysisMaxEvents     = 10_000
-	directAudioAnalysisMaxSections   = 1_000
+	directAudioTranscriptMaxWords  = 10_000
+	directAudioAnalysisMaxLevels   = 10_000
+	directAudioAnalysisMaxEvents   = 10_000
+	directAudioAnalysisMaxSections = 1_000
 )
+
+func validDirectAudioSourceRef(ref string) bool {
+	ref = strings.TrimSpace(ref)
+	if len(ref) != len("audiosrc_")+64 || !strings.HasPrefix(ref, "audiosrc_") {
+		return false
+	}
+	for _, r := range ref[len("audiosrc_"):] {
+		if (r < '0' || r > '9') && (r < 'a' || r > 'f') {
+			return false
+		}
+	}
+	return true
+}
 
 func (s *Server) handleWorkspaceAudioTranscribe(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -55,6 +68,16 @@ func (s *Server) handleWorkspaceAudioTranscribe(w http.ResponseWriter, r *http.R
 		}
 		seen[ref] = struct{}{}
 		refs = append(refs, ref)
+	}
+	if len(refs) == 0 || len(refs) > pebblestore.SessionVideoAttachmentMaxCount {
+		writeError(w, http.StatusBadRequest, errors.New("audio transcription requires a bounded set of exact audiosrc_ references"))
+		return
+	}
+	for _, ref := range refs {
+		if !validDirectAudioSourceRef(ref) {
+			writeError(w, http.StatusBadRequest, errors.New("audio transcription requires exact audiosrc_ references"))
+			return
+		}
 	}
 	if s == nil || s.sessions == nil || s.sessions.Store() == nil || s.workspace == nil || s.videoTranscription == nil {
 		writeError(w, http.StatusInternalServerError, errors.New("workspace audio transcription is not configured"))
@@ -280,7 +303,7 @@ func safeDirectAudioAnalysis(snapshot pebblestore.AudioAnalysisSnapshot) map[str
 		"ref": snapshot.Ref, "schema_version": snapshot.SchemaVersion, "source_ref": snapshot.SourceRef,
 		"analyzer_version": snapshot.AnalyzerVersion, "duration_ms": snapshot.DurationMs, "sample_interval_ms": snapshot.SampleIntervalMs,
 		"levels": levels, "onsets": onsets, "tempo": snapshot.Tempo, "beats": beats, "sections": sections,
-		"content_digest": snapshot.ContentDigest,
+		"content_digest":   snapshot.ContentDigest,
 		"levels_truncated": levelsTruncated, "onsets_truncated": onsetsTruncated, "beats_truncated": beatsTruncated, "sections_truncated": sectionsTruncated,
 		"details_truncated": levelsTruncated || onsetsTruncated || beatsTruncated || sectionsTruncated,
 	}
@@ -292,4 +315,3 @@ func boundedSlice[T any](values []T, limit int) ([]T, bool) {
 	}
 	return values[:limit], true
 }
-

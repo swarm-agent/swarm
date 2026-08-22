@@ -19,18 +19,18 @@ import (
 
 const (
 	AudioAnalyzerVersion = "swarm-dsp.v1"
-	audioSampleRate       = 16000
-	audioMaxPCMBytes      = 128 << 20
+	audioSampleRate      = 16000
+	audioMaxPCMBytes     = 128 << 20
 )
 
 // PreparedAudio owns one normalized 16 kHz mono timeline. FLAC is used for
 // semantic provider analysis while PCM is the sole timing authority for DSP.
 type PreparedAudio struct {
-	DurationMs  int64
-	FLACPath    string
-	FLACBytes   int64
-	PCMPath     string
-	privateDir  string
+	DurationMs int64
+	FLACPath   string
+	FLACBytes  int64
+	PCMPath    string
+	privateDir string
 }
 
 func (a *PreparedAudio) Close() error {
@@ -150,8 +150,12 @@ func AnalyzePreparedAudio(prepared *PreparedAudio, accountScopeID, workspaceID s
 		rms := math.Sqrt(sum / float64(end-start))
 		startMs := int64(start) * 1000 / audioSampleRate
 		endMs := int64(end) * 1000 / audioSampleRate
-		if endMs > prepared.DurationMs { endMs = prepared.DurationMs }
-		if endMs <= startMs { endMs = startMs + 1 }
+		if endMs > prepared.DurationMs {
+			endMs = prepared.DurationMs
+		}
+		if endMs <= startMs {
+			endMs = startMs + 1
+		}
 		levels = append(levels, pebblestore.AudioAnalysisLevel{StartMs: startMs, EndMs: endMs, RMS: clamp01(rms), Peak: clamp01(peak)})
 		energies = append(energies, rms)
 	}
@@ -178,15 +182,19 @@ func detectOnsets(energy []float64, intervalMs, durationMs int64) []pebblestore.
 	for i := 2; i+2 < len(flux); i++ {
 		start := max(0, i-25)
 		var mean float64
-		for _, value := range flux[start:i] { mean += value }
+		for _, value := range flux[start:i] {
+			mean += value
+		}
 		mean /= float64(max(1, i-start))
 		threshold := mean*2.5 + 0.003
 		if flux[i] < threshold || flux[i] < flux[i-1] || flux[i] < flux[i+1] {
 			continue
 		}
 		timeMs := min64(durationMs, int64(i)*intervalMs)
-		if timeMs-last < 100 { continue }
-		strength := clamp01((flux[i]-threshold)/(threshold+0.02))
+		if timeMs-last < 100 {
+			continue
+		}
+		strength := clamp01((flux[i] - threshold) / (threshold + 0.02))
 		out = append(out, pebblestore.AudioAnalysisOnset{TimeMs: timeMs, Strength: strength})
 		last = timeMs
 	}
@@ -194,24 +202,37 @@ func detectOnsets(energy []float64, intervalMs, durationMs int64) []pebblestore.
 }
 
 func estimateTempoAndBeats(onsets []pebblestore.AudioAnalysisOnset, durationMs int64) (*pebblestore.AudioAnalysisTempo, []pebblestore.AudioAnalysisBeat) {
-	if len(onsets) < 6 || durationMs < 3000 { return nil, nil }
-	type candidate struct { interval int64; score float64 }
+	if len(onsets) < 6 || durationMs < 3000 {
+		return nil, nil
+	}
+	type candidate struct {
+		interval int64
+		score    float64
+	}
 	best := candidate{}
 	for bpm := 60; bpm <= 200; bpm++ {
 		interval := int64(math.Round(60000 / float64(bpm)))
 		var score float64
 		for i := 1; i < len(onsets); i++ {
-			delta := onsets[i].TimeMs-onsets[i-1].TimeMs
-			nearest := math.Round(float64(delta)/float64(interval))*float64(interval)
-			if nearest <= 0 { continue }
-			errorMs := math.Abs(float64(delta)-nearest)
+			delta := onsets[i].TimeMs - onsets[i-1].TimeMs
+			nearest := math.Round(float64(delta)/float64(interval)) * float64(interval)
+			if nearest <= 0 {
+				continue
+			}
+			errorMs := math.Abs(float64(delta) - nearest)
 			score += math.Exp(-errorMs*errorMs/(2*40*40)) * onsets[i].Strength
 		}
-		if score > best.score { best = candidate{interval, score} }
+		if score > best.score {
+			best = candidate{interval, score}
+		}
 	}
-	if best.score < 1.5 { return nil,nil }
+	if best.score < 1.5 {
+		return nil, nil
+	}
 	confidence := clamp01(best.score / math.Max(3, float64(len(onsets))*0.7))
-	if confidence < .25 { return nil,nil }
+	if confidence < .25 {
+		return nil, nil
+	}
 	interval := best.interval
 	phase := onsets[0].TimeMs
 	var bestScore float64
@@ -219,39 +240,81 @@ func estimateTempoAndBeats(onsets []pebblestore.AudioAnalysisOnset, durationMs i
 		var score float64
 		for _, other := range onsets {
 			distance := math.Abs(math.Remainder(float64(other.TimeMs-onset.TimeMs), float64(interval)))
-			score += math.Exp(-distance*distance/(2*35*35))*other.Strength
+			score += math.Exp(-distance*distance/(2*35*35)) * other.Strength
 		}
-		if score > bestScore { bestScore, phase = score, onset.TimeMs }
+		if score > bestScore {
+			bestScore, phase = score, onset.TimeMs
+		}
 	}
-	for phase-interval >= 0 { phase -= interval }
+	for phase-interval >= 0 {
+		phase -= interval
+	}
 	beats := make([]pebblestore.AudioAnalysisBeat, 0, int(durationMs/interval)+1)
-	for timeMs, index := phase, 0; timeMs <= durationMs && len(beats)<50000; timeMs,index = timeMs+interval,index+1 {
-		beats = append(beats, pebblestore.AudioAnalysisBeat{TimeMs: timeMs, Confidence: confidence, BarBeat: index%4+1})
+	for timeMs, index := phase, 0; timeMs <= durationMs && len(beats) < 50000; timeMs, index = timeMs+interval, index+1 {
+		beats = append(beats, pebblestore.AudioAnalysisBeat{TimeMs: timeMs, Confidence: confidence, BarBeat: index%4 + 1})
 	}
-	return &pebblestore.AudioAnalysisTempo{BPM: 60000/float64(interval), Confidence: confidence}, beats
+	return &pebblestore.AudioAnalysisTempo{BPM: 60000 / float64(interval), Confidence: confidence}, beats
 }
 
 func deriveEnergySections(energy []float64, intervalMs, durationMs int64) []pebblestore.AudioAnalysisSection {
-	if len(energy)==0 { return nil }
+	if len(energy) == 0 {
+		return nil
+	}
 	window := max(1, int(5000/intervalMs))
 	var sections []pebblestore.AudioAnalysisSection
-	labelFor := func(value float64) string { if value < .015 { return "quiet" }; if value < .08 { return "moderate" }; return "high_energy" }
+	labelFor := func(value float64) string {
+		if value < .015 {
+			return "quiet"
+		}
+		if value < .08 {
+			return "moderate"
+		}
+		return "high_energy"
+	}
 	current, start := "", int64(0)
-	for i:=0; i<len(energy); i+=window {
-		end:=min(len(energy),i+window); var mean float64
-		for _,v:=range energy[i:end] { mean+=v }; mean/=float64(end-i)
-		label:=labelFor(mean); timeMs:=int64(i)*intervalMs
-		if current=="" { current=label; start=timeMs; continue }
-		if label!=current && timeMs-start>=5000 {
-			sections=append(sections,pebblestore.AudioAnalysisSection{StartMs:start,EndMs:min64(timeMs,durationMs),Label:current,Confidence:.65})
-			current,start=label,timeMs
+	for i := 0; i < len(energy); i += window {
+		end := min(len(energy), i+window)
+		var mean float64
+		for _, v := range energy[i:end] {
+			mean += v
+		}
+		mean /= float64(end - i)
+		label := labelFor(mean)
+		timeMs := int64(i) * intervalMs
+		if current == "" {
+			current = label
+			start = timeMs
+			continue
+		}
+		if label != current && timeMs-start >= 5000 {
+			sections = append(sections, pebblestore.AudioAnalysisSection{StartMs: start, EndMs: min64(timeMs, durationMs), Label: current, Confidence: .65})
+			current, start = label, timeMs
 		}
 	}
-	if durationMs>start { sections=append(sections,pebblestore.AudioAnalysisSection{StartMs:start,EndMs:durationMs,Label:current,Confidence:.65}) }
+	if durationMs > start {
+		sections = append(sections, pebblestore.AudioAnalysisSection{StartMs: start, EndMs: durationMs, Label: current, Confidence: .65})
+	}
 	return sections
 }
 
-func clamp01(v float64) float64 { if v<0{return 0};if v>1{return 1};return v }
-func abs64(v int64) int64 { if v<0{return -v};return v }
-func min64(a,b int64) int64 { if a<b{return a};return b }
-
+func clamp01(v float64) float64 {
+	if v < 0 {
+		return 0
+	}
+	if v > 1 {
+		return 1
+	}
+	return v
+}
+func abs64(v int64) int64 {
+	if v < 0 {
+		return -v
+	}
+	return v
+}
+func min64(a, b int64) int64 {
+	if a < b {
+		return a
+	}
+	return b
+}

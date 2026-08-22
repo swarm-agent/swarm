@@ -67,43 +67,43 @@ func manageVideoDefinition() Definition {
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"action":             map[string]any{"type": "string", "enum": []string{"list_source_roots", "browse_source", "inspect_attachments", "start_transcription", "status", "cancel", "read_transcript", "read_audio_analysis", "create_project", "read_project", "get_project", "list_projects", "inspect_accepted_cut", "create_edit_proposal", "propose_plan", "proposal_status", "recommend_render_settings", "create_revision", "restore_revision", "start_render", "render_status", "cancel_render"}, "description": "Use create_project to create or load the session's project; it always returns project_id and an exact revision_id, even when initial_timeline is omitted. Use propose_plan only for an atomic visual plan and pass that revision_id as base_revision_id. Use create_edit_proposal for typed timeline operations."},
-				"source_root_ref":    map[string]any{"type": "string", "description": "Opaque root reference returned by list_source_roots."},
-				"relative_path":      map[string]any{"type": "string", "description": "Bounded path under source_root_ref; use directory relative_path values returned by browse_source."},
-				"video_refs":         map[string]any{"type": "array", "maxItems": pebblestore.SessionVideoAttachmentMaxCount, "items": map[string]any{"type": "string"}, "description": "Opaque video references returned by browse_source. With start_transcription, these are transcribed without needing a message attachment."},
-				"audio_refs":         map[string]any{"type": "array", "maxItems": pebblestore.SessionVideoAttachmentMaxCount, "items": map[string]any{"type": "string"}, "description": "Opaque audiosrc_ references returned by browse_source. With start_transcription, these produce word-timed speech plus deterministic music analysis. Do not mix with video_refs."},
-				"job_refs":           map[string]any{"type": "array", "maxItems": pebblestore.SessionVideoAttachmentMaxCount, "items": map[string]any{"type": "string"}},
-				"job_ref":            map[string]any{"type": "string"},
-				"transcript_ref":     map[string]any{"type": "string"},
-				"source_fingerprint": map[string]any{"type": "string", "description": "Exact source fingerprint returned for an unchanged registered source; read_transcript and read_audio_analysis may use it."},
-				"analysis_ref":       map[string]any{"type": "string", "description": "Exact audanalysis_ reference returned by browse_source or read_audio_analysis."},
+				"action":                 map[string]any{"type": "string", "enum": []string{"list_source_roots", "browse_source", "inspect_attachments", "start_transcription", "status", "cancel", "read_transcript", "read_audio_analysis", "create_project", "read_project", "get_project", "list_projects", "inspect_accepted_cut", "create_edit_proposal", "propose_plan", "proposal_status", "recommend_render_settings", "create_revision", "restore_revision", "start_render", "render_status", "cancel_render"}, "description": "Use create_project to create or load the session's project; it always returns project_id and an exact revision_id, even when initial_timeline is omitted. Use propose_plan only for an atomic visual plan and pass that revision_id as base_revision_id. Use create_edit_proposal for typed timeline operations."},
+				"source_root_ref":        map[string]any{"type": "string", "description": "Opaque root reference returned by list_source_roots."},
+				"relative_path":          map[string]any{"type": "string", "description": "Bounded path under source_root_ref; use directory relative_path values returned by browse_source."},
+				"video_refs":             map[string]any{"type": "array", "maxItems": pebblestore.SessionVideoAttachmentMaxCount, "items": map[string]any{"type": "string"}, "description": "Opaque video references returned by browse_source. With start_transcription, these are transcribed without needing a message attachment."},
+				"audio_refs":             map[string]any{"type": "array", "maxItems": pebblestore.SessionVideoAttachmentMaxCount, "items": map[string]any{"type": "string"}, "description": "Opaque audiosrc_ references returned by browse_source. With start_transcription, these produce word-timed speech plus deterministic music analysis. Do not mix with video_refs."},
+				"job_refs":               map[string]any{"type": "array", "maxItems": pebblestore.SessionVideoAttachmentMaxCount, "items": map[string]any{"type": "string"}},
+				"job_ref":                map[string]any{"type": "string"},
+				"transcript_ref":         map[string]any{"type": "string"},
+				"source_fingerprint":     map[string]any{"type": "string", "description": "Exact source fingerprint returned for an unchanged registered source; read_transcript and read_audio_analysis may use it."},
+				"analysis_ref":           map[string]any{"type": "string", "description": "Exact audanalysis_ reference returned by browse_source or read_audio_analysis."},
 				"waveform_resolution_ms": map[string]any{"type": "integer", "minimum": 1, "maximum": 60000, "description": "Optional minimum waveform bucket width for read_audio_analysis; adjacent deterministic level samples are aggregated."},
-				"focus_notes":        map[string]any{"type": "string", "maxLength": videotranscription.MaxFocusNotesBytes, "description": "Optional job-specific instructions from the initiating user or AI for start_transcription only, for example: 'Silent software demo; produce a dense play-by-play of cursor actions, navigation, text changes, and visible results.' Guidance cannot change the multimodal schema, factuality rules, or source authority."},
-				"max_bytes":          map[string]any{"type": "integer", "minimum": 1, "maximum": manageVideoMaxTranscriptBytes},
-				"max_segments":       map[string]any{"type": "integer", "minimum": 1, "maximum": manageVideoMaxSegments},
-				"start_ms":           map[string]any{"type": "integer", "minimum": 0, "description": "Optional inclusive evidence-range start for bounded transcript retrieval."},
-				"end_ms":             map[string]any{"type": "integer", "minimum": 1, "description": "Optional exclusive evidence-range end for bounded transcript retrieval."},
-				"include_index":      map[string]any{"type": "boolean", "description": "Derive the compact section index, ranged deduplicated evidence, and conservative splice manifest."},
-				"index_only":         map[string]any{"type": "boolean", "description": "Return transcript authority metadata plus the compact index and bounded evidence without hydrating full transcript text or segments."},
-				"project_id":         map[string]any{"type": "string", "description": "Opaque video project identifier for reading, revising, or rendering a project."},
-				"revision_id":        map[string]any{"type": "string", "description": "Optional opaque project revision identifier."},
-				"source_revision_id": map[string]any{"type": "string", "description": "Exact immutable revision to copy when restoring a project."},
-				"render_job_id":      map[string]any{"type": "string", "description": "Opaque render job identifier for checking status or cancelling a render."},
-				"queue_grace_ms":     map[string]any{"type": "integer", "minimum": 0, "maximum": int(videorender.MaxQueueGracePeriod.Milliseconds()), "description": "Optional bounded delay before a new render leaves queued status, allowing deterministic immediate cancellation without weakening terminal-state rules."},
-				"title":              map[string]any{"type": "string", "description": "Human-readable video project title."},
-				"description":        map[string]any{"type": "string", "description": "Optional description for a video project or revision."},
-				"output_preset":      map[string]any{"type": "string", "description": "Target video format preset (e.g. landscape_1080p, landscape_720p, portrait_1080p, portrait_720p, square_1080p, landscape_video, portrait_video, x_header)."},
-				"change_summary":     map[string]any{"type": "string", "description": "Summary of changes made in this revision."},
-				"timeline":           map[string]any{"type": "object", "description": "Structured video project timeline with clips, captions, and audio policy."},
-				"initial_timeline":   map[string]any{"type": "object", "description": "Optional initial structured timeline when creating a video project. Omit it for a new visual plan; create_project still creates and returns an empty exact base revision."},
-				"metadata":           map[string]any{"type": "object", "description": "Optional unstructured metadata for the video project."},
-				"proposal_id":        map[string]any{"type": "string", "description": "Opaque edit proposal identifier."},
-				"base_revision_id":   map[string]any{"type": "string", "description": "Required exact immutable revision for propose_plan or create_edit_proposal. For a new visual plan, copy revision_id directly from create_project."},
-				"rationale":          map[string]any{"type": "string", "description": "Concise rationale for the proposed edit."},
-				"plan":               map[string]any{"type": "object", "description": "Atomic visual video-plan proposal. Every part must include the exact ready image slide the viewer will see. Use kind=initial for the first whole-plan review and kind=revision with stable existing part IDs for selectable replacements.", "properties": map[string]any{"kind": map[string]any{"type": "string", "enum": []string{pebblestore.VideoPlanKindInitial, pebblestore.VideoPlanKindRevision}}, "summary": map[string]any{"type": "string"}, "parts": map[string]any{"type": "array", "minItems": 1, "maxItems": pebblestore.MaxClipsPerTimeline, "items": map[string]any{"type": "object", "properties": map[string]any{"id": map[string]any{"type": "string"}, "title": map[string]any{"type": "string"}, "duration_ms": map[string]any{"type": "integer", "minimum": 1, "maximum": pebblestore.MaxVideoTimelineDurationMs}, "narration": map[string]any{"type": "string"}, "on_screen_text": map[string]any{"type": "string"}, "visual_direction": map[string]any{"type": "string"}, "transition_in": map[string]any{"type": "string"}, "visual": map[string]any{"type": "object", "description": "Complete exact ready managed image reference returned by manage_artifact, including export_html_stills output; copy all four fields from one returned reference without preview/download substitution.", "properties": map[string]any{"session_id": map[string]any{"type": "string"}, "collection_id": map[string]any{"type": "string"}, "variant_id": map[string]any{"type": "string"}, "event_seq": map[string]any{"type": "integer", "minimum": 1}}, "required": []string{"session_id", "collection_id", "variant_id", "event_seq"}, "additionalProperties": false}}, "required": []string{"id", "title", "duration_ms", "visual"}, "additionalProperties": false}}}, "required": []string{"kind", "parts"}, "additionalProperties": false},
-				"operations":         manageVideoEditOperationsSchema(),
-				"affected_ranges":    map[string]any{"type": "array", "maxItems": pebblestore.MaxVideoEditProposalOperations, "items": map[string]any{"type": "object", "properties": map[string]any{"start_ms": map[string]any{"type": "integer", "minimum": 0}, "end_ms": map[string]any{"type": "integer", "minimum": 1}}, "required": []string{"start_ms", "end_ms"}, "additionalProperties": false}},
-				"max_clips":          map[string]any{"type": "integer", "minimum": 1, "maximum": pebblestore.MaxClipsPerTimeline, "description": "Bounded accepted-cut clip count."},
+				"focus_notes":            map[string]any{"type": "string", "maxLength": videotranscription.MaxFocusNotesBytes, "description": "Optional job-specific instructions from the initiating user or AI for start_transcription only, for example: 'Silent software demo; produce a dense play-by-play of cursor actions, navigation, text changes, and visible results.' Guidance cannot change the multimodal schema, factuality rules, or source authority."},
+				"max_bytes":              map[string]any{"type": "integer", "minimum": 1, "maximum": manageVideoMaxTranscriptBytes},
+				"max_segments":           map[string]any{"type": "integer", "minimum": 1, "maximum": manageVideoMaxSegments},
+				"start_ms":               map[string]any{"type": "integer", "minimum": 0, "description": "Optional inclusive evidence-range start for bounded transcript retrieval."},
+				"end_ms":                 map[string]any{"type": "integer", "minimum": 1, "description": "Optional exclusive evidence-range end for bounded transcript retrieval."},
+				"include_index":          map[string]any{"type": "boolean", "description": "Derive the compact section index, ranged deduplicated evidence, and conservative splice manifest."},
+				"index_only":             map[string]any{"type": "boolean", "description": "Return transcript authority metadata plus the compact index and bounded evidence without hydrating full transcript text or segments."},
+				"project_id":             map[string]any{"type": "string", "description": "Opaque video project identifier for reading, revising, or rendering a project."},
+				"revision_id":            map[string]any{"type": "string", "description": "Optional opaque project revision identifier."},
+				"source_revision_id":     map[string]any{"type": "string", "description": "Exact immutable revision to copy when restoring a project."},
+				"render_job_id":          map[string]any{"type": "string", "description": "Opaque render job identifier for checking status or cancelling a render."},
+				"queue_grace_ms":         map[string]any{"type": "integer", "minimum": 0, "maximum": int(videorender.MaxQueueGracePeriod.Milliseconds()), "description": "Optional bounded delay before a new render leaves queued status, allowing deterministic immediate cancellation without weakening terminal-state rules."},
+				"title":                  map[string]any{"type": "string", "description": "Human-readable video project title."},
+				"description":            map[string]any{"type": "string", "description": "Optional description for a video project or revision."},
+				"output_preset":          map[string]any{"type": "string", "description": "Target video format preset (e.g. landscape_1080p, landscape_720p, portrait_1080p, portrait_720p, square_1080p, landscape_video, portrait_video, x_header)."},
+				"change_summary":         map[string]any{"type": "string", "description": "Summary of changes made in this revision."},
+				"timeline":               map[string]any{"type": "object", "description": "Structured video project timeline with clips, captions, and audio policy."},
+				"initial_timeline":       map[string]any{"type": "object", "description": "Optional initial structured timeline when creating a video project. Omit it for a new visual plan; create_project still creates and returns an empty exact base revision."},
+				"metadata":               map[string]any{"type": "object", "description": "Optional unstructured metadata for the video project."},
+				"proposal_id":            map[string]any{"type": "string", "description": "Opaque edit proposal identifier."},
+				"base_revision_id":       map[string]any{"type": "string", "description": "Required exact immutable revision for propose_plan or create_edit_proposal. For a new visual plan, copy revision_id directly from create_project."},
+				"rationale":              map[string]any{"type": "string", "description": "Concise rationale for the proposed edit."},
+				"plan":                   map[string]any{"type": "object", "description": "Atomic visual video-plan proposal. Every part must include the exact ready image slide the viewer will see. Use kind=initial for the first whole-plan review and kind=revision with stable existing part IDs for selectable replacements.", "properties": map[string]any{"kind": map[string]any{"type": "string", "enum": []string{pebblestore.VideoPlanKindInitial, pebblestore.VideoPlanKindRevision}}, "summary": map[string]any{"type": "string"}, "parts": map[string]any{"type": "array", "minItems": 1, "maxItems": pebblestore.MaxClipsPerTimeline, "items": map[string]any{"type": "object", "properties": map[string]any{"id": map[string]any{"type": "string"}, "title": map[string]any{"type": "string"}, "duration_ms": map[string]any{"type": "integer", "minimum": 1, "maximum": pebblestore.MaxVideoTimelineDurationMs}, "narration": map[string]any{"type": "string"}, "on_screen_text": map[string]any{"type": "string"}, "visual_direction": map[string]any{"type": "string"}, "transition_in": map[string]any{"type": "string"}, "visual": map[string]any{"type": "object", "description": "Complete exact ready managed image reference returned by manage_artifact, including export_html_stills output; copy all four fields from one returned reference without preview/download substitution.", "properties": map[string]any{"session_id": map[string]any{"type": "string"}, "collection_id": map[string]any{"type": "string"}, "variant_id": map[string]any{"type": "string"}, "event_seq": map[string]any{"type": "integer", "minimum": 1}}, "required": []string{"session_id", "collection_id", "variant_id", "event_seq"}, "additionalProperties": false}}, "required": []string{"id", "title", "duration_ms", "visual"}, "additionalProperties": false}}}, "required": []string{"kind", "parts"}, "additionalProperties": false},
+				"operations":             manageVideoEditOperationsSchema(),
+				"affected_ranges":        map[string]any{"type": "array", "maxItems": pebblestore.MaxVideoEditProposalOperations, "items": map[string]any{"type": "object", "properties": map[string]any{"start_ms": map[string]any{"type": "integer", "minimum": 0}, "end_ms": map[string]any{"type": "integer", "minimum": 1}}, "required": []string{"start_ms", "end_ms"}, "additionalProperties": false}},
+				"max_clips":              map[string]any{"type": "integer", "minimum": 1, "maximum": pebblestore.MaxClipsPerTimeline, "description": "Bounded accepted-cut clip count."},
 			},
 			"required": []string{"action"}, "additionalProperties": false,
 		},
@@ -237,10 +237,16 @@ func (r *Runtime) executeManageVideo(ctx context.Context, scope WorkspaceScope, 
 			return "", err
 		}
 		videoRefs, parseErr := parseExactStringSlice(args["video_refs"], "video_refs")
-		if parseErr != nil { return "", parseErr }
+		if parseErr != nil {
+			return "", parseErr
+		}
 		audioRefs, parseErr := parseExactStringSlice(args["audio_refs"], "audio_refs")
-		if parseErr != nil { return "", parseErr }
-		if len(videoRefs) > 0 && len(audioRefs) > 0 { return "", errors.New("start_transcription does not allow mixed video_refs and audio_refs") }
+		if parseErr != nil {
+			return "", parseErr
+		}
+		if len(videoRefs) > 0 && len(audioRefs) > 0 {
+			return "", errors.New("start_transcription does not allow mixed video_refs and audio_refs")
+		}
 		var started videotranscription.StartResult
 		if len(videoRefs) > 0 {
 			if r.videoSources == nil {
@@ -256,9 +262,13 @@ func (r *Runtime) executeManageVideo(ctx context.Context, scope WorkspaceScope, 
 			}
 			started, err = r.video.StartRegisteredSources(ctx, scope.Principal, scope.SessionID, sources, focusNotes)
 		} else if len(audioRefs) > 0 {
-			if r.videoSources == nil { return "", errors.New("manage_video source service is not configured") }
+			if r.videoSources == nil {
+				return "", errors.New("manage_video source service is not configured")
+			}
 			_, records, resolveErr := r.videoSources.ResolveAudioClips(scope.Principal, manageVideoWorkspacePath(session), audioRefs)
-			if resolveErr != nil { return "", resolveErr }
+			if resolveErr != nil {
+				return "", resolveErr
+			}
 			sources := make([]pebblestore.AudioSourceReference, 0, len(records))
 			for _, record := range records {
 				sources = append(sources, pebblestore.AudioSourceReference{Ref: record.Ref, Name: record.DisplayName, MIMEType: record.MIMEType, SizeBytes: record.SizeBytes, SourceFingerprint: record.SourceFingerprint, FingerprintVersion: record.FingerprintVersion})
@@ -353,7 +363,9 @@ func (r *Runtime) executeManageVideo(ctx context.Context, scope WorkspaceScope, 
 		}
 		words := transcript.Words
 		wordsTruncated := len(words) > manageVideoMaxWords
-		if wordsTruncated { words = words[:manageVideoMaxWords] }
+		if wordsTruncated {
+			words = words[:manageVideoMaxWords]
+		}
 		if indexOnly {
 			text, segments, words = "", []pebblestore.NormalizedTranscriptSegment{}, []pebblestore.NormalizedTranscriptWord{}
 			textTruncated, segmentsTruncated, wordsTruncated = false, false, false
@@ -388,21 +400,35 @@ func (r *Runtime) executeManageVideo(ctx context.Context, scope WorkspaceScope, 
 		response["details_truncated"] = textTruncated || segmentsTruncated || wordsTruncated
 
 	case "read_audio_analysis":
-		if r.video == nil { return "", errors.New("manage_video transcription service is not configured") }
+		if r.video == nil {
+			return "", errors.New("manage_video transcription service is not configured")
+		}
 		analysisRef, sourceFingerprint := strings.TrimSpace(asString(args["analysis_ref"])), strings.TrimSpace(asString(args["source_fingerprint"]))
-		if analysisRef == "" && sourceFingerprint == "" { return "", errors.New("read_audio_analysis requires analysis_ref or source_fingerprint") }
+		if analysisRef == "" && sourceFingerprint == "" {
+			return "", errors.New("read_audio_analysis requires analysis_ref or source_fingerprint")
+		}
 		var analysis pebblestore.AudioAnalysisSnapshot
 		var readErr error
 		for _, workspaceID := range pebblestore.SessionVideoWorkspaceIDs(session) {
 			analysis, readErr = r.video.ReadAudioAnalysisByWorkspace(scope.Principal, workspaceID, analysisRef, sourceFingerprint)
-			if readErr == nil { break }
+			if readErr == nil {
+				break
+			}
 		}
-		if readErr != nil { return "", readErr }
+		if readErr != nil {
+			return "", readErr
+		}
 		startMs, endMs := int64(asInt(args["start_ms"], 0)), int64(asInt(args["end_ms"], 0))
-		if endMs == 0 { endMs = analysis.DurationMs }
-		if startMs < 0 || endMs <= startMs || endMs > analysis.DurationMs { return "", errors.New("read_audio_analysis requires a valid bounded start_ms/end_ms range") }
+		if endMs == 0 {
+			endMs = analysis.DurationMs
+		}
+		if startMs < 0 || endMs <= startMs || endMs > analysis.DurationMs {
+			return "", errors.New("read_audio_analysis requires a valid bounded start_ms/end_ms range")
+		}
 		resolution := int64(asInt(args["waveform_resolution_ms"], 0))
-		if resolution < 0 || resolution > 60_000 { return "", errors.New("waveform_resolution_ms must be between 1 and 60000 when supplied") }
+		if resolution < 0 || resolution > 60_000 {
+			return "", errors.New("waveform_resolution_ms must be between 1 and 60000 when supplied")
+		}
 		levels := boundedAudioLevels(analysis.Levels, startMs, endMs, resolution)
 		onsets := boundedAudioOnsets(analysis.Onsets, startMs, endMs)
 		beats := boundedAudioBeats(analysis.Beats, startMs, endMs)
@@ -411,10 +437,18 @@ func (r *Runtime) executeManageVideo(ctx context.Context, scope WorkspaceScope, 
 		onsetsTruncated := len(onsets) > manageVideoMaxAnalysisPoints
 		beatsTruncated := len(beats) > manageVideoMaxAnalysisPoints
 		sectionsTruncated := len(sections) > manageVideoMaxAnalysisPoints
-		if levelsTruncated { levels = levels[:manageVideoMaxAnalysisPoints] }
-		if onsetsTruncated { onsets = onsets[:manageVideoMaxAnalysisPoints] }
-		if beatsTruncated { beats = beats[:manageVideoMaxAnalysisPoints] }
-		if sectionsTruncated { sections = sections[:manageVideoMaxAnalysisPoints] }
+		if levelsTruncated {
+			levels = levels[:manageVideoMaxAnalysisPoints]
+		}
+		if onsetsTruncated {
+			onsets = onsets[:manageVideoMaxAnalysisPoints]
+		}
+		if beatsTruncated {
+			beats = beats[:manageVideoMaxAnalysisPoints]
+		}
+		if sectionsTruncated {
+			sections = sections[:manageVideoMaxAnalysisPoints]
+		}
 		response["analysis"] = map[string]any{"ref": analysis.Ref, "schema_version": analysis.SchemaVersion, "source_ref": analysis.SourceRef, "source_fingerprint": analysis.SourceFingerprint, "analyzer_version": analysis.AnalyzerVersion, "duration_ms": analysis.DurationMs, "sample_interval_ms": analysis.SampleIntervalMs, "start_ms": startMs, "end_ms": endMs, "levels": levels, "onsets": onsets, "tempo": analysis.Tempo, "beats": beats, "sections": sections, "timing_authority": "deterministic_pcm_dsp", "model_generated": false, "content_digest": analysis.ContentDigest, "levels_truncated": levelsTruncated, "onsets_truncated": onsetsTruncated, "beats_truncated": beatsTruncated, "sections_truncated": sectionsTruncated}
 		response["details_truncated"] = levelsTruncated || onsetsTruncated || beatsTruncated || sectionsTruncated
 
@@ -1380,32 +1414,65 @@ func manageVideoWorkspacePath(session pebblestore.SessionSnapshot) string {
 
 func boundedAudioLevels(levels []pebblestore.AudioAnalysisLevel, startMs, endMs, resolutionMs int64) []pebblestore.AudioAnalysisLevel {
 	filtered := make([]pebblestore.AudioAnalysisLevel, 0)
-	for _, level := range levels { if level.EndMs > startMs && level.StartMs < endMs { filtered = append(filtered, level) } }
-	if resolutionMs <= 0 || len(filtered) < 2 { return filtered }
+	for _, level := range levels {
+		if level.EndMs > startMs && level.StartMs < endMs {
+			filtered = append(filtered, level)
+		}
+	}
+	if resolutionMs <= 0 || len(filtered) < 2 {
+		return filtered
+	}
 	out := make([]pebblestore.AudioAnalysisLevel, 0, len(filtered))
 	for i := 0; i < len(filtered); {
 		bucket := filtered[i]
 		weightedRMS, duration := bucket.RMS*float64(bucket.EndMs-bucket.StartMs), bucket.EndMs-bucket.StartMs
 		j := i + 1
 		for j < len(filtered) && bucket.EndMs-bucket.StartMs < resolutionMs {
-			next := filtered[j]; span := next.EndMs-next.StartMs
-			weightedRMS += next.RMS*float64(span); duration += span; bucket.EndMs = next.EndMs
-			if next.Peak > bucket.Peak { bucket.Peak = next.Peak }; j++
+			next := filtered[j]
+			span := next.EndMs - next.StartMs
+			weightedRMS += next.RMS * float64(span)
+			duration += span
+			bucket.EndMs = next.EndMs
+			if next.Peak > bucket.Peak {
+				bucket.Peak = next.Peak
+			}
+			j++
 		}
-		if duration > 0 { bucket.RMS = weightedRMS / float64(duration) }
-		out = append(out, bucket); i = j
+		if duration > 0 {
+			bucket.RMS = weightedRMS / float64(duration)
+		}
+		out = append(out, bucket)
+		i = j
 	}
 	return out
 }
 
 func boundedAudioOnsets(values []pebblestore.AudioAnalysisOnset, startMs, endMs int64) []pebblestore.AudioAnalysisOnset {
-	out := make([]pebblestore.AudioAnalysisOnset, 0); for _, value := range values { if value.TimeMs >= startMs && value.TimeMs < endMs { out = append(out, value) } }; return out
+	out := make([]pebblestore.AudioAnalysisOnset, 0)
+	for _, value := range values {
+		if value.TimeMs >= startMs && value.TimeMs < endMs {
+			out = append(out, value)
+		}
+	}
+	return out
 }
 func boundedAudioBeats(values []pebblestore.AudioAnalysisBeat, startMs, endMs int64) []pebblestore.AudioAnalysisBeat {
-	out := make([]pebblestore.AudioAnalysisBeat, 0); for _, value := range values { if value.TimeMs >= startMs && value.TimeMs < endMs { out = append(out, value) } }; return out
+	out := make([]pebblestore.AudioAnalysisBeat, 0)
+	for _, value := range values {
+		if value.TimeMs >= startMs && value.TimeMs < endMs {
+			out = append(out, value)
+		}
+	}
+	return out
 }
 func boundedAudioSections(values []pebblestore.AudioAnalysisSection, startMs, endMs int64) []pebblestore.AudioAnalysisSection {
-	out := make([]pebblestore.AudioAnalysisSection, 0); for _, value := range values { if value.EndMs > startMs && value.StartMs < endMs { out = append(out, value) } }; return out
+	out := make([]pebblestore.AudioAnalysisSection, 0)
+	for _, value := range values {
+		if value.EndMs > startMs && value.StartMs < endMs {
+			out = append(out, value)
+		}
+	}
+	return out
 }
 
 func safeVideoJobs(jobs []pebblestore.TranscriptionJob) []map[string]any {

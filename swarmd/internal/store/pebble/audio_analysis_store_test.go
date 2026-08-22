@@ -27,18 +27,26 @@ func registeredAnalysisSource(t *testing.T, sessions *SessionStore) AudioSourceR
 
 func TestFindAudioAnalysisSnapshotByRefOrFingerprint(t *testing.T) {
 	store, err := Open(filepath.Join(t.TempDir(), "audio-analysis-find.pebble"))
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer store.Close()
 	sessions := NewSessionStore(store)
 	source := registeredAnalysisSource(t, sessions)
 	snapshot := AudioAnalysisSnapshot{AccountScopeID: "account", WorkspaceID: "workspace", SourceRef: source.Ref, SourceFingerprint: source.SourceFingerprint, AnalyzerVersion: "swarm-dsp.v1", DurationMs: 1000, SampleIntervalMs: 100, CreatedAt: 1, Levels: []AudioAnalysisLevel{{StartMs: 0, EndMs: 100, RMS: .2, Peak: .8}}}
 	stored, _, err := sessions.PutAudioAnalysisSnapshot(snapshot)
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, lookup := range []struct{ ref, fingerprint string }{{stored.Ref, ""}, {"", stored.SourceFingerprint}, {stored.Ref, stored.SourceFingerprint}} {
 		found, ok, err := sessions.FindAudioAnalysisSnapshot("account", "workspace", lookup.ref, lookup.fingerprint)
-		if err != nil || !ok || found.Ref != stored.Ref { t.Fatalf("lookup=%+v found=%+v ok=%v err=%v", lookup, found, ok, err) }
+		if err != nil || !ok || found.Ref != stored.Ref {
+			t.Fatalf("lookup=%+v found=%+v ok=%v err=%v", lookup, found, ok, err)
+		}
 	}
-	if _, ok, err := sessions.FindAudioAnalysisSnapshot("account", "other", stored.Ref, ""); err != nil || ok { t.Fatalf("cross-workspace ok=%v err=%v", ok, err) }
+	if _, ok, err := sessions.FindAudioAnalysisSnapshot("account", "other", stored.Ref, ""); err != nil || ok {
+		t.Fatalf("cross-workspace ok=%v err=%v", ok, err)
+	}
 }
 
 func TestAudioAnalysisSnapshotIsBoundedScopedAndImmutable(t *testing.T) {
@@ -53,10 +61,10 @@ func TestAudioAnalysisSnapshotIsBoundedScopedAndImmutable(t *testing.T) {
 		AccountScopeID: "account", WorkspaceID: "workspace", SourceRef: source.Ref,
 		SourceFingerprint: source.SourceFingerprint, AnalyzerVersion: "swarm-dsp.v1", DurationMs: 2000,
 		SampleIntervalMs: 100, CreatedAt: 100,
-		Levels: []AudioAnalysisLevel{{StartMs: 0, EndMs: 100, RMS: .2, Peak: .8}, {StartMs: 100, EndMs: 200, RMS: .3, Peak: .9}},
-		Onsets: []AudioAnalysisOnset{{TimeMs: 120, Strength: .9}},
-		Tempo: &AudioAnalysisTempo{BPM: 120, Confidence: .8},
-		Beats: []AudioAnalysisBeat{{TimeMs: 120, Confidence: .9, BarBeat: 1}, {TimeMs: 620, Confidence: .8, BarBeat: 2}},
+		Levels:   []AudioAnalysisLevel{{StartMs: 0, EndMs: 100, RMS: .2, Peak: .8}, {StartMs: 100, EndMs: 200, RMS: .3, Peak: .9}},
+		Onsets:   []AudioAnalysisOnset{{TimeMs: 120, Strength: .9}},
+		Tempo:    &AudioAnalysisTempo{BPM: 120, Confidence: .8},
+		Beats:    []AudioAnalysisBeat{{TimeMs: 120, Confidence: .9, BarBeat: 1}, {TimeMs: 620, Confidence: .8, BarBeat: 2}},
 		Sections: []AudioAnalysisSection{{StartMs: 0, EndMs: 2000, Label: "intro", Confidence: .7}},
 	}
 	stored, replayed, err := sessions.PutAudioAnalysisSnapshot(snapshot)

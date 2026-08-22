@@ -14,9 +14,9 @@ import (
 func TestAudioTranscriptionHandlersRequireProductPrincipal(t *testing.T) {
 	server := &Server{}
 	tests := []struct {
-		path string
+		path   string
 		handle http.HandlerFunc
-		body string
+		body   string
 	}{
 		{"/v1/workspace/audio/transcribe", server.handleWorkspaceAudioTranscribe, `{}`},
 		{"/v1/workspace/audio/transcribe/status", server.handleWorkspaceAudioTranscribeStatus, `{}`},

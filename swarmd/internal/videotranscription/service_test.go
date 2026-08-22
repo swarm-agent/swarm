@@ -88,20 +88,26 @@ func TestNormalizeGeneratedTranscriptAcceptsOrderedWordMilliseconds(t *testing.T
 	confidence := .9
 	got, err := NormalizeGeneratedTranscript(GeneratedTranscript{
 		DurationMs: 1000,
-		Segments: []pebblestore.NormalizedTranscriptSegment{{StartMs: 0, EndMs: 1000, Speech: "hello world"}},
-		Words: []pebblestore.NormalizedTranscriptWord{{Text: "hello", StartMs: 10, EndMs: 400, Confidence: &confidence, Provenance: "google_audio_semantic.v1"}, {Text: "world", StartMs: 450, EndMs: 900, Provenance: "google_audio_semantic.v1"}},
+		Segments:   []pebblestore.NormalizedTranscriptSegment{{StartMs: 0, EndMs: 1000, Speech: "hello world"}},
+		Words:      []pebblestore.NormalizedTranscriptWord{{Text: "hello", StartMs: 10, EndMs: 400, Confidence: &confidence, Provenance: "google_audio_semantic.v1"}, {Text: "world", StartMs: 450, EndMs: 900, Provenance: "google_audio_semantic.v1"}},
 	})
-	if err != nil || got.Partial || len(got.Words) != 2 { t.Fatalf("normalized = %#v err=%v", got, err) }
+	if err != nil || got.Partial || len(got.Words) != 2 {
+		t.Fatalf("normalized = %#v err=%v", got, err)
+	}
 }
 
 func TestNormalizeGeneratedTranscriptRejectsOverlappingWordMilliseconds(t *testing.T) {
 	got, err := NormalizeGeneratedTranscript(GeneratedTranscript{
 		DurationMs: 1000,
-		Segments: []pebblestore.NormalizedTranscriptSegment{{StartMs: 0, EndMs: 1000, Speech: "hello world"}},
-		Words: []pebblestore.NormalizedTranscriptWord{{Text: "hello", StartMs: 10, EndMs: 500}, {Text: "world", StartMs: 400, EndMs: 900}},
+		Segments:   []pebblestore.NormalizedTranscriptSegment{{StartMs: 0, EndMs: 1000, Speech: "hello world"}},
+		Words:      []pebblestore.NormalizedTranscriptWord{{Text: "hello", StartMs: 10, EndMs: 500}, {Text: "world", StartMs: 400, EndMs: 900}},
 	})
-	if err != nil { t.Fatal(err) }
-	if !got.Partial { t.Fatal("overlapping word timing must be partial") }
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.Partial {
+		t.Fatal("overlapping word timing must be partial")
+	}
 }
 
 func TestNormalizeGeneratedTranscriptDerivesReadableVisualOnlyText(t *testing.T) {

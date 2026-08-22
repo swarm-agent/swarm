@@ -132,7 +132,7 @@ func (a *VideoTranscriptionAdapter) AnalyzeAudio(ctx context.Context, request vi
 		return videotranscription.GeneratedTranscript{}, err
 	}
 	prompt := deterministicAudioPrompt(request.DurationMs, request.FocusNotes)
-	payload, err := a.generate(ctx, apiKey, request.Model, request.MIMEType, uploaded.URI, prompt)
+	payload, err := a.generateAudio(ctx, apiKey, request.Model, request.MIMEType, uploaded.URI, prompt)
 	if err != nil {
 		return videotranscription.GeneratedTranscript{}, err
 	}
@@ -422,6 +422,55 @@ func (a *VideoTranscriptionAdapter) generate(ctx context.Context, apiKey, model,
 	return a.generateRequest(ctx, apiKey, model, body)
 }
 
+func (a *VideoTranscriptionAdapter) generateAudio(ctx context.Context, apiKey, model, mimeType, fileURI, prompt string) ([]byte, error) {
+	model = strings.TrimSpace(strings.TrimPrefix(model, "models/"))
+	if model == "" {
+		return nil, errors.New("google audio transcription model is required")
+	}
+	body := map[string]any{
+		"contents": []any{map[string]any{"role": "user", "parts": []any{
+			map[string]any{"file_data": map[string]string{"mime_type": mimeType, "file_uri": fileURI}},
+			map[string]string{"text": prompt},
+		}}},
+		"generationConfig": map[string]any{
+			"responseMimeType": "application/json",
+			"responseSchema":   googleAudioTranscriptResponseSchema(),
+			"temperature":      0,
+		},
+	}
+	return a.generateRequest(ctx, apiKey, model, body)
+}
+
+func googleAudioTranscriptResponseSchema() map[string]any {
+	segment := map[string]any{
+		"type": "OBJECT",
+		"properties": map[string]any{
+			"start_ms": map[string]any{"type": "INTEGER"}, "end_ms": map[string]any{"type": "INTEGER"},
+			"speech": map[string]any{"type": "STRING"}, "audio": map[string]any{"type": "STRING"},
+			"visual": map[string]any{"type": "STRING"}, "on_screen_text": map[string]any{"type": "STRING"},
+		},
+		"required": []string{"start_ms", "end_ms", "speech", "audio", "visual", "on_screen_text"},
+	}
+	word := map[string]any{
+		"type": "OBJECT",
+		"properties": map[string]any{
+			"text": map[string]any{"type": "STRING"}, "start_ms": map[string]any{"type": "INTEGER"},
+			"end_ms": map[string]any{"type": "INTEGER"}, "confidence": map[string]any{"type": "NUMBER"},
+		},
+		"required": []string{"text", "start_ms", "end_ms"},
+	}
+	return map[string]any{
+		"type": "OBJECT",
+		"properties": map[string]any{
+			"summary": map[string]any{"type": "STRING"}, "language": map[string]any{"type": "STRING"},
+			"duration_ms": map[string]any{"type": "INTEGER"}, "content_empty": map[string]any{"type": "BOOLEAN"},
+			"segments": map[string]any{"type": "ARRAY", "items": segment},
+			"words":    map[string]any{"type": "ARRAY", "items": word},
+		},
+		"required": []string{"summary", "language", "duration_ms", "content_empty", "segments", "words"},
+	}
+}
+
 func (a *VideoTranscriptionAdapter) generateParts(ctx context.Context, apiKey, model string, parts []any) ([]byte, error) {
 	model = strings.TrimSpace(strings.TrimPrefix(model, "models/"))
 	if model == "" {
@@ -528,25 +577,55 @@ func deterministicAudioPrompt(durationMs int64, focusNotes string) string {
 func parseGoogleCandidateText(payload []byte) (string, error) {
 	var envelope struct {
 		Candidates []struct {
-			Content struct {
+			FinishReason  string `json:"finishReason"`
+			FinishMessage string `json:"finishMessage"`
+			Content       struct {
 				Parts []struct {
 					Text string `json:"text"`
 				} `json:"parts"`
 			} `json:"content"`
 		} `json:"candidates"`
+		PromptFeedback struct {
+			BlockReason        string `json:"blockReason"`
+			BlockReasonMessage string `json:"blockReasonMessage"`
+		} `json:"promptFeedback"`
 	}
-	if err := json.Unmarshal(payload, &envelope); err != nil || len(envelope.Candidates) == 0 {
+	if err := json.Unmarshal(payload, &envelope); err != nil {
 		return "", errors.New("google video transcription response was malformed")
 	}
-	var text string
-	for _, part := range envelope.Candidates[0].Content.Parts {
-		text += part.Text
+	if len(envelope.Candidates) == 0 {
+		message := "google video transcription response contained no candidates"
+		if reason := safeGoogleStatus(envelope.PromptFeedback.BlockReason); reason != "" {
+			message += " prompt_block_reason=" + reason
+		}
+		if detail := safeGoogleProviderMessage(envelope.PromptFeedback.BlockReasonMessage); detail != "" {
+			message += " prompt_block_message=" + detail
+		}
+		return "", errors.New(message)
 	}
-	text = strings.TrimSpace(text)
-	text = strings.TrimPrefix(text, "```json")
-	text = strings.TrimPrefix(text, "```")
-	text = strings.TrimSuffix(strings.TrimSpace(text), "```")
-	return text, nil
+	for _, candidate := range envelope.Candidates {
+		var text string
+		for _, part := range candidate.Content.Parts {
+			text += part.Text
+		}
+		text = strings.TrimSpace(text)
+		if text == "" {
+			continue
+		}
+		text = strings.TrimPrefix(text, "```json")
+		text = strings.TrimPrefix(text, "```")
+		text = strings.TrimSuffix(strings.TrimSpace(text), "```")
+		return text, nil
+	}
+	candidate := envelope.Candidates[0]
+	message := "google video transcription response contained no structured text"
+	if reason := safeGoogleStatus(candidate.FinishReason); reason != "" {
+		message += " finish_reason=" + reason
+	}
+	if detail := safeGoogleProviderMessage(candidate.FinishMessage); detail != "" {
+		message += " finish_message=" + detail
+	}
+	return "", errors.New(message)
 }
 
 func parseGoogleFrameObservations(payload []byte) ([]videotranscription.FrameObservation, error) {
@@ -604,9 +683,9 @@ func parseGoogleTranscriptWithWords(payload []byte, wordProvenance bool) (videot
 			OnScreenText string `json:"on_screen_text"`
 		} `json:"segments"`
 		Words []struct {
-			Text string `json:"text"`
-			StartMs int64 `json:"start_ms"`
-			EndMs int64 `json:"end_ms"`
+			Text       string   `json:"text"`
+			StartMs    int64    `json:"start_ms"`
+			EndMs      int64    `json:"end_ms"`
 			Confidence *float64 `json:"confidence,omitempty"`
 		} `json:"words,omitempty"`
 	}
@@ -629,7 +708,9 @@ func parseGoogleTranscriptWithWords(payload []byte, wordProvenance bool) (videot
 	words := make([]pebblestore.NormalizedTranscriptWord, len(structured.Words))
 	for index, word := range structured.Words {
 		provenance := ""
-		if wordProvenance { provenance = "google_audio_semantic.v1" }
+		if wordProvenance {
+			provenance = "google_audio_semantic.v1"
+		}
 		words[index] = pebblestore.NormalizedTranscriptWord{Text: word.Text, StartMs: word.StartMs, EndMs: word.EndMs, Confidence: word.Confidence, Provenance: provenance}
 	}
 	return videotranscription.NormalizeGeneratedTranscript(videotranscription.GeneratedTranscript{
