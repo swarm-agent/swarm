@@ -561,10 +561,11 @@ func parseTaskCallArguments(arguments string) (taskCallArguments, error) {
 		if rawSourceArtifact == nil {
 			return taskCallArguments{}, errors.New("task source_artifact must be an exact ready artifact reference object")
 		}
-		sourceArtifact, err = parseTaskImageSourceArtifact(rawSourceArtifact)
+		parsedSourceArtifact, err := parseTaskImageSourceArtifact(rawSourceArtifact)
 		if err != nil {
 			return taskCallArguments{}, err
 		}
+		sourceArtifact = parsedSourceArtifact
 		for i := range launches {
 			if !agentruntime.IsDesignerAgentName(launches[i].RequestedSubagentType) || launches[i].OutputMode != taskOutputModeManaged {
 				return taskCallArguments{}, errors.New("task regular source_artifact requires every launch to be a managed Designer")
