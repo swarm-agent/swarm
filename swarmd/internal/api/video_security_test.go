@@ -35,6 +35,11 @@ func TestVideoThreadHandlersRequireProductPrincipal(t *testing.T) {
 		httptest.NewRequest(http.MethodPost, "/v1/workspace/video/transcribe/status", bytes.NewReader([]byte(`{"workspace_path":"/workspace","session_id":"session","job_ref":"trjob_test"}`))),
 		httptest.NewRequest(http.MethodPost, "/v1/workspace/video/transcribe/read", bytes.NewReader([]byte(`{"workspace_path":"/workspace","session_id":"session","transcript_ref":"transcript_test"}`))),
 		httptest.NewRequest(http.MethodPost, "/v1/workspace/video/transcribe/cancel", bytes.NewReader([]byte(`{"workspace_path":"/workspace","session_id":"session","job_ref":"trjob_test"}`))),
+		httptest.NewRequest(http.MethodPost, "/v1/workspace/audio/transcribe", bytes.NewReader([]byte(`{"workspace_path":"/workspace","audio_ref":"audiosrc_test"}`))),
+		httptest.NewRequest(http.MethodPost, "/v1/workspace/audio/transcribe/status", bytes.NewReader([]byte(`{"workspace_path":"/workspace","session_id":"session","job_ref":"trjob_test"}`))),
+		httptest.NewRequest(http.MethodPost, "/v1/workspace/audio/transcribe/read", bytes.NewReader([]byte(`{"workspace_path":"/workspace","session_id":"session","transcript_ref":"transcript_test"}`))),
+		httptest.NewRequest(http.MethodPost, "/v1/workspace/audio/transcribe/cancel", bytes.NewReader([]byte(`{"workspace_path":"/workspace","session_id":"session","job_ref":"trjob_test"}`))),
+		httptest.NewRequest(http.MethodPost, "/v1/workspace/audio/analysis/read", bytes.NewReader([]byte(`{"workspace_path":"/workspace","audio_ref":"audiosrc_test"}`))),
 		httptest.NewRequest(http.MethodPost, "/v1/workspace/video/storage/reveal?thread_id=thread", nil),
 	} {
 		recorder := httptest.NewRecorder()
@@ -51,6 +56,16 @@ func TestVideoThreadHandlersRequireProductPrincipal(t *testing.T) {
 			server.handleWorkspaceVideoTranscribeRead(recorder, request)
 		case "/v1/workspace/video/transcribe/cancel":
 			server.handleWorkspaceVideoTranscribeCancel(recorder, request)
+		case "/v1/workspace/audio/transcribe":
+			server.handleWorkspaceAudioTranscribe(recorder, request)
+		case "/v1/workspace/audio/transcribe/status":
+			server.handleWorkspaceAudioTranscribeStatus(recorder, request)
+		case "/v1/workspace/audio/transcribe/read":
+			server.handleWorkspaceAudioTranscribeRead(recorder, request)
+		case "/v1/workspace/audio/transcribe/cancel":
+			server.handleWorkspaceAudioTranscribeCancel(recorder, request)
+		case "/v1/workspace/audio/analysis/read":
+			server.handleWorkspaceAudioAnalysisRead(recorder, request)
 		default:
 			server.handleVideoStorageReveal(recorder, request)
 		}
