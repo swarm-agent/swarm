@@ -39,6 +39,12 @@ test('Video Studio reviews nested selective iterations in the sidebar and keeps 
   assert.match(source, /videoProjectProjectionSequence/)
   assert.match(source, /selectionKind: 'iteration'/)
   assert.match(source, /iterationContext=\{studioComposerContext\?\.iteration\}/)
+  assert.match(source, /VIDEO_STUDIO_UI_PLAYHEAD_INTERVAL_MS/)
+  assert.match(source, /now - lastPublishedPlayheadRef\.current >= VIDEO_STUDIO_UI_PLAYHEAD_INTERVAL_MS/)
+  assert.match(source, /routeOptions=\{studioRouteOptions\}/)
+  assert.match(source, /playheadMs=\{studioSidecarPlayheadMs\}/)
+  assert.match(proposalSource, /memo\(function VideoIterationSidebar/)
+  assert.match(proposalSource, /memo\(function VideoSessionAISidecar/)
   assert.doesNotMatch(source, /<VideoProposalReview/)
   assert.doesNotMatch(source, /aria-label="Kept video plan"/)
 

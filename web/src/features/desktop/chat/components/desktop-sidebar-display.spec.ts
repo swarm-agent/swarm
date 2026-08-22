@@ -20,10 +20,20 @@ test("responsive sidebar mode downgrades without changing the preference", () =>
   const preferred = "full" as const;
   assert.equal(effectiveDesktopSidebarDisplayMode(preferred, 1440), "full");
   assert.equal(effectiveDesktopSidebarDisplayMode(preferred, 900), "compact");
-  assert.equal(effectiveDesktopSidebarDisplayMode(preferred, 680), "thin");
+  assert.equal(effectiveDesktopSidebarDisplayMode(preferred, 660), "thin");
   assert.equal(preferred, "full");
   assert.equal(effectiveDesktopSidebarDisplayMode("compact", 1440), "compact");
   assert.equal(effectiveDesktopSidebarDisplayMode("thin", 1440), "thin");
+});
+
+test("responsive sidebar mode uses hysteresis at layout thresholds", () => {
+  assert.equal(effectiveDesktopSidebarDisplayMode("full", 950, "full"), "full");
+  assert.equal(effectiveDesktopSidebarDisplayMode("full", 950, "compact"), "compact");
+  assert.equal(effectiveDesktopSidebarDisplayMode("full", 1019, "compact"), "compact");
+  assert.equal(effectiveDesktopSidebarDisplayMode("full", 1020, "compact"), "full");
+  assert.equal(effectiveDesktopSidebarDisplayMode("full", 700, "compact"), "compact");
+  assert.equal(effectiveDesktopSidebarDisplayMode("full", 700, "thin"), "thin");
+  assert.equal(effectiveDesktopSidebarDisplayMode("full", 760, "thin"), "compact");
 });
 
 test("artifact generation does not lock the user out of the plan sidebar", () => {

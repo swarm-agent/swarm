@@ -1963,7 +1963,7 @@ export function DesktopV3ExistingConversationPane({
     }
     void navigate({ to: "/settings", search });
   }, [navigate, normalizedSessionId, routeWorkspaceSlug]);
-  const [planSidebarAvailableWidth, setPlanSidebarAvailableWidth] = useState(0);
+  const [planSidebarDisplayMode, setPlanSidebarDisplayMode] = useState<DesktopSidebarDisplayMode>(() => loadDesktopSidebarDisplayMode());
   const planSidebarGridRef = useRef<HTMLDivElement | null>(null);
   const [sessionArtifacts, setSessionArtifacts] = useState<DesktopV3ArtifactCatalogEntry[]>([]);
   const [sessionArtifactsLoading, setSessionArtifactsLoading] = useState(false);
@@ -1979,20 +1979,30 @@ export function DesktopV3ExistingConversationPane({
   const priorSessionArtifactCountRef = useRef(0);
   const priorSessionHasPlanRef = useRef(false);
   const preferredPlanSidebarMode = useMemo(loadDesktopSidebarDisplayMode, []);
-  const planSidebarDisplayMode: DesktopSidebarDisplayMode =
-    effectiveDesktopSidebarDisplayMode(
-      preferredPlanSidebarMode,
-      planSidebarAvailableWidth,
-    );
   useEffect(() => {
     const element = planSidebarGridRef.current;
     if (!element || typeof ResizeObserver === "undefined") return;
-    const update = () => setPlanSidebarAvailableWidth(element.clientWidth);
+    let frame = 0;
+    const update = () => {
+      frame = 0;
+      const availableWidth = element.clientWidth;
+      setPlanSidebarDisplayMode((current) => {
+        const next = effectiveDesktopSidebarDisplayMode(preferredPlanSidebarMode, availableWidth, current);
+        return next === current ? current : next;
+      });
+    };
+    const scheduleUpdate = () => {
+      if (frame) return;
+      frame = window.requestAnimationFrame(update);
+    };
     update();
-    const observer = new ResizeObserver(update);
+    const observer = new ResizeObserver(scheduleUpdate);
     observer.observe(element);
-    return () => observer.disconnect();
-  }, []);
+    return () => {
+      observer.disconnect();
+      if (frame) window.cancelAnimationFrame(frame);
+    };
+  }, [preferredPlanSidebarMode]);
   const refreshSessionArtifacts = useCallback(async () => {
     if (!normalizedSessionId) return;
     setSessionArtifactsLoading(true);

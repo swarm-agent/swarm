@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Check, ChevronDown, ChevronRight, Paperclip, RotateCcw } from 'lucide-react'
 import { Button } from '../../../../components/ui/button'
 import { requestJson } from '../../../../app/api'
@@ -388,7 +388,7 @@ function rangeLabel(startMs: number, endMs: number): string {
   return `${seconds(startMs)}–${seconds(endMs)}`
 }
 
-export function VideoIterationSidebar(props: {
+export const VideoIterationSidebar = memo(function VideoIterationSidebar(props: {
   sessionId: string
   projectId: string
   currentRevisionId: string
@@ -466,7 +466,7 @@ export function VideoIterationSidebar(props: {
       })}
     </div>
   </section>
-}
+})
 
 function videoSessionRenderedMessagesEqual(left: RenderedSessionMessages, right: RenderedSessionMessages): boolean {
   return left.committed === right.committed
@@ -477,7 +477,7 @@ function videoSessionRenderedMessagesEqual(left: RenderedSessionMessages, right:
     && left.latestRunIntent === right.latestRunIntent
 }
 
-export function VideoSessionAISidecar(props: {
+export const VideoSessionAISidecar = memo(function VideoSessionAISidecar(props: {
   sessionId: string
   projectId?: string
   revisionId?: string
@@ -567,4 +567,4 @@ export function VideoSessionAISidecar(props: {
       />
     </aside>
   )
-}
+})

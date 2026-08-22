@@ -312,6 +312,8 @@ type TimelineLayoutSegment = TimelineSegment & {
 
 const TIMELINE_METADATA_KEY = 'timelineSegments'
 const VIDEO_TOOL_BLACK_MODE_STORAGE_KEY = 'swarm.videoTool.blackMode'
+const VIDEO_STUDIO_UI_PLAYHEAD_INTERVAL_MS = 1000 / 30
+const VIDEO_STUDIO_SIDECAR_PLAYHEAD_INTERVAL_MS = 250
 const VIDEO_STUDIO_LAST_SESSION_STORAGE_KEY = 'swarm.videoStudio.lastSession'
 const DEFAULT_VIDEO_SESSION_TITLE = 'Swarm launch video'
 export const VIDEO_STUDIO_AGENT_NAME = 'swarm'
@@ -1248,6 +1250,7 @@ export function VideoToolPage() {
   const playheadRef = useRef(0)
   const playbackStartRef = useRef(0)
   const playbackStartPlayheadRef = useRef(0)
+  const lastPublishedPlayheadRef = useRef(0)
   const refreshRequestSequenceRef = useRef(0)
 
   const workspaceOverviewQuery = useQuery(workspaceOverviewQueryOptions([], 25))
@@ -1627,12 +1630,17 @@ export function VideoToolPage() {
       const duration = timelineDuration(timelineLayout)
       let nextPlayhead = playheadRef.current
       if (isPlaying && duration > 0) {
-        nextPlayhead = Math.min(duration, playbackStartPlayheadRef.current + (performance.now() - playbackStartRef.current) / 1000)
-        if (nextPlayhead >= duration) {
+        const now = performance.now()
+        nextPlayhead = Math.min(duration, playbackStartPlayheadRef.current + (now - playbackStartRef.current) / 1000)
+        const playbackEnded = nextPlayhead >= duration
+        if (playbackEnded) {
           setIsPlaying(false)
         }
         playheadRef.current = nextPlayhead
-        setPlayhead(nextPlayhead)
+        if (playbackEnded || now - lastPublishedPlayheadRef.current >= VIDEO_STUDIO_UI_PLAYHEAD_INTERVAL_MS) {
+          lastPublishedPlayheadRef.current = now
+          setPlayhead(nextPlayhead)
+        }
       }
 
       context.fillStyle = 'black'
@@ -2132,6 +2140,49 @@ export function VideoToolPage() {
     setPendingSelectedChangeIds(selectedChangeIds)
     if (proposal) setPreviewRevisionId(null)
   }, [])
+  const handleIterationFeedback = useCallback((message: string) => {
+    setComposerDraftRequest({ id: Date.now(), draft: message })
+  }, [])
+  const handleAttachIterationChange = useCallback((context: VideoIterationComposerContext) => {
+    setStudioComposerContext({
+      revisionId: context.candidateRevisionId || context.parentRevisionId || currentRevision?.id || '',
+      anchorClipId: context.anchorClipId,
+      label: context.label,
+      playheadMs: context.startMs,
+      selectionKind: 'iteration',
+      transition: null,
+      iteration: context,
+    })
+    setStudioArtifactSelectionRequest(context.artifact ? {
+      session_id: context.artifact.session_id,
+      collection_id: context.artifact.collection_id,
+      variant_id: context.artifact.variant_id,
+      event_seq: context.artifact.event_seq,
+      label: context.artifact.label || context.label,
+      description: context.artifact.description,
+      action: 'select',
+    } : null)
+  }, [currentRevision?.id])
+  const handleStudioContextRemove = useCallback(() => setStudioComposerContext(null), [])
+  const handleStudioArtifactSelectionHandled = useCallback(() => setStudioArtifactSelectionRequest(null), [])
+  const handleStudioActivity = useCallback(() => {
+    setStudioComposerContext(null)
+    setAIRefreshKey((value) => value + 1)
+    void refreshSelectedVideoProject().catch(() => undefined)
+  }, [refreshSelectedVideoProject])
+  const studioRouteOptions = useMemo(() => selectedSessionRoute ? [selectedSessionRoute] : [], [selectedSessionRoute])
+  const studioSidecarPlayheadMs = studioComposerContext?.playheadMs
+    ?? Math.round((playhead * 1000) / VIDEO_STUDIO_SIDECAR_PLAYHEAD_INTERVAL_MS) * VIDEO_STUDIO_SIDECAR_PLAYHEAD_INTERVAL_MS
+  const studioContextChip = useMemo(() => studioComposerContext ? {
+    id: `${studioComposerContext.selectionKind}:${studioComposerContext.revisionId}:${studioComposerContext.anchorClipId}:${studioComposerContext.iteration?.changeId ?? studioComposerContext.transition?.id ?? ''}`,
+    label: studioComposerContext.selectionKind === 'transition' ? `Transition · ${studioComposerContext.label}` : studioComposerContext.label,
+    kind: studioComposerContext.selectionKind,
+    description: studioComposerContext.iteration
+      ? `Iteration ${studioComposerContext.iteration.proposalId} · change ${studioComposerContext.iteration.changeId} · ${studioComposerContext.iteration.startMs}–${studioComposerContext.iteration.endMs}ms`
+      : studioComposerContext.transition
+        ? `${studioComposerContext.transition.kind}; ${studioComposerContext.transition.duration_ms ?? 0}ms`
+        : `Stable part ${studioComposerContext.anchorClipId}`,
+  } : null, [studioComposerContext])
 
   const submitSoundtrackProposal = useCallback(async (type: 'add_clip' | 'update_clip' | 'replace_clip' | 'remove_clip', clip?: VideoTimelineClipWire) => {
     if (!selectedThread || !videoProject || !currentRevision || pendingProposal) return
@@ -2353,7 +2404,7 @@ export function VideoToolPage() {
                     <button type="button" className="shrink-0 p-1 text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]" onClick={() => void handleRevealVideoStorage()} disabled={revealingStorage} aria-label="Show stored files" title="Show stored files"><FolderOpen size={13} /></button>
                   </div>
 
-                  {videoProject && currentRevision ? <VideoIterationSidebar key={`${videoProject.id}:${aiRefreshKey}`} sessionId={selectedThread.id} projectId={videoProject.id} currentRevisionId={currentRevision.id} revisions={projectRevisions} onAccepted={refreshSelectedVideoProject} onFeedback={(message) => setComposerDraftRequest({ id: Date.now(), draft: message })} onPreviewProposal={handlePendingProposalChange} onPreviewRevision={handlePreviewRevision} onFocusChange={handleFocusStep} onAttachChange={(context) => { setStudioComposerContext({ revisionId: context.candidateRevisionId || context.parentRevisionId || currentRevision.id, anchorClipId: context.anchorClipId, label: context.label, playheadMs: context.startMs, selectionKind: 'iteration', transition: null, iteration: context }); setStudioArtifactSelectionRequest(context.artifact ? { session_id: context.artifact.session_id, collection_id: context.artifact.collection_id, variant_id: context.artifact.variant_id, event_seq: context.artifact.event_seq, label: context.artifact.label || context.label, description: context.artifact.description, action: 'select' } : null) }} /> : null}
+                  {videoProject && currentRevision ? <VideoIterationSidebar key={`${videoProject.id}:${aiRefreshKey}`} sessionId={selectedThread.id} projectId={videoProject.id} currentRevisionId={currentRevision.id} revisions={projectRevisions} onAccepted={refreshSelectedVideoProject} onFeedback={handleIterationFeedback} onPreviewProposal={handlePendingProposalChange} onPreviewRevision={handlePreviewRevision} onFocusChange={handleFocusStep} onAttachChange={handleAttachIterationChange} /> : null}
                   {previewRevision ? <div className="mt-2 grid gap-2 px-2"><p className="text-[10px] text-amber-300">Previewing r{previewRevision.revision_number}; kept r{keptRevision?.revision_number} is unchanged.</p><div className="grid grid-cols-2 gap-2"><Button variant="outline" className="h-7 px-2 text-[10px]" disabled={previewRevisionIndex <= 0} onClick={() => handlePreviewRevision(projectRevisions[previewRevisionIndex - 1].id)}>Previous</Button><Button variant="outline" className="h-7 px-2 text-[10px]" disabled={previewRevisionIndex < 0 || previewRevisionIndex >= projectRevisions.length - 1} onClick={() => handlePreviewRevision(projectRevisions[previewRevisionIndex + 1].id)}>Next</Button></div><Button variant="outline" className="h-7 px-2 text-[10px]" onClick={() => setPreviewRevisionId(null)}>Return to kept version</Button><Button className="h-7 px-2 text-[10px]" disabled={Boolean(restoringRevisionId)} onClick={() => void handleRestoreRevision(previewRevision.id)}>{restoringRevisionId === previewRevision.id ? <Loader2 size={11} className="animate-spin" /> : <RotateCcw size={11} />}Restore as new version</Button></div> : null}
 
                   <p className="mb-2 mt-3 px-2 text-[10px] uppercase tracking-[0.18em] text-[var(--app-text-subtle)]">Sources</p>
@@ -2552,7 +2603,7 @@ export function VideoToolPage() {
               </>
               )}
             </section>
-            {selectedThread ? <VideoSessionAISidecar key={selectedThread.id} sessionId={selectedThread.id} projectId={videoProject?.id} revisionId={studioComposerContext?.revisionId ?? currentRevision?.id} anchorClipId={studioComposerContext?.anchorClipId ?? activeSegment?.id} playheadMs={studioComposerContext?.playheadMs ?? playhead * 1000} selectionKind={studioComposerContext?.selectionKind} transition={studioComposerContext?.transition} iterationContext={studioComposerContext?.iteration} routeOptions={selectedSessionRoute ? [selectedSessionRoute] : []} draftRequest={composerDraftRequest} artifactSelectionRequest={studioArtifactSelectionRequest} artifactReviewPortalTarget={studioArtifactReviewPortalTarget} contextChip={studioComposerContext ? { id: `${studioComposerContext.selectionKind}:${studioComposerContext.revisionId}:${studioComposerContext.anchorClipId}:${studioComposerContext.iteration?.changeId ?? studioComposerContext.transition?.id ?? ''}`, label: studioComposerContext.selectionKind === 'transition' ? `Transition · ${studioComposerContext.label}` : studioComposerContext.label, kind: studioComposerContext.selectionKind, description: studioComposerContext.iteration ? `Iteration ${studioComposerContext.iteration.proposalId} · change ${studioComposerContext.iteration.changeId} · ${studioComposerContext.iteration.startMs}–${studioComposerContext.iteration.endMs}ms` : studioComposerContext.transition ? `${studioComposerContext.transition.kind}; ${studioComposerContext.transition.duration_ms ?? 0}ms` : `Stable part ${studioComposerContext.anchorClipId}` } : null} onContextChipRemove={() => setStudioComposerContext(null)} onArtifactSelectionRequestHandled={() => setStudioArtifactSelectionRequest(null)} onActivity={() => { setStudioComposerContext(null); setAIRefreshKey((value) => value + 1); void refreshSelectedVideoProject().catch(() => undefined) }} /> : null}
+            {selectedThread ? <VideoSessionAISidecar key={selectedThread.id} sessionId={selectedThread.id} projectId={videoProject?.id} revisionId={studioComposerContext?.revisionId ?? currentRevision?.id} anchorClipId={studioComposerContext?.anchorClipId ?? activeSegment?.id} playheadMs={studioSidecarPlayheadMs} selectionKind={studioComposerContext?.selectionKind} transition={studioComposerContext?.transition} iterationContext={studioComposerContext?.iteration} routeOptions={studioRouteOptions} draftRequest={composerDraftRequest} artifactSelectionRequest={studioArtifactSelectionRequest} artifactReviewPortalTarget={studioArtifactReviewPortalTarget} contextChip={studioContextChip} onContextChipRemove={handleStudioContextRemove} onArtifactSelectionRequestHandled={handleStudioArtifactSelectionHandled} onActivity={handleStudioActivity} /> : null}
           </main>
 
       {soundtrackPickerOpen ? (
