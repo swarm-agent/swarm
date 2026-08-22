@@ -10,12 +10,14 @@ has_failures=0
 
 filter_allowed_runtime_paths() {
   # Security classifier allowlist entries below detect critical shell access; they are not runtime path defaults.
+  # The renderer entry is the single fixed Chrome package path covered by the reviewed host AppArmor policy.
   grep -Ev \
     -e '^(\./)?scripts/diagnose-live-workset-full-history\.sh:.*(/etc/swarmd|/var/lib/swarmd|/var/cache/swarmd|/var/log/swarmd|/run/swarmd)' \
     -e '^(\./)?(install\.sh|cmd/swarm/main\.go|internal/launcher/service_lifecycle\.go|scripts/ssh-fast-test\.sh):.*(/etc/swarmd|/etc/systemd/system/swarm\.service|/etc/tmpfiles\.d/swarmd\.conf)' \
     -e '^(\./)?scripts/check-daemon-storage-paths\.sh:.*(/home/|/root|/tmp/swarm-storage-gate-self-test\.out|forbidden_home_hits|negative fixture|run_scan)' \
     -e '^(\./)?swarmd/internal/permission/policy\.go:[0-9]+:[[:space:]]*criticalBashSystemConfigMarker[[:space:]]*=[[:space:]]*"/etc/"[[:space:]]*$' \
     -e '^(\./)?swarmd/internal/permission/policy\.go:[0-9]+:[[:space:]]*criticalBashSystemDataMarker[[:space:]]*=[[:space:]]*"/var/lib/"[[:space:]]*$' \
+    -e '^(\./)?swarmd/internal/htmlcapture/renderer\.go:[0-9]+:[[:space:]]*SystemChromePath[[:space:]]*=[[:space:]]*"/opt/google/chrome/chrome"[[:space:]]*$' \
     || true
 }
 

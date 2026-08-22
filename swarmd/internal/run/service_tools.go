@@ -2,6 +2,8 @@ package run
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,6 +16,7 @@ import (
 
 	agentruntime "swarm/packages/swarmd/internal/agent"
 	"swarm/packages/swarmd/internal/agentmodel"
+	"swarm/packages/swarmd/internal/artifact"
 	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/modelpolicy"
 	"swarm/packages/swarmd/internal/permission"
@@ -32,11 +35,15 @@ type taskLaunchPrepared struct {
 	MetaPrompt           string
 	AssignmentLabel      string
 	OwnedScope           []string
+	OutputMode           string
+	OutputRequirements   *pebblestore.SessionArtifactOutputRequirements
+	AnimationProfile     *pebblestore.SessionArtifactAnimationProfile
 	SubagentProvider     string
 	SubagentModel        string
 	SubagentProfile      pebblestore.AgentProfile
 	ChildSession         pebblestore.SessionSnapshot
 	ChildMode            string
+	TargetWorkspacePath  string
 	ChildWorkspacePath   string
 	ChildWorkspaceName   string
 	ChildWorktreeEnabled bool
@@ -45,17 +52,81 @@ type taskLaunchPrepared struct {
 	ChildWorktreeBranch  string
 	TaskBase             *worktreeruntime.TaskBase
 	LaunchStartedAtMS    int64
+	StreamKey            string
+	SwarmMode            bool
+	SwarmStrategy        string
+	AssemblyPart         *taskSwarmAssemblyPart
+	IntegrationContract  string
+	IntegrationRequired  bool
+	ArtifactRunContext   *tool.ArtifactRunContext
+	SourceArtifact       *pebblestore.SessionArtifactSelectionReference
+	ContextWatcher       *taskContextWatcher
+	ContinuationBoundary RunContinuationBoundaryCallback
+	LogicalTaskID        string
+	TaskCallID           string
+	ParentRunID          string
+	PermissionSessionID  string
+	ReservationSessionID string
+	ProgramID            string
+	ProgramJobID         string
 }
 
 func delegatedSubagentRunStartMeta(launch taskLaunchPrepared, permissionSessionID string, principal identity.Principal, applySessionMutation func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error)) RunStartMeta {
 	profile := launch.SubagentProfile
-	return RunStartMeta{
+	meta := RunStartMeta{
 		AllowSubagent:        true,
 		TrustedAgentProfile:  &profile,
 		PermissionSessionID:  strings.TrimSpace(permissionSessionID),
 		Principal:            principal,
 		ApplySessionMutation: applySessionMutation,
+		ArtifactRunContext:   cloneArtifactRunContext(launch.ArtifactRunContext),
 	}
+	if meta.ArtifactRunContext != nil {
+		if launch.OutputRequirements == nil && meta.ArtifactRunContext.OutputRequirements != nil {
+			launch.OutputRequirements = cloneTaskOutputRequirements(meta.ArtifactRunContext.OutputRequirements)
+		}
+		meta.ArtifactRunContext.OutputRequirements = cloneTaskOutputRequirements(launch.OutputRequirements)
+		if launch.AnimationProfile == nil && meta.ArtifactRunContext.AnimationProfile != nil {
+			launch.AnimationProfile = cloneTaskAnimationProfile(meta.ArtifactRunContext.AnimationProfile)
+		}
+		meta.ArtifactRunContext.AnimationProfile = cloneTaskAnimationProfile(launch.AnimationProfile)
+	}
+	if launch.ContinuationBoundary != nil {
+		meta.ContinuationBoundary = launch.ContinuationBoundary
+	} else if launch.ContextWatcher != nil {
+		meta.ContinuationBoundary = launch.ContextWatcher.Boundary
+	}
+	if meta.ContinuationBoundary != nil {
+		baseBranch := strings.TrimSpace(firstNonEmptyString(launch.ChildWorktreeBase, mapString(launch.ChildSession.Metadata, "worktree_base_branch"), mapString(launch.ChildSession.Metadata, "parent_branch")))
+		baseCommit := strings.TrimSpace(mapString(launch.ChildSession.Metadata, "base_commit"))
+		if launch.TaskBase != nil {
+			baseCommit = strings.TrimSpace(launch.TaskBase.BaseCommit)
+			if baseBranch == "" {
+				baseBranch = strings.TrimSpace(launch.TaskBase.ParentBranch)
+			}
+		}
+		meta.TaskCompaction = &TaskContextCompaction{
+			OriginalAssignment:  strings.TrimSpace(firstNonEmptyString(mapString(launch.ChildSession.Metadata, "original_assignment"), launch.MetaPrompt, launch.AssignmentLabel)),
+			LogicalTaskID:       strings.TrimSpace(launch.LogicalTaskID),
+			TaskCallID:          strings.TrimSpace(launch.TaskCallID),
+			ProgramID:           strings.TrimSpace(launch.ProgramID),
+			ProgramJobID:        strings.TrimSpace(launch.ProgramJobID),
+			WorkspacePath:       strings.TrimSpace(launch.ChildWorkspacePath),
+			WorktreeBranch:      strings.TrimSpace(launch.ChildWorktreeBranch),
+			BaseBranch:          baseBranch,
+			ImmutableBaseCommit: baseCommit,
+		}
+	}
+	return meta
+}
+
+type taskChildBlockedError struct {
+	code    string
+	message string
+}
+
+func (e taskChildBlockedError) Error() string {
+	return firstNonEmptyString(e.message, "delegated child blocked")
 }
 
 type taskLaunchOutcome struct {
@@ -69,7 +140,9 @@ type taskLaunchOutcome struct {
 	SubagentProvider    string
 	SubagentModel       string
 	ChildSessionID      string
+	ChildRunID          string
 	ChildMode           string
+	TargetWorkspacePath string
 	WorkspacePath       string
 	WorkspaceName       string
 	WorktreeEnabled     bool
@@ -81,6 +154,7 @@ type taskLaunchOutcome struct {
 	HeadCommit          string
 	GitStatus           string
 	WorktreeClean       bool
+	ChangedFiles        []string
 	LaunchStartedAtMS   int64
 	CurrentTool         string
 	CurrentToolIdentity string
@@ -104,6 +178,20 @@ type taskLaunchOutcome struct {
 	Summary             string
 	Error               string
 	Reason              string
+	BlockerCode         string
+	BlockerEvidence     []string
+	CompletedScope      []string
+	ResolutionRequired  string
+	StreamKey           string
+	SwarmMode           bool
+	SwarmStrategy       string
+	AssemblyPart        *taskSwarmAssemblyPart
+	IntegrationContract string
+	IntegrationRequired bool
+	OutputMode          string
+	OutputRequirements  *pebblestore.SessionArtifactOutputRequirements
+	AnimationProfile    *pebblestore.SessionArtifactAnimationProfile
+	ArtifactReference   *taskArtifactReference
 }
 
 const taskLaunchReasonMaxRunes = 512
@@ -114,6 +202,359 @@ func boundedTaskLaunchReason(reason string) string {
 		return ""
 	}
 	return truncateRunes(reason, taskLaunchReasonMaxRunes)
+}
+
+func taskManagedArtifactID(kind, parentSessionID, routingID string, launchIndex int) string {
+	seed := strings.Join([]string{"task-managed-artifact", kind, strings.TrimSpace(parentSessionID), strings.TrimSpace(routingID), fmt.Sprintf("%d", launchIndex)}, "\x00")
+	sum := sha256.Sum256([]byte(seed))
+	return kind + "-" + hex.EncodeToString(sum[:12])
+}
+
+// Task Program scheduler cohorts reuse the program identity so one newly
+// authored program keeps a stable collection and per-job variants.
+func taskManagedArtifactRoutingID(taskCallID, programID string) string {
+	if programID = strings.TrimSpace(programID); programID != "" {
+		return "program:" + programID
+	}
+	return strings.TrimSpace(taskCallID)
+}
+
+func managedDesignerArtifactContext(parent pebblestore.SessionSnapshot, taskCallID string, spec taskLaunchSpec, launchIndex int) *tool.ArtifactRunContext {
+	if (!agentruntime.IsDesignerAgentName(spec.RequestedSubagentType) && !agentruntime.IsImageAgentName(spec.RequestedSubagentType)) || strings.TrimSpace(spec.OutputMode) != taskOutputModeManaged {
+		return nil
+	}
+	if strings.TrimSpace(parent.ID) == "" || strings.TrimSpace(parent.AccountScopeID) == "" || strings.TrimSpace(parent.UserID) == "" || strings.TrimSpace(taskCallID) == "" || launchIndex < 1 {
+		return nil
+	}
+	programID, _ := spec.SourceArguments["program_id"].(string)
+	programJobID, _ := spec.SourceArguments["program_job_id"].(string)
+	if strings.TrimSpace(programID) != "" && strings.TrimSpace(programJobID) == "" {
+		return nil
+	}
+	routingID := taskManagedArtifactRoutingID(taskCallID, programID)
+	collectionID := taskManagedArtifactID("collection", parent.ID, routingID, 0)
+	variantIndex := launchIndex
+	variantKey := routingID
+	if strings.TrimSpace(programJobID) != "" {
+		variantIndex = 0
+		variantKey = routingID + "\x00job:" + strings.TrimSpace(programJobID)
+	}
+	variantID := taskManagedArtifactID("variant", parent.ID, variantKey, variantIndex)
+	iterationIndex := launchIndex
+	if raw, ok := spec.SourceArguments["swarm_index"].(int); ok && raw > 0 {
+		iterationIndex = raw
+	} else if raw, ok := spec.SourceArguments["swarm_index"].(float64); ok && raw > 0 {
+		iterationIndex = int(raw)
+	}
+	iterationID := ""
+	iterationGroupID, iterationGroup, iterationLabel, iterationTheme := "", "", "", ""
+	if spec.SwarmMode {
+		iterationGroupID = taskManagedArtifactID("iteration-group", parent.ID, routingID, 0)
+		iterationID = taskManagedArtifactID("iteration", parent.ID, routingID, iterationIndex)
+		iterationGroup, _ = spec.SourceArguments["swarm_group"].(string)
+		iterationLabel, iterationTheme = strings.TrimSpace(spec.AssignmentLabel), strings.TrimSpace(mapString(spec.SourceArguments, "swarm_theme"))
+	}
+	return &tool.ArtifactRunContext{
+		SessionID: parent.ID, TaskCallID: taskCallID, ProgramID: strings.TrimSpace(programID), ProgramJobID: strings.TrimSpace(programJobID),
+		IterationGroupID: iterationGroupID, IterationGroup: strings.TrimSpace(iterationGroup), IterationID: iterationID, IterationIndex: iterationIndex,
+		IterationLabel: iterationLabel, IterationTheme: iterationTheme, CollectionID: collectionID, VariantID: variantID,
+		OutputRequirements: cloneTaskOutputRequirements(spec.OutputRequirements),
+		AnimationProfile:   cloneTaskAnimationProfile(spec.AnimationProfile),
+	}
+}
+
+// ensureManagedDesignerArtifactCollection reserves the parent-owned destination
+// before any child session is created. Cohorts within one Task Program resolve
+// the same collection from ProgramID.
+func (s *Service) ensureManagedDesignerArtifactCollection(parent pebblestore.SessionSnapshot, taskCallID string, specs []taskLaunchSpec, applySessionMutation func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error)) (string, error) {
+	managed := false
+	for _, spec := range specs {
+		if (agentruntime.IsDesignerAgentName(spec.RequestedSubagentType) || agentruntime.IsImageAgentName(spec.RequestedSubagentType)) && strings.TrimSpace(spec.OutputMode) == taskOutputModeManaged {
+			managed = true
+			break
+		}
+	}
+	if !managed {
+		return "", nil
+	}
+	parent.ID, parent.AccountScopeID, parent.UserID = strings.TrimSpace(parent.ID), strings.TrimSpace(parent.AccountScopeID), strings.TrimSpace(parent.UserID)
+	taskCallID = strings.TrimSpace(taskCallID)
+	if parent.ID == "" || parent.AccountScopeID == "" || parent.UserID == "" || taskCallID == "" {
+		return "", errors.New("managed Designer collection requires trusted parent ownership and task call identity")
+	}
+	programID := ""
+	managedHasProgram, managedWithoutProgram := false, false
+	programJobs := map[string]struct{}{}
+	for _, spec := range specs {
+		if (!agentruntime.IsDesignerAgentName(spec.RequestedSubagentType) && !agentruntime.IsImageAgentName(spec.RequestedSubagentType)) || strings.TrimSpace(spec.OutputMode) != taskOutputModeManaged {
+			continue
+		}
+		value, _ := spec.SourceArguments["program_id"].(string)
+		value = strings.TrimSpace(value)
+		if value == "" {
+			managedWithoutProgram = true
+			continue
+		}
+		jobID, _ := spec.SourceArguments["program_job_id"].(string)
+		jobID = strings.TrimSpace(jobID)
+		if jobID == "" {
+			return "", errors.New("managed Designer task-program launch requires a trusted program job identity")
+		}
+		if _, duplicate := programJobs[jobID]; duplicate {
+			return "", errors.New("managed Designer task-program launches require unique program job identities")
+		}
+		programJobs[jobID] = struct{}{}
+		managedHasProgram = true
+		if programID != "" && programID != value {
+			return "", errors.New("managed Designer launches cannot target multiple task programs in one wave")
+		}
+		programID = value
+	}
+	if managedHasProgram && managedWithoutProgram {
+		return "", errors.New("managed Designer launches cannot mix task-program and ordinary destinations in one wave")
+	}
+	collectionID := taskManagedArtifactID("collection", parent.ID, taskManagedArtifactRoutingID(taskCallID, programID), 0)
+	collectionName, collectionDescription := "Managed alternatives", ""
+	iterationGroupID := ""
+	for _, spec := range specs {
+		if !spec.SwarmMode {
+			continue
+		}
+		iterationGroupID = taskManagedArtifactID("iteration-group", parent.ID, taskManagedArtifactRoutingID(taskCallID, programID), 0)
+		collectionTitle := strings.TrimSpace(mapString(spec.SourceArguments, "swarm_collection_title"))
+		group := strings.TrimSpace(mapString(spec.SourceArguments, "swarm_group"))
+		swarmDescription := strings.TrimSpace(mapString(spec.SourceArguments, "swarm_description"))
+		switch {
+		case collectionTitle != "":
+			collectionName = collectionTitle
+		case group != "":
+			collectionName = group + " iterations"
+		default:
+			collectionName = "Managed iteration group"
+		}
+		if swarmDescription != "" {
+			collectionDescription = fmt.Sprintf("%s · %d iterations", swarmDescription, len(specs))
+		} else {
+			collectionDescription = fmt.Sprintf("Iteration Swarm group · %d iterations", len(specs))
+		}
+		break
+	}
+	collection := pebblestore.SessionArtifactCollection{
+		ID: collectionID, Name: collectionName, Description: collectionDescription,
+		Lineage: pebblestore.SessionArtifactLineage{ParentSessionID: parent.ID, TaskCallID: taskCallID, ProgramID: strings.TrimSpace(programID), IterationGroupID: iterationGroupID},
+	}
+	payload, err := json.Marshal(collection)
+	if err != nil {
+		return "", err
+	}
+	digest := sha256.Sum256(payload)
+	requestID := "task-managed-collection:" + collectionID
+	apply := applySessionMutation
+	if apply == nil {
+		if s == nil || s.sessions == nil {
+			return "", errors.New("managed Designer collection requires the session mutation authority")
+		}
+		apply = s.sessions.ApplySessionMutation
+	}
+	if s != nil && s.sessions != nil {
+		if existing, ok, getErr := s.sessions.GetSessionArtifactCollection(parent.AccountScopeID, parent.ID, collectionID); getErr != nil {
+			return "", getErr
+		} else if ok {
+			if existing.SessionID != parent.ID || existing.AccountScopeID != parent.AccountScopeID {
+				return "", errors.New("managed Designer artifact collection ownership is inconsistent")
+			}
+			return collectionID, nil
+		}
+	}
+	result, err := apply(sessionruntime.SessionMutationInput{
+		SessionID: parent.ID, UserID: parent.UserID, AccountScopeID: parent.AccountScopeID,
+		ClientRequestID: requestID, IdempotencyKey: requestID, PayloadHash: hex.EncodeToString(digest[:]), RequestHash: hex.EncodeToString(digest[:]),
+		Kind: sessionruntime.SessionMutationCreateArtifact, Artifact: &sessionruntime.ArtifactMutation{Collection: collection}, NowUnixMs: time.Now().UnixMilli(),
+	})
+	if err != nil {
+		return "", fmt.Errorf("allocate managed Designer artifact collection: %w", err)
+	}
+	if result.Artifact == nil || result.Artifact.Variant != nil || result.Artifact.Collection.ID != collectionID || result.Artifact.Collection.SessionID != parent.ID || result.Artifact.Collection.AccountScopeID != parent.AccountScopeID {
+		return "", errors.New("managed Designer artifact collection allocation returned an inconsistent projection")
+	}
+	return collectionID, nil
+}
+
+// ensureManagedDesignerArtifactPlaceholders projects every trusted managed
+// destination after child preparation and before any child execution. The
+// parent-owned staging variants make the complete wave visible through the
+// canonical artifact catalog while preserving the exact child/iteration
+// lineage that finalization must later validate.
+func (s *Service) ensureManagedDesignerArtifactPlaceholders(parent pebblestore.SessionSnapshot, launches []taskLaunchPrepared, applySessionMutation func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error)) error {
+	parent.ID, parent.AccountScopeID, parent.UserID = strings.TrimSpace(parent.ID), strings.TrimSpace(parent.AccountScopeID), strings.TrimSpace(parent.UserID)
+	if parent.ID == "" || parent.AccountScopeID == "" || parent.UserID == "" {
+		return errors.New("managed Designer placeholders require trusted parent ownership")
+	}
+	apply := applySessionMutation
+	if apply == nil {
+		if s == nil || s.sessions == nil {
+			return errors.New("managed Designer placeholders require the session mutation authority")
+		}
+		apply = s.sessions.ApplySessionMutation
+	}
+	for _, launch := range launches {
+		run := launch.ArtifactRunContext
+		if run == nil {
+			continue
+		}
+		childSessionID := strings.TrimSpace(launch.ChildSession.ID)
+		if strings.TrimSpace(run.SessionID) != parent.ID || strings.TrimSpace(run.TaskCallID) == "" || strings.TrimSpace(run.CollectionID) == "" || strings.TrimSpace(run.VariantID) == "" || strings.TrimSpace(run.ChildSessionID) != childSessionID || childSessionID == "" {
+			return fmt.Errorf("managed Designer launch %d has an incomplete trusted artifact placeholder", launch.LaunchIndex)
+		}
+		if s == nil || s.sessions == nil {
+			return errors.New("managed Designer placeholders require artifact projection reads")
+		}
+		collection, ok, err := s.sessions.GetSessionArtifactCollection(parent.AccountScopeID, parent.ID, run.CollectionID)
+		if err != nil {
+			return err
+		}
+		if !ok || collection.SessionID != parent.ID || collection.AccountScopeID != parent.AccountScopeID {
+			return fmt.Errorf("managed Designer collection %q is unavailable or has inconsistent ownership", run.CollectionID)
+		}
+		lineage := pebblestore.SessionArtifactLineage{
+			ParentSessionID: parent.ID, SourceSessionID: childSessionID, TaskCallID: strings.TrimSpace(run.TaskCallID),
+			ProgramID: strings.TrimSpace(run.ProgramID), ProgramJobID: strings.TrimSpace(run.ProgramJobID), ChildSessionID: childSessionID,
+			IterationGroupID: strings.TrimSpace(run.IterationGroupID), IterationGroup: strings.TrimSpace(run.IterationGroup),
+			IterationID: strings.TrimSpace(run.IterationID), IterationIndex: run.IterationIndex,
+			IterationLabel: strings.TrimSpace(run.IterationLabel), IterationTheme: strings.TrimSpace(run.IterationTheme),
+		}
+		if source := launch.SourceArtifact; source != nil {
+			lineage.SourceSessionID = strings.TrimSpace(source.SessionID)
+			lineage.SourceCollectionID = strings.TrimSpace(source.CollectionID)
+			lineage.SourceVariantID = strings.TrimSpace(source.VariantID)
+			lineage.SourceEventSeq = source.EventSeq
+		}
+		if existing, found, getErr := s.sessions.GetSessionArtifactVariant(parent.AccountScopeID, parent.ID, collection.ID, run.VariantID); getErr != nil {
+			return getErr
+		} else if found {
+			requirementsMatch := reflect.DeepEqual(existing.OutputRequirements, run.OutputRequirements)
+			animationProfileMatch := reflect.DeepEqual(existing.AnimationProfile, run.AnimationProfile)
+			dimensionsMatch := run.OutputRequirements == nil || (existing.Presentation.Width == run.OutputRequirements.Width && existing.Presentation.Height == run.OutputRequirements.Height)
+			if existing.CollectionID != collection.ID || existing.Lineage != lineage || !requirementsMatch || !animationProfileMatch || !dimensionsMatch {
+				return fmt.Errorf("managed Designer artifact placeholder %q has inconsistent lineage, requirements, or presentation", run.VariantID)
+			}
+			if existing.Status != pebblestore.SessionArtifactStatusStaging && existing.Status != pebblestore.SessionArtifactStatusReady {
+				return fmt.Errorf("managed Designer artifact placeholder %q has incompatible status %q", run.VariantID, existing.Status)
+			}
+			continue
+		}
+		label := strings.TrimSpace(run.IterationLabel)
+		if label == "" && run.IterationIndex > 0 {
+			label = fmt.Sprintf("Iteration %d", run.IterationIndex)
+		}
+		presentation := pebblestore.SessionArtifactPresentation{Label: label, Description: strings.TrimSpace(run.IterationTheme)}
+		if run.OutputRequirements != nil {
+			presentation.Width, presentation.Height = run.OutputRequirements.Width, run.OutputRequirements.Height
+		}
+		variant := pebblestore.SessionArtifactVariant{
+			ID: run.VariantID, CollectionID: collection.ID, Lineage: lineage,
+			Presentation: presentation, OutputRequirements: cloneTaskOutputRequirements(run.OutputRequirements), AnimationProfile: cloneTaskAnimationProfile(run.AnimationProfile),
+		}
+		payload, err := json.Marshal(variant)
+		if err != nil {
+			return err
+		}
+		digest := sha256.Sum256(payload)
+		requestID := "task-managed-placeholder:" + run.VariantID
+		result, err := apply(sessionruntime.SessionMutationInput{
+			SessionID: parent.ID, UserID: parent.UserID, AccountScopeID: parent.AccountScopeID,
+			ClientRequestID: requestID, IdempotencyKey: requestID, PayloadHash: hex.EncodeToString(digest[:]), RequestHash: hex.EncodeToString(digest[:]),
+			Kind: sessionruntime.SessionMutationCreateArtifact, Artifact: &sessionruntime.ArtifactMutation{Collection: collection, Variant: &variant}, NowUnixMs: time.Now().UnixMilli(),
+		})
+		if err != nil {
+			return fmt.Errorf("allocate managed Designer artifact placeholder %q: %w", run.VariantID, err)
+		}
+		if result.Artifact == nil || result.Artifact.Variant == nil || result.Artifact.Variant.ID != run.VariantID || result.Artifact.Variant.Status != pebblestore.SessionArtifactStatusStaging || result.Artifact.Variant.Lineage != lineage || !reflect.DeepEqual(result.Artifact.Variant.OutputRequirements, run.OutputRequirements) || !reflect.DeepEqual(result.Artifact.Variant.AnimationProfile, run.AnimationProfile) || (run.OutputRequirements != nil && (result.Artifact.Variant.Presentation.Width != run.OutputRequirements.Width || result.Artifact.Variant.Presentation.Height != run.OutputRequirements.Height)) {
+			return fmt.Errorf("managed Designer artifact placeholder %q returned an inconsistent projection", run.VariantID)
+		}
+	}
+	return nil
+}
+
+func disabledTaskToolNames(extra ...string) []string {
+	disabled := taskDisabledTools(false)
+	for _, name := range extra {
+		disabled[name] = true
+	}
+	return sortedDisabledToolNames(disabled)
+}
+
+// markManagedDesignerArtifactFailed is best-effort status projection. The task
+// result remains authoritative about a failed/missing managed output even if a
+// concurrent ready variant or a persistence failure prevents this marker.
+func (s *Service) markManagedDesignerArtifactFailed(parent pebblestore.SessionSnapshot, run *tool.ArtifactRunContext, childSessionID, code string, sourceArtifacts ...*pebblestore.SessionArtifactSelectionReference) {
+	if s == nil || s.sessions == nil || run == nil {
+		return
+	}
+	parent.ID, parent.AccountScopeID, parent.UserID = strings.TrimSpace(parent.ID), strings.TrimSpace(parent.AccountScopeID), strings.TrimSpace(parent.UserID)
+	childSessionID, code = strings.TrimSpace(childSessionID), strings.TrimSpace(code)
+	if parent.ID == "" || parent.AccountScopeID == "" || parent.UserID == "" || childSessionID == "" || code == "" {
+		return
+	}
+	if strings.TrimSpace(run.SessionID) != parent.ID || strings.TrimSpace(run.TaskCallID) == "" || strings.TrimSpace(run.ChildSessionID) != childSessionID || strings.TrimSpace(run.CollectionID) == "" || strings.TrimSpace(run.VariantID) == "" {
+		return
+	}
+	collection, ok, err := s.sessions.GetSessionArtifactCollection(parent.AccountScopeID, parent.ID, run.CollectionID)
+	if err != nil || !ok || collection.SessionID != parent.ID || collection.AccountScopeID != parent.AccountScopeID {
+		return
+	}
+	lineage := pebblestore.SessionArtifactLineage{
+		ParentSessionID: parent.ID, SourceSessionID: childSessionID, TaskCallID: run.TaskCallID,
+		ProgramID: run.ProgramID, ProgramJobID: run.ProgramJobID, ChildSessionID: childSessionID,
+		IterationGroupID: run.IterationGroupID, IterationGroup: run.IterationGroup,
+		IterationID: run.IterationID, IterationIndex: run.IterationIndex, IterationLabel: run.IterationLabel, IterationTheme: run.IterationTheme,
+	}
+	if len(sourceArtifacts) > 0 && sourceArtifacts[0] != nil {
+		source := sourceArtifacts[0]
+		lineage.SourceSessionID = strings.TrimSpace(source.SessionID)
+		lineage.SourceCollectionID = strings.TrimSpace(source.CollectionID)
+		lineage.SourceVariantID = strings.TrimSpace(source.VariantID)
+		lineage.SourceEventSeq = source.EventSeq
+	}
+	variant := pebblestore.SessionArtifactVariant{
+		ID: run.VariantID, CollectionID: collection.ID, Filename: "managed-output", MediaType: "application/octet-stream", FailureCode: code, Lineage: lineage,
+	}
+	requestID := "task-managed-missing:" + run.VariantID
+	staged := &variant
+	if existing, ok, err := s.sessions.GetSessionArtifactVariant(parent.AccountScopeID, parent.ID, collection.ID, run.VariantID); err != nil {
+		return
+	} else if ok {
+		if existing.Lineage != variant.Lineage || existing.CollectionID != collection.ID || existing.Status != pebblestore.SessionArtifactStatusStaging {
+			return
+		}
+		staged = &existing
+	} else {
+		payload, err := json.Marshal(variant)
+		if err != nil {
+			return
+		}
+		digest := sha256.Sum256(payload)
+		created, err := s.sessions.ApplySessionMutation(sessionruntime.SessionMutationInput{
+			SessionID: parent.ID, UserID: parent.UserID, AccountScopeID: parent.AccountScopeID,
+			ClientRequestID: requestID + ":stage", IdempotencyKey: requestID + ":stage", PayloadHash: hex.EncodeToString(digest[:]), RequestHash: hex.EncodeToString(digest[:]),
+			Kind: sessionruntime.SessionMutationCreateArtifact, Artifact: &sessionruntime.ArtifactMutation{Collection: collection, Variant: &variant}, NowUnixMs: time.Now().UnixMilli(),
+		})
+		if err != nil || created.Artifact == nil || created.Artifact.Variant == nil {
+			return
+		}
+		staged = created.Artifact.Variant
+	}
+	staged.FailureCode = code
+	failedPayload, err := json.Marshal(*staged)
+	if err != nil {
+		return
+	}
+	failedDigest := sha256.Sum256(failedPayload)
+	_, _ = s.sessions.ApplySessionMutation(sessionruntime.SessionMutationInput{
+		SessionID: parent.ID, UserID: parent.UserID, AccountScopeID: parent.AccountScopeID,
+		ClientRequestID: requestID + ":failed", IdempotencyKey: requestID + ":failed", PayloadHash: hex.EncodeToString(failedDigest[:]), RequestHash: hex.EncodeToString(failedDigest[:]),
+		Kind: sessionruntime.SessionMutationFailArtifact, Artifact: &sessionruntime.ArtifactMutation{Collection: collection, Variant: staged}, NowUnixMs: time.Now().UnixMilli(),
+	})
 }
 
 func (s *Service) cancelledTaskLaunchReason(childSessionID string, runErr error) (string, bool) {
@@ -131,6 +572,17 @@ func (s *Service) cancelledTaskLaunchReason(childSessionID string, runErr error)
 	return reason, true
 }
 
+type taskArtifactReference struct {
+	SessionID          string                                         `json:"session_id"`
+	CollectionID       string                                         `json:"collection_id"`
+	VariantID          string                                         `json:"variant_id"`
+	EventSeq           uint64                                         `json:"event_seq,omitempty"`
+	Status             string                                         `json:"status"`
+	FailureCode        string                                         `json:"failure_code,omitempty"`
+	OutputRequirements *pebblestore.SessionArtifactOutputRequirements `json:"output_requirements,omitempty"`
+	AnimationProfile   *pebblestore.SessionArtifactAnimationProfile   `json:"animation_profile,omitempty"`
+}
+
 type taskReportRef struct {
 	SessionID string `json:"session_id"`
 	MessageID string `json:"message_id"`
@@ -144,25 +596,45 @@ func buildTaskLaunchOutcome(launch taskLaunchPrepared) taskLaunchOutcome {
 	requested := strings.TrimSpace(launch.RequestedSubagent)
 	metaPrompt := strings.TrimSpace(launch.MetaPrompt)
 	outcome := taskLaunchOutcome{
-		LaunchIndex:        launch.LaunchIndex,
-		VirtualTarget:      launch.VirtualTarget,
-		RequestedSubagent:  requested,
-		ResolvedSubagent:   resolved,
-		MetaPrompt:         metaPrompt,
-		AssignmentLabel:    strings.TrimSpace(launch.AssignmentLabel),
-		OwnedScope:         append([]string(nil), launch.OwnedScope...),
-		SubagentProvider:   strings.TrimSpace(launch.SubagentProvider),
-		SubagentModel:      strings.TrimSpace(launch.SubagentModel),
-		ChildSessionID:     strings.TrimSpace(launch.ChildSession.ID),
-		ChildMode:          strings.TrimSpace(launch.ChildMode),
-		WorkspacePath:      strings.TrimSpace(launch.ChildSession.WorkspacePath),
-		WorkspaceName:      strings.TrimSpace(launch.ChildSession.WorkspaceName),
-		WorktreeEnabled:    launch.ChildSession.WorktreeEnabled,
-		WorktreeRootPath:   strings.TrimSpace(launch.ChildSession.WorktreeRootPath),
-		WorktreeBaseBranch: strings.TrimSpace(launch.ChildSession.WorktreeBaseBranch),
-		WorktreeBranch:     strings.TrimSpace(launch.ChildSession.WorktreeBranch),
-		LaunchStartedAtMS:  launch.LaunchStartedAtMS,
-		WorktreeClean:      true,
+		LaunchIndex:         launch.LaunchIndex,
+		VirtualTarget:       launch.VirtualTarget,
+		RequestedSubagent:   requested,
+		ResolvedSubagent:    resolved,
+		MetaPrompt:          metaPrompt,
+		AssignmentLabel:     strings.TrimSpace(launch.AssignmentLabel),
+		OwnedScope:          append([]string(nil), launch.OwnedScope...),
+		SubagentProvider:    strings.TrimSpace(launch.SubagentProvider),
+		SubagentModel:       strings.TrimSpace(launch.SubagentModel),
+		ChildSessionID:      strings.TrimSpace(launch.ChildSession.ID),
+		ChildMode:           strings.TrimSpace(launch.ChildMode),
+		TargetWorkspacePath: strings.TrimSpace(launch.TargetWorkspacePath),
+		WorkspacePath:       strings.TrimSpace(launch.ChildSession.WorkspacePath),
+		WorkspaceName:       strings.TrimSpace(launch.ChildSession.WorkspaceName),
+		WorktreeEnabled:     launch.ChildSession.WorktreeEnabled,
+		WorktreeRootPath:    strings.TrimSpace(launch.ChildSession.WorktreeRootPath),
+		WorktreeBaseBranch:  strings.TrimSpace(launch.ChildSession.WorktreeBaseBranch),
+		WorktreeBranch:      strings.TrimSpace(launch.ChildSession.WorktreeBranch),
+		LaunchStartedAtMS:   launch.LaunchStartedAtMS,
+		WorktreeClean:       true,
+		StreamKey:           strings.TrimSpace(launch.StreamKey),
+		SwarmMode:           launch.SwarmMode,
+		SwarmStrategy:       strings.TrimSpace(launch.SwarmStrategy),
+		AssemblyPart:        launch.AssemblyPart,
+		IntegrationContract: strings.TrimSpace(launch.IntegrationContract),
+		IntegrationRequired: launch.IntegrationRequired,
+		OutputMode:          strings.TrimSpace(launch.OutputMode),
+		OutputRequirements:  cloneTaskOutputRequirements(launch.OutputRequirements),
+		AnimationProfile:    cloneTaskAnimationProfile(launch.AnimationProfile),
+	}
+	if launch.ArtifactRunContext != nil {
+		outcome.ArtifactReference = &taskArtifactReference{
+			SessionID:          strings.TrimSpace(launch.ArtifactRunContext.SessionID),
+			CollectionID:       strings.TrimSpace(launch.ArtifactRunContext.CollectionID),
+			VariantID:          strings.TrimSpace(launch.ArtifactRunContext.VariantID),
+			Status:             "pending",
+			OutputRequirements: cloneTaskOutputRequirements(launch.ArtifactRunContext.OutputRequirements),
+			AnimationProfile:   cloneTaskAnimationProfile(launch.ArtifactRunContext.AnimationProfile),
+		}
 	}
 	if launch.TaskBase != nil {
 		outcome.BaseCommit = strings.TrimSpace(launch.TaskBase.BaseCommit)
@@ -313,6 +785,18 @@ func buildTaskStreamLaunchPayload(launch taskLaunchOutcome, status, phase string
 		"reason":                     strings.TrimSpace(launch.Reason),
 		"report_chars":               launch.ReportChars,
 		"report_truncated":           launch.ReportTruncated,
+		"swarm_mode":                 launch.SwarmMode,
+		"swarm_strategy":             strings.TrimSpace(launch.SwarmStrategy),
+		"assembly_part":              launch.AssemblyPart,
+		"integration_contract":       strings.TrimSpace(launch.IntegrationContract),
+		"integration_required":       launch.IntegrationRequired,
+		"output_mode":                strings.TrimSpace(launch.OutputMode),
+		"output_requirements":        launch.OutputRequirements,
+		"animation_profile":          launch.AnimationProfile,
+	}
+	if launch.ArtifactReference != nil {
+		row["artifact_reference"] = launch.ArtifactReference
+		row["artifact_status"] = launch.ArtifactReference.Status
 	}
 	if launch.ReportRef != nil {
 		row["report_ref"] = launch.ReportRef
@@ -355,6 +839,9 @@ func buildTaskStreamPayload(parentSessionID, action, description string, launchC
 const taskStreamPathIDV2 = "tool.task.stream.v2"
 
 func taskLaunchStreamKey(launch taskLaunchOutcome) string {
+	if streamKey := strings.TrimSpace(launch.StreamKey); streamKey != "" {
+		return streamKey
+	}
 	if childSessionID := strings.TrimSpace(launch.ChildSessionID); childSessionID != "" {
 		return childSessionID
 	}
@@ -405,12 +892,25 @@ func buildTaskStreamLaunchPatchPayload(launch taskLaunchOutcome, status, phase s
 		"tool_started":               launch.ToolStarted,
 		"tool_completed":             launch.ToolCompleted,
 		"tool_failed":                launch.ToolFailed,
+		"tool_order":                 append([]string(nil), launch.ToolOrder...),
 		"summary":                    strings.TrimSpace(launch.Summary),
 		"error":                      strings.TrimSpace(launch.Error),
 		"reason":                     strings.TrimSpace(launch.Reason),
 		"report_chars":               launch.ReportChars,
 		"report_truncated":           launch.ReportTruncated,
 		"terminal":                   terminal,
+		"swarm_mode":                 launch.SwarmMode,
+		"swarm_strategy":             strings.TrimSpace(launch.SwarmStrategy),
+		"assembly_part":              launch.AssemblyPart,
+		"integration_contract":       strings.TrimSpace(launch.IntegrationContract),
+		"integration_required":       launch.IntegrationRequired,
+		"output_mode":                strings.TrimSpace(launch.OutputMode),
+		"output_requirements":        launch.OutputRequirements,
+		"animation_profile":          launch.AnimationProfile,
+	}
+	if launch.ArtifactReference != nil {
+		patch["artifact_reference"] = launch.ArtifactReference
+		patch["artifact_status"] = launch.ArtifactReference.Status
 	}
 	if launch.ReportRef != nil {
 		patch["report_ref"] = launch.ReportRef
@@ -435,24 +935,28 @@ func buildTaskStreamPatchPayload(parentSessionID, taskCallID, action, descriptio
 	patch := buildTaskStreamLaunchPatchPayload(launch, status, phase, terminal)
 	launchKey := taskLaunchStreamKey(launch)
 	return map[string]any{
-		"tool":              "task",
-		"action":            action,
-		"status":            status,
-		"phase":             strings.TrimSpace(phase),
-		"launch_count":      launchCount,
-		"description":       description,
-		"goal":              description,
-		"parent_session_id": strings.TrimSpace(parentSessionID),
-		"task_call_id":      strings.TrimSpace(taskCallID),
-		"path_id":           taskStreamPathIDV2,
-		"stream_version":    2,
-		"event":             "launch.patch",
-		"launch_index":      launch.LaunchIndex,
-		"launch_key":        launchKey,
-		"child_session_id":  strings.TrimSpace(launch.ChildSessionID),
-		"summary":           summary,
-		"details_truncated": false,
-		"launch":            patch,
+		"tool":                 "task",
+		"action":               action,
+		"status":               status,
+		"phase":                strings.TrimSpace(phase),
+		"launch_count":         launchCount,
+		"description":          description,
+		"goal":                 description,
+		"parent_session_id":    strings.TrimSpace(parentSessionID),
+		"task_call_id":         strings.TrimSpace(taskCallID),
+		"path_id":              taskStreamPathIDV2,
+		"stream_version":       2,
+		"event":                "launch.patch",
+		"launch_index":         launch.LaunchIndex,
+		"launch_key":           launchKey,
+		"child_session_id":     strings.TrimSpace(launch.ChildSessionID),
+		"summary":              summary,
+		"details_truncated":    false,
+		"launch":               patch,
+		"task_mode":            map[bool]string{true: taskModeSwarm, false: taskModeRegular}[launch.SwarmMode],
+		"swarm_strategy":       strings.TrimSpace(launch.SwarmStrategy),
+		"integration_contract": strings.TrimSpace(launch.IntegrationContract),
+		"integration_required": launch.IntegrationRequired,
 	}
 }
 
@@ -500,14 +1004,24 @@ func (s *Service) prepareDelegatedSubagentLaunchWithProfile(parentSession pebble
 	if strings.TrimSpace(subagentProfile.Name) == "" {
 		return taskLaunchPrepared{}, errors.New("task resolved empty subagent")
 	}
+	if agentruntime.IsDesignerAgentName(requestedSubagent) && strings.EqualFold(strings.TrimSpace(launch.OutputMode), taskOutputModeWorkspace) {
+		workspaceProfile := agentruntime.DesignerWorkspaceAgentProfileForParent(subagentProfile)
+		workspaceProfile.Provider, workspaceProfile.Model, workspaceProfile.Thinking = subagentProfile.Provider, subagentProfile.Model, subagentProfile.Thinking
+		workspaceProfile.AutoServiceTier = subagentProfile.AutoServiceTier
+		subagentProfile = workspaceProfile
+	}
 
 	childMode := effectiveTaskChildMode(sessionMode)
 	isCoderTarget := agentruntime.IsCoderAgentName(requestedSubagent)
 	preference := applyAgentPreferenceOverridesForMode(parentSession.Preference, subagentProfile, childMode)
 	assignmentLabel := taskAssignmentLabel(launch.AssignmentLabel, launch.MetaPrompt, description, strings.TrimSpace(subagentProfile.Name))
 	childTitle := assignmentLabel
-	childWorkspacePath := strings.TrimSpace(parentSession.WorkspacePath)
-	childWorkspaceName := strings.TrimSpace(parentSession.WorkspaceName)
+	targetWorkspacePath := strings.TrimSpace(firstNonEmptyString(launch.TargetWorkspacePath, parentSession.WorkspacePath))
+	childWorkspacePath := targetWorkspacePath
+	childWorkspaceName := filepath.Base(targetWorkspacePath)
+	if targetWorkspacePath == strings.TrimSpace(parentSession.WorkspacePath) {
+		childWorkspaceName = strings.TrimSpace(parentSession.WorkspaceName)
+	}
 	childWorktreeEnabled := parentSession.WorktreeEnabled
 	childWorktreeRootPath := strings.TrimSpace(parentSession.WorktreeRootPath)
 	childWorktreeBaseBranch := strings.TrimSpace(parentSession.WorktreeBaseBranch)
@@ -515,31 +1029,117 @@ func (s *Service) prepareDelegatedSubagentLaunchWithProfile(parentSession pebble
 	childTemporaryWorkspaceRoots := append([]string(nil), parentSession.TemporaryWorkspaceRoots...)
 	childWorkspaceID := ""
 	childSessionID := sessionruntime.NewSessionID()
+	if logicalTaskID := strings.TrimSpace(launch.LogicalTaskID); logicalTaskID != "" && strings.TrimSpace(parentSession.AccountScopeID) != "" {
+		childSessionID = deterministicDelegatedChildSessionID(parentSession.AccountScopeID, logicalTaskID, 1)
+	}
 	isDesignerTarget := agentruntime.IsDesignerAgentName(requestedSubagent)
+	isImageTarget := agentruntime.IsImageAgentName(requestedSubagent)
+	isManagedArtifactTarget := isDesignerTarget || isImageTarget
 	childMetadata := map[string]any{
-		"workspace_id":       worktreeruntime.WorkspaceIdentityForSession(childSessionID),
-		"runtime_state":      "standby",
-		"title_pending":      false,
-		"title_locked":       true,
-		"assignment_label":   assignmentLabel,
-		"subagent_provider":  strings.TrimSpace(preference.Provider),
-		"subagent_model":     strings.TrimSpace(preference.Model),
-		"parent_session_id":  strings.TrimSpace(parentSession.ID),
-		"parent_title":       strings.TrimSpace(parentSession.Title),
-		"lineage_kind":       "delegated_subagent",
-		"lineage_label":      "@" + strings.TrimSpace(subagentProfile.Name),
-		"launch_source":      "task",
-		"launch_index":       launch.LaunchIndex,
-		"requested_subagent": requestedSubagent,
-		"subagent":           strings.TrimSpace(subagentProfile.Name),
+		"workspace_id":             worktreeruntime.WorkspaceIdentityForSession(childSessionID),
+		"runtime_state":            "standby",
+		"title_pending":            false,
+		"title_locked":             true,
+		"assignment_label":         assignmentLabel,
+		"subagent_provider":        strings.TrimSpace(preference.Provider),
+		"subagent_model":           strings.TrimSpace(preference.Model),
+		"parent_session_id":        strings.TrimSpace(parentSession.ID),
+		"parent_title":             strings.TrimSpace(parentSession.Title),
+		"lineage_kind":             "delegated_subagent",
+		"lineage_label":            "@" + strings.TrimSpace(subagentProfile.Name),
+		"launch_source":            "task",
+		"launch_index":             launch.LaunchIndex,
+		"requested_subagent":       requestedSubagent,
+		"subagent":                 strings.TrimSpace(subagentProfile.Name),
+		"context_generation":       1,
+		"context_generation_state": pebblestore.DelegatedChildGenerationActive,
+		"logical_task_id":          strings.TrimSpace(launch.LogicalTaskID),
+		"parent_task_call_id":      strings.TrimSpace(launch.TaskCallID),
+		"parent_run_id":            strings.TrimSpace(launch.ParentRunID),
+		"permission_session_id":    strings.TrimSpace(launch.PermissionSessionID),
+		"reservation_session_id":   strings.TrimSpace(launch.ReservationSessionID),
+		"reservation_run_id":       strings.TrimSpace(launch.ParentRunID),
+		"reservation_call_id":      strings.TrimSpace(launch.TaskCallID),
+		"task_program_id":          strings.TrimSpace(launch.ProgramID),
+		"task_program_job_id":      strings.TrimSpace(launch.ProgramJobID),
+		"original_assignment":      strings.TrimSpace(firstNonEmptyString(launch.MetaPrompt, description)),
 	}
 	if len(launch.OwnedScope) > 0 {
 		childMetadata["owned_scope"] = append([]string(nil), launch.OwnedScope...)
 	}
-	if isDesignerTarget {
-		childMetadata["shared_parent_checkout"] = true
-		childMetadata["reusable_workspace_artifacts"] = true
+	if launch.SwarmMode {
+		childMetadata["swarm_mode"] = true
+		childMetadata["swarm_strategy"] = strings.TrimSpace(launch.SwarmStrategy)
+		childMetadata["stream_key"] = strings.TrimSpace(launch.StreamKey)
+		childMetadata["integration_required"] = launch.IntegrationRequired
+		if launch.AssemblyPart != nil {
+			part := *launch.AssemblyPart
+			part.OwnedScope = append([]string(nil), launch.AssemblyPart.OwnedScope...)
+			childMetadata["assembly_part"] = part
+		}
+		if contract := strings.TrimSpace(launch.IntegrationContract); contract != "" {
+			childMetadata["integration_contract"] = contract
+		}
 	}
+	if isManagedArtifactTarget && strings.TrimSpace(launch.OutputMode) == taskOutputModeManaged && launch.ArtifactRunContext == nil {
+		return taskLaunchPrepared{}, errors.New("managed Designer launch is missing its trusted artifact destination")
+	}
+	if isManagedArtifactTarget && strings.TrimSpace(launch.OutputMode) != taskOutputModeManaged && launch.ArtifactRunContext != nil {
+		return taskLaunchPrepared{}, errors.New("workspace Designer launch cannot carry a managed artifact destination")
+	}
+	if isManagedArtifactTarget && launch.ArtifactRunContext != nil {
+		if launch.ArtifactRunContext.SessionID != strings.TrimSpace(parentSession.ID) || launch.ArtifactRunContext.TaskCallID == "" || launch.ArtifactRunContext.CollectionID == "" || launch.ArtifactRunContext.VariantID == "" {
+			return taskLaunchPrepared{}, errors.New("managed Designer launch destination is not owned by the parent session")
+		}
+	}
+	if !isManagedArtifactTarget && launch.OutputRequirements != nil {
+		return taskLaunchPrepared{}, errors.New("output requirements are supported only for Designer or image")
+	}
+	if isManagedArtifactTarget {
+		outputMode := strings.ToLower(strings.TrimSpace(launch.OutputMode))
+		if outputMode != taskOutputModeManaged && outputMode != taskOutputModeWorkspace {
+			return taskLaunchPrepared{}, fmt.Errorf("task Designer launch has invalid output mode %q", launch.OutputMode)
+		}
+		if isDesignerTarget {
+			childMetadata["designer_output_mode"] = outputMode
+		} else {
+			childMetadata["image_output_mode"] = outputMode
+		}
+		if outputMode == taskOutputModeManaged {
+			launch.ArtifactRunContext = cloneArtifactRunContext(launch.ArtifactRunContext)
+			launch.ArtifactRunContext.ChildSessionID = childSessionID
+			launch.ArtifactRunContext.OutputRequirements = cloneTaskOutputRequirements(launch.OutputRequirements)
+			launch.ArtifactRunContext.RunID, launch.ArtifactRunContext.PlanID, launch.ArtifactRunContext.CheckpointID, launch.ArtifactRunContext.AttemptID = "", "", "", ""
+			childMetadata["managed_artifact_output"] = true
+			childMetadata["managed_artifact_parent_session_id"] = launch.ArtifactRunContext.SessionID
+			childMetadata["managed_artifact_collection_id"] = launch.ArtifactRunContext.CollectionID
+			childMetadata["managed_artifact_variant_id"] = launch.ArtifactRunContext.VariantID
+			childMetadata["managed_artifact_task_call_id"] = launch.ArtifactRunContext.TaskCallID
+			childMetadata["managed_artifact_iteration_group_id"] = launch.ArtifactRunContext.IterationGroupID
+			childMetadata["managed_artifact_iteration_group"] = launch.ArtifactRunContext.IterationGroup
+			childMetadata["managed_artifact_iteration_id"] = launch.ArtifactRunContext.IterationID
+			childMetadata["managed_artifact_iteration_index"] = launch.ArtifactRunContext.IterationIndex
+			childMetadata["managed_artifact_iteration_label"] = launch.ArtifactRunContext.IterationLabel
+			childMetadata["managed_artifact_iteration_theme"] = launch.ArtifactRunContext.IterationTheme
+			if launch.ArtifactRunContext.ProgramID != "" {
+				childMetadata["managed_artifact_program_id"] = launch.ArtifactRunContext.ProgramID
+			}
+			if launch.ArtifactRunContext.ProgramJobID != "" {
+				childMetadata["managed_artifact_program_job_id"] = launch.ArtifactRunContext.ProgramJobID
+			}
+		} else {
+			childMetadata["shared_parent_checkout"] = true
+			childMetadata["reusable_workspace_artifacts"] = true
+		}
+	}
+	profileSnapshot, snapshotErr := cloneTaskAgentProfile(subagentProfile)
+	if snapshotErr != nil {
+		return taskLaunchPrepared{}, snapshotErr
+	}
+	childMetadata["source_agent_name"] = strings.TrimSpace(launch.SourceAgentName)
+	childMetadata["source_profile_mode"] = strings.TrimSpace(profileSnapshot.Mode)
+	childMetadata["inherited_runtime_mode"] = pebblestore.AgentProfileRuntimeMode(profileSnapshot)
+	childMetadata["agent_profile"] = profileSnapshot
 	if launch.VirtualTarget {
 		if isCoderTarget {
 			childWorktreeEnabled = false
@@ -548,15 +1148,7 @@ func (s *Service) prepareDelegatedSubagentLaunchWithProfile(parentSession pebble
 			childWorktreeBranch = ""
 			childTemporaryWorkspaceRoots = nil
 		}
-		profileSnapshot, snapshotErr := cloneTaskAgentProfile(subagentProfile)
-		if snapshotErr != nil {
-			return taskLaunchPrepared{}, snapshotErr
-		}
 		childMetadata["parent_copy"] = true
-		childMetadata["source_agent_name"] = strings.TrimSpace(launch.SourceAgentName)
-		childMetadata["source_profile_mode"] = strings.TrimSpace(profileSnapshot.Mode)
-		childMetadata["inherited_runtime_mode"] = pebblestore.AgentProfileRuntimeMode(profileSnapshot)
-		childMetadata["agent_profile"] = profileSnapshot
 		if isCoderTarget && launch.TaskBase != nil {
 			childMetadata["repository_root"] = strings.TrimSpace(launch.TaskBase.RepoRoot)
 			childMetadata["parent_branch"] = strings.TrimSpace(launch.TaskBase.ParentBranch)
@@ -574,7 +1166,7 @@ func (s *Service) prepareDelegatedSubagentLaunchWithProfile(parentSession pebble
 		if launch.TaskBase == nil {
 			return taskLaunchPrepared{}, errors.New("task failed to allocate Coder worktree: parent Git state was not resolved")
 		}
-		allocation, allocErr := s.worktrees.AllocateTaskWorkspace(parentSession.WorkspacePath, *launch.TaskBase, childSessionID)
+		allocation, allocErr := s.worktrees.AllocateTaskWorkspace(targetWorkspacePath, *launch.TaskBase, childSessionID)
 		if allocErr != nil {
 			return taskLaunchPrepared{}, fmt.Errorf("task failed to allocate subagent worktree: %w", allocErr)
 		}
@@ -591,13 +1183,32 @@ func (s *Service) prepareDelegatedSubagentLaunchWithProfile(parentSession pebble
 		childTemporaryWorkspaceRoots = nil
 	}
 
+	if isManagedArtifactTarget && launch.ArtifactRunContext != nil {
+		// Managed Designer output is not checkout output. Keep read-only discovery
+		// rooted at the parent workspace, but do not inherit worktree write identity.
+		childWorktreeEnabled = false
+		childWorktreeRootPath, childWorktreeBaseBranch, childWorktreeBranch = "", "", ""
+		childMetadata["managed_artifact_read_only_checkout"] = true
+	}
 	if childWorkspaceID != "" {
 		childMetadata["workspace_id"] = childWorkspaceID
+	}
+	if targetWorkspacePath != "" {
+		childMetadata["swarm_v3_source_workspace_path"] = targetWorkspacePath
+		childMetadata["target_workspace_path"] = targetWorkspacePath
+	}
+	if childWorkspacePath != "" {
+		childMetadata["swarm_v3_runtime_workspace_path"] = childWorkspacePath
 	}
 	if isCoderTarget {
 		childMetadata["worktree_path"] = childWorktreeRootPath
 		childMetadata["child_branch"] = childWorktreeBranch
 		childMetadata["worktree_base_branch"] = childWorktreeBaseBranch
+		if launch.TaskBase != nil {
+			childMetadata["repository_root"] = strings.TrimSpace(launch.TaskBase.RepoRoot)
+			childMetadata["parent_branch"] = strings.TrimSpace(launch.TaskBase.ParentBranch)
+			childMetadata["base_commit"] = strings.TrimSpace(launch.TaskBase.BaseCommit)
+		}
 	}
 	nowMS := time.Now().UnixMilli()
 	childSession := pebblestore.SessionSnapshot{
@@ -641,6 +1252,17 @@ func (s *Service) prepareDelegatedSubagentLaunchWithProfile(parentSession pebble
 	if created.Session != nil {
 		childSession = *created.Session
 	}
+	generationRecord := delegatedGenerationRecordFromCurrentLaunch(launch, childSession)
+	lineage, _, lineageErr := s.sessions.CreateDelegatedChildLineage(pebblestore.DelegatedChildLineageRecord{
+		AccountScopeID: childSession.AccountScopeID, LogicalTaskID: launch.LogicalTaskID,
+		ProgramID: launch.ProgramID, JobID: launch.ProgramJobID,
+	}, generationRecord, "delegated-child-create:"+strings.TrimSpace(launch.LogicalTaskID))
+	if lineageErr != nil {
+		return taskLaunchPrepared{}, fmt.Errorf("establish delegated child generation authority: %w", lineageErr)
+	}
+	if lineage.CurrentGeneration != 1 || lineage.CurrentSessionID != childSession.ID {
+		return taskLaunchPrepared{}, errors.New("delegated child creation did not acquire generation-one ownership")
+	}
 
 	launch.RequestedSubagent = requestedSubagent
 	launch.AssignmentLabel = assignmentLabel
@@ -649,6 +1271,7 @@ func (s *Service) prepareDelegatedSubagentLaunchWithProfile(parentSession pebble
 	launch.SubagentProfile = subagentProfile
 	launch.ChildSession = childSession
 	launch.ChildMode = childMode
+	launch.TargetWorkspacePath = targetWorkspacePath
 	launch.ChildWorkspacePath = childWorkspacePath
 	launch.ChildWorkspaceName = childWorkspaceName
 	launch.ChildWorktreeEnabled = childWorktreeEnabled
@@ -743,28 +1366,51 @@ func (s *Service) gateToolCalls(ctx context.Context, sessionID, runID string, st
 				decisions[i].Result.Error = "task manifest is invalid"
 				continue
 			}
-			callID := strings.TrimSpace(toolCalls[i].CallID)
-			if callID == "" {
-				decisions[i].Err = errors.New("task call ID is required for durable reservation")
-				decisions[i].Result.Error = decisions[i].Err.Error()
-				continue
-			}
-			delegated := false
-			if s.sessions != nil {
-				if session, ok, _ := s.sessions.GetSession(sessionID); ok {
-					delegated = strings.EqualFold(strings.TrimSpace(mapString(session.Metadata, "lineage_kind")), "delegated_subagent")
+			if manifest.Action == taskProgramActionStatus {
+				// Status is a read-only lookup scoped to the authenticated parent session.
+				// It must never create an approval interaction.
+				if _, ok, statusErr := s.sessions.GetTaskProgram(sessionID, manifest.ProgramID); statusErr != nil {
+					decisions[i].Err = statusErr
+					decisions[i].Result.Error = statusErr.Error()
+				} else if !ok {
+					decisions[i].Err = fmt.Errorf("task program %q not found for calling parent session", manifest.ProgramID)
+					decisions[i].Result.Error = decisions[i].Err.Error()
+				} else {
+					decisions[i].Approved = true
 				}
-			}
-			reserved, reserveErr := s.permissions.ReserveSubagentWave(permission.SubagentReservationRequest{
-				SessionID: sessionID, AccountScopeID: accountScopeID, RunID: runID, CallID: callID,
-				ManifestHash: manifest.ManifestHash, LaunchCount: manifest.LaunchCount, Delegated: delegated,
-			})
-			if reserveErr != nil {
-				decisions[i].Err = reserveErr
-				decisions[i].Result.Error = fmt.Sprintf("subagent wave reservation failed: %v", reserveErr)
 				continue
 			}
-			subagentReservation = &reserved
+			if manifest.Action != taskProgramActionStatus && manifest.ExecutionFormat != taskExecutionFormatImageDirect {
+				// Program status and direct image generation do not allocate delegated
+				// child sessions, so neither consumes a subagent-wave reservation.
+				callID := strings.TrimSpace(toolCalls[i].CallID)
+				if callID == "" {
+					decisions[i].Err = errors.New("task call ID is required for durable reservation")
+					decisions[i].Result.Error = decisions[i].Err.Error()
+					continue
+				}
+				delegated := false
+				if s.sessions != nil {
+					if session, ok, _ := s.sessions.GetSession(sessionID); ok {
+						delegated = strings.EqualFold(strings.TrimSpace(mapString(session.Metadata, "lineage_kind")), "delegated_subagent")
+					}
+				}
+				programCap := 0
+				if manifest.Program != nil && manifest.Program.MaxConcurrency != nil {
+					programCap = *manifest.Program.MaxConcurrency
+				}
+				reserved, reserveErr := s.permissions.ReserveSubagentWave(permission.SubagentReservationRequest{
+					SessionID: sessionID, AccountScopeID: accountScopeID, RunID: runID, CallID: callID,
+					ManifestHash: manifest.ManifestHash, LaunchCount: manifest.LaunchCount, SwarmMode: manifest.TaskMode == taskModeSwarm,
+					Program: manifest.Program != nil, ReadyCount: manifest.ProgramReadyCount, MaxConcurrency: programCap, Delegated: delegated,
+				})
+				if reserveErr != nil {
+					decisions[i].Err = reserveErr
+					decisions[i].Result.Error = fmt.Sprintf("subagent wave reservation failed: %v", reserveErr)
+					continue
+				}
+				subagentReservation = &reserved
+			}
 		}
 		if canonicalToolName(toolCalls[i].Name) == "manage_sessions" && permission.ManageSessionsAction(toolCalls[i].Arguments) == "deploy" {
 			var manifest manageSessionsDeployManifest
@@ -3244,10 +3890,27 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 			return "", err
 		}
 	}
+	parsed, err = s.resolveApprovedCheckpointTaskProgram(sessionID, parsed)
+	if err != nil {
+		return "", err
+	}
+	if err := validateTaskSwarmLaunchEnabled(parsed); err != nil {
+		return "", err
+	}
 
 	action := parsed.Action
 	if strings.TrimSpace(action) == "" {
 		action = "spawn"
+	}
+	if action == taskProgramActionStatus {
+		record, ok, lifecycleErr := s.sessions.GetTaskProgram(sessionID, parsed.ProgramID)
+		if lifecycleErr != nil {
+			return "", lifecycleErr
+		}
+		if !ok {
+			return "", fmt.Errorf("task program %q not found for calling parent session", parsed.ProgramID)
+		}
+		return marshalTaskProgramStatus(record, false)
 	}
 	description := parsed.Description
 	if strings.TrimSpace(req.DescriptionOverride) != "" {
@@ -3256,6 +3919,9 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 	prompt := parsed.Prompt
 	if strings.TrimSpace(req.PromptOverride) != "" {
 		prompt = strings.TrimSpace(req.PromptOverride)
+	}
+	if parsed.Swarm != nil && parsed.Swarm.AgentType == "image" {
+		return s.executeDirectImageSwarm(ctx, sessionID, sessionMode, step, call, emit, req, parsed, description, prompt)
 	}
 	launchSpecs := append([]taskLaunchSpec(nil), parsed.Launches...)
 	if len(launchSpecs) == 0 {
@@ -3290,9 +3956,38 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 	if err := validatePlanSidechatTaskTargets(parentSession, launchSpecs); err != nil {
 		return "", err
 	}
+	for i := range launchSpecs {
+		targetPath, _, targetErr := s.resolveTaskTargetWorkspace(parentSession, req.Principal, launchSpecs[i])
+		if targetErr != nil {
+			return "", fmt.Errorf("task launches[%d] workspace target: %w", i, targetErr)
+		}
+		launchSpecs[i].TargetWorkspacePath = targetPath
+		if parsed.Program != nil && i < len(parsed.Program.Jobs) {
+			parsed.Program.Jobs[i].TargetWorkspacePath = targetPath
+		}
+	}
+	parsed.Launches = append([]taskLaunchSpec(nil), launchSpecs...)
 	taskCallID := strings.TrimSpace(call.CallID)
 	if taskCallID == "" {
 		taskCallID = fmt.Sprintf("task_%d", time.Now().UnixMilli())
+	}
+	var programRecord pebblestore.TaskProgramRecord
+	if parsed.Program != nil {
+		initial, initialErr := taskProgramInitialRecord(parentSession.ID, req.RunID, taskCallID, parsed.Program)
+		if initialErr != nil {
+			return "", initialErr
+		}
+		var created bool
+		programRecord, created, err = s.sessions.CreateTaskProgram(initial)
+		if err != nil {
+			return "", err
+		}
+		if !created {
+			return "", fmt.Errorf("task program %q already exists; inspect its status, then author a new program with a distinct program.id containing only unfinished work", programRecord.ProgramID)
+		}
+	}
+	if parsed.Program != nil {
+		return s.executeTaskProgram(ctx, sessionMode, step, call, emit, req, parentSession, parsed, programRecord, description, prompt)
 	}
 	reservationFinished := false
 	if s.permissions != nil && strings.TrimSpace(req.RunID) != "" {
@@ -3321,6 +4016,21 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 		}
 	}
 
+	sourceArtifact := cloneTaskImageSourceArtifact(parsed.SourceArtifact)
+	if sourceArtifact != nil {
+		if s.tools == nil || s.tools.ArtifactAuthority() == nil {
+			return "", errors.New("task source_artifact requires the authenticated artifact authority")
+		}
+		principal := artifact.Principal{SessionID: parentSession.ID, AccountScopeID: parentSession.AccountScopeID, UserID: parentSession.UserID}
+		if _, sourceErr := s.tools.ArtifactAuthority().GetReference(principal, *sourceArtifact); sourceErr != nil {
+			return "", fmt.Errorf("task source_artifact is unavailable: %w", sourceErr)
+		}
+	}
+
+	launchSpecs, err = s.hydrateTaskSwarm(ctx, parentSession, parsed, launchSpecs, step, taskCallID, emit, req.Principal)
+	if err != nil {
+		return "", err
+	}
 	trustedProfiles := make([]*pebblestore.AgentProfile, len(launchSpecs))
 	trustedVirtualTargets := make([]bool, len(launchSpecs))
 	trustedSources := make([]string, len(launchSpecs))
@@ -3352,6 +4062,30 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 				if err != nil {
 					return "", fmt.Errorf("reconcile compiled Designer launch snapshot: %w", err)
 				}
+				if strings.EqualFold(strings.TrimSpace(launchSpecs[i].OutputMode), taskOutputModeWorkspace) {
+					workspaceProfile := agentruntime.DesignerWorkspaceAgentProfileForParent(profile)
+					workspaceProfile.Provider, workspaceProfile.Model, workspaceProfile.Thinking = profile.Provider, profile.Model, profile.Thinking
+					workspaceProfile.AutoServiceTier = profile.AutoServiceTier
+					profile = workspaceProfile
+				}
+				trustedVirtualTargets[i] = false
+			} else if agentruntime.IsImageAgentName(launchSpecs[i].RequestedSubagentType) {
+				if row.ParentCopy || !agentruntime.IsImageAgentName(row.ResolvedAgentName) || row.ProfileSnapshot == nil || !row.ProfileSnapshot.Protected {
+					return "", fmt.Errorf("approved task manifest launch %d does not identify compiled Image", i)
+				}
+				profile, err = s.agents.ReconcileSystemAgentSnapshot(agentruntime.ImageAgentID, profile)
+				if err != nil {
+					return "", fmt.Errorf("reconcile compiled Image launch snapshot: %w", err)
+				}
+				trustedVirtualTargets[i] = false
+			} else if agentruntime.IsIdeaAgentName(launchSpecs[i].RequestedSubagentType) {
+				if row.ParentCopy || !agentruntime.IsIdeaAgentName(row.ResolvedAgentName) || row.ProfileSnapshot == nil || !row.ProfileSnapshot.Protected {
+					return "", fmt.Errorf("approved task manifest launch %d does not identify compiled Idea", i)
+				}
+				profile, err = s.agents.ReconcileSystemAgentSnapshot(agentruntime.IdeaAgentID, profile)
+				if err != nil {
+					return "", fmt.Errorf("reconcile compiled Idea launch snapshot: %w", err)
+				}
 				trustedVirtualTargets[i] = false
 			} else {
 				trustedVirtualTargets[i] = row.ParentCopy
@@ -3367,28 +4101,39 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 			coderIndexes = append(coderIndexes, i)
 		}
 	}
-	var coderTaskBase *worktreeruntime.TaskBase
+	coderTaskBases := make(map[string]*worktreeruntime.TaskBase, len(coderIndexes))
 	if len(coderIndexes) > 0 {
 		if s.worktrees == nil {
 			return "", errors.New("write-capable Coders require separate worktree isolation")
 		}
-		resolved, resolveErr := s.worktrees.ResolveTaskBase(parentSession.WorkspacePath)
-		if resolveErr != nil {
-			return "", fmt.Errorf("task failed to resolve parent Git state before Coder execution: %w", resolveErr)
+		for _, index := range coderIndexes {
+			targetPath := strings.TrimSpace(firstNonEmptyString(launchSpecs[index].TargetWorkspacePath, parentSession.WorkspacePath))
+			if _, exists := coderTaskBases[targetPath]; exists {
+				continue
+			}
+			resolved, resolveErr := s.worktrees.ResolveTaskBase(targetPath)
+			if resolveErr != nil {
+				return "", fmt.Errorf("task failed to resolve target Git state for %q before Coder execution: %w", targetPath, resolveErr)
+			}
+			base := resolved
+			coderTaskBases[targetPath] = &base
 		}
-		coderTaskBase = &resolved
+	}
+	managedCollectionID, err := s.ensureManagedDesignerArtifactCollection(parentSession, taskCallID, launchSpecs, req.ApplySessionMutation)
+	if err != nil {
+		return "", err
 	}
 	collisionWarnings := make([]string, 0)
 	if len(coderIndexes) > 1 {
 		for left := 0; left < len(coderIndexes); left++ {
 			for right := left + 1; right < len(coderIndexes); right++ {
-				if taskOwnedScopesOverlap(launchSpecs[coderIndexes[left]].OwnedScope, launchSpecs[coderIndexes[right]].OwnedScope) {
+				leftSpec, rightSpec := launchSpecs[coderIndexes[left]], launchSpecs[coderIndexes[right]]
+				if strings.TrimSpace(leftSpec.TargetWorkspacePath) == strings.TrimSpace(rightSpec.TargetWorkspacePath) && taskOwnedScopesOverlap(leftSpec.OwnedScope, rightSpec.OwnedScope) {
 					collisionWarnings = append(collisionWarnings, fmt.Sprintf("owned scopes overlap between launches[%d] and launches[%d]; integrate these child commits sequentially and resolve conflicts explicitly", coderIndexes[left], coderIndexes[right]))
 				}
 			}
 		}
 	}
-
 	prepared := make([]taskLaunchPrepared, 0, len(launchSpecs))
 	for i := range launchSpecs {
 		spec := launchSpecs[i]
@@ -3402,21 +4147,55 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 		}
 		launchTaskBase := (*worktreeruntime.TaskBase)(nil)
 		if agentruntime.IsCoderAgentName(requestedSubagent) {
-			launchTaskBase = coderTaskBase
+			targetPath := strings.TrimSpace(firstNonEmptyString(spec.TargetWorkspacePath, parentSession.WorkspacePath))
+			launchTaskBase = coderTaskBases[targetPath]
 		}
-		launch, prepareErr := s.prepareDelegatedSubagentLaunchWithProfile(parentSession, sessionMode, taskLaunchPrepared{
-			LaunchIndex:       i + 1,
-			VirtualTarget:     trustedVirtualTargets[i],
-			TaskBase:          launchTaskBase,
-			RequestedSubagent: requestedSubagent,
-			MetaPrompt:        metaPrompt,
-			AssignmentLabel:   spec.AssignmentLabel,
-			OwnedScope:        append([]string(nil), spec.OwnedScope...),
-		}, description, strings.TrimSpace(req.TargetedSubagentName), trustedProfiles[i], trustedSources[i], req.ApplySessionMutation)
+		managedArtifactContext := managedDesignerArtifactContext(parentSession, taskCallID, spec, i+1)
+		if (agentruntime.IsDesignerAgentName(requestedSubagent) || agentruntime.IsImageAgentName(requestedSubagent)) && strings.TrimSpace(spec.OutputMode) == taskOutputModeManaged {
+			if managedArtifactContext == nil || managedCollectionID == "" || managedArtifactContext.CollectionID != managedCollectionID {
+				return "", fmt.Errorf("task launches[%d] cannot allocate a trusted managed artifact destination", i)
+			}
+		}
+		launchInput := taskLaunchPrepared{
+			LaunchIndex:          i + 1,
+			VirtualTarget:        trustedVirtualTargets[i],
+			TaskBase:             launchTaskBase,
+			TargetWorkspacePath:  strings.TrimSpace(spec.TargetWorkspacePath),
+			RequestedSubagent:    requestedSubagent,
+			MetaPrompt:           metaPrompt,
+			AssignmentLabel:      spec.AssignmentLabel,
+			OwnedScope:           append([]string(nil), spec.OwnedScope...),
+			OutputMode:           strings.TrimSpace(spec.OutputMode),
+			OutputRequirements:   cloneTaskOutputRequirements(spec.OutputRequirements),
+			AnimationProfile:     cloneTaskAnimationProfile(spec.AnimationProfile),
+			StreamKey:            strings.TrimSpace(spec.StreamKey),
+			SwarmMode:            spec.SwarmMode,
+			SwarmStrategy:        strings.TrimSpace(spec.SwarmStrategy),
+			AssemblyPart:         spec.AssemblyPart,
+			IntegrationContract:  strings.TrimSpace(spec.IntegrationContract),
+			IntegrationRequired:  strings.EqualFold(strings.TrimSpace(spec.SwarmStrategy), taskSwarmStrategyAssembly),
+			ArtifactRunContext:   managedArtifactContext,
+			SourceArtifact:       cloneTaskImageSourceArtifact(spec.SourceArtifact),
+			LogicalTaskID:        taskCallID + ":" + fmt.Sprint(i+1),
+			TaskCallID:           taskCallID,
+			ParentRunID:          req.RunID,
+			PermissionSessionID:  firstNonEmptyString(req.PermissionSessionID, parentSession.ID),
+			ReservationSessionID: parentSession.ID,
+		}
+		if programID := strings.TrimSpace(mapString(spec.SourceArguments, "program_id")); programID != "" {
+			launchInput.ProgramID = programID
+			launchInput.ProgramJobID = strings.TrimSpace(mapString(spec.SourceArguments, "program_job_id"))
+			launchInput.LogicalTaskID = parentSession.ID + ":" + programID + ":" + launchInput.ProgramJobID
+		}
+		launch, prepareErr := s.prepareDelegatedSubagentLaunchWithProfile(parentSession, sessionMode, launchInput, description, strings.TrimSpace(req.TargetedSubagentName), trustedProfiles[i], trustedSources[i], req.ApplySessionMutation)
 		if prepareErr != nil {
 			return "", prepareErr
 		}
+		launch.ContextWatcher = newTaskContextWatcher(s.sessions, launch)
 		prepared = append(prepared, launch)
+	}
+	if err := s.ensureManagedDesignerArtifactPlaceholders(parentSession, prepared, req.ApplySessionMutation); err != nil {
+		return "", err
 	}
 
 	taskToolName := strings.TrimSpace(call.Name)
@@ -3437,7 +4216,27 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 			launchMap = map[string]any{}
 		}
 		entry := map[string]any{
-			"call_id":                 taskCallID,
+			"call_id":   taskCallID,
+			"task_mode": parsed.Mode,
+			"swarm_strategy": func() string {
+				if parsed.Swarm != nil {
+					return parsed.Swarm.Strategy
+				}
+				return ""
+			}(),
+			"assembly_parts": func() []taskSwarmAssemblyPart {
+				if parsed.Swarm != nil {
+					return append([]taskSwarmAssemblyPart(nil), parsed.Swarm.AssemblyParts...)
+				}
+				return nil
+			}(),
+			"integration_contract": func() string {
+				if parsed.Swarm != nil {
+					return parsed.Swarm.IntegrationContract
+				}
+				return ""
+			}(),
+			"integration_required":    parsed.Swarm != nil && parsed.Swarm.Strategy == taskSwarmStrategyAssembly,
 			"status":                  strings.TrimSpace(status),
 			"goal":                    description,
 			"action":                  action,
@@ -3476,7 +4275,9 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 				"subagent_provider":      strings.TrimSpace(launch.SubagentProvider),
 				"subagent_model":         strings.TrimSpace(launch.SubagentModel),
 				"child_session_id":       strings.TrimSpace(launch.ChildSessionID),
+				"child_run_id":           strings.TrimSpace(launch.ChildRunID),
 				"child_mode":             strings.TrimSpace(launch.ChildMode),
+				"parent_workspace_path":  strings.TrimSpace(launch.TargetWorkspacePath),
 				"workspace_path":         strings.TrimSpace(launch.WorkspacePath),
 				"workspace_name":         strings.TrimSpace(launch.WorkspaceName),
 				"worktree_enabled":       launch.WorktreeEnabled,
@@ -3488,6 +4289,7 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 				"head_commit":            strings.TrimSpace(launch.HeadCommit),
 				"worktree_clean":         launch.WorktreeClean,
 				"git_status":             strings.TrimSpace(launch.GitStatus),
+				"changed_files":          append([]string(nil), launch.ChangedFiles...),
 				"current_tool":           strings.TrimSpace(launch.CurrentTool),
 				"current_tool_identity":  strings.TrimSpace(launch.CurrentToolIdentity),
 				"current_tool_run_count": launch.CurrentToolRunCount,
@@ -3500,7 +4302,23 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 				"tool_order":             append([]string(nil), launch.ToolOrder...),
 				"error":                  strings.TrimSpace(launch.Error),
 				"reason":                 strings.TrimSpace(launch.Reason),
+				"blocker_code":           strings.TrimSpace(launch.BlockerCode),
+				"blocker_evidence":       append([]string(nil), launch.BlockerEvidence...),
+				"completed_scope":        append([]string(nil), launch.CompletedScope...),
+				"resolution_requirement": strings.TrimSpace(launch.ResolutionRequired),
 				"phase":                  strings.TrimSpace(launch.Phase),
+				"swarm_mode":             launch.SwarmMode,
+				"swarm_strategy":         strings.TrimSpace(launch.SwarmStrategy),
+				"assembly_part":          launch.AssemblyPart,
+				"integration_contract":   strings.TrimSpace(launch.IntegrationContract),
+				"integration_required":   launch.IntegrationRequired,
+				"output_mode":            strings.TrimSpace(launch.OutputMode),
+				"output_requirements":    launch.OutputRequirements,
+				"animation_profile":      launch.AnimationProfile,
+			}
+			if launch.ArtifactReference != nil {
+				launchRow["artifact_reference"] = launch.ArtifactReference
+				launchRow["artifact_status"] = launch.ArtifactReference.Status
 			}
 			if launch.ReportRef != nil {
 				launchRow["report_ref"] = launch.ReportRef
@@ -3538,38 +4356,52 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 		emitTaskProgress("spawned", fmt.Sprintf("spawned launch %d %s subagent in %s", launch.LaunchIndex, launch.ResolvedSubagent, launch.ChildMode), launch)
 	}
 	lineageUpdate("spawned", spawned, nil)
+	if parsed.Program != nil {
+		nextAction := "await_running_jobs"
+		state := pebblestore.TaskProgramStateRunning
+		programRecord, _, err = s.sessions.TransitionTaskProgram(parentSession.ID, parsed.Program.ID, pebblestore.TaskProgramTransition{
+			ExpectedRevision: programRecord.Revision, MutationID: "launch:" + taskCallID, State: &state, NextAction: &nextAction,
+			Jobs: taskProgramRunningTransitions(parsed.Program, prepared),
+		})
+		if err != nil {
+			return "", err
+		}
+	}
 
 	outcomes, runErrs := executeTaskLaunchesInParallel(ctx, len(prepared), func(runCtx context.Context, idx int) (taskLaunchOutcome, error) {
 		launch := prepared[idx]
 		outcome := buildTaskLaunchOutcome(launch)
 		metaPrompt := strings.TrimSpace(outcome.MetaPrompt)
 		perLaunchPrompt := prompt
-		if metaPrompt != "" {
+		if metaPrompt != "" && !(parsed.Mode == taskModeSwarm && agentruntime.IsIdeaAgentName(launch.RequestedSubagent)) {
 			perLaunchPrompt = "Meta-prompt:\n" + metaPrompt + "\n\nPrompt:\n" + prompt
 		}
-		delegatedPrompt := buildTaskDelegationPrompt(taskDelegationPromptConfig{
-			Description:          description,
-			Prompt:               perLaunchPrompt,
-			ParentSession:        parentSession,
-			ParentMessages:       parentMessages,
-			ParentActivePlan:     parentActivePlan,
-			PermissionSessionID:  req.PermissionSessionID,
-			TargetedSubagentName: req.TargetedSubagentName,
-			RequestedSubagent:    launch.RequestedSubagent,
-			OwnedScope:           append([]string(nil), launch.OwnedScope...),
-		})
-		subResult, runErr := s.RunTurnStreaming(runCtx, launch.ChildSession.ID, RunRequest{
-			Prompt:     delegatedPrompt,
-			TargetKind: RunTargetKindSubagent,
-			TargetName: launch.SubagentProfile.Name,
-			AgentName:  launch.SubagentProfile.Name,
-		}, func() RunStartMeta {
-			meta := delegatedSubagentRunStartMeta(launch, sessionID, req.Principal, req.ApplySessionMutation)
-			meta.DisabledTools = taskDisabledTools(agentruntime.IsCoderAgentName(launch.RequestedSubagent))
-			return meta
-		}(), func(event StreamEvent) {
+		delegatedPrompt := perLaunchPrompt
+		if !(parsed.Mode == taskModeSwarm && agentruntime.IsIdeaAgentName(launch.RequestedSubagent)) {
+			delegatedPrompt = buildTaskDelegationPrompt(taskDelegationPromptConfig{
+				Description:          description,
+				Prompt:               perLaunchPrompt,
+				ParentSession:        parentSession,
+				ParentMessages:       parentMessages,
+				ParentActivePlan:     parentActivePlan,
+				PermissionSessionID:  req.PermissionSessionID,
+				TargetedSubagentName: req.TargetedSubagentName,
+				RequestedSubagent:    launch.RequestedSubagent,
+				OwnedScope:           append([]string(nil), launch.OwnedScope...),
+				OutputMode:           strings.TrimSpace(launch.OutputMode),
+				OutputRequirements:   cloneTaskOutputRequirements(launch.OutputRequirements),
+				AnimationProfile:     cloneTaskAnimationProfile(launch.AnimationProfile),
+				ArtifactRunContext:   launch.ArtifactRunContext,
+				SourceArtifact:       cloneTaskImageSourceArtifact(launch.SourceArtifact),
+			})
+		}
+		var subResult RunResult
+		var runErr error
+		launch, subResult, runErr = s.runDelegatedLogicalLaunch(runCtx, launch, delegatedPrompt, sessionID, req.Principal, req.ApplySessionMutation, func(event StreamEvent) {
 			eventType := strings.ToLower(strings.TrimSpace(event.Type))
 			switch eventType {
+			case StreamEventUsageUpdated:
+				launch.ContextWatcher.Observe(event.UsageSummary)
 			case StreamEventStepStarted:
 				if strings.TrimSpace(outcome.Phase) == "" || strings.EqualFold(strings.TrimSpace(outcome.Phase), "spawned") {
 					emitTaskProgress("running", "", outcome)
@@ -3637,13 +4469,26 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 				}
 			}
 		})
+		outcome.ChildSessionID = launch.ChildSession.ID
+		if lifecycle, ok, lifecycleErr := s.GetSessionLifecycle(outcome.ChildSessionID); lifecycleErr == nil && ok {
+			outcome.ChildRunID = strings.TrimSpace(lifecycle.RunID)
+		}
+		outcome.WorkspacePath = launch.ChildSession.WorkspacePath
+		outcome.WorktreeRootPath = launch.ChildSession.WorktreeRootPath
+		outcome.WorktreeBranch = launch.ChildSession.WorktreeBranch
 		if runErr != nil {
+			if outcome.ArtifactReference != nil && outcome.ArtifactReference.Status == "pending" {
+				outcome.ArtifactReference.Status = pebblestore.SessionArtifactStatusFailed
+				outcome.ArtifactReference.FailureCode = "child_run_failed"
+				s.markManagedDesignerArtifactFailed(parentSession, launch.ArtifactRunContext, launch.ChildSession.ID, "child_run_failed", launch.SourceArtifact)
+			}
 			if agentruntime.IsCoderAgentName(launch.RequestedSubagent) && s.worktrees != nil {
 				if state, inspectErr := s.worktrees.InspectTaskWorkspace(outcome.WorkspacePath); inspectErr == nil {
 					outcome.WorktreeBranch = strings.TrimSpace(state.BranchName)
 					outcome.HeadCommit = strings.TrimSpace(state.HeadCommit)
 					outcome.GitStatus = strings.TrimSpace(state.Status)
 					outcome.WorktreeClean = state.Clean
+					outcome.ChangedFiles = taskChangedFilesFromGitStatus(state.Status)
 				} else {
 					outcome.GitStatus = "Git inspection failed: " + inspectErr.Error()
 					outcome.WorktreeClean = false
@@ -3682,6 +4527,7 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 			report = "Subagent completed without a textual report."
 		}
 		reportRef := taskReportRefFromMessage(subResult.AssistantMessage)
+		blockedErr := parseTaskChildBlockedReport(report, &outcome)
 		nowMS := time.Now().UnixMilli()
 		if outcome.LaunchStartedAtMS <= 0 {
 			outcome.LaunchStartedAtMS = nowMS
@@ -3692,6 +4538,68 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 		outcome.ReportChars = len([]rune(report))
 		outcome.ReportExcerpt = report
 		outcome.ReportRef = reportRef
+		if launch.ArtifactRunContext != nil {
+			markMissing := func(code string) {
+				outcome.ArtifactReference.Status = pebblestore.SessionArtifactStatusFailed
+				outcome.ArtifactReference.FailureCode = code
+				s.markManagedDesignerArtifactFailed(parentSession, launch.ArtifactRunContext, launch.ChildSession.ID, code, launch.SourceArtifact)
+			}
+			artifactPrincipal := artifact.Principal{
+				SessionID:        launch.ArtifactRunContext.SessionID,
+				AccountScopeID:   parentSession.AccountScopeID,
+				UserID:           parentSession.UserID,
+				TaskCallID:       launch.ArtifactRunContext.TaskCallID,
+				ProgramID:        launch.ArtifactRunContext.ProgramID,
+				ProgramJobID:     launch.ArtifactRunContext.ProgramJobID,
+				ChildSessionID:   launch.ChildSession.ID,
+				IterationGroupID: launch.ArtifactRunContext.IterationGroupID,
+				IterationGroup:   launch.ArtifactRunContext.IterationGroup,
+				IterationID:      launch.ArtifactRunContext.IterationID,
+				IterationIndex:   launch.ArtifactRunContext.IterationIndex,
+				IterationLabel:   launch.ArtifactRunContext.IterationLabel,
+				IterationTheme:   launch.ArtifactRunContext.IterationTheme,
+			}
+			if s.tools == nil || s.tools.ArtifactAuthority() == nil {
+				markMissing("artifact_authority_unavailable")
+				return outcome, errors.New("managed Designer output authority is not configured")
+			}
+			variant, artifactErr := s.tools.ArtifactAuthority().Get(artifactPrincipal, launch.ArtifactRunContext.VariantID)
+			if artifactErr != nil {
+				markMissing("managed_output_missing")
+				return outcome, fmt.Errorf("managed Designer completed without its required artifact: %w", artifactErr)
+			}
+			outcome.ArtifactReference = &taskArtifactReference{SessionID: parentSession.ID, CollectionID: variant.CollectionID, VariantID: variant.ID, Status: variant.Status, FailureCode: variant.FailureCode, OutputRequirements: cloneTaskOutputRequirements(variant.OutputRequirements), AnimationProfile: cloneTaskAnimationProfile(variant.AnimationProfile)}
+			lineage := variant.Lineage
+			lineageSourceMatches := lineage.SourceSessionID == launch.ChildSession.ID
+			if source := launch.SourceArtifact; source != nil {
+				lineageSourceMatches = lineage.SourceSessionID == strings.TrimSpace(source.SessionID) &&
+					lineage.SourceCollectionID == strings.TrimSpace(source.CollectionID) &&
+					lineage.SourceVariantID == strings.TrimSpace(source.VariantID) &&
+					lineage.SourceEventSeq == source.EventSeq
+			}
+			lineageMatches := variant.AccountScopeID == parentSession.AccountScopeID && variant.SessionID == parentSession.ID &&
+				lineage.ParentSessionID == parentSession.ID &&
+				lineageSourceMatches &&
+				(lineage.ChildSessionID == launch.ChildSession.ID || lineage.ChildSessionID == strings.TrimSpace(mapString(launch.ChildSession.Metadata, "predecessor_session_id"))) &&
+				lineage.TaskCallID == launch.ArtifactRunContext.TaskCallID &&
+				lineage.ProgramID == launch.ArtifactRunContext.ProgramID &&
+				lineage.ProgramJobID == launch.ArtifactRunContext.ProgramJobID &&
+				lineage.IterationID == launch.ArtifactRunContext.IterationID &&
+				lineage.IterationIndex == launch.ArtifactRunContext.IterationIndex
+			if variant.CollectionID != launch.ArtifactRunContext.CollectionID || variant.ID != launch.ArtifactRunContext.VariantID || variant.Status != pebblestore.SessionArtifactStatusReady || !lineageMatches || !reflect.DeepEqual(variant.OutputRequirements, launch.ArtifactRunContext.OutputRequirements) || !reflect.DeepEqual(variant.AnimationProfile, launch.ArtifactRunContext.AnimationProfile) {
+				if variant.Status == pebblestore.SessionArtifactStatusStaging {
+					markMissing("managed_output_invalid")
+				} else {
+					if outcome.ArtifactReference.Status == "" {
+						outcome.ArtifactReference.Status = pebblestore.SessionArtifactStatusFailed
+					}
+					if outcome.ArtifactReference.FailureCode == "" {
+						outcome.ArtifactReference.FailureCode = "managed_output_invalid"
+					}
+				}
+				return outcome, fmt.Errorf("managed Designer artifact %q is %q or has invalid trusted lineage; want ready at collection %q", variant.ID, variant.Status, launch.ArtifactRunContext.CollectionID)
+			}
+		}
 		if agentruntime.IsCoderAgentName(launch.RequestedSubagent) && s.worktrees != nil {
 			state, inspectErr := s.worktrees.InspectTaskWorkspace(outcome.WorkspacePath)
 			if inspectErr != nil {
@@ -3701,25 +4609,36 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 			outcome.HeadCommit = strings.TrimSpace(state.HeadCommit)
 			outcome.GitStatus = strings.TrimSpace(state.Status)
 			outcome.WorktreeClean = state.Clean
+			outcome.ChangedFiles = taskChangedFilesFromGitStatus(state.Status)
 			if strings.TrimSpace(outcome.WorktreeBranch) != strings.TrimSpace(launch.ChildSession.WorktreeBranch) {
 				return outcome, fmt.Errorf("Coder handoff branch %q does not match allocated branch %q", outcome.WorktreeBranch, launch.ChildSession.WorktreeBranch)
 			}
 			if outcome.HeadCommit == "" {
 				return outcome, errors.New("Coder handoff is missing child HEAD commit")
 			}
-			if !outcome.WorktreeClean {
-				return outcome, fmt.Errorf("implementation Coder completed with uncommitted work; commit the changes before a successful handoff:\n%s", outcome.GitStatus)
+			if blockedErr == nil {
+				if !outcome.WorktreeClean {
+					return outcome, fmt.Errorf("implementation Coder completed with uncommitted work; commit the changes before a successful handoff:\n%s", outcome.GitStatus)
+				}
+				if outcome.HeadCommit == outcome.BaseCommit {
+					return outcome, errors.New("implementation Coder completed without a commit")
+				}
+				descends, ancestryErr := s.worktrees.TaskCommitDescendsFrom(outcome.WorkspacePath, outcome.BaseCommit, outcome.HeadCommit)
+				if ancestryErr != nil {
+					return outcome, fmt.Errorf("validate Coder handoff ancestry: %w", ancestryErr)
+				}
+				if !descends {
+					return outcome, errors.New("Coder handoff HEAD does not descend from its recorded immutable base")
+				}
 			}
-			if outcome.HeadCommit == outcome.BaseCommit {
-				return outcome, errors.New("implementation Coder completed without a commit")
-			}
-			descends, ancestryErr := s.worktrees.TaskCommitDescendsFrom(outcome.WorkspacePath, outcome.BaseCommit, outcome.HeadCommit)
-			if ancestryErr != nil {
-				return outcome, fmt.Errorf("validate Coder handoff ancestry: %w", ancestryErr)
-			}
-			if !descends {
-				return outcome, errors.New("Coder handoff HEAD does not descend from its recorded immutable base")
-			}
+		}
+		if blockedErr != nil {
+			outcome.Phase = "blocked"
+			outcome.Error = ""
+			outcome.Reason = blockedErr.Error()
+			outcome.Summary = fmt.Sprintf("launch %d subagent %s blocked (session %s): %s", outcome.LaunchIndex, outcome.ResolvedSubagent, outcome.ChildSessionID, blockedErr.Error())
+			emitTaskProgress("blocked", outcome.Summary, outcome)
+			return outcome, blockedErr
 		}
 		if outcome.ReportChars > taskReportDefaultChars {
 			outcome.ReportTruncated = true
@@ -3767,6 +4686,10 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 			launch.CurrentToolMS = maxInt64(0, nowMS-launch.CurrentToolStarted)
 		}
 		if err != nil {
+			if launch.ArtifactReference != nil && launch.ArtifactReference.Status == "pending" {
+				launch.ArtifactReference.Status = pebblestore.SessionArtifactStatusFailed
+				launch.ArtifactReference.FailureCode = "managed_output_missing"
+			}
 			if strings.EqualFold(strings.TrimSpace(launch.Phase), "cancelled") {
 				cancelledCount++
 			} else {
@@ -3813,10 +4736,12 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 		}
 		summaryParts = append(summaryParts, fmt.Sprintf("[%d] %s", launch.LaunchIndex, launchSummary))
 		launchPhase := "completed"
-		switch status {
-		case "cancelled":
+		switch {
+		case strings.EqualFold(strings.TrimSpace(launch.Phase), "blocked"):
+			launchPhase = "blocked"
+		case status == "cancelled":
 			launchPhase = "cancelled"
-		case "error":
+		case status == "error":
 			launchPhase = "failed"
 		}
 		launch.Phase = launchPhase
@@ -3833,7 +4758,15 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 			launchPayload["child_state"] = childState
 		}
 		launchPayload["session_id"] = strings.TrimSpace(launch.ChildSessionID)
+		launchPayload["run_id"] = strings.TrimSpace(launch.ChildRunID)
 		launchPayload["mode"] = strings.TrimSpace(launch.ChildMode)
+		if launch.ArtifactReference != nil {
+			launchPayload["artifact_reference"] = launch.ArtifactReference
+			launchPayload["artifact_status"] = launch.ArtifactReference.Status
+		}
+		if launch.OutputRequirements != nil {
+			launchPayload["output_requirements"] = launch.OutputRequirements
+		}
 		if reportExcerpt != "" {
 			excerptChars := len([]rune(reportExcerpt))
 			if inlineReportChars+excerptChars > taskReportAggregateMaxChars {
@@ -3862,6 +4795,22 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 	if failedCount > 0 || cancelledCount > 0 {
 		overallStatus = "error"
 	}
+	if parsed.Program != nil {
+		programState := pebblestore.TaskProgramStateRunning
+		nextAction := "integrate_handoff_ready_jobs"
+		if failedCount > 0 {
+			programState, nextAction = pebblestore.TaskProgramStateFailed, "author_new_program_for_remaining_work"
+		} else if cancelledCount > 0 {
+			programState, nextAction = pebblestore.TaskProgramStateCancelled, "author_new_program_for_remaining_work"
+		}
+		programRecord, _, err = s.sessions.TransitionTaskProgram(parentSession.ID, parsed.Program.ID, pebblestore.TaskProgramTransition{
+			ExpectedRevision: programRecord.Revision, MutationID: "outcomes:" + taskCallID, State: &programState, NextAction: &nextAction,
+			Jobs: taskProgramOutcomeTransitions(parsed.Program, outcomes, runErrs),
+		})
+		if err != nil {
+			return "", err
+		}
+	}
 	if s.permissions != nil && strings.TrimSpace(req.RunID) != "" {
 		reservationStatus := "completed"
 		if failedCount > 0 || cancelledCount > 0 {
@@ -3879,18 +4828,35 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 	if aggregateReportBudgetExceeded {
 		aggregateSummary += " | warning: aggregate subagent reports exceeded inline context budget; inspect report_ref child session transcripts for full reports"
 	}
+	swarmStrategy := ""
+	if parsed.Swarm != nil {
+		swarmStrategy = parsed.Swarm.Strategy
+	}
+	integrationRequired, integrationStatus, readyForDependentWork := taskAssemblyIntegrationState(swarmStrategy, successCount, failedCount, cancelledCount, len(outcomes))
+	artifactReferences := make([]*taskArtifactReference, 0, len(outcomes))
+	for i := range outcomes {
+		if outcomes[i].ArtifactReference != nil {
+			artifactReferences = append(artifactReferences, outcomes[i].ArtifactReference)
+		}
+	}
 	lineageUpdate(overallStatus, outcomes, map[string]any{
-		"success_count":   successCount,
-		"failed_count":    failedCount,
-		"cancelled_count": cancelledCount,
-		"tool_started":    totalToolStarted,
-		"tool_completed":  totalToolCompleted,
-		"tool_failed":     totalToolFailed,
-		"summary":         aggregateSummary,
+		"success_count":            successCount,
+		"failed_count":             failedCount,
+		"cancelled_count":          cancelledCount,
+		"tool_started":             totalToolStarted,
+		"tool_completed":           totalToolCompleted,
+		"tool_failed":              totalToolFailed,
+		"summary":                  aggregateSummary,
+		"integration_required":     integrationRequired,
+		"integration_status":       integrationStatus,
+		"ready_for_dependent_work": readyForDependentWork,
+		"artifact_references":      artifactReferences,
+		"artifact_count":           len(artifactReferences),
 	})
 
 	payload := map[string]any{
 		"tool":                    "task",
+		"task_call_id":            taskCallID,
 		"action":                  action,
 		"status":                  overallStatus,
 		"description":             description,
@@ -3910,9 +4876,37 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 		"elapsed_ms":              maxInt64(0, time.Now().UnixMilli()-taskStartedAtMS),
 		"summary":                 aggregateSummary,
 		"path_id":                 "tool.task.v1",
-		"details_truncated":       false,
-		"report_truncated":        reportTruncatedAny,
-		"report_inline_chars":     inlineReportChars,
+		"task_mode":               parsed.Mode,
+		"swarm_strategy": func() string {
+			if parsed.Swarm != nil {
+				return parsed.Swarm.Strategy
+			}
+			return ""
+		}(),
+		"integration_contract": func() string {
+			if parsed.Swarm != nil {
+				return parsed.Swarm.IntegrationContract
+			}
+			return ""
+		}(),
+		"integration_required":     integrationRequired,
+		"integration_status":       integrationStatus,
+		"ready_for_dependent_work": readyForDependentWork,
+		"details_truncated":        false,
+		"report_truncated":         reportTruncatedAny,
+		"report_inline_chars":      inlineReportChars,
+	}
+	if len(artifactReferences) > 0 {
+		payload["artifact_references"] = artifactReferences
+		payload["artifact_count"] = len(artifactReferences)
+	}
+	if parsed.Program != nil {
+		payload["program_id"] = programRecord.ProgramID
+		payload["program_revision"] = programRecord.Revision
+		payload["program_state"] = programRecord.State
+		payload["active_stage_id"] = programRecord.ActiveStageID
+		payload["next_action"] = programRecord.NextAction
+		payload["program_status"] = taskProgramStatusPayload(programRecord, true)
 	}
 	if aggregateReportBudgetExceeded {
 		payload["report_context_warning"] = "aggregate subagent reports exceeded inline context budget; summaries/excerpts are returned inline and full reports remain in child session transcripts via report_ref"
@@ -3932,6 +4926,10 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 		payload["worktree_enabled"] = first.WorktreeEnabled
 		payload["worktree_root_path"] = strings.TrimSpace(first.WorktreeRootPath)
 		payload["worktree_branch"] = strings.TrimSpace(first.WorktreeBranch)
+		if first.ArtifactReference != nil {
+			payload["artifact_reference"] = first.ArtifactReference
+			payload["artifact_status"] = first.ArtifactReference.Status
+		}
 	}
 	encoded, encodeErr := json.Marshal(payload)
 	if encodeErr != nil {
@@ -3944,6 +4942,16 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 		return string(encoded), firstErr
 	}
 	return string(encoded), nil
+}
+
+func taskAssemblyIntegrationState(strategy string, successCount, failedCount, cancelledCount, outcomeCount int) (required bool, status string, readyForDependentWork bool) {
+	if !strings.EqualFold(strings.TrimSpace(strategy), taskSwarmStrategyAssembly) {
+		return false, "not_required", true
+	}
+	if failedCount > 0 || cancelledCount > 0 || successCount != outcomeCount {
+		return true, "incomplete_children", false
+	}
+	return true, "pending_parent_assembly", false
 }
 
 func (s *Service) resolveTaskSubagentForAccount(accountScopeID, nameOrPurpose string) (pebblestore.AgentProfile, error) {
@@ -3981,6 +4989,11 @@ type taskDelegationPromptConfig struct {
 	TargetedSubagentName string
 	RequestedSubagent    string
 	OwnedScope           []string
+	OutputMode           string
+	OutputRequirements   *pebblestore.SessionArtifactOutputRequirements
+	AnimationProfile     *pebblestore.SessionArtifactAnimationProfile
+	ArtifactRunContext   *tool.ArtifactRunContext
+	SourceArtifact       *pebblestore.SessionArtifactSelectionReference
 }
 
 func buildTaskDelegationPrompt(config taskDelegationPromptConfig) string {
@@ -4001,11 +5014,57 @@ func buildTaskDelegationPrompt(config taskDelegationPromptConfig) string {
 		b.WriteString(targeted)
 		b.WriteString("\n")
 	}
-	if agentruntime.IsDesignerAgentName(config.RequestedSubagent) {
-		b.WriteString("- shared checkout: use the parent's exact checkout; do not run Git or create a worktree\n")
-		b.WriteString("- owned scope/output target: ")
-		b.WriteString(strings.Join(config.OwnedScope, ", "))
-		b.WriteString("\n- output contract: create or revise ordinary reusable workspace artifacts only within that declared target; artifacts remain available after this child finishes\n")
+	if agentruntime.IsDesignerAgentName(config.RequestedSubagent) || agentruntime.IsImageAgentName(config.RequestedSubagent) {
+		if config.OutputRequirements != nil {
+			encoded, _ := json.Marshal(config.OutputRequirements)
+			b.WriteString("- exact output requirements (backend supplied; immutable; worker may not rewrite): ")
+			b.Write(encoded)
+			b.WriteString("\n")
+		}
+		if config.AnimationProfile != nil {
+			encoded, _ := json.Marshal(config.AnimationProfile)
+			b.WriteString("- exact animation profile (backend supplied; immutable; worker may not rewrite): ")
+			b.Write(encoded)
+			b.WriteString("\n")
+			writeDesignerAnimationGuidance(&b, config.AnimationProfile.ProfileID)
+		}
+		switch strings.ToLower(strings.TrimSpace(config.OutputMode)) {
+		case taskOutputModeManaged:
+			if agentruntime.IsImageAgentName(config.RequestedSubagent) {
+				b.WriteString("- output mode: managed image; publish exactly one durable ready image with one manage_artifact generate_image call; omit provider, model, collection_id, variant_id, and output_requirements; do not inspect, write, or edit the workspace checkout\n")
+			} else {
+				b.WriteString("- output mode: managed; publish exactly one durable ready variant with manage_artifact; omit output_requirements and animation_profile because trusted orchestration injects the immutable snapshots; do not write or edit the workspace checkout\n")
+			}
+			if config.SourceArtifact != nil {
+				b.WriteString("- exact source artifact (backend supplied; immutable): ")
+				encoded, _ := json.Marshal(config.SourceArtifact)
+				b.Write(encoded)
+				b.WriteString("\n- source artifact contract: inspect or derive from this exact authenticated ready reference; never substitute a preview, download, or guessed workspace path. When publishing the derived managed output, copy it as source_session_id/source_collection_id/source_variant_id/source_event_seq so lineage remains exact.\n")
+			}
+			if config.ArtifactRunContext == nil {
+				b.WriteString("- output contract: trusted artifact destination is missing; fail without mutating the checkout or managed artifacts\n")
+				break
+			}
+			b.WriteString("- trusted artifact destination (backend supplied; not model-selectable): parent session ")
+			b.WriteString(config.ArtifactRunContext.SessionID)
+			b.WriteString(", collection ")
+			b.WriteString(config.ArtifactRunContext.CollectionID)
+			b.WriteString(", variant ")
+			b.WriteString(config.ArtifactRunContext.VariantID)
+			if agentruntime.IsImageAgentName(config.RequestedSubagent) {
+				b.WriteString("\n- artifact contract: make one manage_artifact generate_image call and omit provider/model/collection_id/variant_id/output_requirements; trusted orchestration resolves the account image model, injects the immutable requirements, and atomically finalizes the preallocated destination. Completion without the returned exact ready reference is a failed handoff. Do not inspect or mutate the workspace\n")
+			} else {
+				b.WriteString("\n- artifact contract: make one manage_artifact create or create_package call and omit collection_id/variant_id/output_requirements/animation_profile; trusted orchestration injects the immutable requirements and animation profile and atomically finalizes the preallocated destination. Do not call unsupported update/finalize actions. Completion without the returned ready reference is a failed handoff; do not choose or override destination lineage. Do not use workspace write/edit or Git\n")
+			}
+		case taskOutputModeWorkspace:
+			b.WriteString("- output mode: workspace\n")
+			b.WriteString("- shared checkout: use the parent's exact checkout; do not run Git or create a worktree\n")
+			b.WriteString("- owned scope/output target: ")
+			b.WriteString(strings.Join(config.OwnedScope, ", "))
+			b.WriteString("\n- output contract: create or revise ordinary reusable workspace artifacts only within that declared target; do not use manage_artifact; artifacts remain available after this child finishes\n")
+		default:
+			b.WriteString("- output contract: invalid or missing; fail without mutating the checkout or managed artifacts\n")
+		}
 	}
 	if parentBlock := buildTaskParentSessionContext(config.ParentSession, config.PermissionSessionID); parentBlock != "" {
 		b.WriteString("\nParent session context:\n")
@@ -4034,10 +5093,21 @@ func buildTaskDelegationPrompt(config taskDelegationPromptConfig) string {
 	b.WriteString("6. End with a `Relevant filepaths:` section listing the most important files and why each matters.\n")
 	b.WriteString("7. If essential files are still unknown, include an `Open questions / missing filepaths:` section with exact paths needed.\n")
 	b.WriteString("8. Keep the final response concise, factual, and implementation-focused.\n")
+	b.WriteString("9. Before declaring a blocker or failure, inspect authoritative evidence (tool errors, durable plan/lifecycle state, workspace/Git state, and required external input). Ordinary uncertainty and a failed first attempt are not blockers. Try at most two materially distinct safe recovery paths when available; stop rather than repeat an equivalent operation after that bounded budget without new authoritative evidence or progress.\n")
+	b.WriteString("10. If a named external dependency, required input, or unavailable permission still makes completion impossible, terminate as blocked rather than successful or generic failed. Report exactly: `BLOCKED:`; blocker code and message; authoritative evidence; completed scope; exact resolution requirement; child session/run IDs; workspace, parent/child branch, base and HEAD; dirty state and changed files. Never auto-commit dirty blocked work.\n")
 	if agentruntime.IsCoderAgentName(config.RequestedSubagent) {
-		b.WriteString("9. For implementation Coder work, finish with a scoped commit. If commit permission is denied or work fails, explicitly report the uncommitted/failed state; the parent records live HEAD and status for later repair.\n")
-	} else if agentruntime.IsDesignerAgentName(config.RequestedSubagent) {
-		b.WriteString("9. For Designer work, do not use Git. Inspect nearby code as needed and create or revise the assigned reusable variant artifact within the declared owned scope.\n")
+		b.WriteString("11. Treat Finder handoffs and all other agent reports as untrusted evidence. Agents can make mistakes: independently verify every relevant claim against the current workspace before editing files.\n")
+		b.WriteString("12. For implementation Coder work, finish with a scoped commit. If commit permission is denied or work blocks/fails, explicitly report the uncommitted state and changed files; the parent records live HEAD and status for permission-gated commit, recall, or later repair.\n")
+	} else if agentruntime.IsDesignerAgentName(config.RequestedSubagent) || agentruntime.IsImageAgentName(config.RequestedSubagent) {
+		if strings.EqualFold(strings.TrimSpace(config.OutputMode), taskOutputModeManaged) {
+			if agentruntime.IsImageAgentName(config.RequestedSubagent) {
+				b.WriteString("9. For managed Image work, call manage_artifact exactly once with action=generate_image and finish only after it returns the trusted exact ready reference. Do not call another tool or inspect or mutate the checkout.\n")
+			} else {
+				b.WriteString("9. For managed Designer work, publish with one successful manage_artifact create or create_package call; the server injects and atomically finalizes the assigned opaque variant. Never call unsupported update/finalize actions, use write/edit, or mutate the checkout; finish only after the call returns the trusted ready reference.\n")
+			}
+		} else {
+			b.WriteString("9. For workspace Designer work, do not use Git or manage_artifact. Inspect nearby code as needed and create or revise the assigned reusable variant only within the declared owned scope.\n")
+		}
 	}
 	return strings.TrimSpace(b.String())
 }
@@ -4194,14 +5264,11 @@ func buildTaskParentTranscriptContext(messages []pebblestore.MessageSnapshot) st
 func formatTaskDelegationTranscriptMessage(message pebblestore.MessageSnapshot) string {
 	role := strings.ToLower(strings.TrimSpace(message.Role))
 	content := strings.TrimSpace(message.Content)
-	if content == "" {
-		return ""
-	}
 	switch role {
 	case "reasoning":
 		return ""
 	case "system":
-		if isToolDBDebugMessage(content) {
+		if content == "" || isToolDBDebugMessage(content) {
 			return ""
 		}
 		content = "[system] " + content
@@ -4212,6 +5279,17 @@ func formatTaskDelegationTranscriptMessage(message pebblestore.MessageSnapshot) 
 		}
 	default:
 		if shouldDropSensitiveConversationMessage(message) {
+			return ""
+		}
+		if len(message.ArtifactSelections) > 0 {
+			artifactContext := attachedArtifactSelectionsForProvider(map[string]any{"artifact_selections": message.ArtifactSelections})
+			if artifactContext != "" {
+				// Keep authenticated opaque references ahead of user prose so the
+				// bounded transcript formatter cannot preferentially truncate them.
+				content = strings.TrimSpace(artifactContext + "\n\n" + content)
+			}
+		}
+		if content == "" {
 			return ""
 		}
 	}
@@ -4306,6 +5384,58 @@ func sanitizeTaskDelegationRoots(values []string) []string {
 	return out
 }
 
+func taskChangedFilesFromGitStatus(status string) []string {
+	lines := strings.Split(strings.TrimSpace(status), "\n")
+	files := make([]string, 0, len(lines))
+	seen := make(map[string]struct{}, len(lines))
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if len(line) > 2 && (line[1] == ' ' || line[1] == 'M' || line[1] == 'A' || line[1] == 'D' || line[1] == 'R' || line[1] == 'C' || line[1] == '?' || line[1] == 'U') {
+			line = strings.TrimSpace(line[2:])
+		}
+		if arrow := strings.LastIndex(line, " -> "); arrow >= 0 {
+			line = strings.TrimSpace(line[arrow+4:])
+		}
+		if line == "" {
+			continue
+		}
+		if _, ok := seen[line]; ok {
+			continue
+		}
+		seen[line] = struct{}{}
+		files = append(files, line)
+	}
+	return files
+}
+
+func parseTaskChildBlockedReport(report string, outcome *taskLaunchOutcome) error {
+	if outcome == nil || !strings.HasPrefix(strings.ToUpper(strings.TrimSpace(report)), "BLOCKED:") {
+		return nil
+	}
+	fields := make(map[string]string)
+	for _, line := range strings.Split(report, "\n") {
+		line = strings.TrimSpace(strings.TrimLeft(line, "-* "))
+		key, value, ok := strings.Cut(line, ":")
+		if !ok {
+			continue
+		}
+		fields[strings.ToLower(strings.TrimSpace(key))] = strings.TrimSpace(value)
+	}
+	outcome.BlockerCode = firstNonEmptyString(fields["blocker code"], fields["code"], "external_dependency")
+	message := firstNonEmptyString(fields["blocker message"], fields["message"], strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(report), "BLOCKED:")))
+	outcome.ResolutionRequired = firstNonEmptyString(fields["resolution requirement"], fields["exact resolution requirement"])
+	if evidence := firstNonEmptyString(fields["authoritative evidence"], fields["evidence"]); evidence != "" {
+		outcome.BlockerEvidence = []string{evidence}
+	}
+	if completed := fields["completed scope"]; completed != "" {
+		outcome.CompletedScope = []string{completed}
+	}
+	return taskChildBlockedError{code: outcome.BlockerCode, message: message}
+}
+
 func taskDisabledTools(allowBash bool) map[string]bool {
 	disabled := map[string]bool{
 		"ask_user":       true,
@@ -4316,6 +5446,8 @@ func taskDisabledTools(allowBash bool) map[string]bool {
 		"plan-manage":    true,
 		"manage_actions": true,
 		"manage-actions": true,
+		"manage_video":   true,
+		"manage-video":   true,
 		"manage_todos":   true,
 		"manage-todos":   true,
 		"manage_agent":   true,
@@ -4402,6 +5534,8 @@ func canonicalToolName(name string) string {
 		return "manage_worktree"
 	case "manage-actions", "manage_actions":
 		return "manage_actions"
+	case "manage-video", "manage_video":
+		return "manage_video"
 	case "manage-todos", "manage_todos":
 		return "manage_todos"
 	default:
@@ -4437,7 +5571,12 @@ func permissionRequirement(mode, toolName, arguments string) (string, bool) {
 	}
 
 	switch toolName {
-	case "read", "search", "websearch", "webfetch", "agentic_search", "list", "skill_use", "manage_worktree", "manage_todos", "manage_theme", "edit_pending_plan":
+	case "manage_artifact":
+		if permission.ShouldApproveManageArtifactGenerateImage(arguments) && !bypass {
+			return "manage_artifact_generate_image", true
+		}
+		return toolName, false
+	case "read", "search", "websearch", "webfetch", "agentic_search", "list", "skill_use", "manage_worktree", "manage_video", "manage_todos", "manage_theme", "edit_pending_plan":
 		return toolName, false
 	case "manage_sessions":
 		if permission.ShouldApproveManageSessionsDeploy(arguments) {

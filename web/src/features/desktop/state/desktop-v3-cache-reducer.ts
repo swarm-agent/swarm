@@ -1043,6 +1043,8 @@ export function upsertPendingUserMessage(
     messageId: string
     content: string
     metadata?: Record<string, unknown>
+    media?: PendingUserMessage['media']
+    artifactSelections?: PendingUserMessage['artifactSelections']
     runId?: string
     createdAt: number
   },
@@ -1081,6 +1083,8 @@ export function upsertPendingUserMessage(
     role: 'user',
     content: input.content,
     metadata: input.metadata,
+    media: input.media,
+    artifactSelections: input.artifactSelections,
     runId: input.runId?.trim() || undefined,
     createdAt: input.createdAt,
     timelineSeq: Math.max(
@@ -3690,6 +3694,8 @@ function cloneToolActivityForMutation(tool: DesktopToolActivity): DesktopToolAct
         Object.entries(tool.taskStream.launchesByKey).map(([launchKey, launch]) => [launchKey, { ...launch }]),
       ),
       launchOrder: [...tool.taskStream.launchOrder],
+      program: tool.taskStream.program ? { ...tool.taskStream.program } : undefined,
+      programStatus: tool.taskStream.programStatus ? { ...tool.taskStream.programStatus } : undefined,
     } : undefined,
   }
 }
@@ -4276,28 +4282,37 @@ function applyTaskStreamPatch(
 ): boolean {
   if ((tool.toolName ?? '').trim().toLowerCase() !== 'task') return false
   const parsed = parseJsonRecord(output)
-  if (!parsed) return false
-  if (stringValue(parsed.path_id) !== 'tool.task.stream.v2' || stringValue(parsed.tool) !== 'task') return false
-  const launchPatch = recordValue(parsed.launch)
-  if (!launchPatch) return false
-  const launchKey = stringValue(parsed.launch_key)
-    || stringValue(launchPatch.launch_key)
+  if (!parsed || stringValue(parsed.tool) !== 'task') return false
+  const pathId = stringValue(parsed.path_id)
+  const directImageStream = pathId === 'tool.task.image_swarm.stream.v1'
+  if (pathId !== 'tool.task.stream.v2' && !directImageStream) return false
+  const launchPatch = recordValue(directImageStream ? parsed.image : parsed.launch)
+  const hasProgramMetadata = !directImageStream && Boolean(
+    stringValue(parsed.program_id)
+    || recordValue(parsed.program)
+    || recordValue(parsed.program_status),
+  )
+  if (!launchPatch && !hasProgramMetadata) return false
+  const launchKey = stringValue(directImageStream ? parsed.image_key : parsed.launch_key)
+    || stringValue(launchPatch?.image_key)
+    || stringValue(launchPatch?.launch_key)
     || stringValue(parsed.child_session_id)
-    || stringValue(launchPatch.child_session_id)
+    || stringValue(launchPatch?.child_session_id)
     || (numberValue(parsed.launch_index) > 0 ? `launch:${numberValue(parsed.launch_index)}` : '')
-    || (numberValue(launchPatch.launch_index) > 0 ? `launch:${numberValue(launchPatch.launch_index)}` : '')
-  if (!launchKey) return false
+    || (numberValue(launchPatch?.launch_index) > 0 ? `launch:${numberValue(launchPatch?.launch_index)}` : '')
+    || (numberValue(launchPatch?.index) > 0 ? `image:${numberValue(launchPatch?.index)}` : '')
+  if (!launchKey && launchPatch) return false
 
   const stream = tool.taskStream ?? {
-    pathId: 'tool.task.stream.v2',
-    streamVersion: 2,
+    pathId,
+    streamVersion: directImageStream ? 1 : 2,
     updatedAt,
     launchesByKey: {},
     launchOrder: [],
   }
-  const existing = stream.launchesByKey[launchKey] ?? {}
-  stream.pathId = 'tool.task.stream.v2'
-  stream.streamVersion = 2
+  const existing = launchKey ? stream.launchesByKey[launchKey] ?? {} : {}
+  stream.pathId = pathId
+  stream.streamVersion = directImageStream ? 1 : 2
   stream.status = stringValue(parsed.status) || stream.status
   stream.phase = stringValue(parsed.phase) || stream.phase
   stream.action = stringValue(parsed.action) || stream.action
@@ -4306,10 +4321,38 @@ function applyTaskStreamPatch(
   stream.parentSessionId = stringValue(parsed.parent_session_id) || stream.parentSessionId
   stream.taskCallId = stringValue(parsed.task_call_id) || stream.taskCallId
   stream.launchCount = numberValue(parsed.launch_count) || stream.launchCount
+  stream.imageCount = numberValue(parsed.image_count) || stream.imageCount
+  stream.taskMode = stringValue(parsed.task_mode) || stream.taskMode
+  stream.executionFormat = stringValue(parsed.execution_format) || stream.executionFormat
+  stream.programId = stringValue(parsed.program_id) || stream.programId
+  stream.programState = stringValue(parsed.program_state) || stream.programState
+  stream.activeStageId = stringValue(parsed.active_stage_id) || stream.activeStageId
+  stream.nextAction = stringValue(parsed.next_action) || stream.nextAction
+  stream.program = recordValue(parsed.program) || stream.program
+  stream.programStatus = recordValue(parsed.program_status) || stream.programStatus
+  stream.swarmStrategy = stringValue(parsed.swarm_strategy) || stream.swarmStrategy
+  stream.integrationContract = stringValue(parsed.integration_contract) || stream.integrationContract
+  if (typeof parsed.integration_required === 'boolean') stream.integrationRequired = parsed.integration_required
   stream.updatedAt = updatedAt
-  stream.launchesByKey[launchKey] = mergeTaskStreamLaunchPatch(existing, launchPatch, launchKey)
-  if (!stream.launchOrder.includes(launchKey)) {
-    stream.launchOrder = [...stream.launchOrder, launchKey]
+  if (launchKey && launchPatch) {
+    const normalizedPatch = directImageStream ? {
+      ...launchPatch,
+      launch_index: numberValue(launchPatch.index),
+      requested_subagent: 'image',
+      assignment_label: stringValue(launchPatch.title) || stringValue(launchPatch.theme) || `Image ${numberValue(launchPatch.index)}`,
+      current_tool: stringValue(launchPatch.current_stage_label) || stringValue(launchPatch.current_stage),
+      current_tool_display: Array.isArray(launchPatch.stage_history)
+        ? launchPatch.stage_history.filter((stage): stage is string => typeof stage === 'string' && Boolean(stage.trim())).join(' → ')
+        : stringValue(launchPatch.current_stage_label) || stringValue(launchPatch.current_stage),
+      tool_order: Array.isArray(launchPatch.stage_history) ? launchPatch.stage_history : [],
+      current_preview_text: stringValue(launchPatch.preview),
+      current_preview_kind: stringValue(launchPatch.preview) ? 'progress' : '',
+      swarm_mode: true,
+    } : launchPatch
+    stream.launchesByKey[launchKey] = mergeTaskStreamLaunchPatch(existing, normalizedPatch, launchKey)
+    if (!stream.launchOrder.includes(launchKey)) {
+      stream.launchOrder = [...stream.launchOrder, launchKey]
+    }
   }
   stream.launchOrder = [...stream.launchOrder].sort((left, right) => {
     const leftIndex = numberValue(stream.launchesByKey[left]?.launch_index)

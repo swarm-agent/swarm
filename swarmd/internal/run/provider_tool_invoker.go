@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	agentruntime "swarm/packages/swarmd/internal/agent"
 	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/permission"
 	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
@@ -90,6 +91,7 @@ type ProviderManagedToolInvokerConfig struct {
 	Model                string
 	MediaContract        provideriface.SessionMediaContract
 	PlanContextGuard     *PlanContextGuard
+	ArtifactRunContext   *tool.ArtifactRunContext
 }
 
 type terminalPlanToolState struct {
@@ -122,6 +124,7 @@ type providerToolInvokerConfig struct {
 	sourceMessageID      string
 	step                 int
 	sessionMode          string
+	mediaExecutionMode   string
 	workspacePath        string
 	workspaceRoots       []string
 	workspaceOriginPath  string
@@ -139,6 +142,7 @@ type providerToolInvokerConfig struct {
 	model                string
 	mediaContract        provideriface.SessionMediaContract
 	planContextGuard     *PlanContextGuard
+	artifactRunContext   *tool.ArtifactRunContext
 }
 
 func (config ProviderManagedToolInvokerConfig) internal() providerToolInvokerConfig {
@@ -149,6 +153,7 @@ func (config ProviderManagedToolInvokerConfig) internal() providerToolInvokerCon
 		sourceMessageID:      strings.TrimSpace(config.SourceMessageID),
 		step:                 config.Step,
 		sessionMode:          strings.TrimSpace(config.SessionMode),
+		mediaExecutionMode:   strings.TrimSpace(config.SessionMode),
 		workspacePath:        strings.TrimSpace(config.WorkspacePath),
 		workspaceRoots:       append([]string(nil), config.WorkspaceRoots...),
 		workspaceOriginPath:  strings.TrimSpace(config.WorkspaceOriginPath),
@@ -165,6 +170,7 @@ func (config ProviderManagedToolInvokerConfig) internal() providerToolInvokerCon
 		model:                strings.TrimSpace(config.Model),
 		mediaContract:        config.MediaContract,
 		planContextGuard:     config.PlanContextGuard,
+		artifactRunContext:   cloneArtifactRunContext(config.ArtifactRunContext),
 	}
 }
 
@@ -289,6 +295,85 @@ func providerManagedOriginWorkspaceRoots(config providerToolInvokerConfig) []str
 	return originRoots
 }
 
+func cloneArtifactRunContext(input *tool.ArtifactRunContext) *tool.ArtifactRunContext {
+	if input == nil {
+		return nil
+	}
+	cloned := *input
+	cloned.OutputRequirements = cloneTaskOutputRequirements(input.OutputRequirements)
+	cloned.AnimationProfile = cloneTaskAnimationProfile(input.AnimationProfile)
+	return &cloned
+}
+
+func (s *Service) providerManagedArtifactRunContext(config providerToolInvokerConfig) tool.ArtifactRunContext {
+	if config.artifactRunContext != nil {
+		run := *config.artifactRunContext
+		run.SessionID = strings.TrimSpace(run.SessionID)
+		run.TaskCallID = strings.TrimSpace(run.TaskCallID)
+		run.ProgramID = strings.TrimSpace(run.ProgramID)
+		run.ProgramJobID = strings.TrimSpace(run.ProgramJobID)
+		run.ChildSessionID = strings.TrimSpace(run.ChildSessionID)
+		run.IterationGroupID = strings.TrimSpace(run.IterationGroupID)
+		run.IterationGroup = strings.TrimSpace(run.IterationGroup)
+		run.IterationID = strings.TrimSpace(run.IterationID)
+		run.IterationLabel = strings.TrimSpace(run.IterationLabel)
+		run.IterationTheme = strings.TrimSpace(run.IterationTheme)
+		run.CollectionID = strings.TrimSpace(run.CollectionID)
+		run.VariantID = strings.TrimSpace(run.VariantID)
+		run.OutputRequirements = cloneTaskOutputRequirements(run.OutputRequirements)
+		run.AnimationProfile = cloneTaskAnimationProfile(run.AnimationProfile)
+		if run.SessionID == "" || run.ChildSessionID == "" || run.ChildSessionID != strings.TrimSpace(config.sessionID) || run.TaskCallID == "" || run.CollectionID == "" || run.VariantID == "" {
+			// Preserve a managed destination marker while forcing ownership checks to
+			// fail closed; never degrade a malformed trusted target into an ordinary
+			// child-session artifact context.
+			run.SessionID = "__invalid_managed_artifact_context__"
+			return run
+		}
+		if strings.TrimSpace(run.RunID) == "" {
+			run.RunID = strings.TrimSpace(config.runID)
+		} else {
+			run.RunID = strings.TrimSpace(run.RunID)
+		}
+		if s != nil && s.sessions != nil && strings.TrimSpace(config.runID) != "" {
+			if intent, ok, err := s.sessions.GetSessionRunIntent(strings.TrimSpace(config.sessionID), strings.TrimSpace(config.runID)); err == nil && ok {
+				run.PlanID = firstNonEmptyString(strings.TrimSpace(run.PlanID), strings.TrimSpace(intent.PlanID))
+				run.CheckpointID = firstNonEmptyString(strings.TrimSpace(run.CheckpointID), strings.TrimSpace(intent.CheckpointID))
+				run.AttemptID = firstNonEmptyString(strings.TrimSpace(run.AttemptID), strings.TrimSpace(intent.AttemptID))
+			}
+		}
+		return run
+	}
+	run := tool.ArtifactRunContext{
+		SessionID: strings.TrimSpace(config.sessionID),
+		RunID:     strings.TrimSpace(config.runID),
+	}
+	if s == nil || s.sessions == nil || run.SessionID == "" || run.RunID == "" {
+		return run
+	}
+	if intent, ok, err := s.sessions.GetSessionRunIntent(run.SessionID, run.RunID); err == nil && ok {
+		run.PlanID = strings.TrimSpace(intent.PlanID)
+		run.CheckpointID = strings.TrimSpace(intent.CheckpointID)
+		run.AttemptID = strings.TrimSpace(intent.AttemptID)
+	}
+	if run.PlanID != "" && run.CheckpointID != "" && run.AttemptID != "" {
+		return run
+	}
+	active, ok, err := s.sessions.GetActivePlan(run.SessionID)
+	if err != nil || !ok || active.Document == nil || active.Document.ExecutionState == nil || strings.TrimSpace(active.Document.ExecutionState.CurrentRunID) != run.RunID {
+		return run
+	}
+	if run.PlanID == "" {
+		run.PlanID = strings.TrimSpace(active.ID)
+	}
+	if run.CheckpointID == "" {
+		run.CheckpointID = strings.TrimSpace(active.Document.ActiveCheckpointID)
+	}
+	if run.AttemptID == "" {
+		run.AttemptID = strings.TrimSpace(active.Document.ExecutionState.ActiveAttemptID)
+	}
+	return run
+}
+
 func providerManagedCheckpointBoundaryCall(call tool.Call) bool {
 	if canonicalToolName(call.Name) != "plan_manage" {
 		return false
@@ -298,6 +383,20 @@ func providerManagedCheckpointBoundaryCall(call tool.Call) bool {
 		return false
 	}
 	return strings.EqualFold(strings.TrimSpace(mapString(args, "action")), sessionruntime.CheckpointBoundaryTransitionAction)
+}
+
+func (s *Service) providerManagedVideoStudioImageGeneration(config providerToolInvokerConfig) bool {
+	if s == nil || s.sessions == nil || !config.providerManagedV3 || strings.TrimSpace(config.sessionID) == "" {
+		return false
+	}
+	session, ok, err := s.sessions.GetSession(strings.TrimSpace(config.sessionID))
+	if err != nil || !ok {
+		return false
+	}
+	launchSource := strings.ToLower(strings.TrimSpace(mapString(session.Metadata, "launch_source")))
+	return strings.EqualFold(strings.TrimSpace(mapString(session.Metadata, "experience")), "video_studio") &&
+		(launchSource == "video_tool" || launchSource == "chat_upgrade") &&
+		strings.EqualFold(strings.TrimSpace(mapString(session.Metadata, "lineage_kind")), "video_project")
 }
 
 func providerManagedToolRequiresTurnRestart(call tool.Call, result tool.Result) bool {
@@ -388,23 +487,64 @@ func (s *Service) executeProviderManagedToolCall(ctx context.Context, config pro
 	if permissionSessionID == "" {
 		permissionSessionID = strings.TrimSpace(config.sessionID)
 	}
+	videoStudioRequest := s.providerManagedVideoStudioImageGeneration(config)
+	if canonicalToolName(call.Name) == "manage_artifact" && permission.ShouldApproveManageArtifactGenerateImage(call.Arguments) {
+		autoAllowImageGeneration := false
+		if agentruntime.IsImageAgentName(config.agentProfile.Name) {
+			if config.artifactRunContext == nil || strings.TrimSpace(config.artifactRunContext.TaskCallID) == "" || strings.TrimSpace(config.artifactRunContext.CollectionID) == "" || strings.TrimSpace(config.artifactRunContext.VariantID) == "" {
+				return tool.Result{}, 0, errors.New("managed Image generation requires a trusted task artifact destination")
+			}
+			// The parent task launch is the user-approved billed operation. Compile a
+			// one-call allow rule into this child invocation so the generated worker
+			// cannot trigger a second approval prompt after the wave has already begun.
+			autoAllowImageGeneration = true
+		} else if videoStudioRequest {
+			// Starting a creative request inside the code-owned Video Studio is the
+			// user gesture authorizing its still generation. The resulting visuals
+			// remain private session artifacts and manage_video still creates only a
+			// pending project proposal that requires explicit review.
+			autoAllowImageGeneration = true
+		}
+		if autoAllowImageGeneration {
+			trustedImagePolicy := permission.NormalizePolicy(permission.Policy{Version: 1, Rules: []permission.PolicyRule{{
+				Kind: permission.PolicyRuleKindTool, Decision: permission.PolicyDecisionAllow, Tool: "manage_artifact",
+			}}})
+			merged := mergePermissionPolicies(config.policy, &trustedImagePolicy)
+			config.policy = &merged
+		}
+	}
+	if videoStudioRequest && canonicalToolName(call.Name) == "manage_video" {
+		// Video Studio owns project proposal construction. The assistant can create
+		// or revise only durable pending proposals; accepting them and starting a
+		// final render remain explicit Studio UI operations.
+		trustedVideoPolicy := permission.NormalizePolicy(permission.Policy{Version: 1, Rules: []permission.PolicyRule{{
+			Kind: permission.PolicyRuleKindTool, Decision: permission.PolicyDecisionAllow, Tool: "manage_video",
+		}}})
+		merged := mergePermissionPolicies(config.policy, &trustedVideoPolicy)
+		config.policy = &merged
+	}
 
 	gatedResults := []tool.Result{{CallID: call.CallID, Name: call.Name}}
 	approvedCalls := []tool.Call{call}
 	permissionFeedback := []PermissionFeedback(nil)
-	var err error
-	gatedResults, approvedCalls, _, _, permissionFeedback, err = s.gateToolCalls(
-		ctx,
-		permissionSessionID,
-		config.runID,
-		config.step,
-		config.sessionMode,
-		[]tool.Call{call},
-		config.emit,
-		config.policy,
-	)
-	if err != nil {
-		return tool.Result{}, 0, err
+	// media_inspect has no permission prompt: its provider-visible schema exists
+	// only after the current model/media intersection admits it, and the handler
+	// below revalidates that contract plus ownership, scope, type, and size.
+	if canonicalToolName(call.Name) != mediaInspectToolName {
+		var err error
+		gatedResults, approvedCalls, _, _, permissionFeedback, err = s.gateToolCalls(
+			ctx,
+			permissionSessionID,
+			config.runID,
+			config.step,
+			config.sessionMode,
+			[]tool.Call{call},
+			config.emit,
+			config.policy,
+		)
+		if err != nil {
+			return tool.Result{}, 0, err
+		}
 	}
 
 	permissionWaitMS := int64(0)
@@ -546,6 +686,8 @@ func (s *Service) executeProviderManagedToolCall(ctx context.Context, config pro
 						Principal:   principal,
 						SessionID:   strings.TrimSpace(config.sessionID),
 					})
+					runtimeCtx = tool.WithArtifactRunContext(runtimeCtx, s.providerManagedArtifactRunContext(config))
+					runtimeCtx = tool.WithVideoRunContext(runtimeCtx, tool.VideoRunContext{SessionID: config.sessionID, RunID: config.runID, MessageID: config.sourceMessageID})
 					executed := s.tools.ExecuteBatchStreamingWithProgress(runtimeCtx, workspaceCtx.WorkspacePath, runtimeCalls, func(_ int, current tool.Call, progress tool.Progress) {
 						if config.emit == nil {
 							return
@@ -662,7 +804,7 @@ func (s *Service) executeProviderManagedMediaInspect(ctx context.Context, config
 	currentContract := CompileSessionMediaContract(SessionMediaContractInput{
 		ProviderID: providerID, Model: modelID, Catalog: catalog, CatalogMeta: meta,
 		Adapter:         ResolveMediaAdapterDeclaration(ctx, providerID, runner),
-		AgentAuthorized: AgentProfileAuthorizesMedia(config.agentProfile), ExecutionMode: config.sessionMode,
+		AgentAuthorized: AgentProfileAuthorizesMedia(config.agentProfile), ExecutionMode: firstNonEmptyString(config.mediaExecutionMode, config.sessionMode),
 		WorkspaceScope: config.workspacePath, SessionScope: config.sessionID,
 	})
 	if currentContract.Hash != config.mediaContract.Hash {

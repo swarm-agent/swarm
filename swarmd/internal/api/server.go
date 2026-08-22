@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -23,6 +24,7 @@ import (
 	actionruntime "swarm/packages/swarmd/internal/action"
 	agentruntime "swarm/packages/swarmd/internal/agent"
 	"swarm/packages/swarmd/internal/agentmodelsettings"
+	"swarm/packages/swarmd/internal/artifact"
 	"swarm/packages/swarmd/internal/auth"
 	"swarm/packages/swarmd/internal/discovery"
 	"swarm/packages/swarmd/internal/identity"
@@ -49,6 +51,9 @@ import (
 	topologyruntime "swarm/packages/swarmd/internal/topology"
 	"swarm/packages/swarmd/internal/uisettings"
 	"swarm/packages/swarmd/internal/update"
+	"swarm/packages/swarmd/internal/videoproject"
+	"swarm/packages/swarmd/internal/videorender"
+	"swarm/packages/swarmd/internal/videotranscription"
 	"swarm/packages/swarmd/internal/voice"
 	"swarm/packages/swarmd/internal/webpush"
 	"swarm/packages/swarmd/internal/workspace"
@@ -122,8 +127,11 @@ type Server struct {
 	topology                    *topologyruntime.Service
 	swarmDesktopTargetSelection *pebblestore.SwarmDesktopTargetSelectionStore
 	videoThreads                *pebblestore.VideoThreadStore
+	videoProjects               *videoproject.Service
+	videoRender                 *videorender.Service
 	imageThreads                *pebblestore.ImageThreadStore
 	imageGen                    *imagegen.Service
+	videoTranscription          *videotranscription.Service
 	integrations                *integrationruntime.Service
 	dataDir                     string
 	startupConfigPath           string
@@ -131,6 +139,7 @@ type Server struct {
 	bypassPermissions           bool
 	longSessionDiagnostics      *longsessiondiag.Recorder
 	mediaStaging                *mediastaging.Service
+	artifacts                   *artifact.Registry
 
 	longSessionDesktopSampleLogOnce sync.Once
 
@@ -147,6 +156,7 @@ type Server struct {
 	desktopLocalSessions   *desktopLocalSessionManager
 	identityService        *identity.Service
 	identitySessions       *identity.SessionService
+	artifactPreviewKey     []byte
 	gitRealtime            *gitRealtimeManager
 	swarmStore             *pebblestore.SwarmStore
 	tailscaleServePolicy   *pebblestore.TailscaleServeAllowlistStore
@@ -256,6 +266,10 @@ type mcpService interface {
 
 func NewServer(authSvc *auth.Service, agentSvc *agentruntime.Service, modelSvc *model.Service, runSvc runService, sessionSvc *sessionruntime.Service, workspaceSvc *workspace.Service, discoverySvc *discovery.Service, securitySvc *security.Service, providers *registry.Registry, permSvc permissionService, notificationSvc notificationService, events *pebblestore.EventLog, hub *stream.Hub) *Server {
 	runCtx, runCancel := context.WithCancel(context.Background())
+	artifactPreviewKey := make([]byte, 32)
+	if _, err := rand.Read(artifactPreviewKey); err != nil {
+		artifactPreviewKey = nil
+	}
 	server := &Server{
 		auth:                 authSvc,
 		agents:               agentSvc,
@@ -277,6 +291,7 @@ func NewServer(authSvc *auth.Service, agentSvc *agentruntime.Service, modelSvc *
 		startedAt:            time.Now(),
 		codexOAuthSessions:   make(map[string]*codexOAuthSession),
 		desktopLocalSessions: newDesktopLocalSessionManager(),
+		artifactPreviewKey:   artifactPreviewKey,
 		gitRealtime:          nil,
 		reviewCommitActive:   make(map[string]string),
 		runCtx:               runCtx,
@@ -319,6 +334,19 @@ func (s *Server) SetMediaStagingService(service *mediastaging.Service) {
 	if s != nil {
 		s.mediaStaging = service
 	}
+}
+
+func (s *Server) SetArtifactRegistry(registry *artifact.Registry) {
+	if s != nil {
+		s.artifacts = registry
+	}
+}
+
+func (s *Server) ArtifactRegistry() *artifact.Registry {
+	if s == nil {
+		return nil
+	}
+	return s.artifacts
 }
 
 func (s *Server) LongSessionSnapshot() map[string]any {
@@ -457,6 +485,24 @@ func (s *Server) SetPlanLifecycleService(planLifecycle *sessionruntime.PlanLifec
 		return
 	}
 	s.planLifecycle = planLifecycle
+}
+
+func (s *Server) SetVideoTranscriptionService(service *videotranscription.Service) {
+	if s != nil {
+		s.videoTranscription = service
+	}
+}
+
+func (s *Server) SetVideoProjectService(service *videoproject.Service) {
+	if s != nil {
+		s.videoProjects = service
+	}
+}
+
+func (s *Server) SetVideoRenderService(service *videorender.Service) {
+	if s != nil {
+		s.videoRender = service
+	}
 }
 
 func (s *Server) SetUISettingsService(uiSettingsSvc *uisettings.Service) {
@@ -1096,7 +1142,22 @@ func (s *Server) handleAuthCredentials(w http.ResponseWriter, r *http.Request) {
 				writeError(w, http.StatusBadRequest, firstRunErr)
 				return
 			} else if firstRun {
-				writeError(w, http.StatusBadRequest, errors.New("first onboarding provider credential must use /v1/onboarding/provider/credential"))
+				status, acceptErr := s.acceptFirstOnboardingProviderCredential(r.Context(), principal, onboardingProviderCredentialRequest{
+					Provider:     provider,
+					Type:         req.Type,
+					Label:        req.Label,
+					Tags:         append([]string(nil), req.Tags...),
+					APIKey:       req.APIKey,
+					AccessToken:  req.AccessToken,
+					RefreshToken: req.RefreshToken,
+					ExpiresAt:    req.ExpiresAt,
+					AccountID:    req.AccountID,
+				})
+				if acceptErr != nil {
+					writeError(w, http.StatusBadRequest, acceptErr)
+					return
+				}
+				writeJSON(w, http.StatusOK, status)
 				return
 			}
 		}
@@ -3345,6 +3406,8 @@ type uiSettingsPatchPresence struct {
 	Swarming  *uiSwarmingSettingsPatchPresence `json:"swarming"`
 	Swarm     *uiSwarmSettingsPatchPresence    `json:"swarm"`
 	Tools     *uiToolSettingsPatchPresence     `json:"tools"`
+	Media     *uiMediaSettingsPatchPresence    `json:"media"`
+	Artifacts *uiArtifactSettingsPatchPresence `json:"artifacts"`
 	UpdatedAt *int64                           `json:"updated_at"`
 }
 
@@ -3376,6 +3439,7 @@ type uiChatSettingsPatchPresence struct {
 	PlanContextGuardEnabled         *bool                                  `json:"plan_context_guard_enabled"`
 	PlanContextGuardUsedPercent     *int                                   `json:"plan_context_guard_used_percent"`
 	PlanContextGuardMaxCompactions  *int                                   `json:"plan_context_guard_max_compactions"`
+	TaskContextMaxCompactions       *int                                   `json:"task_context_max_compactions"`
 	ReviewAutoArchiveMinutes        *int                                   `json:"review_auto_archive_minutes"`
 	SidebarHideInactiveHours        *int                                   `json:"sidebar_hide_inactive_hours"`
 	DefaultWorkspaceRoutes          *map[string]string                     `json:"default_workspace_routes"`
@@ -3398,6 +3462,14 @@ type uiToolImageSettingsPatchPresence struct {
 
 type uiToolSettingsPatchPresence struct {
 	Image *uiToolImageSettingsPatchPresence `json:"image"`
+}
+
+type uiMediaSettingsPatchPresence struct {
+	TranscriptionModel *string `json:"transcription_model"`
+}
+
+type uiArtifactSettingsPatchPresence struct {
+	LibraryDirectory *string `json:"library_directory"`
 }
 
 func mergeUISettingsPatch(current, patch uisettings.UISettings, raw uiSettingsPatchPresence) uisettings.UISettings {
@@ -3446,6 +3518,9 @@ func mergeUISettingsPatch(current, patch uisettings.UISettings, raw uiSettingsPa
 		if raw.Chat.PlanContextGuardMaxCompactions != nil {
 			settings.Chat.PlanContextGuardMaxCompactions = patch.Chat.PlanContextGuardMaxCompactions
 		}
+		if raw.Chat.TaskContextMaxCompactions != nil {
+			settings.Chat.TaskContextMaxCompactions = patch.Chat.TaskContextMaxCompactions
+		}
 		if raw.Chat.ReviewAutoArchiveMinutes != nil {
 			settings.Chat.ReviewAutoArchiveMinutes = patch.Chat.ReviewAutoArchiveMinutes
 		}
@@ -3493,6 +3568,12 @@ func mergeUISettingsPatch(current, patch uisettings.UISettings, raw uiSettingsPa
 		if raw.Tools.Image.DefaultModel != nil {
 			settings.Tools.Image.DefaultModel = patch.Tools.Image.DefaultModel
 		}
+	}
+	if raw.Media != nil && raw.Media.TranscriptionModel != nil {
+		settings.Media.TranscriptionModel = patch.Media.TranscriptionModel
+	}
+	if raw.Artifacts != nil && raw.Artifacts.LibraryDirectory != nil {
+		settings.Artifacts.LibraryDirectory = patch.Artifacts.LibraryDirectory
 	}
 	return settings
 }
@@ -3855,6 +3936,11 @@ func (s *Server) withAuth(next http.Handler) http.Handler {
 				next.ServeHTTP(w, requestWithActorContext(r, actor))
 				return
 			}
+		}
+
+		if principal, ok := s.validateSessionV3ArtifactPreviewRequest(r); ok {
+			next.ServeHTTP(w, requestWithPrincipalContext(r, principal))
+			return
 		}
 
 		if isLocalTransportRequest(r) {

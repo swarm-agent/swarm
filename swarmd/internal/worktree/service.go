@@ -140,13 +140,17 @@ type TaskIntegrationResult struct {
 }
 
 type TaskIntegrationConflictError struct {
-	Commit string `json:"commit"`
-	Detail string `json:"detail"`
+	SessionID string `json:"session_id,omitempty"`
+	Commit    string `json:"commit"`
+	Detail    string `json:"detail"`
 }
 
 func (e *TaskIntegrationConflictError) Error() string {
 	if e == nil {
 		return "integration conflict"
+	}
+	if strings.TrimSpace(e.SessionID) != "" {
+		return fmt.Sprintf("integration conflict in child %s at commit %s: %s", e.SessionID, e.Commit, e.Detail)
 	}
 	return fmt.Sprintf("integration conflict at commit %s: %s", e.Commit, e.Detail)
 }
@@ -519,7 +523,7 @@ func (s *Service) PrepareTaskIntegration(parentPath, expectedParentHead string, 
 		})
 		plan.Commits = append(plan.Commits, commits...)
 	}
-	if err := preflightCherryPick(parentPath, plan.ParentHead, plan.Commits); err != nil {
+	if err := preflightCherryPick(parentPath, plan.ParentHead, plan.Entries); err != nil {
 		return TaskIntegrationPlan{}, err
 	}
 	return plan, nil
@@ -558,6 +562,69 @@ func (s *Service) ApplyTaskIntegration(parentPath string, plan TaskIntegrationPl
 		return TaskIntegrationResult{TaskIntegrationPlan: current}, fmt.Errorf("resolve integrated HEAD: %w", err)
 	}
 	return TaskIntegrationResult{TaskIntegrationPlan: current, ResultingParentHead: head}, nil
+}
+
+// RemoveIntegratedTaskWorkspace removes only a clean, private managed child
+// worktree whose immutable commit range is already represented in the parent.
+// The child branch remains available as durable Git lineage after its checkout
+// is removed.
+func (s *Service) RemoveIntegratedTaskWorkspace(parentPath, childPath, sessionID, branchName, baseCommit, headCommit string) error {
+	parentRoot, err := resolveRepositoryRoot(parentPath)
+	if err != nil {
+		return fmt.Errorf("resolve parent repository for integrated worktree cleanup: %w", err)
+	}
+	expectedPath, err := deterministicSessionWorktreePath(parentRoot, sessionWorkspaceID(sessionID))
+	if err != nil {
+		return err
+	}
+	actualPath, err := filepath.Abs(strings.TrimSpace(childPath))
+	if err != nil {
+		return fmt.Errorf("resolve integrated child worktree path: %w", err)
+	}
+	actualPath = filepath.Clean(actualPath)
+	managedRoot, err := worktreeCacheRoot(parentRoot)
+	if err != nil {
+		return err
+	}
+	if !sameCleanPath(actualPath, expectedPath) || !pathWithinRoot(managedRoot, actualPath) {
+		return errors.New("integrated child worktree is outside its expected private managed path")
+	}
+	if _, statErr := os.Stat(actualPath); errors.Is(statErr, os.ErrNotExist) {
+		return nil
+	} else if statErr != nil {
+		return fmt.Errorf("inspect integrated child worktree: %w", statErr)
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	integrationLock, err := acquireIntegrationLock(parentRoot)
+	if err != nil {
+		return err
+	}
+	defer integrationLock.Release()
+
+	state, err := s.VerifyTaskIntegrationWorkspace(parentPath, actualPath, sessionID, branchName, baseCommit, headCommit)
+	if err != nil {
+		return fmt.Errorf("verify integrated child worktree before cleanup: %w", err)
+	}
+	if !state.Clean {
+		return fmt.Errorf("integrated child worktree is dirty and remains recoverable:\n%s", state.Status)
+	}
+	parentState, err := s.InspectTaskWorkspace(parentPath)
+	if err != nil {
+		return fmt.Errorf("inspect parent before integrated worktree cleanup: %w", err)
+	}
+	integrated, err := s.TaskCommitRangeIntegratedInto(parentPath, baseCommit, headCommit, parentState.HeadCommit)
+	if err != nil {
+		return fmt.Errorf("verify child integration before worktree cleanup: %w", err)
+	}
+	if !integrated {
+		return errors.New("child commit range is not integrated; worktree remains recoverable")
+	}
+	if _, err := runGit(parentRoot, "worktree", "remove", actualPath); err != nil {
+		return fmt.Errorf("remove integrated child worktree: %w", err)
+	}
+	return nil
 }
 
 func rollbackTaskIntegration(parentPath, parentHead string) error {
@@ -604,6 +671,28 @@ func integrationChildrenFromPlan(plan TaskIntegrationPlan) []TaskIntegrationChil
 	return out
 }
 
+// TaskCommitRangeIntegratedInto reports whether every commit in base..head is
+// represented in parentHead by ancestry, a stable patch-equivalent cherry-pick,
+// or a conflict-resolved cherry-pick. Integration changes commit IDs, so
+// ancestry alone is insufficient for post-integration recall.
+func (s *Service) TaskCommitRangeIntegratedInto(parentPath, base, head, parentHead string) (bool, error) {
+	commitText, err := runGit(parentPath, "rev-list", "--reverse", base+".."+head)
+	if err != nil {
+		return false, fmt.Errorf("list child commits for integration classification: %w", err)
+	}
+	commits := strings.Fields(commitText)
+	if len(commits) == 0 {
+		return false, nil
+	}
+	for _, commit := range commits {
+		integrated, classifyErr := taskCommitAlreadyIntegrated(parentPath, parentHead, commit)
+		if classifyErr != nil || !integrated {
+			return false, classifyErr
+		}
+	}
+	return true, nil
+}
+
 func taskCommitAlreadyIntegrated(parentPath, parentHead, commit string) (bool, error) {
 	reachable, err := (&Service{}).TaskCommitDescendsFrom(parentPath, commit, parentHead)
 	if err != nil {
@@ -638,7 +727,7 @@ func taskCommitAlreadyIntegrated(parentPath, parentHead, commit string) (bool, e
 	return integrated, nil
 }
 
-func preflightCherryPick(parentPath, parentHead string, commits []string) error {
+func preflightCherryPick(parentPath, parentHead string, entries []TaskIntegrationEntry) error {
 	gitDir, err := runGit(parentPath, "rev-parse", "--git-dir")
 	if err != nil {
 		return fmt.Errorf("resolve git directory for integration preflight: %w", err)
@@ -661,21 +750,23 @@ func preflightCherryPick(parentPath, parentHead string, commits []string) error 
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("initialize integration preflight: %s", strings.TrimSpace(string(out)))
 	}
-	for _, commit := range commits {
-		patch := exec.Command("git", "-C", parentPath, "diff-tree", "--binary", "--full-index", "--no-commit-id", "-p", commit+"^", commit)
-		data, err := patch.Output()
-		if err != nil {
-			return fmt.Errorf("read commit %s patch: %w", commit, err)
-		}
-		apply := exec.Command("git", "-C", parentPath, "apply", "--cached", "--3way", "--whitespace=nowarn", "-")
-		apply.Env = env
-		apply.Stdin = bytes.NewReader(data)
-		if out, err := apply.CombinedOutput(); err != nil {
-			detail := strings.TrimSpace(string(out))
-			if detail == "" {
-				detail = err.Error()
+	for _, entry := range entries {
+		for _, commit := range entry.Commits {
+			patch := exec.Command("git", "-C", parentPath, "diff-tree", "--binary", "--full-index", "--no-commit-id", "-p", commit+"^", commit)
+			data, err := patch.Output()
+			if err != nil {
+				return fmt.Errorf("read child %q commit %s patch: %w", entry.SessionID, commit, err)
 			}
-			return &TaskIntegrationConflictError{Commit: commit, Detail: detail}
+			apply := exec.Command("git", "-C", parentPath, "apply", "--cached", "--3way", "--whitespace=nowarn", "-")
+			apply.Env = env
+			apply.Stdin = bytes.NewReader(data)
+			if out, err := apply.CombinedOutput(); err != nil {
+				detail := strings.TrimSpace(string(out))
+				if detail == "" {
+					detail = err.Error()
+				}
+				return &TaskIntegrationConflictError{SessionID: entry.SessionID, Commit: commit, Detail: detail}
+			}
 		}
 	}
 	return nil

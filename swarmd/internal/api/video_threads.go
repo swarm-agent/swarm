@@ -1,7 +1,10 @@
 package api
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"mime"
 	"net/http"
 	"os"
@@ -9,11 +12,13 @@ import (
 	"strings"
 
 	"swarm/packages/swarmd/internal/identity"
-	"swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
+	"swarm/packages/swarmd/internal/videoproject"
+	"swarm/packages/swarmd/internal/videosource"
 )
 
 type videoThreadCreateRequest struct {
+	SessionID      string                          `json:"session_id"`
 	Title          string                          `json:"title"`
 	WorkspacePath  string                          `json:"workspace_path"`
 	WorkspaceName  string                          `json:"workspace_name"`
@@ -61,6 +66,30 @@ func (s *Server) handleWorkspaceVideoThreads(w http.ResponseWriter, r *http.Requ
 			writeError(w, http.StatusInternalServerError, err)
 			return
 		}
+		visible := threads[:0]
+		for i := range threads {
+			session, found, sessionErr := s.sessions.GetSession(threads[i].ID)
+			if sessionErr != nil {
+				writeError(w, http.StatusInternalServerError, sessionErr)
+				return
+			}
+			if !found {
+				// The durable V3 session is the visibility authority. Archived sessions
+				// retain their video thread for restoration but leave the active Studio list.
+				continue
+			}
+			threads[i].Title = strings.TrimSpace(session.Title)
+			if session.UpdatedAt > threads[i].UpdatedAt {
+				threads[i].UpdatedAt = session.UpdatedAt
+			}
+			migrated, migrateErr := s.migrateLegacyVideoThreadProject(r.Context(), principal, threads[i])
+			if migrateErr != nil {
+				writeError(w, http.StatusBadRequest, migrateErr)
+				return
+			}
+			visible = append(visible, migrated)
+		}
+		threads = visible
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "threads": threads})
 	case http.MethodPost:
 		var req videoThreadCreateRequest
@@ -74,13 +103,47 @@ func (s *Server) handleWorkspaceVideoThreads(w http.ResponseWriter, r *http.Requ
 			return
 		}
 		workspacePath := owned.WorkspacePath
-		threadID := session.NewSessionID()
+		threadID := strings.TrimSpace(req.SessionID)
+		if threadID == "" {
+			writeError(w, http.StatusBadRequest, errors.New("session_id is required; video threads are session-owned"))
+			return
+		}
+		boundSession, found, sessionErr := s.sessions.GetSession(threadID)
+		if sessionErr != nil {
+			writeError(w, http.StatusInternalServerError, sessionErr)
+			return
+		}
+		if !found || boundSession.AccountScopeID != principal.AccountScopeID || (boundSession.UserID != "" && boundSession.UserID != principal.UserID) {
+			writeError(w, http.StatusBadRequest, errors.New("video session does not belong to the authenticated principal"))
+			return
+		}
+		if filepath.Clean(strings.TrimSpace(boundSession.WorkspacePath)) != filepath.Clean(workspacePath) {
+			writeError(w, http.StatusBadRequest, errors.New("video session workspace does not match requested workspace"))
+			return
+		}
 		storagePath, err := ensureWorkspaceToolStorage(workspacePath, "video", threadID)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
 		metadata := ensureManagedToolStorageMetadata(req.Metadata, storagePath)
+		delete(metadata, "timelineSegments")
+		if s.videoProjects != nil {
+			workspaceID := ""
+			if value, ok := boundSession.Metadata["workspace_id"].(string); ok {
+				workspaceID = strings.TrimSpace(value)
+			}
+			project, _, projectErr := s.videoProjects.GetOrCreatePrimaryVideoToolProject(r.Context(), principal, videoproject.CreateProjectInput{
+				SessionID: threadID, WorkspaceID: workspaceID, Title: strings.TrimSpace(req.Title),
+				OutputPreset: pebblestore.VideoPresetLandscape1080p, ProjectKind: pebblestore.VideoProjectKindVideoTool,
+			})
+			if projectErr != nil {
+				writeError(w, http.StatusBadRequest, projectErr)
+				return
+			}
+			metadata["video_project_id"] = project.ID
+		}
+		req.VideoClips = sanitizeVideoThreadSourceClips(req.VideoClips)
 		thread, err := s.videoThreads.CreateForAccount(principal.AccountScopeID, principal.UserID, pebblestore.VideoThreadSnapshot{
 			ID:             threadID,
 			WorkspacePath:  workspacePath,
@@ -117,7 +180,7 @@ func (s *Server) handleWorkspaceVideoThread(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	if isClipMedia {
-		s.handleWorkspaceVideoClipMedia(w, r, principal.AccountScopeID, threadID, clipID)
+		s.handleWorkspaceVideoClipMedia(w, r, principal, threadID, clipID)
 		return
 	}
 	switch r.Method {
@@ -131,6 +194,12 @@ func (s *Server) handleWorkspaceVideoThread(w http.ResponseWriter, r *http.Reque
 			writeError(w, http.StatusNotFound, errors.New("video thread not found"))
 			return
 		}
+		migrated, migrateErr := s.migrateLegacyVideoThreadProject(r.Context(), principal, thread)
+		if migrateErr != nil {
+			writeError(w, http.StatusBadRequest, migrateErr)
+			return
+		}
+		thread = migrated
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "thread": thread})
 	case http.MethodPost:
 		thread, ok, err := s.videoThreads.GetForAccount(principal.AccountScopeID, threadID)
@@ -148,7 +217,12 @@ func (s *Server) handleWorkspaceVideoThread(w http.ResponseWriter, r *http.Reque
 			return
 		}
 		if req.Title != nil {
-			thread.Title = strings.TrimSpace(*req.Title)
+			title := strings.TrimSpace(*req.Title)
+			if title == "" {
+				writeError(w, http.StatusBadRequest, errors.New("video session title cannot be blank"))
+				return
+			}
+			thread.Title = title
 		}
 		if req.VideoFolders != nil {
 			if storagePath, ok := thread.Metadata["tool_storage_path"].(string); ok && strings.TrimSpace(storagePath) != "" {
@@ -156,14 +230,19 @@ func (s *Server) handleWorkspaceVideoThread(w http.ResponseWriter, r *http.Reque
 			}
 		}
 		if req.VideoClips != nil {
-			thread.VideoClips = req.VideoClips
+			thread.VideoClips = sanitizeVideoThreadSourceClips(req.VideoClips)
 		}
 		if req.VideoClipOrder != nil {
 			thread.VideoClipOrder = req.VideoClipOrder
 		}
 		if req.Metadata != nil {
 			if storagePath, ok := thread.Metadata["tool_storage_path"].(string); ok && strings.TrimSpace(storagePath) != "" {
+				projectID, _ := thread.Metadata["video_project_id"].(string)
 				thread.Metadata = ensureManagedToolStorageMetadata(req.Metadata, storagePath)
+				delete(thread.Metadata, "timelineSegments")
+				if strings.TrimSpace(projectID) != "" {
+					thread.Metadata["video_project_id"] = strings.TrimSpace(projectID)
+				}
 			}
 		}
 		thread, err = s.videoThreads.UpdateForAccount(principal.AccountScopeID, thread)
@@ -175,6 +254,90 @@ func (s *Server) handleWorkspaceVideoThread(w http.ResponseWriter, r *http.Reque
 	default:
 		methodNotAllowed(w)
 	}
+}
+
+func (s *Server) migrateLegacyVideoThreadProject(ctx context.Context, principal identity.Principal, thread pebblestore.VideoThreadSnapshot) (pebblestore.VideoThreadSnapshot, error) {
+	if s.videoProjects == nil || strings.TrimSpace(thread.ID) == "" {
+		return thread, nil
+	}
+	if projectID, _ := thread.Metadata["video_project_id"].(string); strings.TrimSpace(projectID) != "" {
+		return thread, nil
+	}
+	var timeline *pebblestore.VideoProjectTimeline
+	if entries, ok := thread.Metadata["timelineSegments"].([]any); ok && len(entries) > 0 {
+		converted := pebblestore.VideoProjectTimeline{SchemaVersion: pebblestore.VideoTimelineSchemaVersion, OutputPreset: pebblestore.VideoPresetLandscape1080p, Width: 1920, Height: 1080, FPS: 30}
+		for sequence, raw := range entries {
+			entry, ok := raw.(map[string]any)
+			if !ok {
+				continue
+			}
+			clipID := strings.TrimSpace(fmt.Sprint(entry["clipId"]))
+			if clipID == "" || clipID == "<nil>" {
+				clipID = strings.TrimSpace(fmt.Sprint(entry["clip_id"]))
+			}
+			if clipID == "" || clipID == "<nil>" {
+				continue
+			}
+			sourceStartMs := int64(videoThreadMetadataNumber(entry["sourceStart"]) * 1000)
+			durationMs := int64(videoThreadMetadataNumber(entry["duration"]) * 1000)
+			timelineStartMs := int64(videoThreadMetadataNumber(entry["start"]) * 1000)
+			visible, hasVisible := entry["visible"].(bool)
+			if !hasVisible {
+				visible = true
+			}
+			converted.Clips = append(converted.Clips, pebblestore.VideoTimelineClip{ID: clipID, Track: 0, Sequence: sequence, SourceKind: pebblestore.VideoClipSourceKindSourceVideo, SourceRef: clipID, SourceStartMs: sourceStartMs, SourceEndMs: sourceStartMs + durationMs, TimelineStartMs: timelineStartMs, TimelineEndMs: timelineStartMs + durationMs, DurationMs: durationMs, Visible: visible, Volume: 1})
+			if visible && timelineStartMs+durationMs > converted.TotalDurationMs {
+				converted.TotalDurationMs = timelineStartMs + durationMs
+			}
+		}
+		if len(converted.Clips) > 0 {
+			timeline = &converted
+		}
+	}
+	project, _, err := s.videoProjects.GetOrCreatePrimaryVideoToolProject(ctx, principal, videoproject.CreateProjectInput{SessionID: thread.ID, Title: thread.Title, OutputPreset: pebblestore.VideoPresetLandscape1080p, InitialTimeline: timeline, ProjectKind: pebblestore.VideoProjectKindVideoTool})
+	if err != nil {
+		return thread, err
+	}
+	metadata := make(map[string]any, len(thread.Metadata)+1)
+	for key, value := range thread.Metadata {
+		if key != "timelineSegments" {
+			metadata[key] = value
+		}
+	}
+	metadata["video_project_id"] = project.ID
+	thread.Metadata = metadata
+	return s.videoThreads.UpdateForAccount(principal.AccountScopeID, thread)
+}
+
+func videoThreadMetadataNumber(value any) float64 {
+	switch typed := value.(type) {
+	case float64:
+		return typed
+	case float32:
+		return float64(typed)
+	case int:
+		return float64(typed)
+	case int64:
+		return float64(typed)
+	case json.Number:
+		parsed, _ := typed.Float64()
+		return parsed
+	default:
+		return 0
+	}
+}
+
+func sanitizeVideoThreadSourceClips(clips []pebblestore.VideoClipSnapshot) []pebblestore.VideoClipSnapshot {
+	out := make([]pebblestore.VideoClipSnapshot, 0, len(clips))
+	for _, clip := range clips {
+		clip.SourceRef = strings.TrimSpace(clip.SourceRef)
+		if clip.SourceRef != "" {
+			clip.ID = clip.SourceRef
+			clip.Path = ""
+		}
+		out = append(out, clip)
+	}
+	return out
 }
 
 func parseVideoThreadPath(requestPath string) (threadID string, clipID string, isClipMedia bool, err error) {
@@ -208,7 +371,7 @@ func parseVideoThreadPath(requestPath string) (threadID string, clipID string, i
 	return "", "", false, errors.New("invalid video thread path")
 }
 
-func (s *Server) handleWorkspaceVideoClipMedia(w http.ResponseWriter, r *http.Request, accountScopeID string, threadID string, clipID string) {
+func (s *Server) handleWorkspaceVideoClipMedia(w http.ResponseWriter, r *http.Request, principal identity.Principal, threadID string, clipID string) {
 	if clipID == "" {
 		clipID = strings.TrimSpace(r.URL.Query().Get("clip_id"))
 	}
@@ -216,7 +379,7 @@ func (s *Server) handleWorkspaceVideoClipMedia(w http.ResponseWriter, r *http.Re
 		methodNotAllowed(w)
 		return
 	}
-	thread, ok, err := s.videoThreads.GetForAccount(accountScopeID, threadID)
+	thread, ok, err := s.videoThreads.GetForAccount(principal.AccountScopeID, threadID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
@@ -230,10 +393,31 @@ func (s *Server) handleWorkspaceVideoClipMedia(w http.ResponseWriter, r *http.Re
 		writeError(w, http.StatusNotFound, errors.New("video clip not found"))
 		return
 	}
-	clipPath, file, err := openManagedVideoClip(thread, clip.Path)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, err)
-		return
+	var clipPath string
+	var file *os.File
+	if strings.TrimSpace(clip.SourceRef) != "" {
+		owned, resolveErr := s.resolveAccountOwnedPath(principal, thread.WorkspacePath)
+		if resolveErr != nil {
+			writeError(w, http.StatusBadRequest, resolveErr)
+			return
+		}
+		record, found, sourceErr := s.sessions.Store().GetVideoSourceRecord(principal.AccountScopeID, owned.Scope.WorkspaceID, clip.SourceRef)
+		if sourceErr != nil || !found {
+			writeError(w, http.StatusNotFound, errors.New("video source is no longer registered"))
+			return
+		}
+		file, sourceErr = pebblestore.OpenValidatedVideoSource(record)
+		if sourceErr != nil {
+			writeError(w, http.StatusBadRequest, sourceErr)
+			return
+		}
+		clipPath = record.RelativePath
+	} else {
+		clipPath, file, err = openManagedVideoClip(thread, clip.Path)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
 	}
 	defer file.Close()
 	info, err := file.Stat()
@@ -274,7 +458,7 @@ func resolveVideoClipFilePath(clipPath string) (string, error) {
 	}
 	clipPath = filepath.Clean(absClipPath)
 	ext := strings.ToLower(filepath.Ext(clipPath))
-	if _, ok := acceptedVideoExtensions[ext]; !ok {
+	if !videosource.IsAcceptedVideoExtension(ext) {
 		return "", errors.New("video clip extension is not accepted")
 	}
 	return clipPath, nil

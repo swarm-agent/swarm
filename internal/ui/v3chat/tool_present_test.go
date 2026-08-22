@@ -267,6 +267,256 @@ func TestTaskStreamV2UsesKeyedRowsWithoutRawJSONOrReports(t *testing.T) {
 	}
 }
 
+func TestDirectImageSwarmRendersImageProgressWithoutSubagents(t *testing.T) {
+	presentation := presentTaskTool(ToolTimelineItem{Status: "completed"}, map[string]any{"mode": "swarm", "agent_type": "image"}, map[string]any{
+		"task_mode": "swarm", "execution_format": "direct_image_swarm", "image_count": float64(3),
+		"images": []any{
+			map[string]any{"index": float64(1), "theme": "minimal", "status": "ok"},
+			map[string]any{"index": float64(2), "theme": "editorial", "status": "ok"},
+			map[string]any{"index": float64(3), "theme": "product", "status": "ok"},
+		},
+	})
+	if !presentation.TaskSwarm || presentation.TaskSwarmAgent != "image" || !strings.Contains(presentation.Summary, "Routing → Image creation") || !strings.Contains(presentation.Summary, "3 images") || len(presentation.TaskRows) != 3 {
+		t.Fatalf("direct image swarm presentation = %#v", presentation)
+	}
+	for _, row := range presentation.TaskRows {
+		if row.Agent != "image" || row.Status != "done" || row.Tool != "Routing → Image creation" {
+			t.Fatalf("direct image row = %#v", row)
+		}
+	}
+
+	var live ToolTimelineItem
+	live.Name, live.Status = "task", "running"
+	if !applyTaskStreamPatch(&live, `{"tool":"task","path_id":"tool.task.image_swarm.stream.v1","execution_format":"direct_image_swarm","task_mode":"swarm","image_count":1,"image_key":"image:1","image":{"image_key":"image:1","index":1,"status":"running","theme":"minimal","current_stage":"router","current_stage_label":"Routing","stage_history":["Routing"],"swarm_mode":true}}`) {
+		t.Fatal("direct image progress patch was not accepted")
+	}
+	if !applyTaskStreamPatch(&live, `{"tool":"task","path_id":"tool.task.image_swarm.stream.v1","execution_format":"direct_image_swarm","task_mode":"swarm","image_count":1,"image_key":"image:1","image":{"image_key":"image:1","index":1,"status":"running","title":"Minimal image","current_stage":"image_model","current_stage_label":"Image creation","stage_history":["Routing","Image creation"],"swarm_mode":true}}`) {
+		t.Fatal("direct image generation patch was not accepted")
+	}
+	livePresentation := presentTaskTool(live, map[string]any{"mode": "swarm", "agent_type": "image"}, nil)
+	if len(livePresentation.TaskRows) != 1 || livePresentation.TaskRows[0].Status != "running" || livePresentation.TaskRows[0].Tool != "Routing → Image creation" || livePresentation.TaskRows[0].Agent != "image" {
+		t.Fatalf("live direct image presentation = %#v", livePresentation)
+	}
+}
+
+func TestTaskSwarmRendersHeightAwareMatrixWithoutChangingRegularTasks(t *testing.T) {
+	launches := make([]map[string]any, 0, 100)
+	for index := 1; index <= 100; index++ {
+		status := "running"
+		if index%4 == 0 {
+			status = "ok"
+		}
+		launches = append(launches, map[string]any{
+			"launch_index":     index,
+			"subagent":         "coder",
+			"assignment_label": fmt.Sprintf("Epic agent %d", index),
+			"status":           status,
+		})
+	}
+	payload, err := json.Marshal(map[string]any{"tool": "task", "launch_count": len(launches), "launches": launches})
+	if err != nil {
+		t.Fatal(err)
+	}
+	swarm := ToolTimelineItem{Name: "task", Arguments: `{"mode":"swarm","count":100}`, Output: string(payload), Status: "running"}
+	presentation := buildToolPresentation(swarm)
+	if !presentation.TaskSwarm || presentation.TaskSwarmStrategy != "explore" || !strings.HasPrefix(presentation.Summary, "Iteration Swarm") {
+		t.Fatalf("explicit swarm presentation = %#v", presentation)
+	}
+
+	page := NewPage(nil, testPageStyles())
+	shortRows := page.renderToolRowsForHeight(swarm, 80, 12, testPageStyles())
+	tallRows := page.renderToolRowsForHeight(swarm, 80, 36, testPageStyles())
+	shortText := renderTaskPresentationRowsText(shortRows)
+	if !strings.Contains(shortText, "ITERATION SWARM") || !strings.Contains(shortText, "fast parallel iterations") || !strings.Contains(shortText, "100 AGENTS") || !strings.Contains(shortText, "showing 100/100 agents") {
+		t.Fatalf("short swarm matrix missing dashboard details:\n%s", shortText)
+	}
+	for name, rows := range map[string][]renderRow{"short": shortRows, "tall": tallRows} {
+		text := renderTaskPresentationRowsText(rows)
+		if !strings.Contains(text, "showing 100/100 agents") || !strings.Contains(text, "✓100") {
+			t.Fatalf("%s 100-agent swarm matrix truncated the final agent:\n%s", name, text)
+		}
+	}
+	for _, row := range shortRows {
+		if displayWidth(row.text) > 80 {
+			t.Fatalf("swarm matrix row exceeds width: %q", row.text)
+		}
+	}
+
+	regular := ToolTimelineItem{Name: "task", Arguments: `{"mode":"regular"}`, Output: string(payload), Status: "running"}
+	regularPresentation := buildToolPresentation(regular)
+	if regularPresentation.TaskSwarm {
+		t.Fatal("regular task wave must not become swarm mode by count")
+	}
+	regularText := renderTaskPresentationRowsText(page.renderToolRowsForHeight(regular, 80, 12, testPageStyles()))
+	if strings.Contains(regularText, "ITERATION SWARM") || strings.Contains(regularText, "ASSEMBLY SWARM") || !strings.Contains(regularText, "SUBAGENT STREAM") {
+		t.Fatalf("regular task rendering changed:\n%s", regularText)
+	}
+}
+
+func TestTaskSwarmHeaderShowsWorkerTypeAndSharedProviderModel(t *testing.T) {
+	for _, testCase := range []struct {
+		name      string
+		agent     string
+		wantAgent string
+	}{
+		{name: "coders", agent: "coder", wantAgent: "CODERS"},
+		{name: "designers", agent: "designer", wantAgent: "DESIGNERS"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			launches := []map[string]any{
+				{"launch_index": 1, "subagent": testCase.agent, "assignment_label": "Worker 1", "subagent_provider": "codex", "subagent_model": "gpt-5.6-sol", "status": "running"},
+				{"launch_index": 2, "subagent": testCase.agent, "assignment_label": "Worker 2", "subagent_provider": "codex", "subagent_model": "gpt-5.6-sol", "status": "ok"},
+			}
+			payload, err := json.Marshal(map[string]any{"tool": "task", "task_mode": "swarm", "launch_count": len(launches), "launches": launches})
+			if err != nil {
+				t.Fatal(err)
+			}
+			tool := ToolTimelineItem{Name: "task", Arguments: fmt.Sprintf(`{"mode":"swarm","agent_type":%q}`, testCase.agent), Output: string(payload), Status: "running"}
+			text := renderTaskPresentationRowsText(NewPage(nil, testPageStyles()).renderToolRowsForHeight(tool, 100, 16, testPageStyles()))
+			for _, want := range []string{"ITERATION SWARM", testCase.wantAgent, "codex/gpt-5.6-sol"} {
+				if !strings.Contains(text, want) {
+					t.Fatalf("swarm header missing %q:\n%s", want, text)
+				}
+			}
+		})
+	}
+}
+
+func TestAssemblySwarmShowsPartsAndPendingParentIntegration(t *testing.T) {
+	payload := `{"tool":"task","path_id":"tool.task.v1","task_mode":"swarm","swarm_strategy":"assembly","integration_contract":"Combine committed parts into the parent deliverable.","integration_required":true,"integration_status":"pending_parent_assembly","ready_for_dependent_work":false,"launch_count":1,"launches":[{"launch_index":1,"swarm_mode":true,"swarm_strategy":"assembly","assembly_part":{"name":"Backend API","owned_scope":["swarmd/internal/api/**"]},"integration_contract":"Combine committed parts into the parent deliverable.","integration_required":true,"subagent":"coder","status":"ok"}]}`
+	tool := ToolTimelineItem{Name: "task", Arguments: `{"mode":"swarm","swarm_strategy":"assembly"}`, Output: payload, Status: "completed"}
+	presentation := buildToolPresentation(tool)
+	if presentation.TaskSwarmStrategy != "assembly" || presentation.TaskRows[0].Title != "Backend API" || !presentation.TaskIntegrationRequired {
+		t.Fatalf("Assembly presentation = %#v", presentation)
+	}
+	text := renderTaskPresentationRowsText(NewPage(nil, testPageStyles()).renderToolRowsForHeight(tool, 100, 18, testPageStyles()))
+	for _, want := range []string{"ASSEMBLY SWARM", "complementary parts", "parent integration required", "contract: Combine committed parts", "Backend API"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("Assembly rendering missing %q:\n%s", want, text)
+		}
+	}
+	if strings.Contains(text, "ready for dependent work") {
+		t.Fatalf("Assembly children falsely imply integrated parent work:\n%s", text)
+	}
+}
+
+func TestIdeaSwarmUsesSharedModelHeaderAndGenericAgentLabels(t *testing.T) {
+	launches := []map[string]any{
+		{"launch_index": 1, "subagent": "idea", "assignment_label": "Idea swarm 1", "subagent_provider": "codex", "subagent_model": "gpt-5.6-sol", "status": "running"},
+		{"launch_index": 2, "subagent": "idea", "assignment_label": "Idea swarm 2", "subagent_provider": "codex", "subagent_model": "gpt-5.6-sol", "status": "ok"},
+	}
+	payload, err := json.Marshal(map[string]any{"tool": "task", "task_mode": "swarm", "launch_count": len(launches), "launches": launches})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tool := ToolTimelineItem{Name: "task", Arguments: `{"mode":"swarm","agent_type":"idea"}`, Output: string(payload), Status: "running"}
+	presentation := buildToolPresentation(tool)
+	if presentation.TaskSwarmAgent != "idea" || presentation.TaskSwarmModel != "codex/gpt-5.6-sol" {
+		t.Fatalf("Idea swarm metadata = %#v", presentation)
+	}
+	text := renderTaskPresentationRowsText(NewPage(nil, testPageStyles()).renderToolRowsForHeight(tool, 96, 16, testPageStyles()))
+	for _, want := range []string{"IDEA SWARM", "codex/gpt-5.6-sol", "Agent #1", "Agent #2"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("Idea swarm rendering missing %q:\n%s", want, text)
+		}
+	}
+	if strings.Contains(text, "Idea swarm 1") || strings.Contains(text, "Idea swarm 2") {
+		t.Fatalf("Idea implementation labels leaked into rows:\n%s", text)
+	}
+}
+
+func TestTaskSwarmCellKeepsTitleBeforeRightAlignedActivity(t *testing.T) {
+	layout := taskSwarmRenderLayout{cellWidth: 36, density: "detail"}
+	cell, _ := taskSwarmCell(taskPresentationRow{Index: 1, Status: "running", Title: "Long hydrated worker title", Agent: "coder", Tool: "search x3"}, layout, testPageStyles())
+	if displayWidth(cell) != layout.cellWidth || !strings.Contains(cell, "Long hydrated") || !strings.HasSuffix(strings.TrimSpace(cell), "search x3") {
+		t.Fatalf("swarm cell did not preserve title and right-side activity: %q", cell)
+	}
+}
+
+func renderTaskPresentationRowsText(rows []renderRow) string {
+	var rendered strings.Builder
+	for _, row := range rows {
+		rendered.WriteString(row.text)
+		rendered.WriteByte('\n')
+	}
+	return rendered.String()
+}
+
+func TestTaskProgramUsesCanonicalPhasesAndSingleBorderedCard(t *testing.T) {
+	arguments := `{"action":"start","program":{"id":"release-program","stages":[{"id":"research"},{"id":"implement","depends_on":["research"]}],"jobs":[{"id":"map","stage_id":"research","agent_type":"finder","title":"Map system"},{"id":"build","stage_id":"implement","agent_type":"coder","title":"Build change","depends_on":["map"]}]}}`
+	output := `{"tool":"task","program_id":"release-program","program_state":"running","active_stage_id":"research","program_status":{"program_id":"release-program","program_state":"running","active_stage_id":"research","jobs":[{"job_id":"map","stage_id":"research","state":"running","child_session_id":"child-map"},{"job_id":"build","stage_id":"implement","state":"declared"}]},"launches":[{"launch_index":1,"child_session_id":"child-map","assignment_label":"Map system","requested_subagent_type":"finder","status":"running","current_tool":"search"}]}`
+	tool := ToolTimelineItem{ID: "program-tool", Name: "task", Arguments: arguments, Output: output, Status: "running"}
+	presentation := buildToolPresentation(tool)
+	if !presentation.TaskProgram || presentation.TaskProgramID != "release-program" || len(presentation.TaskProgramStages) != 2 {
+		t.Fatalf("program presentation = %#v", presentation)
+	}
+	if presentation.TaskProgramStages[1].Status != "waiting" || len(presentation.TaskProgramStages[1].DependsOn) != 1 {
+		t.Fatalf("dependent phase = %#v", presentation.TaskProgramStages[1])
+	}
+	if presentation.TaskProgramStages[0].Rows[0].ProgramJobID != "map" {
+		t.Fatalf("launch was not joined to canonical job by child session: %#v", presentation.TaskProgramStages[0].Rows)
+	}
+	page := NewPage(nil, testPageStyles())
+	text := renderTaskPresentationRowsText(page.renderToolRowsForHeight(tool, 78, 20, testPageStyles()))
+	for _, want := range []string{"TASK PROGRAM", "release-program", "PHASE 1 · research · RUNNING", "PHASE 2 · implement · WAITING", "after research", "Map system", "Build change"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("program card missing %q:\n%s", want, text)
+		}
+	}
+	if strings.Count(text, "┌") != 1 || strings.Count(text, "└") != 1 || strings.Contains(text, "SUBAGENT STREAM") {
+		t.Fatalf("program was not grouped in one card:\n%s", text)
+	}
+
+	page.SetTaskProgramCollapsed("release-program", true)
+	collapsed := renderTaskPresentationRowsText(page.renderToolRowsForHeight(tool, 78, 20, testPageStyles()))
+	if !strings.Contains(collapsed, "▸ TASK PROGRAM") || strings.Contains(collapsed, "PHASE 1") || strings.Count(collapsed, "┌") != 1 {
+		t.Fatalf("collapsed program card =\n%s", collapsed)
+	}
+}
+
+func TestTaskProgramStreamRetainsCanonicalMetadataWithoutLaunchAdjacency(t *testing.T) {
+	item := ToolTimelineItem{Name: "task"}
+	definition := `{"tool":"task","path_id":"tool.task.stream.v2","program_id":"p","program_state":"running","active_stage_id":"one","program":{"id":"p","stages":[{"id":"one"},{"id":"two","depends_on":["one"]}],"jobs":[{"id":"a","stage_id":"one","title":"A","agent_type":"finder"},{"id":"b","stage_id":"two","title":"B","agent_type":"coder","depends_on":["a"]}]}}`
+	if !applyTaskStreamPatch(&item, definition) {
+		t.Fatal("canonical metadata-only program patch was not applied")
+	}
+	launch := `{"tool":"task","path_id":"tool.task.stream.v2","program_id":"p","launch_key":"child-a","launch":{"launch_index":1,"assignment_label":"A","status":"running","source_arguments":{"program_id":"p","program_job_id":"a","program_stage_id":"one"}}}`
+	if !applyTaskStreamPatch(&item, launch) {
+		t.Fatal("program launch patch was not applied")
+	}
+	if item.TaskStream == nil || item.TaskStream.ProgramID != "p" || len(item.TaskStream.ProgramStages) != 2 || item.TaskStream.LaunchesByKey["child-a"]["program_job_id"] != "a" {
+		t.Fatalf("program stream state = %#v", item.TaskStream)
+	}
+	presentation := buildToolPresentation(item)
+	if !presentation.TaskProgram || len(presentation.TaskProgramStages) != 2 || presentation.TaskProgramStages[1].Rows[0].ProgramJobID != "b" {
+		t.Fatalf("program stream presentation = %#v", presentation)
+	}
+}
+
+func TestTaskProgramTerminalStatusCanProvideCanonicalDefinition(t *testing.T) {
+	tool := ToolTimelineItem{Name: "task", Status: "completed", Output: `{"program_id":"terminal","program_state":"completed","program_status":{"program_id":"terminal","program_state":"completed","definition":{"stages":[{"id":"only"}],"jobs":[{"id":"job","stage_id":"only","title":"Terminal job","agent_type":"finder"}]},"jobs":[{"job_id":"job","stage_id":"only","state":"completed"}]}}`}
+	presentation := buildToolPresentation(tool)
+	if !presentation.TaskProgram || len(presentation.TaskProgramStages) != 1 || presentation.TaskProgramStages[0].Status != "done" || presentation.TaskProgramStages[0].Rows[0].Title != "Terminal job" {
+		t.Fatalf("terminal program presentation = %#v", presentation)
+	}
+}
+
+func TestToggleLatestTaskProgramUsesPageInteractionState(t *testing.T) {
+	store := NewStore()
+	state := NewState()
+	state.Tools["program"] = ToolTimelineItem{ID: "program", CallID: "program", GlobalSeq: 9, Name: "task", Status: "running", Arguments: `{"program":{"id":"p","stages":[{"id":"one"}],"jobs":[{"id":"a","stage_id":"one","title":"A","agent_type":"finder"}]}}`}
+	store.mu.Lock()
+	store.state = state
+	store.mu.Unlock()
+	page := NewPage(NewRuntime(nil, store, nil), testPageStyles())
+	if !page.ToggleLatestTaskProgram() || !page.taskProgramCollapsed["p"] || page.Status() != "task program collapsed" {
+		t.Fatalf("first task program toggle failed: collapsed=%v status=%q", page.taskProgramCollapsed, page.Status())
+	}
+	if !page.ToggleLatestTaskProgram() || page.taskProgramCollapsed["p"] || page.Status() != "task program expanded" {
+		t.Fatalf("second task program toggle failed: collapsed=%v status=%q", page.taskProgramCollapsed, page.Status())
+	}
+}
+
 func TestTaskStreamV2RetainsProgressionWhenLaterPatchHasEmptyCurrentTool(t *testing.T) {
 	item := ToolTimelineItem{Name: "task"}
 	started := `{"tool":"task","path_id":"tool.task.stream.v2","launch_key":"child-1","launch":{"launch_index":1,"current_tool":"read","current_tool_identity":"read","current_tool_run_count":2,"current_tool_display":"read x2"}}`

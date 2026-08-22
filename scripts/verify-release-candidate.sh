@@ -64,6 +64,8 @@ daemon_root="${root_name}/linux-amd64/swarmd"
 required_entries=(
   "${root_name}/install.sh"
   "${root_name}/build-info.txt"
+  "${root_name}/LICENSE"
+  "${root_name}/THIRD_PARTY_NOTICES.md"
   "${root_name}/web/index.html"
   "${platform_root}/swarm"
   "${platform_root}/swarmdev"

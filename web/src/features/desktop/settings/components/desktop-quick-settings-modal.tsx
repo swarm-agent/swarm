@@ -1,4 +1,4 @@
-import { ExternalLink, GitBranch, Palette, Shield, type LucideIcon } from 'lucide-react'
+import { ExternalLink, Film, GitBranch, Palette, Shield, type LucideIcon } from 'lucide-react'
 import { Dialog, DialogBackdrop, DialogPanel } from '../../../../components/ui/dialog'
 import { Button } from '../../../../components/ui/button'
 import { ModalCloseButton } from '../../../../components/ui/modal-close-button'
@@ -6,9 +6,10 @@ import { cn } from '../../../../lib/cn'
 import { PermissionsSettingsPage } from '../permissions/components/permissions-settings-page'
 import { ThemesSettingsPage } from '../themes/components/themes-settings-page'
 import { WorktreeSettingsPage } from '../worktrees/components/worktree-settings-page'
+import { MediaSettingsPage } from '../media/components/media-settings-page'
 import type { SettingsTabID } from '../types/settings-tabs'
 
-export type QuickSettingsTabID = Extract<SettingsTabID, 'permissions' | 'themes' | 'worktrees'>
+export type QuickSettingsTabID = Extract<SettingsTabID, 'media' | 'permissions' | 'themes' | 'worktrees'>
 
 interface QuickSettingsConfig {
   title: string
@@ -18,6 +19,12 @@ interface QuickSettingsConfig {
 }
 
 const quickSettingsConfig: Record<QuickSettingsTabID, QuickSettingsConfig> = {
+  media: {
+    title: 'Media',
+    description: 'Quick access to source video folders and media model controls.',
+    settingsLabel: 'Open full media settings',
+    icon: Film,
+  },
   permissions: {
     title: 'Permissions',
     description: 'Quick access to the same permission policy controls from Settings.',
@@ -38,12 +45,14 @@ const quickSettingsConfig: Record<QuickSettingsTabID, QuickSettingsConfig> = {
   },
 }
 
-function QuickSettingsContent({ tab }: { tab: QuickSettingsTabID }) {
+function QuickSettingsContent({ tab, activeWorkspacePath }: { tab: QuickSettingsTabID; activeWorkspacePath?: string | null }) {
   switch (tab) {
+    case 'media':
+      return <MediaSettingsPage workspacePath={activeWorkspacePath ?? ''} />
     case 'permissions':
       return <PermissionsSettingsPage />
     case 'themes':
-      return <ThemesSettingsPage />
+      return <ThemesSettingsPage activeWorkspacePath={activeWorkspacePath} />
     case 'worktrees':
       return <WorktreeSettingsPage />
   }
@@ -53,9 +62,10 @@ interface DesktopQuickSettingsModalProps {
   tab: QuickSettingsTabID | null
   onClose: () => void
   onOpenFullSettings: (tab: QuickSettingsTabID) => void
+  activeWorkspacePath?: string | null
 }
 
-export function DesktopQuickSettingsModal({ tab, onClose, onOpenFullSettings }: DesktopQuickSettingsModalProps) {
+export function DesktopQuickSettingsModal({ tab, onClose, onOpenFullSettings, activeWorkspacePath }: DesktopQuickSettingsModalProps) {
   if (!tab) {
     return null
   }
@@ -93,7 +103,7 @@ export function DesktopQuickSettingsModal({ tab, onClose, onOpenFullSettings }: 
           </div>
         </div>
         <div className="min-h-0 flex-1 overflow-y-auto px-4 py-5 sm:px-6">
-          <QuickSettingsContent tab={tab} />
+          <QuickSettingsContent tab={tab} activeWorkspacePath={activeWorkspacePath} />
         </div>
         <div className="flex shrink-0 items-center justify-between gap-3 border-t border-[var(--app-border)] bg-[var(--app-bg-alt)] px-4 py-3 sm:hidden">
           <div className="text-xs text-[var(--app-text-muted)]">Need the full page?</div>

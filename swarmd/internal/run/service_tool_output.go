@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"swarm/packages/swarmd/internal/gitstatus"
+	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/tool"
 )
 
@@ -611,6 +612,24 @@ func toolHistoryStructuredPayload(name, output, arguments string) (string, bool)
 		}
 		return string(encoded), true
 	case "task":
+		if payload == nil {
+			return "", false
+		}
+		encoded, err := json.Marshal(payload)
+		if err != nil {
+			return "", false
+		}
+		return string(encoded), true
+	case "manage_artifact", "manage-artifact":
+		if payload == nil {
+			return "", false
+		}
+		encoded, err := json.Marshal(payload)
+		if err != nil {
+			return "", false
+		}
+		return string(encoded), true
+	case "manage_video", "manage-video":
 		if payload == nil {
 			return "", false
 		}
@@ -1284,6 +1303,10 @@ func cloneGenericValue(value any) any {
 			out = append(out, cloneGenericMap(item))
 		}
 		return out
+	case *pebblestore.SessionArtifactOutputRequirements:
+		return cloneTaskOutputRequirements(typed)
+	case *pebblestore.SessionArtifactAnimationProfile:
+		return cloneTaskAnimationProfile(typed)
 	default:
 		return value
 	}

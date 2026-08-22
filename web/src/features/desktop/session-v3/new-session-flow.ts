@@ -1,5 +1,7 @@
 import type { DesktopChatRoute } from '../chat/services/chat-routing'
 import type { DesktopV3MediaReference } from '../state/desktop-v3-cache-types'
+import type { DesktopV3ArtifactMessageSelection } from './artifact-api'
+import type { DesktopVideoSourceAttachment } from '../chat/services/video-source-attachments'
 import type { ModelProfileChoice } from '../chat/types/chat'
 import type { DesktopSessionMode } from '../settings/swarm/types/swarm-settings'
 import { normalizeSessionMode } from '../settings/swarm/types/swarm-settings'
@@ -395,6 +397,8 @@ export async function appendFirstDesktopV3Message(input: {
       sessionId: operation.sessionId,
       content: firstMessageRequest.content,
       metadata: firstMessageRequest.metadata,
+      media: firstMessageRequest.media,
+      artifactSelections: firstMessageRequest.artifact_selections,
       runId: firstMessageRequest.run_id,
       createdAt: operation.createdAt,
     },
@@ -475,10 +479,13 @@ export interface DesktopV3RoutedMediaInput {
 export interface DesktopV3RoutedComposerSnapshot {
   prompt: string
   attachments: DesktopV3RoutedMediaInput[]
+  artifactSelections: DesktopV3ArtifactMessageSelection[]
+  videoAttachments: DesktopVideoSourceAttachment[]
   selectedAction: unknown | null
   selectedSkill: unknown | null
   worktreePrimed: boolean
   planModeRequested: boolean
+  modelProfileChoice?: ModelProfileChoice | null
 }
 
 export interface DesktopV3RoutedDraftState {
@@ -507,11 +514,14 @@ export interface DesktopV3RoutedStartRequest extends DesktopV3RoutedWorkspaceAut
   input: string
   client_request_id: string
   idempotency_key: string
-  agent_name?: string
+  agent_name: string
   metadata?: Record<string, unknown>
   managed_worktree_requested: boolean
   plan_mode_requested: boolean
   media?: DesktopV3RoutedMediaInput[]
+  video_attachments?: DesktopVideoSourceAttachment[]
+  artifact_selections?: DesktopV3ArtifactMessageSelection[]
+  model_profile?: ReturnType<typeof desktopV3ModelProfileChoiceWire>
 }
 
 export interface DesktopV3RoutedStartOperation {
@@ -593,13 +603,14 @@ export interface CreateDesktopV3RoutedStartOperationInput {
   workspace: DesktopV3RoutedWorkspaceAuthority
   prompt?: string
   snapshot?: DesktopV3RoutedComposerSnapshot
-  agentName?: string
+  agentName: string
   metadata?: Record<string, unknown>
   media?: DesktopV3RoutedMediaInput[]
   selectedAction?: unknown | null
   selectedSkill?: unknown | null
   worktreePrimed?: boolean
   planModeRequested?: boolean
+  modelProfileChoice?: ModelProfileChoice
   /** Reserved before media staging so uploads and the routed start share one identity. */
   identity?: DesktopV3RoutedOperationIdentity
 }
@@ -630,6 +641,15 @@ export function createDesktopV3RoutedComposerSnapshot(
   return {
     prompt: input.prompt,
     attachments: input.attachments?.map((attachment) => ({ ...attachment })) ?? [],
+    videoAttachments: input.videoAttachments?.map((attachment) => ({ ...attachment })) ?? [],
+    artifactSelections: input.artifactSelections?.map((selection) => ({
+      ...selection,
+      session_id: selection.session_id.trim(),
+      collection_id: selection.collection_id.trim(),
+      variant_id: selection.variant_id.trim(),
+      label: selection.label.trim(),
+      description: selection.description?.trim() || undefined,
+    })) ?? [],
     selectedAction: input.selectedAction === undefined || input.selectedAction === null
       ? null
       : cloneRoutedComposerSelection(input.selectedAction),
@@ -638,6 +658,7 @@ export function createDesktopV3RoutedComposerSnapshot(
       : cloneRoutedComposerSelection(input.selectedSkill),
     worktreePrimed: input.worktreePrimed === true,
     planModeRequested: input.planModeRequested === true,
+    ...(input.modelProfileChoice ? { modelProfileChoice: cloneRoutedComposerSelection(input.modelProfileChoice) as ModelProfileChoice } : {}),
   }
 }
 
@@ -673,8 +694,10 @@ export function createDesktopV3RoutedOperationIdentity(): DesktopV3RoutedOperati
 
 export function desktopV3RoutedRequestInput(snapshot: DesktopV3RoutedComposerSnapshot): string {
   const prompt = snapshot.prompt.trim()
-  if (!prompt) throw new Error('Routed Desktop start requires a prompt')
-  return prompt
+  if (!prompt && snapshot.attachments.length === 0 && snapshot.videoAttachments.length === 0 && snapshot.artifactSelections.length === 0) {
+    throw new Error('Routed Desktop start requires a prompt, media, video attachment, or artifact selection')
+  }
+  return prompt || (snapshot.videoAttachments.length > 0 ? 'Please review the attached video(s).' : 'Please review the selected artifact(s).')
 }
 
 export function createDesktopV3RoutedStartOperation(
@@ -686,14 +709,24 @@ export function createDesktopV3RoutedStartOperation(
   if (input.snapshot && input.prompt !== undefined && input.prompt !== input.snapshot.prompt) {
     throw new Error('Routed Desktop start prompt must match the captured composer snapshot')
   }
+  if (input.snapshot && input.modelProfileChoice && JSON.stringify(desktopV3ModelProfileChoiceWire(input.modelProfileChoice)) !== JSON.stringify(input.snapshot.modelProfileChoice ? desktopV3ModelProfileChoiceWire(input.snapshot.modelProfileChoice) : undefined)) {
+    throw new Error('Routed Desktop model profile must match the captured composer snapshot')
+  }
   const snapshot = createDesktopV3RoutedComposerSnapshot(input.snapshot ?? {
     prompt: input.prompt ?? '',
     attachments: input.media,
+    videoAttachments: [],
     selectedAction: input.selectedAction,
     selectedSkill: input.selectedSkill,
     worktreePrimed: input.worktreePrimed,
     planModeRequested: input.planModeRequested,
+    modelProfileChoice: input.modelProfileChoice,
   })
+  for (const selection of snapshot.artifactSelections) {
+    if (!selection.session_id || !selection.collection_id || !selection.variant_id || selection.event_seq <= 0 || !selection.label || (selection.action !== 'select' && selection.action !== 'use')) {
+      throw new Error('Routed Desktop start contains an invalid artifact selection')
+    }
+  }
   const requestInput = desktopV3RoutedRequestInput(snapshot)
   const identity = input.identity ?? createDesktopV3RoutedOperationIdentity()
   const operationId = identity.operationId.trim()
@@ -702,6 +735,8 @@ export function createDesktopV3RoutedStartOperation(
     throw new Error('Routed Desktop operation identity is invalid')
   }
   const authority = normalizeDesktopV3RoutedWorkspaceAuthority(input.workspace)
+  const agentName = input.agentName.trim()
+  if (!agentName) throw new Error('Routed Desktop start requires agent_name')
   return {
     version: 2,
     operationId,
@@ -712,11 +747,14 @@ export function createDesktopV3RoutedStartOperation(
       input: requestInput,
       client_request_id: clientRequestID,
       idempotency_key: clientRequestID,
-      ...(input.agentName?.trim() ? { agent_name: input.agentName.trim() } : {}),
+      agent_name: agentName,
       metadata: input.metadata ? { ...input.metadata } : undefined,
       managed_worktree_requested: snapshot.worktreePrimed,
       plan_mode_requested: snapshot.planModeRequested,
+      model_profile: (input.modelProfileChoice ?? snapshot.modelProfileChoice) ? desktopV3ModelProfileChoiceWire((input.modelProfileChoice ?? snapshot.modelProfileChoice)!) : undefined,
       media: normalizedRoutedMedia(snapshot.attachments),
+      video_attachments: snapshot.videoAttachments.map((attachment) => ({ ...attachment })),
+      artifact_selections: snapshot.artifactSelections.map((selection) => ({ ...selection })),
     },
   }
 }
@@ -753,7 +791,7 @@ function isStoredDesktopV3RoutedStartOperation(value: unknown): value is Desktop
   const snapshot = operation.snapshot
   if (!isStoredDesktopV3RoutedComposerSnapshot(snapshot)) return false
   const request = operation.request
-  if (!request || !request.input?.trim() || !request.client_request_id?.trim()) return false
+  if (!request || !request.input?.trim() || !request.client_request_id?.trim() || !request.agent_name?.trim()) return false
   try {
     normalizeDesktopV3RoutedWorkspaceAuthority(request)
   } catch {
@@ -764,8 +802,18 @@ function isStoredDesktopV3RoutedStartOperation(value: unknown): value is Desktop
   if (typeof request.plan_mode_requested !== 'boolean' || request.plan_mode_requested !== snapshot.planModeRequested) return false
   if (request.client_request_id !== `desktop-v3-routed:${operation.operationId}`) return false
   if (request.media && (!Array.isArray(request.media) || request.media.some((item) => !item?.staging_id?.trim()))) return false
-  if (request.input !== desktopV3RoutedRequestInput(snapshot)) return false
+  let expectedInput = ''
+  try {
+    expectedInput = desktopV3RoutedRequestInput(snapshot)
+  } catch {
+    return false
+  }
+  if (request.input !== expectedInput) return false
   if (JSON.stringify(request.media ?? []) !== JSON.stringify(normalizedRoutedMedia(snapshot.attachments) ?? [])) return false
+  if (JSON.stringify(request.video_attachments ?? []) !== JSON.stringify(snapshot.videoAttachments)) return false
+  if (JSON.stringify(request.artifact_selections ?? []) !== JSON.stringify(snapshot.artifactSelections)) return false
+  const snapshotModelProfile = snapshot.modelProfileChoice ? desktopV3ModelProfileChoiceWire(snapshot.modelProfileChoice) : undefined
+  if (JSON.stringify(request.model_profile) !== JSON.stringify(snapshotModelProfile)) return false
   return true
 }
 
@@ -774,6 +822,8 @@ function isStoredDesktopV3RoutedComposerSnapshot(value: unknown): value is Deskt
   const snapshot = value as Partial<DesktopV3RoutedComposerSnapshot>
   if (typeof snapshot.prompt !== 'string' || typeof snapshot.worktreePrimed !== 'boolean' || typeof snapshot.planModeRequested !== 'boolean') return false
   if (!Array.isArray(snapshot.attachments) || snapshot.attachments.some((item) => !item?.staging_id?.trim())) return false
+  if (!Array.isArray(snapshot.videoAttachments) || snapshot.videoAttachments.some((item) => !item?.ref?.trim() || !item?.name?.trim() || !item?.mime_type?.startsWith('video/') || !item?.source_fingerprint?.trim() || !item?.size_bytes)) return false
+  if (!Array.isArray(snapshot.artifactSelections) || snapshot.artifactSelections.some((item) => !item?.session_id?.trim() || !item?.collection_id?.trim() || !item?.variant_id?.trim() || !item?.event_seq || !item?.label?.trim() || (item.action !== 'select' && item.action !== 'use'))) return false
   if (snapshot.selectedAction === undefined || snapshot.selectedSkill === undefined) return false
   return true
 }

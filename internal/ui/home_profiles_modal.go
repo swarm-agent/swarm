@@ -64,10 +64,21 @@ func (p *HomePage) handleProfilesModalKey(ev *tcell.EventKey) {
 	case p.keybinds.Match(ev, KeybindModalEnter):
 		p.applySelectedModelProfile()
 	case ev.Key() == tcell.KeyRune && (ev.Rune() == 'e' || ev.Rune() == 'a'):
-		p.HideProfilesModal()
-		p.pendingHomeAction = &HomeAction{Kind: HomeActionOpenAgentsModal}
-		p.statusLine = "opening agent setup..."
+		p.openSelectedModelProfileEditor()
 	}
+}
+
+func (p *HomePage) openSelectedModelProfileEditor() {
+	if p == nil {
+		return
+	}
+	profileID := ""
+	if p.profilesModal.Selected >= 0 && p.profilesModal.Selected < len(p.model.ModelProfiles) {
+		profileID = strings.TrimSpace(p.model.ModelProfiles[p.profilesModal.Selected].ProfileID)
+	}
+	p.HideProfilesModal()
+	p.pendingHomeAction = &HomeAction{Kind: HomeActionOpenAgentsModal, ModelProfileID: profileID}
+	p.statusLine = "opening favorite in agent setup..."
 }
 
 func (p *HomePage) applySelectedModelProfile() {
@@ -107,8 +118,7 @@ func (p *HomePage) handleProfilesModalMouse(ev *tcell.EventMouse) bool {
 			p.profilesModal.Selected = target.Index
 			p.applySelectedModelProfile()
 		case "profile-edit":
-			p.HideProfilesModal()
-			p.pendingHomeAction = &HomeAction{Kind: HomeActionOpenAgentsModal}
+			p.openSelectedModelProfileEditor()
 		}
 		return true
 	}
@@ -186,7 +196,12 @@ func modelProfileSummary(profile client.ModelProfile, sessionMode string) string
 	}
 	parts := []string{model.DisplayModelLabel(selection.Provider, selection.Model, selection.ServiceTier, selection.ContextMode)}
 	if thinking := strings.TrimSpace(selection.Thinking); thinking != "" {
-		parts = append(parts, thinking)
+		parts = append(parts, "thinking "+thinking)
 	}
+	priority := strings.TrimSpace(selection.ServiceTier)
+	if priority == "" || strings.EqualFold(priority, "standard") {
+		priority = "off / standard"
+	}
+	parts = append(parts, "priority "+priority)
 	return strings.Join(parts, " · ")
 }

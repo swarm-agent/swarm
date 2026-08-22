@@ -3,7 +3,9 @@ package run
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -15,6 +17,8 @@ import (
 	"swarm/packages/swarmd/internal/model"
 	"swarm/packages/swarmd/internal/permission"
 	providerdiagnostics "swarm/packages/swarmd/internal/provider/diagnostics"
+	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
+	"swarm/packages/swarmd/internal/provider/registry"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/tool"
@@ -131,6 +135,12 @@ func TestParseTaskCallArgumentsRejectsLaunchTimeTrustFields(t *testing.T) {
 				},
 			},
 		},
+		{
+			name: "model-selected managed destination",
+			args: map[string]any{
+				"prompt": "create variant", "subagent_type": "designer", "meta_prompt": "create variant", "collection_id": "untrusted",
+			},
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -212,30 +222,375 @@ func TestParseTaskCallArgumentsSupportsCompiledTaskAgentsAndAppliesCanonicalCode
 	}
 }
 
-func TestParseTaskCallArgumentsRequiresDistinctConcreteDesignerScopes(t *testing.T) {
+func TestParseTaskCallArgumentsRegularManagedDesignerAcceptsExactSourceArtifact(t *testing.T) {
+	source := map[string]any{"session_id": "source-session", "collection_id": "source-collection", "variant_id": "source-variant", "event_seq": 9}
+	parsed, err := parseTaskCallArguments(mustJSON(t, map[string]any{
+		"mode":            "regular",
+		"prompt":          "refine the selected artifact",
+		"source_artifact": source,
+		"launches": []any{
+			map[string]any{"subagent_type": "designer", "meta_prompt": "create the focused managed revision"},
+		},
+	}))
+	if err != nil {
+		t.Fatalf("parse regular managed Designer source artifact: %v", err)
+	}
+	want := &pebblestore.SessionArtifactSelectionReference{SessionID: "source-session", CollectionID: "source-collection", VariantID: "source-variant", EventSeq: 9}
+	if !equalTaskImageSourceArtifact(parsed.SourceArtifact, want) || len(parsed.Launches) != 1 || !equalTaskImageSourceArtifact(parsed.Launches[0].SourceArtifact, want) {
+		t.Fatalf("regular managed Designer source artifact = parsed %#v launch %#v", parsed.SourceArtifact, parsed.Launches)
+	}
+	if parsed.Launches[0].OutputMode != taskOutputModeManaged {
+		t.Fatalf("regular Designer output mode = %q", parsed.Launches[0].OutputMode)
+	}
+}
+
+func TestParseTaskCallArgumentsRegularSourceArtifactRejectsUnsupportedLaunches(t *testing.T) {
+	tests := []map[string]any{
+		{"prompt": "inspect", "source_artifact": map[string]any{"session_id": "s", "collection_id": "c", "variant_id": "v", "event_seq": 1}, "subagent_type": "finder", "meta_prompt": "inspect"},
+		{"prompt": "edit", "source_artifact": map[string]any{"session_id": "s", "collection_id": "c", "variant_id": "v", "event_seq": 1}, "subagent_type": "designer", "meta_prompt": "edit", "output_mode": "workspace", "owned_scope": []any{"design.html"}},
+	}
+	for _, args := range tests {
+		if _, err := parseTaskCallArguments(mustJSON(t, args)); err == nil || !strings.Contains(err.Error(), "requires every launch to be a managed Designer") {
+			t.Fatalf("unsupported regular source-artifact launch error = %v", err)
+		}
+	}
+}
+
+func TestParseTaskCallArgumentsDefaultsDesignerToManagedOutput(t *testing.T) {
+	parsed, err := parseTaskCallArguments(mustJSON(t, map[string]any{
+		"prompt": "create two variants",
+		"launches": []any{
+			map[string]any{"subagent_type": "designer", "meta_prompt": "create compact variant"},
+			map[string]any{"subagent_type": agentruntime.DesignerAgentID, "meta_prompt": "create spacious variant"},
+		},
+	}))
+	if err != nil || len(parsed.Launches) != 2 {
+		t.Fatalf("managed Designer wave = %#v err=%v", parsed.Launches, err)
+	}
+	for i, launch := range parsed.Launches {
+		if launch.OutputMode != taskOutputModeManaged || len(launch.OwnedScope) != 0 {
+			t.Fatalf("managed launch %d = %#v", i, launch)
+		}
+	}
+}
+
+func TestManagedDesignerRoutingAllocatesParentOwnedUniqueVariants(t *testing.T) {
+	parent := pebblestore.SessionSnapshot{ID: "parent-session", UserID: "user-1", AccountScopeID: "account-1"}
+	first := taskLaunchSpec{RequestedSubagentType: "designer", OutputMode: taskOutputModeManaged, AssignmentLabel: "Navigation Remix", SourceArguments: map[string]any{"swarm_index": 1, "swarm_group": "navigation", "swarm_theme": "compact", "swarm_collection_title": "Homepage Navigation Studies", "swarm_description": "Create homepage navigation directions", "program_id": "program-1", "program_job_id": "job-1"}, SwarmMode: true}
+	second := taskLaunchSpec{RequestedSubagentType: "designer", OutputMode: taskOutputModeManaged, AssignmentLabel: "Layout Remix", SourceArguments: map[string]any{"swarm_index": 2, "swarm_group": "navigation", "swarm_theme": "spacious", "swarm_collection_title": "Homepage Navigation Studies", "swarm_description": "Create homepage navigation directions", "program_id": "program-1", "program_job_id": "job-2"}, SwarmMode: true}
+	left := managedDesignerArtifactContext(parent, "call-1", first, 1)
+	right := managedDesignerArtifactContext(parent, "call-1", second, 2)
+	if left == nil || right == nil {
+		t.Fatal("managed Designer contexts were not allocated")
+	}
+	if left.SessionID != parent.ID || right.SessionID != parent.ID || left.CollectionID == "" || left.CollectionID != right.CollectionID {
+		t.Fatalf("parent-owned collection mismatch: left=%#v right=%#v", left, right)
+	}
+	if left.VariantID == right.VariantID || left.IterationID == right.IterationID || left.IterationIndex != 1 || right.IterationIndex != 2 {
+		t.Fatalf("variant identity mismatch: left=%#v right=%#v", left, right)
+	}
+	if left.IterationGroupID == "" || left.IterationGroupID != right.IterationGroupID || left.IterationGroup != "navigation" || left.IterationLabel != "Navigation Remix" || left.IterationTheme != "compact" {
+		t.Fatalf("iteration grouping metadata mismatch: left=%#v right=%#v", left, right)
+	}
+	if left.ProgramID != "program-1" || left.ProgramJobID != "job-1" || left.TaskCallID != "call-1" || right.ProgramJobID != "job-2" {
+		t.Fatalf("managed lineage missing: %#v", left)
+	}
+	laterCohort := managedDesignerArtifactContext(parent, "call-later-cohort", first, 1)
+	if laterCohort == nil || laterCohort.CollectionID != left.CollectionID || laterCohort.VariantID != left.VariantID || laterCohort.IterationID != left.IterationID {
+		t.Fatalf("program routing changed across cohort calls: first=%#v later=%#v", left, laterCohort)
+	}
+	if got := managedDesignerArtifactContext(parent, "call-1", taskLaunchSpec{RequestedSubagentType: "designer", OutputMode: taskOutputModeManaged, SourceArguments: map[string]any{"program_id": "program-1"}}, 1); got != nil {
+		t.Fatalf("program route without trusted job id = %#v", got)
+	}
+	if got := managedDesignerArtifactContext(parent, "call-1", taskLaunchSpec{RequestedSubagentType: "designer", OutputMode: taskOutputModeWorkspace}, 1); got != nil {
+		t.Fatalf("workspace Designer received managed context: %#v", got)
+	}
+}
+
+func TestManagedDesignerCollectionIsAllocatedBeforeLaunch(t *testing.T) {
+	svc, parentSessionID, cleanup := newTaskLaunchPermissionTestService(t)
+	defer cleanup()
+	parent, ok, err := svc.sessions.GetSession(parentSessionID)
+	if err != nil || !ok {
+		t.Fatalf("load parent: ok=%v err=%v", ok, err)
+	}
+	specs := []taskLaunchSpec{{RequestedSubagentType: "designer", OutputMode: taskOutputModeManaged}}
+	collectionID, err := svc.ensureManagedDesignerArtifactCollection(parent, "call-managed", specs, nil)
+	if err != nil {
+		t.Fatalf("allocate managed collection: %v", err)
+	}
+	collection, ok, err := svc.sessions.GetSessionArtifactCollection(parent.AccountScopeID, parent.ID, collectionID)
+	if err != nil || !ok {
+		t.Fatalf("load managed collection: ok=%v err=%v", ok, err)
+	}
+	if collection.SessionID != parent.ID || collection.AccountScopeID != parent.AccountScopeID || collection.Name != "Designer alternatives" || collection.Status != pebblestore.SessionArtifactStatusStaging || collection.VariantCount != 0 {
+		t.Fatalf("managed collection = %#v", collection)
+	}
+	if again, err := svc.ensureManagedDesignerArtifactCollection(parent, "call-managed", specs, nil); err != nil || again != collectionID {
+		t.Fatalf("idempotent managed collection = %q err=%v", again, err)
+	}
+	programSpecs := []taskLaunchSpec{{RequestedSubagentType: "designer", OutputMode: taskOutputModeManaged, SourceArguments: map[string]any{"program_id": "program-1", "program_job_id": "job-1"}}}
+	programCollection, err := svc.ensureManagedDesignerArtifactCollection(parent, "call-program-1", programSpecs, nil)
+	if err != nil {
+		t.Fatalf("allocate program collection: %v", err)
+	}
+	if laterCohort, err := svc.ensureManagedDesignerArtifactCollection(parent, "call-program-2", programSpecs, nil); err != nil || laterCohort != programCollection {
+		t.Fatalf("program collection changed across cohorts: first=%q later=%q err=%v", programCollection, laterCohort, err)
+	}
+	mixed := append(append([]taskLaunchSpec(nil), programSpecs...), taskLaunchSpec{RequestedSubagentType: "designer", OutputMode: taskOutputModeManaged})
+	if _, err := svc.ensureManagedDesignerArtifactCollection(parent, "call-mixed", mixed, nil); err == nil || !strings.Contains(err.Error(), "cannot mix") {
+		t.Fatalf("mixed managed destination error = %v", err)
+	}
+}
+
+func TestManagedDesignerWaveProjectsAllExpectedStagingVariantsBeforeExecution(t *testing.T) {
+	svc, parentSessionID, cleanup := newTaskLaunchPermissionTestService(t)
+	defer cleanup()
+	parent, ok, err := svc.sessions.GetSession(parentSessionID)
+	if err != nil || !ok {
+		t.Fatalf("load parent: ok=%v err=%v", ok, err)
+	}
+	specs := []taskLaunchSpec{
+		{RequestedSubagentType: "designer", OutputMode: taskOutputModeManaged, AssignmentLabel: "Compact Navigation", SourceArguments: map[string]any{"swarm_index": 1, "swarm_group": "navigation", "swarm_theme": "compact", "swarm_collection_title": "Homepage Navigation Studies", "swarm_description": "Create homepage navigation directions"}, SwarmMode: true},
+		{RequestedSubagentType: "designer", OutputMode: taskOutputModeManaged, AssignmentLabel: "Spacious Navigation", SourceArguments: map[string]any{"swarm_index": 2, "swarm_group": "navigation", "swarm_theme": "spacious", "swarm_collection_title": "Homepage Navigation Studies", "swarm_description": "Create homepage navigation directions"}, SwarmMode: true},
+	}
+	collectionID, err := svc.ensureManagedDesignerArtifactCollection(parent, "call-swarm", specs, nil)
+	if err != nil {
+		t.Fatalf("allocate managed collection: %v", err)
+	}
+	launches := make([]taskLaunchPrepared, 0, len(specs))
+	for i, spec := range specs {
+		run := managedDesignerArtifactContext(parent, "call-swarm", spec, i+1)
+		run.ChildSessionID = fmt.Sprintf("child-%d", i+1)
+		launches = append(launches, taskLaunchPrepared{LaunchIndex: i + 1, ChildSession: pebblestore.SessionSnapshot{ID: run.ChildSessionID}, ArtifactRunContext: run})
+	}
+	if err := svc.ensureManagedDesignerArtifactPlaceholders(parent, launches, nil); err != nil {
+		t.Fatalf("project placeholders: %v", err)
+	}
+	collection, ok, err := svc.sessions.GetSessionArtifactCollection(parent.AccountScopeID, parent.ID, collectionID)
+	if err != nil || !ok {
+		t.Fatalf("load projected collection: ok=%v err=%v", ok, err)
+	}
+	if collection.Name != "Homepage Navigation Studies" || collection.Description != "Create homepage navigation directions · 2 iterations" || collection.Status != pebblestore.SessionArtifactStatusStaging || collection.VariantCount != len(specs) || collection.StagingCount != len(specs) || collection.ReadyCount != 0 || collection.FailedCount != 0 || collection.Lineage.IterationGroupID == "" {
+		t.Fatalf("projected collection = %#v", collection)
+	}
+	variants, err := svc.sessions.ListSessionArtifactVariants(parent.AccountScopeID, parent.ID, collectionID, 10)
+	if err != nil || len(variants) != len(specs) {
+		t.Fatalf("projected variants = %#v err=%v", variants, err)
+	}
+	seenIndexes := make(map[int]bool, len(variants))
+	for _, variant := range variants {
+		lineage := variant.Lineage
+		if variant.Status != pebblestore.SessionArtifactStatusStaging || lineage.ParentSessionID != parent.ID || lineage.TaskCallID != "call-swarm" || lineage.ChildSessionID == "" || lineage.SourceSessionID != lineage.ChildSessionID || lineage.IterationGroupID != collection.Lineage.IterationGroupID || lineage.IterationID == "" || lineage.IterationIndex < 1 || lineage.IterationIndex > len(specs) || lineage.IterationLabel == "" || lineage.IterationTheme == "" {
+			t.Fatalf("staging variant = %#v", variant)
+		}
+		seenIndexes[lineage.IterationIndex] = true
+	}
+	if len(seenIndexes) != len(specs) {
+		t.Fatalf("projected iteration indexes = %#v", seenIndexes)
+	}
+	if err := svc.ensureManagedDesignerArtifactPlaceholders(parent, launches, nil); err != nil {
+		t.Fatalf("idempotent placeholders: %v", err)
+	}
+	replayed, err := svc.sessions.ListSessionArtifactVariants(parent.AccountScopeID, parent.ID, collectionID, 10)
+	if err != nil || len(replayed) != len(specs) {
+		t.Fatalf("replayed variants = %#v err=%v", replayed, err)
+	}
+}
+
+func TestManagedIterationSwarmPlaceholderPreservesExactSourceLineage(t *testing.T) {
+	svc, parentSessionID, cleanup := newTaskLaunchPermissionTestService(t)
+	defer cleanup()
+	parent, ok, err := svc.sessions.GetSession(parentSessionID)
+	if err != nil || !ok {
+		t.Fatalf("load parent: ok=%v err=%v", ok, err)
+	}
+	spec := taskLaunchSpec{RequestedSubagentType: "designer", OutputMode: taskOutputModeManaged, AssignmentLabel: "Selected artifact refinement", SourceArguments: map[string]any{"swarm_index": 1}, SwarmMode: true}
+	collectionID, err := svc.ensureManagedDesignerArtifactCollection(parent, "call-remix", []taskLaunchSpec{spec}, nil)
+	if err != nil {
+		t.Fatalf("allocate remix collection: %v", err)
+	}
+	run := managedDesignerArtifactContext(parent, "call-remix", spec, 1)
+	run.ChildSessionID = parent.ID
+	source := &pebblestore.SessionArtifactSelectionReference{SessionID: "source-session", CollectionID: "source-collection", VariantID: "source-variant", EventSeq: 41}
+	launch := taskLaunchPrepared{LaunchIndex: 1, ChildSession: parent, ArtifactRunContext: run, SourceArtifact: source}
+	if err := svc.ensureManagedDesignerArtifactPlaceholders(parent, []taskLaunchPrepared{launch}, nil); err != nil {
+		t.Fatalf("project remix placeholder: %v", err)
+	}
+	variant, ok, err := svc.sessions.GetSessionArtifactVariant(parent.AccountScopeID, parent.ID, collectionID, run.VariantID)
+	if err != nil || !ok {
+		t.Fatalf("load remix placeholder: ok=%v err=%v", ok, err)
+	}
+	if variant.Lineage.SourceSessionID != source.SessionID || variant.Lineage.SourceCollectionID != source.CollectionID || variant.Lineage.SourceVariantID != source.VariantID || variant.Lineage.SourceEventSeq != source.EventSeq {
+		t.Fatalf("remix placeholder lineage = %#v", variant.Lineage)
+	}
+}
+
+func TestManagedDesignerMissingOutputProjectsFailedVariant(t *testing.T) {
+	svc, parentSessionID, cleanup := newTaskLaunchPermissionTestService(t)
+	defer cleanup()
+	parent, ok, err := svc.sessions.GetSession(parentSessionID)
+	if err != nil || !ok {
+		t.Fatalf("load parent: ok=%v err=%v", ok, err)
+	}
+	spec := taskLaunchSpec{RequestedSubagentType: "designer", OutputMode: taskOutputModeManaged}
+	if _, err := svc.ensureManagedDesignerArtifactCollection(parent, "call-failed", []taskLaunchSpec{spec}, nil); err != nil {
+		t.Fatalf("allocate managed collection: %v", err)
+	}
+	run := managedDesignerArtifactContext(parent, "call-failed", spec, 1)
+	run.ChildSessionID = "child-failed"
+	launch := taskLaunchPrepared{LaunchIndex: 1, ChildSession: pebblestore.SessionSnapshot{ID: run.ChildSessionID}, ArtifactRunContext: run}
+	if err := svc.ensureManagedDesignerArtifactPlaceholders(parent, []taskLaunchPrepared{launch}, nil); err != nil {
+		t.Fatalf("project managed placeholder: %v", err)
+	}
+	svc.markManagedDesignerArtifactFailed(parent, run, run.ChildSessionID, "managed_output_missing")
+	variant, ok, err := svc.sessions.GetSessionArtifactVariant(parent.AccountScopeID, parent.ID, run.CollectionID, run.VariantID)
+	if err != nil || !ok {
+		t.Fatalf("load failed managed variant: ok=%v err=%v", ok, err)
+	}
+	if variant.Status != pebblestore.SessionArtifactStatusFailed || variant.FailureCode != "managed_output_missing" || variant.Lineage.ParentSessionID != parent.ID || variant.Lineage.ChildSessionID != run.ChildSessionID || variant.Lineage.TaskCallID != run.TaskCallID {
+		t.Fatalf("failed managed variant = %#v", variant)
+	}
+}
+
+func TestManagedDesignerPreparedChildUsesParentArtifactTargetWithoutWorktree(t *testing.T) {
+	svc, parentSessionID, cleanup := newTaskLaunchPermissionTestService(t)
+	defer cleanup()
+	parent, ok, err := svc.sessions.GetSession(parentSessionID)
+	if err != nil || !ok {
+		t.Fatalf("load parent: ok=%v err=%v", ok, err)
+	}
+	parent.WorktreeEnabled, parent.WorktreeRootPath, parent.WorktreeBaseBranch, parent.WorktreeBranch = true, parent.WorkspacePath, "dev", "agent/parent"
+	profile, virtual, source, err := svc.resolveTaskLaunchProfile(parent, "designer")
+	if err != nil {
+		t.Fatalf("resolve Designer: %v", err)
+	}
+	artifactContext := managedDesignerArtifactContext(parent, "call-managed", taskLaunchSpec{RequestedSubagentType: "designer", OutputMode: taskOutputModeManaged}, 1)
+	launch, err := svc.prepareDelegatedSubagentLaunchWithProfile(parent, sessionruntime.ModeAuto, taskLaunchPrepared{
+		LaunchIndex: 1, RequestedSubagent: "designer", MetaPrompt: "create managed variant", OutputMode: taskOutputModeManaged, ArtifactRunContext: artifactContext, VirtualTarget: virtual,
+	}, "design", "", &profile, source, nil)
+	if err != nil {
+		t.Fatalf("prepare managed Designer: %v", err)
+	}
+	if launch.ChildSession.WorktreeEnabled || launch.ChildSession.WorktreeRootPath != "" || launch.ChildSession.WorktreeBaseBranch != "" || launch.ChildSession.WorktreeBranch != "" {
+		t.Fatalf("managed Designer inherited writable worktree identity: %#v", launch.ChildSession)
+	}
+	readOnly, _ := launch.ChildSession.Metadata["managed_artifact_read_only_checkout"].(bool)
+	if launch.ChildSession.WorkspacePath != parent.WorkspacePath || !readOnly || metadataStringForTest(launch.ChildSession.Metadata, "managed_artifact_parent_session_id") != parent.ID || metadataStringForTest(launch.ChildSession.Metadata, "managed_artifact_collection_id") != artifactContext.CollectionID {
+		t.Fatalf("managed Designer trusted metadata = %#v", launch.ChildSession.Metadata)
+	}
+	if launch.ArtifactRunContext == nil || launch.ArtifactRunContext.ChildSessionID != launch.ChildSession.ID || artifactContext.ChildSessionID != "" {
+		t.Fatalf("managed child lineage = launch %#v input %#v, child=%q", launch.ArtifactRunContext, artifactContext, launch.ChildSession.ID)
+	}
+}
+
+func TestManagedDesignerPreparationRequiresTrustedDestination(t *testing.T) {
+	svc, parentSessionID, cleanup := newTaskLaunchPermissionTestService(t)
+	defer cleanup()
+	parent, ok, err := svc.sessions.GetSession(parentSessionID)
+	if err != nil || !ok {
+		t.Fatalf("load parent: ok=%v err=%v", ok, err)
+	}
+	profile, virtual, source, err := svc.resolveTaskLaunchProfile(parent, "designer")
+	if err != nil {
+		t.Fatalf("resolve Designer: %v", err)
+	}
+	_, err = svc.prepareDelegatedSubagentLaunchWithProfile(parent, sessionruntime.ModeAuto, taskLaunchPrepared{LaunchIndex: 1, RequestedSubagent: "designer", MetaPrompt: "create managed variant", OutputMode: taskOutputModeManaged, VirtualTarget: virtual}, "design", "", &profile, source, nil)
+	if err == nil || !strings.Contains(err.Error(), "missing its trusted artifact destination") {
+		t.Fatalf("managed Designer missing-target error = %v", err)
+	}
+	_, err = svc.prepareDelegatedSubagentLaunchWithProfile(parent, sessionruntime.ModeAuto, taskLaunchPrepared{LaunchIndex: 1, RequestedSubagent: "designer", MetaPrompt: "create managed variant", OutputMode: taskOutputModeManaged, ArtifactRunContext: &tool.ArtifactRunContext{SessionID: "other-parent", CollectionID: "collection-1", VariantID: "variant-1"}, VirtualTarget: virtual}, "design", "", &profile, source, nil)
+	if err == nil || !strings.Contains(err.Error(), "not owned by the parent session") {
+		t.Fatalf("managed Designer redirected-target error = %v", err)
+	}
+}
+
+func TestMasterHarnessDescribesManagedDesignerRouting(t *testing.T) {
+	prompt := masterHarnessPrompt("/workspace")
+	for _, want := range []string{"Managed is the default Designer output mode", "unique variant in one parent-owned artifact collection", "Managed Designer variants omit owned_scope", "explicit managed Designer wave", "Designer Iteration Swarms are managed-artifact only", "do not use swarm mode; use regular Designer launches"} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("master harness missing managed Designer guidance %q", want)
+		}
+	}
+}
+
+func TestManagedDesignerPromptAndToolsRequireArtifactWithoutCheckoutWrites(t *testing.T) {
+	ctx := managedDesignerArtifactContext(pebblestore.SessionSnapshot{ID: "parent-session", UserID: "user-1", AccountScopeID: "account-1"}, "call-1", taskLaunchSpec{RequestedSubagentType: "designer", OutputMode: taskOutputModeManaged}, 1)
+	prompt := buildTaskDelegationPrompt(taskDelegationPromptConfig{
+		Description: "create variant", Prompt: "Create the requested variant.", ParentSession: pebblestore.SessionSnapshot{ID: "parent-session"},
+		RequestedSubagent: "designer", OutputMode: taskOutputModeManaged, ArtifactRunContext: ctx,
+	})
+	for _, want := range []string{"publish exactly one durable ready variant with manage_artifact", ctx.CollectionID, ctx.VariantID, "omit collection_id/variant_id", "Do not use workspace write/edit or Git"} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("managed Designer prompt missing %q:\n%s", want, prompt)
+		}
+	}
+	disabled := taskDisabledTools(false)
+	disabled["write"], disabled["edit"] = true, true
+	if !disabled["write"] || !disabled["edit"] || disabled["manage_artifact"] {
+		t.Fatalf("managed Designer launch overlay = %#v", disabled)
+	}
+}
+
+func TestParseTaskCallArgumentsRequiresDistinctConcreteWorkspaceDesignerScopes(t *testing.T) {
 	valid, err := parseTaskCallArguments(mustJSON(t, map[string]any{
 		"prompt": "create two variants",
 		"launches": []any{
-			map[string]any{"subagent_type": "designer", "meta_prompt": "create compact variant", "owned_scope": []any{"web/src/variants/compact.tsx"}},
-			map[string]any{"subagent_type": agentruntime.DesignerAgentID, "meta_prompt": "create spacious variant", "owned_scope": []any{"web/src/variants/spacious.tsx"}},
+			map[string]any{"subagent_type": "designer", "meta_prompt": "create compact variant", "output_mode": "workspace", "owned_scope": []any{"web/src/variants/compact.tsx"}},
+			map[string]any{"subagent_type": agentruntime.DesignerAgentID, "meta_prompt": "create spacious variant", "output_mode": "workspace", "owned_scope": []any{"web/src/variants/spacious.tsx"}},
 		},
 	}))
 	if err != nil || len(valid.Launches) != 2 || valid.Launches[0].RequestedSubagentType != "designer" {
 		t.Fatalf("valid Designer wave = %#v err=%v", valid.Launches, err)
 	}
 	for _, args := range []map[string]any{
-		{"prompt": "missing target", "agent": "designer", "role": "create variant"},
-		{"prompt": "absolute target", "agent": "designer", "role": "create variant", "owned_scope": []any{"/outside/variant.tsx"}},
-		{"prompt": "glob target", "agent": "designer", "role": "create variant", "owned_scope": []any{"web/src/variants/**"}},
-		{"prompt": "unclean target", "agent": "designer", "role": "create variant", "owned_scope": []any{"web/src/variants/../variant.tsx"}},
+		{"prompt": "missing target", "agent": "designer", "role": "create variant", "output_mode": "workspace"},
+		{"prompt": "managed target", "agent": "designer", "role": "create variant", "owned_scope": []any{"web/src/variants/managed.tsx"}},
+		{"prompt": "absolute target", "agent": "designer", "role": "create variant", "output_mode": "workspace", "owned_scope": []any{"/outside/variant.tsx"}},
+		{"prompt": "glob target", "agent": "designer", "role": "create variant", "output_mode": "workspace", "owned_scope": []any{"web/src/variants/**"}},
+		{"prompt": "unclean target", "agent": "designer", "role": "create variant", "output_mode": "workspace", "owned_scope": []any{"web/src/variants/../variant.tsx"}},
 		{"prompt": "overlap", "launches": []any{
-			map[string]any{"agent": "designer", "role": "first", "owned_scope": []any{"web/src/variants"}},
-			map[string]any{"agent": "designer", "role": "second", "owned_scope": []any{"web/src/variants/second.tsx"}},
+			map[string]any{"agent": "designer", "role": "first", "output_mode": "workspace", "owned_scope": []any{"web/src/variants"}},
+			map[string]any{"agent": "designer", "role": "second", "output_mode": "workspace", "owned_scope": []any{"web/src/variants/second.tsx"}},
 		}},
 	} {
 		if _, err := parseTaskCallArguments(mustJSON(t, args)); err == nil {
 			t.Fatalf("Designer scope validation accepted %#v", args)
 		}
+	}
+}
+
+func TestParseTaskCallArgumentsPreservesPerLaunchWorkspaceTargets(t *testing.T) {
+	parsed, err := parseTaskCallArguments(mustJSON(t, map[string]any{
+		"prompt": "implement across shared repositories",
+		"launches": []any{
+			map[string]any{"agent": "coder", "role": "implement web", "workspace_path": "/shared/swarm-web", "owned_scope": []any{"."}},
+			map[string]any{"agent": "finder", "role": "inspect api", "workspace_path": "/shared/swarm-api", "owned_scope": []any{"."}},
+		},
+	}))
+	if err != nil {
+		t.Fatalf("parse workspace-targeted launches: %v", err)
+	}
+	if parsed.Launches[0].TargetWorkspacePath != "/shared/swarm-web" || parsed.Launches[1].TargetWorkspacePath != "/shared/swarm-api" {
+		t.Fatalf("workspace targets = %#v, %#v", parsed.Launches[0].TargetWorkspacePath, parsed.Launches[1].TargetWorkspacePath)
+	}
+}
+
+func TestResolveTaskTargetWorkspaceAcceptsAuthorizedSharedRoot(t *testing.T) {
+	parentRoot := t.TempDir()
+	sharedRoot := t.TempDir()
+	parent := pebblestore.SessionSnapshot{ID: "parent", UserID: "user", AccountScopeID: "account", WorkspacePath: parentRoot, WorkspaceName: "parent", TemporaryWorkspaceRoots: []string{sharedRoot}}
+	svc := &Service{}
+	target, name, err := svc.resolveTaskTargetWorkspace(parent, identity.Principal{Type: identity.PrincipalTypeUser, UserID: "user", AccountScopeID: "account", SessionID: "parent"}, taskLaunchSpec{RequestedSubagentType: "coder", TargetWorkspacePath: sharedRoot})
+	if err != nil {
+		t.Fatalf("resolve authorized shared workspace: %v", err)
+	}
+	if target != sharedRoot || name != filepath.Base(sharedRoot) {
+		t.Fatalf("target = %q/%q, want %q/%q", target, name, sharedRoot, filepath.Base(sharedRoot))
+	}
+	outside := t.TempDir()
+	if _, _, err := svc.resolveTaskTargetWorkspace(parent, identity.Principal{Type: identity.PrincipalTypeUser, UserID: "user", AccountScopeID: "account", SessionID: "parent"}, taskLaunchSpec{RequestedSubagentType: "coder", TargetWorkspacePath: outside}); err == nil || !strings.Contains(err.Error(), "outside the parent session's authorized shared workspace roots") {
+		t.Fatalf("unauthorized workspace error = %v", err)
 	}
 }
 
@@ -547,26 +902,41 @@ type taskLaunchWorktreeStub struct {
 	taskBase          worktreeruntime.TaskBase
 	config            worktreeruntime.Config
 	requestedBase     string
+	resolvedPaths     []string
+	allocatedPaths    []string
 	requestedBranch   string
 	requestedNameSeed string
+	cleanupCalls      []string
+	cleanupErr        error
 }
 
 func (s *taskLaunchWorktreeStub) AttachBranch(_, _, _ string) (string, error) { return "", nil }
 
-func (s *taskLaunchWorktreeStub) ResolveTaskBase(_ string) (worktreeruntime.TaskBase, error) {
+func (s *taskLaunchWorktreeStub) ResolveTaskBase(path string) (worktreeruntime.TaskBase, error) {
+	s.resolvedPaths = append(s.resolvedPaths, strings.TrimSpace(path))
 	if strings.TrimSpace(s.taskBase.BaseCommit) == "" {
 		return worktreeruntime.TaskBase{RepoRoot: "/repo", ParentBranch: "dev", BaseCommit: "base-commit"}, nil
 	}
 	return s.taskBase, nil
 }
 
-func (s *taskLaunchWorktreeStub) AllocateTaskWorkspace(_ string, _ worktreeruntime.TaskBase, _ string) (worktreeruntime.Allocation, error) {
+func (s *taskLaunchWorktreeStub) AllocateTaskWorkspace(path string, _ worktreeruntime.TaskBase, _ string) (worktreeruntime.Allocation, error) {
 	s.allocations++
+	s.allocatedPaths = append(s.allocatedPaths, strings.TrimSpace(path))
 	return s.allocation, nil
 }
 
 func (s *taskLaunchWorktreeStub) TaskCommitDescendsFrom(_, baseCommit, headCommit string) (bool, error) {
 	return strings.TrimSpace(baseCommit) != "" && strings.TrimSpace(headCommit) != "" && baseCommit != headCommit, nil
+}
+
+func (s *taskLaunchWorktreeStub) TaskCommitRangeIntegratedInto(_, baseCommit, headCommit, parentHead string) (bool, error) {
+	return strings.TrimSpace(baseCommit) != "" && strings.TrimSpace(headCommit) != "" && strings.TrimSpace(parentHead) != "" && baseCommit != headCommit, nil
+}
+
+func (s *taskLaunchWorktreeStub) RemoveIntegratedTaskWorkspace(_, childPath, _, _, _, _ string) error {
+	s.cleanupCalls = append(s.cleanupCalls, childPath)
+	return s.cleanupErr
 }
 
 func (s *taskLaunchWorktreeStub) InspectTaskWorkspace(path string) (worktreeruntime.TaskWorkspaceState, error) {
@@ -692,7 +1062,7 @@ func TestApprovedDesignerInheritsParentCheckoutWithoutAllocation(t *testing.T) {
 		t.Fatalf("resolve Designer profile: virtual=%t source=%q err=%v", virtual, source, err)
 	}
 	launch, err := svc.prepareDelegatedSubagentLaunchWithProfile(parent, sessionruntime.ModeAuto, taskLaunchPrepared{
-		LaunchIndex: 1, RequestedSubagent: "designer", MetaPrompt: "create variant", VirtualTarget: virtual, OwnedScope: []string{"web/src/variants/compact.tsx"},
+		LaunchIndex: 1, RequestedSubagent: "designer", MetaPrompt: "create variant", VirtualTarget: virtual, OwnedScope: []string{"web/src/variants/compact.tsx"}, OutputMode: taskOutputModeWorkspace,
 	}, "design", "", &profile, source, nil)
 	if err != nil {
 		t.Fatalf("prepare approved Designer: %v", err)
@@ -704,15 +1074,273 @@ func TestApprovedDesignerInheritsParentCheckoutWithoutAllocation(t *testing.T) {
 	if child.WorkspacePath != parent.WorkspacePath || child.WorktreeRootPath != parent.WorktreeRootPath || child.WorktreeBranch != parent.WorktreeBranch || !child.WorktreeEnabled {
 		t.Fatalf("Designer checkout facts = %#v, want inherited from %#v", child, parent)
 	}
+	if child.WorkspacePath == stub.allocation.WorkspacePath {
+		t.Fatalf("workspace Designer was silently redirected to an allocated worktree: %#v", child)
+	}
 	if got := mapString(child.Metadata, "shared_parent_checkout"); got != "" {
 		// Boolean metadata is asserted below without converting its type.
 		t.Fatalf("unexpected string shared checkout metadata %q", got)
 	}
-	if shared, _ := child.Metadata["shared_parent_checkout"].(bool); !shared {
-		t.Fatalf("Designer child metadata missing shared checkout: %#v", child.Metadata)
+	if shared, _ := child.Metadata["shared_parent_checkout"].(bool); !shared || child.Metadata["designer_output_mode"] != taskOutputModeWorkspace {
+		t.Fatalf("Designer child metadata missing workspace output contract: %#v", child.Metadata)
 	}
 	if scope, _ := child.Metadata["owned_scope"].([]string); !slices.Equal(scope, []string{"web/src/variants/compact.tsx"}) {
 		t.Fatalf("Designer child owned scope = %#v", child.Metadata["owned_scope"])
+	}
+	storedProfile, err := sessionV3AgentProfileFromMetadataMap(child.Metadata)
+	if err != nil {
+		t.Fatalf("Designer child missing durable agent profile: %v", err)
+	}
+	if storedProfile.Name != agentruntime.DesignerAgentID {
+		t.Fatalf("Designer child durable profile = %#v, want compiled workspace Designer", storedProfile)
+	}
+	for _, allowed := range []string{"read", "search", "find", "list", "write", "edit"} {
+		if cfg := storedProfile.ToolContract.Tools[allowed]; cfg.Enabled == nil || !*cfg.Enabled {
+			t.Fatalf("workspace Designer profile missing %q: %#v", allowed, storedProfile.ToolContract)
+		}
+	}
+	for _, denied := range []string{"media_inspect", "bash", "git_status", "git_diff", "git_add", "git_commit", "manage_artifact"} {
+		if cfg := storedProfile.ToolContract.Tools[denied]; cfg.Enabled == nil || *cfg.Enabled {
+			t.Fatalf("workspace Designer profile authorized %q: %#v", denied, storedProfile.ToolContract)
+		}
+	}
+	if _, parentCopy := child.Metadata["parent_copy"]; parentCopy {
+		t.Fatalf("Designer shared-checkout child incorrectly marked parent_copy: %#v", child.Metadata)
+	}
+}
+
+type taskDesignerRecordingRunner struct {
+	requests         []provideriface.Request
+	inspectImagePath string
+	invocationResult provideriface.ToolExecutionResult
+	invocationErr    error
+}
+
+func (r *taskDesignerRecordingRunner) ID() string { return "codex" }
+
+func (r *taskDesignerRecordingRunner) MediaCapabilityDeclaration(context.Context) (provideriface.MediaAdapterDeclaration, error) {
+	return provideriface.MediaAdapterDeclaration{
+		AdapterID:             provideriface.MediaAdapterIDCodexChatGPTV1,
+		ProviderID:            "codex",
+		ProviderSurface:       provideriface.MediaProviderSurfaceCodexChatGPT,
+		CredentialSurface:     provideriface.MediaCredentialSurfaceCodexOAuth,
+		CredentialFingerprint: "task-designer-test-credential",
+		Inputs: []provideriface.MediaAdapterCapability{{
+			Modality: "image", Semantics: pebblestore.ModelCatalogMediaSemanticsNative,
+			MIMETypes: []string{"image/gif", "image/jpeg", "image/png", "image/webp"}, ContentTypes: []string{"input_image"}, MaxBytes: 1024, MaxCount: 1,
+		}},
+	}, nil
+}
+
+func (r *taskDesignerRecordingRunner) CreateResponse(ctx context.Context, req provideriface.Request) (provideriface.Response, error) {
+	return r.CreateResponseStreaming(ctx, req, nil)
+}
+
+func (r *taskDesignerRecordingRunner) CreateResponseStreaming(ctx context.Context, req provideriface.Request, onEvent func(provideriface.StreamEvent)) (provideriface.Response, error) {
+	r.requests = append(r.requests, req)
+	if strings.TrimSpace(r.inspectImagePath) != "" && len(r.requests) == 1 {
+		if req.ToolInvoker == nil {
+			return provideriface.Response{}, errors.New("Designer media test request has no tool invoker")
+		}
+		r.invocationResult, r.invocationErr = req.ToolInvoker.ExecuteTool(ctx, provideriface.ToolInvocation{
+			CallID: "call-designer-media-inspect", Name: mediaInspectToolName,
+			Arguments: mustJSONForRunner(map[string]any{"path": r.inspectImagePath}),
+		})
+		return provideriface.Response{FunctionCalls: []provideriface.FunctionCall{{
+			CallID: "call-designer-media-inspect", Name: mediaInspectToolName,
+			Arguments: mustJSONForRunner(map[string]any{"path": r.inspectImagePath}),
+		}}}, nil
+	}
+	if onEvent != nil {
+		onEvent(provideriface.StreamEvent{Type: provideriface.StreamEventOutputTextDelta, Delta: "designer completed"})
+	}
+	return provideriface.Response{Text: "designer completed"}, nil
+}
+
+func mustJSONForRunner(value any) string {
+	encoded, _ := json.Marshal(value)
+	return string(encoded)
+}
+
+func TestTaskLaunchedWorkspaceDesignerUsesLockedToolProfile(t *testing.T) {
+	svc, parentSessionID, cleanup := newTaskLaunchPermissionTestService(t)
+	defer cleanup()
+
+	runner := &taskDesignerRecordingRunner{}
+	providers := registry.New()
+	providers.RegisterRunner(runner)
+	svc.providers = providers
+
+	parent, ok, err := svc.sessions.GetSession(parentSessionID)
+	if err != nil || !ok {
+		t.Fatalf("load parent: ok=%v err=%v", ok, err)
+	}
+	principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: parent.UserID, AccountScopeID: parent.AccountScopeID, SessionID: parent.ID, AccountScopeSource: identity.AccountScopeSourceSession}
+	parsed, err := parseTaskCallArguments(mustJSON(t, map[string]any{
+		"description": "create media-aware variant",
+		"prompt":      "inspect the supplied image and create the variant",
+		"launches": []any{map[string]any{
+			"subagent_type": "designer",
+			"meta_prompt":   "Use the image as visual reference.",
+			"output_mode":   "workspace",
+			"owned_scope":   []any{"web/src/variants/media-aware.tsx"},
+		}},
+	}))
+	if err != nil {
+		t.Fatalf("parse Designer task: %v", err)
+	}
+	output, err := svc.executeTaskToolWithParsed(context.Background(), parent.ID, sessionruntime.ModeAuto, 1, tool.Call{CallID: "call-designer-media", Name: "task"}, nil, taskExecutionRequest{Parsed: parsed, ParsedProvided: true, Principal: principal})
+	if err != nil {
+		t.Fatalf("execute Designer task launch: %v", err)
+	}
+	var taskResult map[string]any
+	if err := json.Unmarshal([]byte(output), &taskResult); err != nil {
+		t.Fatalf("decode Designer task result: %v", err)
+	}
+	if got := taskResult["task_call_id"]; got != "call-designer-media" {
+		t.Fatalf("task_call_id = %#v, want durable lineage identifier", got)
+	}
+	if len(runner.requests) != 1 {
+		t.Fatalf("workspace Designer provider requests = %d, want 1", len(runner.requests))
+	}
+	providerTools := make(map[string]bool, len(runner.requests[0].Tools))
+	for _, definition := range runner.requests[0].Tools {
+		providerTools[definition.Name] = true
+	}
+	for _, allowed := range []string{"read", "search", "find", "list", "write", "edit"} {
+		if !providerTools[allowed] {
+			t.Fatalf("workspace Designer provider tools missing %q: %#v", allowed, providerTools)
+		}
+	}
+	for _, denied := range []string{"media_inspect", "bash", "git_status", "git_diff", "git_add", "git_commit", "manage_artifact"} {
+		if providerTools[denied] {
+			t.Fatalf("workspace Designer provider tools authorized %q: %#v", denied, providerTools)
+		}
+	}
+	childID, _ := taskResult["session_id"].(string)
+	child, ok, err := svc.sessions.GetSession(childID)
+	if err != nil || !ok {
+		t.Fatalf("load workspace Designer child %q: ok=%v err=%v", childID, ok, err)
+	}
+	storedProfile, err := sessionV3AgentProfileFromMetadataMap(child.Metadata)
+	if err != nil {
+		t.Fatalf("decode workspace Designer profile: %v", err)
+	}
+	for _, allowed := range []string{"read", "search", "find", "list", "write", "edit"} {
+		if cfg := storedProfile.ToolContract.Tools[allowed]; cfg.Enabled == nil || !*cfg.Enabled {
+			t.Fatalf("workspace Designer locked profile missing %q: %#v", allowed, storedProfile.ToolContract)
+		}
+	}
+	for _, denied := range []string{"media_inspect", "bash", "git_status", "git_diff", "git_add", "git_commit", "manage_artifact"} {
+		if cfg := storedProfile.ToolContract.Tools[denied]; cfg.Enabled == nil || *cfg.Enabled {
+			t.Fatalf("workspace Designer locked profile authorized %q: %#v", denied, storedProfile.ToolContract)
+		}
+	}
+}
+
+func TestTaskLaunchedWorkspaceDesignerRunTurnStreamingDeniesMediaInspect(t *testing.T) {
+	svc, parentSessionID, cleanup := newTaskLaunchPermissionTestService(t)
+	defer cleanup()
+
+	parent, ok, err := svc.sessions.GetSession(parentSessionID)
+	if err != nil || !ok {
+		t.Fatalf("load parent: ok=%v err=%v", ok, err)
+	}
+	imagePath := filepath.Join(parent.WorkspacePath, "designer-media.png")
+	if err := os.WriteFile(imagePath, []byte("\x89PNG\r\n\x1a\nmedia-test"), 0o600); err != nil {
+		t.Fatalf("write Designer media fixture: %v", err)
+	}
+	runner := &taskDesignerRecordingRunner{inspectImagePath: imagePath}
+	providers := registry.New()
+	providers.RegisterRunner(runner)
+	svc.providers = providers
+
+	principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: parent.UserID, AccountScopeID: parent.AccountScopeID, SessionID: parent.ID, AccountScopeSource: identity.AccountScopeSourceSession}
+	parsed, err := parseTaskCallArguments(mustJSON(t, map[string]any{
+		"description": "inspect a workspace image",
+		"prompt":      "inspect the supplied image",
+		"launches": []any{map[string]any{
+			"subagent_type": "designer",
+			"meta_prompt":   "Inspect the workspace image with media_inspect.",
+			"output_mode":   "workspace",
+			"owned_scope":   []any{"docs/designer-media-report.md"},
+		}},
+	}))
+	if err != nil {
+		t.Fatalf("parse Designer task: %v", err)
+	}
+	if _, err := svc.executeTaskToolWithParsed(context.Background(), parent.ID, sessionruntime.ModeAuto, 1, tool.Call{CallID: "call-designer-media-execution", Name: "task"}, nil, taskExecutionRequest{Parsed: parsed, ParsedProvided: true, Principal: principal}); err != nil {
+		t.Fatalf("execute Designer media task: %v", err)
+	}
+	if runner.invocationErr != nil {
+		t.Fatalf("workspace Designer media_inspect invocation: %v", runner.invocationErr)
+	}
+	if runner.invocationResult.Error == "" || runner.invocationResult.Media != nil {
+		t.Fatalf("workspace Designer media_inspect result = %+v, want locked-tool denial", runner.invocationResult)
+	}
+	if len(runner.requests) < 2 {
+		t.Fatalf("workspace Designer provider requests = %d, want continuation after locked-tool denial", len(runner.requests))
+	}
+	for _, item := range runner.requests[1].Input {
+		content, _ := item["content"].([]map[string]any)
+		for _, part := range content {
+			if part["type"] == "session_media" {
+				t.Fatalf("workspace Designer continuation leaked denied media: %#v", runner.requests[1].Input)
+			}
+		}
+	}
+	if strings.TrimSpace(runner.requests[1].ProviderConfigurationHash) == "" {
+		t.Fatal("workspace Designer denial continuation omitted provider configuration identity")
+	}
+}
+
+func providerRequestHasTool(definitions []provideriface.ToolDefinition, name string) bool {
+	for _, definition := range definitions {
+		if strings.EqualFold(strings.TrimSpace(definition.Name), strings.TrimSpace(name)) {
+			return true
+		}
+	}
+	return false
+}
+
+func providerToolNames(definitions []provideriface.ToolDefinition) []string {
+	names := make([]string, 0, len(definitions))
+	for _, definition := range definitions {
+		names = append(names, definition.Name)
+	}
+	return names
+}
+
+func TestApprovedCoderAllocatesFromSelectedSharedWorkspace(t *testing.T) {
+	svc, parentSessionID, cleanup := newTaskLaunchPermissionTestService(t)
+	defer cleanup()
+	parent, ok, err := svc.sessions.GetSession(parentSessionID)
+	if err != nil || !ok {
+		t.Fatalf("load parent: ok=%v err=%v", ok, err)
+	}
+	targetPath := t.TempDir()
+	clonePath := t.TempDir()
+	stub := &taskLaunchWorktreeStub{allocation: worktreeruntime.Allocation{WorkspacePath: clonePath, RepoRoot: targetPath, BaseBranch: "dev", BranchName: "agent/shared", WorkspaceID: "shared-workspace"}}
+	svc.SetWorktreeService(stub)
+	profile, virtual, source, err := svc.resolveTaskLaunchProfile(parent, "coder")
+	if err != nil || !virtual {
+		t.Fatalf("resolve Coder profile: virtual=%t source=%q err=%v", virtual, source, err)
+	}
+	taskBase, err := stub.ResolveTaskBase(targetPath)
+	if err != nil {
+		t.Fatalf("resolve target task base: %v", err)
+	}
+	launch, err := svc.prepareDelegatedSubagentLaunchWithProfile(parent, sessionruntime.ModeAuto, taskLaunchPrepared{
+		LaunchIndex: 1, RequestedSubagent: "coder", MetaPrompt: "implement", VirtualTarget: virtual, TaskBase: &taskBase, TargetWorkspacePath: targetPath, LogicalTaskID: "shared-workspace-task",
+	}, "implement", "", &profile, source, nil)
+	if err != nil {
+		t.Fatalf("prepare shared-workspace Coder: %v", err)
+	}
+	if len(stub.allocatedPaths) != 1 || stub.allocatedPaths[0] != targetPath {
+		t.Fatalf("allocated paths = %#v, want %q", stub.allocatedPaths, targetPath)
+	}
+	if metadataStringForTest(launch.ChildSession.Metadata, "swarm_v3_source_workspace_path") != targetPath || metadataStringForTest(launch.ChildSession.Metadata, "swarm_v3_runtime_workspace_path") != clonePath || metadataStringForTest(launch.ChildSession.Metadata, "base_commit") != taskBase.BaseCommit {
+		t.Fatalf("shared workspace metadata = %#v", launch.ChildSession.Metadata)
 	}
 }
 
@@ -745,7 +1373,7 @@ func TestApprovedCoderAllocatesIsolatedWorktreeScope(t *testing.T) {
 		t.Fatalf("prepare approved Coder: %v", err)
 	}
 	child := launch.ChildSession
-	if stub.allocations != 1 || child.WorkspacePath != clonePath || child.WorktreeRootPath != clonePath || !child.WorktreeEnabled {
+	if stub.allocations != 1 || child.WorkspacePath != clonePath || child.WorktreeRootPath != clonePath || !child.WorktreeEnabled || metadataStringForTest(child.Metadata, "base_commit") != taskBase.BaseCommit {
 		t.Fatalf("Coder isolation facts: allocations=%d child=%#v", stub.allocations, child)
 	}
 	if len(child.TemporaryWorkspaceRoots) != 0 {
@@ -930,6 +1558,89 @@ func TestPrepareDelegatedSubagentLaunchCreatesCanonicalV3ChildSession(t *testing
 	}
 	if len(outbox) != 1 || outbox[0].Event.EventType != "session.created" || outbox[0].SessionID != childID || outbox[0].EndpointSeq == 0 {
 		t.Fatalf("child realtime outbox = %#v, want durable session.created outbox row", outbox)
+	}
+}
+
+func TestPrepareAssemblyDesignerLaunchPersistsStrategyThroughHydration(t *testing.T) {
+	svc, _, cleanup := newTaskLaunchPermissionTestService(t)
+	defer cleanup()
+
+	parent, _, err := svc.sessions.CreateSessionWithOptions(sessionruntime.CreateSessionOptions{
+		UserID:         "assembly-user",
+		AccountScopeID: "test-account",
+		Title:          "Assembly Parent",
+		WorkspacePath:  t.TempDir(),
+		WorkspaceName:  "workspace",
+		Mode:           sessionruntime.ModeAuto,
+		Preference:     &pebblestore.ModelPreference{Provider: "codex", Model: "gpt-5.4", Thinking: "high"},
+	})
+	if err != nil {
+		t.Fatalf("create Assembly parent: %v", err)
+	}
+	part := taskSwarmAssemblyPart{Name: "Navigation", Instructions: "Build the reusable navigation", OwnedScope: []string{"web/src/navigation.tsx"}}
+	launch, err := svc.prepareDelegatedSubagentLaunch(parent, sessionruntime.ModeAuto, taskLaunchPrepared{
+		LaunchIndex:         1,
+		RequestedSubagent:   agentruntime.DesignerAgentID,
+		MetaPrompt:          "Implement the Navigation part",
+		AssignmentLabel:     part.Name,
+		OwnedScope:          append([]string(nil), part.OwnedScope...),
+		StreamKey:           "assembly:1",
+		SwarmMode:           true,
+		SwarmStrategy:       taskSwarmStrategyAssembly,
+		AssemblyPart:        &part,
+		IntegrationContract: "Parent wires Navigation into the assembled project before continuing.",
+		IntegrationRequired: true,
+	}, "assemble the project", "", nil)
+	if err != nil {
+		t.Fatalf("prepare Assembly Designer launch: %v", err)
+	}
+	if launch.ChildWorkspacePath != parent.WorkspacePath || launch.ChildWorktreeEnabled != parent.WorktreeEnabled {
+		t.Fatalf("Designer execution escaped parent checkout: child=%q parent=%q worktree=%v", launch.ChildWorkspacePath, parent.WorkspacePath, launch.ChildWorktreeEnabled)
+	}
+
+	hydrated, ok, err := svc.sessions.HydrateSessionSnapshot(launch.ChildSession.ID, 100, 100)
+	if err != nil || !ok {
+		t.Fatalf("hydrate Assembly child ok=%v err=%v", ok, err)
+	}
+	metadata := hydrated.Session.Metadata
+	for key, want := range map[string]string{
+		"parent_session_id":    parent.ID,
+		"lineage_kind":         "delegated_subagent",
+		"swarm_strategy":       taskSwarmStrategyAssembly,
+		"stream_key":           "assembly:1",
+		"integration_contract": "Parent wires Navigation into the assembled project before continuing.",
+	} {
+		if got := strings.TrimSpace(metadataStringForTest(metadata, key)); got != want {
+			t.Fatalf("hydrated metadata[%q] = %q, want %q; metadata=%#v", key, got, want, metadata)
+		}
+	}
+	for key := range map[string]bool{"swarm_mode": true, "integration_required": true, "shared_parent_checkout": true, "reusable_workspace_artifacts": true} {
+		if got, ok := metadata[key].(bool); !ok || !got {
+			t.Fatalf("hydrated metadata[%q] = %#v, want true", key, metadata[key])
+		}
+	}
+	rawPart, err := json.Marshal(metadata["assembly_part"])
+	if err != nil {
+		t.Fatalf("marshal hydrated Assembly part: %v", err)
+	}
+	var hydratedPart taskSwarmAssemblyPart
+	if err := json.Unmarshal(rawPart, &hydratedPart); err != nil {
+		t.Fatalf("decode hydrated Assembly part: %v", err)
+	}
+	if hydratedPart.Name != part.Name || !slices.Equal(hydratedPart.OwnedScope, part.OwnedScope) {
+		t.Fatalf("hydrated Assembly part = %#v, want %#v", hydratedPart, part)
+	}
+	if len(hydrated.Events) != 1 || hydrated.Events[0].EventType != "session.created" {
+		t.Fatalf("hydrated events = %#v, want durable session.created", hydrated.Events)
+	}
+	var created struct {
+		Session *pebblestore.SessionSnapshot `json:"session"`
+	}
+	if err := json.Unmarshal(hydrated.Events[0].Payload, &created); err != nil || created.Session == nil {
+		t.Fatalf("decode durable child creation payload: session=%#v err=%v", created.Session, err)
+	}
+	if got := metadataStringForTest(created.Session.Metadata, "swarm_strategy"); got != taskSwarmStrategyAssembly {
+		t.Fatalf("replayed session.created strategy = %q, want Assembly", got)
 	}
 }
 
@@ -1472,11 +2183,39 @@ func stringSliceContains(values []string, want string) bool {
 	return false
 }
 
+func TestDesignerPermissionManifestUsesCompiledManagedProfileByDefault(t *testing.T) {
+	svc, parentSessionID, cleanup := newTaskLaunchPermissionTestService(t)
+	defer cleanup()
+	manifest, err := svc.buildTaskLaunchPermissionPayload(parentSessionID, sessionruntime.ModeAuto, tool.Call{Name: "task", Arguments: mustJSON(t, map[string]any{
+		"prompt": "create variant", "subagent_type": "designer", "meta_prompt": "create compact variant",
+	})})
+	if err != nil {
+		t.Fatalf("build managed Designer manifest: %v", err)
+	}
+	if len(manifest.Launches) != 1 {
+		t.Fatalf("managed Designer manifest launches = %#v", manifest.Launches)
+	}
+	row := manifest.Launches[0]
+	if row.OutputMode != taskOutputModeManaged || len(row.OwnedScope) != 0 || row.ProfileSnapshot == nil || !row.ProfileSnapshot.Protected {
+		t.Fatalf("managed Designer output contract = mode %q scope %#v profile %#v", row.OutputMode, row.OwnedScope, row.ProfileSnapshot)
+	}
+	for _, name := range []string{"read", "search", "find", "list", "manage_artifact"} {
+		if !stringSliceContains(row.ResolvedTools.AllowedTools, name) {
+			t.Fatalf("managed Designer allowed tools %v missing %q", row.ResolvedTools.AllowedTools, name)
+		}
+	}
+	for _, name := range []string{"write", "edit", "bash", "git_status", "git_commit", "task", "manage_worktree", "plan_manage"} {
+		if !stringSliceContains(row.ResolvedTools.DisabledTools, name) {
+			t.Fatalf("managed Designer disabled tools %v missing %q", row.ResolvedTools.DisabledTools, name)
+		}
+	}
+}
+
 func TestDesignerPermissionManifestUsesCompiledSharedCheckoutProfile(t *testing.T) {
 	svc, parentSessionID, cleanup := newTaskLaunchPermissionTestService(t)
 	defer cleanup()
 	manifest, err := svc.buildTaskLaunchPermissionPayload(parentSessionID, sessionruntime.ModeAuto, tool.Call{Name: "task", Arguments: mustJSON(t, map[string]any{
-		"prompt": "create variant", "subagent_type": "designer", "meta_prompt": "create compact variant", "owned_scope": []any{"web/src/variants/compact.tsx"},
+		"prompt": "create variant", "subagent_type": "designer", "meta_prompt": "create compact variant", "output_mode": "workspace", "owned_scope": []any{"web/src/variants/compact.tsx"},
 	})})
 	if err != nil {
 		t.Fatalf("build Designer manifest: %v", err)
@@ -1488,17 +2227,100 @@ func TestDesignerPermissionManifestUsesCompiledSharedCheckoutProfile(t *testing.
 	if row.ParentCopy || row.ResolvedAgentName != agentruntime.DesignerAgentID || row.ProfileSnapshot == nil || !row.ProfileSnapshot.Protected {
 		t.Fatalf("Designer compiled shared-checkout manifest = %#v", row)
 	}
-	if !slices.Equal(row.OwnedScope, []string{"web/src/variants/compact.tsx"}) {
-		t.Fatalf("Designer manifest scope = %#v", row.OwnedScope)
+	if row.OutputMode != taskOutputModeWorkspace || !slices.Equal(row.OwnedScope, []string{"web/src/variants/compact.tsx"}) {
+		t.Fatalf("Designer manifest output contract = mode %q scope %#v", row.OutputMode, row.OwnedScope)
 	}
 	for _, name := range []string{"read", "search", "find", "list", "write", "edit"} {
 		if !stringSliceContains(row.ResolvedTools.AllowedTools, name) {
 			t.Fatalf("Designer allowed tools %v missing %q", row.ResolvedTools.AllowedTools, name)
 		}
 	}
-	for _, name := range []string{"bash", "git_status", "git_commit", "task", "manage_worktree", "plan_manage"} {
+	for _, name := range []string{"bash", "git_status", "git_commit", "task", "manage_artifact", "manage_worktree", "plan_manage"} {
 		if !stringSliceContains(row.ResolvedTools.DisabledTools, name) {
 			t.Fatalf("Designer disabled tools %v missing %q", row.ResolvedTools.DisabledTools, name)
+		}
+	}
+}
+
+func TestApprovedManagedDesignerManifestRejectsCheckoutMutationCapability(t *testing.T) {
+	svc, parentSessionID, cleanup := newTaskLaunchPermissionTestService(t)
+	defer cleanup()
+	call := tool.Call{Name: "task", Arguments: mustJSON(t, map[string]any{"prompt": "create variant", "subagent_type": "designer", "meta_prompt": "create managed variant"})}
+	parsed, err := parseTaskCallArguments(call.Arguments)
+	if err != nil {
+		t.Fatalf("parse managed Designer: %v", err)
+	}
+	manifest, err := svc.buildTaskLaunchPermissionPayload(parentSessionID, sessionruntime.ModeAuto, call)
+	if err != nil {
+		t.Fatalf("build managed Designer manifest: %v", err)
+	}
+	manifest.Launches[0].DisabledTools = nil
+	manifest.Launches[0].ResolvedTools.DisabledTools = nil
+	manifest.Launches[0].ResolvedTools.AllowedTools = append(manifest.Launches[0].ResolvedTools.AllowedTools, "write")
+	manifest.DisabledTools = manifest.Launches[0].DisabledTools
+	manifest.ResolvedTools = manifest.Launches[0].ResolvedTools
+	manifest.ApprovedArguments = nil
+	manifest.ManifestHash = ""
+	digest, err := taskLaunchManifestDigest(manifest)
+	if err != nil {
+		t.Fatalf("hash mutated manifest: %v", err)
+	}
+	manifest.ManifestHash = digest
+	approved, err := json.Marshal(map[string]any{"manifest_hash": digest, "manifest": manifest})
+	if err != nil {
+		t.Fatalf("marshal mutated manifest: %v", err)
+	}
+	if _, err := parseApprovedTaskLaunchManifest(string(approved), parsed.Launches); err == nil || !strings.Contains(err.Error(), "retains checkout mutation tool") {
+		t.Fatalf("managed Designer manifest capability error = %v", err)
+	}
+}
+
+func TestManagedDesignerPermissionManifestDisablesCheckoutMutation(t *testing.T) {
+	svc, parentSessionID, cleanup := newTaskLaunchPermissionTestService(t)
+	defer cleanup()
+	manifest, err := svc.buildTaskLaunchPermissionPayload(parentSessionID, sessionruntime.ModeAuto, tool.Call{Name: "task", Arguments: mustJSON(t, map[string]any{
+		"prompt": "create variant", "subagent_type": "designer", "meta_prompt": "create managed compact variant",
+	})})
+	if err != nil {
+		t.Fatalf("build managed Designer manifest: %v", err)
+	}
+	row := manifest.Launches[0]
+	if row.OutputMode != taskOutputModeManaged || !stringSliceContains(row.ResolvedTools.AllowedTools, "manage_artifact") {
+		t.Fatalf("managed Designer tools = %#v", row)
+	}
+	for _, name := range []string{"write", "edit"} {
+		if !taskToolNameInSlice(row.DisabledTools, name) || !taskToolNameInSlice(row.ResolvedTools.DisabledTools, name) || taskToolNameInSlice(row.ResolvedTools.AllowedTools, name) {
+			t.Fatalf("managed Designer checkout capability %q was not disabled: %#v", name, row.ResolvedTools)
+		}
+	}
+}
+
+func TestIdeaSwarmUsesConfiguredRouterModelInsteadOfParentModel(t *testing.T) {
+	svc, parentSessionID, cleanup := newTaskLaunchPermissionTestService(t)
+	defer cleanup()
+	settingsCtx := identity.ContextWithPrincipal(context.Background(), identity.Principal{Type: identity.PrincipalTypeUser, UserID: "test-user", AccountScopeID: "test-account"})
+	if _, err := svc.agentModelSettings.UpdateSystemAgent(settingsCtx, pebblestore.SystemAgentRouter, pebblestore.AgentModelAssignment{Provider: "codex", Model: "gpt-5.4", Thinking: "medium"}); err != nil {
+		t.Fatalf("save Router settings: %v", err)
+	}
+	manifest, err := svc.buildTaskLaunchPermissionPayload(parentSessionID, sessionruntime.ModeAuto, tool.Call{Name: "task", Arguments: `{"mode":"swarm","prompt":"same exact question","agent_type":"idea","count":2}`})
+	if err != nil {
+		t.Fatalf("build Idea swarm manifest: %v", err)
+	}
+	if len(manifest.Launches) != 2 {
+		t.Fatalf("Idea swarm launches = %#v", manifest.Launches)
+	}
+	for i, launch := range manifest.Launches {
+		if launch.ProfileSnapshot == nil || launch.ProfileSnapshot.Name != agentruntime.IdeaAgentID || !launch.ProfileSnapshot.Protected {
+			t.Fatalf("Idea launch %d profile = %#v", i, launch.ProfileSnapshot)
+		}
+		if launch.SubagentProvider != "codex" || launch.SubagentModel != "gpt-5.4" || launch.SubagentThinking != "medium" {
+			t.Fatalf("Idea launch %d preference = %#v, want configured Router model", i, launch)
+		}
+		if launch.SubagentProvider == "parent-provider" || launch.SubagentModel == "parent-model" {
+			t.Fatalf("Idea launch %d inherited parent model: %#v", i, launch)
+		}
+		if launch.MetaPrompt != "same exact question" {
+			t.Fatalf("Idea launch %d prompt = %q, want exact question", i, launch.MetaPrompt)
 		}
 	}
 }
@@ -1708,7 +2530,7 @@ func TestApprovedTaskManifestContractAcceptsAllSupportedSubagents(t *testing.T) 
 		"launches": []any{
 			map[string]any{"subagent_type": "finder", "meta_prompt": "Inspect the contract."},
 			map[string]any{"subagent_type": "coder", "meta_prompt": "Implement the contract."},
-			map[string]any{"subagent_type": "designer", "meta_prompt": "Design the contract.", "owned_scope": []any{"web/src/variants/contract.tsx"}},
+			map[string]any{"subagent_type": "designer", "meta_prompt": "Design the contract.", "output_mode": "workspace", "owned_scope": []any{"web/src/variants/contract.tsx"}},
 		},
 	})}
 	parsed, err := parseTaskCallArguments(call.Arguments)

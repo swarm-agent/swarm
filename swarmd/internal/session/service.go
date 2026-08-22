@@ -18,9 +18,14 @@ import (
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
+type ArtifactSessionCleaner interface {
+	DeleteSession(sessionID, workspacePath string) error
+}
+
 type Service struct {
 	store                 *pebblestore.SessionStore
 	events                *pebblestore.EventLog
+	artifactCleaner       ArtifactSessionCleaner
 	mu                    sync.Mutex
 	planLifecycleMu       sync.Mutex
 	planLifecycleSessions map[string]*sync.Mutex
@@ -69,6 +74,12 @@ func NewService(store *pebblestore.SessionStore, events *pebblestore.EventLog) *
 	return &Service{store: store, events: events, planLifecycleSessions: make(map[string]*sync.Mutex)}
 }
 
+func (s *Service) SetArtifactSessionCleaner(cleaner ArtifactSessionCleaner) {
+	if s != nil {
+		s.artifactCleaner = cleaner
+	}
+}
+
 func (s *Service) lockPlanLifecycleSession(sessionID string) func() {
 	sessionID = strings.TrimSpace(sessionID)
 	s.planLifecycleMu.Lock()
@@ -87,6 +98,13 @@ func (s *Service) Store() *pebblestore.SessionStore {
 		return nil
 	}
 	return s.store
+}
+
+func (s *Service) GetV3MessageByID(sessionID, messageID string) (pebblestore.MessageSnapshot, bool, error) {
+	if s == nil || s.store == nil {
+		return pebblestore.MessageSnapshot{}, false, errors.New("session service is not configured")
+	}
+	return s.store.GetV3MessageByID(sessionID, messageID)
 }
 
 func (s *Service) ListDueReviewAutoArchives(nowUnixMs int64, limit int) ([]pebblestore.SessionReviewAutoArchiveDue, error) {
@@ -494,6 +512,24 @@ func (s *Service) tombstoneSessionsWithEventsExpected(sessionIDs []string, kind 
 	} else {
 		if err := s.store.DeleteSessions(normalizedIDs); err != nil {
 			return nil, err
+		}
+		// Filesystem cleanup intentionally runs after the durable Pebble mutation
+		// and outside its batch/locks. The deleted tombstone retains the trusted
+		// workspace route so maintenance can retry after a failure or restart.
+		if s.artifactCleaner != nil {
+			var cleanupErrs []error
+			for _, deleted := range sessions {
+				if err := s.artifactCleaner.DeleteSession(deleted.ID, deleted.WorkspacePath); err != nil {
+					cleanupErrs = append(cleanupErrs, fmt.Errorf("delete artifact bytes for session %q: %w", deleted.ID, err))
+					continue
+				}
+				if err := s.store.MarkV3SessionArtifactCleanupComplete(deleted.ID); err != nil {
+					cleanupErrs = append(cleanupErrs, fmt.Errorf("record artifact cleanup for session %q: %w", deleted.ID, err))
+				}
+			}
+			if len(cleanupErrs) != 0 {
+				return nil, errors.Join(cleanupErrs...)
+			}
 		}
 	}
 	if len(sessions) == 0 || s.events == nil {
@@ -1852,6 +1888,11 @@ func (s *Service) SavePlanWithMetadata(sessionID, planID, title, plan, status, a
 	}
 	if record.Document != nil {
 		record.Document.RevisionID = fmt.Sprintf("%s:v%d", planID, record.Version)
+		if s.store != nil {
+			if err := s.authenticatePlanDocumentArtifacts(record.AccountScopeID, sessionID, record.Document); err != nil {
+				return pebblestore.SessionPlanSnapshot{}, nil, err
+			}
+		}
 	}
 	if record.CreatedAt <= 0 {
 		record.CreatedAt = now

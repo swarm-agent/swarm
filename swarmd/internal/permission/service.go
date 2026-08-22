@@ -415,6 +415,13 @@ func (s *Service) AuthorizeToolCall(input AuthorizationInput) (AuthorizationResu
 	if err != nil {
 		return AuthorizationResult{}, err
 	}
+	if normalizePolicyToolName(input.ToolName) == "ask_user" && explain.Decision != PolicyDecisionDeny {
+		// ask_user is an input boundary, not an ordinary operation approval. It
+		// must wait for an explicit answer even when permissions are bypassed or
+		// a broad allow rule exists; otherwise the tool executes with an empty
+		// response and silently loses the product decision.
+		return s.createPendingAuthorization(input, sessionID, requirement, "ask_user requires an explicit user response", "user_input_policy", "ask user input")
+	}
 	if state.BypassPermissions {
 		// Bypass suppresses ordinary approval prompts only. Hard denials and the
 		// dedicated plan-acceptance boundary remain authoritative.
@@ -1498,6 +1505,12 @@ func authorizationRequirement(mode, toolName, toolArguments string) string {
 			return "theme_change"
 		}
 		return "manage_theme"
+	case "manage_artifact":
+		_, bypass := splitPolicyMode(mode)
+		if ShouldApproveManageArtifactGenerateImage(toolArguments) && !bypass {
+			return "manage_artifact_generate_image"
+		}
+		return "manage_artifact"
 	case "manage_worktree":
 		return "manage_worktree"
 	case "manage_sessions":
@@ -1519,6 +1532,10 @@ func authorizationRequirement(mode, toolName, toolArguments string) string {
 	default:
 		return toolName
 	}
+}
+
+func ShouldApproveManageArtifactGenerateImage(toolArguments string) bool {
+	return manageAction(toolArguments) == "generate_image"
 }
 
 func ShouldApproveManageSkillMutation(toolArguments string) bool {

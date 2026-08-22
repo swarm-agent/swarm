@@ -91,6 +91,7 @@ function planRecord(): DesktopSessionPlanRecord {
     objective: "",
     tasks: [],
     acceptanceCriteria: [],
+    taskProgram: null,
     notes: "",
     report: "",
     result: "",
@@ -193,6 +194,7 @@ function view(
     objective: "",
     tasks: [],
     acceptanceCriteria: [],
+    taskProgram: null,
     notes: "",
     report: "",
     result: "",
@@ -286,6 +288,19 @@ test("plan sidebar does not render a Settings Actions shortcut", () => {
 
   assert.doesNotMatch(full, /Settings → Actions|desktop-plan-open-action-settings/);
   assert.doesNotMatch(thin, /Open Settings → Actions/);
+});
+
+test("started checkpoint overrides stale pending status", () => {
+  const base = view();
+  base.activeCheckpoint = { ...base.activeCheckpoint!, status: "pending" };
+  base.plan.document.checkpoints = [base.activeCheckpoint];
+
+  const markup = renderToStaticMarkup(
+    <DesktopPlanExecutionSidebar view={base} onAction={() => undefined} displayMode="full" />,
+  );
+
+  assert.match(markup, />In progress</);
+  assert.doesNotMatch(markup, />Pending</);
 });
 
 test("plan sidebar renders one execution stack followed by a flexing Git card", () => {
@@ -436,7 +451,7 @@ test("pending-only overflow always exposes a keyboard-accessible chevron disclos
   assert.match(source, /pendingTasks\.slice\(COLLAPSED_VISIBLE_PENDING_TASKS\)/);
 });
 
-test("Git integration uses the remaining sidebar height and scrolls at the bottom edge", () => {
+test("Git integration keeps commit and file details collapsed above the integrate action", () => {
   const sidebarSource = readFileSync(
     new URL("./desktop-v3-existing-conversation-pane.tsx", import.meta.url),
     "utf8",
@@ -453,8 +468,11 @@ test("Git integration uses the remaining sidebar height and scrolls at the botto
   assert.match(sidebarSource, /data-plan-scroll-region/);
   assert.match(appPageSource, /data-testid="desktop-plan-git-sidebar" className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden"/);
   assert.match(appPageSource, /flex min-h-0 flex-1 flex-col overflow-hidden" data-plan-git-scroll-region/);
-  assert.match(appPageSource, /min-h-0 flex-1 overflow-y-auto rounded-xl bg-\[var\(--app-bg-alt\)\] p-1 \[scrollbar-gutter:stable\]" data-plan-git-file-list data-plan-git-scroll="at-sidebar-edge"/);
-  assert.doesNotMatch(appPageSource, /data-plan-git-file-list[^\n]*max-h-/);
+  assert.match(appPageSource, /<details[^\n]*data-plan-git-session-commits>/);
+  assert.match(appPageSource, /<details[^\n]*data-plan-git-file-details>/);
+  assert.match(appPageSource, /data-plan-git-scroll="inside-disclosure"/);
+  assert.match(appPageSource, /data-plan-git-integrate-anchor/);
+  assert.doesNotMatch(appPageSource, /data-plan-git-scroll="at-sidebar-edge"/);
   assert.doesNotMatch(appPageSource, /data-plan-git-visible-rows/);
   assert.doesNotMatch(appPageSource, /h-\[calc\(100%-0\.5rem\)\]/);
   assert.doesNotMatch(appPageSource, /flex-\[0_0_36%\]/);
@@ -567,7 +585,8 @@ test("the status row stays above the fixed console checkpoint", () => {
   assert.ok(titleIndex > statusIndex, "expected checkpoint title beneath the row");
   assert.match(markup, /Current checkpoint/i);
   assert.match(markup, /In Progress/);
-  assert.match(markup, /Build UI/);
+  assert.match(markup, />1<\/span><span class="inline text-\[13px\]">Build UI/);
+  assert.doesNotMatch(markup, /CP-1/);
 });
 
 test("active plan status is plain text without a left badge", () => {
@@ -613,6 +632,11 @@ test("accepted plan sidebar starts with the current checkpoint without an execut
   const currentCheckpointIndex = markup.indexOf("data-plan-current-checkpoint-layout");
   const scrollContentIndex = markup.indexOf("data-plan-top-stack-content");
 
+  assert.match(markup, /data-plan-started-header/);
+  assert.match(markup, /Plan started/);
+  assert.match(markup, />Plan<\/h2>/);
+  assert.match(markup, /1 checkpoint/);
+  assert.match(markup, /Automatic/);
   assert.doesNotMatch(markup, />Execution</);
   assert.doesNotMatch(markup, /title="Plan execution"/);
   assert.ok(currentCheckpointIndex > scrollContentIndex, "expected current checkpoint first in the sidebar stack");
@@ -863,13 +887,13 @@ test("final accept-and-archive review action dispatches checkpoint acceptance fi
   assert.deepEqual(actions, [{ action: "accept_checkpoint", checkpointId: "cp-1" }]);
 });
 
-test("final review renders the terminal recommendation", () => {
+test("final review keeps recommendations out of the plan sidebar", () => {
   const base = view({ reviewRequired: true, status: "waiting_review" });
   base.activeCheckpoint = {
     ...base.activeCheckpoint!,
     recommendation: {
       decision: "ship",
-      action: "accept_and_archive",
+      action: "review",
       reason: "Focused lifecycle coverage passes.",
       actionState: "ready",
     },
@@ -878,41 +902,9 @@ test("final review renders the terminal recommendation", () => {
   const markup = renderToStaticMarkup(
     <DesktopPlanExecutionSidebar view={base} onAction={() => undefined} onEditPlan={() => undefined} />,
   );
-  assert.match(markup, /Recommendation/);
-  assert.match(markup, /Ship — Accept And Archive/);
-  assert.match(markup, /Focused lifecycle coverage passes/);
-  assert.match(markup, /data-plan-recommendation=""/);
-  assert.match(markup, /border border-\[var\(--app-primary-border\)\]/);
-});
-
-test("final review sidebar prefers the same canonical handoff recommendation as the inline card", () => {
-  const base = view({ reviewRequired: true, status: "waiting_review" });
-  base.activeCheckpoint = {
-    ...base.activeCheckpoint!,
-    recommendation: {
-      decision: "change",
-      action: "old_action",
-      reason: "Stale checkpoint value.",
-      actionState: "ready",
-    },
-  };
-  base.plan.document.checkpoints = [base.activeCheckpoint];
-  const markup = renderToStaticMarkup(
-    <DesktopPlanExecutionSidebar
-      view={base}
-      canonicalRecommendation={{
-        decision: "ship",
-        action: "review",
-        reason: "Canonical projected value.",
-        actionState: "ready",
-      }}
-      onAction={() => undefined}
-      onEditPlan={() => undefined}
-    />,
-  );
-  assert.match(markup, /Ship — Review/);
-  assert.match(markup, /Canonical projected value/);
-  assert.doesNotMatch(markup, /Stale checkpoint value/);
+  assert.doesNotMatch(markup, /data-plan-recommendation/);
+  assert.doesNotMatch(markup, /Focused lifecycle coverage passes/);
+  assert.match(markup, /Accept &amp; archive plan/);
 });
 
 test("desktop plan sidebar never renders manual execution mode controls", () => {
@@ -972,7 +964,7 @@ test("plan modal removes recovery and shows the full active checkpoint under the
   const markup = renderPlanModal({ plan: base, revisions: [planRevision()] });
 
   const titleIndex = markup.indexOf(">Plan</h2>");
-  const activeIndex = markup.indexOf("CP 1 of 1");
+  const activeIndex = markup.indexOf("Checkpoint 1 of 1");
   const activeTitleIndex = markup.indexOf(
     "Build UI with a very long active checkpoint title that should wrap instead of truncating underneath the plan title",
   );

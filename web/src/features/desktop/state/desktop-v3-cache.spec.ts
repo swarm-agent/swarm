@@ -2852,6 +2852,10 @@ test('realtime task stream v2 deltas merge launch patches into keyed state witho
     tool: 'task',
     status: 'running',
     launch_count: 2,
+    task_mode: 'swarm',
+    swarm_strategy: 'assembly',
+    integration_contract: 'Combine complementary parts in the parent.',
+    integration_required: true,
     task_call_id: 'call-task',
     launch_key: 'child-1',
     launch_index: 1,
@@ -2942,9 +2946,162 @@ test('realtime task stream v2 deltas merge launch patches into keyed state witho
   const tool = state.liveRunsBySession[sessionA.id]['run-live'].toolCallsByCallId['call-task']
   assert.equal(tool.outputText, undefined)
   assert.deepEqual(tool.taskStream?.launchOrder, ['child-1', 'child-2'])
+  assert.equal(tool.taskStream?.taskMode, 'swarm')
+  assert.equal(tool.taskStream?.swarmStrategy, 'assembly')
+  assert.equal(tool.taskStream?.integrationContract, 'Combine complementary parts in the parent.')
+  assert.equal(tool.taskStream?.integrationRequired, true)
   assert.equal(tool.taskStream?.launchesByKey['child-1']?.current_tool, 'search')
   assert.equal(tool.taskStream?.launchesByKey['child-1']?.current_tool_display, 'search x2')
   assert.equal(tool.taskStream?.launchesByKey['child-2']?.subagent, 'parallel')
+})
+
+test('realtime direct image swarm deltas merge per-image routing and creation progress without child sessions', () => {
+  const state = bootstrappedState()
+  const routing = JSON.stringify({
+    path_id: 'tool.task.image_swarm.stream.v1', tool: 'task', execution_format: 'direct_image_swarm', task_mode: 'swarm', image_count: 1,
+    image_key: 'image:1', image: { image_key: 'image:1', index: 1, status: 'running', theme: 'minimal', current_stage: 'router', current_stage_label: 'Routing', stage_history: ['Routing'], swarm_mode: true },
+  })
+  const creating = JSON.stringify({
+    path_id: 'tool.task.image_swarm.stream.v1', tool: 'task', execution_format: 'direct_image_swarm', task_mode: 'swarm', image_count: 1,
+    image_key: 'image:1', image: { image_key: 'image:1', index: 1, status: 'running', title: 'Minimal image', current_stage: 'image_model', current_stage_label: 'Image creation', stage_history: ['Routing', 'Image creation'], swarm_mode: true },
+  })
+  applyRealtimeFrame(state, { frame: deltaFrame('session.tool.started', {
+    call_id: 'call-image-task', step_id: 'step-image-task', tool_instance_id: 'tool-instance-image-task', tool_name: 'task', arguments: '{"mode":"swarm","agent_type":"image"}',
+  }, 40, 'cursor-image-start') })
+  for (const [index, output] of [routing, creating].entries()) {
+    applyRealtimeFrame(state, { frame: deltaFrame('session.tool.delta', { call_id: 'call-image-task', tool_name: 'task', output }, 41 + index, `cursor-image-${index}`) })
+  }
+
+  const tool = state.liveRunsBySession[sessionA.id]['run-live'].toolCallsByCallId['call-image-task']
+  assert.equal(tool.outputText, undefined)
+  assert.equal(tool.taskStream?.executionFormat, 'direct_image_swarm')
+  assert.equal(tool.taskStream?.imageCount, 1)
+  assert.deepEqual(tool.taskStream?.launchOrder, ['image:1'])
+  assert.equal(tool.taskStream?.launchesByKey['image:1']?.status, 'running')
+  assert.equal(tool.taskStream?.launchesByKey['image:1']?.current_tool, 'Image creation')
+  assert.equal(tool.taskStream?.launchesByKey['image:1']?.current_tool_display, 'Routing → Image creation')
+  assert.equal(tool.taskStream?.launchesByKey['image:1']?.child_session_id, undefined)
+})
+
+test('realtime task stream v2 retains Task Program definition and status metadata', () => {
+  const state = bootstrappedState()
+  const program = {
+    id: 'release_program',
+    stages: [{ id: 'research' }, { id: 'build', depends_on: ['research'] }],
+    jobs: [{ id: 'scan', stage_id: 'research' }, { id: 'code', stage_id: 'build', depends_on: ['scan'] }],
+  }
+  const programStatus = {
+    program_id: 'release_program',
+    program_state: 'running',
+    active_stage_id: 'research',
+    jobs: [{ job_id: 'scan', stage_id: 'research', state: 'running', child_session_id: 'scan-child' }],
+  }
+  const patch = JSON.stringify({
+    path_id: 'tool.task.stream.v2',
+    stream_version: 2,
+    tool: 'task',
+    status: 'running',
+    task_call_id: 'call-program',
+    launch_key: 'scan-child',
+    launch_index: 1,
+    program_id: 'release_program',
+    program_state: 'running',
+    active_stage_id: 'research',
+    next_action: 'launch_ready_jobs',
+    program,
+    program_status: programStatus,
+    launch: {
+      launch_key: 'scan-child',
+      launch_index: 1,
+      child_session_id: 'scan-child',
+      status: 'running',
+      subagent: 'finder',
+    },
+  })
+
+  applyRealtimeFrame(state, {
+    frame: deltaFrame('session.tool.started', {
+      call_id: 'call-program',
+      step_id: 'step-program',
+      tool_instance_id: 'tool-instance-program',
+      tool_name: 'task',
+      arguments: JSON.stringify({ action: 'spawn', program }),
+    }, 20, 'cursor-program-start'),
+  })
+  applyRealtimeFrame(state, {
+    frame: deltaFrame('session.tool.delta', {
+      call_id: 'call-program',
+      tool_name: 'task',
+      output: patch,
+    }, 21, 'cursor-program-delta'),
+  })
+
+  const stream = state.liveRunsBySession[sessionA.id]['run-live'].toolCallsByCallId['call-program'].taskStream
+  assert.equal(stream?.programId, 'release_program')
+  assert.equal(stream?.programState, 'running')
+  assert.equal(stream?.activeStageId, 'research')
+  assert.equal(stream?.nextAction, 'launch_ready_jobs')
+  assert.deepEqual(stream?.program, program)
+  assert.deepEqual(stream?.programStatus, programStatus)
+})
+
+test('task program snapshot without a launch patch updates phased stream metadata', () => {
+  const state = bootstrappedState()
+  state.liveRunsBySession[sessionA.id] = {
+    'run-live': {
+      sessionId: sessionA.id,
+      runId: 'run-live',
+      status: 'running',
+      toolCallsByCallId: {},
+    },
+  }
+  const program = {
+    id: 'release_program',
+    stages: [{ id: 'research' }, { id: 'build', depends_on: ['research'] }],
+    jobs: [{ id: 'scan', stage_id: 'research' }, { id: 'code', stage_id: 'build', depends_on: ['scan'] }],
+  }
+  const programStatus = {
+    program_id: 'release_program',
+    program_state: 'running',
+    active_stage_id: 'build',
+    jobs: [{ job_id: 'scan', stage_id: 'research', state: 'completed' }, { job_id: 'code', stage_id: 'build', state: 'running' }],
+  }
+
+  applyRealtimeFrame(state, {
+    frame: deltaFrame('session.tool.started', {
+      call_id: 'call-program-snapshot',
+      step_id: 'step-program-snapshot',
+      tool_instance_id: 'tool-instance-program-snapshot',
+      tool_name: 'task',
+      arguments: JSON.stringify({ action: 'start', program }),
+    }, 22, 'cursor-program-snapshot-start'),
+  })
+  applyRealtimeFrame(state, {
+    frame: deltaFrame('session.tool.delta', {
+      call_id: 'call-program-snapshot',
+      tool_name: 'task',
+      output: JSON.stringify({
+        path_id: 'tool.task.stream.v2',
+        stream_version: 2,
+        tool: 'task',
+        event: 'program.snapshot',
+        status: 'running',
+        program_id: 'release_program',
+        program_state: 'running',
+        active_stage_id: 'build',
+        next_action: 'await_running_jobs',
+        program,
+        program_status: programStatus,
+      }),
+    }, 23, 'cursor-program-snapshot-delta'),
+  })
+
+  const stream = state.liveRunsBySession[sessionA.id]['run-live'].toolCallsByCallId['call-program-snapshot'].taskStream
+  assert.equal(stream?.activeStageId, 'build')
+  assert.equal(stream?.nextAction, 'await_running_jobs')
+  assert.deepEqual(stream?.program, program)
+  assert.deepEqual(stream?.programStatus, programStatus)
+  assert.deepEqual(stream?.launchOrder, [])
 })
 
 test('restored assistant delta with old seq is ignored', () => {

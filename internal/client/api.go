@@ -1043,20 +1043,53 @@ type SessionPlanCheckpointRecommendation struct {
 	Action      string `json:"action,omitempty"`
 	Reason      string `json:"reason,omitempty"`
 	ActionState string `json:"action_state,omitempty"`
+	Prompt      string `json:"prompt,omitempty"`
 }
 
 // PlanFinalHandoff is the versioned compact projection carried in durable V3
 // message metadata. Suggested prompts are inert text and must be sent through
 // the ordinary user-message API.
 type PlanFinalHandoff struct {
-	SchemaVersion    int                                  `json:"schema_version"`
-	Title            string                               `json:"title"`
-	Overview         string                               `json:"overview"`
-	ImpactBullets    []string                             `json:"impact_bullets,omitempty"`
-	Recommendation   *SessionPlanCheckpointRecommendation `json:"recommendation,omitempty"`
-	SuggestedPrompts []PlanFinalHandoffSuggestedPrompt    `json:"suggested_prompts,omitempty"`
-	PullRequestURL   string                               `json:"pull_request_url,omitempty"`
-	Details          PlanFinalHandoffDetails              `json:"details"`
+	SchemaVersion      int                                  `json:"schema_version"`
+	Title              string                               `json:"title"`
+	Overview           string                               `json:"overview"`
+	ImpactBullets      []string                             `json:"impact_bullets,omitempty"`
+	CopyableCodeBlocks []PlanFinalHandoffCopyableCodeBlock  `json:"copyable_code_blocks,omitempty"`
+	Recommendation     *SessionPlanCheckpointRecommendation `json:"recommendation,omitempty"`
+	SuggestedPrompts   []PlanFinalHandoffSuggestedPrompt    `json:"suggested_prompts,omitempty"`
+	Artifacts          []PlanFinalHandoffArtifact           `json:"artifacts,omitempty"`
+	PullRequestURL     string                               `json:"pull_request_url,omitempty"`
+	Details            PlanFinalHandoffDetails              `json:"details"`
+}
+
+// PlanFinalHandoffArtifact is a safe client projection of a concrete
+// deliverable. ArtifactID is opaque; clients resolve it through the session
+// artifact API rather than treating Path as filesystem authority.
+type PlanFinalHandoffArtifact struct {
+	ArtifactID            string `json:"artifact_id,omitempty"`
+	ID                    string `json:"id,omitempty"`
+	Label                 string `json:"label,omitempty"`
+	Description           string `json:"description,omitempty"`
+	Filename              string `json:"filename,omitempty"`
+	MediaType             string `json:"media_type,omitempty"`
+	Kind                  string `json:"kind,omitempty"`
+	Role                  string `json:"role,omitempty"`
+	Status                string `json:"status,omitempty"`
+	SessionID             string `json:"session_id,omitempty"`
+	CollectionID          string `json:"collection_id,omitempty"`
+	VariantID             string `json:"variant_id,omitempty"`
+	EventSeq              int64  `json:"event_seq,omitempty"`
+	Path                  string `json:"path,omitempty"`
+	RelativePath          string `json:"relative_path,omitempty"`
+	WorkspaceRelativePath string `json:"workspace_relative_path,omitempty"`
+	Previewable           bool   `json:"previewable,omitempty"`
+	PreviewURL            string `json:"preview_url,omitempty"`
+}
+
+type PlanFinalHandoffCopyableCodeBlock struct {
+	Label    string `json:"label,omitempty"`
+	Language string `json:"language,omitempty"`
+	Code     string `json:"code"`
 }
 
 type PlanFinalHandoffSuggestedPrompt struct {

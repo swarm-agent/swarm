@@ -581,6 +581,63 @@ func planManageDocument(payload map[string]any) map[string]any {
 	return nil
 }
 
+func planManageCheckpointDisplay(document map[string]any, payload map[string]any) string {
+	checkpointID := firstNonEmptyToolValue(
+		jsonString(payload, "checkpoint_id"),
+		jsonString(jsonObject(payload, "execution_summary"), "active_checkpoint_id"),
+		jsonString(document, "active_checkpoint_id"),
+	)
+	if checkpointID == "" {
+		return ""
+	}
+	checkpoints := jsonObjectSlice(document, "checkpoints")
+	for index, checkpoint := range checkpoints {
+		if strings.EqualFold(jsonString(checkpoint, "id"), checkpointID) {
+			order := jsonInt(checkpoint, "order")
+			if order <= 0 {
+				order = index + 1
+			}
+			return fmt.Sprintf("checkpoint %d", order)
+		}
+	}
+	if strings.HasPrefix(strings.ToLower(checkpointID), "cp-") {
+		if number := strings.TrimPrefix(strings.ToLower(checkpointID), "cp-"); number != "" {
+			return "checkpoint " + number
+		}
+	}
+	return ""
+}
+
+func planManageLifecycleActionDisplay(action string, payload, plan, document map[string]any) string {
+	if planManageStarted(action, payload, plan, document) {
+		return "started"
+	}
+	return planManageActionDisplay(action)
+}
+
+func planManageStarted(action string, payload, plan, document map[string]any) bool {
+	if normalizePlanManageAction(action) != "request_new_plan" {
+		return false
+	}
+	summary := jsonObject(payload, "execution_summary")
+	return jsonBool(plan, "active") ||
+		strings.EqualFold(jsonString(plan, "status"), "approved") ||
+		strings.EqualFold(jsonString(document, "status"), "approved") ||
+		jsonString(summary, "active_checkpoint_id") != ""
+}
+
+func planManageDisplayStatus(action string, payload, plan, document map[string]any) string {
+	if planManageStarted(action, payload, plan, document) {
+		if status := firstNonEmptyToolValue(
+			jsonString(jsonObject(payload, "execution_summary"), "next_checkpoint_status"),
+			jsonString(jsonObject(payload, "execution_summary"), "next_action"),
+		); status != "" {
+			return status
+		}
+	}
+	return firstNonEmptyToolValue(jsonString(document, "status"), jsonString(plan, "status"), jsonString(payload, "status"))
+}
+
 func planManageCardSummary(payload map[string]any) string {
 	if payload == nil {
 		return ""
@@ -595,12 +652,12 @@ func planManageCardSummary(payload map[string]any) string {
 		jsonString(payload, "title"),
 	)
 	checkpoints := jsonObjectSlice(document, "checkpoints")
-	status := firstNonEmptyToolValue(
-		jsonString(document, "status"),
-		jsonString(plan, "status"),
-		jsonString(payload, "status"),
-	)
-	parts := make([]string, 0, 4)
+	action := firstNonEmptyToolValue(jsonString(payload, "action"), jsonString(payload, "document_operation"), jsonString(payload, "update_kind"))
+	status := planManageDisplayStatus(action, payload, plan, document)
+	parts := make([]string, 0, 5)
+	if checkpoint := planManageCheckpointDisplay(document, payload); checkpoint != "" {
+		parts = append(parts, checkpoint)
+	}
 	if title != "" {
 		parts = append(parts, title)
 	}
@@ -3352,7 +3409,7 @@ func summarizePlanManageToolPayload(payload map[string]any) string {
 
 	summary := "plan"
 	if action != "" {
-		summary += " " + planManageActionDisplay(action)
+		summary += " " + planManageLifecycleActionDisplay(action, payload, plan, jsonObject(plan, "document"))
 	}
 	notes := make([]string, 0, 3)
 	switch action {
@@ -3460,6 +3517,8 @@ func normalizePlanManageAction(action string) string {
 
 func planManageActionDisplay(action string) string {
 	switch normalizePlanManageAction(action) {
+	case "start_session_checkpoint", "start_checkpoint":
+		return "started"
 	case "get-active":
 		return "active"
 	case "set-active":

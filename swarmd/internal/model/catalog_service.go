@@ -17,10 +17,11 @@ import (
 )
 
 const (
-	defaultCatalogURL          = "https://models.swarmagent.dev/v1/snapshot.json"
-	defaultCatalogVersionURL   = "https://models.swarmagent.dev/v1/snapshot-version.json"
-	defaultCatalogTTL          = time.Hour
-	defaultCatalogFetchTimeout = 10 * time.Second
+	catalogMaterializationVersion = 1
+	defaultCatalogURL             = "https://models.swarmagent.dev/v1/snapshot.json"
+	defaultCatalogVersionURL      = "https://models.swarmagent.dev/v1/snapshot-version.json"
+	defaultCatalogTTL             = time.Hour
+	defaultCatalogFetchTimeout    = 10 * time.Second
 
 	catalogSourcePinned = "swarm_snapshot:pinned"
 	catalogSourceLive   = "swarm_snapshot:live"
@@ -745,6 +746,10 @@ func decodeSwarmSnapshotRecords(payload []byte, nowMs, expiresAt int64, source, 
 		if err != nil {
 			return nil, swarmSnapshotVersion{}, fmt.Errorf("Swarm model snapshot media record %q/%q: %w", providerID, modelID, err)
 		}
+		catalogModalities, err := snapshotModelCatalogModalities(model, providerID)
+		if err != nil {
+			return nil, swarmSnapshotVersion{}, fmt.Errorf("Swarm model snapshot catalog modalities %q/%q: %w", providerID, modelID, err)
+		}
 		recommendations := modelRecommendations(model.Swarm.Recommendations)
 		recommendations = appendProviderRecommendations(recommendations, providerID, modelID, model.CatalogID, snapshot.providerRecommendations(providerID))
 		record := pebblestore.ModelCatalogRecord{
@@ -766,6 +771,7 @@ func decodeSwarmSnapshotRecords(payload []byte, nowMs, expiresAt int64, source, 
 			Recommendations:           recommendations,
 			ContextModes:              modelContextModes(model.ProviderSpecific, providerID, contextWindow),
 			Media:                     media,
+			CatalogModalities:         catalogModalities,
 			Source:                    source,
 			SourceSnapshotID:          snapshot.SnapshotID,
 			SourceSnapshotVersion:     snapshot.SnapshotVersion,
@@ -815,6 +821,61 @@ type swarmSnapshotModalityDetail struct {
 	SupportedInputCategories []string `json:"supported_input_categories"`
 	MediaType                string   `json:"media_type"`
 	Processing               string   `json:"processing"`
+}
+
+func snapshotModelCatalogModalities(model swarmSnapshotModel, providerID string) (pebblestore.ModelCatalogModalities, error) {
+	modelRaw, err := snapshotProviderMultimodalRaw(model.ProviderSpecific, providerID)
+	if err != nil {
+		return pebblestore.ModelCatalogModalities{}, err
+	}
+	facts, _, err := decodeSnapshotMultimodal(modelRaw)
+	if err != nil {
+		return pebblestore.ModelCatalogModalities{}, err
+	}
+	inputs := mergeCatalogModalities(firstNonEmptyStringList(facts.ModelNativeInputModalities, facts.InputModalities), capabilityModalities(model, true))
+	outputs := mergeCatalogModalities(firstNonEmptyStringList(facts.ModelNativeOutputModalities, facts.OutputModalities), capabilityModalities(model, false))
+	categories := firstNonEmptyStringList(facts.File.SupportedInputCategories, facts.FileInputCategories)
+	return pebblestore.ModelCatalogModalities{
+		Inputs: normalizeCatalogStringList(inputs), Outputs: normalizeCatalogStringList(outputs), Categories: normalizeCatalogStringList(categories),
+	}, nil
+}
+
+func mergeCatalogModalities(groups ...[]string) []string {
+	merged := make([]string, 0, 6)
+	for _, group := range groups {
+		for _, value := range group {
+			if value = strings.ToLower(strings.TrimSpace(value)); value != "" && !stringInSlice(merged, value) {
+				merged = append(merged, value)
+			}
+		}
+	}
+	return merged
+}
+
+func capabilityModalities(model swarmSnapshotModel, input bool) []string {
+	facts := []struct {
+		name   string
+		input  *bool
+		output *bool
+	}{
+		{"text", model.Capabilities.SupportsTextInput, model.Capabilities.SupportsTextOutput},
+		{"image", model.Capabilities.SupportsImageInput, model.Capabilities.SupportsImageOutput},
+		{"audio", model.Capabilities.SupportsAudioInput, model.Capabilities.SupportsAudioOutput},
+		{"video", model.Capabilities.SupportsVideoInput, model.Capabilities.SupportsVideoOutput},
+		{"file", model.Capabilities.SupportsFileInput, nil},
+		{"pdf", model.Capabilities.SupportsPDFInput, nil},
+	}
+	out := make([]string, 0, len(facts))
+	for _, fact := range facts {
+		value := fact.output
+		if input {
+			value = fact.input
+		}
+		if value != nil && *value {
+			out = append(out, fact.name)
+		}
+	}
+	return out
 }
 
 func catalogMediaProviderEnabled(providerID string) bool {
@@ -1477,24 +1538,25 @@ func (snapshot swarmSnapshot) version() swarmSnapshotVersion {
 
 func metaFromSnapshot(snapshot swarmSnapshotVersion, source, sourceURL, versionURL, etag, versionETag string, nowMs, expiresAt int64, reason string, recordCount int) pebblestore.ModelCatalogMeta {
 	meta := pebblestore.ModelCatalogMeta{
-		Source:                source,
-		SourceURL:             sourceURL,
-		SnapshotURL:           sourceURL,
-		VersionURL:            versionURL,
-		ETag:                  strings.TrimSpace(etag),
-		VersionETag:           strings.TrimSpace(versionETag),
-		SnapshotID:            snapshot.SnapshotID,
-		SnapshotVersion:       snapshot.SnapshotVersion,
-		SnapshotSchemaVersion: snapshot.SnapshotSchemaVersion,
-		GeneratedAt:           snapshot.GeneratedAt,
-		FetchedAt:             nowMs,
-		LastCheckedAt:         nowMs,
-		ExpiresAt:             expiresAt,
-		RecordCount:           recordCount,
-		ModelCount:            snapshot.ModelCount,
-		ProviderCount:         snapshot.ProviderCount,
-		HydratedProviderCount: snapshot.HydratedProviderCount,
-		LastRefreshReason:     reason,
+		MaterializationVersion: catalogMaterializationVersion,
+		Source:                 source,
+		SourceURL:              sourceURL,
+		SnapshotURL:            sourceURL,
+		VersionURL:             versionURL,
+		ETag:                   strings.TrimSpace(etag),
+		VersionETag:            strings.TrimSpace(versionETag),
+		SnapshotID:             snapshot.SnapshotID,
+		SnapshotVersion:        snapshot.SnapshotVersion,
+		SnapshotSchemaVersion:  snapshot.SnapshotSchemaVersion,
+		GeneratedAt:            snapshot.GeneratedAt,
+		FetchedAt:              nowMs,
+		LastCheckedAt:          nowMs,
+		ExpiresAt:              expiresAt,
+		RecordCount:            recordCount,
+		ModelCount:             snapshot.ModelCount,
+		ProviderCount:          snapshot.ProviderCount,
+		HydratedProviderCount:  snapshot.HydratedProviderCount,
+		LastRefreshReason:      reason,
 	}
 	if source == catalogSourcePinned {
 		meta.PinnedSnapshotID = snapshot.SnapshotID
@@ -1542,7 +1604,7 @@ func catalogMetaNeedsPinnedSeed(meta pebblestore.ModelCatalogMeta) bool {
 		return false
 	}
 	if sameCatalogSnapshot(meta, pinned) {
-		return false
+		return meta.MaterializationVersion != catalogMaterializationVersion
 	}
 	if meta.Source == catalogSourcePinned {
 		return true

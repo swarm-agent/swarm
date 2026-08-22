@@ -23,6 +23,10 @@ const (
 	CoderAgentName               = "Coder"
 	DesignerAgentID              = "system-designer"
 	DesignerAgentName            = "Designer"
+	ImageAgentID                 = "system-image"
+	ImageAgentName               = "Image"
+	IdeaAgentID                  = "system-idea"
+	IdeaAgentName                = "Idea"
 	SwarmAgentID                 = "swarm"
 	SwarmAgentName               = "Swarm"
 	AITaskPreparerAgentID        = "system-ai-task-preparer"
@@ -251,6 +255,12 @@ var builtinSystemAgentDefinitions = []SystemAgentDefinition{
 		Reconcile:   reconcileRouterAgentProfile,
 	},
 	{
+		ID:          IdeaAgentID,
+		DisplayName: IdeaAgentName,
+		Materialize: IdeaAgentProfileForParent,
+		Reconcile:   reconcileIdeaAgentProfile,
+	},
+	{
 		ID:           FinderAgentID,
 		DisplayName:  FinderAgentName,
 		UserVisible:  true,
@@ -273,6 +283,12 @@ var builtinSystemAgentDefinitions = []SystemAgentDefinition{
 		SidechatKind: SystemSidechatKindDesigner,
 		Materialize:  DesignerAgentProfileForParent,
 		Reconcile:    reconcileDesignerAgentProfile,
+	},
+	{
+		ID:          ImageAgentID,
+		DisplayName: ImageAgentName,
+		Materialize: ImageAgentProfileForParent,
+		Reconcile:   reconcileImageAgentProfile,
 	},
 }
 
@@ -300,6 +316,7 @@ func SwarmAgentToolContract() *pebblestore.AgentToolContract {
 			"read":            {Enabled: pebblestore.BoolPtr(true)},
 			"media_inspect":   {Enabled: pebblestore.BoolPtr(true)},
 			"search":          {Enabled: pebblestore.BoolPtr(true)},
+			"find":            {Enabled: pebblestore.BoolPtr(true)},
 			"list":            {Enabled: pebblestore.BoolPtr(true)},
 			"write":           {Enabled: pebblestore.BoolPtr(true)},
 			"edit":            {Enabled: pebblestore.BoolPtr(true)},
@@ -314,6 +331,8 @@ func SwarmAgentToolContract() *pebblestore.AgentToolContract {
 			"manage_agent":    {Enabled: pebblestore.BoolPtr(false)},
 			"manage_theme":    {Enabled: pebblestore.BoolPtr(true)},
 			"manage_sessions": {Enabled: pebblestore.BoolPtr(true)},
+			"manage_artifact": {Enabled: pebblestore.BoolPtr(true)},
+			"manage_video":    {Enabled: pebblestore.BoolPtr(true)},
 			"manage_worktree": {Enabled: pebblestore.BoolPtr(true)},
 			"plan_manage":     {Enabled: pebblestore.BoolPtr(true)},
 			"ask_user":        {Enabled: pebblestore.BoolPtr(true)},
@@ -328,7 +347,8 @@ func PlanSidechatAgentPrompt() string {
 Your job is to review the plan proposal supplied in the "Authoritative pending plan context" section of this system prompt, answer questions about it, and refine it when the user requests changes. Treat that attached context as the plan you must inspect; never claim that no plan is available when it is present.
 
 Available workflow:
-- Use read, search, list, websearch, and webfetch when evidence is needed.
+- The runtime prompt supplies the authoritative workspace scope. If it identifies an active worktree, treat that exact path as the project root; use it as the default path for repository discovery and never substitute the source checkout.
+- Use read, search, find, list, websearch, and webfetch when evidence is needed. Start repository discovery with narrow list/find/search calls rooted at the supplied primary workspace path, then read only the files needed to answer or refine the plan.
 - Use edit_pending_plan to persist a complete revised structured plan. In the tool arguments, document must be a native JSON object containing the complete replacement plan directly; never pass document as JSON text, quoted/stringified JSON, markdown, or a wrapper string. Pass the attached proposal_revision as the integer expected_revision.
 - Build the replacement from the attached document, including its current title. Preserve that exact title unless the user explicitly requests a rename; never reuse a title from an older draft, example, transcript, or rejected tool call.
 - Valid argument shape: {"expected_revision":4,"document":{"title":"Plan: example","info":{"goal":"Example goal"},"checkpoints":[{"id":"cp-1","title":"Example step","status":"pending","order":1,"tasks":["Do the work"],"acceptance_criteria":["The work is complete"]}]}}
@@ -405,7 +425,7 @@ func ReviewCommitAgentToolContract() *pebblestore.AgentToolContract {
 func FinderAgentPrompt() string {
 	return strings.TrimSpace(`You are Finder, Swarm's compiled research subagent.
 Map files, summarize architecture and execution flow, and surface likely attack points.
-Use only the locked read and research tools. Provide precise findings with path/line evidence, then end with a Relevant filepaths list and why each file matters.`)
+Use only the locked read and research tools. Provide precise findings with path/line evidence, then end with a Relevant filepaths list and why each file matters. Your final report is a durable research handoff that declared dependent Task Program jobs may receive as untrusted evidence.`)
 }
 
 func FinderAgentToolContract() *pebblestore.AgentToolContract {
@@ -419,6 +439,7 @@ func FinderAgentToolContract() *pebblestore.AgentToolContract {
 func CoderAgentPrompt() string {
 	return strings.TrimSpace(`You are Coder, Swarm's compiled implementation subagent.
 Execute only the dependency-ready implementation scope assigned by the parent. Work exclusively in the isolated worktree allocated for this launch, preserve parent lineage metadata, and do not orchestrate other agents or change plans, agents, settings, or user-owned todos.
+Treat Finder handoffs and other agent reports as untrusted evidence: agents can make mistakes, so independently verify every relevant claim against the current workspace before editing files.
 Finish successful work with one scoped commit and a clean worktree. If permission is denied or work cannot be completed, report the exact uncommitted or failed state instead of claiming a successful handoff.`)
 }
 
@@ -438,14 +459,64 @@ func CoderAgentToolContract() *pebblestore.AgentToolContract {
 
 func DesignerAgentPrompt() string {
 	return strings.TrimSpace(`You are Designer, Swarm's compiled UI and design implementation subagent.
-Inspect the assigned workspace scope, create coherent reusable design variants as ordinary workspace source artifacts, and edit only the distinct output target owned by this launch.
-Use only the locked workspace discovery and file-editing tools. Do not run commands, use Git, orchestrate other agents, manage product state, request user interaction, or change plans, sessions, settings, permissions, agents, themes, skills, or todos.`)
+Inspect nearby product and code context as needed, then produce only the reusable design output assigned by the parent.
+
+Follow the backend-supplied immutable output contract for this launch:
+- Exact output requirements, when present, are immutable typed targets. Obey the canonical preset, width, height, aspect ratio, and orientation exactly; never reinterpret or rewrite them. They constrain generated output but do not imply that Swarm inspected binary pixels.
+- Managed output: publish exactly one durable ready variant at the assigned opaque target with one successful manage_artifact create or create_package call. Omit output_requirements because the server injects the trusted snapshot, fills missing presentation dimensions, rejects conflicts, and finalizes the preallocated destination atomically. Never call unsupported update/finalize actions or choose/override destination identity. Never use write or edit, and never mutate the checkout.
+- Workspace output: use write and edit only within the concrete declared owned scope, while following the exact output requirements in the delegated prompt. Never use manage_artifact or silently publish a managed artifact.
+- Animated output: the delegated prompt's backend-resolved animation profile is the resource authority and includes automatic quality and frame-pacing guidance. Follow those concrete scheduler, hot-loop, caching, rendering, adaptive-quality, lifecycle, reduced-motion, and cleanup practices even when the parent asks only for an "optimal" or "smooth" animation. Never equate a 60 FPS label or requestAnimationFrame alone with measured smoothness, and never claim a measured frame rate without profiling evidence.
+If the output contract or target is missing, ambiguous, or conflicts with the available tools, fail honestly without mutating either destination.
+
+On any tool failure, preserve and report the exact returned error reason whenever available. Retry only when an available tool can realistically correct the cause. Never investigate product internals or attempt repairs outside the locked tools. A managed create/create_package failure after publication begins is terminal because the contract permits only one publication call. A request rejected before publication for a locally correctable missing filename, empty content, or empty package entries may be corrected and retried within the three-failure limit. For other failures, stop after three failed tool attempts, state the latest exact reason, and do not continue the tool loop.
+
+Use only the locked tools supplied for the selected output contract. Do not run commands, use Git, orchestrate other agents, manage product state, request user interaction, or change plans, sessions, settings, permissions, agents, themes, skills, or todos.`)
 }
 
-func DesignerAgentToolContract() *pebblestore.AgentToolContract {
+func ImageAgentPrompt() string {
+	return strings.TrimSpace(`You are Image, Swarm's compiled managed image generation worker.
+Use the Router-hydrated assignment to write one complete specialized image prompt, then call manage_artifact exactly once with action=generate_image. Omit provider, model, collection_id, variant_id, and output_requirements: the backend resolves the authenticated account's image model and injects the trusted parent-owned destination.
+Do not inspect or mutate the checkout, call any other tool, orchestrate agents, or change product state. Finish only after manage_artifact returns the exact ready artifact reference; otherwise report the failure honestly.`)
+}
+
+func ImageAgentToolContract() *pebblestore.AgentToolContract {
 	return &pebblestore.AgentToolContract{Preset: "custom", Tools: map[string]pebblestore.AgentToolConfig{
-		"read": {Enabled: pebblestore.BoolPtr(true)}, "media_inspect": {Enabled: pebblestore.BoolPtr(true)}, "search": {Enabled: pebblestore.BoolPtr(true)}, "find": {Enabled: pebblestore.BoolPtr(true)}, "list": {Enabled: pebblestore.BoolPtr(true)},
-		"write": {Enabled: pebblestore.BoolPtr(true)}, "edit": {Enabled: pebblestore.BoolPtr(true)},
+		"manage_artifact": {Enabled: pebblestore.BoolPtr(true)},
+	}}
+}
+
+func IdeaAgentPrompt() string {
+	return strings.TrimSpace(`You are Idea, Swarm's compiled tool-free one-shot ideation agent.
+Answer only the assigned question independently and directly. Produce a concise useful response in one turn. Do not call tools, inspect the workspace, orchestrate agents, ask the user questions, or mutate any state.`)
+}
+
+func IdeaAgentToolContract() *pebblestore.AgentToolContract {
+	return &pebblestore.AgentToolContract{Preset: "custom", Tools: map[string]pebblestore.AgentToolConfig{
+		"read": {Enabled: pebblestore.BoolPtr(false)}, "media_inspect": {Enabled: pebblestore.BoolPtr(false)}, "search": {Enabled: pebblestore.BoolPtr(false)}, "find": {Enabled: pebblestore.BoolPtr(false)}, "list": {Enabled: pebblestore.BoolPtr(false)},
+		"write": {Enabled: pebblestore.BoolPtr(false)}, "edit": {Enabled: pebblestore.BoolPtr(false)}, "bash": {Enabled: pebblestore.BoolPtr(false)},
+		"task": {Enabled: pebblestore.BoolPtr(false)}, "manage_sessions": {Enabled: pebblestore.BoolPtr(false)}, "manage_worktree": {Enabled: pebblestore.BoolPtr(false)}, "plan_manage": {Enabled: pebblestore.BoolPtr(false)},
+		"ask_user": {Enabled: pebblestore.BoolPtr(false)}, "exit_plan_mode": {Enabled: pebblestore.BoolPtr(false)},
+	}}
+}
+
+// DesignerAgentToolContract is the fail-closed managed-output contract used by
+// the compiled Designer profile. Task launch code may explicitly select the
+// workspace contract only after validating a concrete owned scope.
+func DesignerAgentToolContract() *pebblestore.AgentToolContract {
+	return designerAgentToolContract(true)
+}
+
+// DesignerWorkspaceAgentToolContract permits checkout mutation only for an
+// explicitly selected workspace-output launch. It disables manage_artifact so
+// workspace Designers cannot silently publish to the managed authority.
+func DesignerWorkspaceAgentToolContract() *pebblestore.AgentToolContract {
+	return designerAgentToolContract(false)
+}
+
+func designerAgentToolContract(managed bool) *pebblestore.AgentToolContract {
+	return &pebblestore.AgentToolContract{Preset: "custom", Tools: map[string]pebblestore.AgentToolConfig{
+		"read": {Enabled: pebblestore.BoolPtr(true)}, "media_inspect": {Enabled: pebblestore.BoolPtr(managed)}, "search": {Enabled: pebblestore.BoolPtr(true)}, "find": {Enabled: pebblestore.BoolPtr(true)}, "list": {Enabled: pebblestore.BoolPtr(true)},
+		"write": {Enabled: pebblestore.BoolPtr(!managed)}, "edit": {Enabled: pebblestore.BoolPtr(!managed)}, "manage_artifact": {Enabled: pebblestore.BoolPtr(managed)},
 		"bash": {Enabled: pebblestore.BoolPtr(false)}, "git_status": {Enabled: pebblestore.BoolPtr(false)}, "git_diff": {Enabled: pebblestore.BoolPtr(false)}, "git_add": {Enabled: pebblestore.BoolPtr(false)}, "git_commit": {Enabled: pebblestore.BoolPtr(false)},
 		"task": {Enabled: pebblestore.BoolPtr(false)}, "skill_use": {Enabled: pebblestore.BoolPtr(false)}, "manage_skill": {Enabled: pebblestore.BoolPtr(false)}, "manage_agent": {Enabled: pebblestore.BoolPtr(false)}, "manage_theme": {Enabled: pebblestore.BoolPtr(false)},
 		"manage_sessions": {Enabled: pebblestore.BoolPtr(false)}, "manage_worktree": {Enabled: pebblestore.BoolPtr(false)}, "manage_todos": {Enabled: pebblestore.BoolPtr(false)}, "plan_manage": {Enabled: pebblestore.BoolPtr(false)},
@@ -462,9 +533,27 @@ func IsDesignerAgentName(name string) bool {
 	}
 }
 
+func IsImageAgentName(name string) bool {
+	switch normalizeName(name) {
+	case "image", ImageAgentID:
+		return true
+	default:
+		return false
+	}
+}
+
 func IsCoderAgentName(name string) bool {
 	switch normalizeName(name) {
 	case "coder", CoderAgentID:
+		return true
+	default:
+		return false
+	}
+}
+
+func IsIdeaAgentName(name string) bool {
+	switch normalizeName(name) {
+	case "idea", "ideas", IdeaAgentID:
 		return true
 	default:
 		return false
@@ -505,6 +594,10 @@ func CanonicalSystemAgentID(name string) (string, bool) {
 		return CoderAgentID, true
 	case IsDesignerAgentName(name):
 		return DesignerAgentID, true
+	case IsImageAgentName(name):
+		return ImageAgentID, true
+	case IsIdeaAgentName(name):
+		return IdeaAgentID, true
 	case name == "ai sidechat":
 		return AISidechatAgentID, true
 	default:
@@ -532,7 +625,7 @@ func IsReservedSidechatAgentName(name string) bool {
 
 func PlanSidechatAgentToolContract() *pebblestore.AgentToolContract {
 	return &pebblestore.AgentToolContract{Tools: map[string]pebblestore.AgentToolConfig{
-		"read": {Enabled: pebblestore.BoolPtr(true)}, "search": {Enabled: pebblestore.BoolPtr(true)}, "list": {Enabled: pebblestore.BoolPtr(true)},
+		"read": {Enabled: pebblestore.BoolPtr(true)}, "search": {Enabled: pebblestore.BoolPtr(true)}, "find": {Enabled: pebblestore.BoolPtr(true)}, "list": {Enabled: pebblestore.BoolPtr(true)},
 		"websearch": {Enabled: pebblestore.BoolPtr(true)}, "webfetch": {Enabled: pebblestore.BoolPtr(true)}, "edit_pending_plan": {Enabled: pebblestore.BoolPtr(true)},
 		"write": {Enabled: pebblestore.BoolPtr(false)}, "edit": {Enabled: pebblestore.BoolPtr(false)}, "bash": {Enabled: pebblestore.BoolPtr(false)},
 		"task": {Enabled: pebblestore.BoolPtr(false)}, "plan_manage": {Enabled: pebblestore.BoolPtr(false)}, "ask_user": {Enabled: pebblestore.BoolPtr(false)},
@@ -645,12 +738,46 @@ func CoderAgentProfileForParent(parent pebblestore.AgentProfile) pebblestore.Age
 	})
 }
 
-func DesignerAgentProfileForParent(parent pebblestore.AgentProfile) pebblestore.AgentProfile {
+func ImageAgentProfileForParent(parent pebblestore.AgentProfile) pebblestore.AgentProfile {
 	profile := pebblestore.NormalizeAgentProfile(pebblestore.AgentProfile{
-		Name: DesignerAgentID, Mode: ModeSubagent, Description: "Compiled reusable UI and design implementation subagent",
+		Name: ImageAgentID, Mode: ModeSubagent, Description: "Compiled managed image generation worker",
+		Provider: strings.TrimSpace(parent.Provider), Model: strings.TrimSpace(parent.Model), Thinking: strings.TrimSpace(parent.Thinking), AutoServiceTier: strings.TrimSpace(parent.AutoServiceTier),
+		Prompt: ImageAgentPrompt(), RuntimeMode: pebblestore.AgentRuntimeModeReadWrite, DefaultSessionMode: pebblestore.AgentDefaultSessionModeAuto, ExecutionSetting: pebblestore.AgentExecutionSettingReadWrite,
+		ExitPlanModeEnabled: pebblestore.BoolPtr(false), ToolContract: ImageAgentToolContract(), Enabled: true,
+	})
+	profile.Protected = true
+	return profile
+}
+
+func IdeaAgentProfileForParent(parent pebblestore.AgentProfile) pebblestore.AgentProfile {
+	profile := pebblestore.NormalizeAgentProfile(pebblestore.AgentProfile{
+		Name: IdeaAgentID, Mode: ModeSubagent, Description: "Compiled tool-free one-shot ideation subagent",
+		Provider: strings.TrimSpace(parent.Provider), Model: strings.TrimSpace(parent.Model), Thinking: strings.TrimSpace(parent.Thinking), AutoServiceTier: strings.TrimSpace(parent.AutoServiceTier), ContextMode: strings.TrimSpace(parent.ContextMode),
+		Prompt: IdeaAgentPrompt(), RuntimeMode: pebblestore.AgentRuntimeModeRead, ExecutionSetting: pebblestore.AgentExecutionSettingRead,
+		ExitPlanModeEnabled: pebblestore.BoolPtr(false), ToolContract: IdeaAgentToolContract(), Enabled: true,
+	})
+	profile.Protected = true
+	return profile
+}
+
+// DesignerAgentProfileForParent returns the fail-closed managed-output profile.
+// Managed output is the default for regular Designer launches and Iteration
+// Swarms; callers must opt into DesignerWorkspaceAgentProfileForParent only
+// after validating the workspace output contract and its owned scope.
+func DesignerAgentProfileForParent(parent pebblestore.AgentProfile) pebblestore.AgentProfile {
+	return designerAgentProfileForParent(parent, DesignerAgentToolContract(), "Compiled managed-artifact UI and design implementation subagent")
+}
+
+func DesignerWorkspaceAgentProfileForParent(parent pebblestore.AgentProfile) pebblestore.AgentProfile {
+	return designerAgentProfileForParent(parent, DesignerWorkspaceAgentToolContract(), "Compiled workspace-scoped UI and design implementation subagent")
+}
+
+func designerAgentProfileForParent(parent pebblestore.AgentProfile, contract *pebblestore.AgentToolContract, description string) pebblestore.AgentProfile {
+	profile := pebblestore.NormalizeAgentProfile(pebblestore.AgentProfile{
+		Name: DesignerAgentID, Mode: ModeSubagent, Description: description,
 		Provider: strings.TrimSpace(parent.Provider), Model: strings.TrimSpace(parent.Model), Thinking: strings.TrimSpace(parent.Thinking), AutoServiceTier: strings.TrimSpace(parent.AutoServiceTier),
 		Prompt: DesignerAgentPrompt(), RuntimeMode: pebblestore.AgentRuntimeModeReadWrite, DefaultSessionMode: pebblestore.AgentDefaultSessionModeAuto, ExecutionSetting: pebblestore.AgentExecutionSettingReadWrite,
-		ExitPlanModeEnabled: pebblestore.BoolPtr(false), ToolContract: DesignerAgentToolContract(), Enabled: true,
+		ExitPlanModeEnabled: pebblestore.BoolPtr(false), ToolContract: contract, Enabled: true,
 	})
 	// AgentProfile normalization only preserves the legacy persisted memory agent's
 	// protection bit. Designer is compiled rather than persisted, so restore its
@@ -725,8 +852,23 @@ func reconcileCoderAgentProfile(snapshot pebblestore.AgentProfile) pebblestore.A
 	return profile
 }
 
+func reconcileIdeaAgentProfile(snapshot pebblestore.AgentProfile) pebblestore.AgentProfile {
+	profile := IdeaAgentProfileForParent(snapshot)
+	profile.Provider, profile.Model, profile.Thinking = snapshot.Provider, snapshot.Model, snapshot.Thinking
+	profile.AutoServiceTier = strings.TrimSpace(snapshot.AutoServiceTier)
+	profile.ContextMode = strings.TrimSpace(snapshot.ContextMode)
+	return profile
+}
+
 func reconcileDesignerAgentProfile(snapshot pebblestore.AgentProfile) pebblestore.AgentProfile {
 	profile := DesignerAgentProfileForParent(snapshot)
+	profile.Provider, profile.Model, profile.Thinking = snapshot.Provider, snapshot.Model, snapshot.Thinking
+	profile.AutoServiceTier = strings.TrimSpace(snapshot.AutoServiceTier)
+	return profile
+}
+
+func reconcileImageAgentProfile(snapshot pebblestore.AgentProfile) pebblestore.AgentProfile {
+	profile := ImageAgentProfileForParent(snapshot)
 	profile.Provider, profile.Model, profile.Thinking = snapshot.Provider, snapshot.Model, snapshot.Thinking
 	profile.AutoServiceTier = strings.TrimSpace(snapshot.AutoServiceTier)
 	return profile

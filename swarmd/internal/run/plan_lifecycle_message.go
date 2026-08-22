@@ -429,12 +429,16 @@ func BuildFinalPlanExecutionHandoffSystemMessage(input PlanExecutionLifecycleMes
 		for _, impact := range finalHandoff.ImpactBullets {
 			lines = append(lines, "- "+impact)
 		}
+		for _, block := range finalHandoff.CopyableCodeBlocks {
+			lines = append(lines, "", planLifecycleCopyableCodeBlockMarkdown(block))
+		}
 	} else if detailLines := planLifecycleOutcomeDetailLines(input.Payload, true); len(detailLines) > 0 {
 		lines = append(lines, "")
 		lines = append(lines, detailLines...)
 	}
 	metadata := planExecutionHandoffMetadata(input, action, doc, checkpointID, checkpointTitle, nextAction, PlanExecutionFinalHandoffMessageSource, "plan_final_checkpoint_handoff")
 	if finalHandoff != nil {
+		finalHandoff.Artifacts = sessionruntime.ProjectPlanFinalHandoffArtifacts(input.Plan.ID, checkpointID, planLifecycleArtifacts(doc, checkpointID))
 		metadata["final_handoff"] = finalHandoff
 	}
 	return PlanExecutionLifecycleMessage{Content: strings.Join(lines, "\n"), Metadata: metadata}, true
@@ -482,9 +486,25 @@ func BuildBlockedPlanExecutionHandoffSystemMessage(input PlanExecutionLifecycleM
 	for _, impact := range blockedHandoff.ImpactBullets {
 		lines = append(lines, "- "+impact)
 	}
+	for _, block := range blockedHandoff.CopyableCodeBlocks {
+		lines = append(lines, "", planLifecycleCopyableCodeBlockMarkdown(block))
+	}
 	metadata := planExecutionHandoffMetadata(input, action, doc, checkpointID, checkpointTitle, nextAction, PlanExecutionBlockedHandoffMessageSource, "plan_blocked_checkpoint_handoff")
 	metadata["blocked_handoff"] = blockedHandoff
 	return PlanExecutionLifecycleMessage{Content: strings.Join(lines, "\n"), Metadata: metadata}, true
+}
+
+func planLifecycleCopyableCodeBlockMarkdown(block pebblestore.PlanFinalHandoffCopyableCodeBlock) string {
+	label := strings.TrimSpace(block.Label)
+	prefix := ""
+	if label != "" {
+		prefix = label + "\n"
+	}
+	fence := "```"
+	for strings.Contains(block.Code, fence) {
+		fence += "`"
+	}
+	return prefix + fence + strings.TrimSpace(block.Language) + "\n" + block.Code + "\n" + fence
 }
 
 func planLifecycleFinalHandoff(doc *pebblestore.SessionPlanDocument, checkpointID string) (*pebblestore.PlanFinalHandoff, error) {

@@ -58,7 +58,11 @@ const (
 	sessionV3StaleRecoveryMaxUtilization      = 99.0
 	sessionV3HandoffDefaultTailMessages       = 24
 	sessionV3HandoffDefaultToolOutputChars    = 1200
-	sessionV3HandoffDefaultTotalChars         = 60000
+	// Provider tokenizers differ, so handoff sizing uses the same deterministic
+	// approximation as memory compaction: four Unicode code points per token.
+	sessionV3HandoffApproxCharsPerToken = 4
+	sessionV3HandoffDefaultTotalTokens  = 40000
+	sessionV3HandoffDefaultTotalChars   = sessionV3HandoffDefaultTotalTokens * sessionV3HandoffApproxCharsPerToken
 )
 
 var sessionV3TitleWordPattern = regexp.MustCompile(`\b[\p{L}\p{N}][\p{L}\p{N}'-]*\b`)
@@ -1143,6 +1147,8 @@ type sessionV3AssistantResponse struct {
 	ContextMode                   string
 	ProviderLineageID             string
 	ProviderConfigurationHash     string
+	MediaContract                 provideriface.SessionMediaContract
+	MediaInspectToolExposed       bool
 	ContextBranchID               string
 	ProviderCacheKey              string
 	SessionAffinityKey            string
@@ -1293,6 +1299,11 @@ func (e *sessionV3Executor) persistSessionV3ProviderLifecycle(job sessionV3Execu
 		Provider:                      response.ProviderID,
 		Model:                         response.Model,
 		ConfigurationHash:             response.ProviderConfigurationHash,
+		MediaContractHash:             response.MediaContract.Hash,
+		MediaSnapshotID:               response.MediaContract.SnapshotID,
+		MediaSnapshotVersion:          response.MediaContract.SnapshotVersion,
+		MediaDenialReasons:            append([]string(nil), response.MediaContract.DenialReasons...),
+		MediaInspectToolExposed:       response.MediaInspectToolExposed,
 		ProviderLineageID:             response.ProviderLineageID,
 		ContextBranchID:               response.ContextBranchID,
 		ProviderCacheKey:              response.ProviderCacheKey,
@@ -1790,6 +1801,8 @@ func (e *sessionV3Executor) providerAssistantResponse(ctx context.Context, job s
 			Model:                         modelName,
 			ProviderLineageID:             loopResult.FinalRequest.ProviderLineageID,
 			ProviderConfigurationHash:     loopResult.FinalRequest.ProviderConfigurationHash,
+			MediaContract:                 loopResult.FinalRequest.MediaContract,
+			MediaInspectToolExposed:       sessionsV3ProviderRequestHasTool(loopResult.FinalRequest.Tools, "media_inspect"),
 			ContextBranchID:               loopResult.FinalRequest.ContextBranchID,
 			ProviderCacheKey:              loopResult.FinalRequest.ProviderCacheKey,
 			SessionAffinityKey:            loopResult.FinalRequest.SessionAffinityKey,
@@ -1830,6 +1843,8 @@ func (e *sessionV3Executor) providerAssistantResponse(ctx context.Context, job s
 		Usage:                         response.Usage,
 		ProviderLineageID:             loopResult.FinalRequest.ProviderLineageID,
 		ProviderConfigurationHash:     loopResult.FinalRequest.ProviderConfigurationHash,
+		MediaContract:                 loopResult.FinalRequest.MediaContract,
+		MediaInspectToolExposed:       sessionsV3ProviderRequestHasTool(loopResult.FinalRequest.Tools, "media_inspect"),
 		ContextBranchID:               loopResult.FinalRequest.ContextBranchID,
 		ProviderCacheKey:              loopResult.FinalRequest.ProviderCacheKey,
 		SessionAffinityKey:            loopResult.FinalRequest.SessionAffinityKey,
@@ -2145,10 +2160,26 @@ func (e *sessionV3Executor) sessionV3ProviderHandoffPacket(job sessionV3Executor
 		}
 	}
 	packet := strings.TrimSpace(b.String())
-	if len([]rune(packet)) > caps.TotalChars {
-		return "", fmt.Errorf("bounded provider handoff packet exceeds safety cap: %d chars > %d; compact the session before provider/model handoff", len([]rune(packet)), caps.TotalChars)
+	return sessionV3FitProviderHandoffPacket(packet, caps.TotalChars), nil
+}
+
+func sessionV3FitProviderHandoffPacket(packet string, limit int) string {
+	packet = strings.TrimSpace(packet)
+	if limit <= 0 {
+		return packet
 	}
-	return packet, nil
+	runes := []rune(packet)
+	if len(runes) <= limit {
+		return packet
+	}
+	marker := []rune(fmt.Sprintf("\n\n[provider-handoff exceeded the bounded handoff cap by %d chars; middle context omitted]\n\n", len(runes)-limit))
+	if len(marker) >= limit {
+		return string(runes[:limit])
+	}
+	available := limit - len(marker)
+	headChars := available / 3
+	tailChars := available - headChars
+	return string(runes[:headChars]) + string(marker) + string(runes[len(runes)-tailChars:])
 }
 
 func (e *sessionV3Executor) appendSessionV3ProviderHandoffPlanState(b *strings.Builder, job sessionV3ExecutorJob) {
@@ -3598,6 +3629,12 @@ func (e *sessionV3Executor) sessionV3ProviderResumeContextMessages(sessionID str
 	if parentEpochID == "" {
 		return messages, nil
 	}
+	if strings.EqualFold(strings.TrimSpace(epoch.Boundary.Reason), "final_plan_handoff") {
+		// A final handoff deliberately starts a fresh provider-context epoch. The
+		// canonical handoff is already injected above, so replaying this epoch's
+		// parent would cross the boundary and duplicate that handoff.
+		return messages, nil
+	}
 	_, parentMessages, err := e.server.sessions.ListExecutionEpochMessages(sessionID, parentEpochID, 0)
 	if err != nil {
 		return nil, fmt.Errorf("v3 resume checkpoint parent context resolve failed: %w", err)
@@ -3748,6 +3785,16 @@ func trimStrings(values []string) []string {
 		}
 	}
 	return out
+}
+
+func sessionsV3ProviderRequestHasTool(tools []provideriface.ToolDefinition, name string) bool {
+	name = strings.TrimSpace(name)
+	for _, definition := range tools {
+		if strings.EqualFold(strings.TrimSpace(definition.Name), name) {
+			return true
+		}
+	}
+	return false
 }
 
 func (e *sessionV3Executor) resolveSessionV3Runtime(job sessionV3ExecutorJob) (sessionV3ResolvedRuntime, error) {
@@ -4142,18 +4189,19 @@ func (e *sessionV3Executor) sessionsV3ProviderInputWithMedia(resolved sessionV3R
 			return nil, errors.New("durable media reference is attached to a non-user message")
 		}
 		content := make([]map[string]any, 0, len(message.Media)+1)
-		if text := strings.TrimSpace(message.Content); text != "" {
+		text := sessionsV3ProviderUserText(message)
+		if text != "" {
 			content = append(content, map[string]any{"type": "input_text", "text": text})
 		}
 		for _, reference := range message.Media {
-			if reference.ContractHash != resolved.MediaContract.Hash || !runruntime.SessionMediaContractAllows(resolved.MediaContract, reference.Modality, reference.MIMEType, reference.FileType) {
-				return nil, fmt.Errorf("media asset %q is stale or denied by the current run contract", reference.AssetID)
+			if !runruntime.SessionMediaContractAllows(resolved.MediaContract, reference.Modality, reference.MIMEType, reference.FileType) {
+				return nil, fmt.Errorf("media asset %q is denied by the current run contract", reference.AssetID)
 			}
 			asset, bytes, err := e.server.sessions.ReadSessionMediaAsset(resolved.Session.AccountScopeID, resolved.Session.ID, reference.AssetID)
 			if err != nil {
 				return nil, err
 			}
-			if asset.DigestSHA256 != reference.DigestSHA256 || asset.Size != reference.Size {
+			if asset.ContractHash != reference.ContractHash || asset.DigestSHA256 != reference.DigestSHA256 || asset.Size != reference.Size || asset.Modality != reference.Modality || asset.DetectedMIMEType != reference.MIMEType || asset.FileType != reference.FileType {
 				return nil, fmt.Errorf("media asset %q does not match its durable reference", reference.AssetID)
 			}
 			content = append(content, map[string]any{
@@ -4201,6 +4249,9 @@ func sessionsV3ProviderInputWithOptions(messages []pebblestore.MessageSnapshot, 
 	input := make([]map[string]any, 0, len(messages))
 	for _, message := range messages {
 		content := strings.TrimSpace(message.Content)
+		if strings.EqualFold(strings.TrimSpace(message.Role), "user") {
+			content = sessionsV3ProviderUserText(message)
+		}
 		if content == "" {
 			continue
 		}
@@ -4226,6 +4277,17 @@ func sessionsV3ProviderInputWithOptions(messages []pebblestore.MessageSnapshot, 
 		}
 	}
 	return input
+}
+
+func sessionsV3ProviderUserText(message pebblestore.MessageSnapshot) string {
+	content := strings.TrimSpace(message.Content)
+	if len(message.ArtifactSelections) == 0 {
+		return content
+	}
+	if artifactContext := runruntime.AttachedArtifactSelectionsForProvider(message.ArtifactSelections); artifactContext != "" {
+		content = strings.TrimSpace(content + "\n\n" + artifactContext)
+	}
+	return content
 }
 
 func sessionsV3MessagesForProviderLineage(messages []pebblestore.MessageSnapshot, _ string, _ bool) []pebblestore.MessageSnapshot {
@@ -4618,7 +4680,6 @@ func sessionsV3ProviderToolMediaInputItems(results []provideriface.ToolExecution
 		out = append(out, map[string]any{
 			"role": "user",
 			"content": []map[string]any{
-				{"type": "input_text", "text": "Inspect this authorized media asset and report its visual contents."},
 				{"type": "session_media", "media": *result.Media},
 			},
 		})
@@ -4804,7 +4865,7 @@ func buildSessionV3TitleConversation(messages []pebblestore.MessageSnapshot) str
 }
 
 func resolveSessionV3EffectivePreference(session pebblestore.SessionSnapshot, agentProfile pebblestore.AgentProfile) (pebblestore.ModelPreference, error) {
-	if session.ModelProfile != nil {
+	if session.ModelProfile != nil && strings.EqualFold(strings.TrimSpace(agentProfile.Name), agentruntime.SwarmAgentID) {
 		preference, err := sessionV3ModelProfilePreferenceForMode(*session.ModelProfile, session.Mode)
 		if err != nil {
 			return pebblestore.ModelPreference{}, err

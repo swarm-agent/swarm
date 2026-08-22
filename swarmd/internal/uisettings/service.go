@@ -3,6 +3,7 @@ package uisettings
 import (
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	sharedtheme "swarm-refactor/swarmtui/theme"
@@ -80,6 +81,7 @@ type ChatSettings struct {
 	PlanContextGuardEnabled         bool                   `json:"plan_context_guard_enabled"`
 	PlanContextGuardUsedPercent     int                    `json:"plan_context_guard_used_percent"`
 	PlanContextGuardMaxCompactions  int                    `json:"plan_context_guard_max_compactions"`
+	TaskContextMaxCompactions       int                    `json:"task_context_max_compactions"`
 	ReviewAutoArchiveMinutes        int                    `json:"review_auto_archive_minutes"`
 	SidebarHideInactiveHours        int                    `json:"sidebar_hide_inactive_hours"`
 	DefaultWorkspaceRoutes          map[string]string      `json:"default_workspace_routes,omitempty"`
@@ -109,6 +111,14 @@ type ToolSettings struct {
 	Image ToolImageSettings `json:"image,omitempty"`
 }
 
+type MediaSettings struct {
+	TranscriptionModel string `json:"transcription_model,omitempty"`
+}
+
+type ArtifactSettings struct {
+	LibraryDirectory string `json:"library_directory,omitempty"`
+}
+
 type UISettings struct {
 	Theme     ThemeSettings    `json:"theme,omitempty"`
 	Input     InputSettings    `json:"input,omitempty"`
@@ -116,6 +126,8 @@ type UISettings struct {
 	Swarming  SwarmingSettings `json:"swarming,omitempty"`
 	Swarm     SwarmSettings    `json:"swarm,omitempty"`
 	Tools     ToolSettings     `json:"tools,omitempty"`
+	Media     MediaSettings    `json:"media,omitempty"`
+	Artifacts ArtifactSettings `json:"artifacts,omitempty"`
 	UpdatedAt int64            `json:"updated_at"`
 }
 
@@ -163,13 +175,18 @@ func (s *Service) SetForAccount(accountScopeID string, settings UISettings) (UIS
 	if s == nil || s.store == nil {
 		return UISettings{}, fmt.Errorf("ui settings service not configured")
 	}
+	if directory := strings.TrimSpace(settings.Artifacts.LibraryDirectory); directory != "" && !filepath.IsAbs(directory) {
+		return UISettings{}, fmt.Errorf("artifact library directory must be absolute")
+	}
 	record, err := s.store.UpdateForAccount(strings.TrimSpace(accountScopeID), pebblestore.UISettingsPatch{
-		Theme:    themeRecordFromSettings(settings.Theme),
-		Input:    inputRecordFromSettings(settings.Input),
-		Chat:     chatRecordFromSettings(settings.Chat),
-		Swarming: swarmingRecordFromSettings(settings.Swarming),
-		Swarm:    swarmRecordFromSettings(settings.Swarm),
-		Tools:    toolRecordFromSettings(settings.Tools),
+		Theme:     themeRecordFromSettings(settings.Theme),
+		Input:     inputRecordFromSettings(settings.Input),
+		Chat:      chatRecordFromSettings(settings.Chat),
+		Swarming:  swarmingRecordFromSettings(settings.Swarming),
+		Swarm:     swarmRecordFromSettings(settings.Swarm),
+		Tools:     toolRecordFromSettings(settings.Tools),
+		Media:     mediaRecordFromSettings(settings.Media),
+		Artifacts: artifactRecordFromSettings(settings.Artifacts),
 	})
 	if err != nil {
 		return UISettings{}, fmt.Errorf("persist ui settings: %w", err)
@@ -224,6 +241,7 @@ func uiSettingsFromRecord(record pebblestore.UISettingsRecord) UISettings {
 			PlanContextGuardEnabled:         *record.Chat.PlanContextGuardEnabled,
 			PlanContextGuardUsedPercent:     record.Chat.PlanContextGuardUsedPercent,
 			PlanContextGuardMaxCompactions:  *record.Chat.PlanContextGuardMaxCompactions,
+			TaskContextMaxCompactions:       *record.Chat.TaskContextMaxCompactions,
 			ReviewAutoArchiveMinutes:        record.Chat.ReviewAutoArchiveMinutes,
 			SidebarHideInactiveHours:        *record.Chat.SidebarHideInactiveHours,
 			DefaultWorkspaceRoutes:          cloneMap(record.Chat.DefaultWorkspaceRoutes),
@@ -248,6 +266,8 @@ func uiSettingsFromRecord(record pebblestore.UISettingsRecord) UISettings {
 				DefaultModel: strings.TrimSpace(record.Tools.Image.DefaultModel),
 			},
 		},
+		Media:     MediaSettings{TranscriptionModel: strings.TrimSpace(record.Media.TranscriptionModel)},
+		Artifacts: ArtifactSettings{LibraryDirectory: strings.TrimSpace(record.Artifacts.LibraryDirectory)},
 		UpdatedAt: record.UpdatedAt,
 	}
 	for _, item := range record.Theme.CustomThemes {
@@ -320,6 +340,7 @@ func chatRecordFromSettings(settings ChatSettings) *pebblestore.UIChatSettingsRe
 		PlanContextGuardEnabled:         boolPointer(settings.PlanContextGuardEnabled),
 		PlanContextGuardUsedPercent:     settings.PlanContextGuardUsedPercent,
 		PlanContextGuardMaxCompactions:  intPointer(settings.PlanContextGuardMaxCompactions),
+		TaskContextMaxCompactions:       intPointer(settings.TaskContextMaxCompactions),
 		ReviewAutoArchiveMinutes:        settings.ReviewAutoArchiveMinutes,
 		SidebarHideInactiveHours:        intPointer(settings.SidebarHideInactiveHours),
 		DefaultWorkspaceRoutes:          cloneMap(settings.DefaultWorkspaceRoutes),
@@ -361,6 +382,14 @@ func toolRecordFromSettings(settings ToolSettings) *pebblestore.UIToolSettingsRe
 			DefaultModel: strings.TrimSpace(settings.Image.DefaultModel),
 		},
 	}
+}
+
+func mediaRecordFromSettings(settings MediaSettings) *pebblestore.UIMediaSettingsRecord {
+	return &pebblestore.UIMediaSettingsRecord{TranscriptionModel: strings.TrimSpace(settings.TranscriptionModel)}
+}
+
+func artifactRecordFromSettings(settings ArtifactSettings) *pebblestore.UIArtifactSettingsRecord {
+	return &pebblestore.UIArtifactSettingsRecord{LibraryDirectory: strings.TrimSpace(settings.LibraryDirectory)}
 }
 
 func paletteFromRecord(record pebblestore.UIThemePaletteRecord) ThemePalette {

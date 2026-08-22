@@ -26,6 +26,25 @@ type ImageProviderStatus = {
   models?: string[]
 }
 
+type ImageModelOption = {
+  id: string
+  provider: string
+  model: string
+  label: string
+  helper: string
+  kind: 'codex-image-gen' | 'google-gemini'
+}
+
+type MediaCatalogModelOption = {
+  id: string
+  provider: string
+  model: string
+  display_name: string
+  kind: 'image_generation' | 'video_understanding'
+  ready: boolean
+  reason?: string
+}
+
 type ImageGenerationPartial = {
   item_id?: string
   output_index?: number
@@ -78,7 +97,7 @@ type GeminiChargeInfo = {
   hasCharge: boolean
 }
 
-type ConnectedImageModelOption = (typeof IMAGE_MODEL_OPTIONS)[number] & {
+type ConnectedImageModelOption = ImageModelOption & {
   providerLabel: string
   providerReady: boolean
 }
@@ -94,12 +113,14 @@ type GenerationControlMode = 'manual' | 'ai'
 const IMAGE_TOOL_BLACK_MODE_STORAGE_KEY = 'swarm.imageTool.blackMode'
 const DEFAULT_IMAGE_SESSION_TITLE = 'Swarm image session'
 
-const IMAGE_MODEL_OPTIONS = [
-  { id: 'codex-image-gen', provider: 'codex_openai', model: 'gpt-5.5', label: 'Codex Image Gen', helper: 'OAuth only. Uses Codex/ChatGPT OAuth image generation.', kind: 'codex-image-gen' },
-  { id: 'gemini-nano-banana-2', provider: 'google_gemini', model: 'gemini-3.1-flash-image-preview', label: 'Nano Banana 2', helper: 'Google API key. Fast Gemini image generation with real streaming.', kind: 'google-gemini' },
-  { id: 'gemini-nano-banana-pro', provider: 'google_gemini', model: 'gemini-3-pro-image-preview', label: 'Nano Banana Pro', helper: 'Google API key. Pro Gemini image generation.', kind: 'google-gemini' },
-  { id: 'gemini-nano-banana', provider: 'google_gemini', model: 'gemini-2.5-flash-image', label: 'Nano Banana', helper: 'Google API key. Supports 512, 1K, 2K, and 4K output sizes.', kind: 'google-gemini' },
-] as const
+const CODEX_IMAGE_MODEL_OPTION: ImageModelOption = {
+  id: 'codex-image-gen',
+  provider: 'codex_openai',
+  model: 'gpt-5.5',
+  label: 'Codex Image Gen',
+  helper: 'OAuth only. Codex image generation is really slow and may not work well for image swarms.',
+  kind: 'codex-image-gen',
+}
 
 const OPENAI_IMAGE_SIZE_OPTIONS = [
   { id: 'auto', label: 'Auto', helper: 'Best fit for prompt', aspectRatio: '1:1', size: 'Model default' },
@@ -248,6 +269,11 @@ function imageDownloadName(asset: ImageAsset): string {
   return ext ? `generated-image.${ext.replace(/^\./, '')}` : 'generated-image'
 }
 
+function canonicalImageIterationURL(threadId: string, assetId: string): string {
+  if (typeof window === 'undefined') return ''
+  return new URL(imageAssetURL(threadId, assetId), window.location.origin).toString()
+}
+
 async function copyTextToClipboard(value: string): Promise<void> {
   const text = value.trim()
   if (!text) throw new Error('Nothing to copy')
@@ -285,6 +311,18 @@ async function fetchImageProviders(): Promise<ImageProviderStatus[]> {
   return response.providers ?? []
 }
 
+async function fetchImageModelOptions(): Promise<ImageModelOption[]> {
+  const response = await requestJson<{ image_models?: MediaCatalogModelOption[] }>('/v1/media/settings/catalog')
+  return (response.image_models ?? []).map((option) => ({
+    id: option.id,
+    provider: option.provider,
+    model: option.model,
+    label: option.display_name,
+    helper: option.provider === 'codex_openai' ? CODEX_IMAGE_MODEL_OPTION.helper : 'Google API key. Snapshot-backed Gemini image generation.',
+    kind: option.provider === 'codex_openai' ? 'codex-image-gen' : 'google-gemini',
+  }))
+}
+
 export function ImageToolPage() {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
@@ -299,7 +337,7 @@ export function ImageToolPage() {
   const [revealingStorage, setRevealingStorage] = useState(false)
   const [lastStoragePath, setLastStoragePath] = useState('')
   const [pathCopyStatus, setPathCopyStatus] = useState('')
-  const [sessionLinkCopyStatus, setSessionLinkCopyStatus] = useState('')
+  const [iterationLinkCopyStatus, setIterationLinkCopyStatus] = useState('')
   const [imageActionStatus, setImageActionStatus] = useState('')
   const [newSessionTitle, setNewSessionTitle] = useState('')
   const [creatingSession, setCreatingSession] = useState(false)
@@ -319,7 +357,7 @@ export function ImageToolPage() {
   const thumbnailScrollerRef = useRef<HTMLDivElement | null>(null)
   const mobileSelectedThumbnailButtonRef = useRef<HTMLButtonElement | null>(null)
   const mobileThumbnailScrollerRef = useRef<HTMLDivElement | null>(null)
-  const [selectedImageModel, setSelectedImageModel] = useState<string>(IMAGE_MODEL_OPTIONS[0]?.id ?? '')
+  const [selectedImageModel, setSelectedImageModel] = useState<string>(CODEX_IMAGE_MODEL_OPTION.id)
   const [imageDefaultSaving, setImageDefaultSaving] = useState(false)
   const [imageDefaultStatus, setImageDefaultStatus] = useState('')
   const [imageDefaultMenuOpen, setImageDefaultMenuOpen] = useState(false)
@@ -349,6 +387,11 @@ export function ImageToolPage() {
     queryKey: ['image-generation-providers'],
     queryFn: fetchImageProviders,
     staleTime: 15_000,
+  })
+  const imageModelsQuery = useQuery({
+    queryKey: ['media-settings-catalog', 'image-tool'],
+    queryFn: fetchImageModelOptions,
+    staleTime: 30_000,
   })
   const workspaces = workspacesQuery.data ?? []
 
@@ -420,26 +463,26 @@ export function ImageToolPage() {
   const selectedSessionStoragePath = imageSessionPath(selectedThread)
   const selectedAssetFilePath = selectedImageAsset?.path ?? ''
   const selectedCopyFilePath = selectedAssetFilePath || selectedSessionStoragePath
-  const selectedSessionURL = selectedThread
-    ? `${typeof window !== 'undefined' ? window.location.origin : ''}${selectedWorkspaceSlug ? `/${selectedWorkspaceSlug}/tools/image/${selectedThread.id}` : `/tools/image/${selectedThread.id}`}`
+  const selectedIterationURL = selectedThread && selectedImageAsset
+    ? canonicalImageIterationURL(selectedThread.id, selectedImageAsset.id)
     : ''
+  const imageModelOptions = imageModelsQuery.data ?? []
   const connectedImageModelOptions = useMemo<ConnectedImageModelOption[]>(() => {
     const providers = imageProvidersQuery.data ?? []
-    return IMAGE_MODEL_OPTIONS.flatMap((option) => {
+    return imageModelOptions.flatMap((option) => {
       const providerStatus = providers.find((provider) => provider.id === option.provider)
       if (providerStatus?.ready !== true) return []
-      const providerModels = Array.isArray(providerStatus.models) ? providerStatus.models : []
-      if (providerModels.length > 0 && !providerModels.includes(option.model)) return []
       return [{ ...option, providerLabel: providerStatus.label || option.provider, providerReady: true }]
     })
-  }, [imageProvidersQuery.data])
+  }, [imageModelOptions, imageProvidersQuery.data])
   const savedImageDefaultModel = normalizeImageDefaultModel(uiSettingsQuery.data)
-  const savedDefaultIsConnected = connectedImageModelOptions.some((option) => option.id === savedImageDefaultModel)
+  const normalizedSavedImageDefaultModel = savedImageDefaultModel === 'gpt-5.5' ? 'codex-image-gen' : savedImageDefaultModel
+  const savedDefaultIsConnected = connectedImageModelOptions.some((option) => option.id === normalizedSavedImageDefaultModel)
   const activeImageDefaultModel = savedDefaultIsConnected
-    ? savedImageDefaultModel
+    ? normalizedSavedImageDefaultModel
     : connectedImageModelOptions[0]?.id ?? ''
   const activeImageDefaultOption = connectedImageModelOptions.find((option) => option.id === activeImageDefaultModel) ?? null
-  const selectedModelOption = IMAGE_MODEL_OPTIONS.find((option) => option.id === selectedImageModel) ?? IMAGE_MODEL_OPTIONS[0]
+  const selectedModelOption = imageModelOptions.find((option) => option.id === selectedImageModel) ?? imageModelOptions[0] ?? CODEX_IMAGE_MODEL_OPTION
   const selectedProviderStatus = (imageProvidersQuery.data ?? []).find((provider) => provider.id === selectedModelOption.provider)
   const selectedProviderReady = selectedProviderStatus?.ready === true
   const isGoogleGeminiModel = selectedModelOption.provider === 'google_gemini'
@@ -608,11 +651,11 @@ export function ImageToolPage() {
   const handleBackToTools = useMemo(() => {
     if (routeWorkspaceSlug) {
       return () => {
-        void navigate({ to: '/$workspaceSlug/tools', params: { workspaceSlug: routeWorkspaceSlug } })
+        void navigate({ to: '/$workspaceSlug', params: { workspaceSlug: routeWorkspaceSlug } })
       }
     }
     return () => {
-      void navigate({ to: '/tools' })
+      void navigate({ to: '/' })
     }
   }, [navigate, routeWorkspaceSlug])
 
@@ -776,16 +819,16 @@ export function ImageToolPage() {
     }
   }, [])
 
-  const handleCopySessionLink = useCallback(async () => {
+  const handleCopyIterationLink = useCallback(async () => {
     setGenerationError(null)
-    setSessionLinkCopyStatus('')
+    setIterationLinkCopyStatus('')
     try {
-      await copyTextToClipboard(selectedSessionURL)
-      setSessionLinkCopyStatus('Copied session URL.')
+      await copyTextToClipboard(selectedIterationURL)
+      setIterationLinkCopyStatus('Copied iteration URL.')
     } catch (error) {
       setGenerationError(error instanceof Error ? error.message : String(error))
     }
-  }, [selectedSessionURL])
+  }, [selectedIterationURL])
 
   const handleOpenSelectedImage = useCallback(() => {
     if (!selectedImageSource) return
@@ -1024,7 +1067,7 @@ export function ImageToolPage() {
         <main className="flex min-h-0 min-w-0 flex-1 overflow-hidden overflow-x-hidden py-0 lg:py-5">
           <div className={showMobileSessionLauncher ? 'flex min-h-dvh w-full flex-col overflow-hidden px-4 pb-[calc(var(--app-safe-area-bottom)+1rem)] pt-[calc(var(--app-safe-area-top)+0.75rem)] lg:contents lg:p-0' : 'hidden lg:contents'}>
           <SwarmToolSidebar
-            backLabel="Tools"
+            backLabel={routeWorkspaceSlug ? 'Workspace' : 'Launcher'}
             onBack={handleBackToTools}
             topSecondaryLabel={routeWorkspaceSlug ? 'Workspace' : 'Launcher'}
             onTopSecondary={handleBackToLauncher}
@@ -1094,15 +1137,26 @@ export function ImageToolPage() {
                             >
                               <span className="block truncate text-[12px] font-semibold text-[var(--app-text)]">{option.label}</span>
                               <span className="mt-1 block truncate text-[10px] text-[var(--app-text-subtle)]">{option.providerLabel}</span>
+                              <span className={`mt-1 block text-[10px] leading-4 ${option.kind === 'codex-image-gen' ? 'text-[var(--app-warning)]' : 'text-[var(--app-text-subtle)]'}`}>
+                                {option.helper}
+                              </span>
                             </button>
                           )
                         })}
                       </div>
                     ) : null}
                   </div>
-                  <p className="mt-2 text-[10px] leading-4 text-[var(--app-text-subtle)]">
-                    {imageDefaultStatus || (connectedImageModelOptions.length > 0 ? 'Connected providers only. This DB-backed default auto-selects in the generator.' : 'Connect Codex OAuth or a Google API key to enable image defaults.')}
-                  </p>
+                  {imageDefaultStatus ? (
+                    <p className="mt-2 text-[10px] leading-4 text-[var(--app-text-subtle)]">{imageDefaultStatus}</p>
+                  ) : activeImageDefaultOption ? (
+                    <p className={`mt-2 text-[10px] leading-4 ${activeImageDefaultOption.kind === 'codex-image-gen' ? 'text-[var(--app-warning)]' : 'text-[var(--app-text-subtle)]'}`}>
+                      {activeImageDefaultOption.helper}
+                    </p>
+                  ) : (
+                    <p className="mt-2 text-[10px] leading-4 text-[var(--app-text-subtle)]">
+                      Connect Codex OAuth or a Google API key to enable image defaults.
+                    </p>
+                  )}
                 </div>
               </div>
             )}
@@ -1124,7 +1178,7 @@ export function ImageToolPage() {
                   <div className="border border-[var(--app-border)] bg-[var(--app-bg)] p-3">
                     <h2 className="truncate text-sm font-semibold text-[var(--app-text)]">{selectedThread.title || 'Image thread'}</h2>
                     <p className="mt-2 break-all text-[11px] leading-5 text-[var(--app-text-subtle)]">{selectedThread.workspacePath}</p>
-                    {selectedSessionURL ? <p className="mt-2 break-all text-[10px] leading-4 text-[var(--app-text-subtle)]">URL: {selectedSessionURL}</p> : null}
+                    {selectedIterationURL ? <p className="mt-2 break-all text-[10px] leading-4 text-[var(--app-text-subtle)]">URL: {selectedIterationURL}</p> : null}
                     <div className="mt-4 grid grid-cols-2 gap-2 text-[11px]">
                       <div className="border border-[var(--app-border)] bg-[var(--app-surface)] p-2"><div className="text-[10px] uppercase text-[var(--app-text-subtle)]">Folders</div><div className="mt-1 text-[var(--app-text)]">{selectedThread.imageFolders.length}</div></div>
                       <div className="border border-[var(--app-border)] bg-[var(--app-surface)] p-2"><div className="text-[10px] uppercase text-[var(--app-text-subtle)]">Assets</div><div className="mt-1 text-[var(--app-text)]">{selectedThread.imageAssets.length}</div></div>
@@ -1133,14 +1187,14 @@ export function ImageToolPage() {
                       <Button variant="outline" className="h-8 rounded-xl px-3 text-xs" onClick={() => void handleCopyFilePath(selectedCopyFilePath)} disabled={!selectedCopyFilePath}>
                         <Clipboard size={13} />Copy filepath
                       </Button>
-                      <Button variant="outline" className="h-8 rounded-xl px-3 text-xs" onClick={() => void handleCopySessionLink()} disabled={!selectedSessionURL}>
+                      <Button variant="outline" className="h-8 rounded-xl px-3 text-xs" onClick={() => void handleCopyIterationLink()} disabled={!selectedIterationURL}>
                         <Link2 size={13} />Copy URL
                       </Button>
                     </div>
                     <Button variant="outline" className="mt-2 h-8 w-full rounded-xl px-3 text-xs" onClick={() => void handleRevealImageStorage()} disabled={revealingStorage}>
                       <FolderOpen size={13} />{revealingStorage ? 'Opening…' : 'Reveal local folder'}
                     </Button>
-                    {(pathCopyStatus || sessionLinkCopyStatus) ? <p className="mt-2 text-[10px] text-[var(--app-text-muted)]">{pathCopyStatus || sessionLinkCopyStatus}</p> : null}
+                    {(pathCopyStatus || iterationLinkCopyStatus) ? <p className="mt-2 text-[10px] text-[var(--app-text-muted)]">{pathCopyStatus || iterationLinkCopyStatus}</p> : null}
                     {(lastStoragePath || selectedSessionStoragePath) ? <p className="mt-2 break-all text-[10px] leading-4 text-[var(--app-text-subtle)]">{lastStoragePath || selectedSessionStoragePath}</p> : null}
                   </div>
                 </div>
@@ -1152,7 +1206,7 @@ export function ImageToolPage() {
           <section className={showMobileSessionLauncher ? 'hidden min-w-0 flex-1 flex-col overflow-y-auto lg:flex xl:overflow-hidden' : 'flex h-[100dvh] min-h-0 w-full max-w-[100dvw] min-w-0 flex-1 flex-col overflow-hidden overflow-x-hidden px-3 pt-[calc(var(--app-safe-area-top)+0.75rem)] max-[400px]:px-2 max-[400px]:pt-[calc(var(--app-safe-area-top)+0.5rem)] lg:h-auto lg:max-w-full lg:px-0 lg:pt-0 lg:overflow-y-auto xl:overflow-hidden'}>
             <div className="mb-3 flex shrink-0 items-center justify-between gap-2 max-[400px]:mb-1.5 lg:hidden">
               <div className="flex min-w-0 items-center gap-2">
-                <Button variant="ghost" className="h-9 rounded-xl px-3 text-[var(--app-text-muted)] max-[400px]:h-7 max-[400px]:px-2" onClick={handleBackToTools}><ArrowLeft size={15} />Tools</Button>
+                <Button variant="ghost" className="h-9 rounded-xl px-3 text-[var(--app-text-muted)] max-[400px]:h-7 max-[400px]:px-2" onClick={handleBackToTools}><ArrowLeft size={15} />{routeWorkspaceSlug ? 'Workspace' : 'Launcher'}</Button>
                 <Button variant="ghost" className="h-9 rounded-xl px-3 text-[var(--app-text-subtle)] max-[400px]:h-7 max-[400px]:px-2" onClick={handleBackToLauncher}>{routeWorkspaceSlug ? 'Workspace' : 'Launcher'}</Button>
               </div>
               <Button variant="outline" style={darkOverrideButtonStyle} className={`h-11 w-11 rounded-2xl px-0 max-[400px]:h-9 max-[400px]:w-9 ${blackModeEnabled ? 'border-[var(--image-tool-user-theme-accent)] bg-[var(--image-tool-user-theme-surface)] text-[var(--image-tool-user-theme-text)] hover:bg-[var(--image-tool-user-theme-surface-hover)]' : ''}`} onClick={() => setBlackModeEnabled((enabled) => !enabled)} aria-label="Toggle dark mode override for this page" aria-pressed={blackModeEnabled} title="Toggle dark mode override for this page"><Moon aria-hidden="true" strokeWidth={2.2} className="shrink-0" style={{ width: 22, height: 22, minWidth: 22, minHeight: 22 }} /></Button>
@@ -1490,7 +1544,7 @@ export function ImageToolPage() {
                       <div className="flex flex-col gap-1">
                         <span className="text-[10px] font-bold text-[var(--app-text-subtle)]">MODEL</span>
                         <Select className="h-9 rounded-lg border-[var(--app-border)] bg-[var(--app-surface)] px-2 text-xs font-medium disabled:cursor-not-allowed disabled:opacity-60" value={selectedImageModel} onChange={(event) => setSelectedImageModel(event.target.value)} disabled={generatingImage}>
-                          {IMAGE_MODEL_OPTIONS.map((option) => (
+                          {imageModelOptions.map((option) => (
                             <option key={option.id} value={option.id}>{option.label} · {option.provider === 'google_gemini' ? 'Google API key' : 'OAuth only'}</option>
                           ))}
                         </Select>
@@ -1685,7 +1739,7 @@ export function ImageToolPage() {
                   <label className="flex flex-col gap-1.5">
                     <span className="text-[10px] font-bold uppercase tracking-[0.18em] text-[var(--app-text-subtle)]">Model</span>
                     <Select className="h-11 rounded-xl border-[var(--app-border)] bg-[var(--app-bg)] px-3 text-sm font-medium" value={selectedImageModel} onChange={(event) => setSelectedImageModel(event.target.value)} disabled={generatingImage}>
-                      {IMAGE_MODEL_OPTIONS.map((option) => (
+                      {imageModelOptions.map((option) => (
                         <option key={option.id} value={option.id}>{option.label} · {option.provider === 'google_gemini' ? 'Google API key' : 'OAuth only'}</option>
                       ))}
                     </Select>
@@ -1737,9 +1791,9 @@ export function ImageToolPage() {
                     </label>
                   </div>
 
-                  {(pathCopyStatus || sessionLinkCopyStatus || imageActionStatus || lastStoragePath || selectedSessionStoragePath) ? (
+                  {(pathCopyStatus || iterationLinkCopyStatus || imageActionStatus || lastStoragePath || selectedSessionStoragePath) ? (
                     <div className="space-y-1 border border-[var(--app-border)] bg-[var(--app-bg)] p-3 text-[10px] leading-4 text-[var(--app-text-muted)]">
-                      {(pathCopyStatus || sessionLinkCopyStatus || imageActionStatus) ? <p>{pathCopyStatus || sessionLinkCopyStatus || imageActionStatus}</p> : null}
+                      {(pathCopyStatus || iterationLinkCopyStatus || imageActionStatus) ? <p>{pathCopyStatus || iterationLinkCopyStatus || imageActionStatus}</p> : null}
                       {(lastStoragePath || selectedSessionStoragePath) ? <p className="break-all">{lastStoragePath || selectedSessionStoragePath}</p> : null}
                     </div>
                   ) : null}
@@ -1748,7 +1802,7 @@ export function ImageToolPage() {
                     <Button variant="outline" className="h-10 rounded-xl px-3 text-xs" onClick={() => void handleCopyFilePath(selectedCopyFilePath)} disabled={!selectedCopyFilePath}>
                       <Clipboard size={13} />Copy path
                     </Button>
-                    <Button variant="outline" className="h-10 rounded-xl px-3 text-xs" onClick={() => void handleCopySessionLink()} disabled={!selectedSessionURL}>
+                    <Button variant="outline" className="h-10 rounded-xl px-3 text-xs" onClick={() => void handleCopyIterationLink()} disabled={!selectedIterationURL}>
                       <Link2 size={13} />Copy URL
                     </Button>
                   </div>

@@ -1,8 +1,9 @@
 package swarm
 
 import (
-	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"testing"
+
+	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
 func TestEnsureLocalStateUsesInputNameOnlyForInitialBootstrap(t *testing.T) {
@@ -70,6 +71,67 @@ func TestEnsureLocalStateUsesInputNameOnlyForInitialBootstrap(t *testing.T) {
 	if stored.Name != "Renamed Swarm" {
 		t.Fatalf("stored name = %q, want Renamed Swarm", stored.Name)
 	}
+}
+
+func TestEnsureLocalStateMintReportStateDistinguishesGeneratedRestoredAndExisting(t *testing.T) {
+	t.Run("generated identity is pending until completed", func(t *testing.T) {
+		svc, swarmStore := newTestService(t)
+		state, err := svc.EnsureLocalState(EnsureLocalStateInput{})
+		if err != nil {
+			t.Fatalf("ensure generated local state: %v", err)
+		}
+		pendingID, pending, err := svc.PendingMintReport()
+		if err != nil || !pending || pendingID != state.Node.SwarmID {
+			t.Fatalf("pending report id=%q pending=%t err=%v", pendingID, pending, err)
+		}
+		if err := svc.CompleteMintReport(state.Node.SwarmID); err != nil {
+			t.Fatalf("complete mint report: %v", err)
+		}
+		if err := svc.CompleteMintReport(state.Node.SwarmID); err != nil {
+			t.Fatalf("complete mint report idempotently: %v", err)
+		}
+		if _, pending, err := svc.PendingMintReport(); err != nil || pending {
+			t.Fatalf("completed report pending=%t err=%v", pending, err)
+		}
+		stored, ok, err := swarmStore.GetLocalNode()
+		if err != nil || !ok || stored.MintReportState != mintReportStateCompleted || stored.MintReportCompletedAt <= 0 {
+			t.Fatalf("stored completed state=%+v ok=%t err=%v", stored, ok, err)
+		}
+	})
+
+	t.Run("explicit restore is never a mint", func(t *testing.T) {
+		svc, _ := newTestService(t)
+		if _, err := svc.EnsureLocalState(EnsureLocalStateInput{SwarmID: "restored-swarm-id"}); err != nil {
+			t.Fatalf("ensure restored local state: %v", err)
+		}
+		if _, pending, err := svc.PendingMintReport(); err != nil || pending {
+			t.Fatalf("restored identity pending=%t err=%v", pending, err)
+		}
+	})
+
+	t.Run("pre-existing record is never retroactively marked", func(t *testing.T) {
+		svc, swarmStore := newTestService(t)
+		if _, err := swarmStore.PutLocalNode(pebblestore.SwarmLocalNodeRecord{SwarmID: "existing-swarm-id", Role: bootstrapRoleMaster}); err != nil {
+			t.Fatalf("seed existing record: %v", err)
+		}
+		if _, err := svc.EnsureLocalState(EnsureLocalStateInput{}); err != nil {
+			t.Fatalf("ensure existing local state: %v", err)
+		}
+		if _, pending, err := svc.PendingMintReport(); err != nil || pending {
+			t.Fatalf("existing identity pending=%t err=%v", pending, err)
+		}
+	})
+}
+
+func newTestService(t *testing.T) (*Service, *pebblestore.SwarmStore) {
+	t.Helper()
+	store, err := pebblestore.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	swarmStore := pebblestore.NewSwarmStore(store)
+	return NewService(swarmStore, nil, nil), swarmStore
 }
 
 func TestEnsureLocalStateIgnoresManagedRoleInputWhenDBUnpaired(t *testing.T) {

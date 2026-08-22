@@ -72,15 +72,13 @@ test('draft omits the subtitle when home tips are disabled', () => {
   assert.doesNotMatch(markup, /What would you like to work on\?/)
 })
 
-test('routing immediately shows a pending chat header, first user message, and status below it', () => {
+test('routing shows the first user message and status without duplicating the parent-owned header', () => {
   const markup = render('routing', 'Route this prompt safely')
 
   assert.match(markup, /data-pending-state="routing"/)
   assert.match(markup, /data-local-only="true"/)
-  assert.match(markup, /data-testid="desktop-v3-pending-chat-header"/)
+  assert.doesNotMatch(markup, /<header|desktop-v3-pending-chat-header/)
   assert.match(markup, /data-start-path="router"/)
-  assert.match(markup, />New worktree chat</)
-  assert.match(markup, />Router setup</)
   assert.match(markup, /data-testid="desktop-v3-local-pending-prompt"/)
   assert.match(markup, /Route this prompt safely/)
   assert.match(markup, /data-testid="desktop-v3-routing-status"/)
@@ -96,8 +94,7 @@ test('normal session start never renders Router presentation', () => {
   const markup = render('routing', 'Start this directly', '', 'session')
 
   assert.match(markup, /data-start-path="session"/)
-  assert.match(markup, />New chat</)
-  assert.match(markup, />Starting session</)
+  assert.doesNotMatch(markup, /<header|desktop-v3-pending-chat-header/)
   assert.match(markup, />Starting…</)
   assert.match(markup, /Creating and starting this chat/)
   assert.doesNotMatch(markup, /Router|Routing|worktree/)
@@ -107,7 +104,7 @@ test('fast unresolved routing still renders the same local message without autho
   const markup = render('routing', 'Fast route')
 
   assert.equal((markup.match(/Fast route/g) ?? []).length, 1)
-  assert.match(markup, /New worktree chat/)
+  assert.doesNotMatch(markup, /<header|desktop-v3-pending-chat-header/)
   assert.match(markup, />Routing…</)
   assert.doesNotMatch(markup, /Choosing setup/)
 })
@@ -116,7 +113,7 @@ test('failure preserves the message in the same chat and offers retry beside the
   const markup = render('failed', 'Keep my prompt', 'Router is unavailable')
 
   assert.match(markup, /data-pending-state="failed"/)
-  assert.match(markup, /Router needs attention/)
+  assert.doesNotMatch(markup, /<header|desktop-v3-pending-chat-header/)
   assert.match(markup, /Keep my prompt/)
   assert.match(markup, /Router failed/)
   assert.match(markup, /Router is unavailable/)

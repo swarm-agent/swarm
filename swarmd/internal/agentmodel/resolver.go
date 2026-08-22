@@ -76,7 +76,10 @@ func configuredAgentSettingsForID(settings agentmodelsettings.Settings, agentID 
 		return settings.SystemAgents.Finder, true
 	case agentruntime.CoderAgentID:
 		return settings.SystemAgents.Coder, true
-	case agentruntime.DesignerAgentID:
+	case agentruntime.DesignerAgentID, agentruntime.ImageAgentID:
+		// Image workers use the configured Designer reasoning model only to compose
+		// one provider-neutral image prompt. The billed image model remains the
+		// canonical UI image setting resolved by manage_artifact.
 		return settings.SystemAgents.Designer, true
 	case agentruntime.RouterAgentID:
 		return settings.SystemAgents.Router, true
@@ -95,6 +98,8 @@ func systemAgentLabel(agentID string) string {
 		return agentruntime.CoderAgentName
 	case agentruntime.DesignerAgentID:
 		return agentruntime.DesignerAgentName
+	case agentruntime.ImageAgentID:
+		return agentruntime.ImageAgentName
 	case agentruntime.RouterAgentID:
 		return agentruntime.RouterAgentName
 	default:

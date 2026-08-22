@@ -23,11 +23,19 @@ export function createDesktopV3ExistingMessageOperation(input: {
   prompt: string
   metadata?: Record<string, unknown>
   media?: DesktopV3AppendMessageRequest['media']
+  videoAttachments?: DesktopV3AppendMessageRequest['video_attachments']
+  artifactSelections?: DesktopV3AppendMessageRequest['artifact_selections']
 }): DesktopV3ExistingMessageOperation {
   const sessionId = input.sessionId.trim()
   const content = input.prompt.trim()
   if (!sessionId) throw new Error('Existing Desktop V3 message requires sessionId')
-  if (!content && !(input.media?.length)) throw new Error('Existing Desktop V3 message requires prompt or media')
+  if (!content && !(input.media?.length) && !(input.videoAttachments?.length) && !(input.artifactSelections?.length)) {
+    throw new Error('Existing Desktop V3 message requires prompt, media, video attachment, or artifact selection')
+  }
+
+  if (input.artifactSelections?.some((selection) => !selection.session_id.trim() || !selection.collection_id.trim() || !selection.variant_id.trim() || selection.event_seq <= 0 || !selection.label.trim() || (selection.action !== 'select' && selection.action !== 'use'))) {
+    throw new Error('Existing Desktop V3 message contains an invalid artifact selection')
+  }
 
   const operationId = crypto.randomUUID()
   return {
@@ -43,6 +51,15 @@ export function createDesktopV3ExistingMessageOperation(input: {
       content,
       metadata: input.metadata,
       media: input.media,
+      video_attachments: input.videoAttachments,
+      artifact_selections: input.artifactSelections?.map((selection) => ({
+        ...selection,
+        session_id: selection.session_id.trim(),
+        collection_id: selection.collection_id.trim(),
+        variant_id: selection.variant_id.trim(),
+        label: selection.label.trim(),
+        description: selection.description?.trim() || undefined,
+      })),
     },
   }
 }
@@ -80,7 +97,8 @@ export function loadDesktopV3ExistingMessageOperation(
     if (!value.request?.message_id?.trim()) return null
     if (!value.request?.run_id?.trim()) return null
     if (value.request.role !== 'user') return null
-    if (!value.request.content?.trim() && !(value.request.media?.length)) return null
+    if (!value.request.content?.trim() && !(value.request.media?.length) && !(value.request.video_attachments?.length) && !(value.request.artifact_selections?.length)) return null
+    if (value.request.artifact_selections?.some((selection) => !selection?.session_id?.trim() || !selection?.collection_id?.trim() || !selection?.variant_id?.trim() || selection.event_seq <= 0 || !selection?.label?.trim() || (selection.action !== 'select' && selection.action !== 'use'))) return null
     return value
   } catch {
     return null
@@ -142,8 +160,11 @@ export async function continueDesktopV3Conversation(
   if (operation.request.role !== 'user') {
     throw new Error('Existing Desktop V3 conversation only accepts user messages')
   }
-  if (!operation.request.content.trim() && !(operation.request.media?.length)) {
-    throw new Error('Existing Desktop V3 conversation requires prompt or media')
+  if (!operation.request.content.trim() && !(operation.request.media?.length) && !(operation.request.artifact_selections?.length)) {
+    throw new Error('Existing Desktop V3 conversation requires prompt, media, or artifact selection')
+  }
+  if (operation.request.artifact_selections?.some((selection) => !selection?.session_id?.trim() || !selection?.collection_id?.trim() || !selection?.variant_id?.trim() || selection.event_seq <= 0 || !selection?.label?.trim() || (selection.action !== 'select' && selection.action !== 'use'))) {
+    throw new Error('Existing Desktop V3 conversation contains an invalid artifact selection')
   }
 
   const state = flowDeps.getSnapshot()
@@ -164,6 +185,7 @@ export async function continueDesktopV3Conversation(
       content: operation.request.content,
       metadata: operation.request.metadata,
       media: operation.request.media,
+      artifactSelections: operation.request.artifact_selections,
       runId: operation.request.run_id,
       createdAt: operation.createdAt,
     },

@@ -71,6 +71,7 @@ type UIChatSettingsRecord struct {
 	PlanContextGuardEnabled         *bool                          `json:"plan_context_guard_enabled,omitempty"`
 	PlanContextGuardUsedPercent     int                            `json:"plan_context_guard_used_percent,omitempty"`
 	PlanContextGuardMaxCompactions  *int                           `json:"plan_context_guard_max_compactions,omitempty"`
+	TaskContextMaxCompactions       *int                           `json:"task_context_max_compactions,omitempty"`
 	ReviewAutoArchiveMinutes        int                            `json:"review_auto_archive_minutes"`
 	SidebarHideInactiveHours        *int                           `json:"sidebar_hide_inactive_hours"`
 	DefaultWorkspaceRoutes          map[string]string              `json:"default_workspace_routes,omitempty"`
@@ -97,6 +98,14 @@ type UIToolImageSettingsRecord struct {
 	DefaultModel string `json:"default_model,omitempty"`
 }
 
+type UIMediaSettingsRecord struct {
+	TranscriptionModel string `json:"transcription_model,omitempty"`
+}
+
+type UIArtifactSettingsRecord struct {
+	LibraryDirectory string `json:"library_directory,omitempty"`
+}
+
 type UIToolSettingsRecord struct {
 	Image UIToolImageSettingsRecord `json:"image,omitempty"`
 }
@@ -108,16 +117,20 @@ type UISettingsRecord struct {
 	Swarming  UISwarmingSettingsRecord `json:"swarming,omitempty"`
 	Swarm     UISwarmSettingsRecord    `json:"swarm,omitempty"`
 	Tools     UIToolSettingsRecord     `json:"tools,omitempty"`
+	Media     UIMediaSettingsRecord    `json:"media,omitempty"`
+	Artifacts UIArtifactSettingsRecord `json:"artifacts,omitempty"`
 	UpdatedAt int64                    `json:"updated_at"`
 }
 
 type UISettingsPatch struct {
-	Theme    *UIThemeSettingsRecord
-	Input    *UIInputSettingsRecord
-	Chat     *UIChatSettingsRecord
-	Swarming *UISwarmingSettingsRecord
-	Swarm    *UISwarmSettingsRecord
-	Tools    *UIToolSettingsRecord
+	Theme     *UIThemeSettingsRecord
+	Input     *UIInputSettingsRecord
+	Chat      *UIChatSettingsRecord
+	Swarming  *UISwarmingSettingsRecord
+	Swarm     *UISwarmSettingsRecord
+	Tools     *UIToolSettingsRecord
+	Media     *UIMediaSettingsRecord
+	Artifacts *UIArtifactSettingsRecord
 }
 
 type UISettingsStore struct {
@@ -181,6 +194,12 @@ func (s *UISettingsStore) UpdateForAccount(accountScopeID string, patch UISettin
 	if patch.Tools != nil {
 		record.Tools = *patch.Tools
 	}
+	if patch.Media != nil {
+		record.Media = *patch.Media
+	}
+	if patch.Artifacts != nil {
+		record.Artifacts = *patch.Artifacts
+	}
 	record.UpdatedAt = time.Now().UnixMilli()
 	record.Chat.UpdatedAt = record.UpdatedAt
 	record = normalizeUISettingsRecord(record)
@@ -212,6 +231,7 @@ func DefaultUISettingsRecord() UISettingsRecord {
 			PlanContextGuardEnabled:         boolPointer(true),
 			PlanContextGuardUsedPercent:     80,
 			PlanContextGuardMaxCompactions:  intPointer(1),
+			TaskContextMaxCompactions:       intPointer(5),
 			SidebarHideInactiveHours:        intPointer(12),
 			ToolStream: UIChatToolStreamSettingsRecord{
 				ShowAnchor:    true,
@@ -266,11 +286,18 @@ func normalizeUISettingsRecord(record UISettingsRecord) UISettingsRecord {
 		normalized := normalizePlanContextGuardMaxCompactions(*record.Chat.PlanContextGuardMaxCompactions)
 		record.Chat.PlanContextGuardMaxCompactions = intPointer(normalized)
 	}
+	if record.Chat.TaskContextMaxCompactions == nil {
+		record.Chat.TaskContextMaxCompactions = intPointer(5)
+	} else {
+		normalized := normalizeTaskContextMaxCompactions(*record.Chat.TaskContextMaxCompactions)
+		record.Chat.TaskContextMaxCompactions = intPointer(normalized)
+	}
 	record.Chat.ReviewAutoArchiveMinutes = normalizeReviewAutoArchiveMinutes(record.Chat.ReviewAutoArchiveMinutes)
 	if record.Chat.SidebarHideInactiveHours == nil || *record.Chat.SidebarHideInactiveHours < 0 {
 		record.Chat.SidebarHideInactiveHours = intPointer(12)
 	}
 	record.Chat.DefaultWorkspaceRoutes = normalizeDefaultWorkspaceRoutes(record.Chat.DefaultWorkspaceRoutes)
+	record.Artifacts.LibraryDirectory = strings.TrimSpace(record.Artifacts.LibraryDirectory)
 	if len(record.Chat.ToolStream.PulseFrames) == 0 {
 		record.Chat.ToolStream.PulseFrames = []string{"·", "•", "◦", "•"}
 	}
@@ -316,6 +343,16 @@ func normalizePlanContextGuardMaxCompactions(value int) int {
 	}
 	if value > 3 {
 		return 3
+	}
+	return value
+}
+
+func normalizeTaskContextMaxCompactions(value int) int {
+	if value < 1 {
+		return 1
+	}
+	if value > 10 {
+		return 10
 	}
 	return value
 }

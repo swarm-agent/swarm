@@ -114,6 +114,7 @@ func TestStructuredFinalHandoffRendersCompactCardAndLegacyMarkersAreSanitized(t 
 		"NEXT STEPS",
 		"1. Review",
 		"EVIDENCE",
+		"▸ Artifacts (1)",
 		"▸ Details  ·  report  ·  result",
 		"▸ Files (2)",
 		"▸ Validation (1)",
@@ -141,8 +142,9 @@ func TestFinalHandoffSectionsUseContentAwareSpacing(t *testing.T) {
 				Decision: "ship",
 				Action:   "review",
 			},
-			SuggestedPrompts: []client.PlanFinalHandoffSuggestedPrompt{{Label: "Review", Prompt: "Review it."}},
-			Details:          client.PlanFinalHandoffDetails{Report: "Durable report"},
+			CopyableCodeBlocks: []client.PlanFinalHandoffCopyableCodeBlock{{Label: "Run this command", Language: "bash", Code: "swarm status"}},
+			SuggestedPrompts:   []client.PlanFinalHandoffSuggestedPrompt{{Label: "Review", Prompt: "Review it."}},
+			Details:            client.PlanFinalHandoffDetails{Report: "Durable report"},
 		},
 	}
 	rows := (&Page{}).renderFinalHandoffRows(message, 80, styles)
@@ -152,10 +154,11 @@ func TestFinalHandoffSectionsUseContentAwareSpacing(t *testing.T) {
 	}
 	for _, pair := range [][2]string{
 		{"FINAL HANDOFF  ·  ship", "Ready to review"},
-		{"• Compact card", "RECOMMENDATION"},
+		{"• Compact card", "COPYABLE CODE"},
+		{"swarm status", "RECOMMENDATION"},
 		{"ship — review", "NEXT STEPS"},
 		{"1. Review", "EVIDENCE"},
-		{"▸ Validation (1)", "Tab focus  ·  ←/→ choose  ·  Enter execute/open"},
+		{"▸ Details  ·  report", "Tab focus  ·  ←/→ choose  ·  Enter execute/open"},
 	} {
 		before, after := -1, -1
 		for index, line := range text {
@@ -266,7 +269,7 @@ func TestFinalHandoffKeyboardSuggestionUsesOrdinaryMessagePath(t *testing.T) {
 	page.Draw(screen)
 	page.HandleKey(tcell.NewEventKey(tcell.KeyTab, 0, tcell.ModNone))
 	if !page.handoffFocus || page.handoffControl != 0 {
-		t.Fatalf("Tab did not focus the first handoff control: focus=%t control=%d", page.handoffFocus, page.handoffControl)
+		t.Fatalf("Tab did not focus the primary recommendation control: focus=%t control=%d", page.handoffFocus, page.handoffControl)
 	}
 	page.HandleKey(tcell.NewEventKey(tcell.KeyTab, 0, tcell.ModNone))
 	if page.handoffControl != 0 {
@@ -274,10 +277,14 @@ func TestFinalHandoffKeyboardSuggestionUsesOrdinaryMessagePath(t *testing.T) {
 	}
 	page.HandleKey(tcell.NewEventKey(tcell.KeyRight, 0, tcell.ModNone))
 	if page.handoffControl != 1 {
-		t.Fatalf("Right did not move to the second suggested prompt: %d", page.handoffControl)
+		t.Fatalf("Right did not move to the first suggested prompt: %d", page.handoffControl)
 	}
 	page.HandleKey(tcell.NewEventKey(tcell.KeyRight, 0, tcell.ModNone))
 	if page.handoffControl != 2 {
+		t.Fatalf("Right did not move to the second suggested prompt: %d", page.handoffControl)
+	}
+	page.HandleKey(tcell.NewEventKey(tcell.KeyRight, 0, tcell.ModNone))
+	if page.handoffControl != 3 {
 		t.Fatalf("Right did not move from AI suggestions to the first expandable object: %d", page.handoffControl)
 	}
 	page.HandleKey(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
@@ -288,11 +295,34 @@ func TestFinalHandoffKeyboardSuggestionUsesOrdinaryMessagePath(t *testing.T) {
 	if page.handoffDetailsModal || !page.handoffFocus {
 		t.Fatal("Esc did not close details and return to the handoff controls")
 	}
+	for index := 0; index < 3; index++ {
+		page.HandleKey(tcell.NewEventKey(tcell.KeyRight, 0, tcell.ModNone))
+	}
+	if page.handoffControl != 6 {
+		t.Fatalf("Right did not move to the artifacts control: %d", page.handoffControl)
+	}
+	page.HandleKey(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
+	if !page.handoffDetailsModal || page.handoffDetailsSection != "artifacts" {
+		t.Fatal("Enter did not open the artifacts modal")
+	}
+	lines := finalHandoffDetailsLines(page.handoffDetails, "artifacts", "session-handoff", 96, testPageStyles())
+	var artifactText []string
+	for _, line := range lines {
+		artifactText = append(artifactText, line.Text)
+	}
+	joinedArtifacts := strings.Join(artifactText, "\n")
+	for _, want := range []string{"Interactive gallery", "gallery/index.html", "/v3/sessions/session-handoff/artifacts/artifact-preview", "local or remote Swarm connection"} {
+		if !strings.Contains(joinedArtifacts, want) {
+			t.Fatalf("artifacts modal missing %q:\n%s", want, joinedArtifacts)
+		}
+	}
+	page.HandleKey(tcell.NewEventKey(tcell.KeyEscape, 0, tcell.ModNone))
 	page.HandleKey(tcell.NewEventKey(tcell.KeyEscape, 0, tcell.ModNone))
 	if page.handoffFocus {
 		t.Fatal("Esc did not return focus to the composer")
 	}
 	page.HandleKey(tcell.NewEventKey(tcell.KeyTab, 0, tcell.ModNone))
+	page.HandleKey(tcell.NewEventKey(tcell.KeyRight, 0, tcell.ModNone))
 	page.HandleKey(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
 	deadline := time.Now().Add(time.Second)
 	for {
@@ -375,6 +405,9 @@ func testFinalHandoffMetadata() map[string]any {
 			"suggested_prompts": []any{
 				map[string]any{"label": "Review", "prompt": "Review the final handoff."},
 				map[string]any{"label": "Continue", "prompt": "Continue with the next task."},
+			},
+			"artifacts": []any{
+				map[string]any{"artifact_id": "artifact-preview", "label": "Interactive gallery", "media_type": "text/html", "workspace_relative_path": "gallery/index.html", "previewable": true},
 			},
 			"details": map[string]any{
 				"report":        "Full durable report\nwith additional evidence lines.",

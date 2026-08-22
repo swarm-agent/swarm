@@ -6,6 +6,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 
 import {
   buildDesktopV3ConversationRenderItems,
+  buildDesktopV3FinalHandoffNextSteps,
   buildDesktopV3LiveRunRenderItems,
   desktopV3RenderItemKey,
   DesktopV3RenderItemView,
@@ -401,7 +402,7 @@ test('Desktop V3 structured final handoff is compact, keeps evidence collapsed, 
   assert.match(markup, /Ready to ship/)
   assert.match(markup, /The Desktop now shows one compact final focus card/)
   assert.match(markup, /Recommendation/)
-  assert.match(markup, /Next steps/)
+  assert.match(markup, /Suggested next steps/)
   assert.match(markup, /Open PR in new Tab/)
   assert.match(markup, /href="https:\/\/github\.com\/swarm\/repository\/pull\/42"/)
   assert.match(markup, /target="_blank"/)
@@ -417,6 +418,7 @@ test('Desktop V3 structured final handoff is compact, keeps evidence collapsed, 
   assert.match(markup, /focused test passed/)
   assert.doesNotMatch(markup, /swarm-handoff-summary/)
   assert.equal((markup.match(/Recommendation/g) ?? []).length, 1)
+  assert.doesNotMatch(markup, /ship\s*[—-]\s*review/i)
 
   selectDesktopV3SuggestedPrompt(prompt, (selected) => { selectedPrompt = selected })
   assert.equal(selectedPrompt, prompt)
@@ -425,6 +427,52 @@ test('Desktop V3 structured final handoff is compact, keeps evidence collapsed, 
   assert.equal(Object.hasOwn(handoff.metadata, 'command'), false)
 })
 
+
+test('Desktop V3 final handoff derives actionable defaults without a review button', () => {
+  const steps = buildDesktopV3FinalHandoffNextSteps({
+    schemaVersion: 1,
+    title: 'Changes complete',
+    overview: 'The requested changes are complete.',
+    impactBullets: ['Updated the UI', 'Simplified the handoff'],
+    copyableCodeBlocks: [],
+    recommendation: {
+      decision: 'ship',
+      action: 'review merge commit 859a63d8 on dev',
+      reason: 'The source branch is integrated and the worktree is clean.',
+      actionState: 'ready',
+    },
+    suggestedPrompts: [],
+    pullRequestUrl: '',
+    artifacts: [],
+    details: {
+      report: 'done',
+      result: 'complete',
+      changedFiles: ['web/src/one.tsx', 'web/src/two.tsx', 'web/src/three.tsx'],
+      validation: ['not run; not requested'],
+    },
+  })
+
+  assert.deepEqual(steps.map((step) => step.label), ['Commit changes', 'Run focused tests', 'Ask for clarity'])
+  assert.equal(steps[2]?.behavior, 'prefill')
+  assert.equal(steps.some((step) => /review/i.test(step.label)), false)
+})
+
+test('Desktop V3 final handoff preserves AI-authored next steps', () => {
+  const steps = buildDesktopV3FinalHandoffNextSteps({
+    schemaVersion: 1,
+    title: 'Changes complete',
+    overview: 'The requested changes are complete.',
+    impactBullets: [],
+    copyableCodeBlocks: [],
+    recommendation: null,
+    suggestedPrompts: [{ label: 'Deploy staging', prompt: 'Deploy these changes to staging.' }],
+    pullRequestUrl: '',
+    artifacts: [],
+    details: { report: '', result: '', changedFiles: ['web/src/one.tsx'], validation: [] },
+  })
+
+  assert.deepEqual(steps, [{ label: 'Deploy staging', prompt: 'Deploy these changes to staging.', behavior: 'send' }])
+})
 
 test('Desktop V3 blocked checkpoint handoff renders a compact summary with collapsed evidence', () => {
   const resumePrompt = 'PR #28 is merged. Resume the deployment checkpoint.'

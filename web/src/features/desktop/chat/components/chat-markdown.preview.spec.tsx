@@ -64,12 +64,47 @@ function testPlanManageUsesMinimalTransitionView(): void {
   const markup = renderToolMarkup(message!);
   assert(markup.includes("data-plan-tool-transition"), "expected dedicated plan transition treatment");
   assert(markup.includes("Checkpoint started"), "expected lifecycle action label");
-  assert(markup.includes("cp-2"), "expected checkpoint identity");
+  assert(markup.includes("Checkpoint 2"), "expected friendly checkpoint identity");
+  assert(!markup.includes("cp-2"), "raw checkpoint id must not render");
   assert(markup.includes("in progress"), "expected transition status");
   assert(!markup.includes("action: start checkpoint"), "raw preview rows should not render");
   assert(markup.includes("rounded-xl"), "plan transition should render as a minimal card");
   assert(markup.includes("border border-[var(--app-border)]"), "plan transition card should keep a quiet theme border");
   assert(!markup.includes("border-l-2"), "plan transition should not return to the left-rail treatment");
+}
+
+function testAcceptedPlanShowsStartedPlanMetadata(): void {
+  const message = buildStructuredToolMessage({
+    tool: "plan_manage",
+    callId: "call_plan_manage_accepted",
+    argumentsText: JSON.stringify({ action: "request_new_plan", title: "First Test Plan" }),
+    outputText: JSON.stringify({
+      tool: "plan_manage",
+      action: "request_new_plan",
+      status: "ok",
+      execution_summary: { active_checkpoint_id: "cp-1", next_checkpoint_status: "in_progress" },
+      plan: {
+        id: "plan-1",
+        title: "First Test Plan",
+        document: {
+          title: "First Test Plan",
+          active_checkpoint_id: "cp-1",
+          checkpoints: [{ id: "cp-1", order: 1, title: "Run First Test Checkpoint", status: "pending" }],
+        },
+      },
+    }),
+  });
+  assert(Boolean(message), "expected accepted plan_manage message");
+
+  const markup = renderToolMarkup(message!);
+  assert(markup.includes("Plan started"), "accepted plan should show the started lifecycle");
+  assert(markup.includes("First Test Plan"), "accepted plan should show the plan title");
+  assert(markup.includes("Checkpoint 1"), "accepted plan should show a friendly checkpoint number");
+  assert(markup.includes("Run First Test Checkpoint"), "accepted plan should show checkpoint metadata");
+  assert(markup.includes("1 checkpoint"), "accepted plan should show checkpoint count metadata");
+  assert(markup.includes("in progress"), "started checkpoint should use the execution status instead of stale pending document state");
+  assert(!markup.includes("request new plan") && !markup.includes("request_new_plan"), "accepted plan must not show the request action");
+  assert(!markup.includes("cp-1") && !markup.includes("CP-1"), "accepted plan must not show raw checkpoint ids");
 }
 
 function testPlanManageFollowupUsesCanonicalCheckpointMetadata(): void {
@@ -105,7 +140,8 @@ function testPlanManageFollowupUsesCanonicalCheckpointMetadata(): void {
 
   const markup = renderToolMarkup(message!);
   assert(markup.includes("Checkpoint added"), "expected follow-up transition label");
-  assert(markup.includes("followup-2"), "expected returned follow-up id");
+  assert(markup.includes("Checkpoint 2"), "expected returned checkpoint number");
+  assert(!markup.includes("followup-2"), "raw checkpoint id must not render");
   assert(markup.includes("Fresh follow-up checkpoint"), "expected canonical checkpoint title");
   assert(markup.includes("pending"), "expected canonical pending status");
   assert(!markup.includes("Prior checkpoint") && !markup.includes("Stale plan title"), "stale active checkpoint and plan metadata must not render");
@@ -151,7 +187,8 @@ function testPlanManageSubtaskUsesCanonicalUpdatedMetadata(): void {
 
   const markup = renderToolMarkup(message!);
   assert(markup.includes("Task completed"), "expected subtask lifecycle label");
-  assert(markup.includes("cp-2") && markup.includes("Canonical checkpoint"), "expected affected checkpoint metadata");
+  assert(markup.includes("Checkpoint 2") && markup.includes("Canonical checkpoint"), "expected affected checkpoint metadata");
+  assert(!markup.includes("cp-2"), "raw checkpoint id must not render");
   assert(markup.includes("Canonical updated task") && markup.includes("completed"), "expected canonical updated subtask title and status");
   assert(!markup.includes("Unrelated task") && !markup.includes("Stale active checkpoint"), "unaffected stale metadata must not render");
 }
@@ -177,6 +214,34 @@ function testTaskSwarmLayoutProgressivelyCompacts(): void {
   assert(hundredOne.stage === 101 && hundredOne.maxHeight !== undefined, "only swarms above one hundred should become vertically bounded and scrollable");
 }
 
+function testIdeaSwarmUsesSharedModelHeaderAndGenericAgentLabels(): void {
+  const message = buildStructuredToolMessage({
+    tool: "task",
+    callId: "call_idea_swarm",
+    argumentsText: JSON.stringify({ mode: "swarm", agent_type: "idea", count: 2, prompt: "Name this feature" }),
+    outputText: JSON.stringify({
+      tool: "task",
+      task_mode: "swarm",
+      launch_count: 2,
+      launches: [1, 2].map((index) => ({
+        launch_index: index,
+        subagent: "idea",
+        assignment_label: `Idea swarm ${index}`,
+        subagent_provider: "codex",
+        subagent_model: "gpt-5.6-sol",
+        status: "done",
+      })),
+    }),
+  });
+  assert(Boolean(message), "expected Idea swarm message");
+
+  const markup = renderToolMarkup(message!);
+  assert(markup.includes("IDEA SWARM"), "Idea swarm should identify its mode in the shared header");
+  assert(markup.includes("codex/gpt-5.6-sol"), "Idea swarm should show the shared provider/model in the header");
+  assert(markup.includes("Agent #1") && markup.includes("Agent #2"), "Idea swarm rows should use generic Agent labels");
+  assert(!markup.includes("Idea swarm 1") && !markup.includes("Idea swarm 2"), "Idea swarm implementation labels should not leak into rows");
+}
+
 function testTaskSwarmUsesCompactPreview(): void {
   const longAssignment = "Coordinate an extremely detailed research and implementation assignment that would normally push the desktop task header sideways";
   const message = buildStructuredToolMessage({
@@ -184,6 +249,7 @@ function testTaskSwarmUsesCompactPreview(): void {
     callId: "call_task_swarm",
     outputText: JSON.stringify({
       tool: "task",
+      task_mode: "swarm",
       description: longAssignment,
       launch_count: 12,
       launches: Array.from({ length: 12 }, (_, index) => ({
@@ -200,8 +266,9 @@ function testTaskSwarmUsesCompactPreview(): void {
   assert(Boolean(message), "expected structured task swarm message");
 
   const markup = renderToolMarkup(message!);
-  assert(markup.includes("SWARM MODE"), "expected the post-five swarm mode label");
-  assert((markup.match(/SWARM MODE/g) ?? []).length === 1, "swarm mode heading should render once");
+  assert(markup.includes("ITERATION SWARM"), "legacy explore payload should render as Iteration Swarm");
+  assert((markup.match(/ITERATION SWARM/g) ?? []).length === 1, "Iteration Swarm heading should render once");
+  assert(markup.includes("Fast parallel iterations"), "Iteration Swarm should describe fast parallel iteration");
   assert(!markup.includes("12 AI"), "swarm mode should omit the redundant AI population badge");
   assert(!markup.includes("finder"), "swarm rows should not show provider or agent metadata");
   assert(markup.includes("search"), "12–25 agent rows should retain the current tool");
@@ -210,6 +277,60 @@ function testTaskSwarmUsesCompactPreview(): void {
   assert(!markup.includes("Current"), "swarm mode should not render detailed current column header");
   assert(!markup.includes("child child-session"), "swarm mode should not render child session ids");
   assert(!markup.includes(`task ${longAssignment}`), "swarm mode should suppress long task header summary");
+
+  const regularMessage = buildStructuredToolMessage({
+    tool: "task",
+    callId: "call_task_regular_many",
+    outputText: JSON.stringify({
+      tool: "task",
+      task_mode: "regular",
+      launch_count: 12,
+      launches: Array.from({ length: 12 }, (_, index) => ({
+        launch_index: index + 1,
+        child_session_id: `regular-child-${index + 1}`,
+        status: "done",
+        resolved_agent_name: "finder",
+        assignment_label: `Regular task ${index + 1}`,
+      })),
+    }),
+  });
+  assert(Boolean(regularMessage), "expected regular task message");
+  assert(!renderToolMarkup(regularMessage!).includes("ITERATION SWARM"), "large regular waves must not become swarm mode by count");
+}
+
+function testAssemblySwarmShowsPartsAndParentIntegrationRequirement(): void {
+  const message = buildStructuredToolMessage({
+    tool: "task",
+    callId: "call_assembly_swarm",
+    outputText: JSON.stringify({
+      tool: "task",
+      path_id: "tool.task.v1",
+      task_mode: "swarm",
+      swarm_strategy: "assembly",
+      integration_contract: "Combine committed parts into the parent deliverable.",
+      integration_required: true,
+      integration_status: "pending_parent_assembly",
+      ready_for_dependent_work: false,
+      launches: [{
+        launch_index: 1,
+        child_session_id: "part-1",
+        swarm_mode: true,
+        swarm_strategy: "assembly",
+        assembly_part: { name: "Backend API", owned_scope: ["swarmd/internal/api/**"] },
+        integration_contract: "Combine committed parts into the parent deliverable.",
+        integration_required: true,
+        subagent: "coder",
+        status: "done",
+      }],
+    }),
+  });
+  assert(Boolean(message), "expected Assembly swarm message");
+  const markup = renderToolMarkup(message!);
+  assert(markup.includes("ASSEMBLY SWARM"), "Assembly swarm should use the explicit Assembly label");
+  assert(markup.includes("Complementary parts"), "Assembly swarm should describe workers as parts");
+  assert(markup.includes("parent integration required"), "completed Assembly children must retain the parent integration obligation");
+  assert(markup.includes("Contract: Combine committed parts into the parent deliverable."), "Assembly contract should be visible");
+  assert(markup.includes("Backend API"), "Assembly part identity should label the worker row");
 }
 
 function testTaskRunningTimerUsesStartTimestamp(): void {
@@ -761,13 +882,57 @@ function testTaskElapsedClockUsesDisplayCadence(): void {
   assert(TASK_ELAPSED_TICK_MS === 1_000, `expected one-second elapsed cadence, got ${TASK_ELAPSED_TICK_MS}`);
 }
 
+function testManageArtifactRendersTypedArtifactCard(): void {
+  const message = buildStructuredToolMessage({
+    tool: "manage_artifact",
+    callId: "call_artifact_test",
+    outputText: JSON.stringify({
+      tool: "manage_artifact",
+      action: "create",
+      status: "ok",
+      artifact: {
+        id: "var-123",
+        collection_id: "col-abc",
+        session_id: "sess-xyz",
+        event_seq: 4,
+        filename: "landing.html",
+        media_type: "text/html",
+        label: "Landing Page Mockup",
+        description: "Interactive landing page prototype",
+        status: "ready",
+        category: "visual",
+      },
+      reference: {
+        session_id: "sess-xyz",
+        collection_id: "col-abc",
+        variant_id: "var-123",
+        event_seq: 4,
+      },
+    }),
+  });
+  assert(Boolean(message), "expected manage_artifact message");
+  message!.artifactData!.artifact!.localRevealAvailable = true;
+  const markup = renderToolMarkup(message!);
+  assert(markup.includes('data-testid="desktop-artifact-tool-card"'), "expected artifact tool card testid");
+  assert(markup.includes("Landing Page Mockup"), "expected artifact label in markup");
+  assert(markup.includes("Interactive landing page prototype"), "expected description in markup");
+  assert(markup.includes("text/html"), "expected media type badge");
+  assert(markup.includes("Ready"), "expected Ready status badge");
+  assert(markup.includes("Open in viewer"), "expected Open in viewer button or link");
+  assert(markup.includes("Show in folder"), "local artifact card should expose the recovery working-copy action");
+  assert(markup.includes("Download"), "artifact card should retain the remote recovery download action");
+}
+
 function main(): void {
   testDeniedExitPlanPermissionUsesFlatPreview();
   testPlanManageUsesMinimalTransitionView();
+  testAcceptedPlanShowsStartedPlanMetadata();
   testPlanManageFollowupUsesCanonicalCheckpointMetadata();
   testPlanManageSubtaskUsesCanonicalUpdatedMetadata();
   testTaskSwarmLayoutProgressivelyCompacts();
+  testIdeaSwarmUsesSharedModelHeaderAndGenericAgentLabels();
   testTaskSwarmUsesCompactPreview();
+  testAssemblySwarmShowsPartsAndParentIntegrationRequirement();
   testTaskRunningTimerUsesStartTimestamp();
   testTaskTerminalTimerUsesFinalElapsed();
   testTaskElapsedClockUsesDisplayCadence();
@@ -781,6 +946,7 @@ function main(): void {
   testManageSessionsDeployRendersNavigableResultsAndHonestFailures();
   testManageSessionsReviewWorktreesHydratesCandidates();
   testSearchToolRendersSimpleSummary();
+  testManageArtifactRendersTypedArtifactCard();
   testSearchActivityKeepsInvestigationLabelAcrossSingleAndGroupedCalls();
   testSearchReadGroupRendersCompactFileAggregation();
   testManageSessionsListRendersCardsWithoutRawJson();

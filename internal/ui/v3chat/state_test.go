@@ -371,6 +371,9 @@ func TestFinalHandoffMetadataProjectsFromHydrationAndRealtime(t *testing.T) {
 			"title":          "Ready to review",
 			"overview":       "The focused change is complete.",
 			"impact_bullets": []any{"Compact card", "Ordinary chat continuation"},
+			"copyable_code_blocks": []any{
+				map[string]any{"label": "Run this command", "language": "bash", "code": "swarm status"},
+			},
 			"suggested_prompts": []any{
 				map[string]any{"label": "Review", "prompt": "Review the final handoff."},
 			},
@@ -381,7 +384,7 @@ func TestFinalHandoffMetadataProjectsFromHydrationAndRealtime(t *testing.T) {
 		Session:  client.SessionSummary{ID: "s"},
 		Messages: []client.SessionMessage{{ID: "handoff-1", SessionID: "s", Role: "system", Content: "compact", Metadata: metadata}},
 	}})
-	if len(state.Messages) != 1 || !isStructuredFinalHandoffMessage(state.Messages[0]) || state.Messages[0].FinalHandoff.Title != "Ready to review" {
+	if len(state.Messages) != 1 || !isStructuredFinalHandoffMessage(state.Messages[0]) || state.Messages[0].FinalHandoff.Title != "Ready to review" || len(state.Messages[0].FinalHandoff.CopyableCodeBlocks) != 1 {
 		t.Fatalf("hydrated final handoff = %#v", state.Messages)
 	}
 	if metadataString(state.Messages[0].Metadata, "kind") != "plan_final_checkpoint_handoff" || state.Messages[0].FinalHandoff.Details.Report != "Full report" {
@@ -394,6 +397,29 @@ func TestFinalHandoffMetadataProjectsFromHydrationAndRealtime(t *testing.T) {
 	state = Reduce(state, RealtimeFrameAction{Frame: client.V3RealtimeFrame{Kind: "event", Event: &client.SessionV3Event{SessionID: "s", Seq: 2, EventType: "session.message.created", Payload: payload}}})
 	if len(state.Messages) != 2 || !isStructuredFinalHandoffMessage(state.Messages[1]) || len(state.Messages[1].FinalHandoff.SuggestedPrompts) != 1 {
 		t.Fatalf("realtime final handoff = %#v", state.Messages)
+	}
+}
+
+func TestBlockedHandoffMetadataProjectsCopyableCodeBlock(t *testing.T) {
+	metadata := map[string]any{
+		"source": "plan_execution_blocked_handoff",
+		"kind":   "plan_blocked_checkpoint_handoff",
+		"blocked_handoff": map[string]any{
+			"schema_version": 1,
+			"title":          "Credentials required",
+			"overview":       "Deployment cannot continue until credentials are configured.",
+			"copyable_code_blocks": []any{
+				map[string]any{"label": "Configure credentials", "language": "bash", "code": "swarm auth login"},
+			},
+			"details": map[string]any{},
+		},
+	}
+	state := Reduce(NewState(), HydrateAction{Snapshot: client.SessionV3Hydrated{
+		Session:  client.SessionSummary{ID: "s"},
+		Messages: []client.SessionMessage{{ID: "blocked-1", SessionID: "s", Role: "system", Content: "blocked", Metadata: metadata}},
+	}})
+	if len(state.Messages) != 1 || !isStructuredFinalHandoffMessage(state.Messages[0]) || len(state.Messages[0].FinalHandoff.CopyableCodeBlocks) != 1 || state.Messages[0].FinalHandoff.CopyableCodeBlocks[0].Code != "swarm auth login" {
+		t.Fatalf("blocked handoff = %#v", state.Messages)
 	}
 }
 

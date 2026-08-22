@@ -198,6 +198,22 @@ test('canonical delegated subagent V3 metadata classifies child as subagent line
   assert.deepEqual(sessionChildDescriptor(session), { kind: 'subagent', label: '@reviewer', assignmentLabel: 'Map backend files' })
 })
 
+test('generic delegated lineage label yields to the canonical designated agent', () => {
+  const session = makeSession({
+    id: 'coder-child',
+    metadata: {
+      parent_session_id: 'parent-session',
+      lineage_kind: 'delegated_subagent',
+      lineage_label: '@subagent',
+      resolved_agent_name: 'coder',
+      requested_subagent: 'coder',
+      subagent: 'coder',
+    },
+  })
+
+  assert.deepEqual(sessionChildDescriptor(session), { kind: 'subagent', label: '@coder', assignmentLabel: null })
+})
+
 test('managed deploy keeps parent provenance but is a standalone sidebar session', () => {
   const session = makeSession({
     id: 'managed-session',

@@ -159,6 +159,36 @@ func TestRenderRequestNewPlanPermissionPayloadUsesPlanCardAndRetainsModalDocumen
 	}
 }
 
+func TestRenderAcceptedPlanShowsStartedMetadataWithoutRawCheckpointID(t *testing.T) {
+	page := NewChatPage(ChatPageOptions{SessionID: "session-1"})
+	message := chatMessageItem{
+		Role:      "tool",
+		ToolState: "done",
+		Metadata: map[string]any{
+			chatToolTimelineObjectMetadataKey:   true,
+			chatToolTimelineToolNameMetadataKey: "plan_manage",
+			chatToolTimelinePayloadMetadataKey:  `{"tool":"plan_manage","action":"request_new_plan","status":"ok","checkpoint_id":"cp-1","execution_summary":{"active_checkpoint_id":"cp-1","next_checkpoint_status":"in_progress"},"plan":{"id":"plan-1","title":"First Test Plan","status":"approved","document":{"title":"First Test Plan","status":"approved","active_checkpoint_id":"cp-1","checkpoints":[{"id":"cp-1","order":1,"title":"Run First Test Checkpoint","status":"pending"}]}}}`,
+		},
+	}
+
+	lines := page.renderToolMessageLines(message, 72)
+	var rendered []string
+	for _, line := range lines {
+		rendered = append(rendered, chatRenderLineText(line))
+	}
+	joined := strings.Join(rendered, "\n")
+	for _, want := range []string{"PLAN  ·  started  ·  checkpoint 1  ·  1 checkpoint  ·  In Progress", "First Test Plan"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("accepted plan card missing %q:\n%s", want, joined)
+		}
+	}
+	for _, unwanted := range []string{"request new plan", "request_new_plan", "cp-1", "CP-1"} {
+		if strings.Contains(joined, unwanted) {
+			t.Fatalf("accepted plan card exposed internal lifecycle text %q:\n%s", unwanted, joined)
+		}
+	}
+}
+
 func TestFormatUnifiedToolEntry_ExitPlanModeUsesFlatPlanStyling(t *testing.T) {
 	entry := chatToolStreamEntry{
 		ToolName: "exit_plan_mode",

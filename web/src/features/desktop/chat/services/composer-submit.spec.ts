@@ -78,6 +78,33 @@ test('a synchronous /task dispatch failure retains the draft and never submits o
   assert.deepEqual(calls, ['launch'])
 })
 
+test('ordinary submit clears only after accepted send and retains exact selections after failure', async () => {
+  const selection = { session_id: 'source-session', collection_id: 'collection-1', variant_id: 'variant-1', event_seq: 7, label: 'Homepage', action: 'use' as const }
+  const calls: string[] = []
+  const first = await submitDesktopComposer({
+    draft: 'Use this design.',
+    canStop: false,
+    selections: [selection],
+    clear: () => { calls.push('clear') },
+    onSubmit: async (_draft, _attachments, selections) => {
+      calls.push(JSON.stringify(selections))
+      throw new Error('rejected')
+    },
+  })
+  assert.equal(first, 'submit-failed')
+  assert.deepEqual(calls, [JSON.stringify([selection])])
+
+  const second = await submitDesktopComposer({
+    draft: 'Use this design.',
+    canStop: false,
+    selections: [selection],
+    clear: () => { calls.push('clear') },
+    onSubmit: async (_draft, _attachments, selections) => { calls.push(JSON.stringify(selections)) },
+  })
+  assert.equal(second, 'submitted')
+  assert.deepEqual(calls, [JSON.stringify([selection]), JSON.stringify([selection]), 'clear'])
+})
+
 test('bare /task forms retain the draft and never fall through to ordinary stop handling', async () => {
   for (const draft of ['/task', '/task plan']) {
     const calls: string[] = []

@@ -22,6 +22,11 @@ func openSubagentReservationTestServices(t *testing.T) (*Service, *Service) {
 
 func reserveSubagentWave(t *testing.T, service *Service, accountScopeID, sessionID, runID, callID string, launchCount int) SubagentReservationResult {
 	t.Helper()
+	return reserveSubagentWaveWithMode(t, service, accountScopeID, sessionID, runID, callID, launchCount, false)
+}
+
+func reserveSubagentWaveWithMode(t *testing.T, service *Service, accountScopeID, sessionID, runID, callID string, launchCount int, swarmMode bool) SubagentReservationResult {
+	t.Helper()
 	result, err := service.ReserveSubagentWave(SubagentReservationRequest{
 		SessionID:      sessionID,
 		AccountScopeID: accountScopeID,
@@ -29,6 +34,7 @@ func reserveSubagentWave(t *testing.T, service *Service, accountScopeID, session
 		CallID:         callID,
 		ManifestHash:   "manifest-" + callID,
 		LaunchCount:    launchCount,
+		SwarmMode:      swarmMode,
 	})
 	if err != nil {
 		t.Fatalf("reserve %s: %v", callID, err)
@@ -42,7 +48,7 @@ func TestSubagentPolicyJSONOmitsRemovedWaveAndDepthFields(t *testing.T) {
 		t.Fatalf("marshal policy: %v", err)
 	}
 	payload := string(encoded)
-	for _, field := range []string{"mode", "automatic_launches_per_parent_run", "active_child_limit", "over_budget_action", "require_write_isolation"} {
+	for _, field := range []string{"mode", "automatic_launches_per_parent_run", "active_child_limit", "swarm_active_child_limit", "over_budget_action", "require_write_isolation"} {
 		if !strings.Contains(payload, `"`+field+`"`) {
 			t.Fatalf("policy JSON %s is missing %q", payload, field)
 		}
@@ -60,6 +66,7 @@ func TestSubagentPolicyMapRejectsRemovedFields(t *testing.T) {
 		"mode":                              "bounded",
 		"automatic_launches_per_parent_run": 5,
 		"active_child_limit":                5,
+		"swarm_active_child_limit":          5,
 		"over_budget_action":                "ask",
 		"require_write_isolation":           true,
 		"absolute_wave_maximum":             16,
@@ -93,6 +100,7 @@ func TestPolicyAcceptsPracticalSubagentLimits(t *testing.T) {
 	policy := DefaultSubagentPolicy()
 	policy.AutomaticLaunchesPerParentRun = 24
 	policy.ActiveChildLimit = 12
+	policy.SwarmActiveChildLimit = 100
 	if err := ValidateSubagentPolicy(policy); err != nil {
 		t.Fatalf("validate practical policy: %v", err)
 	}
@@ -128,7 +136,7 @@ func TestReservationAutomaticBudgetCountsWavesRegardlessOfChildCount(t *testing.
 	}
 }
 
-func TestReservationActiveChildLimitIsPerCallAndAggregateHardCeiling(t *testing.T) {
+func TestReservationActiveChildLimitAsksForPerCallAndAggregateOverflow(t *testing.T) {
 	reader, writer := openSubagentReservationTestServices(t)
 	const accountScopeID = "account-concurrency"
 	policy := DefaultSubagentPolicy()
@@ -139,16 +147,66 @@ func TestReservationActiveChildLimitIsPerCallAndAggregateHardCeiling(t *testing.
 	}
 
 	oversized := reserveSubagentWave(t, reader, accountScopeID, "session-concurrency", "run-per-call", "call-oversized", 4)
-	if oversized.Decision != SubagentReservationDeny || oversized.Reason != "subagent wave exceeds active child limit of 3" {
-		t.Fatalf("oversized single call = %#v, want hard deny", oversized)
+	if oversized.Decision != SubagentReservationAsk || oversized.Reason != "wave requires approval because subagent wave exceeds default subagent limit of 3" {
+		t.Fatalf("oversized single call = %#v, want ask", oversized)
 	}
 	first := reserveSubagentWave(t, reader, accountScopeID, "session-concurrency", "run-aggregate", "call-1", 2)
 	if first.Decision != SubagentReservationApprove {
 		t.Fatalf("first aggregate wave = %#v, want approve", first)
 	}
 	second := reserveSubagentWave(t, reader, accountScopeID, "session-concurrency", "run-aggregate", "call-2", 2)
-	if second.Decision != SubagentReservationDeny || second.Reason != "active child concurrency limit would be exceeded" {
-		t.Fatalf("aggregate overflow = %#v, want hard deny", second)
+	if second.Decision != SubagentReservationAsk || second.Reason != "wave requires approval because default subagent limit would be exceeded by active child concurrency" {
+		t.Fatalf("aggregate overflow = %#v, want ask", second)
+	}
+}
+
+func TestReservationUsesSeparateRegularAndSwarmLimits(t *testing.T) {
+	reader, writer := openSubagentReservationTestServices(t)
+	const accountScopeID = "account-split-limits"
+	policy := DefaultSubagentPolicy()
+	policy.ActiveChildLimit = 10
+	policy.SwarmActiveChildLimit = 100
+	if _, err := writer.UpdateSubagentPolicyForAccount(accountScopeID, policy); err != nil {
+		t.Fatalf("update policy: %v", err)
+	}
+
+	regular := reserveSubagentWave(t, reader, accountScopeID, "session-split", "run-regular", "call-regular", 11)
+	if regular.Decision != SubagentReservationAsk || regular.Reason != "wave requires approval because subagent wave exceeds default subagent limit of 10" {
+		t.Fatalf("regular wave = %#v, want default-limit ask", regular)
+	}
+	requestedSwarm := reserveSubagentWaveWithMode(t, reader, accountScopeID, "session-split", "run-swarm", "call-swarm", 100, true)
+	if requestedSwarm.Decision != SubagentReservationApprove {
+		t.Fatalf("swarm wave = %#v, want approve", requestedSwarm)
+	}
+	oversizedSwarm := reserveSubagentWaveWithMode(t, reader, accountScopeID, "session-split", "run-swarm-oversized", "call-swarm-oversized", 101, true)
+	if oversizedSwarm.Decision != SubagentReservationAsk || oversizedSwarm.Reason != "wave requires approval because subagent wave exceeds swarm-mode subagent limit of 100" {
+		t.Fatalf("oversized swarm wave = %#v, want swarm-limit ask", oversizedSwarm)
+	}
+
+	activeRegular := reserveSubagentWave(t, reader, accountScopeID, "session-split", "run-independent-pools", "call-active-regular", 10)
+	if activeRegular.Decision != SubagentReservationApprove {
+		t.Fatalf("active regular wave = %#v, want approve", activeRegular)
+	}
+	concurrentSwarm := reserveSubagentWaveWithMode(t, reader, accountScopeID, "session-split", "run-independent-pools", "call-concurrent-swarm", 100, true)
+	if concurrentSwarm.Decision != SubagentReservationApprove {
+		t.Fatalf("concurrent swarm wave = %#v, want independent-pool approve", concurrentSwarm)
+	}
+}
+
+func TestSubagentPolicyMapDefaultsOmittedSwarmLimitToRegularLimit(t *testing.T) {
+	service, _ := openSubagentReservationTestServices(t)
+	updated, err := service.UpdateSubagentPolicyMapForAccount("account-legacy-client", map[string]any{
+		"mode":                              "bounded",
+		"automatic_launches_per_parent_run": 5,
+		"active_child_limit":                10,
+		"over_budget_action":                "ask",
+		"require_write_isolation":           true,
+	})
+	if err != nil {
+		t.Fatalf("update legacy policy: %v", err)
+	}
+	if got := int(updated["swarm_active_child_limit"].(float64)); got != 10 {
+		t.Fatalf("swarm active child limit = %d, want legacy active child limit 10", got)
 	}
 }
 
@@ -165,7 +223,7 @@ func TestReservationReloadsActiveChildLimitChangedDuringRun(t *testing.T) {
 		t.Fatalf("update policy: %v", err)
 	}
 	second := reserveSubagentWave(t, reader, accountScopeID, "session-1", "run-1", "call-2", 1)
-	if second.Decision != SubagentReservationDeny || second.Reason != "active child concurrency limit would be exceeded" {
+	if second.Decision != SubagentReservationAsk || second.Reason != "wave requires approval because default subagent limit would be exceeded by active child concurrency" {
 		t.Fatalf("second wave did not use updated active child limit: %#v", second)
 	}
 }
@@ -185,6 +243,88 @@ func TestReservationReloadsAutomaticLaunchLimitChangedDuringRun(t *testing.T) {
 	second := reserveSubagentWave(t, reader, accountScopeID, "session-1", "run-1", "call-2", 1)
 	if second.Decision != SubagentReservationAsk || second.Reason != "wave requires approval because the automatic wave budget is exhausted" {
 		t.Fatalf("second wave did not use updated automatic wave limit: %#v", second)
+	}
+}
+
+func TestReservationUsesConfiguredDenyForRegularAndSwarmLimitOverflow(t *testing.T) {
+	reader, writer := openSubagentReservationTestServices(t)
+	const accountScopeID = "account-limit-deny"
+	policy := DefaultSubagentPolicy()
+	policy.ActiveChildLimit = 2
+	policy.SwarmActiveChildLimit = 3
+	policy.OverBudgetAction = SubagentOverBudgetDeny
+	if _, err := writer.UpdateSubagentPolicyForAccount(accountScopeID, policy); err != nil {
+		t.Fatalf("update policy: %v", err)
+	}
+
+	regular := reserveSubagentWave(t, reader, accountScopeID, "session-limit-deny", "run-regular", "call-regular", 3)
+	if regular.Decision != SubagentReservationDeny || regular.Reason != "subagent wave exceeds default subagent limit of 2" {
+		t.Fatalf("regular over-limit wave = %#v, want configured deny", regular)
+	}
+	swarm := reserveSubagentWaveWithMode(t, reader, accountScopeID, "session-limit-deny", "run-swarm", "call-swarm", 4, true)
+	if swarm.Decision != SubagentReservationDeny || swarm.Reason != "subagent wave exceeds swarm-mode subagent limit of 3" {
+		t.Fatalf("swarm over-limit wave = %#v, want configured deny", swarm)
+	}
+}
+
+func TestReservationAsksThroughCanonicalPermissionFlow(t *testing.T) {
+	service, writer := openSubagentReservationTestServices(t)
+	const accountScopeID = "account-limit-ask"
+	policy := DefaultSubagentPolicy()
+	policy.ActiveChildLimit = 1
+	if _, err := writer.UpdateSubagentPolicyForAccount(accountScopeID, policy); err != nil {
+		t.Fatalf("update policy: %v", err)
+	}
+
+	reserved := reserveSubagentWave(t, service, accountScopeID, "session-limit-ask", "run-limit-ask", "call-limit-ask", 2)
+	authorized, err := service.AuthorizeToolCall(AuthorizationInput{
+		SessionID: "session-limit-ask", AccountScopeID: accountScopeID, RunID: "run-limit-ask", CallID: "call-limit-ask",
+		ToolName: "task", ToolArguments: `{}`, ToolCallArguments: `{}`, Mode: "auto", SubagentReservation: &reserved,
+	})
+	if err != nil {
+		t.Fatalf("authorize over-limit wave: %v", err)
+	}
+	if authorized.Decision != AuthorizationPending || authorized.Source != "subagent_orchestration" || authorized.Record == nil {
+		t.Fatalf("over-limit authorization = %#v, want pending subagent approval", authorized)
+	}
+	if reserved.Reservation.ActiveCount != 2 {
+		t.Fatalf("reserved active count = %d, want exact approved wave count 2", reserved.Reservation.ActiveCount)
+	}
+	resolved, err := service.Resolve("session-limit-ask", authorized.Record.ID, "allow_once", "approved exact over-limit wave")
+	if err != nil {
+		t.Fatalf("approve over-limit wave: %v", err)
+	}
+	if resolved.Status != pebblestore.PermissionStatusApproved {
+		t.Fatalf("resolved permission status = %q, want approved", resolved.Status)
+	}
+	idempotent := reserveSubagentWave(t, service, accountScopeID, "session-limit-ask", "run-limit-ask", "call-limit-ask", 2)
+	if idempotent.Decision != SubagentReservationAsk || idempotent.Reservation.ActiveCount != 2 {
+		t.Fatalf("idempotent approved reservation = %#v, want intact exact ask reservation", idempotent)
+	}
+}
+
+func TestReservationPreservesDirectModeAndAbsoluteSafetyDenials(t *testing.T) {
+	reader, writer := openSubagentReservationTestServices(t)
+	const accountScopeID = "account-hard-denials"
+	policy := DefaultSubagentPolicy()
+	policy.Mode = SubagentModeDirect
+	if _, err := writer.UpdateSubagentPolicyForAccount(accountScopeID, policy); err != nil {
+		t.Fatalf("update policy: %v", err)
+	}
+	direct := reserveSubagentWave(t, reader, accountScopeID, "session-hard-denials", "run-direct", "call-direct", 1)
+	if direct.Decision != SubagentReservationDeny || direct.Reason != "direct orchestration mode denies delegation" {
+		t.Fatalf("direct mode wave = %#v, want hard deny", direct)
+	}
+
+	absolute, err := reader.ReserveSubagentWave(SubagentReservationRequest{
+		SessionID: "session-hard-denials", AccountScopeID: accountScopeID, RunID: "run-absolute", CallID: "call-absolute",
+		ManifestHash: "manifest-absolute", LaunchCount: MaxSubagentWaveSize + 1,
+	})
+	if err != nil {
+		t.Fatalf("reserve absolute overflow: %v", err)
+	}
+	if absolute.Decision != SubagentReservationDeny || absolute.Reason != "subagent wave exceeds absolute safety bound of 256" {
+		t.Fatalf("absolute overflow = %#v, want hard deny", absolute)
 	}
 }
 

@@ -6,9 +6,11 @@ import (
 	"testing"
 
 	agentruntime "swarm/packages/swarmd/internal/agent"
+	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/provider/codex"
 	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
+	worktreeruntime "swarm/packages/swarmd/internal/worktree"
 )
 
 func TestCompactModelRuntimeUsesCanonicalProviderMappings(t *testing.T) {
@@ -310,6 +312,190 @@ func TestMemoryCompactionTranscriptIncludesVisibleConversationAndBoundedToolOutc
 	} {
 		if strings.Contains(transcript, unwanted) {
 			t.Fatalf("memory transcript included internal context %q:\n%s", unwanted, transcript)
+		}
+	}
+}
+
+func TestTaskCompactionTranscriptPreservesTypedDiscoveryAndTruncatedMutationEvidence(t *testing.T) {
+	messages := []pebblestore.MessageSnapshot{
+		{Role: "tool", Content: `{"path_id":"run.v3.provider-tool-result.v1","tool_name":"search","arguments":"{\"query\":\"TaskContextCompaction\",\"path\":\"swarmd/internal/run\"}","output":"{\"summary\":\"found TaskContextCompaction in service.go\",\"truncated\":true}"}`},
+		{Role: "tool", Content: `{"path_id":"run.v3.provider-tool-result.v1","tool_name":"edit","arguments":"{\"path\":\"swarmd/internal/run/service.go\"}","completed_output":"{\"path\":\"swarmd/internal/run/service.go\",\"replacements\":1,\"old_string_truncated\":true,\"new_string_truncated\":false,\"summary\":\"updated Compact assembly\"}"}`},
+	}
+	transcript := buildTaskCompactionTranscript(messages)
+	for _, want := range []string{
+		"- kind: discovery",
+		"- name: search",
+		"TaskContextCompaction",
+		"found TaskContextCompaction in service.go",
+		"- kind: mutation",
+		"- name: edit",
+		"updated Compact assembly",
+	} {
+		if !strings.Contains(transcript, want) {
+			t.Fatalf("Task transcript missing typed evidence %q:\n%s", want, transcript)
+		}
+	}
+}
+
+func TestDelegatedSubagentRunStartMetaSeparatesBaseBranchAndCommit(t *testing.T) {
+	launch := taskLaunchPrepared{
+		SubagentProfile: pebblestore.AgentProfile{Name: "system-coder"},
+		ContinuationBoundary: func(RunContinuationBoundaryInput) (RunContinuationBoundaryDecision, error) {
+			return RunContinuationBoundaryDecision{}, nil
+		},
+		ChildWorkspacePath:  "/workspace/child",
+		ChildWorktreeBase:   "dev-parent",
+		ChildWorktreeBranch: "agent/child-context",
+		TaskBase:            &worktreeruntime.TaskBase{RepoRoot: "/repo", ParentBranch: "dev-parent", BaseCommit: "base-commit-123"},
+	}
+	meta := delegatedSubagentRunStartMeta(launch, "permission-session", identity.Principal{AccountScopeID: "account-1"}, nil)
+	if meta.TaskCompaction == nil {
+		t.Fatal("delegated run meta omitted Task compaction context")
+	}
+	if got := meta.TaskCompaction.BaseBranch; got != "dev-parent" {
+		t.Fatalf("Task base branch = %q, want dev-parent", got)
+	}
+	if got := meta.TaskCompaction.ImmutableBaseCommit; got != "base-commit-123" {
+		t.Fatalf("Task immutable base commit = %q, want base-commit-123", got)
+	}
+	if meta.TaskCompaction.ImmutableBaseCommit == meta.TaskCompaction.BaseBranch {
+		t.Fatalf("Task base branch was mislabeled as immutable commit: %+v", meta.TaskCompaction)
+	}
+}
+
+func TestBoundTaskCompactionTranscriptKeepsSemanticEvidenceUnits(t *testing.T) {
+	entries := []taskCompactionTranscriptEntry{
+		{Text: "assistant:\n" + strings.Repeat("low-priority narration ", 100), Priority: 2, Order: 0},
+		{Text: "typed tool evidence:\n- kind: discovery\n- outcome: middle-symbol -> service.go", Priority: 3, Order: 1},
+		{Text: "typed tool evidence:\n- kind: mutation\n- outcome: changed service.go", Priority: 4, Order: 2},
+		{Text: "assistant prior compact checkpoint:\ncritical baseline", Priority: 6, Order: 3},
+	}
+	bounded := boundTaskCompactionTranscript(entries, 1150)
+	for _, want := range []string{"critical baseline", "middle-symbol -> service.go", "changed service.go", "semantic budget notice"} {
+		if !strings.Contains(bounded, want) {
+			t.Fatalf("semantic Task budget dropped %q:\n%s", want, bounded)
+		}
+	}
+	if strings.Contains(bounded, "older middle transcript omitted") || strings.Contains(bounded, strings.Repeat("low-priority narration ", 50)) {
+		t.Fatalf("semantic Task budget reverted to rune slicing or retained low-priority dump:\n%s", bounded)
+	}
+}
+
+func TestCompactInstructionsDefineConservativePersistentLoopWarning(t *testing.T) {
+	for _, origin := range []string{
+		contextCompactionOriginManual,
+		contextCompactionOriginThreshold,
+		contextCompactionOriginOverflow,
+		contextCompactionOriginPlanGuard,
+		contextCompactionOriginTask,
+	} {
+		t.Run(origin, func(t *testing.T) {
+			instructions := buildMemoryCompactionInstructions("", 9000, origin)
+			for _, want := range []string{
+				"two or more attempts or compaction epochs",
+				"substantially equivalent operations",
+				"same unchanged blocker, contradiction, or result",
+				"without new authoritative evidence, a file/workspace change, a commit, a newly validated result, or a materially distinct recovery path",
+				"A bounded retry is productive, not a loop",
+				"A failed first attempt, uncertainty, or scope growth alone is not a loop",
+				"NO-PROGRESS LOOP WARNING (carry forward until resolved):",
+				"workspace/Git state when known",
+				"one bounded next action that is not another substantially equivalent retry",
+				"copy the warning forward under the exact same heading",
+				"Remove it only when visible authoritative evidence proves the blocker resolved or material progress invalidates the repetition claim",
+			} {
+				if !strings.Contains(instructions, want) {
+					t.Fatalf("%s Compact instructions missing %q:\n%s", origin, want, instructions)
+				}
+			}
+		})
+	}
+}
+
+func TestLaterCompactCarriesUnresolvedLoopWarningFromPriorCheckpoint(t *testing.T) {
+	warning := `NO-PROGRESS LOOP WARNING (carry forward until resolved):
+- repeated operation: npm view @xterm/addon-webgl@0.17.0 dist.integrity
+- repetition evidence: Compact #2 and two tool attempts returned the same unavailable-version result
+- unchanged blocker: the exact package version is unavailable
+- completed work: manifest edits are complete
+- workspace/Git state: package.json modified; no commit recorded
+- exact resolution needed: choose an available package version
+- bounded next action: report the version contradiction and request the version decision`
+	messages := []pebblestore.MessageSnapshot{
+		{GlobalSeq: 1, Role: "user", Content: "install the exact package version"},
+		{GlobalSeq: 2, Role: "system", Content: "[context-compact] index=2 origin=threshold\n\nCompacted recap:\n" + warning},
+		{GlobalSeq: 3, Role: "assistant", Content: "I preserved the partial manifest work."},
+	}
+
+	trimmed := trimMessagesToLatestCompactionCheckpoint(messages)
+	transcript := buildMemoryCompactionTranscript(trimmed)
+	prompt := buildMemoryCompactionPrompt(memoryCompactionPromptOptions{
+		RunPrompt:    "install the exact package version",
+		Chunk:        transcript,
+		Origin:       contextCompactionOriginThreshold,
+		CompactIndex: 3,
+	})
+	for _, want := range []string{
+		"This is a later compact",
+		"NO-PROGRESS LOOP WARNING (carry forward until resolved):",
+		"npm view @xterm/addon-webgl@0.17.0 dist.integrity",
+		"choose an available package version",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("later Compact prompt lost stable warning field %q:\n%s", want, prompt)
+		}
+	}
+}
+
+func TestCompactIncidentFixtureExposesUnavailableExactVersionAndTimeout(t *testing.T) {
+	messages := []pebblestore.MessageSnapshot{
+		{Role: "user", Content: "Install exactly @xterm/addon-webgl@0.17.0 and keep completed manifest edits."},
+		{Role: "tool", Content: `{"path_id":"run.v3.provider-tool-result.v1","tool_name":"bash","arguments":"{\"command\":\"npm view @xterm/addon-webgl@0.17.0 dist.integrity\"}","error":"npm ERR! code E404: No match found for version 0.17.0"}`},
+		{Role: "assistant", Content: "The exact registry version appears unavailable; I will try one bounded registry query with a distinct endpoint."},
+		{Role: "tool", Content: `{"path_id":"run.v3.provider-tool-result.v1","tool_name":"bash","arguments":"{\"command\":\"npm view @xterm/addon-webgl versions --json\"}","error":"command timed out after 120000ms"}`},
+		{Role: "tool", Content: `{"path_id":"run.v3.provider-tool-result.v1","tool_name":"edit","arguments":"{\"path\":\"package.json\"}","completed_output":"{\"summary\":\"preserved completed manifest edits\",\"replacements\":1}"}`},
+	}
+	transcript := buildMemoryCompactionTranscript(messages)
+	instructions := buildMemoryCompactionInstructions("", 9000, contextCompactionOriginOverflow)
+	prompt := buildMemoryCompactionPrompt(memoryCompactionPromptOptions{
+		RunPrompt:    "Install exactly @xterm/addon-webgl@0.17.0",
+		Chunk:        transcript,
+		Origin:       contextCompactionOriginOverflow,
+		CompactIndex: 2,
+	})
+	for _, want := range []string{
+		"@xterm/addon-webgl@0.17.0",
+		"No match found for version 0.17.0",
+		"timed out after 120000ms",
+		"preserved completed manifest edits",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("incident Compact prompt missing %q:\n%s", want, prompt)
+		}
+	}
+	for _, want := range []string{
+		"same unchanged blocker, contradiction, or result",
+		"materially distinct recovery path",
+		"A bounded retry is productive, not a loop",
+		"NO-PROGRESS LOOP WARNING (carry forward until resolved):",
+		"Do not recommend another equivalent lookup, install, command, or tool call after warning",
+	} {
+		if !strings.Contains(instructions, want) {
+			t.Fatalf("incident Compact instructions missing %q:\n%s", want, instructions)
+		}
+	}
+}
+
+func TestPlanGuardCheckpointPreservesLoopWarningVerbatim(t *testing.T) {
+	warning := "NO-PROGRESS LOOP WARNING (carry forward until resolved):\n- unchanged blocker: exact package version unavailable\n- bounded next action: request an available version"
+	checkpoint := buildCompactionCheckpointMessage(warning, contextCompactionOriginPlanGuard, 4, "Plan One (plan-1)")
+	for _, want := range []string{
+		warning,
+		"origin=plan_guard",
+		"Attached plan: Plan One (plan-1)",
+	} {
+		if !strings.Contains(checkpoint, want) {
+			t.Fatalf("plan-guard checkpoint lost %q:\n%s", want, checkpoint)
 		}
 	}
 }

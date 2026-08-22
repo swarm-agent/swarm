@@ -3,6 +3,7 @@ package v3chat
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"sort"
 	"strconv"
 	"strings"
@@ -22,22 +23,45 @@ type toolPresentationLine struct {
 }
 
 type toolPresentation struct {
-	Summary  string
-	Lines    []toolPresentationLine
-	Kind     string
-	TaskRows []taskPresentationRow
+	Summary                 string
+	Lines                   []toolPresentationLine
+	Kind                    string
+	TaskRows                []taskPresentationRow
+	TaskSwarm               bool
+	TaskSwarmAgent          string
+	TaskSwarmModel          string
+	TaskSwarmStrategy       string
+	TaskIntegrationContract string
+	TaskIntegrationRequired bool
+	TaskProgram             bool
+	TaskProgramID           string
+	TaskProgramState        string
+	TaskProgramActiveStage  string
+	TaskProgramStages       []taskProgramPresentationStage
+}
+
+type taskProgramPresentationStage struct {
+	ID        string
+	DependsOn []string
+	Status    string
+	Rows      []taskPresentationRow
 }
 
 type taskPresentationRow struct {
-	Index   int
-	Status  string
-	Agent   string
-	Title   string
-	Model   string
-	Tool    string
-	Time    string
-	Preview string
-	Error   string
+	Index          int
+	Status         string
+	Agent          string
+	Title          string
+	Model          string
+	Tool           string
+	Time           string
+	Preview        string
+	Error          string
+	SwarmStrategy  string
+	AssemblyPart   string
+	ProgramJobID   string
+	ProgramStageID string
+	DependsOn      []string
 }
 
 func buildToolPresentation(tool ToolTimelineItem) toolPresentation {
@@ -63,10 +87,12 @@ func buildToolPresentation(tool ToolTimelineItem) toolPresentation {
 		presentation = presentWebTool(name, arguments, output)
 	case "plan-manage":
 		presentation = presentPlanManageTool(tool, arguments, output)
+	case "manage-artifact":
+		presentation = presentManageArtifactTool(tool, arguments, output)
 	case "manage-sessions":
 		presentation = presentManageSessionsTool(tool, arguments, output)
 	case "task":
-		presentation = presentTaskTool(tool, output)
+		presentation = presentTaskTool(tool, arguments, output)
 	default:
 		presentation = presentGenericTool(name, tool.Output, arguments, output)
 	}
@@ -103,6 +129,8 @@ func activeToolSummary(name, fallback string) string {
 		return "editing…"
 	case "plan-manage", "exit-plan-mode":
 		return "planning…"
+	case "manage-artifact":
+		return "managing artifacts…"
 	case "task":
 		return "launching subagents…"
 	default:
@@ -279,6 +307,87 @@ func presentBashTool(tool ToolTimelineItem, arguments, output map[string]any) to
 		lines = append(lines, toolPresentationLine{Text: "waiting for output…", Tone: "muted"})
 	}
 	return toolPresentation{Summary: appendToolFacts(summary, facts), Lines: lines}
+}
+
+func presentManageArtifactTool(tool ToolTimelineItem, arguments, output map[string]any) toolPresentation {
+	payload := output
+	if payload == nil {
+		payload = arguments
+	}
+	action := firstNonEmptyToolRaw(toolString(payload, "action"), toolString(arguments, "action"))
+	summary := "manage-artifact"
+	if action != "" {
+		summary += " " + strings.ReplaceAll(action, "_", " ")
+	}
+	artifact := toolObject(payload, "artifact")
+	reference := toolObject(payload, "reference")
+
+	facts := make([]string, 0, 3)
+	if status := toolString(payload, "status"); status != "" && !strings.EqualFold(status, "ok") {
+		facts = append(facts, status)
+	}
+	mediaType := firstNonEmptyToolRaw(toolString(artifact, "media_type"), toolString(arguments, "media_type"))
+	if mediaType != "" {
+		facts = append(facts, mediaType)
+	}
+	artStatus := toolString(artifact, "status")
+	if artStatus != "" && !strings.EqualFold(artStatus, "ok") {
+		facts = append(facts, artStatus)
+	}
+	if len(facts) > 0 {
+		summary = appendToolFacts(summary, facts)
+	}
+
+	lines := make([]toolPresentationLine, 0, 6)
+	if artifact != nil || reference != nil {
+		title := firstNonEmptyToolRaw(
+			toolString(artifact, "title"),
+			toolString(artifact, "label"),
+			toolString(artifact, "filename"),
+			toolString(artifact, "id"),
+			toolString(reference, "variant_id"),
+			"artifact",
+		)
+		lines = append(lines, toolPresentationLine{Text: title, Tone: "label"})
+
+		sessionID := firstNonEmptyToolRaw(toolString(artifact, "session_id"), toolString(reference, "session_id"))
+		collectionID := firstNonEmptyToolRaw(toolString(artifact, "collection_id"), toolString(reference, "collection_id"))
+		variantID := firstNonEmptyToolRaw(toolString(artifact, "id"), toolString(artifact, "variant_id"), toolString(reference, "variant_id"))
+		eventSeq := toolInt(artifact, "event_seq")
+		if eventSeq <= 0 {
+			eventSeq = toolInt(reference, "event_seq")
+		}
+
+		identityParts := make([]string, 0, 4)
+		if sessionID != "" {
+			identityParts = append(identityParts, "session="+sessionID)
+		}
+		if collectionID != "" {
+			identityParts = append(identityParts, "collection="+collectionID)
+		}
+		if variantID != "" {
+			identityParts = append(identityParts, "variant="+variantID)
+		}
+		if eventSeq > 0 {
+			identityParts = append(identityParts, fmt.Sprintf("event_seq=%d", eventSeq))
+		}
+		if len(identityParts) > 0 {
+			lines = append(lines, toolPresentationLine{Text: strings.Join(identityParts, " · "), Tone: "path"})
+		}
+
+		if sessionID != "" && variantID != "" {
+			route := fmt.Sprintf("/v3/sessions/%s/artifacts/%s", url.PathEscape(sessionID), url.PathEscape(variantID))
+			lines = append(lines, toolPresentationLine{Text: "Route: " + route, Tone: "muted"})
+		}
+	} else if action == "generate_image" {
+		if prompt := toolString(arguments, "prompt"); prompt != "" {
+			lines = append(lines, toolPresentationLine{Text: "Prompt: " + clampToolRunes(prompt, 120), Tone: "muted"})
+		}
+	}
+	if tool.Error != "" {
+		lines = append(lines, toolPresentationLine{Text: tool.Error, Tone: "error"})
+	}
+	return toolPresentation{Summary: summary, Lines: lines}
 }
 
 func looksLikeTerminalBashPayload(payload map[string]any) bool {
@@ -857,7 +966,11 @@ func manageSessionsStatusTone(status string) string {
 	}
 }
 
-func presentTaskTool(tool ToolTimelineItem, output map[string]any) toolPresentation {
+func presentTaskTool(tool ToolTimelineItem, arguments, output map[string]any) toolPresentation {
+	directImageSwarm := strings.EqualFold(strings.TrimSpace(toolString(output, "execution_format")), "direct_image_swarm")
+	if tool.TaskStream != nil && strings.EqualFold(strings.TrimSpace(tool.TaskStream.ExecutionFormat), "direct_image_swarm") {
+		directImageSwarm = true
+	}
 	launches := make([]map[string]any, 0)
 	launchCount := 0
 	if tool.TaskStream != nil {
@@ -872,12 +985,37 @@ func presentTaskTool(tool ToolTimelineItem, output map[string]any) toolPresentat
 		launches = toolObjectSlice(output, "launches")
 		launchCount = maxInt(launchCount, toolInt(output, "launch_count"))
 	}
+	finalImageStatus := normalizeTaskPresentationStatus(toolString(output, "status"))
+	terminalDirectImages := directImageSwarm && len(toolObjectSlice(output, "images")) > 0 && (finalImageStatus == "done" || finalImageStatus == "error" || finalImageStatus == "cancelled")
+	if terminalDirectImages {
+		launches = nil
+	}
+	if directImageSwarm && len(launches) == 0 {
+		for index, image := range toolObjectSlice(output, "images") {
+			imageIndex := toolInt(image, "index")
+			if imageIndex <= 0 {
+				imageIndex = index + 1
+			}
+			status := normalizeTaskPresentationStatus(toolString(image, "status"))
+			stages := []string{"Routing", "Image creation"}
+			errorText := toolString(image, "error")
+			launches = append(launches, map[string]any{
+				"launch_index": imageIndex, "status": status, "requested_subagent": "image", "swarm_mode": true,
+				"assignment_label": firstNonEmptyToolRaw(toolString(image, "title"), toolString(image, "theme"), fmt.Sprintf("Image %d", imageIndex)),
+				"current_tool":     "Image creation", "current_tool_display": strings.Join(stages, " → "), "tool_order": stages, "error": errorText,
+			})
+		}
+	}
 	if len(launches) == 0 && toolString(output, "path_id") == "tool.task.stream.v2" {
 		if launch := toolObject(output, "launch"); launch != nil {
 			launches = append(launches, launch)
 		}
 	}
 	launchCount = maxInt(launchCount, len(launches))
+	swarm := directImageSwarm || taskPresentationIsSwarm(arguments, output, launches)
+	swarmStrategy := taskPresentationSwarmStrategy(arguments, output, tool.TaskStream, launches, swarm)
+	integrationContract := taskPresentationIntegrationContract(arguments, output, tool.TaskStream, launches)
+	integrationRequired := taskPresentationIntegrationRequired(output, tool.TaskStream, launches)
 	rows := make([]taskPresentationRow, 0, len(launches))
 	for index, launch := range launches {
 		launchIndex := toolInt(launch, "launch_index")
@@ -899,30 +1037,324 @@ func presentTaskTool(tool ToolTimelineItem, output map[string]any) toolPresentat
 				currentTool = history[len(history)-1]
 			}
 		}
+		sourceArguments := toolObject(launch, "source_arguments")
+		programJobID, programStageID := taskProgramIdentityForLaunch(output, tool.TaskStream, launch, sourceArguments)
 		status := normalizeTaskPresentationStatus(toolString(launch, "status"))
+		if tool.TaskStream != nil && programJobID != "" {
+			if jobState := tool.TaskStream.ProgramJobStates[programJobID]; jobState != nil {
+				status = normalizeTaskPresentationStatus(toolString(jobState, "state"))
+			}
+		}
 		timeMS := toolInt(launch, "elapsed_ms")
 		if status == "running" {
 			timeMS = toolInt(launch, "current_tool_ms")
 		}
+		assemblyPart := toolObject(launch, "assembly_part")
 		rows = append(rows, taskPresentationRow{
-			Index:   launchIndex,
-			Status:  status,
-			Agent:   firstNonEmptyToolRaw(toolString(launch, "resolved_agent_name"), toolString(launch, "requested_subagent_type"), toolString(launch, "agent_type"), toolString(launch, "subagent"), toolString(launch, "requested_subagent"), "subagent"),
-			Title:   firstNonEmptyToolRaw(toolString(launch, "assignment_label"), toolString(launch, "meta_prompt"), "subagent"),
-			Model:   taskPresentationModel(launch),
-			Tool:    firstNonEmptyToolRaw(currentTool, "-"),
-			Time:    toolDurationLabel(int64(timeMS)),
-			Preview: preview,
-			Error:   toolString(launch, "error"),
+			Index:          launchIndex,
+			Status:         status,
+			Agent:          firstNonEmptyToolRaw(toolString(launch, "resolved_agent_name"), toolString(launch, "requested_subagent_type"), toolString(launch, "agent_type"), toolString(launch, "subagent"), toolString(launch, "requested_subagent"), "subagent"),
+			Title:          firstNonEmptyToolRaw(toolString(assemblyPart, "name"), toolString(launch, "assignment_label"), toolString(launch, "meta_prompt"), "subagent"),
+			Model:          taskPresentationModel(launch),
+			Tool:           firstNonEmptyToolRaw(currentTool, "-"),
+			Time:           toolDurationLabel(int64(timeMS)),
+			Preview:        preview,
+			Error:          toolString(launch, "error"),
+			SwarmStrategy:  firstNonEmptyToolRaw(toolString(launch, "swarm_strategy"), swarmStrategy),
+			AssemblyPart:   toolString(assemblyPart, "name"),
+			ProgramJobID:   programJobID,
+			ProgramStageID: programStageID,
+			DependsOn:      toolStringSlice(sourceArguments, "depends_on"),
 		})
 	}
 	summary := "subagent stream"
+	swarmAgent := ""
+	swarmModel := ""
+	if directImageSwarm {
+		summary = "Image Swarm · Routing → Image creation"
+		swarmAgent = "image"
+	} else if swarm {
+		summary = "Iteration Swarm"
+		if swarmStrategy == "assembly" {
+			summary = "Assembly Swarm"
+		}
+		for _, row := range rows {
+			agent := strings.ToLower(strings.TrimSpace(row.Agent))
+			if swarmAgent == "" {
+				swarmAgent = agent
+			} else if swarmAgent != agent {
+				swarmAgent = "mixed"
+			}
+			model := strings.TrimSpace(row.Model)
+			if model == "" {
+				continue
+			}
+			if swarmModel == "" {
+				swarmModel = model
+			} else if swarmModel != model {
+				swarmModel = ""
+				break
+			}
+		}
+	}
 	if len(rows) == 0 && toolStatusRank(tool.Status) < 3 {
-		summary = "launching subagents…"
+		if directImageSwarm {
+			summary = "Image Swarm · Routing…"
+		} else if swarm {
+			if swarmStrategy == "assembly" {
+				summary = "hydrating Assembly Swarm…"
+			} else {
+				summary = "hydrating Iteration Swarm…"
+			}
+		} else {
+			summary = "launching subagents…"
+		}
+	} else if directImageSwarm && len(rows) > 0 {
+		summary += " · " + toolCountLabel(len(rows), "image", "images")
 	} else if launchCount > 0 {
 		summary += " · " + toolCountLabel(launchCount, "subagent", "subagents")
 	}
-	return toolPresentation{Summary: summary, Kind: "task", TaskRows: rows}
+	presentation := toolPresentation{Summary: summary, Kind: "task", TaskRows: rows, TaskSwarm: swarm, TaskSwarmAgent: swarmAgent, TaskSwarmModel: swarmModel, TaskSwarmStrategy: swarmStrategy, TaskIntegrationContract: integrationContract, TaskIntegrationRequired: integrationRequired}
+	applyTaskProgramPresentation(&presentation, arguments, output, tool.TaskStream, rows)
+	return presentation
+}
+
+func taskProgramIdentityForLaunch(output map[string]any, stream *TaskStreamState, launch, sourceArguments map[string]any) (string, string) {
+	jobID := firstNonEmptyToolRaw(toolString(launch, "program_job_id"), toolString(sourceArguments, "program_job_id"))
+	stageID := firstNonEmptyToolRaw(toolString(launch, "program_stage_id"), toolString(sourceArguments, "program_stage_id"))
+	if jobID != "" {
+		return jobID, stageID
+	}
+	childSessionID := firstNonEmptyToolRaw(toolString(launch, "child_session_id"), toolString(launch, "session_id"))
+	if childSessionID == "" {
+		return "", ""
+	}
+	status := toolObject(output, "program_status")
+	for _, job := range toolObjectSlice(status, "jobs") {
+		if toolString(job, "child_session_id") == childSessionID {
+			return toolString(job, "job_id"), toolString(job, "stage_id")
+		}
+	}
+	if stream != nil {
+		for candidateID, job := range stream.ProgramJobStates {
+			if toolString(job, "child_session_id") == childSessionID {
+				return candidateID, toolString(job, "stage_id")
+			}
+		}
+	}
+	return "", ""
+}
+
+func applyTaskProgramPresentation(presentation *toolPresentation, arguments, output map[string]any, stream *TaskStreamState, rows []taskPresentationRow) {
+	if presentation == nil {
+		return
+	}
+	program := toolObject(arguments, "program")
+	status := toolObject(output, "program_status")
+	if program == nil {
+		program = toolObject(status, "definition")
+	}
+	programID := firstNonEmptyToolRaw(toolString(output, "program_id"), toolString(status, "program_id"), toolString(program, "id"))
+	if stream != nil {
+		programID = firstNonEmptyToolRaw(programID, stream.ProgramID)
+	}
+	if programID == "" {
+		return
+	}
+	presentation.TaskProgram = true
+	presentation.TaskProgramID = programID
+	presentation.TaskProgramState = firstNonEmptyToolRaw(toolString(output, "program_state"), toolString(status, "program_state"))
+	presentation.TaskProgramActiveStage = firstNonEmptyToolRaw(toolString(output, "active_stage_id"), toolString(status, "active_stage_id"))
+	if stream != nil {
+		presentation.TaskProgramState = firstNonEmptyToolRaw(presentation.TaskProgramState, stream.ProgramState)
+		presentation.TaskProgramActiveStage = firstNonEmptyToolRaw(presentation.TaskProgramActiveStage, stream.ActiveStageID)
+	}
+	stageDefinitions := make([]TaskProgramStageState, 0)
+	stageRows := toolObjectSlice(program, "stages")
+	if len(stageRows) == 0 {
+		stageRows = toolObjectSlice(status, "stages")
+	}
+	for _, raw := range stageRows {
+		if id := toolString(raw, "id"); id != "" {
+			stageDefinitions = append(stageDefinitions, TaskProgramStageState{ID: id, DependsOn: toolStringSlice(raw, "depends_on")})
+		}
+	}
+	if len(stageDefinitions) == 0 && stream != nil {
+		stageDefinitions = append(stageDefinitions, stream.ProgramStages...)
+	}
+	jobDefinitions := make(map[string]map[string]any)
+	definitionRows := toolObjectSlice(program, "jobs")
+	if len(definitionRows) == 0 {
+		definitionRows = toolObjectSlice(status, "job_definitions")
+	}
+	for _, raw := range definitionRows {
+		if id := toolString(raw, "id"); id != "" {
+			jobDefinitions[id] = raw
+		}
+	}
+	if stream != nil {
+		for id, raw := range stream.ProgramJobsByID {
+			if _, exists := jobDefinitions[id]; !exists {
+				jobDefinitions[id] = raw
+			}
+		}
+	}
+	rowsByJob := make(map[string]taskPresentationRow)
+	for _, row := range rows {
+		if row.ProgramJobID != "" {
+			rowsByJob[row.ProgramJobID] = row
+		}
+	}
+	jobStates := make(map[string]map[string]any)
+	for _, raw := range toolObjectSlice(status, "jobs") {
+		if id := toolString(raw, "job_id"); id != "" {
+			jobStates[id] = raw
+		}
+	}
+	if stream != nil {
+		for id, raw := range stream.ProgramJobStates {
+			jobStates[id] = raw
+		}
+	}
+	orderedJobs := definitionRows
+	if len(orderedJobs) == 0 && stream != nil {
+		for _, jobID := range stream.ProgramJobOrder {
+			if definition := jobDefinitions[jobID]; definition != nil {
+				orderedJobs = append(orderedJobs, definition)
+			}
+		}
+	}
+	activeStageID := presentation.TaskProgramActiveStage
+	if state := normalizeTaskPresentationStatus(presentation.TaskProgramState); state == "done" || state == "error" || state == "cancelled" {
+		activeStageID = ""
+	}
+	for stageIndex, stage := range stageDefinitions {
+		phase := taskProgramPresentationStage{ID: stage.ID, DependsOn: append([]string(nil), stage.DependsOn...)}
+		for jobIndex, definition := range orderedJobs {
+			if toolString(definition, "stage_id") != stage.ID {
+				continue
+			}
+			jobID := toolString(definition, "id")
+			row, found := rowsByJob[jobID]
+			if !found {
+				row = taskPresentationRow{Index: jobIndex + 1, ProgramJobID: jobID, ProgramStageID: stage.ID, Title: firstNonEmptyToolRaw(toolString(definition, "title"), jobID), Agent: firstNonEmptyToolRaw(toolString(definition, "agent_type"), "subagent"), Tool: "-", DependsOn: toolStringSlice(definition, "depends_on")}
+			}
+			if state := jobStates[jobID]; state != nil {
+				row.Status = normalizeTaskPresentationStatus(toolString(state, "state"))
+			}
+			if row.Status == "" {
+				row.Status = "pending"
+			}
+			phase.Rows = append(phase.Rows, row)
+		}
+		if len(phase.Rows) == 0 {
+			for jobID, definition := range jobDefinitions {
+				if toolString(definition, "stage_id") != stage.ID {
+					continue
+				}
+				row := rowsByJob[jobID]
+				if row.ProgramJobID == "" {
+					row = taskPresentationRow{Index: stageIndex + 1, ProgramJobID: jobID, ProgramStageID: stage.ID, Title: firstNonEmptyToolRaw(toolString(definition, "title"), jobID), Agent: firstNonEmptyToolRaw(toolString(definition, "agent_type"), "subagent"), Tool: "-", DependsOn: toolStringSlice(definition, "depends_on"), Status: "pending"}
+				}
+				phase.Rows = append(phase.Rows, row)
+			}
+		}
+		phase.Status = taskProgramPhaseStatus(phase, activeStageID)
+		presentation.TaskProgramStages = append(presentation.TaskProgramStages, phase)
+	}
+	presentation.Summary = "Task Program · " + programID
+}
+
+func taskProgramPhaseStatus(stage taskProgramPresentationStage, activeStageID string) string {
+	if stage.ID == activeStageID {
+		return "running"
+	}
+	allDone, failed := len(stage.Rows) > 0, false
+	for _, row := range stage.Rows {
+		switch row.Status {
+		case "done":
+		case "error", "cancelled":
+			failed = true
+			allDone = false
+		default:
+			allDone = false
+		}
+	}
+	if failed {
+		return "error"
+	}
+	if allDone {
+		return "done"
+	}
+	if len(stage.DependsOn) > 0 {
+		return "waiting"
+	}
+	return "pending"
+}
+
+func taskPresentationIsSwarm(arguments, output map[string]any, launches []map[string]any) bool {
+	for _, payload := range []map[string]any{arguments, output} {
+		if strings.EqualFold(strings.TrimSpace(toolString(payload, "mode")), "swarm") ||
+			strings.EqualFold(strings.TrimSpace(toolString(payload, "task_mode")), "swarm") ||
+			toolBool(payload, "swarm_mode") {
+			return true
+		}
+	}
+	for _, launch := range launches {
+		if toolBool(launch, "swarm_mode") || strings.EqualFold(strings.TrimSpace(toolString(launch, "task_mode")), "swarm") {
+			return true
+		}
+	}
+	return false
+}
+
+func taskPresentationSwarmStrategy(arguments, output map[string]any, stream *TaskStreamState, launches []map[string]any, swarm bool) string {
+	for _, value := range []string{toolString(output, "swarm_strategy"), toolString(arguments, "swarm_strategy")} {
+		if strategy := strings.ToLower(strings.TrimSpace(value)); strategy == "assembly" || strategy == "explore" {
+			return strategy
+		}
+	}
+	if stream != nil {
+		if strategy := strings.ToLower(strings.TrimSpace(stream.SwarmStrategy)); strategy == "assembly" || strategy == "explore" {
+			return strategy
+		}
+	}
+	for _, launch := range launches {
+		if strategy := strings.ToLower(strings.TrimSpace(toolString(launch, "swarm_strategy"))); strategy == "assembly" || strategy == "explore" {
+			return strategy
+		}
+	}
+	if swarm {
+		return "explore"
+	}
+	return ""
+}
+
+func taskPresentationIntegrationContract(arguments, output map[string]any, stream *TaskStreamState, launches []map[string]any) string {
+	if contract := firstToolString(output, arguments, "integration_contract"); contract != "" {
+		return contract
+	}
+	if stream != nil && strings.TrimSpace(stream.IntegrationContract) != "" {
+		return strings.TrimSpace(stream.IntegrationContract)
+	}
+	for _, launch := range launches {
+		if contract := toolString(launch, "integration_contract"); contract != "" {
+			return contract
+		}
+	}
+	return ""
+}
+
+func taskPresentationIntegrationRequired(output map[string]any, stream *TaskStreamState, launches []map[string]any) bool {
+	if toolBool(output, "integration_required") || (stream != nil && stream.IntegrationRequired) {
+		return true
+	}
+	for _, launch := range launches {
+		if toolBool(launch, "integration_required") {
+			return true
+		}
+	}
+	return false
 }
 
 func normalizeTaskPresentationStatus(status string) string {
@@ -935,6 +1367,12 @@ func normalizeTaskPresentationStatus(status string) string {
 		return "cancelled"
 	case "running", "active", "in_progress":
 		return "running"
+	case "handoff_ready", "integrated":
+		return "done"
+	case "blocked":
+		return "error"
+	case "declared", "queued", "pending":
+		return "pending"
 	case "":
 		return "pending"
 	default:

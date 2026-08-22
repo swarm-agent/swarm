@@ -16,6 +16,16 @@ test('workspace picker uses Alt+W while compact sidebar selection remains availa
   assert.match(desktopSource, /aria-label=\{`Current workspace: \$\{topWorkspaceLabel\}`\}/)
 })
 
+test('plan mode is enabled with Shift+Tab only from the new-session composer', async () => {
+  const shortcut = DESKTOP_SHORTCUTS.find((definition) => definition.id === 'enable-new-session-plan')
+  assert.deepEqual(shortcut?.keys, ['Shift', 'Tab'])
+  assert.equal(DESKTOP_SHORTCUTS.some((definition) => definition.keys.join('+') === '⌘/Ctrl+Alt+M'), false)
+
+  const composerSource = await readFile(new URL('../chat/components/desktop-v3-agentic-composer.tsx', import.meta.url), 'utf8')
+  assert.match(composerSource, /routedNewSession && event\.key === 'Tab' && event\.shiftKey/)
+  assert.match(composerSource, /onModeSelect\?\.\('plan'\)/)
+})
+
 test('workspace picker numbers select workspaces 1 through 10', () => {
   assert.equal(resolveWorkspaceShortcutIndex('1', 10), 0)
   assert.equal(resolveWorkspaceShortcutIndex('9', 10), 8)

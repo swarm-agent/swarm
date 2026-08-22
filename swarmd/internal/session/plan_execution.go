@@ -97,10 +97,31 @@ type PlanCheckpointOutcomeOptions struct {
 	Result          string
 	ChangedFiles    []string
 	Validation      []string
+	Artifacts       []pebblestore.SessionPlanArtifactReference
 	Recommendation  *pebblestore.SessionPlanCheckpointRecommendation
 	Handoff         *pebblestore.SessionPlanCheckpointHandoff
 	StartedAt       int64
 	CompletedAt     int64
+}
+
+func mergePlanCheckpointArtifacts(existing, added []pebblestore.SessionPlanArtifactReference) []pebblestore.SessionPlanArtifactReference {
+	merged := trimPlanArtifacts(append(append([]pebblestore.SessionPlanArtifactReference(nil), existing...), added...))
+	result := make([]pebblestore.SessionPlanArtifactReference, 0, len(merged))
+	seen := make(map[string]struct{}, len(merged))
+	for _, artifact := range merged {
+		var key string
+		if isManagedPlanArtifact(artifact) {
+			key = strings.Join([]string{"managed", artifact.SessionID, artifact.CollectionID, artifact.VariantID, fmt.Sprintf("%d", artifact.EventSeq)}, "\x00")
+		} else {
+			key = strings.Join([]string{"workspace", artifact.Path, artifact.Role, artifact.Description, artifact.MediaType}, "\x00")
+		}
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		result = append(result, artifact)
+	}
+	return result
 }
 
 type PlanCheckpointOutcomeDecision struct {
@@ -156,14 +177,15 @@ type PlanCheckpointCancellationDecision struct {
 // for missing or unknown persisted values.
 func normalizePlanCheckpointRecommendation(value pebblestore.SessionPlanCheckpointRecommendation) pebblestore.SessionPlanCheckpointRecommendation {
 	value.Decision = strings.ToLower(strings.TrimSpace(value.Decision))
-	value.Action = strings.ToLower(strings.TrimSpace(value.Action))
+	value.Action = strings.TrimSpace(value.Action)
 	value.Reason = strings.TrimSpace(value.Reason)
 	value.ActionState = strings.ToLower(strings.TrimSpace(value.ActionState))
+	value.Prompt = strings.TrimSpace(value.Prompt)
 	return value
 }
 
 func validatePlanCheckpointRecommendation(value pebblestore.SessionPlanCheckpointRecommendation) error {
-	if value.Decision == "" && value.Action == "" && value.Reason == "" && value.ActionState == "" {
+	if value.Decision == "" && value.Action == "" && value.Reason == "" && value.ActionState == "" && value.Prompt == "" {
 		return nil
 	}
 	if value.Decision != "ship" && value.Decision != "change" && value.Decision != "revert" && value.Decision != "defer" {
@@ -174,6 +196,15 @@ func validatePlanCheckpointRecommendation(value pebblestore.SessionPlanCheckpoin
 	}
 	if value.ActionState != "taken" && value.ActionState != "ready" && value.ActionState != "needs_approval" {
 		return fmt.Errorf("review recommendation action_state %q is not supported", value.ActionState)
+	}
+	if err := validateFinalHandoffText("recommendation.action", value.Action, PlanFinalHandoffMaxOverviewRunes, true); err != nil {
+		return err
+	}
+	if err := validateFinalHandoffText("recommendation.reason", value.Reason, PlanFinalHandoffMaxOverviewRunes, true); err != nil {
+		return err
+	}
+	if err := validateFinalHandoffText("recommendation.prompt", value.Prompt, PlanFinalHandoffMaxSuggestedPromptRunes, false); err != nil {
+		return err
 	}
 	return nil
 }
@@ -1113,6 +1144,9 @@ func ApplyPlanCheckpointOutcome(doc *pebblestore.SessionPlanDocument, options Pl
 	}
 	if len(options.Validation) > 0 {
 		checkpoint.Validation = trimStringSlice(options.Validation)
+	}
+	if len(options.Artifacts) > 0 {
+		checkpoint.Artifacts = mergePlanCheckpointArtifacts(checkpoint.Artifacts, options.Artifacts)
 	}
 	if options.Recommendation != nil {
 		recommendation := normalizePlanCheckpointRecommendation(*options.Recommendation)

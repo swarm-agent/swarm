@@ -1855,7 +1855,7 @@ function sessionCreateV3RequestBody(input: {
   workspacePath: string;
   workspaceName: string;
   mode: string;
-  agentName?: string;
+  agentName: string;
   metadata?: Record<string, unknown>;
   preference: ResolvedSessionPreference["preference"];
   worktreeMode?: string;
@@ -1865,6 +1865,8 @@ function sessionCreateV3RequestBody(input: {
 }): Record<string, unknown> {
   const preference = sessionCreatePreferenceBody(input.preference)
   const title = optionalString(input.title)
+  const agentName = input.agentName.trim()
+  if (!agentName) throw new Error("Session create requires agent_name")
   return stripUndefinedFields({
     client_request_id: `desktop-v3-create:${crypto.randomUUID()}`,
     swarm_id: input.target.swarmId,
@@ -1873,7 +1875,7 @@ function sessionCreateV3RequestBody(input: {
     workspace_path: input.workspacePath,
     workspace_name: input.workspaceName,
     mode: input.mode,
-    agent_name: input.agentName?.trim() || undefined,
+    agent_name: agentName,
     preference: Object.keys(preference).length > 0 ? preference : undefined,
     metadata: sanitizeSessionCreateMetadata(input.metadata),
     worktree_mode: optionalString(input.worktreeMode) || undefined,
@@ -1888,7 +1890,7 @@ export async function createSession(input: {
   workspacePath: string;
   workspaceName: string;
   mode: string;
-  agentName?: string;
+  agentName: string;
   metadata?: Record<string, unknown>;
   preference: ResolvedSessionPreference["preference"];
   route?: DesktopChatRoute | null;

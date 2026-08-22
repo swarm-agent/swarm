@@ -10,6 +10,7 @@ import { saveShowTipsSetting } from '../../settings/swarm/mutations/save-show-ti
 import { normalizeShowTipsEnabled } from '../../settings/swarm/types/swarm-settings'
 import type { AgentModelControlConfirmInput } from './agent-model-control'
 import { modelOptionKey } from '../services/model-options'
+import type { ModelProfileRecord } from '../types/chat'
 import {
   DesktopV3RoutedNewSessionController,
   createDesktopV3RoutedComposerSnapshot,
@@ -20,6 +21,8 @@ import {
 } from '../../session-v3/new-session-flow'
 import { postDesktopV3RoutedSessionStart } from '../../session-v3/write-api'
 import { DesktopV3AgenticComposer } from './desktop-v3-agentic-composer'
+import { DesktopV3ChatHeader } from './desktop-v3-chat-header'
+import type { DesktopV3RunStatusModel } from './desktop-v3-run-status'
 import { DesktopV3RoutedPendingShell } from './desktop-v3-routed-pending-shell'
 import {
   reconcileDesktopComposerStagedAttachments,
@@ -27,6 +30,7 @@ import {
   type DesktopComposerStagedAttachment,
 } from '../services/composer-attachments'
 import { DESKTOP_V3_MEDIA_STAGING_MAX_TTL_SECONDS } from '../../session-v3/media-staging-api'
+import type { DesktopV3ArtifactMessageSelection } from '../../session-v3/artifact-api'
 import {
   createDesktopRoutedWorktreeIntent,
   encodeDesktopRoutedWorktreeIntentMetadata,
@@ -40,7 +44,7 @@ export interface DesktopV3NewSessionPaneProps {
   mobileSessionQuickMenu?: ReactNode
   onSlashCommand?: (command: DesktopSlashCommand, draft: string) => void | Promise<void>
   workspaces?: WorkspaceEntry[]
-  onOpenWorkspacePicker?: () => void
+  onSelectWorkspace?: (workspace: WorkspaceEntry) => void
   onSetWorkspaceIcon?: (path: string, iconPNGDataURL: string) => Promise<void>
   onOpenActionSettings?: () => void
   composerFocusSignal?: number
@@ -49,6 +53,8 @@ export interface DesktopV3NewSessionPaneProps {
   initialPlanModeRequested?: boolean
   agentSettingsOpenSignal?: number
   agentSettingsInitialAgent?: string
+  artifactSelectionRequest?: DesktopV3ArtifactMessageSelection | null
+  onArtifactSelectionRequestHandled?: () => void
 }
 
 /**
@@ -63,7 +69,7 @@ export function DesktopV3NewSessionPane({
   mobileSessionQuickMenu,
   onSlashCommand,
   workspaces = [workspace],
-  onOpenWorkspacePicker,
+  onSelectWorkspace,
   onSetWorkspaceIcon,
   onOpenActionSettings,
   composerFocusSignal = 0,
@@ -72,6 +78,8 @@ export function DesktopV3NewSessionPane({
   initialPlanModeRequested = false,
   agentSettingsOpenSignal = 0,
   agentSettingsInitialAgent = '',
+  artifactSelectionRequest = null,
+  onArtifactSelectionRequestHandled,
 }: DesktopV3NewSessionPaneProps) {
   const queryClient = useQueryClient()
   const agentStateQuery = useQuery(agentStateQueryOptions())
@@ -83,7 +91,11 @@ export function DesktopV3NewSessionPane({
   const [agentModelSaving, setAgentModelSaving] = useState(false)
   const modelProfiles = modelProfilesQuery.data?.profiles ?? []
   const actionModel = agentModelSettingsQuery.data?.swarm.action ?? null
-  const activeModelProfile = { source: 'agent-default' as const, profileId: '', name: 'Swarm action model' }
+  const [chatOnlyModelProfile, setChatOnlyModelProfile] = useState<ModelProfileRecord | null>(null)
+  const activeModelProfile = chatOnlyModelProfile
+    ? { source: 'temporary' as const, profileId: '', name: chatOnlyModelProfile.name }
+    : { source: 'agent-default' as const, profileId: '', name: 'Swarm action model' }
+  const selectedActionModel = chatOnlyModelProfile ?? actionModel
   const stagedAttachmentsRef = useRef<DesktopComposerStagedAttachment[]>([])
   const stagedAttachmentHistoryRef = useRef<DesktopComposerStagedAttachment[]>([])
   const removedStagedAttachmentIdsRef = useRef(new Set<string>())
@@ -245,7 +257,10 @@ export function DesktopV3NewSessionPane({
 
   function handleSubmit(snapshot: DesktopV3RoutedComposerSnapshot): Promise<DesktopV3RoutedNewSessionState> {
     try {
-      const prompt = snapshot.prompt.trim() || (snapshot.attachments.length > 0 ? 'Please review the attached file(s).' : '')
+      const prompt = snapshot.prompt.trim()
+        || (snapshot.attachments.length > 0 ? 'Please review the attached file(s).' : '')
+        || (snapshot.videoAttachments.length > 0 ? 'Please review the attached video(s).' : '')
+        || (snapshot.artifactSelections.length > 0 ? 'Please review the selected artifact(s).' : '')
       if (!prompt || routedState.phase === 'routing' || routedState.phase === 'resolved') {
         throw new Error('Routed Desktop start is not editable in its current state')
       }
@@ -254,6 +269,17 @@ export function DesktopV3NewSessionPane({
         ...snapshot,
         prompt,
         attachments: snapshot.attachments,
+        modelProfileChoice: chatOnlyModelProfile ? {
+          kind: 'temporary',
+          profile: {
+            name: chatOnlyModelProfile.name,
+            provider: chatOnlyModelProfile.provider,
+            model: chatOnlyModelProfile.model,
+            thinking: chatOnlyModelProfile.thinking,
+            serviceTier: chatOnlyModelProfile.serviceTier,
+            contextMode: chatOnlyModelProfile.contextMode,
+          },
+        } : null,
       })
       if (routedState.phase !== 'failed' && captured.attachments.length !== stagedAttachmentsRef.current.length) {
         throw new Error('Routed composer staged attachment state changed before submit')
@@ -264,6 +290,7 @@ export function DesktopV3NewSessionPane({
       return controller.submit({
         workspace: workspaceAuthority,
         snapshot: captured,
+        agentName: 'swarm',
         metadata: encodeDesktopRoutedWorktreeIntentMetadata(
           createDesktopRoutedWorktreeIntent(captured.worktreePrimed),
           { source: 'desktop-v3' },
@@ -334,6 +361,20 @@ export function DesktopV3NewSessionPane({
   const pendingState = routedState.phase === 'failed' || routedState.phase === 'worktree-primed'
     ? routedState.phase
     : 'draft'
+  const newChatUsesWorktree = routedState.snapshot.worktreePrimed || worktreeIntent.requested
+  const headerStatus: DesktopV3RunStatusModel | null = activationPending
+    ? {
+        kind: 'starting',
+        label: routedState.phase === 'resolved'
+          ? 'Opening…'
+          : newChatUsesWorktree
+            ? 'Routing…'
+            : 'Starting…',
+        active: false,
+      }
+    : routedState.phase === 'failed'
+      ? { kind: 'failed', label: 'Start failed', active: false }
+      : null
 
   return (
     <div
@@ -342,9 +383,15 @@ export function DesktopV3NewSessionPane({
       data-testid="desktop-v3-new-session-pane"
       data-routed-phase={routedState.phase}
     >
+      <DesktopV3ChatHeader
+        title={newChatUsesWorktree ? 'New worktree chat' : 'New chat'}
+        workspaceName={workspace.workspaceName}
+        runStatus={headerStatus}
+      />
+
       {mobileSessionQuickMenu ? (
         <section
-          className="flex min-h-0 flex-1 flex-col overflow-hidden pt-[var(--app-safe-area-top)] sm:hidden"
+          className="flex min-h-0 flex-1 flex-col overflow-hidden sm:hidden"
           data-testid="mobile-workspace-session-list"
           aria-label="Workspace sessions"
         >
@@ -362,7 +409,7 @@ export function DesktopV3NewSessionPane({
         onDisableTips={tipsSaving ? undefined : () => { void handleDisableTips() }}
         workspace={workspace}
         workspaces={workspaces}
-        onOpenWorkspacePicker={onOpenWorkspacePicker}
+        onSelectWorkspace={onSelectWorkspace}
         onSetWorkspaceIcon={onSetWorkspaceIcon}
         className={mobileSessionQuickMenu ? 'hidden sm:flex' : undefined}
       />
@@ -376,8 +423,10 @@ export function DesktopV3NewSessionPane({
           inputLabel="Start a routed Desktop V3 session"
           disabled={activationPending}
           busy={activationPending}
-          canSubmit={Boolean(draft.trim()) || stagedAttachments.length > 0}
+          canSubmit={Boolean(draft.trim()) || stagedAttachments.length > 0 || Boolean(artifactSelectionRequest)}
           onSubmit={() => undefined}
+          artifactSelectionRequest={artifactSelectionRequest}
+          onArtifactSelectionRequestHandled={onArtifactSelectionRequestHandled}
           onRoutedSubmit={handleSubmit}
           routedStagedAttachments={stagedAttachments}
           onRoutedStageAttachments={routedState.phase === 'failed' || activationPending ? undefined : handleStageAttachments}
@@ -400,14 +449,15 @@ export function DesktopV3NewSessionPane({
           modelProfiles={modelProfiles}
           activeModelProfile={activeModelProfile}
           modelOptions={modelOptionsQuery.data ?? []}
-          selectedModelKey={actionModel ? modelOptionKey(actionModel.provider, actionModel.model, actionModel.contextMode) : ''}
-          selectedServiceTier={actionModel?.serviceTier ?? ''}
-          thinking={actionModel?.thinking ?? ''}
-          modelControlDetail={actionModel ? `${actionModel.provider}/${actionModel.model}` : 'Swarm action model'}
+          selectedModelKey={selectedActionModel ? modelOptionKey(selectedActionModel.provider, selectedActionModel.model, selectedActionModel.contextMode) : ''}
+          selectedServiceTier={selectedActionModel?.serviceTier ?? ''}
+          thinking={selectedActionModel?.thinking ?? ''}
+          modelControlDetail={selectedActionModel ? `${selectedActionModel.provider}/${selectedActionModel.model}` : 'Swarm action model'}
           modelStatusLabel="Ready"
           agentSettingsOpenSignal={agentSettingsOpenSignal}
           agentSettingsInitialAgent={agentSettingsInitialAgent}
           onConfirmAgentSettings={handleConfirmAgentSettings}
+          onApplyModelFavoriteChatOnly={(profile) => setChatOnlyModelProfile(profile)}
           agentModelControlBusy={agentModelSaving}
           error={localError ?? (routedState.phase === 'failed' ? routedState.error : null)}
           routedNewSession

@@ -34,6 +34,22 @@ test('existing conversation draft state stays inside the composer-local controll
   assert.match(pane, /controllerRef=\{composerControllerRef\}/)
 })
 
+test('plan execution subscriptions stay inside isolated sidebar components', async () => {
+  const source = await readFile(paneSourceUrl, 'utf8')
+  const pane = componentBody(
+    source,
+    'DesktopV3ExistingConversationPane',
+    'DesktopV3RenderItemView',
+  )
+
+  assert.match(source, /const IsolatedPlanExecutionSidebar = memo/)
+  assert.match(source, /const IsolatedPlanExecutionSummary = memo/)
+  assert.match(pane, /selectPlanPresenceForSession/)
+  assert.match(pane, /<IsolatedPlanExecutionSidebar/)
+  assert.doesNotMatch(pane, /const planExecutionView = useDesktopV3CacheSelector/)
+  assert.doesNotMatch(pane, /selectDesktopV3TaskChildViewModel\(state, row\)/)
+})
+
 test('existing conversation virtualizes every loaded transcript row', async () => {
   const source = await readFile(paneSourceUrl, 'utf8')
   const pane = componentBody(

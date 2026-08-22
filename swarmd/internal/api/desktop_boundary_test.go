@@ -202,6 +202,51 @@ func TestDesktopBoundaryFailsClosedWithoutPolicyOrVerifier(t *testing.T) {
 	}
 }
 
+func TestDesktopBoundaryAllowsOnlyExactOpaqueAnimationRuntimeImports(t *testing.T) {
+	server := newLocalAuthTestServer(t)
+	const origin = "http://127.0.0.1:5555"
+	request := func(path string) *http.Request {
+		req := httptest.NewRequest(http.MethodGet, origin+path, nil)
+		req.RemoteAddr = "127.0.0.1:43210"
+		req.Header.Set("Origin", "null")
+		req.Header.Set("Referer", origin+"/")
+		req.Header.Set("Sec-Fetch-Dest", "script")
+		req.Header.Set("Sec-Fetch-Mode", "cors")
+		req.Header.Set("Sec-Fetch-Site", "cross-site")
+		return req
+	}
+
+	admitted := request("/swarm-animation-runtime/three.module.js")
+	if !shouldAdmitOpaqueDesktopAnimationRuntime(admitted) {
+		t.Fatal("exact opaque animation runtime import was not admitted")
+	}
+	rec := httptest.NewRecorder()
+	server.withDesktopBoundary(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })).ServeHTTP(rec, admitted)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("opaque animation runtime status=%d want=%d body=%s", rec.Code, http.StatusNoContent, rec.Body.String())
+	}
+
+	cases := map[string]*http.Request{
+		"other asset":       request("/assets/index.js"),
+		"nested runtime":    request("/swarm-animation-runtime/nested/three.module.js"),
+		"wrong origin":      request("/swarm-animation-runtime/three.module.js"),
+		"wrong referer":     request("/swarm-animation-runtime/three.module.js"),
+		"wrong destination": request("/swarm-animation-runtime/three.module.js"),
+		"remote source":     request("/swarm-animation-runtime/three.module.js"),
+	}
+	cases["wrong origin"].Header.Set("Origin", "http://attacker.example")
+	cases["wrong referer"].Header.Set("Referer", "http://attacker.example/")
+	cases["wrong destination"].Header.Set("Sec-Fetch-Dest", "document")
+	cases["remote source"].RemoteAddr = "192.0.2.10:43210"
+	for name, req := range cases {
+		t.Run(name, func(t *testing.T) {
+			if shouldAdmitOpaqueDesktopAnimationRuntime(req) {
+				t.Fatal("untrusted opaque request was admitted")
+			}
+		})
+	}
+}
+
 func TestDesktopBoundaryLocalAuthorityRequiresSameMachineSource(t *testing.T) {
 	server := newLocalAuthTestServer(t)
 	local := httptest.NewRequest(http.MethodGet, "http://localhost:5555/app", nil)

@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type DragEvent as ReactDragEvent, type KeyboardEvent } from 'react'
 import { createPortal } from 'react-dom'
-import { AlertTriangle, ArrowUp, FileCode2, FileImage, ListChecks, ListTodo, LoaderCircle, Mic, Minimize2, Sparkles, Square, UploadCloud, X } from 'lucide-react'
+import { AlertTriangle, ArrowLeft, ArrowUp, FileCode2, FileImage, Folder, GalleryHorizontal, ListChecks, ListTodo, LoaderCircle, Mic, Minimize2, Sparkles, Square, UploadCloud, Video, X } from 'lucide-react'
 import { Button } from '../../../../components/ui/button'
+import { Dialog, DialogBackdrop, DialogPanel } from '../../../../components/ui/dialog'
+import { ModalCloseButton } from '../../../../components/ui/modal-close-button'
 import { Textarea } from '../../../../components/ui/textarea'
 import type { ActiveModelProfileState, AgentProfileRecord, ModelOptionRecord, ModelProfileRecord } from '../types/chat'
 import type { DesktopSessionMode } from '../../settings/swarm/types/swarm-settings'
@@ -34,8 +36,16 @@ import { DesktopWorkspaceActionPanel } from './desktop-workspace-action-panel'
 import { DesktopWorkspaceActionChooser } from './desktop-workspace-action-chooser'
 import type { WorkspaceAction } from '../../../workspaces/actions/types'
 import type { WorkspaceSkill } from '../services/workspace-skills'
+import { addSourceMediaDirectory, getSourceMediaDirectories } from '../../settings/media/queries/get-media-settings'
+import { browseDesktopVideoSource, DESKTOP_VIDEO_ATTACHMENT_MAX_COUNT, type DesktopVideoSourceAttachment, type DesktopVideoSourceBrowseResult } from '../services/video-source-attachments'
 import { DesktopRoutedWorktreePrime } from './desktop-routed-worktree-prime'
 import { DesktopComposerPlanToggle } from './desktop-composer-plan-toggle'
+import { DesktopV3ArtifactCatalogGallery } from './desktop-v3-artifact-gallery'
+import {
+  appendDesktopV3ArtifactMessageSelections,
+  removeDesktopV3ArtifactMessageSelection,
+  type DesktopV3ArtifactMessageSelection,
+} from '../../session-v3/artifact-api'
 
 const DICTATION_RESTART_DELAY_MS = 180
 const DICTATION_FINAL_FLUSH_MS = 450
@@ -141,7 +151,12 @@ export interface DesktopV3AgenticComposerProps {
   canStop?: boolean
   submitLabel?: string
   error?: string | null
-  onSubmit: (draft: string, attachments: DesktopV3MediaReference[]) => void | Promise<void>
+  initialArtifactSelections?: readonly DesktopV3ArtifactMessageSelection[]
+  artifactSelectionRequest?: DesktopV3ArtifactMessageSelection | readonly DesktopV3ArtifactMessageSelection[] | null
+  contextChip?: { id: string; label: string; kind: string; description?: string } | null
+  onContextChipRemove?: () => void
+  onArtifactSelectionRequestHandled?: () => void
+  onSubmit: (draft: string, attachments: DesktopV3MediaReference[], artifactSelections: DesktopV3ArtifactMessageSelection[], videoAttachments: DesktopVideoSourceAttachment[]) => void | Promise<void>
   onRoutedSubmit?: (snapshot: DesktopV3RoutedComposerSnapshot) => Promise<DesktopV3RoutedNewSessionState>
   routedStagedAttachments?: readonly DesktopComposerStagedAttachment[]
   onRoutedStageAttachments?: (files: File[], signal: AbortSignal) => Promise<void>
@@ -165,6 +180,7 @@ export interface DesktopV3AgenticComposerProps {
   activeModelProfile?: ActiveModelProfileState
   onUseAgentModelDefault?: () => void | Promise<void>
   onApplyModelFavorite?: (profile: ModelProfileRecord) => void | Promise<void>
+  onApplyModelFavoriteChatOnly?: (profile: ModelProfileRecord) => void | Promise<void>
   modelOptions?: ModelOptionRecord[]
   selectedModelKey?: string
   selectedServiceTier?: string
@@ -240,6 +256,11 @@ export function DesktopV3AgenticComposer({
   canStop = false,
   submitLabel: _submitLabel,
   error,
+  initialArtifactSelections = [],
+  artifactSelectionRequest = null,
+  contextChip = null,
+  onContextChipRemove,
+  onArtifactSelectionRequestHandled,
   onSubmit,
   onRoutedSubmit,
   routedStagedAttachments = [],
@@ -264,6 +285,7 @@ export function DesktopV3AgenticComposer({
   activeModelProfile,
   onUseAgentModelDefault: _onUseAgentModelDefault,
   onApplyModelFavorite,
+  onApplyModelFavoriteChatOnly,
   modelOptions = [],
   selectedModelKey = '',
   selectedServiceTier = '',
@@ -306,6 +328,7 @@ export function DesktopV3AgenticComposer({
   const uploadAbortRef = useRef<AbortController | null>(null)
   const textAttachmentSequenceRef = useRef(0)
   const routedSubmissionRef = useRef(false)
+  const handledArtifactSelectionRequestRef = useRef('')
   const dictationEnabledRef = useRef(false)
   const dictationCanRunRef = useRef(false)
   const dictationRestartTimerRef = useRef<number | null>(null)
@@ -323,10 +346,20 @@ export function DesktopV3AgenticComposer({
   const [dismissedComposerError, setDismissedComposerError] = useState<string | null>(null)
   const [slashSelectionIndex, setSlashSelectionIndex] = useState(0)
   const [mentionSelectionIndex, setMentionSelectionIndex] = useState(0)
+  const [modelFavoritesOpenSignal, setModelFavoritesOpenSignal] = useState(0)
   const [agentSetupOpenSignal, setAgentSetupOpenSignal] = useState(0)
   const modelFavoritesAnchorId = useId()
   const [primedTaskMode, setPrimedTaskMode] = useState<DesktopComposerTaskMode | null>(null)
   const [attachments, setAttachments] = useState<DesktopV3MediaReference[]>([])
+  const [videoAttachments, setVideoAttachments] = useState<DesktopVideoSourceAttachment[]>([])
+  const [videoPickerOpen, setVideoPickerOpen] = useState(false)
+  const [videoRoots, setVideoRoots] = useState<string[]>([])
+  const [videoRoot, setVideoRoot] = useState('')
+  const [videoBrowse, setVideoBrowse] = useState<DesktopVideoSourceBrowseResult | null>(null)
+  const [videoBrowseLoading, setVideoBrowseLoading] = useState(false)
+  const [videoPickerError, setVideoPickerError] = useState<string | null>(null)
+  const [videoFolderDraft, setVideoFolderDraft] = useState('')
+  const [artifactSelections, setArtifactSelections] = useState<DesktopV3ArtifactMessageSelection[]>(() => [...(routedComposerSnapshot?.artifactSelections ?? initialArtifactSelections)])
   const [textAttachments, setTextAttachments] = useState<DesktopComposerTextAttachment[]>([])
   const [uploadingAttachment, setUploadingAttachment] = useState(false)
   const [attachmentError, setAttachmentError] = useState<string | null>(null)
@@ -335,6 +368,7 @@ export function DesktopV3AgenticComposer({
   const [filesDraggingOverChat, setFilesDraggingOverChat] = useState(false)
   const [selectedWorkspaceAction, setSelectedWorkspaceAction] = useState<WorkspaceAction | null>(null)
   const [workspaceActionChooserOpen, setWorkspaceActionChooserOpen] = useState(false)
+  const [artifactViewerOpen, setArtifactViewerOpen] = useState(false)
   const [workspaceActionAutoLaunch, setWorkspaceActionAutoLaunch] = useState(false)
   const [workspaceActionLaunchToken, setWorkspaceActionLaunchToken] = useState(0)
   const [selectedWorkspaceSkill, setSelectedWorkspaceSkill] = useState<WorkspaceSkill | null>(null)
@@ -361,6 +395,9 @@ export function DesktopV3AgenticComposer({
   const selectedModel = useMemo(() => modelOptions.find((option) => option.key === selectedModelKey) ?? null, [modelOptions, selectedModelKey])
   const selectedThinking = thinking.trim() || 'off'
   void _onAgentSelect
+  const openModelFavorites = useCallback(() => {
+    setModelFavoritesOpenSignal((current) => current + 1)
+  }, [])
   const openAgentSetup = useCallback(() => {
     setAgentSetupOpenSignal((current) => current + 1)
   }, [])
@@ -466,6 +503,8 @@ export function DesktopV3AgenticComposer({
     }
     onDraftChange('')
     setAttachments([])
+    setVideoAttachments([])
+    setArtifactSelections([])
     setTextAttachments([])
     setSelectedWorkspaceSkill(null)
     setAttachmentError(null)
@@ -573,11 +612,34 @@ export function DesktopV3AgenticComposer({
   }, [error, routedNewSession])
 
   useEffect(() => {
+    if (!artifactSelectionRequest) {
+      handledArtifactSelectionRequestRef.current = ''
+      return
+    }
+    const artifactSelectionRequests: readonly DesktopV3ArtifactMessageSelection[] = Array.isArray(artifactSelectionRequest)
+      ? artifactSelectionRequest
+      : [artifactSelectionRequest as DesktopV3ArtifactMessageSelection]
+    const artifactSelectionRequestKey = JSON.stringify(artifactSelectionRequests)
+    if (handledArtifactSelectionRequestRef.current === artifactSelectionRequestKey) return
+    handledArtifactSelectionRequestRef.current = artifactSelectionRequestKey
+    try {
+      setArtifactSelections((current) => appendDesktopV3ArtifactMessageSelections(current, artifactSelectionRequests))
+      if (artifactSelectionRequests.some((selection) => selection.action === 'use') && !draft.trim()) onDraftChange('Use this design.')
+      setAttachmentError(null)
+    } catch (cause) {
+      setAttachmentError(cause instanceof Error ? cause.message : 'Artifact selection failed.')
+    } finally {
+      onArtifactSelectionRequestHandled?.()
+    }
+  }, [artifactSelectionRequest, draft, onArtifactSelectionRequestHandled, onDraftChange])
+
+  useEffect(() => {
     if (!routedNewSession || !routedComposerSnapshot) return
     routedSubmissionRef.current = false
     setSelectedWorkspaceAction((routedComposerSnapshot.selectedAction as WorkspaceAction | null) ?? null)
     setWorkspaceActionAutoLaunch(false)
     setSelectedWorkspaceSkill((routedComposerSnapshot.selectedSkill as WorkspaceSkill | null) ?? null)
+    setArtifactSelections(routedComposerSnapshot.artifactSelections ?? [])
   }, [routedComposerSnapshot, routedNewSession])
 
   useEffect(() => {
@@ -611,6 +673,64 @@ export function DesktopV3AgenticComposer({
     setDictationError(null)
     startRecognition()
   }, [dictationButtonDisabled, draft, startRecognition, stopDictation])
+
+  const loadVideoRoot = useCallback(async (rootPath: string, relativePath = '.') => {
+    if (!workspacePath.trim() || !rootPath.trim()) return
+    setVideoBrowseLoading(true)
+    setVideoPickerError(null)
+    try {
+      const result = await browseDesktopVideoSource(workspacePath, rootPath, relativePath)
+      setVideoRoot(result.rootPath)
+      setVideoBrowse(result)
+    } catch (cause) {
+      setVideoPickerError(cause instanceof Error ? cause.message : 'Video source is unavailable.')
+    } finally {
+      setVideoBrowseLoading(false)
+    }
+  }, [workspacePath])
+
+  const openVideoPicker = useCallback(async () => {
+    if (!workspacePath.trim()) return
+    setVideoPickerOpen(true)
+    setVideoPickerError(null)
+    try {
+      const roots = await getSourceMediaDirectories(workspacePath)
+      setVideoRoots(roots)
+      const root = roots.includes(videoRoot) ? videoRoot : roots[0] ?? ''
+      if (root) await loadVideoRoot(root)
+      else setVideoBrowse(null)
+    } catch (cause) {
+      setVideoPickerError(cause instanceof Error ? cause.message : 'Registered media folders are unavailable.')
+    }
+  }, [loadVideoRoot, videoRoot, workspacePath])
+
+  const registerVideoFolder = useCallback(async () => {
+    const path = videoFolderDraft.trim()
+    if (!path || !workspacePath.trim()) return
+    setVideoBrowseLoading(true)
+    setVideoPickerError(null)
+    try {
+      const roots = await addSourceMediaDirectory(workspacePath, path)
+      setVideoRoots(roots)
+      setVideoFolderDraft('')
+      await loadVideoRoot(path)
+    } catch (cause) {
+      setVideoPickerError(cause instanceof Error ? cause.message : 'Media folder registration failed.')
+      setVideoBrowseLoading(false)
+    }
+  }, [loadVideoRoot, videoFolderDraft, workspacePath])
+
+  const toggleVideoAttachment = useCallback((clip: DesktopVideoSourceAttachment) => {
+    setVideoAttachments((current) => {
+      if (current.some((item) => item.ref === clip.ref)) return current.filter((item) => item.ref !== clip.ref)
+      if (current.length >= DESKTOP_VIDEO_ATTACHMENT_MAX_COUNT) {
+        setVideoPickerError(`Attach at most ${DESKTOP_VIDEO_ATTACHMENT_MAX_COUNT} videos per message.`)
+        return current
+      }
+      setVideoPickerError(null)
+      return [...current, clip]
+    })
+  }, [])
 
   const handlePrimeTask = useCallback((taskMode: DesktopComposerTaskMode) => {
     if (dictationEnabledRef.current) stopDictation(false)
@@ -666,6 +786,11 @@ export function DesktopV3AgenticComposer({
     }
     if (routedNewSession && routedSubmissionRef.current) return
     const rawDraft = textareaRef.current?.value ?? dictationComposer
+    if (slashPalette.exactMatch?.action.kind === 'open-artifact-viewer' && !slashPalette.hasArguments) {
+      setArtifactViewerOpen(true)
+      onDraftChange('')
+      return
+    }
     if (isDesktopWorktreeOnCommand(rawDraft)) {
       handleWorktreeOnCommand()
       return
@@ -687,7 +812,10 @@ export function DesktopV3AgenticComposer({
       (nextDraft, attachment) => appendComposerTextFile(nextDraft, attachment.name, attachment.fileType, attachment.content),
       commandDraft,
     )
-    const attachmentDraft = textAttachmentDraft.trim() || (attachments.length > 0 || routedStagedAttachments.length > 0 ? 'Please review the attached file(s).' : textAttachmentDraft)
+    const attachmentDraft = textAttachmentDraft.trim()
+      || (attachments.length > 0 || routedStagedAttachments.length > 0 ? 'Please review the attached file(s).' : '')
+      || (videoAttachments.length > 0 ? 'Please review the attached video(s).' : '')
+      || (artifactSelections.length > 0 ? 'Please review the selected artifact(s).' : textAttachmentDraft)
     const skillInstruction = selectedWorkspaceSkill
       ? `Use the skill-use tool to load "${selectedWorkspaceSkill.canonicalName}" before executing this request.`
       : ''
@@ -706,6 +834,8 @@ export function DesktopV3AgenticComposer({
         canStop,
         clear: clearComposerForSubmit,
         attachments,
+        selections: artifactSelections,
+        videoAttachments,
         onSubmit,
         onStop,
         onSlashCommand,
@@ -717,6 +847,8 @@ export function DesktopV3AgenticComposer({
       const routedSnapshot = {
         prompt: submittedDraft,
         attachments: desktopComposerStagedMediaInput(routedStagedAttachments),
+        artifactSelections,
+        videoAttachments,
         selectedAction: selectedWorkspaceAction,
         selectedSkill: selectedWorkspaceSkill,
         worktreePrimed: newSessionCommand?.worktreeRequested ?? routedWorktreeRequested,
@@ -730,10 +862,13 @@ export function DesktopV3AgenticComposer({
         setAttachmentError(cause instanceof Error ? cause.message : 'Routed session start failed.')
         return
       }
-      clearComposerForSubmit()
-      setSelectedWorkspaceAction(null)
       void routedSubmit.then((state) => {
-        if (state.phase === 'failed') routedSubmissionRef.current = false
+        if (state.phase === 'failed') {
+          routedSubmissionRef.current = false
+          return
+        }
+        clearComposerForSubmit()
+        setSelectedWorkspaceAction(null)
       }).catch((cause) => {
         routedSubmissionRef.current = false
         setAttachmentError(cause instanceof Error ? cause.message : 'Routed session start failed.')
@@ -745,11 +880,13 @@ export function DesktopV3AgenticComposer({
       canStop,
       clear: clearComposerForSubmit,
       attachments,
+      selections: artifactSelections,
+      videoAttachments,
       onSubmit,
       onStop,
       onSlashCommand,
     })
-  }, [attachments, canStop, clearComposerForSubmit, dictationComposer, handleWorktreeOnCommand, mode, onDraftChange, onModeSelect, onRoutedSubmit, onRoutedWorktreeRequestedChange, onSlashCommand, onStop, onSubmit, primedTaskMode, resizeTextareaElement, routedNewSession, routedStagedAttachments, routedWorktreeRequested, selectedWorkspaceAction, selectedWorkspaceSkill, textAttachments, uploadingAttachment])
+  }, [artifactSelections, attachments, canStop, clearComposerForSubmit, dictationComposer, handleWorktreeOnCommand, mode, onDraftChange, onModeSelect, onRoutedSubmit, onRoutedWorktreeRequestedChange, onSlashCommand, onStop, onSubmit, primedTaskMode, resizeTextareaElement, routedNewSession, routedStagedAttachments, routedWorktreeRequested, selectedWorkspaceAction, selectedWorkspaceSkill, slashPalette.exactMatch?.action.kind, slashPalette.hasArguments, textAttachments, uploadingAttachment, videoAttachments])
 
   const handleMentionInsert = useCallback((agent: string) => {
     const trimmedStartLength = draft.length - draft.replace(/^[\s\t\r\n]+/, '').length
@@ -770,6 +907,11 @@ export function DesktopV3AgenticComposer({
 
   const handleSlashSelect = useCallback((command: DesktopSlashCommand) => {
     if (command.state !== 'ready') return
+    if (command.action.kind === 'open-artifact-viewer') {
+      setArtifactViewerOpen(true)
+      onDraftChange('')
+      return
+    }
     if (command.action.kind === 'open-action-chooser') {
       openWorkspaceActionChooser()
       onDraftChange('')
@@ -791,12 +933,17 @@ export function DesktopV3AgenticComposer({
       return
     }
     void onSlashCommand?.(command, draft)
+    if (command.action.kind === 'open-settings' && command.action.tab === 'agents') {
+      openAgentSetup()
+      onDraftChange('')
+      return
+    }
     if (command.action.kind === 'toggle-tips') {
       onDraftChange('')
       return
     }
     if (command.action.kind === 'open-model-picker') {
-      if (!routedNewSession) openAgentSetup()
+      if (!routedNewSession) openModelFavorites()
       onDraftChange('')
       return
     }
@@ -806,7 +953,7 @@ export function DesktopV3AgenticComposer({
       return
     }
     if (!slashPalette.hasArguments) onDraftChange('')
-  }, [currentAgent, draft, handleSubmitClick, handleWorktreeOnCommand, onCompact, onDraftChange, onSlashCommand, onThinkingTagsToggle, openAgentSetup, openWorkspaceActionChooser, routedNewSession, slashPalette.hasArguments, thinkingTagsBusy, thinkingTagsEnabled])
+  }, [currentAgent, draft, handleSubmitClick, handleWorktreeOnCommand, onCompact, onDraftChange, onSlashCommand, onThinkingTagsToggle, openAgentSetup, openModelFavorites, openWorkspaceActionChooser, routedNewSession, slashPalette.hasArguments, thinkingTagsBusy, thinkingTagsEnabled])
 
   const handleKeyDown = useCallback((event: KeyboardEvent<HTMLTextAreaElement>) => {
     if (routedNewSession && event.key === 'Tab' && event.shiftKey && !event.altKey && !event.ctrlKey && !event.metaKey) {
@@ -861,9 +1008,9 @@ export function DesktopV3AgenticComposer({
     }
     if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault()
-      if (canSubmit || attachments.length > 0 || textAttachments.length > 0 || selectedWorkspaceSkill || canStop) handleSubmitClick()
+      if (canSubmit || attachments.length > 0 || artifactSelections.length > 0 || textAttachments.length > 0 || selectedWorkspaceSkill || canStop) handleSubmitClick()
     }
-  }, [attachments.length, canStop, canSubmit, handleMentionInsert, handleSlashSelect, handleSubmitClick, mentionPaletteIsActive, mentionPaletteMatches, mentionSelectionIndex, onDraftChange, onModeSelect, routedNewSession, selectedWorkspaceSkill, slashCommands, slashPalette.active, slashPalette.exactMatch?.action.kind, slashPalette.hasArguments, slashSelectionIndex, textAttachments.length])
+  }, [artifactSelections.length, attachments.length, canStop, canSubmit, handleMentionInsert, handleSlashSelect, handleSubmitClick, mentionPaletteIsActive, mentionPaletteMatches, mentionSelectionIndex, onDraftChange, onModeSelect, routedNewSession, selectedWorkspaceSkill, slashCommands, slashPalette.active, slashPalette.exactMatch?.action.kind, slashPalette.hasArguments, slashSelectionIndex, textAttachments.length])
 
   const handleAttachmentFiles = useCallback(async (files: File[]) => {
     if (files.length === 0) return
@@ -1099,6 +1246,24 @@ export function DesktopV3AgenticComposer({
 
   return (
     <div ref={composerRootRef} className="shrink-0 border-t border-[var(--app-border)] bg-[var(--app-surface)]" data-testid="desktop-v3-agentic-composer">
+      <DesktopV3ArtifactCatalogGallery
+        open={artifactViewerOpen}
+        onOpenChange={setArtifactViewerOpen}
+        onAddToChat={(artifacts) => {
+          setArtifactSelections((current) => appendDesktopV3ArtifactMessageSelections(current, artifacts.map(({ label, description, selection }) => ({ ...selection, label, description, action: 'select' }))))
+          setArtifactViewerOpen(false)
+        }}
+        onUseThisDesign={({ label, description, selection }) => {
+          setArtifactSelections((current) => appendDesktopV3ArtifactMessageSelections(current, [{ ...selection, label, description, action: 'use' }]))
+          if (!draft.trim()) onDraftChange('Use this design.')
+          setArtifactViewerOpen(false)
+        }}
+        onExportVideoStills={({ label, description, selection }, prompt) => {
+          setArtifactSelections((current) => appendDesktopV3ArtifactMessageSelections(current, [{ ...selection, label, description, action: 'select' }]))
+          onDraftChange(prompt)
+          setArtifactViewerOpen(false)
+        }}
+      />
       {fileDropZone && filesDraggingOverChat ? createPortal(
         <div className="pointer-events-none absolute inset-3 z-50 grid place-items-center rounded-2xl border-2 border-dashed border-[var(--app-primary)] bg-[color-mix(in_srgb,var(--app-primary)_10%,var(--app-bg))] p-6 shadow-xl" data-testid="desktop-chat-file-drop-overlay" role="status" aria-live="polite">
           <div className="flex max-w-md flex-col items-center gap-3 rounded-2xl bg-[var(--app-surface-elevated)] px-8 py-6 text-center shadow-lg">
@@ -1214,7 +1379,7 @@ export function DesktopV3AgenticComposer({
               />
             </div>
           </div>
-          {attachments.length > 0 || routedStagedAttachments.length > 0 || textAttachments.length > 0 || selectedWorkspaceSkill ? (
+          {attachments.length > 0 || videoAttachments.length > 0 || artifactSelections.length > 0 || routedStagedAttachments.length > 0 || textAttachments.length > 0 || selectedWorkspaceSkill || contextChip ? (
             <div className="flex flex-wrap gap-2 border-t border-[var(--app-border)] px-4 py-2" data-testid="desktop-media-attachments">
               {selectedWorkspaceSkill ? (
                 <span className="inline-flex max-w-full items-center gap-2 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-2 py-1 text-xs text-[var(--app-text)]" data-testid="desktop-composer-selected-skill">
@@ -1224,6 +1389,30 @@ export function DesktopV3AgenticComposer({
                   <button type="button" aria-label={`Remove ${selectedWorkspaceSkill.name} skill`} onClick={() => setSelectedWorkspaceSkill(null)}><X size={13} /></button>
                 </span>
               ) : null}
+              {contextChip ? (
+                <span className="inline-flex max-w-full items-center gap-2 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-2 py-1 text-xs text-[var(--app-text)]" data-testid="desktop-composer-context-chip">
+                  <Video size={13} className="shrink-0 text-[var(--app-primary)]" aria-hidden="true" />
+                  <span className="max-w-48 truncate font-medium" title={contextChip.description || contextChip.label}>{contextChip.label}</span>
+                  <span className="rounded bg-[var(--app-bg-alt)] px-1.5 py-0.5 font-mono text-[10px] uppercase text-[var(--app-text-muted)]">{contextChip.kind}</span>
+                  <button type="button" aria-label={`Remove ${contextChip.label} context`} onClick={onContextChipRemove}><X size={13} /></button>
+                </span>
+              ) : null}
+              {artifactSelections.map((selection) => (
+                <span key={`${selection.session_id}:${selection.collection_id}:${selection.variant_id}`} className="inline-flex max-w-full items-center gap-2 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-2 py-1 text-xs text-[var(--app-text)]" data-testid="desktop-composer-artifact-chip">
+                  <GalleryHorizontal size={13} className="shrink-0 text-[var(--app-primary)]" aria-hidden="true" />
+                  <span className="max-w-48 truncate font-medium" title={selection.description || selection.label}>{selection.label}</span>
+                  <span className="rounded bg-[var(--app-bg-alt)] px-1.5 py-0.5 font-mono text-[10px] uppercase text-[var(--app-text-muted)]">{selection.action === 'use' ? 'Use design' : 'Artifact'}</span>
+                  <button type="button" aria-label={`Remove ${selection.label} artifact`} onClick={() => setArtifactSelections((current) => removeDesktopV3ArtifactMessageSelection(current, selection))}><X size={13} /></button>
+                </span>
+              ))}
+              {videoAttachments.map((attachment) => (
+                <span key={`video:${attachment.ref}`} className="inline-flex max-w-full items-center gap-2 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-2 py-1 text-xs text-[var(--app-text)]" data-testid="desktop-composer-video-chip">
+                  <Video size={13} className="shrink-0 text-[var(--app-primary)]" aria-hidden="true" />
+                  <span className="max-w-48 truncate font-medium" title={attachment.name}>{attachment.name}</span>
+                  <span className="text-[var(--app-text-muted)]">{Math.max(1, Math.ceil(attachment.size_bytes / (1024 * 1024)))} MB</span>
+                  <button type="button" aria-label={`Remove ${attachment.name} video`} onClick={() => setVideoAttachments((current) => current.filter((item) => item.ref !== attachment.ref))}><X size={13} /></button>
+                </span>
+              ))}
               {routedStagedAttachments.map((attachment) => (
                 <span key={attachment.stagingId} className="inline-flex items-center gap-2 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-2 py-1 text-xs text-[var(--app-text)]">
                   <FileImage size={13} aria-hidden="true" />
@@ -1274,6 +1463,8 @@ export function DesktopV3AgenticComposer({
             <DesktopComposerActionMenu
               disabled={composerDisabled}
               onPrimeTask={handlePrimeTask}
+              onAddMediaFolder={workspacePath.trim() ? () => { void openVideoPicker() } : undefined}
+              addMediaFolderDisabled={composerDisabled || videoBrowseLoading}
               onAttach={routedNewSession ? (onRoutedStageAttachments ? () => fileInputRef.current?.click() : undefined) : effectiveMediaCapability ? () => fileInputRef.current?.click() : undefined}
               attachDisabled={(routedNewSession ? !onRoutedStageAttachments : !effectiveMediaCapability) || composerDisabled || uploadingAttachment}
               attaching={uploadingAttachment}
@@ -1304,7 +1495,7 @@ export function DesktopV3AgenticComposer({
             <div className="hidden min-w-0 flex-1 items-center justify-between gap-2 min-[1000px]:flex">
               <div className="flex min-w-0 flex-1 items-center gap-2 overflow-x-auto whitespace-nowrap [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
                 {primedTaskMode ? taskModeIndicator() : (resolvedSessionControls || routedNewSession) ? (
-                  renderComposerControl(openAgentSetup, false)
+                  renderComposerControl(openModelFavorites, false)
                 ) : executionLabel && !routedNewSession ? (
                   <span className="inline-flex items-center gap-1 whitespace-nowrap font-medium text-[var(--app-text-muted)]">
                     <span className="text-[var(--app-text-subtle)]">Execution:</span>
@@ -1321,7 +1512,7 @@ export function DesktopV3AgenticComposer({
               </div>
               <div className="flex shrink-0 items-center gap-2">
                 {dictationButton()}
-                <Button size="sm" className="h-10 w-10 shrink-0 rounded-lg border border-[var(--app-border-strong)] bg-[var(--app-primary)] p-0 text-[var(--app-primary-text)] transition-all hover:-translate-y-0.5 hover:bg-[var(--app-primary-hover)] hover:shadow-md active:bg-[var(--app-primary-active)] disabled:hover:translate-y-0" onClick={handleSubmitClick} disabled={!canStop && (uploadingAttachment || (!canSubmit && attachments.length === 0 && textAttachments.length === 0 && !selectedWorkspaceSkill) || busy)} aria-label={canStop ? 'Stop run' : 'Send message'}>
+                <Button size="sm" className="h-10 w-10 shrink-0 rounded-lg border border-[var(--app-border-strong)] bg-[var(--app-primary)] p-0 text-[var(--app-primary-text)] transition-all hover:-translate-y-0.5 hover:bg-[var(--app-primary-hover)] hover:shadow-md active:bg-[var(--app-primary-active)] disabled:hover:translate-y-0" onClick={handleSubmitClick} disabled={!canStop && (uploadingAttachment || (!canSubmit && attachments.length === 0 && videoAttachments.length === 0 && artifactSelections.length === 0 && textAttachments.length === 0 && !selectedWorkspaceSkill) || busy)} aria-label={canStop ? 'Stop run' : 'Send message'}>
                   {canStop ? <Square size={18} /> : busy ? <LoaderCircle size={18} className="animate-spin" /> : <ArrowUp size={22} strokeWidth={2.25} className="shrink-0" />}
                 </Button>
               </div>
@@ -1329,7 +1520,7 @@ export function DesktopV3AgenticComposer({
             <div className="flex min-w-0 flex-1 items-center justify-between gap-2 min-[1000px]:hidden">
               <div className="flex min-w-0 flex-1 items-center gap-2 overflow-x-auto whitespace-nowrap [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
                 {primedTaskMode ? taskModeIndicator() : (resolvedSessionControls || routedNewSession) ? (
-                  renderComposerControl(openAgentSetup, false)
+                  renderComposerControl(openModelFavorites, false)
                 ) : !routedNewSession ? (
                   <span className="min-w-0 truncate font-medium text-[var(--app-text-muted)]">{executionLabel || (currentAgent === 'swarm' ? 'Swarm' : currentAgent)}</span>
                 ) : null}
@@ -1337,7 +1528,7 @@ export function DesktopV3AgenticComposer({
               </div>
               <div className="flex shrink-0 items-center gap-2">
                 {dictationButton()}
-                <Button size="sm" className="h-10 w-10 shrink-0 rounded-lg border border-[var(--app-border-strong)] bg-[var(--app-primary)] p-0 text-[var(--app-primary-text)] transition-all hover:-translate-y-0.5 hover:bg-[var(--app-primary-hover)] hover:shadow-md active:bg-[var(--app-primary-active)] disabled:hover:translate-y-0" onClick={handleSubmitClick} disabled={!canStop && (uploadingAttachment || (!canSubmit && attachments.length === 0 && textAttachments.length === 0 && !selectedWorkspaceSkill) || busy)} aria-label={canStop ? 'Stop run' : 'Send message'}>
+                <Button size="sm" className="h-10 w-10 shrink-0 rounded-lg border border-[var(--app-border-strong)] bg-[var(--app-primary)] p-0 text-[var(--app-primary-text)] transition-all hover:-translate-y-0.5 hover:bg-[var(--app-primary-hover)] hover:shadow-md active:bg-[var(--app-primary-active)] disabled:hover:translate-y-0" onClick={handleSubmitClick} disabled={!canStop && (uploadingAttachment || (!canSubmit && attachments.length === 0 && videoAttachments.length === 0 && artifactSelections.length === 0 && textAttachments.length === 0 && !selectedWorkspaceSkill) || busy)} aria-label={canStop ? 'Stop run' : 'Send message'}>
                   {canStop ? <Square size={18} /> : busy ? <LoaderCircle size={18} className="animate-spin" /> : <ArrowUp size={22} strokeWidth={2.25} className="shrink-0" />}
                 </Button>
               </div>
@@ -1345,6 +1536,34 @@ export function DesktopV3AgenticComposer({
           </div>
         </div>
       </div>
+      {videoPickerOpen ? <Dialog role="dialog" aria-modal="true" aria-label="Attach videos">
+        <DialogBackdrop />
+        <DialogPanel className="w-[min(48rem,calc(100vw-2rem))] overflow-hidden rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] shadow-[var(--shadow-panel)]">
+          <div className="flex items-start justify-between gap-3 border-b border-[var(--app-border)] px-5 py-4">
+            <div><h2 className="text-lg font-semibold text-[var(--app-text)]">Attach videos</h2><p className="text-sm text-[var(--app-text-muted)]">Register a read-only folder, browse supported videos, then choose individual files.</p></div>
+            <ModalCloseButton onClick={() => setVideoPickerOpen(false)} />
+          </div>
+          <div className="grid max-h-[70vh] gap-4 overflow-y-auto p-5">
+            <form className="flex gap-2" onSubmit={(event) => { event.preventDefault(); void registerVideoFolder() }}>
+              <input value={videoFolderDraft} onChange={(event) => setVideoFolderDraft(event.target.value)} placeholder="/path/to/media-folder" aria-label="Media folder path" className="min-w-0 flex-1 rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] px-3 py-2 text-sm text-[var(--app-text)]" />
+              <Button type="submit" variant="outline" disabled={!videoFolderDraft.trim() || videoBrowseLoading}>Add media folder</Button>
+            </form>
+            {videoRoots.length > 0 ? <div className="flex flex-wrap gap-2">{videoRoots.map((root) => <button type="button" key={root} onClick={() => { void loadVideoRoot(root) }} className={`rounded-lg border px-3 py-2 text-left text-xs ${root === videoRoot ? 'border-[var(--app-border-accent)] bg-[var(--app-primary-muted)] text-[var(--app-text)]' : 'border-[var(--app-border)] text-[var(--app-text-muted)]'}`} title={root}>{root.split(/[\\/]/).filter(Boolean).pop() || root}</button>)}</div> : <p className="text-sm text-[var(--app-text-muted)]">No media folders registered yet.</p>}
+            {videoBrowse ? <div className="grid gap-2">
+              <div className="flex items-center gap-2 text-xs text-[var(--app-text-muted)]">
+                {videoBrowse.relativePath !== '.' ? <button type="button" onClick={() => { const parts = videoBrowse.relativePath.split(/[\\/]/); parts.pop(); void loadVideoRoot(videoRoot, parts.join('/') || '.') }} className="inline-flex items-center gap-1 font-semibold text-[var(--app-primary)]"><ArrowLeft size={13} />Up</button> : null}
+                <span className="truncate font-mono">{videoBrowse.relativePath}</span>
+              </div>
+              {videoBrowse.directories.map((directory) => <button type="button" key={directory.relative_path} onClick={() => { void loadVideoRoot(videoRoot, directory.relative_path) }} className="flex items-center gap-2 rounded-lg border border-[var(--app-border)] px-3 py-2 text-left text-sm text-[var(--app-text)]"><Folder size={15} />{directory.name}</button>)}
+              {videoBrowse.clips.map((clip) => { const selected = videoAttachments.some((item) => item.ref === clip.ref); return <button type="button" key={clip.ref} onClick={() => toggleVideoAttachment(clip)} className={`flex items-center gap-3 rounded-lg border px-3 py-2 text-left ${selected ? 'border-[var(--app-border-accent)] bg-[var(--app-primary-muted)]' : 'border-[var(--app-border)]'}`}><Video size={16} className="text-[var(--app-primary)]" /><span className="min-w-0 flex-1 truncate text-sm font-medium text-[var(--app-text)]">{clip.name}</span><span className="text-xs text-[var(--app-text-muted)]">{Math.max(1, Math.ceil(clip.size_bytes / (1024 * 1024)))} MB</span><span className="text-xs font-semibold text-[var(--app-primary)]">{selected ? 'Selected' : 'Select'}</span></button> })}
+              {!videoBrowseLoading && videoBrowse.directories.length === 0 && videoBrowse.clips.length === 0 ? <p className="py-6 text-center text-sm text-[var(--app-text-muted)]">No supported videos in this folder.</p> : null}
+            </div> : null}
+            {videoBrowseLoading ? <p className="inline-flex items-center gap-2 text-sm text-[var(--app-text-muted)]"><LoaderCircle size={15} className="animate-spin" />Loading videos…</p> : null}
+            {videoPickerError ? <p role="alert" className="text-sm text-[var(--app-danger)]">{videoPickerError}</p> : null}
+          </div>
+          <div className="flex items-center justify-between border-t border-[var(--app-border)] px-5 py-3"><span className="text-xs text-[var(--app-text-muted)]">{videoAttachments.length} of {DESKTOP_VIDEO_ATTACHMENT_MAX_COUNT} selected</span><Button type="button" onClick={() => setVideoPickerOpen(false)}>Done</Button></div>
+        </DialogPanel>
+      </Dialog> : null}
       <AgentModelControl
         currentAgent={currentAgent}
         selectedPrimaryAgent={selectedPrimaryAgent}
@@ -1357,11 +1576,13 @@ export function DesktopV3AgenticComposer({
         modelLocked={modelPickerDisabled || Boolean(modelLockNotice.trim())}
         modelLockNotice={modelPickerDisabledReason || modelLockNotice}
         triggerDetail={modelControlDetail}
-        openSignal={agentSettingsOpenSignal + agentSetupOpenSignal}
+        openSignal={modelFavoritesOpenSignal}
+        setupOpenSignal={agentSettingsOpenSignal + agentSetupOpenSignal}
         initialAgentName={agentSettingsInitialAgent}
         onOpenAgentSettings={onOpenAgentSettings ? () => onOpenAgentSettings(agentSettingsInitialAgent || currentAgent) : undefined}
         onConfirmAgentSettings={onConfirmAgentSettings}
         onApplyModelFavorite={onApplyModelFavorite}
+        onApplyModelFavoriteChatOnly={onApplyModelFavoriteChatOnly}
         popoverAnchorId={modelFavoritesAnchorId}
         modelProfiles={modelProfiles}
         activeModelProfile={activeModelProfile}

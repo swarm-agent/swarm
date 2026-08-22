@@ -79,6 +79,46 @@ export function toolActivityStartSummary(message: StructuredToolMessage): string
       const launchCount = jsonNumber(args, 'launch_count')
       return description || (launchCount > 0 ? `${launchCount} ${launchCount === 1 ? 'subagent' : 'subagents'}` : '')
     }
+    case 'manage_video': {
+      const action = jsonString(args, 'action').toLowerCase()
+      const title = jsonString(args, 'title')
+      const preset = jsonString(args, 'output_preset').replace(/_/g, ' ')
+      const sourceNames = Array.isArray(args?.source_names)
+        ? args.source_names.filter((value): value is string => typeof value === 'string' && Boolean(value.trim())).map((value) => value.trim())
+        : []
+      const sourceLabel = sourceNames.length === 1 ? sourceNames[0] : sourceNames.length > 1 ? `${sourceNames.length} source videos` : ''
+      const subject = title || sourceLabel || preset
+      const activity: Record<string, string> = {
+        list_source_roots: 'Finding available video sources',
+        browse_source: 'Browsing video sources',
+        inspect_attachments: 'Checking attached videos',
+        start_transcription: 'Starting video transcription',
+        status: 'Checking transcription progress',
+        cancel: 'Cancelling video transcription',
+        read_transcript: 'Reading video transcript',
+        create_project: 'Setting up a video project',
+        read_project: 'Loading the video project',
+        get_project: 'Loading the video project',
+        list_projects: 'Loading video projects',
+        create_revision: 'Saving a new video version',
+        restore_revision: 'Restoring a video version',
+        start_render: 'Starting the video render',
+        render_status: 'Checking render progress',
+        cancel_render: 'Cancelling the video render',
+      }
+      const label = activity[action] || 'Working on video'
+      return subject ? `${label} · ${subject}` : label
+    }
+    case 'manage_worktree': {
+      const action = jsonString(args, 'action') || 'inspect'
+      const taskCallId = jsonString(args, 'task_call_id')
+      const sessionIds = Array.isArray(args?.session_ids)
+        ? args.session_ids.filter((value): value is string => typeof value === 'string' && Boolean(value.trim()))
+        : []
+      if (taskCallId) return `${action.replace(/_/g, ' ')} · ${taskCallId}`
+      if (sessionIds.length > 0) return `${action.replace(/_/g, ' ')} · ${sessionIds.length} ${sessionIds.length === 1 ? 'session' : 'sessions'}`
+      return action.replace(/_/g, ' ')
+    }
     default:
       return message.target || message.commandText
   }

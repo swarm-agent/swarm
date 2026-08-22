@@ -109,6 +109,15 @@ func TestSessionsV3SystemSidechatsExecuteFromRegistryAfterStoreReopen(t *testing
 	}
 	parentPreference := pebblestore.ModelPreference{Provider: "codex", Model: "gpt-5.4", Thinking: "xhigh", ServiceTier: "priority", ContextMode: "full"}
 	parent := createSessionsV3PrimaryTestSessionWithPreference(t, server, "system-sidechat-parent", "system sidechat parent", parentPreference)
+	sourceWorkspacePath := parent.WorkspacePath
+	parentWorktreePath := t.TempDir()
+	parent.WorkspacePath = parentWorktreePath
+	parent.WorktreeEnabled = true
+	parent.WorktreeRootPath = parentWorktreePath
+	parent.WorktreeBaseBranch = "dev"
+	parent.WorktreeBranch = "agent/plan-sidechat-worktree"
+	parent.Metadata["swarm_v3_source_workspace_path"] = sourceWorkspacePath
+	parent.Metadata["swarm_v3_runtime_workspace_path"] = parentWorktreePath
 	parent.ModelProfile = &pebblestore.SessionModelProfileSnapshot{
 		Source:             pebblestore.SessionModelProfileSourceSaved,
 		ActionFavoriteID:   "favorite-action",
@@ -190,6 +199,9 @@ func TestSessionsV3SystemSidechatsExecuteFromRegistryAfterStoreReopen(t *testing
 			if test.kind == "plan" && (stored.Mode != sessionruntime.ModeAuto || stored.ModelProfile == nil || stored.ModelProfile.ActionFavoriteID != "favorite-plan" || stored.ModelProfile.Action.Model != parentPreference.Model) {
 				t.Fatalf("reopened Plan sidechat current model authority=%+v", stored)
 			}
+			if stored.WorkspacePath != parentWorktreePath || !stored.WorktreeEnabled || stored.WorktreeRootPath != parentWorktreePath || stored.WorktreeBranch != parent.WorktreeBranch || sessionsV3MetadataString(stored.Metadata, "swarm_v3_source_workspace_path") != sourceWorkspacePath || sessionsV3MetadataString(stored.Metadata, "swarm_v3_runtime_workspace_path") != parentWorktreePath {
+				t.Fatalf("reopened %s sidechat lost parent worktree identity: %+v", test.kind, stored)
+			}
 			before := runner.callCount
 			postSessionsV3PrimaryTestMessage(t, restarted, test.sessionID, "system-sidechat-message-"+test.kind, "run "+test.kind+" sidechat")
 			waitForSessionsV3MessageCount(t, sessions, test.sessionID, 2)
@@ -200,12 +212,24 @@ func TestSessionsV3SystemSidechatsExecuteFromRegistryAfterStoreReopen(t *testing
 			if request.Model != test.model || !strings.Contains(request.Instructions, "- name: "+test.agentID) {
 				t.Fatalf("%s request model=%q instructions=%q", test.kind, request.Model, request.Instructions)
 			}
+			for _, want := range []string{"- primary_root: " + parentWorktreePath, "- active_worktree: " + parentWorktreePath, "- worktree_branch: " + parent.WorktreeBranch} {
+				if !strings.Contains(request.Instructions, want) {
+					t.Fatalf("%s request missing worktree instruction %q: %s", test.kind, want, request.Instructions)
+				}
+			}
 			if test.kind == "plan" && (request.Thinking != parentPreference.Thinking || request.ServiceTier != parentPreference.ServiceTier || request.ContextMode != parentPreference.ContextMode) {
 				t.Fatalf("Plan request did not preserve parent model setup: request=%+v parent=%+v", request, parentPreference)
 			}
 			tools := sessionsV3ProviderRequestToolNames(request.Tools)
 			if tools["edit_pending_plan"] != test.wantEditPendingPlan {
 				t.Fatalf("%s edit_pending_plan=%t tools=%v", test.kind, tools["edit_pending_plan"], tools)
+			}
+			if test.kind == "plan" {
+				for _, name := range []string{"read", "search", "find", "list"} {
+					if !tools[name] {
+						t.Fatalf("Plan sidechat missing discovery tool %q: %v", name, tools)
+					}
+				}
 			}
 			if tools["exit_plan_mode"] || tools["plan_manage"] {
 				t.Fatalf("%s received forbidden lifecycle tools: %v", test.kind, tools)
@@ -340,6 +364,24 @@ func TestSessionsV3PrimaryCreateResponseIsMinimalMutationResult(t *testing.T) {
 		if strings.Contains(createResponse, forbidden) {
 			t.Fatalf("create response helper contains forbidden snapshot/workset field %s", forbidden)
 		}
+	}
+}
+
+func TestSessionsV3PrimaryCreateRequiresAgentNameBeforeSessionMutation(t *testing.T) {
+	server, sessions, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	bindingID := seedSessionsV3PrimaryAuthority(t, server, "/workspace/video")
+	body := `{"session_id":"video-missing-agent","client_request_id":"video-missing-agent","swarm_id":"host-swarm-id","workspace_binding_id":"` + bindingID + `","title":"Video Session","mode":"auto","metadata":{"experience":"video_studio"}}`
+	req := httptest.NewRequest(http.MethodPost, "/v3/sessions", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "agent_name is required") {
+		t.Fatalf("body missing agent_name requirement: %s", rec.Body.String())
+	}
+	if _, ok, err := sessions.GetSession("video-missing-agent"); err != nil || ok {
+		t.Fatalf("missing-agent request must not create a session: ok=%t err=%v", ok, err)
 	}
 }
 
@@ -4527,6 +4569,24 @@ func TestSessionsV3ExecutorUsesProviderFromCommittedHistory(t *testing.T) {
 	}
 }
 
+func TestSessionsV3ProviderInputProjectsArtifactSelections(t *testing.T) {
+	message := pebblestore.MessageSnapshot{
+		Role:    "user",
+		Content: "Use this one.",
+		ArtifactSelections: []pebblestore.SessionArtifactSelectionReference{{
+			SessionID: "source-session", CollectionID: "collection-1", VariantID: "variant-2", EventSeq: 41,
+			Label: "Iteration 2: Pixel-native lattice", Description: "Reviewed option", Action: "use",
+		}},
+	}
+
+	input := sessionsV3ProviderInput([]pebblestore.MessageSnapshot{message})
+	for _, want := range []string{"Use this one.", "Iteration 2: Pixel-native lattice", "Reviewed option", "session_id=source-session", "collection_id=collection-1", "variant_id=variant-2", "event_seq=41"} {
+		if !sessionsV3ProviderInputContainsContentText(input, want) {
+			t.Fatalf("provider input missing artifact selection %q: %+v", want, input)
+		}
+	}
+}
+
 func TestSessionsV3ProviderInputSuppressesCodexNativeReplayAcrossFreshBoundary(t *testing.T) {
 	message := pebblestore.MessageSnapshot{
 		Role:    "assistant",
@@ -7329,13 +7389,13 @@ func TestSessionsV3RuntimeInstructionsIncludeDurableActivePlanContext(t *testing
 	}
 }
 
-func TestSessionsV3RuntimeInstructionsUseLegacyWorkspaceAndRuleContext(t *testing.T) {
+func TestSessionsV3RuntimeInstructionsUseManagedWorktreeAndRuleContext(t *testing.T) {
 	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	primary := t.TempDir()
 	worktreeRoot := t.TempDir()
 	linked := t.TempDir()
-	if err := os.WriteFile(filepath.Join(primary, "AGENTS.md"), []byte("# Primary rule\nRoot agent rule for V3 parity."), 0o644); err != nil {
-		t.Fatalf("write primary AGENTS.md: %v", err)
+	if err := os.WriteFile(filepath.Join(worktreeRoot, "AGENTS.md"), []byte("# Worktree rule\nWorktree agent rule for V3 parity."), 0o644); err != nil {
+		t.Fatalf("write worktree AGENTS.md: %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(linked, "AGENTS.md"), []byte("# Linked rule\nLinked root instruction."), 0o644); err != nil {
 		t.Fatalf("write linked AGENTS.md: %v", err)
@@ -7360,10 +7420,12 @@ func TestSessionsV3RuntimeInstructionsUseLegacyWorkspaceAndRuleContext(t *testin
 		Mode:                    sessionruntime.ModeAuto,
 		Preference:              pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model", Thinking: "medium"},
 		Metadata: map[string]any{
-			"agent_name":          "swarm",
-			"resolved_agent_name": "swarm",
-			"agent_mode":          "primary",
-			"runtime_mode":        pebblestore.AgentRuntimeModePlanAuto,
+			"agent_name":                      "swarm",
+			"resolved_agent_name":             "swarm",
+			"agent_mode":                      "primary",
+			"runtime_mode":                    pebblestore.AgentRuntimeModePlanAuto,
+			"swarm_v3_source_workspace_path":  primary,
+			"swarm_v3_runtime_workspace_path": worktreeRoot,
 		},
 		CreatedAt: now,
 		UpdatedAt: now,
@@ -7393,13 +7455,15 @@ func TestSessionsV3RuntimeInstructionsUseLegacyWorkspaceAndRuleContext(t *testin
 	for _, want := range []string{
 		"Master harness prompt (applies to every agent run):",
 		"Workspace scope:",
-		"- primary_root: " + primary,
-		"- linked_root: " + worktreeRoot,
+		"- primary_root: " + worktreeRoot,
 		"- linked_root: " + linked,
 		"Workspace runtime policy:",
 		"Allowed workspace roots:",
+		"Managed worktree context (authoritative for this run):",
+		"- active_worktree: " + worktreeRoot,
+		"- source_workspace: " + primary + " (reference identity only",
 		"Loaded instruction sources:",
-		"Root agent rule for V3 parity.",
+		"Worktree agent rule for V3 parity.",
 		"Linked root instruction.",
 	} {
 		if !strings.Contains(resolved.Instructions, want) {
@@ -8130,6 +8194,102 @@ func (r sessionsV3UndeclaredLifecycleRunner) CreateResponseStreaming(context.Con
 	return provideriface.Response{}, nil
 }
 
+func TestSessionsV3DesignerProviderRequestMaterializesMediaInspectAndPersistsDenialProvenance(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	declaration := provideriface.MediaAdapterDeclaration{
+		AdapterID: provideriface.MediaAdapterIDCodexChatGPTV1, ProviderID: "codex",
+		ProviderSurface: provideriface.MediaProviderSurfaceCodexChatGPT, CredentialSurface: provideriface.MediaCredentialSurfaceCodexOAuth,
+		CredentialFingerprint: "designer-test-credential",
+		Inputs:                []provideriface.MediaAdapterCapability{{Modality: "image", Semantics: pebblestore.ModelCatalogMediaSemanticsNative, MIMETypes: []string{"image/png"}, ContentTypes: []string{"input_image"}, MaxBytes: 1024, MaxCount: 1}},
+	}
+	runner := &sessionsV3RecordingProviderRunner{id: "codex", text: "designer response", mediaDeclaration: &declaration}
+	providers := registry.New()
+	providers.RegisterRunner(runner)
+	server.providers = providers
+	if _, err := server.agentModelSettings.UpdateSystemAgent(identity.ContextWithPrincipal(context.Background(), testPrincipal()), "designer", pebblestore.AgentModelAssignment{Provider: "codex", Model: "gpt-5.6-sol", Thinking: "high"}); err != nil {
+		t.Fatalf("configure Designer model assignment: %v", err)
+	}
+
+	workspace := t.TempDir()
+	created := createSessionsV3PrimaryTestSessionWithWorkspaceAndPreference(t, server, "designer-media-provider-request", "designer media provider request", workspace, pebblestore.ModelPreference{Provider: "codex", Model: "gpt-5.6-sol", Thinking: "high"})
+	designer := agentruntime.DesignerAgentProfileForParent(pebblestore.AgentProfile{Provider: "codex", Model: "gpt-5.6-sol", Thinking: "high"})
+	metadata := make(map[string]any, len(created.Metadata)+5)
+	for key, value := range created.Metadata {
+		metadata[key] = value
+	}
+	metadata["agent_name"] = designer.Name
+	metadata["resolved_agent_name"] = designer.Name
+	metadata["agent_mode"] = designer.Mode
+	metadata["runtime_mode"] = designer.RuntimeMode
+	metadata["agent_profile"] = designer
+	metadata["model_profile"] = nil
+	if _, _, err := sessionSvc.UpdateMetadata(created.ID, metadata); err != nil {
+		t.Fatalf("set Designer session metadata: %v", err)
+	}
+
+	exec := newSessionV3Executor(server)
+	server.v3SessionExecutor = exec
+	job := sessionV3ExecutorJob{SessionID: created.ID, RunID: "designer-media-run", Principal: testPrincipal()}
+	resolved, err := exec.resolveSessionV3Runtime(job)
+	if err != nil {
+		t.Fatalf("resolve Designer runtime: %v", err)
+	}
+	if !sessionsV3ProviderRequestHasTool(resolved.Tools, "media_inspect") {
+		t.Fatalf("Designer resolved tools = %#v, want media_inspect; contract=%+v catalog=%T/%+v meta=%+v", sessionsV3ProviderRequestToolNames(resolved.Tools), resolved.MediaContract, resolved.ModelCatalog, resolved.ModelCatalog, resolved.CatalogMeta)
+	}
+	request, err := exec.sessionV3ProviderBaseRequest(job, resolved, []map[string]any{{"role": "user", "content": "inspect the image"}})
+	if err != nil {
+		t.Fatalf("build Designer provider request: %v", err)
+	}
+	if !sessionsV3ProviderRequestHasTool(request.Tools, "media_inspect") {
+		t.Fatalf("Designer provider request tools = %#v, want media_inspect", sessionsV3ProviderRequestToolNames(request.Tools))
+	}
+
+	response := sessionV3AssistantResponse{
+		ProviderID: "codex", Model: "gpt-5.6-sol", EpochID: request.ExecutionEpochID,
+		ProviderConfigurationHash: request.ProviderConfigurationHash, MediaContract: request.MediaContract,
+		MediaInspectToolExposed: sessionsV3ProviderRequestHasTool(request.Tools, "media_inspect"),
+		ProviderLineageID:       request.ProviderLineageID, ContextBranchID: request.ContextBranchID, BoundaryReason: request.BoundaryReason,
+	}
+	if err := exec.persistSessionV3ProviderLifecycle(job, response, sessionruntime.SessionMutationResult{}); err != nil {
+		t.Fatalf("persist Designer provider lifecycle: %v", err)
+	}
+	state, ok, err := sessionSvc.GetExecutionProviderLifecycleState(created.ID, request.ExecutionEpochID)
+	if err != nil || !ok || !state.MediaInspectToolExposed || state.MediaContractHash == "" || len(state.MediaDenialReasons) != 0 {
+		t.Fatalf("allowed Designer media lifecycle ok=%t err=%v state=%+v", ok, err, state)
+	}
+
+	catalog, ok := resolved.ModelCatalog.(pebblestore.ModelCatalogRecord)
+	if !ok {
+		t.Fatalf("Designer model catalog type = %T, want ModelCatalogRecord", resolved.ModelCatalog)
+	}
+	denied := resolved
+	denied.MediaContract = runruntime.CompileSessionMediaContract(runruntime.SessionMediaContractInput{
+		ProviderID: "codex", Model: "gpt-5.6-sol", Catalog: &catalog,
+		CatalogMeta: &pebblestore.ModelCatalogMeta{SnapshotID: "mismatched", SnapshotVersion: resolved.MediaContract.SnapshotVersion},
+		Adapter:     declaration, AgentAuthorized: true, ExecutionMode: sessionruntime.ModeAuto, WorkspaceScope: workspace, SessionScope: created.ID,
+	})
+	denied.Tools = runruntime.MaterializeSessionMediaTool(resolved.Tools, denied.MediaContract)
+	deniedRequest, err := exec.sessionV3ProviderBaseRequest(job, denied, []map[string]any{{"role": "user", "content": "inspect the image"}})
+	if err != nil {
+		t.Fatalf("build denied Designer provider request: %v", err)
+	}
+	if sessionsV3ProviderRequestHasTool(deniedRequest.Tools, "media_inspect") || len(deniedRequest.MediaContract.DenialReasons) == 0 {
+		t.Fatalf("mismatched Designer media contract did not fail closed: contract=%+v tools=%#v", deniedRequest.MediaContract, sessionsV3ProviderRequestToolNames(deniedRequest.Tools))
+	}
+	deniedResponse := response
+	deniedResponse.ProviderConfigurationHash = deniedRequest.ProviderConfigurationHash
+	deniedResponse.MediaContract = deniedRequest.MediaContract
+	deniedResponse.MediaInspectToolExposed = false
+	if err := exec.persistSessionV3ProviderLifecycle(job, deniedResponse, sessionruntime.SessionMutationResult{}); err != nil {
+		t.Fatalf("persist denied Designer provider lifecycle: %v", err)
+	}
+	state, ok, err = sessionSvc.GetExecutionProviderLifecycleState(created.ID, deniedRequest.ExecutionEpochID)
+	if err != nil || !ok || state.MediaInspectToolExposed || len(state.MediaDenialReasons) == 0 || state.MediaSnapshotID == "" {
+		t.Fatalf("denied Designer media lifecycle ok=%t err=%v state=%+v", ok, err, state)
+	}
+}
+
 func TestSessionsV3ProviderBaseRequestFailsClosedWithoutLifecycleCapability(t *testing.T) {
 	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	providers := registry.New()
@@ -8149,18 +8309,19 @@ func TestSessionsV3ProviderBaseRequestFailsClosedWithoutLifecycleCapability(t *t
 }
 
 type sessionsV3RecordingProviderRunner struct {
-	mu            sync.Mutex
-	id            string
-	text          string
-	deltas        []string
-	err           error
-	response      provideriface.Response
-	responses     []provideriface.Response
-	functionCalls []provideriface.FunctionCall
-	handler       func(context.Context, provideriface.Request, func(provideriface.StreamEvent)) (provideriface.Response, error)
-	callCount     int
-	lastRequest   provideriface.Request
-	requests      []provideriface.Request
+	mu               sync.Mutex
+	id               string
+	mediaDeclaration *provideriface.MediaAdapterDeclaration
+	text             string
+	deltas           []string
+	err              error
+	response         provideriface.Response
+	responses        []provideriface.Response
+	functionCalls    []provideriface.FunctionCall
+	handler          func(context.Context, provideriface.Request, func(provideriface.StreamEvent)) (provideriface.Response, error)
+	callCount        int
+	lastRequest      provideriface.Request
+	requests         []provideriface.Request
 }
 
 func (r *sessionsV3RecordingProviderRunner) ID() string {
@@ -8171,6 +8332,12 @@ func (r *sessionsV3RecordingProviderRunner) ID() string {
 }
 func (r *sessionsV3RecordingProviderRunner) ExecutionEpochLifecycle() provideriface.ExecutionEpochLifecycleCapabilities {
 	return provideriface.ExecutionEpochLifecycleCapabilities{ContextMode: provideriface.ExecutionEpochContextResponsesChain, TransportReusable: true}
+}
+func (r *sessionsV3RecordingProviderRunner) MediaCapabilityDeclaration(context.Context) (provideriface.MediaAdapterDeclaration, error) {
+	if r.mediaDeclaration == nil {
+		return provideriface.MediaAdapterDeclaration{}, errors.New("test media declaration is unavailable")
+	}
+	return *r.mediaDeclaration, nil
 }
 func (r *sessionsV3RecordingProviderRunner) CreateResponse(ctx context.Context, req provideriface.Request) (provideriface.Response, error) {
 	return r.CreateResponseStreaming(ctx, req, nil)

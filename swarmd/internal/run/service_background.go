@@ -65,6 +65,11 @@ type RunRequest struct {
 type RunStartMeta struct {
 	AllowSubagent bool
 	DisabledTools map[string]bool
+	// ContinuationBoundary is trusted internal control-plane state. It is checked
+	// only between completed provider/tool steps and is deliberately absent from
+	// RunRequest so clients and models cannot install lifecycle callbacks.
+	ContinuationBoundary RunContinuationBoundaryCallback
+	TaskCompaction       *TaskContextCompaction
 	// TrustedAgentProfile is an internal-only immutable run profile snapshot. It is
 	// deliberately absent from RunRequest so clients and models cannot supply it.
 	TrustedAgentProfile  *pebblestore.AgentProfile
@@ -74,6 +79,7 @@ type RunStartMeta struct {
 	CompiledPolicy       *permission.Policy
 	Principal            identity.Principal
 	ApplySessionMutation func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error)
+	ArtifactRunContext   *tool.ArtifactRunContext
 }
 
 func (r RunRequest) Normalized() RunRequest {
@@ -115,6 +121,8 @@ func NewRunOptions(request RunRequest, meta RunStartMeta) RunOptions {
 		CompactOrigin:         request.CompactOrigin,
 		AllowSubagent:         meta.AllowSubagent,
 		DisabledTools:         cloneDisabledTools(meta.DisabledTools),
+		ContinuationBoundary:  meta.ContinuationBoundary,
+		TaskCompaction:        meta.TaskCompaction,
 		TrustedAgentProfile:   meta.TrustedAgentProfile,
 		PermissionSessionID:   strings.TrimSpace(meta.PermissionSessionID),
 		RunID:                 strings.TrimSpace(meta.RunID),
@@ -128,6 +136,7 @@ func NewRunOptions(request RunRequest, meta RunStartMeta) RunOptions {
 		PlanCheckpointContext: request.PlanCheckpointContext,
 		Principal:             meta.Principal,
 		ApplySessionMutation:  meta.ApplySessionMutation,
+		ArtifactRunContext:    cloneArtifactRunContext(meta.ArtifactRunContext),
 	}
 }
 

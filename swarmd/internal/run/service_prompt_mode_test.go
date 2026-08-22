@@ -57,12 +57,17 @@ func TestModeCapabilityInstructionsUseSessionModeWhenPlanModeEnabled(t *testing.
 		"Current agent runtime contract: plan_auto",
 		"Current agent exit-plan-mode enabled: true.",
 		"Plan-mode expectation:",
-		"Plan-mode Coder-wave assessment:",
+		"Plan-mode swarm-wave assessment:",
 		"do not overload one Coder with several independent systems or deliverables",
 		"do not split a cohesive change into tiny artificial assignments",
 		"do not create a separate dependency graph, planning file, wave manifest artifact, or orchestration document",
 		"Coders in the same wave must have dependency-ready, non-overlapping owned scopes",
 		"place them in sequential waves after parent integration",
+		"early Iteration Swarm checkpoint",
+		"fast parallel alternatives",
+		"explicit parent selection or synthesis",
+		"ordinary ordered checkpoints, without adding another plan schema or executor",
+		"later dependent waves only after prior outcomes are incorporated",
 		"Because the current session mode is plan",
 	} {
 		if !strings.Contains(instructions, want) {
@@ -83,7 +88,7 @@ func TestModeCapabilityInstructionsKeepCoderWavePlanningOutOfAutoMode(t *testing
 
 	instructions := modeCapabilityInstructions(sessionruntime.ModeAuto, false, profile)
 	for _, forbidden := range []string{
-		"Plan-mode Coder-wave assessment:",
+		"Plan-mode swarm-wave assessment:",
 		"do not create a separate dependency graph",
 		"Coders in the same wave must have dependency-ready, non-overlapping owned scopes",
 	} {
@@ -93,16 +98,25 @@ func TestModeCapabilityInstructionsKeepCoderWavePlanningOutOfAutoMode(t *testing
 	}
 }
 
-func TestMasterHarnessAllowsApprovedPlanCoderWavesWithoutGenericSessionDelegation(t *testing.T) {
+func TestMasterHarnessAdvertisesIterationSwarmWithoutAssembly(t *testing.T) {
 	instructions := masterHarnessPrompt("/workspace")
 	for _, want := range []string{
-		"approved structured-plan checkpoint that calls for a dependency-ready Coder wave",
-		"Concurrent Coder assignments must have non-overlapping owned scopes",
-		"sequence dependent or overlapping implementation work into later waves after the parent integrates the prerequisite wave",
+		"Iteration Swarm: fast parallel alternatives or independent trials",
+		"backward-compatible internal strategy identifier remains explore",
+		"Image Iteration Swarms are a distinct direct format",
+		"hydrated Iteration Swarm",
+		"direct managed image Iteration Swarm",
+		"without launching an agent",
+		"quick Idea swarm",
 		"Never reinterpret a generic new-session request as delegation",
 	} {
 		if !strings.Contains(instructions, want) {
-			t.Fatalf("master harness missing Coder-wave contract %q\n--- instructions ---\n%s", want, instructions)
+			t.Fatalf("master harness missing Iteration Swarm contract %q\n--- instructions ---\n%s", want, instructions)
+		}
+	}
+	for _, forbidden := range []string{"swarm_strategy=assembly", "Assembly swarm", "assembly_parts", "integration_contract", "each Image child makes exactly one"} {
+		if strings.Contains(instructions, forbidden) {
+			t.Fatalf("master harness still advertises disabled Assembly capability %q\n--- instructions ---\n%s", forbidden, instructions)
 		}
 	}
 	if strings.Contains(instructions, "Intentional overlapping Coder scopes are allowed") {
@@ -139,6 +153,7 @@ func TestSubagentPolicyInstructionsUseSimplifiedContract(t *testing.T) {
 		"- mode: bounded",
 		"- automatic_launches_per_parent_run: 5",
 		"- active_child_limit: 5",
+		"- swarm_active_child_limit: 5",
 		"- over_budget_action: ask",
 		"- require_write_isolation: true",
 		"- delegation_scope: parent sessions only; child sessions cannot invoke task delegation",
@@ -147,7 +162,7 @@ func TestSubagentPolicyInstructionsUseSimplifiedContract(t *testing.T) {
 			t.Fatalf("subagent policy instructions missing %q:\n%s", want, instructions)
 		}
 	}
-	for _, want := range []string{"wave/task-call budget", "each accepted task call consumes one wave regardless of child count", "hard ceiling for both one task call and aggregate active children"} {
+	for _, want := range []string{"wave/task-call budget", "each accepted task call consumes one wave regardless of child count", "approval-free limit for a regular task call", "separate approval-free limit for a swarm-mode task call", "an over-limit exact wave follows over_budget_action", "backend absolute safety bound still fails closed"} {
 		if !strings.Contains(instructions, want) {
 			t.Fatalf("subagent policy instructions do not explain independent wave and concurrency semantics; missing %q:\n%s", want, instructions)
 		}
@@ -259,6 +274,7 @@ func TestMasterHarnessRoutesAgentProgressToPlanManageAndKeepsTodosUserOwned(t *t
 		"mark_failed only for a nonrecoverable execution error",
 		"plan_manage final checkpoint example",
 		"handoff_overview",
+		"copyable_code_blocks",
 		"Do not emit a separate assistant completion report before or after this call",
 		"On a blocked plan, call request_followup_checkpoint directly",
 		"Session mode=auto is not evidence that a plan exists", "when active_plan_present=false, never call request_followup_checkpoint",

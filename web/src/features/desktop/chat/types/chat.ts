@@ -29,10 +29,20 @@ export interface EditDiffPreview {
 
 export type ToolMessageState = "done" | "running" | "error";
 
+export interface TaskAssemblyPart {
+  name: string;
+  instructions: string;
+  ownedScope: string[];
+}
+
 export interface TaskToolRow {
   launchKey?: string;
   launchIndex: number;
   childSessionId: string;
+  programId?: string;
+  programJobId?: string;
+  programStageId?: string;
+  dependsOn?: string[];
   status: string;
   phase: string;
   agent: string;
@@ -40,6 +50,8 @@ export interface TaskToolRow {
   modelLabel: string;
   tool: string;
   toolActivitySummary?: string;
+  liveToolCalls?: string;
+  liveAssistantText?: string;
   time: string;
   previewKind: string;
   previewText: string;
@@ -48,6 +60,27 @@ export interface TaskToolRow {
   elapsedMs: number;
   currentToolMs: number;
   terminal: boolean;
+  swarmMode?: boolean;
+  swarmStrategy?: "explore" | "assembly";
+  assemblyPart?: TaskAssemblyPart | null;
+  integrationContract?: string;
+  integrationRequired?: boolean;
+}
+
+export interface TaskProgramStage {
+  id: string;
+  dependsOn: string[];
+  dependencyEvidence: string;
+  state: "done" | "active" | "waiting" | "blocked" | "pending" | "failed";
+  rows: TaskToolRow[];
+}
+
+export interface TaskProgram {
+  id: string;
+  state: string;
+  activeStageId: string;
+  nextAction: string;
+  stages: TaskProgramStage[];
 }
 
 export interface SearchToolLineMatch {
@@ -159,6 +192,37 @@ export interface TaskChildCardActions {
   onNavigate: (sessionId: string, workspacePath: string) => void;
 }
 
+export interface ArtifactToolData {
+  action: string;
+  status: string;
+  artifact?: import('../../session-v3/artifact-api').DesktopV3ArtifactCatalogEntry | null;
+  reference?: import('../../session-v3/artifact-api').DesktopV3ArtifactSelection | null;
+  count?: number;
+}
+
+export interface VideoToolData {
+  action: string;
+  status: string;
+  title: string;
+  activeTitle: string;
+  summary: string;
+  subject: string;
+  sourceNames: string[];
+  progress: number | null;
+  projectId: string;
+  revisionId: string;
+  jobId: string;
+  outputPreset: string;
+  revisionNumber: number;
+  count: number;
+  durationMs: number;
+  sizeBytes: number;
+  width: number;
+  height: number;
+  language: string;
+  validation: string;
+}
+
 export interface StructuredToolMessage {
   pathId: "run.tool-history.v2" | "run.v3.provider-tool-result.v1";
   tool: string;
@@ -184,8 +248,17 @@ export interface StructuredToolMessage {
   webFetchData?: WebFetchToolData | null;
   todoData?: TodoToolData | null;
   bashData?: BashToolData | null;
+  artifactData?: ArtifactToolData | null;
+  videoData?: VideoToolData | null;
   previewLines: string[];
   taskRows: TaskToolRow[];
+  taskProgram?: TaskProgram | null;
+  taskMode?: string;
+  swarmStrategy?: "explore" | "assembly";
+  integrationContract?: string;
+  integrationRequired?: boolean;
+  integrationStatus?: string;
+  readyForDependentWork?: boolean;
 }
 
 export interface WorkspaceSessionCacheRecord<SessionRecord> {
@@ -509,6 +582,13 @@ export interface DesktopSessionPlanCheckpointRecommendation {
   action: string;
   reason: string;
   actionState: string;
+  prompt?: string;
+}
+
+export interface DesktopPlanFinalHandoffCopyableCodeBlock {
+  label: string;
+  language: string;
+  code: string;
 }
 
 export interface DesktopPlanFinalHandoffSuggestedPrompt {
@@ -523,14 +603,31 @@ export interface DesktopPlanFinalHandoffDetails {
   validation: string[];
 }
 
+export interface DesktopPlanFinalHandoffArtifact {
+  artifactId: string;
+  label: string;
+  description: string;
+  mediaType: string;
+  previewable: boolean;
+  sessionId?: string;
+  collectionId?: string;
+  eventSeq?: number;
+  sourceRef?: string;
+  kind?: string;
+  category?: import('../../session-v3/artifact-api').DesktopV3ArtifactCategory;
+  filename?: string;
+}
+
 export interface DesktopPlanFinalHandoff {
   schemaVersion: number;
   title: string;
   overview: string;
   impactBullets: string[];
+  copyableCodeBlocks: DesktopPlanFinalHandoffCopyableCodeBlock[];
   recommendation: DesktopSessionPlanCheckpointRecommendation | null;
   suggestedPrompts: DesktopPlanFinalHandoffSuggestedPrompt[];
   pullRequestUrl: string;
+  artifacts: DesktopPlanFinalHandoffArtifact[];
   details: DesktopPlanFinalHandoffDetails;
 }
 

@@ -33,7 +33,7 @@ type PendingAction = 'identity' | 'provider-save' | 'oauth-device' | 'oauth-brow
 type OnboardingView = OnboardingStep | 'setup'
 
 const SWARM_MARK_SRC = '/favicon.svg'
-const STEP_TRANSITION_MS = 180
+const STEP_TRANSITION_MS = 220
 const ONBOARDING_READY_HOLD_MS = 1_000
 
 const ONBOARDING_STEPS: Record<OnboardingStep, { stepLabel: string; title: string; subtitle: string }> = {
@@ -132,12 +132,17 @@ function waitForOnboardingReadyHold(): Promise<void> {
   })
 }
 
-function OnboardingBrandHeader({ restart, step }: { restart: boolean; step: OnboardingStep }) {
+function OnboardingBrandHeader({ restart, step, visible }: { restart: boolean; step: OnboardingStep; visible: boolean }) {
   const stepCopy = ONBOARDING_STEPS[step]
   const stepIndex = (['identity', 'provider', 'workspace'] as OnboardingStep[]).indexOf(step) + 1
 
   return (
-    <div className="grid min-h-[8.5rem] content-start gap-5 transition-[opacity,transform] duration-200 ease-out">
+    <div
+      className={[
+        'grid min-h-[8.5rem] content-start gap-5 transition-[opacity,transform] duration-200 ease-out motion-reduce:transition-none',
+        visible ? 'translate-y-0 opacity-100' : 'translate-y-1 opacity-0',
+      ].join(' ')}
+    >
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div className="flex items-center gap-3">
           <img src={SWARM_MARK_SRC} alt="" className="size-9" aria-hidden="true" />
@@ -190,22 +195,44 @@ function FeedbackSlot({ error, notice, progress }: { error: string | null; notic
 
   return (
     <div className="min-h-[3.5rem]" aria-live="polite">
-      {message && kind ? (
-        <div
-          role={kind === 'error' ? 'alert' : 'status'}
-          className={[
-            'rounded-xl border px-4 py-3 text-sm transition-[opacity,transform] duration-200 ease-out',
-            kind === 'error'
-              ? 'border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] text-[var(--app-danger)]'
-              : kind === 'success'
-                ? 'border-[var(--app-success-border)] bg-[var(--app-success-bg)] text-[var(--app-success)]'
-                : 'border-[var(--app-border)] bg-[var(--app-surface-subtle)] text-[var(--app-text-muted)]',
-          ].join(' ')}
-        >
-          {message}
-        </div>
-      ) : null}
+      <div
+        role={kind === 'error' ? 'alert' : kind ? 'status' : undefined}
+        className={[
+          'rounded-xl border px-4 py-3 text-sm transition-[color,background-color,border-color,opacity,transform] duration-200 ease-out motion-reduce:transition-none',
+          message ? 'translate-y-0 opacity-100' : 'pointer-events-none translate-y-1 opacity-0',
+          kind === 'error'
+            ? 'border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] text-[var(--app-danger)]'
+            : kind === 'success'
+              ? 'border-[var(--app-success-border)] bg-[var(--app-success-bg)] text-[var(--app-success)]'
+              : 'border-[var(--app-border)] bg-[var(--app-surface-subtle)] text-[var(--app-text-muted)]',
+        ].join(' ')}
+      >
+        {message || '\u00a0'}
+      </div>
     </div>
+  )
+}
+
+function OnboardingButtonLabel({ idle, pending, isPending }: { idle: string; pending: string; isPending: boolean }) {
+  return (
+    <span className="inline-grid place-items-center" aria-hidden="true">
+      <span
+        className={[
+          'col-start-1 row-start-1 transition-[opacity,transform] duration-150 ease-out motion-reduce:transition-none',
+          isPending ? '-translate-y-1 opacity-0' : 'translate-y-0 opacity-100',
+        ].join(' ')}
+      >
+        {idle}
+      </span>
+      <span
+        className={[
+          'col-start-1 row-start-1 transition-[opacity,transform] duration-150 ease-out motion-reduce:transition-none',
+          isPending ? 'translate-y-0 opacity-100' : 'translate-y-1 opacity-0',
+        ].join(' ')}
+      >
+        {pending}
+      </span>
+    </span>
   )
 }
 
@@ -218,7 +245,10 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [panelVisible, setPanelVisible] = useState(true)
+  const [closing, setClosing] = useState(false)
   const transitionTimerRef = useRef<number | null>(null)
+  const transitionFrameRef = useRef<number | null>(null)
+  const targetViewRef = useRef<OnboardingView>(view)
 
   const [username, setUsername] = useState(initialStatus.identity.username)
   const [swarmName, setSwarmName] = useState(initialStatus.config.swarmName)
@@ -317,6 +347,9 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
       if (transitionTimerRef.current !== null) {
         window.clearTimeout(transitionTimerRef.current)
       }
+      if (transitionFrameRef.current !== null) {
+        window.cancelAnimationFrame(transitionFrameRef.current)
+      }
     }
   }, [])
 
@@ -404,29 +437,56 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
     }
   }, [codexOAuthMode, oauthSession])
 
-  const transitionToStep = (nextStep: OnboardingStep) => {
-    if (nextStep === step && view === nextStep) {
-      return
-    }
+  const clearStepTransition = () => {
     if (transitionTimerRef.current !== null) {
       window.clearTimeout(transitionTimerRef.current)
+      transitionTimerRef.current = null
     }
+    if (transitionFrameRef.current !== null) {
+      window.cancelAnimationFrame(transitionFrameRef.current)
+      transitionFrameRef.current = null
+    }
+  }
+
+  const revealTransitionPanel = () => {
+    transitionFrameRef.current = window.requestAnimationFrame(() => {
+      setPanelVisible(true)
+      transitionFrameRef.current = null
+    })
+  }
+
+  const transitionToStep = (nextStep: OnboardingStep) => {
+    if (targetViewRef.current === nextStep && view === nextStep) {
+      setPanelVisible(true)
+      return
+    }
+    targetViewRef.current = nextStep
+    clearStepTransition()
     setPanelVisible(false)
     transitionTimerRef.current = window.setTimeout(() => {
       setStep(nextStep)
       setView(nextStep)
-      setPanelVisible(true)
       transitionTimerRef.current = null
+      revealTransitionPanel()
     }, STEP_TRANSITION_MS)
   }
 
   const transitionToSetup = () => {
-    if (transitionTimerRef.current !== null) {
-      window.clearTimeout(transitionTimerRef.current)
-      transitionTimerRef.current = null
+    if (targetViewRef.current === 'setup') {
+      if (view === 'setup') {
+        setPanelVisible(true)
+      }
+      return
     }
-    setView('setup')
-    setPanelVisible(true)
+    targetViewRef.current = 'setup'
+    clearStepTransition()
+    setPanelVisible(false)
+    transitionTimerRef.current = window.setTimeout(() => {
+      setWorkspaceExplorerOpen(false)
+      setView('setup')
+      transitionTimerRef.current = null
+      revealTransitionPanel()
+    }, STEP_TRANSITION_MS)
   }
 
   const reloadStatus = async () => {
@@ -478,7 +538,6 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
       patchDesktopOnboarding({ desktopOnboardingComplete: true }).then(() => reloadStatus()),
     ])
     setStatus(next)
-    onComplete(next)
     return next
   }
 
@@ -505,6 +564,12 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
       throw new Error('Swarm is still finishing onboarding. Try opening the workspace again in a moment.')
     }
     await navigateToWorkspace(resolution, fallbackPath)
+    setClosing(true)
+    await new Promise<void>((resolve) => {
+      const setTimeoutFn = typeof window !== 'undefined' ? window.setTimeout.bind(window) : setTimeout
+      setTimeoutFn(resolve, 200)
+    })
+    onComplete(next)
   }
 
   const handleProviderContinue = () => {
@@ -520,7 +585,6 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
     if (submitting) {
       return
     }
-    setWorkspaceExplorerOpen(false)
     void (async () => {
       setPendingAction('workspace')
       setError(null)
@@ -542,7 +606,6 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
     if (submitting) {
       return
     }
-    setWorkspaceExplorerOpen(false)
     void (async () => {
       setPendingAction('workspace')
       setError(null)
@@ -750,18 +813,21 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
   }
 
   return (
-    <div className="fixed inset-0 z-[9999] flex items-center justify-center overflow-y-auto bg-black px-6 py-8 text-[var(--app-text)]">
+    <div className={`fixed inset-0 z-[9999] flex items-center justify-center overflow-y-auto bg-black px-6 py-8 text-[var(--app-text)] transition-opacity duration-200 ease-out ${closing ? 'pointer-events-none opacity-0' : 'opacity-100'}`}>
       <main className="relative w-full max-w-5xl overflow-hidden rounded-[2rem] border border-[color-mix(in_oklab,var(--app-border)_58%,transparent)] bg-[color-mix(in_oklab,var(--app-surface)_88%,black)] shadow-[0_24px_90px_rgb(0_0_0/0.55)] outline outline-1 outline-offset-2 outline-[color-mix(in_oklab,var(--app-border)_34%,transparent)] transition-[box-shadow,transform] duration-300 ease-out">
-        <div className="grid min-h-[42rem] grid-rows-[auto_auto_minmax(0,1fr)] gap-5 p-8">
-          <OnboardingBrandHeader restart={restart} step={step} />
+        <div className={view === 'setup' ? 'grid min-h-[42rem] place-items-center p-8' : 'grid min-h-[42rem] grid-rows-[auto_auto_minmax(0,1fr)] gap-5 p-8'}>
+          {view !== 'setup' ? (
+            <>
+              <OnboardingBrandHeader restart={restart} step={step} visible={panelVisible} />
+              <FeedbackSlot error={error} notice={notice} progress={progress} />
+            </>
+          ) : null}
 
-          <FeedbackSlot error={error} notice={view === 'setup' ? null : notice} progress={progress} />
-
-          <div className="relative min-h-[25rem] overflow-hidden">
+          <div className="relative min-h-[25rem] w-full overflow-hidden">
             <div
               key={view}
               className={[
-                'h-full transition-[opacity,transform] duration-200 ease-out',
+                'h-full transition-[opacity,transform] duration-200 ease-out motion-reduce:transition-none',
                 panelVisible ? 'translate-y-0 opacity-100' : 'translate-y-2 opacity-0',
               ].join(' ')}
             >
@@ -807,8 +873,12 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
                   </div>
 
                   <div className="flex justify-end pt-1">
-                    <Button type="submit" disabled={submitting}>
-                      {pendingAction === 'identity' ? 'Saving…' : 'Continue to provider'}
+                    <Button
+                      type="submit"
+                      disabled={submitting}
+                      aria-label={pendingAction === 'identity' ? 'Saving…' : 'Continue to provider'}
+                    >
+                      <OnboardingButtonLabel idle="Continue to provider" pending="Saving…" isPending={pendingAction === 'identity'} />
                     </Button>
                   </div>
                 </form>
@@ -911,6 +981,7 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
                                         void handleStartOAuth('device')
                                       }}
                                       disabled={submitting}
+                                      aria-label={pendingAction === 'oauth-device' ? 'Preparing device code…' : 'Device Code'}
                                       className={[
                                         'rounded-lg border px-4 py-3 text-left text-sm transition-colors disabled:cursor-not-allowed disabled:opacity-60',
                                         providerSetupMode === 'oauth-device'
@@ -920,7 +991,9 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
                                             : 'border-[var(--app-border)] bg-transparent text-[var(--app-text-muted)] hover:border-[var(--app-border-accent)] hover:text-[var(--app-text)]',
                                       ].join(' ')}
                                     >
-                                      <span className="block font-semibold">{pendingAction === 'oauth-device' ? 'Preparing…' : 'Device Code'}</span>
+                                      <span className="block font-semibold">
+                                        <OnboardingButtonLabel idle="Device Code" pending="Preparing…" isPending={pendingAction === 'oauth-device'} />
+                                      </span>
                                       {recommendedCodexSetup === 'device' ? <span className="mt-1 block text-xs text-[var(--app-text-muted)]">Recommended for remote setup</span> : null}
                                     </button>
                                     <button
@@ -930,6 +1003,7 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
                                         void handleStartOAuth('browser')
                                       }}
                                       disabled={submitting}
+                                      aria-label={pendingAction === 'oauth-browser' ? 'Opening local setup…' : 'Local Setup'}
                                       className={[
                                         'rounded-lg border px-4 py-3 text-left text-sm transition-colors disabled:cursor-not-allowed disabled:opacity-60',
                                         providerSetupMode === 'oauth-browser'
@@ -939,7 +1013,9 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
                                             : 'border-[var(--app-border)] bg-transparent text-[var(--app-text-muted)] hover:border-[var(--app-border-accent)] hover:text-[var(--app-text)]',
                                       ].join(' ')}
                                     >
-                                      <span className="block font-semibold">{pendingAction === 'oauth-browser' ? 'Opening…' : 'Local Setup'}</span>
+                                      <span className="block font-semibold">
+                                        <OnboardingButtonLabel idle="Local Setup" pending="Opening…" isPending={pendingAction === 'oauth-browser'} />
+                                      </span>
                                       {recommendedCodexSetup === 'browser' ? <span className="mt-1 block text-xs text-[var(--app-text-muted)]">Recommended on this device</span> : null}
                                     </button>
                                     <button
@@ -949,6 +1025,7 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
                                         void handleStartOAuth('manual')
                                       }}
                                       disabled={submitting}
+                                      aria-label={pendingAction === 'oauth-manual' ? 'Preparing manual callback…' : 'Manual callback fallback'}
                                       className={[
                                         'rounded-lg border px-4 py-3 text-left text-sm transition-colors disabled:cursor-not-allowed disabled:opacity-60',
                                         providerSetupMode === 'oauth-manual'
@@ -956,7 +1033,7 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
                                           : 'border-[var(--app-border)] bg-transparent text-[var(--app-text-muted)] hover:border-[var(--app-border-accent)] hover:text-[var(--app-text)]',
                                       ].join(' ')}
                                     >
-                                      {pendingAction === 'oauth-manual' ? 'Preparing…' : 'Manual callback fallback'}
+                                      <OnboardingButtonLabel idle="Manual callback fallback" pending="Preparing…" isPending={pendingAction === 'oauth-manual'} />
                                     </button>
                                   </>
                                 ) : null}
@@ -987,8 +1064,13 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
                                   <p className="text-sm leading-6 text-[var(--app-text-muted)]">{selectedManualMethod.description}</p>
                                 ) : null}
                                 <div className="flex justify-end">
-                                  <Button type="button" onClick={() => void handleProviderSave()} disabled={submitting}>
-                                    {pendingAction === 'provider-save' ? 'Verifying…' : 'Save provider'}
+                                  <Button
+                                    type="button"
+                                    onClick={() => void handleProviderSave()}
+                                    disabled={submitting}
+                                    aria-label={pendingAction === 'provider-save' ? 'Verifying…' : 'Save provider'}
+                                  >
+                                    <OnboardingButtonLabel idle="Save provider" pending="Verifying…" isPending={pendingAction === 'provider-save'} />
                                   </Button>
                                 </div>
                               </div>
@@ -1043,8 +1125,13 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
                                       />
                                     </label>
                                     <div className="flex justify-end">
-                                      <Button type="button" onClick={() => void handleCompleteOAuth()} disabled={submitting || !oauthSession.sessionID}>
-                                        {pendingAction === 'oauth-complete' ? 'Completing…' : 'Complete remote sign-in'}
+                                      <Button
+                                        type="button"
+                                        onClick={() => void handleCompleteOAuth()}
+                                        disabled={submitting || !oauthSession.sessionID}
+                                        aria-label={pendingAction === 'oauth-complete' ? 'Completing…' : 'Complete remote sign-in'}
+                                      >
+                                        <OnboardingButtonLabel idle="Complete remote sign-in" pending="Completing…" isPending={pendingAction === 'oauth-complete'} />
                                       </Button>
                                     </div>
                                   </>
@@ -1180,7 +1267,15 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
       </main>
 
       {workspaceExplorerOpen && view === 'workspace' ? (
-        <div className="fixed inset-0 z-[10000] grid place-items-center p-3 sm:p-6" role="dialog" aria-modal="true" aria-label="Add workspace from Explorer">
+        <div
+          className={[
+            'fixed inset-0 z-[10000] grid place-items-center p-3 transition-opacity duration-200 ease-out sm:p-6 motion-reduce:transition-none',
+            panelVisible ? 'opacity-100' : 'pointer-events-none opacity-0',
+          ].join(' ')}
+          role="dialog"
+          aria-modal="true"
+          aria-label="Add workspace from Explorer"
+        >
           <button type="button" className="absolute inset-0 bg-[var(--app-backdrop)]" onClick={() => setWorkspaceExplorerOpen(false)} aria-label="Close Explorer" />
           <div className="relative z-10 flex h-[min(44rem,calc(100dvh-24px))] w-full max-w-xl flex-col overflow-hidden rounded-3xl border border-[var(--app-border)] bg-[var(--app-surface)] shadow-[var(--shadow-panel)]">
             <div className="flex items-start justify-between gap-4 border-b border-[var(--app-border)] px-5 py-4 sm:px-6">

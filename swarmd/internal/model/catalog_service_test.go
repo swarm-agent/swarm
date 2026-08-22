@@ -230,6 +230,29 @@ func TestDecodeSwarmSnapshotRecordsPreservesReviewedMediaAndDeniesOthers(t *test
 	}
 }
 
+func TestSnapshotCatalogModalitiesRemainSeparateFromRuntimeMedia(t *testing.T) {
+	var googleModel swarmSnapshotModel
+	if err := json.Unmarshal([]byte(`{"provider_id":"google","model_id":"gemini-video","capabilities":{"supports_text_input":true,"supports_text_output":true,"supports_video_input":true}}`), &googleModel); err != nil {
+		t.Fatalf("decode Google video fixture: %v", err)
+	}
+	modalities, err := snapshotModelCatalogModalities(googleModel, "google")
+	if err != nil {
+		t.Fatalf("snapshotModelCatalogModalities: %v", err)
+	}
+	if !stringSlicesEqual(modalities.Inputs, []string{"text", "video"}) || !stringSlicesEqual(modalities.Outputs, []string{"text"}) {
+		t.Fatalf("catalog modalities = %+v", modalities)
+	}
+	media, err := snapshotModelMediaCapabilities(swarmSnapshot{}, "google", googleModel)
+	if err != nil || media == nil {
+		t.Fatalf("snapshotModelMediaCapabilities: media=%+v err=%v", media, err)
+	}
+	for _, input := range media.Inputs {
+		if input.Modality == "video" {
+			t.Fatalf("catalog video fact leaked into reviewed runtime media admission: %+v", media)
+		}
+	}
+}
+
 func TestCatalogMediaSurfaceAliasesRemainProviderScoped(t *testing.T) {
 	for _, test := range []struct{ provider, catalogSurface, runtimeSurface string }{
 		{"google", "generate_content", provideriface.MediaProviderSurfaceGoogleGenerateContent},
@@ -472,6 +495,68 @@ func TestEnsureBootDefaultsSeedsPinnedSnapshotOffline(t *testing.T) {
 	}
 	if len(anthropic.Record.ThinkingMappings) != 5 || anthropic.Record.ThinkingMappings[2].Behavior != "effort" || anthropic.Record.ThinkingMappings[2].ProviderValue != "medium" {
 		t.Fatalf("Anthropic thinking mappings should preserve snapshot effort mappings: %+v", anthropic.Record.ThinkingMappings)
+	}
+}
+
+func TestEnsureBootDefaultsRematerializesCurrentSnapshotRecords(t *testing.T) {
+	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "catalog.pebble"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	pinned, ok := pinnedSnapshotVersionMetadata()
+	if !ok {
+		t.Fatal("pinned snapshot metadata is unavailable")
+	}
+	catalog := NewCatalogService(pebblestore.NewModelCatalogStore(store))
+	if err := catalog.store.SetRecord(pebblestore.ModelCatalogRecord{
+		Provider:              "google",
+		Model:                 "gemini-3.1-flash-image",
+		ContextWindow:         65536,
+		Source:                catalogSourcePinned,
+		SourceSnapshotID:      pinned.SnapshotID,
+		SourceSnapshotVersion: pinned.SnapshotVersion,
+	}); err != nil {
+		t.Fatalf("seed unmaterialized record: %v", err)
+	}
+	if err := catalog.store.SetMeta(pebblestore.ModelCatalogMeta{
+		Source:          catalogSourcePinned,
+		SourceURL:       pinnedCatalogSourceURL,
+		SnapshotURL:     pinnedCatalogSourceURL,
+		VersionURL:      pinnedCatalogVersionURL,
+		SnapshotID:      pinned.SnapshotID,
+		SnapshotVersion: pinned.SnapshotVersion,
+		GeneratedAt:     pinned.GeneratedAt,
+		RecordCount:     1,
+		ModelCount:      1,
+	}); err != nil {
+		t.Fatalf("seed unmaterialized meta: %v", err)
+	}
+
+	if err := catalog.EnsureBootDefaults(); err != nil {
+		t.Fatalf("EnsureBootDefaults returned error: %v", err)
+	}
+	meta, ok, err := catalog.Meta()
+	if err != nil {
+		t.Fatalf("read rematerialized meta: %v", err)
+	}
+	if !ok || meta.MaterializationVersion != catalogMaterializationVersion {
+		t.Fatalf("materialization version = %d, want %d", meta.MaterializationVersion, catalogMaterializationVersion)
+	}
+	lookup, err := catalog.Get("google", "gemini-3.1-flash-image")
+	if err != nil {
+		t.Fatalf("lookup rematerialized Google image model: %v", err)
+	}
+	if !lookup.Found || !stringInSlice(lookup.Record.CatalogModalities.Outputs, "image") || lookup.Record.Media == nil {
+		t.Fatalf("expected rematerialized Google image fields, got %+v", lookup.Record)
+	}
+	lookup, err = catalog.Get("google", "gemini-2.5-flash")
+	if err != nil {
+		t.Fatalf("lookup rematerialized Google video-understanding model: %v", err)
+	}
+	if !lookup.Found || !stringInSlice(lookup.Record.CatalogModalities.Inputs, "video") || !stringInSlice(lookup.Record.CatalogModalities.Outputs, "text") {
+		t.Fatalf("expected rematerialized Google video-to-text fields, got %+v", lookup.Record)
 	}
 }
 

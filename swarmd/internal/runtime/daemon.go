@@ -17,13 +17,16 @@ import (
 	"time"
 
 	"swarm-refactor/swarmtui/pkg/startupconfig"
+	"swarm-refactor/swarmtui/pkg/storagecontract"
 	actionruntime "swarm/packages/swarmd/internal/action"
 	agentruntime "swarm/packages/swarmd/internal/agent"
 	"swarm/packages/swarmd/internal/agentmodelsettings"
 	"swarm/packages/swarmd/internal/api"
+	"swarm/packages/swarmd/internal/artifact"
 	"swarm/packages/swarmd/internal/auth"
 	"swarm/packages/swarmd/internal/config"
 	"swarm/packages/swarmd/internal/discovery"
+	"swarm/packages/swarmd/internal/htmlcapture"
 	identityruntime "swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/imagegen"
 	integrationruntime "swarm/packages/swarmd/internal/integration"
@@ -57,11 +60,77 @@ import (
 	topologyruntime "swarm/packages/swarmd/internal/topology"
 	"swarm/packages/swarmd/internal/uisettings"
 	update "swarm/packages/swarmd/internal/update"
+	"swarm/packages/swarmd/internal/videoproject"
+	"swarm/packages/swarmd/internal/videorender"
+	"swarm/packages/swarmd/internal/videosource"
+	"swarm/packages/swarmd/internal/videotranscription"
 	"swarm/packages/swarmd/internal/voice"
 	"swarm/packages/swarmd/internal/webpush"
 	"swarm/packages/swarmd/internal/workspace"
 	worktreeruntime "swarm/packages/swarmd/internal/worktree"
 )
+
+type artifactMetadataBoundary struct {
+	*sessionruntime.Service
+	mu        sync.RWMutex
+	publisher func(sessionruntime.RealtimeOutboxRecord) error
+}
+
+type artifactOpener struct {
+	registry *artifact.Registry
+}
+
+func (o *artifactOpener) Open(ctx context.Context, variant pebblestore.SessionArtifactVariant) (*os.File, artifact.Blob, error) {
+	if o == nil || o.registry == nil {
+		return nil, artifact.Blob{}, errors.New("artifact registry not configured")
+	}
+	svc, err := o.registry.ServiceForSession(variant.SessionID)
+	if err != nil {
+		return nil, artifact.Blob{}, err
+	}
+	return svc.Open(ctx, variant)
+}
+
+func (b *artifactMetadataBoundary) SetPublisher(publisher func(sessionruntime.RealtimeOutboxRecord) error) {
+	if b == nil {
+		return
+	}
+	b.mu.Lock()
+	b.publisher = publisher
+	b.mu.Unlock()
+}
+
+func (b *artifactMetadataBoundary) ApplySessionMutation(input pebblestore.V3SessionMutationInput) (pebblestore.V3SessionMutationResult, error) {
+	if b == nil || b.Service == nil {
+		return pebblestore.V3SessionMutationResult{}, errors.New("artifact metadata boundary is not configured")
+	}
+	result, err := b.Service.ApplySessionMutation(input)
+	if err != nil || result.Replayed {
+		return result, err
+	}
+	b.mu.RLock()
+	publisher := b.publisher
+	b.mu.RUnlock()
+	if publisher == nil {
+		return result, errors.New("artifact realtime publisher is not configured")
+	}
+	outboxes := result.RealtimeOutboxes
+	if len(outboxes) == 0 && result.RealtimeOutbox != nil {
+		outboxes = []pebblestore.V3RealtimeOutboxRecord{*result.RealtimeOutbox}
+	}
+	if len(outboxes) == 0 {
+		return result, errors.New("committed artifact mutation is missing durable realtime outbox record")
+	}
+	for _, outbox := range outboxes {
+		if outbox.EndpointSeq == 0 {
+			continue
+		}
+		if publishErr := publisher(outbox); publishErr != nil {
+			log.Printf("warning: artifact realtime outbox wake failed after durable commit session=%q endpoint_seq=%d: %v", result.SessionID, outbox.EndpointSeq, publishErr)
+		}
+	}
+	return result, nil
+}
 
 type Daemon struct {
 	cfg                       config.Config
@@ -197,6 +266,10 @@ func New(cfg config.Config) (*Daemon, error) {
 	authSvc := auth.NewService(authStore, events)
 	codexClient := codex.NewClient(authStore)
 	toolRuntime := tool.NewRuntime(8)
+	cacheRoot, cacheRootErr := storagecontract.ResolveRoot(storagecontract.RootCache, storagecontract.Options{})
+	if cacheRootErr == nil {
+		toolRuntime.SetHTMLCaptureRenderer(htmlcapture.NewChromedpRenderer(htmlcapture.SystemChromePath, filepath.Join(cacheRoot, "html-capture")))
+	}
 	agentSvc := agentruntime.NewService(pebblestore.NewAgentStore(store), events)
 	if err := agentSvc.EnsureSystemAgentRegistry(); err != nil {
 		log.Printf("warning: system agent registry validation failed; Plan/AI sidechats will be unavailable until the daemon binary is corrected: %v", err)
@@ -211,6 +284,12 @@ func New(cfg config.Config) (*Daemon, error) {
 	topologyStore := pebblestore.NewTopologyStore(store)
 	swarmStore := pebblestore.NewSwarmStore(store, topologyStore)
 	sessionSvc := sessionruntime.NewService(pebblestore.NewSessionStore(store), events)
+	artifactRegistry := artifact.NewRegistry(sessionSvc, artifact.Limits{})
+	artifactMetadata := &artifactMetadataBoundary{Service: sessionSvc}
+	artifactAuthority := artifact.NewAuthority(artifactRegistry, artifactMetadata)
+	sessionSvc.SetArtifactSessionCleaner(artifactRegistry)
+	toolRuntime.SetArtifactRegistry(artifactRegistry)
+	toolRuntime.SetArtifactAuthority(artifactAuthority)
 	mediaStagingSvc := mediastaging.NewService(pebblestore.NewMediaStagingStore(store))
 	if err := sessionSvc.EnsureSessionRunStateIndex(); err != nil {
 		_ = secretStore.Close()
@@ -334,6 +413,22 @@ func New(cfg config.Config) (*Daemon, error) {
 	toolRuntime.SetManageTodoService(todoSvc)
 	toolRuntime.SetManageActionService(actionSvc)
 	toolRuntime.SetManageThemeServices(uiSettingsSvc, workspaceSvc)
+	videoTranscriptionSvc := videotranscription.NewService(sessionSvc.Store(), modelSvc, uiSettingsSvc, google.NewVideoTranscriptionAdapter(authStore))
+	videoProjectSvc := videoproject.NewService(sessionSvc.Store())
+	videoRenderSvc := videorender.NewService(
+		videorender.Config{},
+		sessionSvc.Store(),
+		artifactAuthority,
+		&artifactOpener{registry: artifactRegistry},
+		workspaceSvc,
+		nil,
+	)
+	toolRuntime.SetManageVideoPipelineServices(
+		videoTranscriptionSvc,
+		videosource.NewService(workspaceSvc, sessionSvc.Store()),
+		videoProjectSvc,
+		videoRenderSvc,
+	)
 	toolRuntime.SetExaConfigResolver(func(ctx context.Context) (tool.ExaRuntimeConfig, error) {
 		cfg := tool.ExaRuntimeConfig{
 			SearchURL:   "https://api.exa.ai/search",
@@ -435,9 +530,15 @@ func New(cfg config.Config) (*Daemon, error) {
 	modelSvc.StartCatalogAutoRefresh(bgCtx)
 	startV3SessionRetention(bgCtx, sessionSvc)
 	startMediaStagingCleanup(bgCtx, mediaStagingSvc)
+	startArtifactMaintenance(bgCtx, artifactRegistry)
+	startVideoRenderRecovery(bgCtx, videoRenderSvc)
 
 	apiServer := api.NewServer(authSvc, agentSvc, modelSvc, runSvc, sessionSvc, workspaceSvc, discoverySvc, securitySvc, providers, permissionSvc, notificationSvc, events, hub)
 	apiServer.SetMediaStagingService(mediaStagingSvc)
+	apiServer.SetVideoTranscriptionService(videoTranscriptionSvc)
+	apiServer.SetVideoProjectService(videoProjectSvc)
+	apiServer.SetVideoRenderService(videoRenderSvc)
+	apiServer.SetArtifactRegistry(artifactRegistry)
 	runSvc.SetSessionDeployCanonicalizer(apiServer.CanonicalizeSessionDeploy)
 	runSvc.SetSessionDeployEnqueuer(apiServer.EnqueueSessionDeployRun)
 	runSvc.SetAITaskBinder(todoSvc)
@@ -451,6 +552,7 @@ func New(cfg config.Config) (*Daemon, error) {
 	}
 	apiServer.SetAITaskEnqueuer(aiTaskDispatcher)
 	toolRuntime.SetManageSessionRealtimePublisher(apiServer.PublishCommittedV3RealtimeOutbox)
+	artifactMetadata.SetPublisher(apiServer.PublishCommittedV3RealtimeOutbox)
 	apiServer.SetCodexAccountClient(codexClient)
 	apiServer.SetWebPushService(webPushSvc)
 	apiServer.SetModelProfileService(modelProfileSvc)
@@ -468,7 +570,8 @@ func New(cfg config.Config) (*Daemon, error) {
 	apiServer.SetSwarmDesktopTargetSelectionStore(swarmDesktopTargetSelectionStore)
 	apiServer.SetVideoThreadStore(pebblestore.NewVideoThreadStore(store))
 	imageThreadStore := pebblestore.NewImageThreadStore(store)
-	imageGenSvc := imagegen.NewService(codexClient, authStore, imageThreadStore)
+	imageGenSvc := imagegen.NewService(codexClient, authStore, imageThreadStore, modelSvc)
+	toolRuntime.SetManagedImageGenerationService(imageGenSvc)
 	apiServer.SetImageGenerationService(imageGenSvc)
 	apiServer.SetImageThreadStore(imageThreadStore)
 	apiServer.SetTodoService(todoSvc)
@@ -594,6 +697,9 @@ func New(cfg config.Config) (*Daemon, error) {
 		diagnostics.RegisterSnapshotProvider("tools", toolRuntime.LongSessionSnapshot)
 		log.Printf("long-session diagnostics enabled directory=%q", diagnostics.Directory())
 	}
+	// Start the best-effort remote report only after local daemon construction
+	// has succeeded, so later initialization failures never race a closed store.
+	startMintReport(bgCtx, swarmSvc)
 	return d, nil
 }
 

@@ -39,7 +39,7 @@ func TestBuildPlanCheckpointRunInputUsesOnlyPlanContextWithoutStartLifecycleMess
 		Artifacts:       []pebblestore.SessionPlanArtifactReference{{Path: "docs/plan-brief.md", Role: "input", Description: "plan context"}},
 		Checkpoints: []pebblestore.SessionPlanCheckpoint{
 			{ID: "cp-1", Title: "Done", Status: sessionruntime.PlanCheckpointStatusCompleted, Order: 1, Handoff: &pebblestore.SessionPlanCheckpointHandoff{Overview: "Prior handoff details must stay canonical"}, Artifacts: []pebblestore.SessionPlanArtifactReference{{Path: "out/uncited-prior.json", Role: "deliverable"}, {Path: "out/shared-result.json", Role: "deliverable"}}},
-			{ID: "cp-2", Title: "Fresh handoff", Status: sessionruntime.PlanCheckpointStatusPending, Order: 2, Objective: "Use plan context only", Tasks: []string{"Build prompt"}, AcceptanceCriteria: []string{"No old chat"}, Artifacts: []pebblestore.SessionPlanArtifactReference{{Path: "out/shared-result.json", Role: "input", Description: "consume the cited prior checkpoint result", MediaType: "application/json"}, {Path: "out/user-summary.md", Role: "deliverable", Description: "user-visible deliverable", MediaType: "text/markdown"}}},
+			{ID: "cp-2", Title: "Fresh handoff", Status: sessionruntime.PlanCheckpointStatusPending, Order: 2, Objective: "Use plan context only", Tasks: []string{"Build prompt"}, AcceptanceCriteria: []string{"No old chat"}, TaskProgram: &pebblestore.TaskProgramDefinition{ID: "approved_program", Stages: []pebblestore.TaskProgramStageSpec{{ID: "build", DependencyEvidence: "Approved stage is ready."}}, Jobs: []pebblestore.TaskProgramJobSpec{{ID: "prompt", StageID: "build", AgentType: "coder", Title: "Build Prompt", MetaPrompt: "Build the approved prompt.", Deliverable: "Committed prompt", OwnedScope: []string{"swarmd/internal/run/**"}, AcceptanceCriteria: []string{"Prompt works"}, DependencyEvidence: "No unfinished dependency."}}}, Artifacts: []pebblestore.SessionPlanArtifactReference{{Path: "out/shared-result.json", Role: "input", Description: "consume the cited prior checkpoint result", MediaType: "application/json"}, {Path: "out/user-summary.md", Role: "deliverable", Description: "user-visible deliverable", MediaType: "text/markdown"}}},
 		},
 		ActiveCheckpointID: "cp-2",
 	}}); err != nil {
@@ -57,8 +57,8 @@ func TestBuildPlanCheckpointRunInputUsesOnlyPlanContextWithoutStartLifecycleMess
 		t.Fatalf("checkpoint input = %#v, ok=%v", input, ok)
 	}
 	text := inputTextFromProviderInput(t, input[0])
-	if !strings.Contains(text, "Conversation history has been intentionally cleared") {
-		t.Fatalf("prompt missing cleared-history instruction: %s", text)
+	if !strings.Contains(text, "same-epoch transcript remains authoritative context") {
+		t.Fatalf("prompt missing same-epoch checkpoint context instruction: %s", text)
 	}
 	if !strings.Contains(text, "Execute exactly one checkpoint: cp-2") {
 		t.Fatalf("prompt missing one-checkpoint assignment: %s", text)
@@ -68,6 +68,11 @@ func TestBuildPlanCheckpointRunInputUsesOnlyPlanContextWithoutStartLifecycleMess
 	}
 	if strings.Contains(text, "Stale original plan goal that must not govern cp-2") || strings.Contains(text, `"goal"`) {
 		t.Fatalf("prompt injected the plan goal as a competing current objective: %s", text)
+	}
+	for _, want := range []string{`"task_program": {`, `"id": "approved_program"`, `"id": "build"`, `"title": "Build Prompt"`, "Start it with task action=start and omit program", "Do not reconstruct or rewrite it from prose"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("prompt missing approved Task Program contract %q: %s", want, text)
+		}
 	}
 	if !strings.Contains(text, `"objective": "Use plan context only"`) {
 		t.Fatalf("prompt missing selected checkpoint objective: %s", text)
@@ -103,7 +108,7 @@ func TestBuildPlanCheckpointRunInputUsesOnlyPlanContextWithoutStartLifecycleMess
 	if strings.Contains(text, "Prior handoff details must stay canonical") {
 		t.Fatalf("prompt embedded prior checkpoint handoff content instead of the orientation index: %s", text)
 	}
-	for _, want := range []string{"docs/plan-brief.md", "out/shared-result.json", "consume the cited prior checkpoint result", "out/user-summary.md", "workspace-relative metadata, not embedded file contents", "Read only artifacts with role=input", "role=deliverable", "Create every role=deliverable artifact in the workspace", "reference its path from the terminal structured handoff", "Do not emit a separate assistant completion report"} {
+	for _, want := range []string{"docs/plan-brief.md", "out/shared-result.json", "consume the cited prior checkpoint result", "out/user-summary.md", "workspace-relative metadata or exact managed artifact references, not embedded file contents", "Read only artifacts with role=input", "role=deliverable", "Create every role=deliverable artifact in the workspace", "reference its path from the terminal structured handoff", "Do not emit a separate assistant completion report"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("prompt missing artifact contract %q: %s", want, text)
 		}
@@ -135,7 +140,7 @@ func TestBuildPlanCheckpointRunInputUsesOnlyPlanContextWithoutStartLifecycleMess
 		"record the proposed title, tasks, acceptance criteria, notes, and artifact inputs in the terminal result/next-action evidence",
 		"a later parent-conversation turn must append it with transition_checkpoint_boundary",
 		"never claim a checkpoint was added unless the plan_manage result succeeded and returned the new checkpoint",
-		"original request already requires multiple AIs, fresh-context stages, or ordered checkpoints",
+		"original request already requires multiple AIs, ordered checkpoints, or explicit context-isolated stages",
 		"Always include the current checkpoint_id from the payload",
 		"setting complete_checkpoint=true on the final complete_subtask call",
 		"use it to avoid a redundant second tool call",
@@ -148,6 +153,7 @@ func TestBuildPlanCheckpointRunInputUsesOnlyPlanContextWithoutStartLifecycleMess
 		"Blocked checkpoint handoff required when using mark_blocked",
 		"handoff_overview that identifies the external dependency/input/permission",
 		"impact_bullets led by the exact resolution required",
+		"include it in copyable_code_blocks so clients expose a copy affordance",
 		"suggested_prompts as ordinary user messages for likely next steps",
 		"client presents that evidence collapsed beneath the compact blocked handoff",
 		"Use mark_failed only for a nonrecoverable execution error after reasonable recovery attempts",
@@ -168,10 +174,14 @@ func TestBuildPlanCheckpointRunInputUsesOnlyPlanContextWithoutStartLifecycleMess
 		"handoff_overview is required and concise",
 		"handoff_title is optional",
 		"impact_bullets contains at most three",
+		"copyable_code_blocks contains at most three optional display-only exact code or command payloads",
 		"suggested_prompts contains at most three inert label/prompt objects",
 		"ordinary future user chat messages only",
 		"never be tool calls, shell commands, Git operations, or lifecycle mutations",
 		"single canonical recommendation",
+		"prefer relevant actions such as committing uncommitted changes",
+		"do not use generic review as a default next step",
+		"reason is the concise user-facing summary of what happened",
 		"Do not put handoff content inside XML-like tags",
 		"joins report, result, changed_files, and validation as lossless details",
 		`"final_checkpoint": true`,
@@ -333,17 +343,9 @@ func newCheckpointRunPromptTestService(t *testing.T) (*Service, string, func()) 
 	modelSvc := model.NewService(pebblestore.NewModelStore(store), events, nil)
 	permissions := permission.NewService(pebblestore.NewPermissionStore(store), events, nil)
 	agentSvc := agentruntime.NewService(pebblestore.NewAgentStore(store), events)
-	enabled := true
-	if _, _, _, err := agentSvc.UpsertForAccount("acct-test", agentruntime.UpsertInput{
-		Name:                "swarm",
-		Mode:                agentruntime.ModePrimary,
-		RuntimeMode:         pebblestore.AgentRuntimeModePlanAuto,
-		ExitPlanModeEnabled: pebblestore.BoolPtr(true),
-		ToolContract:        &pebblestore.AgentToolContract{Preset: "read_write"},
-		Enabled:             &enabled,
-	}); err != nil {
+	if err := agentSvc.EnsureSystemAgentRegistry(); err != nil {
 		cleanup()
-		t.Fatalf("seed swarm agent: %v", err)
+		t.Fatalf("initialize compiled system agents: %v", err)
 	}
 	svc := NewService(sessions, modelSvc, providers, tool.NewRuntime(1), permissions, agentSvc, nil, events)
 	return svc, session.ID, cleanup

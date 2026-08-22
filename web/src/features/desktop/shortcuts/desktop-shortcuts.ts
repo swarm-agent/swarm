@@ -6,7 +6,7 @@ export type DesktopShortcutActionID =
   | 'search-chats'
   | 'latest-needs-approval'
   | 'previous-chat'
-  | 'toggle-plan-auto'
+  | 'enable-new-session-plan'
 
 export interface DesktopShortcutDefinition {
   id: DesktopShortcutActionID
@@ -75,11 +75,11 @@ export const DESKTOP_SHORTCUTS: DesktopShortcutDefinition[] = [
     group: 'Chat',
   },
   {
-    id: 'toggle-plan-auto',
-    label: 'Toggle plan/auto mode',
-    description: 'Switch the active chat composer between plan and auto mode.',
-    keys: ['⌘/Ctrl', 'Alt', 'M'],
-    availability: 'Requires an active Desktop chat route.',
+    id: 'enable-new-session-plan',
+    label: 'Enable plan mode',
+    description: 'Enable plan mode for the new chat composer.',
+    keys: ['Shift', 'Tab'],
+    availability: 'Available only before a new chat is started.',
     group: 'Session mode',
   },
 ]

@@ -15,6 +15,7 @@ const (
 	desktopAssetImmutableCacheControl = "public, max-age=31536000, immutable"
 	desktopDocumentCacheControl       = "no-cache"
 	desktopServiceWorkerCacheControl  = "no-store, no-cache, must-revalidate"
+	desktopAnimationRuntimePath       = "/swarm-animation-runtime/"
 )
 
 func (s *Server) withDesktopAssets(next http.Handler) http.Handler {
@@ -113,6 +114,14 @@ func serveDesktopIndex(w http.ResponseWriter, r *http.Request, staticFS fs.FS) {
 }
 
 func setDesktopAssetHeaders(w http.ResponseWriter, relPath string) {
+	if isDesktopAnimationRuntime(relPath) {
+		// Sandboxed srcdoc previews have an opaque origin. Permit those documents
+		// to fetch only these reviewed same-install runtime bytes; CSP and the
+		// closed runtime path still prohibit CDNs and arbitrary network access.
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Cross-Origin-Resource-Policy", "cross-origin")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+	}
 	if isRootServiceWorker(relPath) {
 		w.Header().Set("Cache-Control", desktopServiceWorkerCacheControl)
 		w.Header().Set("Service-Worker-Allowed", "/")
@@ -151,6 +160,15 @@ func isCompressibleDesktopAsset(relPath string) bool {
 func isImmutableDesktopAsset(relPath string) bool {
 	cleanPath := path.Clean("/" + strings.TrimSpace(relPath))
 	return strings.HasPrefix(cleanPath, "/assets/")
+}
+
+func isDesktopAnimationRuntime(relPath string) bool {
+	cleanPath := path.Clean("/" + strings.TrimSpace(relPath))
+	if !strings.HasPrefix(cleanPath, desktopAnimationRuntimePath) {
+		return false
+	}
+	filename := strings.TrimPrefix(cleanPath, desktopAnimationRuntimePath)
+	return filename != "" && filename == path.Base(filename)
 }
 
 func isRootServiceWorker(relPath string) bool {

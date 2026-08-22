@@ -147,12 +147,33 @@ test('primary/self host route creates via Sessions API v3 primary endpoint', asy
       workspacePath: '/frontend/device/path/swarm-go',
       workspaceName: 'swarm-go',
       mode: 'auto',
+      agentName: 'swarm',
       preference: { provider: '', model: '', thinking: '', serviceTier: '', contextMode: '' },
       route: primaryRoute,
     })
     assert.equal(session.sessionApi, 'v3')
     assert.equal(session.lastEventSeq, 1)
     assert.equal(session.projectionHighWatermarkSeq, 1)
+  })
+})
+
+test('missing agent_name fails before the session create API is called', async () => {
+  const { createSession } = await import('./chat-queries')
+
+  await withFetchStub(async (calls) => {
+    await assert.rejects(
+      createSession({
+        title: 'Missing agent',
+        workspacePath: '/frontend/device/path/swarm-go',
+        workspaceName: 'swarm-go',
+        mode: 'auto',
+        agentName: '   ',
+        preference: { provider: 'codex', model: 'gpt-5.4', thinking: 'medium', serviceTier: '', contextMode: '' },
+        route: primaryRoute,
+      }),
+      /agent_name/,
+    )
+    assert.equal(calls.length, 0)
   })
 })
 

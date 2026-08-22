@@ -89,12 +89,14 @@ type PlanAcceptancePolicy struct {
 }
 
 // SubagentPolicy is the single account-scoped delegation policy. Each accepted
-// parent task call consumes one automatic wave; child count is governed separately
-// by ActiveChildLimit regardless of child purpose (for example Finder or Coder).
+// parent task call consumes one automatic wave. Regular and swarm task calls have
+// independent approval-free child limits and independently accounted active counts;
+// over-limit waves follow OverBudgetAction within the absolute safety bound.
 type SubagentPolicy struct {
 	Mode                          SubagentOrchestrationMode `json:"mode"`
 	AutomaticLaunchesPerParentRun int                       `json:"automatic_launches_per_parent_run"`
 	ActiveChildLimit              int                       `json:"active_child_limit"`
+	SwarmActiveChildLimit         int                       `json:"swarm_active_child_limit"`
 	OverBudgetAction              SubagentOverBudgetAction  `json:"over_budget_action"`
 	RequireWriteIsolation         bool                      `json:"require_write_isolation"`
 }
@@ -153,6 +155,7 @@ func DefaultSubagentPolicy() SubagentPolicy {
 		Mode:                          SubagentModeBounded,
 		AutomaticLaunchesPerParentRun: 5,
 		ActiveChildLimit:              5,
+		SwarmActiveChildLimit:         5,
 		OverBudgetAction:              SubagentOverBudgetAsk,
 		RequireWriteIsolation:         true,
 	}
@@ -177,6 +180,12 @@ func ValidateSubagentPolicy(policy SubagentPolicy) error {
 	}
 	if policy.ActiveChildLimit > MaxSubagentWaveSize {
 		return fmt.Errorf("active child limit cannot exceed %d", MaxSubagentWaveSize)
+	}
+	if policy.SwarmActiveChildLimit < 1 {
+		return fmt.Errorf("swarm active child limit must be at least 1")
+	}
+	if policy.SwarmActiveChildLimit > MaxSubagentWaveSize {
+		return fmt.Errorf("swarm active child limit cannot exceed %d", MaxSubagentWaveSize)
 	}
 	if policy.AutomaticLaunchesPerParentRun > MaxSubagentWaveSize {
 		return fmt.Errorf("automatic waves per parent run cannot exceed %d", MaxSubagentWaveSize)
@@ -257,6 +266,12 @@ func NormalizePolicy(policy Policy) Policy {
 	policy.BashProfile = BashApprovalProfile(strings.TrimSpace(strings.ToLower(string(policy.BashProfile))))
 	if err := ValidateBashApprovalProfile(policy.BashProfile); err != nil {
 		policy.BashProfile = DefaultBashApprovalProfile()
+	}
+	// Policies saved before swarm mode had a separate ceiling carry only
+	// active_child_limit. Preserve their exact behavior instead of resetting the
+	// whole subagent policy or silently granting swarm calls a larger allowance.
+	if policy.Subagents.SwarmActiveChildLimit == 0 && policy.Subagents.ActiveChildLimit > 0 {
+		policy.Subagents.SwarmActiveChildLimit = policy.Subagents.ActiveChildLimit
 	}
 	if err := ValidateSubagentPolicy(policy.Subagents); err != nil {
 		policy.Subagents = DefaultSubagentPolicy()
@@ -1187,7 +1202,19 @@ func defaultPolicyDecision(mode, toolName, toolArguments string) PolicyDecision 
 		// complete batch and applies it atomically, so this canonical operation is
 		// safe to flow without a separate permission round trip.
 		return PolicyDecisionAllow
-	case "read", "search", "websearch", "webfetch", "agentic_search", "list", "skill_use", "manage_actions", "manage_todos", "manage_theme":
+	case "manage_artifact":
+		// Image generation is a billed external provider operation. Ordinary
+		// callers must explicitly approve it; trusted delegated Image workers flow
+		// through the already-approved task manifest and permission-session scope.
+		if ShouldApproveManageArtifactGenerateImage(toolArguments) && !bypass {
+			return PolicyDecisionAsk
+		}
+		// Other managed artifact operations remain inside the authenticated session
+		// authority and private app-owned storage. The only action that can write
+		// into a workspace is materialize/promote, which independently requires an
+		// exact ready reference and a trusted workspace root.
+		return PolicyDecisionAllow
+	case "read", "search", "find", "websearch", "webfetch", "agentic_search", "list", "skill_use", "manage_actions", "manage_todos", "manage_theme":
 		return PolicyDecisionAllow
 	case "action_change":
 		if bypass {

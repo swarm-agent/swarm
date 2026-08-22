@@ -10,6 +10,8 @@
     "test": "node --import tsx --test --test-timeout=30000 --test-force-exit ./src/**/*.spec.ts"
   },
   "dependencies": {
+    "@lottiefiles/dotlottie-web": "0.79.0",
+    "@rive-app/canvas": "2.39.2",
     "@tailwindcss/oxide-linux-x64-gnu": "4.2.2",
     "@tanstack/react-query": "5.90.21",
     "@tanstack/react-router": "1.166.3",
@@ -18,6 +20,7 @@
     "react": "19.2.4",
     "react-dom": "19.2.4",
     "tailwindcss": "4.2.2",
+    "three": "0.185.1",
     "zustand": "5.0.14"
   },
   "devDependencies": {

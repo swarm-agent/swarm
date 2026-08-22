@@ -97,31 +97,34 @@ type SessionLifecycleSnapshot struct {
 }
 
 type V3SessionTombstone struct {
-	SessionID      string          `json:"session_id"`
-	UserID         string          `json:"user_id,omitempty"`
-	AccountScopeID string          `json:"account_scope_id,omitempty"`
-	WorkspacePath  string          `json:"workspace_path,omitempty"`
-	Kind           string          `json:"kind"`
-	Deleted        bool            `json:"deleted,omitempty"`
-	Archived       bool            `json:"archived,omitempty"`
-	Hidden         bool            `json:"hidden,omitempty"`
-	EndpointSeq    uint64          `json:"endpoint_seq"`
-	EventSeq       uint64          `json:"event_seq"`
-	UpdatedAt      int64           `json:"updated_at"`
-	Session        SessionSnapshot `json:"session,omitempty"`
+	SessionID              string          `json:"session_id"`
+	UserID                 string          `json:"user_id,omitempty"`
+	AccountScopeID         string          `json:"account_scope_id,omitempty"`
+	WorkspacePath          string          `json:"workspace_path,omitempty"`
+	Kind                   string          `json:"kind"`
+	Deleted                bool            `json:"deleted,omitempty"`
+	Archived               bool            `json:"archived,omitempty"`
+	Hidden                 bool            `json:"hidden,omitempty"`
+	EndpointSeq            uint64          `json:"endpoint_seq"`
+	EventSeq               uint64          `json:"event_seq"`
+	UpdatedAt              int64           `json:"updated_at"`
+	ArtifactCleanupPending bool            `json:"artifact_cleanup_pending,omitempty"`
+	Session                SessionSnapshot `json:"session,omitempty"`
 }
 
 type MessageSnapshot struct {
-	ID             string                  `json:"id"`
-	SessionID      string                  `json:"session_id"`
-	UserID         string                  `json:"user_id,omitempty"`
-	AccountScopeID string                  `json:"account_scope_id,omitempty"`
-	GlobalSeq      uint64                  `json:"global_seq"`
-	Role           string                  `json:"role"`
-	Content        string                  `json:"content"`
-	Metadata       map[string]any          `json:"metadata,omitempty"`
-	Media          []SessionMediaReference `json:"media,omitempty"`
-	CreatedAt      int64                   `json:"created_at"`
+	ID                 string                              `json:"id"`
+	SessionID          string                              `json:"session_id"`
+	UserID             string                              `json:"user_id,omitempty"`
+	AccountScopeID     string                              `json:"account_scope_id,omitempty"`
+	GlobalSeq          uint64                              `json:"global_seq"`
+	Role               string                              `json:"role"`
+	Content            string                              `json:"content"`
+	Metadata           map[string]any                      `json:"metadata,omitempty"`
+	Media              []SessionMediaReference             `json:"media,omitempty"`
+	VideoAttachments   []SessionVideoAttachmentReference   `json:"video_attachments,omitempty"`
+	ArtifactSelections []SessionArtifactSelectionReference `json:"artifact_selections,omitempty"`
+	CreatedAt          int64                               `json:"created_at"`
 }
 
 type SessionCodexConfig struct {
@@ -216,14 +219,21 @@ type SessionPlanInfo struct {
 	ValidationStrategy string   `json:"validation_strategy,omitempty"`
 }
 
-// SessionPlanArtifactReference identifies a portable workspace artifact that a
-// checkpoint may selectively read or must deliver to the user. Contents are
-// never embedded in the durable plan document.
+// SessionPlanArtifactReference identifies a portable workspace artifact or an
+// existing immutable managed artifact that a checkpoint may selectively read
+// or deliver to the user in a terminal handoff. Contents are never embedded in
+// the durable plan document.
 type SessionPlanArtifactReference struct {
-	Path        string `json:"path"`
-	Role        string `json:"role,omitempty"`
-	Description string `json:"description,omitempty"`
-	MediaType   string `json:"media_type,omitempty"`
+	SessionID    string `json:"session_id,omitempty"`
+	CollectionID string `json:"collection_id,omitempty"`
+	VariantID    string `json:"variant_id,omitempty"`
+	EventSeq     uint64 `json:"event_seq,omitempty"`
+	SourceRef    string `json:"source_ref,omitempty"`
+	Label        string `json:"label,omitempty"`
+	Path         string `json:"path,omitempty"`
+	Role         string `json:"role,omitempty"`
+	Description  string `json:"description,omitempty"`
+	MediaType    string `json:"media_type,omitempty"`
 }
 
 type SessionPlanCheckpoint struct {
@@ -233,27 +243,31 @@ type SessionPlanCheckpoint struct {
 	Objective string `json:"objective,omitempty"`
 	// Tasks is accepted as legacy compatibility input. Subtasks is the canonical
 	// durable execution checklist once a document is normalized or mutated.
-	Tasks              []string                             `json:"tasks,omitempty"`
-	Subtasks           []SessionPlanSubtask                 `json:"subtasks,omitempty"`
-	ActiveSubtaskID    string                               `json:"active_subtask_id,omitempty"`
-	AcceptanceCriteria []string                             `json:"acceptance_criteria,omitempty"`
-	Artifacts          []SessionPlanArtifactReference       `json:"artifacts,omitempty"`
-	SourceMessageID    string                               `json:"source_message_id,omitempty"`
-	Notes              string                               `json:"notes,omitempty"`
-	Report             string                               `json:"report,omitempty"`
-	Result             string                               `json:"result,omitempty"`
-	ChangedFiles       []string                             `json:"changed_files,omitempty"`
-	Validation         []string                             `json:"validation,omitempty"`
-	AttemptID          string                               `json:"attempt_id,omitempty"`
-	RunID              string                               `json:"run_id,omitempty"`
-	SessionID          string                               `json:"session_id,omitempty"`
-	StartedAt          int64                                `json:"started_at,omitempty"`
-	CompletedAt        int64                                `json:"completed_at,omitempty"`
-	Review             *SessionPlanCheckpointReview         `json:"review,omitempty"`
-	Recommendation     *SessionPlanCheckpointRecommendation `json:"recommendation,omitempty"`
-	Handoff            *SessionPlanCheckpointHandoff        `json:"handoff,omitempty"`
-	Attempts           []SessionPlanCheckpointAttempt       `json:"attempts,omitempty"`
-	Order              int                                  `json:"order,omitempty"`
+	Tasks              []string             `json:"tasks,omitempty"`
+	Subtasks           []SessionPlanSubtask `json:"subtasks,omitempty"`
+	ActiveSubtaskID    string               `json:"active_subtask_id,omitempty"`
+	AcceptanceCriteria []string             `json:"acceptance_criteria,omitempty"`
+	// TaskProgram is the canonical, approval-visible implementation graph for a
+	// checkpoint that requires staged delegated work. The checkpoint remains the
+	// lifecycle authority; this definition owns only implementation stages/jobs.
+	TaskProgram     *TaskProgramDefinition               `json:"task_program,omitempty"`
+	Artifacts       []SessionPlanArtifactReference       `json:"artifacts,omitempty"`
+	SourceMessageID string                               `json:"source_message_id,omitempty"`
+	Notes           string                               `json:"notes,omitempty"`
+	Report          string                               `json:"report,omitempty"`
+	Result          string                               `json:"result,omitempty"`
+	ChangedFiles    []string                             `json:"changed_files,omitempty"`
+	Validation      []string                             `json:"validation,omitempty"`
+	AttemptID       string                               `json:"attempt_id,omitempty"`
+	RunID           string                               `json:"run_id,omitempty"`
+	SessionID       string                               `json:"session_id,omitempty"`
+	StartedAt       int64                                `json:"started_at,omitempty"`
+	CompletedAt     int64                                `json:"completed_at,omitempty"`
+	Review          *SessionPlanCheckpointReview         `json:"review,omitempty"`
+	Recommendation  *SessionPlanCheckpointRecommendation `json:"recommendation,omitempty"`
+	Handoff         *SessionPlanCheckpointHandoff        `json:"handoff,omitempty"`
+	Attempts        []SessionPlanCheckpointAttempt       `json:"attempts,omitempty"`
+	Order           int                                  `json:"order,omitempty"`
 }
 
 type SessionPlanSubtask struct {
@@ -299,17 +313,27 @@ type SessionPlanCheckpointRecommendation struct {
 	Action      string `json:"action,omitempty"`
 	Reason      string `json:"reason,omitempty"`
 	ActionState string `json:"action_state,omitempty"`
+	Prompt      string `json:"prompt,omitempty"`
 }
 
 // SessionPlanCheckpointHandoff stores only the concise author-authored fields.
 // Full terminal evidence remains canonical on SessionPlanCheckpoint and is
 // joined into PlanFinalHandoff only when a lifecycle message is projected.
 type SessionPlanCheckpointHandoff struct {
-	Title            string                            `json:"title,omitempty"`
-	Overview         string                            `json:"overview"`
-	ImpactBullets    []string                          `json:"impact_bullets,omitempty"`
-	SuggestedPrompts []PlanFinalHandoffSuggestedPrompt `json:"suggested_prompts,omitempty"`
-	PullRequestURL   string                            `json:"pull_request_url,omitempty"`
+	Title              string                              `json:"title,omitempty"`
+	Overview           string                              `json:"overview"`
+	ImpactBullets      []string                            `json:"impact_bullets,omitempty"`
+	CopyableCodeBlocks []PlanFinalHandoffCopyableCodeBlock `json:"copyable_code_blocks,omitempty"`
+	SuggestedPrompts   []PlanFinalHandoffSuggestedPrompt   `json:"suggested_prompts,omitempty"`
+	PullRequestURL     string                              `json:"pull_request_url,omitempty"`
+}
+
+// PlanFinalHandoffCopyableCodeBlock is display-only text that clients render in
+// a code block with an explicit copy affordance. It is never executed directly.
+type PlanFinalHandoffCopyableCodeBlock struct {
+	Label    string `json:"label,omitempty"`
+	Language string `json:"language,omitempty"`
+	Code     string `json:"code"`
 }
 
 // PlanFinalHandoffSuggestedPrompt is inert chat input. Clients may send Prompt
@@ -322,14 +346,34 @@ type PlanFinalHandoffSuggestedPrompt struct {
 // PlanFinalHandoff is the versioned client projection persisted in lifecycle
 // message metadata. Details is a lossless copy of the checkpoint evidence.
 type PlanFinalHandoff struct {
-	SchemaVersion    int                                  `json:"schema_version"`
-	Title            string                               `json:"title"`
-	Overview         string                               `json:"overview"`
-	ImpactBullets    []string                             `json:"impact_bullets,omitempty"`
-	Recommendation   *SessionPlanCheckpointRecommendation `json:"recommendation,omitempty"`
-	SuggestedPrompts []PlanFinalHandoffSuggestedPrompt    `json:"suggested_prompts,omitempty"`
-	PullRequestURL   string                               `json:"pull_request_url,omitempty"`
-	Details          PlanFinalHandoffDetails              `json:"details"`
+	SchemaVersion      int                                  `json:"schema_version"`
+	Title              string                               `json:"title"`
+	Overview           string                               `json:"overview"`
+	ImpactBullets      []string                             `json:"impact_bullets,omitempty"`
+	CopyableCodeBlocks []PlanFinalHandoffCopyableCodeBlock  `json:"copyable_code_blocks,omitempty"`
+	Recommendation     *SessionPlanCheckpointRecommendation `json:"recommendation,omitempty"`
+	SuggestedPrompts   []PlanFinalHandoffSuggestedPrompt    `json:"suggested_prompts,omitempty"`
+	PullRequestURL     string                               `json:"pull_request_url,omitempty"`
+	Artifacts          []PlanFinalHandoffArtifact           `json:"artifacts,omitempty"`
+	Details            PlanFinalHandoffDetails              `json:"details"`
+}
+
+// PlanFinalHandoffArtifact is a safe client-facing descriptor for one declared
+// deliverable. It intentionally omits the workspace-relative path; clients use
+// ID with the authenticated session artifact route instead.
+type PlanFinalHandoffArtifact struct {
+	ID           string `json:"id"`
+	Label        string `json:"label"`
+	Description  string `json:"description,omitempty"`
+	Filename     string `json:"filename,omitempty"`
+	MediaType    string `json:"media_type,omitempty"`
+	Kind         string `json:"kind,omitempty"`
+	Previewable  bool   `json:"previewable"`
+	SessionID    string `json:"session_id,omitempty"`
+	CollectionID string `json:"collection_id,omitempty"`
+	VariantID    string `json:"variant_id,omitempty"`
+	EventSeq     uint64 `json:"event_seq,omitempty"`
+	SourceRef    string `json:"source_ref,omitempty"`
 }
 
 // PlanFinalHandoffDetails keeps the complete terminal evidence available to
@@ -713,19 +757,20 @@ func (s *SessionStore) tombstoneSessions(sessionIDs []string, kind string) error
 			outboxIndex++
 			now := time.Now().UnixMilli()
 			tombstone := V3SessionTombstone{
-				SessionID:      existing.ID,
-				UserID:         existing.UserID,
-				AccountScopeID: existing.AccountScopeID,
-				WorkspacePath:  existing.WorkspacePath,
-				Kind:           kind,
-				Deleted:        kind == "deleted",
-				Archived:       kind == "archived",
-				EndpointSeq:    endpointSeq,
-				EventSeq:       seq,
-				UpdatedAt:      now,
+				SessionID:              existing.ID,
+				UserID:                 existing.UserID,
+				AccountScopeID:         existing.AccountScopeID,
+				WorkspacePath:          existing.WorkspacePath,
+				Kind:                   kind,
+				Deleted:                kind == "deleted",
+				Archived:               kind == "archived",
+				EndpointSeq:            endpointSeq,
+				EventSeq:               seq,
+				UpdatedAt:              now,
+				ArtifactCleanupPending: kind == "deleted",
 			}
 			// Archived sessions remain restorable. Deleted sessions retain only
-			// routing and ordering fields needed for scoped replay and membership.
+			// routing/ordering fields plus the bounded artifact-cleanup retry bit.
 			if kind == "archived" {
 				tombstone.Session = existing
 			}
@@ -866,6 +911,9 @@ func (s *SessionStore) purgeSessionContentInBatch(batch *pebble.Batch, session S
 		ExecutionEpochPrefix(session.ID), ExecutionEpochOrdinalPrefix(session.ID), ExecutionEpochBoundaryPrefix(session.ID), ExecutionProviderLifecycleStatePrefix(session.ID),
 		V3SessionIdempotencyPrefix(session.AccountScopeID, session.ID), V3RealtimeOutboxBySessionEndpointPrefix(session.ID), V3RealtimeOutboxBySessionSeqPrefix(session.ID),
 		SessionMediaAssetPrefix(session.AccountScopeID, session.ID), SessionMediaBlobPrefix(session.AccountScopeID, session.ID),
+		TranscriptionAttachmentPrefix(session.AccountScopeID, session.ID), TranscriptionJobPrefix(session.AccountScopeID, session.ID), NormalizedTranscriptPrefix(session.AccountScopeID, session.ID),
+		SessionArtifactCollectionPrefix(session.AccountScopeID, session.ID), SessionArtifactCollectionStatusSessionPrefix(session.AccountScopeID, session.ID),
+		SessionArtifactVariantSessionPrefix(session.AccountScopeID, session.ID), SessionArtifactVariantStatusSessionPrefix(session.AccountScopeID, session.ID), SessionArtifactVariantDigestSessionPrefix(session.AccountScopeID, session.ID), SessionArtifactVariantLineageSessionPrefix(session.AccountScopeID, session.ID),
 	} {
 		if err := deletePrefixInBatch(batch, prefix); err != nil {
 			return err
@@ -927,6 +975,13 @@ func setV3SessionTombstoneInBatch(batch *pebble.Batch, tombstone V3SessionTombst
 	if err := batch.Set([]byte(KeyV3SessionTombstone(tombstone.SessionID)), payload, nil); err != nil {
 		return err
 	}
+	if tombstone.ArtifactCleanupPending {
+		if err := batch.Set([]byte(KeyV3SessionArtifactCleanupPending(tombstone.SessionID)), payload, nil); err != nil {
+			return err
+		}
+	} else if err := batch.Delete([]byte(KeyV3SessionArtifactCleanupPending(tombstone.SessionID)), nil); err != nil && !errors.Is(err, pebble.ErrNotFound) {
+		return err
+	}
 	if tombstone.AccountScopeID != "" {
 		if err := batch.Set([]byte(KeyV3SessionTombstoneByAccount(tombstone.AccountScopeID, tombstone.SessionID)), payload, nil); err != nil {
 			return err
@@ -966,6 +1021,9 @@ func removeV3SessionTombstoneInBatch(batch *pebble.Batch, tombstone V3SessionTom
 	if err := deleteKey(KeyV3SessionTombstone(tombstone.SessionID)); err != nil {
 		return err
 	}
+	if err := deleteKey(KeyV3SessionArtifactCleanupPending(tombstone.SessionID)); err != nil {
+		return err
+	}
 	if tombstone.AccountScopeID != "" {
 		if err := deleteKey(KeyV3SessionTombstoneByAccount(tombstone.AccountScopeID, tombstone.SessionID)); err != nil {
 			return err
@@ -992,6 +1050,41 @@ func (s *SessionStore) GetV3SessionTombstone(sessionID string) (V3SessionTombsto
 	return getV3SessionTombstoneFromReader(s.store.db, sessionID)
 }
 
+func (s *SessionStore) MarkV3SessionArtifactCleanupComplete(sessionID string) error {
+	if s == nil || s.store == nil {
+		return errors.New("session store is not configured")
+	}
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return errors.New("session id is required")
+	}
+	unlock := s.store.sessionMutations.lockSessions(sessionID)
+	defer unlock()
+	tombstone, ok, err := getV3SessionTombstoneFromReader(s.store.db, sessionID)
+	if err != nil || !ok {
+		return err
+	}
+	if !tombstone.Deleted || tombstone.Archived {
+		return errors.New("artifact cleanup can only complete for a deleted session")
+	}
+	if !tombstone.ArtifactCleanupPending {
+		return nil
+	}
+	previous := tombstone
+	tombstone.ArtifactCleanupPending = false
+	batch := s.store.NewBatch()
+	defer batch.Close()
+	// Replace all tombstone indexes in one batch so the pending cleanup index
+	// cannot diverge from the durable replay tombstone.
+	if err := removeV3SessionTombstoneInBatch(batch, previous); err != nil {
+		return err
+	}
+	if err := setV3SessionTombstoneInBatch(batch, tombstone); err != nil {
+		return err
+	}
+	return batch.Commit(pebble.Sync)
+}
+
 func getV3SessionTombstoneFromReader(reader pebble.Reader, sessionID string) (V3SessionTombstone, bool, error) {
 	var tombstone V3SessionTombstone
 	ok, err := getJSONFromReader(reader, KeyV3SessionTombstone(strings.TrimSpace(sessionID)), &tombstone)
@@ -999,6 +1092,28 @@ func getV3SessionTombstoneFromReader(reader pebble.Reader, sessionID string) (V3
 		return V3SessionTombstone{}, ok, err
 	}
 	return normalizeV3SessionTombstone(tombstone), true, nil
+}
+
+func (s *SessionStore) ListPendingV3SessionArtifactCleanups(limit int) ([]V3SessionTombstone, error) {
+	if s == nil || s.store == nil {
+		return nil, errors.New("session store is not configured")
+	}
+	if limit <= 0 || limit > 1000 {
+		limit = 100
+	}
+	out := make([]V3SessionTombstone, 0, limit)
+	err := scanRangeFromReader(s.store.db, scanRangeOptions{Prefix: V3SessionArtifactCleanupPendingPrefix(), Limit: limit}, func(_ string, value []byte) (bool, error) {
+		var tombstone V3SessionTombstone
+		if err := json.Unmarshal(value, &tombstone); err != nil {
+			return false, err
+		}
+		tombstone = normalizeV3SessionTombstone(tombstone)
+		if tombstone.Deleted && !tombstone.Archived && tombstone.ArtifactCleanupPending {
+			out = append(out, tombstone)
+		}
+		return len(out) < limit, nil
+	})
+	return out, err
 }
 
 func (s *SessionStore) ListV3SessionTombstonesForAccount(accountScopeID string, limit int) ([]V3SessionTombstone, error) {
@@ -1955,9 +2070,43 @@ func sanitizeMessageSnapshot(message MessageSnapshot) MessageSnapshot {
 	message.Content = privacy.SanitizeText(message.Content)
 	message.Metadata = sanitizeMessageMetadata(message.Metadata)
 	message.Media = normalizeSessionMediaReferences(message.Media)
+	message.VideoAttachments = normalizeSessionVideoAttachmentReferences(message.VideoAttachments)
+	message.ArtifactSelections = normalizeSessionArtifactSelectionReferences(message.ArtifactSelections)
 	return message
 }
 
 func sanitizeMessageMetadata(input map[string]any) map[string]any {
 	return privacy.SanitizeMap(input)
+}
+
+func normalizeSessionVideoAttachmentReferences(input []SessionVideoAttachmentReference) []SessionVideoAttachmentReference {
+	if len(input) == 0 {
+		return nil
+	}
+	out := make([]SessionVideoAttachmentReference, 0, len(input))
+	for _, ref := range input {
+		ref.Ref = strings.TrimSpace(ref.Ref)
+		ref.Name = strings.TrimSpace(ref.Name)
+		ref.MIMEType = strings.ToLower(strings.TrimSpace(ref.MIMEType))
+		ref.SourceFingerprint = strings.ToLower(strings.TrimSpace(ref.SourceFingerprint))
+		out = append(out, ref)
+	}
+	return out
+}
+
+func normalizeSessionArtifactSelectionReferences(input []SessionArtifactSelectionReference) []SessionArtifactSelectionReference {
+	if len(input) == 0 {
+		return nil
+	}
+	out := make([]SessionArtifactSelectionReference, 0, len(input))
+	for _, ref := range input {
+		ref.SessionID = strings.TrimSpace(ref.SessionID)
+		ref.CollectionID = strings.TrimSpace(ref.CollectionID)
+		ref.VariantID = strings.TrimSpace(ref.VariantID)
+		ref.Label = strings.TrimSpace(ref.Label)
+		ref.Description = strings.TrimSpace(ref.Description)
+		ref.Action = strings.ToLower(strings.TrimSpace(ref.Action))
+		out = append(out, ref)
+	}
+	return out
 }

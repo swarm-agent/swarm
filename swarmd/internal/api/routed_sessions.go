@@ -33,22 +33,25 @@ type routedSessionMediaRequest struct {
 }
 
 type routedSessionStartRequest struct {
-	Input                    string                      `json:"input"`
-	ClientRequestID          string                      `json:"client_request_id,omitempty"`
-	IdempotencyKey           string                      `json:"idempotency_key,omitempty"`
-	AgentName                string                      `json:"agent_name,omitempty"`
-	Metadata                 map[string]any              `json:"metadata,omitempty"`
-	ManagedWorktreeRequested *bool                       `json:"managed_worktree_requested"`
-	PlanModeRequested        *bool                       `json:"plan_mode_requested"`
-	WorkspacePath            string                      `json:"workspace_path"`
-	HostWorkspacePath        string                      `json:"host_workspace_path,omitempty"`
-	RuntimeWorkspacePath     string                      `json:"runtime_workspace_path,omitempty"`
-	WorkspaceBindingID       string                      `json:"workspace_binding_id"`
-	SwarmID                  string                      `json:"swarm_id"`
-	TargetKind               string                      `json:"target_kind"`
-	TargetRelationship       string                      `json:"target_relationship"`
-	Media                    []routedSessionMediaRequest `json:"media,omitempty"`
-	StagingIDs               []string                    `json:"staging_ids,omitempty"`
+	Input                    string                                          `json:"input"`
+	ClientRequestID          string                                          `json:"client_request_id,omitempty"`
+	IdempotencyKey           string                                          `json:"idempotency_key,omitempty"`
+	AgentName                string                                          `json:"agent_name"`
+	Metadata                 map[string]any                                  `json:"metadata,omitempty"`
+	ManagedWorktreeRequested *bool                                           `json:"managed_worktree_requested"`
+	PlanModeRequested        *bool                                           `json:"plan_mode_requested"`
+	WorkspacePath            string                                          `json:"workspace_path"`
+	HostWorkspacePath        string                                          `json:"host_workspace_path,omitempty"`
+	RuntimeWorkspacePath     string                                          `json:"runtime_workspace_path,omitempty"`
+	WorkspaceBindingID       string                                          `json:"workspace_binding_id"`
+	SwarmID                  string                                          `json:"swarm_id"`
+	TargetKind               string                                          `json:"target_kind"`
+	TargetRelationship       string                                          `json:"target_relationship"`
+	Media                    []routedSessionMediaRequest                     `json:"media,omitempty"`
+	StagingIDs               []string                                        `json:"staging_ids,omitempty"`
+	VideoAttachments         []pebblestore.SessionVideoAttachmentReference   `json:"video_attachments,omitempty"`
+	ArtifactSelections       []pebblestore.SessionArtifactSelectionReference `json:"artifact_selections,omitempty"`
+	ModelProfile             *sessionsV3ModelProfileChoice                   `json:"model_profile,omitempty"`
 }
 
 type routedSessionStartResult struct {
@@ -387,7 +390,8 @@ func (s *Server) handleRoutedSessionStart(w http.ResponseWriter, r *http.Request
 	req.TargetKind = strings.TrimSpace(req.TargetKind)
 	req.TargetRelationship = strings.TrimSpace(req.TargetRelationship)
 	if req.AgentName == "" {
-		req.AgentName = "swarm"
+		writeError(w, http.StatusBadRequest, errors.New("agent_name is required"))
+		return
 	}
 	media, stagingIDs, err := normalizeRoutedSessionMedia(req)
 	if err != nil {
@@ -410,12 +414,17 @@ func (s *Server) handleRoutedSessionStart(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusBadRequest, errors.New("plan_mode_requested is required"))
 		return
 	}
-	if req.Input == "" {
-		writeError(w, http.StatusBadRequest, errors.New("routed session input is required"))
+	if req.Input == "" && len(req.ArtifactSelections) == 0 {
+		writeError(w, http.StatusBadRequest, errors.New("routed session input or artifact selection is required"))
 		return
 	}
 	if clientRequestID == "" || len(clientRequestID) > 256 {
 		writeError(w, http.StatusBadRequest, errors.New("client_request_id is required and must be 256 characters or fewer"))
+		return
+	}
+	artifactSelections, err := s.sessions.ValidateSessionArtifactMessageSelections(principal.AccountScopeID, principal.UserID, req.ArtifactSelections)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
 		return
 	}
 	if err := validateSessionsV3CreateMetadata(req.Metadata); err != nil {
@@ -484,6 +493,20 @@ func (s *Server) handleRoutedSessionStart(w http.ResponseWriter, r *http.Request
 	mode := sessionruntime.ModeAuto
 	if planModeRequested {
 		mode = sessionruntime.ModePlan
+	}
+	if req.ModelProfile != nil {
+		selectedProfile, resolveErr := s.resolveSessionsV3ModelProfileChoice(identity.ContextWithPrincipal(r.Context(), principal), req.ModelProfile, now)
+		if resolveErr != nil {
+			writeRoutedSessionError(w, resolveErr)
+			return
+		}
+		if selectedProfile != nil {
+			modelProfile, err = mergeSessionsV3ModelProfileChoice(pebblestore.SessionSnapshot{Mode: mode, ModelProfile: modelProfile}, selectedProfile)
+			if err != nil {
+				writeRoutedSessionError(w, err)
+				return
+			}
+		}
 	}
 	if modelProfile != nil && mode == sessionruntime.ModePlan && modelProfile.Plan == nil {
 		writeRoutedSessionError(w, errors.New("Plan was requested but the account default has Plan disabled"))
@@ -579,7 +602,12 @@ func (s *Server) handleRoutedSessionStart(w http.ResponseWriter, r *http.Request
 		materializedAssetIDs = append(materializedAssetIDs, asset.ID)
 		stagingBindings = append(stagingBindings, pebblestore.MediaStagingBinding{StagingID: binding.StagingID, AuthorityAssetID: asset.ID, DigestSHA256: asset.DigestSHA256})
 	}
-	message := pebblestore.MessageSnapshot{Role: "user", Content: req.Input, Media: mediaReferences}
+	videoAttachments, err := s.sessions.Store().ValidateSessionVideoAttachments(principal.AccountScopeID, candidate, req.VideoAttachments)
+	if err != nil {
+		writeRoutedSessionError(w, err)
+		return
+	}
+	message := pebblestore.MessageSnapshot{Role: "user", Content: req.Input, Media: mediaReferences, VideoAttachments: videoAttachments, ArtifactSelections: artifactSelections}
 	messageKey := "routed-message:" + clientRequestID
 	runStatus, blockedReason := s.sessionsV3PrimaryRunIntentStatus(principal, candidate, sessionsV3MessageRequest{})
 	runIntent := &pebblestore.V3SessionRunIntent{RunID: stableSessionsV3PrimaryRunID(sessionID, messageKey), Status: runStatus, BlockedReason: blockedReason}
@@ -755,7 +783,10 @@ func routedSessionRequestHash(req routedSessionStartRequest, binding sessionsV3P
 		PlanModeRequested                                                 *bool
 		Metadata                                                          map[string]any
 		Media                                                             []routedSessionMediaRequest
-	}{req.Input, clientRequestID, req.AgentName, req.WorkspacePath, req.HostWorkspacePath, req.RuntimeWorkspacePath, req.WorkspaceBindingID, req.SwarmID, req.TargetKind, req.TargetRelationship, binding.WorkspaceBindingID, binding.RuntimeSwarmID, binding.RuntimeWorkspacePath, binding.SourceWorkspaceID, binding.SourceWorkspaceName, binding.SourceWorkspacePath, binding.SourceWorkspaceGeneration, binding.PlacementGeneration, binding.BindingGeneration, req.ManagedWorktreeRequested, req.PlanModeRequested, cloneSessionsV3Metadata(req.Metadata), media})
+		VideoAttachments                                                  []pebblestore.SessionVideoAttachmentReference
+		ArtifactSelections                                                []pebblestore.SessionArtifactSelectionReference
+		ModelProfile                                                      *sessionsV3ModelProfileChoice
+	}{req.Input, clientRequestID, req.AgentName, req.WorkspacePath, req.HostWorkspacePath, req.RuntimeWorkspacePath, req.WorkspaceBindingID, req.SwarmID, req.TargetKind, req.TargetRelationship, binding.WorkspaceBindingID, binding.RuntimeSwarmID, binding.RuntimeWorkspacePath, binding.SourceWorkspaceID, binding.SourceWorkspaceName, binding.SourceWorkspacePath, binding.SourceWorkspaceGeneration, binding.PlacementGeneration, binding.BindingGeneration, req.ManagedWorktreeRequested, req.PlanModeRequested, cloneSessionsV3Metadata(req.Metadata), media, req.VideoAttachments, req.ArtifactSelections, req.ModelProfile})
 	if err != nil {
 		return "", err
 	}

@@ -28,14 +28,18 @@ import (
 	actionruntime "swarm/packages/swarmd/internal/action"
 	agentruntime "swarm/packages/swarmd/internal/agent"
 	"swarm/packages/swarmd/internal/appstorage"
+	"swarm/packages/swarmd/internal/artifact"
 	"swarm/packages/swarmd/internal/discovery"
 	"swarm/packages/swarmd/internal/fff"
 	"swarm/packages/swarmd/internal/gitenv"
+	"swarm/packages/swarmd/internal/htmlcapture"
 	"swarm/packages/swarmd/internal/identity"
+	"swarm/packages/swarmd/internal/imagegen"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	todoruntime "swarm/packages/swarmd/internal/todo"
 	"swarm/packages/swarmd/internal/tool/searchipc"
 	uisettings "swarm/packages/swarmd/internal/uisettings"
+	"swarm/packages/swarmd/internal/videosource"
 	workspaceruntime "swarm/packages/swarmd/internal/workspace"
 	worktreeruntime "swarm/packages/swarmd/internal/worktree"
 )
@@ -159,6 +163,15 @@ type Runtime struct {
 	actions              manageActionService
 	uiSettings           manageThemeUISettingsService
 	themeWorkspace       manageThemeWorkspaceService
+	artifacts            *artifact.Registry
+	artifactAuthority    ArtifactAuthority
+	htmlCapture          htmlcapture.Renderer
+	htmlAnimationCapture htmlcapture.AnimationRenderer
+	imageGeneration      ManagedImageGenerationService
+	video                manageVideoService
+	videoSources         *videosource.Service
+	videoProjects        manageVideoProjectService
+	videoRender          manageVideoRenderService
 	searchCoordinator    *SearchCoordinator
 }
 
@@ -171,14 +184,22 @@ type ExaRuntimeConfig struct {
 }
 
 type WorkspaceScope struct {
-	PrimaryPath string
-	Roots       []string
-	SessionID   string
-	Principal   identity.Principal
+	PrimaryPath         string
+	Roots               []string
+	SessionID           string
+	Principal           identity.Principal
+	WorktreeEnabled     bool
+	WorktreeRootPath    string
+	WorktreeBranch      string
+	WorktreeBaseBranch  string
+	WorktreeBaseCommit  string
+	SourceWorkspacePath string
 }
 
 type manageSessionService interface {
 	GetSession(sessionID string) (pebblestore.SessionSnapshot, bool, error)
+	ApplySessionMutation(input pebblestore.V3SessionMutationInput) (pebblestore.V3SessionMutationResult, error)
+	GetV3MessageByID(sessionID, messageID string) (pebblestore.MessageSnapshot, bool, error)
 	GetActivePlan(sessionID string) (pebblestore.SessionPlanSnapshot, bool, error)
 	ListMessages(sessionID string, afterGlobalSeq uint64, limit int) ([]pebblestore.MessageSnapshot, error)
 	ListTopSessionsByWorkspace(workspacePaths []string, perWorkspaceLimit int) ([]pebblestore.WorkspaceSessionList, error)
@@ -206,6 +227,10 @@ type manageWorktreeConfigService interface {
 	VerifyTaskIntegrationWorkspace(parentPath, childPath, sessionID, branchName, baseCommit, headCommit string) (worktreeruntime.TaskWorkspaceState, error)
 	PrepareTaskIntegration(parentPath, expectedParentHead string, children []worktreeruntime.TaskIntegrationChild) (worktreeruntime.TaskIntegrationPlan, error)
 	ApplyTaskIntegration(parentPath string, plan worktreeruntime.TaskIntegrationPlan) (worktreeruntime.TaskIntegrationResult, error)
+}
+
+type manageWorktreeIntegrationClassifier interface {
+	TaskCommitRangeIntegratedInto(workspacePath, baseCommit, headCommit, parentHead string) (bool, error)
 }
 
 type manageOrchestrationPolicyService interface {
@@ -264,6 +289,14 @@ type manageTodoService interface {
 	Reorder(input todoruntime.ReorderInput, options ...todoruntime.ListOptions) ([]pebblestore.WorkspaceTodoItem, pebblestore.WorkspaceTodoSummary, *pebblestore.EventEnvelope, error)
 	SetInProgress(workspacePath, itemID string, options ...todoruntime.ListOptions) (pebblestore.WorkspaceTodoItem, pebblestore.WorkspaceTodoSummary, *pebblestore.EventEnvelope, error)
 	ApplyBatch(workspacePath string, operations []todoruntime.BatchOperation, options ...todoruntime.ListOptions) ([]todoruntime.BatchResult, []pebblestore.WorkspaceTodoItem, pebblestore.WorkspaceTodoSummary, *pebblestore.EventEnvelope, error)
+}
+
+// ManagedImageGenerationService is the provider-neutral in-memory generation
+// boundary used by manage_artifact. The runtime resolves the account setting;
+// AI-authored calls never select providers or models.
+type ManagedImageGenerationService interface {
+	ManagedImageCapabilities(selectionID string) (imagegen.ManagedImageCapabilities, error)
+	GenerateManagedImage(context.Context, imagegen.ManagedGenerateRequest) (imagegen.ManagedImage, error)
 }
 
 type manageThemeUISettingsService interface {
@@ -422,6 +455,105 @@ func (r *Runtime) LongSessionSnapshot() map[string]any {
 		"search_worker_restarts":   snapshot.WorkerRestarts,
 		"search_queue_wait_ms":     snapshot.QueueWait.Milliseconds(),
 	}
+}
+
+func (r *Runtime) SetArtifactRegistry(registry *artifact.Registry) {
+	if r != nil {
+		r.artifacts = registry
+	}
+}
+
+func (r *Runtime) ArtifactRegistry() *artifact.Registry {
+	if r == nil {
+		return nil
+	}
+	return r.artifacts
+}
+
+func (r *Runtime) SetArtifactAuthority(authority ArtifactAuthority) {
+	if r != nil {
+		r.artifactAuthority = authority
+	}
+}
+
+func (r *Runtime) SetHTMLCaptureRenderer(renderer htmlcapture.Renderer) {
+	if r != nil {
+		r.htmlCapture = renderer
+		if animationRenderer, ok := renderer.(htmlcapture.AnimationRenderer); ok {
+			r.htmlAnimationCapture = animationRenderer
+		}
+	}
+}
+
+func (r *Runtime) SetHTMLAnimationRenderer(renderer htmlcapture.AnimationRenderer) {
+	if r != nil {
+		r.htmlAnimationCapture = renderer
+	}
+}
+
+func (r *Runtime) ArtifactAuthority() ArtifactAuthority {
+	if r == nil {
+		return nil
+	}
+	return r.artifactAuthority
+}
+
+// GenerateManagedImageArtifact is the trusted orchestration entrypoint for
+// direct image swarms. It reuses the canonical account image setting and
+// artifact finalization path without creating an AI worker session.
+func (r *Runtime) GenerateManagedImageArtifact(ctx context.Context, scope WorkspaceScope, callID, prompt string, run ArtifactRunContext, source *pebblestore.SessionArtifactSelectionReference) (string, error) {
+	if r == nil {
+		return "", errors.New("manage_artifact runtime is not configured")
+	}
+	ctx = WithWorkspaceScope(ctx, scope)
+	ctx = WithArtifactRunContext(ctx, run)
+	args := map[string]any{"action": "generate_image", "prompt": strings.TrimSpace(prompt)}
+	if source != nil {
+		args["source_session_id"] = strings.TrimSpace(source.SessionID)
+		args["source_collection_id"] = strings.TrimSpace(source.CollectionID)
+		args["source_variant_id"] = strings.TrimSpace(source.VariantID)
+		args["source_event_seq"] = int(source.EventSeq)
+	}
+	if capabilities, err := r.managedImageCapabilities(scope.Principal.AccountScopeID); err != nil {
+		return "", err
+	} else if capabilities.CapabilityToken != "" {
+		args["capability_token"] = capabilities.CapabilityToken
+	}
+	return r.executeManageArtifact(ctx, scope, callID, args)
+}
+
+func (r *Runtime) SetManagedImageGenerationService(service ManagedImageGenerationService) {
+	if r != nil {
+		r.imageGeneration = service
+	}
+}
+
+func (r *Runtime) SetManageVideoServices(service manageVideoService, sources *videosource.Service) {
+	if r != nil {
+		r.video = service
+		r.videoSources = sources
+	}
+}
+
+func (r *Runtime) SetManageVideoPipelineServices(service manageVideoService, sources *videosource.Service, projects manageVideoProjectService, render manageVideoRenderService) {
+	if r != nil {
+		r.video = service
+		r.videoSources = sources
+		r.videoProjects = projects
+		r.videoRender = render
+	}
+}
+
+func (r *Runtime) SetManageVideoProjectServices(projects manageVideoProjectService, render manageVideoRenderService) {
+	if r != nil {
+		r.videoProjects = projects
+		r.videoRender = render
+	}
+}
+
+// SetManageVideoService remains for focused tests and compatibility wiring.
+func (r *Runtime) SetManageVideoService(service manageVideoService) {
+	r.SetManageVideoServices(service, nil)
 }
 
 func (r *Runtime) SetExaConfigResolver(resolver func(context.Context) (ExaRuntimeConfig, error)) {
@@ -1062,15 +1194,16 @@ func (r *Runtime) Definitions() []Definition {
 		{
 			Type:        "function",
 			Name:        "manage-worktree",
-			Description: "Recall durable Coder child lineage or atomically integrate a selected committed child batch. For integrate, pass only action and session_ids. The tool derives and validates all lineage and parent state, preflights the complete ordered stack, applies automatically without confirmation, and leaves the parent unchanged on any conflict.",
+			Description: "Recall durable Coder child lineage or atomically integrate a committed child batch. For large waves, pass action=integrate with task_call_id so the tool selects every Coder child from that durable task call without copying session IDs. Explicit session_ids remain supported. The tool validates the full selection, preflights the complete ordered stack, applies automatically without confirmation, and propagates errors without partially mutating the parent.",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
 					"action":         map[string]any{"type": "string", "description": "Action: inspect|list|recall|integrate"},
-					"session_ids":    map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Selected Coder child session ids from durable current-parent lineage"},
+					"session_ids":    map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Explicit selected Coder child session ids from durable current-parent lineage; mutually exclusive with task_call_id"},
+					"task_call_id":   map[string]any{"type": "string", "description": "Durable parent task call to recall or integrate as one complete Coder wave; mutually exclusive with session_ids for integrate"},
 					"workspace_path": map[string]any{"type": "string", "description": "Optional workspace path; defaults to current/active workspace scope"},
 					"branch_name":    map[string]any{"type": "string", "description": "Optional worktree branch family/prefix override such as agent or foo"},
-					"limit":          map[string]any{"type": "integer", "description": "Page size for returned commits (default 25)"},
+					"limit":          map[string]any{"type": "integer", "description": "Page size for returned children (default 25, max 100)"},
 					"cursor":         map[string]any{"type": "integer", "description": "0-based result offset for pagination"},
 				},
 				"required":             []string{"action"},
@@ -1078,6 +1211,8 @@ func (r *Runtime) Definitions() []Definition {
 			},
 		},
 		manageActionsDefinition(),
+		manageArtifactDefinition(),
+		manageVideoDefinition(),
 		{
 			Type:        "function",
 			Name:        "manage_todos",
@@ -1213,7 +1348,7 @@ func (r *Runtime) Definitions() []Definition {
 					"notes":                      map[string]any{"type": "string", "description": "Checkpoint notes for update/complete operations. For start_session_checkpoint, transition_checkpoint_boundary, or a requirement-changing restart_checkpoint, use this for self-contained replacement/handoff context, constraints, relevant files, and validation expectations."},
 					"tasks":                      map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Proposed checkpoint tasks. Required and complete for a requirement-changing restart_checkpoint; for checkpoint-boundary transitions include enough concrete steps to preserve material request parts."},
 					"acceptance_criteria":        map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Proposed checkpoint acceptance criteria. Required and complete for a requirement-changing restart_checkpoint; include clear completion checks and validation expectations."},
-					"artifacts":                  map[string]any{"type": "array", "items": sessionPlanArtifactToolSchema(), "description": "Workspace-relative artifact references for start_session_checkpoint, transition_checkpoint_boundary, or requirement-changing restart_checkpoint."},
+					"artifacts":                  map[string]any{"type": "array", "items": sessionPlanArtifactToolSchema(), "description": "Workspace-relative artifact references for checkpoint creation/restart or terminal outcomes. On completion, include only concrete deliverables created by this checkpoint; viewable role=deliverable artifacts may appear in the final handoff gallery."},
 					"report":                     map[string]any{"type": "string", "description": "Checkpoint report for update/complete checkpoint operations."},
 					"result":                     map[string]any{"type": "string", "description": "Checkpoint result for update/complete checkpoint operations."},
 					"reviewed_at":                map[string]any{"type": "integer", "description": "Optional review/resolution timestamp for accept_checkpoint or resolve_blocked_checkpoint."},
@@ -1225,6 +1360,7 @@ func (r *Runtime) Definitions() []Definition {
 					"handoff_title":              map[string]any{"type": "string", "description": "Optional concise title for a terminal final or blocked handoff card (maximum 120 characters). For mark_blocked, name the blocker or blocked outcome plainly."},
 					"handoff_overview":           map[string]any{"type": "string", "description": "Required concise overview for final checkpoint completion, mark_blocked compact handoffs, and whenever any handoff field is supplied (maximum 600 characters). For mark_blocked, identify the external blocker and why it prevents progress; keep full evidence in report/result/validation."},
 					"impact_bullets":             map[string]any{"type": "array", "maxItems": 3, "items": map[string]any{"type": "string"}, "description": "Up to three concise impact bullets for a final or blocked handoff. For mark_blocked, lead with the exact resolution required and optionally note unchanged/safe state."},
+					"copyable_code_blocks":       map[string]any{"type": "array", "maxItems": 3, "items": map[string]any{"type": "object", "properties": map[string]any{"label": map[string]any{"type": "string"}, "language": map[string]any{"type": "string"}, "code": map[string]any{"type": "string"}}, "required": []string{"code"}, "additionalProperties": false}, "description": "Up to three optional display-only code or command blocks for final and blocked handoffs. Use when the user needs exact text to copy, such as a run command. label and language are optional; code is required. Clients expose a copy affordance and never execute the text automatically."},
 					"suggested_prompts":          map[string]any{"type": "array", "maxItems": 3, "items": map[string]any{"type": "object", "properties": map[string]any{"label": map[string]any{"type": "string"}, "prompt": map[string]any{"type": "string"}}, "required": []string{"label", "prompt"}, "additionalProperties": false}, "description": "Up to three inert next-step label/prompt objects that clients may send only as ordinary V3 user chat messages. Useful for final and blocked handoffs, including a resume prompt after the blocker is resolved."},
 					"pull_request_url":           map[string]any{"type": "string", "description": "Optional public GitHub pull-request URL for a final handoff. Must exactly use https://github.com/<owner>/<repository>/pull/<number>; clients may expose it as a safe external link and must omit the action when absent or invalid."},
 					"activate":                   map[string]any{"type": "boolean", "description": "Whether the saved/new plan becomes the active plan (default true)."},
@@ -1237,26 +1373,48 @@ func (r *Runtime) Definitions() []Definition {
 		{
 			Type:        "function",
 			Name:        "task",
-			Description: "Delegate a distinct research question to Finder, an independent dependency-ready implementation scope to Coder, or explicitly requested multiple UI/design iterations or variants to Designer. Designer is prohibited for ordinary UI work and single-design requests, which the parent handles directly. Eligible Designer children share the parent checkout, may inspect with read/search/find/list and implement with write/edit, have no Bash or Git, and produce ordinary reusable artifacts that remain until the user requests or chooses cleanup. A generic request to create, make, start, or open a new session means a durable session via manage-sessions deploy, not this task tool. Keep cohesive work direct. Put child launches in the structured launches array; give every launch a concise title of about three words for cosmetic UI display, while keeping the full instructive assignment in meta_prompt. Each launch also states its deliverable, concurrency reason, owned scope, and dependency evidence for review; Designer launches require complete briefs and distinct non-overlapping workspace-relative output targets, and dependency-ready variants should be batched.",
+			Description: "Delegate normal heavy work through explicit Finder, Coder, or Designer launches, optionally submit one staged Task Program, or set mode=swarm for an Iteration Swarm. Swarm mode generates its wave from agent_type and count: omit launches and regular-launch fields such as concurrency_reason, meta_prompt, deliverable, dependency_evidence, and owned_scope. Coder swarms launch Router-hydrated workers. Designer swarms launch Router-hydrated workers into managed parent-owned artifacts only; repository Designer work uses regular launches. Image swarms use a distinct direct format: Router independently hydrates the parent brief plus each base theme, then orchestration sends each prompt straight to the account image model without agent sessions. Idea Swarms repeat the same question directly.",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
 					"action": map[string]any{
 						"type":        "string",
-						"description": "Optional action. Supported: spawn (default).",
+						"description": "Optional action. Supported: spawn (default); Task Programs use start or status. Start uses program when supplied, or the canonical task_program on the active approved checkpoint when program is omitted.",
 					},
+					"mode":       map[string]any{"type": "string", "enum": []string{"regular", "swarm"}, "description": "regular uses explicit dependency-ready launches or an optional staged program. swarm generates a rapid wave from agent_type and count; omit launches and regular-launch fields such as concurrency_reason."},
+					"program_id": map[string]any{"type": "string", "description": "Stable program ID for status. A new start carries a new ID inside program.id; existing IDs cannot be continued."},
+					"program":    taskProgramToolSchema(),
+					"swarm_mode": map[string]any{"type": "boolean", "description": "Compatibility alias for mode=swarm. Do not combine with mode=regular."},
+
+					"agent_type": map[string]any{"type": "string", "enum": []string{"coder", "designer", "image", "idea"}, "description": "Required for mode=swarm. image independently Router-hydrates the parent brief plus each base theme and dispatches directly to the account image model without agent sessions. Idea is tool-free and available only in swarm mode."},
+					"count":      map[string]any{"type": "integer", "minimum": 1, "maximum": 256, "description": "Final worker count for mode=swarm. The account's separate swarm-mode limit controls approval-free capacity; over-limit waves follow its configured action within this absolute bound."},
+					"themes":     map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Optional Coder/Designer/image seed themes; cardinality must equal count."},
+					"groups":     map[string]any{"type": "array", "items": map[string]any{"type": "object", "properties": map[string]any{"name": map[string]any{"type": "string"}, "count": map[string]any{"type": "integer", "minimum": 1}, "instructions": map[string]any{"type": "string"}}, "required": []string{"name", "count"}, "additionalProperties": false}, "description": "Optional Coder/Designer groups. Group counts must total count and Router uses them to specialize prompts."},
+					"iteration_controls": map[string]any{"type": "object", "properties": map[string]any{
+						"preserve": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Parent-authored details every Router and worker must preserve."},
+						"change":   map[string]any{"type": "array", "minItems": 1, "items": map[string]any{"type": "string"}, "description": "The only dimensions the Router may vary during this focused iteration."},
+						"exclude":  map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Parent-authored additions or directions every Router and worker must avoid."},
+					}, "required": []string{"change"}, "additionalProperties": false, "description": "Optional parent-controlled focused iteration boundary for Designer and image swarms. Router may elaborate execution detail only inside this boundary and cannot add, remove, weaken, or reinterpret the parent brief."},
+					"output_contract":     map[string]any{"type": "string", "description": "Shared Coder/Designer/image swarm deliverable contract. Omit for Idea swarms."},
+					"output_requirements": artifact.OutputRequirementsToolSchema(),
+					"animation_profile":   artifact.AnimationProfileToolSchema(),
+					"source_artifact": map[string]any{"type": "object", "properties": map[string]any{
+						"session_id": map[string]any{"type": "string"}, "collection_id": map[string]any{"type": "string"},
+						"variant_id": map[string]any{"type": "string"}, "event_seq": map[string]any{"type": "integer", "minimum": 1},
+					}, "required": []string{"session_id", "collection_id", "variant_id", "event_seq"}, "additionalProperties": false, "description": "Optional exact ready managed artifact reference for managed Designer work (regular launches or Iteration Swarms) or direct image Iteration Swarms. Regular mode requires every launch to be a managed Designer. The backend authenticates the exact ready event and passes the opaque reference to each worker; managed output preserves source lineage. Direct image swarms resolve bounded image bytes only at the trusted generation boundary."},
+					"output_mode": map[string]any{"type": "string", "enum": []string{"managed", "workspace"}, "description": "Designer output contract. Designer and image Iteration Swarms are always managed; swarm calls may omit this field or set managed. Workspace is available only for regular Designer launches and requires concrete owned_scope targets."},
 					"description": map[string]any{
 						"type":        "string",
 						"description": "Short overall task label shown in UI.",
 					},
 					"prompt": map[string]any{
 						"type":        "string",
-						"description": "Shared main task prompt only. Do not embed launch JSON, XML, or parameter tags here; put child launches in the top-level launches array.",
+						"description": "Shared authoritative parent task. In Coder/Designer/image swarm mode, Router may elaborate execution detail but cannot add, remove, weaken, or reinterpret its requirements. In regular mode, pair it with explicit launches. In Idea swarm mode, this exact question is sent unchanged to every one-shot Idea.",
 					},
 					"subagent_type": map[string]any{
 						"type":        "string",
 						"enum":        []string{"coder", "finder", "designer"},
-						"description": "Subagent type for the single-launch shorthand. Supported values: coder, finder, or designer. Designer requires a concrete workspace-relative owned_scope. Requires a top-level meta_prompt or role.",
+						"description": "Subagent type for the single-launch shorthand. Supported values: coder, finder, or designer. Designer defaults to output_mode=managed; workspace mode requires concrete owned_scope. Requires a top-level meta_prompt or role.",
 					},
 					"agent": map[string]any{
 						"type":        "string",
@@ -1281,12 +1439,13 @@ func (r *Runtime) Definitions() []Definition {
 						"description": "Alias for meta_prompt in the single-launch shorthand.",
 					},
 					"deliverable":         map[string]any{"type": "string", "description": "Specific child output the parent will verify."},
-					"concurrency_reason":  map[string]any{"type": "string", "description": "Why this scope is useful and safe to delegate now."},
-					"owned_scope":         map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Declared files, directories, or output target owned by the child. Required for Designer as a concrete clean workspace-relative path; an omitted Coder scope safely defaults to its entire isolated worktree."},
+					"concurrency_reason":  map[string]any{"type": "string", "description": "Regular-mode single-launch shorthand only: why this scope is useful and safe to delegate now. Omit in mode=swarm; swarm concurrency is defined by count."},
+					"workspace_path":      map[string]any{"type": "string", "description": "Regular Coder/Finder single-launch target or default target for every Coder/Finder job in a Task Program start. May select an authorized linked/shared workspace root; omitted uses the parent workspace. Coder worktrees are based on the selected target repository HEAD."},
+					"owned_scope":         map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Declared files, directories, or output target owned by the child. Required as a concrete clean workspace-relative path for workspace-mode Designer and forbidden for managed Designer; an omitted Coder scope safely defaults to its entire isolated worktree."},
 					"dependency_evidence": map[string]any{"type": "string", "description": "Evidence that the launch does not depend on unfinished child work."},
 					"launches": map[string]any{
 						"type":        "array",
-						"description": "The exact dependency-ready wave for one task approval. Do not paste JSON into prompt. Use Finder for distinct research deliverables, Coder for implementation scopes created from the same parent HEAD on unique sibling worktrees, and Designer only for explicit requests for multiple UI/design iterations or variants in the parent checkout. Designer may read/search/find/list/write/edit but has no Bash or Git; its ordinary reusable artifacts are retained unless the user requests or chooses cleanup. Concurrent Designer launches require complete briefs and distinct non-overlapping output scopes. The current backend orchestration policy defines launch limits; available budget is never a target.",
+						"description": "Regular mode only: the exact dependency-ready wave for one task approval. Omit launches in mode=swarm because agent_type and count generate the wave. Do not paste JSON into prompt. Use Finder for distinct research deliverables, Coder for implementation scopes created from each launch's selected authorized workspace HEAD on unique sibling worktrees, and Designer only for explicit requests for multiple UI/design iterations or variants. Designer defaults to managed parent-owned artifact output; workspace mode permits read/search/find/list/write/edit with no Bash or Git and requires distinct non-overlapping output scopes. The current backend orchestration policy defines launch limits; available budget is never a target.",
 						"items": map[string]any{
 							"type": "object",
 							"properties": map[string]any{
@@ -1298,17 +1457,66 @@ func (r *Runtime) Definitions() []Definition {
 								"role":                map[string]any{"type": "string", "description": "Alias for meta_prompt."},
 								"deliverable":         map[string]any{"type": "string", "description": "Specific child output the parent will verify."},
 								"concurrency_reason":  map[string]any{"type": "string", "description": "Why this scope is useful and safe to run in the current wave."},
-								"owned_scope":         map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Declared files, directories, or output target. Required for Designer as a concrete clean workspace-relative path and must not overlap another concurrent Designer launch; an omitted Coder scope defaults to its isolated worktree."},
+								"output_requirements": artifact.OutputRequirementsToolSchema(),
+								"animation_profile":   artifact.AnimationProfileToolSchema(),
+								"output_mode":         map[string]any{"type": "string", "enum": []string{"managed", "workspace"}, "description": "Designer output contract only; defaults to managed. managed forbids owned_scope and workspace requires it. Trusted destination identity is server-owned and cannot be supplied here."},
+								"workspace_path":      map[string]any{"type": "string", "description": "Optional authorized linked/shared workspace target for this Coder or Finder. Each Coder gets a worktree based on that target repository HEAD; omitted uses the parent workspace."},
+								"owned_scope":         map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Declared files, directories, or output target. Required for workspace-mode Designer as a concrete clean workspace-relative path and must not overlap another concurrent workspace Designer launch; forbidden for managed Designer. An omitted Coder scope defaults to its isolated worktree."},
 								"dependency_evidence": map[string]any{"type": "string", "description": "Evidence that this launch does not depend on another child's unfinished work."},
 							},
 							"additionalProperties": false,
 						},
 					},
 				},
-				"required":             []string{"prompt"},
 				"additionalProperties": false,
 			},
 		},
+	}
+}
+
+func taskProgramToolSchema() map[string]any {
+	return taskProgramDefinitionToolSchema("Optional complete staged Task Program. The backend validates every job and stage before any reservation or child launch. Designer jobs default to managed output and omit owned_scope; explicit workspace Designer jobs set output_mode=workspace and require concrete non-overlapping workspace-relative owned_scope targets. One accepted program counts as one parent task invocation; internal capacity cohorts do not require another model-authored task call.")
+}
+
+func taskProgramDefinitionToolSchema(description string) map[string]any {
+	id := map[string]any{"type": "string", "pattern": "^[a-z][a-z0-9_-]{0,63}$"}
+	return map[string]any{
+		"type":        "object",
+		"description": description,
+		"properties": map[string]any{
+			"id":              id,
+			"max_concurrency": map[string]any{"type": "integer", "minimum": 1, "description": "Optional explicit lower concurrency cap. Omit to use the number of ready jobs bounded by current account capacity and backend safety limits."},
+			"stages": map[string]any{
+				"type": "array", "minItems": 1,
+				"items": map[string]any{"type": "object", "properties": map[string]any{
+					"id":                  id,
+					"depends_on":          map[string]any{"type": "array", "items": id, "description": "Earlier stage IDs that must reach their integration barrier first."},
+					"dependency_evidence": map[string]any{"type": "string", "minLength": 1, "description": "Why this stage is ready initially or what prior integrated state unlocks it."},
+				}, "required": []string{"id", "dependency_evidence"}, "additionalProperties": false},
+			},
+			"jobs": map[string]any{
+				"type": "array", "minItems": 1,
+				"items": map[string]any{"type": "object", "properties": map[string]any{
+					"id":                  id,
+					"stage_id":            id,
+					"depends_on":          map[string]any{"type": "array", "items": id, "description": "Earlier-stage job IDs whose accepted/integrated handoffs are required."},
+					"agent_type":          map[string]any{"type": "string", "enum": []string{"coder", "finder", "designer"}},
+					"subagent_type":       map[string]any{"type": "string", "enum": []string{"coder", "finder", "designer"}, "description": "Alias for agent_type."},
+					"workspace_path":      map[string]any{"type": "string", "description": "Optional authorized linked/shared workspace target for this Coder or Finder job. Overrides the Task Program start workspace_path. Coder jobs in one program must resolve to one target workspace so staged integration has one parent Git history."},
+					"meta_prompt":         map[string]any{"type": "string", "minLength": 1, "description": "Complete distinguished assignment; broad copies of the parent objective are invalid program design."},
+					"title":               map[string]any{"type": "string", "minLength": 1},
+					"deliverable":         map[string]any{"type": "string", "minLength": 1},
+					"output_requirements": artifact.OutputRequirementsToolSchema(),
+					"animation_profile":   artifact.AnimationProfileToolSchema(),
+					"output_mode":         map[string]any{"type": "string", "enum": []string{"managed", "workspace"}, "description": "Designer jobs only; defaults to managed. Managed forbids owned_scope. Workspace requires concrete non-overlapping workspace-relative owned_scope targets."},
+					"owned_scope":         map[string]any{"type": "array", "minItems": 1, "items": map[string]any{"type": "string", "minLength": 1}, "description": "Required for Coder/Finder and workspace Designer jobs; omitted for managed Designer jobs."},
+					"acceptance_criteria": map[string]any{"type": "array", "minItems": 1, "items": map[string]any{"type": "string", "minLength": 1}},
+					"dependency_evidence": map[string]any{"type": "string", "minLength": 1},
+				}, "required": []string{"id", "stage_id", "meta_prompt", "title", "deliverable", "acceptance_criteria", "dependency_evidence"}, "additionalProperties": false},
+			},
+		},
+		"required":             []string{"id", "stages", "jobs"},
+		"additionalProperties": false,
 	}
 }
 
@@ -1361,6 +1569,7 @@ func sessionPlanCheckpointToolSchema() map[string]any {
 			"objective":           map[string]any{"type": "string"},
 			"tasks":               stringArray(),
 			"acceptance_criteria": map[string]any{"type": "array", "minItems": 1, "items": map[string]any{"type": "string"}},
+			"task_program":        taskProgramDefinitionToolSchema("Canonical staged implementation program for this lifecycle checkpoint. Include it when dependent delegated implementation qualifies for a Task Program; the approved definition is shown to the user and delivered to the executing checkpoint."),
 			"artifacts":           map[string]any{"type": "array", "items": sessionPlanArtifactToolSchema(), "description": "Workspace-relative artifacts relevant to or delivered by this checkpoint."},
 			"notes":               map[string]any{"type": "string"},
 		},
@@ -1377,12 +1586,22 @@ func sessionPlanArtifactToolSchema() map[string]any {
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"path":        map[string]any{"type": "string", "description": "Clean workspace-relative path; absolute and workspace-escaping paths are rejected."},
-			"role":        map[string]any{"type": "string", "enum": []string{"input", "deliverable"}, "description": "input may be selectively read; deliverable must be included or linked in the user-visible assistant response."},
-			"description": map[string]any{"type": "string"},
-			"media_type":  map[string]any{"type": "string"},
+			"path":          map[string]any{"type": "string", "description": "Clean workspace-relative path; absolute and workspace-escaping paths are rejected."},
+			"source_ref":    map[string]any{"type": "string", "description": "Exact opaque videosrc_ reference returned by manage_video browse_source for a final video deliverable."},
+			"session_id":    map[string]any{"type": "string"},
+			"collection_id": map[string]any{"type": "string"},
+			"variant_id":    map[string]any{"type": "string"},
+			"event_seq":     map[string]any{"type": "integer", "minimum": 1},
+			"label":         map[string]any{"type": "string"},
+			"role":          map[string]any{"type": "string", "enum": []string{"input", "deliverable"}, "description": "input may be selectively read; deliverable must be included or linked in the user-visible assistant response."},
+			"description":   map[string]any{"type": "string"},
+			"media_type":    map[string]any{"type": "string"},
 		},
-		"required":             []string{"path"},
+		"anyOf": []any{
+			map[string]any{"required": []string{"path"}},
+			map[string]any{"required": []string{"source_ref"}},
+			map[string]any{"required": []string{"session_id", "collection_id", "variant_id", "event_seq"}},
+		},
 		"additionalProperties": false,
 	}
 }
@@ -1561,6 +1780,10 @@ func (r *Runtime) executeOne(ctx context.Context, scope WorkspaceScope, call Cal
 		return r.executeManageWorktree(scope, args)
 	case "manage-actions", "manage_actions":
 		return r.executeManageActions(scope, args)
+	case "manage-artifact", "manage_artifact":
+		return r.executeManageArtifact(ctx, scope, call.CallID, args)
+	case "manage-video", "manage_video":
+		return r.executeManageVideo(ctx, scope, args)
 	case "manage-todos", "manage_todos":
 		return r.executeManageTodos(scope, args)
 	case "ask-user", "ask_user", "exit_plan_mode", "exit-plan-mode", "plan_manage", "plan-manage":
@@ -1905,18 +2128,24 @@ func executeGitCommandWithTimeout(parent context.Context, scope WorkspaceScope, 
 	if len(argv) == 0 {
 		return "", errors.New("git command is required")
 	}
+	tempDir, err := os.MkdirTemp("", "swarm-git-")
+	if err != nil {
+		return "", fmt.Errorf("create private Git temp directory: %w", err)
+	}
+	defer os.RemoveAll(tempDir)
+
 	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, "git", argv...)
 	cmd.Dir = scope.PrimaryPath
-	cmd.Env = gitenv.FilterIdentityOverrides(os.Environ())
+	cmd.Env = privateTempEnvironment(gitenv.FilterIdentityOverrides(os.Environ()), tempDir)
 
 	capture := newCappedBuffer(maxCommandOutput)
 	cmd.Stdout = capture
 	cmd.Stderr = capture
 
-	err := cmd.Run()
+	err = cmd.Run()
 	timedOut := errors.Is(ctx.Err(), context.DeadlineExceeded)
 	wasTruncated := capture.Truncated()
 	rawOutput := capture.Bytes()
@@ -1950,6 +2179,7 @@ func executeGitCommandWithTimeout(parent context.Context, scope WorkspaceScope, 
 		"prompt_injection_tag": "tool_output_untrusted",
 		"safety":               buildUntrustedSafety(combined),
 	}
+	addManagedWorktreeGitEvidence(response, scope, exitCode, combined, tempDir)
 	encoded, marshalErr := json.Marshal(response)
 	if marshalErr != nil {
 		return "", marshalErr
@@ -1958,6 +2188,66 @@ func executeGitCommandWithTimeout(parent context.Context, scope WorkspaceScope, 
 		return string(encoded), fmt.Errorf("%s execution failed: %w", toolName, err)
 	}
 	return string(encoded), nil
+}
+
+func addManagedWorktreeGitEvidence(response map[string]any, scope WorkspaceScope, exitCode int, output, tempDir string) {
+	if !scope.WorktreeEnabled {
+		return
+	}
+	if root := strings.TrimSpace(scope.WorktreeRootPath); root != "" {
+		response["worktree_path"] = root
+	}
+	if branch := strings.TrimSpace(scope.WorktreeBranch); branch != "" {
+		response["branch"] = branch
+	}
+	if baseBranch := strings.TrimSpace(scope.WorktreeBaseBranch); baseBranch != "" {
+		response["base_branch"] = baseBranch
+	}
+	if baseCommit := strings.TrimSpace(scope.WorktreeBaseCommit); baseCommit != "" {
+		response["base_commit"] = baseCommit
+	}
+	evidenceEnv := privateTempEnvironment(gitenv.FilterIdentityOverrides(os.Environ()), tempDir)
+	if head, err := gitOutputForEvidence(scope.PrimaryPath, evidenceEnv, "rev-parse", "HEAD"); err == nil && head != "" {
+		response["head_oid"] = head
+	}
+	if status, err := gitOutputForEvidence(scope.PrimaryPath, evidenceEnv, "status", "--short"); err == nil {
+		files := taskChangedFilesFromStatus(status)
+		response["clean"] = len(files) == 0
+		response["dirty_count"] = len(files)
+		response["files"] = files
+	}
+	if exitCode != 0 {
+		response["failure_evidence"] = map[string]any{
+			"exit_code":                 exitCode,
+			"output":                    output,
+			"recover_existing_worktree": true,
+		}
+	}
+}
+
+func gitOutputForEvidence(dir string, env []string, argv ...string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), defaultGitTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", argv...)
+	cmd.Dir = dir
+	cmd.Env = env
+	output, err := cmd.Output()
+	return strings.TrimSpace(string(output)), err
+}
+
+func taskChangedFilesFromStatus(status string) []map[string]any {
+	files := make([]map[string]any, 0)
+	for _, line := range strings.Split(status, "\n") {
+		if len(line) < 3 {
+			continue
+		}
+		path := strings.TrimSpace(line[3:])
+		if path == "" {
+			continue
+		}
+		files = append(files, map[string]any{"path": path, "xy": line[:2]})
+	}
+	return files
 }
 
 func gitCommandSummary(toolName string, argv []string, exitCode int, timedOut, truncated, binarySuppressed bool) string {
@@ -6142,6 +6432,19 @@ func (r *Runtime) executeManageTodos(scope WorkspaceScope, args map[string]any) 
 	return string(encoded), nil
 }
 
+func manageWorktreeLaunchRows(entry map[string]any) []any {
+	rows := make([]any, 0)
+	switch typed := entry["launches"].(type) {
+	case []any:
+		rows = append(rows, typed...)
+	case []map[string]any:
+		for _, row := range typed {
+			rows = append(rows, row)
+		}
+	}
+	return rows
+}
+
 func (r *Runtime) manageWorktreeIntegrate(scope WorkspaceScope, args map[string]any) (string, error) {
 	if r == nil || r.sessions == nil || r.worktrees == nil {
 		return "", errors.New("manage-worktree integrate requires session and worktree services")
@@ -6159,8 +6462,38 @@ func (r *Runtime) manageWorktreeIntegrate(scope WorkspaceScope, args map[string]
 		return "", err
 	}
 	selected := asStringSlice(args["session_ids"])
+	selectedTaskCallID := strings.TrimSpace(asString(args["task_call_id"]))
+	if len(selected) > 0 && selectedTaskCallID != "" {
+		return "", errors.New("integrate accepts exactly one selector: session_ids or task_call_id")
+	}
+	launchMap, _ := parent.Metadata["task_launches"].(map[string]any)
 	if len(selected) == 0 {
-		return "", errors.New("integrate requires selected committed child session_ids; call recall once to obtain them")
+		if selectedTaskCallID == "" {
+			return "", errors.New("integrate requires session_ids or task_call_id; use task_call_id for a complete large Coder wave")
+		}
+		rawEntry, exists := launchMap[selectedTaskCallID]
+		if !exists {
+			return "", fmt.Errorf("task call %q is not present in this parent's durable Coder lineage", selectedTaskCallID)
+		}
+		entry, _ := rawEntry.(map[string]any)
+		rows := manageWorktreeLaunchRows(entry)
+		for _, rawRow := range rows {
+			row, _ := rawRow.(map[string]any)
+			if !agentruntime.IsCoderAgentName(asString(row["subagent"])) {
+				continue
+			}
+			id := strings.TrimSpace(asString(row["child_session_id"]))
+			if id == "" {
+				return "", fmt.Errorf("task call %q contains a Coder launch without a durable child session id", selectedTaskCallID)
+			}
+			if childErr := strings.TrimSpace(asString(row["error"])); childErr != "" {
+				return "", fmt.Errorf("task call %q child %q failed: %s", selectedTaskCallID, id, childErr)
+			}
+			selected = append(selected, id)
+		}
+		if len(selected) == 0 {
+			return "", fmt.Errorf("task call %q contains no Coder children", selectedTaskCallID)
+		}
 	}
 	selectedSet := map[string]bool{}
 	for _, id := range selected {
@@ -6170,22 +6503,19 @@ func (r *Runtime) manageWorktreeIntegrate(scope WorkspaceScope, args map[string]
 		}
 		selectedSet[id] = true
 	}
-	launchMap, _ := parent.Metadata["task_launches"].(map[string]any)
 	type candidate struct {
-		callID string
-		index  int
-		child  worktreeruntime.TaskIntegrationChild
+		callID     string
+		index      int
+		parentPath string
+		child      worktreeruntime.TaskIntegrationChild
 	}
 	candidates := make([]candidate, 0, len(selected))
 	for callID, raw := range launchMap {
-		entry, _ := raw.(map[string]any)
-		rows, _ := entry["launches"].([]any)
-		if typed, ok := entry["launches"].([]map[string]any); ok {
-			for _, row := range typed {
-				rows = append(rows, row)
-			}
+		if selectedTaskCallID != "" && callID != selectedTaskCallID {
+			continue
 		}
-		for _, rawRow := range rows {
+		entry, _ := raw.(map[string]any)
+		for _, rawRow := range manageWorktreeLaunchRows(entry) {
 			row, _ := rawRow.(map[string]any)
 			id := strings.TrimSpace(asString(row["child_session_id"]))
 			if !selectedSet[id] || !agentruntime.IsCoderAgentName(asString(row["subagent"])) {
@@ -6207,14 +6537,19 @@ func (r *Runtime) manageWorktreeIntegrate(scope WorkspaceScope, args map[string]
 			path := strings.TrimSpace(firstNonEmptyString(childSession.WorktreeRootPath, childSession.WorkspacePath))
 			baseCommit := strings.TrimSpace(asString(row["base_commit"]))
 			headCommit := strings.TrimSpace(asString(row["head_commit"]))
-			state, inspectErr := r.worktrees.VerifyTaskIntegrationWorkspace(parentPath, path, id, childSession.WorktreeBranch, baseCommit, headCommit)
+			childParentPath := strings.TrimSpace(firstNonEmptyString(asString(row["parent_workspace_path"]), asString(childSession.Metadata["target_workspace_path"]), parentPath))
+			resolvedParentPath, resolveErr := r.manageWorktreeResolveWorkspacePath(scope, childParentPath)
+			if resolveErr != nil {
+				return "", fmt.Errorf("resolve selected child %q parent workspace: %w", id, resolveErr)
+			}
+			state, inspectErr := r.worktrees.VerifyTaskIntegrationWorkspace(resolvedParentPath, path, id, childSession.WorktreeBranch, baseCommit, headCommit)
 			if inspectErr != nil {
 				return "", fmt.Errorf("verify selected child %q lineage: %w", id, inspectErr)
 			}
 			if !state.Clean {
 				return "", fmt.Errorf("selected child %q is dirty:\n%s", id, state.Status)
 			}
-			candidates = append(candidates, candidate{callID: callID, index: asInt(row["launch_index"], 0), child: worktreeruntime.TaskIntegrationChild{SessionID: id, BaseCommit: baseCommit, HeadCommit: state.HeadCommit}})
+			candidates = append(candidates, candidate{callID: callID, index: asInt(row["launch_index"], 0), parentPath: resolvedParentPath, child: worktreeruntime.TaskIntegrationChild{SessionID: id, BaseCommit: baseCommit, HeadCommit: state.HeadCommit}})
 		}
 	}
 	if len(candidates) != len(selectedSet) {
@@ -6226,22 +6561,29 @@ func (r *Runtime) manageWorktreeIntegrate(scope WorkspaceScope, args map[string]
 		}
 		return candidates[i].index < candidates[j].index
 	})
+	integrationParentPath := parentPath
+	if len(candidates) > 0 {
+		integrationParentPath = candidates[0].parentPath
+	}
 	children := make([]worktreeruntime.TaskIntegrationChild, 0, len(candidates))
 	for _, item := range candidates {
+		if item.parentPath != integrationParentPath {
+			return "", errors.New("integrate selection spans multiple parent workspaces; integrate each workspace's children in a separate call")
+		}
 		children = append(children, item.child)
 	}
-	parentState, inspectErr := r.worktrees.InspectTaskWorkspace(parentPath)
+	parentState, inspectErr := r.worktrees.InspectTaskWorkspace(integrationParentPath)
 	if inspectErr != nil {
 		return "", fmt.Errorf("inspect current parent before integration: %w", inspectErr)
 	}
-	plan, err := r.worktrees.PrepareTaskIntegration(parentPath, parentState.HeadCommit, children)
+	plan, err := r.worktrees.PrepareTaskIntegration(integrationParentPath, parentState.HeadCommit, children)
 	if err != nil {
 		var conflict *worktreeruntime.TaskIntegrationConflictError
 		if errors.As(err, &conflict) {
 			encoded, _ := json.Marshal(map[string]any{
 				"status": "conflict", "action": "integrate", "parent_unchanged": true,
-				"parent_head": parentState.HeadCommit, "conflicting_commit": conflict.Commit,
-				"detail":      conflict.Detail,
+				"parent_head": parentState.HeadCommit, "conflicting_child_session_id": conflict.SessionID,
+				"conflicting_commit": conflict.Commit, "detail": conflict.Detail,
 				"next_action": "Resolve the reported child-stack conflict in a dedicated child or choose a non-conflicting subset, then call integrate once with the final selected session_ids. Do not retry the same batch unchanged.",
 				"path_id":     toolPathID("manage-worktree"),
 			})
@@ -6249,7 +6591,7 @@ func (r *Runtime) manageWorktreeIntegrate(scope WorkspaceScope, args map[string]
 		}
 		return "", err
 	}
-	result, err := r.worktrees.ApplyTaskIntegration(parentPath, plan)
+	result, err := r.worktrees.ApplyTaskIntegration(integrationParentPath, plan)
 	if err != nil {
 		return "", err
 	}
@@ -6257,7 +6599,14 @@ func (r *Runtime) manageWorktreeIntegrate(scope WorkspaceScope, args map[string]
 	for _, entry := range result.Entries {
 		childStates[entry.SessionID] = "integrated"
 	}
-	encoded, err := json.Marshal(map[string]any{"status": "ok", "action": "integrate", "parent_session_id": parentSessionID, "child_states": childStates, "resulting_parent_head": result.ResultingParentHead, "integration": result, "path_id": toolPathID("manage-worktree")})
+	response := map[string]any{"status": "ok", "action": "integrate", "parent_session_id": parentSessionID, "selected_count": len(selectedSet), "child_states": childStates, "resulting_parent_head": result.ResultingParentHead, "integration": result, "path_id": toolPathID("manage-worktree")}
+	if selectedTaskCallID != "" {
+		response["task_call_id"] = selectedTaskCallID
+		response["selection"] = "complete_task_call"
+	} else {
+		response["selection"] = "explicit_session_ids"
+	}
+	encoded, err := json.Marshal(response)
 	if err != nil {
 		return "", err
 	}
@@ -6296,22 +6645,22 @@ func (r *Runtime) manageWorktreeRecall(scope WorkspaceScope, args map[string]any
 		parentState, parentPathErr = r.worktrees.InspectTaskWorkspace(parentPath)
 	}
 	launchMap, _ := parent.Metadata["task_launches"].(map[string]any)
+	selectedTaskCallID := strings.TrimSpace(asString(args["task_call_id"]))
+	if selectedTaskCallID != "" {
+		if _, exists := launchMap[selectedTaskCallID]; !exists {
+			return "", fmt.Errorf("task call %q is not present in this parent's durable Coder lineage", selectedTaskCallID)
+		}
+	}
 	children := make([]map[string]any, 0)
 	for callID, raw := range launchMap {
+		if selectedTaskCallID != "" && callID != selectedTaskCallID {
+			continue
+		}
 		entry, ok := raw.(map[string]any)
 		if !ok {
 			continue
 		}
-		rows := make([]any, 0)
-		switch typed := entry["launches"].(type) {
-		case []any:
-			rows = typed
-		case []map[string]any:
-			for _, row := range typed {
-				rows = append(rows, row)
-			}
-		}
-		for _, rawRow := range rows {
+		for _, rawRow := range manageWorktreeLaunchRows(entry) {
 			row, ok := rawRow.(map[string]any)
 			if !ok || !agentruntime.IsCoderAgentName(asString(row["subagent"])) {
 				continue
@@ -6349,9 +6698,9 @@ func (r *Runtime) manageWorktreeRecall(scope WorkspaceScope, args map[string]any
 						// whether this clean child has a durable committed handoff.
 						childState = "committed"
 					default:
-						integrated, ancestryErr := r.worktrees.TaskCommitDescendsFrom(parentPath, recordedHead, parentState.HeadCommit)
-						if ancestryErr != nil {
-							child["integration_inspection_error"] = ancestryErr.Error()
+						integrated, integrationErr := r.manageWorktreeCommitIntegrated(parentPath, recordedBase, recordedHead, parentState.HeadCommit)
+						if integrationErr != nil {
+							child["integration_inspection_error"] = integrationErr.Error()
 							childState = "blocked"
 						} else if integrated {
 							childState = "integrated"
@@ -6392,27 +6741,47 @@ func (r *Runtime) manageWorktreeRecall(scope WorkspaceScope, args map[string]any
 		"automatic":         true,
 	}
 	committedIDs := make([]string, 0)
+	stateCounts := map[string]int{}
 	for _, child := range children {
-		if strings.EqualFold(asString(child["child_state"]), "committed") {
+		state := strings.TrimSpace(asString(child["child_state"]))
+		stateCounts[state]++
+		if strings.EqualFold(state, "committed") {
 			committedIDs = append(committedIDs, strings.TrimSpace(asString(child["child_session_id"])))
 		}
 	}
 	if len(committedIDs) > 0 {
-		integrationInfo["ready_session_ids"] = committedIDs
-		integrationInfo["integrate_request"] = map[string]any{"action": "integrate", "session_ids": committedIDs}
+		integrationInfo["ready_count"] = len(committedIDs)
+		if selectedTaskCallID != "" && len(committedIDs) == total {
+			integrationInfo["integrate_request"] = map[string]any{"action": "integrate", "task_call_id": selectedTaskCallID}
+		} else {
+			integrationInfo["ready_session_ids"] = committedIDs
+			integrationInfo["integrate_request"] = map[string]any{"action": "integrate", "session_ids": committedIDs}
+		}
 	}
 	response := map[string]any{
 		"status": "ok", "action": "recall", "parent_session_id": parentSessionID,
 		"children": page, "total": total, "returned": len(page), "cursor": cursor, "limit": limit,
-		"next_cursor": nextCursor, "has_more": nextCursor > 0,
+		"next_cursor": nextCursor, "has_more": nextCursor > 0, "state_counts": stateCounts,
 		"integration": integrationInfo,
 		"path_id":     toolPathID("manage-worktree"), "details_truncated": false,
+	}
+	if selectedTaskCallID != "" {
+		response["task_call_id"] = selectedTaskCallID
 	}
 	encoded, err := json.Marshal(response)
 	if err != nil {
 		return "", err
 	}
 	return string(encoded), nil
+}
+
+func (r *Runtime) manageWorktreeCommitIntegrated(parentPath, baseCommit, headCommit, parentHead string) (bool, error) {
+	if classifier, ok := r.worktrees.(manageWorktreeIntegrationClassifier); ok {
+		return classifier.TaskCommitRangeIntegratedInto(parentPath, baseCommit, headCommit, parentHead)
+	}
+	// Compatibility for narrow test doubles and alternate implementations: the
+	// canonical worktree service provides patch-equivalent range classification.
+	return r.worktrees.TaskCommitDescendsFrom(parentPath, headCommit, parentHead)
 }
 
 func (r *Runtime) manageWorktreeInspect(scope WorkspaceScope, args map[string]any) (string, error) {
@@ -6561,8 +6930,11 @@ git log --format=%%H%%x09%%h%%x09%%cI%%x09%%s --branches=%s | while IFS=$'\t' re
 	printf '%%s\t%%s\t%%s\t%%s\t%%s\n' "$commit" "$short" "$committed_at" "$merged" "$subject"
 done`, branchGlob, branchGlob)
 	bashArgs := map[string]any{
-		"command":    command,
-		"timeout_ms": 20000,
+		"command":     command,
+		"timeout_ms":  20000,
+		"explanation": []any{"Inspect worktree-family Git commits and compare them with the current branch without changing repository state."},
+		"category":    "read",
+		"critical":    false,
 	}
 	output, err := executeBash(context.Background(), normalizeWorkspaceScope(workspacePath, scope.Roots), bashArgs, nil)
 	if err != nil {
@@ -8376,6 +8748,8 @@ func manageAgentCanonicalToolName(name string) string {
 		return "manage_worktree"
 	case "manage-actions", "manage_actions":
 		return "manage_actions"
+	case "manage-artifact", "manage_artifact":
+		return "manage_artifact"
 	case "manage-todos", "manage_todos":
 		return "manage_todos"
 	default:
@@ -8957,6 +9331,8 @@ func canonicalStubToolName(raw string) string {
 		return "manage_worktree"
 	case "manage-actions", "manage_actions":
 		return "manage_actions"
+	case "manage-artifact", "manage_artifact":
+		return "manage_artifact"
 	case "manage-todos", "manage_todos":
 		return "manage_todos"
 	case "skill-use", "skill_use":
@@ -9400,6 +9776,8 @@ func toolPathID(name string) string {
 		return "tool.manage-worktree.v1"
 	case "manage-actions", "manage_actions":
 		return "tool.manage-actions.v1"
+	case "manage-artifact", "manage_artifact":
+		return "tool.manage-artifact.v1"
 	case "manage-todos", "manage_todos":
 		return "tool.manage-todos.v1"
 	case "skill-use", "skill_use":

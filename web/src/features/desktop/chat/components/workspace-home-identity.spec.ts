@@ -30,8 +30,12 @@ test('workspace icon manager uses an effective compact responsive width', () => 
   assert.doesNotMatch(source, /420px/)
 })
 
-test('workspace dropdown affordance remains independent from icon management', () => {
-  assert.match(source, /workspaces\.length > 1 && Boolean\(onOpenWorkspacePicker\)/)
-  assert.match(source, /<ChevronDown/)
+test('workspace home control opens an inline dropdown instead of the Alt+W picker', () => {
+  assert.match(source, /workspaces\.length > 1 && Boolean\(onSelectWorkspace\)/)
+  assert.match(source, /aria-haspopup="menu"/)
+  assert.match(source, /role="menu"/)
+  assert.match(source, /role="menuitemradio"/)
+  assert.match(source, /onSelectWorkspace\?\.\(entry\)/)
+  assert.doesNotMatch(source, /onOpenWorkspacePicker/)
   assert.match(source, /<h1[^>]*>\{workspace\.workspaceName\}<\/h1>/)
 })

@@ -1,5 +1,6 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type MouseEvent, type ReactNode } from "react";
-import { Archive, ArrowRight, Bot, CheckCircle2, ChevronDown, ChevronUp, CircleDot, CircleStop, Clock3, Copy, Download, ExternalLink, GitBranch, Layers3, LoaderCircle, MessageSquareText, Search, XCircle } from "lucide-react";
+import React, { memo, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type MouseEvent, type ReactNode } from "react";
+void React;
+import { Archive, ArrowRight, Bot, CheckCircle2, ChevronDown, ChevronUp, CircleDot, CircleStop, Clapperboard, Clock3, Copy, Download, ExternalLink, FolderOpen, GitBranch, Layers3, Loader2, LoaderCircle, MessageSquareText, Search, Sparkles, XCircle } from "lucide-react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { cn } from "../../../../lib/cn";
 import { MarkdownRenderer } from "../markdown/render";
@@ -9,6 +10,7 @@ import type {
   WebResourceData,
   WebSearchToolData,
   TaskToolRow,
+  TaskProgram,
   TaskChildCardActions,
 } from "../types/chat";
 import { useDesktopV3CacheSelector } from "../../state/desktop-v3-cache-store";
@@ -22,6 +24,8 @@ import { displayAgentName } from "../services/agent-display";
 import { toolActivityStartSummary } from "../services/tool-activity";
 import { describeToolActivity } from "../services/tool-message";
 import { ToolActivityShell } from "./tool-activity-shell";
+import { DesktopV3ArtifactPreviewThumbnail } from "./desktop-v3-artifact-preview-thumbnail";
+import { desktopV3ArtifactDownloadName, desktopV3ArtifactMessageSelection, fetchDesktopV3ArtifactDownload, normalizeDesktopV3ArtifactCatalogEntry, revealDesktopV3Artifact, type DesktopV3ArtifactCatalogEntry, type DesktopV3ArtifactMessageSelection } from "../../session-v3/artifact-api";
 
 interface ChatMarkdownProps {
   content: string;
@@ -29,6 +33,10 @@ interface ChatMarkdownProps {
   toolMessage?: StructuredToolMessage | null;
   thinkingTagsEnabled?: boolean;
   taskChildActions?: TaskChildCardActions;
+  artifactCatalog?: DesktopV3ArtifactCatalogEntry[];
+  artifactHref?: (artifact: DesktopV3ArtifactCatalogEntry) => string;
+  onArtifactNavigate?: (artifact: DesktopV3ArtifactCatalogEntry) => void;
+  onArtifactSelections?: (selections: DesktopV3ArtifactMessageSelection[]) => void;
 }
 
 function resolveToolState(toolMessage: StructuredToolMessage): ToolState {
@@ -358,7 +366,6 @@ function EditDiffView({ toolMessage }: { toolMessage: StructuredToolMessage }) {
   );
 }
 
-const TASK_SWARM_THRESHOLD = 5;
 const TASK_SWARM_MAX_HEIGHT = 560;
 const TASK_SWARM_MIN_HEIGHT = 150;
 
@@ -660,6 +667,8 @@ function taskRowsEqual(left: TaskToolRow, right: TaskToolRow, options: { compare
     || left.modelLabel !== right.modelLabel
     || left.tool !== right.tool
     || left.toolActivitySummary !== right.toolActivitySummary
+    || left.liveToolCalls !== right.liveToolCalls
+    || left.liveAssistantText !== right.liveAssistantText
     || left.time !== right.time
     || left.terminal !== right.terminal) return false;
 
@@ -682,12 +691,6 @@ function TaskElapsedTime({ row }: { row: TaskToolRow }) {
   return <>{taskElapsedLabel(row, nowMs)}</>;
 }
 
-function taskPreviewLabel(row: TaskToolRow): string {
-  const previewKind = row.previewKind.trim().toLowerCase();
-  if (previewKind === 'reasoning') return 'thinking';
-  return row.previewKind.trim() || 'live';
-}
-
 const TASK_CARD_HOVER_DEBOUNCE_MS = 180;
 
 function taskChildModelsEqual(left: DesktopV3TaskChildViewModel | null, right: DesktopV3TaskChildViewModel | null): boolean {
@@ -703,6 +706,8 @@ function taskRowWithChildState(row: TaskToolRow, child: DesktopV3TaskChildViewMo
     status: child.status || row.status,
     tool: child.currentTool || row.tool,
     toolActivitySummary: child.toolActivitySummary || row.toolActivitySummary,
+    liveToolCalls: child.liveToolCalls || row.liveToolCalls,
+    liveAssistantText: child.liveAssistantText || row.liveAssistantText,
     modelLabel: child.modelLabel || row.modelLabel,
     launchStartedAtMs: child.startedAt || row.launchStartedAtMs,
     elapsedMs: child.elapsedMs || row.elapsedMs,
@@ -732,6 +737,7 @@ function TaskChildInteractiveRow({
   children,
   showContext = true,
   viewportDemand = true,
+  forceLiveDemand = false,
 }: {
   row: TaskToolRow;
   actions?: TaskChildCardActions;
@@ -739,6 +745,7 @@ function TaskChildInteractiveRow({
   children: (effectiveRow: TaskToolRow, child: DesktopV3TaskChildViewModel | null) => ReactNode;
   showContext?: boolean;
   viewportDemand?: boolean;
+  forceLiveDemand?: boolean;
 }) {
   const rootRef = useRef<HTMLDivElement | null>(null);
   const hoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -754,7 +761,7 @@ function TaskChildInteractiveRow({
   );
   const child = useDesktopV3CacheSelector(selectChild, taskChildModelsEqual);
   const effectiveRow = useMemo(() => taskRowWithChildState(row, child), [child, row]);
-  const engaged = Boolean(actions && row.childSessionId.trim() && !effectiveRow.terminal && (focused || hovered || (viewportDemand && visible)));
+  const engaged = Boolean(actions && row.childSessionId.trim() && !effectiveRow.terminal && (forceLiveDemand || focused || hovered || (viewportDemand && visible)));
   const ownerKey = `${actions?.parentSessionId || 'parent'}:task-card:${row.launchKey || row.childSessionId}`;
 
   useEffect(() => {
@@ -877,12 +884,13 @@ function TaskChildInteractiveRow({
   );
 }
 
-function TaskAgentListRow({ row, index, dense, actions }: { row: TaskToolRow; index: number; dense: boolean; actions?: TaskChildCardActions }) {
+function TaskAgentListRow({ row, index, dense, actions, forceLiveDemand = false }: { row: TaskToolRow; index: number; dense: boolean; actions?: TaskChildCardActions; forceLiveDemand?: boolean }) {
   return (
     <TaskChildInteractiveRow
       row={row}
       actions={actions}
       className="group min-w-0 border-t border-[var(--app-border)] transition-colors hover:bg-[color-mix(in_srgb,var(--app-text-muted)_5%,transparent)]"
+      forceLiveDemand={forceLiveDemand}
     >
       {(effectiveRow) => <TaskAgentListRowContent row={effectiveRow} index={index} dense={dense} />}
     </TaskChildInteractiveRow>
@@ -918,8 +926,6 @@ function TaskAgentListRowContent({ row, index, dense }: { row: TaskToolRow; inde
   const agentLabel = displayAgent && row.assignmentLabel ? `@${displayAgent}` : displayAgent;
   const secondaryLabel = [agentLabel, row.modelLabel].filter(Boolean).join(' · ');
   const toolLabel = taskActivityLabel(row);
-  const errorText = row.status.trim().toLowerCase() === 'failed' || row.status.trim().toLowerCase() === 'error' ? row.previewText.trim() : '';
-  const previewText = errorText ? '' : row.previewText.trim();
   const rowNumber = row.launchIndex || index + 1;
 
   return (
@@ -954,18 +960,6 @@ function TaskAgentListRowContent({ row, index, dense }: { row: TaskToolRow; inde
           <TaskElapsedTime row={row} />
         </div>
       </div>
-      {(previewText || errorText) && !dense ? (
-        <div className="task-card-wide-only grid min-w-0 grid-cols-[3.25rem_minmax(0,1fr)] gap-x-2 px-3 pb-2 sm:grid-cols-[2.5rem_3.75rem_minmax(0,1fr)] sm:gap-x-3">
-          <div />
-          <div className="hidden sm:block" />
-          <div className={cn("col-start-2 min-w-0 break-words border-l pl-2 text-[11px] leading-4 [overflow-wrap:anywhere] sm:col-start-3", errorText ? "border-[var(--app-danger)] text-[var(--app-danger)]" : "border-[var(--app-border)] text-[var(--app-text-subtle)]")}>
-            <span className="mr-1 font-mono uppercase tracking-[0.08em] text-[9px]">
-              {errorText ? 'error' : taskPreviewLabel(row)}:
-            </span>
-            {errorText || previewText}
-          </div>
-        </div>
-      ) : null}
     </div>
   );
 }
@@ -985,15 +979,37 @@ function taskRowsCounts(rows: TaskToolRow[]) {
   );
 }
 
-function TaskRowsHeader({ counts, swarm = false, density = "detailed" }: { counts: ReturnType<typeof taskRowsCounts>; swarm?: boolean; density?: TaskSwarmDensity }) {
+function taskSwarmHeaderLabel(rows: TaskToolRow[], strategy: "explore" | "assembly"): string {
+  const agents = Array.from(new Set(rows.map((row) => row.agent.trim().toLowerCase()).filter(Boolean)));
+  const agent = agents.length === 1 ? agents[0] : agents.length > 1 ? "mixed" : "";
+  const baseLabel = agent === "idea"
+    ? "IDEA SWARM"
+    : agent === "image" ? "IMAGE SWARM" : strategy === "assembly" ? "ASSEMBLY SWARM" : "ITERATION SWARM";
+  const workerLabel = agent === "coder"
+    ? "CODERS"
+    : agent === "designer" ? "DESIGNERS" : agent === "image" ? "IMAGES" : agent === "mixed" ? "MIXED AGENTS" : "";
+  const models = Array.from(new Set(rows.map((row) => row.modelLabel.trim().replace(/\s*\/\s*/g, "/")).filter(Boolean)));
+  const modelLabel = models.length === 1 ? models[0] : models.length > 1 ? "mixed models" : "";
+  return [baseLabel, workerLabel, modelLabel].filter(Boolean).join(" · ");
+}
+
+function TaskRowsHeader({ counts, rows = [], swarm = false, strategy = "explore", integrationContract = "", integrationRequired = false, density = "detailed" }: { counts: ReturnType<typeof taskRowsCounts>; rows?: TaskToolRow[]; swarm?: boolean; strategy?: "explore" | "assembly"; integrationContract?: string; integrationRequired?: boolean; density?: TaskSwarmDensity }) {
+  const headerLabel = swarm ? taskSwarmHeaderLabel(rows, strategy) : "Subagent stream";
+  const imageSwarm = rows.length > 0 && rows.every((row) => row.agent.trim().toLowerCase() === "image");
+  const swarmContext = imageSwarm
+    ? "Each image runs Routing → Image creation"
+    : strategy === "assembly"
+      ? integrationRequired ? "Complementary parts · parent integration required" : "Complementary parts"
+      : "Fast parallel iterations · choose or synthesize";
   return (
-    <div className={cn("flex min-w-0 flex-wrap items-center justify-between gap-2 border-b px-3 py-2", swarm ? "border-[color-mix(in_srgb,var(--app-primary)_38%,var(--app-border))] bg-[color-mix(in_srgb,var(--app-primary)_9%,var(--app-bg-alt))]" : "border-[var(--app-border)] bg-[color-mix(in_srgb,var(--app-bg-alt)_72%,transparent)]")} data-task-card-header>
+    <div className={cn("min-w-0 border-b px-3 py-2", swarm ? "border-[color-mix(in_srgb,var(--app-primary)_38%,var(--app-border))] bg-[color-mix(in_srgb,var(--app-primary)_9%,var(--app-bg-alt))]" : "border-[var(--app-border)] bg-[color-mix(in_srgb,var(--app-bg-alt)_72%,transparent)]")} data-task-card-header data-swarm-strategy={swarm ? strategy : undefined}>
+      <div className="flex min-w-0 flex-wrap items-center justify-between gap-2">
       <div className="flex min-w-0 items-center gap-2">
         <span className={cn("inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full border text-[var(--app-primary)]", swarm ? "border-[color-mix(in_srgb,var(--app-primary)_55%,var(--app-border))] bg-[color-mix(in_srgb,var(--app-primary)_18%,transparent)] shadow-[0_0_18px_color-mix(in_srgb,var(--app-primary)_20%,transparent)]" : "border-[color-mix(in_srgb,var(--app-primary)_28%,var(--app-border))] bg-[color-mix(in_srgb,var(--app-primary)_10%,transparent)]")}>
           {swarm ? <Layers3 size={14} aria-hidden="true" /> : <Bot size={14} aria-hidden="true" />}
         </span>
         <span className="break-words text-xs font-bold uppercase tracking-[0.12em] text-[var(--app-text)] [overflow-wrap:anywhere]">
-          {swarm ? "SWARM MODE" : "Subagent stream"}
+          {headerLabel}
         </span>
       </div>
       <div className={cn("shrink-0 items-center gap-1.5 font-mono text-[10px]", swarm && (density === "micro" || density === "signal") ? "hidden" : "flex")} data-task-card-counts>
@@ -1002,6 +1018,11 @@ function TaskRowsHeader({ counts, swarm = false, density = "detailed" }: { count
         {counts.pending > 0 ? <span className="rounded-md bg-[color-mix(in_srgb,var(--app-text-muted)_10%,transparent)] px-1.5 py-0.5 text-[var(--app-text-subtle)]">WAIT {counts.pending}</span> : null}
         {counts.error > 0 ? <span className="rounded-md bg-[color-mix(in_srgb,var(--app-danger)_12%,transparent)] px-1.5 py-0.5 text-[var(--app-danger)]">ERR {counts.error}</span> : null}
       </div>
+      </div>
+      {swarm ? <div className="mt-1 min-w-0 break-words pl-9 text-[10px] leading-4 text-[var(--app-text-muted)] [overflow-wrap:anywhere]">
+        <span>{swarmContext}</span>
+        {strategy === "assembly" && integrationContract ? <span title={integrationContract}> · Contract: {integrationContract}</span> : null}
+      </div> : null}
     </div>
   );
 }
@@ -1026,7 +1047,8 @@ function TaskSwarmCompactRowContent({ row, index, density }: { row: TaskToolRow;
   const rowNumber = row.launchIndex || index + 1;
   const agent = displayAgentName(row.agent) || "subagent";
   const toolLabel = taskActivityLabel(row);
-  const title = row.assignmentLabel || agent;
+  const ideaAgent = row.agent.trim().toLowerCase() === "idea";
+  const title = ideaAgent ? `Agent #${rowNumber}` : row.assignmentLabel || agent;
   const accessibleLabel = `${rowNumber}. ${title}. ${toolLabel}. ${statusLabel}`;
   const signal = density === "signal";
   const dense = density === "dense";
@@ -1042,9 +1064,9 @@ function TaskSwarmCompactRowContent({ row, index, density }: { row: TaskToolRow;
       aria-label={accessibleLabel}
     >
       <span className={cn("shrink-0 rounded-full", signal || dense || micro ? "size-1.5" : "size-2", taskStatusDotClass(kind), kind === "running" && "animate-pulse")} aria-hidden="true" />
-      {!signal ? <span className="shrink-0 font-mono text-[9px] text-[var(--app-text-subtle)] tabular-nums">{rowNumber.toString().padStart(2, "0")}</span> : null}
-      <span className={cn("min-w-0 flex-1 truncate font-semibold text-[var(--app-text)]", signal ? "text-[8px]" : dense || micro ? "text-[9px]" : "text-[10px]")}>{title}</span>
-      {!dense && !signal ? <span className={cn("min-w-0 flex-1 truncate font-mono text-[var(--app-text-muted)]", micro ? "text-[8px]" : "text-[9px]")}>{toolLabel}</span> : null}
+      {!signal && !ideaAgent ? <span className="shrink-0 font-mono text-[9px] text-[var(--app-text-subtle)] tabular-nums">{rowNumber.toString().padStart(2, "0")}</span> : null}
+      <span className={cn("min-w-0 flex-[2_1_0%] truncate font-semibold text-[var(--app-text)]", signal ? "text-[8px]" : dense || micro ? "text-[9px]" : "text-[10px]")}>{title}</span>
+      {!dense && !signal ? <span className={cn("ml-auto min-w-0 max-w-[38%] flex-[0_1_38%] truncate text-right font-mono text-[var(--app-text-muted)]", micro ? "text-[8px]" : "text-[9px]")}>{toolLabel}</span> : null}
       {density === "detailed" ? <span className={cn("shrink-0 font-mono text-[9px] tabular-nums", taskStatusTextClass(kind))}><TaskElapsedTime row={row} /></span> : null}
     </div>
   );
@@ -1054,6 +1076,7 @@ const MemoizedTaskAgentListRow = memo(TaskAgentListRow, (previous, next) => (
   previous.index === next.index
   && previous.dense === next.dense
   && previous.actions === next.actions
+  && previous.forceLiveDemand === next.forceLiveDemand
   && taskRowsEqual(previous.row, next.row)
 ));
 
@@ -1064,7 +1087,7 @@ const MemoizedTaskSwarmCompactRow = memo(TaskSwarmCompactRow, (previous, next) =
   && taskRowsEqual(previous.row, next.row, { comparePreview: false })
 ));
 
-function TaskSwarmRowsView({ rows, actions }: { rows: TaskToolRow[]; actions?: TaskChildCardActions }) {
+function TaskSwarmRowsView({ rows, actions, strategy, integrationContract, integrationRequired }: { rows: TaskToolRow[]; actions?: TaskChildCardActions; strategy: "explore" | "assembly"; integrationContract?: string; integrationRequired?: boolean }) {
   const rootRef = useRef<HTMLDivElement | null>(null);
   const counts = taskRowsCounts(rows);
   const [layout, setLayout] = useState(() => taskSwarmLayout(rows.length, 420, 720));
@@ -1091,7 +1114,7 @@ function TaskSwarmRowsView({ rows, actions }: { rows: TaskToolRow[]; actions?: T
 
   return (
     <div ref={rootRef} className="task-card-container min-w-0 overflow-hidden" data-task-card data-task-rows data-task-swarm-mode data-swarm-density={layout.density} data-swarm-stage={layout.stage}>
-      <TaskRowsHeader counts={counts} swarm density={layout.density} />
+      <TaskRowsHeader counts={counts} rows={rows} swarm strategy={strategy} integrationContract={integrationContract} integrationRequired={integrationRequired} density={layout.density} />
       <div
         className={cn("task-card-swarm-grid grid min-w-0 p-2", layout.maxHeight ? "overflow-y-auto" : "overflow-hidden")}
         style={{ gridTemplateColumns: `repeat(${layout.columns}, minmax(0, 1fr))`, gridAutoRows: layout.rowHeight, gap: layout.gap, maxHeight: layout.maxHeight }}
@@ -1139,9 +1162,86 @@ function TaskAgentRowsView({ rows, actions }: { rows: TaskToolRow[]; actions?: T
   );
 }
 
-function TaskRowsView({ rows, actions }: { rows: TaskToolRow[]; actions?: TaskChildCardActions }) {
+function taskProgramProgress(program: TaskProgram) {
+  const rows = program.stages.flatMap((stage) => stage.rows);
+  const counts = taskRowsCounts(rows);
+  const finished = counts.done + counts.error;
+  return { counts, finished };
+}
+
+function taskProgramStageLabel(state: TaskProgram["stages"][number]["state"]): string {
+  switch (state) {
+    case "active": return "active";
+    case "done": return "complete";
+    case "waiting": return "waiting on dependencies";
+    case "blocked": return "blocked";
+    case "failed": return "failed";
+    default: return "pending";
+  }
+}
+
+function TaskProgramRowsView({ program, actions }: { program: TaskProgram; actions?: TaskChildCardActions }) {
+  const programIsActive = ["declared", "pending", "running", "active", "waiting"].includes(program.state.trim().toLowerCase());
+  const [expanded, setExpanded] = useState(programIsActive);
+  const progress = taskProgramProgress(program);
+  const finishedPhases = program.stages.filter((stage) => stage.state === "done").length;
+  const percent = progress.counts.total > 0 ? Math.round((progress.finished / progress.counts.total) * 100) : 0;
+  return (
+    <section className="task-card-container min-w-0 overflow-hidden" data-task-card data-task-program-card={program.id}>
+      <button
+        type="button"
+        className="flex w-full min-w-0 items-center gap-3 border-b border-[var(--app-border)] bg-[color-mix(in_srgb,var(--app-primary)_9%,var(--app-bg-alt))] px-3 py-2.5 text-left"
+        onClick={() => setExpanded((value) => !value)}
+        aria-expanded={expanded}
+        aria-controls={`task-program-${program.id}`}
+      >
+        <span className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-[color-mix(in_srgb,var(--app-primary)_45%,var(--app-border))] bg-[color-mix(in_srgb,var(--app-primary)_15%,transparent)] text-[var(--app-primary)]"><Layers3 size={14} /></span>
+        <span className="min-w-0 flex-1">
+          <span className="block text-xs font-bold uppercase tracking-[0.12em] text-[var(--app-text)]">Task Program</span>
+          <span className="block truncate font-mono text-[10px] text-[var(--app-text-muted)]">{program.id} · {progress.finished}/{progress.counts.total} jobs · {finishedPhases}/{program.stages.length} phases</span>
+        </span>
+        <span className="hidden w-24 shrink-0 overflow-hidden rounded-full bg-[var(--app-border)] sm:block"><span className="block h-1.5 bg-[var(--app-primary)]" style={{ width: `${percent}%` }} /></span>
+        <span className="hidden shrink-0 rounded-md border border-[var(--app-border)] px-1.5 py-0.5 font-mono text-[9px] uppercase text-[var(--app-text-muted)] sm:inline-flex">{program.state}</span>
+        <span className="shrink-0 font-mono text-[10px] text-[var(--app-text-muted)]">{percent}%</span>
+        {expanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+      </button>
+      {expanded ? (
+        <div id={`task-program-${program.id}`} className="min-w-0" data-task-program-expanded>
+          {program.nextAction ? <div className="border-b border-[var(--app-border)] px-3 py-1.5 font-mono text-[10px] text-[var(--app-text-muted)]">Next: {program.nextAction.replace(/_/g, " ")}</div> : null}
+          {program.stages.map((stage, stageIndex) => {
+            const counts = taskRowsCounts(stage.rows);
+            const dependencyLabel = stage.dependsOn.length > 0 ? `after ${stage.dependsOn.join(", ")}` : "ready";
+            return (
+              <section key={stage.id} className="min-w-0 border-t border-[var(--app-border)] first:border-t-0" data-task-program-stage={stage.id} data-stage-state={stage.state}>
+                <header className={cn("flex min-w-0 flex-wrap items-center gap-2 px-3 py-2", stage.state === "active" ? "bg-[color-mix(in_srgb,var(--app-primary)_10%,var(--app-bg-alt))]" : "bg-[color-mix(in_srgb,var(--app-bg-alt)_55%,transparent)]")}>
+                  <span className={cn("inline-flex size-4 shrink-0 items-center justify-center rounded-full border", stage.state === "done" ? "border-[var(--app-success)] bg-[var(--app-success)]" : stage.state === "active" ? "animate-pulse border-[var(--app-primary)] bg-[color-mix(in_srgb,var(--app-primary)_22%,transparent)]" : "border-[var(--app-text-subtle)] bg-transparent")} aria-hidden="true" />
+                  <span className="font-mono text-[10px] text-[var(--app-text-subtle)]">PHASE {(stageIndex + 1).toString().padStart(2, "0")}</span>
+                  <span className="min-w-0 flex-1 break-words text-[12px] font-semibold text-[var(--app-text)]">{stage.id}</span>
+                  <span className={cn("inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-[9px] font-semibold uppercase", stage.state === "active" ? taskStatusBadgeClass("running") : stage.state === "done" ? taskStatusBadgeClass("success") : stage.state === "failed" || stage.state === "blocked" ? taskStatusBadgeClass("error") : taskStatusBadgeClass("pending"))}>{stage.state === "active" ? <Loader2 size={10} className="animate-spin" aria-hidden="true" /> : null}{taskProgramStageLabel(stage.state)}</span>
+                  <span className="font-mono text-[9px] text-[var(--app-text-subtle)]">{counts.done}/{counts.total}</span>
+                </header>
+                <div className="border-t border-[var(--app-border)] px-3 py-1.5 text-[10px] text-[var(--app-text-muted)]">
+                  Dependencies: {dependencyLabel}{stage.dependencyEvidence ? ` · ${stage.dependencyEvidence}` : ""}
+                </div>
+                <div className="min-w-0 overflow-hidden">
+                  {stage.rows.map((row, rowIndex) => {
+                    const rowIsActive = stage.state === "active" && taskStatusKind(row) === "running" && !row.terminal;
+                    return <MemoizedTaskAgentListRow key={taskRowKey(row, rowIndex)} row={row} index={rowIndex} dense={false} actions={actions} forceLiveDemand={programIsActive && rowIsActive} />;
+                  })}
+                </div>
+              </section>
+            );
+          })}
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
+function TaskRowsView({ rows, actions, program = null, swarm = false, strategy = "explore", integrationContract = "", integrationRequired = false }: { rows: TaskToolRow[]; actions?: TaskChildCardActions; program?: TaskProgram | null; swarm?: boolean; strategy?: "explore" | "assembly"; integrationContract?: string; integrationRequired?: boolean }) {
+  if (swarm) return rows.length > 0 ? <TaskSwarmRowsView rows={rows} actions={actions} strategy={strategy} integrationContract={integrationContract} integrationRequired={integrationRequired} /> : null;
+  if (program) return <TaskProgramRowsView program={program} actions={actions} />;
   if (rows.length === 0) return null;
-  if (rows.length > TASK_SWARM_THRESHOLD) return <TaskSwarmRowsView rows={rows} actions={actions} />;
   return <TaskAgentRowsView rows={rows} actions={actions} />;
 }
 
@@ -1173,7 +1273,7 @@ function searchReadPathSummaries(toolMessages: StructuredToolMessage[]): SearchR
       if (entry) entry.readCount += 1;
       continue;
     }
-    if (toolName !== "search") continue;
+    if (toolName !== "search" && toolName !== "find") continue;
     for (const file of message.searchData?.files ?? []) {
       const entry = ensurePath(file.path);
       if (!entry) continue;
@@ -1383,6 +1483,290 @@ function ReviewWorktreeRow({ item }: { item: ManageSessionCardItem }) {
   );
 }
 
+export function ManageArtifactCard({
+  toolMessage,
+  artifactCatalog = [],
+  artifactHref,
+  onArtifactNavigate,
+  onArtifactSelections,
+}: {
+  toolMessage: StructuredToolMessage;
+  artifactCatalog?: DesktopV3ArtifactCatalogEntry[];
+  artifactHref?: (artifact: DesktopV3ArtifactCatalogEntry) => string;
+  onArtifactNavigate?: (artifact: DesktopV3ArtifactCatalogEntry) => void;
+  onArtifactSelections?: (selections: DesktopV3ArtifactMessageSelection[]) => void;
+}) {
+  const output = toolMessage.outputJson ?? parseToolJSON(toolMessage.output) ?? parseToolJSON(toolMessage.completedOutput);
+  const args = toolMessage.argumentsJson ?? parseToolJSON(toolMessage.argumentsText);
+  const action = (toolMessage.artifactData?.action || toolJsonString(output, "action") || toolJsonString(args, "action") || "create").trim().toLowerCase();
+  const isImageCapabilities = action === "image_capabilities";
+  const isImageGeneration = action === "generate_image";
+  const isInspection = ["get", "read", "list"].includes(action);
+  const rawArtifact = toolMessage.artifactData?.artifact ?? (output?.artifact ? normalizeDesktopV3ArtifactCatalogEntry(output.artifact) : null);
+
+  const matchedCatalogEntry = rawArtifact
+    ? artifactCatalog.find((entry) => (
+        entry.artifactId === rawArtifact.artifactId
+        && entry.sessionId === rawArtifact.sessionId
+        && entry.collectionId === rawArtifact.collectionId
+        && entry.eventSeq === rawArtifact.eventSeq
+      ))
+    : null;
+  const artifact = matchedCatalogEntry ?? rawArtifact;
+  const [artifactActionError, setArtifactActionError] = useState("");
+  const [artifactActionConfirmation, setArtifactActionConfirmation] = useState("");
+  const [artifactRevealPending, setArtifactRevealPending] = useState(false);
+
+  const isRunning = toolMessage.state === "running";
+  const isError = toolMessage.state === "error" || Boolean(toolMessage.error);
+  if (isInspection) {
+    const inspectionLabel = action === "list" ? "Checked artifacts" : isRunning ? "Checking artifact…" : "Checked artifact";
+    const inspectionSummary = rawArtifact?.label || toolJsonString(args, "filename") || toolJsonString(args, "entry");
+    return (
+      <div className="mb-1 flex min-w-0 items-center gap-1.5 py-1 text-[11px] text-[var(--app-text-subtle)]" data-artifact-inspection-activity data-testid="desktop-artifact-inspection-card">
+        {isError ? <XCircle size={11} className="shrink-0 text-[var(--app-danger)]" aria-hidden="true" /> : isRunning ? <LoaderCircle size={11} className="shrink-0 motion-safe:animate-spin motion-reduce:animate-none" aria-hidden="true" /> : <CheckCircle2 size={11} className="shrink-0" aria-hidden="true" />}
+        <span className="shrink-0 font-medium">{isError ? "Artifact check failed" : inspectionLabel}</span>
+        {inspectionSummary ? <span className="min-w-0 truncate">· {inspectionSummary}</span> : null}
+        {isError && toolMessage.error ? <span className="min-w-0 truncate text-[var(--app-danger)]">· {toolMessage.error}</span> : null}
+      </div>
+    );
+  }
+  const label = artifact?.label
+    || toolJsonString(args, "label")
+    || toolJsonString(args, "filename")
+    || (isImageCapabilities ? "Image generation options" : isImageGeneration ? "Generated image" : "Artifact");
+  const description = artifact?.description
+    || toolJsonString(args, "description")
+    || (isImageCapabilities ? "Checking the configured image model and supported output sizes." : "");
+  const mediaType = artifact?.mediaType || toolJsonString(args, "media_type");
+  const filename = artifact?.filename || toolJsonString(args, "filename");
+  const status = artifact?.status || (isError ? "failed" : isRunning ? "staging" : "ready");
+
+  const actionTitle = isImageCapabilities ? "Image setup" : isImageGeneration ? "Image generation" : action === "create_package" ? "Artifact package" : action === "list" ? "Artifact list" : action === "get" || action === "read" ? "Artifact read" : "Artifact";
+  const statusLabel = isError
+    ? "Failed"
+    : isImageCapabilities
+      ? isRunning ? "Checking…" : "Options ready"
+      : isImageGeneration
+        ? isRunning ? "Generating…" : status === "ready" ? "Image ready" : status || "Created"
+        : isRunning ? "Creating…" : status === "ready" ? "Ready" : status || "Created";
+
+  const href = artifact && artifactHref ? artifactHref(artifact) : undefined;
+
+  const handleOpenViewer = (event?: MouseEvent) => {
+    if (!artifact) return;
+    if (onArtifactNavigate && event && !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey && event.button === 0) {
+      event.preventDefault();
+      onArtifactNavigate(artifact);
+    } else if (onArtifactNavigate && !event) {
+      onArtifactNavigate(artifact);
+    }
+  };
+
+  const artifactSelection = artifact ? (() => {
+    try {
+      return desktopV3ArtifactMessageSelection(artifact, "select");
+    } catch {
+      return null;
+    }
+  })() : null;
+
+  const handleDownload = async () => {
+    if (!artifact) return;
+    try {
+      setArtifactActionError("");
+      setArtifactActionConfirmation("");
+      const blob = await fetchDesktopV3ArtifactDownload(artifact);
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = desktopV3ArtifactDownloadName(artifact);
+      anchor.click();
+      window.setTimeout(() => URL.revokeObjectURL(url), 0);
+    } catch (error) {
+      setArtifactActionError(error instanceof Error ? error.message : "Artifact download failed");
+    }
+  };
+
+  const handleReveal = async () => {
+    if (!artifact || artifact.localRevealAvailable !== true) return;
+    try {
+      setArtifactRevealPending(true);
+      setArtifactActionError("");
+      setArtifactActionConfirmation("");
+      const result = await revealDesktopV3Artifact(artifact.sessionId, artifact.artifactId);
+      setArtifactActionConfirmation(`Opened ${result.displayLocation}`);
+    } catch (error) {
+      setArtifactActionError(error instanceof Error ? error.message : "Could not open this artifact in the native file manager");
+    } finally {
+      setArtifactRevealPending(false);
+    }
+  };
+
+  const handleSelect = () => {
+    if (!artifactSelection || !onArtifactSelections) return;
+    setArtifactActionError("");
+    onArtifactSelections([artifactSelection]);
+  };
+
+  const isMediaWide = artifact?.mediaType.startsWith("image/") || artifact?.mediaType.startsWith("video/") || artifact?.kind === "video";
+  const artifactActionClassName = "inline-flex h-8 items-center justify-center gap-1.5 whitespace-nowrap rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-2.5 text-xs font-medium text-[var(--app-text-muted)] transition hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]";
+
+  return (
+    <div className="mb-2 w-full min-w-0 py-1.5" data-testid="desktop-artifact-tool-card" data-timeline-artifact-card>
+      <div className="w-full min-w-0 rounded-2xl border border-[var(--app-border)] bg-[linear-gradient(145deg,color-mix(in_srgb,var(--app-accent)_8%,var(--app-surface)),var(--app-surface)_45%)] p-3.5 shadow-sm">
+        <div className="flex min-w-0 items-center justify-between gap-2.5">
+          <div className="flex min-w-0 items-center gap-2">
+            <span className="grid h-7 w-7 shrink-0 place-items-center rounded-xl bg-[color-mix(in_srgb,var(--app-accent)_15%,transparent)] text-[var(--app-accent)]">
+              {isRunning ? <LoaderCircle size={14} className="animate-spin" /> : <Sparkles size={14} />}
+            </span>
+            <div className="min-w-0">
+              <span className="text-[10px] font-semibold uppercase tracking-[0.1em] text-[var(--app-text-subtle)]">{actionTitle}</span>
+              <h4 className="truncate text-sm font-semibold text-[var(--app-text)]" title={label}>{label}</h4>
+            </div>
+          </div>
+          <span className={cn(
+            "shrink-0 rounded-full px-2 py-0.5 text-[10px] font-medium capitalize",
+            isError ? "bg-[var(--app-danger-bg)] text-[var(--app-danger)]" : isRunning ? "bg-[var(--app-primary-bg)] text-[var(--app-primary)]" : "bg-[var(--app-success-bg)] text-[var(--app-success)]"
+          )}>
+            {statusLabel}
+          </span>
+        </div>
+
+        {description ? (
+          <p className="mt-2 text-xs leading-5 text-[var(--app-text-muted)] line-clamp-2" title={description}>{description}</p>
+        ) : null}
+
+        {isImageGeneration && isRunning ? (
+          <div
+            className="relative mt-3 aspect-video w-full max-w-3xl overflow-hidden rounded-xl border border-[color-mix(in_srgb,var(--app-primary)_28%,var(--app-border))] bg-[linear-gradient(120deg,color-mix(in_srgb,var(--app-primary)_8%,var(--app-bg-alt)),var(--app-bg-alt),color-mix(in_srgb,var(--app-accent)_10%,var(--app-bg-alt)))]"
+            data-testid="image-generation-pending"
+            role="status"
+            aria-label="Generating image"
+          >
+            <div className="absolute inset-0 motion-safe:animate-pulse bg-[radial-gradient(circle_at_30%_35%,color-mix(in_srgb,var(--app-primary)_20%,transparent),transparent_42%),radial-gradient(circle_at_70%_65%,color-mix(in_srgb,var(--app-accent)_18%,transparent),transparent_40%)] motion-reduce:animate-none" aria-hidden="true" />
+            <div className="relative grid size-full place-items-center px-5 text-center">
+              <div>
+                <span className="mx-auto grid size-11 place-items-center rounded-2xl bg-[color-mix(in_srgb,var(--app-primary)_14%,var(--app-surface))] text-[var(--app-primary)] shadow-sm">
+                  <Sparkles size={20} className="motion-safe:animate-pulse motion-reduce:animate-none" aria-hidden="true" />
+                </span>
+                <div className="mt-3 text-sm font-semibold text-[var(--app-text)]">Generating your image…</div>
+                <div className="mt-1 text-xs text-[var(--app-text-muted)]">The full preview will appear here when it is ready.</div>
+              </div>
+            </div>
+          </div>
+        ) : null}
+
+        {artifact && status === "ready" ? (
+          href ? (
+            <a
+              href={href}
+              onClick={handleOpenViewer}
+              className={cn("mt-3 block w-full overflow-hidden rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-primary)]", isMediaWide ? "max-w-3xl" : "max-w-sm")}
+              aria-label={`Open ${label} artifact`}
+              data-testid="artifact-preview-link"
+            >
+              <DesktopV3ArtifactPreviewThumbnail artifact={artifact} presentation={isMediaWide ? "wide" : "thumbnail"} />
+            </a>
+          ) : onArtifactNavigate ? (
+            <button
+              type="button"
+              onClick={() => handleOpenViewer()}
+              className={cn("mt-3 block w-full overflow-hidden rounded-lg text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-primary)]", isMediaWide ? "max-w-3xl" : "max-w-sm")}
+              aria-label={`Open ${label} artifact`}
+              data-testid="artifact-preview-button"
+            >
+              <DesktopV3ArtifactPreviewThumbnail artifact={artifact} presentation={isMediaWide ? "wide" : "thumbnail"} />
+            </button>
+          ) : (
+            <DesktopV3ArtifactPreviewThumbnail artifact={artifact} className="mt-3" presentation={isMediaWide ? "wide" : "thumbnail"} />
+          )
+        ) : null}
+
+        <div className="mt-2.5 flex min-w-0 flex-wrap items-center gap-2 text-[11px] text-[var(--app-text-subtle)]">
+          {mediaType && !isImageCapabilities ? <span className="rounded bg-[var(--app-bg-alt)] px-1.5 py-0.5 font-mono text-[10px] text-[var(--app-text-muted)]">{mediaType}</span> : null}
+          {filename && filename !== label ? <span className="font-mono text-[10px] truncate max-w-48">{filename}</span> : null}
+          {artifact?.collectionId ? <span className="font-mono text-[10px] truncate max-w-36">col: {artifact.collectionId}</span> : null}
+        </div>
+
+        {isError && toolMessage.error ? (
+          <div className="mt-2.5 rounded-lg border border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] px-3 py-2 text-xs text-[var(--app-danger)]">
+            {toolMessage.error}
+          </div>
+        ) : null}
+
+        {artifactActionError ? (
+          <div className="mt-2.5 rounded-lg border border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] px-3 py-2 text-xs text-[var(--app-danger)]">
+            {artifactActionError}
+          </div>
+        ) : artifactActionConfirmation ? (
+          <div className="mt-2.5 rounded-lg border border-[var(--app-success)] bg-[var(--app-success-bg)] px-3 py-2 text-xs text-[var(--app-success)]">
+            {artifactActionConfirmation}
+          </div>
+        ) : null}
+
+        {artifact ? (
+          <div className="mt-3 flex min-w-0 flex-wrap items-center gap-2 border-t border-[color-mix(in_srgb,var(--app-border)_75%,transparent)] pt-2.5">
+            {href ? (
+              <a
+                href={href}
+                onClick={handleOpenViewer}
+                className={artifactActionClassName}
+                data-testid="open-artifact-viewer-link"
+              >
+                Open in viewer <ExternalLink size={12} />
+              </a>
+            ) : onArtifactNavigate ? (
+              <button
+                type="button"
+                onClick={() => handleOpenViewer()}
+                className={artifactActionClassName}
+                data-testid="open-artifact-viewer-button"
+              >
+                Open in viewer <ExternalLink size={12} />
+              </button>
+            ) : null}
+
+            {status === "ready" && artifact.localRevealAvailable === true ? (
+              <button
+                type="button"
+                onClick={() => void handleReveal()}
+                className={artifactActionClassName}
+                disabled={artifactRevealPending}
+                data-testid="show-artifact-in-folder-button"
+              >
+                {artifactRevealPending ? <LoaderCircle size={12} className="animate-spin" aria-hidden="true" /> : <FolderOpen size={12} aria-hidden="true" />} Show in folder
+              </button>
+            ) : null}
+
+            {status === "ready" ? (
+              <button
+                type="button"
+                onClick={() => void handleDownload()}
+                className={artifactActionClassName}
+                data-testid="download-artifact-button"
+              >
+                <Download size={12} aria-hidden="true" /> Download
+              </button>
+            ) : null}
+
+            {onArtifactSelections && artifactSelection && status === "ready" ? (
+              <button
+                type="button"
+                onClick={handleSelect}
+                className={artifactActionClassName}
+                data-testid="select-artifact-button"
+              >
+                Select
+              </button>
+            ) : null}
+          </div>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
 function ManageSessionsCard({ toolMessage }: { toolMessage: StructuredToolMessage }) {
   const output = toolMessage.outputJson ?? parseToolJSON(toolMessage.output) ?? parseToolJSON(toolMessage.completedOutput);
   if (!output) return null;
@@ -1484,8 +1868,122 @@ function ManageSessionsCard({ toolMessage }: { toolMessage: StructuredToolMessag
   );
 }
 
+function worktreeStateTone(state: string): string {
+  switch (state.trim().toLowerCase()) {
+    case "integrated":
+      return "bg-[color-mix(in_srgb,var(--app-success)_13%,transparent)] text-[var(--app-success)]";
+    case "committed":
+      return "bg-[color-mix(in_srgb,var(--app-primary)_12%,transparent)] text-[var(--app-primary)]";
+    case "blocked":
+    case "conflicting":
+    case "dirty-recoverable":
+    case "stale":
+      return "bg-[color-mix(in_srgb,var(--app-warning)_14%,transparent)] text-[var(--app-warning)]";
+    default:
+      return "bg-[var(--app-surface-hover)] text-[var(--app-text-muted)]";
+  }
+}
+
+function worktreeLabel(value: string): string {
+  const normalized = value.trim().replace(/[-_]+/g, " ");
+  return normalized ? normalized.replace(/^\w/, (letter) => letter.toUpperCase()) : "";
+}
+
+function ManageWorktreeCard({ toolMessage }: { toolMessage: StructuredToolMessage }) {
+  const output = toolMessage.outputJson ?? parseToolJSON(toolMessage.output) ?? parseToolJSON(toolMessage.completedOutput);
+  const args = toolMessage.argumentsJson ?? parseToolJSON(toolMessage.argumentsText);
+  const action = toolJsonString(output, "action") || toolJsonString(args, "action") || "inspect";
+  const children = toolJsonRecords(output, "children");
+  const stateCounts = toolJsonRecord(output?.state_counts);
+  const childStates = toolJsonRecord(output?.child_states);
+  const taskCallId = toolJsonString(output, "task_call_id") || toolJsonString(args, "task_call_id");
+  const total = output ? manageSessionNumber(output, "total") : null;
+  const returned = output ? manageSessionNumber(output, "returned") : null;
+  const selected = output ? manageSessionNumber(output, "selected_count") : null;
+  const parentHead = toolJsonString(output, "resulting_parent_head") || toolJsonString(output, "parent_head");
+  const selection = worktreeLabel(toolJsonString(output, "selection"));
+  const isRecall = action === "recall";
+  const isIntegrate = action === "integrate";
+  const stateBadges = stateCounts ? Object.entries(stateCounts).flatMap(([state, count]) => (
+    typeof count === "number" && count > 0 ? [{ state, count }] : []
+  )) : [];
+  const integratedCount = childStates
+    ? Object.values(childStates).filter((state) => state === "integrated").length
+    : selected ?? 0;
+  const title = isRecall ? "Worktree children" : isIntegrate ? "Worktrees integrated" : "Worktree details";
+  const summary = isRecall
+    ? `${total ?? children.length} ${(total ?? children.length) === 1 ? "child" : "children"}${returned !== null && total !== null && returned < total ? ` · ${returned} shown` : ""}`
+    : isIntegrate
+      ? `${integratedCount} ${integratedCount === 1 ? "child" : "children"} integrated`
+      : worktreeLabel(action);
+
+  return (
+    <div className="mb-2 min-w-0 py-1.5">
+      <section className="min-w-0 max-w-full overflow-hidden rounded-2xl border border-[var(--app-border)] bg-[linear-gradient(145deg,color-mix(in_srgb,var(--app-primary)_8%,var(--app-surface)),var(--app-surface)_45%)] shadow-[0_12px_35px_rgba(0,0,0,0.08)]" data-manage-worktree-card>
+        <header className="flex min-w-0 items-center justify-between gap-3 border-b border-[var(--app-border)] px-4 py-3">
+          <div className="flex min-w-0 items-center gap-2.5">
+            <span className="grid h-8 w-8 shrink-0 place-items-center rounded-xl bg-[color-mix(in_srgb,var(--app-primary)_15%,transparent)] text-[var(--app-primary)]"><GitBranch size={15} /></span>
+            <div className="min-w-0">
+              <h4 className="truncate text-sm font-semibold text-[var(--app-text)]">{title}</h4>
+              <p className="truncate text-[11px] text-[var(--app-text-subtle)]" title={summary}>{summary}</p>
+            </div>
+          </div>
+          <span className="shrink-0 rounded-full border border-[var(--app-border)] bg-[color-mix(in_srgb,var(--app-surface)_82%,transparent)] px-2 py-1 text-[9px] font-semibold uppercase tracking-[0.08em] text-[var(--app-text-muted)]">{worktreeLabel(action)}</span>
+        </header>
+
+        {isRecall ? (
+          <div className={TOOL_RESULT_BODY_CLASS}>
+            {(taskCallId || stateBadges.length > 0) ? (
+              <div className="flex min-w-0 flex-wrap items-center gap-1.5 border-b border-[var(--app-border)] bg-[color-mix(in_srgb,var(--app-surface)_82%,transparent)] px-3 py-2">
+                {taskCallId ? <span className="mr-auto min-w-0 truncate font-mono text-[10px] text-[var(--app-text-muted)]" title={taskCallId}>Task call · {taskCallId}</span> : null}
+                {stateBadges.map(({ state, count }) => <span key={state} className={cn("shrink-0 rounded-full px-2 py-0.5 text-[9px] font-semibold", worktreeStateTone(state))}>{count} {worktreeLabel(state).toLowerCase()}</span>)}
+              </div>
+            ) : null}
+            {children.length > 0 ? (
+              <div className="grid min-w-0 gap-2 p-2.5">
+                {children.map((child, index) => {
+                  const sessionId = toolJsonString(child, "child_session_id");
+                  const childTitle = toolJsonString(child, "title") || toolJsonString(child, "assignment_label") || sessionId || `Child ${index + 1}`;
+                  const state = toolJsonString(child, "child_state");
+                  const branch = toolJsonString(child, "child_branch") || toolJsonString(child, "worktree_branch");
+                  const head = toolJsonString(child, "head_commit");
+                  return (
+                    <article key={sessionId || `${childTitle}:${index}`} className="min-w-0 rounded-xl border border-[var(--app-border)] bg-[color-mix(in_srgb,var(--app-surface)_88%,transparent)] p-3">
+                      <div className="flex min-w-0 items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <div className="truncate text-[12px] font-semibold text-[var(--app-text)]" title={childTitle}>{childTitle}</div>
+                          {sessionId && childTitle !== sessionId ? <div className="mt-0.5 truncate font-mono text-[9px] text-[var(--app-text-subtle)]" title={sessionId}>{sessionId}</div> : null}
+                        </div>
+                        {state ? <span className={cn("shrink-0 rounded-full px-2 py-0.5 text-[9px] font-semibold", worktreeStateTone(state))}>{worktreeLabel(state)}</span> : null}
+                      </div>
+                      {(branch || head) ? <div className="mt-2 flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 border-t border-[var(--app-border)] pt-2 text-[10px] text-[var(--app-text-muted)]">{branch ? <span className="inline-flex min-w-0 items-center gap-1"><GitBranch size={10} className="shrink-0" /><span className="truncate font-mono" title={branch}>{branch}</span></span> : null}{head ? <span className="truncate font-mono" title={head}>{head}</span> : null}</div> : null}
+                    </article>
+                  );
+                })}
+              </div>
+            ) : <div className="px-4 py-3 text-xs text-[var(--app-text-muted)]">No child worktrees found.</div>}
+          </div>
+        ) : null}
+
+        {isIntegrate ? (
+          <div className="grid min-w-0 gap-2 p-2.5 sm:grid-cols-2">
+            {taskCallId ? <div className="min-w-0 rounded-xl border border-[var(--app-border)] bg-[color-mix(in_srgb,var(--app-surface)_88%,transparent)] p-3"><div className="text-[9px] font-semibold uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Task call</div><div className="mt-1 truncate font-mono text-[10px] text-[var(--app-text)]" title={taskCallId}>{taskCallId}</div></div> : null}
+            {selection ? <div className="min-w-0 rounded-xl border border-[var(--app-border)] bg-[color-mix(in_srgb,var(--app-surface)_88%,transparent)] p-3"><div className="text-[9px] font-semibold uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Selection</div><div className="mt-1 text-[11px] font-medium text-[var(--app-text)]">{selection}</div></div> : null}
+            {parentHead ? <div className="min-w-0 rounded-xl border border-[var(--app-border)] bg-[color-mix(in_srgb,var(--app-surface)_88%,transparent)] p-3 sm:col-span-2"><div className="text-[9px] font-semibold uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Parent head</div><div className="mt-1 truncate font-mono text-[10px] text-[var(--app-text)]" title={parentHead}>{parentHead}</div></div> : null}
+          </div>
+        ) : null}
+
+        {!isRecall && !isIntegrate && toolMessage.previewLines.length > 0 ? <div className="p-3"><PreviewLinesView lines={toolMessage.previewLines} commandText={toolMessage.commandText} compact plain /></div> : null}
+        {toolMessage.error ? <div className="border-t border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] px-3 py-2 text-xs text-[var(--app-danger)]">{toolMessage.error}</div> : null}
+      </section>
+    </div>
+  );
+}
+
 function shouldRenderPreviewAsPlain(toolName: string): boolean {
   switch (toolName.trim().toLowerCase()) {
+    case "manage_worktree":
+    case "manage-worktree":
     case "manage_todos":
     case "manage-todos":
     case "manage_theme":
@@ -1517,8 +2015,10 @@ function parseToolJSON(value: string): Record<string, unknown> | null {
   }
 }
 
-function planTransitionLabel(action: string): string {
+function planTransitionLabel(action: string, startedPlan = false): string {
   switch (action.trim().toLowerCase().replace(/-/g, "_")) {
+    case "request_new_plan":
+      return startedPlan ? "Plan started" : "Plan requested";
     case "start_session_checkpoint":
     case "start_checkpoint":
       return "Checkpoint started";
@@ -1590,6 +2090,25 @@ function findPlanCheckpoint(document: Record<string, unknown> | null, checkpoint
   return toolJsonRecords(document, "checkpoints").find((checkpoint) => toolJsonString(checkpoint, "id") === checkpointId) ?? null;
 }
 
+function planCheckpointDisplayLabel(
+  document: Record<string, unknown> | null,
+  checkpoint: Record<string, unknown> | null,
+  checkpointId: string,
+): string {
+  const checkpoints = toolJsonRecords(document, "checkpoints");
+  const index = checkpoint
+    ? checkpoints.findIndex((candidate) => candidate === checkpoint || toolJsonString(candidate, "id") === checkpointId)
+    : checkpoints.findIndex((candidate) => toolJsonString(candidate, "id") === checkpointId);
+  const order = checkpoint && typeof checkpoint.order === "number" && Number.isFinite(checkpoint.order)
+    ? Math.max(1, Math.trunc(checkpoint.order))
+    : index >= 0
+      ? index + 1
+      : 0;
+  if (order > 0) return `Checkpoint ${order}`;
+  const match = checkpointId.trim().match(/^cp[-_ ]?(\d+)$/i);
+  return match ? `Checkpoint ${match[1]}` : checkpointId ? "Checkpoint" : "";
+}
+
 function planTransitionSubtasks(
   action: string,
   payload: Record<string, unknown> | null,
@@ -1613,17 +2132,22 @@ function planTransitionSubtasks(
   return ids.size > 0 ? subtasks.filter((subtask) => ids.has(toolJsonString(subtask, "id"))) : [];
 }
 
-function planTransitionStatus(payload: Record<string, unknown> | null, checkpoint: Record<string, unknown> | null): string {
+function planTransitionStatus(
+  payload: Record<string, unknown> | null,
+  checkpoint: Record<string, unknown> | null,
+  preferExecutionStatus = false,
+): string {
   if (!payload) return "";
+  const summary = toolJsonRecord(payload.execution_summary);
+  if (summary?.review_required === true) return "Waiting review";
+  if (summary?.blocked === true) return "Blocked";
+  if (summary?.failed === true) return "Failed";
+  if (summary?.plan_complete === true) return "Complete";
+  const executionStatus = toolJsonString(summary, "next_checkpoint_status") || toolJsonString(summary, "next_action");
+  if (preferExecutionStatus && executionStatus) return executionStatus;
   const checkpointStatus = toolJsonString(checkpoint, "status");
   if (checkpointStatus) return checkpointStatus;
-  const summary = toolJsonRecord(payload.execution_summary);
-  if (!summary) return toolJsonString(payload, "status");
-  if (summary.review_required === true) return "Waiting review";
-  if (summary.blocked === true) return "Blocked";
-  if (summary.failed === true) return "Failed";
-  if (summary.plan_complete === true) return "Complete";
-  return toolJsonString(summary, "next_checkpoint_status") || toolJsonString(summary, "next_action") || toolJsonString(payload, "status");
+  return executionStatus || toolJsonString(payload, "status");
 }
 
 function ExitPlanModeToolView({ toolMessage }: { toolMessage: StructuredToolMessage }) {
@@ -1635,6 +2159,9 @@ function ExitPlanModeToolView({ toolMessage }: { toolMessage: StructuredToolMess
     ? payload.execution_summary as Record<string, unknown>
     : null;
   const checkpointId = toolJsonString(summary, "active_checkpoint_id") || toolJsonString(summary, "next_checkpoint_id") || toolJsonString(payload, "checkpoint_id");
+  const document = toolJsonRecord(toolJsonRecord(payload?.plan)?.document) || toolJsonRecord(args?.document);
+  const checkpoint = findPlanCheckpoint(document, checkpointId);
+  const checkpointLabel = planCheckpointDisplayLabel(document, checkpoint, checkpointId);
   const nextStatus = toolJsonString(summary, "next_checkpoint_status").replace(/[-_]+/g, " ");
   const transitioned = payload?.mode_changed === true || toolJsonString(payload, "status").toLowerCase() === "approved";
   const isRunning = toolMessage.state === "running" && !transitioned;
@@ -1660,7 +2187,7 @@ function ExitPlanModeToolView({ toolMessage }: { toolMessage: StructuredToolMess
         </div>
         {!isRunning && (checkpointId || nextStatus) ? (
           <div className="mt-2 border-t border-[color-mix(in_srgb,var(--app-border)_75%,transparent)] pt-2 text-[10px] text-[var(--app-text-subtle)]">
-            Execution continues{checkpointId ? <> with <span className="font-mono text-[var(--app-text-muted)]">{checkpointId}</span></> : null}{nextStatus ? ` · ${nextStatus}` : ""}
+            Execution continues{checkpointLabel ? <> with <span className="font-medium text-[var(--app-text-muted)]">{checkpointLabel}</span></> : null}{nextStatus ? ` · ${nextStatus}` : ""}
           </div>
         ) : null}
       </div>
@@ -1678,10 +2205,19 @@ function PlanManageToolView({ toolMessage }: { toolMessage: StructuredToolMessag
   const checkpointId = planTransitionCheckpointId(action, payload, args, summary, document);
   const checkpoint = findPlanCheckpoint(document, checkpointId);
   const affectedSubtasks = planTransitionSubtasks(action, payload, args, checkpoint);
-  const title = toolJsonString(checkpoint, "title") || toolJsonString(plan, "title") || toolJsonString(payload, "title");
+  const planTitle = toolJsonString(plan, "title") || toolJsonString(document, "title") || toolJsonString(payload, "title") || toolJsonString(args, "title");
+  const checkpointTitle = toolJsonString(checkpoint, "title");
+  const checkpointLabel = planCheckpointDisplayLabel(document, checkpoint, checkpointId);
+  const checkpointCount = toolJsonRecords(document, "checkpoints").length;
+  const startedPlan = action.trim().toLowerCase().replace(/-/g, "_") === "request_new_plan" && Boolean(
+    toolJsonString(summary, "active_checkpoint_id") ||
+    toolJsonString(document, "active_checkpoint_id") ||
+    plan?.active === true ||
+    ["approved", "in_progress", "running"].includes(toolJsonString(plan, "status").toLowerCase()),
+  );
   const status = affectedSubtasks.length === 1
-    ? toolJsonString(affectedSubtasks[0], "status") || planTransitionStatus(payload, checkpoint)
-    : planTransitionStatus(payload, checkpoint);
+    ? toolJsonString(affectedSubtasks[0], "status") || planTransitionStatus(payload, checkpoint, startedPlan)
+    : planTransitionStatus(payload, checkpoint, startedPlan);
   const normalizedStatus = status.trim().toLowerCase().replace(/[-_]+/g, " ");
   const tone = toolMessage.state === "error" || normalizedStatus === "failed"
     ? "danger"
@@ -1713,12 +2249,15 @@ function PlanManageToolView({ toolMessage }: { toolMessage: StructuredToolMessag
             <CircleDot size={13} />
           </span>
           <div className="min-w-0 flex-1">
-            <div className="text-[13px] font-semibold leading-5 text-[var(--app-text)]">{planTransitionLabel(action)}</div>
-            {(checkpointId || title) ? (
-              <div className="flex min-w-0 flex-wrap items-center gap-x-1.5 text-[11px] leading-4 text-[var(--app-text-muted)]">
-                {checkpointId ? <span className="font-mono text-[var(--app-text-muted)]">{checkpointId}</span> : null}
-                {checkpointId && title ? <span className="text-[var(--app-text-subtle)]">·</span> : null}
-                {title ? <span className="min-w-0 truncate">{title}</span> : null}
+            <div className="text-[13px] font-semibold leading-5 text-[var(--app-text)]">{planTransitionLabel(action, startedPlan)}</div>
+            {planTitle ? <div className="truncate text-[11px] font-medium leading-4 text-[var(--app-text-muted)]" title={planTitle}>{planTitle}</div> : null}
+            {(checkpointLabel || checkpointTitle || checkpointCount > 0) ? (
+              <div className="flex min-w-0 flex-wrap items-center gap-x-1.5 text-[10px] leading-4 text-[var(--app-text-subtle)]">
+                {checkpointLabel ? <span className="font-medium">{checkpointLabel}</span> : null}
+                {checkpointLabel && checkpointTitle ? <span>·</span> : null}
+                {checkpointTitle ? <span className="min-w-0 truncate">{checkpointTitle}</span> : null}
+                {(checkpointLabel || checkpointTitle) && checkpointCount > 0 ? <span>·</span> : null}
+                {checkpointCount > 0 ? <span>{checkpointCount} {checkpointCount === 1 ? "checkpoint" : "checkpoints"}</span> : null}
               </div>
             ) : null}
             {affectedSubtasks.map((subtask) => {
@@ -1992,7 +2531,10 @@ function SearchToolView({
 
 export function SearchReadToolGroupView({ toolMessages }: { toolMessages: StructuredToolMessage[] }) {
   const paths = searchReadPathSummaries(toolMessages);
-  const searchCount = toolMessages.filter((message) => message.tool.trim().toLowerCase() === "search").length;
+  const searchCount = toolMessages.filter((message) => {
+    const toolName = message.tool.trim().toLowerCase();
+    return toolName === "search" || toolName === "find";
+  }).length;
   const readCount = toolMessages.length - searchCount;
   const runningCount = toolMessages.filter((message) => message.state === "running").length;
   const errorCount = toolMessages.filter((message) => message.state === "error").length;
@@ -2028,20 +2570,152 @@ export function SearchReadToolGroupView({ toolMessages }: { toolMessages: Struct
   );
 }
 
+function humanizeVideoValue(value: string): string {
+  return value.replace(/[_-]+/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function videoDurationLabel(ms: number): string {
+  if (ms <= 0) return "";
+  if (ms < 60_000) return `${Math.max(1, Math.round(ms / 1000))} sec`;
+  const minutes = Math.floor(ms / 60_000);
+  const seconds = Math.round((ms % 60_000) / 1000);
+  return seconds > 0 ? `${minutes} min ${seconds} sec` : `${minutes} min`;
+}
+
+function videoSizeLabel(bytes: number): string {
+  if (bytes <= 0) return "";
+  if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(bytes < 10 * 1024 * 1024 ? 1 : 0)} MB`;
+}
+
+function VideoToolCard({ toolMessage, isGroupItem }: { toolMessage: StructuredToolMessage; isGroupItem?: boolean }) {
+  const data = toolMessage.videoData;
+  if (!data) return null;
+  const running = toolMessage.state === "running";
+  const failed = toolMessage.state === "error";
+  const cancelled = data.status === "cancelled" || data.status === "canceled";
+  const title = failed ? "Video task needs attention" : running ? data.activeTitle : data.title;
+  const description = running ? toolActivityStartSummary(toolMessage) : data.subject;
+  const StateIcon = failed ? XCircle : cancelled ? CircleStop : CheckCircle2;
+  const stateLabel = failed ? "Failed" : cancelled ? "Cancelled" : running ? "In progress" : data.status && data.status !== "ok" ? humanizeVideoValue(data.status) : "Done";
+  const detailChips = [
+    data.outputPreset ? { label: "Format", value: humanizeVideoValue(data.outputPreset) } : null,
+    data.revisionNumber > 0 ? { label: "Version", value: String(data.revisionNumber) } : null,
+    data.width > 0 && data.height > 0 ? { label: "Size", value: `${data.width} × ${data.height}` } : null,
+    data.durationMs > 0 ? { label: "Length", value: videoDurationLabel(data.durationMs) } : null,
+    data.sizeBytes > 0 ? { label: "File", value: videoSizeLabel(data.sizeBytes) } : null,
+    data.language ? { label: "Language", value: data.language.toUpperCase() } : null,
+    data.validation ? { label: "Transcript", value: humanizeVideoValue(data.validation) } : null,
+    data.sourceNames.length > 0 ? { label: data.sourceNames.length === 1 ? "Source video" : "Source videos", value: data.sourceNames.join(", ") } : null,
+    data.count > 0 ? { label: "Found", value: `${data.count} ${data.count === 1 ? "item" : "items"}` } : null,
+  ].filter((chip): chip is { label: string; value: string } => Boolean(chip));
+  const references = [
+    data.projectId ? { label: "Project", value: data.projectId } : null,
+    data.revisionId ? { label: "Version ID", value: data.revisionId } : null,
+    data.jobId ? { label: "Job", value: data.jobId } : null,
+  ].filter((item): item is { label: string; value: string } => Boolean(item));
+  const showProgress = data.progress !== null && !failed && !cancelled;
+
+  return (
+    <div className={cn(isGroupItem ? "py-1.5" : "mb-2 min-w-0 py-1.5", "w-full")}>
+      <section
+        className={cn(
+          "relative min-w-0 overflow-hidden rounded-2xl border bg-[linear-gradient(135deg,color-mix(in_srgb,var(--app-primary)_10%,var(--app-surface)),var(--app-surface-subtle)_62%,var(--app-surface))] shadow-[0_8px_24px_color-mix(in_srgb,var(--app-text)_7%,transparent)]",
+          failed ? "border-[color-mix(in_srgb,var(--app-danger)_42%,var(--app-border))]" : "border-[color-mix(in_srgb,var(--app-primary)_28%,var(--app-border))]",
+        )}
+        data-manage-video-card
+        data-video-action={data.action}
+        aria-busy={running || undefined}
+      >
+        <div className="pointer-events-none absolute -right-12 -top-16 size-36 rounded-full bg-[color-mix(in_srgb,var(--app-primary)_12%,transparent)] blur-2xl" />
+        <header className="relative flex min-w-0 items-start gap-3 px-4 pb-3 pt-4">
+          <span className="grid size-10 shrink-0 place-items-center rounded-xl border border-[color-mix(in_srgb,var(--app-primary)_22%,transparent)] bg-[color-mix(in_srgb,var(--app-primary)_14%,transparent)] text-[var(--app-primary)] shadow-sm">
+            <Clapperboard size={17} aria-hidden="true" />
+          </span>
+          <div className="min-w-0 flex-1">
+            <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+              <h3 className="min-w-0 truncate text-[13px] font-semibold leading-5 text-[var(--app-text)]" title={title}>{title}</h3>
+              <span className="rounded-full bg-[color-mix(in_srgb,var(--app-primary)_11%,transparent)] px-2 py-0.5 text-[9px] font-semibold uppercase tracking-[0.12em] text-[var(--app-primary)]">Video</span>
+            </div>
+            {description ? <p className="mt-0.5 min-w-0 break-words text-[11px] leading-4 text-[var(--app-text-muted)]">{description}</p> : null}
+          </div>
+          <span className={cn("inline-flex shrink-0 items-center gap-1 rounded-full px-2 py-1 text-[10px] font-semibold", failed ? "bg-[color-mix(in_srgb,var(--app-danger)_12%,transparent)] text-[var(--app-danger)]" : "bg-[color-mix(in_srgb,var(--app-primary)_10%,transparent)] text-[var(--app-primary)]")}>
+            {running ? (
+              <span className="relative grid size-3 place-items-center" aria-hidden="true">
+                <span className="absolute size-2.5 rounded-sm border border-current motion-safe:animate-[pulse_1.8s_ease-in-out_infinite] motion-reduce:animate-none" />
+                <span className="size-1 rounded-full bg-current motion-safe:animate-[pulse_1.8s_ease-in-out_infinite] motion-reduce:animate-none" />
+              </span>
+            ) : <StateIcon size={12} aria-hidden="true" />}
+            {stateLabel}
+          </span>
+        </header>
+
+        {showProgress ? (
+          <div className="relative px-4 pb-3">
+            <div className="mb-1.5 flex items-center justify-between text-[10px] font-medium text-[var(--app-text-muted)]">
+              <span>{data.status === "rendering" ? "Rendering frames" : "Progress"}</span>
+              <span className="tabular-nums text-[var(--app-text)]">{data.progress}%</span>
+            </div>
+            <div className="h-1.5 overflow-hidden rounded-full bg-[color-mix(in_srgb,var(--app-border)_70%,transparent)]">
+              <div className="h-full rounded-full bg-[linear-gradient(90deg,var(--app-primary),var(--app-accent))] transition-[width] duration-500" style={{ width: `${data.progress}%` }} />
+            </div>
+          </div>
+        ) : null}
+
+        {detailChips.length > 0 || references.length > 0 || toolMessage.error ? (
+          <div className="relative border-t border-[color-mix(in_srgb,var(--app-border)_78%,transparent)] bg-[color-mix(in_srgb,var(--app-surface)_68%,transparent)] px-4 py-3">
+            {detailChips.length > 0 ? (
+              <div className="flex flex-wrap gap-2">
+                {detailChips.map((chip) => (
+                  <div key={`${chip.label}:${chip.value}`} className="rounded-lg border border-[color-mix(in_srgb,var(--app-border)_75%,transparent)] bg-[color-mix(in_srgb,var(--app-surface)_82%,transparent)] px-2.5 py-1.5">
+                    <div className="text-[9px] font-semibold uppercase tracking-[0.1em] text-[var(--app-text-subtle)]">{chip.label}</div>
+                    <div className="mt-0.5 text-[11px] font-medium text-[var(--app-text)]">{chip.value}</div>
+                  </div>
+                ))}
+              </div>
+            ) : null}
+            {references.length > 0 ? (
+              <div className={cn("grid gap-1.5", detailChips.length > 0 && "mt-3")}>
+                {references.map((item) => (
+                  <div key={item.label} className="flex min-w-0 items-center gap-2 text-[10px] text-[var(--app-text-muted)]">
+                    <span className="w-14 shrink-0 font-medium">{item.label}</span>
+                    <code className="min-w-0 truncate rounded bg-[color-mix(in_srgb,var(--app-code-background)_82%,transparent)] px-1.5 py-0.5 font-mono text-[10px] text-[var(--app-text)]" title={item.value}>{item.value}</code>
+                  </div>
+                ))}
+              </div>
+            ) : null}
+            {toolMessage.error ? <p className="mt-2 break-words text-[11px] leading-4 text-[var(--app-danger)]">{toolMessage.error}</p> : null}
+          </div>
+        ) : null}
+      </section>
+    </div>
+  );
+}
+
 export function ToolMessageView({
   toolMessage,
   isGroupItem,
   thinkingTagsEnabled = true,
   taskChildActions,
+  artifactCatalog,
+  artifactHref,
+  onArtifactNavigate,
+  onArtifactSelections,
 }: {
   toolMessage: StructuredToolMessage;
   isGroupItem?: boolean;
   thinkingTagsEnabled?: boolean;
   taskChildActions?: TaskChildCardActions;
+  artifactCatalog?: DesktopV3ArtifactCatalogEntry[];
+  artifactHref?: (artifact: DesktopV3ArtifactCatalogEntry) => string;
+  onArtifactNavigate?: (artifact: DesktopV3ArtifactCatalogEntry) => void;
+  onArtifactSelections?: (selections: DesktopV3ArtifactMessageSelection[]) => void;
 }) {
   const normalizedToolName = toolMessage.tool.trim().toLowerCase();
+  const isManageArtifactActivity = ["manage-artifact", "manage_artifact"].includes(normalizedToolName);
+  const isManageVideoActivity = ["manage-video", "manage_video"].includes(normalizedToolName);
   const lifecycleStatus = toolMessage.lifecycleStatus?.trim().toLowerCase() ?? "";
-  const hasStructuredTaskRows = normalizedToolName === "task" && toolMessage.taskRows.length > 0;
+  const hasStructuredTaskRows = normalizedToolName === "task" && (toolMessage.taskRows.length > 0 || Boolean(toolMessage.taskProgram));
   const activityOnly = toolMessage.state === "running"
     && !hasStructuredTaskRows
     && !toolMessage.output.trim()
@@ -2055,7 +2729,10 @@ export function ToolMessageView({
   if (normalizedToolName === "bash") {
     return <BashToolCard toolMessage={toolMessage} isGroupItem={isGroupItem} />;
   }
-  if (activityOnly || terminalWithoutResult) {
+  if (isManageVideoActivity && toolMessage.videoData) {
+    return <VideoToolCard toolMessage={toolMessage} isGroupItem={isGroupItem} />;
+  }
+  if ((activityOnly || terminalWithoutResult) && !isManageArtifactActivity && !isManageVideoActivity) {
     const errorBody = toolMessage.error.trim();
     return (
       <div className={cn(isGroupItem ? "py-1.5" : "mb-2 min-w-0 py-1.5", "w-full")}>
@@ -2092,8 +2769,11 @@ export function ToolMessageView({
     ? state === "running" ? `${activityDescriptor.activeLabel}…` : activityDescriptor.label
     : toolTheme.label || toolMessage.tool || "tool";
   const isTask = normalizedTool === "task";
-  const hasTaskRows = isTask && toolMessage.taskRows.length > 0;
-  const isTaskSwarm = hasTaskRows && toolMessage.taskRows.length > TASK_SWARM_THRESHOLD;
+  const hasTaskRows = isTask && (toolMessage.taskRows.length > 0 || Boolean(toolMessage.taskProgram));
+  const isTaskSwarm = (isTask && toolMessage.taskMode === "swarm") || (hasTaskRows && toolMessage.taskRows.some((row) => row.swarmMode));
+  const swarmStrategy = toolMessage.swarmStrategy ?? "explore";
+  const directImageSwarm = isTaskSwarm && toolMessage.taskRows.length > 0 && toolMessage.taskRows.every((row) => row.agent.trim().toLowerCase() === "image");
+  const taskLabel = directImageSwarm ? "Image Swarm" : isTaskSwarm ? (swarmStrategy === "assembly" ? "Assembly Swarm" : "Iteration Swarm") : label;
   const todoCounts = formatTodoCounts(toolMessage.todoData?.summary ?? null);
   const summary = isTaskSwarm
     ? ""
@@ -2102,11 +2782,13 @@ export function ToolMessageView({
   const previewLanguage = inferToolSyntaxLanguage(toolMessage.target || pathFromToolSummary(toolMessage.summary));
   const shellPreview = false;
   const plainPreview = shouldRenderPreviewAsPlain(toolMessage.tool);
+  const isManageArtifact = isManageArtifactActivity;
   const isManageSessions = ["manage-sessions", "manage_sessions"].includes(normalizedTool);
+  const isManageWorktree = ["manage-worktree", "manage_worktree"].includes(normalizedTool);
   const isPlanManage = ["plan-manage", "plan_manage"].includes(normalizedTool);
   const isExitPlanMode = ["exit-plan-mode", "exit_plan_mode"].includes(normalizedTool);
-  const isSearch = normalizedTool === "search";
-  const isFileAction = ["read", "list", "search", "edit"].includes(normalizedTool);
+  const isSearch = normalizedTool === "search" || normalizedTool === "find";
+  const isFileAction = ["read", "list", "search", "find", "write", "edit"].includes(normalizedTool);
   const fileSummary = isSearch
     ? ""
     : isFileAction && toolMessage.target
@@ -2115,10 +2797,22 @@ export function ToolMessageView({
   const showPreview = normalizedTool !== 'thinking' || thinkingTagsEnabled;
   if (isExitPlanMode) return <ExitPlanModeToolView toolMessage={toolMessage} />;
   if (isPlanManage) return <PlanManageToolView toolMessage={toolMessage} />;
+  if (isManageWorktree) return <ManageWorktreeCard toolMessage={toolMessage} />;
+  if (isManageArtifact) {
+    return (
+      <ManageArtifactCard
+        toolMessage={toolMessage}
+        artifactCatalog={artifactCatalog}
+        artifactHref={artifactHref}
+        onArtifactNavigate={onArtifactNavigate}
+        onArtifactSelections={onArtifactSelections}
+      />
+    );
+  }
   const hasBody = Boolean(
     toolMessage.error
     || toolMessage.editDiff
-    || (normalizedTool === "task" && toolMessage.taskRows.length > 0)
+    || (normalizedTool === "task" && (toolMessage.taskRows.length > 0 || Boolean(toolMessage.taskProgram)))
     || (normalizedTool === "search" && toolMessage.searchData)
     || (showPreview && !isManageSessions && (toolMessage.previewLines.length > 0 || toolMessage.commandText))
     || isManageSessions,
@@ -2148,7 +2842,7 @@ export function ToolMessageView({
             </span>
             <div className="min-w-0 flex-1">
               {isFileAction || isTask ? (
-                <div className="font-semibold capitalize leading-4 text-[var(--app-text)]">{label}</div>
+                <div className="font-semibold capitalize leading-4 text-[var(--app-text)]">{isTask ? taskLabel : label}</div>
               ) : null}
               {fileSummary ? (
                 <div className={cn(
@@ -2195,8 +2889,8 @@ export function ToolMessageView({
         ) : null}
         {!toolMessage.editDiff &&
         toolMessage.tool === "task" &&
-        toolMessage.taskRows.length > 0 ? (
-          <TaskRowsView rows={toolMessage.taskRows} actions={taskChildActions} />
+        (toolMessage.taskRows.length > 0 || toolMessage.taskProgram) ? (
+          <TaskRowsView rows={toolMessage.taskRows} actions={taskChildActions} program={toolMessage.taskProgram} swarm={isTaskSwarm} strategy={swarmStrategy} integrationContract={toolMessage.integrationContract} integrationRequired={toolMessage.integrationRequired} />
         ) : null}
         {!toolMessage.editDiff &&
         isSearch &&
@@ -2205,7 +2899,7 @@ export function ToolMessageView({
         ) : null}
         {!toolMessage.editDiff &&
         !isSearch &&
-        !(toolMessage.tool === "task" && toolMessage.taskRows.length > 0) &&
+        !(toolMessage.tool === "task" && (toolMessage.taskRows.length > 0 || toolMessage.taskProgram)) &&
         showPreview &&
         !isManageSessions &&
         (toolMessage.previewLines.length > 0 || toolMessage.commandText) ? (
@@ -2277,9 +2971,23 @@ function ChatMarkdownInner({
   toolMessage,
   thinkingTagsEnabled = true,
   taskChildActions,
+  artifactCatalog,
+  artifactHref,
+  onArtifactNavigate,
+  onArtifactSelections,
 }: ChatMarkdownProps) {
   if (toolMessage) {
-    return <ToolMessageView toolMessage={toolMessage} thinkingTagsEnabled={thinkingTagsEnabled} taskChildActions={taskChildActions} />;
+    return (
+      <ToolMessageView
+        toolMessage={toolMessage}
+        thinkingTagsEnabled={thinkingTagsEnabled}
+        taskChildActions={taskChildActions}
+        artifactCatalog={artifactCatalog}
+        artifactHref={artifactHref}
+        onArtifactNavigate={onArtifactNavigate}
+        onArtifactSelections={onArtifactSelections}
+      />
+    );
   }
 
   return (

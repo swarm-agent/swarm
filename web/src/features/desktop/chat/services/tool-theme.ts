@@ -16,6 +16,7 @@ import {
   Sparkles,
   Brain,
   Wrench,
+  Clapperboard,
   type LucideIcon,
 } from 'lucide-react'
 
@@ -38,6 +39,14 @@ const TOOL_THEME_MAP: Record<string, ToolThemeEntry> = {
   webfetch: { icon: Download, label: 'webfetch', color: 'var(--app-accent)' },
   webdownload: { icon: Download, label: 'webdownload', color: 'var(--app-accent)' },
   task: { icon: GitBranch, label: 'task', color: 'var(--app-primary)' },
+  'manage-worktree': { icon: GitBranch, label: 'worktree', color: 'var(--app-primary)' },
+  manage_worktree: { icon: GitBranch, label: 'worktree', color: 'var(--app-primary)' },
+  'manage-artifact': { icon: Sparkles, label: 'artifact', color: 'var(--app-accent)' },
+  manage_artifact: { icon: Sparkles, label: 'artifact', color: 'var(--app-accent)' },
+  'manage-video': { icon: Clapperboard, label: 'video', color: 'var(--app-primary)' },
+  manage_video: { icon: Clapperboard, label: 'video', color: 'var(--app-primary)' },
+  'manage-sessions': { icon: MessageSquare, label: 'sessions', color: 'var(--app-primary)' },
+  manage_sessions: { icon: MessageSquare, label: 'sessions', color: 'var(--app-primary)' },
   'manage-todos': { icon: ListChecks, label: 'todo', color: 'var(--app-primary)' },
   manage_todos: { icon: ListChecks, label: 'todo', color: 'var(--app-primary)' },
   'manage-theme': { icon: Sparkles, label: 'theme', color: 'var(--app-accent)' },

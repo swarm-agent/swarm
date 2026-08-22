@@ -382,6 +382,14 @@ type ModelPreferenceAction struct {
 	Resolved client.ModelResolved
 }
 
+type DraftModelPreferenceAction struct {
+	Preference      client.ModelPreference
+	ContextWindow   int
+	MaxOutputTokens int
+}
+
+func (DraftModelPreferenceAction) isV3ChatAction() {}
+
 func (ModelPreferenceAction) isV3ChatAction() {}
 
 type ModelProfileAction struct {
@@ -492,6 +500,14 @@ func Reduce(current State, action Action) State {
 		next.Model.Preference = normalizeModelPreference(value.Resolved.Preference)
 		next.Model.ContextWindow = value.Resolved.ContextWindow
 		next.Model.MaxOutputTokens = value.Resolved.MaxOutputTokens
+	case DraftModelPreferenceAction:
+		next.Model.Preference = normalizeModelPreference(value.Preference)
+		next.Model.ContextWindow = value.ContextWindow
+		next.Model.MaxOutputTokens = value.MaxOutputTokens
+		next.Model.Locked = false
+		next.Model.LockReason = ""
+		next.Model.ProfileName = ""
+		next.Model.ProfileSource = "temporary"
 	case ModelProfileAction:
 		applyAgentModelPolicy(&next.Model, value.Policy.Preference, value.Policy.ContextWindow, value.Policy.MaxOutputTokens, value.Policy)
 	case ModeAction:
@@ -991,6 +1007,9 @@ func messageFromClient(value client.SessionMessage) Message {
 func finalHandoffFromMetadata(metadata map[string]any) *client.PlanFinalHandoff {
 	value, ok := metadata["final_handoff"]
 	if !ok || value == nil {
+		value, ok = metadata["blocked_handoff"]
+	}
+	if !ok || value == nil {
 		return nil
 	}
 	raw, err := json.Marshal(value)
@@ -1004,7 +1023,10 @@ func finalHandoffFromMetadata(metadata map[string]any) *client.PlanFinalHandoff 
 	handoff.Title = strings.TrimSpace(handoff.Title)
 	handoff.Overview = strings.TrimSpace(handoff.Overview)
 	handoff.ImpactBullets = cleanStrings(handoff.ImpactBullets, 3)
+	handoff.CopyableCodeBlocks = cleanHandoffCodeBlocks(handoff.CopyableCodeBlocks, 3)
 	handoff.SuggestedPrompts = cleanHandoffPrompts(handoff.SuggestedPrompts, 3)
+	handoff.Artifacts = cleanHandoffArtifacts(handoff.Artifacts, 20)
+	handoff.Recommendation = cleanHandoffRecommendation(handoff.Recommendation)
 	handoff.Details.ChangedFiles = cleanStrings(handoff.Details.ChangedFiles, 0)
 	handoff.Details.Validation = cleanStrings(handoff.Details.Validation, 0)
 	return &handoff
@@ -1014,6 +1036,21 @@ func cleanStrings(values []string, limit int) []string {
 	out := make([]string, 0, len(values))
 	for _, value := range values {
 		if value = strings.TrimSpace(value); value != "" {
+			out = append(out, value)
+			if limit > 0 && len(out) == limit {
+				break
+			}
+		}
+	}
+	return out
+}
+
+func cleanHandoffCodeBlocks(values []client.PlanFinalHandoffCopyableCodeBlock, limit int) []client.PlanFinalHandoffCopyableCodeBlock {
+	out := make([]client.PlanFinalHandoffCopyableCodeBlock, 0, len(values))
+	for _, value := range values {
+		value.Label = strings.TrimSpace(value.Label)
+		value.Language = strings.TrimSpace(value.Language)
+		if strings.TrimSpace(value.Code) != "" {
 			out = append(out, value)
 			if limit > 0 && len(out) == limit {
 				break
@@ -1038,6 +1075,52 @@ func cleanHandoffPrompts(values []client.PlanFinalHandoffSuggestedPrompt, limit 
 	return out
 }
 
+func cleanHandoffRecommendation(value *client.SessionPlanCheckpointRecommendation) *client.SessionPlanCheckpointRecommendation {
+	if value == nil {
+		return nil
+	}
+	cleaned := *value
+	cleaned.Decision = strings.TrimSpace(cleaned.Decision)
+	cleaned.Action = strings.TrimSpace(cleaned.Action)
+	cleaned.Reason = strings.TrimSpace(cleaned.Reason)
+	cleaned.ActionState = strings.TrimSpace(cleaned.ActionState)
+	cleaned.Prompt = strings.TrimSpace(cleaned.Prompt)
+	if cleaned.Decision == "" && cleaned.Action == "" && cleaned.Reason == "" && cleaned.ActionState == "" && cleaned.Prompt == "" {
+		return nil
+	}
+	return &cleaned
+}
+
+func cleanHandoffArtifacts(values []client.PlanFinalHandoffArtifact, limit int) []client.PlanFinalHandoffArtifact {
+	out := make([]client.PlanFinalHandoffArtifact, 0, len(values))
+	for _, value := range values {
+		value.ArtifactID = strings.TrimSpace(value.ArtifactID)
+		value.ID = strings.TrimSpace(value.ID)
+		value.Label = strings.TrimSpace(value.Label)
+		value.Description = strings.TrimSpace(value.Description)
+		value.Filename = strings.TrimSpace(value.Filename)
+		value.MediaType = strings.TrimSpace(value.MediaType)
+		value.Kind = strings.TrimSpace(value.Kind)
+		value.Role = strings.TrimSpace(value.Role)
+		value.Status = strings.TrimSpace(value.Status)
+		value.SessionID = strings.TrimSpace(value.SessionID)
+		value.CollectionID = strings.TrimSpace(value.CollectionID)
+		value.VariantID = strings.TrimSpace(value.VariantID)
+		value.Path = strings.TrimSpace(value.Path)
+		value.RelativePath = strings.TrimSpace(value.RelativePath)
+		value.WorkspaceRelativePath = strings.TrimSpace(value.WorkspaceRelativePath)
+		value.PreviewURL = strings.TrimSpace(value.PreviewURL)
+		if value.ArtifactID == "" && value.ID == "" && value.VariantID == "" && value.WorkspaceRelativePath == "" && value.Path == "" {
+			continue
+		}
+		out = append(out, value)
+		if limit > 0 && len(out) == limit {
+			break
+		}
+	}
+	return out
+}
+
 func cloneAnyMap(value map[string]any) map[string]any {
 	if value == nil {
 		return nil
@@ -1055,6 +1138,17 @@ func sortedEvents(events []client.SessionV3Event) []client.SessionV3Event {
 	return out
 }
 
+func cloneTaskStreamObjects(values map[string]map[string]any) map[string]map[string]any {
+	if values == nil {
+		return nil
+	}
+	out := make(map[string]map[string]any, len(values))
+	for key, value := range values {
+		out[key] = cloneAnyObject(value)
+	}
+	return out
+}
+
 func cloneState(value State) State {
 	out := value
 	out.Messages = append([]Message(nil), value.Messages...)
@@ -1063,7 +1157,9 @@ func cloneState(value State) State {
 		if value.Messages[index].FinalHandoff != nil {
 			handoff := *value.Messages[index].FinalHandoff
 			handoff.ImpactBullets = append([]string(nil), handoff.ImpactBullets...)
+			handoff.CopyableCodeBlocks = append([]client.PlanFinalHandoffCopyableCodeBlock(nil), handoff.CopyableCodeBlocks...)
 			handoff.SuggestedPrompts = append([]client.PlanFinalHandoffSuggestedPrompt(nil), handoff.SuggestedPrompts...)
+			handoff.Artifacts = append([]client.PlanFinalHandoffArtifact(nil), handoff.Artifacts...)
 			handoff.Details.ChangedFiles = append([]string(nil), handoff.Details.ChangedFiles...)
 			handoff.Details.Validation = append([]string(nil), handoff.Details.Validation...)
 			out.Messages[index].FinalHandoff = &handoff
@@ -1087,6 +1183,13 @@ func cloneState(value State) State {
 		if item.TaskStream != nil {
 			stream := *item.TaskStream
 			stream.LaunchOrder = append([]string(nil), item.TaskStream.LaunchOrder...)
+			stream.ProgramStages = append([]TaskProgramStageState(nil), item.TaskStream.ProgramStages...)
+			for index := range stream.ProgramStages {
+				stream.ProgramStages[index].DependsOn = append([]string(nil), stream.ProgramStages[index].DependsOn...)
+			}
+			stream.ProgramJobOrder = append([]string(nil), item.TaskStream.ProgramJobOrder...)
+			stream.ProgramJobsByID = cloneTaskStreamObjects(item.TaskStream.ProgramJobsByID)
+			stream.ProgramJobStates = cloneTaskStreamObjects(item.TaskStream.ProgramJobStates)
 			stream.LaunchesByKey = make(map[string]map[string]any, len(item.TaskStream.LaunchesByKey))
 			for launchKey, launch := range item.TaskStream.LaunchesByKey {
 				cloned := make(map[string]any, len(launch))

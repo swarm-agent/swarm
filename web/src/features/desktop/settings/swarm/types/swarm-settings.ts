@@ -13,6 +13,8 @@ export const DEFAULT_PLAN_CONTEXT_GUARD_MAX_COMPACTIONS = 1
 export const PLAN_CONTEXT_GUARD_USED_PERCENT_MIN = 50
 export const PLAN_CONTEXT_GUARD_USED_PERCENT_MAX = 95
 export const PLAN_CONTEXT_GUARD_MAX_COMPACTIONS = 3
+export const DEFAULT_TASK_CONTEXT_MAX_COMPACTIONS = 5
+export const TASK_CONTEXT_MAX_COMPACTIONS = 10
 
 export interface UISwarmingSettingsWire {
   title?: string
@@ -32,6 +34,14 @@ export interface UIToolSettingsWire {
   image?: UIToolImageSettingsWire
 }
 
+export interface UIMediaSettingsWire {
+  transcription_model?: string
+}
+
+export interface UIArtifactSettingsWire {
+  library_directory?: string
+}
+
 export type DesktopSessionMode = 'auto' | 'plan'
 export type FollowupCheckpointPolicyDefault = 'require_approval' | 'auto_start'
 
@@ -45,6 +55,7 @@ export interface UIChatSettingsWire {
   plan_context_guard_enabled?: boolean
   plan_context_guard_used_percent?: number
   plan_context_guard_max_compactions?: number
+  task_context_max_compactions?: number
   review_auto_archive_minutes?: number
   sidebar_hide_inactive_hours?: number | null
   default_workspace_routes?: Record<string, string>
@@ -65,6 +76,8 @@ export interface UISettingsWire {
   swarming?: UISwarmingSettingsWire
   swarm?: UISwarmSettingsWire
   tools?: UIToolSettingsWire
+  media?: UIMediaSettingsWire
+  artifacts?: UIArtifactSettingsWire
   updated_at?: number
 }
 
@@ -72,6 +85,14 @@ export interface PlanContextGuardSettings {
   enabled: boolean
   usedPercent: number
   maxCompactions: number
+}
+
+export interface TaskContextSettings {
+  maxCompactions: number
+}
+
+export interface ArtifactLibrarySettings {
+  libraryDirectory: string
 }
 
 export interface GlobalThemeSettings {
@@ -116,6 +137,23 @@ export function normalizePlanContextGuardSettings(payload?: UISettingsWire | nul
     usedPercent: normalizePlanContextGuardUsedPercent(payload?.chat?.plan_context_guard_used_percent),
     maxCompactions: normalizePlanContextGuardMaxCompactions(payload?.chat?.plan_context_guard_max_compactions),
   }
+}
+
+export function normalizeTaskContextMaxCompactions(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return DEFAULT_TASK_CONTEXT_MAX_COMPACTIONS
+  return Math.min(TASK_CONTEXT_MAX_COMPACTIONS, Math.max(1, Math.round(value)))
+}
+
+export function normalizeTaskContextSettings(payload?: UISettingsWire | null): TaskContextSettings {
+  return { maxCompactions: normalizeTaskContextMaxCompactions(payload?.chat?.task_context_max_compactions) }
+}
+
+export function normalizeArtifactLibraryDirectory(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : ''
+}
+
+export function normalizeArtifactLibrarySettings(payload?: UISettingsWire | null): ArtifactLibrarySettings {
+  return { libraryDirectory: normalizeArtifactLibraryDirectory(payload?.artifacts?.library_directory) }
 }
 
 export function normalizeReviewAutoArchiveMinutes(value: unknown): number {
@@ -247,6 +285,26 @@ export function withPlanContextGuardSettings(current: UISettingsWire, settings: 
   }
 }
 
+export function withTaskContextSettings(current: UISettingsWire, settings: TaskContextSettings): UISettingsWire {
+  return {
+    ...current,
+    chat: {
+      ...(current.chat ?? {}),
+      task_context_max_compactions: normalizeTaskContextMaxCompactions(settings.maxCompactions),
+    },
+  }
+}
+
+export function withArtifactLibrarySettings(current: UISettingsWire, settings: ArtifactLibrarySettings): UISettingsWire {
+  return {
+    ...current,
+    artifacts: {
+      ...(current.artifacts ?? {}),
+      library_directory: normalizeArtifactLibraryDirectory(settings.libraryDirectory),
+    },
+  }
+}
+
 export function withThinkingTagsEnabled(current: UISettingsWire, enabled: boolean): UISettingsWire {
   return {
     ...current,
@@ -270,6 +328,20 @@ export function withImageDefaultModel(current: UISettingsWire, defaultModel: str
         ...(current.tools?.image ?? {}),
         default_model: defaultModel.trim(),
       },
+    },
+  }
+}
+
+export function normalizeMediaTranscriptionModel(payload?: UISettingsWire | null): string {
+  return typeof payload?.media?.transcription_model === 'string' ? payload.media.transcription_model.trim() : ''
+}
+
+export function withMediaTranscriptionModel(current: UISettingsWire, transcriptionModel: string): UISettingsWire {
+  return {
+    ...current,
+    media: {
+      ...(current.media ?? {}),
+      transcription_model: transcriptionModel.trim(),
     },
   }
 }

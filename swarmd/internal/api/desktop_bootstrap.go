@@ -198,7 +198,15 @@ func (s *Server) handleWorkspaceOverview(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	localBindingByWorkspaceID := localWorkspaceBindingIDsByWorkspaceID(workspaces, topologyRoutesByWorkspace)
+	primaryTarget := primarySelfSwarmTarget(swarmTargets)
+	primarySwarmID := ""
+	if primaryTarget != nil {
+		primarySwarmID = strings.TrimSpace(primaryTarget.SwarmID)
+	}
+	localBindingByWorkspaceID := localWorkspaceBindingIDsByWorkspaceID(workspaces, topologyRoutesByWorkspace, primarySwarmID)
+	if currentOK {
+		current.LocalWorkspaceBindingID = strings.TrimSpace(localBindingByWorkspaceID[strings.TrimSpace(current.WorkspaceID)])
+	}
 	responseWorkspaces := make([]workspaceOverviewWorkspace, 0, len(workspaces))
 	for _, entry := range workspaces {
 		workspacePath := strings.TrimSpace(entry.Path)
@@ -463,7 +471,7 @@ func (s *Server) workspaceOverviewTopologyRouteForBinding(binding pebblestore.To
 	}, true
 }
 
-func localWorkspaceBindingIDsByWorkspaceID(workspaces []workspace.Entry, routesByWorkspace map[string][]workspaceOverviewTopologyRoute) map[string]string {
+func localWorkspaceBindingIDsByWorkspaceID(workspaces []workspace.Entry, routesByWorkspace map[string][]workspaceOverviewTopologyRoute, primarySwarmID string) map[string]string {
 	out := make(map[string]string)
 	workspaceIDByPath := make(map[string]string, len(workspaces))
 	for _, entry := range workspaces {
@@ -473,13 +481,17 @@ func localWorkspaceBindingIDsByWorkspaceID(workspaces []workspace.Entry, routesB
 			workspaceIDByPath[workspacePath] = workspaceID
 		}
 	}
+	primarySwarmID = strings.TrimSpace(primarySwarmID)
+	if primarySwarmID == "" {
+		return out
+	}
 	for workspacePath, routes := range routesByWorkspace {
 		workspaceID := workspaceIDByPath[strings.TrimSpace(workspacePath)]
 		if workspaceID == "" {
 			continue
 		}
 		for _, route := range routes {
-			if strings.EqualFold(strings.TrimSpace(route.RuntimeSwarmID), strings.TrimSpace(route.AuthorityHostSwarmID)) {
+			if strings.EqualFold(strings.TrimSpace(route.RuntimeSwarmID), primarySwarmID) && strings.EqualFold(strings.TrimSpace(route.AuthorityHostSwarmID), primarySwarmID) {
 				out[workspaceID] = strings.TrimSpace(route.WorkspaceBindingID)
 				break
 			}

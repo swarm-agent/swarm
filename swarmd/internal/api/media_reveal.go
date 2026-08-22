@@ -1,14 +1,18 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
+	"time"
 
 	"swarm/packages/swarmd/internal/identity"
 )
@@ -113,7 +117,35 @@ func (s *Server) handleVideoStorageReveal(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "path": revealPath, "method": method})
 }
 
+type revealLocalPathDependencies struct {
+	lookPath func(string) (string, error)
+	run      func(string, []string, []string) error
+}
+
 func revealLocalPath(targetPath string) (string, error) {
+	return revealLocalPathWithDependencies(targetPath, revealLocalPathDependencies{
+		lookPath: exec.LookPath,
+		run: func(executable string, args, env []string) error {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			cmd := exec.CommandContext(ctx, executable, args...)
+			cmd.Env = env
+			output, err := cmd.CombinedOutput()
+			if ctx.Err() != nil {
+				return fmt.Errorf("timed out waiting for native opener: %w", ctx.Err())
+			}
+			if err != nil {
+				detail := strings.TrimSpace(string(output))
+				if detail != "" {
+					return fmt.Errorf("%w: %s", err, detail)
+				}
+			}
+			return err
+		},
+	})
+}
+
+func revealLocalPathWithDependencies(targetPath string, dependencies revealLocalPathDependencies) (string, error) {
 	targetPath = filepath.Clean(strings.TrimSpace(targetPath))
 	if targetPath == "" || targetPath == "." {
 		return "", errors.New("path is required")
@@ -123,35 +155,88 @@ func revealLocalPath(targetPath string) (string, error) {
 		return "", err
 	}
 	absPath = filepath.Clean(absPath)
+	info, err := os.Stat(absPath)
+	if err != nil {
+		return "", fmt.Errorf("inspect reveal path: %w", err)
+	}
 	if runtime.GOOS != "linux" {
 		return "", fmt.Errorf("show in file manager is only implemented on Linux")
 	}
-	fileURI := "file://" + filepath.ToSlash(absPath)
-	if dbusSend, err := exec.LookPath("dbus-send"); err == nil {
-		cmd := exec.Command(dbusSend,
+	if dependencies.lookPath == nil || dependencies.run == nil {
+		return "", errors.New("native file manager opener is not configured")
+	}
+
+	env := localDesktopSessionEnvironment()
+	fileURI := (&url.URL{Scheme: "file", Path: filepath.ToSlash(absPath)}).String()
+	failures := make([]string, 0, 3)
+	if dbusSend, lookupErr := dependencies.lookPath("dbus-send"); lookupErr == nil {
+		method := "ShowItems"
+		methodLabel := "freedesktop-file-manager-show-items"
+		if info.IsDir() {
+			method = "ShowFolders"
+			methodLabel = "freedesktop-file-manager-show-folders"
+		}
+		args := []string{
 			"--session",
+			"--print-reply",
+			"--reply-timeout=5000",
 			"--dest=org.freedesktop.FileManager1",
 			"--type=method_call",
 			"/org/freedesktop/FileManager1",
-			"org.freedesktop.FileManager1.ShowItems",
+			"org.freedesktop.FileManager1." + method,
 			fmt.Sprintf("array:string:%s", fileURI),
 			"string:",
-		)
-		if err := cmd.Start(); err == nil {
-			_ = cmd.Process.Release()
-			return "freedesktop-file-manager-show-items", nil
+		}
+		if runErr := dependencies.run(dbusSend, args, env); runErr == nil {
+			return methodLabel, nil
+		} else {
+			failures = append(failures, "FileManager1: "+runErr.Error())
 		}
 	}
+
 	openPath := absPath
-	if info, err := os.Stat(absPath); err == nil && !info.IsDir() {
+	if !info.IsDir() {
 		openPath = filepath.Dir(absPath)
 	}
-	if xdgOpen, err := exec.LookPath("xdg-open"); err == nil {
-		cmd := exec.Command(xdgOpen, openPath)
-		if err := cmd.Start(); err == nil {
-			_ = cmd.Process.Release()
-			return "xdg-open", nil
+	for _, candidate := range []string{"gio", "xdg-open"} {
+		executable, lookupErr := dependencies.lookPath(candidate)
+		if lookupErr != nil {
+			continue
+		}
+		args := []string{openPath}
+		if candidate == "gio" {
+			args = []string{"open", openPath}
+		}
+		if runErr := dependencies.run(executable, args, env); runErr == nil {
+			return candidate, nil
+		} else {
+			failures = append(failures, candidate+": "+runErr.Error())
 		}
 	}
-	return "", errors.New("no Linux file manager opener found (tried dbus-send and xdg-open)")
+	if len(failures) == 0 {
+		return "", errors.New("no Linux file manager opener found (tried dbus-send, gio, and xdg-open)")
+	}
+	return "", fmt.Errorf("native file manager did not open the folder (%s)", strings.Join(failures, "; "))
+}
+
+func localDesktopSessionEnvironment() []string {
+	env := os.Environ()
+	if runtime.GOOS != "linux" {
+		return env
+	}
+	runtimeDir := strings.TrimSpace(os.Getenv("XDG_RUNTIME_DIR"))
+	if runtimeDir == "" {
+		candidate := filepath.Join(string(filepath.Separator), "run", "user", strconv.Itoa(os.Getuid()))
+		if info, err := os.Stat(candidate); err == nil && info.IsDir() {
+			runtimeDir = candidate
+			env = append(env, "XDG_RUNTIME_DIR="+runtimeDir)
+		}
+	}
+	if strings.TrimSpace(os.Getenv("DBUS_SESSION_BUS_ADDRESS")) == "" && runtimeDir != "" {
+		bus := filepath.Join(runtimeDir, "bus")
+		if info, err := os.Stat(bus); err == nil && info.Mode()&os.ModeSocket != 0 {
+			env = append(env, "DBUS_SESSION_BUS_ADDRESS=unix:path="+bus)
+		}
+	}
+	return env
 }

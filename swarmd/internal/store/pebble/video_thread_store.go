@@ -12,7 +12,8 @@ import (
 type VideoClipSnapshot struct {
 	ID         string `json:"id"`
 	Name       string `json:"name"`
-	Path       string `json:"path"`
+	Path       string `json:"path,omitempty"`
+	SourceRef  string `json:"source_ref,omitempty"`
 	Extension  string `json:"extension"`
 	SizeBytes  int64  `json:"size_bytes"`
 	ModifiedAt int64  `json:"modified_at"`
@@ -194,8 +195,9 @@ func normalizeVideoThread(thread VideoThreadSnapshot) VideoThreadSnapshot {
 		clip.ID = strings.TrimSpace(clip.ID)
 		clip.Name = strings.TrimSpace(clip.Name)
 		clip.Path = strings.TrimSpace(clip.Path)
+		clip.SourceRef = strings.TrimSpace(clip.SourceRef)
 		clip.Extension = strings.TrimSpace(clip.Extension)
-		if clip.ID == "" || clip.Name == "" || clip.Path == "" {
+		if clip.ID == "" || clip.Name == "" || (clip.Path == "" && clip.SourceRef == "") {
 			continue
 		}
 		clips = append(clips, clip)

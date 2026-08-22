@@ -48,6 +48,30 @@ test('resolved header shows the Git branch and canonical model without a mode la
   assert.doesNotMatch(markup, /desktop-v3-plan-mode-badge/)
 })
 
+test('video session header exposes a bidirectional Studio switch', () => {
+  const sessionMarkup = renderToStaticMarkup(
+    <DesktopV3ChatHeader title="Video session" workspaceName="Workspace" studioMode="session" onToggleStudioMode={() => {}} />,
+  )
+  const studioMarkup = renderToStaticMarkup(
+    <DesktopV3ChatHeader title="Video session" workspaceName="Workspace" studioMode="studio" onToggleStudioMode={() => {}} />,
+  )
+
+  assert.match(sessionMarkup, /aria-label="Switch to Video Studio"/)
+  assert.match(sessionMarkup, />Studio</)
+  assert.match(sessionMarkup, /sm:inline-flex/)
+  assert.match(sessionMarkup, /sm:hidden/)
+  assert.match(studioMarkup, /aria-label="Switch to session mode"/)
+  assert.match(studioMarkup, />Chat</)
+})
+
+test('ordinary session header does not expose the Studio switch', () => {
+  const markup = renderToStaticMarkup(
+    <DesktopV3ChatHeader title="Ordinary session" workspaceName="Workspace" />,
+  )
+
+  assert.doesNotMatch(markup, /desktop-v3-video-studio-toggle/)
+})
+
 test('header omits unresolved branch placeholders and the plan indicator', () => {
   const markup = renderToStaticMarkup(
     <DesktopV3ChatHeader title="Plan conversation" workspaceName="Workspace" branchName="undefined" />,

@@ -41,14 +41,15 @@ func (p *ChatPage) renderPlanToolCardLines(message chatMessageItem, payload map[
 		jsonString(payload, "title"),
 		"Plan",
 	)
-	action := strings.ReplaceAll(firstNonEmptyToolValue(
+	action := firstNonEmptyToolValue(
 		jsonString(payload, "action"),
 		jsonString(payload, "document_operation"),
 		jsonString(payload, "update_kind"),
-	), "_", " ")
-	status := firstNonEmptyToolValue(jsonString(document, "status"), jsonString(plan, "status"), jsonString(payload, "status"))
+	)
+	status := planManageDisplayStatus(action, payload, plan, document)
 	checkpointCount := len(jsonObjectSlice(document, "checkpoints"))
 	goal := strings.TrimSpace(jsonString(info, "goal"))
+	checkpointDisplay := planManageCheckpointDisplay(document, payload)
 	updateSummary := firstNonEmptyToolValue(
 		jsonString(plan, "update_summary"),
 		jsonString(plan, "updateSummary"),
@@ -56,9 +57,12 @@ func (p *ChatPage) renderPlanToolCardLines(message chatMessageItem, payload map[
 		jsonString(payload, "summary"),
 	)
 
-	headerParts := make([]string, 0, 3)
+	headerParts := make([]string, 0, 4)
 	if action != "" {
-		headerParts = append(headerParts, action)
+		headerParts = append(headerParts, planManageLifecycleActionDisplay(action, payload, plan, document))
+	}
+	if checkpointDisplay != "" {
+		headerParts = append(headerParts, checkpointDisplay)
 	}
 	if checkpointCount > 0 {
 		headerParts = append(headerParts, toolCountLabel(checkpointCount, "checkpoint", "checkpoints"))

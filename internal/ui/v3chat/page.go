@@ -106,6 +106,7 @@ type Page struct {
 	bashOutputModal              bool
 	bashOutputModalScroll        int
 	bashOutputModalTool          ToolTimelineItem
+	taskProgramCollapsed         map[string]bool
 	modelOptions                 []client.ModelCatalogRecord
 	modelIndex                   int
 	commandSuggestions           []CommandSuggestion
@@ -176,7 +177,7 @@ const (
 )
 
 func NewPage(runtime *Runtime, styles PageStyles) *Page {
-	return &Page{runtime: runtime, styles: styles, showHeader: true, showThinkingTags: true, follow: true, rowCache: make(map[string]cachedRows), handoffTargets: make(map[string]footerbar.Rect), matchKey: defaultKeyMatcher}
+	return &Page{runtime: runtime, styles: styles, showHeader: true, showThinkingTags: true, follow: true, rowCache: make(map[string]cachedRows), taskProgramCollapsed: make(map[string]bool), handoffTargets: make(map[string]footerbar.Rect), matchKey: defaultKeyMatcher}
 }
 
 func (p *Page) SetKeyMatcher(match func(*tcell.EventKey, string) bool) {
@@ -989,6 +990,58 @@ func (p *Page) ToggleLatestBashOutput() bool {
 	return true
 }
 
+// ToggleLatestTaskProgram collapses or expands the newest canonical Task Program
+// card. It deliberately ignores ordinary task calls and swarm presentations.
+func (p *Page) ToggleLatestTaskProgram() bool {
+	if p == nil || p.runtime == nil || p.runtime.Store() == nil {
+		return false
+	}
+	_, presentation, ok := latestTaskProgram(p.runtime.Store().Snapshot())
+	if !ok {
+		return false
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.taskProgramCollapsed == nil {
+		p.taskProgramCollapsed = make(map[string]bool)
+	}
+	next := !p.taskProgramCollapsed[presentation.TaskProgramID]
+	p.taskProgramCollapsed[presentation.TaskProgramID] = next
+	if next {
+		p.status = "task program collapsed"
+	} else {
+		p.status = "task program expanded"
+	}
+	return true
+}
+
+func latestTaskProgram(state State) (ToolTimelineItem, toolPresentation, bool) {
+	var latest ToolTimelineItem
+	var latestPresentation toolPresentation
+	found := false
+	consider := func(tool ToolTimelineItem) {
+		if normalizeToolDisplayName(tool.Name) != "task" {
+			return
+		}
+		presentation := buildToolPresentation(tool)
+		if !presentation.TaskProgram {
+			return
+		}
+		if !found || tool.GlobalSeq > latest.GlobalSeq || (tool.GlobalSeq == latest.GlobalSeq && tool.CreatedAt >= latest.CreatedAt) {
+			latest, latestPresentation, found = tool, presentation, true
+		}
+	}
+	for _, message := range SelectMessages(state) {
+		if tool, ok := parseToolMessage(message); ok {
+			consider(tool)
+		}
+	}
+	for _, tool := range SelectLiveTools(state) {
+		consider(tool)
+	}
+	return latest, latestPresentation, found
+}
+
 func latestBashTool(state State) (ToolTimelineItem, bool) {
 	var latest ToolTimelineItem
 	found := false
@@ -1571,6 +1624,7 @@ func (p *Page) DrawAt(screen tcell.Screen, now time.Time) {
 	planModal, planModalScroll, planModalPlan := p.planModal, p.planModalScroll, p.planModalPlan
 	bashOutputModal, bashOutputModalScroll, bashOutputModalTool := p.bashOutputModal, p.bashOutputModalScroll, p.bashOutputModalTool
 	handoffDetailsModal, handoffDetailsScroll, handoffDetailsSection := p.handoffDetailsModal, p.handoffDetailsScroll, p.handoffDetailsSection
+	handoffDetailsMessageID := p.handoffDetailsMessageID
 	var handoffDetails *client.PlanFinalHandoff
 	if p.handoffDetails != nil {
 		copy := cloneFinalHandoff(p.handoffDetails)
@@ -1595,6 +1649,7 @@ func (p *Page) DrawAt(screen tcell.Screen, now time.Time) {
 	if p.runtime != nil && p.runtime.Store() != nil {
 		state = p.runtime.Store().Snapshot()
 	}
+	handoffDetailsSessionID := finalHandoffMessageSessionID(state.Messages, handoffDetailsMessageID)
 	title := strings.TrimSpace(SelectTitle(state))
 	if title == "" {
 		if draft, ok := SelectRoutedDraft(state); ok && draft.Status != RoutedDraftResolved {
@@ -1745,7 +1800,7 @@ func (p *Page) DrawAt(screen tcell.Screen, now time.Time) {
 	if taskLaunchModalIndex >= 0 && taskLaunchModalIndex < len(pendingPermissions) {
 		p.drawTaskLaunchPermissionModal(screen, width, height, styles, pendingPermissions[taskLaunchModalIndex], permissionContentScroll)
 	} else if handoffDetailsModal {
-		p.drawFinalHandoffDetailsModal(screen, width, height, styles, handoffDetails, handoffDetailsSection, handoffDetailsScroll)
+		p.drawFinalHandoffDetailsModal(screen, width, height, styles, handoffDetails, handoffDetailsSection, handoffDetailsSessionID, handoffDetailsScroll)
 	} else if planModal {
 		plan := state.Plan.ActivePlan
 		if planModalPlan != nil {
@@ -2579,7 +2634,7 @@ func (p *Page) renderRowsForHeight(state State, width, availableHeight int, styl
 				rows = append(rows, inlinePermissionCardRowsWithPlanReview(record, len(pendingPermissions), width, styles, prefix, selected, permissionNote, permissionBusy, permissionError, manualReview)...)
 			}
 		case "tool":
-			rows = append(rows, p.renderToolRows(item.tool, width, styles)...)
+			rows = append(rows, p.renderToolRowsForHeight(item.tool, width, availableHeight, styles)...)
 		case "live":
 			rows = append(rows, p.renderCopyAwareAssistantRows(item.live.Text, copyBlockBaseIndex, width, styles)...)
 			copyBlockBaseIndex += copyBlockCount(item.live.Text)
@@ -2728,6 +2783,10 @@ func (p *Page) renderAssistantRows(content string, width int, styles PageStyles)
 }
 
 func (p *Page) renderToolRows(tool ToolTimelineItem, width int, styles PageStyles) []renderRow {
+	return p.renderToolRowsForHeight(tool, width, 0, styles)
+}
+
+func (p *Page) renderToolRowsForHeight(tool ToolTimelineItem, width, availableHeight int, styles PageStyles) []renderRow {
 	status := canonicalToolStatus(tool.Status)
 	symbol, headerStyle := "•", styles.Accent
 	switch status {
@@ -2742,7 +2801,7 @@ func (p *Page) renderToolRows(tool ToolTimelineItem, width int, styles PageStyle
 		return p.renderPlanToolRows(tool, presentation, width, styles)
 	}
 	if presentation.Kind == "task" {
-		return p.renderTaskToolRows(tool, presentation, width, styles)
+		return p.renderTaskToolRows(tool, presentation, width, availableHeight, styles)
 	}
 	if presentation.Kind == "manage-sessions" {
 		return p.renderManageSessionsToolRows(tool, presentation, width, styles)
@@ -2870,9 +2929,15 @@ func (p *Page) renderManageSessionsToolRows(tool ToolTimelineItem, presentation 
 	return append(rows, renderRow{text: "", style: styles.Text})
 }
 
-func (p *Page) renderTaskToolRows(tool ToolTimelineItem, presentation toolPresentation, width int, styles PageStyles) []renderRow {
+func (p *Page) renderTaskToolRows(tool ToolTimelineItem, presentation toolPresentation, width, availableHeight int, styles PageStyles) []renderRow {
 	if width <= 0 {
 		return nil
+	}
+	if presentation.TaskProgram {
+		return p.renderTaskProgramRows(tool, presentation, width, styles)
+	}
+	if presentation.TaskSwarm {
+		return p.renderTaskSwarmRows(presentation, width, availableHeight, styles)
 	}
 	headerStyle := styles.Secondary.Bold(true)
 	rows := []renderRow{{text: truncateRunes(strings.ToUpper(strings.TrimSpace(presentation.Summary)), width), style: headerStyle}}
@@ -2935,6 +3000,295 @@ func (p *Page) renderTaskToolRows(tool ToolTimelineItem, presentation toolPresen
 	}
 	rows = append(rows, renderRow{text: "", style: styles.Text})
 	return rows
+}
+
+func (p *Page) renderTaskProgramRows(tool ToolTimelineItem, presentation toolPresentation, width int, styles PageStyles) []renderRow {
+	if width < 12 {
+		return []renderRow{{text: truncateCells("TASK PROGRAM · "+presentation.TaskProgramID, width), style: styles.Secondary.Bold(true)}, {text: "", style: styles.Text}}
+	}
+	innerWidth := width - 2
+	contentWidth := maxInt(1, innerWidth-2)
+	borderStyle := styles.Border
+	switch normalizeTaskPresentationStatus(presentation.TaskProgramState) {
+	case "running":
+		borderStyle = styles.Accent
+	case "done":
+		borderStyle = styles.Success
+	case "error", "cancelled":
+		borderStyle = styles.Error
+	}
+	rows := []renderRow{{text: "┌" + strings.Repeat("─", innerWidth) + "┐", style: borderStyle}}
+	appendLine := func(key, text string, style tcell.Style) {
+		for _, wrapped := range p.cachedWrap("task-program:"+tool.ID+":"+key, strings.TrimSpace(text), contentWidth) {
+			wrapped = truncateCells(wrapped, contentWidth)
+			padding := strings.Repeat(" ", maxInt(0, contentWidth-displayWidth(wrapped)))
+			rows = append(rows, renderRow{text: "│ " + wrapped + padding + " │", style: style, spans: []renderSpan{{text: "│ ", style: borderStyle}, {text: wrapped + padding, style: style}, {text: " │", style: borderStyle}}})
+		}
+	}
+	collapsed := p != nil && p.taskProgramCollapsed[presentation.TaskProgramID]
+	marker := "▾"
+	if collapsed {
+		marker = "▸"
+	}
+	done, running, waiting, failed := 0, 0, 0, 0
+	for _, stage := range presentation.TaskProgramStages {
+		switch stage.Status {
+		case "done":
+			done++
+		case "running":
+			running++
+		case "error":
+			failed++
+		default:
+			waiting++
+		}
+	}
+	header := fmt.Sprintf("%s TASK PROGRAM · %s · %s · %d/%d phases", marker, presentation.TaskProgramID, firstNonEmptyToolRaw(presentation.TaskProgramState, "running"), done, len(presentation.TaskProgramStages))
+	appendLine("header", header, styles.Secondary.Bold(true))
+	appendLine("progress", fmt.Sprintf("RUN %d  WAIT %d  ERR %d", running, waiting, failed), styles.Muted)
+	if !collapsed {
+		for phaseIndex, stage := range presentation.TaskProgramStages {
+			symbol, style := "○", styles.Muted
+			switch stage.Status {
+			case "done":
+				symbol, style = "✓", styles.Success
+			case "running":
+				symbol, style = "◆", styles.Accent.Bold(true)
+			case "error":
+				symbol, style = "!", styles.Error.Bold(true)
+			case "waiting":
+				symbol = "◇"
+			}
+			phaseLabel := fmt.Sprintf("%s PHASE %d · %s · %s", symbol, phaseIndex+1, stage.ID, strings.ToUpper(stage.Status))
+			if len(stage.DependsOn) > 0 {
+				phaseLabel += " · after " + strings.Join(stage.DependsOn, ", ")
+			}
+			appendLine(fmt.Sprintf("phase-%d", phaseIndex), phaseLabel, style)
+			for jobIndex, row := range stage.Rows {
+				jobSymbol := taskPresentationStatusLabel(row.Status)
+				job := "  [" + jobSymbol + "] " + firstNonEmptyToolRaw(row.Title, row.ProgramJobID, row.Agent)
+				identity := strings.TrimSpace(row.Agent)
+				if identity != "" && !strings.HasPrefix(identity, "@") {
+					identity = "@" + identity
+				}
+				if identity != "" {
+					job += " · " + identity
+				}
+				if row.Tool != "" && row.Tool != "-" {
+					job += " · " + row.Tool
+				}
+				appendLine(fmt.Sprintf("phase-%d-job-%d", phaseIndex, jobIndex), job, styles.Text)
+			}
+		}
+	}
+	rows = append(rows, renderRow{text: "└" + strings.Repeat("─", innerWidth) + "┘", style: borderStyle}, renderRow{text: "", style: styles.Text})
+	return rows
+}
+
+// SetTaskProgramCollapsed updates only ephemeral presentation state. The
+// canonical program/stage/job identity remains owned by TaskStreamState.
+func (p *Page) SetTaskProgramCollapsed(programID string, collapsed bool) {
+	if p == nil || strings.TrimSpace(programID) == "" {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.taskProgramCollapsed == nil {
+		p.taskProgramCollapsed = make(map[string]bool)
+	}
+	p.taskProgramCollapsed[strings.TrimSpace(programID)] = collapsed
+}
+
+const maxVisibleTaskSwarmAgents = 100
+
+type taskSwarmRenderLayout struct {
+	columns     int
+	bodyRows    int
+	cellWidth   int
+	density     string
+	visibleRows int
+}
+
+func taskSwarmLayout(rowCount, width, availableHeight int) taskSwarmRenderLayout {
+	if availableHeight <= 0 {
+		availableHeight = 24
+	}
+	// Start with a height-aware matrix, then let the card grow past the viewport
+	// when needed so swarms do not summarize away any of their first 100 agents.
+	targetVisible := minInt(rowCount, maxVisibleTaskSwarmAgents)
+	bodyRows := maxInt(3, minInt(20, (availableHeight*2)/3))
+	maxColumns := maxInt(1, width/8)
+	desiredColumns := maxInt(1, (maxInt(1, targetVisible)+bodyRows-1)/bodyRows)
+	columns := minInt(maxColumns, desiredColumns)
+	bodyRows = maxInt(bodyRows, (maxInt(1, targetVisible)+columns-1)/columns)
+	cellWidth := maxInt(1, (width-(columns-1))/columns)
+	density := "signal"
+	switch {
+	case cellWidth >= 24:
+		density = "detail"
+	case cellWidth >= 14:
+		density = "compact"
+	case cellWidth >= 9:
+		density = "micro"
+	}
+	visible := minInt(targetVisible, bodyRows*columns)
+	return taskSwarmRenderLayout{columns: columns, bodyRows: bodyRows, cellWidth: cellWidth, density: density, visibleRows: visible}
+}
+
+func (p *Page) renderTaskSwarmRows(presentation toolPresentation, width, availableHeight int, styles PageStyles) []renderRow {
+	if width <= 0 {
+		return nil
+	}
+	layout := taskSwarmLayout(len(presentation.TaskRows), width, availableHeight)
+	running, done, failed, pending := 0, 0, 0, 0
+	for _, row := range presentation.TaskRows {
+		switch row.Status {
+		case "running":
+			running++
+		case "done":
+			done++
+		case "error", "cancelled":
+			failed++
+		default:
+			pending++
+		}
+	}
+	headerLabel := "ITERATION SWARM"
+	contextLabel := "fast parallel iterations · choose or synthesize"
+	if presentation.TaskSwarmAgent == "image" {
+		headerLabel = "IMAGE SWARM"
+		contextLabel = "each image runs Routing → Image creation"
+	} else if presentation.TaskSwarmStrategy == "assembly" {
+		headerLabel = "ASSEMBLY SWARM"
+		contextLabel = "complementary parts"
+		if presentation.TaskIntegrationRequired {
+			contextLabel += " · parent integration required"
+		}
+	}
+	switch presentation.TaskSwarmAgent {
+	case "idea":
+		headerLabel = "IDEA SWARM"
+	case "coder":
+		headerLabel += "  ·  CODERS"
+	case "designer":
+		headerLabel += "  ·  DESIGNERS"
+	case "mixed":
+		headerLabel += "  ·  MIXED AGENTS"
+	}
+	if presentation.TaskSwarmModel != "" {
+		headerLabel += "  ·  " + presentation.TaskSwarmModel
+	}
+	itemLabel := "AGENTS"
+	if presentation.TaskSwarmAgent == "image" {
+		itemLabel = "IMAGES"
+	}
+	header := fmt.Sprintf("✦ %s  ·  %d %s  ·  RUN %d  OK %d", headerLabel, len(presentation.TaskRows), itemLabel, running, done)
+	if pending > 0 {
+		header += fmt.Sprintf("  WAIT %d", pending)
+	}
+	if failed > 0 {
+		header += fmt.Sprintf("  ERR %d", failed)
+	}
+	rows := []renderRow{{text: truncateCells(header, width), style: styles.Secondary.Bold(true)}}
+	rows = append(rows, renderRow{text: truncateCells("  "+contextLabel, width), style: styles.Muted})
+	if presentation.TaskSwarmStrategy == "assembly" && strings.TrimSpace(presentation.TaskIntegrationContract) != "" {
+		rows = append(rows, renderRow{text: truncateCells("  contract: "+presentation.TaskIntegrationContract, width), style: styles.Muted})
+	}
+	itemNoun := "agents"
+	if presentation.TaskSwarmAgent == "image" {
+		itemNoun = "images"
+	}
+	matrix := fmt.Sprintf("  %s matrix  ·  %d×%d  ·  showing %d/%d %s", strings.ToUpper(layout.density), layout.columns, maxInt(1, (layout.visibleRows+layout.columns-1)/layout.columns), layout.visibleRows, len(presentation.TaskRows), itemNoun)
+	rows = append(rows, renderRow{text: truncateCells(matrix, width), style: styles.Muted})
+
+	for start := 0; start < layout.visibleRows; start += layout.columns {
+		spans := make([]renderSpan, 0, layout.columns*2)
+		for column := 0; column < layout.columns; column++ {
+			index := start + column
+			if column > 0 {
+				spans = append(spans, renderSpan{text: " ", style: styles.Border})
+			}
+			if index >= layout.visibleRows {
+				spans = append(spans, renderSpan{text: strings.Repeat(" ", layout.cellWidth), style: styles.Muted})
+				continue
+			}
+			taskRow := presentation.TaskRows[index]
+			cell, style := taskSwarmCell(taskRow, layout, styles)
+			spans = append(spans, renderSpan{text: cell, style: style})
+		}
+		rows = append(rows, renderRow{text: renderSpansText(spans), style: styles.Text, spans: spans})
+	}
+	if hidden := len(presentation.TaskRows) - layout.visibleRows; hidden > 0 {
+		footer := fmt.Sprintf("  … %d MORE %s  ·  resize taller or wider to reveal more", hidden, strings.ToUpper(itemNoun))
+		rows = append(rows, renderRow{text: truncateCells(footer, width), style: styles.Warning.Bold(true)})
+	}
+	return append(rows, renderRow{text: "", style: styles.Text})
+}
+
+func taskSwarmCell(row taskPresentationRow, layout taskSwarmRenderLayout, styles PageStyles) (string, tcell.Style) {
+	symbol, style := "·", styles.Muted
+	switch row.Status {
+	case "running":
+		symbol, style = "◆", styles.Accent.Bold(true)
+	case "done":
+		symbol, style = "✓", styles.Success
+	case "error":
+		symbol, style = "!", styles.Error.Bold(true)
+	case "cancelled":
+		symbol, style = "×", styles.Error
+	}
+	index := fmt.Sprintf("%02d", row.Index)
+	if row.Index >= 100 {
+		index = fmt.Sprintf("%03d", row.Index)
+	}
+	label := firstNonEmptyToolRaw(row.Title, row.Agent, "subagent")
+	ideaAgent := strings.EqualFold(strings.TrimSpace(row.Agent), "idea")
+	if ideaAgent {
+		label = fmt.Sprintf("Agent #%d", row.Index)
+	}
+	cell := symbol + index
+	if ideaAgent {
+		cell = symbol
+	}
+	switch layout.density {
+	case "detail":
+		cell = taskSwarmCellWithActivity(cell+" "+taskPresentationStatusLabel(row.Status), label, row.Tool, layout.cellWidth)
+	case "compact":
+		cell = taskSwarmCellWithActivity(cell, label, row.Tool, layout.cellWidth)
+	case "micro":
+		if ideaAgent {
+			cell += " " + label
+		} else {
+			cell += " " + firstNonEmptyToolRaw(row.Agent, label)
+		}
+	}
+	cell = truncateCells(cell, layout.cellWidth)
+	if padding := layout.cellWidth - displayWidth(cell); padding > 0 {
+		cell += strings.Repeat(" ", padding)
+	}
+	return cell, style
+}
+
+func taskSwarmCellWithActivity(prefix, title, activity string, width int) string {
+	prefix = strings.TrimSpace(prefix)
+	title = strings.TrimSpace(title)
+	activity = strings.TrimSpace(activity)
+	if activity == "" || activity == "-" {
+		return prefix + " " + title
+	}
+	available := width - displayWidth(prefix) - 2
+	if available < 8 {
+		return prefix + " " + title
+	}
+	activityWidth := minInt(displayWidth(activity), maxInt(5, available/3))
+	titleWidth := available - activityWidth - 1
+	if titleWidth < 4 {
+		return prefix + " " + title
+	}
+	title = truncateCells(title, titleWidth)
+	activity = truncateCells(activity, activityWidth)
+	gap := maxInt(1, width-displayWidth(prefix)-displayWidth(title)-displayWidth(activity)-1)
+	return prefix + " " + title + strings.Repeat(" ", gap) + activity
 }
 
 func taskPresentationStatusLabel(status string) string {

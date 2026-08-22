@@ -237,8 +237,136 @@ func TestPrepareAndApplyTaskIntegrationIsDeterministic(t *testing.T) {
 	if result.ResultingParentHead == "" || result.ResultingParentHead == base {
 		t.Fatalf("result = %#v", result)
 	}
+	if descends, err := svc.TaskCommitDescendsFrom(repo, head, result.ResultingParentHead); err != nil || descends {
+		t.Fatalf("cherry-picked child unexpectedly reachable by ancestry: descends=%t err=%v", descends, err)
+	}
+	if integrated, err := svc.TaskCommitRangeIntegratedInto(repo, base, head, result.ResultingParentHead); err != nil || !integrated {
+		t.Fatalf("cherry-picked child not classified integrated: integrated=%t err=%v", integrated, err)
+	}
 	if _, err := os.Stat(filepath.Join(repo, "child.txt")); err != nil {
 		t.Fatalf("integrated file: %v", err)
+	}
+}
+
+func TestRemoveIntegratedTaskWorkspaceRemovesOnlyCleanIntegratedManagedChild(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	repo := t.TempDir()
+	if _, err := runGit(repo, "init", "-b", "dev"); err != nil {
+		t.Fatal(err)
+	}
+	_, _ = runGit(repo, "config", "user.email", "test@example.invalid")
+	_, _ = runGit(repo, "config", "user.name", "Test User")
+	if err := os.WriteFile(filepath.Join(repo, "base.txt"), []byte("base\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, _ = runGit(repo, "add", "base.txt")
+	_, _ = runGit(repo, "commit", "-m", "base")
+	base, _ := runGit(repo, "rev-parse", "HEAD")
+
+	const sessionID = "cleanup-child"
+	svc := &Service{}
+	allocation, err := svc.AllocateTaskWorkspace(repo, TaskBase{RepoRoot: repo, ParentBranch: "dev", BaseCommit: base}, sessionID)
+	if err != nil {
+		t.Fatalf("allocate task worktree: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(allocation.WorkspacePath, "child.txt"), []byte("child\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, _ = runGit(allocation.WorkspacePath, "add", "child.txt")
+	_, _ = runGit(allocation.WorkspacePath, "commit", "-m", "child")
+	head, _ := runGit(allocation.WorkspacePath, "rev-parse", "HEAD")
+	plan, err := svc.PrepareTaskIntegration(repo, base, []TaskIntegrationChild{{SessionID: sessionID, BaseCommit: base, HeadCommit: head}})
+	if err != nil {
+		t.Fatalf("prepare task integration: %v", err)
+	}
+	if _, err := svc.ApplyTaskIntegration(repo, plan); err != nil {
+		t.Fatalf("apply task integration: %v", err)
+	}
+	if err := svc.RemoveIntegratedTaskWorkspace(repo, allocation.WorkspacePath, sessionID, allocation.BranchName, base, head); err != nil {
+		t.Fatalf("remove integrated task worktree: %v", err)
+	}
+	if _, err := os.Stat(allocation.WorkspacePath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("integrated worktree still exists: %v", err)
+	}
+	branchHead, err := runGit(repo, "rev-parse", "--verify", "refs/heads/"+allocation.BranchName)
+	if err != nil || branchHead != head {
+		t.Fatalf("durable child branch = %q, %v; want %s", branchHead, err, head)
+	}
+
+	dirtyID := "cleanup-dirty"
+	dirtyAllocation, err := svc.AllocateTaskWorkspace(repo, TaskBase{RepoRoot: repo, ParentBranch: "dev", BaseCommit: strings.TrimSpace(plan.ParentHead)}, dirtyID)
+	if err != nil {
+		t.Fatalf("allocate dirty task worktree: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dirtyAllocation.WorkspacePath, "dirty.txt"), []byte("dirty\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dirtyHead, _ := runGit(dirtyAllocation.WorkspacePath, "rev-parse", "HEAD")
+	if err := svc.RemoveIntegratedTaskWorkspace(repo, dirtyAllocation.WorkspacePath, dirtyID, dirtyAllocation.BranchName, strings.TrimSpace(plan.ParentHead), dirtyHead); err == nil || !strings.Contains(err.Error(), "dirty") {
+		t.Fatalf("dirty worktree cleanup error = %v", err)
+	}
+	if _, err := os.Stat(dirtyAllocation.WorkspacePath); err != nil {
+		t.Fatalf("dirty worktree was not preserved: %v", err)
+	}
+}
+
+func TestRemoveIntegratedTaskWorkspaceUsesLinkedParentHEAD(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	repo := t.TempDir()
+	if _, err := runGit(repo, "init", "-b", "dev"); err != nil {
+		t.Fatal(err)
+	}
+	_, _ = runGit(repo, "config", "user.email", "test@example.invalid")
+	_, _ = runGit(repo, "config", "user.name", "Test User")
+	if err := os.WriteFile(filepath.Join(repo, "base.txt"), []byte("base\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, _ = runGit(repo, "add", "base.txt")
+	_, _ = runGit(repo, "commit", "-m", "base")
+	base, _ := runGit(repo, "rev-parse", "HEAD")
+
+	linkedParent := filepath.Join(t.TempDir(), "linked-parent")
+	if _, err := runGit(repo, "worktree", "add", "-b", "agent/linked-parent", linkedParent, base); err != nil {
+		t.Fatalf("add linked parent worktree: %v", err)
+	}
+
+	const sessionID = "linked-parent-cleanup"
+	svc := &Service{}
+	allocation, err := svc.AllocateTaskWorkspace(linkedParent, TaskBase{RepoRoot: repo, ParentBranch: "agent/linked-parent", BaseCommit: base}, sessionID)
+	if err != nil {
+		t.Fatalf("allocate task worktree: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(allocation.WorkspacePath, "child.txt"), []byte("child\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, _ = runGit(allocation.WorkspacePath, "add", "child.txt")
+	_, _ = runGit(allocation.WorkspacePath, "commit", "-m", "child")
+	childHead, _ := runGit(allocation.WorkspacePath, "rev-parse", "HEAD")
+
+	if _, err := runGit(linkedParent, "cherry-pick", childHead); err != nil {
+		t.Fatalf("integrate child into linked parent: %v", err)
+	}
+	rootHead, _ := runGit(repo, "rev-parse", "HEAD")
+	linkedHead, _ := runGit(linkedParent, "rev-parse", "HEAD")
+	if rootHead == linkedHead {
+		t.Fatal("fixture requires repository-root and linked-parent HEADs to differ")
+	}
+	if integrated, err := svc.TaskCommitRangeIntegratedInto(repo, base, childHead, rootHead); err != nil || integrated {
+		t.Fatalf("fixture child unexpectedly integrated into repository-root HEAD: integrated=%t err=%v", integrated, err)
+	}
+	if integrated, err := svc.TaskCommitRangeIntegratedInto(linkedParent, base, childHead, linkedHead); err != nil || !integrated {
+		t.Fatalf("fixture child not integrated into linked parent HEAD: integrated=%t err=%v", integrated, err)
+	}
+
+	if err := svc.RemoveIntegratedTaskWorkspace(linkedParent, allocation.WorkspacePath, sessionID, allocation.BranchName, base, childHead); err != nil {
+		t.Fatalf("remove integrated task worktree from linked parent: %v", err)
+	}
+	if _, err := os.Stat(allocation.WorkspacePath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("integrated worktree still exists: %v", err)
+	}
+	branchHead, err := runGit(repo, "rev-parse", "--verify", "refs/heads/"+allocation.BranchName)
+	if err != nil || branchHead != childHead {
+		t.Fatalf("durable child branch = %q, %v; want %s", branchHead, err, childHead)
 	}
 }
 
@@ -317,6 +445,9 @@ func TestTaskIntegrationSkipsAlreadyIntegratedCommitAndAppliesRemainingCommit(t 
 	}
 	if _, err := os.Stat(filepath.Join(repo, ".git", "CHERRY_PICK_HEAD")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("cherry-pick state remains after integration: %v", err)
+	}
+	if integrated, err := svc.TaskCommitRangeIntegratedInto(repo, base, second, result.ResultingParentHead); err != nil || !integrated {
+		t.Fatalf("multi-commit child range not classified integrated: integrated=%t err=%v", integrated, err)
 	}
 }
 
@@ -418,7 +549,7 @@ func TestPrepareTaskIntegrationPreflightsCompleteStackAndLeavesParentUnchangedOn
 		{SessionID: "second", BaseCommit: base, HeadCommit: second},
 	})
 	var conflict *TaskIntegrationConflictError
-	if !errors.As(err, &conflict) || conflict.Commit != second {
+	if !errors.As(err, &conflict) || conflict.SessionID != "second" || conflict.Commit != second {
 		t.Fatalf("conflict = %#v, err = %v", conflict, err)
 	}
 	head, _ := runGit(repo, "rev-parse", "HEAD")
@@ -440,7 +571,7 @@ func TestPrepareTaskIntegrationRejectsStaleParentHead(t *testing.T) {
 	}
 	_, _ = runGit(repo, "add", "base.txt")
 	_, _ = runGit(repo, "commit", "-m", "base")
-	_, err := (&Service{}).PrepareTaskIntegration(repo, "stale", []TaskIntegrationChild{{SessionID: "child", BaseCommit: "base", HeadCommit: "head"}})
+	_, err := (&Service{}).PrepareTaskIntegration(repo, strings.Repeat("a", 40), []TaskIntegrationChild{{SessionID: "child", BaseCommit: strings.Repeat("b", 40), HeadCommit: strings.Repeat("c", 40)}})
 	if err == nil || !strings.Contains(err.Error(), "stale parent HEAD") {
 		t.Fatalf("error = %v", err)
 	}

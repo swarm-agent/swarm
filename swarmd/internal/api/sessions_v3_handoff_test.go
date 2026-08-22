@@ -40,11 +40,39 @@ func TestSessionV3ProviderHandoffPacketBoundsLongTranscript(t *testing.T) {
 	}
 }
 
-func TestSessionV3ProviderHandoffPacketFailsOverTotalCap(t *testing.T) {
+func TestSessionV3ProviderHandoffDefaultBudgetApproximatesFortyThousandTokens(t *testing.T) {
+	if got, want := sessionV3HandoffDefaultTotalChars, 40000*sessionV3HandoffApproxCharsPerToken; got != want {
+		t.Fatalf("default handoff character budget = %d, want %d", got, want)
+	}
+	if got, want := sessionV3HandoffDefaultTotalChars/sessionV3HandoffApproxCharsPerToken, 40000; got != want {
+		t.Fatalf("default handoff token budget = %d, want %d", got, want)
+	}
+
+	packet := sessionV3FitProviderHandoffPacket("[provider-handoff]\n"+strings.Repeat("middle-context-", sessionV3HandoffDefaultTotalChars)+"\n--- user ---\nnewest conversation tail", sessionV3HandoffDefaultTotalChars)
+	if got := len([]rune(packet)); got != sessionV3HandoffDefaultTotalChars {
+		t.Fatalf("handoff packet length = %d, want %d", got, sessionV3HandoffDefaultTotalChars)
+	}
+	for _, want := range []string{"[provider-handoff]", "provider-handoff exceeded", "--- user ---", "newest conversation tail"} {
+		if !strings.Contains(packet, want) {
+			t.Fatalf("bounded handoff packet missing %q", want)
+		}
+	}
+}
+
+func TestSessionV3ProviderHandoffPacketFitsOverTotalCap(t *testing.T) {
 	exec := &sessionV3Executor{}
-	_, err := exec.sessionV3ProviderHandoffPacket(sessionV3ExecutorJob{}, sessionV3ResolvedRuntime{Preference: pebblestore.ModelPreference{Provider: "codex", Model: "gpt-5"}}, []pebblestore.MessageSnapshot{{Role: "user", Content: strings.Repeat("x", 2000)}}, provideriface.Request{BoundaryReason: "provider_model_runtime_handoff", PreviousProviderLineageID: "old-lineage", ProviderLineageID: "new-lineage"}, sessionV3ProviderHandoffCaps{TailMessages: 4, ToolOutputChars: 100, TotalChars: 500})
-	if err == nil || !strings.Contains(err.Error(), "exceeds safety cap") {
-		t.Fatalf("expected safety cap error, got %v", err)
+	packet, err := exec.sessionV3ProviderHandoffPacket(sessionV3ExecutorJob{}, sessionV3ResolvedRuntime{Preference: pebblestore.ModelPreference{Provider: "codex", Model: "gpt-5"}}, []pebblestore.MessageSnapshot{{Role: "user", Content: strings.Repeat("x", 2000)}}, provideriface.Request{BoundaryReason: "provider_model_runtime_handoff", PreviousProviderLineageID: "old-lineage", ProviderLineageID: "new-lineage"}, sessionV3ProviderHandoffCaps{TailMessages: 4, ToolOutputChars: 100, TotalChars: 500})
+	if err != nil {
+		t.Fatalf("handoff packet: %v", err)
+	}
+	if got := len([]rune(packet)); got != 500 {
+		t.Fatalf("handoff packet length = %d, want 500", got)
+	}
+	if !strings.Contains(packet, "provider-handoff exceeded") {
+		t.Fatalf("handoff packet missing truncation marker: %s", packet)
+	}
+	if !strings.Contains(packet, "--- user ---") {
+		t.Fatalf("handoff packet dropped recent conversation tail: %s", packet)
 	}
 }
 

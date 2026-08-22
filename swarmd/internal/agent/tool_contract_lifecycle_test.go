@@ -101,6 +101,25 @@ func TestBuiltInManageSessionsDefaultIsSwarmOnly(t *testing.T) {
 	}
 }
 
+func TestManagedArtifactToolIsRestrictedToSwarmAndDesigner(t *testing.T) {
+	contracts := map[string]*pebblestore.AgentToolContract{
+		"swarm":    SwarmAgentToolContract(),
+		"designer": DesignerAgentToolContract(),
+		"finder":   FinderAgentToolContract(),
+		"coder":    CoderAgentToolContract(),
+		"plan":     PlanSidechatAgentToolContract(),
+		"idea":     IdeaAgentToolContract(),
+	}
+	for name, contract := range contracts {
+		cfg, present := contract.Tools["manage_artifact"]
+		enabled := present && cfg.Enabled != nil && *cfg.Enabled
+		want := name == "swarm" || name == "designer"
+		if enabled != want {
+			t.Fatalf("%s manage_artifact enabled = %t, want %t", name, enabled, want)
+		}
+	}
+}
+
 func TestEnsureDefaultsPreservesExistingBuiltInToolContract(t *testing.T) {
 	svc, agents := newTestService(t)
 	customContract := &pebblestore.AgentToolContract{Preset: "custom", Tools: map[string]pebblestore.AgentToolConfig{"read": {Enabled: pebblestore.BoolPtr(true)}}}

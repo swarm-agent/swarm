@@ -23,6 +23,10 @@ type SubagentReservationRequest struct {
 	CallID         string
 	ManifestHash   string
 	LaunchCount    int
+	SwarmMode      bool
+	Program        bool
+	ReadyCount     int
+	MaxConcurrency int
 	Delegated      bool
 }
 
@@ -49,14 +53,18 @@ func (s *Service) ReserveSubagentWave(request SubagentReservationRequest) (Subag
 	if request.LaunchCount < 1 {
 		return SubagentReservationResult{}, errors.New("subagent wave must contain at least one launch")
 	}
+	if request.LaunchCount > MaxSubagentWaveSize {
+		record := pebblestore.SubagentWaveReservation{SessionID: request.SessionID, RunID: request.RunID, CallID: request.CallID, ManifestHash: request.ManifestHash, LaunchCount: request.LaunchCount, SwarmMode: request.SwarmMode, Status: string(SubagentReservationDeny)}
+		return SubagentReservationResult{Decision: SubagentReservationDeny, Reason: fmt.Sprintf("subagent wave exceeds absolute safety bound of %d", MaxSubagentWaveSize), Reservation: record}, nil
+	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if existing, ok, err := s.store.GetSubagentWaveReservation(request.SessionID, request.RunID, request.CallID); err != nil {
 		return SubagentReservationResult{}, err
 	} else if ok {
-		if existing.ManifestHash != request.ManifestHash || existing.LaunchCount != request.LaunchCount {
-			return SubagentReservationResult{}, errors.New("task call already reserved with a different exact wave")
+		if existing.ManifestHash != request.ManifestHash || existing.LaunchCount != request.LaunchCount || existing.Program != request.Program || existing.ReadyCount != request.ReadyCount || existing.MaxConcurrency != request.MaxConcurrency {
+			return SubagentReservationResult{}, errors.New("task call already reserved with a different exact wave or program")
 		}
 		return reservationResult(existing), nil
 	}
@@ -68,16 +76,26 @@ func (s *Service) ReserveSubagentWave(request SubagentReservationRequest) (Subag
 		return SubagentReservationResult{}, err
 	}
 	policy := NormalizePolicy(state.Policy).Subagents
+	launchLimit := policy.ActiveChildLimit
+	limitLabel := "default subagent limit"
+	if request.SwarmMode {
+		launchLimit = policy.SwarmActiveChildLimit
+		limitLabel = "swarm-mode subagent limit"
+	}
 	decision := SubagentReservationApprove
 	reason := "wave is within the bounded automatic delegation allowance"
 	if request.Delegated {
 		decision, reason = SubagentReservationDeny, "task delegation is parent-only; child sessions cannot delegate"
-	} else if request.LaunchCount > policy.ActiveChildLimit {
-		decision, reason = SubagentReservationDeny, fmt.Sprintf("subagent wave exceeds active child limit of %d", policy.ActiveChildLimit)
 	} else if policy.Mode == SubagentModeDirect {
 		decision, reason = SubagentReservationDeny, "direct orchestration mode denies delegation"
 	} else if policy.Mode == SubagentModeAsk {
 		decision, reason = SubagentReservationAsk, "ask orchestration mode reviews every exact wave"
+	} else if !request.Program && request.LaunchCount > launchLimit {
+		decision, reason = overBudgetSubagentDecision(policy, fmt.Sprintf("subagent wave exceeds %s of %d", limitLabel, launchLimit))
+	} else if request.Program && (request.ReadyCount < 1 || request.ReadyCount > request.LaunchCount) {
+		decision, reason = SubagentReservationDeny, "task program ready count is invalid"
+	} else if request.Program && (request.MaxConcurrency < 0 || request.MaxConcurrency > request.LaunchCount) {
+		decision, reason = SubagentReservationDeny, "task program lower concurrency cap is invalid"
 	}
 	reservations, err := s.store.ListSubagentWaveReservations(request.SessionID, request.RunID)
 	if err != nil {
@@ -91,22 +109,38 @@ func (s *Service) ReserveSubagentWave(request SubagentReservationRequest) (Subag
 		// Each accepted task call consumes exactly one automatic wave, regardless
 		// of how many children it launches. Completion releases only concurrency.
 		automaticWaves++
-		activeChildren += reservation.ActiveCount
-	}
-	if decision != SubagentReservationDeny && activeChildren+request.LaunchCount > policy.ActiveChildLimit {
-		decision, reason = SubagentReservationDeny, "active child concurrency limit would be exceeded"
-	}
-	if decision == SubagentReservationApprove && automaticWaves >= policy.AutomaticLaunchesPerParentRun {
-		if policy.OverBudgetAction == SubagentOverBudgetDeny {
-			decision, reason = SubagentReservationDeny, "automatic wave budget is exhausted"
-		} else {
-			decision, reason = SubagentReservationAsk, "wave requires approval because the automatic wave budget is exhausted"
+		// Regular and swarm calls have independent configured concurrency pools.
+		// Legacy records omit SwarmMode and therefore remain regular reservations.
+		if reservation.SwarmMode == request.SwarmMode {
+			activeChildren += reservation.ActiveCount
 		}
 	}
+	requestedActive := request.LaunchCount
+	if request.Program {
+		requestedActive = request.ReadyCount
+		remainingCapacity := launchLimit - activeChildren
+		if requestedActive > remainingCapacity {
+			requestedActive = remainingCapacity
+		}
+		if request.MaxConcurrency > 0 && requestedActive > request.MaxConcurrency {
+			requestedActive = request.MaxConcurrency
+		}
+		if requestedActive < 0 {
+			requestedActive = 0
+		}
+	}
+	if decision == SubagentReservationApprove && !request.Program && activeChildren+requestedActive > launchLimit {
+		decision, reason = overBudgetSubagentDecision(policy, fmt.Sprintf("%s would be exceeded by active child concurrency", limitLabel))
+	} else if decision == SubagentReservationApprove && request.Program && requestedActive < 1 {
+		decision, reason = overBudgetSubagentDecision(policy, fmt.Sprintf("%s has no remaining capacity for the program's ready jobs", limitLabel))
+	}
+	if decision == SubagentReservationApprove && automaticWaves >= policy.AutomaticLaunchesPerParentRun {
+		decision, reason = overBudgetSubagentDecision(policy, "the automatic wave budget is exhausted")
+	}
 	status := string(decision)
-	record := pebblestore.SubagentWaveReservation{SessionID: request.SessionID, RunID: request.RunID, CallID: request.CallID, ManifestHash: request.ManifestHash, LaunchCount: request.LaunchCount, Status: status}
+	record := pebblestore.SubagentWaveReservation{SessionID: request.SessionID, RunID: request.RunID, CallID: request.CallID, ManifestHash: request.ManifestHash, LaunchCount: request.LaunchCount, SwarmMode: request.SwarmMode, Program: request.Program, ReadyCount: request.ReadyCount, MaxConcurrency: request.MaxConcurrency, Status: status}
 	if decision != SubagentReservationDeny {
-		record.ActiveCount = request.LaunchCount
+		record.ActiveCount = requestedActive
 	}
 	if err := s.store.PutSubagentWaveReservation(record); err != nil {
 		return SubagentReservationResult{}, err
@@ -114,9 +148,34 @@ func (s *Service) ReserveSubagentWave(request SubagentReservationRequest) (Subag
 	return SubagentReservationResult{Decision: decision, Reason: reason, Reservation: record}, nil
 }
 
+func overBudgetSubagentDecision(policy SubagentPolicy, reason string) (SubagentReservationDecision, string) {
+	if policy.OverBudgetAction == SubagentOverBudgetDeny {
+		return SubagentReservationDeny, strings.TrimPrefix(reason, "the ")
+	}
+	return SubagentReservationAsk, "wave requires approval because " + reason
+}
+
 func reservationResult(record pebblestore.SubagentWaveReservation) SubagentReservationResult {
 	decision := SubagentReservationDecision(record.Status)
 	return SubagentReservationResult{Decision: decision, Reason: "idempotent task wave reservation", Reservation: record}
+}
+
+func (s *Service) GetSubagentReservation(sessionID, runID, callID string) (pebblestore.SubagentWaveReservation, bool, error) {
+	if s == nil || s.store == nil {
+		return pebblestore.SubagentWaveReservation{}, false, errors.New("permission service is not configured")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.store.GetSubagentWaveReservation(strings.TrimSpace(sessionID), strings.TrimSpace(runID), strings.TrimSpace(callID))
+}
+
+func (s *Service) UpdateSubagentProgramCohort(sessionID, runID, callID string, activeCount int) (pebblestore.SubagentWaveReservation, error) {
+	if s == nil || s.store == nil {
+		return pebblestore.SubagentWaveReservation{}, errors.New("permission service is not configured")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.store.UpdateSubagentProgramActiveCount(strings.TrimSpace(sessionID), strings.TrimSpace(runID), strings.TrimSpace(callID), activeCount, "approved")
 }
 
 func (s *Service) FinishSubagentWave(sessionID, runID, callID, status string) error {

@@ -63,6 +63,29 @@ func TestUISettingsServiceRoundTripsNormalizedPlanContextGuard(t *testing.T) {
 	}
 }
 
+func TestUISettingsServiceRoundTripsArtifactLibrary(t *testing.T) {
+	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "ui-settings-artifacts.pebble"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	service := NewService(pebblestore.NewUISettingsStore(store))
+	settings := defaultUISettings()
+	settings.Artifacts.LibraryDirectory = filepath.Join(t.TempDir(), "Creative Library")
+	saved, err := service.SetForAccount("account-a", settings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := service.GetForAccount("account-a")
+	if err != nil || loaded.Artifacts.LibraryDirectory != saved.Artifacts.LibraryDirectory {
+		t.Fatalf("artifact library round trip = %+v, err=%v", loaded.Artifacts, err)
+	}
+	settings.Artifacts.LibraryDirectory = "relative/path"
+	if _, err := service.SetForAccount("account-a", settings); err == nil {
+		t.Fatal("relative artifact library was persisted")
+	}
+}
+
 func TestUISettingsServiceDoesNotExposeOrPersistAgentModels(t *testing.T) {
 	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "ui-settings.pebble"))
 	if err != nil {

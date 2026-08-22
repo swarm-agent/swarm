@@ -7,12 +7,16 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"path/filepath"
+	"reflect"
+	"regexp"
 	"sort"
 	"strings"
 
 	agentruntime "swarm/packages/swarmd/internal/agent"
 	"swarm/packages/swarmd/internal/agentmodel"
+	artifactruntime "swarm/packages/swarmd/internal/artifact"
 	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/permission"
 	sessionruntime "swarm/packages/swarmd/internal/session"
@@ -20,31 +24,145 @@ import (
 	"swarm/packages/swarmd/internal/tool"
 )
 
-const taskLaunchPermissionPathID = "permission.task_launch.v1"
+const (
+	taskLaunchPermissionPathID     = "permission.task_launch.v1"
+	taskModeRegular                = "regular"
+	taskModeSwarm                  = "swarm"
+	taskExecutionFormatSubagents   = "subagent_wave"
+	taskExecutionFormatImageDirect = "direct_image_swarm"
+	taskSwarmStrategyExplore       = "explore"
+	taskSwarmStrategyAssembly      = "assembly"
+	taskOutputModeManaged          = "managed"
+	taskOutputModeWorkspace        = "workspace"
+	taskAssemblySwarmLaunchEnabled = false
+	taskSwarmMaxAgents             = 256
+	taskProgramActionStart         = "start"
+	taskProgramActionStatus        = "status"
+)
+
+var taskProgramIDPattern = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,63}$`)
 
 type taskCallArguments struct {
-	Action          string
-	Description     string
-	Prompt          string
-	Launches        []taskLaunchSpec
-	SourceArguments map[string]any
+	Action               string
+	Description          string
+	Prompt               string
+	Mode                 string
+	ProgramWorkspacePath string
+	Swarm                *taskSwarmSpec
+	Program              *taskProgramSpec
+	ProgramID            string
+	PlannedProgram       bool
+	Launches             []taskLaunchSpec
+	SourceArtifact       *pebblestore.SessionArtifactSelectionReference
+	SourceArguments      map[string]any
+}
+
+type taskProgramSpec struct {
+	ID             string             `json:"id"`
+	MaxConcurrency *int               `json:"max_concurrency,omitempty"`
+	Stages         []taskProgramStage `json:"stages"`
+	Jobs           []taskProgramJob   `json:"jobs"`
+}
+
+type taskProgramStage struct {
+	ID                 string   `json:"id"`
+	DependsOn          []string `json:"depends_on,omitempty"`
+	DependencyEvidence string   `json:"dependency_evidence"`
+}
+
+type taskProgramJob struct {
+	ID                    string                                         `json:"id"`
+	StageID               string                                         `json:"stage_id"`
+	DependsOn             []string                                       `json:"depends_on,omitempty"`
+	RequestedSubagentType string                                         `json:"agent_type"`
+	TargetWorkspacePath   string                                         `json:"workspace_path,omitempty"`
+	MetaPrompt            string                                         `json:"meta_prompt"`
+	AssignmentLabel       string                                         `json:"title"`
+	Deliverable           string                                         `json:"deliverable"`
+	OwnedScope            []string                                       `json:"owned_scope,omitempty"`
+	OutputMode            string                                         `json:"output_mode,omitempty"`
+	OutputRequirements    *pebblestore.SessionArtifactOutputRequirements `json:"output_requirements,omitempty"`
+	AnimationProfile      *pebblestore.SessionArtifactAnimationProfile   `json:"animation_profile,omitempty"`
+	AcceptanceCriteria    []string                                       `json:"acceptance_criteria"`
+	DependencyEvidence    string                                         `json:"dependency_evidence"`
+}
+
+type taskProgramCapacity struct {
+	TotalJobs             int  `json:"total_jobs"`
+	ReadyJobs             int  `json:"ready_jobs"`
+	ActiveAccountCapacity int  `json:"active_account_capacity"`
+	ExplicitLowerCap      *int `json:"explicit_lower_cap,omitempty"`
+	EffectiveCapacity     int  `json:"effective_capacity"`
+}
+
+type taskSwarmGroup struct {
+	Name         string `json:"name"`
+	Count        int    `json:"count"`
+	Instructions string `json:"instructions,omitempty"`
+}
+
+type taskSwarmAssemblyPart struct {
+	Name         string   `json:"name"`
+	Instructions string   `json:"instructions,omitempty"`
+	OwnedScope   []string `json:"owned_scope"`
+}
+
+type taskSwarmIterationControls struct {
+	Preserve []string `json:"preserve,omitempty"`
+	Change   []string `json:"change"`
+	Exclude  []string `json:"exclude,omitempty"`
+}
+
+type taskSwarmSpec struct {
+	Strategy            string
+	AgentType           string
+	Count               int
+	Themes              []string
+	Groups              []taskSwarmGroup
+	OutputContract      string
+	OutputMode          string
+	OutputRequirements  *pebblestore.SessionArtifactOutputRequirements
+	AnimationProfile    *pebblestore.SessionArtifactAnimationProfile
+	IterationControls   *taskSwarmIterationControls
+	SourceArtifact      *pebblestore.SessionArtifactSelectionReference
+	AssemblyParts       []taskSwarmAssemblyPart
+	IntegrationContract string
 }
 
 type taskLaunchSpec struct {
 	RequestedSubagentType string
+	TargetWorkspacePath   string
 	MetaPrompt            string
 	AssignmentLabel       string
 	Deliverable           string
 	ConcurrencyReason     string
 	OwnedScope            []string
+	OutputMode            string
+	OutputRequirements    *pebblestore.SessionArtifactOutputRequirements
+	AnimationProfile      *pebblestore.SessionArtifactAnimationProfile
+	SourceArtifact        *pebblestore.SessionArtifactSelectionReference
 	DependencyEvidence    string
+	StreamKey             string
+	SwarmMode             bool
+	SwarmStrategy         string
+	AssemblyPart          *taskSwarmAssemblyPart
+	IntegrationContract   string
 	SourceArguments       map[string]any
+}
+
+type taskImageManifestRow struct {
+	Index              int                                            `json:"index"`
+	Theme              string                                         `json:"theme,omitempty"`
+	StreamKey          string                                         `json:"stream_key"`
+	OutputRequirements *pebblestore.SessionArtifactOutputRequirements `json:"output_requirements,omitempty"`
+	SourceArtifact     *pebblestore.SessionArtifactSelectionReference `json:"source_artifact,omitempty"`
 }
 
 type taskLaunchManifest struct {
 	PathID              string                         `json:"path_id"`
 	Goal                string                         `json:"goal"`
 	LaunchCount         int                            `json:"launch_count"`
+	ImageCount          int                            `json:"image_count,omitempty"`
 	Description         string                         `json:"description"`
 	Prompt              string                         `json:"prompt"`
 	SubagentType        string                         `json:"subagent_type"`
@@ -60,6 +178,16 @@ type taskLaunchManifest struct {
 	SourceArguments     map[string]any                 `json:"source_arguments,omitempty"`
 	Parent              *taskLaunchParentInfo          `json:"parent,omitempty"`
 	Launches            []taskLaunchManifestRow        `json:"launches,omitempty"`
+	Images              []taskImageManifestRow         `json:"images,omitempty"`
+	ExecutionFormat     string                         `json:"execution_format,omitempty"`
+	TaskMode            string                         `json:"task_mode,omitempty"`
+	Program             *taskProgramSpec               `json:"program,omitempty"`
+	ProgramID           string                         `json:"program_id,omitempty"`
+	ProgramReadyCount   int                            `json:"program_ready_count,omitempty"`
+	SwarmAgentType      string                         `json:"swarm_agent_type,omitempty"`
+	SwarmStrategy       string                         `json:"swarm_strategy,omitempty"`
+	AssemblyParts       []taskSwarmAssemblyPart        `json:"assembly_parts,omitempty"`
+	IntegrationContract string                         `json:"integration_contract,omitempty"`
 	ManifestHash        string                         `json:"manifest_hash"`
 	ApprovedArguments   map[string]any                 `json:"approved_arguments,omitempty"`
 }
@@ -133,35 +261,44 @@ type taskLaunchParentInfo struct {
 }
 
 type taskLaunchManifestRow struct {
-	Description           string                                   `json:"description"`
-	RequestedSubagentType string                                   `json:"requested_subagent_type"`
-	ResolvedAgentName     string                                   `json:"resolved_agent_name"`
-	ResolvedAgentError    string                                   `json:"resolved_agent_error,omitempty"`
-	Action                string                                   `json:"action"`
-	MetaPrompt            string                                   `json:"meta_prompt,omitempty"`
-	AssignmentLabel       string                                   `json:"assignment_label,omitempty"`
-	Deliverable           string                                   `json:"deliverable,omitempty"`
-	ConcurrencyReason     string                                   `json:"concurrency_reason,omitempty"`
-	OwnedScope            []string                                 `json:"owned_scope,omitempty"`
-	DependencyEvidence    string                                   `json:"dependency_evidence,omitempty"`
-	SubagentProvider      string                                   `json:"subagent_provider,omitempty"`
-	SubagentModel         string                                   `json:"subagent_model,omitempty"`
-	SubagentThinking      string                                   `json:"subagent_thinking,omitempty"`
-	SubagentServiceTier   string                                   `json:"subagent_service_tier,omitempty"`
-	ChildTitlePreview     string                                   `json:"child_title_preview,omitempty"`
-	ChildMode             string                                   `json:"effective_child_mode"`
-	DisabledTools         []string                                 `json:"disabled_tools,omitempty"`
-	ResolvedTools         *taskLaunchResolvedToolSummary           `json:"resolved_tools,omitempty"`
-	Capabilities          map[string]any                           `json:"capabilities,omitempty"`
-	TargetWorkspacePath   string                                   `json:"target_workspace_path,omitempty"`
-	TargetWorkspaceName   string                                   `json:"target_workspace_name,omitempty"`
-	SourceArguments       map[string]any                           `json:"source_arguments,omitempty"`
-	ParentCopy            bool                                     `json:"parent_copy,omitempty"`
-	SourceAgentName       string                                   `json:"source_agent_name,omitempty"`
-	SourceProfileMode     string                                   `json:"source_profile_mode,omitempty"`
-	InheritedRuntimeMode  string                                   `json:"inherited_runtime_mode,omitempty"`
-	ProfileSnapshot       *pebblestore.AgentProfile                `json:"profile_snapshot,omitempty"`
-	ModelProfileSnapshot  *pebblestore.SessionModelProfileSnapshot `json:"model_profile_snapshot"`
+	Description           string                                         `json:"description"`
+	RequestedSubagentType string                                         `json:"requested_subagent_type"`
+	ResolvedAgentName     string                                         `json:"resolved_agent_name"`
+	ResolvedAgentError    string                                         `json:"resolved_agent_error,omitempty"`
+	Action                string                                         `json:"action"`
+	MetaPrompt            string                                         `json:"meta_prompt,omitempty"`
+	AssignmentLabel       string                                         `json:"assignment_label,omitempty"`
+	Deliverable           string                                         `json:"deliverable,omitempty"`
+	ConcurrencyReason     string                                         `json:"concurrency_reason,omitempty"`
+	OwnedScope            []string                                       `json:"owned_scope,omitempty"`
+	OutputMode            string                                         `json:"output_mode,omitempty"`
+	OutputRequirements    *pebblestore.SessionArtifactOutputRequirements `json:"output_requirements,omitempty"`
+	AnimationProfile      *pebblestore.SessionArtifactAnimationProfile   `json:"animation_profile,omitempty"`
+	SourceArtifact        *pebblestore.SessionArtifactSelectionReference `json:"source_artifact,omitempty"`
+	DependencyEvidence    string                                         `json:"dependency_evidence,omitempty"`
+	SubagentProvider      string                                         `json:"subagent_provider,omitempty"`
+	SubagentModel         string                                         `json:"subagent_model,omitempty"`
+	SubagentThinking      string                                         `json:"subagent_thinking,omitempty"`
+	SubagentServiceTier   string                                         `json:"subagent_service_tier,omitempty"`
+	ChildTitlePreview     string                                         `json:"child_title_preview,omitempty"`
+	ChildMode             string                                         `json:"effective_child_mode"`
+	DisabledTools         []string                                       `json:"disabled_tools,omitempty"`
+	ResolvedTools         *taskLaunchResolvedToolSummary                 `json:"resolved_tools,omitempty"`
+	Capabilities          map[string]any                                 `json:"capabilities,omitempty"`
+	TargetWorkspacePath   string                                         `json:"target_workspace_path,omitempty"`
+	TargetWorkspaceName   string                                         `json:"target_workspace_name,omitempty"`
+	SourceArguments       map[string]any                                 `json:"source_arguments,omitempty"`
+	ParentCopy            bool                                           `json:"parent_copy,omitempty"`
+	SourceAgentName       string                                         `json:"source_agent_name,omitempty"`
+	SourceProfileMode     string                                         `json:"source_profile_mode,omitempty"`
+	InheritedRuntimeMode  string                                         `json:"inherited_runtime_mode,omitempty"`
+	ProfileSnapshot       *pebblestore.AgentProfile                      `json:"profile_snapshot,omitempty"`
+	ModelProfileSnapshot  *pebblestore.SessionModelProfileSnapshot       `json:"model_profile_snapshot"`
+	StreamKey             string                                         `json:"stream_key,omitempty"`
+	SwarmMode             bool                                           `json:"swarm_mode,omitempty"`
+	SwarmStrategy         string                                         `json:"swarm_strategy,omitempty"`
+	AssemblyPart          *taskSwarmAssemblyPart                         `json:"assembly_part,omitempty"`
+	IntegrationContract   string                                         `json:"integration_contract,omitempty"`
 }
 
 type taskLaunchResolvedToolSummary struct {
@@ -197,12 +334,28 @@ func parseTaskCallArguments(arguments string) (taskCallArguments, error) {
 		return taskCallArguments{}, err
 	}
 
+	_, hasProgram := args["program"]
+	programID := strings.TrimSpace(mapString(args, "program_id"))
 	action := strings.ToLower(strings.TrimSpace(mapString(args, "action")))
-	switch action {
-	case "", "spawn", "start", "run":
-		action = "spawn"
-	default:
-		return taskCallArguments{}, fmt.Errorf("task action %q is not supported", action)
+	if hasProgram {
+		switch action {
+		case "", "spawn", "start", "run":
+			action = taskProgramActionStart
+		default:
+			return taskCallArguments{}, fmt.Errorf("task program action %q is not supported", action)
+		}
+	} else {
+		switch action {
+		case "", "spawn", "run":
+			action = "spawn"
+		case taskProgramActionStart:
+			if programID != "" {
+				return taskCallArguments{}, errors.New("task program start requires a new program definition or the approved active checkpoint program; continuing an existing program_id is not supported")
+			}
+		case taskProgramActionStatus:
+		default:
+			return taskCallArguments{}, fmt.Errorf("task action %q is not supported", action)
+		}
 	}
 
 	description := strings.TrimSpace(mapString(args, "description"))
@@ -213,10 +366,26 @@ func parseTaskCallArguments(arguments string) (taskCallArguments, error) {
 	if prompt == "" {
 		prompt = strings.TrimSpace(mapString(args, "message"))
 	}
-	if prompt == "" {
+	if prompt == "" && action != taskProgramActionStatus && !(action == taskProgramActionStart && !hasProgram) {
 		return taskCallArguments{}, fmt.Errorf("task requires prompt")
 	}
 
+	mode := strings.ToLower(strings.TrimSpace(mapString(args, "mode")))
+	if mapBool(args, "swarm_mode") {
+		if mode != "" && mode != taskModeSwarm {
+			return taskCallArguments{}, errors.New("task mode conflicts with swarm_mode")
+		}
+		mode = taskModeSwarm
+	}
+	if mode == "" {
+		mode = taskModeRegular
+	}
+	if mode != taskModeRegular && mode != taskModeSwarm {
+		return taskCallArguments{}, fmt.Errorf("task mode must be %q or %q", taskModeRegular, taskModeSwarm)
+	}
+	if (hasProgram || action == taskProgramActionStatus) && mode != taskModeRegular {
+		return taskCallArguments{}, errors.New("task program lifecycle supports only mode=regular")
+	}
 	parseLaunchSpec := func(raw map[string]any, label string) (taskLaunchSpec, error) {
 		if err := rejectTaskLaunchTrustFields(raw, label); err != nil {
 			return taskLaunchSpec{}, err
@@ -240,11 +409,12 @@ func parseTaskCallArguments(arguments string) (taskCallArguments, error) {
 				mapString(raw, "assignment_label"),
 				mapString(raw, "label"),
 			)),
-			Deliverable:        strings.TrimSpace(mapString(raw, "deliverable")),
-			ConcurrencyReason:  strings.TrimSpace(mapString(raw, "concurrency_reason")),
-			OwnedScope:         ownedScope,
-			DependencyEvidence: strings.TrimSpace(mapString(raw, "dependency_evidence")),
-			SourceArguments:    cloneGenericMap(raw),
+			TargetWorkspacePath: strings.TrimSpace(mapString(raw, "workspace_path")),
+			Deliverable:         strings.TrimSpace(mapString(raw, "deliverable")),
+			ConcurrencyReason:   strings.TrimSpace(mapString(raw, "concurrency_reason")),
+			OwnedScope:          ownedScope,
+			DependencyEvidence:  strings.TrimSpace(mapString(raw, "dependency_evidence")),
+			SourceArguments:     cloneGenericMap(raw),
 		}
 		if launch.RequestedSubagentType == "" {
 			return taskLaunchSpec{}, fmt.Errorf("%s requires subagent_type, agent, or purpose", label)
@@ -257,17 +427,91 @@ func parseTaskCallArguments(arguments string) (taskCallArguments, error) {
 		case agentruntime.IsDesignerAgentName(launch.RequestedSubagentType):
 			launch.RequestedSubagentType = "designer"
 		default:
-			return taskLaunchSpec{}, fmt.Errorf("%s subagent_type must be coder, finder, or designer", label)
+			return taskLaunchSpec{}, fmt.Errorf("%s subagent_type must be coder, finder, or designer; Idea is available only through task mode=swarm", label)
 		}
 		if launch.MetaPrompt == "" {
 			return taskLaunchSpec{}, fmt.Errorf("%s requires meta_prompt or role assignment", label)
+		}
+		if err := applyTaskDesignerOutputMode(&launch, mapString(raw, "output_mode"), label); err != nil {
+			return taskLaunchSpec{}, err
+		}
+		if rawRequirements, exists := raw["output_requirements"]; exists {
+			if rawRequirements == nil {
+				return taskLaunchSpec{}, fmt.Errorf("%s output_requirements must be an object", label)
+			}
+			if err := applyTaskOutputRequirements(&launch, rawRequirements, label); err != nil {
+				return taskLaunchSpec{}, err
+			}
+		}
+		if rawProfile, exists := raw["animation_profile"]; exists {
+			if rawProfile == nil {
+				return taskLaunchSpec{}, fmt.Errorf("%s animation_profile must be an object", label)
+			}
+			if err := applyTaskAnimationProfile(&launch, rawProfile, label); err != nil {
+				return taskLaunchSpec{}, err
+			}
 		}
 		applyCanonicalCoderOwnedScope(&launch)
 		return launch, nil
 	}
 
+	if hasProgram {
+		if _, ok := args["launches"]; ok {
+			return taskCallArguments{}, errors.New("task program start declares jobs in program.jobs; launches must be omitted")
+		}
+		program, launches, err := parseTaskProgram(args, prompt)
+		if err != nil {
+			return taskCallArguments{}, err
+		}
+		return taskCallArguments{
+			Action: action, Description: description, Prompt: prompt, Mode: mode,
+			ProgramWorkspacePath: strings.TrimSpace(mapString(args, "workspace_path")),
+			Program:              program, ProgramID: program.ID, Launches: launches, SourceArguments: args,
+		}, nil
+	}
+	if action == taskProgramActionStart && !hasProgram {
+		for key := range args {
+			switch key {
+			case "action", "description", "prompt", "message", "mode", "workspace_path":
+			default:
+				return taskCallArguments{}, fmt.Errorf("planned task program start contains unsupported field %q", key)
+			}
+		}
+		return taskCallArguments{Action: action, Description: description, Prompt: prompt, Mode: mode, ProgramWorkspacePath: strings.TrimSpace(mapString(args, "workspace_path")), PlannedProgram: true, SourceArguments: args}, nil
+	}
+	if action == taskProgramActionStatus {
+		if !taskProgramIDPattern.MatchString(programID) {
+			return taskCallArguments{}, errors.New("task program_id must match ^[a-z][a-z0-9_-]{0,63}$")
+		}
+		for key := range args {
+			switch key {
+			case "action", "description", "prompt", "message", "mode", "program_id":
+			default:
+				return taskCallArguments{}, fmt.Errorf("task program status contains unsupported field %q", key)
+			}
+		}
+		return taskCallArguments{Action: action, Description: description, Prompt: prompt, Mode: mode, ProgramID: programID, SourceArguments: args}, nil
+	}
+
+	if mode == taskModeSwarm {
+		swarm, launches, err := parseTaskSwarmArguments(args, prompt, description)
+		if err != nil {
+			return taskCallArguments{}, err
+		}
+		return taskCallArguments{
+			Action: action, Description: description, Prompt: prompt, Mode: mode,
+			Swarm: swarm, Launches: launches, SourceArtifact: cloneTaskImageSourceArtifact(swarm.SourceArtifact), SourceArguments: args,
+		}, nil
+	}
+
 	launches := make([]taskLaunchSpec, 0, 8)
 	if rawLaunches, ok := args["launches"]; ok {
+		if _, exists := args["output_requirements"]; exists {
+			return taskCallArguments{}, errors.New("task regular launches must declare output_requirements on each Designer launch, not at top level")
+		}
+		if _, exists := args["animation_profile"]; exists {
+			return taskCallArguments{}, errors.New("task regular launches must declare animation_profile on each Designer launch, not at top level")
+		}
 		typed, ok := rawLaunches.([]any)
 		if !ok {
 			return taskCallArguments{}, fmt.Errorf("task launches must be an array")
@@ -281,6 +525,13 @@ func parseTaskCallArguments(arguments string) (taskCallArguments, error) {
 			if err != nil {
 				return taskCallArguments{}, err
 			}
+			if launch.OutputRequirements != nil {
+				entry["output_requirements"] = cloneTaskOutputRequirements(launch.OutputRequirements)
+			}
+			if launch.AnimationProfile != nil {
+				entry["animation_profile"] = cloneTaskAnimationProfile(launch.AnimationProfile)
+			}
+			launch.SourceArguments = cloneGenericMap(entry)
 			launches = append(launches, launch)
 		}
 		if len(launches) == 0 {
@@ -293,19 +544,815 @@ func parseTaskCallArguments(arguments string) (taskCallArguments, error) {
 		if err != nil {
 			return taskCallArguments{}, err
 		}
+		if launch.OutputRequirements != nil {
+			args["output_requirements"] = cloneTaskOutputRequirements(launch.OutputRequirements)
+		}
+		if launch.AnimationProfile != nil {
+			args["animation_profile"] = cloneTaskAnimationProfile(launch.AnimationProfile)
+		}
+		launch.SourceArguments = cloneGenericMap(args)
 		launches = append(launches, launch)
 	}
 	if err := validateTaskDesignerScopes(launches); err != nil {
 		return taskCallArguments{}, err
+	}
+	var sourceArtifact *pebblestore.SessionArtifactSelectionReference
+	if rawSourceArtifact, supplied := args["source_artifact"]; supplied {
+		if rawSourceArtifact == nil {
+			return taskCallArguments{}, errors.New("task source_artifact must be an exact ready artifact reference object")
+		}
+		parsedSourceArtifact, err := parseTaskImageSourceArtifact(rawSourceArtifact)
+		if err != nil {
+			return taskCallArguments{}, err
+		}
+		sourceArtifact = parsedSourceArtifact
+		for i := range launches {
+			if !agentruntime.IsDesignerAgentName(launches[i].RequestedSubagentType) || launches[i].OutputMode != taskOutputModeManaged {
+				return taskCallArguments{}, errors.New("task regular source_artifact requires every launch to be a managed Designer")
+			}
+			launches[i].SourceArtifact = cloneTaskImageSourceArtifact(sourceArtifact)
+		}
+		args["source_artifact"] = cloneTaskImageSourceArtifact(sourceArtifact)
 	}
 
 	return taskCallArguments{
 		Action:          action,
 		Description:     description,
 		Prompt:          prompt,
+		Mode:            mode,
 		Launches:        launches,
+		SourceArtifact:  cloneTaskImageSourceArtifact(sourceArtifact),
 		SourceArguments: args,
 	}, nil
+}
+
+func parseTaskProgram(args map[string]any, prompt string) (*taskProgramSpec, []taskLaunchSpec, error) {
+	for key := range args {
+		switch key {
+		case "action", "description", "prompt", "message", "mode", "workspace_path", "program":
+		default:
+			return nil, nil, fmt.Errorf("task program start contains unsupported field %q", key)
+		}
+	}
+	raw, ok := args["program"].(map[string]any)
+	if !ok {
+		return nil, nil, errors.New("task program must be an object")
+	}
+	for key := range raw {
+		switch key {
+		case "id", "max_concurrency", "stages", "jobs":
+		default:
+			return nil, nil, fmt.Errorf("task program contains unsupported field %q", key)
+		}
+	}
+	program := &taskProgramSpec{ID: strings.TrimSpace(mapString(raw, "id"))}
+	if !taskProgramIDPattern.MatchString(program.ID) {
+		return nil, nil, errors.New("task program id must match ^[a-z][a-z0-9_-]{0,63}$")
+	}
+	if value, exists := raw["max_concurrency"]; exists {
+		cap, err := taskRequiredPositiveIntValue(value, "task program max_concurrency")
+		if err != nil {
+			return nil, nil, err
+		}
+		program.MaxConcurrency = &cap
+	}
+
+	rawStages, ok := raw["stages"].([]any)
+	if !ok || len(rawStages) == 0 {
+		return nil, nil, errors.New("task program stages must be a non-empty array")
+	}
+	stageIndexes := make(map[string]int, len(rawStages))
+	for i, value := range rawStages {
+		row, ok := value.(map[string]any)
+		if !ok {
+			return nil, nil, fmt.Errorf("task program stages[%d] must be an object", i)
+		}
+		for key := range row {
+			switch key {
+			case "id", "depends_on", "dependency_evidence":
+			default:
+				return nil, nil, fmt.Errorf("task program stages[%d] contains unsupported field %q", i, key)
+			}
+		}
+		stage := taskProgramStage{ID: strings.TrimSpace(mapString(row, "id")), DependencyEvidence: strings.TrimSpace(mapString(row, "dependency_evidence"))}
+		if !taskProgramIDPattern.MatchString(stage.ID) {
+			return nil, nil, fmt.Errorf("task program stages[%d] id must match ^[a-z][a-z0-9_-]{0,63}$", i)
+		}
+		if _, duplicate := stageIndexes[stage.ID]; duplicate {
+			return nil, nil, fmt.Errorf("task program stages[%d] duplicates stage id %q", i, stage.ID)
+		}
+		dependsOn, err := taskProgramStringArray(row, "depends_on", fmt.Sprintf("task program stages[%d] depends_on", i), false)
+		if err != nil {
+			return nil, nil, err
+		}
+		if i > 0 && len(dependsOn) == 0 {
+			return nil, nil, fmt.Errorf("task program stages[%d] requires depends_on identifying an earlier barrier", i)
+		}
+		if stage.DependencyEvidence == "" {
+			return nil, nil, fmt.Errorf("task program stages[%d] requires dependency_evidence", i)
+		}
+		for _, dependency := range dependsOn {
+			dependencyIndex, exists := stageIndexes[dependency]
+			if !exists || dependencyIndex >= i {
+				return nil, nil, fmt.Errorf("task program stages[%d] dependency %q must identify an earlier stage", i, dependency)
+			}
+		}
+		stage.DependsOn = dependsOn
+		stageIndexes[stage.ID] = i
+		program.Stages = append(program.Stages, stage)
+	}
+
+	rawJobs, ok := raw["jobs"].([]any)
+	if !ok || len(rawJobs) == 0 {
+		return nil, nil, errors.New("task program jobs must be a non-empty array")
+	}
+	if len(rawJobs) > permission.MaxSubagentWaveSize {
+		return nil, nil, fmt.Errorf("task program jobs cannot exceed backend safety bound of %d", permission.MaxSubagentWaveSize)
+	}
+	jobIndexes := make(map[string]int, len(rawJobs))
+	jobStages := make(map[string]int, len(rawJobs))
+	stageJobCounts := make(map[string]int, len(program.Stages))
+	assignmentOwners := make(map[string]string, len(rawJobs))
+	launches := make([]taskLaunchSpec, 0, len(rawJobs))
+	for i, value := range rawJobs {
+		row, ok := value.(map[string]any)
+		if !ok {
+			return nil, nil, fmt.Errorf("task program jobs[%d] must be an object", i)
+		}
+		for key := range row {
+			switch key {
+			case "id", "stage_id", "depends_on", "agent_type", "subagent_type", "meta_prompt", "title", "deliverable", "workspace_path", "owned_scope", "output_mode", "output_requirements", "animation_profile", "acceptance_criteria", "dependency_evidence":
+			default:
+				return nil, nil, fmt.Errorf("task program jobs[%d] contains unsupported field %q", i, key)
+			}
+		}
+		agentType := strings.TrimSpace(mapString(row, "agent_type"))
+		subagentType := strings.TrimSpace(mapString(row, "subagent_type"))
+		if agentType != "" && subagentType != "" && !strings.EqualFold(agentType, subagentType) {
+			return nil, nil, fmt.Errorf("task program jobs[%d] agent_type conflicts with subagent_type", i)
+		}
+		job := taskProgramJob{
+			ID: strings.TrimSpace(mapString(row, "id")), StageID: strings.TrimSpace(mapString(row, "stage_id")),
+			RequestedSubagentType: strings.TrimSpace(firstNonEmptyString(agentType, subagentType)),
+			TargetWorkspacePath:   strings.TrimSpace(mapString(row, "workspace_path")),
+			MetaPrompt:            strings.TrimSpace(mapString(row, "meta_prompt")), AssignmentLabel: strings.TrimSpace(mapString(row, "title")),
+			Deliverable: strings.TrimSpace(mapString(row, "deliverable")), DependencyEvidence: strings.TrimSpace(mapString(row, "dependency_evidence")),
+		}
+		if !taskProgramIDPattern.MatchString(job.ID) {
+			return nil, nil, fmt.Errorf("task program jobs[%d] id must match ^[a-z][a-z0-9_-]{0,63}$", i)
+		}
+		if _, duplicate := jobIndexes[job.ID]; duplicate {
+			return nil, nil, fmt.Errorf("task program jobs[%d] duplicates job id %q", i, job.ID)
+		}
+		stageIndex, exists := stageIndexes[job.StageID]
+		if !exists {
+			return nil, nil, fmt.Errorf("task program jobs[%d] references unknown stage %q", i, job.StageID)
+		}
+		switch {
+		case agentruntime.IsCoderAgentName(job.RequestedSubagentType):
+			job.RequestedSubagentType = "coder"
+		case agentruntime.IsFinderAgentName(job.RequestedSubagentType):
+			job.RequestedSubagentType = "finder"
+		case agentruntime.IsDesignerAgentName(job.RequestedSubagentType):
+			job.RequestedSubagentType = "designer"
+		default:
+			return nil, nil, fmt.Errorf("task program jobs[%d] agent_type must be coder, finder, or designer", i)
+		}
+		if job.TargetWorkspacePath == "" && (job.RequestedSubagentType == "coder" || job.RequestedSubagentType == "finder") {
+			job.TargetWorkspacePath = strings.TrimSpace(mapString(args, "workspace_path"))
+		}
+		if job.TargetWorkspacePath != "" && job.RequestedSubagentType == "designer" {
+			return nil, nil, fmt.Errorf("task program jobs[%d] workspace_path is supported only for Coder or Finder", i)
+		}
+		if job.MetaPrompt == "" || job.AssignmentLabel == "" || job.Deliverable == "" || job.DependencyEvidence == "" {
+			return nil, nil, fmt.Errorf("task program jobs[%d] requires meta_prompt, title, deliverable, and dependency_evidence", i)
+		}
+		assignmentKey := strings.ToLower(job.AssignmentLabel + "\x00" + job.MetaPrompt + "\x00" + job.Deliverable)
+		if owner, duplicate := assignmentOwners[assignmentKey]; duplicate {
+			return nil, nil, fmt.Errorf("task program jobs[%d] copies the reviewable assignment of job %q", i, owner)
+		}
+		assignmentOwners[assignmentKey] = job.ID
+		ownedScope, err := parseTaskOwnedScope(row, fmt.Sprintf("task program jobs[%d]", i))
+		if err != nil {
+			return nil, nil, err
+		}
+		job.OwnedScope = ownedScope
+		launch := taskLaunchSpec{RequestedSubagentType: job.RequestedSubagentType, TargetWorkspacePath: job.TargetWorkspacePath, OwnedScope: append([]string(nil), ownedScope...)}
+		if err := applyTaskDesignerOutputMode(&launch, mapString(row, "output_mode"), fmt.Sprintf("task program jobs[%d]", i)); err != nil {
+			return nil, nil, err
+		}
+		if rawRequirements, exists := row["output_requirements"]; exists {
+			if rawRequirements == nil {
+				return nil, nil, fmt.Errorf("task program jobs[%d] output_requirements must be an object", i)
+			}
+			if err := applyTaskOutputRequirements(&launch, rawRequirements, fmt.Sprintf("task program jobs[%d]", i)); err != nil {
+				return nil, nil, err
+			}
+		}
+		job.OutputRequirements = cloneTaskOutputRequirements(launch.OutputRequirements)
+		if job.OutputRequirements != nil {
+			row["output_requirements"] = cloneTaskOutputRequirements(job.OutputRequirements)
+		}
+		if rawProfile, exists := row["animation_profile"]; exists {
+			if rawProfile == nil {
+				return nil, nil, fmt.Errorf("task program jobs[%d] animation_profile must be an object", i)
+			}
+			if err := applyTaskAnimationProfile(&launch, rawProfile, fmt.Sprintf("task program jobs[%d]", i)); err != nil {
+				return nil, nil, err
+			}
+		}
+		job.AnimationProfile = cloneTaskAnimationProfile(launch.AnimationProfile)
+		if job.AnimationProfile != nil {
+			row["animation_profile"] = cloneTaskAnimationProfile(job.AnimationProfile)
+		}
+		if job.RequestedSubagentType == "designer" {
+			job.OutputMode = launch.OutputMode
+		} else if len(ownedScope) == 0 {
+			return nil, nil, fmt.Errorf("task program jobs[%d] requires a reviewable owned_scope", i)
+		}
+		criteria, err := taskProgramStringArray(row, "acceptance_criteria", fmt.Sprintf("task program jobs[%d] acceptance_criteria", i), true)
+		if err != nil {
+			return nil, nil, err
+		}
+		job.AcceptanceCriteria = criteria
+		dependencies, err := taskProgramStringArray(row, "depends_on", fmt.Sprintf("task program jobs[%d] depends_on", i), false)
+		if err != nil {
+			return nil, nil, err
+		}
+		for _, dependency := range dependencies {
+			dependencyIndex, exists := jobIndexes[dependency]
+			if !exists {
+				return nil, nil, fmt.Errorf("task program jobs[%d] dependency %q must identify an earlier job", i, dependency)
+			}
+			if jobStages[dependency] >= stageIndex || dependencyIndex >= i {
+				return nil, nil, fmt.Errorf("task program jobs[%d] dependency %q must belong to an earlier stage", i, dependency)
+			}
+		}
+		job.DependsOn = dependencies
+		jobIndexes[job.ID] = i
+		jobStages[job.ID] = stageIndex
+		stageJobCounts[job.StageID]++
+		program.Jobs = append(program.Jobs, job)
+		sourceArguments := map[string]any{"program_id": program.ID, "program_job_id": job.ID, "program_stage_id": job.StageID, "acceptance_criteria": append([]string(nil), job.AcceptanceCriteria...), "depends_on": append([]string(nil), job.DependsOn...)}
+		if job.TargetWorkspacePath != "" {
+			sourceArguments["workspace_path"] = job.TargetWorkspacePath
+		}
+		if job.OutputRequirements != nil {
+			sourceArguments["output_requirements"] = cloneTaskOutputRequirements(job.OutputRequirements)
+		}
+		if job.AnimationProfile != nil {
+			sourceArguments["animation_profile"] = cloneTaskAnimationProfile(job.AnimationProfile)
+		}
+		launches = append(launches, taskLaunchSpec{
+			RequestedSubagentType: job.RequestedSubagentType, TargetWorkspacePath: job.TargetWorkspacePath, MetaPrompt: job.MetaPrompt, AssignmentLabel: job.AssignmentLabel,
+			Deliverable: job.Deliverable, OwnedScope: append([]string(nil), job.OwnedScope...), OutputMode: job.OutputMode, OutputRequirements: cloneTaskOutputRequirements(job.OutputRequirements), AnimationProfile: cloneTaskAnimationProfile(job.AnimationProfile), DependencyEvidence: job.DependencyEvidence,
+			SourceArguments: sourceArguments,
+		})
+	}
+	for i, stage := range program.Stages {
+		if stageJobCounts[stage.ID] == 0 {
+			return nil, nil, fmt.Errorf("task program stages[%d] %q has no jobs", i, stage.ID)
+		}
+	}
+	for i := range program.Jobs {
+		for j := i + 1; j < len(program.Jobs); j++ {
+			left, right := program.Jobs[i], program.Jobs[j]
+			if left.StageID != right.StageID {
+				continue
+			}
+			if left.RequestedSubagentType == "coder" && right.RequestedSubagentType == "coder" && strings.TrimSpace(left.TargetWorkspacePath) == strings.TrimSpace(right.TargetWorkspacePath) && taskOwnedScopesOverlap(left.OwnedScope, right.OwnedScope) {
+				return nil, nil, fmt.Errorf("task program concurrent Coder owned scopes overlap between jobs %q and %q", left.ID, right.ID)
+			}
+			if left.RequestedSubagentType == "designer" && right.RequestedSubagentType == "designer" && left.OutputMode == taskOutputModeWorkspace && right.OutputMode == taskOutputModeWorkspace && taskOwnedScopesOverlap(left.OwnedScope, right.OwnedScope) {
+				return nil, nil, fmt.Errorf("task program concurrent workspace Designer owned scopes overlap between jobs %q and %q", left.ID, right.ID)
+			}
+		}
+	}
+	if err := validateTaskProgramCoderWorkspaceTargets(program.Jobs); err != nil {
+		return nil, nil, err
+	}
+	if program.MaxConcurrency != nil && *program.MaxConcurrency > len(program.Jobs) {
+		return nil, nil, errors.New("task program max_concurrency cannot exceed total job count")
+	}
+	if err := validateTaskDesignerScopes(launches); err != nil {
+		return nil, nil, err
+	}
+	_ = prompt // The parent prompt remains a manifest field; each job assignment is authoritative for child execution.
+	return program, launches, nil
+}
+
+func validateTaskProgramCoderWorkspaceTargets(jobs []taskProgramJob) error {
+	target := ""
+	found := false
+	for _, job := range jobs {
+		if !agentruntime.IsCoderAgentName(job.RequestedSubagentType) {
+			continue
+		}
+		jobTarget := strings.TrimSpace(job.TargetWorkspacePath)
+		if !found {
+			target, found = jobTarget, true
+			continue
+		}
+		if jobTarget != target {
+			return errors.New("task program Coder jobs must target one workspace so staged integration has one durable parent Git history")
+		}
+	}
+	return nil
+}
+
+func taskProgramStringArray(raw map[string]any, key, label string, required bool) ([]string, error) {
+	value, exists := raw[key]
+	if !exists {
+		if required {
+			return nil, fmt.Errorf("%s must be a non-empty array", label)
+		}
+		return nil, nil
+	}
+	rows, ok := value.([]any)
+	if !ok || (required && len(rows) == 0) {
+		return nil, fmt.Errorf("%s must be a non-empty array", label)
+	}
+	out := make([]string, 0, len(rows))
+	seen := map[string]struct{}{}
+	for i, value := range rows {
+		text, ok := value.(string)
+		text = strings.TrimSpace(text)
+		if !ok || text == "" {
+			return nil, fmt.Errorf("%s[%d] must be a non-empty string", label, i)
+		}
+		if _, duplicate := seen[text]; duplicate {
+			return nil, fmt.Errorf("%s[%d] duplicates %q", label, i, text)
+		}
+		seen[text] = struct{}{}
+		out = append(out, text)
+	}
+	return out, nil
+}
+
+func taskRequiredPositiveIntValue(value any, label string) (int, error) {
+	number, ok := value.(float64)
+	if !ok || number != math.Trunc(number) || number < 1 || number > math.MaxInt {
+		return 0, fmt.Errorf("%s must be a positive integer", label)
+	}
+	return int(number), nil
+}
+
+func taskProgramEffectiveCapacity(totalJobs, readyJobs, activeAccountCapacity int, explicitLowerCap *int) taskProgramCapacity {
+	capacity := readyJobs
+	if activeAccountCapacity < capacity {
+		capacity = activeAccountCapacity
+	}
+	if explicitLowerCap != nil && *explicitLowerCap < capacity {
+		capacity = *explicitLowerCap
+	}
+	if capacity < 0 {
+		capacity = 0
+	}
+	return taskProgramCapacity{TotalJobs: totalJobs, ReadyJobs: readyJobs, ActiveAccountCapacity: activeAccountCapacity, ExplicitLowerCap: explicitLowerCap, EffectiveCapacity: capacity}
+}
+
+func parseTaskSwarmArguments(args map[string]any, prompt, description string) (*taskSwarmSpec, []taskLaunchSpec, error) {
+	allowed := map[string]bool{
+		"action": true, "description": true, "prompt": true, "message": true, "mode": true, "swarm_mode": true,
+		"swarm_strategy": true, "agent_type": true, "subagent_type": true, "agent": true, "purpose": true, "count": true,
+		"themes": true, "groups": true, "iteration_controls": true, "output_contract": true, "output_mode": true, "assembly_parts": true,
+		"integration_contract": true, "output_requirements": true, "animation_profile": true, "source_artifact": true, "launches": true,
+		// concurrency_reason is a regular-launch field. Accept and discard it here as a
+		// compatibility no-op so one misplaced advisory hint cannot abort a swarm wave.
+		"concurrency_reason": true,
+	}
+	for key := range args {
+		if !allowed[key] {
+			return nil, nil, fmt.Errorf("task swarm mode contains unsupported field %q", key)
+		}
+	}
+	delete(args, "concurrency_reason")
+	if _, ok := args["launches"]; ok {
+		return nil, nil, errors.New("task swarm mode generates its launch wave; launches must be omitted")
+	}
+	strategy := strings.ToLower(strings.TrimSpace(mapString(args, "swarm_strategy")))
+	if strategy == "" {
+		strategy = taskSwarmStrategyExplore
+	}
+	if strategy != taskSwarmStrategyExplore && strategy != taskSwarmStrategyAssembly {
+		return nil, nil, fmt.Errorf("task swarm_strategy must be %q", taskSwarmStrategyExplore)
+	}
+	agentType := strings.ToLower(strings.TrimSpace(firstNonEmptyString(mapString(args, "agent_type"), mapString(args, "subagent_type"), mapString(args, "agent"), mapString(args, "purpose"))))
+	switch {
+	case agentruntime.IsCoderAgentName(agentType):
+		agentType = "coder"
+	case agentruntime.IsDesignerAgentName(agentType):
+		agentType = "designer"
+	case agentruntime.IsIdeaAgentName(agentType):
+		agentType = "idea"
+	case agentruntime.IsImageAgentName(agentType):
+		agentType = "image"
+	default:
+		return nil, nil, errors.New("task swarm mode agent_type must be coder, designer, image, or idea")
+	}
+	if strategy == taskSwarmStrategyAssembly && (agentType == "idea" || agentType == "image") {
+		return nil, nil, fmt.Errorf("task %s swarms support only swarm_strategy=explore", taskSwarmAgentLabel(agentType))
+	}
+	count, err := taskPositiveInt(args, "count")
+	if err != nil {
+		return nil, nil, err
+	}
+	if count > taskSwarmMaxAgents {
+		return nil, nil, fmt.Errorf("task swarm mode count cannot exceed %d", taskSwarmMaxAgents)
+	}
+
+	if strategy == taskSwarmStrategyAssembly {
+		if _, exists := args["iteration_controls"]; exists {
+			return nil, nil, errors.New("task Assembly swarm does not accept iteration_controls")
+		}
+		if _, exists := args["source_artifact"]; exists {
+			return nil, nil, errors.New("task Assembly swarm does not accept source_artifact")
+		}
+		if _, exists := args["output_requirements"]; exists {
+			return nil, nil, errors.New("task Assembly swarm does not accept output_requirements")
+		}
+		if _, exists := args["output_mode"]; exists {
+			return nil, nil, errors.New("task Assembly swarm does not accept output_mode")
+		}
+		return parseTaskAssemblySwarm(args, agentType, count)
+	}
+	if _, ok := args["assembly_parts"]; ok || strings.TrimSpace(mapString(args, "integration_contract")) != "" {
+		return nil, nil, errors.New("task Iteration Swarm does not accept assembly_parts or integration_contract")
+	}
+	themes, err := taskStringArray(args, "themes")
+	if err != nil {
+		return nil, nil, err
+	}
+	if len(themes) != 0 && len(themes) != count {
+		return nil, nil, fmt.Errorf("task swarm mode themes must be omitted or contain exactly %d entries", count)
+	}
+	groups, err := taskSwarmGroups(args, count)
+	if err != nil {
+		return nil, nil, err
+	}
+	iterationControls, err := taskSwarmIterationControlsFromArgs(args)
+	if err != nil {
+		return nil, nil, err
+	}
+	if iterationControls != nil && agentType != "designer" && agentType != "image" {
+		return nil, nil, errors.New("task swarm iteration_controls is supported only for Designer or image")
+	}
+	outputContract := strings.TrimSpace(mapString(args, "output_contract"))
+	if outputContract == "" {
+		outputContract = strings.TrimSpace(description)
+	}
+	_, outputModeProvided := args["output_mode"]
+	outputMode := strings.ToLower(strings.TrimSpace(mapString(args, "output_mode")))
+	if agentType == "designer" {
+		if outputMode == "" {
+			outputMode = taskOutputModeManaged
+		}
+		if outputMode != taskOutputModeManaged {
+			return nil, nil, errors.New("task Designer Iteration Swarm output_mode must be managed; use regular task launches for workspace repository output")
+		}
+	} else if agentType == "image" {
+		if outputMode != "" && outputMode != taskOutputModeManaged {
+			return nil, nil, errors.New("task image swarm output_mode must be managed when supplied")
+		}
+		outputMode = taskOutputModeManaged
+	} else if outputModeProvided {
+		return nil, nil, errors.New("task swarm output_mode is supported only for Designer or image")
+	}
+	_, animationProfileProvided := args["animation_profile"]
+	if animationProfileProvided && agentType != "designer" {
+		return nil, nil, errors.New("task swarm animation_profile is supported only for Designer")
+	}
+	if animationProfileProvided && args["animation_profile"] == nil {
+		return nil, nil, errors.New("task swarm animation_profile must be an object")
+	}
+	var animationProfile *pebblestore.SessionArtifactAnimationProfile
+	if animationProfileProvided {
+		animationProfile, err = artifactruntime.ParseAnimationProfile(args["animation_profile"])
+		if err != nil {
+			return nil, nil, fmt.Errorf("task swarm animation_profile: %w", err)
+		}
+		args["animation_profile"] = cloneTaskAnimationProfile(animationProfile)
+	}
+	_, outputRequirementsProvided := args["output_requirements"]
+	if outputRequirementsProvided && agentType != "designer" && agentType != "image" {
+		return nil, nil, errors.New("task swarm output_requirements is supported only for Designer or image")
+	}
+	if outputRequirementsProvided && args["output_requirements"] == nil {
+		return nil, nil, errors.New("task swarm output_requirements must be an object")
+	}
+	if value, ok := args["output_requirements"].(map[string]any); outputRequirementsProvided && ok && len(value) == 0 {
+		return nil, nil, errors.New("task swarm output_requirements must include a preset or paired width and height")
+	}
+	var outputRequirements *pebblestore.SessionArtifactOutputRequirements
+	if outputRequirementsProvided {
+		var err error
+		outputRequirements, err = artifactruntime.ParseOutputRequirements(args["output_requirements"])
+		if err != nil {
+			return nil, nil, fmt.Errorf("task swarm output_requirements: %w", err)
+		}
+		args["output_requirements"] = cloneTaskOutputRequirements(outputRequirements)
+	}
+	rawSourceArtifact, sourceArtifactProvided := args["source_artifact"]
+	if sourceArtifactProvided && rawSourceArtifact == nil {
+		return nil, nil, errors.New("task source_artifact must be an exact ready artifact reference object")
+	}
+	sourceArtifact, err := parseTaskImageSourceArtifact(rawSourceArtifact)
+	if err != nil {
+		return nil, nil, err
+	}
+	if outputMode != taskOutputModeManaged && animationProfile != nil {
+		return nil, nil, errors.New("task Designer swarm animation_profile requires managed output")
+	}
+	if sourceArtifact != nil && agentType != "image" && agentType != "designer" {
+		return nil, nil, errors.New("task source_artifact is supported only for Designer or direct image Iteration Swarms")
+	}
+	if sourceArtifact != nil {
+		args["source_artifact"] = cloneTaskImageSourceArtifact(sourceArtifact)
+	}
+	if agentType == "idea" && (len(themes) != 0 || len(groups) != 0 || iterationControls != nil || strings.TrimSpace(mapString(args, "output_contract")) != "" || outputModeProvided || outputRequirements != nil || animationProfile != nil) {
+		return nil, nil, errors.New("task Idea swarm accepts only mode, swarm_strategy=explore, prompt, agent_type, count, and optional description")
+	}
+
+	swarm := &taskSwarmSpec{Strategy: strategy, AgentType: agentType, Count: count, Themes: themes, Groups: groups, OutputContract: outputContract, OutputMode: outputMode, OutputRequirements: cloneTaskOutputRequirements(outputRequirements), AnimationProfile: cloneTaskAnimationProfile(animationProfile), IterationControls: cloneTaskSwarmIterationControls(iterationControls), SourceArtifact: cloneTaskImageSourceArtifact(sourceArtifact)}
+	launches := make([]taskLaunchSpec, count)
+	for i := range launches {
+		index := i + 1
+		metaPrompt := prompt
+		if agentType != "idea" {
+			metaPrompt = fmt.Sprintf("Pending Router hydration for swarm item %d.", index)
+		}
+		assignmentLabel := fmt.Sprintf("%s swarm %d", taskSwarmAgentLabel(agentType), index)
+		if agentType == "idea" {
+			assignmentLabel = fmt.Sprintf("Agent #%d", index)
+		}
+		sourceArguments := map[string]any{"swarm_index": index, "swarm_mode": true, "swarm_strategy": strategy, "output_mode": outputMode}
+		if outputRequirements != nil {
+			sourceArguments["output_requirements"] = cloneTaskOutputRequirements(outputRequirements)
+		}
+		if animationProfile != nil {
+			sourceArguments["animation_profile"] = cloneTaskAnimationProfile(animationProfile)
+		}
+		if iterationControls != nil {
+			sourceArguments["iteration_controls"] = cloneTaskSwarmIterationControls(iterationControls)
+		}
+		if sourceArtifact != nil {
+			sourceArguments["source_artifact"] = cloneTaskImageSourceArtifact(sourceArtifact)
+		}
+		launches[i] = taskLaunchSpec{
+			RequestedSubagentType: agentType, MetaPrompt: metaPrompt, AssignmentLabel: assignmentLabel,
+			Deliverable: outputContract, ConcurrencyReason: "Independent Iteration Swarm alternative", OutputMode: outputMode, OutputRequirements: cloneTaskOutputRequirements(outputRequirements), AnimationProfile: cloneTaskAnimationProfile(animationProfile),
+			DependencyEvidence: "The shared parent brief is complete before this task swarm wave starts.",
+			StreamKey:          fmt.Sprintf("swarm:%d", index), SwarmMode: true, SwarmStrategy: strategy,
+			SourceArtifact: cloneTaskImageSourceArtifact(sourceArtifact), SourceArguments: sourceArguments,
+		}
+		applyCanonicalCoderOwnedScope(&launches[i])
+	}
+	if err := validateTaskDesignerScopes(launches); err != nil {
+		return nil, nil, err
+	}
+	return swarm, launches, nil
+}
+
+func validateTaskSwarmLaunchEnabled(parsed taskCallArguments) error {
+	if parsed.Swarm != nil && parsed.Swarm.Strategy == taskSwarmStrategyAssembly && !taskAssemblySwarmLaunchEnabled {
+		return errors.New("task Assembly Swarm is not available in this launch")
+	}
+	return nil
+}
+
+func parseTaskAssemblySwarm(args map[string]any, agentType string, count int) (*taskSwarmSpec, []taskLaunchSpec, error) {
+	for _, key := range []string{"themes", "groups", "iteration_controls", "output_contract", "output_mode", "owned_scope_template"} {
+		if _, ok := args[key]; ok {
+			return nil, nil, fmt.Errorf("task Assembly swarm does not accept Explore field %q", key)
+		}
+	}
+	integrationContract := strings.TrimSpace(mapString(args, "integration_contract"))
+	if integrationContract == "" {
+		return nil, nil, errors.New("task Assembly swarm requires integration_contract describing the parent-owned final deliverable")
+	}
+	raw, ok := args["assembly_parts"]
+	if !ok {
+		return nil, nil, errors.New("task Assembly swarm requires assembly_parts")
+	}
+	rows, ok := raw.([]any)
+	if !ok || len(rows) == 0 {
+		return nil, nil, errors.New("task Assembly swarm assembly_parts must be a non-empty array")
+	}
+	if len(rows) != count {
+		return nil, nil, fmt.Errorf("task Assembly swarm assembly_parts must contain exactly %d entries", count)
+	}
+	parts := make([]taskSwarmAssemblyPart, len(rows))
+	seenNames := map[string]struct{}{}
+	for i, rawPart := range rows {
+		row, ok := rawPart.(map[string]any)
+		if !ok {
+			return nil, nil, fmt.Errorf("task Assembly swarm assembly_parts[%d] must be an object", i)
+		}
+		for key := range row {
+			if key != "name" && key != "instructions" && key != "owned_scope" {
+				return nil, nil, fmt.Errorf("task Assembly swarm assembly_parts[%d] contains unsupported field %q", i, key)
+			}
+		}
+		name := strings.TrimSpace(mapString(row, "name"))
+		if name == "" {
+			return nil, nil, fmt.Errorf("task Assembly swarm assembly_parts[%d] requires name", i)
+		}
+		normalizedName := strings.ToLower(name)
+		if _, duplicate := seenNames[normalizedName]; duplicate {
+			return nil, nil, fmt.Errorf("task Assembly swarm assembly_parts[%d] duplicates another name", i)
+		}
+		seenNames[normalizedName] = struct{}{}
+		scopes, err := parseTaskOwnedScope(row, fmt.Sprintf("task Assembly swarm assembly_parts[%d]", i))
+		if err != nil {
+			return nil, nil, err
+		}
+		if len(scopes) == 0 {
+			return nil, nil, fmt.Errorf("task Assembly swarm assembly_parts[%d] requires one or more owned_scope paths", i)
+		}
+		for j, scope := range scopes {
+			if err := validateTaskSwarmOwnedScope(scope); err != nil {
+				return nil, nil, fmt.Errorf("task Assembly swarm assembly_parts[%d] owned_scope[%d] %w", i, j, err)
+			}
+		}
+		parts[i] = taskSwarmAssemblyPart{Name: name, Instructions: strings.TrimSpace(mapString(row, "instructions")), OwnedScope: scopes}
+	}
+	for left := range parts {
+		for right := left + 1; right < len(parts); right++ {
+			if taskOwnedScopesOverlap(parts[left].OwnedScope, parts[right].OwnedScope) {
+				return nil, nil, fmt.Errorf("task Assembly swarm owned scopes overlap between assembly_parts[%d] and assembly_parts[%d]", left, right)
+			}
+		}
+	}
+	outputMode := ""
+	if agentType == "designer" {
+		outputMode = taskOutputModeWorkspace
+	}
+	swarm := &taskSwarmSpec{Strategy: taskSwarmStrategyAssembly, AgentType: agentType, Count: count, OutputMode: outputMode, AssemblyParts: parts, IntegrationContract: integrationContract}
+	launches := make([]taskLaunchSpec, count)
+	for i := range parts {
+		part := parts[i]
+		partCopy := part
+		outputMode := ""
+		if agentType == "designer" {
+			outputMode = taskOutputModeWorkspace
+		}
+		launches[i] = taskLaunchSpec{
+			RequestedSubagentType: agentType, MetaPrompt: fmt.Sprintf("Pending Router hydration for Assembly part %q.", part.Name),
+			AssignmentLabel: part.Name, Deliverable: integrationContract, ConcurrencyReason: "Complementary Assembly part with distinct ownership.",
+			OwnedScope: append([]string(nil), part.OwnedScope...), OutputMode: outputMode, DependencyEvidence: "All Assembly parts and the parent integration contract are complete before launch.",
+			StreamKey: fmt.Sprintf("swarm:%d", i+1), SwarmMode: true, SwarmStrategy: taskSwarmStrategyAssembly,
+			AssemblyPart: &partCopy, IntegrationContract: integrationContract,
+			SourceArguments: map[string]any{"swarm_index": i + 1, "swarm_mode": true, "swarm_strategy": taskSwarmStrategyAssembly, "assembly_part": part, "integration_contract": integrationContract},
+		}
+	}
+	if err := validateTaskDesignerScopes(launches); err != nil {
+		return nil, nil, err
+	}
+	return swarm, launches, nil
+}
+
+func taskSwarmAgentLabel(agentType string) string {
+	switch agentType {
+	case "coder":
+		return "Coder"
+	case "designer":
+		return "Designer"
+	case "idea":
+		return "Idea"
+	case "image":
+		return "Image"
+	default:
+		return "Swarm"
+	}
+}
+
+func taskPositiveInt(args map[string]any, key string) (int, error) {
+	value, ok := args[key]
+	if !ok {
+		return 0, fmt.Errorf("task swarm mode requires %s", key)
+	}
+	number, ok := value.(float64)
+	if !ok || number != math.Trunc(number) || number < 1 {
+		return 0, fmt.Errorf("task swarm mode %s must be a positive integer", key)
+	}
+	return int(number), nil
+}
+
+func taskStringArray(args map[string]any, key string) ([]string, error) {
+	value, ok := args[key]
+	if !ok || value == nil {
+		return nil, nil
+	}
+	typed, ok := value.([]any)
+	if !ok {
+		return nil, fmt.Errorf("task swarm mode %s must be an array of strings", key)
+	}
+	result := make([]string, 0, len(typed))
+	seen := map[string]struct{}{}
+	for i, entry := range typed {
+		text, ok := entry.(string)
+		text = strings.TrimSpace(text)
+		if !ok || text == "" {
+			return nil, fmt.Errorf("task swarm mode %s[%d] must be a non-empty string", key, i)
+		}
+		normalized := strings.ToLower(text)
+		if _, duplicate := seen[normalized]; duplicate {
+			return nil, fmt.Errorf("task swarm mode %s[%d] duplicates another value", key, i)
+		}
+		seen[normalized] = struct{}{}
+		result = append(result, text)
+	}
+	return result, nil
+}
+
+func taskSwarmIterationControlsFromArgs(args map[string]any) (*taskSwarmIterationControls, error) {
+	value, ok := args["iteration_controls"]
+	if !ok || value == nil {
+		return nil, nil
+	}
+	row, ok := value.(map[string]any)
+	if !ok {
+		return nil, errors.New("task swarm iteration_controls must be an object")
+	}
+	for key := range row {
+		if key != "preserve" && key != "change" && key != "exclude" {
+			return nil, fmt.Errorf("task swarm iteration_controls contains unsupported field %q", key)
+		}
+	}
+	preserve, err := taskStringArray(row, "preserve")
+	if err != nil {
+		return nil, err
+	}
+	change, err := taskStringArray(row, "change")
+	if err != nil {
+		return nil, err
+	}
+	exclude, err := taskStringArray(row, "exclude")
+	if err != nil {
+		return nil, err
+	}
+	if len(change) == 0 {
+		return nil, errors.New("task swarm iteration_controls requires at least one parent-controlled change dimension")
+	}
+	return &taskSwarmIterationControls{Preserve: preserve, Change: change, Exclude: exclude}, nil
+}
+
+func cloneTaskSwarmIterationControls(input *taskSwarmIterationControls) *taskSwarmIterationControls {
+	if input == nil {
+		return nil
+	}
+	return &taskSwarmIterationControls{
+		Preserve: append([]string(nil), input.Preserve...),
+		Change:   append([]string(nil), input.Change...),
+		Exclude:  append([]string(nil), input.Exclude...),
+	}
+}
+
+func taskSwarmGroups(args map[string]any, count int) ([]taskSwarmGroup, error) {
+	value, ok := args["groups"]
+	if !ok || value == nil {
+		return nil, nil
+	}
+	typed, ok := value.([]any)
+	if !ok || len(typed) == 0 {
+		return nil, errors.New("task swarm mode groups must be a non-empty array")
+	}
+	groups := make([]taskSwarmGroup, 0, len(typed))
+	total := 0
+	for i, entry := range typed {
+		row, ok := entry.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("task swarm mode groups[%d] must be an object", i)
+		}
+		for key := range row {
+			if key != "name" && key != "count" && key != "instructions" {
+				return nil, fmt.Errorf("task swarm mode groups[%d] contains unsupported field %q", i, key)
+			}
+		}
+		name := strings.TrimSpace(mapString(row, "name"))
+		if name == "" {
+			return nil, fmt.Errorf("task swarm mode groups[%d] requires name", i)
+		}
+		groupCount, err := taskPositiveInt(row, "count")
+		if err != nil {
+			return nil, fmt.Errorf("task swarm mode groups[%d]: %w", i, err)
+		}
+		groups = append(groups, taskSwarmGroup{Name: name, Count: groupCount, Instructions: strings.TrimSpace(mapString(row, "instructions"))})
+		total += groupCount
+	}
+	if total != count {
+		return nil, fmt.Errorf("task swarm mode group counts total %d, want %d", total, count)
+	}
+	return groups, nil
+}
+
+func validateTaskSwarmOwnedScope(scope string) error {
+	clean := filepath.Clean(filepath.FromSlash(strings.TrimSpace(scope)))
+	canonical := filepath.ToSlash(clean)
+	if scope == "" || filepath.IsAbs(clean) || clean == "." || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) || strings.ContainsAny(scope, "*?[]") || canonical != scope {
+		return errors.New("must be a concrete clean workspace-relative path")
+	}
+	return nil
 }
 
 func parseTaskOwnedScope(raw map[string]any, label string) ([]string, error) {
@@ -338,11 +1385,164 @@ func parseTaskOwnedScope(raw map[string]any, label string) ([]string, error) {
 	return out, nil
 }
 
+func parseTaskImageSourceArtifact(raw any) (*pebblestore.SessionArtifactSelectionReference, error) {
+	if raw == nil {
+		return nil, nil
+	}
+	encoded, err := json.Marshal(raw)
+	if err != nil {
+		return nil, errors.New("task source_artifact must be an object")
+	}
+	var ref pebblestore.SessionArtifactSelectionReference
+	decoder := json.NewDecoder(strings.NewReader(string(encoded)))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&ref); err != nil {
+		return nil, fmt.Errorf("task source_artifact is invalid: %w", err)
+	}
+	ref.SessionID = strings.TrimSpace(ref.SessionID)
+	ref.CollectionID = strings.TrimSpace(ref.CollectionID)
+	ref.VariantID = strings.TrimSpace(ref.VariantID)
+	if ref.SessionID == "" || ref.CollectionID == "" || ref.VariantID == "" || ref.EventSeq < 1 || ref.EventSeq > uint64(math.MaxInt) {
+		return nil, errors.New("task source_artifact requires session_id, collection_id, variant_id, and event_seq from one exact ready artifact reference")
+	}
+	return &ref, nil
+}
+
+func cloneTaskImageSourceArtifact(input *pebblestore.SessionArtifactSelectionReference) *pebblestore.SessionArtifactSelectionReference {
+	if input == nil {
+		return nil
+	}
+	cloned := *input
+	return &cloned
+}
+
+func equalTaskImageSourceArtifact(left, right *pebblestore.SessionArtifactSelectionReference) bool {
+	if left == nil || right == nil {
+		return left == nil && right == nil
+	}
+	return left.SessionID == right.SessionID && left.CollectionID == right.CollectionID && left.VariantID == right.VariantID && left.EventSeq == right.EventSeq
+}
+
+func cloneTaskOutputRequirements(input *pebblestore.SessionArtifactOutputRequirements) *pebblestore.SessionArtifactOutputRequirements {
+	if input == nil {
+		return nil
+	}
+	cloned := *input
+	return &cloned
+}
+
+func cloneTaskAnimationProfile(input *pebblestore.SessionArtifactAnimationProfile) *pebblestore.SessionArtifactAnimationProfile {
+	if input == nil {
+		return nil
+	}
+	cloned := *input
+	return &cloned
+}
+
+func applyTaskOutputRequirements(launch *taskLaunchSpec, raw any, label string) error {
+	if launch == nil {
+		return errors.New("task launch is required")
+	}
+	if raw == nil {
+		launch.OutputRequirements = nil
+		if launch.SourceArguments != nil {
+			delete(launch.SourceArguments, "output_requirements")
+		}
+		return nil
+	}
+	if !agentruntime.IsDesignerAgentName(launch.RequestedSubagentType) && !agentruntime.IsImageAgentName(launch.RequestedSubagentType) {
+		return fmt.Errorf("%s output_requirements is supported only for Designer or image", label)
+	}
+	if value, ok := raw.(map[string]any); ok && len(value) == 0 {
+		return fmt.Errorf("%s output_requirements must include a preset or paired width and height", label)
+	}
+	resolved, err := artifactruntime.ParseOutputRequirements(raw)
+	if err != nil {
+		return fmt.Errorf("%s output_requirements: %w", label, err)
+	}
+	launch.OutputRequirements = cloneTaskOutputRequirements(resolved)
+	if launch.SourceArguments != nil {
+		if resolved == nil {
+			delete(launch.SourceArguments, "output_requirements")
+		} else {
+			launch.SourceArguments["output_requirements"] = cloneTaskOutputRequirements(resolved)
+		}
+	}
+	return nil
+}
+
+func applyTaskAnimationProfile(launch *taskLaunchSpec, raw any, label string) error {
+	if launch == nil {
+		return errors.New("task launch is required")
+	}
+	if !agentruntime.IsDesignerAgentName(launch.RequestedSubagentType) {
+		return fmt.Errorf("%s animation_profile is supported only for Designer", label)
+	}
+	if launch.OutputMode != taskOutputModeManaged {
+		return fmt.Errorf("%s animation_profile requires managed Designer output", label)
+	}
+	resolved, err := artifactruntime.ParseAnimationProfile(raw)
+	if err != nil {
+		return fmt.Errorf("%s animation_profile: %w", label, err)
+	}
+	launch.AnimationProfile = cloneTaskAnimationProfile(resolved)
+	if launch.SourceArguments != nil {
+		launch.SourceArguments["animation_profile"] = cloneTaskAnimationProfile(resolved)
+	}
+	return nil
+}
+
+func applyTaskDesignerOutputMode(launch *taskLaunchSpec, rawMode, label string) error {
+	if launch == nil {
+		return errors.New("task launch is required")
+	}
+	mode := strings.ToLower(strings.TrimSpace(rawMode))
+	if !agentruntime.IsDesignerAgentName(launch.RequestedSubagentType) && !agentruntime.IsImageAgentName(launch.RequestedSubagentType) {
+		if mode != "" {
+			return fmt.Errorf("%s output_mode is supported only for Designer or image", label)
+		}
+		return nil
+	}
+	if agentruntime.IsImageAgentName(launch.RequestedSubagentType) {
+		if mode != "" && mode != taskOutputModeManaged {
+			return fmt.Errorf("%s image output_mode must be managed", label)
+		}
+		if len(launch.OwnedScope) != 0 {
+			return fmt.Errorf("%s managed image must omit owned_scope", label)
+		}
+		launch.OutputMode = taskOutputModeManaged
+		return nil
+	}
+	if mode == "" {
+		mode = taskOutputModeManaged
+	}
+	if mode != taskOutputModeManaged && mode != taskOutputModeWorkspace {
+		return fmt.Errorf("%s Designer output_mode must be managed or workspace", label)
+	}
+	if mode == taskOutputModeManaged && len(launch.OwnedScope) != 0 {
+		return fmt.Errorf("%s managed Designer must omit owned_scope", label)
+	}
+	if mode == taskOutputModeWorkspace && len(launch.OwnedScope) == 0 {
+		return fmt.Errorf("%s workspace Designer requires a concrete workspace-relative owned_scope", label)
+	}
+	launch.OutputMode = mode
+	return nil
+}
+
 func validateTaskDesignerScopes(launches []taskLaunchSpec) error {
 	designerIndexes := make([]int, 0, len(launches))
 	for i := range launches {
-		if !agentruntime.IsDesignerAgentName(launches[i].RequestedSubagentType) {
+		if !agentruntime.IsDesignerAgentName(launches[i].RequestedSubagentType) && !agentruntime.IsImageAgentName(launches[i].RequestedSubagentType) {
 			continue
+		}
+		if launches[i].OutputMode == taskOutputModeManaged {
+			if len(launches[i].OwnedScope) != 0 {
+				return fmt.Errorf("task launches[%d] managed Designer must omit owned_scope", i)
+			}
+			continue
+		}
+		if launches[i].OutputMode != taskOutputModeWorkspace {
+			return fmt.Errorf("task launches[%d] Designer output_mode must be managed or workspace", i)
 		}
 		if len(launches[i].OwnedScope) == 0 {
 			return fmt.Errorf("task launches[%d] Designer requires a concrete workspace-relative owned_scope or output target", i)
@@ -543,6 +1743,14 @@ func rejectTaskLaunchTrustFields(args map[string]any, label string) error {
 		"denyTools",
 		"disabled_tools",
 		"disabledTools",
+		"target_session_id",
+		"targetSessionID",
+		"collection_id",
+		"collectionID",
+		"variant_id",
+		"variantID",
+		"artifact_target",
+		"artifactTarget",
 		"trust",
 		"trusted",
 	} {
@@ -604,6 +1812,16 @@ func taskAssignmentLabel(explicitLabel, metaPrompt, description, resolvedSubagen
 func taskDisabledToolNames(allowBash bool) []string {
 	disabled := taskDisabledTools(allowBash)
 	return sortedDisabledToolNames(disabled)
+}
+
+func taskToolNameInSlice(values []string, want string) bool {
+	want = canonicalToolName(want)
+	for _, value := range values {
+		if canonicalToolName(value) == want {
+			return true
+		}
+	}
+	return false
 }
 
 func sortedDisabledToolNames(disabled map[string]bool) []string {
@@ -1596,6 +2814,74 @@ func isPlanSidechatTaskParent(session pebblestore.SessionSnapshot) bool {
 		agentruntime.IsPlanSidechatAgentName(mapString(session.Metadata, "agent_name"))
 }
 
+func taskPathWithinRoot(root, target string) bool {
+	root = filepath.Clean(strings.TrimSpace(root))
+	target = filepath.Clean(strings.TrimSpace(target))
+	if root == "" || target == "" {
+		return false
+	}
+	rel, err := filepath.Rel(root, target)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+func (s *Service) resolveTaskTargetWorkspace(parentSession pebblestore.SessionSnapshot, principal identity.Principal, launch taskLaunchSpec) (string, string, error) {
+	requested := strings.TrimSpace(launch.TargetWorkspacePath)
+	if requested == "" {
+		return strings.TrimSpace(parentSession.WorkspacePath), strings.TrimSpace(parentSession.WorkspaceName), nil
+	}
+	if !agentruntime.IsCoderAgentName(launch.RequestedSubagentType) && !agentruntime.IsFinderAgentName(launch.RequestedSubagentType) {
+		return "", "", errors.New("task workspace_path is supported only for Coder or Finder launches")
+	}
+	principal, err := principalForRunWorkspaceScope(parentSession, principal)
+	if err != nil {
+		return "", "", err
+	}
+	scope, err := s.resolveRunWorkspaceScope(parentSession, principal)
+	if err != nil {
+		return "", "", fmt.Errorf("resolve parent shared workspace roots: %w", err)
+	}
+	allowedRoots := append([]string(nil), scope.Roots...)
+	if s != nil && s.workspace != nil {
+		sourcePath := strings.TrimSpace(firstNonEmptyString(mapString(parentSession.Metadata, "swarm_v3_source_workspace_path"), parentSession.WorkspacePath))
+		if saved, savedErr := s.workspace.ScopeForPathForPrincipal(principal, sourcePath); savedErr == nil && saved.Matched {
+			allowedRoots = append(allowedRoots, saved.Directories...)
+		}
+	}
+	if !filepath.IsAbs(requested) {
+		base := strings.TrimSpace(firstNonEmptyString(mapString(parentSession.Metadata, "swarm_v3_source_workspace_path"), parentSession.WorkspacePath))
+		requested = filepath.Join(base, requested)
+	}
+	target, err := normalizeRunScopePath(requested)
+	if err != nil {
+		return "", "", fmt.Errorf("resolve task workspace_path: %w", err)
+	}
+	authorized := false
+	for _, root := range allowedRoots {
+		canonicalRoot, rootErr := normalizeRunScopePath(root)
+		if rootErr == nil && taskPathWithinRoot(canonicalRoot, target) {
+			authorized = true
+			break
+		}
+	}
+	if !authorized {
+		return "", "", fmt.Errorf("task workspace_path %q is outside the parent session's authorized shared workspace roots", requested)
+	}
+	name := filepath.Base(target)
+	if s != nil && s.workspace != nil {
+		resolved, scopeErr := s.workspace.ScopeForPathForPrincipal(principal, target)
+		if scopeErr != nil {
+			return "", "", fmt.Errorf("resolve task workspace identity: %w", scopeErr)
+		}
+		if strings.TrimSpace(resolved.ResolvedPath) != "" {
+			target = strings.TrimSpace(resolved.ResolvedPath)
+		}
+		if strings.TrimSpace(resolved.WorkspaceName) != "" {
+			name = strings.TrimSpace(resolved.WorkspaceName)
+		}
+	}
+	return target, name, nil
+}
+
 func validatePlanSidechatTaskTargets(parentSession pebblestore.SessionSnapshot, launches []taskLaunchSpec) error {
 	if !isPlanSidechatTaskParent(parentSession) {
 		return nil
@@ -1644,6 +2930,18 @@ func (s *Service) resolveTaskLaunchProfileForMode(parentSession pebblestore.Sess
 		profile.Provider, profile.Model, profile.Thinking = preference.Provider, preference.Model, preference.Thinking
 		profile.AutoServiceTier, profile.ContextMode = preference.ServiceTier, preference.ContextMode
 		return profile, false, "", nil
+	}
+	if agentruntime.IsIdeaAgentName(requested) {
+		_, routerProfile, err := agentmodel.ResolveSystemAgent(s.model, s.agents, s.agentModelSettings, parentSession.AccountScopeID, agentruntime.RouterAgentID, "")
+		if err != nil {
+			return pebblestore.AgentProfile{}, false, "", fmt.Errorf("resolve Idea Router model: %w", err)
+		}
+		profile, err := s.agents.ResolveSystemAgent(agentruntime.IdeaAgentID, routerProfile)
+		return profile, false, "", err
+	}
+	if agentruntime.IsImageAgentName(requested) {
+		_, profile, err := agentmodel.ResolveSystemAgent(s.model, s.agents, s.agentModelSettings, parentSession.AccountScopeID, agentruntime.ImageAgentID, "")
+		return profile, false, "", err
 	}
 	if !agentruntime.IsCoderAgentName(requested) {
 		profile, err := s.resolveTaskSubagentForAccount(parentSession.AccountScopeID, requested)
@@ -1697,16 +2995,101 @@ func parseApprovedTaskLaunchManifest(approved string, launchSpecs []taskLaunchSp
 	if err != nil || digest != strings.TrimSpace(envelope.ManifestHash) || digest != strings.TrimSpace(envelope.Manifest.ManifestHash) {
 		return taskLaunchManifest{}, errors.New("approved task manifest snapshot hash mismatch")
 	}
-	if len(envelope.Manifest.Launches) != len(launchSpecs) {
+	approvedLaunches := envelope.Manifest.Launches
+	if envelope.Manifest.Program != nil && len(approvedLaunches) != len(launchSpecs) {
+		byJobID := make(map[string]taskLaunchManifestRow, len(approvedLaunches))
+		for _, row := range approvedLaunches {
+			if jobID, _ := row.SourceArguments["program_job_id"].(string); strings.TrimSpace(jobID) != "" {
+				byJobID[strings.TrimSpace(jobID)] = row
+			}
+		}
+		approvedLaunches = approvedLaunches[:0]
+		for _, spec := range launchSpecs {
+			jobID, _ := spec.SourceArguments["program_job_id"].(string)
+			row, ok := byJobID[strings.TrimSpace(jobID)]
+			if !ok {
+				return taskLaunchManifest{}, fmt.Errorf("approved task manifest is missing program job %q", jobID)
+			}
+			approvedLaunches = append(approvedLaunches, row)
+		}
+	}
+	if len(approvedLaunches) != len(launchSpecs) {
 		return taskLaunchManifest{}, errors.New("approved task manifest launch count mismatch")
 	}
+	envelope.Manifest.Launches = approvedLaunches
 	for i := range launchSpecs {
-		row := envelope.Manifest.Launches[i]
+		row := approvedLaunches[i]
 		if !strings.EqualFold(strings.TrimSpace(row.RequestedSubagentType), strings.TrimSpace(launchSpecs[i].RequestedSubagentType)) {
 			return taskLaunchManifest{}, fmt.Errorf("approved task manifest launch %d target mismatch", i)
 		}
 		if row.ProfileSnapshot == nil {
 			return taskLaunchManifest{}, fmt.Errorf("approved task manifest launch %d is missing profile snapshot", i)
+		}
+		if strings.TrimSpace(row.OutputMode) != strings.TrimSpace(launchSpecs[i].OutputMode) {
+			return taskLaunchManifest{}, fmt.Errorf("approved task manifest launch %d output mode mismatch", i)
+		}
+		if !reflect.DeepEqual(row.OutputRequirements, launchSpecs[i].OutputRequirements) {
+			return taskLaunchManifest{}, fmt.Errorf("approved task manifest launch %d output requirements mismatch", i)
+		}
+		if !reflect.DeepEqual(row.AnimationProfile, launchSpecs[i].AnimationProfile) {
+			return taskLaunchManifest{}, fmt.Errorf("approved task manifest launch %d animation profile mismatch", i)
+		}
+		if !equalTaskImageSourceArtifact(row.SourceArtifact, launchSpecs[i].SourceArtifact) {
+			return taskLaunchManifest{}, fmt.Errorf("approved task manifest launch %d source artifact mismatch", i)
+		}
+		if row.SourceArguments != nil {
+			row.SourceArguments = cloneGenericMap(row.SourceArguments)
+			if launchSpecs[i].OutputRequirements != nil {
+				row.SourceArguments["output_requirements"] = cloneTaskOutputRequirements(launchSpecs[i].OutputRequirements)
+			}
+			if launchSpecs[i].AnimationProfile != nil {
+				row.SourceArguments["animation_profile"] = cloneTaskAnimationProfile(launchSpecs[i].AnimationProfile)
+			}
+		}
+		approvedLaunches[i] = row
+		if !reflect.DeepEqual(row.OwnedScope, launchSpecs[i].OwnedScope) {
+			return taskLaunchManifest{}, fmt.Errorf("approved task manifest launch %d owned scope mismatch", i)
+		}
+		if strings.TrimSpace(row.TargetWorkspacePath) != strings.TrimSpace(launchSpecs[i].TargetWorkspacePath) {
+			return taskLaunchManifest{}, fmt.Errorf("approved task manifest launch %d workspace target mismatch", i)
+		}
+		if agentruntime.IsImageAgentName(launchSpecs[i].RequestedSubagentType) {
+			if row.ResolvedTools == nil || len(row.ResolvedTools.AllowedTools) != 1 || !taskToolNameInSlice(row.ResolvedTools.AllowedTools, "manage_artifact") {
+				return taskLaunchManifest{}, fmt.Errorf("approved managed Image manifest launch %d must allow only manage_artifact", i)
+			}
+		}
+		if agentruntime.IsDesignerAgentName(launchSpecs[i].RequestedSubagentType) || agentruntime.IsImageAgentName(launchSpecs[i].RequestedSubagentType) {
+			switch strings.TrimSpace(launchSpecs[i].OutputMode) {
+			case taskOutputModeManaged:
+				if row.ResolvedTools == nil || !taskToolNameInSlice(row.ResolvedTools.AllowedTools, "manage_artifact") {
+					return taskLaunchManifest{}, fmt.Errorf("approved managed Designer manifest launch %d is missing manage_artifact", i)
+				}
+				for _, name := range []string{"write", "edit"} {
+					if !taskToolNameInSlice(row.DisabledTools, name) || !taskToolNameInSlice(row.ResolvedTools.DisabledTools, name) || taskToolNameInSlice(row.ResolvedTools.AllowedTools, name) {
+						return taskLaunchManifest{}, fmt.Errorf("approved managed Designer manifest launch %d retains checkout mutation tool %q", i, name)
+					}
+				}
+			case taskOutputModeWorkspace:
+				if row.ResolvedTools == nil {
+					return taskLaunchManifest{}, fmt.Errorf("approved workspace Designer manifest launch %d is missing resolved tools", i)
+				}
+				for _, name := range []string{"read", "search", "find", "list", "write", "edit"} {
+					if !taskToolNameInSlice(row.ResolvedTools.AllowedTools, name) {
+						return taskLaunchManifest{}, fmt.Errorf("approved workspace Designer manifest launch %d is missing tool %q", i, name)
+					}
+				}
+				for _, name := range []string{"media_inspect", "bash", "git_status", "git_diff", "git_add", "git_commit", "manage_artifact"} {
+					if taskToolNameInSlice(row.ResolvedTools.AllowedTools, name) || !taskToolNameInSlice(row.ResolvedTools.DisabledTools, name) {
+						return taskLaunchManifest{}, fmt.Errorf("approved workspace Designer manifest launch %d retains forbidden tool %q", i, name)
+					}
+				}
+			}
+		}
+		if strings.TrimSpace(row.StreamKey) != strings.TrimSpace(launchSpecs[i].StreamKey) || row.SwarmMode != launchSpecs[i].SwarmMode || strings.TrimSpace(row.SwarmStrategy) != strings.TrimSpace(launchSpecs[i].SwarmStrategy) {
+			return taskLaunchManifest{}, fmt.Errorf("approved task manifest launch %d swarm identity mismatch", i)
+		}
+		if !reflect.DeepEqual(row.AssemblyPart, launchSpecs[i].AssemblyPart) || strings.TrimSpace(row.IntegrationContract) != strings.TrimSpace(launchSpecs[i].IntegrationContract) {
+			return taskLaunchManifest{}, fmt.Errorf("approved task manifest launch %d Assembly contract mismatch", i)
 		}
 	}
 	return envelope.Manifest, nil
@@ -1717,6 +3100,29 @@ func (s *Service) buildTaskLaunchPermissionPayload(sessionID, sessionMode string
 	if err != nil {
 		return taskLaunchManifest{}, err
 	}
+	parsed, err = s.resolveApprovedCheckpointTaskProgram(sessionID, parsed)
+	if err != nil {
+		return taskLaunchManifest{}, err
+	}
+	if err := validateTaskSwarmLaunchEnabled(parsed); err != nil {
+		return taskLaunchManifest{}, err
+	}
+	if parsed.Action == taskProgramActionStatus {
+		manifest := taskLaunchManifest{
+			PathID: taskLaunchPermissionPathID, Goal: "task program " + parsed.Action, Description: parsed.Description,
+			Action: parsed.Action, ParentMode: sessionruntime.NormalizeMode(sessionMode), TaskMode: parsed.Mode,
+			ProgramID:       parsed.ProgramID,
+			SourceArguments: parsed.SourceArguments,
+		}
+		digest, digestErr := taskLaunchManifestDigest(manifest)
+		if digestErr != nil {
+			return taskLaunchManifest{}, fmt.Errorf("hash task program lifecycle manifest: %w", digestErr)
+		}
+		manifest.ManifestHash = digest
+		approvedManifest := manifest
+		manifest.ApprovedArguments = map[string]any{"manifest_hash": digest, "manifest": approvedManifest}
+		return manifest, nil
+	}
 
 	parentSession, ok, sessionErr := s.sessions.GetSession(sessionID)
 	if sessionErr != nil {
@@ -1725,18 +3131,56 @@ func (s *Service) buildTaskLaunchPermissionPayload(sessionID, sessionMode string
 	if !ok {
 		return taskLaunchManifest{}, fmt.Errorf("session %q not found", sessionID)
 	}
+	if parsed.Swarm != nil && parsed.Swarm.AgentType == "image" {
+		images := make([]taskImageManifestRow, len(parsed.Launches))
+		for i, launch := range parsed.Launches {
+			theme := ""
+			if i < len(parsed.Swarm.Themes) {
+				theme = strings.TrimSpace(parsed.Swarm.Themes[i])
+			}
+			images[i] = taskImageManifestRow{Index: i + 1, Theme: theme, StreamKey: strings.TrimSpace(launch.StreamKey), OutputRequirements: cloneTaskOutputRequirements(launch.OutputRequirements), SourceArtifact: cloneTaskImageSourceArtifact(parsed.Swarm.SourceArtifact)}
+		}
+		manifest := taskLaunchManifest{
+			PathID: taskLaunchPermissionPathID, Goal: parsed.Description, ImageCount: len(images), Description: parsed.Description,
+			Prompt: parsed.Prompt, Action: parsed.Action, ParentMode: sessionruntime.NormalizeMode(sessionMode), TaskMode: parsed.Mode,
+			SwarmAgentType: "image", SwarmStrategy: parsed.Swarm.Strategy, Images: images, ExecutionFormat: taskExecutionFormatImageDirect,
+			SourceArguments: parsed.SourceArguments,
+		}
+		if parent, found := s.lookupTaskLaunchParentSession(sessionID, manifest.ParentMode); found {
+			manifest.Parent = parent
+			manifest.TargetWorkspacePath = strings.TrimSpace(parent.WorkspacePath)
+			manifest.TargetWorkspaceName = strings.TrimSpace(parent.WorkspaceName)
+		}
+		digest, digestErr := taskLaunchManifestDigest(manifest)
+		if digestErr != nil {
+			return taskLaunchManifest{}, fmt.Errorf("hash direct image swarm manifest: %w", digestErr)
+		}
+		manifest.ManifestHash = digest
+		approvedManifest := manifest
+		manifest.ApprovedArguments = map[string]any{"manifest_hash": digest, "manifest": approvedManifest}
+		return manifest, nil
+	}
 	if err := validatePlanSidechatTaskTargets(parentSession, parsed.Launches); err != nil {
 		return taskLaunchManifest{}, err
 	}
 	parentMode := sessionruntime.NormalizeMode(sessionMode)
 	childMode := effectiveTaskChildMode(sessionMode)
-	disabledTools := taskDisabledToolNames(false)
+	defaultDisabledTools := taskDisabledToolNames(false)
 
 	launches := make([]taskLaunchManifestRow, 0, len(parsed.Launches))
 	resolvedAgentName := ""
 	resolvedAgentError := ""
 	requestedPrimary := ""
 	for i, launch := range parsed.Launches {
+		targetWorkspacePath, targetWorkspaceName, targetErr := s.resolveTaskTargetWorkspace(parentSession, identity.Principal{}, launch)
+		if targetErr != nil {
+			return taskLaunchManifest{}, fmt.Errorf("task launches[%d] workspace target: %w", i, targetErr)
+		}
+		parsed.Launches[i].TargetWorkspacePath = targetWorkspacePath
+		launch.TargetWorkspacePath = targetWorkspacePath
+		if parsed.Program != nil && i < len(parsed.Program.Jobs) {
+			parsed.Program.Jobs[i].TargetWorkspacePath = targetWorkspacePath
+		}
 		requested := strings.TrimSpace(launch.RequestedSubagentType)
 		if requested == "" {
 			return taskLaunchManifest{}, fmt.Errorf("task launches[%d] requires subagent_type, agent, or purpose", i)
@@ -1750,6 +3194,14 @@ func (s *Service) buildTaskLaunchPermissionPayload(sessionID, sessionMode string
 		subagentProfile, virtualTarget, sourceAgentName, err := s.resolveTaskLaunchProfileForMode(parentSession, requested, childMode)
 		if err != nil {
 			return taskLaunchManifest{}, fmt.Errorf("task launches[%d] cannot resolve subagent %q: %w", i, requested, err)
+		}
+		if agentruntime.IsDesignerAgentName(requested) && strings.EqualFold(strings.TrimSpace(launch.OutputMode), taskOutputModeWorkspace) {
+			// Designer resolution is fail-closed to managed output. Only the
+			// validated workspace output mode may replace that immutable contract.
+			workspaceProfile := agentruntime.DesignerWorkspaceAgentProfileForParent(subagentProfile)
+			workspaceProfile.Provider, workspaceProfile.Model, workspaceProfile.Thinking = subagentProfile.Provider, subagentProfile.Model, subagentProfile.Thinking
+			workspaceProfile.AutoServiceTier = subagentProfile.AutoServiceTier
+			subagentProfile = workspaceProfile
 		}
 		resolvedName := strings.TrimSpace(subagentProfile.Name)
 		if resolvedName == "" {
@@ -1771,8 +3223,8 @@ func (s *Service) buildTaskLaunchPermissionPayload(sessionID, sessionMode string
 		var toolContract ResolvedAgentToolContract
 		var profileDisabledTools map[string]bool
 		var toolErr error
-		if virtualTarget || agentruntime.IsFinderAgentName(resolvedName) || agentruntime.IsDesignerAgentName(resolvedName) {
-			// Compiled Coder, Finder, and Designer profiles are trusted launch snapshots, not
+		if virtualTarget || agentruntime.IsFinderAgentName(resolvedName) || agentruntime.IsDesignerAgentName(resolvedName) || agentruntime.IsImageAgentName(resolvedName) || agentruntime.IsIdeaAgentName(resolvedName) {
+			// Compiled Coder, Finder, Designer, and Idea profiles are trusted launch snapshots, not
 			// persisted agent rows. Compile their immutable
 			// contracts directly instead of looking them up in the agent store.
 			toolContract, _, profileDisabledTools, toolErr = s.compileResolvedAgentToolContract(parentSession.AccountScopeID, subagentProfile)
@@ -1782,7 +3234,11 @@ func (s *Service) buildTaskLaunchPermissionPayload(sessionID, sessionMode string
 		if toolErr != nil {
 			return taskLaunchManifest{}, fmt.Errorf("task launches[%d] cannot resolve subagent %q tool contract: %w", i, requested, toolErr)
 		}
-		resolvedTools := buildTaskLaunchResolvedToolSummary(toolContract, profileDisabledTools, disabledTools, executionMode)
+		launchDisabledTools := append([]string(nil), defaultDisabledTools...)
+		if (agentruntime.IsDesignerAgentName(requested) || agentruntime.IsImageAgentName(requested)) && strings.TrimSpace(launch.OutputMode) == taskOutputModeManaged {
+			launchDisabledTools = disabledTaskToolNames("write", "edit")
+		}
+		resolvedTools := buildTaskLaunchResolvedToolSummary(toolContract, profileDisabledTools, launchDisabledTools, executionMode)
 		preference := applyAgentPreferenceOverridesForMode(parentSession.Preference, subagentProfile, childMode)
 		childTitle := assignmentLabel
 		launches = append(launches, taskLaunchManifestRow{
@@ -1795,6 +3251,10 @@ func (s *Service) buildTaskLaunchPermissionPayload(sessionID, sessionMode string
 			Deliverable:           strings.TrimSpace(launch.Deliverable),
 			ConcurrencyReason:     strings.TrimSpace(launch.ConcurrencyReason),
 			OwnedScope:            append([]string(nil), launch.OwnedScope...),
+			OutputMode:            strings.TrimSpace(launch.OutputMode),
+			OutputRequirements:    cloneTaskOutputRequirements(launch.OutputRequirements),
+			AnimationProfile:      cloneTaskAnimationProfile(launch.AnimationProfile),
+			SourceArtifact:        cloneTaskImageSourceArtifact(launch.SourceArtifact),
 			DependencyEvidence:    strings.TrimSpace(launch.DependencyEvidence),
 			SubagentProvider:      strings.TrimSpace(preference.Provider),
 			SubagentModel:         strings.TrimSpace(preference.Model),
@@ -1802,11 +3262,13 @@ func (s *Service) buildTaskLaunchPermissionPayload(sessionID, sessionMode string
 			SubagentServiceTier:   strings.TrimSpace(preference.ServiceTier),
 			ChildTitlePreview:     childTitle,
 			ChildMode:             childMode,
-			DisabledTools:         disabledTools,
+			DisabledTools:         launchDisabledTools,
 			ResolvedTools:         resolvedTools,
+			TargetWorkspacePath:   targetWorkspacePath,
+			TargetWorkspaceName:   targetWorkspaceName,
 			Capabilities: map[string]any{
 				"allow_bash":            false,
-				"disabled_tools":        disabledTools,
+				"disabled_tools":        launchDisabledTools,
 				"effective_child_mode":  childMode,
 				"resolved_tools":        resolvedTools,
 				"permission_session_id": strings.TrimSpace(sessionID),
@@ -1817,6 +3279,11 @@ func (s *Service) buildTaskLaunchPermissionPayload(sessionID, sessionMode string
 			SourceProfileMode:    strings.TrimSpace(subagentProfile.Mode),
 			InheritedRuntimeMode: pebblestore.AgentProfileRuntimeMode(subagentProfile),
 			ProfileSnapshot:      &subagentProfile,
+			StreamKey:            strings.TrimSpace(launch.StreamKey),
+			SwarmMode:            launch.SwarmMode,
+			SwarmStrategy:        strings.TrimSpace(launch.SwarmStrategy),
+			AssemblyPart:         launch.AssemblyPart,
+			IntegrationContract:  strings.TrimSpace(launch.IntegrationContract),
 		})
 	}
 	if len(launches) == 0 {
@@ -1831,6 +3298,7 @@ func (s *Service) buildTaskLaunchPermissionPayload(sessionID, sessionMode string
 
 	manifest := taskLaunchManifest{
 		PathID:             taskLaunchPermissionPathID,
+		ExecutionFormat:    taskExecutionFormatSubagents,
 		Goal:               parsed.Description,
 		LaunchCount:        len(launches),
 		Description:        parsed.Description,
@@ -1841,21 +3309,50 @@ func (s *Service) buildTaskLaunchPermissionPayload(sessionID, sessionMode string
 		Action:             parsed.Action,
 		ParentMode:         parentMode,
 		EffectiveChildMode: childMode,
-		DisabledTools:      disabledTools,
+		DisabledTools:      launches[0].DisabledTools,
 		ResolvedTools:      launches[0].ResolvedTools,
 		SourceArguments:    parsed.SourceArguments,
 		Launches:           launches,
+		TaskMode:           parsed.Mode,
+		Program:            parsed.Program,
+	}
+	if parsed.Program != nil {
+		for _, job := range parsed.Program.Jobs {
+			if len(job.DependsOn) == 0 && len(parsed.Program.Stages) > 0 && job.StageID == parsed.Program.Stages[0].ID {
+				manifest.ProgramReadyCount++
+			}
+		}
+	}
+	if parsed.Swarm != nil {
+		manifest.SwarmAgentType = parsed.Swarm.AgentType
+		manifest.SwarmStrategy = parsed.Swarm.Strategy
+		manifest.AssemblyParts = append([]taskSwarmAssemblyPart(nil), parsed.Swarm.AssemblyParts...)
+		manifest.IntegrationContract = parsed.Swarm.IntegrationContract
 	}
 
 	parent, ok := s.lookupTaskLaunchParentSession(sessionID, parentMode)
 	if ok {
+		if parsed.Program != nil {
+			hasCoder := false
+			coderWorkspacePath := ""
+			for _, job := range parsed.Program.Jobs {
+				if agentruntime.IsCoderAgentName(job.RequestedSubagentType) {
+					hasCoder = true
+					coderWorkspacePath = strings.TrimSpace(firstNonEmptyString(job.TargetWorkspacePath, parent.WorkspacePath))
+				}
+			}
+			if hasCoder {
+				if s.worktrees == nil {
+					return taskLaunchManifest{}, errors.New("task program Coder jobs require separate worktree isolation")
+				}
+				if _, baseErr := s.worktrees.ResolveTaskBase(coderWorkspacePath); baseErr != nil {
+					return taskLaunchManifest{}, fmt.Errorf("validate task program target Git state for %q: %w", coderWorkspacePath, baseErr)
+				}
+			}
+		}
 		manifest.Parent = parent
 		manifest.TargetWorkspacePath = strings.TrimSpace(parent.WorkspacePath)
 		manifest.TargetWorkspaceName = strings.TrimSpace(parent.WorkspaceName)
-		for i := range manifest.Launches {
-			manifest.Launches[i].TargetWorkspacePath = strings.TrimSpace(parent.WorkspacePath)
-			manifest.Launches[i].TargetWorkspaceName = strings.TrimSpace(parent.WorkspaceName)
-		}
 	}
 
 	digest, err := taskLaunchManifestDigest(manifest)

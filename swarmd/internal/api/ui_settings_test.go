@@ -290,6 +290,35 @@ func TestUISettingsPostPatchesShowTipsWithoutOverwritingOtherSettings(t *testing
 	}
 }
 
+func TestUISettingsPostPersistsMediaTranscriptionModel(t *testing.T) {
+	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "ui-settings-api-media-transcription.pebble"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	settingsSvc := uisettings.NewService(pebblestore.NewUISettingsStore(store))
+	server := NewServer(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	server.SetUISettingsService(settingsSvc)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/ui/settings", bytes.NewReader([]byte(`{"media":{"transcription_model":"gemini-2.5-flash"}}`)))
+	req = req.WithContext(identity.ContextWithPrincipal(req.Context(), identity.Principal{Type: identity.PrincipalTypeUser, AccountScopeID: "media-account"}))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /v1/ui/settings status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	loaded, err := settingsSvc.GetForAccount("media-account")
+	if err != nil {
+		t.Fatalf("get settings: %v", err)
+	}
+	if loaded.Media.TranscriptionModel != "gemini-2.5-flash" {
+		t.Fatalf("persisted transcription model = %q, want gemini-2.5-flash", loaded.Media.TranscriptionModel)
+	}
+}
+
 func TestUISettingsPostPersistsImageDefaultModel(t *testing.T) {
 	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "ui-settings-api-image-default.pebble"))
 	if err != nil {

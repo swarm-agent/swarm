@@ -1,5 +1,7 @@
 import type {
+  ArtifactToolData,
   EditDiffPreview,
+  VideoToolData,
   SearchToolData,
   SearchToolFileGroup,
   SearchToolLineGroup,
@@ -12,6 +14,10 @@ import type {
   WebSearchQueryData,
   WebSearchToolData,
 } from "../types/chat";
+import {
+  normalizeDesktopV3ArtifactCatalogEntry,
+  normalizeDesktopV3ArtifactSelection,
+} from "../../session-v3/artifact-api";
 
 interface ToolHistoryPayload {
   path_id?: string;
@@ -39,6 +45,18 @@ interface StructuredToolMessageInput {
   taskStream?: {
     launchesByKey: Record<string, Record<string, unknown>>;
     launchOrder: string[];
+    taskMode?: string;
+    executionFormat?: string;
+    imageCount?: number;
+    programId?: string;
+    programState?: string;
+    activeStageId?: string;
+    nextAction?: string;
+    program?: Record<string, unknown>;
+    programStatus?: Record<string, unknown>;
+    swarmStrategy?: string;
+    integrationContract?: string;
+    integrationRequired?: boolean;
   };
   error?: string;
   durationMs?: number;
@@ -49,7 +67,7 @@ interface StructuredToolMessageInput {
 const MAX_STRUCTURED_OUTPUT_PARSE_BYTES = 1_000_000;
 const MAX_PREVIEW_LINES = 12;
 
-export type ToolActivitySemanticKind = "edit" | "plan" | "task" | "investigation" | "generic";
+export type ToolActivitySemanticKind = "edit" | "plan" | "task" | "investigation" | "artifact" | "video" | "generic";
 
 export interface ToolActivityDescriptor {
   kind: ToolActivitySemanticKind;
@@ -59,6 +77,12 @@ export interface ToolActivityDescriptor {
 
 export function describeToolActivity(toolName: string): ToolActivityDescriptor {
   const normalized = String(toolName ?? "").trim().toLowerCase().replace(/-/g, "_");
+  if (normalized === "manage_artifact") {
+    return { kind: "artifact", label: "Artifact", activeLabel: "Creating artifact" };
+  }
+  if (normalized === "manage_video") {
+    return { kind: "video", label: "Video", activeLabel: "Working on video" };
+  }
   if (normalized === "edit" || normalized === "write") {
     return { kind: "edit", label: "Edit", activeLabel: "Editing" };
   }
@@ -68,7 +92,7 @@ export function describeToolActivity(toolName: string): ToolActivityDescriptor {
   if (normalized === "task" || normalized === "subagent" || normalized === "launch_subagent") {
     return { kind: "task", label: "Subagents", activeLabel: "Launching subagents" };
   }
-  if (normalized === "search" || normalized === "read") {
+  if (normalized === "search" || normalized === "find" || normalized === "read") {
     return { kind: "investigation", label: "Investigation", activeLabel: "Investigating" };
   }
   const label = normalized
@@ -95,7 +119,7 @@ function parseJsonRecord(value: string, maxBytes = Number.POSITIVE_INFINITY): Re
   }
 }
 
-function jsonStr(obj: Record<string, unknown> | null, key: string): string {
+function jsonStr(obj: Record<string, unknown> | null | undefined, key: string): string {
   if (!obj) return "";
   const v = obj[key];
   return typeof v === "string" ? v.trim() : "";
@@ -330,6 +354,158 @@ function resolveToolTarget(
   return null;
 }
 
+function videoRecord(payload: Record<string, unknown> | null | undefined, key: string): Record<string, unknown> | null {
+  return jsonRecord(payload?.[key]);
+}
+
+function videoString(
+  output: Record<string, unknown> | null,
+  args: Record<string, unknown> | null,
+  key: string,
+  ...records: Array<Record<string, unknown> | null>
+): string {
+  return firstNonEmpty(jsonStr(output, key), ...records.map((record) => jsonStr(record, key)), jsonStr(args, key));
+}
+
+function videoNumber(
+  output: Record<string, unknown> | null,
+  args: Record<string, unknown> | null,
+  key: string,
+  ...records: Array<Record<string, unknown> | null>
+): number {
+  for (const record of [output, ...records, args]) {
+    if (hasJsonKey(record, key)) return jsonNum(record, key);
+  }
+  return 0;
+}
+
+function formatVideoDuration(ms: number): string {
+  if (ms <= 0) return "";
+  if (ms < 60_000) return `${Math.max(1, Math.round(ms / 1000))}s`;
+  const minutes = Math.floor(ms / 60_000);
+  const seconds = Math.round((ms % 60_000) / 1000);
+  return seconds > 0 ? `${minutes}m ${seconds}s` : `${minutes}m`;
+}
+
+function formatVideoBytes(bytes: number): string {
+  if (bytes <= 0) return "";
+  if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(bytes < 10 * 1024 * 1024 ? 1 : 0)} MB`;
+}
+
+function videoActionCopy(action: string): { title: string; activeTitle: string } {
+  switch (action) {
+    case "list_source_roots": return { title: "Video sources ready", activeTitle: "Finding video sources…" };
+    case "browse_source": return { title: "Video source opened", activeTitle: "Browsing video sources…" };
+    case "inspect_attachments": return { title: "Video attachments checked", activeTitle: "Checking video attachments…" };
+    case "start_transcription": return { title: "Transcription started", activeTitle: "Starting video transcription…" };
+    case "status": return { title: "Transcription status checked", activeTitle: "Checking transcription progress…" };
+    case "cancel": return { title: "Transcription cancelled", activeTitle: "Cancelling transcription…" };
+    case "read_transcript": return { title: "Transcript ready", activeTitle: "Reading video transcript…" };
+    case "create_project": return { title: "Video project ready", activeTitle: "Setting up video project…" };
+    case "read_project":
+    case "get_project": return { title: "Video project loaded", activeTitle: "Loading video project…" };
+    case "list_projects": return { title: "Video projects loaded", activeTitle: "Loading video projects…" };
+    case "create_revision": return { title: "Video edit saved", activeTitle: "Saving video edit…" };
+    case "restore_revision": return { title: "Video version restored", activeTitle: "Restoring video version…" };
+    case "start_render": return { title: "Video render started", activeTitle: "Starting video render…" };
+    case "render_status": return { title: "Render status updated", activeTitle: "Checking render progress…" };
+    case "cancel_render": return { title: "Video render cancelled", activeTitle: "Cancelling video render…" };
+    default: return { title: "Video task complete", activeTitle: "Working on video…" };
+  }
+}
+
+function extractVideoToolData(
+  outputJson: Record<string, unknown> | null,
+  argumentsJson: Record<string, unknown> | null,
+): VideoToolData | null {
+  const effective = outputJson ?? argumentsJson;
+  if (!effective) return null;
+  const action = firstNonEmpty(jsonStr(outputJson, "action"), jsonStr(argumentsJson, "action")).toLowerCase();
+  if (!action) return null;
+
+  const presentation = videoRecord(outputJson, "presentation");
+  const project = videoRecord(outputJson, "project");
+  const revision = videoRecord(outputJson, "revision") ?? videoRecord(outputJson, "current_revision");
+  const renderJob = videoRecord(outputJson, "render_job") ?? videoRecord(outputJson, "active_render_job");
+  const transcript = videoRecord(outputJson, "transcript");
+  const job = videoRecord(outputJson, "job") ?? jsonObjectSlice(outputJson, "jobs")[0] ?? null;
+  const fallbackCopy = videoActionCopy(action);
+  const copy = {
+    title: jsonStr(presentation, "title") || fallbackCopy.title,
+    activeTitle: jsonStr(presentation, "activity_label") || fallbackCopy.activeTitle,
+  };
+  const status = videoString(outputJson, argumentsJson, "status", presentation, renderJob, job).toLowerCase();
+  const projectTitle = videoString(outputJson, argumentsJson, "title", project);
+  const projectId = videoString(outputJson, argumentsJson, "project_id", presentation, project, revision, renderJob);
+  const revisionId = videoString(outputJson, argumentsJson, "revision_id", presentation, revision, renderJob);
+  const jobId = firstNonEmpty(
+    videoString(outputJson, argumentsJson, "job_id", presentation, renderJob),
+    videoString(outputJson, argumentsJson, "render_job_id", renderJob),
+    videoString(outputJson, argumentsJson, "job_ref", job),
+  );
+  const outputPreset = videoString(outputJson, argumentsJson, "output_preset", presentation, project, renderJob, transcript);
+  const revisionNumber = videoNumber(outputJson, argumentsJson, "revision_number", revision, renderJob);
+  const count = videoNumber(outputJson, argumentsJson, "count");
+  const durationMs = videoNumber(outputJson, argumentsJson, "duration_ms", transcript)
+    || videoNumber(outputJson, argumentsJson, "output_duration_ms", renderJob);
+  const sizeBytes = videoNumber(outputJson, argumentsJson, "output_size_bytes", renderJob);
+  const width = videoNumber(outputJson, argumentsJson, "output_width", renderJob);
+  const height = videoNumber(outputJson, argumentsJson, "output_height", renderJob);
+  const progressValue = hasJsonKey(outputJson, "progress") || hasJsonKey(renderJob, "progress")
+    ? videoNumber(outputJson, argumentsJson, "progress", renderJob)
+    : null;
+  const progress = progressValue === null ? null : Math.max(0, Math.min(100, progressValue <= 1 ? Math.round(progressValue * 100) : Math.round(progressValue)));
+  const language = videoString(outputJson, argumentsJson, "language", transcript);
+  const validation = videoString(outputJson, argumentsJson, "validation", transcript);
+  const sourceNames = [
+    ...jsonObjectSlice(outputJson, "videos"),
+    ...jsonObjectSlice(outputJson, "attachments"),
+  ].map((item) => jsonStr(item, "name")).filter(Boolean);
+  const presentationSourceNames = Array.isArray(presentation?.source_names)
+    ? presentation.source_names.filter((value): value is string => typeof value === "string" && Boolean(value.trim())).map((value) => value.trim())
+    : [];
+  const argumentSourceNames = Array.isArray(argumentsJson?.source_names)
+    ? argumentsJson.source_names.filter((value): value is string => typeof value === "string" && Boolean(value.trim())).map((value) => value.trim())
+    : [];
+  const uniqueSourceNames = Array.from(new Set([...presentationSourceNames, ...sourceNames, ...argumentSourceNames])).slice(0, 8);
+  const subject = firstNonEmpty(jsonStr(presentation, "subject"), uniqueSourceNames.length === 1 ? uniqueSourceNames[0] : "", projectTitle, videoString(outputJson, argumentsJson, "relative_path"), outputPreset);
+  const notes: string[] = [];
+  if (subject) notes.push(subject);
+  if (status && status !== "ok") notes.push(status.replace(/_/g, " "));
+  if (progress !== null && status !== "ready" && status !== "cancelled") notes.push(`${progress}%`);
+  if (revisionNumber > 0) notes.push(`Version ${revisionNumber}`);
+  if (width > 0 && height > 0) notes.push(`${width}×${height}`);
+  const duration = formatVideoDuration(durationMs);
+  if (duration) notes.push(duration);
+  const size = formatVideoBytes(sizeBytes);
+  if (size) notes.push(size);
+  if (count > 0 && !subject) notes.push(`${count} ${count === 1 ? "item" : "items"}`);
+
+  return {
+    action,
+    status,
+    title: copy.title,
+    activeTitle: copy.activeTitle,
+    summary: notes.length > 0 ? `${copy.title} · ${notes.join(" · ")}` : copy.title,
+    subject,
+    sourceNames: uniqueSourceNames,
+    progress,
+    projectId,
+    revisionId,
+    jobId,
+    outputPreset,
+    revisionNumber,
+    count,
+    durationMs,
+    sizeBytes,
+    width,
+    height,
+    language,
+    validation,
+  };
+}
+
 function summarizeToolOutput(
   toolName: string,
   outputJson: Record<string, unknown> | null,
@@ -487,6 +663,7 @@ function summarizeToolOutput(
         return summaryWithNotes(`websearch ${quotedSummary(query, 60)}`, notes);
       return summaryWithNotes("websearch", notes);
     }
+    case "find":
     case "search": {
       const mode = jsonStr(effective, "search_mode").toLowerCase();
       const root = jsonStr(effective, "path");
@@ -498,7 +675,7 @@ function summarizeToolOutput(
         jsonBool(effective, "details_truncated") ||
         jsonBool(effective, "truncated_queries");
       const timedOut = jsonBool(effective, "timed_out");
-      let s = "search";
+      let s = tool;
       const query = jsonStr(effective, "query");
       if (query && queryCount <= 1) s += ` ${quotedSummary(query, 60)}`;
       else if (queryCount > 1) s += ` (${queryCount} queries)`;
@@ -538,13 +715,19 @@ function summarizeToolOutput(
         jsonStr(effective, "agent_type") ||
         jsonStr(effective, "subagent");
       const launchCount = jsonNum(effective, "launch_count");
+      const imageCount = jsonNum(effective, "image_count");
+      const executionFormat = jsonStr(effective, "execution_format");
       const parts: string[] = [];
       if (description) {
         parts.push(description);
       } else if (agentType) {
         parts.push("@" + agentType);
       }
-      if (launchCount > 1) parts.push(`(${launchCount} launches)`);
+      if (executionFormat === "direct_image_swarm" && imageCount > 0) {
+        parts.push(`(${imageCount} direct images)`);
+      } else if (launchCount > 1) {
+        parts.push(`(${launchCount} launches)`);
+      }
       if (status) parts.push("(" + status + ")");
       return parts.length ? "task " + parts.join(" ") : "task";
     }
@@ -565,6 +748,18 @@ function summarizeToolOutput(
       }
       if (resultSummary) return `theme · ${resultSummary}`;
       return action ? `theme ${action}` : "theme";
+    }
+    case "manage_artifact":
+    case "manage-artifact": {
+      return summarizeManageArtifactToolOutput(outputJson, argumentsJson);
+    }
+    case "manage_video":
+    case "manage-video": {
+      return extractVideoToolData(outputJson, argumentsJson)?.summary || "video";
+    }
+    case "manage_worktree":
+    case "manage-worktree": {
+      return summarizeManageWorktreeToolOutput(effective);
     }
     case "manage_todos":
     case "manage-todos": {
@@ -933,6 +1128,27 @@ function normalizeTaskToolDisplay(
   };
 }
 
+function normalizeSwarmStrategy(...values: string[]): "explore" | "assembly" | undefined {
+  for (const value of values) {
+    const normalized = value.trim().toLowerCase();
+    if (normalized === "assembly") return "assembly";
+    if (normalized === "explore") return "explore";
+  }
+  return undefined;
+}
+
+function taskAssemblyPart(payload: Record<string, unknown> | null): StructuredToolMessage["taskRows"][number]["assemblyPart"] {
+  const part = jsonRecord(payload?.assembly_part);
+  if (!part) return null;
+  const name = jsonStr(part, "name");
+  if (!name) return null;
+  return {
+    name,
+    instructions: jsonStr(part, "instructions"),
+    ownedScope: jsonStrArray(part, "owned_scope"),
+  };
+}
+
 function buildTaskToolRow(
   payload: Record<string, unknown> | null,
   fallbackLaunchIndex = 0,
@@ -943,6 +1159,7 @@ function buildTaskToolRow(
   const normalizedStatus = status.trim().toLowerCase();
   const terminal = ["done", "ok", "success", "completed", "complete", "error", "failed", "cancelled", "canceled"].includes(normalizedStatus);
   const launchKey = jsonStr(payload, "launch_key");
+  const sourceArguments = jsonRecord(payload.source_arguments);
   const launchIndex = Math.max(0, jsonNum(payload, "launch_index") || fallbackLaunchIndex);
   const childSessionId = firstNonEmpty(
     jsonStr(payload, "session_id"),
@@ -956,8 +1173,13 @@ function buildTaskToolRow(
     jsonStr(payload, "requested_subagent"),
     "subagent",
   );
-  const assignmentLabel = jsonStr(payload, "assignment_label");
-  const modelLabel = [jsonStr(payload, "subagent_provider"), jsonStr(payload, "subagent_model")].filter(Boolean).join(" / ");
+  const assemblyPart = taskAssemblyPart(payload);
+  const assignmentLabel = firstNonEmpty(assemblyPart?.name ?? "", jsonStr(payload, "assignment_label"));
+  const providerLabel = jsonStr(payload, "subagent_provider");
+  const model = jsonStr(payload, "subagent_model");
+  const modelLabel = providerLabel && model && model.toLowerCase().startsWith(`${providerLabel.toLowerCase()}/`)
+    ? model
+    : [providerLabel, model].filter(Boolean).join(" / ");
   const rawPreviewKind = jsonStr(payload, "current_preview_kind");
   const error = jsonStr(payload, "error");
   let tool = firstNonEmpty(jsonStr(payload, "current_tool_display"), jsonStr(payload, "current_tool"));
@@ -968,6 +1190,14 @@ function buildTaskToolRow(
   const currentToolMs = jsonNum(payload, "current_tool_ms");
   const elapsedMs = jsonNum(payload, "elapsed_ms");
   const time = terminal ? formatDurationCompact(elapsedMs || currentToolMs) : "";
+  const toolOrder = jsonStrArray(payload, "tool_order").filter((entry) => entry.trim() && entry.trim() !== "-");
+  const liveToolCalls = toolOrder.length > 0
+    ? toolOrder.slice(-12).map((entry, index, recent) => {
+      if (index !== recent.length - 1) return entry;
+      const activeTool = firstNonEmpty(jsonStr(payload, "current_tool_display"), jsonStr(payload, "current_tool"), entry);
+      return terminal ? activeTool : `${activeTool} · ${status.trim().toLowerCase() || "running"}`;
+    }).join("\n")
+    : "";
   const previewText = error || taskPreviewText(payload);
   const normalized = normalizeTaskToolDisplay(tool, error ? "error" : rawPreviewKind, previewText);
   const launchStartedAtMs = jsonNum(payload, "launch_started_at_ms");
@@ -977,12 +1207,18 @@ function buildTaskToolRow(
     launchKey: launchKey || undefined,
     launchIndex,
     childSessionId,
+    programId: firstNonEmpty(jsonStr(payload, "program_id"), jsonStr(sourceArguments, "program_id")) || undefined,
+    programJobId: firstNonEmpty(jsonStr(payload, "program_job_id"), jsonStr(payload, "job_id"), jsonStr(sourceArguments, "program_job_id")) || undefined,
+    programStageId: firstNonEmpty(jsonStr(payload, "program_stage_id"), jsonStr(payload, "stage_id"), jsonStr(sourceArguments, "program_stage_id")) || undefined,
+    dependsOn: jsonStrArray(sourceArguments, "depends_on").length > 0 ? jsonStrArray(sourceArguments, "depends_on") : jsonStrArray(payload, "depends_on"),
     status,
     phase,
     agent,
     assignmentLabel,
     modelLabel,
     tool: normalized.tool || "-",
+    toolActivitySummary: normalized.tool && normalized.tool !== "-" ? normalized.tool : undefined,
+    liveToolCalls: liveToolCalls || undefined,
     time,
     previewKind: normalized.previewKind,
     previewText: normalized.previewText,
@@ -991,6 +1227,11 @@ function buildTaskToolRow(
     elapsedMs,
     currentToolMs,
     terminal,
+    swarmMode: jsonBool(payload, "swarm_mode"),
+    swarmStrategy: normalizeSwarmStrategy(jsonStr(payload, "swarm_strategy")) ?? (jsonBool(payload, "swarm_mode") ? "explore" : undefined),
+    assemblyPart,
+    integrationContract: jsonStr(payload, "integration_contract"),
+    integrationRequired: jsonBool(payload, "integration_required"),
   };
 }
 
@@ -1004,11 +1245,43 @@ function buildTaskToolRows(
   payload: Record<string, unknown> | null,
   taskStream?: StructuredToolMessageInput["taskStream"],
 ): StructuredToolMessage["taskRows"] {
+  const executionFormat = firstNonEmpty(jsonStr(payload, "execution_format"), taskStream?.executionFormat ?? "");
+  if (executionFormat === "direct_image_swarm") {
+    const terminalStatus = jsonStr(payload, "status").trim().toLowerCase();
+    const terminalImages = jsonObjectSlice(payload, "images");
+    const terminalPayload = terminalImages.length > 0 && ["done", "ok", "success", "completed", "complete", "error", "failed", "cancelled", "canceled"].includes(terminalStatus);
+    if (taskStream?.launchOrder.length && !terminalPayload) {
+      return taskStream.launchOrder
+        .map((imageKey, index) => {
+          const image = taskStream.launchesByKey[imageKey] ?? null;
+          return buildTaskToolRow(image ? { ...image, launch_key: jsonStr(image, "launch_key") || imageKey } : null, index + 1);
+        })
+        .filter((row): row is StructuredToolMessage["taskRows"][number] => Boolean(row));
+    }
+    return jsonObjectSlice(payload, "images")
+      .map((image, index) => buildTaskToolRow({
+        ...image,
+        launch_index: jsonNum(image, "index") || index + 1,
+        requested_subagent: "image",
+        assignment_label: jsonStr(image, "title") || jsonStr(image, "theme") || `Image ${index + 1}`,
+        current_tool: "Image creation",
+        current_tool_display: "Routing → Image creation",
+        tool_order: ["Routing", "Image creation"],
+        current_preview_text: jsonStr(image, "error"),
+        current_preview_kind: jsonStr(image, "error") ? "error" : "",
+        swarm_mode: true,
+      }, index + 1))
+      .filter((row): row is StructuredToolMessage["taskRows"][number] => Boolean(row));
+  }
   if (taskStream && !isTerminalTaskPayload(payload)) {
     return taskStream.launchOrder
       .map((launchKey, index) => {
         const launch = taskStream.launchesByKey[launchKey] ?? null;
-        return buildTaskToolRow(launch ? { ...launch, launch_key: jsonStr(launch, "launch_key") || launchKey } : null, index + 1);
+        return buildTaskToolRow(launch ? {
+          ...launch,
+          launch_key: jsonStr(launch, "launch_key") || launchKey,
+          program_id: jsonStr(launch, "program_id") || taskStream.programId,
+        } : null, index + 1);
       })
       .filter((row): row is StructuredToolMessage["taskRows"][number] => Boolean(row));
   }
@@ -1033,6 +1306,157 @@ function buildTaskToolRows(
   return row ? [row] : [];
 }
 
+function taskProgramJobStateToRowStatus(state: string): string {
+  switch (state.trim().toLowerCase()) {
+    case "integrated":
+    case "completed":
+      return "completed";
+    case "handoff_ready":
+      return "pending";
+    case "running":
+      return "running";
+    case "failed":
+    case "blocked":
+    case "cancelled":
+      return state.trim().toLowerCase();
+    default:
+      return "pending";
+  }
+}
+
+function taskProgramRecord(
+  outputJson: Record<string, unknown> | null,
+  taskStream?: StructuredToolMessageInput["taskStream"],
+): Record<string, unknown> | null {
+  const terminalStatus = jsonRecord(outputJson?.program_status);
+  if (terminalStatus) return terminalStatus;
+  const outputHasProgramStatus = Boolean(
+    jsonStr(outputJson, "program_state")
+    || jsonStr(outputJson, "active_stage_id")
+    || jsonObjectSlice(outputJson, "jobs").length > 0,
+  );
+  if (outputHasProgramStatus) return outputJson;
+  return taskStream?.programStatus ?? outputJson ?? null;
+}
+
+function buildTaskProgram(
+  argumentsJson: Record<string, unknown> | null,
+  outputJson: Record<string, unknown> | null,
+  taskStream: StructuredToolMessageInput["taskStream"] | undefined,
+  rows: StructuredToolMessage["taskRows"],
+): StructuredToolMessage["taskProgram"] {
+  const argumentProgram = jsonRecord(argumentsJson?.program);
+  const streamProgram = taskStream?.program ?? null;
+  const definition = argumentProgram ?? streamProgram;
+  const status = taskProgramRecord(outputJson, taskStream);
+  const definitionProgramId = jsonStr(definition, "id");
+  const programId = firstNonEmpty(
+    jsonStr(status, "program_id"),
+    jsonStr(outputJson, "program_id"),
+    taskStream?.programId ?? "",
+    definitionProgramId,
+  );
+  if (!programId || !definition || definitionProgramId !== programId) return null;
+
+  const stageSpecs = jsonObjectSlice(definition, "stages");
+  const jobSpecs = jsonObjectSlice(definition, "jobs");
+  if (stageSpecs.length === 0 || jobSpecs.length === 0) return null;
+
+  const statusJobs = jsonObjectSlice(status, "jobs");
+  const statusByJob = new Map(statusJobs.map((job) => [jsonStr(job, "job_id"), job]));
+  const rowByJob = new Map(
+    rows
+      .filter((row) => (!row.programId || row.programId === programId) && Boolean(row.programJobId))
+      .map((row) => [row.programJobId ?? "", row]),
+  );
+  for (const row of rows) {
+    if (row.programJobId || (row.programId && row.programId !== programId)) continue;
+    const matchingJob = jobSpecs.find((job) => {
+      const jobId = jsonStr(job, "id");
+      const statusJob = statusByJob.get(jobId);
+      return Boolean(row.childSessionId)
+        && row.childSessionId === jsonStr(statusJob, "child_session_id");
+    });
+    const jobId = jsonStr(matchingJob, "id");
+    if (jobId && !rowByJob.has(jobId)) rowByJob.set(jobId, row);
+  }
+  const activeStageId = firstNonEmpty(
+    jsonStr(status, "active_stage_id"),
+    jsonStr(outputJson, "active_stage_id"),
+    taskStream?.activeStageId ?? "",
+  );
+  const programState = firstNonEmpty(
+    jsonStr(status, "program_state"),
+    jsonStr(outputJson, "program_state"),
+    taskStream?.programState ?? "",
+    "running",
+  );
+
+  const stages = stageSpecs.map((stage) => {
+    const id = jsonStr(stage, "id");
+    const stageJobs = jobSpecs.filter((job) => jsonStr(job, "stage_id") === id);
+    const stageRows = stageJobs.map((job) => {
+      const jobId = jsonStr(job, "id");
+      const liveRow = rowByJob.get(jobId);
+      const jobStatus = statusByJob.get(jobId);
+      const state = firstNonEmpty(jsonStr(jobStatus, "state"), liveRow?.status ?? "", "declared");
+      const rowStatus = jobStatus ? taskProgramJobStateToRowStatus(state) : liveRow?.status || taskProgramJobStateToRowStatus(state);
+      const base: StructuredToolMessage["taskRows"][number] = liveRow ?? {
+        launchIndex: Math.max(1, jobSpecs.findIndex((candidate) => jsonStr(candidate, "id") === jobId) + 1),
+        childSessionId: jsonStr(jobStatus, "child_session_id"),
+        status: taskProgramJobStateToRowStatus(state),
+        phase: state,
+        agent: firstNonEmpty(jsonStr(job, "agent_type"), "subagent"),
+        assignmentLabel: firstNonEmpty(jsonStr(job, "title"), jobId),
+        modelLabel: "",
+        tool: "-",
+        time: "",
+        previewKind: "",
+        previewText: "",
+        launchStartedAtMs: 0,
+        currentToolStartedAtMs: 0,
+        elapsedMs: 0,
+        currentToolMs: 0,
+        terminal: ["integrated", "completed", "failed", "cancelled"].includes(state.toLowerCase()),
+      };
+      return {
+        ...base,
+        programId,
+        programJobId: jobId,
+        programStageId: id,
+        dependsOn: jsonStrArray(job, "depends_on"),
+        status: rowStatus,
+        liveToolCalls: rowStatus === "running" && base.tool && base.tool !== "-" ? `${base.tool} · running` : undefined,
+      };
+    });
+    const normalizedStates = stageRows.map((row) => row.status.trim().toLowerCase());
+    const allDone = normalizedStates.length > 0 && normalizedStates.every((state) => ["done", "ok", "success", "completed", "complete"].includes(state));
+    const hasFailure = normalizedStates.some((state) => state === "failed" || state === "error");
+    const hasBlocked = normalizedStates.some((state) => state === "blocked");
+    const stageState = hasFailure ? "failed"
+      : hasBlocked ? "blocked"
+      : allDone ? "done"
+      : id === activeStageId ? "active"
+      : jsonStrArray(stage, "depends_on").length > 0 ? "waiting"
+      : "pending";
+    return {
+      id,
+      dependsOn: jsonStrArray(stage, "depends_on"),
+      dependencyEvidence: jsonStr(stage, "dependency_evidence"),
+      state: stageState,
+      rows: stageRows,
+    } satisfies NonNullable<StructuredToolMessage["taskProgram"]>["stages"][number];
+  });
+
+  return {
+    id: programId,
+    state: programState,
+    activeStageId,
+    nextAction: firstNonEmpty(jsonStr(status, "next_action"), jsonStr(outputJson, "next_action"), taskStream?.nextAction ?? ""),
+    stages,
+  };
+}
+
 function pushPreviewLine(
   lines: string[],
   value: string,
@@ -1047,6 +1471,7 @@ function pushPreviewLine(
 function extractSearchToolData(
   outputJson: Record<string, unknown> | null,
   argumentsJson: Record<string, unknown> | null,
+  pathDiscovery = false,
 ): SearchToolData | null {
   const effective = outputJson ?? argumentsJson;
   if (!effective) return null;
@@ -1072,7 +1497,7 @@ function extractSearchToolData(
     jsonBool(effective, "details_truncated") ||
     jsonBool(effective, "truncated_queries");
   const timedOut = jsonBool(effective, "timed_out");
-  const files = buildSearchFileGroups(outputJson, mode);
+  const files = buildSearchFileGroups(outputJson, mode, pathDiscovery);
 
   if (!files.length && !count && !totalMatched && !path) return null;
 
@@ -1092,9 +1517,10 @@ function extractSearchToolData(
 function buildSearchFileGroups(
   outputJson: Record<string, unknown> | null,
   mode: string,
+  pathDiscovery: boolean,
 ): SearchToolFileGroup[] {
   if (!outputJson) return [];
-  if (mode === "files") {
+  if (mode === "files" || pathDiscovery) {
     return buildSearchFileModeGroups(outputJson);
   }
   return buildSearchContentFileGroups(outputJson);
@@ -1310,6 +1736,7 @@ function extractPreviewLines(
       }
       return out;
     }
+    case "find":
     case "search": {
       return [];
     }
@@ -1379,6 +1806,18 @@ function extractPreviewLines(
       if (out.length === 0) pushPreviewLine(out, jsonStr(effective, "summary"), 8);
       return out;
     }
+    case "manage_artifact":
+    case "manage-artifact": {
+      return extractManageArtifactPreviewLines(outputJson, argumentsJson, 6);
+    }
+    case "manage_video":
+    case "manage-video": {
+      return [];
+    }
+    case "manage_worktree":
+    case "manage-worktree": {
+      return buildManageWorktreePreviewLines(effective, 8);
+    }
     case "manage_todos": {
       return buildManageTodosPreviewLines(effective, 6);
     }
@@ -1392,6 +1831,124 @@ function extractPreviewLines(
     default:
       return [];
   }
+}
+
+function manageWorktreeAction(payload: Record<string, unknown>): string {
+  return jsonStr(payload, "action").toLowerCase() || "inspect";
+}
+
+function manageWorktreeStateCounts(payload: Record<string, unknown>): string[] {
+  const counts = jsonRecord(payload.state_counts);
+  if (!counts) return [];
+  return Object.entries(counts)
+    .filter((entry): entry is [string, number] => typeof entry[1] === "number" && entry[1] > 0)
+    .map(([state, count]) => `${count} ${state.replace(/_/g, " ")}`);
+}
+
+function summarizeManageWorktreeToolOutput(payload: Record<string, unknown>): string {
+  const action = manageWorktreeAction(payload);
+  switch (action) {
+    case "inspect":
+    case "list": {
+      const workspace = jsonRecord(payload.workspace);
+      const workspaceName = jsonStr(workspace, "name");
+      const branch = jsonStr(payload, "branch_name");
+      const returned = jsonNum(payload, "returned");
+      const total = jsonNum(payload, "total");
+      const target = workspaceName && branch ? `${workspaceName}/${branch}*` : workspaceName || branch;
+      const count = hasJsonKey(payload, "returned") || hasJsonKey(payload, "total")
+        ? `${returned} of ${total} commits`
+        : "commits";
+      return `worktree inspect${target ? ` · ${target}` : ""} · ${count}`;
+    }
+    case "recall": {
+      const total = jsonNum(payload, "total");
+      const states = manageWorktreeStateCounts(payload);
+      const notes = total > 0 ? [`${total} ${total === 1 ? "child" : "children"}`, ...states] : states;
+      return notes.length > 0 ? `worktree recall · ${notes.join(" · ")}` : "worktree recall";
+    }
+    case "integrate": {
+      const selected = jsonNum(payload, "selected_count");
+      const status = jsonStr(payload, "status").toLowerCase();
+      const notes: string[] = [];
+      if (selected > 0) notes.push(`${selected} ${selected === 1 ? "child" : "children"}`);
+      if (status && status !== "ok") notes.push(status.replace(/_/g, " "));
+      return notes.length > 0 ? `worktree integrate · ${notes.join(" · ")}` : "worktree integrate";
+    }
+    default:
+      return `worktree ${action.replace(/_/g, " ")}`;
+  }
+}
+
+function buildManageWorktreePreviewLines(
+  payload: Record<string, unknown> | null,
+  maxLines: number,
+): string[] {
+  if (!payload) return [];
+  const out: string[] = [];
+  const action = manageWorktreeAction(payload);
+  pushPreviewLine(out, `Action: ${action.replace(/_/g, " ")}`, maxLines);
+
+  if (action === "inspect" || action === "list") {
+    const workspace = jsonRecord(payload.workspace);
+    const workspaceName = jsonStr(workspace, "name");
+    const workspacePath = jsonStr(workspace, "path");
+    const branch = jsonStr(payload, "branch_name");
+    const currentBranch = jsonStr(payload, "current_branch");
+    if (workspaceName || workspacePath) pushPreviewLine(out, `Workspace: ${workspaceName || workspacePath}`, maxLines);
+    if (branch) pushPreviewLine(out, `Branch family: ${branch}/*`, maxLines);
+    if (currentBranch) pushPreviewLine(out, `Current branch: ${currentBranch}`, maxLines);
+    const returned = jsonNum(payload, "returned");
+    const total = jsonNum(payload, "total");
+    if (hasJsonKey(payload, "returned") || hasJsonKey(payload, "total")) {
+      pushPreviewLine(out, `Commits: ${returned} returned · ${total} total`, maxLines);
+    }
+    const items = jsonObjectSlice(payload, "items");
+    for (const item of items) {
+      const commit = firstNonEmpty(jsonStr(item, "commit_short"), jsonStr(item, "commit"));
+      const subject = jsonStr(item, "subject");
+      const integrated = jsonBool(item, "merged_into_current_branch") ? " · already integrated" : "";
+      pushPreviewLine(out, `${commit}${commit && subject ? " · " : ""}${subject}${integrated}`, maxLines);
+    }
+    return out;
+  }
+
+  const taskCallId = jsonStr(payload, "task_call_id");
+  if (taskCallId) pushPreviewLine(out, `Task call: ${taskCallId}`, maxLines);
+  if (action === "recall") {
+    const total = jsonNum(payload, "total");
+    if (hasJsonKey(payload, "total")) pushPreviewLine(out, `Children: ${total}`, maxLines);
+    const states = manageWorktreeStateCounts(payload);
+    if (states.length > 0) pushPreviewLine(out, `States: ${states.join(" · ")}`, maxLines);
+    for (const child of jsonObjectSlice(payload, "children")) {
+      const title = firstNonEmpty(
+        jsonStr(child, "title"),
+        jsonStr(child, "assignment_label"),
+        jsonStr(child, "child_session_id"),
+      );
+      const state = jsonStr(child, "child_state").replace(/_/g, " ");
+      const branch = firstNonEmpty(jsonStr(child, "child_branch"), jsonStr(child, "worktree_branch"));
+      const metadata = [state, branch].filter(Boolean).join(" · ");
+      pushPreviewLine(out, `${title}${title && metadata ? " · " : ""}${metadata}`, maxLines);
+    }
+    return out;
+  }
+
+  if (action === "integrate") {
+    const selected = jsonNum(payload, "selected_count");
+    if (selected > 0) pushPreviewLine(out, `Integrated: ${selected} ${selected === 1 ? "child" : "children"}`, maxLines);
+    const selection = jsonStr(payload, "selection").replace(/_/g, " ");
+    if (selection) pushPreviewLine(out, `Selection: ${selection}`, maxLines);
+    const parentHead = firstNonEmpty(jsonStr(payload, "resulting_parent_head"), jsonStr(payload, "parent_head"));
+    if (parentHead) pushPreviewLine(out, `Parent head: ${parentHead}`, maxLines);
+    const conflictingChild = jsonStr(payload, "conflicting_child_session_id");
+    if (conflictingChild) pushPreviewLine(out, `Conflict: ${conflictingChild}`, maxLines);
+    const detail = jsonStr(payload, "detail");
+    if (detail) pushPreviewLine(out, detail, maxLines);
+    return out;
+  }
+
+  return out;
 }
 
 function buildManageTodosPreviewLines(
@@ -1845,6 +2402,67 @@ function extractExitPlanDetails(
   };
 }
 
+export function extractArtifactToolData(
+  outputJson: Record<string, unknown> | null,
+  argumentsJson: Record<string, unknown> | null,
+): ArtifactToolData | null {
+  if (!outputJson && !argumentsJson) return null;
+  const action = jsonStr(outputJson, "action") || jsonStr(argumentsJson, "action") || "create";
+  const status = jsonStr(outputJson, "status") || (outputJson ? "ok" : "running");
+  const rawArtifact = outputJson?.artifact ?? outputJson?.variant ?? null;
+  let artifact: import("../../session-v3/artifact-api").DesktopV3ArtifactCatalogEntry | null = null;
+  if (rawArtifact && typeof rawArtifact === "object" && !Array.isArray(rawArtifact)) {
+    artifact = normalizeDesktopV3ArtifactCatalogEntry(rawArtifact);
+  }
+  const rawReference = outputJson?.reference ?? null;
+  let reference: import("../../session-v3/artifact-api").DesktopV3ArtifactSelection | null = null;
+  if (rawReference && typeof rawReference === "object" && !Array.isArray(rawReference)) {
+    reference = normalizeDesktopV3ArtifactSelection(rawReference);
+  }
+  return {
+    action,
+    status,
+    artifact,
+    reference,
+    count: typeof outputJson?.count === "number" ? outputJson.count : undefined,
+  };
+}
+
+function summarizeManageArtifactToolOutput(
+  outputJson: Record<string, unknown> | null,
+  argumentsJson: Record<string, unknown> | null,
+): string {
+  const effective = outputJson ?? argumentsJson;
+  const action = jsonStr(effective, "action") || "create";
+  const artifact = jsonRecord(outputJson?.artifact) ?? jsonRecord(outputJson?.variant);
+  const label = jsonStr(artifact, "label") || jsonStr(artifact, "filename") || jsonStr(argumentsJson, "label") || jsonStr(argumentsJson, "filename") || "";
+  if (label) {
+    return `artifact ${action.replace(/_/g, " ")} · ${label}`;
+  }
+  return `artifact ${action.replace(/_/g, " ")}`;
+}
+
+function extractManageArtifactPreviewLines(
+  outputJson: Record<string, unknown> | null,
+  argumentsJson: Record<string, unknown> | null,
+  maxLines = 5,
+): string[] {
+  const lines: string[] = [];
+  const effective = outputJson ?? argumentsJson;
+  const action = jsonStr(effective, "action") || "create";
+  pushPreviewLine(lines, `action: ${action.replace(/_/g, " ")}`, maxLines);
+  const artifact = jsonRecord(outputJson?.artifact) ?? jsonRecord(outputJson?.variant);
+  const label = jsonStr(artifact, "label") || jsonStr(argumentsJson, "label") || jsonStr(argumentsJson, "filename");
+  if (label) pushPreviewLine(lines, `label: ${label}`, maxLines);
+  const id = jsonStr(artifact, "id") || jsonStr(artifact, "artifact_id") || jsonStr(argumentsJson, "variant_id");
+  if (id) pushPreviewLine(lines, `id: ${id}`, maxLines);
+  const mediaType = jsonStr(artifact, "media_type") || jsonStr(argumentsJson, "media_type");
+  if (mediaType) pushPreviewLine(lines, `type: ${mediaType}`, maxLines);
+  const status = jsonStr(artifact, "status") || jsonStr(outputJson, "status");
+  if (status) pushPreviewLine(lines, `status: ${status}`, maxLines);
+  return lines;
+}
+
 function summarizeExitPlanToolOutput(
   toolName: string,
   outputJson: Record<string, unknown> | null,
@@ -1905,8 +2523,8 @@ export function buildStructuredToolMessage(
   const editDiff =
     normalizedToolName === "edit" ? extractEditDiff(outputJson) : null;
   const searchData =
-    normalizedToolName === "search"
-      ? extractSearchToolData(outputJson, argumentsJson)
+    normalizedToolName === "search" || normalizedToolName === "find"
+      ? extractSearchToolData(outputJson, argumentsJson, normalizedToolName === "find")
       : null;
   const webSearchData = normalizedToolName === "websearch"
     ? extractWebSearchToolData(outputJson, argumentsJson)
@@ -1922,6 +2540,14 @@ export function buildStructuredToolMessage(
     normalizedToolName === "bash"
       ? extractBashToolData(outputJson, outputText || completedOutputText, argumentsJson)
       : null;
+  const artifactData =
+    normalizedToolName === "manage_artifact" || normalizedToolName === "manage-artifact"
+      ? extractArtifactToolData(outputJson, argumentsJson)
+      : null;
+  const videoData =
+    normalizedToolName === "manage_video" || normalizedToolName === "manage-video"
+      ? extractVideoToolData(outputJson, argumentsJson)
+      : null;
   const previewLines = searchData || webSearchData || webFetchData
     ? []
     : extractPreviewLines(
@@ -1934,15 +2560,41 @@ export function buildStructuredToolMessage(
     toolName.toLowerCase() === "task"
       ? buildTaskToolRows(outputJson, input.taskStream)
       : [];
+  const taskMode = firstNonEmpty(jsonStr(outputJson, "task_mode"), input.taskStream?.taskMode ?? "", jsonStr(argumentsJson, "mode"));
+  const taskProgram = normalizedToolName === "task" && taskMode !== "swarm"
+    ? buildTaskProgram(argumentsJson, outputJson, input.taskStream, taskRows)
+    : null;
+  const isSwarm = taskMode === "swarm" || taskRows.some((row) => row.swarmMode);
+  const swarmStrategy = normalizeSwarmStrategy(
+    jsonStr(outputJson, "swarm_strategy"),
+    input.taskStream?.swarmStrategy ?? "",
+    jsonStr(argumentsJson, "swarm_strategy"),
+    ...taskRows.map((row) => row.swarmStrategy ?? ""),
+  ) ?? (isSwarm ? "explore" : undefined);
+  const integrationContract = firstNonEmpty(
+    jsonStr(outputJson, "integration_contract"),
+    input.taskStream?.integrationContract ?? "",
+    jsonStr(argumentsJson, "integration_contract"),
+    ...taskRows.map((row) => row.integrationContract ?? ""),
+  );
+  const integrationRequired = jsonBool(outputJson, "integration_required")
+    || input.taskStream?.integrationRequired === true
+    || taskRows.some((row) => row.integrationRequired);
   const error = String(input.error ?? "").trim();
 
   const retainOutputJson = [
     "manage-sessions",
     "manage_sessions",
+    "manage-worktree",
+    "manage_worktree",
     "plan-manage",
     "plan_manage",
     "exit-plan-mode",
     "exit_plan_mode",
+    "manage-artifact",
+    "manage_artifact",
+    "manage-video",
+    "manage_video",
   ].includes(normalizedToolName);
   const outputWasStructured = outputJson !== null;
 
@@ -1974,8 +2626,17 @@ export function buildStructuredToolMessage(
     webFetchData,
     todoData,
     bashData,
+    artifactData,
+    videoData,
     previewLines,
     taskRows,
+    taskProgram,
+    taskMode,
+    swarmStrategy,
+    integrationContract,
+    integrationRequired,
+    integrationStatus: jsonStr(outputJson, "integration_status"),
+    readyForDependentWork: jsonBool(outputJson, "ready_for_dependent_work"),
   };
 }
 

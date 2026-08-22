@@ -686,6 +686,11 @@ func installRuntimeTreeFromArtifact(runtimeRoot, artifactRoot string) error {
 	if err := copyFile(filepath.Join(artifactRoot, "build-info.txt"), filepath.Join(runtimeRoot, "build-info.txt")); err != nil {
 		return err
 	}
+	for _, name := range []string{"LICENSE", "THIRD_PARTY_NOTICES.md"} {
+		if err := copyFile(filepath.Join(artifactRoot, name), filepath.Join(runtimeRoot, name)); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 

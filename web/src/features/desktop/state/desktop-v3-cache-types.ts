@@ -113,6 +113,24 @@ export interface DesktopV3MediaCapability {
   capabilities: DesktopV3MediaCapabilityEntry[]
 }
 
+export interface DesktopV3VideoAttachmentReference {
+  ref: string
+  name: string
+  mime_type: string
+  size_bytes: number
+  source_fingerprint: string
+}
+
+export interface DesktopV3ArtifactSelectionReference {
+  session_id: string
+  collection_id: string
+  variant_id: string
+  event_seq: number
+  label?: string
+  description?: string
+  action?: 'select' | 'use'
+}
+
 export interface MessageSnapshot {
   id: string
   session_id: string
@@ -123,6 +141,8 @@ export interface MessageSnapshot {
   content: string
   metadata?: Record<string, unknown>
   media?: DesktopV3MediaReference[]
+  video_attachments?: DesktopV3VideoAttachmentReference[]
+  artifact_selections?: DesktopV3ArtifactSelectionReference[]
   created_at: number
   execution_epoch?: V3ExecutionEpochRef
   /** Canonical cache-boundary normalization; renderers must not reparse content. */
@@ -751,6 +771,7 @@ export interface PendingUserMessage {
   content: string
   metadata?: Record<string, unknown>
   media?: DesktopV3MediaReference[]
+  artifactSelections?: DesktopV3ArtifactSelectionReference[]
   runId?: string
   createdAt: number
   timelineSeq?: number
@@ -759,7 +780,7 @@ export interface PendingUserMessage {
 }
 
 export type DesktopToolActivityPhase = 'constructing' | 'ready' | 'running' | 'completed' | 'failed' | 'cancelled'
-export type DesktopToolActivitySemanticKind = 'edit' | 'plan' | 'task' | 'investigation' | 'generic'
+export type DesktopToolActivitySemanticKind = 'edit' | 'plan' | 'task' | 'investigation' | 'artifact' | 'video' | 'generic'
 
 export interface DesktopToolActivityProvenance {
   providerConstruction: boolean
@@ -808,6 +829,18 @@ export interface LiveTaskToolStreamState {
   parentSessionId?: string
   taskCallId?: string
   launchCount?: number
+  imageCount?: number
+  taskMode?: string
+  executionFormat?: string
+  programId?: string
+  programState?: string
+  activeStageId?: string
+  nextAction?: string
+  program?: Record<string, unknown>
+  programStatus?: Record<string, unknown>
+  swarmStrategy?: string
+  integrationContract?: string
+  integrationRequired?: boolean
   updatedAt: number
   launchesByKey: Record<string, Record<string, unknown>>
   launchOrder: string[]

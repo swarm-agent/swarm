@@ -105,6 +105,16 @@ test('Desktop V3 composer warnings and errors can be dismissed without a refresh
   assert.equal((source.match(/min-h-11 min-w-11 shrink-0 touch-manipulation/g) ?? []).length, 2)
 })
 
+test('Desktop V3 /agents dispatch skips model favorites and opens Agent Setup directly', async () => {
+  const source = await readFile(new URL('./desktop-v3-agentic-composer.tsx', import.meta.url), 'utf8')
+
+  assert.match(source, /command\.action\.kind === 'open-settings' && command\.action\.tab === 'agents'[\s\S]*openAgentSetup\(\)/)
+  assert.match(source, /renderComposerControl\(openModelFavorites, false\)/)
+  assert.doesNotMatch(source, /renderComposerControl\(openAgentSetup, false\)/)
+  assert.match(source, /openSignal=\{modelFavoritesOpenSignal\}/)
+  assert.match(source, /setupOpenSignal=\{agentSettingsOpenSignal \+ agentSetupOpenSignal\}/)
+})
+
 test('Desktop V3 composer exposes only backend-projected media and preserves durable references', async () => {
   const composer = await readFile(new URL('./desktop-v3-agentic-composer.tsx', import.meta.url), 'utf8')
   const pane = await readFile(new URL('./desktop-v3-existing-conversation-pane.tsx', import.meta.url), 'utf8')

@@ -1,4 +1,5 @@
-import type { DesktopPlanFinalHandoff, DesktopSessionPlanCheckpoint, DesktopSessionPlanDocument, DesktopSessionPlanInfo, DesktopSessionPlanRecord, DesktopSessionPlanRevisionRecord } from '../types/chat'
+import type { DesktopPlanFinalHandoff, DesktopPlanFinalHandoffArtifact, DesktopSessionPlanCheckpoint, DesktopSessionPlanDocument, DesktopSessionPlanInfo, DesktopSessionPlanRecord, DesktopSessionPlanRevisionRecord } from '../types/chat'
+import type { DesktopV3ArtifactCategory } from '../../session-v3/artifact-api'
 
 export interface DesktopSessionPlanWire {
   id?: string
@@ -265,8 +266,9 @@ function normalizeDesktopSessionPlanCheckpointRecommendation(value: unknown): De
     action: stringValue(record, 'action'),
     reason: stringValue(record, 'reason'),
     actionState: stringValue(record, 'actionState', 'action_state'),
+    prompt: stringValue(record, 'prompt'),
   }
-  return recommendation.decision || recommendation.action || recommendation.reason || recommendation.actionState ? recommendation : null
+  return recommendation.decision || recommendation.action || recommendation.reason || recommendation.actionState || recommendation.prompt ? recommendation : null
 }
 
 export function normalizeDesktopPlanFinalHandoff(value: unknown): DesktopPlanFinalHandoff | null {
@@ -288,14 +290,62 @@ export function normalizeDesktopPlanFinalHandoff(value: unknown): DesktopPlanFin
     })
     .filter((entry: { label: string; prompt: string }) => entry.label && entry.prompt)
     .slice(0, 3)
+  const copyableCodeBlockValue = record.copyableCodeBlocks ?? record.copyable_code_blocks
+  const copyableCodeBlocks = (Array.isArray(copyableCodeBlockValue) ? copyableCodeBlockValue : [])
+    .map((entry: unknown) => {
+      const block = objectValue(entry) ?? {}
+      return {
+        label: stringValue(block, 'label'),
+        language: stringValue(block, 'language'),
+        code: rawStringValue(block, 'code'),
+      }
+    })
+    .filter((block) => block.code.trim())
+    .slice(0, 3)
+  const artifacts: DesktopPlanFinalHandoffArtifact[] = (Array.isArray(record.artifacts) ? record.artifacts : [])
+    .map((entry: unknown) => {
+      const artifact = objectValue(entry) ?? {}
+      const artifactId = stringValue(artifact, 'artifactId', 'artifact_id', 'id', 'variant_id', 'variantId')
+      const description = stringValue(artifact, 'description')
+      const filename = stringValue(artifact, 'filename')
+      const label = stringValue(artifact, 'label') || filename || description || 'Artifact'
+      const mediaType = stringValue(artifact, 'mediaType', 'media_type') || 'application/octet-stream'
+      const sessionId = stringValue(artifact, 'sessionId', 'session_id')
+      const collectionId = stringValue(artifact, 'collectionId', 'collection_id')
+      const eventSeq = numberValue(artifact.eventSeq ?? artifact.event_seq)
+      const sourceRef = stringValue(artifact, 'sourceRef', 'source_ref')
+      const kind = stringValue(artifact, 'kind')
+      const rawCategory = stringValue(artifact, 'category')
+      const category: DesktopV3ArtifactCategory = rawCategory === 'plan' || rawCategory === 'visual' ? rawCategory : (
+        mediaType === 'text/html' || mediaType === 'application/pdf' || mediaType.startsWith('image/') || mediaType.startsWith('video/') || kind === 'video' ? 'visual' : 'document'
+      )
+      const previewable = typeof artifact.previewable === 'boolean' ? artifact.previewable : true
+      return {
+        artifactId,
+        label,
+        description,
+        mediaType,
+        previewable,
+        ...(sessionId ? { sessionId } : {}),
+        ...(collectionId ? { collectionId } : {}),
+        ...(eventSeq > 0 ? { eventSeq } : {}),
+        ...(sourceRef ? { sourceRef } : {}),
+        ...(kind ? { kind } : {}),
+        category,
+        ...(filename ? { filename } : {}),
+      }
+    })
+    .filter((artifact) => artifact.artifactId)
   const handoff: DesktopPlanFinalHandoff = {
     schemaVersion,
     title: stringValue(record, 'title'),
     overview: stringValue(record, 'overview'),
     impactBullets: stringArrayValue(record, 'impactBullets', 'impact_bullets').slice(0, 3),
+    copyableCodeBlocks,
     recommendation,
     suggestedPrompts,
     pullRequestUrl: normalizeGitHubPullRequestUrl(record.pullRequestUrl ?? record.pull_request_url),
+    artifacts,
     details: {
       report: rawStringValue(detailsRecord, 'report'),
       result: rawStringValue(detailsRecord, 'result'),

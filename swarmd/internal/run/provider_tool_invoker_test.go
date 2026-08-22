@@ -283,6 +283,87 @@ func TestProviderManagedV3ToolCallBypassesPermissionRequests(t *testing.T) {
 	}
 }
 
+func TestProviderManagedChatUpgradedVideoStudioImageGeneration(t *testing.T) {
+	workspace := t.TempDir()
+	svc, sessionID, _, cleanup := newProviderManagedV3PermissionTestServiceWithMetadata(t, workspace, map[string]any{
+		"experience":    "video_studio",
+		"launch_source": "chat_upgrade",
+		"lineage_kind":  "video_project",
+	})
+	defer cleanup()
+	if !svc.providerManagedVideoStudioImageGeneration(providerToolInvokerConfig{sessionID: sessionID, providerManagedV3: true}) {
+		t.Fatal("expected chat-upgraded Video Studio session to authorize still generation")
+	}
+}
+
+func TestProviderManagedVideoStudioImageGenerationSkipsDuplicatePermissionPrompt(t *testing.T) {
+	workspace := t.TempDir()
+	svc, sessionID, permissions, cleanup := newProviderManagedV3PermissionTestServiceWithMetadata(t, workspace, map[string]any{
+		"experience":    "video_studio",
+		"launch_source": "video_tool",
+		"lineage_kind":  "video_project",
+	})
+	defer cleanup()
+
+	config := providerToolInvokerConfig{
+		sessionID:            sessionID,
+		permissionSessionID:  sessionID,
+		runID:                "run-video-studio-image",
+		step:                 1,
+		sessionMode:          sessionruntime.ModeAuto,
+		workspacePath:        workspace,
+		workspaceRoots:       []string{workspace},
+		workspaceOriginPath:  workspace,
+		workspaceOriginRoots: []string{workspace},
+		workspaceName:        "workspace",
+		applySessionMutation: providerManagedV3NoopMutation,
+		providerManagedV3:    true,
+	}
+	if !svc.providerManagedVideoStudioImageGeneration(config) {
+		t.Fatal("expected code-owned Video Studio session to authorize still generation")
+	}
+
+	invoker := svc.newProviderToolInvoker(config)
+	ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
+	defer cancel()
+	result, err := invoker.ExecuteTool(ctx, toolInvocation("call-video-still", "manage_artifact", `{"action":"generate_image","prompt":"one still"}`))
+	if err != nil {
+		t.Fatalf("execute Video Studio image call: %v", err)
+	}
+	if result.PermissionWaitMS != 0 {
+		t.Fatalf("Video Studio image call permission wait = %dms, want 0", result.PermissionWaitMS)
+	}
+	if strings.Contains(strings.ToLower(result.Error), "permission") || strings.Contains(strings.ToLower(result.Output), "permission") {
+		t.Fatalf("Video Studio image call unexpectedly stopped at the permission gate: %+v", result)
+	}
+	videoResult, err := invoker.ExecuteTool(ctx, toolInvocation("call-video-project", "manage_video", `{"action":"create_project","title":"Pending video"}`))
+	if err != nil {
+		t.Fatalf("execute Video Studio project call: %v", err)
+	}
+	if videoResult.PermissionWaitMS != 0 {
+		t.Fatalf("Video Studio project call permission wait = %dms, want 0", videoResult.PermissionWaitMS)
+	}
+	if strings.Contains(strings.ToLower(videoResult.Error), "permission") || strings.Contains(strings.ToLower(videoResult.Output), "permission") {
+		t.Fatalf("Video Studio project call unexpectedly stopped at the permission gate: %+v", videoResult)
+	}
+	pending, err := permissions.ListPending(sessionID, 10)
+	if err != nil {
+		t.Fatalf("list pending permissions: %v", err)
+	}
+	if len(pending) != 0 {
+		t.Fatalf("Video Studio still/project authorization created permission records: %#v", pending)
+	}
+}
+
+func TestProviderManagedOrdinarySessionDoesNotAuthorizeImageGeneration(t *testing.T) {
+	workspace := t.TempDir()
+	svc, sessionID, _, cleanup := newProviderManagedV3PermissionTestService(t, workspace)
+	defer cleanup()
+	if svc.providerManagedVideoStudioImageGeneration(providerToolInvokerConfig{sessionID: sessionID, providerManagedV3: true}) {
+		t.Fatal("ordinary session unexpectedly authorized image generation")
+	}
+}
+
 func TestProviderManagedToolCallRefreshesTemporaryWorkspaceRoots(t *testing.T) {
 	workspace := t.TempDir()
 	outside := t.TempDir()
@@ -399,6 +480,42 @@ func TestProviderManagedToolCallRefreshesTemporaryWorkspaceRoots(t *testing.T) {
 	}
 	if len(pending) != 0 {
 		t.Fatalf("expected refreshed session root to avoid second permission request, got %#v", pending)
+	}
+}
+
+func TestProviderManagedMediaInspectSkipsPermissionGateButStillRunsBackendValidation(t *testing.T) {
+	workspace := t.TempDir()
+	svc, sessionID, permissions, cleanup := newProviderManagedV3PermissionTestService(t, workspace)
+	defer cleanup()
+	invoker := svc.newProviderToolInvoker(providerToolInvokerConfig{
+		sessionID:            sessionID,
+		permissionSessionID:  sessionID,
+		runID:                "run-media-auto-allow",
+		step:                 1,
+		sessionMode:          sessionruntime.ModeAuto,
+		workspacePath:        workspace,
+		workspaceRoots:       []string{workspace},
+		workspaceOriginPath:  workspace,
+		workspaceOriginRoots: []string{workspace},
+		workspaceName:        "workspace",
+		providerManagedV3:    true,
+		applySessionMutation: providerManagedV3NoopMutation,
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
+	defer cancel()
+	result, err := invoker.ExecuteTool(ctx, toolInvocation("call-media", mediaInspectToolName, `{"path":"missing.png"}`))
+	if err != nil {
+		t.Fatalf("execute media_inspect: %v", err)
+	}
+	if result.Error != "media inspection runtime is not configured" {
+		t.Fatalf("media_inspect backend validation error = %q", result.Error)
+	}
+	pending, err := permissions.ListPending(sessionID, 10)
+	if err != nil {
+		t.Fatalf("list pending permissions: %v", err)
+	}
+	if len(pending) != 0 {
+		t.Fatalf("media_inspect created permission records: %#v", pending)
 	}
 }
 
@@ -548,7 +665,48 @@ func TestProviderManagedToolCallRejectsMissingPermissionService(t *testing.T) {
 	}
 }
 
-func TestProviderManagedV3BypassPermissionsAllowsControlPlaneTool(t *testing.T) {
+func TestProviderManagedV3AskUserInputBoundaryIgnoresPermissionAllow(t *testing.T) {
+	workspace := t.TempDir()
+	svc, sessionID, permissions, cleanup := newProviderManagedV3PermissionTestService(t, workspace)
+	defer cleanup()
+	invoker := svc.newProviderToolInvoker(providerToolInvokerConfig{
+		sessionID:            sessionID,
+		permissionSessionID:  sessionID,
+		runID:                "run-v3-control-allowed",
+		step:                 1,
+		sessionMode:          sessionruntime.ModeAuto,
+		workspacePath:        workspace,
+		workspaceRoots:       []string{workspace},
+		workspaceOriginPath:  workspace,
+		workspaceOriginRoots: []string{workspace},
+		workspaceName:        "workspace",
+		applySessionMutation: providerManagedV3NoopMutation,
+		providerManagedV3:    true,
+		policy: &permission.Policy{Version: 1, Rules: []permission.PolicyRule{{
+			Kind: permission.PolicyRuleKindTool, Decision: permission.PolicyDecisionAllow, Tool: "ask_user",
+		}}},
+	})
+	if invoker == nil {
+		t.Fatalf("provider tool invoker is nil")
+	}
+
+	args := mustProviderToolInvokerJSON(t, map[string]any{"question": "Continue?", "options": []string{"yes", "no"}})
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Millisecond)
+	defer cancel()
+	_, err := invoker.ExecuteTool(ctx, toolInvocation("call-ask", "ask_user", args))
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected ask-user to wait for input despite a broad allow rule, got %v", err)
+	}
+	pending, listErr := permissions.ListPending(sessionID, 10)
+	if listErr != nil {
+		t.Fatalf("list pending permissions: %v", listErr)
+	}
+	if len(pending) != 1 || canonicalToolName(pending[0].ToolName) != "ask_user" {
+		t.Fatalf("expected one pending ask-user input request despite a broad allow rule, got %#v", pending)
+	}
+}
+
+func TestProviderManagedV3AskUserInputBoundaryIgnoresPermissionBypass(t *testing.T) {
 	workspace := t.TempDir()
 	svc, sessionID, permissions, cleanup := newProviderManagedV3PermissionTestService(t, workspace)
 	defer cleanup()
@@ -572,23 +730,19 @@ func TestProviderManagedV3BypassPermissionsAllowsControlPlaneTool(t *testing.T) 
 	}
 
 	args := mustProviderToolInvokerJSON(t, map[string]any{"question": "Continue?", "options": []string{"yes", "no"}})
-	result, err := invoker.ExecuteTool(context.Background(), toolInvocation("call-ask", "ask_user", args))
-	if err != nil {
-		t.Fatalf("execute v3 provider control tool with bypass: %v", err)
-	}
-	if result.Error != "" {
-		t.Fatalf("result error = %q", result.Error)
-	}
-	if !strings.Contains(result.Output, "approved_no_response") {
-		t.Fatalf("result output missing ask-user bypass response: %s", result.Output)
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Millisecond)
+	defer cancel()
+	_, err := invoker.ExecuteTool(ctx, toolInvocation("call-ask", "ask_user", args))
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected ask-user to wait for input while ordinary permissions are bypassed, got %v", err)
 	}
 
-	pending, err := permissions.ListPending(sessionID, 10)
-	if err != nil {
-		t.Fatalf("list pending permissions: %v", err)
+	pending, listErr := permissions.ListPending(sessionID, 10)
+	if listErr != nil {
+		t.Fatalf("list pending permissions: %v", listErr)
 	}
-	if len(pending) != 0 {
-		t.Fatalf("expected no pending permission records while bypass is enabled, got %#v", pending)
+	if len(pending) != 1 || canonicalToolName(pending[0].ToolName) != "ask_user" {
+		t.Fatalf("expected one pending ask-user input request while bypass is enabled, got %#v", pending)
 	}
 }
 
@@ -694,7 +848,56 @@ func TestProviderManagedV3BashEmitsEachLineBeforeCompletion(t *testing.T) {
 	}
 }
 
+func TestProviderManagedArtifactRunContextPreservesTrustedManagedDestination(t *testing.T) {
+	svc := &Service{}
+	trusted := &tool.ArtifactRunContext{SessionID: "parent-1", ChildSessionID: "child-1", CollectionID: "collection-1", VariantID: "variant-1", TaskCallID: "call-1"}
+	run := svc.providerManagedArtifactRunContext(providerToolInvokerConfig{sessionID: "child-1", runID: "run-1", artifactRunContext: trusted})
+	if run.SessionID != "parent-1" || run.ChildSessionID != "child-1" || run.RunID != "run-1" || run.CollectionID != "collection-1" {
+		t.Fatalf("trusted child artifact context = %#v", run)
+	}
+	contextCopy := svc.providerManagedArtifactRunContext(providerToolInvokerConfig{sessionID: "child-1", runID: "run-2", artifactRunContext: trusted})
+	contextCopy.CollectionID = "mutated"
+	if trusted.CollectionID != "collection-1" {
+		t.Fatalf("trusted artifact context was mutated through provider copy: %#v", trusted)
+	}
+	redirected := svc.providerManagedArtifactRunContext(providerToolInvokerConfig{sessionID: "other-child", runID: "run-3", artifactRunContext: trusted})
+	if redirected.SessionID != "__invalid_managed_artifact_context__" || redirected.CollectionID != "collection-1" {
+		t.Fatalf("redirected trusted artifact context = %#v", redirected)
+	}
+}
+
+func TestProviderManagedArtifactRunContextUsesTrustedRunIntentLineage(t *testing.T) {
+	workspace := t.TempDir()
+	svc, sessionID, _, cleanup := newProviderManagedV3PermissionTestService(t, workspace)
+	defer cleanup()
+
+	_, err := svc.sessions.ApplySessionMutation(sessionruntime.SessionMutationInput{
+		SessionID:       sessionID,
+		ClientRequestID: "artifact-lineage-intent",
+		IdempotencyKey:  "artifact-lineage-intent",
+		PayloadHash:     "artifact-lineage-intent",
+		RequestHash:     "artifact-lineage-intent",
+		Kind:            sessionruntime.SessionMutationRecordRunIntent,
+		RunIntent: &pebblestore.V3SessionRunIntent{
+			RunID: "run-artifact", Status: sessionruntime.RunIntentRunning,
+			PlanID: "plan-1", CheckpointID: "cp-2", AttemptID: "cp-2:attempt-3",
+		},
+	})
+	if err != nil {
+		t.Fatalf("persist run intent: %v", err)
+	}
+
+	run := svc.providerManagedArtifactRunContext(providerToolInvokerConfig{sessionID: sessionID, runID: "run-artifact"})
+	if run.SessionID != sessionID || run.RunID != "run-artifact" || run.PlanID != "plan-1" || run.CheckpointID != "cp-2" || run.AttemptID != "cp-2:attempt-3" {
+		t.Fatalf("artifact run context = %#v", run)
+	}
+}
+
 func newProviderManagedV3PermissionTestService(t testing.TB, workspace string) (*Service, string, *permission.Service, func()) {
+	return newProviderManagedV3PermissionTestServiceWithMetadata(t, workspace, nil)
+}
+
+func newProviderManagedV3PermissionTestServiceWithMetadata(t testing.TB, workspace string, metadata map[string]any) (*Service, string, *permission.Service, func()) {
 	t.Helper()
 	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "state.pebble"))
 	if err != nil {
@@ -717,6 +920,7 @@ func newProviderManagedV3PermissionTestService(t testing.TB, workspace string) (
 			Model:    "test-model",
 			Thinking: "off",
 		},
+		Metadata: metadata,
 	})
 	if err != nil {
 		cleanup()

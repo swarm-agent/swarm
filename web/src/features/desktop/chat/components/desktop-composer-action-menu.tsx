@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useId, useRef, useState } from 'react'
-import { AlertTriangle, ChevronLeft, ChevronRight, ListChecks, ListTodo, LoaderCircle, Minimize2, Paperclip, Pin, Plus, Settings, Sparkles, Trash2, Zap } from 'lucide-react'
+import { AlertTriangle, ChevronLeft, ChevronRight, FileVideo, ListChecks, ListTodo, LoaderCircle, Minimize2, Paperclip, Pin, Plus, Settings, Sparkles, Trash2, Zap } from 'lucide-react'
 import { deleteWorkspaceAction, fetchWorkspaceActions, orderWorkspaceActionsForQuickAccess, type WorkspaceAction } from '../../../workspaces/actions/types'
 import { deleteWorkspaceSkill, fetchWorkspaceSkills, type WorkspaceSkill } from '../services/workspace-skills'
 
@@ -9,6 +9,8 @@ interface DesktopComposerActionMenuProps {
   disabled?: boolean
   onPrimeTask: (mode: DesktopComposerTaskMode) => void
   onAttach?: () => void
+  onAddMediaFolder?: () => void
+  addMediaFolderDisabled?: boolean
   attachDisabled?: boolean
   attaching?: boolean
   contextLabel?: string
@@ -34,6 +36,8 @@ export function DesktopComposerActionMenu({
   disabled = false,
   onPrimeTask,
   onAttach,
+  onAddMediaFolder,
+  addMediaFolderDisabled = false,
   attachDisabled = false,
   attaching = false,
   contextLabel = '',
@@ -174,6 +178,11 @@ export function DesktopComposerActionMenu({
   const attach = () => {
     closeMenu()
     onAttach?.()
+  }
+
+  const addMediaFolder = () => {
+    closeMenu()
+    onAddMediaFolder?.()
   }
 
   const compact = () => {
@@ -344,6 +353,25 @@ export function DesktopComposerActionMenu({
                 </span>
                 <ChevronRight size={16} className="shrink-0 text-[var(--app-text-subtle)]" aria-hidden="true" />
               </button>
+
+              {onAddMediaFolder ? (
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={addMediaFolder}
+                  disabled={addMediaFolderDisabled}
+                  className="flex w-full items-center gap-3 rounded-lg px-2.5 py-2.5 text-left text-sm text-[var(--app-text)] outline-none transition-colors hover:bg-[var(--app-surface-hover)] focus-visible:bg-[var(--app-surface-hover)] disabled:cursor-not-allowed disabled:opacity-50"
+                  data-testid="desktop-composer-add-media-folder-menu-item"
+                >
+                  <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[var(--app-bg-alt)] text-[var(--app-primary)]">
+                    <FileVideo size={16} aria-hidden="true" />
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block font-semibold">Add media folder</span>
+                    <span className="block text-[11px] leading-4 text-[var(--app-text-subtle)]">Browse registered video sources</span>
+                  </span>
+                </button>
+              ) : null}
 
               {onAttach ? (
                 <button

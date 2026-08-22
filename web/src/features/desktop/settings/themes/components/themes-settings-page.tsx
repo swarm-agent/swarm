@@ -8,6 +8,7 @@ import { useWorkspaceLauncher } from '../../../../workspaces/launcher/state/use-
 import { WORKSPACE_THEME_OPTIONS, formatWorkspaceThemeLabel } from '../../../../workspaces/launcher/services/workspace-theme'
 import { uiSettingsQueryOptions } from '../../../../queries/query-options'
 import type { WorkspaceEntry } from '../../../../workspaces/launcher/types/workspace'
+import { resolveWorkspaceBySlug } from '../../../../workspaces/launcher/services/workspace-route'
 
 function describeWorkspaceTheme(themeId: string): string {
   const normalized = themeId.trim().toLowerCase()
@@ -17,8 +18,19 @@ function describeWorkspaceTheme(themeId: string): string {
   return formatWorkspaceThemeLabel(normalized)
 }
 
-export function ThemesSettingsPage() {
+interface ThemesSettingsPageProps {
+  activeWorkspacePath?: string | null
+  activeWorkspaceSlug?: string
+}
+
+export function ThemesSettingsPage({ activeWorkspacePath, activeWorkspaceSlug = '' }: ThemesSettingsPageProps = {}) {
   const { workspaces, currentWorkspacePath, setWorkspaceTheme } = useWorkspaceLauncher({ applyDocumentTheme: false })
+  const routeWorkspacePath = activeWorkspaceSlug.trim()
+    ? resolveWorkspaceBySlug(workspaces, activeWorkspaceSlug)?.path ?? null
+    : null
+  const resolvedActiveWorkspacePath = activeWorkspacePath === undefined
+    ? routeWorkspacePath || currentWorkspacePath
+    : activeWorkspacePath?.trim() || null
   const [savingPath, setSavingPath] = useState<string | null>(null)
   const [savingGlobalTheme, setSavingGlobalTheme] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -43,6 +55,16 @@ export function ThemesSettingsPage() {
     }
     return `${workspaces.length} saved workspaces`
   }, [workspaces.length])
+  const activeWorkspace = useMemo(
+    () => workspaces.find((workspace) => workspace.path === resolvedActiveWorkspacePath) ?? null,
+    [resolvedActiveWorkspacePath, workspaces],
+  )
+  const orderedWorkspaces = useMemo(
+    () => activeWorkspace
+      ? [activeWorkspace, ...workspaces.filter((workspace) => workspace.path !== activeWorkspace.path)]
+      : workspaces,
+    [activeWorkspace, workspaces],
+  )
 
   const handleGlobalThemeChange = async (newThemeId: string) => {
     setSavingGlobalTheme(true)
@@ -52,7 +74,6 @@ export function ThemesSettingsPage() {
       const normalized = normalizeGlobalThemeSettings(nextSettings)
       setGlobalThemeId(normalized.activeId)
       setGlobalThemeLabel(normalized.activeLabel)
-      const activeWorkspace = workspaces.find((workspace) => workspace.path === currentWorkspacePath) ?? null
       if (!activeWorkspace?.themeId?.trim()) {
         applyWorkspaceTheme(normalized.activeId)
       }
@@ -68,6 +89,10 @@ export function ThemesSettingsPage() {
     setError(null)
     try {
       await setWorkspaceTheme(workspace.path, newThemeId)
+      if (workspace.path === resolvedActiveWorkspacePath) {
+        const normalizedThemeId = newThemeId.trim().toLowerCase()
+        applyWorkspaceTheme(normalizedThemeId === '' || normalizedThemeId === 'inherit' ? globalThemeId : normalizedThemeId)
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to update workspace theme')
     } finally {
@@ -87,8 +112,16 @@ export function ThemesSettingsPage() {
         </div>
 
         <div className="rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-4 py-4 text-sm text-[var(--app-text-muted)]">
-          Workspace colors switch when you change the <strong>active workspace from the launch menu</strong>. The active
-          workspace is highlighted below so you can see which theme is controlling the current desktop window.
+          <div>
+            Workspace colors follow the <strong>active Desktop workspace</strong>. The active workspace is highlighted below
+            so you can see which theme is controlling this window.
+          </div>
+          {resolvedActiveWorkspacePath ? (
+            <div className="mt-2 min-w-0 text-xs text-[var(--app-text-subtle)]" data-testid="themes-active-workspace">
+              Active workspace: <strong className="text-[var(--app-text)]">{activeWorkspace?.workspaceName || resolvedActiveWorkspacePath}</strong>
+              {activeWorkspace ? <span className="ml-1 break-all">({activeWorkspace.path})</span> : null}
+            </div>
+          ) : null}
         </div>
 
         <p className="text-xs text-[var(--app-text-subtle)]">{workspaceCountLabel}</p>
@@ -137,8 +170,8 @@ export function ThemesSettingsPage() {
               You don't have any saved workspaces yet.
             </div>
           ) : (
-            workspaces.map((workspace) => {
-              const isCurrent = workspace.path === currentWorkspacePath
+            orderedWorkspaces.map((workspace) => {
+              const isCurrent = workspace.path === resolvedActiveWorkspacePath
               const busy = savingPath === workspace.path
               const normalizedThemeId = (workspace.themeId || 'inherit').trim().toLowerCase() || 'inherit'
               const effectiveThemeLabel = normalizedThemeId === 'inherit' ? globalThemeLabel : describeWorkspaceTheme(normalizedThemeId)
@@ -149,7 +182,7 @@ export function ThemesSettingsPage() {
                   className={[
                     'rounded-2xl border px-4 py-4 shadow-sm transition-colors',
                     isCurrent
-                      ? 'border-[var(--app-primary)] bg-[color-mix(in_oklab,var(--app-primary)_10%,var(--app-surface-subtle))]'
+                      ? 'order-first border-[var(--app-primary)] bg-[color-mix(in_oklab,var(--app-primary)_10%,var(--app-surface-subtle))]'
                       : 'border-[var(--app-border)] bg-[var(--app-surface-subtle)]',
                   ].join(' ')}
                 >
@@ -169,7 +202,7 @@ export function ThemesSettingsPage() {
                         {normalizedThemeId === 'inherit' ? ' (from global theme)' : ' (workspace override)'}
                       </span>
                       <span className="mt-1 text-xs text-[var(--app-text-muted)]">
-                        Switch to this workspace from the launch menu to make its theme take over the desktop.
+                        Open this workspace on Desktop to make its theme control the window.
                       </span>
                       {isCurrent ? (
                         <span className="mt-1 text-xs text-[var(--app-warning)]">

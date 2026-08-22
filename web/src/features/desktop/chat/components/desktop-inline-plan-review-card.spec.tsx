@@ -23,6 +23,11 @@ function permission(
             title: "First checkpoint",
             tasks: ["Implement it"],
             acceptance_criteria: ["It works"],
+            task_program: {
+              id: "approved_program",
+              stages: [{ id: "build", dependency_evidence: "Approved work is ready." }],
+              jobs: [{ id: "api", stage_id: "build", agent_type: "coder", title: "API Work", meta_prompt: "Implement the approved API scope.", deliverable: "Committed API", owned_scope: ["swarmd/internal/api/**"], acceptance_criteria: ["API works"], dependency_evidence: "No unfinished dependency." }],
+            },
           },
         ],
       },
@@ -80,6 +85,7 @@ for (const [requirement, toolName] of [
     markup.includes("First checkpoint"),
     `expected checkpoint for ${requirement}`,
   );
+  assert(markup.includes("Task Program · approved_program") && markup.includes("API Work"), `expected approved Task Program stages for ${requirement}`);
   assert(markup.includes(">Reject<") && markup.includes(">Accept once<"), `expected concise review controls for ${requirement}`);
   if (requirement !== "plan_update") {
     assert(markup.includes(">Always allow<"), `expected persistent plan acceptance control for ${requirement}`);
@@ -112,5 +118,18 @@ const mobileMarkup = renderToStaticMarkup(
 assert(mobileMarkup.includes(">Ask Swarm<"), "expected mobile plan chat opener when provided");
 assert(mobileMarkup.includes("xl:hidden"), "expected plan chat opener to stay mobile-only");
 assert(mobileMarkup.indexOf(">Ask Swarm<") < mobileMarkup.indexOf(">Copy<"), "expected plan chat opener to the left of Copy");
+
+const resolvingMarkup = renderToStaticMarkup(
+  <DesktopInlinePlanReviewCard
+    permission={permission("permission", "exit_plan_mode")}
+    parentSessionId="session-1"
+    pendingPosition={1}
+    pendingCount={1}
+    onResolve={async () => undefined}
+    resolutionPending
+  />,
+);
+assert(resolvingMarkup.includes("Starting execution…"), "expected a stable acceptance transition label while the approved plan projection arrives");
+assert(!resolvingMarkup.includes(">Accept once<"), "expected the acceptance action to stay resolved during projection handoff");
 
 console.log("desktop inline plan review card tests passed");

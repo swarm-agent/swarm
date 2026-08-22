@@ -4,7 +4,7 @@ export type DesktopSlashCommandState = 'ready' | 'coming-soon'
 
 export type DesktopSlashCommandAction =
   | { kind: 'open-settings'; tab: SettingsTabID | 'agents' }
-  | { kind: 'open-quick-settings'; tab: Extract<SettingsTabID, 'permissions' | 'themes' | 'worktrees'> }
+  | { kind: 'open-quick-settings'; tab: Extract<SettingsTabID, 'media' | 'permissions' | 'themes' | 'worktrees'> }
   | { kind: 'open-permissions' }
   | { kind: 'open-workspace-launcher' }
   | { kind: 'open-model-picker' }
@@ -21,6 +21,7 @@ export type DesktopSlashCommandAction =
   | { kind: 'new-session'; worktreeRequested: boolean; planModeRequested: boolean }
   | { kind: 'start-background-router-session' }
   | { kind: 'show-help' }
+  | { kind: 'open-artifact-viewer' }
 
 export interface DesktopSlashCommand {
   id: string
@@ -216,6 +217,16 @@ const DESKTOP_SLASH_COMMANDS: DesktopSlashCommand[] = [
     action: { kind: 'toggle-thinking' },
   },
   {
+    id: 'media',
+    command: '/media',
+    aliases: [],
+    hint: 'Open media quick settings',
+    actionLabel: 'Open Media Quick Settings',
+    tips: ['/media', 'Change source video folders and media models without leaving chat'],
+    state: 'ready',
+    action: { kind: 'open-quick-settings', tab: 'media' },
+  },
+  {
     id: 'models',
     command: '/models',
     aliases: [],
@@ -264,6 +275,16 @@ const DESKTOP_SLASH_COMMANDS: DesktopSlashCommand[] = [
     tips: ['/permissions', 'Review always-allow and always-deny rules', 'Explain how a tool request will resolve'],
     state: 'ready',
     action: { kind: 'open-quick-settings', tab: 'permissions' },
+  },
+  {
+    id: 'artifact',
+    command: '/artifact',
+    aliases: ['/artifacts'],
+    hint: 'Browse artifacts across your workspaces',
+    actionLabel: 'Open Artifact Viewer',
+    tips: ['/artifact', '/artifacts', 'Search plans, visual artifacts, and documents without leaving chat'],
+    state: 'ready',
+    action: { kind: 'open-artifact-viewer' },
   },
   {
     id: 'plan',

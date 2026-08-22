@@ -73,8 +73,8 @@ require_go() {
 
   major="${BASH_REMATCH[1]}"
   minor="${BASH_REMATCH[2]}"
-  if (( major < 1 || (major == 1 && minor < 25) )); then
-    echo "Go 1.25+ required; found ${version} at ${GO_BIN}" >&2
+  if (( major < 1 || (major == 1 && minor < 26) )); then
+    echo "Go 1.26+ required; found ${version} at ${GO_BIN}" >&2
     exit 1
   fi
 
@@ -109,6 +109,8 @@ done
 require_cmd bash
 require_cmd git
 require_cmd curl
+require_cmd ffmpeg
+require_cmd ffprobe
 require_go
 
 cd "${ROOT_DIR}"

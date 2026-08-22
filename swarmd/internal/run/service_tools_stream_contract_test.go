@@ -2,6 +2,8 @@ package run
 
 import (
 	"encoding/json"
+	"fmt"
+	"strings"
 	"testing"
 )
 
@@ -33,25 +35,34 @@ func TestBuildTaskStreamPatchPayloadDesktopSubagentSchema(t *testing.T) {
 		ToolCompleted:       0,
 		ToolFailed:          0,
 		ToolOrder:           []string{"search"},
+		SwarmMode:           true,
+		SwarmStrategy:       taskSwarmStrategyAssembly,
+		AssemblyPart:        &taskSwarmAssemblyPart{Name: "Backend", OwnedScope: []string{"swarmd/internal/run"}},
+		IntegrationContract: "Parent assembles the final feature",
+		IntegrationRequired: true,
 	}, "tool.delta", "")
 
 	wantTop := map[string]any{
-		"tool":              "task",
-		"action":            "spawn",
-		"status":            "running",
-		"phase":             "tool.delta",
-		"launch_count":      3,
-		"description":       "map repo",
-		"goal":              "map repo",
-		"parent_session_id": "parent-session",
-		"task_call_id":      "call-task",
-		"path_id":           "tool.task.stream.v2",
-		"stream_version":    2,
-		"event":             "launch.patch",
-		"launch_index":      2,
-		"launch_key":        "child-session-2",
-		"child_session_id":  "child-session-2",
-		"details_truncated": false,
+		"tool":                 "task",
+		"action":               "spawn",
+		"status":               "running",
+		"phase":                "tool.delta",
+		"launch_count":         3,
+		"description":          "map repo",
+		"goal":                 "map repo",
+		"parent_session_id":    "parent-session",
+		"task_call_id":         "call-task",
+		"path_id":              "tool.task.stream.v2",
+		"stream_version":       2,
+		"event":                "launch.patch",
+		"launch_index":         2,
+		"launch_key":           "child-session-2",
+		"child_session_id":     "child-session-2",
+		"details_truncated":    false,
+		"task_mode":            taskModeSwarm,
+		"swarm_strategy":       taskSwarmStrategyAssembly,
+		"integration_contract": "Parent assembles the final feature",
+		"integration_required": true,
 	}
 	for key, want := range wantTop {
 		if got := payload[key]; got != want {
@@ -68,6 +79,15 @@ func TestBuildTaskStreamPatchPayloadDesktopSubagentSchema(t *testing.T) {
 	launch, ok := payload["launch"].(map[string]any)
 	if !ok {
 		t.Fatalf("launch = %#v, want launch patch map", payload["launch"])
+	}
+	if got := launch["swarm_strategy"]; got != taskSwarmStrategyAssembly {
+		t.Fatalf("launch strategy = %#v", got)
+	}
+	if got := launch["integration_required"]; got != true {
+		t.Fatalf("launch integration_required = %#v", got)
+	}
+	if got, ok := launch["assembly_part"].(*taskSwarmAssemblyPart); !ok || got.Name != "Backend" {
+		t.Fatalf("launch Assembly part = %#v", launch["assembly_part"])
 	}
 	wantLaunch := map[string]any{
 		"launch_index":               2,
@@ -105,6 +125,95 @@ func TestBuildTaskStreamPatchPayloadDesktopSubagentSchema(t *testing.T) {
 			t.Fatalf("launch patch includes forbidden field %q: %#v", forbidden, launch[forbidden])
 		}
 	}
+}
+
+func TestTaskAssemblyIntegrationStateRequiresParentClosure(t *testing.T) {
+	tests := []struct {
+		name                            string
+		strategy                        string
+		success, failed, cancelled, all int
+		wantRequired                    bool
+		wantStatus                      string
+		wantReady                       bool
+	}{
+		{name: "Explore complete", strategy: taskSwarmStrategyExplore, success: 2, all: 2, wantStatus: "not_required", wantReady: true},
+		{name: "Assembly children complete", strategy: taskSwarmStrategyAssembly, success: 2, all: 2, wantRequired: true, wantStatus: "pending_parent_assembly"},
+		{name: "Assembly child failed", strategy: taskSwarmStrategyAssembly, success: 1, failed: 1, all: 2, wantRequired: true, wantStatus: "incomplete_children"},
+		{name: "Assembly child cancelled", strategy: taskSwarmStrategyAssembly, success: 1, cancelled: 1, all: 2, wantRequired: true, wantStatus: "incomplete_children"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			required, status, ready := taskAssemblyIntegrationState(tt.strategy, tt.success, tt.failed, tt.cancelled, tt.all)
+			if required != tt.wantRequired || status != tt.wantStatus || ready != tt.wantReady {
+				t.Fatalf("state = required:%v status:%q ready:%v", required, status, ready)
+			}
+		})
+	}
+}
+
+func TestCumulativeProjectSwarmContractTransitionsFromExploreToParentAssembly(t *testing.T) {
+	explore, err := parseTaskCallArguments(`{"mode":"swarm","prompt":"Explore two viable architectures","agent_type":"coder","count":2}`)
+	if err != nil {
+		t.Fatalf("parse Explore checkpoint: %v", err)
+	}
+	if explore.Swarm == nil || explore.Swarm.Strategy != taskSwarmStrategyExplore {
+		t.Fatalf("Explore checkpoint = %#v", explore.Swarm)
+	}
+	if required, status, ready := taskAssemblyIntegrationState(explore.Swarm.Strategy, 2, 0, 0, 2); required || status != "not_required" || !ready {
+		t.Fatalf("Explore closure = required:%v status:%q ready:%v", required, status, ready)
+	}
+
+	assembly, err := parseTaskCallArguments(`{"mode":"swarm","swarm_strategy":"assembly","prompt":"Assemble the selected architecture","agent_type":"coder","count":2,"assembly_parts":[{"name":"Backend","owned_scope":["swarmd/internal/project"]},{"name":"Frontend","owned_scope":["web/src/project"]}],"integration_contract":"Parent integrates the ordered Coder commits, wires Designer artifacts in the shared checkout, validates the assembled state, and only then continues dependent work."}`)
+	if err != nil {
+		t.Fatalf("parse Assembly checkpoint: %v", err)
+	}
+	request, err := buildTaskSwarmHydrationRequest(assembly, assembly.Launches)
+	if err != nil {
+		t.Fatalf("build Assembly Router request: %v", err)
+	}
+	if request.SwarmStrategy != taskSwarmStrategyAssembly || len(request.Items) != 2 {
+		t.Fatalf("Assembly Router request = %#v", request)
+	}
+	for i, item := range request.Items {
+		delta := taskSwarmHydratedDelta{
+			Index:       i + 1,
+			Title:       item.PartName,
+			Theme:       "selected architecture",
+			Role:        "Implement the assigned complementary part.",
+			Constraints: []string{"Preserve parent ownership and the declared scope."},
+			Deliverable: "A clean committed Coder handoff for parent integration.",
+		}
+		prompt, composeErr := composeTaskSwarmChildPrompt(request, item, delta)
+		if composeErr != nil {
+			t.Fatalf("compose Assembly child %d: %v", i+1, composeErr)
+		}
+		for _, required := range []string{"Assembly", item.PartName, item.OwnedScope[0], request.IntegrationContract, "isolated worktree", "clean worktree"} {
+			if !strings.Contains(prompt, required) {
+				t.Fatalf("Assembly child %d prompt missing %q:\n%s", i+1, required, prompt)
+			}
+		}
+		payload := buildTaskStreamPatchPayload("project-parent", "assembly-call", "spawn", "assemble project", 2, taskLaunchOutcome{
+			LaunchIndex:         i + 1,
+			RequestedSubagent:   "coder",
+			ResolvedSubagent:    "coder",
+			ChildSessionID:      fmt.Sprintf("coder-child-%d", i+1),
+			StreamKey:           fmt.Sprintf("swarm:%d", i+1),
+			SwarmMode:           true,
+			SwarmStrategy:       taskSwarmStrategyAssembly,
+			AssemblyPart:        assembly.Launches[i].AssemblyPart,
+			IntegrationContract: request.IntegrationContract,
+			IntegrationRequired: true,
+		}, "completed", "part complete")
+		if payload["parent_session_id"] != "project-parent" || payload["child_session_id"] != fmt.Sprintf("coder-child-%d", i+1) || payload["swarm_strategy"] != taskSwarmStrategyAssembly {
+			t.Fatalf("Assembly lineage/strategy payload %d = %#v", i+1, payload)
+		}
+	}
+	if required, status, ready := taskAssemblyIntegrationState(assembly.Swarm.Strategy, 2, 0, 0, 2); !required || status != "pending_parent_assembly" || ready {
+		t.Fatalf("pre-integration Assembly closure = required:%v status:%q ready:%v", required, status, ready)
+	}
+	// The task result deliberately cannot transition to ready_for_dependent_work.
+	// Parent recall, ordered atomic Coder integration, shared-checkout Designer wiring,
+	// clean-state validation, and the next checkpoint remain parent-owned lifecycle work.
 }
 
 func TestToolProgressionStateGroupsNormalizedConsecutiveToolsAndResets(t *testing.T) {
@@ -147,6 +256,36 @@ func TestTaskLaunchProgressionPersistsAcrossCompletionUntilNextStart(t *testing.
 	}
 	if outcome.CurrentToolDisplay != "read x2" || outcome.CurrentToolRunCount != 2 {
 		t.Fatalf("progression = %#v, want read x2", outcome)
+	}
+}
+
+func TestBuildTaskStreamPatchPayloadRetainsGranularToolHistoryAndAgentModel(t *testing.T) {
+	payload := buildTaskStreamPatchPayload("parent", "call-task", "spawn", "inspect", 1, taskLaunchOutcome{
+		LaunchIndex:         1,
+		RequestedSubagent:   "coder",
+		ResolvedSubagent:    "coder",
+		SubagentProvider:    "codex",
+		SubagentModel:       "gpt-5.6-codex",
+		ChildSessionID:      "child-coder",
+		CurrentTool:         "edit",
+		CurrentToolDisplay:  "edit x2",
+		CurrentToolRunCount: 2,
+		ToolOrder:           []string{"search", "read", "edit", "edit"},
+	}, "tool.started", "")
+
+	launch, ok := payload["launch"].(map[string]any)
+	if !ok {
+		t.Fatalf("launch = %#v, want object", payload["launch"])
+	}
+	if got := launch["agent_type"]; got != "coder" {
+		t.Fatalf("agent_type = %#v, want coder", got)
+	}
+	if got := launch["subagent_model"]; got != "gpt-5.6-codex" {
+		t.Fatalf("subagent_model = %#v, want gpt-5.6-codex", got)
+	}
+	order, ok := launch["tool_order"].([]string)
+	if !ok || strings.Join(order, ",") != "search,read,edit,edit" {
+		t.Fatalf("tool_order = %#v, want granular ordered tools", launch["tool_order"])
 	}
 }
 

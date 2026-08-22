@@ -8,8 +8,10 @@ const markdownSource = readFileSync(new URL('./chat-markdown.tsx', import.meta.u
 test('file action cards span the transcript and grouped actions stack vertically', () => {
   assert.match(paneSource, /max-w-\[70rem\] flex-col gap-5/)
   assert.doesNotMatch(paneSource, /md:grid-cols-2/)
-  assert.match(paneSource, /toolName === "bash" \|\| toolName === "task" \|\| \["read", "list", "search", "edit", "websearch", "webfetch"/)
-  assert.match(paneSource, /usesFullWidthCard \? "w-full max-w-full" : "max-w-\[calc\(100%-2rem\)\]"/)
+  assert.match(paneSource, /"flex w-full min-w-0 justify-start"/)
+  assert.match(paneSource, /className="w-full min-w-0 max-w-full"/)
+  assert.doesNotMatch(paneSource, /usesFullWidthCard/)
+  assert.doesNotMatch(paneSource, /max-w-\[calc\(100%-2rem\)\].*toolMessage/)
   assert.match(markdownSource, /<div className="flex min-w-0 flex-col gap-2">/)
   assert.doesNotMatch(markdownSource, /grid min-w-0 grid-cols-1 gap-2 md:grid-cols-2/)
 })
@@ -19,4 +21,10 @@ test('expanded tool result bodies stay within half the viewport and scroll inter
   assert.match(markdownSource, /TOOL_RESULT_BODY_CLASS = "max-h-\[50vh\] min-w-0 overflow-y-auto overflow-x-hidden overscroll-contain"/)
   assert.match(markdownSource, /className=\{TOOL_RESULT_BODY_CLASS\}/)
   assert.match(markdownSource, /cn\(TOOL_RESULT_BODY_CLASS, "mt-2 grid gap-2 font-mono pr-1"\)/)
+})
+
+test('write tool results use the full-width file action card treatment', () => {
+  assert.match(markdownSource, /\["read", "list", "search", "write", "edit"\]\.includes\(normalizedTool\)/)
+  assert.match(markdownSource, /isFileAction && "overflow-hidden rounded-xl border border-\[var\(--app-border\)\] bg-\[var\(--app-surface-subtle\)\]/)
+  assert.match(markdownSource, /isFileAction && !isSearch && toolMessage\.target/)
 })

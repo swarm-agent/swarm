@@ -36,7 +36,7 @@ sh install.sh --yes --service
 sh install.sh --yes --no-service
 ```
 
-That command fetches the latest stable GitHub release asset, extracts it, and runs the bundled installer. You do not need to clone or download this repository to install Swarm.
+That command fetches the latest stable GitHub release asset, extracts it, and runs the bundled installer. You do not need to clone or download this repository to install Swarm. Deterministic video analysis requires `ffmpeg` and `ffprobe` on `PATH`; install your distribution's FFmpeg package before starting video transcription.
 
 The installer prints an install plan, places launchers in `/usr/local/bin`, and installs Swarm runtime artifacts under `/usr/local/share/swarm/{bin,libexec,lib,share}`. It then offers three explicit choices: install/start the systemd service, install files only with no service, or cancel. Because these are system locations, `install.sh` may prompt for sudo during initial provisioning. Swarm-owned runtime directories are created for the service user, so a healthy installed system can verify, activate, restart, health-check, and if necessary roll back routine stable release updates without prompting for sudo. If launcher links, service topology, or install-root ownership are later changed or damaged, the update refuses before activation and directs you to perform a one-time privileged repair or reinstall; it does not silently fall back to sudo.
 
@@ -175,6 +175,10 @@ You can point the terminal UI at a specific daemon with:
 ```bash
 SWARMD_URL=http://127.0.0.1:7782 SWARMD_TOKEN=<token> swarm dev
 ```
+
+## Privacy and anonymous mint reporting
+
+When a new local swarm identity is generated for the first time, `swarmd` makes one best-effort HTTPS request to `https://swarmagent.dev/api/mint`. The request contains only payload version `1` and a one-way anonymous identifier derived locally from the random swarm ID. It does not send the raw swarm ID or user, machine, network, key, account, workspace, provider, or session data. Delivery state is stored locally so transient failures can retry on a later start without delaying or preventing daemon startup; existing and explicitly restored identities are not reported as new mints.
 
 ## Data and configuration locations
 

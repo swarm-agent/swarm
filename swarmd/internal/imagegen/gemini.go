@@ -31,6 +31,7 @@ type GeminiImageGenerationRequest struct {
 	ImageSize   string
 	OutputIndex int
 	OnEvent     func(GenerateStreamEvent)
+	Source      *ManagedImageSource
 }
 
 type GeminiImageGenerationResult struct {
@@ -111,7 +112,7 @@ func (c googleGeminiImageClient) GenerateImage(ctx context.Context, req GeminiIm
 	}
 	modelID := strings.TrimSpace(req.Model)
 	if modelID == "" {
-		modelID = defaultGeminiImageModel
+		return GeminiImageGenerationResult{}, errors.New("Google image model is required")
 	}
 	prompt := strings.TrimSpace(req.Prompt)
 	if prompt == "" {
@@ -129,10 +130,25 @@ func (c googleGeminiImageClient) GenerateImage(ctx context.Context, req GeminiIm
 	}}
 	emitGenerateEvent(req.OnEvent, GenerateStreamEvent{Type: "generating", OutputIndex: req.OutputIndex, SequenceNumber: 1})
 
+	parts := []geminiRESTPart{{Text: prompt}}
+	if req.Source != nil {
+		mediaType := strings.ToLower(strings.TrimSpace(req.Source.MediaType))
+		if len(req.Source.Bytes) == 0 {
+			return GeminiImageGenerationResult{}, errors.New("Gemini image remix source is empty")
+		}
+		if len(req.Source.Bytes) > managedImageMaxBytes {
+			return GeminiImageGenerationResult{}, fmt.Errorf("Gemini image remix source exceeds %d bytes", managedImageMaxBytes)
+		}
+		if extensionFromMIME(mediaType) == "" {
+			return GeminiImageGenerationResult{}, fmt.Errorf("Gemini image remix source media type %q is unsupported", req.Source.MediaType)
+		}
+		parts = append(parts, geminiRESTPart{InlineData: &geminiRESTInlineData{MIMEType: mediaType, Data: base64.StdEncoding.EncodeToString(req.Source.Bytes)}})
+		result.ProviderResponse["source_image"] = true
+	}
 	requestBody := geminiGenerateContentRequest{
 		Contents: []geminiRESTContent{{
 			Role:  "user",
-			Parts: []geminiRESTPart{{Text: prompt}},
+			Parts: parts,
 		}},
 		GenerationConfig: geminiRESTGenerationConfig{
 			ResponseModalities: []string{"IMAGE"},
@@ -245,7 +261,14 @@ func (s *Service) generateGoogleGemini(ctx context.Context, req GenerateRequest,
 		imageGenerationLogf("stage=open_session provider=%q thread_id=%q reason=%q will_save=false", ProviderGoogleGemini, strings.TrimSpace(req.Target.ThreadID), err.Error())
 		return GenerateResult{}, err
 	}
-	modelID := normalizeGeminiImageModel(req.Model)
+	selection, err := s.ResolveModelSelection(req.Model)
+	if err != nil {
+		return GenerateResult{}, err
+	}
+	if selection.Provider != ProviderGoogleGemini {
+		return GenerateResult{}, fmt.Errorf("configured image model %q is not a Google image model", req.Model)
+	}
+	modelID := selection.Model
 	aspectRatio := normalizeGeminiAspectRatio(firstNonEmpty(settingString(req.Settings, "aspect_ratio"), req.Size))
 	imageSize, err := normalizeGeminiImageSize(modelID, firstNonEmpty(settingString(req.Settings, "image_size"), settingString(req.Settings, "size")))
 	if err != nil {
@@ -548,19 +571,6 @@ func (s *Service) recordImageGenerationMetadata(thread pebblestore.ImageThreadSn
 	return updated, nil
 }
 
-func normalizeGeminiImageModel(model string) string {
-	model = strings.TrimSpace(model)
-	if model == "" {
-		return defaultGeminiImageModel
-	}
-	for _, allowed := range geminiImageModels {
-		if model == allowed {
-			return model
-		}
-	}
-	return defaultGeminiImageModel
-}
-
 func normalizeGeminiAspectRatio(value string) string {
 	switch strings.TrimSpace(value) {
 	case "1:1", "2:3", "3:2", "3:4", "4:3", "9:16", "16:9", "21:9":
@@ -572,19 +582,26 @@ func normalizeGeminiAspectRatio(value string) string {
 
 func normalizeGeminiImageSize(model, value string) (string, error) {
 	value = strings.ToUpper(strings.TrimSpace(value))
-	if value == "" || value == "AUTO" {
+	switch value {
+	case "", "AUTO":
 		return "1K", nil
+	case "1024", "1024X1024":
+		value = "1K"
+	case "2048", "2048X2048":
+		value = "2K"
+	case "4096", "4096X4096":
+		value = "4K"
 	}
-	if value == "512" {
+	if value == "512" || value == "512X512" {
 		if strings.TrimSpace(model) == "gemini-2.5-flash-image" {
-			return value, nil
+			return "512", nil
 		}
 		return "", fmt.Errorf("image_size 512 is only supported for gemini-2.5-flash-image")
 	}
 	if value == "1K" || value == "2K" || value == "4K" {
 		return value, nil
 	}
-	return "", fmt.Errorf("unsupported Gemini image_size %q", value)
+	return "", fmt.Errorf("unsupported Gemini image_size %q; use 512, 1K, 2K, or 4K (square pixel aliases are also accepted)", value)
 }
 
 func imageFormatFromMIME(mimeType string) string {

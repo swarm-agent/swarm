@@ -94,6 +94,69 @@ function testExitPlanDefaultApprovalFeedbackIsHidden(): void {
   );
 }
 
+function testManageWorktreeInspectShowsMetadata(): void {
+  const message = buildStructuredToolMessage({
+    tool: "manage-worktree",
+    callId: "call_worktree_inspect",
+    argumentsText: JSON.stringify({ action: "inspect", branch_name: "agent" }),
+    outputText: JSON.stringify({
+      status: "ok",
+      action: "inspect",
+      workspace: { name: "swarm", path: "/workspace/swarm" },
+      branch_name: "agent",
+      current_branch: "dev",
+      returned: 1,
+      total: 2,
+      items: [{ commit_short: "abc1234", subject: "Expose metadata", merged_into_current_branch: false }],
+    }),
+  });
+  assert(Boolean(message), "expected structured manage-worktree inspect message");
+  assert(message?.summary === "worktree inspect · swarm/agent* · 1 of 2 commits", `unexpected worktree inspect summary: ${message?.summary}`);
+  assert(message?.previewLines.includes("Action: inspect") === true, `missing inspect action: ${message?.previewLines.join(" | ")}`);
+  assert(message?.previewLines.includes("Workspace: swarm") === true, `missing workspace metadata: ${message?.previewLines.join(" | ")}`);
+  assert(message?.previewLines.includes("Branch family: agent/*") === true, `missing branch metadata: ${message?.previewLines.join(" | ")}`);
+  assert(message?.previewLines.includes("Current branch: dev") === true, `missing current branch metadata: ${message?.previewLines.join(" | ")}`);
+  assert(message?.previewLines.some((line) => line.includes("abc1234 · Expose metadata")) === true, `missing commit outcome: ${message?.previewLines.join(" | ")}`);
+}
+
+function testManageWorktreeRecallAndIntegrateShowOutcomes(): void {
+  const recall = buildStructuredToolMessage({
+    tool: "manage_worktree",
+    callId: "call_worktree_recall",
+    argumentsText: JSON.stringify({ action: "recall", task_call_id: "task-call-1" }),
+    outputText: JSON.stringify({
+      status: "ok",
+      action: "recall",
+      task_call_id: "task-call-1",
+      total: 2,
+      state_counts: { committed: 1, integrated: 1 },
+      children: [
+        { child_session_id: "child-a", child_state: "committed", child_branch: "agent/child-a" },
+        { child_session_id: "child-b", child_state: "integrated", child_branch: "agent/child-b" },
+      ],
+    }),
+  });
+  assert(recall?.summary === "worktree recall · 2 children · 1 committed · 1 integrated", `unexpected recall summary: ${recall?.summary}`);
+  assert(recall?.previewLines.includes("Task call: task-call-1") === true, `missing recalled task call: ${recall?.previewLines.join(" | ")}`);
+  assert(recall?.previewLines.some((line) => line.includes("child-a · committed · agent/child-a")) === true, `missing recalled child metadata: ${recall?.previewLines.join(" | ")}`);
+
+  const integrate = buildStructuredToolMessage({
+    tool: "manage-worktree",
+    callId: "call_worktree_integrate",
+    argumentsText: JSON.stringify({ action: "integrate", session_ids: ["child-a", "child-b"] }),
+    outputText: JSON.stringify({
+      status: "ok",
+      action: "integrate",
+      selected_count: 2,
+      selection: "explicit_session_ids",
+      resulting_parent_head: "deadbeef",
+    }),
+  });
+  assert(integrate?.summary === "worktree integrate · 2 children", `unexpected integrate summary: ${integrate?.summary}`);
+  assert(integrate?.previewLines.includes("Integrated: 2 children") === true, `missing integration count: ${integrate?.previewLines.join(" | ")}`);
+  assert(integrate?.previewLines.includes("Parent head: deadbeef") === true, `missing parent head: ${integrate?.previewLines.join(" | ")}`);
+}
+
 function testManageTodosListShowsItems(): void {
   const message = buildStructuredToolMessage({
     tool: "manage_todos",
@@ -551,6 +614,31 @@ function testSearchToolPreservesContentMatchText(): void {
   )
 }
 
+function testFindToolParsesPathDiscoveryResults(): void {
+  const message = buildStructuredToolMessage({
+    tool: 'find',
+    callId: 'call_find_1',
+    argumentsText: JSON.stringify({ query: 'tool activity', path: 'web/src', mode: 'mixed' }),
+    outputText: JSON.stringify({
+      path_id: 'tool.find.v3',
+      search_mode: 'mixed',
+      path: 'web/src',
+      count: 2,
+      total_matched: 2,
+      results: [
+        { path: 'features/desktop/chat/services/tool-activity.ts', kind: 'file' },
+        { path: 'features/desktop/chat/components', kind: 'directory' },
+      ],
+    }),
+  })
+
+  assert(Boolean(message), 'expected structured find tool message')
+  assert(message?.searchData?.queries[0] === 'tool activity', `unexpected find query: ${message?.searchData?.queries[0]}`)
+  assert(message?.searchData?.files.length === 2, `unexpected find path count: ${message?.searchData?.files.length}`)
+  assert(message?.searchData?.files[1]?.path === 'features/desktop/chat/components', `missing find directory path: ${message?.searchData?.files[1]?.path}`)
+  assert(message?.summary.startsWith('find ') === true, `unexpected find summary: ${message?.summary}`)
+}
+
 function testSearchToolParsesCompactGroupedResults(): void {
   const message = buildStructuredToolMessage({
     tool: 'search',
@@ -704,6 +792,257 @@ function testTaskRowsParseCanonicalStreamContractFields(): void {
   assert(row?.terminal === false, 'running task stream row should not be terminal')
 }
 
+function testTaskProgramGroupsCanonicalOrderedStagesAndStatus(): void {
+  const message = buildStructuredToolMessage({
+    tool: 'task',
+    callId: 'call_task_program',
+    argumentsText: JSON.stringify({
+      action: 'spawn',
+      program: {
+        id: 'release_program',
+        stages: [
+          { id: 'research', dependency_evidence: 'Inputs are independent.' },
+          { id: 'implement', depends_on: ['research'], dependency_evidence: 'Uses research handoffs.' },
+        ],
+        jobs: [
+          { id: 'api_research', stage_id: 'research', agent_type: 'finder', title: 'Map API' },
+          { id: 'ui_research', stage_id: 'research', agent_type: 'finder', title: 'Map UI' },
+          { id: 'desktop', stage_id: 'implement', depends_on: ['api_research', 'ui_research'], agent_type: 'coder', title: 'Build Desktop' },
+        ],
+      },
+    }),
+    outputText: JSON.stringify({
+      tool: 'task',
+      path_id: 'tool.task.v1',
+      status: 'running',
+      program_id: 'release_program',
+      program_state: 'running',
+      active_stage_id: 'implement',
+      next_action: 'launch_ready_jobs',
+      launches: [{
+        launch_index: 3,
+        child_session_id: 'desktop-child',
+        status: 'running',
+        subagent: 'coder',
+        assignment_label: 'Build Desktop',
+        source_arguments: {
+          program_id: 'release_program',
+          program_job_id: 'desktop',
+          program_stage_id: 'implement',
+          depends_on: ['api_research', 'ui_research'],
+        },
+      }],
+      program_status: {
+        program_id: 'release_program',
+        program_state: 'running',
+        active_stage_id: 'implement',
+        next_action: 'launch_ready_jobs',
+        jobs: [
+          { job_id: 'api_research', stage_id: 'research', state: 'integrated', child_session_id: 'api-child' },
+          { job_id: 'ui_research', stage_id: 'research', state: 'completed', child_session_id: 'ui-child' },
+          { job_id: 'desktop', stage_id: 'implement', state: 'running', child_session_id: 'desktop-child' },
+        ],
+      },
+    }),
+  });
+
+  assert(Boolean(message?.taskProgram), 'canonical program metadata should enable Task Program presentation');
+  assert(message?.taskProgram?.id === 'release_program', `unexpected program id: ${message?.taskProgram?.id}`);
+  assert(message?.taskProgram?.stages.map((stage) => stage.id).join('|') === 'research|implement', 'program stages must preserve declared order');
+  assert(message?.taskProgram?.stages[0]?.state === 'done', `research should derive done from terminal job states: ${message?.taskProgram?.stages[0]?.state}`);
+  assert(message?.taskProgram?.stages[0]?.rows.every((row) => !row.liveToolCalls), 'completed Task Program rows must not retain a tool stream');
+  assert(message?.taskProgram?.stages[1]?.state === 'active', `implement should use canonical active stage: ${message?.taskProgram?.stages[1]?.state}`);
+  assert(message?.taskProgram?.stages[1]?.dependsOn.join('|') === 'research', 'stage dependencies must be retained');
+  assert(message?.taskProgram?.stages[1]?.rows[0]?.programJobId === 'desktop', 'source_arguments must assign the live row to its canonical job');
+  assert(message?.taskProgram?.stages[1]?.rows[0]?.childSessionId === 'desktop-child', 'interactive live child row must remain attached');
+}
+
+function testTaskProgramUsesLiveMetadataAndShowsDependentStageWaiting(): void {
+  const program = {
+    id: 'live_program',
+    stages: [
+      { id: 'discover' },
+      { id: 'build', depends_on: ['discover'], dependency_evidence: 'Discover must complete first.' },
+    ],
+    jobs: [
+      { id: 'scan', stage_id: 'discover', agent_type: 'finder', title: 'Scan' },
+      { id: 'code', stage_id: 'build', depends_on: ['scan'], agent_type: 'coder', title: 'Code' },
+    ],
+  };
+  const message = buildStructuredToolMessage({
+    tool: 'task',
+    callId: 'call_task_program_live',
+    argumentsText: JSON.stringify({ action: 'spawn', program }),
+    state: 'running',
+    taskStream: {
+      programId: 'live_program',
+      programState: 'running',
+      activeStageId: 'discover',
+      nextAction: 'launch_ready_jobs',
+      program,
+      programStatus: {
+        program_id: 'live_program',
+        program_state: 'running',
+        active_stage_id: 'discover',
+        jobs: [
+          { job_id: 'scan', stage_id: 'discover', state: 'running', child_session_id: 'scan-child' },
+          { job_id: 'code', stage_id: 'build', state: 'declared' },
+        ],
+      },
+      launchOrder: ['scan-child'],
+      launchesByKey: {
+        'scan-child': {
+          launch_index: 1,
+          child_session_id: 'scan-child',
+          status: 'running',
+          subagent: 'finder',
+          assignment_label: 'Scan',
+          subagent_provider: 'google',
+          subagent_model: 'gemini-3.6-flash',
+          current_tool: 'search',
+          current_tool_display: 'search x2',
+          tool_order: ['read', 'search', 'search'],
+          program_job_id: 'scan',
+          program_stage_id: 'discover',
+        },
+      },
+    },
+  });
+
+  assert(message?.taskProgram?.activeStageId === 'discover', 'live active stage metadata must be retained');
+  assert(message?.taskProgram?.stages[0]?.rows[0]?.childSessionId === 'scan-child', 'status child identity must attach an untagged live row');
+  assert(message?.taskProgram?.stages[0]?.rows[0]?.agent === 'finder', 'program job identity must attach the designated agent');
+  assert(message?.taskProgram?.stages[0]?.rows[0]?.modelLabel === 'google / gemini-3.6-flash', 'program job identity must retain the resolved model');
+  assert(message?.taskProgram?.stages[0]?.rows[0]?.liveToolCalls === 'search x2 · running', 'Task Program must expose only the active tool instead of accumulated tool history');
+  assert(message?.taskProgram?.stages[1]?.state === 'waiting', `dependent declared stage should wait: ${message?.taskProgram?.stages[1]?.state}`);
+  assert(message?.taskProgram?.stages[1]?.rows[0]?.status === 'pending', 'declared jobs must render pending');
+}
+
+function testDirectImageSwarmSummaryDoesNotClaimAgentLaunches(): void {
+  const message = buildStructuredToolMessage({
+    tool: 'task',
+    argumentsText: JSON.stringify({ mode: 'swarm', agent_type: 'image', count: 3 }),
+    outputText: JSON.stringify({
+      tool: 'task',
+      task_mode: 'swarm',
+      execution_format: 'direct_image_swarm',
+      image_count: 3,
+      subagent_launch_count: 0,
+      status: 'ok',
+      description: 'campaign images',
+      images: [{ index: 1 }, { index: 2 }, { index: 3 }],
+    }),
+  });
+  assert(message?.summary.includes('3 direct images') === true, `unexpected direct image summary: ${message?.summary}`);
+  assert(message?.summary.includes('launch') === false, `direct image summary must not claim launches: ${message?.summary}`);
+  assert(message?.taskRows.length === 3, 'completed direct images must retain per-image rows');
+  assert(message?.taskRows.every((row) => row.agent === 'image'), 'direct image rows must not be labeled as subagents');
+  assert(message?.taskRows.every((row) => row.tool === 'Routing → Image creation'), 'completed direct image rows must show the full pipeline');
+}
+
+function testDirectImageSwarmLiveRowsRemainRunningThroughImageCreation(): void {
+  const message = buildStructuredToolMessage({
+    tool: 'task',
+    argumentsText: JSON.stringify({ mode: 'swarm', agent_type: 'image', count: 2 }),
+    state: 'running',
+    taskStream: {
+      taskMode: 'swarm',
+      executionFormat: 'direct_image_swarm',
+      imageCount: 2,
+      launchOrder: ['image:1', 'image:2'],
+      launchesByKey: {
+        'image:1': {
+          launch_index: 1,
+          requested_subagent: 'image',
+          assignment_label: 'Minimal',
+          status: 'running',
+          current_tool: 'Routing',
+          current_tool_display: 'Routing',
+          tool_order: ['Routing'],
+          swarm_mode: true,
+        },
+        'image:2': {
+          launch_index: 2,
+          requested_subagent: 'image',
+          assignment_label: 'Editorial',
+          status: 'running',
+          current_tool: 'Image creation',
+          current_tool_display: 'Routing → Image creation',
+          tool_order: ['Routing', 'Image creation'],
+          swarm_mode: true,
+        },
+      },
+    },
+  });
+
+  assert(message?.taskRows.length === 2, 'live direct image progress must render one row per image');
+  assert(message?.taskRows.every((row) => row.status === 'running'), 'routing and image creation must both stay running');
+  assert(message?.taskRows[0]?.tool === 'Routing', `unexpected routing label: ${message?.taskRows[0]?.tool}`);
+  assert(message?.taskRows[1]?.tool === 'Routing → Image creation', `unexpected image creation pipeline: ${message?.taskRows[1]?.tool}`);
+  assert(message?.taskRows.every((row) => !row.childSessionId), 'direct image progress must not invent child sessions');
+}
+
+function testOrdinaryTaskDoesNotInferTaskProgramFromRows(): void {
+  const message = buildStructuredToolMessage({
+    tool: 'task',
+    callId: 'call_task_ordinary',
+    outputText: JSON.stringify({
+      tool: 'task',
+      path_id: 'tool.task.v1',
+      status: 'running',
+      launches: [
+        { launch_index: 1, child_session_id: 'child-a', subagent: 'finder', assignment_label: 'Phase One', status: 'running' },
+        { launch_index: 2, child_session_id: 'child-b', subagent: 'coder', assignment_label: 'Phase Two', status: 'pending' },
+      ],
+    }),
+  });
+
+  assert(message?.taskRows.length === 2, 'ordinary task rows must remain available');
+  assert(message?.taskProgram == null, 'adjacent rows or phase-like titles must never infer a Task Program');
+}
+
+function testAssemblyTaskMetadataAndLegacyExploreCompatibility(): void {
+  const assembly = buildStructuredToolMessage({
+    tool: 'task',
+    argumentsText: JSON.stringify({ mode: 'swarm', swarm_strategy: 'assembly' }),
+    outputText: JSON.stringify({
+      tool: 'task',
+      path_id: 'tool.task.v1',
+      task_mode: 'swarm',
+      swarm_strategy: 'assembly',
+      integration_contract: 'Combine committed parts into the parent deliverable.',
+      integration_required: true,
+      integration_status: 'pending_parent_assembly',
+      ready_for_dependent_work: false,
+      launches: [{
+        launch_index: 1,
+        child_session_id: 'part-one',
+        swarm_mode: true,
+        swarm_strategy: 'assembly',
+        assembly_part: { name: 'Backend API', instructions: 'Implement API', owned_scope: ['swarmd/internal/api/**'] },
+        integration_contract: 'Combine committed parts into the parent deliverable.',
+        integration_required: true,
+        subagent: 'coder',
+        status: 'ok',
+      }],
+    }),
+  });
+  assert(assembly?.swarmStrategy === 'assembly', `unexpected assembly strategy: ${assembly?.swarmStrategy}`);
+  assert(assembly?.integrationRequired === true, 'assembly must preserve parent integration requirement');
+  assert(assembly?.integrationStatus === 'pending_parent_assembly', `unexpected integration status: ${assembly?.integrationStatus}`);
+  assert(assembly?.readyForDependentWork === false, 'completed parts must not imply dependent work is ready');
+  assert(assembly?.taskRows[0]?.assignmentLabel === 'Backend API', `assembly part name must be the row identity: ${assembly?.taskRows[0]?.assignmentLabel}`);
+  assert(assembly?.taskRows[0]?.assemblyPart?.ownedScope[0] === 'swarmd/internal/api/**', 'assembly part owned scope must be preserved');
+
+  const legacy = buildStructuredToolMessage({
+    tool: 'task',
+    argumentsText: JSON.stringify({ mode: 'swarm' }),
+    outputText: JSON.stringify({ tool: 'task', path_id: 'tool.task.v1', task_mode: 'swarm', launches: [{ launch_index: 1, swarm_mode: true, subagent: 'finder', status: 'running' }] }),
+  });
+  assert(legacy?.swarmStrategy === 'explore', `legacy swarm payload must default to Explore: ${legacy?.swarmStrategy}`);
+  assert(legacy?.taskRows[0]?.swarmStrategy === 'explore', `legacy swarm row must default to Explore: ${legacy?.taskRows[0]?.swarmStrategy}`);
+}
+
 function testTaskRowsRenderFromNativeTaskStreamStateBeforeLegacyPayload(): void {
   const message = buildStructuredToolMessage({
     tool: 'task',
@@ -732,11 +1071,12 @@ function testTaskRowsRenderFromNativeTaskStreamStateBeforeLegacyPayload(): void 
           subagent: 'finder',
           assignment_label: 'Explore frontend',
           subagent_provider: 'provider-a',
-          subagent_model: 'model-a',
+          subagent_model: 'provider-a/model-a',
           current_tool: 'search',
           current_tool_identity: 'search',
           current_tool_run_count: 3,
           current_tool_display: 'search x3',
+          tool_order: ['read', 'search', 'search', 'search'],
           launch_started_at_ms: 123000,
           current_tool_started_at_ms: 124000,
         },
@@ -758,7 +1098,10 @@ function testTaskRowsRenderFromNativeTaskStreamStateBeforeLegacyPayload(): void 
   assert(message?.taskRows[0]?.launchKey === 'child-native-1', `expected launch key from native state, got ${message?.taskRows[0]?.launchKey}`)
   assert(message?.taskRows[0]?.childSessionId === 'child-native-1', `expected native child session, got ${message?.taskRows[0]?.childSessionId}`)
   assert(message?.taskRows[0]?.phase === 'tool.started', `expected phase, got ${message?.taskRows[0]?.phase}`)
+  assert(message?.taskRows[0]?.agent === 'finder', `expected designated agent, got ${message?.taskRows[0]?.agent}`)
+  assert(message?.taskRows[0]?.modelLabel === 'provider-a/model-a', `expected canonical provider/model label without duplication, got ${message?.taskRows[0]?.modelLabel}`)
   assert(message?.taskRows[0]?.tool === 'search x3', `expected backend progression label, got ${message?.taskRows[0]?.tool}`)
+  assert(message?.taskRows[0]?.liveToolCalls === 'read\nsearch\nsearch\nsearch x3 · running', `expected granular ordered tool stream, got ${message?.taskRows[0]?.liveToolCalls}`)
   assert(message?.taskRows[0]?.previewText === '', `native lifecycle state should not render transcript preview text, got ${message?.taskRows[0]?.previewText}`)
   assert(message?.taskRows[1]?.previewText === 'subagent failed', `expected failure text, got ${message?.taskRows[1]?.previewText}`)
 }
@@ -1092,6 +1435,112 @@ function testWebToolsRetainStructuredArgumentsWhileRunning(): void {
   assert(fetch?.webFetchData?.urls.length === 2, "running fetch should retain argument URLs");
 }
 
+function testManageVideoToolMessageParsesUserMetadata(): void {
+  const message = buildStructuredToolMessage({
+    tool: "manage_video",
+    callId: "call_video_1",
+    argumentsText: JSON.stringify({ action: "render_status", render_job_id: "vren_1" }),
+    outputText: JSON.stringify({
+      tool: "manage_video",
+      action: "render_status",
+      status: "rendering",
+      progress: 0.42,
+      project_id: "vproj_1",
+      revision_id: "vrev_2",
+      job_id: "vren_1",
+      presentation: {
+        kind: "video",
+        title: "Render status updated",
+        activity_label: "Checking render progress",
+        subject: "Launch film",
+      },
+      render_job: {
+        id: "vren_1",
+        status: "rendering",
+        progress: 0.42,
+        output_preset: "landscape_1080p",
+        output_width: 1920,
+        output_height: 1080,
+        output_duration_ms: 65000,
+        output_size_bytes: 5242880,
+        revision_number: 2,
+      },
+    }),
+  });
+  assert(Boolean(message), "expected structured manage_video tool message");
+  assert(message?.summary.includes("Render status updated") === true, `unexpected video summary: ${message?.summary}`);
+  assert(message?.summary.includes("Launch film") === true, `missing video subject: ${message?.summary}`);
+  assert(message?.videoData?.progress === 42, `unexpected video progress: ${message?.videoData?.progress}`);
+  assert(message?.videoData?.width === 1920 && message.videoData.height === 1080, "expected output dimensions");
+  assert(message?.videoData?.durationMs === 65000, `unexpected video duration: ${message?.videoData?.durationMs}`);
+  assert(message?.videoData?.jobId === "vren_1", `unexpected render job: ${message?.videoData?.jobId}`);
+  assert(message?.outputJson?.presentation && typeof message.outputJson.presentation === "object", "manage_video metadata must remain structured for the card");
+  assert(message?.previewLines.length === 0, "manage_video should not render raw JSON preview lines");
+}
+
+function testManageVideoToolMessageParsesSourceIdentity(): void {
+  const message = buildStructuredToolMessage({
+    tool: "manage_video",
+    state: "done",
+    argumentsText: JSON.stringify({ action: "read_transcript", transcript_ref: "transcript_1" }),
+    outputText: JSON.stringify({
+      action: "read_transcript",
+      status: "ok",
+      source_names: ["ycfinalwithaudio.mp4"],
+      presentation: {
+        kind: "video",
+        title: "Transcript ready",
+        activity_label: "Reading video transcript",
+        subject: "ycfinalwithaudio.mp4",
+        source_names: ["ycfinalwithaudio.mp4"],
+      },
+      transcript: { duration_ms: 184000, language: "en", validation: "validated" },
+    }),
+  });
+  assert(message?.videoData?.subject === "ycfinalwithaudio.mp4", `unexpected source subject: ${message?.videoData?.subject}`);
+  assert(message?.videoData?.sourceNames[0] === "ycfinalwithaudio.mp4", `missing source name: ${message?.videoData?.sourceNames}`);
+}
+
+function testManageArtifactToolMessageParsesArtifactData(): void {
+  const message = buildStructuredToolMessage({
+    tool: "manage_artifact",
+    callId: "call_artifact_1",
+    outputText: JSON.stringify({
+      tool: "manage_artifact",
+      action: "create",
+      status: "ok",
+      artifact: {
+        id: "variant-1",
+        collection_id: "col-1",
+        session_id: "sess-1",
+        event_seq: 1,
+        filename: "concept.html",
+        media_type: "text/html",
+        label: "Concept document",
+        description: "Brainstorming idea",
+        status: "ready",
+        category: "visual",
+      },
+      reference: {
+        session_id: "sess-1",
+        collection_id: "col-1",
+        variant_id: "variant-1",
+        event_seq: 1,
+      },
+    }),
+  });
+  assert(Boolean(message), "expected structured manage_artifact tool message");
+  assert(message?.summary === "artifact create · Concept document", `unexpected summary: ${message?.summary}`);
+  assert(message?.artifactData?.action === "create", "expected action create");
+  assert(message?.artifactData?.artifact?.artifactId === "variant-1", "expected artifactId variant-1");
+  assert(message?.artifactData?.artifact?.sessionId === "sess-1", "expected sessionId sess-1");
+  assert(message?.artifactData?.artifact?.label === "Concept document", "expected label");
+  assert(message?.artifactData?.reference?.variant_id === "variant-1", "expected reference variant_id");
+  assert(message?.previewLines.includes("action: create") === true, "missing action preview line");
+  assert(message?.previewLines.includes("label: Concept document") === true, "missing label preview line");
+  assert(message?.previewLines.includes("id: variant-1") === true, "missing id preview line");
+}
+
 function testProviderNeutralToolActivityDescriptors(): void {
   assert(describeToolActivity('edit').kind === 'edit', 'edit should use edit semantics');
   assert(describeToolActivity('edit').activeLabel === 'Editing', 'edit should expose active label');
@@ -1101,17 +1550,26 @@ function testProviderNeutralToolActivityDescriptors(): void {
   assert(describeToolActivity('task').activeLabel === 'Launching subagents', 'task should expose launch label');
   assert(describeToolActivity('search').kind === 'investigation', 'search should use investigation semantics');
   assert(describeToolActivity('search').activeLabel === 'Investigating', 'search should expose a stable investigation label');
+  assert(describeToolActivity('find').kind === 'investigation', 'find should use investigation semantics');
+  assert(describeToolActivity('find').label === 'Investigation', 'find should keep the same label as grouped investigation activity');
   assert(describeToolActivity('read').kind === 'investigation', 'read should use investigation semantics');
   assert(describeToolActivity('read').label === 'Investigation', 'read should keep the same label as grouped investigation activity');
+  assert(describeToolActivity('manage_video').kind === 'video', 'manage_video should use video semantics');
+  assert(describeToolActivity('manage_video').activeLabel === 'Working on video', 'manage_video should expose video activity copy');
   assert(describeToolActivity('custom_tool').kind === 'generic', 'unknown tool should stay generic');
   assert(describeToolActivity('custom_tool').activeLabel === 'Running Custom Tool', 'generic label should be presentation ready');
 }
 
 function main(): void {
   testProviderNeutralToolActivityDescriptors();
+  testManageVideoToolMessageParsesUserMetadata();
+  testManageVideoToolMessageParsesSourceIdentity();
+  testManageArtifactToolMessageParsesArtifactData();
   testExitPlanApprovedShowsMetadata();
   testExitPlanDeniedPermissionShowsFeedbackAndPlan();
   testExitPlanDefaultApprovalFeedbackIsHidden();
+  testManageWorktreeInspectShowsMetadata();
+  testManageWorktreeRecallAndIntegrateShowOutcomes();
   testManageTodosListShowsItems();
   testManageTodosSummaryShowsCounts();
   testManageTodosBatchShowsOnlyChangedItems();
@@ -1126,9 +1584,16 @@ function main(): void {
   testLargePlainPreviewIsBoundedBeforeSplitting();
   testHugeJsonSkipsSummaryParsing();
   testSearchToolPreservesContentMatchText();
+  testFindToolParsesPathDiscoveryResults();
   testSearchToolParsesCompactGroupedResults();
   testTaskRowsPreserveCompletedLaunchesAcrossDeltaAndFinalPayloads();
   testTaskRowsParseCanonicalStreamContractFields();
+  testTaskProgramGroupsCanonicalOrderedStagesAndStatus();
+  testTaskProgramUsesLiveMetadataAndShowsDependentStageWaiting();
+  testDirectImageSwarmSummaryDoesNotClaimAgentLaunches();
+  testDirectImageSwarmLiveRowsRemainRunningThroughImageCreation();
+  testOrdinaryTaskDoesNotInferTaskProgramFromRows();
+  testAssemblyTaskMetadataAndLegacyExploreCompatibility();
   testTaskRowsRenderFromNativeTaskStreamStateBeforeLegacyPayload();
   testTerminalTaskPayloadOverridesStaleNativeTaskStream();
   testTaskRowsParseSingleV2PatchAsHistoricalCompatibility();

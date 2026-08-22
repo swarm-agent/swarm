@@ -44,7 +44,7 @@ swarm_require_go() {
   local go_dir gofmt_bin goroot_dir
 
   if ! GO_BIN="$(swarm_find_go_bin "${root}")"; then
-    echo "missing Go toolchain (go 1.25+ required)." >&2
+    echo "missing Go toolchain (go 1.26+ required)." >&2
     echo "set GO_BIN, install go in PATH, or install local go at ${root}/.tools/go/bin/go" >&2
     return 1
   fi

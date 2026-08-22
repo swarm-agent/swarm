@@ -8,22 +8,28 @@ import {
   useState,
   type ComponentProps,
   type MutableRefObject,
+  type MouseEvent as ReactMouseEvent,
   type ReactNode,
 } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { useMatchRoute, useNavigate } from "@tanstack/react-router";
+import { useNavigate, useParams, useSearch } from "@tanstack/react-router";
 import {
   ArrowDown,
   ArrowRight,
   CheckCircle2,
+  Check,
   ChevronDown,
   CircleAlert,
   CircleDot,
-  Loader2,
+  Copy,
   LoaderCircle,
+  Loader2,
   Github,
   ExternalLink,
+  GalleryHorizontal,
+  ListChecks,
+  MessageCircle,
   XCircle,
 } from "lucide-react";
 import { cn } from "../../../../lib/cn";
@@ -38,6 +44,7 @@ import {
   type RenderedSessionMessages,
 } from "../../state/desktop-v3-cache-selectors";
 import type {
+  DesktopV3ArtifactSelectionReference,
   DesktopV3CacheState,
   DesktopV3MediaReference,
   LiveRunOverlay,
@@ -60,7 +67,7 @@ import type {
   ModelProfileRecord,
   ChatMessageRecord,
   DesktopPlanFinalHandoff,
-  DesktopSessionPlanCheckpointRecommendation,
+  DesktopPlanFinalHandoffSuggestedPrompt,
   TaskChildCardActions,
   TaskToolRow,
 } from "../types/chat";
@@ -122,6 +129,7 @@ import {
 } from "../../session-v3/api";
 import { getDesktopV3MediaCapability, uploadDesktopV3MediaAsset } from "../../session-v3/write-api";
 import { admitComposerFile } from "../services/composer-attachments";
+import type { DesktopVideoSourceAttachment } from "../services/video-source-attachments";
 import {
   clearDesktopV3ExistingMessageOperation,
   continueDesktopV3Conversation,
@@ -160,11 +168,35 @@ import {
   type DesktopPlanExecutionSidebarActionInput,
 } from "./desktop-plan-execution-sidebar";
 import { normalizeDesktopPlanFinalHandoff } from "../services/session-plan-record";
+import { DesktopV3ArtifactGallery, type DesktopV3ArtifactGalleryEntry } from "./desktop-v3-artifact-gallery";
+import { DesktopV3ArtifactSidebar, desktopV3ArtifactsForSession, desktopV3HasPendingVisualSwarm, desktopV3MobileVisualSwarmArtifactToOpen, desktopV3NextSessionSidebarView } from "./desktop-v3-artifact-sidebar";
+import { appendDesktopV3ArtifactMessageSelections, desktopV3ArtifactCatalogEntryForViewerLocation, desktopV3ArtifactCatalogEntryKey, desktopV3ArtifactCollectionViewerHref, desktopV3ArtifactCollectionViewerSearch, desktopV3ArtifactMessageSelection, desktopV3ArtifactViewerHref, desktopV3ArtifactViewerLocation, desktopV3ArtifactViewerSearch, fetchDesktopV3ArtifactCatalog, type DesktopV3ArtifactCatalogEntry, type DesktopV3ArtifactMessageSelection } from "../../session-v3/artifact-api";
+import { DesktopV3ArtifactPreviewThumbnail } from "./desktop-v3-artifact-preview-thumbnail";
+import { useDesktopV3OpenArtifactCatalogRefresh } from "../../session-v3/use-artifact-catalog-refresh";
 import {
+  desktopV3ActiveSessionSidebarView,
   effectiveDesktopSidebarDisplayMode,
   loadDesktopSidebarDisplayMode,
   type DesktopSidebarDisplayMode,
+  type DesktopV3SessionSidebarView,
 } from "./desktop-sidebar-display";
+
+const PLAN_SIDEBAR_MEDIA_QUERY = "(min-width: 1300px)";
+
+function usePlanSidebarViewport(): boolean {
+  const [matches, setMatches] = useState(() => typeof window !== "undefined" && typeof window.matchMedia === "function" && window.matchMedia(PLAN_SIDEBAR_MEDIA_QUERY).matches);
+
+  useEffect(() => {
+    if (typeof window.matchMedia !== "function") return;
+    const query = window.matchMedia(PLAN_SIDEBAR_MEDIA_QUERY);
+    const update = () => setMatches(query.matches);
+    update();
+    query.addEventListener("change", update);
+    return () => query.removeEventListener("change", update);
+  }, []);
+
+  return matches;
+}
 
 const EMPTY_AGENT_STATE: AgentStateRecord = {
   profiles: [],
@@ -484,6 +516,77 @@ function pendingPermissionsEqual(
   }
   return true;
 }
+
+type IsolatedPlanExecutionSidebarProps = Omit<
+  ComponentProps<typeof DesktopPlanExecutionSidebar>,
+  "view" | "taskChildren"
+> & {
+  sessionId: string;
+  taskRows?: TaskToolRow[];
+};
+
+function isolatedPlanExecutionStatus(view: DesktopPlanExecutionView | null): string {
+  if (!view) return "Ready";
+  if (view.reviewRequired) return "Waiting review";
+  if (view.completed) return "Completed";
+  if (view.paused) return "Paused";
+  if (view.blocked) return "Blocked";
+  if (view.failed) return "Failed";
+  const status = view.activeCheckpoint?.status || view.status || "ready";
+  return status.replace(/[-_]+/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+const IsolatedPlanExecutionSummary = memo(function IsolatedPlanExecutionSummary({
+  sessionId,
+}: {
+  sessionId: string;
+}) {
+  const selectPlanView = useCallback(
+    (state: DesktopV3CacheState) => selectDesktopPlanExecutionView(state, sessionId),
+    [sessionId],
+  );
+  const view = useDesktopV3CacheSelector(selectPlanView, planExecutionViewsEqual);
+
+  return (
+    <>
+      <span className="flex min-w-0 flex-1 items-center gap-2.5">
+        <span className="shrink-0 text-[10px] font-semibold uppercase tracking-[0.16em] text-[var(--app-text-subtle)]">Plan</span>
+        <span className="min-w-0 truncate text-xs font-medium text-[var(--app-text)]">
+          {view?.activeCheckpoint?.title || view?.plan.title || "Plan execution"}
+        </span>
+      </span>
+      {view?.policyMode !== "automatic" ? (
+        <span className="shrink-0 text-[10px] font-semibold uppercase tracking-[0.1em] text-[var(--app-primary)]">Review each</span>
+      ) : null}
+      <span className="hidden shrink-0 text-[10px] font-medium text-[var(--app-primary)] sm:inline">
+        {isolatedPlanExecutionStatus(view)}
+      </span>
+    </>
+  );
+});
+
+const IsolatedPlanExecutionSidebar = memo(function IsolatedPlanExecutionSidebar({
+  sessionId,
+  taskRows = [],
+  ...props
+}: IsolatedPlanExecutionSidebarProps) {
+  const selectPlanView = useCallback(
+    (state: DesktopV3CacheState) => selectDesktopPlanExecutionView(state, sessionId),
+    [sessionId],
+  );
+  const view = useDesktopV3CacheSelector(selectPlanView, planExecutionViewsEqual);
+  const taskChildren = useDesktopV3CacheSelector((state) =>
+    taskRows.map((row) => ({ row, view: selectDesktopV3TaskChildViewModel(state, row) })),
+  );
+
+  return (
+    <DesktopPlanExecutionSidebar
+      {...props}
+      view={view}
+      taskChildren={taskChildren}
+    />
+  );
+});
 
 function permissionSavedRuleEqual(
   left: DesktopPermissionRecord["savedRule"],
@@ -921,7 +1024,7 @@ function structuredSearchReadMessage(item: DesktopV3RenderItem): StructuredToolM
       ? structuredLiveToolMessage(item.tool)
       : null;
   const toolName = toolMessage?.tool.trim().toLowerCase();
-  return toolName === "search" || toolName === "read" ? toolMessage : null;
+  return toolName === "search" || toolName === "find" || toolName === "read" ? toolMessage : null;
 }
 
 export function groupDesktopV3SearchReadActivity(
@@ -1420,6 +1523,8 @@ export interface DesktopV3ExistingConversationPaneProps {
   onNewSession?: () => void;
   onOpenChildSession?: (sessionId: string, workspacePath: string) => void;
   sessionActions?: DesktopV3ChatHeaderSessionActions | null;
+  studioMode?: 'session' | 'studio' | null;
+  onToggleStudioMode?: () => void;
   onSlashCommand?: (
     command: DesktopSlashCommand,
     draft: string,
@@ -1427,11 +1532,22 @@ export interface DesktopV3ExistingConversationPaneProps {
   agentSettingsOpenSignal?: number;
   agentSettingsInitialAgent?: string;
   composerFocusSignal?: number;
+  composerDraftRequest?: { id: number; draft: string };
   onCompactingChange?: (sessionId: string, startedAt: number | null) => void;
   onArchivePlanSession?: (sessionId: string) => void;
   onOpenPlan?: () => void;
   onOpenActionSettings?: () => void;
   planSidebarBelowActions?: ReactNode;
+  artifactSelectionRequest?: DesktopV3ArtifactMessageSelection | null;
+  contextChip?: { id: string; label: string; kind: string; description?: string } | null;
+  onContextChipRemove?: () => void;
+  onArtifactSelectionRequestHandled?: () => void;
+  /** Keep artifact review inside an embedded Studio-owned surface. */
+  artifactReviewPresentation?: "fullscreen" | "embedded";
+  artifactReviewPortalTarget?: HTMLElement | null;
+  /** Reuse the canonical conversation as a constrained embedded surface. */
+  presentation?: "page" | "sidebar";
+  onMessageSent?: () => void;
 }
 
 export function completeDesktopV3ExistingMessage(input: {
@@ -1462,7 +1578,8 @@ type DesktopV3ExistingConversationComposerProps = Omit<
   hasStoredOperation: boolean;
   canSubmitWithoutDraft: boolean;
   controllerRef: MutableRefObject<DesktopV3ExistingComposerController | null>;
-  onSubmit: (draft: string, attachments: DesktopV3MediaReference[]) => void | Promise<void>;
+  draftRequest?: { id: number; draft: string };
+  onSubmit: ComponentProps<typeof DesktopV3AgenticComposer>['onSubmit'];
 };
 
 export function DesktopV3ExistingConversationComposer({
@@ -1470,10 +1587,18 @@ export function DesktopV3ExistingConversationComposer({
   hasStoredOperation,
   canSubmitWithoutDraft,
   controllerRef,
+  draftRequest,
   onSubmit,
   ...composerProps
 }: DesktopV3ExistingConversationComposerProps) {
   const [draft, setDraft] = useState(initialDraft);
+  const handledDraftRequestRef = useRef(0);
+
+  useEffect(() => {
+    if (!draftRequest || draftRequest.id === handledDraftRequestRef.current) return;
+    handledDraftRequestRef.current = draftRequest.id;
+    setDraft(draftRequest.draft);
+  }, [draftRequest]);
 
   useLayoutEffect(() => {
     const controller: DesktopV3ExistingComposerController = { setDraft };
@@ -1511,19 +1636,31 @@ export function DesktopV3ExistingConversationPane({
   onNewSession,
   onOpenChildSession,
   sessionActions = null,
+  studioMode = null,
+  onToggleStudioMode,
   onSlashCommand,
   agentSettingsOpenSignal = 0,
   agentSettingsInitialAgent = "",
   composerFocusSignal = 0,
+  composerDraftRequest,
   onCompactingChange,
   onArchivePlanSession,
   onOpenPlan,
   onOpenActionSettings,
   planSidebarBelowActions,
+  artifactSelectionRequest = null,
+  contextChip = null,
+  onContextChipRemove,
+  onArtifactSelectionRequestHandled,
+  artifactReviewPresentation = "fullscreen",
+  artifactReviewPortalTarget = null,
+  presentation = "page",
+  onMessageSent,
 }: DesktopV3ExistingConversationPaneProps) {
   const normalizedSessionId = sessionId.trim();
   const navigate = useNavigate();
-  const matchRoute = useMatchRoute();
+  const routeParams = useParams({ strict: false }) as { workspaceSlug?: unknown };
+  const artifactRouteSearch = useSearch({ strict: false }) as { artifactSession?: unknown; artifact?: unknown; collection?: unknown };
   const queryClient = useQueryClient();
   const mountedRef = useRef(true);
   const operationRef = useRef<DesktopV3ExistingMessageOperation | null>(
@@ -1544,9 +1681,9 @@ export function DesktopV3ExistingConversationPane({
   const thinkingTagsEnabled = normalizeThinkingTagsEnabled(
     uiSettingsQuery.data,
   );
-  const selectPlanExecutionViewForSession = useCallback(
+  const selectPlanPresenceForSession = useCallback(
     (state: DesktopV3CacheState) =>
-      selectDesktopPlanExecutionView(state, normalizedSessionId),
+      Boolean(state.plansBySession[normalizedSessionId] && selectDesktopPlanExecutionView(state, normalizedSessionId)?.plan.document),
     [normalizedSessionId],
   );
   const sessionMediaCapability = useDesktopV3CacheSelector(
@@ -1561,9 +1698,8 @@ export function DesktopV3ExistingConversationPane({
   const cachedAgentModelPolicy = useDesktopV3CacheSelector(
     (state) => state.agentModelPolicyBySession[normalizedSessionId],
   );
-  const planExecutionView = useDesktopV3CacheSelector(
-    selectPlanExecutionViewForSession,
-    planExecutionViewsEqual,
+  const showPlanExecutionSidebar = useDesktopV3CacheSelector(
+    selectPlanPresenceForSession,
   );
   const cachedPreference = useMemo(
     () => normalizePreference(rawCachedPreference),
@@ -1608,6 +1744,9 @@ export function DesktopV3ExistingConversationPane({
     [pendingPlanPermission],
   );
   const [planAgentMobileOpen, setPlanAgentMobileOpen] = useState(false);
+  const [resolvingPlanPermissionId, setResolvingPlanPermissionId] = useState("");
+  const heldPlanPermissionRef = useRef<DesktopPermissionRecord | null>(null);
+  const planSidebarViewport = usePlanSidebarViewport() && presentation !== "sidebar";
   useEffect(() => {
     setPlanAgentMobileOpen(false);
   }, [pendingPlanPermission?.id]);
@@ -1649,6 +1788,14 @@ export function DesktopV3ExistingConversationPane({
     ],
   );
   const composerControllerRef = useRef<DesktopV3ExistingComposerController | null>(null);
+  const [galleryArtifactSelectionRequest, setGalleryArtifactSelectionRequest] = useState<DesktopV3ArtifactMessageSelection[] | null>(null);
+  const pendingExternalArtifactSelectionRequestRef = useRef("");
+  const externalArtifactSelectionRequestRef = useRef(artifactSelectionRequest);
+  externalArtifactSelectionRequestRef.current = artifactSelectionRequest;
+  const externalArtifactSelectionRequestHandledRef = useRef(onArtifactSelectionRequestHandled);
+  externalArtifactSelectionRequestHandledRef.current = onArtifactSelectionRequestHandled;
+  const galleryArtifactSelectionInFlightRef = useRef(false);
+  const queuedGalleryArtifactSelectionsRef = useRef<DesktopV3ArtifactMessageSelection[]>([]);
   const [sendError, setSendError] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
   const [compactStartedAt, setCompactStartedAt] = useState<number | null>(null);
@@ -1805,14 +1952,9 @@ export function DesktopV3ExistingConversationPane({
     effectiveContextWindowValue,
     displayedUsage,
   );
-  const workspaceSettingsMatch =
-    matchRoute({ to: "/$workspaceSlug/settings", fuzzy: false }) ??
-    matchRoute({ to: "/$workspaceSlug/$sessionId", fuzzy: false }) ??
-    matchRoute({ to: "/$workspaceSlug", fuzzy: false });
-  const routeWorkspaceSlug =
-    workspaceSettingsMatch && "workspaceSlug" in workspaceSettingsMatch
-      ? String(workspaceSettingsMatch.workspaceSlug ?? "").trim()
-      : "";
+  const routeWorkspaceSlug = typeof routeParams.workspaceSlug === "string"
+    ? routeParams.workspaceSlug.trim()
+    : "";
   const openPermissionsSettings = useCallback(() => {
     const search = { tab: "permissions" as const, returnSessionId: normalizedSessionId };
     if (routeWorkspaceSlug) {
@@ -1821,23 +1963,75 @@ export function DesktopV3ExistingConversationPane({
     }
     void navigate({ to: "/settings", search });
   }, [navigate, normalizedSessionId, routeWorkspaceSlug]);
-  const [planSidebarAvailableWidth, setPlanSidebarAvailableWidth] = useState(0);
+  const [planSidebarDisplayMode, setPlanSidebarDisplayMode] = useState<DesktopSidebarDisplayMode>(() => loadDesktopSidebarDisplayMode());
   const planSidebarGridRef = useRef<HTMLDivElement | null>(null);
+  const [sessionArtifacts, setSessionArtifacts] = useState<DesktopV3ArtifactCatalogEntry[]>([]);
+  const [sessionArtifactsLoading, setSessionArtifactsLoading] = useState(false);
+  const [sessionArtifactsError, setSessionArtifactsError] = useState("");
+  const [sidebarView, setSidebarView] = useState<DesktopV3SessionSidebarView>("plan");
+  const [artifactGalleryOpen, setArtifactGalleryOpen] = useState(false);
+  const [artifactGalleryInitialKey, setArtifactGalleryInitialKey] = useState("");
+  const [artifactGalleryInitialCollectionId, setArtifactGalleryInitialCollectionId] = useState("");
+  const [artifactComposerFocusSignal, setArtifactComposerFocusSignal] = useState(0);
+  const dismissedArtifactViewerLocationKeyRef = useRef("");
+  const openedMobileVisualSwarmKeysRef = useRef(new Set<string>());
+  const artifactSidebarSessionRef = useRef("");
+  const priorSessionArtifactCountRef = useRef(0);
+  const priorSessionHasPlanRef = useRef(false);
   const preferredPlanSidebarMode = useMemo(loadDesktopSidebarDisplayMode, []);
-  const planSidebarDisplayMode: DesktopSidebarDisplayMode =
-    effectiveDesktopSidebarDisplayMode(
-      preferredPlanSidebarMode,
-      planSidebarAvailableWidth,
-    );
   useEffect(() => {
     const element = planSidebarGridRef.current;
     if (!element || typeof ResizeObserver === "undefined") return;
-    const update = () => setPlanSidebarAvailableWidth(element.clientWidth);
+    let frame = 0;
+    const update = () => {
+      frame = 0;
+      const availableWidth = element.clientWidth;
+      setPlanSidebarDisplayMode((current) => {
+        const next = effectiveDesktopSidebarDisplayMode(preferredPlanSidebarMode, availableWidth, current);
+        return next === current ? current : next;
+      });
+    };
+    const scheduleUpdate = () => {
+      if (frame) return;
+      frame = window.requestAnimationFrame(update);
+    };
     update();
-    const observer = new ResizeObserver(update);
+    const observer = new ResizeObserver(scheduleUpdate);
     observer.observe(element);
-    return () => observer.disconnect();
-  }, []);
+    return () => {
+      observer.disconnect();
+      if (frame) window.cancelAnimationFrame(frame);
+    };
+  }, [preferredPlanSidebarMode]);
+  const refreshSessionArtifacts = useCallback(async () => {
+    if (!normalizedSessionId) return;
+    setSessionArtifactsLoading(true);
+    setSessionArtifactsError("");
+    try {
+      const catalog = await fetchDesktopV3ArtifactCatalog(undefined, normalizedSessionId);
+      if (artifactSidebarSessionRef.current !== normalizedSessionId) return;
+      setSessionArtifacts(desktopV3ArtifactsForSession(catalog, normalizedSessionId));
+    } catch (error) {
+      setSessionArtifactsError(error instanceof Error ? error.message : "Session artifacts failed to load");
+    } finally {
+      setSessionArtifactsLoading(false);
+    }
+  }, [normalizedSessionId]);
+  useDesktopV3OpenArtifactCatalogRefresh(Boolean(normalizedSessionId), refreshSessionArtifacts);
+  useEffect(() => {
+    artifactSidebarSessionRef.current = normalizedSessionId;
+    priorSessionArtifactCountRef.current = 0;
+    priorSessionHasPlanRef.current = false;
+    setSessionArtifacts([]);
+    setSidebarView("plan");
+    setArtifactGalleryOpen(false);
+    setArtifactGalleryInitialKey("");
+    setArtifactGalleryInitialCollectionId("");
+    dismissedArtifactViewerLocationKeyRef.current = "";
+    openedMobileVisualSwarmKeysRef.current.clear();
+    void refreshSessionArtifacts();
+  }, [normalizedSessionId, refreshSessionArtifacts]);
+
   const taskChildActions = useMemo<TaskChildCardActions>(() => ({
     workspaceSlug: routeWorkspaceSlug,
     parentSessionId: normalizedSessionId,
@@ -1878,16 +2072,6 @@ export function DesktopV3ExistingConversationPane({
     [renderedMessages],
   );
 
-  const canonicalFinalHandoffRecommendation = useMemo<DesktopSessionPlanCheckpointRecommendation | null>(() => {
-    const checkpointId = planExecutionView?.activeCheckpointId || planExecutionView?.activeCheckpoint?.id || "";
-    for (let index = renderItems.length - 1; index >= 0; index -= 1) {
-      const item = renderItems[index];
-      if (item.type !== "plan-final-handoff" || !item.finalHandoff?.recommendation) continue;
-      const handoffCheckpointId = metadataString(item.message.metadata, "checkpoint_id");
-      if (!checkpointId || handoffCheckpointId === checkpointId) return item.finalHandoff.recommendation;
-    }
-    return null;
-  }, [planExecutionView, renderItems]);
   const taskChildRows = useMemo<TaskToolRow[]>(() => {
     const rows: TaskToolRow[] = [];
     for (const item of renderItems) {
@@ -1917,7 +2101,6 @@ export function DesktopV3ExistingConversationPane({
     for (const row of rows) bySession.set(row.childSessionId || row.launchKey || String(row.launchIndex), row);
     return [...bySession.values()];
   }, [renderItems]);
-  const taskChildren = useDesktopV3CacheSelector((state) => taskChildRows.map((row) => ({ row, view: selectDesktopV3TaskChildViewModel(state, row) })));
   const scrollFollowKey = useMemo(
     () =>
       [
@@ -1981,8 +2164,171 @@ export function DesktopV3ExistingConversationPane({
     !messagesLoaded &&
     !hasMessages &&
     !hasStoredOperation;
-  const showPlanExecutionSidebar = Boolean(planExecutionView?.plan.document);
-  const showPlanSidebar = showPlanExecutionSidebar || Boolean(pendingPlanDocument);
+  const heldPlanPermission = resolvingPlanPermissionId
+    ? heldPlanPermissionRef.current
+    : null;
+  const stablePlanPermission = pendingPlanPermission ?? heldPlanPermission;
+  const stablePlanDocument = pendingPlanDocument ?? (heldPlanPermission
+    ? structuredPlanDocumentFromPermission(heldPlanPermission)
+    : null);
+  const visiblePlanPermissions = heldPlanPermission && !pendingPlanPermissions.some(
+    (permission) => permission.id === heldPlanPermission.id,
+  )
+    ? [...pendingPlanPermissions, heldPlanPermission]
+    : pendingPlanPermissions;
+  useEffect(() => {
+    if (!resolvingPlanPermissionId || !showPlanExecutionSidebar) return;
+    heldPlanPermissionRef.current = null;
+    setResolvingPlanPermissionId("");
+  }, [resolvingPlanPermissionId, showPlanExecutionSidebar]);
+  const showPlanSidebar = showPlanExecutionSidebar || Boolean(stablePlanDocument);
+  const hasSessionArtifacts = sessionArtifacts.length > 0;
+  const hasPendingVisualSwarm = desktopV3HasPendingVisualSwarm(sessionArtifacts);
+  const showConversationSidebar = showPlanSidebar || hasSessionArtifacts;
+  const showConversationSidebarColumn = showConversationSidebar && presentation !== "sidebar";
+  useEffect(() => {
+    if (artifactSidebarSessionRef.current !== normalizedSessionId) return;
+    const previousCount = priorSessionArtifactCountRef.current;
+    const previousHasPlan = priorSessionHasPlanRef.current;
+    setSidebarView((current) => desktopV3NextSessionSidebarView({
+      current,
+      previousArtifactCount: previousCount,
+      artifactCount: sessionArtifacts.length,
+      hasPlan: showPlanSidebar,
+      prioritizePlan: Boolean(stablePlanDocument) || (showPlanSidebar && !previousHasPlan),
+      hasPendingVisualSwarm,
+    }));
+    priorSessionArtifactCountRef.current = sessionArtifacts.length;
+    priorSessionHasPlanRef.current = showPlanSidebar;
+  }, [hasPendingVisualSwarm, normalizedSessionId, sessionArtifacts.length, showPlanSidebar, stablePlanDocument]);
+  const activeSidebarView = desktopV3ActiveSessionSidebarView({
+    selected: sidebarView,
+    hasPlan: showPlanSidebar,
+    hasArtifacts: hasSessionArtifacts,
+  });
+  const artifactViewerLocation = useMemo(
+    () => desktopV3ArtifactViewerLocation(normalizedSessionId, artifactRouteSearch),
+    [
+      artifactRouteSearch.artifact,
+      artifactRouteSearch.artifactSession,
+      artifactRouteSearch.collection,
+      normalizedSessionId,
+    ],
+  );
+  const artifactViewerLocationKey = artifactViewerLocation
+    ? `${artifactViewerLocation.sessionId}:${artifactViewerLocation.collectionId ?? ""}:${artifactViewerLocation.artifactId ?? ""}`
+    : "";
+  const artifactViewerEntry = artifactViewerLocation
+    ? desktopV3ArtifactCatalogEntryForViewerLocation(sessionArtifacts, artifactViewerLocation)
+    : undefined;
+  const artifactViewerHref = useCallback((artifact: DesktopV3ArtifactCatalogEntry) => {
+    if (!routeWorkspaceSlug) return '#';
+    return desktopV3ArtifactViewerHref(routeWorkspaceSlug, artifact);
+  }, [routeWorkspaceSlug]);
+  const artifactCollectionViewerHref = useCallback((artifact: DesktopV3ArtifactCatalogEntry) => {
+    if (!routeWorkspaceSlug || !artifact.collectionId) return '#';
+    return desktopV3ArtifactCollectionViewerHref(routeWorkspaceSlug, {
+      sessionId: artifact.lineage?.parentSessionId || artifact.sessionId,
+      collectionId: artifact.collectionId,
+    });
+  }, [routeWorkspaceSlug]);
+  const openArtifactFullView = useCallback((artifact: DesktopV3ArtifactCatalogEntry) => {
+    const artifactKey = desktopV3ArtifactCatalogEntryKey(artifact);
+    dismissedArtifactViewerLocationKeyRef.current = "";
+    setArtifactGalleryInitialCollectionId("");
+    setArtifactGalleryInitialKey(artifactKey);
+    setArtifactGalleryOpen(true);
+    if (artifactReviewPresentation === "embedded" || !routeWorkspaceSlug) return;
+    void navigate({
+      to: "/$workspaceSlug/$sessionId",
+      params: { workspaceSlug: routeWorkspaceSlug, sessionId: artifact.sessionId },
+      search: (previous) => ({ ...previous, artifact: undefined, collection: undefined, ...desktopV3ArtifactViewerSearch(artifact) }),
+    });
+  }, [artifactReviewPresentation, navigate, routeWorkspaceSlug]);
+  const navigateArtifactViewer = useCallback((artifact: DesktopV3ArtifactCatalogEntry) => {
+    setArtifactGalleryInitialCollectionId("");
+    setArtifactGalleryInitialKey(desktopV3ArtifactCatalogEntryKey(artifact));
+    if (artifactReviewPresentation === "embedded" || !routeWorkspaceSlug) return;
+    void navigate({
+      to: "/$workspaceSlug/$sessionId",
+      params: { workspaceSlug: routeWorkspaceSlug, sessionId: artifact.sessionId },
+      search: (previous) => ({ ...previous, artifact: undefined, collection: undefined, ...desktopV3ArtifactViewerSearch(artifact) }),
+      replace: true,
+    });
+  }, [artifactReviewPresentation, navigate, routeWorkspaceSlug]);
+  const navigateArtifactCollectionViewer = useCallback((artifact: DesktopV3ArtifactCatalogEntry) => {
+    const collectionId = artifact.collectionId?.trim() ?? "";
+    const sessionId = artifact.lineage?.parentSessionId || artifact.sessionId;
+    if (!collectionId || !sessionId) return;
+    setArtifactGalleryInitialKey("");
+    setArtifactGalleryInitialCollectionId(collectionId);
+    if (artifactReviewPresentation === "embedded" || !routeWorkspaceSlug) return;
+    void navigate({
+      to: "/$workspaceSlug/$sessionId",
+      params: { workspaceSlug: routeWorkspaceSlug, sessionId },
+      search: (previous) => ({
+        ...previous,
+        artifact: undefined,
+        collection: undefined,
+        ...desktopV3ArtifactCollectionViewerSearch({ sessionId, collectionId }),
+      }),
+      replace: true,
+    });
+  }, [artifactReviewPresentation, navigate, routeWorkspaceSlug]);
+  const setArtifactGalleryOpenFromViewer = useCallback((nextOpen: boolean) => {
+    setArtifactGalleryOpen(nextOpen);
+    if (nextOpen) {
+      dismissedArtifactViewerLocationKeyRef.current = "";
+      return;
+    }
+    dismissedArtifactViewerLocationKeyRef.current = artifactViewerLocationKey;
+    if (artifactReviewPresentation === "embedded" || !routeWorkspaceSlug) return;
+    void navigate({
+      to: "/$workspaceSlug/$sessionId",
+      params: { workspaceSlug: routeWorkspaceSlug, sessionId: normalizedSessionId },
+      search: (previous) => ({
+        ...previous,
+        artifactSession: undefined,
+        artifact: undefined,
+        collection: undefined,
+      }),
+      replace: true,
+    });
+  }, [artifactReviewPresentation, artifactViewerLocationKey, navigate, normalizedSessionId, routeWorkspaceSlug]);
+  useEffect(() => {
+    if (!artifactViewerLocation) {
+      dismissedArtifactViewerLocationKeyRef.current = "";
+      setArtifactGalleryOpen(false);
+      return;
+    }
+    if (dismissedArtifactViewerLocationKeyRef.current === artifactViewerLocationKey) return;
+    setArtifactGalleryOpen(true);
+    if (artifactViewerEntry) {
+      setArtifactGalleryInitialCollectionId("");
+      setArtifactGalleryInitialKey(desktopV3ArtifactCatalogEntryKey(artifactViewerEntry));
+    } else if (artifactViewerLocation.collectionId && !artifactViewerLocation.artifactId) {
+      setArtifactGalleryInitialKey("");
+      setArtifactGalleryInitialCollectionId(artifactViewerLocation.collectionId);
+    }
+  }, [artifactViewerEntry, artifactViewerLocation, artifactViewerLocationKey]);
+  useEffect(() => {
+    if (!hasPendingVisualSwarm) return;
+    const unopenedArtifact = desktopV3MobileVisualSwarmArtifactToOpen({
+      artifacts: sessionArtifacts,
+      sessionId: normalizedSessionId,
+      sidebarViewport: planSidebarViewport,
+      openedGroupKeys: openedMobileVisualSwarmKeysRef.current,
+    });
+    if (!unopenedArtifact) return;
+    const iterationGroupId = unopenedArtifact.lineage?.iterationGroupId.trim();
+    if (!iterationGroupId) return;
+    for (const artifact of desktopV3ArtifactsForSession(sessionArtifacts, normalizedSessionId)) {
+      const pendingGroupId = artifact.status === "staging" ? artifact.lineage?.iterationGroupId.trim() : "";
+      if (pendingGroupId) openedMobileVisualSwarmKeysRef.current.add(`${normalizedSessionId}:${pendingGroupId}`);
+    }
+    setArtifactGalleryInitialKey(desktopV3ArtifactCatalogEntryKey(unopenedArtifact));
+    setArtifactGalleryOpen(true);
+  }, [hasPendingVisualSwarm, normalizedSessionId, planSidebarViewport, sessionArtifacts]);
   const {
     scrollContainerRef,
     contentRef,
@@ -2024,6 +2370,10 @@ export function DesktopV3ExistingConversationPane({
       loadDesktopV3ExistingMessageOperation(normalizedSessionId);
     operationRef.current = operation;
     composerControllerRef.current?.setDraft(operation?.request.content ?? "");
+    galleryArtifactSelectionInFlightRef.current = false;
+    queuedGalleryArtifactSelectionsRef.current = [];
+    pendingExternalArtifactSelectionRequestRef.current = "";
+    setGalleryArtifactSelectionRequest(null);
     setSendError(null);
   }, [normalizedSessionId]);
 
@@ -2376,7 +2726,7 @@ export function DesktopV3ExistingConversationPane({
     oldestLoadedSeq,
   ]);
 
-  async function handleSubmit(submittedDraft: string, attachments: DesktopV3MediaReference[]) {
+  async function handleSubmit(submittedDraft: string, attachments: DesktopV3MediaReference[], artifactSelections: DesktopV3ArtifactMessageSelection[], videoAttachments: DesktopVideoSourceAttachment[]) {
     if (!normalizedSessionId || sending || compacting) return;
 
     setSending(true);
@@ -2387,16 +2737,28 @@ export function DesktopV3ExistingConversationPane({
         throw new Error("Select a model and thinking level before sending");
       }
       await persistVisibleSettings();
+      const retainedOperation = operationRef.current;
+      if (retainedOperation) {
+        const sameDraft = retainedOperation.request.content === submittedDraft.trim();
+        const sameMedia = JSON.stringify(retainedOperation.request.media ?? []) === JSON.stringify(attachments);
+        const retainedArtifacts = retainedOperation.request.artifact_selections ?? [];
+        const sameArtifacts = JSON.stringify(retainedArtifacts) === JSON.stringify(artifactSelections);
+        const sameVideos = JSON.stringify(retainedOperation.request.video_attachments ?? []) === JSON.stringify(videoAttachments);
+        if (!sameDraft || !sameMedia || !sameArtifacts || !sameVideos) {
+          throw new Error("Retry the retained message without changing its text or attachments");
+        }
+      }
       const operation =
-        operationRef.current ??
+        retainedOperation ??
         createDesktopV3ExistingMessageOperation({
           sessionId: normalizedSessionId,
           prompt: submittedDraft,
           metadata,
           media: attachments,
+          videoAttachments,
+          artifactSelections,
         });
       operationRef.current = operation;
-      composerControllerRef.current?.setDraft("");
       persistDesktopV3ExistingMessageOperation(operation);
 
       await continueDesktopV3Conversation(operation);
@@ -2409,10 +2771,12 @@ export function DesktopV3ExistingConversationPane({
         },
         setDraft: (nextDraft) => composerControllerRef.current?.setDraft(nextDraft),
       });
+      onMessageSent?.();
     } catch (error) {
       if (mountedRef.current) {
         setSendError(error instanceof Error ? error.message : String(error));
       }
+      throw error;
     } finally {
       if (mountedRef.current) {
         setSending(false);
@@ -2541,20 +2905,33 @@ export function DesktopV3ExistingConversationPane({
     reason: string,
     approvedArguments?: Record<string, unknown>,
   ) {
-    const resolved = await resolveSessionPermission(
-      permission.sessionId,
-      permission.id,
-      action,
-      reason,
-      approvedArguments,
-      { sessionApi: "v3" },
-    );
-    dispatchDesktopV3Cache({
-      type: "permission.resolveResult",
-      sessionId: permission.sessionId,
-      permissionId: permission.id,
-      permission: resolved,
-    });
+    const holdApprovedPlan = action === "approve" && isPlanProposalPermission(permission);
+    if (holdApprovedPlan) {
+      heldPlanPermissionRef.current = permission;
+      setResolvingPlanPermissionId(permission.id);
+    }
+    try {
+      const resolved = await resolveSessionPermission(
+        permission.sessionId,
+        permission.id,
+        action,
+        reason,
+        approvedArguments,
+        { sessionApi: "v3" },
+      );
+      dispatchDesktopV3Cache({
+        type: "permission.resolveResult",
+        sessionId: permission.sessionId,
+        permissionId: permission.id,
+        permission: resolved,
+      });
+    } catch (error) {
+      if (holdApprovedPlan) {
+        heldPlanPermissionRef.current = null;
+        setResolvingPlanPermissionId("");
+      }
+      throw error;
+    }
   }
 
   async function handleResolveBashPermission(
@@ -2583,7 +2960,7 @@ export function DesktopV3ExistingConversationPane({
   const submitRef = useRef(handleSubmit);
   submitRef.current = handleSubmit;
   const stableSubmit = useCallback(
-    (submittedDraft: string, attachments: DesktopV3MediaReference[]) => submitRef.current(submittedDraft, attachments),
+    (submittedDraft: string, attachments: DesktopV3MediaReference[], artifactSelections: DesktopV3ArtifactMessageSelection[], videoAttachments: DesktopVideoSourceAttachment[]) => submitRef.current(submittedDraft, attachments, artifactSelections, videoAttachments),
     [],
   );
 
@@ -2647,7 +3024,60 @@ export function DesktopV3ExistingConversationPane({
     onDownloadConversation: () => { void handleTranscriptExport('download'); },
   } : null, [handleTranscriptExport, sessionActions, transcriptAction]);
 
-  const stableSuggestedPrompt = useCallback((prompt: string) => stableSubmit(prompt, []), [stableSubmit]);
+  const stableSuggestedPrompt = useCallback((prompt: string) => stableSubmit(prompt, [], [], []), [stableSubmit]);
+  const prefillSuggestedPrompt = useCallback((prompt: string) => {
+    const normalizedPrompt = prompt.trim();
+    if (!normalizedPrompt) return;
+    composerControllerRef.current?.setDraft(normalizedPrompt);
+    setArtifactComposerFocusSignal((current) => current + 1);
+  }, []);
+  const queueGalleryArtifactSelections = useCallback((selections: DesktopV3ArtifactMessageSelection[]) => {
+    if (selections.length === 0) return;
+    try {
+      const requestSelections = appendDesktopV3ArtifactMessageSelections([], selections);
+      if (galleryArtifactSelectionInFlightRef.current) {
+        queuedGalleryArtifactSelectionsRef.current = appendDesktopV3ArtifactMessageSelections(queuedGalleryArtifactSelectionsRef.current, requestSelections);
+        setSendError(null);
+        return;
+      }
+      galleryArtifactSelectionInFlightRef.current = true;
+      setGalleryArtifactSelectionRequest([...requestSelections]);
+      setSendError(null);
+    } catch (error) {
+      galleryArtifactSelectionInFlightRef.current = false;
+      setGalleryArtifactSelectionRequest(null);
+      setSendError(error instanceof Error ? error.message : "Artifact selection failed");
+    }
+  }, []);
+  const handleGalleryArtifactSelectionRequest = useCallback(() => {
+    galleryArtifactSelectionInFlightRef.current = false;
+    setGalleryArtifactSelectionRequest(null);
+    const queuedSelections = queuedGalleryArtifactSelectionsRef.current;
+    queuedGalleryArtifactSelectionsRef.current = [];
+    const externalRequest = externalArtifactSelectionRequestRef.current;
+    if (queuedSelections.length === 0 && !externalRequest) return;
+    queueMicrotask(() => {
+      if (queuedSelections.length > 0) {
+        queueGalleryArtifactSelections(queuedSelections);
+        return;
+      }
+      if (!externalArtifactSelectionRequestRef.current || !externalRequest) return;
+      queueGalleryArtifactSelections([externalRequest]);
+      externalArtifactSelectionRequestHandledRef.current?.();
+    });
+  }, [queueGalleryArtifactSelections]);
+  useEffect(() => {
+    if (galleryArtifactSelectionRequest || !artifactSelectionRequest) return;
+    const artifactSelectionRequestKey = JSON.stringify(artifactSelectionRequest);
+    if (pendingExternalArtifactSelectionRequestRef.current === artifactSelectionRequestKey) return;
+    const frame = requestAnimationFrame(() => {
+      if (galleryArtifactSelectionInFlightRef.current) return;
+      pendingExternalArtifactSelectionRequestRef.current = artifactSelectionRequestKey;
+      queueGalleryArtifactSelections([artifactSelectionRequest]);
+      onArtifactSelectionRequestHandled?.();
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [artifactSelectionRequest, galleryArtifactSelectionRequest, onArtifactSelectionRequestHandled, queueGalleryArtifactSelections]);
 
   const hasOpenPlan = Boolean(onOpenPlan);
   const stableOpenPlan = useMemo(
@@ -2668,6 +3098,7 @@ export function DesktopV3ExistingConversationPane({
     <div
       className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-[var(--app-bg)]"
       data-desktop-chat-drop-zone
+      data-desktop-chat-presentation={presentation}
       data-testid="desktop-v3-existing-conversation-pane"
     >
       <DesktopV3ChatHeader
@@ -2681,25 +3112,65 @@ export function DesktopV3ExistingConversationPane({
         onOpenChats={onOpenChats}
         onNewSession={onNewSession}
         sessionActions={headerSessionActions}
+        studioMode={presentation === "page" ? studioMode : null}
+        onToggleStudioMode={presentation === "page" ? onToggleStudioMode : undefined}
       />
       <div
         ref={planSidebarGridRef}
         className={cn(
           "grid min-h-0 min-w-0 flex-1 grid-cols-[minmax(0,1fr)] overflow-hidden",
-          showPlanSidebar && planSidebarDisplayMode === "full"
+          showConversationSidebarColumn && planSidebarDisplayMode === "full"
             ? "min-[1300px]:grid-cols-[minmax(0,1fr)_360px]"
             : "",
-          showPlanSidebar && planSidebarDisplayMode === "compact"
+          showConversationSidebarColumn && planSidebarDisplayMode === "compact"
             ? "min-[1300px]:grid-cols-[minmax(0,1fr)_280px]"
             : "",
-          showPlanSidebar && planSidebarDisplayMode === "thin"
+          showConversationSidebarColumn && planSidebarDisplayMode === "thin"
             ? "min-[1300px]:grid-cols-[minmax(0,1fr)_56px]"
             : "",
         )}
         data-plan-sidebar-mode={planSidebarDisplayMode}
+        data-session-sidebar-view={activeSidebarView}
       >
         <div className="flex min-h-0 min-w-0 flex-col overflow-hidden">
           <div className="relative min-h-0 min-w-0 flex-1 overflow-hidden">
+            {artifactReviewPresentation === "embedded" ? (
+              <DesktopV3ArtifactGallery
+                artifacts={sessionArtifacts}
+                open={artifactGalleryOpen}
+                onOpenChange={setArtifactGalleryOpenFromViewer}
+                showTrigger={false}
+                loading={sessionArtifactsLoading}
+                error={sessionArtifactsError}
+                title="Studio iterations"
+                initialArtifactKey={artifactGalleryInitialKey}
+                initialCollectionId={artifactGalleryInitialCollectionId}
+                artifactHref={artifactViewerHref}
+                collectionHref={artifactCollectionViewerHref}
+                onArtifactNavigate={navigateArtifactViewer}
+                onCollectionNavigate={navigateArtifactCollectionViewer}
+                presentation="embedded"
+                embeddedPortalTarget={artifactReviewPortalTarget}
+                backLabel="Back to Studio"
+                onAddToChat={(artifacts) => {
+                  queueGalleryArtifactSelections(artifacts.map(({ label, description, selection }) => ({ ...selection, label, description, action: "select" })));
+                  setArtifactGalleryOpenFromViewer(false);
+                  setArtifactComposerFocusSignal((current) => current + 1);
+                }}
+                onUseThisDesign={({ label, description, selection }) => {
+                  queueGalleryArtifactSelections([{ ...selection, label, description, action: "use" }]);
+                  setArtifactGalleryOpenFromViewer(false);
+                  setArtifactComposerFocusSignal((current) => current + 1);
+                }}
+                onExportVideoStills={({ label, description, selection }, prompt) => {
+                  queueGalleryArtifactSelections([{ ...selection, label, description, action: "select" }]);
+                  composerControllerRef.current?.setDraft(prompt);
+                  setArtifactGalleryOpenFromViewer(false);
+                  setArtifactComposerFocusSignal((current) => current + 1);
+                }}
+                onSelectionPersisted={refreshSessionArtifacts}
+              />
+            ) : null}
             <div
               ref={scrollContainerRef}
               className="h-full min-h-0 overflow-x-hidden overflow-y-auto py-6 [scrollbar-gutter:stable_both-edges]"
@@ -2709,7 +3180,10 @@ export function DesktopV3ExistingConversationPane({
               {/* Match the composer's 70rem frame, then double its 16/24px frame padding so both message edges sit exactly 16/24px inside the outlined composer. */}
               <div
                 ref={contentRef}
-                className="mx-auto flex min-h-full w-full min-w-0 max-w-[70rem] flex-col gap-5 px-8 [&>*:not(:last-child)]:[overflow-anchor:none] sm:px-12"
+                className={cn(
+                  "mx-auto flex min-h-full w-full min-w-0 max-w-[70rem] flex-col gap-5 [&>*:not(:last-child)]:[overflow-anchor:none]",
+                  presentation === "sidebar" ? "px-4" : "px-8 sm:px-12",
+                )}
               >
                 {showConversationLoading ? (
                   <DesktopV3ConversationLoadingSpinner />
@@ -2756,6 +3230,11 @@ export function DesktopV3ExistingConversationPane({
                             index={virtualRow.index}
                             taskChildActions={taskChildActions}
                             onSuggestedPrompt={stableSuggestedPrompt}
+                            onPrefillPrompt={prefillSuggestedPrompt}
+                            artifactCatalog={sessionArtifacts}
+                            artifactHref={artifactViewerHref}
+                            onArtifactNavigate={openArtifactFullView}
+                            onArtifactSelections={queueGalleryArtifactSelections}
                           />
                         </div>
                       );
@@ -2772,15 +3251,15 @@ export function DesktopV3ExistingConversationPane({
                     onOpenPermissions={openPermissionsSettings}
                   />
                 ))}
-                {pendingPlanPermissions.map((permission, index) => (
+                {visiblePlanPermissions.map((permission, index) => (
                   <DesktopInlinePlanReviewCard
                     key={permission.id}
                     permission={permission}
                     parentSessionId={normalizedSessionId}
                     pendingPosition={index + 1}
-                    pendingCount={pendingPlanPermissions.length}
+                    pendingCount={visiblePlanPermissions.length}
                     onResolve={resolvePermission}
-                    onAskForChanges={index === 0 ? () => setPlanAgentMobileOpen(true) : undefined}
+                    resolutionPending={resolvingPlanPermissionId === permission.id}
                   />
                 ))}
                 <div
@@ -2803,46 +3282,75 @@ export function DesktopV3ExistingConversationPane({
             ) : null}
           </div>
 
-          {!pendingPlanDocument && showPlanExecutionSidebar && planExecutionView ? (
+          {stablePlanDocument && stablePlanPermission && !planSidebarViewport ? (
+            <div
+              className="shrink-0 bg-[var(--app-surface)] min-[1300px]:hidden"
+              id="desktop-plan-agent-composer-region"
+              data-testid="desktop-plan-agent-composer-region"
+            >
+              {planAgentMobileOpen ? (
+                <DesktopPlanAgentSidecar
+                  parentSessionId={normalizedSessionId}
+                  permission={stablePlanPermission}
+                  document={stablePlanDocument}
+                  embedded
+                  mobileInline
+                  mobileOpen
+                  modelLabel={displayedPreference.model}
+                  onClose={() => setPlanAgentMobileOpen(false)}
+                />
+              ) : (
+                <div className="mx-auto w-full max-w-[70rem] px-4 py-2 sm:px-6">
+                  <button
+                    type="button"
+                    className="flex min-h-12 w-full items-center gap-3 rounded-xl border border-[var(--app-primary-border)] bg-[var(--app-primary-soft)] px-4 py-2.5 text-left transition hover:border-[var(--app-border-accent)] hover:bg-[var(--app-surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-primary)]"
+                    aria-expanded="false"
+                    aria-controls="mobile-plan-agent-panel"
+                    onClick={() => setPlanAgentMobileOpen(true)}
+                  >
+                    <MessageCircle className="size-4 shrink-0 text-[var(--app-primary)]" aria-hidden="true" />
+                    <span className="min-w-0 flex-1">
+                      <span className="block text-sm font-semibold text-[var(--app-text)]">Ask Swarm Plan</span>
+                      <span className="block truncate text-xs text-[var(--app-text-muted)]">Waiting for your review · Talk through changes before approval</span>
+                    </span>
+                    <ChevronDown className="size-4 shrink-0 -rotate-90 text-[var(--app-text-muted)]" aria-hidden="true" />
+                  </button>
+                </div>
+              )}
+            </div>
+          ) : null}
+
+          {!stablePlanDocument && showPlanExecutionSidebar ? (
             <div
               className="shrink-0 border-t border-[var(--app-border)] bg-[var(--app-surface)] min-[1300px]:hidden"
               data-testid="desktop-plan-execution-composer-region"
             >
               <details className="group mx-auto w-full max-w-[70rem] px-4 sm:px-6">
                 <summary className="flex min-h-12 cursor-pointer list-none items-center gap-3 py-2.5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--app-primary)] [&::-webkit-details-marker]:hidden">
-                  <span className="flex min-w-0 flex-1 items-center gap-2.5">
-                    <span className="shrink-0 text-[10px] font-semibold uppercase tracking-[0.16em] text-[var(--app-text-subtle)]">
-                      Plan
-                    </span>
-                    <span className="min-w-0 truncate text-xs font-medium text-[var(--app-text)]">
-                      {planExecutionView.activeCheckpoint?.title || planExecutionView.plan.title || "Plan execution"}
-                    </span>
-                  </span>
-                  {planExecutionView.policyMode !== "automatic" ? (
-                    <span className="shrink-0 text-[10px] font-semibold uppercase tracking-[0.1em] text-[var(--app-primary)]">
-                      Review each
-                    </span>
-                  ) : null}
-                  <span className="hidden shrink-0 text-[10px] font-medium capitalize text-[var(--app-text-muted)] sm:inline">
-                    {(planExecutionView.activeCheckpoint?.status || planExecutionView.status || "ready").replace(/_/g, " ")}
-                  </span>
-                  <ChevronDown
-                    aria-hidden="true"
-                    className="size-4 shrink-0 text-[var(--app-text-muted)] transition-transform group-open:rotate-180"
-                  />
+                  <IsolatedPlanExecutionSummary sessionId={normalizedSessionId} />
+                  <ChevronDown aria-hidden="true" className="size-4 shrink-0 text-[var(--app-text-muted)] transition-transform group-open:rotate-180" />
                 </summary>
                 <div className="max-h-[min(46vh,30rem)] overflow-y-auto border-t border-[var(--app-border)] py-4">
-                  <DesktopPlanExecutionSidebar
-                    view={planExecutionView}
-                    embedded
-                    busyAction={planExecutionBusyAction}
-                    canStop={Boolean(currentRun)}
-                    onAction={stablePlanExecutionAction}
-                    onStop={stableStop}
-                    onEditPlan={stableOpenPlan}
-                    belowActions={planSidebarBelowActions}
-                    canonicalRecommendation={canonicalFinalHandoffRecommendation}
-                  />
+                  {hasSessionArtifacts ? (
+                    <div className="mx-4 mb-3 grid grid-cols-2 gap-1 rounded-lg bg-[var(--app-bg-alt)] p-1 sm:mx-6" role="tablist" aria-label="Mobile session sidebar view" data-mobile-session-sidebar-toggle>
+                      <button type="button" role="tab" aria-selected={activeSidebarView === "plan"} aria-label="Show plan" onClick={() => setSidebarView("plan")} className={cn("inline-flex min-h-9 items-center justify-center gap-1.5 rounded-md px-2 text-xs font-semibold transition", activeSidebarView === "plan" ? "bg-[var(--app-surface)] text-[var(--app-text)] shadow-sm" : "text-[var(--app-text-muted)] hover:text-[var(--app-text)]")}><ListChecks size={14} aria-hidden="true" />Plan</button>
+                      <button type="button" role="tab" aria-selected={activeSidebarView === "artifacts"} aria-label={`Show ${sessionArtifacts.length} session artifacts`} onClick={() => setSidebarView("artifacts")} className={cn("inline-flex min-h-9 items-center justify-center gap-1.5 rounded-md px-2 text-xs font-semibold transition", activeSidebarView === "artifacts" ? "bg-[var(--app-surface)] text-[var(--app-text)] shadow-sm" : "text-[var(--app-text-muted)] hover:text-[var(--app-text)]")}><GalleryHorizontal size={14} aria-hidden="true" />Artifacts {sessionArtifacts.length}</button>
+                    </div>
+                  ) : null}
+                  {activeSidebarView === "artifacts" ? (
+                    <DesktopV3ArtifactSidebar artifacts={sessionArtifacts} displayMode="full" loading={sessionArtifactsLoading} error={sessionArtifactsError} embedded artifactHref={artifactViewerHref} onOpenArtifact={openArtifactFullView} onAddToChat={(artifacts) => queueGalleryArtifactSelections(artifacts.map((artifact) => desktopV3ArtifactMessageSelection(artifact, "select")))} />
+                  ) : (
+                    <IsolatedPlanExecutionSidebar
+                      sessionId={normalizedSessionId}
+                      embedded
+                      busyAction={planExecutionBusyAction}
+                      canStop={Boolean(currentRun)}
+                      onAction={stablePlanExecutionAction}
+                      onStop={stableStop}
+                      onEditPlan={stableOpenPlan}
+                      belowActions={planSidebarBelowActions}
+                    />
+                  )}
                 </div>
               </details>
             </div>
@@ -2853,16 +3361,22 @@ export function DesktopV3ExistingConversationPane({
             workspacePath={session?.workspacePath?.trim() || cacheSession?.workspace_path?.trim() || metadataString(sessionMetadata, "workspace_path")}
             sessionId={normalizedSessionId}
             initialDraft={storedOperation?.request.content ?? ""}
-            focusSignal={composerFocusSignal}
+            initialArtifactSelections={storedOperation?.request.artifact_selections ?? []}
+            focusSignal={composerFocusSignal + artifactComposerFocusSignal}
             hasStoredOperation={hasStoredOperation}
             canSubmitWithoutDraft={canSubmitWithoutDraft}
             controllerRef={composerControllerRef}
+            draftRequest={composerDraftRequest}
             placeholder="Message Swarm…"
             inputLabel="Continue Desktop V3 conversation"
             disabled={sending || compacting}
             busy={sending || compacting}
             canStop={Boolean(currentRun)}
             error={sendError}
+            artifactSelectionRequest={galleryArtifactSelectionRequest}
+            contextChip={contextChip}
+            onContextChipRemove={onContextChipRemove}
+            onArtifactSelectionRequestHandled={handleGalleryArtifactSelectionRequest}
             mediaCapability={mediaCapability}
             onUploadAttachment={async (file, signal) => {
               const capability = await getDesktopV3MediaCapability(normalizedSessionId);
@@ -2922,6 +3436,7 @@ export function DesktopV3ExistingConversationPane({
             onOpenAuthSettings={handleOpenAuthSettings}
             onConfirmAgentSettings={handleConfirmAgentSettings}
             onApplyModelFavorite={handleApplyModelFavorite}
+            onApplyModelFavoriteChatOnly={handleApplyModelFavorite}
             agentModelControlBusy={agentModelSaving}
             thinking={displayedPreference.thinking}
             thinkingTagsEnabled={thinkingTagsEnabled}
@@ -2937,39 +3452,85 @@ export function DesktopV3ExistingConversationPane({
           />
         </div>
 
-        {pendingPlanDocument && pendingPlanPermission ? (
-          <DesktopPlanAgentSidecar
-            parentSessionId={normalizedSessionId}
-            permission={pendingPlanPermission}
-            document={pendingPlanDocument}
-            embedded
-            mobileOpen={planAgentMobileOpen}
-            modelLabel={displayedPreference.model}
-            displayMode={planSidebarDisplayMode}
-            onClose={() => setPlanAgentMobileOpen(false)}
-
-          />
-        ) : showPlanExecutionSidebar && planExecutionView ? (
+        {showConversationSidebarColumn ? (
           <div
-            className="hidden min-h-0 min-w-0 overflow-hidden min-[1300px]:flex min-[1300px]:flex-col"
-            data-plan-sidebar-column
+            className={stablePlanDocument
+              ? "contents min-[1300px]:flex min-[1300px]:min-h-0 min-[1300px]:min-w-0 min-[1300px]:flex-col min-[1300px]:overflow-hidden"
+              : "hidden min-h-0 min-w-0 overflow-hidden min-[1300px]:flex min-[1300px]:flex-col"}
+            data-session-sidebar-column
+            data-plan-sidebar-column={showPlanSidebar ? true : undefined}
           >
-            <DesktopPlanExecutionSidebar
-              view={planExecutionView}
-              busyAction={planExecutionBusyAction}
-              canStop={Boolean(currentRun)}
-              onAction={stablePlanExecutionAction}
-              onStop={stableStop}
-              onEditPlan={stableOpenPlan}
-              belowActions={planSidebarBelowActions}
-              displayMode={planSidebarDisplayMode}
-              taskChildren={taskChildren}
-              taskChildActions={taskChildActions}
-              canonicalRecommendation={canonicalFinalHandoffRecommendation}
-            />
+            {showPlanSidebar && hasSessionArtifacts ? (
+              <div className={cn("shrink-0 border-b border-l border-[var(--app-border)]/60 bg-[var(--app-surface)]", planSidebarDisplayMode === "thin" ? "grid gap-1 p-1.5" : "grid grid-cols-2 gap-1 p-2")} role="tablist" aria-label="Session sidebar view" data-session-sidebar-toggle>
+                <button type="button" role="tab" aria-selected={activeSidebarView === "plan"} aria-label="Show plan sidebar" title="Plan" onClick={() => setSidebarView("plan")} className={cn("inline-flex min-h-8 items-center justify-center gap-1.5 rounded-md px-2 text-xs font-semibold transition", activeSidebarView === "plan" ? "bg-[var(--app-surface-active)] text-[var(--app-text)]" : "text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)]", planSidebarDisplayMode === "thin" && "px-0")}><ListChecks size={14} aria-hidden="true" />{planSidebarDisplayMode !== "thin" ? "Plan" : null}</button>
+                <button type="button" role="tab" aria-selected={activeSidebarView === "artifacts"} aria-label={`Show ${sessionArtifacts.length} session artifacts`} title="Artifacts" onClick={() => setSidebarView("artifacts")} className={cn("inline-flex min-h-8 items-center justify-center gap-1.5 rounded-md px-2 text-xs font-semibold transition", activeSidebarView === "artifacts" ? "bg-[var(--app-surface-active)] text-[var(--app-text)]" : "text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)]", planSidebarDisplayMode === "thin" && "px-0")}><GalleryHorizontal size={14} aria-hidden="true" />{planSidebarDisplayMode !== "thin" ? `Artifacts ${sessionArtifacts.length}` : null}</button>
+              </div>
+            ) : null}
+            <div className={stablePlanDocument
+              ? "contents min-[1300px]:flex min-[1300px]:min-h-0 min-[1300px]:min-w-0 min-[1300px]:flex-1 min-[1300px]:flex-col min-[1300px]:overflow-hidden"
+              : "flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden"}>
+              {activeSidebarView === "artifacts" ? (
+                <DesktopV3ArtifactSidebar artifacts={sessionArtifacts} displayMode={planSidebarDisplayMode} loading={sessionArtifactsLoading} error={sessionArtifactsError} artifactHref={artifactViewerHref} onOpenArtifact={openArtifactFullView} onAddToChat={(artifacts) => queueGalleryArtifactSelections(artifacts.map((artifact) => desktopV3ArtifactMessageSelection(artifact, "select")))} />
+              ) : stablePlanDocument && stablePlanPermission && planSidebarViewport ? (
+                <DesktopPlanAgentSidecar
+                  parentSessionId={normalizedSessionId}
+                  permission={stablePlanPermission}
+                  document={stablePlanDocument}
+                  embedded
+                  modelLabel={displayedPreference.model}
+                  displayMode={planSidebarDisplayMode}
+                />
+              ) : showPlanExecutionSidebar ? (
+                <IsolatedPlanExecutionSidebar
+                  sessionId={normalizedSessionId}
+                  busyAction={planExecutionBusyAction}
+                  canStop={Boolean(currentRun)}
+                  onAction={stablePlanExecutionAction}
+                  onStop={stableStop}
+                  onEditPlan={stableOpenPlan}
+                  belowActions={planSidebarBelowActions}
+                  displayMode={planSidebarDisplayMode}
+                  taskRows={taskChildRows}
+                  taskChildActions={taskChildActions}
+                />
+              ) : null}
+            </div>
           </div>
         ) : null}
       </div>
+
+      {artifactReviewPresentation !== "embedded" ? <DesktopV3ArtifactGallery
+        artifacts={sessionArtifacts}
+        open={artifactGalleryOpen}
+        onOpenChange={setArtifactGalleryOpenFromViewer}
+        showTrigger={false}
+        loading={sessionArtifactsLoading}
+        error={sessionArtifactsError}
+        title="Session artifacts"
+        initialArtifactKey={artifactGalleryInitialKey}
+        initialCollectionId={artifactGalleryInitialCollectionId}
+        artifactHref={artifactViewerHref}
+        collectionHref={artifactCollectionViewerHref}
+        onArtifactNavigate={navigateArtifactViewer}
+        onCollectionNavigate={navigateArtifactCollectionViewer}
+        onAddToChat={(artifacts) => {
+          queueGalleryArtifactSelections(artifacts.map(({ label, description, selection }) => ({ ...selection, label, description, action: "select" })));
+          setArtifactGalleryOpenFromViewer(false);
+          setArtifactComposerFocusSignal((current) => current + 1);
+        }}
+        onUseThisDesign={({ label, description, selection }) => {
+          queueGalleryArtifactSelections([{ ...selection, label, description, action: "use" }]);
+          setArtifactGalleryOpenFromViewer(false);
+          setArtifactComposerFocusSignal((current) => current + 1);
+        }}
+        onExportVideoStills={({ label, description, selection }, prompt) => {
+          queueGalleryArtifactSelections([{ ...selection, label, description, action: "select" }]);
+          composerControllerRef.current?.setDraft(prompt);
+          setArtifactGalleryOpenFromViewer(false);
+          setArtifactComposerFocusSignal((current) => current + 1);
+        }}
+        onSelectionPersisted={refreshSessionArtifacts}
+      /> : null}
 
       <DesktopPermissionModal
         key={`permission:${normalizedSessionId}`}
@@ -2990,12 +3551,22 @@ export const DesktopV3RenderItemView = memo(function DesktopV3RenderItemView({
   thinkingTagsEnabled,
   taskChildActions,
   onSuggestedPrompt,
+  onPrefillPrompt,
+  artifactCatalog = [],
+  artifactHref,
+  onArtifactNavigate,
+  onArtifactSelections,
 }: {
   item: DesktopV3RenderItem;
   thinkingTagsEnabled: boolean;
   index: number;
   taskChildActions?: TaskChildCardActions;
   onSuggestedPrompt?: (prompt: string) => void | Promise<void>;
+  onPrefillPrompt?: (prompt: string) => void;
+  artifactCatalog?: DesktopV3ArtifactCatalogEntry[];
+  artifactHref?: (artifact: DesktopV3ArtifactCatalogEntry) => string;
+  onArtifactNavigate?: (artifact: DesktopV3ArtifactCatalogEntry) => void;
+  onArtifactSelections?: (selections: DesktopV3ArtifactMessageSelection[]) => void;
 }) {
   switch (item.type) {
     case "plan-break":
@@ -3003,7 +3574,7 @@ export const DesktopV3RenderItemView = memo(function DesktopV3RenderItemView({
     case "plan-checkpoint-handoff":
       return <DesktopV3PlanCheckpointHandoff item={item} />;
     case "plan-final-handoff":
-      return <DesktopV3PlanFinalHandoff item={item} onSuggestedPrompt={onSuggestedPrompt} />;
+      return <DesktopV3PlanFinalHandoff item={item} onSuggestedPrompt={onSuggestedPrompt} onPrefillPrompt={onPrefillPrompt} artifactCatalog={artifactCatalog} artifactHref={artifactHref} onArtifactNavigate={onArtifactNavigate} />;
     case "plan-blocked-handoff":
       return <DesktopV3PlanBlockedHandoff item={item} onSuggestedPrompt={onSuggestedPrompt} />;
     case "message":
@@ -3012,6 +3583,10 @@ export const DesktopV3RenderItemView = memo(function DesktopV3RenderItemView({
           message={item.message}
           thinkingTagsEnabled={thinkingTagsEnabled}
           taskChildActions={taskChildActions}
+          artifactCatalog={artifactCatalog}
+          artifactHref={artifactHref}
+          onArtifactNavigate={onArtifactNavigate}
+          onArtifactSelections={onArtifactSelections}
         />
       );
     case "pending-user":
@@ -3028,7 +3603,16 @@ export const DesktopV3RenderItemView = memo(function DesktopV3RenderItemView({
         />
       );
     case "live-tool":
-      return <DesktopV3LiveToolCall tool={item.tool} taskChildActions={taskChildActions} />;
+      return (
+        <DesktopV3LiveToolCall
+          tool={item.tool}
+          taskChildActions={taskChildActions}
+          artifactCatalog={artifactCatalog}
+          artifactHref={artifactHref}
+          onArtifactNavigate={onArtifactNavigate}
+          onArtifactSelections={onArtifactSelections}
+        />
+      );
     case "search-read-group":
       return <SearchReadToolGroupView toolMessages={item.toolMessages} />;
     case "live-working":
@@ -3226,7 +3810,7 @@ function DesktopV3CheckpointReviewCardView({
         {(card.plan || checkpointId) ? (
           <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 border-t border-[var(--app-border)] bg-[color-mix(in_srgb,var(--app-bg-alt)_42%,transparent)] px-4 py-2 text-[10px] text-[var(--app-text-subtle)]">
             {card.plan ? <span className="min-w-0 truncate">Plan: {card.plan}</span> : null}
-            {checkpointId ? <code className="ml-auto shrink-0 font-mono">{checkpointId}</code> : null}
+            {checkpointId ? <span className="ml-auto shrink-0">Checkpoint</span> : null}
           </div>
         ) : null}
       </section>
@@ -3308,9 +3892,17 @@ function DesktopV3PlanCheckpointHandoff({
 function DesktopV3PlanFinalHandoff({
   item,
   onSuggestedPrompt,
+  onPrefillPrompt,
+  artifactCatalog,
+  artifactHref,
+  onArtifactNavigate,
 }: {
   item: Extract<DesktopV3RenderItem, { type: "plan-final-handoff" }>;
   onSuggestedPrompt?: (prompt: string) => void | Promise<void>;
+  onPrefillPrompt?: (prompt: string) => void;
+  artifactCatalog: DesktopV3ArtifactCatalogEntry[];
+  artifactHref?: (artifact: DesktopV3ArtifactCatalogEntry) => string;
+  onArtifactNavigate?: (artifact: DesktopV3ArtifactCatalogEntry) => void;
 }) {
   if (item.finalHandoff) {
     return (
@@ -3318,6 +3910,10 @@ function DesktopV3PlanFinalHandoff({
         item={item}
         handoff={item.finalHandoff}
         onSuggestedPrompt={onSuggestedPrompt}
+        onPrefillPrompt={onPrefillPrompt}
+        artifactCatalog={artifactCatalog}
+        artifactHref={artifactHref}
+        onArtifactNavigate={onArtifactNavigate}
       />
     );
   }
@@ -3330,6 +3926,51 @@ function DesktopV3PlanFinalHandoff({
   );
 }
 
+async function copyDesktopV3HandoffCode(code: string): Promise<void> {
+  if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(code);
+    return;
+  }
+  if (typeof document === "undefined") return;
+  const textarea = document.createElement("textarea");
+  textarea.value = code;
+  textarea.setAttribute("readonly", "true");
+  textarea.style.position = "fixed";
+  textarea.style.opacity = "0";
+  document.body.appendChild(textarea);
+  textarea.select();
+  document.execCommand("copy");
+  textarea.remove();
+}
+
+function DesktopV3HandoffCopyableCodeBlocks({ handoff, tone = "primary" }: { handoff: DesktopPlanFinalHandoff; tone?: "primary" | "warning" }) {
+  const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
+  if (handoff.copyableCodeBlocks.length === 0) return null;
+  return (
+    <div className="mt-3 grid gap-2" data-handoff-copyable-code-blocks>
+      {handoff.copyableCodeBlocks.map((block, index) => (
+        <section key={`copyable-code:${index}`} className="overflow-hidden rounded-lg border border-[var(--app-border)] bg-[var(--app-code-bg)]">
+          <header className="flex items-center justify-between gap-3 border-b border-[var(--app-border)] px-3 py-1.5">
+            <span className="min-w-0 truncate text-[10px] font-semibold uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">{block.label || (block.language ? block.language : "Copy this")}</span>
+            <button
+              type="button"
+              className="inline-flex shrink-0 items-center gap-1.5 rounded px-2 py-1 text-[10px] font-medium text-[var(--app-text-muted)] transition hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-primary)]"
+              aria-label={`Copy ${block.label || "code"}`}
+              onClick={() => { void copyDesktopV3HandoffCode(block.code).then(() => { setCopiedIndex(index); window.setTimeout(() => setCopiedIndex((current) => current === index ? null : current), 1600); }); }}
+              data-handoff-copy-code
+              data-handoff-code-tone={tone}
+            >
+              {copiedIndex === index ? <Check size={12} aria-hidden="true" /> : <Copy size={12} aria-hidden="true" />}
+              {copiedIndex === index ? "Copied" : "Copy"}
+            </button>
+          </header>
+          <pre className="max-h-64 overflow-auto whitespace-pre p-3 font-mono text-xs leading-5 text-[var(--app-text)]"><code className={block.language ? `language-${block.language}` : undefined}>{block.code}</code></pre>
+        </section>
+      ))}
+    </div>
+  );
+}
+
 export function selectDesktopV3SuggestedPrompt(
   prompt: string,
   onSuggestedPrompt?: (prompt: string) => void | Promise<void>,
@@ -3338,18 +3979,134 @@ export function selectDesktopV3SuggestedPrompt(
   void onSuggestedPrompt(prompt);
 }
 
+type DesktopV3FinalHandoffNextStep = DesktopPlanFinalHandoffSuggestedPrompt & {
+  behavior: "send" | "prefill";
+};
+
+function finalHandoffActionLabel(value: string): string {
+  const normalized = value.trim().replace(/[-_]+/g, " ");
+  if (!normalized) return "Continue";
+  return normalized.replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+export function buildDesktopV3FinalHandoffNextSteps(
+  handoff: DesktopPlanFinalHandoff,
+  includeRecommendationPrompt = true,
+): DesktopV3FinalHandoffNextStep[] {
+  if (handoff.suggestedPrompts.length > 0) {
+    return handoff.suggestedPrompts.slice(0, 3).map((suggestion) => ({
+      ...suggestion,
+      behavior: /clar/i.test(suggestion.label) ? "prefill" : "send",
+    }));
+  }
+
+  const steps: DesktopV3FinalHandoffNextStep[] = [];
+  const recommendationAction = handoff.recommendation?.action.trim() ?? "";
+  const normalizedAction = recommendationAction.toLowerCase().replace(/[-_]+/g, " ");
+  const recommendationPrompt = handoff.recommendation?.prompt?.trim() ?? "";
+  const isReviewOnly = /\breview\b/.test(normalizedAction);
+
+  if (includeRecommendationPrompt && recommendationPrompt && !isReviewOnly) {
+    steps.push({
+      label: finalHandoffActionLabel(recommendationAction),
+      prompt: recommendationPrompt,
+      behavior: "send",
+    });
+  } else if (handoff.recommendation?.decision.trim().toLowerCase() === "change") {
+    steps.push({
+      label: "Request changes",
+      prompt: "Please make the following changes: ",
+      behavior: "prefill",
+    });
+  }
+
+  if (handoff.details.changedFiles.length > 0 && steps.length < 3) {
+    steps.push({
+      label: "Commit changes",
+      prompt: "Commit the completed changes with an appropriate commit message.",
+      behavior: "send",
+    });
+  }
+
+  const validationWasSkipped = handoff.details.validation.length === 0
+    || handoff.details.validation.every((entry) => /not run|not requested|skipped/i.test(entry));
+  if (validationWasSkipped && steps.length < 3) {
+    steps.push({
+      label: "Run focused tests",
+      prompt: "Run the focused tests for these changes and report the results.",
+      behavior: "send",
+    });
+  }
+
+  const substantialHandoff = handoff.details.changedFiles.length >= 3 || handoff.impactBullets.length >= 2;
+  if ((substantialHandoff || steps.length === 0) && steps.length < 3) {
+    steps.push({
+      label: "Ask for clarity",
+      prompt: "I have a question about these changes: ",
+      behavior: "prefill",
+    });
+  }
+
+  return steps;
+}
+
 function DesktopV3StructuredFinalHandoff({
   item,
   handoff,
   onSuggestedPrompt,
+  onPrefillPrompt,
+  artifactCatalog,
+  artifactHref,
+  onArtifactNavigate,
 }: {
   item: Extract<DesktopV3RenderItem, { type: "plan-final-handoff" }>;
   handoff: DesktopPlanFinalHandoff;
   onSuggestedPrompt?: (prompt: string) => void | Promise<void>;
+  onPrefillPrompt?: (prompt: string) => void;
+  artifactCatalog: DesktopV3ArtifactCatalogEntry[];
+  artifactHref?: (artifact: DesktopV3ArtifactCatalogEntry) => string;
+  onArtifactNavigate?: (artifact: DesktopV3ArtifactCatalogEntry) => void;
 }) {
   const recommendation = handoff.recommendation;
   const details = handoff.details;
   const hasDetails = Boolean(details.report || details.result);
+  const nextSteps = buildDesktopV3FinalHandoffNextSteps(handoff, handoff.artifacts.length === 0);
+  const handoffArtifacts = handoff.artifacts.flatMap((artifact): DesktopV3ArtifactGalleryEntry[] => {
+    const isVideoSource = Boolean(artifact.sourceRef);
+    const isManagedArtifact = !isVideoSource && Boolean(artifact.sessionId || artifact.collectionId || artifact.eventSeq);
+    const exactCatalogEntry = artifactCatalog.find((entry) => (
+      entry.artifactId === artifact.artifactId
+      && (!isManagedArtifact || (
+        entry.sessionId === artifact.sessionId
+        && entry.collectionId === artifact.collectionId
+        && entry.eventSeq === artifact.eventSeq
+      ))
+    ));
+    if (exactCatalogEntry) return [exactCatalogEntry];
+    if (isManagedArtifact && (!artifact.sessionId || !artifact.collectionId || !artifact.eventSeq)) return [];
+    const fallbackArtifact: DesktopV3ArtifactGalleryEntry = {
+      ...artifact,
+      sourceRef: artifact.sourceRef || "",
+      sessionId: artifact.sessionId || item.message.session_id,
+      collectionId: artifact.collectionId || "",
+      eventSeq: artifact.eventSeq || 0,
+      sessionTitle: "This session",
+      workspacePath: "",
+      workspaceName: "",
+      planId: "",
+      planTitle: "",
+      checkpointId: "",
+      checkpointTitle: "",
+      collectionName: "",
+      collectionDescription: "",
+      filename: artifact.filename || artifact.label,
+      kind: artifact.kind || artifact.mediaType,
+      category: artifact.category || (artifact.mediaType === "text/html" || artifact.mediaType === "application/pdf" || artifact.mediaType.startsWith("image/") || artifact.mediaType.startsWith("video/") || artifact.kind === "video" ? "visual" : "document"),
+      status: "ready",
+      updatedAt: 0,
+    };
+    return [fallbackArtifact];
+  });
   return (
     <div className="flex w-full min-w-0 justify-start py-1" data-testid="desktop-v3-plan-final-handoff">
       <section
@@ -3381,13 +4138,54 @@ function DesktopV3StructuredFinalHandoff({
           </ul>
         ) : null}
 
+        <DesktopV3HandoffCopyableCodeBlocks handoff={handoff} />
+
         {recommendation ? (
           <div className="mt-3 border-l-2 border-[var(--app-primary)] pl-3" data-final-handoff-recommendation>
             <div className="text-[10px] font-semibold uppercase tracking-[0.1em] text-[var(--app-text-subtle)]">Recommendation</div>
-            <div className="mt-0.5 font-medium text-[var(--app-text)]">
-              {recommendation.decision.replace(/[-_]+/g, " ")} — {recommendation.action.replace(/[-_]+/g, " ")}
-            </div>
-            {recommendation.reason ? <p className="mt-1 text-xs leading-5 text-[var(--app-text-muted)]">{recommendation.reason}</p> : null}
+            {recommendation.reason ? (
+              <p className="mt-1 text-sm leading-5 text-[var(--app-text-muted)]" data-final-handoff-recommendation-summary>
+                {recommendation.reason}
+              </p>
+            ) : null}
+          </div>
+        ) : null}
+
+        {handoffArtifacts.length > 0 ? (
+          <div className="mt-3 flex flex-wrap gap-3" data-final-handoff-artifacts>
+            {handoffArtifacts.map((artifact) => {
+              const videoSourceHref = artifact.sourceRef
+                ? `/v3/sessions/${encodeURIComponent(artifact.sessionId)}/video/sources/media?source_ref=${encodeURIComponent(artifact.sourceRef)}`
+                : "";
+              const href = videoSourceHref || artifactHref?.(artifact);
+              if (!href) return null;
+              const catalogedArtifact = artifactCatalog.some((entry) => desktopV3ArtifactCatalogEntryKey(entry) === desktopV3ArtifactCatalogEntryKey(artifact));
+              const openArtifact = (event: ReactMouseEvent<HTMLAnchorElement>) => {
+                if (videoSourceHref || !onArtifactNavigate || !catalogedArtifact || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+                event.preventDefault();
+                onArtifactNavigate(artifact);
+              };
+              return (
+                <a
+                  key={`${artifact.sessionId}:${artifact.collectionId ?? ""}:${artifact.artifactId}`}
+                  href={href}
+                  onClick={openArtifact}
+                  className="group w-full max-w-sm overflow-hidden rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] transition hover:border-[var(--app-border-active)] hover:bg-[var(--app-surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-primary)]"
+                  aria-label={`Open ${artifact.label} artifact`}
+                  data-final-handoff-artifact-link
+                  data-artifact-id={artifact.artifactId}
+                >
+                  <DesktopV3ArtifactPreviewThumbnail artifact={artifact} className="rounded-none border-0 border-b border-[var(--app-border)]" />
+                  <div className="flex min-w-0 items-center justify-between gap-3 p-3">
+                    <div className="min-w-0">
+                      <div className="truncate text-xs font-semibold text-[var(--app-text)]">{artifact.label}</div>
+                      <div className="truncate text-[10px] text-[var(--app-text-subtle)]">{artifact.filename || artifact.mediaType}</div>
+                    </div>
+                    <ExternalLink size={14} className="shrink-0 text-[var(--app-primary)]" aria-hidden="true" />
+                  </div>
+                </a>
+              );
+            })}
           </div>
         ) : null}
 
@@ -3406,23 +4204,30 @@ function DesktopV3StructuredFinalHandoff({
           </div>
         ) : null}
 
-        {handoff.suggestedPrompts.length > 0 ? (
+        {nextSteps.length > 0 ? (
           <div className="mt-3" data-final-handoff-suggestions>
-            <div className="text-[10px] font-semibold uppercase tracking-[0.1em] text-[var(--app-text-subtle)]">Next steps</div>
+            <div className="text-[10px] font-semibold uppercase tracking-[0.1em] text-[var(--app-text-subtle)]">Suggested next steps</div>
             <div className="mt-1.5 flex flex-wrap gap-2">
-              {handoff.suggestedPrompts.map((suggestion, index) => (
-                <button
-                  key={`${item.message.id}:prompt:${index}`}
-                  type="button"
-                  className="rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-1.5 text-left text-xs font-medium text-[var(--app-text)] transition hover:border-[var(--app-border-active)] hover:bg-[var(--app-surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-primary)] disabled:cursor-not-allowed disabled:opacity-50"
-                  disabled={!onSuggestedPrompt}
-                  title={suggestion.prompt}
-                  onClick={() => selectDesktopV3SuggestedPrompt(suggestion.prompt, onSuggestedPrompt)}
-                  data-final-handoff-prompt={suggestion.prompt}
-                >
-                  {suggestion.label}
-                </button>
-              ))}
+              {nextSteps.map((suggestion, index) => {
+                const available = suggestion.behavior === "prefill" ? Boolean(onPrefillPrompt) : Boolean(onSuggestedPrompt);
+                return (
+                  <button
+                    key={`${item.message.id}:prompt:${index}`}
+                    type="button"
+                    className="rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-1.5 text-left text-xs font-medium text-[var(--app-text)] transition hover:border-[var(--app-border-active)] hover:bg-[var(--app-surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-primary)] disabled:cursor-not-allowed disabled:opacity-50"
+                    disabled={!available}
+                    title={suggestion.prompt}
+                    onClick={() => {
+                      if (suggestion.behavior === "prefill") onPrefillPrompt?.(suggestion.prompt);
+                      else selectDesktopV3SuggestedPrompt(suggestion.prompt, onSuggestedPrompt);
+                    }}
+                    data-final-handoff-prompt={suggestion.prompt}
+                    data-final-handoff-prompt-behavior={suggestion.behavior}
+                  >
+                    {suggestion.label}
+                  </button>
+                );
+              })}
             </div>
           </div>
         ) : null}
@@ -3509,6 +4314,7 @@ function DesktopV3PlanBlockedHandoff({
                     ))}
                   </ul>
                 ) : null}
+                <DesktopV3HandoffCopyableCodeBlocks handoff={handoff} tone="warning" />
                 {handoff.suggestedPrompts.length > 0 ? (
                   <div className="mt-3" data-blocked-handoff-suggestions>
                     <div className="text-[10px] font-semibold uppercase tracking-[0.1em] text-[var(--app-text-subtle)]">Next steps</div>
@@ -3634,10 +4440,18 @@ function DesktopV3CommittedMessage({
   message,
   thinkingTagsEnabled,
   taskChildActions,
+  artifactCatalog,
+  artifactHref,
+  onArtifactNavigate,
+  onArtifactSelections,
 }: {
   message: MessageSnapshot;
   thinkingTagsEnabled: boolean;
   taskChildActions?: TaskChildCardActions;
+  artifactCatalog?: DesktopV3ArtifactCatalogEntry[];
+  artifactHref?: (artifact: DesktopV3ArtifactCatalogEntry) => string;
+  onArtifactNavigate?: (artifact: DesktopV3ArtifactCatalogEntry) => void;
+  onArtifactSelections?: (selections: DesktopV3ArtifactMessageSelection[]) => void;
 }) {
   const role = message.role || "message";
   const toolMessage = message.toolMessage ?? null;
@@ -3648,11 +4462,15 @@ function DesktopV3CommittedMessage({
         toolMessage={toolMessage}
         thinkingTagsEnabled={thinkingTagsEnabled}
         taskChildActions={taskChildActions}
+        artifactCatalog={artifactCatalog}
+        artifactHref={artifactHref}
+        onArtifactNavigate={onArtifactNavigate}
+        onArtifactSelections={onArtifactSelections}
       />
     );
   }
   if (role === "user") {
-    return <DesktopV3UserMessage content={message.content} media={message.media} />;
+    return <DesktopV3UserMessage content={message.content} media={message.media} artifactSelections={message.artifact_selections} />;
   }
   if (role === "reasoning") {
     return (
@@ -3689,10 +4507,12 @@ function DesktopV3CommittedMessage({
 function DesktopV3UserMessage({
   content,
   media,
+  artifactSelections,
   pendingLabel,
 }: {
   content: string;
   media?: DesktopV3MediaReference[];
+  artifactSelections?: DesktopV3ArtifactSelectionReference[];
   pendingLabel?: string;
 }) {
   return (
@@ -3700,6 +4520,7 @@ function DesktopV3UserMessage({
       <div className="max-w-[70%] rounded-xl bg-[var(--app-primary)] px-4 py-3 text-sm leading-6 text-[var(--app-primary-text)] shadow-sm">
         {content ? <div className="whitespace-pre-wrap break-words">{content}</div> : null}
         {media?.length ? <div className="mt-2 flex flex-wrap gap-1.5">{media.map((item, index) => <span key={`${item.asset_id}:${index}`} className="rounded-md border border-white/25 px-2 py-1 text-xs">{item.file_type?.toUpperCase() || item.mime_type} · {Math.ceil(item.size / 1024)} KB</span>)}</div> : null}
+        {artifactSelections?.length ? <div className="mt-2 flex flex-wrap gap-1.5" data-testid="desktop-user-message-artifact-selections">{artifactSelections.map((selection) => <span key={`${selection.session_id}:${selection.collection_id}:${selection.variant_id}`} className="inline-flex min-w-0 max-w-full items-center gap-1.5 rounded-md border border-white/30 bg-white/10 px-2 py-1 text-xs"><GalleryHorizontal size={12} className="shrink-0" aria-hidden="true" /><span className="max-w-52 truncate" title={selection.description || selection.label}>{selection.label || 'Designer iteration'}</span>{selection.action === 'use' ? <span className="text-[9px] font-semibold uppercase tracking-wide opacity-75">Use design</span> : null}</span>)}</div> : null}
         {pendingLabel ? (
           <div className="mt-1 text-right text-[10px] uppercase tracking-[0.12em] opacity-70">
             {pendingLabel}
@@ -3719,6 +4540,7 @@ function DesktopV3PendingUserMessage({
     <DesktopV3UserMessage
       content={message.content}
       media={message.media}
+      artifactSelections={message.artifactSelections}
       pendingLabel={
         message.status === "failed" ? message.error || "failed" : undefined
       }
@@ -3771,32 +4593,38 @@ function DesktopV3ToolMessage({
   toolMessage,
   thinkingTagsEnabled = true,
   taskChildActions,
+  artifactCatalog,
+  artifactHref,
+  onArtifactNavigate,
+  onArtifactSelections,
 }: {
   content: string;
   toolMessage: StructuredToolMessage | null;
   thinkingTagsEnabled?: boolean;
   taskChildActions?: TaskChildCardActions;
+  artifactCatalog?: DesktopV3ArtifactCatalogEntry[];
+  artifactHref?: (artifact: DesktopV3ArtifactCatalogEntry) => string;
+  onArtifactNavigate?: (artifact: DesktopV3ArtifactCatalogEntry) => void;
+  onArtifactSelections?: (selections: DesktopV3ArtifactMessageSelection[]) => void;
 }) {
   const toolName = toolMessage?.tool.trim().toLowerCase();
-  const usesFullWidthCard = toolName === "bash" || toolName === "task" || ["read", "list", "search", "edit", "websearch", "webfetch", "plan-manage", "plan_manage", "exit-plan-mode", "exit_plan_mode"].includes(toolName ?? "");
   return (
     <div
       className={cn(
-        "flex justify-start",
+        "flex w-full min-w-0 justify-start",
         toolName === "bash" && "translate-x-[5px]",
       )}
     >
-      <div
-        className={cn(
-          "min-w-0",
-          usesFullWidthCard ? "w-full max-w-full" : "max-w-[calc(100%-2rem)]",
-        )}
-      >
+      <div className="w-full min-w-0 max-w-full">
         <ChatMarkdown
           content={content}
           toolMessage={toolMessage ?? undefined}
           thinkingTagsEnabled={thinkingTagsEnabled}
           taskChildActions={taskChildActions}
+          artifactCatalog={artifactCatalog}
+          artifactHref={artifactHref}
+          onArtifactNavigate={onArtifactNavigate}
+          onArtifactSelections={onArtifactSelections}
         />
       </div>
     </div>
@@ -3895,11 +4723,29 @@ function structuredLiveToolMessage(
 function DesktopV3LiveToolCall({
   tool,
   taskChildActions,
+  artifactCatalog,
+  artifactHref,
+  onArtifactNavigate,
+  onArtifactSelections,
 }: {
   tool: LiveRunOverlay["toolCallsByCallId"][string];
   taskChildActions?: TaskChildCardActions;
+  artifactCatalog?: DesktopV3ArtifactCatalogEntry[];
+  artifactHref?: (artifact: DesktopV3ArtifactCatalogEntry) => string;
+  onArtifactNavigate?: (artifact: DesktopV3ArtifactCatalogEntry) => void;
+  onArtifactSelections?: (selections: DesktopV3ArtifactMessageSelection[]) => void;
 }) {
-  return <DesktopV3ToolMessage content="" toolMessage={structuredLiveToolMessage(tool)} taskChildActions={taskChildActions} />;
+  return (
+    <DesktopV3ToolMessage
+      content=""
+      toolMessage={structuredLiveToolMessage(tool)}
+      taskChildActions={taskChildActions}
+      artifactCatalog={artifactCatalog}
+      artifactHref={artifactHref}
+      onArtifactNavigate={onArtifactNavigate}
+      onArtifactSelections={onArtifactSelections}
+    />
+  );
 }
 
 export function chatMessageToMessageSnapshot(

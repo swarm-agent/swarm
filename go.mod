@@ -1,6 +1,6 @@
 module swarm-refactor/swarmtui
 
-go 1.25.12
+go 1.26.7
 
 require (
 	github.com/alecthomas/chroma/v2 v2.24.1

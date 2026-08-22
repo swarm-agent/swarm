@@ -88,6 +88,22 @@ func TestSessionMediaToolOmittedForEmptyAndNonPilotContracts(t *testing.T) {
 	}
 }
 
+func TestProviderToolMediaInputItemsCarriesOnlyAuthorizedPayload(t *testing.T) {
+	payload := tool.MediaPayload{AssetID: "asset", Modality: "image", MIMEType: "image/png", Size: 3, Bytes: []byte("png")}
+	items := providerToolMediaInputItems([]tool.Result{{Name: mediaInspectToolName, Media: &payload}})
+	if len(items) != 1 {
+		t.Fatalf("media input items = %#v", items)
+	}
+	content, ok := items[0]["content"].([]map[string]any)
+	if !ok || len(content) != 1 || content[0]["type"] != "session_media" {
+		t.Fatalf("media input content = %#v", items[0]["content"])
+	}
+	got, ok := content[0]["media"].(provideriface.SessionMediaPayload)
+	if !ok || got.AssetID != payload.AssetID || string(got.Bytes) != "png" {
+		t.Fatalf("media input payload = %#v", content[0]["media"])
+	}
+}
+
 func TestMediaInspectInvocationRejectsForgedStaleAndDeniedCalls(t *testing.T) {
 	contract := provideriface.SessionMediaContract{Hash: "current", Capabilities: []provideriface.MediaContractCapability{{Modality: "image", State: provideriface.MediaCapabilityStateAllowed, MIMETypes: []string{"image/png"}, FileTypes: []string{"png"}, MaxBytes: 1024, MaxCount: 1}}}
 	if _, err := validateMediaInspectInvocation(contract, "image", "image/png", "png"); err != nil {
@@ -104,6 +120,34 @@ func TestMediaInspectInvocationRejectsForgedStaleAndDeniedCalls(t *testing.T) {
 	}
 	if args, err := decodeMediaInspectArguments(`{"path":"web/public/pwa-icon-512.png"}`); err != nil || args.Path == "" {
 		t.Fatalf("workspace media path rejected: args=%+v err=%v", args, err)
+	}
+}
+
+func TestDesignerMediaToolIsMaterializedOnlyForAllowedResolvedModelContract(t *testing.T) {
+	profile := agentruntime.DesignerAgentProfileForParent(pebblestore.AgentProfile{})
+	if !AgentProfileAuthorizesMedia(profile) {
+		t.Fatal("compiled Designer profile did not explicitly authorize media")
+	}
+	base := []provideriface.ToolDefinition{{Type: "function", Name: "read"}, {Type: "function", Name: mediaInspectToolName}}
+	catalog := &pebblestore.ModelCatalogRecord{
+		Provider: "openai", Model: "designer-vision", Source: "live", SourceSnapshotID: "designer-snapshot", SourceSnapshotVersion: "v1",
+		Media: &pebblestore.ModelCatalogMediaCapabilities{State: pebblestore.ModelCatalogMediaStateSupported, ProviderSurface: provideriface.MediaProviderSurfaceOpenAIResponses, CredentialSurface: provideriface.MediaCredentialSurfaceOpenAIAPIKey, Inputs: []pebblestore.ModelCatalogMediaDirection{{Modality: "image", State: pebblestore.ModelCatalogMediaStateSupported, Semantics: pebblestore.ModelCatalogMediaSemanticsNative, MIMETypes: []string{"image/png"}}}},
+	}
+	input := SessionMediaContractInput{
+		ProviderID: "openai", Model: catalog.Model, Catalog: catalog, CatalogMeta: &pebblestore.ModelCatalogMeta{SnapshotID: catalog.SourceSnapshotID, SnapshotVersion: catalog.SourceSnapshotVersion},
+		Adapter:         provideriface.MediaAdapterDeclaration{AdapterID: provideriface.MediaAdapterIDOpenAIResponsesV1, ProviderID: "openai", ProviderSurface: provideriface.MediaProviderSurfaceOpenAIResponses, CredentialSurface: provideriface.MediaCredentialSurfaceOpenAIAPIKey, CredentialFingerprint: "designer-credential", Inputs: []provideriface.MediaAdapterCapability{{Modality: "image", Semantics: pebblestore.ModelCatalogMediaSemanticsNative, MIMETypes: []string{"image/png"}, ContentTypes: []string{"input_image"}, MaxBytes: 1024, MaxCount: 1}}},
+		AgentAuthorized: AgentProfileAuthorizesMedia(profile), ExecutionMode: "auto", WorkspaceScope: "/workspace", SessionScope: "designer-session",
+	}
+	allowed := CompileSessionMediaContract(input)
+	if tools := MaterializeSessionMediaTool(base, allowed); len(tools) != 2 || tools[1].Name != mediaInspectToolName {
+		t.Fatalf("allowed Designer model tools = %#v, want media_inspect", tools)
+	}
+	input.Model = "designer-text"
+	input.Catalog = &pebblestore.ModelCatalogRecord{Provider: "openai", Model: input.Model, Source: "live", SourceSnapshotID: "designer-text-snapshot", SourceSnapshotVersion: "v1"}
+	input.CatalogMeta = &pebblestore.ModelCatalogMeta{SnapshotID: input.Catalog.SourceSnapshotID, SnapshotVersion: input.Catalog.SourceSnapshotVersion}
+	denied := CompileSessionMediaContract(input)
+	if tools := MaterializeSessionMediaTool(base, denied); len(tools) != 1 || tools[0].Name != "read" {
+		t.Fatalf("unsupported Designer model tools = %#v, want media_inspect omitted", tools)
 	}
 }
 

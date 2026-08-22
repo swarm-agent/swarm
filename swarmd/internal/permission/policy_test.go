@@ -2,6 +2,7 @@ package permission
 
 import (
 	"encoding/json"
+	"fmt"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -10,6 +11,37 @@ import (
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
+
+func TestReadOnlyDiscoveryToolsDefaultAllow(t *testing.T) {
+	for _, toolName := range []string{"read", "search", "find", "list"} {
+		t.Run(toolName, func(t *testing.T) {
+			got := ExplainPolicy(sessionruntime.ModeAuto, toolName, `{}`, DefaultPolicy())
+			if got.Decision != PolicyDecisionAllow {
+				t.Fatalf("%s decision = %q source=%q reason=%q", toolName, got.Decision, got.Source, got.Reason)
+			}
+		})
+	}
+}
+
+func TestManageArtifactDefaultsToAutomaticPrivateAuthority(t *testing.T) {
+	for _, action := range []string{"create", "create_package", "list", "get", "read", "select", "delete", "materialize", "promote"} {
+		arguments := fmt.Sprintf(`{"action":%q}`, action)
+		got := ExplainPolicy("auto", "manage_artifact", arguments, Policy{})
+		if got.Decision != PolicyDecisionAllow {
+			t.Fatalf("manage_artifact %s decision = %q source=%q reason=%q", action, got.Decision, got.Source, got.Reason)
+		}
+	}
+}
+
+func TestManageArtifactGenerateImageRequiresBillingApproval(t *testing.T) {
+	arguments := `{"action":"generate_image","prompt":"a red square"}`
+	if got := ExplainPolicy("auto", "manage_artifact", arguments, Policy{}); got.Decision != PolicyDecisionAsk {
+		t.Fatalf("generate_image decision = %q source=%q reason=%q", got.Decision, got.Source, got.Reason)
+	}
+	if got := ExplainPolicy("auto+bypass_permissions", "manage_artifact", arguments, Policy{}); got.Decision != PolicyDecisionAllow {
+		t.Fatalf("bypassed generate_image decision = %q source=%q reason=%q", got.Decision, got.Source, got.Reason)
+	}
+}
 
 func bashArguments(t *testing.T, command string) string {
 	t.Helper()

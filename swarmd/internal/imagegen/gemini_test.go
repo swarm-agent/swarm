@@ -119,6 +119,34 @@ func (c *blockingGeminiImageClient) GenerateImage(_ context.Context, req GeminiI
 	return GeminiImageGenerationResult{ProviderResponse: map[string]any{"slot": req.OutputIndex}}, nil
 }
 
+func TestGoogleGeminiImageClientGenerateImageIncludesExactSourceInlineData(t *testing.T) {
+	png := testPNGBytes()
+	var gotBody geminiGenerateContentRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Fatalf("decode request body: %v", err)
+		}
+		_ = json.NewEncoder(w).Encode(geminiGenerateContentResponse{Candidates: []geminiRESTCandidate{{Content: &geminiRESTContent{Parts: []geminiRESTPart{{InlineData: &geminiRESTInlineData{MIMEType: "image/png", Data: base64.StdEncoding.EncodeToString(png)}}}}}}})
+	}))
+	defer server.Close()
+
+	client := googleGeminiImageClient{httpClient: server.Client(), baseURL: server.URL}
+	_, err := client.GenerateImage(context.Background(), GeminiImageGenerationRequest{
+		APIKey: "key", Model: "model", Prompt: "make the sky warmer",
+		Source: &ManagedImageSource{Bytes: png, MediaType: "image/png"},
+	})
+	if err != nil {
+		t.Fatalf("GenerateImage remix: %v", err)
+	}
+	parts := gotBody.Contents[0].Parts
+	if len(parts) != 2 || parts[0].Text != "make the sky warmer" || parts[1].InlineData == nil {
+		t.Fatalf("remix parts = %#v", parts)
+	}
+	if parts[1].InlineData.MIMEType != "image/png" || parts[1].InlineData.Data != base64.StdEncoding.EncodeToString(png) {
+		t.Fatalf("source inline data = %#v", parts[1].InlineData)
+	}
+}
+
 func TestGenerateGeminiSlotsParallelKeepsRESTSlotsParallel(t *testing.T) {
 	count := 3
 	client := &blockingGeminiImageClient{ready: make(chan struct{}, count), start: make(chan struct{})}
@@ -151,6 +179,18 @@ func TestGenerateGeminiSlotsParallelKeepsRESTSlotsParallel(t *testing.T) {
 		if len(results) != count {
 			t.Fatalf("results len = %d, want %d", len(results), count)
 		}
+	}
+}
+
+func TestNormalizeGeminiImageSizeAcceptsProviderNeutralPixelAliases(t *testing.T) {
+	for input, want := range map[string]string{"1024x1024": "1K", "2048x2048": "2K", "4096x4096": "4K", "2k": "2K"} {
+		got, err := normalizeGeminiImageSize("gemini-3.1-flash-image", input)
+		if err != nil || got != want {
+			t.Fatalf("normalizeGeminiImageSize(%q) = %q, %v; want %q", input, got, err, want)
+		}
+	}
+	if got, err := normalizeGeminiImageSize("gemini-2.5-flash-image", "512x512"); err != nil || got != "512" {
+		t.Fatalf("normalizeGeminiImageSize(512x512) = %q, %v; want 512", got, err)
 	}
 }
 

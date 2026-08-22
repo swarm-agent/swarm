@@ -41,8 +41,12 @@ test('running edit renders an accessible stable activity card without raw argume
   assert.match(rendered, /aria-live="polite"/)
   assert.match(rendered, /aria-busy="true"/)
   assert.match(rendered, /min-h-\[4\.25rem\]/)
+  assert.match(rendered, /w-full/)
+  assert.match(rendered, /max-w-full/)
+  assert.match(rendered, /self-stretch/)
   assert.match(rendered, /motion-safe:animate-\[pulse_2\.8s_ease-in-out_infinite\]/)
   assert.match(rendered, /motion-reduce:animate-none/)
+  assert.doesNotMatch(rendered, />Active</)
   assert.doesNotMatch(rendered, /unrendered argument body/)
 })
 
@@ -57,6 +61,105 @@ test('plan and task starts use specialized concise labels', () => {
   assert.match(task, /data-tool-activity-kind="task"/)
   assert.doesNotMatch(plan, /action&quot;/)
   assert.doesNotMatch(task, /launch_count/)
+})
+
+test('manage-video shows polished active and result cards with user metadata', () => {
+  const active = markup({
+    tool: 'manage_video',
+    state: 'running',
+    argumentsText: JSON.stringify({ action: 'create_project', title: 'Launch film', output_preset: 'landscape_1080p' }),
+  })
+  assert.match(active, /data-manage-video-card/)
+  assert.match(active, /Setting up video project…/)
+  assert.match(active, /Setting up a video project · Launch film/)
+  assert.match(active, /In progress/)
+  assert.match(active, /motion-safe:animate-\[pulse_1\.8s_ease-in-out_infinite\]/)
+  assert.doesNotMatch(active, /animate-spin/)
+  assert.doesNotMatch(active, /initial_timeline/)
+
+  const result = markup({
+    tool: 'manage_video',
+    state: 'done',
+    outputText: JSON.stringify({
+      action: 'render_status', status: 'ready', progress: 1, project_id: 'vproj_1', revision_id: 'vrev_2', job_id: 'vren_3',
+      presentation: { kind: 'video', title: 'Render status updated', activity_label: 'Checking render progress', subject: 'Launch film' },
+      render_job: { status: 'ready', progress: 1, output_preset: 'landscape_1080p', output_width: 1920, output_height: 1080, output_duration_ms: 65000, output_size_bytes: 5242880, revision_number: 2 },
+    }),
+  })
+  assert.match(result, /data-video-action="render_status"/)
+  assert.match(result, /Render status updated/)
+  assert.match(result, /Launch film/)
+  assert.match(result, /Landscape 1080p/)
+  assert.match(result, /1920 × 1080/)
+  assert.match(result, /1 min 5 sec/)
+  assert.match(result, /5\.0 MB/)
+  assert.match(result, /vproj_1/)
+  assert.match(result, /vrev_2/)
+  assert.match(result, /vren_3/)
+  assert.doesNotMatch(result, /output_digest_sha256/)
+
+  const transcript = markup({
+    tool: 'manage_video',
+    state: 'done',
+    argumentsText: JSON.stringify({ action: 'read_transcript', transcript_ref: 'transcript_1' }),
+    outputText: JSON.stringify({
+      action: 'read_transcript', status: 'ok', source_names: ['ycfinalwithaudio.mp4'],
+      presentation: { kind: 'video', title: 'Transcript ready', activity_label: 'Reading video transcript', subject: 'ycfinalwithaudio.mp4', source_names: ['ycfinalwithaudio.mp4'] },
+      transcript: { duration_ms: 184000, language: 'en', validation: 'validated' },
+    }),
+  })
+  assert.match(transcript, /Source video/)
+  assert.match(transcript, /ycfinalwithaudio\.mp4/)
+  assert.doesNotMatch(transcript, /source_fingerprint/)
+})
+
+test('manage-worktree start shows the requested action and selection metadata', () => {
+  const recall = markup({ tool: 'manage_worktree', state: 'running', argumentsText: '{"action":"recall","task_call_id":"task-call-1"}' })
+  const integrate = markup({ tool: 'manage-worktree', state: 'running', argumentsText: '{"action":"integrate","session_ids":["child-a","child-b"]}' })
+  assert.match(recall, /Running Manage Worktree…/)
+  assert.match(recall, /recall · task-call-1/)
+  assert.match(integrate, /integrate · 2 sessions/)
+})
+
+test('completed manage-worktree recall and integrate results render as structured cards', () => {
+  const recall = markup({
+    tool: 'manage_worktree',
+    state: 'done',
+    outputText: JSON.stringify({
+      action: 'recall',
+      task_call_id: 'task-call-1',
+      total: 2,
+      state_counts: { committed: 1, integrated: 1 },
+      children: [
+        { child_session_id: 'child-a', title: 'API work', child_state: 'committed', child_branch: 'agent/api' },
+        { child_session_id: 'child-b', title: 'UI work', child_state: 'integrated', child_branch: 'agent/ui' },
+      ],
+    }),
+  })
+  assert.match(recall, /data-manage-worktree-card/)
+  assert.match(recall, /Worktree children/)
+  assert.match(recall, /API work/)
+  assert.match(recall, /Committed/)
+  assert.match(recall, /agent\/api/)
+  assert.doesNotMatch(recall, /Action:/)
+
+  const integrate = markup({
+    tool: 'manage-worktree',
+    state: 'done',
+    outputText: JSON.stringify({
+      action: 'integrate',
+      task_call_id: 'task-call-1',
+      selected_count: 2,
+      selection: 'complete_task_call',
+      child_states: { 'child-a': 'integrated', 'child-b': 'integrated' },
+      resulting_parent_head: 'deadbeef',
+    }),
+  })
+  assert.match(integrate, /data-manage-worktree-card/)
+  assert.match(integrate, /Worktrees integrated/)
+  assert.match(integrate, /2 children integrated/)
+  assert.match(integrate, /Complete task call/)
+  assert.match(integrate, /deadbeef/)
 })
 
 test('task stream result content supersedes the start shell in place', () => {

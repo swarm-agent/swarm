@@ -244,6 +244,54 @@ func TestGooglePriorityTransportMarksMissingServedTierUnconfirmed(t *testing.T) 
 	}
 }
 
+func TestBuildGoogleRequestOmitsUnsupportedUniqueItemsWithoutMutatingCanonicalSchema(t *testing.T) {
+	parameters := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"state_ids": map[string]any{
+				"type":        "array",
+				"minItems":    1,
+				"maxItems":    16,
+				"uniqueItems": true,
+				"items": map[string]any{
+					"type":    "string",
+					"pattern": "^[a-z0-9][a-z0-9._-]{0,63}$",
+				},
+			},
+		},
+	}
+
+	request, err := buildGoogleRequest(provideriface.Request{
+		Input: []map[string]any{{"role": "user", "content": "export the selected states"}},
+		Tools: []provideriface.ToolDefinition{{
+			Type: "function", Name: "manage_artifact", Parameters: parameters,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("build Google request: %v", err)
+	}
+	if len(request.Tools) != 1 || len(request.Tools[0].FunctionDeclarations) != 1 {
+		t.Fatalf("Google request tools = %+v, want one declaration", request.Tools)
+	}
+	declaration := request.Tools[0].FunctionDeclarations[0]
+	encoded, err := json.Marshal(declaration.Parameters)
+	if err != nil {
+		t.Fatalf("marshal Google tool parameters: %v", err)
+	}
+	if strings.Contains(string(encoded), `"uniqueItems"`) {
+		t.Fatalf("Google tool parameters retain unsupported uniqueItems: %s", encoded)
+	}
+	for _, supported := range []string{`"minItems":1`, `"maxItems":16`, `"pattern":"^[a-z0-9][a-z0-9._-]{0,63}$"`} {
+		if !strings.Contains(string(encoded), supported) {
+			t.Fatalf("Google tool parameters lost supported constraint %s: %s", supported, encoded)
+		}
+	}
+	stateIDs := parameters["properties"].(map[string]any)["state_ids"].(map[string]any)
+	if stateIDs["uniqueItems"] != true {
+		t.Fatalf("Google serialization mutated canonical schema: %#v", parameters)
+	}
+}
+
 func TestBuildGoogleRequestNormalizesPlanCheckpointAnyOfRequiredBranches(t *testing.T) {
 	definitions := toolruntime.NewRuntime(1).Definitions()
 	planTools := make([]provideriface.ToolDefinition, 0, 2)

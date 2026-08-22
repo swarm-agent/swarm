@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Archive, Clipboard, Download, LoaderCircle, MessageSquare, MessageSquareText, MoreVertical, Pin } from 'lucide-react'
+import { Archive, Clipboard, Download, Film, LoaderCircle, MessageSquare, MessageSquareText, MoreVertical, Pin } from 'lucide-react'
 import { DesktopV3RunStatusPill, formatDesktopV3RunTimerLabel, type DesktopV3RunStatusModel } from './desktop-v3-run-status'
 
 export interface DesktopV3ChatHeaderSessionActions {
@@ -21,6 +21,8 @@ export interface DesktopV3ChatHeaderProps {
   runStatus?: DesktopV3RunStatusModel | null
   runStatusNow?: number
   sessionActions?: DesktopV3ChatHeaderSessionActions | null
+  studioMode?: 'session' | 'studio' | null
+  onToggleStudioMode?: () => void
   onOpenChats?: () => void
   onNewSession?: () => void
   hideMobileIdentity?: boolean
@@ -47,6 +49,8 @@ export function DesktopV3ChatHeader({
   runStatus = null,
   runStatusNow: controlledRunStatusNow,
   sessionActions = null,
+  studioMode = null,
+  onToggleStudioMode,
   onOpenChats,
   onNewSession,
   hideMobileIdentity = false,
@@ -75,8 +79,8 @@ export function DesktopV3ChatHeader({
   }, [controlledRunStatusNow, runStatus?.active])
 
   useEffect(() => {
-    if (!sessionActions) setMobileActionsOpen(false)
-  }, [sessionActions])
+    if (!sessionActions && !(studioMode && onToggleStudioMode)) setMobileActionsOpen(false)
+  }, [onToggleStudioMode, sessionActions, studioMode])
 
   useEffect(() => {
     if (!editingTitle) setTitleDraft(displayTitle)
@@ -188,6 +192,21 @@ export function DesktopV3ChatHeader({
           <DesktopV3RunStatusPill model={runStatus} now={runStatusNow} />
         </div>
 
+        {studioMode && onToggleStudioMode ? (
+          <button
+            type="button"
+            className="hidden h-9 shrink-0 touch-manipulation items-center gap-1.5 rounded-xl border border-transparent bg-transparent px-2 text-xs font-medium text-[var(--app-text-muted)] transition duration-150 hover:bg-[var(--app-surface-subtle)] hover:text-[var(--app-text)] active:bg-[var(--app-surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-focus-ring)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--app-bg)] sm:inline-flex"
+            onClick={onToggleStudioMode}
+            aria-label={studioMode === 'studio' ? 'Switch to session mode' : 'Switch to Video Studio'}
+            aria-pressed={studioMode === 'studio'}
+            title={studioMode === 'studio' ? 'Video Studio is on. Switch to session mode.' : 'Open this video session in Video Studio.'}
+            data-testid="desktop-v3-video-studio-toggle"
+          >
+            {studioMode === 'studio' ? <MessageSquare size={15} aria-hidden="true" /> : <Film size={15} aria-hidden="true" />}
+            <span>{studioMode === 'studio' ? 'Chat' : 'Studio'}</span>
+          </button>
+        ) : null}
+
         {onNewSession ? (
           <button
             type="button"
@@ -200,7 +219,7 @@ export function DesktopV3ChatHeader({
           </button>
         ) : null}
 
-        {sessionActions ? (
+        {sessionActions || (studioMode && onToggleStudioMode) ? (
           <span
             ref={mobileActionsRef}
             className="relative z-20 inline-flex"
@@ -225,8 +244,21 @@ export function DesktopV3ChatHeader({
               <MoreVertical size={19} />
             </button>
             {mobileActionsOpen ? (
-              <span className="absolute right-0 top-full z-50 mt-1 grid min-w-32 gap-0.5 rounded-md border border-[var(--app-border-strong)] bg-[var(--app-surface-elevated)] p-1 text-[11px] shadow-lg [background-color:var(--app-surface-elevated)]">
-                {sessionActions.canPin ? (
+              <span className="absolute right-0 top-full z-50 mt-1 grid min-w-44 gap-0.5 rounded-md border border-[var(--app-border-strong)] bg-[var(--app-surface-elevated)] p-1 text-[11px] shadow-lg [background-color:var(--app-surface-elevated)]">
+                {studioMode && onToggleStudioMode ? (
+                  <button
+                    type="button"
+                    className="inline-flex h-9 w-full items-center gap-2 rounded border-0 bg-transparent px-2 text-left font-medium text-[var(--app-text)] transition hover:bg-[var(--app-surface-active)] sm:hidden"
+                    onClick={() => {
+                      setMobileActionsOpen(false)
+                      onToggleStudioMode()
+                    }}
+                  >
+                    {studioMode === 'studio' ? <MessageSquare size={14} aria-hidden="true" /> : <Film size={14} aria-hidden="true" />}
+                    <span>{studioMode === 'studio' ? 'Open chat' : 'Open Video Studio'}</span>
+                  </button>
+                ) : null}
+                {sessionActions?.canPin ? (
                   <button
                     type="button"
                     className="inline-flex h-8 w-full items-center gap-2 rounded border-0 bg-transparent px-2 text-left text-[var(--app-text-subtle)] transition hover:bg-[var(--app-surface-active)] hover:text-[var(--app-text)] disabled:cursor-default disabled:opacity-60 disabled:hover:bg-transparent"
@@ -242,29 +274,31 @@ export function DesktopV3ChatHeader({
                     <span>{sessionActions.pinned ? 'Unpin session' : 'Pin session'}</span>
                   </button>
                 ) : null}
-                {sessionActions.onCopyConversation ? (
+                {sessionActions?.onCopyConversation ? (
                   <button type="button" className="inline-flex h-8 w-full items-center gap-2 rounded border-0 bg-transparent px-2 text-left text-[var(--app-text-subtle)] transition hover:bg-[var(--app-surface-active)] hover:text-[var(--app-text)] disabled:opacity-60" disabled={actionDisabled} onClick={() => { setMobileActionsOpen(false); sessionActions.onCopyConversation?.() }}>
                     {pendingAction === 'copy' ? <LoaderCircle size={13} className="animate-spin" /> : <Clipboard size={13} />}<span>Copy</span>
                   </button>
                 ) : null}
-                {sessionActions.onDownloadConversation ? (
+                {sessionActions?.onDownloadConversation ? (
                   <button type="button" className="inline-flex h-8 w-full items-center gap-2 rounded border-0 bg-transparent px-2 text-left text-[var(--app-text-subtle)] transition hover:bg-[var(--app-surface-active)] hover:text-[var(--app-text)] disabled:opacity-60" disabled={actionDisabled} onClick={() => { setMobileActionsOpen(false); sessionActions.onDownloadConversation?.() }}>
                     {pendingAction === 'download' ? <LoaderCircle size={13} className="animate-spin" /> : <Download size={13} />}<span>Download</span>
                   </button>
                 ) : null}
-                <button
-                  type="button"
-                  className="inline-flex h-8 w-full items-center gap-2 rounded border-0 bg-transparent px-2 text-left text-[var(--app-text-subtle)] transition hover:bg-[var(--app-surface-active)] hover:text-[var(--app-text)] disabled:cursor-default disabled:opacity-60 disabled:hover:bg-transparent"
-                  disabled={actionDisabled}
-                  onClick={() => {
-                    if (actionDisabled) return
-                    setMobileActionsOpen(false)
-                    sessionActions.onArchive()
-                  }}
-                >
-                  {pendingAction === 'archive' ? <LoaderCircle size={13} className="animate-spin" aria-hidden="true" /> : <Archive size={13} aria-hidden="true" />}
-                  <span>Archive session</span>
-                </button>
+                {sessionActions ? (
+                  <button
+                    type="button"
+                    className="inline-flex h-8 w-full items-center gap-2 rounded border-0 bg-transparent px-2 text-left text-[var(--app-text-subtle)] transition hover:bg-[var(--app-surface-active)] hover:text-[var(--app-text)] disabled:cursor-default disabled:opacity-60 disabled:hover:bg-transparent"
+                    disabled={actionDisabled}
+                    onClick={() => {
+                      if (actionDisabled) return
+                      setMobileActionsOpen(false)
+                      sessionActions.onArchive()
+                    }}
+                  >
+                    {pendingAction === 'archive' ? <LoaderCircle size={13} className="animate-spin" aria-hidden="true" /> : <Archive size={13} aria-hidden="true" />}
+                    <span>Archive session</span>
+                  </button>
+                ) : null}
               </span>
             ) : null}
           </span>

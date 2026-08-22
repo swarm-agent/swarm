@@ -49,6 +49,7 @@ const (
 	emptyStepRetryBase           = 250 * time.Millisecond
 	emptyStepRetryMax            = 2 * time.Second
 	emptyStepRetryLimit          = 2
+	designerToolFailureLimit     = 3
 
 	contextCompactionRetryLimit             = 2
 	memoryCompactionHeartbeatInterval       = 2 * time.Second
@@ -71,6 +72,7 @@ const (
 	contextCompactionOriginManual           = "manual"
 	contextCompactionOriginThreshold        = "threshold"
 	contextCompactionOriginPlanGuard        = "plan_guard"
+	contextCompactionOriginTask             = "task"
 	contextCompactionOriginOverflow         = "overflow"
 	ContextCompactionOriginPlanFreshContext = "plan_fresh_context"
 
@@ -183,18 +185,79 @@ type worktreeService interface {
 	AllocateTaskWorkspace(workspacePath string, base worktreeruntime.TaskBase, nameSeed string) (worktreeruntime.Allocation, error)
 	InspectTaskWorkspace(workspacePath string) (worktreeruntime.TaskWorkspaceState, error)
 	TaskCommitDescendsFrom(workspacePath, baseCommit, headCommit string) (bool, error)
+	TaskCommitRangeIntegratedInto(workspacePath, baseCommit, headCommit, parentHead string) (bool, error)
+	RemoveIntegratedTaskWorkspace(parentPath, childPath, sessionID, branchName, baseCommit, headCommit string) error
 	GetConfigForPrincipal(principal identity.Principal, workspacePath string) (worktreeruntime.Config, error)
 	AllocateDetachedWorkspaceRequestedForPrincipal(principal identity.Principal, workspacePath, nameSeed, baseBranch, branchName string) (worktreeruntime.Allocation, error)
 }
 
+type RunContinuationBoundaryDecision struct {
+	Kind         string
+	Reason       string
+	UsageSummary *pebblestore.SessionUsageSummary
+}
+
+type RunContinuationBoundaryInput struct {
+	SessionID    string
+	RunID        string
+	Provider     string
+	Model        string
+	Step         int
+	ToolCalls    int
+	UsageSummary *pebblestore.SessionUsageSummary
+}
+
+type RunContinuationBoundaryCallback func(RunContinuationBoundaryInput) (RunContinuationBoundaryDecision, error)
+
+const RunContinuationBoundaryTaskRotation = "task_context_rotation"
+
+// TaskContextCompaction describes trusted Task-specific state supplied by Task
+// orchestration. It is deliberately absent from RunRequest so clients and
+// models cannot opt into Task compaction or alter logical-job identity.
+type TaskContextCompaction struct {
+	OriginalAssignment  string
+	LogicalTaskID       string
+	TaskCallID          string
+	ProgramID           string
+	ProgramJobID        string
+	WorkspacePath       string
+	WorktreeBranch      string
+	BaseBranch          string
+	ImmutableBaseCommit string
+}
+
+// TaskRotationBoundaryError is a typed, non-failure handoff to Task
+// orchestration. It is returned only after the triggering response's tool calls
+// and durable tool messages have completed.
+type TaskRotationBoundaryError struct {
+	Decision RunContinuationBoundaryDecision
+}
+
+func (e *TaskRotationBoundaryError) Error() string {
+	if e == nil {
+		return "task context rotation requested"
+	}
+	if reason := strings.TrimSpace(e.Decision.Reason); reason != "" {
+		return "task context rotation requested: " + reason
+	}
+	return "task context rotation requested"
+}
+
+func IsTaskRotationBoundary(err error) bool {
+	var typed *TaskRotationBoundaryError
+	return errors.As(err, &typed)
+}
+
 type RunOptions struct {
-	Prompt        string
-	AgentName     string
-	Instructions  string
-	Compact       bool
-	CompactOrigin string
-	AllowSubagent bool
-	DisabledTools map[string]bool
+	Prompt               string
+	AgentName            string
+	Instructions         string
+	Compact              bool
+	CompactOrigin        string
+	AllowSubagent        bool
+	DisabledTools        map[string]bool
+	ContinuationBoundary RunContinuationBoundaryCallback
+	TaskCompaction       *TaskContextCompaction
 	// TrustedAgentProfile is populated only by trusted internal orchestration.
 	TrustedAgentProfile   *pebblestore.AgentProfile
 	PermissionSessionID   string
@@ -209,6 +272,7 @@ type RunOptions struct {
 	PlanCheckpointContext *RunPlanCheckpointContext
 	Principal             identity.Principal
 	ApplySessionMutation  func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error)
+	ArtifactRunContext    *tool.ArtifactRunContext
 	// SkipInitialUserMessage is trusted control-plane state for a run whose user
 	// message and run intent were committed atomically before dispatch.
 	SkipInitialUserMessage bool
@@ -821,9 +885,14 @@ func (s *Service) runTargetedSubagent(ctx context.Context, parentSession pebbles
 	}
 
 	description := fmt.Sprintf("@%s %s", targetName, truncateRunes(prompt, targetedSubagentSummaryRunes))
+	outputMode := ""
+	if agentruntime.IsDesignerAgentName(targetName) {
+		outputMode = taskOutputModeManaged
+	}
 	launch, err := s.prepareDelegatedSubagentLaunch(parentSession, sessionruntime.NormalizeMode(parentSession.Mode), taskLaunchPrepared{
 		LaunchIndex:       1,
 		RequestedSubagent: targetName,
+		OutputMode:        outputMode,
 	}, description, targetName, options.ApplySessionMutation)
 	if err != nil {
 		return RunResult{}, err
@@ -868,13 +937,18 @@ func (s *Service) runTargetedSubagent(ctx context.Context, parentSession pebbles
 		ParentActivePlan:     delegationContext.ActivePlan,
 		PermissionSessionID:  firstNonEmptyString(strings.TrimSpace(options.PermissionSessionID), strings.TrimSpace(parentSession.ID)),
 		TargetedSubagentName: targetName,
+		RequestedSubagent:    targetName,
+		OutputMode:           launch.OutputMode,
 	})
 	childResult, err := s.RunTurnStreaming(ctx, launch.ChildSession.ID, RunRequest{
 		Prompt:     delegatedPrompt,
 		TargetKind: RunTargetKindSubagent,
 		TargetName: launch.SubagentProfile.Name,
 		AgentName:  launch.SubagentProfile.Name,
-	}, delegatedSubagentRunStartMeta(launch, parentSession.ID, options.Principal, options.ApplySessionMutation), func(event StreamEvent) {
+	}, func() RunStartMeta {
+		launch.ContextWatcher = newTaskContextWatcher(s.sessions, launch)
+		return delegatedSubagentRunStartMeta(launch, parentSession.ID, options.Principal, options.ApplySessionMutation)
+	}(), func(event StreamEvent) {
 		switch strings.TrimSpace(event.Type) {
 		case StreamEventStepStarted:
 			taskStep = maxInt(taskStep, maxInt(1, event.Step))
@@ -1068,7 +1142,11 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 			return
 		}
 		terminalErrText := ""
-		if snapshot, changed, err := s.finishSessionLifecycle(sessionID, runID, runErr); err == nil && changed {
+		lifecycleErr := runErr
+		if IsTaskRotationBoundary(runErr) {
+			lifecycleErr = nil
+		}
+		if snapshot, changed, err := s.finishSessionLifecycle(sessionID, runID, lifecycleErr); err == nil && changed {
 			emitLifecycleSnapshot(emit, snapshot)
 			if strings.TrimSpace(snapshot.Error) != "" {
 				terminalErrText = strings.TrimSpace(snapshot.Error)
@@ -1076,7 +1154,7 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 				terminalErrText = strings.TrimSpace(snapshot.StopReason)
 			}
 		}
-		if runErr == nil || errors.Is(runErr, context.Canceled) {
+		if runErr == nil || errors.Is(runErr, context.Canceled) || IsTaskRotationBoundary(runErr) {
 			return
 		}
 		if terminalErrText == "" {
@@ -1145,6 +1223,8 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 	if activeAgent == "" {
 		activeAgent = "swarm"
 	}
+	isDesignerRun := agentruntime.IsDesignerAgentName(activeAgent)
+	designerFailures := designerToolFailureState{}
 
 	resolvedPreference, err := s.resolveMainSessionPreference(sessionID)
 	if err != nil {
@@ -1186,15 +1266,27 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 	if targetKind == RunTargetKindSubagent || strings.EqualFold(strings.TrimSpace(agentProfile.Mode), agentruntime.ModeSubagent) {
 		effectiveDisabledTools = mergeDisabledTools(effectiveDisabledTools, map[string]bool{"task": true})
 	}
-	if agentPolicy, agentDisabled, scopeErr := s.compileAgentToolScopeForAccount(options.Principal.AccountScopeID, agentProfile); scopeErr != nil {
-		return RunResult{}, scopeErr
+	var (
+		agentPolicy   *permission.Policy
+		agentDisabled map[string]bool
+		scopeErr      error
+	)
+	if options.TrustedAgentProfile != nil {
+		// Delegated compiled agents carry an immutable, launch-specific snapshot.
+		// Compile that exact contract so workspace Designer write/edit authority is
+		// not replaced by the same named agent's fail-closed managed default.
+		_, agentPolicy, agentDisabled, scopeErr = s.compileResolvedAgentToolContract(options.Principal.AccountScopeID, agentProfile)
 	} else {
-		if agentPolicy != nil {
-			merged := mergePermissionPolicies(agentPolicy, compiledPolicy)
-			compiledPolicy = &merged
-		}
-		effectiveDisabledTools = mergeDisabledTools(effectiveDisabledTools, agentDisabled)
+		agentPolicy, agentDisabled, scopeErr = s.compileAgentToolScopeForAccount(options.Principal.AccountScopeID, agentProfile)
 	}
+	if scopeErr != nil {
+		return RunResult{}, scopeErr
+	}
+	if agentPolicy != nil {
+		merged := mergePermissionPolicies(agentPolicy, compiledPolicy)
+		compiledPolicy = &merged
+	}
+	effectiveDisabledTools = mergeDisabledTools(effectiveDisabledTools, agentDisabled)
 	if options.ToolScope != nil {
 		if targetKind == RunTargetKindSubagent || targetKind == RunTargetKindBackground {
 			return RunResult{}, errors.New("request-time tool_scope is not supported for targeted agent runs; update the saved agent profile instead")
@@ -1420,6 +1512,7 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 	emptyStepRetries := 0
 	contextCompactionAttempts := 0
 	planContextGuard := newPlanContextGuardState(sessionSnapshot.Metadata)
+	taskContextMaxCompactions := 5
 	if s.uiSettings != nil {
 		accountScopeID := firstNonEmptyString(options.Principal.AccountScopeID, sessionSnapshot.AccountScopeID)
 		settings, settingsErr := s.uiSettings.GetForAccount(accountScopeID)
@@ -1431,6 +1524,7 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 			float64(settings.Chat.PlanContextGuardUsedPercent),
 			settings.Chat.PlanContextGuardMaxCompactions,
 		)
+		taskContextMaxCompactions = settings.Chat.TaskContextMaxCompactions
 	}
 	planGuardFreshContext := false
 	accumulatedUsage := provideriface.TokenUsage{}
@@ -1653,6 +1747,45 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 		return true, nil
 	}
 
+	checkContinuationBoundary := func(step, toolCalls int) error {
+		if options.ContinuationBoundary == nil {
+			return nil
+		}
+		var summaryCopy *pebblestore.SessionUsageSummary
+		if usageSummaryState != nil {
+			copy := *usageSummaryState
+			summaryCopy = &copy
+		}
+		decision, boundaryErr := options.ContinuationBoundary(RunContinuationBoundaryInput{
+			SessionID: sessionID, RunID: runID, Provider: providerID,
+			Model: resolvedPreference.Preference.Model, Step: step, ToolCalls: toolCalls,
+			UsageSummary: summaryCopy,
+		})
+		if boundaryErr != nil {
+			return boundaryErr
+		}
+		switch strings.TrimSpace(decision.Kind) {
+		case "":
+			return nil
+		case RunContinuationBoundaryTaskRotation:
+			if options.TaskCompaction == nil {
+				return &TaskRotationBoundaryError{Decision: decision}
+			}
+			compactedInput, compactErr := s.applyTaskContextCompaction(ctx, sessionID, runID, providerID, resolvedPreference.Preference, resolvedPreference.ContextWindow, resolvedPreference.MaxOutputTokens, step, taskContextMaxCompactions, options.TaskCompaction, emit, runAppendMessageInput{RunID: runID, Step: step, Principal: options.Principal, ApplySessionMutation: options.ApplySessionMutation})
+			if compactErr != nil {
+				return compactErr
+			}
+			input = compactedInput
+			turnUsageRecord = nil
+			usageSummaryState = nil
+			accumulatedUsage = provideriface.TokenUsage{}
+			emptyStepRetries = 0
+			return nil
+		default:
+			return fmt.Errorf("unsupported run continuation boundary decision %q", decision.Kind)
+		}
+	}
+
 	runtimeContextAt := time.Now()
 	for step := 1; ; step++ {
 		if err := ctx.Err(); err != nil {
@@ -1676,10 +1809,11 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 			emit(StreamEvent{Type: StreamEventSessionWarning, Step: step, Warning: modeWarning})
 		}
 		stepInstructions := composeModeAwareInstructions(baseInstructions, executionMode, s.permissions != nil && s.permissions.BypassPermissions(), agentProfile)
+		mediaExecutionMode := requestMode
 		mediaContract := CompileSessionMediaContract(SessionMediaContractInput{
 			ProviderID: providerID, Model: resolvedPreference.Preference.Model, Catalog: catalogRecord, CatalogMeta: catalogMeta,
 			Adapter: ResolveMediaAdapterDeclaration(runnerCtx, providerID, providerRunner), AgentAuthorized: AgentProfileAuthorizesMedia(agentProfile) && !effectiveDisabledTools[mediaInspectToolName],
-			ExecutionMode: executionMode, WorkspaceScope: workspaceCtx.WorkspacePath, SessionScope: sessionID,
+			ExecutionMode: mediaExecutionMode, WorkspaceScope: workspaceCtx.WorkspacePath, SessionScope: sessionID,
 		})
 		stepInstructions = AppendSessionMediaInstructions(stepInstructions, mediaContract)
 		runStateInstructions, stateErr := s.durableRunStateInstructions(sessionID, executionMode, runID, options)
@@ -1858,6 +1992,22 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 			reasoningStreamingActive = false
 		}
 
+		providerConfigurationHash := provideriface.ShortProviderLineageKey(
+			providerID,
+			resolvedPreference.Preference.Model,
+			stepInstructions,
+			providerToolsLineageHash(stepToolDefinitions),
+			executionMode,
+			strings.TrimSpace(agentProfile.Name),
+			strings.TrimSpace(agentProfile.Mode),
+			strings.TrimSpace(agentProfile.RuntimeMode),
+			strings.TrimSpace(agentProfile.ExecutionSetting),
+			resolvedPreference.Preference.Thinking,
+			serviceTier,
+			resolvedPreference.Preference.ContextMode,
+			mediaContract.Hash,
+			mediaContract.SnapshotID,
+		)
 		providerLineageID := provideriface.ShortProviderLineageKey(
 			sessionID,
 			providerID,
@@ -1885,6 +2035,7 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 		stepRequest := provideriface.Request{
 			SessionID:                 sessionID,
 			ProviderLineageID:         providerLineageID,
+			ProviderConfigurationHash: providerConfigurationHash,
 			ContextBranchID:           provideriface.ShortProviderLineageKey("session", sessionID, executionMode),
 			ProviderCacheKey:          providerScopedKey("cache", providerLineageID),
 			SessionAffinityKey:        providerScopedKey("affinity", providerLineageID),
@@ -1910,6 +2061,7 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 				runID:                runID,
 				step:                 step,
 				sessionMode:          executionMode,
+				mediaExecutionMode:   mediaExecutionMode,
 				agentProfile:         agentProfile,
 				workspacePath:        workspaceCtx.WorkspacePath,
 				workspaceRoots:       append([]string(nil), workspaceCtx.WorkspaceRoots...),
@@ -1925,6 +2077,7 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 				providerID:           providerID,
 				model:                resolvedPreference.Preference.Model,
 				mediaContract:        mediaContract,
+				artifactRunContext:   cloneArtifactRunContext(options.ArtifactRunContext),
 			}),
 		}
 		runRequestDebugEvent("provider_request", map[string]any{
@@ -2085,6 +2238,9 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 		}
 
 		if response.RestartTurn {
+			if boundaryErr := checkContinuationBoundary(step, len(response.FunctionCalls)); boundaryErr != nil {
+				return RunResult{}, boundaryErr
+			}
 			if checkpointRunContext {
 				input = append([]map[string]any(nil), checkpointRunInput...)
 			} else {
@@ -2114,6 +2270,9 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 				if refusalErr := planContextGuard.recordRefusal(); refusalErr != nil {
 					return RunResult{}, refusalErr
 				}
+				if boundaryErr := checkContinuationBoundary(step, 0); boundaryErr != nil {
+					return RunResult{}, boundaryErr
+				}
 				continue
 			}
 			// Let the model decide loop length:
@@ -2132,11 +2291,17 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 			}
 			if responseText == "" && stepReasoningSummary != "" {
 				emptyStepRetries = 0
+				if boundaryErr := checkContinuationBoundary(step, 0); boundaryErr != nil {
+					return RunResult{}, boundaryErr
+				}
 				continue
 			}
 			if responseText == "" {
 				emptyStepRetries++
 				if emptyStepRetries <= emptyStepRetryLimit {
+					if boundaryErr := checkContinuationBoundary(step, 0); boundaryErr != nil {
+						return RunResult{}, boundaryErr
+					}
 					retryDelay := emptyStepRetryDelay(emptyStepRetries)
 					if err := waitForRetryDelay(ctx, retryDelay); err != nil {
 						return RunResult{}, err
@@ -2218,9 +2383,39 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 		if modeErr != nil {
 			return RunResult{}, modeErr
 		}
-		gatedResults, approvedCalls, approvedIndexes, approvedMask, permissionFeedback, err := s.gateToolCalls(ctx, permissionSessionID, runID, step, executionMode, toolCalls, emit, compiledPolicy)
-		if err != nil {
-			return RunResult{}, err
+		gatedResults := make([]tool.Result, len(toolCalls))
+		approvedMask := make([]bool, len(toolCalls))
+		approvedCalls := make([]tool.Call, 0, len(toolCalls))
+		approvedIndexes := make([]int, 0, len(toolCalls))
+		permissionFeedback := make([]PermissionFeedback, 0, len(toolCalls))
+		permissionCalls := make([]tool.Call, 0, len(toolCalls))
+		permissionIndexes := make([]int, 0, len(toolCalls))
+		for i, call := range toolCalls {
+			gatedResults[i] = tool.Result{CallID: strings.TrimSpace(call.CallID), Name: strings.TrimSpace(call.Name)}
+			if canonicalToolName(call.Name) == mediaInspectToolName {
+				approvedMask[i] = true
+				continue
+			}
+			permissionCalls = append(permissionCalls, call)
+			permissionIndexes = append(permissionIndexes, i)
+		}
+		if len(permissionCalls) > 0 {
+			permissionResults, _, _, permissionApprovedMask, feedback, gateErr := s.gateToolCalls(ctx, permissionSessionID, runID, step, executionMode, permissionCalls, emit, compiledPolicy)
+			if gateErr != nil {
+				return RunResult{}, gateErr
+			}
+			permissionFeedback = append(permissionFeedback, feedback...)
+			for i, originalIndex := range permissionIndexes {
+				gatedResults[originalIndex] = permissionResults[i]
+				approvedMask[originalIndex] = permissionApprovedMask[i]
+			}
+		}
+		for i, call := range toolCalls {
+			if !approvedMask[i] {
+				continue
+			}
+			approvedCalls = append(approvedCalls, call)
+			approvedIndexes = append(approvedIndexes, i)
 		}
 
 		feedbackByCall := make(map[string]PermissionFeedback, len(permissionFeedback))
@@ -2237,6 +2432,39 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 		for i := range approvedCalls {
 			call := approvedCalls[i]
 			target := approvedIndexes[i]
+			if canonicalToolName(call.Name) == mediaInspectToolName {
+				mediaResult, mediaErr := s.executeProviderManagedMediaInspect(ctx, providerToolInvokerConfig{
+					sessionID:            sessionID,
+					permissionSessionID:  permissionSessionID,
+					runID:                runID,
+					step:                 step,
+					sessionMode:          executionMode,
+					mediaExecutionMode:   mediaExecutionMode,
+					workspacePath:        workspaceCtx.WorkspacePath,
+					workspaceRoots:       append([]string(nil), workspaceCtx.WorkspaceRoots...),
+					workspaceOriginPath:  workspaceCtx.OriginWorkspacePath,
+					workspaceOriginRoots: append([]string(nil), workspaceCtx.OriginWorkspaceRoots...),
+					workspaceName:        sessionSnapshot.WorkspaceName,
+					principal:            options.Principal,
+					agentProfile:         agentProfile,
+					providerID:           providerID,
+					model:                resolvedPreference.Preference.Model,
+					mediaContract:        mediaContract,
+				}, call, options.Principal)
+				if mediaErr != nil {
+					mediaResult.Error = strings.TrimSpace(mediaErr.Error())
+					if strings.TrimSpace(mediaResult.Output) == "" {
+						mediaResult.Output = strings.TrimSpace(mediaErr.Error())
+					}
+				}
+				gatedResults[target] = mediaResult
+				emit(StreamEvent{
+					Type: StreamEventToolCompleted, Step: step, ToolName: strings.TrimSpace(mediaResult.Name), CallID: strings.TrimSpace(mediaResult.CallID),
+					Output: formatToolCompletedOutput(call, mediaResult), RawOutput: liveStreamRawOutput(call, mediaResult), Error: strings.TrimSpace(mediaResult.Error), DurationMS: mediaResult.DurationMS,
+				})
+				markToolCompleted(step, call, mediaResult)
+				continue
+			}
 			feedback := feedbackByCall[strings.TrimSpace(call.CallID)]
 			handled, controlResult, controlErr := s.executeControlPlaneTool(ctx, sessionID, executionMode, agentProfile, step, call, feedback.ApprovedArguments, emit)
 			if !handled {
@@ -2336,6 +2564,11 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 			Principal:   options.Principal,
 			SessionID:   strings.TrimSpace(sessionSnapshot.ID),
 		})
+		runtimeCtx = tool.WithArtifactRunContext(runtimeCtx, s.providerManagedArtifactRunContext(providerToolInvokerConfig{
+			sessionID:          sessionID,
+			runID:              runID,
+			artifactRunContext: cloneArtifactRunContext(options.ArtifactRunContext),
+		}))
 		executedResults := s.tools.ExecuteBatchStreamingWithProgress(runtimeCtx, workspaceCtx.WorkspacePath, scopeApprovedCalls, func(_ int, call tool.Call, progress tool.Progress) {
 			stage := strings.ToLower(strings.TrimSpace(progress.Stage))
 			if stage != "output" && stage != "image" {
@@ -2474,6 +2707,12 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 				return RunResult{}, err
 			}
 		}
+		if isDesignerRun {
+			if terminalFailure, stop := designerFailures.Observe(toolCalls, gatedResults); stop {
+				assistantFragments = append(assistantFragments, terminalFailure)
+				break
+			}
+		}
 		if guardCompactHandoff != "" {
 			resetSummary, _, compactEvents, compactErr := s.applyContextCompactionArtifacts(
 				sessionID,
@@ -2526,6 +2765,7 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 		}
 		nextInput = append(nextInput, nextInputFunctionCalls...)
 		nextInput = append(nextInput, nextInputFunctionOutputs...)
+		nextInput = append(nextInput, providerToolMediaInputItems(gatedResults)...)
 		if feedbackInput := buildPermissionFeedbackInput(permissionFeedback); feedbackInput != "" {
 			runPermissionDebugf("run_turn.feedback_append session=%s run=%s step=%d payload_chars=%d", sessionID, runID, step, len(feedbackInput))
 			nextInput = append(nextInput, map[string]any{
@@ -2537,6 +2777,9 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 		}
 
 		input = append(input, nextInput...)
+		if boundaryErr := checkContinuationBoundary(step, len(toolCalls)); boundaryErr != nil {
+			return RunResult{}, boundaryErr
+		}
 	}
 
 	assistantMessage, flushedFinalAssistant, err := flushAssistantFragments(stepsCompleted)
@@ -2581,6 +2824,52 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 		TargetKind:       targetKind,
 		TargetName:       targetName,
 	}, nil
+}
+
+type designerToolFailureState struct {
+	attempts int
+}
+
+func (s *designerToolFailureState) Observe(calls []tool.Call, results []tool.Result) (string, bool) {
+	if s == nil {
+		return "", false
+	}
+	for i := range calls {
+		if i >= len(results) {
+			break
+		}
+		detail := strings.TrimSpace(results[i].Error)
+		if detail == "" {
+			continue
+		}
+		s.attempts++
+		if designerManagedPublicationCall(calls[i]) && !designerManagedPublicationRetryablePreflightError(detail) {
+			return fmt.Sprintf("Designer failed to publish the managed artifact and stopped. Exact reason: %s", detail), true
+		}
+		if s.attempts >= designerToolFailureLimit {
+			return fmt.Sprintf("Designer stopped after %d failed tool attempts. Exact reason: %s", s.attempts, detail), true
+		}
+	}
+	return "", false
+}
+
+func designerManagedPublicationCall(call tool.Call) bool {
+	if canonicalToolName(call.Name) != "manage_artifact" {
+		return false
+	}
+	var args map[string]any
+	if err := json.Unmarshal([]byte(strings.TrimSpace(call.Arguments)), &args); err != nil {
+		return false
+	}
+	action := strings.ToLower(strings.TrimSpace(mapString(args, "action")))
+	return action == "create" || action == "create_package"
+}
+
+func designerManagedPublicationRetryablePreflightError(detail string) bool {
+	detail = strings.ToLower(strings.TrimSpace(detail))
+	return detail == "create requires filename" ||
+		detail == "create requires non-empty content" ||
+		detail == "create_package requires non-empty entries"
 }
 
 func (s *Service) persistRunFailure(sessionID string, runErr error, appendInput runAppendMessageInput) {
@@ -3359,7 +3648,13 @@ func (s *Service) compactRunContextWithMemory(ctx context.Context, sessionID, ru
 	activePlanText := compactedActivePlanText(activePlan)
 	compactIndex := nextMemoryCompactionIndex(messages)
 	toolStream.SetCompactIndex(compactIndex)
+	normalizedOrigin := normalizeContextCompactionOrigin(origin)
 	transcript := buildMemoryCompactionTranscript(messages)
+	var taskTranscriptEntries []taskCompactionTranscriptEntry
+	if normalizedOrigin == contextCompactionOriginTask {
+		taskTranscriptEntries = buildTaskCompactionTranscriptEntries(messages)
+		transcript = joinTaskCompactionTranscriptEntries(taskTranscriptEntries)
+	}
 	if strings.TrimSpace(transcript) == "" {
 		err := errors.New("memory compaction transcript is empty")
 		finishFailure(err)
@@ -3371,17 +3666,26 @@ func (s *Service) compactRunContextWithMemory(ctx context.Context, sessionID, ru
 	}
 	instructions := buildMemoryCompactionInstructions(compactProfile.Prompt, summaryMaxRunes, origin)
 	inputBudgetTokens := effectiveMemoryCompactionInputBudget(contextWindow, maxOutputTokens, summaryMaxRunes)
-	transcript = boundCompactTranscript(transcript, inputBudgetTokens, instructions, runPrompt, activePlanText)
+	trustedTaskContext := ""
+	promptRunPrompt := runPrompt
+	if normalizedOrigin == contextCompactionOriginTask {
+		trustedTaskContext = runPrompt
+		promptRunPrompt = ""
+		transcript = boundTaskCompactionTranscript(taskTranscriptEntries, inputBudgetTokens, instructions, trustedTaskContext, activePlanText)
+	} else {
+		transcript = boundCompactTranscript(transcript, inputBudgetTokens, instructions, runPrompt, activePlanText)
+	}
 	transcriptRunes := len([]rune(transcript))
 	oneShotPrompt := buildMemoryCompactionPrompt(memoryCompactionPromptOptions{
-		RunPrompt:      runPrompt,
-		RollingSummary: "",
-		Chunk:          transcript,
-		Index:          1,
-		Total:          1,
-		Origin:         origin,
-		CompactIndex:   compactIndex,
-		ActivePlanText: activePlanText,
+		RunPrompt:          promptRunPrompt,
+		TrustedTaskContext: trustedTaskContext,
+		RollingSummary:     "",
+		Chunk:              transcript,
+		Index:              1,
+		Total:              1,
+		Origin:             origin,
+		CompactIndex:       compactIndex,
+		ActivePlanText:     activePlanText,
 	})
 	oneShotTokens := estimateMemoryCompactionTokens(instructions, oneShotPrompt)
 	runCompactionDebugEvent("memory_compaction_start", map[string]any{
@@ -3556,6 +3860,153 @@ func buildMemoryCompactionTranscript(messages []pebblestore.MessageSnapshot) str
 	return strings.TrimSpace(strings.Join(entries, "\n\n"))
 }
 
+type taskCompactionTranscriptEntry struct {
+	Text     string
+	Priority int
+	Order    int
+}
+
+func buildTaskCompactionTranscript(messages []pebblestore.MessageSnapshot) string {
+	return joinTaskCompactionTranscriptEntries(buildTaskCompactionTranscriptEntries(messages))
+}
+
+func buildTaskCompactionTranscriptEntries(messages []pebblestore.MessageSnapshot) []taskCompactionTranscriptEntry {
+	entries := make([]taskCompactionTranscriptEntry, 0, len(messages))
+	for order, message := range messages {
+		content := strings.TrimSpace(message.Content)
+		if content == "" || isManualCompactionAcknowledgement(message) {
+			continue
+		}
+		switch strings.ToLower(strings.TrimSpace(message.Role)) {
+		case "user":
+			if shouldDropSensitiveConversationMessage(message) {
+				continue
+			}
+			entries = append(entries, taskCompactionTranscriptEntry{Text: "user:\n" + content, Priority: 5, Order: order})
+		case "assistant":
+			entries = append(entries, taskCompactionTranscriptEntry{Text: "assistant:\n" + content, Priority: 2, Order: order})
+		case "system":
+			if isCompactionCheckpointMessage(content) {
+				entries = append(entries, taskCompactionTranscriptEntry{Text: "assistant prior compact checkpoint:\n" + content, Priority: 6, Order: order})
+			}
+		case "tool":
+			if outcome, priority := taskCompactionToolOutcome(content); outcome != "" {
+				entries = append(entries, taskCompactionTranscriptEntry{Text: outcome, Priority: priority, Order: order})
+			}
+		}
+	}
+	return entries
+}
+
+func joinTaskCompactionTranscriptEntries(entries []taskCompactionTranscriptEntry) string {
+	parts := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if text := strings.TrimSpace(entry.Text); text != "" {
+			parts = append(parts, text)
+		}
+	}
+	return strings.TrimSpace(strings.Join(parts, "\n\n"))
+}
+
+func boundTaskCompactionTranscript(entries []taskCompactionTranscriptEntry, inputBudgetTokens int, fixedParts ...string) string {
+	if len(entries) == 0 || inputBudgetTokens <= 0 {
+		return joinTaskCompactionTranscriptEntries(entries)
+	}
+	fixedRunes := 0
+	for _, part := range fixedParts {
+		fixedRunes += len([]rune(part))
+	}
+	maxRunes := inputBudgetTokens*memoryCompactionTokenEstimateDivisor - fixedRunes - memoryCompactionMinimumChunkRunes
+	full := joinTaskCompactionTranscriptEntries(entries)
+	if maxRunes <= 0 || len([]rune(full)) <= maxRunes {
+		return full
+	}
+
+	// Select complete semantic records rather than slicing the transcript by rune
+	// position. Trusted prior checkpoints and user constraints win first, followed
+	// by typed mutation/command and discovery evidence, then assistant narration.
+	candidates := append([]taskCompactionTranscriptEntry(nil), entries...)
+	sort.SliceStable(candidates, func(i, j int) bool {
+		if candidates[i].Priority != candidates[j].Priority {
+			return candidates[i].Priority > candidates[j].Priority
+		}
+		return candidates[i].Order > candidates[j].Order
+	})
+	selected := make(map[int]bool, len(entries))
+	used := 0
+	const separatorRunes = 2
+	for _, entry := range candidates {
+		textRunes := len([]rune(strings.TrimSpace(entry.Text)))
+		if textRunes == 0 || textRunes > maxRunes-used {
+			continue
+		}
+		if used > 0 {
+			if textRunes+separatorRunes > maxRunes-used {
+				continue
+			}
+			used += separatorRunes
+		}
+		selected[entry.Order] = true
+		used += textRunes
+	}
+	bounded := make([]taskCompactionTranscriptEntry, 0, len(selected)+1)
+	omitted := len(entries) - len(selected)
+	if omitted > 0 {
+		bounded = append(bounded, taskCompactionTranscriptEntry{Text: fmt.Sprintf("semantic budget notice:\n- omitted lower-priority transcript records: %d\n- retained records are complete semantic units", omitted), Order: -1})
+	}
+	for _, entry := range entries {
+		if selected[entry.Order] {
+			bounded = append(bounded, entry)
+		}
+	}
+	return joinTaskCompactionTranscriptEntries(bounded)
+}
+
+func taskCompactionToolOutcome(content string) (string, int) {
+	type record struct {
+		PathID          string `json:"path_id"`
+		Tool            string `json:"tool"`
+		ToolName        string `json:"tool_name"`
+		Arguments       string `json:"arguments"`
+		CompletedOutput string `json:"completed_output"`
+		Output          string `json:"output"`
+		Error           string `json:"error"`
+	}
+	var item record
+	if json.Unmarshal([]byte(strings.TrimSpace(content)), &item) != nil || (item.PathID != toolHistoryPathID && item.PathID != v3ProviderManagedToolResultPathID) {
+		return "", 0
+	}
+	name := canonicalToolName(firstNonEmptyString(item.ToolName, item.Tool))
+	kind, priority := "", 0
+	switch name {
+	case "read", "search", "list", "find", "glob":
+		kind, priority = "discovery", 3
+	case "edit", "write", "plan_manage", "manage_artifact", "manage_worktree":
+		kind, priority = "mutation", 4
+	case "bash":
+		kind, priority = "command", 4
+	default:
+		return "", 0
+	}
+	outcome := strings.TrimSpace(firstNonEmptyString(item.CompletedOutput, item.Error, item.Output))
+	if outcome == "" {
+		return "", 0
+	}
+	status := "completed"
+	if strings.TrimSpace(item.Error) != "" {
+		status, priority = "failed", 5
+	}
+	arguments := summarizePlainToolOutput(strings.TrimSpace(item.Arguments), memoryCompactionToolArgumentsMaxRunes, 4)
+	if arguments == "" {
+		arguments = "{}"
+	}
+	summary := summarizeToolOutput(name, outcome, memoryCompactionToolOutputMaxRunes, 8)
+	if summary == "" {
+		return "", 0
+	}
+	return fmt.Sprintf("typed tool evidence:\n- kind: %s\n- name: %s\n- status: %s\n- arguments: %s\n- outcome: %s", kind, name, status, arguments, truncateRunes(summary, memoryCompactionToolOutputMaxRunes)), priority
+}
+
 func buildMemoryCompactionToolTranscriptEntry(content string) string {
 	content = strings.TrimSpace(content)
 	if content == "" {
@@ -3671,6 +4122,13 @@ func buildMemoryCompactionInstructions(memoryPrompt string, summaryMaxRunes int,
 			"Emphasize current goal, constraints, known facts, relevant files, completed work, and the highest-value next action.",
 			"Call out completed/open plan or todo checkpoints when the transcript makes them clear, and say if the resumed agent should update plan/todos.",
 		)
+	case contextCompactionOriginTask:
+		lines = append(lines,
+			"Compaction mode: Task-orchestrated same-session compact at a verified provider-usage boundary.",
+			"This replaces successor-session handoff. Preserve the immutable delegated assignment and logical Task identity exactly.",
+			"Do not infer progress from absent or truncated tool output. Use the trusted workspace/Git snapshot and explicit conversation outcomes; mark all other work as uncertain.",
+			"If this is a later Task compact, retain the same section structure and distinguish prior checkpoint state from changes since the last compact.",
+		)
 	case contextCompactionOriginOverflow:
 		lines = append(lines,
 			"Compaction mode: reactive automatic compact after provider context overflow.",
@@ -3681,6 +4139,13 @@ func buildMemoryCompactionInstructions(memoryPrompt string, summaryMaxRunes int,
 		)
 	}
 	lines = append(lines,
+		"Conservative no-progress loop check:",
+		"- Treat work as a no-progress loop only when two or more attempts or compaction epochs repeat substantially equivalent operations against the same unchanged blocker, contradiction, or result, without new authoritative evidence, a file or workspace change, a commit, a newly validated result, or a materially distinct recovery path.",
+		"- A bounded retry is productive, not a loop, when it is testing a materially different hypothesis or recovery path, gathering new authoritative evidence, or follows an observable state change. A failed first attempt, uncertainty, or scope growth alone is not a loop.",
+		"- Compare operation arguments and outcomes, prior compact checkpoints, completed work, durable plan/checkpoint state, and the trusted workspace/Git snapshot when supplied. Do not infer repetition merely from similar prose.",
+		"- When the conservative test is met, emit the exact heading `NO-PROGRESS LOOP WARNING (carry forward until resolved):` and record: the repeated operation; attempt/compact evidence; the unchanged blocker or contradiction; work already completed; workspace/Git state when known; the exact external resolution or new evidence needed; and one bounded next action that is not another substantially equivalent retry.",
+		"- If a prior compact checkpoint contains that warning, copy the warning forward under the exact same heading. Remove it only when visible authoritative evidence proves the blocker resolved or material progress invalidates the repetition claim; then state that evidence under changed/completed work.",
+		"- Do not recommend another equivalent lookup, install, command, or tool call after warning. Preserve usable partial work and direct the resumed agent to report or repair the named blocker.",
 		"Required sections:",
 		"1) Original/active goal and non-negotiable constraints.",
 		"2) What changed since any prior compact checkpoint.",
@@ -3688,7 +4153,8 @@ func buildMemoryCompactionInstructions(memoryPrompt string, summaryMaxRunes int,
 		"4) Active plan/todo state: done, probably done, open, and needs updating.",
 		"5) Relevant filepaths and locations (path + line/symbol when known).",
 		"6) Outstanding issues, errors, risks, and pending asks.",
-		"7) Immediate next action for the resumed agent.",
+		"7) NO-PROGRESS LOOP WARNING (carry forward until resolved), when the conservative test is met or an unresolved prior warning exists.",
+		"8) One immediate bounded next action for the resumed agent.",
 	)
 	if summaryMaxRunes > 0 {
 		lines = append(lines, fmt.Sprintf("Keep the summary under %d characters while preserving critical details.", summaryMaxRunes))
@@ -3703,14 +4169,15 @@ func buildMemoryCompactionInstructions(memoryPrompt string, summaryMaxRunes int,
 }
 
 type memoryCompactionPromptOptions struct {
-	RunPrompt      string
-	RollingSummary string
-	Chunk          string
-	Index          int
-	Total          int
-	Origin         string
-	CompactIndex   int
-	ActivePlanText string
+	RunPrompt          string
+	TrustedTaskContext string
+	RollingSummary     string
+	Chunk              string
+	Index              int
+	Total              int
+	Origin             string
+	CompactIndex       int
+	ActivePlanText     string
 }
 
 func buildMemoryCompactionPrompt(options memoryCompactionPromptOptions) string {
@@ -3735,6 +4202,14 @@ func buildMemoryCompactionPrompt(options memoryCompactionPromptOptions) string {
 	}
 
 	lines := []string{memoryCompactionContextLine(origin), fmt.Sprintf("This will become Compact #%d.", compactIndex)}
+	if origin == contextCompactionOriginTask {
+		if trustedTaskContext := strings.TrimSpace(options.TrustedTaskContext); trustedTaskContext != "" {
+			lines = append(lines,
+				"Trusted Task execution context (authoritative; preserve before interpreting transcript evidence):",
+				trustedTaskContext,
+			)
+		}
+	}
 	if activePlanText := strings.TrimSpace(options.ActivePlanText); activePlanText != "" {
 		lines = append(lines,
 			"Durable active plan/checkpoint state (authoritative; preserve this execution scope in the recap):",
@@ -3755,6 +4230,8 @@ func buildMemoryCompactionPrompt(options memoryCompactionPromptOptions) string {
 		lines = append(lines, "Formulate the continuation as a clear problem statement for the next main-agent step, with the compacted-away evidence embedded in the recap.")
 	case contextCompactionOriginPlanGuard:
 		lines = append(lines, "The main plan agent supplied this explicit research handoff. Preserve it verbatim in substance, carry the durable active plan state, and continue in fresh provider context without rerunning completed discovery.")
+	case contextCompactionOriginTask:
+		lines = append(lines, "Task orchestration supplied the immutable assignment, logical identity, compact index, and trusted workspace/Git snapshot above. Treat its canonical child worktree as the only execution root; parent or alternate paths in transcript evidence are non-authoritative historical context. Produce a stable same-session continuation checkpoint; do not reinterpret this as a new launch or successor session.")
 	case contextCompactionOriginOverflow:
 		lines = append(lines, "The provider overflow means the previous agent may have stopped mid-thought or mid-action. Preserve in-progress intent and tell the resumed agent exactly what to do next.")
 	}
@@ -3764,8 +4241,12 @@ func buildMemoryCompactionPrompt(options memoryCompactionPromptOptions) string {
 			chunk,
 		)
 	} else {
+		label := "Full transcript for compaction:"
+		if origin == contextCompactionOriginTask {
+			label = "Selected transcript evidence for compaction (non-authoritative where it conflicts with trusted Task execution context):"
+		}
 		lines = append(lines,
-			"Full transcript for compaction:",
+			label,
 			chunk,
 		)
 	}
@@ -3787,6 +4268,8 @@ func normalizeContextCompactionOrigin(origin string) string {
 		return contextCompactionOriginThreshold
 	case contextCompactionOriginPlanGuard:
 		return contextCompactionOriginPlanGuard
+	case contextCompactionOriginTask:
+		return contextCompactionOriginTask
 	case contextCompactionOriginOverflow:
 		return contextCompactionOriginOverflow
 	case ContextCompactionOriginPlanFreshContext:
@@ -3804,6 +4287,8 @@ func memoryCompactionContextLine(origin string) string {
 		return "Compaction context: remaining context hit the configured proactive auto-compact threshold before provider overflow."
 	case contextCompactionOriginPlanGuard:
 		return "Compaction context: the plan-mode context guard accepted an explicit research handoff and started fresh provider context."
+	case contextCompactionOriginTask:
+		return "Compaction context: Task orchestration reached its verified provider-usage boundary and is compacting the same durable child session without creating a successor."
 	case ContextCompactionOriginPlanFreshContext:
 		return "Compaction context: an automatic checkpoint fresh-context run superseded earlier transcript history; preserve completed checkpoint evidence, plan state, and the user's next action context."
 	default:

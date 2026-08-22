@@ -108,10 +108,25 @@ func executeBashCommand(parent context.Context, scope WorkspaceScope, args map[s
 }
 
 func commandEnvironment(env []string, tempDir string) []string {
+	out := make([]string, 0, len(env))
+	for _, item := range env {
+		name, _, _ := strings.Cut(item, "=")
+		if sensitiveCommandEnvironment(name) {
+			continue
+		}
+		out = append(out, item)
+	}
+	return privateTempEnvironment(out, tempDir)
+}
+
+// privateTempEnvironment gives one tool invocation exclusive disposable scratch
+// without discarding unrelated environment such as Git signing or credential-agent
+// configuration. The caller owns creation and removal of tempDir.
+func privateTempEnvironment(env []string, tempDir string) []string {
 	out := make([]string, 0, len(env)+3)
 	for _, item := range env {
 		name, _, _ := strings.Cut(item, "=")
-		if name == "TMPDIR" || name == "TMP" || name == "TEMP" || sensitiveCommandEnvironment(name) {
+		if name == "TMPDIR" || name == "TMP" || name == "TEMP" {
 			continue
 		}
 		out = append(out, item)

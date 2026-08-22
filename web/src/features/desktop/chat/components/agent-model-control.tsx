@@ -1,14 +1,14 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from 'react'
 import { createPortal } from 'react-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { ChevronDown, GitBranch, Lightbulb, Lock, Settings2, Star, Trash2, Zap, ZapOff } from 'lucide-react'
+import { ChevronDown, GitBranch, Info, Lightbulb, Lock, MoreHorizontal, Settings2, Star, Trash2, Zap, ZapOff } from 'lucide-react'
 import type { ActiveModelProfileState, AgentProfileRecord, ModelOptionRecord, ModelProfileInput, ModelProfileRecord } from '../types/chat'
 import { defaultModelThinking, displayModelName, effectiveContextWindow, formatContextWindow, formatModelPricing, modelOptionRouteLabel, modelOptionUpstreamFamily, modelServiceTierOptions, modelThinkingOptions, normalizeModelServiceTier, normalizeModelThinking, supportsModelServiceTier } from '../services/model-options'
 import { displayAgentName } from '../services/agent-display'
 import { agentModelSettingsQueryOptions, agentModelSettingsQueryKey } from '../../settings/swarm/queries/get-agent-model-settings'
 import { saveSwarmAgentModelSettings, saveSystemAgentModelSettings } from '../../settings/swarm/mutations/save-agent-model-settings'
 import type { AgentModelAssignment, AgentModelSettings, SystemAgentModelName } from '../../settings/swarm/types/agent-model-settings'
-import { createModelProfile, deleteModelProfile, invalidateModelProfiles } from '../queries/model-profile-queries'
+import { createModelProfile, deleteModelProfile, invalidateModelProfiles, updateModelProfile } from '../queries/model-profile-queries'
 
 export type AgentModelControlProfilePatch = Partial<Pick<AgentProfileRecord,
   | 'provider'
@@ -38,9 +38,11 @@ interface AgentModelControlProps {
   modelLockNotice?: string
   triggerDetail?: string
   openSignal?: number
+  setupOpenSignal?: number
   onOpenAgentSettings?: () => void
   onConfirmAgentSettings?: (input: AgentModelControlConfirmInput) => void | Promise<void>
   onApplyModelFavorite?: (profile: ModelProfileRecord) => void | Promise<void>
+  onApplyModelFavoriteChatOnly?: (profile: ModelProfileRecord) => void | Promise<void>
   popoverAnchorId?: string
   modelProfiles?: ModelProfileRecord[]
   activeModelProfile?: ActiveModelProfileState
@@ -231,9 +233,11 @@ export function AgentModelControl({
   modelLockNotice = '',
   triggerDetail = '',
   openSignal = 0,
+  setupOpenSignal = 0,
   onOpenAgentSettings,
   onConfirmAgentSettings,
   onApplyModelFavorite,
+  onApplyModelFavoriteChatOnly,
   popoverAnchorId = '',
   modelProfiles = [],
   activeModelProfile,
@@ -322,13 +326,15 @@ export function AgentModelControl({
   const [screen, setScreen] = useState<'favorites' | 'setup'>('favorites')
   const [saving, setSaving] = useState(false)
   const [switchingFavoriteId, setSwitchingFavoriteId] = useState('')
+  const [switchingChatFavoriteId, setSwitchingChatFavoriteId] = useState('')
   const [deletingFavoriteId, setDeletingFavoriteId] = useState('')
   const [deleteCandidateId, setDeleteCandidateId] = useState('')
   const [favoriteName, setFavoriteName] = useState('')
   const [favoriteEditorOpen, setFavoriteEditorOpen] = useState(false)
+  const [favoritesHelpOpen, setFavoritesHelpOpen] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const favoritesPopoverRef = useRef<HTMLDivElement | null>(null)
-  const [favoritesPosition, setFavoritesPosition] = useState<{ bottom: number; left: number; width: number; maxHeight: number } | null>(null)
+  const [favoritesPosition, setFavoritesPosition] = useState<{ top?: number; bottom?: number; left: number; width: number; maxHeight: number } | null>(null)
   const initializedOpenRef = useRef(false)
   const selectableAgents = useMemo(() => [...agents.filter((agent) => agent.enabled !== false && agent.name !== 'finder' && !isCompiledSystemAgent(agent.name)), compactProfile, finderProfile, coderProfile, designerProfile, routerProfile], [agents, coderProfile, compactProfile, designerProfile, finderProfile, routerProfile])
   const activeProfile = selectableAgents.find((agent) => agent.name === selectedPrimaryAgent) ?? selectableAgents.find((agent) => agent.name === currentAgent) ?? null
@@ -374,7 +380,7 @@ export function AgentModelControl({
     setSingleDraft(fallback)
     setActionDraft(action)
     setPlanDraft(plan)
-    setEditingProfileId(activeModelProfile?.source === 'saved' ? activeModelProfile.profileId : '')
+    setEditingProfileId(profile && !isCompiledSystemAgent(profile.name) && activeModelProfile?.source === 'saved' ? activeModelProfile.profileId : '')
   }
 
   useEffect(() => {
@@ -383,6 +389,13 @@ export function AgentModelControl({
       setOpen(true)
     }
   }, [createModelProfileSignal, openSignal])
+
+  useEffect(() => {
+    if (setupOpenSignal > 0) {
+      setScreen('setup')
+      setOpen(true)
+    }
+  }, [setupOpenSignal])
 
   const findVisibleFavoritesAnchor = useCallback(() => {
     if (!popoverAnchorId || typeof document === 'undefined') return null
@@ -405,14 +418,20 @@ export function AgentModelControl({
     }
     const rect = anchor.getBoundingClientRect()
     const gutter = 8
-    const viewportWidth = window.innerWidth
+    const viewportWidth = window.visualViewport?.width ?? window.innerWidth
     const viewportHeight = window.visualViewport?.height ?? window.innerHeight
-    const width = Math.min(420, viewportWidth - gutter * 2)
+    const width = Math.max(0, Math.min(420, viewportWidth - gutter * 2))
+    const left = Math.min(Math.max(gutter, rect.left), Math.max(gutter, viewportWidth - width - gutter))
+    const spaceAbove = Math.max(0, rect.top - gutter * 2)
+    const spaceBelow = Math.max(0, viewportHeight - rect.bottom - gutter * 2)
+    const openAbove = spaceAbove >= spaceBelow
     setFavoritesPosition({
-      bottom: Math.max(gutter, viewportHeight - rect.top + gutter),
-      left: Math.min(Math.max(gutter, rect.left), Math.max(gutter, viewportWidth - width - gutter)),
+      ...(openAbove
+        ? { bottom: Math.max(gutter, viewportHeight - rect.top + gutter) }
+        : { top: Math.max(gutter, rect.bottom + gutter) }),
+      left,
       width,
-      maxHeight: Math.max(180, Math.min(460, rect.top - gutter * 2)),
+      maxHeight: Math.min(460, openAbove ? spaceAbove : spaceBelow),
     })
   }, [findVisibleFavoritesAnchor, open, screen])
 
@@ -456,6 +475,7 @@ export function AgentModelControl({
       setFavoritesPosition(null)
       setScreen('favorites')
       setFavoriteEditorOpen(false)
+      setFavoritesHelpOpen(false)
       setFavoriteName('')
       setDeleteCandidateId('')
       return
@@ -523,6 +543,22 @@ export function AgentModelControl({
       && profile.contextMode.trim().toLowerCase() === selectedModel.contextMode.trim().toLowerCase()
   }
 
+  async function applyFavoriteToChat(profile: ModelProfileRecord) {
+    if (saving || busy || !onApplyModelFavoriteChatOnly) return
+    setSaving(true)
+    setSwitchingChatFavoriteId(profile.profileId)
+    setError(null)
+    try {
+      await onApplyModelFavoriteChatOnly(profile)
+      setOpen(false)
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause))
+    } finally {
+      setSaving(false)
+      setSwitchingChatFavoriteId('')
+    }
+  }
+
   async function applyFavorite(profile: ModelProfileRecord) {
     if (saving || busy) return
     const settings = agentModelSettingsQuery.data
@@ -553,6 +589,25 @@ export function AgentModelControl({
       setSaving(false)
       setSwitchingFavoriteId('')
     }
+  }
+
+  function editFavorite(profile: ModelProfileRecord) {
+    const option = modelOptionFor(profile.provider, profile.model, modelOptions, profile.contextMode)
+    setDraftAgentName(SWARM_AGENT_NAME)
+    setActionDraft({
+      provider: profile.provider,
+      upstreamFamily: option ? modelOptionUpstreamFamily(option) : '',
+      model: profile.model,
+      thinking: profile.thinking,
+      serviceTier: normalizeDraftServiceTier(profile.provider, profile.serviceTier),
+      contextMode: profile.contextMode,
+    })
+    setEditingProfileId(profile.profileId)
+    setFavoriteName(profile.name)
+    setFavoriteEditorOpen(false)
+    setDeleteCandidateId('')
+    setError(null)
+    setScreen('setup')
   }
 
   async function deleteFavorite(profile: ModelProfileRecord) {
@@ -601,7 +656,7 @@ export function AgentModelControl({
     }
   }
 
-  async function confirm() {
+  async function confirm(closeAfterSave: boolean) {
     const profile = draftProfile
     if ((draftAgentName !== SWARM_AGENT_NAME && !profile) || saving || busy) return
     setSaving(true)
@@ -609,6 +664,13 @@ export function AgentModelControl({
     try {
       if (draftAgentName === SWARM_AGENT_NAME) {
         await saveSwarmModels()
+        if (editingProfileId) {
+          const name = favoriteName.trim()
+          if (!name) throw new Error('Enter a favorite name.')
+          const favorite = await updateModelProfile(editingProfileId, validateDraft(name, actionDraft))
+          await invalidateModelProfiles(queryClient)
+          await onApplyModelFavorite?.(favorite)
+        }
       } else if (profile && isSystemUtility(profile.name)) {
         const agentPatch = validateDraft(`${displayAgentName(profile.name)} model`, singleDraft)
         const agent: SystemAgentModelName = profile.name === COMPACT_AGENT_NAME ? 'compact' : profile.name === CODER_AGENT_NAME ? 'coder' : profile.name === DESIGNER_AGENT_NAME ? 'designer' : profile.name === ROUTER_AGENT_NAME ? 'router' : 'finder'
@@ -633,7 +695,7 @@ export function AgentModelControl({
           makeDefault: false,
         })
       }
-      setOpen(false)
+      if (closeAfterSave) setOpen(false)
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause))
     } finally {
@@ -645,10 +707,11 @@ export function AgentModelControl({
     <div
       ref={screen === 'favorites' ? favoritesPopoverRef : undefined}
       className={screen === 'favorites'
-        ? 'fixed z-[9999] overflow-hidden rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] shadow-xl shadow-black/30'
+        ? 'fixed z-[9999] max-w-[calc(100vw-1rem)] overflow-hidden rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] shadow-xl shadow-black/30'
         : 'fixed inset-0 z-[9999] flex items-stretch justify-center overflow-hidden bg-black/50 pt-[var(--app-safe-area-top)] pr-[var(--app-safe-area-right)] pb-[var(--app-safe-area-bottom)] pl-[var(--app-safe-area-left)] sm:items-center sm:pt-[calc(var(--app-safe-area-top)+0.75rem)] sm:pr-[calc(var(--app-safe-area-right)+0.75rem)] sm:pb-[calc(var(--app-safe-area-bottom)+0.75rem)] sm:pl-[calc(var(--app-safe-area-left)+0.75rem)]'}
       style={screen === 'favorites' && favoritesPosition ? {
-        bottom: `${favoritesPosition.bottom}px`,
+        top: favoritesPosition.top === undefined ? undefined : `${favoritesPosition.top}px`,
+        bottom: favoritesPosition.bottom === undefined ? undefined : `${favoritesPosition.bottom}px`,
         left: `${favoritesPosition.left}px`,
         width: `${favoritesPosition.width}px`,
         maxHeight: `${favoritesPosition.maxHeight}px`,
@@ -660,40 +723,85 @@ export function AgentModelControl({
       <div className={`flex w-full flex-col overflow-hidden bg-[var(--app-surface)] ${screen === 'favorites' ? 'max-h-[inherit]' : 'h-full max-h-full max-w-6xl shadow-xl sm:h-auto sm:max-h-[min(94dvh,880px)] sm:rounded-xl sm:border sm:border-[var(--app-border)]'}`}>
         {screen === 'favorites' ? (
           <>
-            <div className="flex items-start justify-between gap-4 border-b border-[var(--app-border)] px-4 py-4 sm:px-5">
-              <div>
+            <div className="flex min-w-0 items-start justify-between gap-4 border-b border-[var(--app-border)] px-4 py-4 sm:px-5">
+              <div className="min-w-0">
                 <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--app-text-subtle)]">Model favorites</div>
-                <div className="mt-1 text-base font-semibold text-[var(--app-text)]">Choose a model</div>
-                <div className="mt-1 text-xs text-[var(--app-text-muted)]">Switch the current chat and the canonical Default Model.</div>
+                <div className="mt-1 flex min-w-0 items-center gap-2">
+                  <div className="truncate text-base font-semibold text-[var(--app-text)]">Choose a model</div>
+                  <button
+                    type="button"
+                    aria-label="How model favorite actions work"
+                    aria-expanded={favoritesHelpOpen}
+                    aria-controls="model-favorites-help"
+                    onClick={() => setFavoritesHelpOpen((value) => !value)}
+                    className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[var(--app-text-subtle)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-primary)]"
+                  >
+                    <Info size={14} />
+                  </button>
+                </div>
               </div>
-              <button type="button" onClick={() => setOpen(false)} className="rounded-lg border border-[var(--app-border)] px-3 py-2 text-xs font-semibold text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]">Close</button>
+              <button type="button" onClick={() => setOpen(false)} className="shrink-0 rounded-lg border border-[var(--app-border)] px-3 py-2 text-xs font-semibold text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]">Close</button>
             </div>
-            <div className="min-h-0 flex-1 overflow-y-auto p-4 sm:p-5">
+            {favoritesHelpOpen ? (
+              <div id="model-favorites-help" role="region" aria-label="Model favorite action help" className="border-b border-[var(--app-border)] bg-[var(--app-bg-alt)] px-4 py-3 text-xs leading-5 text-[var(--app-text-muted)] sm:px-5">
+                Hover or focus a favorite to reveal chat, default, and delete actions. “Use in chat” changes only this chat; “Default” applies to future chats. Use the external ellipsis button to edit a favorite.
+              </div>
+            ) : null}
+            <div className="min-h-0 max-w-full flex-1 overflow-x-hidden overflow-y-auto overscroll-contain p-4 sm:p-5">
               {modelProfiles.length > 0 ? (
                 <div className="grid gap-2" aria-label="Model favorites">
                   {modelProfiles.map((profile) => {
                     const active = favoriteMatchesCurrentChat(profile)
                     const confirmingDelete = deleteCandidateId === profile.profileId
                     return (
-                      <div key={profile.profileId} className={`flex items-center gap-1 rounded-xl border p-1 transition ${active ? 'border-[var(--app-primary)] bg-[var(--app-surface-subtle)]' : 'border-[var(--app-border)] hover:border-[var(--app-border-strong)] hover:bg-[var(--app-surface-hover)]'}`}>
-                        <button type="button" disabled={saving || busy} onClick={() => { void applyFavorite(profile) }} className="flex min-w-0 flex-1 items-center gap-3 rounded-lg p-2 text-left disabled:cursor-default disabled:opacity-70">
-                          <Star size={17} fill={active ? 'currentColor' : 'none'} className={active ? 'text-[var(--app-primary)]' : 'text-[var(--app-text-subtle)]'} />
-                          <span className="min-w-0 flex-1">
-                            <span className="block truncate text-sm font-semibold text-[var(--app-text)]">{profile.name}</span>
-                            <span className="block truncate text-xs text-[var(--app-text-muted)]">{profile.provider} / {displayModelName(profile.provider, profile.model, profile.contextMode)} · {profile.thinking}</span>
-                          </span>
-                          <span className="shrink-0 text-[11px] font-semibold text-[var(--app-text-subtle)]">{switchingFavoriteId === profile.profileId ? 'Switching…' : active ? 'Current' : 'Use'}</span>
-                        </button>
-                        {confirmingDelete ? (
-                          <div className="flex shrink-0 items-center gap-1" role="group" aria-label={`Confirm deletion of ${profile.name}`}>
-                            <button type="button" disabled={saving || busy} onClick={() => setDeleteCandidateId('')} className="rounded-lg px-2 py-2 text-[11px] font-semibold text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] disabled:opacity-60">Keep</button>
-                            <button type="button" disabled={saving || busy} onClick={() => { void deleteFavorite(profile) }} className="rounded-lg border border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] px-2 py-2 text-[11px] font-semibold text-[var(--app-danger)] hover:brightness-110 disabled:opacity-60">{deletingFavoriteId === profile.profileId ? 'Deleting…' : 'Delete'}</button>
+                      <div key={profile.profileId} className="flex min-w-0 max-w-full items-center gap-1">
+                        <div className={`group relative flex min-w-0 flex-1 items-center overflow-hidden rounded-xl border p-1 transition ${active ? 'border-[var(--app-primary)] bg-[var(--app-surface-subtle)]' : 'border-[var(--app-border)] hover:border-[var(--app-border-strong)] hover:bg-[var(--app-surface-hover)]'}`}>
+                          <div className="flex min-w-0 flex-1 items-center gap-3 rounded-lg p-2">
+                            <Star size={17} fill={active ? 'currentColor' : 'none'} className={`shrink-0 ${active ? 'text-[var(--app-primary)]' : 'text-[var(--app-text-subtle)]'}`} />
+                            <span className="min-w-0 flex-1">
+                              <span className="block truncate text-sm font-semibold text-[var(--app-text)]">{profile.name}</span>
+                              <span className="block truncate text-xs text-[var(--app-text-muted)]">{profile.provider}/{displayModelName(profile.provider, profile.model, profile.contextMode)}</span>
+                              <span className="block truncate text-xs text-[var(--app-text-muted)]">{profile.thinking || 'off'} · {serviceTierLabel(profile.provider, profile.model, modelOptions, profile.serviceTier)}</span>
+                            </span>
                           </div>
-                        ) : (
-                          <button type="button" disabled={saving || busy} aria-label={`Delete favorite ${profile.name}`} title={`Delete favorite ${profile.name}`} onClick={() => { setError(null); setDeleteCandidateId(profile.profileId) }} className="shrink-0 rounded-lg p-2 text-[var(--app-text-subtle)] hover:bg-[var(--app-danger-bg)] hover:text-[var(--app-danger)] disabled:opacity-60">
-                            <Trash2 size={15} />
-                          </button>
-                        )}
+                          <div
+                            className={`absolute inset-y-1 right-1 z-10 flex max-w-[calc(100%-0.5rem)] items-center gap-1 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-1 shadow-sm transition-all duration-150 ${confirmingDelete ? 'pointer-events-auto translate-x-0 opacity-100' : 'pointer-events-none translate-x-1 opacity-0 group-hover:pointer-events-auto group-hover:translate-x-0 group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:translate-x-0 group-focus-within:opacity-100'}`}
+                            role="group"
+                            aria-label={`Actions for ${profile.name}`}
+                          >
+                            {confirmingDelete ? (
+                              <>
+                                <span className="px-1 text-[11px] font-medium text-[var(--app-text-muted)]">Delete?</span>
+                                <button type="button" disabled={saving || busy} onClick={() => setDeleteCandidateId('')} className="rounded-lg px-2 py-2 text-[11px] font-semibold text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-primary)] disabled:opacity-60">Keep</button>
+                                <button type="button" disabled={saving || busy} onClick={() => { void deleteFavorite(profile) }} className="rounded-lg border border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] px-2 py-2 text-[11px] font-semibold text-[var(--app-danger)] hover:brightness-110 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-danger)] disabled:opacity-60">{deletingFavoriteId === profile.profileId ? 'Deleting…' : 'Delete'}</button>
+                              </>
+                            ) : (
+                              <>
+                                {onApplyModelFavoriteChatOnly ? (
+                                  <button type="button" disabled={saving || busy} aria-label={active ? `${profile.name} is in use for this chat` : `Use ${profile.name} in this chat only`} title={active ? 'In use for this chat' : 'Change only this chat to this model'} onClick={() => { void applyFavoriteToChat(profile) }} className="shrink-0 rounded-lg border border-[var(--app-border)] px-2 py-2 text-[11px] font-semibold text-[var(--app-text)] hover:bg-[var(--app-surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-primary)] disabled:opacity-60">
+                                    {switchingChatFavoriteId === profile.profileId ? 'Switching…' : active ? 'Current' : 'Use in chat'}
+                                  </button>
+                                ) : null}
+                                <button type="button" disabled={saving || busy} aria-label={`Make ${profile.name} the default model for future chats`} title="Use this model for future chats" onClick={() => { void applyFavorite(profile) }} className="shrink-0 rounded-lg border border-[var(--app-primary)] px-2 py-2 text-[11px] font-semibold text-[var(--app-primary)] hover:bg-[var(--app-surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-primary)] disabled:opacity-60">
+                                  {switchingFavoriteId === profile.profileId ? 'Switching…' : 'Default'}
+                                </button>
+                                <button type="button" disabled={saving || busy} aria-label={`Delete favorite ${profile.name}`} title={`Delete favorite ${profile.name}`} onClick={() => { setError(null); setDeleteCandidateId(profile.profileId) }} className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-[var(--app-text-subtle)] hover:bg-[var(--app-danger-bg)] hover:text-[var(--app-danger)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-danger)] disabled:opacity-60">
+                                  <Trash2 size={14} />
+                                </button>
+                              </>
+                            )}
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          disabled={saving || busy}
+                          aria-label={`Edit favorite ${profile.name}`}
+                          title={`Edit favorite ${profile.name}`}
+                          onClick={() => editFavorite(profile)}
+                          className="inline-flex h-10 w-9 shrink-0 items-center justify-center rounded-lg border border-transparent text-[var(--app-text-subtle)] hover:border-[var(--app-border)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] focus-visible:border-[var(--app-border)] focus-visible:bg-[var(--app-surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-primary)] disabled:opacity-60"
+                        >
+                          <MoreHorizontal size={17} />
+                        </button>
                       </div>
                     )
                   })}
@@ -708,7 +816,7 @@ export function AgentModelControl({
               {error ? <div className="mt-3 rounded-xl border border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] px-3 py-2 text-sm text-[var(--app-danger)]">{error}</div> : null}
             </div>
             <div className="flex shrink-0 justify-end border-t border-[var(--app-border)] px-4 py-3 sm:px-5">
-              <button type="button" onClick={() => { setError(null); setScreen('setup') }} className="inline-flex min-h-10 items-center gap-2 rounded-lg border border-[var(--app-primary)] bg-[var(--app-primary)] px-4 py-2 text-xs font-semibold text-[var(--app-primary-text)] hover:bg-[var(--app-primary-hover)]">
+              <button type="button" onClick={() => { setError(null); setEditingProfileId(''); setFavoriteName(''); setScreen('setup') }} className="inline-flex min-h-10 items-center gap-2 rounded-lg border border-[var(--app-primary)] bg-[var(--app-primary)] px-4 py-2 text-xs font-semibold text-[var(--app-primary-text)] hover:bg-[var(--app-primary-hover)]">
                 <Settings2 size={14} /> Agent Setup
               </button>
             </div>
@@ -801,7 +909,14 @@ export function AgentModelControl({
           <section aria-label="Agent model settings" className="min-h-0 p-4 min-[900px]:overflow-y-auto min-[900px]:p-5">
             {draftAgentName === SWARM_AGENT_NAME ? (
               <div className="grid gap-4">
-                <ModelDraftEditor title="Default Model" draft={actionDraft} providers={providers} modelOptions={modelOptions} onProviderChange={(provider) => updateProvider(setActionDraft, provider)} onModelChange={(model) => updateModel(setActionDraft, model)} onThinkingChange={(thinking) => setActionDraft((current) => ({ ...current, thinking }))} onServiceTierChange={(serviceTier) => setActionDraft((current) => ({ ...current, serviceTier }))} onFavorite={beginFavorite} showServiceTier />
+                <ModelDraftEditor title={editingProfileId ? `Favorite: ${favoriteName}` : 'Default Model'} draft={actionDraft} providers={providers} modelOptions={modelOptions} onProviderChange={(provider) => updateProvider(setActionDraft, provider)} onModelChange={(model) => updateModel(setActionDraft, model)} onThinkingChange={(thinking) => setActionDraft((current) => ({ ...current, thinking }))} onServiceTierChange={(serviceTier) => setActionDraft((current) => ({ ...current, serviceTier }))} onFavorite={editingProfileId ? undefined : beginFavorite} showServiceTier />
+                {editingProfileId ? (
+                  <label className="grid gap-1.5 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4 text-xs font-semibold uppercase tracking-wider text-[var(--app-text-muted)]">
+                    Favorite name
+                    <input value={favoriteName} onChange={(event) => setFavoriteName(event.target.value)} className="w-full rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] px-3 py-2 text-sm normal-case tracking-normal text-[var(--app-text)] outline-none focus:border-[var(--app-primary)] focus:ring-1 focus:ring-[var(--app-primary)]" />
+                    <span className="normal-case font-normal tracking-normal">Saving updates this favorite, the canonical Default Model, and the current chat.</span>
+                  </label>
+                ) : null}
                 {favoriteEditorOpen ? (
                   <form className="grid gap-3 rounded-xl border border-[var(--app-primary)] bg-[var(--app-surface)] p-4" onSubmit={(event) => { event.preventDefault(); void createFavoriteFromDefault() }}>
                     <div>
@@ -844,8 +959,11 @@ export function AgentModelControl({
         <div className="flex shrink-0 items-center justify-end gap-2 border-t border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-3 sm:px-5 sm:py-4">
           <button type="button" onClick={() => { setError(null); setScreen('favorites') }} className="mr-auto min-h-10 rounded-lg border border-[var(--app-border)] px-3 py-2 text-[11px] font-semibold text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] sm:min-h-0 sm:py-1.5">Favorites</button>
           <button type="button" onClick={() => setOpen(false)} className="min-h-10 rounded-lg border border-[var(--app-border)] px-3 py-2 text-[11px] font-semibold text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] sm:min-h-0 sm:py-1.5">Cancel</button>
-          <button type="button" disabled={busy || saving || (draftAgentName !== SWARM_AGENT_NAME && !draftProfile)} onClick={() => { void confirm() }} className="min-h-10 rounded-lg border border-[var(--app-primary)] bg-[var(--app-primary)] px-4 py-2 text-[11px] font-semibold text-[var(--app-primary-text)] hover:bg-[var(--app-primary-hover)] disabled:opacity-60 sm:min-h-0 sm:py-1.5">
-            {saving || busy ? 'Saving…' : `Save ${draftAgentName === SWARM_AGENT_NAME ? 'Swarm models' : `${draftProfile ? displayAgentName(draftProfile.name) : 'agent'} model`}`}
+          <button type="button" disabled={busy || saving || (draftAgentName !== SWARM_AGENT_NAME && !draftProfile)} onClick={() => { void confirm(false) }} className="min-h-10 rounded-lg border border-[var(--app-primary)] px-4 py-2 text-[11px] font-semibold text-[var(--app-primary)] hover:bg-[var(--app-surface-hover)] disabled:opacity-60 sm:min-h-0 sm:py-1.5">
+            {saving || busy ? 'Saving…' : 'Save & Continue'}
+          </button>
+          <button type="button" disabled={busy || saving || (draftAgentName !== SWARM_AGENT_NAME && !draftProfile)} onClick={() => { void confirm(true) }} className="min-h-10 rounded-lg border border-[var(--app-primary)] bg-[var(--app-primary)] px-4 py-2 text-[11px] font-semibold text-[var(--app-primary-text)] hover:bg-[var(--app-primary-hover)] disabled:opacity-60 sm:min-h-0 sm:py-1.5">
+            {saving || busy ? 'Saving…' : 'Save & Exit'}
           </button>
         </div>
           </>

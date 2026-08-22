@@ -62,6 +62,14 @@ func writeRuntimeArtifact(t *testing.T, artifactRoot, version string, omit map[s
 	if err := os.WriteFile(filepath.Join(artifactRoot, "build-info.txt"), []byte("version="+version+"\ncommit=test\n"), 0o644); err != nil {
 		t.Fatalf("write build-info: %v", err)
 	}
+	for name, contents := range map[string]string{
+		"LICENSE":                "Apache License 2.0\n",
+		"THIRD_PARTY_NOTICES.md": "# Third-Party Notices\n",
+	} {
+		if err := os.WriteFile(filepath.Join(artifactRoot, name), []byte(contents), 0o644); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
 }
 
 func TestValidateUpdateDownloadURLRejectsUntrustedOrInsecureOrigins(t *testing.T) {
@@ -149,6 +157,8 @@ func TestInstallRuntimeFromArtifactUsesVersionedCurrentLayout(t *testing.T) {
 		filepath.Join("share", "assets", "app.js"),
 		filepath.Join("share", "assets", "app.js.gz"),
 		"build-info.txt",
+		"LICENSE",
+		"THIRD_PARTY_NOTICES.md",
 		".version",
 	} {
 		path := filepath.Join(versionRoot, rel)

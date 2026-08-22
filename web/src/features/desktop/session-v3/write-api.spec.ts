@@ -181,6 +181,7 @@ test('routed start accepts staging IDs without inventing route selections', asyn
       ...workspaceAuthority,
       input: 'Replay this',
       client_request_id: 'desktop-routed:stable-2',
+      agent_name: 'swarm',
       managed_worktree_requested: false,
       plan_mode_requested: false,
       staging_ids: ['staged-2'],
@@ -208,6 +209,20 @@ test('routed response normalization rejects mismatched canonical durable state',
   )
 })
 
+test('routed start rejects missing agent_name before transport', async () => {
+  await assert.rejects(
+    postDesktopV3RoutedSessionStart({
+      ...workspaceAuthority,
+      input: 'Do work',
+      client_request_id: 'desktop-routed:missing-agent',
+      agent_name: '   ',
+      managed_worktree_requested: false,
+      plan_mode_requested: false,
+    }),
+    /agent_name/,
+  )
+})
+
 test('routed start rejects conflicting idempotency identities before transport', async () => {
   await assert.rejects(
     postDesktopV3RoutedSessionStart({
@@ -215,6 +230,7 @@ test('routed start rejects conflicting idempotency identities before transport',
       input: 'Do work',
       client_request_id: 'desktop-routed:one',
       idempotency_key: 'desktop-routed:two',
+      agent_name: 'swarm',
       managed_worktree_requested: false,
       plan_mode_requested: false,
     }),

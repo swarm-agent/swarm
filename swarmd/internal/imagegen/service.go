@@ -3,8 +3,10 @@ package imagegen
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -18,26 +20,22 @@ import (
 	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/imagegenlog"
 	"swarm/packages/swarmd/internal/provider/codex"
+	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
 const (
-	ProviderCodexOpenAI       = "codex_openai"
-	ProviderGoogleGemini      = "google_gemini"
-	TargetWorkspaceImage      = "workspace_image_session"
-	defaultCodexImageModel    = "gpt-5.5"
-	defaultGeminiImageModel   = "gemini-3.1-flash-image-preview"
-	generatedImageExtension   = ".png"
-	assetPathMetadataKey      = "tool_storage_path"
-	assetURLBase              = "/v1/image/assets"
-	geminiMaxParallelRequests = 10
+	ProviderCodexOpenAI             = "codex_openai"
+	ProviderGoogleGemini            = "google_gemini"
+	TargetWorkspaceImage            = "workspace_image_session"
+	defaultCodexImageModel          = "gpt-5.5"
+	generatedImageExtension         = ".png"
+	assetPathMetadataKey            = "tool_storage_path"
+	assetURLBase                    = "/v1/image/assets"
+	geminiMaxParallelRequests       = 10
+	managedImageMaxParallelRequests = 4
+	managedImageMaxBytes            = 16 << 20
 )
-
-var geminiImageModels = []string{
-	"gemini-3.1-flash-image-preview",
-	"gemini-3-pro-image-preview",
-	"gemini-2.5-flash-image",
-}
 
 type CodexImageClient interface {
 	GenerateImage(ctx context.Context, req codex.ImageGenerationRequest) (codex.ImageGenerationResult, error)
@@ -47,11 +45,17 @@ type GeminiImageClient interface {
 	GenerateImage(ctx context.Context, req GeminiImageGenerationRequest) (GeminiImageGenerationResult, error)
 }
 
+type ModelCatalog interface {
+	ListCatalog(providerID string, limit int) ([]pebblestore.ModelCatalogRecord, error)
+}
+
 type Service struct {
 	codexClient       CodexImageClient
 	geminiImageClient GeminiImageClient
 	authStore         *pebblestore.AuthStore
 	imageThreads      *pebblestore.ImageThreadStore
+	modelCatalog      ModelCatalog
+	managedSlots      chan struct{}
 }
 
 type GenerateRequest struct {
@@ -116,6 +120,334 @@ type GenerateResult struct {
 	ProviderResponse map[string]any                   `json:"provider_response,omitempty"`
 }
 
+// ManagedGenerateRequest is the provider-neutral, single-image contract used by
+// V3 managed artifacts. Provider and model are resolved from the account's
+// canonical image setting before this boundary and are never model-authored tool
+// arguments.
+type ManagedGenerateRequest struct {
+	SelectionID     string
+	Prompt          string
+	Size            string
+	Settings        map[string]any
+	CapabilityToken string
+	Principal       identity.Principal
+	Source          *ManagedImageSource
+}
+
+// ManagedImageSource carries an authenticated, bounded source image across the
+// provider-neutral generation boundary. It intentionally contains no path or
+// storage identity; artifact lineage remains owned by the publishing caller.
+type ManagedImageSource struct {
+	Bytes     []byte
+	MediaType string
+}
+
+// ManagedImage is an in-memory provider result ready for direct publication by
+// the artifact authority. It intentionally contains no workspace or storage path.
+type ManagedImage struct {
+	Bytes         []byte
+	MediaType     string
+	RevisedPrompt string
+}
+
+type ModelSelection struct {
+	ID          string
+	Provider    string
+	Model       string
+	DisplayName string
+}
+
+type ManagedImageSettingCapability struct {
+	Status          string `json:"status"`
+	DefaultValue    any    `json:"default_value,omitempty"`
+	SupportedValues []any  `json:"supported_values,omitempty"`
+	Notes           string `json:"notes,omitempty"`
+}
+
+type ManagedImageCapabilities struct {
+	CapabilityToken string                                   `json:"capability_token,omitempty"`
+	Available       bool                                     `json:"available"`
+	Reason          string                                   `json:"reason,omitempty"`
+	Settings        map[string]ManagedImageSettingCapability `json:"settings,omitempty"`
+	selection       ModelSelection
+}
+
+type googleImageGenerationProfile struct {
+	APISurface       string `json:"api_surface"`
+	Status           string `json:"status"`
+	ManagedImageTool struct {
+		Supported          bool     `json:"supported"`
+		ClientSettingNames []string `json:"client_setting_names"`
+		Notes              string   `json:"notes"`
+	} `json:"managed_image_tool"`
+	Settings map[string]struct {
+		Status          string `json:"status"`
+		DefaultValue    any    `json:"default_value"`
+		SupportedValues []any  `json:"supported_values"`
+		Notes           string `json:"notes"`
+	} `json:"settings"`
+}
+
+const DefaultModelSelectionID = "codex-image-gen"
+
+func HardcodedModelSelections() []ModelSelection {
+	return []ModelSelection{{ID: DefaultModelSelectionID, Provider: ProviderCodexOpenAI, Model: defaultCodexImageModel, DisplayName: "Codex Image Gen"}}
+}
+
+func (s *Service) ManagedImageCapabilities(selectionID string) (ManagedImageCapabilities, error) {
+	selectionID = strings.TrimSpace(selectionID)
+	if selectionID == "" || selectionID == DefaultModelSelectionID || selectionID == defaultCodexImageModel {
+		selection, err := ResolveModelSelection(selectionID)
+		if err != nil {
+			return ManagedImageCapabilities{}, err
+		}
+		return ManagedImageCapabilities{Available: true, selection: selection}, nil
+	}
+	selection := ModelSelection{ID: selectionID, Provider: ProviderGoogleGemini, Model: selectionID, DisplayName: selectionID}
+	record, found, err := s.googleImageCatalogRecord(selectionID)
+	if err != nil {
+		return ManagedImageCapabilities{}, err
+	}
+	if !found {
+		return ManagedImageCapabilities{Available: false, Reason: "configured Google image model is absent from the current snapshot", selection: selection}, nil
+	}
+	selection.Model = strings.TrimSpace(record.Model)
+	selection.ID = selection.Model
+	selection.DisplayName = firstNonEmpty(strings.TrimSpace(record.DisplayName), selection.Model)
+	profile, modelSurface, err := decodeGoogleImageGenerationProfile(record.ProviderSpecific)
+	if err != nil {
+		return ManagedImageCapabilities{}, err
+	}
+	capabilities := ManagedImageCapabilities{Available: false, Reason: strings.TrimSpace(profile.ManagedImageTool.Notes), selection: selection}
+	if strings.HasPrefix(strings.ToLower(selection.Model), "imagen-") || !strings.EqualFold(modelSurface, "generate_content") || !strings.EqualFold(profile.APISurface, "generate_content") {
+		if capabilities.Reason == "" {
+			capabilities.Reason = "configured Google image model does not use the supported generateContent surface"
+		}
+		return capabilities, nil
+	}
+	if !strings.EqualFold(strings.TrimSpace(profile.Status), "verified") && !strings.EqualFold(strings.TrimSpace(profile.Status), "partially_verified") {
+		if capabilities.Reason == "" {
+			capabilities.Reason = "configured Google image model has no verified generation controls"
+		}
+		return capabilities, nil
+	}
+	capabilities.Settings = make(map[string]ManagedImageSettingCapability, 2)
+	for _, name := range []string{"aspect_ratio", "image_size"} {
+		setting, ok := profile.Settings[name]
+		if !ok || !strings.EqualFold(strings.TrimSpace(setting.Status), "verified") || len(setting.SupportedValues) == 0 {
+			continue
+		}
+		capabilities.Settings[name] = ManagedImageSettingCapability{
+			Status: strings.TrimSpace(setting.Status), DefaultValue: setting.DefaultValue,
+			SupportedValues: append([]any(nil), setting.SupportedValues...), Notes: strings.TrimSpace(setting.Notes),
+		}
+	}
+	if len(capabilities.Settings) == 0 {
+		capabilities.Reason = "configured Google image model has no verified managed settings"
+		return capabilities, nil
+	}
+	capabilities.Available = true
+	capabilities.Reason = ""
+	tokenPayload := strings.Join([]string{record.SourceSnapshotID, record.SourceSnapshotVersion, selection.Model, string(record.ProviderSpecific)}, "\x00")
+	capabilities.CapabilityToken = fmt.Sprintf("%x", sha256.Sum256([]byte(tokenPayload)))
+	return capabilities, nil
+}
+
+func (s *Service) googleImageCatalogRecord(modelID string) (pebblestore.ModelCatalogRecord, bool, error) {
+	if s == nil || s.modelCatalog == nil {
+		return pebblestore.ModelCatalogRecord{}, false, nil
+	}
+	records, err := s.modelCatalog.ListCatalog("google", 2000)
+	if err != nil {
+		return pebblestore.ModelCatalogRecord{}, false, fmt.Errorf("list Google image models: %w", err)
+	}
+	for _, record := range records {
+		if strings.TrimSpace(record.Model) == strings.TrimSpace(modelID) {
+			return record, true, nil
+		}
+	}
+	return pebblestore.ModelCatalogRecord{}, false, nil
+}
+
+func decodeGoogleImageGenerationProfile(raw json.RawMessage) (googleImageGenerationProfile, string, error) {
+	var providers map[string]struct {
+		ModelAPISurface string                       `json:"model_api_surface"`
+		ImageGeneration googleImageGenerationProfile `json:"image_generation"`
+	}
+	if err := json.Unmarshal(raw, &providers); err != nil {
+		return googleImageGenerationProfile{}, "", fmt.Errorf("decode Google image-generation profile: %w", err)
+	}
+	for providerID, provider := range providers {
+		if strings.EqualFold(strings.TrimSpace(providerID), "google") {
+			return provider.ImageGeneration, strings.TrimSpace(provider.ModelAPISurface), nil
+		}
+	}
+	return googleImageGenerationProfile{}, "", errors.New("Google image-generation profile is missing")
+}
+
+func (c ManagedImageCapabilities) validateRequest(req ManagedGenerateRequest) (string, string, error) {
+	if !c.Available {
+		return "", "", fmt.Errorf("configured image model is unavailable: %s", strings.TrimSpace(c.Reason))
+	}
+	if c.selection.Provider != ProviderGoogleGemini {
+		return "", "", nil
+	}
+	if strings.TrimSpace(req.CapabilityToken) == "" || strings.TrimSpace(req.CapabilityToken) != c.CapabilityToken {
+		return "", "", errors.New("Google image generation requires a fresh manage_artifact image_capabilities result")
+	}
+	for key := range req.Settings {
+		if key != "size" {
+			if _, ok := c.Settings[key]; !ok {
+				return "", "", fmt.Errorf("Google image setting %q is not supported by the configured model", key)
+			}
+		}
+	}
+	aspectRatio := strings.TrimSpace(settingString(req.Settings, "aspect_ratio"))
+	derivedRatio, derivedSize := splitPortableImageDimensions(firstNonEmpty(req.Size, settingString(req.Settings, "size")))
+	if aspectRatio == "" {
+		aspectRatio = derivedRatio
+	}
+	imageSize := strings.TrimSpace(settingString(req.Settings, "image_size"))
+	if imageSize == "" && imageSizeCapabilityPresent(c) {
+		imageSize = derivedSize
+	}
+	aspectRatio, err := validateManagedGoogleSetting(c, "aspect_ratio", aspectRatio)
+	if err != nil {
+		return "", "", err
+	}
+	imageSize, err = validateManagedGoogleSetting(c, "image_size", imageSize)
+	if err != nil {
+		return "", "", err
+	}
+	return aspectRatio, imageSize, nil
+}
+
+func imageSizeCapabilityPresent(capabilities ManagedImageCapabilities) bool {
+	_, ok := capabilities.Settings["image_size"]
+	return ok
+}
+
+func validateManagedGoogleSetting(capabilities ManagedImageCapabilities, name, value string) (string, error) {
+	capability, advertised := capabilities.Settings[name]
+	if !advertised {
+		if strings.TrimSpace(value) != "" {
+			return "", fmt.Errorf("Google image setting %q is not supported by the configured model", name)
+		}
+		return "", nil
+	}
+	if strings.TrimSpace(value) == "" && capability.DefaultValue != nil {
+		value = strings.TrimSpace(fmt.Sprint(capability.DefaultValue))
+	}
+	for _, supported := range capability.SupportedValues {
+		if strings.EqualFold(strings.TrimSpace(value), strings.TrimSpace(fmt.Sprint(supported))) {
+			return strings.TrimSpace(fmt.Sprint(supported)), nil
+		}
+	}
+	return "", fmt.Errorf("Google image setting %s=%q is not in the current supported values", name, value)
+}
+
+// ResolveModelSelection resolves only the dedicated hardcoded Codex contract.
+// Snapshot-backed provider models are resolved by Service.ResolveModelSelection.
+func ResolveModelSelection(selectionID string) (ModelSelection, error) {
+	selectionID = strings.TrimSpace(selectionID)
+	if selectionID == "" {
+		selectionID = DefaultModelSelectionID
+	}
+	if selectionID == DefaultModelSelectionID || selectionID == defaultCodexImageModel {
+		return HardcodedModelSelections()[0], nil
+	}
+	return ModelSelection{}, fmt.Errorf("configured image model %q is not a hardcoded image model", selectionID)
+}
+
+func (s *Service) GoogleImageModelSelections() ([]ModelSelection, error) {
+	if s == nil || s.modelCatalog == nil {
+		return nil, nil
+	}
+	records, err := s.modelCatalog.ListCatalog("google", 2000)
+	if err != nil {
+		return nil, fmt.Errorf("list Google image models: %w", err)
+	}
+	selections := make([]ModelSelection, 0, len(records))
+	for _, record := range records {
+		if !isSnapshotGoogleGenerateContentImageModel(record) {
+			continue
+		}
+		selections = append(selections, ModelSelection{
+			ID: strings.TrimSpace(record.Model), Provider: ProviderGoogleGemini, Model: strings.TrimSpace(record.Model),
+			DisplayName: firstNonEmpty(strings.TrimSpace(record.DisplayName), strings.TrimSpace(record.Model)),
+		})
+	}
+	sort.Slice(selections, func(i, j int) bool {
+		if selections[i].DisplayName == selections[j].DisplayName {
+			return selections[i].Model < selections[j].Model
+		}
+		return selections[i].DisplayName < selections[j].DisplayName
+	})
+	return selections, nil
+}
+
+func (s *Service) ResolveModelSelection(selectionID string) (ModelSelection, error) {
+	selectionID = strings.TrimSpace(selectionID)
+	if selectionID == "" || selectionID == DefaultModelSelectionID || selectionID == defaultCodexImageModel {
+		return ResolveModelSelection(selectionID)
+	}
+	selections, err := s.GoogleImageModelSelections()
+	if err != nil {
+		return ModelSelection{}, err
+	}
+	for _, selection := range selections {
+		if selection.ID == selectionID || selection.Model == selectionID || legacyGoogleSelectionID(selection.DisplayName) == selectionID {
+			return selection, nil
+		}
+	}
+	return ModelSelection{}, fmt.Errorf("configured image model %q is not in the current Google image catalog", selectionID)
+}
+
+func legacyGoogleSelectionID(displayName string) string {
+	fields := strings.FieldsFunc(strings.ToLower(strings.TrimSpace(displayName)), func(r rune) bool {
+		return (r < 'a' || r > 'z') && (r < '0' || r > '9')
+	})
+	if len(fields) == 0 {
+		return ""
+	}
+	return "gemini-" + strings.Join(fields, "-")
+}
+
+func isSnapshotGoogleGenerateContentImageModel(record pebblestore.ModelCatalogRecord) bool {
+	if !strings.EqualFold(strings.TrimSpace(record.Provider), "google") ||
+		strings.HasPrefix(strings.ToLower(strings.TrimSpace(record.Model)), "imagen-") ||
+		!containsStringFold(record.CatalogModalities.Outputs, "image") {
+		return false
+	}
+	if record.Media == nil || record.Media.State != pebblestore.ModelCatalogMediaStateSupported || record.Media.ProviderSurface != provideriface.MediaProviderSurfaceGoogleGenerateContent {
+		return false
+	}
+	profile, modelSurface, err := decodeGoogleImageGenerationProfile(record.ProviderSpecific)
+	if err != nil {
+		return false
+	}
+	if !strings.EqualFold(modelSurface, "generate_content") || !strings.EqualFold(strings.TrimSpace(profile.APISurface), "generate_content") ||
+		(!strings.EqualFold(strings.TrimSpace(profile.Status), "verified") && !strings.EqualFold(strings.TrimSpace(profile.Status), "partially_verified")) {
+		return false
+	}
+	for _, name := range []string{"aspect_ratio", "image_size"} {
+		setting := profile.Settings[name]
+		if strings.EqualFold(strings.TrimSpace(setting.Status), "verified") && len(setting.SupportedValues) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func containsStringFold(values []string, wanted string) bool {
+	for _, value := range values {
+		if strings.EqualFold(strings.TrimSpace(value), wanted) {
+			return true
+		}
+	}
+	return false
+}
+
 type WorkspaceImageSessionTargetInfo struct {
 	Kind   string                          `json:"kind"`
 	Thread pebblestore.ImageThreadSnapshot `json:"thread"`
@@ -140,8 +472,25 @@ type imageSession struct {
 	storagePath string
 }
 
-func NewService(codexClient CodexImageClient, authStore *pebblestore.AuthStore, imageThreads *pebblestore.ImageThreadStore) *Service {
-	return &Service{codexClient: codexClient, geminiImageClient: googleGeminiImageClient{}, authStore: authStore, imageThreads: imageThreads}
+func NewService(codexClient CodexImageClient, authStore *pebblestore.AuthStore, imageThreads *pebblestore.ImageThreadStore, modelCatalog ...ModelCatalog) *Service {
+	service := &Service{
+		codexClient:       codexClient,
+		geminiImageClient: googleGeminiImageClient{},
+		authStore:         authStore,
+		imageThreads:      imageThreads,
+		managedSlots:      make(chan struct{}, managedImageMaxParallelRequests),
+	}
+	if len(modelCatalog) > 0 {
+		service.modelCatalog = modelCatalog[0]
+	}
+	return service
+}
+
+func (s *Service) SetModelCatalog(catalog ModelCatalog) {
+	if s == nil {
+		return
+	}
+	s.modelCatalog = catalog
 }
 
 func (s *Service) SetGeminiImageClient(client GeminiImageClient) {
@@ -184,11 +533,18 @@ func (s *Service) Capabilities(ctx context.Context) (Capabilities, error) {
 	} else {
 		codexStatus.Ready = true
 	}
-	geminiStatus := ProviderStatus{
-		ID:           ProviderGoogleGemini,
-		Label:        "Google Gemini / Nano Banana",
-		DefaultModel: defaultGeminiImageModel,
-		Models:       append([]string(nil), geminiImageModels...),
+	googleSelections, err := s.GoogleImageModelSelections()
+	if err != nil {
+		return Capabilities{}, err
+	}
+	geminiStatus := ProviderStatus{ID: ProviderGoogleGemini, Label: "Google Gemini"}
+	for _, selection := range googleSelections {
+		geminiStatus.Models = append(geminiStatus.Models, selection.Model)
+	}
+	if len(geminiStatus.Models) > 0 {
+		geminiStatus.DefaultModel = geminiStatus.Models[0]
+	} else {
+		geminiStatus.Reason = "no snapshot-backed Google image models are available"
 	}
 	if s == nil || s.geminiImageClient == nil || s.authStore == nil {
 		geminiStatus.Ready = false
@@ -201,10 +557,205 @@ func (s *Service) Capabilities(ctx context.Context) (Capabilities, error) {
 	} else if !ok || strings.TrimSpace(record.APIKey) == "" {
 		geminiStatus.Ready = false
 		geminiStatus.Reason = "connect a Google API key to enable Gemini image generation"
-	} else {
+	} else if len(geminiStatus.Models) > 0 {
 		geminiStatus.Ready = true
 	}
 	return Capabilities{Providers: []ProviderStatus{codexStatus, geminiStatus}}, nil
+}
+
+// GenerateManagedImage performs exactly one billed provider call and returns
+// exactly one verified image without writing image-tool session storage.
+func (s *Service) GenerateManagedImage(ctx context.Context, req ManagedGenerateRequest) (ManagedImage, error) {
+	if s == nil {
+		return ManagedImage{}, errors.New("image generation service is not configured")
+	}
+	if !req.Principal.Valid() {
+		return ManagedImage{}, identity.ErrPrincipalRequired
+	}
+	prompt := strings.TrimSpace(req.Prompt)
+	if prompt == "" {
+		return ManagedImage{}, errors.New("prompt is required")
+	}
+	if req.Source != nil {
+		req.Source = cloneManagedImageSource(req.Source)
+		if len(req.Source.Bytes) == 0 {
+			return ManagedImage{}, errors.New("managed image remix source is empty")
+		}
+		if len(req.Source.Bytes) > managedImageMaxBytes {
+			return ManagedImage{}, fmt.Errorf("managed image remix source exceeds %d bytes", managedImageMaxBytes)
+		}
+		if extensionFromMIME(req.Source.MediaType) == "" {
+			return ManagedImage{}, fmt.Errorf("managed image remix source media type %q is unsupported", req.Source.MediaType)
+		}
+	}
+	if s.managedSlots != nil {
+		select {
+		case s.managedSlots <- struct{}{}:
+			defer func() { <-s.managedSlots }()
+		case <-ctx.Done():
+			return ManagedImage{}, ctx.Err()
+		}
+	}
+	selection, err := s.ResolveModelSelection(req.SelectionID)
+	if err != nil {
+		return ManagedImage{}, err
+	}
+	capabilities, err := s.ManagedImageCapabilities(req.SelectionID)
+	if err != nil {
+		return ManagedImage{}, err
+	}
+	googleAspectRatio, googleImageSize, err := capabilities.validateRequest(req)
+	if err != nil {
+		return ManagedImage{}, err
+	}
+	switch selection.Provider {
+	case ProviderCodexOpenAI:
+		if req.Source != nil {
+			return ManagedImage{}, errors.New("configured Codex image provider does not support managed image remixing")
+		}
+		if s.codexClient == nil || s.authStore == nil {
+			return ManagedImage{}, errors.New("codex image provider is not configured")
+		}
+		record, ok, err := s.authStore.GetCodexAuthRecordForAccount(req.Principal.AccountScopeID)
+		if err != nil {
+			return ManagedImage{}, fmt.Errorf("read codex image auth: %w", err)
+		}
+		if !ok || strings.TrimSpace(record.AccessToken) == "" || strings.TrimSpace(record.RefreshToken) == "" {
+			return ManagedImage{}, errors.New("connect Codex with OAuth to enable image generation")
+		}
+		generated, err := s.codexClient.GenerateImage(identity.ContextWithPrincipal(ctx, req.Principal), codex.ImageGenerationRequest{
+			Model: selection.Model, Prompt: prompt, Size: managedCodexImageSize(req), Count: 1,
+		})
+		if err != nil {
+			return ManagedImage{}, err
+		}
+		completed, err := completedCodexImages(generated, 1, nil)
+		if err != nil {
+			return ManagedImage{}, err
+		}
+		return managedImageFromCodex(completed[0])
+	case ProviderGoogleGemini:
+		if s.geminiImageClient == nil || s.authStore == nil {
+			return ManagedImage{}, errors.New("Gemini image provider is not configured")
+		}
+		record, ok, err := s.authStore.GetActiveCredentialForAccount(req.Principal.AccountScopeID, "google")
+		if err != nil {
+			return ManagedImage{}, fmt.Errorf("read google auth: %w", err)
+		}
+		if !ok || strings.TrimSpace(record.APIKey) == "" {
+			return ManagedImage{}, errors.New("connect a Google API key to enable Gemini image generation")
+		}
+		generated, err := s.geminiImageClient.GenerateImage(identity.ContextWithPrincipal(ctx, req.Principal), GeminiImageGenerationRequest{
+			APIKey: record.APIKey, Model: selection.Model, Prompt: prompt,
+			AspectRatio: googleAspectRatio, ImageSize: googleImageSize, Source: cloneManagedImageSource(req.Source),
+		})
+		if err != nil {
+			return ManagedImage{}, err
+		}
+		completed, err := completedGeminiImages(generated, 0, "")
+		if err != nil {
+			return ManagedImage{}, err
+		}
+		return managedImageFromCodex(completed[0])
+	default:
+		return ManagedImage{}, fmt.Errorf("unsupported image provider %q", selection.Provider)
+	}
+}
+
+func cloneManagedImageSource(source *ManagedImageSource) *ManagedImageSource {
+	if source == nil {
+		return nil
+	}
+	return &ManagedImageSource{Bytes: append([]byte(nil), source.Bytes...), MediaType: strings.TrimSpace(source.MediaType)}
+}
+
+func managedCodexImageSize(req ManagedGenerateRequest) string {
+	if value := strings.TrimSpace(firstNonEmpty(req.Size, settingString(req.Settings, "size"))); value != "" {
+		return value
+	}
+	switch strings.ToUpper(strings.TrimSpace(settingString(req.Settings, "image_size"))) {
+	case "512", "512X512":
+		return "512x512"
+	case "1K", "1024", "1024X1024":
+		return "1024x1024"
+	case "2K", "2048", "2048X2048":
+		return "2048x2048"
+	case "4K", "4096", "4096X4096":
+		return "4096x4096"
+	default:
+		return ""
+	}
+}
+
+func managedGeminiImageSize(req ManagedGenerateRequest) string {
+	if value := strings.TrimSpace(settingString(req.Settings, "image_size")); value != "" {
+		return value
+	}
+	if _, imageSize := splitPortableImageDimensions(firstNonEmpty(req.Size, settingString(req.Settings, "size"))); imageSize != "" {
+		return imageSize
+	}
+	return ""
+}
+
+func managedGeminiAspectRatio(req ManagedGenerateRequest) string {
+	if value := strings.TrimSpace(settingString(req.Settings, "aspect_ratio")); value != "" {
+		return normalizeGeminiAspectRatio(value)
+	}
+	aspectRatio, _ := splitPortableImageDimensions(firstNonEmpty(req.Size, settingString(req.Settings, "size")))
+	return normalizeGeminiAspectRatio(aspectRatio)
+}
+
+func splitPortableImageDimensions(value string) (aspectRatio, imageSize string) {
+	value = strings.ToUpper(strings.TrimSpace(value))
+	parts := strings.Split(value, "X")
+	if len(parts) != 2 {
+		return "", ""
+	}
+	var width, height int
+	if _, err := fmt.Sscanf(parts[0], "%d", &width); err != nil || width < 1 {
+		return "", ""
+	}
+	if _, err := fmt.Sscanf(parts[1], "%d", &height); err != nil || height < 1 {
+		return "", ""
+	}
+	switch {
+	case width == height:
+		aspectRatio = "1:1"
+	case width*2 == height*3:
+		aspectRatio = "3:2"
+	case width*3 == height*2:
+		aspectRatio = "2:3"
+	case width*9 == height*16:
+		aspectRatio = "16:9"
+	case width*16 == height*9:
+		aspectRatio = "9:16"
+	}
+	maxDimension := width
+	if height > maxDimension {
+		maxDimension = height
+	}
+	switch {
+	case maxDimension <= 512:
+		imageSize = "512"
+	case maxDimension <= 1024:
+		imageSize = "1K"
+	case maxDimension <= 2048:
+		imageSize = "2K"
+	default:
+		imageSize = "4K"
+	}
+	return aspectRatio, imageSize
+}
+
+func managedImageFromCodex(image codex.ImageGenerationResult) (ManagedImage, error) {
+	mediaType := finalImageMIME(image)
+	if extensionFromMIME(mediaType) == "" || len(image.DecodedPNG) == 0 {
+		return ManagedImage{}, errors.New("image generation returned unsupported or empty image data")
+	}
+	if len(image.DecodedPNG) > managedImageMaxBytes {
+		return ManagedImage{}, fmt.Errorf("generated image exceeds %d bytes", managedImageMaxBytes)
+	}
+	return ManagedImage{Bytes: append([]byte(nil), image.DecodedPNG...), MediaType: mediaType, RevisedPrompt: strings.TrimSpace(image.RevisedPrompt)}, nil
 }
 
 func (s *Service) Generate(ctx context.Context, req GenerateRequest) (GenerateResult, error) {
@@ -753,7 +1304,11 @@ func settingString(settings map[string]any, key string) string {
 	if settings == nil {
 		return ""
 	}
-	return strings.TrimSpace(fmt.Sprint(settings[key]))
+	value, ok := settings[key]
+	if !ok || value == nil {
+		return ""
+	}
+	return strings.TrimSpace(fmt.Sprint(value))
 }
 
 func imageGenerationLogf(format string, args ...any) {

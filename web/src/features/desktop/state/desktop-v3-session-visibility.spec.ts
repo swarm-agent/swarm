@@ -2,9 +2,9 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 
 import { createEmptyDesktopV3CacheState, applyHydrateSnapshot, applyReconnectSnapshot, applySnapshot, applyWorksetSessionDiscovered, applyWorksetSessionUpdated } from './desktop-v3-cache-reducer'
-import { selectDesktopSidebarRows } from './desktop-v3-cache-selectors'
+import { selectDesktopSidebarRows, selectDesktopVideoStudioRows } from './desktop-v3-cache-selectors'
 import { hydrateSnapshotFixture, reconnectFixture, sessionA, sessionB, snapshotFixture } from './desktop-v3-cache.backend-fixtures'
-import { isDesktopV3NavigationHiddenSession } from './desktop-v3-session-visibility'
+import { isDesktopV3NavigationHiddenSession, isDesktopV3VideoStudioMetadata, isDesktopV3VideoStudioSession } from './desktop-v3-session-visibility'
 
 const hiddenSession = {
   ...sessionA,
@@ -21,13 +21,47 @@ test('navigation-hidden predicate recognizes every supported backend marker', ()
   assert.equal(isDesktopV3NavigationHiddenSession(sessionA), false)
 })
 
+test('Video Studio classification recognizes dedicated-tool and AI-created project contracts', () => {
+  const videoSession = { ...sessionA, metadata: { experience: ' VIDEO_STUDIO ', launch_source: 'VIDEO_TOOL' } }
+  assert.equal(isDesktopV3VideoStudioSession(videoSession), true)
+  assert.equal(isDesktopV3VideoStudioSession({ ...videoSession, metadata: { experience: 'video_studio' } }), false)
+  assert.equal(isDesktopV3VideoStudioSession({ ...videoSession, metadata: { launch_source: 'video_tool' } }), false)
+  assert.equal(isDesktopV3VideoStudioSession({ ...videoSession, metadata: { lineage_kind: ' VIDEO_PROJECT ' } }), true)
+  assert.equal(isDesktopV3VideoStudioMetadata({ lineage_kind: 'video_child' }), false)
+})
+
+test('ordinary and Video selectors partition canonical V3 sessions without dropping hydration authority', () => {
+  const state = createEmptyDesktopV3CacheState()
+  const videoSession = {
+    ...sessionB,
+    id: 'video-studio-session',
+    metadata: { experience: 'video_studio', launch_source: 'video_tool' },
+  }
+  const snapshot = snapshotFixture({
+    sessions_by_id: { [sessionA.id]: sessionA, [videoSession.id]: videoSession },
+    projections_by_session: {},
+    messages_by_session: {},
+    run_intents_by_session: {},
+    session_order: [videoSession.id, sessionA.id],
+  })
+  applySnapshot(state, { source: 'bootstrap', scopeId: snapshot.scope_id, snapshot })
+
+  assert.deepEqual(selectDesktopSidebarRows(state).map((row) => row.sessionId), [sessionA.id])
+  assert.deepEqual(selectDesktopVideoStudioRows(state).map((row) => row.sessionId), [videoSession.id])
+  assert.equal(state.sessionsById[videoSession.id]?.kind, 'full')
+})
+
 test('bootstrap excludes hidden sidechats while ordinary and non-system child sessions remain visible', () => {
   const state = createEmptyDesktopV3CacheState()
   const childSession = { ...sessionB, id: 'ordinary-child', metadata: { lineage_kind: 'subagent' } }
-  applySnapshot(state, snapshotFixture({
+  const snapshot = snapshotFixture({
     sessions_by_id: { [sessionA.id]: sessionA, [childSession.id]: childSession, [hiddenSession.id]: hiddenSession },
+    projections_by_session: {},
+    messages_by_session: {},
+    run_intents_by_session: {},
     session_order: [hiddenSession.id, childSession.id, sessionA.id],
-  }))
+  })
+  applySnapshot(state, { source: 'bootstrap', scopeId: snapshot.scope_id, snapshot })
 
   assert.deepEqual(state.sessionOrderByScope['selector-hash:messages,run_intents'], [childSession.id, sessionA.id])
   assert.deepEqual(selectDesktopSidebarRows(state).map((row) => row.sessionId), [childSession.id, sessionA.id])
@@ -40,10 +74,13 @@ test('explicit hydrate retains hidden sidechat cache data without sidebar member
   applyHydrateSnapshot(state, hydrateSnapshotFixture({
     session_order: [hiddenSession.id],
     sessions_by_id: { [hiddenSession.id]: hiddenSession },
+    projections_by_session: {},
+    messages_by_session: {},
+    selector: { kind: 'session_ids', session_ids: [hiddenSession.id] },
   }), [hiddenSession.id])
 
   assert.equal(state.sessionsById[hiddenSession.id]?.kind, 'full')
-  assert.equal(state.sessionOrderByScope.sidebar.includes(hiddenSession.id), false)
+  assert.deepEqual(selectDesktopSidebarRows(state, 'sidebar'), [])
 })
 
 test('reconnect and realtime discovered/updated remove hidden sessions from navigation membership', () => {
@@ -84,9 +121,9 @@ test('archived hidden sessions are excluded by the final sidebar selector', () =
   state.desktopSidebarBootstrap = { status: 'ready', scopeId: 'sidebar' }
   state.sessionOrderByScope.sidebar = []
   state.tombstonesBySession = {
-    hidden: { session_id: hiddenSession.id, archived: true, session: hiddenSession },
-    visible: { session_id: sessionA.id, archived: true, session: sessionA },
+    hidden: { kind: 'archived', session_id: hiddenSession.id, archived: true, session: hiddenSession },
+    visible: { kind: 'archived', session_id: sessionA.id, archived: true, session: sessionA },
   }
 
-  assert.deepEqual(selectDesktopSidebarRows(state).map((row) => row.sessionId), [sessionA.id])
+  assert.deepEqual(selectDesktopSidebarRows(state, 'sidebar').map((row) => row.sessionId), [sessionA.id])
 })

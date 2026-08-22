@@ -37,8 +37,12 @@ func TestDeleteSessionsPurgesContentAndRetainsDurableRemoval(t *testing.T) {
 	if err != nil || !ok || !tombstone.Deleted {
 		t.Fatalf("durable deletion tombstone missing: ok=%t tombstone=%+v err=%v", ok, tombstone, err)
 	}
-	if tombstone.Session.ID != "" || tombstone.WorkspacePath != session.WorkspacePath || tombstone.UserID != session.UserID || tombstone.AccountScopeID != session.AccountScopeID {
-		t.Fatalf("deletion tombstone retained private session data or lost routing scope: %+v", tombstone)
+	if tombstone.Session.ID != "" || tombstone.WorkspacePath != session.WorkspacePath || tombstone.UserID != session.UserID || tombstone.AccountScopeID != session.AccountScopeID || !tombstone.ArtifactCleanupPending {
+		t.Fatalf("deletion tombstone retained private session data or lost routing/cleanup scope: %+v", tombstone)
+	}
+	pending, err := sessions.ListPendingV3SessionArtifactCleanups(10)
+	if err != nil || len(pending) != 1 || pending[0].SessionID != session.ID {
+		t.Fatalf("artifact cleanup retry record missing: pending=%+v err=%v", pending, err)
 	}
 	projection, ok, err := sessions.GetV3SessionProjection(session.ID)
 	if err != nil || !ok || projection.LastEventSeq == 0 {

@@ -38,6 +38,11 @@ function useEscapeToClose(open: boolean, onClose: () => void) {
   }, [open, onClose])
 }
 
+function displayCheckpointNumber(value: string, fallback = ''): string {
+  const match = value.trim().match(/^cp[-_ ]?(\d+)$/i)
+  return match ? match[1] : fallback
+}
+
 function firstNonBlankText(...values: Array<string | null | undefined>): string {
   for (const value of values) {
     const normalized = (value ?? '').trim()
@@ -75,7 +80,7 @@ export function structuredPlanCopyText(document: DesktopSessionPlanDocument): st
     ['Status', document.status],
     ['Schema version', document.schemaVersion],
     ['Revision', document.revisionId],
-    ['Active checkpoint', document.activeCheckpointId],
+    ['Active checkpoint', displayCheckpointNumber(document.activeCheckpointId)],
   ]
   const presentIdentityFields = identityFields.filter(([, value]) => value.trim() !== '')
   if (presentIdentityFields.length > 0) {
@@ -115,9 +120,9 @@ export function structuredPlanCopyText(document: DesktopSessionPlanDocument): st
   if (document.originalCheckpoints.length > 0) {
     lines.push('', '## Original checkpoint plan')
     document.originalCheckpoints.forEach((checkpoint, index) => {
-      lines.push('', `### ${index + 1}. ${firstNonBlankText(checkpoint.title, checkpoint.id, 'Checkpoint')}`)
+      lines.push('', `### ${index + 1}. ${firstNonBlankText(checkpoint.title, `Checkpoint ${index + 1}`)}`)
       const fields: Array<[string, string | number]> = [
-        ['ID', checkpoint.id],
+        ['Checkpoint', String(index + 1)],
         ['Status', checkpoint.status],
         ['Objective', checkpoint.objective],
         ['Notes', checkpoint.notes],
@@ -142,9 +147,9 @@ export function structuredPlanCopyText(document: DesktopSessionPlanDocument): st
   if (document.checkpoints.length > 0) {
     lines.push('', document.originalCheckpoints.length > 0 ? '## Execution checkpoints' : '## Checkpoints')
     document.checkpoints.forEach((checkpoint, index) => {
-      lines.push('', `### ${index + 1}. ${firstNonBlankText(checkpoint.title, checkpoint.id, 'Checkpoint')}`)
+      lines.push('', `### ${index + 1}. ${firstNonBlankText(checkpoint.title, `Checkpoint ${index + 1}`)}`)
       const fields: Array<[string, string | number]> = [
-        ['ID', checkpoint.id],
+        ['Checkpoint', String(index + 1)],
         ['Status', checkpoint.status],
         ['Objective', checkpoint.objective],
         ['Attempt', checkpoint.attemptId],
@@ -223,8 +228,8 @@ function PlanModalDocumentView({ document, emptyText }: { document: DesktopSessi
   )
 }
 
-function checkpointTitle(checkpoint: DesktopSessionPlanCheckpoint | null | undefined): string {
-  return firstNonBlankText(checkpoint?.title, checkpoint?.id, 'No checkpoint selected')
+function checkpointTitle(checkpoint: DesktopSessionPlanCheckpoint | null | undefined, fallbackNumber = 0): string {
+  return firstNonBlankText(checkpoint?.title, fallbackNumber > 0 ? `Checkpoint ${fallbackNumber}` : '', 'No checkpoint selected')
 }
 
 function ActiveCheckpointHeader({ document }: { document: DesktopSessionPlanDocument | null }) {
@@ -234,8 +239,8 @@ function ActiveCheckpointHeader({ document }: { document: DesktopSessionPlanDocu
   if (!activeCheckpoint) return null
   const activeIndex = checkpoints.findIndex((checkpoint) => checkpoint.id === activeCheckpoint.id)
   const totalCount = checkpoints.length
-  const checkpointPosition = activeIndex >= 0 && totalCount > 0 ? `CP ${activeIndex + 1} of ${totalCount}` : 'Active checkpoint'
-  const title = checkpointTitle(activeCheckpoint)
+  const checkpointPosition = activeIndex >= 0 && totalCount > 0 ? `Checkpoint ${activeIndex + 1} of ${totalCount}` : 'Active checkpoint'
+  const title = checkpointTitle(activeCheckpoint, activeIndex + 1)
   return (
     <div className="mt-1.5 flex min-w-0 flex-wrap items-start gap-2 text-sm leading-5" title={`${checkpointPosition}: ${title}`}>
       <span className="inline-flex shrink-0 items-center gap-1.5 rounded-full border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-2 py-0.5 text-xs font-semibold text-[var(--app-primary)]">

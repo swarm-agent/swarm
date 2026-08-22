@@ -34,7 +34,7 @@ test('live activity keeps one stable call key through provider-ready and runtime
   assert.equal(desktopV3RenderItemKey(runtime), 'live-tool:call-edit')
 })
 
-test('consecutive search and read results form one group while unrelated tools create boundaries', () => {
+test('consecutive search, find, and read results form one group while unrelated tools create boundaries', () => {
   const makeToolMessage = (id: string, seq: number, tool: string, path: string): MessageSnapshot => {
     const toolMessage = buildStructuredToolMessage({
       tool,
@@ -42,7 +42,9 @@ test('consecutive search and read results form one group while unrelated tools c
       argumentsText: JSON.stringify({ path, query: 'needle' }),
       outputText: tool === 'search'
         ? JSON.stringify({ search_mode: 'content', count: 1, total_matched: 1, results: [{ path, items: [{ line: 1, column: 1, text: 'needle' }] }] })
-        : JSON.stringify({ path, count: 10 }),
+        : tool === 'find'
+          ? JSON.stringify({ search_mode: 'files', count: 1, total_matched: 1, results: [{ path, kind: 'file' }] })
+          : JSON.stringify({ path, count: 10 }),
     })
     assert.ok(toolMessage)
     if (!toolMessage) throw new Error('expected tool message')
@@ -51,10 +53,11 @@ test('consecutive search and read results form one group while unrelated tools c
   const rendered: RenderedSessionMessages = {
     committed: [
       makeToolMessage('search-1', 1, 'search', 'web/src/one.ts'),
-      makeToolMessage('read-1', 2, 'read', 'web/src/one.ts'),
-      makeToolMessage('edit-1', 3, 'edit', 'web/src/one.ts'),
-      makeToolMessage('read-2', 4, 'read', 'web/src/two.ts'),
-      makeToolMessage('search-2', 5, 'search', 'web/src/two.ts'),
+      makeToolMessage('find-1', 2, 'find', 'web/src/one.ts'),
+      makeToolMessage('read-1', 3, 'read', 'web/src/one.ts'),
+      makeToolMessage('edit-1', 4, 'edit', 'web/src/one.ts'),
+      makeToolMessage('read-2', 5, 'read', 'web/src/two.ts'),
+      makeToolMessage('search-2', 6, 'search', 'web/src/two.ts'),
     ],
     pendingUser: [], liveRuns: [], runIntents: [], currentRunIntent: undefined, latestRunIntent: undefined,
   }
@@ -62,7 +65,7 @@ test('consecutive search and read results form one group while unrelated tools c
   assert.deepEqual(items.map((item) => item.type), ['search-read-group', 'message', 'search-read-group'])
   const groups = items.filter((item) => item.type === 'search-read-group')
   assert.equal(groups.length, 2)
-  assert.ok(groups.every((group) => group.toolMessages.length === 2))
+  assert.deepEqual(groups.map((group) => group.toolMessages.length), [3, 2])
 })
 
 test('committed result suppresses matching live activity instead of rendering a duplicate card', () => {

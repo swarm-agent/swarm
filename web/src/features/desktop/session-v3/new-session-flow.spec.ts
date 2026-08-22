@@ -161,12 +161,12 @@ test('routed draft defaults to current workspace while preserving explicit local
   assert.deepEqual(createDesktopV3RoutedDraftState('draft'), {
     phase: 'draft',
     prompt: 'draft',
-    snapshot: { prompt: 'draft', attachments: [], selectedAction: null, selectedSkill: null, worktreePrimed: false, planModeRequested: false },
+    snapshot: { prompt: 'draft', attachments: [], videoAttachments: [], artifactSelections: [], selectedAction: null, selectedSkill: null, worktreePrimed: false, planModeRequested: false },
   })
   assert.deepEqual(createDesktopV3RoutedWorktreePrimedState('primed'), {
     phase: 'worktree-primed',
     prompt: 'primed',
-    snapshot: { prompt: 'primed', attachments: [], selectedAction: null, selectedSkill: null, worktreePrimed: true, planModeRequested: false },
+    snapshot: { prompt: 'primed', attachments: [], videoAttachments: [], artifactSelections: [], selectedAction: null, selectedSkill: null, worktreePrimed: true, planModeRequested: false },
   })
   assert.equal('sessionId' in createDesktopV3RoutedDraftState(), false)
   assert.equal('workspace' in createDesktopV3RoutedWorktreePrimedState(), false)
@@ -181,9 +181,8 @@ test('routed operation persists one stable transport identity across reload', ()
     worktreePrimed: true,
     planModeRequested: true,
   })
-  const operation = createDesktopV3RoutedStartOperation({ workspace: workspaceAuthority,
+  const operation = createDesktopV3RoutedStartOperation({ workspace: workspaceAuthority, agentName: ' swarm ',
     snapshot,
-    agentName: ' swarm ',
     metadata: { source: 'desktop-v3' },
   })
 
@@ -214,24 +213,41 @@ test('routed operation persists one stable transport identity across reload', ()
   }
 }))
 
+test('routed first message preserves cross-session artifact source refs and stable retry payload', async () => {
+  const artifactSelections = [{
+    session_id: 'source-session', collection_id: 'collection-1', variant_id: 'variant-1', event_seq: 13,
+    label: 'Dashboard', action: 'use' as const,
+  }]
+  const snapshot = createDesktopV3RoutedComposerSnapshot({ prompt: 'Use this design.', artifactSelections })
+  const operation = createDesktopV3RoutedStartOperation({ workspace: workspaceAuthority, agentName: 'swarm', snapshot })
+  assert.deepEqual(operation.request.artifact_selections, artifactSelections.map((selection) => ({ ...selection, description: undefined })))
+  assert.equal(operation.request.artifact_selections?.[0]?.session_id, 'source-session')
+  const controller = new DesktopV3RoutedNewSessionController(async () => { throw new Error('network ambiguous') }, createDesktopV3RoutedDraftState(snapshot.prompt, snapshot))
+  await withAsyncSessionStorage(async () => {
+    const failed = await controller.submit({ workspace: workspaceAuthority, agentName: 'swarm', snapshot })
+    assert.equal(failed.phase, 'failed')
+    if (failed.phase === 'failed') assert.deepEqual(failed.operation.request.artifact_selections, artifactSelections.map((selection) => ({ ...selection, description: undefined })))
+  })
+})
+
 test('routed worktree prime carries explicit request authority without mutating user input or introducing a name field', () => {
   const snapshot = createDesktopV3RoutedComposerSnapshot({ prompt: 'route me', worktreePrimed: true })
   assert.equal(desktopV3RoutedRequestInput(snapshot), 'route me')
-  assert.equal(createDesktopV3RoutedStartOperation({ workspace: workspaceAuthority, snapshot }).request.managed_worktree_requested, true)
-  assert.deepEqual(Object.keys(snapshot), ['prompt', 'attachments', 'selectedAction', 'selectedSkill', 'worktreePrimed', 'planModeRequested'])
+  assert.equal(createDesktopV3RoutedStartOperation({ workspace: workspaceAuthority, agentName: 'swarm', snapshot }).request.managed_worktree_requested, true)
+  assert.deepEqual(Object.keys(snapshot), ['prompt', 'attachments', 'videoAttachments', 'artifactSelections', 'selectedAction', 'selectedSkill', 'worktreePrimed', 'planModeRequested'])
 })
 
 test('routed operation captures complete workspace authority', () => {
-  const operation = createDesktopV3RoutedStartOperation({ workspace: workspaceAuthority, prompt: 'route me' })
+  const operation = createDesktopV3RoutedStartOperation({ workspace: workspaceAuthority, agentName: 'swarm', prompt: 'route me' })
 
   assert.deepEqual(Object.keys(operation.request).sort(), [
-    'client_request_id', 'host_workspace_path', 'idempotency_key', 'input', 'managed_worktree_requested', 'media', 'metadata', 'plan_mode_requested',
-    'runtime_workspace_path', 'swarm_id', 'target_kind', 'target_relationship', 'workspace_binding_id', 'workspace_path',
+    'agent_name', 'artifact_selections', 'client_request_id', 'host_workspace_path', 'idempotency_key', 'input', 'managed_worktree_requested', 'media', 'metadata',
+    'model_profile', 'plan_mode_requested', 'runtime_workspace_path', 'swarm_id', 'target_kind', 'target_relationship', 'video_attachments', 'workspace_binding_id', 'workspace_path',
   ])
 })
 
 test('routed operation rejects malformed reserved identity', () => {
-  assert.throws(() => createDesktopV3RoutedStartOperation({ workspace: workspaceAuthority,
+  assert.throws(() => createDesktopV3RoutedStartOperation({ workspace: workspaceAuthority, agentName: 'swarm',
     prompt: 'route me',
     identity: { operationId: 'operation-a', clientRequestId: 'desktop-v3-routed:operation-b' },
   }), /operation identity is invalid/)
@@ -248,7 +264,7 @@ test('routed controller reserves one identity before staging and reuses it for s
   const second = controller.prepareOperationIdentity()
   assert.deepEqual(second, first)
 
-  const state = await controller.submit({ workspace: workspaceAuthority,
+  const state = await controller.submit({ workspace: workspaceAuthority, agentName: 'swarm',
     prompt: 'route me',
     media: [{ staging_id: 'staged-1', modality: 'image', file_type: 'png' }],
   })
@@ -271,7 +287,7 @@ test('routed controller keeps the pending prompt local and resolves only canonic
   const phases: string[] = []
   controller.subscribe((state) => phases.push(state.phase))
 
-  const pending = controller.submit({ workspace: workspaceAuthority, prompt: 'route me' })
+  const pending = controller.submit({ workspace: workspaceAuthority, agentName: 'swarm', prompt: 'route me' })
   const routing = controller.getState()
   assert.equal(routing.phase, 'routing')
   assert.equal(routing.prompt, 'route me')
@@ -306,7 +322,7 @@ test('routed activation rejection restores the exact operation and retry identit
     worktreePrimed: true,
   })
 
-  const resolved = await controller.submit({ workspace: workspaceAuthority, snapshot })
+  const resolved = await controller.submit({ workspace: workspaceAuthority, agentName: 'swarm', snapshot })
   assert.equal(resolved.phase, 'resolved')
   if (resolved.phase !== 'resolved') throw new Error('expected resolved state')
   assert.equal(storage.size, 1)
@@ -343,7 +359,7 @@ test('routed failure restores the exact composer snapshot and retries the same o
     worktreePrimed: true,
   })
 
-  const failed = await controller.submit({ workspace: workspaceAuthority, snapshot })
+  const failed = await controller.submit({ workspace: workspaceAuthority, agentName: 'swarm', snapshot })
   assert.equal(failed.phase, 'failed')
   if (failed.phase === 'failed') {
     assert.match(failed.error, /network ambiguous/)
@@ -371,7 +387,7 @@ test('routed interruption recovery discards legacy authority-free state and reta
     selectedSkill: { canonicalName: 'skill-a' },
     worktreePrimed: false,
   })
-  const operation = createDesktopV3RoutedStartOperation({ workspace: workspaceAuthority, snapshot })
+  const operation = createDesktopV3RoutedStartOperation({ workspace: workspaceAuthority, agentName: 'swarm', snapshot })
   persistDesktopV3RoutedStartOperation(operation)
 
   const recovered = restoreDesktopV3RoutedNewSessionState()
@@ -397,7 +413,7 @@ test('routed interruption recovery rejects corrupted snapshots and retains exact
     selectedSkill: { canonicalName: 'skill-a' },
     worktreePrimed: false,
   })
-  const operation = createDesktopV3RoutedStartOperation({ workspace: workspaceAuthority, snapshot })
+  const operation = createDesktopV3RoutedStartOperation({ workspace: workspaceAuthority, agentName: 'swarm', snapshot })
   persistDesktopV3RoutedStartOperation(operation)
 
   const recovered = restoreDesktopV3RoutedNewSessionState()
@@ -426,7 +442,7 @@ test('routed invalidation clears only the invalidated operation and preserves th
     selectedSkill: null,
     worktreePrimed: true,
   })
-  const pending = controller.submit({ workspace: workspaceAuthority, snapshot: oldSnapshot })
+  const pending = controller.submit({ workspace: workspaceAuthority, agentName: 'swarm', snapshot: oldSnapshot })
 
   const newSnapshot = createDesktopV3RoutedComposerSnapshot({
     prompt: 'new prompt ',
@@ -451,7 +467,7 @@ test('stale routed success cannot activate after a newer local draft starts', as
     resolveRequest = resolve
   }), createDesktopV3RoutedDraftState('old prompt'))
 
-  const pending = controller.submit({ workspace: workspaceAuthority, prompt: 'old prompt' })
+  const pending = controller.submit({ workspace: workspaceAuthority, agentName: 'swarm', prompt: 'old prompt' })
   controller.startDraft('new prompt')
   resolveRequest(makeRoutedResult('stale-session'))
   const result = await pending
@@ -467,7 +483,7 @@ test('stale routed failure cannot replace a newer local draft', async () => with
     rejectRequest = reject
   }), createDesktopV3RoutedDraftState('old prompt'))
 
-  const pending = controller.submit({ workspace: workspaceAuthority, prompt: 'old prompt' })
+  const pending = controller.submit({ workspace: workspaceAuthority, agentName: 'swarm', prompt: 'old prompt' })
   controller.startDraft('new prompt')
   rejectRequest(new Error('stale failure'))
   const result = await pending
@@ -482,7 +498,7 @@ test('mismatched routed response remains local failed state', async () => withAs
     projection: { session_id: 'other-session', last_event_seq: 1 },
   }), createDesktopV3RoutedDraftState('route me'))
 
-  const state = await controller.submit({ workspace: workspaceAuthority, prompt: 'route me' })
+  const state = await controller.submit({ workspace: workspaceAuthority, agentName: 'swarm', prompt: 'route me' })
   assert.equal(state.phase, 'failed')
   if (state.phase === 'failed') assert.match(state.error, /mismatched projection/)
 }))

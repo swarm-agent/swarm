@@ -17,14 +17,12 @@ import (
 )
 
 const (
-	accountsURL                = "https://api.fireworks.ai/v1/accounts"
-	modelsURL                  = "https://api.fireworks.ai/inference/v1/models"
-	chatURL                    = "https://api.fireworks.ai/inference/v1/chat/completions"
-	maxResponseBytes           = 8 << 20
-	maxStreamEvents            = 16_384
-	maxStreamOutputBytes       = 4 << 20
-	maxStreamToolArgumentBytes = 1 << 20
-	maxProviderErrorBytes      = 4 << 10
+	verifyAPIKeyURL       = "https://api.fireworks.ai/verifyApiKey"
+	modelsURL             = "https://api.fireworks.ai/inference/v1/models"
+	chatURL               = "https://api.fireworks.ai/inference/v1/chat/completions"
+	maxResponseBytes      = 8 << 20
+	maxStreamEventBytes   = 8 << 20
+	maxProviderErrorBytes = 4 << 10
 )
 
 type Client struct {
@@ -167,21 +165,14 @@ func (c *Client) VerifyAPIKey(ctx context.Context, apiKey string) (string, error
 	if apiKey == "" {
 		return "", errors.New("fireworks api verification requires api_key")
 	}
-	body, status, err := c.do(ctx, http.MethodGet, accountsURL, apiKey, nil)
+	body, status, err := c.do(ctx, http.MethodGet, verifyAPIKeyURL, apiKey, nil)
 	if err != nil {
 		return "", err
 	}
 	if status >= http.StatusBadRequest {
 		return "", fmt.Errorf("fireworks api verification failed status=%d: %s", status, apiErrorMessage(body))
 	}
-	accountName, displayName := parsePrimaryAccount(body)
-	if displayName != "" {
-		return fmt.Sprintf("Fireworks API key verified for %s (%s)", displayName, accountName), nil
-	}
-	if accountName != "" {
-		return fmt.Sprintf("Fireworks API key verified for %s", accountName), nil
-	}
-	return "Fireworks API key verified via /v1/accounts", nil
+	return "Fireworks API key verified via /verifyApiKey", nil
 }
 
 func (c *Client) CreateChatCompletion(ctx context.Context, apiKey string, payload chatCompletionRequest, options ...requestOptions) (chatCompletionResponse, error) {
@@ -298,8 +289,8 @@ func (c *Client) do(ctx context.Context, method, url, apiKey string, body []byte
 	operation := "api"
 	if strings.EqualFold(method, http.MethodPost) && strings.Contains(url, "/chat/completions") {
 		operation = "chat.completions"
-	} else if strings.EqualFold(method, http.MethodGet) && strings.Contains(url, "/accounts") {
-		operation = "verify.accounts"
+	} else if strings.EqualFold(method, http.MethodGet) && strings.Contains(url, "/verifyApiKey") {
+		operation = "verify.api_key"
 	}
 	providerdiagnostics.LogRequest("fireworks", operation, req, body)
 	resp, err := client.Do(req)
@@ -318,11 +309,8 @@ func (c *Client) do(ctx context.Context, method, url, apiKey string, body []byte
 }
 
 type fireworksStreamState struct {
-	merged            chatCompletionResponse
-	toolCalls         map[int]*chatCompletionToolCall
-	eventCount        int
-	outputBytes       int
-	toolArgumentBytes int
+	merged    chatCompletionResponse
+	toolCalls map[int]*chatCompletionToolCall
 }
 
 func newFireworksStreamState() *fireworksStreamState {
@@ -332,27 +320,6 @@ func newFireworksStreamState() *fireworksStreamState {
 func (s *fireworksStreamState) apply(chunk chatCompletionChunk) error {
 	if s == nil {
 		return errors.New("fireworks stream state is not configured")
-	}
-	s.eventCount++
-	if s.eventCount > maxStreamEvents {
-		return errors.New("fireworks stream event limit exceeded")
-	}
-	for _, choice := range chunk.Choices {
-		if choice.Delta == nil {
-			continue
-		}
-		s.outputBytes += len(choice.Delta.Content) + len(choice.Delta.ReasoningContent)
-		for _, call := range choice.Delta.ToolCalls {
-			if call.Function != nil {
-				s.toolArgumentBytes += len(call.Function.Arguments)
-			}
-		}
-	}
-	if s.outputBytes > maxStreamOutputBytes {
-		return errors.New("fireworks stream output limit exceeded")
-	}
-	if s.toolArgumentBytes > maxStreamToolArgumentBytes {
-		return errors.New("fireworks stream tool argument limit exceeded")
 	}
 	if strings.TrimSpace(chunk.ID) != "" {
 		s.merged.ID = chunk.ID
@@ -436,11 +403,10 @@ func (s *fireworksStreamState) response() chatCompletionResponse {
 }
 
 func parseFireworksEventStream(reader io.Reader, onPayload func(string) error) error {
-	scanner := bufio.NewScanner(io.LimitReader(reader, maxResponseBytes+1))
-	scanner.Buffer(make([]byte, 0, 64*1024), maxResponseBytes)
+	scanner := bufio.NewScanner(reader)
+	scanner.Buffer(make([]byte, 0, 64*1024), maxStreamEventBytes)
 	dataLines := make([]string, 0, 8)
-	totalBytes := 0
-	eventCount := 0
+	dataBytes := 0
 	done := false
 	flush := func() error {
 		if len(dataLines) == 0 {
@@ -448,22 +414,15 @@ func parseFireworksEventStream(reader io.Reader, onPayload func(string) error) e
 		}
 		payload := strings.Join(dataLines, "\n")
 		dataLines = dataLines[:0]
+		dataBytes = 0
 		if strings.TrimSpace(payload) == "[DONE]" {
 			done = true
 			return nil
-		}
-		eventCount++
-		if eventCount > maxStreamEvents {
-			return errors.New("fireworks stream event limit exceeded")
 		}
 		return onPayload(payload)
 	}
 	for scanner.Scan() {
 		line := strings.TrimSuffix(scanner.Text(), "\r")
-		totalBytes += len(line) + 1
-		if totalBytes > maxResponseBytes {
-			return errors.New("fireworks stream byte limit exceeded")
-		}
 		if strings.TrimSpace(line) == "" {
 			if err := flush(); err != nil {
 				return err
@@ -474,7 +433,15 @@ func parseFireworksEventStream(reader io.Reader, onPayload func(string) error) e
 			continue
 		}
 		if strings.HasPrefix(line, "data:") {
-			dataLines = append(dataLines, strings.TrimLeft(line[len("data:"):], " 	"))
+			dataLine := strings.TrimLeft(line[len("data:"):], " 	")
+			dataBytes += len(dataLine)
+			if len(dataLines) > 0 {
+				dataBytes++
+			}
+			if dataBytes > maxStreamEventBytes {
+				return errors.New("fireworks stream event byte limit exceeded")
+			}
+			dataLines = append(dataLines, dataLine)
 		}
 	}
 	if err := scanner.Err(); err != nil {
@@ -517,20 +484,4 @@ func boundedProviderError(value string) string {
 		return value
 	}
 	return value[:maxProviderErrorBytes] + "…"
-}
-
-func parsePrimaryAccount(raw []byte) (string, string) {
-	var payload struct {
-		Accounts []struct {
-			Name        string `json:"name"`
-			DisplayName string `json:"displayName"`
-		} `json:"accounts"`
-	}
-	if err := json.Unmarshal(raw, &payload); err != nil {
-		return "", ""
-	}
-	if len(payload.Accounts) == 0 {
-		return "", ""
-	}
-	return strings.TrimSpace(payload.Accounts[0].Name), strings.TrimSpace(payload.Accounts[0].DisplayName)
 }

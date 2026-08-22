@@ -117,6 +117,20 @@ func scopeExpansionArgument(call Call) (string, string, bool) {
 			return "paths", path, true
 		}
 		return "path", path, true
+	case "task":
+		if launches, ok := args["launches"].([]any); ok {
+			for _, raw := range launches {
+				row, _ := raw.(map[string]any)
+				if path := strings.TrimSpace(asString(row["workspace_path"])); path != "" {
+					return "workspace_path", path, true
+				}
+			}
+		}
+		path := strings.TrimSpace(asString(args["workspace_path"]))
+		if path == "" {
+			return "", "", false
+		}
+		return "workspace_path", path, true
 	case "webdownload":
 		path := strings.TrimSpace(asString(args["output_dir"]))
 		if path == "" {

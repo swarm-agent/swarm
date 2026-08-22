@@ -48,7 +48,7 @@ type sessionsV3CreateRequest struct {
 	HostWorkspacePath        string                        `json:"host_workspace_path,omitempty"`
 	RuntimeWorkspacePath     string                        `json:"runtime_workspace_path,omitempty"`
 	Mode                     string                        `json:"mode,omitempty"`
-	AgentName                string                        `json:"agent_name,omitempty"`
+	AgentName                string                        `json:"agent_name"`
 	Preference               pebblestore.ModelPreference   `json:"preference,omitempty"`
 	WorktreeMode             string                        `json:"worktree_mode,omitempty"`
 	WorktreeUseCurrentBranch *bool                         `json:"worktree_use_current_branch,omitempty"`
@@ -82,15 +82,17 @@ type sessionsV3ModelProfileApplyRequest struct {
 }
 
 type sessionsV3MessageRequest struct {
-	ClientRequestID   string                              `json:"client_request_id,omitempty"`
-	IdempotencyKey    string                              `json:"idempotency_key,omitempty"`
-	MessageID         string                              `json:"message_id,omitempty"`
-	RunID             string                              `json:"run_id,omitempty"`
-	Role              string                              `json:"role"`
-	Content           string                              `json:"content"`
-	Metadata          map[string]any                      `json:"metadata,omitempty"`
-	Media             []pebblestore.SessionMediaReference `json:"media,omitempty"`
-	DispatchAuthority map[string]any                      `json:"dispatch_authority,omitempty"`
+	ClientRequestID    string                                          `json:"client_request_id,omitempty"`
+	IdempotencyKey     string                                          `json:"idempotency_key,omitempty"`
+	MessageID          string                                          `json:"message_id,omitempty"`
+	RunID              string                                          `json:"run_id,omitempty"`
+	Role               string                                          `json:"role"`
+	Content            string                                          `json:"content"`
+	Metadata           map[string]any                                  `json:"metadata,omitempty"`
+	Media              []pebblestore.SessionMediaReference             `json:"media,omitempty"`
+	VideoAttachments   []pebblestore.SessionVideoAttachmentReference   `json:"video_attachments,omitempty"`
+	ArtifactSelections []pebblestore.SessionArtifactSelectionReference `json:"artifact_selections,omitempty"`
+	DispatchAuthority  map[string]any                                  `json:"dispatch_authority,omitempty"`
 }
 
 type sessionsV3StopRequest struct {
@@ -328,7 +330,80 @@ func (s *Server) handleSessionV3PrimaryByID(w http.ResponseWriter, r *http.Reque
 		s.handleSessionV3SystemSidechat(w, r, principal, sessionID, "ai")
 	case "permissions/resolve_all":
 		s.handleSessionV3PrimaryPermissionResolveAll(w, r, principal, sessionID)
+	case "artifacts/preview-access":
+		s.handleSessionV3ArtifactPreviewAccess(w, r, principal, sessionID)
+	case "video/sources/media":
+		s.handleSessionV3VideoSourceMedia(w, r, principal, sessionID)
+	case "video/projects":
+		s.handleSessionV3VideoProjects(w, r, principal, sessionID)
 	default:
+		if strings.HasPrefix(subpath, "video/") {
+			s.handleSessionV3VideoSubpath(w, r, principal, sessionID, strings.TrimPrefix(subpath, "video/"))
+			return
+		}
+		if strings.HasPrefix(subpath, "artifacts/") {
+			artifactPath := strings.TrimSpace(strings.TrimPrefix(subpath, "artifacts/"))
+			if collectionPath, hasCollection := strings.CutPrefix(artifactPath, "collections/"); hasCollection {
+				collectionID, action, ok := strings.Cut(collectionPath, "/")
+				collectionID = strings.TrimSpace(collectionID)
+				if !ok || collectionID == "" || strings.Contains(collectionID, "/") {
+					writeError(w, http.StatusBadRequest, errors.New("invalid artifact collection path"))
+					return
+				}
+				switch action {
+				case "bundle":
+					s.handleSessionV3ArtifactCollectionBundle(w, r, principal, sessionID, collectionID)
+				case "reveal":
+					s.handleSessionV3ArtifactCollectionReveal(w, r, principal, sessionID, collectionID)
+				default:
+					writeError(w, http.StatusBadRequest, errors.New("invalid artifact collection path"))
+				}
+				return
+			}
+			if artifactID, hasSelection := strings.CutSuffix(artifactPath, "/selection"); hasSelection {
+				artifactID = strings.TrimSpace(artifactID)
+				if artifactID == "" || strings.Contains(artifactID, "/") {
+					writeError(w, http.StatusBadRequest, errors.New("artifact id is required"))
+					return
+				}
+				s.handleSessionV3ArtifactSelection(w, r, principal, sessionID, artifactID)
+				return
+			}
+			if artifactID, hasReveal := strings.CutSuffix(artifactPath, "/reveal"); hasReveal {
+				artifactID = strings.TrimSpace(artifactID)
+				if artifactID == "" || strings.Contains(artifactID, "/") {
+					writeError(w, http.StatusBadRequest, errors.New("artifact id is required"))
+					return
+				}
+				s.handleSessionV3ArtifactReveal(w, r, principal, sessionID, artifactID)
+				return
+			}
+			if artifactID, hasBundle := strings.CutSuffix(artifactPath, "/bundle"); hasBundle {
+				artifactID = strings.TrimSpace(artifactID)
+				if artifactID == "" || strings.Contains(artifactID, "/") {
+					writeError(w, http.StatusBadRequest, errors.New("artifact id is required"))
+					return
+				}
+				s.handleSessionV3ArtifactBundle(w, r, principal, sessionID, artifactID)
+				return
+			}
+			artifactID, contentPath, hasContent := strings.Cut(artifactPath, "/content/")
+			artifactID = strings.TrimSpace(artifactID)
+			if artifactID == "" || strings.Contains(artifactID, "/") {
+				writeError(w, http.StatusBadRequest, errors.New("artifact id is required"))
+				return
+			}
+			if hasContent {
+				s.handleSessionV3ArtifactContent(w, r, principal, sessionID, artifactID, contentPath)
+				return
+			}
+			if strings.Contains(artifactPath, "/") {
+				writeError(w, http.StatusBadRequest, errors.New("invalid artifact path"))
+				return
+			}
+			s.handleSessionV3Artifact(w, r, principal, sessionID, artifactID)
+			return
+		}
 		if strings.HasPrefix(subpath, "plan-mode/") {
 			if locked, found, _ := s.requireSessionV3Access(principal, sessionID); found && s.rejectSystemSidechatMutation(w, locked) {
 				return
@@ -371,6 +446,38 @@ func sessionsV3SystemSidechatMetadata(parentSessionID, kind string, profile pebb
 		"system_sidechat_kind":   strings.ToLower(strings.TrimSpace(kind)),
 		"system_agent_id":        profile.Name,
 		"settings_locked":        true,
+	}
+}
+
+func inheritSessionsV3SystemSidechatWorkspace(parent pebblestore.SessionSnapshot, sidechat *pebblestore.SessionSnapshot, metadata map[string]any) {
+	if sidechat == nil {
+		return
+	}
+	sidechat.WorkspacePath = strings.TrimSpace(parent.WorkspacePath)
+	sidechat.WorkspaceName = strings.TrimSpace(parent.WorkspaceName)
+	sidechat.TemporaryWorkspaceRoots = append([]string(nil), parent.TemporaryWorkspaceRoots...)
+	sidechat.WorktreeEnabled = parent.WorktreeEnabled
+	sidechat.WorktreeRootPath = strings.TrimSpace(parent.WorktreeRootPath)
+	sidechat.WorktreeBaseBranch = strings.TrimSpace(parent.WorktreeBaseBranch)
+	sidechat.WorktreeBranch = strings.TrimSpace(parent.WorktreeBranch)
+	for _, key := range []string{
+		"workspace_id",
+		"swarm_v3_workspace_binding_id",
+		"swarm_v3_source_workspace_id",
+		"swarm_v3_source_workspace_generation",
+		"swarm_v3_source_workspace_name",
+		"swarm_v3_source_workspace_path",
+		"swarm_v3_runtime_workspace_path",
+		"swarm_v3_runtime_swarm_id",
+		"swarm_v3_runtime_kind",
+		"swarm_v3_authority_host_swarm_id",
+		"swarm_v3_placement_generation",
+		"swarm_v3_binding_generation",
+		"local_workspace_binding_id",
+	} {
+		if value, ok := parent.Metadata[key]; ok && value != nil {
+			metadata[key] = value
+		}
 	}
 }
 
@@ -566,6 +673,7 @@ func (s *Server) handleSessionV3SystemSidechat(w http.ResponseWriter, r *http.Re
 		return
 	} else if exists {
 		next := existing
+		inheritSessionsV3SystemSidechatWorkspace(parent, &next, metadata)
 		next.Metadata = metadata
 		next.Preference = preference
 		next.ModelProfile = pebblestore.CloneSessionModelProfileSnapshot(modelProfile)
@@ -594,7 +702,8 @@ func (s *Server) handleSessionV3SystemSidechat(w http.ResponseWriter, r *http.Re
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "kind": kind, "session_id": sidecarID, "parent_session_id": parentSessionID, "permission_id": req.PermissionID, "plan_id": req.PlanID, "plan_revision": req.PlanRevision, "provider": profile.Provider, "model": profile.Model, "runtime_swarm_id": sessionsV3MetadataString(parent.Metadata, "swarm_v3_runtime_swarm_id"), "replayed": updateResult.Replayed})
 		return
 	}
-	sidecar := pebblestore.SessionSnapshot{ID: sidecarID, UserID: principal.UserID, AccountScopeID: principal.AccountScopeID, WorkspacePath: parent.WorkspacePath, WorkspaceName: parent.WorkspaceName, Title: title, Mode: sessionruntime.ModeAuto, Preference: preference, ModelProfile: pebblestore.CloneSessionModelProfileSnapshot(modelProfile), Metadata: metadata, CreatedAt: now, UpdatedAt: now}
+	sidecar := pebblestore.SessionSnapshot{ID: sidecarID, UserID: principal.UserID, AccountScopeID: principal.AccountScopeID, Title: title, Mode: sessionruntime.ModeAuto, Preference: preference, ModelProfile: pebblestore.CloneSessionModelProfileSnapshot(modelProfile), Metadata: metadata, CreatedAt: now, UpdatedAt: now}
+	inheritSessionsV3SystemSidechatWorkspace(parent, &sidecar, metadata)
 	payload, _ := json.Marshal(struct {
 		Parent, Permission, Plan string
 		Revision                 int64
@@ -1294,14 +1403,30 @@ func (s *Server) acceptSessionsV3Message(principal identity.Principal, sessionID
 	if err := validateSessionsV3CreateMetadata(req.Metadata); err != nil {
 		return sessionruntime.SessionMutationResult{}, nil, err
 	}
-	message := pebblestore.MessageSnapshot{ID: strings.TrimSpace(req.MessageID), Role: strings.TrimSpace(req.Role), Content: req.Content, Metadata: cloneSessionsV3Metadata(req.Metadata), Media: append([]pebblestore.SessionMediaReference(nil), req.Media...)}
+	message := pebblestore.MessageSnapshot{
+		ID: strings.TrimSpace(req.MessageID), Role: strings.TrimSpace(req.Role), Content: req.Content,
+		Metadata: cloneSessionsV3Metadata(req.Metadata), Media: append([]pebblestore.SessionMediaReference(nil), req.Media...),
+		VideoAttachments:   append([]pebblestore.SessionVideoAttachmentReference(nil), req.VideoAttachments...),
+		ArtifactSelections: append([]pebblestore.SessionArtifactSelectionReference(nil), req.ArtifactSelections...),
+	}
 	if message.Role == "" {
 		return sessionruntime.SessionMutationResult{}, nil, errors.New("message role is required")
 	}
-	if message.Content == "" && len(message.Media) == 0 {
-		return sessionruntime.SessionMutationResult{}, nil, errors.New("message content or media is required")
+	if len(message.ArtifactSelections) > 0 && !strings.EqualFold(message.Role, "user") {
+		return sessionruntime.SessionMutationResult{}, nil, errors.New("artifact selections are allowed only on user messages")
+	}
+	if message.Content == "" && len(message.Media) == 0 && len(message.VideoAttachments) == 0 && len(message.ArtifactSelections) == 0 {
+		return sessionruntime.SessionMutationResult{}, nil, errors.New("message content, media, video attachment, or artifact selection is required")
+	}
+	message.ArtifactSelections, err = s.sessions.ValidateSessionArtifactMessageSelections(principal.AccountScopeID, principal.UserID, message.ArtifactSelections)
+	if err != nil {
+		return sessionruntime.SessionMutationResult{}, nil, err
 	}
 	if err := s.validateSessionsV3MessageMedia(principal, session, message.Media); err != nil {
+		return sessionruntime.SessionMutationResult{}, nil, err
+	}
+	message.VideoAttachments, err = s.sessions.Store().ValidateSessionVideoAttachments(principal.AccountScopeID, session, message.VideoAttachments)
+	if err != nil {
 		return sessionruntime.SessionMutationResult{}, nil, err
 	}
 	now := time.Now().UnixMilli()
@@ -3449,31 +3574,35 @@ func mergeSessionsV3PreferenceUpdate(current pebblestore.ModelPreference, req se
 
 func sessionsV3MessagePayloadHash(sessionID string, req sessionsV3MessageRequest, message pebblestore.MessageSnapshot, runStatus, blockedReason string) (string, error) {
 	canonical := struct {
-		Operation         string                              `json:"operation"`
-		SessionID         string                              `json:"session_id"`
-		MessageID         string                              `json:"message_id,omitempty"`
-		RunID             string                              `json:"run_id,omitempty"`
-		Role              string                              `json:"role"`
-		Content           string                              `json:"content"`
-		Metadata          map[string]any                      `json:"metadata,omitempty"`
-		Media             []pebblestore.SessionMediaReference `json:"media,omitempty"`
-		RunStatus         string                              `json:"run_status"`
-		BlockedReason     string                              `json:"blocked_reason"`
-		AuthorityStatus   string                              `json:"authority_status"`
-		DispatchAuthority map[string]any                      `json:"dispatch_authority,omitempty"`
+		Operation          string                                          `json:"operation"`
+		SessionID          string                                          `json:"session_id"`
+		MessageID          string                                          `json:"message_id,omitempty"`
+		RunID              string                                          `json:"run_id,omitempty"`
+		Role               string                                          `json:"role"`
+		Content            string                                          `json:"content"`
+		Metadata           map[string]any                                  `json:"metadata,omitempty"`
+		Media              []pebblestore.SessionMediaReference             `json:"media,omitempty"`
+		VideoAttachments   []pebblestore.SessionVideoAttachmentReference   `json:"video_attachments,omitempty"`
+		ArtifactSelections []pebblestore.SessionArtifactSelectionReference `json:"artifact_selections,omitempty"`
+		RunStatus          string                                          `json:"run_status"`
+		BlockedReason      string                                          `json:"blocked_reason"`
+		AuthorityStatus    string                                          `json:"authority_status"`
+		DispatchAuthority  map[string]any                                  `json:"dispatch_authority,omitempty"`
 	}{
-		Operation:         sessionruntime.SessionMutationAppendMessage,
-		SessionID:         strings.TrimSpace(sessionID),
-		MessageID:         strings.TrimSpace(message.ID),
-		RunID:             strings.TrimSpace(req.RunID),
-		Role:              strings.TrimSpace(message.Role),
-		Content:           message.Content,
-		Metadata:          cloneSessionsV3Metadata(message.Metadata),
-		Media:             append([]pebblestore.SessionMediaReference(nil), message.Media...),
-		RunStatus:         runStatus,
-		BlockedReason:     blockedReason,
-		AuthorityStatus:   sessionsV3PrimaryAuthorityStatus(req),
-		DispatchAuthority: cloneSessionsV3Metadata(req.DispatchAuthority),
+		Operation:          sessionruntime.SessionMutationAppendMessage,
+		SessionID:          strings.TrimSpace(sessionID),
+		MessageID:          strings.TrimSpace(message.ID),
+		RunID:              strings.TrimSpace(req.RunID),
+		Role:               strings.TrimSpace(message.Role),
+		Content:            message.Content,
+		Metadata:           cloneSessionsV3Metadata(message.Metadata),
+		Media:              append([]pebblestore.SessionMediaReference(nil), message.Media...),
+		VideoAttachments:   append([]pebblestore.SessionVideoAttachmentReference(nil), message.VideoAttachments...),
+		ArtifactSelections: append([]pebblestore.SessionArtifactSelectionReference(nil), message.ArtifactSelections...),
+		RunStatus:          runStatus,
+		BlockedReason:      blockedReason,
+		AuthorityStatus:    sessionsV3PrimaryAuthorityStatus(req),
+		DispatchAuthority:  cloneSessionsV3Metadata(req.DispatchAuthority),
 	}
 	raw, err := json.Marshal(canonical)
 	if err != nil {

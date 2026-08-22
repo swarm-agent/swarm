@@ -35,11 +35,29 @@ type ToolTimelineItem struct {
 }
 
 type TaskStreamState struct {
-	PathID        string
-	Status        string
-	LaunchCount   int
-	LaunchesByKey map[string]map[string]any
-	LaunchOrder   []string
+	PathID              string
+	Status              string
+	LaunchCount         int
+	ImageCount          int
+	TaskMode            string
+	ExecutionFormat     string
+	SwarmStrategy       string
+	IntegrationContract string
+	IntegrationRequired bool
+	LaunchesByKey       map[string]map[string]any
+	LaunchOrder         []string
+	ProgramID           string
+	ProgramState        string
+	ActiveStageID       string
+	ProgramStages       []TaskProgramStageState
+	ProgramJobsByID     map[string]map[string]any
+	ProgramJobOrder     []string
+	ProgramJobStates    map[string]map[string]any
+}
+
+type TaskProgramStageState struct {
+	ID        string
+	DependsOn []string
 }
 
 type toolHistoryPayload struct {
@@ -279,30 +297,42 @@ func applyTaskStreamPatch(item *ToolTimelineItem, output string) bool {
 		return false
 	}
 	var payload map[string]any
-	if json.Unmarshal([]byte(strings.TrimSpace(output)), &payload) != nil || strings.TrimSpace(anyString(payload["path_id"])) != "tool.task.stream.v2" || strings.TrimSpace(anyString(payload["tool"])) != "task" {
+	if json.Unmarshal([]byte(strings.TrimSpace(output)), &payload) != nil || strings.TrimSpace(anyString(payload["tool"])) != "task" {
 		return false
 	}
-	launch, ok := payload["launch"].(map[string]any)
-	if !ok || len(launch) == 0 {
+	pathID := strings.TrimSpace(anyString(payload["path_id"]))
+	directImageStream := pathID == "tool.task.image_swarm.stream.v1"
+	if pathID != "tool.task.stream.v2" && !directImageStream {
+		return false
+	}
+	launch, _ := payload["launch"].(map[string]any)
+	if directImageStream {
+		launch, _ = payload["image"].(map[string]any)
+	}
+	if len(launch) == 0 && (!taskStreamPayloadHasProgramMetadata(payload) || directImageStream) {
 		return false
 	}
 	launchKey := firstNonEmpty(
 		anyString(payload["launch_key"]),
+		anyString(payload["image_key"]),
 		anyString(launch["launch_key"]),
+		anyString(launch["image_key"]),
 		anyString(payload["child_session_id"]),
 		anyString(launch["child_session_id"]),
 	)
 	if launchKey == "" {
 		if launchIndex := anyInt(launch["launch_index"]); launchIndex > 0 {
 			launchKey = fmt.Sprintf("launch:%d", launchIndex)
+		} else if imageIndex := anyInt(launch["index"]); imageIndex > 0 {
+			launchKey = fmt.Sprintf("image:%d", imageIndex)
 		}
 	}
-	if launchKey == "" {
+	if launchKey == "" && len(launch) > 0 {
 		return false
 	}
 	stream := item.TaskStream
 	if stream == nil {
-		stream = &TaskStreamState{PathID: "tool.task.stream.v2", LaunchesByKey: make(map[string]map[string]any)}
+		stream = &TaskStreamState{PathID: pathID, LaunchesByKey: make(map[string]map[string]any)}
 	}
 	if stream.LaunchesByKey == nil {
 		stream.LaunchesByKey = make(map[string]map[string]any)
@@ -318,20 +348,39 @@ func applyTaskStreamPatch(item *ToolTimelineItem, output string) bool {
 		stream.LaunchesByKey = launchesByKey
 		stream.LaunchOrder = append([]string(nil), stream.LaunchOrder...)
 	}
-	merged := make(map[string]any, len(stream.LaunchesByKey[launchKey])+len(launch)+1)
-	for key, value := range stream.LaunchesByKey[launchKey] {
-		merged[key] = value
-	}
-	for key, value := range launch {
-		if key == "current_tool" && anyString(value) == "" && anyString(merged["current_tool"]) != "" {
-			continue
+	if len(launch) > 0 {
+		if directImageStream {
+			index := anyInt(launch["index"])
+			stageHistory, _ := launch["stage_history"].([]any)
+			stages := make([]string, 0, len(stageHistory))
+			for _, stage := range stageHistory {
+				if label := strings.TrimSpace(anyString(stage)); label != "" {
+					stages = append(stages, label)
+				}
+			}
+			launch["launch_index"] = index
+			launch["requested_subagent"] = "image"
+			launch["assignment_label"] = firstNonEmpty(anyString(launch["title"]), anyString(launch["theme"]), fmt.Sprintf("Image %d", index))
+			launch["current_tool"] = firstNonEmpty(anyString(launch["current_stage_label"]), anyString(launch["current_stage"]))
+			launch["current_tool_display"] = strings.Join(stages, " → ")
+			launch["tool_order"] = stages
+			launch["swarm_mode"] = true
 		}
-		merged[key] = value
-	}
-	merged["launch_key"] = launchKey
-	stream.LaunchesByKey[launchKey] = merged
-	if !containsString(stream.LaunchOrder, launchKey) {
-		stream.LaunchOrder = append(stream.LaunchOrder, launchKey)
+		merged := make(map[string]any, len(stream.LaunchesByKey[launchKey])+len(launch)+1)
+		for key, value := range stream.LaunchesByKey[launchKey] {
+			merged[key] = value
+		}
+		for key, value := range launch {
+			if key == "current_tool" && anyString(value) == "" && anyString(merged["current_tool"]) != "" {
+				continue
+			}
+			merged[key] = value
+		}
+		merged["launch_key"] = launchKey
+		stream.LaunchesByKey[launchKey] = merged
+		if !containsString(stream.LaunchOrder, launchKey) {
+			stream.LaunchOrder = append(stream.LaunchOrder, launchKey)
+		}
 	}
 	sort.SliceStable(stream.LaunchOrder, func(i, j int) bool {
 		left := anyInt(stream.LaunchesByKey[stream.LaunchOrder[i]]["launch_index"])
@@ -347,10 +396,140 @@ func applyTaskStreamPatch(item *ToolTimelineItem, output string) bool {
 		}
 		return stream.LaunchOrder[i] < stream.LaunchOrder[j]
 	})
+	stream.PathID = pathID
 	stream.Status = firstNonEmpty(anyString(payload["status"]), stream.Status)
 	stream.LaunchCount = maxInt(anyInt(payload["launch_count"]), len(stream.LaunchOrder))
+	stream.ImageCount = maxInt(anyInt(payload["image_count"]), stream.ImageCount)
+	stream.TaskMode = firstNonEmpty(anyString(payload["task_mode"]), stream.TaskMode)
+	stream.ExecutionFormat = firstNonEmpty(anyString(payload["execution_format"]), stream.ExecutionFormat)
+	stream.SwarmStrategy = firstNonEmpty(anyString(payload["swarm_strategy"]), stream.SwarmStrategy)
+	stream.IntegrationContract = firstNonEmpty(anyString(payload["integration_contract"]), stream.IntegrationContract)
+	if required, ok := payload["integration_required"].(bool); ok {
+		stream.IntegrationRequired = required
+	}
+	programLaunch := launch
+	if launchKey != "" && stream.LaunchesByKey[launchKey] != nil {
+		programLaunch = stream.LaunchesByKey[launchKey]
+	}
+	applyTaskProgramMetadata(stream, payload, programLaunch)
 	item.TaskStream = stream
 	return true
+}
+
+func taskStreamPayloadHasProgramMetadata(payload map[string]any) bool {
+	return anyString(payload["program_id"]) != "" || toolObjectAny(payload["program"]) != nil || toolObjectAny(payload["program_status"]) != nil
+}
+
+func applyTaskProgramMetadata(stream *TaskStreamState, payload, launch map[string]any) {
+	if stream == nil {
+		return
+	}
+	program := toolObjectAny(payload["program"])
+	status := toolObjectAny(payload["program_status"])
+	definition := toolObjectAny(status["definition"])
+	if program == nil {
+		program = definition
+	}
+	stream.ProgramID = firstNonEmpty(anyString(payload["program_id"]), anyString(program["id"]), anyString(status["program_id"]), stream.ProgramID)
+	stream.ProgramState = firstNonEmpty(anyString(payload["program_state"]), anyString(status["program_state"]), stream.ProgramState)
+	stream.ActiveStageID = firstNonEmpty(anyString(payload["active_stage_id"]), anyString(status["active_stage_id"]), stream.ActiveStageID)
+	stages, _ := program["stages"].([]any)
+	if len(stages) == 0 {
+		stages, _ = status["stages"].([]any)
+	}
+	if len(stages) > 0 {
+		stream.ProgramStages = nil
+		for _, raw := range stages {
+			stage := toolObjectAny(raw)
+			if id := anyString(stage["id"]); id != "" {
+				stream.ProgramStages = append(stream.ProgramStages, TaskProgramStageState{ID: id, DependsOn: anyStringSlice(stage["depends_on"])})
+			}
+		}
+	}
+	if stream.ProgramJobsByID == nil {
+		stream.ProgramJobsByID = make(map[string]map[string]any)
+	}
+	jobs, _ := program["jobs"].([]any)
+	if len(jobs) == 0 {
+		jobs, _ = status["job_definitions"].([]any)
+	}
+	if len(jobs) > 0 {
+		for _, raw := range jobs {
+			job := toolObjectAny(raw)
+			id := anyString(job["id"])
+			if id == "" {
+				continue
+			}
+			stream.ProgramJobsByID[id] = cloneAnyObject(job)
+			if !containsString(stream.ProgramJobOrder, id) {
+				stream.ProgramJobOrder = append(stream.ProgramJobOrder, id)
+			}
+		}
+	}
+	if stream.ProgramJobStates == nil {
+		stream.ProgramJobStates = make(map[string]map[string]any)
+	}
+	if jobs, ok := status["jobs"].([]any); ok {
+		for _, raw := range jobs {
+			job := toolObjectAny(raw)
+			id := anyString(job["job_id"])
+			if id != "" {
+				stream.ProgramJobStates[id] = cloneAnyObject(job)
+			}
+		}
+	}
+	if len(launch) > 0 {
+		source := toolObjectAny(launch["source_arguments"])
+		jobID := firstNonEmpty(anyString(launch["program_job_id"]), anyString(source["program_job_id"]))
+		stageID := firstNonEmpty(anyString(launch["program_stage_id"]), anyString(source["program_stage_id"]))
+		if jobID != "" {
+			launch["program_job_id"] = jobID
+			launch["program_stage_id"] = stageID
+			if _, ok := stream.ProgramJobsByID[jobID]; !ok {
+				stream.ProgramJobsByID[jobID] = map[string]any{"id": jobID, "stage_id": stageID, "title": anyString(launch["assignment_label"]), "agent_type": anyString(launch["requested_subagent_type"]), "depends_on": source["depends_on"]}
+				stream.ProgramJobOrder = append(stream.ProgramJobOrder, jobID)
+			}
+		}
+	}
+}
+
+func toolObjectAny(value any) map[string]any {
+	object, _ := value.(map[string]any)
+	return object
+}
+
+func cloneAnyObject(value map[string]any) map[string]any {
+	if value == nil {
+		return nil
+	}
+	out := make(map[string]any, len(value))
+	for key, field := range value {
+		out[key] = field
+	}
+	return out
+}
+
+func anyStringSlice(value any) []string {
+	switch values := value.(type) {
+	case []string:
+		out := make([]string, 0, len(values))
+		for _, value := range values {
+			if text := strings.TrimSpace(value); text != "" {
+				out = append(out, text)
+			}
+		}
+		return out
+	case []any:
+		out := make([]string, 0, len(values))
+		for _, value := range values {
+			if text := anyString(value); text != "" {
+				out = append(out, text)
+			}
+		}
+		return out
+	default:
+		return nil
+	}
 }
 
 func containsString(values []string, want string) bool {

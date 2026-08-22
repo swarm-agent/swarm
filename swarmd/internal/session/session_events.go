@@ -18,26 +18,51 @@ type SessionRunStateRepairResult = pebblestore.V3SessionRunStateRepairResult
 type SessionReplay = pebblestore.V3SessionReplay
 type RealtimeOutboxRecord = pebblestore.V3RealtimeOutboxRecord
 type SessionTombstone = pebblestore.V3SessionTombstone
+type ArtifactMutation = pebblestore.V3ArtifactMutation
+type ArtifactProjection = pebblestore.V3ArtifactProjection
+type ArtifactCollection = pebblestore.SessionArtifactCollection
+type ArtifactVariant = pebblestore.SessionArtifactVariant
+type ArtifactSelectionReference = pebblestore.SessionArtifactSelectionReference
+type VideoProjectSnapshot = pebblestore.VideoProjectSnapshot
+type VideoProjectRevisionSnapshot = pebblestore.VideoProjectRevisionSnapshot
+type VideoRenderJobSnapshot = pebblestore.VideoRenderJobSnapshot
+type VideoProjectTimeline = pebblestore.VideoProjectTimeline
+type VideoTimelineClip = pebblestore.VideoTimelineClip
+type VideoProjectMutation = pebblestore.V3VideoProjectMutation
+type VideoProjectProjection = pebblestore.V3VideoProjectProjection
 
 type SessionIdempotencyRecord = pebblestore.V3SessionIdempotencyRecord
 
 const (
-	SessionMutationCreateSession            = pebblestore.V3SessionMutationCreateSession
-	SessionMutationAppendMessage            = pebblestore.V3SessionMutationAppendMessage
-	SessionMutationUpsertLifecycle          = pebblestore.V3SessionMutationUpsertLifecycle
-	SessionMutationRecordRunIntent          = pebblestore.V3SessionMutationRecordRunIntent
-	SessionMutationRecordDiagnostic         = pebblestore.V3SessionMutationRecordDiagnostic
-	SessionMutationRecordUsage              = pebblestore.V3SessionMutationRecordUsage
-	SessionMutationUpdateMode               = pebblestore.V3SessionMutationUpdateMode
-	SessionMutationUpdatePreference         = pebblestore.V3SessionMutationUpdatePreference
-	SessionMutationUpdateMetadata           = pebblestore.V3SessionMutationUpdateMetadata
-	SessionMutationUpdateSettings           = pebblestore.V3SessionMutationUpdateSettings
-	SessionMutationUpdateModelProfile       = pebblestore.V3SessionMutationUpdateModelProfile
-	SessionMutationUpdateTitle              = pebblestore.V3SessionMutationUpdateTitle
-	SessionMutationSavePlan                 = pebblestore.V3SessionMutationSavePlan
-	SessionMutationAcceptPlan               = pebblestore.V3SessionMutationAcceptPlan
-	SessionMutationCommitCheckpointBoundary = pebblestore.V3SessionMutationCommitCheckpointBoundary
-	SessionMutationArchiveSession           = pebblestore.V3SessionMutationArchiveSession
+	SessionMutationCreateSession              = pebblestore.V3SessionMutationCreateSession
+	SessionMutationAppendMessage              = pebblestore.V3SessionMutationAppendMessage
+	SessionMutationUpsertLifecycle            = pebblestore.V3SessionMutationUpsertLifecycle
+	SessionMutationRecordRunIntent            = pebblestore.V3SessionMutationRecordRunIntent
+	SessionMutationRecordDiagnostic           = pebblestore.V3SessionMutationRecordDiagnostic
+	SessionMutationRecordUsage                = pebblestore.V3SessionMutationRecordUsage
+	SessionMutationUpdateMode                 = pebblestore.V3SessionMutationUpdateMode
+	SessionMutationUpdatePreference           = pebblestore.V3SessionMutationUpdatePreference
+	SessionMutationUpdateMetadata             = pebblestore.V3SessionMutationUpdateMetadata
+	SessionMutationUpdateSettings             = pebblestore.V3SessionMutationUpdateSettings
+	SessionMutationUpdateModelProfile         = pebblestore.V3SessionMutationUpdateModelProfile
+	SessionMutationUpdateTitle                = pebblestore.V3SessionMutationUpdateTitle
+	SessionMutationSavePlan                   = pebblestore.V3SessionMutationSavePlan
+	SessionMutationAcceptPlan                 = pebblestore.V3SessionMutationAcceptPlan
+	SessionMutationCommitCheckpointBoundary   = pebblestore.V3SessionMutationCommitCheckpointBoundary
+	SessionMutationArchiveSession             = pebblestore.V3SessionMutationArchiveSession
+	SessionMutationCreateArtifact             = pebblestore.V3SessionMutationCreateArtifact
+	SessionMutationUpdateArtifact             = pebblestore.V3SessionMutationUpdateArtifact
+	SessionMutationFinalizeArtifact           = pebblestore.V3SessionMutationFinalizeArtifact
+	SessionMutationFailArtifact               = pebblestore.V3SessionMutationFailArtifact
+	SessionMutationUnavailableArtifact        = pebblestore.V3SessionMutationUnavailableArtifact
+	SessionMutationSelectArtifact             = pebblestore.V3SessionMutationSelectArtifact
+	SessionMutationDeleteArtifactVariant      = pebblestore.V3SessionMutationDeleteArtifactVariant
+	SessionMutationDeleteArtifactCollection   = pebblestore.V3SessionMutationDeleteArtifactCollection
+	SessionMutationCreateVideoProject         = pebblestore.V3SessionMutationCreateVideoProject
+	SessionMutationUpdateVideoProject         = pebblestore.V3SessionMutationUpdateVideoProject
+	SessionMutationCreateVideoProjectRevision = pebblestore.V3SessionMutationCreateVideoProjectRevision
+	SessionMutationCreateVideoRenderJob       = pebblestore.V3SessionMutationCreateVideoRenderJob
+	SessionMutationUpdateVideoRenderJob       = pebblestore.V3SessionMutationUpdateVideoRenderJob
 
 	RunIntentPendingExecutor = pebblestore.V3RunIntentPendingExecutor
 	RunIntentRunning         = pebblestore.V3RunIntentRunning
@@ -56,6 +81,139 @@ func (s *Service) ApplySessionMutation(input SessionMutationInput) (SessionMutat
 		return SessionMutationResult{}, errors.New("session store is not configured")
 	}
 	return s.store.ApplyV3SessionMutation(input)
+}
+
+func (s *Service) GetSessionArtifactCollection(accountScopeID, sessionID, collectionID string) (ArtifactCollection, bool, error) {
+	if s == nil || s.store == nil {
+		return ArtifactCollection{}, false, errors.New("session store is not configured")
+	}
+	return s.store.GetSessionArtifactCollection(accountScopeID, sessionID, collectionID)
+}
+
+func (s *Service) GetSessionArtifactVariant(accountScopeID, sessionID, collectionID, variantID string) (ArtifactVariant, bool, error) {
+	if s == nil || s.store == nil {
+		return ArtifactVariant{}, false, errors.New("session store is not configured")
+	}
+	return s.store.GetSessionArtifactVariant(accountScopeID, sessionID, collectionID, variantID)
+}
+
+func (s *Service) GetSessionArtifactVariantByID(accountScopeID, sessionID, variantID string) (ArtifactVariant, bool, error) {
+	if s == nil || s.store == nil {
+		return ArtifactVariant{}, false, errors.New("session store is not configured")
+	}
+	return s.store.GetSessionArtifactVariantByID(accountScopeID, sessionID, variantID)
+}
+
+func (s *Service) ValidateSessionArtifactMessageSelections(accountScopeID, userID string, selections []ArtifactSelectionReference) ([]ArtifactSelectionReference, error) {
+	if s == nil || s.store == nil {
+		return nil, errors.New("session store is not configured")
+	}
+	return s.store.ValidateSessionArtifactMessageSelections(accountScopeID, userID, selections)
+}
+
+func (s *Service) GetVideoProject(accountScopeID, sessionID, projectID string) (VideoProjectSnapshot, bool, error) {
+	if s == nil || s.store == nil {
+		return VideoProjectSnapshot{}, false, errors.New("session store is not configured")
+	}
+	return s.store.GetVideoProject(accountScopeID, sessionID, projectID)
+}
+
+func (s *Service) CreateVideoProject(input pebblestore.CreateVideoProjectInput) (VideoProjectSnapshot, *VideoProjectRevisionSnapshot, error) {
+	if s == nil || s.store == nil {
+		return VideoProjectSnapshot{}, nil, errors.New("session store is not configured")
+	}
+	return s.store.CreateVideoProject(input)
+}
+
+func (s *Service) ListVideoProjects(accountScopeID, sessionID string, limit int) ([]VideoProjectSnapshot, error) {
+	if s == nil || s.store == nil {
+		return nil, errors.New("session store is not configured")
+	}
+	return s.store.ListVideoProjects(accountScopeID, sessionID, limit)
+}
+
+func (s *Service) CreateVideoProjectRevision(input pebblestore.CreateVideoProjectRevisionInput) (VideoProjectRevisionSnapshot, VideoProjectSnapshot, error) {
+	if s == nil || s.store == nil {
+		return VideoProjectRevisionSnapshot{}, VideoProjectSnapshot{}, errors.New("session store is not configured")
+	}
+	return s.store.CreateVideoProjectRevision(input)
+}
+
+func (s *Service) GetVideoProjectRevision(accountScopeID, sessionID, projectID, revisionID string) (VideoProjectRevisionSnapshot, bool, error) {
+	if s == nil || s.store == nil {
+		return VideoProjectRevisionSnapshot{}, false, errors.New("session store is not configured")
+	}
+	return s.store.GetVideoProjectRevision(accountScopeID, sessionID, projectID, revisionID)
+}
+
+func (s *Service) ListVideoProjectRevisions(accountScopeID, sessionID, projectID string, limit int) ([]VideoProjectRevisionSnapshot, error) {
+	if s == nil || s.store == nil {
+		return nil, errors.New("session store is not configured")
+	}
+	return s.store.ListVideoProjectRevisions(accountScopeID, sessionID, projectID, limit)
+}
+
+func (s *Service) CreateVideoRenderJob(input pebblestore.CreateVideoRenderJobInput) (VideoRenderJobSnapshot, error) {
+	if s == nil || s.store == nil {
+		return VideoRenderJobSnapshot{}, errors.New("session store is not configured")
+	}
+	return s.store.CreateVideoRenderJob(input)
+}
+
+func (s *Service) GetVideoRenderJob(accountScopeID, sessionID, jobID string) (VideoRenderJobSnapshot, bool, error) {
+	if s == nil || s.store == nil {
+		return VideoRenderJobSnapshot{}, false, errors.New("session store is not configured")
+	}
+	return s.store.GetVideoRenderJob(accountScopeID, sessionID, jobID)
+}
+
+func (s *Service) UpdateVideoRenderJob(input pebblestore.UpdateVideoRenderJobInput) (VideoRenderJobSnapshot, error) {
+	if s == nil || s.store == nil {
+		return VideoRenderJobSnapshot{}, errors.New("session store is not configured")
+	}
+	return s.store.UpdateVideoRenderJob(input)
+}
+
+func (s *Service) ListVideoRenderJobs(accountScopeID, sessionID, projectID string, limit int) ([]VideoRenderJobSnapshot, error) {
+	if s == nil || s.store == nil {
+		return nil, errors.New("session store is not configured")
+	}
+	return s.store.ListVideoRenderJobs(accountScopeID, sessionID, projectID, limit)
+}
+
+func (s *Service) ListSessionArtifactCollections(accountScopeID, sessionID, status string, limit int) ([]ArtifactCollection, error) {
+	if s == nil || s.store == nil {
+		return nil, errors.New("session store is not configured")
+	}
+	return s.store.ListSessionArtifactCollections(accountScopeID, sessionID, status, limit)
+}
+
+func (s *Service) ListAllSessionArtifactCollections(accountScopeID, sessionID, status string) ([]ArtifactCollection, error) {
+	if s == nil || s.store == nil {
+		return nil, errors.New("session store is not configured")
+	}
+	return s.store.ListAllSessionArtifactCollections(accountScopeID, sessionID, status)
+}
+
+func (s *Service) ListSessionArtifactVariants(accountScopeID, sessionID, collectionID string, limit int) ([]ArtifactVariant, error) {
+	if s == nil || s.store == nil {
+		return nil, errors.New("session store is not configured")
+	}
+	return s.store.ListSessionArtifactVariants(accountScopeID, sessionID, collectionID, limit)
+}
+
+func (s *Service) SearchSessionArtifactCatalog(accountScopeID, userID string, options pebblestore.SessionArtifactCatalogOptions) (pebblestore.SessionArtifactCatalogPage, error) {
+	if s == nil || s.store == nil {
+		return pebblestore.SessionArtifactCatalogPage{}, errors.New("session store is not configured")
+	}
+	return s.store.SearchSessionArtifactCatalog(accountScopeID, userID, options)
+}
+
+func (s *Service) ListSessionArtifactVariantsByLineage(accountScopeID, sessionID, dimension, value string, limit int) ([]ArtifactVariant, error) {
+	if s == nil || s.store == nil {
+		return nil, errors.New("session store is not configured")
+	}
+	return s.store.ListSessionArtifactVariantsByLineage(accountScopeID, sessionID, dimension, value, limit)
 }
 
 func (s *Service) ListSessionEvents(sessionID string, afterSeq uint64, limit int) ([]SessionEvent, error) {
@@ -121,6 +279,13 @@ func (s *Service) GetSessionTombstone(sessionID string) (pebblestore.V3SessionTo
 	return s.store.GetV3SessionTombstone(sessionID)
 }
 
+func (s *Service) MarkSessionArtifactCleanupComplete(sessionID string) error {
+	if s == nil || s.store == nil {
+		return errors.New("session store is not configured")
+	}
+	return s.store.MarkV3SessionArtifactCleanupComplete(sessionID)
+}
+
 func (s *Service) SearchSessions(options pebblestore.V3SessionSearchOptions) (pebblestore.V3SessionSearchResult, error) {
 	if s == nil || s.store == nil {
 		return pebblestore.V3SessionSearchResult{}, errors.New("session store is not configured")
@@ -174,6 +339,20 @@ func (s *Service) ListSessionTombstonesForAccount(accountScopeID string, limit i
 		return nil, errors.New("session store is not configured")
 	}
 	return s.store.ListV3SessionTombstonesForAccount(accountScopeID, limit)
+}
+
+func (s *Service) ListPendingSessionArtifactCleanups(limit int) ([]SessionTombstone, error) {
+	if s == nil || s.store == nil {
+		return nil, errors.New("session store is not configured")
+	}
+	return s.store.ListPendingV3SessionArtifactCleanups(limit)
+}
+
+func (s *Service) RepairSessionArtifactCollections(sessionID string) (pebblestore.SessionArtifactRepairReport, error) {
+	if s == nil || s.store == nil {
+		return pebblestore.SessionArtifactRepairReport{}, errors.New("session store is not configured")
+	}
+	return s.store.RepairSessionArtifactCollections(sessionID)
 }
 
 func (s *Service) ListRealtimeOutboxForSessionsAfterEndpoint(sessionIDs []string, afterEndpointSeq uint64, limit int) ([]RealtimeOutboxRecord, error) {

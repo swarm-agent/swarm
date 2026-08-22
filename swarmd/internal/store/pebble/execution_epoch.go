@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -71,27 +72,32 @@ type ExecutionProviderPolicy struct {
 // provider response identifier: response IDs from store=false calls are not
 // assumed to survive transport loss.
 type ExecutionProviderLifecycleState struct {
-	Version                       int    `json:"version"`
-	SessionID                     string `json:"session_id"`
-	EpochID                       string `json:"epoch_id"`
-	Provider                      string `json:"provider"`
-	Model                         string `json:"model"`
-	ConfigurationHash             string `json:"configuration_hash"`
-	ProviderLineageID             string `json:"provider_lineage_id"`
-	ContextBranchID               string `json:"context_branch_id"`
-	ProviderCacheKey              string `json:"provider_cache_key"`
-	SessionAffinityKey            string `json:"session_affinity_key"`
-	TransportAffinityKey          string `json:"transport_affinity_key"`
-	PreviousProviderLineageID     string `json:"previous_provider_lineage_id,omitempty"`
-	PreviousProvider              string `json:"previous_provider,omitempty"`
-	PreviousModel                 string `json:"previous_model,omitempty"`
-	BoundaryReason                string `json:"boundary_reason"`
-	HandoffSummaryMessageID       string `json:"handoff_summary_message_id,omitempty"`
-	HandoffSummaryGlobalSeq       uint64 `json:"handoff_summary_global_seq,omitempty"`
-	ProviderLineageStartMessageID string `json:"provider_lineage_start_message_id,omitempty"`
-	ProviderLineageStartRunID     string `json:"provider_lineage_start_run_id,omitempty"`
-	ProviderLineageStartGlobalSeq uint64 `json:"provider_lineage_start_global_seq,omitempty"`
-	UpdatedAt                     int64  `json:"updated_at"`
+	Version                       int      `json:"version"`
+	SessionID                     string   `json:"session_id"`
+	EpochID                       string   `json:"epoch_id"`
+	Provider                      string   `json:"provider"`
+	Model                         string   `json:"model"`
+	ConfigurationHash             string   `json:"configuration_hash"`
+	MediaContractHash             string   `json:"media_contract_hash,omitempty"`
+	MediaSnapshotID               string   `json:"media_snapshot_id,omitempty"`
+	MediaSnapshotVersion          string   `json:"media_snapshot_version,omitempty"`
+	MediaDenialReasons            []string `json:"media_denial_reasons,omitempty"`
+	MediaInspectToolExposed       bool     `json:"media_inspect_tool_exposed"`
+	ProviderLineageID             string   `json:"provider_lineage_id"`
+	ContextBranchID               string   `json:"context_branch_id"`
+	ProviderCacheKey              string   `json:"provider_cache_key"`
+	SessionAffinityKey            string   `json:"session_affinity_key"`
+	TransportAffinityKey          string   `json:"transport_affinity_key"`
+	PreviousProviderLineageID     string   `json:"previous_provider_lineage_id,omitempty"`
+	PreviousProvider              string   `json:"previous_provider,omitempty"`
+	PreviousModel                 string   `json:"previous_model,omitempty"`
+	BoundaryReason                string   `json:"boundary_reason"`
+	HandoffSummaryMessageID       string   `json:"handoff_summary_message_id,omitempty"`
+	HandoffSummaryGlobalSeq       uint64   `json:"handoff_summary_global_seq,omitempty"`
+	ProviderLineageStartMessageID string   `json:"provider_lineage_start_message_id,omitempty"`
+	ProviderLineageStartRunID     string   `json:"provider_lineage_start_run_id,omitempty"`
+	ProviderLineageStartGlobalSeq uint64   `json:"provider_lineage_start_global_seq,omitempty"`
+	UpdatedAt                     int64    `json:"updated_at"`
 }
 
 type BeginExecutionEpochInput struct {
@@ -298,12 +304,34 @@ func (s *SessionStore) GetExecutionProviderLifecycleState(sessionID, epochID str
 	return state, true, nil
 }
 
+func normalizeExecutionProviderLifecycleReasons(values []string) []string {
+	seen := make(map[string]struct{}, len(values))
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	sort.Strings(out)
+	return out
+}
+
 func (s *SessionStore) PutExecutionProviderLifecycleState(state ExecutionProviderLifecycleState) error {
 	state.SessionID = strings.TrimSpace(state.SessionID)
 	state.EpochID = strings.TrimSpace(state.EpochID)
 	state.Provider = strings.ToLower(strings.TrimSpace(state.Provider))
 	state.Model = strings.TrimSpace(state.Model)
 	state.ConfigurationHash = strings.TrimSpace(state.ConfigurationHash)
+	state.MediaContractHash = strings.TrimSpace(state.MediaContractHash)
+	state.MediaSnapshotID = strings.TrimSpace(state.MediaSnapshotID)
+	state.MediaSnapshotVersion = strings.TrimSpace(state.MediaSnapshotVersion)
+	state.MediaDenialReasons = normalizeExecutionProviderLifecycleReasons(state.MediaDenialReasons)
 	state.ProviderLineageID = strings.TrimSpace(state.ProviderLineageID)
 	state.ContextBranchID = strings.TrimSpace(state.ContextBranchID)
 	if state.SessionID == "" || state.EpochID == "" || state.Provider == "" || state.Model == "" || state.ConfigurationHash == "" || state.ProviderLineageID == "" || state.ContextBranchID == "" {
@@ -712,7 +740,7 @@ func (s *SessionStore) beginFreshExecutionEpoch(input BeginExecutionEpochInput, 
 		if finalHandoffMessage.CreatedAt == 0 {
 			finalHandoffMessage.CreatedAt = now
 		}
-		handoffPayload, marshalErr := (V3SessionMutationInput{Kind: V3SessionMutationAppendMessage, Message: &finalHandoffMessage}).v3EventPayload(finalHandoffSeq, SessionSnapshot{}, finalHandoffMessage, SessionLifecycleSnapshot{}, V3SessionRunIntent{}, SessionTurnUsageSnapshot{}, SessionUsageSummary{})
+		handoffPayload, marshalErr := (V3SessionMutationInput{Kind: V3SessionMutationAppendMessage, Message: &finalHandoffMessage}).v3EventPayload(finalHandoffSeq, SessionSnapshot{}, finalHandoffMessage, SessionLifecycleSnapshot{}, V3SessionRunIntent{}, SessionTurnUsageSnapshot{}, SessionUsageSummary{}, V3ArtifactProjection{}, V3TranscriptionProjection{}, V3VideoProjectProjection{})
 		if marshalErr != nil {
 			return BeginExecutionEpochResult{}, marshalErr
 		}
@@ -739,7 +767,7 @@ func (s *SessionStore) beginFreshExecutionEpoch(input BeginExecutionEpochInput, 
 		if triggerMessage.CreatedAt == 0 {
 			triggerMessage.CreatedAt = now
 		}
-		triggerPayload, marshalErr := (V3SessionMutationInput{Kind: V3SessionMutationAppendMessage, Message: &triggerMessage}).v3EventPayload(triggerSeq, SessionSnapshot{}, triggerMessage, SessionLifecycleSnapshot{}, V3SessionRunIntent{}, SessionTurnUsageSnapshot{}, SessionUsageSummary{})
+		triggerPayload, marshalErr := (V3SessionMutationInput{Kind: V3SessionMutationAppendMessage, Message: &triggerMessage}).v3EventPayload(triggerSeq, SessionSnapshot{}, triggerMessage, SessionLifecycleSnapshot{}, V3SessionRunIntent{}, SessionTurnUsageSnapshot{}, SessionUsageSummary{}, V3ArtifactProjection{}, V3TranscriptionProjection{}, V3VideoProjectProjection{})
 		if marshalErr != nil {
 			return BeginExecutionEpochResult{}, marshalErr
 		}

@@ -40,7 +40,9 @@ func structuredPlanDocumentText(doc map[string]any) string {
 		lines = append(lines, "Revision: "+revision)
 	}
 	if active := firstNonEmptyToolValue(mapStringArg(doc, "active_checkpoint_id"), mapStringArg(doc, "activeCheckpointId")); active != "" {
-		lines = append(lines, "Active checkpoint: "+active)
+		if label := planManageCheckpointDisplay(doc, map[string]any{"checkpoint_id": active}); label != "" {
+			lines = append(lines, strings.Title(label)+" active")
+		}
 	}
 	info, _ := doc["info"].(map[string]any)
 	if len(info) > 0 {
@@ -65,14 +67,14 @@ func structuredPlanDocumentText(doc map[string]any) string {
 			if order <= 0 {
 				order = idx + 1
 			}
-			heading := fmt.Sprintf("%d. %s", order, firstNonEmptyToolValue(mapStringArg(checkpoint, "title"), mapStringArg(checkpoint, "id"), "Untitled checkpoint"))
+			heading := fmt.Sprintf("%d. %s", order, firstNonEmptyToolValue(mapStringArg(checkpoint, "title"), fmt.Sprintf("Checkpoint %d", order)))
 			if status := mapStringArg(checkpoint, "status"); status != "" {
+				if strings.EqualFold(mapStringArg(doc, "active_checkpoint_id"), mapStringArg(checkpoint, "id")) && (strings.EqualFold(status, "pending") || strings.EqualFold(status, "queued") || strings.EqualFold(status, "approved")) {
+					status = "in_progress"
+				}
 				heading += " [" + status + "]"
 			}
 			lines = append(lines, heading)
-			if id := mapStringArg(checkpoint, "id"); id != "" {
-				lines = append(lines, "   ID: "+id)
-			}
 			appendPlanDocumentIndentedField(&lines, "Objective", mapStringArg(checkpoint, "objective"))
 			appendPlanDocumentIndentedList(&lines, "Tasks", mapAnyStringSlice(checkpoint, "tasks"))
 			appendPlanDocumentIndentedList(&lines, "Acceptance", firstNonEmptyStringSlice(mapAnyStringSlice(checkpoint, "acceptance_criteria"), mapAnyStringSlice(checkpoint, "acceptanceCriteria")))

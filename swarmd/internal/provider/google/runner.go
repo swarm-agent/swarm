@@ -25,16 +25,14 @@ import (
 )
 
 const (
-	generateContentURL         = "https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent"
-	streamGenerateContentURL   = "https://generativelanguage.googleapis.com/v1beta/models/%s:streamGenerateContent"
-	googleAPIKeyHeader         = "x-goog-api-key"
-	googleSkipSignature        = "skip_thought_signature_validator"
-	maxResponseBytes           = 8 << 20
-	maxStreamEvents            = 16_384
-	maxStreamOutputBytes       = 4 << 20
-	maxStreamToolArgumentBytes = 1 << 20
-	maxInlineRequestBytes      = 20 << 20
-	maxInlineImageBytes        = 14 << 20
+	generateContentURL       = "https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent"
+	streamGenerateContentURL = "https://generativelanguage.googleapis.com/v1beta/models/%s:streamGenerateContent"
+	googleAPIKeyHeader       = "x-goog-api-key"
+	googleSkipSignature      = "skip_thought_signature_validator"
+	maxResponseBytes         = 8 << 20
+	maxStreamEventBytes      = 8 << 20
+	maxInlineRequestBytes    = 20 << 20
+	maxInlineImageBytes      = 14 << 20
 )
 
 var googleInlineImageMIMETypes = []string{"image/heic", "image/heif", "image/jpeg", "image/png", "image/webp"}
@@ -605,7 +603,7 @@ func sanitizeGoogleToolSchemaMap(schema map[string]any, inheritedProperties map[
 	}
 	for key, item := range schema {
 		switch key {
-		case "additionalProperties", "properties":
+		case "additionalProperties", "uniqueItems", "properties":
 			continue
 		case "anyOf":
 			out[key] = sanitizeGoogleToolSchemaAlternatives(item, properties)
@@ -1005,9 +1003,6 @@ type googleStreamAccumulator struct {
 	toolState          *googleToolCallConstructionState
 	serviceTier        string
 	finished           bool
-	eventCount         int
-	outputBytes        int
-	toolArgumentBytes  int
 }
 
 type googleStreamCandidateState struct {
@@ -1044,10 +1039,6 @@ func (a *googleStreamAccumulator) applyPayload(payload string, onEvent func(prov
 	if payload == "" {
 		return nil
 	}
-	a.eventCount++
-	if a.eventCount > maxStreamEvents {
-		return errors.New("google stream event limit exceeded")
-	}
 	var decoded googleResponse
 	if err := json.Unmarshal([]byte(payload), &decoded); err != nil {
 		return fmt.Errorf("decode google stream payload: %w", err)
@@ -1079,10 +1070,6 @@ func (a *googleStreamAccumulator) applyPayload(payload string, onEvent func(prov
 		for partPosition, part := range candidate.Content.Parts {
 			partThoughtSignature := partThoughtSignatureValue(part)
 			if part.Text != "" {
-				a.outputBytes += len(part.Text)
-				if a.outputBytes > maxStreamOutputBytes {
-					return errors.New("google stream output limit exceeded")
-				}
 				if part.Thought {
 					a.reasoning += part.Text
 					if onEvent != nil {
@@ -1117,10 +1104,6 @@ func (a *googleStreamAccumulator) applyPayload(payload string, onEvent func(prov
 				call.Metadata = mergeGoogleFunctionCallMetadata(call.Metadata, map[string]any{
 					"google": map[string]any{"synthetic_call_id": false},
 				})
-			}
-			a.toolArgumentBytes += len(call.Arguments)
-			if a.toolArgumentBytes > maxStreamToolArgumentBytes {
-				return errors.New("google stream tool argument limit exceeded")
 			}
 			a.upsertFunctionCall(logicalIndex, call)
 			a.emitToolCallConstructionEvents(logicalIndex, call, onEvent)
@@ -1200,32 +1183,24 @@ func sanitizeGoogleText(raw string) string {
 }
 
 func parseGoogleEventStream(reader io.Reader, onPayload func(string) error) error {
-	scanner := bufio.NewScanner(io.LimitReader(reader, maxResponseBytes+1))
-	scanner.Buffer(make([]byte, 0, 64*1024), maxResponseBytes)
+	scanner := bufio.NewScanner(reader)
+	scanner.Buffer(make([]byte, 0, 64*1024), maxStreamEventBytes)
 	dataLines := make([]string, 0, 8)
-	totalBytes := 0
-	eventCount := 0
+	dataBytes := 0
 	flush := func() error {
 		if len(dataLines) == 0 {
 			return nil
 		}
 		payload := strings.Join(dataLines, "\n")
 		dataLines = dataLines[:0]
+		dataBytes = 0
 		if strings.TrimSpace(payload) == "[DONE]" {
 			return nil
-		}
-		eventCount++
-		if eventCount > maxStreamEvents {
-			return errors.New("google stream event limit exceeded")
 		}
 		return onPayload(payload)
 	}
 	for scanner.Scan() {
 		line := strings.TrimSuffix(scanner.Text(), "\r")
-		totalBytes += len(line) + 1
-		if totalBytes > maxResponseBytes {
-			return errors.New("google stream byte limit exceeded")
-		}
 		if strings.TrimSpace(line) == "" {
 			if err := flush(); err != nil {
 				return err
@@ -1236,7 +1211,15 @@ func parseGoogleEventStream(reader io.Reader, onPayload func(string) error) erro
 			continue
 		}
 		if strings.HasPrefix(line, "data:") {
-			dataLines = append(dataLines, strings.TrimLeft(line[len("data:"):], " \t"))
+			dataLine := strings.TrimLeft(line[len("data:"):], " \t")
+			dataBytes += len(dataLine)
+			if len(dataLines) > 0 {
+				dataBytes++
+			}
+			if dataBytes > maxStreamEventBytes {
+				return errors.New("google stream event byte limit exceeded")
+			}
+			dataLines = append(dataLines, dataLine)
 		}
 	}
 	if err := scanner.Err(); err != nil {

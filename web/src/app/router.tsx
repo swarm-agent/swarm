@@ -1,4 +1,4 @@
-import { createRootRoute, createRoute, createRouter, lazyRouteComponent, useNavigate } from '@tanstack/react-router'
+import { createRootRoute, createRoute, createRouter, lazyRouteComponent, redirect, useNavigate } from '@tanstack/react-router'
 import { useEffect } from 'react'
 import { DesktopDocumentTitleController } from '../features/desktop/runtime/desktop-document-title-controller'
 import { DesktopVaultShell } from '../features/desktop/vault/components/desktop-vault-shell'
@@ -10,14 +10,16 @@ const importDesktopAppPage = () => import('../features/desktop/layout/desktop-ap
 const DesktopAppPage = lazyRouteComponent(importDesktopAppPage, 'DesktopAppPage')
 const DesktopSettingsPage = lazyRouteComponent(() => import('../features/desktop/settings/components/desktop-settings-page'), 'DesktopSettingsPage')
 const IntegrationsPage = lazyRouteComponent(() => import('../features/desktop/integrations/pages/integrations-page'), 'IntegrationsPage')
-const SwarmToolsPage = lazyRouteComponent(() => import('../features/desktop/tools/pages/swarm-tools-page'), 'SwarmToolsPage')
 const VideoToolPage = lazyRouteComponent(() => import('../features/desktop/tools/pages/video-tool-page'), 'VideoToolPage')
 const ImageToolPage = lazyRouteComponent(() => import('../features/desktop/tools/pages/image-tool-page'), 'ImageToolPage')
-const ROOT_RESERVED_ROUTE_SEGMENTS = new Set(['settings', 'integrations', 'tools', 'agents'])
-const WORKSPACE_RESERVED_ROUTE_SEGMENTS = new Set(['settings', 'tools', 'task', 'worktree'])
+const ROOT_RESERVED_ROUTE_SEGMENTS = new Set(['settings', 'integrations', 'tools', 'agents', 'studio'])
+const WORKSPACE_RESERVED_ROUTE_SEGMENTS = new Set(['settings', 'tools', 'task', 'worktree', 'video', 'studio'])
 
 function currentWorkspaceRoute(pathname: string): { sessionId?: string } | null {
   const parts = pathname.split('/').map((part) => decodeURIComponent(part).trim()).filter(Boolean)
+  if (parts.length === 3 && parts[1] === 'video' && parts[2]) {
+    return { sessionId: parts[2] }
+  }
   if (parts.length !== 1 && parts.length !== 2) {
     return null
   }
@@ -64,6 +66,16 @@ function validateWorkspaceImageToolParams(params: Record<string, unknown>): { wo
   return { workspaceSlug, imageSessionId }
 }
 
+function validateWorkspaceVideoSessionParams(params: Record<string, unknown>): { workspaceSlug: string; videoSessionId: string } {
+  const workspaceSlug = typeof params.workspaceSlug === 'string' ? params.workspaceSlug.trim() : ''
+  const videoSessionId = typeof params.videoSessionId === 'string' ? params.videoSessionId.trim() : ''
+  return { workspaceSlug, videoSessionId }
+}
+
+function validateWorkspaceStudioSessionParams(params: Record<string, unknown>): { workspaceSlug: string; videoSessionId: string } {
+  return validateWorkspaceVideoSessionParams(params)
+}
+
 function validateWorkspaceSessionParams(params: Record<string, unknown>): { workspaceSlug: string; sessionId: string } {
   const workspaceSlug = typeof params.workspaceSlug === 'string' ? params.workspaceSlug.trim() : ''
   const sessionId = typeof params.sessionId === 'string' ? params.sessionId.trim() : ''
@@ -84,6 +96,19 @@ function validateSettingsSearch(search: Record<string, unknown>): { tab?: string
     ...(agent ? { agent } : {}),
     ...(newWorktree ? { newWorktree } : {}),
     ...(newPlan ? { newPlan } : {}),
+  }
+}
+
+function validateWorkspaceSessionSearch(search: Record<string, unknown>): ReturnType<typeof validateSettingsSearch> & { artifactSession?: string; artifact?: string; collection?: string } {
+  const settingsSearch = validateSettingsSearch(search)
+  const artifactSession = typeof search.artifactSession === 'string' ? search.artifactSession.trim() : ''
+  const artifact = typeof search.artifact === 'string' ? search.artifact.trim() : ''
+  const collection = typeof search.collection === 'string' ? search.collection.trim() : ''
+  return {
+    ...settingsSearch,
+    ...(artifactSession ? { artifactSession } : {}),
+    ...(artifact ? { artifact } : {}),
+    ...(collection ? { collection } : {}),
   }
 }
 
@@ -158,13 +183,23 @@ const integrationSessionRoute = createRoute({
 const toolsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/tools',
-  component: SwarmToolsPage,
+  beforeLoad: () => {
+    throw redirect({ to: '/studio', replace: true })
+  },
+})
+
+const studioRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/studio',
+  component: VideoToolPage,
 })
 
 const videoToolRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/tools/video',
-  component: VideoToolPage,
+  beforeLoad: () => {
+    throw redirect({ to: '/studio', replace: true })
+  },
 })
 
 const imageToolRoute = createRoute({
@@ -192,7 +227,7 @@ const workspaceSessionRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/$workspaceSlug/$sessionId',
   parseParams: validateWorkspaceSessionParams,
-  validateSearch: validateSettingsSearch,
+  validateSearch: validateWorkspaceSessionSearch,
   loader: ({ params }) => {
     const sessionId = params.sessionId.trim()
     if (!sessionId) {
@@ -201,6 +236,14 @@ const workspaceSessionRoute = createRoute({
     return { sessionId }
   },
   component: DesktopAppPage,
+})
+
+const workspaceVideoSessionRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/$workspaceSlug/video/$videoSessionId',
+  parseParams: validateWorkspaceVideoSessionParams,
+  loader: ({ params }) => ({ sessionId: params.videoSessionId.trim() }),
+  component: VideoToolPage,
 })
 
 const workspaceTaskRoute = createRoute({
@@ -229,14 +272,32 @@ const workspaceToolsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/$workspaceSlug/tools',
   parseParams: validateWorkspaceParams,
-  component: SwarmToolsPage,
+  beforeLoad: ({ params }) => {
+    throw redirect({ to: '/$workspaceSlug/studio', params: { workspaceSlug: params.workspaceSlug }, replace: true })
+  },
+})
+
+const workspaceStudioRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/$workspaceSlug/studio',
+  parseParams: validateWorkspaceParams,
+  component: VideoToolPage,
+})
+
+const workspaceStudioSessionRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/$workspaceSlug/studio/$videoSessionId',
+  parseParams: validateWorkspaceStudioSessionParams,
+  component: VideoToolPage,
 })
 
 const workspaceVideoToolRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/$workspaceSlug/tools/video',
   parseParams: validateWorkspaceParams,
-  component: VideoToolPage,
+  beforeLoad: ({ params }) => {
+    throw redirect({ to: '/$workspaceSlug/studio', params: { workspaceSlug: params.workspaceSlug }, replace: true })
+  },
 })
 
 const workspaceImageToolRoute = createRoute({
@@ -260,15 +321,19 @@ const routeTree = rootRoute.addChildren([
   integrationsRoute,
   integrationSessionRoute,
   toolsRoute,
+  studioRoute,
   videoToolRoute,
   imageToolRoute,
   imageToolSessionRoute,
   workspaceRoute,
   workspaceSessionRoute,
+  workspaceVideoSessionRoute,
   workspaceTaskRoute,
   workspaceWorktreeRoute,
   workspaceSettingsRoute,
   workspaceToolsRoute,
+  workspaceStudioRoute,
+  workspaceStudioSessionRoute,
   workspaceVideoToolRoute,
   workspaceImageToolRoute,
   workspaceImageToolSessionRoute,

@@ -25,6 +25,47 @@ func TestTaskDefinitionKeepsProviderSchemaSimpleAndDocumentsRuntimeRequirements(
 	if _, ok := properties["allow_bash"]; ok {
 		t.Fatal("task schema must not expose launch-time allow_bash")
 	}
+	for _, key := range []string{"mode", "agent_type", "count", "themes", "groups", "output_contract", "output_mode", "animation_profile"} {
+		if _, ok := properties[key]; !ok {
+			t.Fatalf("task schema missing swarm-mode field %q", key)
+		}
+	}
+	for _, want := range []string{"omit launches and regular-launch fields such as concurrency_reason", "Omit in mode=swarm", "swarm concurrency is defined by count"} {
+		if !definitionTextContains(taskDefinition, want) {
+			t.Fatalf("task schema missing regular/swarm field boundary %q: %#v", want, taskDefinition)
+		}
+	}
+	if _, ok := properties["owned_scope_template"]; ok {
+		t.Fatal("task schema must not expose workspace target templates for Iteration Swarms")
+	}
+	if !definitionTextContains(taskDefinition, "authorized linked/shared workspace") || !definitionTextContains(taskDefinition, "selected target repository HEAD") {
+		t.Fatalf("task schema missing cross-workspace Coder target contract: %#v", taskDefinition)
+	}
+	if !definitionTextContains(taskDefinition, "Designer and image Iteration Swarms are always managed") || !definitionTextContains(taskDefinition, "Workspace is available only for regular Designer launches") {
+		t.Fatalf("task schema missing managed-only Designer Iteration Swarm contract: %#v", taskDefinition)
+	}
+	for _, key := range []string{"swarm_strategy", "assembly_parts", "integration_contract"} {
+		if _, ok := properties[key]; ok {
+			t.Fatalf("task schema must not advertise disabled Assembly field %q", key)
+		}
+	}
+	for _, definition := range rt.Definitions() {
+		if definition.Name == "swarm_mode" {
+			t.Fatal("swarm mode must remain part of task, not a separate tool")
+		}
+	}
+	for _, want := range []string{
+		"same subagent policy",
+		"same question directly without Router",
+		"Iteration Swarm",
+		"fast parallel alternatives or independent trials",
+		"internal explore strategy remains implicit for backward compatibility",
+		"Idea Swarm",
+	} {
+		if !definitionTextContains(taskDefinition, want) {
+			t.Fatalf("task definition missing launch swarm contract %q: %#v", want, taskDefinition)
+		}
+	}
 	if !definitionTextContains(taskDefinition, "structured launches array") || !definitionTextContains(taskDefinition, "Do not embed launch JSON") || !definitionTextContains(taskDefinition, "not text embedded in prompt") {
 		t.Fatalf("task definition must warn models to use structured launch fields instead of prompt-embedded launch markup: %#v", taskDefinition)
 	}
@@ -42,7 +83,7 @@ func TestTaskDefinitionKeepsProviderSchemaSimpleAndDocumentsRuntimeRequirements(
 			t.Fatalf("task definition missing Designer contract %q: %#v", want, taskDefinition)
 		}
 	}
-	for _, key := range []string{"subagent_type", "agent", "purpose", "title", "meta_prompt", "role"} {
+	for _, key := range []string{"subagent_type", "agent", "purpose", "title", "meta_prompt", "role", "workspace_path"} {
 		property, ok := properties[key]
 		if !ok {
 			t.Fatalf("task single-launch shorthand missing %q", key)
@@ -56,17 +97,45 @@ func TestTaskDefinitionKeepsProviderSchemaSimpleAndDocumentsRuntimeRequirements(
 	if !ok {
 		t.Fatalf("task launches schema missing: %#v", properties["launches"])
 	}
+	if !containsInAny(launches["description"], "Regular mode only") || !containsInAny(launches["description"], "Omit launches in mode=swarm") {
+		t.Fatalf("task launches schema does not distinguish regular mode from swarm mode: %#v", launches)
+	}
 	items, ok := launches["items"].(map[string]any)
 	if !ok {
 		t.Fatalf("task launches item schema missing: %#v", launches)
 	}
-	for _, key := range []string{"subagent_type", "agent", "purpose", "title", "meta_prompt", "role"} {
+	for _, key := range []string{"subagent_type", "agent", "purpose", "title", "meta_prompt", "role", "workspace_path", "animation_profile"} {
 		property, ok := itemsProperty(items, key)
 		if !ok {
 			t.Fatalf("task launches item missing property %q", key)
 		}
 		if key == "subagent_type" || key == "agent" || key == "purpose" {
 			assertTaskSubagentEnum(t, property, "launches."+key)
+		}
+	}
+	animationProfile, ok := properties["animation_profile"].(map[string]any)
+	if !ok || !containsInAny(animationProfile, "spatial_3d") {
+		t.Fatalf("task animation_profile schema does not expose the closed profile registry: %#v", properties["animation_profile"])
+	}
+	program, ok := properties["program"].(map[string]any)
+	if !ok {
+		t.Fatalf("task program schema missing: %#v", properties["program"])
+	}
+	jobs, ok := itemsProperty(program, "jobs")
+	if !ok {
+		t.Fatalf("task program jobs schema missing: %#v", program)
+	}
+	jobArray, ok := jobs.(map[string]any)
+	if !ok {
+		t.Fatalf("task program jobs schema = %#v, want object", jobs)
+	}
+	jobItems, ok := jobArray["items"].(map[string]any)
+	if !ok {
+		t.Fatalf("task program job item schema missing: %#v", jobArray)
+	}
+	for _, key := range []string{"animation_profile", "workspace_path"} {
+		if _, ok := itemsProperty(jobItems, key); !ok {
+			t.Fatalf("task program job schema missing %s: %#v", key, jobItems)
 		}
 	}
 	if !definitionTextContains(taskDefinition, "ideally three words") || !definitionTextContains(taskDefinition, "full instructive") {

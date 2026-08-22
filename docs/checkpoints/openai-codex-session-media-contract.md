@@ -40,7 +40,7 @@ Session deletion purges both media metadata and blob prefixes in the same conten
 
 ## Dynamic tool and continuation behavior
 
-`media_inspect` is the sole media tool. The static profile authorization placeholder is removed and replaced per request with a schema whose enums contain only admitted modalities, MIME types, file types, and current contract hash. The tool is omitted when the intersection is empty or the agent is unauthorized. Invocation revalidates the current contract, authenticated account/session ownership, immutable digest/type/size, and current admission before provider payload assembly.
+`media_inspect` is the sole media tool. The static profile authorization placeholder is removed and replaced per request with a schema whose enums contain only admitted modalities, MIME types, file types, and current contract hash. The tool is omitted when the intersection is empty or the agent is unauthorized. Calls do not create user permission requests: the backend itself remains the fail-closed authorization boundary and revalidates the current contract, authenticated account/session ownership, workspace containment, immutable digest/type/size, and current admission before provider payload assembly.
 
 Provider configuration and lineage change when model, credential fingerprint/surface, adapter surface, snapshot identity, agent authorization, effective schema/instructions, or admission changes. Replay after daemon restart reconstructs provider input from durable message references and immutable blobs. A stale upload, forged tool call/reference, or continuation from the other pilot surface is rejected rather than downgraded through a fallback.
 

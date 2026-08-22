@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises'
 import test from 'node:test'
 
 import type { DesktopSessionRecord } from '../types/realtime'
+import type { DesktopV3SidebarRow } from '../state/desktop-v3-cache-selectors'
 import { DESKTOP_V3_SIDEBAR_PINNED_METADATA_KEY } from '../session-v3/api'
 import {
   SIDEBAR_SESSION_GROUPS,
@@ -23,7 +24,39 @@ import {
   sidebarRootIDsForSelectionGroup,
   sidebarShouldRenderSelectionToolbar,
   sidebarShouldShowReviewAction,
+  activeVideoSidebarRows,
+  videoSidebarSessionIDsForArchive,
 } from './desktop-app-page'
+
+test('video sidebar excludes archived tombstones from active archive controls', () => {
+  const active = { sessionId: 'video-active', sidebarGroup: 'active_chats' } as DesktopV3SidebarRow
+  const archived = { sessionId: 'video-archived', sidebarGroup: 'archived' } as DesktopV3SidebarRow
+
+  assert.deepEqual(activeVideoSidebarRows([active, archived]).map((row) => row.sessionId), ['video-active'])
+})
+
+test('video sidebar bulk archive selects only the requested durable video sessions', () => {
+  const sessions = [
+    { id: 'video-a' },
+    { id: 'video-b' },
+    { id: 'video-c' },
+  ] as DesktopSessionRecord[]
+
+  assert.deepEqual(videoSidebarSessionIDsForArchive(sessions, new Set(['video-a', 'video-c', 'ordinary-chat'])), ['video-a', 'video-c'])
+  assert.deepEqual(videoSidebarSessionIDsForArchive(sessions, new Set()), [])
+})
+
+test('outer sidebar renders video sessions as selectable child rows with canonical archive controls', async () => {
+  const source = await readFile(new URL('./desktop-app-page.tsx', import.meta.url), 'utf8')
+
+  assert.match(source, />Video sessions</)
+  assert.match(source, /childLabel=""/)
+  assert.doesNotMatch(source, /video child/)
+  assert.match(source, /selectionGroup="video"/)
+  assert.match(source, /selectionEligible/)
+  assert.match(source, /onArchive=\{handleArchiveSidebarSession\}/)
+  assert.match(source, /videoSidebarSessionIDsForArchive\(videoStudioSessions, selectedSidebarRootIDs\)/)
+})
 
 test('sidebar workspace context shows the Git branch before the workspace name', () => {
   assert.equal(sidebarWorkspaceContextLabel('swarm-go', 'dev'), 'dev · swarm-go')
@@ -53,7 +86,7 @@ test('sidebar header renders workspace context instead of the swarm role label',
   assert.doesNotMatch(headerSource, /currentSwarmRoleLabel/)
 })
 
-test('plan Git panel fills the remaining sidebar height and scrolls its file list at the bottom edge', async () => {
+test('plan Git panel keeps changed files compact and expandable so integration remains visible', async () => {
   const source = await readFile(new URL('./desktop-app-page.tsx', import.meta.url), 'utf8')
   const panelStart = source.indexOf('const planSidebarGitPanel =')
   const panelEnd = source.indexOf('const sidebarContent =', panelStart)
@@ -62,9 +95,12 @@ test('plan Git panel fills the remaining sidebar height and scrolls its file lis
   assert.ok(panelStart >= 0 && panelEnd > panelStart)
   assert.match(panelSource, /desktop-plan-git-sidebar[^\n]*flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden/)
   assert.match(panelSource, /flex min-h-0 flex-1 flex-col overflow-hidden[^\n]*data-plan-git-scroll-region/)
-  assert.match(panelSource, /min-h-0 flex-1 overflow-y-auto[^\n]*data-plan-git-file-list[^\n]*data-plan-git-scroll="at-sidebar-edge"/)
+  assert.match(panelSource, /<details[^\n]*data-plan-git-file-details>/)
+  assert.match(panelSource, /gitSnapshot\.files\.length\} file\{gitSnapshot\.files\.length === 1 \? '' : 's'\} changed/)
+  assert.match(panelSource, /max-h-40 overflow-y-auto[^\n]*data-plan-git-file-list[^\n]*data-plan-git-scroll="inside-disclosure"/)
   assert.match(panelSource, /shrink-0[^\n]*data-plan-git-commit|data-plan-git-commit[^\n]*shrink-0/)
-  assert.doesNotMatch(panelSource, /data-plan-git-file-list[^\n]*max-h-/)
+  assert.match(panelSource, /data-plan-git-integrate-anchor/)
+  assert.doesNotMatch(panelSource, /data-plan-git-scroll="at-sidebar-edge"/)
   assert.doesNotMatch(panelSource, /data-plan-git-visible-rows/)
 })
 
@@ -126,7 +162,7 @@ test('Git sidebar missing-Git action launches a fresh Swarm session', async () =
   assert.match(panelSource, /onClick=\{\(\) => \{ void handleAskSwarmToInstallGit\(\) \}\}/)
 })
 
-test('Git sidebar integration help prompt carries the actual error without authorizing integration or archive', () => {
+test('Git sidebar integration help prompt directs Swarm to recover and integrate without authorizing archive', () => {
   const prompt = buildGitSidebarIntegrationHelpPrompt({
     sessionId: 'review-session',
     workspacePath: '/workspace',
@@ -140,7 +176,11 @@ test('Git sidebar integration help prompt carries the actual error without autho
   assert.match(prompt, /Target branch: dev/)
   assert.match(prompt, /Target workspace: \/workspace/)
   assert.match(prompt, /Integration error:\nCONFLICT in web\/src\/app\.tsx/)
-  assert.match(prompt, /Do not integrate or archive anything unless I explicitly ask/)
+  assert.match(prompt, /Fix this worktree integration error and integrate the worktree/)
+  assert.match(prompt, /diagnose and resolve the failure, and integrate the source worktree into the target branch/)
+  assert.match(prompt, /rather than only explaining the error or returning a blocked message/)
+  assert.match(prompt, /Do not archive the session unless I explicitly ask/)
+  assert.doesNotMatch(prompt, /Do not integrate/)
 })
 
 test('plan Git sidebar renders session commits and an anchored integration confirmation popout', async () => {

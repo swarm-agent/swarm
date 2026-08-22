@@ -867,11 +867,21 @@ export function WorkspaceHomePage() {
     }
 
     const seenLinkedDirectories = new Set<string>()
+    const alreadyLinkedDirectories = new Set(
+      (modalState.mode === 'edit' ? editingWorkspace?.directories ?? [] : [])
+        .map(normalizeComparePath)
+        .filter((value) => value !== ''),
+    )
     const linkedDirectories = modalState.sourcePaths
       .map((value) => value.trim())
       .filter((value) => {
         const comparePath = normalizeComparePath(value)
-        if (comparePath === '' || comparePath === normalizeComparePath(workspacePath) || seenLinkedDirectories.has(comparePath)) {
+        if (
+          comparePath === ''
+          || comparePath === normalizeComparePath(workspacePath)
+          || seenLinkedDirectories.has(comparePath)
+          || alreadyLinkedDirectories.has(comparePath)
+        ) {
           return false
         }
         seenLinkedDirectories.add(comparePath)

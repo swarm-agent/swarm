@@ -54,6 +54,7 @@ type ModelsModalActionKind string
 const (
 	ModelsModalActionRefresh        ModelsModalActionKind = "refresh"
 	ModelsModalActionSetActiveModel ModelsModalActionKind = "set-active-model"
+	ModelsModalActionSetChatModel   ModelsModalActionKind = "set-chat-model"
 	ModelsModalActionToggleFavorite ModelsModalActionKind = "toggle-favorite"
 	ModelsModalActionUpsertAPIKey   ModelsModalActionKind = "upsert-api-key"
 )
@@ -114,11 +115,17 @@ type modelsModalState struct {
 	ActiveModel       string
 	ActiveContextMode string
 	ActiveThinking    string
+	ChatSelection     bool
 	AuthEditor        *modelsModalAuthEditor
 }
 
 func (p *HomePage) ShowModelsModal() {
+	p.ShowModelsModalForChat(false)
+}
+
+func (p *HomePage) ShowModelsModalForChat(chatSelection bool) {
 	p.modelsModal.Visible = true
+	p.modelsModal.ChatSelection = chatSelection
 	if p.modelsModal.Focus < modelsModalFocusProviders || p.modelsModal.Focus > modelsModalFocusSearch {
 		p.modelsModal.Focus = modelsModalFocusModels
 	}
@@ -421,9 +428,18 @@ func (p *HomePage) activateModelsModalTarget(target clickTarget) {
 		if target.Index < 0 || target.Index >= len(p.modelsModal.Models) {
 			return
 		}
+		wasSelected := target.Index == p.modelsModal.SelectedModel
 		p.modelsModal.Focus = modelsModalFocusModels
 		p.modelsModal.SelectedModel = target.Index
-		p.handleModelsModalEnter()
+		if wasSelected {
+			p.handleModelsModalEnter()
+		} else if model, ok := p.selectedModelsModalModel(); ok {
+			p.modelsModal.Status = fmt.Sprintf("selected %s/%s; Enter sets default", model.Provider, model.Model)
+			if p.modelsModal.ChatSelection {
+				p.modelsModal.Status += ", c uses it for this chat only"
+			}
+			p.modelsModal.Error = ""
+		}
 	case "models-search":
 		p.modelsModal.Focus = modelsModalFocusSearch
 		p.modelsModal.Status = "type to search models"
@@ -492,6 +508,10 @@ func (p *HomePage) handleModelsModalRune(ev *tcell.EventKey) {
 			p.modelsModal.Status = "Favorites filter: on"
 		} else {
 			p.modelsModal.Status = "Favorites filter: off"
+		}
+	case p.keybinds.Match(ev, KeybindModelsUseForChat):
+		if p.modelsModal.ChatSelection {
+			p.enqueueSelectedModelsModalAction(ModelsModalActionSetChatModel, true)
 		}
 	case p.keybinds.Match(ev, KeybindModelsToggleFavorite):
 		model, ok := p.selectedModelsModalModel()
@@ -588,6 +608,43 @@ func (p *HomePage) enqueueModelsModalThinkingAction(thinking string, closeAfter 
 	})
 }
 
+func (p *HomePage) enqueueSelectedModelsModalAction(kind ModelsModalActionKind, closeAfter bool) {
+	model, ok := p.selectedModelsModalModel()
+	if !ok {
+		p.modelsModal.Status = "Select a model first"
+		p.modelsModal.Error = ""
+		return
+	}
+	provider, found := p.modelsModalProviderByID(model.Provider)
+	if found && !provider.Ready {
+		p.openModelsModalAuthEditor(provider.ID)
+		return
+	}
+	if found && !provider.Runnable {
+		reason := strings.TrimSpace(provider.Reason)
+		if reason == "" {
+			reason = "runner unavailable"
+		}
+		p.modelsModal.Status = fmt.Sprintf("%s is not runnable (%s)", strings.ToLower(strings.TrimSpace(provider.ID)), reason)
+		p.modelsModal.Error = ""
+		return
+	}
+	label := "default model"
+	if kind == ModelsModalActionSetChatModel {
+		label = "this chat only"
+	}
+	p.enqueueModelsModalAction(ModelsModalAction{
+		Kind:        kind,
+		Provider:    model.Provider,
+		Model:       model.Model,
+		ContextMode: model.ContextMode,
+		Thinking:    modelThinkingForAction(model, p.modelsModal.ActiveThinking),
+		CloseAfter:  closeAfter,
+		StatusHint:  fmt.Sprintf("Setting %s: %s/%s ...", label, model.Provider, model.Model),
+		FastOnly:    supportsCodexFastRuntime(model.Provider, model.Model),
+	})
+}
+
 func (p *HomePage) handleModelsModalEnter() {
 	switch p.modelsModal.Focus {
 	case modelsModalFocusProviders:
@@ -652,17 +709,7 @@ func (p *HomePage) handleModelsModalEnter() {
 			p.modelsModal.Error = ""
 			return
 		}
-		thinking := modelThinkingForAction(model, p.modelsModal.ActiveThinking)
-		p.enqueueModelsModalAction(ModelsModalAction{
-			Kind:        ModelsModalActionSetActiveModel,
-			Provider:    model.Provider,
-			Model:       model.Model,
-			ContextMode: model.ContextMode,
-			Thinking:    thinking,
-			CloseAfter:  true,
-			StatusHint:  fmt.Sprintf("Setting default model: %s/%s ...", model.Provider, model.Model),
-			FastOnly:    supportsCodexFastRuntime(model.Provider, model.Model),
-		})
+		p.enqueueSelectedModelsModalAction(ModelsModalActionSetActiveModel, true)
 	}
 }
 
@@ -1138,7 +1185,10 @@ func (p *HomePage) drawModelsModal(s tcell.Screen) {
 		p.drawModelsModalModelPane(s, modelRect)
 	}
 
-	help := "Enter select/set default | 1..5 set thinking | Fast on/off shown only on Codex gpt-5.4/gpt-5.5 | a favorite | n add API key | f favorites-only | r refresh | / search | Tab focus | Esc close"
+	help := "Enter set default | 1..5 set default thinking | Fast on/off shown only on Codex gpt-5.4/gpt-5.5 | a favorite | n add API key | f favorites-only | r refresh | / search | Tab focus | Esc close"
+	if p.modelsModal.ChatSelection {
+		help = "c use for this chat only | " + help
+	}
 	for _, line := range Wrap(help, rect.W-4) {
 		DrawText(s, rect.X+2, rect.Y+rect.H-2, rect.W-4, p.theme.TextMuted, clampEllipsis(line, rect.W-4))
 		break

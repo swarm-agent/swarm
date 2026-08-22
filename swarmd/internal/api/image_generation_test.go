@@ -60,7 +60,7 @@ func TestHandleImageGenerationsStreamSerializesConcurrentEvents(t *testing.T) {
 
 	payload := map[string]any{
 		"provider": imagegen.ProviderGoogleGemini,
-		"model":    "gemini-3.1-flash-image-preview",
+		"model":    "gemini-3.1-flash-image",
 		"prompt":   "make images",
 		"count":    count,
 		"target": map[string]any{

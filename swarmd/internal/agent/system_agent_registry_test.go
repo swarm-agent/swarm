@@ -16,7 +16,7 @@ func TestBuiltinSystemAgentRegistryIsCompleteAndUnique(t *testing.T) {
 	if err := registry.Validate(); err != nil {
 		t.Fatalf("validate builtin registry: %v", err)
 	}
-	want := []string{SwarmAgentID, AISidechatAgentID, AITaskPreparerAgentID, CoderAgentID, CompactAgentID, DesignerAgentID, FinderAgentID, PlanSidechatAgentID, ReviewCommitAgentID, RouterAgentID, WorkspaceDefinitionAgentID}
+	want := []string{SwarmAgentID, AISidechatAgentID, AITaskPreparerAgentID, CoderAgentID, CompactAgentID, DesignerAgentID, FinderAgentID, IdeaAgentID, ImageAgentID, PlanSidechatAgentID, ReviewCommitAgentID, RouterAgentID, WorkspaceDefinitionAgentID}
 	if got := registry.IDs(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("registry IDs = %v, want %v", got, want)
 	}
@@ -32,7 +32,7 @@ func TestBuiltinSystemAgentRegistryIsCompleteAndUnique(t *testing.T) {
 			t.Fatalf("sidechat-only system agent %q is not protected: %+v", id, definition)
 		}
 	}
-	for _, id := range []string{SwarmAgentID, AITaskPreparerAgentID, CompactAgentID, FinderAgentID, CoderAgentID, DesignerAgentID, ReviewCommitAgentID, RouterAgentID, WorkspaceDefinitionAgentID} {
+	for _, id := range []string{SwarmAgentID, AITaskPreparerAgentID, CompactAgentID, FinderAgentID, CoderAgentID, DesignerAgentID, ImageAgentID, IdeaAgentID, ReviewCommitAgentID, RouterAgentID, WorkspaceDefinitionAgentID} {
 		definition, _ := registry.DefinitionByID(id)
 		if definition.RequiresSidechatMetadata || IsReservedSidechatAgentName(id) {
 			t.Fatalf("ordinary/task system agent %q was classified as sidechat-only: %+v", id, definition)
@@ -169,6 +169,16 @@ func TestSystemAgentSnapshotReconciliationPreservesDynamicContextAndModels(t *te
 	if cfg := plan.ToolContract.Tools["bash"]; cfg.Enabled == nil || *cfg.Enabled {
 		t.Fatal("Plan snapshot retained mutable bash permission")
 	}
+	for _, allowed := range []string{"read", "search", "find", "list", "websearch", "webfetch", "edit_pending_plan"} {
+		if cfg := plan.ToolContract.Tools[allowed]; cfg.Enabled == nil || !*cfg.Enabled {
+			t.Fatalf("Plan locked discovery tool %q unavailable: %+v", allowed, plan.ToolContract)
+		}
+	}
+	for _, want := range []string{"authoritative workspace scope", "active worktree", "project root", "list/find/search"} {
+		if !strings.Contains(plan.Prompt, want) {
+			t.Fatalf("Plan prompt missing worktree discovery guidance %q: %s", want, plan.Prompt)
+		}
+	}
 
 	ai, err := registry.ReconcileSnapshot(AISidechatAgentID, pebblestore.AgentProfile{
 		Name: AISidechatAgentID, Provider: "openai", Model: "auto-model", Thinking: "medium", AutoServiceTier: "fast",
@@ -265,18 +275,48 @@ func TestSystemAgentSnapshotReconciliationPreservesDynamicContextAndModels(t *te
 	if designer.Name != DesignerAgentID || designer.Mode != ModeSubagent || designer.Prompt != DesignerAgentPrompt() || designer.RuntimeMode != pebblestore.AgentRuntimeModeReadWrite || designer.DefaultSessionMode != pebblestore.AgentDefaultSessionModeAuto || !designer.Enabled || !designer.Protected || designer.ExitPlanModeEnabled == nil || *designer.ExitPlanModeEnabled {
 		t.Fatalf("Designer immutable contract was not restored: %+v", designer)
 	}
-	for _, allowed := range []string{"read", "search", "find", "list", "write", "edit"} {
+	for _, allowed := range []string{"read", "search", "find", "list", "manage_artifact"} {
 		if cfg := designer.ToolContract.Tools[allowed]; cfg.Enabled == nil || !*cfg.Enabled {
-			t.Fatalf("Designer locked tool %q unavailable: %+v", allowed, designer.ToolContract)
+			t.Fatalf("managed Designer locked tool %q unavailable: %+v", allowed, designer.ToolContract)
 		}
 	}
-	for _, denied := range []string{"bash", "git_status", "git_diff", "git_add", "git_commit", "task", "skill_use", "manage_skill", "manage_agent", "manage_theme", "manage_sessions", "manage_worktree", "manage_todos", "plan_manage", "ask_user", "exit_plan_mode"} {
+	for _, denied := range []string{"write", "edit", "bash", "git_status", "git_diff", "git_add", "git_commit", "task", "skill_use", "manage_skill", "manage_agent", "manage_theme", "manage_sessions", "manage_worktree", "manage_todos", "plan_manage", "ask_user", "exit_plan_mode"} {
 		if cfg := designer.ToolContract.Tools[denied]; cfg.Enabled == nil || *cfg.Enabled {
 			t.Fatalf("Designer mandatory denial %q was not restored: %+v", denied, designer.ToolContract)
 		}
 	}
 	if _, exists := designer.ToolContract.Tools["create_file"]; exists || strings.Contains(DesignerAgentPrompt(), "create_file") {
 		t.Fatalf("Designer must not register or reference create_file: %+v", designer.ToolContract)
+	}
+	imageWorker, err := registry.ReconcileSnapshot(ImageAgentID, pebblestore.AgentProfile{Name: ImageAgentID, Provider: "openai", Model: "utility-model", Thinking: "medium", Prompt: "mutable", ToolContract: &pebblestore.AgentToolContract{Preset: "read_write"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if imageWorker.Name != ImageAgentID || imageWorker.Prompt != ImageAgentPrompt() || !imageWorker.Protected || imageWorker.RuntimeMode != pebblestore.AgentRuntimeModeReadWrite || imageWorker.ToolContract == nil || len(imageWorker.ToolContract.Tools) != 1 {
+		t.Fatalf("Image immutable contract was not restored: %+v", imageWorker)
+	}
+	if cfg := imageWorker.ToolContract.Tools["manage_artifact"]; cfg.Enabled == nil || !*cfg.Enabled {
+		t.Fatalf("Image worker must allow only manage_artifact: %+v", imageWorker.ToolContract)
+	}
+	if !strings.Contains(ImageAgentPrompt(), "generate_image") || !strings.Contains(ImageAgentPrompt(), "Omit provider, model") {
+		t.Fatalf("Image prompt is missing generation restrictions: %s", ImageAgentPrompt())
+	}
+
+	workspaceDesigner := DesignerWorkspaceAgentProfileForParent(designer)
+	for _, allowed := range []string{"read", "search", "find", "list", "write", "edit"} {
+		if cfg := workspaceDesigner.ToolContract.Tools[allowed]; cfg.Enabled == nil || !*cfg.Enabled {
+			t.Fatalf("workspace Designer locked tool %q unavailable: %+v", allowed, workspaceDesigner.ToolContract)
+		}
+	}
+	for _, denied := range []string{"media_inspect", "bash", "git_status", "git_diff", "git_add", "git_commit", "manage_artifact"} {
+		if cfg := workspaceDesigner.ToolContract.Tools[denied]; cfg.Enabled == nil || *cfg.Enabled {
+			t.Fatalf("workspace Designer must not authorize %q: %+v", denied, workspaceDesigner.ToolContract)
+		}
+	}
+	for _, want := range []string{"backend-supplied immutable output contract", "Exact output requirements", "canonical preset", "never reinterpret or rewrite", "do not imply that Swarm inspected binary pixels", "Managed output", "manage_artifact", "Omit output_requirements", "exactly one durable ready variant", "Never use write or edit", "Workspace output", "Never use manage_artifact", "Animated output", "automatic quality and frame-pacing guidance", "Never equate a 60 FPS label", "profiling evidence", "exact returned error reason", "stop after three failed tool attempts", "failure after publication begins is terminal", "rejected before publication", "orchestrate other agents"} {
+		if !strings.Contains(DesignerAgentPrompt(), want) {
+			t.Fatalf("Designer prompt missing immutable output contract %q", want)
+		}
 	}
 
 	swarm, err := registry.ReconcileSnapshot(SwarmAgentID, pebblestore.AgentProfile{
@@ -329,7 +369,7 @@ func TestEnsureSystemAgentRegistryExposesImmutableProfilesWithoutPersistingThem(
 	if err := svc.EnsureSystemAgentRegistry(); err != nil {
 		t.Fatalf("ensure registry: %v", err)
 	}
-	for _, id := range []string{PlanSidechatAgentID, AISidechatAgentID, AITaskPreparerAgentID, CompactAgentID, FinderAgentID, CoderAgentID, DesignerAgentID, ReviewCommitAgentID, RouterAgentID, WorkspaceDefinitionAgentID, SwarmAgentID} {
+	for _, id := range []string{PlanSidechatAgentID, AISidechatAgentID, AITaskPreparerAgentID, CompactAgentID, FinderAgentID, CoderAgentID, DesignerAgentID, ImageAgentID, IdeaAgentID, ReviewCommitAgentID, RouterAgentID, WorkspaceDefinitionAgentID, SwarmAgentID} {
 		if id != SwarmAgentID {
 			if _, ok, err := agents.GetProfile(id); err != nil || ok {
 				t.Fatalf("system profile %q persisted ok=%v err=%v", id, ok, err)
