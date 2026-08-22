@@ -30,7 +30,7 @@ func TestManageVideoDefinitionExposesOnlyOpaqueReferences(t *testing.T) {
 			t.Fatalf("manage_video schema exposes forbidden field %q", forbidden)
 		}
 	}
-	for _, required := range []string{"source_root_ref", "relative_path", "video_refs", "job_refs", "job_ref", "transcript_ref", "source_fingerprint", "focus_notes", "start_ms", "end_ms", "include_index", "index_only", "base_revision_id", "operations", "affected_ranges"} {
+	for _, required := range []string{"source_root_ref", "relative_path", "video_refs", "audio_refs", "job_refs", "job_ref", "transcript_ref", "analysis_ref", "source_fingerprint", "waveform_resolution_ms", "focus_notes", "start_ms", "end_ms", "include_index", "index_only", "base_revision_id", "operations", "affected_ranges"} {
 		if !strings.Contains(text, `"`+required+`"`) {
 			t.Fatalf("manage_video schema lacks %q", required)
 		}
@@ -53,7 +53,7 @@ func TestManageVideoDefinitionExposesAdaptiveJobInstructions(t *testing.T) {
 
 func TestManageVideoDefinitionExposesSourceNavigationWorkflow(t *testing.T) {
 	definition := manageVideoDefinition()
-	if !strings.Contains(definition.Description, "trusted video and audio sources") || !strings.Contains(definition.Description, "registered source-media folders") || !strings.Contains(definition.Description, "selected opaque video references") || !strings.Contains(definition.Description, "triggering-message video attachments") {
+	if !strings.Contains(definition.Description, "trusted video and audio sources") || !strings.Contains(definition.Description, "registered source-media folders") || !strings.Contains(definition.Description, "selected opaque video or audio references") || !strings.Contains(definition.Description, "triggering-message video attachments") {
 		t.Fatalf("description does not expose source workflow: %s", definition.Description)
 	}
 	raw, err := json.Marshal(definition.Parameters)
@@ -152,6 +152,25 @@ func TestManageVideoListsRegisteredSourcesWithoutTriggerAttachment(t *testing.T)
 	if videoService.focusNotes != focusNotes {
 		t.Fatalf("focus notes=%q, want %q", videoService.focusNotes, focusNotes)
 	}
+	audioArgs, _ := json.Marshal(map[string]any{"action": "start_transcription", "audio_refs": []string{browseResponse.Audio[0].Ref}})
+	if _, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, WorkspaceScope{SessionID: "session-1", Principal: principal}, Call{CallID: "call-4", Name: "manage_video", Arguments: string(audioArgs)}); err != nil {
+		t.Fatal(err)
+	}
+	if videoService.audioSourceCount != 1 { t.Fatalf("selected audio source count=%d, want 1", videoService.audioSourceCount) }
+	mixedArgs, _ := json.Marshal(map[string]any{"action": "start_transcription", "video_refs": []string{browseResponse.Videos[0].Ref}, "audio_refs": []string{browseResponse.Audio[0].Ref}})
+	if _, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, WorkspaceScope{SessionID: "session-1", Principal: principal}, Call{CallID: "call-5", Name: "manage_video", Arguments: string(mixedArgs)}); err == nil || !strings.Contains(err.Error(), "mixed") {
+		t.Fatalf("mixed media error=%v", err)
+	}
+}
+
+func TestBoundedAudioAnalysisSlicesAndAggregates(t *testing.T) {
+	levels := []pebblestore.AudioAnalysisLevel{{StartMs: 0, EndMs: 100, RMS: .2, Peak: .4}, {StartMs: 100, EndMs: 200, RMS: .4, Peak: .8}, {StartMs: 200, EndMs: 300, RMS: .6, Peak: .7}}
+	got := boundedAudioLevels(levels, 50, 250, 200)
+	if len(got) != 2 || got[0].StartMs != 0 || got[0].EndMs != 200 || got[0].RMS != .3 || got[0].Peak != .8 {
+		t.Fatalf("aggregated levels=%+v", got)
+	}
+	beats := boundedAudioBeats([]pebblestore.AudioAnalysisBeat{{TimeMs: 50}, {TimeMs: 100}, {TimeMs: 250}}, 100, 250)
+	if len(beats) != 1 || beats[0].TimeMs != 100 { t.Fatalf("bounded beats=%+v", beats) }
 }
 
 func TestManageVideoRequiresTrustedRunContext(t *testing.T) {
@@ -186,13 +205,20 @@ func TestManageVideoRequiresTrustedRunContext(t *testing.T) {
 }
 
 type fakeManageVideoService struct {
-	focusNotes  string
-	sourceCount int
+	focusNotes       string
+	sourceCount      int
+	audioSourceCount int
 }
 
 func (f *fakeManageVideoService) StartRegisteredSources(_ context.Context, _ identity.Principal, _ string, sources []pebblestore.SessionVideoAttachmentReference, focusNotes string) (videotranscription.StartResult, error) {
 	f.focusNotes = focusNotes
 	f.sourceCount = len(sources)
+	return videotranscription.StartResult{}, nil
+}
+
+func (f *fakeManageVideoService) StartRegisteredAudioSources(_ context.Context, _ identity.Principal, _ string, sources []pebblestore.AudioSourceReference, focusNotes string) (videotranscription.StartResult, error) {
+	f.focusNotes = focusNotes
+	f.audioSourceCount = len(sources)
 	return videotranscription.StartResult{}, nil
 }
 
@@ -211,6 +237,9 @@ func (*fakeManageVideoService) ReadByWorkspace(identity.Principal, string, strin
 }
 func (*fakeManageVideoService) ReadBySourceFingerprint(identity.Principal, string, string) (pebblestore.NormalizedTranscript, error) {
 	return pebblestore.NormalizedTranscript{}, nil
+}
+func (*fakeManageVideoService) ReadAudioAnalysisByWorkspace(identity.Principal, string, string, string) (pebblestore.AudioAnalysisSnapshot, error) {
+	return pebblestore.AudioAnalysisSnapshot{}, nil
 }
 func (*fakeManageVideoService) Cancel(identity.Principal, string, string) (pebblestore.TranscriptionJob, error) {
 	return pebblestore.TranscriptionJob{}, nil

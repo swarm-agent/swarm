@@ -78,6 +78,8 @@ type AudioClip struct {
 	ModifiedAt         int64  `json:"modified_at"`
 	SourceFingerprint  string `json:"source_fingerprint"`
 	FingerprintVersion string `json:"fingerprint_version"`
+	TranscriptRef      string `json:"transcript_ref,omitempty"`
+	AnalysisRef        string `json:"analysis_ref,omitempty"`
 }
 
 type BrowseResult struct {
@@ -319,11 +321,22 @@ func (s *Service) browseResolved(principal identity.Principal, workspaceID, root
 			if putErr != nil {
 				return BrowseResult{}, putErr
 			}
-			audioClips = append(audioClips, AudioClip{
+			audioClip := AudioClip{
 				Ref: record.Ref, Name: record.DisplayName, MediaKind: MediaKindAudio, Extension: extension,
 				MIMEType: record.MIMEType, SizeBytes: record.SizeBytes, ModifiedAt: record.ModifiedAt,
 				SourceFingerprint: record.SourceFingerprint, FingerprintVersion: record.FingerprintVersion,
-			})
+			}
+			if transcript, found, lookupErr := s.store.FindNormalizedTranscriptBySourceFingerprint(principal.AccountScopeID, principal.UserID, workspaceID, record.SourceFingerprint); lookupErr != nil {
+				return BrowseResult{}, lookupErr
+			} else if found {
+				audioClip.TranscriptRef = transcript.Ref
+			}
+			if analysis, found, lookupErr := s.store.FindAudioAnalysisSnapshot(principal.AccountScopeID, workspaceID, "", record.SourceFingerprint); lookupErr != nil {
+				return BrowseResult{}, lookupErr
+			} else if found {
+				audioClip.AnalysisRef = analysis.Ref
+			}
+			audioClips = append(audioClips, audioClip)
 			continue
 		}
 		mimeType, mimeErr := videoMIMEForFile(file, extension)

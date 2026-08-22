@@ -114,6 +114,35 @@ func (s *SessionStore) PutAudioAnalysisSnapshot(snapshot AudioAnalysisSnapshot) 
 	return normalized, false, nil
 }
 
+func (s *SessionStore) FindAudioAnalysisSnapshot(accountScopeID, workspaceID, analysisRef, sourceFingerprint string) (AudioAnalysisSnapshot, bool, error) {
+	accountScopeID, workspaceID = strings.TrimSpace(accountScopeID), strings.TrimSpace(workspaceID)
+	analysisRef, sourceFingerprint = strings.TrimSpace(analysisRef), strings.ToLower(strings.TrimSpace(sourceFingerprint))
+	if accountScopeID == "" || workspaceID == "" || (analysisRef == "" && sourceFingerprint == "") {
+		return AudioAnalysisSnapshot{}, false, errors.New("audio analysis lookup requires account, workspace, and analysis_ref or source_fingerprint")
+	}
+	if analysisRef != "" && (!strings.HasPrefix(analysisRef, "audanalysis_") || len(analysisRef) != len("audanalysis_")+64) {
+		return AudioAnalysisSnapshot{}, false, errors.New("invalid audio analysis reference")
+	}
+	if sourceFingerprint != "" && !validFingerprint(sourceFingerprint) {
+		return AudioAnalysisSnapshot{}, false, errors.New("invalid audio analysis source fingerprint")
+	}
+	prefix := fmt.Sprintf("v3/audio_analysis/%s/%s/", keyPart(accountScopeID), keyPart(workspaceID))
+	var found AudioAnalysisSnapshot
+	var scanned int
+	err := s.store.IteratePrefix(prefix, 10_001, func(_ string, value []byte) error {
+		scanned++
+		if scanned > 10_000 { return errors.New("audio analysis lookup exceeded the bounded record limit") }
+		var candidate AudioAnalysisSnapshot
+		if err := json.Unmarshal(value, &candidate); err != nil { return err }
+		if (analysisRef != "" && candidate.Ref != analysisRef) || (sourceFingerprint != "" && candidate.SourceFingerprint != sourceFingerprint) { return nil }
+		if found.Ref != "" && found.Ref != candidate.Ref { return errors.New("audio analysis lookup is ambiguous") }
+		found = candidate
+		return nil
+	})
+	if err != nil || found.Ref == "" { return AudioAnalysisSnapshot{}, false, err }
+	return s.GetAudioAnalysisSnapshot(accountScopeID, workspaceID, found.SourceFingerprint, found.AnalyzerVersion)
+}
+
 func (s *SessionStore) GetAudioAnalysisSnapshot(accountScopeID, workspaceID, sourceFingerprint, analyzerVersion string) (AudioAnalysisSnapshot, bool, error) {
 	accountScopeID, workspaceID = strings.TrimSpace(accountScopeID), strings.TrimSpace(workspaceID)
 	sourceFingerprint, analyzerVersion = strings.ToLower(strings.TrimSpace(sourceFingerprint)), strings.TrimSpace(analyzerVersion)

@@ -347,6 +347,18 @@ func (s *Service) ReadByWorkspace(principal identity.Principal, workspaceID, tra
 
 // ReadAudioAnalysis returns the current deterministic snapshot for one exact
 // registered audio reference in authenticated workspace scope.
+func (s *Service) ReadAudioAnalysisByWorkspace(principal identity.Principal, workspaceID, analysisRef, sourceFingerprint string) (pebblestore.AudioAnalysisSnapshot, error) {
+	if s == nil || s.sessions == nil || !principal.Valid() {
+		return pebblestore.AudioAnalysisSnapshot{}, errors.New("audio analysis requires authenticated workspace authority")
+	}
+	snapshot, ok, err := s.sessions.FindAudioAnalysisSnapshot(principal.AccountScopeID, strings.TrimSpace(workspaceID), strings.TrimSpace(analysisRef), strings.TrimSpace(sourceFingerprint))
+	if err != nil || !ok {
+		if err == nil { err = errors.New("deterministic audio analysis not found in authenticated workspace scope") }
+		return pebblestore.AudioAnalysisSnapshot{}, err
+	}
+	return snapshot, nil
+}
+
 func (s *Service) ReadAudioAnalysis(principal identity.Principal, workspaceID string, source pebblestore.AudioSourceReference) (pebblestore.AudioAnalysisSnapshot, error) {
 	if s == nil || s.sessions == nil || !principal.Valid() {
 		return pebblestore.AudioAnalysisSnapshot{}, errors.New("audio analysis requires authenticated workspace authority")
