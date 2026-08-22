@@ -73,8 +73,8 @@ require_go() {
 
   major="${BASH_REMATCH[1]}"
   minor="${BASH_REMATCH[2]}"
-  if (( major < 1 || (major == 1 && minor < 25) )); then
-    echo "Go 1.25+ required; found ${version} at ${GO_BIN}" >&2
+  if (( major < 1 || (major == 1 && minor < 26) )); then
+    echo "Go 1.26+ required; found ${version} at ${GO_BIN}" >&2
     exit 1
   fi
 

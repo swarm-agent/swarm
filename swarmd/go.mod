@@ -1,6 +1,6 @@
 module swarm/packages/swarmd
 
-go 1.25.13
+go 1.26.7
 
 require (
 	github.com/SherClockHolmes/webpush-go v1.4.0
