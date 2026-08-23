@@ -47,6 +47,14 @@ test('artifact studio follows recursive exact source lineage into one branch tre
   assert.deepEqual(desktopV3ArtifactStudioSectionAlternatives(entries, second, 'opening'), [first, second])
 })
 
+test('artifact studio groups section alternatives when the exact external source is not in the local catalog', () => {
+  const externalRoot = artifact({ id: 'external-root', collection: 'external-collection', eventSeq: 1 })
+  const first = artifact({ id: 'first', collection: 'iteration-a', eventSeq: 2, source: externalRoot, section: 'opening' })
+  const second = artifact({ id: 'second', collection: 'iteration-b', eventSeq: 3, source: externalRoot, section: 'opening' })
+
+  assert.deepEqual(desktopV3ArtifactStudioSectionAlternatives([first, second], first, 'opening'), [first, second])
+})
+
 test('artifact studio keeps unrelated roots and sections out of a section branch', () => {
   const root = artifact({ id: 'root', collection: 'root-collection', eventSeq: 1 })
   const opening = artifact({ id: 'opening', collection: 'iteration-a', eventSeq: 2, source: root, section: 'opening' })

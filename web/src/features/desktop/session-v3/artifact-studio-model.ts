@@ -6,11 +6,15 @@ import {
 function sourceKey(entry: DesktopV3ArtifactCatalogEntry): string {
   const lineage = entry.lineage
   if (!lineage?.sourceSessionId || !lineage.sourceCollectionId || !lineage.sourceVariantId || !lineage.sourceEventSeq) return ''
-  return desktopV3ArtifactCatalogEntryKey({
+  return `${desktopV3ArtifactCatalogEntryKey({
     sessionId: lineage.sourceSessionId,
     collectionId: lineage.sourceCollectionId,
     artifactId: lineage.sourceVariantId,
-  })
+  })}:${lineage.sourceEventSeq}`
+}
+
+function entryKey(entry: DesktopV3ArtifactCatalogEntry): string {
+  return `${desktopV3ArtifactCatalogEntryKey(entry)}:${entry.eventSeq ?? 0}`
 }
 
 export function desktopV3ArtifactStudioParent(
@@ -19,8 +23,7 @@ export function desktopV3ArtifactStudioParent(
 ): DesktopV3ArtifactCatalogEntry | undefined {
   const key = sourceKey(entry)
   if (!key) return undefined
-  const eventSeq = entry.lineage?.sourceEventSeq ?? 0
-  return entries.find((candidate) => desktopV3ArtifactCatalogEntryKey(candidate) === key && (candidate.eventSeq ?? 0) === eventSeq)
+  return entries.find((candidate) => entryKey(candidate) === key)
 }
 
 export function desktopV3ArtifactStudioRoot(
@@ -38,6 +41,27 @@ export function desktopV3ArtifactStudioRoot(
     current = parent
   }
   return current
+}
+
+export function desktopV3ArtifactStudioRootKey(
+  entries: readonly DesktopV3ArtifactCatalogEntry[],
+  entry: DesktopV3ArtifactCatalogEntry,
+): string {
+  const visited = new Set<string>()
+  let current = entry
+  for (let index = 0; index < entries.length; index += 1) {
+    const key = entryKey(current)
+    if (visited.has(key)) return `artifact:${key}`
+    visited.add(key)
+    const parent = desktopV3ArtifactStudioParent(entries, current)
+    if (parent) {
+      current = parent
+      continue
+    }
+    const unresolvedSource = sourceKey(current)
+    return unresolvedSource ? `source:${unresolvedSource}` : `artifact:${key}`
+  }
+  return `artifact:${entryKey(current)}`
 }
 
 export function desktopV3ArtifactStudioBranchDepth(
@@ -64,10 +88,10 @@ export function desktopV3ArtifactStudioSectionAlternatives(
   source: DesktopV3ArtifactCatalogEntry,
   sectionId: string,
 ): DesktopV3ArtifactCatalogEntry[] {
-  const rootKey = desktopV3ArtifactCatalogEntryKey(desktopV3ArtifactStudioRoot(entries, source))
+  const rootKey = desktopV3ArtifactStudioRootKey(entries, source)
   return entries
     .filter((entry) => entry.lineage?.iterationSectionId === sectionId
-      && desktopV3ArtifactCatalogEntryKey(desktopV3ArtifactStudioRoot(entries, entry)) === rootKey)
+      && desktopV3ArtifactStudioRootKey(entries, entry) === rootKey)
     .sort((left, right) => desktopV3ArtifactStudioBranchDepth(entries, left) - desktopV3ArtifactStudioBranchDepth(entries, right)
       || left.updatedAt - right.updatedAt
       || desktopV3ArtifactCatalogEntryKey(left).localeCompare(desktopV3ArtifactCatalogEntryKey(right)))

@@ -2248,7 +2248,7 @@ export function DesktopV3ExistingConversationPane({
   const navigateArtifactViewer = useCallback((artifact: DesktopV3ArtifactCatalogEntry) => {
     setArtifactGalleryInitialCollectionId("");
     setArtifactGalleryInitialKey(desktopV3ArtifactCatalogEntryKey(artifact));
-    if (artifactReviewPresentation === "embedded" || !routeWorkspaceSlug) return;
+    if (artifactReviewPresentation === "embedded" || artifact.lineage?.iterationSectionId || !routeWorkspaceSlug) return;
     void navigate({
       to: "/$workspaceSlug/$sessionId",
       params: { workspaceSlug: routeWorkspaceSlug, sessionId: artifact.sessionId },

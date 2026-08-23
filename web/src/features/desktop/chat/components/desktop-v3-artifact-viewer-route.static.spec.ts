@@ -11,4 +11,5 @@ test('artifact viewer route remains authoritative for modal visibility and sessi
   assert.match(pane, /setSessionArtifacts\(\[\]\);\s+setSidebarView\("plan"\);\s+setArtifactGalleryOpen\(false\);\s+setArtifactGalleryInitialKey\(""\);\s+setArtifactGalleryInitialCollectionId\(""\);/)
   assert.match(pane, /initialCollectionId=\{artifactGalleryInitialCollectionId\}\s+artifactHref=\{artifactViewerHref\}\s+collectionHref=\{artifactCollectionViewerHref\}\s+onArtifactNavigate=\{navigateArtifactViewer\}\s+onCollectionNavigate=\{navigateArtifactCollectionViewer\}/)
   assert.match(pane, /artifactViewerLocation\.collectionId && !artifactViewerLocation\.artifactId/)
+  assert.match(pane, /artifactReviewPresentation === "embedded" \|\| artifact\.lineage\?\.iterationSectionId \|\| !routeWorkspaceSlug/)
 })
