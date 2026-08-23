@@ -7,6 +7,10 @@ export function desktopV3ArtifactStudioChainKey(entry: DesktopV3ArtifactCatalogE
   return entry.artifactChainId?.trim() || entry.chain?.id.trim() || ''
 }
 
+function referenceKey(reference: { sessionId: string; collectionId: string; variantId: string; eventSeq: number }): string {
+  return `${desktopV3ArtifactCatalogEntryKey({ sessionId: reference.sessionId, collectionId: reference.collectionId, artifactId: reference.variantId })}:${reference.eventSeq}`
+}
+
 function sourceKey(entry: DesktopV3ArtifactCatalogEntry): string {
   const lineage = entry.lineage
   if (!lineage?.sourceSessionId || !lineage.sourceCollectionId || !lineage.sourceVariantId || !lineage.sourceEventSeq) return ''
@@ -26,7 +30,7 @@ export function desktopV3ArtifactStudioEntries(
   entry: DesktopV3ArtifactCatalogEntry,
 ): DesktopV3ArtifactCatalogEntry[] {
   const chainKey = desktopV3ArtifactStudioChainKey(entry)
-  if (chainKey) {
+  if (chainKey && (entry.graphState === 'authoritative' || entry.chain?.graphState === 'authoritative')) {
     return entries.filter((candidate) => desktopV3ArtifactStudioChainKey(candidate) === chainKey)
       .sort((left, right) => (left.revisionNumber ?? 0) - (right.revisionNumber ?? 0)
         || (left.candidateIndex ?? 0) - (right.candidateIndex ?? 0)
@@ -41,12 +45,8 @@ export function desktopV3ArtifactStudioHead(
   entry: DesktopV3ArtifactCatalogEntry,
 ): DesktopV3ArtifactCatalogEntry {
   const chainEntries = desktopV3ArtifactStudioEntries(entries, entry)
-  return chainEntries.find((candidate) => candidate.selected)
-    ?? chainEntries.find((candidate) => candidate.chain?.head.sessionId === candidate.sessionId
-      && candidate.chain.head.collectionId === candidate.collectionId
-      && candidate.chain.head.variantId === candidate.artifactId)
-    ?? chainEntries.filter((candidate) => candidate.status === 'ready').reduce<DesktopV3ArtifactCatalogEntry | undefined>((latest, candidate) => !latest || (candidate.revisionNumber ?? 0) > (latest.revisionNumber ?? 0) ? candidate : latest, undefined)
-    ?? entry
+  const head = chainEntries.find((candidate) => candidate.chain?.head && referenceKey(candidate.chain.head) === entryKey(candidate))
+  return head ?? (entry.graphState === 'legacy_unproven' ? entry : chainEntries.find((candidate) => candidate.selected) ?? entry)
 }
 
 export function desktopV3ArtifactStudioRounds(
@@ -55,7 +55,7 @@ export function desktopV3ArtifactStudioRounds(
 ): Array<{ id: string; revisionNumber: number; candidates: DesktopV3ArtifactCatalogEntry[] }> {
   const rounds = new Map<string, DesktopV3ArtifactCatalogEntry[]>()
   for (const candidate of desktopV3ArtifactStudioEntries(entries, entry)) {
-    const id = candidate.revisionRoundId?.trim() || `revision-${candidate.revisionNumber ?? 0}`
+    const id = candidate.artifactStepId?.trim() || candidate.step?.id.trim() || candidate.revisionRoundId?.trim() || `legacy-revision-${candidate.revisionNumber ?? 0}`
     rounds.set(id, [...(rounds.get(id) ?? []), candidate])
   }
   return [...rounds.entries()].map(([id, candidates]) => ({ id, revisionNumber: candidates[0]?.revisionNumber ?? 0, candidates }))
@@ -66,11 +66,9 @@ export function desktopV3ArtifactStudioParent(
   entries: readonly DesktopV3ArtifactCatalogEntry[],
   entry: DesktopV3ArtifactCatalogEntry,
 ): DesktopV3ArtifactCatalogEntry | undefined {
-  const chainKey = desktopV3ArtifactStudioChainKey(entry)
-  if (chainKey && (entry.revisionNumber ?? 0) > 1) {
-    const previousRevision = (entry.revisionNumber ?? 0) - 1
-    const candidates = entries.filter((candidate) => desktopV3ArtifactStudioChainKey(candidate) === chainKey && candidate.revisionNumber === previousRevision)
-    return candidates.find((candidate) => candidate.selected) ?? candidates[candidates.length - 1]
+  const authoritativeParent = entry.parentArtifact ?? entry.step?.parent
+  if (entry.graphState === 'authoritative' || entry.step?.graphState === 'authoritative') {
+    return authoritativeParent ? entries.find((candidate) => entryKey(candidate) === referenceKey(authoritativeParent)) : undefined
   }
   const key = sourceKey(entry)
   if (!key) return undefined

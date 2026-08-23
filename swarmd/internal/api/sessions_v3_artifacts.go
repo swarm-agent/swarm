@@ -113,7 +113,11 @@ type sessionsV3ArtifactCatalogItem struct {
 	OutputRequirements    *pebblestore.SessionArtifactOutputRequirements `json:"output_requirements,omitempty"`
 	AnimationProfile      *pebblestore.SessionArtifactAnimationProfile   `json:"animation_profile,omitempty"`
 	Chain                 *pebblestore.SessionArtifactChain              `json:"chain,omitempty"`
+	Step                  *pebblestore.SessionArtifactStep               `json:"step,omitempty"`
+	GraphState            string                                         `json:"graph_state,omitempty"`
+	ParentArtifact        *pebblestore.SessionArtifactSelectionReference `json:"parent_artifact,omitempty"`
 	ArtifactChainID       string                                         `json:"artifact_chain_id,omitempty"`
+	ArtifactStepID        string                                         `json:"artifact_step_id,omitempty"`
 	RevisionNumber        int                                            `json:"revision_number,omitempty"`
 	RevisionRoundID       string                                         `json:"revision_round_id,omitempty"`
 	CandidateIndex        int                                            `json:"candidate_index,omitempty"`
@@ -245,6 +249,13 @@ func (s *Server) handleSessionsV3Artifacts(w http.ResponseWriter, r *http.Reques
 					if kind == "package" && variant.Status == pebblestore.SessionArtifactStatusReady && variant.MediaType == "application/zip" {
 						kind, previewable = "html", true
 					}
+					var step *pebblestore.SessionArtifactStep
+					if variant.GraphState == pebblestore.SessionArtifactGraphAuthoritative && variant.ArtifactStepID != "" {
+						persistedStep, foundStep, stepErr := s.sessions.GetSessionArtifactStep(session.AccountScopeID, session.UserID, variant.ArtifactChainID, variant.ArtifactStepID)
+						if stepErr != nil { writeError(w, http.StatusInternalServerError, stepErr); return }
+						if !foundStep { writeError(w, http.StatusInternalServerError, errors.New("authoritative artifact step was not found")); return }
+						step = &persistedStep
+					}
 					appendCatalogArtifact(&artifacts, seen, session.ID+"\x00"+variant.ID, sessionsV3ArtifactCatalogItem{
 						ArtifactID: variant.ID, CollectionID: collection.ID, SessionID: session.ID, SessionTitle: session.Title,
 						PlanID: lineage.PlanID, CheckpointID: lineage.CheckpointID,
@@ -253,7 +264,7 @@ func (s *Server) handleSessionsV3Artifacts(w http.ResponseWriter, r *http.Reques
 						CollectionName: collection.Name, CollectionDescription: collection.Description, Filename: variant.Filename, MediaType: variant.MediaType, Kind: kind, Status: variant.Status, FailureCode: variant.FailureCode,
 						Previewable: previewable, Selected: chain.Head.SessionID == variant.SessionID && chain.Head.CollectionID == variant.CollectionID && chain.Head.VariantID == variant.ID,
 						Category: sessionsV3ManagedArtifactCategory(variant), UpdatedAt: variant.UpdatedAt, EventSeq: variant.EventSeq, Progress: &progress, Lineage: &lineage, OutputRequirements: cloneSessionsV3ArtifactOutputRequirements(variant.OutputRequirements), AnimationProfile: cloneSessionsV3ArtifactAnimationProfile(variant.AnimationProfile),
-						Chain: &chain, ArtifactChainID: variant.ArtifactChainID, RevisionNumber: variant.RevisionNumber, RevisionRoundID: variant.RevisionRoundID, CandidateIndex: variant.CandidateIndex, Parts: append([]pebblestore.SessionArtifactPart(nil), variant.Parts...),
+						Chain: &chain, Step: step, GraphState: variant.GraphState, ParentArtifact: variant.ParentArtifact, ArtifactChainID: variant.ArtifactChainID, ArtifactStepID: variant.ArtifactStepID, RevisionNumber: variant.RevisionNumber, RevisionRoundID: variant.RevisionRoundID, CandidateIndex: variant.CandidateIndex, Parts: append([]pebblestore.SessionArtifactPart(nil), variant.Parts...),
 					})
 				}
 			}

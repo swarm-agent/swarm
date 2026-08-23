@@ -97,6 +97,10 @@ type ArtifactRunContext struct {
 	PartID                  string
 	PartLabel               string
 	PartKind                string
+	Part                    *pebblestore.SessionArtifactPart
+	SourceArtifact          *pebblestore.SessionArtifactSelectionReference
+	ArtifactStepID          string
+	CandidateIndex          int
 	CollectionID            string
 	VariantID               string
 	OutputRequirements      *pebblestore.SessionArtifactOutputRequirements
@@ -320,6 +324,14 @@ func (r *Runtime) executeManageArtifact(ctx context.Context, scope WorkspaceScop
 				}
 				input.CollectionID, input.VariantID = trustedCollectionID, trustedVariantID
 				input.OutputRequirements = cloneArtifactOutputRequirements(run.OutputRequirements)
+				if run.SourceArtifact != nil {
+					if input.SourceSessionID != "" && (input.SourceSessionID != run.SourceArtifact.SessionID || input.SourceCollectionID != run.SourceArtifact.CollectionID || input.SourceVariantID != run.SourceArtifact.VariantID || input.SourceEventSeq != run.SourceArtifact.EventSeq) { return "", errors.New("manage_artifact source lineage does not match the trusted task source") }
+					input.SourceSessionID = run.SourceArtifact.SessionID
+					input.SourceCollectionID = run.SourceArtifact.CollectionID
+					input.SourceVariantID = run.SourceArtifact.VariantID
+					input.SourceEventSeq = run.SourceArtifact.EventSeq
+				}
+				input.ArtifactStepID, input.CandidateIndex = strings.TrimSpace(run.ArtifactStepID), run.CandidateIndex
 				input.AnimationProfile = cloneArtifactAnimationProfile(run.AnimationProfile)
 				if err := enforceArtifactPresentationRequirements(&input.Presentation, input.OutputRequirements); err != nil {
 					return "", err

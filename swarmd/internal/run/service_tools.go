@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -268,14 +269,21 @@ func managedDesignerArtifactContext(parent pebblestore.SessionSnapshot, taskCall
 		// bounded iteration display metadata and persist the exact target below.
 		iterationLabel = strings.TrimSpace(spec.AssignmentLabel)
 	}
+	stepID := taskManagedArtifactID("step", parent.ID, routingID, 0)
 	run := &tool.ArtifactRunContext{
 		SessionID: parent.ID, TaskCallID: taskCallID, ProgramID: strings.TrimSpace(programID), ProgramJobID: strings.TrimSpace(programJobID),
 		IterationGroupID: iterationGroupID, IterationGroup: strings.TrimSpace(iterationGroup), IterationID: iterationID, IterationIndex: iterationIndex,
-		IterationLabel: iterationLabel, IterationTheme: iterationTheme, CollectionID: collectionID, VariantID: variantID,
+		IterationLabel: iterationLabel, IterationTheme: iterationTheme, ArtifactStepID: stepID, CandidateIndex: iterationIndex, CollectionID: collectionID, VariantID: variantID,
 		OutputRequirements: cloneTaskOutputRequirements(spec.OutputRequirements),
 		AnimationProfile:   cloneTaskAnimationProfile(spec.AnimationProfile),
 	}
+	if spec.SourceArtifact != nil {
+		sourceCopy := *spec.SourceArtifact
+		run.SourceArtifact = &sourceCopy
+	}
 	if sectionTarget != nil {
+		part := pebblestore.SessionArtifactPart{ID: sectionTarget.ID, Label: sectionTarget.Label, Kind: sectionTarget.Kind, Description: sectionTarget.Description, StartMs: sectionTarget.StartMs, EndMs: sectionTarget.EndMs, X: sectionTarget.X, Y: sectionTarget.Y, Width: sectionTarget.Width, Height: sectionTarget.Height, Page: sectionTarget.Page, StateID: sectionTarget.StateID, Selector: sectionTarget.Selector}
+		run.Part = &part
 		if sectionTarget.Kind == "" || sectionTarget.Kind == "temporal" {
 			run.IterationSectionID, run.IterationSectionLabel = sectionTarget.ID, sectionTarget.Label
 			run.IterationSectionStartMs, run.IterationSectionEndMs = sectionTarget.StartMs, sectionTarget.EndMs
@@ -4094,7 +4102,38 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 		}
 	}
 
-	sourceArtifact := cloneTaskImageSourceArtifact(parsed.SourceArtifact)
+	var sourceArtifact *pebblestore.SessionArtifactSelectionReference
+	boundSelection := latestTaskArtifactUseSelection(parentMessages)
+	if boundSelection != nil {
+		boundSource := &pebblestore.SessionArtifactSelectionReference{SessionID: boundSelection.SessionID, CollectionID: boundSelection.CollectionID, VariantID: boundSelection.VariantID, EventSeq: boundSelection.EventSeq}
+		if parsed.SourceArtifact != nil && !equalTaskImageSourceArtifact(parsed.SourceArtifact, boundSource) {
+			return "", errors.New("task source_artifact does not match the authenticated Artifact Studio selection")
+		}
+		parsed.SourceArtifact, sourceArtifact = cloneTaskImageSourceArtifact(boundSource), cloneTaskImageSourceArtifact(boundSource)
+		if parsed.Swarm != nil {
+			parsed.Swarm.SourceArtifact = cloneTaskImageSourceArtifact(boundSource)
+			if boundSelection.Part != nil {
+				boundTarget := taskSectionTargetFromArtifactPart(*boundSelection.Part)
+				if parsed.Swarm.SectionTarget != nil && !equalTaskSectionTarget(parsed.Swarm.SectionTarget, boundTarget) { return "", errors.New("task section_target does not match the authenticated Artifact Studio part") }
+				parsed.Swarm.SectionTarget = boundTarget
+			}
+		}
+		for i := range launchSpecs {
+			if (agentruntime.IsDesignerAgentName(launchSpecs[i].RequestedSubagentType) || agentruntime.IsImageAgentName(launchSpecs[i].RequestedSubagentType)) && launchSpecs[i].OutputMode == taskOutputModeManaged {
+				if launchSpecs[i].SourceArguments == nil { launchSpecs[i].SourceArguments = map[string]any{} }
+				if launchSpecs[i].SourceArtifact != nil && !equalTaskImageSourceArtifact(launchSpecs[i].SourceArtifact, boundSource) { return "", errors.New("task launch source_artifact does not match the authenticated Artifact Studio selection") }
+				launchSpecs[i].SourceArtifact = cloneTaskImageSourceArtifact(boundSource)
+				if boundSelection.Part != nil {
+					boundTarget := taskSectionTargetFromArtifactPart(*boundSelection.Part)
+					requested, targetErr := parseTaskSwarmSectionTarget(launchSpecs[i].SourceArguments["section_target"])
+					if targetErr != nil { return "", targetErr }
+					if requested != nil && !equalTaskSectionTarget(requested, boundTarget) { return "", errors.New("task section_target does not match the authenticated Artifact Studio part") }
+					launchSpecs[i].SourceArguments["section_target"] = boundTarget
+				}
+			}
+		}
+	}
+	if sourceArtifact == nil { sourceArtifact = cloneTaskImageSourceArtifact(parsed.SourceArtifact) }
 	if sourceArtifact != nil {
 		if s.tools == nil || s.tools.ArtifactAuthority() == nil {
 			return "", errors.New("task source_artifact requires the authenticated artifact authority")
@@ -4105,6 +4144,7 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 		}
 	}
 
+	parsed.Launches = append([]taskLaunchSpec(nil), launchSpecs...)
 	launchSpecs, err = s.hydrateTaskSwarm(ctx, parentSession, parsed, launchSpecs, step, taskCallID, emit, req.Principal)
 	if err != nil {
 		return "", err
@@ -5137,6 +5177,10 @@ func buildTaskDelegationPrompt(config taskDelegationPromptConfig) string {
 			b.WriteString(config.ArtifactRunContext.CollectionID)
 			b.WriteString(", variant ")
 			b.WriteString(config.ArtifactRunContext.VariantID)
+			b.WriteString(", step ")
+			b.WriteString(config.ArtifactRunContext.ArtifactStepID)
+			b.WriteString(", candidate ")
+			b.WriteString(strconv.Itoa(config.ArtifactRunContext.CandidateIndex))
 			if agentruntime.IsImageAgentName(config.RequestedSubagent) {
 				b.WriteString("\n- artifact contract: make one manage_artifact generate_image call and omit provider/model/collection_id/variant_id/output_requirements; trusted orchestration resolves the account image model, injects the immutable requirements, and atomically finalizes the preallocated destination. Completion without the returned exact ready reference is a failed handoff. Do not inspect or mutate the workspace\n")
 			} else {
@@ -5311,6 +5355,31 @@ func (s *Service) loadDelegationTranscriptMessages(sessionID string) ([]pebblest
 
 func buildTaskActivePlanContext(activePlan *pebblestore.SessionPlanSnapshot) string {
 	return strings.TrimSpace(privacy.SanitizeText(compactedActivePlanText(activePlan)))
+}
+
+func latestTaskArtifactUseSelection(messages []pebblestore.MessageSnapshot) *pebblestore.SessionArtifactSelectionReference {
+	for messageIndex := len(messages) - 1; messageIndex >= 0; messageIndex-- {
+		message := messages[messageIndex]
+		if !strings.EqualFold(strings.TrimSpace(message.Role), "user") { continue }
+		for selectionIndex := len(message.ArtifactSelections) - 1; selectionIndex >= 0; selectionIndex-- {
+			selection := message.ArtifactSelections[selectionIndex]
+			if strings.EqualFold(strings.TrimSpace(selection.Action), "use") {
+				copy := selection
+				if selection.Part != nil { partCopy := *selection.Part; copy.Part = &partCopy }
+				return &copy
+			}
+		}
+	}
+	return nil
+}
+
+func taskSectionTargetFromArtifactPart(part pebblestore.SessionArtifactPart) *taskSwarmSectionTarget {
+	return &taskSwarmSectionTarget{ID: part.ID, Label: part.Label, Kind: part.Kind, Description: part.Description, StartMs: part.StartMs, EndMs: part.EndMs, X: part.X, Y: part.Y, Width: part.Width, Height: part.Height, Page: part.Page, StateID: part.StateID, Selector: part.Selector}
+}
+
+func equalTaskSectionTarget(left, right *taskSwarmSectionTarget) bool {
+	if left == nil || right == nil { return left == nil && right == nil }
+	return *left == *right
 }
 
 func buildTaskParentTranscriptContext(messages []pebblestore.MessageSnapshot) string {

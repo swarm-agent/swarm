@@ -80,10 +80,21 @@ export interface DesktopV3ArtifactChainReference {
 export interface DesktopV3ArtifactChain {
   id: string
   name: string
-  root: DesktopV3ArtifactChainReference
-  head: DesktopV3ArtifactChainReference
+  graphState: string
+  root: DesktopV3ArtifactChainReference | null
+  head: DesktopV3ArtifactChainReference | null
   revisionCount: number
   lastRoundId: string
+}
+
+export interface DesktopV3ArtifactStep {
+  id: string
+  graphState: string
+  artifactChainId: string
+  parent?: DesktopV3ArtifactChainReference
+  revisionNumber: number
+  candidates: DesktopV3ArtifactChainReference[]
+  accepted?: DesktopV3ArtifactChainReference
 }
 
 export interface DesktopV3ArtifactLineage {
@@ -166,7 +177,11 @@ export interface DesktopV3ArtifactCatalogEntry {
   outputRequirements?: DesktopV3ArtifactOutputRequirements
   animationProfile?: DesktopV3ArtifactAnimationProfile
   chain?: DesktopV3ArtifactChain
+  step?: DesktopV3ArtifactStep
+  graphState?: string
+  parentArtifact?: DesktopV3ArtifactChainReference
   artifactChainId?: string
+  artifactStepId?: string
   revisionNumber?: number
   revisionRoundId?: string
   candidateIndex?: number
@@ -357,8 +372,20 @@ function normalizeArtifactChain(value: unknown): DesktopV3ArtifactChain | null {
   const id = artifactCatalogString(record.id)
   const root = normalizeArtifactChainReference(record.root)
   const head = normalizeArtifactChainReference(record.head)
-  if (!id || !root || !head) return null
-  return { id, name: artifactCatalogString(record.name), root, head, revisionCount: artifactCatalogCount(record.revision_count), lastRoundId: artifactCatalogString(record.last_round_id) }
+  if (!id) return null
+  return { id, name: artifactCatalogString(record.name), graphState: artifactCatalogString(record.graph_state), root, head, revisionCount: artifactCatalogCount(record.revision_count), lastRoundId: artifactCatalogString(record.last_round_id) }
+}
+
+function normalizeArtifactStep(value: unknown): DesktopV3ArtifactStep | null {
+  const record = artifactCatalogRecord(value)
+  if (!record) return null
+  const id = artifactCatalogString(record.id)
+  const artifactChainId = artifactCatalogString(record.artifact_chain_id)
+  if (!id || !artifactChainId) return null
+  const parent = normalizeArtifactChainReference(record.parent)
+  const accepted = normalizeArtifactChainReference(record.accepted)
+  const candidates = Array.isArray(record.candidates) ? record.candidates.map(normalizeArtifactChainReference).filter((ref): ref is DesktopV3ArtifactChainReference => ref !== null) : []
+  return { id, artifactChainId, graphState: artifactCatalogString(record.graph_state), ...(parent ? { parent } : {}), revisionNumber: artifactCatalogCount(record.revision_number), candidates, ...(accepted ? { accepted } : {}) }
 }
 
 function normalizeArtifactParts(value: unknown): DesktopV3ArtifactPart[] {
@@ -427,6 +454,8 @@ export function normalizeDesktopV3ArtifactCatalogEntry(value: unknown): DesktopV
   const outputRequirements = normalizeDesktopV3ArtifactOutputRequirements(record.output_requirements)
   const animationProfile = normalizeDesktopV3ArtifactAnimationProfile(record.animation_profile)
   const chain = normalizeArtifactChain(record.chain)
+  const step = normalizeArtifactStep(record.step)
+  const parentArtifact = normalizeArtifactChainReference(record.parent_artifact)
   return {
     artifactId,
     sourceRef: artifactCatalogString(record.source_ref),
@@ -456,7 +485,11 @@ export function normalizeDesktopV3ArtifactCatalogEntry(value: unknown): DesktopV
     progress: normalizeArtifactProgress(record.progress),
     lineage: normalizeArtifactLineage(record.lineage),
     ...(chain ? { chain } : {}),
+    ...(step ? { step } : {}),
+    ...(artifactCatalogString(record.graph_state) ? { graphState: artifactCatalogString(record.graph_state) } : {}),
+    ...(parentArtifact ? { parentArtifact } : {}),
     ...((artifactCatalogString(record.artifact_chain_id) || chain?.id) ? { artifactChainId: artifactCatalogString(record.artifact_chain_id) || chain?.id } : {}),
+    ...(artifactCatalogString(record.artifact_step_id) ? { artifactStepId: artifactCatalogString(record.artifact_step_id) } : {}),
     ...(artifactCatalogCount(record.revision_number) ? { revisionNumber: artifactCatalogCount(record.revision_number) } : {}),
     ...(artifactCatalogString(record.revision_round_id) ? { revisionRoundId: artifactCatalogString(record.revision_round_id) } : {}),
     ...(artifactCatalogCount(record.candidate_index) ? { candidateIndex: artifactCatalogCount(record.candidate_index) } : {}),

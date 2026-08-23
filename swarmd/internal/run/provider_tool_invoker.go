@@ -300,6 +300,14 @@ func cloneArtifactRunContext(input *tool.ArtifactRunContext) *tool.ArtifactRunCo
 		return nil
 	}
 	cloned := *input
+	if input.SourceArtifact != nil {
+		sourceCopy := *input.SourceArtifact
+		cloned.SourceArtifact = &sourceCopy
+	}
+	if input.Part != nil {
+		partCopy := *input.Part
+		cloned.Part = &partCopy
+	}
 	cloned.OutputRequirements = cloneTaskOutputRequirements(input.OutputRequirements)
 	cloned.AnimationProfile = cloneTaskAnimationProfile(input.AnimationProfile)
 	return &cloned
@@ -320,6 +328,9 @@ func (s *Service) providerManagedArtifactRunContext(config providerToolInvokerCo
 		run.IterationTheme = strings.TrimSpace(run.IterationTheme)
 		run.IterationSectionID = strings.TrimSpace(run.IterationSectionID)
 		run.IterationSectionLabel = strings.TrimSpace(run.IterationSectionLabel)
+		run.ArtifactStepID = strings.TrimSpace(run.ArtifactStepID)
+		if run.SourceArtifact != nil { sourceCopy := *run.SourceArtifact; run.SourceArtifact = &sourceCopy }
+		if run.Part != nil { partCopy := *run.Part; run.Part = &partCopy }
 		run.CollectionID = strings.TrimSpace(run.CollectionID)
 		run.VariantID = strings.TrimSpace(run.VariantID)
 		run.OutputRequirements = cloneTaskOutputRequirements(run.OutputRequirements)

@@ -893,6 +893,10 @@ func attachedArtifactSelectionsForProvider(metadata map[string]any) string {
 		IterationSectionLabel   string         `json:"iteration_section_label"`
 		IterationSectionStartMs int64          `json:"iteration_section_start_ms"`
 		IterationSectionEndMs   int64          `json:"iteration_section_end_ms"`
+		PartID                  string                             `json:"part_id"`
+		PartLabel               string                             `json:"part_label"`
+		PartKind                string                             `json:"part_kind"`
+		Part                    *pebblestore.SessionArtifactPart   `json:"part"`
 		Metadata                map[string]any `json:"metadata"`
 		VisibleMetadata         map[string]any `json:"visible_metadata"`
 	}
@@ -943,6 +947,14 @@ func attachedArtifactSelectionsForProvider(metadata map[string]any) string {
 				chosen = append(chosen, fmt.Sprintf("selected_iteration_section_target={\"id\":%q,\"label\":%q,\"start_ms\":%d,\"end_ms\":%d}", selection.IterationSectionID, selection.IterationSectionLabel, selection.IterationSectionStartMs, selection.IterationSectionEndMs))
 			}
 			lines = append(lines, strings.Join(chosen, "\n"))
+		}
+		selection.PartID = truncateUTF8Bytes(strings.TrimSpace(selection.PartID), 128)
+		if selection.Part != nil {
+			if selection.PartID == "" || selection.Part.ID != selection.PartID { return "" }
+			encodedPart, _ := json.Marshal(selection.Part)
+			lines = append(lines, "Selected Artifact Studio part (server-authoritative exact typed locator): "+string(encodedPart))
+		} else if strings.TrimSpace(selection.PartID) != "" {
+			return ""
 		}
 		if selection.PendingRequest != "" {
 			lines = append(lines, "Pending Artifact Studio update (hidden composer context; treat it as part of the user's request and do not ask them to paste it):\n"+selection.PendingRequest)

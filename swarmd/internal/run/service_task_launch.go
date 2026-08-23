@@ -114,11 +114,19 @@ type taskSwarmIterationControls struct {
 }
 
 type taskSwarmSectionTarget struct {
-	ID      string `json:"id"`
-	Label   string `json:"label"`
-	Kind    string `json:"kind,omitempty"`
-	StartMs int64  `json:"start_ms,omitempty"`
-	EndMs   int64  `json:"end_ms,omitempty"`
+	ID          string  `json:"id"`
+	Label       string  `json:"label"`
+	Kind        string  `json:"kind,omitempty"`
+	Description string  `json:"description,omitempty"`
+	StartMs     int64   `json:"start_ms,omitempty"`
+	EndMs       int64   `json:"end_ms,omitempty"`
+	X           float64 `json:"x,omitempty"`
+	Y           float64 `json:"y,omitempty"`
+	Width       float64 `json:"width,omitempty"`
+	Height      float64 `json:"height,omitempty"`
+	Page        int     `json:"page,omitempty"`
+	StateID     string  `json:"state_id,omitempty"`
+	Selector    string  `json:"selector,omitempty"`
 }
 
 type taskSwarmSpec struct {
@@ -1183,28 +1191,35 @@ func parseTaskSwarmSectionTarget(value any) (*taskSwarmSectionTarget, error) {
 	}
 	for key := range raw {
 		switch key {
-		case "id", "label", "kind", "start_ms", "end_ms":
+		case "id", "label", "kind", "description", "start_ms", "end_ms", "x", "y", "width", "height", "page", "state_id", "selector":
 		default:
 			return nil, fmt.Errorf("task section_target contains unsupported field %q", key)
 		}
 	}
-	id, label, kind := strings.TrimSpace(mapString(raw, "id")), strings.TrimSpace(mapString(raw, "label")), strings.ToLower(strings.TrimSpace(mapString(raw, "kind")))
-	start, startOK := raw["start_ms"].(float64)
-	end, endOK := raw["end_ms"].(float64)
-	if id == "" || label == "" {
-		return nil, errors.New("task section_target requires id and label")
+	encoded, err := json.Marshal(raw)
+	if err != nil { return nil, errors.New("task section_target must be an object") }
+	var part pebblestore.SessionArtifactPart
+	if err := json.Unmarshal(encoded, &part); err != nil { return nil, fmt.Errorf("task section_target is invalid: %w", err) }
+	part.ID, part.Label, part.Kind = strings.TrimSpace(part.ID), strings.TrimSpace(part.Label), strings.ToLower(strings.TrimSpace(part.Kind))
+	if part.ID == "" || part.Label == "" { return nil, errors.New("task section_target requires id and label") }
+	if part.Kind == "" { part.Kind = "temporal" }
+	target := &taskSwarmSectionTarget{ID: part.ID, Label: part.Label, Kind: part.Kind, Description: strings.TrimSpace(part.Description), StartMs: part.StartMs, EndMs: part.EndMs, X: part.X, Y: part.Y, Width: part.Width, Height: part.Height, Page: part.Page, StateID: strings.TrimSpace(part.StateID), Selector: strings.TrimSpace(part.Selector)}
+	switch part.Kind {
+	case "temporal":
+		if part.StartMs < 0 || part.EndMs <= part.StartMs { return nil, errors.New("temporal task section_target requires a valid start_ms/end_ms range") }
+	case "spatial":
+		if part.X < 0 || part.Y < 0 || part.Width <= 0 || part.Height <= 0 || part.X+part.Width > 1 || part.Y+part.Height > 1 { return nil, errors.New("spatial task section_target requires normalized x/y/width/height") }
+	case "page":
+		if part.Page < 1 { return nil, errors.New("page task section_target requires page") }
+	case "state":
+		if target.StateID == "" { return nil, errors.New("state task section_target requires state_id") }
+	case "selector":
+		if target.Selector == "" { return nil, errors.New("selector task section_target requires selector") }
+	case "semantic":
+	default:
+		return nil, errors.New("task section_target kind is invalid")
 	}
-	if kind == "" {
-		kind = "temporal"
-	}
-	if kind == "temporal" {
-		if !startOK || !endOK || start != math.Trunc(start) || end != math.Trunc(end) || start < 0 || end <= start || end > math.MaxInt64 {
-			return nil, errors.New("temporal task section_target requires a valid start_ms/end_ms range")
-		}
-	} else if startOK || endOK {
-		return nil, errors.New("non-temporal task section_target must omit start_ms/end_ms")
-	}
-	return &taskSwarmSectionTarget{ID: id, Label: label, Kind: kind, StartMs: int64(start), EndMs: int64(end)}, nil
+	return target, nil
 }
 
 func validateTaskSwarmLaunchEnabled(parsed taskCallArguments) error {

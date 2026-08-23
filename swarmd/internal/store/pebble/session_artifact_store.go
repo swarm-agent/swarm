@@ -1548,10 +1548,13 @@ func (s *SessionStore) prepareV3ArtifactMutation(input V3SessionMutationInput, s
 			return preparedV3ArtifactMutation{}, errors.New("artifact collection variant limit exceeded")
 		}
 		if !variantOK {
-			if next.RevisionRoundID == "" {
-				next.RevisionRoundID = artifactRevisionRoundID(next)
+			if next.ArtifactStepID == "" {
+				next.ArtifactStepID = artifactStepID(next)
 			}
-			next.ArtifactStepID = artifactStepID(next)
+			if next.RevisionRoundID == "" { next.RevisionRoundID = next.ArtifactStepID }
+			if next.RevisionRoundID != next.ArtifactStepID {
+				return preparedV3ArtifactMutation{}, errors.New("artifact candidate step identity conflicts with revision round")
+			}
 			next.GraphState = SessionArtifactGraphAuthoritative
 			if next.CandidateIndex <= 0 {
 				next.CandidateIndex = next.Lineage.IterationIndex

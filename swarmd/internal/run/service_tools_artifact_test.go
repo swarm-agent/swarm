@@ -54,6 +54,15 @@ func TestTaskDelegationTranscriptKeepsArtifactOnlyUserMessage(t *testing.T) {
 	}
 }
 
+func TestLatestTaskArtifactUseSelectionPreservesTypedPart(t *testing.T) {
+	part := pebblestore.SessionArtifactPart{ID: "hero", Label: "Hero", Kind: "selector", Selector: "#hero"}
+	messages := []pebblestore.MessageSnapshot{{Role: "user", ArtifactSelections: []pebblestore.SessionArtifactSelectionReference{{SessionID: "s", CollectionID: "c", VariantID: "v", EventSeq: 9, Action: "use", PartID: "hero", Part: &part}}}}
+	selected := latestTaskArtifactUseSelection(messages)
+	if selected == nil || selected.Part == nil || *selected.Part != part { t.Fatalf("selection = %#v", selected) }
+	target := taskSectionTargetFromArtifactPart(*selected.Part)
+	if target.Kind != "selector" || target.Selector != "#hero" { t.Fatalf("target = %#v", target) }
+}
+
 func TestManageArtifactToolOutputIsStructured(t *testing.T) {
 	output := `{"action":"create","artifact":{"collection_id":"col-1","event_seq":1,"filename":"concept.html","id":"var-1","media_type":"text/html","session_id":"sess-1","status":"ready"},"path_id":"run.manage-artifact.v1","reference":{"collection_id":"col-1","event_seq":1,"session_id":"sess-1","variant_id":"var-1"},"status":"ok","tool":"manage_artifact"}`
 	preview, ok := toolHistoryStructuredPayload("manage_artifact", output, `{"action":"create"}`)
