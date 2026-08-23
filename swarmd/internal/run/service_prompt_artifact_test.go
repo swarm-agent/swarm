@@ -33,6 +33,52 @@ func TestBuildInputProjectsAttachedArtifactSelectionsWithoutBytes(t *testing.T) 
 	}
 }
 
+func TestBuildInputProjectsPendingArtifactStudioUpdateWithoutVisiblePromptDump(t *testing.T) {
+	input := buildInput([]pebblestore.MessageSnapshot{{
+		Role: "user", Content: "Make it cleaner.", ArtifactSelections: []pebblestore.SessionArtifactSelectionReference{{
+			SessionID: "source-session", CollectionID: "collection-1", VariantID: "variant-2", EventSeq: 41,
+			Label: "Active branch", Action: "use", PendingRequest: "Create five alternatives for section 03B from this exact head.",
+		}},
+	}})
+	content := input[0]["content"].([]map[string]any)[0]["text"].(string)
+	for _, want := range []string{"Make it cleaner.", "Pending Artifact Studio update", "Create five alternatives for section 03B", "session_id=source-session"} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("provider content missing %q: %s", want, content)
+		}
+	}
+}
+
+func TestBuildInputProjectsAuthoritativeChainedIterationSelectionBeforePendingTarget(t *testing.T) {
+	input := buildInput([]pebblestore.MessageSnapshot{{
+		Role: "user", Content: "Fix 3A and show me particle swarm finders.", ArtifactSelections: []pebblestore.SessionArtifactSelectionReference{{
+			SessionID: "source-session", CollectionID: "collection-1", VariantID: "variant-3", EventSeq: 42,
+			Label: "Iteration 3: Luminous Branching Paths", Action: "use",
+			IterationID: "iteration-3", IterationIndex: 3, IterationLabel: "Luminous Branching Paths", IterationTheme: "branching paths",
+			IterationSectionID: "step-03-find", IterationSectionLabel: "03A · FIND · PARALLEL FINDERS", IterationSectionStartMs: 21000, IterationSectionEndMs: 28000,
+			PendingRequest: "Create five alternatives for section 03C.",
+		}},
+	}})
+	content := input[0]["content"].([]map[string]any)[0]["text"].(string)
+	for _, want := range []string{"Selected chained iteration metadata", "iteration_id=iteration-3", "iteration_index=3", `iteration_label="Luminous Branching Paths"`, `selected_iteration_section_target={"id":"step-03-find","label":"03A · FIND · PARALLEL FINDERS","start_ms":21000,"end_ms":28000}`, "distinct from any pending next-step target", "Create five alternatives for section 03C"} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("provider content missing %q: %s", want, content)
+		}
+	}
+	if strings.Index(content, "Selected chained iteration metadata") > strings.Index(content, "Pending Artifact Studio update") {
+		t.Fatalf("selected iteration metadata must precede pending target context: %s", content)
+	}
+}
+
+func TestPendingArtifactStudioUpdateRequiresUseAction(t *testing.T) {
+	selection := map[string]any{
+		"session_id": "source-session", "collection_id": "collection-1", "variant_id": "variant-2", "event_seq": 41,
+		"label": "Active branch", "action": "select", "pending_request": "Hidden update",
+	}
+	if got := attachedArtifactSelectionsForProvider(map[string]any{"artifact_selections": []any{selection}}); got != "" {
+		t.Fatalf("pending request projected without use action: %q", got)
+	}
+}
+
 func TestBuildInputProjectsSelectedVideoProjectAndRevisionContext(t *testing.T) {
 	input := buildInput([]pebblestore.MessageSnapshot{{
 		Role: "user", Content: "Make the transition longer.", Metadata: map[string]any{

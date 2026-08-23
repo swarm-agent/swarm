@@ -99,7 +99,7 @@ export function formatDesktopV3ArtifactIterationTime(timeMs: number): string {
   return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}.${String(millis).padStart(3, '0')}`
 }
 
-export function desktopV3ArtifactIterationChangeDescription(section: DesktopV3ArtifactIterationSection, alternativeCount = 5): string {
+function desktopV3ArtifactIterationSectionBrief(section: DesktopV3ArtifactIterationSection, alternativeCount: number): string[] {
   const count = Math.min(50, Math.max(1, Math.round(alternativeCount)))
   const narration = section.narration
     .map((line) => `${formatDesktopV3ArtifactIterationTime(line.startMs)}–${formatDesktopV3ArtifactIterationTime(line.endMs)} ${[line.text, line.detail].filter(Boolean).join(' — ')}`)
@@ -107,9 +107,26 @@ export function desktopV3ArtifactIterationChangeDescription(section: DesktopV3Ar
   return [
     `Create ${count} new alternatives for animation section "${section.label}" (${section.id}) from ${formatDesktopV3ArtifactIterationTime(section.startMs)} to ${formatDesktopV3ArtifactIterationTime(section.endMs)}.`,
     `Exact section_target: ${JSON.stringify({ id: section.id, label: section.label, start_ms: section.startMs, end_ms: section.endMs })}`,
-    'Use a managed Designer Iteration Swarm with the attached exact selected source artifact and this exact section_target so every generated alternative becomes a child branch under this section in Artifact Studio.',
-    'Build directly on the attached selected branch. Each alternative must be a complete derived animation that preserves every other section, the global duration, deterministic seek contract, output geometry, and surrounding transitions.',
-    'Do not select or lock an alternative automatically; the user will compare them in the section timeline and lock one explicitly.',
     narration ? `Section narration:\n${narration}` : 'This section declares no narration.',
+  ]
+}
+
+/** Requests sibling alternatives from the immutable source that began the current review round. */
+export function desktopV3ArtifactIterationChangeDescription(section: DesktopV3ArtifactIterationSection, alternativeCount = 5): string {
+  return [
+    ...desktopV3ArtifactIterationSectionBrief(section, alternativeCount),
+    'Use a managed Designer Iteration Swarm with the attached exact current-round source artifact and this exact section_target.',
+    'Generate sibling alternatives from that round source, not from whichever candidate is currently previewed. Each result must remain a complete derived artifact that preserves every other section, the global duration, deterministic seek contract, output geometry, and surrounding transitions.',
+    'Return complete branches for comparison. Do not durably select a collection variant and do not compose or splice content across branches.',
+  ].join('\n')
+}
+
+/** Advances the active complete artifact head to the next ordered manifest section. */
+export function desktopV3ArtifactIterationNextSectionDescription(section: DesktopV3ArtifactIterationSection, alternativeCount = 5): string {
+  return [
+    ...desktopV3ArtifactIterationSectionBrief(section, alternativeCount),
+    'The attached exact artifact is the newly accepted complete artifact head from the previous step. Use it as the sole source artifact for this next ordered section.',
+    'Use a managed Designer Iteration Swarm with this exact section_target. Each result must be a complete derived artifact that preserves all non-target sections and the deterministic animation contract.',
+    'Continue linearly from this head. Do not compose or splice content from any other branch, and do not durably select a collection variant automatically.',
   ].join('\n')
 }

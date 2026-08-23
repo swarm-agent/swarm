@@ -152,16 +152,26 @@ type SessionArtifactCollection struct {
 }
 
 // SessionArtifactSelectionReference is the portable, opaque reference placed in
-// messages and handoffs. Label and description are bounded display metadata; the
-// reference intentionally contains no bytes, digest, or storage path.
+// messages and handoffs. Label and description are bounded display metadata;
+// PendingRequest is hidden Studio context. The reference contains no bytes,
+// digest, or storage path.
 type SessionArtifactSelectionReference struct {
-	SessionID    string `json:"session_id"`
-	CollectionID string `json:"collection_id"`
-	VariantID    string `json:"variant_id"`
-	EventSeq     uint64 `json:"event_seq,omitempty"`
-	Label        string `json:"label,omitempty"`
-	Description  string `json:"description,omitempty"`
-	Action       string `json:"action,omitempty"`
+	SessionID               string `json:"session_id"`
+	CollectionID            string `json:"collection_id"`
+	VariantID               string `json:"variant_id"`
+	EventSeq                uint64 `json:"event_seq,omitempty"`
+	Label                   string `json:"label,omitempty"`
+	Description             string `json:"description,omitempty"`
+	PendingRequest          string `json:"pending_request,omitempty"`
+	Action                  string `json:"action,omitempty"`
+	IterationID             string `json:"iteration_id,omitempty"`
+	IterationIndex          int    `json:"iteration_index,omitempty"`
+	IterationLabel          string `json:"iteration_label,omitempty"`
+	IterationTheme          string `json:"iteration_theme,omitempty"`
+	IterationSectionID      string `json:"iteration_section_id,omitempty"`
+	IterationSectionLabel   string `json:"iteration_section_label,omitempty"`
+	IterationSectionStartMs int64  `json:"iteration_section_start_ms,omitempty"`
+	IterationSectionEndMs   int64  `json:"iteration_section_end_ms,omitempty"`
 }
 
 // ValidateSessionArtifactMessageSelections resolves portable message references
@@ -186,7 +196,7 @@ func (s *SessionStore) ValidateSessionArtifactMessageSelections(accountScopeID, 
 			SessionID: strings.TrimSpace(incoming.SessionID), CollectionID: strings.TrimSpace(incoming.CollectionID),
 			VariantID: strings.TrimSpace(incoming.VariantID), EventSeq: incoming.EventSeq,
 			Label: strings.TrimSpace(incoming.Label), Description: strings.TrimSpace(incoming.Description),
-			Action: strings.ToLower(strings.TrimSpace(incoming.Action)),
+			PendingRequest: strings.TrimSpace(incoming.PendingRequest), Action: strings.ToLower(strings.TrimSpace(incoming.Action)),
 		}
 		if len(ref.SessionID) > 256 || ref.SessionID == "" || ref.SessionID == "." || ref.SessionID == ".." || strings.ContainsAny(ref.SessionID, `/\\`) {
 			return nil, fmt.Errorf("artifact selection %d session id is invalid", index)
@@ -200,16 +210,20 @@ func (s *SessionStore) ValidateSessionArtifactMessageSelections(accountScopeID, 
 		if ref.EventSeq == 0 {
 			return nil, fmt.Errorf("artifact selection %d event sequence is required", index)
 		}
-		if len(ref.Label) > 256 || len(ref.Description) > 2048 {
-			return nil, fmt.Errorf("artifact selection %d display metadata exceeds bounds", index)
+		if len(ref.Label) > 256 || len(ref.Description) > 2048 || len(ref.PendingRequest) > 16<<10 {
+			return nil, fmt.Errorf("artifact selection %d message context exceeds bounds", index)
 		}
 		ref.Label = strings.TrimSpace(privacy.SanitizeText(ref.Label))
 		ref.Description = strings.TrimSpace(privacy.SanitizeText(ref.Description))
+		ref.PendingRequest = strings.TrimSpace(privacy.SanitizeText(ref.PendingRequest))
 		if ref.Action == "" {
 			ref.Action = "use"
 		}
 		if ref.Action != "select" && ref.Action != "use" {
 			return nil, fmt.Errorf("artifact selection %d action must be select or use", index)
+		}
+		if ref.PendingRequest != "" && ref.Action != "use" {
+			return nil, fmt.Errorf("artifact selection %d pending request requires use action", index)
 		}
 		key := strings.Join([]string{ref.SessionID, ref.CollectionID, ref.VariantID}, "\x00")
 		if _, duplicate := seen[key]; duplicate {
@@ -253,6 +267,16 @@ func (s *SessionStore) ValidateSessionArtifactMessageSelections(accountScopeID, 
 		}
 		ref.Label = strings.TrimSpace(privacy.SanitizeText(ref.Label))
 		ref.Description = strings.TrimSpace(privacy.SanitizeText(ref.Description))
+		// Selection lineage is always copied from the authenticated exact variant.
+		// Never trust client-supplied iteration or section metadata for provider context.
+		ref.IterationID = variant.Lineage.IterationID
+		ref.IterationIndex = variant.Lineage.IterationIndex
+		ref.IterationLabel = variant.Lineage.IterationLabel
+		ref.IterationTheme = variant.Lineage.IterationTheme
+		ref.IterationSectionID = variant.Lineage.IterationSectionID
+		ref.IterationSectionLabel = variant.Lineage.IterationSectionLabel
+		ref.IterationSectionStartMs = variant.Lineage.IterationSectionStartMs
+		ref.IterationSectionEndMs = variant.Lineage.IterationSectionEndMs
 		out = append(out, ref)
 	}
 	return out, nil

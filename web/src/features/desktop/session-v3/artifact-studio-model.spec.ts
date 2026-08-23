@@ -4,7 +4,7 @@ import assert from 'node:assert/strict'
 import type { DesktopV3ArtifactCatalogEntry } from './artifact-api'
 import {
   desktopV3ArtifactStudioBranchDepth,
-  desktopV3ArtifactStudioLockedAlternative,
+  desktopV3ArtifactStudioParent,
   desktopV3ArtifactStudioRoot,
   desktopV3ArtifactStudioSectionAlternatives,
 } from './artifact-studio-model'
@@ -40,6 +40,7 @@ test('artifact studio follows recursive exact source lineage into one branch tre
   const second = artifact({ id: 'second', collection: 'iteration-b', eventSeq: 3, source: first, section: 'opening' })
   const entries = [root, first, second]
 
+  assert.equal(desktopV3ArtifactStudioParent(entries, second), first)
   assert.equal(desktopV3ArtifactStudioRoot(entries, second), root)
   assert.equal(desktopV3ArtifactStudioBranchDepth(entries, root), 0)
   assert.equal(desktopV3ArtifactStudioBranchDepth(entries, first), 1)
@@ -63,10 +64,4 @@ test('artifact studio keeps unrelated roots and sections out of a section branch
   const unrelated = artifact({ id: 'unrelated', collection: 'iteration-c', eventSeq: 5, source: otherRoot, section: 'opening' })
 
   assert.deepEqual(desktopV3ArtifactStudioSectionAlternatives([root, opening, payoff, otherRoot, unrelated], opening, 'opening'), [opening])
-})
-
-test('artifact studio resolves the latest durable locked alternative across generation collections', () => {
-  const first = artifact({ id: 'first', collection: 'iteration-a', eventSeq: 2, selected: true, updatedAt: 10 })
-  const second = artifact({ id: 'second', collection: 'iteration-b', eventSeq: 3, selected: true, updatedAt: 20 })
-  assert.equal(desktopV3ArtifactStudioLockedAlternative([first, second]), second)
 })

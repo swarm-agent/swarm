@@ -399,6 +399,69 @@ func TestValidateTaskSwarmHydrationFailsClosed(t *testing.T) {
 	}
 }
 
+func TestDecodeTaskSwarmHydrationRepairsGenericGroupTitleFromAuthoritativeContext(t *testing.T) {
+	deltas := `[{"index":1,"title":"One","theme":"A","role":"specialist one","deliverable":"focused output one"},{"index":2,"title":"Two","theme":"B","role":"specialist two","deliverable":"focused output two"}]`
+	cases := []struct {
+		name       string
+		raw        string
+		requestRaw string
+		wantTitle  string
+	}{
+		{
+			name:       "section target with themes",
+			raw:        `{"group_title":"Designer Managed Alternatives","deltas":` + deltas + `}`,
+			requestRaw: `{"mode":"swarm","prompt":"Create two new approaches for section 3b.","agent_type":"designer","count":2,"themes":["quiet","bold"],"source_artifact":{"session_id":"source-session","collection_id":"source-collection","variant_id":"source-variant","event_seq":9},"section_target":{"id":"3b","label":"Finder payoff","start_ms":12000,"end_ms":18500},"iteration_controls":{"change":["section 3b visual treatment"],"preserve":["all other sections"]}}`,
+			wantTitle:  "Finder payoff Design Studies",
+		},
+		{
+			name:       "theme based",
+			raw:        `{"group_title":"Creative Design Alternatives","deltas":` + deltas + `}`,
+			requestRaw: `{"mode":"swarm","prompt":"Refine the approved artifact.","agent_type":"designer","count":2,"themes":["compact","spacious"]}`,
+			wantTitle:  "compact Design Studies",
+		},
+		{
+			name:       "explicit groups",
+			raw:        `{"group_title":"Managed Design Group","deltas":` + deltas + `}`,
+			requestRaw: `{"mode":"swarm","prompt":"Refine the approved artifact.","agent_type":"designer","count":2,"groups":[{"name":"kinetic typography","count":2,"instructions":"Vary only the type motion."}]}`,
+			wantTitle:  "kinetic typography Design Studies",
+		},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			parsed, err := parseTaskCallArguments(test.requestRaw)
+			if err != nil {
+				t.Fatalf("parse Designer swarm: %v", err)
+			}
+			request, err := buildTaskSwarmHydrationRequest(parsed, parsed.Launches)
+			if err != nil {
+				t.Fatalf("build hydration request: %v", err)
+			}
+			result, err := decodeTaskSwarmHydrationResultForRequest(test.raw, request)
+			if err != nil {
+				t.Fatalf("decode repairable hydration result: %v", err)
+			}
+			if result.GroupTitle != test.wantTitle {
+				t.Fatalf("group title = %q, want %q", result.GroupTitle, test.wantTitle)
+			}
+		})
+	}
+}
+
+func TestDecodeTaskSwarmHydrationDoesNotRepairMalformedOutput(t *testing.T) {
+	parsed, err := parseTaskCallArguments(`{"mode":"swarm","prompt":"Create variants.","agent_type":"designer","count":1,"themes":["compact"]}`)
+	if err != nil {
+		t.Fatalf("parse Designer swarm: %v", err)
+	}
+	request, err := buildTaskSwarmHydrationRequest(parsed, parsed.Launches)
+	if err != nil {
+		t.Fatalf("build hydration request: %v", err)
+	}
+	raw := `{"group_title":"Managed group","deltas":[{"index":1,"title":"","theme":"compact","role":"specialist","deliverable":"focused output"}]}`
+	if _, err := decodeTaskSwarmHydrationResultForRequest(raw, request); err == nil {
+		t.Fatal("malformed Router hydration was silently accepted")
+	}
+}
+
 func TestDecodeTaskSwarmHydrationAcceptsSingleJSONFence(t *testing.T) {
 	valid := `{"group_title":"Campaign Image Studies","deltas":[{"index":1,"title":"One","theme":"A","role":"specialist","constraints":["bounded"],"deliverable":"focused output"}]}`
 	for _, raw := range []string{

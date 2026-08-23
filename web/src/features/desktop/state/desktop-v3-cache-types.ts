@@ -128,6 +128,7 @@ export interface DesktopV3ArtifactSelectionReference {
   event_seq: number
   label?: string
   description?: string
+  pending_request?: string
   action?: 'select' | 'use'
 }
 

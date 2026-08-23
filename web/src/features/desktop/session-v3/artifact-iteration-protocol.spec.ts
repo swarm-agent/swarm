@@ -4,6 +4,7 @@ import assert from 'node:assert/strict'
 import {
   desktopV3ArtifactIterationChangeDescription,
   desktopV3ArtifactIterationMessage,
+  desktopV3ArtifactIterationNextSectionDescription,
   normalizeDesktopV3ArtifactIterationDescriptor,
 } from './artifact-iteration-protocol'
 
@@ -61,9 +62,13 @@ test('builds opaque player messages and an exact section-change brief', () => {
   assert.match(prompt, /00:00\.000 to 00:02\.000/)
   assert.match(prompt, /Hello — INTRO/)
   assert.match(prompt, /preserves every other section/)
-  assert.match(prompt, /attached exact selected source artifact/)
-  assert.match(prompt, /child branch/)
-  assert.match(prompt, /Build directly on the attached selected branch/)
+  assert.match(prompt, /attached exact current-round source artifact/)
+  assert.match(prompt, /sibling alternatives from that round source/)
   assert.match(prompt, /exact section_target/)
-  assert.match(prompt, /Do not select or lock an alternative automatically/)
+  assert.match(prompt, /do not compose or splice content across branches/)
+
+  const nextPrompt = desktopV3ArtifactIterationNextSectionDescription(descriptor.sections[1]!)
+  assert.match(nextPrompt, /newly accepted complete artifact head/)
+  assert.match(nextPrompt, /sole source artifact for this next ordered section/)
+  assert.match(nextPrompt, /Do not compose or splice content from any other branch/)
 })

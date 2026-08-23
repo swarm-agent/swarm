@@ -3162,9 +3162,12 @@ export function DesktopV3ExistingConversationPane({
                   setArtifactGalleryOpenFromViewer(false);
                   setArtifactComposerFocusSignal((current) => current + 1);
                 }}
+                onActiveBranchChange={({ label, description, selection }) => {
+                  queueGalleryArtifactSelections([{ ...selection, label, description, action: "use" }]);
+                  setArtifactComposerFocusSignal((current) => current + 1);
+                }}
                 onIterateSection={({ label, description, selection }, prompt) => {
-                  queueGalleryArtifactSelections([{ ...selection, label, description, action: "select" }]);
-                  composerControllerRef.current?.setDraft(prompt);
+                  queueGalleryArtifactSelections([{ ...selection, label, description, pending_request: prompt, action: "use" }]);
                   setArtifactGalleryOpenFromViewer(false);
                   setArtifactComposerFocusSignal((current) => current + 1);
                 }}
@@ -3526,6 +3529,15 @@ export function DesktopV3ExistingConversationPane({
         }}
         onUseThisDesign={({ label, description, selection }) => {
           queueGalleryArtifactSelections([{ ...selection, label, description, action: "use" }]);
+          setArtifactGalleryOpenFromViewer(false);
+          setArtifactComposerFocusSignal((current) => current + 1);
+        }}
+        onActiveBranchChange={({ label, description, selection }) => {
+          queueGalleryArtifactSelections([{ ...selection, label, description, action: "use" }]);
+          setArtifactComposerFocusSignal((current) => current + 1);
+        }}
+        onIterateSection={({ label, description, selection }, prompt) => {
+          queueGalleryArtifactSelections([{ ...selection, label, description, pending_request: prompt, action: "use" }]);
           setArtifactGalleryOpenFromViewer(false);
           setArtifactComposerFocusSignal((current) => current + 1);
         }}

@@ -2105,6 +2105,7 @@ func normalizeSessionArtifactSelectionReferences(input []SessionArtifactSelectio
 		ref.VariantID = strings.TrimSpace(ref.VariantID)
 		ref.Label = strings.TrimSpace(ref.Label)
 		ref.Description = strings.TrimSpace(ref.Description)
+		ref.PendingRequest = strings.TrimSpace(ref.PendingRequest)
 		ref.Action = strings.ToLower(strings.TrimSpace(ref.Action))
 		out = append(out, ref)
 	}

@@ -460,10 +460,25 @@ func TestSessionArtifactMessageSelectionsValidateOwnershipReadinessAndSequence(t
 	if err != nil || !ok {
 		t.Fatalf("get ready variant: ok=%t err=%v", ok, err)
 	}
-	ref := SessionArtifactSelectionReference{SessionID: variant.SessionID, CollectionID: variant.CollectionID, VariantID: variant.ID, EventSeq: variant.EventSeq, Action: "use"}
+	apply("selection-derived-create", V3SessionMutationCreateArtifact, V3ArtifactMutation{Collection: SessionArtifactCollection{ID: "selection-derived", Name: "Finder alternatives"}, Variant: &SessionArtifactVariant{
+		ID: "selection-derived-variant", Filename: "finder.html", MediaType: "text/html", Lineage: SessionArtifactLineage{
+			SourceSessionID: variant.SessionID, SourceCollectionID: variant.CollectionID, SourceVariantID: variant.ID, SourceEventSeq: variant.EventSeq,
+			IterationID: "iteration-3", IterationIndex: 3, IterationLabel: "Luminous Branching Paths", IterationTheme: "particle swarm finders",
+			IterationSectionID: "step-03-find", IterationSectionLabel: "03A · FIND · PARALLEL FINDERS", IterationSectionStartMs: 21000, IterationSectionEndMs: 28000,
+		},
+	}})
+	apply("selection-derived-finalize", V3SessionMutationFinalizeArtifact, V3ArtifactMutation{Collection: SessionArtifactCollection{ID: "selection-derived"}, Variant: &SessionArtifactVariant{ID: "selection-derived-variant", Filename: "finder.html", MediaType: "text/html", DigestSHA256: strings.Repeat("b", 64), Size: 7}})
+	derived, ok, err := sessions.GetSessionArtifactVariant("account-1", "artifact-selection-source", "selection-derived", "selection-derived-variant")
+	if err != nil || !ok {
+		t.Fatalf("get derived variant: ok=%t err=%v", ok, err)
+	}
+	ref := SessionArtifactSelectionReference{SessionID: derived.SessionID, CollectionID: derived.CollectionID, VariantID: derived.ID, EventSeq: derived.EventSeq, Action: "use", PendingRequest: "  Continue to the next section.  ", IterationSectionID: "stale-client-section"}
 	got, err := sessions.ValidateSessionArtifactMessageSelections("account-1", "user-1", []SessionArtifactSelectionReference{ref})
-	if err != nil || len(got) != 1 || got[0].VariantID != variant.ID {
+	if err != nil || len(got) != 1 || got[0].VariantID != derived.ID || got[0].PendingRequest != "Continue to the next section." {
 		t.Fatalf("validate ready selection = %+v err=%v", got, err)
+	}
+	if got[0].IterationID != "iteration-3" || got[0].IterationIndex != 3 || got[0].IterationLabel != "Luminous Branching Paths" || got[0].IterationTheme != "particle swarm finders" || got[0].IterationSectionID != "step-03-find" || got[0].IterationSectionLabel != "03A · FIND · PARALLEL FINDERS" || got[0].IterationSectionStartMs != 21000 || got[0].IterationSectionEndMs != 28000 {
+		t.Fatalf("selection did not inherit authoritative iteration lineage: %+v", got[0])
 	}
 	stale := ref
 	stale.EventSeq++

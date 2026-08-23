@@ -111,7 +111,7 @@ func taskSwarmRouterSystemPrompt(request taskSwarmHydrationRequest) string {
 	b.WriteString(`You are Router, the tool-free specialization planner for an Iteration Swarm inside Swarm's existing task tool.
 Return only one JSON object matching this exact response contract: {"group_title":"concise iteration group title","deltas":[{"index":1,"title":"short title","theme":"specific theme","role":"specialized responsibility only","constraints":["worker-specific constraint"],"deliverable":"worker-specific output"}]}.
 Produce exactly one compact delta for every supplied item in ascending index order.
-Name group_title from the supplied description so it identifies the whole iteration group in a narrow sidebar. It must be exactly 3 or 4 words, never a generic label such as "Managed group", and must not end with filler such as "group", "iterations", or "alternatives".
+Name group_title from the supplied description and the most specific authoritative context so it identifies the whole iteration group in a narrow sidebar. Prefer the section target label when present, then an explicit item group or theme, and use the parent prompt only when those fields are absent. It must be exactly 3 or 4 words, never a generic label such as "Managed group", and must not end with filler such as "group", "iterations", or "alternatives".
 
 The parent-authored prompt, output contract, output requirements, iteration controls, item themes, group briefs, execution model, and ownership rules are authoritative and read-only. Never add, remove, weaken, contradict, reinterpret, or silently replace any of them. Never invent user-facing content, product features, components, interactions, visual motifs, claims, dependencies, or requirements that the parent did not authorize. Your delta may elaborate execution details only when they are directly supported by the parent brief. When uncertain, preserve the parent detail instead of filling the gap creatively.
 Never repeat, quote, summarize, or rewrite the shared prompt, output contract, output requirements, execution model, or immutable ownership rules in the response because the server composes those authoritative fields after validation.`)
@@ -176,10 +176,18 @@ func (r *configuredTaskSwarmRouter) Hydrate(ctx context.Context, request taskSwa
 	if raw == "" {
 		return taskSwarmHydrationResult{}, errors.New("task swarm Router returned no output")
 	}
-	return decodeTaskSwarmHydrationResult(raw, len(request.Items))
+	return decodeTaskSwarmHydrationResultForRequest(raw, request)
 }
 
 func decodeTaskSwarmHydrationResult(raw string, count int) (taskSwarmHydrationResult, error) {
+	return decodeTaskSwarmHydrationResultWithRequest(raw, count, nil)
+}
+
+func decodeTaskSwarmHydrationResultForRequest(raw string, request taskSwarmHydrationRequest) (taskSwarmHydrationResult, error) {
+	return decodeTaskSwarmHydrationResultWithRequest(raw, len(request.Items), &request)
+}
+
+func decodeTaskSwarmHydrationResultWithRequest(raw string, count int, request *taskSwarmHydrationRequest) (taskSwarmHydrationResult, error) {
 	raw = normalizeTaskSwarmRouterJSONResponse(raw)
 	var result taskSwarmHydrationResult
 	decoder := json.NewDecoder(bytes.NewBufferString(raw))
@@ -190,6 +198,11 @@ func decodeTaskSwarmHydrationResult(raw string, count int) (taskSwarmHydrationRe
 	var trailing any
 	if err := decoder.Decode(&trailing); err != io.EOF {
 		return taskSwarmHydrationResult{}, errors.New("decode task swarm Router output: trailing content is forbidden")
+	}
+	if request != nil && isRepairableGenericTaskSwarmGroupTitle(result.GroupTitle) {
+		if repaired := taskSwarmFallbackGroupTitle(*request); repaired != "" {
+			result.GroupTitle = repaired
+		}
 	}
 	if err := validateTaskSwarmHydrationResult(result, count); err != nil {
 		return taskSwarmHydrationResult{}, err
@@ -222,6 +235,65 @@ func normalizeTaskSwarmRouterJSONResponse(raw string) string {
 	return body
 }
 
+func isRepairableGenericTaskSwarmGroupTitle(title string) bool {
+	title = strings.TrimSpace(title)
+	words := strings.Fields(title)
+	if len(words) < 3 || len(words) > 4 {
+		return false
+	}
+	lastWord := strings.Trim(strings.ToLower(words[len(words)-1]), " .,:;!?-_()[]{}")
+	return lastWord == "group" || lastWord == "iterations" || lastWord == "alternatives"
+}
+
+func taskSwarmFallbackGroupTitle(request taskSwarmHydrationRequest) string {
+	var sources []string
+	if request.SectionTarget != nil {
+		sources = append(sources, request.SectionTarget.Label, request.SectionTarget.ID)
+	}
+	if description := strings.TrimSpace(request.Description); !strings.EqualFold(description, "delegated task") {
+		sources = append(sources, description)
+	}
+	for _, item := range request.Items {
+		sources = append(sources, item.Group)
+	}
+	for _, item := range request.Items {
+		sources = append(sources, item.Theme)
+	}
+	sources = append(sources, request.Prompt)
+	for _, source := range sources {
+		words := taskSwarmGroupTitleKeywords(source)
+		if len(words) == 0 {
+			continue
+		}
+		return strings.Join(append(words, "Design", "Studies"), " ")
+	}
+	return ""
+}
+
+func taskSwarmGroupTitleKeywords(source string) []string {
+	stopWords := map[string]struct{}{
+		"a": {}, "an": {}, "and": {}, "build": {}, "create": {}, "design": {}, "distinct": {},
+		"explore": {}, "for": {}, "generate": {}, "make": {}, "new": {}, "of": {}, "or": {},
+		"produce": {}, "refine": {}, "requested": {}, "reusable": {}, "the": {}, "to": {}, "with": {},
+	}
+	keywords := make([]string, 0, 2)
+	for _, field := range strings.Fields(source) {
+		word := strings.Trim(field, " .,:;!?-_()[]{}\"'")
+		if word == "" {
+			continue
+		}
+		lower := strings.ToLower(word)
+		if _, skip := stopWords[lower]; skip || lower == "group" || lower == "iterations" || lower == "alternatives" {
+			continue
+		}
+		keywords = append(keywords, word)
+		if len(keywords) == 2 {
+			break
+		}
+	}
+	return keywords
+}
+
 func validateTaskSwarmHydrationResult(result taskSwarmHydrationResult, count int) error {
 	result.GroupTitle = strings.TrimSpace(result.GroupTitle)
 	if wordCount := len(strings.Fields(result.GroupTitle)); wordCount < 3 || wordCount > 4 {
@@ -230,9 +302,7 @@ func validateTaskSwarmHydrationResult(result taskSwarmHydrationResult, count int
 	if len([]rune(result.GroupTitle)) > taskSwarmRouterMaxDeltaFieldRunes {
 		return errors.New("task swarm Router group title is oversized")
 	}
-	titleWords := strings.Fields(strings.ToLower(result.GroupTitle))
-	lastWord := strings.Trim(titleWords[len(titleWords)-1], " .,:;!?-_()[]{}")
-	if strings.EqualFold(result.GroupTitle, "Managed group") || lastWord == "group" || lastWord == "iterations" || lastWord == "alternatives" {
+	if strings.EqualFold(result.GroupTitle, "Managed group") || isRepairableGenericTaskSwarmGroupTitle(result.GroupTitle) {
 		return errors.New("task swarm Router group title is generic")
 	}
 	if len(result.Deltas) != count {

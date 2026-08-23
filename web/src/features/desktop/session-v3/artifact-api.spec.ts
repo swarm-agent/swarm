@@ -420,7 +420,7 @@ test('artifact chips preserve exact iteration identity and describe the selected
   assert.equal(JSON.stringify(use).includes('content'), false)
 })
 
-test('artifact chips enforce bounded batches and keep use intent singular per collection', () => {
+test('artifact chips enforce bounded batches and keep one active complete artifact head', () => {
   const entry = normalizeDesktopV3ArtifactCatalogEntry(managedCatalogWire)
   assert.ok(entry)
   const other = { ...desktopV3ArtifactMessageSelection(entry, 'select'), variant_id: 'variant-2', label: 'Homepage alt' }
@@ -430,8 +430,14 @@ test('artifact chips enforce bounded batches and keep use intent singular per co
   assert.deepEqual(usedFirst, [desktopV3ArtifactMessageSelection(entry, 'use'), other])
   assert.deepEqual(
     appendDesktopV3ArtifactMessageSelections(usedFirst, [{ ...other, action: 'use' }]),
-    [desktopV3ArtifactMessageSelection(entry, 'select'), { ...other, action: 'use' }],
+    [{ ...other, action: 'use' }],
   )
+  const pending = appendDesktopV3ArtifactMessageSelections([], [{
+    ...other,
+    action: 'use',
+    pending_request: 'Create sibling alternatives for the next section.',
+  }])
+  assert.equal(pending[0]?.pending_request, 'Create sibling alternatives for the next section.')
 
   const full = Array.from({ length: DESKTOP_V3_ARTIFACT_MESSAGE_SELECTION_MAX_COUNT }, (_, index) => ({
     ...desktopV3ArtifactMessageSelection(entry, 'select'),

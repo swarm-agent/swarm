@@ -199,6 +199,7 @@ export interface SessionV3ArtifactSelectionReferenceWire {
   event_seq: number
   label?: string
   description?: string
+  pending_request?: string
   action?: 'select' | 'use'
 }
 

@@ -874,16 +874,26 @@ func attachedArtifactSelectionsForProvider(metadata map[string]any) string {
 		return ""
 	}
 	var selections []struct {
-		SessionID       string         `json:"session_id"`
-		CollectionID    string         `json:"collection_id"`
-		VariantID       string         `json:"variant_id"`
-		EventSeq        uint64         `json:"event_seq"`
-		Label           string         `json:"label"`
-		Filename        string         `json:"filename"`
-		MediaType       string         `json:"media_type"`
-		Description     string         `json:"description"`
-		Metadata        map[string]any `json:"metadata"`
-		VisibleMetadata map[string]any `json:"visible_metadata"`
+		SessionID               string         `json:"session_id"`
+		CollectionID            string         `json:"collection_id"`
+		VariantID               string         `json:"variant_id"`
+		EventSeq                uint64         `json:"event_seq"`
+		Label                   string         `json:"label"`
+		Filename                string         `json:"filename"`
+		MediaType               string         `json:"media_type"`
+		Description             string         `json:"description"`
+		PendingRequest          string         `json:"pending_request"`
+		Action                  string         `json:"action"`
+		IterationID             string         `json:"iteration_id"`
+		IterationIndex          int            `json:"iteration_index"`
+		IterationLabel          string         `json:"iteration_label"`
+		IterationTheme          string         `json:"iteration_theme"`
+		IterationSectionID      string         `json:"iteration_section_id"`
+		IterationSectionLabel   string         `json:"iteration_section_label"`
+		IterationSectionStartMs int64          `json:"iteration_section_start_ms"`
+		IterationSectionEndMs   int64          `json:"iteration_section_end_ms"`
+		Metadata                map[string]any `json:"metadata"`
+		VisibleMetadata         map[string]any `json:"visible_metadata"`
 	}
 	if err := json.Unmarshal(encoded, &selections); err != nil || len(selections) == 0 || len(selections) > maxProviderArtifactSelections {
 		return ""
@@ -913,6 +923,28 @@ func attachedArtifactSelectionsForProvider(metadata map[string]any) string {
 		selection.Label = truncateUTF8Bytes(selection.Label, 256)
 		if selection.Label == "" {
 			selection.Label = "Attached artifact"
+		}
+		selection.PendingRequest = truncateUTF8Bytes(strings.TrimSpace(selection.PendingRequest), 16<<10)
+		if selection.PendingRequest != "" && !strings.EqualFold(strings.TrimSpace(selection.Action), "use") {
+			return ""
+		}
+		selection.IterationID = truncateUTF8Bytes(strings.TrimSpace(selection.IterationID), 256)
+		selection.IterationLabel = truncateUTF8Bytes(strings.TrimSpace(selection.IterationLabel), 256)
+		selection.IterationTheme = truncateUTF8Bytes(strings.TrimSpace(selection.IterationTheme), 256)
+		selection.IterationSectionID = truncateUTF8Bytes(strings.TrimSpace(selection.IterationSectionID), 256)
+		selection.IterationSectionLabel = truncateUTF8Bytes(strings.TrimSpace(selection.IterationSectionLabel), 512)
+		if selection.IterationID != "" || selection.IterationSectionID != "" {
+			chosen := []string{"Selected chained iteration metadata (server-authoritative for this exact artifact reference; this identifies what the user chose, distinct from any pending next-step target):"}
+			if selection.IterationID != "" {
+				chosen = append(chosen, fmt.Sprintf("iteration_id=%s iteration_index=%d iteration_label=%q iteration_theme=%q", selection.IterationID, selection.IterationIndex, selection.IterationLabel, selection.IterationTheme))
+			}
+			if selection.IterationSectionID != "" {
+				chosen = append(chosen, fmt.Sprintf("selected_iteration_section_target={\"id\":%q,\"label\":%q,\"start_ms\":%d,\"end_ms\":%d}", selection.IterationSectionID, selection.IterationSectionLabel, selection.IterationSectionStartMs, selection.IterationSectionEndMs))
+			}
+			lines = append(lines, strings.Join(chosen, "\n"))
+		}
+		if selection.PendingRequest != "" {
+			lines = append(lines, "Pending Artifact Studio update (hidden composer context; treat it as part of the user's request and do not ask them to paste it):\n"+selection.PendingRequest)
 		}
 		line := fmt.Sprintf("- %s: session_id=%s collection_id=%s variant_id=%s event_seq=%d", selection.Label, selection.SessionID, selection.CollectionID, selection.VariantID, selection.EventSeq)
 		visible := make([]string, 0, 3)

@@ -92,6 +92,8 @@ export interface DesktopV3ArtifactSelection {
 export interface DesktopV3ArtifactMessageSelection extends DesktopV3ArtifactSelection {
   label: string
   description?: string
+  /** Hidden provider instruction queued by Artifact Studio; never rendered as composer or chat text. */
+  pending_request?: string
   action: 'select' | 'use'
 }
 
@@ -590,11 +592,13 @@ export function normalizeDesktopV3ArtifactMessageSelection(value: unknown): Desk
   if (!selection || !record) return null
   const label = artifactCatalogString(record.label)
   const rawAction = artifactCatalogString(record.action).toLowerCase()
-  if (!label || (rawAction !== 'select' && rawAction !== 'use')) return null
+  const pendingRequest = artifactCatalogString(record.pending_request)
+  if (!label || (rawAction !== 'select' && rawAction !== 'use') || (pendingRequest && rawAction !== 'use')) return null
   return {
     ...selection,
     label,
     description: artifactCatalogString(record.description) || undefined,
+    pending_request: pendingRequest || undefined,
     action: rawAction,
   }
 }
@@ -606,11 +610,7 @@ export function appendDesktopV3ArtifactMessageSelection(
   const normalized = normalizeDesktopV3ArtifactMessageSelection(incoming)
   if (!normalized) throw new Error('Artifact chip requires a complete opaque selection, visible label, and action')
   const singularSelections = normalized.action === 'use'
-    ? selections.map((selection) => selection.action === 'use'
-        && selection.session_id === normalized.session_id
-        && selection.collection_id === normalized.collection_id
-      ? { ...selection, action: 'select' as const }
-      : selection)
+    ? selections.filter((selection) => selection.action !== 'use')
     : selections
   const key = desktopV3ArtifactMessageSelectionKey(normalized)
   const index = singularSelections.findIndex((selection) => desktopV3ArtifactMessageSelectionKey(selection) === key)
