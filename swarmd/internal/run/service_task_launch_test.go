@@ -556,7 +556,7 @@ func TestManagedDesignerPromptAndToolsRequireArtifactWithoutCheckoutWrites(t *te
 		Description: "create variant", Prompt: "Create the requested variant.", ParentSession: pebblestore.SessionSnapshot{ID: "parent-session"},
 		RequestedSubagent: "designer", OutputMode: taskOutputModeManaged, ArtifactRunContext: ctx,
 	})
-	for _, want := range []string{"publish exactly one durable ready variant with manage_artifact", ctx.CollectionID, ctx.VariantID, "omit collection_id/variant_id", "Do not use workspace write/edit or Git"} {
+	for _, want := range []string{"publish exactly one durable ready variant with manage_artifact", ctx.CollectionID, ctx.VariantID, "omit collection_id/variant_id", "accurate parts for every meaningful authored review/edit target", "one temporal part matching every manifest section's exact id, label, start_ms, and end_ms", "Do not use workspace write/edit or Git"} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("managed Designer prompt missing %q:\n%s", want, prompt)
 		}

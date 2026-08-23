@@ -519,6 +519,56 @@ func TestManageArtifactDefinitionDoesNotExposeProviderOrModel(t *testing.T) {
 	}
 }
 
+func TestManageArtifactDefinitionExplainsKindSpecificPartsContract(t *testing.T) {
+	properties := manageArtifactDefinition().Parameters["properties"].(map[string]any)
+	parts := properties["parts"].(map[string]any)
+	partsDescription := parts["description"].(string)
+	for _, want := range []string{
+		"meaningful authored region or section",
+		"stable IDs",
+		"swarm.iteration/v1 animation",
+		"same id, label, start_ms, and end_ms",
+		"Do not invent generic parts",
+	} {
+		if !strings.Contains(partsDescription, want) {
+			t.Fatalf("parts description missing %q: %s", want, partsDescription)
+		}
+	}
+	partProperties := parts["items"].(map[string]any)["properties"].(map[string]any)
+	kindDescription := partProperties["kind"].(map[string]any)["description"].(string)
+	for _, want := range []string{"temporal requires start_ms/end_ms", "spatial requires normalized x/y/width/height", "page requires page", "state requires state_id", "selector requires selector"} {
+		if !strings.Contains(kindDescription, want) {
+			t.Fatalf("part kind description missing %q: %s", want, kindDescription)
+		}
+	}
+}
+
+func TestManageArtifactCreateCarriesReviewParts(t *testing.T) {
+	authority := &fakeArtifactAuthority{}
+	runtime := NewRuntime(1)
+	runtime.SetArtifactAuthority(authority)
+	ctx, scope := artifactToolContext()
+	_, err := runtime.executeManageArtifact(ctx, scope, "parts-create", map[string]any{
+		"action": "create", "filename": "motion.html", "media_type": "text/html", "content": "animated",
+		"parts": []any{
+			map[string]any{"id": "intro", "label": "Intro", "kind": "temporal", "description": "Opening section", "start_ms": 0, "end_ms": 1200},
+			map[string]any{"id": "hero", "label": "Hero", "kind": "spatial", "description": "Hero region", "x": 0.1, "y": 0.2, "width": 0.8, "height": 0.5},
+		},
+	})
+	if err != nil {
+		t.Fatalf("create artifact with parts: %v", err)
+	}
+	if len(authority.created.Parts) != 2 {
+		t.Fatalf("created parts = %#v", authority.created.Parts)
+	}
+	if part := authority.created.Parts[0]; part.ID != "intro" || part.Kind != "temporal" || part.StartMs != 0 || part.EndMs != 1200 {
+		t.Fatalf("temporal part = %#v", part)
+	}
+	if part := authority.created.Parts[1]; part.ID != "hero" || part.Kind != "spatial" || part.X != 0.1 || part.Y != 0.2 || part.Width != 0.8 || part.Height != 0.5 {
+		t.Fatalf("spatial part = %#v", part)
+	}
+}
+
 func TestManageArtifactCreatePinsTrustedManagedDestinationAndLineage(t *testing.T) {
 	authority := &fakeArtifactAuthority{}
 	runtime := NewRuntime(1)

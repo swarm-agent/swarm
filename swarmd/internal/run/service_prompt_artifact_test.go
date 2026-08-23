@@ -135,15 +135,35 @@ func TestMasterHarnessPromptGuidesPriorArtifactWorkspaceWorkflow(t *testing.T) {
 		"use manage_artifact search with bounded filters instead of scanning transcripts, session folders, or storage paths",
 		"ask the user to disambiguate equally plausible human-named matches",
 		"copy next_cursor back unchanged as cursor",
+		"publish it with manage_artifact create/create_package",
+		"do not materialize, stage, or duplicate it in the workspace merely for submission",
 		"materialize the selected complete exact reference",
 		"atomic materialize_batch",
 		"normal workspace read/edit/write tools",
-		"publish_workspace",
+		"Use publish_workspace only when the intended end product is a workspace file or package",
 		"all four source_* lineage fields",
 		"artifact remains available but is too large for bounded tool output",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("master prompt missing artifact workflow guidance %q", want)
+		}
+	}
+}
+
+func TestMasterHarnessPromptGuidesManagedArtifactParts(t *testing.T) {
+	prompt := masterHarnessPrompt("/workspace")
+	for _, want := range []string{
+		"Managed artifact `parts` are the durable review/edit targets shown by Artifact Studio",
+		"include accurate `parts` in the same manage_artifact create/create_package call",
+		"temporal requires start_ms/end_ms in milliseconds",
+		"spatial requires normalized x/y/width/height within 0..1",
+		"semantic is for a named conceptual region with no stronger locator",
+		"Do not omit parts for an explicitly sectioned/editable deliverable",
+		"Every derived complete revision must submit its own accurate parts",
+		"mirror every canonical manifest section as a temporal part with the exact same id, label, start_ms, and end_ms",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("master prompt missing managed artifact parts guidance %q", want)
 		}
 	}
 }

@@ -108,7 +108,7 @@ func TestBuildPlanCheckpointRunInputUsesOnlyPlanContextWithoutStartLifecycleMess
 	if strings.Contains(text, "Prior handoff details must stay canonical") {
 		t.Fatalf("prompt embedded prior checkpoint handoff content instead of the orientation index: %s", text)
 	}
-	for _, want := range []string{"docs/plan-brief.md", "out/shared-result.json", "consume the cited prior checkpoint result", "out/user-summary.md", "workspace-relative metadata or exact managed artifact references, not embedded file contents", "Read only artifacts with role=input", "role=deliverable", "Create every role=deliverable artifact in the workspace", "reference its path from the terminal structured handoff", "Do not emit a separate assistant completion report"} {
+	for _, want := range []string{"docs/plan-brief.md", "out/shared-result.json", "consume the cited prior checkpoint result", "out/user-summary.md", "workspace-relative metadata or exact managed artifact references, not embedded file contents", "Read only artifacts with role=input", "role=deliverable", "publish a managed artifact directly with manage_artifact create/create_package", "without staging it in the workspace", "create a workspace file only when the requested deliverable is itself a workspace or repository file", "use a path for workspace files", "Do not emit a separate assistant completion report"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("prompt missing artifact contract %q: %s", want, text)
 		}
@@ -174,7 +174,9 @@ func TestBuildPlanCheckpointRunInputUsesOnlyPlanContextWithoutStartLifecycleMess
 		"keep report substantive and lossless",
 		"terminal plan_manage outcome is the single canonical user-visible completion",
 		"Do not emit an assistant text completion report before or after it",
-		"create every requested durable deliverable artifact in the workspace",
+		"create every requested durable deliverable through its intended authority",
+		"must be created directly with manage_artifact create/create_package",
+		"must not be staged in or duplicated into the workspace merely for submission",
 		"handoff_overview is required and concise",
 		"handoff_title is optional",
 		"impact_bullets contains at most three",
