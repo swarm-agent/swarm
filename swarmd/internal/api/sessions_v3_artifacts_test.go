@@ -412,6 +412,20 @@ func TestManagedArtifactCatalogShowsPrivateReadyArtifactWithoutRepositoryOutput(
 	}
 }
 
+func TestArtifactCatalogSessionFilterKeepsExplicitRequestedSessionOutsideBoundedList(t *testing.T) {
+	requested := pebblestore.SessionSnapshot{ID: "older-requested-session"}
+	newer := pebblestore.SessionSnapshot{ID: "newer-session"}
+
+	sessions := sessionsV3ArtifactCatalogEnsureSession([]pebblestore.SessionSnapshot{newer}, requested)
+	if len(sessions) != 2 || sessions[1].ID != requested.ID {
+		t.Fatalf("ensured sessions = %+v", sessions)
+	}
+	sessions = sessionsV3ArtifactCatalogEnsureSession(sessions, requested)
+	if len(sessions) != 2 {
+		t.Fatalf("requested session was duplicated: %+v", sessions)
+	}
+}
+
 func TestArtifactCatalogSessionFilterIncludesDirectChildren(t *testing.T) {
 	requested := "artifact-parent"
 	for _, test := range []struct {

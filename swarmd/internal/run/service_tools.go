@@ -10,7 +10,6 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -221,12 +220,9 @@ func taskManagedArtifactRoutingID(taskCallID, programID string) string {
 }
 
 func taskManagedArtifactCollectionRoutingID(taskCallID, programID string, spec taskLaunchSpec) string {
-	if target, err := parseTaskSwarmSectionTarget(spec.SourceArguments["section_target"]); err == nil && target != nil && spec.SourceArtifact != nil {
-		source := spec.SourceArtifact
-		// Keep each generation wave immutable, but include the exact source section in
-		// routing so related collections can be identified without trusting names.
-		return strings.Join([]string{"section", strings.TrimSpace(source.SessionID), strings.TrimSpace(source.CollectionID), strings.TrimSpace(source.VariantID), strconv.FormatUint(source.EventSeq, 10), target.ID, taskManagedArtifactRoutingID(taskCallID, programID)}, "\x00")
-	}
+	// Collections remain immutable candidate rounds. Canonical continuity is now
+	// carried by authenticated source lineage into the durable artifact chain,
+	// while this routing ID keeps each task/program round independently addressable.
 	return taskManagedArtifactRoutingID(taskCallID, programID)
 }
 
@@ -260,13 +256,17 @@ func managedDesignerArtifactContext(parent pebblestore.SessionSnapshot, taskCall
 	}
 	iterationID := ""
 	iterationGroupID, iterationGroup, iterationLabel, iterationTheme := "", "", "", ""
-	var sectionTarget *taskSwarmSectionTarget
+	sectionTarget, _ := parseTaskSwarmSectionTarget(spec.SourceArguments["section_target"])
 	if spec.SwarmMode {
-		sectionTarget, _ = parseTaskSwarmSectionTarget(spec.SourceArguments["section_target"])
 		iterationGroupID = taskManagedArtifactID("iteration-group", parent.ID, routingID, 0)
 		iterationID = taskManagedArtifactID("iteration", parent.ID, routingID, iterationIndex)
 		iterationGroup, _ = spec.SourceArguments["swarm_group"].(string)
 		iterationLabel, iterationTheme = strings.TrimSpace(spec.AssignmentLabel), strings.TrimSpace(mapString(spec.SourceArguments, "swarm_theme"))
+	} else if sectionTarget != nil {
+		// A focused regular Designer correction is still part of the same section
+		// chain even though it is not an alternatives wave. Preserve its title as
+		// bounded iteration display metadata and persist the exact target below.
+		iterationLabel = strings.TrimSpace(spec.AssignmentLabel)
 	}
 	run := &tool.ArtifactRunContext{
 		SessionID: parent.ID, TaskCallID: taskCallID, ProgramID: strings.TrimSpace(programID), ProgramJobID: strings.TrimSpace(programJobID),
@@ -276,8 +276,14 @@ func managedDesignerArtifactContext(parent pebblestore.SessionSnapshot, taskCall
 		AnimationProfile:   cloneTaskAnimationProfile(spec.AnimationProfile),
 	}
 	if sectionTarget != nil {
-		run.IterationSectionID, run.IterationSectionLabel = sectionTarget.ID, sectionTarget.Label
-		run.IterationSectionStartMs, run.IterationSectionEndMs = sectionTarget.StartMs, sectionTarget.EndMs
+		if sectionTarget.Kind == "" || sectionTarget.Kind == "temporal" {
+			run.IterationSectionID, run.IterationSectionLabel = sectionTarget.ID, sectionTarget.Label
+			run.IterationSectionStartMs, run.IterationSectionEndMs = sectionTarget.StartMs, sectionTarget.EndMs
+		}
+		run.PartID, run.PartLabel, run.PartKind = sectionTarget.ID, sectionTarget.Label, sectionTarget.Kind
+		if run.PartKind == "" {
+			run.PartKind = "temporal"
+		}
 	}
 	return run
 }
@@ -454,6 +460,7 @@ func (s *Service) ensureManagedDesignerArtifactPlaceholders(parent pebblestore.S
 			IterationID: strings.TrimSpace(run.IterationID), IterationIndex: run.IterationIndex,
 			IterationLabel: strings.TrimSpace(run.IterationLabel), IterationTheme: strings.TrimSpace(run.IterationTheme),
 			IterationSectionID: strings.TrimSpace(run.IterationSectionID), IterationSectionLabel: strings.TrimSpace(run.IterationSectionLabel), IterationSectionStartMs: run.IterationSectionStartMs, IterationSectionEndMs: run.IterationSectionEndMs,
+			PartID: strings.TrimSpace(run.PartID), PartLabel: strings.TrimSpace(run.PartLabel), PartKind: strings.TrimSpace(run.PartKind),
 		}
 		if source := launch.SourceArtifact; source != nil {
 			lineage.SourceSessionID = strings.TrimSpace(source.SessionID)
@@ -541,6 +548,7 @@ func (s *Service) markManagedDesignerArtifactFailed(parent pebblestore.SessionSn
 		IterationGroupID: run.IterationGroupID, IterationGroup: run.IterationGroup,
 		IterationID: run.IterationID, IterationIndex: run.IterationIndex, IterationLabel: run.IterationLabel, IterationTheme: run.IterationTheme,
 		IterationSectionID: run.IterationSectionID, IterationSectionLabel: run.IterationSectionLabel, IterationSectionStartMs: run.IterationSectionStartMs, IterationSectionEndMs: run.IterationSectionEndMs,
+		PartID: run.PartID, PartLabel: run.PartLabel, PartKind: run.PartKind,
 	}
 	if len(sourceArtifacts) > 0 && sourceArtifacts[0] != nil {
 		source := sourceArtifacts[0]
@@ -612,8 +620,32 @@ type taskArtifactReference struct {
 	EventSeq           uint64                                         `json:"event_seq,omitempty"`
 	Status             string                                         `json:"status"`
 	FailureCode        string                                         `json:"failure_code,omitempty"`
+	SourceArtifact     *pebblestore.SessionArtifactSelectionReference `json:"source_artifact,omitempty"`
+	ArtifactChainID    string                                         `json:"artifact_chain_id,omitempty"`
+	RevisionNumber     int                                            `json:"revision_number,omitempty"`
+	RevisionRoundID    string                                         `json:"revision_round_id,omitempty"`
+	CandidateIndex     int                                            `json:"candidate_index,omitempty"`
+	Parts              []pebblestore.SessionArtifactPart              `json:"parts,omitempty"`
+	SectionTarget      *taskSwarmSectionTarget                        `json:"section_target,omitempty"`
 	OutputRequirements *pebblestore.SessionArtifactOutputRequirements `json:"output_requirements,omitempty"`
 	AnimationProfile   *pebblestore.SessionArtifactAnimationProfile   `json:"animation_profile,omitempty"`
+}
+
+func taskArtifactReferenceFromVariant(sessionID string, variant pebblestore.SessionArtifactVariant) *taskArtifactReference {
+	lineage := variant.Lineage
+	reference := &taskArtifactReference{
+		SessionID: strings.TrimSpace(sessionID), CollectionID: strings.TrimSpace(variant.CollectionID), VariantID: strings.TrimSpace(variant.ID), EventSeq: variant.EventSeq,
+		Status: variant.Status, FailureCode: variant.FailureCode,
+		ArtifactChainID: variant.ArtifactChainID, RevisionNumber: variant.RevisionNumber, RevisionRoundID: variant.RevisionRoundID, CandidateIndex: variant.CandidateIndex, Parts: append([]pebblestore.SessionArtifactPart(nil), variant.Parts...),
+		OutputRequirements: cloneTaskOutputRequirements(variant.OutputRequirements), AnimationProfile: cloneTaskAnimationProfile(variant.AnimationProfile),
+	}
+	if lineage.SourceSessionID != "" && lineage.SourceCollectionID != "" && lineage.SourceVariantID != "" && lineage.SourceEventSeq > 0 {
+		reference.SourceArtifact = &pebblestore.SessionArtifactSelectionReference{SessionID: lineage.SourceSessionID, CollectionID: lineage.SourceCollectionID, VariantID: lineage.SourceVariantID, EventSeq: lineage.SourceEventSeq}
+	}
+	if lineage.IterationSectionID != "" && lineage.IterationSectionLabel != "" && lineage.IterationSectionEndMs > lineage.IterationSectionStartMs {
+		reference.SectionTarget = &taskSwarmSectionTarget{ID: lineage.IterationSectionID, Label: lineage.IterationSectionLabel, StartMs: lineage.IterationSectionStartMs, EndMs: lineage.IterationSectionEndMs}
+	}
+	return reference
 }
 
 type taskReportRef struct {
@@ -660,13 +692,18 @@ func buildTaskLaunchOutcome(launch taskLaunchPrepared) taskLaunchOutcome {
 		AnimationProfile:    cloneTaskAnimationProfile(launch.AnimationProfile),
 	}
 	if launch.ArtifactRunContext != nil {
+		run := launch.ArtifactRunContext
 		outcome.ArtifactReference = &taskArtifactReference{
-			SessionID:          strings.TrimSpace(launch.ArtifactRunContext.SessionID),
-			CollectionID:       strings.TrimSpace(launch.ArtifactRunContext.CollectionID),
-			VariantID:          strings.TrimSpace(launch.ArtifactRunContext.VariantID),
+			SessionID:          strings.TrimSpace(run.SessionID),
+			CollectionID:       strings.TrimSpace(run.CollectionID),
+			VariantID:          strings.TrimSpace(run.VariantID),
 			Status:             "pending",
-			OutputRequirements: cloneTaskOutputRequirements(launch.ArtifactRunContext.OutputRequirements),
-			AnimationProfile:   cloneTaskAnimationProfile(launch.ArtifactRunContext.AnimationProfile),
+			SourceArtifact:     cloneTaskImageSourceArtifact(launch.SourceArtifact),
+			OutputRequirements: cloneTaskOutputRequirements(run.OutputRequirements),
+			AnimationProfile:   cloneTaskAnimationProfile(run.AnimationProfile),
+		}
+		if run.IterationSectionID != "" && run.IterationSectionLabel != "" && run.IterationSectionEndMs > run.IterationSectionStartMs {
+			outcome.ArtifactReference.SectionTarget = &taskSwarmSectionTarget{ID: run.IterationSectionID, Label: run.IterationSectionLabel, StartMs: run.IterationSectionStartMs, EndMs: run.IterationSectionEndMs}
 		}
 	}
 	if launch.TaskBase != nil {
@@ -4613,7 +4650,7 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 				markMissing("managed_output_missing")
 				return outcome, fmt.Errorf("managed Designer completed without its required artifact: %w", artifactErr)
 			}
-			outcome.ArtifactReference = &taskArtifactReference{SessionID: parentSession.ID, CollectionID: variant.CollectionID, VariantID: variant.ID, Status: variant.Status, FailureCode: variant.FailureCode, OutputRequirements: cloneTaskOutputRequirements(variant.OutputRequirements), AnimationProfile: cloneTaskAnimationProfile(variant.AnimationProfile)}
+			outcome.ArtifactReference = taskArtifactReferenceFromVariant(parentSession.ID, variant)
 			lineage := variant.Lineage
 			lineageSourceMatches := lineage.SourceSessionID == launch.ChildSession.ID
 			if source := launch.SourceArtifact; source != nil {

@@ -116,8 +116,9 @@ type taskSwarmIterationControls struct {
 type taskSwarmSectionTarget struct {
 	ID      string `json:"id"`
 	Label   string `json:"label"`
-	StartMs int64  `json:"start_ms"`
-	EndMs   int64  `json:"end_ms"`
+	Kind    string `json:"kind,omitempty"`
+	StartMs int64  `json:"start_ms,omitempty"`
+	EndMs   int64  `json:"end_ms,omitempty"`
 }
 
 type taskSwarmSpec struct {
@@ -565,6 +566,7 @@ func parseTaskCallArguments(arguments string) (taskCallArguments, error) {
 		return taskCallArguments{}, err
 	}
 	var sourceArtifact *pebblestore.SessionArtifactSelectionReference
+	var sectionTarget *taskSwarmSectionTarget
 	if rawSourceArtifact, supplied := args["source_artifact"]; supplied {
 		if rawSourceArtifact == nil {
 			return taskCallArguments{}, errors.New("task source_artifact must be an exact ready artifact reference object")
@@ -581,6 +583,23 @@ func parseTaskCallArguments(arguments string) (taskCallArguments, error) {
 			launches[i].SourceArtifact = cloneTaskImageSourceArtifact(sourceArtifact)
 		}
 		args["source_artifact"] = cloneTaskImageSourceArtifact(sourceArtifact)
+	}
+	if rawSectionTarget, supplied := args["section_target"]; supplied {
+		if sourceArtifact == nil {
+			return taskCallArguments{}, errors.New("task regular section_target requires an exact source_artifact")
+		}
+		parsedSectionTarget, err := parseTaskSwarmSectionTarget(rawSectionTarget)
+		if err != nil {
+			return taskCallArguments{}, err
+		}
+		if parsedSectionTarget == nil {
+			return taskCallArguments{}, errors.New("task section_target must be an object")
+		}
+		sectionTarget = parsedSectionTarget
+		args["section_target"] = cloneTaskSwarmSectionTarget(sectionTarget)
+		for i := range launches {
+			launches[i].SourceArguments["section_target"] = cloneTaskSwarmSectionTarget(sectionTarget)
+		}
 	}
 
 	return taskCallArguments{
@@ -1164,18 +1183,28 @@ func parseTaskSwarmSectionTarget(value any) (*taskSwarmSectionTarget, error) {
 	}
 	for key := range raw {
 		switch key {
-		case "id", "label", "start_ms", "end_ms":
+		case "id", "label", "kind", "start_ms", "end_ms":
 		default:
 			return nil, fmt.Errorf("task section_target contains unsupported field %q", key)
 		}
 	}
-	id, label := strings.TrimSpace(mapString(raw, "id")), strings.TrimSpace(mapString(raw, "label"))
+	id, label, kind := strings.TrimSpace(mapString(raw, "id")), strings.TrimSpace(mapString(raw, "label")), strings.ToLower(strings.TrimSpace(mapString(raw, "kind")))
 	start, startOK := raw["start_ms"].(float64)
 	end, endOK := raw["end_ms"].(float64)
-	if id == "" || label == "" || !startOK || !endOK || start != math.Trunc(start) || end != math.Trunc(end) || start < 0 || end <= start || end > math.MaxInt64 {
-		return nil, errors.New("task section_target requires id, label, and a valid start_ms/end_ms range")
+	if id == "" || label == "" {
+		return nil, errors.New("task section_target requires id and label")
 	}
-	return &taskSwarmSectionTarget{ID: id, Label: label, StartMs: int64(start), EndMs: int64(end)}, nil
+	if kind == "" {
+		kind = "temporal"
+	}
+	if kind == "temporal" {
+		if !startOK || !endOK || start != math.Trunc(start) || end != math.Trunc(end) || start < 0 || end <= start || end > math.MaxInt64 {
+			return nil, errors.New("temporal task section_target requires a valid start_ms/end_ms range")
+		}
+	} else if startOK || endOK {
+		return nil, errors.New("non-temporal task section_target must omit start_ms/end_ms")
+	}
+	return &taskSwarmSectionTarget{ID: id, Label: label, Kind: kind, StartMs: int64(start), EndMs: int64(end)}, nil
 }
 
 func validateTaskSwarmLaunchEnabled(parsed taskCallArguments) error {

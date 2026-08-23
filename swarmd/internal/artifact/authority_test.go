@@ -126,15 +126,22 @@ func TestAuthorityFinalizesPreallocatedManagedPlaceholder(t *testing.T) {
 	principal.TaskCallID, principal.ChildSessionID = "call-1", "child-1"
 	principal.IterationGroupID, principal.IterationID, principal.IterationIndex = "group-1", "iteration-1", 1
 	principal.IterationLabel, principal.IterationTheme = "Compact", "compact"
-	lineage := authority.lineage(principal, CreateInput{})
+	principal.IterationSectionID, principal.IterationSectionLabel, principal.IterationSectionStartMs, principal.IterationSectionEndMs = "part-2", "Part 2", 4000, 8000
+	principal.PartID, principal.PartLabel, principal.PartKind = "part-2", "Part 2", "temporal"
+	source := CreateInput{SourceSessionID: "source-session", SourceCollectionID: "source-collection", SourceVariantID: "source-variant", SourceEventSeq: 41}
+	metadata.sourceCollection = pebblestore.SessionArtifactCollection{ID: source.SourceCollectionID, AccountScopeID: principal.AccountScopeID, SessionID: source.SourceSessionID, Status: pebblestore.SessionArtifactStatusReady, VariantCount: 1, ReadyCount: 1}
+	metadata.sourceVariant = pebblestore.SessionArtifactVariant{ID: source.SourceVariantID, CollectionID: source.SourceCollectionID, AccountScopeID: principal.AccountScopeID, SessionID: source.SourceSessionID, Status: pebblestore.SessionArtifactStatusReady, EventSeq: source.SourceEventSeq, MediaType: "text/html"}
+	lineage := authority.lineage(principal, source)
 	collectionLineage := lineage
-	collectionLineage.SourceSessionID, collectionLineage.ChildSessionID = "", ""
+	collectionLineage.SourceSessionID, collectionLineage.SourceCollectionID, collectionLineage.SourceVariantID, collectionLineage.SourceEventSeq, collectionLineage.ChildSessionID = "", "", "", 0, ""
 	collectionLineage.IterationID, collectionLineage.IterationIndex, collectionLineage.IterationLabel, collectionLineage.IterationTheme = "", 0, "", ""
+	collectionLineage.IterationSectionID, collectionLineage.IterationSectionLabel, collectionLineage.IterationSectionStartMs, collectionLineage.IterationSectionEndMs = "", "", 0, 0
+	collectionLineage.PartID, collectionLineage.PartLabel, collectionLineage.PartKind = "", "", ""
 	metadata.collection = pebblestore.SessionArtifactCollection{ID: "collection-1", AccountScopeID: principal.AccountScopeID, SessionID: principal.SessionID, Name: "Iterations", Status: pebblestore.SessionArtifactStatusStaging, Lineage: collectionLineage, VariantCount: 1, StagingCount: 1}
 	metadata.variant = pebblestore.SessionArtifactVariant{ID: "variant-1", CollectionID: metadata.collection.ID, AccountScopeID: principal.AccountScopeID, SessionID: principal.SessionID, Status: pebblestore.SessionArtifactStatusStaging, Lineage: lineage, Presentation: pebblestore.SessionArtifactPresentation{Label: "Compact"}}
 	// The parent reserves the placeholder before this child provider run exists.
 	principal.RunID, principal.PlanID, principal.CheckpointID, principal.AttemptID = "child-run-1", "child-plan-1", "child-cp-1", "child-attempt-1"
-	created, err := authority.Create(context.Background(), principal, CreateInput{RequestID: "managed-create", CollectionID: metadata.collection.ID, VariantID: metadata.variant.ID, Filename: "compact.html", MediaType: "text/html", Presentation: pebblestore.SessionArtifactPresentation{Kind: "html", Label: "Compact", Previewable: true}, Body: []byte("<h1>compact</h1>")})
+	created, err := authority.Create(context.Background(), principal, CreateInput{RequestID: "managed-create", CollectionID: metadata.collection.ID, VariantID: metadata.variant.ID, Filename: "compact.html", MediaType: "text/html", Presentation: pebblestore.SessionArtifactPresentation{Kind: "html", Label: "Compact", Previewable: true}, SourceSessionID: source.SourceSessionID, SourceCollectionID: source.SourceCollectionID, SourceVariantID: source.SourceVariantID, SourceEventSeq: source.SourceEventSeq, Body: []byte("<h1>compact</h1>")})
 	if err != nil {
 		t.Fatalf("finalize placeholder: %v", err)
 	}

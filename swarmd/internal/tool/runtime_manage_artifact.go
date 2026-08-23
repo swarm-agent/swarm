@@ -94,6 +94,9 @@ type ArtifactRunContext struct {
 	IterationSectionLabel   string
 	IterationSectionStartMs int64
 	IterationSectionEndMs   int64
+	PartID                  string
+	PartLabel               string
+	PartKind                string
 	CollectionID            string
 	VariantID               string
 	OutputRequirements      *pebblestore.SessionArtifactOutputRequirements
@@ -110,6 +113,26 @@ func WithArtifactRunContext(parent context.Context, run ArtifactRunContext) cont
 }
 
 func manageArtifactDefinition() Definition {
+	part := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"id":          map[string]any{"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$"},
+			"label":       map[string]any{"type": "string", "maxLength": 256},
+			"kind":        map[string]any{"type": "string", "enum": []string{"temporal", "spatial", "page", "state", "selector", "semantic"}},
+			"description": map[string]any{"type": "string", "maxLength": 2048},
+			"start_ms":    map[string]any{"type": "integer", "minimum": 0},
+			"end_ms":      map[string]any{"type": "integer", "minimum": 1},
+			"x":           map[string]any{"type": "number", "minimum": 0, "maximum": 1},
+			"y":           map[string]any{"type": "number", "minimum": 0, "maximum": 1},
+			"width":       map[string]any{"type": "number", "exclusiveMinimum": 0, "maximum": 1},
+			"height":      map[string]any{"type": "number", "exclusiveMinimum": 0, "maximum": 1},
+			"page":        map[string]any{"type": "integer", "minimum": 1},
+			"state_id":    map[string]any{"type": "string", "maxLength": 128},
+			"selector":    map[string]any{"type": "string", "maxLength": 512},
+		},
+		"required":             []string{"id", "label", "kind"},
+		"additionalProperties": false,
+	}
 	presentation := map[string]any{
 		"type": "object",
 		"properties": map[string]any{
@@ -166,6 +189,7 @@ func manageArtifactDefinition() Definition {
 				"media_type":             map[string]any{"type": "string", "maxLength": 255, "description": "Artifact media type for create; optional exact canonical media type filter for list/search discovery"},
 				"content":                map[string]any{"type": "string", "description": "Bounded UTF-8 artifact content for create"},
 				"entries":                map[string]any{"type": "array", "maxItems": manageArtifactMaxPackageFiles, "items": entry},
+				"parts":                  map[string]any{"type": "array", "maxItems": pebblestore.SessionArtifactMaxParts, "items": part, "description": "Optional media-agnostic clickable review/edit targets. Temporal, spatial, page, state, selector, and semantic parts are durable metadata on this complete artifact revision."},
 				"references":             map[string]any{"type": "array", "minItems": 1, "maxItems": manageArtifactMaxBatchItems, "items": reference, "description": "Complete exact ready references from discovery results, imported atomically by materialize_batch into one destination directory. The whole batch is preflighted; filenames come from trusted artifact metadata."},
 				"state_ids":              map[string]any{"type": "array", "minItems": 1, "maxItems": 16, "uniqueItems": true, "items": map[string]any{"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$"}, "description": "Optional bounded declared swarm.capture/v1 state IDs for export_html_stills; omitted exports every manifest state. Caller order never overrides canonical manifest order."},
 				"source":                 map[string]any{"type": "string", "maxLength": 4096, "description": "Trusted canonical workspace-relative regular file or bounded package directory for publish_workspace. Build or revise it with normal workspace tools before publication."},
@@ -1260,6 +1284,7 @@ func artifactPrincipal(ctx context.Context, scope WorkspaceScope) (artifact.Prin
 		ChildSessionID: strings.TrimSpace(run.ChildSessionID), IterationGroupID: strings.TrimSpace(run.IterationGroupID), IterationGroup: strings.TrimSpace(run.IterationGroup),
 		IterationID: strings.TrimSpace(run.IterationID), IterationIndex: run.IterationIndex, IterationLabel: strings.TrimSpace(run.IterationLabel), IterationTheme: strings.TrimSpace(run.IterationTheme),
 		IterationSectionID: strings.TrimSpace(run.IterationSectionID), IterationSectionLabel: strings.TrimSpace(run.IterationSectionLabel), IterationSectionStartMs: run.IterationSectionStartMs, IterationSectionEndMs: run.IterationSectionEndMs,
+		PartID: strings.TrimSpace(run.PartID), PartLabel: strings.TrimSpace(run.PartLabel), PartKind: strings.TrimSpace(run.PartKind),
 	}, nil
 }
 
@@ -1316,7 +1341,11 @@ func parseArtifactCreate(args map[string]any, sessionID, callID string, packageA
 	if err := enforceArtifactPresentationRequirements(&presentation, requirements); err != nil {
 		return artifact.CreateInput{}, nil, err
 	}
-	input := artifact.CreateInput{CollectionID: collectionID, CollectionName: name, CollectionDescription: asString(args["collection_description"]), VariantID: variantID, Filename: filename, MediaType: strings.TrimSpace(asString(args["media_type"])), Presentation: presentation, OutputRequirements: requirements, AnimationProfile: animationProfile, SourceSessionID: strings.TrimSpace(asString(args["source_session_id"])), SourceCollectionID: strings.TrimSpace(asString(args["source_collection_id"])), SourceVariantID: strings.TrimSpace(asString(args["source_variant_id"])), SourceEventSeq: asUint64(args["source_event_seq"])}
+	parts, err := parseArtifactParts(args["parts"])
+	if err != nil {
+		return artifact.CreateInput{}, nil, err
+	}
+	input := artifact.CreateInput{CollectionID: collectionID, CollectionName: name, CollectionDescription: asString(args["collection_description"]), VariantID: variantID, Filename: filename, MediaType: strings.TrimSpace(asString(args["media_type"])), Presentation: presentation, OutputRequirements: requirements, AnimationProfile: animationProfile, Parts: parts, SourceSessionID: strings.TrimSpace(asString(args["source_session_id"])), SourceCollectionID: strings.TrimSpace(asString(args["source_collection_id"])), SourceVariantID: strings.TrimSpace(asString(args["source_variant_id"])), SourceEventSeq: asUint64(args["source_event_seq"])}
 	if !packageArtifact {
 		content, ok := args["content"].(string)
 		if !ok || content == "" {
@@ -1330,6 +1359,47 @@ func parseArtifactCreate(args map[string]any, sessionID, callID string, packageA
 	}
 	entries, err := parseArtifactPackageEntries(args["entries"])
 	return input, entries, err
+}
+
+func artifactPartNumber(value any) float64 {
+	switch typed := value.(type) {
+	case float64:
+		return typed
+	case float32:
+		return float64(typed)
+	case int:
+		return float64(typed)
+	case int64:
+		return float64(typed)
+	case json.Number:
+		parsed, _ := typed.Float64()
+		return parsed
+	default:
+		return 0
+	}
+}
+
+func parseArtifactParts(raw any) ([]pebblestore.SessionArtifactPart, error) {
+	if raw == nil {
+		return nil, nil
+	}
+	items, ok := raw.([]any)
+	if !ok || len(items) > pebblestore.SessionArtifactMaxParts {
+		return nil, errors.New("parts must be a bounded array")
+	}
+	parts := make([]pebblestore.SessionArtifactPart, 0, len(items))
+	for index, rawItem := range items {
+		item, ok := rawItem.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("part %d must be an object", index)
+		}
+		parts = append(parts, pebblestore.SessionArtifactPart{
+			ID: asString(item["id"]), Label: asString(item["label"]), Kind: asString(item["kind"]), Description: asString(item["description"]),
+			StartMs: int64(asInt(item["start_ms"], 0)), EndMs: int64(asInt(item["end_ms"], 0)), X: artifactPartNumber(item["x"]), Y: artifactPartNumber(item["y"]), Width: artifactPartNumber(item["width"]), Height: artifactPartNumber(item["height"]),
+			Page: asInt(item["page"], 0), StateID: asString(item["state_id"]), Selector: asString(item["selector"]),
+		})
+	}
+	return parts, nil
 }
 
 func parseArtifactPackageEntries(raw any) ([]artifact.PackageEntry, error) {

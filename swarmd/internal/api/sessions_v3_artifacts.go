@@ -112,6 +112,12 @@ type sessionsV3ArtifactCatalogItem struct {
 	Lineage               *pebblestore.SessionArtifactLineage            `json:"lineage,omitempty"`
 	OutputRequirements    *pebblestore.SessionArtifactOutputRequirements `json:"output_requirements,omitempty"`
 	AnimationProfile      *pebblestore.SessionArtifactAnimationProfile   `json:"animation_profile,omitempty"`
+	Chain                 *pebblestore.SessionArtifactChain              `json:"chain,omitempty"`
+	ArtifactChainID       string                                         `json:"artifact_chain_id,omitempty"`
+	RevisionNumber        int                                            `json:"revision_number,omitempty"`
+	RevisionRoundID       string                                         `json:"revision_round_id,omitempty"`
+	CandidateIndex        int                                            `json:"candidate_index,omitempty"`
+	Parts                 []pebblestore.SessionArtifactPart              `json:"parts,omitempty"`
 	Content               string                                         `json:"content,omitempty"`
 }
 
@@ -168,6 +174,16 @@ func (s *Server) handleSessionsV3Artifacts(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
+	if requestedSessionID != "" {
+		requestedSession, found, err := s.sessions.GetSession(requestedSessionID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		if found && strings.TrimSpace(requestedSession.AccountScopeID) == principal.AccountScopeID && strings.TrimSpace(requestedSession.UserID) == principal.UserID {
+			sessions = sessionsV3ArtifactCatalogEnsureSession(sessions, requestedSession)
+		}
+	}
 	artifacts := make([]sessionsV3ArtifactCatalogItem, 0, limit)
 	seen := make(map[string]struct{})
 	for _, session := range sessions {
@@ -199,6 +215,12 @@ func (s *Server) handleSessionsV3Artifacts(w http.ResponseWriter, r *http.Reques
 					return
 				}
 				for _, variant := range variants {
+					projectedVariant, chain, projectionErr := s.sessions.ProjectSessionArtifactVariantChain(session.AccountScopeID, session.UserID, variant)
+					if projectionErr != nil {
+						writeError(w, http.StatusInternalServerError, projectionErr)
+						return
+					}
+					variant = projectedVariant
 					if variant.Status != pebblestore.SessionArtifactStatusStaging && variant.Status != pebblestore.SessionArtifactStatusReady && variant.Status != pebblestore.SessionArtifactStatusFailed && variant.Status != pebblestore.SessionArtifactStatusUnavailable {
 						writeError(w, http.StatusInternalServerError, errors.New("artifact variant status is inconsistent"))
 						return
@@ -229,8 +251,9 @@ func (s *Server) handleSessionsV3Artifacts(w http.ResponseWriter, r *http.Reques
 						WorkspacePath: workspacePath, WorkspaceName: workspaceName,
 						Label: firstNonEmpty(variant.Presentation.Label, collection.Name, variant.Filename), Description: firstNonEmpty(variant.Presentation.Description, collection.Description),
 						CollectionName: collection.Name, CollectionDescription: collection.Description, Filename: variant.Filename, MediaType: variant.MediaType, Kind: kind, Status: variant.Status, FailureCode: variant.FailureCode,
-						Previewable: previewable, Selected: collection.SelectedVariantID == variant.ID,
+						Previewable: previewable, Selected: chain.Head.SessionID == variant.SessionID && chain.Head.CollectionID == variant.CollectionID && chain.Head.VariantID == variant.ID,
 						Category: sessionsV3ManagedArtifactCategory(variant), UpdatedAt: variant.UpdatedAt, EventSeq: variant.EventSeq, Progress: &progress, Lineage: &lineage, OutputRequirements: cloneSessionsV3ArtifactOutputRequirements(variant.OutputRequirements), AnimationProfile: cloneSessionsV3ArtifactAnimationProfile(variant.AnimationProfile),
+						Chain: &chain, ArtifactChainID: variant.ArtifactChainID, RevisionNumber: variant.RevisionNumber, RevisionRoundID: variant.RevisionRoundID, CandidateIndex: variant.CandidateIndex, Parts: append([]pebblestore.SessionArtifactPart(nil), variant.Parts...),
 					})
 				}
 			}
@@ -316,6 +339,19 @@ func (s *Server) handleSessionsV3Artifacts(w http.ResponseWriter, r *http.Reques
 		artifacts = artifacts[:limit]
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "artifacts": artifacts, "local_reveal_available": sessionV3ArtifactRevealIsLoopback(r)})
+}
+
+func sessionsV3ArtifactCatalogEnsureSession(sessions []pebblestore.SessionSnapshot, requested pebblestore.SessionSnapshot) []pebblestore.SessionSnapshot {
+	requestedSessionID := strings.TrimSpace(requested.ID)
+	if requestedSessionID == "" {
+		return sessions
+	}
+	for _, session := range sessions {
+		if strings.TrimSpace(session.ID) == requestedSessionID {
+			return sessions
+		}
+	}
+	return append(sessions, requested)
 }
 
 func sessionsV3ArtifactCatalogIncludesSession(session pebblestore.SessionSnapshot, requestedSessionID string) bool {
@@ -559,6 +595,7 @@ func (s *Server) handleSessionV3ArtifactSelection(w http.ResponseWriter, r *http
 		ClientRequestID string `json:"client_request_id"`
 		EventSeq        uint64 `json:"event_seq"`
 		Action          string `json:"action,omitempty"`
+		PartID          string `json:"part_id,omitempty"`
 	}
 	if err := decodeJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, err)
@@ -599,8 +636,23 @@ func (s *Server) handleSessionV3ArtifactSelection(w http.ResponseWriter, r *http
 		writeError(w, http.StatusBadRequest, errors.New("artifact collection was not found"))
 		return
 	}
+	partID := strings.TrimSpace(req.PartID)
+	partLabel, partKind := "", ""
+	if partID != "" {
+		for _, part := range variant.Parts {
+			if part.ID == partID {
+				partLabel, partKind = part.Label, part.Kind
+				break
+			}
+		}
+		if partLabel == "" {
+			writeError(w, http.StatusBadRequest, errors.New("artifact part was not found on the exact revision"))
+			return
+		}
+	}
 	selection := &pebblestore.SessionArtifactSelectionReference{
 		SessionID: sessionID, CollectionID: collection.ID, VariantID: variant.ID, EventSeq: req.EventSeq, Action: action,
+		PartID: partID, PartLabel: partLabel, PartKind: partKind,
 		Label:       firstNonEmpty(variant.Presentation.Label, collection.Name, variant.Filename),
 		Description: firstNonEmpty(variant.Presentation.Description, collection.Description),
 	}

@@ -420,6 +420,18 @@ test('artifact chips preserve exact iteration identity and describe the selected
   assert.equal(JSON.stringify(use).includes('content'), false)
 })
 
+test('artifact chips preserve independent exact part targets on one artifact', () => {
+  const entry = normalizeDesktopV3ArtifactCatalogEntry(managedCatalogWire)
+  assert.ok(entry)
+  const base = desktopV3ArtifactMessageSelection(entry, 'select')
+  const signal = { ...base, part_id: 'part-1-signal', label: 'Signal' }
+  const orbit = { ...base, part_id: 'part-2-orbit', label: 'Orbit' }
+  const selections = appendDesktopV3ArtifactMessageSelections([], [signal, orbit])
+
+  assert.equal(selections.length, 2)
+  assert.deepEqual(removeDesktopV3ArtifactMessageSelection(selections, signal), [orbit])
+})
+
 test('artifact chips enforce bounded batches and keep one active complete artifact head', () => {
   const entry = normalizeDesktopV3ArtifactCatalogEntry(managedCatalogWire)
   assert.ok(entry)

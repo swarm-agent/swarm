@@ -23,6 +23,7 @@ type ArtifactProjection = pebblestore.V3ArtifactProjection
 type ArtifactCollection = pebblestore.SessionArtifactCollection
 type ArtifactVariant = pebblestore.SessionArtifactVariant
 type ArtifactSelectionReference = pebblestore.SessionArtifactSelectionReference
+type ArtifactChain = pebblestore.SessionArtifactChain
 type VideoProjectSnapshot = pebblestore.VideoProjectSnapshot
 type VideoProjectRevisionSnapshot = pebblestore.VideoProjectRevisionSnapshot
 type VideoRenderJobSnapshot = pebblestore.VideoRenderJobSnapshot
@@ -88,6 +89,13 @@ func (s *Service) GetSessionArtifactCollection(accountScopeID, sessionID, collec
 		return ArtifactCollection{}, false, errors.New("session store is not configured")
 	}
 	return s.store.GetSessionArtifactCollection(accountScopeID, sessionID, collectionID)
+}
+
+func (s *Service) ProjectSessionArtifactVariantChain(accountScopeID, userID string, variant ArtifactVariant) (ArtifactVariant, ArtifactChain, error) {
+	if s == nil || s.store == nil {
+		return ArtifactVariant{}, ArtifactChain{}, errors.New("session store is not configured")
+	}
+	return s.store.ProjectSessionArtifactVariantChain(accountScopeID, userID, variant)
 }
 
 func (s *Service) GetSessionArtifactVariant(accountScopeID, sessionID, collectionID, variantID string) (ArtifactVariant, bool, error) {

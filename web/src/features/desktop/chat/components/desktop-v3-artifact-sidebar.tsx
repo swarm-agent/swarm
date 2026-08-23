@@ -191,7 +191,10 @@ export function desktopV3ArtifactSidebarGroups(
   for (const artifact of artifacts) {
     const collectionId = artifact.collectionId?.trim() ?? ''
     const owningSessionId = artifact.lineage?.parentSessionId || artifact.sessionId
-    const key = collectionId
+    const chainId = artifact.artifactChainId?.trim() || artifact.chain?.id.trim() || ''
+    const key = chainId
+      ? `chain\u0000${chainId}`
+      : collectionId
       ? `${owningSessionId}\u0000${collectionId}`
       : `${artifact.sessionId}\u0000artifact\u0000${artifact.artifactId}`
     groups.set(key, [...(groups.get(key) ?? []), artifact])
@@ -199,13 +202,11 @@ export function desktopV3ArtifactSidebarGroups(
   return [...groups.entries()].map(([key, entries]) => ({
     key,
     collectionId: entries[0]?.collectionId?.trim() ?? '',
-    entries: [...entries].sort((left, right) => {
-      const leftIndex = left.lineage?.iterationIndex ?? 0
-      const rightIndex = right.lineage?.iterationIndex ?? 0
-      return leftIndex && rightIndex ? leftIndex - rightIndex : leftIndex ? -1 : rightIndex ? 1 : 0
-    }),
+    entries: [...entries].sort((left, right) => (left.revisionNumber ?? 0) - (right.revisionNumber ?? 0)
+      || (left.candidateIndex ?? left.lineage?.iterationIndex ?? 0) - (right.candidateIndex ?? right.lineage?.iterationIndex ?? 0)
+      || left.updatedAt - right.updatedAt),
     progress: sidebarCollectionProgress(entries),
-    label: entries[0] ? sidebarCollectionLabel(entries[0]) : 'Artifact collection',
+    label: entries[0]?.chain?.name || (entries[0] ? sidebarCollectionLabel(entries[0]) : 'Artifact'),
   }))
 }
 
@@ -265,7 +266,7 @@ export function DesktopV3ArtifactSidebar({
         >
           {groups.map((group) => {
             const representative = group.entries.find((entry) => entry.selected)
-              ?? group.entries.find((entry) => entry.status === 'ready')
+              ?? [...group.entries].reverse().find((entry) => entry.status === 'ready')
               ?? group.entries[0]
             if (!representative) return null
             const grouped = Boolean(group.collectionId)
@@ -277,7 +278,7 @@ export function DesktopV3ArtifactSidebar({
             return (
               <section key={group.key} className={cn('min-w-0 overflow-hidden rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)]', embedded ? 'w-64 shrink-0' : 'w-full')} data-artifact-collection-group={grouped ? group.collectionId : undefined}>
                 <a href={artifactHref(representative)} className="flex min-w-0 items-center justify-between gap-2 border-b border-[var(--app-border)] px-3 py-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-primary)]" onClick={(event: MouseEvent<HTMLAnchorElement>) => { if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return; event.preventDefault(); onOpenArtifact(representative) }}>
-                  <span className="min-w-0"><span className="block truncate text-xs font-semibold">{grouped ? group.label : representative.label}</span><span className="mt-0.5 block text-[10px] text-[var(--app-text-subtle)]">{grouped ? sidebarProgressLabel(group) : representative.status === 'staging' ? 'Generating' : representative.kind || representative.mediaType}</span>{requirementLabel ? <span className="mt-0.5 block truncate text-[9px] text-[var(--app-text-subtle)]" data-artifact-output-requirements>{requirementLabel}</span> : null}{animationLabel ? <span className="mt-0.5 block truncate text-[9px] text-[var(--app-text-subtle)]" data-artifact-animation-profile-label>{animationLabel}</span> : null}</span>
+                  <span className="min-w-0"><span className="block truncate text-xs font-semibold">{representative.artifactChainId ? (representative.chain?.name || representative.label) : grouped ? group.label : representative.label}</span><span className="mt-0.5 block text-[10px] text-[var(--app-text-subtle)]">{representative.artifactChainId ? `${representative.chain?.revisionCount || group.entries.length} revisions · current r${representative.revisionNumber || 1}` : grouped ? sidebarProgressLabel(group) : representative.status === 'staging' ? 'Generating' : representative.kind || representative.mediaType}</span>{requirementLabel ? <span className="mt-0.5 block truncate text-[9px] text-[var(--app-text-subtle)]" data-artifact-output-requirements>{requirementLabel}</span> : null}{animationLabel ? <span className="mt-0.5 block truncate text-[9px] text-[var(--app-text-subtle)]" data-artifact-animation-profile-label>{animationLabel}</span> : null}</span>
                   {group.progress.staging > 0 ? <Loader2 className="size-4 shrink-0 motion-safe:animate-spin motion-reduce:animate-none text-[var(--app-primary)]" aria-label="Iteration Swarm generating" /> : <Maximize2 className="size-4 shrink-0 text-[var(--app-text-subtle)]" aria-hidden="true" />}
                 </a>
                 <div className={cn('grid gap-1 p-2', grouped && 'grid-cols-2')} aria-label={grouped ? `${group.label} iterations` : undefined}>

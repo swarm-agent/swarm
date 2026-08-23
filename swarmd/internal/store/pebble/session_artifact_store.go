@@ -1,6 +1,7 @@
 package pebblestore
 
 import (
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -17,6 +18,7 @@ const (
 	SessionArtifactMaxVariantsPerCollection = 128
 	SessionArtifactMaxList                  = 256
 	SessionArtifactMaxMessageSelections     = 16
+	SessionArtifactMaxParts                 = 64
 
 	SessionArtifactStatusStaging     = "staging"
 	SessionArtifactStatusReady       = "ready"
@@ -50,6 +52,9 @@ type SessionArtifactLineage struct {
 	IterationSectionLabel   string `json:"iteration_section_label,omitempty"`
 	IterationSectionStartMs int64  `json:"iteration_section_start_ms,omitempty"`
 	IterationSectionEndMs   int64  `json:"iteration_section_end_ms,omitempty"`
+	PartID                  string `json:"part_id,omitempty"`
+	PartLabel               string `json:"part_label,omitempty"`
+	PartKind                string `json:"part_kind,omitempty"`
 	RunID                   string `json:"run_id,omitempty"`
 	PlanID                  string `json:"plan_id,omitempty"`
 	CheckpointID            string `json:"checkpoint_id,omitempty"`
@@ -109,6 +114,44 @@ type SessionArtifactAnimationBudgets struct {
 	NetworkAllowed              bool    `json:"network_allowed"`
 }
 
+// SessionArtifactPart is a bounded, media-agnostic review/edit target. Temporal,
+// spatial, document, state, and semantic parts share one durable contract; fields
+// that do not apply to a part kind remain zero-valued.
+type SessionArtifactPart struct {
+	ID          string  `json:"id"`
+	Label       string  `json:"label"`
+	Kind        string  `json:"kind"`
+	Description string  `json:"description,omitempty"`
+	StartMs     int64   `json:"start_ms,omitempty"`
+	EndMs       int64   `json:"end_ms,omitempty"`
+	X           float64 `json:"x,omitempty"`
+	Y           float64 `json:"y,omitempty"`
+	Width       float64 `json:"width,omitempty"`
+	Height      float64 `json:"height,omitempty"`
+	Page        int     `json:"page,omitempty"`
+	StateID     string  `json:"state_id,omitempty"`
+	Selector    string  `json:"selector,omitempty"`
+}
+
+// SessionArtifactChain is the account-owned canonical identity for one evolving
+// artifact. Immutable variants remain the byte authority; this record names the
+// exact root and active head and orders generation rounds across collections and
+// sessions without moving or rebuilding bytes.
+type SessionArtifactChain struct {
+	Version        int                               `json:"version"`
+	ID             string                            `json:"id"`
+	AccountScopeID string                            `json:"account_scope_id"`
+	UserID         string                            `json:"user_id"`
+	Name           string                            `json:"name,omitempty"`
+	Root           SessionArtifactSelectionReference `json:"root"`
+	Head           SessionArtifactSelectionReference `json:"head"`
+	RevisionCount  int                               `json:"revision_count"`
+	LastRoundID    string                            `json:"last_round_id,omitempty"`
+	CreatedAt      int64                             `json:"created_at"`
+	UpdatedAt      int64                             `json:"updated_at"`
+	EventSeq       uint64                            `json:"event_seq"`
+}
+
 type SessionArtifactVariant struct {
 	Version            int                                `json:"version"`
 	ID                 string                             `json:"id"`
@@ -125,6 +168,11 @@ type SessionArtifactVariant struct {
 	Presentation       SessionArtifactPresentation        `json:"presentation,omitempty"`
 	OutputRequirements *SessionArtifactOutputRequirements `json:"output_requirements,omitempty"`
 	AnimationProfile   *SessionArtifactAnimationProfile   `json:"animation_profile,omitempty"`
+	ArtifactChainID    string                             `json:"artifact_chain_id,omitempty"`
+	RevisionNumber     int                                `json:"revision_number,omitempty"`
+	RevisionRoundID    string                             `json:"revision_round_id,omitempty"`
+	CandidateIndex     int                                `json:"candidate_index,omitempty"`
+	Parts              []SessionArtifactPart              `json:"parts,omitempty"`
 	CreatedAt          int64                              `json:"created_at"`
 	UpdatedAt          int64                              `json:"updated_at"`
 	EventSeq           uint64                             `json:"event_seq"`
@@ -172,6 +220,9 @@ type SessionArtifactSelectionReference struct {
 	IterationSectionLabel   string `json:"iteration_section_label,omitempty"`
 	IterationSectionStartMs int64  `json:"iteration_section_start_ms,omitempty"`
 	IterationSectionEndMs   int64  `json:"iteration_section_end_ms,omitempty"`
+	PartID                  string `json:"part_id,omitempty"`
+	PartLabel               string `json:"part_label,omitempty"`
+	PartKind                string `json:"part_kind,omitempty"`
 }
 
 // ValidateSessionArtifactMessageSelections resolves portable message references
@@ -197,6 +248,7 @@ func (s *SessionStore) ValidateSessionArtifactMessageSelections(accountScopeID, 
 			VariantID: strings.TrimSpace(incoming.VariantID), EventSeq: incoming.EventSeq,
 			Label: strings.TrimSpace(incoming.Label), Description: strings.TrimSpace(incoming.Description),
 			PendingRequest: strings.TrimSpace(incoming.PendingRequest), Action: strings.ToLower(strings.TrimSpace(incoming.Action)),
+			PartID: strings.TrimSpace(incoming.PartID),
 		}
 		if len(ref.SessionID) > 256 || ref.SessionID == "" || ref.SessionID == "." || ref.SessionID == ".." || strings.ContainsAny(ref.SessionID, `/\\`) {
 			return nil, fmt.Errorf("artifact selection %d session id is invalid", index)
@@ -210,7 +262,7 @@ func (s *SessionStore) ValidateSessionArtifactMessageSelections(accountScopeID, 
 		if ref.EventSeq == 0 {
 			return nil, fmt.Errorf("artifact selection %d event sequence is required", index)
 		}
-		if len(ref.Label) > 256 || len(ref.Description) > 2048 || len(ref.PendingRequest) > 16<<10 {
+		if len(ref.Label) > 256 || len(ref.Description) > 2048 || len(ref.PendingRequest) > 16<<10 || len(ref.PartID) > 128 {
 			return nil, fmt.Errorf("artifact selection %d message context exceeds bounds", index)
 		}
 		ref.Label = strings.TrimSpace(privacy.SanitizeText(ref.Label))
@@ -277,6 +329,18 @@ func (s *SessionStore) ValidateSessionArtifactMessageSelections(accountScopeID, 
 		ref.IterationSectionLabel = variant.Lineage.IterationSectionLabel
 		ref.IterationSectionStartMs = variant.Lineage.IterationSectionStartMs
 		ref.IterationSectionEndMs = variant.Lineage.IterationSectionEndMs
+		if ref.PartID != "" {
+			foundPart := false
+			for _, part := range variant.Parts {
+				if part.ID == ref.PartID {
+					ref.PartLabel, ref.PartKind, foundPart = part.Label, part.Kind, true
+					break
+				}
+			}
+			if !foundPart {
+				return nil, fmt.Errorf("artifact selection %d part was not found on the exact revision", index)
+			}
+		}
 		out = append(out, ref)
 	}
 	return out, nil
@@ -298,6 +362,7 @@ type V3ArtifactMutation struct {
 	Collection SessionArtifactCollection          `json:"collection"`
 	Variant    *SessionArtifactVariant            `json:"variant,omitempty"`
 	Selection  *SessionArtifactSelectionReference `json:"selection,omitempty"`
+	Chain      *SessionArtifactChain              `json:"chain,omitempty"`
 }
 
 // V3ArtifactProjection is safe for session events and realtime delivery. It is
@@ -306,6 +371,7 @@ type V3ArtifactProjection struct {
 	Collection SessionArtifactCollection          `json:"collection"`
 	Variant    *SessionArtifactVariant            `json:"variant,omitempty"`
 	Selection  *SessionArtifactSelectionReference `json:"selection,omitempty"`
+	Chain      *SessionArtifactChain              `json:"chain,omitempty"`
 }
 
 type preparedV3ArtifactMutation struct {
@@ -315,6 +381,15 @@ type preparedV3ArtifactMutation struct {
 	DeletedVariants    []SessionArtifactVariant
 	DeleteVariant      bool
 	DeleteCollection   bool
+	PreviousChain      *SessionArtifactChain
+}
+
+func KeySessionArtifactChain(accountScopeID, userID, chainID string) string {
+	return fmt.Sprintf("v3/session_artifact/chains/%s/%s/%s", keyPart(accountScopeID), keyPart(userID), keyPart(chainID))
+}
+
+func SessionArtifactChainPrefix(accountScopeID, userID string) string {
+	return fmt.Sprintf("v3/session_artifact/chains/%s/%s/", keyPart(accountScopeID), keyPart(userID))
 }
 
 func KeySessionArtifactCollection(accountScopeID, sessionID, collectionID string) string {
@@ -407,6 +482,142 @@ func artifactVariantLineageIndexKeys(variant SessionArtifactVariant) []string {
 		keys = append(keys, KeySessionArtifactVariantLineage(variant.AccountScopeID, variant.SessionID, item.dimension, artifactLineageIndexValue(item.value), variant.CollectionID, variant.ID))
 	}
 	return keys
+}
+
+func (s *SessionStore) GetSessionArtifactChain(accountScopeID, userID, chainID string) (SessionArtifactChain, bool, error) {
+	if s == nil || s.store == nil {
+		return SessionArtifactChain{}, false, errors.New("session store is not configured")
+	}
+	accountScopeID, userID, chainID = strings.TrimSpace(accountScopeID), strings.TrimSpace(userID), strings.TrimSpace(chainID)
+	if accountScopeID == "" || userID == "" || chainID == "" {
+		return SessionArtifactChain{}, false, nil
+	}
+	var chain SessionArtifactChain
+	ok, err := s.store.GetJSON(KeySessionArtifactChain(accountScopeID, userID, chainID), &chain)
+	if err != nil || !ok {
+		return SessionArtifactChain{}, ok, err
+	}
+	if chain.AccountScopeID != accountScopeID || chain.UserID != userID || chain.ID != chainID {
+		return SessionArtifactChain{}, false, errors.New("artifact chain ownership metadata is inconsistent")
+	}
+	return chain, true, nil
+}
+
+func (s *SessionStore) ListSessionArtifactChains(accountScopeID, userID string, limit int) ([]SessionArtifactChain, error) {
+	if s == nil || s.store == nil {
+		return nil, errors.New("session store is not configured")
+	}
+	accountScopeID, userID = strings.TrimSpace(accountScopeID), strings.TrimSpace(userID)
+	limit = boundedArtifactListLimit(limit, SessionArtifactMaxList)
+	out := make([]SessionArtifactChain, 0, limit)
+	err := s.store.IteratePrefix(SessionArtifactChainPrefix(accountScopeID, userID), limit, func(_ string, value []byte) error {
+		var chain SessionArtifactChain
+		if err := json.Unmarshal(value, &chain); err != nil {
+			return err
+		}
+		if chain.AccountScopeID != accountScopeID || chain.UserID != userID || chain.ID == "" {
+			return errors.New("artifact chain ownership metadata is inconsistent")
+		}
+		out = append(out, chain)
+		return nil
+	})
+	return out, err
+}
+
+func artifactChainIDForRoot(ref SessionArtifactSelectionReference) string {
+	seed := strings.Join([]string{"artifact-chain-v1", strings.TrimSpace(ref.SessionID), strings.TrimSpace(ref.CollectionID), strings.TrimSpace(ref.VariantID)}, "\x00")
+	digest := sha256.Sum256([]byte(seed))
+	return "artifact-chain-" + hex.EncodeToString(digest[:12])
+}
+
+func artifactRevisionRoundID(variant SessionArtifactVariant) string {
+	for _, value := range []string{variant.Lineage.IterationGroupID, variant.Lineage.TaskCallID, variant.CollectionID} {
+		if value = strings.TrimSpace(value); value != "" {
+			return value
+		}
+	}
+	return variant.ID
+}
+
+func (s *SessionStore) projectSessionArtifactVariantChain(accountScopeID, userID string, variant SessionArtifactVariant) (SessionArtifactVariant, SessionArtifactChain, error) {
+	visited := map[string]struct{}{}
+	path := make([]SessionArtifactVariant, 0, 8)
+	current := variant
+	var persisted SessionArtifactChain
+	for {
+		key := strings.Join([]string{current.SessionID, current.CollectionID, current.ID}, "\x00")
+		if _, duplicate := visited[key]; duplicate {
+			return SessionArtifactVariant{}, SessionArtifactChain{}, errors.New("artifact source lineage contains a cycle")
+		}
+		visited[key] = struct{}{}
+		path = append(path, current)
+		if current.ArtifactChainID != "" {
+			if chain, ok, err := s.GetSessionArtifactChain(accountScopeID, userID, current.ArtifactChainID); err != nil {
+				return SessionArtifactVariant{}, SessionArtifactChain{}, err
+			} else if ok {
+				persisted = chain
+				break
+			}
+		}
+		lineage := current.Lineage
+		if lineage.SourceSessionID == "" || lineage.SourceCollectionID == "" || lineage.SourceVariantID == "" || lineage.SourceEventSeq == 0 {
+			break
+		}
+		sourceSession, ok, err := s.GetSession(lineage.SourceSessionID)
+		if err != nil {
+			return SessionArtifactVariant{}, SessionArtifactChain{}, err
+		}
+		if !ok || sourceSession.AccountScopeID != accountScopeID || sourceSession.UserID != userID {
+			break
+		}
+		source, ok, err := s.GetSessionArtifactVariant(accountScopeID, lineage.SourceSessionID, lineage.SourceCollectionID, lineage.SourceVariantID)
+		if err != nil {
+			return SessionArtifactVariant{}, SessionArtifactChain{}, err
+		}
+		if !ok || source.Status != SessionArtifactStatusReady || source.EventSeq != lineage.SourceEventSeq {
+			break
+		}
+		current = source
+	}
+	rootVariant := path[len(path)-1]
+	rootRef := SessionArtifactSelectionReference{SessionID: rootVariant.SessionID, CollectionID: rootVariant.CollectionID, VariantID: rootVariant.ID, EventSeq: rootVariant.EventSeq}
+	chainID := artifactChainIDForRoot(rootRef)
+	if persisted.ID != "" {
+		chainID = persisted.ID
+		rootRef = persisted.Root
+	}
+	baseRevision := 1
+	if persisted.ID != "" && path[len(path)-1].RevisionNumber > 0 {
+		baseRevision = path[len(path)-1].RevisionNumber
+	}
+	for index := len(path) - 1; index >= 0; index-- {
+		path[index].ArtifactChainID = chainID
+		if path[index].RevisionNumber <= 0 {
+			path[index].RevisionNumber = baseRevision + len(path) - 1 - index
+		}
+		if path[index].RevisionRoundID == "" {
+			path[index].RevisionRoundID = artifactRevisionRoundID(path[index])
+		}
+		if path[index].CandidateIndex <= 0 {
+			path[index].CandidateIndex = path[index].Lineage.IterationIndex
+			if path[index].CandidateIndex <= 0 {
+				path[index].CandidateIndex = 1
+			}
+		}
+	}
+	projected := path[0]
+	chain := persisted
+	if chain.ID == "" {
+		chain = SessionArtifactChain{Version: SessionArtifactVersion, ID: chainID, AccountScopeID: accountScopeID, UserID: userID, Name: firstNonEmptyArtifactString(projected.Presentation.Label, projected.Filename), Root: rootRef, Head: rootRef, RevisionCount: projected.RevisionNumber, LastRoundID: projected.RevisionRoundID, CreatedAt: rootVariant.CreatedAt, UpdatedAt: projected.UpdatedAt, EventSeq: projected.EventSeq}
+	}
+	return projected, chain, nil
+}
+
+// ProjectSessionArtifactVariantChain supplies authoritative chain metadata for
+// both persisted v2 artifacts and legacy variants whose stable chain is derived
+// from authenticated exact ancestry without rewriting their bytes.
+func (s *SessionStore) ProjectSessionArtifactVariantChain(accountScopeID, userID string, variant SessionArtifactVariant) (SessionArtifactVariant, SessionArtifactChain, error) {
+	return s.projectSessionArtifactVariantChain(strings.TrimSpace(accountScopeID), strings.TrimSpace(userID), variant)
 }
 
 func (s *SessionStore) GetSessionArtifactCollection(accountScopeID, sessionID, collectionID string) (SessionArtifactCollection, bool, error) {
@@ -658,6 +869,11 @@ func normalizeV3ArtifactMutation(input *V3SessionMutationInput) {
 		variant.MediaType = strings.ToLower(strings.TrimSpace(variant.MediaType))
 		variant.DigestSHA256 = strings.ToLower(strings.TrimSpace(variant.DigestSHA256))
 		variant.FailureCode = strings.ToLower(strings.TrimSpace(variant.FailureCode))
+		variant.ArtifactChainID = strings.TrimSpace(variant.ArtifactChainID)
+		variant.RevisionRoundID = strings.TrimSpace(variant.RevisionRoundID)
+		for index := range variant.Parts {
+			normalizeArtifactPart(&variant.Parts[index])
+		}
 		normalizeArtifactLineage(&variant.Lineage)
 		normalizeArtifactPresentation(&variant.Presentation)
 	}
@@ -667,6 +883,9 @@ func normalizeV3ArtifactMutation(input *V3SessionMutationInput) {
 		input.Artifact.Selection.VariantID = strings.TrimSpace(input.Artifact.Selection.VariantID)
 		input.Artifact.Selection.Label = strings.TrimSpace(input.Artifact.Selection.Label)
 		input.Artifact.Selection.Description = strings.TrimSpace(input.Artifact.Selection.Description)
+		input.Artifact.Selection.PartID = strings.TrimSpace(input.Artifact.Selection.PartID)
+		input.Artifact.Selection.PartLabel = strings.TrimSpace(input.Artifact.Selection.PartLabel)
+		input.Artifact.Selection.PartKind = strings.ToLower(strings.TrimSpace(input.Artifact.Selection.PartKind))
 		input.Artifact.Selection.Action = strings.ToLower(strings.TrimSpace(input.Artifact.Selection.Action))
 	}
 }
@@ -683,10 +902,25 @@ func normalizeArtifactLineage(lineage *SessionArtifactLineage) {
 	lineage.IterationID = strings.TrimSpace(lineage.IterationID)
 	lineage.IterationSectionID = strings.TrimSpace(lineage.IterationSectionID)
 	lineage.IterationSectionLabel = strings.TrimSpace(lineage.IterationSectionLabel)
+	lineage.PartID = strings.TrimSpace(lineage.PartID)
+	lineage.PartLabel = strings.TrimSpace(lineage.PartLabel)
+	lineage.PartKind = strings.ToLower(strings.TrimSpace(lineage.PartKind))
 	lineage.RunID = strings.TrimSpace(lineage.RunID)
 	lineage.PlanID = strings.TrimSpace(lineage.PlanID)
 	lineage.CheckpointID = strings.TrimSpace(lineage.CheckpointID)
 	lineage.AttemptID = strings.TrimSpace(lineage.AttemptID)
+}
+
+func normalizeArtifactPart(part *SessionArtifactPart) {
+	if part == nil {
+		return
+	}
+	part.ID = strings.TrimSpace(part.ID)
+	part.Label = strings.TrimSpace(part.Label)
+	part.Kind = strings.ToLower(strings.TrimSpace(part.Kind))
+	part.Description = strings.TrimSpace(part.Description)
+	part.StateID = strings.TrimSpace(part.StateID)
+	part.Selector = strings.TrimSpace(part.Selector)
 }
 
 func normalizeArtifactPresentation(presentation *SessionArtifactPresentation) {
@@ -754,6 +988,9 @@ func validateV3ArtifactMutation(input V3SessionMutationInput) error {
 		if err := validateArtifactAnimationProfile(variant.AnimationProfile); err != nil {
 			return err
 		}
+		if err := validateArtifactRevisionMetadata(*variant); err != nil {
+			return err
+		}
 	}
 	switch input.Kind {
 	case V3SessionMutationCreateArtifact:
@@ -774,7 +1011,7 @@ func validateV3ArtifactMutation(input V3SessionMutationInput) error {
 		if input.Artifact.Selection.Action != "" && input.Artifact.Selection.Action != "select" && input.Artifact.Selection.Action != "use" {
 			return errors.New("artifact selection action must be select or use")
 		}
-		if len(input.Artifact.Selection.Label) > 256 || len(input.Artifact.Selection.Description) > 2048 {
+		if len(input.Artifact.Selection.Label) > 256 || len(input.Artifact.Selection.Description) > 2048 || len(input.Artifact.Selection.PartID) > 128 || len(input.Artifact.Selection.PartLabel) > 256 || len(input.Artifact.Selection.PartKind) > 32 {
 			return errors.New("artifact selection display metadata exceeds bounds")
 		}
 	case V3SessionMutationDeleteArtifactCollection:
@@ -805,7 +1042,7 @@ func validateArtifactID(label, value string) error {
 }
 
 func validateArtifactLineage(lineage SessionArtifactLineage) error {
-	for _, value := range []string{lineage.ParentSessionID, lineage.SourceSessionID, lineage.SourceCollectionID, lineage.SourceVariantID, lineage.TaskCallID, lineage.ProgramID, lineage.ProgramJobID, lineage.ChildSessionID, lineage.IterationID, lineage.IterationSectionID, lineage.IterationSectionLabel, lineage.RunID, lineage.PlanID, lineage.CheckpointID, lineage.AttemptID} {
+	for _, value := range []string{lineage.ParentSessionID, lineage.SourceSessionID, lineage.SourceCollectionID, lineage.SourceVariantID, lineage.TaskCallID, lineage.ProgramID, lineage.ProgramJobID, lineage.ChildSessionID, lineage.IterationID, lineage.IterationSectionID, lineage.IterationSectionLabel, lineage.PartID, lineage.PartLabel, lineage.PartKind, lineage.RunID, lineage.PlanID, lineage.CheckpointID, lineage.AttemptID} {
 		if len(value) > 256 {
 			return errors.New("artifact lineage metadata exceeds bounds")
 		}
@@ -822,6 +1059,61 @@ func validateArtifactLineage(lineage SessionArtifactLineage) error {
 		}
 	} else if lineage.IterationSectionLabel == "" || lineage.IterationSectionStartMs < 0 || lineage.IterationSectionEndMs <= lineage.IterationSectionStartMs || lineage.SourceCollectionID == "" || lineage.SourceVariantID == "" || lineage.SourceEventSeq == 0 {
 		return errors.New("artifact iteration section lineage requires a label, valid range, and exact source artifact")
+	}
+	if lineage.PartID == "" {
+		if lineage.PartLabel != "" || lineage.PartKind != "" {
+			return errors.New("artifact part target metadata requires a part id")
+		}
+	} else if lineage.PartLabel == "" || lineage.PartKind == "" || lineage.SourceCollectionID == "" || lineage.SourceVariantID == "" || lineage.SourceEventSeq == 0 {
+		return errors.New("artifact part target lineage requires a label, kind, and exact source artifact")
+	}
+	return nil
+}
+
+func validateArtifactRevisionMetadata(variant SessionArtifactVariant) error {
+	if len(variant.ArtifactChainID) > 128 || len(variant.RevisionRoundID) > 256 || variant.RevisionNumber < 0 || variant.RevisionNumber > 1_000_000 || variant.CandidateIndex < 0 || variant.CandidateIndex > 1_000_000 {
+		return errors.New("artifact revision metadata is invalid")
+	}
+	if len(variant.Parts) > SessionArtifactMaxParts {
+		return errors.New("artifact part count limit exceeded")
+	}
+	seen := make(map[string]struct{}, len(variant.Parts))
+	for _, part := range variant.Parts {
+		if err := validateArtifactID("part", part.ID); err != nil {
+			return err
+		}
+		if part.Label == "" || len(part.Label) > 256 || len(part.Description) > 2048 || len(part.Kind) > 32 || len(part.StateID) > 128 || len(part.Selector) > 512 {
+			return errors.New("artifact part metadata is incomplete or exceeds bounds")
+		}
+		if _, duplicate := seen[part.ID]; duplicate {
+			return errors.New("artifact part ids must be unique")
+		}
+		seen[part.ID] = struct{}{}
+		switch part.Kind {
+		case "temporal":
+			if part.StartMs < 0 || part.EndMs <= part.StartMs {
+				return errors.New("temporal artifact part requires a valid time range")
+			}
+		case "spatial":
+			if part.X < 0 || part.Y < 0 || part.Width <= 0 || part.Height <= 0 || part.X+part.Width > 1 || part.Y+part.Height > 1 {
+				return errors.New("spatial artifact part requires normalized bounds")
+			}
+		case "page":
+			if part.Page < 1 {
+				return errors.New("page artifact part requires a positive page")
+			}
+		case "state":
+			if part.StateID == "" {
+				return errors.New("state artifact part requires a state id")
+			}
+		case "selector":
+			if part.Selector == "" {
+				return errors.New("selector artifact part requires a selector")
+			}
+		case "semantic":
+		default:
+			return errors.New("artifact part kind is invalid")
+		}
 	}
 	return nil
 }
@@ -1157,6 +1449,43 @@ func (s *SessionStore) prepareV3ArtifactMutation(input V3SessionMutationInput, s
 		if !variantOK && collection.VariantCount > SessionArtifactMaxVariantsPerCollection {
 			return preparedV3ArtifactMutation{}, errors.New("artifact collection variant limit exceeded")
 		}
+		if !variantOK {
+			if lineage := next.Lineage; lineage.SourceSessionID != "" && lineage.SourceCollectionID != "" && lineage.SourceVariantID != "" && lineage.SourceEventSeq > 0 {
+				sourceSession, ok, sourceErr := s.GetSession(lineage.SourceSessionID)
+				if sourceErr != nil {
+					return preparedV3ArtifactMutation{}, sourceErr
+				}
+				if !ok || sourceSession.AccountScopeID != input.AccountScopeID || sourceSession.UserID != input.UserID {
+					return preparedV3ArtifactMutation{}, errors.New("artifact source chain ownership is inconsistent")
+				}
+				source, ok, sourceErr := s.GetSessionArtifactVariant(input.AccountScopeID, lineage.SourceSessionID, lineage.SourceCollectionID, lineage.SourceVariantID)
+				if sourceErr != nil {
+					return preparedV3ArtifactMutation{}, sourceErr
+				}
+				if !ok || source.Status != SessionArtifactStatusReady || source.EventSeq != lineage.SourceEventSeq {
+					return preparedV3ArtifactMutation{}, errors.New("artifact source chain requires an exact ready source")
+				}
+				projectedSource, chain, sourceErr := s.projectSessionArtifactVariantChain(input.AccountScopeID, input.UserID, source)
+				if sourceErr != nil {
+					return preparedV3ArtifactMutation{}, sourceErr
+				}
+				next.ArtifactChainID = chain.ID
+				next.RevisionNumber = projectedSource.RevisionNumber + 1
+			} else {
+				root := SessionArtifactSelectionReference{SessionID: input.SessionID, CollectionID: collection.ID, VariantID: next.ID, EventSeq: seq}
+				next.ArtifactChainID = artifactChainIDForRoot(root)
+				next.RevisionNumber = 1
+			}
+			if next.RevisionRoundID == "" {
+				next.RevisionRoundID = artifactRevisionRoundID(next)
+			}
+			if next.CandidateIndex <= 0 {
+				next.CandidateIndex = next.Lineage.IterationIndex
+				if next.CandidateIndex <= 0 {
+					next.CandidateIndex = 1
+				}
+			}
+		}
 		switch input.Kind {
 		case V3SessionMutationCreateArtifact, V3SessionMutationUpdateArtifact:
 			if variantOK && current.Status == SessionArtifactStatusReady {
@@ -1216,6 +1545,48 @@ func (s *SessionStore) prepareV3ArtifactMutation(input V3SessionMutationInput, s
 		next.UpdatedAt = now
 		next.EventSeq = seq
 		variant = &next
+		if input.Kind == V3SessionMutationFinalizeArtifact {
+			chain, chainOK, chainErr := s.GetSessionArtifactChain(input.AccountScopeID, input.UserID, next.ArtifactChainID)
+			if chainErr != nil {
+				return preparedV3ArtifactMutation{}, chainErr
+			}
+			if chainOK {
+				copy := chain
+				prepared.PreviousChain = &copy
+			} else {
+				rootVariant := next
+				if next.Lineage.SourceSessionID != "" && next.Lineage.SourceCollectionID != "" && next.Lineage.SourceVariantID != "" {
+					if source, ok, sourceErr := s.GetSessionArtifactVariant(input.AccountScopeID, next.Lineage.SourceSessionID, next.Lineage.SourceCollectionID, next.Lineage.SourceVariantID); sourceErr != nil {
+						return preparedV3ArtifactMutation{}, sourceErr
+					} else if ok {
+						projectedSource, projectedChain, projectionErr := s.projectSessionArtifactVariantChain(input.AccountScopeID, input.UserID, source)
+						if projectionErr != nil {
+							return preparedV3ArtifactMutation{}, projectionErr
+						}
+						rootVariant = projectedSource
+						chain = projectedChain
+					}
+				}
+				if chain.ID == "" {
+					rootRef := SessionArtifactSelectionReference{SessionID: rootVariant.SessionID, CollectionID: rootVariant.CollectionID, VariantID: rootVariant.ID, EventSeq: rootVariant.EventSeq}
+					chain = SessionArtifactChain{Version: SessionArtifactVersion, ID: next.ArtifactChainID, AccountScopeID: input.AccountScopeID, UserID: input.UserID, Name: firstNonEmptyArtifactString(next.Presentation.Label, collection.Name, next.Filename), Root: rootRef, CreatedAt: rootVariant.CreatedAt}
+				}
+			}
+			if chain.Root.EventSeq == 0 || (next.RevisionNumber == 1 && chain.Root.VariantID == next.ID) {
+				chain.Root = SessionArtifactSelectionReference{SessionID: input.SessionID, CollectionID: collection.ID, VariantID: next.ID, EventSeq: seq}
+			}
+			chain.Version = SessionArtifactVersion
+			chain.AccountScopeID, chain.UserID = input.AccountScopeID, input.UserID
+			chain.Head = SessionArtifactSelectionReference{SessionID: input.SessionID, CollectionID: collection.ID, VariantID: next.ID, EventSeq: seq}
+			if next.RevisionNumber > chain.RevisionCount {
+				chain.RevisionCount = next.RevisionNumber
+			}
+			chain.LastRoundID, chain.UpdatedAt, chain.EventSeq = next.RevisionRoundID, now, seq
+			if chain.CreatedAt == 0 {
+				chain.CreatedAt = now
+			}
+			prepared.Projection.Chain = &chain
+		}
 	}
 
 	var selection *SessionArtifactSelectionReference
@@ -1238,13 +1609,43 @@ func (s *SessionStore) prepareV3ArtifactMutation(input V3SessionMutationInput, s
 		if action == "" {
 			action = "select"
 		}
-		ref := SessionArtifactSelectionReference{SessionID: input.SessionID, CollectionID: collection.ID, VariantID: selected.ID, EventSeq: seq, Label: incoming.Selection.Label, Description: incoming.Selection.Description, Action: action}
+		ref := SessionArtifactSelectionReference{SessionID: input.SessionID, CollectionID: collection.ID, VariantID: selected.ID, EventSeq: seq, Label: incoming.Selection.Label, Description: incoming.Selection.Description, Action: action, PartID: incoming.Selection.PartID}
+		if ref.PartID != "" {
+			for _, part := range selected.Parts {
+				if part.ID == ref.PartID {
+					ref.PartLabel, ref.PartKind = part.Label, part.Kind
+					break
+				}
+			}
+			if ref.PartLabel == "" {
+				return preparedV3ArtifactMutation{}, errors.New("artifact selection part was not found on the exact revision")
+			}
+		}
 		selection = &ref
+		projected, chain, projectionErr := s.projectSessionArtifactVariantChain(input.AccountScopeID, input.UserID, selected)
+		if projectionErr != nil {
+			return preparedV3ArtifactMutation{}, projectionErr
+		}
+		if existing, ok, chainErr := s.GetSessionArtifactChain(input.AccountScopeID, input.UserID, projected.ArtifactChainID); chainErr != nil {
+			return preparedV3ArtifactMutation{}, chainErr
+		} else if ok {
+			copy := existing
+			prepared.PreviousChain = &copy
+			chain = existing
+		}
+		chain.Version, chain.AccountScopeID, chain.UserID = SessionArtifactVersion, input.AccountScopeID, input.UserID
+		chain.Head, chain.UpdatedAt, chain.EventSeq = ref, now, seq
+		if projected.RevisionNumber > chain.RevisionCount {
+			chain.RevisionCount = projected.RevisionNumber
+		}
+		chain.LastRoundID = projected.RevisionRoundID
+		prepared.Projection.Chain = &chain
 	}
 	if err := validateArtifactCollectionProgress(collection); err != nil {
 		return preparedV3ArtifactMutation{}, err
 	}
-	prepared.Projection = V3ArtifactProjection{Collection: collection, Variant: variant, Selection: selection}
+	chain := prepared.Projection.Chain
+	prepared.Projection = V3ArtifactProjection{Collection: collection, Variant: variant, Selection: selection, Chain: chain}
 	return prepared, nil
 }
 
@@ -1379,6 +1780,15 @@ func setV3ArtifactMutationInBatch(batch *pebble.Batch, prepared preparedV3Artifa
 				}
 			}
 			return nil
+		}
+	}
+	if chain := prepared.Projection.Chain; chain != nil {
+		payload, err := json.Marshal(chain)
+		if err != nil {
+			return fmt.Errorf("marshal artifact chain: %w", err)
+		}
+		if err := batch.Set([]byte(KeySessionArtifactChain(chain.AccountScopeID, chain.UserID, chain.ID)), payload, nil); err != nil {
+			return err
 		}
 	}
 	if prepared.PreviousCollection != nil && prepared.PreviousCollection.Status != collection.Status {

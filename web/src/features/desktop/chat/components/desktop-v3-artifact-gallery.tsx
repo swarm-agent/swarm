@@ -51,11 +51,19 @@ import {
 import { refreshOpenDesktopV3ArtifactCatalogs } from '../../session-v3/artifact-catalog-refresh'
 import { useDesktopV3OpenArtifactCatalogRefresh } from '../../session-v3/use-artifact-catalog-refresh'
 import {
-  desktopV3ArtifactStudioBranchDepth,
+  desktopV3ArtifactStudioChainKey,
+  desktopV3ArtifactStudioEntries,
+  desktopV3ArtifactStudioHead,
+  desktopV3ArtifactStudioRounds,
   desktopV3ArtifactStudioParent,
   desktopV3ArtifactStudioSectionAlternatives,
+  desktopV3ArtifactStudioSectionLineage,
 } from '../../session-v3/artifact-studio-model'
 import { useDesktopV3ArtifactPreviewVisibility } from './desktop-v3-artifact-preview-thumbnail'
+import {
+  DesktopV3ArtifactSeekAcknowledger,
+  resolveDesktopV3ArtifactAutoplaySection,
+} from './desktop-v3-artifact-playback'
 import {
   DESKTOP_V3_ARTIFACT_PLAYER_PROTOCOL,
   desktopV3ArtifactIterationChangeDescription,
@@ -115,6 +123,8 @@ function artifactSelectionKey(artifact: DesktopV3ArtifactGalleryEntry): string {
 }
 
 function artifactCollectionKey(artifact: DesktopV3ArtifactGalleryEntry): string {
+  const chainKey = desktopV3ArtifactStudioChainKey(artifact)
+  if (chainKey) return `chain:${chainKey}`
   const owningSessionId = artifact.lineage?.parentSessionId || artifact.sessionId
   return artifact.collectionId
     ? `${owningSessionId}:${artifact.collectionId}`
@@ -241,10 +251,11 @@ export function DesktopV3ArtifactGallery({
   const [previewRetry, setPreviewRetry] = useState(0)
   const [iterationDescriptor, setIterationDescriptor] = useState<DesktopV3ArtifactIterationDescriptor | null>(null)
   const [iterationSectionId, setIterationSectionId] = useState('')
+  const [selectedPartId, setSelectedPartId] = useState('')
   const [iterationTimeMs, setIterationTimeMs] = useState(0)
   const [iterationPlaying, setIterationPlaying] = useState(false)
   const [iterationPlayerReadyVersion, setIterationPlayerReadyVersion] = useState(0)
-  const [actionPending, setActionPending] = useState<'add' | 'use' | 'iterate-section' | 'next-section' | 'export-video-stills' | 'download-collection' | 'reveal-artifact' | 'reveal-collection' | ''>('')
+  const [actionPending, setActionPending] = useState<'add' | 'use' | 'ask-part' | 'iterate-section' | 'next-section' | 'export-video-stills' | 'download-collection' | 'reveal-artifact' | 'reveal-collection' | ''>('')
   const [actionError, setActionError] = useState('')
   const [actionConfirmation, setActionConfirmation] = useState('')
   const [query, setQuery] = useState('')
@@ -254,12 +265,19 @@ export function DesktopV3ArtifactGallery({
   const previewSurfaceRef = useRef<HTMLDivElement>(null)
   const animationFrameRef = useRef<HTMLIFrameElement>(null)
   const iterationDescribeRequestRef = useRef('')
+  const iterationDescribeArtifactRef = useRef('')
+  const iterationPlayerArtifactRef = useRef('')
   const iterationSectionIdRef = useRef('')
   const iterationPlaybackFrameRef = useRef<number | null>(null)
   const iterationPlaybackStartedAtRef = useRef(0)
   const iterationPlaybackStartMsRef = useRef(0)
   const iterationTimeMsRef = useRef(0)
   const iterationLastUIUpdateRef = useRef(0)
+  const iterationSeekAcknowledgerRef = useRef<DesktopV3ArtifactSeekAcknowledger | null>(null)
+  if (!iterationSeekAcknowledgerRef.current) {
+    iterationSeekAcknowledgerRef.current = new DesktopV3ArtifactSeekAcknowledger((timeMs) => sendAnimationMessage('seek', timeMs))
+  }
+  const iterationAutoplayArtifactRef = useRef('')
   const iterationAutoplaySectionRef = useRef('')
   const open = controlledOpen ?? internalOpen
   const { previewRef: animationPreviewRef, previewVisible: animationPreviewVisible } = useDesktopV3ArtifactPreviewVisibility(open)
@@ -296,14 +314,16 @@ export function DesktopV3ArtifactGallery({
     : visibleArtifacts.find((artifact) => artifactSelectionKey(artifact) === selectedId) ?? visibleArtifacts[0]
   const selectedGroupKey = overviewGroup?.key ?? (selected ? artifactCollectionKey(selected) : '')
   const selectedGroup = overviewGroup ?? groups.find((group) => group.key === selectedGroupKey)
-  const selectedVariants = selectedGroup?.entries ?? []
+  const selectedVariants = selected ? desktopV3ArtifactStudioEntries(artifacts, selected) : selectedGroup?.entries ?? []
+  const selectedHead = selected ? desktopV3ArtifactStudioHead(artifacts, selected) : undefined
+  const selectedRounds = selected ? desktopV3ArtifactStudioRounds(artifacts, selected) : []
   const selectedVariantIndex = selected
     ? selectedVariants.findIndex((artifact) => artifactSelectionKey(artifact) === artifactSelectionKey(selected))
     : -1
   const persistedSelectedArtifact = selectedGroup?.entries.find((artifact) => artifact.selected)
   const durableSelectedArtifact = artifacts.find((artifact) => artifactSelectionKey(artifact) === durableSelectedId)
   const durableSelectionMatchesGroup = durableSelectedArtifact && artifactCollectionKey(durableSelectedArtifact) === selectedGroupKey
-  const canonicalSelectedId = durableSelectionMatchesGroup ? durableSelectedId : (persistedSelectedArtifact ? artifactSelectionKey(persistedSelectedArtifact) : '')
+  const canonicalSelectedId = durableSelectionMatchesGroup ? durableSelectedId : (persistedSelectedArtifact ? artifactSelectionKey(persistedSelectedArtifact) : selectedHead ? artifactSelectionKey(selectedHead) : '')
   const selectedIsCanonical = Boolean(selected && artifactSelectionKey(selected) === canonicalSelectedId)
   const selectedCanAttach = selected?.status === 'ready' && Boolean(selected.collectionId) && (selected.eventSeq ?? 0) > 0
   const selectedCanExportVideoStills = Boolean(selected && desktopV3ArtifactCanExportHTMLStills(selected))
@@ -313,14 +333,20 @@ export function DesktopV3ArtifactGallery({
   const selectedAnimationActive = animationPreviewVisible
   const selectedVideoProfileCompatible = !selected?.animationProfile || selected.animationProfile.profileId === 'final_render'
   const iterationSection = iterationDescriptor?.sections.find((section) => section.id === iterationSectionId) ?? iterationDescriptor?.sections[0]
-  const studioSectionId = iterationSection?.id ?? selected?.lineage?.iterationSectionId ?? ''
+  const selectedPart = selected?.parts?.find((part) => part.id === selectedPartId)
+  const studioSectionLineage = selected ? desktopV3ArtifactStudioSectionLineage(artifacts, selected) : undefined
+  const studioSectionId = iterationSection?.id ?? studioSectionLineage?.iterationSectionId ?? ''
   const studioModeActive = Boolean(iterationDescriptor || studioSectionId)
   const iterationAlternativesForSection = (sectionId: string) => selected
     ? desktopV3ArtifactStudioSectionAlternatives(artifacts, selected, sectionId)
     : []
   const iterationSectionAlternatives = studioSectionId ? iterationAlternativesForSection(studioSectionId) : []
+  const selectedIterationAlternative = selected && iterationSectionAlternatives.some((artifact) => artifactSelectionKey(artifact) === artifactSelectionKey(selected))
+    ? selected
+    : undefined
   const activeIterationAlternative = iterationSectionAlternatives.find((artifact) => artifactSelectionKey(artifact) === studioActiveBranchId)
-    ?? (selected && iterationSectionAlternatives.some((artifact) => artifactSelectionKey(artifact) === artifactSelectionKey(selected)) ? selected : undefined)
+    ?? selectedIterationAlternative
+    ?? iterationSectionAlternatives[iterationSectionAlternatives.length - 1]
   const iterationRoundSourceArtifact = activeIterationAlternative
     ? (desktopV3ArtifactStudioParent(artifacts, activeIterationAlternative) ?? activeIterationAlternative)
     : selected
@@ -355,6 +381,7 @@ export function DesktopV3ArtifactGallery({
     setActionConfirmation('')
     if (iterationPlaybackFrameRef.current !== null) cancelAnimationFrame(iterationPlaybackFrameRef.current)
     iterationPlaybackFrameRef.current = null
+    iterationSeekAcknowledgerRef.current?.setOnSettled(null)
     setIterationPlaying(false)
   }, [open])
 
@@ -363,26 +390,41 @@ export function DesktopV3ArtifactGallery({
     iterationPlaybackFrameRef.current = null
     setIterationPlaying(false)
     iterationDescribeRequestRef.current = ''
+    iterationDescribeArtifactRef.current = ''
+    iterationPlayerArtifactRef.current = ''
+    iterationSeekAcknowledgerRef.current?.reset()
+    iterationSectionIdRef.current = ''
+    iterationTimeMsRef.current = 0
+    setIterationDescriptor(null)
+    setIterationSectionId('')
+    setIterationTimeMs(0)
+    setIterationPlayerReadyVersion(0)
+    setSelectedPartId('')
   }, [selected?.artifactId, selected?.sessionId])
 
   useEffect(() => {
-    const targetSectionId = selected?.lineage?.iterationSectionId
+    const targetSectionId = selected ? desktopV3ArtifactStudioSectionLineage(artifacts, selected)?.iterationSectionId : ''
     if (!targetSectionId || !iterationDescriptor) return
     const targetSection = iterationDescriptor.sections.find((section) => section.id === targetSectionId)
     if (!targetSection) return
     iterationSectionIdRef.current = targetSection.id
     setIterationSectionId(targetSection.id)
     seekIteration(targetSection.startMs)
-  }, [iterationDescriptor, selected?.artifactId, selected?.lineage?.iterationSectionId])
+  }, [artifacts, iterationDescriptor, selected?.artifactId, selected?.eventSeq])
 
   useEffect(() => {
     const receiveIterationDescription = (event: MessageEvent) => {
       if (event.source !== animationFrameRef.current?.contentWindow) return
       const data = event.data && typeof event.data === 'object' && !Array.isArray(event.data) ? event.data as Record<string, unknown> : null
-      if (!data || data.protocol !== DESKTOP_V3_ARTIFACT_PLAYER_PROTOCOL || data.id !== iterationDescribeRequestRef.current || data.ok !== true) return
+      if (!data || data.protocol !== DESKTOP_V3_ARTIFACT_PLAYER_PROTOCOL || data.ok !== true) return
+      if (iterationSeekAcknowledgerRef.current?.acknowledge(data.id)) return
+      if (data.id !== iterationDescribeRequestRef.current) return
       const descriptor = normalizeDesktopV3ArtifactIterationDescriptor(data.result)
       iterationDescribeRequestRef.current = ''
-      if (!descriptor) return
+      const describedArtifactKey = iterationDescribeArtifactRef.current
+      iterationDescribeArtifactRef.current = ''
+      if (!descriptor || !describedArtifactKey) return
+      iterationPlayerArtifactRef.current = describedArtifactKey
       setIterationDescriptor(descriptor)
       const selectedSection = descriptor.sections.find((section) => section.id === iterationSectionIdRef.current) ?? descriptor.sections[0]
       iterationSectionIdRef.current = selectedSection?.id ?? ''
@@ -503,21 +545,37 @@ export function DesktopV3ArtifactGallery({
     if (navigate) onArtifactNavigate?.(artifact)
   }
 
-  const selectStudioArtifact = (artifact: DesktopV3ArtifactGalleryEntry) => {
-    iterationAutoplaySectionRef.current = artifact.lineage?.iterationSectionId || iterationSectionIdRef.current
-    setStudioActiveBranchId(artifactSelectionKey(artifact))
-    selectArtifact(artifact, false)
+  const selectStudioArtifact = (artifact: DesktopV3ArtifactGalleryEntry, section?: DesktopV3ArtifactIterationSection) => {
+    const artifactKey = artifactSelectionKey(artifact)
+    const targetSectionId = section?.id || desktopV3ArtifactStudioSectionLineage(artifacts, artifact)?.iterationSectionId || iterationSectionIdRef.current
+    iterationAutoplayArtifactRef.current = artifactKey
+    iterationAutoplaySectionRef.current = targetSectionId
+    if (section) {
+      iterationSectionIdRef.current = section.id
+      setIterationSectionId(section.id)
+      setSelectedPartId(artifact.parts?.find((part) => part.id === section.id)?.id ?? '')
+    }
+    setStudioActiveBranchId(artifactKey)
+    if (selected && artifactSelectionKey(selected) === artifactKey && iterationDescriptor) {
+      const targetSection = iterationDescriptor.sections.find((candidate) => candidate.id === targetSectionId)
+      if (targetSection) {
+        iterationAutoplayArtifactRef.current = ''
+        iterationAutoplaySectionRef.current = ''
+        startIterationSectionPlayback({ ...targetSection, endMs: iterationDescriptor.durationMs }, true)
+      }
+    }
+    selectArtifact(artifact)
     if (artifact.status === 'ready' && artifact.collectionId && (artifact.eventSeq ?? 0) > 0 && onActiveBranchChange) {
       const messageSelection = desktopV3ArtifactMessageSelection(artifact, 'use')
       void Promise.resolve(onActiveBranchChange({
         label: messageSelection.label,
-        description: [`Active complete artifact branch for section "${artifact.lineage?.iterationSectionLabel || iterationSection?.label || 'current'}".`, messageSelection.description].filter(Boolean).join(' '),
+        description: [`Active complete artifact branch for section "${desktopV3ArtifactStudioSectionLineage(artifacts, artifact)?.iterationSectionLabel || iterationSection?.label || 'current'}".`, messageSelection.description].filter(Boolean).join(' '),
         selection: desktopV3ArtifactSelection(artifact),
       })).catch((error) => setActionError(error instanceof Error ? error.message : 'Could not attach the active Studio branch'))
     }
   }
 
-  const sendAnimationMessage = (type: 'describe' | 'seek' | 'stop', timeMs?: number) => {
+  function sendAnimationMessage(type: 'describe' | 'seek' | 'stop', timeMs?: number) {
     const frameWindow = animationFrameRef.current?.contentWindow
     if (!frameWindow) return ''
     const id = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
@@ -527,80 +585,149 @@ export function DesktopV3ArtifactGallery({
     return id
   }
 
-  const requestIterationDescription = () => {
+  function requestIterationDescription(artifactKey: string) {
+    iterationSeekAcknowledgerRef.current?.reset()
+    sendAnimationMessage('stop')
+    iterationDescribeArtifactRef.current = artifactKey
     iterationDescribeRequestRef.current = sendAnimationMessage('describe')
   }
 
-  const seekIteration = (timeMs: number) => {
-    const bounded = iterationDescriptor ? Math.min(iterationDescriptor.durationMs, Math.max(0, Math.round(timeMs))) : Math.max(0, Math.round(timeMs))
-    sendAnimationMessage('seek', bounded)
-    iterationTimeMsRef.current = bounded
-    setIterationTimeMs(bounded)
+  function queueAnimationSeek(timeMs: number) {
+    iterationSeekAcknowledgerRef.current?.queue(timeMs)
   }
 
-  const pauseIteration = () => {
+  function syncIterationSectionToTime(timeMs: number) {
+    if (!iterationDescriptor) return
+    const section = iterationDescriptor.sections.find((candidate) => timeMs >= candidate.startMs && timeMs < candidate.endMs)
+      ?? (timeMs >= iterationDescriptor.durationMs ? iterationDescriptor.sections[iterationDescriptor.sections.length - 1] : undefined)
+    if (!section || section.id === iterationSectionIdRef.current) return
+    iterationSectionIdRef.current = section.id
+    setIterationSectionId(section.id)
+    const matchingPart = selected?.parts?.find((part) => part.id === section.id)
+      ?? selected?.parts?.find((part) => part.kind === 'temporal' && part.startMs === section.startMs && part.endMs === section.endMs)
+    setSelectedPartId(matchingPart?.id ?? '')
+  }
+
+  function seekIteration(timeMs: number) {
+    const bounded = iterationDescriptor ? Math.min(iterationDescriptor.durationMs, Math.max(0, Math.round(timeMs))) : Math.max(0, Math.round(timeMs))
+    queueAnimationSeek(bounded)
+    iterationTimeMsRef.current = bounded
+    setIterationTimeMs(bounded)
+    syncIterationSectionToTime(bounded)
+  }
+
+  function pauseIteration() {
     if (iterationPlaybackFrameRef.current !== null) cancelAnimationFrame(iterationPlaybackFrameRef.current)
     iterationPlaybackFrameRef.current = null
+    iterationSeekAcknowledgerRef.current?.setOnSettled(null)
     setIterationPlaying(false)
     seekIteration(iterationTimeMsRef.current)
   }
 
-  const startIterationSectionPlayback = (section: DesktopV3ArtifactIterationSection, fromBeginning: boolean) => {
+  function startIterationSectionPlayback(section: DesktopV3ArtifactIterationSection, fromBeginning: boolean) {
     if (iterationPlaybackFrameRef.current !== null) cancelAnimationFrame(iterationPlaybackFrameRef.current)
     iterationPlaybackFrameRef.current = null
+    iterationSeekAcknowledgerRef.current?.setOnSettled(null)
+    setIterationPlaying(false)
     const startMs = !fromBeginning && iterationTimeMsRef.current >= section.startMs && iterationTimeMsRef.current < section.endMs
       ? iterationTimeMsRef.current
       : section.startMs
-    seekIteration(startMs)
-    iterationPlaybackStartMsRef.current = startMs
-    iterationPlaybackStartedAtRef.current = performance.now()
-    iterationLastUIUpdateRef.current = 0
-    setIterationPlaying(true)
-    const tick = (now: number) => {
-      const nextMs = iterationPlaybackStartMsRef.current + (now - iterationPlaybackStartedAtRef.current)
-      if (nextMs >= section.endMs) {
-        seekIteration(section.endMs)
-        setIterationPlaying(false)
-        iterationPlaybackFrameRef.current = null
-        return
-      }
-      sendAnimationMessage('seek', nextMs)
-      iterationTimeMsRef.current = nextMs
-      if (now - iterationLastUIUpdateRef.current >= 100) {
-        iterationLastUIUpdateRef.current = now
-        setIterationTimeMs(nextMs)
+    iterationSeekAcknowledgerRef.current?.setOnSettled(() => {
+      iterationPlaybackStartMsRef.current = startMs
+      iterationPlaybackStartedAtRef.current = performance.now()
+      iterationLastUIUpdateRef.current = 0
+      setIterationPlaying(true)
+      const tick = (now: number) => {
+        const nextMs = iterationPlaybackStartMsRef.current + (now - iterationPlaybackStartedAtRef.current)
+        if (nextMs >= section.endMs) {
+          seekIteration(section.endMs)
+          setIterationPlaying(false)
+          iterationPlaybackFrameRef.current = null
+          return
+        }
+        queueAnimationSeek(nextMs)
+        iterationTimeMsRef.current = nextMs
+        syncIterationSectionToTime(nextMs)
+        if (now - iterationLastUIUpdateRef.current >= 100) {
+          iterationLastUIUpdateRef.current = now
+          setIterationTimeMs(nextMs)
+        }
+        iterationPlaybackFrameRef.current = requestAnimationFrame(tick)
       }
       iterationPlaybackFrameRef.current = requestAnimationFrame(tick)
-    }
-    iterationPlaybackFrameRef.current = requestAnimationFrame(tick)
+    })
+    seekIteration(startMs)
   }
 
-  const playIterationSection = () => {
-    if (!iterationSection) return
+  function playIterationSection() {
+    if (!iterationDescriptor) return
     if (iterationPlaying) {
       pauseIteration()
       return
     }
-    startIterationSectionPlayback(iterationSection, false)
+    const wholeArtifact = { id: 'whole-artifact', label: 'Whole artifact', startMs: 0, endMs: iterationDescriptor.durationMs, narration: [] }
+    startIterationSectionPlayback(wholeArtifact, false)
+  }
+
+  const selectArtifactPart = (part: NonNullable<DesktopV3ArtifactGalleryEntry['parts']>[number]) => {
+    if (!selected) return
+    setSelectedPartId(part.id)
+    if (part.kind === 'temporal' && part.endMs > part.startMs && iterationDescriptor) {
+      const matchingSection = iterationDescriptor.sections.find((section) => section.id === part.id)
+        ?? iterationDescriptor.sections.find((section) => section.startMs === part.startMs && section.endMs === part.endMs)
+      if (matchingSection) {
+        iterationSectionIdRef.current = matchingSection.id
+        setIterationSectionId(matchingSection.id)
+      }
+      startIterationSectionPlayback({ id: 'whole-artifact', label: 'Whole artifact', startMs: part.startMs, endMs: iterationDescriptor.durationMs, narration: [] }, true)
+    }
+  }
+
+  const requestPartChanges = async (part: NonNullable<DesktopV3ArtifactGalleryEntry['parts']>[number]) => {
+    if (!selected || !onAddToChat || !selectedCanAttach) return
+    try {
+      setActionPending('ask-part')
+      setActionError('')
+      const messageSelection = desktopV3ArtifactMessageSelection(selected, 'select')
+      const selection = { ...desktopV3ArtifactSelection(selected), part_id: part.id }
+      await onAddToChat([{
+        label: `${messageSelection.label} · ${part.label}`,
+        description: [`Change target: ${part.label} (${part.kind}).`, part.description, messageSelection.description].filter(Boolean).join(' '),
+        selection,
+      }])
+      setOpen(false)
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : 'Could not attach this artifact part for changes')
+    } finally {
+      setActionPending('')
+    }
   }
 
   const selectIterationSection = (section: DesktopV3ArtifactIterationSection) => {
     iterationSectionIdRef.current = section.id
     setIterationSectionId(section.id)
+    setSelectedPartId(selected?.parts?.find((part) => part.id === section.id)?.id ?? '')
     iterationAutoplaySectionRef.current = ''
-    startIterationSectionPlayback(section, true)
+    if (!iterationDescriptor) return
+    startIterationSectionPlayback({ ...section, endMs: iterationDescriptor.durationMs }, true)
   }
 
   useEffect(() => {
-    const sectionId = iterationAutoplaySectionRef.current
-    if (!sectionId || !iterationDescriptor || iterationPlayerReadyVersion === 0) return
-    const section = iterationDescriptor.sections.find((candidate) => candidate.id === sectionId)
-    if (!section) return
+    if (!selected || iterationPlayerReadyVersion === 0) return
+    const artifactKey = iterationAutoplayArtifactRef.current
+    const section = resolveDesktopV3ArtifactAutoplaySection(
+      { artifactKey, sectionId: iterationAutoplaySectionRef.current },
+      artifactSelectionKey(selected),
+      iterationPlayerArtifactRef.current,
+      iterationDescriptor,
+    )
+    if (!section || !iterationDescriptor) return
+    iterationAutoplayArtifactRef.current = ''
     iterationAutoplaySectionRef.current = ''
     iterationSectionIdRef.current = section.id
     setIterationSectionId(section.id)
-    startIterationSectionPlayback(section, true)
-  }, [iterationPlayerReadyVersion])
+    startIterationSectionPlayback({ ...section, endMs: iterationDescriptor.durationMs }, true)
+  }, [iterationDescriptor, iterationPlayerReadyVersion, selected])
 
   const requestSectionIteration = async () => {
     if (!iterationRoundSourceArtifact || !iterationSection || !onIterateSection || iterationRoundSourceArtifact.status !== 'ready' || !iterationRoundSourceArtifact.collectionId || !(iterationRoundSourceArtifact.eventSeq ?? 0)) return
@@ -767,10 +894,12 @@ export function DesktopV3ArtifactGallery({
       setActionError('')
       await onAddToChat(pendingChatArtifacts.map((artifact) => {
         const messageSelection = desktopV3ArtifactMessageSelection(artifact, 'select')
+        const selection = desktopV3ArtifactSelection(artifact)
+        if (selected && artifactSelectionKey(artifact) === artifactSelectionKey(selected) && selectedPartId) selection.part_id = selectedPartId
         return {
           label: messageSelection.label,
           description: messageSelection.description,
-          selection: desktopV3ArtifactSelection(artifact),
+          selection,
         }
       }))
       setChatSelectedIds([])
@@ -819,13 +948,12 @@ export function DesktopV3ArtifactGallery({
     }
   }
 
-  const renderStudioBranch = (artifact: DesktopV3ArtifactGalleryEntry, alternativeIndex: number) => {
-    const branchActive = selected ? artifactSelectionKey(artifact) === artifactSelectionKey(selected) : false
+  const renderStudioBranch = (artifact: DesktopV3ArtifactGalleryEntry, alternativeIndex: number, section: DesktopV3ArtifactIterationSection) => {
+    const branchSelected = selected ? artifactSelectionKey(artifact) === artifactSelectionKey(selected) : false
     const activeBranch = artifactSelectionKey(artifact) === studioActiveBranchId
-    const depth = desktopV3ArtifactStudioBranchDepth(artifacts, artifact)
-    return <div key={artifactSelectionKey(artifact)} className={cn('flex min-w-0 items-stretch rounded-lg', branchActive ? 'bg-[var(--app-surface-active)] text-[var(--app-text)]' : 'text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)]')} data-artifact-studio-branch>
-      <button type="button" className="flex min-w-0 flex-1 items-start gap-2 rounded-lg px-2.5 py-2 text-left text-[10px]" aria-current={branchActive ? 'true' : undefined} onClick={() => selectStudioArtifact(artifact)}>
-        <span className="shrink-0 font-mono text-[9px] leading-4 text-[var(--app-text-subtle)]">{depth ? `↳${depth}` : alternativeIndex + 1}</span>
+    return <div key={artifactSelectionKey(artifact)} className={cn('flex min-w-0 items-stretch rounded-lg', branchSelected ? 'bg-[var(--app-surface-active)] text-[var(--app-text)]' : 'text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)]')} data-artifact-studio-branch>
+      <button type="button" className="flex min-w-0 flex-1 items-start gap-2 rounded-lg px-2.5 py-2 text-left text-[10px]" aria-current={branchSelected ? 'true' : undefined} onClick={() => selectStudioArtifact(artifact, section)}>
+        <span className="grid size-4 shrink-0 place-items-center rounded-full border border-[var(--app-border)] font-mono text-[9px]">{alternativeIndex + 1}</span>
         <span className="min-w-0 flex-1 break-words leading-4">{variantDisplayLabel(artifact, alternativeIndex)}</span>
         {activeBranch ? <Check className="mt-0.5 size-3 shrink-0 text-[var(--app-primary)]" aria-label="Active branch" /> : null}
       </button>
@@ -1005,7 +1133,7 @@ export function DesktopV3ArtifactGallery({
                   data-artifact-animation-active={selectedAnimationActive || undefined}
                 >
                   {iterationDescriptor && !previewFullscreen ? <aside className="absolute inset-y-0 left-0 z-10 hidden w-72 overflow-x-hidden overflow-y-auto border-r border-[var(--app-border)] bg-[var(--app-surface)] p-3 xl:w-80 md:block" aria-label="Artifact Studio steps" data-artifact-studio-step-sidebar data-artifact-studio-unified-iterations>
-                    <div className="mb-2 px-2 py-1"><p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-[var(--app-text-subtle)]">Studio steps</p><p className="mt-0.5 text-[10px] text-[var(--app-text-muted)]">Choose a branch to preview it. Your active branch is attached automatically when you continue.</p></div>
+                    <div className="mb-2 px-2 py-1"><p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-[var(--app-text-subtle)]">Studio steps</p><p className="mt-0.5 text-[10px] text-[var(--app-text-muted)]">Choose a step, then select its iteration here. The preview starts at that step.</p></div>
                     <div className="grid gap-2">
                       {iterationDescriptor.sections.map((section, index) => {
                         const active = section.id === iterationSection?.id
@@ -1017,7 +1145,7 @@ export function DesktopV3ArtifactGallery({
                             <span className="mt-1 block pl-7 font-mono text-[9px] text-[var(--app-text-subtle)]">{formatDesktopV3ArtifactIterationTime(section.startMs)}–{formatDesktopV3ArtifactIterationTime(section.endMs)}</span>
                           </button>
                           {active && alternatives.length ? <div className="grid gap-1 border-t border-[var(--app-border)] p-1.5" aria-label={`${section.label} branches`}>
-                            {alternatives.map(renderStudioBranch)}
+                            {alternatives.map((artifact, alternativeIndex) => renderStudioBranch(artifact, alternativeIndex, section))}
                           </div> : null}
                         </section>
                       })}
@@ -1031,7 +1159,8 @@ export function DesktopV3ArtifactGallery({
                   {!previewLoading && !previewError && !selected.previewable && selected.content === undefined && selected.status !== 'staging' && selected.status !== 'failed' && selected.status !== 'unavailable' ? <div className="grid h-full min-h-40 place-items-center text-center text-sm text-[var(--app-text-muted)]"><div><FileText className="mx-auto mb-2 size-6" /><p>This artifact is available to download, but has no inline preview.</p></div></div> : null}
                   {!previewLoading && !previewError && selectedAnimationActive && selected.mediaType.startsWith('image/') && previewURL ? <div className="grid size-full min-h-0 place-items-center"><img key={`${previewURL}:${previewRetry}`} src={previewURL} alt={selected.description || selected.label} className="size-full rounded-lg border border-[var(--app-border)] bg-white object-contain shadow-sm" onError={() => setPreviewError('The browser could not decode or load this image.')} /></div> : null}
                   {!previewLoading && !previewError && selectedAnimationActive && selectedVideoProfileCompatible && (selected.mediaType.startsWith('video/') || selected.kind === 'video') && previewURL ? <div className="grid size-full min-h-0 place-items-center bg-black/90 p-2 sm:p-4 rounded-lg"><video key={`${previewURL}:${previewRetry}`} src={previewURL} controls autoPlay={false} playsInline preload="metadata" className="max-h-full max-w-full rounded-lg border border-white/10 object-contain shadow-md" data-artifact-video-player onError={() => setPreviewError('The browser could not decode or load this video.')} /></div> : null}
-                  {!previewLoading && !previewError && selectedAnimationActive && selected.mediaType === 'text/html' && previewURL ? <iframe ref={animationFrameRef} key={`${previewURL}:${previewRetry}`} title={selected.label} src={previewURL} sandbox="allow-scripts" referrerPolicy="no-referrer" className="h-full min-h-0 w-full border-0 bg-white" onLoad={requestIterationDescription} onError={() => setPreviewError('The secure animation runtime could not load this artifact. Access may have expired or the artifact may be incompatible with preview policy.')} /> : null}
+                  {!previewLoading && !previewError && selectedAnimationActive && selected.mediaType === 'text/html' && previewURL ? <iframe ref={animationFrameRef} key={`${previewURL}:${previewRetry}`} title={selected.label} src={previewURL} sandbox="allow-scripts" referrerPolicy="no-referrer" className="h-full min-h-0 w-full border-0 bg-white" onLoad={() => requestIterationDescription(artifactSelectionKey(selected))} onError={() => setPreviewError('The secure animation runtime could not load this artifact. Access may have expired or the artifact may be incompatible with preview policy.')} /> : null}
+                  {iterationDescriptor && !previewLoading && !previewError && !previewFullscreen ? <button type="button" className="absolute bottom-3 left-1/2 z-20 inline-flex h-10 -translate-x-1/2 items-center gap-2 rounded-full border border-white/20 bg-black/75 px-4 text-xs font-semibold text-white shadow-lg backdrop-blur hover:bg-black/90 md:left-[calc(50%+9rem)] xl:left-[calc(50%+10rem)]" aria-label={iterationPlaying ? 'Pause animated artifact' : `Play animated artifact from ${iterationSection?.label || 'current position'}`} onClick={playIterationSection} data-artifact-primary-playback>{iterationPlaying ? <Pause size={15} /> : <Play size={15} />}{iterationPlaying ? 'Pause' : iterationTimeMs > 0 ? `Play from ${iterationSection?.label || 'here'}` : 'Play animation'}</button> : null}
                   {!previewLoading && !previewError && selectedAnimationActive && selected.mediaType === 'application/pdf' && previewURL ? <iframe key={`${previewURL}:${previewRetry}`} title={selected.label} src={previewURL} sandbox="" referrerPolicy="no-referrer" className="h-full min-h-0 w-full border-0 bg-white" onError={() => setPreviewError('The browser could not load this PDF.')} /> : null}
                   {!previewLoading && !previewError && selectedAnimationActive && selected.mediaType === 'text/markdown' && previewText ? <div className="mx-auto max-w-4xl rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] p-5"><ChatMarkdown content={previewText} /></div> : null}
                   {!previewLoading && !previewError && selectedAnimationActive && selected.mediaType === 'text/plain' && previewText ? <pre className="mx-auto max-w-4xl whitespace-pre-wrap break-words rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] p-5 font-mono text-xs leading-5">{previewText}</pre> : null}
@@ -1048,14 +1177,14 @@ export function DesktopV3ArtifactGallery({
                           <span className="mt-0.5 block font-mono text-[9px] text-[var(--app-text-subtle)]">{formatDesktopV3ArtifactIterationTime(section.startMs)}–{formatDesktopV3ArtifactIterationTime(section.endMs)}</span>
                         </button>
                         {active && alternatives.length ? <div className="grid gap-1 border-t border-[var(--app-border)] p-1.5 text-[var(--app-text-muted)]" aria-label={`${section.label} branches`}>
-                          {alternatives.map(renderStudioBranch)}
+                          {alternatives.map((artifact, alternativeIndex) => renderStudioBranch(artifact, alternativeIndex, section))}
                         </div> : null}
                       </section>
                     })}
                   </div>
                   <div className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2 lg:flex lg:flex-wrap">
-                    <button type="button" className="grid size-8 shrink-0 place-items-center rounded-full bg-[var(--app-primary)] text-white hover:opacity-90" aria-label={iterationPlaying ? 'Pause animation section' : 'Play animation section'} onClick={playIterationSection}>{iterationPlaying ? <Pause size={14} /> : <Play size={14} />}</button>
-                    <input type="range" min={iterationSection.startMs} max={iterationSection.endMs} step={1} value={Math.min(iterationSection.endMs, Math.max(iterationSection.startMs, iterationTimeMs))} aria-label="Animation section timeline" className="w-full min-w-0 accent-[var(--app-primary)] lg:min-w-40 lg:flex-1" onChange={(event) => { if (iterationPlaying) pauseIteration(); seekIteration(Number(event.target.value)) }} />
+                    <button type="button" className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-full bg-[var(--app-primary)] px-3 text-xs font-semibold text-white hover:opacity-90" aria-label={iterationPlaying ? 'Pause whole artifact' : 'Play whole artifact from current position'} onClick={playIterationSection}>{iterationPlaying ? <Pause size={14} /> : <Play size={14} />}<span>{iterationPlaying ? 'Pause' : iterationTimeMs > 0 ? 'Play from here' : 'Play'}</span></button>
+                    <input type="range" min={0} max={iterationDescriptor.durationMs} step={1} value={Math.min(iterationDescriptor.durationMs, Math.max(0, iterationTimeMs))} aria-label="Whole artifact timeline" className="w-full min-w-0 accent-[var(--app-primary)] lg:min-w-40 lg:flex-1" onChange={(event) => { if (iterationPlaying) pauseIteration(); seekIteration(Number(event.target.value)) }} />
                     <span className="shrink-0 font-mono text-[10px] text-[var(--app-text-muted)]">{formatDesktopV3ArtifactIterationTime(iterationTimeMs)}</span>
                     <button type="button" className="col-span-3 inline-flex h-9 w-full min-w-0 items-center justify-center gap-1.5 rounded-lg border border-[var(--app-primary)] bg-[var(--app-primary-soft)] px-3 text-xs font-semibold text-[var(--app-primary)] hover:opacity-90 disabled:opacity-50 lg:col-auto lg:h-8 lg:w-auto lg:shrink-0" disabled={!iterationRoundSourceArtifact || !onIterateSection || Boolean(actionPending)} onClick={() => void requestSectionIteration()} data-artifact-iterate-section>{actionPending === 'iterate-section' ? <Loader2 className="size-3 animate-spin" /> : <Sparkles size={13} />}More alternatives</button>
                     {nextIterationSection ? <button type="button" className="col-span-3 inline-flex h-9 w-full min-w-0 items-center justify-center gap-1.5 rounded-lg bg-[var(--app-primary)] px-3 text-xs font-semibold text-white hover:opacity-90 disabled:opacity-50 lg:col-auto lg:h-8 lg:w-auto lg:shrink-0" disabled={!activeIterationAlternative || !onIterateSection || Boolean(actionPending)} onClick={() => void requestNextSectionIteration()} data-artifact-next-section>{actionPending === 'next-section' ? <Loader2 className="size-3 animate-spin" /> : <ChevronRight size={13} />}Continue to {nextIterationSection.label}</button> : null}
@@ -1065,6 +1194,8 @@ export function DesktopV3ArtifactGallery({
                   </div>
 
                 </section> : null}
+                {selected.parts?.length ? <section className="shrink-0 border-t border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-2" aria-label="Artifact parts" data-artifact-parts><div className="mb-1.5 flex items-center justify-between gap-2"><span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--app-text-subtle)]">Parts · choose one to play from it</span>{selectedPart ? <span className="truncate text-[10px] font-medium text-[var(--app-primary)]">Editing target: {selectedPart.label}</span> : null}</div><div className="flex min-w-0 gap-2 overflow-x-auto">{selected.parts.map((part, index) => { const active = part.id === selectedPartId || (part.kind === 'temporal' && iterationSection?.id === part.id); return <div key={part.id} className={cn('flex shrink-0 items-stretch overflow-hidden rounded-lg border', active ? 'border-[var(--app-primary)] bg-[var(--app-primary-soft)]' : 'border-[var(--app-border)] bg-[var(--app-bg)]')} data-artifact-part={part.id}><button type="button" className="min-w-32 px-3 py-2 text-left hover:bg-[var(--app-surface-hover)]" aria-pressed={active} onClick={() => selectArtifactPart(part)}><span className="flex items-center gap-1.5 text-[10px] font-semibold">{part.kind === 'temporal' ? <Play size={11} /> : null}{index + 1}. {part.label}</span><span className="block text-[9px] text-[var(--app-text-subtle)]">{part.kind === 'temporal' ? `${formatDesktopV3ArtifactIterationTime(part.startMs)} · play from here` : part.kind}</span></button><button type="button" className="inline-flex items-center gap-1 border-l border-[var(--app-border)] px-2.5 text-[9px] font-semibold text-[var(--app-primary)] hover:bg-[var(--app-surface-hover)] disabled:opacity-50" disabled={!onAddToChat || !selectedCanAttach || Boolean(actionPending)} onClick={() => void requestPartChanges(part)} aria-label={`Ask for changes to ${part.label}`} data-artifact-ask-part>{actionPending === 'ask-part' && selectedPartId === part.id ? <Loader2 size={11} className="animate-spin" /> : <MessageSquarePlus size={11} />}Ask changes</button></div>})}</div></section> : null}
+                {!studioModeActive && selectedRounds.length > 1 ? <section className="shrink-0 border-t border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-2" aria-label="Artifact revision history" data-artifact-revision-history><div className="flex gap-2 overflow-x-auto">{selectedRounds.map((round) => <div key={round.id} className="shrink-0 rounded-lg border border-[var(--app-border)] px-2 py-1.5 text-[10px]"><span className="font-semibold">Revision {round.revisionNumber}</span><span className="ml-1 text-[var(--app-text-subtle)]">{round.candidates.length} candidate{round.candidates.length === 1 ? '' : 's'}</span></div>)}</div></section> : null}
                 <footer className={cn('grid shrink-0 gap-1.5 border-t border-[var(--app-border)] bg-[var(--app-surface)] px-2 py-2 md:flex md:flex-wrap md:items-center md:justify-between md:gap-2 md:px-4 md:py-3', selectedCanExportVideoStills && onExportVideoStills ? 'grid-cols-4' : 'grid-cols-3')} aria-live="polite" data-mobile-generation-actions>
                   <div className="hidden min-w-0 flex-1 text-xs md:block">{actionError ? <span className="text-[var(--app-danger)]">{actionError}</span> : actionConfirmation ? <span className="text-[var(--app-success)]">{actionConfirmation}</span> : chatSelectedIds.length > 0 ? <span className="text-[var(--app-text-subtle)]">{chatSelectedIds.length} ready variant{chatSelectedIds.length === 1 ? '' : 's'} selected for chat. {pendingChatArtifacts.some((artifact) => artifact.mediaType.startsWith('image/')) ? 'Ask for changes to remix the exact selected image.' : 'This does not change the durable selected design.'}</span> : selectedIsCanonical ? <span className="inline-flex items-center gap-1.5 text-[var(--app-success)]"><Check className="size-3.5" />This is the durable selected design for the collection.</span> : <span className="text-[var(--app-text-subtle)]">Attach a reference for changes without changing the selected design, or select and use it.</span>}</div>
                   {selectedCanExportVideoStills && onExportVideoStills ? <button type="button" className="inline-flex h-10 min-w-0 items-center justify-center gap-1 rounded-lg border border-[var(--app-primary)] bg-[var(--app-primary-soft)] px-2 text-[10px] font-semibold text-[var(--app-primary)] hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 md:h-9 md:px-3 md:text-xs" disabled={Boolean(actionPending)} title="Export declared capture states as managed 1920 × 1080 PNGs, then prepare a pending video plan" onClick={() => void requestVideoStillExport()} data-artifact-export-video-stills>{actionPending === 'export-video-stills' ? <Loader2 className="size-4 shrink-0 animate-spin" /> : <Sparkles className="size-4 shrink-0" />}<span className="truncate">Video stills</span></button> : null}

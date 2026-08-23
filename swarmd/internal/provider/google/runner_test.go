@@ -244,7 +244,7 @@ func TestGooglePriorityTransportMarksMissingServedTierUnconfirmed(t *testing.T) 
 	}
 }
 
-func TestBuildGoogleRequestOmitsUnsupportedUniqueItemsWithoutMutatingCanonicalSchema(t *testing.T) {
+func TestBuildGoogleRequestOmitsUnsupportedConstraintsWithoutMutatingCanonicalSchema(t *testing.T) {
 	parameters := map[string]any{
 		"type": "object",
 		"properties": map[string]any{
@@ -256,6 +256,16 @@ func TestBuildGoogleRequestOmitsUnsupportedUniqueItemsWithoutMutatingCanonicalSc
 				"items": map[string]any{
 					"type":    "string",
 					"pattern": "^[a-z0-9][a-z0-9._-]{0,63}$",
+				},
+			},
+			"parts": map[string]any{
+				"type": "array",
+				"items": map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"width":  map[string]any{"type": "number", "exclusiveMinimum": 0, "maximum": 1},
+						"height": map[string]any{"type": "number", "exclusiveMaximum": 1, "minimum": 0},
+					},
 				},
 			},
 		},
@@ -278,16 +288,21 @@ func TestBuildGoogleRequestOmitsUnsupportedUniqueItemsWithoutMutatingCanonicalSc
 	if err != nil {
 		t.Fatalf("marshal Google tool parameters: %v", err)
 	}
-	if strings.Contains(string(encoded), `"uniqueItems"`) {
-		t.Fatalf("Google tool parameters retain unsupported uniqueItems: %s", encoded)
+	for _, unsupported := range []string{`"uniqueItems"`, `"exclusiveMinimum"`, `"exclusiveMaximum"`} {
+		if strings.Contains(string(encoded), unsupported) {
+			t.Fatalf("Google tool parameters retain unsupported constraint %s: %s", unsupported, encoded)
+		}
 	}
-	for _, supported := range []string{`"minItems":1`, `"maxItems":16`, `"pattern":"^[a-z0-9][a-z0-9._-]{0,63}$"`} {
+	for _, supported := range []string{`"minItems":1`, `"maxItems":16`, `"pattern":"^[a-z0-9][a-z0-9._-]{0,63}$"`, `"maximum":1`, `"minimum":0`} {
 		if !strings.Contains(string(encoded), supported) {
 			t.Fatalf("Google tool parameters lost supported constraint %s: %s", supported, encoded)
 		}
 	}
-	stateIDs := parameters["properties"].(map[string]any)["state_ids"].(map[string]any)
-	if stateIDs["uniqueItems"] != true {
+	canonicalProperties := parameters["properties"].(map[string]any)
+	stateIDs := canonicalProperties["state_ids"].(map[string]any)
+	parts := canonicalProperties["parts"].(map[string]any)
+	partProperties := parts["items"].(map[string]any)["properties"].(map[string]any)
+	if stateIDs["uniqueItems"] != true || partProperties["width"].(map[string]any)["exclusiveMinimum"] != 0 || partProperties["height"].(map[string]any)["exclusiveMaximum"] != 1 {
 		t.Fatalf("Google serialization mutated canonical schema: %#v", parameters)
 	}
 }

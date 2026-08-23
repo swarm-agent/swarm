@@ -603,7 +603,7 @@ func sanitizeGoogleToolSchemaMap(schema map[string]any, inheritedProperties map[
 	}
 	for key, item := range schema {
 		switch key {
-		case "additionalProperties", "uniqueItems", "properties":
+		case "additionalProperties", "uniqueItems", "exclusiveMinimum", "exclusiveMaximum", "properties":
 			continue
 		case "anyOf":
 			out[key] = sanitizeGoogleToolSchemaAlternatives(item, properties)
