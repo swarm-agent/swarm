@@ -51,6 +51,10 @@ func TestArtifactGitGraphTenCandidatesFinalizeThenAcceptOnce(t *testing.T) {
 	if err != nil { t.Fatal(err) }
 	if accepted.Artifact.Chain.Head.VariantID != chosen.ID || accepted.Artifact.Step.Accepted.VariantID != chosen.ID { t.Fatalf("accept projection = %+v", accepted.Artifact) }
 	if _, err := apply("accept-conflict", V3SessionMutationSelectArtifact, V3ArtifactMutation{Collection: SessionArtifactCollection{ID: ready[5].CollectionID}, Selection: &SessionArtifactSelectionReference{SessionID: ready[5].SessionID, CollectionID: ready[5].CollectionID, VariantID: ready[5].ID, EventSeq: ready[5].EventSeq}}); err == nil || !strings.Contains(err.Error(), "already accepted") { t.Fatalf("conflicting acceptance error = %v", err) }
+	used, err := apply("use-head", V3SessionMutationSelectArtifact, V3ArtifactMutation{Collection: SessionArtifactCollection{ID: chosen.CollectionID}, Selection: &SessionArtifactSelectionReference{SessionID: chosen.SessionID, CollectionID: chosen.CollectionID, VariantID: chosen.ID, EventSeq: chosen.EventSeq, Action: "use"}})
+	if err != nil { t.Fatalf("use accepted head: %v", err) }
+	if used.Artifact == nil || used.Artifact.Selection == nil || used.Artifact.Selection.Action != "use" || used.Artifact.Chain == nil || used.Artifact.Chain.Head.VariantID != chosen.ID { t.Fatalf("use projection = %+v", used.Artifact) }
+	if _, err := apply("use-unaccepted", V3SessionMutationSelectArtifact, V3ArtifactMutation{Collection: SessionArtifactCollection{ID: ready[5].CollectionID}, Selection: &SessionArtifactSelectionReference{SessionID: ready[5].SessionID, CollectionID: ready[5].CollectionID, VariantID: ready[5].ID, EventSeq: ready[5].EventSeq, Action: "use"}}); err == nil || !strings.Contains(err.Error(), "accepted chain head") { t.Fatalf("unaccepted use error = %v", err) }
 
 	// Two later turns may start from the same head, but accepting one makes the
 	// other's captured parent stale.

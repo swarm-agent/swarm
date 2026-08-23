@@ -647,7 +647,7 @@ func (s *Server) handleSessionV3ArtifactSelection(w http.ResponseWriter, r *http
 		return
 	}
 	if strings.TrimSpace(req.ArtifactChainID) == "" || strings.TrimSpace(req.ArtifactStepID) == "" || strings.TrimSpace(req.ArtifactChainID) != variant.ArtifactChainID || strings.TrimSpace(req.ArtifactStepID) != variant.ArtifactStepID {
-		writeError(w, http.StatusConflict, errors.New("artifact acceptance chain or step identity is stale"))
+		writeError(w, http.StatusConflict, errors.New("artifact selection chain or step identity is stale"))
 		return
 	}
 	collection, found, err := s.sessions.GetSessionArtifactCollection(principal.AccountScopeID, sessionID, variant.CollectionID)
@@ -702,7 +702,7 @@ func (s *Server) handleSessionV3ArtifactSelection(w http.ResponseWriter, r *http
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	if result.Artifact == nil || result.Artifact.Selection == nil || result.Artifact.Collection.SelectedVariantID != variant.ID {
+	if result.Artifact == nil || result.Artifact.Selection == nil || (action == "select" && result.Artifact.Collection.SelectedVariantID != variant.ID) {
 		writeError(w, http.StatusInternalServerError, errors.New("artifact selection was not persisted"))
 		return
 	}

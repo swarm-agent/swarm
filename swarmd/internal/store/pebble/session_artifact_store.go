@@ -1698,9 +1698,6 @@ func (s *SessionStore) prepareV3ArtifactMutation(input V3SessionMutationInput, s
 		if incoming.Selection.EventSeq != 0 && incoming.Selection.EventSeq != selected.EventSeq {
 			return preparedV3ArtifactMutation{}, errors.New("artifact selection event sequence is stale")
 		}
-		collection.Status = artifactCollectionStatusFromCounts(collection)
-		collection.UpdatedAt = now
-		collection.EventSeq = seq
 		action := incoming.Selection.Action
 		if action == "" {
 			action = "select"
@@ -1719,7 +1716,7 @@ func (s *SessionStore) prepareV3ArtifactMutation(input V3SessionMutationInput, s
 			}
 		}
 		selection = &ref
-		if selected.GraphState != SessionArtifactGraphAuthoritative || selected.ArtifactChainID == "" || selected.ArtifactStepID == "" { return preparedV3ArtifactMutation{}, errors.New("legacy artifact lineage is unproven and cannot advance a canonical head") }
+		if selected.GraphState != SessionArtifactGraphAuthoritative || selected.ArtifactChainID == "" || selected.ArtifactStepID == "" { return preparedV3ArtifactMutation{}, errors.New("legacy artifact lineage is unproven and cannot participate in a canonical continuation") }
 		chain, ok, err := s.GetSessionArtifactChain(input.AccountScopeID, input.UserID, selected.ArtifactChainID)
 		if err != nil { return preparedV3ArtifactMutation{}, err }
 		if !ok || chain.GraphState != SessionArtifactGraphAuthoritative { return preparedV3ArtifactMutation{}, errors.New("authoritative artifact chain was not found") }
@@ -1727,6 +1724,14 @@ func (s *SessionStore) prepareV3ArtifactMutation(input V3SessionMutationInput, s
 		step, ok, err := s.GetSessionArtifactStep(input.AccountScopeID, input.UserID, chain.ID, selected.ArtifactStepID)
 		if err != nil { return preparedV3ArtifactMutation{}, err }
 		if !ok || step.GraphState != SessionArtifactGraphAuthoritative { return preparedV3ArtifactMutation{}, errors.New("authoritative artifact step was not found") }
+		if action == "use" {
+			if !sameArtifactReference(chain.Head, artifactSelectionForVariant(selected)) { return preparedV3ArtifactMutation{}, errors.New("only the exact accepted chain head can be used for continuation") }
+			prepared.Projection = V3ArtifactProjection{Collection: collection, Variant: variant, Selection: selection, Chain: &chain, Step: &step}
+			return prepared, nil
+		}
+		collection.Status = artifactCollectionStatusFromCounts(collection)
+		collection.UpdatedAt = now
+		collection.EventSeq = seq
 		copyStep := step; prepared.PreviousStep = &copyStep
 		if step.Accepted != nil {
 			if step.Accepted.VariantID == selected.ID && step.Accepted.EventSeq == selected.EventSeq { return preparedV3ArtifactMutation{}, errors.New("artifact step candidate was already accepted") }
