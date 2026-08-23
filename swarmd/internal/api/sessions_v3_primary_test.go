@@ -6516,7 +6516,12 @@ func TestSessionsV3ProviderManagedPlanManageTerminalOutcomesUsePlanSavedOutbox(t
 				if req.ToolInvoker == nil {
 					return provideriface.Response{}, fmt.Errorf("missing provider-managed tool invoker")
 				}
-				args := mustSessionsV3TestJSON(t, map[string]any{"action": tc.action, "checkpoint_id": "cp-1", "report": tc.action + " report", "result": "done"})
+				terminalArgs := map[string]any{"action": tc.action, "checkpoint_id": "cp-1", "report": tc.action + " report", "result": "done"}
+				if tc.action == "mark_needs_review" {
+					terminalArgs["handoff_overview"] = "The checkpoint needs user judgment before execution continues."
+					terminalArgs["suggested_prompts"] = []any{map[string]any{"label": "Ask a question", "prompt": "Explain what needs review."}}
+				}
+				args := mustSessionsV3TestJSON(t, terminalArgs)
 				result, err := req.ToolInvoker.ExecuteTool(context.Background(), provideriface.ToolInvocation{CallID: "call-" + tc.name, Name: "plan_manage", Arguments: args})
 				if err != nil {
 					return provideriface.Response{}, err

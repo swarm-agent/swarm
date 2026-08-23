@@ -1341,7 +1341,7 @@ function buildDesktopV3PlanHandoffItem(
   const bodyLines = headlineIndex >= 0 ? lines.slice(headlineIndex + 1) : [];
   const rawBody = bodyLines.join("\n").trim() || message.content.trim();
   const finalHandoff = type === "plan-final-handoff"
-    ? normalizeDesktopPlanFinalHandoff(message.metadata?.final_handoff)
+    ? normalizeDesktopPlanFinalHandoff(message.metadata?.review_handoff ?? message.metadata?.final_handoff)
     : type === "plan-blocked-handoff"
       ? normalizeDesktopPlanFinalHandoff(message.metadata?.blocked_handoff)
       : null;
@@ -4116,15 +4116,16 @@ function DesktopV3StructuredFinalHandoff({
   return (
     <div className="flex w-full min-w-0 justify-start py-1" data-testid="desktop-v3-plan-final-handoff">
       <section
-        aria-label="Final handoff"
+        aria-label={metadataString(item.message.metadata, "action").toLowerCase() === "mark_needs_review" ? "Review handoff" : "Final handoff"}
         className="w-full min-w-0 rounded-xl border border-[var(--app-border-active)] bg-[var(--app-surface-subtle)] px-4 py-3 text-sm text-[var(--app-text)]"
         data-testid="desktop-v3-structured-final-handoff"
+        data-checkpoint-status={metadataString(item.message.metadata, "action").toLowerCase() === "mark_needs_review" ? "review" : undefined}
       >
         <div className="flex min-w-0 items-start justify-between gap-3">
           <div className="min-w-0">
             <div className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--app-primary)]">
               <CheckCircle2 size={13} aria-hidden="true" />
-              Final handoff
+              {metadataString(item.message.metadata, "action").toLowerCase() === "mark_needs_review" ? "Review handoff" : "Final handoff"}
             </div>
             <h3 className="mt-3 break-words text-base font-semibold leading-6">{handoff.title}</h3>
           </div>

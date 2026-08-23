@@ -10,6 +10,9 @@ import (
 
 func (s *Service) appendPlanExecutionLifecycleSystemMessage(sessionID, action string, plan pebblestore.SessionPlanSnapshot, payload map[string]any, applySessionMutation func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error)) error {
 	handoffInput := PlanExecutionLifecycleMessageInput{Action: action, Plan: plan, Payload: payload}
+	if reviewHandoff, ok := BuildFinalPlanExecutionHandoffSystemMessage(handoffInput); ok && strings.TrimSpace(action) == "mark_needs_review" {
+		return s.appendFinalPlanExecutionSystemMessage(sessionID, plan, reviewHandoff, planFinalHandoffMessageLogicalKey(action, plan, payload), "plan execution review handoff")
+	}
 	if blockedHandoff, ok := BuildBlockedPlanExecutionHandoffSystemMessage(handoffInput); ok {
 		return s.appendPlanExecutionSystemMessage(sessionID, plan, blockedHandoff, planBlockedHandoffMessageLogicalKey(action, plan, payload), "plan execution blocked handoff", applySessionMutation)
 	}

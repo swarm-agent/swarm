@@ -57,7 +57,7 @@ func BuildPlanExecutionLifecycleSystemMessage(input PlanExecutionLifecycleMessag
 	if nextCheckpointID != "" && nextCheckpointID != checkpointID && nextAction != "await_review" && nextAction != "stopped" && nextAction != "plan_complete" {
 		bodyLines = append(bodyLines, "Next: "+planLifecycleCheckpointLabel(nextCheckpointID, nextCheckpointTitle))
 	}
-	finalHandoff := planLifecycleFinalHandoffRequired(nextAction, checkpointID, doc)
+	finalHandoff := planLifecycleFinalHandoffRequired(action, nextAction, checkpointID, doc)
 	allCheckpointsComplete := allPlanLifecycleCheckpointsCompleted(doc)
 	if nextAction == "await_review" {
 		if allCheckpointsComplete {
@@ -179,7 +179,7 @@ func planLifecycleHeadline(action, checkpointID string, doc *pebblestore.Session
 	case "complete_checkpoint", "checkpoint_outcome":
 		if nextAction == "await_review" && allPlanLifecycleCheckpointsCompleted(doc) {
 			base = "All checkpoints complete; review required"
-		} else if planLifecycleFinalHandoffRequired(nextAction, checkpointID, doc) {
+		} else if planLifecycleFinalHandoffRequired(action, nextAction, checkpointID, doc) {
 			base = "Follow-up checkpoint complete; review required"
 		} else if summary.PlanComplete || nextAction == "plan_complete" {
 			base = "Plan complete"
@@ -252,9 +252,12 @@ func planLifecycleActionCompleted(action string) bool {
 	}
 }
 
-func planLifecycleFinalHandoffRequired(nextAction, checkpointID string, doc *pebblestore.SessionPlanDocument) bool {
+func planLifecycleFinalHandoffRequired(action, nextAction, checkpointID string, doc *pebblestore.SessionPlanDocument) bool {
 	if strings.TrimSpace(nextAction) != "await_review" {
 		return false
+	}
+	if strings.TrimSpace(action) == "mark_needs_review" {
+		return true
 	}
 	if allPlanLifecycleCheckpointsCompleted(doc) {
 		return true
@@ -401,7 +404,7 @@ func BuildPlanExecutionCheckpointHandoffSystemMessage(input PlanExecutionLifecyc
 
 func BuildFinalPlanExecutionHandoffSystemMessage(input PlanExecutionLifecycleMessageInput) (PlanExecutionLifecycleMessage, bool) {
 	action := strings.TrimSpace(input.Action)
-	if !planLifecycleActionCompleted(action) || input.Plan.Document == nil {
+	if (!planLifecycleActionCompleted(action) && action != "mark_needs_review") || input.Plan.Document == nil {
 		return PlanExecutionLifecycleMessage{}, false
 	}
 	doc := input.Plan.Document
@@ -411,7 +414,7 @@ func BuildFinalPlanExecutionHandoffSystemMessage(input PlanExecutionLifecycleMes
 		nextAction = inferPlanExecutionNextAction(summary)
 	}
 	checkpointID := planLifecycleCheckpointID(action, doc, summary, input.Payload)
-	if !planLifecycleFinalHandoffRequired(nextAction, checkpointID, doc) {
+	if !planLifecycleFinalHandoffRequired(action, nextAction, checkpointID, doc) {
 		return PlanExecutionLifecycleMessage{}, false
 	}
 	checkpointTitle := planLifecycleCheckpointTitle(doc, checkpointID)
@@ -419,8 +422,28 @@ func BuildFinalPlanExecutionHandoffSystemMessage(input PlanExecutionLifecycleMes
 	if err != nil {
 		return PlanExecutionLifecycleMessage{}, false
 	}
+	if action == "mark_needs_review" && finalHandoff == nil {
+		title := "Checkpoint review requested"
+		if checkpointTitle != "" {
+			title = checkpointTitle + " needs review"
+		}
+		finalHandoff = &pebblestore.PlanFinalHandoff{
+			SchemaVersion: sessionruntime.PlanFinalHandoffSchemaVersion,
+			Title:         title,
+			Overview:      "The checkpoint is paused for user or audit judgment before execution can continue.",
+			ImpactBullets: []string{"Ask Swarm questions or request changes in chat, or accept the checkpoint review when it is ready to continue."},
+			Details: pebblestore.PlanFinalHandoffDetails{
+				Report:       stringFromPlanPayload(input.Payload, "report"),
+				Result:       stringFromPlanPayload(input.Payload, "result"),
+				ChangedFiles: stringsFromPlanPayload(input.Payload, "changed_files"),
+				Validation:   stringsFromPlanPayload(input.Payload, "validation"),
+			},
+		}
+	}
 	completionNotice := "The last checkpoint is complete. No additional checkpoint will start unless the user explicitly requests it."
-	if !allPlanLifecycleCheckpointsCompleted(doc) {
+	if action == "mark_needs_review" {
+		completionNotice = "This checkpoint is paused for review. You can keep chatting with Swarm, ask questions, or request changes before accepting the review."
+	} else if !allPlanLifecycleCheckpointsCompleted(doc) {
 		completionNotice = "The follow-up checkpoint is complete and waiting for review. No additional checkpoint will start until that review is resolved."
 	}
 	lines := []string{"Final checkpoint handoff", "", completionNotice}
@@ -440,6 +463,11 @@ func BuildFinalPlanExecutionHandoffSystemMessage(input PlanExecutionLifecycleMes
 	if finalHandoff != nil {
 		finalHandoff.Artifacts = sessionruntime.ProjectPlanFinalHandoffArtifacts(input.Plan.ID, checkpointID, planLifecycleArtifacts(doc, checkpointID))
 		metadata["final_handoff"] = finalHandoff
+		if action == "mark_needs_review" {
+			metadata["review_required"] = true
+			metadata["review_handoff"] = finalHandoff
+			metadata["interaction_allowed"] = true
+		}
 	}
 	return PlanExecutionLifecycleMessage{Content: strings.Join(lines, "\n"), Metadata: metadata}, true
 }

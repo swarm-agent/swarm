@@ -3637,10 +3637,12 @@ func (s *Service) requireProviderManagedFinalCheckpointHandoff(sessionID, planID
 			switch action {
 			case "complete_checkpoint", "checkpoint_outcome":
 				outcome = sessionruntime.PlanCheckpointStatusCompleted
+			case "mark_needs_review":
+				outcome = sessionruntime.PlanCheckpointStatusNeedsReview
 			}
 		}
 	}
-	if outcome != sessionruntime.PlanCheckpointStatusCompleted {
+	if outcome != sessionruntime.PlanCheckpointStatusCompleted && outcome != sessionruntime.PlanCheckpointStatusNeedsReview {
 		return nil
 	}
 	var (
@@ -3660,6 +3662,12 @@ func (s *Service) requireProviderManagedFinalCheckpointHandoff(sessionID, planID
 		return errors.New("final checkpoint completion requires an active structured plan")
 	}
 	checkpointID := strings.TrimSpace(firstNonEmptyString(patch.CheckpointID, plan.Document.ActiveCheckpointID))
+	if outcome == sessionruntime.PlanCheckpointStatusNeedsReview {
+		if patch.Handoff == nil {
+			return errors.New("checkpoint review requires handoff_overview; present the pause as an interactive structured handoff with ordinary chat next steps")
+		}
+		return nil
+	}
 	if !isFinalPlanCheckpointRun(plan.Document, checkpointID) {
 		return nil
 	}
