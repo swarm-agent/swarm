@@ -113,6 +113,13 @@ type taskSwarmIterationControls struct {
 	Exclude  []string `json:"exclude,omitempty"`
 }
 
+type taskSwarmSectionTarget struct {
+	ID      string `json:"id"`
+	Label   string `json:"label"`
+	StartMs int64  `json:"start_ms"`
+	EndMs   int64  `json:"end_ms"`
+}
+
 type taskSwarmSpec struct {
 	Strategy            string
 	AgentType           string
@@ -125,6 +132,7 @@ type taskSwarmSpec struct {
 	AnimationProfile    *pebblestore.SessionArtifactAnimationProfile
 	IterationControls   *taskSwarmIterationControls
 	SourceArtifact      *pebblestore.SessionArtifactSelectionReference
+	SectionTarget       *taskSwarmSectionTarget
 	AssemblyParts       []taskSwarmAssemblyPart
 	IntegrationContract string
 }
@@ -916,7 +924,7 @@ func parseTaskSwarmArguments(args map[string]any, prompt, description string) (*
 		"action": true, "description": true, "prompt": true, "message": true, "mode": true, "swarm_mode": true,
 		"swarm_strategy": true, "agent_type": true, "subagent_type": true, "agent": true, "purpose": true, "count": true,
 		"themes": true, "groups": true, "iteration_controls": true, "output_contract": true, "output_mode": true, "assembly_parts": true,
-		"integration_contract": true, "output_requirements": true, "animation_profile": true, "source_artifact": true, "launches": true,
+		"integration_contract": true, "output_requirements": true, "animation_profile": true, "source_artifact": true, "section_target": true, "launches": true,
 		// concurrency_reason is a regular-launch field. Accept and discard it here as a
 		// compatibility no-op so one misplaced advisory hint cannot abort a swarm wave.
 		"concurrency_reason": true,
@@ -962,6 +970,9 @@ func parseTaskSwarmArguments(args map[string]any, prompt, description string) (*
 	}
 
 	if strategy == taskSwarmStrategyAssembly {
+		if _, exists := args["section_target"]; exists {
+			return nil, nil, errors.New("task Assembly swarm does not accept section_target")
+		}
 		if _, exists := args["iteration_controls"]; exists {
 			return nil, nil, errors.New("task Assembly swarm does not accept iteration_controls")
 		}
@@ -1069,11 +1080,21 @@ func parseTaskSwarmArguments(args map[string]any, prompt, description string) (*
 	if sourceArtifact != nil {
 		args["source_artifact"] = cloneTaskImageSourceArtifact(sourceArtifact)
 	}
+	sectionTarget, err := parseTaskSwarmSectionTarget(args["section_target"])
+	if err != nil {
+		return nil, nil, err
+	}
+	if sectionTarget != nil {
+		if agentType != "designer" || sourceArtifact == nil {
+			return nil, nil, errors.New("task section_target requires a Designer Iteration Swarm with an exact source_artifact")
+		}
+		args["section_target"] = cloneTaskSwarmSectionTarget(sectionTarget)
+	}
 	if agentType == "idea" && (len(themes) != 0 || len(groups) != 0 || iterationControls != nil || strings.TrimSpace(mapString(args, "output_contract")) != "" || outputModeProvided || outputRequirements != nil || animationProfile != nil) {
 		return nil, nil, errors.New("task Idea swarm accepts only mode, swarm_strategy=explore, prompt, agent_type, count, and optional description")
 	}
 
-	swarm := &taskSwarmSpec{Strategy: strategy, AgentType: agentType, Count: count, Themes: themes, Groups: groups, OutputContract: outputContract, OutputMode: outputMode, OutputRequirements: cloneTaskOutputRequirements(outputRequirements), AnimationProfile: cloneTaskAnimationProfile(animationProfile), IterationControls: cloneTaskSwarmIterationControls(iterationControls), SourceArtifact: cloneTaskImageSourceArtifact(sourceArtifact)}
+	swarm := &taskSwarmSpec{Strategy: strategy, AgentType: agentType, Count: count, Themes: themes, Groups: groups, OutputContract: outputContract, OutputMode: outputMode, OutputRequirements: cloneTaskOutputRequirements(outputRequirements), AnimationProfile: cloneTaskAnimationProfile(animationProfile), IterationControls: cloneTaskSwarmIterationControls(iterationControls), SourceArtifact: cloneTaskImageSourceArtifact(sourceArtifact), SectionTarget: cloneTaskSwarmSectionTarget(sectionTarget)}
 	launches := make([]taskLaunchSpec, count)
 	for i := range launches {
 		index := i + 1
@@ -1098,6 +1119,9 @@ func parseTaskSwarmArguments(args map[string]any, prompt, description string) (*
 		if sourceArtifact != nil {
 			sourceArguments["source_artifact"] = cloneTaskImageSourceArtifact(sourceArtifact)
 		}
+		if sectionTarget != nil {
+			sourceArguments["section_target"] = cloneTaskSwarmSectionTarget(sectionTarget)
+		}
 		launches[i] = taskLaunchSpec{
 			RequestedSubagentType: agentType, MetaPrompt: metaPrompt, AssignmentLabel: assignmentLabel,
 			Deliverable: outputContract, ConcurrencyReason: "Independent Iteration Swarm alternative", OutputMode: outputMode, OutputRequirements: cloneTaskOutputRequirements(outputRequirements), AnimationProfile: cloneTaskAnimationProfile(animationProfile),
@@ -1111,6 +1135,47 @@ func parseTaskSwarmArguments(args map[string]any, prompt, description string) (*
 		return nil, nil, err
 	}
 	return swarm, launches, nil
+}
+
+func cloneTaskSwarmSectionTarget(input *taskSwarmSectionTarget) *taskSwarmSectionTarget {
+	if input == nil {
+		return nil
+	}
+	cloned := *input
+	return &cloned
+}
+
+func parseTaskSwarmSectionTarget(value any) (*taskSwarmSectionTarget, error) {
+	if value == nil {
+		return nil, nil
+	}
+	if normalized, ok := value.(*taskSwarmSectionTarget); ok {
+		if normalized == nil {
+			return nil, nil
+		}
+		return cloneTaskSwarmSectionTarget(normalized), nil
+	}
+	if normalized, ok := value.(taskSwarmSectionTarget); ok {
+		return cloneTaskSwarmSectionTarget(&normalized), nil
+	}
+	raw, ok := value.(map[string]any)
+	if !ok {
+		return nil, errors.New("task section_target must be an object")
+	}
+	for key := range raw {
+		switch key {
+		case "id", "label", "start_ms", "end_ms":
+		default:
+			return nil, fmt.Errorf("task section_target contains unsupported field %q", key)
+		}
+	}
+	id, label := strings.TrimSpace(mapString(raw, "id")), strings.TrimSpace(mapString(raw, "label"))
+	start, startOK := raw["start_ms"].(float64)
+	end, endOK := raw["end_ms"].(float64)
+	if id == "" || label == "" || !startOK || !endOK || start != math.Trunc(start) || end != math.Trunc(end) || start < 0 || end <= start || end > math.MaxInt64 {
+		return nil, errors.New("task section_target requires id, label, and a valid start_ms/end_ms range")
+	}
+	return &taskSwarmSectionTarget{ID: id, Label: label, StartMs: int64(start), EndMs: int64(end)}, nil
 }
 
 func validateTaskSwarmLaunchEnabled(parsed taskCallArguments) error {

@@ -30,23 +30,27 @@ type MetadataStore interface {
 // Principal is trusted run/session context. None of these ownership or lineage
 // fields are accepted from artifact content or model-authored metadata.
 type Principal struct {
-	SessionID        string
-	AccountScopeID   string
-	UserID           string
-	RunID            string
-	PlanID           string
-	CheckpointID     string
-	AttemptID        string
-	TaskCallID       string
-	ProgramID        string
-	ProgramJobID     string
-	ChildSessionID   string
-	IterationGroupID string
-	IterationGroup   string
-	IterationID      string
-	IterationIndex   int
-	IterationLabel   string
-	IterationTheme   string
+	SessionID               string
+	AccountScopeID          string
+	UserID                  string
+	RunID                   string
+	PlanID                  string
+	CheckpointID            string
+	AttemptID               string
+	TaskCallID              string
+	ProgramID               string
+	ProgramJobID            string
+	ChildSessionID          string
+	IterationGroupID        string
+	IterationGroup          string
+	IterationID             string
+	IterationIndex          int
+	IterationLabel          string
+	IterationTheme          string
+	IterationSectionID      string
+	IterationSectionLabel   string
+	IterationSectionStartMs int64
+	IterationSectionEndMs   int64
 }
 
 type CreateInput struct {
@@ -157,6 +161,7 @@ func (a *Authority) create(ctx context.Context, principal Principal, input Creat
 	collectionLineage.SourceSessionID, collectionLineage.SourceCollectionID, collectionLineage.SourceVariantID, collectionLineage.SourceEventSeq = "", "", "", 0
 	collectionLineage.ProgramJobID, collectionLineage.ChildSessionID = "", ""
 	collectionLineage.IterationID, collectionLineage.IterationIndex, collectionLineage.IterationLabel, collectionLineage.IterationTheme = "", 0, "", ""
+	collectionLineage.IterationSectionID, collectionLineage.IterationSectionLabel, collectionLineage.IterationSectionStartMs, collectionLineage.IterationSectionEndMs = "", "", 0, 0
 	if err := applyArtifactOutputRequirementsToPresentation(&input.Presentation, input.OutputRequirements); err != nil {
 		return pebblestore.SessionArtifactVariant{}, err
 	}
@@ -679,6 +684,7 @@ func (a *Authority) lineage(principal Principal, input CreateInput) pebblestore.
 		TaskCallID: strings.TrimSpace(principal.TaskCallID), ProgramID: strings.TrimSpace(principal.ProgramID), ProgramJobID: strings.TrimSpace(principal.ProgramJobID),
 		ChildSessionID: childSessionID, IterationGroupID: strings.TrimSpace(principal.IterationGroupID), IterationGroup: strings.TrimSpace(principal.IterationGroup),
 		IterationID: strings.TrimSpace(principal.IterationID), IterationIndex: principal.IterationIndex, IterationLabel: strings.TrimSpace(principal.IterationLabel), IterationTheme: strings.TrimSpace(principal.IterationTheme),
+		IterationSectionID: strings.TrimSpace(principal.IterationSectionID), IterationSectionLabel: strings.TrimSpace(principal.IterationSectionLabel), IterationSectionStartMs: principal.IterationSectionStartMs, IterationSectionEndMs: principal.IterationSectionEndMs,
 		RunID: strings.TrimSpace(principal.RunID), PlanID: strings.TrimSpace(principal.PlanID), CheckpointID: strings.TrimSpace(principal.CheckpointID), AttemptID: strings.TrimSpace(principal.AttemptID),
 	}
 }

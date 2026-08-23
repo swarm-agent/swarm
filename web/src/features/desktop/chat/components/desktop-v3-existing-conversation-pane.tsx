@@ -3162,6 +3162,12 @@ export function DesktopV3ExistingConversationPane({
                   setArtifactGalleryOpenFromViewer(false);
                   setArtifactComposerFocusSignal((current) => current + 1);
                 }}
+                onIterateSection={({ label, description, selection }, prompt) => {
+                  queueGalleryArtifactSelections([{ ...selection, label, description, action: "select" }]);
+                  composerControllerRef.current?.setDraft(prompt);
+                  setArtifactGalleryOpenFromViewer(false);
+                  setArtifactComposerFocusSignal((current) => current + 1);
+                }}
                 onExportVideoStills={({ label, description, selection }, prompt) => {
                   queueGalleryArtifactSelections([{ ...selection, label, description, action: "select" }]);
                   composerControllerRef.current?.setDraft(prompt);

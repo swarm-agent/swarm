@@ -53,6 +53,7 @@ type taskSwarmHydrationRequest struct {
 	IterationControls   *taskSwarmIterationControls                    `json:"iteration_controls,omitempty"`
 	IntegrationContract string                                         `json:"integration_contract,omitempty"`
 	SourceArtifact      *pebblestore.SessionArtifactSelectionReference `json:"source_artifact,omitempty"`
+	SectionTarget       *taskSwarmSectionTarget                        `json:"section_target,omitempty"`
 	Items               []taskSwarmHydrationItem                       `json:"items"`
 }
 
@@ -282,7 +283,7 @@ func buildTaskSwarmHydrationRequest(parsed taskCallArguments, launchSpecs []task
 	}
 	request := taskSwarmHydrationRequest{
 		Description: strings.TrimSpace(parsed.Description), Prompt: strings.TrimSpace(parsed.Prompt), AgentType: parsed.Swarm.AgentType, SwarmStrategy: parsed.Swarm.Strategy,
-		OutputContract: strings.TrimSpace(parsed.Swarm.OutputContract), OutputMode: strings.TrimSpace(parsed.Swarm.OutputMode), OutputRequirements: cloneTaskOutputRequirements(parsed.Swarm.OutputRequirements), AnimationProfile: cloneTaskAnimationProfile(parsed.Swarm.AnimationProfile), IterationControls: cloneTaskSwarmIterationControls(parsed.Swarm.IterationControls), IntegrationContract: strings.TrimSpace(parsed.Swarm.IntegrationContract), SourceArtifact: cloneTaskImageSourceArtifact(parsed.Swarm.SourceArtifact),
+		OutputContract: strings.TrimSpace(parsed.Swarm.OutputContract), OutputMode: strings.TrimSpace(parsed.Swarm.OutputMode), OutputRequirements: cloneTaskOutputRequirements(parsed.Swarm.OutputRequirements), AnimationProfile: cloneTaskAnimationProfile(parsed.Swarm.AnimationProfile), IterationControls: cloneTaskSwarmIterationControls(parsed.Swarm.IterationControls), IntegrationContract: strings.TrimSpace(parsed.Swarm.IntegrationContract), SourceArtifact: cloneTaskImageSourceArtifact(parsed.Swarm.SourceArtifact), SectionTarget: cloneTaskSwarmSectionTarget(parsed.Swarm.SectionTarget),
 		Items: make([]taskSwarmHydrationItem, len(launchSpecs)),
 	}
 	groupIndex, groupRemaining := 0, 0
@@ -419,6 +420,12 @@ func composeTaskSwarmChildPrompt(request taskSwarmHydrationRequest, item taskSwa
 			encoded, _ := json.Marshal(request.SourceArtifact)
 			b.Write(encoded)
 			b.WriteString("\n")
+		}
+		if request.SectionTarget != nil {
+			encoded, _ := json.Marshal(request.SectionTarget)
+			b.WriteString("- exact animation section target (immutable): ")
+			b.Write(encoded)
+			b.WriteString("\n- section-output contract: publish one complete derived animation that preserves every non-target section and declares swarm.iteration/v1 with the same target section id and range.\n")
 		}
 		if request.OutputRequirements != nil {
 			encoded, _ := json.Marshal(request.OutputRequirements)

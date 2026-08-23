@@ -31,25 +31,29 @@ type SessionArtifactLineage struct {
 	// ParentSessionID is the trusted destination session that owns the
 	// collection. SourceSessionID identifies the producing child when output is
 	// routed into a parent-owned managed collection.
-	ParentSessionID    string `json:"parent_session_id,omitempty"`
-	SourceSessionID    string `json:"source_session_id,omitempty"`
-	SourceCollectionID string `json:"source_collection_id,omitempty"`
-	SourceVariantID    string `json:"source_variant_id,omitempty"`
-	SourceEventSeq     uint64 `json:"source_event_seq,omitempty"`
-	TaskCallID         string `json:"task_call_id,omitempty"`
-	ProgramID          string `json:"program_id,omitempty"`
-	ProgramJobID       string `json:"program_job_id,omitempty"`
-	ChildSessionID     string `json:"child_session_id,omitempty"`
-	IterationGroupID   string `json:"iteration_group_id,omitempty"`
-	IterationGroup     string `json:"iteration_group,omitempty"`
-	IterationID        string `json:"iteration_id,omitempty"`
-	IterationIndex     int    `json:"iteration_index,omitempty"`
-	IterationLabel     string `json:"iteration_label,omitempty"`
-	IterationTheme     string `json:"iteration_theme,omitempty"`
-	RunID              string `json:"run_id,omitempty"`
-	PlanID             string `json:"plan_id,omitempty"`
-	CheckpointID       string `json:"checkpoint_id,omitempty"`
-	AttemptID          string `json:"attempt_id,omitempty"`
+	ParentSessionID         string `json:"parent_session_id,omitempty"`
+	SourceSessionID         string `json:"source_session_id,omitempty"`
+	SourceCollectionID      string `json:"source_collection_id,omitempty"`
+	SourceVariantID         string `json:"source_variant_id,omitempty"`
+	SourceEventSeq          uint64 `json:"source_event_seq,omitempty"`
+	TaskCallID              string `json:"task_call_id,omitempty"`
+	ProgramID               string `json:"program_id,omitempty"`
+	ProgramJobID            string `json:"program_job_id,omitempty"`
+	ChildSessionID          string `json:"child_session_id,omitempty"`
+	IterationGroupID        string `json:"iteration_group_id,omitempty"`
+	IterationGroup          string `json:"iteration_group,omitempty"`
+	IterationID             string `json:"iteration_id,omitempty"`
+	IterationIndex          int    `json:"iteration_index,omitempty"`
+	IterationLabel          string `json:"iteration_label,omitempty"`
+	IterationTheme          string `json:"iteration_theme,omitempty"`
+	IterationSectionID      string `json:"iteration_section_id,omitempty"`
+	IterationSectionLabel   string `json:"iteration_section_label,omitempty"`
+	IterationSectionStartMs int64  `json:"iteration_section_start_ms,omitempty"`
+	IterationSectionEndMs   int64  `json:"iteration_section_end_ms,omitempty"`
+	RunID                   string `json:"run_id,omitempty"`
+	PlanID                  string `json:"plan_id,omitempty"`
+	CheckpointID            string `json:"checkpoint_id,omitempty"`
+	AttemptID               string `json:"attempt_id,omitempty"`
 }
 
 // SessionArtifactPresentation contains bounded client display hints. It is
@@ -653,6 +657,8 @@ func normalizeArtifactLineage(lineage *SessionArtifactLineage) {
 	lineage.ProgramJobID = strings.TrimSpace(lineage.ProgramJobID)
 	lineage.ChildSessionID = strings.TrimSpace(lineage.ChildSessionID)
 	lineage.IterationID = strings.TrimSpace(lineage.IterationID)
+	lineage.IterationSectionID = strings.TrimSpace(lineage.IterationSectionID)
+	lineage.IterationSectionLabel = strings.TrimSpace(lineage.IterationSectionLabel)
 	lineage.RunID = strings.TrimSpace(lineage.RunID)
 	lineage.PlanID = strings.TrimSpace(lineage.PlanID)
 	lineage.CheckpointID = strings.TrimSpace(lineage.CheckpointID)
@@ -775,7 +781,7 @@ func validateArtifactID(label, value string) error {
 }
 
 func validateArtifactLineage(lineage SessionArtifactLineage) error {
-	for _, value := range []string{lineage.ParentSessionID, lineage.SourceSessionID, lineage.SourceCollectionID, lineage.SourceVariantID, lineage.TaskCallID, lineage.ProgramID, lineage.ProgramJobID, lineage.ChildSessionID, lineage.IterationID, lineage.RunID, lineage.PlanID, lineage.CheckpointID, lineage.AttemptID} {
+	for _, value := range []string{lineage.ParentSessionID, lineage.SourceSessionID, lineage.SourceCollectionID, lineage.SourceVariantID, lineage.TaskCallID, lineage.ProgramID, lineage.ProgramJobID, lineage.ChildSessionID, lineage.IterationID, lineage.IterationSectionID, lineage.IterationSectionLabel, lineage.RunID, lineage.PlanID, lineage.CheckpointID, lineage.AttemptID} {
 		if len(value) > 256 {
 			return errors.New("artifact lineage metadata exceeds bounds")
 		}
@@ -785,6 +791,13 @@ func validateArtifactLineage(lineage SessionArtifactLineage) error {
 	}
 	if lineage.ChildSessionID != "" && lineage.SourceSessionID != lineage.ChildSessionID && (lineage.SourceCollectionID == "" || lineage.SourceVariantID == "") {
 		return errors.New("artifact child lineage requires the child as source session unless authenticated source artifact lineage is present")
+	}
+	if lineage.IterationSectionID == "" {
+		if lineage.IterationSectionLabel != "" || lineage.IterationSectionStartMs != 0 || lineage.IterationSectionEndMs != 0 {
+			return errors.New("artifact iteration section metadata requires a section id")
+		}
+	} else if lineage.IterationSectionLabel == "" || lineage.IterationSectionStartMs < 0 || lineage.IterationSectionEndMs <= lineage.IterationSectionStartMs || lineage.SourceCollectionID == "" || lineage.SourceVariantID == "" || lineage.SourceEventSeq == 0 {
+		return errors.New("artifact iteration section lineage requires a label, valid range, and exact source artifact")
 	}
 	return nil
 }

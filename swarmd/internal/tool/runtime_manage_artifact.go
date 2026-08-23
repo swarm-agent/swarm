@@ -80,20 +80,24 @@ type ArtifactRunContext struct {
 	// Managed task destinations are injected only by trusted orchestration. When
 	// present, create calls are pinned to this parent-owned collection/variant;
 	// model-authored target arguments may not redirect the output.
-	TaskCallID         string
-	ProgramID          string
-	ProgramJobID       string
-	ChildSessionID     string
-	IterationGroupID   string
-	IterationGroup     string
-	IterationID        string
-	IterationIndex     int
-	IterationLabel     string
-	IterationTheme     string
-	CollectionID       string
-	VariantID          string
-	OutputRequirements *pebblestore.SessionArtifactOutputRequirements
-	AnimationProfile   *pebblestore.SessionArtifactAnimationProfile
+	TaskCallID              string
+	ProgramID               string
+	ProgramJobID            string
+	ChildSessionID          string
+	IterationGroupID        string
+	IterationGroup          string
+	IterationID             string
+	IterationIndex          int
+	IterationLabel          string
+	IterationTheme          string
+	IterationSectionID      string
+	IterationSectionLabel   string
+	IterationSectionStartMs int64
+	IterationSectionEndMs   int64
+	CollectionID            string
+	VariantID               string
+	OutputRequirements      *pebblestore.SessionArtifactOutputRequirements
+	AnimationProfile        *pebblestore.SessionArtifactAnimationProfile
 }
 
 type artifactRunContextKey struct{}
@@ -1255,6 +1259,7 @@ func artifactPrincipal(ctx context.Context, scope WorkspaceScope) (artifact.Prin
 		TaskCallID: strings.TrimSpace(run.TaskCallID), ProgramID: strings.TrimSpace(run.ProgramID), ProgramJobID: strings.TrimSpace(run.ProgramJobID),
 		ChildSessionID: strings.TrimSpace(run.ChildSessionID), IterationGroupID: strings.TrimSpace(run.IterationGroupID), IterationGroup: strings.TrimSpace(run.IterationGroup),
 		IterationID: strings.TrimSpace(run.IterationID), IterationIndex: run.IterationIndex, IterationLabel: strings.TrimSpace(run.IterationLabel), IterationTheme: strings.TrimSpace(run.IterationTheme),
+		IterationSectionID: strings.TrimSpace(run.IterationSectionID), IterationSectionLabel: strings.TrimSpace(run.IterationSectionLabel), IterationSectionStartMs: run.IterationSectionStartMs, IterationSectionEndMs: run.IterationSectionEndMs,
 	}, nil
 }
 

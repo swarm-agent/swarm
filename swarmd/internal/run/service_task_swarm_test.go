@@ -154,6 +154,38 @@ func TestDirectImageSwarmParsesAndApprovesExactSourceArtifact(t *testing.T) {
 	}
 }
 
+func TestDesignerSectionIterationCarriesDurableTarget(t *testing.T) {
+	parsed, err := parseTaskCallArguments(`{"mode":"swarm","prompt":"Create five new approaches for section 3b.","agent_type":"designer","count":5,"source_artifact":{"session_id":"source-session","collection_id":"source-collection","variant_id":"source-variant","event_seq":9},"section_target":{"id":"3b","label":"Finder payoff","start_ms":12000,"end_ms":18500},"iteration_controls":{"change":["section 3b visual treatment"],"preserve":["all other sections"]}}`)
+	if err != nil {
+		t.Fatalf("parse section iteration swarm: %v", err)
+	}
+	if parsed.Swarm == nil || parsed.Swarm.SectionTarget == nil || parsed.Swarm.SectionTarget.ID != "3b" || parsed.Swarm.SectionTarget.StartMs != 12000 || parsed.Swarm.Count != 5 {
+		t.Fatalf("section target = %#v", parsed.Swarm)
+	}
+	for index, launch := range parsed.Launches {
+		target, targetErr := parseTaskSwarmSectionTarget(launch.SourceArguments["section_target"])
+		if targetErr != nil || target == nil || target.ID != "3b" {
+			t.Fatalf("launch %d section target = %#v, %v", index, target, targetErr)
+		}
+	}
+	request, err := buildTaskSwarmHydrationRequest(parsed, parsed.Launches)
+	if err != nil || request.SectionTarget == nil || request.SectionTarget.ID != "3b" {
+		t.Fatalf("hydration section target = %#v, %v", request.SectionTarget, err)
+	}
+	prompt, err := composeTaskSwarmChildPrompt(request, request.Items[0], taskSwarmHydratedDelta{Index: 1, Title: "Finder payoff", Theme: "alternative one", Role: "Change section 3b.", Deliverable: "Complete derived animation"})
+	if err != nil || !strings.Contains(prompt, "exact animation section target") || !strings.Contains(prompt, `"id":"3b"`) || !strings.Contains(prompt, "preserves every non-target section") {
+		t.Fatalf("section child prompt = %q, %v", prompt, err)
+	}
+	for _, raw := range []string{
+		`{"mode":"swarm","prompt":"x","agent_type":"designer","count":1,"section_target":{"id":"3b","label":"x","start_ms":0,"end_ms":10}}`,
+		`{"mode":"swarm","prompt":"x","agent_type":"designer","count":1,"source_artifact":{"session_id":"s","collection_id":"c","variant_id":"v","event_seq":1},"section_target":{"id":"3b","label":"x","start_ms":10,"end_ms":10}}`,
+	} {
+		if _, parseErr := parseTaskCallArguments(raw); parseErr == nil {
+			t.Fatalf("invalid section iteration accepted: %s", raw)
+		}
+	}
+}
+
 func TestDirectImageSwarmApprovedManifestUsesImagesNotLaunches(t *testing.T) {
 	parsed, err := parseTaskCallArguments(`{"mode":"swarm","description":"images","prompt":"campaign brief","agent_type":"image","count":2,"themes":["minimal","editorial"]}`)
 	if err != nil {

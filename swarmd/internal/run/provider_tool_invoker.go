@@ -318,6 +318,8 @@ func (s *Service) providerManagedArtifactRunContext(config providerToolInvokerCo
 		run.IterationID = strings.TrimSpace(run.IterationID)
 		run.IterationLabel = strings.TrimSpace(run.IterationLabel)
 		run.IterationTheme = strings.TrimSpace(run.IterationTheme)
+		run.IterationSectionID = strings.TrimSpace(run.IterationSectionID)
+		run.IterationSectionLabel = strings.TrimSpace(run.IterationSectionLabel)
 		run.CollectionID = strings.TrimSpace(run.CollectionID)
 		run.VariantID = strings.TrimSpace(run.VariantID)
 		run.OutputRequirements = cloneTaskOutputRequirements(run.OutputRequirements)

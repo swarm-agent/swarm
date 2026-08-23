@@ -70,6 +70,10 @@ export interface DesktopV3ArtifactLineage {
   iterationIndex: number
   iterationLabel: string
   iterationTheme: string
+  iterationSectionId: string
+  iterationSectionLabel: string
+  iterationSectionStartMs: number
+  iterationSectionEndMs: number
   runId: string
   planId: string
   checkpointId: string
@@ -312,6 +316,10 @@ function normalizeArtifactLineage(value: unknown): DesktopV3ArtifactLineage | nu
     iterationIndex: artifactCatalogCount(record.iteration_index),
     iterationLabel: artifactCatalogString(record.iteration_label),
     iterationTheme: artifactCatalogString(record.iteration_theme),
+    iterationSectionId: artifactCatalogString(record.iteration_section_id),
+    iterationSectionLabel: artifactCatalogString(record.iteration_section_label),
+    iterationSectionStartMs: artifactCatalogNonNegativeInteger(record.iteration_section_start_ms),
+    iterationSectionEndMs: artifactCatalogNonNegativeInteger(record.iteration_section_end_ms),
     runId: artifactCatalogString(record.run_id),
     planId: artifactCatalogString(record.plan_id),
     checkpointId: artifactCatalogString(record.checkpoint_id),

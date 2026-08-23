@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -219,6 +220,16 @@ func taskManagedArtifactRoutingID(taskCallID, programID string) string {
 	return strings.TrimSpace(taskCallID)
 }
 
+func taskManagedArtifactCollectionRoutingID(taskCallID, programID string, spec taskLaunchSpec) string {
+	if target, err := parseTaskSwarmSectionTarget(spec.SourceArguments["section_target"]); err == nil && target != nil && spec.SourceArtifact != nil {
+		source := spec.SourceArtifact
+		// Keep each generation wave immutable, but include the exact source section in
+		// routing so related collections can be identified without trusting names.
+		return strings.Join([]string{"section", strings.TrimSpace(source.SessionID), strings.TrimSpace(source.CollectionID), strings.TrimSpace(source.VariantID), strconv.FormatUint(source.EventSeq, 10), target.ID, taskManagedArtifactRoutingID(taskCallID, programID)}, "\x00")
+	}
+	return taskManagedArtifactRoutingID(taskCallID, programID)
+}
+
 func managedDesignerArtifactContext(parent pebblestore.SessionSnapshot, taskCallID string, spec taskLaunchSpec, launchIndex int) *tool.ArtifactRunContext {
 	if (!agentruntime.IsDesignerAgentName(spec.RequestedSubagentType) && !agentruntime.IsImageAgentName(spec.RequestedSubagentType)) || strings.TrimSpace(spec.OutputMode) != taskOutputModeManaged {
 		return nil
@@ -232,7 +243,8 @@ func managedDesignerArtifactContext(parent pebblestore.SessionSnapshot, taskCall
 		return nil
 	}
 	routingID := taskManagedArtifactRoutingID(taskCallID, programID)
-	collectionID := taskManagedArtifactID("collection", parent.ID, routingID, 0)
+	collectionRoutingID := taskManagedArtifactCollectionRoutingID(taskCallID, programID, spec)
+	collectionID := taskManagedArtifactID("collection", parent.ID, collectionRoutingID, 0)
 	variantIndex := launchIndex
 	variantKey := routingID
 	if strings.TrimSpace(programJobID) != "" {
@@ -248,19 +260,26 @@ func managedDesignerArtifactContext(parent pebblestore.SessionSnapshot, taskCall
 	}
 	iterationID := ""
 	iterationGroupID, iterationGroup, iterationLabel, iterationTheme := "", "", "", ""
+	var sectionTarget *taskSwarmSectionTarget
 	if spec.SwarmMode {
+		sectionTarget, _ = parseTaskSwarmSectionTarget(spec.SourceArguments["section_target"])
 		iterationGroupID = taskManagedArtifactID("iteration-group", parent.ID, routingID, 0)
 		iterationID = taskManagedArtifactID("iteration", parent.ID, routingID, iterationIndex)
 		iterationGroup, _ = spec.SourceArguments["swarm_group"].(string)
 		iterationLabel, iterationTheme = strings.TrimSpace(spec.AssignmentLabel), strings.TrimSpace(mapString(spec.SourceArguments, "swarm_theme"))
 	}
-	return &tool.ArtifactRunContext{
+	run := &tool.ArtifactRunContext{
 		SessionID: parent.ID, TaskCallID: taskCallID, ProgramID: strings.TrimSpace(programID), ProgramJobID: strings.TrimSpace(programJobID),
 		IterationGroupID: iterationGroupID, IterationGroup: strings.TrimSpace(iterationGroup), IterationID: iterationID, IterationIndex: iterationIndex,
 		IterationLabel: iterationLabel, IterationTheme: iterationTheme, CollectionID: collectionID, VariantID: variantID,
 		OutputRequirements: cloneTaskOutputRequirements(spec.OutputRequirements),
 		AnimationProfile:   cloneTaskAnimationProfile(spec.AnimationProfile),
 	}
+	if sectionTarget != nil {
+		run.IterationSectionID, run.IterationSectionLabel = sectionTarget.ID, sectionTarget.Label
+		run.IterationSectionStartMs, run.IterationSectionEndMs = sectionTarget.StartMs, sectionTarget.EndMs
+	}
+	return run
 }
 
 // ensureManagedDesignerArtifactCollection reserves the parent-owned destination
@@ -313,7 +332,14 @@ func (s *Service) ensureManagedDesignerArtifactCollection(parent pebblestore.Ses
 	if managedHasProgram && managedWithoutProgram {
 		return "", errors.New("managed Designer launches cannot mix task-program and ordinary destinations in one wave")
 	}
-	collectionID := taskManagedArtifactID("collection", parent.ID, taskManagedArtifactRoutingID(taskCallID, programID), 0)
+	collectionRoutingID := taskManagedArtifactRoutingID(taskCallID, programID)
+	for _, spec := range specs {
+		if (agentruntime.IsDesignerAgentName(spec.RequestedSubagentType) || agentruntime.IsImageAgentName(spec.RequestedSubagentType)) && strings.TrimSpace(spec.OutputMode) == taskOutputModeManaged {
+			collectionRoutingID = taskManagedArtifactCollectionRoutingID(taskCallID, programID, spec)
+			break
+		}
+	}
+	collectionID := taskManagedArtifactID("collection", parent.ID, collectionRoutingID, 0)
 	collectionName, collectionDescription := "Managed alternatives", ""
 	iterationGroupID := ""
 	for _, spec := range specs {
@@ -321,6 +347,11 @@ func (s *Service) ensureManagedDesignerArtifactCollection(parent pebblestore.Ses
 			continue
 		}
 		iterationGroupID = taskManagedArtifactID("iteration-group", parent.ID, taskManagedArtifactRoutingID(taskCallID, programID), 0)
+		if target, err := parseTaskSwarmSectionTarget(spec.SourceArguments["section_target"]); err == nil && target != nil {
+			collectionName = target.Label + " alternatives"
+			collectionDescription = fmt.Sprintf("Animation section %s · %d alternatives", target.ID, len(specs))
+			break
+		}
 		collectionTitle := strings.TrimSpace(mapString(spec.SourceArguments, "swarm_collection_title"))
 		group := strings.TrimSpace(mapString(spec.SourceArguments, "swarm_group"))
 		swarmDescription := strings.TrimSpace(mapString(spec.SourceArguments, "swarm_description"))
@@ -422,6 +453,7 @@ func (s *Service) ensureManagedDesignerArtifactPlaceholders(parent pebblestore.S
 			IterationGroupID: strings.TrimSpace(run.IterationGroupID), IterationGroup: strings.TrimSpace(run.IterationGroup),
 			IterationID: strings.TrimSpace(run.IterationID), IterationIndex: run.IterationIndex,
 			IterationLabel: strings.TrimSpace(run.IterationLabel), IterationTheme: strings.TrimSpace(run.IterationTheme),
+			IterationSectionID: strings.TrimSpace(run.IterationSectionID), IterationSectionLabel: strings.TrimSpace(run.IterationSectionLabel), IterationSectionStartMs: run.IterationSectionStartMs, IterationSectionEndMs: run.IterationSectionEndMs,
 		}
 		if source := launch.SourceArtifact; source != nil {
 			lineage.SourceSessionID = strings.TrimSpace(source.SessionID)
@@ -508,6 +540,7 @@ func (s *Service) markManagedDesignerArtifactFailed(parent pebblestore.SessionSn
 		ProgramID: run.ProgramID, ProgramJobID: run.ProgramJobID, ChildSessionID: childSessionID,
 		IterationGroupID: run.IterationGroupID, IterationGroup: run.IterationGroup,
 		IterationID: run.IterationID, IterationIndex: run.IterationIndex, IterationLabel: run.IterationLabel, IterationTheme: run.IterationTheme,
+		IterationSectionID: run.IterationSectionID, IterationSectionLabel: run.IterationSectionLabel, IterationSectionStartMs: run.IterationSectionStartMs, IterationSectionEndMs: run.IterationSectionEndMs,
 	}
 	if len(sourceArtifacts) > 0 && sourceArtifacts[0] != nil {
 		source := sourceArtifacts[0]
@@ -4545,19 +4578,23 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 				s.markManagedDesignerArtifactFailed(parentSession, launch.ArtifactRunContext, launch.ChildSession.ID, code, launch.SourceArtifact)
 			}
 			artifactPrincipal := artifact.Principal{
-				SessionID:        launch.ArtifactRunContext.SessionID,
-				AccountScopeID:   parentSession.AccountScopeID,
-				UserID:           parentSession.UserID,
-				TaskCallID:       launch.ArtifactRunContext.TaskCallID,
-				ProgramID:        launch.ArtifactRunContext.ProgramID,
-				ProgramJobID:     launch.ArtifactRunContext.ProgramJobID,
-				ChildSessionID:   launch.ChildSession.ID,
-				IterationGroupID: launch.ArtifactRunContext.IterationGroupID,
-				IterationGroup:   launch.ArtifactRunContext.IterationGroup,
-				IterationID:      launch.ArtifactRunContext.IterationID,
-				IterationIndex:   launch.ArtifactRunContext.IterationIndex,
-				IterationLabel:   launch.ArtifactRunContext.IterationLabel,
-				IterationTheme:   launch.ArtifactRunContext.IterationTheme,
+				SessionID:               launch.ArtifactRunContext.SessionID,
+				AccountScopeID:          parentSession.AccountScopeID,
+				UserID:                  parentSession.UserID,
+				TaskCallID:              launch.ArtifactRunContext.TaskCallID,
+				ProgramID:               launch.ArtifactRunContext.ProgramID,
+				ProgramJobID:            launch.ArtifactRunContext.ProgramJobID,
+				ChildSessionID:          launch.ChildSession.ID,
+				IterationGroupID:        launch.ArtifactRunContext.IterationGroupID,
+				IterationGroup:          launch.ArtifactRunContext.IterationGroup,
+				IterationID:             launch.ArtifactRunContext.IterationID,
+				IterationIndex:          launch.ArtifactRunContext.IterationIndex,
+				IterationLabel:          launch.ArtifactRunContext.IterationLabel,
+				IterationTheme:          launch.ArtifactRunContext.IterationTheme,
+				IterationSectionID:      launch.ArtifactRunContext.IterationSectionID,
+				IterationSectionLabel:   launch.ArtifactRunContext.IterationSectionLabel,
+				IterationSectionStartMs: launch.ArtifactRunContext.IterationSectionStartMs,
+				IterationSectionEndMs:   launch.ArtifactRunContext.IterationSectionEndMs,
 			}
 			if s.tools == nil || s.tools.ArtifactAuthority() == nil {
 				markMissing("artifact_authority_unavailable")
@@ -4585,7 +4622,11 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 				lineage.ProgramID == launch.ArtifactRunContext.ProgramID &&
 				lineage.ProgramJobID == launch.ArtifactRunContext.ProgramJobID &&
 				lineage.IterationID == launch.ArtifactRunContext.IterationID &&
-				lineage.IterationIndex == launch.ArtifactRunContext.IterationIndex
+				lineage.IterationIndex == launch.ArtifactRunContext.IterationIndex &&
+				lineage.IterationSectionID == launch.ArtifactRunContext.IterationSectionID &&
+				lineage.IterationSectionLabel == launch.ArtifactRunContext.IterationSectionLabel &&
+				lineage.IterationSectionStartMs == launch.ArtifactRunContext.IterationSectionStartMs &&
+				lineage.IterationSectionEndMs == launch.ArtifactRunContext.IterationSectionEndMs
 			if variant.CollectionID != launch.ArtifactRunContext.CollectionID || variant.ID != launch.ArtifactRunContext.VariantID || variant.Status != pebblestore.SessionArtifactStatusReady || !lineageMatches || !reflect.DeepEqual(variant.OutputRequirements, launch.ArtifactRunContext.OutputRequirements) || !reflect.DeepEqual(variant.AnimationProfile, launch.ArtifactRunContext.AnimationProfile) {
 				if variant.Status == pebblestore.SessionArtifactStatusStaging {
 					markMissing("managed_output_invalid")
