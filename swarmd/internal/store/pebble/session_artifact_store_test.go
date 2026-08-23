@@ -504,18 +504,23 @@ func TestCanonicalArtifactChainPersistsHeadAndProjectsLegacyAncestry(t *testing.
 	}
 	apply("chain-root-create", V3SessionMutationCreateArtifact, V3ArtifactMutation{Collection: SessionArtifactCollection{ID: "chain-root", Name: "Canonical artifact"}, Variant: &SessionArtifactVariant{ID: "root", Filename: "root.html", MediaType: "text/html", Parts: []SessionArtifactPart{{ID: "hero", Label: "Hero", Kind: "spatial", Width: 1, Height: .5}}}})
 	rootReady := apply("chain-root-ready", V3SessionMutationFinalizeArtifact, V3ArtifactMutation{Collection: SessionArtifactCollection{ID: "chain-root"}, Variant: &SessionArtifactVariant{ID: "root", Filename: "root.html", MediaType: "text/html", DigestSHA256: strings.Repeat("a", 64), Size: 10}})
-	if rootReady.Artifact == nil || rootReady.Artifact.Variant == nil || rootReady.Artifact.Chain == nil || rootReady.Artifact.Variant.RevisionNumber != 1 || rootReady.Artifact.Chain.Head.VariantID != "root" {
-		t.Fatalf("root chain projection = %+v", rootReady.Artifact)
+	if rootReady.Artifact == nil || rootReady.Artifact.Variant == nil || rootReady.Artifact.Step == nil || rootReady.Artifact.Variant.RevisionNumber != 1 {
+		t.Fatalf("root ready projection = %+v", rootReady.Artifact)
 	}
 	root := *rootReady.Artifact.Variant
+	selectedRoot := apply("chain-select-root", V3SessionMutationSelectArtifact, V3ArtifactMutation{Collection: SessionArtifactCollection{ID: "chain-root"}, Selection: &SessionArtifactSelectionReference{SessionID: root.SessionID, CollectionID: root.CollectionID, VariantID: root.ID, EventSeq: root.EventSeq, Action: "use", PartID: "hero"}})
+	if selectedRoot.Artifact == nil || selectedRoot.Artifact.Chain == nil || selectedRoot.Artifact.Chain.Head.VariantID != "root" || selectedRoot.Artifact.Selection == nil || selectedRoot.Artifact.Selection.Part == nil || selectedRoot.Artifact.Selection.Part.ID != "hero" {
+		t.Fatalf("selected root = %+v", selectedRoot.Artifact)
+	}
 	apply("chain-child-create", V3SessionMutationCreateArtifact, V3ArtifactMutation{Collection: SessionArtifactCollection{ID: "chain-round-2", Name: "Round 2"}, Variant: &SessionArtifactVariant{ID: "candidate", Filename: "candidate.html", MediaType: "text/html", Lineage: SessionArtifactLineage{SourceSessionID: root.SessionID, SourceCollectionID: root.CollectionID, SourceVariantID: root.ID, SourceEventSeq: root.EventSeq, TaskCallID: "round-2"}}})
 	childReady := apply("chain-child-ready", V3SessionMutationFinalizeArtifact, V3ArtifactMutation{Collection: SessionArtifactCollection{ID: "chain-round-2"}, Variant: &SessionArtifactVariant{ID: "candidate", Filename: "candidate.html", MediaType: "text/html", DigestSHA256: strings.Repeat("b", 64), Size: 11}})
-	if childReady.Artifact == nil || childReady.Artifact.Variant == nil || childReady.Artifact.Chain == nil || childReady.Artifact.Variant.ArtifactChainID != root.ArtifactChainID || childReady.Artifact.Variant.RevisionNumber != 2 || childReady.Artifact.Chain.Head.VariantID != "candidate" || childReady.Artifact.Chain.RevisionCount != 2 {
-		t.Fatalf("child chain projection = %+v", childReady.Artifact)
+	if childReady.Artifact == nil || childReady.Artifact.Variant == nil || childReady.Artifact.Step == nil || childReady.Artifact.Variant.ArtifactChainID != root.ArtifactChainID || childReady.Artifact.Variant.RevisionNumber != 2 {
+		t.Fatalf("child ready projection = %+v", childReady.Artifact)
 	}
-	selected := apply("chain-select-root", V3SessionMutationSelectArtifact, V3ArtifactMutation{Collection: SessionArtifactCollection{ID: "chain-root"}, Selection: &SessionArtifactSelectionReference{SessionID: root.SessionID, CollectionID: root.CollectionID, VariantID: root.ID, EventSeq: root.EventSeq, Action: "use", PartID: "hero"}})
-	if selected.Artifact == nil || selected.Artifact.Chain == nil || selected.Artifact.Chain.Head.VariantID != "root" || selected.Artifact.Selection == nil || selected.Artifact.Selection.PartID != "hero" {
-		t.Fatalf("selected chain head = %+v", selected.Artifact)
+	child := *childReady.Artifact.Variant
+	selectedChild := apply("chain-select-child", V3SessionMutationSelectArtifact, V3ArtifactMutation{Collection: SessionArtifactCollection{ID: child.CollectionID}, Selection: &SessionArtifactSelectionReference{SessionID: child.SessionID, CollectionID: child.CollectionID, VariantID: child.ID, EventSeq: child.EventSeq}})
+	if selectedChild.Artifact.Chain.Head.VariantID != "candidate" || selectedChild.Artifact.Chain.RevisionCount != 2 {
+		t.Fatalf("selected child = %+v", selectedChild.Artifact)
 	}
 }
 
