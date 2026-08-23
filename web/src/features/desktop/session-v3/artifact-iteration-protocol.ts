@@ -107,8 +107,8 @@ export function desktopV3ArtifactIterationChangeDescription(section: DesktopV3Ar
   return [
     `Create ${count} new alternatives for animation section "${section.label}" (${section.id}) from ${formatDesktopV3ArtifactIterationTime(section.startMs)} to ${formatDesktopV3ArtifactIterationTime(section.endMs)}.`,
     `Exact section_target: ${JSON.stringify({ id: section.id, label: section.label, start_ms: section.startMs, end_ms: section.endMs })}`,
-    'Use a managed Designer Iteration Swarm with the attached exact source artifact and this exact section_target so every generated alternative is automatically grouped under this section in Artifact Studio.',
-    'Each alternative must be a complete derived animation that preserves every other section, the global duration, deterministic seek contract, output geometry, and surrounding transitions.',
+    'Use a managed Designer Iteration Swarm with the attached exact selected source artifact and this exact section_target so every generated alternative becomes a child branch under this section in Artifact Studio.',
+    'Build directly on the attached selected branch. Each alternative must be a complete derived animation that preserves every other section, the global duration, deterministic seek contract, output geometry, and surrounding transitions.',
     'Do not select or lock an alternative automatically; the user will compare them in the section timeline and lock one explicitly.',
     narration ? `Section narration:\n${narration}` : 'This section declares no narration.',
   ].join('\n')

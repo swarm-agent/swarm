@@ -9,6 +9,13 @@ test('artifact gallery is a live collection review surface distinct from plan ex
 
   assert.match(gallery, /data-artifact-review-surface/)
   assert.match(gallery, /data-artifact-collection-sidebar/)
+  assert.match(gallery, /data-artifact-studio-step-sidebar/)
+  assert.match(gallery, /aria-label="Artifact Studio steps"/)
+  assert.match(gallery, /data-artifact-studio-branch/)
+  assert.match(gallery, /desktopV3ArtifactStudioSectionAlternatives/)
+  assert.match(gallery, /desktopV3ArtifactStudioBranchDepth/)
+  assert.match(gallery, /const iterationRequestSourceArtifact = selected/)
+  assert.match(gallery, /seekIteration\(targetSection\.startMs\)/)
   assert.match(gallery, /Live collections/)
   assert.match(gallery, /Collection progress/)
   assert.match(gallery, /generating/)
