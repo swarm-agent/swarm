@@ -69,6 +69,7 @@ import { selectAndHydrateDesktopV3Session } from '../state/desktop-v3-session-hy
 import type { DesktopV3SidebarRow, RenderedSessionMessages } from '../state/desktop-v3-cache-selectors'
 import { fetchAndApplyDesktopV3PlanSnapshot } from '../state/desktop-v3-session-api'
 import { sessionHasVideoProject, sessionVideoProjectPresenceKey, videoProposalProjectionSequence } from '../tools/video-studio/video-project-presence'
+import { preferredVideoSessionView, saveVideoSessionViewPreference } from '../tools/video-studio/video-session-view-preference'
 import { archiveDesktopV3Sessions } from '../session-v3/plan-execution-api'
 import { DESKTOP_V3_SIDEBAR_PINNED_METADATA_KEY, updateAndApplySessionV3DesktopSidebarPinned, updateSessionV3Title } from '../session-v3/api'
 import { sessionWorkspaceBindingId } from '../services/session-workspace'
@@ -3571,7 +3572,11 @@ export function DesktopAppPage() {
     void selectAndHydrateDesktopV3Session(normalizedSessionId)
     const workspaceSlug = globalSessionWorkspaceSlug(session)
     setMobileSidebarOpen(false)
-    void navigate({
+    const preferredView = preferredVideoSessionView(normalizedSessionId)
+    void navigate(preferredView === 'chat' ? {
+      to: '/$workspaceSlug/$sessionId',
+      params: { workspaceSlug, sessionId: normalizedSessionId },
+    } : {
       to: '/$workspaceSlug/video/$videoSessionId',
       params: { workspaceSlug, videoSessionId: normalizedSessionId },
     })
@@ -5530,6 +5535,7 @@ export function DesktopAppPage() {
             sessionActions={activeRouteSessionActions}
             studioMode={routeSessionHasVideoProject ? 'session' : null}
             onToggleStudioMode={routeSessionHasVideoProject ? () => {
+              saveVideoSessionViewPreference(routeSessionId, 'studio')
               void navigate({ to: '/$workspaceSlug/studio/$videoSessionId', params: { workspaceSlug: routeWorkspaceSlug, videoSessionId: routeSessionId } })
             } : undefined}
             onCompactingChange={handleCompactingSessionChange}

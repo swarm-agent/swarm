@@ -58,6 +58,19 @@ test('outer sidebar renders video sessions as selectable child rows with canonic
   assert.match(source, /videoSidebarSessionIDsForArchive\(videoStudioSessions, selectedSidebarRootIDs\)/)
 })
 
+test('video sidebar reopens each session in its remembered Studio or Chat view', async () => {
+  const source = await readFile(new URL('./desktop-app-page.tsx', import.meta.url), 'utf8')
+  const handlerStart = source.indexOf('const handleSelectVideoSidebarSession = useCallback')
+  const handlerEnd = source.indexOf('const handleSelectSession = useCallback', handlerStart)
+  const handlerSource = source.slice(handlerStart, handlerEnd)
+
+  assert.ok(handlerStart >= 0 && handlerEnd > handlerStart)
+  assert.match(handlerSource, /preferredVideoSessionView\(normalizedSessionId\)/)
+  assert.match(handlerSource, /preferredView === 'chat'/)
+  assert.match(handlerSource, /to: '\/\$workspaceSlug\/\$sessionId'/)
+  assert.match(handlerSource, /to: '\/\$workspaceSlug\/video\/\$videoSessionId'/)
+})
+
 test('sidebar workspace context shows the Git branch before the workspace name', () => {
   assert.equal(sidebarWorkspaceContextLabel('swarm-go', 'dev'), 'dev · swarm-go')
   assert.equal(sidebarWorkspaceContextLabel(' swarm-go ', ' agent/sidebar-label '), 'agent/sidebar-label · swarm-go')

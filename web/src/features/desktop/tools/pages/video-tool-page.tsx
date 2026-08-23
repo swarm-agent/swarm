@@ -17,6 +17,7 @@ import type { WorkspaceBrowseResult, WorkspaceEntry } from '../../../workspaces/
 import type { WorkspaceOverviewSwarmTarget } from '../../../workspaces/launcher/types/workspace-overview'
 import { SwarmToolSidebar } from '../components/swarm-tool-sidebar'
 import { VIDEO_TRANSITION_KINDS, VideoIterationSidebar, VideoSessionAISidecar, createVideoEditProposal, renderedVideoArtifactUrl, requestVideoRenderCancellation, transitionLabel, videoPlanPartMessageSelection, videoPlanTransitionMessageSelection, videoProposalProjectionSequence, type VideoEditProposalWire, type VideoIterationComposerContext, type VideoPlanProposalWire, type VideoStepEditAction, type VideoTransitionKind, type VideoTransitionWire } from '../video-studio/video-studio-surface'
+import { saveVideoSessionViewPreference } from '../video-studio/video-session-view-preference'
 import { useDesktopV3CacheSelector } from '../../state/desktop-v3-cache-store'
 
 export type VideoClip = {
@@ -1305,6 +1306,7 @@ export function VideoToolPage() {
   useEffect(() => {
     if (!selectedThreadId || typeof window === 'undefined') return
     window.localStorage.setItem(`${VIDEO_STUDIO_LAST_SESSION_STORAGE_KEY}:${routeWorkspaceSlug}`, selectedThreadId)
+    saveVideoSessionViewPreference(selectedThreadId, 'studio')
   }, [routeWorkspaceSlug, selectedThreadId])
 
   const videoProjectProjectionSequence = useDesktopV3CacheSelector(
@@ -1756,6 +1758,7 @@ export function VideoToolPage() {
 
   const handleOpenSessionMode = useCallback(() => {
     if (!selectedThread || !routeWorkspaceSlug) return
+    saveVideoSessionViewPreference(selectedThread.id, 'chat')
     void navigate({ to: '/$workspaceSlug/$sessionId', params: { workspaceSlug: routeWorkspaceSlug, sessionId: selectedThread.id } })
   }, [navigate, routeWorkspaceSlug, selectedThread])
 
