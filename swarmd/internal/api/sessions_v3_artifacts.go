@@ -250,10 +250,16 @@ func (s *Server) handleSessionsV3Artifacts(w http.ResponseWriter, r *http.Reques
 						kind, previewable = "html", true
 					}
 					var step *pebblestore.SessionArtifactStep
-					if variant.GraphState == pebblestore.SessionArtifactGraphAuthoritative && variant.ArtifactStepID != "" {
-						persistedStep, foundStep, stepErr := s.sessions.GetSessionArtifactStep(session.AccountScopeID, session.UserID, variant.ArtifactChainID, variant.ArtifactStepID)
-						if stepErr != nil { writeError(w, http.StatusInternalServerError, stepErr); return }
-						if !foundStep { writeError(w, http.StatusInternalServerError, errors.New("authoritative artifact step was not found")); return }
+					if variant.GraphState == pebblestore.SessionArtifactGraphAuthoritative && variant.ArtifactChainID != "" && variant.ArtifactStepID != "" {
+						persistedStep, found, stepErr := s.sessions.GetSessionArtifactStep(session.AccountScopeID, session.UserID, variant.ArtifactChainID, variant.ArtifactStepID)
+						if stepErr != nil {
+							writeError(w, http.StatusInternalServerError, stepErr)
+							return
+						}
+						if !found || persistedStep.GraphState != pebblestore.SessionArtifactGraphAuthoritative {
+							writeError(w, http.StatusInternalServerError, errors.New("authoritative artifact step is missing"))
+							return
+						}
 						step = &persistedStep
 					}
 					appendCatalogArtifact(&artifacts, seen, session.ID+"\x00"+variant.ID, sessionsV3ArtifactCatalogItem{
@@ -606,6 +612,8 @@ func (s *Server) handleSessionV3ArtifactSelection(w http.ResponseWriter, r *http
 		ClientRequestID string `json:"client_request_id"`
 		EventSeq        uint64 `json:"event_seq"`
 		Action          string `json:"action,omitempty"`
+		ArtifactChainID string `json:"artifact_chain_id,omitempty"`
+		ArtifactStepID  string `json:"artifact_step_id,omitempty"`
 		PartID          string `json:"part_id,omitempty"`
 	}
 	if err := decodeJSON(r, &req); err != nil {
@@ -635,7 +643,11 @@ func (s *Server) handleSessionV3ArtifactSelection(w http.ResponseWriter, r *http
 		return
 	}
 	if req.EventSeq == 0 || req.EventSeq != variant.EventSeq {
-		writeError(w, http.StatusBadRequest, errors.New("artifact selection event sequence is required and must match the ready variant"))
+		writeError(w, http.StatusConflict, errors.New("artifact selection event sequence is stale"))
+		return
+	}
+	if strings.TrimSpace(req.ArtifactChainID) == "" || strings.TrimSpace(req.ArtifactStepID) == "" || strings.TrimSpace(req.ArtifactChainID) != variant.ArtifactChainID || strings.TrimSpace(req.ArtifactStepID) != variant.ArtifactStepID {
+		writeError(w, http.StatusConflict, errors.New("artifact acceptance chain or step identity is stale"))
 		return
 	}
 	collection, found, err := s.sessions.GetSessionArtifactCollection(principal.AccountScopeID, sessionID, variant.CollectionID)
@@ -681,6 +693,10 @@ func (s *Server) handleSessionV3ArtifactSelection(w http.ResponseWriter, r *http
 	if err != nil {
 		if errors.Is(err, sessionruntime.ErrSessionIdempotencyConflict) {
 			writeJSON(w, http.StatusConflict, map[string]any{"ok": false, "error_code": "idempotency_conflict", "error": err.Error()})
+			return
+		}
+		if strings.Contains(err.Error(), "stale") || strings.Contains(err.Error(), "already accepted") {
+			writeJSON(w, http.StatusConflict, map[string]any{"ok": false, "error_code": "artifact_acceptance_conflict", "error": err.Error()})
 			return
 		}
 		writeError(w, http.StatusBadRequest, err)

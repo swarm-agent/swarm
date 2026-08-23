@@ -1705,7 +1705,7 @@ func (s *SessionStore) prepareV3ArtifactMutation(input V3SessionMutationInput, s
 		if action == "" {
 			action = "select"
 		}
-		ref := SessionArtifactSelectionReference{SessionID: input.SessionID, CollectionID: collection.ID, VariantID: selected.ID, EventSeq: seq, Label: incoming.Selection.Label, Description: incoming.Selection.Description, Action: action, PartID: incoming.Selection.PartID}
+		ref := SessionArtifactSelectionReference{SessionID: input.SessionID, CollectionID: collection.ID, VariantID: selected.ID, EventSeq: selected.EventSeq, Label: incoming.Selection.Label, Description: incoming.Selection.Description, Action: action, PartID: incoming.Selection.PartID}
 		if ref.PartID != "" {
 			for _, part := range selected.Parts {
 				if part.ID == ref.PartID {

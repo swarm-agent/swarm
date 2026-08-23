@@ -153,9 +153,13 @@ function collectionProgress(entries: DesktopV3ArtifactGalleryEntry[]): DesktopV3
 }
 
 function collectionLandingArtifact(group: ArtifactCollectionGroup): DesktopV3ArtifactGalleryEntry | undefined {
-  return group.entries.find((entry) => entry.selected)
-    ?? group.entries.find((entry) => entry.status === 'ready')
-    ?? group.entries[0]
+  const authoritative = group.entries.find((entry) => entry.graphState === 'authoritative' && entry.chain?.head)
+  if (!authoritative?.chain?.head) return group.entries[0]
+  const head = authoritative.chain.head
+  return group.entries.find((entry) => entry.sessionId === head.sessionId
+    && entry.collectionId === head.collectionId
+    && entry.artifactId === head.variantId
+    && entry.eventSeq === head.eventSeq)
 }
 
 function collectionDisplayLabel(group: ArtifactCollectionGroup): string {
@@ -324,10 +328,9 @@ export function DesktopV3ArtifactGallery({
   const selectedVariantIndex = selected
     ? selectedVariants.findIndex((artifact) => artifactSelectionKey(artifact) === artifactSelectionKey(selected))
     : -1
-  const persistedSelectedArtifact = selectedGroup?.entries.find((artifact) => artifact.selected)
   const durableSelectedArtifact = artifacts.find((artifact) => artifactSelectionKey(artifact) === durableSelectedId)
   const durableSelectionMatchesGroup = durableSelectedArtifact && artifactCollectionKey(durableSelectedArtifact) === selectedGroupKey
-  const canonicalSelectedId = durableSelectionMatchesGroup ? durableSelectedId : (persistedSelectedArtifact ? artifactSelectionKey(persistedSelectedArtifact) : selectedHead ? artifactSelectionKey(selectedHead) : '')
+  const canonicalSelectedId = durableSelectionMatchesGroup ? durableSelectedId : selectedHead ? artifactSelectionKey(selectedHead) : ''
   const selectedIsCanonical = Boolean(selected && artifactSelectionKey(selected) === canonicalSelectedId)
   const selectedCanAttach = selected?.status === 'ready' && Boolean(selected.collectionId) && (selected.eventSeq ?? 0) > 0
   const selectedCanExportVideoStills = Boolean(selected && desktopV3ArtifactCanExportHTMLStills(selected))
@@ -369,7 +372,12 @@ export function DesktopV3ArtifactGallery({
   useEffect(() => {
     setDurableSelectedId((current) => {
       if (current && artifacts.some((artifact) => artifactSelectionKey(artifact) === current && artifact.selected)) return current
-      const persisted = artifacts.find((artifact) => artifact.selected)
+      const persisted = artifacts.find((artifact) => artifact.graphState === 'authoritative'
+        && artifact.chain?.head
+        && artifact.sessionId === artifact.chain.head.sessionId
+        && artifact.collectionId === artifact.chain.head.collectionId
+        && artifact.artifactId === artifact.chain.head.variantId
+        && artifact.eventSeq === artifact.chain.head.eventSeq)
       return persisted ? artifactSelectionKey(persisted) : ''
     })
     const availableKeys = new Set(artifacts.map(artifactSelectionKey))
@@ -952,6 +960,9 @@ export function DesktopV3ArtifactGallery({
     try {
       setActionPending('use')
       setActionError('')
+      if (selected.graphState !== 'authoritative' || !selected.artifactChainId || !selected.artifactStepId) {
+        throw new Error('This legacy artifact is unstructured and cannot advance a canonical head')
+      }
       const canonicalSelection = await useDesktopV3Artifact(desktopV3ArtifactSelection(selected))
       setDurableSelectedId(artifactSelectionKey(selected))
       await onSelectionPersisted?.()
@@ -1047,8 +1058,7 @@ export function DesktopV3ArtifactGallery({
   const workspaceGroups = organization === 'workspace'
     ? Array.from(new Map(groups.map((group) => [group.workspaceLabel, group.workspaceLabel])).keys())
     : []
-  const triggerArtifact = artifacts.find((artifact) => artifact.selected)
-    ?? artifacts.find((artifact) => artifact.status === 'ready')
+  const triggerArtifact = groups.map(collectionLandingArtifact).find((artifact) => artifact?.graphState === 'authoritative')
     ?? artifacts[0]
 
   if (!showTrigger && !open) return null

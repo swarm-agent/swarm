@@ -132,6 +132,8 @@ export interface DesktopV3ArtifactSelection {
   collection_id: string
   variant_id: string
   event_seq: number
+  artifact_chain_id?: string
+  artifact_step_id?: string
   part_id?: string
 }
 
@@ -178,7 +180,7 @@ export interface DesktopV3ArtifactCatalogEntry {
   animationProfile?: DesktopV3ArtifactAnimationProfile
   chain?: DesktopV3ArtifactChain
   step?: DesktopV3ArtifactStep
-  graphState?: string
+  graphState?: 'authoritative' | 'legacy_unproven'
   parentArtifact?: DesktopV3ArtifactChainReference
   artifactChainId?: string
   artifactStepId?: string
@@ -381,11 +383,15 @@ function normalizeArtifactStep(value: unknown): DesktopV3ArtifactStep | null {
   if (!record) return null
   const id = artifactCatalogString(record.id)
   const artifactChainId = artifactCatalogString(record.artifact_chain_id)
-  if (!id || !artifactChainId) return null
+  const revisionNumber = artifactCatalogPositiveInteger(record.revision_number)
+  const candidates = Array.isArray(record.candidates)
+    ? record.candidates.map(normalizeArtifactChainReference).filter((candidate): candidate is DesktopV3ArtifactChainReference => candidate !== null)
+    : []
   const parent = normalizeArtifactChainReference(record.parent)
   const accepted = normalizeArtifactChainReference(record.accepted)
-  const candidates = Array.isArray(record.candidates) ? record.candidates.map(normalizeArtifactChainReference).filter((ref): ref is DesktopV3ArtifactChainReference => ref !== null) : []
-  return { id, artifactChainId, graphState: artifactCatalogString(record.graph_state), ...(parent ? { parent } : {}), revisionNumber: artifactCatalogCount(record.revision_number), candidates, ...(accepted ? { accepted } : {}) }
+  const graphState = artifactCatalogString(record.graph_state)
+  if (!id || !artifactChainId || !revisionNumber || candidates.length === 0 || graphState !== 'authoritative') return null
+  return { id, artifactChainId, graphState, revisionNumber, candidates, ...(parent ? { parent } : {}), ...(accepted ? { accepted } : {}) }
 }
 
 function normalizeArtifactParts(value: unknown): DesktopV3ArtifactPart[] {
@@ -456,6 +462,7 @@ export function normalizeDesktopV3ArtifactCatalogEntry(value: unknown): DesktopV
   const chain = normalizeArtifactChain(record.chain)
   const step = normalizeArtifactStep(record.step)
   const parentArtifact = normalizeArtifactChainReference(record.parent_artifact)
+  const graphState = artifactCatalogString(record.graph_state)
   return {
     artifactId,
     sourceRef: artifactCatalogString(record.source_ref),
@@ -486,7 +493,7 @@ export function normalizeDesktopV3ArtifactCatalogEntry(value: unknown): DesktopV
     lineage: normalizeArtifactLineage(record.lineage),
     ...(chain ? { chain } : {}),
     ...(step ? { step } : {}),
-    ...(artifactCatalogString(record.graph_state) ? { graphState: artifactCatalogString(record.graph_state) } : {}),
+    ...(graphState === 'authoritative' || graphState === 'legacy_unproven' ? { graphState } : {}),
     ...(parentArtifact ? { parentArtifact } : {}),
     ...((artifactCatalogString(record.artifact_chain_id) || chain?.id) ? { artifactChainId: artifactCatalogString(record.artifact_chain_id) || chain?.id } : {}),
     ...(artifactCatalogString(record.artifact_step_id) ? { artifactStepId: artifactCatalogString(record.artifact_step_id) } : {}),
@@ -527,6 +534,8 @@ export function desktopV3ArtifactSelection(entry: DesktopV3ArtifactCatalogEntry)
     collection_id: entry.collectionId ?? '',
     variant_id: entry.artifactId,
     event_seq: entry.eventSeq ?? 0,
+    artifact_chain_id: entry.artifactChainId,
+    artifact_step_id: entry.artifactStepId,
   })
   if (!selection || entry.status !== 'ready') {
     throw new Error('Artifact selection requires a ready managed variant with a durable event sequence')
@@ -778,7 +787,9 @@ export function normalizeDesktopV3ArtifactSelection(value: unknown): DesktopV3Ar
   const eventSeq = artifactCatalogEventSeq(record.event_seq)
   if (!sessionId || !collectionId || !variantId || eventSeq <= 0) return null
   const partId = artifactCatalogString(record.part_id)
-  return { session_id: sessionId, collection_id: collectionId, variant_id: variantId, event_seq: eventSeq, ...(partId ? { part_id: partId } : {}) }
+  const artifactChainId = artifactCatalogString(record.artifact_chain_id)
+  const artifactStepId = artifactCatalogString(record.artifact_step_id)
+  return { session_id: sessionId, collection_id: collectionId, variant_id: variantId, event_seq: eventSeq, ...(artifactChainId ? { artifact_chain_id: artifactChainId } : {}), ...(artifactStepId ? { artifact_step_id: artifactStepId } : {}), ...(partId ? { part_id: partId } : {}) }
 }
 
 export function desktopV3ArtifactSelectionEndpoint(sessionId: string, variantId: string): string {
@@ -799,7 +810,7 @@ async function postDesktopV3ArtifactSelection(
   const response = await apiFetch(desktopV3ArtifactSelectionEndpoint(normalized.session_id, normalized.variant_id), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ client_request_id: clientRequestId, event_seq: normalized.event_seq, action, ...(normalized.part_id ? { part_id: normalized.part_id } : {}) }),
+    body: JSON.stringify({ client_request_id: clientRequestId, event_seq: normalized.event_seq, action, artifact_chain_id: normalized.artifact_chain_id, artifact_step_id: normalized.artifact_step_id, ...(normalized.part_id ? { part_id: normalized.part_id } : {}) }),
     signal,
   })
   if (!response.ok) throw new Error(await readErrorMessage(response))

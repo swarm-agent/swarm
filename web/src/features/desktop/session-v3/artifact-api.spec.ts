@@ -139,6 +139,22 @@ test('artifact catalog normalizes managed collection, progress, selection, linea
   })
 })
 
+test('artifact catalog preserves authoritative graph and step refs', () => {
+  const entry = normalizeDesktopV3ArtifactCatalogEntry({
+    ...managedCatalogWire,
+    graph_state: 'authoritative',
+    artifact_chain_id: 'chain-1',
+    artifact_step_id: 'step-2',
+    chain: { id: 'chain-1', name: 'Homepage', root: { session_id: 'session-1', collection_id: 'collection-1', variant_id: 'variant-1', event_seq: 42 }, head: { session_id: 'session-1', collection_id: 'collection-1', variant_id: 'variant-1', event_seq: 42 }, revision_count: 2, last_round_id: 'step-2' },
+    step: { id: 'step-2', artifact_chain_id: 'chain-1', revision_number: 2, parent: { session_id: 'session-1', collection_id: 'collection-0', variant_id: 'variant-0', event_seq: 41 }, candidates: [{ session_id: 'session-1', collection_id: 'collection-1', variant_id: 'variant-1', event_seq: 42 }], accepted: { session_id: 'session-1', collection_id: 'collection-1', variant_id: 'variant-1', event_seq: 42 } },
+  })
+  assert.ok(entry)
+  assert.equal(entry.graphState, 'authoritative')
+  assert.equal(entry.artifactStepId, 'step-2')
+  assert.equal(entry.step?.accepted?.variantId, 'variant-1')
+  assert.deepEqual(desktopV3ArtifactSelection(entry), { session_id: 'session-1', collection_id: 'collection-1', variant_id: 'variant-1', event_seq: 42, artifact_chain_id: 'chain-1', artifact_step_id: 'step-2' })
+})
+
 test('artifact animation profiles preserve only the exact server-owned runtime contract', () => {
   const profile = normalizeDesktopV3ArtifactAnimationProfile(managedCatalogWire.animation_profile)
   assert.ok(profile)
