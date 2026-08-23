@@ -22,6 +22,11 @@ func TestWriteDesignerAnimationGuidanceIncludesCommonPerformanceContract(t *test
 		"sustained frame time",
 		"motion_ui performance tips",
 		"one requestAnimationFrame owner",
+		"must start natively",
+		"must not require a Play button",
+		"separate random-access capture interface",
+		"do not use an external wall-clock seek driver",
+		"do not create a second scheduler",
 	} {
 		if !strings.Contains(prompt, expected) {
 			t.Fatalf("animation guidance missing %q: %s", expected, prompt)

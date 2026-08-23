@@ -1,0 +1,180 @@
+name: release-pr-gate
+
+on:
+  workflow_call:
+
+permissions: {}
+
+jobs:
+  gate:
+    name: release-candidate-request
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      pull-requests: read
+      id-token: write
+    concurrency:
+      group: release-pr-gate
+      cancel-in-progress: false
+    steps:
+      - name: Validate immutable candidate
+        id: candidate
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
+        with:
+          script: |
+            const expected = {
+              repository: 'swarm-agent/swarm',
+              repositoryId: 1262903051,
+              ownerId: 216872391,
+              base: 'main',
+              head: 'dev',
+              workflow: 'swarm-agent/swarm/.github/workflows/release-pr-gate.yml@refs/heads/main',
+            }
+
+            const event = context.payload
+            const pull = event.pull_request
+            if (context.eventName !== 'pull_request' || !pull) {
+              core.setFailed('gate requires a pull request event')
+              return
+            }
+            if (
+              context.repo.owner + '/' + context.repo.repo !== expected.repository ||
+              Number(event.repository?.id) !== expected.repositoryId ||
+              Number(event.repository?.owner?.id) !== expected.ownerId ||
+              event.repository?.private !== false ||
+              pull.draft !== false ||
+              pull.base?.repo?.full_name !== expected.repository ||
+              pull.head?.repo?.full_name !== expected.repository ||
+              Number(pull.base?.repo?.id) !== expected.repositoryId ||
+              Number(pull.head?.repo?.id) !== expected.repositoryId ||
+              pull.base?.ref !== expected.base ||
+              pull.head?.ref !== expected.head
+            ) {
+              core.setFailed('candidate is outside the trusted release boundary')
+              return
+            }
+
+            const headSha = pull.head?.sha
+            if (!/^[0-9a-f]{40}$/.test(headSha || '')) {
+              core.setFailed('candidate SHA is invalid')
+              return
+            }
+
+            const currentPull = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: pull.number,
+            })
+            const currentRef = await github.rest.git.getRef({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              ref: 'heads/dev',
+            })
+            const currentRepository = await github.rest.repos.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+            })
+
+            if (
+              currentRepository.data.full_name !== expected.repository ||
+              Number(currentRepository.data.id) !== expected.repositoryId ||
+              Number(currentRepository.data.owner?.id) !== expected.ownerId ||
+              currentRepository.data.private !== false ||
+              currentPull.data.draft !== false ||
+              currentPull.data.base?.repo?.full_name !== expected.repository ||
+              currentPull.data.head?.repo?.full_name !== expected.repository ||
+              currentPull.data.base?.ref !== expected.base ||
+              currentPull.data.head?.ref !== expected.head ||
+              currentPull.data.head?.sha !== headSha ||
+              currentRef.data.object?.sha !== headSha
+            ) {
+              core.setFailed('candidate changed or no longer matches the trusted release boundary')
+              return
+            }
+
+            core.setOutput('head-sha', headSha)
+            core.setOutput('pull-number', String(pull.number))
+            core.setOutput('trusted-workflow', expected.workflow)
+
+      - name: Join isolated gate network
+        uses: tailscale/github-action@bcdcd248fc675b41adfdb2553b11e990e0d66a05 # v4
+        with:
+          oauth-client-id: ${{ vars.RELEASE_GATE_NETWORK_CLIENT_ID }}
+          audience: ${{ vars.RELEASE_GATE_NETWORK_AUDIENCE }}
+          tags: tag:release-gate-ci
+
+      - name: Run isolated candidate gate
+        shell: bash
+        env:
+          EXPECTED_HEAD_SHA: ${{ steps.candidate.outputs.head-sha }}
+          EXPECTED_PULL_NUMBER: ${{ steps.candidate.outputs.pull-number }}
+          GATE_ENDPOINT: ${{ vars.RELEASE_GATE_ENDPOINT }}
+        run: |
+          set -euo pipefail
+          set +x
+
+          [[ "${EXPECTED_HEAD_SHA}" =~ ^[0-9a-f]{40}$ ]]
+          [[ "${EXPECTED_PULL_NUMBER}" =~ ^[1-9][0-9]*$ ]]
+          [[ "${GATE_ENDPOINT}" =~ ^[a-z0-9][a-z0-9.-]*$ ]]
+
+          receipt="${RUNNER_TEMP}/release-gate-receipt.json"
+          tailscale ssh "release-gate@${GATE_ENDPOINT}" \
+            request \
+            --repository-id 1262903051 \
+            --pull-number "${EXPECTED_PULL_NUMBER}" \
+            --head-sha "${EXPECTED_HEAD_SHA}" \
+            --github-run-id "${GITHUB_RUN_ID}" \
+            --github-run-attempt "${GITHUB_RUN_ATTEMPT}" \
+            >"${receipt}"
+
+          jq -e \
+            --arg sha "${EXPECTED_HEAD_SHA}" \
+            --arg run "${GITHUB_RUN_ID}" \
+            --arg attempt "${GITHUB_RUN_ATTEMPT}" \
+            '
+              .schema == "swarm.release-gate.receipt.v1" and
+              .head_sha == $sha and
+              .github_run_id == $run and
+              .github_run_attempt == $attempt and
+              .overall == "success" and
+              .cleanup == "passed" and
+              ([.stages[]?.status] | length > 0) and
+              ([.stages[]?.status] | all(. == "passed"))
+            ' "${receipt}" >/dev/null
+
+          rm -f -- "${receipt}"
+
+      - name: Revalidate candidate after gate
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
+        env:
+          EXPECTED_HEAD_SHA: ${{ steps.candidate.outputs.head-sha }}
+          EXPECTED_PULL_NUMBER: ${{ steps.candidate.outputs.pull-number }}
+        with:
+          script: |
+            const headSha = process.env.EXPECTED_HEAD_SHA
+            const pullNumber = Number(process.env.EXPECTED_PULL_NUMBER)
+            if (!/^[0-9a-f]{40}$/.test(headSha || '') || !Number.isInteger(pullNumber) || pullNumber < 1) {
+              core.setFailed('candidate outputs are invalid')
+              return
+            }
+            const currentPull = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: pullNumber,
+            })
+            const currentRef = await github.rest.git.getRef({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              ref: 'heads/dev',
+            })
+            if (
+              currentPull.data.draft !== false ||
+              currentPull.data.base?.ref !== 'main' ||
+              currentPull.data.head?.ref !== 'dev' ||
+              currentPull.data.head?.repo?.full_name !== 'swarm-agent/swarm' ||
+              currentPull.data.head?.sha !== headSha ||
+              currentRef.data.object?.sha !== headSha
+            ) {
+              core.setFailed('candidate changed while the gate was running')
+            }

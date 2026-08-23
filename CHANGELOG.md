@@ -22,6 +22,7 @@ Release entries are the source checkpoint for public docs verification. Each ent
 - Reworked durable V3 plan and checkpoint execution so boundary transitions, resumptions, source-message provenance, and conversation context remain in the canonical session epoch.
 - Expanded Desktop and TUI workspace onboarding, session routing, themes, responsive navigation, git status, and launch tips while removing legacy display and workspace-definition authorities.
 - Hardened release update and systemd relaunch behavior, including non-privileged update handoff, replacement readiness, authorization, and rollback-sensitive restart paths.
+- Split trusted pre-merge qualification from final protected-branch release builds so publication can require an independently authenticated candidate check while keeping infrastructure details and credentials outside the public repository.
 - Separated core system agents from utility agents in Desktop and TUI model controls.
 - Improved TUI Codex model-profile switching and V3 chat integration, with a maintained helper for copying the local Swarm database for diagnostics.
 - Changed worktree-name conflict retries to use random five-digit identifiers.
