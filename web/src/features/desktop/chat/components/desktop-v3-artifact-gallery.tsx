@@ -314,9 +314,13 @@ export function DesktopV3ArtifactGallery({
     : visibleArtifacts.find((artifact) => artifactSelectionKey(artifact) === selectedId) ?? visibleArtifacts[0]
   const selectedGroupKey = overviewGroup?.key ?? (selected ? artifactCollectionKey(selected) : '')
   const selectedGroup = overviewGroup ?? groups.find((group) => group.key === selectedGroupKey)
-  const selectedVariants = selected ? desktopV3ArtifactStudioEntries(artifacts, selected) : selectedGroup?.entries ?? []
+  const selectedChainEntries = selected ? desktopV3ArtifactStudioEntries(artifacts, selected) : []
   const selectedHead = selected ? desktopV3ArtifactStudioHead(artifacts, selected) : undefined
   const selectedRounds = selected ? desktopV3ArtifactStudioRounds(artifacts, selected) : []
+  const selectedRound = selected
+    ? selectedRounds.find((round) => round.candidates.some((candidate) => artifactSelectionKey(candidate) === artifactSelectionKey(selected)))
+    : undefined
+  const selectedVariants = selectedRound?.candidates ?? selectedGroup?.entries ?? selectedChainEntries
   const selectedVariantIndex = selected
     ? selectedVariants.findIndex((artifact) => artifactSelectionKey(artifact) === artifactSelectionKey(selected))
     : -1
@@ -470,12 +474,16 @@ export function DesktopV3ArtifactGallery({
         return
       }
       if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement) return
-      if (!studioModeActive && (event.key === 'ArrowLeft' || event.key === 'ArrowRight') && selectedVariants.length > 1 && selectedVariantIndex >= 0) {
+      if ((event.key === 'ArrowLeft' || event.key === 'ArrowRight') && selectedVariants.length > 1 && selectedVariantIndex >= 0) {
         event.preventDefault()
         const offset = event.key === 'ArrowLeft' ? -1 : 1
         const nextIndex = (selectedVariantIndex + offset + selectedVariants.length) % selectedVariants.length
         const nextArtifact = selectedVariants[nextIndex]
         if (nextArtifact) {
+          if (studioModeActive) {
+            iterationAutoplayArtifactRef.current = artifactSelectionKey(nextArtifact)
+            iterationAutoplaySectionRef.current = iterationSectionIdRef.current
+          }
           setSelectedId(artifactSelectionKey(nextArtifact))
           onArtifactNavigate?.(nextArtifact)
         }
@@ -543,6 +551,15 @@ export function DesktopV3ArtifactGallery({
     setOverviewCollectionKey('')
     setSelectedId(artifactSelectionKey(artifact))
     if (navigate) onArtifactNavigate?.(artifact)
+  }
+
+  const selectFullIterationArtifact = (artifact: DesktopV3ArtifactGalleryEntry) => {
+    const artifactKey = artifactSelectionKey(artifact)
+    if (studioModeActive) {
+      iterationAutoplayArtifactRef.current = artifactKey
+      iterationAutoplaySectionRef.current = iterationSectionIdRef.current
+    }
+    selectArtifact(artifact)
   }
 
   const selectStudioArtifact = (artifact: DesktopV3ArtifactGalleryEntry, section?: DesktopV3ArtifactIterationSection) => {
@@ -771,7 +788,7 @@ export function DesktopV3ArtifactGallery({
     if (selectedVariants.length < 2 || selectedVariantIndex < 0) return
     const nextIndex = (selectedVariantIndex + offset + selectedVariants.length) % selectedVariants.length
     const nextArtifact = selectedVariants[nextIndex]
-    if (nextArtifact) selectArtifact(nextArtifact)
+    if (nextArtifact) selectFullIterationArtifact(nextArtifact)
   }
 
   const selectCollection = (group: ArtifactCollectionGroup) => {
@@ -1099,23 +1116,30 @@ export function DesktopV3ArtifactGallery({
                   </div>
                 </div>
               ) : selected ? <>
-                {!studioModeActive ? <div className={cn('min-w-0 shrink-0 border-b border-[var(--app-border)] bg-[var(--app-surface)]', presentation !== 'embedded' && 'md:hidden')} data-mobile-generation-selector>
+                <div className={cn('min-w-0 shrink-0 border-b border-[var(--app-border)] bg-[var(--app-surface)]', presentation !== 'embedded' && 'md:hidden')} data-mobile-generation-selector>
                   {groups.length > 1 ? <div className="flex h-9 min-w-0 items-center gap-1 overflow-x-auto border-b border-[var(--app-border)] px-2" aria-label="Select artifact collection">
                     {groups.map((group) => {
                       const active = group.key === selectedGroupKey
                       return <button key={group.key} type="button" className={cn('h-7 max-w-[12rem] shrink-0 truncate rounded-md px-2.5 text-[10px] font-semibold', active ? 'bg-[var(--app-primary-soft)] text-[var(--app-primary)]' : 'text-[var(--app-text-muted)]')} aria-pressed={active} onClick={() => selectCollection(group)}>{collectionDisplayLabel(group)}</button>
                     })}
                   </div> : null}
+                  {selectedRounds.length > 1 ? <div className="flex h-9 min-w-0 items-center gap-1 overflow-x-auto border-b border-[var(--app-border)] px-2" aria-label="Select artifact revision turn" data-mobile-revision-turn-selector>
+                    {selectedRounds.map((round) => {
+                      const active = round.id === selectedRound?.id
+                      const target = active ? selected : (round.candidates.find((candidate) => candidate.selected) ?? round.candidates[0])
+                      return <button key={round.id} type="button" className={cn('shrink-0 rounded-md px-2 py-1 text-[10px] font-semibold', active ? 'bg-[var(--app-primary-soft)] text-[var(--app-primary)]' : 'text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)]')} aria-current={active ? 'step' : undefined} disabled={!target} onClick={() => { if (target) selectFullIterationArtifact(target) }}>Turn {round.revisionNumber} · {round.candidates.length}</button>
+                    })}
+                  </div> : null}
                   <div className="flex h-11 min-w-0 items-center gap-1.5 overflow-x-auto px-2" aria-label="Select generation">
                     {selectedVariants.map((artifact, index) => {
                       const active = artifactSelectionKey(artifact) === artifactSelectionKey(selected)
-                      return <button key={artifactSelectionKey(artifact)} type="button" className={cn('inline-flex h-8 max-w-[13rem] shrink-0 items-center gap-1.5 rounded-lg border px-2.5 text-[11px] font-semibold', active ? 'border-[var(--app-primary)] bg-[var(--app-primary-soft)] text-[var(--app-primary)]' : 'border-[var(--app-border)] bg-[var(--app-bg)] text-[var(--app-text-muted)]')} aria-current={active ? 'true' : undefined} onClick={() => selectArtifact(artifact)}><span className="grid size-4 shrink-0 place-items-center rounded bg-[var(--app-surface)] text-[9px]">{artifact.lineage?.iterationIndex || index + 1}</span><span className="truncate">{variantDisplayLabel(artifact, index)}</span></button>
+                      return <button key={artifactSelectionKey(artifact)} type="button" className={cn('inline-flex h-8 max-w-[13rem] shrink-0 items-center gap-1.5 rounded-lg border px-2.5 text-[11px] font-semibold', active ? 'border-[var(--app-primary)] bg-[var(--app-primary-soft)] text-[var(--app-primary)]' : 'border-[var(--app-border)] bg-[var(--app-bg)] text-[var(--app-text-muted)]')} aria-current={active ? 'true' : undefined} onClick={() => selectFullIterationArtifact(artifact)}><span className="grid size-4 shrink-0 place-items-center rounded bg-[var(--app-surface)] text-[9px]">{artifact.lineage?.iterationIndex || index + 1}</span><span className="truncate">{variantDisplayLabel(artifact, index)}</span></button>
                     })}
                   </div>
-                </div> : null}
+                </div>
                 <div className={cn('hidden flex-wrap items-center justify-between gap-3 border-b border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-2.5 sm:px-4', presentation !== 'embedded' && 'md:flex')}>
                   <div className="min-w-0 flex-1"><div className="flex min-w-0 flex-wrap items-center gap-2"><div className="truncate text-sm font-semibold">{variantDisplayLabel(selected, Math.max(selectedVariantIndex, 0))}</div><span className="shrink-0 rounded border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-1.5 py-0.5 text-[9px] font-semibold uppercase">{artifactTypeLabel(selected)}</span>{selectedIsCanonical ? <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-[var(--app-success-bg)] px-2 py-0.5 text-[10px] font-semibold text-[var(--app-success)]" data-artifact-selected-design><Check className="size-3" />Selected design</span> : null}{selected.status && selected.status !== 'ready' ? <span className={cn('rounded-full px-2 py-0.5 text-[10px] font-semibold', selected.status === 'staging' ? 'bg-[var(--app-primary-soft)] text-[var(--app-primary)]' : 'bg-[var(--app-danger-bg)] text-[var(--app-danger)]')}>{artifactStatusLabel(selected)}</span> : null}</div>{selected.description && selected.description !== selected.label && selected.description !== selected.collectionDescription ? <p className="truncate text-xs text-[var(--app-text-muted)]">{selected.description}</p> : null}<p className="truncate text-[10px] text-[var(--app-text-subtle)]">{selectedGroup ? collectionDisplayLabel(selectedGroup) : selected.sessionTitle}{selectedVariantIndex >= 0 ? ` · Variant ${selectedVariantIndex + 1} of ${selectedVariants.length}` : ''}</p>{selectedRequirementLabel ? <p className="truncate text-[10px] font-medium text-[var(--app-text-muted)]" data-artifact-output-requirements title="Requested output target; not measured binary dimensions">{selectedRequirementLabel}</p> : null}{selectedAnimationLabel ? <p className="truncate text-[10px] font-medium text-[var(--app-text-muted)]" data-artifact-animation-profile-label>{selectedAnimationLabel}</p> : null}</div>
-                  <div className="flex shrink-0 items-center gap-1.5">{artifactHref && !studioModeActive ? <a href={artifactHref(selected)} className="inline-flex h-8 items-center rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-2.5 text-[10px] font-semibold hover:bg-[var(--app-surface-hover)]" onClick={(event) => openArtifactLink(event, selected)}>Open iteration URL</a> : null}{!studioModeActive ? <><button type="button" className="grid size-8 place-items-center rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] hover:bg-[var(--app-surface-hover)] disabled:cursor-default disabled:opacity-40" disabled={selectedVariants.length < 2} aria-label="Previous artifact" onClick={() => selectAdjacentVariant(-1)}><ChevronLeft size={15} /></button><button type="button" className="grid size-8 place-items-center rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] hover:bg-[var(--app-surface-hover)] disabled:cursor-default disabled:opacity-40" disabled={selectedVariants.length < 2} aria-label="Next artifact" onClick={() => selectAdjacentVariant(1)}><ChevronRight size={15} /></button></> : null}<button type="button" className="grid size-8 place-items-center rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] hover:bg-[var(--app-surface-hover)]" aria-label="View artifact fullscreen" onClick={() => void togglePreviewFullscreen()}><Maximize2 size={14} /></button>{artifactCanReveal(selected) ? <button type="button" className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-2.5 text-xs font-medium hover:bg-[var(--app-surface-hover)] disabled:opacity-50" disabled={Boolean(actionPending)} title="Open this artifact in the native file manager" onClick={() => void revealArtifact(selected)}>{actionPending === 'reveal-artifact' ? <Loader2 size={13} className="animate-spin" /> : <FolderOpen size={13} />} <span className="hidden sm:inline">Show in folder</span></button> : null}{selected.content === undefined && selected.status !== 'staging' && selected.status !== 'failed' && selected.status !== 'unavailable' ? <button type="button" className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-2.5 text-xs font-medium hover:bg-[var(--app-surface-hover)]" onClick={() => void downloadArtifact(selected)}><Download size={13} /> <span className="hidden sm:inline">{desktopV3ArtifactRequiresBundle(selected) ? 'Download bundle' : 'Download file'}</span></button> : null}</div>
+                  <div className="flex shrink-0 items-center gap-1.5">{artifactHref ? <a href={artifactHref(selected)} className="inline-flex h-8 items-center rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-2.5 text-[10px] font-semibold hover:bg-[var(--app-surface-hover)]" onClick={(event) => openArtifactLink(event, selected)}>Open iteration URL</a> : null}<button type="button" className="grid size-8 place-items-center rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] hover:bg-[var(--app-surface-hover)] disabled:cursor-default disabled:opacity-40" disabled={selectedVariants.length < 2} aria-label="Previous artifact" onClick={() => selectAdjacentVariant(-1)}><ChevronLeft size={15} /></button><button type="button" className="grid size-8 place-items-center rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] hover:bg-[var(--app-surface-hover)] disabled:cursor-default disabled:opacity-40" disabled={selectedVariants.length < 2} aria-label="Next artifact" onClick={() => selectAdjacentVariant(1)}><ChevronRight size={15} /></button><button type="button" className="grid size-8 place-items-center rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] hover:bg-[var(--app-surface-hover)]" aria-label="View artifact fullscreen" onClick={() => void togglePreviewFullscreen()}><Maximize2 size={14} /></button>{artifactCanReveal(selected) ? <button type="button" className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-2.5 text-xs font-medium hover:bg-[var(--app-surface-hover)] disabled:opacity-50" disabled={Boolean(actionPending)} title="Open this artifact in the native file manager" onClick={() => void revealArtifact(selected)}>{actionPending === 'reveal-artifact' ? <Loader2 size={13} className="animate-spin" /> : <FolderOpen size={13} />} <span className="hidden sm:inline">Show in folder</span></button> : null}{selected.content === undefined && selected.status !== 'staging' && selected.status !== 'failed' && selected.status !== 'unavailable' ? <button type="button" className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-2.5 text-xs font-medium hover:bg-[var(--app-surface-hover)]" onClick={() => void downloadArtifact(selected)}><Download size={13} /> <span className="hidden sm:inline">{desktopV3ArtifactRequiresBundle(selected) ? 'Download bundle' : 'Download file'}</span></button> : null}</div>
                 </div>
                 <div
                   ref={(node) => {
@@ -1133,6 +1157,20 @@ export function DesktopV3ArtifactGallery({
                   data-artifact-animation-active={selectedAnimationActive || undefined}
                 >
                   {iterationDescriptor && !previewFullscreen ? <aside className="absolute inset-y-0 left-0 z-10 hidden w-72 overflow-x-hidden overflow-y-auto border-r border-[var(--app-border)] bg-[var(--app-surface)] p-3 xl:w-80 md:block" aria-label="Artifact Studio steps" data-artifact-studio-step-sidebar data-artifact-studio-unified-iterations>
+                    {selectedChainEntries.length > 1 ? <section className="mb-3 rounded-xl border border-[var(--app-border)] bg-[var(--app-bg)] p-2" aria-label="Full artifact iterations" data-artifact-studio-full-iterations>
+                      <div className="px-1 pb-1.5"><p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-[var(--app-text-subtle)]">Full iterations by turn</p><p className="mt-0.5 text-[10px] text-[var(--app-text-muted)]">Each turn stays grouped. Switch a complete version while keeping the current step in view.</p></div>
+                      <div className="grid gap-2">
+                        {selectedRounds.map((round) => <section key={round.id} className={cn('overflow-hidden rounded-lg border', round.id === selectedRound?.id ? 'border-[var(--app-primary)]' : 'border-[var(--app-border)]')} data-artifact-studio-revision-round={round.id}>
+                          <div className="flex items-center justify-between gap-2 bg-[var(--app-surface)] px-2 py-1.5"><span className="text-[9px] font-semibold uppercase tracking-[0.12em] text-[var(--app-text-subtle)]">Turn {round.revisionNumber}</span><span className="text-[9px] text-[var(--app-text-subtle)]">{round.candidates.length} complete version{round.candidates.length === 1 ? '' : 's'}</span></div>
+                          <div className="grid gap-1 p-1">
+                            {round.candidates.map((artifact, index) => {
+                              const active = artifactSelectionKey(artifact) === artifactSelectionKey(selected)
+                              return <button key={artifactSelectionKey(artifact)} type="button" className={cn('flex min-w-0 items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[10px]', active ? 'bg-[var(--app-primary-soft)] font-semibold text-[var(--app-primary)]' : 'text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)]')} aria-current={active ? 'true' : undefined} onClick={() => selectFullIterationArtifact(artifact)}><span className="grid size-4 shrink-0 place-items-center rounded-full border border-[var(--app-border)] font-mono text-[9px]">{artifact.candidateIndex || artifact.lineage?.iterationIndex || index + 1}</span><span className="min-w-0 flex-1 truncate">{variantDisplayLabel(artifact, index)}</span>{active ? <Check className="size-3 shrink-0" aria-label="Current full iteration" /> : null}</button>
+                            })}
+                          </div>
+                        </section>)}
+                      </div>
+                    </section> : null}
                     <div className="mb-2 px-2 py-1"><p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-[var(--app-text-subtle)]">Studio steps</p><p className="mt-0.5 text-[10px] text-[var(--app-text-muted)]">Choose a step, then select its iteration here. The preview starts at that step.</p></div>
                     <div className="grid gap-2">
                       {iterationDescriptor.sections.map((section, index) => {
