@@ -2,10 +2,10 @@
   "schema_version": "2026-08-14.2",
   "api_version": "v1",
   "snapshot_schema_version": "2026-08-14.2",
-  "snapshot_id": "swarm-models-v1-b1a2717c6a27fbb5",
-  "snapshot_version": "b1a2717c6a27fbb5",
-  "generated_at": "2026-08-14T13:44:13Z",
-  "model_count": 689,
+  "snapshot_id": "swarm-models-v1-1772e9d9e0a83721",
+  "snapshot_version": "1772e9d9e0a83721",
+  "generated_at": "2026-08-15T14:46:40.212Z",
+  "model_count": 688,
   "provider_count": 7,
   "hydrated_provider_count": 6,
   "definitions": {
@@ -1325,7 +1325,7 @@
       },
       "coder": {
         "model": "gpt-5.6-sol",
-        "thinking": "high",
+        "thinking": "medium",
         "fast": "off"
       },
       "designer": {
@@ -1367,7 +1367,7 @@
       },
       "coder": {
         "model": "gpt-5.6-sol",
-        "thinking": "high",
+        "thinking": "medium",
         "fast": "off"
       },
       "designer": {
@@ -1502,7 +1502,7 @@
         "fast": "off"
       },
       "router": {
-        "model": "accounts/fireworks/models/deepseek-v4-flash",
+        "model": "accounts/fireworks/models/deepseek-v4-flash-0731",
         "thinking": "high",
         "fast": "off"
       }
@@ -1535,7 +1535,7 @@
       },
       "coder": {
         "model": "openai/gpt-5.6-sol",
-        "thinking": "high",
+        "thinking": "medium",
         "fast": "off"
       },
       "designer": {
@@ -1712,7 +1712,7 @@
         },
         "coder": {
           "model": "gpt-5.6-sol",
-          "thinking": "high",
+          "thinking": "medium",
           "fast": "off"
         },
         "designer": {
@@ -1831,12 +1831,12 @@
           "fast": "off"
         },
         "router": {
-          "model": "accounts/fireworks/models/deepseek-v4-flash",
+          "model": "accounts/fireworks/models/deepseek-v4-flash-0731",
           "thinking": "high",
           "fast": "off"
         }
       },
-      "model_count": 24,
+      "model_count": 23,
       "sources": [
         {
           "source_id": "fireworks_serverless_models_api",
@@ -2113,7 +2113,7 @@
         },
         "coder": {
           "model": "gpt-5.6-sol",
-          "thinking": "high",
+          "thinking": "medium",
           "fast": "off"
         },
         "designer": {
@@ -2199,7 +2199,7 @@
         },
         "coder": {
           "model": "openai/gpt-5.6-sol",
-          "thinking": "high",
+          "thinking": "medium",
           "fast": "off"
         },
         "designer": {
@@ -2279,7 +2279,7 @@
       "provider_id": "fireworks",
       "provider_display_name": "Fireworks AI",
       "source_url": "https://fireworks.ai/models?modelTypes=Serverless",
-      "model_count": 24,
+      "model_count": 23,
       "path": "/v1/models/fireworks.json"
     },
     {
@@ -9851,7 +9851,7 @@
           "source_id": "codex_models_manager_models_json",
           "source_url": "https://raw.githubusercontent.com/openai/codex/main/codex-rs/models-manager/models.json",
           "source_kind": "official_api",
-          "fetched_at": "2026-08-14T13:44:13Z",
+          "fetched_at": "2026-08-15T14:46:40.212Z",
           "confidence": "high",
           "verification_status": "verified",
           "fields": [
@@ -9918,7 +9918,7 @@
           "source_id": "codex_app_server_docs",
           "source_url": "https://developers.openai.com/codex/app-server",
           "source_kind": "official_docs",
-          "fetched_at": "2026-08-14T13:44:13Z",
+          "fetched_at": "2026-08-15T14:46:40.212Z",
           "confidence": "high",
           "verification_status": "verified",
           "fields": [
@@ -9941,7 +9941,7 @@
           "source_id": "codex_image_input_source",
           "source_url": "https://github.com/openai/codex/blob/bd2de422aa287b97b06ca6425a10935bcf1b3731/codex-rs/utils/image/src/lib.rs",
           "source_kind": "official_api",
-          "fetched_at": "2026-08-14T13:44:13Z",
+          "fetched_at": "2026-08-15T14:46:40.212Z",
           "confidence": "high",
           "verification_status": "verified",
           "fields": [
@@ -10165,7 +10165,7 @@
         "reviewed_at": null,
         "notes": "Codex model metadata is hydrated from OpenAI's Codex GitHub repository. Swarm currently treats this model as ChatGPT-subscription routable for Codex, but authenticated backend availability should still be verified before live traffic."
       },
-      "updated_at": "2026-08-14T13:44:13Z",
+      "updated_at": "2026-08-15T14:46:40.212Z",
       "media": {
         "input_understanding": {
           "audio": false,
@@ -10234,7 +10234,7 @@
         "supports_pdf_input": null,
         "supports_voice": false,
         "supports_tools": true,
-        "supports_parallel_tool_calls": null,
+        "supports_parallel_tool_calls": true,
         "supports_structured_outputs": null,
         "supports_json_mode": null,
         "supports_reasoning": true,
@@ -10340,6 +10340,7 @@
         "supported_parameters": [
           "apply_patch",
           "default_reasoning_effort",
+          "parallel_tool_calls",
           "reasoning_effort",
           "service_tier",
           "verbosity",
@@ -10372,7 +10373,7 @@
           "source_id": "codex_models_manager_models_json",
           "source_url": "https://raw.githubusercontent.com/openai/codex/main/codex-rs/models-manager/models.json",
           "source_kind": "official_api",
-          "fetched_at": "2026-08-14T13:44:13Z",
+          "fetched_at": "2026-08-15T14:46:40.212Z",
           "confidence": "high",
           "verification_status": "verified",
           "fields": [
@@ -10439,7 +10440,7 @@
           "source_id": "codex_app_server_docs",
           "source_url": "https://developers.openai.com/codex/app-server",
           "source_kind": "official_docs",
-          "fetched_at": "2026-08-14T13:44:13Z",
+          "fetched_at": "2026-08-15T14:46:40.212Z",
           "confidence": "high",
           "verification_status": "verified",
           "fields": [
@@ -10462,7 +10463,7 @@
           "source_id": "codex_image_input_source",
           "source_url": "https://github.com/openai/codex/blob/bd2de422aa287b97b06ca6425a10935bcf1b3731/codex-rs/utils/image/src/lib.rs",
           "source_kind": "official_api",
-          "fetched_at": "2026-08-14T13:44:13Z",
+          "fetched_at": "2026-08-15T14:46:40.212Z",
           "confidence": "high",
           "verification_status": "verified",
           "fields": [
@@ -10608,6 +10609,7 @@
             "prolite",
             "quorum",
             "sci",
+            "self_serve_business_prolite",
             "self_serve_business_usage_based",
             "team"
           ],
@@ -10690,11 +10692,12 @@
           },
           "supports_reasoning_summaries": true,
           "default_reasoning_summary": "none",
-          "reasoning_summary_format": "experimental",
+          "reasoning_summary_format": null,
           "prefer_websockets": true,
           "upgrade": {
             "model": "gpt-5.6-terra",
-            "migration_markdown": "GPT-5.4 is no longer available\n\nCodex now uses GPT-5.6 Terra in place of GPT-5.4. Switch to GPT-5.6 Terra to continue.\n"
+            "migration_markdown": "GPT-5.4 is no longer available\n\nCodex now uses GPT-5.6 Terra in place of GPT-5.4. Switch to GPT-5.6 Terra to continue.\n",
+            "retirement_at": "2026-08-31T19:00:00Z"
           },
           "availability_nux": null,
           "images_api": {
@@ -10736,7 +10739,7 @@
         "reviewed_at": null,
         "notes": "Codex model metadata is hydrated from OpenAI's Codex GitHub repository. Swarm currently treats this model as ChatGPT-subscription routable for Codex, but authenticated backend availability should still be verified before live traffic."
       },
-      "updated_at": "2026-08-14T13:44:13Z",
+      "updated_at": "2026-08-15T14:46:40.212Z",
       "media": {
         "input_understanding": {
           "audio": false,
@@ -10805,7 +10808,7 @@
         "supports_pdf_input": null,
         "supports_voice": false,
         "supports_tools": true,
-        "supports_parallel_tool_calls": null,
+        "supports_parallel_tool_calls": true,
         "supports_structured_outputs": null,
         "supports_json_mode": null,
         "supports_reasoning": true,
@@ -10911,6 +10914,7 @@
         "supported_parameters": [
           "apply_patch",
           "default_reasoning_effort",
+          "parallel_tool_calls",
           "reasoning_effort",
           "verbosity",
           "web_search"
@@ -10942,7 +10946,7 @@
           "source_id": "codex_models_manager_models_json",
           "source_url": "https://raw.githubusercontent.com/openai/codex/main/codex-rs/models-manager/models.json",
           "source_kind": "official_api",
-          "fetched_at": "2026-08-14T13:44:13Z",
+          "fetched_at": "2026-08-15T14:46:40.212Z",
           "confidence": "high",
           "verification_status": "verified",
           "fields": [
@@ -11009,7 +11013,7 @@
           "source_id": "codex_app_server_docs",
           "source_url": "https://developers.openai.com/codex/app-server",
           "source_kind": "official_docs",
-          "fetched_at": "2026-08-14T13:44:13Z",
+          "fetched_at": "2026-08-15T14:46:40.212Z",
           "confidence": "high",
           "verification_status": "verified",
           "fields": [
@@ -11032,7 +11036,7 @@
           "source_id": "codex_image_input_source",
           "source_url": "https://github.com/openai/codex/blob/bd2de422aa287b97b06ca6425a10935bcf1b3731/codex-rs/utils/image/src/lib.rs",
           "source_kind": "official_api",
-          "fetched_at": "2026-08-14T13:44:13Z",
+          "fetched_at": "2026-08-15T14:46:40.212Z",
           "confidence": "high",
           "verification_status": "verified",
           "fields": [
@@ -11162,6 +11166,7 @@
             "prolite",
             "quorum",
             "sci",
+            "self_serve_business_prolite",
             "self_serve_business_usage_based",
             "team"
           ],
@@ -11244,11 +11249,12 @@
           },
           "supports_reasoning_summaries": true,
           "default_reasoning_summary": "none",
-          "reasoning_summary_format": "experimental",
+          "reasoning_summary_format": null,
           "prefer_websockets": true,
           "upgrade": {
             "model": "gpt-5.6-luna",
-            "migration_markdown": "GPT-5.4 Mini is no longer available\n\nCodex now uses GPT-5.6 Luna in place of GPT-5.4 Mini. Switch to GPT-5.6 Luna to continue.\n"
+            "migration_markdown": "GPT-5.4 Mini is no longer available\n\nCodex now uses GPT-5.6 Luna in place of GPT-5.4 Mini. Switch to GPT-5.6 Luna to continue.\n",
+            "retirement_at": "2026-08-31T19:00:00Z"
           },
           "availability_nux": null,
           "images_api": {
@@ -11288,7 +11294,7 @@
         "reviewed_at": null,
         "notes": "Codex model metadata is hydrated from OpenAI's Codex GitHub repository. Swarm currently treats this model as ChatGPT-subscription routable for Codex, but authenticated backend availability should still be verified before live traffic."
       },
-      "updated_at": "2026-08-14T13:44:13Z",
+      "updated_at": "2026-08-15T14:46:40.212Z",
       "media": {
         "input_understanding": {
           "audio": false,
@@ -11357,7 +11363,7 @@
         "supports_pdf_input": null,
         "supports_voice": false,
         "supports_tools": true,
-        "supports_parallel_tool_calls": null,
+        "supports_parallel_tool_calls": true,
         "supports_structured_outputs": null,
         "supports_json_mode": null,
         "supports_reasoning": true,
@@ -11463,6 +11469,7 @@
         "supported_parameters": [
           "apply_patch",
           "default_reasoning_effort",
+          "parallel_tool_calls",
           "reasoning_effort",
           "service_tier",
           "verbosity",
@@ -11495,7 +11502,7 @@
           "source_id": "codex_models_manager_models_json",
           "source_url": "https://raw.githubusercontent.com/openai/codex/main/codex-rs/models-manager/models.json",
           "source_kind": "official_api",
-          "fetched_at": "2026-08-14T13:44:13Z",
+          "fetched_at": "2026-08-15T14:46:40.212Z",
           "confidence": "high",
           "verification_status": "verified",
           "fields": [
@@ -11562,7 +11569,7 @@
           "source_id": "codex_app_server_docs",
           "source_url": "https://developers.openai.com/codex/app-server",
           "source_kind": "official_docs",
-          "fetched_at": "2026-08-14T13:44:13Z",
+          "fetched_at": "2026-08-15T14:46:40.212Z",
           "confidence": "high",
           "verification_status": "verified",
           "fields": [
@@ -11585,7 +11592,7 @@
           "source_id": "codex_image_input_source",
           "source_url": "https://github.com/openai/codex/blob/bd2de422aa287b97b06ca6425a10935bcf1b3731/codex-rs/utils/image/src/lib.rs",
           "source_kind": "official_api",
-          "fetched_at": "2026-08-14T13:44:13Z",
+          "fetched_at": "2026-08-15T14:46:40.212Z",
           "confidence": "high",
           "verification_status": "verified",
           "fields": [
@@ -11734,6 +11741,7 @@
             "prolite",
             "quorum",
             "sci",
+            "self_serve_business_prolite",
             "self_serve_business_usage_based",
             "team"
           ],
@@ -11816,12 +11824,10 @@
           },
           "supports_reasoning_summaries": true,
           "default_reasoning_summary": "none",
-          "reasoning_summary_format": "experimental",
+          "reasoning_summary_format": null,
           "prefer_websockets": true,
           "upgrade": null,
-          "availability_nux": {
-            "message": "GPT-5.5 is now available in Codex. It's our strongest agentic coding model yet, built to reason through large codebases, check assumptions with tools, and keep going until the work is done.\n\nLearn more: https://openai.com/index/introducing-gpt-5-5/\n\n"
-          },
+          "availability_nux": null,
           "images_api": {
             "generation_endpoint": "https://chatgpt.com/backend-api/codex/images/generations",
             "edits_endpoint": "https://chatgpt.com/backend-api/codex/images/edits",
@@ -11859,7 +11865,7 @@
         "reviewed_at": null,
         "notes": "Codex model metadata is hydrated from OpenAI's Codex GitHub repository. Swarm currently treats this model as ChatGPT-subscription routable for Codex, but authenticated backend availability should still be verified before live traffic."
       },
-      "updated_at": "2026-08-14T13:44:13Z",
+      "updated_at": "2026-08-15T14:46:40.212Z",
       "media": {
         "input_understanding": {
           "audio": false,
@@ -11928,7 +11934,7 @@
         "supports_pdf_input": null,
         "supports_voice": false,
         "supports_tools": true,
-        "supports_parallel_tool_calls": null,
+        "supports_parallel_tool_calls": true,
         "supports_structured_outputs": null,
         "supports_json_mode": null,
         "supports_reasoning": true,
@@ -12015,7 +12021,7 @@
         "notes": "OpenAI Codex reasoning uses reasoning_effort. Swarm off maps to provider value none; effort values pass through only when advertised by each model's supported_reasoning_levels."
       },
       "limits": {
-        "context_window_tokens": 372000,
+        "context_window_tokens": 1050000,
         "max_input_tokens": null,
         "max_output_tokens": null,
         "max_reasoning_tokens": null
@@ -12041,6 +12047,7 @@
         "supported_parameters": [
           "apply_patch",
           "default_reasoning_effort",
+          "parallel_tool_calls",
           "reasoning_effort",
           "service_tier",
           "verbosity",
@@ -12057,7 +12064,7 @@
         "upstream_provider_ids": [
           "openai"
         ],
-        "top_provider_context_window_tokens": 372000,
+        "top_provider_context_window_tokens": 1050000,
         "top_provider_max_output_tokens": null,
         "top_provider_is_moderated": null,
         "per_request_limits": null
@@ -12073,7 +12080,7 @@
           "source_id": "codex_models_manager_models_json",
           "source_url": "https://raw.githubusercontent.com/openai/codex/main/codex-rs/models-manager/models.json",
           "source_kind": "official_api",
-          "fetched_at": "2026-08-14T13:44:13Z",
+          "fetched_at": "2026-08-15T14:46:40.212Z",
           "confidence": "high",
           "verification_status": "verified",
           "fields": [
@@ -12140,7 +12147,7 @@
           "source_id": "codex_app_server_docs",
           "source_url": "https://developers.openai.com/codex/app-server",
           "source_kind": "official_docs",
-          "fetched_at": "2026-08-14T13:44:13Z",
+          "fetched_at": "2026-08-15T14:46:40.212Z",
           "confidence": "high",
           "verification_status": "verified",
           "fields": [
@@ -12163,7 +12170,7 @@
           "source_id": "codex_image_input_source",
           "source_url": "https://github.com/openai/codex/blob/bd2de422aa287b97b06ca6425a10935bcf1b3731/codex-rs/utils/image/src/lib.rs",
           "source_kind": "official_api",
-          "fetched_at": "2026-08-14T13:44:13Z",
+          "fetched_at": "2026-08-15T14:46:40.212Z",
           "confidence": "high",
           "verification_status": "verified",
           "fields": [
@@ -12182,6 +12189,20 @@
             "provider_specific.codex.chatgpt_subscription_availability",
             "swarm.recommendations",
             "swarm.routing_roles"
+          ]
+        },
+        {
+          "source_id": "openai_models_docs",
+          "source_url": "https://developers.openai.com/api/docs/models/gpt-5.6-luna",
+          "source_kind": "official_docs",
+          "fetched_at": null,
+          "confidence": "high",
+          "verification_status": "verified",
+          "fields": [
+            "limits.context_window_tokens",
+            "provider_specific.codex.context_window",
+            "provider_specific.codex.max_context_window",
+            "routing.top_provider_context_window_tokens"
           ]
         },
         {
@@ -12238,8 +12259,8 @@
             "mode": "tokens",
             "limit": 10000
           },
-          "context_window": 372000,
-          "max_context_window": 372000,
+          "context_window": 1050000,
+          "max_context_window": 1050000,
           "auto_compact_token_limit": null,
           "effective_context_window_percent": null,
           "supports_image_detail_original": true,
@@ -12316,6 +12337,7 @@
             "prolite",
             "quorum",
             "sci",
+            "self_serve_business_prolite",
             "self_serve_business_usage_based",
             "team"
           ],
@@ -12398,7 +12420,7 @@
           },
           "supports_reasoning_summaries": true,
           "default_reasoning_summary": "none",
-          "reasoning_summary_format": "experimental",
+          "reasoning_summary_format": null,
           "prefer_websockets": true,
           "upgrade": null,
           "availability_nux": null,
@@ -12450,7 +12472,7 @@
         "reviewed_at": null,
         "notes": "Codex model metadata is hydrated from OpenAI's Codex GitHub repository. Swarm currently treats this model as ChatGPT-subscription routable for Codex, but authenticated backend availability should still be verified before live traffic."
       },
-      "updated_at": "2026-08-14T13:44:13Z",
+      "updated_at": "2026-08-15T14:46:40.212Z",
       "media": {
         "input_understanding": {
           "audio": false,
@@ -12519,7 +12541,7 @@
         "supports_pdf_input": null,
         "supports_voice": false,
         "supports_tools": true,
-        "supports_parallel_tool_calls": null,
+        "supports_parallel_tool_calls": true,
         "supports_structured_outputs": null,
         "supports_json_mode": null,
         "supports_reasoning": true,
@@ -12607,7 +12629,7 @@
         "notes": "OpenAI Codex reasoning uses reasoning_effort. Swarm off maps to provider value none; effort values pass through only when advertised by each model's supported_reasoning_levels."
       },
       "limits": {
-        "context_window_tokens": 372000,
+        "context_window_tokens": 1050000,
         "max_input_tokens": null,
         "max_output_tokens": null,
         "max_reasoning_tokens": null
@@ -12633,6 +12655,7 @@
         "supported_parameters": [
           "apply_patch",
           "default_reasoning_effort",
+          "parallel_tool_calls",
           "reasoning_effort",
           "service_tier",
           "verbosity",
@@ -12649,7 +12672,7 @@
         "upstream_provider_ids": [
           "openai"
         ],
-        "top_provider_context_window_tokens": 372000,
+        "top_provider_context_window_tokens": 1050000,
         "top_provider_max_output_tokens": null,
         "top_provider_is_moderated": null,
         "per_request_limits": null
@@ -12665,7 +12688,7 @@
           "source_id": "codex_models_manager_models_json",
           "source_url": "https://raw.githubusercontent.com/openai/codex/main/codex-rs/models-manager/models.json",
           "source_kind": "official_api",
-          "fetched_at": "2026-08-14T13:44:13Z",
+          "fetched_at": "2026-08-15T14:46:40.212Z",
           "confidence": "high",
           "verification_status": "verified",
           "fields": [
@@ -12732,7 +12755,7 @@
           "source_id": "codex_app_server_docs",
           "source_url": "https://developers.openai.com/codex/app-server",
           "source_kind": "official_docs",
-          "fetched_at": "2026-08-14T13:44:13Z",
+          "fetched_at": "2026-08-15T14:46:40.212Z",
           "confidence": "high",
           "verification_status": "verified",
           "fields": [
@@ -12755,7 +12778,7 @@
           "source_id": "codex_image_input_source",
           "source_url": "https://github.com/openai/codex/blob/bd2de422aa287b97b06ca6425a10935bcf1b3731/codex-rs/utils/image/src/lib.rs",
           "source_kind": "official_api",
-          "fetched_at": "2026-08-14T13:44:13Z",
+          "fetched_at": "2026-08-15T14:46:40.212Z",
           "confidence": "high",
           "verification_status": "verified",
           "fields": [
@@ -12774,6 +12797,20 @@
             "provider_specific.codex.chatgpt_subscription_availability",
             "swarm.recommendations",
             "swarm.routing_roles"
+          ]
+        },
+        {
+          "source_id": "openai_models_docs",
+          "source_url": "https://developers.openai.com/api/docs/models/gpt-5.6-sol",
+          "source_kind": "official_docs",
+          "fetched_at": null,
+          "confidence": "high",
+          "verification_status": "verified",
+          "fields": [
+            "limits.context_window_tokens",
+            "provider_specific.codex.context_window",
+            "provider_specific.codex.max_context_window",
+            "routing.top_provider_context_window_tokens"
           ]
         },
         {
@@ -12834,8 +12871,8 @@
             "mode": "tokens",
             "limit": 10000
           },
-          "context_window": 372000,
-          "max_context_window": 372000,
+          "context_window": 1050000,
+          "max_context_window": 1050000,
           "auto_compact_token_limit": null,
           "effective_context_window_percent": null,
           "supports_image_detail_original": true,
@@ -12845,6 +12882,11 @@
               "id": "priority",
               "name": "Fast",
               "description": "1.5x speed, increased usage"
+            },
+            {
+              "id": "ultrafast",
+              "name": "Ultrafast",
+              "description": "The fastest available responses for latency-sensitive work."
             }
           ],
           "default_service_tier": null,
@@ -12912,6 +12954,7 @@
             "prolite",
             "quorum",
             "sci",
+            "self_serve_business_prolite",
             "self_serve_business_usage_based",
             "team"
           ],
@@ -12994,12 +13037,10 @@
           },
           "supports_reasoning_summaries": true,
           "default_reasoning_summary": "none",
-          "reasoning_summary_format": "experimental",
+          "reasoning_summary_format": null,
           "prefer_websockets": true,
           "upgrade": null,
-          "availability_nux": {
-            "message": "Our most capable model yet. GPT-5.6 Sol can tackle complex code changes, dig into research, produce polished documents, and take on your most ambitious work. Sol is highly capable at lower reasoning efforts—try starting lower, then turn it up for harder jobs."
-          },
+          "availability_nux": null,
           "images_api": {
             "generation_endpoint": "https://chatgpt.com/backend-api/codex/images/generations",
             "edits_endpoint": "https://chatgpt.com/backend-api/codex/images/edits",
@@ -13057,7 +13098,7 @@
         "reviewed_at": null,
         "notes": "Codex model metadata is hydrated from OpenAI's Codex GitHub repository. Swarm currently treats this model as ChatGPT-subscription routable for Codex, but authenticated backend availability should still be verified before live traffic."
       },
-      "updated_at": "2026-08-14T13:44:13Z",
+      "updated_at": "2026-08-15T14:46:40.212Z",
       "media": {
         "input_understanding": {
           "audio": false,
@@ -13126,7 +13167,7 @@
         "supports_pdf_input": null,
         "supports_voice": false,
         "supports_tools": true,
-        "supports_parallel_tool_calls": null,
+        "supports_parallel_tool_calls": true,
         "supports_structured_outputs": null,
         "supports_json_mode": null,
         "supports_reasoning": true,
@@ -13214,7 +13255,7 @@
         "notes": "OpenAI Codex reasoning uses reasoning_effort. Swarm off maps to provider value none; effort values pass through only when advertised by each model's supported_reasoning_levels."
       },
       "limits": {
-        "context_window_tokens": 372000,
+        "context_window_tokens": 1050000,
         "max_input_tokens": null,
         "max_output_tokens": null,
         "max_reasoning_tokens": null
@@ -13240,6 +13281,7 @@
         "supported_parameters": [
           "apply_patch",
           "default_reasoning_effort",
+          "parallel_tool_calls",
           "reasoning_effort",
           "service_tier",
           "verbosity",
@@ -13256,7 +13298,7 @@
         "upstream_provider_ids": [
           "openai"
         ],
-        "top_provider_context_window_tokens": 372000,
+        "top_provider_context_window_tokens": 1050000,
         "top_provider_max_output_tokens": null,
         "top_provider_is_moderated": null,
         "per_request_limits": null
@@ -13272,7 +13314,7 @@
           "source_id": "codex_models_manager_models_json",
           "source_url": "https://raw.githubusercontent.com/openai/codex/main/codex-rs/models-manager/models.json",
           "source_kind": "official_api",
-          "fetched_at": "2026-08-14T13:44:13Z",
+          "fetched_at": "2026-08-15T14:46:40.212Z",
           "confidence": "high",
           "verification_status": "verified",
           "fields": [
@@ -13339,7 +13381,7 @@
           "source_id": "codex_app_server_docs",
           "source_url": "https://developers.openai.com/codex/app-server",
           "source_kind": "official_docs",
-          "fetched_at": "2026-08-14T13:44:13Z",
+          "fetched_at": "2026-08-15T14:46:40.212Z",
           "confidence": "high",
           "verification_status": "verified",
           "fields": [
@@ -13362,7 +13404,7 @@
           "source_id": "codex_image_input_source",
           "source_url": "https://github.com/openai/codex/blob/bd2de422aa287b97b06ca6425a10935bcf1b3731/codex-rs/utils/image/src/lib.rs",
           "source_kind": "official_api",
-          "fetched_at": "2026-08-14T13:44:13Z",
+          "fetched_at": "2026-08-15T14:46:40.212Z",
           "confidence": "high",
           "verification_status": "verified",
           "fields": [
@@ -13381,6 +13423,20 @@
             "provider_specific.codex.chatgpt_subscription_availability",
             "swarm.recommendations",
             "swarm.routing_roles"
+          ]
+        },
+        {
+          "source_id": "openai_models_docs",
+          "source_url": "https://developers.openai.com/api/docs/models/gpt-5.6-terra",
+          "source_kind": "official_docs",
+          "fetched_at": null,
+          "confidence": "high",
+          "verification_status": "verified",
+          "fields": [
+            "limits.context_window_tokens",
+            "provider_specific.codex.context_window",
+            "provider_specific.codex.max_context_window",
+            "routing.top_provider_context_window_tokens"
           ]
         },
         {
@@ -13441,8 +13497,8 @@
             "mode": "tokens",
             "limit": 10000
           },
-          "context_window": 372000,
-          "max_context_window": 372000,
+          "context_window": 1050000,
+          "max_context_window": 1050000,
           "auto_compact_token_limit": null,
           "effective_context_window_percent": null,
           "supports_image_detail_original": true,
@@ -13519,6 +13575,7 @@
             "prolite",
             "quorum",
             "sci",
+            "self_serve_business_prolite",
             "self_serve_business_usage_based",
             "team"
           ],
@@ -13601,7 +13658,7 @@
           },
           "supports_reasoning_summaries": true,
           "default_reasoning_summary": "none",
-          "reasoning_summary_format": "experimental",
+          "reasoning_summary_format": null,
           "prefer_websockets": true,
           "upgrade": null,
           "availability_nux": null,
@@ -13642,7 +13699,7 @@
         "reviewed_at": null,
         "notes": "Codex model metadata is hydrated from OpenAI's Codex GitHub repository. Swarm currently treats this model as ChatGPT-subscription routable for Codex, but authenticated backend availability should still be verified before live traffic."
       },
-      "updated_at": "2026-08-14T13:44:13Z",
+      "updated_at": "2026-08-15T14:46:40.212Z",
       "media": {
         "input_understanding": {
           "audio": false,
@@ -13657,603 +13714,6 @@
         "categories": [
           "image_understanding"
         ]
-      }
-    },
-    {
-      "schema_version": "2026-08-14.2",
-      "catalog_id": "fireworks/deepseek-v4-flash",
-      "provider_id": "fireworks",
-      "provider_display_name": "Fireworks AI",
-      "model_id": "deepseek-v4-flash",
-      "display_name": "DeepSeek-V4-Flash",
-      "description": "DeepSeek-V4-Flash is a streamlined open-source Mixture-of-Experts model optimized for fast, cost-efficient inference while preserving strong reasoning and coding performance at 1M token context scale. It leverages the same hybrid attention innovations as Pro but is tuned for lower latency and higher throughput in real-time applications. It delivers near-Pro reasoning quality under sufficient compute budget, making it ideal for interactive agents and high-volume production workloads.",
-      "family": "deepseek",
-      "external_ids": {
-        "provider_canonical_slug": "accounts/fireworks/models/deepseek-v4-flash",
-        "hugging_face_id": "deepseek-ai/DeepSeek-V4-Flash",
-        "upstream_model_id": "deepseek-ai/DeepSeek-V4-Flash"
-      },
-      "lifecycle": {
-        "created_at": "2026-04-24T00:00:00.000Z",
-        "created_at_unix_seconds": 1776988800,
-        "release_date": null,
-        "knowledge_cutoff": null,
-        "deprecation_date": null,
-        "expiration_date": null
-      },
-      "availability_status": "available",
-      "architecture": {
-        "source_modality": "text->text",
-        "tokenizer": null,
-        "instruct_type": null,
-        "parameter_count": 284000000000,
-        "active_parameter_count": null
-      },
-      "modalities": {
-        "input": [
-          "text"
-        ],
-        "output": [
-          "text"
-        ]
-      },
-      "capabilities": {
-        "supports_text_input": true,
-        "supports_text_output": true,
-        "supports_image_input": false,
-        "supports_image_output": false,
-        "supports_audio_input": false,
-        "supports_audio_output": false,
-        "supports_video_input": false,
-        "supports_video_output": false,
-        "supports_file_input": false,
-        "supports_pdf_input": false,
-        "supports_voice": false,
-        "supports_tools": true,
-        "supports_parallel_tool_calls": true,
-        "supports_structured_outputs": null,
-        "supports_json_mode": null,
-        "supports_reasoning": true,
-        "supports_embeddings": false,
-        "supports_batch": null,
-        "supports_fine_tuning": true,
-        "supports_caching": null
-      },
-      "thinking": {
-        "supported": true,
-        "control_kind": "effort",
-        "supported_swarm_settings": [
-          "off",
-          "high",
-          "xhigh"
-        ],
-        "default_swarm_setting": "high",
-        "provider_parameter": "reasoning_effort",
-        "provider_supported_values": [
-          "none",
-          "low",
-          "medium",
-          "high",
-          "xhigh",
-          "max",
-          false,
-          true
-        ],
-        "provider_default_value": "high",
-        "can_disable": true,
-        "supports_budget_tokens": false,
-        "supports_effort_levels": true,
-        "supports_reasoning_content": true,
-        "swarm_setting_mappings": [
-          {
-            "swarm_setting": "off",
-            "provider_value": "none",
-            "effective_provider_value": "none",
-            "behavior": "disabled",
-            "notes": "Disables thinking."
-          },
-          {
-            "swarm_setting": "high",
-            "provider_value": "high",
-            "effective_provider_value": "high",
-            "behavior": "effort",
-            "notes": "Selects the Fireworks High reasoning tier; provider low/medium aliases collapse to this same tier and are not exposed as Swarm choices."
-          },
-          {
-            "swarm_setting": "xhigh",
-            "provider_value": "max",
-            "effective_provider_value": "max",
-            "behavior": "effort",
-            "notes": "Selects the Fireworks Max reasoning tier. Swarm xhigh intentionally sends provider max instead of exposing provider max as a separate Swarm option."
-          }
-        ],
-        "unsupported_swarm_settings": [
-          "low",
-          "medium"
-        ],
-        "source_ids": [
-          "fireworks_chat_completions_reasoning_docs"
-        ],
-        "notes": "DeepSeek V4 defaults to high reasoning. Fireworks accepts low/medium but silently collapses them to high, so Swarm intentionally does not expose low/medium as meaningful choices. Swarm xhigh maps to provider max; provider max is not exposed directly as a Swarm option."
-      },
-      "limits": {
-        "context_window_tokens": 1048576,
-        "max_input_tokens": 1048576,
-        "max_output_tokens": null,
-        "max_reasoning_tokens": null
-      },
-      "pricing": {
-        "currency": "USD",
-        "input_price_per_million_tokens": 0.14,
-        "output_price_per_million_tokens": 0.28,
-        "cached_input_price_per_million_tokens": 0.028,
-        "reasoning_price_per_million_tokens": null,
-        "image_input_price": null,
-        "image_output_price": null,
-        "audio_input_price": null,
-        "audio_output_price": null,
-        "is_free": null,
-        "billing": {
-          "status": "unknown",
-          "lines": [],
-          "notes": "No verified machine-readable billing lines are available for this model."
-        }
-      },
-      "parameters": {
-        "supported_parameters": [
-          "max_tokens",
-          "parallel_tool_calls",
-          "reasoning_effort",
-          "service_tier",
-          "stream",
-          "temperature",
-          "tool_choice",
-          "tools",
-          "top_k",
-          "top_p"
-        ],
-        "default_parameters": {},
-        "supported_voices": null
-      },
-      "routing": {
-        "routed_through_provider_id": "fireworks",
-        "upstream_provider_ids": [
-          "fireworks"
-        ],
-        "top_provider_context_window_tokens": 1048576,
-        "top_provider_max_output_tokens": null,
-        "top_provider_is_moderated": null,
-        "per_request_limits": null
-      },
-      "links": {
-        "details_url": "https://fireworks.ai/models/fireworks/deepseek-v4-flash",
-        "docs_url": "https://docs.fireworks.ai/models/overview",
-        "pricing_url": "https://docs.fireworks.ai/serverless/pricing",
-        "endpoint_url": "https://api.fireworks.ai/v1/accounts/fireworks/models?filter=supports_serverless%3Dtrue"
-      },
-      "sources": [
-        {
-          "source_id": "fireworks_model_library",
-          "source_url": "https://fireworks.ai/models",
-          "source_kind": "official_docs",
-          "fetched_at": "2026-08-14T07:42:20.435Z",
-          "confidence": "high",
-          "verification_status": "verified",
-          "fields": [
-            "architecture",
-            "availability_status",
-            "capabilities",
-            "catalog_id",
-            "description",
-            "display_name",
-            "external_ids",
-            "lifecycle",
-            "limits",
-            "links",
-            "modalities",
-            "model_id",
-            "parameters",
-            "provider_id",
-            "provider_specific.fireworks",
-            "routing"
-          ]
-        },
-        {
-          "source_id": "fireworks_serverless_models_api",
-          "source_url": "https://api.fireworks.ai/v1/accounts/fireworks/models?filter=supports_serverless%3Dtrue",
-          "source_kind": "official_api",
-          "fetched_at": null,
-          "confidence": "medium",
-          "verification_status": "missing",
-          "fields": [
-            "architecture",
-            "availability_status",
-            "capabilities",
-            "catalog_id",
-            "description",
-            "display_name",
-            "external_ids",
-            "lifecycle",
-            "limits",
-            "links",
-            "modalities",
-            "model_id",
-            "parameters",
-            "provider_id",
-            "provider_specific.fireworks",
-            "routing"
-          ]
-        },
-        {
-          "source_id": "fireworks_vision_models_docs",
-          "source_url": "https://docs.fireworks.ai/guides/querying-vision-language-models",
-          "source_kind": "official_docs",
-          "fetched_at": null,
-          "confidence": "high",
-          "verification_status": "verified",
-          "fields": [
-            "architecture.source_modality",
-            "capabilities.supports_audio_input",
-            "capabilities.supports_audio_output",
-            "capabilities.supports_file_input",
-            "capabilities.supports_image_input",
-            "capabilities.supports_image_output",
-            "capabilities.supports_pdf_input",
-            "capabilities.supports_text_input",
-            "capabilities.supports_text_output",
-            "capabilities.supports_video_input",
-            "capabilities.supports_video_output",
-            "modalities",
-            "provider_specific.fireworks.multimodal"
-          ]
-        },
-        {
-          "source_id": "fireworks_chat_completions_api_reference",
-          "source_url": "https://docs.fireworks.ai/api-reference/post-chatcompletions",
-          "source_kind": "official_api",
-          "fetched_at": null,
-          "confidence": "high",
-          "verification_status": "verified",
-          "fields": [
-            "provider_specific.fireworks.multimodal.image"
-          ]
-        },
-        {
-          "source_id": "fireworks_video_audio_inputs_docs",
-          "source_url": "https://docs.fireworks.ai/guides/video-audio-inputs",
-          "source_kind": "official_docs",
-          "fetched_at": null,
-          "confidence": "high",
-          "verification_status": "verified",
-          "fields": [
-            "architecture.source_modality",
-            "capabilities.supports_audio_input",
-            "capabilities.supports_audio_output",
-            "capabilities.supports_file_input",
-            "capabilities.supports_image_input",
-            "capabilities.supports_image_output",
-            "capabilities.supports_pdf_input",
-            "capabilities.supports_text_input",
-            "capabilities.supports_text_output",
-            "capabilities.supports_video_input",
-            "capabilities.supports_video_output",
-            "modalities",
-            "provider_specific.fireworks.multimodal"
-          ]
-        },
-        {
-          "source_id": "fireworks_document_inlining_docs",
-          "source_url": "https://docs.fireworks.ai/firesearch/inline-multimodal",
-          "source_kind": "official_docs",
-          "fetched_at": null,
-          "confidence": "high",
-          "verification_status": "verified",
-          "fields": [
-            "architecture.source_modality",
-            "capabilities.supports_audio_input",
-            "capabilities.supports_audio_output",
-            "capabilities.supports_file_input",
-            "capabilities.supports_image_input",
-            "capabilities.supports_image_output",
-            "capabilities.supports_pdf_input",
-            "capabilities.supports_text_input",
-            "capabilities.supports_text_output",
-            "capabilities.supports_video_input",
-            "capabilities.supports_video_output",
-            "modalities",
-            "provider_specific.fireworks.multimodal"
-          ]
-        },
-        {
-          "source_id": "fireworks_recommended_models_docs",
-          "source_url": "https://docs.fireworks.ai/guides/recommended-models",
-          "source_kind": "official_docs",
-          "fetched_at": null,
-          "confidence": "high",
-          "verification_status": "verified",
-          "fields": [
-            "swarm.labels.best_for_vision"
-          ]
-        },
-        {
-          "source_id": "fireworks_chat_completions_reasoning_docs",
-          "source_url": "https://docs.fireworks.ai/api-reference/post-chatcompletions",
-          "source_kind": "official_docs",
-          "fetched_at": null,
-          "confidence": "high",
-          "verification_status": "verified",
-          "fields": [
-            "capabilities.supports_reasoning",
-            "parameters.supported_parameters",
-            "provider_specific.fireworks.reasoning_effort",
-            "thinking"
-          ]
-        },
-        {
-          "source_id": "fireworks_serverless_pricing_docs",
-          "source_url": "https://docs.fireworks.ai/serverless/pricing",
-          "source_kind": "official_docs",
-          "fetched_at": null,
-          "confidence": "high",
-          "verification_status": "verified",
-          "fields": [
-            "parameters.supported_parameters",
-            "pricing",
-            "provider_specific.fireworks.serving",
-            "provider_specific.fireworks.serving.fast.pricing",
-            "provider_specific.fireworks.serving.priority.pricing",
-            "provider_specific.fireworks.serving.standard.pricing"
-          ]
-        },
-        {
-          "source_id": "fireworks_serverless_serving_paths_docs",
-          "source_url": "https://docs.fireworks.ai/serverless/serving-paths",
-          "source_kind": "official_docs",
-          "fetched_at": null,
-          "confidence": "high",
-          "verification_status": "verified",
-          "fields": [
-            "parameters.supported_parameters",
-            "pricing",
-            "provider_specific.fireworks.serving",
-            "provider_specific.fireworks.serving.fast.pricing",
-            "provider_specific.fireworks.serving.priority.pricing",
-            "provider_specific.fireworks.serving.standard.pricing"
-          ]
-        },
-        {
-          "source_id": "fireworks_app_model_pages",
-          "source_url": "https://fireworks.ai/models/fireworks/deepseek-v4-flash",
-          "source_kind": "official_docs",
-          "fetched_at": null,
-          "confidence": "medium",
-          "verification_status": "partially_verified",
-          "fields": [
-            "limits.context_window_tokens",
-            "limits.max_input_tokens",
-            "limits.max_output_tokens",
-            "pricing",
-            "provider_specific.fireworks.serving"
-          ]
-        }
-      ],
-      "provider_specific": {
-        "fireworks": {
-          "resource_name": "accounts/fireworks/models/deepseek-v4-flash",
-          "request_model_path": "accounts/fireworks/models/deepseek-v4-flash",
-          "account_id": "fireworks",
-          "kind": "BASE_MODEL",
-          "state": "READY",
-          "public": true,
-          "supports_serverless": true,
-          "supports_lora": true,
-          "multimodal": {
-            "api_surface": "serverless_chat_completions",
-            "text": {
-              "input": true,
-              "output": true
-            },
-            "image": {
-              "input": false,
-              "output": false,
-              "contract_inheritance": null,
-              "model_overrides": {
-                "status": "unsupported"
-              },
-              "note": "This model is not marked as image-capable by the current Fireworks model library."
-            },
-            "file": {
-              "input": false,
-              "semantics": "The current Fireworks Serverless model contract has no generic file/document input capability. File-upload assets may transport supported images through mm_file://, but transport does not make arbitrary files model inputs."
-            },
-            "pdf": {
-              "input": false,
-              "processing": "PDFs are not native model inputs; this non-vision Serverless entry does not accept converted page images either."
-            },
-            "audio": {
-              "input": false,
-              "output": false,
-              "serverless_note": "Fireworks documents audio-capable models only on dedicated deployments; none are current Serverless catalog entries."
-            },
-            "video": {
-              "input": false,
-              "output": false,
-              "serverless_note": "Fireworks documents video-capable models only on dedicated deployments; none are current Serverless catalog entries."
-            },
-            "output_note": "Current Fireworks Serverless chat/VLM entries generate text; image, audio, and video generation APIs/models are outside this catalog.",
-            "source_ids": [
-              "fireworks_app_model_pages",
-              "fireworks_vision_models_docs",
-              "fireworks_chat_completions_api_reference",
-              "fireworks_video_audio_inputs_docs",
-              "fireworks_document_inlining_docs"
-            ]
-          },
-          "use_hf_apply_chat_template": null,
-          "serving": {
-            "supported": true,
-            "supported_tiers": [
-              "standard",
-              "priority"
-            ],
-            "default_tier": "standard",
-            "provider_parameter": "service_tier",
-            "standard": {
-              "tier": "standard",
-              "provider_parameter": null,
-              "provider_value": null,
-              "request_model_path": "accounts/fireworks/models/deepseek-v4-flash",
-              "pricing": {
-                "uncached_input_price_per_million_tokens": 0.14,
-                "cached_input_price_per_million_tokens": 0.028,
-                "output_price_per_million_tokens": 0.28
-              },
-              "notes": "Fireworks Standard serving; default path when service_tier is omitted."
-            },
-            "priority": {
-              "tier": "priority",
-              "provider_parameter": "service_tier",
-              "provider_value": "priority",
-              "request_model_path": "accounts/fireworks/models/deepseek-v4-flash",
-              "pricing": {
-                "uncached_input_price_per_million_tokens": 0.21,
-                "cached_input_price_per_million_tokens": 0.042,
-                "output_price_per_million_tokens": 0.42
-              },
-              "notes": "Fireworks provider-native Priority serving selected with service_tier=priority on the base model path. Fireworks serving-path docs describe Priority as a higher-reliability path during peak traffic."
-            },
-            "fast": null,
-            "pricing_unit": "USD_per_1m_tokens",
-            "source_ids": [
-              "fireworks_serverless_pricing_docs",
-              "fireworks_serverless_serving_paths_docs",
-              "fireworks_app_model_pages"
-            ],
-            "notes": "DeepSeek-V4-Flash serverless pricing and model identity were scraped from the current Fireworks model library and pricing docs. Priority is present only when the Fireworks serverless pricing table publishes a concrete Priority price for this model; Fast router rows are represented as separate catalog model entries when Fireworks publishes a Fast router ID."
-          },
-          "reasoning_effort": {
-            "control_kind": "effort",
-            "supported_swarm_settings": [
-              "off",
-              "high",
-              "xhigh"
-            ],
-            "default_swarm_setting": "high",
-            "provider_parameter": "reasoning_effort",
-            "provider_supported_values": [
-              "none",
-              "low",
-              "medium",
-              "high",
-              "xhigh",
-              "max",
-              false,
-              true
-            ],
-            "provider_default_value": "high",
-            "can_disable": true,
-            "supports_budget_tokens": false,
-            "supports_effort_levels": true,
-            "supports_reasoning_content": true,
-            "unsupported_swarm_settings": [
-              "low",
-              "medium"
-            ],
-            "source_ids": [
-              "fireworks_chat_completions_reasoning_docs"
-            ],
-            "note": "DeepSeek V4 defaults to high reasoning. Fireworks accepts low/medium but silently collapses them to high, so Swarm intentionally does not expose low/medium as meaningful choices. Swarm xhigh maps to provider max; provider max is not exposed directly as a Swarm option."
-          },
-          "model_library": {
-            "source_url": "https://fireworks.ai/models/fireworks/deepseek-v4-flash",
-            "fetched_at": "2026-08-14T07:42:20.435Z",
-            "list_url": "https://fireworks.ai/models?modelTypes=Serverless",
-            "list_tags": [
-              "LLM"
-            ],
-            "provider_name": "Deepseek",
-            "supports_reranking": false,
-            "standard_pricing_from_detail_page": null
-          },
-          "serverless_serving": {
-            "priority_supported": true,
-            "standard_request_model_path": "accounts/fireworks/models/deepseek-v4-flash",
-            "priority_request_model_path": "accounts/fireworks/models/deepseek-v4-flash",
-            "fast_router_id": null,
-            "fast_request_model_path": null,
-            "standard_pricing": {
-              "uncached_input_price_per_million_tokens": 0.14,
-              "cached_input_price_per_million_tokens": 0.028,
-              "output_price_per_million_tokens": 0.28
-            },
-            "priority_pricing": {
-              "uncached_input_price_per_million_tokens": 0.21,
-              "cached_input_price_per_million_tokens": 0.042,
-              "output_price_per_million_tokens": 0.42
-            },
-            "fast_pricing": null,
-            "pricing_source_label": "DeepSeek V4 Flash",
-            "fast_pricing_source_label": null
-          },
-          "base_model_details": {
-            "parameterCount": "284000000000",
-            "moe": true,
-            "modelType": "deepseek"
-          },
-          "conversation_config": null,
-          "default_sampling_params": null,
-          "training_context_length": null,
-          "default_draft_model": null,
-          "default_draft_token_count": null,
-          "imported_from": "deepseek-ai/DeepSeek-V4-Flash",
-          "cluster": null,
-          "calibrated": false,
-          "tuning": {
-            "tunable": true,
-            "supervised_lora_tunable": null,
-            "supervised_full_parameter_tunable": null,
-            "rl_tunable": null,
-            "rl_lora_tunable": null,
-            "rl_full_parameter_tunable": null
-          },
-          "pricing_enrichment_status": "fireworks_model_library_scrape",
-          "note": "Serverless identity, capability, context/input limits, and model-page metadata are scraped from the current Fireworks model library. Standard/Priority serving support and pricing are from Fireworks serverless pricing docs; Fast router rows are represented as separate model entries."
-        }
-      },
-      "swarm": {
-        "routing_roles": [],
-        "labels": {
-          "best_for_coding": null,
-          "best_for_reasoning": null,
-          "best_for_fast_chat": null,
-          "best_for_vision": null,
-          "best_for_voice": false,
-          "best_for_image_generation": false,
-          "best_for_low_cost": null
-        },
-        "measurements": {
-          "time_to_first_token_ms": null,
-          "output_tokens_per_second": null,
-          "reliability_score": null,
-          "sample_count": null,
-          "measured_at": null
-        },
-        "reviewed_at": null,
-        "notes": "Fireworks entry hydrated from the current Fireworks model library. Context/input limits are scraped from the model library; provider-native Standard/Priority serving metadata is documented in provider_specific.fireworks.serving, while Fast router rows are separate model entries."
-      },
-      "updated_at": "2026-08-14T07:42:20.435Z",
-      "media": {
-        "input_understanding": {
-          "audio": false,
-          "image": false,
-          "video": false
-        },
-        "output_generation": {
-          "audio": false,
-          "image": false,
-          "video": false
-        },
-        "categories": []
       }
     },
     {
