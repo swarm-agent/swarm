@@ -106,26 +106,43 @@ func (a *Authority) attachGitProjection(ctx context.Context, principal Principal
 	if kind == pebblestore.V3SessionMutationFinalizeArtifact && (len(parents) == 0 || variant.AutoAccept) {
 		state, resulting = "committed", variant.CommitOID
 	}
+	selectionCASCompleted := false
 	if kind == pebblestore.V3SessionMutationSelectArtifact && (mutation.Selection == nil || mutation.Selection.Action != "use") {
 		if variant.AutoAccept {
 			state, resulting = "committed", variant.CommitOID
 		} else {
-			chain, ok, err := a.metadata.GetSessionArtifactChain(principal.AccountScopeID, principal.UserID, variant.ArtifactChainID)
-			if err != nil {
-				return err
-			}
-			if !ok {
-				return errors.New("artifact Git chain projection was not found")
-			}
-			expected = chain.OfficialCommitOID
 			repo, err := a.repository(ctx, variant.RepositoryID)
 			if err != nil {
 				return err
 			}
-			if _, err = repo.AdvanceOfficial(ctx, expected, variant.CommitOID, artifactGitID("tx", requestID)); err != nil {
-				return err
+			currentOfficial, officialErr := repo.Official(ctx)
+			if officialErr != nil {
+				return officialErr
 			}
-			state, resulting = "committed", variant.CommitOID
+			if currentOfficial == variant.CommitOID {
+				chain, ok, chainErr := a.metadata.GetSessionArtifactChain(principal.AccountScopeID, principal.UserID, variant.ArtifactChainID)
+				if chainErr != nil {
+					return chainErr
+				}
+				if !ok {
+					return errors.New("artifact Git chain projection was not found")
+				}
+				expected, state, resulting = chain.OfficialCommitOID, "committed", variant.CommitOID
+			} else {
+				chain, ok, err := a.metadata.GetSessionArtifactChain(principal.AccountScopeID, principal.UserID, variant.ArtifactChainID)
+				if err != nil {
+					return err
+				}
+				if !ok {
+					return errors.New("artifact Git chain projection was not found")
+				}
+				expected = chain.OfficialCommitOID
+				txID := artifactGitID("tx", requestID)
+				if _, err = repo.AdvanceOfficial(ctx, expected, variant.CommitOID, txID); err != nil {
+					return fmt.Errorf("advance artifact official ref from %q to %q with transaction %q: %w", expected, variant.CommitOID, txID, err)
+				}
+				state, resulting, selectionCASCompleted = "committed", variant.CommitOID, true
+			}
 		}
 	}
 	txID := artifactGitID("tx", requestID)
@@ -137,7 +154,7 @@ func (a *Authority) attachGitProjection(ctx context.Context, principal Principal
 	// AdvanceOfficial creates it atomically with official; all other mutations
 	// record it explicitly. Selection can replay after that atomic CAS, so an
 	// existing exact transaction is accepted while a missing ref is a conflict.
-	if kind == pebblestore.V3SessionMutationSelectArtifact && state == "committed" && resulting != "" {
+	if kind == pebblestore.V3SessionMutationSelectArtifact && state == "committed" && resulting != "" && selectionCASCompleted {
 		committed, txErr := repo.Transaction(ctx, txID)
 		if txErr != nil || committed != variant.CommitOID {
 			return artifactgit.ErrConflict
