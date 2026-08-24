@@ -340,12 +340,17 @@ export function DesktopV3ArtifactSidebar({
                     const turnAccepted = turn.accepted?.entry
                     const turnTarget = turnAccepted ?? turn.candidates.find((candidate) => candidate.entry)?.entry
                     const currentTurn = turn.id === authoritativeHead?.artifactStepId
+                    const headTurn = turn.candidates.some((candidate) => Boolean(authoritativeHead && candidate.entry
+                      && candidate.entry.sessionId === authoritativeHead.sessionId
+                      && candidate.entry.collectionId === authoritativeHead.collectionId
+                      && candidate.entry.artifactId === authoritativeHead.artifactId
+                      && candidate.entry.eventSeq === authoritativeHead.eventSeq))
                     return <section key={turn.id} className="overflow-hidden rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)]" data-artifact-sidebar-turn={turn.id}>
                       <button type="button" className="flex w-full items-center justify-between gap-2 px-2 py-1.5 text-left hover:bg-[var(--app-surface-hover)] disabled:opacity-50" disabled={!turnTarget} onClick={() => { if (turnTarget) onOpenArtifact(turnTarget) }}>
                         <span className="text-[10px] font-semibold">Turn {turn.revisionNumber}</span>
-                        <span className="text-[9px] text-[var(--app-text-subtle)]">{currentTurn ? 'Current turn' : turn.accepted ? 'Committed' : 'Historical'} · {turn.candidates.length} option{turn.candidates.length === 1 ? '' : 's'}</span>
+                        <span className="text-[9px] text-[var(--app-text-subtle)]">{currentTurn ? 'Latest turn' : 'Turn history'} · {headTurn ? 'Composition head' : turn.accepted ? 'Decision recorded' : 'No decision'} · {turn.candidates.length} option{turn.candidates.length === 1 ? '' : 's'}</span>
                       </button>
-                      {turn.parts.length > 0 ? <div className="grid gap-1 border-t border-[var(--app-border)] p-1.5">
+                      {turn.parts.length > 0 ? <div className="grid gap-1 border-t border-[var(--app-border)] p-1.5"><p className="px-0.5 text-[9px] text-[var(--app-text-subtle)]">{turn.parts.length} changed part{turn.parts.length === 1 ? '' : 's'}</p>
                         {turn.parts.map((turnPart) => {
                           const definition = partDefinitionsById.get(turnPart.partId)
                           const currentSlot = currentComposition?.parts.find((part) => part.partId === turnPart.partId)

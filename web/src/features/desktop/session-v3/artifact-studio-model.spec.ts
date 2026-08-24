@@ -109,6 +109,36 @@ test('artifact studio exposes every authoritative step as a turn, including root
   assert.equal(turns[1]?.parts[0]?.accepted?.entry?.artifactId, 'fine-tune')
 })
 
+test('artifact studio detects changed parts by durable identity when composition order changes', () => {
+  const baseRef = ref('base', 1)
+  const candidateRef = ref('reordered', 2)
+  const base = artifact({ id: 'base', eventSeq: 1, step: 'step-1', revision: 1, candidates: [baseRef], accepted: baseRef, head: candidateRef })
+  const hero = { partId: 'hero', definitionOwnerSessionId: 'session-1', revision: partRef('hero', 'a1') }
+  const footer = { partId: 'footer', definitionOwnerSessionId: 'session-1', revision: partRef('footer', 'b1') }
+  Object.assign(base, { partGraphState: 'authoritative', composition: { id: 'composition-1', artifactChainId: 'chain-1', iterationTurnId: 'turn-1', iterationGroupId: 'group-1', parts: [hero, footer] }, partDefinitions: [{ id: 'hero', label: 'Hero', description: '', locator: null }, { id: 'footer', label: 'Footer', description: '', locator: null }] })
+  const candidate = artifact({ id: 'reordered', eventSeq: 2, step: 'step-2', revision: 2, candidates: [candidateRef], parent: baseRef, accepted: candidateRef, head: candidateRef })
+  Object.assign(candidate, { partGraphState: 'authoritative', composition: { id: 'composition-2', artifactChainId: 'chain-1', iterationTurnId: 'turn-2', iterationGroupId: 'group-2', parts: [footer, { ...hero, revision: partRef('hero', 'a2') }] }, partDefinitions: base.partDefinitions })
+
+  assert.deepEqual(desktopV3ArtifactStudioChangedPartIds([base, candidate], candidate), ['hero'])
+  assert.deepEqual(desktopV3ArtifactStudioTurns([base, candidate], candidate)[1]?.changedPartIds, ['hero'])
+})
+
+test('artifact studio uses authoritative part revision turn metadata when the parent candidate is not hydrated', () => {
+  const parentRef = ref('missing-parent', 1)
+  const candidateRef = ref('candidate', 2)
+  const candidate = artifact({ id: 'candidate', eventSeq: 2, step: 'step-2', revision: 2, candidates: [candidateRef], parent: parentRef, accepted: candidateRef, head: candidateRef })
+  const heroRevision = partRef('hero', 'a2')
+  Object.assign(candidate, {
+    partGraphState: 'authoritative',
+    composition: { id: 'composition-2', artifactChainId: 'chain-1', iterationTurnId: 'turn-2', iterationGroupId: 'group-2', parts: [{ partId: 'hero', definitionOwnerSessionId: 'session-1', revision: heroRevision }] },
+    partDefinitions: [{ id: 'hero', label: 'Hero', description: '', locator: null }],
+    partRevisions: [{ reference: heroRevision, parent: partRef('hero', 'a1'), iterationTurnId: 'turn-2', iterationGroupId: 'group-2', createdAt: 2, eventSeq: 2 }],
+  })
+
+  const turns = desktopV3ArtifactStudioTurns([candidate], candidate)
+  assert.deepEqual(turns.map((turn) => [turn.id, turn.changedPartIds, turn.parts[0]?.candidates.length]), [['step-2', ['hero'], 1]])
+})
+
 test('artifact studio preserves authoritative unresolved candidates without fabricating part state', () => {
   const baseRef = ref('base', 1)
   const missingRef = ref('still-staging', 2)

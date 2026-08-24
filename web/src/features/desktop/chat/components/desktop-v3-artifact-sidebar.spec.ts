@@ -146,6 +146,15 @@ test('sidebar distinguishes accepted byte heads from pending locked candidates',
   assert.match(source, /acceptedCurrent \? 'Accepted' : slot\?\.locked \? 'Locked pending' : 'Current'/)
 })
 
+test('sidebar turn copy distinguishes chronological turns, decisions, and the composition head', async () => {
+  const source = await readFile(new URL('./desktop-v3-artifact-sidebar.tsx', import.meta.url), 'utf8')
+  assert.match(source, /Latest turn/)
+  assert.match(source, /Turn history/)
+  assert.match(source, /Composition head/)
+  assert.match(source, /Decision recorded/)
+  assert.match(source, /changed part/)
+})
+
 test('ordinary artifacts remain separate sidebar entries', () => {
   assert.deepEqual(desktopV3ArtifactSidebarGroups([artifact('session-a', 'one'), artifact('session-a', 'two')]).map((group) => group.entries.length), [1, 1])
 })

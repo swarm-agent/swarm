@@ -120,11 +120,19 @@ export function desktopV3ArtifactStudioChangedPartIds(entries: readonly DesktopV
   const composition = candidate.composition
   const parent = desktopV3ArtifactStudioParent(entries, candidate)?.composition
   if (candidate.partGraphState !== 'authoritative' || !composition || !parent || composition.parts.length !== parent.parts.length) return []
+
+  // Composition order is presentation metadata, not part identity. Compare slots by
+  // their durable part IDs so a producer that emits the same composition in a
+  // different order does not turn a real iteration into a misleading "0 parts" turn.
+  const previousByPartId = new Map(parent.parts.map((part) => [part.partId, part]))
+  if (previousByPartId.size !== parent.parts.length) return []
   const changed: string[] = []
-  for (let index = 0; index < composition.parts.length; index += 1) {
-    const current = composition.parts[index]!
-    const previous = parent.parts[index]!
-    if (current.partId !== previous.partId || current.definitionOwnerSessionId !== previous.definitionOwnerSessionId) return []
+  const visited = new Set<string>()
+  for (const current of composition.parts) {
+    if (visited.has(current.partId)) return []
+    visited.add(current.partId)
+    const previous = previousByPartId.get(current.partId)
+    if (!previous || current.definitionOwnerSessionId !== previous.definitionOwnerSessionId) return []
     if (!desktopV3ArtifactStudioSamePartRevision(current, previous)) changed.push(current.partId)
   }
   return changed
@@ -163,11 +171,22 @@ export function desktopV3ArtifactStudioTurns(entries: readonly DesktopV3Artifact
         : []
       return desktopV3ArtifactStudioChangedPartIds(chainEntries, candidate.entry)
     })
-    const changedPartIds = [...new Set(changedByCandidate.flat())]
+    const declaredByCandidate = candidates.map((candidate) => {
+      const composition = candidate.entry?.composition
+      if (!candidate.entry || !composition?.iterationTurnId) return []
+      const revisions = candidate.entry.partRevisions ?? []
+      return composition.parts.flatMap((part) => revisions.some((revision) => revision.iterationTurnId === composition.iterationTurnId
+        && revision.reference.partId === part.partId
+        && revision.reference.partRevisionId === part.revision.partRevisionId
+        && revision.reference.ownerSessionId === part.revision.ownerSessionId)
+        ? [part.partId]
+        : [])
+    })
+    const changedPartIds = [...new Set([...changedByCandidate.flat(), ...declaredByCandidate.flat()])]
     const accepted = step.accepted ? turnCandidate(chainEntries, step.accepted) : undefined
     const parts = changedPartIds.map((partId): DesktopV3ArtifactStudioTurnPart => {
       const partCandidates = candidates.flatMap((candidate, index) => {
-        if (!changedByCandidate[index]?.includes(partId)) return []
+        if (!changedByCandidate[index]?.includes(partId) && !declaredByCandidate[index]?.includes(partId)) return []
         const part = candidate.entry?.composition?.parts.find((candidatePart) => candidatePart.partId === partId)
         return [{ ...candidate, ...(part ? { part } : {}) }]
       })
