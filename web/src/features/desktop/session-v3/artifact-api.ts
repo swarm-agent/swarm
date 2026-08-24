@@ -673,6 +673,13 @@ export function normalizeDesktopV3ArtifactCatalogEntry(value: unknown): DesktopV
     && composition.artifactChainId === (artifactCatalogString(record.artifact_chain_id) || chain?.id)
     && partDefinitions.length === composition.parts.length
     && partRevisions.length === composition.parts.length
+  const projectedRepositoryId = artifactCatalogString(record.repository_id) || composition?.repositoryId || chain?.repositoryId || step?.repositoryId || ''
+  const projectedCommitOid = artifactCatalogString(record.commit_oid) || composition?.commitOid || step?.commitOid || ''
+  const projectedTreeOid = artifactCatalogString(record.tree_oid) || composition?.treeOid || ''
+  const projectedCandidateRef = artifactCatalogString(record.candidate_ref) || step?.candidateRef || ''
+  const projectedParentCommitOids = Array.isArray(record.parent_commit_oids)
+    ? record.parent_commit_oids.map(artifactCatalogString).filter(Boolean)
+    : composition?.parentCommitOids ?? step?.parentCommitOids ?? []
   return {
     artifactId,
     sourceRef: artifactCatalogString(record.source_ref),
@@ -704,6 +711,13 @@ export function normalizeDesktopV3ArtifactCatalogEntry(value: unknown): DesktopV
     ...(chain ? { chain } : {}),
     ...(step ? { step } : {}),
     ...(graphState === 'git_projection' || graphState === 'legacy_unproven' ? { graphState } : {}),
+    ...(graphState === 'git_projection' ? {
+      repositoryId: projectedRepositoryId,
+      commitOid: projectedCommitOid,
+      treeOid: projectedTreeOid,
+      candidateRef: projectedCandidateRef,
+      parentCommitOids: projectedParentCommitOids,
+    } : {}),
     ...(parentArtifact ? { parentArtifact } : {}),
     ...((artifactCatalogString(record.artifact_chain_id) || chain?.id) ? { artifactChainId: artifactCatalogString(record.artifact_chain_id) || chain?.id } : {}),
     ...(artifactCatalogString(record.artifact_step_id) ? { artifactStepId: artifactCatalogString(record.artifact_step_id) } : {}),
@@ -713,11 +727,11 @@ export function normalizeDesktopV3ArtifactCatalogEntry(value: unknown): DesktopV
     ...(Array.isArray(record.parts) ? { parts: normalizeArtifactParts(record.parts) } : {}),
     ...(authoritativeParts ? {
       partGraphState: 'git_projection' as const,
-      repositoryId: artifactCatalogString(record.repository_id),
-      commitOid: artifactCatalogString(record.commit_oid),
-      treeOid: artifactCatalogString(record.tree_oid),
-      candidateRef: artifactCatalogString(record.candidate_ref),
-      parentCommitOids: Array.isArray(record.parent_commit_oids) ? record.parent_commit_oids.map(artifactCatalogString).filter(Boolean) : [],
+      repositoryId: projectedRepositoryId,
+      commitOid: projectedCommitOid,
+      treeOid: projectedTreeOid,
+      candidateRef: projectedCandidateRef,
+      parentCommitOids: projectedParentCommitOids,
       partDefinitions,
       partRevisions,
       composition,
@@ -821,7 +835,7 @@ export function desktopV3ArtifactRevisionHasPart(entry: DesktopV3ArtifactCatalog
   const definition = entry.partDefinitions?.find((part) => part.id === normalizedPartId)
   const compositionHasPart = entry.composition?.parts.some((part) => part.partId === normalizedPartId) === true
   const reviewPart = entry.parts?.some((part) => part.id === normalizedPartId) === true
-  return (entry.partGraphState === 'authoritative' && Boolean(definition && compositionHasPart)) || reviewPart
+  return (entry.partGraphState === 'git_projection' && Boolean(definition && compositionHasPart)) || reviewPart
 }
 
 export function desktopV3ArtifactPartMessageSelection(
@@ -837,7 +851,7 @@ export function desktopV3ArtifactPartMessageSelection(
   }
   const artifactSelection = desktopV3ArtifactMessageSelection(entry, action)
   const label = definition?.label || reviewPart!.label
-  const description = definition?.description || reviewPart!.description
+  const description = definition?.description || reviewPart?.description || ''
   const partKind = definition?.locator?.kind || reviewPart?.kind || 'semantic'
   return {
     ...artifactSelection,
