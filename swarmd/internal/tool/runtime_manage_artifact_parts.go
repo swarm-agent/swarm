@@ -176,6 +176,31 @@ func parseManagedPartReplacement(raw map[string]any) ([]byte, string, string, bo
 	return body, strings.TrimSpace(asString(raw["media_type"])), strings.TrimSpace(asString(raw["filename"])), raw["locked"] == true, nil
 }
 
+func parseExactPartRevision(raw any) (pebblestore.SessionArtifactPartRevisionReference, error) {
+	row, ok := raw.(map[string]any)
+	if !ok { return pebblestore.SessionArtifactPartRevisionReference{}, errors.New("part choice revision must be an object") }
+	ref := pebblestore.SessionArtifactPartRevisionReference{ArtifactChainID: strings.TrimSpace(asString(row["artifact_chain_id"])), PartID: strings.TrimSpace(asString(row["part_id"])), PartRevisionID: strings.TrimSpace(asString(row["part_revision_id"])), OwnerSessionID: strings.TrimSpace(asString(row["owner_session_id"])), DigestSHA256: strings.ToLower(strings.TrimSpace(asString(row["digest_sha256"]))), Size: int64(asInt(row["size"], 0)), MediaType: strings.TrimSpace(asString(row["media_type"]))}
+	if ref.ArtifactChainID == "" || ref.PartID == "" || ref.PartRevisionID == "" || ref.OwnerSessionID == "" || ref.DigestSHA256 == "" || ref.Size < 1 || ref.MediaType == "" { return pebblestore.SessionArtifactPartRevisionReference{}, errors.New("part choice revision is incomplete") }
+	return ref, nil
+}
+
+func (r *Runtime) selectManagedArtifactParts(ctx context.Context, principal artifact.Principal, callID, requestID string, args map[string]any) (pebblestore.SessionArtifactVariant, error) {
+	for key := range args { if key != "action" && key != "session_id" && key != "collection_id" && key != "variant_id" && key != "event_seq" && key != "part_choices" { return pebblestore.SessionArtifactVariant{}, fmt.Errorf("manage_artifact select_parts contains unsupported field %q", key) } }
+	source := pebblestore.SessionArtifactSelectionReference{SessionID: strings.TrimSpace(asString(args["session_id"])), CollectionID: strings.TrimSpace(asString(args["collection_id"])), VariantID: strings.TrimSpace(asString(args["variant_id"])), EventSeq: asUint64(args["event_seq"])}
+	if source.SessionID == "" || source.CollectionID == "" || source.VariantID == "" || source.EventSeq == 0 { return pebblestore.SessionArtifactVariant{}, errors.New("manage_artifact select_parts requires one complete exact source reference") }
+	authority, ok := r.artifactAuthority.(*artifact.Authority); if !ok || authority == nil { return pebblestore.SessionArtifactVariant{}, errors.New("authoritative artifact part operations are unavailable") }
+	variant, err := authority.GetReference(principal, source); if err != nil { return pebblestore.SessionArtifactVariant{}, err }
+	if variant.Composition == nil || variant.PartGraphState != pebblestore.SessionArtifactGraphAuthoritative { return pebblestore.SessionArtifactVariant{}, errors.New("manage_artifact select_parts source has no authoritative composition") }
+	raw, ok := args["part_choices"].([]any); if !ok || len(raw) == 0 || len(raw) > pebblestore.SessionArtifactMaxParts { return pebblestore.SessionArtifactVariant{}, errors.New("manage_artifact select_parts requires one or more bounded part_choices") }
+	choices := make([]artifact.PartRevisionChoiceInput, 0, len(raw))
+	for _, item := range raw {
+		row, ok := item.(map[string]any); if !ok { return pebblestore.SessionArtifactVariant{}, errors.New("manage_artifact part_choices must contain objects") }
+		ref, parseErr := parseExactPartRevision(row["revision"]); if parseErr != nil { return pebblestore.SessionArtifactVariant{}, parseErr }
+		choices = append(choices, artifact.PartRevisionChoiceInput{PartID: strings.TrimSpace(asString(row["part_id"])), Revision: ref, RevisionEventSeq: asUint64(row["revision_event_seq"]), Locked: row["locked"] == true})
+	}
+	return authority.SelectPartRevisions(ctx, principal, artifact.SelectPartRevisionsInput{RequestID: requestID, CollectionID: managedArtifactOpaqueID("collection", principal.SessionID, callID), VariantID: managedArtifactOpaqueID("variant", principal.SessionID, callID), ArtifactStepID: managedArtifactOpaqueID("step", principal.SessionID, callID), SourceArtifact: source, SourceComposition: *variant.Composition, Choices: choices})
+}
+
 func (r *Runtime) publishManagedArtifactParts(ctx context.Context, principal artifact.Principal, callID, requestID string, args map[string]any) (pebblestore.SessionArtifactVariant, error) {
 	if err := rejectFocusedPartCallerAuthority(args, "replacements"); err != nil { return pebblestore.SessionArtifactVariant{}, err }
 	run, err := managedArtifactFocusedPartRun(ctx); if err != nil { return pebblestore.SessionArtifactVariant{}, err }

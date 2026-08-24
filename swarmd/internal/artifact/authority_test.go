@@ -21,6 +21,7 @@ type authorityMetadata struct {
 	partDefinitions  map[string]pebblestore.SessionArtifactPartDefinition
 	partRevisions    map[string]pebblestore.SessionArtifactPartRevision
 	compositions     map[string]pebblestore.SessionArtifactComposition
+	chainHead        pebblestore.SessionArtifactSelectionReference
 }
 
 func (m *authorityMetadata) GetSessionArtifactCollection(_, sessionID, id string) (pebblestore.SessionArtifactCollection, bool, error) {
@@ -65,6 +66,10 @@ func (m *authorityMetadata) GetSessionArtifactComposition(_, _, owner, chain, co
 	got, ok := m.compositions[owner+"\x00"+chain+"\x00"+composition]
 	return got, ok, nil
 }
+func (m *authorityMetadata) GetSessionArtifactChain(_, _, chain string) (pebblestore.SessionArtifactChain, bool, error) {
+	if m.chainHead.VariantID == "" { return pebblestore.SessionArtifactChain{}, false, nil }
+	return pebblestore.SessionArtifactChain{GraphState: pebblestore.SessionArtifactGraphAuthoritative, ID: chain, Head: m.chainHead}, true, nil
+}
 func (m *authorityMetadata) ApplySessionMutation(input pebblestore.V3SessionMutationInput) (pebblestore.V3SessionMutationResult, error) {
 	projection := pebblestore.V3ArtifactProjection{Collection: input.Artifact.Collection, Variant: input.Artifact.Variant, Selection: input.Artifact.Selection}
 	switch input.Kind {
@@ -88,12 +93,12 @@ func (m *authorityMetadata) ApplySessionMutation(input pebblestore.V3SessionMuta
 			m.partDefinitions[definition.OwnerSessionID+"\x00"+definition.ArtifactChainID+"\x00"+definition.ID] = definition
 		}
 		for _, revision := range input.Artifact.PartRevisions {
-			revision.AccountScopeID, revision.UserID, revision.GraphState = input.AccountScopeID, input.UserID, pebblestore.SessionArtifactGraphAuthoritative
+			revision.AccountScopeID, revision.UserID, revision.GraphState, revision.EventSeq = input.AccountScopeID, input.UserID, pebblestore.SessionArtifactGraphAuthoritative, 1
 			m.partRevisions[revision.OwnerSessionID+"\x00"+revision.ArtifactChainID+"\x00"+revision.PartID+"\x00"+revision.ID] = revision
 		}
 		if input.Artifact.Composition != nil {
 			composition := *input.Artifact.Composition
-			composition.AccountScopeID, composition.UserID, composition.GraphState = input.AccountScopeID, input.UserID, pebblestore.SessionArtifactGraphAuthoritative
+			composition.AccountScopeID, composition.UserID, composition.GraphState, composition.EventSeq = input.AccountScopeID, input.UserID, pebblestore.SessionArtifactGraphAuthoritative, 1
 			m.compositions[composition.OwnerSessionID+"\x00"+composition.ArtifactChainID+"\x00"+composition.ID] = composition
 			m.variant.PartGraphState, m.variant.Composition, m.variant.PartDefinitions = pebblestore.SessionArtifactGraphAuthoritative, &composition, input.Artifact.PartDefinitions
 			projection.Variant = &m.variant
@@ -110,6 +115,7 @@ func (m *authorityMetadata) ApplySessionMutation(input pebblestore.V3SessionMuta
 			m.variant.Composition, m.variant.PartDefinitions, m.variant.PartGraphState = currentComposition, currentDefinitions, currentPartGraphState
 		}
 		m.variant.Status = pebblestore.SessionArtifactStatusReady
+		if m.variant.AutoAccept { m.chainHead = pebblestore.SessionArtifactSelectionReference{SessionID: m.variant.SessionID, CollectionID: m.variant.CollectionID, VariantID: m.variant.ID, EventSeq: m.variant.EventSeq} }
 		m.collection.Status = pebblestore.SessionArtifactStatusReady
 		m.collection.StagingCount, m.collection.ReadyCount = 0, 1
 		projection.Collection, projection.Variant, projection.Composition = m.collection, &m.variant, m.variant.Composition

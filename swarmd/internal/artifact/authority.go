@@ -29,6 +29,7 @@ type MetadataStore interface {
 	GetSessionArtifactPartDefinition(accountScopeID, userID, ownerSessionID, chainID, partID string) (pebblestore.SessionArtifactPartDefinition, bool, error)
 	GetSessionArtifactPartRevision(accountScopeID, userID, ownerSessionID, chainID, partID, revisionID string) (pebblestore.SessionArtifactPartRevision, bool, error)
 	GetSessionArtifactComposition(accountScopeID, userID, ownerSessionID, chainID, compositionID string) (pebblestore.SessionArtifactComposition, bool, error)
+	GetSessionArtifactChain(accountScopeID, userID, chainID string) (pebblestore.SessionArtifactChain, bool, error)
 	ApplySessionMutation(pebblestore.V3SessionMutationInput) (pebblestore.V3SessionMutationResult, error)
 }
 
@@ -120,6 +121,23 @@ type PublishPartReplacementsInput struct {
 	SourceArtifact     pebblestore.SessionArtifactSelectionReference
 	SourceComposition  pebblestore.SessionArtifactComposition
 	Replacements       []PartReplacementInput
+}
+
+type PartRevisionChoiceInput struct {
+	PartID           string
+	Revision         pebblestore.SessionArtifactPartRevisionReference
+	RevisionEventSeq uint64
+	Locked           bool
+}
+
+type SelectPartRevisionsInput struct {
+	RequestID      string
+	CollectionID   string
+	VariantID      string
+	ArtifactStepID string
+	SourceArtifact pebblestore.SessionArtifactSelectionReference
+	SourceComposition pebblestore.SessionArtifactComposition
+	Choices        []PartRevisionChoiceInput
 }
 
 type PublishPartReplacementInput struct {
