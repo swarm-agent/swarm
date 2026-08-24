@@ -1167,7 +1167,7 @@ func (s *Server) handleSessionV3ArtifactCollectionReveal(w http.ResponseWriter, 
 
 func (s *Server) handleSessionV3ArtifactLibraryPublish(w http.ResponseWriter, r *http.Request, principal identity.Principal, session pebblestore.SessionSnapshot, destination string, variants []pebblestore.SessionArtifactVariant) {
 	if s == nil || s.artifacts == nil || s.uiSettings == nil {
-		writeError(w, http.StatusInternalServerError, errors.New("artifact working-copy storage is not configured"))
+		writeError(w, http.StatusInternalServerError, errors.New("artifact Git authority is not configured"))
 		return
 	}
 	settings, err := s.uiSettings.GetForAccount(principal.AccountScopeID)
@@ -1188,22 +1188,20 @@ func (s *Server) handleSessionV3ArtifactLibraryPublish(w http.ResponseWriter, r 
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	service, err := s.artifacts.ServiceForSession(session.ID)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err)
-		return
-	}
+	authority := artifact.NewAuthority(s.artifacts, s.sessions)
 	inputs := make([]artifact.BatchMaterializeInput, 0, len(variants))
 	for _, variant := range variants {
 		if variant.SessionID != session.ID || variant.AccountScopeID != principal.AccountScopeID {
 			writeError(w, http.StatusNotFound, errors.New("artifact ownership does not match session"))
 			return
 		}
-		inputs = append(inputs, artifact.BatchMaterializeInput{Service: service, Variant: variant})
+		body, readErr := authority.ReadVariant(r.Context(), artifact.Principal{SessionID: session.ID, AccountScopeID: session.AccountScopeID, UserID: session.UserID}, variant, sessionsV3ArtifactMaxBytes)
+		if readErr != nil { writeError(w, http.StatusBadRequest, readErr); return }
+		inputs = append(inputs, artifact.BatchMaterializeInput{Variant: variant, Body: body})
 	}
 	sessionDirectory := sessionV3ArtifactLibraryName(firstNonEmpty(session.Title, "Session"), session.ID)
 	relative := filepath.Join(sessionDirectory, destination)
-	if _, err := artifact.MaterializeBatch(r.Context(), inputs, libraryRoot, relative, true); err != nil {
+	if _, err := artifact.MaterializeBatch(r.Context(), artifact.Limits{}, inputs, libraryRoot, relative, true); err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
@@ -1726,32 +1724,11 @@ func (s *Server) openSessionV3Artifact(ctx context.Context, session pebblestore.
 	if resolved.Managed.Status != pebblestore.SessionArtifactStatusReady || s.artifacts == nil {
 		return nil, nil, artifact.ErrNotReady
 	}
-	if resolved.Managed.PartGraphState == pebblestore.SessionArtifactGraphAuthoritative && resolved.Managed.Composition != nil {
-		authority := artifact.NewAuthority(s.artifacts, s.sessions)
-		body, _, err := authority.ReadReference(ctx, artifact.Principal{SessionID: session.ID, AccountScopeID: session.AccountScopeID, UserID: session.UserID}, pebblestore.SessionArtifactSelectionReference{SessionID: resolved.Managed.SessionID, CollectionID: resolved.Managed.CollectionID, VariantID: resolved.Managed.ID, EventSeq: resolved.Managed.EventSeq}, sessionsV3ArtifactMaxBytes)
-		if err != nil {
-			return nil, nil, err
-		}
-		info := sessionsV3MemoryFileInfo{name: resolved.Managed.Filename, size: int64(len(body)), modTime: time.UnixMilli(resolved.Managed.UpdatedAt)}
-		return sessionsV3NewMemoryFile(body), info, nil
-	}
-	if resolved.Managed.SessionID != session.ID || resolved.Managed.AccountScopeID != session.AccountScopeID {
-		return nil, nil, errors.New("managed artifact ownership does not match session")
-	}
-	service, err := s.artifacts.ServiceForSession(session.ID)
-	if err != nil {
-		return nil, nil, err
-	}
-	file, _, err := service.Open(ctx, *resolved.Managed)
-	if err != nil {
-		return nil, nil, err
-	}
-	info, err := file.Stat()
-	if err != nil {
-		_ = file.Close()
-		return nil, nil, err
-	}
-	return file, info, nil
+	authority := artifact.NewAuthority(s.artifacts, s.sessions)
+	body, _, err := authority.ReadReference(ctx, artifact.Principal{SessionID: session.ID, AccountScopeID: session.AccountScopeID, UserID: session.UserID}, pebblestore.SessionArtifactSelectionReference{SessionID: resolved.Managed.SessionID, CollectionID: resolved.Managed.CollectionID, VariantID: resolved.Managed.ID, EventSeq: resolved.Managed.EventSeq}, sessionsV3ArtifactMaxBytes)
+	if err != nil { return nil, nil, err }
+	info := sessionsV3MemoryFileInfo{name: resolved.Managed.Filename, size: int64(len(body)), modTime: time.UnixMilli(resolved.Managed.UpdatedAt)}
+	return sessionsV3NewMemoryFile(body), info, nil
 }
 
 func (s *Server) openSessionV3ArtifactPackageFile(ctx context.Context, session pebblestore.SessionSnapshot, resolved sessionsV3ResolvedArtifact, contentPath string) (sessionsV3ReadSeekCloser, os.FileInfo, string, error) {

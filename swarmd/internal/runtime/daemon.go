@@ -2,7 +2,6 @@ package runtime
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -74,21 +73,6 @@ type artifactMetadataBoundary struct {
 	*sessionruntime.Service
 	mu        sync.RWMutex
 	publisher func(sessionruntime.RealtimeOutboxRecord) error
-}
-
-type artifactOpener struct {
-	registry *artifact.Registry
-}
-
-func (o *artifactOpener) Open(ctx context.Context, variant pebblestore.SessionArtifactVariant) (*os.File, artifact.Blob, error) {
-	if o == nil || o.registry == nil {
-		return nil, artifact.Blob{}, errors.New("artifact registry not configured")
-	}
-	svc, err := o.registry.ServiceForSession(variant.SessionID)
-	if err != nil {
-		return nil, artifact.Blob{}, err
-	}
-	return svc.Open(ctx, variant)
 }
 
 func (b *artifactMetadataBoundary) SetPublisher(publisher func(sessionruntime.RealtimeOutboxRecord) error) {
@@ -295,7 +279,6 @@ func New(cfg config.Config) (*Daemon, error) {
 	}
 	artifactMetadata := &artifactMetadataBoundary{Service: sessionSvc}
 	artifactAuthority := artifact.NewAuthority(artifactRegistry, artifactMetadata)
-	sessionSvc.SetArtifactSessionCleaner(artifactRegistry)
 	toolRuntime.SetArtifactRegistry(artifactRegistry)
 	toolRuntime.SetArtifactAuthority(artifactAuthority)
 	mediaStagingSvc := mediastaging.NewService(pebblestore.NewMediaStagingStore(store))
@@ -427,7 +410,7 @@ func New(cfg config.Config) (*Daemon, error) {
 		videorender.Config{},
 		sessionSvc.Store(),
 		artifactAuthority,
-		&artifactOpener{registry: artifactRegistry},
+		nil,
 		workspaceSvc,
 		nil,
 	)

@@ -140,7 +140,6 @@ func TestBackendArtifactSessionDeletionCleansPrivateBytes(t *testing.T) {
 		t.Fatal(err)
 	}
 	registry := artifact.NewRegistry(sessionSvc, artifact.Limits{})
-	sessionSvc.SetArtifactSessionCleaner(registry)
 	authority := artifact.NewAuthority(registry, sessionSvc)
 	_, err = authority.Create(context.Background(), artifact.Principal{SessionID: created.ID, AccountScopeID: created.AccountScopeID, UserID: created.UserID}, artifact.CreateInput{
 		RequestID: "cleanup-create", CollectionID: "cleanup-collection", CollectionName: "Cleanup", VariantID: "cleanup-variant", Filename: "cleanup.txt", MediaType: "text/plain", Body: []byte("delete me"),
@@ -151,10 +150,10 @@ func TestBackendArtifactSessionDeletionCleansPrivateBytes(t *testing.T) {
 	if err := sessionSvc.DeleteSession(created.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := registry.ServiceForOwnedSession(created.ID, created.AccountScopeID, created.UserID); err == nil {
+	if _, err := registry.OwnedSession(created.ID, created.AccountScopeID, created.UserID); err == nil {
 		t.Fatal("deleted session retained authenticated artifact-byte access")
 	}
-	if report, err := registry.RunMaintenance(10); err != nil || report.DeletedSessions != 0 {
+	if report, err := registry.RunMaintenance(10); err != nil || report.DeletedSessions != 1 {
 		t.Fatalf("post-delete maintenance = %+v err=%v", report, err)
 	}
 }

@@ -13,9 +13,8 @@ const (
 	artifactMaintenanceInterval     = 15 * time.Minute
 )
 
-// startArtifactMaintenance retries byte deletion from durable deleted-session
-// tombstones and removes incomplete staging for active sessions. Each pass is
-// bounded and archived tombstones are never cleaned.
+// startArtifactMaintenance repairs bounded Pebble projections and acknowledges
+// obsolete workspace-byte cleanup tombstones. Git remains the byte authority.
 func startArtifactMaintenance(ctx context.Context, artifacts *artifact.Registry) {
 	if artifacts == nil {
 		return
@@ -28,8 +27,8 @@ func startArtifactMaintenance(ctx context.Context, artifacts *artifact.Registry)
 			}
 			return
 		}
-		if report.DeletedSessions > 0 || report.RemovedStaging > 0 || report.CollectionsRepaired > 0 {
-			log.Printf("artifact maintenance pass: visited=%d deleted_sessions=%d removed_staging=%d removed_bytes=%d repaired_collections=%d", report.SessionsVisited, report.DeletedSessions, report.RemovedStaging, report.RemovedBytes, report.CollectionsRepaired)
+		if report.DeletedSessions > 0 || report.CollectionsRepaired > 0 {
+			log.Printf("artifact maintenance pass: visited=%d acknowledged_deleted_sessions=%d repaired_collections=%d", report.SessionsVisited, report.DeletedSessions, report.CollectionsRepaired)
 		}
 	}
 

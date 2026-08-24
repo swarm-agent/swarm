@@ -17,7 +17,7 @@ import (
 // canonical V3 mutation atomically publishes definitions, exact revisions,
 // composition, artifact step, projection, and realtime outbox state.
 func (a *Authority) CreateInitialComposition(ctx context.Context, principal Principal, input CreateInitialCompositionInput) (pebblestore.SessionArtifactVariant, error) {
-	_, principal, err := a.owned(principal)
+	principal, err := a.owned(principal)
 	if err != nil {
 		return pebblestore.SessionArtifactVariant{}, err
 	}
@@ -167,7 +167,7 @@ func (a *Authority) CreateInitialComposition(ctx context.Context, principal Prin
 }
 
 func (a *Authority) ReadPartRevision(ctx context.Context, principal Principal, reference pebblestore.SessionArtifactPartRevisionReference, maxBytes int64) ([]byte, pebblestore.SessionArtifactPartRevision, error) {
-	_, ownedPrincipal, err := a.owned(principal)
+	ownedPrincipal, err := a.owned(principal)
 	if err != nil {
 		return nil, pebblestore.SessionArtifactPartRevision{}, err
 	}

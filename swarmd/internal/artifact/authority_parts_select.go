@@ -17,7 +17,7 @@ import (
 // existing part revisions. It changes no part bytes, creates a Git commit with
 // every distinct selected candidate as a parent, and advances official by CAS.
 func (a *Authority) SelectPartRevisions(ctx context.Context, principal Principal, input SelectPartRevisionsInput) (pebblestore.SessionArtifactVariant, error) {
-	_, principal, err := a.owned(principal)
+	principal, err := a.owned(principal)
 	if err != nil {
 		return pebblestore.SessionArtifactVariant{}, err
 	}

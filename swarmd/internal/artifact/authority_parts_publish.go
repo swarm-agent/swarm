@@ -76,7 +76,7 @@ func (a *Authority) PublishPartReplacement(ctx context.Context, principal Princi
 // one or more changed parts. Every candidate in the call shares durable turn/group
 // identity, while each revision retains exact ancestry.
 func (a *Authority) PublishPartReplacements(ctx context.Context, principal Principal, input PublishPartReplacementsInput) (pebblestore.SessionArtifactVariant, error) {
-	_, principal, err := a.owned(principal)
+	principal, err := a.owned(principal)
 	if err != nil {
 		return pebblestore.SessionArtifactVariant{}, err
 	}

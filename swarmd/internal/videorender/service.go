@@ -123,11 +123,8 @@ func (b *boundedBuffer) String() string {
 
 type ArtifactAuthority interface {
 	GetReference(principal artifact.Principal, ref pebblestore.SessionArtifactSelectionReference) (pebblestore.SessionArtifactVariant, error)
+	ReadReference(ctx context.Context, principal artifact.Principal, ref pebblestore.SessionArtifactSelectionReference, maxBytes int64) ([]byte, pebblestore.SessionArtifactVariant, error)
 	CreateFromFile(ctx context.Context, principal artifact.Principal, input artifact.CreateFileInput) (pebblestore.SessionArtifactVariant, error)
-}
-
-type ArtifactFileOpener interface {
-	Open(ctx context.Context, variant pebblestore.SessionArtifactVariant) (*os.File, artifact.Blob, error)
 }
 
 type SessionStore interface {
@@ -151,7 +148,6 @@ type Service struct {
 	cfg           Config
 	store         SessionStore
 	artifacts     ArtifactAuthority
-	opener        ArtifactFileOpener
 	workspace     WorkspaceAuthority
 	runner        CommandRunner
 	mu            sync.Mutex
@@ -163,7 +159,7 @@ type Service struct {
 	idle          chan struct{}
 }
 
-func NewService(cfg Config, store SessionStore, artifacts ArtifactAuthority, opener ArtifactFileOpener, workspace WorkspaceAuthority, runner CommandRunner) *Service {
+func NewService(cfg Config, store SessionStore, artifacts ArtifactAuthority, _ any, workspace WorkspaceAuthority, runner CommandRunner) *Service {
 	if cfg.MaxClips <= 0 {
 		cfg.MaxClips = DefaultMaxClips
 	}
@@ -186,7 +182,6 @@ func NewService(cfg Config, store SessionStore, artifacts ArtifactAuthority, ope
 		cfg:           cfg,
 		store:         store,
 		artifacts:     artifacts,
-		opener:        opener,
 		workspace:     workspace,
 		runner:        runner,
 		cancels:       make(map[string]context.CancelFunc),
@@ -672,22 +667,9 @@ func (s *Service) materializeTimelineInputs(ctx context.Context, principal ident
 			}
 
 			destPath := filepath.Join(jobDir, fmt.Sprintf("input_%d_%s", input.Index, variant.Filename))
-			if s.opener != nil {
-				artFile, _, err := s.opener.Open(ctx, variant)
-				if err != nil {
-					return nil, fmt.Errorf("open artifact clip %d: %w", i, err)
-				}
-				if err := copyBoundedFile(destPath, artFile, variant.Size); err != nil {
-					artFile.Close()
-					return nil, fmt.Errorf("materialize artifact clip %d: %w", i, err)
-				}
-				artFile.Close()
-			} else {
-				// Stub fallback for tests if opener not supplied
-				if err := os.WriteFile(destPath, []byte("fake artifact content"), 0o600); err != nil {
-					return nil, err
-				}
-			}
+			body, _, err := s.artifacts.ReadReference(ctx, artifact.Principal{SessionID: session.ID, AccountScopeID: principal.AccountScopeID, UserID: principal.UserID}, *targetRef, s.cfg.MaxRenderBytes)
+			if err != nil { return nil, fmt.Errorf("read artifact clip %d: %w", i, err) }
+			if err := os.WriteFile(destPath, body, 0o600); err != nil { return nil, err }
 			input.FilePath = destPath
 			if strings.HasPrefix(variant.MediaType, "image/") {
 				input.IsImage = true
@@ -731,17 +713,9 @@ func (s *Service) materializeTimelineInputs(ctx context.Context, principal ident
 				return nil, fmt.Errorf("clip %d design input variant %q has a stale or missing event sequence", i, designVariant.ID)
 			}
 			designPath := filepath.Join(jobDir, fmt.Sprintf("design_%d_%s", input.Index, designVariant.Filename))
-			if s.opener != nil {
-				dFile, _, err := s.opener.Open(ctx, designVariant)
-				if err != nil {
-					return nil, fmt.Errorf("open design input clip %d: %w", i, err)
-				}
-				if err := copyBoundedFile(designPath, dFile, designVariant.Size); err != nil {
-					dFile.Close()
-					return nil, fmt.Errorf("materialize design input clip %d: %w", i, err)
-				}
-				dFile.Close()
-			}
+			designBody, _, err := s.artifacts.ReadReference(ctx, artifact.Principal{SessionID: session.ID, AccountScopeID: principal.AccountScopeID, UserID: principal.UserID}, pebblestore.SessionArtifactSelectionReference{SessionID: designSessionID, CollectionID: designRef.CollectionID, VariantID: designRef.VariantID, EventSeq: designRef.EventSeq}, s.cfg.MaxRenderBytes)
+			if err != nil { return nil, fmt.Errorf("read design input clip %d: %w", i, err) }
+			if err := os.WriteFile(designPath, designBody, 0o600); err != nil { return nil, err }
 			input.DesignInputs = append(input.DesignInputs, MaterializedInput{
 				FilePath:    designPath,
 				OverlayMode: designRef.OverlayMode,
