@@ -6,6 +6,7 @@ import {
   Check,
   ChevronLeft,
   ChevronRight,
+  Clock3,
   Download,
   FileText,
   FolderOpen,

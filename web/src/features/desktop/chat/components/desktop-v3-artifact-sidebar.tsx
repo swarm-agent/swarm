@@ -218,7 +218,7 @@ export function desktopV3ArtifactSidebarGroups(
     key,
     collectionId: entries[0]?.collectionId?.trim() ?? '',
     entries: [...entries].sort((left, right) => (left.step?.revisionNumber ?? 0) - (right.step?.revisionNumber ?? 0)
-      || (left.candidateIndex ?? 0) - (right.candidateIndex ?? 0)
+      || (left.candidateIndex || left.lineage?.iterationIndex || 0) - (right.candidateIndex || right.lineage?.iterationIndex || 0)
       || left.updatedAt - right.updatedAt),
     progress: sidebarCollectionProgress(entries),
     label: entries[0]?.chain?.name || (entries[0] ? sidebarCollectionLabel(entries[0]) : 'Artifact'),
@@ -387,7 +387,7 @@ export function DesktopV3ArtifactSidebar({
                       {onAddToChat && artifact.status === 'ready' && artifact.collectionId && (artifact.eventSeq ?? 0) > 0 ? <button type="button" className="absolute right-1 top-1 grid size-7 place-items-center rounded-md bg-[var(--app-primary)] text-white opacity-0 shadow-md transition hover:opacity-90 group-hover:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white" aria-label={`Attach ${artifact.label} for chat changes`} title={artifact.mediaType.startsWith('image/') ? 'Attach to chat for remixing' : 'Attach to chat'} onClick={() => onAddToChat([desktopV3ArtifactMessageSelection(artifact, 'select')])}><MessageSquarePlus size={13} aria-hidden="true" /></button> : null}
                     </div>
                   ))}
-                </div>
+                </div>}
               </section>
             )
           })}
