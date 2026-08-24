@@ -12,8 +12,9 @@ import (
 // SessionArtifactRepairReport describes bounded idempotent maintenance of
 // rebuildable catalog projections. Git remains the artifact authority.
 type SessionArtifactRepairReport struct {
-	CollectionsVisited  int
-	CollectionsRepaired int
+	CollectionsVisited      int
+	CollectionsRepaired     int
+	InvalidVariantsOmitted  int
 }
 
 // RepairSessionArtifactCollections derives redundant collection progress from
@@ -56,6 +57,7 @@ func (s *SessionStore) RepairSessionArtifactCollections(sessionID string) (Sessi
 		report.CollectionsVisited++
 
 		variants := make([]SessionArtifactVariant, 0, SessionArtifactMaxVariantsPerCollection)
+		invalidVariants := 0
 		if err := s.store.IteratePrefix(SessionArtifactVariantPrefix(accountScopeID, sessionID, collection.ID), SessionArtifactMaxVariantsPerCollection+1, func(_ string, variantValue []byte) error {
 			if len(variants) >= SessionArtifactMaxVariantsPerCollection {
 				return errors.New("artifact collection variant limit exceeded")
@@ -68,7 +70,12 @@ func (s *SessionStore) RepairSessionArtifactCollections(sessionID string) (Sessi
 				return errors.New("artifact variant ownership metadata is inconsistent")
 			}
 			if variant.GraphState != SessionArtifactGraphProjection || variant.RepositoryID == "" || !validGitOID(variant.CommitOID) {
-				return errors.New("artifact repair refuses a variant without an exact Git projection")
+				// Historical rows and trusted managed-output reservations can predate an
+				// authoritative Git commit. They are not byte/version evidence, so omit
+				// them from reconstructed progress instead of manufacturing authority or
+				// making maintenance fail for the rest of the session.
+				invalidVariants++
+				return nil
 			}
 			if variant.Lineage.ParentSessionID != "" && variant.Lineage.ParentSessionID != sessionID {
 				return errors.New("artifact variant parent lineage is inconsistent")
@@ -84,6 +91,7 @@ func (s *SessionStore) RepairSessionArtifactCollections(sessionID string) (Sessi
 			return err
 		}
 
+		report.InvalidVariantsOmitted += invalidVariants
 		repaired := collection
 		repaired.VariantCount = len(variants)
 		repaired.StagingCount = 0

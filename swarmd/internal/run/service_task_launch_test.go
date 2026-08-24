@@ -420,6 +420,9 @@ func TestManagedDesignerWaveProjectsAllExpectedStagingVariantsBeforeExecution(t 
 		if variant.Status != pebblestore.SessionArtifactStatusStaging || lineage.ParentSessionID != parent.ID || lineage.TaskCallID != "call-swarm" || lineage.ChildSessionID == "" || lineage.SourceSessionID != lineage.ChildSessionID || lineage.IterationGroupID != collection.Lineage.IterationGroupID || lineage.IterationID == "" || lineage.IterationIndex < 1 || lineage.IterationIndex > len(specs) || lineage.IterationLabel == "" || lineage.IterationTheme == "" {
 			t.Fatalf("staging variant = %#v", variant)
 		}
+		if variant.GraphState != "" || variant.RepositoryID != "" || variant.CommitOID != "" || variant.CandidateRef != "" {
+			t.Fatalf("placeholder claimed nonexistent Git identity = %#v", variant)
+		}
 		seenIndexes[lineage.IterationIndex] = true
 	}
 	if len(seenIndexes) != len(specs) {

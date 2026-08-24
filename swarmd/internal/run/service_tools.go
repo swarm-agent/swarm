@@ -436,7 +436,7 @@ func (s *Service) ensureManagedDesignerArtifactCollection(parent pebblestore.Ses
 	result, err := apply(sessionruntime.SessionMutationInput{
 		SessionID: parent.ID, UserID: parent.UserID, AccountScopeID: parent.AccountScopeID,
 		ClientRequestID: requestID, IdempotencyKey: requestID, PayloadHash: hex.EncodeToString(digest[:]), RequestHash: hex.EncodeToString(digest[:]),
-		Kind: sessionruntime.SessionMutationCreateArtifact, Artifact: &sessionruntime.ArtifactMutation{Collection: collection}, NowUnixMs: time.Now().UnixMilli(),
+		Kind: sessionruntime.SessionMutationCreateArtifact, Artifact: &sessionruntime.ArtifactMutation{ProjectionOnly: true, Collection: collection}, NowUnixMs: time.Now().UnixMilli(),
 	})
 	if err != nil {
 		return "", fmt.Errorf("allocate managed Designer artifact collection: %w", err)
@@ -534,7 +534,7 @@ func (s *Service) ensureManagedDesignerArtifactPlaceholders(parent pebblestore.S
 		result, err := apply(sessionruntime.SessionMutationInput{
 			SessionID: parent.ID, UserID: parent.UserID, AccountScopeID: parent.AccountScopeID,
 			ClientRequestID: requestID, IdempotencyKey: requestID, PayloadHash: hex.EncodeToString(digest[:]), RequestHash: hex.EncodeToString(digest[:]),
-			Kind: sessionruntime.SessionMutationCreateArtifact, Artifact: &sessionruntime.ArtifactMutation{Collection: collection, Variant: &variant}, NowUnixMs: time.Now().UnixMilli(),
+			Kind: sessionruntime.SessionMutationCreateArtifact, Artifact: &sessionruntime.ArtifactMutation{ProjectionOnly: true, Collection: collection, Variant: &variant}, NowUnixMs: time.Now().UnixMilli(),
 		})
 		if err != nil {
 			return fmt.Errorf("allocate managed Designer artifact placeholder %q: %w", run.VariantID, err)
@@ -609,7 +609,7 @@ func (s *Service) markManagedDesignerArtifactFailed(parent pebblestore.SessionSn
 		created, err := s.sessions.ApplySessionMutation(sessionruntime.SessionMutationInput{
 			SessionID: parent.ID, UserID: parent.UserID, AccountScopeID: parent.AccountScopeID,
 			ClientRequestID: requestID + ":stage", IdempotencyKey: requestID + ":stage", PayloadHash: hex.EncodeToString(digest[:]), RequestHash: hex.EncodeToString(digest[:]),
-			Kind: sessionruntime.SessionMutationCreateArtifact, Artifact: &sessionruntime.ArtifactMutation{Collection: collection, Variant: &variant}, NowUnixMs: time.Now().UnixMilli(),
+			Kind: sessionruntime.SessionMutationCreateArtifact, Artifact: &sessionruntime.ArtifactMutation{ProjectionOnly: true, Collection: collection, Variant: &variant}, NowUnixMs: time.Now().UnixMilli(),
 		})
 		if err != nil || created.Artifact == nil || created.Artifact.Variant == nil {
 			return
@@ -625,7 +625,7 @@ func (s *Service) markManagedDesignerArtifactFailed(parent pebblestore.SessionSn
 	_, _ = s.sessions.ApplySessionMutation(sessionruntime.SessionMutationInput{
 		SessionID: parent.ID, UserID: parent.UserID, AccountScopeID: parent.AccountScopeID,
 		ClientRequestID: requestID + ":failed", IdempotencyKey: requestID + ":failed", PayloadHash: hex.EncodeToString(failedDigest[:]), RequestHash: hex.EncodeToString(failedDigest[:]),
-		Kind: sessionruntime.SessionMutationFailArtifact, Artifact: &sessionruntime.ArtifactMutation{Collection: collection, Variant: staged}, NowUnixMs: time.Now().UnixMilli(),
+		Kind: sessionruntime.SessionMutationFailArtifact, Artifact: &sessionruntime.ArtifactMutation{ProjectionOnly: true, Collection: collection, Variant: staged}, NowUnixMs: time.Now().UnixMilli(),
 	})
 }
 

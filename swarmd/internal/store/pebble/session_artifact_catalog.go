@@ -125,6 +125,13 @@ func (s *SessionStore) SearchSessionArtifactCatalog(accountScopeID, userID strin
 				return SessionArtifactCatalogPage{}, err
 			}
 			for _, variant := range variants {
+				// Catalog discovery must never advertise historical rows as immutable
+				// artifacts when their projected Git identity is absent or invalid.
+				// Managed staging reservations remain visible in their owning session's
+				// artifact viewer, but cross-session discovery waits for a real commit.
+				if variant.GraphState != SessionArtifactGraphProjection || variant.RepositoryID == "" || !validGitOID(variant.CommitOID) {
+					continue
+				}
 				if !artifactCatalogVariantMatches(collection, variant, options) {
 					continue
 				}
