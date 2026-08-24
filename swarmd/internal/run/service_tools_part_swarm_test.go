@@ -27,6 +27,9 @@ func TestFocusedDesignerSwarmContextCarriesExactPartAuthorityAndCountOneAutoAcce
 	if multi == nil || multi.AutoAccept {
 		t.Fatalf("multi-candidate focused context = %#v", multi)
 	}
+	if multi.ArtifactStepID == "" || multi.CandidateIndex != 1 {
+		t.Fatalf("multi-candidate turn identity = %#v", multi)
+	}
 }
 
 func TestFocusedDesignerPromptRequiresPartReadAndPublishOnly(t *testing.T) {

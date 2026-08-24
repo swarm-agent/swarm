@@ -513,6 +513,7 @@ func (s *Service) ensureManagedDesignerArtifactPlaceholders(parent pebblestore.S
 		}
 		variant := pebblestore.SessionArtifactVariant{
 			ID: run.VariantID, CollectionID: collection.ID, Lineage: lineage, AutoAccept: run.AutoAccept,
+			ArtifactStepID: run.ArtifactStepID, RevisionRoundID: run.ArtifactStepID, CandidateIndex: run.CandidateIndex,
 			Presentation: presentation, OutputRequirements: cloneTaskOutputRequirements(run.OutputRequirements), AnimationProfile: cloneTaskAnimationProfile(run.AnimationProfile),
 		}
 		payload, err := json.Marshal(variant)
