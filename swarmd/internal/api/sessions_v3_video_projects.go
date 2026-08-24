@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"mime"
 	"net/http"
 	"os"
@@ -854,7 +855,10 @@ func (s *Server) handleSessionV3VideoExport(w http.ResponseWriter, r *http.Reque
 	}
 	authority := artifact.NewAuthority(s.artifacts, s.sessions)
 	body, err := authority.ReadVariant(r.Context(), artifact.Principal{SessionID: sessionID, AccountScopeID: principal.AccountScopeID, UserID: principal.UserID}, variant, sessionsV3ArtifactMaxBytes)
-	if err != nil { writeError(w, http.StatusBadRequest, fmt.Errorf("read output artifact: %w", err)); return }
+	if err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("read output artifact: %w", err))
+		return
+	}
 
 	if err := os.MkdirAll(filepath.Dir(absDest), 0o755); err != nil {
 		writeError(w, http.StatusInternalServerError, fmt.Errorf("create destination directory: %w", err))

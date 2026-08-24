@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -271,7 +272,7 @@ func New(cfg config.Config) (*Daemon, error) {
 	artifactRegistry := artifact.NewRegistry(sessionSvc, artifact.Limits{})
 	// Artifact persistence is Git-native. Fail startup explicitly instead of
 	// allowing the first Designer publication to discover a missing dependency.
-	if err := artifactRegistry.VerifyGitPrerequisite(ctx); err != nil {
+	if err := artifactRegistry.VerifyGitPrerequisite(context.Background()); err != nil {
 		_ = secretStore.Close()
 		_ = store.Close()
 		_ = lk.Release()

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"swarm/packages/swarmd/internal/artifactgit"
@@ -153,6 +154,29 @@ func authorityFixture(t *testing.T) (*Authority, *authorityMetadata, Principal) 
 	return NewAuthority(NewRegistry(resolver, Limits{}), metadata), metadata, Principal{SessionID: "session-1", AccountScopeID: "account-1", UserID: "user-1", RunID: "run-1", PlanID: "plan-1", CheckpointID: "cp-1", AttemptID: "attempt-1"}
 }
 
+func gitSourceVariant(t *testing.T, authority *Authority, variant pebblestore.SessionArtifactVariant, body []byte) pebblestore.SessionArtifactVariant {
+	t.Helper()
+	variant.RepositoryID = "source-" + variant.ID
+	variant.ArtifactChainID = variant.RepositoryID
+	if variant.Filename == "" {
+		variant.Filename = variant.ID + ".bin"
+	}
+	_, digest, size, err := canonicalArtifactBytes(context.Background(), Limits{}, variant, body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	variant.DigestSHA256, variant.Size = digest, size
+	repo, err := authority.repository(context.Background(), variant.RepositoryID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	variant.CommitOID, err = repo.Genesis(context.Background(), artifactgit.Genesis{MediaType: variant.MediaType, Content: &artifactgit.BlobInput{MediaType: variant.MediaType, Bytes: body}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return variant
+}
+
 func TestAuthorityCreatesGitCommitBeforeReadyMetadata(t *testing.T) {
 	authority, metadata, principal := authorityFixture(t)
 	created, err := authority.Create(context.Background(), principal, CreateInput{RequestID: "create-1", CollectionID: "collection-1", CollectionName: "Drafts", VariantID: "variant-1", Filename: "note.txt", MediaType: "text/plain", Presentation: pebblestore.SessionArtifactPresentation{Kind: "text", Previewable: true}, Body: []byte("managed")})
@@ -189,7 +213,7 @@ func TestAuthorityFinalizesPreallocatedManagedPlaceholder(t *testing.T) {
 	principal.PartID, principal.PartLabel, principal.PartKind = "part-2", "Part 2", "temporal"
 	source := CreateInput{SourceSessionID: "source-session", SourceCollectionID: "source-collection", SourceVariantID: "source-variant", SourceEventSeq: 41}
 	metadata.sourceCollection = pebblestore.SessionArtifactCollection{ID: source.SourceCollectionID, AccountScopeID: principal.AccountScopeID, SessionID: source.SourceSessionID, Status: pebblestore.SessionArtifactStatusReady, VariantCount: 1, ReadyCount: 1}
-	metadata.sourceVariant = pebblestore.SessionArtifactVariant{ID: source.SourceVariantID, CollectionID: source.SourceCollectionID, AccountScopeID: principal.AccountScopeID, SessionID: source.SourceSessionID, Status: pebblestore.SessionArtifactStatusReady, EventSeq: source.SourceEventSeq, MediaType: "text/html"}
+	metadata.sourceVariant = gitSourceVariant(t, authority, pebblestore.SessionArtifactVariant{ID: source.SourceVariantID, CollectionID: source.SourceCollectionID, AccountScopeID: principal.AccountScopeID, SessionID: source.SourceSessionID, Status: pebblestore.SessionArtifactStatusReady, EventSeq: source.SourceEventSeq, MediaType: "text/html"}, []byte("<h1>source</h1>"))
 	lineage := authority.lineage(principal, source)
 	collectionLineage := lineage
 	collectionLineage.SourceSessionID, collectionLineage.SourceCollectionID, collectionLineage.SourceVariantID, collectionLineage.SourceEventSeq, collectionLineage.ChildSessionID = "", "", "", 0, ""
@@ -300,12 +324,21 @@ func TestAuthorityMaterializeReferenceRequiresOwnedReadyExactEvent(t *testing.T)
 	variant := testVariant("source-variant", "source.txt", "text/plain", "text")
 	variant.SessionID, variant.CollectionID, variant.Status, variant.EventSeq = "source-session", "source-collection", pebblestore.SessionArtifactStatusStaging, 41
 	body := []byte("selected")
-	_, variant.DigestSHA256, variant.Size, err := canonicalArtifactBytes(context.Background(), Limits{}, variant, body)
-	if err != nil { t.Fatal(err) }
+	_, digest, size, err := canonicalArtifactBytes(context.Background(), Limits{}, variant, body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	variant.DigestSHA256, variant.Size = digest, size
 	variant.Status = pebblestore.SessionArtifactStatusReady
 	variant.RepositoryID, variant.ArtifactChainID = "source-chain", "source-chain"
-	repo, err := authority.repository(context.Background(), variant.RepositoryID); if err != nil { t.Fatal(err) }
-	variant.CommitOID, err = repo.Genesis(context.Background(), artifactgit.Genesis{MediaType: variant.MediaType, Content: &artifactgit.BlobInput{MediaType: variant.MediaType, Bytes: body}}); if err != nil { t.Fatal(err) }
+	repo, err := authority.repository(context.Background(), variant.RepositoryID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	variant.CommitOID, err = repo.Genesis(context.Background(), artifactgit.Genesis{MediaType: variant.MediaType, Content: &artifactgit.BlobInput{MediaType: variant.MediaType, Bytes: body}})
+	if err != nil {
+		t.Fatal(err)
+	}
 	metadata.sourceVariant = variant
 	workspace := t.TempDir()
 	ref := pebblestore.SessionArtifactSelectionReference{SessionID: "source-session", CollectionID: "source-collection", VariantID: "source-variant", EventSeq: 41}
@@ -326,11 +359,23 @@ func TestAuthorityReadPackageReferenceRequiresOwnedReadyExactEvent(t *testing.T)
 	metadata.sourceCollection = pebblestore.SessionArtifactCollection{ID: "source-collection", AccountScopeID: "account-1", SessionID: "source-session", Status: pebblestore.SessionArtifactStatusReady, VariantCount: 1, ReadyCount: 1}
 	variant := testVariant("source-variant", "design.zip", "application/zip", "package")
 	variant.SessionID, variant.CollectionID, variant.Status, variant.EventSeq = "source-session", "source-collection", pebblestore.SessionArtifactStatusStaging, 41
-	body, err := canonicalPackageEntries(context.Background(), Limits{}, []PackageEntry{{Name: "index.html", Data: []byte("<main>selected</main>")}}); if err != nil { t.Fatal(err) }
-	_, variant.DigestSHA256, variant.Size, err = canonicalArtifactBytes(context.Background(), Limits{}, variant, body); if err != nil { t.Fatal(err) }
+	body, err := canonicalPackageEntries(context.Background(), Limits{}, []PackageEntry{{Name: "index.html", Data: []byte("<main>selected</main>")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, variant.DigestSHA256, variant.Size, err = canonicalArtifactBytes(context.Background(), Limits{}, variant, body)
+	if err != nil {
+		t.Fatal(err)
+	}
 	variant.Status, variant.RepositoryID, variant.ArtifactChainID = pebblestore.SessionArtifactStatusReady, "source-package-chain", "source-package-chain"
-	repo, err := authority.repository(context.Background(), variant.RepositoryID); if err != nil { t.Fatal(err) }
-	variant.CommitOID, err = repo.Genesis(context.Background(), artifactgit.Genesis{MediaType: variant.MediaType, Content: &artifactgit.BlobInput{MediaType: variant.MediaType, Bytes: body}}); if err != nil { t.Fatal(err) }
+	repo, err := authority.repository(context.Background(), variant.RepositoryID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	variant.CommitOID, err = repo.Genesis(context.Background(), artifactgit.Genesis{MediaType: variant.MediaType, Content: &artifactgit.BlobInput{MediaType: variant.MediaType, Bytes: body}})
+	if err != nil {
+		t.Fatal(err)
+	}
 	metadata.sourceVariant = variant
 	ref := pebblestore.SessionArtifactSelectionReference{SessionID: "source-session", CollectionID: "source-collection", VariantID: "source-variant", EventSeq: 41}
 	if manifest, body, _, err := authority.ReadPackageReference(context.Background(), principal, ref, "index.html", 64); err != nil || manifest != nil || string(body) != "<main>selected</main>" {
@@ -350,7 +395,7 @@ func TestAuthorityReadPackageReferenceRequiresOwnedReadyExactEvent(t *testing.T)
 func TestAuthorityDerivedArtifactRecordsAttachedSourceSession(t *testing.T) {
 	authority, metadata, principal := authorityFixture(t)
 	metadata.sourceCollection = pebblestore.SessionArtifactCollection{ID: "source-collection", AccountScopeID: "account-1", SessionID: "source-session", Status: pebblestore.SessionArtifactStatusReady, VariantCount: 1, ReadyCount: 1}
-	metadata.sourceVariant = pebblestore.SessionArtifactVariant{ID: "source-variant", CollectionID: "source-collection", AccountScopeID: "account-1", SessionID: "source-session", Status: pebblestore.SessionArtifactStatusReady, EventSeq: 41, MediaType: "text/plain"}
+	metadata.sourceVariant = gitSourceVariant(t, authority, pebblestore.SessionArtifactVariant{ID: "source-variant", CollectionID: "source-collection", AccountScopeID: "account-1", SessionID: "source-session", Status: pebblestore.SessionArtifactStatusReady, EventSeq: 41, MediaType: "text/plain"}, []byte("source"))
 	created, err := authority.Create(context.Background(), principal, CreateInput{RequestID: "derived-1", CollectionID: "derived-collection", CollectionName: "Derived", VariantID: "derived-variant", Filename: "derived.txt", MediaType: "text/plain", SourceSessionID: "source-session", SourceCollectionID: "source-collection", SourceVariantID: "source-variant", SourceEventSeq: 41, Body: []byte("revision")})
 	if err != nil {
 		t.Fatal(err)
@@ -363,7 +408,7 @@ func TestAuthorityDerivedArtifactRecordsAttachedSourceSession(t *testing.T) {
 func TestAuthorityCreateFromWorkspaceDirectoryCreatesPackageWithSourceLineage(t *testing.T) {
 	authority, metadata, principal := authorityFixture(t)
 	metadata.sourceCollection = pebblestore.SessionArtifactCollection{ID: "collection-source", AccountScopeID: "account-1", SessionID: "session-1", Status: pebblestore.SessionArtifactStatusReady, VariantCount: 1, ReadyCount: 1}
-	metadata.sourceVariant = pebblestore.SessionArtifactVariant{ID: "variant-source", CollectionID: "collection-source", AccountScopeID: "account-1", SessionID: "session-1", Status: pebblestore.SessionArtifactStatusReady, EventSeq: 9, MediaType: "text/plain"}
+	metadata.sourceVariant = gitSourceVariant(t, authority, pebblestore.SessionArtifactVariant{ID: "variant-source", CollectionID: "collection-source", AccountScopeID: "account-1", SessionID: "session-1", Status: pebblestore.SessionArtifactStatusReady, EventSeq: 9, MediaType: "text/plain"}, []byte("source"))
 	source := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(source, "assets"), 0o755); err != nil {
 		t.Fatal(err)

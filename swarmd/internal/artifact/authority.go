@@ -337,8 +337,12 @@ func (a *Authority) create(ctx context.Context, principal Principal, input Creat
 	var gitBody []byte
 	if packageEntries != nil {
 		entries := packageEntries
-		if sourcePath != "" { entries, err = packageDirectoryEntries(sourcePath, a.registry.limits) }
-		if err == nil { gitBody, err = canonicalPackageEntries(ctx, a.registry.limits, entries) }
+		if sourcePath != "" {
+			entries, err = packageDirectoryEntries(sourcePath, a.registry.limits)
+		}
+		if err == nil {
+			gitBody, err = canonicalPackageEntries(ctx, a.registry.limits, entries)
+		}
 	} else if sourcePath != "" {
 		gitBody, err = readArtifactFile(ctx, a.registry.limits, variant, sourcePath)
 	} else {
@@ -346,16 +350,24 @@ func (a *Authority) create(ctx context.Context, principal Principal, input Creat
 	}
 	var digest string
 	var size int64
-	if err == nil { gitBody, digest, size, err = canonicalArtifactBytes(ctx, a.registry.limits, variant, gitBody) }
+	if err == nil {
+		gitBody, digest, size, err = canonicalArtifactBytes(ctx, a.registry.limits, variant, gitBody)
+	}
 	if err != nil {
 		failed, mutationErr := a.recordFailure(principal, input.RequestID, collection, variant, "ingress_failed")
-		if mutationErr != nil { return pebblestore.SessionArtifactVariant{}, fmt.Errorf("%v; persist artifact failure: %w", err, mutationErr) }
+		if mutationErr != nil {
+			return pebblestore.SessionArtifactVariant{}, fmt.Errorf("%v; persist artifact failure: %w", err, mutationErr)
+		}
 		return failed, fmt.Errorf("validate artifact ingress: %w", err)
 	}
 	variant.DigestSHA256, variant.Size = digest, size
-	if err := a.publishGitVariant(ctx, principal, input, &variant, gitBody); err != nil { return pebblestore.SessionArtifactVariant{}, err }
+	if err := a.publishGitVariant(ctx, principal, input, &variant, gitBody); err != nil {
+		return pebblestore.SessionArtifactVariant{}, err
+	}
 	if !existingStaging {
-		if _, err := a.mutate(principal, input.RequestID+":stage", pebblestore.V3SessionMutationCreateArtifact, collection, &variant, nil); err != nil { return pebblestore.SessionArtifactVariant{}, err }
+		if _, err := a.mutate(principal, input.RequestID+":stage", pebblestore.V3SessionMutationCreateArtifact, collection, &variant, nil); err != nil {
+			return pebblestore.SessionArtifactVariant{}, err
+		}
 	}
 	// Requirements are the trusted target contract. Byte staging/finalization does
 	// not inspect binary pixel dimensions, so preserve the exact target metadata.
@@ -400,7 +412,9 @@ func (a *Authority) ListVariants(principal Principal, collectionID string, limit
 // the trusted principal and durable session records.
 func (a *Authority) SearchCatalog(principal Principal, options pebblestore.SessionArtifactCatalogOptions) (pebblestore.SessionArtifactCatalogPage, error) {
 	owned, err := a.owned(principal)
-	if err != nil { return pebblestore.SessionArtifactCatalogPage{}, err }
+	if err != nil {
+		return pebblestore.SessionArtifactCatalogPage{}, err
+	}
 	return a.metadata.SearchSessionArtifactCatalog(owned.AccountScopeID, owned.UserID, options)
 }
 
@@ -420,10 +434,21 @@ func (a *Authority) Get(principal Principal, variantID string) (pebblestore.Sess
 }
 
 func (a *Authority) ReadVariant(ctx context.Context, principal Principal, variant pebblestore.SessionArtifactVariant, maxBytes int64) ([]byte, error) {
-	owned, err := a.owned(principal); if err != nil { return nil, err }
-	if variant.AccountScopeID != owned.AccountScopeID { return nil, errors.New("artifact variant ownership does not match") }
-	if variant.SessionID != owned.SessionID { if _, err := a.registry.OwnedSession(variant.SessionID, owned.AccountScopeID, owned.UserID); err != nil { return nil, errors.New("artifact variant ownership does not match") } }
-	if variant.Status != pebblestore.SessionArtifactStatusReady { return nil, ErrNotReady }
+	owned, err := a.owned(principal)
+	if err != nil {
+		return nil, err
+	}
+	if variant.AccountScopeID != owned.AccountScopeID {
+		return nil, errors.New("artifact variant ownership does not match")
+	}
+	if variant.SessionID != owned.SessionID {
+		if _, err := a.registry.OwnedSession(variant.SessionID, owned.AccountScopeID, owned.UserID); err != nil {
+			return nil, errors.New("artifact variant ownership does not match")
+		}
+	}
+	if variant.Status != pebblestore.SessionArtifactStatusReady {
+		return nil, ErrNotReady
+	}
 	if variant.PartGraphState == pebblestore.SessionArtifactGraphAuthoritative && variant.Composition != nil {
 		return a.constructComposition(ctx, principal, *variant.Composition, maxBytes)
 	}
@@ -560,7 +585,9 @@ func (a *Authority) ReadPackageReference(ctx context.Context, principal Principa
 		return nil, nil, pebblestore.SessionArtifactVariant{}, err
 	}
 	body, err := a.ReadVariant(ctx, principal, variant, a.registry.limits.MaxVideoArtifactBytes)
-	if err != nil { return nil, nil, pebblestore.SessionArtifactVariant{}, err }
+	if err != nil {
+		return nil, nil, pebblestore.SessionArtifactVariant{}, err
+	}
 	manifest, data, err := readPackageBytes(a.registry.limits, body, entryName, maxBytes)
 	return manifest, data, variant, err
 }
@@ -573,7 +600,9 @@ func (a *Authority) MaterializeReference(ctx context.Context, principal Principa
 		return Materialized{}, err
 	}
 	body, err := a.ReadVariant(ctx, principal, variant, a.registry.limits.MaxVideoArtifactBytes)
-	if err != nil { return Materialized{}, err }
+	if err != nil {
+		return Materialized{}, err
+	}
 	return MaterializeBytes(ctx, a.registry.limits, variant, body, workspaceRoot, destination, overwrite)
 }
 
@@ -591,7 +620,9 @@ func (a *Authority) MaterializeBatchReferences(ctx context.Context, principal Pr
 			return nil, nil, err
 		}
 		body, err := a.ReadVariant(ctx, principal, variant, a.registry.limits.MaxVideoArtifactBytes)
-		if err != nil { return nil, nil, err }
+		if err != nil {
+			return nil, nil, err
+		}
 		inputs = append(inputs, BatchMaterializeInput{Variant: variant, Body: body})
 		variants = append(variants, variant)
 	}
@@ -603,6 +634,14 @@ func (a *Authority) MaterializeBatchReferences(ctx context.Context, principal Pr
 }
 
 func (a *Authority) Select(principal Principal, requestID, collectionID, variantID string) (pebblestore.SessionArtifactSelectionReference, error) {
+	return a.SelectAction(principal, requestID, collectionID, variantID, "select")
+}
+
+func (a *Authority) SelectAction(principal Principal, requestID, collectionID, variantID, action string) (pebblestore.SessionArtifactSelectionReference, error) {
+	return a.SelectReference(principal, requestID, collectionID, pebblestore.SessionArtifactSelectionReference{VariantID: variantID, Action: action})
+}
+
+func (a *Authority) SelectReference(principal Principal, requestID, collectionID string, incoming pebblestore.SessionArtifactSelectionReference) (pebblestore.SessionArtifactSelectionReference, error) {
 	principal, err := a.owned(principal)
 	if err != nil {
 		return pebblestore.SessionArtifactSelectionReference{}, err
@@ -614,10 +653,19 @@ func (a *Authority) Select(principal Principal, requestID, collectionID, variant
 	if !ok {
 		return pebblestore.SessionArtifactSelectionReference{}, fmt.Errorf("artifact collection %q was not found", collectionID)
 	}
-	selection := &pebblestore.SessionArtifactSelectionReference{SessionID: principal.SessionID, CollectionID: collection.ID, VariantID: strings.TrimSpace(variantID)}
+	incoming.Action = strings.ToLower(strings.TrimSpace(incoming.Action))
+	if incoming.Action != "select" && incoming.Action != "use" {
+		return pebblestore.SessionArtifactSelectionReference{}, errors.New("artifact selection action must be select or use")
+	}
+	incoming.SessionID, incoming.CollectionID, incoming.VariantID = principal.SessionID, collection.ID, strings.TrimSpace(incoming.VariantID)
+	selection := &incoming
 	selected, ok, err := a.metadata.GetSessionArtifactVariant(principal.AccountScopeID, principal.SessionID, collection.ID, selection.VariantID)
-	if err != nil { return pebblestore.SessionArtifactSelectionReference{}, err }
-	if !ok { return pebblestore.SessionArtifactSelectionReference{}, errors.New("selected artifact was not found") }
+	if err != nil {
+		return pebblestore.SessionArtifactSelectionReference{}, err
+	}
+	if !ok {
+		return pebblestore.SessionArtifactSelectionReference{}, errors.New("selected artifact was not found")
+	}
 	result, err := a.mutateWithArtifact(principal, requestID, pebblestore.V3SessionMutationSelectArtifact, pebblestore.V3ArtifactMutation{Collection: collection, Variant: &selected, Selection: selection})
 	if err != nil {
 		return pebblestore.SessionArtifactSelectionReference{}, err
@@ -688,10 +736,16 @@ func (a *Authority) DeleteVariant(principal Principal, requestID, collectionID, 
 	}
 	if variant.CandidateRef != "" {
 		repo, repoErr := a.repository(context.Background(), variant.RepositoryID)
-		if repoErr != nil { return repoErr }
-		if repoErr = repo.DeleteCandidate(context.Background(), variant.CandidateRef, variant.CommitOID); repoErr != nil { return repoErr }
+		if repoErr != nil {
+			return repoErr
+		}
+		if repoErr = repo.DeleteCandidate(context.Background(), variant.CandidateRef, variant.CommitOID); repoErr != nil {
+			return repoErr
+		}
 	}
-	if _, err = a.mutate(principal, requestID, pebblestore.V3SessionMutationDeleteArtifactVariant, collection, &variant, nil); err != nil { return err }
+	if _, err = a.mutate(principal, requestID, pebblestore.V3SessionMutationDeleteArtifactVariant, collection, &variant, nil); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -737,13 +791,17 @@ func (a *Authority) owned(principal Principal) (Principal, error) {
 		return Principal{}, errors.New("trusted artifact session ownership is required")
 	}
 	session, err := a.registry.OwnedSession(principal.SessionID, principal.AccountScopeID, principal.UserID)
-	if err != nil { return Principal{}, err }
+	if err != nil {
+		return Principal{}, err
+	}
 	principal.AccountScopeID, principal.UserID = session.AccountScopeID, session.UserID
 	return principal, nil
 }
 
 func (a *Authority) repository(ctx context.Context, repositoryID string) (*artifactgit.Repository, error) {
-	if a == nil || a.registry == nil { return nil, errors.New("artifact authority is not configured") }
+	if a == nil || a.registry == nil {
+		return nil, errors.New("artifact authority is not configured")
+	}
 	return a.registry.Repository(ctx, repositoryID)
 }
 
@@ -836,7 +894,9 @@ func (a *Authority) mutate(principal Principal, requestID, kind string, collecti
 func (a *Authority) mutateWithArtifact(principal Principal, requestID, kind string, artifactMutation pebblestore.V3ArtifactMutation) (pebblestore.V3SessionMutationResult, error) {
 	requestID = strings.TrimSpace(requestID)
 	if artifactMutation.Transaction == nil {
-		if err := a.attachGitProjection(context.Background(), principal, requestID, kind, &artifactMutation); err != nil { return pebblestore.V3SessionMutationResult{}, err }
+		if err := a.attachGitProjection(context.Background(), principal, requestID, kind, &artifactMutation); err != nil {
+			return pebblestore.V3SessionMutationResult{}, err
+		}
 	}
 	if requestID == "" {
 		return pebblestore.V3SessionMutationResult{}, errors.New("artifact request id is required")

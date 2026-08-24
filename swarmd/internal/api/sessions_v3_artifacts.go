@@ -870,17 +870,8 @@ func (s *Server) handleSessionV3ArtifactSelection(w http.ResponseWriter, r *http
 		Label:       firstNonEmpty(variant.Presentation.Label, collection.Name, variant.Filename),
 		Description: firstNonEmpty(variant.Presentation.Description, collection.Description),
 	}
-	payloadHash, err := sessionsV3ArtifactSelectionPayloadHash(sessionID, action, *selection)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err)
-		return
-	}
-	result, err := s.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
-		SessionID: sessionID, UserID: principal.UserID, AccountScopeID: principal.AccountScopeID,
-		ClientRequestID: req.ClientRequestID, IdempotencyKey: req.ClientRequestID,
-		PayloadHash: payloadHash, RequestHash: payloadHash, Kind: sessionruntime.SessionMutationSelectArtifact,
-		Artifact: &pebblestore.V3ArtifactMutation{Collection: collection, Selection: selection}, NowUnixMs: time.Now().UnixMilli(),
-	})
+	authority := artifact.NewAuthority(s.artifacts, s.sessions)
+	selectedRef, err := authority.SelectReference(artifact.Principal{SessionID: sessionID, AccountScopeID: principal.AccountScopeID, UserID: principal.UserID}, req.ClientRequestID, collection.ID, *selection)
 	if err != nil {
 		if errors.Is(err, sessionruntime.ErrSessionIdempotencyConflict) {
 			writeJSON(w, http.StatusConflict, map[string]any{"ok": false, "error_code": "idempotency_conflict", "error": err.Error()})
@@ -893,11 +884,7 @@ func (s *Server) handleSessionV3ArtifactSelection(w http.ResponseWriter, r *http
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	if result.Artifact == nil || result.Artifact.Selection == nil || (action == "select" && result.Artifact.Collection.SelectedVariantID != variant.ID) {
-		writeError(w, http.StatusInternalServerError, errors.New("artifact selection was not persisted"))
-		return
-	}
-	response := map[string]any{"ok": true, "session_id": sessionID, "action": action, "selection": result.Artifact.Selection, "mutation": sessionV3MutationResultResponse(result), "realtime_outbox": result.RealtimeOutbox}
+	response := map[string]any{"ok": true, "session_id": sessionID, "action": action, "selection": selectedRef}
 	writeJSON(w, http.StatusOK, response)
 }
 
@@ -1196,7 +1183,10 @@ func (s *Server) handleSessionV3ArtifactLibraryPublish(w http.ResponseWriter, r 
 			return
 		}
 		body, readErr := authority.ReadVariant(r.Context(), artifact.Principal{SessionID: session.ID, AccountScopeID: session.AccountScopeID, UserID: session.UserID}, variant, sessionsV3ArtifactMaxBytes)
-		if readErr != nil { writeError(w, http.StatusBadRequest, readErr); return }
+		if readErr != nil {
+			writeError(w, http.StatusBadRequest, readErr)
+			return
+		}
 		inputs = append(inputs, artifact.BatchMaterializeInput{Variant: variant, Body: body})
 	}
 	sessionDirectory := sessionV3ArtifactLibraryName(firstNonEmpty(session.Title, "Session"), session.ID)
@@ -1726,7 +1716,9 @@ func (s *Server) openSessionV3Artifact(ctx context.Context, session pebblestore.
 	}
 	authority := artifact.NewAuthority(s.artifacts, s.sessions)
 	body, _, err := authority.ReadReference(ctx, artifact.Principal{SessionID: session.ID, AccountScopeID: session.AccountScopeID, UserID: session.UserID}, pebblestore.SessionArtifactSelectionReference{SessionID: resolved.Managed.SessionID, CollectionID: resolved.Managed.CollectionID, VariantID: resolved.Managed.ID, EventSeq: resolved.Managed.EventSeq}, sessionsV3ArtifactMaxBytes)
-	if err != nil { return nil, nil, err }
+	if err != nil {
+		return nil, nil, err
+	}
 	info := sessionsV3MemoryFileInfo{name: resolved.Managed.Filename, size: int64(len(body)), modTime: time.UnixMilli(resolved.Managed.UpdatedAt)}
 	return sessionsV3NewMemoryFile(body), info, nil
 }

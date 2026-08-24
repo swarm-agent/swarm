@@ -620,7 +620,7 @@ func TestManageArtifactCreateInitialPartsUsesAuthoritativeCompositionContract(t 
 	if authority.initial.ArtifactChainID != pebblestore.RootSessionArtifactChainID("session-1", authority.initial.CollectionID, authority.initial.VariantID) || authority.initial.CompositionID == "" || authority.initial.Parts[0].RevisionID == "" || authority.initial.Parts[1].RevisionID == "" {
 		t.Fatalf("server-owned composition identities = %#v", authority.initial)
 	}
-	for _, required := range []string{`"part_graph_state":"authoritative"`, `"part_definitions"`, `"composition"`, `"part_revision_id"`, `"status":"ready"`} {
+	for _, required := range []string{`"part_graph_state":"git_projection"`, `"part_definitions"`, `"composition"`, `"part_revision_id"`, `"status":"ready"`} {
 		if !strings.Contains(output, required) {
 			t.Fatalf("authoritative create response lacks %s: %s", required, output)
 		}

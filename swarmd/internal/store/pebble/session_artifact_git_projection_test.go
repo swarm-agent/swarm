@@ -52,7 +52,6 @@ func TestArtifactGitProjectionExactPartBlobAndLocks(t *testing.T) {
 
 func TestArtifactGitTransactionProjectionSurvivesRestartAndRejectsOwnershipMismatch(t *testing.T) {
 	store := openV3SessionEventTestStore(t)
-	sessions := NewSessionStore(store)
 	transaction := SessionArtifactGitTransaction{
 		Version: SessionArtifactVersion, ID: "tx-1", AccountScopeID: "account-1", UserID: "user-1", OwnerSessionID: "session-1",
 		ArtifactChainID: "artifact-1", RepositoryID: "repo-1", TransactionRef: "refs/swarm/transactions/tx-1",
