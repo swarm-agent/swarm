@@ -122,12 +122,72 @@ test('delegated collection variants group under their parent session', () => {
   assert.deepEqual(groups[0]?.entries.map((entry) => entry.artifactId), ['variant-1', 'variant-2'])
 })
 
+test('source-free overall iteration roots stay grouped before artifact turns begin', () => {
+  const projectedRoot = (artifactId: string, chainId: string, candidateIndex: number) => ({
+    ...artifact('session-a', artifactId),
+    collectionId: 'collection-overall',
+    collectionName: 'Overall concepts',
+    graphState: 'git_projection' as const,
+    artifactChainId: chainId,
+    artifactStepId: 'step-overall',
+    candidateIndex,
+    chain: { name: `Candidate ${candidateIndex}`, revisionCount: 1 },
+    step: { id: 'step-overall', revisionNumber: 1 },
+  }) as DesktopV3ArtifactCatalogEntry
+
+  const groups = desktopV3ArtifactSidebarGroups([
+    projectedRoot('variant-3', 'chain-3', 3),
+    projectedRoot('variant-1', 'chain-1', 1),
+    projectedRoot('variant-2', 'chain-2', 2),
+  ])
+
+  assert.equal(groups.length, 1)
+  assert.equal(groups[0]?.label, 'Overall concepts')
+  assert.deepEqual(groups[0]?.entries.map((entry) => entry.artifactId), ['variant-1', 'variant-2', 'variant-3'])
+})
+
+test('a candidate becomes a turn-based artifact only after its chain gains another revision', () => {
+  const root = {
+    ...artifact('session-a', 'variant-root'),
+    collectionId: 'collection-overall',
+    collectionName: 'Overall concepts',
+    graphState: 'git_projection' as const,
+    artifactChainId: 'chain-selected',
+    artifactStepId: 'step-root',
+    candidateIndex: 1,
+    chain: { name: 'Selected concept', revisionCount: 2 },
+    step: { id: 'step-root', revisionNumber: 1 },
+  } as DesktopV3ArtifactCatalogEntry
+  const nextTurn = {
+    ...root,
+    artifactId: 'variant-turn-2',
+    collectionId: 'collection-turn-2',
+    artifactStepId: 'step-turn-2',
+    step: { id: 'step-turn-2', revisionNumber: 2 },
+  } as DesktopV3ArtifactCatalogEntry
+  const unselectedRoot = {
+    ...root,
+    artifactId: 'variant-other',
+    artifactChainId: 'chain-other',
+    artifactStepId: 'step-overall',
+    candidateIndex: 2,
+    chain: { name: 'Other concept', revisionCount: 1 },
+    step: { id: 'step-overall', revisionNumber: 1 },
+  } as DesktopV3ArtifactCatalogEntry
+
+  const groups = desktopV3ArtifactSidebarGroups([unselectedRoot, nextTurn, root])
+
+  assert.equal(groups.length, 2)
+  assert.deepEqual(groups.find((group) => group.key === 'chain\u0000chain-selected')?.entries.map((entry) => entry.artifactId), ['variant-root', 'variant-turn-2'])
+  assert.deepEqual(groups.find((group) => group.key.includes('collection-overall'))?.entries.map((entry) => entry.artifactId), ['variant-other'])
+})
+
 test('sidebar part attachment links the exact authoritative part back to chat', () => {
   const entry = {
     ...artifact('session-a', 'variant-1'),
     collectionId: 'collection-1',
     eventSeq: 42,
-    partGraphState: 'authoritative' as const,
+    partGraphState: 'git_projection' as const,
     artifactChainId: 'chain-1',
     partDefinitions: [{ id: 'signal', label: 'Signal', description: 'Signal animation.', locator: { id: 'signal', label: 'Signal', description: 'Signal animation.', kind: 'temporal' as const, startMs: 0, endMs: 4000, x: 0, y: 0, width: 0, height: 0, page: 0, stateId: '', selector: '' } }],
     composition: { id: 'composition-1', artifactChainId: 'chain-1', parent: null, iterationTurnId: '', iterationGroupId: '', construction: null, parts: [{ partId: 'signal', definitionOwnerSessionId: 'session-a', revision: { artifactChainId: 'chain-1', partId: 'signal', partRevisionId: 'signal-r1', ownerSessionId: 'session-a', digestSha256: 'a'.repeat(64), size: 10, mediaType: 'text/html' } }] },
@@ -142,8 +202,8 @@ test('sidebar part attachment links the exact authoritative part back to chat', 
 
 test('sidebar distinguishes accepted byte heads from pending locked candidates', async () => {
   const source = await readFile(new URL('./desktop-v3-artifact-sidebar.tsx', import.meta.url), 'utf8')
-  assert.match(source, /desktopV3ArtifactStudioSamePartRevision\(slot, accepted\)/)
-  assert.match(source, /acceptedCurrent \? 'Accepted' : slot\?\.locked \? 'Locked pending' : 'Current'/)
+  assert.match(source, /desktopV3ArtifactStudioSamePartRevision\(currentSlot, acceptedSlot\)/)
+  assert.match(source, /acceptedCurrent \? 'Accepted head' : currentSlot\?\.locked \? 'Locked pending' : 'History'/)
 })
 
 test('sidebar turn copy distinguishes chronological turns, decisions, and the composition head', async () => {

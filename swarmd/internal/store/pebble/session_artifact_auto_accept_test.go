@@ -5,6 +5,54 @@ import (
 	"testing"
 )
 
+func TestReservedArtifactSoleReadyCandidateAppliesCompletedCAS(t *testing.T) {
+	store := openV3SessionEventTestStore(t)
+	sessions := NewSessionStore(store)
+	createV3SessionForTest(t, sessions, "artifact-reserved-auto-head")
+
+	apply := func(request, kind string, mutation V3ArtifactMutation) (V3SessionMutationResult, error) {
+		t.Helper()
+		return applyV3ArtifactMutationForTest(sessions, V3SessionMutationInput{
+			SessionID: "artifact-reserved-auto-head", UserID: "user-1", AccountScopeID: "account-1",
+			ClientRequestID: request, PayloadHash: request, Kind: kind, Artifact: &mutation, NowUnixMs: 1000,
+		})
+	}
+
+	reserved := V3ArtifactMutation{
+		ProjectionOnly: true,
+		Collection:     SessionArtifactCollection{ID: "reserved-collection", Name: "Reserved"},
+		Variant:        &SessionArtifactVariant{ID: "reserved-variant", RevisionRoundID: "reserved-step", AutoAccept: true},
+	}
+	if _, err := sessions.ApplyV3SessionMutation(V3SessionMutationInput{
+		SessionID: "artifact-reserved-auto-head", UserID: "user-1", AccountScopeID: "account-1",
+		ClientRequestID: "reserved-create", PayloadHash: "reserved-create", Kind: V3SessionMutationCreateArtifact, Artifact: &reserved, NowUnixMs: 1000,
+	}); err != nil {
+		t.Fatalf("reserve managed destination: %v", err)
+	}
+
+	finalize := artifactMutationWithGitProjection("artifact-reserved-auto-head", "reserved-ready", V3ArtifactMutation{
+		Collection: SessionArtifactCollection{ID: "reserved-collection"},
+		Variant:    &SessionArtifactVariant{ID: "reserved-variant", Filename: "reserved.html", MediaType: "text/html", DigestSHA256: strings.Repeat("a", 64), Size: 1},
+	})
+	finalize.Transaction.ArtifactChainID = artifactChainIDForRoot(SessionArtifactSelectionReference{
+		SessionID: "artifact-reserved-auto-head", CollectionID: "reserved-collection", VariantID: "reserved-variant",
+	})
+	finalize.Transaction.OfficialRef = "refs/swarm/official/reserved-auto-head"
+	finalize.Transaction.State = "committed"
+	finalize.Transaction.ResultingOfficial = finalize.Transaction.CommitOID
+	ready, err := apply("reserved-ready", V3SessionMutationFinalizeArtifact, finalize)
+	if err != nil {
+		t.Fatalf("finalize reserved managed destination: %v", err)
+	}
+	variant := ready.Artifact.Variant
+	if variant == nil || ready.Artifact.Chain == nil || ready.Artifact.Step == nil || ready.Artifact.Step.Accepted == nil {
+		t.Fatalf("reserved finalization omitted accepted graph: %+v", ready.Artifact)
+	}
+	if ready.Artifact.Chain.OfficialCommitOID != finalize.Transaction.ResultingOfficial || !sameArtifactReference(ready.Artifact.Chain.Head, artifactSelectionForVariant(*variant)) || !sameArtifactReference(*ready.Artifact.Step.Accepted, artifactSelectionForVariant(*variant)) {
+		t.Fatalf("reserved finalization did not apply completed CAS: chain=%+v step=%+v variant=%+v", ready.Artifact.Chain, ready.Artifact.Step, variant)
+	}
+}
+
 func TestArtifactSoleReadyCandidateBecomesImmediateContinuationHead(t *testing.T) {
 	store := openV3SessionEventTestStore(t)
 	sessions := NewSessionStore(store)

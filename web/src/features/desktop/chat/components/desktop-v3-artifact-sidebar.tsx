@@ -201,6 +201,17 @@ function sidebarCollectionLabel(entry: DesktopV3ArtifactCatalogEntry): string {
 export function desktopV3ArtifactSidebarGroups(
   artifacts: readonly DesktopV3ArtifactCatalogEntry[],
 ): DesktopV3ArtifactSidebarGroup[] {
+  // A source-free overall Iteration Swarm gives every root candidate its own chain.
+  // Keep those roots in their shared launch collection until one chain actually
+  // gains a later turn; otherwise the first publication splits one swarm into a
+  // separate sidebar card per candidate.
+  const turnBasedChainIds = new Set(artifacts.flatMap((artifact) => {
+    const chainId = artifact.graphState === 'git_projection' && artifact.step?.id === artifact.artifactStepId
+      ? artifact.artifactChainId?.trim() ?? ''
+      : ''
+    const hasLaterTurn = (artifact.step?.revisionNumber ?? 0) > 1 || (artifact.chain?.revisionCount ?? 0) > 1
+    return chainId && hasLaterTurn ? [chainId] : []
+  }))
   const groups = new Map<string, DesktopV3ArtifactCatalogEntry[]>()
   for (const artifact of artifacts) {
     const collectionId = artifact.collectionId?.trim() ?? ''
@@ -208,7 +219,7 @@ export function desktopV3ArtifactSidebarGroups(
     const chainId = artifact.graphState === 'git_projection' && artifact.step?.id === artifact.artifactStepId
       ? artifact.artifactChainId?.trim() ?? ''
       : ''
-    const key = chainId
+    const key = chainId && turnBasedChainIds.has(chainId)
       ? `chain\u0000${chainId}`
       : collectionId
       ? `${owningSessionId}\u0000${collectionId}`
@@ -222,7 +233,9 @@ export function desktopV3ArtifactSidebarGroups(
       || (left.candidateIndex || left.lineage?.iterationIndex || 0) - (right.candidateIndex || right.lineage?.iterationIndex || 0)
       || left.updatedAt - right.updatedAt),
     progress: sidebarCollectionProgress(entries),
-    label: entries[0]?.chain?.name || (entries[0] ? sidebarCollectionLabel(entries[0]) : 'Artifact'),
+    label: key.startsWith('chain\u0000')
+      ? entries[0]?.chain?.name || (entries[0] ? sidebarCollectionLabel(entries[0]) : 'Artifact')
+      : entries[0] ? sidebarCollectionLabel(entries[0]) : 'Artifact',
   }))
 }
 
@@ -318,7 +331,8 @@ export function DesktopV3ArtifactSidebar({
               : group.entries[0]
             if (!representative) return null
             const grouped = Boolean(group.collectionId)
-            const artifactTurns = representative.graphState === 'git_projection' ? desktopV3ArtifactStudioTurns(group.entries, representative) : []
+            const turnBased = group.key.startsWith('chain\u0000')
+            const artifactTurns = turnBased ? desktopV3ArtifactStudioTurns(group.entries, representative) : []
             const authoritativeHead = head
               ? group.entries.find((entry) => entry.sessionId === head.sessionId && entry.collectionId === head.collectionId && entry.artifactId === head.variantId && entry.eventSeq === head.eventSeq)
               : undefined
@@ -334,7 +348,7 @@ export function DesktopV3ArtifactSidebar({
             return (
               <section key={group.key} className={cn('min-w-0 overflow-hidden rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)]', embedded ? 'w-64 shrink-0' : 'w-full')} data-artifact-collection-group={grouped ? group.collectionId : undefined}>
                 <a href={artifactHref(representative)} className="flex min-w-0 items-center justify-between gap-2 border-b border-[var(--app-border)] px-3 py-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-primary)]" onClick={(event: MouseEvent<HTMLAnchorElement>) => { if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return; event.preventDefault(); onOpenArtifact(representative) }}>
-                  <span className="min-w-0"><span className="block truncate text-xs font-semibold">{representative.graphState === 'git_projection' ? (representative.chain?.name || representative.label) : grouped ? group.label : representative.label}</span><span className="mt-0.5 block text-[10px] text-[var(--app-text-subtle)]">{representative.graphState === 'git_projection' ? `${artifactTurns.length} turn${artifactTurns.length === 1 ? '' : 's'} · current head Turn ${authoritativeHead?.step?.revisionNumber || representative.step?.revisionNumber || 1}` : grouped ? `Unstructured · ${sidebarProgressLabel(group)}` : `Unstructured · ${representative.status === 'staging' ? 'Generating' : representative.kind || representative.mediaType}`}</span>{requirementLabel ? <span className="mt-0.5 block truncate text-[9px] text-[var(--app-text-subtle)]" data-artifact-output-requirements>{requirementLabel}</span> : null}{animationLabel ? <span className="mt-0.5 block truncate text-[9px] text-[var(--app-text-subtle)]" data-artifact-animation-profile-label>{animationLabel}</span> : null}</span>
+                  <span className="min-w-0"><span className="block truncate text-xs font-semibold">{turnBased ? (representative.chain?.name || representative.label) : grouped ? group.label : representative.label}</span><span className="mt-0.5 block text-[10px] text-[var(--app-text-subtle)]">{turnBased ? `${artifactTurns.length} turn${artifactTurns.length === 1 ? '' : 's'} · current head Turn ${authoritativeHead?.step?.revisionNumber || representative.step?.revisionNumber || 1}` : grouped ? `Overall iterations · ${sidebarProgressLabel(group)}` : `Unstructured · ${representative.status === 'staging' ? 'Generating' : representative.kind || representative.mediaType}`}</span>{requirementLabel ? <span className="mt-0.5 block truncate text-[9px] text-[var(--app-text-subtle)]" data-artifact-output-requirements>{requirementLabel}</span> : null}{animationLabel ? <span className="mt-0.5 block truncate text-[9px] text-[var(--app-text-subtle)]" data-artifact-animation-profile-label>{animationLabel}</span> : null}</span>
                   {group.progress.staging > 0 ? <Loader2 className="size-4 shrink-0 motion-safe:animate-spin motion-reduce:animate-none text-[var(--app-primary)]" aria-label="Iteration Swarm generating" /> : <Maximize2 className="size-4 shrink-0 text-[var(--app-text-subtle)]" aria-hidden="true" />}
                 </a>
                 {artifactTurns.length > 0 ? <div className="grid gap-2 border-b border-[var(--app-border)] bg-[var(--app-bg-alt)] p-2" aria-label="Artifact turn progression" data-artifact-sidebar-turn-progression>

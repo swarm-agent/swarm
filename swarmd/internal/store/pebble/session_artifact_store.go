@@ -1928,7 +1928,16 @@ func (s *SessionStore) prepareV3ArtifactMutation(input V3SessionMutationInput, s
 					return preparedV3ArtifactMutation{}, err
 				}
 				if !chainOK {
-					chain = SessionArtifactChain{Version: SessionArtifactVersion, GraphState: SessionArtifactGraphProjection, ID: next.ArtifactChainID, AccountScopeID: input.AccountScopeID, UserID: input.UserID, Name: firstNonEmptyArtifactString(next.Presentation.Label, collection.Name, next.Filename), RepositoryID: incoming.Transaction.RepositoryID, OfficialRef: incoming.Transaction.OfficialRef, OfficialCommitOID: incoming.Transaction.ResultingOfficial, RevisionCount: next.RevisionNumber, LastRoundID: next.ArtifactStepID, CreatedAt: now, UpdatedAt: now, EventSeq: seq}
+					initialOfficial := incoming.Transaction.ResultingOfficial
+					if next.AutoAccept && incoming.Transaction.State == "committed" {
+						// A projection-only managed reservation has no chain row until its
+						// terminal byte publication. Keep the new projection at the CAS base
+						// until the sole-candidate auto-accept block below applies the already
+						// completed transaction; initializing it at the result would make that
+						// same valid CAS look stale.
+						initialOfficial = incoming.Transaction.ExpectedOldOID
+					}
+					chain = SessionArtifactChain{Version: SessionArtifactVersion, GraphState: SessionArtifactGraphProjection, ID: next.ArtifactChainID, AccountScopeID: input.AccountScopeID, UserID: input.UserID, Name: firstNonEmptyArtifactString(next.Presentation.Label, collection.Name, next.Filename), RepositoryID: incoming.Transaction.RepositoryID, OfficialRef: incoming.Transaction.OfficialRef, OfficialCommitOID: initialOfficial, RevisionCount: next.RevisionNumber, LastRoundID: next.ArtifactStepID, CreatedAt: now, UpdatedAt: now, EventSeq: seq}
 				} else if chain.GraphState != SessionArtifactGraphProjection || chain.RepositoryID != incoming.Transaction.RepositoryID || chain.OfficialRef != incoming.Transaction.OfficialRef {
 					return preparedV3ArtifactMutation{}, errors.New("artifact Git chain projection conflicts with transaction identity")
 				}
