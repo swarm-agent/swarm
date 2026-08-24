@@ -1927,9 +1927,12 @@ func (s *SessionStore) prepareV3ArtifactMutation(input V3SessionMutationInput, s
 				if stepOK {
 					copy := step
 					prepared.PreviousStep = &copy
-					if step.RepositoryID != incoming.Transaction.RepositoryID || step.TransactionRef != incoming.Transaction.TransactionRef || step.CommitOID != incoming.Transaction.CommitOID {
-						return preparedV3ArtifactMutation{}, errors.New("artifact step conflicts with the authoritative Git transaction")
+					if step.RepositoryID != incoming.Transaction.RepositoryID {
+						return preparedV3ArtifactMutation{}, errors.New("artifact step conflicts with the authoritative Git repository")
 					}
+					// One iteration step owns sibling candidate transactions. The step-level
+					// transaction fields remain the first candidate's representative identity;
+					// every candidate's exact transaction stays authoritative on its variant.
 				} else {
 					step = SessionArtifactStep{Version: SessionArtifactVersion, GraphState: SessionArtifactGraphProjection, ID: next.ArtifactStepID, ArtifactChainID: chain.ID, AccountScopeID: input.AccountScopeID, UserID: input.UserID, RepositoryID: incoming.Transaction.RepositoryID, TransactionRef: incoming.Transaction.TransactionRef, CandidateRef: incoming.Transaction.CandidateRef, CommitOID: incoming.Transaction.CommitOID, ParentCommitOIDs: append([]string(nil), incoming.Transaction.ParentCommitOIDs...), ExpectedOldOID: incoming.Transaction.ExpectedOldOID, ResultingOID: incoming.Transaction.ResultingOfficial, Parent: parent, RevisionNumber: next.RevisionNumber, CreatedAt: now}
 				}
