@@ -114,6 +114,7 @@ export function desktopV3ArtifactStudioPartIterations(entries: readonly DesktopV
   const currentByPart = new Map(currentComposition.parts.map((part) => [part.partId, part]))
   const acceptedByPart = new Map((head.acceptedPartHeads ?? entry.acceptedPartHeads ?? []).map((part) => [part.partId, part]))
   const groups = new Map<string, DesktopV3ArtifactStudioPartIteration>()
+  const definitionOrder = new Map((head.partDefinitions ?? entry.partDefinitions ?? []).map((definition, index) => [definition.id, index]))
   for (const part of currentComposition.parts) {
     const definition = definitions.get(part.partId)
     if (!definition) continue
@@ -134,7 +135,7 @@ export function desktopV3ArtifactStudioPartIterations(entries: readonly DesktopV
   return [...groups.values()].filter((part) => part.turns.length > 0).sort((left, right) => {
     const leftRevision = left.turns[0]?.revisionNumber ?? 0
     const rightRevision = right.turns[0]?.revisionNumber ?? 0
-    return leftRevision - rightRevision || left.label.localeCompare(right.label)
+    return leftRevision - rightRevision || (definitionOrder.get(left.id) ?? Number.MAX_SAFE_INTEGER) - (definitionOrder.get(right.id) ?? Number.MAX_SAFE_INTEGER) || left.label.localeCompare(right.label)
   })
 }
 

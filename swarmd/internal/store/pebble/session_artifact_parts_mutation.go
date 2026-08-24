@@ -32,7 +32,7 @@ func (s *SessionStore) prepareAuthoritativeArtifactParts(input V3SessionMutation
 	if mutation.Variant.ArtifactChainID != "" && mutation.Variant.ArtifactChainID != composition.ArtifactChainID {
 		return nil, nil, nil, errors.New("artifact variant and composition chain identities conflict")
 	}
-	if err := validateArtifactConstruction(composition); err != nil {
+	if err := ValidateArtifactConstruction(composition); err != nil {
 		return nil, nil, nil, err
 	}
 	if composition.Parent != nil {
@@ -140,7 +140,7 @@ func (s *SessionStore) prepareAuthoritativeArtifactParts(input V3SessionMutation
 	return definitions, revisions, &composition, nil
 }
 
-func validateArtifactConstruction(composition SessionArtifactComposition) error {
+func ValidateArtifactConstruction(composition SessionArtifactComposition) error {
 	if len(composition.Parts) == 0 || len(composition.Parts) > SessionArtifactMaxParts {
 		return errors.New("artifact composition requires a bounded part graph")
 	}
