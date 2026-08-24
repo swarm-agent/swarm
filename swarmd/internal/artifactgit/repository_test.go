@@ -90,6 +90,30 @@ func TestHistoricalForkMergeLocksCASRestartAndBundle(t *testing.T) {
 	}
 }
 
+func TestGenesisRetryRequiresExactTreeAndTransactionsAreImmutable(t *testing.T) {
+	ctx := context.Background()
+	r := openTest(t)
+	genesis := Genesis{MediaType: "text/plain", Content: &BlobInput{MediaType: "text/plain", Bytes: []byte("first")}}
+	commit, err := r.Genesis(ctx, genesis)
+	if err != nil { t.Fatal(err) }
+	if retried, retryErr := r.Genesis(ctx, genesis); retryErr != nil || retried != commit {
+		t.Fatalf("exact genesis retry=%s err=%v", retried, retryErr)
+	}
+	if _, conflictErr := r.Genesis(ctx, Genesis{MediaType: "text/plain", Content: &BlobInput{MediaType: "text/plain", Bytes: []byte("different")}}); !errors.Is(conflictErr, ErrConflict) {
+		t.Fatalf("mismatched genesis retry=%v", conflictErr)
+	}
+	if err := r.RecordTransaction(ctx, "publish_1", commit); err != nil { t.Fatal(err) }
+	if err := r.RecordTransaction(ctx, "publish_1", commit); err != nil { t.Fatalf("transaction replay=%v", err) }
+	candidate, err := r.Candidate(ctx, CandidateRequest{ID: "candidate", Base: commit, Content: &BlobInput{MediaType: "text/plain", Bytes: []byte("second")}})
+	if err != nil { t.Fatal(err) }
+	if err := r.RecordTransaction(ctx, "publish_1", candidate); !errors.Is(err, ErrTransactionReuse) {
+		t.Fatalf("transaction reuse=%v", err)
+	}
+	if got, err := r.Transaction(ctx, "publish_1"); err != nil || got != commit { t.Fatalf("transaction=%s err=%v", got, err) }
+	refs, err := r.ListRefs(ctx, "refs/swarm/transactions/")
+	if err != nil || len(refs) != 1 || refs[0].Commit != commit { t.Fatalf("transaction refs=%v err=%v", refs, err) }
+}
+
 func TestMoveMaterializeDeleteAndBounds(t *testing.T) {
 	ctx := context.Background()
 	r := openTest(t)

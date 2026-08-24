@@ -53,6 +53,19 @@ func (r *Registry) OwnedSession(sessionID, accountScopeID, userID string) (pebbl
 	return session, nil
 }
 
+// VerifyGitPrerequisite checks native Git and private repository creation without
+// leaving a probe repository or cached handle in the runtime registry.
+func (r *Registry) VerifyGitPrerequisite(ctx context.Context) error {
+	const probeID = "startup-probe"
+	repo, err := r.Repository(ctx, probeID)
+	if err != nil { return err }
+	if err = repo.Delete(); err != nil { return err }
+	r.mu.Lock()
+	delete(r.repositories, probeID)
+	r.mu.Unlock()
+	return nil
+}
+
 func (r *Registry) Repository(ctx context.Context, repositoryID string) (*artifactgit.Repository, error) {
 	if r == nil { return nil, errors.New("artifact Git repository root is not configured") }
 	if r.repositoryErr != nil { return nil, fmt.Errorf("resolve artifact Git repository root: %w", r.repositoryErr) }

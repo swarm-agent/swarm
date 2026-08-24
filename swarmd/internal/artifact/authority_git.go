@@ -55,6 +55,8 @@ func (a *Authority) readGitVariant(ctx context.Context, variant pebblestore.Sess
 }
 
 func (a *Authority) attachGitProjection(ctx context.Context, principal Principal, requestID, kind string, mutation *pebblestore.V3ArtifactMutation) error {
+	requestID = strings.TrimSpace(requestID)
+	if requestID == "" { return errors.New("artifact request id is required") }
 	variant := mutation.Variant
 	if variant == nil && mutation.Selection != nil {
 		selected, ok, err := a.metadata.GetSessionArtifactVariant(principal.AccountScopeID, principal.SessionID, mutation.Collection.ID, mutation.Selection.VariantID)
@@ -87,6 +89,16 @@ func (a *Authority) attachGitProjection(ctx context.Context, principal Principal
 		}
 	}
 	txID := artifactGitID("tx", requestID)
+	repo, err := a.repository(ctx, variant.RepositoryID)
+	if err != nil { return err }
+	// Every projected transaction must have an authoritative immutable Git ref.
+	// AdvanceOfficial creates it atomically with official; all other mutations
+	// record it explicitly. Selection can replay after that atomic CAS, so an
+	// existing exact transaction is accepted while a missing ref is a conflict.
+	if kind == pebblestore.V3SessionMutationSelectArtifact && state == "committed" && resulting != "" {
+		committed, txErr := repo.Transaction(ctx, txID)
+		if txErr != nil || committed != variant.CommitOID { return artifactgit.ErrConflict }
+	} else if err := repo.RecordTransaction(ctx, txID, variant.CommitOID); err != nil { return err }
 	mutation.Transaction = &pebblestore.SessionArtifactGitTransaction{ID: txID, ArtifactChainID: variant.ArtifactChainID, RepositoryID: variant.RepositoryID, TransactionRef: "refs/swarm/transactions/"+txID, CandidateRef: variant.CandidateRef, OfficialRef: "refs/heads/official", ExpectedOldOID: expected, CommitOID: variant.CommitOID, ParentCommitOIDs: parents, ResultingOfficial: resulting, State: state}
 	return nil
 }

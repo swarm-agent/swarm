@@ -35,7 +35,7 @@ func (a *Authority) ResolvePartTarget(principal Principal, source pebblestore.Se
 			return pebblestore.SessionArtifactVariant{}, pebblestore.SessionArtifactComposition{}, pebblestore.SessionArtifactPartDefinition{}, pebblestore.SessionArtifactPartRevisionReference{}, err
 		}
 		if !ok || definition.GraphState != pebblestore.SessionArtifactGraphAuthoritative {
-			return pebblestore.SessionArtifactVariant{}, pebblestore.SessionArtifactComposition{}, pebblestore.SessionArtifactPartDefinition{}, pebblestore.SessionArtifactPartRevisionReference{}, errors.New("selected part definition is unavailable or legacy")
+			return pebblestore.SessionArtifactVariant{}, pebblestore.SessionArtifactComposition{}, pebblestore.SessionArtifactPartDefinition{}, pebblestore.SessionArtifactPartRevisionReference{}, errors.New("selected part definition is unavailable or non-Git")
 		}
 		revision, ok, err := a.metadata.GetSessionArtifactPartRevision(principal.AccountScopeID, principal.UserID, selected.Revision.OwnerSessionID, selected.Revision.ArtifactChainID, selected.Revision.PartID, selected.Revision.PartRevisionID)
 		if err != nil {

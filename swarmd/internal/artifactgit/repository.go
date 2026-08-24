@@ -100,12 +100,23 @@ func (r *Repository) gitCmd(ctx context.Context, input []byte, args ...string) (
 }
 
 func (r *Repository) Genesis(ctx context.Context, value Genesis) (string, error) {
-	if head, err := r.ref(ctx, "refs/heads/official"); err == nil {
-		return head, nil
-	}
 	m, err := r.manifestFromGenesis(ctx, value)
 	if err != nil {
 		return "", err
+	}
+	if head, refErr := r.ref(ctx, "refs/heads/official"); refErr == nil {
+		// A retry may encounter an official ref written before its Pebble projection.
+		// Converge only when Git contains the exact requested genesis.
+		existing, readErr := r.ReadCommit(ctx, head)
+		if readErr != nil {
+			return "", readErr
+		}
+		if !equalManifest(existing.Manifest, m) {
+			return "", ErrConflict
+		}
+		return head, nil
+	} else if !errors.Is(refErr, ErrNotFound) {
+		return "", refErr
 	}
 	commit, err := r.commit(ctx, m, nil, "artifact genesis")
 	if err != nil {
@@ -214,6 +225,12 @@ func (r *Repository) commit(ctx context.Context, m Manifest, parents []string, m
 		return "", err
 	}
 	return strings.TrimSpace(string(out)), nil
+}
+
+func equalManifest(left, right Manifest) bool {
+	leftBody, leftErr := json.Marshal(left)
+	rightBody, rightErr := json.Marshal(right)
+	return leftErr == nil && rightErr == nil && bytes.Equal(leftBody, rightBody)
 }
 
 func boundedMessage(s string) string {
@@ -493,6 +510,30 @@ func (r *Repository) Merge(ctx context.Context, req MergeRequest) (string, error
 	return commit, nil
 }
 
+// RecordTransaction creates an immutable reconciliation ref for a Git write that
+// does not move official. Reusing an ID is idempotent only for the same commit.
+func (r *Repository) RecordTransaction(ctx context.Context, transactionID, commit string) error {
+	if !idPattern.MatchString(transactionID) || !objectPattern.MatchString(commit) {
+		return invalid("transaction")
+	}
+	if _, err := r.ReadCommit(ctx, commit); err != nil {
+		return err
+	}
+	ref := "refs/swarm/transactions/" + transactionID
+	if old, err := r.ref(ctx, ref); err == nil {
+		if old == commit {
+			return nil
+		}
+		return ErrTransactionReuse
+	} else if !errors.Is(err, ErrNotFound) {
+		return err
+	}
+	if err := r.updateRef(ctx, ref, commit, strings.Repeat("0", len(commit))); err != nil {
+		return fmt.Errorf("%w: %v", ErrConflict, err)
+	}
+	return nil
+}
+
 func (r *Repository) AdvanceOfficial(ctx context.Context, expected, next, transactionID string) (string, error) {
 	if !idPattern.MatchString(transactionID) || !objectPattern.MatchString(expected) || !objectPattern.MatchString(next) {
 		return "", invalid("transaction")
@@ -533,6 +574,11 @@ func (r *Repository) DeleteCandidate(ctx context.Context, name, expected string)
 	if current, err := r.ref(ctx, name); errors.Is(err, ErrNotFound) { return nil } else if err != nil { return err } else if current != expected { return ErrConflict }
 	if err := r.updateRef(ctx, name, strings.Repeat("0", len(expected)), expected); err != nil { return ErrConflict }
 	return nil
+}
+
+func (r *Repository) Transaction(ctx context.Context, transactionID string) (string, error) {
+	if !idPattern.MatchString(transactionID) { return "", invalid("transaction") }
+	return r.ref(ctx, "refs/swarm/transactions/"+transactionID)
 }
 
 func (r *Repository) ListRefs(ctx context.Context, prefix string) ([]Ref, error) {

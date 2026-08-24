@@ -177,7 +177,7 @@ func (a *Authority) ReadPartRevision(ctx context.Context, principal Principal, r
 		return nil, pebblestore.SessionArtifactPartRevision{}, err
 	}
 	if !ok || revision.Reference() != reference || revision.GraphState != pebblestore.SessionArtifactGraphAuthoritative {
-		return nil, pebblestore.SessionArtifactPartRevision{}, errors.New("artifact part revision reference is missing, legacy, or stale")
+		return nil, pebblestore.SessionArtifactPartRevision{}, errors.New("artifact part revision reference is missing, non-Git, or stale")
 	}
 	body, err := a.readGitPartRevision(ctx, revision, maxBytes)
 	return body, revision, err

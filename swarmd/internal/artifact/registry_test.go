@@ -26,6 +26,16 @@ func TestRegistryOwnedSessionDoesNotUseWorkspaceIdentity(t *testing.T) {
 	if got, err := registry.OwnedSession("owned", "account", "user"); err != nil || got.ID != "owned" { t.Fatalf("owned=%+v err=%v", got, err) }
 }
 
+func TestVerifyGitPrerequisiteLeavesNoProbeRepository(t *testing.T) {
+	t.Setenv("STATE_DIRECTORY", t.TempDir())
+	registry := NewRegistry(&registryResolver{}, Limits{})
+	if err := registry.VerifyGitPrerequisite(context.Background()); err != nil { t.Fatal(err) }
+	if _, err := os.Stat(filepath.Join(registry.repositoryRoot, "startup-probe.git")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("startup probe repository remains: %v", err)
+	}
+	if registry.repositories["startup-probe"] != nil { t.Fatal("startup probe remains cached") }
+}
+
 func TestRegistryMaintenanceDeletesGitRepositoryBeforeAcknowledging(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "data")
 	t.Setenv("STATE_DIRECTORY", root)
