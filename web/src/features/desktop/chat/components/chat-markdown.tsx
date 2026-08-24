@@ -2039,6 +2039,7 @@ function planTransitionLabel(action: string, startedPlan = false): string {
       return "Checkpoint failed";
     case "approve_and_start":
       return "Plan approved";
+    case "transition_checkpoint_boundary":
     case "request_followup_checkpoint":
       return "Checkpoint added";
     default:
