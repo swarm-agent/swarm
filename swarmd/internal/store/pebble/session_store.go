@@ -929,9 +929,9 @@ func (s *SessionStore) sessionArtifactGitCleanup(session SessionSnapshot) ([]V3S
 			}
 		}
 		entry := V3SessionArtifactGitCleanup{
-			RepositoryID: variant.RepositoryID,
-			CandidateRef: variant.CandidateRef,
-			ExpectedCommit: variant.CommitOID,
+			RepositoryID:     variant.RepositoryID,
+			CandidateRef:     variant.CandidateRef,
+			ExpectedCommit:   variant.CommitOID,
 			DeleteRepository: deleteRepository,
 		}
 		key := entry.RepositoryID + "\x00" + entry.CandidateRef

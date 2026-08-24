@@ -76,15 +76,25 @@ func TestSearchSessionArtifactCatalogPaginatesOwnedReadyReferencesWithoutGaps(t 
 func TestSearchSessionArtifactCatalogOmitsRowsWithoutExactGitProjection(t *testing.T) {
 	store := openV3SessionEventTestStore(t)
 	sessions := NewSessionStore(store)
-	if err := sessions.CreateSession(SessionSnapshot{ID: "owned-invalid", UserID: "user-1", AccountScopeID: "account-1", WorkspacePath: t.TempDir()}); err != nil { t.Fatal(err) }
+	if err := sessions.CreateSession(SessionSnapshot{ID: "owned-invalid", UserID: "user-1", AccountScopeID: "account-1", WorkspacePath: t.TempDir()}); err != nil {
+		t.Fatal(err)
+	}
 	collection := SessionArtifactCollection{Version: SessionArtifactVersion, ID: "collection", AccountScopeID: "account-1", SessionID: "owned-invalid", Status: SessionArtifactStatusReady, Name: "Invalid", VariantCount: 1, ReadyCount: 1}
 	variant := SessionArtifactVariant{Version: SessionArtifactVersion, ID: "variant", CollectionID: collection.ID, AccountScopeID: collection.AccountScopeID, SessionID: collection.SessionID, Status: SessionArtifactStatusReady, Filename: "invalid.txt", MediaType: "text/plain", EventSeq: 1}
-	if err := store.PutJSON(KeySessionArtifactCollection(collection.AccountScopeID, collection.SessionID, collection.ID), collection); err != nil { t.Fatal(err) }
-	if err := store.PutJSON(KeySessionArtifactVariant(variant.AccountScopeID, variant.SessionID, variant.CollectionID, variant.ID), variant); err != nil { t.Fatal(err) }
+	if err := store.PutJSON(KeySessionArtifactCollection(collection.AccountScopeID, collection.SessionID, collection.ID), collection); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.PutJSON(KeySessionArtifactVariant(variant.AccountScopeID, variant.SessionID, variant.CollectionID, variant.ID), variant); err != nil {
+		t.Fatal(err)
+	}
 	page, err := sessions.SearchSessionArtifactCatalog("account-1", "user-1", SessionArtifactCatalogOptions{Limit: 10})
-	if err != nil || len(page.Items) != 0 { t.Fatalf("catalog page=%+v err=%v", page, err) }
+	if err != nil || len(page.Items) != 0 {
+		t.Fatalf("catalog page=%+v err=%v", page, err)
+	}
 	stored, ok, err := sessions.GetSessionArtifactVariant(variant.AccountScopeID, variant.SessionID, variant.CollectionID, variant.ID)
-	if err != nil || !ok || stored.Status != SessionArtifactStatusReady { t.Fatalf("preserved invalid row=%+v ok=%t err=%v", stored, ok, err) }
+	if err != nil || !ok || stored.Status != SessionArtifactStatusReady {
+		t.Fatalf("preserved invalid row=%+v ok=%t err=%v", stored, ok, err)
+	}
 }
 
 func TestSearchSessionArtifactCatalogSnapshotAndCursorFilterContract(t *testing.T) {

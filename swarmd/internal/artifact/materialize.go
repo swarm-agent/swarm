@@ -45,17 +45,29 @@ const MaxMaterializeBatchItems = 64
 // workspace-relative destination. ZIP packages are safely expanded into a
 // destination directory; other artifacts are copied to one destination file.
 func MaterializeBytes(ctx context.Context, limits Limits, variant pebblestore.SessionArtifactVariant, body []byte, workspaceRoot, destination string, overwrite bool) (Materialized, error) {
-	if err := ctx.Err(); err != nil { return Materialized{}, err }
+	if err := ctx.Err(); err != nil {
+		return Materialized{}, err
+	}
 	workspaceRoot, destination, err := validateMaterializeDestination(workspaceRoot, destination)
-	if err != nil { return Materialized{}, err }
-	if int64(len(body)) != variant.Size { return Materialized{}, errors.New("artifact Git bytes do not match projected size") }
+	if err != nil {
+		return Materialized{}, err
+	}
+	if int64(len(body)) != variant.Size {
+		return Materialized{}, errors.New("artifact Git bytes do not match projected size")
+	}
 	digest := sha256.Sum256(body)
-	if hex.EncodeToString(digest[:]) != strings.ToLower(variant.DigestSHA256) { return Materialized{}, errors.New("artifact Git bytes do not match projected digest") }
+	if hex.EncodeToString(digest[:]) != strings.ToLower(variant.DigestSHA256) {
+		return Materialized{}, errors.New("artifact Git bytes do not match projected digest")
+	}
 	if variant.MediaType == "application/zip" || variant.Presentation.Kind == "package" {
-		if variant.MediaType != "application/zip" { return Materialized{}, errors.New("artifact package has an invalid media type") }
+		if variant.MediaType != "application/zip" {
+			return Materialized{}, errors.New("artifact package has an invalid media type")
+		}
 		return materializePackage(ctx, normalizeLimits(limits), bytes.NewReader(body), variant, workspaceRoot, destination, overwrite)
 	}
-	if err := materializeWorkspaceFile(ctx, workspaceRoot, destination, bytes.NewReader(body), variant.Size, variant.DigestSHA256, artifactByteLimit(normalizeLimits(limits), variant.MediaType, variant.Presentation.Kind), overwrite); err != nil { return Materialized{}, err }
+	if err := materializeWorkspaceFile(ctx, workspaceRoot, destination, bytes.NewReader(body), variant.Size, variant.DigestSHA256, artifactByteLimit(normalizeLimits(limits), variant.MediaType, variant.Presentation.Kind), overwrite); err != nil {
+		return Materialized{}, err
+	}
 	return Materialized{Destination: filepath.ToSlash(destination), Files: 1, Bytes: variant.Size, DigestSHA256: variant.DigestSHA256, MediaType: variant.MediaType}, nil
 }
 
@@ -112,11 +124,17 @@ func MaterializeBatch(ctx context.Context, limits Limits, inputs []BatchMaterial
 				return nil, errors.New("artifact materialization batch package filename cannot derive a safe directory")
 			}
 		}
-		if int64(len(input.Body)) != input.Variant.Size { return nil, errors.New("artifact Git batch bytes do not match projected size") }
+		if int64(len(input.Body)) != input.Variant.Size {
+			return nil, errors.New("artifact Git batch bytes do not match projected size")
+		}
 		digest := sha256.Sum256(input.Body)
-		if hex.EncodeToString(digest[:]) != strings.ToLower(input.Variant.DigestSHA256) { return nil, errors.New("artifact Git batch bytes do not match projected digest") }
+		if hex.EncodeToString(digest[:]) != strings.ToLower(input.Variant.DigestSHA256) {
+			return nil, errors.New("artifact Git batch bytes do not match projected digest")
+		}
 		if packageItem {
-			if _, _, zipErr := readPackageBytes(limits, input.Body, "", normalizeLimits(limits).MaxPackageEntryBytes); zipErr != nil { return nil, zipErr }
+			if _, _, zipErr := readPackageBytes(limits, input.Body, "", normalizeLimits(limits).MaxPackageEntryBytes); zipErr != nil {
+				return nil, zipErr
+			}
 		}
 		baseRelative := relative
 		for suffix := 2; ; suffix++ {

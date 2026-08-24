@@ -43,13 +43,23 @@ func TestRepairSessionArtifactCollectionsOmitsHistoricalRowsWithoutGitIdentity(t
 	createV3SessionForTest(t, sessions, "artifact-repair-historical")
 	collection := SessionArtifactCollection{Version: SessionArtifactVersion, ID: "collection-1", AccountScopeID: "account-1", SessionID: "artifact-repair-historical", Status: SessionArtifactStatusStaging, Name: "Historical", VariantCount: 1, StagingCount: 1}
 	variant := SessionArtifactVariant{Version: SessionArtifactVersion, ID: "variant-1", CollectionID: collection.ID, AccountScopeID: collection.AccountScopeID, SessionID: collection.SessionID, Status: SessionArtifactStatusStaging}
-	if err := store.PutJSON(KeySessionArtifactCollection(collection.AccountScopeID, collection.SessionID, collection.ID), collection); err != nil { t.Fatal(err) }
-	if err := store.PutJSON(KeySessionArtifactVariant(variant.AccountScopeID, variant.SessionID, variant.CollectionID, variant.ID), variant); err != nil { t.Fatal(err) }
+	if err := store.PutJSON(KeySessionArtifactCollection(collection.AccountScopeID, collection.SessionID, collection.ID), collection); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.PutJSON(KeySessionArtifactVariant(variant.AccountScopeID, variant.SessionID, variant.CollectionID, variant.ID), variant); err != nil {
+		t.Fatal(err)
+	}
 	report, err := sessions.RepairSessionArtifactCollections(collection.SessionID)
-	if err != nil { t.Fatal(err) }
-	if report.InvalidVariantsOmitted != 1 || report.CollectionsRepaired != 1 { t.Fatalf("repair report = %+v", report) }
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.InvalidVariantsOmitted != 1 || report.CollectionsRepaired != 1 {
+		t.Fatalf("repair report = %+v", report)
+	}
 	repaired, ok, err := sessions.GetSessionArtifactCollection(collection.AccountScopeID, collection.SessionID, collection.ID)
-	if err != nil || !ok || repaired.VariantCount != 0 || repaired.StagingCount != 0 { t.Fatalf("repaired=%+v ok=%t err=%v", repaired, ok, err) }
+	if err != nil || !ok || repaired.VariantCount != 0 || repaired.StagingCount != 0 {
+		t.Fatalf("repaired=%+v ok=%t err=%v", repaired, ok, err)
+	}
 }
 
 func TestRepairSessionArtifactCollectionsDerivesProgressFromVariants(t *testing.T) {
@@ -65,9 +75,13 @@ func TestRepairSessionArtifactCollectionsDerivesProgressFromVariants(t *testing.
 		t.Fatal(err)
 	}
 	variant, ok, err := sessions.GetSessionArtifactVariant("account-1", "artifact-repair-progress", "collection-1", "variant-1")
-	if err != nil || !ok { t.Fatalf("load variant: ok=%t err=%v", ok, err) }
+	if err != nil || !ok {
+		t.Fatalf("load variant: ok=%t err=%v", ok, err)
+	}
 	variant.GraphState, variant.RepositoryID, variant.CommitOID = SessionArtifactGraphProjection, "repair-repository", strings.Repeat("d", 64)
-	if err := store.PutJSON(KeySessionArtifactVariant(variant.AccountScopeID, variant.SessionID, variant.CollectionID, variant.ID), variant); err != nil { t.Fatal(err) }
+	if err := store.PutJSON(KeySessionArtifactVariant(variant.AccountScopeID, variant.SessionID, variant.CollectionID, variant.ID), variant); err != nil {
+		t.Fatal(err)
+	}
 	corrupt := SessionArtifactCollection{
 		Version: SessionArtifactVersion, ID: "collection-1", AccountScopeID: "account-1", SessionID: "artifact-repair-progress",
 		Status: SessionArtifactStatusFailed, Name: "Repair", VariantCount: 1, FailedCount: 1, SelectedVariantID: "missing",

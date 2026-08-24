@@ -153,10 +153,14 @@ func (a *Authority) publishReplacementComposition(ctx context.Context, principal
 	parent := input.SourceArtifact
 	variant := pebblestore.SessionArtifactVariant{ID: input.VariantID, CollectionID: collection.ID, AccountScopeID: principal.AccountScopeID, SessionID: principal.SessionID, Filename: sourceVariant.Filename, MediaType: sourceVariant.MediaType, Presentation: sourceVariant.Presentation, OutputRequirements: cloneOutputRequirements(sourceVariant.OutputRequirements), AnimationProfile: cloneAnimationProfile(sourceVariant.AnimationProfile), Lineage: lineage, ArtifactChainID: composition.ArtifactChainID, ArtifactStepID: input.ArtifactStepID, GraphState: pebblestore.SessionArtifactGraphAuthoritative, ParentArtifact: &parent, RevisionNumber: sourceVariant.RevisionNumber + 1, RevisionRoundID: input.ArtifactStepID, CandidateIndex: input.CandidateIndex, AutoAccept: input.AutoAccept, PartDefinitions: definitions, Composition: &composition}
 	revisions, err = a.publishGitReplacement(ctx, input, sourceVariant, &variant, &composition, revisions)
-	if err != nil { return pebblestore.SessionArtifactVariant{}, fmt.Errorf("publish multipart Git candidate: %w", err) }
+	if err != nil {
+		return pebblestore.SessionArtifactVariant{}, fmt.Errorf("publish multipart Git candidate: %w", err)
+	}
 	variant.Composition = &composition
 	compositionBytes, err := json.Marshal(composition)
-	if err != nil { return pebblestore.SessionArtifactVariant{}, fmt.Errorf("encode replacement composition projection: %w", err) }
+	if err != nil {
+		return pebblestore.SessionArtifactVariant{}, fmt.Errorf("encode replacement composition projection: %w", err)
+	}
 	digest := sha256.Sum256(compositionBytes)
 	variant.DigestSHA256, variant.Size = hex.EncodeToString(digest[:]), int64(len(compositionBytes))
 	kind := pebblestore.V3SessionMutationCreateArtifact

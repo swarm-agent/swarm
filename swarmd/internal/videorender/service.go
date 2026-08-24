@@ -668,8 +668,12 @@ func (s *Service) materializeTimelineInputs(ctx context.Context, principal ident
 
 			destPath := filepath.Join(jobDir, fmt.Sprintf("input_%d_%s", input.Index, variant.Filename))
 			body, _, err := s.artifacts.ReadReference(ctx, artifact.Principal{SessionID: session.ID, AccountScopeID: principal.AccountScopeID, UserID: principal.UserID}, *targetRef, s.cfg.MaxRenderBytes)
-			if err != nil { return nil, fmt.Errorf("read artifact clip %d: %w", i, err) }
-			if err := os.WriteFile(destPath, body, 0o600); err != nil { return nil, err }
+			if err != nil {
+				return nil, fmt.Errorf("read artifact clip %d: %w", i, err)
+			}
+			if err := os.WriteFile(destPath, body, 0o600); err != nil {
+				return nil, err
+			}
 			input.FilePath = destPath
 			if strings.HasPrefix(variant.MediaType, "image/") {
 				input.IsImage = true
@@ -714,8 +718,12 @@ func (s *Service) materializeTimelineInputs(ctx context.Context, principal ident
 			}
 			designPath := filepath.Join(jobDir, fmt.Sprintf("design_%d_%s", input.Index, designVariant.Filename))
 			designBody, _, err := s.artifacts.ReadReference(ctx, artifact.Principal{SessionID: session.ID, AccountScopeID: principal.AccountScopeID, UserID: principal.UserID}, pebblestore.SessionArtifactSelectionReference{SessionID: designSessionID, CollectionID: designRef.CollectionID, VariantID: designRef.VariantID, EventSeq: designRef.EventSeq}, s.cfg.MaxRenderBytes)
-			if err != nil { return nil, fmt.Errorf("read design input clip %d: %w", i, err) }
-			if err := os.WriteFile(designPath, designBody, 0o600); err != nil { return nil, err }
+			if err != nil {
+				return nil, fmt.Errorf("read design input clip %d: %w", i, err)
+			}
+			if err := os.WriteFile(designPath, designBody, 0o600); err != nil {
+				return nil, err
+			}
 			input.DesignInputs = append(input.DesignInputs, MaterializedInput{
 				FilePath:    designPath,
 				OverlayMode: designRef.OverlayMode,

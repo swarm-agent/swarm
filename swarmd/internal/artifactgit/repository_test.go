@@ -51,7 +51,9 @@ func TestHistoricalForkMergeLocksCASRestartAndBundle(t *testing.T) {
 	}
 	var mergedB Part
 	for _, part := range mc.Manifest.Parts {
-		if part.ID == "b" { mergedB = part }
+		if part.ID == "b" {
+			mergedB = part
+		}
 	}
 	if mergedB.SourceCommit != right || mergedB.SourcePart != "b" {
 		t.Fatalf("merge provenance = %#v", mergedB)
@@ -69,8 +71,12 @@ func TestHistoricalForkMergeLocksCASRestartAndBundle(t *testing.T) {
 	if _, e = r.Candidate(ctx, CandidateRequest{ID: "locked", Base: merged, Parts: map[string]PartChange{"b": {MediaType: "text/plain", Bytes: []byte("bad")}}}); !errors.Is(e, ErrLockedPart) {
 		t.Fatalf("lock=%v", e)
 	}
-	if e = r.DeleteCandidate(ctx, "refs/swarm/candidates/left", left); e != nil { t.Fatal(e) }
-	if refs, e := r.ListRefs(ctx, "refs/swarm/candidates/"); e != nil || len(refs) != 2 { t.Fatalf("candidate delete=%v %v", refs, e) }
+	if e = r.DeleteCandidate(ctx, "refs/swarm/candidates/left", left); e != nil {
+		t.Fatal(e)
+	}
+	if refs, e := r.ListRefs(ctx, "refs/swarm/candidates/"); e != nil || len(refs) != 2 {
+		t.Fatalf("candidate delete=%v %v", refs, e)
+	}
 	if e = r.IntegrityCheck(ctx); e != nil {
 		t.Fatal(e)
 	}
@@ -95,23 +101,35 @@ func TestGenesisRetryRequiresExactTreeAndTransactionsAreImmutable(t *testing.T) 
 	r := openTest(t)
 	genesis := Genesis{MediaType: "text/plain", Content: &BlobInput{MediaType: "text/plain", Bytes: []byte("first")}}
 	commit, err := r.Genesis(ctx, genesis)
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	if retried, retryErr := r.Genesis(ctx, genesis); retryErr != nil || retried != commit {
 		t.Fatalf("exact genesis retry=%s err=%v", retried, retryErr)
 	}
 	if _, conflictErr := r.Genesis(ctx, Genesis{MediaType: "text/plain", Content: &BlobInput{MediaType: "text/plain", Bytes: []byte("different")}}); !errors.Is(conflictErr, ErrConflict) {
 		t.Fatalf("mismatched genesis retry=%v", conflictErr)
 	}
-	if err := r.RecordTransaction(ctx, "publish_1", commit); err != nil { t.Fatal(err) }
-	if err := r.RecordTransaction(ctx, "publish_1", commit); err != nil { t.Fatalf("transaction replay=%v", err) }
+	if err := r.RecordTransaction(ctx, "publish_1", commit); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.RecordTransaction(ctx, "publish_1", commit); err != nil {
+		t.Fatalf("transaction replay=%v", err)
+	}
 	candidate, err := r.Candidate(ctx, CandidateRequest{ID: "candidate", Base: commit, Content: &BlobInput{MediaType: "text/plain", Bytes: []byte("second")}})
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := r.RecordTransaction(ctx, "publish_1", candidate); !errors.Is(err, ErrTransactionReuse) {
 		t.Fatalf("transaction reuse=%v", err)
 	}
-	if got, err := r.Transaction(ctx, "publish_1"); err != nil || got != commit { t.Fatalf("transaction=%s err=%v", got, err) }
+	if got, err := r.Transaction(ctx, "publish_1"); err != nil || got != commit {
+		t.Fatalf("transaction=%s err=%v", got, err)
+	}
 	refs, err := r.ListRefs(ctx, "refs/swarm/transactions/")
-	if err != nil || len(refs) != 1 || refs[0].Commit != commit { t.Fatalf("transaction refs=%v err=%v", refs, err) }
+	if err != nil || len(refs) != 1 || refs[0].Commit != commit {
+		t.Fatalf("transaction refs=%v err=%v", refs, err)
+	}
 }
 
 func TestMoveMaterializeDeleteAndBounds(t *testing.T) {

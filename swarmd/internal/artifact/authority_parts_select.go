@@ -101,10 +101,14 @@ func (a *Authority) SelectPartRevisions(ctx context.Context, principal Principal
 	}
 	lineage := a.lineage(principal, CreateInput{SourceSessionID: input.SourceArtifact.SessionID, SourceCollectionID: input.SourceArtifact.CollectionID, SourceVariantID: input.SourceArtifact.VariantID, SourceEventSeq: input.SourceArtifact.EventSeq})
 	variant := pebblestore.SessionArtifactVariant{ID: input.VariantID, CollectionID: input.CollectionID, AccountScopeID: principal.AccountScopeID, SessionID: principal.SessionID, Filename: sourceVariant.Filename, MediaType: sourceVariant.MediaType, Presentation: sourceVariant.Presentation, OutputRequirements: cloneOutputRequirements(sourceVariant.OutputRequirements), AnimationProfile: cloneAnimationProfile(sourceVariant.AnimationProfile), Lineage: lineage, ArtifactChainID: source.ArtifactChainID, ArtifactStepID: input.ArtifactStepID, RevisionRoundID: input.ArtifactStepID, CandidateIndex: 1, AutoAccept: true, Composition: &composition}
-	if err := a.publishGitPartSelection(ctx, input, sourceVariant, &variant, &composition); err != nil { return pebblestore.SessionArtifactVariant{}, fmt.Errorf("publish Git part selection: %w", err) }
+	if err := a.publishGitPartSelection(ctx, input, sourceVariant, &variant, &composition); err != nil {
+		return pebblestore.SessionArtifactVariant{}, fmt.Errorf("publish Git part selection: %w", err)
+	}
 	variant.Composition = &composition
 	compositionBytes, err := json.Marshal(composition)
-	if err != nil { return pebblestore.SessionArtifactVariant{}, err }
+	if err != nil {
+		return pebblestore.SessionArtifactVariant{}, err
+	}
 	digest := sha256.Sum256(compositionBytes)
 	variant.DigestSHA256, variant.Size = hex.EncodeToString(digest[:]), int64(len(compositionBytes))
 	result, err := a.mutateArtifact(principal, input.RequestID+":part-selection", pebblestore.V3SessionMutationCreateArtifact, collection, &variant, nil, nil, nil, &composition)

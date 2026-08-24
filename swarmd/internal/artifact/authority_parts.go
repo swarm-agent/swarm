@@ -137,10 +137,14 @@ func (a *Authority) CreateInitialComposition(ctx context.Context, principal Prin
 		variant.CandidateIndex = 1
 	}
 	revisions, err = a.publishGitInitialComposition(ctx, input, &variant, &composition, revisions)
-	if err != nil { return pebblestore.SessionArtifactVariant{}, fmt.Errorf("publish initial artifact Git composition: %w", err) }
+	if err != nil {
+		return pebblestore.SessionArtifactVariant{}, fmt.Errorf("publish initial artifact Git composition: %w", err)
+	}
 	variant.Composition = &composition
 	compositionBytes, err := json.Marshal(composition)
-	if err != nil { return pebblestore.SessionArtifactVariant{}, fmt.Errorf("encode initial artifact composition projection: %w", err) }
+	if err != nil {
+		return pebblestore.SessionArtifactVariant{}, fmt.Errorf("encode initial artifact composition projection: %w", err)
+	}
 	compositionDigest := sha256.Sum256(compositionBytes)
 	variant.DigestSHA256, variant.Size = hex.EncodeToString(compositionDigest[:]), int64(len(compositionBytes))
 	mutationKind := pebblestore.V3SessionMutationCreateArtifact
