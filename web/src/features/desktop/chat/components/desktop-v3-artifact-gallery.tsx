@@ -6,7 +6,6 @@ import {
   Check,
   ChevronLeft,
   ChevronRight,
-  Clock3,
   Download,
   FileText,
   FolderOpen,
@@ -57,12 +56,12 @@ import {
   desktopV3ArtifactStudioChainKey,
   desktopV3ArtifactStudioEntries,
   desktopV3ArtifactStudioHead,
-  desktopV3ArtifactStudioPartIterations,
   desktopV3ArtifactStudioSamePartRevision,
   desktopV3ArtifactStudioRounds,
   desktopV3ArtifactStudioParent,
   desktopV3ArtifactStudioSectionAlternatives,
   desktopV3ArtifactStudioSectionLineage,
+  desktopV3ArtifactStudioTurns,
 } from '../../session-v3/artifact-studio-model'
 import { useDesktopV3ArtifactPreviewVisibility } from './desktop-v3-artifact-preview-thumbnail'
 import {
@@ -105,6 +104,7 @@ export interface DesktopV3ArtifactGalleryProps {
   title?: string
   initialArtifactKey?: string
   initialCollectionId?: string
+  initialPartId?: string
   artifactHref?: (artifact: DesktopV3ArtifactGalleryEntry) => string
   collectionHref?: (artifact: DesktopV3ArtifactGalleryEntry) => string
   onArtifactNavigate?: (artifact: DesktopV3ArtifactGalleryEntry) => void
@@ -238,6 +238,7 @@ export function DesktopV3ArtifactGallery({
   title = 'Artifact Studio',
   initialArtifactKey = '',
   initialCollectionId = '',
+  initialPartId = '',
   artifactHref,
   collectionHref,
   onArtifactNavigate,
@@ -278,6 +279,8 @@ export function DesktopV3ArtifactGallery({
   const iterationDescribeArtifactRef = useRef('')
   const iterationPlayerArtifactRef = useRef('')
   const iterationSectionIdRef = useRef('')
+  const selectedArtifactKeyRef = useRef('')
+  const iterationDescriptorRef = useRef<DesktopV3ArtifactIterationDescriptor | null>(null)
   const iterationPlaybackFrameRef = useRef<number | null>(null)
   const iterationPlaybackStartedAtRef = useRef(0)
   const iterationPlaybackStartMsRef = useRef(0)
@@ -290,6 +293,8 @@ export function DesktopV3ArtifactGallery({
   const iterationAutoplayArtifactRef = useRef('')
   const iterationAutoplaySectionRef = useRef('')
   const initialPlaybackArtifactRef = useRef('')
+  const initialPartRequestRef = useRef('')
+  const initialPartPlaybackRef = useRef('')
   const open = controlledOpen ?? internalOpen
   const { previewRef: animationPreviewRef, previewVisible: animationPreviewVisible } = useDesktopV3ArtifactPreviewVisibility(open)
   const [previewFullscreen, setPreviewFullscreen] = useState(false)
@@ -323,12 +328,14 @@ export function DesktopV3ArtifactGallery({
   const selected = overviewGroup
     ? undefined
     : visibleArtifacts.find((artifact) => artifactSelectionKey(artifact) === selectedId) ?? visibleArtifacts[0]
+  selectedArtifactKeyRef.current = selected ? artifactSelectionKey(selected) : ''
+  iterationDescriptorRef.current = iterationDescriptor
   const selectedGroupKey = overviewGroup?.key ?? (selected ? artifactCollectionKey(selected) : '')
   const selectedGroup = overviewGroup ?? groups.find((group) => group.key === selectedGroupKey)
   const selectedChainEntries = selected ? desktopV3ArtifactStudioEntries(artifacts, selected) : []
   const selectedHead = selected ? desktopV3ArtifactStudioHead(artifacts, selected) : undefined
   const selectedRounds = selected ? desktopV3ArtifactStudioRounds(artifacts, selected) : []
-  const selectedPartIterations = selected ? desktopV3ArtifactStudioPartIterations(artifacts, selected) : []
+  const selectedTurns = selected ? desktopV3ArtifactStudioTurns(artifacts, selected) : []
   const selectedRound = selected
     ? selectedRounds.find((round) => round.candidates.some((candidate) => artifactSelectionKey(candidate) === artifactSelectionKey(selected)))
     : undefined
@@ -354,7 +361,7 @@ export function DesktopV3ArtifactGallery({
   const selectedAcceptedPartCount = selected?.composition?.parts.filter((part) => selectedAcceptedPartHeads.some((accepted) => desktopV3ArtifactStudioSamePartRevision(part, accepted))).length ?? 0
   const studioSectionLineage = selected ? desktopV3ArtifactStudioSectionLineage(artifacts, selected) : undefined
   const studioSectionId = iterationSection?.id ?? studioSectionLineage?.iterationSectionId ?? ''
-  const studioModeActive = Boolean(iterationDescriptor || studioSectionId || selectedPartIterations.length)
+  const studioModeActive = Boolean(iterationDescriptor || studioSectionId || selectedTurns.length)
   const iterationAlternativesForSection = (sectionId: string) => selected
     ? desktopV3ArtifactStudioSectionAlternatives(artifacts, selected, sectionId)
     : []
@@ -481,10 +488,36 @@ export function DesktopV3ArtifactGallery({
     if (!open || !initialArtifactKey) return
     const requested = desktopV3ArtifactCatalogEntryForKey(artifacts, initialArtifactKey)
     if (requested) {
+      const artifactKey = artifactSelectionKey(requested)
       setOverviewCollectionKey('')
-      setSelectedId(artifactSelectionKey(requested))
+      setSelectedId(artifactKey)
+      if (initialPartId) {
+        const requestKey = `${artifactKey}:${initialPartId}`
+        if (initialPartRequestRef.current !== requestKey) {
+          initialPartRequestRef.current = requestKey
+          initialPartPlaybackRef.current = ''
+          iterationAutoplayArtifactRef.current = artifactKey
+          iterationAutoplaySectionRef.current = initialPartId
+          iterationSectionIdRef.current = initialPartId
+          setIterationSectionId(initialPartId)
+          setSelectedPartIds([initialPartId])
+        }
+        const descriptor = iterationDescriptorRef.current
+        if (initialPartPlaybackRef.current !== requestKey && selectedArtifactKeyRef.current === artifactKey && descriptor) {
+          const targetSection = descriptor.sections.find((section) => section.id === initialPartId)
+          if (targetSection) {
+            initialPartPlaybackRef.current = requestKey
+            iterationAutoplayArtifactRef.current = ''
+            iterationAutoplaySectionRef.current = ''
+            startIterationSectionPlayback({ ...targetSection, endMs: descriptor.durationMs }, true)
+          }
+        }
+      } else {
+        initialPartRequestRef.current = ''
+        initialPartPlaybackRef.current = ''
+      }
     }
-  }, [artifacts, initialArtifactKey, open])
+  }, [artifacts, initialArtifactKey, initialPartId, iterationPlayerReadyVersion, open])
 
   useEffect(() => {
     if (!open || !initialCollectionId || initialArtifactKey) return
@@ -1224,13 +1257,6 @@ export function DesktopV3ArtifactGallery({
                       return <button key={group.key} type="button" className={cn('h-7 max-w-[12rem] shrink-0 truncate rounded-md px-2.5 text-[10px] font-semibold', active ? 'bg-[var(--app-primary-soft)] text-[var(--app-primary)]' : 'text-[var(--app-text-muted)]')} aria-pressed={active} onClick={() => selectCollection(group)}>{collectionDisplayLabel(group)}</button>
                     })}
                   </div> : null}
-                  {selectedRounds.length > 1 ? <div className="flex h-9 min-w-0 items-center gap-1 overflow-x-auto border-b border-[var(--app-border)] px-2" aria-label="Select artifact revision turn" data-mobile-revision-turn-selector>
-                    {selectedRounds.map((round) => {
-                      const active = round.id === selectedRound?.id
-                      const target = active ? selected : (round.candidates.find((candidate) => candidate.selected) ?? round.candidates[0])
-                      return <button key={round.id} type="button" className={cn('shrink-0 rounded-md px-2 py-1 text-[10px] font-semibold', active ? 'bg-[var(--app-primary-soft)] text-[var(--app-primary)]' : 'text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)]')} aria-current={active ? 'step' : undefined} disabled={!target} onClick={() => { if (target) selectFullIterationArtifact(target) }}>Turn {round.revisionNumber} · {round.candidates.length}</button>
-                    })}
-                  </div> : null}
                   <div className="flex h-11 min-w-0 items-center gap-1.5 overflow-x-auto px-2" aria-label="Select generation">
                     {selectedVariants.map((artifact, index) => {
                       const active = artifactSelectionKey(artifact) === artifactSelectionKey(selected)
@@ -1240,13 +1266,7 @@ export function DesktopV3ArtifactGallery({
                 </div>
                 <div className={cn('hidden flex-wrap items-center justify-between gap-3 border-b border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-2.5 sm:px-4', presentation !== 'embedded' && 'md:flex')}>
                   <div className="min-w-0 flex-1"><div className="flex min-w-0 flex-wrap items-center gap-2"><div className="truncate text-sm font-semibold">{variantDisplayLabel(selected, Math.max(selectedVariantIndex, 0))}</div><span className="shrink-0 rounded border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-1.5 py-0.5 text-[9px] font-semibold uppercase">{artifactTypeLabel(selected)}</span>{selectedIsCanonical ? <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-[var(--app-success-bg)] px-2 py-0.5 text-[10px] font-semibold text-[var(--app-success)]" data-artifact-selected-design><Check className="size-3" />Selected design</span> : null}{selected.status && selected.status !== 'ready' ? <span className={cn('rounded-full px-2 py-0.5 text-[10px] font-semibold', selected.status === 'staging' ? 'bg-[var(--app-primary-soft)] text-[var(--app-primary)]' : 'bg-[var(--app-danger-bg)] text-[var(--app-danger)]')}>{artifactStatusLabel(selected)}</span> : null}</div>{selected.description && selected.description !== selected.label && selected.description !== selected.collectionDescription ? <p className="truncate text-xs text-[var(--app-text-muted)]">{selected.description}</p> : null}<p className="truncate text-[10px] text-[var(--app-text-subtle)]">{selectedGroup ? collectionDisplayLabel(selectedGroup) : selected.sessionTitle}{selectedVariantIndex >= 0 ? ` · Variant ${selectedVariantIndex + 1} of ${selectedVariants.length}` : ''}</p>{selectedRequirementLabel ? <p className="truncate text-[10px] font-medium text-[var(--app-text-muted)]" data-artifact-output-requirements title="Requested output target; not measured binary dimensions">{selectedRequirementLabel}</p> : null}{selectedAnimationLabel ? <p className="truncate text-[10px] font-medium text-[var(--app-text-muted)]" data-artifact-animation-profile-label>{selectedAnimationLabel}</p> : null}</div>
-                  <div className="flex shrink-0 items-center gap-1.5">{selectedRounds.length > 1 ? <div className="flex items-center gap-1 rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] p-0.5" aria-label="Select artifact revision turn" data-desktop-revision-turn-selector>
-                    {selectedRounds.map((round) => {
-                      const active = round.id === selectedRound?.id
-                      const target = active ? selected : (round.candidates.find((candidate) => candidate.selected) ?? round.candidates[0])
-                      return <button key={round.id} type="button" className={cn('h-7 rounded-md px-2 text-[10px] font-semibold', active ? 'bg-[var(--app-primary-soft)] text-[var(--app-primary)]' : 'text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)]')} aria-current={active ? 'step' : undefined} disabled={!target} onClick={() => { if (target) selectFullIterationArtifact(target) }}>Turn {round.revisionNumber}</button>
-                    })}
-                  </div> : null}{artifactHref ? <a href={artifactHref(selected)} className="inline-flex h-8 items-center rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-2.5 text-[10px] font-semibold hover:bg-[var(--app-surface-hover)]" onClick={(event) => openArtifactLink(event, selected)}>Open iteration URL</a> : null}<button type="button" className="grid size-8 place-items-center rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] hover:bg-[var(--app-surface-hover)] disabled:cursor-default disabled:opacity-40" disabled={selectedVariants.length < 2} aria-label="Previous artifact" onClick={() => selectAdjacentVariant(-1)}><ChevronLeft size={15} /></button><button type="button" className="grid size-8 place-items-center rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] hover:bg-[var(--app-surface-hover)] disabled:cursor-default disabled:opacity-40" disabled={selectedVariants.length < 2} aria-label="Next artifact" onClick={() => selectAdjacentVariant(1)}><ChevronRight size={15} /></button><button type="button" className="grid size-8 place-items-center rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] hover:bg-[var(--app-surface-hover)]" aria-label="View artifact fullscreen" onClick={() => void togglePreviewFullscreen()}><Maximize2 size={14} /></button>{artifactCanReveal(selected) ? <button type="button" className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-2.5 text-xs font-medium hover:bg-[var(--app-surface-hover)] disabled:opacity-50" disabled={Boolean(actionPending)} title="Open this artifact in the native file manager" onClick={() => void revealArtifact(selected)}>{actionPending === 'reveal-artifact' ? <Loader2 size={13} className="animate-spin" /> : <FolderOpen size={13} />} <span className="hidden sm:inline">Show in folder</span></button> : null}{selected.content === undefined && selected.status !== 'staging' && selected.status !== 'failed' && selected.status !== 'unavailable' ? <button type="button" className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-2.5 text-xs font-medium hover:bg-[var(--app-surface-hover)]" onClick={() => void downloadArtifact(selected)}><Download size={13} /> <span className="hidden sm:inline">{desktopV3ArtifactRequiresBundle(selected) ? 'Download bundle' : 'Download file'}</span></button> : null}</div>
+                  <div className="flex shrink-0 items-center gap-1.5">{artifactHref ? <a href={artifactHref(selected)} className="inline-flex h-8 items-center rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-2.5 text-[10px] font-semibold hover:bg-[var(--app-surface-hover)]" onClick={(event) => openArtifactLink(event, selected)}>Open iteration URL</a> : null}<button type="button" className="grid size-8 place-items-center rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] hover:bg-[var(--app-surface-hover)] disabled:cursor-default disabled:opacity-40" disabled={selectedVariants.length < 2} aria-label="Previous artifact" onClick={() => selectAdjacentVariant(-1)}><ChevronLeft size={15} /></button><button type="button" className="grid size-8 place-items-center rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] hover:bg-[var(--app-surface-hover)] disabled:cursor-default disabled:opacity-40" disabled={selectedVariants.length < 2} aria-label="Next artifact" onClick={() => selectAdjacentVariant(1)}><ChevronRight size={15} /></button><button type="button" className="grid size-8 place-items-center rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] hover:bg-[var(--app-surface-hover)]" aria-label="View artifact fullscreen" onClick={() => void togglePreviewFullscreen()}><Maximize2 size={14} /></button>{artifactCanReveal(selected) ? <button type="button" className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-2.5 text-xs font-medium hover:bg-[var(--app-surface-hover)] disabled:opacity-50" disabled={Boolean(actionPending)} title="Open this artifact in the native file manager" onClick={() => void revealArtifact(selected)}>{actionPending === 'reveal-artifact' ? <Loader2 size={13} className="animate-spin" /> : <FolderOpen size={13} />} <span className="hidden sm:inline">Show in folder</span></button> : null}{selected.content === undefined && selected.status !== 'staging' && selected.status !== 'failed' && selected.status !== 'unavailable' ? <button type="button" className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-2.5 text-xs font-medium hover:bg-[var(--app-surface-hover)]" onClick={() => void downloadArtifact(selected)}><Download size={13} /> <span className="hidden sm:inline">{desktopV3ArtifactRequiresBundle(selected) ? 'Download bundle' : 'Download file'}</span></button> : null}</div>
                 </div>
                 <div
                   ref={(node) => {
@@ -1264,46 +1284,32 @@ export function DesktopV3ArtifactGallery({
                   data-artifact-animation-active={selectedAnimationActive || undefined}
                 >
                   {studioModeActive && !previewFullscreen ? <aside className="absolute inset-y-0 left-0 z-10 hidden w-72 overflow-x-hidden overflow-y-auto border-r border-[var(--app-border)] bg-[var(--app-surface)] p-3 xl:w-80 md:block" aria-label="Artifact Studio steps" data-artifact-studio-step-sidebar data-artifact-studio-unified-iterations>
-                    {selectedPartIterations.length ? <section className="mb-3 rounded-xl border border-[var(--app-border)] bg-[var(--app-bg)] p-2" aria-label="Part iteration history" data-artifact-studio-part-iterations>
-                      <div className="px-1 pb-1.5"><p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-[var(--app-text-subtle)]">Part iterations</p><p className="mt-0.5 text-[10px] text-[var(--app-text-muted)]">Each requested part keeps its revision turns and alternatives together.</p></div>
-                      <div className="grid gap-2">
-                        {selectedPartIterations.map((part, partIndex) => <section key={part.id} className="overflow-hidden rounded-lg border border-[var(--app-border)]" data-artifact-studio-part-iteration={part.id}>
-                          <div className="bg-[var(--app-surface)] px-2 py-1.5"><div className="flex items-center justify-between gap-2"><span className="truncate text-[10px] font-semibold text-[var(--app-text)]">Part {partIndex + 1} · {part.label}</span><span className="shrink-0 text-[9px] text-[var(--app-text-subtle)]">{part.turns.length} turn{part.turns.length === 1 ? '' : 's'}</span></div><p className="mt-0.5 truncate text-[9px] text-[var(--app-text-subtle)]">{part.kind === 'temporal' && part.endMs > part.startMs ? `${formatDesktopV3ArtifactIterationTime(part.startMs)}–${formatDesktopV3ArtifactIterationTime(part.endMs)} · every option starts here` : part.kind} · {part.accepted && part.current && desktopV3ArtifactStudioSamePartRevision(part.current, part.accepted) ? 'Accepted head' : 'Unaccepted head'}</p></div>
-                          <div className="grid gap-2 p-1.5">
-                            {part.turns.map((turn, turnIndex) => { const latestTurn = turnIndex === part.turns.length - 1; return <section key={turn.id} className={cn('overflow-hidden rounded-md border', turn.id === selectedRound?.id ? 'border-[var(--app-primary)]' : 'border-[var(--app-border)]')} data-artifact-studio-part-turn={turn.id}>
-                              <button type="button" className="flex w-full items-center justify-between gap-2 px-2 py-1 text-left hover:bg-[var(--app-surface-hover)]" onClick={() => { const target = turn.accepted ?? turn.candidates[0]; if (target) selectPartIterationArtifact(target, part.id) }}><span className="text-[9px] font-semibold uppercase tracking-[0.12em] text-[var(--app-text-subtle)]">Turn {turnIndex + 1}</span><span className="text-[9px] font-medium text-[var(--app-text-subtle)]">{latestTurn ? 'Current options' : 'Committed history'} · play Part {partIndex + 1}</span></button>
-                              <div className="grid gap-1 border-t border-[var(--app-border)] p-1">{turn.candidates.map((artifact, index) => {
-                                const artifactKey = artifactSelectionKey(artifact)
-                                const viewed = selected ? artifactKey === artifactSelectionKey(selected) : false
-                                const committed = turn.accepted ? artifactKey === artifactSelectionKey(turn.accepted) : false
-                                const currentCommit = artifactKey === canonicalSelectedId
-                                const stateLabel = artifact.status === 'staging' ? 'Pending · generating' : currentCommit ? 'Current commit' : committed ? 'Committed' : latestTurn ? 'Pending option' : 'History option'
-                                const staged = stagedPartChoices[part.id]
-                                const stagedHere = staged?.revision.partRevisionId === artifact.composition?.parts.find((slot) => slot.partId === part.id)?.revision.partRevisionId
-                                  && staged?.revision.ownerSessionId === artifact.composition?.parts.find((slot) => slot.partId === part.id)?.revision.ownerSessionId
-                                return <div key={artifactKey} className={cn('min-w-0 rounded-md text-[10px]', viewed ? 'bg-[var(--app-primary-soft)] text-[var(--app-primary)] ring-1 ring-inset ring-[var(--app-primary)]' : 'text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)]')}>
-                                  <button type="button" className="w-full px-2 py-1.5 text-left" aria-current={viewed ? 'true' : undefined} onClick={() => selectPartIterationArtifact(artifact, part.id)}><span className="flex min-w-0 items-center gap-2"><span className="grid size-4 shrink-0 place-items-center rounded-full border border-[var(--app-border)] font-mono text-[9px]">{artifact.candidateIndex || artifact.lineage?.iterationIndex || index + 1}</span><span className="min-w-0 flex-1 truncate font-semibold">Option {artifact.candidateIndex || artifact.lineage?.iterationIndex || index + 1} · {variantDisplayLabel(artifact, index)}</span>{artifact.status === 'staging' ? <Clock3 className="size-3 shrink-0" aria-hidden="true" /> : committed ? <Check className="size-3 shrink-0" aria-hidden="true" /> : null}</span><span className="mt-0.5 flex items-center gap-1 pl-6 text-[9px]"><span className={cn('rounded-full px-1.5 py-0.5', currentCommit || committed ? 'bg-[var(--app-success-bg)] text-[var(--app-success)]' : 'bg-[var(--app-surface-active)] text-[var(--app-text-subtle)]')}>{stateLabel}</span>{viewed ? <span className="rounded-full bg-[var(--app-primary)] px-1.5 py-0.5 font-semibold text-white">Viewing now</span> : null}{stagedHere ? <span className="rounded-full bg-[var(--app-primary)] px-1.5 py-0.5 font-semibold text-white">Staged {staged.locked ? 'lock' : 'unlock'}</span> : null}</span></button>
-                                  {artifact.status === 'ready' ? <div className="flex gap-1 border-t border-[var(--app-border)] px-2 py-1"><button type="button" className="rounded border border-[var(--app-border)] px-1.5 py-0.5 font-semibold hover:bg-[var(--app-surface-active)]" onClick={() => stagePartChoice(artifact, part.id, true)}>Stage lock</button><button type="button" className="rounded border border-[var(--app-border)] px-1.5 py-0.5 font-semibold hover:bg-[var(--app-surface-active)]" onClick={() => stagePartChoice(artifact, part.id, false)}>Stage unlocked</button></div> : null}
+                    {selectedTurns.length ? <section className="mb-3 rounded-xl border border-[var(--app-border)] bg-[var(--app-bg)] p-2" aria-label="Artifact turn progression" data-artifact-studio-turns>
+                      <div className="px-1 pb-1.5"><p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-[var(--app-text-subtle)]">Artifact progression</p><p className="mt-0.5 text-[10px] text-[var(--app-text-muted)]">Every AI creation round is one turn. Each turn contains only its changed parts and exact options.</p></div>
+                      <div className="grid gap-2">{selectedTurns.map((turn) => {
+                        const currentTurn = turn.id === selectedHead?.artifactStepId
+                        const turnTarget = turn.accepted?.entry ?? turn.candidates.find((candidate) => candidate.entry)?.entry
+                        return <section key={turn.id} className={cn('overflow-hidden rounded-lg border', selectedRound?.id === turn.id ? 'border-[var(--app-primary)]' : 'border-[var(--app-border)]')} data-artifact-studio-turn={turn.id}>
+                          <button type="button" className="flex w-full items-center justify-between gap-2 bg-[var(--app-surface)] px-2 py-1.5 text-left hover:bg-[var(--app-surface-hover)] disabled:opacity-50" disabled={!turnTarget} onClick={() => { if (turnTarget) selectFullIterationArtifact(turnTarget) }}><span className="text-[10px] font-semibold">Turn {turn.revisionNumber}</span><span className="text-[9px] text-[var(--app-text-subtle)]">{currentTurn ? 'Current head' : turn.accepted ? 'Committed' : 'Historical'} · {turn.candidates.length} option{turn.candidates.length === 1 ? '' : 's'}</span></button>
+                          {turn.parts.length ? <div className="grid gap-1 border-t border-[var(--app-border)] p-1.5">{turn.parts.map((turnPart) => {
+                            const definition = selectedPartDefinitions.find((part) => part.id === turnPart.partId)
+                            return <section key={turnPart.partId} className="overflow-hidden rounded-md border border-[var(--app-border)]" data-artifact-studio-turn-part={turnPart.partId}>
+                              <button type="button" className="flex w-full items-center justify-between gap-2 px-2 py-1 text-left hover:bg-[var(--app-surface-hover)]" onClick={() => { const target = turnPart.accepted?.entry ?? turnPart.candidates.find((candidate) => candidate.entry)?.entry; if (target) selectPartIterationArtifact(target, turnPart.partId) }}><span className="truncate text-[9px] font-semibold">{definition?.label || turnPart.partId}</span><span className="shrink-0 text-[9px] text-[var(--app-text-subtle)]">{definition?.locator?.kind === 'temporal' ? `${formatDesktopV3ArtifactIterationTime(definition.locator.startMs)} · play here` : definition?.locator?.kind || 'part'}</span></button>
+                              <div className="grid gap-1 border-t border-[var(--app-border)] p-1">{turnPart.candidates.map((candidate, index) => {
+                                const artifact = candidate.entry
+                                const viewed = Boolean(artifact && selected && artifactSelectionKey(artifact) === artifactSelectionKey(selected))
+                                const accepted = Boolean(turnPart.accepted && candidate.reference.sessionId === turnPart.accepted.reference.sessionId && candidate.reference.collectionId === turnPart.accepted.reference.collectionId && candidate.reference.variantId === turnPart.accepted.reference.variantId && candidate.reference.eventSeq === turnPart.accepted.reference.eventSeq)
+                                const staged = stagedPartChoices[turnPart.partId]
+                                const stagedHere = Boolean(candidate.part && staged?.revision.partRevisionId === candidate.part.revision.partRevisionId && staged.revision.ownerSessionId === candidate.part.revision.ownerSessionId)
+                                return <div key={`${candidate.reference.sessionId}:${candidate.reference.variantId}:${turnPart.partId}`} className={cn('overflow-hidden rounded border border-[var(--app-border)]', viewed ? 'bg-[var(--app-primary-soft)] text-[var(--app-primary)]' : 'text-[var(--app-text-muted)]')}>
+                                  <button type="button" className="flex w-full min-w-0 items-center gap-2 px-2 py-1.5 text-left text-[9px] hover:bg-[var(--app-surface-hover)]" disabled={!artifact} onClick={() => { if (artifact) selectPartIterationArtifact(artifact, turnPart.partId) }}><span className="grid size-4 shrink-0 place-items-center rounded-full border border-[var(--app-border)] font-mono">{artifact?.candidateIndex || index + 1}</span><span className="min-w-0 flex-1 truncate">Option {artifact?.candidateIndex || index + 1} · {artifact ? variantDisplayLabel(artifact, index) : 'Loading'}</span><span className="shrink-0">{artifact?.status === 'staging' ? 'Generating' : accepted ? 'Committed' : viewed ? 'Viewing' : 'Available'}</span></button>
+                                  {artifact?.status === 'ready' && candidate.part ? <div className="flex items-center gap-1 border-t border-[var(--app-border)] px-2 py-1"><button type="button" className="rounded border border-[var(--app-border)] px-1.5 py-0.5 font-semibold hover:bg-[var(--app-surface-active)]" onClick={() => stagePartChoice(artifact, turnPart.partId, true)}>Stage lock</button><button type="button" className="rounded border border-[var(--app-border)] px-1.5 py-0.5 font-semibold hover:bg-[var(--app-surface-active)]" onClick={() => stagePartChoice(artifact, turnPart.partId, false)}>Stage unlocked</button>{stagedHere ? <span className="ml-auto rounded-full bg-[var(--app-primary)] px-1.5 py-0.5 font-semibold text-white">Staged {staged?.locked ? 'lock' : 'unlocked'}</span> : null}</div> : null}
                                 </div>
                               })}</div>
-                            </section> })}
-                          </div>
-                        </section>)}
-                      </div>
-                    </section> : null}
-                    {selectedChainEntries.length > 1 ? <section className="mb-3 rounded-xl border border-[var(--app-border)] bg-[var(--app-bg)] p-2" aria-label="Full artifact iterations" data-artifact-studio-full-iterations>
-                      <div className="px-1 pb-1.5"><p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-[var(--app-text-subtle)]">Full iterations by turn</p><p className="mt-0.5 text-[10px] text-[var(--app-text-muted)]">Each turn stays grouped. Switch a complete version while keeping the current step in view.</p></div>
-                      <div className="grid gap-2">
-                        {selectedRounds.map((round) => <section key={round.id} className={cn('overflow-hidden rounded-lg border', round.id === selectedRound?.id ? 'border-[var(--app-primary)]' : 'border-[var(--app-border)]')} data-artifact-studio-revision-round={round.id}>
-                          <div className="flex items-center justify-between gap-2 bg-[var(--app-surface)] px-2 py-1.5"><span className="text-[9px] font-semibold uppercase tracking-[0.12em] text-[var(--app-text-subtle)]">Turn {round.revisionNumber}</span><span className="text-[9px] text-[var(--app-text-subtle)]">{round.candidates.length} complete version{round.candidates.length === 1 ? '' : 's'}</span></div>
-                          <div className="grid gap-1 p-1">
-                            {round.candidates.map((artifact, index) => {
-                              const active = artifactSelectionKey(artifact) === artifactSelectionKey(selected)
-                              return <button key={artifactSelectionKey(artifact)} type="button" className={cn('flex min-w-0 items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[10px]', active ? 'bg-[var(--app-primary-soft)] font-semibold text-[var(--app-primary)]' : 'text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)]')} aria-current={active ? 'true' : undefined} onClick={() => selectFullIterationArtifact(artifact)}><span className="grid size-4 shrink-0 place-items-center rounded-full border border-[var(--app-border)] font-mono text-[9px]">{artifact.candidateIndex || artifact.lineage?.iterationIndex || index + 1}</span><span className="min-w-0 flex-1 truncate">{variantDisplayLabel(artifact, index)}</span>{active ? <Check className="size-3 shrink-0" aria-label="Current full iteration" /> : null}</button>
-                            })}
-                          </div>
-                        </section>)}
-                      </div>
+                            </section>
+                          })}</div> : <div className="border-t border-[var(--app-border)] px-2 py-1.5 text-[9px] text-[var(--app-text-subtle)]">{turn.revisionNumber === 1 ? 'Original composition' : 'Composition-only update'}</div>}
+                        </section>
+                      })}</div>
                     </section> : null}
                     {iterationDescriptor ? <><div className="mb-2 px-2 py-1"><p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-[var(--app-text-subtle)]">Studio steps</p><p className="mt-0.5 text-[10px] text-[var(--app-text-muted)]">Choose a step, then select its iteration here. The preview starts at that step.</p></div>
                     <div className="grid gap-2">

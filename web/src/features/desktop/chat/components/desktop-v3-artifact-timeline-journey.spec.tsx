@@ -323,6 +323,21 @@ test('multipart Studio keeps exact part-change intent, accepted heads, and recon
   assert.match(realtime, /refresh_artifacts/)
 })
 
+test('session sidebar opens an exact turn candidate at its part and the viewer autoplays that authored boundary', async () => {
+  const [sidebar, gallery, pane] = await Promise.all([
+    readFile(new URL('./desktop-v3-artifact-sidebar.tsx', import.meta.url), 'utf8'),
+    readFile(new URL('./desktop-v3-artifact-gallery.tsx', import.meta.url), 'utf8'),
+    readFile(new URL('./desktop-v3-existing-conversation-pane.tsx', import.meta.url), 'utf8'),
+  ])
+
+  assert.match(sidebar, /desktopV3ArtifactStudioTurns/)
+  assert.match(sidebar, /onOpenArtifact\(artifact, turnPart\.partId\)/)
+  assert.match(pane, /setArtifactGalleryInitialPartId\(partId\)/)
+  assert.match(pane, /initialPartId=\{artifactGalleryInitialPartId\}/)
+  assert.match(gallery, /iterationAutoplaySectionRef\.current = initialPartId/)
+  assert.match(gallery, /startIterationSectionPlayback\(\{ \.\.\.targetSection, endMs: descriptor\.durationMs \}, true\)/)
+})
+
 test('exact viewer navigation search identity and URL resolution', () => {
   const entry: DesktopV3ArtifactCatalogEntry = {
     artifactId: 'var-99',

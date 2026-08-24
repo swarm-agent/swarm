@@ -1972,6 +1972,7 @@ export function DesktopV3ExistingConversationPane({
   const [artifactGalleryOpen, setArtifactGalleryOpen] = useState(false);
   const [artifactGalleryInitialKey, setArtifactGalleryInitialKey] = useState("");
   const [artifactGalleryInitialCollectionId, setArtifactGalleryInitialCollectionId] = useState("");
+  const [artifactGalleryInitialPartId, setArtifactGalleryInitialPartId] = useState("");
   const [artifactComposerFocusSignal, setArtifactComposerFocusSignal] = useState(0);
   const dismissedArtifactViewerLocationKeyRef = useRef("");
   const openedMobileVisualSwarmKeysRef = useRef(new Set<string>());
@@ -2027,6 +2028,7 @@ export function DesktopV3ExistingConversationPane({
     setArtifactGalleryOpen(false);
     setArtifactGalleryInitialKey("");
     setArtifactGalleryInitialCollectionId("");
+    setArtifactGalleryInitialPartId("");
     dismissedArtifactViewerLocationKeyRef.current = "";
     openedMobileVisualSwarmKeysRef.current.clear();
     void refreshSessionArtifacts();
@@ -2232,10 +2234,11 @@ export function DesktopV3ExistingConversationPane({
       collectionId: artifact.collectionId,
     });
   }, [routeWorkspaceSlug]);
-  const openArtifactFullView = useCallback((artifact: DesktopV3ArtifactCatalogEntry) => {
+  const openArtifactFullView = useCallback((artifact: DesktopV3ArtifactCatalogEntry, partId = "") => {
     const artifactKey = desktopV3ArtifactCatalogEntryKey(artifact);
     dismissedArtifactViewerLocationKeyRef.current = "";
     setArtifactGalleryInitialCollectionId("");
+    setArtifactGalleryInitialPartId(partId);
     setArtifactGalleryInitialKey(artifactKey);
     setArtifactGalleryOpen(true);
     if (artifactReviewPresentation === "embedded" || !routeWorkspaceSlug) return;
@@ -2247,6 +2250,7 @@ export function DesktopV3ExistingConversationPane({
   }, [artifactReviewPresentation, navigate, routeWorkspaceSlug]);
   const navigateArtifactViewer = useCallback((artifact: DesktopV3ArtifactCatalogEntry) => {
     setArtifactGalleryInitialCollectionId("");
+    setArtifactGalleryInitialPartId("");
     setArtifactGalleryInitialKey(desktopV3ArtifactCatalogEntryKey(artifact));
     if (artifactReviewPresentation === "embedded" || !routeWorkspaceSlug) return;
     void navigate({
@@ -2261,6 +2265,7 @@ export function DesktopV3ExistingConversationPane({
     const sessionId = artifact.lineage?.parentSessionId || artifact.sessionId;
     if (!collectionId || !sessionId) return;
     setArtifactGalleryInitialKey("");
+    setArtifactGalleryInitialPartId("");
     setArtifactGalleryInitialCollectionId(collectionId);
     if (artifactReviewPresentation === "embedded" || !routeWorkspaceSlug) return;
     void navigate({
@@ -3145,6 +3150,7 @@ export function DesktopV3ExistingConversationPane({
                 title="Studio iterations"
                 initialArtifactKey={artifactGalleryInitialKey}
                 initialCollectionId={artifactGalleryInitialCollectionId}
+                initialPartId={artifactGalleryInitialPartId}
                 artifactHref={artifactViewerHref}
                 collectionHref={artifactCollectionViewerHref}
                 onArtifactNavigate={navigateArtifactViewer}
@@ -3518,6 +3524,7 @@ export function DesktopV3ExistingConversationPane({
         title="Session artifacts"
         initialArtifactKey={artifactGalleryInitialKey}
         initialCollectionId={artifactGalleryInitialCollectionId}
+        initialPartId={artifactGalleryInitialPartId}
         artifactHref={artifactViewerHref}
         collectionHref={artifactCollectionViewerHref}
         onArtifactNavigate={navigateArtifactViewer}
