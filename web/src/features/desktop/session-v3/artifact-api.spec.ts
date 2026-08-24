@@ -27,12 +27,14 @@ import {
   removeDesktopV3ArtifactMessageSelection,
   normalizeDesktopV3ArtifactCatalogEntry,
   desktopV3ArtifactSelectionEndpoint,
+  desktopV3ArtifactPartSelectionEndpoint,
   fetchDesktopV3ArtifactPreviewAccess,
   fetchDesktopV3ArtifactCatalogResult,
   preflightDesktopV3ArtifactDirectContent,
   revealDesktopV3Artifact,
   revealDesktopV3ArtifactCollection,
   selectDesktopV3Artifact,
+  selectDesktopV3ArtifactPartRevisions,
   useDesktopV3Artifact,
 } from './artifact-api'
 
@@ -302,8 +304,48 @@ test('exported PNG catalog entries remain normal exact-reference chat and video 
   assert.equal(formatDesktopV3ArtifactOutputRequirements(exported.outputRequirements), 'Landscape video · 1920 × 1080 · 16:9')
 })
 
-test('artifact selection actions target the canonical variant selection route', () => {
+test('artifact selection actions target canonical variant and multipart routes', () => {
   assert.equal(desktopV3ArtifactSelectionEndpoint('session-1', 'variant-1'), '/v3/sessions/session-1/artifacts/variant-1/selection')
+  assert.equal(desktopV3ArtifactPartSelectionEndpoint('session-1', 'variant-1'), '/v3/sessions/session-1/artifacts/variant-1/part-selection')
+})
+
+test('multipart selection sends exact lock choices atomically and normalizes the accepted composition', async () => {
+  const originalFetch = globalThis.fetch
+  const digest = 'b'.repeat(64)
+  let requestURL = ''
+  let requestBody: Record<string, unknown> = {}
+  globalThis.fetch = (async (input, init) => {
+    requestURL = String(input)
+    requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>
+    return new Response(JSON.stringify({
+      ok: true,
+      reference: { session_id: 'session-1', collection_id: 'selection-1', variant_id: 'selection-1', event_seq: 50 },
+      composition: {
+        id: 'composition-50', artifact_chain_id: 'chain-1', iteration_turn_id: 'selection-1', iteration_group_id: 'selection-1',
+        construction: { kind: 'concat-v1', entries: [{ part_id: 'hero', path: '' }] },
+        parts: [{ part_id: 'hero', definition_owner_session_id: 'session-1', locked: true, revision: { artifact_chain_id: 'chain-1', part_id: 'hero', part_revision_id: 'hero-2', owner_session_id: 'session-1', digest_sha256: digest, size: 10, media_type: 'text/plain' } }],
+      },
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+  }) as typeof fetch
+  try {
+    const result = await selectDesktopV3ArtifactPartRevisions(
+      { sessionId: 'session-1', artifactId: 'variant-1', eventSeq: 42 },
+      [{ partId: 'hero', revision: { artifactChainId: 'chain-1', partId: 'hero', partRevisionId: 'hero-2', ownerSessionId: 'session-1', digestSha256: digest, size: 10, mediaType: 'text/plain' }, revisionEventSeq: 49, locked: true }],
+    )
+    assert.equal(requestURL, '/v3/sessions/session-1/artifacts/variant-1/part-selection')
+    assert.equal(requestBody.event_seq, 42)
+    assert.deepEqual(requestBody.choices, [{ part_id: 'hero', revision: { artifact_chain_id: 'chain-1', part_id: 'hero', part_revision_id: 'hero-2', owner_session_id: 'session-1', digest_sha256: digest, size: 10, media_type: 'text/plain' }, revision_event_seq: 49, locked: true }])
+    assert.equal(result.composition.parts[0]?.locked, true)
+    assert.equal(result.reference.event_seq, 50)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('multipart selection rejects duplicate part choices before mutation', async () => {
+  const digest = 'c'.repeat(64)
+  const choice = { partId: 'hero', revision: { artifactChainId: 'chain-1', partId: 'hero', partRevisionId: 'hero-2', ownerSessionId: 'session-1', digestSha256: digest, size: 10, mediaType: 'text/plain' }, revisionEventSeq: 49, locked: true }
+  await assert.rejects(selectDesktopV3ArtifactPartRevisions({ sessionId: 'session-1', artifactId: 'variant-1', eventSeq: 42 }, [choice, choice]), /unique matching part/)
 })
 
 test('rich artifact previews use direct browser URLs instead of blob hydration', () => {

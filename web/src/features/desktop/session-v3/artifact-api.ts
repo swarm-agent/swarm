@@ -997,6 +997,76 @@ export function useDesktopV3Artifact(selection: DesktopV3ArtifactSelection, sign
   return postDesktopV3ArtifactSelection('use', selection, signal)
 }
 
+export interface DesktopV3ArtifactPartRevisionChoice {
+  partId: string
+  revision: DesktopV3ArtifactPartRevisionReference
+  revisionEventSeq: number
+  locked: boolean
+}
+
+export interface DesktopV3ArtifactPartSelectionResult {
+  reference: DesktopV3ArtifactSelection
+  composition: DesktopV3ArtifactComposition
+}
+
+export function desktopV3ArtifactPartSelectionEndpoint(sessionId: string, variantId: string): string {
+  return `${desktopV3ArtifactEndpoint(sessionId, variantId)}/part-selection`
+}
+
+/**
+ * Atomically publishes one complete accepted composition from exact server-projected
+ * part revisions. The source event is an optimistic concurrency token; callers must
+ * refresh the canonical V3 catalog after either success or conflict.
+ */
+export async function selectDesktopV3ArtifactPartRevisions(
+  source: Pick<DesktopV3ArtifactCatalogEntry, 'sessionId' | 'artifactId' | 'eventSeq'>,
+  choices: readonly DesktopV3ArtifactPartRevisionChoice[],
+  signal?: AbortSignal,
+): Promise<DesktopV3ArtifactPartSelectionResult> {
+  const eventSeq = source.eventSeq ?? 0
+  if (!source.sessionId.trim() || !source.artifactId.trim() || eventSeq <= 0 || choices.length === 0 || choices.length > 64) {
+    throw new Error('Part selection requires a ready exact source and one to 64 exact choices')
+  }
+  const seen = new Set<string>()
+  const normalizedChoices = choices.map((choice) => {
+    const partId = choice.partId.trim()
+    if (!partId || seen.has(partId) || choice.revision.partId !== partId || choice.revisionEventSeq <= 0) {
+      throw new Error('Part selection choices require unique matching part and revision identities')
+    }
+    seen.add(partId)
+    return {
+      part_id: partId,
+      revision: {
+        artifact_chain_id: choice.revision.artifactChainId,
+        part_id: choice.revision.partId,
+        part_revision_id: choice.revision.partRevisionId,
+        owner_session_id: choice.revision.ownerSessionId,
+        digest_sha256: choice.revision.digestSha256,
+        size: choice.revision.size,
+        media_type: choice.revision.mediaType,
+      },
+      revision_event_seq: choice.revisionEventSeq,
+      locked: choice.locked,
+    }
+  })
+  const response = await apiFetch(desktopV3ArtifactPartSelectionEndpoint(source.sessionId, source.artifactId), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      client_request_id: `desktop-v3-artifact-part-selection:${crypto.randomUUID()}`,
+      event_seq: eventSeq,
+      choices: normalizedChoices,
+    }),
+    signal,
+  })
+  if (!response.ok) throw new Error(await readErrorMessage(response))
+  const payload = artifactCatalogRecord(await response.json() as unknown)
+  const reference = normalizeDesktopV3ArtifactSelection(payload?.reference)
+  const composition = normalizeArtifactComposition(payload?.composition)
+  if (payload?.ok !== true || !reference || !composition) throw new Error('Artifact part selection returned an invalid composition')
+  return { reference, composition }
+}
+
 export function desktopV3ArtifactEndpoint(sessionId: string, artifactId: string): string {
   const normalizedSessionId = sessionId.trim()
   const normalizedArtifactId = artifactId.trim()

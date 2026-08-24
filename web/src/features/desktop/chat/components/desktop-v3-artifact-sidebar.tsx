@@ -7,11 +7,13 @@ import {
   preflightDesktopV3ArtifactDirectContent,
   formatDesktopV3ArtifactAnimationProfile,
   formatDesktopV3ArtifactOutputRequirements,
+  selectDesktopV3ArtifactPartRevisions,
   type DesktopV3ArtifactCatalogEntry,
   type DesktopV3ArtifactCollectionProgress,
 } from '../../session-v3/artifact-api'
 import type { DesktopSidebarDisplayMode, DesktopV3SessionSidebarView } from './desktop-sidebar-display'
 import { desktopV3ArtifactStudioPartIterations, desktopV3ArtifactStudioRounds, desktopV3ArtifactStudioSamePartRevision } from '../../session-v3/artifact-studio-model'
+import { refreshOpenDesktopV3ArtifactCatalogs } from '../../session-v3/artifact-catalog-refresh'
 import { useDesktopV3ArtifactPreviewVisibility } from './desktop-v3-artifact-preview-thumbnail'
 
 export function desktopV3ArtifactsForSession(
@@ -233,6 +235,32 @@ export function DesktopV3ArtifactSidebar({
   const thin = displayMode === 'thin'
   const compact = displayMode === 'compact'
   const groups = useMemo(() => desktopV3ArtifactSidebarGroups(artifacts), [artifacts])
+  const [partSelectionPending, setPartSelectionPending] = useState('')
+  const [partSelectionError, setPartSelectionError] = useState('')
+
+  const applyPartChoice = async (source: DesktopV3ArtifactCatalogEntry, candidate: DesktopV3ArtifactCatalogEntry, partId: string, locked: boolean) => {
+    const slot = candidate.composition?.parts.find((part) => part.partId === partId)
+    const revision = slot ? candidate.partRevisions?.find((partRevision) => partRevision.reference.partId === partId
+      && partRevision.reference.partRevisionId === slot.revision.partRevisionId
+      && partRevision.reference.ownerSessionId === slot.revision.ownerSessionId
+      && partRevision.reference.digestSha256 === slot.revision.digestSha256) : undefined
+    if (!slot || !revision?.eventSeq) {
+      setPartSelectionError(`Exact ${partId} revision unavailable; refresh and try again.`)
+      return
+    }
+    const pendingKey = `${partId}:${slot.revision.ownerSessionId}:${slot.revision.partRevisionId}:${locked}`
+    try {
+      setPartSelectionPending(pendingKey)
+      setPartSelectionError('')
+      await selectDesktopV3ArtifactPartRevisions(source, [{ partId, revision: slot.revision, revisionEventSeq: revision.eventSeq, locked }])
+      await refreshOpenDesktopV3ArtifactCatalogs()
+    } catch (error) {
+      await refreshOpenDesktopV3ArtifactCatalogs()
+      setPartSelectionError(error instanceof Error ? `${error.message} Catalog refreshed.` : 'Part selection conflicted; catalog refreshed.')
+    } finally {
+      setPartSelectionPending('')
+    }
+  }
 
   return (
     <aside
@@ -258,6 +286,7 @@ export function DesktopV3ArtifactSidebar({
       {error && artifacts.length === 0 ? <p className={cn('text-xs text-[var(--app-danger)]', thin ? 'sr-only' : 'rounded-lg border border-[var(--app-danger)]/40 bg-[var(--app-danger-bg)] p-3')}>{error}</p> : null}
       {!loading && !error && artifacts.length === 0 ? <p className={cn('text-xs text-[var(--app-text-muted)]', thin ? 'sr-only' : 'p-3 text-center')}>Artifacts created in this session will appear here.</p> : null}
 
+      {partSelectionError ? <p className={cn('mb-2 text-[10px] text-[var(--app-danger)]', thin && 'sr-only')} role="alert">{partSelectionError}</p> : null}
       {artifacts.length > 0 ? (
         <div
           className={cn(
@@ -296,7 +325,7 @@ export function DesktopV3ArtifactSidebar({
                   <span className="min-w-0"><span className="block truncate text-xs font-semibold">{representative.graphState === 'authoritative' ? (representative.chain?.name || representative.label) : grouped ? group.label : representative.label}</span><span className="mt-0.5 block text-[10px] text-[var(--app-text-subtle)]">{representative.graphState === 'authoritative' ? `${representative.chain?.revisionCount || 0} accepted step${representative.chain?.revisionCount === 1 ? '' : 's'} · head r${representative.step?.revisionNumber || 1}` : grouped ? `Unstructured · ${sidebarProgressLabel(group)}` : `Unstructured · ${representative.status === 'staging' ? 'Generating' : representative.kind || representative.mediaType}`}</span>{requirementLabel ? <span className="mt-0.5 block truncate text-[9px] text-[var(--app-text-subtle)]" data-artifact-output-requirements>{requirementLabel}</span> : null}{animationLabel ? <span className="mt-0.5 block truncate text-[9px] text-[var(--app-text-subtle)]" data-artifact-animation-profile-label>{animationLabel}</span> : null}</span>
                   {group.progress.staging > 0 ? <Loader2 className="size-4 shrink-0 motion-safe:animate-spin motion-reduce:animate-none text-[var(--app-primary)]" aria-label="Iteration Swarm generating" /> : <Maximize2 className="size-4 shrink-0 text-[var(--app-text-subtle)]" aria-hidden="true" />}
                 </a>
-                {representative.partGraphState === 'authoritative' && currentComposition ? <div className="grid gap-1 border-b border-[var(--app-border)] bg-[var(--app-bg-alt)] p-2" aria-label="Artifact part lineage" data-artifact-sidebar-part-lineage>{currentPartDefinitions.map((part) => { const slot = currentComposition.parts.find((candidate) => candidate.partId === part.id); const history = partHistory.find((candidate) => candidate.id === part.id); const accepted = authoritativeHead?.acceptedPartHeads?.find((candidate) => candidate.partId === part.id); const acceptedCurrent = Boolean(slot && accepted && desktopV3ArtifactStudioSamePartRevision(slot, accepted)); return <div key={part.id} className="rounded-md border border-[var(--app-border)] bg-[var(--app-surface)] px-2 py-1.5"><div className="flex items-center justify-between gap-2"><span className="truncate text-[10px] font-semibold">{part.label}</span><span className="shrink-0 text-[9px] text-[var(--app-text-subtle)]">{acceptedCurrent ? 'Accepted' : slot?.locked ? 'Locked pending' : 'Current'}</span></div><div className="mt-0.5 flex items-center justify-between gap-2 text-[9px] text-[var(--app-text-subtle)]"><span>{history?.turns.length ?? 0} part turn{history?.turns.length === 1 ? '' : 's'} · {history?.turns.reduce((count, turn) => count + turn.candidates.length, 0) ?? 0} options</span><span>r{revisionTurns.at(-1)?.revisionNumber ?? 1}</span></div></div>})}</div> : null}
+                {representative.partGraphState === 'authoritative' && currentComposition ? <div className="grid gap-1 border-b border-[var(--app-border)] bg-[var(--app-bg-alt)] p-2" aria-label="Artifact part lineage" data-artifact-sidebar-part-lineage>{currentPartDefinitions.map((part) => { const slot = currentComposition.parts.find((candidate) => candidate.partId === part.id); const history = partHistory.find((candidate) => candidate.id === part.id); const accepted = authoritativeHead?.acceptedPartHeads?.find((candidate) => candidate.partId === part.id); const acceptedCurrent = Boolean(slot && accepted && desktopV3ArtifactStudioSamePartRevision(slot, accepted)); return <div key={part.id} className="rounded-md border border-[var(--app-border)] bg-[var(--app-surface)] px-2 py-1.5"><div className="flex items-center justify-between gap-2"><span className="truncate text-[10px] font-semibold">{part.label}</span><span className="shrink-0 text-[9px] text-[var(--app-text-subtle)]">{acceptedCurrent ? 'Accepted' : slot?.locked ? 'Locked pending' : 'Current'}</span></div><div className="mt-0.5 flex items-center justify-between gap-2 text-[9px] text-[var(--app-text-subtle)]"><span>{history?.turns.length ?? 0} part turn{history?.turns.length === 1 ? '' : 's'} · {history?.turns.reduce((count, turn) => count + turn.candidates.length, 0) ?? 0} options</span><span>r{revisionTurns.at(-1)?.revisionNumber ?? 1}</span></div>{history?.turns.at(-1)?.candidates.length && authoritativeHead ? <div className="mt-1 flex flex-wrap gap-1" data-artifact-sidebar-part-choices={part.id}>{history.turns.at(-1)!.candidates.map((candidate, candidateIndex) => { const candidateSlot = candidate.composition?.parts.find((candidatePart) => candidatePart.partId === part.id); const pendingKey = candidateSlot ? `${part.id}:${candidateSlot.revision.ownerSessionId}:${candidateSlot.revision.partRevisionId}:true` : ''; return <button key={`${candidate.sessionId}:${candidate.artifactId}:${part.id}`} type="button" className="rounded border border-[var(--app-border)] px-1.5 py-0.5 text-[9px] font-semibold text-[var(--app-text-muted)] hover:bg-[var(--app-surface-active)] disabled:opacity-50" disabled={!candidateSlot || Boolean(partSelectionPending)} onClick={() => void applyPartChoice(authoritativeHead, candidate, part.id, true)}>{partSelectionPending === pendingKey ? <Loader2 className="mr-1 inline size-2.5 animate-spin" /> : null}Lock option {candidate.candidateIndex || candidateIndex + 1}</button>})}{slot?.locked ? <button type="button" className="rounded border border-[var(--app-border)] px-1.5 py-0.5 text-[9px] font-semibold text-[var(--app-text-muted)] hover:bg-[var(--app-surface-active)] disabled:opacity-50" disabled={Boolean(partSelectionPending)} onClick={() => void applyPartChoice(authoritativeHead, authoritativeHead, part.id, false)}>Unlock current</button> : null}</div> : null}</div>})}</div> : null}
                 <div className={cn('grid gap-1 p-2', grouped && 'grid-cols-2')} aria-label={grouped ? `${group.label} iterations` : undefined}>
                   {group.entries.map((artifact, index) => (
                     <div key={`${artifact.sessionId}:${artifact.collectionId ?? ''}:${artifact.artifactId}`} className="group relative min-w-0 overflow-hidden rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)]">
