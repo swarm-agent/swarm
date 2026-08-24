@@ -36,7 +36,7 @@ func TestParseTaskCallArgumentsRejectsAmbiguousAndDuplicateSectionTargets(t *tes
 func TestMultipartDesignerPromptRequiresAtomicReadAndPublish(t *testing.T) {
 	request := taskSwarmHydrationRequest{
 		Prompt: "change hero and footer", AgentType: "designer", SwarmStrategy: taskSwarmStrategyExplore,
-		OutputMode: taskOutputModeManaged,
+		OutputMode:     taskOutputModeManaged,
 		SectionTargets: []*taskSwarmSectionTarget{{ID: "hero", Label: "Hero", Kind: "semantic"}, {ID: "footer", Label: "Footer", Kind: "semantic"}},
 	}
 	prompt, err := composeTaskSwarmChildPrompt(request, taskSwarmHydrationItem{Index: 1, OutputMode: taskOutputModeManaged}, taskSwarmHydratedDelta{Index: 1, Title: "Combined Alternative", Theme: "quiet", Role: "edit selected parts", Deliverable: "atomic replacement"})

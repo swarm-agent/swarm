@@ -124,7 +124,9 @@ func (s *Service) GetSessionArtifactComposition(accountScopeID, userID, ownerSes
 }
 
 func (s *Service) GetSessionArtifactChain(accountScopeID, userID, chainID string) (ArtifactChain, bool, error) {
-	if s == nil || s.store == nil { return ArtifactChain{}, false, errors.New("session store is not configured") }
+	if s == nil || s.store == nil {
+		return ArtifactChain{}, false, errors.New("session store is not configured")
+	}
 	return s.store.GetSessionArtifactChain(accountScopeID, userID, chainID)
 }
 

@@ -32,8 +32,8 @@ func TestManagedArtifactMultipartProtocolRejectsSinglePartActions(t *testing.T) 
 	run := ArtifactRunContext{
 		SourceArtifact: &source, SourceComposition: &composition,
 		SourcePartDefinitions: []pebblestore.SessionArtifactPartDefinition{{ID: "hero"}, {ID: "footer"}},
-		SourcePartRevisions: []pebblestore.SessionArtifactPartRevisionReference{{ArtifactChainID: "chain", PartID: "hero"}, {ArtifactChainID: "chain", PartID: "footer"}},
-		CollectionID: "destination", VariantID: "candidate", ArtifactStepID: "step", CandidateIndex: 1,
+		SourcePartRevisions:   []pebblestore.SessionArtifactPartRevisionReference{{ArtifactChainID: "chain", PartID: "hero"}, {ArtifactChainID: "chain", PartID: "footer"}},
+		CollectionID:          "destination", VariantID: "candidate", ArtifactStepID: "step", CandidateIndex: 1,
 	}
 	runtime := &Runtime{}
 	ctx := WithArtifactRunContext(context.Background(), run)

@@ -11,27 +11,35 @@ import (
 const ManifestVersion = "swarm.artifact/v1"
 
 var (
-	ErrInvalidID      = errors.New("artifactgit: invalid identifier")
-	ErrNotFound       = errors.New("artifactgit: not found")
-	ErrConflict       = errors.New("artifactgit: compare-and-swap conflict")
-	ErrLockedPart     = errors.New("artifactgit: locked part cannot be changed")
-	ErrQuotaExceeded  = errors.New("artifactgit: quota exceeded")
-	ErrIntegrity      = errors.New("artifactgit: integrity check failed")
+	ErrInvalidID        = errors.New("artifactgit: invalid identifier")
+	ErrNotFound         = errors.New("artifactgit: not found")
+	ErrConflict         = errors.New("artifactgit: compare-and-swap conflict")
+	ErrLockedPart       = errors.New("artifactgit: locked part cannot be changed")
+	ErrQuotaExceeded    = errors.New("artifactgit: quota exceeded")
+	ErrIntegrity        = errors.New("artifactgit: integrity check failed")
 	ErrTransactionReuse = errors.New("artifactgit: transaction id already names another commit")
 )
 
 type Limits struct {
-	MaxBlobBytes       int64
+	MaxBlobBytes        int64
 	MaxCompositionBytes int64
-	MaxParts           int
-	MaxRefs            int
+	MaxParts            int
+	MaxRefs             int
 }
 
 func (l Limits) normalized() Limits {
-	if l.MaxBlobBytes <= 0 { l.MaxBlobBytes = 64 << 20 }
-	if l.MaxCompositionBytes <= 0 { l.MaxCompositionBytes = 256 << 20 }
-	if l.MaxParts <= 0 { l.MaxParts = 256 }
-	if l.MaxRefs <= 0 { l.MaxRefs = 4096 }
+	if l.MaxBlobBytes <= 0 {
+		l.MaxBlobBytes = 64 << 20
+	}
+	if l.MaxCompositionBytes <= 0 {
+		l.MaxCompositionBytes = 256 << 20
+	}
+	if l.MaxParts <= 0 {
+		l.MaxParts = 256
+	}
+	if l.MaxRefs <= 0 {
+		l.MaxRefs = 4096
+	}
 	return l
 }
 
@@ -88,7 +96,7 @@ type MergeRequest struct {
 	Message    string
 }
 
-type Ref struct { Name, Commit string }
+type Ref struct{ Name, Commit string }
 
 type Commit struct {
 	ID       string
@@ -98,8 +106,8 @@ type Commit struct {
 
 type Repository struct {
 	root, path, git, hooks string
-	id string
-	limits Limits
+	id                     string
+	limits                 Limits
 }
 
 func invalid(field string) error { return fmt.Errorf("%w: %s", ErrInvalidID, field) }

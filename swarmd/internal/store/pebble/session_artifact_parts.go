@@ -78,10 +78,10 @@ type SessionArtifactPartRevision struct {
 	// Parent is decoded only for migration diagnostics. Git ParentCommitOIDs is
 	// the sole ancestry projection and this field is never written or followed.
 	Parent           *SessionArtifactPartRevisionReference `json:"parent,omitempty"`
-	IterationTurnID  string   `json:"iteration_turn_id,omitempty"`
-	IterationGroupID string   `json:"iteration_group_id,omitempty"`
-	CreatedAt        int64    `json:"created_at"`
-	EventSeq         uint64   `json:"event_seq"`
+	IterationTurnID  string                                `json:"iteration_turn_id,omitempty"`
+	IterationGroupID string                                `json:"iteration_group_id,omitempty"`
+	CreatedAt        int64                                 `json:"created_at"`
+	EventSeq         uint64                                `json:"event_seq"`
 }
 
 func (revision SessionArtifactPartRevision) Reference() SessionArtifactPartRevisionReference {
@@ -134,25 +134,25 @@ type SessionArtifactConstructionEntry struct {
 // SessionArtifactComposition is a rebuildable projection of one complete Git
 // commit. Git owns the tree, ordered part blobs, locks, and merge ancestry.
 type SessionArtifactComposition struct {
-	Version          int                              `json:"version"`
-	GraphState       string                           `json:"graph_state"`
-	ID               string                           `json:"id"`
-	ArtifactChainID  string                           `json:"artifact_chain_id"`
-	AccountScopeID   string                           `json:"account_scope_id"`
-	UserID           string                           `json:"user_id"`
-	OwnerSessionID   string                           `json:"owner_session_id"`
-	RepositoryID     string                           `json:"repository_id"`
-	CommitOID        string                           `json:"commit_oid"`
-	TreeOID          string                           `json:"tree_oid"`
-	ParentCommitOIDs []string                         `json:"parent_commit_oids,omitempty"`
+	Version          int      `json:"version"`
+	GraphState       string   `json:"graph_state"`
+	ID               string   `json:"id"`
+	ArtifactChainID  string   `json:"artifact_chain_id"`
+	AccountScopeID   string   `json:"account_scope_id"`
+	UserID           string   `json:"user_id"`
+	OwnerSessionID   string   `json:"owner_session_id"`
+	RepositoryID     string   `json:"repository_id"`
+	CommitOID        string   `json:"commit_oid"`
+	TreeOID          string   `json:"tree_oid"`
+	ParentCommitOIDs []string `json:"parent_commit_oids,omitempty"`
 	// Parent is migration-only metadata and never participates in authority.
 	Parent           *SessionArtifactCompositionReference `json:"parent,omitempty"`
-	IterationTurnID  string                           `json:"iteration_turn_id,omitempty"`
-	IterationGroupID string                           `json:"iteration_group_id,omitempty"`
-	Construction     SessionArtifactConstruction      `json:"construction"`
-	Parts            []SessionArtifactCompositionPart `json:"parts"`
-	CreatedAt        int64                            `json:"created_at"`
-	EventSeq         uint64                           `json:"event_seq"`
+	IterationTurnID  string                               `json:"iteration_turn_id,omitempty"`
+	IterationGroupID string                               `json:"iteration_group_id,omitempty"`
+	Construction     SessionArtifactConstruction          `json:"construction"`
+	Parts            []SessionArtifactCompositionPart     `json:"parts"`
+	CreatedAt        int64                                `json:"created_at"`
+	EventSeq         uint64                               `json:"event_seq"`
 }
 
 func KeySessionArtifactPartDefinition(accountScopeID, ownerSessionID, chainID, partID string) string {

@@ -214,8 +214,8 @@ type SessionArtifactVariant struct {
 	RepositoryID       string                             `json:"repository_id,omitempty"`
 	CommitOID          string                             `json:"commit_oid,omitempty"`
 	TreeOID            string                             `json:"tree_oid,omitempty"`
-	CandidateRef        string                             `json:"candidate_ref,omitempty"`
-	ParentCommitOIDs    []string                           `json:"parent_commit_oids,omitempty"`
+	CandidateRef       string                             `json:"candidate_ref,omitempty"`
+	ParentCommitOIDs   []string                           `json:"parent_commit_oids,omitempty"`
 	GraphState         string                             `json:"graph_state,omitempty"`
 	PartGraphState     string                             `json:"part_graph_state,omitempty"`
 	ParentArtifact     *SessionArtifactSelectionReference `json:"parent_artifact,omitempty"`

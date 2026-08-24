@@ -109,18 +109,18 @@ type PartReplacementInput struct {
 }
 
 type PublishPartReplacementsInput struct {
-	RequestID          string
-	CallID             string
-	CollectionID       string
-	VariantID          string
-	ArtifactStepID     string
-	IterationTurnID    string
-	IterationGroupID   string
-	CandidateIndex     int
-	AutoAccept         bool
-	SourceArtifact     pebblestore.SessionArtifactSelectionReference
-	SourceComposition  pebblestore.SessionArtifactComposition
-	Replacements       []PartReplacementInput
+	RequestID         string
+	CallID            string
+	CollectionID      string
+	VariantID         string
+	ArtifactStepID    string
+	IterationTurnID   string
+	IterationGroupID  string
+	CandidateIndex    int
+	AutoAccept        bool
+	SourceArtifact    pebblestore.SessionArtifactSelectionReference
+	SourceComposition pebblestore.SessionArtifactComposition
+	Replacements      []PartReplacementInput
 }
 
 type PartRevisionChoiceInput struct {
@@ -131,13 +131,13 @@ type PartRevisionChoiceInput struct {
 }
 
 type SelectPartRevisionsInput struct {
-	RequestID      string
-	CollectionID   string
-	VariantID      string
-	ArtifactStepID string
-	SourceArtifact pebblestore.SessionArtifactSelectionReference
+	RequestID         string
+	CollectionID      string
+	VariantID         string
+	ArtifactStepID    string
+	SourceArtifact    pebblestore.SessionArtifactSelectionReference
 	SourceComposition pebblestore.SessionArtifactComposition
-	Choices        []PartRevisionChoiceInput
+	Choices           []PartRevisionChoiceInput
 }
 
 type PublishPartReplacementInput struct {
@@ -530,19 +530,45 @@ func (a *Authority) constructComposition(ctx context.Context, principal Principa
 	}
 	var assembled bytes.Buffer
 	var archive *zip.Writer
-	if composition.Construction.Kind == "package-v1" { archive = zip.NewWriter(&assembled) }
-	if composition.Construction.Kind != "concat-v1" && archive == nil { return nil, errors.New("artifact composition construction kind is unsupported") }
+	if composition.Construction.Kind == "package-v1" {
+		archive = zip.NewWriter(&assembled)
+	}
+	if composition.Construction.Kind != "concat-v1" && archive == nil {
+		return nil, errors.New("artifact composition construction kind is unsupported")
+	}
 	for _, entry := range composition.Construction.Entries {
 		reference, ok := slots[entry.PartID]
-		if !ok { return nil, errors.New("artifact construction references an unknown part") }
+		if !ok {
+			return nil, errors.New("artifact construction references an unknown part")
+		}
 		part, _, err := a.ReadPartRevision(ctx, principal, reference, maxBytes-int64(assembled.Len()))
-		if err != nil { return nil, err }
-		if archive == nil { _, err = assembled.Write(part) } else { var writer io.Writer; writer, err = archive.CreateHeader(&zip.FileHeader{Name: entry.Path, Method: zip.Store}); if err == nil { _, err = writer.Write(part) } }
-		if err != nil { return nil, err }
-		if int64(assembled.Len()) > maxBytes { return nil, errors.New("constructed artifact composition exceeds read byte bound") }
+		if err != nil {
+			return nil, err
+		}
+		if archive == nil {
+			_, err = assembled.Write(part)
+		} else {
+			var writer io.Writer
+			writer, err = archive.CreateHeader(&zip.FileHeader{Name: entry.Path, Method: zip.Store})
+			if err == nil {
+				_, err = writer.Write(part)
+			}
+		}
+		if err != nil {
+			return nil, err
+		}
+		if int64(assembled.Len()) > maxBytes {
+			return nil, errors.New("constructed artifact composition exceeds read byte bound")
+		}
 	}
-	if archive != nil { if err := archive.Close(); err != nil { return nil, err } }
-	if int64(assembled.Len()) > maxBytes { return nil, errors.New("constructed artifact composition exceeds read byte bound") }
+	if archive != nil {
+		if err := archive.Close(); err != nil {
+			return nil, err
+		}
+	}
+	if int64(assembled.Len()) > maxBytes {
+		return nil, errors.New("constructed artifact composition exceeds read byte bound")
+	}
 	return assembled.Bytes(), nil
 }
 

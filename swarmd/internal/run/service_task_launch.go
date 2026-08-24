@@ -594,13 +594,22 @@ func parseTaskCallArguments(arguments string) (taskCallArguments, error) {
 		args["source_artifact"] = cloneTaskImageSourceArtifact(sourceArtifact)
 	}
 	if _, single := args["section_target"]; single {
-		if _, multi := args["section_targets"]; multi { return taskCallArguments{}, errors.New("task accepts section_target or section_targets, not both") }
+		if _, multi := args["section_targets"]; multi {
+			return taskCallArguments{}, errors.New("task accepts section_target or section_targets, not both")
+		}
 	}
 	if rawSectionTargets, supplied := args["section_targets"]; supplied {
-		if sourceArtifact == nil { return taskCallArguments{}, errors.New("task regular section_targets requires an exact source_artifact") }
-		parsedTargets, err := parseTaskSwarmSectionTargets(rawSectionTargets); if err != nil { return taskCallArguments{}, err }
+		if sourceArtifact == nil {
+			return taskCallArguments{}, errors.New("task regular section_targets requires an exact source_artifact")
+		}
+		parsedTargets, err := parseTaskSwarmSectionTargets(rawSectionTargets)
+		if err != nil {
+			return taskCallArguments{}, err
+		}
 		args["section_targets"] = cloneTaskSwarmSectionTargets(parsedTargets)
-		for i := range launches { launches[i].SourceArguments["section_targets"] = cloneTaskSwarmSectionTargets(parsedTargets) }
+		for i := range launches {
+			launches[i].SourceArguments["section_targets"] = cloneTaskSwarmSectionTargets(parsedTargets)
+		}
 	}
 	if rawSectionTarget, supplied := args["section_target"]; supplied {
 		if sourceArtifact == nil {
@@ -1117,15 +1126,23 @@ func parseTaskSwarmArguments(args map[string]any, prompt, description string) (*
 	if sourceArtifact != nil {
 		args["source_artifact"] = cloneTaskImageSourceArtifact(sourceArtifact)
 	}
-	if _, single := args["section_target"]; single { if _, multi := args["section_targets"]; multi { return nil, nil, errors.New("task accepts section_target or section_targets, not both") } }
+	if _, single := args["section_target"]; single {
+		if _, multi := args["section_targets"]; multi {
+			return nil, nil, errors.New("task accepts section_target or section_targets, not both")
+		}
+	}
 	sectionTargets, err := parseTaskSwarmSectionTargets(args["section_targets"])
-	if err != nil { return nil, nil, err }
+	if err != nil {
+		return nil, nil, err
+	}
 	sectionTarget, err := parseTaskSwarmSectionTarget(args["section_target"])
 	if err != nil {
 		return nil, nil, err
 	}
 	if len(sectionTargets) != 0 {
-		if agentType != "designer" || sourceArtifact == nil { return nil, nil, errors.New("task section_targets requires a Designer Iteration Swarm with an exact source_artifact") }
+		if agentType != "designer" || sourceArtifact == nil {
+			return nil, nil, errors.New("task section_targets requires a Designer Iteration Swarm with an exact source_artifact")
+		}
 		args["section_targets"] = cloneTaskSwarmSectionTargets(sectionTargets)
 	}
 	if sectionTarget != nil {
@@ -1163,8 +1180,12 @@ func parseTaskSwarmArguments(args map[string]any, prompt, description string) (*
 		if sourceArtifact != nil {
 			sourceArguments["source_artifact"] = cloneTaskImageSourceArtifact(sourceArtifact)
 		}
-		if sectionTarget != nil { sourceArguments["section_target"] = cloneTaskSwarmSectionTarget(sectionTarget) }
-		if len(sectionTargets) != 0 { sourceArguments["section_targets"] = cloneTaskSwarmSectionTargets(sectionTargets) }
+		if sectionTarget != nil {
+			sourceArguments["section_target"] = cloneTaskSwarmSectionTarget(sectionTarget)
+		}
+		if len(sectionTargets) != 0 {
+			sourceArguments["section_targets"] = cloneTaskSwarmSectionTargets(sectionTargets)
+		}
 		launches[i] = taskLaunchSpec{
 			RequestedSubagentType: agentType, MetaPrompt: metaPrompt, AssignmentLabel: assignmentLabel,
 			Deliverable: outputContract, ConcurrencyReason: "Independent Iteration Swarm alternative", OutputMode: outputMode, OutputRequirements: cloneTaskOutputRequirements(outputRequirements), AnimationProfile: cloneTaskAnimationProfile(animationProfile),
@@ -1181,16 +1202,40 @@ func parseTaskSwarmArguments(args map[string]any, prompt, description string) (*
 }
 
 func cloneTaskSwarmSectionTargets(input []*taskSwarmSectionTarget) []*taskSwarmSectionTarget {
-	if len(input) == 0 { return nil }
-	out := make([]*taskSwarmSectionTarget, len(input)); for i := range input { out[i] = cloneTaskSwarmSectionTarget(input[i]) }; return out
+	if len(input) == 0 {
+		return nil
+	}
+	out := make([]*taskSwarmSectionTarget, len(input))
+	for i := range input {
+		out[i] = cloneTaskSwarmSectionTarget(input[i])
+	}
+	return out
 }
 
 func parseTaskSwarmSectionTargets(value any) ([]*taskSwarmSectionTarget, error) {
-	if value == nil { return nil, nil }
-	if normalized, ok := value.([]*taskSwarmSectionTarget); ok { return cloneTaskSwarmSectionTargets(normalized), nil }
-	raw, ok := value.([]any); if !ok || len(raw) == 0 || len(raw) > pebblestore.SessionArtifactMaxParts { return nil, errors.New("task section_targets must be a non-empty bounded array") }
-	out := make([]*taskSwarmSectionTarget, 0, len(raw)); seen := map[string]struct{}{}
-	for _, item := range raw { target, err := parseTaskSwarmSectionTarget(item); if err != nil { return nil, err }; if _, duplicate := seen[target.ID]; duplicate { return nil, fmt.Errorf("task section_targets contains duplicate id %q", target.ID) }; seen[target.ID] = struct{}{}; out = append(out, target) }
+	if value == nil {
+		return nil, nil
+	}
+	if normalized, ok := value.([]*taskSwarmSectionTarget); ok {
+		return cloneTaskSwarmSectionTargets(normalized), nil
+	}
+	raw, ok := value.([]any)
+	if !ok || len(raw) == 0 || len(raw) > pebblestore.SessionArtifactMaxParts {
+		return nil, errors.New("task section_targets must be a non-empty bounded array")
+	}
+	out := make([]*taskSwarmSectionTarget, 0, len(raw))
+	seen := map[string]struct{}{}
+	for _, item := range raw {
+		target, err := parseTaskSwarmSectionTarget(item)
+		if err != nil {
+			return nil, err
+		}
+		if _, duplicate := seen[target.ID]; duplicate {
+			return nil, fmt.Errorf("task section_targets contains duplicate id %q", target.ID)
+		}
+		seen[target.ID] = struct{}{}
+		out = append(out, target)
+	}
 	return out, nil
 }
 

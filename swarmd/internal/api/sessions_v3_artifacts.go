@@ -91,11 +91,11 @@ type sessionsV3ArtifactPartDefinitionProjection struct {
 
 type sessionsV3ArtifactPartRevisionProjection struct {
 	Reference        pebblestore.SessionArtifactPartRevisionReference `json:"reference"`
-	ParentCommitOIDs []string                                          `json:"parent_commit_oids,omitempty"`
-	IterationTurnID  string                                            `json:"iteration_turn_id,omitempty"`
-	IterationGroupID string                                            `json:"iteration_group_id,omitempty"`
-	CreatedAt        int64                                             `json:"created_at,omitempty"`
-	EventSeq         uint64                                            `json:"event_seq,omitempty"`
+	ParentCommitOIDs []string                                         `json:"parent_commit_oids,omitempty"`
+	IterationTurnID  string                                           `json:"iteration_turn_id,omitempty"`
+	IterationGroupID string                                           `json:"iteration_group_id,omitempty"`
+	CreatedAt        int64                                            `json:"created_at,omitempty"`
+	EventSeq         uint64                                           `json:"event_seq,omitempty"`
 }
 
 type sessionsV3ArtifactCompositionProjection struct {

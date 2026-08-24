@@ -106,15 +106,15 @@ type ArtifactRunContext struct {
 	// SourcePartDefinitions and SourcePartRevisions are the canonical bounded
 	// multi-part selection. The singular fields remain a compatibility view when
 	// exactly one part is selected.
-	SourcePartDefinitions   []pebblestore.SessionArtifactPartDefinition
-	SourcePartRevisions     []pebblestore.SessionArtifactPartRevisionReference
-	ArtifactStepID          string
-	CandidateIndex          int
-	AutoAccept              bool
-	CollectionID            string
-	VariantID               string
-	OutputRequirements      *pebblestore.SessionArtifactOutputRequirements
-	AnimationProfile        *pebblestore.SessionArtifactAnimationProfile
+	SourcePartDefinitions []pebblestore.SessionArtifactPartDefinition
+	SourcePartRevisions   []pebblestore.SessionArtifactPartRevisionReference
+	ArtifactStepID        string
+	CandidateIndex        int
+	AutoAccept            bool
+	CollectionID          string
+	VariantID             string
+	OutputRequirements    *pebblestore.SessionArtifactOutputRequirements
+	AnimationProfile      *pebblestore.SessionArtifactAnimationProfile
 }
 
 type artifactRunContextKey struct{}
@@ -166,12 +166,12 @@ func manageArtifactDefinition() Definition {
 	}
 	replacementPart := map[string]any{
 		"type": "object", "properties": map[string]any{
-			"part_id": map[string]any{"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$"},
-			"content": map[string]any{"type": "string"},
+			"part_id":        map[string]any{"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$"},
+			"content":        map[string]any{"type": "string"},
 			"content_base64": map[string]any{"type": "string"},
-			"media_type": map[string]any{"type": "string", "maxLength": 255},
-			"filename": map[string]any{"type": "string", "maxLength": 255},
-			"locked": map[string]any{"type": "boolean"},
+			"media_type":     map[string]any{"type": "string", "maxLength": 255},
+			"filename":       map[string]any{"type": "string", "maxLength": 255},
+			"locked":         map[string]any{"type": "boolean"},
 		}, "required": []string{"part_id"}, "additionalProperties": false,
 	}
 	initialPart := map[string]any{
@@ -217,7 +217,7 @@ func manageArtifactDefinition() Definition {
 				"artifact_chain_id": map[string]any{"type": "string"}, "part_id": map[string]any{"type": "string"}, "part_revision_id": map[string]any{"type": "string"}, "owner_session_id": map[string]any{"type": "string"}, "digest_sha256": map[string]any{"type": "string"}, "size": map[string]any{"type": "integer", "minimum": 1}, "media_type": map[string]any{"type": "string"},
 			}, "required": []string{"artifact_chain_id", "part_id", "part_revision_id", "owner_session_id", "digest_sha256", "size", "media_type"}, "additionalProperties": false},
 			"revision_event_seq": map[string]any{"type": "integer", "minimum": 1},
-			"locked": map[string]any{"type": "boolean"},
+			"locked":             map[string]any{"type": "boolean"},
 		},
 		"required": []string{"part_id", "revision", "revision_event_seq", "locked"}, "additionalProperties": false,
 	}
@@ -355,7 +355,9 @@ func (r *Runtime) executeManageArtifact(ctx context.Context, scope WorkspaceScop
 		response["part"] = part
 	case "read_parts":
 		parts, err := r.readManagedArtifactParts(ctx, principal, args)
-		if err != nil { return "", err }
+		if err != nil {
+			return "", err
+		}
 		response["parts"] = parts
 	case "publish_part":
 		variant, err := r.publishManagedArtifactPart(ctx, principal, callID, requestID, args)
@@ -366,12 +368,16 @@ func (r *Runtime) executeManageArtifact(ctx context.Context, scope WorkspaceScop
 		response["reference"] = managedArtifactReferenceWithSession(variant.SessionID, variant.CollectionID, variant.ID, variant.EventSeq)
 	case "select_parts":
 		variant, err := r.selectManagedArtifactParts(ctx, principal, callID, requestID, args)
-		if err != nil { return "", err }
+		if err != nil {
+			return "", err
+		}
 		response["artifact"] = managedArtifactVariant(variant)
 		response["reference"] = managedArtifactReferenceWithSession(variant.SessionID, variant.CollectionID, variant.ID, variant.EventSeq)
 	case "publish_parts":
 		variant, err := r.publishManagedArtifactParts(ctx, principal, callID, requestID, args)
-		if err != nil { return "", err }
+		if err != nil {
+			return "", err
+		}
 		response["artifact"] = managedArtifactVariant(variant)
 		response["reference"] = managedArtifactReferenceWithSession(variant.SessionID, variant.CollectionID, variant.ID, variant.EventSeq)
 	case "export_html_stills":

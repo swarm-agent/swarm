@@ -248,8 +248,14 @@ func isRepairableGenericTaskSwarmGroupTitle(title string) bool {
 
 func taskSwarmFallbackGroupTitle(request taskSwarmHydrationRequest) string {
 	var sources []string
-	if request.SectionTarget != nil { sources = append(sources, request.SectionTarget.Label, request.SectionTarget.ID) }
-	for _, target := range request.SectionTargets { if target != nil { sources = append(sources, target.Label, target.ID) } }
+	if request.SectionTarget != nil {
+		sources = append(sources, request.SectionTarget.Label, request.SectionTarget.ID)
+	}
+	for _, target := range request.SectionTargets {
+		if target != nil {
+			sources = append(sources, target.Label, target.ID)
+		}
+	}
 	if description := strings.TrimSpace(request.Description); !strings.EqualFold(description, "delegated task") {
 		sources = append(sources, description)
 	}
