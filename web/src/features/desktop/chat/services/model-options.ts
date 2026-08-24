@@ -260,17 +260,20 @@ export function sortModelOptions(options: ModelOptionRecord[]): ModelOptionRecor
   })
 }
 
+function formatCompactContextWindow(value: number, unit: number, suffix: string): string {
+  const truncated = Math.floor(value / (unit / 100)) / 100
+  return `${truncated.toFixed(2).replace(/\.?0+$/u, '')}${suffix}`
+}
+
 export function formatContextWindow(value: number): string {
   if (!Number.isFinite(value) || value <= 0) {
     return ''
   }
   if (value >= 1_000_000) {
-    const millions = value / 1_000_000
-    return millions % 1 === 0 ? `${millions}m` : `${millions.toFixed(1)}m`
+    return formatCompactContextWindow(value, 1_000_000, 'm')
   }
   if (value >= 1_000) {
-    const thousands = value / 1_000
-    return thousands % 1 === 0 ? `${thousands}k` : `${thousands.toFixed(1)}k`
+    return formatCompactContextWindow(value, 1_000, 'k')
   }
   return `${value}`
 }

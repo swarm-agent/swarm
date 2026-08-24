@@ -1,4 +1,3 @@
-import { requireDesktopV3RealtimeControllerReady } from '../realtime/v3-realtime-controller'
 import { dispatchDesktopV3Cache, getDesktopV3CacheSnapshot } from '../state/desktop-v3-cache-store'
 import type {
   MessageMutationConflictResponse,
@@ -33,7 +32,7 @@ export function createDesktopV3ExistingMessageOperation(input: {
     throw new Error('Existing Desktop V3 message requires prompt, media, video attachment, or artifact selection')
   }
 
-  if (input.artifactSelections?.some((selection) => !selection.session_id.trim() || !selection.collection_id.trim() || !selection.variant_id.trim() || selection.event_seq <= 0 || !selection.label.trim() || (selection.action !== 'select' && selection.action !== 'use'))) {
+  if (input.artifactSelections?.some((selection) => !selection.session_id.trim() || !selection.collection_id.trim() || !selection.variant_id.trim() || selection.event_seq <= 0 || !selection.label.trim() || (selection.action !== 'select' && selection.action !== 'use') || (selection.pending_request?.trim() && selection.action !== 'use'))) {
     throw new Error('Existing Desktop V3 message contains an invalid artifact selection')
   }
 
@@ -58,7 +57,9 @@ export function createDesktopV3ExistingMessageOperation(input: {
         collection_id: selection.collection_id.trim(),
         variant_id: selection.variant_id.trim(),
         label: selection.label.trim(),
-        description: selection.description?.trim() || undefined,
+        ...(selection.description?.trim() ? { description: selection.description.trim() } : {}),
+        ...(selection.pending_request?.trim() ? { pending_request: selection.pending_request.trim() } : {}),
+        ...(selection.part_id?.trim() ? { part_id: selection.part_id.trim() } : {}),
       })),
     },
   }
@@ -98,7 +99,7 @@ export function loadDesktopV3ExistingMessageOperation(
     if (!value.request?.run_id?.trim()) return null
     if (value.request.role !== 'user') return null
     if (!value.request.content?.trim() && !(value.request.media?.length) && !(value.request.video_attachments?.length) && !(value.request.artifact_selections?.length)) return null
-    if (value.request.artifact_selections?.some((selection) => !selection?.session_id?.trim() || !selection?.collection_id?.trim() || !selection?.variant_id?.trim() || selection.event_seq <= 0 || !selection?.label?.trim() || (selection.action !== 'select' && selection.action !== 'use'))) return null
+    if (value.request.artifact_selections?.some((selection) => !selection?.session_id?.trim() || !selection?.collection_id?.trim() || !selection?.variant_id?.trim() || selection.event_seq <= 0 || !selection?.label?.trim() || (selection.action !== 'select' && selection.action !== 'use') || (selection.pending_request?.trim() && selection.action !== 'use'))) return null
     return value
   } catch {
     return null
@@ -122,14 +123,12 @@ export function clearDesktopV3ExistingMessageOperation(
 
 interface DesktopV3ExistingSessionFlowDeps {
   getSnapshot: typeof getDesktopV3CacheSnapshot
-  requireControllerReady: typeof requireDesktopV3RealtimeControllerReady
   dispatch: typeof dispatchDesktopV3Cache
   postAppendMessage: typeof postDesktopV3AppendMessage
 }
 
 let flowDeps: DesktopV3ExistingSessionFlowDeps = {
   getSnapshot: getDesktopV3CacheSnapshot,
-  requireControllerReady: requireDesktopV3RealtimeControllerReady,
   dispatch: dispatchDesktopV3Cache,
   postAppendMessage: postDesktopV3AppendMessage,
 }
@@ -163,7 +162,7 @@ export async function continueDesktopV3Conversation(
   if (!operation.request.content.trim() && !(operation.request.media?.length) && !(operation.request.artifact_selections?.length)) {
     throw new Error('Existing Desktop V3 conversation requires prompt, media, or artifact selection')
   }
-  if (operation.request.artifact_selections?.some((selection) => !selection?.session_id?.trim() || !selection?.collection_id?.trim() || !selection?.variant_id?.trim() || selection.event_seq <= 0 || !selection?.label?.trim() || (selection.action !== 'select' && selection.action !== 'use'))) {
+  if (operation.request.artifact_selections?.some((selection) => !selection?.session_id?.trim() || !selection?.collection_id?.trim() || !selection?.variant_id?.trim() || selection.event_seq <= 0 || !selection?.label?.trim() || (selection.action !== 'select' && selection.action !== 'use') || (selection.pending_request?.trim() && selection.action !== 'use'))) {
     throw new Error('Existing Desktop V3 conversation contains an invalid artifact selection')
   }
 
@@ -173,9 +172,9 @@ export async function continueDesktopV3Conversation(
     throw new Error(`Desktop V3 session ${sessionId} is deleted`)
   }
 
-  const controller = await flowDeps.requireControllerReady()
-  await controller.ensureSessionConnected(sessionId)
-
+  // Realtime is an accelerator, not the authority for message acceptance. A stale
+  // or reconnecting subscription must not block the canonical HTTP mutation;
+  // its response updates the cache and durable replay repairs live delivery.
   flowDeps.dispatch({
     type: 'pendingUser.upsert',
     input: {

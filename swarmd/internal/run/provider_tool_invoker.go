@@ -15,6 +15,7 @@ import (
 	"time"
 
 	agentruntime "swarm/packages/swarmd/internal/agent"
+	"swarm/packages/swarmd/internal/artifact"
 	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/permission"
 	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
@@ -300,12 +301,81 @@ func cloneArtifactRunContext(input *tool.ArtifactRunContext) *tool.ArtifactRunCo
 		return nil
 	}
 	cloned := *input
+	if input.SourceArtifact != nil {
+		sourceCopy := *input.SourceArtifact
+		cloned.SourceArtifact = &sourceCopy
+	}
+	if input.Part != nil {
+		partCopy := *input.Part
+		cloned.Part = &partCopy
+	}
+	if input.SourceComposition != nil {
+		copy := *input.SourceComposition
+		copy.Parts = append([]pebblestore.SessionArtifactCompositionPart(nil), input.SourceComposition.Parts...)
+		cloned.SourceComposition = &copy
+	}
+	if input.SourcePartDefinition != nil {
+		copy := *input.SourcePartDefinition
+		if input.SourcePartDefinition.Locator != nil {
+			locator := *input.SourcePartDefinition.Locator
+			copy.Locator = &locator
+		}
+		cloned.SourcePartDefinition = &copy
+	}
+	if input.SourcePartRevision != nil {
+		copy := *input.SourcePartRevision
+		cloned.SourcePartRevision = &copy
+	}
+	cloned.SourcePartDefinitions = append([]pebblestore.SessionArtifactPartDefinition(nil), input.SourcePartDefinitions...)
+	cloned.SourcePartRevisions = append([]pebblestore.SessionArtifactPartRevisionReference(nil), input.SourcePartRevisions...)
 	cloned.OutputRequirements = cloneTaskOutputRequirements(input.OutputRequirements)
 	cloned.AnimationProfile = cloneTaskAnimationProfile(input.AnimationProfile)
 	return &cloned
 }
 
+func (s *Service) providerFocusedArtifactRunContext(config providerToolInvokerConfig) *tool.ArtifactRunContext {
+	if s == nil || s.sessions == nil || s.tools == nil || strings.TrimSpace(config.sessionID) == "" {
+		return nil
+	}
+	sourceMessageID := strings.TrimSpace(config.sourceMessageID)
+	if sourceMessageID == "" {
+		return nil
+	}
+	message, ok, err := s.sessions.GetV3MessageByID(strings.TrimSpace(config.sessionID), sourceMessageID)
+	if err != nil || !ok || !strings.EqualFold(strings.TrimSpace(message.Role), "user") {
+		return nil
+	}
+	selection := latestTaskArtifactUseSelection([]pebblestore.MessageSnapshot{message})
+	if selection == nil || selection.Part == nil || strings.TrimSpace(selection.Part.ID) == "" {
+		return nil
+	}
+	session, ok, err := s.sessions.GetSession(strings.TrimSpace(config.sessionID))
+	if err != nil || !ok || strings.TrimSpace(session.AccountScopeID) == "" || strings.TrimSpace(session.UserID) == "" {
+		return nil
+	}
+	principal := artifact.Principal{SessionID: session.ID, AccountScopeID: session.AccountScopeID, UserID: session.UserID}
+	_, composition, definition, revision, err := s.tools.ResolveArtifactPartTarget(principal, *selection, selection.Part.ID)
+	if err != nil {
+		return nil
+	}
+	seed := sha256.Sum256([]byte("direct-focused-part-v1\x00" + session.ID + "\x00" + strings.TrimSpace(config.runID) + "\x00" + strings.TrimSpace(selection.Part.ID)))
+	id := hex.EncodeToString(seed[:12])
+	source := pebblestore.SessionArtifactSelectionReference{SessionID: selection.SessionID, CollectionID: selection.CollectionID, VariantID: selection.VariantID, EventSeq: selection.EventSeq}
+	part := *selection.Part
+	return &tool.ArtifactRunContext{
+		SessionID: session.ID, RunID: strings.TrimSpace(config.runID), TaskCallID: "direct-focused-" + id,
+		ChildSessionID: session.ID, CollectionID: source.CollectionID, VariantID: "direct-focused-" + id,
+		ArtifactStepID: "direct-focused-" + id, CandidateIndex: 1, AutoAccept: true,
+		PartID: definition.ID, PartLabel: definition.Label, PartKind: part.Kind, Part: &part,
+		SourceArtifact: &source, SourceComposition: &composition, SourcePartDefinition: &definition, SourcePartRevision: &revision,
+		SourcePartDefinitions: []pebblestore.SessionArtifactPartDefinition{definition}, SourcePartRevisions: []pebblestore.SessionArtifactPartRevisionReference{revision},
+	}
+}
+
 func (s *Service) providerManagedArtifactRunContext(config providerToolInvokerConfig) tool.ArtifactRunContext {
+	if config.artifactRunContext == nil {
+		config.artifactRunContext = s.providerFocusedArtifactRunContext(config)
+	}
 	if config.artifactRunContext != nil {
 		run := *config.artifactRunContext
 		run.SessionID = strings.TrimSpace(run.SessionID)
@@ -318,6 +388,36 @@ func (s *Service) providerManagedArtifactRunContext(config providerToolInvokerCo
 		run.IterationID = strings.TrimSpace(run.IterationID)
 		run.IterationLabel = strings.TrimSpace(run.IterationLabel)
 		run.IterationTheme = strings.TrimSpace(run.IterationTheme)
+		run.IterationSectionID = strings.TrimSpace(run.IterationSectionID)
+		run.IterationSectionLabel = strings.TrimSpace(run.IterationSectionLabel)
+		run.ArtifactStepID = strings.TrimSpace(run.ArtifactStepID)
+		if run.SourceArtifact != nil {
+			sourceCopy := *run.SourceArtifact
+			run.SourceArtifact = &sourceCopy
+		}
+		if run.Part != nil {
+			partCopy := *run.Part
+			run.Part = &partCopy
+		}
+		if run.SourceComposition != nil {
+			copy := *run.SourceComposition
+			copy.Parts = append([]pebblestore.SessionArtifactCompositionPart(nil), run.SourceComposition.Parts...)
+			run.SourceComposition = &copy
+		}
+		if run.SourcePartDefinition != nil {
+			copy := *run.SourcePartDefinition
+			if run.SourcePartDefinition.Locator != nil {
+				locator := *run.SourcePartDefinition.Locator
+				copy.Locator = &locator
+			}
+			run.SourcePartDefinition = &copy
+		}
+		if run.SourcePartRevision != nil {
+			copy := *run.SourcePartRevision
+			run.SourcePartRevision = &copy
+		}
+		run.SourcePartDefinitions = append([]pebblestore.SessionArtifactPartDefinition(nil), run.SourcePartDefinitions...)
+		run.SourcePartRevisions = append([]pebblestore.SessionArtifactPartRevisionReference(nil), run.SourcePartRevisions...)
 		run.CollectionID = strings.TrimSpace(run.CollectionID)
 		run.VariantID = strings.TrimSpace(run.VariantID)
 		run.OutputRequirements = cloneTaskOutputRequirements(run.OutputRequirements)

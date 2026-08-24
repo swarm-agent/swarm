@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"swarm/packages/swarmd/internal/artifact"
 	"swarm/packages/swarmd/internal/identity"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/videoproject"
@@ -852,17 +853,12 @@ func (s *Server) handleSessionV3VideoExport(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusBadRequest, errors.New("output artifact reference is no longer exact or available"))
 		return
 	}
-	artifactService, err := s.artifacts.ServiceForSession(sessionID)
+	authority := artifact.NewAuthority(s.artifacts, s.sessions)
+	body, err := authority.ReadVariant(r.Context(), artifact.Principal{SessionID: sessionID, AccountScopeID: principal.AccountScopeID, UserID: principal.UserID}, variant, sessionsV3ArtifactMaxBytes)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, fmt.Errorf("resolve artifact service: %w", err))
+		writeError(w, http.StatusBadRequest, fmt.Errorf("read output artifact: %w", err))
 		return
 	}
-	file, _, err := artifactService.Open(r.Context(), variant)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, fmt.Errorf("open output artifact: %w", err))
-		return
-	}
-	defer file.Close()
 
 	if err := os.MkdirAll(filepath.Dir(absDest), 0o755); err != nil {
 		writeError(w, http.StatusInternalServerError, fmt.Errorf("create destination directory: %w", err))
@@ -875,7 +871,7 @@ func (s *Server) handleSessionV3VideoExport(w http.ResponseWriter, r *http.Reque
 	}
 	defer out.Close()
 
-	if _, err := io.Copy(out, file); err != nil {
+	if _, err := out.Write(body); err != nil {
 		writeError(w, http.StatusInternalServerError, fmt.Errorf("write destination file: %w", err))
 		return
 	}

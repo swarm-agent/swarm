@@ -61,6 +61,7 @@ func (f *fakeImageUISettings) SetForAccount(_ string, settings uisettings.UISett
 type fakeArtifactAuthority struct {
 	principal       artifact.Principal
 	created         artifact.CreateInput
+	initial         artifact.CreateInitialCompositionInput
 	packaged        artifact.CreatePackageInput
 	readBody        []byte
 	readErr         error
@@ -86,6 +87,18 @@ func (f *fakeArtifactAuthority) Create(_ context.Context, principal artifact.Pri
 	f.readBody = append([]byte(nil), input.Body...)
 	digest := sha256.Sum256(input.Body)
 	f.variant = pebblestore.SessionArtifactVariant{ID: input.VariantID, CollectionID: input.CollectionID, SessionID: principal.SessionID, EventSeq: 1, Status: pebblestore.SessionArtifactStatusReady, Filename: input.Filename, MediaType: input.MediaType, Size: int64(len(input.Body)), DigestSHA256: hex.EncodeToString(digest[:]), Presentation: input.Presentation, OutputRequirements: input.OutputRequirements, AnimationProfile: input.AnimationProfile}
+	return f.variant, nil
+}
+func (f *fakeArtifactAuthority) CreateInitialComposition(_ context.Context, principal artifact.Principal, input artifact.CreateInitialCompositionInput) (pebblestore.SessionArtifactVariant, error) {
+	f.principal, f.initial = principal, input
+	definitions := make([]pebblestore.SessionArtifactPartDefinition, 0, len(input.Parts))
+	composition := pebblestore.SessionArtifactComposition{ID: input.CompositionID, ArtifactChainID: input.ArtifactChainID, OwnerSessionID: principal.SessionID}
+	for _, part := range input.Parts {
+		definitions = append(definitions, part.Definition)
+		digest := sha256.Sum256(part.Body)
+		composition.Parts = append(composition.Parts, pebblestore.SessionArtifactCompositionPart{PartID: part.Definition.ID, DefinitionOwnerSessionID: principal.SessionID, Revision: pebblestore.SessionArtifactPartRevisionReference{ArtifactChainID: input.ArtifactChainID, PartID: part.Definition.ID, PartRevisionID: part.RevisionID, OwnerSessionID: principal.SessionID, DigestSHA256: hex.EncodeToString(digest[:]), Size: int64(len(part.Body)), MediaType: part.MediaType}})
+	}
+	f.variant = pebblestore.SessionArtifactVariant{ID: input.VariantID, CollectionID: input.CollectionID, SessionID: principal.SessionID, EventSeq: 1, Status: pebblestore.SessionArtifactStatusReady, Filename: input.Filename, MediaType: input.MediaType, ArtifactChainID: input.ArtifactChainID, PartGraphState: pebblestore.SessionArtifactGraphAuthoritative, PartDefinitions: definitions, Composition: &composition}
 	return f.variant, nil
 }
 func (f *fakeArtifactAuthority) CreatePackage(_ context.Context, principal artifact.Principal, input artifact.CreatePackageInput) (pebblestore.SessionArtifactVariant, error) {
@@ -238,6 +251,9 @@ func TestManageArtifactGenerateImageUsesCanonicalSettingAndTrustedDestination(t 
 	if generator.calls != 1 || generator.req.SelectionID != "gemini-nano-banana-2" || generator.req.Principal.AccountScopeID != "account-1" {
 		t.Fatalf("generation calls=%d request=%#v", generator.calls, generator.req)
 	}
+	if authority.created.AutoAccept {
+		t.Fatalf("managed swarm image unexpectedly requested auto-accept: %+v", authority.created)
+	}
 	if authority.created.CollectionID != "collection-1" || authority.created.VariantID != "variant-1" || authority.created.MediaType != "image/png" || string(authority.created.Body) != string(testPNGImage()) {
 		t.Fatalf("artifact create = %#v", authority.created)
 	}
@@ -271,6 +287,9 @@ func TestManageArtifactGenerateImageResolvesExactRemixSourceAndPublishesLineage(
 	}
 	if authority.created.SourceSessionID != "source-session" || authority.created.SourceCollectionID != "source-collection" || authority.created.SourceVariantID != "source-variant" || authority.created.SourceEventSeq != 9 {
 		t.Fatalf("published remix lineage = %#v", authority.created)
+	}
+	if !authority.created.AutoAccept {
+		t.Fatalf("direct generated image did not request auto-accept: %+v", authority.created)
 	}
 
 	_, err = runtime.executeManageArtifact(ctx, scope, "remix-same-collection", map[string]any{
@@ -519,6 +538,125 @@ func TestManageArtifactDefinitionDoesNotExposeProviderOrModel(t *testing.T) {
 	}
 }
 
+func TestManageArtifactDefinitionExplainsKindSpecificPartsContract(t *testing.T) {
+	properties := manageArtifactDefinition().Parameters["properties"].(map[string]any)
+	parts := properties["parts"].(map[string]any)
+	partsDescription := parts["description"].(string)
+	for _, want := range []string{
+		"legacy/unproven locator-only",
+		"never create or prove real part identities",
+		"meaningful authored region or section",
+		"swarm.iteration/v1 animation",
+		"same id, label, start_ms, and end_ms",
+		"Do not invent generic parts",
+		"Use initial_parts instead",
+	} {
+		if !strings.Contains(partsDescription, want) {
+			t.Fatalf("parts description missing %q: %s", want, partsDescription)
+		}
+	}
+	initialParts := properties["initial_parts"].(map[string]any)
+	if initialParts["minItems"] != 2 {
+		t.Fatalf("initial_parts schema = %#v", initialParts)
+	}
+	for _, want := range []string{"real independently byte-bearing", "server owns all chain", "Mutually exclusive"} {
+		if !strings.Contains(initialParts["description"].(string), want) {
+			t.Fatalf("initial_parts description missing %q: %s", want, initialParts["description"])
+		}
+	}
+	partProperties := parts["items"].(map[string]any)["properties"].(map[string]any)
+	kindDescription := partProperties["kind"].(map[string]any)["description"].(string)
+	for _, want := range []string{"temporal requires start_ms/end_ms", "spatial requires normalized x/y/width/height", "page requires page", "state requires state_id", "selector requires selector"} {
+		if !strings.Contains(kindDescription, want) {
+			t.Fatalf("part kind description missing %q: %s", want, kindDescription)
+		}
+	}
+}
+
+func TestManageArtifactCreateCarriesReviewParts(t *testing.T) {
+	authority := &fakeArtifactAuthority{}
+	runtime := NewRuntime(1)
+	runtime.SetArtifactAuthority(authority)
+	ctx, scope := artifactToolContext()
+	_, err := runtime.executeManageArtifact(ctx, scope, "parts-create", map[string]any{
+		"action": "create", "filename": "motion.html", "media_type": "text/html", "content": "animated",
+		"parts": []any{
+			map[string]any{"id": "intro", "label": "Intro", "kind": "temporal", "description": "Opening section", "start_ms": 0, "end_ms": 1200},
+			map[string]any{"id": "hero", "label": "Hero", "kind": "spatial", "description": "Hero region", "x": 0.1, "y": 0.2, "width": 0.8, "height": 0.5},
+		},
+	})
+	if err != nil {
+		t.Fatalf("create artifact with parts: %v", err)
+	}
+	if len(authority.created.Parts) != 2 {
+		t.Fatalf("created parts = %#v", authority.created.Parts)
+	}
+	if part := authority.created.Parts[0]; part.ID != "intro" || part.Kind != "temporal" || part.StartMs != 0 || part.EndMs != 1200 {
+		t.Fatalf("temporal part = %#v", part)
+	}
+	if part := authority.created.Parts[1]; part.ID != "hero" || part.Kind != "spatial" || part.X != 0.1 || part.Y != 0.2 || part.Width != 0.8 || part.Height != 0.5 {
+		t.Fatalf("spatial part = %#v", part)
+	}
+}
+
+func TestManageArtifactCreateInitialPartsUsesAuthoritativeCompositionContract(t *testing.T) {
+	authority := &fakeArtifactAuthority{}
+	runtime := NewRuntime(1)
+	runtime.SetArtifactAuthority(authority)
+	ctx, scope := artifactToolContext()
+	output, err := runtime.executeManageArtifact(ctx, scope, "real-parts-create", map[string]any{
+		"action": "create", "collection_name": "Composed", "filename": "composed.txt", "media_type": "text/plain",
+		"initial_parts": []any{
+			map[string]any{"id": "hero", "label": "Hero", "description": "Hero bytes", "media_type": "text/plain", "content": "hero", "locator": map[string]any{"kind": "semantic"}},
+			map[string]any{"id": "footer", "label": "Footer", "media_type": "application/octet-stream", "content_base64": base64.StdEncoding.EncodeToString([]byte{0, 1, 2})},
+		},
+	})
+	if err != nil {
+		t.Fatalf("create authoritative initial parts: %v", err)
+	}
+	if len(authority.initial.Parts) != 2 || string(authority.initial.Parts[0].Body) != "hero" || string(authority.initial.Parts[1].Body) != string([]byte{0, 1, 2}) {
+		t.Fatalf("initial composition input = %#v", authority.initial)
+	}
+	if authority.initial.ArtifactChainID != pebblestore.RootSessionArtifactChainID("session-1", authority.initial.CollectionID, authority.initial.VariantID) || authority.initial.CompositionID == "" || authority.initial.Parts[0].RevisionID == "" || authority.initial.Parts[1].RevisionID == "" {
+		t.Fatalf("server-owned composition identities = %#v", authority.initial)
+	}
+	for _, required := range []string{`"part_graph_state":"git_projection"`, `"part_definitions"`, `"composition"`, `"part_revision_id"`, `"status":"ready"`} {
+		if !strings.Contains(output, required) {
+			t.Fatalf("authoritative create response lacks %s: %s", required, output)
+		}
+	}
+	if authority.created.Body != nil || len(authority.created.Parts) != 0 {
+		t.Fatalf("real parts fell through monolithic create: %#v", authority.created)
+	}
+}
+
+func TestManageArtifactCreateInitialPartsRejectsAmbiguousOrMalformedPayloads(t *testing.T) {
+	runtime := NewRuntime(1)
+	runtime.SetArtifactAuthority(&fakeArtifactAuthority{})
+	ctx, scope := artifactToolContext()
+	valid := []any{
+		map[string]any{"id": "hero", "label": "Hero", "media_type": "text/plain", "content": "hero"},
+		map[string]any{"id": "footer", "label": "Footer", "media_type": "text/plain", "content": "footer"},
+	}
+	for _, test := range []struct {
+		name string
+		args map[string]any
+		want string
+	}{
+		{name: "monolithic conflict", args: map[string]any{"action": "create", "filename": "a.txt", "media_type": "text/plain", "content": "whole", "initial_parts": valid}, want: "cannot combine monolithic content"},
+		{name: "locator conflict", args: map[string]any{"action": "create", "filename": "a.txt", "media_type": "text/plain", "parts": []any{map[string]any{"id": "hero", "label": "Hero", "kind": "semantic"}}, "initial_parts": valid}, want: "cannot combine locator-only parts"},
+		{name: "too few", args: map[string]any{"action": "create", "filename": "a.txt", "media_type": "text/plain", "initial_parts": valid[:1]}, want: "2 to"},
+		{name: "duplicate", args: map[string]any{"action": "create", "filename": "a.txt", "media_type": "text/plain", "initial_parts": []any{valid[0], valid[0]}}, want: "duplicate stable part id"},
+		{name: "empty bytes", args: map[string]any{"action": "create", "filename": "a.txt", "media_type": "text/plain", "initial_parts": []any{map[string]any{"id": "hero", "label": "Hero", "media_type": "text/plain", "content": ""}, valid[1]}}, want: "between 1"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := runtime.executeManageArtifact(ctx, scope, "invalid-"+test.name, test.args); err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("error = %v, want %q", err, test.want)
+			}
+		})
+	}
+}
+
 func TestManageArtifactCreatePinsTrustedManagedDestinationAndLineage(t *testing.T) {
 	authority := &fakeArtifactAuthority{}
 	runtime := NewRuntime(1)
@@ -717,6 +855,9 @@ func TestManageArtifactPackageAndBoundedTextRead(t *testing.T) {
 	if len(authority.packaged.Entries) != 1 || string(authority.packaged.Entries[0].Data) != "<h1>Hi</h1>" {
 		t.Fatalf("package input = %+v", authority.packaged)
 	}
+	if !authority.packaged.AutoAccept {
+		t.Fatalf("direct package did not request auto-accept: %+v", authority.packaged)
+	}
 	authority.variant.MediaType = "text/plain"
 	output, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, Call{CallID: "call-read", Name: "manage_artifact", Arguments: `{"action":"read","variant_id":"variant-1","max_bytes":100}`})
 	if err != nil || !json.Valid([]byte(output)) {
@@ -774,7 +915,7 @@ func TestManageArtifactReadsExplicitAttachedReference(t *testing.T) {
 		t.Fatalf("read output = %s", output)
 	}
 	_, err = runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, Call{CallID: "call-read-incomplete", Name: "manage_artifact", Arguments: `{"action":"read","session_id":"source-session","variant_id":"variant-source"}`})
-	if err == nil || !strings.Contains(err.Error(), "requires session_id, collection_id, variant_id, and event_seq") {
+	if err == nil || !strings.Contains(err.Error(), "complete ready reference") || !strings.Contains(err.Error(), "session_id") || !strings.Contains(err.Error(), "collection_id") || !strings.Contains(err.Error(), "variant_id") || !strings.Contains(err.Error(), "event_seq") {
 		t.Fatalf("incomplete source reference error = %v", err)
 	}
 }
@@ -799,7 +940,7 @@ func TestManageArtifactMaterializesExactReferenceIntoTrustedWorkspace(t *testing
 		t.Fatalf("materialize output = %s", output)
 	}
 	_, err = runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, Call{CallID: "call-materialize-current", Name: "manage_artifact", Arguments: `{"action":"materialize","variant_id":"source-variant","destination":"selected.txt"}`})
-	if err == nil || !strings.Contains(err.Error(), "requires session_id, collection_id, variant_id, and event_seq") {
+	if err == nil || !strings.Contains(err.Error(), "complete ready reference") || !strings.Contains(err.Error(), "session_id") || !strings.Contains(err.Error(), "collection_id") || !strings.Contains(err.Error(), "variant_id") || !strings.Contains(err.Error(), "event_seq") {
 		t.Fatalf("materialize without exact reference error = %v", err)
 	}
 	managedCtx := WithArtifactRunContext(ctx, ArtifactRunContext{SessionID: "session-1", ChildSessionID: "session-1", TaskCallID: "task-call", CollectionID: "managed-collection", VariantID: "managed-variant"})
@@ -864,6 +1005,9 @@ func TestManageArtifactPublishWorkspaceRejectsUnsafePrivateSourcesAndPreservesLi
 	if authority.createdFromFile.SourcePath != filepath.Join(scope.PrimaryPath, "revision.txt") || authority.createdFromFile.Package || authority.createdFromFile.SourceEventSeq != 42 || authority.createdFromFile.CollectionID != "collection-new" {
 		t.Fatalf("workspace publication = %#v", authority.createdFromFile)
 	}
+	if !authority.createdFromFile.AutoAccept {
+		t.Fatalf("workspace publication did not request auto-accept: %+v", authority.createdFromFile)
+	}
 	if !strings.Contains(output, `"digest_sha256":"published-digest"`) || !strings.Contains(output, `"event_seq":11`) || strings.Contains(output, scope.PrimaryPath) {
 		t.Fatalf("publish output = %s", output)
 	}
@@ -878,7 +1022,7 @@ func TestManageArtifactPublishWorkspaceRejectsUnsafePrivateSourcesAndPreservesLi
 		t.Fatal(err)
 	}
 	if err := os.Symlink(outside, filepath.Join(scope.PrimaryPath, "link.txt")); err == nil {
-		if _, err := runtime.executeManageArtifact(ctx, scope, "link", map[string]any{"action": "publish_workspace", "source": "link.txt"}); err == nil || !strings.Contains(err.Error(), "non-symlink") {
+		if _, err := runtime.executeManageArtifact(ctx, scope, "link", map[string]any{"action": "publish_workspace", "source": "link.txt"}); err == nil || !strings.Contains(err.Error(), "symlink") {
 			t.Fatalf("symlink source error = %v", err)
 		}
 	}

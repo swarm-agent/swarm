@@ -1,0 +1,2605 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Swarm Feature Constellation · Layered Circuit SVG Search &amp; Repair</title>
+<style>
+:root{color-scheme:dark;
+--bg:#020205;
+--sky:#87ceeb;
+--cyan:#00f0ff;
+--ice:#e0f2fe;
+--violet:#8b5cf6;
+--green:#00ff88;
+--amber:#fcd34d;
+--pink:#ff7edb}
+*{box-sizing:border-box}html,body{width:100%;
+height:100%;
+margin:0;
+overflow:hidden;
+background:var(--bg)}
+body{font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+user-select:none}
+#stage-wrap{position:fixed;
+inset:0;
+display:grid;
+place-items:center;
+background:#020205}
+#stage{display:block;
+width:100vw;
+height:56.25vw;
+max-width:177.78vh;
+max-height:100vh;
+aspect-ratio:16/9;
+background:#020205}
+.preview-ui{position:fixed;
+left:28px;
+right:28px;
+bottom:24px;
+z-index:10;
+display:grid;
+grid-template-columns:auto 1fr auto;
+gap:14px;
+align-items:center;
+padding:14px 18px;
+background:rgba(2,2,5,.88);
+border:1px solid rgba(135,206,235,.24);
+border-radius:14px;
+backdrop-filter:blur(20px);
+color:var(--ice)}
+.preview-ui button,.moments button{font:600 12px/1 system-ui,sans-serif;
+color:var(--ice);
+background:#0a1522;
+border:1px solid rgba(135,206,235,.32);
+border-radius:7px;
+padding:9px 14px;
+cursor:pointer}
+.preview-ui input{width:100%;
+accent-color:var(--cyan)}
+.preview-ui output{min-width:96px;
+text-align:right;
+font:600 12px ui-monospace,monospace;
+color:var(--sky)}
+.moments{position:fixed;
+left:28px;
+right:28px;
+top:24px;
+z-index:10;
+display:flex;
+gap:7px;
+flex-wrap:wrap}
+.moments button{font-size:10px;
+background:rgba(2,2,5,.72);
+padding:7px 10px}
+.moments button.active{color:#020205;
+background:var(--sky);
+border-color:var(--cyan)}
+.embedded .preview-ui{display:grid}.embedded .moments{display:flex}
+@media(max-width:900px){.preview-ui{grid-template-columns:auto 1fr}.preview-ui output{display:none}}
+</style>
+<script id="swarm-animation-manifest" type="application/json">{"version":"swarm.animation/v1","duration_ms":63400,"fps":30}</script>
+<script id="swarm-iteration-manifest" type="application/json">{"version":"swarm.iteration/v1","duration_ms":63400,"sections":[{"id":"causal-opening","label":"01 · MATERIAL FILL TO SOCKET & SEND","start_ms":0,"end_ms":11800,"narration":[{"start_ms":0,"end_ms":3200,"text":"Hi, I’m Swarm.","detail":"THE LOCAL-FIRST AI WORKSPACE"},{"start_ms":3200,"end_ms":5000,"text":"I’m an AI agent.","detail":"LOCAL ORCHESTRATION · ZERO CLOUD LATENCY"},{"start_ms":5000,"end_ms":9900,"text":"Tell me what you want to create.","detail":"NATURAL CREATIVE INTENT · COMPOSING USER REQUEST"},{"start_ms":9900,"end_ms":11800,"text":"Send your request. Message sent. Your message is on its way.","detail":""}]},{"id":"vector-synthesis","label":"02 · INVERSE MATERIAL REBUILD & LED CONVERSION","start_ms":11800,"end_ms":20220,"narration":[{"start_ms":11800,"end_ms":16600,"text":"Recreating the Swarm SVG. Restructuring it in LED form.","detail":""},{"start_ms":16600,"end_ms":18800,"text":"Your logo, rebuilt in LED form.","detail":""},{"start_ms":18800,"end_ms":20220,"text":"Made with Swarm.","detail":""}]},{"id":"step-03-understand","label":"03A · UNDERSTAND · FINDER PARTICLE SNAKES","start_ms":20220,"end_ms":27600,"narration":[{"start_ms":20220,"end_ms":21800,"text":"I send five Finders into the unknown.","detail":"5 CONCURRENT SEARCH CURRENTS"},{"start_ms":21800,"end_ms":24200,"text":"Each one takes a different path.","detail":"SEARCHING THE SAME FIELD IN PARALLEL"},{"start_ms":24200,"end_ms":25300,"text":"They move through the noise together.","detail":"FIVE PATHS · ONE SHARED CONTEXT"},{"start_ms":25300,"end_ms":26400,"text":"Every trail changes what the others can see.","detail":"COLLECTIVE SEARCH FIELD"},{"start_ms":26400,"end_ms":27600,"text":"The cloud resolves into a shared direction.","detail":"PARALLEL DISCOVERY CONVERGED"}]},{"id":"step-03-explore","label":"03B · EXPLORE · 25 PARALLEL DIRECTIONS","start_ms":27600,"end_ms":34400,"narration":[{"start_ms":27600,"end_ms":31500,"text":"Now I can explore the possibilities.","detail":"25 CONCURRENT DESIGNER ALTERNATIVES"},{"start_ms":31500,"end_ms":34400,"text":"Twenty-five directions. One chosen identity.","detail":"1 DIRECTION SELECTED · 24 PRESERVED"}]},{"id":"step-03-create","label":"03C · CREATE · END-TO-END VIDEO PRODUCTION","start_ms":34400,"end_ms":48120,"narration":[{"start_ms":34400,"end_ms":36400,"text":"Recreate my onboarding video with a TUI demo and polished Desktop footage.","detail":"NATURAL PRODUCT GOAL"},{"start_ms":36400,"end_ms":39200,"text":"First, I turn the idea into a plan.","detail":"7 ORDERED CHECKPOINTS · DEPENDENCY-READY"},{"start_ms":39200,"end_ms":41800,"text":"Then I delegate each part.","detail":"PARALLEL SESSIONS & SPECIALIST SWARMS"},{"start_ms":41800,"end_ms":44500,"text":"The work comes back into one timeline.","detail":"MULTITRACK TIMELINE · FRAME-ACCURATE SYNC"},{"start_ms":44500,"end_ms":46200,"text":"I review the complete cut.","detail":"AUTOMATED VERIFICATION & QUALITY GATES"},{"start_ms":46200,"end_ms":48120,"text":"One idea. One plan. One finished video.","detail":"1920×1080 60FPS LOSSLESS MASTER · READY TO SHIP"}]},{"id":"system-map","label":"04 · SYSTEM CONVERGENCE","start_ms":48120,"end_ms":55400,"narration":[]},{"id":"final-drop","label":"05 · APEX LED CONVERGENCE","start_ms":55400,"end_ms":61400,"narration":[]},{"id":"singularity","label":"06 · SINGULARITY","start_ms":61400,"end_ms":62160,"narration":[]},{"id":"resolution","label":"07 · CANONICAL RESOLUTION","start_ms":62160,"end_ms":63400,"narration":[]}]}</script>
+<script>
+if(window.self!==window.top)document.documentElement.classList.add('embedded');
+
+globalThis.__SWARM_ANIMATION_V1__={version:'swarm.animation/v1',ready:async()=>({duration_ms:63400,fps:30}),seek:async timeMs=>({time_ms:Number(timeMs)||0})};
+
+</script>
+</head>
+<body>
+<div id="stage-wrap">
+<canvas id="stage" width="1920" height="1080" aria-label="Swarm Launch Video Infographic · Layered Circuit SVG Search &amp; Repair">
+</canvas>
+</div>
+<div class="moments" id="moments" data-swarm-capture-ui>
+</div>
+<div class="preview-ui" data-swarm-capture-ui>
+<button id="play" type="button">Play</button>
+<input id="timeline" type="range" min="0" max="63400" step="1" value="0" aria-label="Timeline scrubber">
+<output id="clock">00:00.000</output>
+</div>
+<audio id="soundtrack" preload="auto" src="../../media/vacuum-drop-1-synced.mp3">
+</audio>
+<script>
+(()=>{
+'use strict';
+
+const DURATION=63400,FPS=30,W=1920,H=1080,CX=960,CY=540,TAU=Math.PI*2;
+
+const AUDIO_LINEAGE=Object.freeze({name:'Vacuum Drop 1 — synced',src:'../../media/vacuum-drop-1-synced.mp3',source_ref:'audiosrc_fed4959adfb9a7f52e0bf002308f295fcc6216a1b51a011a2c6a31f7266a4ab7'});
+
+const MOMENTS=Object.freeze([
+  {id:'causal-opening',start:0,end:11800,label:'01 · MATERIAL FILL TO SOCKET & SEND'},
+  {id:'vector-synthesis',start:11800,end:20220,label:'02 · INVERSE MATERIAL REBUILD & LED CONVERSION'},
+  {id:'step-03-understand',start:20220,end:27600,label:'03A · UNDERSTAND · LAYERED CIRCUIT REPAIR'},
+  {id:'step-03-explore',start:27600,end:34400,label:'03B · EXPLORE · 25 PARALLEL DIRECTIONS'},
+  {id:'step-03-create',start:34400,end:48120,label:'03C · CREATE · END-TO-END VIDEO PRODUCTION'},
+  {id:'system-map',start:48120,end:55400,label:'04 · SYSTEM CONVERGENCE'},
+  {id:'final-drop',start:55400,end:61400,label:'05 · APEX LED CONVERGENCE'},
+  {id:'singularity',start:61400,end:62160,label:'06 · SINGULARITY'},
+  {id:'resolution',start:62160,end:63400,label:'07 · CANONICAL RESOLUTION'}
+]);
+
+const FEATURES=Object.freeze([
+  {id:'agents',title:'PARALLEL AI',micro:'CODER · FINDER · DESIGNER',accent:'#00f0ff'},
+  {id:'plans',title:'GOAL → PLAN',micro:'STRUCTURED · APPROVAL',accent:'#fcd34d'},
+  {id:'sessions',title:'ALWAYS READY',micro:'DURABLE V3 · PEBBLE SYNC',accent:'#00ff88'},
+  {id:'tools',title:'PLAN → ACTION',micro:'TASK ENGINE · ACTIONS',accent:'#8b5cf6'},
+  {id:'media',title:'RESULTS',micro:'ARTIFACTS · STUDIO',accent:'#ff7edb'},
+  {id:'worktrees',title:'ISOLATED WORK',micro:'GIT WORKTREES · ZERO DRIFT',accent:'#87ceeb'}
+]);
+
+const CUES=Object.freeze([0,840,980,2100,3180,4960,7380,8380,8940,9940,11800,13600,14840,16580,18800,19300,19560,19920,20220,20320,21080,22200,23640,24500,25360,26220,27940,29660,30500,31360,32220,33080,35360,36520,38240,41740,43360,45080,45940,46800,48120,48880,50240,52120,53680,55060,55240,55400,55820,56720,57860,58280,59240,60100,60520,61400,62160,62760,63260]);
+
+const BASE_BOXES=Object.freeze([
+  {x:20,s:360,r:90,a:.15},
+  {x:60,s:280,r:65,a:.35},
+  {x:100,s:200,r:45,a:.60},
+  {x:140,s:120,r:25,a:.85}
+]);
+
+const PROMPT_TEXT="Make my logo animation in LED form.";
+
+// ==================================================
+// LAYERED CIRCUIT PRECOMPUTED GEOMETRY & FINDER PATHS
+// ==================================================
+const STATIC_VIAS = Object.freeze([
+  // Cardinal intersections
+  { x: 0, y: -180 }, { x: 0, y: -140 }, { x: 0, y: -100 }, { x: 0, y: -60 },
+  { x: 0, y: 180 },  { x: 0, y: 140 },  { x: 0, y: 100 },  { x: 0, y: 60 },
+  { x: 180, y: 0 },  { x: 140, y: 0 },  { x: 100, y: 0 },  { x: 60, y: 0 },
+  { x: -180, y: 0 }, { x: -140, y: 0 }, { x: -100, y: 0 }, { x: -60, y: 0 },
+  // Diagonal intersections
+  { x: -130, y: -130 }, { x: -100, y: -100 }, { x: -70, y: -70 }, { x: -40, y: -40 },
+  { x: 130, y: 130 },   { x: 100, y: 100 },   { x: 70, y: 70 },   { x: 40, y: 40 },
+  { x: -130, y: 130 },  { x: -100, y: 100 },  { x: -70, y: 70 },  { x: -40, y: 40 },
+  { x: 130, y: -130 },  { x: 100, y: -100 },  { x: 70, y: -70 },  { x: 40, y: -40 }
+]);
+
+const FAULT_PAD_A = Object.freeze({ x: -10, y: -100 });
+const FAULT_PAD_B = Object.freeze({ x: 10, y: -100 });
+
+function buildCircuitPath(color, searchPts, convergePts) {
+  function computePathData(pts) {
+    const segLengths = [];
+    let totalLength = 0;
+    for (let i = 0; i < pts.length - 1; i++) {
+      const d = Math.hypot(pts[i + 1].x - pts[i].x, pts[i + 1].y - pts[i].y);
+      segLengths.push(d);
+      totalLength += d;
+    }
+    return { pts, segLengths, totalLength };
+  }
+  return {
+    color,
+    search: computePathData(searchPts),
+    converge: computePathData(convergePts)
+  };
+}
+
+// Five dedicated structurally embedded Finder paths constrained to the SVG circuit layers
+const LEGACY_FINDER_CIRCUIT_PATHS = Object.freeze([
+  // Finder 1 (Outer Perimeter Route - Layer 0): Sweeps entire outer circumference from Top-Left Port 1
+  buildCircuitPath('#00f0ff', [
+    { x: -90, y: -180 },
+    { x: -40, y: -180 },
+    { x: 0, y: -180 },
+    { x: 40, y: -180 },
+    { x: 90, y: -180 },
+    { x: 135, y: -165 },
+    { x: 165, y: -135 },
+    { x: 180, y: -90 },
+    { x: 180, y: -40 },
+    { x: 180, y: 0 },
+    { x: 180, y: 40 },
+    { x: 180, y: 90 },
+    { x: 165, y: 135 },
+    { x: 135, y: 165 },
+    { x: 90, y: 180 },
+    { x: 40, y: 180 },
+    { x: 0, y: 180 },
+    { x: -40, y: 180 },
+    { x: -90, y: 180 },
+    { x: -135, y: 165 },
+    { x: -165, y: 135 },
+    { x: -180, y: 90 },
+    { x: -180, y: 40 },
+    { x: -180, y: 0 },
+    { x: -180, y: -40 },
+    { x: -180, y: -90 },
+    { x: -165, y: -135 },
+    { x: -135, y: -165 },
+    { x: -90, y: -180 }
+  ], [
+    { x: -90, y: -180 },
+    { x: -75, y: -140 },
+    { x: 0, y: -140 },
+    { x: 40, y: -140 },
+    { x: 75, y: -140 },
+    { x: 100, y: -100 },
+    { x: 88, y: -102 }
+  ]),
+
+  // Finder 2 (Second Layer Route - Layer 1): Loops concentric tracks from West Port 2
+  buildCircuitPath('#e0f2fe', [
+    { x: -140, y: 0 },
+    { x: -140, y: 40 },
+    { x: -140, y: 75 },
+    { x: -120, y: 115 },
+    { x: -75, y: 140 },
+    { x: -40, y: 140 },
+    { x: 0, y: 140 },
+    { x: 40, y: 140 },
+    { x: 75, y: 140 },
+    { x: 115, y: 120 },
+    { x: 140, y: 75 },
+    { x: 140, y: 40 },
+    { x: 140, y: 0 },
+    { x: 140, y: -40 },
+    { x: 140, y: -75 },
+    { x: 120, y: -115 },
+    { x: 75, y: -140 },
+    { x: 40, y: -140 },
+    { x: 0, y: -140 },
+    { x: -40, y: -140 },
+    { x: -75, y: -140 },
+    { x: -115, y: -120 },
+    { x: -140, y: -75 },
+    { x: -140, y: 0 }
+  ], [
+    { x: -140, y: 0 },
+    { x: -100, y: 0 },
+    { x: -50, y: 0 },
+    { x: 0, y: 60 },
+    { x: 60, y: 0 },
+    { x: 100, y: 0 },
+    { x: 100, y: -60 },
+    { x: 95, y: -70 }
+  ]),
+
+  // Finder 3 (The Discoverer - Layer 2): Travels clockwise from North Port 3 to FAULT_PAD_A and halts!
+  buildCircuitPath('#87ceeb', [
+    { x: 0, y: -100 },
+    { x: -35, y: -100 },
+    { x: -55, y: -100 },
+    { x: -85, y: -85 },
+    { x: -100, y: -55 },
+    { x: -100, y: 0 },
+    { x: -100, y: 55 },
+    { x: -85, y: 85 },
+    { x: -55, y: 100 },
+    { x: 0, y: 100 },
+    { x: 55, y: 100 },
+    { x: 85, y: 85 },
+    { x: 100, y: 55 },
+    { x: 100, y: 0 },
+    { x: 100, y: -40 },
+    { x: 88, y: -102 }
+  ], [
+    { x: 88, y: -102 },
+    { x: 88, y: -102 }
+  ]),
+
+  // Finder 4 (Inner/Core Route - Layer 3): Sweeps central nucleus tracks from East Port 4
+  buildCircuitPath('#00f0ff', [
+    { x: 60, y: 0 },
+    { x: 60, y: 25 },
+    { x: 50, y: 45 },
+    { x: 25, y: 60 },
+    { x: 0, y: 60 },
+    { x: -25, y: 60 },
+    { x: -50, y: 45 },
+    { x: -60, y: 25 },
+    { x: -60, y: 0 },
+    { x: -60, y: -25 },
+    { x: -50, y: -45 },
+    { x: -25, y: -60 },
+    { x: 0, y: -60 },
+    { x: 25, y: -60 },
+    { x: 50, y: -45 },
+    { x: 60, y: -25 },
+    { x: 60, y: 0 }
+  ], [
+    { x: 60, y: 0 },
+    { x: 40, y: -20 },
+    { x: 40, y: -40 },
+    { x: 55, y: -65 },
+    { x: 72, y: -86 }
+  ]),
+
+  // Finder 5 (Inter-layer Via Crosser): Traverses via network across all 4 plates from South Port 5
+  buildCircuitPath('#e0f2fe', [
+    { x: 0, y: 180 },
+    { x: 0, y: 140 },
+    { x: 0, y: 100 },
+    { x: 0, y: 60 },
+    { x: -35, y: 35 },
+    { x: -70, y: 70 },
+    { x: -100, y: 100 },
+    { x: -130, y: 130 },
+    { x: -130, y: 0 },
+    { x: -100, y: 0 },
+    { x: -40, y: 0 },
+    { x: 0, y: -40 },
+    { x: 40, y: -40 },
+    { x: 70, y: -70 },
+    { x: 72, y: -86 }
+  ], [
+    { x: 70, y: -70 },
+    { x: 72, y: -86 }
+  ])
+]);
+
+// Exact logo-line routes: four canonical rounded-square contours, with the
+// third contour searched from both directions so five currents remain distinct.
+function roundedLogoLine(size, radius) {
+  const h = size / 2, c = h - radius, q = 6;
+  const pts = [{ x: 0, y: -h }, { x: 10, y: -h }, { x: c, y: -h }];
+  const arc = (cx, cy, a0, a1) => {
+    for (let i = 1; i <= q; i++) {
+      const a = a0 + (a1 - a0) * (i / q);
+      pts.push({ x: cx + Math.cos(a) * radius, y: cy + Math.sin(a) * radius });
+    }
+  };
+  arc(c, -c, -Math.PI / 2, 0);
+  pts.push({ x: h, y: 0 }, { x: h, y: c });
+  arc(c, c, 0, Math.PI / 2);
+  pts.push({ x: 0, y: h }, { x: -c, y: h });
+  arc(-c, c, Math.PI / 2, Math.PI);
+  pts.push({ x: -h, y: 0 }, { x: -h, y: -c });
+  arc(-c, -c, Math.PI, Math.PI * 1.5);
+  pts.push({ x: -10, y: -h }, { x: 0, y: -h });
+  return pts;
+}
+
+function halfLogoLineToFault(size, radius, reverse) {
+  const closed = roundedLogoLine(size, radius);
+  const unique = closed.slice(0, -1);
+  const bottom = unique.findIndex(p => p.x === 0 && p.y === size / 2);
+  const targetX = reverse ? 10 : -10;
+  const step = reverse ? -1 : 1;
+  const out = [unique[bottom]];
+  let i = bottom;
+  while (out.length <= unique.length + 1) {
+    i = (i + step + unique.length) % unique.length;
+    out.push(unique[i]);
+    if (unique[i].x === targetX && unique[i].y === -size / 2) break;
+  }
+  return out;
+}
+
+const FINDER_CIRCUIT_PATHS = Object.freeze([
+  buildCircuitPath('#00f0ff', roundedLogoLine(360, 90), roundedLogoLine(360, 90)),
+  buildCircuitPath('#87ceeb', roundedLogoLine(280, 65), roundedLogoLine(280, 65)),
+  buildCircuitPath('#e0f2fe', halfLogoLineToFault(200, 45, false), halfLogoLineToFault(200, 45, false)),
+  buildCircuitPath('#00d8ff', roundedLogoLine(120, 25), roundedLogoLine(120, 25)),
+  buildCircuitPath('#b8efff', halfLogoLineToFault(200, 45, true), halfLogoLineToFault(200, 45, true))
+]);
+
+let canvas,ctx;
+let isInitialized=false;
+
+const clamp=(v,a=0,b=1)=>Math.max(a,Math.min(b,v));
+const mix=(a,b,t)=>a+(b-a)*t;
+const ease=t=>{t=clamp(t);return t*t*(3-2*t)};
+const out=t=>1-Math.pow(1-clamp(t),3);
+const hash=n=>{const x=Math.sin(n*127.1+311.7)*43758.5453;return x-Math.floor(x)};
+
+const RGBA_MAP=new Map();
+
+function rgba(hex,a){
+  const key=hex+'_'+(Math.round(clamp(a)*100)/100);
+  let cached=RGBA_MAP.get(key);
+  if(!cached){
+    const n=parseInt(hex.slice(1),16);
+    cached=`rgba(${n>>16},${n>>8&255},${n&255},${clamp(a)})`;
+    RGBA_MAP.set(key,cached);
+  }
+  return cached;
+}
+
+function rr(x,y,w,h,r){
+  const q=Math.min(r,w/2,h/2);
+  ctx.beginPath();
+  ctx.moveTo(x+q,y);
+  ctx.arcTo(x+w,y,x+w,y+h,q);
+  ctx.arcTo(x+w,y+h,x,y+h,q);
+  ctx.arcTo(x,y+h,x,y,q);
+  ctx.arcTo(x,y,x+w,y,q);
+  ctx.closePath();
+}
+
+function insideMark(x,y,box){
+  const qx=Math.abs(x)-box.s/2+box.r,qy=Math.abs(y)-box.s/2+box.r;
+  return Math.min(Math.max(qx,qy),0)+Math.hypot(Math.max(qx,0),Math.max(qy,0))<=box.r;
+}
+
+function layerAt(x,y){
+  let layer=-1;
+  for(let i=0;i<BASE_BOXES.length;i++){
+    if(insideMark(x,y,BASE_BOXES[i]))layer=i;
+  }
+  return layer;
+}
+
+const SPRITES={};
+let DIODES=[];
+let FINAL_DROP_GRID=[];
+const TEXT_LAYOUT_CACHE=new Map();
+
+function initSprites(){
+  const makeSprite=(color,glowColor,glowSize,coreRadius,alpha=1)=>{
+    const size=36;
+    const can=document.createElement('canvas');
+    can.width=size;
+    can.height=size;
+    const sctx=can.getContext('2d');
+    const scx=size/2,scy=size/2;
+    if(glowSize>0){
+      const grad=sctx.createRadialGradient(scx,scy,0,scx,scy,glowSize);
+      grad.addColorStop(0,glowColor);
+      grad.addColorStop(0.5,glowColor.replace(/[\d.]+\)$/,'0.15)'));
+      grad.addColorStop(1,'rgba(0,0,0,0)');
+      sctx.fillStyle=grad;
+      sctx.fillRect(0,0,size,size);
+    }
+    sctx.fillStyle=color;
+    sctx.globalAlpha=alpha;
+    sctx.fillRect(scx-coreRadius,scy-coreRadius,coreRadius*2,coreRadius*2);
+    sctx.fillStyle='rgba(255,255,255,0.9)';
+    sctx.fillRect(scx-coreRadius*0.4,scy-coreRadius*0.4,coreRadius*0.8,coreRadius*0.8);
+    return can;
+  };
+
+  SPRITES.layer0=makeSprite('rgba(135,206,235,0.80)','rgba(0,240,255,0.30)',10,1.8,0.7);
+  SPRITES.layer1=makeSprite('rgba(0,240,255,0.90)','rgba(0,240,255,0.40)',12,2.2,0.85);
+  SPRITES.layer2=makeSprite('rgba(224,242,254,0.95)','rgba(0,240,255,0.50)',14,2.5,0.95);
+  SPRITES.layer3=makeSprite('rgba(255,255,255,1.0)','rgba(0,240,255,0.65)',16,2.8,1.0);
+  SPRITES.lockFlash=makeSprite('rgba(255,255,255,1.0)','rgba(0,240,255,0.75)',18,3.2,1.0);
+  SPRITES.green=makeSprite('rgba(0,255,136,0.95)','rgba(0,255,136,0.55)',14,2.4,1.0);
+  SPRITES.amber=makeSprite('rgba(252,211,77,0.95)','rgba(252,211,77,0.55)',14,2.4,1.0);
+  SPRITES.violet=makeSprite('rgba(139,92,246,0.95)','rgba(139,92,246,0.55)',14,2.4,1.0);
+}
+
+function initDiodeGrid(){
+  const cell=10;
+  const span=400;
+  const list=[];
+  for(let y=-span/2;y<=span/2;y+=cell){
+    for(let x=-span/2;x<=span/2;x+=cell){
+      const l=layerAt(x,y);
+      if(l>=0){
+        const yNorm=(y+span/2)/span;
+        const xNorm=(x+span/2)/span;
+        const diagDist=(x+span/2+y+span/2)/(2*span);
+        list.push({x,y,layer:l,yNorm,xNorm,diagDist});
+      }
+    }
+  }
+  DIODES=list;
+}
+
+function initFinalDropGrid(){
+  const cell=28;
+  const list=[];
+  for(let y=0;y<H;y+=cell){
+    for(let x=0;x<W;x+=cell){
+      const dx=x+cell/2-CX,dy=y+cell/2-CY;
+      const l=layerAt(dx/1.85,dy/1.85);
+      list.push({x:x+cell/2,y:y+cell/2,layer:l});
+    }
+  }
+  FINAL_DROP_GRID=list;
+}
+
+function ensureInit(){
+  if(isInitialized)return;
+  if(!canvas){
+    canvas=document.getElementById('stage');
+    ctx=canvas.getContext('2d',{alpha:false});
+  }
+  initSprites();
+  initDiodeGrid();
+  initFinalDropGrid();
+  isInitialized=true;
+}
+
+function pulseAt(ms){
+  let best=0;
+  for(const cue of CUES){
+    const age=ms-cue;
+    if(age>=0&&age<360)best=Math.max(best,Math.exp(-age/115));
+  }
+  return best;
+}
+
+function drawBackground(ms,energy){
+  const g=ctx.createRadialGradient(CX,CY,10,CX,CY,1200);
+  g.addColorStop(0,`rgba(6,20,36,${.48+energy*.20})`);
+  g.addColorStop(.38,'#030711');
+  g.addColorStop(1,'#010204');
+  ctx.fillStyle=g;
+  ctx.fillRect(0,0,W,H);
+
+  ctx.save();
+  ctx.strokeStyle=`rgba(135,206,235,${.022+energy*.030})`;
+  ctx.lineWidth=1;
+  const drift=(ms/1000*36)%40;
+  for(let x=-40+drift;x<W+40;x+=40){
+    ctx.beginPath();
+    ctx.moveTo(x,0);
+    ctx.lineTo(x,H);
+    ctx.stroke();
+  }
+  for(let y=-40+drift*.5;y<H+40;y+=40){
+    ctx.beginPath();
+    ctx.moveTo(0,y);
+    ctx.lineTo(W,y);
+    ctx.stroke();
+  }
+  ctx.restore();
+
+  const v=ctx.createRadialGradient(CX,CY,420,CX,CY,1180);
+  v.addColorStop(0,'rgba(0,0,0,0)');
+  v.addColorStop(1,'rgba(0,0,0,.92)');
+  ctx.fillStyle=v;
+  ctx.fillRect(0,0,W,H);
+}
+
+function drawTracked(text,x,y,spacing,color,alpha,font='600 16px Inter,system-ui,sans-serif'){
+  ctx.save();
+  ctx.font=font;
+  ctx.fillStyle=color;
+  ctx.globalAlpha=alpha;
+  ctx.textBaseline='middle';
+  
+  const cacheKey=font+'_'+spacing+'_'+text;
+  let layout=TEXT_LAYOUT_CACHE.get(cacheKey);
+  if(!layout){
+    let totalW=0;
+    const charWidths=[];
+    for(let i=0;i<text.length;i++){
+      const cw=ctx.measureText(text[i]).width;
+      charWidths.push(cw);
+      totalW+=cw+spacing;
+    }
+    totalW-=spacing;
+    
+    const charOffsets=[];
+    let curX=-totalW/2;
+    for(let i=0;i<text.length;i++){
+      charOffsets.push({ch:text[i],x:curX});
+      curX+=charWidths[i]+spacing;
+    }
+    layout={totalW,charOffsets};
+    TEXT_LAYOUT_CACHE.set(cacheKey,layout);
+  }
+  
+  for(let i=0;i<layout.charOffsets.length;i++){
+    const item=layout.charOffsets[i];
+    ctx.fillText(item.ch,x+item.x,y);
+  }
+  ctx.restore();
+}
+
+function drawCornerBrackets(x,y,w,h,size,color,alpha){
+  ctx.save();
+  ctx.strokeStyle=rgba(color,alpha);
+  ctx.lineWidth=1.8;
+  ctx.beginPath();
+  ctx.moveTo(x,y+size);
+  ctx.lineTo(x,y);
+  ctx.lineTo(x+size,y);
+
+  ctx.moveTo(x+w-size,y);
+  ctx.lineTo(x+w,y);
+  ctx.lineTo(x+w,y+size);
+
+  ctx.moveTo(x,y+h-size);
+  ctx.lineTo(x,y+h);
+  ctx.lineTo(x+size,y+h);
+
+  ctx.moveTo(x+w-size,y+h);
+  ctx.lineTo(x+w,y+h);
+  ctx.lineTo(x+w,y+h-size);
+  ctx.stroke();
+  ctx.restore();
+}
+
+function drawBanner(mainText,subText,badgeText,y,color,alpha,pulse){
+  ctx.save();
+  ctx.globalAlpha=alpha;
+  const bannerW=1080,bannerH=100,bx=CX-bannerW/2,by=y-bannerH/2;
+
+  ctx.fillStyle='rgba(3,10,18,.92)';
+  ctx.strokeStyle=rgba(color,.65+pulse*.3);
+  ctx.lineWidth=2;
+  ctx.shadowColor=color;
+  ctx.shadowBlur=14+pulse*10;
+  rr(bx,by,bannerW,bannerH,14);
+  ctx.fill();
+  ctx.stroke();
+  ctx.shadowBlur=0;
+  
+  drawCornerBrackets(bx,by,bannerW,bannerH,16,color,1);
+  
+  if(badgeText){
+    ctx.fillStyle=rgba(color,.18);
+    rr(CX-170,by+10,340,20,5);
+    ctx.fill();
+    ctx.strokeStyle=rgba(color,.5);
+    ctx.stroke();
+    drawTracked(badgeText,CX,by+20,2,color,alpha,'700 10px ui-monospace,monospace');
+  }
+  
+  drawTracked(mainText,CX,by+(badgeText?48:38),4,'#ffffff',alpha,'800 26px Inter,system-ui,sans-serif');
+  if(subText){
+    drawTracked(subText,CX,by+(badgeText?76:68),2,'#e0f2fe',alpha*.9,'600 12px ui-monospace,monospace');
+  }
+  ctx.restore();
+}
+
+function drawAsciiMark(cx,cy,scale,alpha,pulse,dense=false){
+  const cols=dense?45:37,rows=cols,span=400*scale,cell=span/cols,glyph=['·',':','+','█'];
+  ctx.save();
+  ctx.font=`700 ${Math.max(8,cell*.94)}px ui-monospace,SFMono-Regular,Menlo,monospace`;
+  ctx.textAlign='center';
+  ctx.textBaseline='middle';
+  ctx.shadowColor='#00f0ff';
+  ctx.shadowBlur=5+pulse*6;
+  
+  for(let r=0;r<rows;r++){
+    for(let c=0;c<cols;c++){
+      const x=(c+.5)*cell-span/2,y=(r+.5)*cell-span/2,l=layerAt(x/scale,y/scale);
+      if(l<0)continue;
+      const shimmer=.82+.18*Math.sin(c*2.2+r*2.5+pulse*10);
+      ctx.globalAlpha=alpha*BASE_BOXES[l].a*shimmer;
+      ctx.fillStyle=l>1?'#e0f2fe':l===1?'#00f0ff':'#87ceeb';
+      ctx.fillText(glyph[l],cx+x,cy+y);
+    }
+  }
+  ctx.restore();
+}
+
+function drawLedMark(cx,cy,scale,alpha,pulse,cell=12){
+  const span=400*scale;
+  ctx.save();
+  ctx.globalCompositeOperation='lighter';
+  ctx.globalAlpha=alpha;
+  
+  for(let y=-span/2;y<=span/2;y+=cell){
+    for(let x=-span/2;x<=span/2;x+=cell){
+      const l=layerAt(x/scale,y/scale);
+      if(l<0)continue;
+      const a=BASE_BOXES[l].a*(.8+.2*Math.sin(x*.05+y*.05+pulse*9+l));
+      const sprite=l===3?SPRITES.layer3:l===2?SPRITES.layer2:l===1?SPRITES.layer1:SPRITES.layer0;
+      const dSize=Math.max(15,cell*1.7)*(1+pulse*.12);
+      ctx.globalAlpha=alpha*a;
+      ctx.drawImage(sprite,cx+x-dSize/2,cy+y-dSize/2,dSize,dSize);
+    }
+  }
+  ctx.restore();
+}
+
+function drawCrystallineLedMatrix(cx,cy,scale,alpha,pulse,cell=10,rasterT=1){
+  ctx.save();
+  ctx.globalCompositeOperation='lighter';
+  ctx.globalAlpha=alpha;
+  for(let i=0;i<DIODES.length;i++){
+    const d=DIODES[i];
+    if(d.yNorm>rasterT)continue;
+    const lockFlash=clamp(1-(rasterT-d.yNorm)*4);
+    const baseSprite=d.layer===3?SPRITES.layer3:d.layer===2?SPRITES.layer2:d.layer===1?SPRITES.layer1:SPRITES.layer0;
+    const sprite=lockFlash>.35?SPRITES.lockFlash:baseSprite;
+    const spriteSize=mix(18,25,lockFlash)*(scale/0.65)*(1+pulse*0.08);
+    ctx.drawImage(sprite,cx+d.x*scale-spriteSize/2,cy+d.y*scale-spriteSize/2,spriteSize,spriteSize);
+  }
+  ctx.restore();
+}
+
+function drawExactSvgMark(cx,cy,scale,alpha,pulse){
+  ctx.save();
+  ctx.translate(cx,cy);
+  ctx.scale(scale,scale);
+  ctx.translate(-200,-200);
+  ctx.shadowColor='#00f0ff';
+  ctx.shadowBlur=8+pulse*8;
+  for(const b of BASE_BOXES){
+    ctx.globalAlpha=alpha*b.a;
+    ctx.fillStyle='#87ceeb';
+    rr(b.x,b.x,b.s,b.s,b.r);
+    ctx.fill();
+  }
+  ctx.restore();
+}
+
+function drawCompactSwarmMark(cx,cy,scale,alpha,pulse){
+  ctx.save();
+  ctx.translate(cx,cy);
+  ctx.scale(scale,scale);
+  ctx.translate(-200,-200);
+  ctx.shadowColor='#00f0ff';
+  ctx.shadowBlur=6+pulse*6;
+  for(const b of BASE_BOXES){
+    ctx.globalAlpha=alpha*b.a;
+    ctx.fillStyle='#87ceeb';
+    rr(b.x,b.x,b.s,b.s,b.r);
+    ctx.fill();
+  }
+  ctx.restore();
+}
+
+function drawThemedSwarmMark(cx,cy,scale,color,alpha,pulse){
+  ctx.save();
+  ctx.translate(cx,cy);
+  ctx.scale(scale,scale);
+  ctx.translate(-200,-200);
+  ctx.shadowColor=color;
+  ctx.shadowBlur=6+pulse*6;
+  for(const b of BASE_BOXES){
+    ctx.globalAlpha=alpha*b.a;
+    ctx.fillStyle=color;
+    rr(b.x,b.x,b.s,b.s,b.r);
+    ctx.fill();
+  }
+  ctx.restore();
+}
+
+function drawIcon(type,cx,cy,color,alpha,pulse,scale=1){
+  ctx.save();
+  ctx.translate(cx,cy);
+  if(scale!==1)ctx.scale(scale,scale);
+  ctx.globalAlpha=alpha;
+  ctx.strokeStyle=color;
+  ctx.fillStyle=color;
+  ctx.lineWidth=2.5/scale;
+  ctx.shadowColor=color;
+  ctx.shadowBlur=8+pulse*10;
+  ctx.lineCap='square';
+  ctx.lineJoin='miter';
+  const dot=(x,y,r=5)=>{ctx.beginPath();ctx.arc(x,y,r,0,TAU);ctx.fill()};
+  
+  if(type==='agents'){
+    ctx.beginPath();ctx.moveTo(0,-24);ctx.lineTo(-26,18);ctx.lineTo(26,18);ctx.closePath();ctx.stroke();
+    dot(0,-27,7);dot(-29,21,7);dot(29,21,7);dot(0,4,5);
+  }else if(type==='plan'){
+    ctx.strokeRect(-34,-36,68,72);
+    for(let i=0;i<3;i++){
+      const y=-21+i*22;
+      ctx.beginPath();ctx.moveTo(-23,y);ctx.lineTo(-16,y+6);ctx.lineTo(-7,y-7);ctx.stroke();
+      ctx.fillRect(2,y-3,21,3);
+    }
+  }else if(type==='sessions'){
+    for(let i=2;i>=0;i--){
+      ctx.globalAlpha=alpha*(1-i*.18);
+      ctx.strokeRect(-36+i*9,-29-i*8,62,50);
+    }
+    ctx.beginPath();ctx.moveTo(-18,35);ctx.lineTo(18,35);ctx.stroke();dot(0,35,4);
+  }else if(type==='tools'){
+    ctx.strokeRect(-36,-30,29,29);ctx.strokeRect(7,-30,29,29);ctx.strokeRect(-15,13,30,25);
+    ctx.beginPath();ctx.moveTo(-7,-1);ctx.lineTo(-7,13);ctx.moveTo(7,-1);ctx.lineTo(7,13);ctx.stroke();
+  }else if(type==='media'){
+    ctx.strokeRect(-38,-32,76,64);
+    ctx.beginPath();ctx.moveTo(-29,19);ctx.lineTo(-8,-8);ctx.lineTo(7,8);ctx.lineTo(20,-5);ctx.lineTo(31,19);ctx.stroke();
+    dot(20,-18,6);ctx.strokeRect(-8,-8,16,16);
+  }else if(type==='worktree'){
+    ctx.beginPath();ctx.moveTo(-28,-30);ctx.lineTo(-28,27);ctx.lineTo(25,27);
+    ctx.moveTo(-28,-4);ctx.lineTo(20,-4);ctx.moveTo(20,-4);ctx.lineTo(20,-22);ctx.stroke();
+    dot(-28,-32,6);dot(20,-24,6);dot(27,27,6);
+  }
+  ctx.restore();
+}
+
+function drawConnector(x1,y1,x2,y2,alpha,pulse,phase,color='#00f0ff'){
+  ctx.save();
+  ctx.strokeStyle=rgba(color,alpha*.45);
+  ctx.lineWidth=1.8;
+  ctx.setLineDash([6,10]);
+  ctx.lineDashOffset=-phase*60;
+  ctx.beginPath();
+  ctx.moveTo(x1,y1);
+  ctx.lineTo(x2,y2);
+  ctx.stroke();
+  ctx.setLineDash([]);
+  
+  for(let i=0;i<4;i++){
+    const q=(phase*.4+i/4)%1,x=mix(x1,x2,q),y=mix(y1,y2,q);
+    ctx.fillStyle=rgba(color,alpha*(.6+pulse*.4));
+    ctx.shadowColor=color;
+    ctx.shadowBlur=8;
+    ctx.beginPath();
+    ctx.arc(x,y,3.2+pulse*1.8,0,TAU);
+    ctx.fill();
+  }
+  ctx.restore();
+}
+
+function drawEditorialNarration(mainText,subText,alpha,color='#00f0ff'){
+  ctx.save();
+  ctx.globalAlpha=alpha;
+  const ny=945;
+  const g=ctx.createRadialGradient(CX,ny,20,CX,ny,480);
+  g.addColorStop(0,'rgba(2,2,5,.88)');
+  g.addColorStop(1,'rgba(2,2,5,0)');
+  ctx.fillStyle=g;
+  ctx.fillRect(CX-500,ny-40,1000,90);
+  
+  ctx.shadowColor=color;
+  ctx.shadowBlur=10;
+  drawTracked(mainText,CX,ny,4,'#ffffff',alpha,'800 28px Inter,system-ui,sans-serif');
+  ctx.shadowBlur=0;
+  
+  if(subText){
+    drawTracked(subText,CX,ny+34,2,color,alpha*.9,'700 13px ui-monospace,monospace');
+  }
+  ctx.restore();
+}
+
+// ----------------------------------------------------
+// SCENE 1: MATERIAL FILL PROPAGATION (0 - 20220ms) - LOCKED SOURCE
+// ----------------------------------------------------
+function drawOpeningCinematic(ms,pulse){
+  const tSec=ms/1000;
+
+  if(ms<3200){
+    const aIntro=ease(clamp(ms/1400));
+    const pFill=clamp(ms/2800);
+    const breathe=1+.015*Math.sin(tSec*2.5);
+    const coreScale=mix(.42,.52,ease(pFill))*breathe*(1+pulse*.02);
+    ctx.save();
+    ctx.translate(CX,CY);
+    ctx.scale(coreScale,coreScale);
+    ctx.translate(-200,-200);
+    for(let i=0;i<BASE_BOXES.length;i++){
+      const b=BASE_BOXES[i];
+      const lp=ease(clamp((pFill-i*0.20)/0.35));
+      if(lp<=0)continue;
+      ctx.globalAlpha=aIntro*b.a*lp*0.52;
+      ctx.fillStyle='#87ceeb';
+      rr(b.x,b.x,b.s,b.s,b.r);
+      ctx.fill();
+      if(lp<0.99){
+        ctx.globalAlpha=aIntro*(1-lp*0.5)*0.36;
+        ctx.strokeStyle='#00f0ff';
+        ctx.lineWidth=mix(2.0,1.0,lp)/coreScale;
+        rr(b.x,b.x,b.s,b.s,b.r);
+        ctx.stroke();
+      }else{
+        ctx.globalAlpha=aIntro*0.12;
+        ctx.strokeStyle='#87ceeb';
+        ctx.lineWidth=1.0/coreScale;
+        rr(b.x,b.x,b.s,b.s,b.r);
+        ctx.stroke();
+      }
+    }
+    ctx.restore();
+    ctx.save();
+    const boxExtent=210*coreScale;
+    drawCornerBrackets(CX-boxExtent,CY-boxExtent,boxExtent*2,boxExtent*2,12,'#00f0ff',.12*aIntro);
+    ctx.restore();
+    drawEditorialNarration("Hi, I’m Swarm.","THE LOCAL-FIRST AI WORKSPACE",aIntro,'#00f0ff');
+    return;
+  }
+  if(ms<5000){
+    const p=clamp((ms-3200)/1800);
+    const coreScale=mix(.52,.54,ease(p))*(1+pulse*.02);
+    drawExactSvgMark(CX,CY,coreScale,.52,pulse);
+    ctx.save();
+    const boxExtent=210*coreScale;
+    drawCornerBrackets(CX-boxExtent,CY-boxExtent,boxExtent*2,boxExtent*2,12,'#00f0ff',.16);
+    for(let l=0;l<BASE_BOXES.length;l++){
+      const box=BASE_BOXES[l];
+      const s=box.s*coreScale;
+      ctx.strokeStyle=rgba(l>1?'#00f0ff':'#87ceeb',.08+pulse*.02);
+      ctx.lineWidth=1.0;
+      rr(CX-s/2,CY-s/2,s,s,box.r*coreScale);
+      ctx.stroke();
+    }
+    ctx.restore();
+    const crossFade=ease(clamp((ms-3200)/500));
+    drawEditorialNarration("I’m an AI agent.","LOCAL ORCHESTRATION · ZERO CLOUD LATENCY",crossFade,'#00f0ff');
+    return;
+  }
+  if(ms<7400){
+    const p=clamp((ms-5000)/2400);
+    const pEase=ease(p);
+    const anchorTargetX=CX-1040/2+55;
+    const curLogoX=mix(CX,anchorTargetX,pEase);
+    const curLogoScale=mix(.54,.17,pEase)*(1+pulse*.02);
+    const barLeft=curLogoX-55;
+    const barRight=mix(curLogoX+55,CX+520,pEase);
+    const barW=Math.max(110,barRight-barLeft);
+    const barH=90;
+    const barX=barLeft;
+    const barY=CY-barH/2;
+    ctx.save();
+    ctx.fillStyle='rgba(2,6,12,0.94)';
+    ctx.strokeStyle=rgba('#00f0ff',.08*pEase+.06+pulse*.02);
+    ctx.lineWidth=1.4;
+    ctx.shadowColor='#00f0ff';
+    ctx.shadowBlur=3*pEase;
+    rr(barX,barY,barW,barH,12);
+    ctx.fill();
+    ctx.stroke();
+    ctx.shadowBlur=0;
+    drawCornerBrackets(barX,barY,barW,barH,14,'#00f0ff',.20*pEase);
+    if(pEase>.3){
+      const socketA=(pEase-.3)/.7;
+      ctx.strokeStyle=rgba('#87ceeb',socketA*.25);
+      ctx.lineWidth=1.0;
+      rr(curLogoX-34,CY-34,68,68,8);
+      ctx.stroke();
+    }
+    ctx.restore();
+    drawCompactSwarmMark(curLogoX,CY,curLogoScale,.52,pulse);
+    const crossFade=ease(clamp((ms-5000)/600));
+    drawEditorialNarration("Tell me what you want to create.","NATURAL CREATIVE INTENT",crossFade,'#87ceeb');
+    return;
+  }
+  if(ms<9900){
+    const pType=clamp((ms-7400)/2300);
+    const totalChars=PROMPT_TEXT.length;
+    const count=Math.floor(pType*totalChars);
+    const visibleStr=PROMPT_TEXT.slice(0,count);
+    const pbW=1040,pbH=90,pbx=CX-pbW/2,pby=CY-pbH/2;
+    const anchorX=pbx+55;
+    const textStartX=pbx+112;
+    const sendBtnX=pbx+pbW-55;
+    ctx.save();
+    ctx.fillStyle='rgba(2,6,12,0.94)';
+    ctx.strokeStyle='rgba(0,240,255,0.16)';
+    ctx.lineWidth=1.4;
+    ctx.shadowColor='#00f0ff';
+    ctx.shadowBlur=3+pulse*2;
+    rr(pbx,pby,pbW,pbH,12);
+    ctx.fill();
+    ctx.stroke();
+    ctx.shadowBlur=0;
+    drawCornerBrackets(pbx,pby,pbW,pbH,14,'#00f0ff',.24);
+    ctx.strokeStyle='rgba(135,206,235,0.30)';
+    ctx.lineWidth=1.0;
+    rr(anchorX-34,CY-34,68,68,8);
+    ctx.stroke();
+    ctx.strokeStyle='rgba(135,206,235,0.15)';
+    ctx.lineWidth=1.0;
+    ctx.beginPath();
+    ctx.moveTo(anchorX+34,CY);
+    ctx.lineTo(textStartX-10,CY);
+    ctx.stroke();
+    ctx.font='600 24px ui-monospace,SFMono-Regular,Menlo,monospace';
+    ctx.fillStyle='#ffffff';
+    ctx.textAlign='left';
+    ctx.textBaseline='middle';
+    ctx.shadowColor='#00f0ff';
+    ctx.shadowBlur=2;
+    ctx.fillText(visibleStr,textStartX,CY);
+    const textW=ctx.measureText(visibleStr).width;
+    const cursorX=textStartX+textW+3;
+    const cursorBlink=Math.sin(tSec*10)>-0.2;
+    if(cursorBlink){
+      ctx.fillStyle='#00f0ff';
+      ctx.shadowColor='#00f0ff';
+      ctx.shadowBlur=8;
+      ctx.fillRect(cursorX,CY-15,3,30);
+    }
+    const sendW=44,sendH=44;
+    const isFinishedTyping=count===totalChars;
+    const sendAlpha=isFinishedTyping?.75:.35;
+    ctx.fillStyle='rgba(10,24,38,0.6)';
+    ctx.strokeStyle=rgba('#00f0ff',sendAlpha);
+    ctx.lineWidth=1.2;
+    rr(sendBtnX-sendW/2,CY-sendH/2,sendW,sendH,8);
+    ctx.fill();
+    ctx.stroke();
+    ctx.strokeStyle=rgba('#e0f2fe',sendAlpha);
+    ctx.lineWidth=2.0;
+    ctx.beginPath();
+    ctx.moveTo(sendBtnX-7,CY);
+    ctx.lineTo(sendBtnX+6,CY);
+    ctx.moveTo(sendBtnX+1,CY-5);
+    ctx.lineTo(sendBtnX+6,CY);
+    ctx.lineTo(sendBtnX+1,CY+5);
+    ctx.stroke();
+    ctx.restore();
+    drawCompactSwarmMark(anchorX,CY,.17,.52,pulse);
+    drawEditorialNarration("Tell me what you want to create.","COMPOSING USER REQUEST",1,'#87ceeb');
+    return;
+  }
+  if(ms<11800){
+    const pbW=1040,pbH=90,pbx=CX-pbW/2,pby=CY-pbH/2;
+    const anchorX=pbx+55,textStartX=pbx+112,sendBtnX=pbx+pbW-55;
+    const pPress=ease(clamp((ms-9900)/320));
+    const pPending=ease(clamp((ms-10220)/430));
+    const pDepart=ease(clamp((ms-10950)/700));
+    const barY=CY-mix(0,24,pDepart);
+    const alpha=clamp(1-pDepart);
+    const btnScale=pPress<.6?mix(1,.90,pPress/.6):mix(.90,1,(pPress-.6)/.4);
+    ctx.save();
+    ctx.globalAlpha=alpha;
+    ctx.fillStyle='rgba(1,3,7,0.96)';
+    ctx.strokeStyle='rgba(135,206,235,0.13)';
+    ctx.lineWidth=1;
+    rr(pbx,barY-pbH/2,pbW,pbH,12);
+    ctx.fill();
+    ctx.stroke();
+    drawCornerBrackets(pbx,barY-pbH/2,pbW,pbH,14,'#87ceeb',.13*alpha);
+    ctx.strokeStyle='rgba(135,206,235,0.11)';
+    rr(anchorX-34,barY-34,68,68,8);
+    ctx.stroke();
+    drawCompactSwarmMark(anchorX,barY,.17,.34,pulse*.15);
+    ctx.font='600 24px ui-monospace,SFMono-Regular,Menlo,monospace';
+    ctx.fillStyle='rgba(224,242,254,0.82)';
+    ctx.textAlign='left';
+    ctx.textBaseline='middle';
+    ctx.fillText(PROMPT_TEXT,textStartX+mix(0,3,pPress),barY);
+    const sendW=44*btnScale,sendH=44*btnScale;
+    ctx.fillStyle='rgba(8,15,24,0.72)';
+    ctx.strokeStyle='rgba(135,206,235,0.28)';
+    rr(sendBtnX-sendW/2,barY-sendH/2,sendW,sendH,8);
+    ctx.fill();
+    ctx.stroke();
+    ctx.strokeStyle='rgba(224,242,254,0.74)';
+    ctx.lineWidth=1.6;
+    ctx.beginPath();
+    ctx.moveTo(sendBtnX-7*btnScale,barY);
+    ctx.lineTo(sendBtnX+6*btnScale,barY);
+    ctx.moveTo(sendBtnX+1*btnScale,barY-5*btnScale);
+    ctx.lineTo(sendBtnX+6*btnScale,barY);
+    ctx.lineTo(sendBtnX+1*btnScale,barY+5*btnScale);
+    ctx.stroke();
+    if(pPending>0&&pDepart<.2){
+      ctx.fillStyle=`rgba(135,206,235,${.18*(1-pDepart)})`;
+      ctx.fillRect(pbx+18,barY+pbH/2-2,(pbW-36)*pPending,1);
+    }
+    ctx.restore();
+    const message=pDepart>0?'Your message is on its way.':(pPending>.25?'Message sent.':'Send your request.');
+    drawEditorialNarration(message,'',.72*alpha,'#87ceeb');
+    return;
+  }
+  if(ms<16600){
+    const quiet=ease(clamp((ms-11800)/420));
+    const rebuildP=ease(clamp((ms-12180)/2400));
+    const diodeP=ease(clamp((ms-14400)/2200));
+    const scale=.65;
+    if(rebuildP>0){
+      ctx.save();
+      ctx.translate(CX,CY);
+      ctx.scale(scale,scale);
+      ctx.translate(-200,-200);
+      for(let i=0;i<BASE_BOXES.length;i++){
+        const b=BASE_BOXES[i];
+        const layerOrder=3-i;
+        const lp=ease(clamp((rebuildP-layerOrder*0.16)/0.40));
+        if(lp<=0)continue;
+        ctx.globalAlpha=lp*b.a*.48;
+        ctx.fillStyle='#87ceeb';
+        rr(b.x,b.x,b.s,b.s,b.r);
+        ctx.fill();
+        if(lp<0.99){
+          ctx.globalAlpha=(1-lp*0.5)*0.28;
+          ctx.strokeStyle='#00f0ff';
+          ctx.lineWidth=1.5/scale;
+          rr(b.x,b.x,b.s,b.s,b.r);
+          ctx.stroke();
+        }else{
+          ctx.globalAlpha=0.12;
+          ctx.strokeStyle='#e0f2fe';
+          ctx.lineWidth=1.0/scale;
+          rr(b.x,b.x,b.s,b.s,b.r);
+          ctx.stroke();
+        }
+      }
+      ctx.restore();
+      if(diodeP>0){
+        drawCrystallineLedMatrix(CX,CY,scale,.44*diodeP,pulse*.12,10,diodeP);
+        const frontierY=CY-200*scale+400*scale*diodeP;
+        if(diodeP<.99){
+          ctx.save();
+          ctx.strokeStyle='rgba(135,206,235,0.30)';
+          ctx.lineWidth=1.2;
+          ctx.beginPath();
+          ctx.moveTo(CX-225*scale,frontierY);
+          ctx.lineTo(CX+225*scale,frontierY);
+          ctx.stroke();
+          ctx.restore();
+        }
+      }
+    }
+    const title=rebuildP<.15?'':(diodeP<.25?'Recreating the Swarm SVG.':'Restructuring it in LED form.');
+    drawEditorialNarration(title,'',quiet*.72,'#87ceeb');
+    return;
+  }
+  if(ms<18800){
+    const p=ease(clamp((ms-16600)/900));
+    const scale=.65;
+    drawExactSvgMark(CX,CY,scale,.10*p,pulse*.08);
+    drawCrystallineLedMatrix(CX,CY,scale,.44*p,pulse*.12,10,1);
+    drawEditorialNarration('Your logo, rebuilt in LED form.','',.72,'#87ceeb');
+    return;
+  }
+  {
+    const scale=.65;
+    drawExactSvgMark(CX,CY,scale,.10,pulse*.06);
+    drawCrystallineLedMatrix(CX,CY,scale,.40,pulse*.10,10,1);
+    drawEditorialNarration('Made with Swarm.','',.68,'#87ceeb');
+  }
+}
+
+// ----------------------------------------------------
+// SCENE 2 / STEP 03: UNDERSTAND -> EXPLORE -> CREATE (20220ms - 48120ms)
+// Layered Circuit Swarm SVG -> 25 Directions Matrix -> Multitrack Production Studio
+// ----------------------------------------------------
+function drawProgressiveVariantLogo(c, r, cx, cy, scale, alpha, tSec, pulse, isSelected, genProgress) {
+  const idx = r * 5 + c;
+
+  ctx.save();
+  ctx.translate(cx, cy);
+  ctx.globalAlpha = alpha;
+
+  if (isSelected) {
+    ctx.shadowColor = '#ffffff';
+    ctx.shadowBlur = 18 + pulse * 14;
+  }
+
+  // Level 1: Construction seeds
+  if (genProgress < 0.35) {
+    const pSeed = genProgress / 0.35;
+    ctx.fillStyle = '#00f0ff';
+    ctx.shadowColor = '#00f0ff';
+    ctx.shadowBlur = 8;
+    ctx.beginPath();
+    ctx.arc(0, 0, mix(1, 4, pSeed), 0, TAU);
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(135,206,235,0.4)';
+    ctx.lineWidth = 1.0;
+    ctx.strokeRect(-15 * pSeed, -15 * pSeed, 30 * pSeed, 30 * pSeed);
+    ctx.restore();
+    return;
+  }
+  // Level 2 & 3: Progressive Box Rendering
+  for (let l = 0; l < BASE_BOXES.length; l++) {
+    const b = BASE_BOXES[l];
+    let layerAlpha = b.a * alpha * clamp((genProgress - 0.2) / 0.5);
+    let s = b.s * scale;
+    let rad = b.r * scale;
+    let col = '#87ceeb';
+
+    if (idx === 0) {
+      const wave = Math.sin(l * 1.5 - tSec * 6 + c * 0.8);
+      col = wave > 0.2 ? '#00f0ff' : '#87ceeb';
+      layerAlpha *= 0.8 + wave * 0.4;
+    } else if (idx === 1) {
+      col = l === 3 ? '#ffffff' : l === 2 ? '#00f0ff' : l === 1 ? '#87ceeb' : '#8b5cf6';
+    } else if (idx === 2) {
+      col = l === 3 ? '#ffffff' : '#00f0ff';
+    } else if (idx === 3) {
+      col = l === 3 ? '#ff7edb' : l === 2 ? '#00f0ff' : '#87ceeb';
+    } else if (idx === 4) {
+      s *= 1 + 0.06 * Math.sin(tSec * 4 + l * 0.8);
+    } else if (idx === 5) {
+      col = l > 1 ? '#e0f2fe' : '#00f0ff';
+    } else if (idx === 6) {
+      const scanY = (tSec * 1.8 + c * 0.2) % 1;
+      if (Math.abs(l / 3 - scanY) < 0.25) col = '#ffffff';
+    } else if (idx === 7) {
+      col = l % 2 === 0 ? '#00f0ff' : '#e0f2fe';
+    } else if (idx === 8) {
+      col = l === 3 ? '#fcd34d' : '#00ff88';
+    } else if (idx === 9) {
+      col = '#00ff88';
+    } else if (idx === 10) {
+      col = l === 3 ? '#ffffff' : '#87ceeb';
+    } else if (idx === 11) {
+      rad *= 1 + 0.15 * Math.sin(tSec * 5 + l);
+    } else if (idx === 12) {
+      col = l === 3 ? '#ffffff' : l === 2 ? '#e0f2fe' : l === 1 ? '#00f0ff' : '#87ceeb';
+      layerAlpha = Math.min(1, layerAlpha * 1.35);
+    } else if (idx === 13) {
+      col = Math.sin(tSec * 12 + idx) > 0 ? '#00f0ff' : '#87ceeb';
+    } else if (idx === 14) {
+      s *= 1 + 0.04 * Math.cos(tSec * 8 + l * 1.2);
+    } else if (idx === 15) {
+      col = l === 3 ? '#ffffff' : '#87ceeb';
+    } else if (idx === 16) {
+      col = l > 1 ? '#00f0ff' : '#8b5cf6';
+    } else if (idx === 17) {
+      col = '#e0f2fe';
+    } else if (idx === 18) {
+      col = l === 3 ? '#00ff88' : '#87ceeb';
+    } else if (idx === 19) {
+      col = l === 3 ? '#ffffff' : '#00f0ff';
+    } else if (idx === 20) {
+      col = l === 3 ? '#fcd34d' : '#ff7edb';
+    } else if (idx === 21) {
+      col = '#00ff88';
+    } else if (idx === 22) {
+      col = l === 3 ? '#ffffff' : l === 2 ? '#fcd34d' : '#87ceeb';
+    } else if (idx === 23) {
+      col = '#87ceeb';
+    } else if (idx === 24) {
+      col = l === 3 ? '#ffffff' : '#e0f2fe';
+    }
+    ctx.globalAlpha = layerAlpha;
+    ctx.fillStyle = col;
+    rr(-s / 2, -s / 2, s, s, rad);
+    ctx.fill();
+
+    if (isSelected || l === 3 || idx === 12) {
+      ctx.strokeStyle = isSelected ? '#ffffff' : col;
+      ctx.lineWidth = isSelected ? 1.6 : 1.2;
+      rr(-s / 2, -s / 2, s, s, rad);
+      ctx.stroke();
+    }
+  }
+  if (isSelected) {
+    const boxW = 140, boxH = 84;
+    ctx.strokeStyle = rgba('#ffffff', 0.95);
+    ctx.lineWidth = 1.8;
+    rr(-boxW / 2, -boxH / 2, boxW, boxH, 8);
+    ctx.stroke();
+    drawCornerBrackets(-boxW / 2, -boxH / 2, boxW, boxH, 10, '#ffffff', 1);
+
+    ctx.fillStyle = 'rgba(0,240,255,0.22)';
+    ctx.strokeStyle = rgba('#00f0ff', 0.8);
+    ctx.lineWidth = 1.0;
+    rr(-100, boxH / 2 + 8, 200, 20, 4);
+    ctx.fill();
+    ctx.stroke();
+    ctx.font = '800 9px ui-monospace,monospace';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = '#ffffff';
+    ctx.fillText('SELECTED // KINETIC CRYSTALLINE', 0, boxH / 2 + 18);
+  }
+  ctx.restore();
+}
+
+function getPathPoint(pathData, progress) {
+  const pts = pathData.pts;
+  const segLengths = pathData.segLengths;
+  const totalLength = pathData.totalLength;
+  if (totalLength === 0 || pts.length === 0) return { x: 0, y: 0, heading: 0 };
+  if (progress <= 0) {
+    const heading = pts.length > 1 ? Math.atan2(pts[1].y - pts[0].y, pts[1].x - pts[0].x) : 0;
+    return { x: pts[0].x, y: pts[0].y, heading };
+  }
+  if (progress >= 1) {
+    const last = pts.length - 1;
+    const heading = last > 0 ? Math.atan2(pts[last].y - pts[last - 1].y, pts[last].x - pts[last - 1].x) : 0;
+    return { x: pts[last].x, y: pts[last].y, heading };
+  }
+  const targetDist = progress * totalLength;
+  let accum = 0;
+  for (let i = 0; i < pts.length - 1; i++) {
+    const segLen = segLengths[i];
+    if (accum + segLen >= targetDist) {
+      const segT = (targetDist - accum) / (segLen || 1);
+      const x = mix(pts[i].x, pts[i + 1].x, segT);
+      const y = mix(pts[i].y, pts[i + 1].y, segT);
+      const heading = Math.atan2(pts[i + 1].y - pts[i].y, pts[i + 1].x - pts[i].x);
+      return { x, y, heading };
+    }
+    accum += segLen;
+  }
+  const last = pts.length - 1;
+  const heading = last > 0 ? Math.atan2(pts[last].y - pts[last - 1].y, pts[last].x - pts[last - 1].x) : 0;
+  return { x: pts[last].x, y: pts[last].y, heading };
+}
+
+// Deterministic electrical current rendered only on the canonical logo contour.
+function drawEmbeddedFinderCurrent(ctx, pathData, progress, color, pulse, tSec, scale, isDiscovererHalt=false) {
+  const pts = pathData.pts;
+  const segLengths = pathData.segLengths;
+  const totalLength = pathData.totalLength;
+  if (progress <= 0 || totalLength === 0 || pts.length === 0) return;
+
+  const targetDist = progress * totalLength;
+  let accum = 0;
+  ctx.save();
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+
+  // A restrained energized wake: every pixel remains centered on the logo line.
+  ctx.beginPath();
+  ctx.moveTo(pts[0].x * scale, pts[0].y * scale);
+  for (let i = 0; i < pts.length - 1; i++) {
+    const segLen = segLengths[i];
+    if (accum + segLen >= targetDist) {
+      const segT = (targetDist - accum) / (segLen || 1);
+      ctx.lineTo(mix(pts[i].x, pts[i + 1].x, segT) * scale, mix(pts[i].y, pts[i + 1].y, segT) * scale);
+      break;
+    }
+    ctx.lineTo(pts[i + 1].x * scale, pts[i + 1].y * scale);
+    accum += segLen;
+  }
+  ctx.strokeStyle = rgba(color, 0.32 + pulse * 0.12);
+  ctx.lineWidth = 7.5 * scale;
+  ctx.shadowColor = color;
+  ctx.shadowBlur = (18 + pulse * 10) * scale;
+  ctx.stroke();
+  ctx.strokeStyle = rgba(color, 0.95);
+  ctx.lineWidth = 2.15 * scale;
+  ctx.shadowBlur = 8 * scale;
+  ctx.stroke();
+  ctx.strokeStyle = 'rgba(255,255,255,0.92)';
+  ctx.lineWidth = 0.72 * scale;
+  ctx.shadowBlur = 0;
+  ctx.stroke();
+
+  // Five compact charge packets form a coherent train behind the leading edge.
+  const packetSpacing = 0.026;
+  for (let k = 0; k < 5; k++) {
+    const pp = Math.max(0, progress - k * packetSpacing);
+    const p = getPathPoint(pathData, pp);
+    const energy = 1 - k / 6;
+    ctx.fillStyle = k === 0 ? '#ffffff' : rgba(color, energy);
+    ctx.shadowColor = color;
+    ctx.shadowBlur = (k === 0 ? 20 : 11) * scale * energy;
+    ctx.beginPath();
+    ctx.arc(p.x * scale, p.y * scale, (k === 0 ? 3.6 : 2.1) * scale * energy, 0, TAU);
+    ctx.fill();
+  }
+  ctx.restore();
+}
+
+function drawSolderPad(ctx, x, y, color, isPowered, pulse) {
+  ctx.save();
+  ctx.fillStyle = 'rgba(2, 8, 16, 0.9)';
+  ctx.strokeStyle = rgba(color, isPowered ? 0.9 : 0.45);
+  ctx.lineWidth = isPowered ? 1.8 : 1.2;
+  if (isPowered) {
+    ctx.shadowColor = color;
+    ctx.shadowBlur = 8 + pulse * 4;
+  }
+  ctx.beginPath();
+  ctx.arc(x, y, 4.5, 0, TAU);
+  ctx.fill();
+  ctx.stroke();
+  ctx.fillStyle = isPowered ? '#ffffff' : 'rgba(135, 206, 235, 0.3)';
+  ctx.beginPath();
+  ctx.arc(x, y, 1.6, 0, TAU);
+  ctx.fill();
+  ctx.restore();
+}
+
+function drawCircuitBlueprint(ctx, scale, alpha, pulse, pActivate) {
+  ctx.save();
+  ctx.globalAlpha = alpha;
+
+  // 4 Nested rounded square plates with subtle blueprint fills
+  for (let l = 0; l < BASE_BOXES.length; l++) {
+    const b = BASE_BOXES[l];
+    const s = b.s * scale;
+    const r = b.r * scale;
+    const layerCurrent = l === 0 ? clamp((pActivate - 0.0) / 0.35) :
+                         l === 1 ? clamp((pActivate - 0.15) / 0.35) :
+                         l === 2 ? clamp((pActivate - 0.30) / 0.35) :
+                                   clamp((pActivate - 0.45) / 0.35);
+
+    // Line-only mark: no plates or decorative substrate.
+
+    // Canonical logo contour
+    const borderCol = layerCurrent > 0.5 ? '#00f0ff' : '#87ceeb';
+    const borderA = mix(0.18, 0.85, layerCurrent);
+    ctx.strokeStyle = rgba(borderCol, borderA);
+    ctx.lineWidth = mix(1.0, 1.6, layerCurrent);
+    if (layerCurrent > 0.7) {
+      ctx.shadowColor = borderCol;
+      ctx.shadowBlur = 8 + pulse * 6;
+    }
+    rr(-s / 2, -s / 2, s, s, r);
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+
+  }
+
+  // No secondary tracks, buses, vias, brackets, cards, or off-logo decoration.
+
+  ctx.restore();
+}
+
+const FINDER_SNAKE_COLORS = Object.freeze(['#00f0ff','#87ceeb','#e0f2fe','#8b5cf6','#00ffb7']);
+const FINDER_CLOUD = Object.freeze(Array.from({length:920},(_,i)=>Object.freeze({
+  x:80+hash(i*5.31)*1760,
+  y:145+hash(i*9.17+4)*705,
+  z:hash(i*2.73+11),
+  phase:hash(i*7.91+3)*TAU
+})));
+
+function finderSnakePoint(index,u,tSec){
+  u=clamp(u);
+  const lane=255+index*132;
+  const weave=Math.sin(u*TAU*(1.25+index*.075)+index*1.31+tSec*.16)*62;
+  const ripple=Math.sin(u*TAU*3.25-index*.83-tSec*.28)*19;
+  const crossing=Math.sin(u*Math.PI)*Math.sin(index*1.7+u*TAU)*28;
+  return {x:95+u*1730,y:lane+weave+ripple+crossing};
+}
+
+function drawFinderParticleCloud(ms,pulse){
+  const tSec=ms/1000;
+  const intro=ease(clamp((ms-20220)/720));
+  const exit=ease(clamp((ms-27220)/380));
+  const alpha=intro*(1-exit*.08);
+  const travel=clamp((ms-20520)/5450);
+  const surge=ease(clamp((ms-25900)/1300));
+  const tails=[];
+
+  for(let i=0;i<5;i++){
+    const head=clamp((travel*1.12-i*.045));
+    const length=mix(.13,.235,ease(head));
+    const samples=[];
+    for(let s=0;s<34;s++){
+      const u=Math.max(0,head-(s/33)*length);
+      samples.push({...finderSnakePoint(i,u,tSec),u,fade:1-s/34});
+    }
+    tails.push({head,samples,color:FINDER_SNAKE_COLORS[i]});
+  }
+
+  ctx.save();
+  ctx.globalAlpha=alpha;
+
+  // Deep granular field. Nearby particles are pushed aside and energized by
+  // the five bodies, making their passage legible without cards or geometry.
+  for(let i=0;i<FINDER_CLOUD.length;i++){
+    const p=FINDER_CLOUD[i];
+    let x=p.x+Math.sin(tSec*.19+p.phase)*mix(2,11,p.z);
+    let y=p.y+Math.cos(tSec*.16+p.phase*1.7)*mix(2,9,p.z);
+    let nearest=999,nearestColor='#87ceeb',pushX=0,pushY=0;
+    for(let f=0;f<tails.length;f++){
+      const sample=tails[f].samples[(i+f*7)%tails[f].samples.length];
+      if(tails[f].head<=0)continue;
+      const dx=x-sample.x,dy=y-sample.y,d=Math.hypot(dx,dy);
+      if(d<nearest){nearest=d;nearestColor=tails[f].color;pushX=dx;pushY=dy;}
+    }
+    const influence=clamp(1-nearest/118);
+    if(influence>0){
+      const inv=1/(nearest||1);
+      x+=pushX*inv*influence*20;
+      y+=pushY*inv*influence*20;
+    }
+    const baseA=mix(.08,.32,p.z);
+    const a=baseA+influence*.68+surge*.08;
+    const r=mix(.65,2.05,p.z)+influence*1.8;
+    ctx.fillStyle=rgba(influence>.06?nearestColor:'#87ceeb',a);
+    ctx.shadowColor=nearestColor;
+    ctx.shadowBlur=influence*11;
+    ctx.beginPath();
+    ctx.arc(x,y,r,0,TAU);
+    ctx.fill();
+  }
+
+  // Continuous serpentine Finder bodies: broad atmospheric displacement,
+  // colored plasma skin, then a white-hot conductive core.
+  tails.forEach((tail,index)=>{
+    if(tail.head<=0)return;
+    const pts=tail.samples.slice().reverse();
+    const trace=()=>{
+      ctx.beginPath();
+      pts.forEach((p,j)=>j?ctx.lineTo(p.x,p.y):ctx.moveTo(p.x,p.y));
+    };
+    ctx.lineCap='round';ctx.lineJoin='round';
+    trace();
+    ctx.strokeStyle=rgba(tail.color,.15+pulse*.05);
+    ctx.lineWidth=38;
+    ctx.shadowColor=tail.color;ctx.shadowBlur=32;
+    ctx.stroke();
+    trace();
+    ctx.strokeStyle=rgba(tail.color,.92);
+    ctx.lineWidth=9;
+    ctx.shadowBlur=18;
+    ctx.stroke();
+    trace();
+    ctx.strokeStyle='rgba(255,255,255,.90)';
+    ctx.lineWidth=2.1;
+    ctx.shadowBlur=5;
+    ctx.stroke();
+
+    for(let k=0;k<7;k++){
+      const p=tail.samples[Math.min(k*3,tail.samples.length-1)];
+      const energy=1-k/8;
+      ctx.fillStyle=k===0?'#ffffff':rgba(tail.color,energy*.9);
+      ctx.shadowColor=tail.color;ctx.shadowBlur=18*energy;
+      ctx.beginPath();ctx.arc(p.x,p.y,(k===0?6.2:3.2)*energy,0,TAU);ctx.fill();
+    }
+  });
+
+  // Final cloud coherence is expressed as a denser shared current—not a logo,
+  // ring, explosion, or separate overlay.
+  if(surge>0){
+    ctx.globalCompositeOperation='screen';
+    ctx.globalAlpha=alpha*surge*.16;
+    ctx.fillStyle='#87ceeb';
+    ctx.fillRect(0,170,W,640);
+  }
+  ctx.restore();
+
+  if(ms<21800)drawEditorialNarration('I send five Finders into the unknown.','5 CONCURRENT SEARCH CURRENTS',alpha,'#00f0ff');
+  else if(ms<24200)drawEditorialNarration('Each one takes a different path.','SEARCHING THE SAME FIELD IN PARALLEL',alpha,'#00f0ff');
+  else if(ms<25300)drawEditorialNarration('They move through the noise together.','FIVE PATHS · ONE SHARED CONTEXT',alpha,'#87ceeb');
+  else if(ms<26400)drawEditorialNarration('Every trail changes what the others can see.','COLLECTIVE SEARCH FIELD',alpha,'#e0f2fe');
+  else drawEditorialNarration('The cloud resolves into a shared direction.','PARALLEL DISCOVERY CONVERGED',alpha,'#00f0ff');
+}
+
+function drawStep03Sequence(ms, pulse){
+  const tSec = ms / 1000;
+
+  // ==================================================
+  // PHASE A: UNDERSTAND (20,220ms – 27,600ms) - Layered Circuit Swarm SVG Search & Repair
+  // ==================================================
+  if (ms < 27600) {
+    drawFinderParticleCloud(ms,pulse);
+    return;
+
+    const pIntro = ease(clamp((ms - 20220) / 900));
+    const pSearch = clamp((ms - 21120) / 3080); // 21120 to 24200: search
+    const pDiscover = clamp((ms - 24200) / 600); // 24200 to 24800: discovery & halt at fault
+    const pConverge = ease(clamp((ms - 24800) / 700)); // 24800 to 25500: reroute & converge
+    const pBridge = clamp((ms - 25500) / 600); // 25500 to 26100: synthesize bridge
+    const pSurge = clamp((ms - 26100) / 300); // 26100 to 26400: lock surge
+    const pActivate = clamp((ms - 26300) / 1200); // 26300 to 27500: 4-layer activation cascade
+    const pOut = ease(clamp((ms - 27200) / 400));
+    const alpha = pIntro * (1 - pOut * 0.05);
+
+    const circuitScale = mix(1.05, 1.15, pIntro);
+    const originX = CX;
+    const originY = CY - 15;
+
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.translate(originX, originY);
+
+    // 1. Draw Layered Circuit Blueprint (Plates, Concentric Tracks, Bus Traces, Solder Pads)
+    drawCircuitBlueprint(ctx, circuitScale, alpha, pulse, pActivate);
+
+    // Draw five structurally embedded currents. No labels or terminal ornaments.
+    // Two counter-running currents share layer three; all motion remains on the mark.
+
+    // 3. Draw 5 Structurally Embedded Finder Currents inside SVG tracks
+    FINDER_CIRCUIT_PATHS.forEach((fPath, idx) => {
+      let pt, curProgress;
+      const isDiscoverer = (idx === 2 || idx === 4);
+
+      if (pConverge > 0) {
+        const cProgress = isDiscoverer ? 1.0 : clamp((pConverge * 1.08 - idx * 0.035) / 1.0);
+        curProgress = cProgress;
+        drawEmbeddedFinderCurrent(ctx, fPath.converge, cProgress, fPath.color, pulse, tSec, circuitScale, isDiscoverer);
+      } else if (pSearch > 0) {
+        const sProgress = clamp((pSearch * 1.05 - idx * 0.02) / 1.0);
+        curProgress = sProgress;
+        const isHalt = isDiscoverer && (pDiscover > 0 || sProgress >= 0.98);
+        drawEmbeddedFinderCurrent(ctx, fPath.search, sProgress, fPath.color, pulse, tSec, circuitScale, isHalt);
+      }
+    });
+
+    // 4. Draw Fault Gap / Solder Pads / Cooperative Bridging Synthesis
+    const padAX = FAULT_PAD_A.x * circuitScale;
+    const padAY = FAULT_PAD_A.y * circuitScale;
+    const padBX = FAULT_PAD_B.x * circuitScale;
+    const padBY = FAULT_PAD_B.y * circuitScale;
+
+    if (pBridge < 1.0) {
+      const isPadALit = pSearch > 0.92;
+      const isPadBLit = pConverge > 0.8;
+      drawSolderPad(ctx, padAX, padAY, isPadALit ? '#00f0ff' : '#87ceeb', isPadALit, pulse);
+      drawSolderPad(ctx, padBX, padBY, isPadBLit ? '#00f0ff' : '#87ceeb', isPadBLit, pulse);
+
+      if (pBridge > 0) {
+        // Molten conductive bridge material growing between endpoints
+        const bx = mix(padAX, padBX, pBridge);
+        const by = mix(padAY, padBY, pBridge);
+        ctx.save();
+        ctx.strokeStyle = rgba('#ffffff', 0.95);
+        ctx.lineWidth = 2.4 * circuitScale;
+        ctx.shadowColor = '#00f0ff';
+        ctx.shadowBlur = 12 * circuitScale;
+        ctx.beginPath();
+        ctx.moveTo(padAX, padAY);
+        ctx.lineTo(bx, by);
+        ctx.stroke();
+
+        ctx.fillStyle = '#ffffff';
+        ctx.beginPath();
+        ctx.arc(bx, by, 3.5 * circuitScale, 0, TAU);
+        ctx.fill();
+        ctx.restore();
+      } else if (pDiscover > 0) {
+        // Intermittent micro-spark arc against the open connection break
+        if (Math.sin(tSec * 35) > 0.25) {
+          ctx.save();
+          ctx.strokeStyle = 'rgba(224, 242, 254, 0.45)';
+          ctx.lineWidth = 1.0;
+          ctx.setLineDash([2, 3]);
+          ctx.beginPath();
+          ctx.moveTo(padAX, padAY);
+          ctx.lineTo(padBX, padBY);
+          ctx.stroke();
+          ctx.setLineDash([]);
+          ctx.restore();
+        }
+      }
+    } else {
+      // Bridge fully synthesized, solidified and energized
+      ctx.save();
+      ctx.strokeStyle = rgba('#00f0ff', 0.92 + pulse * 0.08);
+      ctx.lineWidth = 2.4 * circuitScale;
+      ctx.shadowColor = '#00f0ff';
+      ctx.shadowBlur = 12 * circuitScale;
+      ctx.beginPath();
+      ctx.moveTo(padAX, padAY);
+      ctx.lineTo(padBX, padBY);
+      ctx.stroke();
+      ctx.restore();
+
+      drawSolderPad(ctx, padAX, padAY, '#00f0ff', true, pulse);
+      drawSolderPad(ctx, padBX, padBY, '#00f0ff', true, pulse);
+
+      // The completion surge remains a tight brightness pulse on the repaired line.
+    }
+
+    // 5. Layer-by-Layer Swarm Mark Illumination Payoff
+    if (pActivate > 0) {
+      const coreScale = circuitScale * 0.92;
+      const l3Current = clamp((pActivate - 0.45) / 0.35);
+      const l2Current = clamp((pActivate - 0.30) / 0.35);
+      const l1Current = clamp((pActivate - 0.15) / 0.35);
+      const l0Current = clamp((pActivate - 0.00) / 0.35);
+
+      ctx.save();
+      for (let i = 0; i < BASE_BOXES.length; i++) {
+        const b = BASE_BOXES[i];
+        const s = b.s * coreScale;
+        const r = b.r * coreScale;
+        const lCur = i === 3 ? l3Current : i === 2 ? l2Current : i === 1 ? l1Current : l0Current;
+        if (lCur > 0) {
+          ctx.globalAlpha = lCur * b.a;
+          ctx.strokeStyle = '#87ceeb';
+          ctx.lineWidth = mix(2.2, 5.4, lCur);
+          ctx.shadowColor = '#00f0ff';
+          ctx.shadowBlur = 22 * lCur;
+          rr(-s / 2, -s / 2, s, s, r);
+          ctx.stroke();
+        }
+      }
+      ctx.restore();
+    }
+    ctx.restore();
+
+    // 6. Bottom Narration Only (No Top UI, Clean Editorial Hierarchy)
+    if (ms < 21800) {
+      drawEditorialNarration("I send five Finders through every layer.", "5 CONCURRENT SEARCH CURRENTS", alpha, "#00f0ff");
+    } else if (ms < 24200) {
+      drawEditorialNarration("Each one traces a different circuit.", "MAPPING MULTI-LAYER TOPOLOGY & VIA GATES", alpha, "#00f0ff");
+    } else if (ms < 25300) {
+      drawEditorialNarration("One current stops at a broken connection.", "ISOLATING INTER-LAYER GAP AT VIA BRIDGE", alpha, "#87ceeb");
+    } else if (ms < 26400) {
+      drawEditorialNarration("The others route in to repair it.", "SYNTHESIZING BRIDGING TRACE · RESTORING CURRENT", alpha, "#e0f2fe");
+    } else {
+      drawEditorialNarration("Now the whole system can activate.", "CIRCUIT CONTINUITY RESTORED · ALL 4 LAYERS ACTIVE", alpha, "#00f0ff");
+    }
+    return;
+  }
+
+  // ==================================================
+  // PHASE B: EXPLORE (27,600ms – 34,400ms) - 25 Parallel Directions
+  // ==================================================
+  if (ms < 34400) {
+    const pPhase2 = ease(clamp((ms - 27600) / 700));
+    const pGridIn = ease(clamp((ms - 28000) / 900));
+    const pGenProgress = clamp((ms - 28400) / 3400);
+    const pSelect = ease(clamp((ms - 31800) / 900));
+    const pOut = ease(clamp((ms - 33800) / 600));
+    const alpha = pPhase2 * (1 - pOut * 0.1);
+
+    const colsX = [380, 670, 960, 1250, 1540];
+    const rowsY = [230, 340, 450, 560, 670];
+
+    ctx.save();
+    ctx.globalAlpha = alpha;
+
+    // Background Matrix Grid Lines
+    ctx.save();
+    ctx.strokeStyle = 'rgba(135,206,235,0.12)';
+    ctx.lineWidth = 1.0;
+    colsX.forEach(gx => {
+      ctx.beginPath();
+      ctx.moveTo(gx, rowsY[0] - 45);
+      ctx.lineTo(gx, rowsY[4] + 45);
+      ctx.stroke();
+    });
+    rowsY.forEach(gy => {
+      ctx.beginPath();
+      ctx.moveTo(colsX[0] - 110, gy);
+      ctx.lineTo(colsX[4] + 110, gy);
+      ctx.stroke();
+    });
+    ctx.restore();
+
+    for (let r = 0; r < 5; r++) {
+      for (let c = 0; c < 5; c++) {
+        const isSelected = (r === 2 && c === 2);
+        const cellX = colsX[c], cellY = rowsY[r];
+        const cellGenStagger = clamp((pGenProgress - (c + r * 0.4) * 0.08) / 0.45);
+        if (cellGenStagger <= 0 && pGridIn <= 0) continue;
+
+        const cellScale = isSelected ? mix(0.18, 0.26, pSelect) : mix(0.18, 0.15, pSelect);
+        const cellAlpha = isSelected ? 1.0 : mix(0.92, 0.20, pSelect);
+
+        ctx.save();
+        ctx.fillStyle = 'rgba(3,10,18,0.80)';
+        ctx.strokeStyle = rgba(isSelected ? (pSelect > 0.1 ? '#ffffff' : '#00f0ff') : '#87ceeb', isSelected ? (0.6 + pulse * 0.25) : 0.14);
+        ctx.lineWidth = isSelected ? (1.5 + pSelect * 0.5) : 1.0;
+        rr(cellX - 100, cellY - 44, 200, 88, 6);
+        ctx.fill();
+        ctx.stroke();
+
+        if (isSelected) {
+          drawCornerBrackets(cellX - 100, cellY - 44, 200, 88, 8, pSelect > 0.2 ? '#ffffff' : '#00f0ff', 0.9);
+        }
+        ctx.restore();
+
+        if (cellGenStagger > 0) {
+          drawProgressiveVariantLogo(c, r, cellX, cellY, cellScale, cellAlpha * pGridIn, tSec, pulse, isSelected && pSelect > 0.2, cellGenStagger);
+        }
+      }
+    }
+    ctx.restore();
+
+    if (ms < 31500) {
+      drawEditorialNarration("Now I can explore the possibilities.", "25 CONCURRENT DESIGNER ALTERNATIVES", alpha, "#ff7edb");
+    } else {
+      drawEditorialNarration("Twenty-five directions. One chosen identity.", "1 DIRECTION SELECTED · 24 PRESERVED", alpha, "#e0f2fe");
+    }
+    return;
+  }
+
+  // ==================================================
+  // PHASE C: CREATE (34,400ms – 48,120ms) - Long Plan Rail & Live Production Studio
+  // ==================================================
+  {
+    const pPhase3 = ease(clamp((ms - 34400) / 800));
+    const pBuildPlan = ease(clamp((ms - 36200) / 1800));
+    const pExecAction = clamp((ms - 38600) / 7800);
+    const pPlayhead = clamp((ms - 39200) / 8000);
+    const pMorphToConvergence = ease(clamp((ms - 47200) / 920));
+    const alpha = pPhase3;
+
+    ctx.save();
+    ctx.globalAlpha = alpha;
+
+    // Selected Identity Anchor at Top-Left
+    const anchorX = mix(180, 290, pMorphToConvergence);
+    const anchorY = mix(210, CY - 80, pMorphToConvergence);
+    const anchorScale = mix(0.22, 0.32, pMorphToConvergence);
+    
+    if (pMorphToConvergence < 0.8) {
+      ctx.save();
+      ctx.globalAlpha = alpha * (1 - pMorphToConvergence * 1.2);
+      drawExactSvgMark(anchorX, anchorY, anchorScale, 0.85, pulse * 0.2);
+      drawThemedSwarmMark(anchorX, anchorY, anchorScale, '#00f0ff', 0.9, pulse * 0.2);
+      ctx.font = '800 10px ui-monospace,monospace';
+      ctx.fillStyle = '#00f0ff';
+      ctx.textAlign = 'center';
+      ctx.fillText('SELECTED IDENTITY', anchorX, anchorY + 48);
+      ctx.restore();
+    }
+
+    // ----------------------------------------------------
+    // PLAN RAIL (Left Column: X: 80 to 500, Y: 275 to 780)
+    // ----------------------------------------------------
+    const planRows = [
+      { cp: 'CP-01', title: 'Map onboarding flow', desc: 'Finder AST & shot anchors', c: '#00f0ff', threshold: 0.10 },
+      { cp: 'CP-02', title: 'Script the TUI demo', desc: 'CLI workflow & scripts', c: '#00ff88', threshold: 0.25 },
+      { cp: 'CP-03', title: 'Capture the TUI', desc: 'Headless Xvfb :99 capture', c: '#00ff88', threshold: 0.42 },
+      { cp: 'CP-04', title: 'Capture Desktop onboarding', desc: 'React Desktop 60fps canvas', c: '#00f0ff', threshold: 0.60 },
+      { cp: 'CP-05', title: 'Design transitions & captions', desc: 'Kinetic identity styling', c: '#ff7edb', threshold: 0.75 },
+      { cp: 'CP-06', title: 'Assemble picture & soundtrack', desc: 'Vacuum Drop 1 multitrack', c: '#8b5cf6', threshold: 0.90 },
+      { cp: 'CP-07', title: 'Review the final cut', desc: '1920x1080 FFV1 verification', c: '#00ff88', threshold: 0.98 }
+    ];
+
+    if (pMorphToConvergence < 0.75) {
+      const railAlpha = alpha * (1 - pMorphToConvergence * 1.3);
+      const railX = 80, railY = 275, railW = 420, railH = 505;
+
+      ctx.save();
+      ctx.globalAlpha = railAlpha;
+      ctx.fillStyle = 'rgba(2,8,16,0.94)';
+      ctx.strokeStyle = 'rgba(135,206,235,0.22)';
+      ctx.lineWidth = 1.2;
+      rr(railX, railY, railW, railH, 10);
+      ctx.fill();
+      ctx.stroke();
+      drawCornerBrackets(railX, railY, railW, railH, 12, '#87ceeb', 0.5);
+
+      ctx.fillStyle = 'rgba(135,206,235,0.08)';
+      ctx.fillRect(railX + 2, railY + 2, railW - 4, 30);
+      ctx.font = '800 10px ui-monospace,monospace';
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'middle';
+      ctx.fillStyle = '#87ceeb';
+      ctx.fillText('STRUCTURED PLAN // 7 DEPENDENCY CHECKPOINTS', railX + 14, railY + 17);
+
+      ctx.textAlign = 'right';
+      ctx.fillStyle = pExecAction >= 0.98 ? '#00ff88' : '#00f0ff';
+      ctx.fillText(pExecAction >= 0.98 ? '✓ ALL 7 GREEN' : 'EXECUTING...', railX + railW - 14, railY + 17);
+
+      planRows.forEach((row, idx) => {
+        const rowProgress = ease(clamp((pBuildPlan - idx * 0.12) / 0.35));
+        if (rowProgress <= 0) return;
+
+        const ry = railY + 40 + idx * 64;
+        const rw = (railW - 20) * rowProgress;
+        const isDone = pExecAction >= row.threshold;
+        const isActive = !isDone && (idx === 0 || pExecAction >= planRows[idx - 1].threshold);
+
+        ctx.save();
+        ctx.fillStyle = isActive ? 'rgba(0,240,255,0.12)' : (isDone ? 'rgba(0,255,136,0.06)' : 'rgba(255,255,255,0.03)');
+        ctx.strokeStyle = isActive ? 'rgba(0,240,255,0.6)' : (isDone ? 'rgba(0,255,136,0.4)' : 'rgba(135,206,235,0.15)');
+        ctx.lineWidth = isActive ? 1.4 : 1.0;
+        rr(railX + 10, ry, rw, 54, 6);
+        ctx.fill();
+        ctx.stroke();
+
+        ctx.font = '800 9.5px ui-monospace,monospace';
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'middle';
+        ctx.fillStyle = isActive ? '#00f0ff' : (isDone ? '#00ff88' : 'rgba(224,242,254,0.5)');
+        ctx.fillText(row.cp, railX + 20, ry + 18);
+
+        ctx.font = '700 11px Inter,system-ui,sans-serif';
+        ctx.fillStyle = isDone || isActive ? '#ffffff' : 'rgba(224,242,254,0.65)';
+        ctx.fillText(row.title, railX + 75, ry + 18);
+
+        ctx.font = '600 9px ui-monospace,monospace';
+        ctx.fillStyle = isDone ? '#00ff88' : (isActive ? '#87ceeb' : 'rgba(224,242,254,0.4)');
+        ctx.fillText(row.desc, railX + 75, ry + 36);
+
+        ctx.textAlign = 'right';
+        ctx.font = '700 9px ui-monospace,monospace';
+        if (isDone) {
+          ctx.fillStyle = '#00ff88';
+          ctx.fillText('✓ DONE', railX + railW - 20, ry + 27);
+        } else if (isActive) {
+          ctx.fillStyle = '#00f0ff';
+          ctx.fillText('● RUNNING', railX + railW - 20, ry + 27);
+        } else {
+          ctx.fillStyle = 'rgba(135,206,235,0.4)';
+          ctx.fillText('QUEUED', railX + railW - 20, ry + 27);
+        }
+        ctx.restore();
+      });
+
+      ctx.restore();
+    }
+
+    // ----------------------------------------------------
+    // TOP PRODUCTION DECKS (X: 520 to 1840, Y: 135 to 485)
+    // ----------------------------------------------------
+    if (pMorphToConvergence < 0.8) {
+      const deckAlpha = alpha * (1 - pMorphToConvergence * 1.25);
+      
+      // Deck 1: Headless TUI Feed (X: 520 to 1160, Y: 135 to 485)
+      const tuiX = 520, tuiY = 135, tuiW = 620, tuiH = 345;
+      ctx.save();
+      ctx.globalAlpha = deckAlpha;
+      ctx.fillStyle = 'rgba(1,6,12,0.96)';
+      ctx.strokeStyle = 'rgba(0,255,136,0.45)';
+      ctx.lineWidth = 1.4;
+      rr(tuiX, tuiY, tuiW, tuiH, 8);
+      ctx.fill();
+      ctx.stroke();
+      drawCornerBrackets(tuiX, tuiY, tuiW, tuiH, 10, '#00ff88', 0.5);
+
+      ctx.fillStyle = 'rgba(0,255,136,0.08)';
+      ctx.fillRect(tuiX + 2, tuiY + 2, tuiW - 4, 28);
+      ctx.font = '700 10px ui-monospace,monospace';
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'middle';
+      ctx.fillStyle = '#00ff88';
+      ctx.fillText('TERMINAL TUI FEED // HEADLESS CAPTURE (Xvfb :99)', tuiX + 14, tuiY + 15);
+
+      const tuiLines = [
+        { text: '> swarm plan --run (7 checkpoints active)', c: '#00ff88', bold: true },
+        { text: '[✓] CP-1 Map onboarding flow (42 routes clean)', c: '#00ff88' },
+        { text: '[✓] CP-2 Script TUI demo & commands', c: '#00ff88' },
+        { text: '[✓] CP-3 Headless TUI capture (60fps FFV1)', c: '#00ff88' },
+        { text: '[●] CP-4 Capture Desktop onboarding (Canvas compiler)', c: '#00f0ff', bold: true },
+        { text: '    ├─ Lossless buffer: 1920x1080 @ 60fps (FFV1/bgr0)', c: '#87ceeb' },
+        { text: '    ├─ Audio track synced: Vacuum Drop 1', c: '#87ceeb' },
+        { text: '    └─ Verification: 18/18 checks green · 0 dropped frames', c: '#00ff88' }
+      ];
+
+      tuiLines.forEach((tl, idx) => {
+        const ly = tuiY + 46 + idx * 26;
+        if (ly + 16 > tuiY + tuiH) return;
+        ctx.font = tl.bold ? '700 10.5px ui-monospace,monospace' : '600 10px ui-monospace,monospace';
+        ctx.fillStyle = tl.c;
+        ctx.fillText(tl.text, tuiX + 16, ly);
+      });
+
+      const cursorBlink = Math.sin(tSec * 8) > 0;
+      if (cursorBlink) {
+        ctx.fillStyle = '#00ff88';
+        ctx.fillRect(tuiX + 16 + ctx.measureText('    └─ Verification: 18/18 checks green · 0 dropped frames').width + 8, tuiY + 46 + 7 * 26 - 7, 6, 13);
+      }
+      ctx.restore();
+
+      // Deck 2: Studio Master Canvas (X: 1160 to 1840, Y: 135 to 485)
+      const deskX = 1160, deskY = 135, deskW = 680, deskH = 345;
+      ctx.save();
+      ctx.globalAlpha = deckAlpha;
+      ctx.fillStyle = 'rgba(2,10,20,0.96)';
+      ctx.strokeStyle = 'rgba(0,240,255,0.5)';
+      ctx.lineWidth = 1.4;
+      rr(deskX, deskY, deskW, deskH, 8);
+      ctx.fill();
+      ctx.stroke();
+      drawCornerBrackets(deskX, deskY, deskW, deskH, 10, '#00f0ff', 0.6);
+
+      ctx.fillStyle = 'rgba(0,240,255,0.08)';
+      ctx.fillRect(deskX + 2, deskY + 2, deskW - 4, 28);
+      ctx.font = '700 10px ui-monospace,monospace';
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'middle';
+      ctx.fillStyle = '#00f0ff';
+      ctx.fillText('STUDIO MASTER // 1920×1080 60FPS LOSSLESS (FFV1)', deskX + 14, deskY + 15);
+
+      ctx.textAlign = 'right';
+      ctx.fillStyle = '#ff5f56';
+      ctx.fillText('● REC 60FPS', deskX + deskW - 14, deskY + 15);
+
+      const monX = deskX + 16, monY = deskY + 40, monW = 380, monH = 285;
+      ctx.fillStyle = 'rgba(1,4,8,0.95)';
+      ctx.strokeStyle = 'rgba(135,206,235,0.25)';
+      ctx.lineWidth = 1.0;
+      rr(monX, monY, monW, monH, 6);
+      ctx.fill();
+      ctx.stroke();
+
+      const monScale = 0.30;
+      drawExactSvgMark(monX + monW / 2, monY + monH / 2 - 18, monScale, deckAlpha, pulse);
+      drawLedMark(monX + monW / 2, monY + monH / 2 - 18, monScale * 0.85, deckAlpha * 0.9, pulse, 9);
+
+      ctx.fillStyle = 'rgba(0,255,136,0.15)';
+      ctx.strokeStyle = 'rgba(0,255,136,0.5)';
+      rr(monX + 12, monY + monH - 32, monW - 24, 22, 4);
+      ctx.fill();
+      ctx.stroke();
+      ctx.font = '700 9px ui-monospace,monospace';
+      ctx.textAlign = 'center';
+      ctx.fillStyle = '#00ff88';
+      ctx.fillText('1920×1080 60FPS LOSSLESS MASTER // FFV1 BGR0', monX + monW / 2, monY + monH - 20);
+
+      const spX = deskX + 412, spY = deskY + 40, spW = deskW - 428, spH = 285;
+      ctx.fillStyle = 'rgba(3,12,22,0.85)';
+      ctx.strokeStyle = 'rgba(0,240,255,0.20)';
+      rr(spX, spY, spW, spH, 6);
+      ctx.fill();
+      ctx.stroke();
+
+      ctx.font = '700 10px ui-monospace,monospace';
+      ctx.textAlign = 'left';
+      ctx.fillStyle = '#87ceeb';
+      ctx.fillText('SHOT PLAN // TIMELINE SYNC', spX + 12, spY + 18);
+
+      const shotPlanItems = [
+        { shot: 'SHOT 01', title: 'CLI Init & Contract', time: '00:00-00:08', c: '#00f0ff' },
+        { shot: 'SHOT 02', title: 'Isolated Worktrees', time: '00:08-00:18', c: '#00ff88' },
+        { shot: 'SHOT 03', title: '25 Logo Matrix', time: '00:18-00:32', c: '#ff7edb' },
+        { shot: 'SHOT 04', title: 'Multitrack Master', time: '00:32-00:48', c: '#87ceeb' },
+        { shot: 'SHOT 05', title: 'Unified Convergence', time: '00:48-01:03', c: '#fcd34d' }
+      ];
+
+      shotPlanItems.forEach((sp, idx) => {
+        const sy = spY + 36 + idx * 46;
+        ctx.fillStyle = 'rgba(255,255,255,0.04)';
+        rr(spX + 8, sy, spW - 16, 38, 4);
+        ctx.fill();
+        ctx.font = '800 9px ui-monospace,monospace';
+        ctx.fillStyle = sp.c;
+        ctx.fillText(sp.shot, spX + 14, sy + 16);
+        ctx.font = '600 9.5px Inter,system-ui,sans-serif';
+        ctx.fillStyle = '#ffffff';
+        ctx.fillText(sp.title, spX + 70, sy + 16);
+        ctx.font = '600 8.5px ui-monospace,monospace';
+        ctx.fillStyle = sp.c;
+        ctx.textAlign = 'right';
+        ctx.fillText(sp.time, spX + spW - 14, sy + 24);
+        ctx.textAlign = 'left';
+      });
+
+      ctx.restore();
+    }
+
+    // ----------------------------------------------------
+    // MULTITRACK TIMELINE (Bottom: X: 520 to 1840, Y: 495 to 780)
+    // ----------------------------------------------------
+    if (pMorphToConvergence < 0.7) {
+      const tlAlpha = alpha * (1 - pMorphToConvergence * 1.5);
+      const tlX = 520, tlY = 495, tlW = 1320, tlH = 285;
+
+      ctx.save();
+      ctx.globalAlpha = tlAlpha;
+      ctx.fillStyle = 'rgba(2,7,14,0.98)';
+      ctx.strokeStyle = 'rgba(135,206,235,0.30)';
+      ctx.lineWidth = 1.2;
+      rr(tlX, tlY, tlW, tlH, 8);
+      ctx.fill();
+      ctx.stroke();
+      drawCornerBrackets(tlX, tlY, tlW, tlH, 10, '#87ceeb', 0.5);
+
+      const anchors = [
+        { label: 'ANCHOR 01 // MAP', c: '#00f0ff' },
+        { label: 'ANCHOR 02 // TUI', c: '#00ff88' },
+        { label: 'ANCHOR 03 // 25 LOGOS', c: '#ff7edb' },
+        { label: 'ANCHOR 04 // STUDIO', c: '#87ceeb' },
+        { label: 'ANCHOR 05 // REVIEW', c: '#fcd34d' }
+      ];
+
+      anchors.forEach((anc, i) => {
+        const ax = tlX + 160 + i * 220;
+        ctx.fillStyle = rgba(anc.c, 0.18);
+        ctx.strokeStyle = rgba(anc.c, 0.5);
+        rr(ax, tlY + 8, 190, 22, 4);
+        ctx.fill();
+        ctx.stroke();
+        ctx.font = '800 9px ui-monospace,monospace';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillStyle = anc.c;
+        ctx.fillText(anc.label, ax + 95, tlY + 19);
+      });
+
+      const lanes = [
+        {
+          label: 'LANE 01 // TUI DEMO',
+          c: '#00ff88',
+          clips: [
+            { x: tlX + 160, w: 260, t: 'CLI REPO INIT & CONTRACT' },
+            { x: tlX + 440, w: 320, t: 'ISOLATED WORKTREES (18/18)' },
+            { x: tlX + 780, w: 350, t: 'DAEMON LOGIC STREAM' }
+          ]
+        },
+        {
+          label: 'LANE 02 // DESKTOP STUDIO',
+          c: '#00f0ff',
+          clips: [
+            { x: tlX + 160, w: 360, t: 'STUDIO MULTITRACK COMPILATION' },
+            { x: tlX + 540, w: 380, t: 'CANVAS 60FPS VECTOR MASTER' },
+            { x: tlX + 940, w: 200, t: 'LOSSLESS EXPORT' }
+          ]
+        },
+        {
+          label: 'LANE 03 // KINETIC IDENTITY',
+          c: '#ff7edb',
+          clips: [
+            { x: tlX + 160, w: 980, t: 'SELECTED KINETIC CRYSTALLINE MASTER // 4K 60FPS IDENTITY' }
+          ]
+        },
+        {
+          label: 'LANE 04 // AUDIO SOUNDTRACK',
+          c: '#8b5cf6',
+          isWaveform: true,
+          clips: [
+            { x: tlX + 160, w: 980, t: 'VACUUM DROP 1 // 128 BPM LOSSLESS STEREO SYNC' }
+          ]
+        }
+      ];
+
+      lanes.forEach((lane, lIdx) => {
+        const ly = tlY + 38 + lIdx * 58;
+        ctx.fillStyle = 'rgba(255,255,255,0.03)';
+        ctx.fillRect(tlX + 8, ly, tlW - 16, 52);
+
+        ctx.font = '700 8.5px ui-monospace,monospace';
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'middle';
+        ctx.fillStyle = lane.c;
+        ctx.fillText(lane.label, tlX + 14, ly + 26);
+
+        lane.clips.forEach(clip => {
+          const clipProgress = ease(clamp((pExecAction * 1300 - (clip.x - tlX)) / 260));
+          if (clipProgress <= 0) return;
+          const curW = clip.w * clipProgress;
+
+          ctx.fillStyle = rgba(lane.c, 0.22);
+          ctx.strokeStyle = rgba(lane.c, 0.65);
+          ctx.lineWidth = 1.0;
+          rr(clip.x, ly + 6, curW, 40, 4);
+          ctx.fill();
+          ctx.stroke();
+
+          if (lane.isWaveform) {
+            ctx.strokeStyle = rgba(lane.c, 0.7);
+            ctx.lineWidth = 1.5;
+            ctx.beginPath();
+            for (let wx = clip.x + 8; wx < clip.x + curW - 8; wx += 6) {
+              const waveHeight = Math.abs(Math.sin(wx * 0.08 + tSec * 2)) * 15 + 2;
+              ctx.moveTo(wx, ly + 26 - waveHeight);
+              ctx.lineTo(wx, ly + 26 + waveHeight);
+            }
+            ctx.stroke();
+          }
+
+          if (clipProgress > 0.4) {
+            ctx.save();
+            ctx.globalAlpha = tlAlpha * (clipProgress - 0.4) / 0.6;
+            ctx.font = '600 9px ui-monospace,monospace';
+            ctx.fillStyle = '#ffffff';
+            ctx.fillText(clip.t, clip.x + 12, ly + 26);
+            ctx.restore();
+          }
+        });
+      });
+
+      const playheadX = tlX + 160 + pPlayhead * 980;
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = 2.0;
+      ctx.shadowColor = '#00f0ff';
+      ctx.shadowBlur = 8;
+      ctx.beginPath();
+      ctx.moveTo(playheadX, tlY + 6);
+      ctx.lineTo(playheadX, tlY + tlH - 8);
+      ctx.stroke();
+      ctx.shadowBlur = 0;
+
+      ctx.fillStyle = '#00f0ff';
+      ctx.beginPath();
+      ctx.moveTo(playheadX - 6, tlY + 6);
+      ctx.lineTo(playheadX + 6, tlY + 6);
+      ctx.lineTo(playheadX, tlY + 14);
+      ctx.closePath();
+      ctx.fill();
+      ctx.restore();
+    }
+    ctx.restore();
+
+    // Bottom Narration Progression
+    if (ms < 36400) {
+      drawEditorialNarration("Recreate my onboarding video with a TUI demo and polished Desktop footage.", "NATURAL PRODUCT GOAL", alpha, "#00ff88");
+    } else if (ms < 39200) {
+      drawEditorialNarration("First, I turn the idea into a plan.", "7 ORDERED CHECKPOINTS // DEPENDENCY-READY", alpha, "#87ceeb");
+    } else if (ms < 41800) {
+      drawEditorialNarration("Then I delegate each part.", "PARALLEL SESSIONS & SPECIALIST SWARMS", alpha, "#00f0ff");
+    } else if (ms < 44500) {
+      drawEditorialNarration("The work comes back into one timeline.", "MULTITRACK TIMELINE · FRAME-ACCURATE SYNC", alpha, "#00ff88");
+    } else if (ms < 46200) {
+      drawEditorialNarration("I review the complete cut.", "AUTOMATED VERIFICATION & QUALITY GATES", alpha, "#87ceeb");
+    } else {
+      drawEditorialNarration("One idea. One plan. One finished video.", "1920×1080 60FPS LOSSLESS MASTER // READY TO SHIP", alpha, "#00ff88");
+    }
+  }
+}
+
+// ----------------------------------------------------
+// SCENE 7: SYSTEM CONVERGENCE (48120ms - 55400ms) - LOCKED SOURCE
+// ----------------------------------------------------
+function drawNetwork(ms,pulse){
+  const tSec=ms/1000;
+
+  ctx.save();
+  drawBanner('THE COMPLETE LOCAL-FIRST AI WORKSPACE','AUTONOMOUS AGENTS · PEBBLE V3 PERSISTENCE · GIT WORKTREES','THE UNIFIED SYSTEM',110,'#00f0ff',1,pulse);
+
+  const hubW=460,hubH=280,hx=CX-hubW/2,hy=CY-hubH/2;
+
+  ctx.fillStyle='rgba(3,11,19,.98)';
+  ctx.strokeStyle='rgba(135,206,235,.85)';
+  ctx.lineWidth=2.5;
+  ctx.shadowColor='#00f0ff';
+  ctx.shadowBlur=26+pulse*20;
+  rr(hx,hy,hubW,hubH,16);
+  ctx.fill();
+  ctx.stroke();
+  ctx.shadowBlur=0;
+  drawCornerBrackets(hx,hy,hubW,hubH,20,'#00f0ff',1);
+
+  drawAsciiMark(CX,CY-35,.40,1,pulse,true);
+  drawLedMark(CX,CY-35,.30,.8,pulse,10);
+  drawTracked('LOCAL WORKSPACE KERNEL',CX,CY+45,4,'#ffffff',1,'800 18px Inter,system-ui,sans-serif');
+  drawTracked('SINGLE SOURCE OF TRUTH // DURABLE V3 PEBBLE DB',CX,CY+74,2,'#00ff88',.95,'700 11px ui-monospace,monospace');
+  drawTracked('EVENT STREAM: 1,420 EV/S · ZERO CLOUD DRIFT',CX,CY+98,2,'#87ceeb',.85,'600 10px ui-monospace,monospace');
+
+  const pillars=[
+    {
+      title:'AUTONOMOUS AGENTS',
+      subtitle:'FINDER · CODER · DESIGNER · ROUTER',
+      bullets:['• FINDER: REPO & AST AUDIT','• CODER: WORKTREE ISOLATION','• DESIGNER: 60FPS ARTIFACTS','• ROUTER: DYNAMIC DISPATCH'],
+      x:290,y:CY,w:380,h:260,c:'#00f0ff',icon:'agents'
+    },
+    {
+      title:'DURABLE V3 ENGINE',
+      subtitle:'PEBBLE STORAGE · REALTIME BUS',
+      bullets:['• DURABLE V3 EVENT LOGS','• ATOMIC CRASH RECOVERY'],
+      x:CX,y:CY-240,w:460,h:120,c:'#00ff88',icon:'sessions'
+    },
+    {
+      title:'GIT WORKTREE ISOLATION',
+      subtitle:'HEAD REPO INTEGRATION · CLEAN LOGS',
+      bullets:['• ISOLATED SIBLING WORKTREES','• ZERO MAIN CHECKOUT DRIFT','• ATOMIC MERGE VERIFICATION','• DURABLE CHILD LINEAGE'],
+      x:W-290,y:CY,w:380,h:260,c:'#8b5cf6',icon:'worktree'
+    }
+  ];
+
+  pillars.forEach((p,i)=>{
+    drawConnector(CX,CY,p.x,p.y,1,pulse,tSec*2+i*.6,p.c);
+    ctx.save();
+    ctx.fillStyle='rgba(4,14,24,.96)';
+    ctx.strokeStyle=rgba(p.c,.8);
+    ctx.lineWidth=2;
+    ctx.shadowColor=p.c;
+    ctx.shadowBlur=16+pulse*12;
+    const px=p.x-p.w/2,py=p.y-p.h/2;
+    rr(px,py,p.w,p.h,12);
+    ctx.fill();
+    ctx.stroke();
+    ctx.shadowBlur=0;
+    drawCornerBrackets(px,py,p.w,p.h,16,p.c,1);
+    if(p.h>150){
+      drawIcon(p.icon,px+42,py+40,p.c,1,pulse,0.5);
+      ctx.font='800 17px Inter,system-ui,sans-serif';
+      ctx.fillStyle='#ffffff';
+      ctx.textAlign='left';
+      ctx.fillText(p.title,px+76,py+30);
+      ctx.font='700 11px ui-monospace,monospace';
+      ctx.fillStyle=p.c;
+      ctx.fillText(p.subtitle,px+76,py+50);
+      ctx.fillStyle='rgba(255,255,255,.06)';
+      rr(px+20,py+72,p.w-40,166,8);
+      ctx.fill();
+      ctx.strokeStyle=rgba(p.c,.25);
+      ctx.stroke();
+      p.bullets.forEach((txt,idx)=>{
+        ctx.font='600 11px ui-monospace,monospace';
+        ctx.fillStyle='#e0f2fe';
+        ctx.fillText(txt,px+34,py+102+idx*32);
+      });
+    }else{
+      drawIcon(p.icon,px+42,py+42,p.c,1,pulse,0.5);
+      ctx.font='800 17px Inter,system-ui,sans-serif';
+      ctx.fillStyle='#ffffff';
+      ctx.textAlign='left';
+      ctx.fillText(p.title,px+76,py+28);
+      ctx.font='700 11px ui-monospace,monospace';
+      ctx.fillStyle=p.c;
+      ctx.fillText(p.subtitle,px+76,py+48);
+      ctx.font='600 10px ui-monospace,monospace';
+      ctx.fillStyle='#8ca0b5';
+      ctx.fillText(p.bullets.join(' · '),px+76,py+72);
+    }
+    ctx.restore();
+  });
+
+  drawTracked('EVERY SUBSYSTEM ENGINEERED TO RUN 100% LOCALLY IN YOUR ENVIRONMENT',CX,960,5,'#00ff88',.95,'700 16px ui-monospace,monospace');
+  ctx.restore();
+}
+
+// ----------------------------------------------------
+// SCENE 8: FINAL DROP & APEX LED CONVERGENCE (55400ms - 61400ms) - LOCKED SOURCE
+// ----------------------------------------------------
+function drawFinalDrop(ms,pulse){
+  const tSec=ms/1000;
+  const p=clamp((ms-55400)/6000);
+  const hit=clamp((ms-55400)/900);
+
+  ctx.save();
+  ctx.globalCompositeOperation='lighter';
+  for(let i=0;i<FINAL_DROP_GRID.length;i++){
+    const pt=FINAL_DROP_GRID[i];
+    const ambient=.5+.5*Math.sin(pt.x*.02+pt.y*.02+tSec*3);
+    const lit=pt.layer>=0;
+    const a=lit?BASE_BOXES[pt.layer].a*(.75+ambient*.25):.02+ambient*.02;
+    if(lit){
+      const sprite=pt.layer===3?SPRITES.layer3:pt.layer===2?SPRITES.layer2:pt.layer===1?SPRITES.layer1:SPRITES.layer0;
+      const dSize=18+pulse*6;
+      ctx.globalAlpha=a;
+      ctx.drawImage(sprite,pt.x-dSize/2,pt.y-dSize/2,dSize,dSize);
+    }else{
+      ctx.fillStyle='rgba(0,240,255,0.08)';
+      ctx.fillRect(pt.x-1,pt.y-1,2,2);
+    }
+  }
+  ctx.restore();
+  if(hit<1){
+    ctx.strokeStyle=rgba('#ffffff',(1-hit)*.95);
+    ctx.lineWidth=12*(1-hit)+1;
+    ctx.beginPath();
+    ctx.arc(CX,CY,mix(50,1200,hit),0,TAU);
+    ctx.stroke();
+  }
+  const scale=mix(.55,.82,ease(p));
+  drawAsciiMark(CX,CY,scale,1,pulse,true);
+  drawLedMark(CX,CY,scale*.75,1,pulse,9);
+
+  for(let b=0;b<3;b++){
+    const wavePhase=((tSec*1.5+b*.33)%1);
+    const radius=mix(120,950,out(wavePhase));
+    ctx.save();
+    ctx.strokeStyle=rgba(b%2===0?'#00f0ff':'#87ceeb',(1-wavePhase)*.7);
+    ctx.lineWidth=3*(1-wavePhase)+1;
+    ctx.shadowColor='#00f0ff';
+    ctx.shadowBlur=12;
+    ctx.beginPath();
+    ctx.arc(CX,CY,radius,0,TAU);
+    ctx.stroke();
+    ctx.restore();
+  }
+  drawBanner('SWARM // THE LOCAL-FIRST AI WORKSPACE','TAKE BACK CONTROL OF YOUR DEVELOPMENT WORKFLOW','APEX CONVERGENCE',110,'#00f0ff',1,pulse);
+  drawTracked('SHIP SOFTWARE AT THE SPEED OF THOUGHT // SWARMAGENT.DEV',CX,945,5,'#00ff88',.95,'700 16px ui-monospace,monospace');
+}
+
+// ----------------------------------------------------
+// SCENE 9: SINGULARITY (61400ms - 62160ms) - LOCKED SOURCE
+// ----------------------------------------------------
+function drawSingularity(ms){
+  const p=ease(clamp((ms-61400)/760));
+  ctx.save();
+  ctx.globalCompositeOperation='lighter';
+
+  for(let i=0;i<96;i++){
+    const a=i/96*TAU,r=mix(980,4,p)*(0.7+hash(i)*.35),twist=a+p*4.2;
+    const x=CX+Math.cos(twist)*r,y=CY+Math.sin(twist)*r;
+    ctx.strokeStyle=rgba(i%3===0?'#00f0ff':i%3===1?'#e0f2fe':'#8b5cf6',(1-p)*.7);
+    ctx.lineWidth=1.5;
+    ctx.beginPath();
+    ctx.moveTo(CX,CY);
+    ctx.lineTo(x,y);
+    ctx.stroke();
+  }
+  const g=ctx.createRadialGradient(CX,CY,0,CX,CY,mix(280,10,p));
+  g.addColorStop(0,'#ffffff');
+  g.addColorStop(.3,rgba('#e0f2fe',.95));
+  g.addColorStop(1,rgba('#00f0ff',0));
+  ctx.fillStyle=g;
+  ctx.beginPath();
+  ctx.arc(CX,CY,mix(280,10,p),0,TAU);
+  ctx.fill();
+  ctx.restore();
+}
+
+// ----------------------------------------------------
+// SCENE 10: CANONICAL RESOLUTION (62160ms - 63400ms) - LOCKED SOURCE
+// ----------------------------------------------------
+function drawResolution(ms){
+  const p=ease(clamp((ms-62160)/950)),scale=mix(.32,.54,p);
+  ctx.save();
+  ctx.translate(CX,CY-50);
+  ctx.scale(scale,scale);
+  ctx.translate(-200,-200);
+  ctx.shadowColor='#00f0ff';
+  ctx.shadowBlur=mix(60,24,p);
+  for(const b of BASE_BOXES){
+    ctx.globalAlpha=p*b.a;
+    ctx.fillStyle='#87ceeb';
+    rr(b.x,b.x,b.s,b.s,b.r);
+    ctx.fill();
+  }
+  ctx.restore();
+
+  drawTracked('SWARM',CX,830,20,'#ffffff',p,'800 48px Inter,system-ui,sans-serif');
+  drawTracked('THE LOCAL-FIRST AI WORKSPACE',CX,895,6,'#87ceeb',p*.9,'700 16px Inter,system-ui,sans-serif');
+  drawTracked('GET STARTED AT SWARMAGENT.DEV',CX,940,4,'#00ff88',p*.95,'700 14px ui-monospace,monospace');
+}
+
+// ----------------------------------------------------
+// MAIN DRAW LOOP
+// ----------------------------------------------------
+function draw(ms){
+  ms=clamp(Number(ms)||0,0,DURATION);
+  const pulse=pulseAt(ms);
+  const energy=ms<20220?(-.48+ease(ms/20220)*.08+pulse*.035):(.22+ease(ms/55400)*.4+pulse*.38);
+
+  ctx.clearRect(0,0,W,H);
+  drawBackground(ms,energy);
+
+  if(ms<20220)drawOpeningCinematic(ms,pulse);
+  else if(ms<48120)drawStep03Sequence(ms,pulse);
+  else if(ms<55400)drawNetwork(ms,pulse);
+  else if(ms<61400)drawFinalDrop(ms,pulse);
+  else if(ms<62160)drawSingularity(ms);
+  else drawResolution(ms);
+}
+
+// ----------------------------------------------------
+// SCHEDULER & ANIMATION EXPORT CONTRACTS
+// ----------------------------------------------------
+let isPlaying=false;
+let rafId=0;
+let playbackStartTime=0;
+let playbackStartMs=0;
+let currentMs=0;
+
+const prefersReducedMotion=window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+const playBtn=document.getElementById('play');
+const range=document.getElementById('timeline');
+const clock=document.getElementById('clock');
+const audio=document.getElementById('soundtrack');
+const nav=document.getElementById('moments');
+
+const format=ms=>{
+  const t=Math.max(0,Math.min(63400,ms)),m=Math.floor(t/60000),s=Math.floor(t%60000/1000),x=Math.floor(t%1000);
+  return `${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}.${String(x).padStart(3,'0')}`;
+};
+
+function updateMoment(ms){
+  const active=MOMENTS.find(m=>ms>=m.start&&ms<m.end)||MOMENTS[MOMENTS.length-1];
+  if(nav){
+    nav.querySelectorAll('button').forEach((b,i)=>b.classList.toggle('active',MOMENTS[i]===active));
+  }
+}
+
+function updateUI(ms){
+  if(range&&Number(range.value)!==Math.round(ms))range.value=String(Math.round(ms));
+  if(clock)clock.textContent=format(ms);
+  updateMoment(ms);
+}
+
+function renderFrame(ms){
+  ensureInit();
+  currentMs=clamp(Number(ms)||0,0,DURATION);
+  document.documentElement.dataset.swarmAnimationTimeMs=String(currentMs);
+  draw(currentMs);
+  updateUI(currentMs);
+}
+
+function startPlayback(fromMs){
+  if(prefersReducedMotion){
+    renderFrame(fromMs!==undefined?fromMs:0);
+    return;
+  }
+  if(fromMs!==undefined){
+    playbackStartMs=clamp(fromMs,0,DURATION);
+  }else{
+    playbackStartMs=currentMs>=DURATION?0:currentMs;
+  }
+  playbackStartTime=performance.now();
+  isPlaying=true;
+  if(playBtn)playBtn.textContent='Pause';
+
+  if(audio){
+    audio.currentTime=playbackStartMs/1000;
+    audio.play().catch(()=>{});
+  }
+  cancelAnimationFrame(rafId);
+  rafId=requestAnimationFrame(animationLoop);
+}
+
+function pausePlayback(){
+  isPlaying=false;
+  cancelAnimationFrame(rafId);
+  if(playBtn)playBtn.textContent='Play';
+  if(audio)audio.pause();
+}
+
+function animationLoop(now){
+  if(!isPlaying)return;
+  const elapsed=now-playbackStartTime;
+  const ms=playbackStartMs+elapsed;
+  if(ms>=DURATION){
+    renderFrame(DURATION);
+    pausePlayback();
+    return;
+  }
+  renderFrame(ms);
+
+  if(audio&&!audio.paused&&Math.abs(audio.currentTime-ms/1000)>0.15){
+    audio.currentTime=ms/1000;
+  }
+  rafId=requestAnimationFrame(animationLoop);
+}
+
+document.addEventListener('visibilitychange',()=>{
+  if(document.hidden){
+    if(isPlaying){
+      pausePlayback();
+      document.documentElement.dataset.wasPlaying='true';
+    }
+  }else{
+    if(document.documentElement.dataset.wasPlaying==='true'){
+      delete document.documentElement.dataset.wasPlaying;
+      startPlayback(currentMs);
+    }
+  }
+});
+
+async function ready(){
+  if(document.fonts?.ready){
+    try{await document.fonts.ready}catch(_){}
+  }
+  ensureInit();
+  renderFrame(0);
+  return{duration_ms:DURATION,fps:FPS};
+}
+
+async function seek(timeMs){
+  ensureInit();
+  const ms=clamp(Number(timeMs)||0,0,DURATION);
+  if(isPlaying){
+    pausePlayback();
+  }
+  renderFrame(ms);
+  if(audio){
+    audio.currentTime=ms/1000;
+  }
+  await new Promise(resolve=>requestAnimationFrame(resolve));
+  return{time_ms:ms};
+}
+
+globalThis.SWARM_MOMENTS=MOMENTS;
+globalThis.SWARM_FEATURES=FEATURES;
+globalThis.SWARM_AUDIO_LINEAGE=AUDIO_LINEAGE;
+globalThis.__SWARM_ANIMATION_V1__={version:'swarm.animation/v1',ready,seek};
+globalThis.__SWARM_LOCAL_PREVIEW__={show:seek,stop:pausePlayback,moments:MOMENTS};
+
+if(playBtn){
+  playBtn.addEventListener('click',()=>{
+    if(isPlaying)pausePlayback();
+    else startPlayback();
+  });
+}
+if(range){
+  range.addEventListener('input',()=>{
+    seek(Number(range.value));
+  });
+}
+if(nav){
+  const iterationManifestNode=document.getElementById('swarm-iteration-manifest');
+  let iterationSections=[];
+  try{iterationSections=JSON.parse(iterationManifestNode?.textContent||'null')?.sections||[];}catch(_){}
+  for(const m of MOMENTS){
+    const b=document.createElement('button');
+    b.type='button';
+    b.textContent=m.label;
+    const section=iterationSections.find(item=>item.id===m.id);
+    const narration=section?.narration?.map(line=>[line.text,line.detail].filter(Boolean).join(' — ')).filter(Boolean).join('\n');
+    if(narration)b.title=narration;
+    b.addEventListener('click',()=>{
+      seek(m.start);
+    });
+    nav.appendChild(b);
+  }
+}
+
+window.addEventListener('DOMContentLoaded',()=>{
+  ensureInit();
+  const urlParam=new URLSearchParams(location.search).get('t');
+  const initialMs=urlParam!==null?clamp(Number(urlParam)||0,DURATION):0;
+  renderFrame(initialMs);
+
+  if(!prefersReducedMotion&&!document.hidden&&urlParam===null){
+    startPlayback(0);
+  }
+},{once:true});
+
+})();
+</script>
+<script data-swarm-player-bridge>
+(()=>{
+  const protocol='swarm-player/v1';
+  const iterationManifest=()=>{
+    const node=document.getElementById('swarm-iteration-manifest');
+    if(!node)return null;
+    try{return JSON.parse(node.textContent||'null');}catch(_){return null;}
+  };
+
+  addEventListener('message',async event=>{
+    const data=event.data;
+    if(!data||data.protocol!==protocol||!data.id)return;
+    try{
+      let result=null;
+      if(data.type==='ready')result=await globalThis.__SWARM_ANIMATION_V1__.ready();
+      else if(data.type==='describe')result=iterationManifest();
+      else if(data.type==='seek')result=await globalThis.__SWARM_ANIMATION_V1__.seek(data.time_ms);
+      else if(data.type==='stop'){
+        try{globalThis.__SWARM_LOCAL_PREVIEW__?.stop?.()}catch(_){}
+        document.querySelectorAll('audio,video').forEach(media=>{media.pause();media.muted=true});
+        result={stopped:true};
+      }else return;
+      event.source?.postMessage({protocol,id:data.id,ok:true,result},'*');
+    }catch(err){
+      event.source?.postMessage({protocol,id:data.id,ok:false,error:err?.message||String(err)},'*');
+    }
+  });
+})();
+</script>
+</body>
+</html>

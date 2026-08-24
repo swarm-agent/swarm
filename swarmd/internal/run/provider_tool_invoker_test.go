@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"swarm/packages/swarmd/internal/artifact"
 	"swarm/packages/swarmd/internal/permission"
 	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
 	sessionruntime "swarm/packages/swarmd/internal/session"
@@ -866,6 +867,48 @@ func TestProviderManagedArtifactRunContextPreservesTrustedManagedDestination(t *
 	}
 }
 
+func TestProviderManagedArtifactRunContextDerivesFocusedPartFromSourceMessage(t *testing.T) {
+	workspace := t.TempDir()
+	svc, sessionID, _, cleanup := newProviderManagedV3PermissionTestService(t, workspace)
+	defer cleanup()
+	t.Setenv("STATE_DIRECTORY", filepath.Join(t.TempDir(), "artifact-state"))
+	authority := artifact.NewAuthority(artifact.NewRegistry(svc.sessions, artifact.Limits{}), svc.sessions)
+	svc.tools.SetArtifactAuthority(authority)
+
+	session, ok, err := svc.sessions.GetSession(sessionID)
+	if err != nil || !ok {
+		t.Fatalf("load session: ok=%t err=%v", ok, err)
+	}
+	principal := artifact.Principal{SessionID: session.ID, AccountScopeID: session.AccountScopeID, UserID: session.UserID}
+	collectionID, variantID := "focused-source", "focused-source"
+	created, err := authority.CreateInitialComposition(context.Background(), principal, artifact.CreateInitialCompositionInput{
+		CreateInput:     artifact.CreateInput{RequestID: "focused-source", CollectionID: collectionID, VariantID: variantID, CollectionName: "Focused source", Filename: "three.txt", MediaType: "text/plain", AutoAccept: true},
+		ArtifactChainID: pebblestore.RootSessionArtifactChainID(session.ID, collectionID, variantID), CompositionID: "focused-composition", Parts: []artifact.InitialPartInput{
+			{Definition: pebblestore.SessionArtifactPartDefinition{ID: "hero", Label: "Hero"}, RevisionID: "hero-r1", MediaType: "text/plain", Body: []byte("hero")},
+			{Definition: pebblestore.SessionArtifactPartDefinition{ID: "body", Label: "Body"}, RevisionID: "body-r1", MediaType: "text/plain", Body: []byte("body")},
+			{Definition: pebblestore.SessionArtifactPartDefinition{ID: "footer", Label: "Footer"}, RevisionID: "footer-r1", MediaType: "text/plain", Body: []byte("footer")},
+		},
+	})
+	if err != nil {
+		t.Fatalf("create multipart source: %v", err)
+	}
+	part := pebblestore.SessionArtifactPart{ID: "body", Label: "Body", Kind: "semantic"}
+	message := pebblestore.MessageSnapshot{ID: "focused-message", Role: "user", Content: "Revise body", ArtifactSelections: []pebblestore.SessionArtifactSelectionReference{{SessionID: created.SessionID, CollectionID: created.CollectionID, VariantID: created.ID, EventSeq: created.EventSeq, Action: "use", PartID: "body", Part: &part}}}
+	result, err := svc.sessions.ApplySessionMutation(sessionruntime.SessionMutationInput{SessionID: sessionID, UserID: session.UserID, AccountScopeID: session.AccountScopeID, ClientRequestID: "focused-message", IdempotencyKey: "focused-message", PayloadHash: "focused-message", RequestHash: "focused-message", Kind: sessionruntime.SessionMutationAppendMessage, Message: &message})
+	if err != nil || result.Message == nil {
+		t.Fatalf("append focused message: result=%#v err=%v", result, err)
+	}
+
+	run := svc.providerManagedArtifactRunContext(providerToolInvokerConfig{sessionID: sessionID, runID: "run-focused", sourceMessageID: result.Message.ID})
+	if run.SourceArtifact == nil || run.SourcePartRevision == nil || run.SourcePartRevision.PartID != "body" || run.SourceComposition == nil || run.CollectionID == "" || !run.AutoAccept {
+		t.Fatalf("focused parent artifact context = %#v", run)
+	}
+	unbound := svc.providerManagedArtifactRunContext(providerToolInvokerConfig{sessionID: sessionID, runID: "run-focused"})
+	if unbound.SourceArtifact != nil || unbound.SourcePartRevision != nil {
+		t.Fatalf("unbound parent context gained artifact authority: %#v", unbound)
+	}
+}
+
 func TestProviderManagedArtifactRunContextUsesTrustedRunIntentLineage(t *testing.T) {
 	workspace := t.TempDir()
 	svc, sessionID, _, cleanup := newProviderManagedV3PermissionTestService(t, workspace)
@@ -911,10 +954,12 @@ func newProviderManagedV3PermissionTestServiceWithMetadata(t testing.TB, workspa
 	}
 	sessions := sessionruntime.NewService(pebblestore.NewSessionStore(store), events)
 	session, _, err := sessions.CreateSessionWithOptions(sessionruntime.CreateSessionOptions{
-		Title:         "Provider managed v3",
-		WorkspacePath: workspace,
-		WorkspaceName: "workspace",
-		Mode:          sessionruntime.ModeAuto,
+		UserID:         "provider-managed-user",
+		AccountScopeID: "provider-managed-account",
+		Title:          "Provider managed v3",
+		WorkspacePath:  workspace,
+		WorkspaceName:  "workspace",
+		Mode:           sessionruntime.ModeAuto,
 		Preference: &pebblestore.ModelPreference{
 			Provider: "test-provider",
 			Model:    "test-model",

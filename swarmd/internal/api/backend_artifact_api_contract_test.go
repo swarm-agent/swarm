@@ -79,7 +79,7 @@ func TestBackendArtifactSelectionEndpointEnforcesOwnershipAndExactReadyEvent(t *
 	}
 	post := func(requestID string, eventSeq uint64, principal identity.Principal) *httptest.ResponseRecorder {
 		t.Helper()
-		body := bytes.NewBufferString(`{"client_request_id":"` + requestID + `","event_seq":` + artifactContractJSONNumber(eventSeq) + `,"action":"use"}`)
+		body := bytes.NewBufferString(`{"client_request_id":"` + requestID + `","event_seq":` + artifactContractJSONNumber(eventSeq) + `,"action":"select","artifact_chain_id":"` + variant.ArtifactChainID + `","artifact_step_id":"` + variant.ArtifactStepID + `"}`)
 		req := httptest.NewRequest(http.MethodPost, "/v3/sessions/"+variant.SessionID+"/artifacts/"+variant.ID+"/selection", body)
 		req.Header.Set("Content-Type", "application/json")
 		req = req.WithContext(identity.ContextWithPrincipal(req.Context(), principal))
@@ -87,7 +87,7 @@ func TestBackendArtifactSelectionEndpointEnforcesOwnershipAndExactReadyEvent(t *
 		server.Handler().ServeHTTP(recorder, req)
 		return recorder
 	}
-	if stale := post("selection-stale", variant.EventSeq+1, principal); stale.Code != http.StatusBadRequest || !strings.Contains(stale.Body.String(), "event sequence") {
+	if stale := post("selection-stale", variant.EventSeq+1, principal); stale.Code != http.StatusConflict || !strings.Contains(stale.Body.String(), "event sequence") {
 		t.Fatalf("stale selection status=%d body=%s", stale.Code, stale.Body.String())
 	}
 	wrong := principal
@@ -96,7 +96,7 @@ func TestBackendArtifactSelectionEndpointEnforcesOwnershipAndExactReadyEvent(t *
 		t.Fatalf("cross-account selection succeeded: %s", foreign.Body.String())
 	}
 	selected := post("selection-valid", variant.EventSeq, principal)
-	if selected.Code != http.StatusOK || !strings.Contains(selected.Body.String(), `"action":"use"`) {
+	if selected.Code != http.StatusOK || !strings.Contains(selected.Body.String(), `"action":"select"`) {
 		t.Fatalf("valid selection status=%d body=%s", selected.Code, selected.Body.String())
 	}
 }
@@ -140,7 +140,6 @@ func TestBackendArtifactSessionDeletionCleansPrivateBytes(t *testing.T) {
 		t.Fatal(err)
 	}
 	registry := artifact.NewRegistry(sessionSvc, artifact.Limits{})
-	sessionSvc.SetArtifactSessionCleaner(registry)
 	authority := artifact.NewAuthority(registry, sessionSvc)
 	_, err = authority.Create(context.Background(), artifact.Principal{SessionID: created.ID, AccountScopeID: created.AccountScopeID, UserID: created.UserID}, artifact.CreateInput{
 		RequestID: "cleanup-create", CollectionID: "cleanup-collection", CollectionName: "Cleanup", VariantID: "cleanup-variant", Filename: "cleanup.txt", MediaType: "text/plain", Body: []byte("delete me"),
@@ -151,10 +150,10 @@ func TestBackendArtifactSessionDeletionCleansPrivateBytes(t *testing.T) {
 	if err := sessionSvc.DeleteSession(created.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := registry.ServiceForOwnedSession(created.ID, created.AccountScopeID, created.UserID); err == nil {
+	if _, err := registry.OwnedSession(created.ID, created.AccountScopeID, created.UserID); err == nil {
 		t.Fatal("deleted session retained authenticated artifact-byte access")
 	}
-	if report, err := registry.RunMaintenance(10); err != nil || report.DeletedSessions != 0 {
+	if report, err := registry.RunMaintenance(10); err != nil || report.DeletedSessions != 1 {
 		t.Fatalf("post-delete maintenance = %+v err=%v", report, err)
 	}
 }

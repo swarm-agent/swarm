@@ -11,10 +11,11 @@ func TestUpdateArtifactMovesTerminalStatusBackToStaging(t *testing.T) {
 	createV3SessionForTest(t, sessions, "artifact-update-progress")
 	apply := func(request, kind string, variant SessionArtifactVariant) V3SessionMutationResult {
 		t.Helper()
-		result, err := sessions.ApplyV3SessionMutation(V3SessionMutationInput{
+		mutation := V3ArtifactMutation{Collection: SessionArtifactCollection{ID: "collection-1", Name: "Update progress"}, Variant: &variant}
+		result, err := applyV3ArtifactMutationForTest(sessions, V3SessionMutationInput{
 			SessionID: "artifact-update-progress", UserID: "user-1", AccountScopeID: "account-1",
 			ClientRequestID: request, PayloadHash: request, Kind: kind,
-			Artifact: &V3ArtifactMutation{Collection: SessionArtifactCollection{ID: "collection-1", Name: "Update progress"}, Variant: &variant},
+			Artifact: &mutation,
 		})
 		if err != nil {
 			t.Fatalf("%s: %v", request, err)
@@ -36,15 +37,49 @@ func TestUpdateArtifactMovesTerminalStatusBackToStaging(t *testing.T) {
 	}
 }
 
+func TestRepairSessionArtifactCollectionsOmitsHistoricalRowsWithoutGitIdentity(t *testing.T) {
+	store := openV3SessionEventTestStore(t)
+	sessions := NewSessionStore(store)
+	createV3SessionForTest(t, sessions, "artifact-repair-historical")
+	collection := SessionArtifactCollection{Version: SessionArtifactVersion, ID: "collection-1", AccountScopeID: "account-1", SessionID: "artifact-repair-historical", Status: SessionArtifactStatusStaging, Name: "Historical", VariantCount: 1, StagingCount: 1}
+	variant := SessionArtifactVariant{Version: SessionArtifactVersion, ID: "variant-1", CollectionID: collection.ID, AccountScopeID: collection.AccountScopeID, SessionID: collection.SessionID, Status: SessionArtifactStatusStaging}
+	if err := store.PutJSON(KeySessionArtifactCollection(collection.AccountScopeID, collection.SessionID, collection.ID), collection); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.PutJSON(KeySessionArtifactVariant(variant.AccountScopeID, variant.SessionID, variant.CollectionID, variant.ID), variant); err != nil {
+		t.Fatal(err)
+	}
+	report, err := sessions.RepairSessionArtifactCollections(collection.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.InvalidVariantsOmitted != 1 || report.CollectionsRepaired != 1 {
+		t.Fatalf("repair report = %+v", report)
+	}
+	repaired, ok, err := sessions.GetSessionArtifactCollection(collection.AccountScopeID, collection.SessionID, collection.ID)
+	if err != nil || !ok || repaired.VariantCount != 0 || repaired.StagingCount != 0 {
+		t.Fatalf("repaired=%+v ok=%t err=%v", repaired, ok, err)
+	}
+}
+
 func TestRepairSessionArtifactCollectionsDerivesProgressFromVariants(t *testing.T) {
 	store := openV3SessionEventTestStore(t)
 	sessions := NewSessionStore(store)
 	createV3SessionForTest(t, sessions, "artifact-repair-progress")
-	if _, err := sessions.ApplyV3SessionMutation(V3SessionMutationInput{
+	mutation := V3ArtifactMutation{Collection: SessionArtifactCollection{ID: "collection-1", Name: "Repair"}, Variant: &SessionArtifactVariant{ID: "variant-1", Filename: "note.txt", MediaType: "text/plain"}}
+	if _, err := applyV3ArtifactMutationForTest(sessions, V3SessionMutationInput{
 		SessionID: "artifact-repair-progress", UserID: "user-1", AccountScopeID: "account-1",
 		ClientRequestID: "create", PayloadHash: "create", Kind: V3SessionMutationCreateArtifact,
-		Artifact: &V3ArtifactMutation{Collection: SessionArtifactCollection{ID: "collection-1", Name: "Repair"}, Variant: &SessionArtifactVariant{ID: "variant-1", Filename: "note.txt", MediaType: "text/plain"}},
+		Artifact: &mutation,
 	}); err != nil {
+		t.Fatal(err)
+	}
+	variant, ok, err := sessions.GetSessionArtifactVariant("account-1", "artifact-repair-progress", "collection-1", "variant-1")
+	if err != nil || !ok {
+		t.Fatalf("load variant: ok=%t err=%v", ok, err)
+	}
+	variant.GraphState, variant.RepositoryID, variant.CommitOID = SessionArtifactGraphProjection, "repair-repository", strings.Repeat("d", 64)
+	if err := store.PutJSON(KeySessionArtifactVariant(variant.AccountScopeID, variant.SessionID, variant.CollectionID, variant.ID), variant); err != nil {
 		t.Fatal(err)
 	}
 	corrupt := SessionArtifactCollection{

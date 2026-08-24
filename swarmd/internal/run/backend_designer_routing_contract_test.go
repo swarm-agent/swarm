@@ -21,8 +21,9 @@ func TestBackendDesignerRegularAndIterationRoutingContract(t *testing.T) {
 	if len(managed.Launches) != 2 || managed.Launches[0].OutputMode != taskOutputModeManaged || managed.Launches[1].OutputMode != taskOutputModeManaged || len(managed.Launches[0].OwnedScope) != 0 {
 		t.Fatalf("managed regular routing = %#v", managed.Launches)
 	}
-	first := managedDesignerArtifactContext(pebblestore.SessionSnapshot{ID: "parent"}, "task-call", managed.Launches[0], 1)
-	second := managedDesignerArtifactContext(pebblestore.SessionSnapshot{ID: "parent"}, "task-call", managed.Launches[1], 2)
+	parent := pebblestore.SessionSnapshot{ID: "parent", UserID: "user-1", AccountScopeID: "account-1"}
+	first := managedDesignerArtifactContext(parent, "task-call", managed.Launches[0], 1)
+	second := managedDesignerArtifactContext(parent, "task-call", managed.Launches[1], 2)
 	if first.CollectionID == "" || first.CollectionID != second.CollectionID || first.VariantID == second.VariantID || first.VariantID == "" || second.VariantID == "" {
 		t.Fatalf("managed regular destinations = %#v / %#v", first, second)
 	}
@@ -55,6 +56,26 @@ func TestBackendDesignerRegularAndIterationRoutingContract(t *testing.T) {
 	}))
 	if err == nil || !strings.Contains(err.Error(), "regular task launches") {
 		t.Fatalf("workspace Designer Iteration Swarm error = %v", err)
+	}
+}
+
+func TestTaskArtifactReferenceReturnsCompleteReadyLineage(t *testing.T) {
+	variant := pebblestore.SessionArtifactVariant{
+		ID: "variant-2", CollectionID: "collection-2", EventSeq: 42, Status: pebblestore.SessionArtifactStatusReady,
+		Lineage: pebblestore.SessionArtifactLineage{
+			SourceSessionID: "source-session", SourceCollectionID: "source-collection", SourceVariantID: "source-variant", SourceEventSeq: 41,
+			IterationSectionID: "step-03-understand", IterationSectionLabel: "03A · UNDERSTAND", IterationSectionStartMs: 20220, IterationSectionEndMs: 27600,
+		},
+	}
+	reference := taskArtifactReferenceFromVariant("parent-session", variant)
+	if reference == nil || reference.SessionID != "parent-session" || reference.CollectionID != variant.CollectionID || reference.VariantID != variant.ID || reference.EventSeq != variant.EventSeq {
+		t.Fatalf("ready artifact reference is incomplete: %#v", reference)
+	}
+	if reference.SourceArtifact == nil || reference.SourceArtifact.SessionID != "source-session" || reference.SourceArtifact.EventSeq != 41 {
+		t.Fatalf("ready artifact reference lost exact source lineage: %#v", reference)
+	}
+	if reference.SectionTarget == nil || reference.SectionTarget.ID != "step-03-understand" || reference.SectionTarget.StartMs != 20220 || reference.SectionTarget.EndMs != 27600 {
+		t.Fatalf("ready artifact reference lost exact section target: %#v", reference)
 	}
 }
 

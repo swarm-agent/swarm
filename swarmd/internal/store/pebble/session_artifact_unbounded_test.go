@@ -22,10 +22,11 @@ func TestCreateArtifactCollectionHasNoSessionLifetimeCeiling(t *testing.T) {
 		}
 	}
 
-	result, err := sessions.ApplyV3SessionMutation(V3SessionMutationInput{
+	mutation := V3ArtifactMutation{Collection: SessionArtifactCollection{ID: "collection-065", Name: "Collection 65"}}
+	result, err := applyV3ArtifactMutationForTest(sessions, V3SessionMutationInput{
 		SessionID: sessionID, UserID: "user-1", AccountScopeID: "account-1",
 		ClientRequestID: "create-65", PayloadHash: "create-65", Kind: V3SessionMutationCreateArtifact,
-		Artifact: &V3ArtifactMutation{Collection: SessionArtifactCollection{ID: "collection-065", Name: "Collection 65"}},
+		Artifact: &mutation,
 	})
 	if err != nil {
 		t.Fatalf("create collection beyond former ceiling: %v", err)

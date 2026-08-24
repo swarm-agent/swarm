@@ -63,6 +63,9 @@ func TestExportHTMLAnimationUsesManifestTimelineAndPublishesExactLineage(t *test
 	if authority.created.MediaType != "video/mp4" || authority.created.AnimationProfile == nil || authority.created.AnimationProfile.ProfileID != "final_render" || authority.created.OutputRequirements == nil || authority.created.OutputRequirements.Width != 1920 || authority.created.OutputRequirements.Height != 1080 {
 		t.Fatalf("published contract = %+v", authority.created)
 	}
+	if !authority.created.AutoAccept {
+		t.Fatalf("single animation export did not request auto-accept: %+v", authority.created)
+	}
 	for _, required := range []string{`"action":"export_html_animation"`, `"media_type":"video/mp4"`, `"profile_id":"final_render"`, `"source_reference"`} {
 		if !strings.Contains(output, required) {
 			t.Fatalf("output lacks %s: %s", required, output)

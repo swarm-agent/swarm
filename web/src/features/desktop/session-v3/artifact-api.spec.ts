@@ -19,6 +19,9 @@ import {
   desktopV3ArtifactViewerLocation,
   desktopV3ArtifactViewerSearch,
   desktopV3ArtifactMessageSelection,
+  desktopV3ArtifactPartIterationMessageSelection,
+  desktopV3ArtifactPartMessageSelection,
+  desktopV3ArtifactRevisionHasPart,
   desktopV3ArtifactSelection,
   formatDesktopV3ArtifactAnimationProfile,
   formatDesktopV3ArtifactOutputRequirements,
@@ -27,12 +30,14 @@ import {
   removeDesktopV3ArtifactMessageSelection,
   normalizeDesktopV3ArtifactCatalogEntry,
   desktopV3ArtifactSelectionEndpoint,
+  desktopV3ArtifactPartSelectionEndpoint,
   fetchDesktopV3ArtifactPreviewAccess,
   fetchDesktopV3ArtifactCatalogResult,
   preflightDesktopV3ArtifactDirectContent,
   revealDesktopV3Artifact,
   revealDesktopV3ArtifactCollection,
   selectDesktopV3Artifact,
+  selectDesktopV3ArtifactPartRevisions,
   useDesktopV3Artifact,
 } from './artifact-api'
 
@@ -96,6 +101,7 @@ const managedCatalogWire = {
 test('artifact catalog normalizes managed collection, progress, selection, lineage, status, and event sequence', () => {
   assert.deepEqual(normalizeDesktopV3ArtifactCatalogEntry(managedCatalogWire), {
     artifactId: 'variant-1',
+    sourceRef: '',
     collectionId: 'collection-1',
     sessionId: 'session-1',
     sessionTitle: '',
@@ -134,9 +140,87 @@ test('artifact catalog normalizes managed collection, progress, selection, linea
       parentSessionId: 'session-1', sourceSessionId: 'child-1', sourceCollectionId: 'source-collection',
       sourceVariantId: 'source-variant', sourceEventSeq: 41, taskCallId: 'call-1', programId: 'program-1', programJobId: 'job-1',
       childSessionId: '', iterationGroupId: '', iterationGroup: '', iterationId: '', iterationIndex: 2,
-      iterationLabel: '', iterationTheme: '', runId: '', planId: '', checkpointId: '', attemptId: '',
+      iterationLabel: '', iterationTheme: '', iterationSectionId: '', iterationSectionLabel: '',
+      iterationSectionStartMs: -1, iterationSectionEndMs: -1, runId: '', planId: '', checkpointId: '', attemptId: '',
     },
   })
+})
+
+test('artifact catalog preserves Git projection and exact repository refs', () => {
+  const entry = normalizeDesktopV3ArtifactCatalogEntry({
+    ...managedCatalogWire,
+    graph_state: 'git_projection',
+    artifact_chain_id: 'chain-1',
+    artifact_step_id: 'step-2',
+    repository_id: 'repository-1',
+    commit_oid: 'commit-2',
+    tree_oid: 'tree-2',
+    candidate_ref: 'refs/swarm/candidates/step-2',
+    parent_commit_oids: ['commit-1'],
+    chain: { id: 'chain-1', graph_state: 'git_projection', name: 'Homepage', repository_id: 'repository-1', official_ref: 'refs/swarm/official/chain-1', official_commit_oid: 'commit-2', root: { session_id: 'session-1', collection_id: 'collection-1', variant_id: 'variant-1', event_seq: 42 }, head: { session_id: 'session-1', collection_id: 'collection-1', variant_id: 'variant-1', event_seq: 42 }, revision_count: 2, last_round_id: 'step-2' },
+    step: { id: 'step-2', graph_state: 'git_projection', artifact_chain_id: 'chain-1', repository_id: 'repository-1', transaction_ref: 'refs/swarm/transactions/step-2', candidate_ref: 'refs/swarm/candidates/step-2', commit_oid: 'commit-2', parent_commit_oids: ['commit-1'], expected_old_oid: 'commit-1', resulting_oid: 'commit-2', revision_number: 2, parent: { session_id: 'session-1', collection_id: 'collection-0', variant_id: 'variant-0', event_seq: 41 }, candidates: [{ session_id: 'session-1', collection_id: 'collection-1', variant_id: 'variant-1', event_seq: 42 }], accepted: { session_id: 'session-1', collection_id: 'collection-1', variant_id: 'variant-1', event_seq: 42 } },
+  })
+  assert.ok(entry)
+  assert.equal(entry.graphState, 'git_projection')
+  assert.equal(entry.artifactStepId, 'step-2')
+  assert.equal(entry.chain?.officialRef, 'refs/swarm/official/chain-1')
+  assert.equal(entry.chain?.officialCommitOid, 'commit-2')
+  assert.equal(entry.step?.transactionRef, 'refs/swarm/transactions/step-2')
+  assert.deepEqual(entry.step?.parentCommitOids, ['commit-1'])
+  assert.equal(entry.commitOid, 'commit-2')
+  assert.equal(entry.candidateRef, 'refs/swarm/candidates/step-2')
+  assert.equal(entry.step?.accepted?.variantId, 'variant-1')
+  assert.deepEqual(desktopV3ArtifactSelection(entry), { session_id: 'session-1', collection_id: 'collection-1', variant_id: 'variant-1', event_seq: 42, artifact_chain_id: 'chain-1', artifact_step_id: 'step-2' })
+})
+
+test('artifact catalog preserves multipart construction, locks, ancestry, and turn groups', () => {
+  const digest = 'a'.repeat(64)
+  const entry = normalizeDesktopV3ArtifactCatalogEntry({
+    ...managedCatalogWire,
+    graph_state: 'git_projection', artifact_chain_id: 'chain-1', artifact_step_id: 'step-2', part_graph_state: 'git_projection', targeted_part_ids: ['hero', 'footer'],
+    chain: { id: 'chain-1', graph_state: 'git_projection', name: 'Homepage', root: { session_id: 'session-1', collection_id: 'collection-1', variant_id: 'variant-1', event_seq: 42 }, head: { session_id: 'session-1', collection_id: 'collection-1', variant_id: 'variant-1', event_seq: 42 }, revision_count: 2, last_round_id: 'step-2' },
+    step: { id: 'step-2', graph_state: 'git_projection', artifact_chain_id: 'chain-1', revision_number: 2, candidates: [{ session_id: 'session-1', collection_id: 'collection-1', variant_id: 'variant-1', event_seq: 42 }] },
+    part_definitions: [{ id: 'hero', label: 'Hero' }, { id: 'footer', label: 'Footer' }],
+    part_revisions: [
+      { reference: { artifact_chain_id: 'chain-1', part_id: 'hero', part_revision_id: 'hero-2', owner_session_id: 'session-1', digest_sha256: digest, size: 10, media_type: 'text/plain' }, parent: { artifact_chain_id: 'chain-1', part_id: 'hero', part_revision_id: 'hero-1', owner_session_id: 'session-1', digest_sha256: digest, size: 9, media_type: 'text/plain' }, iteration_turn_id: 'turn-2', iteration_group_id: 'group-2', event_seq: 42 },
+      { reference: { artifact_chain_id: 'chain-1', part_id: 'footer', part_revision_id: 'footer-2', owner_session_id: 'session-1', digest_sha256: digest, size: 11, media_type: 'text/plain' }, parent: { artifact_chain_id: 'chain-1', part_id: 'footer', part_revision_id: 'footer-1', owner_session_id: 'session-1', digest_sha256: digest, size: 8, media_type: 'text/plain' }, iteration_turn_id: 'turn-2', iteration_group_id: 'group-2', event_seq: 42 },
+    ],
+    composition: {
+      id: 'composition-2', artifact_chain_id: 'chain-1', iteration_turn_id: 'turn-2', iteration_group_id: 'group-2',
+      parent: { artifact_chain_id: 'chain-1', composition_id: 'composition-1', owner_session_id: 'session-1', event_seq: 41 },
+      construction: { kind: 'package-v1', entries: [{ part_id: 'hero', path: 'index.html' }, { part_id: 'footer', path: 'footer.html' }] },
+      parts: [
+        { part_id: 'hero', definition_owner_session_id: 'session-1', revision: { artifact_chain_id: 'chain-1', part_id: 'hero', part_revision_id: 'hero-2', owner_session_id: 'session-1', digest_sha256: digest, size: 10, media_type: 'text/plain' } },
+        { part_id: 'footer', definition_owner_session_id: 'session-1', locked: true, revision: { artifact_chain_id: 'chain-1', part_id: 'footer', part_revision_id: 'footer-2', owner_session_id: 'session-1', digest_sha256: digest, size: 11, media_type: 'text/plain' } },
+      ],
+    },
+  })
+  assert.ok(entry?.composition)
+  assert.equal(entry.composition.construction?.kind, 'package-v1')
+  assert.equal(entry.composition.parent?.compositionId, 'composition-1')
+  assert.equal(entry.composition.parts[1]?.locked, true)
+  assert.deepEqual(entry.composition.parentCommitOids, [])
+  assert.deepEqual(entry.partRevisions?.[0]?.parentCommitOids, [])
+  assert.deepEqual(entry.targetedPartIds, ['hero', 'footer'])
+  assert.equal(entry.partRevisions?.[0]?.iterationGroupId, 'group-2')
+})
+
+test('focused part iteration queues the official head and a bounded three-candidate branch request', () => {
+  const entry = normalizeDesktopV3ArtifactCatalogEntry({
+    ...managedCatalogWire,
+    graph_state: 'git_projection', artifact_chain_id: 'chain-1', artifact_step_id: 'step-1', part_graph_state: 'git_projection',
+    chain: { id: 'chain-1', graph_state: 'git_projection', name: 'Three part artifact', root: { session_id: 'session-1', collection_id: 'collection-1', variant_id: 'variant-1', event_seq: 42 }, head: { session_id: 'session-1', collection_id: 'collection-1', variant_id: 'variant-1', event_seq: 42 }, revision_count: 1 },
+    step: { id: 'step-1', graph_state: 'git_projection', artifact_chain_id: 'chain-1', revision_number: 1, candidates: [{ session_id: 'session-1', collection_id: 'collection-1', variant_id: 'variant-1', event_seq: 42 }] },
+    part_definitions: [{ id: 'header', label: 'Header' }, { id: 'body', label: 'Body' }, { id: 'footer', label: 'Footer' }],
+    part_revisions: ['header', 'body', 'footer'].map((part, index) => ({ reference: { artifact_chain_id: 'chain-1', part_id: part, part_revision_id: `${part}-1`, owner_session_id: 'session-1', digest_sha256: String(index + 1).repeat(64), size: 10, media_type: 'text/plain' }, event_seq: 42 })),
+    composition: { id: 'composition-1', artifact_chain_id: 'chain-1', parts: ['header', 'body', 'footer'].map((part, index) => ({ part_id: part, definition_owner_session_id: 'session-1', revision: { artifact_chain_id: 'chain-1', part_id: part, part_revision_id: `${part}-1`, owner_session_id: 'session-1', digest_sha256: String(index + 1).repeat(64), size: 10, media_type: 'text/plain' } })) },
+  })
+  assert.ok(entry)
+  const selection = desktopV3ArtifactPartIterationMessageSelection(entry, 'body', 3)
+  assert.equal(selection.part_id, 'body')
+  assert.match(selection.pending_request ?? '', /Create 3 new alternatives/)
+  assert.match(selection.pending_request ?? '', /Git-backed official composition head/)
+  assert.match(selection.pending_request ?? '', /managed Designer Iteration Swarm/)
 })
 
 test('artifact animation profiles preserve only the exact server-owned runtime contract', () => {
@@ -249,13 +333,53 @@ test('exported PNG catalog entries remain normal exact-reference chat and video 
   })
   assert.deepEqual(desktopV3ArtifactMessageSelection(exported, 'select'), {
     session_id: 'session-1', collection_id: 'html-video-stills', variant_id: 'capture-opening', event_seq: 84,
-    label: 'Homepage', description: 'Iteration 2 of 3', action: 'select',
+    label: 'Iteration 2: Homepage', description: 'Iteration 2 of 3', action: 'select',
   })
   assert.equal(formatDesktopV3ArtifactOutputRequirements(exported.outputRequirements), 'Landscape video · 1920 × 1080 · 16:9')
 })
 
-test('artifact selection actions target the canonical variant selection route', () => {
+test('artifact selection actions target canonical variant and multipart routes', () => {
   assert.equal(desktopV3ArtifactSelectionEndpoint('session-1', 'variant-1'), '/v3/sessions/session-1/artifacts/variant-1/selection')
+  assert.equal(desktopV3ArtifactPartSelectionEndpoint('session-1', 'variant-1'), '/v3/sessions/session-1/artifacts/variant-1/part-selection')
+})
+
+test('multipart selection sends exact lock choices atomically and normalizes the accepted composition', async () => {
+  const originalFetch = globalThis.fetch
+  const digest = 'b'.repeat(64)
+  let requestURL = ''
+  let requestBody: Record<string, unknown> = {}
+  globalThis.fetch = (async (input, init) => {
+    requestURL = String(input)
+    requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>
+    return new Response(JSON.stringify({
+      ok: true,
+      reference: { session_id: 'session-1', collection_id: 'selection-1', variant_id: 'selection-1', event_seq: 50 },
+      composition: {
+        id: 'composition-50', artifact_chain_id: 'chain-1', iteration_turn_id: 'selection-1', iteration_group_id: 'selection-1',
+        construction: { kind: 'concat-v1', entries: [{ part_id: 'hero', path: '' }] },
+        parts: [{ part_id: 'hero', definition_owner_session_id: 'session-1', locked: true, revision: { artifact_chain_id: 'chain-1', part_id: 'hero', part_revision_id: 'hero-2', owner_session_id: 'session-1', digest_sha256: digest, size: 10, media_type: 'text/plain' } }],
+      },
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+  }) as typeof fetch
+  try {
+    const result = await selectDesktopV3ArtifactPartRevisions(
+      { sessionId: 'session-1', artifactId: 'variant-1', eventSeq: 42 },
+      [{ partId: 'hero', revision: { artifactChainId: 'chain-1', partId: 'hero', partRevisionId: 'hero-2', ownerSessionId: 'session-1', digestSha256: digest, size: 10, mediaType: 'text/plain' }, revisionEventSeq: 49, locked: true }],
+    )
+    assert.equal(requestURL, '/v3/sessions/session-1/artifacts/variant-1/part-selection')
+    assert.equal(requestBody.event_seq, 42)
+    assert.deepEqual(requestBody.choices, [{ part_id: 'hero', revision: { artifact_chain_id: 'chain-1', part_id: 'hero', part_revision_id: 'hero-2', owner_session_id: 'session-1', digest_sha256: digest, size: 10, media_type: 'text/plain' }, revision_event_seq: 49, locked: true }])
+    assert.equal(result.composition.parts[0]?.locked, true)
+    assert.equal(result.reference.event_seq, 50)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('multipart selection rejects duplicate part choices before mutation', async () => {
+  const digest = 'c'.repeat(64)
+  const choice = { partId: 'hero', revision: { artifactChainId: 'chain-1', partId: 'hero', partRevisionId: 'hero-2', ownerSessionId: 'session-1', digestSha256: digest, size: 10, mediaType: 'text/plain' }, revisionEventSeq: 49, locked: true }
+  await assert.rejects(selectDesktopV3ArtifactPartRevisions({ sessionId: 'session-1', artifactId: 'variant-1', eventSeq: 42 }, [choice, choice]), /unique matching part/)
 })
 
 test('rich artifact previews use direct browser URLs instead of blob hydration', () => {
@@ -420,7 +544,60 @@ test('artifact chips preserve exact iteration identity and describe the selected
   assert.equal(JSON.stringify(use).includes('content'), false)
 })
 
-test('artifact chips enforce bounded batches and keep use intent singular per collection', () => {
+test('authoritative part chips carry the exact part identity and readable target metadata', () => {
+  const entry = normalizeDesktopV3ArtifactCatalogEntry({
+    ...managedCatalogWire,
+    part_graph_state: 'git_projection',
+    artifact_chain_id: 'chain-1',
+    part_definitions: [{ id: 'signal', label: 'Signal', description: 'Signal animation.', locator: { id: 'signal', label: 'Signal', kind: 'temporal', description: 'Signal animation.', start_ms: 0, end_ms: 4000 } }],
+    part_revisions: [{ reference: { artifact_chain_id: 'chain-1', part_id: 'signal', part_revision_id: 'signal-r1', owner_session_id: 'session-1', digest_sha256: 'a'.repeat(64), size: 10, media_type: 'text/html' }, iteration_turn_id: 'turn-1', iteration_group_id: 'group-1', event_seq: 42 }],
+    composition: {
+      id: 'composition-1', artifact_chain_id: 'chain-1', owner_session_id: 'session-1',
+      construction: { kind: 'concat-v1', entries: [{ part_id: 'signal', path: 'signal.html' }] },
+      parts: [{ part_id: 'signal', definition_owner_session_id: 'session-1', revision: { artifact_chain_id: 'chain-1', part_id: 'signal', part_revision_id: 'signal-r1', owner_session_id: 'session-1', digest_sha256: 'a'.repeat(64), size: 10, media_type: 'text/html' } }],
+    },
+  })
+  assert.ok(entry)
+
+  assert.equal(desktopV3ArtifactRevisionHasPart(entry, 'signal'), true)
+  assert.equal(desktopV3ArtifactRevisionHasPart(entry, 'missing'), false)
+  const selection = desktopV3ArtifactPartMessageSelection(entry, 'signal')
+  assert.equal(selection.part_id, 'signal')
+  assert.equal(selection.action, 'use')
+  assert.match(selection.label, /Signal/)
+  assert.match(selection.description ?? '', /Signal \(temporal\)/)
+  assert.throws(() => desktopV3ArtifactPartMessageSelection(entry, 'missing'), /exact part/)
+})
+
+test('locator-only review parts carry exact event-scoped metadata back to AI', () => {
+  const entry = normalizeDesktopV3ArtifactCatalogEntry({
+    ...managedCatalogWire,
+    part_graph_state: 'legacy_unproven',
+    parts: [{ id: 'part-2', label: 'Orbit', description: 'Middle animation section.', kind: 'temporal', start_ms: 3000, end_ms: 6000 }],
+  })
+  assert.ok(entry)
+
+  assert.equal(desktopV3ArtifactRevisionHasPart(entry, 'part-2'), true)
+  const selection = desktopV3ArtifactPartMessageSelection(entry, 'part-2')
+  assert.equal(selection.part_id, 'part-2')
+  assert.equal(selection.action, 'use')
+  assert.match(selection.label, /Orbit/)
+  assert.match(selection.description ?? '', /Orbit \(temporal\)/)
+})
+
+test('artifact chips preserve independent exact part targets on one artifact', () => {
+  const entry = normalizeDesktopV3ArtifactCatalogEntry(managedCatalogWire)
+  assert.ok(entry)
+  const base = desktopV3ArtifactMessageSelection(entry, 'select')
+  const signal = { ...base, part_id: 'part-1-signal', label: 'Signal' }
+  const orbit = { ...base, part_id: 'part-2-orbit', label: 'Orbit' }
+  const selections = appendDesktopV3ArtifactMessageSelections([], [signal, orbit])
+
+  assert.equal(selections.length, 2)
+  assert.deepEqual(removeDesktopV3ArtifactMessageSelection(selections, signal), [orbit])
+})
+
+test('artifact chips enforce bounded batches and keep one active complete artifact head', () => {
   const entry = normalizeDesktopV3ArtifactCatalogEntry(managedCatalogWire)
   assert.ok(entry)
   const other = { ...desktopV3ArtifactMessageSelection(entry, 'select'), variant_id: 'variant-2', label: 'Homepage alt' }
@@ -430,8 +607,14 @@ test('artifact chips enforce bounded batches and keep use intent singular per co
   assert.deepEqual(usedFirst, [desktopV3ArtifactMessageSelection(entry, 'use'), other])
   assert.deepEqual(
     appendDesktopV3ArtifactMessageSelections(usedFirst, [{ ...other, action: 'use' }]),
-    [desktopV3ArtifactMessageSelection(entry, 'select'), { ...other, action: 'use' }],
+    [{ ...other, action: 'use' }],
   )
+  const pending = appendDesktopV3ArtifactMessageSelections([], [{
+    ...other,
+    action: 'use',
+    pending_request: 'Create sibling alternatives for the next section.',
+  }])
+  assert.equal(pending[0]?.pending_request, 'Create sibling alternatives for the next section.')
 
   const full = Array.from({ length: DESKTOP_V3_ARTIFACT_MESSAGE_SELECTION_MAX_COUNT }, (_, index) => ({
     ...desktopV3ArtifactMessageSelection(entry, 'select'),

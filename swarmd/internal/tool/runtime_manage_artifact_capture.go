@@ -107,7 +107,7 @@ func (r *Runtime) exportHTMLStills(ctx context.Context, principal artifact.Princ
 			Presentation:       pebblestore.SessionArtifactPresentation{Kind: "image", Label: capture.StateID, Previewable: true, Width: htmlcapture.Width, Height: htmlcapture.Height},
 			OutputRequirements: requirements,
 			SourceSessionID:    ref.SessionID, SourceCollectionID: ref.CollectionID, SourceVariantID: ref.VariantID, SourceEventSeq: ref.EventSeq,
-			Body: append([]byte(nil), capture.PNG...),
+			Body: append([]byte(nil), capture.PNG...), AutoAccept: len(captures) == 1,
 		}
 		if index == 0 {
 			input.CollectionName = "HTML video stills"

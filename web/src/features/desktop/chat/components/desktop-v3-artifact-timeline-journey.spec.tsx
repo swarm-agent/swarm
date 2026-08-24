@@ -1,6 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import React from 'react'
+import { readFile } from 'node:fs/promises'
 import { renderToStaticMarkup } from 'react-dom/server'
 import {
   buildStructuredToolMessage,
@@ -300,6 +301,55 @@ test('final handoff normalizes one and many managed artifacts alongside delivera
   assert.equal(handoff?.artifacts[0]?.eventSeq, 10)
   assert.equal(handoff?.artifacts[1]?.artifactId, 'var-2')
   assert.equal(handoff?.artifacts[1]?.eventSeq, 11)
+})
+
+test('multipart Studio keeps exact part-change intent, accepted heads, and reconnect authority in one launch journey', async () => {
+  const [gallery, pane, model, api, realtime] = await Promise.all([
+    readFile(new URL('./desktop-v3-artifact-gallery.tsx', import.meta.url), 'utf8'),
+    readFile(new URL('./desktop-v3-existing-conversation-pane.tsx', import.meta.url), 'utf8'),
+    readFile(new URL('../../session-v3/artifact-studio-model.ts', import.meta.url), 'utf8'),
+    readFile(new URL('../../session-v3/artifact-api.ts', import.meta.url), 'utf8'),
+    readFile(new URL('../../realtime/v3-client-effect-runner.ts', import.meta.url), 'utf8'),
+  ])
+  assert.match(gallery, /selectedPartIds/)
+  assert.match(gallery, /requestedParts\.map/)
+  assert.match(gallery, /desktopV3ArtifactPartMessageSelection\(selected, part\.id, 'use'\)/)
+  assert.match(pane, /action: selection\.action \?\? "select"/)
+  assert.match(model, /acceptedPartHeads/)
+  assert.match(model, /desktopV3ArtifactStudioSamePartRevision/)
+  assert.match(api, /accepted_part_heads/)
+  assert.match(api, /targeted_part_ids/)
+  assert.match(realtime, /session\.artifact\.updated/)
+  assert.match(realtime, /refresh_artifacts/)
+})
+
+test('session sidebar opens an exact turn candidate at its part and the viewer autoplays that authored boundary', async () => {
+  const [sidebar, gallery, pane] = await Promise.all([
+    readFile(new URL('./desktop-v3-artifact-sidebar.tsx', import.meta.url), 'utf8'),
+    readFile(new URL('./desktop-v3-artifact-gallery.tsx', import.meta.url), 'utf8'),
+    readFile(new URL('./desktop-v3-existing-conversation-pane.tsx', import.meta.url), 'utf8'),
+  ])
+
+  assert.match(sidebar, /desktopV3ArtifactStudioTurns/)
+  assert.match(sidebar, /onOpenArtifact\(artifact, turnPart\.partId\)/)
+  assert.match(pane, /setArtifactGalleryInitialPartId\(partId\)/)
+  assert.match(pane, /initialPartId=\{artifactGalleryInitialPartId\}/)
+  assert.match(gallery, /iterationAutoplaySectionRef\.current = initialPartId/)
+  assert.match(gallery, /startIterationSectionPlayback\(targetSection, true\)/)
+})
+
+test('Studio round generation keeps the exact step attached and renders every round option even for whole-artifact candidates', async () => {
+  const [gallery, pane] = await Promise.all([
+    readFile(new URL('./desktop-v3-artifact-gallery.tsx', import.meta.url), 'utf8'),
+    readFile(new URL('./desktop-v3-existing-conversation-pane.tsx', import.meta.url), 'utf8'),
+  ])
+
+  assert.match(gallery, /desktopV3ArtifactPartMessageSelection\(iterationRoundSourceArtifact, iterationSection\.id, 'use'\)/)
+  assert.match(gallery, /selection: messageSelection/)
+  assert.match(pane, /pending_request: prompt, action: "use"/)
+  assert.match(gallery, /data-artifact-studio-whole-turn-options=\{turn\.id\}/)
+  assert.match(gallery, /turn\.candidates\.map\(\(candidate, index\)/)
+  assert.match(gallery, /selectPartIterationArtifact\(artifact, iterationSection\.id\)/)
 })
 
 test('exact viewer navigation search identity and URL resolution', () => {

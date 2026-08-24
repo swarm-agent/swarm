@@ -76,21 +76,6 @@ type artifactMetadataBoundary struct {
 	publisher func(sessionruntime.RealtimeOutboxRecord) error
 }
 
-type artifactOpener struct {
-	registry *artifact.Registry
-}
-
-func (o *artifactOpener) Open(ctx context.Context, variant pebblestore.SessionArtifactVariant) (*os.File, artifact.Blob, error) {
-	if o == nil || o.registry == nil {
-		return nil, artifact.Blob{}, errors.New("artifact registry not configured")
-	}
-	svc, err := o.registry.ServiceForSession(variant.SessionID)
-	if err != nil {
-		return nil, artifact.Blob{}, err
-	}
-	return svc.Open(ctx, variant)
-}
-
 func (b *artifactMetadataBoundary) SetPublisher(publisher func(sessionruntime.RealtimeOutboxRecord) error) {
 	if b == nil {
 		return
@@ -285,9 +270,16 @@ func New(cfg config.Config) (*Daemon, error) {
 	swarmStore := pebblestore.NewSwarmStore(store, topologyStore)
 	sessionSvc := sessionruntime.NewService(pebblestore.NewSessionStore(store), events)
 	artifactRegistry := artifact.NewRegistry(sessionSvc, artifact.Limits{})
+	// Artifact persistence is Git-native. Fail startup explicitly instead of
+	// allowing the first Designer publication to discover a missing dependency.
+	if err := artifactRegistry.VerifyGitPrerequisite(context.Background()); err != nil {
+		_ = secretStore.Close()
+		_ = store.Close()
+		_ = lk.Release()
+		return nil, fmt.Errorf("initialize private artifact Git storage: %w", err)
+	}
 	artifactMetadata := &artifactMetadataBoundary{Service: sessionSvc}
 	artifactAuthority := artifact.NewAuthority(artifactRegistry, artifactMetadata)
-	sessionSvc.SetArtifactSessionCleaner(artifactRegistry)
 	toolRuntime.SetArtifactRegistry(artifactRegistry)
 	toolRuntime.SetArtifactAuthority(artifactAuthority)
 	mediaStagingSvc := mediastaging.NewService(pebblestore.NewMediaStagingStore(store))
@@ -419,7 +411,7 @@ func New(cfg config.Config) (*Daemon, error) {
 		videorender.Config{},
 		sessionSvc.Store(),
 		artifactAuthority,
-		&artifactOpener{registry: artifactRegistry},
+		nil,
 		workspaceSvc,
 		nil,
 	)

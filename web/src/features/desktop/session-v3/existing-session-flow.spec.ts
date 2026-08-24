@@ -89,17 +89,17 @@ test('Path B operation rejects missing sessionId or prompt before HTTP', () => {
   }), /prompt/)
 })
 
-test('Path B keeps opaque artifact refs and visible labels in the stable retry payload', () => {
+test('Path B keeps opaque artifact refs, exact part targets, and visible labels in the stable retry payload', () => {
   const artifactSelections = [{
     session_id: 'source-session', collection_id: 'collection-1', variant_id: 'variant-1', event_seq: 9,
-    label: 'Landing page', description: 'Selected variant', action: 'use' as const,
+    label: 'Landing page · Signal', description: 'Selected variant', action: 'use' as const, part_id: ' signal ',
   }]
   const operation = createDesktopV3ExistingMessageOperation({
     sessionId: 'session-1',
     prompt: 'Use this design.',
     artifactSelections,
   })
-  assert.deepEqual(operation.request.artifact_selections, artifactSelections)
+  assert.deepEqual(operation.request.artifact_selections, [{ ...artifactSelections[0], part_id: 'signal' }])
   assert.equal(JSON.stringify(operation.request).includes('storage'), false)
   const replay = JSON.parse(JSON.stringify(operation)) as DesktopV3ExistingMessageOperation
   assert.deepEqual(replay.request.artifact_selections, operation.request.artifact_selections)
@@ -144,13 +144,6 @@ test('continueDesktopV3Conversation appends message through canonical mutation a
   const actions: DesktopV3CacheAction[] = []
   const restore = setDesktopV3ExistingSessionFlowDepsForTests({
     getSnapshot: () => state,
-    requireControllerReady: async () => ({
-      ensureSessionConnected: async (sessionId: string) => {
-        calls.push(`connect:${sessionId}`)
-      },
-      start: async () => undefined,
-      stop: () => undefined,
-    }),
     dispatch: (action) => {
       actions.push(action)
       calls.push(`dispatch:${action.type}`)
@@ -165,7 +158,6 @@ test('continueDesktopV3Conversation appends message through canonical mutation a
     const response = await continueDesktopV3Conversation(operation)
     assert.equal(response.session_id, 'session-1')
     assert.deepEqual(calls, [
-      'connect:session-1',
       'dispatch:pendingUser.upsert',
       `message:session-1:${operation.request.message_id}`,
       'dispatch:mutation.messageResult',
@@ -180,6 +172,13 @@ test('continueDesktopV3Conversation appends message through canonical mutation a
   }
 })
 
+test('continueDesktopV3Conversation does not gate canonical mutation on realtime subscription', async () => {
+  const filename = fileURLToPath(new URL('./existing-session-flow.ts', import.meta.url))
+  const source = readFileSync(filename, 'utf8')
+  assert.equal(source.includes('ensureSessionConnected'), false)
+  assert.equal(source.includes('requireDesktopV3RealtimeControllerReady'), false)
+  assert.match(source, /postAppendMessage\(sessionId, operation\.request\)/)
+})
 
 test('continueDesktopV3Conversation allows archived sessions so append can reactivate them', async () => {
   const operation = createDesktopV3ExistingMessageOperation({
@@ -199,11 +198,6 @@ test('continueDesktopV3Conversation allows archived sessions so append can react
   let appended = false
   const restore = setDesktopV3ExistingSessionFlowDepsForTests({
     getSnapshot: () => state,
-    requireControllerReady: async () => ({
-      ensureSessionConnected: async () => undefined,
-      start: async () => undefined,
-      stop: () => undefined,
-    }),
     dispatch: () => undefined,
     postAppendMessage: async () => {
       appended = true
@@ -258,11 +252,6 @@ test('continueDesktopV3Conversation accepts terminal replay so retained operatio
   const actions: DesktopV3CacheAction[] = []
   const restore = setDesktopV3ExistingSessionFlowDepsForTests({
     getSnapshot: () => state,
-    requireControllerReady: async () => ({
-      ensureSessionConnected: async () => undefined,
-      start: async () => undefined,
-      stop: () => undefined,
-    }),
     dispatch: (action) => {
       actions.push(action)
     },
@@ -293,11 +282,6 @@ test('continueDesktopV3Conversation still rejects dispatch-blocked run intent', 
   const state = createEmptyDesktopV3CacheState()
   const restore = setDesktopV3ExistingSessionFlowDepsForTests({
     getSnapshot: () => state,
-    requireControllerReady: async () => ({
-      ensureSessionConnected: async () => undefined,
-      start: async () => undefined,
-      stop: () => undefined,
-    }),
     dispatch: () => undefined,
     postAppendMessage: async () => ({
       ...makeMessageResponse(operation),

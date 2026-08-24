@@ -3,6 +3,7 @@ import test from 'node:test'
 
 import {
   normalizeDesktopV3RoutedSessionStartResponse,
+  postDesktopV3AppendMessage,
   postDesktopV3BackgroundRouterSessionStart,
   postDesktopV3RoutedSessionStart,
 } from './write-api'
@@ -122,6 +123,57 @@ test('postDesktopV3RoutedSessionStart sends only routed input authority with sta
     'worktree_mode', 'worktree_branch_name',
   ]) {
     assert.equal(Object.hasOwn(body, forbidden), false, `request must not preselect ${forbidden}`)
+  }
+})
+
+test('artifact message transport strips Studio graph identity from strict portable references', async () => {
+  const calls: Array<{ url: string; init?: RequestInit }> = []
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input)
+    calls.push({ url, init })
+    return new Response(JSON.stringify(url === '/v3/sessions:routed' ? routedResponse() : {}), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    })
+  }) as typeof fetch
+
+  const selection = {
+    session_id: ' source-session ',
+    collection_id: ' collection-1 ',
+    variant_id: ' variant-1 ',
+    event_seq: 42,
+    artifact_chain_id: 'chain-1',
+    artifact_step_id: 'step-1',
+    part_id: ' hero ',
+    label: ' Selected design ',
+    description: ' Design context ',
+    action: 'select' as const,
+  }
+
+  try {
+    await postDesktopV3AppendMessage('session-existing', {
+      client_request_id: 'append-artifact', message_id: 'message-artifact', run_id: 'run-artifact', role: 'user', content: 'Use this', artifact_selections: [selection],
+    })
+    await postDesktopV3RoutedSessionStart({
+      ...workspaceAuthority,
+      input: 'Use this',
+      client_request_id: 'desktop-routed:artifact',
+      agent_name: 'swarm',
+      managed_worktree_requested: false,
+      plan_mode_requested: false,
+      artifact_selections: [selection],
+    })
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+
+  assert.equal(calls.length, 2)
+  for (const call of calls) {
+    const body = JSON.parse(String(call.init?.body)) as { artifact_selections?: Array<Record<string, unknown>> }
+    assert.deepEqual(body.artifact_selections, [{
+      session_id: 'source-session', collection_id: 'collection-1', variant_id: 'variant-1', event_seq: 42,
+      part_id: 'hero', label: 'Selected design', description: 'Design context', action: 'select',
+    }])
   }
 })
 

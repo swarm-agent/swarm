@@ -173,6 +173,8 @@ type Runtime struct {
 	videoProjects        manageVideoProjectService
 	videoRender          manageVideoRenderService
 	searchCoordinator    *SearchCoordinator
+	focusedPartMu        sync.Mutex
+	focusedPartProtocols map[string]focusedPartProtocolState
 }
 
 type ExaRuntimeConfig struct {
@@ -496,6 +498,14 @@ func (r *Runtime) ArtifactAuthority() ArtifactAuthority {
 		return nil
 	}
 	return r.artifactAuthority
+}
+
+func (r *Runtime) ResolveArtifactPartTarget(principal artifact.Principal, source pebblestore.SessionArtifactSelectionReference, partID string) (pebblestore.SessionArtifactVariant, pebblestore.SessionArtifactComposition, pebblestore.SessionArtifactPartDefinition, pebblestore.SessionArtifactPartRevisionReference, error) {
+	authority, ok := r.artifactAuthority.(*artifact.Authority)
+	if !ok || authority == nil {
+		return pebblestore.SessionArtifactVariant{}, pebblestore.SessionArtifactComposition{}, pebblestore.SessionArtifactPartDefinition{}, pebblestore.SessionArtifactPartRevisionReference{}, errors.New("authoritative artifact part operations are unavailable")
+	}
+	return authority.ResolvePartTarget(principal, source, partID)
 }
 
 // GenerateManagedImageArtifact is the trusted orchestration entrypoint for
@@ -1358,7 +1368,7 @@ func (r *Runtime) Definitions() []Definition {
 					"validation":                 map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Validation evidence for checkpoint updates."},
 					"recommendation":             map[string]any{"type": "object", "description": "Single final-review recommendation for terminal checkpoint outcomes: decision ship/change/revert/defer, action, short reason, and action_state taken/ready/needs_approval."},
 					"handoff_title":              map[string]any{"type": "string", "description": "Optional concise title for a terminal final or blocked handoff card (maximum 120 characters). For mark_blocked, name the blocker or blocked outcome plainly."},
-					"handoff_overview":           map[string]any{"type": "string", "description": "Required concise overview for final checkpoint completion, mark_blocked compact handoffs, and whenever any handoff field is supplied (maximum 600 characters). For mark_blocked, identify the external blocker and why it prevents progress; keep full evidence in report/result/validation."},
+					"handoff_overview":           map[string]any{"type": "string", "description": "Required concise overview for final checkpoint completion, mark_needs_review and mark_blocked interactive handoffs, and whenever any handoff field is supplied (maximum 600 characters). For mark_needs_review, explain the judgment needed and keep chat interaction available; for mark_blocked, identify the external blocker and why it prevents progress. Keep full evidence in report/result/validation."},
 					"impact_bullets":             map[string]any{"type": "array", "maxItems": 3, "items": map[string]any{"type": "string"}, "description": "Up to three concise impact bullets for a final or blocked handoff. For mark_blocked, lead with the exact resolution required and optionally note unchanged/safe state."},
 					"copyable_code_blocks":       map[string]any{"type": "array", "maxItems": 3, "items": map[string]any{"type": "object", "properties": map[string]any{"label": map[string]any{"type": "string"}, "language": map[string]any{"type": "string"}, "code": map[string]any{"type": "string"}}, "required": []string{"code"}, "additionalProperties": false}, "description": "Up to three optional display-only code or command blocks for final and blocked handoffs. Use when the user needs exact text to copy, such as a run command. label and language are optional; code is required. Clients expose a copy affordance and never execute the text automatically."},
 					"suggested_prompts":          map[string]any{"type": "array", "maxItems": 3, "items": map[string]any{"type": "object", "properties": map[string]any{"label": map[string]any{"type": "string"}, "prompt": map[string]any{"type": "string"}}, "required": []string{"label", "prompt"}, "additionalProperties": false}, "description": "Up to three inert next-step label/prompt objects that clients may send only as ordinary V3 user chat messages. Useful for final and blocked handoffs, including a resume prompt after the blocker is resolved."},
@@ -1402,6 +1412,14 @@ func (r *Runtime) Definitions() []Definition {
 						"session_id": map[string]any{"type": "string"}, "collection_id": map[string]any{"type": "string"},
 						"variant_id": map[string]any{"type": "string"}, "event_seq": map[string]any{"type": "integer", "minimum": 1},
 					}, "required": []string{"session_id", "collection_id", "variant_id", "event_seq"}, "additionalProperties": false, "description": "Optional exact ready managed artifact reference for managed Designer work (regular launches or Iteration Swarms) or direct image Iteration Swarms. Regular mode requires every launch to be a managed Designer. The backend authenticates the exact ready event and passes the opaque reference to each worker; managed output preserves source lineage. Direct image swarms resolve bounded image bytes only at the trusted generation boundary."},
+					"section_target": map[string]any{"type": "object", "properties": map[string]any{
+						"id": map[string]any{"type": "string", "minLength": 1}, "label": map[string]any{"type": "string", "minLength": 1},
+						"kind":     map[string]any{"type": "string", "enum": []string{"temporal", "spatial", "page", "state", "selector", "semantic"}, "description": "Media-agnostic part kind; defaults to temporal for backward compatibility."},
+						"start_ms": map[string]any{"type": "integer", "minimum": 0}, "end_ms": map[string]any{"type": "integer", "minimum": 1},
+					}, "required": []string{"id", "label"}, "additionalProperties": false, "description": "Optional exact artifact part target for managed Designer work. Requires source_artifact. Mutually exclusive with section_targets."},
+					"section_targets": map[string]any{"type": "array", "minItems": 1, "maxItems": pebblestore.SessionArtifactMaxParts, "items": map[string]any{"type": "object", "properties": map[string]any{
+						"id": map[string]any{"type": "string", "minLength": 1}, "label": map[string]any{"type": "string", "minLength": 1}, "kind": map[string]any{"type": "string", "enum": []string{"temporal", "spatial", "page", "state", "selector", "semantic"}}, "start_ms": map[string]any{"type": "integer", "minimum": 0}, "end_ms": map[string]any{"type": "integer", "minimum": 1},
+					}, "required": []string{"id", "label"}, "additionalProperties": true}, "description": "Canonical bounded multi-part selection from one exact source composition. Managed Designer candidates must replace every selected part together as one atomic composition turn. Mutually exclusive with section_target."},
 					"output_mode": map[string]any{"type": "string", "enum": []string{"managed", "workspace"}, "description": "Designer output contract. Designer and image Iteration Swarms are always managed; swarm calls may omit this field or set managed. Workspace is available only for regular Designer launches and requires concrete owned_scope targets."},
 					"description": map[string]any{
 						"type":        "string",

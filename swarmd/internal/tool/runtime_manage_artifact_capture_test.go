@@ -63,10 +63,22 @@ func TestExportHTMLStillsUsesExactReferenceManifestOrderAndLineage(t *testing.T)
 	if authority.created.OutputRequirements == nil || authority.created.OutputRequirements.Width != 1920 || authority.created.OutputRequirements.Height != 1080 {
 		t.Fatalf("requirements = %+v", authority.created.OutputRequirements)
 	}
+	if authority.created.AutoAccept {
+		t.Fatalf("multi-state still export unexpectedly requested auto-accept: %+v", authority.created)
+	}
 	for _, required := range []string{`"action":"export_html_stills"`, `"state_id":"opening"`, `"state_id":"proof"`, `"media_type":"image/png"`, `"count":2`} {
 		if !strings.Contains(output, required) {
 			t.Fatalf("output lacks %s: %s", required, output)
 		}
+	}
+
+	authority.readBody = []byte(html)
+	authority.variant = pebblestore.SessionArtifactVariant{ID: "source-variant", CollectionID: "source-collection", SessionID: "source-session", EventSeq: 7, Status: pebblestore.SessionArtifactStatusReady, MediaType: "text/html"}
+	if _, err := runtime.executeManageArtifact(ctx, scope, "capture-single", map[string]any{"action": "export_html_stills", "session_id": "source-session", "collection_id": "source-collection", "variant_id": "source-variant", "event_seq": 7, "state_ids": []any{"opening"}}); err != nil {
+		t.Fatalf("single-state export_html_stills: %v", err)
+	}
+	if !authority.created.AutoAccept {
+		t.Fatalf("single-state still export did not request auto-accept: %+v", authority.created)
 	}
 }
 

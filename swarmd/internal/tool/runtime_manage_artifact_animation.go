@@ -87,7 +87,7 @@ func (r *Runtime) exportHTMLAnimation(ctx context.Context, principal artifact.Pr
 		Presentation:       pebblestore.SessionArtifactPresentation{Kind: "video", Label: "HTML animation", Previewable: true, Width: htmlcapture.Width, Height: htmlcapture.Height},
 		OutputRequirements: requirements, AnimationProfile: profile,
 		SourceSessionID: ref.SessionID, SourceCollectionID: ref.CollectionID, SourceVariantID: ref.VariantID, SourceEventSeq: ref.EventSeq,
-		Body: append([]byte(nil), result.MP4...),
+		Body: append([]byte(nil), result.MP4...), AutoAccept: true,
 	}
 	published, err := r.artifactAuthority.Create(ctx, principal, input)
 	if err != nil {

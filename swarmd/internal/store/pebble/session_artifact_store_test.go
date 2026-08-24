@@ -21,7 +21,7 @@ func TestApplyV3ArtifactLifecycleIsAtomicIdempotentAndMetadataOnly(t *testing.T)
 			Variant:    &SessionArtifactVariant{ID: "variant-1", CollectionID: "collection-1", AccountScopeID: "model-forged", SessionID: "other", Filename: "landing.html", MediaType: "text/html", Lineage: SessionArtifactLineage{RunID: "run-1"}},
 		},
 	}
-	first, err := sessions.ApplyV3SessionMutation(create)
+	first, err := applyV3ArtifactMutationForTest(sessions, create)
 	if err != nil {
 		t.Fatalf("create artifact: %v", err)
 	}
@@ -46,7 +46,7 @@ func TestApplyV3ArtifactLifecycleIsAtomicIdempotentAndMetadataOnly(t *testing.T)
 		t.Fatalf("event lacks artifact projection: %v", eventPayload)
 	}
 
-	replayed, err := sessions.ApplyV3SessionMutation(create)
+	replayed, err := applyV3ArtifactMutationForTest(sessions, create)
 	if err != nil {
 		t.Fatalf("replay artifact create: %v", err)
 	}
@@ -62,7 +62,7 @@ func TestApplyV3ArtifactLifecycleIsAtomicIdempotentAndMetadataOnly(t *testing.T)
 		t.Fatalf("variants = %+v err=%v", variants, err)
 	}
 
-	finalized, err := sessions.ApplyV3SessionMutation(V3SessionMutationInput{
+	finalized, err := applyV3ArtifactMutationForTest(sessions, V3SessionMutationInput{
 		SessionID: "artifact-session", UserID: "user-1", AccountScopeID: "account-1",
 		ClientRequestID: "artifact-finalize", PayloadHash: "artifact-finalize-hash", Kind: V3SessionMutationFinalizeArtifact, NowUnixMs: 3000,
 		Artifact: &V3ArtifactMutation{Collection: SessionArtifactCollection{ID: "collection-1"}, Variant: &SessionArtifactVariant{ID: "variant-1", CollectionID: "collection-1", Filename: "landing.html", MediaType: "text/html", DigestSHA256: strings.Repeat("a", 64), Size: 123}},
@@ -77,7 +77,7 @@ func TestApplyV3ArtifactLifecycleIsAtomicIdempotentAndMetadataOnly(t *testing.T)
 		t.Fatalf("finalized progress = %+v", finalized.Artifact.Collection)
 	}
 
-	selected, err := sessions.ApplyV3SessionMutation(V3SessionMutationInput{
+	selected, err := applyV3ArtifactMutationForTest(sessions, V3SessionMutationInput{
 		SessionID: "artifact-session", UserID: "user-1", AccountScopeID: "account-1",
 		ClientRequestID: "artifact-select", PayloadHash: "artifact-select-hash", Kind: V3SessionMutationSelectArtifact, NowUnixMs: 4000,
 		Artifact: &V3ArtifactMutation{Collection: SessionArtifactCollection{ID: "collection-1"}, Selection: &SessionArtifactSelectionReference{SessionID: "artifact-session", CollectionID: "collection-1", VariantID: "variant-1"}},
@@ -102,7 +102,7 @@ func TestArtifactLineageIndexesDesignerRoutingDimensions(t *testing.T) {
 	lineage := SessionArtifactLineage{ParentSessionID: "artifact-lineage", TaskCallID: "call-mixedcase", ProgramID: "program-1", ProgramJobID: "job-1", ChildSessionID: "child-1", IterationID: "iteration-1", IterationIndex: 2}
 	collectionLineage := lineage
 	collectionLineage.ProgramJobID, collectionLineage.ChildSessionID, collectionLineage.IterationID, collectionLineage.IterationIndex = "", "", "", 0
-	if _, err := sessions.ApplyV3SessionMutation(V3SessionMutationInput{
+	if _, err := applyV3ArtifactMutationForTest(sessions, V3SessionMutationInput{
 		SessionID: "artifact-lineage", UserID: "user-1", AccountScopeID: "account-1", ClientRequestID: "lineage-create", PayloadHash: "lineage-create", Kind: V3SessionMutationCreateArtifact,
 		Artifact: &V3ArtifactMutation{Collection: SessionArtifactCollection{ID: "collection-1", Name: "Designer alternatives", Lineage: collectionLineage}, Variant: &SessionArtifactVariant{ID: "variant-1", Filename: "design.html", MediaType: "text/html", Lineage: lineage}},
 	}); err != nil {
@@ -121,7 +121,7 @@ func TestArtifactLineageIndexesDesignerRoutingDimensions(t *testing.T) {
 			t.Fatalf("lineage values must remain case-sensitive: %+v err=%v", other, err)
 		}
 	}
-	if _, err := sessions.ApplyV3SessionMutation(V3SessionMutationInput{
+	if _, err := applyV3ArtifactMutationForTest(sessions, V3SessionMutationInput{
 		SessionID: "artifact-lineage", UserID: "user-1", AccountScopeID: "account-1", ClientRequestID: "lineage-create-2", PayloadHash: "lineage-create-2", Kind: V3SessionMutationCreateArtifact,
 		Artifact: &V3ArtifactMutation{Collection: SessionArtifactCollection{ID: "collection-2", Name: "Designer alternatives", Lineage: collectionLineage}, Variant: &SessionArtifactVariant{ID: "variant-2", Filename: "design-2.html", MediaType: "text/html", Lineage: lineage}},
 	}); err != nil {
@@ -153,7 +153,7 @@ func TestConcurrentArtifactLifecycleMutationsRemainIdempotent(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			<-start
-			result, err := sessions.ApplyV3SessionMutation(input)
+			result, err := applyV3ArtifactMutationForTest(sessions, input)
 			results <- result
 			errs <- err
 		}()
@@ -201,7 +201,7 @@ func TestArtifactMutationRejectsCrossAccountSessionOwnership(t *testing.T) {
 		{name: "wrong-user", userID: "user-2", accountID: "account-1"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := sessions.ApplyV3SessionMutation(V3SessionMutationInput{
+			_, err := applyV3ArtifactMutationForTest(sessions, V3SessionMutationInput{
 				SessionID: "artifact-owned", UserID: tc.userID, AccountScopeID: tc.accountID,
 				ClientRequestID: "artifact-owned-" + tc.name, PayloadHash: "artifact-owned-" + tc.name, Kind: V3SessionMutationCreateArtifact,
 				Artifact: &V3ArtifactMutation{Collection: SessionArtifactCollection{ID: "collection-" + tc.accountID, Name: "Forbidden"}},
@@ -221,7 +221,7 @@ func TestArtifactEventProjectionContainsMetadataButNoBytesOrPrivatePaths(t *test
 	store := openV3SessionEventTestStore(t)
 	sessions := NewSessionStore(store)
 	createV3SessionForTest(t, sessions, "artifact-projection")
-	result, err := sessions.ApplyV3SessionMutation(V3SessionMutationInput{
+	result, err := applyV3ArtifactMutationForTest(sessions, V3SessionMutationInput{
 		SessionID: "artifact-projection", UserID: "user-1", AccountScopeID: "account-1",
 		ClientRequestID: "artifact-projection-create", PayloadHash: "artifact-projection-create", Kind: V3SessionMutationCreateArtifact,
 		Artifact: &V3ArtifactMutation{Collection: SessionArtifactCollection{ID: "collection-1", Name: "Metadata only"}, Variant: &SessionArtifactVariant{ID: "variant-1", Filename: "note.txt", MediaType: "text/plain", Presentation: SessionArtifactPresentation{Kind: "text", Label: "Preview", Description: "Safe metadata"}}},
@@ -281,7 +281,7 @@ func TestDeleteSessionPurgesArtifactMetadataAndIndexes(t *testing.T) {
 	store := openV3SessionEventTestStore(t)
 	sessions := NewSessionStore(store)
 	createV3SessionForTest(t, sessions, "artifact-delete")
-	if _, err := sessions.ApplyV3SessionMutation(V3SessionMutationInput{
+	if _, err := applyV3ArtifactMutationForTest(sessions, V3SessionMutationInput{
 		SessionID: "artifact-delete", UserID: "user-1", AccountScopeID: "account-1",
 		ClientRequestID: "artifact-delete-create", PayloadHash: "artifact-delete-create", Kind: V3SessionMutationCreateArtifact,
 		Artifact: &V3ArtifactMutation{Collection: SessionArtifactCollection{ID: "collection-1", Name: "Artifact"}, Variant: &SessionArtifactVariant{ID: "variant-1", Filename: "note.txt", MediaType: "text/plain"}},
@@ -309,7 +309,7 @@ func TestArchiveAndUnarchiveSessionPreserveArtifactMetadata(t *testing.T) {
 	store := openV3SessionEventTestStore(t)
 	sessions := NewSessionStore(store)
 	createV3SessionForTest(t, sessions, "artifact-archive")
-	if _, err := sessions.ApplyV3SessionMutation(V3SessionMutationInput{
+	if _, err := applyV3ArtifactMutationForTest(sessions, V3SessionMutationInput{
 		SessionID: "artifact-archive", UserID: "user-1", AccountScopeID: "account-1",
 		ClientRequestID: "artifact-archive-create", PayloadHash: "artifact-archive-create", Kind: V3SessionMutationCreateArtifact,
 		Artifact: &V3ArtifactMutation{Collection: SessionArtifactCollection{ID: "collection-1", Name: "Artifact"}},
@@ -338,29 +338,29 @@ func TestArtifactUnavailableMutationRecordsHonestTerminalState(t *testing.T) {
 	store := openV3SessionEventTestStore(t)
 	sessions := NewSessionStore(store)
 	createV3SessionForTest(t, sessions, "artifact-unavailable")
-	if _, err := sessions.ApplyV3SessionMutation(V3SessionMutationInput{
+	if _, err := applyV3ArtifactMutationForTest(sessions, V3SessionMutationInput{
 		SessionID: "artifact-unavailable", UserID: "user-1", AccountScopeID: "account-1",
 		ClientRequestID: "artifact-unavailable-create", PayloadHash: "artifact-unavailable-create", Kind: V3SessionMutationCreateArtifact,
-		Artifact: &V3ArtifactMutation{Collection: SessionArtifactCollection{ID: "legacy-collection", Name: "Legacy"}, Variant: &SessionArtifactVariant{ID: "legacy-variant", Filename: "missing.html", MediaType: "text/html"}},
+		Artifact: &V3ArtifactMutation{Collection: SessionArtifactCollection{ID: "unavailable-collection", Name: "Unavailable"}, Variant: &SessionArtifactVariant{ID: "unavailable-variant", Filename: "missing.html", MediaType: "text/html"}},
 	}); err != nil {
 		t.Fatalf("create artifact: %v", err)
 	}
-	if _, err := sessions.ApplyV3SessionMutation(V3SessionMutationInput{
+	if _, err := applyV3ArtifactMutationForTest(sessions, V3SessionMutationInput{
 		SessionID: "artifact-unavailable", UserID: "user-1", AccountScopeID: "account-1",
 		ClientRequestID: "artifact-unavailable-terminal", PayloadHash: "artifact-unavailable-terminal", Kind: V3SessionMutationUnavailableArtifact,
-		Artifact: &V3ArtifactMutation{Collection: SessionArtifactCollection{ID: "legacy-collection"}, Variant: &SessionArtifactVariant{ID: "legacy-variant", FailureCode: "legacy_source_unavailable"}},
+		Artifact: &V3ArtifactMutation{Collection: SessionArtifactCollection{ID: "unavailable-collection"}, Variant: &SessionArtifactVariant{ID: "unavailable-variant", FailureCode: "git_object_unavailable"}},
 	}); err != nil {
 		t.Fatalf("mark unavailable: %v", err)
 	}
-	variant, ok, err := sessions.GetSessionArtifactVariant("account-1", "artifact-unavailable", "legacy-collection", "legacy-variant")
+	variant, ok, err := sessions.GetSessionArtifactVariant("account-1", "artifact-unavailable", "unavailable-collection", "unavailable-variant")
 	if err != nil || !ok {
 		t.Fatalf("get unavailable artifact: ok=%v err=%v", ok, err)
 	}
-	if variant.Status != SessionArtifactStatusUnavailable || variant.FailureCode != "legacy_source_unavailable" || variant.DigestSHA256 != "" || variant.Size != 0 {
+	if variant.Status != SessionArtifactStatusUnavailable || variant.FailureCode != "git_object_unavailable" || variant.DigestSHA256 != "" || variant.Size != 0 {
 		t.Fatalf("unavailable variant = %+v", variant)
 	}
 	collections, err := sessions.ListSessionArtifactCollections("account-1", "artifact-unavailable", SessionArtifactStatusUnavailable, 10)
-	if err != nil || len(collections) != 1 || collections[0].ID != "legacy-collection" {
+	if err != nil || len(collections) != 1 || collections[0].ID != "unavailable-collection" {
 		t.Fatalf("unavailable collection index = %+v err=%v", collections, err)
 	}
 }
@@ -371,7 +371,7 @@ func TestArtifactVariantLookupAndDeleteMutationsRepairIndexesAndSelection(t *tes
 	createV3SessionForTest(t, sessions, "artifact-metadata-delete")
 	apply := func(request, kind string, artifact V3ArtifactMutation, now int64) V3SessionMutationResult {
 		t.Helper()
-		result, err := sessions.ApplyV3SessionMutation(V3SessionMutationInput{SessionID: "artifact-metadata-delete", UserID: "user-1", AccountScopeID: "account-1", ClientRequestID: request, PayloadHash: request, Kind: kind, Artifact: &artifact, NowUnixMs: now})
+		result, err := applyV3ArtifactMutationForTest(sessions, V3SessionMutationInput{SessionID: "artifact-metadata-delete", UserID: "user-1", AccountScopeID: "account-1", ClientRequestID: request, PayloadHash: request, Kind: kind, Artifact: &artifact, NowUnixMs: now})
 		if err != nil {
 			t.Fatalf("%s: %v", request, err)
 		}
@@ -418,12 +418,12 @@ func TestDeleteArtifactCollectionRemovesEveryVariantIndex(t *testing.T) {
 		if index == 0 {
 			name = "Delete all"
 		}
-		_, err := sessions.ApplyV3SessionMutation(V3SessionMutationInput{SessionID: "artifact-collection-delete", UserID: "user-1", AccountScopeID: "account-1", ClientRequestID: request, PayloadHash: request, Kind: V3SessionMutationCreateArtifact, Artifact: &V3ArtifactMutation{Collection: SessionArtifactCollection{ID: "collection-1", Name: name}, Variant: &SessionArtifactVariant{ID: id}}})
+		_, err := applyV3ArtifactMutationForTest(sessions, V3SessionMutationInput{SessionID: "artifact-collection-delete", UserID: "user-1", AccountScopeID: "account-1", ClientRequestID: request, PayloadHash: request, Kind: V3SessionMutationCreateArtifact, Artifact: &V3ArtifactMutation{Collection: SessionArtifactCollection{ID: "collection-1", Name: name}, Variant: &SessionArtifactVariant{ID: id}}})
 		if err != nil {
 			t.Fatal(err)
 		}
 	}
-	_, err := sessions.ApplyV3SessionMutation(V3SessionMutationInput{SessionID: "artifact-collection-delete", UserID: "user-1", AccountScopeID: "account-1", ClientRequestID: "delete-all", PayloadHash: "delete-all", Kind: V3SessionMutationDeleteArtifactCollection, Artifact: &V3ArtifactMutation{Collection: SessionArtifactCollection{ID: "collection-1"}}})
+	_, err := applyV3ArtifactMutationForTest(sessions, V3SessionMutationInput{SessionID: "artifact-collection-delete", UserID: "user-1", AccountScopeID: "account-1", ClientRequestID: "delete-all", PayloadHash: "delete-all", Kind: V3SessionMutationDeleteArtifactCollection, Artifact: &V3ArtifactMutation{Collection: SessionArtifactCollection{ID: "collection-1"}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -442,11 +442,11 @@ func TestSessionArtifactMessageSelectionsValidateOwnershipReadinessAndSequence(t
 	createV3SessionForTest(t, sessions, "artifact-selection-source")
 	apply := func(request, kind string, artifact V3ArtifactMutation) {
 		t.Helper()
-		if _, err := sessions.ApplyV3SessionMutation(V3SessionMutationInput{SessionID: "artifact-selection-source", UserID: "user-1", AccountScopeID: "account-1", ClientRequestID: request, PayloadHash: request, Kind: kind, Artifact: &artifact}); err != nil {
+		if _, err := applyV3ArtifactMutationForTest(sessions, V3SessionMutationInput{SessionID: "artifact-selection-source", UserID: "user-1", AccountScopeID: "account-1", ClientRequestID: request, PayloadHash: request, Kind: kind, Artifact: &artifact}); err != nil {
 			t.Fatal(err)
 		}
 	}
-	apply("selection-create", V3SessionMutationCreateArtifact, V3ArtifactMutation{Collection: SessionArtifactCollection{ID: "selection-collection", Name: "Selections"}, Variant: &SessionArtifactVariant{ID: "selection-variant", Filename: "design.txt", MediaType: "text/plain"}})
+	apply("selection-create", V3SessionMutationCreateArtifact, V3ArtifactMutation{Collection: SessionArtifactCollection{ID: "selection-collection", Name: "Selections"}, Variant: &SessionArtifactVariant{ID: "selection-variant", Filename: "design.txt", MediaType: "text/plain", Parts: []SessionArtifactPart{{ID: "opening", Label: "Opening", Description: "Opening review target.", Kind: "temporal", EndMs: 3000}}}})
 	staging, ok, err := sessions.GetSessionArtifactVariant("account-1", "artifact-selection-source", "selection-collection", "selection-variant")
 	if err != nil || !ok {
 		t.Fatalf("get staging variant: ok=%t err=%v", ok, err)
@@ -458,12 +458,37 @@ func TestSessionArtifactMessageSelectionsValidateOwnershipReadinessAndSequence(t
 	apply("selection-finalize", V3SessionMutationFinalizeArtifact, V3ArtifactMutation{Collection: SessionArtifactCollection{ID: "selection-collection"}, Variant: &SessionArtifactVariant{ID: "selection-variant", Filename: "design.txt", MediaType: "text/plain", DigestSHA256: strings.Repeat("a", 64), Size: 6}})
 	variant, ok, err := sessions.GetSessionArtifactVariant("account-1", "artifact-selection-source", "selection-collection", "selection-variant")
 	if err != nil || !ok {
+		t.Fatalf("get ready variant before acceptance: ok=%t err=%v", ok, err)
+	}
+	apply("selection-accept", V3SessionMutationSelectArtifact, V3ArtifactMutation{Collection: SessionArtifactCollection{ID: "selection-collection"}, Selection: &SessionArtifactSelectionReference{SessionID: variant.SessionID, CollectionID: variant.CollectionID, VariantID: variant.ID, EventSeq: variant.EventSeq}})
+	variant, ok, err = sessions.GetSessionArtifactVariant("account-1", "artifact-selection-source", "selection-collection", "selection-variant")
+	if err != nil || !ok {
 		t.Fatalf("get ready variant: ok=%t err=%v", ok, err)
 	}
-	ref := SessionArtifactSelectionReference{SessionID: variant.SessionID, CollectionID: variant.CollectionID, VariantID: variant.ID, EventSeq: variant.EventSeq, Action: "use"}
+	partSelection := SessionArtifactSelectionReference{SessionID: variant.SessionID, CollectionID: variant.CollectionID, VariantID: variant.ID, EventSeq: variant.EventSeq, Action: "use", PartID: "opening"}
+	validatedPart, err := sessions.ValidateSessionArtifactMessageSelections("account-1", "user-1", []SessionArtifactSelectionReference{partSelection})
+	if err != nil || len(validatedPart) != 1 || validatedPart[0].Part == nil || validatedPart[0].Part.ID != "opening" || validatedPart[0].Part.EndMs != 3000 {
+		t.Fatalf("validate locator-only review part = %+v err=%v", validatedPart, err)
+	}
+	apply("selection-derived-create", V3SessionMutationCreateArtifact, V3ArtifactMutation{Collection: SessionArtifactCollection{ID: "selection-derived", Name: "Finder alternatives"}, Variant: &SessionArtifactVariant{
+		ID: "selection-derived-variant", Filename: "finder.html", MediaType: "text/html", Lineage: SessionArtifactLineage{
+			SourceSessionID: variant.SessionID, SourceCollectionID: variant.CollectionID, SourceVariantID: variant.ID, SourceEventSeq: variant.EventSeq,
+			IterationID: "iteration-3", IterationIndex: 3, IterationLabel: "Luminous Branching Paths", IterationTheme: "particle swarm finders",
+			IterationSectionID: "step-03-find", IterationSectionLabel: "03A · FIND · PARALLEL FINDERS", IterationSectionStartMs: 21000, IterationSectionEndMs: 28000,
+		},
+	}})
+	apply("selection-derived-finalize", V3SessionMutationFinalizeArtifact, V3ArtifactMutation{Collection: SessionArtifactCollection{ID: "selection-derived"}, Variant: &SessionArtifactVariant{ID: "selection-derived-variant", Filename: "finder.html", MediaType: "text/html", DigestSHA256: strings.Repeat("b", 64), Size: 7}})
+	derived, ok, err := sessions.GetSessionArtifactVariant("account-1", "artifact-selection-source", "selection-derived", "selection-derived-variant")
+	if err != nil || !ok {
+		t.Fatalf("get derived variant: ok=%t err=%v", ok, err)
+	}
+	ref := SessionArtifactSelectionReference{SessionID: derived.SessionID, CollectionID: derived.CollectionID, VariantID: derived.ID, EventSeq: derived.EventSeq, Action: "use", PendingRequest: "  Continue to the next section.  ", IterationSectionID: "stale-client-section"}
 	got, err := sessions.ValidateSessionArtifactMessageSelections("account-1", "user-1", []SessionArtifactSelectionReference{ref})
-	if err != nil || len(got) != 1 || got[0].VariantID != variant.ID {
+	if err != nil || len(got) != 1 || got[0].VariantID != derived.ID || got[0].PendingRequest != "Continue to the next section." {
 		t.Fatalf("validate ready selection = %+v err=%v", got, err)
+	}
+	if got[0].IterationID != "iteration-3" || got[0].IterationIndex != 3 || got[0].IterationLabel != "Luminous Branching Paths" || got[0].IterationTheme != "particle swarm finders" || got[0].IterationSectionID != "step-03-find" || got[0].IterationSectionLabel != "03A · FIND · PARALLEL FINDERS" || got[0].IterationSectionStartMs != 21000 || got[0].IterationSectionEndMs != 28000 {
+		t.Fatalf("selection did not inherit authoritative iteration lineage: %+v", got[0])
 	}
 	stale := ref
 	stale.EventSeq++
@@ -475,11 +500,45 @@ func TestSessionArtifactMessageSelectionsValidateOwnershipReadinessAndSequence(t
 	}
 }
 
+func TestCanonicalArtifactChainPersistsGitProjectedHeadAndAncestry(t *testing.T) {
+	store := openV3SessionEventTestStore(t)
+	sessions := NewSessionStore(store)
+	createV3SessionForTest(t, sessions, "artifact-chain-session")
+	apply := func(request, kind string, mutation V3ArtifactMutation) V3SessionMutationResult {
+		t.Helper()
+		result, err := applyV3ArtifactMutationForTest(sessions, V3SessionMutationInput{SessionID: "artifact-chain-session", UserID: "user-1", AccountScopeID: "account-1", ClientRequestID: request, PayloadHash: request, Kind: kind, Artifact: &mutation, NowUnixMs: 1000})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return result
+	}
+	apply("chain-root-create", V3SessionMutationCreateArtifact, V3ArtifactMutation{Collection: SessionArtifactCollection{ID: "chain-root", Name: "Canonical artifact"}, Variant: &SessionArtifactVariant{ID: "root", Filename: "root.html", MediaType: "text/html", Parts: []SessionArtifactPart{{ID: "hero", Label: "Hero", Kind: "spatial", Width: 1, Height: .5}}}})
+	rootReady := apply("chain-root-ready", V3SessionMutationFinalizeArtifact, V3ArtifactMutation{Collection: SessionArtifactCollection{ID: "chain-root"}, Variant: &SessionArtifactVariant{ID: "root", Filename: "root.html", MediaType: "text/html", DigestSHA256: strings.Repeat("a", 64), Size: 10}})
+	if rootReady.Artifact == nil || rootReady.Artifact.Variant == nil || rootReady.Artifact.Step == nil || rootReady.Artifact.Variant.RevisionNumber != 1 {
+		t.Fatalf("root ready projection = %+v", rootReady.Artifact)
+	}
+	root := *rootReady.Artifact.Variant
+	selectedRoot := apply("chain-select-root", V3SessionMutationSelectArtifact, V3ArtifactMutation{Collection: SessionArtifactCollection{ID: "chain-root"}, Selection: &SessionArtifactSelectionReference{SessionID: root.SessionID, CollectionID: root.CollectionID, VariantID: root.ID, EventSeq: root.EventSeq, Action: "use", PartID: "hero"}})
+	if selectedRoot.Artifact == nil || selectedRoot.Artifact.Chain == nil || selectedRoot.Artifact.Chain.Head.VariantID != "root" || selectedRoot.Artifact.Selection == nil || selectedRoot.Artifact.Selection.Part == nil || selectedRoot.Artifact.Selection.Part.ID != "hero" {
+		t.Fatalf("selected root = %+v", selectedRoot.Artifact)
+	}
+	apply("chain-child-create", V3SessionMutationCreateArtifact, V3ArtifactMutation{Collection: SessionArtifactCollection{ID: "chain-round-2", Name: "Round 2"}, Variant: &SessionArtifactVariant{ID: "candidate", Filename: "candidate.html", MediaType: "text/html", Lineage: SessionArtifactLineage{SourceSessionID: root.SessionID, SourceCollectionID: root.CollectionID, SourceVariantID: root.ID, SourceEventSeq: root.EventSeq, TaskCallID: "round-2"}}})
+	childReady := apply("chain-child-ready", V3SessionMutationFinalizeArtifact, V3ArtifactMutation{Collection: SessionArtifactCollection{ID: "chain-round-2"}, Variant: &SessionArtifactVariant{ID: "candidate", Filename: "candidate.html", MediaType: "text/html", DigestSHA256: strings.Repeat("b", 64), Size: 11}})
+	if childReady.Artifact == nil || childReady.Artifact.Variant == nil || childReady.Artifact.Step == nil || childReady.Artifact.Variant.ArtifactChainID != root.ArtifactChainID || childReady.Artifact.Variant.RevisionNumber != 2 {
+		t.Fatalf("child ready projection = %+v", childReady.Artifact)
+	}
+	child := *childReady.Artifact.Variant
+	selectedChild := apply("chain-select-child", V3SessionMutationSelectArtifact, V3ArtifactMutation{Collection: SessionArtifactCollection{ID: child.CollectionID}, Selection: &SessionArtifactSelectionReference{SessionID: child.SessionID, CollectionID: child.CollectionID, VariantID: child.ID, EventSeq: child.EventSeq}})
+	if selectedChild.Artifact.Chain.Head.VariantID != "candidate" || selectedChild.Artifact.Chain.RevisionCount != 2 {
+		t.Fatalf("selected child = %+v", selectedChild.Artifact)
+	}
+}
+
 func TestApplyV3ArtifactLifecycleRejectsUnsafeOrInvalidMetadata(t *testing.T) {
 	store := openV3SessionEventTestStore(t)
 	sessions := NewSessionStore(store)
 	createV3SessionForTest(t, sessions, "artifact-invalid")
-	if _, err := sessions.ApplyV3SessionMutation(V3SessionMutationInput{
+	if _, err := applyV3ArtifactMutationForTest(sessions, V3SessionMutationInput{
 		SessionID: "artifact-invalid", UserID: "user-1", AccountScopeID: "account-1",
 		ClientRequestID: "stage-invalid-digest", PayloadHash: "stage-invalid-digest", Kind: V3SessionMutationCreateArtifact,
 		Artifact: &V3ArtifactMutation{Collection: SessionArtifactCollection{ID: "digest-collection", Name: "digest"}, Variant: &SessionArtifactVariant{ID: "digest-variant"}},
@@ -504,7 +563,7 @@ func TestApplyV3ArtifactLifecycleRejectsUnsafeOrInvalidMetadata(t *testing.T) {
 			tc.input.AccountScopeID = "account-1"
 			tc.input.ClientRequestID = "request-" + strings.ReplaceAll(tc.name, " ", "-")
 			tc.input.PayloadHash = "hash-" + strings.ReplaceAll(tc.name, " ", "-")
-			if _, err := sessions.ApplyV3SessionMutation(tc.input); err == nil || !strings.Contains(err.Error(), tc.want) {
+			if _, err := applyV3ArtifactMutationForTest(sessions, tc.input); err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("err=%v want %q", err, tc.want)
 			}
 		})
@@ -519,7 +578,7 @@ func TestArtifactFinalizationPreservesOutputRequirements(t *testing.T) {
 		PresetID: "x_header", Width: 1500, Height: 500, AspectRatio: "3:1",
 		Orientation: "landscape", ResolutionSource: "preset", RegistryVersion: "2026-08-14.v1",
 	}
-	create, err := sessions.ApplyV3SessionMutation(V3SessionMutationInput{
+	create, err := applyV3ArtifactMutationForTest(sessions, V3SessionMutationInput{
 		SessionID: "artifact-requirements", UserID: "user-1", AccountScopeID: "account-1",
 		ClientRequestID: "artifact-requirements-create", PayloadHash: "artifact-requirements-create", Kind: V3SessionMutationCreateArtifact,
 		Artifact: &V3ArtifactMutation{
@@ -533,7 +592,7 @@ func TestArtifactFinalizationPreservesOutputRequirements(t *testing.T) {
 	if create.Artifact == nil || create.Artifact.Variant == nil || create.Artifact.Variant.OutputRequirements == nil {
 		t.Fatalf("create projection = %#v", create.Artifact)
 	}
-	finalized, err := sessions.ApplyV3SessionMutation(V3SessionMutationInput{
+	finalized, err := applyV3ArtifactMutationForTest(sessions, V3SessionMutationInput{
 		SessionID: "artifact-requirements", UserID: "user-1", AccountScopeID: "account-1",
 		ClientRequestID: "artifact-requirements-finalize", PayloadHash: "artifact-requirements-finalize", Kind: V3SessionMutationFinalizeArtifact,
 		Artifact: &V3ArtifactMutation{
@@ -555,13 +614,13 @@ func TestArtifactFinalizationRejectsOutputRequirementOverride(t *testing.T) {
 	sessions := NewSessionStore(store)
 	createV3SessionForTest(t, sessions, "artifact-requirements-override")
 	requirements := &SessionArtifactOutputRequirements{PresetID: "x_header", Width: 1500, Height: 500, AspectRatio: "3:1", Orientation: "landscape", ResolutionSource: "preset", RegistryVersion: "2026-08-14.v1"}
-	_, err := sessions.ApplyV3SessionMutation(V3SessionMutationInput{SessionID: "artifact-requirements-override", UserID: "user-1", AccountScopeID: "account-1", ClientRequestID: "create", PayloadHash: "create", Kind: V3SessionMutationCreateArtifact, Artifact: &V3ArtifactMutation{Collection: SessionArtifactCollection{ID: "collection", Name: "Header"}, Variant: &SessionArtifactVariant{ID: "variant", OutputRequirements: requirements, Presentation: SessionArtifactPresentation{Width: 1500, Height: 500}}}})
+	_, err := applyV3ArtifactMutationForTest(sessions, V3SessionMutationInput{SessionID: "artifact-requirements-override", UserID: "user-1", AccountScopeID: "account-1", ClientRequestID: "create", PayloadHash: "create", Kind: V3SessionMutationCreateArtifact, Artifact: &V3ArtifactMutation{Collection: SessionArtifactCollection{ID: "collection", Name: "Header"}, Variant: &SessionArtifactVariant{ID: "variant", OutputRequirements: requirements, Presentation: SessionArtifactPresentation{Width: 1500, Height: 500}}}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	override := *requirements
 	override.PresetID, override.Width, override.Height, override.AspectRatio, override.Orientation = "square_1080", 1080, 1080, "1:1", "square"
-	_, err = sessions.ApplyV3SessionMutation(V3SessionMutationInput{SessionID: "artifact-requirements-override", UserID: "user-1", AccountScopeID: "account-1", ClientRequestID: "finalize", PayloadHash: "finalize", Kind: V3SessionMutationFinalizeArtifact, Artifact: &V3ArtifactMutation{Collection: SessionArtifactCollection{ID: "collection"}, Variant: &SessionArtifactVariant{ID: "variant", Filename: "header.svg", MediaType: "image/svg+xml", DigestSHA256: strings.Repeat("b", 64), Size: 1, OutputRequirements: &override}}})
+	_, err = applyV3ArtifactMutationForTest(sessions, V3SessionMutationInput{SessionID: "artifact-requirements-override", UserID: "user-1", AccountScopeID: "account-1", ClientRequestID: "finalize", PayloadHash: "finalize", Kind: V3SessionMutationFinalizeArtifact, Artifact: &V3ArtifactMutation{Collection: SessionArtifactCollection{ID: "collection"}, Variant: &SessionArtifactVariant{ID: "variant", Filename: "header.svg", MediaType: "image/svg+xml", DigestSHA256: strings.Repeat("b", 64), Size: 1, OutputRequirements: &override}}})
 	if err == nil || !strings.Contains(err.Error(), "immutable") {
 		t.Fatalf("override err = %v", err)
 	}

@@ -113,6 +113,22 @@ type taskSwarmIterationControls struct {
 	Exclude  []string `json:"exclude,omitempty"`
 }
 
+type taskSwarmSectionTarget struct {
+	ID          string  `json:"id"`
+	Label       string  `json:"label"`
+	Kind        string  `json:"kind,omitempty"`
+	Description string  `json:"description,omitempty"`
+	StartMs     int64   `json:"start_ms,omitempty"`
+	EndMs       int64   `json:"end_ms,omitempty"`
+	X           float64 `json:"x,omitempty"`
+	Y           float64 `json:"y,omitempty"`
+	Width       float64 `json:"width,omitempty"`
+	Height      float64 `json:"height,omitempty"`
+	Page        int     `json:"page,omitempty"`
+	StateID     string  `json:"state_id,omitempty"`
+	Selector    string  `json:"selector,omitempty"`
+}
+
 type taskSwarmSpec struct {
 	Strategy            string
 	AgentType           string
@@ -125,6 +141,8 @@ type taskSwarmSpec struct {
 	AnimationProfile    *pebblestore.SessionArtifactAnimationProfile
 	IterationControls   *taskSwarmIterationControls
 	SourceArtifact      *pebblestore.SessionArtifactSelectionReference
+	SectionTarget       *taskSwarmSectionTarget
+	SectionTargets      []*taskSwarmSectionTarget
 	AssemblyParts       []taskSwarmAssemblyPart
 	IntegrationContract string
 }
@@ -557,6 +575,7 @@ func parseTaskCallArguments(arguments string) (taskCallArguments, error) {
 		return taskCallArguments{}, err
 	}
 	var sourceArtifact *pebblestore.SessionArtifactSelectionReference
+	var sectionTarget *taskSwarmSectionTarget
 	if rawSourceArtifact, supplied := args["source_artifact"]; supplied {
 		if rawSourceArtifact == nil {
 			return taskCallArguments{}, errors.New("task source_artifact must be an exact ready artifact reference object")
@@ -573,6 +592,41 @@ func parseTaskCallArguments(arguments string) (taskCallArguments, error) {
 			launches[i].SourceArtifact = cloneTaskImageSourceArtifact(sourceArtifact)
 		}
 		args["source_artifact"] = cloneTaskImageSourceArtifact(sourceArtifact)
+	}
+	if _, single := args["section_target"]; single {
+		if _, multi := args["section_targets"]; multi {
+			return taskCallArguments{}, errors.New("task accepts section_target or section_targets, not both")
+		}
+	}
+	if rawSectionTargets, supplied := args["section_targets"]; supplied {
+		if sourceArtifact == nil {
+			return taskCallArguments{}, errors.New("task regular section_targets requires an exact source_artifact")
+		}
+		parsedTargets, err := parseTaskSwarmSectionTargets(rawSectionTargets)
+		if err != nil {
+			return taskCallArguments{}, err
+		}
+		args["section_targets"] = cloneTaskSwarmSectionTargets(parsedTargets)
+		for i := range launches {
+			launches[i].SourceArguments["section_targets"] = cloneTaskSwarmSectionTargets(parsedTargets)
+		}
+	}
+	if rawSectionTarget, supplied := args["section_target"]; supplied {
+		if sourceArtifact == nil {
+			return taskCallArguments{}, errors.New("task regular section_target requires an exact source_artifact")
+		}
+		parsedSectionTarget, err := parseTaskSwarmSectionTarget(rawSectionTarget)
+		if err != nil {
+			return taskCallArguments{}, err
+		}
+		if parsedSectionTarget == nil {
+			return taskCallArguments{}, errors.New("task section_target must be an object")
+		}
+		sectionTarget = parsedSectionTarget
+		args["section_target"] = cloneTaskSwarmSectionTarget(sectionTarget)
+		for i := range launches {
+			launches[i].SourceArguments["section_target"] = cloneTaskSwarmSectionTarget(sectionTarget)
+		}
 	}
 
 	return taskCallArguments{
@@ -916,7 +970,7 @@ func parseTaskSwarmArguments(args map[string]any, prompt, description string) (*
 		"action": true, "description": true, "prompt": true, "message": true, "mode": true, "swarm_mode": true,
 		"swarm_strategy": true, "agent_type": true, "subagent_type": true, "agent": true, "purpose": true, "count": true,
 		"themes": true, "groups": true, "iteration_controls": true, "output_contract": true, "output_mode": true, "assembly_parts": true,
-		"integration_contract": true, "output_requirements": true, "animation_profile": true, "source_artifact": true, "launches": true,
+		"integration_contract": true, "output_requirements": true, "animation_profile": true, "source_artifact": true, "section_target": true, "section_targets": true, "launches": true,
 		// concurrency_reason is a regular-launch field. Accept and discard it here as a
 		// compatibility no-op so one misplaced advisory hint cannot abort a swarm wave.
 		"concurrency_reason": true,
@@ -962,6 +1016,9 @@ func parseTaskSwarmArguments(args map[string]any, prompt, description string) (*
 	}
 
 	if strategy == taskSwarmStrategyAssembly {
+		if _, exists := args["section_target"]; exists {
+			return nil, nil, errors.New("task Assembly swarm does not accept section_target")
+		}
 		if _, exists := args["iteration_controls"]; exists {
 			return nil, nil, errors.New("task Assembly swarm does not accept iteration_controls")
 		}
@@ -1069,11 +1126,36 @@ func parseTaskSwarmArguments(args map[string]any, prompt, description string) (*
 	if sourceArtifact != nil {
 		args["source_artifact"] = cloneTaskImageSourceArtifact(sourceArtifact)
 	}
+	if _, single := args["section_target"]; single {
+		if _, multi := args["section_targets"]; multi {
+			return nil, nil, errors.New("task accepts section_target or section_targets, not both")
+		}
+	}
+	sectionTargets, err := parseTaskSwarmSectionTargets(args["section_targets"])
+	if err != nil {
+		return nil, nil, err
+	}
+	sectionTarget, err := parseTaskSwarmSectionTarget(args["section_target"])
+	if err != nil {
+		return nil, nil, err
+	}
+	if len(sectionTargets) != 0 {
+		if agentType != "designer" || sourceArtifact == nil {
+			return nil, nil, errors.New("task section_targets requires a Designer Iteration Swarm with an exact source_artifact")
+		}
+		args["section_targets"] = cloneTaskSwarmSectionTargets(sectionTargets)
+	}
+	if sectionTarget != nil {
+		if agentType != "designer" || sourceArtifact == nil {
+			return nil, nil, errors.New("task section_target requires a Designer Iteration Swarm with an exact source_artifact")
+		}
+		args["section_target"] = cloneTaskSwarmSectionTarget(sectionTarget)
+	}
 	if agentType == "idea" && (len(themes) != 0 || len(groups) != 0 || iterationControls != nil || strings.TrimSpace(mapString(args, "output_contract")) != "" || outputModeProvided || outputRequirements != nil || animationProfile != nil) {
 		return nil, nil, errors.New("task Idea swarm accepts only mode, swarm_strategy=explore, prompt, agent_type, count, and optional description")
 	}
 
-	swarm := &taskSwarmSpec{Strategy: strategy, AgentType: agentType, Count: count, Themes: themes, Groups: groups, OutputContract: outputContract, OutputMode: outputMode, OutputRequirements: cloneTaskOutputRequirements(outputRequirements), AnimationProfile: cloneTaskAnimationProfile(animationProfile), IterationControls: cloneTaskSwarmIterationControls(iterationControls), SourceArtifact: cloneTaskImageSourceArtifact(sourceArtifact)}
+	swarm := &taskSwarmSpec{Strategy: strategy, AgentType: agentType, Count: count, Themes: themes, Groups: groups, OutputContract: outputContract, OutputMode: outputMode, OutputRequirements: cloneTaskOutputRequirements(outputRequirements), AnimationProfile: cloneTaskAnimationProfile(animationProfile), IterationControls: cloneTaskSwarmIterationControls(iterationControls), SourceArtifact: cloneTaskImageSourceArtifact(sourceArtifact), SectionTarget: cloneTaskSwarmSectionTarget(sectionTarget), SectionTargets: cloneTaskSwarmSectionTargets(sectionTargets)}
 	launches := make([]taskLaunchSpec, count)
 	for i := range launches {
 		index := i + 1
@@ -1085,7 +1167,7 @@ func parseTaskSwarmArguments(args map[string]any, prompt, description string) (*
 		if agentType == "idea" {
 			assignmentLabel = fmt.Sprintf("Agent #%d", index)
 		}
-		sourceArguments := map[string]any{"swarm_index": index, "swarm_mode": true, "swarm_strategy": strategy, "output_mode": outputMode}
+		sourceArguments := map[string]any{"swarm_index": index, "swarm_count": count, "swarm_mode": true, "swarm_strategy": strategy, "output_mode": outputMode}
 		if outputRequirements != nil {
 			sourceArguments["output_requirements"] = cloneTaskOutputRequirements(outputRequirements)
 		}
@@ -1097,6 +1179,12 @@ func parseTaskSwarmArguments(args map[string]any, prompt, description string) (*
 		}
 		if sourceArtifact != nil {
 			sourceArguments["source_artifact"] = cloneTaskImageSourceArtifact(sourceArtifact)
+		}
+		if sectionTarget != nil {
+			sourceArguments["section_target"] = cloneTaskSwarmSectionTarget(sectionTarget)
+		}
+		if len(sectionTargets) != 0 {
+			sourceArguments["section_targets"] = cloneTaskSwarmSectionTargets(sectionTargets)
 		}
 		launches[i] = taskLaunchSpec{
 			RequestedSubagentType: agentType, MetaPrompt: metaPrompt, AssignmentLabel: assignmentLabel,
@@ -1111,6 +1199,120 @@ func parseTaskSwarmArguments(args map[string]any, prompt, description string) (*
 		return nil, nil, err
 	}
 	return swarm, launches, nil
+}
+
+func cloneTaskSwarmSectionTargets(input []*taskSwarmSectionTarget) []*taskSwarmSectionTarget {
+	if len(input) == 0 {
+		return nil
+	}
+	out := make([]*taskSwarmSectionTarget, len(input))
+	for i := range input {
+		out[i] = cloneTaskSwarmSectionTarget(input[i])
+	}
+	return out
+}
+
+func parseTaskSwarmSectionTargets(value any) ([]*taskSwarmSectionTarget, error) {
+	if value == nil {
+		return nil, nil
+	}
+	if normalized, ok := value.([]*taskSwarmSectionTarget); ok {
+		return cloneTaskSwarmSectionTargets(normalized), nil
+	}
+	raw, ok := value.([]any)
+	if !ok || len(raw) == 0 || len(raw) > pebblestore.SessionArtifactMaxParts {
+		return nil, errors.New("task section_targets must be a non-empty bounded array")
+	}
+	out := make([]*taskSwarmSectionTarget, 0, len(raw))
+	seen := map[string]struct{}{}
+	for _, item := range raw {
+		target, err := parseTaskSwarmSectionTarget(item)
+		if err != nil {
+			return nil, err
+		}
+		if _, duplicate := seen[target.ID]; duplicate {
+			return nil, fmt.Errorf("task section_targets contains duplicate id %q", target.ID)
+		}
+		seen[target.ID] = struct{}{}
+		out = append(out, target)
+	}
+	return out, nil
+}
+
+func cloneTaskSwarmSectionTarget(input *taskSwarmSectionTarget) *taskSwarmSectionTarget {
+	if input == nil {
+		return nil
+	}
+	cloned := *input
+	return &cloned
+}
+
+func parseTaskSwarmSectionTarget(value any) (*taskSwarmSectionTarget, error) {
+	if value == nil {
+		return nil, nil
+	}
+	if normalized, ok := value.(*taskSwarmSectionTarget); ok {
+		if normalized == nil {
+			return nil, nil
+		}
+		return cloneTaskSwarmSectionTarget(normalized), nil
+	}
+	if normalized, ok := value.(taskSwarmSectionTarget); ok {
+		return cloneTaskSwarmSectionTarget(&normalized), nil
+	}
+	raw, ok := value.(map[string]any)
+	if !ok {
+		return nil, errors.New("task section_target must be an object")
+	}
+	for key := range raw {
+		switch key {
+		case "id", "label", "kind", "description", "start_ms", "end_ms", "x", "y", "width", "height", "page", "state_id", "selector":
+		default:
+			return nil, fmt.Errorf("task section_target contains unsupported field %q", key)
+		}
+	}
+	encoded, err := json.Marshal(raw)
+	if err != nil {
+		return nil, errors.New("task section_target must be an object")
+	}
+	var part pebblestore.SessionArtifactPart
+	if err := json.Unmarshal(encoded, &part); err != nil {
+		return nil, fmt.Errorf("task section_target is invalid: %w", err)
+	}
+	part.ID, part.Label, part.Kind = strings.TrimSpace(part.ID), strings.TrimSpace(part.Label), strings.ToLower(strings.TrimSpace(part.Kind))
+	if part.ID == "" || part.Label == "" {
+		return nil, errors.New("task section_target requires id and label")
+	}
+	if part.Kind == "" {
+		part.Kind = "temporal"
+	}
+	target := &taskSwarmSectionTarget{ID: part.ID, Label: part.Label, Kind: part.Kind, Description: strings.TrimSpace(part.Description), StartMs: part.StartMs, EndMs: part.EndMs, X: part.X, Y: part.Y, Width: part.Width, Height: part.Height, Page: part.Page, StateID: strings.TrimSpace(part.StateID), Selector: strings.TrimSpace(part.Selector)}
+	switch part.Kind {
+	case "temporal":
+		if part.StartMs < 0 || part.EndMs <= part.StartMs {
+			return nil, errors.New("temporal task section_target requires a valid start_ms/end_ms range")
+		}
+	case "spatial":
+		if part.X < 0 || part.Y < 0 || part.Width <= 0 || part.Height <= 0 || part.X+part.Width > 1 || part.Y+part.Height > 1 {
+			return nil, errors.New("spatial task section_target requires normalized x/y/width/height")
+		}
+	case "page":
+		if part.Page < 1 {
+			return nil, errors.New("page task section_target requires page")
+		}
+	case "state":
+		if target.StateID == "" {
+			return nil, errors.New("state task section_target requires state_id")
+		}
+	case "selector":
+		if target.Selector == "" {
+			return nil, errors.New("selector task section_target requires selector")
+		}
+	case "semantic":
+	default:
+		return nil, errors.New("task section_target kind is invalid")
+	}
+	return target, nil
 }
 
 func validateTaskSwarmLaunchEnabled(parsed taskCallArguments) error {

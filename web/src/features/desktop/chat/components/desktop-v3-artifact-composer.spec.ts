@@ -14,8 +14,11 @@ test('artifact composer renders removable labeled chips and submits structured r
   assert.match(composer, /removeDesktopV3ArtifactMessageSelection/)
   assert.match(composer, /selections: artifactSelections/)
   assert.match(composer, /artifactSelections,/)
+  assert.match(composer, /Let Swarm know your next step requests/)
+  assert.match(composer, /selection\.pending_request\?\.trim\(\) \? 'Pending update'/)
+  assert.doesNotMatch(composer, /onDraftChange\('Use this design\.'\)/)
   assert.match(composer, /onAddToChat=\{\(artifacts\)/)
-  assert.match(composer, /onUseThisDesign=\{\(\{ label, selection \}\)/)
+  assert.match(composer, /onUseThisDesign=\{\(\{ label, description, selection \}\)/)
 })
 
 test('existing and routed panes preserve artifact refs across retry boundaries', () => {
@@ -24,6 +27,8 @@ test('existing and routed panes preserve artifact refs across retry boundaries',
   assert.match(existing, /initialArtifactSelections=\{storedOperation\?\.request\.artifact_selections \?\? \[\]\}/)
   assert.match(existing, /queueGalleryArtifactSelections\(\[artifactSelectionRequest\]\)/)
   assert.match(existing, /requestSelections = appendDesktopV3ArtifactMessageSelections\(\[\], selections\)/)
+  assert.equal((existing.match(/pending_request: prompt/g) ?? []).length, 2)
+  assert.equal((existing.match(/onIterateSection=\{/g) ?? []).length, 2)
   assert.match(existing, /artifactSelectionRequest=\{galleryArtifactSelectionRequest\}/)
   assert.match(existing, /artifactSelections,/)
   assert.match(existing, /JSON\.stringify\(retainedArtifacts\) === JSON\.stringify\(artifactSelections\)/)

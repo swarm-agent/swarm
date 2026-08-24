@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"errors"
+	"strings"
 	"testing"
 
 	sessionruntime "swarm/packages/swarmd/internal/session"
@@ -36,6 +37,11 @@ func TestArtifactMetadataBoundaryPublishesOnlyCommittedOutboxRecords(t *testing.
 		Artifact: &pebblestore.V3ArtifactMutation{
 			Collection: pebblestore.SessionArtifactCollection{ID: "collection-1", Name: "Draft"},
 			Variant:    &pebblestore.SessionArtifactVariant{ID: "variant-1", CollectionID: "collection-1", Filename: "draft.txt", MediaType: "text/plain"},
+			Transaction: &pebblestore.SessionArtifactGitTransaction{
+				ID: "tx-artifact-stage", OwnerSessionID: created.ID, ArtifactChainID: "chain-1", RepositoryID: "artifact-runtime-test",
+				TransactionRef: "refs/swarm/transactions/artifact-stage", CandidateRef: "refs/swarm/candidates/artifact-stage",
+				OfficialRef: "refs/swarm/official/chain-1", CommitOID: strings.Repeat("a", 64), State: "candidate",
+			},
 		},
 	}
 	result, err := boundary.ApplySessionMutation(input)

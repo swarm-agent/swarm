@@ -241,6 +241,10 @@ func (f *fakeArtifactAuthority) GetReference(principal artifact.Principal, ref p
 	}, nil
 }
 
+func (f *fakeArtifactAuthority) ReadReference(context.Context, artifact.Principal, pebblestore.SessionArtifactSelectionReference, int64) ([]byte, pebblestore.SessionArtifactVariant, error) {
+	return []byte("fake artifact content"), pebblestore.SessionArtifactVariant{}, nil
+}
+
 func (f *fakeArtifactAuthority) CreateFromFile(ctx context.Context, principal artifact.Principal, input artifact.CreateFileInput) (pebblestore.SessionArtifactVariant, error) {
 	if f.createErr != nil {
 		return pebblestore.SessionArtifactVariant{}, f.createErr

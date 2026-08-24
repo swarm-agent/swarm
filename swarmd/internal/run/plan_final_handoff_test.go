@@ -89,6 +89,76 @@ func TestBuildFinalPlanExecutionHandoffKeepsLegacyContentWhenStructuredFieldsAre
 	}
 }
 
+func TestBuildNeedsReviewPlanExecutionHandoffRejectsBareProviderOutcome(t *testing.T) {
+	runSvc, sessionSvc, cleanup := newPlanManageRunTestService(t)
+	defer cleanup()
+
+	sessionID := createPlanManageTestSession(t, sessionSvc)
+	_, _, err := sessionSvc.SavePlanWithMetadata(sessionID, "plan-review-handoff-required", "Review handoff", "# Review", "approved", "approved", true, sessionruntime.PlanSaveMetadata{Document: &pebblestore.SessionPlanDocument{
+		ExecutionPolicy:    pebblestore.SessionPlanExecutionPolicy{Mode: sessionruntime.PlanExecutionPolicyModeAutomatic, Shape: sessionruntime.PlanExecutionShapeCheckpointed},
+		ExecutionState:     &pebblestore.SessionPlanExecutionState{Status: sessionruntime.PlanExecutionStateInProgress, ActiveAttemptID: "cp-1:attempt-1", CurrentRunID: "run-review", CurrentSessionID: sessionID, ParentSessionID: sessionID},
+		Checkpoints:        []pebblestore.SessionPlanCheckpoint{{ID: "cp-1", Title: "Review", Status: sessionruntime.PlanCheckpointStatusInProgress, AttemptID: "cp-1:attempt-1", RunID: "run-review", SessionID: sessionID}},
+		ActiveCheckpointID: "cp-1",
+	}})
+	if err != nil {
+		t.Fatalf("save review plan: %v", err)
+	}
+	patch := &sessionruntime.PlanDocumentPatch{CheckpointID: "cp-1"}
+	if err := runSvc.requireProviderManagedFinalCheckpointHandoff(sessionID, "plan-review-handoff-required", "mark_needs_review", patch); err == nil || !strings.Contains(err.Error(), "checkpoint review requires handoff_overview") {
+		t.Fatalf("missing review handoff error = %v", err)
+	}
+}
+
+func TestBuildNeedsReviewPlanExecutionHandoffProjectsInteractiveStructuredMetadata(t *testing.T) {
+	doc := &pebblestore.SessionPlanDocument{
+		ExecutionPolicy: pebblestore.SessionPlanExecutionPolicy{Mode: sessionruntime.PlanExecutionPolicyModeAutomatic, Shape: sessionruntime.PlanExecutionShapeCheckpointed},
+		ExecutionState:  &pebblestore.SessionPlanExecutionState{Status: sessionruntime.PlanExecutionStateWaitingReview, LastCheckpointID: "followup-1"},
+		Checkpoints: []pebblestore.SessionPlanCheckpoint{{
+			ID: "followup-1", Title: "Enforce Atlas synchronization", Status: sessionruntime.PlanCheckpointStatusNeedsReview,
+			Report: "Atlas synchronization needs user judgment.", Result: "Choose whether to enforce synchronization.",
+			Handoff: &pebblestore.SessionPlanCheckpointHandoff{
+				Title: "Atlas synchronization needs review", Overview: "Review the synchronization behavior before continuing.",
+				SuggestedPrompts: []pebblestore.PlanFinalHandoffSuggestedPrompt{{Label: "Ask a question", Prompt: "Explain the Atlas synchronization tradeoffs."}},
+			},
+		}},
+		ActiveCheckpointID: "followup-1",
+	}
+	message, ok := BuildFinalPlanExecutionHandoffSystemMessage(PlanExecutionLifecycleMessageInput{
+		Action:  "mark_needs_review",
+		Plan:    pebblestore.SessionPlanSnapshot{ID: "plan-review", Title: "Assess launch status", Document: doc},
+		Payload: map[string]any{"next_action": "await_review", "checkpoint_id": "followup-1", "report": "Atlas synchronization needs user judgment.", "result": "Choose whether to enforce synchronization."},
+	})
+	if !ok {
+		t.Fatal("review handoff was not built")
+	}
+	if message.Metadata["source"] != PlanExecutionFinalHandoffMessageSource || message.Metadata["kind"] != "plan_final_checkpoint_handoff" || message.Metadata["action"] != "mark_needs_review" || message.Metadata["review_required"] != true || message.Metadata["interaction_allowed"] != true {
+		t.Fatalf("review handoff metadata = %#v", message.Metadata)
+	}
+	projection, ok := message.Metadata["review_handoff"].(*pebblestore.PlanFinalHandoff)
+	if !ok || projection == nil || projection.Title != "Atlas synchronization needs review" || len(projection.SuggestedPrompts) != 1 || projection.Details.Report != "Atlas synchronization needs user judgment." {
+		t.Fatalf("review handoff projection = %#v", message.Metadata["review_handoff"])
+	}
+	if strings.Contains(message.Content, "waiting for checkpoint review") || !strings.Contains(message.Content, "Review the synchronization behavior") || !strings.Contains(message.Content, "Explain the Atlas synchronization tradeoffs") {
+		t.Fatalf("review handoff content = %q", message.Content)
+	}
+}
+
+func TestBuildNeedsReviewPlanExecutionHandoffFallbackExplainsChatRemainsInteractive(t *testing.T) {
+	doc := &pebblestore.SessionPlanDocument{
+		ExecutionPolicy:    pebblestore.SessionPlanExecutionPolicy{Mode: sessionruntime.PlanExecutionPolicyModeAutomatic, Shape: sessionruntime.PlanExecutionShapeCheckpointed},
+		ExecutionState:     &pebblestore.SessionPlanExecutionState{Status: sessionruntime.PlanExecutionStateWaitingReview, LastCheckpointID: "cp-1"},
+		Checkpoints:        []pebblestore.SessionPlanCheckpoint{{ID: "cp-1", Title: "Review", Status: sessionruntime.PlanCheckpointStatusNeedsReview}},
+		ActiveCheckpointID: "cp-1",
+	}
+	message, ok := BuildFinalPlanExecutionHandoffSystemMessage(PlanExecutionLifecycleMessageInput{
+		Action: "mark_needs_review", Plan: pebblestore.SessionPlanSnapshot{ID: "plan-review-fallback", Document: doc},
+		Payload: map[string]any{"next_action": "await_review", "checkpoint_id": "cp-1", "report": "Review required."},
+	})
+	if !ok || !strings.Contains(message.Content, "Ask Swarm questions or request changes in chat") || strings.Contains(message.Content, "waiting for checkpoint review") {
+		t.Fatalf("fallback review handoff = %#v", message)
+	}
+}
+
 func TestBuildBlockedPlanExecutionHandoffProjectsCopyableCodeBlock(t *testing.T) {
 	doc := &pebblestore.SessionPlanDocument{
 		ExecutionPolicy: pebblestore.SessionPlanExecutionPolicy{Mode: sessionruntime.PlanExecutionPolicyModeAutomatic, Shape: sessionruntime.PlanExecutionShapeCheckpointed},

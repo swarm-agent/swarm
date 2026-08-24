@@ -71,6 +71,13 @@ func TestTaskToolSchemaExposesOnlyDesignerOutputModeSelection(t *testing.T) {
 	if description, _ := source["description"].(string); !strings.Contains(description, "managed Designer work") || !strings.Contains(description, "Regular mode requires every launch to be a managed Designer") || !strings.Contains(description, "passes the opaque reference to each worker") {
 		t.Fatalf("task source_artifact description = %q", description)
 	}
+	sectionTarget, ok := properties["section_target"].(map[string]any)
+	if !ok {
+		t.Fatal("task schema omits exact section_target")
+	}
+	if description, _ := sectionTarget["description"].(string); !strings.Contains(description, "managed Designer work") || !strings.Contains(description, "Requires source_artifact") || !strings.Contains(description, "focused corrections") {
+		t.Fatalf("task section_target description = %q", description)
+	}
 	controls, ok := properties["iteration_controls"].(map[string]any)
 	if !ok || !reflect.DeepEqual(controls["required"], []string{"change"}) || controls["additionalProperties"] != false {
 		t.Fatalf("task iteration_controls schema = %#v", controls)

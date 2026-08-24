@@ -170,7 +170,7 @@ import {
 import { normalizeDesktopPlanFinalHandoff } from "../services/session-plan-record";
 import { DesktopV3ArtifactGallery, type DesktopV3ArtifactGalleryEntry } from "./desktop-v3-artifact-gallery";
 import { DesktopV3ArtifactSidebar, desktopV3ArtifactsForSession, desktopV3HasPendingVisualSwarm, desktopV3MobileVisualSwarmArtifactToOpen, desktopV3NextSessionSidebarView } from "./desktop-v3-artifact-sidebar";
-import { appendDesktopV3ArtifactMessageSelections, desktopV3ArtifactCatalogEntryForViewerLocation, desktopV3ArtifactCatalogEntryKey, desktopV3ArtifactCollectionViewerHref, desktopV3ArtifactCollectionViewerSearch, desktopV3ArtifactMessageSelection, desktopV3ArtifactViewerHref, desktopV3ArtifactViewerLocation, desktopV3ArtifactViewerSearch, fetchDesktopV3ArtifactCatalog, type DesktopV3ArtifactCatalogEntry, type DesktopV3ArtifactMessageSelection } from "../../session-v3/artifact-api";
+import { appendDesktopV3ArtifactMessageSelections, desktopV3ArtifactCatalogEntryForViewerLocation, desktopV3ArtifactCatalogEntryKey, desktopV3ArtifactCollectionViewerHref, desktopV3ArtifactCollectionViewerSearch, desktopV3ArtifactViewerHref, desktopV3ArtifactViewerLocation, desktopV3ArtifactViewerSearch, fetchDesktopV3ArtifactCatalog, type DesktopV3ArtifactCatalogEntry, type DesktopV3ArtifactMessageSelection } from "../../session-v3/artifact-api";
 import { DesktopV3ArtifactPreviewThumbnail } from "./desktop-v3-artifact-preview-thumbnail";
 import { useDesktopV3OpenArtifactCatalogRefresh } from "../../session-v3/use-artifact-catalog-refresh";
 import {
@@ -1341,7 +1341,7 @@ function buildDesktopV3PlanHandoffItem(
   const bodyLines = headlineIndex >= 0 ? lines.slice(headlineIndex + 1) : [];
   const rawBody = bodyLines.join("\n").trim() || message.content.trim();
   const finalHandoff = type === "plan-final-handoff"
-    ? normalizeDesktopPlanFinalHandoff(message.metadata?.final_handoff)
+    ? normalizeDesktopPlanFinalHandoff(message.metadata?.review_handoff ?? message.metadata?.final_handoff)
     : type === "plan-blocked-handoff"
       ? normalizeDesktopPlanFinalHandoff(message.metadata?.blocked_handoff)
       : null;
@@ -1972,6 +1972,7 @@ export function DesktopV3ExistingConversationPane({
   const [artifactGalleryOpen, setArtifactGalleryOpen] = useState(false);
   const [artifactGalleryInitialKey, setArtifactGalleryInitialKey] = useState("");
   const [artifactGalleryInitialCollectionId, setArtifactGalleryInitialCollectionId] = useState("");
+  const [artifactGalleryInitialPartId, setArtifactGalleryInitialPartId] = useState("");
   const [artifactComposerFocusSignal, setArtifactComposerFocusSignal] = useState(0);
   const dismissedArtifactViewerLocationKeyRef = useRef("");
   const openedMobileVisualSwarmKeysRef = useRef(new Set<string>());
@@ -2027,6 +2028,7 @@ export function DesktopV3ExistingConversationPane({
     setArtifactGalleryOpen(false);
     setArtifactGalleryInitialKey("");
     setArtifactGalleryInitialCollectionId("");
+    setArtifactGalleryInitialPartId("");
     dismissedArtifactViewerLocationKeyRef.current = "";
     openedMobileVisualSwarmKeysRef.current.clear();
     void refreshSessionArtifacts();
@@ -2232,10 +2234,11 @@ export function DesktopV3ExistingConversationPane({
       collectionId: artifact.collectionId,
     });
   }, [routeWorkspaceSlug]);
-  const openArtifactFullView = useCallback((artifact: DesktopV3ArtifactCatalogEntry) => {
+  const openArtifactFullView = useCallback((artifact: DesktopV3ArtifactCatalogEntry, partId = "") => {
     const artifactKey = desktopV3ArtifactCatalogEntryKey(artifact);
     dismissedArtifactViewerLocationKeyRef.current = "";
     setArtifactGalleryInitialCollectionId("");
+    setArtifactGalleryInitialPartId(partId);
     setArtifactGalleryInitialKey(artifactKey);
     setArtifactGalleryOpen(true);
     if (artifactReviewPresentation === "embedded" || !routeWorkspaceSlug) return;
@@ -2247,6 +2250,7 @@ export function DesktopV3ExistingConversationPane({
   }, [artifactReviewPresentation, navigate, routeWorkspaceSlug]);
   const navigateArtifactViewer = useCallback((artifact: DesktopV3ArtifactCatalogEntry) => {
     setArtifactGalleryInitialCollectionId("");
+    setArtifactGalleryInitialPartId("");
     setArtifactGalleryInitialKey(desktopV3ArtifactCatalogEntryKey(artifact));
     if (artifactReviewPresentation === "embedded" || !routeWorkspaceSlug) return;
     void navigate({
@@ -2261,6 +2265,7 @@ export function DesktopV3ExistingConversationPane({
     const sessionId = artifact.lineage?.parentSessionId || artifact.sessionId;
     if (!collectionId || !sessionId) return;
     setArtifactGalleryInitialKey("");
+    setArtifactGalleryInitialPartId("");
     setArtifactGalleryInitialCollectionId(collectionId);
     if (artifactReviewPresentation === "embedded" || !routeWorkspaceSlug) return;
     void navigate({
@@ -3145,6 +3150,7 @@ export function DesktopV3ExistingConversationPane({
                 title="Studio iterations"
                 initialArtifactKey={artifactGalleryInitialKey}
                 initialCollectionId={artifactGalleryInitialCollectionId}
+                initialPartId={artifactGalleryInitialPartId}
                 artifactHref={artifactViewerHref}
                 collectionHref={artifactCollectionViewerHref}
                 onArtifactNavigate={navigateArtifactViewer}
@@ -3153,12 +3159,21 @@ export function DesktopV3ExistingConversationPane({
                 embeddedPortalTarget={artifactReviewPortalTarget}
                 backLabel="Back to Studio"
                 onAddToChat={(artifacts) => {
-                  queueGalleryArtifactSelections(artifacts.map(({ label, description, selection }) => ({ ...selection, label, description, action: "select" })));
+                  queueGalleryArtifactSelections(artifacts.map(({ label, description, selection }) => ({ ...selection, label, description, action: selection.action ?? "select" })));
                   setArtifactGalleryOpenFromViewer(false);
                   setArtifactComposerFocusSignal((current) => current + 1);
                 }}
                 onUseThisDesign={({ label, description, selection }) => {
                   queueGalleryArtifactSelections([{ ...selection, label, description, action: "use" }]);
+                  setArtifactGalleryOpenFromViewer(false);
+                  setArtifactComposerFocusSignal((current) => current + 1);
+                }}
+                onActiveBranchChange={({ label, description, selection }) => {
+                  queueGalleryArtifactSelections([{ ...selection, label, description, action: "use" }]);
+                  setArtifactComposerFocusSignal((current) => current + 1);
+                }}
+                onIterateSection={({ label, description, selection }, prompt) => {
+                  queueGalleryArtifactSelections([{ ...selection, label, description, pending_request: prompt, action: "use" }]);
                   setArtifactGalleryOpenFromViewer(false);
                   setArtifactComposerFocusSignal((current) => current + 1);
                 }}
@@ -3338,7 +3353,7 @@ export function DesktopV3ExistingConversationPane({
                     </div>
                   ) : null}
                   {activeSidebarView === "artifacts" ? (
-                    <DesktopV3ArtifactSidebar artifacts={sessionArtifacts} displayMode="full" loading={sessionArtifactsLoading} error={sessionArtifactsError} embedded artifactHref={artifactViewerHref} onOpenArtifact={openArtifactFullView} onAddToChat={(artifacts) => queueGalleryArtifactSelections(artifacts.map((artifact) => desktopV3ArtifactMessageSelection(artifact, "select")))} />
+                    <DesktopV3ArtifactSidebar artifacts={sessionArtifacts} displayMode="full" loading={sessionArtifactsLoading} error={sessionArtifactsError} embedded artifactHref={artifactViewerHref} onOpenArtifact={openArtifactFullView} onAddToChat={queueGalleryArtifactSelections} />
                   ) : (
                     <IsolatedPlanExecutionSidebar
                       sessionId={normalizedSessionId}
@@ -3470,7 +3485,7 @@ export function DesktopV3ExistingConversationPane({
               ? "contents min-[1300px]:flex min-[1300px]:min-h-0 min-[1300px]:min-w-0 min-[1300px]:flex-1 min-[1300px]:flex-col min-[1300px]:overflow-hidden"
               : "flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden"}>
               {activeSidebarView === "artifacts" ? (
-                <DesktopV3ArtifactSidebar artifacts={sessionArtifacts} displayMode={planSidebarDisplayMode} loading={sessionArtifactsLoading} error={sessionArtifactsError} artifactHref={artifactViewerHref} onOpenArtifact={openArtifactFullView} onAddToChat={(artifacts) => queueGalleryArtifactSelections(artifacts.map((artifact) => desktopV3ArtifactMessageSelection(artifact, "select")))} />
+                <DesktopV3ArtifactSidebar artifacts={sessionArtifacts} displayMode={planSidebarDisplayMode} loading={sessionArtifactsLoading} error={sessionArtifactsError} artifactHref={artifactViewerHref} onOpenArtifact={openArtifactFullView} onAddToChat={queueGalleryArtifactSelections} />
               ) : stablePlanDocument && stablePlanPermission && planSidebarViewport ? (
                 <DesktopPlanAgentSidecar
                   parentSessionId={normalizedSessionId}
@@ -3509,17 +3524,27 @@ export function DesktopV3ExistingConversationPane({
         title="Session artifacts"
         initialArtifactKey={artifactGalleryInitialKey}
         initialCollectionId={artifactGalleryInitialCollectionId}
+        initialPartId={artifactGalleryInitialPartId}
         artifactHref={artifactViewerHref}
         collectionHref={artifactCollectionViewerHref}
         onArtifactNavigate={navigateArtifactViewer}
         onCollectionNavigate={navigateArtifactCollectionViewer}
         onAddToChat={(artifacts) => {
-          queueGalleryArtifactSelections(artifacts.map(({ label, description, selection }) => ({ ...selection, label, description, action: "select" })));
+          queueGalleryArtifactSelections(artifacts.map(({ label, description, selection }) => ({ ...selection, label, description, action: selection.action ?? "select" })));
           setArtifactGalleryOpenFromViewer(false);
           setArtifactComposerFocusSignal((current) => current + 1);
         }}
         onUseThisDesign={({ label, description, selection }) => {
           queueGalleryArtifactSelections([{ ...selection, label, description, action: "use" }]);
+          setArtifactGalleryOpenFromViewer(false);
+          setArtifactComposerFocusSignal((current) => current + 1);
+        }}
+        onActiveBranchChange={({ label, description, selection }) => {
+          queueGalleryArtifactSelections([{ ...selection, label, description, action: "use" }]);
+          setArtifactComposerFocusSignal((current) => current + 1);
+        }}
+        onIterateSection={({ label, description, selection }, prompt) => {
+          queueGalleryArtifactSelections([{ ...selection, label, description, pending_request: prompt, action: "use" }]);
           setArtifactGalleryOpenFromViewer(false);
           setArtifactComposerFocusSignal((current) => current + 1);
         }}
@@ -4110,15 +4135,16 @@ function DesktopV3StructuredFinalHandoff({
   return (
     <div className="flex w-full min-w-0 justify-start py-1" data-testid="desktop-v3-plan-final-handoff">
       <section
-        aria-label="Final handoff"
+        aria-label={metadataString(item.message.metadata, "action").toLowerCase() === "mark_needs_review" ? "Review handoff" : "Final handoff"}
         className="w-full min-w-0 rounded-xl border border-[var(--app-border-active)] bg-[var(--app-surface-subtle)] px-4 py-3 text-sm text-[var(--app-text)]"
         data-testid="desktop-v3-structured-final-handoff"
+        data-checkpoint-status={metadataString(item.message.metadata, "action").toLowerCase() === "mark_needs_review" ? "review" : undefined}
       >
         <div className="flex min-w-0 items-start justify-between gap-3">
           <div className="min-w-0">
             <div className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--app-primary)]">
               <CheckCircle2 size={13} aria-hidden="true" />
-              Final handoff
+              {metadataString(item.message.metadata, "action").toLowerCase() === "mark_needs_review" ? "Review handoff" : "Final handoff"}
             </div>
             <h3 className="mt-3 break-words text-base font-semibold leading-6">{handoff.title}</h3>
           </div>

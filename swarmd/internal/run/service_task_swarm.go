@@ -53,6 +53,8 @@ type taskSwarmHydrationRequest struct {
 	IterationControls   *taskSwarmIterationControls                    `json:"iteration_controls,omitempty"`
 	IntegrationContract string                                         `json:"integration_contract,omitempty"`
 	SourceArtifact      *pebblestore.SessionArtifactSelectionReference `json:"source_artifact,omitempty"`
+	SectionTarget       *taskSwarmSectionTarget                        `json:"section_target,omitempty"`
+	SectionTargets      []*taskSwarmSectionTarget                      `json:"section_targets,omitempty"`
 	Items               []taskSwarmHydrationItem                       `json:"items"`
 }
 
@@ -110,7 +112,7 @@ func taskSwarmRouterSystemPrompt(request taskSwarmHydrationRequest) string {
 	b.WriteString(`You are Router, the tool-free specialization planner for an Iteration Swarm inside Swarm's existing task tool.
 Return only one JSON object matching this exact response contract: {"group_title":"concise iteration group title","deltas":[{"index":1,"title":"short title","theme":"specific theme","role":"specialized responsibility only","constraints":["worker-specific constraint"],"deliverable":"worker-specific output"}]}.
 Produce exactly one compact delta for every supplied item in ascending index order.
-Name group_title from the supplied description so it identifies the whole iteration group in a narrow sidebar. It must be exactly 3 or 4 words, never a generic label such as "Managed group", and must not end with filler such as "group", "iterations", or "alternatives".
+Name group_title from the supplied description and the most specific authoritative context so it identifies the whole iteration group in a narrow sidebar. Prefer the section target label when present, then an explicit item group or theme, and use the parent prompt only when those fields are absent. It must be exactly 3 or 4 words, never a generic label such as "Managed group", and must not end with filler such as "group", "iterations", or "alternatives".
 
 The parent-authored prompt, output contract, output requirements, iteration controls, item themes, group briefs, execution model, and ownership rules are authoritative and read-only. Never add, remove, weaken, contradict, reinterpret, or silently replace any of them. Never invent user-facing content, product features, components, interactions, visual motifs, claims, dependencies, or requirements that the parent did not authorize. Your delta may elaborate execution details only when they are directly supported by the parent brief. When uncertain, preserve the parent detail instead of filling the gap creatively.
 Never repeat, quote, summarize, or rewrite the shared prompt, output contract, output requirements, execution model, or immutable ownership rules in the response because the server composes those authoritative fields after validation.`)
@@ -175,10 +177,18 @@ func (r *configuredTaskSwarmRouter) Hydrate(ctx context.Context, request taskSwa
 	if raw == "" {
 		return taskSwarmHydrationResult{}, errors.New("task swarm Router returned no output")
 	}
-	return decodeTaskSwarmHydrationResult(raw, len(request.Items))
+	return decodeTaskSwarmHydrationResultForRequest(raw, request)
 }
 
 func decodeTaskSwarmHydrationResult(raw string, count int) (taskSwarmHydrationResult, error) {
+	return decodeTaskSwarmHydrationResultWithRequest(raw, count, nil)
+}
+
+func decodeTaskSwarmHydrationResultForRequest(raw string, request taskSwarmHydrationRequest) (taskSwarmHydrationResult, error) {
+	return decodeTaskSwarmHydrationResultWithRequest(raw, len(request.Items), &request)
+}
+
+func decodeTaskSwarmHydrationResultWithRequest(raw string, count int, request *taskSwarmHydrationRequest) (taskSwarmHydrationResult, error) {
 	raw = normalizeTaskSwarmRouterJSONResponse(raw)
 	var result taskSwarmHydrationResult
 	decoder := json.NewDecoder(bytes.NewBufferString(raw))
@@ -189,6 +199,11 @@ func decodeTaskSwarmHydrationResult(raw string, count int) (taskSwarmHydrationRe
 	var trailing any
 	if err := decoder.Decode(&trailing); err != io.EOF {
 		return taskSwarmHydrationResult{}, errors.New("decode task swarm Router output: trailing content is forbidden")
+	}
+	if request != nil && isRepairableGenericTaskSwarmGroupTitle(result.GroupTitle) {
+		if repaired := taskSwarmFallbackGroupTitle(*request); repaired != "" {
+			result.GroupTitle = repaired
+		}
 	}
 	if err := validateTaskSwarmHydrationResult(result, count); err != nil {
 		return taskSwarmHydrationResult{}, err
@@ -221,6 +236,70 @@ func normalizeTaskSwarmRouterJSONResponse(raw string) string {
 	return body
 }
 
+func isRepairableGenericTaskSwarmGroupTitle(title string) bool {
+	title = strings.TrimSpace(title)
+	words := strings.Fields(title)
+	if len(words) < 3 || len(words) > 4 {
+		return false
+	}
+	lastWord := strings.Trim(strings.ToLower(words[len(words)-1]), " .,:;!?-_()[]{}")
+	return lastWord == "group" || lastWord == "iterations" || lastWord == "alternatives"
+}
+
+func taskSwarmFallbackGroupTitle(request taskSwarmHydrationRequest) string {
+	var sources []string
+	if request.SectionTarget != nil {
+		sources = append(sources, request.SectionTarget.Label, request.SectionTarget.ID)
+	}
+	for _, target := range request.SectionTargets {
+		if target != nil {
+			sources = append(sources, target.Label, target.ID)
+		}
+	}
+	if description := strings.TrimSpace(request.Description); !strings.EqualFold(description, "delegated task") {
+		sources = append(sources, description)
+	}
+	for _, item := range request.Items {
+		sources = append(sources, item.Group)
+	}
+	for _, item := range request.Items {
+		sources = append(sources, item.Theme)
+	}
+	sources = append(sources, request.Prompt)
+	for _, source := range sources {
+		words := taskSwarmGroupTitleKeywords(source)
+		if len(words) == 0 {
+			continue
+		}
+		return strings.Join(append(words, "Design", "Studies"), " ")
+	}
+	return ""
+}
+
+func taskSwarmGroupTitleKeywords(source string) []string {
+	stopWords := map[string]struct{}{
+		"a": {}, "an": {}, "and": {}, "build": {}, "create": {}, "design": {}, "distinct": {},
+		"explore": {}, "for": {}, "generate": {}, "make": {}, "new": {}, "of": {}, "or": {},
+		"produce": {}, "refine": {}, "requested": {}, "reusable": {}, "the": {}, "to": {}, "with": {},
+	}
+	keywords := make([]string, 0, 2)
+	for _, field := range strings.Fields(source) {
+		word := strings.Trim(field, " .,:;!?-_()[]{}\"'")
+		if word == "" {
+			continue
+		}
+		lower := strings.ToLower(word)
+		if _, skip := stopWords[lower]; skip || lower == "group" || lower == "iterations" || lower == "alternatives" {
+			continue
+		}
+		keywords = append(keywords, word)
+		if len(keywords) == 2 {
+			break
+		}
+	}
+	return keywords
+}
+
 func validateTaskSwarmHydrationResult(result taskSwarmHydrationResult, count int) error {
 	result.GroupTitle = strings.TrimSpace(result.GroupTitle)
 	if wordCount := len(strings.Fields(result.GroupTitle)); wordCount < 3 || wordCount > 4 {
@@ -229,9 +308,7 @@ func validateTaskSwarmHydrationResult(result taskSwarmHydrationResult, count int
 	if len([]rune(result.GroupTitle)) > taskSwarmRouterMaxDeltaFieldRunes {
 		return errors.New("task swarm Router group title is oversized")
 	}
-	titleWords := strings.Fields(strings.ToLower(result.GroupTitle))
-	lastWord := strings.Trim(titleWords[len(titleWords)-1], " .,:;!?-_()[]{}")
-	if strings.EqualFold(result.GroupTitle, "Managed group") || lastWord == "group" || lastWord == "iterations" || lastWord == "alternatives" {
+	if strings.EqualFold(result.GroupTitle, "Managed group") || isRepairableGenericTaskSwarmGroupTitle(result.GroupTitle) {
 		return errors.New("task swarm Router group title is generic")
 	}
 	if len(result.Deltas) != count {
@@ -282,7 +359,7 @@ func buildTaskSwarmHydrationRequest(parsed taskCallArguments, launchSpecs []task
 	}
 	request := taskSwarmHydrationRequest{
 		Description: strings.TrimSpace(parsed.Description), Prompt: strings.TrimSpace(parsed.Prompt), AgentType: parsed.Swarm.AgentType, SwarmStrategy: parsed.Swarm.Strategy,
-		OutputContract: strings.TrimSpace(parsed.Swarm.OutputContract), OutputMode: strings.TrimSpace(parsed.Swarm.OutputMode), OutputRequirements: cloneTaskOutputRequirements(parsed.Swarm.OutputRequirements), AnimationProfile: cloneTaskAnimationProfile(parsed.Swarm.AnimationProfile), IterationControls: cloneTaskSwarmIterationControls(parsed.Swarm.IterationControls), IntegrationContract: strings.TrimSpace(parsed.Swarm.IntegrationContract), SourceArtifact: cloneTaskImageSourceArtifact(parsed.Swarm.SourceArtifact),
+		OutputContract: strings.TrimSpace(parsed.Swarm.OutputContract), OutputMode: strings.TrimSpace(parsed.Swarm.OutputMode), OutputRequirements: cloneTaskOutputRequirements(parsed.Swarm.OutputRequirements), AnimationProfile: cloneTaskAnimationProfile(parsed.Swarm.AnimationProfile), IterationControls: cloneTaskSwarmIterationControls(parsed.Swarm.IterationControls), IntegrationContract: strings.TrimSpace(parsed.Swarm.IntegrationContract), SourceArtifact: cloneTaskImageSourceArtifact(parsed.Swarm.SourceArtifact), SectionTarget: cloneTaskSwarmSectionTarget(parsed.Swarm.SectionTarget), SectionTargets: cloneTaskSwarmSectionTargets(parsed.Swarm.SectionTargets),
 		Items: make([]taskSwarmHydrationItem, len(launchSpecs)),
 	}
 	groupIndex, groupRemaining := 0, 0
@@ -420,6 +497,17 @@ func composeTaskSwarmChildPrompt(request taskSwarmHydrationRequest, item taskSwa
 			b.Write(encoded)
 			b.WriteString("\n")
 		}
+		if len(request.SectionTargets) != 0 {
+			encoded, _ := json.Marshal(request.SectionTargets)
+			b.WriteString("- selected authoritative artifact parts (immutable server-bound selection): ")
+			b.Write(encoded)
+			b.WriteString("\n- multipart contract: call manage_artifact action=read_parts once, edit every selected part and no others, then call manage_artifact action=publish_parts exactly once with one replacement per selected part. The server publishes all changed revisions as one atomic candidate composition and preserves every untouched exact part revision. Do not use create/create_package.\n")
+		} else if request.SectionTarget != nil {
+			encoded, _ := json.Marshal(request.SectionTarget)
+			b.WriteString("- selected artifact part review metadata (descriptive only; immutable part authority is injected by the server): ")
+			b.Write(encoded)
+			b.WriteString("\n- focused part contract: call manage_artifact action=read_part to retrieve only the selected exact part bytes, edit only those bytes, then call manage_artifact action=publish_part exactly once with only replacement content and content metadata. Do not read, materialize, recreate, or publish the complete artifact. Do not use create/create_package. The server preserves every untouched exact part revision and constructs the candidate composition.\n")
+		}
 		if request.OutputRequirements != nil {
 			encoded, _ := json.Marshal(request.OutputRequirements)
 			b.WriteString("- exact output requirements (immutable; Router and worker may not rewrite): ")
@@ -436,8 +524,8 @@ func composeTaskSwarmChildPrompt(request taskSwarmHydrationRequest, item taskSwa
 		if request.OutputMode == taskOutputModeManaged {
 			if request.AgentType == "image" {
 				b.WriteString("- output mode: managed image; call manage_artifact exactly once with action=generate_image and a specialized image prompt. Omit provider, model, collection_id, variant_id, and output_requirements. The server resolves the account image model, performs one billed generation call, injects the immutable destination, and finalizes the ready image. Do not call create/create_package, write/edit, or mutate the checkout.\n")
-			} else {
-				b.WriteString("- output mode: managed; use manage_artifact with one successful create or create_package call and omit output_requirements and animation_profile. The server injects the immutable requirement snapshot and atomically finalizes the preallocated opaque target. Never call unsupported update/finalize actions. Do not use write/edit, write the workspace checkout, or choose/override destination lineage.\n")
+			} else if request.SectionTarget == nil && len(request.SectionTargets) == 0 {
+				b.WriteString("- output mode: managed; use manage_artifact with one successful create or create_package call and omit output_requirements and animation_profile. Include accurate parts in that same call for every meaningful authored review/edit target, using stable IDs and kind-appropriate locators; for swarm.iteration/v1 animations, mirror every manifest section as one temporal part with the exact same id, label, start_ms, and end_ms. Do not invent generic parts or omit them from an explicitly sectioned/editable deliverable. The server injects the immutable requirement snapshot and atomically finalizes the preallocated opaque target. Never call unsupported update/finalize actions. Do not use write/edit, write the workspace checkout, or choose/override destination lineage.\n")
 			}
 		} else {
 			b.WriteString("- output mode: workspace; work in the parent's shared checkout and write only within the distinct declared owned scope; do not use Bash or Git.\n")

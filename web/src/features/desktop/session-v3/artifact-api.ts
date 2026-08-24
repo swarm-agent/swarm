@@ -54,6 +54,112 @@ export interface DesktopV3ArtifactCollectionProgress {
   unavailable: number
 }
 
+export interface DesktopV3ArtifactPartRevisionReference {
+  artifactChainId: string
+  partId: string
+  partRevisionId: string
+  ownerSessionId: string
+  digestSha256: string
+  size: number
+  mediaType: string
+}
+
+export interface DesktopV3ArtifactPartDefinition {
+  id: string
+  label: string
+  description: string
+  locator: DesktopV3ArtifactPart | null
+}
+
+export interface DesktopV3ArtifactPartRevision {
+  reference: DesktopV3ArtifactPartRevisionReference
+  parent: DesktopV3ArtifactPartRevisionReference | null
+  parentCommitOids?: string[]
+  iterationTurnId: string
+  iterationGroupId: string
+  createdAt: number
+  eventSeq: number
+}
+
+export interface DesktopV3ArtifactCompositionPart {
+  partId: string
+  definitionOwnerSessionId: string
+  revision: DesktopV3ArtifactPartRevisionReference
+  locked?: boolean
+}
+
+export interface DesktopV3ArtifactConstructionEntry {
+  partId: string
+  path: string
+}
+
+export interface DesktopV3ArtifactComposition {
+  id: string
+  artifactChainId: string
+  repositoryId?: string
+  commitOid?: string
+  treeOid?: string
+  parentCommitOids?: string[]
+  parent: { artifactChainId: string; compositionId: string; ownerSessionId: string; eventSeq: number } | null
+  iterationTurnId: string
+  iterationGroupId: string
+  construction: { kind: 'concat-v1' | 'package-v1'; entries: DesktopV3ArtifactConstructionEntry[] } | null
+  parts: DesktopV3ArtifactCompositionPart[]
+}
+
+export interface DesktopV3ArtifactPart {
+  id: string
+  label: string
+  kind: 'temporal' | 'spatial' | 'page' | 'state' | 'selector' | 'semantic'
+  description: string
+  startMs: number
+  endMs: number
+  x: number
+  y: number
+  width: number
+  height: number
+  page: number
+  stateId: string
+  selector: string
+}
+
+export interface DesktopV3ArtifactChainReference {
+  sessionId: string
+  collectionId: string
+  variantId: string
+  eventSeq: number
+}
+
+export interface DesktopV3ArtifactChain {
+  id: string
+  name: string
+  graphState: string
+  repositoryId?: string
+  officialRef?: string
+  officialCommitOid?: string
+  root: DesktopV3ArtifactChainReference | null
+  head: DesktopV3ArtifactChainReference | null
+  revisionCount: number
+  lastRoundId: string
+}
+
+export interface DesktopV3ArtifactStep {
+  id: string
+  graphState: string
+  artifactChainId: string
+  repositoryId?: string
+  transactionRef?: string
+  candidateRef?: string
+  commitOid?: string
+  parentCommitOids?: string[]
+  expectedOldOid?: string
+  resultingOid?: string
+  parent?: DesktopV3ArtifactChainReference
+  revisionNumber: number
+  candidates: DesktopV3ArtifactChainReference[]
+  accepted?: DesktopV3ArtifactChainReference
+}
+
 export interface DesktopV3ArtifactLineage {
   parentSessionId: string
   sourceSessionId: string
@@ -70,10 +176,17 @@ export interface DesktopV3ArtifactLineage {
   iterationIndex: number
   iterationLabel: string
   iterationTheme: string
+  iterationSectionId: string
+  iterationSectionLabel: string
+  iterationSectionStartMs: number
+  iterationSectionEndMs: number
   runId: string
   planId: string
   checkpointId: string
   attemptId: string
+  partId?: string
+  partLabel?: string
+  partKind?: string
 }
 
 /** Opaque, portable managed-artifact reference. It never contains bytes or storage paths. */
@@ -82,12 +195,17 @@ export interface DesktopV3ArtifactSelection {
   collection_id: string
   variant_id: string
   event_seq: number
+  artifact_chain_id?: string
+  artifact_step_id?: string
+  part_id?: string
 }
 
 /** Opaque message reference plus bounded display metadata and review intent. */
 export interface DesktopV3ArtifactMessageSelection extends DesktopV3ArtifactSelection {
   label: string
   description?: string
+  /** Hidden provider instruction queued by Artifact Studio; never rendered as composer or chat text. */
+  pending_request?: string
   action: 'select' | 'use'
 }
 
@@ -123,6 +241,28 @@ export interface DesktopV3ArtifactCatalogEntry {
   lineage?: DesktopV3ArtifactLineage | null
   outputRequirements?: DesktopV3ArtifactOutputRequirements
   animationProfile?: DesktopV3ArtifactAnimationProfile
+  chain?: DesktopV3ArtifactChain
+  step?: DesktopV3ArtifactStep
+  graphState?: 'git_projection' | 'legacy_unproven'
+  parentArtifact?: DesktopV3ArtifactChainReference
+  artifactChainId?: string
+  artifactStepId?: string
+  revisionNumber?: number
+  revisionRoundId?: string
+  candidateIndex?: number
+  parts?: DesktopV3ArtifactPart[]
+  partGraphState?: 'git_projection' | 'legacy_unproven'
+  repositoryId?: string
+  commitOid?: string
+  treeOid?: string
+  candidateRef?: string
+  parentCommitOids?: string[]
+  partDefinitions?: DesktopV3ArtifactPartDefinition[]
+  partRevisions?: DesktopV3ArtifactPartRevision[]
+  composition?: DesktopV3ArtifactComposition
+  targetedPartId?: string
+  targetedPartIds?: string[]
+  acceptedPartHeads?: DesktopV3ArtifactCompositionPart[]
   localRevealAvailable?: boolean
   content?: string
 }
@@ -293,6 +433,176 @@ export function formatDesktopV3ArtifactOutputRequirements(requirements?: Desktop
   return [preset, `${requirements.width} × ${requirements.height}`, requirements.aspectRatio].filter(Boolean).join(' · ')
 }
 
+function normalizeArtifactChainReference(value: unknown): DesktopV3ArtifactChainReference | null {
+  const record = artifactCatalogRecord(value)
+  if (!record) return null
+  const sessionId = artifactCatalogString(record.session_id)
+  const collectionId = artifactCatalogString(record.collection_id)
+  const variantId = artifactCatalogString(record.variant_id)
+  const eventSeq = artifactCatalogEventSeq(record.event_seq)
+  return sessionId && collectionId && variantId && eventSeq ? { sessionId, collectionId, variantId, eventSeq } : null
+}
+
+function normalizeArtifactChain(value: unknown): DesktopV3ArtifactChain | null {
+  const record = artifactCatalogRecord(value)
+  if (!record) return null
+  const id = artifactCatalogString(record.id)
+  const root = normalizeArtifactChainReference(record.root)
+  const head = normalizeArtifactChainReference(record.head)
+  if (!id) return null
+  return {
+    id,
+    name: artifactCatalogString(record.name),
+    graphState: artifactCatalogString(record.graph_state),
+    repositoryId: artifactCatalogString(record.repository_id),
+    officialRef: artifactCatalogString(record.official_ref),
+    officialCommitOid: artifactCatalogString(record.official_commit_oid),
+    root,
+    head,
+    revisionCount: artifactCatalogCount(record.revision_count),
+    lastRoundId: artifactCatalogString(record.last_round_id),
+  }
+}
+
+function normalizeArtifactStep(value: unknown): DesktopV3ArtifactStep | null {
+  const record = artifactCatalogRecord(value)
+  if (!record) return null
+  const id = artifactCatalogString(record.id)
+  const artifactChainId = artifactCatalogString(record.artifact_chain_id)
+  const revisionNumber = artifactCatalogPositiveInteger(record.revision_number)
+  const candidates = Array.isArray(record.candidates)
+    ? record.candidates.map(normalizeArtifactChainReference).filter((candidate): candidate is DesktopV3ArtifactChainReference => candidate !== null)
+    : []
+  const parent = normalizeArtifactChainReference(record.parent)
+  const accepted = normalizeArtifactChainReference(record.accepted)
+  const graphState = artifactCatalogString(record.graph_state)
+  if (!id || !artifactChainId || !revisionNumber || candidates.length === 0 || graphState !== 'git_projection') return null
+  return {
+    id,
+    artifactChainId,
+    graphState,
+    repositoryId: artifactCatalogString(record.repository_id),
+    transactionRef: artifactCatalogString(record.transaction_ref),
+    candidateRef: artifactCatalogString(record.candidate_ref),
+    commitOid: artifactCatalogString(record.commit_oid),
+    parentCommitOids: Array.isArray(record.parent_commit_oids) ? record.parent_commit_oids.map(artifactCatalogString).filter(Boolean) : [],
+    expectedOldOid: artifactCatalogString(record.expected_old_oid),
+    resultingOid: artifactCatalogString(record.resulting_oid),
+    revisionNumber,
+    candidates,
+    ...(parent ? { parent } : {}),
+    ...(accepted ? { accepted } : {}),
+  }
+}
+
+function normalizeArtifactParts(value: unknown): DesktopV3ArtifactPart[] {
+  if (!Array.isArray(value)) return []
+  return value.flatMap((raw): DesktopV3ArtifactPart[] => {
+    const record = artifactCatalogRecord(raw)
+    if (!record) return []
+    const id = artifactCatalogString(record.id)
+    const label = artifactCatalogString(record.label)
+    const kind = artifactCatalogString(record.kind) as DesktopV3ArtifactPart['kind']
+    if (!id || !label || !['temporal', 'spatial', 'page', 'state', 'selector', 'semantic'].includes(kind)) return []
+    const number = (input: unknown) => typeof input === 'number' && Number.isFinite(input) ? input : 0
+    return [{ id, label, kind, description: artifactCatalogString(record.description), startMs: number(record.start_ms), endMs: number(record.end_ms), x: number(record.x), y: number(record.y), width: number(record.width), height: number(record.height), page: artifactCatalogCount(record.page), stateId: artifactCatalogString(record.state_id), selector: artifactCatalogString(record.selector) }]
+  })
+}
+
+function normalizeArtifactPartRevisionReference(value: unknown): DesktopV3ArtifactPartRevisionReference | null {
+  const record = artifactCatalogRecord(value)
+  if (!record) return null
+  const artifactChainId = artifactCatalogString(record.artifact_chain_id)
+  const partId = artifactCatalogString(record.part_id)
+  const partRevisionId = artifactCatalogString(record.part_revision_id)
+  const ownerSessionId = artifactCatalogString(record.owner_session_id)
+  const digestSha256 = artifactCatalogString(record.digest_sha256).toLowerCase()
+  const size = artifactCatalogPositiveInteger(record.size)
+  const mediaType = artifactCatalogString(record.media_type).toLowerCase()
+  if (!artifactChainId || !partId || !partRevisionId || !ownerSessionId || !/^[a-f0-9]{64}$/.test(digestSha256) || !size || !mediaType) return null
+  return { artifactChainId, partId, partRevisionId, ownerSessionId, digestSha256, size, mediaType }
+}
+
+function normalizeArtifactPartDefinitions(value: unknown): DesktopV3ArtifactPartDefinition[] {
+  if (!Array.isArray(value)) return []
+  return value.flatMap((raw): DesktopV3ArtifactPartDefinition[] => {
+    const record = artifactCatalogRecord(raw)
+    if (!record) return []
+    const id = artifactCatalogString(record.id)
+    const label = artifactCatalogString(record.label)
+    if (!id || !label) return []
+    const locatorRecord = artifactCatalogRecord(record.locator)
+    const locator = locatorRecord ? normalizeArtifactParts([{ ...locatorRecord, id, label, description: record.description }])[0] ?? null : null
+    return [{ id, label, description: artifactCatalogString(record.description), locator }]
+  })
+}
+
+function normalizeArtifactPartRevisions(value: unknown): DesktopV3ArtifactPartRevision[] {
+  if (!Array.isArray(value)) return []
+  return value.flatMap((raw): DesktopV3ArtifactPartRevision[] => {
+    const record = artifactCatalogRecord(raw)
+    const reference = normalizeArtifactPartRevisionReference(record?.reference)
+    if (!record || !reference) return []
+    const parent = normalizeArtifactPartRevisionReference(record.parent)
+    return [{ reference, parent, parentCommitOids: Array.isArray(record.parent_commit_oids) ? record.parent_commit_oids.map(artifactCatalogString).filter(Boolean) : [], iterationTurnId: artifactCatalogString(record.iteration_turn_id), iterationGroupId: artifactCatalogString(record.iteration_group_id), createdAt: artifactCatalogCount(record.created_at), eventSeq: artifactCatalogEventSeq(record.event_seq) }]
+  })
+}
+
+function normalizeArtifactCompositionPart(value: unknown): DesktopV3ArtifactCompositionPart | null {
+  const record = artifactCatalogRecord(value)
+  const revision = normalizeArtifactPartRevisionReference(record?.revision)
+  const partId = artifactCatalogString(record?.part_id)
+  const definitionOwnerSessionId = artifactCatalogString(record?.definition_owner_session_id)
+  if (!record || !revision || !partId || !definitionOwnerSessionId || revision.partId !== partId) return null
+  return { partId, definitionOwnerSessionId, revision, locked: record.locked === true }
+}
+
+function normalizeArtifactComposition(value: unknown): DesktopV3ArtifactComposition | null {
+  const record = artifactCatalogRecord(value)
+  if (!record || !Array.isArray(record.parts)) return null
+  const id = artifactCatalogString(record.id)
+  const artifactChainId = artifactCatalogString(record.artifact_chain_id)
+  const parts = record.parts.map(normalizeArtifactCompositionPart).filter((part): part is DesktopV3ArtifactCompositionPart => part !== null)
+  if (!id || !artifactChainId || parts.length === 0 || parts.length !== record.parts.length || new Set(parts.map((part) => part.partId)).size !== parts.length) return null
+  const parentRecord = artifactCatalogRecord(record.parent)
+  const parent = parentRecord ? {
+    artifactChainId: artifactCatalogString(parentRecord.artifact_chain_id),
+    compositionId: artifactCatalogString(parentRecord.composition_id),
+    ownerSessionId: artifactCatalogString(parentRecord.owner_session_id),
+    eventSeq: artifactCatalogEventSeq(parentRecord.event_seq),
+  } : null
+  const constructionRecord = artifactCatalogRecord(record.construction)
+  const constructionKind = artifactCatalogString(constructionRecord?.kind)
+  const rawEntries = Array.isArray(constructionRecord?.entries) ? constructionRecord.entries : []
+  const entries = rawEntries.flatMap((raw): DesktopV3ArtifactConstructionEntry[] => {
+    const entry = artifactCatalogRecord(raw)
+    const partId = artifactCatalogString(entry?.part_id)
+    return partId ? [{ partId, path: artifactCatalogString(entry?.path) }] : []
+  })
+  const partIds = new Set(parts.map((part) => part.partId))
+  const validConstructionKind: 'concat-v1' | 'package-v1' | null =
+    constructionKind === 'concat-v1' || constructionKind === 'package-v1' ? constructionKind : null
+  const construction: DesktopV3ArtifactComposition['construction'] = validConstructionKind
+    && entries.length === parts.length
+    && new Set(entries.map((entry) => entry.partId)).size === entries.length
+    && entries.every((entry) => partIds.has(entry.partId))
+    ? { kind: validConstructionKind, entries }
+    : null
+  return {
+    id,
+    artifactChainId,
+    repositoryId: artifactCatalogString(record.repository_id),
+    commitOid: artifactCatalogString(record.commit_oid),
+    treeOid: artifactCatalogString(record.tree_oid),
+    parentCommitOids: Array.isArray(record.parent_commit_oids) ? record.parent_commit_oids.map(artifactCatalogString).filter(Boolean) : [],
+    parent: parent && parent.artifactChainId && parent.compositionId && parent.ownerSessionId && parent.eventSeq ? parent : null,
+    iterationTurnId: artifactCatalogString(record.iteration_turn_id),
+    iterationGroupId: artifactCatalogString(record.iteration_group_id),
+    construction,
+    parts,
+  }
+}
+
 function normalizeArtifactLineage(value: unknown): DesktopV3ArtifactLineage | null {
   const record = artifactCatalogRecord(value)
   if (!record) return null
@@ -312,10 +622,15 @@ function normalizeArtifactLineage(value: unknown): DesktopV3ArtifactLineage | nu
     iterationIndex: artifactCatalogCount(record.iteration_index),
     iterationLabel: artifactCatalogString(record.iteration_label),
     iterationTheme: artifactCatalogString(record.iteration_theme),
+    iterationSectionId: artifactCatalogString(record.iteration_section_id),
+    iterationSectionLabel: artifactCatalogString(record.iteration_section_label),
+    iterationSectionStartMs: artifactCatalogNonNegativeInteger(record.iteration_section_start_ms),
+    iterationSectionEndMs: artifactCatalogNonNegativeInteger(record.iteration_section_end_ms),
     runId: artifactCatalogString(record.run_id),
     planId: artifactCatalogString(record.plan_id),
     checkpointId: artifactCatalogString(record.checkpoint_id),
     attemptId: artifactCatalogString(record.attempt_id),
+    ...(artifactCatalogString(record.part_id) ? { partId: artifactCatalogString(record.part_id), partLabel: artifactCatalogString(record.part_label), partKind: artifactCatalogString(record.part_kind) } : {}),
   }
 }
 
@@ -339,6 +654,32 @@ export function normalizeDesktopV3ArtifactCatalogEntry(value: unknown): DesktopV
       : 0
   const outputRequirements = normalizeDesktopV3ArtifactOutputRequirements(record.output_requirements)
   const animationProfile = normalizeDesktopV3ArtifactAnimationProfile(record.animation_profile)
+  const chain = normalizeArtifactChain(record.chain)
+  const step = normalizeArtifactStep(record.step)
+  const parentArtifact = normalizeArtifactChainReference(record.parent_artifact)
+  const graphState = artifactCatalogString(record.graph_state)
+  const partGraphState = artifactCatalogString(record.part_graph_state)
+  const partDefinitions = normalizeArtifactPartDefinitions(record.part_definitions)
+  const partRevisions = normalizeArtifactPartRevisions(record.part_revisions)
+  const composition = normalizeArtifactComposition(record.composition)
+  const targetedPartIds = Array.isArray(record.targeted_part_ids)
+    ? [...new Set(record.targeted_part_ids.map(artifactCatalogString).filter(Boolean))]
+    : []
+  const acceptedPartHeads = Array.isArray(record.accepted_part_heads)
+    ? record.accepted_part_heads.map(normalizeArtifactCompositionPart).filter((part): part is DesktopV3ArtifactCompositionPart => part !== null)
+    : []
+  const authoritativeParts = partGraphState === 'git_projection'
+    && composition
+    && composition.artifactChainId === (artifactCatalogString(record.artifact_chain_id) || chain?.id)
+    && partDefinitions.length === composition.parts.length
+    && partRevisions.length === composition.parts.length
+  const projectedRepositoryId = artifactCatalogString(record.repository_id) || composition?.repositoryId || chain?.repositoryId || step?.repositoryId || ''
+  const projectedCommitOid = artifactCatalogString(record.commit_oid) || composition?.commitOid || step?.commitOid || ''
+  const projectedTreeOid = artifactCatalogString(record.tree_oid) || composition?.treeOid || ''
+  const projectedCandidateRef = artifactCatalogString(record.candidate_ref) || step?.candidateRef || ''
+  const projectedParentCommitOids = Array.isArray(record.parent_commit_oids)
+    ? record.parent_commit_oids.map(artifactCatalogString).filter(Boolean)
+    : composition?.parentCommitOids ?? step?.parentCommitOids ?? []
   return {
     artifactId,
     sourceRef: artifactCatalogString(record.source_ref),
@@ -367,6 +708,37 @@ export function normalizeDesktopV3ArtifactCatalogEntry(value: unknown): DesktopV
     eventSeq: artifactCatalogEventSeq(record.event_seq),
     progress: normalizeArtifactProgress(record.progress),
     lineage: normalizeArtifactLineage(record.lineage),
+    ...(chain ? { chain } : {}),
+    ...(step ? { step } : {}),
+    ...(graphState === 'git_projection' || graphState === 'legacy_unproven' ? { graphState } : {}),
+    ...(graphState === 'git_projection' ? {
+      repositoryId: projectedRepositoryId,
+      commitOid: projectedCommitOid,
+      treeOid: projectedTreeOid,
+      candidateRef: projectedCandidateRef,
+      parentCommitOids: projectedParentCommitOids,
+    } : {}),
+    ...(parentArtifact ? { parentArtifact } : {}),
+    ...((artifactCatalogString(record.artifact_chain_id) || chain?.id) ? { artifactChainId: artifactCatalogString(record.artifact_chain_id) || chain?.id } : {}),
+    ...(artifactCatalogString(record.artifact_step_id) ? { artifactStepId: artifactCatalogString(record.artifact_step_id) } : {}),
+    ...(artifactCatalogCount(record.revision_number) ? { revisionNumber: artifactCatalogCount(record.revision_number) } : {}),
+    ...(artifactCatalogString(record.revision_round_id) ? { revisionRoundId: artifactCatalogString(record.revision_round_id) } : {}),
+    ...(artifactCatalogCount(record.candidate_index) ? { candidateIndex: artifactCatalogCount(record.candidate_index) } : {}),
+    ...(Array.isArray(record.parts) ? { parts: normalizeArtifactParts(record.parts) } : {}),
+    ...(authoritativeParts ? {
+      partGraphState: 'git_projection' as const,
+      repositoryId: projectedRepositoryId,
+      commitOid: projectedCommitOid,
+      treeOid: projectedTreeOid,
+      candidateRef: projectedCandidateRef,
+      parentCommitOids: projectedParentCommitOids,
+      partDefinitions,
+      partRevisions,
+      composition,
+      targetedPartId: artifactCatalogString(record.targeted_part_id) || undefined,
+      targetedPartIds,
+      acceptedPartHeads,
+    } : partGraphState === 'legacy_unproven' ? { partGraphState: 'legacy_unproven' as const } : {}),
     ...(outputRequirements ? { outputRequirements } : {}),
     ...(animationProfile ? { animationProfile } : {}),
     ...(typeof record.content === 'string' ? { content: record.content } : {}),
@@ -400,6 +772,8 @@ export function desktopV3ArtifactSelection(entry: DesktopV3ArtifactCatalogEntry)
     collection_id: entry.collectionId ?? '',
     variant_id: entry.artifactId,
     event_seq: entry.eventSeq ?? 0,
+    artifact_chain_id: entry.artifactChainId,
+    artifact_step_id: entry.artifactStepId,
   })
   if (!selection || entry.status !== 'ready') {
     throw new Error('Artifact selection requires a ready managed variant with a durable event sequence')
@@ -450,10 +824,71 @@ export function desktopV3ArtifactMessageSelection(
   }
 }
 
+/**
+ * Builds portable chat metadata for one exact authoritative part. The server
+ * resolves the typed locator from the authenticated artifact revision before
+ * provider context is assembled; the client sends only the stable part ID.
+ */
+export function desktopV3ArtifactRevisionHasPart(entry: DesktopV3ArtifactCatalogEntry, partId: string): boolean {
+  const normalizedPartId = partId.trim()
+  if (!normalizedPartId) return false
+  const definition = entry.partDefinitions?.find((part) => part.id === normalizedPartId)
+  const compositionHasPart = entry.composition?.parts.some((part) => part.partId === normalizedPartId) === true
+  const reviewPart = entry.parts?.some((part) => part.id === normalizedPartId) === true
+  return (entry.partGraphState === 'git_projection' && Boolean(definition && compositionHasPart)) || reviewPart
+}
+
+export function desktopV3ArtifactPartMessageSelection(
+  entry: DesktopV3ArtifactCatalogEntry,
+  partId: string,
+  action: 'select' | 'use' = 'use',
+): DesktopV3ArtifactMessageSelection {
+  const normalizedPartId = partId.trim()
+  const definition = entry.partDefinitions?.find((part) => part.id === normalizedPartId)
+  const reviewPart = entry.parts?.find((part) => part.id === normalizedPartId)
+  if (!desktopV3ArtifactRevisionHasPart(entry, normalizedPartId)) {
+    throw new Error('Artifact part attachment requires an exact part on the selected revision')
+  }
+  const artifactSelection = desktopV3ArtifactMessageSelection(entry, action)
+  const label = definition?.label || reviewPart!.label
+  const description = definition?.description || reviewPart?.description || ''
+  const partKind = definition?.locator?.kind || reviewPart?.kind || 'semantic'
+  return {
+    ...artifactSelection,
+    part_id: normalizedPartId,
+    label: `${artifactSelection.label} · ${label}`,
+    description: [
+      `Change target: ${label} (${partKind}).`,
+      description,
+      artifactSelection.description,
+    ].filter(Boolean).join(' '),
+  }
+}
+
+/** Queues a focused follow-up from the current official composition head. */
+export function desktopV3ArtifactPartIterationMessageSelection(
+  entry: DesktopV3ArtifactCatalogEntry,
+  partId: string,
+  alternativeCount = 3,
+): DesktopV3ArtifactMessageSelection {
+  const selection = desktopV3ArtifactPartMessageSelection(entry, partId, 'use')
+  const definition = entry.partDefinitions?.find((part) => part.id === partId.trim())
+  const count = Math.min(50, Math.max(1, Math.round(alternativeCount)))
+  return {
+    ...selection,
+    pending_request: [
+      `Create ${count} new alternatives for the exact artifact part "${definition?.label || partId}" (${partId}).`,
+      'Use the attached exact Git-backed official composition head as the sole base revision.',
+      'Either revise this part directly with manage_artifact or delegate it to a managed Designer Iteration Swarm as appropriate.',
+      'Every candidate must be a complete derived artifact, preserve every non-target part and lock, and remain an unselected branch for review in Artifact Studio.',
+    ].join('\n'),
+  }
+}
+
 export function desktopV3ArtifactMessageSelectionKey(
-  selection: Pick<DesktopV3ArtifactSelection, 'session_id' | 'collection_id' | 'variant_id'>,
+  selection: Pick<DesktopV3ArtifactSelection, 'session_id' | 'collection_id' | 'variant_id'> & Partial<Pick<DesktopV3ArtifactSelection, 'part_id'>>,
 ): string {
-  return `${selection.session_id.trim()}\u0000${selection.collection_id.trim()}\u0000${selection.variant_id.trim()}`
+  return `${selection.session_id.trim()}\u0000${selection.collection_id.trim()}\u0000${selection.variant_id.trim()}\u0000${selection.part_id?.trim() ?? ''}`
 }
 
 export function desktopV3ArtifactCatalogEntryKey(entry: Pick<DesktopV3ArtifactCatalogEntry, 'sessionId' | 'collectionId' | 'artifactId'>): string {
@@ -582,11 +1017,13 @@ export function normalizeDesktopV3ArtifactMessageSelection(value: unknown): Desk
   if (!selection || !record) return null
   const label = artifactCatalogString(record.label)
   const rawAction = artifactCatalogString(record.action).toLowerCase()
-  if (!label || (rawAction !== 'select' && rawAction !== 'use')) return null
+  const pendingRequest = artifactCatalogString(record.pending_request)
+  if (!label || (rawAction !== 'select' && rawAction !== 'use') || (pendingRequest && rawAction !== 'use')) return null
   return {
     ...selection,
     label,
     description: artifactCatalogString(record.description) || undefined,
+    ...(pendingRequest ? { pending_request: pendingRequest } : {}),
     action: rawAction,
   }
 }
@@ -598,11 +1035,7 @@ export function appendDesktopV3ArtifactMessageSelection(
   const normalized = normalizeDesktopV3ArtifactMessageSelection(incoming)
   if (!normalized) throw new Error('Artifact chip requires a complete opaque selection, visible label, and action')
   const singularSelections = normalized.action === 'use'
-    ? selections.map((selection) => selection.action === 'use'
-        && selection.session_id === normalized.session_id
-        && selection.collection_id === normalized.collection_id
-      ? { ...selection, action: 'select' as const }
-      : selection)
+    ? selections.filter((selection) => selection.action !== 'use')
     : selections
   const key = desktopV3ArtifactMessageSelectionKey(normalized)
   const index = singularSelections.findIndex((selection) => desktopV3ArtifactMessageSelectionKey(selection) === key)
@@ -638,7 +1071,7 @@ export function appendDesktopV3ArtifactMessageSelections(
 
 export function removeDesktopV3ArtifactMessageSelection(
   selections: readonly DesktopV3ArtifactMessageSelection[],
-  selection: Pick<DesktopV3ArtifactSelection, 'session_id' | 'collection_id' | 'variant_id'>,
+  selection: Pick<DesktopV3ArtifactSelection, 'session_id' | 'collection_id' | 'variant_id'> & Partial<Pick<DesktopV3ArtifactSelection, 'part_id'>>,
 ): DesktopV3ArtifactMessageSelection[] {
   const key = desktopV3ArtifactMessageSelectionKey(selection)
   return selections.filter((item) => desktopV3ArtifactMessageSelectionKey(item) !== key)
@@ -652,7 +1085,10 @@ export function normalizeDesktopV3ArtifactSelection(value: unknown): DesktopV3Ar
   const variantId = artifactCatalogString(record.variant_id) || artifactCatalogString(record.id) || artifactCatalogString(record.artifact_id)
   const eventSeq = artifactCatalogEventSeq(record.event_seq)
   if (!sessionId || !collectionId || !variantId || eventSeq <= 0) return null
-  return { session_id: sessionId, collection_id: collectionId, variant_id: variantId, event_seq: eventSeq }
+  const partId = artifactCatalogString(record.part_id)
+  const artifactChainId = artifactCatalogString(record.artifact_chain_id)
+  const artifactStepId = artifactCatalogString(record.artifact_step_id)
+  return { session_id: sessionId, collection_id: collectionId, variant_id: variantId, event_seq: eventSeq, ...(artifactChainId ? { artifact_chain_id: artifactChainId } : {}), ...(artifactStepId ? { artifact_step_id: artifactStepId } : {}), ...(partId ? { part_id: partId } : {}) }
 }
 
 export function desktopV3ArtifactSelectionEndpoint(sessionId: string, variantId: string): string {
@@ -673,7 +1109,7 @@ async function postDesktopV3ArtifactSelection(
   const response = await apiFetch(desktopV3ArtifactSelectionEndpoint(normalized.session_id, normalized.variant_id), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ client_request_id: clientRequestId, event_seq: normalized.event_seq, action }),
+    body: JSON.stringify({ client_request_id: clientRequestId, event_seq: normalized.event_seq, action, artifact_chain_id: normalized.artifact_chain_id, artifact_step_id: normalized.artifact_step_id, ...(normalized.part_id ? { part_id: normalized.part_id } : {}) }),
     signal,
   })
   if (!response.ok) throw new Error(await readErrorMessage(response))
@@ -691,6 +1127,76 @@ export function selectDesktopV3Artifact(selection: DesktopV3ArtifactSelection, s
 
 export function useDesktopV3Artifact(selection: DesktopV3ArtifactSelection, signal?: AbortSignal): Promise<DesktopV3ArtifactSelection> {
   return postDesktopV3ArtifactSelection('use', selection, signal)
+}
+
+export interface DesktopV3ArtifactPartRevisionChoice {
+  partId: string
+  revision: DesktopV3ArtifactPartRevisionReference
+  revisionEventSeq: number
+  locked: boolean
+}
+
+export interface DesktopV3ArtifactPartSelectionResult {
+  reference: DesktopV3ArtifactSelection
+  composition: DesktopV3ArtifactComposition
+}
+
+export function desktopV3ArtifactPartSelectionEndpoint(sessionId: string, variantId: string): string {
+  return `${desktopV3ArtifactEndpoint(sessionId, variantId)}/part-selection`
+}
+
+/**
+ * Atomically publishes one complete accepted composition from exact server-projected
+ * part revisions. The source event is an optimistic concurrency token; callers must
+ * refresh the canonical V3 catalog after either success or conflict.
+ */
+export async function selectDesktopV3ArtifactPartRevisions(
+  source: Pick<DesktopV3ArtifactCatalogEntry, 'sessionId' | 'artifactId' | 'eventSeq'>,
+  choices: readonly DesktopV3ArtifactPartRevisionChoice[],
+  signal?: AbortSignal,
+): Promise<DesktopV3ArtifactPartSelectionResult> {
+  const eventSeq = source.eventSeq ?? 0
+  if (!source.sessionId.trim() || !source.artifactId.trim() || eventSeq <= 0 || choices.length === 0 || choices.length > 64) {
+    throw new Error('Part selection requires a ready exact source and one to 64 exact choices')
+  }
+  const seen = new Set<string>()
+  const normalizedChoices = choices.map((choice) => {
+    const partId = choice.partId.trim()
+    if (!partId || seen.has(partId) || choice.revision.partId !== partId || choice.revisionEventSeq <= 0) {
+      throw new Error('Part selection choices require unique matching part and revision identities')
+    }
+    seen.add(partId)
+    return {
+      part_id: partId,
+      revision: {
+        artifact_chain_id: choice.revision.artifactChainId,
+        part_id: choice.revision.partId,
+        part_revision_id: choice.revision.partRevisionId,
+        owner_session_id: choice.revision.ownerSessionId,
+        digest_sha256: choice.revision.digestSha256,
+        size: choice.revision.size,
+        media_type: choice.revision.mediaType,
+      },
+      revision_event_seq: choice.revisionEventSeq,
+      locked: choice.locked,
+    }
+  })
+  const response = await apiFetch(desktopV3ArtifactPartSelectionEndpoint(source.sessionId, source.artifactId), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      client_request_id: `desktop-v3-artifact-part-selection:${crypto.randomUUID()}`,
+      event_seq: eventSeq,
+      choices: normalizedChoices,
+    }),
+    signal,
+  })
+  if (!response.ok) throw new Error(await readErrorMessage(response))
+  const payload = artifactCatalogRecord(await response.json() as unknown)
+  const reference = normalizeDesktopV3ArtifactSelection(payload?.reference)
+  const composition = normalizeArtifactComposition(payload?.composition)
+  if (payload?.ok !== true || !reference || !composition) throw new Error('Artifact part selection returned an invalid composition')
+  return { reference, composition }
 }
 
 export function desktopV3ArtifactEndpoint(sessionId: string, artifactId: string): string {

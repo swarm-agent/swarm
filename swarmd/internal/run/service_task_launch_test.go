@@ -228,6 +228,7 @@ func TestParseTaskCallArgumentsRegularManagedDesignerAcceptsExactSourceArtifact(
 		"mode":            "regular",
 		"prompt":          "refine the selected artifact",
 		"source_artifact": source,
+		"section_target":  map[string]any{"id": "step-03-understand", "label": "03A · UNDERSTAND", "start_ms": 20220, "end_ms": 27600},
 		"launches": []any{
 			map[string]any{"subagent_type": "designer", "meta_prompt": "create the focused managed revision"},
 		},
@@ -241,6 +242,22 @@ func TestParseTaskCallArgumentsRegularManagedDesignerAcceptsExactSourceArtifact(
 	}
 	if parsed.Launches[0].OutputMode != taskOutputModeManaged {
 		t.Fatalf("regular Designer output mode = %q", parsed.Launches[0].OutputMode)
+	}
+	target, targetErr := parseTaskSwarmSectionTarget(parsed.Launches[0].SourceArguments["section_target"])
+	if targetErr != nil || target == nil || target.ID != "step-03-understand" || target.Label != "03A · UNDERSTAND" || target.StartMs != 20220 || target.EndMs != 27600 {
+		t.Fatalf("regular managed Designer section target = %#v err=%v", target, targetErr)
+	}
+}
+
+func TestParseTaskCallArgumentsRegularSectionTargetRequiresSourceArtifact(t *testing.T) {
+	_, err := parseTaskCallArguments(mustJSON(t, map[string]any{
+		"prompt":         "refine one section",
+		"section_target": map[string]any{"id": "step-03-understand", "label": "03A · UNDERSTAND", "start_ms": 20220, "end_ms": 27600},
+		"subagent_type":  "designer",
+		"meta_prompt":    "create the focused managed revision",
+	}))
+	if err == nil || !strings.Contains(err.Error(), "section_target requires an exact source_artifact") {
+		t.Fatalf("regular section target without source error = %v", err)
 	}
 }
 
@@ -304,6 +321,25 @@ func TestManagedDesignerRoutingAllocatesParentOwnedUniqueVariants(t *testing.T) 
 	}
 	if got := managedDesignerArtifactContext(parent, "call-1", taskLaunchSpec{RequestedSubagentType: "designer", OutputMode: taskOutputModeWorkspace}, 1); got != nil {
 		t.Fatalf("workspace Designer received managed context: %#v", got)
+	}
+}
+
+func TestRegularManagedDesignerRoutingPreservesSectionMetadata(t *testing.T) {
+	parent := pebblestore.SessionSnapshot{ID: "parent-session", UserID: "user-1", AccountScopeID: "account-1"}
+	spec := taskLaunchSpec{
+		RequestedSubagentType: "designer",
+		OutputMode:            taskOutputModeManaged,
+		AssignmentLabel:       "Rounded Rect Correction",
+		SourceArguments: map[string]any{
+			"section_target": taskSwarmSectionTarget{ID: "step-03-understand", Label: "03A · UNDERSTAND", StartMs: 20220, EndMs: 27600},
+		},
+	}
+	run := managedDesignerArtifactContext(parent, "call-regular", spec, 1)
+	if run == nil || run.IterationSectionID != "step-03-understand" || run.IterationSectionLabel != "03A · UNDERSTAND" || run.IterationSectionStartMs != 20220 || run.IterationSectionEndMs != 27600 || run.IterationLabel != "Rounded Rect Correction" {
+		t.Fatalf("regular managed Designer context lost section metadata: %#v", run)
+	}
+	if run.IterationGroupID != "" || run.IterationID != "" {
+		t.Fatalf("regular correction was mislabeled as an alternatives wave: %#v", run)
 	}
 }
 
@@ -383,6 +419,9 @@ func TestManagedDesignerWaveProjectsAllExpectedStagingVariantsBeforeExecution(t 
 		lineage := variant.Lineage
 		if variant.Status != pebblestore.SessionArtifactStatusStaging || lineage.ParentSessionID != parent.ID || lineage.TaskCallID != "call-swarm" || lineage.ChildSessionID == "" || lineage.SourceSessionID != lineage.ChildSessionID || lineage.IterationGroupID != collection.Lineage.IterationGroupID || lineage.IterationID == "" || lineage.IterationIndex < 1 || lineage.IterationIndex > len(specs) || lineage.IterationLabel == "" || lineage.IterationTheme == "" {
 			t.Fatalf("staging variant = %#v", variant)
+		}
+		if variant.GraphState != "" || variant.RepositoryID != "" || variant.CommitOID != "" || variant.CandidateRef != "" {
+			t.Fatalf("placeholder claimed nonexistent Git identity = %#v", variant)
 		}
 		seenIndexes[lineage.IterationIndex] = true
 	}
@@ -520,7 +559,7 @@ func TestManagedDesignerPromptAndToolsRequireArtifactWithoutCheckoutWrites(t *te
 		Description: "create variant", Prompt: "Create the requested variant.", ParentSession: pebblestore.SessionSnapshot{ID: "parent-session"},
 		RequestedSubagent: "designer", OutputMode: taskOutputModeManaged, ArtifactRunContext: ctx,
 	})
-	for _, want := range []string{"publish exactly one durable ready variant with manage_artifact", ctx.CollectionID, ctx.VariantID, "omit collection_id/variant_id", "Do not use workspace write/edit or Git"} {
+	for _, want := range []string{"publish exactly one durable ready variant with manage_artifact", ctx.CollectionID, ctx.VariantID, "omit collection_id/variant_id", "accurate parts for every meaningful authored review/edit target", "one temporal part matching every manifest section's exact id, label, start_ms, and end_ms", "Do not use workspace write/edit or Git"} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("managed Designer prompt missing %q:\n%s", want, prompt)
 		}

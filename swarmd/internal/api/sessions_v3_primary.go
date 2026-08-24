@@ -360,6 +360,15 @@ func (s *Server) handleSessionV3PrimaryByID(w http.ResponseWriter, r *http.Reque
 				}
 				return
 			}
+			if artifactID, hasPartSelection := strings.CutSuffix(artifactPath, "/part-selection"); hasPartSelection {
+				artifactID = strings.TrimSpace(artifactID)
+				if artifactID == "" || strings.Contains(artifactID, "/") {
+					writeError(w, http.StatusBadRequest, errors.New("artifact id is required"))
+					return
+				}
+				s.handleSessionV3ArtifactPartSelection(w, r, principal, sessionID, artifactID)
+				return
+			}
 			if artifactID, hasSelection := strings.CutSuffix(artifactPath, "/selection"); hasSelection {
 				artifactID = strings.TrimSpace(artifactID)
 				if artifactID == "" || strings.Contains(artifactID, "/") {

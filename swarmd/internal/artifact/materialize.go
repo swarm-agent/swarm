@@ -2,6 +2,7 @@ package artifact
 
 import (
 	"archive/zip"
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -34,8 +35,8 @@ type Materialized struct {
 // destination-directory publication. Source is resolved by Authority and never
 // comes from a model-authored path.
 type BatchMaterializeInput struct {
-	Service *Service
 	Variant pebblestore.SessionArtifactVariant
+	Body    []byte
 }
 
 const MaxMaterializeBatchItems = 64
@@ -43,7 +44,7 @@ const MaxMaterializeBatchItems = 64
 // Materialize copies one verified ready artifact into an explicitly supplied
 // workspace-relative destination. ZIP packages are safely expanded into a
 // destination directory; other artifacts are copied to one destination file.
-func (s *Service) Materialize(ctx context.Context, variant pebblestore.SessionArtifactVariant, workspaceRoot, destination string, overwrite bool) (Materialized, error) {
+func MaterializeBytes(ctx context.Context, limits Limits, variant pebblestore.SessionArtifactVariant, body []byte, workspaceRoot, destination string, overwrite bool) (Materialized, error) {
 	if err := ctx.Err(); err != nil {
 		return Materialized{}, err
 	}
@@ -51,29 +52,30 @@ func (s *Service) Materialize(ctx context.Context, variant pebblestore.SessionAr
 	if err != nil {
 		return Materialized{}, err
 	}
-	file, blob, err := s.Open(ctx, variant)
-	if err != nil {
-		return Materialized{}, err
+	if int64(len(body)) != variant.Size {
+		return Materialized{}, errors.New("artifact Git bytes do not match projected size")
 	}
-	defer file.Close()
-
-	if blob.MediaType == "application/zip" || blob.Presentation.Kind == "package" {
-		if blob.MediaType != "application/zip" {
+	digest := sha256.Sum256(body)
+	if hex.EncodeToString(digest[:]) != strings.ToLower(variant.DigestSHA256) {
+		return Materialized{}, errors.New("artifact Git bytes do not match projected digest")
+	}
+	if variant.MediaType == "application/zip" || variant.Presentation.Kind == "package" {
+		if variant.MediaType != "application/zip" {
 			return Materialized{}, errors.New("artifact package has an invalid media type")
 		}
-		return s.materializePackage(ctx, file, blob, workspaceRoot, destination, overwrite)
+		return materializePackage(ctx, normalizeLimits(limits), bytes.NewReader(body), variant, workspaceRoot, destination, overwrite)
 	}
-	if err := materializeWorkspaceFile(ctx, workspaceRoot, destination, file, blob.Size, blob.DigestSHA256, s.maxArtifactLimit(blob.MediaType, blob.Presentation.Kind), overwrite); err != nil {
+	if err := materializeWorkspaceFile(ctx, workspaceRoot, destination, bytes.NewReader(body), variant.Size, variant.DigestSHA256, artifactByteLimit(normalizeLimits(limits), variant.MediaType, variant.Presentation.Kind), overwrite); err != nil {
 		return Materialized{}, err
 	}
-	return Materialized{Destination: filepath.ToSlash(destination), Files: 1, Bytes: blob.Size, DigestSHA256: blob.DigestSHA256, MediaType: blob.MediaType}, nil
+	return Materialized{Destination: filepath.ToSlash(destination), Files: 1, Bytes: variant.Size, DigestSHA256: variant.DigestSHA256, MediaType: variant.MediaType}, nil
 }
 
 // MaterializeBatch preflights every source and derived destination, writes all
 // outputs beneath one private sibling staging directory, and publishes that
 // directory with one rename. A failed preflight or staging step leaves no final
 // destination and never reports partial success.
-func MaterializeBatch(ctx context.Context, inputs []BatchMaterializeInput, workspaceRoot, destination string, overwrite bool) ([]Materialized, error) {
+func MaterializeBatch(ctx context.Context, limits Limits, inputs []BatchMaterializeInput, workspaceRoot, destination string, overwrite bool) ([]Materialized, error) {
 	if len(inputs) == 0 || len(inputs) > MaxMaterializeBatchItems {
 		return nil, fmt.Errorf("artifact materialization batch must contain 1 to %d items", MaxMaterializeBatchItems)
 	}
@@ -107,9 +109,6 @@ func MaterializeBatch(ctx context.Context, inputs []BatchMaterializeInput, works
 	items := make([]prepared, 0, len(inputs))
 	seen := make(map[string]struct{}, len(inputs))
 	for _, input := range inputs {
-		if input.Service == nil {
-			return nil, errors.New("artifact materialization batch source service is not configured")
-		}
 		filename := strings.TrimSpace(input.Variant.Filename)
 		if filename == "" || filename != filepath.Base(filename) || strings.ContainsAny(filename, `/\\`) || len(filename) > 255 {
 			return nil, errors.New("artifact materialization batch source filename is unsafe")
@@ -125,23 +124,17 @@ func MaterializeBatch(ctx context.Context, inputs []BatchMaterializeInput, works
 				return nil, errors.New("artifact materialization batch package filename cannot derive a safe directory")
 			}
 		}
-		file, blob, err := input.Service.Open(ctx, input.Variant)
-		if err != nil {
-			return nil, fmt.Errorf("preflight artifact materialization batch source: %w", err)
+		if int64(len(input.Body)) != input.Variant.Size {
+			return nil, errors.New("artifact Git batch bytes do not match projected size")
+		}
+		digest := sha256.Sum256(input.Body)
+		if hex.EncodeToString(digest[:]) != strings.ToLower(input.Variant.DigestSHA256) {
+			return nil, errors.New("artifact Git batch bytes do not match projected digest")
 		}
 		if packageItem {
-			archive, zipErr := zip.NewReader(file, blob.Size)
-			if zipErr != nil {
-				_ = file.Close()
-				return nil, errors.New("artifact package is not a valid zip archive")
-			}
-			if _, _, zipErr = input.Service.materializePackageEntries(archive.File); zipErr != nil {
-				_ = file.Close()
+			if _, _, zipErr := readPackageBytes(limits, input.Body, "", normalizeLimits(limits).MaxPackageEntryBytes); zipErr != nil {
 				return nil, zipErr
 			}
-		}
-		if err := file.Close(); err != nil {
-			return nil, fmt.Errorf("close preflight artifact materialization batch source: %w", err)
 		}
 		baseRelative := relative
 		for suffix := 2; ; suffix++ {
@@ -173,7 +166,7 @@ func MaterializeBatch(ctx context.Context, inputs []BatchMaterializeInput, works
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		materialized, err := item.input.Service.Materialize(ctx, item.input.Variant, stagePath, item.relative, false)
+		materialized, err := MaterializeBytes(ctx, limits, item.input.Variant, item.input.Body, stagePath, item.relative, false)
 		if err != nil {
 			return nil, fmt.Errorf("stage artifact batch destination %q: %w", item.relative, err)
 		}
@@ -243,12 +236,12 @@ func validateMaterializeDestination(workspaceRoot, destination string) (string, 
 	return workspaceRoot, destination, nil
 }
 
-func (s *Service) materializePackage(ctx context.Context, source *os.File, blob Blob, workspaceRoot, destination string, overwrite bool) (result Materialized, resultErr error) {
-	archive, err := zip.NewReader(source, blob.Size)
+func materializePackage(ctx context.Context, limits Limits, source io.ReaderAt, variant pebblestore.SessionArtifactVariant, workspaceRoot, destination string, overwrite bool) (result Materialized, resultErr error) {
+	archive, err := zip.NewReader(source, variant.Size)
 	if err != nil {
 		return Materialized{}, errors.New("artifact package is not a valid zip archive")
 	}
-	entries, total, err := s.materializePackageEntries(archive.File)
+	entries, total, err := materializePackageEntries(limits, archive.File)
 	if err != nil {
 		return Materialized{}, err
 	}
@@ -282,7 +275,7 @@ func (s *Service) materializePackage(ctx context.Context, source *os.File, blob 
 			if err != nil {
 				return Materialized{}, fmt.Errorf("open artifact package entry: %w", err)
 			}
-			_, verifyErr := copyBounded(ctx, io.Discard, reader, s.limits.MaxPackageEntryBytes)
+			_, verifyErr := copyBounded(ctx, io.Discard, reader, limits.MaxPackageEntryBytes)
 			closeErr := reader.Close()
 			if verifyErr != nil {
 				return Materialized{}, verifyErr
@@ -302,10 +295,10 @@ func (s *Service) materializePackage(ctx context.Context, source *os.File, blob 
 				_ = removeDirectoryTree(target)
 			}
 		}()
-		if err := s.extractMaterializedPackage(ctx, entries, target); err != nil {
+		if err := extractMaterializedPackage(ctx, limits, entries, target); err != nil {
 			return Materialized{}, err
 		}
-		return Materialized{Destination: filepath.ToSlash(destination), Package: true, Files: len(entries), Bytes: total, DigestSHA256: blob.DigestSHA256, MediaType: blob.MediaType}, nil
+		return Materialized{Destination: filepath.ToSlash(destination), Package: true, Files: len(entries), Bytes: total, DigestSHA256: variant.DigestSHA256, MediaType: variant.MediaType}, nil
 	}
 
 	token, err := randomToken()
@@ -318,7 +311,7 @@ func (s *Service) materializePackage(ctx context.Context, source *os.File, blob 
 		return Materialized{}, fmt.Errorf("create artifact package staging directory: %w", err)
 	}
 	defer func() { _ = removeDirectoryTreeIfPresent(stagePath) }()
-	if err := s.extractMaterializedPackage(ctx, entries, stagePath); err != nil {
+	if err := extractMaterializedPackage(ctx, limits, entries, stagePath); err != nil {
 		return Materialized{}, err
 	}
 	if err := ensureWorkspaceDirectory(workspaceRoot, destination, false); err != nil {
@@ -336,10 +329,10 @@ func (s *Service) materializePackage(ctx context.Context, source *os.File, blob 
 	if err := removeDirectoryTree(backupPath); err != nil {
 		return Materialized{}, fmt.Errorf("remove replaced artifact package destination: %w", err)
 	}
-	return Materialized{Destination: filepath.ToSlash(destination), Package: true, Files: len(entries), Bytes: total, DigestSHA256: blob.DigestSHA256, MediaType: blob.MediaType}, nil
+	return Materialized{Destination: filepath.ToSlash(destination), Package: true, Files: len(entries), Bytes: total, DigestSHA256: variant.DigestSHA256, MediaType: variant.MediaType}, nil
 }
 
-func (s *Service) extractMaterializedPackage(ctx context.Context, entries []*zip.File, root string) error {
+func extractMaterializedPackage(ctx context.Context, limits Limits, entries []*zip.File, root string) error {
 	for _, entry := range entries {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -348,7 +341,7 @@ func (s *Service) extractMaterializedPackage(ctx context.Context, entries []*zip
 		if err != nil {
 			return fmt.Errorf("open artifact package entry: %w", err)
 		}
-		err = materializeWorkspaceFile(ctx, root, filepath.FromSlash(entry.Name), reader, int64(entry.UncompressedSize64), "", s.limits.MaxPackageEntryBytes, false)
+		err = materializeWorkspaceFile(ctx, root, filepath.FromSlash(entry.Name), reader, int64(entry.UncompressedSize64), "", limits.MaxPackageEntryBytes, false)
 		closeErr := reader.Close()
 		if err != nil {
 			return err
@@ -369,8 +362,8 @@ func removeDirectoryTreeIfPresent(path string) error {
 	return removeDirectoryTree(path)
 }
 
-func (s *Service) materializePackageEntries(files []*zip.File) ([]*zip.File, int64, error) {
-	if len(files) == 0 || len(files) > s.limits.MaxPackageFiles {
+func materializePackageEntries(limits Limits, files []*zip.File) ([]*zip.File, int64, error) {
+	if len(files) == 0 || len(files) > limits.MaxPackageFiles {
 		return nil, 0, ErrQuotaExceeded
 	}
 	entries := make([]*zip.File, 0, len(files))
@@ -398,14 +391,14 @@ func (s *Service) materializePackageEntries(files []*zip.File) ([]*zip.File, int
 			return nil, 0, errors.New("artifact package contains a symlink or special entry")
 		}
 		size := int64(entry.UncompressedSize64)
-		if size < 0 || size > s.limits.MaxPackageEntryBytes || size > s.limits.MaxPackageBytes-total {
+		if size < 0 || size > limits.MaxPackageEntryBytes || size > limits.MaxPackageBytes-total {
 			return nil, 0, ErrQuotaExceeded
 		}
 		total += size
 		fileNames[folded] = struct{}{}
 		entries = append(entries, entry)
 	}
-	if len(entries) == 0 || len(entries) > s.limits.MaxPackageFiles {
+	if len(entries) == 0 || len(entries) > limits.MaxPackageFiles {
 		return nil, 0, ErrQuotaExceeded
 	}
 	for name := range fileNames {

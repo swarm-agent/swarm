@@ -9,13 +9,16 @@ import (
 	"github.com/cockroachdb/pebble"
 )
 
-// SessionArtifactRepairReport describes bounded maintenance derived from authoritative variant records.
+// SessionArtifactRepairReport describes bounded idempotent maintenance of
+// rebuildable catalog projections. Git remains the artifact authority.
 type SessionArtifactRepairReport struct {
-	CollectionsVisited  int
-	CollectionsRepaired int
+	CollectionsVisited     int
+	CollectionsRepaired    int
+	InvalidVariantsOmitted int
 }
 
-// RepairSessionArtifactCollections derives redundant collection progress from authoritative variants.
+// RepairSessionArtifactCollections derives redundant collection progress from
+// exact Git-backed variant projections. It never reconstructs ancestry or bytes.
 func (s *SessionStore) RepairSessionArtifactCollections(sessionID string) (SessionArtifactRepairReport, error) {
 	if s == nil || s.store == nil {
 		return SessionArtifactRepairReport{}, errors.New("session store is not configured")
@@ -54,6 +57,7 @@ func (s *SessionStore) RepairSessionArtifactCollections(sessionID string) (Sessi
 		report.CollectionsVisited++
 
 		variants := make([]SessionArtifactVariant, 0, SessionArtifactMaxVariantsPerCollection)
+		invalidVariants := 0
 		if err := s.store.IteratePrefix(SessionArtifactVariantPrefix(accountScopeID, sessionID, collection.ID), SessionArtifactMaxVariantsPerCollection+1, func(_ string, variantValue []byte) error {
 			if len(variants) >= SessionArtifactMaxVariantsPerCollection {
 				return errors.New("artifact collection variant limit exceeded")
@@ -64,6 +68,20 @@ func (s *SessionStore) RepairSessionArtifactCollections(sessionID string) (Sessi
 			}
 			if variant.AccountScopeID != accountScopeID || variant.SessionID != sessionID || variant.CollectionID != collection.ID {
 				return errors.New("artifact variant ownership metadata is inconsistent")
+			}
+			if variant.GraphState != SessionArtifactGraphProjection || variant.RepositoryID == "" || !validGitOID(variant.CommitOID) {
+				// Trusted managed-output reservations are visible progress, not byte/version
+				// authority. Count only explicitly marked reservations; historical rows that
+				// predate this marker remain omitted rather than silently gaining authority.
+				if variant.ProjectionReservation && variant.GraphState == "" && variant.RepositoryID == "" && variant.CommitOID == "" {
+					switch variant.Status {
+					case SessionArtifactStatusStaging, SessionArtifactStatusFailed, SessionArtifactStatusUnavailable:
+						variants = append(variants, variant)
+						return nil
+					}
+				}
+				invalidVariants++
+				return nil
 			}
 			if variant.Lineage.ParentSessionID != "" && variant.Lineage.ParentSessionID != sessionID {
 				return errors.New("artifact variant parent lineage is inconsistent")
@@ -79,6 +97,7 @@ func (s *SessionStore) RepairSessionArtifactCollections(sessionID string) (Sessi
 			return err
 		}
 
+		report.InvalidVariantsOmitted += invalidVariants
 		repaired := collection
 		repaired.VariantCount = len(variants)
 		repaired.StagingCount = 0

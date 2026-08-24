@@ -5,14 +5,14 @@ import (
 	"testing"
 )
 
-func TestBackendArtifactNativePersistenceSelectionAndRestartContract(t *testing.T) {
+func TestBackendArtifactGitProjectionSelectionAndRestartContract(t *testing.T) {
 	store := openV3SessionEventTestStore(t)
 	sessions := NewSessionStore(store)
 	createV3SessionForTest(t, sessions, "artifact-persistence-contract")
 
 	apply := func(request, kind string, mutation V3ArtifactMutation) V3SessionMutationResult {
 		t.Helper()
-		result, err := sessions.ApplyV3SessionMutation(V3SessionMutationInput{
+		result, err := applyV3ArtifactMutationForTest(sessions, V3SessionMutationInput{
 			SessionID: "artifact-persistence-contract", UserID: "user-1", AccountScopeID: "account-1",
 			ClientRequestID: request, IdempotencyKey: request, PayloadHash: request, RequestHash: request,
 			Kind: kind, Artifact: &mutation,
@@ -71,11 +71,11 @@ func TestBackendArtifactNativePersistenceSelectionAndRestartContract(t *testing.
 	}
 }
 
-func TestBackendArtifactSessionDeletionPurgesNativeMetadata(t *testing.T) {
+func TestBackendArtifactSessionDeletionPurgesGitProjectionMetadata(t *testing.T) {
 	store := openV3SessionEventTestStore(t)
 	sessions := NewSessionStore(store)
 	createV3SessionForTest(t, sessions, "artifact-delete-contract")
-	_, err := sessions.ApplyV3SessionMutation(V3SessionMutationInput{
+	_, err := applyV3ArtifactMutationForTest(sessions, V3SessionMutationInput{
 		SessionID: "artifact-delete-contract", UserID: "user-1", AccountScopeID: "account-1",
 		ClientRequestID: "delete-create", PayloadHash: "delete-create", Kind: V3SessionMutationCreateArtifact,
 		Artifact: &V3ArtifactMutation{Collection: SessionArtifactCollection{ID: "collection", Name: "Delete"}, Variant: &SessionArtifactVariant{ID: "variant", Filename: "delete.txt", MediaType: "text/plain"}},

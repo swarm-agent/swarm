@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"swarm/packages/swarmd/internal/artifactgit"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
@@ -18,6 +19,10 @@ type authorityMetadata struct {
 	sourceVariant    pebblestore.SessionArtifactVariant
 	readyCalls       int
 	failReady        bool
+	partDefinitions  map[string]pebblestore.SessionArtifactPartDefinition
+	partRevisions    map[string]pebblestore.SessionArtifactPartRevision
+	compositions     map[string]pebblestore.SessionArtifactComposition
+	chainHead        pebblestore.SessionArtifactSelectionReference
 }
 
 func (m *authorityMetadata) GetSessionArtifactCollection(_, sessionID, id string) (pebblestore.SessionArtifactCollection, bool, error) {
@@ -50,25 +55,80 @@ func (m *authorityMetadata) ListSessionArtifactVariants(_, _, collectionID strin
 func (m *authorityMetadata) SearchSessionArtifactCatalog(_, _ string, _ pebblestore.SessionArtifactCatalogOptions) (pebblestore.SessionArtifactCatalogPage, error) {
 	return pebblestore.SessionArtifactCatalogPage{}, nil
 }
+func (m *authorityMetadata) GetSessionArtifactPartDefinition(_, _, owner, chain, part string) (pebblestore.SessionArtifactPartDefinition, bool, error) {
+	got, ok := m.partDefinitions[owner+"\x00"+chain+"\x00"+part]
+	return got, ok, nil
+}
+func (m *authorityMetadata) GetSessionArtifactPartRevision(_, _, owner, chain, part, revision string) (pebblestore.SessionArtifactPartRevision, bool, error) {
+	got, ok := m.partRevisions[owner+"\x00"+chain+"\x00"+part+"\x00"+revision]
+	return got, ok, nil
+}
+func (m *authorityMetadata) GetSessionArtifactComposition(_, _, owner, chain, composition string) (pebblestore.SessionArtifactComposition, bool, error) {
+	got, ok := m.compositions[owner+"\x00"+chain+"\x00"+composition]
+	return got, ok, nil
+}
+func (m *authorityMetadata) GetSessionArtifactChain(_, _, chain string) (pebblestore.SessionArtifactChain, bool, error) {
+	if m.chainHead.VariantID == "" {
+		return pebblestore.SessionArtifactChain{}, false, nil
+	}
+	return pebblestore.SessionArtifactChain{GraphState: pebblestore.SessionArtifactGraphAuthoritative, ID: chain, Head: m.chainHead}, true, nil
+}
 func (m *authorityMetadata) ApplySessionMutation(input pebblestore.V3SessionMutationInput) (pebblestore.V3SessionMutationResult, error) {
 	projection := pebblestore.V3ArtifactProjection{Collection: input.Artifact.Collection, Variant: input.Artifact.Variant, Selection: input.Artifact.Selection}
 	switch input.Kind {
-	case pebblestore.V3SessionMutationCreateArtifact:
+	case pebblestore.V3SessionMutationCreateArtifact, pebblestore.V3SessionMutationUpdateArtifact:
 		m.collection = input.Artifact.Collection
 		m.collection.AccountScopeID, m.collection.SessionID, m.collection.Status = input.AccountScopeID, input.SessionID, pebblestore.SessionArtifactStatusStaging
 		m.collection.VariantCount, m.collection.StagingCount = 1, 1
 		m.variant = *input.Artifact.Variant
 		m.variant.AccountScopeID, m.variant.SessionID, m.variant.CollectionID, m.variant.Status = input.AccountScopeID, input.SessionID, m.collection.ID, pebblestore.SessionArtifactStatusStaging
+		if m.partDefinitions == nil {
+			m.partDefinitions = map[string]pebblestore.SessionArtifactPartDefinition{}
+		}
+		if m.partRevisions == nil {
+			m.partRevisions = map[string]pebblestore.SessionArtifactPartRevision{}
+		}
+		if m.compositions == nil {
+			m.compositions = map[string]pebblestore.SessionArtifactComposition{}
+		}
+		normalizedDefinitions := make([]pebblestore.SessionArtifactPartDefinition, 0, len(input.Artifact.PartDefinitions))
+		for _, definition := range input.Artifact.PartDefinitions {
+			definition.AccountScopeID, definition.UserID, definition.GraphState = input.AccountScopeID, input.UserID, pebblestore.SessionArtifactGraphAuthoritative
+			m.partDefinitions[definition.OwnerSessionID+"\x00"+definition.ArtifactChainID+"\x00"+definition.ID] = definition
+			normalizedDefinitions = append(normalizedDefinitions, definition)
+		}
+		for _, revision := range input.Artifact.PartRevisions {
+			revision.AccountScopeID, revision.UserID, revision.GraphState, revision.EventSeq = input.AccountScopeID, input.UserID, pebblestore.SessionArtifactGraphAuthoritative, 1
+			m.partRevisions[revision.OwnerSessionID+"\x00"+revision.ArtifactChainID+"\x00"+revision.PartID+"\x00"+revision.ID] = revision
+		}
+		if input.Artifact.Composition != nil {
+			composition := *input.Artifact.Composition
+			composition.AccountScopeID, composition.UserID, composition.GraphState, composition.EventSeq = input.AccountScopeID, input.UserID, pebblestore.SessionArtifactGraphAuthoritative, 1
+			m.compositions[composition.OwnerSessionID+"\x00"+composition.ArtifactChainID+"\x00"+composition.ID] = composition
+			m.variant.PartGraphState, m.variant.Composition, m.variant.PartDefinitions = pebblestore.SessionArtifactGraphAuthoritative, &composition, normalizedDefinitions
+			projection.Variant = &m.variant
+			projection.PartDefinitions, projection.PartRevisions, projection.Composition = normalizedDefinitions, input.Artifact.PartRevisions, &composition
+		}
 	case pebblestore.V3SessionMutationFinalizeArtifact:
 		m.readyCalls++
 		if m.failReady {
 			return pebblestore.V3SessionMutationResult{}, errors.New("metadata unavailable")
 		}
+		currentComposition, currentDefinitions, currentPartGraphState := m.variant.Composition, m.variant.PartDefinitions, m.variant.PartGraphState
 		m.variant = *input.Artifact.Variant
+		if m.variant.Composition == nil {
+			m.variant.Composition, m.variant.PartDefinitions, m.variant.PartGraphState = currentComposition, currentDefinitions, currentPartGraphState
+		}
 		m.variant.Status = pebblestore.SessionArtifactStatusReady
+		if m.variant.EventSeq == 0 {
+			m.variant.EventSeq = 1
+		}
+		if m.variant.AutoAccept {
+			m.chainHead = pebblestore.SessionArtifactSelectionReference{SessionID: m.variant.SessionID, CollectionID: m.variant.CollectionID, VariantID: m.variant.ID, EventSeq: m.variant.EventSeq}
+		}
 		m.collection.Status = pebblestore.SessionArtifactStatusReady
 		m.collection.StagingCount, m.collection.ReadyCount = 0, 1
-		projection.Collection, projection.Variant = m.collection, &m.variant
+		projection.Collection, projection.Variant, projection.Composition = m.collection, &m.variant, m.variant.Composition
 	case pebblestore.V3SessionMutationFailArtifact:
 		m.variant.Status, m.variant.FailureCode = pebblestore.SessionArtifactStatusFailed, input.Artifact.Variant.FailureCode
 	case pebblestore.V3SessionMutationDeleteArtifactVariant:
@@ -94,7 +154,30 @@ func authorityFixture(t *testing.T) (*Authority, *authorityMetadata, Principal) 
 	return NewAuthority(NewRegistry(resolver, Limits{}), metadata), metadata, Principal{SessionID: "session-1", AccountScopeID: "account-1", UserID: "user-1", RunID: "run-1", PlanID: "plan-1", CheckpointID: "cp-1", AttemptID: "attempt-1"}
 }
 
-func TestAuthorityCreateFinalizesBytesBeforeReadyMetadata(t *testing.T) {
+func gitSourceVariant(t *testing.T, authority *Authority, variant pebblestore.SessionArtifactVariant, body []byte) pebblestore.SessionArtifactVariant {
+	t.Helper()
+	variant.RepositoryID = "source-" + variant.ID
+	variant.ArtifactChainID = variant.RepositoryID
+	if variant.Filename == "" {
+		variant.Filename = variant.ID + ".bin"
+	}
+	_, digest, size, err := canonicalArtifactBytes(context.Background(), Limits{}, variant, body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	variant.DigestSHA256, variant.Size = digest, size
+	repo, err := authority.repository(context.Background(), variant.RepositoryID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	variant.CommitOID, err = repo.Genesis(context.Background(), artifactgit.Genesis{MediaType: variant.MediaType, Content: &artifactgit.BlobInput{MediaType: variant.MediaType, Bytes: body}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return variant
+}
+
+func TestAuthorityCreatesGitCommitBeforeReadyMetadata(t *testing.T) {
 	authority, metadata, principal := authorityFixture(t)
 	created, err := authority.Create(context.Background(), principal, CreateInput{RequestID: "create-1", CollectionID: "collection-1", CollectionName: "Drafts", VariantID: "variant-1", Filename: "note.txt", MediaType: "text/plain", Presentation: pebblestore.SessionArtifactPresentation{Kind: "text", Previewable: true}, Body: []byte("managed")})
 	if err != nil {
@@ -126,15 +209,22 @@ func TestAuthorityFinalizesPreallocatedManagedPlaceholder(t *testing.T) {
 	principal.TaskCallID, principal.ChildSessionID = "call-1", "child-1"
 	principal.IterationGroupID, principal.IterationID, principal.IterationIndex = "group-1", "iteration-1", 1
 	principal.IterationLabel, principal.IterationTheme = "Compact", "compact"
-	lineage := authority.lineage(principal, CreateInput{})
+	principal.IterationSectionID, principal.IterationSectionLabel, principal.IterationSectionStartMs, principal.IterationSectionEndMs = "part-2", "Part 2", 4000, 8000
+	principal.PartID, principal.PartLabel, principal.PartKind = "part-2", "Part 2", "temporal"
+	source := CreateInput{SourceSessionID: "source-session", SourceCollectionID: "source-collection", SourceVariantID: "source-variant", SourceEventSeq: 41}
+	metadata.sourceCollection = pebblestore.SessionArtifactCollection{ID: source.SourceCollectionID, AccountScopeID: principal.AccountScopeID, SessionID: source.SourceSessionID, Status: pebblestore.SessionArtifactStatusReady, VariantCount: 1, ReadyCount: 1}
+	metadata.sourceVariant = gitSourceVariant(t, authority, pebblestore.SessionArtifactVariant{ID: source.SourceVariantID, CollectionID: source.SourceCollectionID, AccountScopeID: principal.AccountScopeID, SessionID: source.SourceSessionID, Status: pebblestore.SessionArtifactStatusReady, EventSeq: source.SourceEventSeq, MediaType: "text/html"}, []byte("<h1>source</h1>"))
+	lineage := authority.lineage(principal, source)
 	collectionLineage := lineage
-	collectionLineage.SourceSessionID, collectionLineage.ChildSessionID = "", ""
+	collectionLineage.SourceSessionID, collectionLineage.SourceCollectionID, collectionLineage.SourceVariantID, collectionLineage.SourceEventSeq, collectionLineage.ChildSessionID = "", "", "", 0, ""
 	collectionLineage.IterationID, collectionLineage.IterationIndex, collectionLineage.IterationLabel, collectionLineage.IterationTheme = "", 0, "", ""
+	collectionLineage.IterationSectionID, collectionLineage.IterationSectionLabel, collectionLineage.IterationSectionStartMs, collectionLineage.IterationSectionEndMs = "", "", 0, 0
+	collectionLineage.PartID, collectionLineage.PartLabel, collectionLineage.PartKind = "", "", ""
 	metadata.collection = pebblestore.SessionArtifactCollection{ID: "collection-1", AccountScopeID: principal.AccountScopeID, SessionID: principal.SessionID, Name: "Iterations", Status: pebblestore.SessionArtifactStatusStaging, Lineage: collectionLineage, VariantCount: 1, StagingCount: 1}
 	metadata.variant = pebblestore.SessionArtifactVariant{ID: "variant-1", CollectionID: metadata.collection.ID, AccountScopeID: principal.AccountScopeID, SessionID: principal.SessionID, Status: pebblestore.SessionArtifactStatusStaging, Lineage: lineage, Presentation: pebblestore.SessionArtifactPresentation{Label: "Compact"}}
 	// The parent reserves the placeholder before this child provider run exists.
 	principal.RunID, principal.PlanID, principal.CheckpointID, principal.AttemptID = "child-run-1", "child-plan-1", "child-cp-1", "child-attempt-1"
-	created, err := authority.Create(context.Background(), principal, CreateInput{RequestID: "managed-create", CollectionID: metadata.collection.ID, VariantID: metadata.variant.ID, Filename: "compact.html", MediaType: "text/html", Presentation: pebblestore.SessionArtifactPresentation{Kind: "html", Label: "Compact", Previewable: true}, Body: []byte("<h1>compact</h1>")})
+	created, err := authority.Create(context.Background(), principal, CreateInput{RequestID: "managed-create", CollectionID: metadata.collection.ID, VariantID: metadata.variant.ID, Filename: "compact.html", MediaType: "text/html", Presentation: pebblestore.SessionArtifactPresentation{Kind: "html", Label: "Compact", Previewable: true}, SourceSessionID: source.SourceSessionID, SourceCollectionID: source.SourceCollectionID, SourceVariantID: source.SourceVariantID, SourceEventSeq: source.SourceEventSeq, Body: []byte("<h1>compact</h1>")})
 	if err != nil {
 		t.Fatalf("finalize placeholder: %v", err)
 	}
@@ -233,19 +323,22 @@ func TestAuthorityMaterializeReferenceRequiresOwnedReadyExactEvent(t *testing.T)
 	metadata.sourceCollection = pebblestore.SessionArtifactCollection{ID: "source-collection", AccountScopeID: "account-1", SessionID: "source-session", Status: pebblestore.SessionArtifactStatusReady, VariantCount: 1, ReadyCount: 1}
 	variant := testVariant("source-variant", "source.txt", "text/plain", "text")
 	variant.SessionID, variant.CollectionID, variant.Status, variant.EventSeq = "source-session", "source-collection", pebblestore.SessionArtifactStatusStaging, 41
-	service, _, err := authority.registry.ServiceForOwnedSession("source-session", "account-1", "user-1")
+	body := []byte("selected")
+	_, digest, size, err := canonicalArtifactBytes(context.Background(), Limits{}, variant, body)
 	if err != nil {
 		t.Fatal(err)
 	}
-	staged, err := service.Stage(context.Background(), variant, strings.NewReader("selected"))
+	variant.DigestSHA256, variant.Size = digest, size
+	variant.Status = pebblestore.SessionArtifactStatusReady
+	variant.RepositoryID, variant.ArtifactChainID = "source-chain", "source-chain"
+	repo, err := authority.repository(context.Background(), variant.RepositoryID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	blob, err := service.Finalize(context.Background(), staged, "", 0)
+	variant.CommitOID, err = repo.Genesis(context.Background(), artifactgit.Genesis{MediaType: variant.MediaType, Content: &artifactgit.BlobInput{MediaType: variant.MediaType, Bytes: body}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	variant.Status, variant.DigestSHA256, variant.Size = pebblestore.SessionArtifactStatusReady, blob.DigestSHA256, blob.Size
 	metadata.sourceVariant = variant
 	workspace := t.TempDir()
 	ref := pebblestore.SessionArtifactSelectionReference{SessionID: "source-session", CollectionID: "source-collection", VariantID: "source-variant", EventSeq: 41}
@@ -264,21 +357,25 @@ func TestAuthorityMaterializeReferenceRequiresOwnedReadyExactEvent(t *testing.T)
 func TestAuthorityReadPackageReferenceRequiresOwnedReadyExactEvent(t *testing.T) {
 	authority, metadata, principal := authorityFixture(t)
 	metadata.sourceCollection = pebblestore.SessionArtifactCollection{ID: "source-collection", AccountScopeID: "account-1", SessionID: "source-session", Status: pebblestore.SessionArtifactStatusReady, VariantCount: 1, ReadyCount: 1}
-	service, _, err := authority.registry.ServiceForOwnedSession("source-session", "account-1", "user-1")
-	if err != nil {
-		t.Fatal(err)
-	}
 	variant := testVariant("source-variant", "design.zip", "application/zip", "package")
 	variant.SessionID, variant.CollectionID, variant.Status, variant.EventSeq = "source-session", "source-collection", pebblestore.SessionArtifactStatusStaging, 41
-	staged, err := service.StagePackage(context.Background(), variant, []PackageEntry{{Name: "index.html", Data: []byte("<main>selected</main>")}})
+	body, err := canonicalPackageEntries(context.Background(), Limits{}, []PackageEntry{{Name: "index.html", Data: []byte("<main>selected</main>")}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	blob, err := service.Finalize(context.Background(), staged, "", 0)
+	_, variant.DigestSHA256, variant.Size, err = canonicalArtifactBytes(context.Background(), Limits{}, variant, body)
 	if err != nil {
 		t.Fatal(err)
 	}
-	variant.Status, variant.DigestSHA256, variant.Size = pebblestore.SessionArtifactStatusReady, blob.DigestSHA256, blob.Size
+	variant.Status, variant.RepositoryID, variant.ArtifactChainID = pebblestore.SessionArtifactStatusReady, "source-package-chain", "source-package-chain"
+	repo, err := authority.repository(context.Background(), variant.RepositoryID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	variant.CommitOID, err = repo.Genesis(context.Background(), artifactgit.Genesis{MediaType: variant.MediaType, Content: &artifactgit.BlobInput{MediaType: variant.MediaType, Bytes: body}})
+	if err != nil {
+		t.Fatal(err)
+	}
 	metadata.sourceVariant = variant
 	ref := pebblestore.SessionArtifactSelectionReference{SessionID: "source-session", CollectionID: "source-collection", VariantID: "source-variant", EventSeq: 41}
 	if manifest, body, _, err := authority.ReadPackageReference(context.Background(), principal, ref, "index.html", 64); err != nil || manifest != nil || string(body) != "<main>selected</main>" {
@@ -298,7 +395,7 @@ func TestAuthorityReadPackageReferenceRequiresOwnedReadyExactEvent(t *testing.T)
 func TestAuthorityDerivedArtifactRecordsAttachedSourceSession(t *testing.T) {
 	authority, metadata, principal := authorityFixture(t)
 	metadata.sourceCollection = pebblestore.SessionArtifactCollection{ID: "source-collection", AccountScopeID: "account-1", SessionID: "source-session", Status: pebblestore.SessionArtifactStatusReady, VariantCount: 1, ReadyCount: 1}
-	metadata.sourceVariant = pebblestore.SessionArtifactVariant{ID: "source-variant", CollectionID: "source-collection", AccountScopeID: "account-1", SessionID: "source-session", Status: pebblestore.SessionArtifactStatusReady, EventSeq: 41, MediaType: "text/plain"}
+	metadata.sourceVariant = gitSourceVariant(t, authority, pebblestore.SessionArtifactVariant{ID: "source-variant", CollectionID: "source-collection", AccountScopeID: "account-1", SessionID: "source-session", Status: pebblestore.SessionArtifactStatusReady, EventSeq: 41, MediaType: "text/plain"}, []byte("source"))
 	created, err := authority.Create(context.Background(), principal, CreateInput{RequestID: "derived-1", CollectionID: "derived-collection", CollectionName: "Derived", VariantID: "derived-variant", Filename: "derived.txt", MediaType: "text/plain", SourceSessionID: "source-session", SourceCollectionID: "source-collection", SourceVariantID: "source-variant", SourceEventSeq: 41, Body: []byte("revision")})
 	if err != nil {
 		t.Fatal(err)
@@ -311,7 +408,7 @@ func TestAuthorityDerivedArtifactRecordsAttachedSourceSession(t *testing.T) {
 func TestAuthorityCreateFromWorkspaceDirectoryCreatesPackageWithSourceLineage(t *testing.T) {
 	authority, metadata, principal := authorityFixture(t)
 	metadata.sourceCollection = pebblestore.SessionArtifactCollection{ID: "collection-source", AccountScopeID: "account-1", SessionID: "session-1", Status: pebblestore.SessionArtifactStatusReady, VariantCount: 1, ReadyCount: 1}
-	metadata.sourceVariant = pebblestore.SessionArtifactVariant{ID: "variant-source", CollectionID: "collection-source", AccountScopeID: "account-1", SessionID: "session-1", Status: pebblestore.SessionArtifactStatusReady, EventSeq: 9, MediaType: "text/plain"}
+	metadata.sourceVariant = gitSourceVariant(t, authority, pebblestore.SessionArtifactVariant{ID: "variant-source", CollectionID: "collection-source", AccountScopeID: "account-1", SessionID: "session-1", Status: pebblestore.SessionArtifactStatusReady, EventSeq: 9, MediaType: "text/plain"}, []byte("source"))
 	source := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(source, "assets"), 0o755); err != nil {
 		t.Fatal(err)

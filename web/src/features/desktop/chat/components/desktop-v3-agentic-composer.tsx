@@ -624,14 +624,13 @@ export function DesktopV3AgenticComposer({
     handledArtifactSelectionRequestRef.current = artifactSelectionRequestKey
     try {
       setArtifactSelections((current) => appendDesktopV3ArtifactMessageSelections(current, artifactSelectionRequests))
-      if (artifactSelectionRequests.some((selection) => selection.action === 'use') && !draft.trim()) onDraftChange('Use this design.')
       setAttachmentError(null)
     } catch (cause) {
       setAttachmentError(cause instanceof Error ? cause.message : 'Artifact selection failed.')
     } finally {
       onArtifactSelectionRequestHandled?.()
     }
-  }, [artifactSelectionRequest, draft, onArtifactSelectionRequestHandled, onDraftChange])
+  }, [artifactSelectionRequest, onArtifactSelectionRequestHandled])
 
   useEffect(() => {
     if (!routedNewSession || !routedComposerSnapshot) return
@@ -1369,7 +1368,9 @@ export function DesktopV3AgenticComposer({
                     void handleAttachmentFiles(files)
                   }
                 }}
-                placeholder={placeholder}
+                placeholder={!draft.trim() && artifactSelections.some((selection) => Boolean(selection.pending_request?.trim()))
+                  ? 'Let Swarm know your next step requests'
+                  : placeholder}
                 aria-label={inputLabel}
                 aria-keyshortcuts={routedNewSession ? 'Shift+Tab' : undefined}
                 title={routedNewSession ? 'Shift+Tab enables Plan for this new session' : undefined}
@@ -1398,10 +1399,10 @@ export function DesktopV3AgenticComposer({
                 </span>
               ) : null}
               {artifactSelections.map((selection) => (
-                <span key={`${selection.session_id}:${selection.collection_id}:${selection.variant_id}`} className="inline-flex max-w-full items-center gap-2 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-2 py-1 text-xs text-[var(--app-text)]" data-testid="desktop-composer-artifact-chip">
+                <span key={`${selection.session_id}:${selection.collection_id}:${selection.variant_id}:${selection.part_id ?? ''}`} className="inline-flex max-w-full items-center gap-2 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-2 py-1 text-xs text-[var(--app-text)]" data-testid="desktop-composer-artifact-chip">
                   <GalleryHorizontal size={13} className="shrink-0 text-[var(--app-primary)]" aria-hidden="true" />
                   <span className="max-w-48 truncate font-medium" title={selection.description || selection.label}>{selection.label}</span>
-                  <span className="rounded bg-[var(--app-bg-alt)] px-1.5 py-0.5 font-mono text-[10px] uppercase text-[var(--app-text-muted)]">{selection.action === 'use' ? 'Use design' : 'Artifact'}</span>
+                  <span className="rounded bg-[var(--app-bg-alt)] px-1.5 py-0.5 font-mono text-[10px] uppercase text-[var(--app-text-muted)]">{selection.pending_request?.trim() ? 'Pending update' : selection.part_id ? 'Part target' : selection.action === 'use' ? 'Use design' : 'Artifact'}</span>
                   <button type="button" aria-label={`Remove ${selection.label} artifact`} onClick={() => setArtifactSelections((current) => removeDesktopV3ArtifactMessageSelection(current, selection))}><X size={13} /></button>
                 </span>
               ))}
