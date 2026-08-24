@@ -54,6 +54,7 @@ type taskSwarmHydrationRequest struct {
 	IntegrationContract string                                         `json:"integration_contract,omitempty"`
 	SourceArtifact      *pebblestore.SessionArtifactSelectionReference `json:"source_artifact,omitempty"`
 	SectionTarget       *taskSwarmSectionTarget                        `json:"section_target,omitempty"`
+	SectionTargets      []*taskSwarmSectionTarget                      `json:"section_targets,omitempty"`
 	Items               []taskSwarmHydrationItem                       `json:"items"`
 }
 
@@ -247,9 +248,8 @@ func isRepairableGenericTaskSwarmGroupTitle(title string) bool {
 
 func taskSwarmFallbackGroupTitle(request taskSwarmHydrationRequest) string {
 	var sources []string
-	if request.SectionTarget != nil {
-		sources = append(sources, request.SectionTarget.Label, request.SectionTarget.ID)
-	}
+	if request.SectionTarget != nil { sources = append(sources, request.SectionTarget.Label, request.SectionTarget.ID) }
+	for _, target := range request.SectionTargets { if target != nil { sources = append(sources, target.Label, target.ID) } }
 	if description := strings.TrimSpace(request.Description); !strings.EqualFold(description, "delegated task") {
 		sources = append(sources, description)
 	}
@@ -353,7 +353,7 @@ func buildTaskSwarmHydrationRequest(parsed taskCallArguments, launchSpecs []task
 	}
 	request := taskSwarmHydrationRequest{
 		Description: strings.TrimSpace(parsed.Description), Prompt: strings.TrimSpace(parsed.Prompt), AgentType: parsed.Swarm.AgentType, SwarmStrategy: parsed.Swarm.Strategy,
-		OutputContract: strings.TrimSpace(parsed.Swarm.OutputContract), OutputMode: strings.TrimSpace(parsed.Swarm.OutputMode), OutputRequirements: cloneTaskOutputRequirements(parsed.Swarm.OutputRequirements), AnimationProfile: cloneTaskAnimationProfile(parsed.Swarm.AnimationProfile), IterationControls: cloneTaskSwarmIterationControls(parsed.Swarm.IterationControls), IntegrationContract: strings.TrimSpace(parsed.Swarm.IntegrationContract), SourceArtifact: cloneTaskImageSourceArtifact(parsed.Swarm.SourceArtifact), SectionTarget: cloneTaskSwarmSectionTarget(parsed.Swarm.SectionTarget),
+		OutputContract: strings.TrimSpace(parsed.Swarm.OutputContract), OutputMode: strings.TrimSpace(parsed.Swarm.OutputMode), OutputRequirements: cloneTaskOutputRequirements(parsed.Swarm.OutputRequirements), AnimationProfile: cloneTaskAnimationProfile(parsed.Swarm.AnimationProfile), IterationControls: cloneTaskSwarmIterationControls(parsed.Swarm.IterationControls), IntegrationContract: strings.TrimSpace(parsed.Swarm.IntegrationContract), SourceArtifact: cloneTaskImageSourceArtifact(parsed.Swarm.SourceArtifact), SectionTarget: cloneTaskSwarmSectionTarget(parsed.Swarm.SectionTarget), SectionTargets: cloneTaskSwarmSectionTargets(parsed.Swarm.SectionTargets),
 		Items: make([]taskSwarmHydrationItem, len(launchSpecs)),
 	}
 	groupIndex, groupRemaining := 0, 0
@@ -491,7 +491,12 @@ func composeTaskSwarmChildPrompt(request taskSwarmHydrationRequest, item taskSwa
 			b.Write(encoded)
 			b.WriteString("\n")
 		}
-		if request.SectionTarget != nil {
+		if len(request.SectionTargets) != 0 {
+			encoded, _ := json.Marshal(request.SectionTargets)
+			b.WriteString("- selected authoritative artifact parts (immutable server-bound selection): ")
+			b.Write(encoded)
+			b.WriteString("\n- multipart contract: call manage_artifact action=read_parts once, edit every selected part and no others, then call manage_artifact action=publish_parts exactly once with one replacement per selected part. The server publishes all changed revisions as one atomic candidate composition and preserves every untouched exact part revision. Do not use create/create_package.\n")
+		} else if request.SectionTarget != nil {
 			encoded, _ := json.Marshal(request.SectionTarget)
 			b.WriteString("- selected artifact part review metadata (descriptive only; immutable part authority is injected by the server): ")
 			b.Write(encoded)
@@ -513,7 +518,7 @@ func composeTaskSwarmChildPrompt(request taskSwarmHydrationRequest, item taskSwa
 		if request.OutputMode == taskOutputModeManaged {
 			if request.AgentType == "image" {
 				b.WriteString("- output mode: managed image; call manage_artifact exactly once with action=generate_image and a specialized image prompt. Omit provider, model, collection_id, variant_id, and output_requirements. The server resolves the account image model, performs one billed generation call, injects the immutable destination, and finalizes the ready image. Do not call create/create_package, write/edit, or mutate the checkout.\n")
-			} else if request.SectionTarget == nil {
+			} else if request.SectionTarget == nil && len(request.SectionTargets) == 0 {
 				b.WriteString("- output mode: managed; use manage_artifact with one successful create or create_package call and omit output_requirements and animation_profile. Include accurate parts in that same call for every meaningful authored review/edit target, using stable IDs and kind-appropriate locators; for swarm.iteration/v1 animations, mirror every manifest section as one temporal part with the exact same id, label, start_ms, and end_ms. Do not invent generic parts or omit them from an explicitly sectioned/editable deliverable. The server injects the immutable requirement snapshot and atomically finalizes the preallocated opaque target. Never call unsupported update/finalize actions. Do not use write/edit, write the workspace checkout, or choose/override destination lineage.\n")
 			}
 		} else {

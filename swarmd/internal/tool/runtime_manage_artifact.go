@@ -103,6 +103,11 @@ type ArtifactRunContext struct {
 	SourceComposition       *pebblestore.SessionArtifactComposition
 	SourcePartDefinition    *pebblestore.SessionArtifactPartDefinition
 	SourcePartRevision      *pebblestore.SessionArtifactPartRevisionReference
+	// SourcePartDefinitions and SourcePartRevisions are the canonical bounded
+	// multi-part selection. The singular fields remain a compatibility view when
+	// exactly one part is selected.
+	SourcePartDefinitions   []pebblestore.SessionArtifactPartDefinition
+	SourcePartRevisions     []pebblestore.SessionArtifactPartRevisionReference
 	ArtifactStepID          string
 	CandidateIndex          int
 	AutoAccept              bool
@@ -159,6 +164,16 @@ func manageArtifactDefinition() Definition {
 		"required":             []string{"kind"},
 		"additionalProperties": false,
 	}
+	replacementPart := map[string]any{
+		"type": "object", "properties": map[string]any{
+			"part_id": map[string]any{"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$"},
+			"content": map[string]any{"type": "string"},
+			"content_base64": map[string]any{"type": "string"},
+			"media_type": map[string]any{"type": "string", "maxLength": 255},
+			"filename": map[string]any{"type": "string", "maxLength": 255},
+			"locked": map[string]any{"type": "boolean"},
+		}, "required": []string{"part_id"}, "additionalProperties": false,
+	}
 	initialPart := map[string]any{
 		"type": "object",
 		"properties": map[string]any{
@@ -212,7 +227,7 @@ func manageArtifactDefinition() Definition {
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"action":           map[string]any{"type": "string", "enum": []string{"image_capabilities", "generate_image", "export_html_stills", "export_html_animation", "read_part", "publish_part", "create", "create_package", "list_presets", "list", "search", "get", "read", "materialize", "materialize_batch", "promote", "publish_workspace", "select", "delete"}, "description": "Artifact operation. Focused managed Designers must use read_part then publish_part; those actions are bound entirely to trusted selected-part context. Supports search, materialize/materialize_batch, and publish_workspace. export_html_stills captures declared swarm.capture/v1 states into managed PNGs. export_html_animation captures a bounded deterministic swarm.animation/v1 timeline into one silent managed MP4 valid as a managed video timeline clip."},
+				"action":           map[string]any{"type": "string", "enum": []string{"image_capabilities", "generate_image", "export_html_stills", "export_html_animation", "read_part", "publish_part", "read_parts", "publish_parts", "create", "create_package", "list_presets", "list", "search", "get", "read", "materialize", "materialize_batch", "promote", "publish_workspace", "select", "delete"}, "description": "Artifact operation. Focused managed Designers use read_part then publish_part for one selected part, or read_parts then publish_parts for a bounded multi-part selection; those actions are bound entirely to trusted exact composition context and publish one atomic candidate. Supports search, materialize/materialize_batch, and publish_workspace. export_html_stills captures declared swarm.capture/v1 states into managed PNGs. export_html_animation captures a bounded deterministic swarm.animation/v1 timeline into one silent managed MP4 valid as a managed video timeline clip."},
 				"prompt":           map[string]any{"type": "string", "maxLength": manageArtifactMaxPromptRunes, "description": "Image prompt required only for generate_image. For a remix, describe only the requested changes while preserving the attached exact source through all source_* fields."},
 				"capability_token": map[string]any{"type": "string", "description": "Fresh token returned by image_capabilities; required for each Google generate_image call, including every repeated remix"},
 				"image_settings": map[string]any{"type": "object", "properties": map[string]any{
@@ -229,6 +244,7 @@ func manageArtifactDefinition() Definition {
 				"media_type":             map[string]any{"type": "string", "maxLength": 255, "description": "Artifact media type for create; optional exact canonical media type filter for list/search discovery"},
 				"content":                map[string]any{"type": "string", "description": "Bounded UTF-8 artifact content for monolithic create or focused publish_part replacement bytes"},
 				"content_base64":         map[string]any{"type": "string", "description": "Bounded base64 replacement bytes for focused publish_part; mutually exclusive with content"},
+				"replacements":           map[string]any{"type": "array", "minItems": 1, "maxItems": pebblestore.SessionArtifactMaxParts, "items": replacementPart, "description": "Canonical publish_parts payload. Include exactly one replacement for every authenticated selected part; publication is one atomic candidate composition."},
 				"entries":                map[string]any{"type": "array", "maxItems": manageArtifactMaxPackageFiles, "items": entry},
 				"initial_parts":          map[string]any{"type": "array", "minItems": 2, "maxItems": pebblestore.SessionArtifactMaxParts, "items": initialPart, "description": "Two or more real independently byte-bearing initial parts for create. Every item has its own stable id, media type, and non-empty content/content_base64. The server owns all chain, composition, and part-revision identities. Mutually exclusive with top-level content, entries, and locator-only parts."},
 				"parts":                  map[string]any{"type": "array", "maxItems": pebblestore.SessionArtifactMaxParts, "items": part, "description": "Optional legacy/unproven locator-only clickable review metadata on a monolithic complete artifact. These locators never create or prove real part identities. Include one target for each meaningful authored region or section the user may ask to change. For a swarm.iteration/v1 animation, mirror each canonical manifest section as a temporal target with the same id, label, start_ms, and end_ms. Do not invent generic parts that do not map to actual content. Use initial_parts instead when independently stored replaceable bytes are required."},
@@ -289,11 +305,11 @@ func (r *Runtime) executeManageArtifact(ctx context.Context, scope WorkspaceScop
 	if actionName != "list_presets" {
 		requestID = managedArtifactRequestID(principal.SessionID, callID, actionName)
 	}
-	if run, ok := ctx.Value(artifactRunContextKey{}).(ArtifactRunContext); ok && run.SourcePartRevision != nil {
+	if run, ok := ctx.Value(artifactRunContextKey{}).(ArtifactRunContext); ok && (run.SourcePartRevision != nil || len(run.SourcePartRevisions) != 0) {
 		switch actionName {
-		case "read_part", "publish_part", "list_presets":
+		case "read_part", "publish_part", "read_parts", "publish_parts", "list_presets":
 		default:
-			return "", errors.New("focused managed Designer context permits only manage_artifact read_part followed by publish_part")
+			return "", errors.New("focused managed Designer context permits only read_part/publish_part or read_parts/publish_parts")
 		}
 	}
 
@@ -324,11 +340,20 @@ func (r *Runtime) executeManageArtifact(ctx context.Context, scope WorkspaceScop
 			return "", err
 		}
 		response["part"] = part
+	case "read_parts":
+		parts, err := r.readManagedArtifactParts(ctx, principal, args)
+		if err != nil { return "", err }
+		response["parts"] = parts
 	case "publish_part":
 		variant, err := r.publishManagedArtifactPart(ctx, principal, callID, requestID, args)
 		if err != nil {
 			return "", err
 		}
+		response["artifact"] = managedArtifactVariant(variant)
+		response["reference"] = managedArtifactReferenceWithSession(variant.SessionID, variant.CollectionID, variant.ID, variant.EventSeq)
+	case "publish_parts":
+		variant, err := r.publishManagedArtifactParts(ctx, principal, callID, requestID, args)
+		if err != nil { return "", err }
 		response["artifact"] = managedArtifactVariant(variant)
 		response["reference"] = managedArtifactReferenceWithSession(variant.SessionID, variant.CollectionID, variant.ID, variant.EventSeq)
 	case "export_html_stills":

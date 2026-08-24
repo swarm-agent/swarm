@@ -321,10 +321,9 @@ func cloneArtifactRunContext(input *tool.ArtifactRunContext) *tool.ArtifactRunCo
 		}
 		cloned.SourcePartDefinition = &copy
 	}
-	if input.SourcePartRevision != nil {
-		copy := *input.SourcePartRevision
-		cloned.SourcePartRevision = &copy
-	}
+	if input.SourcePartRevision != nil { copy := *input.SourcePartRevision; cloned.SourcePartRevision = &copy }
+	cloned.SourcePartDefinitions = append([]pebblestore.SessionArtifactPartDefinition(nil), input.SourcePartDefinitions...)
+	cloned.SourcePartRevisions = append([]pebblestore.SessionArtifactPartRevisionReference(nil), input.SourcePartRevisions...)
 	cloned.OutputRequirements = cloneTaskOutputRequirements(input.OutputRequirements)
 	cloned.AnimationProfile = cloneTaskAnimationProfile(input.AnimationProfile)
 	return &cloned
@@ -367,10 +366,9 @@ func (s *Service) providerManagedArtifactRunContext(config providerToolInvokerCo
 			}
 			run.SourcePartDefinition = &copy
 		}
-		if run.SourcePartRevision != nil {
-			copy := *run.SourcePartRevision
-			run.SourcePartRevision = &copy
-		}
+		if run.SourcePartRevision != nil { copy := *run.SourcePartRevision; run.SourcePartRevision = &copy }
+		run.SourcePartDefinitions = append([]pebblestore.SessionArtifactPartDefinition(nil), run.SourcePartDefinitions...)
+		run.SourcePartRevisions = append([]pebblestore.SessionArtifactPartRevisionReference(nil), run.SourcePartRevisions...)
 		run.CollectionID = strings.TrimSpace(run.CollectionID)
 		run.VariantID = strings.TrimSpace(run.VariantID)
 		run.OutputRequirements = cloneTaskOutputRequirements(run.OutputRequirements)
