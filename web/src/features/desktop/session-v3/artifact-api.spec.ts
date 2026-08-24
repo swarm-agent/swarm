@@ -157,6 +157,36 @@ test('artifact catalog preserves authoritative graph and step refs', () => {
   assert.deepEqual(desktopV3ArtifactSelection(entry), { session_id: 'session-1', collection_id: 'collection-1', variant_id: 'variant-1', event_seq: 42, artifact_chain_id: 'chain-1', artifact_step_id: 'step-2' })
 })
 
+test('artifact catalog preserves multipart construction, locks, ancestry, and turn groups', () => {
+  const digest = 'a'.repeat(64)
+  const entry = normalizeDesktopV3ArtifactCatalogEntry({
+    ...managedCatalogWire,
+    graph_state: 'authoritative', artifact_chain_id: 'chain-1', artifact_step_id: 'step-2', part_graph_state: 'authoritative', targeted_part_ids: ['hero', 'footer'],
+    chain: { id: 'chain-1', graph_state: 'authoritative', name: 'Homepage', root: { session_id: 'session-1', collection_id: 'collection-1', variant_id: 'variant-1', event_seq: 42 }, head: { session_id: 'session-1', collection_id: 'collection-1', variant_id: 'variant-1', event_seq: 42 }, revision_count: 2, last_round_id: 'step-2' },
+    step: { id: 'step-2', graph_state: 'authoritative', artifact_chain_id: 'chain-1', revision_number: 2, candidates: [{ session_id: 'session-1', collection_id: 'collection-1', variant_id: 'variant-1', event_seq: 42 }] },
+    part_definitions: [{ id: 'hero', label: 'Hero' }, { id: 'footer', label: 'Footer' }],
+    part_revisions: [
+      { reference: { artifact_chain_id: 'chain-1', part_id: 'hero', part_revision_id: 'hero-2', owner_session_id: 'session-1', digest_sha256: digest, size: 10, media_type: 'text/plain' }, parent: { artifact_chain_id: 'chain-1', part_id: 'hero', part_revision_id: 'hero-1', owner_session_id: 'session-1', digest_sha256: digest, size: 9, media_type: 'text/plain' }, iteration_turn_id: 'turn-2', iteration_group_id: 'group-2', event_seq: 42 },
+      { reference: { artifact_chain_id: 'chain-1', part_id: 'footer', part_revision_id: 'footer-2', owner_session_id: 'session-1', digest_sha256: digest, size: 11, media_type: 'text/plain' }, parent: { artifact_chain_id: 'chain-1', part_id: 'footer', part_revision_id: 'footer-1', owner_session_id: 'session-1', digest_sha256: digest, size: 8, media_type: 'text/plain' }, iteration_turn_id: 'turn-2', iteration_group_id: 'group-2', event_seq: 42 },
+    ],
+    composition: {
+      id: 'composition-2', artifact_chain_id: 'chain-1', iteration_turn_id: 'turn-2', iteration_group_id: 'group-2',
+      parent: { artifact_chain_id: 'chain-1', composition_id: 'composition-1', owner_session_id: 'session-1', event_seq: 41 },
+      construction: { kind: 'package-v1', entries: [{ part_id: 'hero', path: 'index.html' }, { part_id: 'footer', path: 'footer.html' }] },
+      parts: [
+        { part_id: 'hero', definition_owner_session_id: 'session-1', revision: { artifact_chain_id: 'chain-1', part_id: 'hero', part_revision_id: 'hero-2', owner_session_id: 'session-1', digest_sha256: digest, size: 10, media_type: 'text/plain' } },
+        { part_id: 'footer', definition_owner_session_id: 'session-1', locked: true, revision: { artifact_chain_id: 'chain-1', part_id: 'footer', part_revision_id: 'footer-2', owner_session_id: 'session-1', digest_sha256: digest, size: 11, media_type: 'text/plain' } },
+      ],
+    },
+  })
+  assert.ok(entry?.composition)
+  assert.equal(entry.composition.construction?.kind, 'package-v1')
+  assert.equal(entry.composition.parent?.compositionId, 'composition-1')
+  assert.equal(entry.composition.parts[1]?.locked, true)
+  assert.deepEqual(entry.targetedPartIds, ['hero', 'footer'])
+  assert.equal(entry.partRevisions?.[0]?.iterationGroupId, 'group-2')
+})
+
 test('artifact animation profiles preserve only the exact server-owned runtime contract', () => {
   const profile = normalizeDesktopV3ArtifactAnimationProfile(managedCatalogWire.animation_profile)
   assert.ok(profile)

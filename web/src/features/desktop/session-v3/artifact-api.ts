@@ -74,6 +74,8 @@ export interface DesktopV3ArtifactPartDefinition {
 export interface DesktopV3ArtifactPartRevision {
   reference: DesktopV3ArtifactPartRevisionReference
   parent: DesktopV3ArtifactPartRevisionReference | null
+  iterationTurnId: string
+  iterationGroupId: string
   createdAt: number
   eventSeq: number
 }
@@ -82,11 +84,21 @@ export interface DesktopV3ArtifactCompositionPart {
   partId: string
   definitionOwnerSessionId: string
   revision: DesktopV3ArtifactPartRevisionReference
+  locked?: boolean
+}
+
+export interface DesktopV3ArtifactConstructionEntry {
+  partId: string
+  path: string
 }
 
 export interface DesktopV3ArtifactComposition {
   id: string
   artifactChainId: string
+  parent: { artifactChainId: string; compositionId: string; ownerSessionId: string; eventSeq: number } | null
+  iterationTurnId: string
+  iterationGroupId: string
+  construction: { kind: 'concat-v1' | 'package-v1'; entries: DesktopV3ArtifactConstructionEntry[] } | null
   parts: DesktopV3ArtifactCompositionPart[]
 }
 
@@ -229,6 +241,7 @@ export interface DesktopV3ArtifactCatalogEntry {
   partRevisions?: DesktopV3ArtifactPartRevision[]
   composition?: DesktopV3ArtifactComposition
   targetedPartId?: string
+  targetedPartIds?: string[]
   acceptedPartHeads?: DesktopV3ArtifactCompositionPart[]
   localRevealAvailable?: boolean
   content?: string
@@ -485,7 +498,7 @@ function normalizeArtifactPartRevisions(value: unknown): DesktopV3ArtifactPartRe
     const reference = normalizeArtifactPartRevisionReference(record?.reference)
     if (!record || !reference) return []
     const parent = normalizeArtifactPartRevisionReference(record.parent)
-    return [{ reference, parent, createdAt: artifactCatalogCount(record.created_at), eventSeq: artifactCatalogEventSeq(record.event_seq) }]
+    return [{ reference, parent, iterationTurnId: artifactCatalogString(record.iteration_turn_id), iterationGroupId: artifactCatalogString(record.iteration_group_id), createdAt: artifactCatalogCount(record.created_at), eventSeq: artifactCatalogEventSeq(record.event_seq) }]
   })
 }
 
@@ -495,7 +508,7 @@ function normalizeArtifactCompositionPart(value: unknown): DesktopV3ArtifactComp
   const partId = artifactCatalogString(record?.part_id)
   const definitionOwnerSessionId = artifactCatalogString(record?.definition_owner_session_id)
   if (!record || !revision || !partId || !definitionOwnerSessionId || revision.partId !== partId) return null
-  return { partId, definitionOwnerSessionId, revision }
+  return { partId, definitionOwnerSessionId, revision, locked: record.locked === true }
 }
 
 function normalizeArtifactComposition(value: unknown): DesktopV3ArtifactComposition | null {
@@ -505,7 +518,37 @@ function normalizeArtifactComposition(value: unknown): DesktopV3ArtifactComposit
   const artifactChainId = artifactCatalogString(record.artifact_chain_id)
   const parts = record.parts.map(normalizeArtifactCompositionPart).filter((part): part is DesktopV3ArtifactCompositionPart => part !== null)
   if (!id || !artifactChainId || parts.length === 0 || parts.length !== record.parts.length || new Set(parts.map((part) => part.partId)).size !== parts.length) return null
-  return { id, artifactChainId, parts }
+  const parentRecord = artifactCatalogRecord(record.parent)
+  const parent = parentRecord ? {
+    artifactChainId: artifactCatalogString(parentRecord.artifact_chain_id),
+    compositionId: artifactCatalogString(parentRecord.composition_id),
+    ownerSessionId: artifactCatalogString(parentRecord.owner_session_id),
+    eventSeq: artifactCatalogEventSeq(parentRecord.event_seq),
+  } : null
+  const constructionRecord = artifactCatalogRecord(record.construction)
+  const constructionKind = artifactCatalogString(constructionRecord?.kind)
+  const rawEntries = Array.isArray(constructionRecord?.entries) ? constructionRecord.entries : []
+  const entries = rawEntries.flatMap((raw): DesktopV3ArtifactConstructionEntry[] => {
+    const entry = artifactCatalogRecord(raw)
+    const partId = artifactCatalogString(entry?.part_id)
+    return partId ? [{ partId, path: artifactCatalogString(entry?.path) }] : []
+  })
+  const partIds = new Set(parts.map((part) => part.partId))
+  const construction = (constructionKind === 'concat-v1' || constructionKind === 'package-v1')
+    && entries.length === parts.length
+    && new Set(entries.map((entry) => entry.partId)).size === entries.length
+    && entries.every((entry) => partIds.has(entry.partId))
+    ? { kind: constructionKind, entries }
+    : null
+  return {
+    id,
+    artifactChainId,
+    parent: parent && parent.artifactChainId && parent.compositionId && parent.ownerSessionId && parent.eventSeq ? parent : null,
+    iterationTurnId: artifactCatalogString(record.iteration_turn_id),
+    iterationGroupId: artifactCatalogString(record.iteration_group_id),
+    construction,
+    parts,
+  }
 }
 
 function normalizeArtifactLineage(value: unknown): DesktopV3ArtifactLineage | null {
@@ -567,6 +610,9 @@ export function normalizeDesktopV3ArtifactCatalogEntry(value: unknown): DesktopV
   const partDefinitions = normalizeArtifactPartDefinitions(record.part_definitions)
   const partRevisions = normalizeArtifactPartRevisions(record.part_revisions)
   const composition = normalizeArtifactComposition(record.composition)
+  const targetedPartIds = Array.isArray(record.targeted_part_ids)
+    ? [...new Set(record.targeted_part_ids.map(artifactCatalogString).filter(Boolean))]
+    : []
   const acceptedPartHeads = Array.isArray(record.accepted_part_heads)
     ? record.accepted_part_heads.map(normalizeArtifactCompositionPart).filter((part): part is DesktopV3ArtifactCompositionPart => part !== null)
     : []
@@ -619,6 +665,7 @@ export function normalizeDesktopV3ArtifactCatalogEntry(value: unknown): DesktopV
       partRevisions,
       composition,
       targetedPartId: artifactCatalogString(record.targeted_part_id) || undefined,
+      targetedPartIds,
       acceptedPartHeads,
     } : partGraphState === 'legacy_unproven' ? { partGraphState: 'legacy_unproven' as const } : {}),
     ...(outputRequirements ? { outputRequirements } : {}),

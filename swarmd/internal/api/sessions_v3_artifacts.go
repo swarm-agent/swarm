@@ -90,16 +90,22 @@ type sessionsV3ArtifactPartDefinitionProjection struct {
 }
 
 type sessionsV3ArtifactPartRevisionProjection struct {
-	Reference pebblestore.SessionArtifactPartRevisionReference  `json:"reference"`
-	Parent    *pebblestore.SessionArtifactPartRevisionReference `json:"parent,omitempty"`
-	CreatedAt int64                                             `json:"created_at,omitempty"`
-	EventSeq  uint64                                            `json:"event_seq,omitempty"`
+	Reference        pebblestore.SessionArtifactPartRevisionReference  `json:"reference"`
+	Parent           *pebblestore.SessionArtifactPartRevisionReference `json:"parent,omitempty"`
+	IterationTurnID  string                                            `json:"iteration_turn_id,omitempty"`
+	IterationGroupID string                                            `json:"iteration_group_id,omitempty"`
+	CreatedAt        int64                                             `json:"created_at,omitempty"`
+	EventSeq         uint64                                            `json:"event_seq,omitempty"`
 }
 
 type sessionsV3ArtifactCompositionProjection struct {
-	ID              string                                       `json:"id"`
-	ArtifactChainID string                                       `json:"artifact_chain_id"`
-	Parts           []pebblestore.SessionArtifactCompositionPart `json:"parts"`
+	ID               string                                           `json:"id"`
+	ArtifactChainID  string                                           `json:"artifact_chain_id"`
+	Parent           *pebblestore.SessionArtifactCompositionReference `json:"parent,omitempty"`
+	IterationTurnID  string                                           `json:"iteration_turn_id,omitempty"`
+	IterationGroupID string                                           `json:"iteration_group_id,omitempty"`
+	Construction     pebblestore.SessionArtifactConstruction          `json:"construction"`
+	Parts            []pebblestore.SessionArtifactCompositionPart     `json:"parts"`
 }
 
 type sessionsV3ArtifactCatalogItem struct {
@@ -147,6 +153,7 @@ type sessionsV3ArtifactCatalogItem struct {
 	PartRevisions         []sessionsV3ArtifactPartRevisionProjection     `json:"part_revisions,omitempty"`
 	Composition           *sessionsV3ArtifactCompositionProjection       `json:"composition,omitempty"`
 	TargetedPartID        string                                         `json:"targeted_part_id,omitempty"`
+	TargetedPartIDs       []string                                       `json:"targeted_part_ids,omitempty"`
 	AcceptedPartHeads     []pebblestore.SessionArtifactCompositionPart   `json:"accepted_part_heads,omitempty"`
 	Content               string                                         `json:"content,omitempty"`
 }
@@ -203,9 +210,14 @@ func (s *Server) projectSessionsV3ArtifactComposition(session pebblestore.Sessio
 			copy := *revision.Parent
 			parent = &copy
 		}
-		revisions = append(revisions, sessionsV3ArtifactPartRevisionProjection{Reference: revision.Reference(), Parent: parent, CreatedAt: revision.CreatedAt, EventSeq: revision.EventSeq})
+		revisions = append(revisions, sessionsV3ArtifactPartRevisionProjection{Reference: revision.Reference(), Parent: parent, IterationTurnID: revision.IterationTurnID, IterationGroupID: revision.IterationGroupID, CreatedAt: revision.CreatedAt, EventSeq: revision.EventSeq})
 	}
-	projection := &sessionsV3ArtifactCompositionProjection{ID: composition.ID, ArtifactChainID: composition.ArtifactChainID, Parts: append([]pebblestore.SessionArtifactCompositionPart(nil), composition.Parts...)}
+	var compositionParent *pebblestore.SessionArtifactCompositionReference
+	if composition.Parent != nil {
+		copy := *composition.Parent
+		compositionParent = &copy
+	}
+	projection := &sessionsV3ArtifactCompositionProjection{ID: composition.ID, ArtifactChainID: composition.ArtifactChainID, Parent: compositionParent, IterationTurnID: composition.IterationTurnID, IterationGroupID: composition.IterationGroupID, Construction: composition.Construction, Parts: append([]pebblestore.SessionArtifactCompositionPart(nil), composition.Parts...)}
 	targetedPartID, err := s.sessionsV3ArtifactTargetedPartID(session, variant, composition)
 	if err != nil {
 		return nil, nil, nil, "", nil, err
@@ -215,6 +227,25 @@ func (s *Server) projectSessionsV3ArtifactComposition(session pebblestore.Sessio
 		return nil, nil, nil, "", nil, err
 	}
 	return definitions, revisions, projection, targetedPartID, acceptedHeads, nil
+}
+
+func sessionsV3ArtifactTargetedPartIDs(variant pebblestore.SessionArtifactVariant, composition *sessionsV3ArtifactCompositionProjection) []string {
+	if variant.ParentArtifact == nil || composition == nil {
+		return nil
+	}
+	changed := make([]string, 0, len(composition.Parts))
+	// Part definitions are exactly the newly authenticated members of this immutable
+	// composition; untouched slots are referenced without re-authoring rows.
+	seen := make(map[string]struct{}, len(variant.PartDefinitions))
+	for _, definition := range variant.PartDefinitions {
+		if _, ok := seen[definition.ID]; ok || definition.ID == "" {
+			continue
+		}
+		seen[definition.ID] = struct{}{}
+		changed = append(changed, definition.ID)
+	}
+	sort.Strings(changed)
+	return changed
 }
 
 func (s *Server) sessionsV3ArtifactTargetedPartID(session pebblestore.SessionSnapshot, variant pebblestore.SessionArtifactVariant, composition pebblestore.SessionArtifactComposition) (string, error) {
@@ -240,16 +271,21 @@ func (s *Server) sessionsV3ArtifactTargetedPartID(session pebblestore.SessionSna
 		return "", errors.New("artifact composition changed its stable part set")
 	}
 	changed := ""
+	changedCount := 0
 	for index, slot := range composition.Parts {
 		previous := parent.Composition.Parts[index]
 		if slot.PartID != previous.PartID || slot.DefinitionOwnerSessionID != previous.DefinitionOwnerSessionID {
 			return "", errors.New("artifact composition reordered or replaced a stable part definition")
 		}
-		if slot.Revision != previous.Revision {
-			if changed != "" {
-				return "", errors.New("artifact composition candidate changed more than one part")
+		if slot.Revision != previous.Revision || slot.Locked != previous.Locked {
+			changedCount++
+			if changedCount == 1 {
+				changed = slot.PartID
+			} else {
+				// Empty identifies a valid multi-part turn. The exact changed set is
+				// derived by Desktop from the immutable parent/current compositions.
+				changed = ""
 			}
-			changed = slot.PartID
 		}
 	}
 	return changed, nil
@@ -418,7 +454,7 @@ func (s *Server) handleSessionsV3Artifacts(w http.ResponseWriter, r *http.Reques
 						Previewable: previewable, Selected: chain.Head.SessionID == variant.SessionID && chain.Head.CollectionID == variant.CollectionID && chain.Head.VariantID == variant.ID,
 						Category: sessionsV3ManagedArtifactCategory(variant), UpdatedAt: variant.UpdatedAt, EventSeq: variant.EventSeq, Progress: &progress, Lineage: &lineage, OutputRequirements: cloneSessionsV3ArtifactOutputRequirements(variant.OutputRequirements), AnimationProfile: cloneSessionsV3ArtifactAnimationProfile(variant.AnimationProfile),
 						Chain: &chain, Step: step, GraphState: variant.GraphState, ParentArtifact: variant.ParentArtifact, ArtifactChainID: variant.ArtifactChainID, ArtifactStepID: variant.ArtifactStepID, RevisionNumber: variant.RevisionNumber, RevisionRoundID: variant.RevisionRoundID, CandidateIndex: variant.CandidateIndex, Parts: append([]pebblestore.SessionArtifactPart(nil), variant.Parts...),
-						PartGraphState: variant.PartGraphState, PartDefinitions: partDefinitions, PartRevisions: partRevisions, Composition: composition, TargetedPartID: targetedPartID, AcceptedPartHeads: acceptedPartHeads,
+						PartGraphState: variant.PartGraphState, PartDefinitions: partDefinitions, PartRevisions: partRevisions, Composition: composition, TargetedPartID: targetedPartID, TargetedPartIDs: sessionsV3ArtifactTargetedPartIDs(variant, composition), AcceptedPartHeads: acceptedPartHeads,
 					})
 				}
 			}

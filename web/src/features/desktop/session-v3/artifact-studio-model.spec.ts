@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 
 import type { DesktopV3ArtifactCatalogEntry, DesktopV3ArtifactChainReference } from './artifact-api'
 import {
+  desktopV3ArtifactStudioChangedPartIds,
   desktopV3ArtifactStudioEntries,
   desktopV3ArtifactStudioHead,
   desktopV3ArtifactStudioParent,
@@ -58,6 +59,25 @@ test('artifact studio groups section-targeted revision turns by part', () => {
   const partIterations = desktopV3ArtifactStudioPartIterations([base, ...roundTwo, ...roundThree], base)
   assert.deepEqual(partIterations.map((part) => [part.id, part.label, part.turns.map((turn) => [turn.revisionNumber, turn.candidates.length])]), [
     ['flow', 'Flow', [[2, 2], [3, 2]]],
+  ])
+})
+
+test('artifact studio groups atomic multi-part candidates into every affected part lineage', () => {
+  const baseRef = ref('base', 1)
+  const candidateRefs = [ref('multi-a', 2), ref('multi-b', 3)]
+  const head = candidateRefs[0]!
+  const base = artifact({ id: 'base', eventSeq: 1, step: 'step-1', revision: 1, candidates: [baseRef], accepted: baseRef, head })
+  const baseParts = [{ partId: 'hero', definitionOwnerSessionId: 'session-1', revision: partRef('hero', 'a1') }, { partId: 'footer', definitionOwnerSessionId: 'session-1', revision: partRef('footer', 'b1') }]
+  Object.assign(base, { partGraphState: 'authoritative', composition: { id: 'composition-1', artifactChainId: 'chain-1', parts: baseParts }, partDefinitions: [{ id: 'hero', label: 'Hero', description: '', locator: null }, { id: 'footer', label: 'Footer', description: '', locator: null }] })
+  const candidates = candidateRefs.map((candidate, index) => artifact({ id: candidate.variantId, eventSeq: index + 2, step: 'step-2', revision: 2, candidates: candidateRefs, parent: baseRef, accepted: head, head }))
+  candidates.forEach((candidate, index) => Object.assign(candidate, { partGraphState: 'authoritative', composition: { id: `composition-2-${index}`, artifactChainId: 'chain-1', iterationTurnId: 'turn-2', iterationGroupId: 'group-2', parts: [{ ...baseParts[0]!, revision: partRef('hero', `a2${index}`) }, { ...baseParts[1]!, revision: partRef('footer', `b2${index}`), locked: true }] }, partDefinitions: base.partDefinitions }))
+
+  const entries = [base, ...candidates]
+  assert.deepEqual(desktopV3ArtifactStudioChangedPartIds(entries, candidates[0]!), ['hero', 'footer'])
+  const history = desktopV3ArtifactStudioPartIterations(entries, base)
+  assert.deepEqual(history.map((part) => [part.id, part.turns[0]?.groupId, part.turns[0]?.changedPartIds, part.turns[0]?.candidates.length]), [
+    ['hero', 'group-2', ['hero', 'footer'], 2],
+    ['footer', 'group-2', ['hero', 'footer'], 2],
   ])
 })
 
