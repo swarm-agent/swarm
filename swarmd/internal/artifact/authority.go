@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"swarm/packages/swarmd/internal/artifactgit"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
@@ -763,6 +764,11 @@ func (a *Authority) owned(principal Principal) (*Service, Principal, error) {
 	}
 	principal.AccountScopeID, principal.UserID = session.AccountScopeID, session.UserID
 	return service, principal, nil
+}
+
+func (a *Authority) repository(ctx context.Context, repositoryID string) (*artifactgit.Repository, error) {
+	if a == nil || a.registry == nil { return nil, errors.New("artifact authority is not configured") }
+	return a.registry.Repository(ctx, repositoryID)
 }
 
 func cloneOutputRequirements(input *pebblestore.SessionArtifactOutputRequirements) *pebblestore.SessionArtifactOutputRequirements {

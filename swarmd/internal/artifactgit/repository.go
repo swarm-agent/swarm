@@ -257,6 +257,8 @@ func (r *Repository) ReadCommit(ctx context.Context, id string) (Commit, error) 
 	if err != nil || strings.TrimSpace(string(typeOut)) != "commit" {
 		return Commit{}, ErrNotFound
 	}
+	treeOut, err := r.gitCmd(ctx, nil, "show", "-s", "--format=%T", id)
+	if err != nil { return Commit{}, err }
 	parentOut, err := r.gitCmd(ctx, nil, "show", "-s", "--format=%P", id)
 	if err != nil {
 		return Commit{}, err
@@ -273,7 +275,7 @@ func (r *Repository) ReadCommit(ctx context.Context, id string) (Commit, error) 
 	if err := validateManifest(m, r.limits); err != nil {
 		return Commit{}, err
 	}
-	return Commit{ID: id, Parents: parents, Manifest: m}, nil
+	return Commit{ID: id, Tree: strings.TrimSpace(string(treeOut)), Parents: parents, Manifest: m}, nil
 }
 
 func (r *Repository) ReadBlob(ctx context.Context, commit, partID string) ([]byte, error) {
@@ -409,6 +411,8 @@ func (r *Repository) Merge(ctx context.Context, req MergeRequest) (string, error
 			return "", ErrLockedPart
 		}
 		p.ID = partID
+		p.SourceCommit = sel.Commit
+		p.SourcePart = sourceID
 		if sel.Lock != nil {
 			p.Locked = *sel.Lock
 		}

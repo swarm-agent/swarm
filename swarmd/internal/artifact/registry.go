@@ -1,12 +1,14 @@
 package artifact
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strings"
 	"sync"
 
 	"swarm/packages/swarmd/internal/appstorage"
+	"swarm/packages/swarmd/internal/artifactgit"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
@@ -30,7 +32,10 @@ type Registry struct {
 	resolver SessionResolver
 	limits   Limits
 	mu       sync.Mutex
-	services map[string]*Service
+	services       map[string]*Service
+	repositories   map[string]*artifactgit.Repository
+	repositoryRoot string
+	repositoryErr  error
 }
 
 type MaintenanceReport struct {
@@ -42,7 +47,46 @@ type MaintenanceReport struct {
 }
 
 func NewRegistry(resolver SessionResolver, limits Limits) *Registry {
-	return &Registry{resolver: resolver, limits: normalizeLimits(limits), services: make(map[string]*Service)}
+	root, err := appstorage.DataDir("artifact-repositories")
+	return &Registry{resolver: resolver, limits: normalizeLimits(limits), services: make(map[string]*Service), repositories: make(map[string]*artifactgit.Repository), repositoryRoot: root, repositoryErr: err}
+}
+
+// OwnedSession authenticates a session without using its workspace path as
+// artifact storage identity.
+func (r *Registry) OwnedSession(sessionID, accountScopeID, userID string) (pebblestore.SessionSnapshot, error) {
+	if r == nil || r.resolver == nil {
+		return pebblestore.SessionSnapshot{}, errors.New("artifact registry session resolver is not configured")
+	}
+	session, ok, err := r.resolver.GetSession(strings.TrimSpace(sessionID))
+	if err != nil { return pebblestore.SessionSnapshot{}, err }
+	if !ok { return pebblestore.SessionSnapshot{}, fmt.Errorf("session %q was not found", sessionID) }
+	if session.AccountScopeID != strings.TrimSpace(accountScopeID) || session.UserID != strings.TrimSpace(userID) {
+		return pebblestore.SessionSnapshot{}, errors.New("artifact session ownership does not match")
+	}
+	return session, nil
+}
+
+// Repository opens the private stable bare Git repository for one artifact
+// chain. The root is daemon-owned and independent of workspace repositories and
+// workspace paths.
+func (r *Registry) Repository(ctx context.Context, repositoryID string) (*artifactgit.Repository, error) {
+	if r == nil {
+		return nil, errors.New("artifact Git repository root is not configured")
+	}
+	if r.repositoryErr != nil {
+		return nil, fmt.Errorf("resolve artifact Git repository root: %w", r.repositoryErr)
+	}
+	if strings.TrimSpace(r.repositoryRoot) == "" {
+		return nil, errors.New("artifact Git repository root is not configured")
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if repo := r.repositories[repositoryID]; repo != nil { return repo, nil }
+	limits := artifactgit.Limits{MaxBlobBytes: r.limits.MaxVideoArtifactBytes, MaxCompositionBytes: r.limits.MaxSessionBytes, MaxParts: pebblestore.SessionArtifactMaxParts}
+	repo, err := artifactgit.Open(ctx, r.repositoryRoot, repositoryID, limits)
+	if err != nil { return nil, err }
+	r.repositories[repositoryID] = repo
+	return repo, nil
 }
 
 func (r *Registry) ServiceForWorkspace(workspacePath string) (*Service, error) {

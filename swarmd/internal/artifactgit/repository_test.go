@@ -46,6 +46,16 @@ func TestHistoricalForkMergeLocksCASRestartAndBundle(t *testing.T) {
 	if e != nil || len(mc.Parents) != 2 {
 		t.Fatalf("merge parents: %#v %v", mc.Parents, e)
 	}
+	if mc.Tree == "" {
+		t.Fatal("merge tree oid is missing")
+	}
+	var mergedB Part
+	for _, part := range mc.Manifest.Parts {
+		if part.ID == "b" { mergedB = part }
+	}
+	if mergedB.SourceCommit != right || mergedB.SourcePart != "b" {
+		t.Fatalf("merge provenance = %#v", mergedB)
+	}
 	if _, e = r.AdvanceOfficial(ctx, gen, merged, "accept_1"); e != nil {
 		t.Fatal(e)
 	}

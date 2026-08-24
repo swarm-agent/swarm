@@ -44,11 +44,13 @@ func (l Limits) normalized() Limits {
 }
 
 type Part struct {
-	ID        string `json:"id"`
-	MediaType string `json:"media_type"`
-	Blob      string `json:"blob"`
-	Size      int64  `json:"size"`
-	Locked    bool   `json:"locked,omitempty"`
+	ID           string `json:"id"`
+	MediaType    string `json:"media_type"`
+	Blob         string `json:"blob"`
+	Size         int64  `json:"size"`
+	Locked       bool   `json:"locked,omitempty"`
+	SourceCommit string `json:"source_commit,omitempty"`
+	SourcePart   string `json:"source_part,omitempty"`
 }
 
 type Manifest struct {
@@ -100,6 +102,7 @@ type Ref struct{ Name, Commit string }
 
 type Commit struct {
 	ID       string
+	Tree     string
 	Parents  []string
 	Manifest Manifest
 }
