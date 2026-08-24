@@ -11,6 +11,7 @@ import {
   desktopV3ArtifactStudioRounds,
   desktopV3ArtifactStudioSamePartRevision,
   desktopV3ArtifactStudioSectionAlternatives,
+  desktopV3ArtifactStudioTurns,
 } from './artifact-studio-model'
 
 const ref = (id: string, eventSeq: number): DesktopV3ArtifactChainReference => ({ sessionId: 'session-1', collectionId: `collection-${eventSeq}`, variantId: id, eventSeq })
@@ -84,6 +85,41 @@ test('artifact studio groups atomic multi-part candidates into every affected pa
   ])
 })
 
+test('artifact studio exposes every authoritative step as a turn, including roots and single fine-tunes', () => {
+  const baseRef = ref('base', 1)
+  const fineTuneRef = ref('fine-tune', 2)
+  const noOpRef = ref('metadata-only', 3)
+  const head = noOpRef
+  const base = artifact({ id: 'base', eventSeq: 1, step: 'step-1', revision: 1, candidates: [baseRef], accepted: baseRef, head })
+  const baseParts = [{ partId: 'hero', definitionOwnerSessionId: 'session-1', revision: partRef('hero', 'a1') }, { partId: 'footer', definitionOwnerSessionId: 'session-1', revision: partRef('footer', 'b1') }]
+  Object.assign(base, { partGraphState: 'authoritative', composition: { id: 'composition-1', artifactChainId: 'chain-1', iterationTurnId: 'turn-1', iterationGroupId: 'group-1', parts: baseParts }, partDefinitions: [{ id: 'hero', label: 'Hero', description: '', locator: null }, { id: 'footer', label: 'Footer', description: '', locator: null }] })
+  const fineTune = artifact({ id: 'fine-tune', eventSeq: 2, step: 'step-2', revision: 2, candidates: [fineTuneRef], parent: baseRef, accepted: fineTuneRef, head })
+  Object.assign(fineTune, { partGraphState: 'authoritative', composition: { id: 'composition-2', artifactChainId: 'chain-1', iterationTurnId: 'turn-2', iterationGroupId: 'fine-tune-group', parts: [{ ...baseParts[0]!, revision: partRef('hero', 'a2') }, baseParts[1]!] }, partDefinitions: base.partDefinitions })
+  const noOp = artifact({ id: 'metadata-only', eventSeq: 3, step: 'step-3', revision: 3, candidates: [noOpRef], parent: fineTuneRef, accepted: noOpRef, head })
+  Object.assign(noOp, { partGraphState: 'authoritative', composition: { id: 'composition-3', artifactChainId: 'chain-1', iterationTurnId: 'turn-3', iterationGroupId: 'metadata-group', parts: fineTune.composition!.parts }, partDefinitions: base.partDefinitions })
+
+  const turns = desktopV3ArtifactStudioTurns([noOp, fineTune, base], noOp)
+  assert.deepEqual(turns.map((turn) => [turn.id, turn.changedPartIds, turn.candidates.length, turn.accepted?.entry?.artifactId]), [
+    ['step-1', ['hero', 'footer'], 1, 'base'],
+    ['step-2', ['hero'], 1, 'fine-tune'],
+    ['step-3', [], 1, 'metadata-only'],
+  ])
+  assert.equal(turns[1]?.groupId, 'fine-tune-group')
+  assert.equal(turns[1]?.parts[0]?.candidates[0]?.part?.revision.partRevisionId, 'a2')
+  assert.equal(turns[1]?.parts[0]?.accepted?.entry?.artifactId, 'fine-tune')
+})
+
+test('artifact studio preserves authoritative unresolved candidates without fabricating part state', () => {
+  const baseRef = ref('base', 1)
+  const missingRef = ref('still-staging', 2)
+  const base = artifact({ id: 'base', eventSeq: 1, step: 'step-1', revision: 1, candidates: [baseRef, missingRef], accepted: baseRef, head: baseRef })
+
+  const turns = desktopV3ArtifactStudioTurns([base], base)
+  assert.equal(turns.length, 1)
+  assert.deepEqual(turns[0]?.candidates.map((candidate) => [candidate.reference.variantId, candidate.entry?.artifactId]), [['base', 'base'], ['still-staging', undefined]])
+  assert.deepEqual(turns[0]?.changedPartIds, [])
+})
+
 test('artifact studio never infers lineage or a head for legacy unstructured entries', () => {
   const legacy = artifact({ id: 'legacy', eventSeq: 20, step: 'legacy-step', revision: 3, candidates: [ref('legacy', 20)], head: ref('legacy', 20) })
   legacy.graphState = 'legacy_unproven'
@@ -94,5 +130,6 @@ test('artifact studio never infers lineage or a head for legacy unstructured ent
   assert.equal(desktopV3ArtifactStudioHead([legacy], legacy), undefined)
   assert.equal(desktopV3ArtifactStudioParent([legacy], legacy), undefined)
   assert.deepEqual(desktopV3ArtifactStudioRounds([legacy], legacy), [])
+  assert.deepEqual(desktopV3ArtifactStudioTurns([legacy], legacy), [])
   assert.deepEqual(desktopV3ArtifactStudioSectionAlternatives([legacy], legacy, 'hero'), [])
 })

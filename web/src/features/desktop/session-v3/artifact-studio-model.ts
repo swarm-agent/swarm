@@ -72,6 +72,30 @@ export function desktopV3ArtifactStudioRounds(entries: readonly DesktopV3Artifac
   })).sort((left, right) => left.revisionNumber - right.revisionNumber || left.id.localeCompare(right.id))
 }
 
+export interface DesktopV3ArtifactStudioTurnCandidate {
+  reference: DesktopV3ArtifactChainReference
+  entry?: DesktopV3ArtifactCatalogEntry
+  part?: DesktopV3ArtifactCompositionPart
+}
+
+export interface DesktopV3ArtifactStudioTurnPart {
+  partId: string
+  candidates: DesktopV3ArtifactStudioTurnCandidate[]
+  accepted?: DesktopV3ArtifactStudioTurnCandidate
+}
+
+/** One authoritative artifact step, including roots, no-op steps, and single-candidate edits. */
+export interface DesktopV3ArtifactStudioTurn {
+  id: string
+  groupId: string
+  revisionNumber: number
+  parent?: DesktopV3ArtifactChainReference
+  changedPartIds: string[]
+  candidates: DesktopV3ArtifactStudioTurnCandidate[]
+  parts: DesktopV3ArtifactStudioTurnPart[]
+  accepted?: DesktopV3ArtifactStudioTurnCandidate
+}
+
 export interface DesktopV3ArtifactStudioPartTurn {
   id: string
   groupId: string
@@ -104,6 +128,68 @@ export function desktopV3ArtifactStudioChangedPartIds(entries: readonly DesktopV
     if (!desktopV3ArtifactStudioSamePartRevision(current, previous)) changed.push(current.partId)
   }
   return changed
+}
+
+function turnCandidate(
+  entries: readonly DesktopV3ArtifactCatalogEntry[],
+  reference: DesktopV3ArtifactChainReference,
+): DesktopV3ArtifactStudioTurnCandidate {
+  const entry = entries.find((candidate) => sameReference(candidate, reference))
+  return { reference, ...(entry ? { entry } : {}) }
+}
+
+/**
+ * Projects the immutable chain into chronological user-visible turns. The step is
+ * the authority: unresolved candidate references remain visible as references,
+ * while legacy entries never gain inferred turns.
+ */
+export function desktopV3ArtifactStudioTurns(entries: readonly DesktopV3ArtifactCatalogEntry[], entry: DesktopV3ArtifactCatalogEntry): DesktopV3ArtifactStudioTurn[] {
+  if (!authoritative(entry)) return []
+  const chainEntries = desktopV3ArtifactStudioEntries(entries, entry)
+  const steps = new Map<string, DesktopV3ArtifactCatalogEntry>()
+  for (const candidate of chainEntries) {
+    const current = steps.get(candidate.step!.id)
+    if (!current || (candidate.candidateIndex ?? Number.MAX_SAFE_INTEGER) < (current.candidateIndex ?? Number.MAX_SAFE_INTEGER)) {
+      steps.set(candidate.step!.id, candidate)
+    }
+  }
+  return [...steps.values()].map((representative): DesktopV3ArtifactStudioTurn => {
+    const step = representative.step!
+    const candidates = step.candidates.map((reference) => turnCandidate(chainEntries, reference))
+    const changedByCandidate = candidates.map((candidate) => {
+      if (!candidate.entry) return []
+      if (!step.parent) return candidate.entry.partGraphState === 'authoritative'
+        ? candidate.entry.composition?.parts.map((part) => part.partId) ?? []
+        : []
+      return desktopV3ArtifactStudioChangedPartIds(chainEntries, candidate.entry)
+    })
+    const changedPartIds = [...new Set(changedByCandidate.flat())]
+    const accepted = step.accepted ? turnCandidate(chainEntries, step.accepted) : undefined
+    const parts = changedPartIds.map((partId): DesktopV3ArtifactStudioTurnPart => {
+      const partCandidates = candidates.flatMap((candidate, index) => {
+        if (!changedByCandidate[index]?.includes(partId)) return []
+        const part = candidate.entry?.composition?.parts.find((candidatePart) => candidatePart.partId === partId)
+        return [{ ...candidate, ...(part ? { part } : {}) }]
+      })
+      const acceptedCandidate = accepted
+        ? partCandidates.find((candidate) => candidate.reference.sessionId === accepted.reference.sessionId
+          && candidate.reference.collectionId === accepted.reference.collectionId
+          && candidate.reference.variantId === accepted.reference.variantId
+          && candidate.reference.eventSeq === accepted.reference.eventSeq)
+        : undefined
+      return { partId, candidates: partCandidates, ...(acceptedCandidate ? { accepted: acceptedCandidate } : {}) }
+    })
+    return {
+      id: step.id,
+      groupId: representative.composition?.iterationGroupId || representative.revisionRoundId || step.id,
+      revisionNumber: step.revisionNumber,
+      ...(step.parent ? { parent: step.parent } : {}),
+      changedPartIds,
+      candidates,
+      parts,
+      ...(accepted ? { accepted } : {}),
+    }
+  }).sort((left, right) => left.revisionNumber - right.revisionNumber || left.id.localeCompare(right.id))
 }
 
 export function desktopV3ArtifactStudioPartIterations(entries: readonly DesktopV3ArtifactCatalogEntry[], entry: DesktopV3ArtifactCatalogEntry): DesktopV3ArtifactStudioPartIteration[] {
