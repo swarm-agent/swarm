@@ -150,7 +150,9 @@ func (r *Repository) manifestFromGenesis(ctx context.Context, g Genesis) (Manife
 	}
 	if len(ids) > 0 && m.Construction.Kind == "" {
 		m.Construction.Kind = "concat-v1"
-		for _, id := range ids { m.Construction.Entries = append(m.Construction.Entries, ConstructionEntry{PartID: id}) }
+		for _, id := range ids {
+			m.Construction.Entries = append(m.Construction.Entries, ConstructionEntry{PartID: id})
+		}
 	}
 	for _, id := range ids {
 		p, err := r.storeBlob(ctx, id, g.Parts[id])
@@ -287,7 +289,9 @@ func validateConstruction(construction Construction, parts []Part) error {
 		return fmt.Errorf("%w: construction must use every part exactly once", ErrIntegrity)
 	}
 	known := make(map[string]bool, len(parts))
-	for _, part := range parts { known[part.ID] = true }
+	for _, part := range parts {
+		known[part.ID] = true
+	}
 	seenParts, seenPaths := map[string]bool{}, map[string]bool{}
 	for _, entry := range construction.Entries {
 		if !known[entry.PartID] || seenParts[entry.PartID] {
@@ -295,7 +299,9 @@ func validateConstruction(construction Construction, parts []Part) error {
 		}
 		seenParts[entry.PartID] = true
 		if construction.Kind == "concat-v1" {
-			if entry.Path != "" { return fmt.Errorf("%w: concat construction path", ErrIntegrity) }
+			if entry.Path != "" {
+				return fmt.Errorf("%w: concat construction path", ErrIntegrity)
+			}
 			continue
 		}
 		clean := filepath.ToSlash(filepath.Clean(entry.Path))
@@ -316,7 +322,9 @@ func (r *Repository) ReadCommit(ctx context.Context, id string) (Commit, error) 
 		return Commit{}, ErrNotFound
 	}
 	treeOut, err := r.gitCmd(ctx, nil, "show", "-s", "--format=%T", id)
-	if err != nil { return Commit{}, err }
+	if err != nil {
+		return Commit{}, err
+	}
 	parentOut, err := r.gitCmd(ctx, nil, "show", "-s", "--format=%P", id)
 	if err != nil {
 		return Commit{}, err
@@ -357,9 +365,13 @@ func (r *Repository) ReadBlob(ctx context.Context, commit, partID string) ([]byt
 
 func (r *Repository) ReadBlobOID(ctx context.Context, commit, partID string) (string, error) {
 	c, err := r.ReadCommit(ctx, commit)
-	if err != nil { return "", err }
+	if err != nil {
+		return "", err
+	}
 	part, ok := findPart(c.Manifest, partID)
-	if !ok { return "", ErrNotFound }
+	if !ok {
+		return "", ErrNotFound
+	}
 	return part.Blob, nil
 }
 
@@ -427,7 +439,24 @@ func (r *Repository) Candidate(ctx context.Context, req CandidateRequest) (strin
 			m.Parts[idx].Locked = *ch.Lock
 		}
 	}
-	commit, err := r.commit(ctx, m, []string{req.Base}, req.Message)
+	parents := append([]string(nil), req.Parents...)
+	if len(parents) == 0 {
+		parents = []string{req.Base}
+	}
+	seenParents := make(map[string]bool, len(parents))
+	for _, parent := range parents {
+		if !objectPattern.MatchString(parent) || seenParents[parent] {
+			return "", invalid("candidate parent")
+		}
+		if _, readErr := r.ReadCommit(ctx, parent); readErr != nil {
+			return "", readErr
+		}
+		seenParents[parent] = true
+	}
+	if !seenParents[req.Base] {
+		return "", invalid("candidate parents omit base")
+	}
+	commit, err := r.commit(ctx, m, parents, req.Message)
 	if err != nil {
 		return "", err
 	}
@@ -570,14 +599,26 @@ func (r *Repository) Official(ctx context.Context) (string, error) {
 	return r.ref(ctx, "refs/heads/official")
 }
 func (r *Repository) DeleteCandidate(ctx context.Context, name, expected string) error {
-	if !strings.HasPrefix(name, "refs/swarm/candidates/") || !idPattern.MatchString(strings.TrimPrefix(name, "refs/swarm/candidates/")) || !objectPattern.MatchString(expected) { return invalid("candidate ref") }
-	if current, err := r.ref(ctx, name); errors.Is(err, ErrNotFound) { return nil } else if err != nil { return err } else if current != expected { return ErrConflict }
-	if err := r.updateRef(ctx, name, strings.Repeat("0", len(expected)), expected); err != nil { return ErrConflict }
+	if !strings.HasPrefix(name, "refs/swarm/candidates/") || !idPattern.MatchString(strings.TrimPrefix(name, "refs/swarm/candidates/")) || !objectPattern.MatchString(expected) {
+		return invalid("candidate ref")
+	}
+	if current, err := r.ref(ctx, name); errors.Is(err, ErrNotFound) {
+		return nil
+	} else if err != nil {
+		return err
+	} else if current != expected {
+		return ErrConflict
+	}
+	if err := r.updateRef(ctx, name, strings.Repeat("0", len(expected)), expected); err != nil {
+		return ErrConflict
+	}
 	return nil
 }
 
 func (r *Repository) Transaction(ctx context.Context, transactionID string) (string, error) {
-	if !idPattern.MatchString(transactionID) { return "", invalid("transaction") }
+	if !idPattern.MatchString(transactionID) {
+		return "", invalid("transaction")
+	}
 	return r.ref(ctx, "refs/swarm/transactions/"+transactionID)
 }
 

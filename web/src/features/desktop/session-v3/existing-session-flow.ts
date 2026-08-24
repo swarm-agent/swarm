@@ -1,4 +1,3 @@
-import { requireDesktopV3RealtimeControllerReady } from '../realtime/v3-realtime-controller'
 import { dispatchDesktopV3Cache, getDesktopV3CacheSnapshot } from '../state/desktop-v3-cache-store'
 import type {
   MessageMutationConflictResponse,
@@ -58,8 +57,9 @@ export function createDesktopV3ExistingMessageOperation(input: {
         collection_id: selection.collection_id.trim(),
         variant_id: selection.variant_id.trim(),
         label: selection.label.trim(),
-        description: selection.description?.trim() || undefined,
-        pending_request: selection.pending_request?.trim() || undefined,
+        ...(selection.description?.trim() ? { description: selection.description.trim() } : {}),
+        ...(selection.pending_request?.trim() ? { pending_request: selection.pending_request.trim() } : {}),
+        ...(selection.part_id?.trim() ? { part_id: selection.part_id.trim() } : {}),
       })),
     },
   }
@@ -123,14 +123,12 @@ export function clearDesktopV3ExistingMessageOperation(
 
 interface DesktopV3ExistingSessionFlowDeps {
   getSnapshot: typeof getDesktopV3CacheSnapshot
-  requireControllerReady: typeof requireDesktopV3RealtimeControllerReady
   dispatch: typeof dispatchDesktopV3Cache
   postAppendMessage: typeof postDesktopV3AppendMessage
 }
 
 let flowDeps: DesktopV3ExistingSessionFlowDeps = {
   getSnapshot: getDesktopV3CacheSnapshot,
-  requireControllerReady: requireDesktopV3RealtimeControllerReady,
   dispatch: dispatchDesktopV3Cache,
   postAppendMessage: postDesktopV3AppendMessage,
 }
@@ -174,9 +172,9 @@ export async function continueDesktopV3Conversation(
     throw new Error(`Desktop V3 session ${sessionId} is deleted`)
   }
 
-  const controller = await flowDeps.requireControllerReady()
-  await controller.ensureSessionConnected(sessionId)
-
+  // Realtime is an accelerator, not the authority for message acceptance. A stale
+  // or reconnecting subscription must not block the canonical HTTP mutation;
+  // its response updates the cache and durable replay repairs live delivery.
   flowDeps.dispatch({
     type: 'pendingUser.upsert',
     input: {

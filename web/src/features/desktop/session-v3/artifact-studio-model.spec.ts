@@ -85,6 +85,24 @@ test('artifact studio groups atomic multi-part candidates into every affected pa
   ])
 })
 
+test('artifact studio keeps review-part lineage attached to whole-artifact turns', () => {
+  const baseRef = ref('base', 1)
+  const candidateRefs = [ref('bloom-a', 2), ref('bloom-b', 3)]
+  const base = artifact({ id: 'base', eventSeq: 1, step: 'step-1', revision: 1, candidates: [baseRef], accepted: baseRef, head: baseRef })
+  base.parts = [{ id: 'ignite', label: '01 — Ignite', kind: 'temporal', startMs: 0, endMs: 4000 }, { id: 'bloom', label: '03 — Bloom', kind: 'temporal', startMs: 8000, endMs: 12000 }]
+  const candidates = candidateRefs.map((reference, index) => artifact({ id: reference.variantId, eventSeq: index + 2, step: 'step-2', revision: 2, candidates: candidateRefs, parent: baseRef, head: baseRef, section: 'bloom' }))
+  candidates.forEach((candidate) => {
+    candidate.parts = base.parts
+    candidate.lineage.iterationSectionLabel = '03 — Bloom'
+    candidate.lineage.iterationSectionStartMs = 8000
+    candidate.lineage.iterationSectionEndMs = 12000
+  })
+
+  const turns = desktopV3ArtifactStudioTurns([base, ...candidates], candidates[0]!)
+  assert.deepEqual(turns[1]?.changedPartIds, [])
+  assert.deepEqual(turns[1]?.relatedTargets, [{ partId: 'bloom', label: '03 — Bloom', kind: 'temporal', startMs: 8000, endMs: 12000 }])
+})
+
 test('artifact studio exposes every authoritative step as a turn, including roots and single fine-tunes', () => {
   const baseRef = ref('base', 1)
   const fineTuneRef = ref('fine-tune', 2)

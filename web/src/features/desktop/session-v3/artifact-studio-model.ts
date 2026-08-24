@@ -85,6 +85,14 @@ export interface DesktopV3ArtifactStudioTurnPart {
   accepted?: DesktopV3ArtifactStudioTurnCandidate
 }
 
+export interface DesktopV3ArtifactStudioTurnTarget {
+  partId: string
+  label: string
+  kind: string
+  startMs: number
+  endMs: number
+}
+
 /** One authoritative artifact step, including roots, no-op steps, and single-candidate edits. */
 export interface DesktopV3ArtifactStudioTurn {
   id: string
@@ -92,6 +100,7 @@ export interface DesktopV3ArtifactStudioTurn {
   revisionNumber: number
   parent?: DesktopV3ArtifactChainReference
   changedPartIds: string[]
+  relatedTargets: DesktopV3ArtifactStudioTurnTarget[]
   candidates: DesktopV3ArtifactStudioTurnCandidate[]
   parts: DesktopV3ArtifactStudioTurnPart[]
   accepted?: DesktopV3ArtifactStudioTurnCandidate
@@ -187,6 +196,18 @@ export function desktopV3ArtifactStudioTurns(entries: readonly DesktopV3Artifact
         : [])
     })
     const changedPartIds = [...new Set([...changedByCandidate.flat(), ...declaredByCandidate.flat()])]
+    const relatedTargets = [...new Map(candidates.flatMap((candidate): Array<[string, DesktopV3ArtifactStudioTurnTarget]> => {
+      const lineage = candidate.entry?.lineage
+      const partId = lineage?.partId || lineage?.iterationSectionId || ''
+      if (!partId) return []
+      const definition = candidate.entry?.partDefinitions?.find((part) => part.id === partId)
+      const reviewPart = candidate.entry?.parts?.find((part) => part.id === partId)
+      const label = lineage?.partLabel || lineage?.iterationSectionLabel || definition?.label || reviewPart?.label || partId
+      const kind = lineage?.partKind || definition?.locator?.kind || reviewPart?.kind || 'semantic'
+      const startMs = lineage?.iterationSectionStartMs || (definition?.locator?.kind === 'temporal' ? definition.locator.startMs : reviewPart?.startMs) || 0
+      const endMs = lineage?.iterationSectionEndMs || (definition?.locator?.kind === 'temporal' ? definition.locator.endMs : reviewPart?.endMs) || 0
+      return [[partId, { partId, label, kind, startMs, endMs }]]
+    })).values()]
     const accepted = step.accepted ? turnCandidate(entries, step.accepted) : undefined
     const parts = changedPartIds.map((partId): DesktopV3ArtifactStudioTurnPart => {
       const partCandidates = candidates.flatMap((candidate, index) => {
@@ -208,6 +229,7 @@ export function desktopV3ArtifactStudioTurns(entries: readonly DesktopV3Artifact
       revisionNumber: step.revisionNumber,
       ...(step.parent ? { parent: step.parent } : {}),
       changedPartIds,
+      relatedTargets,
       candidates,
       parts,
       ...(accepted ? { accepted } : {}),

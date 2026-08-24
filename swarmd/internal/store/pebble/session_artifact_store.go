@@ -408,6 +408,18 @@ func (s *SessionStore) ValidateSessionArtifactMessageSelections(accountScopeID, 
 					ref.PartLabel, ref.PartKind, ref.Part, foundPart = part.Label, part.Kind, &part, true
 					break
 				}
+			} else {
+				// Locator-only review parts are exact metadata on this authenticated
+				// immutable variant even though they are not independently stored
+				// composition parts. Preserve that exact target for Studio changes.
+				for _, declared := range variant.Parts {
+					if strings.TrimSpace(declared.ID) != ref.PartID {
+						continue
+					}
+					part := declared
+					ref.PartLabel, ref.PartKind, ref.Part, foundPart = strings.TrimSpace(part.Label), strings.TrimSpace(part.Kind), &part, true
+					break
+				}
 			}
 			if !foundPart {
 				return nil, fmt.Errorf("artifact selection %d part was not found on the exact revision", index)

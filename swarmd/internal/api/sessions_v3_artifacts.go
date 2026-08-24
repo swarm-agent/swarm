@@ -222,6 +222,16 @@ func (s *Server) projectSessionsV3ArtifactComposition(session pebblestore.Sessio
 	return definitions, revisions, projection, targetedPartID, acceptedHeads, nil
 }
 
+func sessionsV3ArtifactCatalogPartGraphState(variant pebblestore.SessionArtifactVariant) string {
+	if variant.PartGraphState != "" {
+		return variant.PartGraphState
+	}
+	if len(variant.Parts) != 0 {
+		return pebblestore.SessionArtifactGraphLegacyUnproven
+	}
+	return ""
+}
+
 func sessionsV3ArtifactTargetedPartIDs(variant pebblestore.SessionArtifactVariant, composition *sessionsV3ArtifactCompositionProjection) []string {
 	if variant.ParentArtifact == nil || composition == nil {
 		return nil
@@ -464,7 +474,7 @@ func (s *Server) handleSessionsV3Artifacts(w http.ResponseWriter, r *http.Reques
 						Previewable: previewable, Selected: chain.Head.SessionID == variant.SessionID && chain.Head.CollectionID == variant.CollectionID && chain.Head.VariantID == variant.ID,
 						Category: sessionsV3ManagedArtifactCategory(variant), UpdatedAt: variant.UpdatedAt, EventSeq: variant.EventSeq, Progress: &progress, Lineage: &lineage, OutputRequirements: cloneSessionsV3ArtifactOutputRequirements(variant.OutputRequirements), AnimationProfile: cloneSessionsV3ArtifactAnimationProfile(variant.AnimationProfile),
 						Chain: &chain, Step: step, GraphState: variant.GraphState, ParentArtifact: variant.ParentArtifact, ArtifactChainID: variant.ArtifactChainID, ArtifactStepID: variant.ArtifactStepID, RevisionNumber: variant.RevisionNumber, RevisionRoundID: variant.RevisionRoundID, CandidateIndex: variant.CandidateIndex, Parts: append([]pebblestore.SessionArtifactPart(nil), variant.Parts...),
-						PartGraphState: variant.PartGraphState, PartDefinitions: partDefinitions, PartRevisions: partRevisions, Composition: composition, TargetedPartID: targetedPartID, TargetedPartIDs: sessionsV3ArtifactTargetedPartIDs(variant, composition), AcceptedPartHeads: acceptedPartHeads,
+						PartGraphState: sessionsV3ArtifactCatalogPartGraphState(variant), PartDefinitions: partDefinitions, PartRevisions: partRevisions, Composition: composition, TargetedPartID: targetedPartID, TargetedPartIDs: sessionsV3ArtifactTargetedPartIDs(variant, composition), AcceptedPartHeads: acceptedPartHeads,
 					})
 				}
 			}

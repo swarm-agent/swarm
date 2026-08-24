@@ -41,6 +41,21 @@ func TestSessionV3ArtifactRequiresBundleOnlyForPackages(t *testing.T) {
 	}
 }
 
+func TestSessionsV3ArtifactCatalogPartGraphStateProjectsReviewParts(t *testing.T) {
+	reviewOnly := pebblestore.SessionArtifactVariant{Parts: []pebblestore.SessionArtifactPart{{ID: "signal", Label: "Signal", Kind: "temporal", EndMs: 4000}}}
+	if got := sessionsV3ArtifactCatalogPartGraphState(reviewOnly); got != pebblestore.SessionArtifactGraphLegacyUnproven {
+		t.Fatalf("review-only part graph state = %q", got)
+	}
+	multipart := reviewOnly
+	multipart.PartGraphState = pebblestore.SessionArtifactGraphAuthoritative
+	if got := sessionsV3ArtifactCatalogPartGraphState(multipart); got != pebblestore.SessionArtifactGraphAuthoritative {
+		t.Fatalf("authoritative part graph state = %q", got)
+	}
+	if got := sessionsV3ArtifactCatalogPartGraphState(pebblestore.SessionArtifactVariant{}); got != "" {
+		t.Fatalf("partless graph state = %q", got)
+	}
+}
+
 func TestSessionsV3ArtifactCatalogItemPreservesAnimationProfile(t *testing.T) {
 	profile, err := artifact.ResolveAnimationProfile(&artifact.AnimationProfileInput{Profile: "motion_ui"})
 	if err != nil {

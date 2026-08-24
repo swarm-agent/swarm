@@ -188,6 +188,14 @@ test('gallery exposes the exact-reference HTML-to-video-stills bridge without br
   assert.doesNotMatch(gallery, /start.*render/i)
 })
 
+test('artifact studio turn headers identify and navigate through their related review part', async () => {
+  const gallery = await readFile(galleryURL, 'utf8')
+
+  assert.match(gallery, /turn\.relatedTargets\.length === 1/)
+  assert.match(gallery, /data-artifact-studio-turn-related-parts>Related to \{turnRelatedLabel\}/)
+  assert.match(gallery, /if \(turnRelatedPart\) selectPartIterationArtifact\(turnTarget, turnRelatedPart\.partId\)/)
+})
+
 test('mobile gallery reserves a stable middle generation viewport between selectors and actions', async () => {
   const gallery = await readFile(galleryURL, 'utf8')
 

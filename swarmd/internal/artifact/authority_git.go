@@ -41,10 +41,24 @@ func (a *Authority) publishGitVariant(ctx context.Context, principal Principal, 
 		variant.CommitOID, err = repo.Genesis(ctx, artifactgit.Genesis{MediaType: variant.MediaType, Content: &artifactgit.BlobInput{MediaType: variant.MediaType, Bytes: body}})
 	} else {
 		candidateID := artifactGitID("candidate", input.ArtifactStepID, variant.ID)
-		variant.CommitOID, err = repo.Candidate(ctx, artifactgit.CandidateRequest{ID: candidateID, Base: base, Content: &artifactgit.BlobInput{MediaType: variant.MediaType, Bytes: body}, Message: "artifact candidate"})
-		variant.CandidateRef, variant.ParentCommitOIDs = "refs/swarm/candidates/"+candidateID, []string{base}
+		parents := []string{base}
+		expectedOfficial := base
+		if input.AutoAccept {
+			// A user may continue directly from any exact ready iteration, including a
+			// sibling candidate that is not the current official head. Join that base
+			// with the current official history and CAS from the actual official ref;
+			// never retry the impossible stale CAS against the selected candidate.
+			expectedOfficial, err = repo.Official(ctx)
+			if err == nil && expectedOfficial != base {
+				parents = []string{expectedOfficial, base}
+			}
+		}
+		if err == nil {
+			variant.CommitOID, err = repo.Candidate(ctx, artifactgit.CandidateRequest{ID: candidateID, Base: base, Parents: parents, Content: &artifactgit.BlobInput{MediaType: variant.MediaType, Bytes: body}, Message: "artifact candidate"})
+		}
+		variant.CandidateRef, variant.ParentCommitOIDs = "refs/swarm/candidates/"+candidateID, append([]string(nil), parents...)
 		if err == nil && input.AutoAccept {
-			_, err = repo.AdvanceOfficial(ctx, base, variant.CommitOID, artifactGitID("tx", input.RequestID))
+			_, err = repo.AdvanceOfficial(ctx, expectedOfficial, variant.CommitOID, artifactGitID("tx", input.RequestID))
 		}
 	}
 	if err != nil {

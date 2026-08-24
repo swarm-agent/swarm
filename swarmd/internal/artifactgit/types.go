@@ -90,8 +90,13 @@ type PartChange struct {
 }
 
 type CandidateRequest struct {
-	ID      string
-	Base    string
+	ID   string
+	Base string
+	// Parents defaults to Base. When a candidate continues from a non-official
+	// revision and will be accepted immediately, callers may put the current
+	// official commit first and Base second so the resulting commit joins both
+	// histories and its first parent remains the authoritative CAS expectation.
+	Parents []string
 	Content *BlobInput
 	Parts   map[string]PartChange
 	Message string
