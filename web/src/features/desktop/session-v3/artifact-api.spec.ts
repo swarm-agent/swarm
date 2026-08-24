@@ -20,6 +20,7 @@ import {
   desktopV3ArtifactViewerSearch,
   desktopV3ArtifactMessageSelection,
   desktopV3ArtifactPartMessageSelection,
+  desktopV3ArtifactRevisionHasPart,
   desktopV3ArtifactSelection,
   formatDesktopV3ArtifactAnimationProfile,
   formatDesktopV3ArtifactOutputRequirements,
@@ -526,6 +527,8 @@ test('authoritative part chips carry the exact part identity and readable target
   })
   assert.ok(entry)
 
+  assert.equal(desktopV3ArtifactRevisionHasPart(entry, 'signal'), true)
+  assert.equal(desktopV3ArtifactRevisionHasPart(entry, 'missing'), false)
   const selection = desktopV3ArtifactPartMessageSelection(entry, 'signal')
   assert.equal(selection.part_id, 'signal')
   assert.equal(selection.action, 'use')
@@ -542,6 +545,7 @@ test('locator-only review parts carry exact event-scoped metadata back to AI', (
   })
   assert.ok(entry)
 
+  assert.equal(desktopV3ArtifactRevisionHasPart(entry, 'part-2'), true)
   const selection = desktopV3ArtifactPartMessageSelection(entry, 'part-2')
   assert.equal(selection.part_id, 'part-2')
   assert.equal(selection.action, 'use')

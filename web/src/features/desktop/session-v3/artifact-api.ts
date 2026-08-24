@@ -760,6 +760,15 @@ export function desktopV3ArtifactMessageSelection(
  * resolves the typed locator from the authenticated artifact revision before
  * provider context is assembled; the client sends only the stable part ID.
  */
+export function desktopV3ArtifactRevisionHasPart(entry: DesktopV3ArtifactCatalogEntry, partId: string): boolean {
+  const normalizedPartId = partId.trim()
+  if (!normalizedPartId) return false
+  const definition = entry.partDefinitions?.find((part) => part.id === normalizedPartId)
+  const compositionHasPart = entry.composition?.parts.some((part) => part.partId === normalizedPartId) === true
+  const reviewPart = entry.parts?.some((part) => part.id === normalizedPartId) === true
+  return (entry.partGraphState === 'authoritative' && Boolean(definition && compositionHasPart)) || reviewPart
+}
+
 export function desktopV3ArtifactPartMessageSelection(
   entry: DesktopV3ArtifactCatalogEntry,
   partId: string,
@@ -767,10 +776,8 @@ export function desktopV3ArtifactPartMessageSelection(
 ): DesktopV3ArtifactMessageSelection {
   const normalizedPartId = partId.trim()
   const definition = entry.partDefinitions?.find((part) => part.id === normalizedPartId)
-  const compositionHasPart = entry.composition?.parts.some((part) => part.partId === normalizedPartId) === true
   const reviewPart = entry.parts?.find((part) => part.id === normalizedPartId)
-  const authoritativePart = entry.partGraphState === 'authoritative' && Boolean(definition && compositionHasPart)
-  if (!normalizedPartId || (!authoritativePart && !reviewPart)) {
+  if (!desktopV3ArtifactRevisionHasPart(entry, normalizedPartId)) {
     throw new Error('Artifact part attachment requires an exact part on the selected revision')
   }
   const artifactSelection = desktopV3ArtifactMessageSelection(entry, action)
