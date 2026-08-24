@@ -68,7 +68,7 @@ func TestTaskToolSchemaExposesOnlyDesignerOutputModeSelection(t *testing.T) {
 	if !reflect.DeepEqual(source["required"], []string{"session_id", "collection_id", "variant_id", "event_seq"}) || sourceProperties["event_seq"] == nil {
 		t.Fatalf("task source_artifact schema = %#v", source)
 	}
-	if description, _ := source["description"].(string); !strings.Contains(description, "managed Designer work") || !strings.Contains(description, "Regular mode requires every launch to be a managed Designer") || !strings.Contains(description, "passes the opaque reference to each worker") {
+	if description, _ := source["description"].(string); !strings.Contains(description, "Regular workspace Designers") || !strings.Contains(description, "materializes the artifact") || !strings.Contains(description, "Managed Designers receive the opaque reference") {
 		t.Fatalf("task source_artifact description = %q", description)
 	}
 	sectionTarget, ok := properties["section_target"].(map[string]any)

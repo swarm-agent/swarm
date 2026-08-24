@@ -261,15 +261,27 @@ func TestParseTaskCallArgumentsRegularSectionTargetRequiresSourceArtifact(t *tes
 	}
 }
 
-func TestParseTaskCallArgumentsRegularSourceArtifactRejectsUnsupportedLaunches(t *testing.T) {
-	tests := []map[string]any{
-		{"prompt": "inspect", "source_artifact": map[string]any{"session_id": "s", "collection_id": "c", "variant_id": "v", "event_seq": 1}, "subagent_type": "finder", "meta_prompt": "inspect"},
-		{"prompt": "edit", "source_artifact": map[string]any{"session_id": "s", "collection_id": "c", "variant_id": "v", "event_seq": 1}, "subagent_type": "designer", "meta_prompt": "edit", "output_mode": "workspace", "owned_scope": []any{"design.html"}},
+func TestParseTaskCallArgumentsRegularSourceArtifactAcceptsWorkspaceDesigner(t *testing.T) {
+	source := map[string]any{"session_id": "s", "collection_id": "c", "variant_id": "v", "event_seq": 1}
+	parsed, err := parseTaskCallArguments(mustJSON(t, map[string]any{
+		"prompt": "edit", "source_artifact": source, "subagent_type": "designer", "meta_prompt": "edit",
+		"output_mode": "workspace", "owned_scope": []any{"design/source"}, "animation_profile": map[string]any{"profile": "motion_ui"},
+	}))
+	if err != nil {
+		t.Fatalf("parse workspace Designer source artifact: %v", err)
 	}
-	for _, args := range tests {
-		if _, err := parseTaskCallArguments(mustJSON(t, args)); err == nil || !strings.Contains(err.Error(), "requires every launch to be a managed Designer") {
-			t.Fatalf("unsupported regular source-artifact launch error = %v", err)
-		}
+	if len(parsed.Launches) != 1 || parsed.Launches[0].OutputMode != taskOutputModeWorkspace || !equalTaskImageSourceArtifact(parsed.Launches[0].SourceArtifact, parsed.SourceArtifact) {
+		t.Fatalf("workspace Designer source artifact = %#v", parsed.Launches)
+	}
+	if parsed.Launches[0].AnimationProfile == nil || parsed.Launches[0].AnimationProfile.ProfileID != "motion_ui" {
+		t.Fatalf("workspace Designer animation profile = %#v", parsed.Launches[0].AnimationProfile)
+	}
+}
+
+func TestParseTaskCallArgumentsRegularSourceArtifactRejectsNonDesigner(t *testing.T) {
+	args := map[string]any{"prompt": "inspect", "source_artifact": map[string]any{"session_id": "s", "collection_id": "c", "variant_id": "v", "event_seq": 1}, "subagent_type": "finder", "meta_prompt": "inspect"}
+	if _, err := parseTaskCallArguments(mustJSON(t, args)); err == nil || !strings.Contains(err.Error(), "requires every launch to be a Designer") {
+		t.Fatalf("unsupported regular source-artifact launch error = %v", err)
 	}
 }
 

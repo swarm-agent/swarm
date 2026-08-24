@@ -586,8 +586,8 @@ func parseTaskCallArguments(arguments string) (taskCallArguments, error) {
 		}
 		sourceArtifact = parsedSourceArtifact
 		for i := range launches {
-			if !agentruntime.IsDesignerAgentName(launches[i].RequestedSubagentType) || launches[i].OutputMode != taskOutputModeManaged {
-				return taskCallArguments{}, errors.New("task regular source_artifact requires every launch to be a managed Designer")
+			if !agentruntime.IsDesignerAgentName(launches[i].RequestedSubagentType) {
+				return taskCallArguments{}, errors.New("task regular source_artifact requires every launch to be a Designer")
 			}
 			launches[i].SourceArtifact = cloneTaskImageSourceArtifact(sourceArtifact)
 		}
@@ -1679,9 +1679,6 @@ func applyTaskAnimationProfile(launch *taskLaunchSpec, raw any, label string) er
 	}
 	if !agentruntime.IsDesignerAgentName(launch.RequestedSubagentType) {
 		return fmt.Errorf("%s animation_profile is supported only for Designer", label)
-	}
-	if launch.OutputMode != taskOutputModeManaged {
-		return fmt.Errorf("%s animation_profile requires managed Designer output", label)
 	}
 	resolved, err := artifactruntime.ParseAnimationProfile(raw)
 	if err != nil {
@@ -3364,6 +3361,19 @@ func (s *Service) buildTaskLaunchPermissionPayload(sessionID, sessionMode string
 	}
 	if err := validatePlanSidechatTaskTargets(parentSession, parsed.Launches); err != nil {
 		return taskLaunchManifest{}, err
+	}
+	if parsed.SourceArtifact != nil {
+		if s == nil || s.tools == nil || s.tools.ArtifactAuthority() == nil {
+			return taskLaunchManifest{}, errors.New("task source_artifact requires the authenticated artifact authority")
+		}
+		principal := artifactruntime.Principal{SessionID: parentSession.ID, AccountScopeID: parentSession.AccountScopeID, UserID: parentSession.UserID}
+		sourceVariant, sourceErr := s.tools.ArtifactAuthority().GetReference(principal, *parsed.SourceArtifact)
+		if sourceErr != nil {
+			return taskLaunchManifest{}, fmt.Errorf("task source_artifact is unavailable: %w", sourceErr)
+		}
+		if profileErr := applyTaskSourceAnimationProfile(sourceVariant, parsed.Launches); profileErr != nil {
+			return taskLaunchManifest{}, profileErr
+		}
 	}
 	parentMode := sessionruntime.NormalizeMode(sessionMode)
 	childMode := effectiveTaskChildMode(sessionMode)

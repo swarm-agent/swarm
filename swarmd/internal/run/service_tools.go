@@ -3971,6 +3971,69 @@ type taskExecutionRequest struct {
 	ApplySessionMutation func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error)
 }
 
+func applyTaskSourceAnimationProfile(source pebblestore.SessionArtifactVariant, launches []taskLaunchSpec) error {
+	if source.AnimationProfile == nil {
+		return nil
+	}
+	for index := range launches {
+		if !agentruntime.IsDesignerAgentName(launches[index].RequestedSubagentType) {
+			continue
+		}
+		if launches[index].AnimationProfile != nil && !reflect.DeepEqual(launches[index].AnimationProfile, source.AnimationProfile) {
+			return fmt.Errorf("task launches[%d] animation_profile conflicts with the exact source artifact snapshot", index)
+		}
+		launches[index].AnimationProfile = cloneTaskAnimationProfile(source.AnimationProfile)
+		if launches[index].SourceArguments == nil {
+			launches[index].SourceArguments = map[string]any{}
+		}
+		launches[index].SourceArguments["animation_profile"] = cloneTaskAnimationProfile(source.AnimationProfile)
+	}
+	return nil
+}
+
+func (s *Service) materializeWorkspaceDesignerSources(ctx context.Context, parent pebblestore.SessionSnapshot, launches []taskLaunchSpec) error {
+	if s == nil || s.tools == nil || s.tools.ArtifactAuthority() == nil {
+		for index := range launches {
+			if agentruntime.IsDesignerAgentName(launches[index].RequestedSubagentType) && launches[index].OutputMode == taskOutputModeWorkspace && launches[index].SourceArtifact != nil {
+				return errors.New("workspace Designer source_artifact requires the authenticated artifact authority")
+			}
+		}
+		return nil
+	}
+	principal := artifact.Principal{SessionID: parent.ID, AccountScopeID: parent.AccountScopeID, UserID: parent.UserID}
+	for index := range launches {
+		launch := &launches[index]
+		if !agentruntime.IsDesignerAgentName(launch.RequestedSubagentType) || launch.OutputMode != taskOutputModeWorkspace || launch.SourceArtifact == nil {
+			continue
+		}
+		if len(launch.OwnedScope) != 1 {
+			return fmt.Errorf("task launches[%d] workspace Designer source_artifact requires exactly one owned_scope output target", index)
+		}
+		workspaceRoot := strings.TrimSpace(firstNonEmptyString(launch.TargetWorkspacePath, parent.WorkspacePath))
+		destination := strings.TrimSpace(launch.OwnedScope[0])
+		if workspaceRoot == "" || destination == "" {
+			return fmt.Errorf("task launches[%d] workspace Designer source_artifact requires a resolved workspace and output target", index)
+		}
+		if _, statErr := os.Lstat(filepath.Join(workspaceRoot, filepath.FromSlash(destination))); statErr == nil {
+			return fmt.Errorf("task launches[%d] workspace Designer source artifact destination %q already exists", index, destination)
+		} else if !errors.Is(statErr, os.ErrNotExist) {
+			return fmt.Errorf("task launches[%d] preflight workspace Designer source destination: %w", index, statErr)
+		}
+	}
+	for index := range launches {
+		launch := &launches[index]
+		if !agentruntime.IsDesignerAgentName(launch.RequestedSubagentType) || launch.OutputMode != taskOutputModeWorkspace || launch.SourceArtifact == nil {
+			continue
+		}
+		workspaceRoot := strings.TrimSpace(firstNonEmptyString(launch.TargetWorkspacePath, parent.WorkspacePath))
+		destination := strings.TrimSpace(launch.OwnedScope[0])
+		if _, err := s.tools.ArtifactAuthority().MaterializeReference(ctx, principal, *launch.SourceArtifact, workspaceRoot, destination, false); err != nil {
+			return fmt.Errorf("task launches[%d] materialize source_artifact into workspace output %q: %w", index, destination, err)
+		}
+	}
+	return nil
+}
+
 func executeTaskLaunchesInParallel[T any](ctx context.Context, launchCount int, runOne func(context.Context, int) (T, error)) ([]T, []error) {
 	if launchCount <= 0 {
 		return nil, nil
@@ -4157,28 +4220,29 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 			}
 		}
 		for i := range launchSpecs {
-			if (agentruntime.IsDesignerAgentName(launchSpecs[i].RequestedSubagentType) || agentruntime.IsImageAgentName(launchSpecs[i].RequestedSubagentType)) && launchSpecs[i].OutputMode == taskOutputModeManaged {
-				if launchSpecs[i].SourceArguments == nil {
-					launchSpecs[i].SourceArguments = map[string]any{}
+			if !agentruntime.IsDesignerAgentName(launchSpecs[i].RequestedSubagentType) && !agentruntime.IsImageAgentName(launchSpecs[i].RequestedSubagentType) {
+				continue
+			}
+			if launchSpecs[i].SourceArguments == nil {
+				launchSpecs[i].SourceArguments = map[string]any{}
+			}
+			if launchSpecs[i].SourceArtifact != nil && !equalTaskImageSourceArtifact(launchSpecs[i].SourceArtifact, boundSource) {
+				return "", errors.New("task launch source_artifact does not match the authenticated Artifact Studio selection")
+			}
+			launchSpecs[i].SourceArtifact = cloneTaskImageSourceArtifact(boundSource)
+			if boundSelection.Part != nil {
+				if requestedTargets, _ := parseTaskSwarmSectionTargets(launchSpecs[i].SourceArguments["section_targets"]); len(requestedTargets) > 1 {
+					return "", errors.New("task authenticated message selection contains one part but launch section_targets requests multiple parts")
 				}
-				if launchSpecs[i].SourceArtifact != nil && !equalTaskImageSourceArtifact(launchSpecs[i].SourceArtifact, boundSource) {
-					return "", errors.New("task launch source_artifact does not match the authenticated Artifact Studio selection")
+				boundTarget := taskSectionTargetFromArtifactPart(*boundSelection.Part)
+				requested, targetErr := parseTaskSwarmSectionTarget(launchSpecs[i].SourceArguments["section_target"])
+				if targetErr != nil {
+					return "", targetErr
 				}
-				launchSpecs[i].SourceArtifact = cloneTaskImageSourceArtifact(boundSource)
-				if boundSelection.Part != nil {
-					if requestedTargets, _ := parseTaskSwarmSectionTargets(launchSpecs[i].SourceArguments["section_targets"]); len(requestedTargets) > 1 {
-						return "", errors.New("task authenticated message selection contains one part but launch section_targets requests multiple parts")
-					}
-					boundTarget := taskSectionTargetFromArtifactPart(*boundSelection.Part)
-					requested, targetErr := parseTaskSwarmSectionTarget(launchSpecs[i].SourceArguments["section_target"])
-					if targetErr != nil {
-						return "", targetErr
-					}
-					if requested != nil && !equalTaskSectionTarget(requested, boundTarget) {
-						return "", errors.New("task section_target does not match the authenticated Artifact Studio part")
-					}
-					launchSpecs[i].SourceArguments["section_target"] = boundTarget
+				if requested != nil && !equalTaskSectionTarget(requested, boundTarget) {
+					return "", errors.New("task section_target does not match the authenticated Artifact Studio part")
 				}
+				launchSpecs[i].SourceArguments["section_target"] = boundTarget
 			}
 		}
 	}
@@ -4193,6 +4257,9 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 		sourceVariant, sourceErr := s.tools.ArtifactAuthority().GetReference(principal, *sourceArtifact)
 		if sourceErr != nil {
 			return "", fmt.Errorf("task source_artifact is unavailable: %w", sourceErr)
+		}
+		if profileErr := applyTaskSourceAnimationProfile(sourceVariant, launchSpecs); profileErr != nil {
+			return "", profileErr
 		}
 		var targets []*taskSwarmSectionTarget
 		if parsed.Mode == taskModeSwarm && parsed.Swarm != nil && agentruntime.IsDesignerAgentName(parsed.Swarm.AgentType) {
@@ -4373,6 +4440,9 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 			trustedProfiles[i] = &profile
 			trustedSources[i] = strings.TrimSpace(row.SourceAgentName)
 		}
+	}
+	if err := s.materializeWorkspaceDesignerSources(ctx, parentSession, launchSpecs); err != nil {
+		return "", err
 	}
 
 	coderIndexes := make([]int, 0, len(launchSpecs))
@@ -5412,6 +5482,12 @@ func buildTaskDelegationPrompt(config taskDelegationPromptConfig) string {
 			b.WriteString("- owned scope/output target: ")
 			b.WriteString(strings.Join(config.OwnedScope, ", "))
 			b.WriteString("\n- output contract: create or revise ordinary reusable workspace artifacts only within that declared target; do not use manage_artifact; artifacts remain available after this child finishes\n")
+			if config.SourceArtifact != nil {
+				b.WriteString("- exact source artifact (backend supplied; immutable input): ")
+				encoded, _ := json.Marshal(config.SourceArtifact)
+				b.Write(encoded)
+				b.WriteString("\n- source artifact contract: trusted orchestration has authenticated and materialized this exact ready artifact at the declared owned-scope destination before launch. Inspect and revise those workspace bytes in place; never guess another path or publish a managed artifact.\n")
+			}
 		default:
 			b.WriteString("- output contract: invalid or missing; fail without mutating the checkout or managed artifacts\n")
 		}
