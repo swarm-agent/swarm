@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises'
 import test from 'node:test'
 
 import type { DesktopV3ArtifactCatalogEntry } from '../../session-v3/artifact-api'
-import { desktopV3ArtifactSidebarGroups, desktopV3ArtifactsForSession, desktopV3HasPendingVisualSwarm, desktopV3MobileVisualSwarmArtifactToOpen, desktopV3NextSessionSidebarView } from './desktop-v3-artifact-sidebar'
+import { desktopV3ArtifactSidebarGroups, desktopV3ArtifactSidebarPartChatSelection, desktopV3ArtifactsForSession, desktopV3HasPendingVisualSwarm, desktopV3MobileVisualSwarmArtifactToOpen, desktopV3NextSessionSidebarView } from './desktop-v3-artifact-sidebar'
 
 function artifact(sessionId: string, artifactId: string, parentSessionId = ''): DesktopV3ArtifactCatalogEntry {
   return {
@@ -63,7 +63,7 @@ test('sidebar labels ready images as exact chat remix inputs', async () => {
   const source = await readFile(new URL('./desktop-v3-artifact-sidebar.tsx', import.meta.url), 'utf8')
   assert.match(source, /Attach \$\{artifact\.label\} for chat changes/)
   assert.match(source, /Attach to chat for remixing/)
-  assert.match(source, /onAddToChat\(\[artifact\]\)/)
+  assert.match(source, /desktopV3ArtifactMessageSelection\(artifact, 'select'\)/)
 })
 
 test('sidebar animates every visible governed preview while isolating arbitrary HTML', async () => {
@@ -120,6 +120,24 @@ test('delegated collection variants group under their parent session', () => {
   const groups = desktopV3ArtifactSidebarGroups([first, second])
   assert.equal(groups.length, 1)
   assert.deepEqual(groups[0]?.entries.map((entry) => entry.artifactId), ['variant-1', 'variant-2'])
+})
+
+test('sidebar part attachment links the exact authoritative part back to chat', () => {
+  const entry = {
+    ...artifact('session-a', 'variant-1'),
+    collectionId: 'collection-1',
+    eventSeq: 42,
+    partGraphState: 'authoritative' as const,
+    artifactChainId: 'chain-1',
+    partDefinitions: [{ id: 'signal', label: 'Signal', description: 'Signal animation.', locator: { id: 'signal', label: 'Signal', description: 'Signal animation.', kind: 'temporal' as const, startMs: 0, endMs: 4000, x: 0, y: 0, width: 0, height: 0, page: 0, stateId: '', selector: '' } }],
+    composition: { id: 'composition-1', artifactChainId: 'chain-1', parent: null, iterationTurnId: '', iterationGroupId: '', construction: null, parts: [{ partId: 'signal', definitionOwnerSessionId: 'session-a', revision: { artifactChainId: 'chain-1', partId: 'signal', partRevisionId: 'signal-r1', ownerSessionId: 'session-a', digestSha256: 'a'.repeat(64), size: 10, mediaType: 'text/html' } }] },
+  }
+
+  const selection = desktopV3ArtifactSidebarPartChatSelection(entry, 'signal')
+  assert.equal(selection.part_id, 'signal')
+  assert.equal(selection.action, 'use')
+  assert.match(selection.label, /Signal/)
+  assert.match(selection.description ?? '', /temporal/)
 })
 
 test('sidebar distinguishes accepted byte heads from pending locked candidates', async () => {

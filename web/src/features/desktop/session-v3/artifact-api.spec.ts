@@ -19,6 +19,7 @@ import {
   desktopV3ArtifactViewerLocation,
   desktopV3ArtifactViewerSearch,
   desktopV3ArtifactMessageSelection,
+  desktopV3ArtifactPartMessageSelection,
   desktopV3ArtifactSelection,
   formatDesktopV3ArtifactAnimationProfile,
   formatDesktopV3ArtifactOutputRequirements,
@@ -508,6 +509,28 @@ test('artifact chips preserve exact iteration identity and describe the selected
   assert.deepEqual(appendDesktopV3ArtifactMessageSelection([select], use), [use])
   assert.deepEqual(removeDesktopV3ArtifactMessageSelection([use], use), [])
   assert.equal(JSON.stringify(use).includes('content'), false)
+})
+
+test('authoritative part chips carry the exact part identity and readable target metadata', () => {
+  const entry = normalizeDesktopV3ArtifactCatalogEntry({
+    ...managedCatalogWire,
+    part_graph_state: 'authoritative',
+    artifact_chain_id: 'chain-1',
+    part_definitions: [{ id: 'signal', label: 'Signal', description: 'Signal animation.', locator: { id: 'signal', label: 'Signal', kind: 'temporal', description: 'Signal animation.', start_ms: 0, end_ms: 4000 } }],
+    composition: {
+      id: 'composition-1', artifact_chain_id: 'chain-1', owner_session_id: 'session-1',
+      construction: { kind: 'concat-v1', entries: [{ part_id: 'signal', path: 'signal.html' }] },
+      parts: [{ part_id: 'signal', definition_owner_session_id: 'session-1', revision: { artifact_chain_id: 'chain-1', part_id: 'signal', part_revision_id: 'signal-r1', owner_session_id: 'session-1', digest_sha256: 'a'.repeat(64), size: 10, media_type: 'text/html' } }],
+    },
+  })
+  assert.ok(entry)
+
+  const selection = desktopV3ArtifactPartMessageSelection(entry, 'signal')
+  assert.equal(selection.part_id, 'signal')
+  assert.equal(selection.action, 'use')
+  assert.match(selection.label, /Signal/)
+  assert.match(selection.description ?? '', /Signal \(temporal\)/)
+  assert.throws(() => desktopV3ArtifactPartMessageSelection(entry, 'missing'), /exact authoritative part/)
 })
 
 test('artifact chips preserve independent exact part targets on one artifact', () => {

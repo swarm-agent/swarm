@@ -56,7 +56,9 @@ func equalAuthoritativePartDefinition(left, right pebblestore.SessionArtifactPar
 
 func firstNonEmpty(values ...string) string {
 	for _, value := range values {
-		if strings.TrimSpace(value) != "" { return strings.TrimSpace(value) }
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
 	}
 	return ""
 }
@@ -157,7 +159,9 @@ func (a *Authority) publishReplacementComposition(principal Principal, input Pub
 	digest := sha256.Sum256(compositionBytes)
 	collection, ok, err := a.metadata.GetSessionArtifactCollection(principal.AccountScopeID, principal.SessionID, input.CollectionID)
 	if err != nil || !ok {
-		if err == nil { err = errors.New("part replacement destination collection was not found") }
+		if err == nil {
+			err = errors.New("part replacement destination collection was not found")
+		}
 		return pebblestore.SessionArtifactVariant{}, err
 	}
 	lineage := a.lineage(principal, CreateInput{SourceSessionID: input.SourceArtifact.SessionID, SourceCollectionID: input.SourceArtifact.CollectionID, SourceVariantID: input.SourceArtifact.VariantID, SourceEventSeq: input.SourceArtifact.EventSeq})
@@ -170,14 +174,27 @@ func (a *Authority) publishReplacementComposition(principal Principal, input Pub
 			return pebblestore.SessionArtifactVariant{}, errors.New("part replacement destination was already published or has incompatible trusted lineage")
 		}
 		variant.CreatedAt, variant.UpdatedAt, variant.EventSeq, kind = existing.CreatedAt, existing.UpdatedAt, existing.EventSeq, pebblestore.V3SessionMutationUpdateArtifact
+		if existing.Lineage != (pebblestore.SessionArtifactLineage{}) {
+			variant.Lineage = existing.Lineage
+		}
+		variant.OutputRequirements = cloneOutputRequirements(existing.OutputRequirements)
+		variant.AnimationProfile = cloneAnimationProfile(existing.AnimationProfile)
 	}
 	result, err := a.mutateArtifact(principal, input.RequestID+":parts", kind, collection, &variant, nil, definitions, revisions, &composition)
-	if err != nil { return pebblestore.SessionArtifactVariant{}, fmt.Errorf("persist replacement part composition: %w", err) }
-	if result.Artifact == nil || result.Artifact.Variant == nil { return pebblestore.SessionArtifactVariant{}, errors.New("replacement part composition was not persisted") }
+	if err != nil {
+		return pebblestore.SessionArtifactVariant{}, fmt.Errorf("persist replacement part composition: %w", err)
+	}
+	if result.Artifact == nil || result.Artifact.Variant == nil {
+		return pebblestore.SessionArtifactVariant{}, errors.New("replacement part composition was not persisted")
+	}
 	created := *result.Artifact.Variant
 	created.Status, created.DigestSHA256, created.Size = pebblestore.SessionArtifactStatusReady, hex.EncodeToString(digest[:]), int64(len(compositionBytes))
 	finalized, err := a.mutateArtifact(principal, input.RequestID+":parts-ready:"+created.DigestSHA256, pebblestore.V3SessionMutationFinalizeArtifact, collection, &created, nil, nil, nil, nil)
-	if err != nil { return pebblestore.SessionArtifactVariant{}, fmt.Errorf("finalize replacement part candidate: %w", err) }
-	if finalized.Artifact == nil || finalized.Artifact.Variant == nil || finalized.Artifact.Variant.Status != pebblestore.SessionArtifactStatusReady { return pebblestore.SessionArtifactVariant{}, errors.New("replacement part candidate did not become ready") }
+	if err != nil {
+		return pebblestore.SessionArtifactVariant{}, fmt.Errorf("finalize replacement part candidate: %w", err)
+	}
+	if finalized.Artifact == nil || finalized.Artifact.Variant == nil || finalized.Artifact.Variant.Status != pebblestore.SessionArtifactStatusReady {
+		return pebblestore.SessionArtifactVariant{}, errors.New("replacement part candidate did not become ready")
+	}
 	return *finalized.Artifact.Variant, nil
 }

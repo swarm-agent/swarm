@@ -313,7 +313,7 @@ test('multipart Studio keeps exact part-change intent, accepted heads, and recon
   ])
   assert.match(gallery, /selectedPartIds/)
   assert.match(gallery, /requestedParts\.map/)
-  assert.match(gallery, /desktopV3ArtifactMessageSelection\(selected, 'use'\), part_id: part\.id/)
+  assert.match(gallery, /desktopV3ArtifactPartMessageSelection\(selected, part\.id, 'use'\)/)
   assert.match(pane, /action: selection\.action \?\? "select"/)
   assert.match(model, /acceptedPartHeads/)
   assert.match(model, /desktopV3ArtifactStudioSamePartRevision/)

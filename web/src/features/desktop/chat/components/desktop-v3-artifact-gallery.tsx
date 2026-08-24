@@ -31,6 +31,7 @@ import {
   desktopV3ArtifactCatalogEntryKey,
   desktopV3ArtifactDownloadName,
   desktopV3ArtifactMessageSelection,
+  desktopV3ArtifactPartMessageSelection,
   desktopV3ArtifactRequiresBundle,
   desktopV3ArtifactSelection,
   fetchDesktopV3ArtifactCollectionBundle,
@@ -808,12 +809,10 @@ export function DesktopV3ArtifactGallery({
     try {
       setActionPending('ask-part')
       setActionError('')
-      const messageSelection = desktopV3ArtifactMessageSelection(selected, 'select')
-      await onAddToChat(requestedParts.map((part) => ({
-        label: `${messageSelection.label} · ${part.label}`,
-        description: [`Change target: ${part.label} (${part.locator?.kind ?? 'semantic'}).`, part.description, messageSelection.description].filter(Boolean).join(' '),
-        selection: { ...desktopV3ArtifactMessageSelection(selected, 'use'), part_id: part.id },
-      })))
+      await onAddToChat(requestedParts.map((part) => {
+        const selection = desktopV3ArtifactPartMessageSelection(selected, part.id, 'use')
+        return { label: selection.label, description: selection.description, selection }
+      }))
       setOpen(false)
     } catch (error) {
       setActionError(error instanceof Error ? error.message : 'Could not attach these artifact parts for changes')
@@ -1012,14 +1011,12 @@ export function DesktopV3ArtifactGallery({
       setActionPending('add')
       setActionError('')
       await onAddToChat(pendingChatArtifacts.map((artifact) => {
-        const messageSelection = desktopV3ArtifactMessageSelection(artifact, 'select')
-        const selection = desktopV3ArtifactSelection(artifact)
-        if (selected && artifactSelectionKey(artifact) === artifactSelectionKey(selected) && selectedPartIds.length === 1) selection.part_id = selectedPartIds[0]
-        return {
-          label: messageSelection.label,
-          description: messageSelection.description,
-          selection,
+        if (selected && artifactSelectionKey(artifact) === artifactSelectionKey(selected) && selectedPartIds.length === 1) {
+          const selection = desktopV3ArtifactPartMessageSelection(artifact, selectedPartIds[0]!, 'select')
+          return { label: selection.label, description: selection.description, selection }
         }
+        const selection = desktopV3ArtifactMessageSelection(artifact, 'select')
+        return { label: selection.label, description: selection.description, selection }
       }))
       setChatSelectedIds([])
       setOpen(false)

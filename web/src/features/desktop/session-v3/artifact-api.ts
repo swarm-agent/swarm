@@ -534,11 +534,13 @@ function normalizeArtifactComposition(value: unknown): DesktopV3ArtifactComposit
     return partId ? [{ partId, path: artifactCatalogString(entry?.path) }] : []
   })
   const partIds = new Set(parts.map((part) => part.partId))
-  const construction = (constructionKind === 'concat-v1' || constructionKind === 'package-v1')
+  const validConstructionKind: 'concat-v1' | 'package-v1' | null =
+    constructionKind === 'concat-v1' || constructionKind === 'package-v1' ? constructionKind : null
+  const construction: DesktopV3ArtifactComposition['construction'] = validConstructionKind
     && entries.length === parts.length
     && new Set(entries.map((entry) => entry.partId)).size === entries.length
     && entries.every((entry) => partIds.has(entry.partId))
-    ? { kind: constructionKind, entries }
+    ? { kind: validConstructionKind, entries }
     : null
   return {
     id,
@@ -750,6 +752,36 @@ export function desktopV3ArtifactMessageSelection(
     label: desktopV3ArtifactVariantLabel(entry),
     description: desktopV3ArtifactVariantDescription(entry),
     action,
+  }
+}
+
+/**
+ * Builds portable chat metadata for one exact authoritative part. The server
+ * resolves the typed locator from the authenticated artifact revision before
+ * provider context is assembled; the client sends only the stable part ID.
+ */
+export function desktopV3ArtifactPartMessageSelection(
+  entry: DesktopV3ArtifactCatalogEntry,
+  partId: string,
+  action: 'select' | 'use' = 'use',
+): DesktopV3ArtifactMessageSelection {
+  const normalizedPartId = partId.trim()
+  const definition = entry.partDefinitions?.find((part) => part.id === normalizedPartId)
+  const compositionHasPart = entry.composition?.parts.some((part) => part.partId === normalizedPartId) === true
+  if (entry.partGraphState !== 'authoritative' || !normalizedPartId || !definition || !compositionHasPart) {
+    throw new Error('Artifact part attachment requires an exact authoritative part on the selected revision')
+  }
+  const artifactSelection = desktopV3ArtifactMessageSelection(entry, action)
+  const partKind = definition.locator?.kind ?? 'semantic'
+  return {
+    ...artifactSelection,
+    part_id: normalizedPartId,
+    label: `${artifactSelection.label} · ${definition.label}`,
+    description: [
+      `Change target: ${definition.label} (${partKind}).`,
+      definition.description,
+      artifactSelection.description,
+    ].filter(Boolean).join(' '),
   }
 }
 
