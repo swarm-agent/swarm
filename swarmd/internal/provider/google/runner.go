@@ -683,7 +683,6 @@ func sanitizeGoogleToolSchemaAlternatives(value any, inheritedProperties map[str
 func buildGoogleContents(req provideriface.Request) ([]googleContent, error) {
 	input := req.Input
 	contents := make([]googleContent, 0, len(input))
-	mediaCounts := map[string]int{}
 	callNameByID := make(map[string]string, 32)
 
 	for i := 0; i < len(input); i++ {
@@ -774,7 +773,9 @@ func buildGoogleContents(req provideriface.Request) ([]googleContent, error) {
 		if sourceRole == "assistant" {
 			googleRole = "model"
 		}
-		parts, err := googleMessageParts(req, item["content"], sourceRole, mediaCounts)
+		// MaxCount is the admission ceiling for one explicit message, not the
+		// accumulated media count across stateless full-input history replay.
+		parts, err := googleMessageParts(req, item["content"], sourceRole, map[string]int{})
 		if err != nil {
 			return nil, err
 		}
