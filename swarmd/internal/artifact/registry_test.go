@@ -1,7 +1,9 @@
 package artifact
 
 import (
+	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -24,9 +26,16 @@ func TestRegistryOwnedSessionDoesNotUseWorkspaceIdentity(t *testing.T) {
 	if got, err := registry.OwnedSession("owned", "account", "user"); err != nil || got.ID != "owned" { t.Fatalf("owned=%+v err=%v", got, err) }
 }
 
-func TestRegistryMaintenanceAcknowledgesObsoleteWorkspaceCleanup(t *testing.T) {
-	t.Setenv("STATE_DIRECTORY", filepath.Join(t.TempDir(), "data"))
-	resolver := &registryResolver{tombstones: []pebblestore.V3SessionTombstone{{SessionID:"deleted", Deleted:true, ArtifactCleanupPending:true}}}
-	report, err := NewRegistry(resolver, Limits{}).RunMaintenance(10)
+func TestRegistryMaintenanceDeletesGitRepositoryBeforeAcknowledging(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "data")
+	t.Setenv("STATE_DIRECTORY", root)
+	resolver := &registryResolver{tombstones: []pebblestore.V3SessionTombstone{{
+		SessionID: "deleted", Deleted: true, ArtifactCleanupPending: true,
+		ArtifactGitCleanup: []pebblestore.V3SessionArtifactGitCleanup{{RepositoryID: "deleted-repository", DeleteRepository: true}},
+	}}}
+	registry := NewRegistry(resolver, Limits{})
+	if _, err := registry.Repository(context.Background(), "deleted-repository"); err != nil { t.Fatal(err) }
+	report, err := registry.RunMaintenance(10)
 	if err != nil || report.DeletedSessions != 1 || resolver.tombstones[0].ArtifactCleanupPending { t.Fatalf("report=%+v err=%v", report, err) }
+	if _, err := os.Stat(filepath.Join(root, "artifact-repositories", "deleted-repository.git")); !errors.Is(err, os.ErrNotExist) { t.Fatalf("repository survived cleanup: %v", err) }
 }

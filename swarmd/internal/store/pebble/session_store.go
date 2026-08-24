@@ -96,20 +96,28 @@ type SessionLifecycleSnapshot struct {
 	OwnerTransport string `json:"owner_transport,omitempty"`
 }
 
+type V3SessionArtifactGitCleanup struct {
+	RepositoryID     string `json:"repository_id"`
+	CandidateRef     string `json:"candidate_ref,omitempty"`
+	ExpectedCommit   string `json:"expected_commit,omitempty"`
+	DeleteRepository bool   `json:"delete_repository,omitempty"`
+}
+
 type V3SessionTombstone struct {
-	SessionID              string          `json:"session_id"`
-	UserID                 string          `json:"user_id,omitempty"`
-	AccountScopeID         string          `json:"account_scope_id,omitempty"`
-	WorkspacePath          string          `json:"workspace_path,omitempty"`
-	Kind                   string          `json:"kind"`
-	Deleted                bool            `json:"deleted,omitempty"`
-	Archived               bool            `json:"archived,omitempty"`
-	Hidden                 bool            `json:"hidden,omitempty"`
-	EndpointSeq            uint64          `json:"endpoint_seq"`
-	EventSeq               uint64          `json:"event_seq"`
-	UpdatedAt              int64           `json:"updated_at"`
-	ArtifactCleanupPending bool            `json:"artifact_cleanup_pending,omitempty"`
-	Session                SessionSnapshot `json:"session,omitempty"`
+	SessionID              string                        `json:"session_id"`
+	UserID                 string                        `json:"user_id,omitempty"`
+	AccountScopeID         string                        `json:"account_scope_id,omitempty"`
+	WorkspacePath          string                        `json:"workspace_path,omitempty"`
+	Kind                   string                        `json:"kind"`
+	Deleted                bool                          `json:"deleted,omitempty"`
+	Archived               bool                          `json:"archived,omitempty"`
+	Hidden                 bool                          `json:"hidden,omitempty"`
+	EndpointSeq            uint64                        `json:"endpoint_seq"`
+	EventSeq               uint64                        `json:"event_seq"`
+	UpdatedAt              int64                         `json:"updated_at"`
+	ArtifactCleanupPending bool                          `json:"artifact_cleanup_pending,omitempty"`
+	ArtifactGitCleanup     []V3SessionArtifactGitCleanup `json:"artifact_git_cleanup,omitempty"`
+	Session                SessionSnapshot               `json:"session,omitempty"`
 }
 
 type MessageSnapshot struct {
@@ -756,6 +764,13 @@ func (s *SessionStore) tombstoneSessions(sessionIDs []string, kind string) error
 			endpointSeq := reservedOutbox[outboxIndex]
 			outboxIndex++
 			now := time.Now().UnixMilli()
+			artifactGitCleanup := []V3SessionArtifactGitCleanup(nil)
+			if kind == "deleted" {
+				artifactGitCleanup, err = s.sessionArtifactGitCleanup(existing)
+				if err != nil {
+					return err
+				}
+			}
 			tombstone := V3SessionTombstone{
 				SessionID:              existing.ID,
 				UserID:                 existing.UserID,
@@ -767,7 +782,8 @@ func (s *SessionStore) tombstoneSessions(sessionIDs []string, kind string) error
 				EndpointSeq:            endpointSeq,
 				EventSeq:               seq,
 				UpdatedAt:              now,
-				ArtifactCleanupPending: kind == "deleted",
+				ArtifactCleanupPending: len(artifactGitCleanup) > 0,
+				ArtifactGitCleanup:     artifactGitCleanup,
 			}
 			// Archived sessions remain restorable. Deleted sessions retain only
 			// routing/ordering fields plus the bounded artifact-cleanup retry bit.
@@ -889,6 +905,89 @@ func (s *SessionStore) tombstoneSessions(sessionIDs []string, kind string) error
 	}
 	v3SuccessfulBatchOperations.Add(1)
 	return nil
+}
+
+func (s *SessionStore) sessionArtifactGitCleanup(session SessionSnapshot) ([]V3SessionArtifactGitCleanup, error) {
+	cleanupByKey := make(map[string]V3SessionArtifactGitCleanup)
+	limit := SessionArtifactMaxList*SessionArtifactMaxVariantsPerCollection + 1
+	err := s.store.IteratePrefix(SessionArtifactVariantSessionPrefix(session.AccountScopeID, session.ID), limit, func(_ string, value []byte) error {
+		var variant SessionArtifactVariant
+		if err := json.Unmarshal(value, &variant); err != nil {
+			return err
+		}
+		if variant.RepositoryID == "" || variant.CommitOID == "" {
+			return errors.New("managed artifact projection is missing exact Git cleanup identity")
+		}
+		deleteRepository := variant.ArtifactChainID == variant.RepositoryID && len(variant.ParentCommitOIDs) == 0
+		if deleteRepository {
+			shared, err := s.artifactRepositoryReferencedOutsideSession(session.AccountScopeID, variant.RepositoryID, session.ID, limit)
+			if err != nil {
+				return err
+			}
+			if shared {
+				return nil
+			}
+		}
+		entry := V3SessionArtifactGitCleanup{
+			RepositoryID: variant.RepositoryID,
+			CandidateRef: variant.CandidateRef,
+			ExpectedCommit: variant.CommitOID,
+			DeleteRepository: deleteRepository,
+		}
+		key := entry.RepositoryID + "\x00" + entry.CandidateRef
+		if existing, ok := cleanupByKey[key]; ok && existing != entry {
+			return errors.New("managed artifact Git cleanup identity is inconsistent")
+		}
+		cleanupByKey[key] = entry
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	deleteRepositories := make(map[string]struct{})
+	for _, entry := range cleanupByKey {
+		if entry.DeleteRepository {
+			deleteRepositories[entry.RepositoryID] = struct{}{}
+		}
+	}
+	cleanup := make([]V3SessionArtifactGitCleanup, 0, len(cleanupByKey))
+	for _, entry := range cleanupByKey {
+		if _, deleteWholeRepository := deleteRepositories[entry.RepositoryID]; deleteWholeRepository && !entry.DeleteRepository {
+			continue
+		}
+		cleanup = append(cleanup, entry)
+	}
+	sort.Slice(cleanup, func(i, j int) bool {
+		if cleanup[i].RepositoryID == cleanup[j].RepositoryID {
+			return cleanup[i].CandidateRef < cleanup[j].CandidateRef
+		}
+		return cleanup[i].RepositoryID < cleanup[j].RepositoryID
+	})
+	return cleanup, nil
+}
+
+func (s *SessionStore) artifactRepositoryReferencedOutsideSession(accountScopeID, repositoryID, excludedSessionID string, limit int) (bool, error) {
+	accountPrefix := fmt.Sprintf("v3/session_artifact/variants/%s/", keyPart(accountScopeID))
+	visited := 0
+	shared := false
+	err := s.store.IteratePrefix(accountPrefix, limit, func(_ string, value []byte) error {
+		visited++
+		var variant SessionArtifactVariant
+		if err := json.Unmarshal(value, &variant); err != nil {
+			return err
+		}
+		if variant.RepositoryID == repositoryID && variant.SessionID != excludedSessionID {
+			shared = true
+		}
+		return nil
+	})
+	if err != nil {
+		return false, err
+	}
+	if !shared && visited >= limit {
+		return false, errors.New("managed artifact repository reference scan exceeded its bound")
+	}
+	return shared, nil
 }
 
 func deletePrefixInBatch(batch *pebble.Batch, prefix string) error {

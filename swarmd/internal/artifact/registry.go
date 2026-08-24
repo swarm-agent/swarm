@@ -65,9 +65,9 @@ func (r *Registry) Repository(ctx context.Context, repositoryID string) (*artifa
 	return repo, nil
 }
 
-// RunMaintenance repairs Pebble projections and acknowledges obsolete cleanup
-// tombstones. Git repositories are addressed by artifact identity, not session
-// workspace paths, so workspace byte-tree reconciliation no longer exists.
+// RunMaintenance applies exact Git ref/repository cleanup captured before a
+// session projection is purged, then repairs bounded Pebble projections. Cleanup
+// is artifact-identity based and never derives a byte location from a workspace.
 func (r *Registry) RunMaintenance(limit int) (MaintenanceReport, error) {
 	if r == nil || r.resolver == nil { return MaintenanceReport{}, errors.New("artifact registry session resolver is not configured") }
 	if limit <= 0 || limit > DefaultMaintenanceLimit { limit = DefaultMaintenanceLimit }
@@ -76,6 +76,22 @@ func (r *Registry) RunMaintenance(limit int) (MaintenanceReport, error) {
 	for _, tombstone := range tombstones {
 		if report.SessionsVisited >= limit { break }
 		if !tombstone.Deleted || tombstone.Archived || !tombstone.ArtifactCleanupPending { continue }
+		if len(tombstone.ArtifactGitCleanup) == 0 { return report, errors.New("artifact cleanup tombstone is missing exact Git identities") }
+		deletedRepositories := make(map[string]struct{})
+		for _, cleanup := range tombstone.ArtifactGitCleanup {
+			if _, deleted := deletedRepositories[cleanup.RepositoryID]; deleted { continue }
+			repo, openErr := r.Repository(context.Background(), cleanup.RepositoryID)
+			if openErr != nil { return report, openErr }
+			if cleanup.DeleteRepository {
+				if cleanup.CandidateRef != "" { return report, errors.New("artifact cleanup cannot delete a root repository through a candidate ref") }
+				if deleteErr := repo.Delete(); deleteErr != nil { return report, deleteErr }
+				r.mu.Lock(); delete(r.repositories, cleanup.RepositoryID); r.mu.Unlock()
+				deletedRepositories[cleanup.RepositoryID] = struct{}{}
+				continue
+			}
+			if cleanup.CandidateRef == "" || cleanup.ExpectedCommit == "" { return report, errors.New("artifact candidate cleanup identity is incomplete") }
+			if deleteErr := repo.DeleteCandidate(context.Background(), cleanup.CandidateRef, cleanup.ExpectedCommit); deleteErr != nil { return report, deleteErr }
+		}
 		if err := r.resolver.MarkSessionArtifactCleanupComplete(tombstone.SessionID); err != nil { return report, err }
 		report.SessionsVisited++; report.DeletedSessions++
 	}

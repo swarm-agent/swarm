@@ -13,8 +13,8 @@ const (
 	artifactMaintenanceInterval     = 15 * time.Minute
 )
 
-// startArtifactMaintenance repairs bounded Pebble projections and acknowledges
-// obsolete workspace-byte cleanup tombstones. Git remains the byte authority.
+// startArtifactMaintenance applies bounded Git ref/repository cleanup from
+// durable tombstones and repairs Pebble projections. Git remains byte authority.
 func startArtifactMaintenance(ctx context.Context, artifacts *artifact.Registry) {
 	if artifacts == nil {
 		return
