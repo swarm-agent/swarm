@@ -768,18 +768,22 @@ export function desktopV3ArtifactPartMessageSelection(
   const normalizedPartId = partId.trim()
   const definition = entry.partDefinitions?.find((part) => part.id === normalizedPartId)
   const compositionHasPart = entry.composition?.parts.some((part) => part.partId === normalizedPartId) === true
-  if (entry.partGraphState !== 'authoritative' || !normalizedPartId || !definition || !compositionHasPart) {
-    throw new Error('Artifact part attachment requires an exact authoritative part on the selected revision')
+  const reviewPart = entry.parts?.find((part) => part.id === normalizedPartId)
+  const authoritativePart = entry.partGraphState === 'authoritative' && Boolean(definition && compositionHasPart)
+  if (!normalizedPartId || (!authoritativePart && !reviewPart)) {
+    throw new Error('Artifact part attachment requires an exact part on the selected revision')
   }
   const artifactSelection = desktopV3ArtifactMessageSelection(entry, action)
-  const partKind = definition.locator?.kind ?? 'semantic'
+  const label = definition?.label || reviewPart!.label
+  const description = definition?.description || reviewPart!.description
+  const partKind = definition?.locator?.kind || reviewPart?.kind || 'semantic'
   return {
     ...artifactSelection,
     part_id: normalizedPartId,
-    label: `${artifactSelection.label} · ${definition.label}`,
+    label: `${artifactSelection.label} · ${label}`,
     description: [
-      `Change target: ${definition.label} (${partKind}).`,
-      definition.description,
+      `Change target: ${label} (${partKind}).`,
+      description,
       artifactSelection.description,
     ].filter(Boolean).join(' '),
   }

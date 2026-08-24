@@ -83,11 +83,21 @@ export function normalizeDesktopV3ArtifactIterationDescriptor(value: unknown): D
 }
 
 export function desktopV3ArtifactIterationMessage(id: string, method: 'describe' | 'seek' | 'stop', timeMs?: number): UnknownRecord {
+  const boundedTimeMs = Math.max(0, Math.round(timeMs ?? 0))
   return {
     protocol: DESKTOP_V3_ARTIFACT_PLAYER_PROTOCOL,
     id,
     method,
-    ...(method === 'seek' ? { params: { time_ms: Math.max(0, Math.round(timeMs ?? 0)) } } : {}),
+    // Early swarm-player/v1 artifacts used `type`; keep it alongside the
+    // canonical `method` so existing immutable artifacts remain playable.
+    type: method,
+    ...(method === 'seek' ? {
+      // swarm-player/v1 artifacts historically read the canonical top-level value,
+      // while newer bridges may read the JSON-RPC-style params value. Send both so
+      // exact section navigation works across every already-published artifact.
+      time_ms: boundedTimeMs,
+      params: { time_ms: boundedTimeMs },
+    } : {}),
   }
 }
 

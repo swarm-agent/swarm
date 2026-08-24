@@ -446,7 +446,7 @@ func TestSessionArtifactMessageSelectionsValidateOwnershipReadinessAndSequence(t
 			t.Fatal(err)
 		}
 	}
-	apply("selection-create", V3SessionMutationCreateArtifact, V3ArtifactMutation{Collection: SessionArtifactCollection{ID: "selection-collection", Name: "Selections"}, Variant: &SessionArtifactVariant{ID: "selection-variant", Filename: "design.txt", MediaType: "text/plain"}})
+	apply("selection-create", V3SessionMutationCreateArtifact, V3ArtifactMutation{Collection: SessionArtifactCollection{ID: "selection-collection", Name: "Selections"}, Variant: &SessionArtifactVariant{ID: "selection-variant", Filename: "design.txt", MediaType: "text/plain", Parts: []SessionArtifactPart{{ID: "opening", Label: "Opening", Description: "Opening review target.", Kind: "temporal", EndMs: 3000}}}})
 	staging, ok, err := sessions.GetSessionArtifactVariant("account-1", "artifact-selection-source", "selection-collection", "selection-variant")
 	if err != nil || !ok {
 		t.Fatalf("get staging variant: ok=%t err=%v", ok, err)
@@ -464,6 +464,11 @@ func TestSessionArtifactMessageSelectionsValidateOwnershipReadinessAndSequence(t
 	variant, ok, err = sessions.GetSessionArtifactVariant("account-1", "artifact-selection-source", "selection-collection", "selection-variant")
 	if err != nil || !ok {
 		t.Fatalf("get ready variant: ok=%t err=%v", ok, err)
+	}
+	partSelection := SessionArtifactSelectionReference{SessionID: variant.SessionID, CollectionID: variant.CollectionID, VariantID: variant.ID, EventSeq: variant.EventSeq, Action: "use", PartID: "opening"}
+	validatedPart, err := sessions.ValidateSessionArtifactMessageSelections("account-1", "user-1", []SessionArtifactSelectionReference{partSelection})
+	if err != nil || len(validatedPart) != 1 || validatedPart[0].Part == nil || validatedPart[0].Part.ID != "opening" || validatedPart[0].Part.EndMs != 3000 {
+		t.Fatalf("validate locator-only review part = %+v err=%v", validatedPart, err)
 	}
 	apply("selection-derived-create", V3SessionMutationCreateArtifact, V3ArtifactMutation{Collection: SessionArtifactCollection{ID: "selection-derived", Name: "Finder alternatives"}, Variant: &SessionArtifactVariant{
 		ID: "selection-derived-variant", Filename: "finder.html", MediaType: "text/html", Lineage: SessionArtifactLineage{

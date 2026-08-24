@@ -335,7 +335,21 @@ test('session sidebar opens an exact turn candidate at its part and the viewer a
   assert.match(pane, /setArtifactGalleryInitialPartId\(partId\)/)
   assert.match(pane, /initialPartId=\{artifactGalleryInitialPartId\}/)
   assert.match(gallery, /iterationAutoplaySectionRef\.current = initialPartId/)
-  assert.match(gallery, /startIterationSectionPlayback\(\{ \.\.\.targetSection, endMs: descriptor\.durationMs \}, true\)/)
+  assert.match(gallery, /startIterationSectionPlayback\(targetSection, true\)/)
+})
+
+test('Studio round generation keeps the exact step attached and renders every round option even for whole-artifact candidates', async () => {
+  const [gallery, pane] = await Promise.all([
+    readFile(new URL('./desktop-v3-artifact-gallery.tsx', import.meta.url), 'utf8'),
+    readFile(new URL('./desktop-v3-existing-conversation-pane.tsx', import.meta.url), 'utf8'),
+  ])
+
+  assert.match(gallery, /desktopV3ArtifactPartMessageSelection\(iterationRoundSourceArtifact, iterationSection\.id, 'use'\)/)
+  assert.match(gallery, /selection: messageSelection/)
+  assert.match(pane, /pending_request: prompt, action: "use"/)
+  assert.match(gallery, /data-artifact-studio-whole-turn-options=\{turn\.id\}/)
+  assert.match(gallery, /turn\.candidates\.map\(\(candidate, index\)/)
+  assert.match(gallery, /selectPartIterationArtifact\(artifact, iterationSection\.id\)/)
 })
 
 test('exact viewer navigation search identity and URL resolution', () => {

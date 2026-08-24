@@ -386,6 +386,18 @@ func (s *SessionStore) ValidateSessionArtifactMessageSelections(accountScopeID, 
 					ref.PartLabel, ref.PartKind, ref.Part, foundPart = part.Label, part.Kind, &part, true
 					break
 				}
+			} else {
+				// Locator-only review parts remain exact event-scoped metadata targets.
+				// They are not independent byte revisions, but the authenticated ready
+				// variant can still safely resolve their typed locator for AI context.
+				for _, candidate := range variant.Parts {
+					if candidate.ID != ref.PartID {
+						continue
+					}
+					part := candidate
+					ref.PartLabel, ref.PartKind, ref.Part, foundPart = part.Label, part.Kind, &part, true
+					break
+				}
 			}
 			if !foundPart {
 				return nil, fmt.Errorf("artifact selection %d part was not found on the exact revision", index)

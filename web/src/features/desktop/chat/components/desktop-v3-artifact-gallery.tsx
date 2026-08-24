@@ -357,7 +357,9 @@ export function DesktopV3ArtifactGallery({
   const selectedAnimationActive = animationPreviewVisible
   const selectedVideoProfileCompatible = !selected?.animationProfile || selected.animationProfile.profileId === 'final_render'
   const iterationSection = iterationDescriptor?.sections.find((section) => section.id === iterationSectionId) ?? iterationDescriptor?.sections[0]
-  const selectedPartDefinitions = selected?.partGraphState === 'authoritative' ? selected.partDefinitions ?? [] : []
+  const selectedPartDefinitions = selected?.partGraphState === 'authoritative'
+    ? selected.partDefinitions ?? []
+    : (selected?.parts ?? []).map((part) => ({ id: part.id, label: part.label, description: part.description, locator: part }))
   const selectedParts = selectedPartDefinitions.filter((part) => selectedPartIds.includes(part.id))
   const selectedAcceptedPartHeads = selected?.acceptedPartHeads ?? []
   const selectedAcceptedPartCount = selected?.composition?.parts.filter((part) => selectedAcceptedPartHeads.some((accepted) => desktopV3ArtifactStudioSamePartRevision(part, accepted))).length ?? 0
@@ -454,7 +456,7 @@ export function DesktopV3ArtifactGallery({
     iterationSectionIdRef.current = targetSection.id
     setIterationSectionId(targetSection.id)
     setSelectedPartIds([targetSection.id])
-    startIterationSectionPlayback({ ...targetSection, endMs: iterationDescriptor.durationMs }, true)
+    startIterationSectionPlayback(targetSection, true)
   }, [iterationDescriptor, iterationPlayerReadyVersion, selected?.artifactId, selected?.eventSeq, studioSectionLineage?.iterationSectionId])
 
   useEffect(() => {
@@ -511,7 +513,7 @@ export function DesktopV3ArtifactGallery({
             initialPartPlaybackRef.current = requestKey
             iterationAutoplayArtifactRef.current = ''
             iterationAutoplaySectionRef.current = ''
-            startIterationSectionPlayback({ ...targetSection, endMs: descriptor.durationMs }, true)
+            startIterationSectionPlayback(targetSection, true)
           }
         }
       } else {
@@ -631,7 +633,7 @@ export function DesktopV3ArtifactGallery({
         if (targetSection) {
           iterationAutoplayArtifactRef.current = ''
           iterationAutoplaySectionRef.current = ''
-          startIterationSectionPlayback({ ...targetSection, endMs: iterationDescriptor.durationMs }, true)
+          startIterationSectionPlayback(targetSection, true)
         }
       }
     }
@@ -651,7 +653,7 @@ export function DesktopV3ArtifactGallery({
       if (targetSection) {
         iterationAutoplayArtifactRef.current = ''
         iterationAutoplaySectionRef.current = ''
-        startIterationSectionPlayback({ ...targetSection, endMs: iterationDescriptor.durationMs }, true)
+        startIterationSectionPlayback(targetSection, true)
       }
     }
     selectArtifact(artifact)
@@ -673,7 +675,7 @@ export function DesktopV3ArtifactGallery({
       if (targetSection) {
         iterationAutoplayArtifactRef.current = ''
         iterationAutoplaySectionRef.current = ''
-        startIterationSectionPlayback({ ...targetSection, endMs: iterationDescriptor.durationMs }, true)
+        startIterationSectionPlayback(targetSection, true)
       }
     }
     selectArtifact(artifact)
@@ -791,7 +793,7 @@ export function DesktopV3ArtifactGallery({
         iterationSectionIdRef.current = matchingSection.id
         setIterationSectionId(matchingSection.id)
       }
-      startIterationSectionPlayback({ id: 'whole-artifact', label: 'Whole artifact', startMs: locator.startMs, endMs: iterationDescriptor.durationMs, narration: [] }, true)
+      if (matchingSection) startIterationSectionPlayback(matchingSection, true)
     }
   }
 
@@ -862,7 +864,7 @@ export function DesktopV3ArtifactGallery({
     setSelectedPartIds(selectedPartDefinitions.some((part) => part.id === section.id) ? [section.id] : [])
     iterationAutoplaySectionRef.current = ''
     if (!iterationDescriptor) return
-    startIterationSectionPlayback({ ...section, endMs: iterationDescriptor.durationMs }, true)
+    startIterationSectionPlayback(section, true)
   }
 
   useEffect(() => {
@@ -879,7 +881,7 @@ export function DesktopV3ArtifactGallery({
     iterationAutoplaySectionRef.current = ''
     iterationSectionIdRef.current = section.id
     setIterationSectionId(section.id)
-    startIterationSectionPlayback({ ...section, endMs: iterationDescriptor.durationMs }, true)
+    startIterationSectionPlayback(section, true)
   }, [iterationDescriptor, iterationPlayerReadyVersion, selected])
 
   const requestSectionIteration = async () => {
@@ -887,9 +889,9 @@ export function DesktopV3ArtifactGallery({
     try {
       setActionPending('iterate-section')
       setActionError('')
-      const messageSelection = desktopV3ArtifactMessageSelection(iterationRoundSourceArtifact, 'select')
+      const messageSelection = desktopV3ArtifactPartMessageSelection(iterationRoundSourceArtifact, iterationSection.id, 'use')
       await onIterateSection(
-        { label: messageSelection.label, description: messageSelection.description, selection: desktopV3ArtifactSelection(iterationRoundSourceArtifact) },
+        { label: messageSelection.label, description: messageSelection.description, selection: messageSelection },
         desktopV3ArtifactIterationChangeDescription(iterationSection),
         'alternatives',
       )
@@ -915,6 +917,21 @@ export function DesktopV3ArtifactGallery({
       setOpen(false)
     } catch (error) {
       setActionError(error instanceof Error ? error.message : 'Could not advance this artifact to the next section')
+    } finally {
+      setActionPending('')
+    }
+  }
+
+  const attachIterationSection = async (section: DesktopV3ArtifactIterationSection) => {
+    if (!selected || !onAddToChat || !selectedCanAttach) return
+    try {
+      setActionPending('ask-part')
+      setActionError('')
+      const selection = desktopV3ArtifactPartMessageSelection(selected, section.id, 'use')
+      await onAddToChat([{ label: selection.label, description: selection.description, selection }])
+      setOpen(false)
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : 'Could not attach this artifact step for changes')
     } finally {
       setActionPending('')
     }
@@ -1311,7 +1328,18 @@ export function DesktopV3ArtifactGallery({
                                 </div>
                               })}</div>
                             </section>
-                          })}</div> : <div className="border-t border-[var(--app-border)] px-2 py-1.5 text-[9px] text-[var(--app-text-subtle)]">{turn.revisionNumber === 1 ? 'Original composition' : 'Composition-only update'}</div>}
+                          })}</div> : turn.candidates.length ? <div className="grid gap-1 border-t border-[var(--app-border)] p-1.5" data-artifact-studio-whole-turn-options={turn.id}>
+                            <p className="px-0.5 text-[9px] text-[var(--app-text-subtle)]">{turn.revisionNumber === 1 ? 'Original composition' : `Round options · preview at ${iterationSection?.label || 'the selected Studio step'}`}</p>
+                            {turn.candidates.map((candidate, index) => {
+                              const artifact = candidate.entry
+                              const viewed = Boolean(artifact && selected && artifactSelectionKey(artifact) === artifactSelectionKey(selected))
+                              return <button key={`${candidate.reference.sessionId}:${candidate.reference.variantId}`} type="button" className={cn('flex w-full min-w-0 items-center gap-2 rounded border border-[var(--app-border)] px-2 py-1.5 text-left text-[9px] hover:bg-[var(--app-surface-hover)]', viewed ? 'bg-[var(--app-primary-soft)] text-[var(--app-primary)]' : 'text-[var(--app-text-muted)]')} disabled={!artifact} onClick={() => { if (!artifact) return; if (iterationSection) selectPartIterationArtifact(artifact, iterationSection.id); else selectFullIterationArtifact(artifact) }}>
+                                <span className="grid size-4 shrink-0 place-items-center rounded-full border border-[var(--app-border)] font-mono">{artifact?.candidateIndex || index + 1}</span>
+                                <span className="min-w-0 flex-1 truncate">Option {artifact?.candidateIndex || index + 1} · {artifact ? variantDisplayLabel(artifact, index) : 'Loading'}</span>
+                                <span className="shrink-0">{artifact?.status === 'staging' ? 'Generating' : viewed ? 'Viewing' : artifact ? 'Available' : 'Pending'}</span>
+                              </button>
+                            })}
+                          </div> : <div className="border-t border-[var(--app-border)] px-2 py-1.5 text-[9px] text-[var(--app-text-subtle)]">No round options are available yet.</div>}
                         </section>
                       })}</div>
                     </section> : null}
@@ -1322,10 +1350,13 @@ export function DesktopV3ArtifactGallery({
                         const alternatives = iterationAlternativesForSection(section.id)
                         const activeBranch = alternatives.find((artifact) => artifactSelectionKey(artifact) === studioActiveBranchId)
                         return <section key={section.id} className={cn('min-w-0 overflow-hidden rounded-xl border', active ? 'border-[var(--app-primary)] bg-[var(--app-primary-soft)]' : 'border-[var(--app-border)] bg-[var(--app-bg)]')} data-artifact-studio-step={section.id}>
-                          <button type="button" className="w-full min-w-0 px-3 py-2.5 text-left" aria-current={active ? 'step' : undefined} onClick={() => selectIterationSection(section)}>
-                            <span className="flex min-w-0 items-start gap-2.5"><span className="grid size-5 shrink-0 place-items-center rounded border border-[var(--app-border)] text-[9px] font-semibold">{index + 1}</span><span className="min-w-0 flex-1 break-words text-[11px] font-semibold leading-4">{section.label}</span>{activeBranch ? <Check className="mt-0.5 size-3.5 shrink-0 text-[var(--app-primary)]" aria-label="Active branch" /> : alternatives.length ? <span className="mt-0.5 shrink-0 rounded-full bg-[var(--app-surface-active)] px-1.5 py-0.5 text-[8px] font-semibold">{alternatives.length}</span> : null}</span>
-                            <span className="mt-1 block pl-7 font-mono text-[9px] text-[var(--app-text-subtle)]">{formatDesktopV3ArtifactIterationTime(section.startMs)}–{formatDesktopV3ArtifactIterationTime(section.endMs)}</span>
-                          </button>
+                          <div className="flex min-w-0 items-stretch">
+                            <button type="button" className="min-w-0 flex-1 px-3 py-2.5 text-left" aria-current={active ? 'step' : undefined} onClick={() => selectIterationSection(section)}>
+                              <span className="flex min-w-0 items-start gap-2.5"><span className="grid size-5 shrink-0 place-items-center rounded border border-[var(--app-border)] text-[9px] font-semibold">{index + 1}</span><span className="min-w-0 flex-1 break-words text-[11px] font-semibold leading-4">{section.label}</span>{activeBranch ? <Check className="mt-0.5 size-3.5 shrink-0 text-[var(--app-primary)]" aria-label="Active branch" /> : alternatives.length ? <span className="mt-0.5 shrink-0 rounded-full bg-[var(--app-surface-active)] px-1.5 py-0.5 text-[8px] font-semibold">{alternatives.length}</span> : null}</span>
+                              <span className="mt-1 block pl-7 font-mono text-[9px] text-[var(--app-text-subtle)]">{formatDesktopV3ArtifactIterationTime(section.startMs)}–{formatDesktopV3ArtifactIterationTime(section.endMs)}</span>
+                            </button>
+                            {selectedPartDefinitions.some((part) => part.id === section.id) && onAddToChat ? <button type="button" className="m-1.5 grid size-7 shrink-0 place-items-center self-center rounded-md border border-[var(--app-border)] text-[var(--app-text-muted)] hover:bg-[var(--app-surface-active)] disabled:opacity-50" aria-label={`Attach ${section.label} step for AI changes`} title={`Attach ${section.label} as the exact change target`} disabled={!selectedCanAttach || Boolean(actionPending)} onClick={() => void attachIterationSection(section)}><MessageSquarePlus size={13} aria-hidden="true" /></button> : null}
+                          </div>
                           {active && alternatives.length ? <div className="grid gap-1 border-t border-[var(--app-border)] p-1.5" aria-label={`${section.label} branches`}>
                             {alternatives.map((artifact, alternativeIndex) => renderStudioBranch(artifact, alternativeIndex, section))}
                           </div> : null}

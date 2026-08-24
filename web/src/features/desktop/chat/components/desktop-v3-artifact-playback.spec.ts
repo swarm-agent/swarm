@@ -17,6 +17,11 @@ const descriptor: DesktopV3ArtifactIterationDescriptor = {
   ],
 }
 
+test('section playback keeps the exact authored boundary instead of widening to the full artifact', () => {
+  const section = descriptor.sections[1]!
+  assert.deepEqual(section, { id: 'part-2', label: 'Part 2', startMs: 4_000, endMs: 8_000, narration: [] })
+})
+
 test('a stale preview cannot consume a clicked iteration autoplay request', () => {
   const request = { artifactKey: 'clicked-artifact', sectionId: 'part-3' }
 

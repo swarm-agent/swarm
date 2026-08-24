@@ -517,6 +517,7 @@ test('authoritative part chips carry the exact part identity and readable target
     part_graph_state: 'authoritative',
     artifact_chain_id: 'chain-1',
     part_definitions: [{ id: 'signal', label: 'Signal', description: 'Signal animation.', locator: { id: 'signal', label: 'Signal', kind: 'temporal', description: 'Signal animation.', start_ms: 0, end_ms: 4000 } }],
+    part_revisions: [{ reference: { artifact_chain_id: 'chain-1', part_id: 'signal', part_revision_id: 'signal-r1', owner_session_id: 'session-1', digest_sha256: 'a'.repeat(64), size: 10, media_type: 'text/html' }, iteration_turn_id: 'turn-1', iteration_group_id: 'group-1', event_seq: 42 }],
     composition: {
       id: 'composition-1', artifact_chain_id: 'chain-1', owner_session_id: 'session-1',
       construction: { kind: 'concat-v1', entries: [{ part_id: 'signal', path: 'signal.html' }] },
@@ -530,7 +531,22 @@ test('authoritative part chips carry the exact part identity and readable target
   assert.equal(selection.action, 'use')
   assert.match(selection.label, /Signal/)
   assert.match(selection.description ?? '', /Signal \(temporal\)/)
-  assert.throws(() => desktopV3ArtifactPartMessageSelection(entry, 'missing'), /exact authoritative part/)
+  assert.throws(() => desktopV3ArtifactPartMessageSelection(entry, 'missing'), /exact part/)
+})
+
+test('locator-only review parts carry exact event-scoped metadata back to AI', () => {
+  const entry = normalizeDesktopV3ArtifactCatalogEntry({
+    ...managedCatalogWire,
+    part_graph_state: 'legacy_unproven',
+    parts: [{ id: 'part-2', label: 'Orbit', description: 'Middle animation section.', kind: 'temporal', start_ms: 3000, end_ms: 6000 }],
+  })
+  assert.ok(entry)
+
+  const selection = desktopV3ArtifactPartMessageSelection(entry, 'part-2')
+  assert.equal(selection.part_id, 'part-2')
+  assert.equal(selection.action, 'use')
+  assert.match(selection.label, /Orbit/)
+  assert.match(selection.description ?? '', /Orbit \(temporal\)/)
 })
 
 test('artifact chips preserve independent exact part targets on one artifact', () => {
