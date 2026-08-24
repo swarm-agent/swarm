@@ -90,8 +90,8 @@ type sessionsV3ArtifactPartDefinitionProjection struct {
 }
 
 type sessionsV3ArtifactPartRevisionProjection struct {
-	Reference        pebblestore.SessionArtifactPartRevisionReference  `json:"reference"`
-	Parent           *pebblestore.SessionArtifactPartRevisionReference `json:"parent,omitempty"`
+	Reference        pebblestore.SessionArtifactPartRevisionReference `json:"reference"`
+	ParentCommitOIDs []string                                          `json:"parent_commit_oids,omitempty"`
 	IterationTurnID  string                                            `json:"iteration_turn_id,omitempty"`
 	IterationGroupID string                                            `json:"iteration_group_id,omitempty"`
 	CreatedAt        int64                                             `json:"created_at,omitempty"`
@@ -99,13 +99,16 @@ type sessionsV3ArtifactPartRevisionProjection struct {
 }
 
 type sessionsV3ArtifactCompositionProjection struct {
-	ID               string                                           `json:"id"`
-	ArtifactChainID  string                                           `json:"artifact_chain_id"`
-	Parent           *pebblestore.SessionArtifactCompositionReference `json:"parent,omitempty"`
-	IterationTurnID  string                                           `json:"iteration_turn_id,omitempty"`
-	IterationGroupID string                                           `json:"iteration_group_id,omitempty"`
-	Construction     pebblestore.SessionArtifactConstruction          `json:"construction"`
-	Parts            []pebblestore.SessionArtifactCompositionPart     `json:"parts"`
+	ID               string                                       `json:"id"`
+	ArtifactChainID  string                                       `json:"artifact_chain_id"`
+	RepositoryID     string                                       `json:"repository_id"`
+	CommitOID        string                                       `json:"commit_oid"`
+	TreeOID          string                                       `json:"tree_oid"`
+	ParentCommitOIDs []string                                     `json:"parent_commit_oids,omitempty"`
+	IterationTurnID  string                                       `json:"iteration_turn_id,omitempty"`
+	IterationGroupID string                                       `json:"iteration_group_id,omitempty"`
+	Construction     pebblestore.SessionArtifactConstruction      `json:"construction"`
+	Parts            []pebblestore.SessionArtifactCompositionPart `json:"parts"`
 }
 
 type sessionsV3ArtifactCatalogItem struct {
@@ -205,19 +208,9 @@ func (s *Server) projectSessionsV3ArtifactComposition(session pebblestore.Sessio
 			locator = &copy
 		}
 		definitions = append(definitions, sessionsV3ArtifactPartDefinitionProjection{ID: definition.ID, Label: definition.Label, Description: definition.Description, Locator: locator})
-		var parent *pebblestore.SessionArtifactPartRevisionReference
-		if revision.Parent != nil {
-			copy := *revision.Parent
-			parent = &copy
-		}
-		revisions = append(revisions, sessionsV3ArtifactPartRevisionProjection{Reference: revision.Reference(), Parent: parent, IterationTurnID: revision.IterationTurnID, IterationGroupID: revision.IterationGroupID, CreatedAt: revision.CreatedAt, EventSeq: revision.EventSeq})
+		revisions = append(revisions, sessionsV3ArtifactPartRevisionProjection{Reference: revision.Reference(), ParentCommitOIDs: append([]string(nil), revision.ParentCommitOIDs...), IterationTurnID: revision.IterationTurnID, IterationGroupID: revision.IterationGroupID, CreatedAt: revision.CreatedAt, EventSeq: revision.EventSeq})
 	}
-	var compositionParent *pebblestore.SessionArtifactCompositionReference
-	if composition.Parent != nil {
-		copy := *composition.Parent
-		compositionParent = &copy
-	}
-	projection := &sessionsV3ArtifactCompositionProjection{ID: composition.ID, ArtifactChainID: composition.ArtifactChainID, Parent: compositionParent, IterationTurnID: composition.IterationTurnID, IterationGroupID: composition.IterationGroupID, Construction: composition.Construction, Parts: append([]pebblestore.SessionArtifactCompositionPart(nil), composition.Parts...)}
+	projection := &sessionsV3ArtifactCompositionProjection{ID: composition.ID, ArtifactChainID: composition.ArtifactChainID, RepositoryID: composition.RepositoryID, CommitOID: composition.CommitOID, TreeOID: composition.TreeOID, ParentCommitOIDs: append([]string(nil), composition.ParentCommitOIDs...), IterationTurnID: composition.IterationTurnID, IterationGroupID: composition.IterationGroupID, Construction: composition.Construction, Parts: append([]pebblestore.SessionArtifactCompositionPart(nil), composition.Parts...)}
 	targetedPartID, err := s.sessionsV3ArtifactTargetedPartID(session, variant, composition)
 	if err != nil {
 		return nil, nil, nil, "", nil, err

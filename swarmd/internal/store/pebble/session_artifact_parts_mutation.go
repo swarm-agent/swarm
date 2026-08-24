@@ -35,14 +35,8 @@ func (s *SessionStore) prepareAuthoritativeArtifactParts(input V3SessionMutation
 	if err := ValidateArtifactConstruction(composition); err != nil {
 		return nil, nil, nil, err
 	}
-	if composition.Parent != nil {
-		parent, ok, err := s.GetSessionArtifactComposition(input.AccountScopeID, input.UserID, composition.Parent.OwnerSessionID, composition.Parent.ArtifactChainID, composition.Parent.CompositionID)
-		if err != nil {
-			return nil, nil, nil, err
-		}
-		if !ok || parent.EventSeq != composition.Parent.EventSeq || parent.GraphState != SessionArtifactGraphAuthoritative {
-			return nil, nil, nil, errors.New("artifact composition parent is missing or stale")
-		}
+	if input.Artifact.Transaction == nil || composition.RepositoryID != input.Artifact.Transaction.RepositoryID || composition.CommitOID != input.Artifact.Transaction.CommitOID || !reflect.DeepEqual(composition.ParentCommitOIDs, input.Artifact.Transaction.ParentCommitOIDs) {
+		return nil, nil, nil, errors.New("artifact composition must match the exact authoritative Git transaction")
 	}
 
 	definitions := make([]SessionArtifactPartDefinition, len(mutation.PartDefinitions))
@@ -75,8 +69,8 @@ func (s *SessionStore) prepareAuthoritativeArtifactParts(input V3SessionMutation
 		if !ok || owner.AccountScopeID != input.AccountScopeID || owner.UserID != input.UserID {
 			return nil, nil, nil, errors.New("artifact part revision owner is not authenticated")
 		}
-		if revision.ArtifactChainID != composition.ArtifactChainID {
-			return nil, nil, nil, errors.New("artifact part revision is outside the composition chain")
+		if revision.ArtifactChainID != composition.ArtifactChainID || revision.RepositoryID != composition.RepositoryID || revision.CommitOID != composition.CommitOID {
+			return nil, nil, nil, errors.New("artifact part revision is outside the composition Git commit")
 		}
 		revision.Version = SessionArtifactVersion
 		revision.GraphState = SessionArtifactGraphAuthoritative
@@ -88,15 +82,6 @@ func (s *SessionStore) prepareAuthoritativeArtifactParts(input V3SessionMutation
 			return nil, nil, nil, err
 		} else if ok {
 			return nil, nil, nil, fmt.Errorf("artifact part revision %q is immutable", revision.ID)
-		}
-		if revision.Parent != nil {
-			parent, ok, err := s.GetSessionArtifactPartRevision(input.AccountScopeID, input.UserID, revision.Parent.OwnerSessionID, revision.Parent.ArtifactChainID, revision.Parent.PartID, revision.Parent.PartRevisionID)
-			if err != nil {
-				return nil, nil, nil, err
-			}
-			if !ok || !exactPartRevisionReference(*revision.Parent, parent) {
-				return nil, nil, nil, errors.New("artifact part revision parent is missing or does not match exact immutable metadata")
-			}
 		}
 		revisions[index] = revision
 		revisionByKey[partRevisionLookupKey(revision.OwnerSessionID, revision.ArtifactChainID, revision.PartID, revision.ID)] = revision

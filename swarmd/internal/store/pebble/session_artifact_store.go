@@ -21,8 +21,15 @@ const (
 	SessionArtifactMaxMessageSelections     = 16
 	SessionArtifactMaxParts                 = 64
 	SessionArtifactMaxStepCandidates        = 128
+	SessionArtifactMaxCommitParents         = 64
+	SessionArtifactMaxLocks                 = 64
 
-	SessionArtifactGraphAuthoritative  = "authoritative"
+	SessionArtifactGraphProjection = "git_projection"
+	// SessionArtifactGraphAuthoritative is retained as a source compatibility
+	// name while its value explicitly describes rebuildable Git projection state.
+	SessionArtifactGraphAuthoritative = SessionArtifactGraphProjection
+	// LegacyUnproven is read-only migration vocabulary. New mutation validation
+	// never emits or accepts it as an execution authority.
 	SessionArtifactGraphLegacyUnproven = "legacy_unproven"
 
 	SessionArtifactStatusStaging     = "staging"
@@ -139,42 +146,51 @@ type SessionArtifactPart struct {
 	Selector    string  `json:"selector,omitempty"`
 }
 
-// SessionArtifactChain is the account-owned canonical identity for one evolving
-// artifact. Immutable variants remain the byte authority; this record names the
-// exact root and active head and orders generation rounds across collections and
-// sessions without moving or rebuilding bytes.
+// SessionArtifactChain is a rebuildable catalog projection. OfficialCommitOID
+// and OfficialRef mirror the authoritative Git ref; neither field makes Pebble a
+// graph or byte authority.
 type SessionArtifactChain struct {
-	Version        int                               `json:"version"`
-	GraphState     string                            `json:"graph_state"`
-	ID             string                            `json:"id"`
-	AccountScopeID string                            `json:"account_scope_id"`
-	UserID         string                            `json:"user_id"`
-	Name           string                            `json:"name,omitempty"`
-	Root           SessionArtifactSelectionReference `json:"root"`
-	Head           SessionArtifactSelectionReference `json:"head"`
-	RevisionCount  int                               `json:"revision_count"`
-	LastRoundID    string                            `json:"last_round_id,omitempty"`
-	CreatedAt      int64                             `json:"created_at"`
-	UpdatedAt      int64                             `json:"updated_at"`
-	EventSeq       uint64                            `json:"event_seq"`
+	Version           int                               `json:"version"`
+	GraphState        string                            `json:"graph_state"`
+	ID                string                            `json:"id"`
+	AccountScopeID    string                            `json:"account_scope_id"`
+	UserID            string                            `json:"user_id"`
+	Name              string                            `json:"name,omitempty"`
+	RepositoryID      string                            `json:"repository_id"`
+	OfficialRef       string                            `json:"official_ref"`
+	OfficialCommitOID string                            `json:"official_commit_oid,omitempty"`
+	Root              SessionArtifactSelectionReference `json:"root,omitempty"`
+	Head              SessionArtifactSelectionReference `json:"head,omitempty"`
+	RevisionCount     int                               `json:"revision_count"`
+	LastRoundID       string                            `json:"last_round_id,omitempty"`
+	CreatedAt         int64                             `json:"created_at"`
+	UpdatedAt         int64                             `json:"updated_at"`
+	EventSeq          uint64                            `json:"event_seq"`
 }
 
-// SessionArtifactStep is one immutable-parent generation turn. Candidates may
-// become ready independently, but only Accepted may advance the chain head.
+// SessionArtifactStep projects one Git transaction and its candidate refs. The
+// parent list is copied from Git and supports arbitrary forks and merges.
 type SessionArtifactStep struct {
-	Version         int                                 `json:"version"`
-	GraphState      string                              `json:"graph_state"`
-	ID              string                              `json:"id"`
-	ArtifactChainID string                              `json:"artifact_chain_id"`
-	AccountScopeID  string                              `json:"account_scope_id"`
-	UserID          string                              `json:"user_id"`
-	Parent          SessionArtifactSelectionReference   `json:"parent,omitempty"`
-	RevisionNumber  int                                 `json:"revision_number"`
-	Candidates      []SessionArtifactSelectionReference `json:"candidates"`
-	Accepted        *SessionArtifactSelectionReference  `json:"accepted,omitempty"`
-	CreatedAt       int64                               `json:"created_at"`
-	UpdatedAt       int64                               `json:"updated_at"`
-	EventSeq        uint64                              `json:"event_seq"`
+	Version          int                                 `json:"version"`
+	GraphState       string                              `json:"graph_state"`
+	ID               string                              `json:"id"`
+	ArtifactChainID  string                              `json:"artifact_chain_id"`
+	AccountScopeID   string                              `json:"account_scope_id"`
+	UserID           string                              `json:"user_id"`
+	RepositoryID     string                              `json:"repository_id"`
+	TransactionRef   string                              `json:"transaction_ref"`
+	CandidateRef     string                              `json:"candidate_ref,omitempty"`
+	CommitOID        string                              `json:"commit_oid,omitempty"`
+	ParentCommitOIDs []string                            `json:"parent_commit_oids,omitempty"`
+	ExpectedOldOID   string                              `json:"expected_old_oid,omitempty"`
+	ResultingOID     string                              `json:"resulting_oid,omitempty"`
+	Parent           SessionArtifactSelectionReference   `json:"parent,omitempty"`
+	RevisionNumber   int                                 `json:"revision_number"`
+	Candidates       []SessionArtifactSelectionReference `json:"candidates"`
+	Accepted         *SessionArtifactSelectionReference  `json:"accepted,omitempty"`
+	CreatedAt        int64                               `json:"created_at"`
+	UpdatedAt        int64                               `json:"updated_at"`
+	EventSeq         uint64                              `json:"event_seq"`
 }
 
 type SessionArtifactVariant struct {
@@ -195,6 +211,11 @@ type SessionArtifactVariant struct {
 	AnimationProfile   *SessionArtifactAnimationProfile   `json:"animation_profile,omitempty"`
 	ArtifactChainID    string                             `json:"artifact_chain_id,omitempty"`
 	ArtifactStepID     string                             `json:"artifact_step_id,omitempty"`
+	RepositoryID       string                             `json:"repository_id,omitempty"`
+	CommitOID          string                             `json:"commit_oid,omitempty"`
+	TreeOID            string                             `json:"tree_oid,omitempty"`
+	CandidateRef        string                             `json:"candidate_ref,omitempty"`
+	ParentCommitOIDs    []string                           `json:"parent_commit_oids,omitempty"`
 	GraphState         string                             `json:"graph_state,omitempty"`
 	PartGraphState     string                             `json:"part_graph_state,omitempty"`
 	ParentArtifact     *SessionArtifactSelectionReference `json:"parent_artifact,omitempty"`
@@ -426,6 +447,8 @@ type V3ArtifactMutation struct {
 	Selection       *SessionArtifactSelectionReference `json:"selection,omitempty"`
 	Chain           *SessionArtifactChain              `json:"chain,omitempty"`
 	Step            *SessionArtifactStep               `json:"step,omitempty"`
+	Transaction     *SessionArtifactGitTransaction     `json:"transaction,omitempty"`
+	Locks           []SessionArtifactGitLock           `json:"locks,omitempty"`
 	PartDefinitions []SessionArtifactPartDefinition    `json:"part_definitions,omitempty"`
 	PartRevisions   []SessionArtifactPartRevision      `json:"part_revisions,omitempty"`
 	Composition     *SessionArtifactComposition        `json:"composition,omitempty"`
@@ -439,6 +462,8 @@ type V3ArtifactProjection struct {
 	Selection       *SessionArtifactSelectionReference `json:"selection,omitempty"`
 	Chain           *SessionArtifactChain              `json:"chain,omitempty"`
 	Step            *SessionArtifactStep               `json:"step,omitempty"`
+	Transaction     *SessionArtifactGitTransaction     `json:"transaction,omitempty"`
+	Locks           []SessionArtifactGitLock           `json:"locks,omitempty"`
 	PartDefinitions []SessionArtifactPartDefinition    `json:"part_definitions,omitempty"`
 	PartRevisions   []SessionArtifactPartRevision      `json:"part_revisions,omitempty"`
 	Composition     *SessionArtifactComposition        `json:"composition,omitempty"`
@@ -453,6 +478,8 @@ type preparedV3ArtifactMutation struct {
 	DeleteCollection   bool
 	PreviousChain      *SessionArtifactChain
 	PreviousStep       *SessionArtifactStep
+	Transaction        *SessionArtifactGitTransaction
+	Locks              []SessionArtifactGitLock
 	PartDefinitions    []SessionArtifactPartDefinition
 	PartRevisions      []SessionArtifactPartRevision
 	Composition        *SessionArtifactComposition
@@ -729,7 +756,7 @@ func (s *SessionStore) projectSessionArtifactVariantChain(accountScopeID, userID
 		chainID = persisted.ID
 		rootRef = persisted.Root
 		if persisted.GraphState == "" {
-			persisted.GraphState = SessionArtifactGraphLegacyUnproven
+			return SessionArtifactVariant{}, SessionArtifactChain{}, errors.New("artifact chain is missing its Git projection state")
 		}
 	}
 	baseRevision := 1
@@ -753,21 +780,15 @@ func (s *SessionStore) projectSessionArtifactVariantChain(accountScopeID, userID
 	}
 	projected := path[0]
 	chain := persisted
-	if chain.GraphState == SessionArtifactGraphLegacyUnproven {
-		projected.GraphState = SessionArtifactGraphLegacyUnproven
+	if chain.ID == "" || chain.GraphState != SessionArtifactGraphProjection || chain.RepositoryID == "" || chain.OfficialRef == "" {
+		return SessionArtifactVariant{}, SessionArtifactChain{}, errors.New("artifact variant has no authoritative Git projection")
 	}
-	if chain.ID == "" {
-		// Legacy ancestry remains readable, but missing graph facts are explicitly
-		// unproven: do not fabricate an authoritative parent, step, or head.
-		projected.GraphState = SessionArtifactGraphLegacyUnproven
-		chain = SessionArtifactChain{Version: SessionArtifactVersion, GraphState: SessionArtifactGraphLegacyUnproven, ID: chainID, AccountScopeID: accountScopeID, UserID: userID, Name: firstNonEmptyArtifactString(projected.Presentation.Label, projected.Filename), CreatedAt: rootVariant.CreatedAt, UpdatedAt: projected.UpdatedAt, EventSeq: projected.EventSeq}
-	}
+	projected.GraphState = SessionArtifactGraphProjection
 	return projected, chain, nil
 }
 
-// ProjectSessionArtifactVariantChain supplies authoritative chain metadata for
-// both persisted v2 artifacts and legacy variants whose stable chain is derived
-// from authenticated exact ancestry without rewriting their bytes.
+// ProjectSessionArtifactVariantChain returns only authenticated, rebuildable Git
+// projection metadata. It never fabricates graph facts from application lineage.
 func (s *SessionStore) ProjectSessionArtifactVariantChain(accountScopeID, userID string, variant SessionArtifactVariant) (SessionArtifactVariant, SessionArtifactChain, error) {
 	return s.projectSessionArtifactVariantChain(strings.TrimSpace(accountScopeID), strings.TrimSpace(userID), variant)
 }
@@ -1023,6 +1044,13 @@ func normalizeV3ArtifactMutation(input *V3SessionMutationInput) {
 		variant.FailureCode = strings.ToLower(strings.TrimSpace(variant.FailureCode))
 		variant.ArtifactChainID = strings.TrimSpace(variant.ArtifactChainID)
 		variant.ArtifactStepID = strings.TrimSpace(variant.ArtifactStepID)
+		variant.RepositoryID = strings.TrimSpace(variant.RepositoryID)
+		variant.CommitOID = strings.ToLower(strings.TrimSpace(variant.CommitOID))
+		variant.TreeOID = strings.ToLower(strings.TrimSpace(variant.TreeOID))
+		variant.CandidateRef = strings.TrimSpace(variant.CandidateRef)
+		for index := range variant.ParentCommitOIDs {
+			variant.ParentCommitOIDs[index] = strings.ToLower(strings.TrimSpace(variant.ParentCommitOIDs[index]))
+		}
 		variant.GraphState = strings.ToLower(strings.TrimSpace(variant.GraphState))
 		variant.RevisionRoundID = strings.TrimSpace(variant.RevisionRoundID)
 		for index := range variant.Parts {
@@ -1065,21 +1093,38 @@ func normalizeV3ArtifactMutation(input *V3SessionMutationInput) {
 		revision.PartID = strings.TrimSpace(revision.PartID)
 		revision.ArtifactChainID = strings.TrimSpace(revision.ArtifactChainID)
 		revision.OwnerSessionID = strings.TrimSpace(revision.OwnerSessionID)
+		revision.RepositoryID = strings.TrimSpace(revision.RepositoryID)
+		revision.CommitOID = strings.ToLower(strings.TrimSpace(revision.CommitOID))
+		revision.BlobOID = strings.ToLower(strings.TrimSpace(revision.BlobOID))
 		revision.DigestSHA256 = strings.ToLower(strings.TrimSpace(revision.DigestSHA256))
 		revision.MediaType = strings.ToLower(strings.TrimSpace(revision.MediaType))
-		if revision.Parent != nil {
-			normalizeArtifactPartRevisionReference(revision.Parent)
+		for parentIndex := range revision.ParentCommitOIDs {
+			revision.ParentCommitOIDs[parentIndex] = strings.ToLower(strings.TrimSpace(revision.ParentCommitOIDs[parentIndex]))
 		}
 	}
 	if composition := input.Artifact.Composition; composition != nil {
 		composition.ID = strings.TrimSpace(composition.ID)
 		composition.ArtifactChainID = strings.TrimSpace(composition.ArtifactChainID)
 		composition.OwnerSessionID = strings.TrimSpace(composition.OwnerSessionID)
+		composition.RepositoryID = strings.TrimSpace(composition.RepositoryID)
+		composition.CommitOID = strings.ToLower(strings.TrimSpace(composition.CommitOID))
+		composition.TreeOID = strings.ToLower(strings.TrimSpace(composition.TreeOID))
+		for parentIndex := range composition.ParentCommitOIDs {
+			composition.ParentCommitOIDs[parentIndex] = strings.ToLower(strings.TrimSpace(composition.ParentCommitOIDs[parentIndex]))
+		}
 		for index := range composition.Parts {
 			composition.Parts[index].PartID = strings.TrimSpace(composition.Parts[index].PartID)
 			composition.Parts[index].DefinitionOwnerSessionID = strings.TrimSpace(composition.Parts[index].DefinitionOwnerSessionID)
 			normalizeArtifactPartRevisionReference(&composition.Parts[index].Revision)
 		}
+	}
+	normalizeArtifactGitTransaction(input.Artifact.Transaction)
+	for index := range input.Artifact.Locks {
+		lock := [38;5;188m[48;5;52m[1m&input.Artifact.Locks[index][0m
+		lock.PartID = strings.TrimSpace(lock.PartID)
+		lock.RepositoryID = strings.TrimSpace(lock.RepositoryID)
+		lock.CommitOID = strings.ToLower(strings.TrimSpace(lock.CommitOID))
+		lock.BlobOID = strings.ToLower(strings.TrimSpace(lock.BlobOID))
 	}
 	if input.Artifact.Selection != nil {
 		input.Artifact.Selection.SessionID = strings.TrimSpace(input.Artifact.Selection.SessionID)
@@ -1144,7 +1189,7 @@ func validateV3ArtifactMutation(input V3SessionMutationInput) error {
 		return errors.New("artifact mutation payload is required")
 	}
 	if len(input.EventPayload) != 0 || input.EventType != "" {
-		return errors.New("artifact event type and payload are derived from canonical metadata")
+		return errors.New("artifact event type and payload are derived from projected Git metadata")
 	}
 	collection := input.Artifact.Collection
 	if err := validateArtifactID("collection", collection.ID); err != nil {
@@ -1196,8 +1241,17 @@ func validateV3ArtifactMutation(input V3SessionMutationInput) error {
 			return err
 		}
 	}
+	if input.Artifact.Transaction == nil {
+		return errors.New("artifact mutation requires an authoritative Git transaction projection")
+	}
+	if err := validateArtifactGitTransaction(*input.Artifact.Transaction, input); err != nil {
+		return err
+	}
+	if err := validateArtifactGitLocks(input.Artifact.Locks, input.Artifact.Transaction.RepositoryID); err != nil {
+		return err
+	}
 	if len(input.Artifact.PartDefinitions) > SessionArtifactMaxParts || len(input.Artifact.PartRevisions) > SessionArtifactMaxParts {
-		return errors.New("artifact authoritative part count limit exceeded")
+		return errors.New("artifact projected part count limit exceeded")
 	}
 	definitionIDs := make(map[string]struct{}, len(input.Artifact.PartDefinitions))
 	for _, definition := range input.Artifact.PartDefinitions {
@@ -1226,16 +1280,20 @@ func validateV3ArtifactMutation(input V3SessionMutationInput) error {
 		if err := validateArtifactID("part", revision.PartID); err != nil {
 			return err
 		}
-		if revision.ArtifactChainID == "" || revision.OwnerSessionID == "" || len(revision.ArtifactChainID) > 128 || len(revision.OwnerSessionID) > 128 || len(revision.MediaType) > 255 || !validArtifactDigest(revision.DigestSHA256) || revision.Size <= 0 {
-			return errors.New("artifact part revision requires chain, owner, media type, digest, and positive size")
+		if revision.ArtifactChainID == "" || revision.OwnerSessionID == "" || len(revision.ArtifactChainID) > 128 || len(revision.OwnerSessionID) > 128 || len(revision.MediaType) > 255 || revision.Size <= 0 {
+			return errors.New("artifact part revision requires chain, owner, media type, and positive size")
 		}
-		if revision.Parent != nil {
-			if err := validateArtifactPartRevisionReference(*revision.Parent); err != nil {
-				return err
-			}
-			if revision.Parent.ArtifactChainID != revision.ArtifactChainID || revision.Parent.PartID != revision.PartID {
-				return errors.New("artifact part revision parent must remain in the same chain and stable part")
-			}
+		if err := validateArtifactRepositoryID(revision.RepositoryID); err != nil {
+			return err
+		}
+		if !validGitOID(revision.CommitOID) || !validGitOID(revision.BlobOID) {
+			return errors.New("artifact part revision requires exact Git commit and blob oids")
+		}
+		if err := validateCommitOIDs(revision.ParentCommitOIDs); err != nil {
+			return err
+		}
+		if revision.DigestSHA256 != "" && !validArtifactDigest(revision.DigestSHA256) {
+			return errors.New("artifact part revision digest is invalid")
 		}
 		key := revision.OwnerSessionID + "\x00" + revision.ArtifactChainID + "\x00" + revision.PartID + "\x00" + revision.ID
 		if _, duplicate := revisionIDs[key]; duplicate {
@@ -1249,6 +1307,15 @@ func validateV3ArtifactMutation(input V3SessionMutationInput) error {
 		}
 		if composition.ArtifactChainID == "" || composition.OwnerSessionID == "" || len(composition.Parts) == 0 || len(composition.Parts) > SessionArtifactMaxParts {
 			return errors.New("artifact composition requires chain, owner, and bounded parts")
+		}
+		if err := validateArtifactRepositoryID(composition.RepositoryID); err != nil {
+			return err
+		}
+		if !validGitOID(composition.CommitOID) || !validGitOID(composition.TreeOID) {
+			return errors.New("artifact composition requires exact Git commit and tree oids")
+		}
+		if err := validateCommitOIDs(composition.ParentCommitOIDs); err != nil {
+			return err
 		}
 		seenParts := make(map[string]struct{}, len(composition.Parts))
 		for _, part := range composition.Parts {
@@ -1351,6 +1418,17 @@ func validateArtifactLineage(lineage SessionArtifactLineage) error {
 func validateArtifactRevisionMetadata(variant SessionArtifactVariant) error {
 	if len(variant.ArtifactChainID) > 128 || len(variant.ArtifactStepID) > 256 || len(variant.RevisionRoundID) > 256 || variant.RevisionNumber < 0 || variant.RevisionNumber > 1_000_000 || variant.CandidateIndex < 0 || variant.CandidateIndex > 1_000_000 {
 		return errors.New("artifact revision metadata is invalid")
+	}
+	if variant.RepositoryID != "" {
+		if err := validateArtifactRepositoryID(variant.RepositoryID); err != nil {
+			return err
+		}
+		if !validGitOID(variant.CommitOID) || (variant.TreeOID != "" && !validGitOID(variant.TreeOID)) || (variant.CandidateRef != "" && !validArtifactGitRef(variant.CandidateRef)) {
+			return errors.New("artifact variant Git projection is invalid")
+		}
+		if err := validateCommitOIDs(variant.ParentCommitOIDs); err != nil {
+			return err
+		}
 	}
 	if (len(variant.PartDefinitions) > 0 || variant.Composition != nil) && len(variant.Parts) > 0 {
 		return errors.New("locator-only parts cannot be composition authority")
@@ -1529,6 +1607,25 @@ func (s *SessionStore) prepareV3ArtifactMutation(input V3SessionMutationInput, s
 		return preparedV3ArtifactMutation{}, err
 	}
 	prepared := preparedV3ArtifactMutation{}
+	transaction := *input.Artifact.Transaction
+	transaction.Version = SessionArtifactVersion
+	transaction.AccountScopeID = input.AccountScopeID
+	transaction.UserID = input.UserID
+	transaction.OwnerSessionID = input.SessionID
+	transaction.CreatedAt = now
+	transaction.EventSeq = seq
+	if existing, ok, transactionErr := s.GetSessionArtifactGitTransaction(input.AccountScopeID, input.UserID, input.SessionID, transaction.ID); transactionErr != nil {
+		return preparedV3ArtifactMutation{}, transactionErr
+	} else if ok {
+		// The same projection may be replayed after a crash. Event sequencing is
+		// intentionally excluded from the authoritative Git identity comparison.
+		existing.EventSeq, existing.CreatedAt = transaction.EventSeq, transaction.CreatedAt
+		if !reflect.DeepEqual(existing, transaction) {
+			return preparedV3ArtifactMutation{}, errors.New("artifact Git transaction projection conflicts with an existing transaction")
+		}
+	}
+	prepared.Transaction = &transaction
+	prepared.Locks = append([]SessionArtifactGitLock(nil), input.Artifact.Locks...)
 	definitions, revisions, composition, err := s.prepareAuthoritativeArtifactParts(input, seq, now)
 	if err != nil {
 		return preparedV3ArtifactMutation{}, err
@@ -1565,7 +1662,7 @@ func (s *SessionStore) prepareV3ArtifactMutation(input V3SessionMutationInput, s
 		deletedCollection := collection
 		deletedCollection.UpdatedAt = now
 		deletedCollection.EventSeq = seq
-		prepared.Projection = V3ArtifactProjection{Collection: deletedCollection}
+		prepared.Projection = V3ArtifactProjection{Collection: deletedCollection, Transaction: prepared.Transaction, Locks: prepared.Locks}
 		prepared.DeletedVariants = variants
 		prepared.DeleteCollection = true
 		return prepared, nil
@@ -1688,7 +1785,7 @@ func (s *SessionStore) prepareV3ArtifactMutation(input V3SessionMutationInput, s
 			if err := validateArtifactCollectionProgress(collection); err != nil {
 				return preparedV3ArtifactMutation{}, err
 			}
-			prepared.Projection = V3ArtifactProjection{Collection: collection, Variant: &deleted}
+			prepared.Projection = V3ArtifactProjection{Collection: collection, Variant: &deleted, Transaction: prepared.Transaction, Locks: prepared.Locks}
 			prepared.DeletedVariants = []SessionArtifactVariant{current}
 			prepared.DeleteVariant = true
 			return prepared, nil
@@ -1712,6 +1809,13 @@ func (s *SessionStore) prepareV3ArtifactMutation(input V3SessionMutationInput, s
 		next.AccountScopeID = input.AccountScopeID
 		next.SessionID = input.SessionID
 		next.CollectionID = collection.ID
+		next.RepositoryID = incoming.Transaction.RepositoryID
+		next.CommitOID = incoming.Transaction.CommitOID
+		next.ParentCommitOIDs = append([]string(nil), incoming.Transaction.ParentCommitOIDs...)
+		next.CandidateRef = incoming.Transaction.CandidateRef
+		if composition != nil {
+			next.TreeOID = composition.TreeOID
+		}
 		if variantOK {
 			next.CreatedAt = current.CreatedAt
 		} else {
@@ -1724,9 +1828,9 @@ func (s *SessionStore) prepareV3ArtifactMutation(input V3SessionMutationInput, s
 		}
 		if !variantOK {
 			if next.Composition == nil {
-				next.PartGraphState = SessionArtifactGraphLegacyUnproven
+				next.PartGraphState = ""
 			} else {
-				next.PartGraphState = SessionArtifactGraphAuthoritative
+				next.PartGraphState = SessionArtifactGraphProjection
 			}
 			if next.ArtifactStepID == "" {
 				next.ArtifactStepID = artifactStepID(next)
@@ -1764,8 +1868,8 @@ func (s *SessionStore) prepareV3ArtifactMutation(input V3SessionMutationInput, s
 				if sourceErr != nil {
 					return preparedV3ArtifactMutation{}, sourceErr
 				}
-				if chain.GraphState != SessionArtifactGraphAuthoritative || !sameArtifactReference(chain.Head, artifactSelectionForVariant(source)) {
-					return preparedV3ArtifactMutation{}, errors.New("artifact source must be the exact accepted chain head")
+				if chain.GraphState != SessionArtifactGraphProjection || source.RepositoryID != incoming.Transaction.RepositoryID || source.CommitOID == "" {
+					return preparedV3ArtifactMutation{}, errors.New("artifact source is not an exact Git projection in the transaction repository")
 				}
 				next.ArtifactChainID, next.RevisionNumber = chain.ID, projectedSource.RevisionNumber+1
 				parent = artifactSelectionForVariant(source)
@@ -1786,9 +1890,9 @@ func (s *SessionStore) prepareV3ArtifactMutation(input V3SessionMutationInput, s
 				return preparedV3ArtifactMutation{}, err
 			}
 			if !chainOK {
-				chain = SessionArtifactChain{Version: SessionArtifactVersion, GraphState: SessionArtifactGraphAuthoritative, ID: next.ArtifactChainID, AccountScopeID: input.AccountScopeID, UserID: input.UserID, Name: firstNonEmptyArtifactString(next.Presentation.Label, collection.Name, next.Filename), RevisionCount: next.RevisionNumber, LastRoundID: next.ArtifactStepID, CreatedAt: now, UpdatedAt: now, EventSeq: seq}
-			} else if chain.GraphState != SessionArtifactGraphAuthoritative {
-				return preparedV3ArtifactMutation{}, errors.New("legacy artifact chain cannot accept authoritative candidates")
+				chain = SessionArtifactChain{Version: SessionArtifactVersion, GraphState: SessionArtifactGraphProjection, ID: next.ArtifactChainID, AccountScopeID: input.AccountScopeID, UserID: input.UserID, Name: firstNonEmptyArtifactString(next.Presentation.Label, collection.Name, next.Filename), RepositoryID: incoming.Transaction.RepositoryID, OfficialRef: incoming.Transaction.OfficialRef, OfficialCommitOID: incoming.Transaction.ResultingOfficial, RevisionCount: next.RevisionNumber, LastRoundID: next.ArtifactStepID, CreatedAt: now, UpdatedAt: now, EventSeq: seq}
+			} else if chain.GraphState != SessionArtifactGraphProjection || chain.RepositoryID != incoming.Transaction.RepositoryID || chain.OfficialRef != incoming.Transaction.OfficialRef {
+				return preparedV3ArtifactMutation{}, errors.New("artifact Git chain projection conflicts with transaction identity")
 			}
 			step, stepOK, err := s.GetSessionArtifactStep(input.AccountScopeID, input.UserID, chain.ID, next.ArtifactStepID)
 			if err != nil {
@@ -1797,11 +1901,11 @@ func (s *SessionStore) prepareV3ArtifactMutation(input V3SessionMutationInput, s
 			if stepOK {
 				copy := step
 				prepared.PreviousStep = &copy
-				if step.RevisionNumber != next.RevisionNumber || !sameArtifactReference(step.Parent, parent) || step.Accepted != nil {
-					return preparedV3ArtifactMutation{}, errors.New("artifact step parent, revision, or acceptance conflicts")
+				if step.RepositoryID != incoming.Transaction.RepositoryID || step.TransactionRef != incoming.Transaction.TransactionRef || step.CommitOID != incoming.Transaction.CommitOID {
+					return preparedV3ArtifactMutation{}, errors.New("artifact step conflicts with the authoritative Git transaction")
 				}
 			} else {
-				step = SessionArtifactStep{Version: SessionArtifactVersion, GraphState: SessionArtifactGraphAuthoritative, ID: next.ArtifactStepID, ArtifactChainID: chain.ID, AccountScopeID: input.AccountScopeID, UserID: input.UserID, Parent: parent, RevisionNumber: next.RevisionNumber, CreatedAt: now}
+				step = SessionArtifactStep{Version: SessionArtifactVersion, GraphState: SessionArtifactGraphProjection, ID: next.ArtifactStepID, ArtifactChainID: chain.ID, AccountScopeID: input.AccountScopeID, UserID: input.UserID, RepositoryID: incoming.Transaction.RepositoryID, TransactionRef: incoming.Transaction.TransactionRef, CandidateRef: incoming.Transaction.CandidateRef, CommitOID: incoming.Transaction.CommitOID, ParentCommitOIDs: append([]string(nil), incoming.Transaction.ParentCommitOIDs...), ExpectedOldOID: incoming.Transaction.ExpectedOldOID, ResultingOID: incoming.Transaction.ResultingOfficial, Parent: parent, RevisionNumber: next.RevisionNumber, CreatedAt: now}
 			}
 			if len(step.Candidates) >= SessionArtifactMaxStepCandidates {
 				return preparedV3ArtifactMutation{}, errors.New("artifact step candidate limit exceeded")
@@ -1906,7 +2010,7 @@ func (s *SessionStore) prepareV3ArtifactMutation(input V3SessionMutationInput, s
 			// reusable as the canonical continuation head. Multi-candidate steps remain
 			// pending for explicit review even when their candidates finalize at
 			// different times.
-			if next.AutoAccept && len(step.Candidates) == 1 && step.Accepted == nil {
+			if next.AutoAccept && len(step.Candidates) == 1 && step.Accepted == nil && incoming.Transaction.State == "committed" {
 				chain, chainOK, chainErr := s.GetSessionArtifactChain(input.AccountScopeID, input.UserID, next.ArtifactChainID)
 				if chainErr != nil {
 					return preparedV3ArtifactMutation{}, chainErr
@@ -1914,12 +2018,13 @@ func (s *SessionStore) prepareV3ArtifactMutation(input V3SessionMutationInput, s
 				if !chainOK || chain.GraphState != SessionArtifactGraphAuthoritative {
 					return preparedV3ArtifactMutation{}, errors.New("authoritative artifact chain was not found")
 				}
-				if !sameArtifactReference(chain.Head, step.Parent) {
-					return preparedV3ArtifactMutation{}, errors.New("artifact step parent is stale relative to the canonical head")
+				if chain.OfficialCommitOID != incoming.Transaction.ExpectedOldOID {
+					return preparedV3ArtifactMutation{}, errors.New("artifact Git official ref projection does not match the completed CAS transaction")
 				}
 				candidate := artifactSelectionForVariant(next)
 				step.Accepted = &candidate
 				chain.Head = candidate
+				chain.OfficialCommitOID = incoming.Transaction.ResultingOfficial
 				collection.SelectedVariantID = next.ID
 				if step.RevisionNumber == 1 && chain.Root.EventSeq == 0 {
 					chain.Root = candidate
@@ -1960,8 +2065,8 @@ func (s *SessionStore) prepareV3ArtifactMutation(input V3SessionMutationInput, s
 			}
 		}
 		selection = &ref
-		if selected.GraphState != SessionArtifactGraphAuthoritative || selected.ArtifactChainID == "" || selected.ArtifactStepID == "" {
-			return preparedV3ArtifactMutation{}, errors.New("legacy artifact lineage is unproven and cannot participate in a canonical continuation")
+		if selected.GraphState != SessionArtifactGraphProjection || selected.ArtifactChainID == "" || selected.ArtifactStepID == "" || !validGitOID(selected.CommitOID) {
+			return preparedV3ArtifactMutation{}, errors.New("artifact selection is missing an exact Git projection")
 		}
 		chain, ok, err := s.GetSessionArtifactChain(input.AccountScopeID, input.UserID, selected.ArtifactChainID)
 		if err != nil {
@@ -1980,10 +2085,10 @@ func (s *SessionStore) prepareV3ArtifactMutation(input V3SessionMutationInput, s
 			return preparedV3ArtifactMutation{}, errors.New("authoritative artifact step was not found")
 		}
 		if action == "use" {
-			if !sameArtifactReference(chain.Head, artifactSelectionForVariant(selected)) {
-				return preparedV3ArtifactMutation{}, errors.New("only the exact accepted chain head can be used for continuation")
+			if !validGitOID(selected.CommitOID) || selected.RepositoryID != incoming.Transaction.RepositoryID {
+				return preparedV3ArtifactMutation{}, errors.New("artifact continuation requires an exact Git commit in the transaction repository")
 			}
-			prepared.Projection = V3ArtifactProjection{Collection: collection, Variant: variant, Selection: selection, Chain: &chain, Step: &step}
+			prepared.Projection = V3ArtifactProjection{Collection: collection, Variant: variant, Selection: selection, Chain: &chain, Step: &step, Transaction: prepared.Transaction, Locks: prepared.Locks}
 			return prepared, nil
 		}
 		collection.Status = artifactCollectionStatusFromCounts(collection)
@@ -2000,13 +2105,13 @@ func (s *SessionStore) prepareV3ArtifactMutation(input V3SessionMutationInput, s
 				collection.Status = artifactCollectionStatusFromCounts(collection)
 				collection.UpdatedAt = now
 				collection.EventSeq = seq
-				prepared.Projection = V3ArtifactProjection{Collection: collection, Variant: variant, Selection: selection, Chain: &chain, Step: &step}
+				prepared.Projection = V3ArtifactProjection{Collection: collection, Variant: variant, Selection: selection, Chain: &chain, Step: &step, Transaction: prepared.Transaction, Locks: prepared.Locks}
 				return prepared, nil
 			}
 			return preparedV3ArtifactMutation{}, errors.New("artifact step already accepted a different candidate")
 		}
-		if !sameArtifactReference(chain.Head, step.Parent) {
-			return preparedV3ArtifactMutation{}, errors.New("artifact step parent is stale relative to the canonical head")
+		if incoming.Transaction.State != "committed" || chain.OfficialCommitOID != incoming.Transaction.ExpectedOldOID {
+			return preparedV3ArtifactMutation{}, errors.New("artifact selection requires a completed Git CAS transaction against the projected official ref")
 		}
 		candidate := artifactSelectionForVariant(selected)
 		member := false
@@ -2021,6 +2126,7 @@ func (s *SessionStore) prepareV3ArtifactMutation(input V3SessionMutationInput, s
 		}
 		step.Accepted, step.UpdatedAt, step.EventSeq = &candidate, now, seq
 		chain.Head = candidate
+		chain.OfficialCommitOID = incoming.Transaction.ResultingOfficial
 		collection.SelectedVariantID = selected.ID
 		if step.RevisionNumber == 1 && chain.Root.EventSeq == 0 {
 			chain.Root = candidate
@@ -2032,7 +2138,7 @@ func (s *SessionStore) prepareV3ArtifactMutation(input V3SessionMutationInput, s
 		return preparedV3ArtifactMutation{}, err
 	}
 	chain, step := prepared.Projection.Chain, prepared.Projection.Step
-	prepared.Projection = V3ArtifactProjection{Collection: collection, Variant: variant, Selection: selection, Chain: chain, Step: step, PartDefinitions: prepared.PartDefinitions, PartRevisions: prepared.PartRevisions, Composition: prepared.Composition}
+	prepared.Projection = V3ArtifactProjection{Collection: collection, Variant: variant, Selection: selection, Chain: chain, Step: step, Transaction: prepared.Transaction, Locks: prepared.Locks, PartDefinitions: prepared.PartDefinitions, PartRevisions: prepared.PartRevisions, Composition: prepared.Composition}
 	return prepared, nil
 }
 
@@ -2174,6 +2280,15 @@ func setV3ArtifactMutationInBatch(batch *pebble.Batch, prepared preparedV3Artifa
 				}
 			}
 			return nil
+		}
+	}
+	if transaction := prepared.Transaction; transaction != nil {
+		payload, err := json.Marshal(transaction)
+		if err != nil {
+			return fmt.Errorf("marshal artifact Git transaction: %w", err)
+		}
+		if err := batch.Set([]byte(KeySessionArtifactGitTransaction(transaction.AccountScopeID, transaction.OwnerSessionID, transaction.ID)), payload, nil); err != nil {
+			return err
 		}
 	}
 	if step := prepared.Projection.Step; step != nil {

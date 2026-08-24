@@ -9,13 +9,15 @@ import (
 	"github.com/cockroachdb/pebble"
 )
 
-// SessionArtifactRepairReport describes bounded maintenance derived from authoritative variant records.
+// SessionArtifactRepairReport describes bounded idempotent maintenance of
+// rebuildable catalog projections. Git remains the artifact authority.
 type SessionArtifactRepairReport struct {
 	CollectionsVisited  int
 	CollectionsRepaired int
 }
 
-// RepairSessionArtifactCollections derives redundant collection progress from authoritative variants.
+// RepairSessionArtifactCollections derives redundant collection progress from
+// exact Git-backed variant projections. It never reconstructs ancestry or bytes.
 func (s *SessionStore) RepairSessionArtifactCollections(sessionID string) (SessionArtifactRepairReport, error) {
 	if s == nil || s.store == nil {
 		return SessionArtifactRepairReport{}, errors.New("session store is not configured")
@@ -64,6 +66,9 @@ func (s *SessionStore) RepairSessionArtifactCollections(sessionID string) (Sessi
 			}
 			if variant.AccountScopeID != accountScopeID || variant.SessionID != sessionID || variant.CollectionID != collection.ID {
 				return errors.New("artifact variant ownership metadata is inconsistent")
+			}
+			if variant.GraphState != SessionArtifactGraphProjection || variant.RepositoryID == "" || !validGitOID(variant.CommitOID) {
+				return errors.New("artifact repair refuses a variant without an exact Git projection")
 			}
 			if variant.Lineage.ParentSessionID != "" && variant.Lineage.ParentSessionID != sessionID {
 				return errors.New("artifact variant parent lineage is inconsistent")

@@ -62,7 +62,7 @@ func (a *Authority) SelectPartRevisions(ctx context.Context, principal Principal
 		}
 		composition.Parts[slotIndex].Revision, composition.Parts[slotIndex].Locked = choice.Revision, choice.Locked
 	}
-	for index, slot := range composition.Parts { if _, changed := seen[slot.PartID]; !changed && slot != source.Parts[index] { return pebblestore.SessionArtifactVariant{}, errors.New("part selection changed an untouched exact part") } }
+	for index, slot := range composition.Parts { if _, changed := seen[slot.PartID]; !changed && !reflect.DeepEqual(slot, source.Parts[index]) { return pebblestore.SessionArtifactVariant{}, errors.New("part selection changed an untouched exact part") } }
 	if existingDestination {
 		if existing.Status == pebblestore.SessionArtifactStatusReady && existing.Composition != nil && reflect.DeepEqual(existing.Composition.Parts, composition.Parts) && existing.Composition.Parent != nil && *existing.Composition.Parent == *composition.Parent { return existing, nil }
 		return pebblestore.SessionArtifactVariant{}, errors.New("part selection idempotency destination conflicts with the exact request")

@@ -39,38 +39,49 @@ type SessionArtifactPartDefinition struct {
 	EventSeq        uint64                      `json:"event_seq"`
 }
 
-// SessionArtifactPartRevisionReference is an exact immutable byte reference.
-// Digest, size, and media type are repeated so a composition cannot silently
-// resolve a mutable or mismatched revision row.
+// SessionArtifactPartRevisionReference is an exact projection of a blob in the
+// authoritative artifact Git repository. Pebble never resolves this reference
+// to an application-managed file and never treats the repeated digest as the
+// byte authority.
 type SessionArtifactPartRevisionReference struct {
 	ArtifactChainID string `json:"artifact_chain_id"`
 	PartID          string `json:"part_id"`
 	PartRevisionID  string `json:"part_revision_id"`
 	OwnerSessionID  string `json:"owner_session_id"`
-	DigestSHA256    string `json:"digest_sha256"`
+	RepositoryID    string `json:"repository_id"`
+	CommitOID       string `json:"commit_oid"`
+	BlobOID         string `json:"blob_oid"`
+	DigestSHA256    string `json:"digest_sha256,omitempty"`
 	Size            int64  `json:"size"`
 	MediaType       string `json:"media_type"`
 }
 
-// SessionArtifactPartRevision is immutable metadata for one independently
-// stored byte-bearing component. Parent is exact ancestry, not a label.
+// SessionArtifactPartRevision is rebuildable metadata projected from an exact
+// Git commit/tree/blob tuple. ParentCommitOIDs mirrors Git ancestry and may be
+// empty, singular, or multi-parent; Pebble does not construct ancestry itself.
 type SessionArtifactPartRevision struct {
-	Version         int                                   `json:"version"`
-	GraphState      string                                `json:"graph_state"`
-	ArtifactChainID string                                `json:"artifact_chain_id"`
-	PartID          string                                `json:"part_id"`
-	ID              string                                `json:"id"`
-	AccountScopeID  string                                `json:"account_scope_id"`
-	UserID          string                                `json:"user_id"`
-	OwnerSessionID  string                                `json:"owner_session_id"`
-	DigestSHA256    string                                `json:"digest_sha256"`
-	Size            int64                                 `json:"size"`
-	MediaType       string                                `json:"media_type"`
-	Parent          *SessionArtifactPartRevisionReference `json:"parent,omitempty"`
-	IterationTurnID  string                                `json:"iteration_turn_id,omitempty"`
-	IterationGroupID string                                `json:"iteration_group_id,omitempty"`
-	CreatedAt       int64                                 `json:"created_at"`
-	EventSeq        uint64                                `json:"event_seq"`
+	Version          int      `json:"version"`
+	GraphState       string   `json:"graph_state"`
+	ArtifactChainID  string   `json:"artifact_chain_id"`
+	PartID           string   `json:"part_id"`
+	ID               string   `json:"id"`
+	AccountScopeID   string   `json:"account_scope_id"`
+	UserID           string   `json:"user_id"`
+	OwnerSessionID   string   `json:"owner_session_id"`
+	RepositoryID     string   `json:"repository_id"`
+	CommitOID        string   `json:"commit_oid"`
+	ParentCommitOIDs []string `json:"parent_commit_oids,omitempty"`
+	BlobOID          string   `json:"blob_oid"`
+	DigestSHA256     string   `json:"digest_sha256,omitempty"`
+	Size             int64    `json:"size"`
+	MediaType        string   `json:"media_type"`
+	// Parent is decoded only for migration diagnostics. Git ParentCommitOIDs is
+	// the sole ancestry projection and this field is never written or followed.
+	Parent           *SessionArtifactPartRevisionReference `json:"parent,omitempty"`
+	IterationTurnID  string   `json:"iteration_turn_id,omitempty"`
+	IterationGroupID string   `json:"iteration_group_id,omitempty"`
+	CreatedAt        int64    `json:"created_at"`
+	EventSeq         uint64   `json:"event_seq"`
 }
 
 func (revision SessionArtifactPartRevision) Reference() SessionArtifactPartRevisionReference {
@@ -79,6 +90,9 @@ func (revision SessionArtifactPartRevision) Reference() SessionArtifactPartRevis
 		PartID:          revision.PartID,
 		PartRevisionID:  revision.ID,
 		OwnerSessionID:  revision.OwnerSessionID,
+		RepositoryID:    revision.RepositoryID,
+		CommitOID:       revision.CommitOID,
+		BlobOID:         revision.BlobOID,
 		DigestSHA256:    revision.DigestSHA256,
 		Size:            revision.Size,
 		MediaType:       revision.MediaType,
@@ -95,11 +109,13 @@ type SessionArtifactCompositionPart struct {
 	Locked                   bool                                 `json:"locked,omitempty"`
 }
 
-// SessionArtifactCompositionReference identifies one immutable composition.
+// SessionArtifactCompositionReference identifies one exact Git commit.
 type SessionArtifactCompositionReference struct {
 	ArtifactChainID string `json:"artifact_chain_id"`
 	CompositionID   string `json:"composition_id"`
 	OwnerSessionID  string `json:"owner_session_id"`
+	RepositoryID    string `json:"repository_id"`
+	CommitOID       string `json:"commit_oid"`
 	EventSeq        uint64 `json:"event_seq"`
 }
 
@@ -115,23 +131,28 @@ type SessionArtifactConstructionEntry struct {
 	Path   string `json:"path,omitempty"`
 }
 
-// SessionArtifactComposition is the preservation authority for one complete
-// artifact revision. Preview/export bytes are projections of this ordered list.
+// SessionArtifactComposition is a rebuildable projection of one complete Git
+// commit. Git owns the tree, ordered part blobs, locks, and merge ancestry.
 type SessionArtifactComposition struct {
-	Version          int                                  `json:"version"`
-	GraphState       string                               `json:"graph_state"`
-	ID               string                               `json:"id"`
-	ArtifactChainID  string                               `json:"artifact_chain_id"`
-	AccountScopeID   string                               `json:"account_scope_id"`
-	UserID           string                               `json:"user_id"`
-	OwnerSessionID   string                               `json:"owner_session_id"`
+	Version          int                              `json:"version"`
+	GraphState       string                           `json:"graph_state"`
+	ID               string                           `json:"id"`
+	ArtifactChainID  string                           `json:"artifact_chain_id"`
+	AccountScopeID   string                           `json:"account_scope_id"`
+	UserID           string                           `json:"user_id"`
+	OwnerSessionID   string                           `json:"owner_session_id"`
+	RepositoryID     string                           `json:"repository_id"`
+	CommitOID        string                           `json:"commit_oid"`
+	TreeOID          string                           `json:"tree_oid"`
+	ParentCommitOIDs []string                         `json:"parent_commit_oids,omitempty"`
+	// Parent is migration-only metadata and never participates in authority.
 	Parent           *SessionArtifactCompositionReference `json:"parent,omitempty"`
-	IterationTurnID  string                               `json:"iteration_turn_id,omitempty"`
-	IterationGroupID string                               `json:"iteration_group_id,omitempty"`
-	Construction     SessionArtifactConstruction          `json:"construction"`
-	Parts            []SessionArtifactCompositionPart     `json:"parts"`
-	CreatedAt        int64                                `json:"created_at"`
-	EventSeq         uint64                               `json:"event_seq"`
+	IterationTurnID  string                           `json:"iteration_turn_id,omitempty"`
+	IterationGroupID string                           `json:"iteration_group_id,omitempty"`
+	Construction     SessionArtifactConstruction      `json:"construction"`
+	Parts            []SessionArtifactCompositionPart `json:"parts"`
+	CreatedAt        int64                            `json:"created_at"`
+	EventSeq         uint64                           `json:"event_seq"`
 }
 
 func KeySessionArtifactPartDefinition(accountScopeID, ownerSessionID, chainID, partID string) string {
@@ -223,6 +244,9 @@ func normalizeArtifactPartRevisionReference(reference *SessionArtifactPartRevisi
 	reference.PartID = strings.TrimSpace(reference.PartID)
 	reference.PartRevisionID = strings.TrimSpace(reference.PartRevisionID)
 	reference.OwnerSessionID = strings.TrimSpace(reference.OwnerSessionID)
+	reference.RepositoryID = strings.TrimSpace(reference.RepositoryID)
+	reference.CommitOID = strings.ToLower(strings.TrimSpace(reference.CommitOID))
+	reference.BlobOID = strings.ToLower(strings.TrimSpace(reference.BlobOID))
 	reference.DigestSHA256 = strings.ToLower(strings.TrimSpace(reference.DigestSHA256))
 	reference.MediaType = strings.ToLower(strings.TrimSpace(reference.MediaType))
 }
@@ -286,8 +310,17 @@ func validateArtifactPartRevisionReference(reference SessionArtifactPartRevision
 	if err := validateArtifactID("part revision", reference.PartRevisionID); err != nil {
 		return err
 	}
-	if reference.ArtifactChainID == "" || reference.OwnerSessionID == "" || len(reference.ArtifactChainID) > 128 || len(reference.OwnerSessionID) > 128 || len(reference.MediaType) > 255 || !validArtifactDigest(reference.DigestSHA256) || reference.Size <= 0 {
+	if reference.ArtifactChainID == "" || reference.OwnerSessionID == "" || len(reference.ArtifactChainID) > 128 || len(reference.OwnerSessionID) > 128 || len(reference.MediaType) > 255 || reference.Size <= 0 {
 		return errors.New("artifact part revision reference is incomplete")
+	}
+	if err := validateArtifactRepositoryID(reference.RepositoryID); err != nil {
+		return err
+	}
+	if !validGitOID(reference.CommitOID) || !validGitOID(reference.BlobOID) {
+		return errors.New("artifact part revision requires exact Git commit and blob oids")
+	}
+	if reference.DigestSHA256 != "" && !validArtifactDigest(reference.DigestSHA256) {
+		return errors.New("artifact part revision digest is invalid")
 	}
 	return nil
 }
