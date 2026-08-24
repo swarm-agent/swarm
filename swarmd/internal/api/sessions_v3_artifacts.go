@@ -82,6 +82,26 @@ type sessionsV3ResolvedArtifact struct {
 	Managed    *pebblestore.SessionArtifactVariant
 }
 
+type sessionsV3ArtifactPartDefinitionProjection struct {
+	ID          string                                  `json:"id"`
+	Label       string                                  `json:"label"`
+	Description string                                  `json:"description,omitempty"`
+	Locator     *pebblestore.SessionArtifactPartLocator `json:"locator,omitempty"`
+}
+
+type sessionsV3ArtifactPartRevisionProjection struct {
+	Reference pebblestore.SessionArtifactPartRevisionReference  `json:"reference"`
+	Parent    *pebblestore.SessionArtifactPartRevisionReference `json:"parent,omitempty"`
+	CreatedAt int64                                             `json:"created_at,omitempty"`
+	EventSeq  uint64                                            `json:"event_seq,omitempty"`
+}
+
+type sessionsV3ArtifactCompositionProjection struct {
+	ID              string                                       `json:"id"`
+	ArtifactChainID string                                       `json:"artifact_chain_id"`
+	Parts           []pebblestore.SessionArtifactCompositionPart `json:"parts"`
+}
+
 type sessionsV3ArtifactCatalogItem struct {
 	ArtifactID            string                                         `json:"artifact_id"`
 	SourceRef             string                                         `json:"source_ref,omitempty"`
@@ -122,6 +142,12 @@ type sessionsV3ArtifactCatalogItem struct {
 	RevisionRoundID       string                                         `json:"revision_round_id,omitempty"`
 	CandidateIndex        int                                            `json:"candidate_index,omitempty"`
 	Parts                 []pebblestore.SessionArtifactPart              `json:"parts,omitempty"`
+	PartGraphState        string                                         `json:"part_graph_state,omitempty"`
+	PartDefinitions       []sessionsV3ArtifactPartDefinitionProjection   `json:"part_definitions,omitempty"`
+	PartRevisions         []sessionsV3ArtifactPartRevisionProjection     `json:"part_revisions,omitempty"`
+	Composition           *sessionsV3ArtifactCompositionProjection       `json:"composition,omitempty"`
+	TargetedPartID        string                                         `json:"targeted_part_id,omitempty"`
+	AcceptedPartHeads     []pebblestore.SessionArtifactCompositionPart   `json:"accepted_part_heads,omitempty"`
 	Content               string                                         `json:"content,omitempty"`
 }
 
@@ -139,6 +165,115 @@ func cloneSessionsV3ArtifactAnimationProfile(input *pebblestore.SessionArtifactA
 	}
 	cloned := *input
 	return &cloned
+}
+
+func (s *Server) projectSessionsV3ArtifactComposition(session pebblestore.SessionSnapshot, variant pebblestore.SessionArtifactVariant, chain pebblestore.SessionArtifactChain) ([]sessionsV3ArtifactPartDefinitionProjection, []sessionsV3ArtifactPartRevisionProjection, *sessionsV3ArtifactCompositionProjection, string, []pebblestore.SessionArtifactCompositionPart, error) {
+	if variant.PartGraphState != pebblestore.SessionArtifactGraphAuthoritative || variant.Composition == nil {
+		return nil, nil, nil, "", nil, nil
+	}
+	composition := *variant.Composition
+	if composition.GraphState != pebblestore.SessionArtifactGraphAuthoritative || composition.ArtifactChainID != variant.ArtifactChainID || composition.OwnerSessionID != variant.SessionID || len(composition.Parts) == 0 {
+		return nil, nil, nil, "", nil, errors.New("authoritative artifact composition is inconsistent")
+	}
+	definitions := make([]sessionsV3ArtifactPartDefinitionProjection, 0, len(composition.Parts))
+	revisions := make([]sessionsV3ArtifactPartRevisionProjection, 0, len(composition.Parts))
+	for _, slot := range composition.Parts {
+		definition, ok, err := s.sessions.GetSessionArtifactPartDefinition(session.AccountScopeID, session.UserID, slot.DefinitionOwnerSessionID, composition.ArtifactChainID, slot.PartID)
+		if err != nil {
+			return nil, nil, nil, "", nil, err
+		}
+		if !ok || definition.GraphState != pebblestore.SessionArtifactGraphAuthoritative {
+			return nil, nil, nil, "", nil, errors.New("authoritative artifact part definition is missing")
+		}
+		revision, ok, err := s.sessions.GetSessionArtifactPartRevision(session.AccountScopeID, session.UserID, slot.Revision.OwnerSessionID, slot.Revision.ArtifactChainID, slot.Revision.PartID, slot.Revision.PartRevisionID)
+		if err != nil {
+			return nil, nil, nil, "", nil, err
+		}
+		if !ok || revision.GraphState != pebblestore.SessionArtifactGraphAuthoritative || revision.Reference() != slot.Revision {
+			return nil, nil, nil, "", nil, errors.New("authoritative artifact part revision is missing or stale")
+		}
+		var locator *pebblestore.SessionArtifactPartLocator
+		if definition.Locator != nil {
+			copy := *definition.Locator
+			locator = &copy
+		}
+		definitions = append(definitions, sessionsV3ArtifactPartDefinitionProjection{ID: definition.ID, Label: definition.Label, Description: definition.Description, Locator: locator})
+		var parent *pebblestore.SessionArtifactPartRevisionReference
+		if revision.Parent != nil {
+			copy := *revision.Parent
+			parent = &copy
+		}
+		revisions = append(revisions, sessionsV3ArtifactPartRevisionProjection{Reference: revision.Reference(), Parent: parent, CreatedAt: revision.CreatedAt, EventSeq: revision.EventSeq})
+	}
+	projection := &sessionsV3ArtifactCompositionProjection{ID: composition.ID, ArtifactChainID: composition.ArtifactChainID, Parts: append([]pebblestore.SessionArtifactCompositionPart(nil), composition.Parts...)}
+	targetedPartID, err := s.sessionsV3ArtifactTargetedPartID(session, variant, composition)
+	if err != nil {
+		return nil, nil, nil, "", nil, err
+	}
+	acceptedHeads, err := s.sessionsV3ArtifactAcceptedPartHeads(session, chain)
+	if err != nil {
+		return nil, nil, nil, "", nil, err
+	}
+	return definitions, revisions, projection, targetedPartID, acceptedHeads, nil
+}
+
+func (s *Server) sessionsV3ArtifactTargetedPartID(session pebblestore.SessionSnapshot, variant pebblestore.SessionArtifactVariant, composition pebblestore.SessionArtifactComposition) (string, error) {
+	if variant.ParentArtifact == nil || variant.ParentArtifact.VariantID == "" {
+		return "", nil
+	}
+	parentRef := *variant.ParentArtifact
+	parentSession, ok, err := s.sessions.GetSession(parentRef.SessionID)
+	if err != nil {
+		return "", err
+	}
+	if !ok || parentSession.AccountScopeID != session.AccountScopeID || parentSession.UserID != session.UserID {
+		return "", errors.New("artifact composition parent ownership is inconsistent")
+	}
+	parent, ok, err := s.sessions.GetSessionArtifactVariant(parentSession.AccountScopeID, parentRef.SessionID, parentRef.CollectionID, parentRef.VariantID)
+	if err != nil {
+		return "", err
+	}
+	if !ok || parent.EventSeq != parentRef.EventSeq || parent.PartGraphState != pebblestore.SessionArtifactGraphAuthoritative || parent.Composition == nil {
+		return "", errors.New("artifact composition parent is missing or stale")
+	}
+	if len(parent.Composition.Parts) != len(composition.Parts) {
+		return "", errors.New("artifact composition changed its stable part set")
+	}
+	changed := ""
+	for index, slot := range composition.Parts {
+		previous := parent.Composition.Parts[index]
+		if slot.PartID != previous.PartID || slot.DefinitionOwnerSessionID != previous.DefinitionOwnerSessionID {
+			return "", errors.New("artifact composition reordered or replaced a stable part definition")
+		}
+		if slot.Revision != previous.Revision {
+			if changed != "" {
+				return "", errors.New("artifact composition candidate changed more than one part")
+			}
+			changed = slot.PartID
+		}
+	}
+	return changed, nil
+}
+
+func (s *Server) sessionsV3ArtifactAcceptedPartHeads(session pebblestore.SessionSnapshot, chain pebblestore.SessionArtifactChain) ([]pebblestore.SessionArtifactCompositionPart, error) {
+	if chain.GraphState != pebblestore.SessionArtifactGraphAuthoritative || chain.Head.VariantID == "" {
+		return nil, nil
+	}
+	headSession, ok, err := s.sessions.GetSession(chain.Head.SessionID)
+	if err != nil {
+		return nil, err
+	}
+	if !ok || headSession.AccountScopeID != session.AccountScopeID || headSession.UserID != session.UserID {
+		return nil, errors.New("artifact chain head ownership is inconsistent")
+	}
+	head, ok, err := s.sessions.GetSessionArtifactVariant(session.AccountScopeID, chain.Head.SessionID, chain.Head.CollectionID, chain.Head.VariantID)
+	if err != nil {
+		return nil, err
+	}
+	if !ok || head.EventSeq != chain.Head.EventSeq || head.PartGraphState != pebblestore.SessionArtifactGraphAuthoritative || head.Composition == nil {
+		return nil, errors.New("authoritative artifact chain head composition is missing or stale")
+	}
+	return append([]pebblestore.SessionArtifactCompositionPart(nil), head.Composition.Parts...), nil
 }
 
 type sessionsV3ArtifactCollectionProgress struct {
@@ -250,6 +385,11 @@ func (s *Server) handleSessionsV3Artifacts(w http.ResponseWriter, r *http.Reques
 						kind, previewable = "html", true
 					}
 					var step *pebblestore.SessionArtifactStep
+					var partDefinitions []sessionsV3ArtifactPartDefinitionProjection
+					var partRevisions []sessionsV3ArtifactPartRevisionProjection
+					var composition *sessionsV3ArtifactCompositionProjection
+					var targetedPartID string
+					var acceptedPartHeads []pebblestore.SessionArtifactCompositionPart
 					if variant.GraphState == pebblestore.SessionArtifactGraphAuthoritative && variant.ArtifactChainID != "" && variant.ArtifactStepID != "" {
 						persistedStep, found, stepErr := s.sessions.GetSessionArtifactStep(session.AccountScopeID, session.UserID, variant.ArtifactChainID, variant.ArtifactStepID)
 						if stepErr != nil {
@@ -262,6 +402,13 @@ func (s *Server) handleSessionsV3Artifacts(w http.ResponseWriter, r *http.Reques
 						}
 						step = &persistedStep
 					}
+					if variant.PartGraphState == pebblestore.SessionArtifactGraphAuthoritative {
+						partDefinitions, partRevisions, composition, targetedPartID, acceptedPartHeads, projectionErr = s.projectSessionsV3ArtifactComposition(session, variant, chain)
+						if projectionErr != nil {
+							writeError(w, http.StatusInternalServerError, projectionErr)
+							return
+						}
+					}
 					appendCatalogArtifact(&artifacts, seen, session.ID+"\x00"+variant.ID, sessionsV3ArtifactCatalogItem{
 						ArtifactID: variant.ID, CollectionID: collection.ID, SessionID: session.ID, SessionTitle: session.Title,
 						PlanID: lineage.PlanID, CheckpointID: lineage.CheckpointID,
@@ -271,6 +418,7 @@ func (s *Server) handleSessionsV3Artifacts(w http.ResponseWriter, r *http.Reques
 						Previewable: previewable, Selected: chain.Head.SessionID == variant.SessionID && chain.Head.CollectionID == variant.CollectionID && chain.Head.VariantID == variant.ID,
 						Category: sessionsV3ManagedArtifactCategory(variant), UpdatedAt: variant.UpdatedAt, EventSeq: variant.EventSeq, Progress: &progress, Lineage: &lineage, OutputRequirements: cloneSessionsV3ArtifactOutputRequirements(variant.OutputRequirements), AnimationProfile: cloneSessionsV3ArtifactAnimationProfile(variant.AnimationProfile),
 						Chain: &chain, Step: step, GraphState: variant.GraphState, ParentArtifact: variant.ParentArtifact, ArtifactChainID: variant.ArtifactChainID, ArtifactStepID: variant.ArtifactStepID, RevisionNumber: variant.RevisionNumber, RevisionRoundID: variant.RevisionRoundID, CandidateIndex: variant.CandidateIndex, Parts: append([]pebblestore.SessionArtifactPart(nil), variant.Parts...),
+						PartGraphState: variant.PartGraphState, PartDefinitions: partDefinitions, PartRevisions: partRevisions, Composition: composition, TargetedPartID: targetedPartID, AcceptedPartHeads: acceptedPartHeads,
 					})
 				}
 			}
@@ -662,15 +810,29 @@ func (s *Server) handleSessionV3ArtifactSelection(w http.ResponseWriter, r *http
 	partID := strings.TrimSpace(req.PartID)
 	partLabel, partKind := "", ""
 	if partID != "" {
-		for _, part := range variant.Parts {
-			if part.ID == partID {
-				partLabel, partKind = part.Label, part.Kind
+		if variant.PartGraphState != pebblestore.SessionArtifactGraphAuthoritative || variant.Composition == nil {
+			writeError(w, http.StatusBadRequest, errors.New("artifact part selection requires an authoritative composition"))
+			return
+		}
+		definitionOwner := ""
+		for _, slot := range variant.Composition.Parts {
+			if slot.PartID == partID {
+				definitionOwner = slot.DefinitionOwnerSessionID
 				break
 			}
 		}
-		if partLabel == "" {
-			writeError(w, http.StatusBadRequest, errors.New("artifact part was not found on the exact revision"))
+		definition, ok, definitionErr := s.sessions.GetSessionArtifactPartDefinition(principal.AccountScopeID, principal.UserID, definitionOwner, variant.Composition.ArtifactChainID, partID)
+		if definitionErr != nil {
+			writeError(w, http.StatusInternalServerError, definitionErr)
 			return
+		}
+		if !ok || definition.GraphState != pebblestore.SessionArtifactGraphAuthoritative {
+			writeError(w, http.StatusBadRequest, errors.New("artifact part was not found in the exact authoritative composition"))
+			return
+		}
+		partLabel, partKind = definition.Label, "semantic"
+		if definition.Locator != nil {
+			partKind = definition.Locator.Kind
 		}
 	}
 	selection := &pebblestore.SessionArtifactSelectionReference{
@@ -1128,7 +1290,7 @@ func (s *Server) handleSessionV3ArtifactCollectionBundle(w http.ResponseWriter, 
 
 	type collectionBundleFile struct {
 		variant pebblestore.SessionArtifactVariant
-		file    *os.File
+		file    sessionsV3ReadSeekCloser
 	}
 	files := make([]collectionBundleFile, 0, len(ready))
 	for _, variant := range ready {
@@ -1528,12 +1690,21 @@ func (s *Server) resolveSessionV3Artifact(ctx context.Context, principal identit
 	return sessionsV3ResolvedArtifact{}, false, nil
 }
 
-func (s *Server) openSessionV3Artifact(ctx context.Context, session pebblestore.SessionSnapshot, resolved sessionsV3ResolvedArtifact) (*os.File, os.FileInfo, error) {
+func (s *Server) openSessionV3Artifact(ctx context.Context, session pebblestore.SessionSnapshot, resolved sessionsV3ResolvedArtifact) (sessionsV3ReadSeekCloser, os.FileInfo, error) {
 	if resolved.Managed == nil {
 		return openSessionV3ArtifactFile(sessionV3ArtifactWorkspaceRoot(session), resolved.Reference.Path)
 	}
 	if resolved.Managed.Status != pebblestore.SessionArtifactStatusReady || s.artifacts == nil {
 		return nil, nil, artifact.ErrNotReady
+	}
+	if resolved.Managed.PartGraphState == pebblestore.SessionArtifactGraphAuthoritative && resolved.Managed.Composition != nil {
+		authority := artifact.NewAuthority(s.artifacts, s.sessions)
+		body, _, err := authority.ReadReference(ctx, artifact.Principal{SessionID: session.ID, AccountScopeID: session.AccountScopeID, UserID: session.UserID}, pebblestore.SessionArtifactSelectionReference{SessionID: resolved.Managed.SessionID, CollectionID: resolved.Managed.CollectionID, VariantID: resolved.Managed.ID, EventSeq: resolved.Managed.EventSeq}, sessionsV3ArtifactMaxBytes)
+		if err != nil {
+			return nil, nil, err
+		}
+		info := sessionsV3MemoryFileInfo{name: resolved.Managed.Filename, size: int64(len(body)), modTime: time.UnixMilli(resolved.Managed.UpdatedAt)}
+		return sessionsV3NewMemoryFile(body), info, nil
 	}
 	if resolved.Managed.SessionID != session.ID || resolved.Managed.AccountScopeID != session.AccountScopeID {
 		return nil, nil, errors.New("managed artifact ownership does not match session")
@@ -1640,6 +1811,7 @@ func (i sessionsV3MemoryFileInfo) Sys() any           { return nil }
 
 type sessionsV3ReadSeekCloser interface {
 	io.ReadSeeker
+	io.ReaderAt
 	io.Closer
 }
 

@@ -18,6 +18,9 @@ type authorityMetadata struct {
 	sourceVariant    pebblestore.SessionArtifactVariant
 	readyCalls       int
 	failReady        bool
+	partDefinitions  map[string]pebblestore.SessionArtifactPartDefinition
+	partRevisions    map[string]pebblestore.SessionArtifactPartRevision
+	compositions     map[string]pebblestore.SessionArtifactComposition
 }
 
 func (m *authorityMetadata) GetSessionArtifactCollection(_, sessionID, id string) (pebblestore.SessionArtifactCollection, bool, error) {
@@ -50,6 +53,18 @@ func (m *authorityMetadata) ListSessionArtifactVariants(_, _, collectionID strin
 func (m *authorityMetadata) SearchSessionArtifactCatalog(_, _ string, _ pebblestore.SessionArtifactCatalogOptions) (pebblestore.SessionArtifactCatalogPage, error) {
 	return pebblestore.SessionArtifactCatalogPage{}, nil
 }
+func (m *authorityMetadata) GetSessionArtifactPartDefinition(_, _, owner, chain, part string) (pebblestore.SessionArtifactPartDefinition, bool, error) {
+	got, ok := m.partDefinitions[owner+"\x00"+chain+"\x00"+part]
+	return got, ok, nil
+}
+func (m *authorityMetadata) GetSessionArtifactPartRevision(_, _, owner, chain, part, revision string) (pebblestore.SessionArtifactPartRevision, bool, error) {
+	got, ok := m.partRevisions[owner+"\x00"+chain+"\x00"+part+"\x00"+revision]
+	return got, ok, nil
+}
+func (m *authorityMetadata) GetSessionArtifactComposition(_, _, owner, chain, composition string) (pebblestore.SessionArtifactComposition, bool, error) {
+	got, ok := m.compositions[owner+"\x00"+chain+"\x00"+composition]
+	return got, ok, nil
+}
 func (m *authorityMetadata) ApplySessionMutation(input pebblestore.V3SessionMutationInput) (pebblestore.V3SessionMutationResult, error) {
 	projection := pebblestore.V3ArtifactProjection{Collection: input.Artifact.Collection, Variant: input.Artifact.Variant, Selection: input.Artifact.Selection}
 	switch input.Kind {
@@ -59,16 +74,45 @@ func (m *authorityMetadata) ApplySessionMutation(input pebblestore.V3SessionMuta
 		m.collection.VariantCount, m.collection.StagingCount = 1, 1
 		m.variant = *input.Artifact.Variant
 		m.variant.AccountScopeID, m.variant.SessionID, m.variant.CollectionID, m.variant.Status = input.AccountScopeID, input.SessionID, m.collection.ID, pebblestore.SessionArtifactStatusStaging
+		if m.partDefinitions == nil {
+			m.partDefinitions = map[string]pebblestore.SessionArtifactPartDefinition{}
+		}
+		if m.partRevisions == nil {
+			m.partRevisions = map[string]pebblestore.SessionArtifactPartRevision{}
+		}
+		if m.compositions == nil {
+			m.compositions = map[string]pebblestore.SessionArtifactComposition{}
+		}
+		for _, definition := range input.Artifact.PartDefinitions {
+			definition.AccountScopeID, definition.UserID, definition.GraphState = input.AccountScopeID, input.UserID, pebblestore.SessionArtifactGraphAuthoritative
+			m.partDefinitions[definition.OwnerSessionID+"\x00"+definition.ArtifactChainID+"\x00"+definition.ID] = definition
+		}
+		for _, revision := range input.Artifact.PartRevisions {
+			revision.AccountScopeID, revision.UserID, revision.GraphState = input.AccountScopeID, input.UserID, pebblestore.SessionArtifactGraphAuthoritative
+			m.partRevisions[revision.OwnerSessionID+"\x00"+revision.ArtifactChainID+"\x00"+revision.PartID+"\x00"+revision.ID] = revision
+		}
+		if input.Artifact.Composition != nil {
+			composition := *input.Artifact.Composition
+			composition.AccountScopeID, composition.UserID, composition.GraphState = input.AccountScopeID, input.UserID, pebblestore.SessionArtifactGraphAuthoritative
+			m.compositions[composition.OwnerSessionID+"\x00"+composition.ArtifactChainID+"\x00"+composition.ID] = composition
+			m.variant.PartGraphState, m.variant.Composition, m.variant.PartDefinitions = pebblestore.SessionArtifactGraphAuthoritative, &composition, input.Artifact.PartDefinitions
+			projection.Variant = &m.variant
+			projection.PartDefinitions, projection.PartRevisions, projection.Composition = input.Artifact.PartDefinitions, input.Artifact.PartRevisions, &composition
+		}
 	case pebblestore.V3SessionMutationFinalizeArtifact:
 		m.readyCalls++
 		if m.failReady {
 			return pebblestore.V3SessionMutationResult{}, errors.New("metadata unavailable")
 		}
+		currentComposition, currentDefinitions, currentPartGraphState := m.variant.Composition, m.variant.PartDefinitions, m.variant.PartGraphState
 		m.variant = *input.Artifact.Variant
+		if m.variant.Composition == nil {
+			m.variant.Composition, m.variant.PartDefinitions, m.variant.PartGraphState = currentComposition, currentDefinitions, currentPartGraphState
+		}
 		m.variant.Status = pebblestore.SessionArtifactStatusReady
 		m.collection.Status = pebblestore.SessionArtifactStatusReady
 		m.collection.StagingCount, m.collection.ReadyCount = 0, 1
-		projection.Collection, projection.Variant = m.collection, &m.variant
+		projection.Collection, projection.Variant, projection.Composition = m.collection, &m.variant, m.variant.Composition
 	case pebblestore.V3SessionMutationFailArtifact:
 		m.variant.Status, m.variant.FailureCode = pebblestore.SessionArtifactStatusFailed, input.Artifact.Variant.FailureCode
 	case pebblestore.V3SessionMutationDeleteArtifactVariant:

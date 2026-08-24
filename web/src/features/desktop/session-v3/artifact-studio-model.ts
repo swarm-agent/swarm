@@ -20,11 +20,12 @@ function sameReference(entry: DesktopV3ArtifactCatalogEntry, reference: DesktopV
 function authoritative(entry: DesktopV3ArtifactCatalogEntry): boolean {
   return entry.graphState === 'authoritative'
     && Boolean(entry.artifactChainId && entry.artifactStepId && entry.chain && entry.step)
-    && entry.chain?.id === entry.artifactChainId
-    && Boolean(entry.chain.head)
-    && entry.step?.artifactChainId === entry.artifactChainId
-    && entry.step?.id === entry.artifactStepId
-    && entry.step?.candidates.some((candidate) => sameReference(entry, candidate)) === true
+    && entry.chain?.graphState === 'authoritative'
+    && entry.chain.id === entry.artifactChainId
+    && entry.step?.graphState === 'authoritative'
+    && entry.step.artifactChainId === entry.artifactChainId
+    && entry.step.id === entry.artifactStepId
+    && entry.step.candidates.some((candidate) => sameReference(entry, candidate))
 }
 
 export function desktopV3ArtifactStudioChainKey(entry: DesktopV3ArtifactCatalogEntry): string {
@@ -67,6 +68,70 @@ export function desktopV3ArtifactStudioRounds(
     candidates,
     accepted: candidates.find((candidate) => sameReference(candidate, candidates[0]!.step!.accepted)),
   })).sort((left, right) => left.revisionNumber - right.revisionNumber || left.id.localeCompare(right.id))
+}
+
+export interface DesktopV3ArtifactStudioPartTurn {
+  id: string
+  revisionNumber: number
+  candidates: DesktopV3ArtifactCatalogEntry[]
+  accepted?: DesktopV3ArtifactCatalogEntry
+}
+
+export interface DesktopV3ArtifactStudioPartIteration {
+  id: string
+  label: string
+  kind: string
+  startMs: number
+  endMs: number
+  turns: DesktopV3ArtifactStudioPartTurn[]
+}
+
+function exactPartCandidate(entries: readonly DesktopV3ArtifactCatalogEntry[], candidate: DesktopV3ArtifactCatalogEntry): boolean {
+  const partId = candidate.targetedPartId?.trim() ?? ''
+  const composition = candidate.composition
+  const parent = desktopV3ArtifactStudioParent(entries, candidate)?.composition
+  if (candidate.partGraphState !== 'authoritative' || !partId || !composition || !parent || composition.parts.length !== parent.parts.length) return false
+  let changes = 0
+  for (let index = 0; index < composition.parts.length; index += 1) {
+    const current = composition.parts[index]!
+    const previous = parent.parts[index]!
+    if (current.partId !== previous.partId || current.definitionOwnerSessionId !== previous.definitionOwnerSessionId) return false
+    const changed = current.revision.partRevisionId !== previous.revision.partRevisionId
+      || current.revision.ownerSessionId !== previous.revision.ownerSessionId
+      || current.revision.digestSha256 !== previous.revision.digestSha256
+      || current.revision.size !== previous.revision.size
+      || current.revision.mediaType !== previous.revision.mediaType
+    if (changed) {
+      if (current.partId !== partId) return false
+      changes += 1
+    }
+  }
+  return changes === 1
+}
+
+export function desktopV3ArtifactStudioPartIterations(
+  entries: readonly DesktopV3ArtifactCatalogEntry[],
+  entry: DesktopV3ArtifactCatalogEntry,
+): DesktopV3ArtifactStudioPartIteration[] {
+  const groups = new Map<string, DesktopV3ArtifactStudioPartIteration>()
+  for (const round of desktopV3ArtifactStudioRounds(entries, entry)) {
+    const candidates = round.candidates.filter((candidate) => exactPartCandidate(entries, candidate))
+    const id = candidates[0]?.targetedPartId?.trim() ?? ''
+    if (!id || candidates.length !== round.candidates.length || candidates.some((candidate) => candidate.targetedPartId !== id)) continue
+    const definition = candidates[0]?.partDefinitions?.find((part) => part.id === id)
+    if (!definition || candidates.some((candidate) => !candidate.composition?.parts.some((part) => part.partId === id))) continue
+    const locator = definition.locator
+    const accepted = round.accepted && candidates.includes(round.accepted) ? round.accepted : undefined
+    const turn = { ...round, candidates, accepted }
+    const group = groups.get(id) ?? { id, label: definition.label, kind: locator?.kind ?? 'semantic', startMs: locator?.startMs ?? 0, endMs: locator?.endMs ?? 0, turns: [] }
+    group.turns.push(turn)
+    groups.set(id, group)
+  }
+  return [...groups.values()].sort((left, right) => {
+    const leftRevision = left.turns[0]?.revisionNumber ?? 0
+    const rightRevision = right.turns[0]?.revisionNumber ?? 0
+    return leftRevision - rightRevision || left.label.localeCompare(right.label)
+  })
 }
 
 export function desktopV3ArtifactStudioParent(

@@ -458,6 +458,11 @@ func TestSessionArtifactMessageSelectionsValidateOwnershipReadinessAndSequence(t
 	apply("selection-finalize", V3SessionMutationFinalizeArtifact, V3ArtifactMutation{Collection: SessionArtifactCollection{ID: "selection-collection"}, Variant: &SessionArtifactVariant{ID: "selection-variant", Filename: "design.txt", MediaType: "text/plain", DigestSHA256: strings.Repeat("a", 64), Size: 6}})
 	variant, ok, err := sessions.GetSessionArtifactVariant("account-1", "artifact-selection-source", "selection-collection", "selection-variant")
 	if err != nil || !ok {
+		t.Fatalf("get ready variant before acceptance: ok=%t err=%v", ok, err)
+	}
+	apply("selection-accept", V3SessionMutationSelectArtifact, V3ArtifactMutation{Collection: SessionArtifactCollection{ID: "selection-collection"}, Selection: &SessionArtifactSelectionReference{SessionID: variant.SessionID, CollectionID: variant.CollectionID, VariantID: variant.ID, EventSeq: variant.EventSeq}})
+	variant, ok, err = sessions.GetSessionArtifactVariant("account-1", "artifact-selection-source", "selection-collection", "selection-variant")
+	if err != nil || !ok {
 		t.Fatalf("get ready variant: ok=%t err=%v", ok, err)
 	}
 	apply("selection-derived-create", V3SessionMutationCreateArtifact, V3ArtifactMutation{Collection: SessionArtifactCollection{ID: "selection-derived", Name: "Finder alternatives"}, Variant: &SessionArtifactVariant{

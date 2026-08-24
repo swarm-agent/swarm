@@ -24,6 +24,9 @@ type MetadataStore interface {
 	ListSessionArtifactCollections(accountScopeID, sessionID, status string, limit int) ([]pebblestore.SessionArtifactCollection, error)
 	ListSessionArtifactVariants(accountScopeID, sessionID, collectionID string, limit int) ([]pebblestore.SessionArtifactVariant, error)
 	SearchSessionArtifactCatalog(accountScopeID, userID string, options pebblestore.SessionArtifactCatalogOptions) (pebblestore.SessionArtifactCatalogPage, error)
+	GetSessionArtifactPartDefinition(accountScopeID, userID, ownerSessionID, chainID, partID string) (pebblestore.SessionArtifactPartDefinition, bool, error)
+	GetSessionArtifactPartRevision(accountScopeID, userID, ownerSessionID, chainID, partID, revisionID string) (pebblestore.SessionArtifactPartRevision, bool, error)
+	GetSessionArtifactComposition(accountScopeID, userID, ownerSessionID, chainID, compositionID string) (pebblestore.SessionArtifactComposition, bool, error)
 	ApplySessionMutation(pebblestore.V3SessionMutationInput) (pebblestore.V3SessionMutationResult, error)
 }
 
@@ -74,7 +77,42 @@ type CreateInput struct {
 	SourceEventSeq        uint64
 	ArtifactStepID        string
 	CandidateIndex        int
+	AutoAccept            bool
 	Body                  []byte
+}
+
+type InitialPartInput struct {
+	Definition pebblestore.SessionArtifactPartDefinition
+	RevisionID string
+	MediaType  string
+	Body       []byte
+}
+
+type CreateInitialCompositionInput struct {
+	CreateInput
+	ArtifactChainID string
+	CompositionID   string
+	Parts           []InitialPartInput
+}
+
+type PublishPartReplacementInput struct {
+	RequestID          string
+	CallID             string
+	CollectionID       string
+	VariantID          string
+	ArtifactStepID     string
+	CandidateIndex     int
+	AutoAccept         bool
+	SourceArtifact     pebblestore.SessionArtifactSelectionReference
+	SourceComposition  pebblestore.SessionArtifactComposition
+	PartDefinition     pebblestore.SessionArtifactPartDefinition
+	SourcePartRevision pebblestore.SessionArtifactPartRevisionReference
+	Filename           string
+	MediaType          string
+	Presentation       pebblestore.SessionArtifactPresentation
+	OutputRequirements *pebblestore.SessionArtifactOutputRequirements
+	AnimationProfile   *pebblestore.SessionArtifactAnimationProfile
+	Body               []byte
 }
 
 type CreatePackageInput struct {
@@ -167,7 +205,9 @@ func (a *Authority) create(ctx context.Context, principal Principal, input Creat
 		digest := sha256.Sum256([]byte("artifact-step-v1\x00" + principal.SessionID + "\x00" + input.RequestID))
 		input.ArtifactStepID = "artifact-step-" + hex.EncodeToString(digest[:12])
 	}
-	if input.CandidateIndex < 1 { input.CandidateIndex = 1 }
+	if input.CandidateIndex < 1 {
+		input.CandidateIndex = 1
+	}
 	collectionLineage := lineage
 	collectionLineage.SourceSessionID, collectionLineage.SourceCollectionID, collectionLineage.SourceVariantID, collectionLineage.SourceEventSeq = "", "", "", 0
 	collectionLineage.ProgramJobID, collectionLineage.ChildSessionID = "", ""
@@ -178,7 +218,7 @@ func (a *Authority) create(ctx context.Context, principal Principal, input Creat
 		return pebblestore.SessionArtifactVariant{}, err
 	}
 	collection := pebblestore.SessionArtifactCollection{ID: strings.TrimSpace(input.CollectionID), Name: strings.TrimSpace(input.CollectionName), Description: strings.TrimSpace(input.CollectionDescription), Lineage: collectionLineage, Presentation: input.Presentation}
-	variant := pebblestore.SessionArtifactVariant{ID: strings.TrimSpace(input.VariantID), CollectionID: collection.ID, AccountScopeID: principal.AccountScopeID, SessionID: principal.SessionID, Filename: strings.TrimSpace(input.Filename), MediaType: strings.TrimSpace(input.MediaType), Presentation: input.Presentation, OutputRequirements: cloneOutputRequirements(input.OutputRequirements), AnimationProfile: cloneAnimationProfile(input.AnimationProfile), Parts: append([]pebblestore.SessionArtifactPart(nil), input.Parts...), Lineage: lineage, ArtifactStepID: strings.TrimSpace(input.ArtifactStepID), RevisionRoundID: strings.TrimSpace(input.ArtifactStepID), CandidateIndex: input.CandidateIndex}
+	variant := pebblestore.SessionArtifactVariant{ID: strings.TrimSpace(input.VariantID), CollectionID: collection.ID, AccountScopeID: principal.AccountScopeID, SessionID: principal.SessionID, Filename: strings.TrimSpace(input.Filename), MediaType: strings.TrimSpace(input.MediaType), Presentation: input.Presentation, OutputRequirements: cloneOutputRequirements(input.OutputRequirements), AnimationProfile: cloneAnimationProfile(input.AnimationProfile), Parts: append([]pebblestore.SessionArtifactPart(nil), input.Parts...), Lineage: lineage, ArtifactStepID: strings.TrimSpace(input.ArtifactStepID), RevisionRoundID: strings.TrimSpace(input.ArtifactStepID), CandidateIndex: input.CandidateIndex, AutoAccept: input.AutoAccept}
 	existingStaging := false
 	if existing, ok, getErr := a.metadata.GetSessionArtifactVariant(principal.AccountScopeID, principal.SessionID, collection.ID, variant.ID); getErr != nil {
 		return pebblestore.SessionArtifactVariant{}, getErr
@@ -418,6 +458,24 @@ func (a *Authority) ReadReference(ctx context.Context, principal Principal, ref 
 	variant, err := a.GetReference(principal, ref)
 	if err != nil {
 		return nil, pebblestore.SessionArtifactVariant{}, err
+	}
+	if variant.PartGraphState == pebblestore.SessionArtifactGraphAuthoritative && variant.Composition != nil {
+		if maxBytes <= 0 {
+			return nil, pebblestore.SessionArtifactVariant{}, errors.New("artifact composition read requires a positive byte bound")
+		}
+		assembled := make([]byte, 0, min(maxBytes, variant.Size))
+		for _, slot := range variant.Composition.Parts {
+			remaining := maxBytes - int64(len(assembled))
+			if remaining <= 0 || slot.Revision.Size > remaining {
+				return nil, pebblestore.SessionArtifactVariant{}, errors.New("assembled artifact composition exceeds read byte bound")
+			}
+			part, _, readErr := a.ReadPartRevision(ctx, principal, slot.Revision, remaining)
+			if readErr != nil {
+				return nil, pebblestore.SessionArtifactVariant{}, readErr
+			}
+			assembled = append(assembled, part...)
+		}
+		return assembled, variant, nil
 	}
 	service, _, err := a.registry.ServiceForOwnedSession(ref.SessionID, principal.AccountScopeID, principal.UserID)
 	if err != nil {
@@ -703,16 +761,18 @@ func (a *Authority) lineage(principal Principal, input CreateInput) pebblestore.
 }
 
 func (a *Authority) mutate(principal Principal, requestID, kind string, collection pebblestore.SessionArtifactCollection, variant *pebblestore.SessionArtifactVariant, selection *pebblestore.SessionArtifactSelectionReference) (pebblestore.V3SessionMutationResult, error) {
+	return a.mutateWithArtifact(principal, requestID, kind, pebblestore.V3ArtifactMutation{Collection: collection, Variant: variant, Selection: selection})
+}
+
+func (a *Authority) mutateWithArtifact(principal Principal, requestID, kind string, artifactMutation pebblestore.V3ArtifactMutation) (pebblestore.V3SessionMutationResult, error) {
 	requestID = strings.TrimSpace(requestID)
 	if requestID == "" {
 		return pebblestore.V3SessionMutationResult{}, errors.New("artifact request id is required")
 	}
 	payload := struct {
-		Kind       string                                         `json:"kind"`
-		Collection pebblestore.SessionArtifactCollection          `json:"collection"`
-		Variant    *pebblestore.SessionArtifactVariant            `json:"variant,omitempty"`
-		Selection  *pebblestore.SessionArtifactSelectionReference `json:"selection,omitempty"`
-	}{kind, collection, variant, selection}
+		Kind     string                         `json:"kind"`
+		Artifact pebblestore.V3ArtifactMutation `json:"artifact"`
+	}{kind, artifactMutation}
 	encoded, err := json.Marshal(payload)
 	if err != nil {
 		return pebblestore.V3SessionMutationResult{}, err
@@ -725,5 +785,5 @@ func (a *Authority) mutate(principal Principal, requestID, kind string, collecti
 	if a.now != nil {
 		now = a.now()
 	}
-	return a.metadata.ApplySessionMutation(pebblestore.V3SessionMutationInput{SessionID: principal.SessionID, AccountScopeID: principal.AccountScopeID, UserID: principal.UserID, ClientRequestID: key, IdempotencyKey: key, PayloadHash: payloadHash, RequestHash: payloadHash, Kind: kind, Artifact: &pebblestore.V3ArtifactMutation{Collection: collection, Variant: variant, Selection: selection}, NowUnixMs: now.UnixMilli()})
+	return a.metadata.ApplySessionMutation(pebblestore.V3SessionMutationInput{SessionID: principal.SessionID, AccountScopeID: principal.AccountScopeID, UserID: principal.UserID, ClientRequestID: key, IdempotencyKey: key, PayloadHash: payloadHash, RequestHash: payloadHash, Kind: kind, Artifact: &artifactMutation, NowUnixMs: now.UnixMilli()})
 }

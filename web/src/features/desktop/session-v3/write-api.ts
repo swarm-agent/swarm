@@ -202,6 +202,20 @@ export interface DesktopV3RoutedSessionStartResponse {
   mutation: DesktopV3RoutedSessionMutation
 }
 
+function portableDesktopV3ArtifactMessageSelection(selection: DesktopV3ArtifactMessageSelection): DesktopV3ArtifactMessageSelection {
+  return {
+    session_id: selection.session_id.trim(),
+    collection_id: selection.collection_id.trim(),
+    variant_id: selection.variant_id.trim(),
+    event_seq: selection.event_seq,
+    label: selection.label.trim(),
+    ...(selection.description?.trim() ? { description: selection.description.trim() } : {}),
+    ...(selection.pending_request?.trim() ? { pending_request: selection.pending_request.trim() } : {}),
+    action: selection.action,
+    ...(selection.part_id?.trim() ? { part_id: selection.part_id.trim() } : {}),
+  }
+}
+
 export interface DesktopV3AppendMessageRequest {
   client_request_id: string
   message_id: string
@@ -316,7 +330,7 @@ export async function postDesktopV3RoutedSessionStart(
     ...(input.media?.length ? { media: input.media } : {}),
     ...(input.staging_ids?.length ? { staging_ids: input.staging_ids } : {}),
     ...(input.video_attachments?.length ? { video_attachments: input.video_attachments.map((attachment) => ({ ...attachment })) } : {}),
-    ...(input.artifact_selections ? { artifact_selections: input.artifact_selections.map((selection) => ({ ...selection, session_id: selection.session_id.trim() })) } : {}),
+    ...(input.artifact_selections ? { artifact_selections: input.artifact_selections.map(portableDesktopV3ArtifactMessageSelection) } : {}),
   }
   const payload = await requestJson<unknown>('/v3/sessions:routed', {
     method: 'POST',
@@ -437,7 +451,10 @@ export async function postDesktopV3AppendMessage(
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(input),
+      body: JSON.stringify({
+        ...input,
+        ...(input.artifact_selections ? { artifact_selections: input.artifact_selections.map(portableDesktopV3ArtifactMessageSelection) } : {}),
+      }),
     },
   )
 }

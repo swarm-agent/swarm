@@ -973,7 +973,7 @@ func TestSessionV3ArtifactSelectionActionPersistsThroughMutation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	body := bytes.NewBufferString(fmt.Sprintf(`{"client_request_id":"select-action","event_seq":%d,"action":"use"}`, variant.EventSeq))
+	body := bytes.NewBufferString(fmt.Sprintf(`{"client_request_id":"select-action","event_seq":%d,"action":"select","artifact_chain_id":%q,"artifact_step_id":%q}`, variant.EventSeq, variant.ArtifactChainID, variant.ArtifactStepID))
 	req := httptest.NewRequest("POST", "/v3/sessions/"+variant.SessionID+"/artifacts/"+variant.ID+"/selection", body)
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
@@ -987,22 +987,22 @@ func TestSessionV3ArtifactSelectionActionPersistsThroughMutation(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
 		t.Fatal(err)
 	}
-	if response.Selection.VariantID != variant.ID || response.Selection.EventSeq <= variant.EventSeq || response.Selection.Action != "use" {
+	if response.Selection.VariantID != variant.ID || response.Selection.EventSeq != variant.EventSeq || response.Selection.Action != "select" {
 		t.Fatalf("selection response = %+v", response.Selection)
 	}
 	if !strings.Contains(response.Selection.Label, "Actions") && !strings.Contains(response.Selection.Label, "action.txt") {
 		t.Fatalf("selection label = %q", response.Selection.Label)
 	}
 	collection, ok, err := sessionSvc.GetSessionArtifactCollection(principal.AccountScopeID, variant.SessionID, variant.CollectionID)
-	if err != nil || !ok || collection.SelectedVariantID != variant.ID || collection.EventSeq != response.Selection.EventSeq {
+	if err != nil || !ok || collection.SelectedVariantID != variant.ID || collection.EventSeq <= response.Selection.EventSeq {
 		t.Fatalf("selected collection = %+v ok=%t err=%v", collection, ok, err)
 	}
-	body = bytes.NewBufferString(`{"client_request_id":"select-action-stale","event_seq":0,"action":"select"}`)
+	body = bytes.NewBufferString(fmt.Sprintf(`{"client_request_id":"select-action-stale","event_seq":0,"action":"select","artifact_chain_id":%q,"artifact_step_id":%q}`, variant.ArtifactChainID, variant.ArtifactStepID))
 	req = httptest.NewRequest("POST", "/v3/sessions/"+variant.SessionID+"/artifacts/"+variant.ID+"/selection", body)
 	req.Header.Set("Content-Type", "application/json")
 	rec = httptest.NewRecorder()
 	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
-	if rec.Code != 400 || !strings.Contains(rec.Body.String(), "event sequence") {
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "event sequence") {
 		t.Fatalf("stale selection status=%d body=%s", rec.Code, rec.Body.String())
 	}
 }

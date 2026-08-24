@@ -52,8 +52,13 @@ test('builds opaque player messages and an exact section-change brief', () => {
   assert.deepEqual(desktopV3ArtifactIterationMessage('request-1', 'seek', 2_200.4), {
     protocol: 'swarm-player/v1',
     id: 'request-1',
-    type: 'seek',
-    time_ms: 2_200,
+    method: 'seek',
+    params: { time_ms: 2_200 },
+  })
+  assert.deepEqual(desktopV3ArtifactIterationMessage('request-2', 'describe'), {
+    protocol: 'swarm-player/v1',
+    id: 'request-2',
+    method: 'describe',
   })
   const descriptor = normalizeDesktopV3ArtifactIterationDescriptor(descriptorWire)
   assert(descriptor)

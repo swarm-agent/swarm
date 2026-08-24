@@ -1133,7 +1133,7 @@ func parseTaskSwarmArguments(args map[string]any, prompt, description string) (*
 		if agentType == "idea" {
 			assignmentLabel = fmt.Sprintf("Agent #%d", index)
 		}
-		sourceArguments := map[string]any{"swarm_index": index, "swarm_mode": true, "swarm_strategy": strategy, "output_mode": outputMode}
+		sourceArguments := map[string]any{"swarm_index": index, "swarm_count": count, "swarm_mode": true, "swarm_strategy": strategy, "output_mode": outputMode}
 		if outputRequirements != nil {
 			sourceArguments["output_requirements"] = cloneTaskOutputRequirements(outputRequirements)
 		}
@@ -1197,24 +1197,42 @@ func parseTaskSwarmSectionTarget(value any) (*taskSwarmSectionTarget, error) {
 		}
 	}
 	encoded, err := json.Marshal(raw)
-	if err != nil { return nil, errors.New("task section_target must be an object") }
+	if err != nil {
+		return nil, errors.New("task section_target must be an object")
+	}
 	var part pebblestore.SessionArtifactPart
-	if err := json.Unmarshal(encoded, &part); err != nil { return nil, fmt.Errorf("task section_target is invalid: %w", err) }
+	if err := json.Unmarshal(encoded, &part); err != nil {
+		return nil, fmt.Errorf("task section_target is invalid: %w", err)
+	}
 	part.ID, part.Label, part.Kind = strings.TrimSpace(part.ID), strings.TrimSpace(part.Label), strings.ToLower(strings.TrimSpace(part.Kind))
-	if part.ID == "" || part.Label == "" { return nil, errors.New("task section_target requires id and label") }
-	if part.Kind == "" { part.Kind = "temporal" }
+	if part.ID == "" || part.Label == "" {
+		return nil, errors.New("task section_target requires id and label")
+	}
+	if part.Kind == "" {
+		part.Kind = "temporal"
+	}
 	target := &taskSwarmSectionTarget{ID: part.ID, Label: part.Label, Kind: part.Kind, Description: strings.TrimSpace(part.Description), StartMs: part.StartMs, EndMs: part.EndMs, X: part.X, Y: part.Y, Width: part.Width, Height: part.Height, Page: part.Page, StateID: strings.TrimSpace(part.StateID), Selector: strings.TrimSpace(part.Selector)}
 	switch part.Kind {
 	case "temporal":
-		if part.StartMs < 0 || part.EndMs <= part.StartMs { return nil, errors.New("temporal task section_target requires a valid start_ms/end_ms range") }
+		if part.StartMs < 0 || part.EndMs <= part.StartMs {
+			return nil, errors.New("temporal task section_target requires a valid start_ms/end_ms range")
+		}
 	case "spatial":
-		if part.X < 0 || part.Y < 0 || part.Width <= 0 || part.Height <= 0 || part.X+part.Width > 1 || part.Y+part.Height > 1 { return nil, errors.New("spatial task section_target requires normalized x/y/width/height") }
+		if part.X < 0 || part.Y < 0 || part.Width <= 0 || part.Height <= 0 || part.X+part.Width > 1 || part.Y+part.Height > 1 {
+			return nil, errors.New("spatial task section_target requires normalized x/y/width/height")
+		}
 	case "page":
-		if part.Page < 1 { return nil, errors.New("page task section_target requires page") }
+		if part.Page < 1 {
+			return nil, errors.New("page task section_target requires page")
+		}
 	case "state":
-		if target.StateID == "" { return nil, errors.New("state task section_target requires state_id") }
+		if target.StateID == "" {
+			return nil, errors.New("state task section_target requires state_id")
+		}
 	case "selector":
-		if target.Selector == "" { return nil, errors.New("selector task section_target requires selector") }
+		if target.Selector == "" {
+			return nil, errors.New("selector task section_target requires selector")
+		}
 	case "semantic":
 	default:
 		return nil, errors.New("task section_target kind is invalid")

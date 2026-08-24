@@ -90,6 +90,28 @@ type PackageManifestEntry struct {
 }
 
 // Blob describes finalized bytes without exposing their private location.
+type PartStaged struct {
+	OwnerSessionID  string
+	ArtifactChainID string
+	PartID          string
+	RevisionID      string
+	MediaType       string
+	DigestSHA256    string
+	Size            int64
+	token           string
+	existing        bool
+}
+
+type PartBlob struct {
+	OwnerSessionID  string
+	ArtifactChainID string
+	PartID          string
+	RevisionID      string
+	MediaType       string
+	DigestSHA256    string
+	Size            int64
+}
+
 type Blob struct {
 	SessionID    string
 	CollectionID string

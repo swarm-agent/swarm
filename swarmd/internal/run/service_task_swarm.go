@@ -493,9 +493,9 @@ func composeTaskSwarmChildPrompt(request taskSwarmHydrationRequest, item taskSwa
 		}
 		if request.SectionTarget != nil {
 			encoded, _ := json.Marshal(request.SectionTarget)
-			b.WriteString("- exact animation section target (immutable): ")
+			b.WriteString("- selected artifact part review metadata (descriptive only; immutable part authority is injected by the server): ")
 			b.Write(encoded)
-			b.WriteString("\n- section-output contract: publish one complete derived animation that preserves every non-target section and declares swarm.iteration/v1 with the same target section id and range.\n")
+			b.WriteString("\n- focused part contract: call manage_artifact action=read_part to retrieve only the selected exact part bytes, edit only those bytes, then call manage_artifact action=publish_part exactly once with only replacement content and content metadata. Do not read, materialize, recreate, or publish the complete artifact. Do not use create/create_package. The server preserves every untouched exact part revision and constructs the candidate composition.\n")
 		}
 		if request.OutputRequirements != nil {
 			encoded, _ := json.Marshal(request.OutputRequirements)
@@ -513,7 +513,7 @@ func composeTaskSwarmChildPrompt(request taskSwarmHydrationRequest, item taskSwa
 		if request.OutputMode == taskOutputModeManaged {
 			if request.AgentType == "image" {
 				b.WriteString("- output mode: managed image; call manage_artifact exactly once with action=generate_image and a specialized image prompt. Omit provider, model, collection_id, variant_id, and output_requirements. The server resolves the account image model, performs one billed generation call, injects the immutable destination, and finalizes the ready image. Do not call create/create_package, write/edit, or mutate the checkout.\n")
-			} else {
+			} else if request.SectionTarget == nil {
 				b.WriteString("- output mode: managed; use manage_artifact with one successful create or create_package call and omit output_requirements and animation_profile. Include accurate parts in that same call for every meaningful authored review/edit target, using stable IDs and kind-appropriate locators; for swarm.iteration/v1 animations, mirror every manifest section as one temporal part with the exact same id, label, start_ms, and end_ms. Do not invent generic parts or omit them from an explicitly sectioned/editable deliverable. The server injects the immutable requirement snapshot and atomically finalizes the preallocated opaque target. Never call unsupported update/finalize actions. Do not use write/edit, write the workspace checkout, or choose/override destination lineage.\n")
 			}
 		} else {

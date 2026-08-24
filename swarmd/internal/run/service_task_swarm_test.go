@@ -173,7 +173,7 @@ func TestDesignerSectionIterationCarriesDurableTarget(t *testing.T) {
 		t.Fatalf("hydration section target = %#v, %v", request.SectionTarget, err)
 	}
 	prompt, err := composeTaskSwarmChildPrompt(request, request.Items[0], taskSwarmHydratedDelta{Index: 1, Title: "Finder payoff", Theme: "alternative one", Role: "Change section 3b.", Deliverable: "Complete derived animation"})
-	if err != nil || !strings.Contains(prompt, "exact animation section target") || !strings.Contains(prompt, `"id":"3b"`) || !strings.Contains(prompt, "preserves every non-target section") {
+	if err != nil || !strings.Contains(prompt, "selected artifact part review metadata") || !strings.Contains(prompt, `"id":"3b"`) || !strings.Contains(prompt, "server preserves every untouched exact part revision") || !strings.Contains(prompt, "manage_artifact action=read_part") || !strings.Contains(prompt, "manage_artifact action=publish_part") {
 		t.Fatalf("section child prompt = %q, %v", prompt, err)
 	}
 	for _, raw := range []string{

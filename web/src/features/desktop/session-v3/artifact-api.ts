@@ -54,6 +54,42 @@ export interface DesktopV3ArtifactCollectionProgress {
   unavailable: number
 }
 
+export interface DesktopV3ArtifactPartRevisionReference {
+  artifactChainId: string
+  partId: string
+  partRevisionId: string
+  ownerSessionId: string
+  digestSha256: string
+  size: number
+  mediaType: string
+}
+
+export interface DesktopV3ArtifactPartDefinition {
+  id: string
+  label: string
+  description: string
+  locator: DesktopV3ArtifactPart | null
+}
+
+export interface DesktopV3ArtifactPartRevision {
+  reference: DesktopV3ArtifactPartRevisionReference
+  parent: DesktopV3ArtifactPartRevisionReference | null
+  createdAt: number
+  eventSeq: number
+}
+
+export interface DesktopV3ArtifactCompositionPart {
+  partId: string
+  definitionOwnerSessionId: string
+  revision: DesktopV3ArtifactPartRevisionReference
+}
+
+export interface DesktopV3ArtifactComposition {
+  id: string
+  artifactChainId: string
+  parts: DesktopV3ArtifactCompositionPart[]
+}
+
 export interface DesktopV3ArtifactPart {
   id: string
   label: string
@@ -188,6 +224,12 @@ export interface DesktopV3ArtifactCatalogEntry {
   revisionRoundId?: string
   candidateIndex?: number
   parts?: DesktopV3ArtifactPart[]
+  partGraphState?: 'authoritative' | 'legacy_unproven'
+  partDefinitions?: DesktopV3ArtifactPartDefinition[]
+  partRevisions?: DesktopV3ArtifactPartRevision[]
+  composition?: DesktopV3ArtifactComposition
+  targetedPartId?: string
+  acceptedPartHeads?: DesktopV3ArtifactCompositionPart[]
   localRevealAvailable?: boolean
   content?: string
 }
@@ -408,6 +450,64 @@ function normalizeArtifactParts(value: unknown): DesktopV3ArtifactPart[] {
   })
 }
 
+function normalizeArtifactPartRevisionReference(value: unknown): DesktopV3ArtifactPartRevisionReference | null {
+  const record = artifactCatalogRecord(value)
+  if (!record) return null
+  const artifactChainId = artifactCatalogString(record.artifact_chain_id)
+  const partId = artifactCatalogString(record.part_id)
+  const partRevisionId = artifactCatalogString(record.part_revision_id)
+  const ownerSessionId = artifactCatalogString(record.owner_session_id)
+  const digestSha256 = artifactCatalogString(record.digest_sha256).toLowerCase()
+  const size = artifactCatalogPositiveInteger(record.size)
+  const mediaType = artifactCatalogString(record.media_type).toLowerCase()
+  if (!artifactChainId || !partId || !partRevisionId || !ownerSessionId || !/^[a-f0-9]{64}$/.test(digestSha256) || !size || !mediaType) return null
+  return { artifactChainId, partId, partRevisionId, ownerSessionId, digestSha256, size, mediaType }
+}
+
+function normalizeArtifactPartDefinitions(value: unknown): DesktopV3ArtifactPartDefinition[] {
+  if (!Array.isArray(value)) return []
+  return value.flatMap((raw): DesktopV3ArtifactPartDefinition[] => {
+    const record = artifactCatalogRecord(raw)
+    if (!record) return []
+    const id = artifactCatalogString(record.id)
+    const label = artifactCatalogString(record.label)
+    if (!id || !label) return []
+    const locatorRecord = artifactCatalogRecord(record.locator)
+    const locator = locatorRecord ? normalizeArtifactParts([{ ...locatorRecord, id, label, description: record.description }])[0] ?? null : null
+    return [{ id, label, description: artifactCatalogString(record.description), locator }]
+  })
+}
+
+function normalizeArtifactPartRevisions(value: unknown): DesktopV3ArtifactPartRevision[] {
+  if (!Array.isArray(value)) return []
+  return value.flatMap((raw): DesktopV3ArtifactPartRevision[] => {
+    const record = artifactCatalogRecord(raw)
+    const reference = normalizeArtifactPartRevisionReference(record?.reference)
+    if (!record || !reference) return []
+    const parent = normalizeArtifactPartRevisionReference(record.parent)
+    return [{ reference, parent, createdAt: artifactCatalogCount(record.created_at), eventSeq: artifactCatalogEventSeq(record.event_seq) }]
+  })
+}
+
+function normalizeArtifactCompositionPart(value: unknown): DesktopV3ArtifactCompositionPart | null {
+  const record = artifactCatalogRecord(value)
+  const revision = normalizeArtifactPartRevisionReference(record?.revision)
+  const partId = artifactCatalogString(record?.part_id)
+  const definitionOwnerSessionId = artifactCatalogString(record?.definition_owner_session_id)
+  if (!record || !revision || !partId || !definitionOwnerSessionId || revision.partId !== partId) return null
+  return { partId, definitionOwnerSessionId, revision }
+}
+
+function normalizeArtifactComposition(value: unknown): DesktopV3ArtifactComposition | null {
+  const record = artifactCatalogRecord(value)
+  if (!record || !Array.isArray(record.parts)) return null
+  const id = artifactCatalogString(record.id)
+  const artifactChainId = artifactCatalogString(record.artifact_chain_id)
+  const parts = record.parts.map(normalizeArtifactCompositionPart).filter((part): part is DesktopV3ArtifactCompositionPart => part !== null)
+  if (!id || !artifactChainId || parts.length === 0 || parts.length !== record.parts.length || new Set(parts.map((part) => part.partId)).size !== parts.length) return null
+  return { id, artifactChainId, parts }
+}
+
 function normalizeArtifactLineage(value: unknown): DesktopV3ArtifactLineage | null {
   const record = artifactCatalogRecord(value)
   if (!record) return null
@@ -463,6 +563,18 @@ export function normalizeDesktopV3ArtifactCatalogEntry(value: unknown): DesktopV
   const step = normalizeArtifactStep(record.step)
   const parentArtifact = normalizeArtifactChainReference(record.parent_artifact)
   const graphState = artifactCatalogString(record.graph_state)
+  const partGraphState = artifactCatalogString(record.part_graph_state)
+  const partDefinitions = normalizeArtifactPartDefinitions(record.part_definitions)
+  const partRevisions = normalizeArtifactPartRevisions(record.part_revisions)
+  const composition = normalizeArtifactComposition(record.composition)
+  const acceptedPartHeads = Array.isArray(record.accepted_part_heads)
+    ? record.accepted_part_heads.map(normalizeArtifactCompositionPart).filter((part): part is DesktopV3ArtifactCompositionPart => part !== null)
+    : []
+  const authoritativeParts = partGraphState === 'authoritative'
+    && composition
+    && composition.artifactChainId === (artifactCatalogString(record.artifact_chain_id) || chain?.id)
+    && partDefinitions.length === composition.parts.length
+    && partRevisions.length === composition.parts.length
   return {
     artifactId,
     sourceRef: artifactCatalogString(record.source_ref),
@@ -501,6 +613,14 @@ export function normalizeDesktopV3ArtifactCatalogEntry(value: unknown): DesktopV
     ...(artifactCatalogString(record.revision_round_id) ? { revisionRoundId: artifactCatalogString(record.revision_round_id) } : {}),
     ...(artifactCatalogCount(record.candidate_index) ? { candidateIndex: artifactCatalogCount(record.candidate_index) } : {}),
     ...(Array.isArray(record.parts) ? { parts: normalizeArtifactParts(record.parts) } : {}),
+    ...(authoritativeParts ? {
+      partGraphState: 'authoritative' as const,
+      partDefinitions,
+      partRevisions,
+      composition,
+      targetedPartId: artifactCatalogString(record.targeted_part_id) || undefined,
+      acceptedPartHeads,
+    } : partGraphState === 'legacy_unproven' ? { partGraphState: 'legacy_unproven' as const } : {}),
     ...(outputRequirements ? { outputRequirements } : {}),
     ...(animationProfile ? { animationProfile } : {}),
     ...(typeof record.content === 'string' ? { content: record.content } : {}),

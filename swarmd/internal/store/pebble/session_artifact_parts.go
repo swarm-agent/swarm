@@ -1,0 +1,270 @@
+package pebblestore
+
+import (
+	"errors"
+	"fmt"
+	"strings"
+)
+
+// SessionArtifactPartLocator is optional review metadata for an already
+// authoritative part definition. It never identifies bytes or proves that a
+// part exists.
+type SessionArtifactPartLocator struct {
+	Kind     string  `json:"kind"`
+	StartMs  int64   `json:"start_ms,omitempty"`
+	EndMs    int64   `json:"end_ms,omitempty"`
+	X        float64 `json:"x,omitempty"`
+	Y        float64 `json:"y,omitempty"`
+	Width    float64 `json:"width,omitempty"`
+	Height   float64 `json:"height,omitempty"`
+	Page     int     `json:"page,omitempty"`
+	StateID  string  `json:"state_id,omitempty"`
+	Selector string  `json:"selector,omitempty"`
+}
+
+// SessionArtifactPartDefinition is the stable identity of one independently
+// replaceable component in an artifact chain. Locator is display-only.
+type SessionArtifactPartDefinition struct {
+	Version         int                         `json:"version"`
+	GraphState      string                      `json:"graph_state"`
+	ArtifactChainID string                      `json:"artifact_chain_id"`
+	ID              string                      `json:"id"`
+	AccountScopeID  string                      `json:"account_scope_id"`
+	UserID          string                      `json:"user_id"`
+	OwnerSessionID  string                      `json:"owner_session_id"`
+	Label           string                      `json:"label"`
+	Description     string                      `json:"description,omitempty"`
+	Locator         *SessionArtifactPartLocator `json:"locator,omitempty"`
+	CreatedAt       int64                       `json:"created_at"`
+	EventSeq        uint64                      `json:"event_seq"`
+}
+
+// SessionArtifactPartRevisionReference is an exact immutable byte reference.
+// Digest, size, and media type are repeated so a composition cannot silently
+// resolve a mutable or mismatched revision row.
+type SessionArtifactPartRevisionReference struct {
+	ArtifactChainID string `json:"artifact_chain_id"`
+	PartID          string `json:"part_id"`
+	PartRevisionID  string `json:"part_revision_id"`
+	OwnerSessionID  string `json:"owner_session_id"`
+	DigestSHA256    string `json:"digest_sha256"`
+	Size            int64  `json:"size"`
+	MediaType       string `json:"media_type"`
+}
+
+// SessionArtifactPartRevision is immutable metadata for one independently
+// stored byte-bearing component. Parent is exact ancestry, not a label.
+type SessionArtifactPartRevision struct {
+	Version         int                                   `json:"version"`
+	GraphState      string                                `json:"graph_state"`
+	ArtifactChainID string                                `json:"artifact_chain_id"`
+	PartID          string                                `json:"part_id"`
+	ID              string                                `json:"id"`
+	AccountScopeID  string                                `json:"account_scope_id"`
+	UserID          string                                `json:"user_id"`
+	OwnerSessionID  string                                `json:"owner_session_id"`
+	DigestSHA256    string                                `json:"digest_sha256"`
+	Size            int64                                 `json:"size"`
+	MediaType       string                                `json:"media_type"`
+	Parent          *SessionArtifactPartRevisionReference `json:"parent,omitempty"`
+	CreatedAt       int64                                 `json:"created_at"`
+	EventSeq        uint64                                `json:"event_seq"`
+}
+
+func (revision SessionArtifactPartRevision) Reference() SessionArtifactPartRevisionReference {
+	return SessionArtifactPartRevisionReference{
+		ArtifactChainID: revision.ArtifactChainID,
+		PartID:          revision.PartID,
+		PartRevisionID:  revision.ID,
+		OwnerSessionID:  revision.OwnerSessionID,
+		DigestSHA256:    revision.DigestSHA256,
+		Size:            revision.Size,
+		MediaType:       revision.MediaType,
+	}
+}
+
+// SessionArtifactCompositionPart is one ordered composition slot. The stable
+// definition and exact byte revision may have different storage owners, but
+// both remain in the same artifact chain and authenticated account/user scope.
+type SessionArtifactCompositionPart struct {
+	PartID                   string                               `json:"part_id"`
+	DefinitionOwnerSessionID string                               `json:"definition_owner_session_id"`
+	Revision                 SessionArtifactPartRevisionReference `json:"revision"`
+}
+
+// SessionArtifactComposition is the preservation authority for one complete
+// artifact revision. Preview/export bytes are projections of this ordered list.
+type SessionArtifactComposition struct {
+	Version         int                              `json:"version"`
+	GraphState      string                           `json:"graph_state"`
+	ID              string                           `json:"id"`
+	ArtifactChainID string                           `json:"artifact_chain_id"`
+	AccountScopeID  string                           `json:"account_scope_id"`
+	UserID          string                           `json:"user_id"`
+	OwnerSessionID  string                           `json:"owner_session_id"`
+	Parts           []SessionArtifactCompositionPart `json:"parts"`
+	CreatedAt       int64                            `json:"created_at"`
+	EventSeq        uint64                           `json:"event_seq"`
+}
+
+func KeySessionArtifactPartDefinition(accountScopeID, ownerSessionID, chainID, partID string) string {
+	return fmt.Sprintf("v3/session_artifact/part_definitions/%s/%s/%s/%s", keyPart(accountScopeID), keyPart(ownerSessionID), keyPart(chainID), keyPart(partID))
+}
+
+func SessionArtifactPartDefinitionSessionPrefix(accountScopeID, ownerSessionID string) string {
+	return fmt.Sprintf("v3/session_artifact/part_definitions/%s/%s/", keyPart(accountScopeID), keyPart(ownerSessionID))
+}
+
+func KeySessionArtifactPartRevision(accountScopeID, ownerSessionID, chainID, partID, revisionID string) string {
+	return fmt.Sprintf("v3/session_artifact/part_revisions/%s/%s/%s/%s/%s", keyPart(accountScopeID), keyPart(ownerSessionID), keyPart(chainID), keyPart(partID), keyPart(revisionID))
+}
+
+func SessionArtifactPartRevisionSessionPrefix(accountScopeID, ownerSessionID string) string {
+	return fmt.Sprintf("v3/session_artifact/part_revisions/%s/%s/", keyPart(accountScopeID), keyPart(ownerSessionID))
+}
+
+func KeySessionArtifactComposition(accountScopeID, ownerSessionID, chainID, compositionID string) string {
+	return fmt.Sprintf("v3/session_artifact/compositions/%s/%s/%s/%s", keyPart(accountScopeID), keyPart(ownerSessionID), keyPart(chainID), keyPart(compositionID))
+}
+
+func SessionArtifactCompositionSessionPrefix(accountScopeID, ownerSessionID string) string {
+	return fmt.Sprintf("v3/session_artifact/compositions/%s/%s/", keyPart(accountScopeID), keyPart(ownerSessionID))
+}
+
+func (s *SessionStore) GetSessionArtifactPartDefinition(accountScopeID, userID, ownerSessionID, chainID, partID string) (SessionArtifactPartDefinition, bool, error) {
+	if s == nil || s.store == nil {
+		return SessionArtifactPartDefinition{}, false, errors.New("session store is not configured")
+	}
+	accountScopeID, userID, ownerSessionID, chainID, partID = strings.TrimSpace(accountScopeID), strings.TrimSpace(userID), strings.TrimSpace(ownerSessionID), strings.TrimSpace(chainID), strings.TrimSpace(partID)
+	if accountScopeID == "" || userID == "" || ownerSessionID == "" || chainID == "" || partID == "" {
+		return SessionArtifactPartDefinition{}, false, nil
+	}
+	var definition SessionArtifactPartDefinition
+	ok, err := s.store.GetJSON(KeySessionArtifactPartDefinition(accountScopeID, ownerSessionID, chainID, partID), &definition)
+	if err != nil || !ok {
+		return SessionArtifactPartDefinition{}, ok, err
+	}
+	if definition.AccountScopeID != accountScopeID || definition.UserID != userID || definition.OwnerSessionID != ownerSessionID || definition.ArtifactChainID != chainID || definition.ID != partID {
+		return SessionArtifactPartDefinition{}, false, errors.New("artifact part definition ownership metadata is inconsistent")
+	}
+	return definition, true, nil
+}
+
+func (s *SessionStore) GetSessionArtifactPartRevision(accountScopeID, userID, ownerSessionID, chainID, partID, revisionID string) (SessionArtifactPartRevision, bool, error) {
+	if s == nil || s.store == nil {
+		return SessionArtifactPartRevision{}, false, errors.New("session store is not configured")
+	}
+	accountScopeID, userID, ownerSessionID, chainID, partID, revisionID = strings.TrimSpace(accountScopeID), strings.TrimSpace(userID), strings.TrimSpace(ownerSessionID), strings.TrimSpace(chainID), strings.TrimSpace(partID), strings.TrimSpace(revisionID)
+	if accountScopeID == "" || userID == "" || ownerSessionID == "" || chainID == "" || partID == "" || revisionID == "" {
+		return SessionArtifactPartRevision{}, false, nil
+	}
+	var revision SessionArtifactPartRevision
+	ok, err := s.store.GetJSON(KeySessionArtifactPartRevision(accountScopeID, ownerSessionID, chainID, partID, revisionID), &revision)
+	if err != nil || !ok {
+		return SessionArtifactPartRevision{}, ok, err
+	}
+	if revision.AccountScopeID != accountScopeID || revision.UserID != userID || revision.OwnerSessionID != ownerSessionID || revision.ArtifactChainID != chainID || revision.PartID != partID || revision.ID != revisionID {
+		return SessionArtifactPartRevision{}, false, errors.New("artifact part revision ownership metadata is inconsistent")
+	}
+	return revision, true, nil
+}
+
+func (s *SessionStore) GetSessionArtifactComposition(accountScopeID, userID, ownerSessionID, chainID, compositionID string) (SessionArtifactComposition, bool, error) {
+	if s == nil || s.store == nil {
+		return SessionArtifactComposition{}, false, errors.New("session store is not configured")
+	}
+	accountScopeID, userID, ownerSessionID, chainID, compositionID = strings.TrimSpace(accountScopeID), strings.TrimSpace(userID), strings.TrimSpace(ownerSessionID), strings.TrimSpace(chainID), strings.TrimSpace(compositionID)
+	if accountScopeID == "" || userID == "" || ownerSessionID == "" || chainID == "" || compositionID == "" {
+		return SessionArtifactComposition{}, false, nil
+	}
+	var composition SessionArtifactComposition
+	ok, err := s.store.GetJSON(KeySessionArtifactComposition(accountScopeID, ownerSessionID, chainID, compositionID), &composition)
+	if err != nil || !ok {
+		return SessionArtifactComposition{}, ok, err
+	}
+	if composition.AccountScopeID != accountScopeID || composition.UserID != userID || composition.OwnerSessionID != ownerSessionID || composition.ArtifactChainID != chainID || composition.ID != compositionID {
+		return SessionArtifactComposition{}, false, errors.New("artifact composition ownership metadata is inconsistent")
+	}
+	return composition, true, nil
+}
+
+func normalizeArtifactPartRevisionReference(reference *SessionArtifactPartRevisionReference) {
+	if reference == nil {
+		return
+	}
+	reference.ArtifactChainID = strings.TrimSpace(reference.ArtifactChainID)
+	reference.PartID = strings.TrimSpace(reference.PartID)
+	reference.PartRevisionID = strings.TrimSpace(reference.PartRevisionID)
+	reference.OwnerSessionID = strings.TrimSpace(reference.OwnerSessionID)
+	reference.DigestSHA256 = strings.ToLower(strings.TrimSpace(reference.DigestSHA256))
+	reference.MediaType = strings.ToLower(strings.TrimSpace(reference.MediaType))
+}
+
+func normalizeArtifactPartLocator(locator *SessionArtifactPartLocator) {
+	if locator == nil {
+		return
+	}
+	locator.Kind = strings.ToLower(strings.TrimSpace(locator.Kind))
+	locator.StateID = strings.TrimSpace(locator.StateID)
+	locator.Selector = strings.TrimSpace(locator.Selector)
+}
+
+func validateArtifactPartLocator(locator *SessionArtifactPartLocator) error {
+	if locator == nil {
+		return nil
+	}
+	part := SessionArtifactPart{ID: "locator", Label: "locator", Kind: locator.Kind, StartMs: locator.StartMs, EndMs: locator.EndMs, X: locator.X, Y: locator.Y, Width: locator.Width, Height: locator.Height, Page: locator.Page, StateID: locator.StateID, Selector: locator.Selector}
+	return validateArtifactReviewPart(part)
+}
+
+func validateArtifactReviewPart(part SessionArtifactPart) error {
+	if err := validateArtifactID("part", part.ID); err != nil {
+		return err
+	}
+	if part.Label == "" || len(part.Label) > 256 || len(part.Description) > 2048 || len(part.Kind) > 32 || len(part.StateID) > 128 || len(part.Selector) > 512 {
+		return errors.New("artifact part metadata is incomplete or exceeds bounds")
+	}
+	switch part.Kind {
+	case "temporal":
+		if part.StartMs < 0 || part.EndMs <= part.StartMs {
+			return errors.New("temporal artifact part requires a valid time range")
+		}
+	case "spatial":
+		if part.X < 0 || part.Y < 0 || part.Width <= 0 || part.Height <= 0 || part.X+part.Width > 1 || part.Y+part.Height > 1 {
+			return errors.New("spatial artifact part requires normalized bounds")
+		}
+	case "page":
+		if part.Page < 1 {
+			return errors.New("page artifact part requires a positive page")
+		}
+	case "state":
+		if part.StateID == "" {
+			return errors.New("state artifact part requires a state id")
+		}
+	case "selector":
+		if part.Selector == "" {
+			return errors.New("selector artifact part requires a selector")
+		}
+	case "semantic":
+	default:
+		return errors.New("artifact part kind is invalid")
+	}
+	return nil
+}
+
+func validateArtifactPartRevisionReference(reference SessionArtifactPartRevisionReference) error {
+	if err := validateArtifactID("part", reference.PartID); err != nil {
+		return err
+	}
+	if err := validateArtifactID("part revision", reference.PartRevisionID); err != nil {
+		return err
+	}
+	if reference.ArtifactChainID == "" || reference.OwnerSessionID == "" || len(reference.ArtifactChainID) > 128 || len(reference.OwnerSessionID) > 128 || len(reference.MediaType) > 255 || !validArtifactDigest(reference.DigestSHA256) || reference.Size <= 0 {
+		return errors.New("artifact part revision reference is incomplete")
+	}
+	return nil
+}
+
+func exactPartRevisionReference(reference SessionArtifactPartRevisionReference, revision SessionArtifactPartRevision) bool {
+	return reference == revision.Reference()
+}

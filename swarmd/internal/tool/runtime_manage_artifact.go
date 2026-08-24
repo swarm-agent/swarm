@@ -50,6 +50,7 @@ const (
 // storage paths or mutates artifact metadata directly.
 type ArtifactAuthority interface {
 	Create(context.Context, artifact.Principal, artifact.CreateInput) (pebblestore.SessionArtifactVariant, error)
+	CreateInitialComposition(context.Context, artifact.Principal, artifact.CreateInitialCompositionInput) (pebblestore.SessionArtifactVariant, error)
 	CreatePackage(context.Context, artifact.Principal, artifact.CreatePackageInput) (pebblestore.SessionArtifactVariant, error)
 	List(artifact.Principal, string, int) ([]pebblestore.SessionArtifactCollection, error)
 	ListVariants(artifact.Principal, string, int) ([]pebblestore.SessionArtifactVariant, error)
@@ -99,8 +100,12 @@ type ArtifactRunContext struct {
 	PartKind                string
 	Part                    *pebblestore.SessionArtifactPart
 	SourceArtifact          *pebblestore.SessionArtifactSelectionReference
+	SourceComposition       *pebblestore.SessionArtifactComposition
+	SourcePartDefinition    *pebblestore.SessionArtifactPartDefinition
+	SourcePartRevision      *pebblestore.SessionArtifactPartRevisionReference
 	ArtifactStepID          string
 	CandidateIndex          int
+	AutoAccept              bool
 	CollectionID            string
 	VariantID               string
 	OutputRequirements      *pebblestore.SessionArtifactOutputRequirements
@@ -135,6 +140,37 @@ func manageArtifactDefinition() Definition {
 			"selector":    map[string]any{"type": "string", "maxLength": 512, "description": "Stable selector for an element in the authored artifact; required only for kind=selector."},
 		},
 		"required":             []string{"id", "label", "kind"},
+		"additionalProperties": false,
+	}
+	locator := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"kind":     map[string]any{"type": "string", "enum": []string{"temporal", "spatial", "page", "state", "selector", "semantic"}},
+			"start_ms": map[string]any{"type": "integer", "minimum": 0},
+			"end_ms":   map[string]any{"type": "integer", "minimum": 1},
+			"x":        map[string]any{"type": "number", "minimum": 0, "maximum": 1},
+			"y":        map[string]any{"type": "number", "minimum": 0, "maximum": 1},
+			"width":    map[string]any{"type": "number", "exclusiveMinimum": 0, "maximum": 1},
+			"height":   map[string]any{"type": "number", "exclusiveMinimum": 0, "maximum": 1},
+			"page":     map[string]any{"type": "integer", "minimum": 1},
+			"state_id": map[string]any{"type": "string", "maxLength": 128},
+			"selector": map[string]any{"type": "string", "maxLength": 512},
+		},
+		"required":             []string{"kind"},
+		"additionalProperties": false,
+	}
+	initialPart := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"id":             map[string]any{"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$", "description": "Stable independently replaceable part identity."},
+			"label":          map[string]any{"type": "string", "maxLength": 256},
+			"description":    map[string]any{"type": "string", "maxLength": 2048},
+			"media_type":     map[string]any{"type": "string", "maxLength": 255, "description": "Media type for this part's independently stored immutable bytes."},
+			"content":        map[string]any{"type": "string", "description": "Non-empty UTF-8 bytes for this independent part; mutually exclusive with content_base64."},
+			"content_base64": map[string]any{"type": "string", "description": "Non-empty base64 bytes for this independent part; mutually exclusive with content."},
+			"locator":        locator,
+		},
+		"required":             []string{"id", "label", "media_type"},
 		"additionalProperties": false,
 	}
 	presentation := map[string]any{
@@ -176,7 +212,7 @@ func manageArtifactDefinition() Definition {
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"action":           map[string]any{"type": "string", "enum": []string{"image_capabilities", "generate_image", "export_html_stills", "export_html_animation", "create", "create_package", "list_presets", "list", "search", "get", "read", "materialize", "materialize_batch", "promote", "publish_workspace", "select", "delete"}, "description": "Artifact operation. Supports search, materialize/materialize_batch, and publish_workspace. export_html_stills captures declared swarm.capture/v1 states into managed PNGs. export_html_animation captures a bounded deterministic swarm.animation/v1 timeline into one silent managed MP4 valid as a managed video timeline clip."},
+				"action":           map[string]any{"type": "string", "enum": []string{"image_capabilities", "generate_image", "export_html_stills", "export_html_animation", "read_part", "publish_part", "create", "create_package", "list_presets", "list", "search", "get", "read", "materialize", "materialize_batch", "promote", "publish_workspace", "select", "delete"}, "description": "Artifact operation. Focused managed Designers must use read_part then publish_part; those actions are bound entirely to trusted selected-part context. Supports search, materialize/materialize_batch, and publish_workspace. export_html_stills captures declared swarm.capture/v1 states into managed PNGs. export_html_animation captures a bounded deterministic swarm.animation/v1 timeline into one silent managed MP4 valid as a managed video timeline clip."},
 				"prompt":           map[string]any{"type": "string", "maxLength": manageArtifactMaxPromptRunes, "description": "Image prompt required only for generate_image. For a remix, describe only the requested changes while preserving the attached exact source through all source_* fields."},
 				"capability_token": map[string]any{"type": "string", "description": "Fresh token returned by image_capabilities; required for each Google generate_image call, including every repeated remix"},
 				"image_settings": map[string]any{"type": "object", "properties": map[string]any{
@@ -191,9 +227,11 @@ func manageArtifactDefinition() Definition {
 				"variant_id":             map[string]any{"type": "string", "description": "Opaque variant reference. For get/read/materialize/promote of an attached ready artifact, copy this together with session_id, collection_id, and event_seq from the same returned reference; otherwise optional on create."},
 				"filename":               map[string]any{"type": "string", "maxLength": 255},
 				"media_type":             map[string]any{"type": "string", "maxLength": 255, "description": "Artifact media type for create; optional exact canonical media type filter for list/search discovery"},
-				"content":                map[string]any{"type": "string", "description": "Bounded UTF-8 artifact content for create"},
+				"content":                map[string]any{"type": "string", "description": "Bounded UTF-8 artifact content for monolithic create or focused publish_part replacement bytes"},
+				"content_base64":         map[string]any{"type": "string", "description": "Bounded base64 replacement bytes for focused publish_part; mutually exclusive with content"},
 				"entries":                map[string]any{"type": "array", "maxItems": manageArtifactMaxPackageFiles, "items": entry},
-				"parts":                  map[string]any{"type": "array", "maxItems": pebblestore.SessionArtifactMaxParts, "items": part, "description": "Optional media-agnostic clickable review/edit targets on this complete artifact revision. Include one part for each meaningful authored region or section the user may ask to change, with stable IDs and the locator fields required by its kind. For a swarm.iteration/v1 animation, mirror each canonical manifest section as a temporal part with the same id, label, start_ms, and end_ms. Do not invent generic parts that do not map to actual content."},
+				"initial_parts":          map[string]any{"type": "array", "minItems": 2, "maxItems": pebblestore.SessionArtifactMaxParts, "items": initialPart, "description": "Two or more real independently byte-bearing initial parts for create. Every item has its own stable id, media type, and non-empty content/content_base64. The server owns all chain, composition, and part-revision identities. Mutually exclusive with top-level content, entries, and locator-only parts."},
+				"parts":                  map[string]any{"type": "array", "maxItems": pebblestore.SessionArtifactMaxParts, "items": part, "description": "Optional legacy/unproven locator-only clickable review metadata on a monolithic complete artifact. These locators never create or prove real part identities. Include one target for each meaningful authored region or section the user may ask to change. For a swarm.iteration/v1 animation, mirror each canonical manifest section as a temporal target with the same id, label, start_ms, and end_ms. Do not invent generic parts that do not map to actual content. Use initial_parts instead when independently stored replaceable bytes are required."},
 				"references":             map[string]any{"type": "array", "minItems": 1, "maxItems": manageArtifactMaxBatchItems, "items": reference, "description": "Complete exact ready references from discovery results, imported atomically by materialize_batch into one destination directory. The whole batch is preflighted; filenames come from trusted artifact metadata."},
 				"state_ids":              map[string]any{"type": "array", "minItems": 1, "maxItems": 16, "uniqueItems": true, "items": map[string]any{"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$"}, "description": "Optional bounded declared swarm.capture/v1 state IDs for export_html_stills; omitted exports every manifest state. Caller order never overrides canonical manifest order."},
 				"source":                 map[string]any{"type": "string", "maxLength": 4096, "description": "Trusted canonical workspace-relative regular file or bounded package directory for publish_workspace. Build or revise it with normal workspace tools before publication."},
@@ -251,6 +289,13 @@ func (r *Runtime) executeManageArtifact(ctx context.Context, scope WorkspaceScop
 	if actionName != "list_presets" {
 		requestID = managedArtifactRequestID(principal.SessionID, callID, actionName)
 	}
+	if run, ok := ctx.Value(artifactRunContextKey{}).(ArtifactRunContext); ok && run.SourcePartRevision != nil {
+		switch actionName {
+		case "read_part", "publish_part", "list_presets":
+		default:
+			return "", errors.New("focused managed Designer context permits only manage_artifact read_part followed by publish_part")
+		}
+	}
 
 	if actionName != "create" && actionName != "create_package" && actionName != "generate_image" && actionName != "publish_workspace" {
 		if _, supplied := args["output_requirements"]; supplied {
@@ -273,6 +318,19 @@ func (r *Runtime) executeManageArtifact(ctx context.Context, scope WorkspaceScop
 			return "", err
 		}
 		response["image_capabilities"] = capabilities
+	case "read_part":
+		part, err := r.readManagedArtifactPart(ctx, principal, args)
+		if err != nil {
+			return "", err
+		}
+		response["part"] = part
+	case "publish_part":
+		variant, err := r.publishManagedArtifactPart(ctx, principal, callID, requestID, args)
+		if err != nil {
+			return "", err
+		}
+		response["artifact"] = managedArtifactVariant(variant)
+		response["reference"] = managedArtifactReferenceWithSession(variant.SessionID, variant.CollectionID, variant.ID, variant.EventSeq)
 	case "export_html_stills":
 		exports, sourceRef, requirements, err := r.exportHTMLStills(ctx, principal, callID, args)
 		if err != nil {
@@ -310,6 +368,10 @@ func (r *Runtime) executeManageArtifact(ctx context.Context, scope WorkspaceScop
 		if err != nil {
 			return "", err
 		}
+		// A direct manage_artifact publication is one complete candidate, not a
+		// review wave. Accept it atomically when it becomes ready so its exact
+		// returned reference can immediately parent a later focused iteration.
+		input.AutoAccept = true
 		if run, ok := ctx.Value(artifactRunContextKey{}).(ArtifactRunContext); ok {
 			trustedCollectionID, trustedVariantID := strings.TrimSpace(run.CollectionID), strings.TrimSpace(run.VariantID)
 			if trustedCollectionID != "" || trustedVariantID != "" {
@@ -325,13 +387,15 @@ func (r *Runtime) executeManageArtifact(ctx context.Context, scope WorkspaceScop
 				input.CollectionID, input.VariantID = trustedCollectionID, trustedVariantID
 				input.OutputRequirements = cloneArtifactOutputRequirements(run.OutputRequirements)
 				if run.SourceArtifact != nil {
-					if input.SourceSessionID != "" && (input.SourceSessionID != run.SourceArtifact.SessionID || input.SourceCollectionID != run.SourceArtifact.CollectionID || input.SourceVariantID != run.SourceArtifact.VariantID || input.SourceEventSeq != run.SourceArtifact.EventSeq) { return "", errors.New("manage_artifact source lineage does not match the trusted task source") }
+					if input.SourceSessionID != "" && (input.SourceSessionID != run.SourceArtifact.SessionID || input.SourceCollectionID != run.SourceArtifact.CollectionID || input.SourceVariantID != run.SourceArtifact.VariantID || input.SourceEventSeq != run.SourceArtifact.EventSeq) {
+						return "", errors.New("manage_artifact source lineage does not match the trusted task source")
+					}
 					input.SourceSessionID = run.SourceArtifact.SessionID
 					input.SourceCollectionID = run.SourceArtifact.CollectionID
 					input.SourceVariantID = run.SourceArtifact.VariantID
 					input.SourceEventSeq = run.SourceArtifact.EventSeq
 				}
-				input.ArtifactStepID, input.CandidateIndex = strings.TrimSpace(run.ArtifactStepID), run.CandidateIndex
+				input.ArtifactStepID, input.CandidateIndex, input.AutoAccept = strings.TrimSpace(run.ArtifactStepID), run.CandidateIndex, run.AutoAccept
 				input.AnimationProfile = cloneArtifactAnimationProfile(run.AnimationProfile)
 				if err := enforceArtifactPresentationRequirements(&input.Presentation, input.OutputRequirements); err != nil {
 					return "", err
@@ -345,10 +409,24 @@ func (r *Runtime) executeManageArtifact(ctx context.Context, scope WorkspaceScop
 			return "", err
 		}
 		input.RequestID = requestID
+		initialParts, err := parseArtifactInitialParts(args["initial_parts"], principal.SessionID, input.CollectionID, input.VariantID, callID)
+		if err != nil {
+			return "", err
+		}
 		var variant pebblestore.SessionArtifactVariant
-		if actionName == "create_package" {
+		switch {
+		case len(initialParts) != 0:
+			if actionName != "create" {
+				return "", errors.New("manage_artifact initial_parts is valid only for create")
+			}
+			chainID := pebblestore.RootSessionArtifactChainID(principal.SessionID, input.CollectionID, input.VariantID)
+			variant, err = r.artifactAuthority.CreateInitialComposition(ctx, principal, artifact.CreateInitialCompositionInput{
+				CreateInput: input, ArtifactChainID: chainID,
+				CompositionID: managedArtifactOpaqueID("composition", principal.SessionID, callID), Parts: initialParts,
+			})
+		case actionName == "create_package":
 			variant, err = r.artifactAuthority.CreatePackage(ctx, principal, artifact.CreatePackageInput{CreateInput: input, Entries: entries})
-		} else {
+		default:
 			variant, err = r.artifactAuthority.Create(ctx, principal, input)
 		}
 		if err != nil {
@@ -798,7 +876,7 @@ func (r *Runtime) publishWorkspaceArtifact(ctx context.Context, principal artifa
 	}
 	create := artifact.CreateInput{
 		RequestID: requestID, CollectionID: collectionID, CollectionName: strings.TrimSpace(asString(args["collection_name"])), CollectionDescription: strings.TrimSpace(asString(args["collection_description"])),
-		VariantID: variantID, Filename: filename, MediaType: mediaType, Presentation: presentation, OutputRequirements: requirements,
+		VariantID: variantID, Filename: filename, MediaType: mediaType, Presentation: presentation, OutputRequirements: requirements, AutoAccept: true,
 		SourceSessionID: strings.TrimSpace(asString(args["source_session_id"])), SourceCollectionID: strings.TrimSpace(asString(args["source_collection_id"])), SourceVariantID: strings.TrimSpace(asString(args["source_variant_id"])), SourceEventSeq: asUint64(args["source_event_seq"]),
 	}
 	if generatedCollection && create.CollectionName == "" {
@@ -1164,7 +1242,11 @@ func (r *Runtime) generateManagedImageArtifact(ctx context.Context, scope Worksp
 	create := artifact.CreateInput{
 		RequestID: requestID, CollectionID: collectionID, CollectionName: collectionName, CollectionDescription: collectionDescription,
 		VariantID: variantID, Filename: filename, MediaType: canonicalArtifactMediaType(generated.MediaType), Presentation: presentation,
-		OutputRequirements: requirements, Body: append([]byte(nil), generated.Bytes...),
+		OutputRequirements: requirements, Body: append([]byte(nil), generated.Bytes...), AutoAccept: !managedDestination,
+	}
+	if managedDestination {
+		run, _ := ctx.Value(artifactRunContextKey{}).(ArtifactRunContext)
+		create.ArtifactStepID, create.CandidateIndex, create.AutoAccept = strings.TrimSpace(run.ArtifactStepID), run.CandidateIndex, run.AutoAccept
 	}
 	if sourceRef != nil {
 		create.SourceSessionID, create.SourceCollectionID, create.SourceVariantID, create.SourceEventSeq = sourceRef.SessionID, sourceRef.CollectionID, sourceRef.VariantID, sourceRef.EventSeq
@@ -1357,11 +1439,29 @@ func parseArtifactCreate(args map[string]any, sessionID, callID string, packageA
 	if err != nil {
 		return artifact.CreateInput{}, nil, err
 	}
+	_, hasInitialParts := args["initial_parts"]
+	if hasInitialParts {
+		if packageArtifact {
+			return artifact.CreateInput{}, nil, errors.New("manage_artifact initial_parts is valid only for create")
+		}
+		if len(parts) != 0 {
+			return artifact.CreateInput{}, nil, errors.New("manage_artifact create cannot combine locator-only parts with real initial_parts; put optional locator metadata on each initial part")
+		}
+		if _, supplied := args["content"]; supplied {
+			return artifact.CreateInput{}, nil, errors.New("manage_artifact create cannot combine monolithic content with real initial_parts")
+		}
+		if _, supplied := args["entries"]; supplied {
+			return artifact.CreateInput{}, nil, errors.New("manage_artifact create cannot combine package entries with real initial_parts")
+		}
+	}
 	input := artifact.CreateInput{CollectionID: collectionID, CollectionName: name, CollectionDescription: asString(args["collection_description"]), VariantID: variantID, Filename: filename, MediaType: strings.TrimSpace(asString(args["media_type"])), Presentation: presentation, OutputRequirements: requirements, AnimationProfile: animationProfile, Parts: parts, SourceSessionID: strings.TrimSpace(asString(args["source_session_id"])), SourceCollectionID: strings.TrimSpace(asString(args["source_collection_id"])), SourceVariantID: strings.TrimSpace(asString(args["source_variant_id"])), SourceEventSeq: asUint64(args["source_event_seq"])}
 	if !packageArtifact {
+		if hasInitialParts {
+			return input, nil, nil
+		}
 		content, ok := args["content"].(string)
 		if !ok || content == "" {
-			return artifact.CreateInput{}, nil, errors.New("create requires non-empty content")
+			return artifact.CreateInput{}, nil, errors.New("create requires non-empty content or real initial_parts")
 		}
 		if len(content) > manageArtifactMaxCreateBytes {
 			return artifact.CreateInput{}, nil, fmt.Errorf("create content exceeds %d bytes", manageArtifactMaxCreateBytes)
@@ -1389,6 +1489,136 @@ func artifactPartNumber(value any) float64 {
 	default:
 		return 0
 	}
+}
+
+func parseArtifactInitialParts(raw any, sessionID, collectionID, variantID, callID string) ([]artifact.InitialPartInput, error) {
+	if raw == nil {
+		return nil, nil
+	}
+	items, ok := raw.([]any)
+	if !ok || len(items) < 2 || len(items) > pebblestore.SessionArtifactMaxParts {
+		return nil, fmt.Errorf("manage_artifact initial_parts must contain 2 to %d independently byte-bearing parts", pebblestore.SessionArtifactMaxParts)
+	}
+	chainID := pebblestore.RootSessionArtifactChainID(sessionID, collectionID, variantID)
+	parts := make([]artifact.InitialPartInput, 0, len(items))
+	seen := make(map[string]struct{}, len(items))
+	total := 0
+	for index, rawItem := range items {
+		item, ok := rawItem.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("manage_artifact initial part %d must be an object", index)
+		}
+		id := strings.TrimSpace(asString(item["id"]))
+		if !validManagedArtifactStableID(id) {
+			return nil, fmt.Errorf("manage_artifact initial part %d has an invalid stable id", index)
+		}
+		if _, duplicate := seen[id]; duplicate {
+			return nil, fmt.Errorf("manage_artifact initial_parts contains duplicate stable part id %q", id)
+		}
+		seen[id] = struct{}{}
+		label := strings.TrimSpace(asString(item["label"]))
+		description := strings.TrimSpace(asString(item["description"]))
+		mediaType := canonicalArtifactMediaType(asString(item["media_type"]))
+		if label == "" || len(label) > 256 || len(description) > 2048 || mediaType == "" || len(mediaType) > 255 {
+			return nil, fmt.Errorf("manage_artifact initial part %q requires bounded label, description, and media_type", id)
+		}
+		text, hasText := item["content"]
+		encoded, hasBase64 := item["content_base64"]
+		if hasText == hasBase64 {
+			return nil, fmt.Errorf("manage_artifact initial part %q requires exactly one of content or content_base64", id)
+		}
+		var body []byte
+		if hasText {
+			value, ok := text.(string)
+			if !ok {
+				return nil, fmt.Errorf("manage_artifact initial part %q content must be a string", id)
+			}
+			body = []byte(value)
+		} else {
+			value, ok := encoded.(string)
+			if !ok {
+				return nil, fmt.Errorf("manage_artifact initial part %q content_base64 must be a string", id)
+			}
+			var err error
+			body, err = base64.StdEncoding.Strict().DecodeString(value)
+			if err != nil {
+				return nil, fmt.Errorf("manage_artifact initial part %q content_base64 is invalid", id)
+			}
+		}
+		if len(body) == 0 || len(body) > manageArtifactMaxCreateBytes {
+			return nil, fmt.Errorf("manage_artifact initial part %q content must be between 1 and %d bytes", id, manageArtifactMaxCreateBytes)
+		}
+		total += len(body)
+		if total > manageArtifactMaxPackageBytes {
+			return nil, fmt.Errorf("manage_artifact initial_parts content exceeds %d bytes", manageArtifactMaxPackageBytes)
+		}
+		locator, err := parseArtifactInitialPartLocator(item["locator"])
+		if err != nil {
+			return nil, fmt.Errorf("manage_artifact initial part %q locator: %w", id, err)
+		}
+		revisionSeed := strings.Join([]string{"initial-part-revision-v1", strings.TrimSpace(sessionID), strings.TrimSpace(collectionID), strings.TrimSpace(variantID), strings.TrimSpace(callID), id}, "\x00")
+		revisionDigest := sha256.Sum256([]byte(revisionSeed))
+		parts = append(parts, artifact.InitialPartInput{
+			Definition: pebblestore.SessionArtifactPartDefinition{ArtifactChainID: chainID, ID: id, OwnerSessionID: strings.TrimSpace(sessionID), Label: label, Description: description, Locator: locator},
+			RevisionID: "part-revision-" + hex.EncodeToString(revisionDigest[:12]), MediaType: mediaType, Body: body,
+		})
+	}
+	return parts, nil
+}
+
+func parseArtifactInitialPartLocator(raw any) (*pebblestore.SessionArtifactPartLocator, error) {
+	if raw == nil {
+		return nil, nil
+	}
+	item, ok := raw.(map[string]any)
+	if !ok {
+		return nil, errors.New("must be an object")
+	}
+	kind := strings.ToLower(strings.TrimSpace(asString(item["kind"])))
+	locator := &pebblestore.SessionArtifactPartLocator{
+		Kind: kind, StartMs: int64(asInt(item["start_ms"], 0)), EndMs: int64(asInt(item["end_ms"], 0)),
+		X: artifactPartNumber(item["x"]), Y: artifactPartNumber(item["y"]), Width: artifactPartNumber(item["width"]), Height: artifactPartNumber(item["height"]),
+		Page: asInt(item["page"], 0), StateID: strings.TrimSpace(asString(item["state_id"])), Selector: strings.TrimSpace(asString(item["selector"])),
+	}
+	switch kind {
+	case "temporal":
+		if locator.StartMs < 0 || locator.EndMs <= locator.StartMs {
+			return nil, errors.New("temporal locator requires a valid start_ms/end_ms range")
+		}
+	case "spatial":
+		if locator.X < 0 || locator.Y < 0 || locator.Width <= 0 || locator.Height <= 0 || locator.X+locator.Width > 1 || locator.Y+locator.Height > 1 {
+			return nil, errors.New("spatial locator requires normalized x/y/width/height")
+		}
+	case "page":
+		if locator.Page < 1 {
+			return nil, errors.New("page locator requires page")
+		}
+	case "state":
+		if locator.StateID == "" || len(locator.StateID) > 128 {
+			return nil, errors.New("state locator requires bounded state_id")
+		}
+	case "selector":
+		if locator.Selector == "" || len(locator.Selector) > 512 {
+			return nil, errors.New("selector locator requires bounded selector")
+		}
+	case "semantic":
+	default:
+		return nil, errors.New("kind is invalid")
+	}
+	return locator, nil
+}
+
+func validManagedArtifactStableID(value string) bool {
+	if value == "" || len(value) > 128 || value == "." || value == ".." {
+		return false
+	}
+	for index, character := range value {
+		if (character >= 'a' && character <= 'z') || (character >= '0' && character <= '9') || (index > 0 && (character == '_' || character == '-' || character == '.')) {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func parseArtifactParts(raw any) ([]pebblestore.SessionArtifactPart, error) {
@@ -1581,7 +1811,13 @@ func managedArtifactPresentation(p pebblestore.SessionArtifactPresentation) map[
 }
 
 func managedArtifactVariant(v pebblestore.SessionArtifactVariant) map[string]any {
-	return map[string]any{"id": v.ID, "collection_id": v.CollectionID, "session_id": v.SessionID, "status": v.Status, "filename": v.Filename, "media_type": v.MediaType, "digest_sha256": v.DigestSHA256, "size": v.Size, "failure_code": v.FailureCode, "presentation": managedArtifactPresentation(v.Presentation), "output_requirements": v.OutputRequirements, "animation_profile": v.AnimationProfile, "created_at": v.CreatedAt, "updated_at": v.UpdatedAt, "event_seq": v.EventSeq}
+	result := map[string]any{"id": v.ID, "collection_id": v.CollectionID, "session_id": v.SessionID, "status": v.Status, "filename": v.Filename, "media_type": v.MediaType, "digest_sha256": v.DigestSHA256, "size": v.Size, "failure_code": v.FailureCode, "presentation": managedArtifactPresentation(v.Presentation), "output_requirements": v.OutputRequirements, "animation_profile": v.AnimationProfile, "part_graph_state": v.PartGraphState, "created_at": v.CreatedAt, "updated_at": v.UpdatedAt, "event_seq": v.EventSeq}
+	if v.PartGraphState == pebblestore.SessionArtifactGraphAuthoritative && v.Composition != nil {
+		result["artifact_chain_id"] = v.ArtifactChainID
+		result["part_definitions"] = v.PartDefinitions
+		result["composition"] = v.Composition
+	}
+	return result
 }
 
 func cloneArtifactOutputRequirements(input *pebblestore.SessionArtifactOutputRequirements) *pebblestore.SessionArtifactOutputRequirements {

@@ -42,6 +42,9 @@ func TestManageArtifactBackendLifecycleAndPromotionContract(t *testing.T) {
 	if created["artifact"].(map[string]any)["session_id"] == "" {
 		t.Fatalf("artifact variant payload missing session_id: %#v", created)
 	}
+	if !authority.created.AutoAccept {
+		t.Fatalf("direct create did not request trusted sole-candidate acceptance: %+v", authority.created)
+	}
 
 	authority.variant = pebblestore.SessionArtifactVariant{
 		ID: variantID, CollectionID: collectionID, SessionID: "session-1",

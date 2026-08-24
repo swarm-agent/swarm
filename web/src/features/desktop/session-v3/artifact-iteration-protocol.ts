@@ -82,12 +82,12 @@ export function normalizeDesktopV3ArtifactIterationDescriptor(value: unknown): D
   return { version: DESKTOP_V3_ARTIFACT_ITERATION_VERSION, durationMs, sections: normalized }
 }
 
-export function desktopV3ArtifactIterationMessage(id: string, type: 'describe' | 'seek' | 'stop', timeMs?: number): UnknownRecord {
+export function desktopV3ArtifactIterationMessage(id: string, method: 'describe' | 'seek' | 'stop', timeMs?: number): UnknownRecord {
   return {
     protocol: DESKTOP_V3_ARTIFACT_PLAYER_PROTOCOL,
     id,
-    type,
-    ...(type === 'seek' ? { time_ms: Math.max(0, Math.round(timeMs ?? 0)) } : {}),
+    method,
+    ...(method === 'seek' ? { params: { time_ms: Math.max(0, Math.round(timeMs ?? 0)) } } : {}),
   }
 }
 

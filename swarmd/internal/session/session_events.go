@@ -24,6 +24,10 @@ type ArtifactCollection = pebblestore.SessionArtifactCollection
 type ArtifactVariant = pebblestore.SessionArtifactVariant
 type ArtifactSelectionReference = pebblestore.SessionArtifactSelectionReference
 type ArtifactChain = pebblestore.SessionArtifactChain
+type ArtifactStep = pebblestore.SessionArtifactStep
+type ArtifactPartDefinition = pebblestore.SessionArtifactPartDefinition
+type ArtifactPartRevision = pebblestore.SessionArtifactPartRevision
+type ArtifactComposition = pebblestore.SessionArtifactComposition
 type VideoProjectSnapshot = pebblestore.VideoProjectSnapshot
 type VideoProjectRevisionSnapshot = pebblestore.VideoProjectRevisionSnapshot
 type VideoRenderJobSnapshot = pebblestore.VideoRenderJobSnapshot
@@ -96,6 +100,34 @@ func (s *Service) ProjectSessionArtifactVariantChain(accountScopeID, userID stri
 		return ArtifactVariant{}, ArtifactChain{}, errors.New("session store is not configured")
 	}
 	return s.store.ProjectSessionArtifactVariantChain(accountScopeID, userID, variant)
+}
+
+func (s *Service) GetSessionArtifactPartDefinition(accountScopeID, userID, ownerSessionID, chainID, partID string) (ArtifactPartDefinition, bool, error) {
+	if s == nil || s.store == nil {
+		return ArtifactPartDefinition{}, false, errors.New("session store is not configured")
+	}
+	return s.store.GetSessionArtifactPartDefinition(accountScopeID, userID, ownerSessionID, chainID, partID)
+}
+
+func (s *Service) GetSessionArtifactPartRevision(accountScopeID, userID, ownerSessionID, chainID, partID, revisionID string) (ArtifactPartRevision, bool, error) {
+	if s == nil || s.store == nil {
+		return ArtifactPartRevision{}, false, errors.New("session store is not configured")
+	}
+	return s.store.GetSessionArtifactPartRevision(accountScopeID, userID, ownerSessionID, chainID, partID, revisionID)
+}
+
+func (s *Service) GetSessionArtifactComposition(accountScopeID, userID, ownerSessionID, chainID, compositionID string) (ArtifactComposition, bool, error) {
+	if s == nil || s.store == nil {
+		return ArtifactComposition{}, false, errors.New("session store is not configured")
+	}
+	return s.store.GetSessionArtifactComposition(accountScopeID, userID, ownerSessionID, chainID, compositionID)
+}
+
+func (s *Service) GetSessionArtifactStep(accountScopeID, userID, chainID, stepID string) (ArtifactStep, bool, error) {
+	if s == nil || s.store == nil {
+		return ArtifactStep{}, false, errors.New("session store is not configured")
+	}
+	return s.store.GetSessionArtifactStep(accountScopeID, userID, chainID, stepID)
 }
 
 func (s *Service) GetSessionArtifactVariant(accountScopeID, sessionID, collectionID, variantID string) (ArtifactVariant, bool, error) {

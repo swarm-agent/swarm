@@ -273,7 +273,7 @@ func managedDesignerArtifactContext(parent pebblestore.SessionSnapshot, taskCall
 	run := &tool.ArtifactRunContext{
 		SessionID: parent.ID, TaskCallID: taskCallID, ProgramID: strings.TrimSpace(programID), ProgramJobID: strings.TrimSpace(programJobID),
 		IterationGroupID: iterationGroupID, IterationGroup: strings.TrimSpace(iterationGroup), IterationID: iterationID, IterationIndex: iterationIndex,
-		IterationLabel: iterationLabel, IterationTheme: iterationTheme, ArtifactStepID: stepID, CandidateIndex: iterationIndex, CollectionID: collectionID, VariantID: variantID,
+		IterationLabel: iterationLabel, IterationTheme: iterationTheme, ArtifactStepID: stepID, CandidateIndex: iterationIndex, AutoAccept: !spec.SwarmMode || (spec.SwarmMode && mapInt(spec.SourceArguments, "swarm_count") == 1), CollectionID: collectionID, VariantID: variantID,
 		OutputRequirements: cloneTaskOutputRequirements(spec.OutputRequirements),
 		AnimationProfile:   cloneTaskAnimationProfile(spec.AnimationProfile),
 	}
@@ -282,6 +282,18 @@ func managedDesignerArtifactContext(parent pebblestore.SessionSnapshot, taskCall
 		run.SourceArtifact = &sourceCopy
 	}
 	if sectionTarget != nil {
+		if composition, ok := spec.SourceArguments["source_composition"].(pebblestore.SessionArtifactComposition); ok {
+			copy := composition
+			run.SourceComposition = &copy
+		}
+		if definition, ok := spec.SourceArguments["source_part_definition"].(pebblestore.SessionArtifactPartDefinition); ok {
+			copy := definition
+			run.SourcePartDefinition = &copy
+		}
+		if revision, ok := spec.SourceArguments["source_part_revision"].(pebblestore.SessionArtifactPartRevisionReference); ok {
+			copy := revision
+			run.SourcePartRevision = &copy
+		}
 		part := pebblestore.SessionArtifactPart{ID: sectionTarget.ID, Label: sectionTarget.Label, Kind: sectionTarget.Kind, Description: sectionTarget.Description, StartMs: sectionTarget.StartMs, EndMs: sectionTarget.EndMs, X: sectionTarget.X, Y: sectionTarget.Y, Width: sectionTarget.Width, Height: sectionTarget.Height, Page: sectionTarget.Page, StateID: sectionTarget.StateID, Selector: sectionTarget.Selector}
 		run.Part = &part
 		if sectionTarget.Kind == "" || sectionTarget.Kind == "temporal" {
@@ -499,7 +511,7 @@ func (s *Service) ensureManagedDesignerArtifactPlaceholders(parent pebblestore.S
 			presentation.Width, presentation.Height = run.OutputRequirements.Width, run.OutputRequirements.Height
 		}
 		variant := pebblestore.SessionArtifactVariant{
-			ID: run.VariantID, CollectionID: collection.ID, Lineage: lineage,
+			ID: run.VariantID, CollectionID: collection.ID, Lineage: lineage, AutoAccept: run.AutoAccept,
 			Presentation: presentation, OutputRequirements: cloneTaskOutputRequirements(run.OutputRequirements), AnimationProfile: cloneTaskAnimationProfile(run.AnimationProfile),
 		}
 		payload, err := json.Marshal(variant)
@@ -634,9 +646,19 @@ type taskArtifactReference struct {
 	RevisionRoundID    string                                         `json:"revision_round_id,omitempty"`
 	CandidateIndex     int                                            `json:"candidate_index,omitempty"`
 	Parts              []pebblestore.SessionArtifactPart              `json:"parts,omitempty"`
+	Composition        *pebblestore.SessionArtifactComposition        `json:"composition,omitempty"`
 	SectionTarget      *taskSwarmSectionTarget                        `json:"section_target,omitempty"`
 	OutputRequirements *pebblestore.SessionArtifactOutputRequirements `json:"output_requirements,omitempty"`
 	AnimationProfile   *pebblestore.SessionArtifactAnimationProfile   `json:"animation_profile,omitempty"`
+}
+
+func cloneTaskArtifactComposition(input *pebblestore.SessionArtifactComposition) *pebblestore.SessionArtifactComposition {
+	if input == nil {
+		return nil
+	}
+	copy := *input
+	copy.Parts = append([]pebblestore.SessionArtifactCompositionPart(nil), input.Parts...)
+	return &copy
 }
 
 func taskArtifactReferenceFromVariant(sessionID string, variant pebblestore.SessionArtifactVariant) *taskArtifactReference {
@@ -644,7 +666,7 @@ func taskArtifactReferenceFromVariant(sessionID string, variant pebblestore.Sess
 	reference := &taskArtifactReference{
 		SessionID: strings.TrimSpace(sessionID), CollectionID: strings.TrimSpace(variant.CollectionID), VariantID: strings.TrimSpace(variant.ID), EventSeq: variant.EventSeq,
 		Status: variant.Status, FailureCode: variant.FailureCode,
-		ArtifactChainID: variant.ArtifactChainID, RevisionNumber: variant.RevisionNumber, RevisionRoundID: variant.RevisionRoundID, CandidateIndex: variant.CandidateIndex, Parts: append([]pebblestore.SessionArtifactPart(nil), variant.Parts...),
+		ArtifactChainID: variant.ArtifactChainID, RevisionNumber: variant.RevisionNumber, RevisionRoundID: variant.RevisionRoundID, CandidateIndex: variant.CandidateIndex, Parts: append([]pebblestore.SessionArtifactPart(nil), variant.Parts...), Composition: cloneTaskArtifactComposition(variant.Composition),
 		OutputRequirements: cloneTaskOutputRequirements(variant.OutputRequirements), AnimationProfile: cloneTaskAnimationProfile(variant.AnimationProfile),
 	}
 	if lineage.SourceSessionID != "" && lineage.SourceCollectionID != "" && lineage.SourceVariantID != "" && lineage.SourceEventSeq > 0 {
@@ -4114,33 +4136,73 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 			parsed.Swarm.SourceArtifact = cloneTaskImageSourceArtifact(boundSource)
 			if boundSelection.Part != nil {
 				boundTarget := taskSectionTargetFromArtifactPart(*boundSelection.Part)
-				if parsed.Swarm.SectionTarget != nil && !equalTaskSectionTarget(parsed.Swarm.SectionTarget, boundTarget) { return "", errors.New("task section_target does not match the authenticated Artifact Studio part") }
+				if parsed.Swarm.SectionTarget != nil && !equalTaskSectionTarget(parsed.Swarm.SectionTarget, boundTarget) {
+					return "", errors.New("task section_target does not match the authenticated Artifact Studio part")
+				}
 				parsed.Swarm.SectionTarget = boundTarget
 			}
 		}
 		for i := range launchSpecs {
 			if (agentruntime.IsDesignerAgentName(launchSpecs[i].RequestedSubagentType) || agentruntime.IsImageAgentName(launchSpecs[i].RequestedSubagentType)) && launchSpecs[i].OutputMode == taskOutputModeManaged {
-				if launchSpecs[i].SourceArguments == nil { launchSpecs[i].SourceArguments = map[string]any{} }
-				if launchSpecs[i].SourceArtifact != nil && !equalTaskImageSourceArtifact(launchSpecs[i].SourceArtifact, boundSource) { return "", errors.New("task launch source_artifact does not match the authenticated Artifact Studio selection") }
+				if launchSpecs[i].SourceArguments == nil {
+					launchSpecs[i].SourceArguments = map[string]any{}
+				}
+				if launchSpecs[i].SourceArtifact != nil && !equalTaskImageSourceArtifact(launchSpecs[i].SourceArtifact, boundSource) {
+					return "", errors.New("task launch source_artifact does not match the authenticated Artifact Studio selection")
+				}
 				launchSpecs[i].SourceArtifact = cloneTaskImageSourceArtifact(boundSource)
 				if boundSelection.Part != nil {
 					boundTarget := taskSectionTargetFromArtifactPart(*boundSelection.Part)
 					requested, targetErr := parseTaskSwarmSectionTarget(launchSpecs[i].SourceArguments["section_target"])
-					if targetErr != nil { return "", targetErr }
-					if requested != nil && !equalTaskSectionTarget(requested, boundTarget) { return "", errors.New("task section_target does not match the authenticated Artifact Studio part") }
+					if targetErr != nil {
+						return "", targetErr
+					}
+					if requested != nil && !equalTaskSectionTarget(requested, boundTarget) {
+						return "", errors.New("task section_target does not match the authenticated Artifact Studio part")
+					}
 					launchSpecs[i].SourceArguments["section_target"] = boundTarget
 				}
 			}
 		}
 	}
-	if sourceArtifact == nil { sourceArtifact = cloneTaskImageSourceArtifact(parsed.SourceArtifact) }
+	if sourceArtifact == nil {
+		sourceArtifact = cloneTaskImageSourceArtifact(parsed.SourceArtifact)
+	}
 	if sourceArtifact != nil {
 		if s.tools == nil || s.tools.ArtifactAuthority() == nil {
 			return "", errors.New("task source_artifact requires the authenticated artifact authority")
 		}
 		principal := artifact.Principal{SessionID: parentSession.ID, AccountScopeID: parentSession.AccountScopeID, UserID: parentSession.UserID}
-		if _, sourceErr := s.tools.ArtifactAuthority().GetReference(principal, *sourceArtifact); sourceErr != nil {
+		sourceVariant, sourceErr := s.tools.ArtifactAuthority().GetReference(principal, *sourceArtifact)
+		if sourceErr != nil {
 			return "", fmt.Errorf("task source_artifact is unavailable: %w", sourceErr)
+		}
+		if parsed.Mode == taskModeSwarm && parsed.Swarm != nil && agentruntime.IsDesignerAgentName(parsed.Swarm.AgentType) && parsed.Swarm.SectionTarget != nil {
+			partID := strings.TrimSpace(parsed.Swarm.SectionTarget.ID)
+			_, composition, definition, revision, resolveErr := s.tools.ResolveArtifactPartTarget(principal, *sourceArtifact, partID)
+			if resolveErr != nil {
+				return "", fmt.Errorf("task selected part is unavailable: %w", resolveErr)
+			}
+			if sourceVariant.Composition == nil || !reflect.DeepEqual(*sourceVariant.Composition, composition) {
+				return "", errors.New("task selected part composition does not match the authenticated exact source")
+			}
+			boundTarget := taskSectionTargetFromArtifactDefinition(definition)
+			if parsed.Swarm.SectionTarget != nil && !equalTaskSectionTarget(parsed.Swarm.SectionTarget, boundTarget) {
+				return "", errors.New("task section_target locator does not match the authoritative selected part definition")
+			}
+			parsed.Swarm.SectionTarget = boundTarget
+			for index := range launchSpecs {
+				if !agentruntime.IsDesignerAgentName(launchSpecs[index].RequestedSubagentType) || launchSpecs[index].OutputMode != taskOutputModeManaged {
+					return "", errors.New("focused part Iteration Swarm requires only managed Designer launches")
+				}
+				if launchSpecs[index].SourceArguments == nil {
+					launchSpecs[index].SourceArguments = map[string]any{}
+				}
+				launchSpecs[index].SourceArguments["section_target"] = cloneTaskSwarmSectionTarget(boundTarget)
+				launchSpecs[index].SourceArguments["source_composition"] = composition
+				launchSpecs[index].SourceArguments["source_part_definition"] = definition
+				launchSpecs[index].SourceArguments["source_part_revision"] = revision
+			}
 		}
 	}
 
@@ -4680,6 +4742,9 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 				IterationSectionLabel:   launch.ArtifactRunContext.IterationSectionLabel,
 				IterationSectionStartMs: launch.ArtifactRunContext.IterationSectionStartMs,
 				IterationSectionEndMs:   launch.ArtifactRunContext.IterationSectionEndMs,
+				PartID:                  launch.ArtifactRunContext.PartID,
+				PartLabel:               launch.ArtifactRunContext.PartLabel,
+				PartKind:                launch.ArtifactRunContext.PartKind,
 			}
 			if s.tools == nil || s.tools.ArtifactAuthority() == nil {
 				markMissing("artifact_authority_unavailable")
@@ -4711,8 +4776,34 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 				lineage.IterationSectionID == launch.ArtifactRunContext.IterationSectionID &&
 				lineage.IterationSectionLabel == launch.ArtifactRunContext.IterationSectionLabel &&
 				lineage.IterationSectionStartMs == launch.ArtifactRunContext.IterationSectionStartMs &&
-				lineage.IterationSectionEndMs == launch.ArtifactRunContext.IterationSectionEndMs
-			if variant.CollectionID != launch.ArtifactRunContext.CollectionID || variant.ID != launch.ArtifactRunContext.VariantID || variant.Status != pebblestore.SessionArtifactStatusReady || !lineageMatches || !reflect.DeepEqual(variant.OutputRequirements, launch.ArtifactRunContext.OutputRequirements) || !reflect.DeepEqual(variant.AnimationProfile, launch.ArtifactRunContext.AnimationProfile) {
+				lineage.IterationSectionEndMs == launch.ArtifactRunContext.IterationSectionEndMs &&
+				lineage.PartID == launch.ArtifactRunContext.PartID &&
+				lineage.PartLabel == launch.ArtifactRunContext.PartLabel &&
+				lineage.PartKind == launch.ArtifactRunContext.PartKind
+			compositionMatches := true
+			if launch.ArtifactRunContext.SourcePartRevision != nil {
+				compositionMatches = variant.PartGraphState == pebblestore.SessionArtifactGraphAuthoritative && variant.Composition != nil && variant.Composition.ArtifactChainID == launch.ArtifactRunContext.SourcePartRevision.ArtifactChainID
+				changed := 0
+				if compositionMatches && launch.ArtifactRunContext.SourceComposition != nil && len(variant.Composition.Parts) == len(launch.ArtifactRunContext.SourceComposition.Parts) {
+					for index := range variant.Composition.Parts {
+						sourcePart, candidatePart := launch.ArtifactRunContext.SourceComposition.Parts[index], variant.Composition.Parts[index]
+						if sourcePart.PartID == launch.ArtifactRunContext.PartID {
+							if sourcePart.Revision == candidatePart.Revision || candidatePart.PartID != sourcePart.PartID {
+								compositionMatches = false
+								break
+							}
+							changed++
+						} else if sourcePart != candidatePart {
+							compositionMatches = false
+							break
+						}
+					}
+					compositionMatches = compositionMatches && changed == 1
+				} else {
+					compositionMatches = false
+				}
+			}
+			if variant.CollectionID != launch.ArtifactRunContext.CollectionID || variant.ID != launch.ArtifactRunContext.VariantID || variant.Status != pebblestore.SessionArtifactStatusReady || !lineageMatches || !compositionMatches || !reflect.DeepEqual(variant.OutputRequirements, launch.ArtifactRunContext.OutputRequirements) || !reflect.DeepEqual(variant.AnimationProfile, launch.ArtifactRunContext.AnimationProfile) {
 				if variant.Status == pebblestore.SessionArtifactStatusStaging {
 					markMissing("managed_output_invalid")
 				} else {
@@ -5360,12 +5451,17 @@ func buildTaskActivePlanContext(activePlan *pebblestore.SessionPlanSnapshot) str
 func latestTaskArtifactUseSelection(messages []pebblestore.MessageSnapshot) *pebblestore.SessionArtifactSelectionReference {
 	for messageIndex := len(messages) - 1; messageIndex >= 0; messageIndex-- {
 		message := messages[messageIndex]
-		if !strings.EqualFold(strings.TrimSpace(message.Role), "user") { continue }
+		if !strings.EqualFold(strings.TrimSpace(message.Role), "user") {
+			continue
+		}
 		for selectionIndex := len(message.ArtifactSelections) - 1; selectionIndex >= 0; selectionIndex-- {
 			selection := message.ArtifactSelections[selectionIndex]
 			if strings.EqualFold(strings.TrimSpace(selection.Action), "use") {
 				copy := selection
-				if selection.Part != nil { partCopy := *selection.Part; copy.Part = &partCopy }
+				if selection.Part != nil {
+					partCopy := *selection.Part
+					copy.Part = &partCopy
+				}
 				return &copy
 			}
 		}
@@ -5377,8 +5473,20 @@ func taskSectionTargetFromArtifactPart(part pebblestore.SessionArtifactPart) *ta
 	return &taskSwarmSectionTarget{ID: part.ID, Label: part.Label, Kind: part.Kind, Description: part.Description, StartMs: part.StartMs, EndMs: part.EndMs, X: part.X, Y: part.Y, Width: part.Width, Height: part.Height, Page: part.Page, StateID: part.StateID, Selector: part.Selector}
 }
 
+func taskSectionTargetFromArtifactDefinition(part pebblestore.SessionArtifactPartDefinition) *taskSwarmSectionTarget {
+	target := &taskSwarmSectionTarget{ID: part.ID, Label: part.Label, Description: part.Description, Kind: "semantic"}
+	if locator := part.Locator; locator != nil {
+		target.Kind, target.StartMs, target.EndMs = locator.Kind, locator.StartMs, locator.EndMs
+		target.X, target.Y, target.Width, target.Height = locator.X, locator.Y, locator.Width, locator.Height
+		target.Page, target.StateID, target.Selector = locator.Page, locator.StateID, locator.Selector
+	}
+	return target
+}
+
 func equalTaskSectionTarget(left, right *taskSwarmSectionTarget) bool {
-	if left == nil || right == nil { return left == nil && right == nil }
+	if left == nil || right == nil {
+		return left == nil && right == nil
+	}
 	return *left == *right
 }
 

@@ -173,6 +173,8 @@ type Runtime struct {
 	videoProjects        manageVideoProjectService
 	videoRender          manageVideoRenderService
 	searchCoordinator    *SearchCoordinator
+	focusedPartMu        sync.Mutex
+	focusedPartProtocols map[string]focusedPartProtocolState
 }
 
 type ExaRuntimeConfig struct {
@@ -496,6 +498,14 @@ func (r *Runtime) ArtifactAuthority() ArtifactAuthority {
 		return nil
 	}
 	return r.artifactAuthority
+}
+
+func (r *Runtime) ResolveArtifactPartTarget(principal artifact.Principal, source pebblestore.SessionArtifactSelectionReference, partID string) (pebblestore.SessionArtifactVariant, pebblestore.SessionArtifactComposition, pebblestore.SessionArtifactPartDefinition, pebblestore.SessionArtifactPartRevisionReference, error) {
+	authority, ok := r.artifactAuthority.(*artifact.Authority)
+	if !ok || authority == nil {
+		return pebblestore.SessionArtifactVariant{}, pebblestore.SessionArtifactComposition{}, pebblestore.SessionArtifactPartDefinition{}, pebblestore.SessionArtifactPartRevisionReference{}, errors.New("authoritative artifact part operations are unavailable")
+	}
+	return authority.ResolvePartTarget(principal, source, partID)
 }
 
 // GenerateManagedImageArtifact is the trusted orchestration entrypoint for

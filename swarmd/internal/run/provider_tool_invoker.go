@@ -308,6 +308,23 @@ func cloneArtifactRunContext(input *tool.ArtifactRunContext) *tool.ArtifactRunCo
 		partCopy := *input.Part
 		cloned.Part = &partCopy
 	}
+	if input.SourceComposition != nil {
+		copy := *input.SourceComposition
+		copy.Parts = append([]pebblestore.SessionArtifactCompositionPart(nil), input.SourceComposition.Parts...)
+		cloned.SourceComposition = &copy
+	}
+	if input.SourcePartDefinition != nil {
+		copy := *input.SourcePartDefinition
+		if input.SourcePartDefinition.Locator != nil {
+			locator := *input.SourcePartDefinition.Locator
+			copy.Locator = &locator
+		}
+		cloned.SourcePartDefinition = &copy
+	}
+	if input.SourcePartRevision != nil {
+		copy := *input.SourcePartRevision
+		cloned.SourcePartRevision = &copy
+	}
 	cloned.OutputRequirements = cloneTaskOutputRequirements(input.OutputRequirements)
 	cloned.AnimationProfile = cloneTaskAnimationProfile(input.AnimationProfile)
 	return &cloned
@@ -329,8 +346,31 @@ func (s *Service) providerManagedArtifactRunContext(config providerToolInvokerCo
 		run.IterationSectionID = strings.TrimSpace(run.IterationSectionID)
 		run.IterationSectionLabel = strings.TrimSpace(run.IterationSectionLabel)
 		run.ArtifactStepID = strings.TrimSpace(run.ArtifactStepID)
-		if run.SourceArtifact != nil { sourceCopy := *run.SourceArtifact; run.SourceArtifact = &sourceCopy }
-		if run.Part != nil { partCopy := *run.Part; run.Part = &partCopy }
+		if run.SourceArtifact != nil {
+			sourceCopy := *run.SourceArtifact
+			run.SourceArtifact = &sourceCopy
+		}
+		if run.Part != nil {
+			partCopy := *run.Part
+			run.Part = &partCopy
+		}
+		if run.SourceComposition != nil {
+			copy := *run.SourceComposition
+			copy.Parts = append([]pebblestore.SessionArtifactCompositionPart(nil), run.SourceComposition.Parts...)
+			run.SourceComposition = &copy
+		}
+		if run.SourcePartDefinition != nil {
+			copy := *run.SourcePartDefinition
+			if run.SourcePartDefinition.Locator != nil {
+				locator := *run.SourcePartDefinition.Locator
+				copy.Locator = &locator
+			}
+			run.SourcePartDefinition = &copy
+		}
+		if run.SourcePartRevision != nil {
+			copy := *run.SourcePartRevision
+			run.SourcePartRevision = &copy
+		}
 		run.CollectionID = strings.TrimSpace(run.CollectionID)
 		run.VariantID = strings.TrimSpace(run.VariantID)
 		run.OutputRequirements = cloneTaskOutputRequirements(run.OutputRequirements)
