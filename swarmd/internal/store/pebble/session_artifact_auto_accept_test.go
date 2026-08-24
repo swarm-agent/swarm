@@ -12,7 +12,7 @@ func TestArtifactSoleReadyCandidateBecomesImmediateContinuationHead(t *testing.T
 
 	apply := func(request, kind string, mutation V3ArtifactMutation) V3SessionMutationResult {
 		t.Helper()
-		result, err := sessions.ApplyV3SessionMutation(V3SessionMutationInput{
+		result, err := applyV3ArtifactMutationForTest(sessions, V3SessionMutationInput{
 			SessionID: "artifact-auto-head", UserID: "user-1", AccountScopeID: "account-1",
 			ClientRequestID: request, PayloadHash: request, Kind: kind, Artifact: &mutation, NowUnixMs: 1000,
 		})

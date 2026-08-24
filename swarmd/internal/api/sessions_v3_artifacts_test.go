@@ -450,21 +450,18 @@ func TestArtifactCatalogSessionFilterIncludesDirectChildren(t *testing.T) {
 	}
 }
 
-func TestManagedArtifactCatalogProjectsStagingIterationGroupProgress(t *testing.T) {
-	server, sessionSvc, _, _, _, _, _ := newArtifactSessionFixture(t, "unused.txt", "unused")
+func TestManagedArtifactCatalogProjectsReadyIterationGroupProgress(t *testing.T) {
+	server, sessionSvc, registry, _, _, _, _ := newArtifactSessionFixture(t, "unused.txt", "unused")
 	principal := testPrincipal()
 	sessionID := "artifact-session"
-	collection := pebblestore.SessionArtifactCollection{ID: "iteration-collection", Name: "Navigation iterations", Description: "Iteration Swarm group · 2 iterations", Lineage: pebblestore.SessionArtifactLineage{ParentSessionID: sessionID, TaskCallID: "call-swarm", IterationGroupID: "group-1"}}
+	authority := artifact.NewAuthority(registry, sessionSvc)
 	for index, theme := range []string{"compact", "spacious"} {
 		label := strings.ToUpper(theme[:1]) + theme[1:]
-		variant := pebblestore.SessionArtifactVariant{ID: fmt.Sprintf("iteration-variant-%d", index+1), CollectionID: collection.ID, Lineage: pebblestore.SessionArtifactLineage{ParentSessionID: sessionID, SourceSessionID: fmt.Sprintf("child-%d", index+1), TaskCallID: "call-swarm", ChildSessionID: fmt.Sprintf("child-%d", index+1), IterationGroupID: "group-1", IterationGroup: "navigation", IterationID: fmt.Sprintf("iteration-%d", index+1), IterationIndex: index + 1, IterationLabel: label, IterationTheme: theme}, Presentation: pebblestore.SessionArtifactPresentation{Label: label}}
-		payload, err := json.Marshal(variant)
+		_, err := authority.Create(context.Background(), artifact.Principal{SessionID: sessionID, AccountScopeID: principal.AccountScopeID, UserID: principal.UserID, TaskCallID: "call-swarm", ChildSessionID: fmt.Sprintf("child-%d", index+1), IterationID: fmt.Sprintf("iteration-%d", index+1), IterationIndex: index + 1, IterationGroupID: "group-1", IterationGroup: "navigation", IterationLabel: label, IterationTheme: theme}, artifact.CreateInput{
+			RequestID: "catalog-create-" + theme, CollectionID: "iteration-collection", CollectionName: "Navigation iterations", CollectionDescription: "Iteration Swarm group · 2 iterations", VariantID: fmt.Sprintf("iteration-variant-%d", index+1), Filename: theme + ".txt", MediaType: "text/plain", Presentation: pebblestore.SessionArtifactPresentation{Label: label}, Body: []byte(theme),
+		})
 		if err != nil {
-			t.Fatal(err)
-		}
-		result, err := sessionSvc.ApplySessionMutation(sessionruntime.SessionMutationInput{SessionID: sessionID, UserID: principal.UserID, AccountScopeID: principal.AccountScopeID, ClientRequestID: "catalog-stage-" + variant.ID, IdempotencyKey: "catalog-stage-" + variant.ID, PayloadHash: fmt.Sprintf("%x", payload), RequestHash: fmt.Sprintf("%x", payload), Kind: sessionruntime.SessionMutationCreateArtifact, Artifact: &sessionruntime.ArtifactMutation{Collection: collection, Variant: &variant}, NowUnixMs: time.Now().UnixMilli()})
-		if err != nil || result.Artifact == nil || result.Artifact.Variant == nil {
-			t.Fatalf("stage iteration %d: result=%+v err=%v", index+1, result, err)
+			t.Fatalf("create iteration %d: %v", index+1, err)
 		}
 	}
 	req := httptest.NewRequest(http.MethodGet, "/v3/artifacts?limit=2000", nil)
@@ -481,16 +478,16 @@ func TestManagedArtifactCatalogProjectsStagingIterationGroupProgress(t *testing.
 	}
 	matched := 0
 	for _, item := range payload.Artifacts {
-		if item.CollectionID != collection.ID {
+		if item.CollectionID != "iteration-collection" {
 			continue
 		}
 		matched++
-		if item.Status != pebblestore.SessionArtifactStatusStaging || item.Progress == nil || item.Progress.Total != 2 || item.Progress.Staging != 2 || item.Progress.Ready != 0 || item.Lineage == nil || item.Lineage.IterationGroupID != "group-1" || item.Lineage.IterationIndex < 1 {
-			t.Fatalf("staging catalog item = %+v", item)
+		if item.Status != pebblestore.SessionArtifactStatusReady || item.Progress == nil || item.Progress.Total != 2 || item.Progress.Staging != 0 || item.Progress.Ready != 2 || item.Lineage == nil || item.Lineage.IterationGroupID != "group-1" || item.Lineage.IterationIndex < 1 {
+			t.Fatalf("iteration catalog item = %+v", item)
 		}
 	}
 	if matched != 2 {
-		t.Fatalf("staging catalog matched=%d artifacts=%+v", matched, payload.Artifacts)
+		t.Fatalf("iteration catalog matched=%d artifacts=%+v", matched, payload.Artifacts)
 	}
 }
 

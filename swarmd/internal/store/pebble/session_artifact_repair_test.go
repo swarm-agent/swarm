@@ -11,10 +11,11 @@ func TestUpdateArtifactMovesTerminalStatusBackToStaging(t *testing.T) {
 	createV3SessionForTest(t, sessions, "artifact-update-progress")
 	apply := func(request, kind string, variant SessionArtifactVariant) V3SessionMutationResult {
 		t.Helper()
-		result, err := sessions.ApplyV3SessionMutation(V3SessionMutationInput{
+		mutation := V3ArtifactMutation{Collection: SessionArtifactCollection{ID: "collection-1", Name: "Update progress"}, Variant: &variant}
+		result, err := applyV3ArtifactMutationForTest(sessions, V3SessionMutationInput{
 			SessionID: "artifact-update-progress", UserID: "user-1", AccountScopeID: "account-1",
 			ClientRequestID: request, PayloadHash: request, Kind: kind,
-			Artifact: &V3ArtifactMutation{Collection: SessionArtifactCollection{ID: "collection-1", Name: "Update progress"}, Variant: &variant},
+			Artifact: &mutation,
 		})
 		if err != nil {
 			t.Fatalf("%s: %v", request, err)
@@ -40,10 +41,11 @@ func TestRepairSessionArtifactCollectionsDerivesProgressFromVariants(t *testing.
 	store := openV3SessionEventTestStore(t)
 	sessions := NewSessionStore(store)
 	createV3SessionForTest(t, sessions, "artifact-repair-progress")
-	if _, err := sessions.ApplyV3SessionMutation(V3SessionMutationInput{
+	mutation := V3ArtifactMutation{Collection: SessionArtifactCollection{ID: "collection-1", Name: "Repair"}, Variant: &SessionArtifactVariant{ID: "variant-1", Filename: "note.txt", MediaType: "text/plain"}}
+	if _, err := applyV3ArtifactMutationForTest(sessions, V3SessionMutationInput{
 		SessionID: "artifact-repair-progress", UserID: "user-1", AccountScopeID: "account-1",
 		ClientRequestID: "create", PayloadHash: "create", Kind: V3SessionMutationCreateArtifact,
-		Artifact: &V3ArtifactMutation{Collection: SessionArtifactCollection{ID: "collection-1", Name: "Repair"}, Variant: &SessionArtifactVariant{ID: "variant-1", Filename: "note.txt", MediaType: "text/plain"}},
+		Artifact: &mutation,
 	}); err != nil {
 		t.Fatal(err)
 	}

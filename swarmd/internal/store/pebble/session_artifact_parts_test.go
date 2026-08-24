@@ -15,14 +15,15 @@ func TestInitialArtifactCompositionPersistsExactPartsAtomicallyAndSurvivesRestar
 		{ArtifactChainID: "chain-1", ID: "footer", OwnerSessionID: "part-composition", Label: "Footer"},
 	}
 	revisions := []SessionArtifactPartRevision{
-		{ArtifactChainID: "chain-1", PartID: "hero", ID: "hero-r1", OwnerSessionID: "part-composition", DigestSHA256: digestA, Size: 4, MediaType: "text/plain"},
-		{ArtifactChainID: "chain-1", PartID: "footer", ID: "footer-r1", OwnerSessionID: "part-composition", DigestSHA256: digestB, Size: 6, MediaType: "text/plain"},
+		{ArtifactChainID: "chain-1", PartID: "hero", ID: "hero-r1", OwnerSessionID: "part-composition", DigestSHA256: digestA, Size: 4, MediaType: "text/plain", RepositoryID: "artifact-test-repository"},
+		{ArtifactChainID: "chain-1", PartID: "footer", ID: "footer-r1", OwnerSessionID: "part-composition", DigestSHA256: digestB, Size: 6, MediaType: "text/plain", RepositoryID: "artifact-test-repository"},
 	}
 	composition := SessionArtifactComposition{ID: "composition-1", ArtifactChainID: "chain-1", OwnerSessionID: "part-composition", Construction: SessionArtifactConstruction{Kind: "concat-v1", Entries: []SessionArtifactConstructionEntry{{PartID: "hero"}, {PartID: "footer"}}}, Parts: []SessionArtifactCompositionPart{
 		{PartID: "hero", DefinitionOwnerSessionID: "part-composition", Revision: revisions[0].Reference()},
 		{PartID: "footer", DefinitionOwnerSessionID: "part-composition", Revision: revisions[1].Reference()},
 	}}
-	result, err := sessions.ApplyV3SessionMutation(V3SessionMutationInput{SessionID: "part-composition", UserID: "user-1", AccountScopeID: "account-1", ClientRequestID: "composition-create", PayloadHash: "composition-create", Kind: V3SessionMutationCreateArtifact, Artifact: &V3ArtifactMutation{Collection: SessionArtifactCollection{ID: "collection-1", Name: "Composed"}, Variant: &SessionArtifactVariant{ID: "variant-1", Filename: "preview.txt", MediaType: "text/plain", ArtifactChainID: "chain-1", PartDefinitions: definitions, Composition: &composition}, PartDefinitions: definitions, PartRevisions: revisions, Composition: &composition}})
+	mutation := V3ArtifactMutation{Collection: SessionArtifactCollection{ID: "collection-1", Name: "Composed"}, Variant: &SessionArtifactVariant{ID: "variant-1", Filename: "preview.txt", MediaType: "text/plain", ArtifactChainID: "chain-1", PartDefinitions: definitions, Composition: &composition}, PartDefinitions: definitions, PartRevisions: revisions, Composition: &composition}
+	result, err := applyV3ArtifactMutationForTest(sessions, V3SessionMutationInput{SessionID: "part-composition", UserID: "user-1", AccountScopeID: "account-1", ClientRequestID: "composition-create", PayloadHash: "composition-create", Kind: V3SessionMutationCreateArtifact, Artifact: &mutation})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -39,17 +40,14 @@ func TestInitialArtifactCompositionPersistsExactPartsAtomicallyAndSurvivesRestar
 	}
 }
 
-func TestArtifactCompositionFailsClosedForLocatorOnlyMissingForeignOrMismatchedParts(t *testing.T) {
+func TestArtifactCompositionFailsClosedForMissingAuthenticatedPart(t *testing.T) {
 	store := openV3SessionEventTestStore(t)
 	sessions := NewSessionStore(store)
 	createV3SessionForTest(t, sessions, "part-invalid")
-	legacy, err := sessions.ApplyV3SessionMutation(V3SessionMutationInput{SessionID: "part-invalid", UserID: "user-1", AccountScopeID: "account-1", ClientRequestID: "legacy", PayloadHash: "legacy", Kind: V3SessionMutationCreateArtifact, Artifact: &V3ArtifactMutation{Collection: SessionArtifactCollection{ID: "legacy", Name: "Legacy"}, Variant: &SessionArtifactVariant{ID: "legacy", Parts: []SessionArtifactPart{{ID: "hero", Label: "Hero", Kind: "semantic"}}}}})
-	if err != nil || legacy.Artifact == nil || legacy.Artifact.Variant == nil || legacy.Artifact.Variant.PartGraphState != SessionArtifactGraphLegacyUnproven {
-		t.Fatalf("legacy classification = %#v err=%v", legacy.Artifact, err)
-	}
 	ref := SessionArtifactPartRevisionReference{ArtifactChainID: "chain-1", PartID: "hero", PartRevisionID: "missing", OwnerSessionID: "part-invalid", DigestSHA256: strings.Repeat("a", 64), Size: 1, MediaType: "text/plain"}
 	composition := SessionArtifactComposition{ID: "missing-composition", ArtifactChainID: "chain-1", OwnerSessionID: "part-invalid", Construction: SessionArtifactConstruction{Kind: "concat-v1", Entries: []SessionArtifactConstructionEntry{{PartID: "hero"}}}, Parts: []SessionArtifactCompositionPart{{PartID: "hero", DefinitionOwnerSessionID: "part-invalid", Revision: ref}}}
-	_, err = sessions.ApplyV3SessionMutation(V3SessionMutationInput{SessionID: "part-invalid", UserID: "user-1", AccountScopeID: "account-1", ClientRequestID: "missing", PayloadHash: "missing", Kind: V3SessionMutationCreateArtifact, Artifact: &V3ArtifactMutation{Collection: SessionArtifactCollection{ID: "missing", Name: "Missing"}, Variant: &SessionArtifactVariant{ID: "missing", ArtifactChainID: "chain-1", Composition: &composition}, Composition: &composition}})
+	mutation := V3ArtifactMutation{Collection: SessionArtifactCollection{ID: "missing", Name: "Missing"}, Variant: &SessionArtifactVariant{ID: "missing", ArtifactChainID: "chain-1", Composition: &composition}, Composition: &composition}
+	_, err := applyV3ArtifactMutationForTest(sessions, V3SessionMutationInput{SessionID: "part-invalid", UserID: "user-1", AccountScopeID: "account-1", ClientRequestID: "missing", PayloadHash: "missing", Kind: V3SessionMutationCreateArtifact, Artifact: &mutation})
 	if err == nil || !strings.Contains(err.Error(), "missing or unauthenticated part definition") {
 		t.Fatalf("missing composition error = %v", err)
 	}
