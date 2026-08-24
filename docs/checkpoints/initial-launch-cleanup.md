@@ -115,7 +115,7 @@ This is the focused backlog to finish before the promotion PR, followed by post-
 - `scripts/build-main-dist.sh` builds and checksums the candidate archive without publishing it.
 - `scripts/smoke-release-archive.sh` consumes that archive, verifies its checksum and every launcher/daemon/library/web/build-info/service-install input, extracts it under `TMPDIR`, and runs the embedded `swarmsetup --artifact-root ... --no-service` with every system and storage root redirected below the disposable smoke root.
 - The smoke asserts the installed versioned runtime, web assets, `libfff_c.so`, launcher and daemon binaries, and launcher symlinks. It emits `smoke-evidence.txt` with the archive name, digest, version, hermetic install result, and explicit external-systemd status.
-- `.github/workflows/build-main.yml` runs this gate in `build-candidate` before artifact upload. `publish-stable` depends on that successful job, so a smoke failure cannot create a stable tag or release.
+- `.github/workflows/build-main.yml` runs this gate in `build-stable-release` only for protected `main` pushes or manual diagnostics before artifact upload. `publish-stable-release` depends on that successful job, so a smoke failure cannot create a stable tag or release. Pull-request candidate validation is owned by the dedicated external `release-candidate` check rather than a GitHub-hosted PR build.
 
 **Remaining post-PR external release prerequisite**
 

@@ -4,9 +4,6 @@ on:
   push:
     branches:
       - main
-  pull_request:
-    branches:
-      - main
   workflow_dispatch:
 
 permissions:
@@ -17,8 +14,8 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  build-candidate:
-    if: ${{ (github.event_name == 'pull_request' && github.head_ref == 'dev' && github.base_ref == 'main' && github.event.pull_request.head.repo.full_name == github.repository) || (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch' }}
+  build-stable-release:
+    if: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:
@@ -35,13 +32,6 @@ jobs:
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           fetch-depth: 0
-
-      - name: Require an Unreleased changelog update
-        if: ${{ github.event_name == 'pull_request' }}
-        env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        run: ./scripts/check-changelog.sh "${BASE_SHA}" "${HEAD_SHA}"
 
       - name: Check for committed secrets
         run: ./scripts/check-secrets.sh
@@ -72,14 +62,10 @@ jobs:
         shell: bash
         env:
           EVENT_NAME: ${{ github.event_name }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           set -euo pipefail
           short_sha="${GITHUB_SHA::12}"
           case "${EVENT_NAME}" in
-            pull_request)
-              version="pr-${PR_NUMBER}-${short_sha}"
-              ;;
             push)
               version="$(./scripts/resolve-release-version.sh)"
               ;;
@@ -93,7 +79,7 @@ jobs:
           esac
           echo "version=${version}" >> "${GITHUB_OUTPUT}"
 
-      - name: Build release candidate
+      - name: Build stable release archive
         run: ./scripts/build-main-dist.sh --output-dir dist --version "${{ steps.version.outputs.version }}"
 
       - name: Smoke release archive and artifact-root install
@@ -143,10 +129,10 @@ jobs:
             --workflow-name "${GITHUB_WORKFLOW}" \
             --event-name "${GITHUB_EVENT_NAME}"
 
-      - name: Upload candidate artifacts
+      - name: Upload stable release artifacts
         uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
         with:
-          name: release-candidate-${{ steps.version.outputs.version }}
+          name: stable-release-${{ steps.version.outputs.version }}
           path: |
             dist/swarm-${{ steps.version.outputs.version }}-linux-amd64.tar.gz
             dist/swarm-${{ steps.version.outputs.version }}-linux-amd64.tar.gz.sha256
@@ -159,7 +145,7 @@ jobs:
 
   publish-stable-release:
     if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
-    needs: build-candidate
+    needs: build-stable-release
     runs-on: ubuntu-latest
     timeout-minutes: 15
     environment: stable-release
@@ -176,7 +162,7 @@ jobs:
       - name: Download this run's verified candidate
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: release-candidate-${{ needs.build-candidate.outputs.version }}
+          name: stable-release-${{ needs.build-stable-release.outputs.version }}
           path: release-evidence
 
       - name: Install Cosign
@@ -188,7 +174,7 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ needs.build-candidate.outputs.version }}
+          VERSION: ${{ needs.build-stable-release.outputs.version }}
           EXPECTED_WORKFLOW_IDENTITY: ${{ github.server_url }}/${{ github.workflow_ref }}
           EXPECTED_WORKFLOW_REF: ${{ github.workflow_ref }}
           EXPECTED_WORKFLOW_SHA: ${{ github.workflow_sha }}
