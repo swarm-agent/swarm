@@ -378,17 +378,33 @@ func (s *Server) handleSessionsV3Artifacts(w http.ResponseWriter, r *http.Reques
 					return
 				}
 				progress := sessionsV3ArtifactCollectionProgress{Total: collection.VariantCount, Staging: collection.StagingCount, Ready: collection.ReadyCount, Failed: collection.FailedCount, Unavailable: collection.UnavailableCount}
-				if progress.Total != progress.Staging+progress.Ready+progress.Failed+progress.Unavailable || progress.Total != len(variants) {
+				visibleVariants := 0
+				for _, candidate := range variants {
+					if candidate.GraphState == pebblestore.SessionArtifactGraphProjection || candidate.ProjectionReservation {
+						visibleVariants++
+					}
+				}
+				if progress.Total != progress.Staging+progress.Ready+progress.Failed+progress.Unavailable || progress.Total != visibleVariants {
 					writeError(w, http.StatusInternalServerError, errors.New("artifact collection progress is inconsistent"))
 					return
 				}
 				for _, variant := range variants {
-					projectedVariant, chain, projectionErr := s.sessions.ProjectSessionArtifactVariantChain(session.AccountScopeID, session.UserID, variant)
-					if projectionErr != nil {
-						writeError(w, http.StatusInternalServerError, projectionErr)
-						return
+					if variant.GraphState != pebblestore.SessionArtifactGraphProjection && !variant.ProjectionReservation {
+						continue
 					}
-					variant = projectedVariant
+					var chain pebblestore.SessionArtifactChain
+					if variant.ProjectionReservation {
+						// Reservations are visible turn progress only. They intentionally have no
+						// chain/commit projection until a managed worker publishes real Git bytes.
+						chain = pebblestore.SessionArtifactChain{}
+					} else {
+						projectedVariant, projectedChain, projectionErr := s.sessions.ProjectSessionArtifactVariantChain(session.AccountScopeID, session.UserID, variant)
+						if projectionErr != nil {
+							writeError(w, http.StatusInternalServerError, projectionErr)
+							return
+						}
+						variant, chain = projectedVariant, projectedChain
+					}
 					if variant.Status != pebblestore.SessionArtifactStatusStaging && variant.Status != pebblestore.SessionArtifactStatusReady && variant.Status != pebblestore.SessionArtifactStatusFailed && variant.Status != pebblestore.SessionArtifactStatusUnavailable {
 						writeError(w, http.StatusInternalServerError, errors.New("artifact variant status is inconsistent"))
 						return

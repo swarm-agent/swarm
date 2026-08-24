@@ -12,9 +12,9 @@ import (
 // SessionArtifactRepairReport describes bounded idempotent maintenance of
 // rebuildable catalog projections. Git remains the artifact authority.
 type SessionArtifactRepairReport struct {
-	CollectionsVisited      int
-	CollectionsRepaired     int
-	InvalidVariantsOmitted  int
+	CollectionsVisited     int
+	CollectionsRepaired    int
+	InvalidVariantsOmitted int
 }
 
 // RepairSessionArtifactCollections derives redundant collection progress from
@@ -70,10 +70,16 @@ func (s *SessionStore) RepairSessionArtifactCollections(sessionID string) (Sessi
 				return errors.New("artifact variant ownership metadata is inconsistent")
 			}
 			if variant.GraphState != SessionArtifactGraphProjection || variant.RepositoryID == "" || !validGitOID(variant.CommitOID) {
-				// Historical rows and trusted managed-output reservations can predate an
-				// authoritative Git commit. They are not byte/version evidence, so omit
-				// them from reconstructed progress instead of manufacturing authority or
-				// making maintenance fail for the rest of the session.
+				// Trusted managed-output reservations are visible progress, not byte/version
+				// authority. Count only explicitly marked reservations; historical rows that
+				// predate this marker remain omitted rather than silently gaining authority.
+				if variant.ProjectionReservation && variant.GraphState == "" && variant.RepositoryID == "" && variant.CommitOID == "" {
+					switch variant.Status {
+					case SessionArtifactStatusStaging, SessionArtifactStatusFailed, SessionArtifactStatusUnavailable:
+						variants = append(variants, variant)
+						return nil
+					}
+				}
 				invalidVariants++
 				return nil
 			}
