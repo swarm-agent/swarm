@@ -285,6 +285,14 @@ func New(cfg config.Config) (*Daemon, error) {
 	swarmStore := pebblestore.NewSwarmStore(store, topologyStore)
 	sessionSvc := sessionruntime.NewService(pebblestore.NewSessionStore(store), events)
 	artifactRegistry := artifact.NewRegistry(sessionSvc, artifact.Limits{})
+	// Artifact persistence is Git-native. Fail startup explicitly instead of
+	// allowing the first Designer publication to discover a missing dependency.
+	if _, err := artifactRegistry.Repository(ctx, "startup-probe"); err != nil {
+		_ = secretStore.Close()
+		_ = store.Close()
+		_ = lk.Release()
+		return nil, fmt.Errorf("initialize private artifact Git storage: %w", err)
+	}
 	artifactMetadata := &artifactMetadataBoundary{Service: sessionSvc}
 	artifactAuthority := artifact.NewAuthority(artifactRegistry, artifactMetadata)
 	sessionSvc.SetArtifactSessionCleaner(artifactRegistry)

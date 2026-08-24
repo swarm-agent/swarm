@@ -334,15 +334,6 @@ func (a *Authority) create(ctx context.Context, principal Principal, input Creat
 		variant.OutputRequirements = cloneOutputRequirements(existing.OutputRequirements)
 		variant.AnimationProfile = cloneAnimationProfile(existing.AnimationProfile)
 	}
-	if !existingStaging {
-		if _, err := a.mutate(principal, input.RequestID+":stage", pebblestore.V3SessionMutationCreateArtifact, collection, &variant, nil); err != nil {
-			if replayed, ok, getErr := a.metadata.GetSessionArtifactVariant(principal.AccountScopeID, principal.SessionID, collection.ID, variant.ID); getErr == nil && ok && replayed.Status == pebblestore.SessionArtifactStatusReady {
-				return replayed, nil
-			}
-			return pebblestore.SessionArtifactVariant{}, err
-		}
-	}
-	// Staging metadata is durable before any byte promotion.
 	var staged Staged
 	if packageEntries != nil {
 		if sourcePath != "" {
@@ -375,6 +366,13 @@ func (a *Authority) create(ctx context.Context, principal Principal, input Creat
 		return failed, fmt.Errorf("finalize artifact bytes: %w", err)
 	}
 	variant.Filename, variant.MediaType, variant.DigestSHA256, variant.Size, variant.Presentation = blob.Filename, blob.MediaType, blob.DigestSHA256, blob.Size, blob.Presentation
+	gitBody, _, err := service.Read(ctx, variant, a.registry.limits.MaxVideoArtifactBytes)
+	if err != nil { return pebblestore.SessionArtifactVariant{}, fmt.Errorf("read artifact ingress bytes: %w", err) }
+	if err := a.publishGitVariant(ctx, principal, input, &variant, gitBody); err != nil { return pebblestore.SessionArtifactVariant{}, err }
+	if !existingStaging {
+		if _, err := a.mutate(principal, input.RequestID+":stage", pebblestore.V3SessionMutationCreateArtifact, collection, &variant, nil); err != nil { return pebblestore.SessionArtifactVariant{}, err }
+	}
+	if err := service.DeleteVariant(principal.SessionID, collection.ID, variant.ID); err != nil { return pebblestore.SessionArtifactVariant{}, fmt.Errorf("remove artifact ingress bytes: %w", err) }
 	// Requirements are the trusted target contract. Byte staging/finalization does
 	// not inspect binary pixel dimensions, so preserve the exact target metadata.
 	variant.Presentation.Width, variant.Presentation.Height = 0, 0
@@ -447,7 +445,8 @@ func (a *Authority) Read(ctx context.Context, principal Principal, variantID str
 	if err != nil {
 		return nil, pebblestore.SessionArtifactVariant{}, err
 	}
-	data, _, err := service.Read(ctx, variant, maxBytes)
+	_ = service
+	data, err := a.readGitVariant(ctx, variant, maxBytes)
 	return data, variant, err
 }
 
@@ -513,11 +512,7 @@ func (a *Authority) ReadReference(ctx context.Context, principal Principal, ref 
 		}
 		return assembled, variant, nil
 	}
-	service, _, err := a.registry.ServiceForOwnedSession(ref.SessionID, principal.AccountScopeID, principal.UserID)
-	if err != nil {
-		return nil, pebblestore.SessionArtifactVariant{}, err
-	}
-	data, _, err := service.Read(ctx, variant, maxBytes)
+	data, err := a.readGitVariant(ctx, variant, maxBytes)
 	return data, variant, err
 }
 
@@ -640,7 +635,10 @@ func (a *Authority) Select(principal Principal, requestID, collectionID, variant
 		return pebblestore.SessionArtifactSelectionReference{}, fmt.Errorf("artifact collection %q was not found", collectionID)
 	}
 	selection := &pebblestore.SessionArtifactSelectionReference{SessionID: principal.SessionID, CollectionID: collection.ID, VariantID: strings.TrimSpace(variantID)}
-	result, err := a.mutate(principal, requestID, pebblestore.V3SessionMutationSelectArtifact, collection, nil, selection)
+	selected, ok, err := a.metadata.GetSessionArtifactVariant(principal.AccountScopeID, principal.SessionID, collection.ID, selection.VariantID)
+	if err != nil { return pebblestore.SessionArtifactSelectionReference{}, err }
+	if !ok { return pebblestore.SessionArtifactSelectionReference{}, errors.New("selected artifact was not found") }
+	result, err := a.mutateWithArtifact(principal, requestID, pebblestore.V3SessionMutationSelectArtifact, pebblestore.V3ArtifactMutation{Collection: collection, Variant: &selected, Selection: selection})
 	if err != nil {
 		return pebblestore.SessionArtifactSelectionReference{}, err
 	}
@@ -859,6 +857,9 @@ func (a *Authority) mutate(principal Principal, requestID, kind string, collecti
 
 func (a *Authority) mutateWithArtifact(principal Principal, requestID, kind string, artifactMutation pebblestore.V3ArtifactMutation) (pebblestore.V3SessionMutationResult, error) {
 	requestID = strings.TrimSpace(requestID)
+	if artifactMutation.Transaction == nil {
+		if err := a.attachGitProjection(context.Background(), principal, requestID, kind, &artifactMutation); err != nil { return pebblestore.V3SessionMutationResult{}, err }
+	}
 	if requestID == "" {
 		return pebblestore.V3SessionMutationResult{}, errors.New("artifact request id is required")
 	}
