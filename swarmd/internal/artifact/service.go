@@ -85,4 +85,3 @@ func removeDirectoryTree(root string) error {
 	}
 	return os.Remove(root)
 }
-
