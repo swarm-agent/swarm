@@ -337,6 +337,7 @@ export function DesktopV3ArtifactGallery({
   const selectedHead = selected ? desktopV3ArtifactStudioHead(artifacts, selected) : undefined
   const selectedRounds = selected ? desktopV3ArtifactStudioRounds(artifacts, selected) : []
   const selectedTurns = selected ? desktopV3ArtifactStudioTurns(artifacts, selected) : []
+  const latestSelectedTurnId = selectedTurns[selectedTurns.length - 1]?.id ?? ''
   const selectedRound = selected
     ? selectedRounds.find((round) => round.candidates.some((candidate) => artifactSelectionKey(candidate) === artifactSelectionKey(selected)))
     : undefined
@@ -1288,7 +1289,7 @@ export function DesktopV3ArtifactGallery({
                     {selectedTurns.length ? <section className="mb-3 rounded-xl border border-[var(--app-border)] bg-[var(--app-bg)] p-2" aria-label="Artifact turn progression" data-artifact-studio-turns>
                       <div className="px-1 pb-1.5"><p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-[var(--app-text-subtle)]">Artifact progression</p><p className="mt-0.5 text-[10px] text-[var(--app-text-muted)]">Every AI creation round is one turn. Each turn contains only its changed parts and exact options.</p></div>
                       <div className="grid gap-2">{selectedTurns.map((turn) => {
-                        const currentTurn = turn.id === selectedHead?.artifactStepId
+                        const currentTurn = turn.id === latestSelectedTurnId
                         const turnTarget = turn.accepted?.entry ?? turn.candidates.find((candidate) => candidate.entry)?.entry
                         const headTurn = turn.candidates.some((candidate) => Boolean(selectedHead && candidate.entry
                           && artifactSelectionKey(candidate.entry) === artifactSelectionKey(selectedHead)))

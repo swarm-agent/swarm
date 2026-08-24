@@ -150,6 +150,17 @@ test('artifact studio preserves authoritative unresolved candidates without fabr
   assert.deepEqual(turns[0]?.changedPartIds, [])
 })
 
+test('artifact studio orders an unresolved latest turn after the accepted composition head', () => {
+  const baseRef = ref('base', 1)
+  const optionRefs = [ref('signal-a', 2), ref('signal-b', 3), ref('signal-c', 4)]
+  const base = artifact({ id: 'base', eventSeq: 1, step: 'step-1', revision: 1, candidates: [baseRef], accepted: baseRef, head: baseRef })
+  const options = optionRefs.map((candidate, index) => artifact({ id: candidate.variantId, eventSeq: index + 2, step: 'step-2', revision: 2, candidates: optionRefs, parent: baseRef, head: baseRef }))
+  assert.deepEqual(desktopV3ArtifactStudioTurns([base, ...options], base).map((turn) => [turn.id, turn.revisionNumber, turn.accepted?.entry?.artifactId]), [
+    ['step-1', 1, 'base'],
+    ['step-2', 2, undefined],
+  ])
+})
+
 test('artifact studio never infers lineage or a head for legacy unstructured entries', () => {
   const legacy = artifact({ id: 'legacy', eventSeq: 20, step: 'legacy-step', revision: 3, candidates: [ref('legacy', 20)], head: ref('legacy', 20) })
   legacy.graphState = 'legacy_unproven'

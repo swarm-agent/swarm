@@ -323,6 +323,7 @@ export function DesktopV3ArtifactSidebar({
               : undefined
             const currentComposition = authoritativeHead?.composition ?? representative.composition
             const currentPartDefinitions = authoritativeHead?.partDefinitions ?? representative.partDefinitions ?? []
+            const latestTurnId = artifactTurns[artifactTurns.length - 1]?.id ?? ''
             const partDefinitionsById = new Map(currentPartDefinitions.map((part) => [part.id, part]))
             const requirementLabel = formatDesktopV3ArtifactOutputRequirements(representative.outputRequirements)
             const animationLabel = formatDesktopV3ArtifactAnimationProfile(representative.animationProfile)
@@ -339,7 +340,7 @@ export function DesktopV3ArtifactSidebar({
                   {artifactTurns.map((turn, turnIndex) => {
                     const turnAccepted = turn.accepted?.entry
                     const turnTarget = turnAccepted ?? turn.candidates.find((candidate) => candidate.entry)?.entry
-                    const currentTurn = turn.id === authoritativeHead?.artifactStepId
+                    const currentTurn = turn.id === latestTurnId
                     const headTurn = turn.candidates.some((candidate) => Boolean(authoritativeHead && candidate.entry
                       && candidate.entry.sessionId === authoritativeHead.sessionId
                       && candidate.entry.collectionId === authoritativeHead.collectionId
