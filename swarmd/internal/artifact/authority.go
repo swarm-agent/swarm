@@ -573,11 +573,11 @@ func (a *Authority) ReadPackageReference(ctx context.Context, principal Principa
 	if err != nil {
 		return nil, nil, pebblestore.SessionArtifactVariant{}, err
 	}
+	body, err := a.readGitVariant(ctx, variant, a.registry.limits.MaxVideoArtifactBytes)
+	if err != nil { return nil, nil, pebblestore.SessionArtifactVariant{}, err }
 	service, _, err := a.registry.ServiceForOwnedSession(ref.SessionID, principal.AccountScopeID, principal.UserID)
-	if err != nil {
-		return nil, nil, pebblestore.SessionArtifactVariant{}, err
-	}
-	manifest, data, _, err := service.ReadPackage(ctx, variant, entryName, maxBytes)
+	if err != nil { return nil, nil, pebblestore.SessionArtifactVariant{}, err }
+	manifest, data, err := service.ReadPackageBytes(body, entryName, maxBytes)
 	return manifest, data, variant, err
 }
 
@@ -588,11 +588,11 @@ func (a *Authority) MaterializeReference(ctx context.Context, principal Principa
 	if err != nil {
 		return Materialized{}, err
 	}
+	body, err := a.readGitVariant(ctx, variant, a.registry.limits.MaxVideoArtifactBytes)
+	if err != nil { return Materialized{}, err }
 	service, _, err := a.registry.ServiceForOwnedSession(ref.SessionID, principal.AccountScopeID, principal.UserID)
-	if err != nil {
-		return Materialized{}, err
-	}
-	return service.Materialize(ctx, variant, workspaceRoot, destination, overwrite)
+	if err != nil { return Materialized{}, err }
+	return service.MaterializeBytes(ctx, variant, body, workspaceRoot, destination, overwrite)
 }
 
 // MaterializeBatchReferences authenticates the complete reference set before the
@@ -608,11 +608,11 @@ func (a *Authority) MaterializeBatchReferences(ctx context.Context, principal Pr
 		if err != nil {
 			return nil, nil, err
 		}
+		body, err := a.readGitVariant(ctx, variant, a.registry.limits.MaxVideoArtifactBytes)
+		if err != nil { return nil, nil, err }
 		service, _, err := a.registry.ServiceForOwnedSession(item.Reference.SessionID, principal.AccountScopeID, principal.UserID)
-		if err != nil {
-			return nil, nil, err
-		}
-		inputs = append(inputs, BatchMaterializeInput{Service: service, Variant: variant})
+		if err != nil { return nil, nil, err }
+		inputs = append(inputs, BatchMaterializeInput{Service: service, Variant: variant, Body: body})
 		variants = append(variants, variant)
 	}
 	materialized, err := MaterializeBatch(ctx, inputs, workspaceRoot, destination, overwrite)
@@ -709,9 +709,12 @@ func (a *Authority) DeleteVariant(principal Principal, requestID, collectionID, 
 	if !ok {
 		return nil
 	}
-	if _, err = a.mutate(principal, requestID, pebblestore.V3SessionMutationDeleteArtifactVariant, collection, &variant, nil); err != nil {
-		return err
+	if variant.CandidateRef != "" {
+		repo, repoErr := a.repository(context.Background(), variant.RepositoryID)
+		if repoErr != nil { return repoErr }
+		if repoErr = repo.DeleteCandidate(context.Background(), variant.CandidateRef, variant.CommitOID); repoErr != nil { return repoErr }
 	}
+	if _, err = a.mutate(principal, requestID, pebblestore.V3SessionMutationDeleteArtifactVariant, collection, &variant, nil); err != nil { return err }
 	return service.DeleteVariant(principal.SessionID, collection.ID, variant.ID)
 }
 

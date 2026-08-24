@@ -77,7 +77,7 @@ func TestAuthorityPublishesAtomicGroupedMultipartReplacement(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if created.Composition == nil || created.Composition.Parent == nil || created.Composition.IterationGroupID != "group-1" || len(created.Composition.Parts) != 2 || !created.Composition.Parts[1].Locked {
+	if created.Composition == nil || len(created.Composition.ParentCommitOIDs) != 1 || created.Composition.IterationGroupID != "group-1" || len(created.Composition.Parts) != 2 || !created.Composition.Parts[1].Locked {
 		t.Fatalf("created=%#v", created)
 	}
 	if created.GraphState != pebblestore.SessionArtifactGraphAuthoritative || created.ParentArtifact == nil || *created.ParentArtifact != (pebblestore.SessionArtifactSelectionReference{SessionID: source.SessionID, CollectionID: source.CollectionID, VariantID: source.ID, EventSeq: source.EventSeq}) || created.RevisionNumber != source.RevisionNumber+1 || created.ArtifactStepID != "step-1" || created.RevisionRoundID != "step-1" {
@@ -85,7 +85,7 @@ func TestAuthorityPublishesAtomicGroupedMultipartReplacement(t *testing.T) {
 	}
 	for _, slot := range created.Composition.Parts {
 		revision := metadata.partRevisions[slot.Revision.OwnerSessionID+"\x00"+slot.Revision.ArtifactChainID+"\x00"+slot.Revision.PartID+"\x00"+slot.Revision.PartRevisionID]
-		if revision.Parent == nil || revision.IterationTurnID != "turn-1" || revision.IterationGroupID != "group-1" {
+		if len(revision.ParentCommitOIDs) != 1 || revision.IterationTurnID != "turn-1" || revision.IterationGroupID != "group-1" {
 			t.Fatalf("revision=%#v", revision)
 		}
 	}

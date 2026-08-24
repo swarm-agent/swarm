@@ -14,8 +14,8 @@ import (
 )
 
 // SelectPartRevisions publishes an immutable complete composition from exact
-// existing part revisions. It changes no part bytes and advances the canonical
-// chain head through the same one-candidate auto-accept path as AI publication.
+// existing part revisions. It changes no part bytes, creates a Git commit with
+// every distinct selected candidate as a parent, and advances official by CAS.
 func (a *Authority) SelectPartRevisions(ctx context.Context, principal Principal, input SelectPartRevisionsInput) (pebblestore.SessionArtifactVariant, error) {
 	_, principal, err := a.owned(principal)
 	if err != nil {
@@ -37,16 +37,9 @@ func (a *Authority) SelectPartRevisions(ctx context.Context, principal Principal
 	if err != nil {
 		return pebblestore.SessionArtifactVariant{}, err
 	}
-	chain, ok, err := a.metadata.GetSessionArtifactChain(principal.AccountScopeID, principal.UserID, source.ArtifactChainID)
-	if err != nil {
-		return pebblestore.SessionArtifactVariant{}, err
-	}
-	if !existingDestination && (!ok || chain.GraphState != pebblestore.SessionArtifactGraphAuthoritative || chain.Head.SessionID != input.SourceArtifact.SessionID || chain.Head.CollectionID != input.SourceArtifact.CollectionID || chain.Head.VariantID != input.SourceArtifact.VariantID || chain.Head.EventSeq != input.SourceArtifact.EventSeq) {
-		return pebblestore.SessionArtifactVariant{}, errors.New("part selection source is stale relative to the canonical chain head")
-	}
 	composition := source
 	composition.Parts = append([]pebblestore.SessionArtifactCompositionPart(nil), source.Parts...)
-	composition.Parent = &pebblestore.SessionArtifactCompositionReference{ArtifactChainID: source.ArtifactChainID, CompositionID: source.ID, OwnerSessionID: source.OwnerSessionID, EventSeq: source.EventSeq}
+	composition.Parent = nil
 	seed := sha256.Sum256([]byte("artifact-part-selection-v1\x00" + principal.SessionID + "\x00" + input.RequestID))
 	composition.ID, composition.OwnerSessionID = "composition-"+hex.EncodeToString(seed[:12]), principal.SessionID
 	composition.IterationTurnID, composition.IterationGroupID = input.ArtifactStepID, input.ArtifactStepID
@@ -93,7 +86,7 @@ func (a *Authority) SelectPartRevisions(ctx context.Context, principal Principal
 		}
 	}
 	if existingDestination {
-		if existing.Status == pebblestore.SessionArtifactStatusReady && existing.Composition != nil && reflect.DeepEqual(existing.Composition.Parts, composition.Parts) && existing.Composition.Parent != nil && *existing.Composition.Parent == *composition.Parent {
+		if existing.Status == pebblestore.SessionArtifactStatusReady && existing.Composition != nil && reflect.DeepEqual(existing.Composition.Parts, composition.Parts) {
 			return existing, nil
 		}
 		return pebblestore.SessionArtifactVariant{}, errors.New("part selection idempotency destination conflicts with the exact request")
@@ -106,13 +99,14 @@ func (a *Authority) SelectPartRevisions(ctx context.Context, principal Principal
 	if !ok {
 		collection = pebblestore.SessionArtifactCollection{ID: input.CollectionID, Name: "Part selections", Description: "Accepted exact part selections"}
 	}
-	compositionBytes, err := json.Marshal(composition)
-	if err != nil {
-		return pebblestore.SessionArtifactVariant{}, err
-	}
-	digest := sha256.Sum256(compositionBytes)
 	lineage := a.lineage(principal, CreateInput{SourceSessionID: input.SourceArtifact.SessionID, SourceCollectionID: input.SourceArtifact.CollectionID, SourceVariantID: input.SourceArtifact.VariantID, SourceEventSeq: input.SourceArtifact.EventSeq})
-	variant := pebblestore.SessionArtifactVariant{ID: input.VariantID, CollectionID: input.CollectionID, AccountScopeID: principal.AccountScopeID, SessionID: principal.SessionID, Filename: sourceVariant.Filename, MediaType: sourceVariant.MediaType, DigestSHA256: hex.EncodeToString(digest[:]), Size: int64(len(compositionBytes)), Presentation: sourceVariant.Presentation, OutputRequirements: cloneOutputRequirements(sourceVariant.OutputRequirements), AnimationProfile: cloneAnimationProfile(sourceVariant.AnimationProfile), Lineage: lineage, ArtifactChainID: source.ArtifactChainID, ArtifactStepID: input.ArtifactStepID, RevisionRoundID: input.ArtifactStepID, CandidateIndex: 1, AutoAccept: true, Composition: &composition}
+	variant := pebblestore.SessionArtifactVariant{ID: input.VariantID, CollectionID: input.CollectionID, AccountScopeID: principal.AccountScopeID, SessionID: principal.SessionID, Filename: sourceVariant.Filename, MediaType: sourceVariant.MediaType, Presentation: sourceVariant.Presentation, OutputRequirements: cloneOutputRequirements(sourceVariant.OutputRequirements), AnimationProfile: cloneAnimationProfile(sourceVariant.AnimationProfile), Lineage: lineage, ArtifactChainID: source.ArtifactChainID, ArtifactStepID: input.ArtifactStepID, RevisionRoundID: input.ArtifactStepID, CandidateIndex: 1, AutoAccept: true, Composition: &composition}
+	if err := a.publishGitPartSelection(ctx, input, sourceVariant, &variant, &composition); err != nil { return pebblestore.SessionArtifactVariant{}, fmt.Errorf("publish Git part selection: %w", err) }
+	variant.Composition = &composition
+	compositionBytes, err := json.Marshal(composition)
+	if err != nil { return pebblestore.SessionArtifactVariant{}, err }
+	digest := sha256.Sum256(compositionBytes)
+	variant.DigestSHA256, variant.Size = hex.EncodeToString(digest[:]), int64(len(compositionBytes))
 	result, err := a.mutateArtifact(principal, input.RequestID+":part-selection", pebblestore.V3SessionMutationCreateArtifact, collection, &variant, nil, nil, nil, &composition)
 	if err != nil {
 		return pebblestore.SessionArtifactVariant{}, fmt.Errorf("persist part selection composition: %w", err)
@@ -121,7 +115,7 @@ func (a *Authority) SelectPartRevisions(ctx context.Context, principal Principal
 		return pebblestore.SessionArtifactVariant{}, errors.New("part selection composition was not persisted")
 	}
 	created := *result.Artifact.Variant
-	created.Status = pebblestore.SessionArtifactStatusReady
+	created.Status, created.DigestSHA256, created.Size = pebblestore.SessionArtifactStatusReady, variant.DigestSHA256, variant.Size
 	finalized, err := a.mutateArtifact(principal, input.RequestID+":part-selection-ready:"+created.DigestSHA256, pebblestore.V3SessionMutationFinalizeArtifact, collection, &created, nil, nil, nil, nil)
 	if err != nil {
 		return pebblestore.SessionArtifactVariant{}, fmt.Errorf("finalize part selection composition: %w", err)

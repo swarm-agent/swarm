@@ -69,8 +69,8 @@ func (s *SessionStore) prepareAuthoritativeArtifactParts(input V3SessionMutation
 		if !ok || owner.AccountScopeID != input.AccountScopeID || owner.UserID != input.UserID {
 			return nil, nil, nil, errors.New("artifact part revision owner is not authenticated")
 		}
-		if revision.ArtifactChainID != composition.ArtifactChainID || revision.RepositoryID != composition.RepositoryID || revision.CommitOID != composition.CommitOID {
-			return nil, nil, nil, errors.New("artifact part revision is outside the composition Git commit")
+		if revision.ArtifactChainID != composition.ArtifactChainID || revision.RepositoryID != composition.RepositoryID || revision.CommitOID == "" || revision.BlobOID == "" {
+			return nil, nil, nil, errors.New("artifact part revision is missing exact identity in the composition Git repository")
 		}
 		revision.Version = SessionArtifactVersion
 		revision.GraphState = SessionArtifactGraphAuthoritative

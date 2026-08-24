@@ -32,7 +32,7 @@ func TestAuthoritySelectsAndLocksExactPartRevisionsAtomically(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if selected.Composition == nil || selected.Composition.Parent == nil || !selected.Composition.Parts[0].Locked || !selected.Composition.Parts[1].Locked {
+	if selected.Composition == nil || len(selected.Composition.ParentCommitOIDs) == 0 || !selected.Composition.Parts[0].Locked || !selected.Composition.Parts[1].Locked {
 		t.Fatalf("selected=%#v", selected)
 	}
 	if selected.Composition.Parts[0].Revision != source.Composition.Parts[0].Revision || selected.Composition.Parts[1].Revision != source.Composition.Parts[1].Revision {

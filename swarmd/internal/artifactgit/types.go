@@ -53,11 +53,22 @@ type Part struct {
 	SourcePart   string `json:"source_part,omitempty"`
 }
 
+type ConstructionEntry struct {
+	PartID string `json:"part_id"`
+	Path   string `json:"path,omitempty"`
+}
+
+type Construction struct {
+	Kind    string              `json:"kind,omitempty"`
+	Entries []ConstructionEntry `json:"entries,omitempty"`
+}
+
 type Manifest struct {
-	Version   string `json:"version"`
-	MediaType string `json:"media_type"`
-	Content   *Part  `json:"content,omitempty"`
-	Parts     []Part `json:"parts,omitempty"`
+	Version      string       `json:"version"`
+	MediaType    string       `json:"media_type"`
+	Content      *Part        `json:"content,omitempty"`
+	Parts        []Part       `json:"parts,omitempty"`
+	Construction Construction `json:"construction,omitempty"`
 }
 
 type BlobInput struct {
@@ -66,9 +77,10 @@ type BlobInput struct {
 }
 
 type Genesis struct {
-	MediaType string
-	Content   *BlobInput
-	Parts     map[string]BlobInput
+	MediaType    string
+	Content      *BlobInput
+	Parts        map[string]BlobInput
+	Construction Construction
 }
 
 type PartChange struct {

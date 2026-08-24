@@ -21,7 +21,7 @@ func boolp(v bool) *bool { return &v }
 func TestHistoricalForkMergeLocksCASRestartAndBundle(t *testing.T) {
 	ctx := context.Background()
 	r := openTest(t)
-	gen, e := r.Genesis(ctx, Genesis{MediaType: "application/test", Parts: map[string]BlobInput{"a": {MediaType: "text/plain", Bytes: []byte("a0")}, "b": {MediaType: "text/plain", Bytes: []byte("b0")}}})
+	gen, e := r.Genesis(ctx, Genesis{MediaType: "application/test", Parts: map[string]BlobInput{"a": {MediaType: "text/plain", Bytes: []byte("a0")}, "b": {MediaType: "text/plain", Bytes: []byte("b0")}}, Construction: Construction{Kind: "concat-v1", Entries: []ConstructionEntry{{PartID: "b"}, {PartID: "a"}}}})
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -69,6 +69,8 @@ func TestHistoricalForkMergeLocksCASRestartAndBundle(t *testing.T) {
 	if _, e = r.Candidate(ctx, CandidateRequest{ID: "locked", Base: merged, Parts: map[string]PartChange{"b": {MediaType: "text/plain", Bytes: []byte("bad")}}}); !errors.Is(e, ErrLockedPart) {
 		t.Fatalf("lock=%v", e)
 	}
+	if e = r.DeleteCandidate(ctx, "refs/swarm/candidates/left", left); e != nil { t.Fatal(e) }
+	if refs, e := r.ListRefs(ctx, "refs/swarm/candidates/"); e != nil || len(refs) != 2 { t.Fatalf("candidate delete=%v %v", refs, e) }
 	if e = r.IntegrityCheck(ctx); e != nil {
 		t.Fatal(e)
 	}

@@ -75,8 +75,7 @@ type SessionArtifactPartRevision struct {
 	DigestSHA256     string   `json:"digest_sha256,omitempty"`
 	Size             int64    `json:"size"`
 	MediaType        string   `json:"media_type"`
-	// Parent is decoded only for migration diagnostics. Git ParentCommitOIDs is
-	// the sole ancestry projection and this field is never written or followed.
+	// Parent decodes pre-Git projections only. New writes leave it nil.
 	Parent           *SessionArtifactPartRevisionReference `json:"parent,omitempty"`
 	IterationTurnID  string                                `json:"iteration_turn_id,omitempty"`
 	IterationGroupID string                                `json:"iteration_group_id,omitempty"`
@@ -145,7 +144,7 @@ type SessionArtifactComposition struct {
 	CommitOID        string   `json:"commit_oid"`
 	TreeOID          string   `json:"tree_oid"`
 	ParentCommitOIDs []string `json:"parent_commit_oids,omitempty"`
-	// Parent is migration-only metadata and never participates in authority.
+	// Parent decodes pre-Git projections only. ParentCommitOIDs is authoritative.
 	Parent           *SessionArtifactCompositionReference `json:"parent,omitempty"`
 	IterationTurnID  string                               `json:"iteration_turn_id,omitempty"`
 	IterationGroupID string                               `json:"iteration_group_id,omitempty"`

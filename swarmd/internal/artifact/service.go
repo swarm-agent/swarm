@@ -5,6 +5,7 @@ package artifact
 
 import (
 	"archive/zip"
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -684,6 +685,28 @@ func (s *Service) Read(ctx context.Context, variant pebblestore.SessionArtifactV
 // ReadPackage inspects a verified ready ZIP without extracting it. An empty
 // entry name returns a bounded manifest; a non-empty name returns exactly one
 // regular entry after validating the entire archive.
+func (s *Service) ReadPackageBytes(body []byte, entryName string, maxBytes int64) ([]PackageManifestEntry, []byte, error) {
+	if s == nil { return nil, nil, errors.New("artifact service is not configured") }
+	if maxBytes <= 0 { return nil, nil, errors.New("artifact package read limit is required") }
+	trimmed := strings.TrimSpace(entryName)
+	if entryName != trimmed || (trimmed != "" && (len(trimmed) > 1024 || strings.Contains(trimmed, "\\") || !safePackageEntryName(trimmed))) { return nil, nil, errors.New("artifact package entry name is unsafe") }
+	reader := bytes.NewReader(body)
+	archive, err := zip.NewReader(reader, int64(len(body)))
+	if err != nil { return nil, nil, errors.New("artifact package is not a valid zip archive") }
+	entries, _, err := s.materializePackageEntries(archive.File)
+	if err != nil { return nil, nil, err }
+	manifest := make([]PackageManifestEntry, 0, len(entries))
+	var selected *zip.File
+	for _, entry := range entries { manifest = append(manifest, PackageManifestEntry{Name: entry.Name, Size: int64(entry.UncompressedSize64)}); if entry.Name == trimmed { selected = entry } }
+	if trimmed == "" { return manifest, nil, nil }
+	if selected == nil { return nil, nil, fmt.Errorf("artifact package entry %q was not found", trimmed) }
+	if int64(selected.UncompressedSize64) > maxBytes { return nil, nil, ErrQuotaExceeded }
+	source, err := selected.Open(); if err != nil { return nil, nil, err }; defer source.Close()
+	data, err := io.ReadAll(io.LimitReader(source, maxBytes+1)); if err != nil { return nil, nil, err }
+	if int64(len(data)) != int64(selected.UncompressedSize64) || int64(len(data)) > maxBytes { return nil, nil, ErrQuotaExceeded }
+	return nil, data, nil
+}
+
 func (s *Service) ReadPackage(ctx context.Context, variant pebblestore.SessionArtifactVariant, entryName string, maxBytes int64) ([]PackageManifestEntry, []byte, Blob, error) {
 	if s == nil {
 		return nil, nil, Blob{}, errors.New("artifact service is not configured")

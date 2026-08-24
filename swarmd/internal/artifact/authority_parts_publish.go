@@ -1,7 +1,6 @@
 package artifact
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -77,7 +76,7 @@ func (a *Authority) PublishPartReplacement(ctx context.Context, principal Princi
 // one or more changed parts. Every candidate in the call shares durable turn/group
 // identity, while each revision retains exact ancestry.
 func (a *Authority) PublishPartReplacements(ctx context.Context, principal Principal, input PublishPartReplacementsInput) (pebblestore.SessionArtifactVariant, error) {
-	service, principal, err := a.owned(principal)
+	_, principal, err := a.owned(principal)
 	if err != nil {
 		return pebblestore.SessionArtifactVariant{}, err
 	}
@@ -96,7 +95,7 @@ func (a *Authority) PublishPartReplacements(ctx context.Context, principal Princ
 	source := *sourceVariant.Composition
 	composition := source
 	composition.Parts = append([]pebblestore.SessionArtifactCompositionPart(nil), source.Parts...)
-	composition.Parent = &pebblestore.SessionArtifactCompositionReference{ArtifactChainID: source.ArtifactChainID, CompositionID: source.ID, OwnerSessionID: source.OwnerSessionID, EventSeq: source.EventSeq}
+	composition.Parent = nil
 	composition.IterationTurnID, composition.IterationGroupID = input.IterationTurnID, input.IterationGroupID
 	seed := sha256.Sum256([]byte("artifact-composition-turn-v1\x00" + principal.SessionID + "\x00" + input.VariantID + "\x00" + input.RequestID))
 	composition.ID, composition.OwnerSessionID = "composition-"+hex.EncodeToString(seed[:12]), principal.SessionID
@@ -126,16 +125,7 @@ func (a *Authority) PublishPartReplacements(ctx context.Context, principal Princ
 			}
 		}
 		revisionSeed := sha256.Sum256([]byte(fmt.Sprintf("artifact-part-turn-v1\x00%s\x00%s\x00%d", principal.SessionID, input.RequestID, index)))
-		revision := pebblestore.SessionArtifactPartRevision{ArtifactChainID: source.ArtifactChainID, PartID: partID, ID: "part-revision-" + hex.EncodeToString(revisionSeed[:12]), OwnerSessionID: principal.SessionID, MediaType: replacement.MediaType, Parent: &sourceRevision, IterationTurnID: input.IterationTurnID, IterationGroupID: input.IterationGroupID}
-		staged, stageErr := service.StagePart(ctx, revision, bytes.NewReader(replacement.Body))
-		if stageErr != nil {
-			return pebblestore.SessionArtifactVariant{}, fmt.Errorf("stage replacement part %q: %w", partID, stageErr)
-		}
-		blob, finalizeErr := service.FinalizePart(ctx, staged, staged.DigestSHA256, staged.Size)
-		if finalizeErr != nil {
-			return pebblestore.SessionArtifactVariant{}, fmt.Errorf("finalize replacement part %q: %w", partID, finalizeErr)
-		}
-		revision.DigestSHA256, revision.Size, revision.MediaType = blob.DigestSHA256, blob.Size, blob.MediaType
+		revision := pebblestore.SessionArtifactPartRevision{ArtifactChainID: source.ArtifactChainID, PartID: partID, ID: "part-revision-" + hex.EncodeToString(revisionSeed[:12]), OwnerSessionID: principal.SessionID, MediaType: replacement.MediaType, IterationTurnID: input.IterationTurnID, IterationGroupID: input.IterationGroupID}
 		for slotIndex := range composition.Parts {
 			if composition.Parts[slotIndex].PartID == partID {
 				composition.Parts[slotIndex].Revision, composition.Parts[slotIndex].Locked = revision.Reference(), replacement.Locked
@@ -148,15 +138,10 @@ func (a *Authority) PublishPartReplacements(ctx context.Context, principal Princ
 			return pebblestore.SessionArtifactVariant{}, errors.New("multipart replacement changed an untouched exact part reference")
 		}
 	}
-	return a.publishReplacementComposition(principal, input, sourceVariant, composition, definitions, revisions)
+	return a.publishReplacementComposition(ctx, principal, input, sourceVariant, composition, definitions, revisions)
 }
 
-func (a *Authority) publishReplacementComposition(principal Principal, input PublishPartReplacementsInput, sourceVariant pebblestore.SessionArtifactVariant, composition pebblestore.SessionArtifactComposition, definitions []pebblestore.SessionArtifactPartDefinition, revisions []pebblestore.SessionArtifactPartRevision) (pebblestore.SessionArtifactVariant, error) {
-	compositionBytes, err := json.Marshal(composition)
-	if err != nil {
-		return pebblestore.SessionArtifactVariant{}, fmt.Errorf("encode replacement composition projection: %w", err)
-	}
-	digest := sha256.Sum256(compositionBytes)
+func (a *Authority) publishReplacementComposition(ctx context.Context, principal Principal, input PublishPartReplacementsInput, sourceVariant pebblestore.SessionArtifactVariant, composition pebblestore.SessionArtifactComposition, definitions []pebblestore.SessionArtifactPartDefinition, revisions []pebblestore.SessionArtifactPartRevision) (pebblestore.SessionArtifactVariant, error) {
 	collection, ok, err := a.metadata.GetSessionArtifactCollection(principal.AccountScopeID, principal.SessionID, input.CollectionID)
 	if err != nil || !ok {
 		if err == nil {
@@ -166,7 +151,14 @@ func (a *Authority) publishReplacementComposition(principal Principal, input Pub
 	}
 	lineage := a.lineage(principal, CreateInput{SourceSessionID: input.SourceArtifact.SessionID, SourceCollectionID: input.SourceArtifact.CollectionID, SourceVariantID: input.SourceArtifact.VariantID, SourceEventSeq: input.SourceArtifact.EventSeq})
 	parent := input.SourceArtifact
-	variant := pebblestore.SessionArtifactVariant{ID: input.VariantID, CollectionID: collection.ID, AccountScopeID: principal.AccountScopeID, SessionID: principal.SessionID, Filename: sourceVariant.Filename, MediaType: sourceVariant.MediaType, DigestSHA256: hex.EncodeToString(digest[:]), Size: int64(len(compositionBytes)), Presentation: sourceVariant.Presentation, OutputRequirements: cloneOutputRequirements(sourceVariant.OutputRequirements), AnimationProfile: cloneAnimationProfile(sourceVariant.AnimationProfile), Lineage: lineage, ArtifactChainID: composition.ArtifactChainID, ArtifactStepID: input.ArtifactStepID, GraphState: pebblestore.SessionArtifactGraphAuthoritative, ParentArtifact: &parent, RevisionNumber: sourceVariant.RevisionNumber + 1, RevisionRoundID: input.ArtifactStepID, CandidateIndex: input.CandidateIndex, AutoAccept: input.AutoAccept, PartDefinitions: definitions, Composition: &composition}
+	variant := pebblestore.SessionArtifactVariant{ID: input.VariantID, CollectionID: collection.ID, AccountScopeID: principal.AccountScopeID, SessionID: principal.SessionID, Filename: sourceVariant.Filename, MediaType: sourceVariant.MediaType, Presentation: sourceVariant.Presentation, OutputRequirements: cloneOutputRequirements(sourceVariant.OutputRequirements), AnimationProfile: cloneAnimationProfile(sourceVariant.AnimationProfile), Lineage: lineage, ArtifactChainID: composition.ArtifactChainID, ArtifactStepID: input.ArtifactStepID, GraphState: pebblestore.SessionArtifactGraphAuthoritative, ParentArtifact: &parent, RevisionNumber: sourceVariant.RevisionNumber + 1, RevisionRoundID: input.ArtifactStepID, CandidateIndex: input.CandidateIndex, AutoAccept: input.AutoAccept, PartDefinitions: definitions, Composition: &composition}
+	revisions, err = a.publishGitReplacement(ctx, input, sourceVariant, &variant, &composition, revisions)
+	if err != nil { return pebblestore.SessionArtifactVariant{}, fmt.Errorf("publish multipart Git candidate: %w", err) }
+	variant.Composition = &composition
+	compositionBytes, err := json.Marshal(composition)
+	if err != nil { return pebblestore.SessionArtifactVariant{}, fmt.Errorf("encode replacement composition projection: %w", err) }
+	digest := sha256.Sum256(compositionBytes)
+	variant.DigestSHA256, variant.Size = hex.EncodeToString(digest[:]), int64(len(compositionBytes))
 	kind := pebblestore.V3SessionMutationCreateArtifact
 	if existing, exists, getErr := a.metadata.GetSessionArtifactVariant(principal.AccountScopeID, principal.SessionID, collection.ID, variant.ID); getErr != nil {
 		return pebblestore.SessionArtifactVariant{}, getErr
@@ -189,7 +181,7 @@ func (a *Authority) publishReplacementComposition(principal Principal, input Pub
 		return pebblestore.SessionArtifactVariant{}, errors.New("replacement part composition was not persisted")
 	}
 	created := *result.Artifact.Variant
-	created.Status, created.DigestSHA256, created.Size = pebblestore.SessionArtifactStatusReady, hex.EncodeToString(digest[:]), int64(len(compositionBytes))
+	created.Status, created.DigestSHA256, created.Size = pebblestore.SessionArtifactStatusReady, variant.DigestSHA256, variant.Size
 	finalized, err := a.mutateArtifact(principal, input.RequestID+":parts-ready:"+created.DigestSHA256, pebblestore.V3SessionMutationFinalizeArtifact, collection, &created, nil, nil, nil, nil)
 	if err != nil {
 		return pebblestore.SessionArtifactVariant{}, fmt.Errorf("finalize replacement part candidate: %w", err)

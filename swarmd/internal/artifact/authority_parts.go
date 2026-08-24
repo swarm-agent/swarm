@@ -1,7 +1,6 @@
 package artifact
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -18,7 +17,7 @@ import (
 // canonical V3 mutation atomically publishes definitions, exact revisions,
 // composition, artifact step, projection, and realtime outbox state.
 func (a *Authority) CreateInitialComposition(ctx context.Context, principal Principal, input CreateInitialCompositionInput) (pebblestore.SessionArtifactVariant, error) {
-	service, principal, err := a.owned(principal)
+	_, principal, err := a.owned(principal)
 	if err != nil {
 		return pebblestore.SessionArtifactVariant{}, err
 	}
@@ -112,15 +111,7 @@ func (a *Authority) CreateInitialComposition(ctx context.Context, principal Prin
 		if revision.ID == "" {
 			return pebblestore.SessionArtifactVariant{}, fmt.Errorf("initial artifact part %q requires a server-owned revision identity", definition.ID)
 		}
-		handle, stageErr := service.StagePart(ctx, revision, bytes.NewReader(part.Body))
-		if stageErr != nil {
-			return pebblestore.SessionArtifactVariant{}, fmt.Errorf("stage initial artifact part %q: %w", definition.ID, stageErr)
-		}
-		blob, finalizeErr := service.FinalizePart(ctx, handle, handle.DigestSHA256, handle.Size)
-		if finalizeErr != nil {
-			return pebblestore.SessionArtifactVariant{}, fmt.Errorf("finalize initial artifact part %q: %w", definition.ID, finalizeErr)
-		}
-		revision.DigestSHA256, revision.Size, revision.MediaType = blob.DigestSHA256, blob.Size, blob.MediaType
+		revision.MediaType = strings.ToLower(mediaType)
 		definitions = append(definitions, definition)
 		revisions = append(revisions, revision)
 		composition.Parts = append(composition.Parts, pebblestore.SessionArtifactCompositionPart{PartID: definition.ID, DefinitionOwnerSessionID: principal.SessionID, Revision: revision.Reference()})
@@ -131,18 +122,13 @@ func (a *Authority) CreateInitialComposition(ctx context.Context, principal Prin
 	if !existingStaging {
 		collection = pebblestore.SessionArtifactCollection{ID: strings.TrimSpace(input.CollectionID), Name: strings.TrimSpace(input.CollectionName), Description: strings.TrimSpace(input.CollectionDescription), Lineage: collectionLineage, Presentation: input.Presentation}
 	}
-	compositionBytes, err := json.Marshal(composition)
-	if err != nil {
-		return pebblestore.SessionArtifactVariant{}, fmt.Errorf("encode initial artifact composition projection: %w", err)
-	}
-	compositionDigest := sha256.Sum256(compositionBytes)
 	variantLineage := lineage
 	if existingStaging {
 		if existing, ok, _ := a.metadata.GetSessionArtifactVariant(principal.AccountScopeID, principal.SessionID, input.CollectionID, input.VariantID); ok && existing.Lineage != (pebblestore.SessionArtifactLineage{}) {
 			variantLineage = existing.Lineage
 		}
 	}
-	variant := pebblestore.SessionArtifactVariant{ID: strings.TrimSpace(input.VariantID), CollectionID: collection.ID, AccountScopeID: principal.AccountScopeID, SessionID: principal.SessionID, Filename: strings.TrimSpace(input.Filename), MediaType: strings.TrimSpace(input.MediaType), DigestSHA256: hex.EncodeToString(compositionDigest[:]), Size: int64(len(compositionBytes)), Presentation: input.Presentation, OutputRequirements: cloneOutputRequirements(input.OutputRequirements), AnimationProfile: cloneAnimationProfile(input.AnimationProfile), Lineage: variantLineage, ArtifactChainID: input.ArtifactChainID, ArtifactStepID: strings.TrimSpace(input.ArtifactStepID), RevisionRoundID: strings.TrimSpace(input.ArtifactStepID), CandidateIndex: input.CandidateIndex, AutoAccept: input.AutoAccept, PartDefinitions: definitions, Composition: &composition}
+	variant := pebblestore.SessionArtifactVariant{ID: strings.TrimSpace(input.VariantID), CollectionID: collection.ID, AccountScopeID: principal.AccountScopeID, SessionID: principal.SessionID, Filename: strings.TrimSpace(input.Filename), MediaType: strings.TrimSpace(input.MediaType), Presentation: input.Presentation, OutputRequirements: cloneOutputRequirements(input.OutputRequirements), AnimationProfile: cloneAnimationProfile(input.AnimationProfile), Lineage: variantLineage, ArtifactChainID: input.ArtifactChainID, ArtifactStepID: strings.TrimSpace(input.ArtifactStepID), RevisionRoundID: strings.TrimSpace(input.ArtifactStepID), CandidateIndex: input.CandidateIndex, AutoAccept: input.AutoAccept, PartDefinitions: definitions, Composition: &composition}
 	if variant.ArtifactStepID == "" {
 		variant.ArtifactStepID = input.CompositionID
 		variant.RevisionRoundID = input.CompositionID
@@ -150,6 +136,13 @@ func (a *Authority) CreateInitialComposition(ctx context.Context, principal Prin
 	if variant.CandidateIndex < 1 {
 		variant.CandidateIndex = 1
 	}
+	revisions, err = a.publishGitInitialComposition(ctx, input, &variant, &composition, revisions)
+	if err != nil { return pebblestore.SessionArtifactVariant{}, fmt.Errorf("publish initial artifact Git composition: %w", err) }
+	variant.Composition = &composition
+	compositionBytes, err := json.Marshal(composition)
+	if err != nil { return pebblestore.SessionArtifactVariant{}, fmt.Errorf("encode initial artifact composition projection: %w", err) }
+	compositionDigest := sha256.Sum256(compositionBytes)
+	variant.DigestSHA256, variant.Size = hex.EncodeToString(compositionDigest[:]), int64(len(compositionBytes))
 	mutationKind := pebblestore.V3SessionMutationCreateArtifact
 	if existingStaging {
 		mutationKind = pebblestore.V3SessionMutationUpdateArtifact
@@ -162,7 +155,7 @@ func (a *Authority) CreateInitialComposition(ctx context.Context, principal Prin
 		return pebblestore.SessionArtifactVariant{}, errors.New("initial artifact composition was not persisted")
 	}
 	created := *result.Artifact.Variant
-	created.Status, created.DigestSHA256, created.Size = pebblestore.SessionArtifactStatusReady, hex.EncodeToString(compositionDigest[:]), int64(len(compositionBytes))
+	created.Status, created.DigestSHA256, created.Size = pebblestore.SessionArtifactStatusReady, variant.DigestSHA256, variant.Size
 	finalized, err := a.mutateArtifact(principal, input.RequestID+":composition-ready:"+created.DigestSHA256, pebblestore.V3SessionMutationFinalizeArtifact, collection, &created, nil, nil, nil, nil)
 	if err != nil {
 		return pebblestore.SessionArtifactVariant{}, fmt.Errorf("finalize initial artifact composition: %w", err)
@@ -186,11 +179,7 @@ func (a *Authority) ReadPartRevision(ctx context.Context, principal Principal, r
 	if !ok || revision.Reference() != reference || revision.GraphState != pebblestore.SessionArtifactGraphAuthoritative {
 		return nil, pebblestore.SessionArtifactPartRevision{}, errors.New("artifact part revision reference is missing, legacy, or stale")
 	}
-	service, _, err := a.registry.ServiceForOwnedSession(reference.OwnerSessionID, principal.AccountScopeID, principal.UserID)
-	if err != nil {
-		return nil, pebblestore.SessionArtifactPartRevision{}, err
-	}
-	body, _, err := service.ReadPart(ctx, revision, maxBytes)
+	body, err := a.readGitPartRevision(ctx, revision, maxBytes)
 	return body, revision, err
 }
 

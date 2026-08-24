@@ -2,6 +2,7 @@ package artifact
 
 import (
 	"archive/zip"
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -36,6 +37,7 @@ type Materialized struct {
 type BatchMaterializeInput struct {
 	Service *Service
 	Variant pebblestore.SessionArtifactVariant
+	Body    []byte
 }
 
 const MaxMaterializeBatchItems = 64
@@ -43,6 +45,22 @@ const MaxMaterializeBatchItems = 64
 // Materialize copies one verified ready artifact into an explicitly supplied
 // workspace-relative destination. ZIP packages are safely expanded into a
 // destination directory; other artifacts are copied to one destination file.
+func (s *Service) MaterializeBytes(ctx context.Context, variant pebblestore.SessionArtifactVariant, body []byte, workspaceRoot, destination string, overwrite bool) (Materialized, error) {
+	if err := ctx.Err(); err != nil { return Materialized{}, err }
+	workspaceRoot, destination, err := validateMaterializeDestination(workspaceRoot, destination)
+	if err != nil { return Materialized{}, err }
+	if int64(len(body)) != variant.Size { return Materialized{}, errors.New("artifact Git bytes do not match projected size") }
+	digest := sha256.Sum256(body)
+	if hex.EncodeToString(digest[:]) != strings.ToLower(variant.DigestSHA256) { return Materialized{}, errors.New("artifact Git bytes do not match projected digest") }
+	blob := Blob{Filename: variant.Filename, MediaType: variant.MediaType, DigestSHA256: variant.DigestSHA256, Size: variant.Size, Presentation: variant.Presentation}
+	if blob.MediaType == "application/zip" || blob.Presentation.Kind == "package" {
+		if blob.MediaType != "application/zip" { return Materialized{}, errors.New("artifact package has an invalid media type") }
+		return s.materializePackage(ctx, bytes.NewReader(body), blob, workspaceRoot, destination, overwrite)
+	}
+	if err := materializeWorkspaceFile(ctx, workspaceRoot, destination, bytes.NewReader(body), blob.Size, blob.DigestSHA256, s.maxArtifactLimit(blob.MediaType, blob.Presentation.Kind), overwrite); err != nil { return Materialized{}, err }
+	return Materialized{Destination: filepath.ToSlash(destination), Files: 1, Bytes: blob.Size, DigestSHA256: blob.DigestSHA256, MediaType: blob.MediaType}, nil
+}
+
 func (s *Service) Materialize(ctx context.Context, variant pebblestore.SessionArtifactVariant, workspaceRoot, destination string, overwrite bool) (Materialized, error) {
 	if err := ctx.Err(); err != nil {
 		return Materialized{}, err
@@ -125,23 +143,11 @@ func MaterializeBatch(ctx context.Context, inputs []BatchMaterializeInput, works
 				return nil, errors.New("artifact materialization batch package filename cannot derive a safe directory")
 			}
 		}
-		file, blob, err := input.Service.Open(ctx, input.Variant)
-		if err != nil {
-			return nil, fmt.Errorf("preflight artifact materialization batch source: %w", err)
-		}
+		if int64(len(input.Body)) != input.Variant.Size { return nil, errors.New("artifact Git batch bytes do not match projected size") }
+		digest := sha256.Sum256(input.Body)
+		if hex.EncodeToString(digest[:]) != strings.ToLower(input.Variant.DigestSHA256) { return nil, errors.New("artifact Git batch bytes do not match projected digest") }
 		if packageItem {
-			archive, zipErr := zip.NewReader(file, blob.Size)
-			if zipErr != nil {
-				_ = file.Close()
-				return nil, errors.New("artifact package is not a valid zip archive")
-			}
-			if _, _, zipErr = input.Service.materializePackageEntries(archive.File); zipErr != nil {
-				_ = file.Close()
-				return nil, zipErr
-			}
-		}
-		if err := file.Close(); err != nil {
-			return nil, fmt.Errorf("close preflight artifact materialization batch source: %w", err)
+			if _, _, zipErr := input.Service.ReadPackageBytes(input.Body, "", input.Service.limits.MaxPackageEntryBytes); zipErr != nil { return nil, zipErr }
 		}
 		baseRelative := relative
 		for suffix := 2; ; suffix++ {
@@ -173,7 +179,7 @@ func MaterializeBatch(ctx context.Context, inputs []BatchMaterializeInput, works
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		materialized, err := item.input.Service.Materialize(ctx, item.input.Variant, stagePath, item.relative, false)
+		materialized, err := item.input.Service.MaterializeBytes(ctx, item.input.Variant, item.input.Body, stagePath, item.relative, false)
 		if err != nil {
 			return nil, fmt.Errorf("stage artifact batch destination %q: %w", item.relative, err)
 		}
@@ -243,7 +249,7 @@ func validateMaterializeDestination(workspaceRoot, destination string) (string, 
 	return workspaceRoot, destination, nil
 }
 
-func (s *Service) materializePackage(ctx context.Context, source *os.File, blob Blob, workspaceRoot, destination string, overwrite bool) (result Materialized, resultErr error) {
+func (s *Service) materializePackage(ctx context.Context, source io.ReaderAt, blob Blob, workspaceRoot, destination string, overwrite bool) (result Materialized, resultErr error) {
 	archive, err := zip.NewReader(source, blob.Size)
 	if err != nil {
 		return Materialized{}, errors.New("artifact package is not a valid zip archive")

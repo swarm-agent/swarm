@@ -118,7 +118,7 @@ func (r *Repository) Genesis(ctx context.Context, value Genesis) (string, error)
 }
 
 func (r *Repository) manifestFromGenesis(ctx context.Context, g Genesis) (Manifest, error) {
-	m := Manifest{Version: ManifestVersion, MediaType: g.MediaType}
+	m := Manifest{Version: ManifestVersion, MediaType: g.MediaType, Construction: g.Construction}
 	if g.Content != nil && len(g.Parts) > 0 {
 		return m, invalid("content and parts are mutually exclusive")
 	}
@@ -136,6 +136,10 @@ func (r *Repository) manifestFromGenesis(ctx context.Context, g Genesis) (Manife
 	sort.Strings(ids)
 	if len(ids) > r.limits.MaxParts {
 		return m, ErrQuotaExceeded
+	}
+	if len(ids) > 0 && m.Construction.Kind == "" {
+		m.Construction.Kind = "concat-v1"
+		for _, id := range ids { m.Construction.Entries = append(m.Construction.Entries, ConstructionEntry{PartID: id}) }
 	}
 	for _, id := range ids {
 		p, err := r.storeBlob(ctx, id, g.Parts[id])
@@ -246,6 +250,43 @@ func validateManifest(m Manifest, limits Limits) error {
 	if total > limits.MaxCompositionBytes {
 		return ErrQuotaExceeded
 	}
+	if m.Content != nil {
+		if m.Construction.Kind != "" || len(m.Construction.Entries) != 0 {
+			return fmt.Errorf("%w: monolithic artifact has construction metadata", ErrIntegrity)
+		}
+		return nil
+	}
+	if err := validateConstruction(m.Construction, m.Parts); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateConstruction(construction Construction, parts []Part) error {
+	if construction.Kind != "concat-v1" && construction.Kind != "package-v1" {
+		return fmt.Errorf("%w: unsupported construction", ErrIntegrity)
+	}
+	if len(construction.Entries) != len(parts) {
+		return fmt.Errorf("%w: construction must use every part exactly once", ErrIntegrity)
+	}
+	known := make(map[string]bool, len(parts))
+	for _, part := range parts { known[part.ID] = true }
+	seenParts, seenPaths := map[string]bool{}, map[string]bool{}
+	for _, entry := range construction.Entries {
+		if !known[entry.PartID] || seenParts[entry.PartID] {
+			return fmt.Errorf("%w: invalid construction part", ErrIntegrity)
+		}
+		seenParts[entry.PartID] = true
+		if construction.Kind == "concat-v1" {
+			if entry.Path != "" { return fmt.Errorf("%w: concat construction path", ErrIntegrity) }
+			continue
+		}
+		clean := filepath.ToSlash(filepath.Clean(entry.Path))
+		if entry.Path == "" || clean != entry.Path || filepath.IsAbs(entry.Path) || strings.HasPrefix(entry.Path, "../") || strings.Contains(entry.Path, "\\") || seenPaths[strings.ToLower(entry.Path)] {
+			return fmt.Errorf("%w: unsafe package construction path", ErrIntegrity)
+		}
+		seenPaths[strings.ToLower(entry.Path)] = true
+	}
 	return nil
 }
 
@@ -296,6 +337,15 @@ func (r *Repository) ReadBlob(ctx context.Context, commit, partID string) ([]byt
 	}
 	return out, nil
 }
+
+func (r *Repository) ReadBlobOID(ctx context.Context, commit, partID string) (string, error) {
+	c, err := r.ReadCommit(ctx, commit)
+	if err != nil { return "", err }
+	part, ok := findPart(c.Manifest, partID)
+	if !ok { return "", ErrNotFound }
+	return part.Blob, nil
+}
+
 func findPart(m Manifest, id string) (Part, bool) {
 	if m.Content != nil && (id == "content" || id == m.Content.ID) {
 		return *m.Content, true
@@ -478,6 +528,13 @@ func (r *Repository) updateRef(ctx context.Context, name, next, old string) erro
 func (r *Repository) Official(ctx context.Context) (string, error) {
 	return r.ref(ctx, "refs/heads/official")
 }
+func (r *Repository) DeleteCandidate(ctx context.Context, name, expected string) error {
+	if !strings.HasPrefix(name, "refs/swarm/candidates/") || !idPattern.MatchString(strings.TrimPrefix(name, "refs/swarm/candidates/")) || !objectPattern.MatchString(expected) { return invalid("candidate ref") }
+	if current, err := r.ref(ctx, name); errors.Is(err, ErrNotFound) { return nil } else if err != nil { return err } else if current != expected { return ErrConflict }
+	if err := r.updateRef(ctx, name, strings.Repeat("0", len(expected)), expected); err != nil { return ErrConflict }
+	return nil
+}
+
 func (r *Repository) ListRefs(ctx context.Context, prefix string) ([]Ref, error) {
 	allowed := map[string]bool{"refs/swarm/candidates/": true, "refs/swarm/transactions/": true}
 	if !allowed[prefix] {
