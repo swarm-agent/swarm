@@ -19,6 +19,7 @@ import {
   desktopV3ArtifactViewerLocation,
   desktopV3ArtifactViewerSearch,
   desktopV3ArtifactMessageSelection,
+  desktopV3ArtifactPartIterationMessageSelection,
   desktopV3ArtifactPartMessageSelection,
   desktopV3ArtifactRevisionHasPart,
   desktopV3ArtifactSelection,
@@ -145,18 +146,29 @@ test('artifact catalog normalizes managed collection, progress, selection, linea
   })
 })
 
-test('artifact catalog preserves authoritative graph and step refs', () => {
+test('artifact catalog preserves Git projection and exact repository refs', () => {
   const entry = normalizeDesktopV3ArtifactCatalogEntry({
     ...managedCatalogWire,
-    graph_state: 'authoritative',
+    graph_state: 'git_projection',
     artifact_chain_id: 'chain-1',
     artifact_step_id: 'step-2',
-    chain: { id: 'chain-1', graph_state: 'authoritative', name: 'Homepage', root: { session_id: 'session-1', collection_id: 'collection-1', variant_id: 'variant-1', event_seq: 42 }, head: { session_id: 'session-1', collection_id: 'collection-1', variant_id: 'variant-1', event_seq: 42 }, revision_count: 2, last_round_id: 'step-2' },
-    step: { id: 'step-2', graph_state: 'authoritative', artifact_chain_id: 'chain-1', revision_number: 2, parent: { session_id: 'session-1', collection_id: 'collection-0', variant_id: 'variant-0', event_seq: 41 }, candidates: [{ session_id: 'session-1', collection_id: 'collection-1', variant_id: 'variant-1', event_seq: 42 }], accepted: { session_id: 'session-1', collection_id: 'collection-1', variant_id: 'variant-1', event_seq: 42 } },
+    repository_id: 'repository-1',
+    commit_oid: 'commit-2',
+    tree_oid: 'tree-2',
+    candidate_ref: 'refs/swarm/candidates/step-2',
+    parent_commit_oids: ['commit-1'],
+    chain: { id: 'chain-1', graph_state: 'git_projection', name: 'Homepage', repository_id: 'repository-1', official_ref: 'refs/swarm/official/chain-1', official_commit_oid: 'commit-2', root: { session_id: 'session-1', collection_id: 'collection-1', variant_id: 'variant-1', event_seq: 42 }, head: { session_id: 'session-1', collection_id: 'collection-1', variant_id: 'variant-1', event_seq: 42 }, revision_count: 2, last_round_id: 'step-2' },
+    step: { id: 'step-2', graph_state: 'git_projection', artifact_chain_id: 'chain-1', repository_id: 'repository-1', transaction_ref: 'refs/swarm/transactions/step-2', candidate_ref: 'refs/swarm/candidates/step-2', commit_oid: 'commit-2', parent_commit_oids: ['commit-1'], expected_old_oid: 'commit-1', resulting_oid: 'commit-2', revision_number: 2, parent: { session_id: 'session-1', collection_id: 'collection-0', variant_id: 'variant-0', event_seq: 41 }, candidates: [{ session_id: 'session-1', collection_id: 'collection-1', variant_id: 'variant-1', event_seq: 42 }], accepted: { session_id: 'session-1', collection_id: 'collection-1', variant_id: 'variant-1', event_seq: 42 } },
   })
   assert.ok(entry)
-  assert.equal(entry.graphState, 'authoritative')
+  assert.equal(entry.graphState, 'git_projection')
   assert.equal(entry.artifactStepId, 'step-2')
+  assert.equal(entry.chain?.officialRef, 'refs/swarm/official/chain-1')
+  assert.equal(entry.chain?.officialCommitOid, 'commit-2')
+  assert.equal(entry.step?.transactionRef, 'refs/swarm/transactions/step-2')
+  assert.deepEqual(entry.step?.parentCommitOids, ['commit-1'])
+  assert.equal(entry.commitOid, 'commit-2')
+  assert.equal(entry.candidateRef, 'refs/swarm/candidates/step-2')
   assert.equal(entry.step?.accepted?.variantId, 'variant-1')
   assert.deepEqual(desktopV3ArtifactSelection(entry), { session_id: 'session-1', collection_id: 'collection-1', variant_id: 'variant-1', event_seq: 42, artifact_chain_id: 'chain-1', artifact_step_id: 'step-2' })
 })
@@ -165,9 +177,9 @@ test('artifact catalog preserves multipart construction, locks, ancestry, and tu
   const digest = 'a'.repeat(64)
   const entry = normalizeDesktopV3ArtifactCatalogEntry({
     ...managedCatalogWire,
-    graph_state: 'authoritative', artifact_chain_id: 'chain-1', artifact_step_id: 'step-2', part_graph_state: 'authoritative', targeted_part_ids: ['hero', 'footer'],
-    chain: { id: 'chain-1', graph_state: 'authoritative', name: 'Homepage', root: { session_id: 'session-1', collection_id: 'collection-1', variant_id: 'variant-1', event_seq: 42 }, head: { session_id: 'session-1', collection_id: 'collection-1', variant_id: 'variant-1', event_seq: 42 }, revision_count: 2, last_round_id: 'step-2' },
-    step: { id: 'step-2', graph_state: 'authoritative', artifact_chain_id: 'chain-1', revision_number: 2, candidates: [{ session_id: 'session-1', collection_id: 'collection-1', variant_id: 'variant-1', event_seq: 42 }] },
+    graph_state: 'git_projection', artifact_chain_id: 'chain-1', artifact_step_id: 'step-2', part_graph_state: 'git_projection', targeted_part_ids: ['hero', 'footer'],
+    chain: { id: 'chain-1', graph_state: 'git_projection', name: 'Homepage', root: { session_id: 'session-1', collection_id: 'collection-1', variant_id: 'variant-1', event_seq: 42 }, head: { session_id: 'session-1', collection_id: 'collection-1', variant_id: 'variant-1', event_seq: 42 }, revision_count: 2, last_round_id: 'step-2' },
+    step: { id: 'step-2', graph_state: 'git_projection', artifact_chain_id: 'chain-1', revision_number: 2, candidates: [{ session_id: 'session-1', collection_id: 'collection-1', variant_id: 'variant-1', event_seq: 42 }] },
     part_definitions: [{ id: 'hero', label: 'Hero' }, { id: 'footer', label: 'Footer' }],
     part_revisions: [
       { reference: { artifact_chain_id: 'chain-1', part_id: 'hero', part_revision_id: 'hero-2', owner_session_id: 'session-1', digest_sha256: digest, size: 10, media_type: 'text/plain' }, parent: { artifact_chain_id: 'chain-1', part_id: 'hero', part_revision_id: 'hero-1', owner_session_id: 'session-1', digest_sha256: digest, size: 9, media_type: 'text/plain' }, iteration_turn_id: 'turn-2', iteration_group_id: 'group-2', event_seq: 42 },
@@ -187,8 +199,28 @@ test('artifact catalog preserves multipart construction, locks, ancestry, and tu
   assert.equal(entry.composition.construction?.kind, 'package-v1')
   assert.equal(entry.composition.parent?.compositionId, 'composition-1')
   assert.equal(entry.composition.parts[1]?.locked, true)
+  assert.deepEqual(entry.composition.parentCommitOids, [])
+  assert.deepEqual(entry.partRevisions?.[0]?.parentCommitOids, [])
   assert.deepEqual(entry.targetedPartIds, ['hero', 'footer'])
   assert.equal(entry.partRevisions?.[0]?.iterationGroupId, 'group-2')
+})
+
+test('focused part iteration queues the official head and a bounded three-candidate branch request', () => {
+  const entry = normalizeDesktopV3ArtifactCatalogEntry({
+    ...managedCatalogWire,
+    graph_state: 'git_projection', artifact_chain_id: 'chain-1', artifact_step_id: 'step-1', part_graph_state: 'git_projection',
+    chain: { id: 'chain-1', graph_state: 'git_projection', name: 'Three part artifact', root: { session_id: 'session-1', collection_id: 'collection-1', variant_id: 'variant-1', event_seq: 42 }, head: { session_id: 'session-1', collection_id: 'collection-1', variant_id: 'variant-1', event_seq: 42 }, revision_count: 1 },
+    step: { id: 'step-1', graph_state: 'git_projection', artifact_chain_id: 'chain-1', revision_number: 1, candidates: [{ session_id: 'session-1', collection_id: 'collection-1', variant_id: 'variant-1', event_seq: 42 }] },
+    part_definitions: [{ id: 'header', label: 'Header' }, { id: 'body', label: 'Body' }, { id: 'footer', label: 'Footer' }],
+    part_revisions: ['header', 'body', 'footer'].map((part, index) => ({ reference: { artifact_chain_id: 'chain-1', part_id: part, part_revision_id: `${part}-1`, owner_session_id: 'session-1', digest_sha256: String(index + 1).repeat(64), size: 10, media_type: 'text/plain' }, event_seq: 42 })),
+    composition: { id: 'composition-1', artifact_chain_id: 'chain-1', parts: ['header', 'body', 'footer'].map((part, index) => ({ part_id: part, definition_owner_session_id: 'session-1', revision: { artifact_chain_id: 'chain-1', part_id: part, part_revision_id: `${part}-1`, owner_session_id: 'session-1', digest_sha256: String(index + 1).repeat(64), size: 10, media_type: 'text/plain' } })) },
+  })
+  assert.ok(entry)
+  const selection = desktopV3ArtifactPartIterationMessageSelection(entry, 'body', 3)
+  assert.equal(selection.part_id, 'body')
+  assert.match(selection.pending_request ?? '', /Create 3 new alternatives/)
+  assert.match(selection.pending_request ?? '', /Git-backed official composition head/)
+  assert.match(selection.pending_request ?? '', /managed Designer Iteration Swarm/)
 })
 
 test('artifact animation profiles preserve only the exact server-owned runtime contract', () => {
@@ -515,7 +547,7 @@ test('artifact chips preserve exact iteration identity and describe the selected
 test('authoritative part chips carry the exact part identity and readable target metadata', () => {
   const entry = normalizeDesktopV3ArtifactCatalogEntry({
     ...managedCatalogWire,
-    part_graph_state: 'authoritative',
+    part_graph_state: 'git_projection',
     artifact_chain_id: 'chain-1',
     part_definitions: [{ id: 'signal', label: 'Signal', description: 'Signal animation.', locator: { id: 'signal', label: 'Signal', kind: 'temporal', description: 'Signal animation.', start_ms: 0, end_ms: 4000 } }],
     part_revisions: [{ reference: { artifact_chain_id: 'chain-1', part_id: 'signal', part_revision_id: 'signal-r1', owner_session_id: 'session-1', digest_sha256: 'a'.repeat(64), size: 10, media_type: 'text/html' }, iteration_turn_id: 'turn-1', iteration_group_id: 'group-1', event_seq: 42 }],

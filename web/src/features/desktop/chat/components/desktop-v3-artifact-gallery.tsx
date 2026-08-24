@@ -31,6 +31,7 @@ import {
   desktopV3ArtifactCatalogEntryKey,
   desktopV3ArtifactDownloadName,
   desktopV3ArtifactMessageSelection,
+  desktopV3ArtifactPartIterationMessageSelection,
   desktopV3ArtifactPartMessageSelection,
   desktopV3ArtifactRevisionHasPart,
   desktopV3ArtifactRequiresBundle,
@@ -160,9 +161,9 @@ function collectionProgress(entries: DesktopV3ArtifactGalleryEntry[]): DesktopV3
 }
 
 function collectionLandingArtifact(group: ArtifactCollectionGroup): DesktopV3ArtifactGalleryEntry | undefined {
-  const authoritative = group.entries.find((entry) => entry.graphState === 'authoritative' && entry.chain?.head)
-  if (!authoritative?.chain?.head) return group.entries[0]
-  const head = authoritative.chain.head
+  const projected = group.entries.find((entry) => entry.graphState === 'git_projection' && entry.chain?.head)
+  if (!projected?.chain?.head) return group.entries[0]
+  const head = projected.chain.head
   return group.entries.find((entry) => entry.sessionId === head.sessionId
     && entry.collectionId === head.collectionId
     && entry.artifactId === head.variantId
@@ -268,7 +269,7 @@ export function DesktopV3ArtifactGallery({
   const [iterationTimeMs, setIterationTimeMs] = useState(0)
   const [iterationPlaying, setIterationPlaying] = useState(false)
   const [iterationPlayerReadyVersion, setIterationPlayerReadyVersion] = useState(0)
-  const [actionPending, setActionPending] = useState<'add' | 'use' | 'ask-part' | 'apply-parts' | 'iterate-section' | 'next-section' | 'export-video-stills' | 'download-collection' | 'reveal-artifact' | 'reveal-collection' | ''>('')
+  const [actionPending, setActionPending] = useState<'add' | 'use' | 'ask-part' | 'apply-parts' | 'iterate-part' | 'iterate-section' | 'next-section' | 'export-video-stills' | 'download-collection' | 'reveal-artifact' | 'reveal-collection' | ''>('')
   const [actionError, setActionError] = useState('')
   const [actionConfirmation, setActionConfirmation] = useState('')
   const [query, setQuery] = useState('')
@@ -358,9 +359,11 @@ export function DesktopV3ArtifactGallery({
   const selectedAnimationActive = animationPreviewVisible
   const selectedVideoProfileCompatible = !selected?.animationProfile || selected.animationProfile.profileId === 'final_render'
   const iterationSection = iterationDescriptor?.sections.find((section) => section.id === iterationSectionId) ?? iterationDescriptor?.sections[0]
-  const selectedPartDefinitions = selected?.partGraphState === 'authoritative'
+  const selectedPartDefinitions = selected?.partGraphState === 'git_projection'
     ? selected.partDefinitions ?? []
-    : (selected?.parts ?? []).map((part) => ({ id: part.id, label: part.label, description: part.description, locator: part }))
+    : selected?.partGraphState === 'legacy_unproven'
+      ? (selected.parts ?? []).map((part) => ({ id: part.id, label: part.label, description: part.description, locator: part }))
+      : []
   const selectedParts = selectedPartDefinitions.filter((part) => selectedPartIds.includes(part.id))
   const selectedAcceptedPartHeads = selected?.acceptedPartHeads ?? []
   const selectedAcceptedPartCount = selected?.composition?.parts.filter((part) => selectedAcceptedPartHeads.some((accepted) => desktopV3ArtifactStudioSamePartRevision(part, accepted))).length ?? 0
@@ -396,7 +399,7 @@ export function DesktopV3ArtifactGallery({
   useEffect(() => {
     setDurableSelectedId((current) => {
       if (current && artifacts.some((artifact) => artifactSelectionKey(artifact) === current && artifact.selected)) return current
-      const persisted = artifacts.find((artifact) => artifact.graphState === 'authoritative'
+      const persisted = artifacts.find((artifact) => artifact.graphState === 'git_projection'
         && artifact.chain?.head
         && artifact.sessionId === artifact.chain.head.sessionId
         && artifact.collectionId === artifact.chain.head.collectionId
@@ -844,17 +847,34 @@ export function DesktopV3ArtifactGallery({
   }
 
   const requestPartChanges = async (requestedParts = selectedParts) => {
-    if (!selected || !onAddToChat || !selectedCanAttach || requestedParts.length === 0) return
+    const source = selectedHead ?? selected
+    if (!source || !onAddToChat || source.status !== 'ready' || !source.collectionId || !(source.eventSeq ?? 0) || requestedParts.length === 0) return
     try {
       setActionPending('ask-part')
       setActionError('')
       await onAddToChat(requestedParts.map((part) => {
-        const selection = desktopV3ArtifactPartMessageSelection(selected, part.id, 'use')
+        const selection = desktopV3ArtifactPartMessageSelection(source, part.id, 'use')
         return { label: selection.label, description: selection.description, selection }
       }))
       setOpen(false)
     } catch (error) {
       setActionError(error instanceof Error ? error.message : 'Could not attach these artifact parts for changes')
+    } finally {
+      setActionPending('')
+    }
+  }
+
+  const requestAnotherPartIteration = async (partId: string) => {
+    const source = selectedHead ?? selected
+    if (!source || !onAddToChat || source.status !== 'ready' || !source.collectionId || !(source.eventSeq ?? 0)) return
+    try {
+      setActionPending('iterate-part')
+      setActionError('')
+      const selection = desktopV3ArtifactPartIterationMessageSelection(source, partId, 3)
+      await onAddToChat([{ label: selection.label, description: selection.description, selection }])
+      setOpen(false)
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : 'Could not request another iteration for this part')
     } finally {
       setActionPending('')
     }
@@ -1105,7 +1125,7 @@ export function DesktopV3ArtifactGallery({
     try {
       setActionPending('use')
       setActionError('')
-      if (selected.graphState !== 'authoritative' || !selected.artifactChainId || !selected.artifactStepId) {
+      if (selected.graphState !== 'git_projection' || !selected.artifactChainId || !selected.artifactStepId) {
         throw new Error('This legacy artifact is unstructured and cannot advance a canonical head')
       }
       const canonicalSelection = await useDesktopV3Artifact(desktopV3ArtifactSelection(selected))
@@ -1203,7 +1223,7 @@ export function DesktopV3ArtifactGallery({
   const workspaceGroups = organization === 'workspace'
     ? Array.from(new Map(groups.map((group) => [group.workspaceLabel, group.workspaceLabel])).keys())
     : []
-  const triggerArtifact = groups.map(collectionLandingArtifact).find((artifact) => artifact?.graphState === 'authoritative')
+  const triggerArtifact = groups.map(collectionLandingArtifact).find((artifact) => artifact?.graphState === 'git_projection')
     ?? artifacts[0]
 
   if (!showTrigger && !open) return null
@@ -1317,7 +1337,7 @@ export function DesktopV3ArtifactGallery({
                           {turn.parts.length ? <div className="grid gap-1 border-t border-[var(--app-border)] p-1.5"><p className="px-0.5 text-[9px] text-[var(--app-text-subtle)]">{turn.parts.length} changed part{turn.parts.length === 1 ? '' : 's'}</p>{turn.parts.map((turnPart) => {
                             const definition = selectedPartDefinitions.find((part) => part.id === turnPart.partId)
                             return <section key={turnPart.partId} className="overflow-hidden rounded-md border border-[var(--app-border)]" data-artifact-studio-turn-part={turnPart.partId}>
-                              <button type="button" className="flex w-full items-center justify-between gap-2 px-2 py-1 text-left hover:bg-[var(--app-surface-hover)]" onClick={() => { const target = turnPart.accepted?.entry ?? turnPart.candidates.find((candidate) => candidate.entry)?.entry; if (target) selectPartIterationArtifact(target, turnPart.partId) }}><span className="truncate text-[9px] font-semibold">{definition?.label || turnPart.partId}</span><span className="shrink-0 text-[9px] text-[var(--app-text-subtle)]">{definition?.locator?.kind === 'temporal' ? `${formatDesktopV3ArtifactIterationTime(definition.locator.startMs)} · play here` : definition?.locator?.kind || 'part'}</span></button>
+                              <div className="flex items-center gap-1 px-1 py-0.5"><button type="button" className="flex min-w-0 flex-1 items-center justify-between gap-2 px-1 py-0.5 text-left hover:bg-[var(--app-surface-hover)]" onClick={() => { const target = turnPart.accepted?.entry ?? turnPart.candidates.find((candidate) => candidate.entry)?.entry; if (target) selectPartIterationArtifact(target, turnPart.partId) }}><span className="truncate text-[9px] font-semibold">{definition?.label || turnPart.partId}</span><span className="shrink-0 text-[9px] text-[var(--app-text-subtle)]">{definition?.locator?.kind === 'temporal' ? `${formatDesktopV3ArtifactIterationTime(definition.locator.startMs)} · play here` : definition?.locator?.kind || 'part'}</span></button>{onAddToChat ? <button type="button" className="shrink-0 rounded border border-[var(--app-border)] px-1.5 py-0.5 text-[9px] font-semibold text-[var(--app-primary)] hover:bg-[var(--app-primary-soft)] disabled:opacity-50" disabled={Boolean(actionPending)} onClick={() => void requestAnotherPartIteration(turnPart.partId)} data-artifact-iterate-part>{actionPending === 'iterate-part' ? <Loader2 className="mr-1 inline size-2.5 animate-spin" /> : <Sparkles className="mr-1 inline size-2.5" />}Iterate again</button> : null}</div>
                               <div className="grid gap-1 border-t border-[var(--app-border)] p-1">{turnPart.candidates.map((candidate, index) => {
                                 const artifact = candidate.entry
                                 const viewed = Boolean(artifact && selected && artifactSelectionKey(artifact) === artifactSelectionKey(selected))
@@ -1325,7 +1345,7 @@ export function DesktopV3ArtifactGallery({
                                 const staged = stagedPartChoices[turnPart.partId]
                                 const stagedHere = Boolean(candidate.part && staged?.revision.partRevisionId === candidate.part.revision.partRevisionId && staged.revision.ownerSessionId === candidate.part.revision.ownerSessionId)
                                 return <div key={`${candidate.reference.sessionId}:${candidate.reference.variantId}:${turnPart.partId}`} className={cn('overflow-hidden rounded border border-[var(--app-border)]', viewed ? 'bg-[var(--app-primary-soft)] text-[var(--app-primary)]' : 'text-[var(--app-text-muted)]')}>
-                                  <button type="button" className="flex w-full min-w-0 items-center gap-2 px-2 py-1.5 text-left text-[9px] hover:bg-[var(--app-surface-hover)]" disabled={!artifact} onClick={() => { if (artifact) selectPartIterationArtifact(artifact, turnPart.partId) }}><span className="grid size-4 shrink-0 place-items-center rounded-full border border-[var(--app-border)] font-mono">{artifact?.candidateIndex || index + 1}</span><span className="min-w-0 flex-1 truncate">Option {artifact?.candidateIndex || index + 1} · {artifact ? variantDisplayLabel(artifact, index) : 'Loading'}</span><span className="shrink-0">{artifact?.status === 'staging' ? 'Generating' : accepted ? 'Committed' : viewed ? 'Viewing' : 'Available'}</span></button>
+                                  <button type="button" className="flex w-full min-w-0 items-center gap-2 px-2 py-1.5 text-left text-[9px] hover:bg-[var(--app-surface-hover)]" disabled={!artifact} onClick={() => { if (artifact) selectPartIterationArtifact(artifact, turnPart.partId) }}><span className="grid size-4 shrink-0 place-items-center rounded-full border border-[var(--app-border)] font-mono">{artifact?.candidateIndex || index + 1}</span><span className="min-w-0 flex-1 truncate">Option {artifact?.candidateIndex || index + 1} · {artifact ? variantDisplayLabel(artifact, index) : 'Loading'}</span><span className="shrink-0">{!artifact ? 'Pending' : artifact.status === 'staging' ? 'Generating' : artifact.status === 'failed' || artifact.status === 'unavailable' ? 'Failed' : accepted ? 'Committed' : viewed ? 'Viewing' : 'Available'}</span></button>
                                   {artifact?.status === 'ready' && candidate.part ? <div className="flex items-center gap-1 border-t border-[var(--app-border)] px-2 py-1"><button type="button" className="rounded border border-[var(--app-border)] px-1.5 py-0.5 font-semibold hover:bg-[var(--app-surface-active)]" onClick={() => stagePartChoice(artifact, turnPart.partId, true)}>Stage lock</button><button type="button" className="rounded border border-[var(--app-border)] px-1.5 py-0.5 font-semibold hover:bg-[var(--app-surface-active)]" onClick={() => stagePartChoice(artifact, turnPart.partId, false)}>Stage unlocked</button>{stagedHere ? <span className="ml-auto rounded-full bg-[var(--app-primary)] px-1.5 py-0.5 font-semibold text-white">Staged {staged?.locked ? 'lock' : 'unlocked'}</span> : null}</div> : null}
                                 </div>
                               })}</div>
@@ -1409,7 +1429,7 @@ export function DesktopV3ArtifactGallery({
                   </div>
 
                 </section> : null}
-                {selectedPartDefinitions.length ? <section className="shrink-0 border-t border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-2" aria-label="Artifact parts" data-artifact-parts>{Object.keys(stagedPartChoices).length ? <div className="mb-2 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-[var(--app-primary)] bg-[var(--app-primary-soft)] px-2.5 py-2" data-artifact-staged-part-choices><span className="text-[10px] font-semibold text-[var(--app-primary)]">{Object.keys(stagedPartChoices).length} exact part choice{Object.keys(stagedPartChoices).length === 1 ? '' : 's'} staged</span><span className="flex gap-1"><button type="button" className="rounded-md border border-[var(--app-primary)] px-2 py-1 text-[10px] font-semibold text-[var(--app-primary)]" disabled={Boolean(actionPending)} onClick={() => setStagedPartChoices({})}>Clear</button><button type="button" className="inline-flex items-center gap-1 rounded-md bg-[var(--app-primary)] px-2 py-1 text-[10px] font-semibold text-white disabled:opacity-50" disabled={Boolean(actionPending)} onClick={() => void applyStagedPartChoices()} data-artifact-apply-part-choices>{actionPending === 'apply-parts' ? <Loader2 size={11} className="animate-spin" /> : <Check size={11} />}Apply atomically</button></span></div> : null}<div className="mb-1.5 flex items-center justify-between gap-2"><span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--app-text-subtle)]">Parts · select one or more change targets · {selectedAcceptedPartCount}/{selectedPartDefinitions.length} accepted</span>{selectedParts.length ? <button type="button" className="inline-flex items-center gap-1 rounded-md bg-[var(--app-primary)] px-2 py-1 text-[10px] font-semibold text-white disabled:opacity-50" disabled={!onAddToChat || !selectedCanAttach || Boolean(actionPending)} onClick={() => void requestPartChanges()} data-artifact-ask-selected-parts>{actionPending === 'ask-part' ? <Loader2 size={11} className="animate-spin" /> : <MessageSquarePlus size={11} />}Ask changes to {selectedParts.length}</button> : <span className="text-[10px] text-[var(--app-text-subtle)]">No parts selected</span>}</div><div className="flex min-w-0 gap-2 overflow-x-auto">{selectedPartDefinitions.map((part, index) => { const active = selectedPartIds.includes(part.id); const slot = selected.composition?.parts.find((candidate) => candidate.partId === part.id); const accepted = selectedAcceptedPartHeads.find((candidate) => candidate.partId === part.id); const acceptedCurrent = Boolean(slot && accepted && desktopV3ArtifactStudioSamePartRevision(slot, accepted)); return <button key={part.id} type="button" className={cn('min-w-36 shrink-0 rounded-lg border px-3 py-2 text-left hover:bg-[var(--app-surface-hover)]', active ? 'border-[var(--app-primary)] bg-[var(--app-primary-soft)]' : 'border-[var(--app-border)] bg-[var(--app-bg)]')} aria-pressed={active} onClick={() => selectArtifactPart(part)} data-artifact-part={part.id}><span className="flex items-center gap-1.5 text-[10px] font-semibold">{active ? <Check size={11} /> : (part.locator?.kind ?? 'semantic') === 'temporal' ? <Play size={11} /> : null}{index + 1}. {part.label}</span><span className="block text-[9px] text-[var(--app-text-subtle)]">{acceptedCurrent ? 'Accepted revision' : slot?.locked ? 'Locked pending revision' : (part.locator?.kind ?? 'semantic') === 'temporal' ? `${formatDesktopV3ArtifactIterationTime(part.locator?.startMs ?? 0)} · play from here` : (part.locator?.kind ?? 'semantic')}</span></button>})}</div></section> : null}
+                {selectedPartDefinitions.length ? <section className="shrink-0 border-t border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-2" aria-label="Artifact parts" data-artifact-parts>{Object.keys(stagedPartChoices).length ? <div className="mb-2 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-[var(--app-primary)] bg-[var(--app-primary-soft)] px-2.5 py-2" data-artifact-staged-part-choices><span className="text-[10px] font-semibold text-[var(--app-primary)]">{Object.keys(stagedPartChoices).length} exact part choice{Object.keys(stagedPartChoices).length === 1 ? '' : 's'} staged</span><span className="flex gap-1"><button type="button" className="rounded-md border border-[var(--app-primary)] px-2 py-1 text-[10px] font-semibold text-[var(--app-primary)]" disabled={Boolean(actionPending)} onClick={() => setStagedPartChoices({})}>Clear</button><button type="button" className="inline-flex items-center gap-1 rounded-md bg-[var(--app-primary)] px-2 py-1 text-[10px] font-semibold text-white disabled:opacity-50" disabled={Boolean(actionPending)} onClick={() => void applyStagedPartChoices()} data-artifact-apply-part-choices>{actionPending === 'apply-parts' ? <Loader2 size={11} className="animate-spin" /> : <Check size={11} />}Apply atomically</button></span></div> : null}<div className="mb-1.5 flex items-center justify-between gap-2"><span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--app-text-subtle)]">Parts · select one or more change targets · {selectedAcceptedPartCount}/{selectedPartDefinitions.length} accepted</span>{selectedParts.length ? <button type="button" className="inline-flex items-center gap-1 rounded-md bg-[var(--app-primary)] px-2 py-1 text-[10px] font-semibold text-white disabled:opacity-50" disabled={!onAddToChat || !(selectedHead ?? selectedCanAttach) || Boolean(actionPending)} onClick={() => void requestPartChanges()} data-artifact-ask-selected-parts>{actionPending === 'ask-part' ? <Loader2 size={11} className="animate-spin" /> : <MessageSquarePlus size={11} />}Ask changes to {selectedParts.length}</button> : <span className="text-[10px] text-[var(--app-text-subtle)]">No parts selected</span>}</div><div className="flex min-w-0 gap-2 overflow-x-auto">{selectedPartDefinitions.map((part, index) => { const active = selectedPartIds.includes(part.id); const slot = selected.composition?.parts.find((candidate) => candidate.partId === part.id); const accepted = selectedAcceptedPartHeads.find((candidate) => candidate.partId === part.id); const acceptedCurrent = Boolean(slot && accepted && desktopV3ArtifactStudioSamePartRevision(slot, accepted)); return <button key={part.id} type="button" className={cn('min-w-36 shrink-0 rounded-lg border px-3 py-2 text-left hover:bg-[var(--app-surface-hover)]', active ? 'border-[var(--app-primary)] bg-[var(--app-primary-soft)]' : 'border-[var(--app-border)] bg-[var(--app-bg)]')} aria-pressed={active} onClick={() => selectArtifactPart(part)} data-artifact-part={part.id}><span className="flex items-center gap-1.5 text-[10px] font-semibold">{active ? <Check size={11} /> : (part.locator?.kind ?? 'semantic') === 'temporal' ? <Play size={11} /> : null}{index + 1}. {part.label}</span><span className="block text-[9px] text-[var(--app-text-subtle)]">{acceptedCurrent ? 'Accepted revision' : slot?.locked ? 'Locked pending revision' : (part.locator?.kind ?? 'semantic') === 'temporal' ? `${formatDesktopV3ArtifactIterationTime(part.locator?.startMs ?? 0)} · play from here` : (part.locator?.kind ?? 'semantic')}</span></button>})}</div></section> : null}
                 {!studioModeActive && selectedRounds.length > 1 ? <section className="shrink-0 border-t border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-2" aria-label="Artifact revision history" data-artifact-revision-history><div className="flex gap-2 overflow-x-auto">{selectedRounds.map((round) => <div key={round.id} className="shrink-0 rounded-lg border border-[var(--app-border)] px-2 py-1.5 text-[10px]"><span className="font-semibold">Revision {round.revisionNumber}</span><span className="ml-1 text-[var(--app-text-subtle)]">{round.candidates.length} candidate{round.candidates.length === 1 ? '' : 's'}</span></div>)}</div></section> : null}
                 <footer className={cn('grid shrink-0 gap-1.5 border-t border-[var(--app-border)] bg-[var(--app-surface)] px-2 py-2 md:flex md:flex-wrap md:items-center md:justify-between md:gap-2 md:px-4 md:py-3', selectedCanExportVideoStills && onExportVideoStills ? 'grid-cols-4' : 'grid-cols-3')} aria-live="polite" data-mobile-generation-actions>
                   <div className="col-span-full min-w-0 text-[10px] leading-4 md:flex-1 md:text-xs">{actionError ? <span className="text-[var(--app-danger)]">{actionError}</span> : actionConfirmation ? <span className="text-[var(--app-success)]">{actionConfirmation}</span> : <span className="text-[var(--app-text-subtle)]"><strong className="text-[var(--app-text)]">Your choice{selectedChoiceCount === 1 ? '' : 's'}: {selectedChoiceCount}</strong> · Attach for changes keeps the durable selected design unchanged. Use this design selects the previewed choice and continues with iterations.{selectedIsCanonical ? ' This choice is already the durable selected design.' : ''}</span>}</div>

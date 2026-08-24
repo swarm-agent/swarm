@@ -28,37 +28,38 @@ export function desktopV3ArtifactStudioSamePartRevision(left: DesktopV3ArtifactC
     && left.revision.mediaType === right.revision.mediaType
 }
 
-function authoritative(entry: DesktopV3ArtifactCatalogEntry): boolean {
-  return entry.graphState === 'authoritative'
+function gitProjected(entry: DesktopV3ArtifactCatalogEntry): boolean {
+  return entry.graphState === 'git_projection'
     && Boolean(entry.artifactChainId && entry.artifactStepId && entry.chain && entry.step)
-    && entry.chain?.graphState === 'authoritative'
+    && entry.chain?.graphState === 'git_projection'
     && entry.chain.id === entry.artifactChainId
-    && entry.step?.graphState === 'authoritative'
+    && entry.step?.graphState === 'git_projection'
     && entry.step.artifactChainId === entry.artifactChainId
     && entry.step.id === entry.artifactStepId
-    && entry.step.candidates.some((candidate) => sameReference(entry, candidate))
+    && (entry.step.candidates.some((candidate) => sameReference(entry, candidate))
+      || sameReference(entry, entry.chain.head))
 }
 
 export function desktopV3ArtifactStudioChainKey(entry: DesktopV3ArtifactCatalogEntry): string {
-  return authoritative(entry) ? entry.artifactChainId! : ''
+  return gitProjected(entry) ? entry.artifactChainId! : ''
 }
 
 export function desktopV3ArtifactStudioEntries(entries: readonly DesktopV3ArtifactCatalogEntry[], entry: DesktopV3ArtifactCatalogEntry): DesktopV3ArtifactCatalogEntry[] {
   const chainKey = desktopV3ArtifactStudioChainKey(entry)
   if (!chainKey) return [entry]
-  return entries.filter((candidate) => authoritative(candidate) && candidate.artifactChainId === chainKey)
+  return entries.filter((candidate) => gitProjected(candidate) && candidate.artifactChainId === chainKey)
     .sort((left, right) => left.step!.revisionNumber - right.step!.revisionNumber
       || (left.candidateIndex ?? 0) - (right.candidateIndex ?? 0)
       || left.updatedAt - right.updatedAt)
 }
 
 export function desktopV3ArtifactStudioHead(entries: readonly DesktopV3ArtifactCatalogEntry[], entry: DesktopV3ArtifactCatalogEntry): DesktopV3ArtifactCatalogEntry | undefined {
-  if (!authoritative(entry)) return undefined
+  if (!gitProjected(entry)) return undefined
   return desktopV3ArtifactStudioEntries(entries, entry).find((candidate) => sameReference(candidate, entry.chain?.head))
 }
 
 export function desktopV3ArtifactStudioRounds(entries: readonly DesktopV3ArtifactCatalogEntry[], entry: DesktopV3ArtifactCatalogEntry): Array<{ id: string; revisionNumber: number; candidates: DesktopV3ArtifactCatalogEntry[]; accepted?: DesktopV3ArtifactCatalogEntry }> {
-  if (!authoritative(entry)) return []
+  if (!gitProjected(entry)) return []
   const rounds = new Map<string, DesktopV3ArtifactCatalogEntry[]>()
   for (const candidate of desktopV3ArtifactStudioEntries(entries, entry)) {
     const id = candidate.step!.id
@@ -119,7 +120,7 @@ export interface DesktopV3ArtifactStudioPartIteration {
 export function desktopV3ArtifactStudioChangedPartIds(entries: readonly DesktopV3ArtifactCatalogEntry[], candidate: DesktopV3ArtifactCatalogEntry): string[] {
   const composition = candidate.composition
   const parent = desktopV3ArtifactStudioParent(entries, candidate)?.composition
-  if (candidate.partGraphState !== 'authoritative' || !composition || !parent || composition.parts.length !== parent.parts.length) return []
+  if (candidate.partGraphState !== 'git_projection' || !composition || !parent || composition.parts.length !== parent.parts.length) return []
 
   // Composition order is presentation metadata, not part identity. Compare slots by
   // their durable part IDs so a producer that emits the same composition in a
@@ -143,6 +144,9 @@ function turnCandidate(
   reference: DesktopV3ArtifactChainReference,
 ): DesktopV3ArtifactStudioTurnCandidate {
   const entry = entries.find((candidate) => sameReference(candidate, reference))
+    ?? entries.find((candidate) => candidate.sessionId === reference.sessionId
+      && candidate.collectionId === reference.collectionId
+      && candidate.artifactId === reference.variantId)
   return { reference, ...(entry ? { entry } : {}) }
 }
 
@@ -152,7 +156,7 @@ function turnCandidate(
  * while legacy entries never gain inferred turns.
  */
 export function desktopV3ArtifactStudioTurns(entries: readonly DesktopV3ArtifactCatalogEntry[], entry: DesktopV3ArtifactCatalogEntry): DesktopV3ArtifactStudioTurn[] {
-  if (!authoritative(entry)) return []
+  if (!gitProjected(entry)) return []
   const chainEntries = desktopV3ArtifactStudioEntries(entries, entry)
   const steps = new Map<string, DesktopV3ArtifactCatalogEntry>()
   for (const candidate of chainEntries) {
@@ -163,10 +167,10 @@ export function desktopV3ArtifactStudioTurns(entries: readonly DesktopV3Artifact
   }
   return [...steps.values()].map((representative): DesktopV3ArtifactStudioTurn => {
     const step = representative.step!
-    const candidates = step.candidates.map((reference) => turnCandidate(chainEntries, reference))
+    const candidates = step.candidates.map((reference) => turnCandidate(entries, reference))
     const changedByCandidate = candidates.map((candidate) => {
       if (!candidate.entry) return []
-      if (!step.parent) return candidate.entry.partGraphState === 'authoritative'
+      if (!step.parent) return candidate.entry.partGraphState === 'git_projection'
         ? candidate.entry.composition?.parts.map((part) => part.partId) ?? []
         : []
       return desktopV3ArtifactStudioChangedPartIds(chainEntries, candidate.entry)
@@ -183,7 +187,7 @@ export function desktopV3ArtifactStudioTurns(entries: readonly DesktopV3Artifact
         : [])
     })
     const changedPartIds = [...new Set([...changedByCandidate.flat(), ...declaredByCandidate.flat()])]
-    const accepted = step.accepted ? turnCandidate(chainEntries, step.accepted) : undefined
+    const accepted = step.accepted ? turnCandidate(entries, step.accepted) : undefined
     const parts = changedPartIds.map((partId): DesktopV3ArtifactStudioTurnPart => {
       const partCandidates = candidates.flatMap((candidate, index) => {
         if (!changedByCandidate[index]?.includes(partId) && !declaredByCandidate[index]?.includes(partId)) return []
@@ -212,7 +216,7 @@ export function desktopV3ArtifactStudioTurns(entries: readonly DesktopV3Artifact
 }
 
 export function desktopV3ArtifactStudioPartIterations(entries: readonly DesktopV3ArtifactCatalogEntry[], entry: DesktopV3ArtifactCatalogEntry): DesktopV3ArtifactStudioPartIteration[] {
-  if (entry.partGraphState !== 'authoritative' || !entry.composition) return []
+  if (entry.partGraphState !== 'git_projection' || !entry.composition) return []
   const head = desktopV3ArtifactStudioHead(entries, entry) ?? entry
   const definitions = new Map((head.partDefinitions ?? entry.partDefinitions ?? []).map((definition) => [definition.id, definition]))
   const currentComposition = head.composition ?? entry.composition
@@ -245,14 +249,14 @@ export function desktopV3ArtifactStudioPartIterations(entries: readonly DesktopV
 }
 
 export function desktopV3ArtifactStudioParent(entries: readonly DesktopV3ArtifactCatalogEntry[], entry: DesktopV3ArtifactCatalogEntry): DesktopV3ArtifactCatalogEntry | undefined {
-  if (!authoritative(entry) || !entry.step?.parent) return undefined
-  return entries.find((candidate) => authoritative(candidate)
+  if (!gitProjected(entry) || !entry.step?.parent) return undefined
+  return entries.find((candidate) => gitProjected(candidate)
     && candidate.artifactChainId === entry.artifactChainId
     && sameReference(candidate, entry.step?.parent))
 }
 
 export function desktopV3ArtifactStudioRoot(entries: readonly DesktopV3ArtifactCatalogEntry[], entry: DesktopV3ArtifactCatalogEntry): DesktopV3ArtifactCatalogEntry {
-  if (!authoritative(entry)) return entry
+  if (!gitProjected(entry)) return entry
   return desktopV3ArtifactStudioEntries(entries, entry).find((candidate) => sameReference(candidate, entry.chain?.root)) ?? entry
 }
 
@@ -278,13 +282,13 @@ export function desktopV3ArtifactStudioSectionLineage(entries: readonly DesktopV
 }
 
 export function desktopV3ArtifactStudioBranchDepth(_entries: readonly DesktopV3ArtifactCatalogEntry[], entry: DesktopV3ArtifactCatalogEntry): number {
-  return authoritative(entry) ? Math.max(0, entry.step!.revisionNumber - 1) : 0
+  return gitProjected(entry) ? Math.max(0, entry.step!.revisionNumber - 1) : 0
 }
 
 export function desktopV3ArtifactStudioSectionAlternatives(entries: readonly DesktopV3ArtifactCatalogEntry[], source: DesktopV3ArtifactCatalogEntry, sectionId: string): DesktopV3ArtifactCatalogEntry[] {
-  if (!authoritative(source)) return []
+  if (!gitProjected(source)) return []
   const chainKey = source.artifactChainId
-  return entries.filter((entry) => authoritative(entry)
+  return entries.filter((entry) => gitProjected(entry)
       && entry.artifactChainId === chainKey
       && desktopV3ArtifactStudioSectionLineage(entries, entry)?.iterationSectionId === sectionId)
     .sort((left, right) => left.step!.revisionNumber - right.step!.revisionNumber
@@ -292,5 +296,5 @@ export function desktopV3ArtifactStudioSectionAlternatives(entries: readonly Des
 }
 
 export function desktopV3ArtifactStudioLockedAlternative(entries: readonly DesktopV3ArtifactCatalogEntry[]): DesktopV3ArtifactCatalogEntry | undefined {
-  return entries.find((entry) => authoritative(entry) && sameReference(entry, entry.step?.accepted))
+  return entries.find((entry) => gitProjected(entry) && sameReference(entry, entry.step?.accepted))
 }

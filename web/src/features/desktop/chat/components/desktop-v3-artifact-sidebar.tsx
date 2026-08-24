@@ -8,6 +8,7 @@ import {
   formatDesktopV3ArtifactAnimationProfile,
   formatDesktopV3ArtifactOutputRequirements,
   desktopV3ArtifactMessageSelection,
+  desktopV3ArtifactPartIterationMessageSelection,
   desktopV3ArtifactPartMessageSelection,
   selectDesktopV3ArtifactPartRevisions,
   type DesktopV3ArtifactCatalogEntry,
@@ -204,7 +205,7 @@ export function desktopV3ArtifactSidebarGroups(
   for (const artifact of artifacts) {
     const collectionId = artifact.collectionId?.trim() ?? ''
     const owningSessionId = artifact.lineage?.parentSessionId || artifact.sessionId
-    const chainId = artifact.graphState === 'authoritative' && artifact.step?.id === artifact.artifactStepId
+    const chainId = artifact.graphState === 'git_projection' && artifact.step?.id === artifact.artifactStepId
       ? artifact.artifactChainId?.trim() ?? ''
       : ''
     const key = chainId
@@ -307,8 +308,8 @@ export function DesktopV3ArtifactSidebar({
           data-artifact-thumbnail-rail
         >
           {groups.map((group) => {
-            const authoritative = group.entries.find((entry) => entry.graphState === 'authoritative' && entry.chain?.head)
-            const head = authoritative?.chain?.head
+            const projected = group.entries.find((entry) => entry.graphState === 'git_projection' && entry.chain?.head)
+            const head = projected?.chain?.head
             const representative = head
               ? group.entries.find((entry) => entry.sessionId === head.sessionId
                 && entry.collectionId === head.collectionId
@@ -317,7 +318,7 @@ export function DesktopV3ArtifactSidebar({
               : group.entries[0]
             if (!representative) return null
             const grouped = Boolean(group.collectionId)
-            const artifactTurns = representative.graphState === 'authoritative' ? desktopV3ArtifactStudioTurns(group.entries, representative) : []
+            const artifactTurns = representative.graphState === 'git_projection' ? desktopV3ArtifactStudioTurns(group.entries, representative) : []
             const authoritativeHead = head
               ? group.entries.find((entry) => entry.sessionId === head.sessionId && entry.collectionId === head.collectionId && entry.artifactId === head.variantId && entry.eventSeq === head.eventSeq)
               : undefined
@@ -333,7 +334,7 @@ export function DesktopV3ArtifactSidebar({
             return (
               <section key={group.key} className={cn('min-w-0 overflow-hidden rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)]', embedded ? 'w-64 shrink-0' : 'w-full')} data-artifact-collection-group={grouped ? group.collectionId : undefined}>
                 <a href={artifactHref(representative)} className="flex min-w-0 items-center justify-between gap-2 border-b border-[var(--app-border)] px-3 py-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-primary)]" onClick={(event: MouseEvent<HTMLAnchorElement>) => { if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return; event.preventDefault(); onOpenArtifact(representative) }}>
-                  <span className="min-w-0"><span className="block truncate text-xs font-semibold">{representative.graphState === 'authoritative' ? (representative.chain?.name || representative.label) : grouped ? group.label : representative.label}</span><span className="mt-0.5 block text-[10px] text-[var(--app-text-subtle)]">{representative.graphState === 'authoritative' ? `${artifactTurns.length} turn${artifactTurns.length === 1 ? '' : 's'} · current head Turn ${authoritativeHead?.step?.revisionNumber || representative.step?.revisionNumber || 1}` : grouped ? `Unstructured · ${sidebarProgressLabel(group)}` : `Unstructured · ${representative.status === 'staging' ? 'Generating' : representative.kind || representative.mediaType}`}</span>{requirementLabel ? <span className="mt-0.5 block truncate text-[9px] text-[var(--app-text-subtle)]" data-artifact-output-requirements>{requirementLabel}</span> : null}{animationLabel ? <span className="mt-0.5 block truncate text-[9px] text-[var(--app-text-subtle)]" data-artifact-animation-profile-label>{animationLabel}</span> : null}</span>
+                  <span className="min-w-0"><span className="block truncate text-xs font-semibold">{representative.graphState === 'git_projection' ? (representative.chain?.name || representative.label) : grouped ? group.label : representative.label}</span><span className="mt-0.5 block text-[10px] text-[var(--app-text-subtle)]">{representative.graphState === 'git_projection' ? `${artifactTurns.length} turn${artifactTurns.length === 1 ? '' : 's'} · current head Turn ${authoritativeHead?.step?.revisionNumber || representative.step?.revisionNumber || 1}` : grouped ? `Unstructured · ${sidebarProgressLabel(group)}` : `Unstructured · ${representative.status === 'staging' ? 'Generating' : representative.kind || representative.mediaType}`}</span>{requirementLabel ? <span className="mt-0.5 block truncate text-[9px] text-[var(--app-text-subtle)]" data-artifact-output-requirements>{requirementLabel}</span> : null}{animationLabel ? <span className="mt-0.5 block truncate text-[9px] text-[var(--app-text-subtle)]" data-artifact-animation-profile-label>{animationLabel}</span> : null}</span>
                   {group.progress.staging > 0 ? <Loader2 className="size-4 shrink-0 motion-safe:animate-spin motion-reduce:animate-none text-[var(--app-primary)]" aria-label="Iteration Swarm generating" /> : <Maximize2 className="size-4 shrink-0 text-[var(--app-text-subtle)]" aria-hidden="true" />}
                 </a>
                 {artifactTurns.length > 0 ? <div className="grid gap-2 border-b border-[var(--app-border)] bg-[var(--app-bg-alt)] p-2" aria-label="Artifact turn progression" data-artifact-sidebar-turn-progression>
@@ -361,7 +362,7 @@ export function DesktopV3ArtifactSidebar({
                           return <section key={turnPart.partId} className="rounded-md border border-[var(--app-border)] bg-[var(--app-bg)] p-1.5" data-artifact-sidebar-turn-part={turnPart.partId}>
                             <div className="flex items-center justify-between gap-2 px-0.5 pb-1">
                               <button type="button" className="truncate text-left text-[10px] font-semibold hover:text-[var(--app-primary)]" onClick={() => { const target = turnPart.accepted?.entry ?? turnPart.candidates.find((candidate) => candidate.entry)?.entry; if (target) onOpenArtifact(target, turnPart.partId) }}>{definition?.label || turnPart.partId}</button>
-                              <span className="flex shrink-0 items-center gap-1"><span className="text-[9px] text-[var(--app-text-subtle)]">{partStatus}</span>{onAddToChat && authoritativeHead ? <button type="button" className="grid size-5 place-items-center rounded border border-[var(--app-border)] text-[var(--app-text-muted)] hover:bg-[var(--app-surface-active)]" aria-label={`Attach ${definition?.label || turnPart.partId} for chat changes`} title={`Attach ${definition?.label || turnPart.partId} as the exact change target`} onClick={() => onAddToChat([desktopV3ArtifactSidebarPartChatSelection(authoritativeHead, turnPart.partId)])}><MessageSquarePlus size={10} aria-hidden="true" /></button> : null}</span>
+                              <span className="flex shrink-0 items-center gap-1"><span className="text-[9px] text-[var(--app-text-subtle)]">{partStatus}</span>{onAddToChat && authoritativeHead ? <><button type="button" className="grid size-5 place-items-center rounded border border-[var(--app-border)] text-[var(--app-text-muted)] hover:bg-[var(--app-surface-active)]" aria-label={`Attach ${definition?.label || turnPart.partId} for chat changes`} title={`Attach ${definition?.label || turnPart.partId} as the exact change target`} onClick={() => onAddToChat([desktopV3ArtifactSidebarPartChatSelection(authoritativeHead, turnPart.partId)])}><MessageSquarePlus size={10} aria-hidden="true" /></button><button type="button" className="rounded border border-[var(--app-border)] px-1 py-0.5 text-[9px] font-semibold text-[var(--app-primary)] hover:bg-[var(--app-primary-soft)]" onClick={() => onAddToChat([desktopV3ArtifactPartIterationMessageSelection(authoritativeHead, turnPart.partId, 3)])} data-artifact-sidebar-iterate-part>Iterate</button></> : null}</span>
                             </div>
                             <div className="grid gap-1" data-artifact-sidebar-part-choices={turnPart.partId}>{turnPart.candidates.map((candidate, candidateIndex) => {
                               const artifact = candidate.entry
@@ -369,7 +370,7 @@ export function DesktopV3ArtifactSidebar({
                               const acceptedOption = Boolean(turnPart.accepted && candidate.reference.sessionId === turnPart.accepted.reference.sessionId && candidate.reference.collectionId === turnPart.accepted.reference.collectionId && candidate.reference.variantId === turnPart.accepted.reference.variantId && candidate.reference.eventSeq === turnPart.accepted.reference.eventSeq)
                               const pendingKey = candidateSlot ? `${turnPart.partId}:${candidateSlot.revision.ownerSessionId}:${candidateSlot.revision.partRevisionId}:true` : ''
                               return <div key={`${candidate.reference.sessionId}:${candidate.reference.variantId}:${turnPart.partId}`} className="flex min-w-0 items-center gap-1">
-                                <button type="button" className="flex min-w-0 flex-1 items-center gap-1.5 rounded border border-[var(--app-border)] px-1.5 py-1 text-left text-[9px] hover:bg-[var(--app-surface-active)] disabled:opacity-50" disabled={!artifact} onClick={() => { if (artifact) onOpenArtifact(artifact, turnPart.partId) }}><span className="grid size-4 shrink-0 place-items-center rounded-full bg-[var(--app-surface-active)] font-mono">{artifact?.candidateIndex || candidateIndex + 1}</span><span className="truncate font-semibold">Option {artifact?.candidateIndex || candidateIndex + 1}</span><span className="ml-auto shrink-0 text-[var(--app-text-subtle)]">{!artifact ? 'Loading' : artifact.status === 'staging' ? 'Generating' : acceptedOption ? 'Committed' : currentTurn ? 'Available' : 'History'}</span></button>
+                                <button type="button" className="flex min-w-0 flex-1 items-center gap-1.5 rounded border border-[var(--app-border)] px-1.5 py-1 text-left text-[9px] hover:bg-[var(--app-surface-active)] disabled:opacity-50" disabled={!artifact} onClick={() => { if (artifact) onOpenArtifact(artifact, turnPart.partId) }}><span className="grid size-4 shrink-0 place-items-center rounded-full bg-[var(--app-surface-active)] font-mono">{artifact?.candidateIndex || candidateIndex + 1}</span><span className="truncate font-semibold">Option {artifact?.candidateIndex || candidateIndex + 1}</span><span className="ml-auto shrink-0 text-[var(--app-text-subtle)]">{!artifact ? 'Pending' : artifact.status === 'staging' ? 'Generating' : artifact.status === 'failed' || artifact.status === 'unavailable' ? 'Failed' : acceptedOption ? 'Committed' : currentTurn ? 'Available' : 'History'}</span></button>
                                 {authoritativeHead && artifact?.status === 'ready' ? <button type="button" className="shrink-0 rounded border border-[var(--app-border)] px-1.5 py-1 text-[9px] font-semibold text-[var(--app-text-muted)] hover:bg-[var(--app-surface-active)] disabled:opacity-50" disabled={!candidateSlot || Boolean(partSelectionPending)} onClick={() => void applyPartChoice(authoritativeHead, artifact, turnPart.partId, true)}>{partSelectionPending === pendingKey ? <Loader2 className="mr-1 inline size-2.5 animate-spin" /> : null}Lock</button> : null}
                               </div>
                             })}</div>

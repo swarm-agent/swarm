@@ -74,6 +74,7 @@ export interface DesktopV3ArtifactPartDefinition {
 export interface DesktopV3ArtifactPartRevision {
   reference: DesktopV3ArtifactPartRevisionReference
   parent: DesktopV3ArtifactPartRevisionReference | null
+  parentCommitOids?: string[]
   iterationTurnId: string
   iterationGroupId: string
   createdAt: number
@@ -95,6 +96,10 @@ export interface DesktopV3ArtifactConstructionEntry {
 export interface DesktopV3ArtifactComposition {
   id: string
   artifactChainId: string
+  repositoryId?: string
+  commitOid?: string
+  treeOid?: string
+  parentCommitOids?: string[]
   parent: { artifactChainId: string; compositionId: string; ownerSessionId: string; eventSeq: number } | null
   iterationTurnId: string
   iterationGroupId: string
@@ -129,6 +134,9 @@ export interface DesktopV3ArtifactChain {
   id: string
   name: string
   graphState: string
+  repositoryId?: string
+  officialRef?: string
+  officialCommitOid?: string
   root: DesktopV3ArtifactChainReference | null
   head: DesktopV3ArtifactChainReference | null
   revisionCount: number
@@ -139,6 +147,13 @@ export interface DesktopV3ArtifactStep {
   id: string
   graphState: string
   artifactChainId: string
+  repositoryId?: string
+  transactionRef?: string
+  candidateRef?: string
+  commitOid?: string
+  parentCommitOids?: string[]
+  expectedOldOid?: string
+  resultingOid?: string
   parent?: DesktopV3ArtifactChainReference
   revisionNumber: number
   candidates: DesktopV3ArtifactChainReference[]
@@ -228,7 +243,7 @@ export interface DesktopV3ArtifactCatalogEntry {
   animationProfile?: DesktopV3ArtifactAnimationProfile
   chain?: DesktopV3ArtifactChain
   step?: DesktopV3ArtifactStep
-  graphState?: 'authoritative' | 'legacy_unproven'
+  graphState?: 'git_projection' | 'legacy_unproven'
   parentArtifact?: DesktopV3ArtifactChainReference
   artifactChainId?: string
   artifactStepId?: string
@@ -236,7 +251,12 @@ export interface DesktopV3ArtifactCatalogEntry {
   revisionRoundId?: string
   candidateIndex?: number
   parts?: DesktopV3ArtifactPart[]
-  partGraphState?: 'authoritative' | 'legacy_unproven'
+  partGraphState?: 'git_projection' | 'legacy_unproven'
+  repositoryId?: string
+  commitOid?: string
+  treeOid?: string
+  candidateRef?: string
+  parentCommitOids?: string[]
   partDefinitions?: DesktopV3ArtifactPartDefinition[]
   partRevisions?: DesktopV3ArtifactPartRevision[]
   composition?: DesktopV3ArtifactComposition
@@ -430,7 +450,18 @@ function normalizeArtifactChain(value: unknown): DesktopV3ArtifactChain | null {
   const root = normalizeArtifactChainReference(record.root)
   const head = normalizeArtifactChainReference(record.head)
   if (!id) return null
-  return { id, name: artifactCatalogString(record.name), graphState: artifactCatalogString(record.graph_state), root, head, revisionCount: artifactCatalogCount(record.revision_count), lastRoundId: artifactCatalogString(record.last_round_id) }
+  return {
+    id,
+    name: artifactCatalogString(record.name),
+    graphState: artifactCatalogString(record.graph_state),
+    repositoryId: artifactCatalogString(record.repository_id),
+    officialRef: artifactCatalogString(record.official_ref),
+    officialCommitOid: artifactCatalogString(record.official_commit_oid),
+    root,
+    head,
+    revisionCount: artifactCatalogCount(record.revision_count),
+    lastRoundId: artifactCatalogString(record.last_round_id),
+  }
 }
 
 function normalizeArtifactStep(value: unknown): DesktopV3ArtifactStep | null {
@@ -445,8 +476,23 @@ function normalizeArtifactStep(value: unknown): DesktopV3ArtifactStep | null {
   const parent = normalizeArtifactChainReference(record.parent)
   const accepted = normalizeArtifactChainReference(record.accepted)
   const graphState = artifactCatalogString(record.graph_state)
-  if (!id || !artifactChainId || !revisionNumber || candidates.length === 0 || graphState !== 'authoritative') return null
-  return { id, artifactChainId, graphState, revisionNumber, candidates, ...(parent ? { parent } : {}), ...(accepted ? { accepted } : {}) }
+  if (!id || !artifactChainId || !revisionNumber || candidates.length === 0 || graphState !== 'git_projection') return null
+  return {
+    id,
+    artifactChainId,
+    graphState,
+    repositoryId: artifactCatalogString(record.repository_id),
+    transactionRef: artifactCatalogString(record.transaction_ref),
+    candidateRef: artifactCatalogString(record.candidate_ref),
+    commitOid: artifactCatalogString(record.commit_oid),
+    parentCommitOids: Array.isArray(record.parent_commit_oids) ? record.parent_commit_oids.map(artifactCatalogString).filter(Boolean) : [],
+    expectedOldOid: artifactCatalogString(record.expected_old_oid),
+    resultingOid: artifactCatalogString(record.resulting_oid),
+    revisionNumber,
+    candidates,
+    ...(parent ? { parent } : {}),
+    ...(accepted ? { accepted } : {}),
+  }
 }
 
 function normalizeArtifactParts(value: unknown): DesktopV3ArtifactPart[] {
@@ -498,7 +544,7 @@ function normalizeArtifactPartRevisions(value: unknown): DesktopV3ArtifactPartRe
     const reference = normalizeArtifactPartRevisionReference(record?.reference)
     if (!record || !reference) return []
     const parent = normalizeArtifactPartRevisionReference(record.parent)
-    return [{ reference, parent, iterationTurnId: artifactCatalogString(record.iteration_turn_id), iterationGroupId: artifactCatalogString(record.iteration_group_id), createdAt: artifactCatalogCount(record.created_at), eventSeq: artifactCatalogEventSeq(record.event_seq) }]
+    return [{ reference, parent, parentCommitOids: Array.isArray(record.parent_commit_oids) ? record.parent_commit_oids.map(artifactCatalogString).filter(Boolean) : [], iterationTurnId: artifactCatalogString(record.iteration_turn_id), iterationGroupId: artifactCatalogString(record.iteration_group_id), createdAt: artifactCatalogCount(record.created_at), eventSeq: artifactCatalogEventSeq(record.event_seq) }]
   })
 }
 
@@ -545,6 +591,10 @@ function normalizeArtifactComposition(value: unknown): DesktopV3ArtifactComposit
   return {
     id,
     artifactChainId,
+    repositoryId: artifactCatalogString(record.repository_id),
+    commitOid: artifactCatalogString(record.commit_oid),
+    treeOid: artifactCatalogString(record.tree_oid),
+    parentCommitOids: Array.isArray(record.parent_commit_oids) ? record.parent_commit_oids.map(artifactCatalogString).filter(Boolean) : [],
     parent: parent && parent.artifactChainId && parent.compositionId && parent.ownerSessionId && parent.eventSeq ? parent : null,
     iterationTurnId: artifactCatalogString(record.iteration_turn_id),
     iterationGroupId: artifactCatalogString(record.iteration_group_id),
@@ -618,7 +668,7 @@ export function normalizeDesktopV3ArtifactCatalogEntry(value: unknown): DesktopV
   const acceptedPartHeads = Array.isArray(record.accepted_part_heads)
     ? record.accepted_part_heads.map(normalizeArtifactCompositionPart).filter((part): part is DesktopV3ArtifactCompositionPart => part !== null)
     : []
-  const authoritativeParts = partGraphState === 'authoritative'
+  const authoritativeParts = partGraphState === 'git_projection'
     && composition
     && composition.artifactChainId === (artifactCatalogString(record.artifact_chain_id) || chain?.id)
     && partDefinitions.length === composition.parts.length
@@ -653,7 +703,7 @@ export function normalizeDesktopV3ArtifactCatalogEntry(value: unknown): DesktopV
     lineage: normalizeArtifactLineage(record.lineage),
     ...(chain ? { chain } : {}),
     ...(step ? { step } : {}),
-    ...(graphState === 'authoritative' || graphState === 'legacy_unproven' ? { graphState } : {}),
+    ...(graphState === 'git_projection' || graphState === 'legacy_unproven' ? { graphState } : {}),
     ...(parentArtifact ? { parentArtifact } : {}),
     ...((artifactCatalogString(record.artifact_chain_id) || chain?.id) ? { artifactChainId: artifactCatalogString(record.artifact_chain_id) || chain?.id } : {}),
     ...(artifactCatalogString(record.artifact_step_id) ? { artifactStepId: artifactCatalogString(record.artifact_step_id) } : {}),
@@ -662,7 +712,12 @@ export function normalizeDesktopV3ArtifactCatalogEntry(value: unknown): DesktopV
     ...(artifactCatalogCount(record.candidate_index) ? { candidateIndex: artifactCatalogCount(record.candidate_index) } : {}),
     ...(Array.isArray(record.parts) ? { parts: normalizeArtifactParts(record.parts) } : {}),
     ...(authoritativeParts ? {
-      partGraphState: 'authoritative' as const,
+      partGraphState: 'git_projection' as const,
+      repositoryId: artifactCatalogString(record.repository_id),
+      commitOid: artifactCatalogString(record.commit_oid),
+      treeOid: artifactCatalogString(record.tree_oid),
+      candidateRef: artifactCatalogString(record.candidate_ref),
+      parentCommitOids: Array.isArray(record.parent_commit_oids) ? record.parent_commit_oids.map(artifactCatalogString).filter(Boolean) : [],
       partDefinitions,
       partRevisions,
       composition,
@@ -793,6 +848,26 @@ export function desktopV3ArtifactPartMessageSelection(
       description,
       artifactSelection.description,
     ].filter(Boolean).join(' '),
+  }
+}
+
+/** Queues a focused follow-up from the current official composition head. */
+export function desktopV3ArtifactPartIterationMessageSelection(
+  entry: DesktopV3ArtifactCatalogEntry,
+  partId: string,
+  alternativeCount = 3,
+): DesktopV3ArtifactMessageSelection {
+  const selection = desktopV3ArtifactPartMessageSelection(entry, partId, 'use')
+  const definition = entry.partDefinitions?.find((part) => part.id === partId.trim())
+  const count = Math.min(50, Math.max(1, Math.round(alternativeCount)))
+  return {
+    ...selection,
+    pending_request: [
+      `Create ${count} new alternatives for the exact artifact part "${definition?.label || partId}" (${partId}).`,
+      'Use the attached exact Git-backed official composition head as the sole base revision.',
+      'Either revise this part directly with manage_artifact or delegate it to a managed Designer Iteration Swarm as appropriate.',
+      'Every candidate must be a complete derived artifact, preserve every non-target part and lock, and remain an unselected branch for review in Artifact Studio.',
+    ].join('\n'),
   }
 }
 

@@ -23,9 +23,9 @@ function artifact(input: { id: string; eventSeq: number; step: string; revision:
   return {
     artifactId: input.id, collectionId: `collection-${input.eventSeq}`, sessionId: 'session-1', sessionTitle: 'Studio', workspacePath: '', workspaceName: '', planId: '', planTitle: '', checkpointId: '', checkpointTitle: '',
     label: input.id, description: '', collectionName: input.step, collectionDescription: '', filename: `${input.id}.html`, mediaType: 'text/html', kind: 'html', status: 'ready', previewable: true, category: 'visual', updatedAt: input.eventSeq, eventSeq: input.eventSeq,
-    graphState: 'authoritative', artifactChainId: 'chain-1', artifactStepId: input.step, revisionNumber: input.revision, candidateIndex: input.candidates.findIndex((candidate) => candidate.variantId === input.id) + 1,
-    chain: { id: 'chain-1', graphState: 'authoritative', name: 'Artifact', root: ref('base', 1), head: input.head, revisionCount: input.revision, lastRoundId: input.step },
-    step: { id: input.step, graphState: 'authoritative', artifactChainId: 'chain-1', revisionNumber: input.revision, candidates: input.candidates, ...(input.parent ? { parent: input.parent } : {}), ...(input.accepted ? { accepted: input.accepted } : {}) },
+    graphState: 'git_projection', artifactChainId: 'chain-1', artifactStepId: input.step, revisionNumber: input.revision, candidateIndex: input.candidates.findIndex((candidate) => candidate.variantId === input.id) + 1,
+    chain: { id: 'chain-1', graphState: 'git_projection', name: 'Artifact', root: ref('base', 1), head: input.head, revisionCount: input.revision, lastRoundId: input.step },
+    step: { id: input.step, graphState: 'git_projection', artifactChainId: 'chain-1', revisionNumber: input.revision, candidates: input.candidates, ...(input.parent ? { parent: input.parent } : {}), ...(input.accepted ? { accepted: input.accepted } : {}) },
     lineage: { parentSessionId: 'session-1', sourceSessionId: '', sourceCollectionId: '', sourceVariantId: '', taskCallId: '', programId: '', programJobId: '', childSessionId: '', iterationGroupId: '', iterationGroup: '', iterationId: input.id, iterationIndex: 1, iterationLabel: input.id, iterationTheme: '', iterationSectionId: input.section ?? '', iterationSectionLabel: input.section ?? '', iterationSectionStartMs: 0, iterationSectionEndMs: 1000, runId: '', planId: '', checkpointId: '', attemptId: '' },
   }
 }
@@ -52,11 +52,11 @@ test('artifact studio groups section-targeted revision turns by part', () => {
   const head = flowRoundThreeRefs[0]!
   const base = artifact({ id: 'base', eventSeq: 1, step: 'step-1', revision: 1, candidates: [baseRef], accepted: baseRef, head })
   const baseParts = [{ partId: 'flow', definitionOwnerSessionId: 'session-1', revision: partRef('flow', 'a1') }, { partId: 'footer', definitionOwnerSessionId: 'session-1', revision: partRef('footer', 'b1') }]
-  Object.assign(base, { partGraphState: 'authoritative', composition: { id: 'composition-1', artifactChainId: 'chain-1', parts: baseParts }, partDefinitions: [{ id: 'flow', label: 'Flow', description: '', locator: { id: 'flow', label: 'Flow', kind: 'temporal', description: '', startMs: 0, endMs: 1000, x: 0, y: 0, width: 0, height: 0, page: 0, stateId: '', selector: '' } }, { id: 'footer', label: 'Footer', description: '', locator: null }], partRevisions: baseParts.map((part) => ({ reference: part.revision, parent: null, createdAt: 1, eventSeq: 1 })) })
+  Object.assign(base, { partGraphState: 'git_projection', composition: { id: 'composition-1', artifactChainId: 'chain-1', parts: baseParts }, partDefinitions: [{ id: 'flow', label: 'Flow', description: '', locator: { id: 'flow', label: 'Flow', kind: 'temporal', description: '', startMs: 0, endMs: 1000, x: 0, y: 0, width: 0, height: 0, page: 0, stateId: '', selector: '' } }, { id: 'footer', label: 'Footer', description: '', locator: null }], partRevisions: baseParts.map((part) => ({ reference: part.revision, parent: null, createdAt: 1, eventSeq: 1 })) })
   const roundTwo = flowRoundTwoRefs.map((candidate, index) => artifact({ id: candidate.variantId, eventSeq: index + 2, step: 'step-2', revision: 2, candidates: flowRoundTwoRefs, parent: baseRef, accepted: flowRoundTwoRefs[0], head, section: 'flow' }))
-  roundTwo.forEach((candidate, index) => Object.assign(candidate, { partGraphState: 'authoritative', targetedPartId: 'flow', composition: { id: `composition-2-${index}`, artifactChainId: 'chain-1', parts: [{ ...baseParts[0]!, revision: partRef('flow', `a2${index}`) }, baseParts[1]!] }, partDefinitions: base.partDefinitions, partRevisions: [{ reference: partRef('flow', `a2${index}`), parent: baseParts[0]!.revision, createdAt: 2, eventSeq: 2 }, { reference: baseParts[1]!.revision, parent: null, createdAt: 1, eventSeq: 1 }] }))
+  roundTwo.forEach((candidate, index) => Object.assign(candidate, { partGraphState: 'git_projection', targetedPartId: 'flow', composition: { id: `composition-2-${index}`, artifactChainId: 'chain-1', parts: [{ ...baseParts[0]!, revision: partRef('flow', `a2${index}`) }, baseParts[1]!] }, partDefinitions: base.partDefinitions, partRevisions: [{ reference: partRef('flow', `a2${index}`), parent: baseParts[0]!.revision, createdAt: 2, eventSeq: 2 }, { reference: baseParts[1]!.revision, parent: null, createdAt: 1, eventSeq: 1 }] }))
   const roundThree = flowRoundThreeRefs.map((candidate, index) => artifact({ id: candidate.variantId, eventSeq: index + 4, step: 'step-3', revision: 3, candidates: flowRoundThreeRefs, parent: flowRoundTwoRefs[0], accepted: head, head, section: 'flow' }))
-  roundThree.forEach((candidate, index) => Object.assign(candidate, { partGraphState: 'authoritative', targetedPartId: 'flow', composition: { id: `composition-3-${index}`, artifactChainId: 'chain-1', parts: [{ ...baseParts[0]!, revision: partRef('flow', `a3${index}`) }, baseParts[1]!] }, partDefinitions: base.partDefinitions, partRevisions: [{ reference: partRef('flow', `a3${index}`), parent: roundTwo[0]!.composition!.parts[0]!.revision, createdAt: 3, eventSeq: 4 }, { reference: baseParts[1]!.revision, parent: null, createdAt: 1, eventSeq: 1 }] }))
+  roundThree.forEach((candidate, index) => Object.assign(candidate, { partGraphState: 'git_projection', targetedPartId: 'flow', composition: { id: `composition-3-${index}`, artifactChainId: 'chain-1', parts: [{ ...baseParts[0]!, revision: partRef('flow', `a3${index}`) }, baseParts[1]!] }, partDefinitions: base.partDefinitions, partRevisions: [{ reference: partRef('flow', `a3${index}`), parent: roundTwo[0]!.composition!.parts[0]!.revision, createdAt: 3, eventSeq: 4 }, { reference: baseParts[1]!.revision, parent: null, createdAt: 1, eventSeq: 1 }] }))
 
   const partIterations = desktopV3ArtifactStudioPartIterations([base, ...roundTwo, ...roundThree], base)
   assert.deepEqual(partIterations.map((part) => [part.id, part.label, part.turns.map((turn) => [turn.revisionNumber, turn.candidates.length])]), [
@@ -70,9 +70,9 @@ test('artifact studio groups atomic multi-part candidates into every affected pa
   const head = candidateRefs[0]!
   const base = artifact({ id: 'base', eventSeq: 1, step: 'step-1', revision: 1, candidates: [baseRef], accepted: baseRef, head })
   const baseParts = [{ partId: 'hero', definitionOwnerSessionId: 'session-1', revision: partRef('hero', 'a1') }, { partId: 'footer', definitionOwnerSessionId: 'session-1', revision: partRef('footer', 'b1') }]
-  Object.assign(base, { partGraphState: 'authoritative', composition: { id: 'composition-1', artifactChainId: 'chain-1', parts: baseParts }, acceptedPartHeads: baseParts, partDefinitions: [{ id: 'hero', label: 'Hero', description: '', locator: null }, { id: 'footer', label: 'Footer', description: '', locator: null }] })
+  Object.assign(base, { partGraphState: 'git_projection', composition: { id: 'composition-1', artifactChainId: 'chain-1', parts: baseParts }, acceptedPartHeads: baseParts, partDefinitions: [{ id: 'hero', label: 'Hero', description: '', locator: null }, { id: 'footer', label: 'Footer', description: '', locator: null }] })
   const candidates = candidateRefs.map((candidate, index) => artifact({ id: candidate.variantId, eventSeq: index + 2, step: 'step-2', revision: 2, candidates: candidateRefs, parent: baseRef, accepted: head, head }))
-  candidates.forEach((candidate, index) => Object.assign(candidate, { partGraphState: 'authoritative', composition: { id: `composition-2-${index}`, artifactChainId: 'chain-1', iterationTurnId: 'turn-2', iterationGroupId: 'group-2', parts: [{ ...baseParts[0]!, revision: partRef('hero', `a2${index}`) }, { ...baseParts[1]!, revision: partRef('footer', `b2${index}`), locked: true }] }, partDefinitions: base.partDefinitions }))
+  candidates.forEach((candidate, index) => Object.assign(candidate, { partGraphState: 'git_projection', composition: { id: `composition-2-${index}`, artifactChainId: 'chain-1', iterationTurnId: 'turn-2', iterationGroupId: 'group-2', parts: [{ ...baseParts[0]!, revision: partRef('hero', `a2${index}`) }, { ...baseParts[1]!, revision: partRef('footer', `b2${index}`), locked: true }] }, partDefinitions: base.partDefinitions }))
 
   const entries = [base, ...candidates]
   assert.deepEqual(desktopV3ArtifactStudioChangedPartIds(entries, candidates[0]!), ['hero', 'footer'])
@@ -92,11 +92,11 @@ test('artifact studio exposes every authoritative step as a turn, including root
   const head = noOpRef
   const base = artifact({ id: 'base', eventSeq: 1, step: 'step-1', revision: 1, candidates: [baseRef], accepted: baseRef, head })
   const baseParts = [{ partId: 'hero', definitionOwnerSessionId: 'session-1', revision: partRef('hero', 'a1') }, { partId: 'footer', definitionOwnerSessionId: 'session-1', revision: partRef('footer', 'b1') }]
-  Object.assign(base, { partGraphState: 'authoritative', composition: { id: 'composition-1', artifactChainId: 'chain-1', iterationTurnId: 'turn-1', iterationGroupId: 'group-1', parts: baseParts }, partDefinitions: [{ id: 'hero', label: 'Hero', description: '', locator: null }, { id: 'footer', label: 'Footer', description: '', locator: null }] })
+  Object.assign(base, { partGraphState: 'git_projection', composition: { id: 'composition-1', artifactChainId: 'chain-1', iterationTurnId: 'turn-1', iterationGroupId: 'group-1', parts: baseParts }, partDefinitions: [{ id: 'hero', label: 'Hero', description: '', locator: null }, { id: 'footer', label: 'Footer', description: '', locator: null }] })
   const fineTune = artifact({ id: 'fine-tune', eventSeq: 2, step: 'step-2', revision: 2, candidates: [fineTuneRef], parent: baseRef, accepted: fineTuneRef, head })
-  Object.assign(fineTune, { partGraphState: 'authoritative', composition: { id: 'composition-2', artifactChainId: 'chain-1', iterationTurnId: 'turn-2', iterationGroupId: 'fine-tune-group', parts: [{ ...baseParts[0]!, revision: partRef('hero', 'a2') }, baseParts[1]!] }, partDefinitions: base.partDefinitions })
+  Object.assign(fineTune, { partGraphState: 'git_projection', composition: { id: 'composition-2', artifactChainId: 'chain-1', iterationTurnId: 'turn-2', iterationGroupId: 'fine-tune-group', parts: [{ ...baseParts[0]!, revision: partRef('hero', 'a2') }, baseParts[1]!] }, partDefinitions: base.partDefinitions })
   const noOp = artifact({ id: 'metadata-only', eventSeq: 3, step: 'step-3', revision: 3, candidates: [noOpRef], parent: fineTuneRef, accepted: noOpRef, head })
-  Object.assign(noOp, { partGraphState: 'authoritative', composition: { id: 'composition-3', artifactChainId: 'chain-1', iterationTurnId: 'turn-3', iterationGroupId: 'metadata-group', parts: fineTune.composition!.parts }, partDefinitions: base.partDefinitions })
+  Object.assign(noOp, { partGraphState: 'git_projection', composition: { id: 'composition-3', artifactChainId: 'chain-1', iterationTurnId: 'turn-3', iterationGroupId: 'metadata-group', parts: fineTune.composition!.parts }, partDefinitions: base.partDefinitions })
 
   const turns = desktopV3ArtifactStudioTurns([noOp, fineTune, base], noOp)
   assert.deepEqual(turns.map((turn) => [turn.id, turn.changedPartIds, turn.candidates.length, turn.accepted?.entry?.artifactId]), [
@@ -115,9 +115,9 @@ test('artifact studio detects changed parts by durable identity when composition
   const base = artifact({ id: 'base', eventSeq: 1, step: 'step-1', revision: 1, candidates: [baseRef], accepted: baseRef, head: candidateRef })
   const hero = { partId: 'hero', definitionOwnerSessionId: 'session-1', revision: partRef('hero', 'a1') }
   const footer = { partId: 'footer', definitionOwnerSessionId: 'session-1', revision: partRef('footer', 'b1') }
-  Object.assign(base, { partGraphState: 'authoritative', composition: { id: 'composition-1', artifactChainId: 'chain-1', iterationTurnId: 'turn-1', iterationGroupId: 'group-1', parts: [hero, footer] }, partDefinitions: [{ id: 'hero', label: 'Hero', description: '', locator: null }, { id: 'footer', label: 'Footer', description: '', locator: null }] })
+  Object.assign(base, { partGraphState: 'git_projection', composition: { id: 'composition-1', artifactChainId: 'chain-1', iterationTurnId: 'turn-1', iterationGroupId: 'group-1', parts: [hero, footer] }, partDefinitions: [{ id: 'hero', label: 'Hero', description: '', locator: null }, { id: 'footer', label: 'Footer', description: '', locator: null }] })
   const candidate = artifact({ id: 'reordered', eventSeq: 2, step: 'step-2', revision: 2, candidates: [candidateRef], parent: baseRef, accepted: candidateRef, head: candidateRef })
-  Object.assign(candidate, { partGraphState: 'authoritative', composition: { id: 'composition-2', artifactChainId: 'chain-1', iterationTurnId: 'turn-2', iterationGroupId: 'group-2', parts: [footer, { ...hero, revision: partRef('hero', 'a2') }] }, partDefinitions: base.partDefinitions })
+  Object.assign(candidate, { partGraphState: 'git_projection', composition: { id: 'composition-2', artifactChainId: 'chain-1', iterationTurnId: 'turn-2', iterationGroupId: 'group-2', parts: [footer, { ...hero, revision: partRef('hero', 'a2') }] }, partDefinitions: base.partDefinitions })
 
   assert.deepEqual(desktopV3ArtifactStudioChangedPartIds([base, candidate], candidate), ['hero'])
   assert.deepEqual(desktopV3ArtifactStudioTurns([base, candidate], candidate)[1]?.changedPartIds, ['hero'])
@@ -129,7 +129,7 @@ test('artifact studio uses authoritative part revision turn metadata when the pa
   const candidate = artifact({ id: 'candidate', eventSeq: 2, step: 'step-2', revision: 2, candidates: [candidateRef], parent: parentRef, accepted: candidateRef, head: candidateRef })
   const heroRevision = partRef('hero', 'a2')
   Object.assign(candidate, {
-    partGraphState: 'authoritative',
+    partGraphState: 'git_projection',
     composition: { id: 'composition-2', artifactChainId: 'chain-1', iterationTurnId: 'turn-2', iterationGroupId: 'group-2', parts: [{ partId: 'hero', definitionOwnerSessionId: 'session-1', revision: heroRevision }] },
     partDefinitions: [{ id: 'hero', label: 'Hero', description: '', locator: null }],
     partRevisions: [{ reference: heroRevision, parent: partRef('hero', 'a1'), iterationTurnId: 'turn-2', iterationGroupId: 'group-2', createdAt: 2, eventSeq: 2 }],
@@ -137,6 +137,30 @@ test('artifact studio uses authoritative part revision turn metadata when the pa
 
   const turns = desktopV3ArtifactStudioTurns([candidate], candidate)
   assert.deepEqual(turns.map((turn) => [turn.id, turn.changedPartIds, turn.parts[0]?.candidates.length]), [['step-2', ['hero'], 1]])
+})
+
+test('artifact studio resolves staging and failed placeholders even before their Git projection is complete', () => {
+  const baseRef = ref('base', 1)
+  const stagingRef = ref('body-staging', 2)
+  const failedRef = ref('body-failed', 3)
+  const base = artifact({ id: 'base', eventSeq: 1, step: 'step-1', revision: 1, candidates: [baseRef, stagingRef, failedRef], accepted: baseRef, head: baseRef })
+  const staging = artifact({ id: 'body-staging', eventSeq: 2, step: 'placeholder', revision: 2, candidates: [stagingRef], head: baseRef })
+  staging.graphState = undefined
+  staging.step = undefined
+  staging.artifactStepId = undefined
+  staging.status = 'staging'
+  staging.eventSeq = 20
+  const failed = artifact({ id: 'body-failed', eventSeq: 3, step: 'placeholder', revision: 2, candidates: [failedRef], head: baseRef })
+  failed.graphState = undefined
+  failed.step = undefined
+  failed.artifactStepId = undefined
+  failed.status = 'failed'
+  failed.eventSeq = 30
+
+  const turn = desktopV3ArtifactStudioTurns([base, staging, failed], base)[0]
+  assert.deepEqual(turn?.candidates.map((candidate) => [candidate.reference.variantId, candidate.entry?.status]), [
+    ['base', 'ready'], ['body-staging', 'staging'], ['body-failed', 'failed'],
+  ])
 })
 
 test('artifact studio preserves authoritative unresolved candidates without fabricating part state', () => {
@@ -159,6 +183,35 @@ test('artifact studio orders an unresolved latest turn after the accepted compos
     ['step-1', 1, 'base'],
     ['step-2', 2, undefined],
   ])
+})
+
+test('artifact studio preserves three Body candidates, a locked official merge, and a second iteration', () => {
+  const baseRef = ref('base', 1)
+  const bodyRefs = [ref('body-a', 2), ref('body-b', 3), ref('body-c', 4)]
+  const mergedRef = ref('merged-body-b', 5)
+  const secondRefs = [ref('body-d', 6), ref('body-e', 7)]
+  const base = artifact({ id: 'base', eventSeq: 1, step: 'step-1', revision: 1, candidates: [baseRef], accepted: baseRef, head: mergedRef })
+  const baseParts = ['header', 'body', 'footer'].map((part, index) => ({ partId: part, definitionOwnerSessionId: 'session-1', revision: partRef(part, `${index + 1}1`) }))
+  Object.assign(base, { partGraphState: 'git_projection', composition: { id: 'composition-1', artifactChainId: 'chain-1', parts: baseParts }, partDefinitions: ['Header', 'Body', 'Footer'].map((label) => ({ id: label.toLowerCase(), label, description: '', locator: null })) })
+  const bodyCandidates = bodyRefs.map((reference, index) => artifact({ id: reference.variantId, eventSeq: index + 2, step: 'step-2', revision: 2, candidates: bodyRefs, parent: baseRef, accepted: bodyRefs[1], head: mergedRef }))
+  bodyCandidates.forEach((candidate, index) => Object.assign(candidate, { partGraphState: 'git_projection', composition: { id: `composition-2-${index}`, artifactChainId: 'chain-1', iterationTurnId: 'turn-2', iterationGroupId: 'body-round-1', parts: [baseParts[0]!, { ...baseParts[1]!, revision: partRef('body', `b2${index}`) }, baseParts[2]!] }, partDefinitions: base.partDefinitions }))
+  const merged = artifact({ id: 'merged-body-b', eventSeq: 5, step: 'step-3', revision: 3, candidates: [mergedRef], parent: bodyRefs[1], accepted: mergedRef, head: mergedRef })
+  Object.assign(merged, { partGraphState: 'git_projection', composition: { id: 'composition-3', artifactChainId: 'chain-1', iterationTurnId: 'turn-3', iterationGroupId: 'body-lock', parts: [baseParts[0]!, { ...bodyCandidates[1]!.composition!.parts[1]!, locked: true }, baseParts[2]!] }, partDefinitions: base.partDefinitions, acceptedPartHeads: [baseParts[0]!, { ...bodyCandidates[1]!.composition!.parts[1]!, locked: true }, baseParts[2]!] })
+  const second = secondRefs.map((reference, index) => artifact({ id: reference.variantId, eventSeq: index + 6, step: 'step-4', revision: 4, candidates: secondRefs, parent: mergedRef, head: mergedRef }))
+  second.forEach((candidate, index) => Object.assign(candidate, { partGraphState: 'git_projection', composition: { id: `composition-4-${index}`, artifactChainId: 'chain-1', iterationTurnId: 'turn-4', iterationGroupId: 'body-round-2', parts: [baseParts[0]!, { ...merged.composition!.parts[1]!, revision: partRef('body', `b4${index}`), locked: false }, baseParts[2]!] }, partDefinitions: base.partDefinitions }))
+
+  const entries = [base, ...bodyCandidates, merged, ...second]
+  const turns = desktopV3ArtifactStudioTurns(entries, base)
+  assert.deepEqual(turns.map((turn) => [turn.revisionNumber, turn.changedPartIds, turn.candidates.length, turn.accepted?.entry?.artifactId]), [
+    [1, ['header', 'body', 'footer'], 1, 'base'],
+    [2, ['body'], 3, 'body-b'],
+    [3, [], 1, 'merged-body-b'],
+    [4, ['body'], 2, undefined],
+  ])
+  assert.equal(desktopV3ArtifactStudioHead(entries, bodyCandidates[0]!)?.artifactId, 'merged-body-b')
+  assert.equal(desktopV3ArtifactStudioEntries(entries, bodyCandidates[0]!).some((entry) => entry.artifactId === 'merged-body-b'), true)
+  assert.equal(turns[1]?.parts[0]?.accepted?.part?.revision.partRevisionId, 'b21')
+  assert.equal(merged.composition?.parts[1]?.locked, true)
 })
 
 test('artifact studio never infers lineage or a head for legacy unstructured entries', () => {
