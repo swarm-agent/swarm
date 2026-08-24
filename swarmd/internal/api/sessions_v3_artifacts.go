@@ -448,6 +448,7 @@ func (s *Server) handleSessionsV3Artifacts(w http.ResponseWriter, r *http.Reques
 						step = &persistedStep
 					}
 					if variant.PartGraphState == pebblestore.SessionArtifactGraphAuthoritative {
+						var projectionErr error
 						partDefinitions, partRevisions, composition, targetedPartID, acceptedPartHeads, projectionErr = s.projectSessionsV3ArtifactComposition(session, variant, chain)
 						if projectionErr != nil {
 							writeError(w, http.StatusInternalServerError, projectionErr)
