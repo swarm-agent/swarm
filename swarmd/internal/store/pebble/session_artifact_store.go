@@ -1120,7 +1120,7 @@ func normalizeV3ArtifactMutation(input *V3SessionMutationInput) {
 	}
 	normalizeArtifactGitTransaction(input.Artifact.Transaction)
 	for index := range input.Artifact.Locks {
-		lock := [38;5;188m[48;5;52m[1m&input.Artifact.Locks[index][0m
+		lock := &input.Artifact.Locks[index]
 		lock.PartID = strings.TrimSpace(lock.PartID)
 		lock.RepositoryID = strings.TrimSpace(lock.RepositoryID)
 		lock.CommitOID = strings.ToLower(strings.TrimSpace(lock.CommitOID))
