@@ -35,6 +35,7 @@ test('session sidebar and final handoff galleries feed the active existing compo
   assert.match(pane, /artifactSelectionRequest=\{galleryArtifactSelectionRequest\}/)
   assert.match(pane, /requestAnimationFrame/)
   assert.match(pane, /onAddToChat=\{\(artifacts\) =>/)
+  assert.match(pane, /action: selection\.action \?\? "select"/)
   assert.match(pane, /onUseThisDesign=\{\(\{ label, selection \}\) =>/)
   assert.match(pane, /setArtifactGalleryOpenFromViewer\(false\)/)
   assert.match(pane, /dismissedArtifactViewerLocationKeyRef\.current = artifactViewerLocationKey/)

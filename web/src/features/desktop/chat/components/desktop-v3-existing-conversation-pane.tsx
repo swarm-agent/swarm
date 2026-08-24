@@ -3153,7 +3153,7 @@ export function DesktopV3ExistingConversationPane({
                 embeddedPortalTarget={artifactReviewPortalTarget}
                 backLabel="Back to Studio"
                 onAddToChat={(artifacts) => {
-                  queueGalleryArtifactSelections(artifacts.map(({ label, description, selection }) => ({ ...selection, label, description, action: "select" })));
+                  queueGalleryArtifactSelections(artifacts.map(({ label, description, selection }) => ({ ...selection, label, description, action: selection.action ?? "select" })));
                   setArtifactGalleryOpenFromViewer(false);
                   setArtifactComposerFocusSignal((current) => current + 1);
                 }}
@@ -3523,7 +3523,7 @@ export function DesktopV3ExistingConversationPane({
         onArtifactNavigate={navigateArtifactViewer}
         onCollectionNavigate={navigateArtifactCollectionViewer}
         onAddToChat={(artifacts) => {
-          queueGalleryArtifactSelections(artifacts.map(({ label, description, selection }) => ({ ...selection, label, description, action: "select" })));
+          queueGalleryArtifactSelections(artifacts.map(({ label, description, selection }) => ({ ...selection, label, description, action: selection.action ?? "select" })));
           setArtifactGalleryOpenFromViewer(false);
           setArtifactComposerFocusSignal((current) => current + 1);
         }}

@@ -18,10 +18,9 @@ function sameReference(entry: DesktopV3ArtifactCatalogEntry, reference: DesktopV
     && entry.eventSeq === reference.eventSeq)
 }
 
-function samePartRevision(left: DesktopV3ArtifactCompositionPart, right: DesktopV3ArtifactCompositionPart): boolean {
+export function desktopV3ArtifactStudioSamePartRevision(left: DesktopV3ArtifactCompositionPart, right: DesktopV3ArtifactCompositionPart): boolean {
   return left.partId === right.partId
     && left.definitionOwnerSessionId === right.definitionOwnerSessionId
-    && left.locked === right.locked
     && left.revision.partRevisionId === right.revision.partRevisionId
     && left.revision.ownerSessionId === right.revision.ownerSessionId
     && left.revision.digestSha256 === right.revision.digestSha256
@@ -89,6 +88,7 @@ export interface DesktopV3ArtifactStudioPartIteration {
   startMs: number
   endMs: number
   current?: DesktopV3ArtifactCompositionPart
+  accepted?: DesktopV3ArtifactCompositionPart
   turns: DesktopV3ArtifactStudioPartTurn[]
 }
 
@@ -101,7 +101,7 @@ export function desktopV3ArtifactStudioChangedPartIds(entries: readonly DesktopV
     const current = composition.parts[index]!
     const previous = parent.parts[index]!
     if (current.partId !== previous.partId || current.definitionOwnerSessionId !== previous.definitionOwnerSessionId) return []
-    if (!samePartRevision(current, previous)) changed.push(current.partId)
+    if (!desktopV3ArtifactStudioSamePartRevision(current, previous)) changed.push(current.partId)
   }
   return changed
 }
@@ -112,12 +112,13 @@ export function desktopV3ArtifactStudioPartIterations(entries: readonly DesktopV
   const definitions = new Map((head.partDefinitions ?? entry.partDefinitions ?? []).map((definition) => [definition.id, definition]))
   const currentComposition = head.composition ?? entry.composition
   const currentByPart = new Map(currentComposition.parts.map((part) => [part.partId, part]))
+  const acceptedByPart = new Map((head.acceptedPartHeads ?? entry.acceptedPartHeads ?? []).map((part) => [part.partId, part]))
   const groups = new Map<string, DesktopV3ArtifactStudioPartIteration>()
   for (const part of currentComposition.parts) {
     const definition = definitions.get(part.partId)
     if (!definition) continue
     const locator = definition.locator
-    groups.set(part.partId, { id: part.partId, label: definition.label, kind: locator?.kind ?? 'semantic', startMs: locator?.startMs ?? 0, endMs: locator?.endMs ?? 0, current: currentByPart.get(part.partId), turns: [] })
+    groups.set(part.partId, { id: part.partId, label: definition.label, kind: locator?.kind ?? 'semantic', startMs: locator?.startMs ?? 0, endMs: locator?.endMs ?? 0, current: currentByPart.get(part.partId), accepted: acceptedByPart.get(part.partId), turns: [] })
   }
   for (const round of desktopV3ArtifactStudioRounds(entries, entry)) {
     const changedSets = round.candidates.map((candidate) => desktopV3ArtifactStudioChangedPartIds(entries, candidate))

@@ -1,6 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import React from 'react'
+import { readFile } from 'node:fs/promises'
 import { renderToStaticMarkup } from 'react-dom/server'
 import {
   buildStructuredToolMessage,
@@ -300,6 +301,26 @@ test('final handoff normalizes one and many managed artifacts alongside delivera
   assert.equal(handoff?.artifacts[0]?.eventSeq, 10)
   assert.equal(handoff?.artifacts[1]?.artifactId, 'var-2')
   assert.equal(handoff?.artifacts[1]?.eventSeq, 11)
+})
+
+test('multipart Studio keeps exact part-change intent, accepted heads, and reconnect authority in one launch journey', async () => {
+  const [gallery, pane, model, api, realtime] = await Promise.all([
+    readFile(new URL('./desktop-v3-artifact-gallery.tsx', import.meta.url), 'utf8'),
+    readFile(new URL('./desktop-v3-existing-conversation-pane.tsx', import.meta.url), 'utf8'),
+    readFile(new URL('../../session-v3/artifact-studio-model.ts', import.meta.url), 'utf8'),
+    readFile(new URL('../../session-v3/artifact-api.ts', import.meta.url), 'utf8'),
+    readFile(new URL('../../realtime/v3-client-effect-runner.ts', import.meta.url), 'utf8'),
+  ])
+  assert.match(gallery, /selectedPartIds/)
+  assert.match(gallery, /requestedParts\.map/)
+  assert.match(gallery, /desktopV3ArtifactMessageSelection\(selected, 'use'\), part_id: part\.id/)
+  assert.match(pane, /action: selection\.action \?\? "select"/)
+  assert.match(model, /acceptedPartHeads/)
+  assert.match(model, /desktopV3ArtifactStudioSamePartRevision/)
+  assert.match(api, /accepted_part_heads/)
+  assert.match(api, /targeted_part_ids/)
+  assert.match(realtime, /session\.artifact\.updated/)
+  assert.match(realtime, /refresh_artifacts/)
 })
 
 test('exact viewer navigation search identity and URL resolution', () => {

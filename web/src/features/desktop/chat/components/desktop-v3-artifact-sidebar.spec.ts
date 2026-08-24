@@ -122,6 +122,12 @@ test('delegated collection variants group under their parent session', () => {
   assert.deepEqual(groups[0]?.entries.map((entry) => entry.artifactId), ['variant-1', 'variant-2'])
 })
 
+test('sidebar distinguishes accepted byte heads from pending locked candidates', async () => {
+  const source = await readFile(new URL('./desktop-v3-artifact-sidebar.tsx', import.meta.url), 'utf8')
+  assert.match(source, /desktopV3ArtifactStudioSamePartRevision\(slot, accepted\)/)
+  assert.match(source, /acceptedCurrent \? 'Accepted' : slot\?\.locked \? 'Locked pending' : 'Current'/)
+})
+
 test('ordinary artifacts remain separate sidebar entries', () => {
   assert.deepEqual(desktopV3ArtifactSidebarGroups([artifact('session-a', 'one'), artifact('session-a', 'two')]).map((group) => group.entries.length), [1, 1])
 })

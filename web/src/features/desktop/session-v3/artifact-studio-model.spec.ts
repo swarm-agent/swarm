@@ -9,6 +9,7 @@ import {
   desktopV3ArtifactStudioParent,
   desktopV3ArtifactStudioPartIterations,
   desktopV3ArtifactStudioRounds,
+  desktopV3ArtifactStudioSamePartRevision,
   desktopV3ArtifactStudioSectionAlternatives,
 } from './artifact-studio-model'
 
@@ -68,13 +69,15 @@ test('artifact studio groups atomic multi-part candidates into every affected pa
   const head = candidateRefs[0]!
   const base = artifact({ id: 'base', eventSeq: 1, step: 'step-1', revision: 1, candidates: [baseRef], accepted: baseRef, head })
   const baseParts = [{ partId: 'hero', definitionOwnerSessionId: 'session-1', revision: partRef('hero', 'a1') }, { partId: 'footer', definitionOwnerSessionId: 'session-1', revision: partRef('footer', 'b1') }]
-  Object.assign(base, { partGraphState: 'authoritative', composition: { id: 'composition-1', artifactChainId: 'chain-1', parts: baseParts }, partDefinitions: [{ id: 'hero', label: 'Hero', description: '', locator: null }, { id: 'footer', label: 'Footer', description: '', locator: null }] })
+  Object.assign(base, { partGraphState: 'authoritative', composition: { id: 'composition-1', artifactChainId: 'chain-1', parts: baseParts }, acceptedPartHeads: baseParts, partDefinitions: [{ id: 'hero', label: 'Hero', description: '', locator: null }, { id: 'footer', label: 'Footer', description: '', locator: null }] })
   const candidates = candidateRefs.map((candidate, index) => artifact({ id: candidate.variantId, eventSeq: index + 2, step: 'step-2', revision: 2, candidates: candidateRefs, parent: baseRef, accepted: head, head }))
   candidates.forEach((candidate, index) => Object.assign(candidate, { partGraphState: 'authoritative', composition: { id: `composition-2-${index}`, artifactChainId: 'chain-1', iterationTurnId: 'turn-2', iterationGroupId: 'group-2', parts: [{ ...baseParts[0]!, revision: partRef('hero', `a2${index}`) }, { ...baseParts[1]!, revision: partRef('footer', `b2${index}`), locked: true }] }, partDefinitions: base.partDefinitions }))
 
   const entries = [base, ...candidates]
   assert.deepEqual(desktopV3ArtifactStudioChangedPartIds(entries, candidates[0]!), ['hero', 'footer'])
+  assert.equal(desktopV3ArtifactStudioSamePartRevision({ ...baseParts[0]!, locked: true }, baseParts[0]!), true, 'lock metadata must not fabricate a byte revision change')
   const history = desktopV3ArtifactStudioPartIterations(entries, base)
+  assert.deepEqual(history.map((part) => part.accepted?.revision.partRevisionId), ['a1', 'b1'])
   assert.deepEqual(history.map((part) => [part.id, part.turns[0]?.groupId, part.turns[0]?.changedPartIds, part.turns[0]?.candidates.length]), [
     ['hero', 'group-2', ['hero', 'footer'], 2],
     ['footer', 'group-2', ['hero', 'footer'], 2],
