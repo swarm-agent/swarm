@@ -221,7 +221,9 @@ func TestAttachedArtifactSelectionsProjectsExactTypedPart(t *testing.T) {
 	selection := pebblestore.SessionArtifactSelectionReference{SessionID: "source-session", CollectionID: "collection-1", VariantID: "variant-2", EventSeq: 41, Action: "use", PartID: "hero", Part: &pebblestore.SessionArtifactPart{ID: "hero", Label: "Hero", Kind: "spatial", X: .1, Y: .2, Width: .7, Height: .5}}
 	got := AttachedArtifactSelectionsForProvider([]pebblestore.SessionArtifactSelectionReference{selection})
 	for _, want := range []string{"Selected Artifact Studio part", `"kind":"spatial"`, `"x":0.1`, `"width":0.7`} {
-		if !strings.Contains(got, want) { t.Fatalf("provider context missing %q: %s", want, got) }
+		if !strings.Contains(got, want) {
+			t.Fatalf("provider context missing %q: %s", want, got)
+		}
 	}
 }
 

@@ -875,30 +875,30 @@ func attachedArtifactSelectionsForProvider(metadata map[string]any) string {
 		return ""
 	}
 	var selections []struct {
-		SessionID               string         `json:"session_id"`
-		CollectionID            string         `json:"collection_id"`
-		VariantID               string         `json:"variant_id"`
-		EventSeq                uint64         `json:"event_seq"`
-		Label                   string         `json:"label"`
-		Filename                string         `json:"filename"`
-		MediaType               string         `json:"media_type"`
-		Description             string         `json:"description"`
-		PendingRequest          string         `json:"pending_request"`
-		Action                  string         `json:"action"`
-		IterationID             string         `json:"iteration_id"`
-		IterationIndex          int            `json:"iteration_index"`
-		IterationLabel          string         `json:"iteration_label"`
-		IterationTheme          string         `json:"iteration_theme"`
-		IterationSectionID      string         `json:"iteration_section_id"`
-		IterationSectionLabel   string         `json:"iteration_section_label"`
-		IterationSectionStartMs int64          `json:"iteration_section_start_ms"`
-		IterationSectionEndMs   int64          `json:"iteration_section_end_ms"`
-		PartID                  string                             `json:"part_id"`
-		PartLabel               string                             `json:"part_label"`
-		PartKind                string                             `json:"part_kind"`
-		Part                    *pebblestore.SessionArtifactPart   `json:"part"`
-		Metadata                map[string]any `json:"metadata"`
-		VisibleMetadata         map[string]any `json:"visible_metadata"`
+		SessionID               string                           `json:"session_id"`
+		CollectionID            string                           `json:"collection_id"`
+		VariantID               string                           `json:"variant_id"`
+		EventSeq                uint64                           `json:"event_seq"`
+		Label                   string                           `json:"label"`
+		Filename                string                           `json:"filename"`
+		MediaType               string                           `json:"media_type"`
+		Description             string                           `json:"description"`
+		PendingRequest          string                           `json:"pending_request"`
+		Action                  string                           `json:"action"`
+		IterationID             string                           `json:"iteration_id"`
+		IterationIndex          int                              `json:"iteration_index"`
+		IterationLabel          string                           `json:"iteration_label"`
+		IterationTheme          string                           `json:"iteration_theme"`
+		IterationSectionID      string                           `json:"iteration_section_id"`
+		IterationSectionLabel   string                           `json:"iteration_section_label"`
+		IterationSectionStartMs int64                            `json:"iteration_section_start_ms"`
+		IterationSectionEndMs   int64                            `json:"iteration_section_end_ms"`
+		PartID                  string                           `json:"part_id"`
+		PartLabel               string                           `json:"part_label"`
+		PartKind                string                           `json:"part_kind"`
+		Part                    *pebblestore.SessionArtifactPart `json:"part"`
+		Metadata                map[string]any                   `json:"metadata"`
+		VisibleMetadata         map[string]any                   `json:"visible_metadata"`
 	}
 	if err := json.Unmarshal(encoded, &selections); err != nil || len(selections) == 0 || len(selections) > maxProviderArtifactSelections {
 		return ""
@@ -950,7 +950,9 @@ func attachedArtifactSelectionsForProvider(metadata map[string]any) string {
 		}
 		selection.PartID = truncateUTF8Bytes(strings.TrimSpace(selection.PartID), 128)
 		if selection.Part != nil {
-			if selection.PartID == "" || selection.Part.ID != selection.PartID { return "" }
+			if selection.PartID == "" || selection.Part.ID != selection.PartID {
+				return ""
+			}
 			encodedPart, _ := json.Marshal(selection.Part)
 			lines = append(lines, "Selected Artifact Studio part (server-authoritative exact typed locator): "+string(encodedPart))
 		} else if strings.TrimSpace(selection.PartID) != "" {

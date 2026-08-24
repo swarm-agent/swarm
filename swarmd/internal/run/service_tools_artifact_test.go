@@ -58,9 +58,13 @@ func TestLatestTaskArtifactUseSelectionPreservesTypedPart(t *testing.T) {
 	part := pebblestore.SessionArtifactPart{ID: "hero", Label: "Hero", Kind: "selector", Selector: "#hero"}
 	messages := []pebblestore.MessageSnapshot{{Role: "user", ArtifactSelections: []pebblestore.SessionArtifactSelectionReference{{SessionID: "s", CollectionID: "c", VariantID: "v", EventSeq: 9, Action: "use", PartID: "hero", Part: &part}}}}
 	selected := latestTaskArtifactUseSelection(messages)
-	if selected == nil || selected.Part == nil || *selected.Part != part { t.Fatalf("selection = %#v", selected) }
+	if selected == nil || selected.Part == nil || *selected.Part != part {
+		t.Fatalf("selection = %#v", selected)
+	}
 	target := taskSectionTargetFromArtifactPart(*selected.Part)
-	if target.Kind != "selector" || target.Selector != "#hero" { t.Fatalf("target = %#v", target) }
+	if target.Kind != "selector" || target.Selector != "#hero" {
+		t.Fatalf("target = %#v", target)
+	}
 }
 
 func TestManageArtifactToolOutputIsStructured(t *testing.T) {
