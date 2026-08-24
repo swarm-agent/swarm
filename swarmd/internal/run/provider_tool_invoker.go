@@ -15,6 +15,7 @@ import (
 	"time"
 
 	agentruntime "swarm/packages/swarmd/internal/agent"
+	"swarm/packages/swarmd/internal/artifact"
 	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/permission"
 	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
@@ -332,7 +333,49 @@ func cloneArtifactRunContext(input *tool.ArtifactRunContext) *tool.ArtifactRunCo
 	return &cloned
 }
 
+func (s *Service) providerFocusedArtifactRunContext(config providerToolInvokerConfig) *tool.ArtifactRunContext {
+	if s == nil || s.sessions == nil || s.tools == nil || strings.TrimSpace(config.sessionID) == "" {
+		return nil
+	}
+	sourceMessageID := strings.TrimSpace(config.sourceMessageID)
+	if sourceMessageID == "" {
+		return nil
+	}
+	message, ok, err := s.sessions.GetV3MessageByID(strings.TrimSpace(config.sessionID), sourceMessageID)
+	if err != nil || !ok || !strings.EqualFold(strings.TrimSpace(message.Role), "user") {
+		return nil
+	}
+	selection := latestTaskArtifactUseSelection([]pebblestore.MessageSnapshot{message})
+	if selection == nil || selection.Part == nil || strings.TrimSpace(selection.Part.ID) == "" {
+		return nil
+	}
+	session, ok, err := s.sessions.GetSession(strings.TrimSpace(config.sessionID))
+	if err != nil || !ok || strings.TrimSpace(session.AccountScopeID) == "" || strings.TrimSpace(session.UserID) == "" {
+		return nil
+	}
+	principal := artifact.Principal{SessionID: session.ID, AccountScopeID: session.AccountScopeID, UserID: session.UserID}
+	_, composition, definition, revision, err := s.tools.ResolveArtifactPartTarget(principal, *selection, selection.Part.ID)
+	if err != nil {
+		return nil
+	}
+	seed := sha256.Sum256([]byte("direct-focused-part-v1\x00" + session.ID + "\x00" + strings.TrimSpace(config.runID) + "\x00" + strings.TrimSpace(selection.Part.ID)))
+	id := hex.EncodeToString(seed[:12])
+	source := pebblestore.SessionArtifactSelectionReference{SessionID: selection.SessionID, CollectionID: selection.CollectionID, VariantID: selection.VariantID, EventSeq: selection.EventSeq}
+	part := *selection.Part
+	return &tool.ArtifactRunContext{
+		SessionID: session.ID, RunID: strings.TrimSpace(config.runID), TaskCallID: "direct-focused-" + id,
+		ChildSessionID: session.ID, CollectionID: source.CollectionID, VariantID: "direct-focused-" + id,
+		ArtifactStepID: "direct-focused-" + id, CandidateIndex: 1, AutoAccept: true,
+		PartID: definition.ID, PartLabel: definition.Label, PartKind: part.Kind, Part: &part,
+		SourceArtifact: &source, SourceComposition: &composition, SourcePartDefinition: &definition, SourcePartRevision: &revision,
+		SourcePartDefinitions: []pebblestore.SessionArtifactPartDefinition{definition}, SourcePartRevisions: []pebblestore.SessionArtifactPartRevisionReference{revision},
+	}
+}
+
 func (s *Service) providerManagedArtifactRunContext(config providerToolInvokerConfig) tool.ArtifactRunContext {
+	if config.artifactRunContext == nil {
+		config.artifactRunContext = s.providerFocusedArtifactRunContext(config)
+	}
 	if config.artifactRunContext != nil {
 		run := *config.artifactRunContext
 		run.SessionID = strings.TrimSpace(run.SessionID)
