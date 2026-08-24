@@ -3,7 +3,9 @@ package pebblestore
 import (
 	"errors"
 	"fmt"
+	"path"
 	"reflect"
+	"strings"
 )
 
 func (s *SessionStore) prepareAuthoritativeArtifactParts(input V3SessionMutationInput, seq uint64, now int64) ([]SessionArtifactPartDefinition, []SessionArtifactPartRevision, *SessionArtifactComposition, error) {
@@ -29,6 +31,18 @@ func (s *SessionStore) prepareAuthoritativeArtifactParts(input V3SessionMutation
 	}
 	if mutation.Variant.ArtifactChainID != "" && mutation.Variant.ArtifactChainID != composition.ArtifactChainID {
 		return nil, nil, nil, errors.New("artifact variant and composition chain identities conflict")
+	}
+	if err := validateArtifactConstruction(composition); err != nil {
+		return nil, nil, nil, err
+	}
+	if composition.Parent != nil {
+		parent, ok, err := s.GetSessionArtifactComposition(input.AccountScopeID, input.UserID, composition.Parent.OwnerSessionID, composition.Parent.ArtifactChainID, composition.Parent.CompositionID)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		if !ok || parent.EventSeq != composition.Parent.EventSeq || parent.GraphState != SessionArtifactGraphAuthoritative {
+			return nil, nil, nil, errors.New("artifact composition parent is missing or stale")
+		}
 	}
 
 	definitions := make([]SessionArtifactPartDefinition, len(mutation.PartDefinitions))
@@ -124,6 +138,52 @@ func (s *SessionStore) prepareAuthoritativeArtifactParts(input V3SessionMutation
 	composition.CreatedAt = now
 	composition.EventSeq = seq
 	return definitions, revisions, &composition, nil
+}
+
+func validateArtifactConstruction(composition SessionArtifactComposition) error {
+	if len(composition.Parts) == 0 || len(composition.Parts) > SessionArtifactMaxParts {
+		return errors.New("artifact composition requires a bounded part graph")
+	}
+	parts := make(map[string]struct{}, len(composition.Parts))
+	for _, part := range composition.Parts {
+		if _, exists := parts[part.PartID]; exists {
+			return errors.New("artifact composition contains duplicate part ids")
+		}
+		parts[part.PartID] = struct{}{}
+	}
+	construction := composition.Construction
+	if construction.Kind != "concat-v1" && construction.Kind != "package-v1" {
+		return errors.New("artifact composition construction kind is unsupported")
+	}
+	if len(construction.Entries) != len(composition.Parts) {
+		return errors.New("artifact construction must reference every part exactly once")
+	}
+	seen := make(map[string]struct{}, len(construction.Entries))
+	paths := make(map[string]struct{}, len(construction.Entries))
+	for _, entry := range construction.Entries {
+		if _, ok := parts[entry.PartID]; !ok {
+			return errors.New("artifact construction references an unknown part")
+		}
+		if _, duplicate := seen[entry.PartID]; duplicate {
+			return errors.New("artifact construction references a part more than once")
+		}
+		seen[entry.PartID] = struct{}{}
+		if construction.Kind == "concat-v1" {
+			if entry.Path != "" {
+				return errors.New("concat artifact construction cannot declare package paths")
+			}
+			continue
+		}
+		clean := path.Clean(strings.TrimSpace(entry.Path))
+		if clean == "." || clean != entry.Path || path.IsAbs(clean) || strings.HasPrefix(clean, "../") || strings.Contains(clean, "\\") {
+			return errors.New("package artifact construction contains an unsafe path")
+		}
+		if _, duplicate := paths[clean]; duplicate {
+			return errors.New("package artifact construction contains duplicate paths")
+		}
+		paths[clean] = struct{}{}
+	}
+	return nil
 }
 
 func partRevisionLookupKey(ownerSessionID, chainID, partID, revisionID string) string {

@@ -68,7 +68,7 @@ func (m *authorityMetadata) GetSessionArtifactComposition(_, _, owner, chain, co
 func (m *authorityMetadata) ApplySessionMutation(input pebblestore.V3SessionMutationInput) (pebblestore.V3SessionMutationResult, error) {
 	projection := pebblestore.V3ArtifactProjection{Collection: input.Artifact.Collection, Variant: input.Artifact.Variant, Selection: input.Artifact.Selection}
 	switch input.Kind {
-	case pebblestore.V3SessionMutationCreateArtifact:
+	case pebblestore.V3SessionMutationCreateArtifact, pebblestore.V3SessionMutationUpdateArtifact:
 		m.collection = input.Artifact.Collection
 		m.collection.AccountScopeID, m.collection.SessionID, m.collection.Status = input.AccountScopeID, input.SessionID, pebblestore.SessionArtifactStatusStaging
 		m.collection.VariantCount, m.collection.StagingCount = 1, 1

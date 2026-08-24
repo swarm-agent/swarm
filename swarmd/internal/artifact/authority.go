@@ -1,6 +1,7 @@
 package artifact
 
 import (
+	"archive/zip"
 	"bytes"
 	"context"
 	"crypto/sha256"
@@ -8,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 
@@ -92,7 +94,32 @@ type CreateInitialCompositionInput struct {
 	CreateInput
 	ArtifactChainID string
 	CompositionID   string
+	Construction    pebblestore.SessionArtifactConstruction
 	Parts           []InitialPartInput
+}
+
+type PartReplacementInput struct {
+	PartDefinition     pebblestore.SessionArtifactPartDefinition
+	SourcePartRevision pebblestore.SessionArtifactPartRevisionReference
+	Filename           string
+	MediaType          string
+	Body               []byte
+	Locked             bool
+}
+
+type PublishPartReplacementsInput struct {
+	RequestID          string
+	CallID             string
+	CollectionID       string
+	VariantID          string
+	ArtifactStepID     string
+	IterationTurnID    string
+	IterationGroupID   string
+	CandidateIndex     int
+	AutoAccept         bool
+	SourceArtifact     pebblestore.SessionArtifactSelectionReference
+	SourceComposition  pebblestore.SessionArtifactComposition
+	Replacements       []PartReplacementInput
 }
 
 type PublishPartReplacementInput struct {
@@ -113,6 +140,7 @@ type PublishPartReplacementInput struct {
 	OutputRequirements *pebblestore.SessionArtifactOutputRequirements
 	AnimationProfile   *pebblestore.SessionArtifactAnimationProfile
 	Body               []byte
+	Locked             bool
 }
 
 type CreatePackageInput struct {
@@ -460,20 +488,9 @@ func (a *Authority) ReadReference(ctx context.Context, principal Principal, ref 
 		return nil, pebblestore.SessionArtifactVariant{}, err
 	}
 	if variant.PartGraphState == pebblestore.SessionArtifactGraphAuthoritative && variant.Composition != nil {
-		if maxBytes <= 0 {
-			return nil, pebblestore.SessionArtifactVariant{}, errors.New("artifact composition read requires a positive byte bound")
-		}
-		assembled := make([]byte, 0, min(maxBytes, variant.Size))
-		for _, slot := range variant.Composition.Parts {
-			remaining := maxBytes - int64(len(assembled))
-			if remaining <= 0 || slot.Revision.Size > remaining {
-				return nil, pebblestore.SessionArtifactVariant{}, errors.New("assembled artifact composition exceeds read byte bound")
-			}
-			part, _, readErr := a.ReadPartRevision(ctx, principal, slot.Revision, remaining)
-			if readErr != nil {
-				return nil, pebblestore.SessionArtifactVariant{}, readErr
-			}
-			assembled = append(assembled, part...)
+		assembled, constructErr := a.constructComposition(ctx, principal, *variant.Composition, maxBytes)
+		if constructErr != nil {
+			return nil, pebblestore.SessionArtifactVariant{}, constructErr
 		}
 		return assembled, variant, nil
 	}
@@ -483,6 +500,32 @@ func (a *Authority) ReadReference(ctx context.Context, principal Principal, ref 
 	}
 	data, _, err := service.Read(ctx, variant, maxBytes)
 	return data, variant, err
+}
+
+func (a *Authority) constructComposition(ctx context.Context, principal Principal, composition pebblestore.SessionArtifactComposition, maxBytes int64) ([]byte, error) {
+	if maxBytes <= 0 {
+		return nil, errors.New("artifact composition read requires a positive byte bound")
+	}
+	slots := make(map[string]pebblestore.SessionArtifactPartRevisionReference, len(composition.Parts))
+	for _, slot := range composition.Parts {
+		slots[slot.PartID] = slot.Revision
+	}
+	var assembled bytes.Buffer
+	var archive *zip.Writer
+	if composition.Construction.Kind == "package-v1" { archive = zip.NewWriter(&assembled) }
+	if composition.Construction.Kind != "concat-v1" && archive == nil { return nil, errors.New("artifact composition construction kind is unsupported") }
+	for _, entry := range composition.Construction.Entries {
+		reference, ok := slots[entry.PartID]
+		if !ok { return nil, errors.New("artifact construction references an unknown part") }
+		part, _, err := a.ReadPartRevision(ctx, principal, reference, maxBytes-int64(assembled.Len()))
+		if err != nil { return nil, err }
+		if archive == nil { _, err = assembled.Write(part) } else { var writer io.Writer; writer, err = archive.CreateHeader(&zip.FileHeader{Name: entry.Path, Method: zip.Store}); if err == nil { _, err = writer.Write(part) } }
+		if err != nil { return nil, err }
+		if int64(assembled.Len()) > maxBytes { return nil, errors.New("constructed artifact composition exceeds read byte bound") }
+	}
+	if archive != nil { if err := archive.Close(); err != nil { return nil, err } }
+	if int64(assembled.Len()) > maxBytes { return nil, errors.New("constructed artifact composition exceeds read byte bound") }
+	return assembled.Bytes(), nil
 }
 
 func (a *Authority) ReadPackageReference(ctx context.Context, principal Principal, ref pebblestore.SessionArtifactSelectionReference, entryName string, maxBytes int64) ([]PackageManifestEntry, []byte, pebblestore.SessionArtifactVariant, error) {

@@ -75,7 +75,12 @@ func (a *Authority) CreateInitialComposition(ctx context.Context, principal Prin
 	}
 	definitions := make([]pebblestore.SessionArtifactPartDefinition, 0, len(input.Parts))
 	revisions := make([]pebblestore.SessionArtifactPartRevision, 0, len(input.Parts))
-	composition := pebblestore.SessionArtifactComposition{ID: input.CompositionID, ArtifactChainID: input.ArtifactChainID, OwnerSessionID: principal.SessionID}
+	composition := pebblestore.SessionArtifactComposition{ID: input.CompositionID, ArtifactChainID: input.ArtifactChainID, OwnerSessionID: principal.SessionID, Construction: input.Construction}
+	if composition.Construction.Kind == "" {
+		entries := make([]pebblestore.SessionArtifactConstructionEntry, 0, len(input.Parts))
+		for _, part := range input.Parts { entries = append(entries, pebblestore.SessionArtifactConstructionEntry{PartID: strings.TrimSpace(part.Definition.ID)}) }
+		composition.Construction = pebblestore.SessionArtifactConstruction{Kind: "concat-v1", Entries: entries}
+	}
 	seen := make(map[string]struct{}, len(input.Parts))
 	for _, part := range input.Parts {
 		definition := part.Definition

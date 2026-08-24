@@ -67,6 +67,8 @@ type SessionArtifactPartRevision struct {
 	Size            int64                                 `json:"size"`
 	MediaType       string                                `json:"media_type"`
 	Parent          *SessionArtifactPartRevisionReference `json:"parent,omitempty"`
+	IterationTurnID  string                                `json:"iteration_turn_id,omitempty"`
+	IterationGroupID string                                `json:"iteration_group_id,omitempty"`
 	CreatedAt       int64                                 `json:"created_at"`
 	EventSeq        uint64                                `json:"event_seq"`
 }
@@ -90,21 +92,46 @@ type SessionArtifactCompositionPart struct {
 	PartID                   string                               `json:"part_id"`
 	DefinitionOwnerSessionID string                               `json:"definition_owner_session_id"`
 	Revision                 SessionArtifactPartRevisionReference `json:"revision"`
+	Locked                   bool                                 `json:"locked,omitempty"`
+}
+
+// SessionArtifactCompositionReference identifies one immutable composition.
+type SessionArtifactCompositionReference struct {
+	ArtifactChainID string `json:"artifact_chain_id"`
+	CompositionID   string `json:"composition_id"`
+	OwnerSessionID  string `json:"owner_session_id"`
+	EventSeq        uint64 `json:"event_seq"`
+}
+
+// SessionArtifactConstruction declares how exact part bytes become the complete
+// artifact. No media-derived or implicit construction is permitted.
+type SessionArtifactConstruction struct {
+	Kind    string                             `json:"kind"`
+	Entries []SessionArtifactConstructionEntry `json:"entries,omitempty"`
+}
+
+type SessionArtifactConstructionEntry struct {
+	PartID string `json:"part_id"`
+	Path   string `json:"path,omitempty"`
 }
 
 // SessionArtifactComposition is the preservation authority for one complete
 // artifact revision. Preview/export bytes are projections of this ordered list.
 type SessionArtifactComposition struct {
-	Version         int                              `json:"version"`
-	GraphState      string                           `json:"graph_state"`
-	ID              string                           `json:"id"`
-	ArtifactChainID string                           `json:"artifact_chain_id"`
-	AccountScopeID  string                           `json:"account_scope_id"`
-	UserID          string                           `json:"user_id"`
-	OwnerSessionID  string                           `json:"owner_session_id"`
-	Parts           []SessionArtifactCompositionPart `json:"parts"`
-	CreatedAt       int64                            `json:"created_at"`
-	EventSeq        uint64                           `json:"event_seq"`
+	Version          int                                  `json:"version"`
+	GraphState       string                               `json:"graph_state"`
+	ID               string                               `json:"id"`
+	ArtifactChainID  string                               `json:"artifact_chain_id"`
+	AccountScopeID   string                               `json:"account_scope_id"`
+	UserID           string                               `json:"user_id"`
+	OwnerSessionID   string                               `json:"owner_session_id"`
+	Parent           *SessionArtifactCompositionReference `json:"parent,omitempty"`
+	IterationTurnID  string                               `json:"iteration_turn_id,omitempty"`
+	IterationGroupID string                               `json:"iteration_group_id,omitempty"`
+	Construction     SessionArtifactConstruction          `json:"construction"`
+	Parts            []SessionArtifactCompositionPart     `json:"parts"`
+	CreatedAt        int64                                `json:"created_at"`
+	EventSeq         uint64                               `json:"event_seq"`
 }
 
 func KeySessionArtifactPartDefinition(accountScopeID, ownerSessionID, chainID, partID string) string {
