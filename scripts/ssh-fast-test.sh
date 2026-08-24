@@ -82,6 +82,38 @@ rm -f -- "$1"
 REMOTE_CLEAN_BUNDLE
 }
 
+remote_service_action() {
+  local action="$1"
+  ssh "${SSH_ALIAS}" 'bash -s' -- "${SERVICE_UNIT}" "${action}" <<'REMOTE_SERVICE_ACTION'
+set -euo pipefail
+service_unit="$1"
+action="$2"
+admin_broker='/usr/local/sbin/swarm-testbench-admin'
+if systemctl --user cat "${service_unit}" >/dev/null 2>&1; then
+  case "${action}" in
+    status) systemctl --user --no-pager --full status "${service_unit}" | sed -n '1,18p' ;;
+    stop) systemctl --user stop "${service_unit}" ;;
+    reload) systemctl --user daemon-reload ;;
+    restart) systemctl --user restart "${service_unit}" ;;
+    *) printf 'ssh-fast-test: unsupported service action: %s\n' "${action}" >&2; exit 2 ;;
+  esac
+  exit 0
+fi
+if [ "${service_unit}" != 'swarm.service' ]; then
+  printf 'ssh-fast-test: system service must use the fixed swarm.service unit\n' >&2
+  exit 1
+fi
+if [ ! -x "${admin_broker}" ]; then
+  printf 'ssh-fast-test: fixed testbench administration broker is unavailable\n' >&2
+  exit 1
+fi
+case "${action}" in
+  status|stop|reload|restart) sudo -n "${admin_broker}" "swarm-service-${action}" ;;
+  *) printf 'ssh-fast-test: unsupported service action: %s\n' "${action}" >&2; exit 2 ;;
+esac
+REMOTE_SERVICE_ACTION
+}
+
 if [[ $# -lt 1 ]]; then
   usage
   exit 2
@@ -194,14 +226,7 @@ trap 'rm -f -- "${LOCAL_BUNDLE}"; cleanup_remote_bundle "${REMOTE_BUNDLE_PATH}" 
 
 if [[ "${FROM_ZERO}" == "true" ]]; then
   printf 'ssh-fast-test: stopping remote service before checkout update\n'
-  ssh "${SSH_ALIAS}" 'bash -s' -- "${SERVICE_UNIT}" <<'REMOTE_STOP_SERVICE'
-set -euo pipefail
-service_unit="$1"
-systemctl --user stop "${service_unit}" >/dev/null 2>&1 || true
-if command -v sudo >/dev/null 2>&1; then
-  sudo -n systemctl stop "${service_unit}" >/dev/null 2>&1 || true
-fi
-REMOTE_STOP_SERVICE
+  remote_service_action stop
 fi
 
 ssh "${SSH_ALIAS}" 'bash -s' -- "${REMOTE_DIR}" "${FROM_ZERO}" "${DB_PATH}" "${RESTART_SERVICE}" "${SERVICE_UNIT}" "${REMOTE_BUNDLE_PATH}" "${LOCAL_HEAD}" "${LOCAL_BRANCH}" "${LOCAL_REF}" <<'REMOTE_SSH_FAST_TEST'
@@ -285,18 +310,36 @@ if [ ! -f web/node_modules/vite/bin/vite.js ]; then
   fi
   (cd web && pnpm install --frozen-lockfile)
 fi
-./rebuild s
-if [ "${restart_service}" = 'true' ]; then
-  if systemctl --user cat "${service_unit}" >/dev/null 2>&1; then
-    systemctl --user daemon-reload
-    systemctl --user restart "${service_unit}"
-    sleep 2
-    systemctl --user --no-pager --full status "${service_unit}" | sed -n '1,18p'
-  else
-    sudo -n systemctl daemon-reload
-    sudo -n systemctl restart "${service_unit}"
-    sleep 2
-    sudo -n systemctl --no-pager --full status "${service_unit}" | sed -n '1,18p'
-  fi
-fi
+sudo_shim_dir="$(mktemp -d)"
+trap 'rm -rf -- "${sudo_shim_dir}"' EXIT
+cat >"${sudo_shim_dir}/sudo" <<'SUDO_SHIM'
+#!/usr/bin/env bash
+set -euo pipefail
+admin_broker='/usr/local/sbin/swarm-testbench-admin'
+[[ $# -ge 1 ]] || { printf 'ssh-fast-test: privileged command is required\n' >&2; exit 2; }
+if [[ "$1" == '-n' ]]; then shift; fi
+[[ $# -ge 1 ]] || { printf 'ssh-fast-test: privileged command is required\n' >&2; exit 2; }
+case "$(basename -- "$1")" in
+  systemctl) shift ;;
+  *) exit 1 ;;
+esac
+case "$*" in
+  'daemon-reload') action='swarm-service-reload' ;;
+  'start swarm.service'|'restart swarm.service') action='swarm-service-restart' ;;
+  'stop swarm.service') action='swarm-service-stop' ;;
+  *) printf 'ssh-fast-test: rebuild requested unsupported system service action\n' >&2; exit 1 ;;
+esac
+exec /usr/bin/sudo -n "${admin_broker}" "${action}"
+SUDO_SHIM
+chmod 0700 "${sudo_shim_dir}/sudo"
+SWARM_SKIP_SYSTEMD_UNIT=1 PATH="${sudo_shim_dir}:${PATH}" ./rebuild f
+rm -rf -- "${sudo_shim_dir}"
+trap - EXIT
 REMOTE_SSH_FAST_TEST
+
+if [[ "${RESTART_SERVICE}" == "true" ]]; then
+  remote_service_action reload
+  remote_service_action restart
+  sleep 2
+  remote_service_action status
+fi

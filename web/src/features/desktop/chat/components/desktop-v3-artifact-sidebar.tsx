@@ -16,7 +16,7 @@ import {
   type DesktopV3ArtifactCollectionProgress,
 } from '../../session-v3/artifact-api'
 import type { DesktopSidebarDisplayMode, DesktopV3SessionSidebarView } from './desktop-sidebar-display'
-import { desktopV3ArtifactStudioSamePartRevision, desktopV3ArtifactStudioTurns } from '../../session-v3/artifact-studio-model'
+import { desktopV3ArtifactStudioPresentationGroupKey, desktopV3ArtifactStudioSamePartRevision, desktopV3ArtifactStudioTurns } from '../../session-v3/artifact-studio-model'
 import { refreshOpenDesktopV3ArtifactCatalogs } from '../../session-v3/artifact-catalog-refresh'
 import { useDesktopV3ArtifactPreviewVisibility } from './desktop-v3-artifact-preview-thumbnail'
 
@@ -201,29 +201,9 @@ function sidebarCollectionLabel(entry: DesktopV3ArtifactCatalogEntry): string {
 export function desktopV3ArtifactSidebarGroups(
   artifacts: readonly DesktopV3ArtifactCatalogEntry[],
 ): DesktopV3ArtifactSidebarGroup[] {
-  // A source-free overall Iteration Swarm gives every root candidate its own chain.
-  // Keep those roots in their shared launch collection until one chain actually
-  // gains a later turn; otherwise the first publication splits one swarm into a
-  // separate sidebar card per candidate.
-  const turnBasedChainIds = new Set(artifacts.flatMap((artifact) => {
-    const chainId = artifact.graphState === 'git_projection' && artifact.step?.id === artifact.artifactStepId
-      ? artifact.artifactChainId?.trim() ?? ''
-      : ''
-    const hasLaterTurn = (artifact.step?.revisionNumber ?? 0) > 1 || (artifact.chain?.revisionCount ?? 0) > 1
-    return chainId && hasLaterTurn ? [chainId] : []
-  }))
   const groups = new Map<string, DesktopV3ArtifactCatalogEntry[]>()
   for (const artifact of artifacts) {
-    const collectionId = artifact.collectionId?.trim() ?? ''
-    const owningSessionId = artifact.lineage?.parentSessionId || artifact.sessionId
-    const chainId = artifact.graphState === 'git_projection' && artifact.step?.id === artifact.artifactStepId
-      ? artifact.artifactChainId?.trim() ?? ''
-      : ''
-    const key = chainId && turnBasedChainIds.has(chainId)
-      ? `chain\u0000${chainId}`
-      : collectionId
-      ? `${owningSessionId}\u0000${collectionId}`
-      : `${artifact.sessionId}\u0000artifact\u0000${artifact.artifactId}`
+    const key = desktopV3ArtifactStudioPresentationGroupKey(artifacts, artifact)
     groups.set(key, [...(groups.get(key) ?? []), artifact])
   }
   return [...groups.entries()].map(([key, entries]) => ({
@@ -233,7 +213,7 @@ export function desktopV3ArtifactSidebarGroups(
       || (left.candidateIndex || left.lineage?.iterationIndex || 0) - (right.candidateIndex || right.lineage?.iterationIndex || 0)
       || left.updatedAt - right.updatedAt),
     progress: sidebarCollectionProgress(entries),
-    label: key.startsWith('chain\u0000')
+    label: key.startsWith('chain:')
       ? entries[0]?.chain?.name || (entries[0] ? sidebarCollectionLabel(entries[0]) : 'Artifact')
       : entries[0] ? sidebarCollectionLabel(entries[0]) : 'Artifact',
   }))
@@ -331,7 +311,7 @@ export function DesktopV3ArtifactSidebar({
               : group.entries[0]
             if (!representative) return null
             const grouped = Boolean(group.collectionId)
-            const turnBased = group.key.startsWith('chain\u0000')
+            const turnBased = group.key.startsWith('chain:')
             const artifactTurns = turnBased ? desktopV3ArtifactStudioTurns(group.entries, representative) : []
             const authoritativeHead = head
               ? group.entries.find((entry) => entry.sessionId === head.sessionId && entry.collectionId === head.collectionId && entry.artifactId === head.variantId && entry.eventSeq === head.eventSeq)
@@ -366,7 +346,7 @@ export function DesktopV3ArtifactSidebar({
                         <span className="text-[10px] font-semibold">Turn {turn.revisionNumber}</span>
                         <span className="text-[9px] text-[var(--app-text-subtle)]">{currentTurn ? 'Latest turn' : 'Turn history'} · {headTurn ? 'Composition head' : turn.accepted ? 'Decision recorded' : 'No decision'} · {turn.candidates.length} option{turn.candidates.length === 1 ? '' : 's'}</span>
                       </button>
-                      {turn.parts.length > 0 ? <div className="grid gap-1 border-t border-[var(--app-border)] p-1.5"><p className="px-0.5 text-[9px] text-[var(--app-text-subtle)]">{turn.parts.length} changed part{turn.parts.length === 1 ? '' : 's'}</p>
+                      {turn.parts.length === 1 ? <div className="grid gap-1 border-t border-[var(--app-border)] p-1.5"><p className="px-0.5 text-[9px] text-[var(--app-text-subtle)]">1 changed part</p>
                         {turn.parts.map((turnPart) => {
                           const definition = partDefinitionsById.get(turnPart.partId)
                           const currentSlot = currentComposition?.parts.find((part) => part.partId === turnPart.partId)
@@ -390,7 +370,7 @@ export function DesktopV3ArtifactSidebar({
                             })}</div>
                           </section>
                         })}
-                      </div> : <div className="border-t border-[var(--app-border)] px-2 py-1.5 text-[9px] text-[var(--app-text-subtle)]">{turnIndex === 0 ? 'Original composition' : 'Composition-only update'}{turnTarget ? <button type="button" className="ml-2 font-semibold text-[var(--app-primary)]" onClick={() => onOpenArtifact(turnTarget)}>Open exact version</button> : null}</div>}
+                      </div> : <div className="border-t border-[var(--app-border)] px-2 py-1.5 text-[9px] text-[var(--app-text-subtle)]">{turnIndex === 0 ? 'Original composition' : turn.parts.length > 1 ? `${turn.parts.length} parts changed together` : 'Composition-only update'}{turnTarget ? <button type="button" className="ml-2 font-semibold text-[var(--app-primary)]" onClick={() => onOpenArtifact(turnTarget)}>Open iteration</button> : null}</div>}
                     </section>
                   })}
                   {authoritativeHead && currentComposition?.parts.some((part) => part.locked) ? <div className="flex flex-wrap gap-1">{currentComposition.parts.filter((part) => part.locked).map((part) => <button key={part.partId} type="button" className="rounded border border-[var(--app-border)] px-1.5 py-0.5 text-[9px] font-semibold text-[var(--app-text-muted)] hover:bg-[var(--app-surface-active)] disabled:opacity-50" disabled={Boolean(partSelectionPending)} onClick={() => void applyPartChoice(authoritativeHead, authoritativeHead, part.partId, false)}>Unlock {partDefinitionsById.get(part.partId)?.label || part.partId}</button>)}</div> : null}

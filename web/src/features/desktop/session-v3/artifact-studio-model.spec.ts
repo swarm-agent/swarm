@@ -8,6 +8,7 @@ import {
   desktopV3ArtifactStudioHead,
   desktopV3ArtifactStudioParent,
   desktopV3ArtifactStudioPartIterations,
+  desktopV3ArtifactStudioPresentationGroupKey,
   desktopV3ArtifactStudioRounds,
   desktopV3ArtifactStudioSamePartRevision,
   desktopV3ArtifactStudioSectionAlternatives,
@@ -43,6 +44,49 @@ test('artifact studio renders authoritative ordered steps with ten candidates an
   assert.deepEqual(desktopV3ArtifactStudioRounds(entries, candidates[0]!).map((step) => [step.id, step.candidates.length, step.accepted?.artifactId]), [['step-1', 1, 'base'], ['step-2', 10, 'candidate-7']])
   assert.equal(desktopV3ArtifactStudioParent(entries, candidates[0]!)?.artifactId, 'base')
   assert.equal(desktopV3ArtifactStudioSectionAlternatives(entries, candidates[0]!, 'hero').length, 10)
+})
+
+test('artifact studio keeps source-free root iterations together until one candidate gains a later turn', () => {
+  const firstRef = ref('first', 1)
+  const secondRef = ref('second', 2)
+  const first = artifact({ id: 'first', eventSeq: 1, step: 'root-first', revision: 1, candidates: [firstRef], head: firstRef })
+  const second = artifact({ id: 'second', eventSeq: 2, step: 'root-second', revision: 1, candidates: [secondRef], head: secondRef })
+  const firstGroupRef = { ...firstRef, collectionId: 'overall-wave' }
+  const secondGroupRef = { ...secondRef, collectionId: 'overall-wave' }
+  first.collectionId = 'overall-wave'
+  second.collectionId = 'overall-wave'
+  first.artifactChainId = 'chain-first'
+  first.chain = { ...first.chain!, id: 'chain-first', root: firstGroupRef, head: firstGroupRef, revisionCount: 1 }
+  first.step = { ...first.step!, artifactChainId: 'chain-first', candidates: [firstGroupRef] }
+  second.artifactChainId = 'chain-second'
+  second.chain = { ...second.chain!, id: 'chain-second', root: secondGroupRef, head: secondGroupRef, revisionCount: 1 }
+  second.step = { ...second.step!, artifactChainId: 'chain-second', candidates: [secondGroupRef] }
+
+  assert.equal(desktopV3ArtifactStudioPresentationGroupKey([first, second], first), 'collection:session-1:overall-wave')
+  assert.equal(desktopV3ArtifactStudioPresentationGroupKey([first, second], second), 'collection:session-1:overall-wave')
+
+  const nextRef = { ...ref('first-v2', 3), collectionId: 'first-v2-collection' }
+  const next = artifact({ id: 'first-v2', eventSeq: 3, step: 'first-turn-2', revision: 2, candidates: [nextRef], parent: firstGroupRef, head: nextRef })
+  next.artifactChainId = 'chain-first'
+  next.chain = { ...next.chain!, id: 'chain-first', root: firstGroupRef, revisionCount: 2 }
+  next.step = { ...next.step!, artifactChainId: 'chain-first' }
+  first.chain = { ...first.chain!, revisionCount: 2 }
+
+  assert.equal(desktopV3ArtifactStudioPresentationGroupKey([first, second, next], first), 'chain:chain-first')
+  assert.equal(desktopV3ArtifactStudioPresentationGroupKey([first, second, next], next), 'chain:chain-first')
+  assert.equal(desktopV3ArtifactStudioPresentationGroupKey([first, second, next], second), 'collection:session-1:overall-wave')
+})
+
+test('artifact studio groups one generating turn across collections by durable iteration group', () => {
+  const first = artifact({ id: 'first', eventSeq: 1, step: 'first', revision: 1, candidates: [ref('first', 1)], head: ref('first', 1) })
+  const second = artifact({ id: 'second', eventSeq: 2, step: 'second', revision: 1, candidates: [ref('second', 2)], head: ref('second', 2) })
+  first.collectionId = 'collection-a'
+  second.collectionId = 'collection-b'
+  first.lineage.iterationGroupId = 'task-turn-9'
+  second.lineage.iterationGroupId = 'task-turn-9'
+
+  assert.equal(desktopV3ArtifactStudioPresentationGroupKey([first, second], first), 'turn:session-1:task-turn-9')
+  assert.equal(desktopV3ArtifactStudioPresentationGroupKey([first, second], second), 'turn:session-1:task-turn-9')
 })
 
 test('artifact studio groups section-targeted revision turns by part', () => {

@@ -44,6 +44,32 @@ export function desktopV3ArtifactStudioChainKey(entry: DesktopV3ArtifactCatalogE
   return gitProjected(entry) ? entry.artifactChainId! : ''
 }
 
+/**
+ * Returns the user-visible artifact group for a session catalog. The durable
+ * iteration-group identity is the generating AI turn and can span collections;
+ * source-free legacy waves fall back to their shared collection. Once an
+ * ungrouped chain gains a later revision, that chain becomes the stable artifact
+ * whose turns should be browsed chronologically.
+ */
+export function desktopV3ArtifactStudioPresentationGroupKey(
+  entries: readonly DesktopV3ArtifactCatalogEntry[],
+  entry: DesktopV3ArtifactCatalogEntry,
+): string {
+  const chainKey = desktopV3ArtifactStudioChainKey(entry)
+  const iterationGroupId = entry.lineage?.iterationGroupId.trim() ?? ''
+  const owningSessionId = entry.lineage?.parentSessionId || entry.sessionId
+  if (iterationGroupId) return `turn:${owningSessionId}:${iterationGroupId}`
+  const chainHasMultipleTurns = Boolean(chainKey && entries.some((candidate) =>
+    desktopV3ArtifactStudioChainKey(candidate) === chainKey
+      && ((candidate.step?.revisionNumber ?? candidate.revisionNumber ?? 0) > 1
+        || (candidate.chain?.revisionCount ?? 0) > 1)
+  ))
+  if (chainHasMultipleTurns) return `chain:${chainKey}`
+  return entry.collectionId
+    ? `collection:${owningSessionId}:${entry.collectionId}`
+    : `standalone:${entry.sessionId}:${entry.artifactId}`
+}
+
 export function desktopV3ArtifactStudioEntries(entries: readonly DesktopV3ArtifactCatalogEntry[], entry: DesktopV3ArtifactCatalogEntry): DesktopV3ArtifactCatalogEntry[] {
   const chainKey = desktopV3ArtifactStudioChainKey(entry)
   if (!chainKey) return [entry]

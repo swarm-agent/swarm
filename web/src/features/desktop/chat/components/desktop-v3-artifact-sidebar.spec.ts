@@ -178,8 +178,8 @@ test('a candidate becomes a turn-based artifact only after its chain gains anoth
   const groups = desktopV3ArtifactSidebarGroups([unselectedRoot, nextTurn, root])
 
   assert.equal(groups.length, 2)
-  assert.deepEqual(groups.find((group) => group.key === 'chain\u0000chain-selected')?.entries.map((entry) => entry.artifactId), ['variant-root', 'variant-turn-2'])
-  assert.deepEqual(groups.find((group) => group.key.includes('collection-overall'))?.entries.map((entry) => entry.artifactId), ['variant-other'])
+  assert.deepEqual(groups.find((group) => group.key === 'chain:chain-selected')?.entries.map((entry) => entry.artifactId), ['variant-root', 'variant-turn-2'])
+  assert.deepEqual(groups.find((group) => group.key === 'collection:session-a:collection-overall')?.entries.map((entry) => entry.artifactId), ['variant-other'])
 })
 
 test('sidebar part attachment links the exact authoritative part back to chat', () => {
@@ -206,13 +206,15 @@ test('sidebar distinguishes accepted byte heads from pending locked candidates',
   assert.match(source, /acceptedCurrent \? 'Accepted head' : currentSlot\?\.locked \? 'Locked pending' : 'History'/)
 })
 
-test('sidebar turn copy distinguishes chronological turns, decisions, and the composition head', async () => {
+test('sidebar turn copy keeps multi-part rounds at the complete-iteration level', async () => {
   const source = await readFile(new URL('./desktop-v3-artifact-sidebar.tsx', import.meta.url), 'utf8')
   assert.match(source, /Latest turn/)
   assert.match(source, /Turn history/)
   assert.match(source, /Composition head/)
   assert.match(source, /Decision recorded/)
-  assert.match(source, /changed part/)
+  assert.match(source, /turn\.parts\.length === 1/)
+  assert.match(source, /parts changed together/)
+  assert.match(source, />Open iteration</)
 })
 
 test('ordinary artifacts remain separate sidebar entries', () => {
