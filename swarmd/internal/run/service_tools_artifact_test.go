@@ -67,6 +67,19 @@ func TestLatestTaskArtifactUseSelectionPreservesTypedPart(t *testing.T) {
 	}
 }
 
+func TestEqualTaskSectionTargetIgnoresAuthenticatedDisplayDescription(t *testing.T) {
+	requested := &taskSwarmSectionTarget{ID: "signal", Label: "Signal", Kind: "temporal", EndMs: 2000}
+	bound := &taskSwarmSectionTarget{ID: "signal", Label: "Signal", Kind: "temporal", Description: "Opening Signal section.", EndMs: 2000}
+	if !equalTaskSectionTarget(requested, bound) {
+		t.Fatal("task-callable locator should match the authenticated target even though display description is server-only")
+	}
+	mismatch := *requested
+	mismatch.EndMs = 2001
+	if equalTaskSectionTarget(&mismatch, bound) {
+		t.Fatal("typed locator differences must still fail closed")
+	}
+}
+
 func TestManageArtifactToolOutputIsStructured(t *testing.T) {
 	output := `{"action":"create","artifact":{"collection_id":"col-1","event_seq":1,"filename":"concept.html","id":"var-1","media_type":"text/html","session_id":"sess-1","status":"ready"},"path_id":"run.manage-artifact.v1","reference":{"collection_id":"col-1","event_seq":1,"session_id":"sess-1","variant_id":"var-1"},"status":"ok","tool":"manage_artifact"}`
 	preview, ok := toolHistoryStructuredPayload("manage_artifact", output, `{"action":"create"}`)

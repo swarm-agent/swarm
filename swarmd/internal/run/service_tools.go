@@ -5516,7 +5516,13 @@ func equalTaskSectionTarget(left, right *taskSwarmSectionTarget) bool {
 	if left == nil || right == nil {
 		return left == nil && right == nil
 	}
-	return *left == *right
+	// Description is authenticated display context copied from the artifact part,
+	// but task section_target arguments cannot carry it. Compare only the typed
+	// locator contract that callers can express; the bound target remains the
+	// server-owned value propagated to workers after this check.
+	leftCopy, rightCopy := *left, *right
+	leftCopy.Description, rightCopy.Description = "", ""
+	return leftCopy == rightCopy
 }
 
 func buildTaskParentTranscriptContext(messages []pebblestore.MessageSnapshot) string {
