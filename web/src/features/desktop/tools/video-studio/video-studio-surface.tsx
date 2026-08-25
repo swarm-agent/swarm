@@ -35,8 +35,17 @@ export type VideoPlanVisualWire = {
   collection_id: string
   variant_id: string
   event_seq: number
+  media_type?: string
   label?: string
   description?: string
+}
+
+export type VideoCaptionWire = {
+  id: string
+  text: string
+  position?: string
+  start_ms: number
+  end_ms: number
 }
 
 export type VideoPlanPartWire = {
@@ -47,8 +56,12 @@ export type VideoPlanPartWire = {
   on_screen_text?: string
   visual_direction?: string
   transition_in?: string
+  caption?: VideoCaptionWire
+  transition?: VideoTransitionWire
   visual?: VideoPlanVisualWire
   visual_media_type?: string
+  source_start_ms?: number
+  source_end_ms?: number
 }
 
 export type VideoPlanProposalWire = {
@@ -86,7 +99,7 @@ export function videoPlanPartArtifact(part: VideoPlanPartWire): DesktopV3Artifac
     sessionTitle: '', workspacePath: '', workspaceName: '', planId: '', planTitle: '', checkpointId: '', checkpointTitle: '',
     label: part.visual.label || part.title,
     description: part.visual.description || part.visual_direction || '',
-    collectionName: '', collectionDescription: '', filename: part.title, mediaType: part.visual_media_type || 'image/png', kind: 'visual',
+    collectionName: '', collectionDescription: '', filename: part.title, mediaType: part.visual_media_type || part.visual.media_type || 'image/png', kind: 'visual',
     status: 'ready', previewable: true, category: 'visual', updatedAt: 0, eventSeq: part.visual.event_seq,
   }
 }

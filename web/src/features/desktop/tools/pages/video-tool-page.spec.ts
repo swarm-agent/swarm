@@ -665,6 +665,28 @@ test('pending visual plan tolerates an empty legacy base revision', () => {
   assert.equal(shadow.clips[0].artifact_ref?.variant_id, 'still-1')
 })
 
+test('pending visual plan consumes typed MP4 ranges, captions, and transitions without synthesizing presentation', () => {
+  const shadow = applyPendingVideoProposal({ schema_version: 1, clips: [], transitions: [] }, {
+    id: 'proposal-motion', project_id: 'project-1', base_revision_id: 'revision-1', base_revision_number: 1,
+    status: 'pending', created_at: 1, updated_at: 1, operations: [],
+    plan: {
+      kind: 'initial',
+      parts: [
+        { id: 'motion-1', title: 'Motion', duration_ms: 2000, on_screen_text: 'descriptive only', transition_in: 'descriptive only', visual_media_type: 'video/mp4', source_start_ms: 500, source_end_ms: 2500, visual: { session_id: 'session-1', collection_id: 'motion', variant_id: 'clip-1', event_seq: 7 } },
+        { id: 'still-2', title: 'Still', duration_ms: 1000, caption: { id: 'caption-2', text: 'Explicit', position: 'bottom', start_ms: 100, end_ms: 900 }, transition: { id: 'cut-1-2', kind: 'cut', from_clip_id: 'motion-1', to_clip_id: 'still-2' }, visual: { session_id: 'session-1', collection_id: 'stills', variant_id: 'still-2', event_seq: 8 } },
+      ],
+    },
+  })
+
+  assert.deepEqual([shadow.clips[0].source_start_ms, shadow.clips[0].source_end_ms, shadow.clips[0].captions], [500, 2500, []])
+  assert.deepEqual(shadow.clips[1].captions, [{ id: 'caption-2', text: 'Explicit', position: 'bottom', start_ms: 2100, end_ms: 2900 }])
+  assert.deepEqual(shadow.transitions, [{ id: 'cut-1-2', kind: 'cut', from_clip_id: 'motion-1', to_clip_id: 'still-2' }])
+  const segments = projectTimelineToTimelineSegments(shadow, {}, [], 'session-1')
+  assert.deepEqual([segments[0].type, segments[0].sourceStart, segments[0].duration], ['video', 0.5, 2])
+  assert.equal(segments[0].src, '/v3/sessions/session-1/artifacts/clip-1')
+  assert.deepEqual(segments[1].captions, shadow.clips[1].captions)
+})
+
 test('pending selective still revision preserves accepted auxiliary footage in the live shadow cut', () => {
   const accepted: VideoProjectTimelineWire = {
     schema_version: 1,

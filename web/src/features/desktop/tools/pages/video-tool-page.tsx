@@ -363,6 +363,7 @@ export type TimelineSegment = {
   muted?: boolean
   audioSource?: AudioSourceWire
   transitionIn?: VideoTransitionWire
+  captions?: NonNullable<VideoTimelineClipWire['captions']>
 }
 
 type TimelineLayoutSegment = TimelineSegment & {
@@ -665,6 +666,30 @@ function transitionPreviewOpacity(segments: TimelineLayoutSegment[], index: numb
   return index === 0 ? 1 : progress
 }
 
+function drawActiveCaptions(context: CanvasRenderingContext2D, canvas: HTMLCanvasElement, segment: TimelineLayoutSegment, playheadSeconds: number): void {
+  const playheadMs = Math.round(playheadSeconds * 1000)
+  const active = (segment.captions ?? []).filter((caption) => {
+    const startMs = caption.start_ms ?? Math.round(segment.timelineStart * 1000)
+    const endMs = caption.end_ms ?? Math.round(segment.timelineEnd * 1000)
+    return Boolean(caption.text.trim()) && playheadMs >= startMs && playheadMs < endMs
+  })
+  for (const caption of active) {
+    const position = caption.position?.trim().toLowerCase() || 'bottom'
+    const y = position === 'top' ? canvas.height * 0.13 : position === 'center' ? canvas.height * 0.5 : canvas.height * 0.86
+    context.save()
+    context.font = '600 54px system-ui, sans-serif'
+    context.textAlign = 'center'
+    context.textBaseline = 'middle'
+    context.lineJoin = 'round'
+    context.lineWidth = 12
+    context.strokeStyle = 'rgba(0, 0, 0, 0.82)'
+    context.strokeText(caption.text, canvas.width / 2, y, canvas.width * 0.82)
+    context.fillStyle = '#ffffff'
+    context.fillText(caption.text, canvas.width / 2, y, canvas.width * 0.82)
+    context.restore()
+  }
+}
+
 export function soundtrackTimelineClip(input: {
   audio: AudioClip
   durationMs: number
@@ -949,7 +974,9 @@ function visualPlanTimeline(accepted: VideoProjectTimelineWire, plan: VideoPlanP
       timeline_end_ms: endMs,
       duration_ms: part.duration_ms,
       visible: true,
-      captions: part.on_screen_text ? [{ id: `${part.id}-caption`, text: part.on_screen_text, position: 'center', start_ms: startMs, end_ms: endMs }] : [],
+      source_start_ms: part.source_start_ms ?? 0,
+      source_end_ms: part.source_end_ms ?? ((part.visual_media_type || part.visual?.media_type) === 'video/mp4' ? undefined : part.duration_ms),
+      captions: part.caption ? [{ ...part.caption, start_ms: startMs + (part.caption.start_ms ?? 0), end_ms: startMs + (part.caption.end_ms ?? part.duration_ms) }] : [],
     }
     startMs = endMs
     return clip
@@ -958,13 +985,7 @@ function visualPlanTimeline(accepted: VideoProjectTimelineWire, plan: VideoPlanP
   const auxiliaryClips = (accepted.clips ?? []).filter((clip) => !planPartIds.has(clip.id))
   const clips = [...planClips, ...auxiliaryClips]
   const transitions = [
-    ...parts.slice(1).map((part, index): VideoTransitionWire => ({
-      id: `transition-${part.id}`,
-      kind: 'crossfade',
-      from_clip_id: parts[index].id,
-      to_clip_id: part.id,
-      duration_ms: 300,
-    })),
+    ...parts.flatMap((part) => part.transition ? [{ ...part.transition }] : []),
     ...(accepted.transitions ?? []).filter((transition) => !planPartIds.has(transition.from_clip_id) || !planPartIds.has(transition.to_clip_id)),
   ]
   const totalDurationMs = auxiliaryClips.reduce((duration, clip) => Math.max(duration, clip.timeline_end_ms ?? ((clip.timeline_start_ms ?? 0) + (clip.duration_ms ?? 0))), startMs)
@@ -1090,6 +1111,7 @@ export function projectTimelineToTimelineSegments(
       muted: clipWire.muted === true,
       audioSource: clipWire.audio_source,
       transitionIn,
+      captions: clipWire.captions?.map((caption) => ({ ...caption })),
     }
   }).sort((left, right) => left.start - right.start
     || (left.layer ?? left.track ?? 0) - (right.layer ?? right.track ?? 0)
@@ -1457,6 +1479,8 @@ export function VideoToolPage() {
     const base = projectRevisions.find((revision) => revision.id === pendingProposal.base_revision_id)
     if (!base) return currentRevision.timeline
     const selected = new Set(pendingSelectedChangeIds)
+    const selectableCount = pendingProposal.plan?.kind === 'revision' ? pendingProposal.plan.parts.length : pendingProposal.plan ? 0 : pendingProposal.operations.length
+    if (selected.size === selectableCount) return currentRevision.timeline
     const selectedProposal = pendingProposal.plan?.kind === 'revision'
       ? { ...pendingProposal, plan: { ...pendingProposal.plan, parts: pendingProposal.plan.parts.filter((part) => selected.has(part.id)) } }
       : pendingProposal.plan
@@ -1814,6 +1838,7 @@ export function VideoToolPage() {
           context.globalAlpha = opacity
           context.drawImage(image, (canvas.width - drawWidth) / 2, (canvas.height - drawHeight) / 2, drawWidth, drawHeight)
           context.restore()
+          drawActiveCaptions(context, canvas, segment, nextPlayhead)
           continue
         }
         if (segment.type === 'frame') {
@@ -1852,6 +1877,7 @@ export function VideoToolPage() {
         context.globalAlpha = opacity
         context.drawImage(video, (canvas.width - drawWidth) / 2, (canvas.height - drawHeight) / 2, drawWidth, drawHeight)
         context.restore()
+        drawActiveCaptions(context, canvas, segment, nextPlayhead)
       }
       frame = window.requestAnimationFrame(render)
     }
