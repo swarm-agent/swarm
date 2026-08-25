@@ -2,6 +2,24 @@ package pebblestore
 
 import "testing"
 
+func TestValidateArtifactLineageAcceptsExactMultiTargetReviewSource(t *testing.T) {
+	lineage := SessionArtifactLineage{
+		ParentSessionID:         "parent-1",
+		SourceSessionID:         "source-1",
+		SourceCollectionID:      "collection-1",
+		SourceVariantID:         "variant-1",
+		SourceEventSeq:          41,
+		SelectedReviewTargetIDs: "part-1,part-3",
+	}
+	if err := validateArtifactLineage(lineage); err != nil {
+		t.Fatalf("valid multi-target review lineage rejected: %v", err)
+	}
+	lineage.SourceSessionID = ""
+	if err := validateArtifactLineage(lineage); err == nil {
+		t.Fatal("multi-target review lineage without a source session was accepted")
+	}
+}
+
 func TestArtifactCollectionLineageCompatibleAllowsSiblingManagedVariants(t *testing.T) {
 	existing := SessionArtifactLineage{
 		ParentSessionID: "parent-1",

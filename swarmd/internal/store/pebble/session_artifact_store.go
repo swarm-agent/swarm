@@ -1434,7 +1434,7 @@ func validateArtifactLineage(lineage SessionArtifactLineage) error {
 		return errors.New("artifact part target lineage requires a label, kind, and exact source artifact")
 	}
 	if lineage.SelectedReviewTargetIDs != "" {
-		if lineage.PartID != "" || lineage.SourceCollectionID == "" || lineage.SourceVariantID == "" || lineage.SourceEventSeq == 0 {
+		if lineage.PartID != "" || lineage.SourceSessionID == "" || lineage.SourceCollectionID == "" || lineage.SourceVariantID == "" || lineage.SourceEventSeq == 0 {
 			return errors.New("artifact multi-target review lineage requires only a bounded id set and exact source artifact")
 		}
 		seen := map[string]struct{}{}
