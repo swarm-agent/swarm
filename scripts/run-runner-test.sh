@@ -23,7 +23,7 @@ Options:
   --source-collection-id  Exact source artifact collection for supported resumed stages
   --source-variant-id     Exact source artifact variant for supported resumed stages
   --source-event-seq      Exact positive source artifact event sequence
-  --timeout-ms       Overall runner wait budget (default: 900000)
+  --timeout-ms       Per-stage runner wait budget (default: 600000; maximum: 600000)
 
 Environment:
   SWARM_RUNNER_TOKEN  Optional auth token, required when direct URL access cannot use
@@ -66,7 +66,7 @@ SOURCE_SESSION_ID=""
 SOURCE_COLLECTION_ID=""
 SOURCE_VARIANT_ID=""
 SOURCE_EVENT_SEQ=""
-TIMEOUT_MS="900000"
+TIMEOUT_MS="600000"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --api-url)
@@ -138,6 +138,7 @@ done
 [[ "${PROVIDER}" =~ ^[A-Za-z0-9._-]+$ ]] || fail "provider contains unsupported characters"
 [[ "${TIMEOUT_MS}" =~ ^[0-9]+$ ]] || fail "--timeout-ms must be an integer"
 (( TIMEOUT_MS >= 30000 )) || fail "--timeout-ms must be at least 30000"
+(( TIMEOUT_MS <= 600000 )) || fail "--timeout-ms must not exceed 600000; split longer proofs into resumable stages"
 if [[ -n "${SOURCE_EVENT_SEQ}" ]]; then
   [[ "${SOURCE_EVENT_SEQ}" =~ ^[1-9][0-9]*$ ]] || fail "--source-event-seq must be a positive integer"
 fi

@@ -157,6 +157,7 @@ Use each script’s `--help`. Do not manually reproduce a script’s contract, h
 - Run `./scripts/testbench-e2e-tunnel.sh run <command...>` to execute any E2E command with `SWARM_DESKTOP_URL` and `SWARM_PRIMARY_API_URL` exported through loopback-only SSH local forwards. Use `./scripts/run-testbench-desktop-e2e.sh` for the canonical Desktop launch suite and `./scripts/run-testbench-runner.sh <runner-name>` for checked-in API runner scenarios.
 - The Desktop listener remains remote-loopback-only. Do not bind test ports to `0.0.0.0`, use raw hosts in runners, or bypass the SSH alias. If the remote test requires a callback to a local loopback service, set both reverse-port variables in `.env`; the tunnel runner adds one bounded `ssh -R remote:127.0.0.1:local` forwarding rule.
 - E2E scripts must use these environment variables or explicit equivalent CLI arguments, produce bounded evidence under an existing ignored `.tmp/` location, clean up tunnel processes, and never persist authentication material.
+- Never run one opaque 30-minute E2E wait. Split live proofs into resumable stages with one independently inspectable result per stage, cap each stage at 10 minutes, emit a heartbeat at least every 15 seconds showing the current run status and observable progress, and stop early with durable session evidence when progress stalls or a failure becomes visible.
 
 ## Temporary Data
 

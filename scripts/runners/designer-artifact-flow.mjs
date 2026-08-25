@@ -13,7 +13,8 @@ const apiURL = String(option('--api-url', process.env.SWARM_RUNNER_API_URL || ''
 const provider = String(option('--provider', process.env.SWARM_RUNNER_PROVIDER || 'codex')).trim().toLowerCase()
 const modelOverride = String(option('--model', process.env.SWARM_RUNNER_MODEL || '')).trim()
 const thinkingOverride = String(option('--thinking', process.env.SWARM_RUNNER_THINKING || 'high')).trim().toLowerCase()
-const timeoutMs = Number(option('--timeout-ms', process.env.SWARM_RUNNER_TIMEOUT_MS || '1800000'))
+const timeoutMs = Number(option('--timeout-ms', process.env.SWARM_RUNNER_TIMEOUT_MS || '600000'))
+const heartbeatMs = 15000
 const workspacePathOverride = String(option('--workspace-path', process.env.SWARM_RUNNER_WORKSPACE_PATH || '')).trim()
 const suppliedToken = String(process.env.SWARM_RUNNER_TOKEN || '').trim()
 const stage = String(option('--stage', process.env.SWARM_RUNNER_STAGE || 'all')).trim().toLowerCase()
@@ -25,7 +26,7 @@ const sourceEventSeqOverride = Number(option('--source-event-seq', process.env.S
 
 if (!apiURL || !/^https?:\/\//.test(apiURL)) throw new Error('--api-url must be an http or https URL')
 if (!provider || !/^[a-z0-9._-]+$/.test(provider)) throw new Error('--provider is invalid')
-if (!Number.isFinite(timeoutMs) || timeoutMs < 300000) throw new Error('--timeout-ms must be at least 300000')
+if (!Number.isFinite(timeoutMs) || timeoutMs < 300000 || timeoutMs > 600000) throw new Error('--timeout-ms must be between 300000 and 600000; split longer proofs into resumable stages')
 if (!['root', 'focused', 'multi2', 'multi3', 'whole', 'managed', 'workspace', 'all'].includes(stage)) throw new Error('--stage must be root, focused, multi2, multi3, whole, managed, workspace, or all')
 if (stage !== 'root' && stage !== 'all' && !sessionOverride) throw new Error('--session-id is required for non-root stages')
 if (['multi2', 'multi3'].includes(stage) && (!sourceSessionOverride || !sourceCollectionOverride || !sourceVariantOverride || !Number.isInteger(sourceEventSeqOverride) || sourceEventSeqOverride <= 0)) throw new Error('multi-target stages require --source-session-id, --source-collection-id, --source-variant-id, and --source-event-seq')
@@ -179,15 +180,28 @@ async function approvePending(sessionID) {
 }
 
 async function waitForTurn(sessionID, runID, label) {
-  const deadline = Date.now() + timeoutMs
+  const startedAt = Date.now()
+  const deadline = startedAt + timeoutMs
   let latest = null
+  let nextHeartbeatAt = startedAt
+  let lastStatus = ''
   while (Date.now() < deadline) {
-    await approvePending(sessionID)
+    const approvals = await approvePending(sessionID)
     latest = await hydrate(sessionID)
     const intents = latest.run_intents_by_session?.[sessionID] || []
     const intent = intents.find((candidate) => String(candidate?.run_id || '') === runID)
     const failed = intents.filter((candidate) => /failed|cancelled|expired|interrupted/.test(String(candidate?.status || '').toLowerCase()))
     if (failed.length > 0) fail(`${label} has failed run intent(s): ${failed.map((item) => `${item.run_id}:${item.status}`).join(', ')}`)
+    const status = String(intent?.status || 'pending')
+    if (status !== lastStatus || Date.now() >= nextHeartbeatAt) {
+      const elapsed = Math.floor((Date.now() - startedAt) / 1000)
+      const artifacts = (await catalog(sessionID)).filter((item) => item?.session_id === sessionID)
+      const ready = artifacts.filter((item) => item?.status === 'ready').length
+      const staging = artifacts.filter((item) => item?.status === 'staging').length
+      log(`${label} progress elapsed=${elapsed}s run=${runID} status=${status} ready_artifacts=${ready} staging_artifacts=${staging} approvals=${approvals}`)
+      lastStatus = status
+      nextHeartbeatAt = Date.now() + heartbeatMs
+    }
     if (intent && terminalStatus(intent.status)) {
       const messages = latest.messages_by_session?.[sessionID] || []
       const assistant = [...messages].reverse().find((message) => String(message?.role || '').toLowerCase() === 'assistant')
@@ -195,7 +209,7 @@ async function waitForTurn(sessionID, runID, label) {
     }
     await sleep(1500)
   }
-  fail(`${label} timed out waiting for run ${runID}`)
+  fail(`${label} timed out after ${Math.floor(timeoutMs / 1000)}s waiting for run ${runID}; inspect the durable session before retrying`)
 }
 
 async function postTurn(sessionID, label, content, artifactSelections = []) {
@@ -219,14 +233,24 @@ async function catalog(sessionID) {
 }
 
 async function waitForArtifacts(sessionID, predicate, count, label) {
-  const deadline = Date.now() + timeoutMs
+  const startedAt = Date.now()
+  const deadline = startedAt + timeoutMs
   let matches = []
+  let nextHeartbeatAt = startedAt
+  let lastCount = -1
   while (Date.now() < deadline) {
-    matches = (await catalog(sessionID)).filter((item) => item?.status === 'ready' && predicate(item))
+    const artifacts = await catalog(sessionID)
+    matches = artifacts.filter((item) => item?.status === 'ready' && predicate(item))
+    const staging = artifacts.filter((item) => item?.status === 'staging' && predicate(item)).length
+    if (matches.length !== lastCount || Date.now() >= nextHeartbeatAt) {
+      log(`${label} progress elapsed=${Math.floor((Date.now() - startedAt) / 1000)}s ready=${matches.length}/${count} staging=${staging}`)
+      lastCount = matches.length
+      nextHeartbeatAt = Date.now() + heartbeatMs
+    }
     if (matches.length >= count) return matches
     await sleep(2000)
   }
-  fail(`${label} timed out with ${matches.length}/${count} ready artifacts`)
+  fail(`${label} timed out after ${Math.floor(timeoutMs / 1000)}s with ${matches.length}/${count} ready artifacts; inspect the durable session before retrying`)
 }
 
 async function selectModel() {
