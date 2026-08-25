@@ -71,6 +71,9 @@ type SessionArtifactLineage struct {
 	PlanID                  string `json:"plan_id,omitempty"`
 	CheckpointID            string `json:"checkpoint_id,omitempty"`
 	AttemptID               string `json:"attempt_id,omitempty"`
+	VideoProjectID          string `json:"video_project_id,omitempty"`
+	VideoRevisionID         string `json:"video_revision_id,omitempty"`
+	VideoRevisionEventSeq   uint64 `json:"video_revision_event_seq,omitempty"`
 }
 
 // SessionArtifactPresentation contains bounded client display hints. It is

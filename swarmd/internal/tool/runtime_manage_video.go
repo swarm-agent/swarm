@@ -55,6 +55,7 @@ type manageVideoProjectService interface {
 }
 
 type manageVideoRenderService interface {
+	InspectFrames(context.Context, identity.Principal, videorender.FrameInspectionRequest) (videorender.FrameInspectionResult, error)
 	StartRenderJob(principal identity.Principal, req videorender.RenderJobRequest)
 	CancelRenderJob(ctx context.Context, principal identity.Principal, sessionID, jobID string) (pebblestore.VideoRenderJobSnapshot, error)
 	GetRenderJobStatus(ctx context.Context, principal identity.Principal, sessionID, jobID string) (pebblestore.VideoRenderJobSnapshot, bool, error)
@@ -70,6 +71,7 @@ type manageVideoActionSpec struct {
 var manageVideoActionRegistry = []manageVideoActionSpec{
 	{"capabilities", "Video capabilities ready", "Checking video capabilities", true},
 	{"inspect_context", "Video context loaded", "Inspecting Video Studio context", true},
+	{"inspect_frames", "Video frames ready", "Inspecting exact video frames", true},
 	{"list_source_roots", "Media sources ready", "Finding media sources", true},
 	{"browse_source", "Media source opened", "Browsing media sources", true},
 	{"inspect_attachments", "Video attachments checked", "Checking video attachments", true},
@@ -116,7 +118,7 @@ func manageVideoAction(action string) (manageVideoActionSpec, bool) {
 func manageVideoDefinition() Definition {
 	return Definition{
 		Type: "function", Name: "manage_video",
-		Description: "Inspect trusted video and audio sources, browse registered source-media folders, inspect triggering-message video attachments, transcribe selected opaque video or audio references, inspect transcripts and the accepted immutable cut, create a project, and submit atomic visual video-plan proposals with one exact ready image slide per part or typed edit proposals against one exact base revision. Exact ready image/png references returned by manage_artifact export_html_stills are valid visual inputs without download, materialization, or workspace duplication. One-shot initial-plan workflow: call create_project without initial_timeline, use the returned project_id and revision_id, then call propose_plan with base_revision_id set to that revision and plan.kind=initial. propose_plan creates only a pending whole-plan review object; it never accepts or applies the plan. Later stable-part revisions support selective acceptance. An owned chat session with an attached video project is durably upgraded to Video Studio when it first proposes an edit, regardless of whether it was entered from Chat or Studio. For a soundtrack, browse a registered source-media folder, copy the complete exact audio object into a source_audio clip, and submit add_clip, update_clip, replace_clip, or remove_clip operations with affected_ranges against the exact base revision. AI may propose edits and recommend render settings, but cannot accept a proposal or start a final render. Existing non-Studio project and render actions remain compatible. Arbitrary paths, provider URIs, credentials, and provider payloads are never accepted or returned.",
+		Description: "Inspect trusted video and audio sources, browse registered source-media folders, inspect triggering-message video attachments, transcribe selected opaque video or audio references, inspect transcripts and the accepted immutable cut, extract bounded deterministic PNG frames from one exact project revision as ready parent-session managed artifacts, create a project, and submit atomic visual video-plan proposals with one exact ready image slide per part or typed edit proposals against one exact base revision. Exact ready image/png references returned by manage_artifact export_html_stills are valid visual inputs without download, materialization, or workspace duplication. One-shot initial-plan workflow: call create_project without initial_timeline, use the returned project_id and revision_id, then call propose_plan with base_revision_id set to that revision and plan.kind=initial. propose_plan creates only a pending whole-plan review object; it never accepts or applies the plan. Later stable-part revisions support selective acceptance. An owned chat session with an attached video project is durably upgraded to Video Studio when it first proposes an edit, regardless of whether it was entered from Chat or Studio. For a soundtrack, browse a registered source-media folder, copy the complete exact audio object into a source_audio clip, and submit add_clip, update_clip, replace_clip, or remove_clip operations with affected_ranges against the exact base revision. AI may propose edits and recommend render settings, but cannot accept a proposal or start a final render. Existing non-Studio project and render actions remain compatible. Arbitrary paths, provider URIs, credentials, and provider payloads are never accepted or returned.",
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -136,6 +138,9 @@ func manageVideoDefinition() Definition {
 				"max_segments":           map[string]any{"type": "integer", "minimum": 1, "maximum": manageVideoMaxSegments},
 				"start_ms":               map[string]any{"type": "integer", "minimum": 0, "description": "Optional inclusive evidence-range start for bounded transcript retrieval."},
 				"end_ms":                 map[string]any{"type": "integer", "minimum": 1, "description": "Optional exclusive evidence-range end for bounded transcript retrieval."},
+				"timestamps_ms":          map[string]any{"type": "array", "minItems": 1, "maxItems": videorender.MaxInspectionFrames, "items": map[string]any{"type": "integer", "minimum": 0}, "description": "Canonical timestamps for inspect_frames, sorted and deduplicated server-side."},
+				"ranges":                 map[string]any{"type": "array", "maxItems": videorender.MaxInspectionFrames, "items": map[string]any{"type": "object", "properties": map[string]any{"start_ms": map[string]any{"type": "integer", "minimum": 0}, "end_ms": map[string]any{"type": "integer", "minimum": 1}, "count": map[string]any{"type": "integer", "minimum": 1, "maximum": videorender.MaxInspectionFrames}}, "required": []string{"start_ms", "end_ms", "count"}, "additionalProperties": false}, "description": "Bounded ranges no longer than 60000ms each; frames are sampled inclusively and returned in canonical timestamp order."},
+				"max_width":              map[string]any{"type": "integer", "minimum": 2, "maximum": videorender.MaxInspectionWidth, "description": "Maximum PNG width; aspect ratio is preserved."},
 				"include_index":          map[string]any{"type": "boolean", "description": "Derive the compact section index, ranged deduplicated evidence, and conservative splice manifest."},
 				"index_only":             map[string]any{"type": "boolean", "description": "Return transcript authority metadata plus the compact index and bounded evidence without hydrating full transcript text or segments."},
 				"project_id":             map[string]any{"type": "string", "description": "Opaque video project identifier for reading, revising, or rendering a project."},
@@ -296,7 +301,7 @@ func (r *Runtime) executeManageVideo(ctx context.Context, scope WorkspaceScope, 
 	case "capabilities":
 		response["studio"] = studio
 		response["allowed_actions"] = allowedActions
-		response["read_only_actions"] = []string{"capabilities", "inspect_context", "list_source_roots", "browse_source", "inspect_attachments", "status", "read_transcript", "read_audio_analysis", "read_project", "get_project", "list_projects", "inspect_accepted_cut", "proposal_status", "recommend_render_settings", "render_status"}
+		response["read_only_actions"] = []string{"capabilities", "inspect_context", "inspect_frames", "list_source_roots", "browse_source", "inspect_attachments", "status", "read_transcript", "read_audio_analysis", "read_project", "get_project", "list_projects", "inspect_accepted_cut", "proposal_status", "recommend_render_settings", "render_status"}
 	case "inspect_context":
 		response["studio"] = studio
 		response["allowed_actions"] = allowedActions
@@ -330,6 +335,26 @@ func (r *Runtime) executeManageVideo(ctx context.Context, scope WorkspaceScope, 
 				}
 			}
 		}
+	case "inspect_frames":
+		if r.videoProjects == nil || r.videoRender == nil {
+			return "", errors.New("video frame inspection is unavailable: project or render service is not configured")
+		}
+		projectID, revisionID := strings.TrimSpace(asString(args["project_id"])), strings.TrimSpace(asString(args["revision_id"]))
+		if projectID == "" || revisionID == "" {
+			return "", errors.New("inspect_frames requires exact project_id and revision_id")
+		}
+		timestamps, parseErr := parseFrameTimestamps(args["timestamps_ms"])
+		if parseErr != nil { return "", parseErr }
+		ranges, parseErr := parseFrameRanges(args["ranges"])
+		if parseErr != nil { return "", parseErr }
+		result, inspectErr := r.videoRender.InspectFrames(ctx, scope.Principal, videorender.FrameInspectionRequest{SessionID: projectSessionID, ArtifactSessionID: scope.SessionID, ProjectID: projectID, RevisionID: revisionID, WorkspacePath: manageVideoWorkspacePath(session), TimestampsMs: timestamps, Ranges: ranges, MaxWidth: asInt(args["max_width"], 0), RequestID: run.RunID})
+		if inspectErr != nil { return "", inspectErr }
+		frames := make([]map[string]any, 0, len(result.Frames))
+		for _, frame := range result.Frames { frames = append(frames, map[string]any{"timestamp_ms": frame.TimestampMs, "artifact": frame.Artifact}) }
+		response["project_id"], response["revision_id"], response["revision_event_seq"] = result.ProjectID, result.RevisionID, result.RevisionEventSeq
+		response["duration_ms"], response["width"], response["height"] = result.DurationMs, result.Width, result.Height
+		response["frames"], response["count"] = frames, len(frames)
+
 	case "list_source_roots":
 		if r.videoSources == nil {
 			return "", errors.New("manage_video source service is not configured")
@@ -1294,6 +1319,30 @@ func parseVideoEditOperations(raw any, timeline pebblestore.VideoProjectTimeline
 		operations = append(operations, op)
 	}
 	return operations, nil
+}
+
+func parseFrameTimestamps(raw any) ([]int64, error) {
+	if raw == nil { return nil, nil }
+	encoded, err := json.Marshal(raw)
+	if text, ok := raw.(string); ok { encoded = []byte(strings.TrimSpace(text)) }
+	if err != nil { return nil, fmt.Errorf("marshal timestamps_ms: %w", err) }
+	var values []int64
+	if err := json.Unmarshal(encoded, &values); err != nil { return nil, fmt.Errorf("invalid timestamps_ms payload: %w", err) }
+	if len(values) > videorender.MaxInspectionFrames { return nil, errors.New("timestamps_ms exceeds bounded frame count") }
+	return values, nil
+}
+
+func parseFrameRanges(raw any) ([]videorender.FrameInspectionRange, error) {
+	if raw == nil { return nil, nil }
+	encoded, err := json.Marshal(raw)
+	if text, ok := raw.(string); ok { encoded = []byte(strings.TrimSpace(text)) }
+	if err != nil { return nil, fmt.Errorf("marshal ranges: %w", err) }
+	var values []struct { StartMs int64 `json:"start_ms"`; EndMs int64 `json:"end_ms"`; Count int `json:"count"` }
+	if err := json.Unmarshal(encoded, &values); err != nil { return nil, fmt.Errorf("invalid ranges payload: %w", err) }
+	if len(values) > videorender.MaxInspectionFrames { return nil, errors.New("ranges exceeds bounded frame count") }
+	result := make([]videorender.FrameInspectionRange, 0, len(values))
+	for _, value := range values { result = append(result, videorender.FrameInspectionRange{StartMs: value.StartMs, EndMs: value.EndMs, Count: value.Count}) }
+	return result, nil
 }
 
 func parseVideoTimelineRanges(raw any) ([]pebblestore.VideoTimelineRange, error) {

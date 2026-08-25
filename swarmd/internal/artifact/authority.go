@@ -79,6 +79,9 @@ type CreateInput struct {
 	SourceCollectionID    string
 	SourceVariantID       string
 	SourceEventSeq        uint64
+	VideoProjectID        string
+	VideoRevisionID       string
+	VideoRevisionEventSeq uint64
 	ArtifactStepID        string
 	CandidateIndex        int
 	AutoAccept            bool
@@ -261,6 +264,7 @@ func (a *Authority) create(ctx context.Context, principal Principal, input Creat
 	collectionLineage.IterationID, collectionLineage.IterationIndex, collectionLineage.IterationLabel, collectionLineage.IterationTheme = "", 0, "", ""
 	collectionLineage.IterationSectionID, collectionLineage.IterationSectionLabel, collectionLineage.IterationSectionStartMs, collectionLineage.IterationSectionEndMs = "", "", 0, 0
 	collectionLineage.PartID, collectionLineage.PartLabel, collectionLineage.PartKind = "", "", ""
+	collectionLineage.VideoProjectID, collectionLineage.VideoRevisionID, collectionLineage.VideoRevisionEventSeq = "", "", 0
 	if err := applyArtifactOutputRequirementsToPresentation(&input.Presentation, input.OutputRequirements); err != nil {
 		return pebblestore.SessionArtifactVariant{}, err
 	}
@@ -884,6 +888,7 @@ func (a *Authority) lineage(principal Principal, input CreateInput) pebblestore.
 		IterationSectionID: strings.TrimSpace(principal.IterationSectionID), IterationSectionLabel: strings.TrimSpace(principal.IterationSectionLabel), IterationSectionStartMs: principal.IterationSectionStartMs, IterationSectionEndMs: principal.IterationSectionEndMs,
 		PartID: strings.TrimSpace(principal.PartID), PartLabel: strings.TrimSpace(principal.PartLabel), PartKind: strings.TrimSpace(principal.PartKind),
 		RunID: strings.TrimSpace(principal.RunID), PlanID: strings.TrimSpace(principal.PlanID), CheckpointID: strings.TrimSpace(principal.CheckpointID), AttemptID: strings.TrimSpace(principal.AttemptID),
+		VideoProjectID: strings.TrimSpace(input.VideoProjectID), VideoRevisionID: strings.TrimSpace(input.VideoRevisionID), VideoRevisionEventSeq: input.VideoRevisionEventSeq,
 	}
 }
 

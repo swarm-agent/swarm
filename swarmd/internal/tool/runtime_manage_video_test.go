@@ -30,7 +30,7 @@ func TestManageVideoDefinitionExposesOnlyOpaqueReferences(t *testing.T) {
 			t.Fatalf("manage_video schema exposes forbidden field %q", forbidden)
 		}
 	}
-	for _, required := range []string{"source_root_ref", "relative_path", "video_refs", "audio_refs", "job_refs", "job_ref", "transcript_ref", "analysis_ref", "source_fingerprint", "waveform_resolution_ms", "focus_notes", "start_ms", "end_ms", "include_index", "index_only", "base_revision_id", "operations", "affected_ranges"} {
+	for _, required := range []string{"source_root_ref", "relative_path", "video_refs", "audio_refs", "job_refs", "job_ref", "transcript_ref", "analysis_ref", "source_fingerprint", "waveform_resolution_ms", "focus_notes", "start_ms", "end_ms", "timestamps_ms", "ranges", "max_width", "include_index", "index_only", "base_revision_id", "operations", "affected_ranges"} {
 		if !strings.Contains(text, `"`+required+`"`) {
 			t.Fatalf("manage_video schema lacks %q", required)
 		}
@@ -41,7 +41,7 @@ func TestManageVideoActionRegistryAndNearestSuggestions(t *testing.T) {
 	definition := manageVideoDefinition()
 	properties := definition.Parameters["properties"].(map[string]any)
 	actions := properties["action"].(map[string]any)["enum"].([]string)
-	if len(actions) != len(manageVideoActionRegistry) || actions[0] != "capabilities" || actions[1] != "inspect_context" {
+	if len(actions) != len(manageVideoActionRegistry) || actions[0] != "capabilities" || actions[1] != "inspect_context" || actions[2] != "inspect_frames" {
 		t.Fatalf("schema actions = %#v", actions)
 	}
 	nearest := nearestManageVideoActions("inspect_attachment", 2)
