@@ -833,6 +833,10 @@ func (s *Service) validateTimelineArtifacts(principal identity.Principal, sessio
 			if targetSessionID == "" {
 				targetSessionID = sessionID
 			}
+			sourceSession, owned, err := s.sessions.GetSession(targetSessionID)
+			if err != nil || !owned || sourceSession.AccountScopeID != principal.AccountScopeID || (sourceSession.UserID != "" && sourceSession.UserID != principal.UserID) {
+				return fmt.Errorf("referenced artifact source session %q is not owned by the authenticated principal", targetSessionID)
+			}
 			variant, ok, err := s.sessions.GetSessionArtifactVariant(principal.AccountScopeID, targetSessionID, ref.CollectionID, ref.VariantID)
 			if err != nil || !ok {
 				if err == nil {
@@ -845,6 +849,21 @@ func (s *Service) validateTimelineArtifacts(principal identity.Principal, sessio
 			}
 			if ref.EventSeq == 0 || ref.EventSeq != variant.EventSeq {
 				return fmt.Errorf("referenced artifact variant %q event sequence is stale or missing", ref.VariantID)
+			}
+			mediaType := strings.ToLower(strings.TrimSpace(variant.MediaType))
+			if !strings.HasPrefix(mediaType, "image/") && mediaType != "video/mp4" {
+				return fmt.Errorf("referenced artifact variant %q must be an image or video/mp4", ref.VariantID)
+			}
+			if declared := strings.ToLower(strings.TrimSpace(clip.MediaType)); declared != "" && declared != mediaType {
+				return fmt.Errorf("managed_artifact clip %q media_type does not match its exact artifact", clip.ID)
+			}
+			if mediaType == "video/mp4" {
+				if clip.SourceStartMs < 0 || clip.SourceEndMs <= clip.SourceStartMs {
+					return fmt.Errorf("managed video clip %q requires a non-empty source range", clip.ID)
+				}
+				if clip.DurationMs != clip.SourceEndMs-clip.SourceStartMs {
+					return fmt.Errorf("managed video clip %q duration must match its source range", clip.ID)
+				}
 			}
 		}
 		if clip.DesignInput != nil {

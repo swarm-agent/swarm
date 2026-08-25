@@ -349,6 +349,43 @@ func TestCreateEditProposalNormalizesAndValidatesVisualPlanReferences(t *testing
 	}
 }
 
+func TestValidateTimelineArtifactsRejectsManagedMP4RangeAndMediaMismatches(t *testing.T) {
+	store := newFakeSessionStore()
+	svc := NewService(store)
+	principal := identity.Principal{Type: identity.PrincipalTypeUser, AccountScopeID: "acc", UserID: "user"}
+	store.sessions["session"] = pebblestore.SessionSnapshot{ID: "session", AccountScopeID: "acc", UserID: "user"}
+	store.artifacts["acc/session/motion/clip-1"] = pebblestore.SessionArtifactVariant{ID: "clip-1", CollectionID: "motion", SessionID: "session", AccountScopeID: "acc", Status: pebblestore.SessionArtifactStatusReady, MediaType: "video/mp4", EventSeq: 8}
+	clip := pebblestore.VideoTimelineClip{
+		ID: "motion", SourceKind: pebblestore.VideoClipSourceKindManagedArtifact, MediaType: "video/mp4",
+		ArtifactRef: &pebblestore.SessionArtifactSelectionReference{SessionID: "session", CollectionID: "motion", VariantID: "clip-1", EventSeq: 8},
+		SourceStartMs: 500, SourceEndMs: 2500, DurationMs: 2000,
+	}
+	if err := svc.validateTimelineArtifacts(principal, "session", pebblestore.VideoProjectTimeline{Clips: []pebblestore.VideoTimelineClip{clip}}); err != nil {
+		t.Fatalf("valid managed MP4 range rejected: %v", err)
+	}
+	clip.SourceEndMs = 2400
+	if err := svc.validateTimelineArtifacts(principal, "session", pebblestore.VideoProjectTimeline{Clips: []pebblestore.VideoTimelineClip{clip}}); err == nil || !strings.Contains(err.Error(), "duration must match") {
+		t.Fatalf("expected managed MP4 duration mismatch, got %v", err)
+	}
+	clip.SourceEndMs, clip.MediaType = 2500, "image/png"
+	if err := svc.validateTimelineArtifacts(principal, "session", pebblestore.VideoProjectTimeline{Clips: []pebblestore.VideoTimelineClip{clip}}); err == nil || !strings.Contains(err.Error(), "media_type does not match") {
+		t.Fatalf("expected managed artifact media mismatch, got %v", err)
+	}
+}
+
+func TestValidateTimelineArtifactsRejectsUnownedCrossSessionReference(t *testing.T) {
+	store := newFakeSessionStore()
+	svc := NewService(store)
+	principal := identity.Principal{Type: identity.PrincipalTypeUser, AccountScopeID: "acc", UserID: "user"}
+	store.sessions["session"] = pebblestore.SessionSnapshot{ID: "session", AccountScopeID: "acc", UserID: "user"}
+	store.sessions["other"] = pebblestore.SessionSnapshot{ID: "other", AccountScopeID: "acc", UserID: "other-user"}
+	store.artifacts["acc/other/slides/slide-1"] = pebblestore.SessionArtifactVariant{ID: "slide-1", CollectionID: "slides", SessionID: "other", AccountScopeID: "acc", Status: pebblestore.SessionArtifactStatusReady, MediaType: "image/png", EventSeq: 3}
+	clip := pebblestore.VideoTimelineClip{ID: "still", SourceKind: pebblestore.VideoClipSourceKindManagedArtifact, MediaType: "image/png", DurationMs: 1000, ArtifactRef: &pebblestore.SessionArtifactSelectionReference{SessionID: "other", CollectionID: "slides", VariantID: "slide-1", EventSeq: 3}}
+	if err := svc.validateTimelineArtifacts(principal, "session", pebblestore.VideoProjectTimeline{Clips: []pebblestore.VideoTimelineClip{clip}}); err == nil || !strings.Contains(err.Error(), "not owned") {
+		t.Fatalf("expected cross-session ownership rejection, got %v", err)
+	}
+}
+
 func TestVideoprojectServiceWorkflow(t *testing.T) {
 	store := newFakeSessionStore()
 	svc := NewService(store)
