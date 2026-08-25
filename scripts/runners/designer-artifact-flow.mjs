@@ -132,7 +132,7 @@ async function hydrate(sessionID) {
   const response = await api('POST', '/v3/sync/hydrate', {
     surface: 'desktop',
     session_ids: [sessionID],
-    history: { mode: 'tail', max_messages_per_session: 300, max_events_per_session: 500, manifest_policy: 'manifest' },
+    history: { mode: 'tail', max_messages_per_session: 200, max_events_per_session: 200, manifest_policy: 'manifest' },
     resources: {
       messages: true,
       events: true,
