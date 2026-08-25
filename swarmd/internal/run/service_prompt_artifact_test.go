@@ -169,14 +169,14 @@ func TestMasterHarnessPromptGuidesPriorArtifactWorkspaceWorkflow(t *testing.T) {
 func TestMasterHarnessPromptGuidesManagedArtifactParts(t *testing.T) {
 	prompt := masterHarnessPrompt("/workspace")
 	for _, want := range []string{
-		"Managed artifact `parts` are the durable review/edit targets shown by Artifact Studio",
-		"include accurate `parts` in the same manage_artifact create/create_package call",
-		"temporal requires start_ms/end_ms in milliseconds",
-		"spatial requires normalized x/y/width/height within 0..1",
-		"semantic is for a named conceptual region with no stronger locator",
-		"Do not omit parts for an explicitly sectioned/editable deliverable",
-		"Every derived complete revision must submit its own accurate parts",
-		"mirror every canonical manifest section as a temporal part with the exact same id, label, start_ms, and end_ms",
+		"Managed artifact `parts` are durable source-bound review/edit targets shown by Artifact Studio",
+		"complete monolithic artifact remains one file",
+		"For text/html, the caller may omit `parts`",
+		"server derives useful targets",
+		"without splitting or rewriting the source",
+		"Use `initial_parts` only",
+		"Never create a ZIP merely to represent HTML review/edit targets",
+		"derived temporal targets mirror each canonical manifest section's exact id, label, start_ms, and end_ms",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("master prompt missing managed artifact parts guidance %q", want)

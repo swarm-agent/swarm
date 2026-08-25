@@ -543,13 +543,13 @@ func TestManageArtifactDefinitionExplainsKindSpecificPartsContract(t *testing.T)
 	parts := properties["parts"].(map[string]any)
 	partsDescription := parts["description"].(string)
 	for _, want := range []string{
-		"legacy/unproven locator-only",
-		"never create or prove real part identities",
-		"meaningful authored region or section",
-		"swarm.iteration/v1 animation",
-		"same id, label, start_ms, and end_ms",
-		"Do not invent generic parts",
-		"Use initial_parts instead",
+		"source-bound review/edit targets",
+		"never create or prove independently replaceable bytes",
+		"For text/html, omit parts",
+		"server derive useful targets",
+		"without splitting or rewriting the file",
+		"explicitly supplied parts remain authoritative",
+		"Use initial_parts only",
 	} {
 		if !strings.Contains(partsDescription, want) {
 			t.Fatalf("parts description missing %q: %s", want, partsDescription)
@@ -596,6 +596,26 @@ func TestManageArtifactCreateCarriesReviewParts(t *testing.T) {
 	}
 	if part := authority.created.Parts[1]; part.ID != "hero" || part.Kind != "spatial" || part.X != 0.1 || part.Y != 0.2 || part.Width != 0.8 || part.Height != 0.5 {
 		t.Fatalf("spatial part = %#v", part)
+	}
+}
+
+func TestManageArtifactCreateDerivesHTMLReviewTargetsWithoutMultipartPayloads(t *testing.T) {
+	authority := &fakeArtifactAuthority{}
+	runtime := NewRuntime(1)
+	runtime.SetArtifactAuthority(authority)
+	ctx, scope := artifactToolContext()
+	html := `<!doctype html><main id="hero" aria-label="Hero"></main><footer id="proof"></footer>`
+	_, err := runtime.executeManageArtifact(ctx, scope, "derived-html-parts", map[string]any{
+		"action": "create", "filename": "page.html", "media_type": "text/html", "content": html,
+	})
+	if err != nil {
+		t.Fatalf("create monolithic HTML: %v", err)
+	}
+	if string(authority.created.Body) != html || len(authority.created.Parts) != 2 || authority.created.Parts[0].ID != "hero" || authority.created.Parts[1].ID != "proof" {
+		t.Fatalf("monolithic HTML publication = %#v", authority.created)
+	}
+	if len(authority.initial.Parts) != 0 {
+		t.Fatalf("derived review targets entered multipart composition: %#v", authority.initial)
 	}
 }
 

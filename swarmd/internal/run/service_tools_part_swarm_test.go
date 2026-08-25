@@ -33,7 +33,7 @@ func TestFocusedDesignerSwarmContextCarriesExactPartAuthorityAndCountOneAutoAcce
 }
 
 func TestFocusedDesignerPromptRequiresPartReadAndPublishOnly(t *testing.T) {
-	request := taskSwarmHydrationRequest{Prompt: "change hero", AgentType: "designer", SwarmStrategy: taskSwarmStrategyExplore, OutputMode: taskOutputModeManaged, SectionTarget: &taskSwarmSectionTarget{ID: "hero", Label: "Hero", Kind: "semantic"}}
+	request := taskSwarmHydrationRequest{Prompt: "change hero", AgentType: "designer", SwarmStrategy: taskSwarmStrategyExplore, OutputMode: taskOutputModeManaged, SectionTarget: &taskSwarmSectionTarget{ID: "hero", Label: "Hero", Kind: "semantic"}, FocusedParts: true}
 	prompt, err := composeTaskSwarmChildPrompt(request, taskSwarmHydrationItem{Index: 1, OutputMode: taskOutputModeManaged}, taskSwarmHydratedDelta{Index: 1, Title: "Hero Alternative", Theme: "quiet", Role: "edit hero", Deliverable: "replacement hero"})
 	if err != nil {
 		t.Fatal(err)
@@ -41,6 +41,24 @@ func TestFocusedDesignerPromptRequiresPartReadAndPublishOnly(t *testing.T) {
 	for _, required := range []string{"action=read_part", "action=publish_part", "Do not use create/create_package", "preserves every untouched exact part revision"} {
 		if !strings.Contains(prompt, required) {
 			t.Fatalf("focused prompt missing %q:\n%s", required, prompt)
+		}
+	}
+}
+
+func TestLocatorTargetDesignerPromptPublishesOneCompleteHTMLRevision(t *testing.T) {
+	request := taskSwarmHydrationRequest{Prompt: "change hero", AgentType: "designer", SwarmStrategy: taskSwarmStrategyExplore, OutputMode: taskOutputModeManaged, SectionTarget: &taskSwarmSectionTarget{ID: "hero", Label: "Hero", Kind: "selector", Selector: "#hero"}}
+	prompt, err := composeTaskSwarmChildPrompt(request, taskSwarmHydrationItem{Index: 1, OutputMode: taskOutputModeManaged}, taskSwarmHydratedDelta{Index: 1, Title: "Hero Alternative", Theme: "quiet", Role: "edit hero", Deliverable: "complete HTML revision"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, required := range []string{"monolithic revision contract", "exactly one manage_artifact create or create_package call", "Keep a single-file text/html source as text/html", "do not convert it to a ZIP", "server derive targets"} {
+		if !strings.Contains(prompt, required) {
+			t.Fatalf("monolithic prompt missing %q:\n%s", required, prompt)
+		}
+	}
+	for _, forbidden := range []string{"action=read_part", "action=publish_part"} {
+		if strings.Contains(prompt, forbidden) {
+			t.Fatalf("monolithic prompt contains focused byte protocol %q:\n%s", forbidden, prompt)
 		}
 	}
 }

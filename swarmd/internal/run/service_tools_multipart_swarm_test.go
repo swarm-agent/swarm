@@ -38,6 +38,7 @@ func TestMultipartDesignerPromptRequiresAtomicReadAndPublish(t *testing.T) {
 		Prompt: "change hero and footer", AgentType: "designer", SwarmStrategy: taskSwarmStrategyExplore,
 		OutputMode:     taskOutputModeManaged,
 		SectionTargets: []*taskSwarmSectionTarget{{ID: "hero", Label: "Hero", Kind: "semantic"}, {ID: "footer", Label: "Footer", Kind: "semantic"}},
+		FocusedParts:   true,
 	}
 	prompt, err := composeTaskSwarmChildPrompt(request, taskSwarmHydrationItem{Index: 1, OutputMode: taskOutputModeManaged}, taskSwarmHydratedDelta{Index: 1, Title: "Combined Alternative", Theme: "quiet", Role: "edit selected parts", Deliverable: "atomic replacement"})
 	if err != nil {

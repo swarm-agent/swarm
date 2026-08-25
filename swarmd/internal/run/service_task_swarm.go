@@ -55,6 +55,7 @@ type taskSwarmHydrationRequest struct {
 	SourceArtifact      *pebblestore.SessionArtifactSelectionReference `json:"source_artifact,omitempty"`
 	SectionTarget       *taskSwarmSectionTarget                        `json:"section_target,omitempty"`
 	SectionTargets      []*taskSwarmSectionTarget                      `json:"section_targets,omitempty"`
+	FocusedParts        bool                                           `json:"focused_parts,omitempty"`
 	Items               []taskSwarmHydrationItem                       `json:"items"`
 }
 
@@ -362,6 +363,12 @@ func buildTaskSwarmHydrationRequest(parsed taskCallArguments, launchSpecs []task
 		OutputContract: strings.TrimSpace(parsed.Swarm.OutputContract), OutputMode: strings.TrimSpace(parsed.Swarm.OutputMode), OutputRequirements: cloneTaskOutputRequirements(parsed.Swarm.OutputRequirements), AnimationProfile: cloneTaskAnimationProfile(parsed.Swarm.AnimationProfile), IterationControls: cloneTaskSwarmIterationControls(parsed.Swarm.IterationControls), IntegrationContract: strings.TrimSpace(parsed.Swarm.IntegrationContract), SourceArtifact: cloneTaskImageSourceArtifact(parsed.Swarm.SourceArtifact), SectionTarget: cloneTaskSwarmSectionTarget(parsed.Swarm.SectionTarget), SectionTargets: cloneTaskSwarmSectionTargets(parsed.Swarm.SectionTargets),
 		Items: make([]taskSwarmHydrationItem, len(launchSpecs)),
 	}
+	for _, launch := range launchSpecs {
+		if _, ok := launch.SourceArguments["source_composition"].(pebblestore.SessionArtifactComposition); ok {
+			request.FocusedParts = true
+			break
+		}
+	}
 	groupIndex, groupRemaining := 0, 0
 	for i, launch := range launchSpecs {
 		if launch.RequestedSubagentType != request.AgentType || launch.SwarmStrategy != request.SwarmStrategy {
@@ -501,12 +508,20 @@ func composeTaskSwarmChildPrompt(request taskSwarmHydrationRequest, item taskSwa
 			encoded, _ := json.Marshal(request.SectionTargets)
 			b.WriteString("- selected authoritative artifact parts (immutable server-bound selection): ")
 			b.Write(encoded)
-			b.WriteString("\n- multipart contract: call manage_artifact action=read_parts once, edit every selected part and no others, then call manage_artifact action=publish_parts exactly once with one replacement per selected part. The server publishes all changed revisions as one atomic candidate composition and preserves every untouched exact part revision. Do not use create/create_package.\n")
+			if request.FocusedParts {
+				b.WriteString("\n- multipart contract: call manage_artifact action=read_parts once, edit every selected independently byte-bearing part and no others, then call manage_artifact action=publish_parts exactly once with one replacement per selected part. The server publishes all changed revisions as one atomic candidate composition and preserves every untouched exact part revision. Do not use create/create_package.\n")
+			}
 		} else if request.SectionTarget != nil {
 			encoded, _ := json.Marshal(request.SectionTarget)
-			b.WriteString("- selected artifact part review metadata (descriptive only; immutable part authority is injected by the server): ")
-			b.Write(encoded)
-			b.WriteString("\n- focused part contract: call manage_artifact action=read_part to retrieve only the selected exact part bytes, edit only those bytes, then call manage_artifact action=publish_part exactly once with only replacement content and content metadata. Do not read, materialize, recreate, or publish the complete artifact. Do not use create/create_package. The server preserves every untouched exact part revision and constructs the candidate composition.\n")
+			if request.FocusedParts {
+				b.WriteString("- selected authoritative artifact part (immutable server-bound byte selection): ")
+				b.Write(encoded)
+				b.WriteString("\n- focused part contract: call manage_artifact action=read_part to retrieve only the selected exact part bytes, edit only those bytes, then call manage_artifact action=publish_part exactly once with only replacement content and content metadata. Do not read, materialize, recreate, or publish the complete artifact. Do not use create/create_package. The server preserves every untouched exact part revision and constructs the candidate composition.\n")
+			} else {
+				b.WriteString("- selected source-bound review/edit target on one complete artifact (immutable server-authenticated locator): ")
+				b.Write(encoded)
+				b.WriteString("\n- monolithic revision contract: this target identifies what to change, not separate bytes. Inspect the exact source artifact, preserve every non-target region, and publish one complete revised artifact with exactly one manage_artifact create or create_package call. Keep a single-file text/html source as text/html; do not convert it to a ZIP or manufacture initial_parts. Include the source's complete review/edit targets in that same publication, with the targeted locator retained.\n")
+			}
 		}
 		if request.OutputRequirements != nil {
 			encoded, _ := json.Marshal(request.OutputRequirements)
@@ -524,8 +539,8 @@ func composeTaskSwarmChildPrompt(request taskSwarmHydrationRequest, item taskSwa
 		if request.OutputMode == taskOutputModeManaged {
 			if request.AgentType == "image" {
 				b.WriteString("- output mode: managed image; call manage_artifact exactly once with action=generate_image and a specialized image prompt. Omit provider, model, collection_id, variant_id, and output_requirements. The server resolves the account image model, performs one billed generation call, injects the immutable destination, and finalizes the ready image. Do not call create/create_package, write/edit, or mutate the checkout.\n")
-			} else if request.SectionTarget == nil && len(request.SectionTargets) == 0 {
-				b.WriteString("- output mode: managed; use manage_artifact with one successful create or create_package call and omit output_requirements and animation_profile. Include accurate parts in that same call for every meaningful authored review/edit target, using stable IDs and kind-appropriate locators; for swarm.iteration/v1 animations, mirror every manifest section as one temporal part with the exact same id, label, start_ms, and end_ms. Do not invent generic parts or omit them from an explicitly sectioned/editable deliverable. The server injects the immutable requirement snapshot and atomically finalizes the preallocated opaque target. Never call unsupported update/finalize actions. Do not use write/edit, write the workspace checkout, or choose/override destination lineage.\n")
+			} else if !request.FocusedParts {
+				b.WriteString("- output mode: managed complete revision; use one successful manage_artifact create or create_package call and omit output_requirements and animation_profile. Prefer one self-contained text/html file when the source is one HTML file; never wrap it in a ZIP merely to represent review/edit targets. Include accurate complete-revision parts when already known; otherwise, for text/html omit parts and let the server derive targets from authored manifests and stable semantic-region IDs without splitting or rewriting the file. The server injects the immutable requirement snapshot and atomically finalizes the preallocated opaque target. Never call unsupported update/finalize actions. Do not use write/edit, write the workspace checkout, or choose/override destination lineage.\n")
 			}
 		} else {
 			b.WriteString("- output mode: workspace; work in the parent's shared checkout and write only within the distinct declared owned scope; do not use Bash or Git.\n")
