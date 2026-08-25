@@ -37,6 +37,19 @@ func TestManageVideoDefinitionExposesOnlyOpaqueReferences(t *testing.T) {
 	}
 }
 
+func TestManageVideoDefinitionExposesManagedMP4PlanContract(t *testing.T) {
+	raw, err := json.Marshal(manageVideoDefinition().Parameters)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(raw)
+	for _, required := range []string{"video/mp4", "source_start_ms", "source_end_ms", "caption", "transition", "Descriptive on_screen_text and transition_in never create timeline presentation"} {
+		if !strings.Contains(text, required) {
+			t.Fatalf("manage_video plan schema lacks %q", required)
+		}
+	}
+}
+
 func TestManageVideoActionRegistryAndNearestSuggestions(t *testing.T) {
 	definition := manageVideoDefinition()
 	properties := definition.Parameters["properties"].(map[string]any)

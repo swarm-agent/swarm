@@ -336,12 +336,16 @@ func TestCreateEditProposalNormalizesAndValidatesVisualPlanReferences(t *testing
 	store.sessions["session"] = pebblestore.SessionSnapshot{ID: "session", AccountScopeID: principal.AccountScopeID, UserID: principal.UserID}
 	store.projects["project"] = pebblestore.VideoProjectSnapshot{ID: "project", AccountScopeID: principal.AccountScopeID, UserID: principal.UserID, SessionID: "session"}
 	store.artifacts["acc/session/slides/slide-1"] = pebblestore.SessionArtifactVariant{ID: "slide-1", CollectionID: "slides", SessionID: "session", AccountScopeID: "acc", Status: pebblestore.SessionArtifactStatusReady, MediaType: "image/png", EventSeq: 7}
-	plan := &pebblestore.VideoPlanProposal{Kind: pebblestore.VideoPlanKindInitial, Parts: []pebblestore.VideoPlanPart{{ID: "part-1", Title: "Hook", DurationMs: 3000, Visual: &pebblestore.SessionArtifactSelectionReference{CollectionID: "slides", VariantID: "slide-1", EventSeq: 7}}}}
+	store.artifacts["acc/session/motion/clip-1"] = pebblestore.SessionArtifactVariant{ID: "clip-1", CollectionID: "motion", SessionID: "session", AccountScopeID: "acc", Status: pebblestore.SessionArtifactStatusReady, MediaType: "video/mp4", EventSeq: 8}
+	plan := &pebblestore.VideoPlanProposal{Kind: pebblestore.VideoPlanKindInitial, Parts: []pebblestore.VideoPlanPart{
+		{ID: "part-1", Title: "Hook", DurationMs: 3000, Visual: &pebblestore.SessionArtifactSelectionReference{CollectionID: "slides", VariantID: "slide-1", EventSeq: 7}},
+		{ID: "part-2", Title: "Motion", DurationMs: 2000, SourceStartMs: 500, SourceEndMs: 2500, Visual: &pebblestore.SessionArtifactSelectionReference{CollectionID: "motion", VariantID: "clip-1", EventSeq: 8}},
+	}}
 	if _, err := svc.CreateEditProposal(context.Background(), principal, CreateEditProposalInput{SessionID: "session", ProjectID: "project", Plan: plan}); err != nil {
 		t.Fatalf("create visual plan proposal: %v", err)
 	}
-	if plan.Parts[0].Visual.SessionID != "session" || plan.Parts[0].VisualMediaType != "image/png" {
-		t.Fatalf("visual plan reference was not normalized: %+v", plan.Parts[0])
+	if plan.Parts[0].Visual.SessionID != "session" || plan.Parts[0].VisualMediaType != "image/png" || plan.Parts[1].Visual.SessionID != "session" || plan.Parts[1].VisualMediaType != "video/mp4" {
+		t.Fatalf("visual plan references were not normalized: %+v", plan.Parts)
 	}
 }
 

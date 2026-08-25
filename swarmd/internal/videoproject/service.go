@@ -773,8 +773,9 @@ func (s *Service) normalizeVisualPlanArtifacts(principal identity.Principal, ses
 		if ref.EventSeq == 0 || ref.EventSeq != variant.EventSeq {
 			return fmt.Errorf("visual artifact variant %q event sequence is stale or missing", variant.ID)
 		}
-		if !strings.HasPrefix(variant.MediaType, "image/") {
-			return fmt.Errorf("visual artifact variant %q must be an image slide", variant.ID)
+		mediaType := strings.ToLower(strings.TrimSpace(variant.MediaType))
+		if !strings.HasPrefix(mediaType, "image/") && mediaType != "video/mp4" {
+			return fmt.Errorf("visual artifact variant %q must be an image or video/mp4", variant.ID)
 		}
 		part.VisualMediaType = variant.MediaType
 	}

@@ -216,8 +216,12 @@ type VideoPlanPart struct {
 	OnScreenText    string                             `json:"on_screen_text,omitempty"`
 	VisualDirection string                             `json:"visual_direction,omitempty"`
 	TransitionIn    string                             `json:"transition_in,omitempty"`
+	Caption         *VideoTextOverlay                  `json:"caption,omitempty"`
+	Transition      *VideoTimelineTransition           `json:"transition,omitempty"`
 	Visual          *SessionArtifactSelectionReference `json:"visual"`
 	VisualMediaType string                             `json:"visual_media_type,omitempty"`
+	SourceStartMs   int64                              `json:"source_start_ms,omitempty"`
+	SourceEndMs     int64                              `json:"source_end_ms,omitempty"`
 }
 
 const (
@@ -469,6 +473,14 @@ func normalizeV3VideoProjectMutation(input *V3SessionMutationInput) {
 				part.VisualDirection = strings.TrimSpace(part.VisualDirection)
 				part.TransitionIn = strings.TrimSpace(part.TransitionIn)
 				part.VisualMediaType = strings.ToLower(strings.TrimSpace(part.VisualMediaType))
+				if part.Caption != nil {
+					part.Caption.ID = strings.TrimSpace(part.Caption.ID)
+					part.Caption.Text = strings.TrimSpace(part.Caption.Text)
+					part.Caption.Position = strings.ToLower(strings.TrimSpace(part.Caption.Position))
+				}
+				if part.Transition != nil {
+					normalizeVideoTransition(part.Transition)
+				}
 				if part.Visual != nil {
 					part.Visual.SessionID = strings.TrimSpace(part.Visual.SessionID)
 					part.Visual.CollectionID = strings.TrimSpace(part.Visual.CollectionID)
@@ -977,8 +989,20 @@ func validateVideoPlanProposal(plan VideoPlanProposal) error {
 		if part.Visual == nil || part.Visual.SessionID == "" || part.Visual.CollectionID == "" || part.Visual.VariantID == "" || part.Visual.EventSeq == 0 {
 			return fmt.Errorf("video plan part %q requires one complete exact ready visual reference", part.ID)
 		}
-		if !strings.HasPrefix(part.VisualMediaType, "image/") {
-			return fmt.Errorf("video plan part %q visual must resolve to an image slide", part.ID)
+		isImage := strings.HasPrefix(part.VisualMediaType, "image/")
+		isVideo := part.VisualMediaType == "video/mp4"
+		if !isImage && !isVideo {
+			return fmt.Errorf("video plan part %q visual must resolve to an image or video/mp4 artifact", part.ID)
+		}
+		if isVideo {
+			if part.SourceStartMs < 0 || part.SourceEndMs <= part.SourceStartMs {
+				return fmt.Errorf("video plan part %q requires a non-empty MP4 source range", part.ID)
+			}
+			if part.SourceEndMs-part.SourceStartMs != part.DurationMs {
+				return fmt.Errorf("video plan part %q duration_ms must match its MP4 source range", part.ID)
+			}
+		} else if part.SourceStartMs != 0 || part.SourceEndMs != 0 {
+			return fmt.Errorf("video plan part %q image visual cannot declare an MP4 source range", part.ID)
 		}
 		if _, exists := seen[part.ID]; exists {
 			return fmt.Errorf("duplicate video plan part id %q", part.ID)
@@ -987,6 +1011,25 @@ func validateVideoPlanProposal(plan VideoPlanProposal) error {
 		for _, value := range []string{part.Title, part.Narration, part.OnScreenText, part.VisualDirection, part.TransitionIn} {
 			if len(value) > MaxTextOverlayLength {
 				return fmt.Errorf("video plan part %q field exceeds maximum %d characters", part.ID, MaxTextOverlayLength)
+			}
+		}
+		if part.Caption != nil {
+			if part.Caption.ID == "" || part.Caption.Text == "" || part.Caption.StartMs < 0 || part.Caption.EndMs <= part.Caption.StartMs || part.Caption.EndMs > part.DurationMs {
+				return fmt.Errorf("video plan part %q caption requires a stable id, text, and bounded part-relative range", part.ID)
+			}
+			if len(part.Caption.Text) > MaxTextOverlayLength {
+				return fmt.Errorf("video plan part %q caption exceeds maximum %d characters", part.ID, MaxTextOverlayLength)
+			}
+		}
+		if part.Transition != nil {
+			if part.Transition.ID == "" || part.Transition.Kind == "" || part.Transition.FromClipID == "" || part.Transition.ToClipID != part.ID {
+				return fmt.Errorf("video plan part %q transition requires a stable id, kind, from_clip_id, and matching to_clip_id", part.ID)
+			}
+			if part.Transition.Kind != VideoTransitionKindCut && part.Transition.Kind != VideoTransitionKindCrossfade {
+				return fmt.Errorf("video plan part %q transition kind is unsupported", part.ID)
+			}
+			if part.Transition.DurationMs < 0 || (part.Transition.Kind == VideoTransitionKindCut && part.Transition.DurationMs != 0) || (part.Transition.Kind == VideoTransitionKindCrossfade && part.Transition.DurationMs <= 0) {
+				return fmt.Errorf("video plan part %q transition duration is invalid", part.ID)
 			}
 		}
 	}
@@ -1095,19 +1138,24 @@ func visualVideoPlanTimeline(base VideoProjectTimeline, plan VideoPlanProposal) 
 	startMs := int64(0)
 	for index, part := range plan.Parts {
 		endMs := startMs + part.DurationMs
-		caption := VideoTextOverlay{ID: part.ID + "-caption", Text: part.OnScreenText, Position: "center", StartMs: startMs, EndMs: endMs}
 		clip := VideoTimelineClip{
 			ID: part.ID, Name: part.Title + " | Narration: " + part.Narration + " | Planned still: " + part.VisualDirection,
 			Track: 0, Sequence: index, SourceKind: VideoClipSourceKindManagedArtifact, ArtifactRef: part.Visual,
 			MediaType: part.VisualMediaType, TimelineStartMs: startMs, TimelineEndMs: endMs, DurationMs: part.DurationMs,
-			SourceStartMs: 0, SourceEndMs: part.DurationMs, Visible: true,
+			SourceStartMs: part.SourceStartMs, SourceEndMs: part.SourceEndMs, Visible: true,
 		}
-		if part.OnScreenText != "" {
+		if part.VisualMediaType != "video/mp4" {
+			clip.SourceEndMs = part.DurationMs
+		}
+		if part.Caption != nil {
+			caption := *part.Caption
+			caption.StartMs += startMs
+			caption.EndMs += startMs
 			clip.Captions = []VideoTextOverlay{caption}
 		}
 		timeline.Clips = append(timeline.Clips, clip)
-		if index > 0 {
-			timeline.Transitions = append(timeline.Transitions, VideoTimelineTransition{ID: "transition-" + part.ID, Kind: VideoTransitionKindCrossfade, FromClipID: plan.Parts[index-1].ID, ToClipID: part.ID, DurationMs: 300})
+		if part.Transition != nil {
+			timeline.Transitions = append(timeline.Transitions, *part.Transition)
 		}
 		startMs = endMs
 	}

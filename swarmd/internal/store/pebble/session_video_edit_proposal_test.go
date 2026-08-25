@@ -103,6 +103,36 @@ func TestVideoPlanProposalRejectsPartialAcceptance(t *testing.T) {
 	}
 }
 
+func TestVideoPlanCompilesMP4RangesAndOnlyTypedPresentation(t *testing.T) {
+	visual := &SessionArtifactSelectionReference{SessionID: "sess", CollectionID: "motion", VariantID: "clip", EventSeq: 9}
+	plan := VideoPlanProposal{Kind: VideoPlanKindInitial, Parts: []VideoPlanPart{
+		{ID: "part-1", Title: "Motion", DurationMs: 2000, OnScreenText: "descriptive only", TransitionIn: "descriptive only", Visual: visual, VisualMediaType: "video/mp4", SourceStartMs: 500, SourceEndMs: 2500},
+		{ID: "part-2", Title: "Still", DurationMs: 1000, Visual: &SessionArtifactSelectionReference{SessionID: "sess", CollectionID: "slides", VariantID: "still", EventSeq: 3}, VisualMediaType: "image/png", Caption: &VideoTextOverlay{ID: "caption-2", Text: "Explicit", Position: "bottom", StartMs: 100, EndMs: 900}, Transition: &VideoTimelineTransition{ID: "cut-1-2", Kind: VideoTransitionKindCut, FromClipID: "part-1", ToClipID: "part-2"}},
+	}}
+	if err := validateVideoPlanProposal(plan); err != nil {
+		t.Fatal(err)
+	}
+	timeline := visualVideoPlanTimeline(VideoProjectTimeline{}, plan)
+	if len(timeline.Clips) != 2 || timeline.Clips[0].SourceStartMs != 500 || timeline.Clips[0].SourceEndMs != 2500 || len(timeline.Clips[0].Captions) != 0 {
+		t.Fatalf("MP4 plan compilation = %+v", timeline.Clips)
+	}
+	if len(timeline.Clips[1].Captions) != 1 || timeline.Clips[1].Captions[0].StartMs != 2100 || timeline.Clips[1].Captions[0].EndMs != 2900 {
+		t.Fatalf("typed caption compilation = %+v", timeline.Clips[1].Captions)
+	}
+	if len(timeline.Transitions) != 1 || timeline.Transitions[0].ID != "cut-1-2" {
+		t.Fatalf("typed transition compilation = %+v", timeline.Transitions)
+	}
+}
+
+func TestVideoPlanRejectsInvalidMP4Range(t *testing.T) {
+	part := videoPlanTestPart("part", "Motion", "motion")
+	part.VisualMediaType = "video/mp4"
+	part.SourceStartMs, part.SourceEndMs = 100, 500
+	if err := validateVideoPlanProposal(VideoPlanProposal{Kind: VideoPlanKindInitial, Parts: []VideoPlanPart{part}}); err == nil || !strings.Contains(err.Error(), "duration_ms must match") {
+		t.Fatalf("expected MP4 range rejection, got %v", err)
+	}
+}
+
 func TestVideoTimelineTransitionsAreFirstClassAndValidated(t *testing.T) {
 	timeline := *proposalTestTimeline()
 	timeline.Width, timeline.Height = 1920, 1080
