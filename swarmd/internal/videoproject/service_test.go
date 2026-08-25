@@ -270,6 +270,45 @@ func (f *fakeSessionStore) GetAudioSourceRecord(accountScopeID, workspaceID, ref
 	return pebblestore.AudioSourceRecord{}, false, nil
 }
 
+func TestListWorkspaceCatalogFiltersScopeAndGroupsRelatedSessions(t *testing.T) {
+	store := newFakeSessionStore()
+	svc := NewService(store)
+	principal := identity.Principal{Type: identity.PrincipalTypeUser, AccountScopeID: "account", UserID: "user"}
+	store.sessions["source"] = pebblestore.SessionSnapshot{ID: "source", AccountScopeID: "account", UserID: "user", WorkspacePath: "/workspace/project", Title: "Original"}
+	store.sessions["follow-up"] = pebblestore.SessionSnapshot{ID: "follow-up", AccountScopeID: "account", UserID: "user", WorkspacePath: "/workspace/project/../project", Title: "Follow-up"}
+	store.sessions["other-workspace"] = pebblestore.SessionSnapshot{ID: "other-workspace", AccountScopeID: "account", UserID: "user", WorkspacePath: "/workspace/other", Title: "Other"}
+	store.projects["source-project"] = pebblestore.VideoProjectSnapshot{ID: "source-project", AccountScopeID: "account", UserID: "user", SessionID: "source", Title: "Launch", CurrentRevisionID: "source-revision"}
+	store.projects["fork-project"] = pebblestore.VideoProjectSnapshot{ID: "fork-project", AccountScopeID: "account", UserID: "user", SessionID: "follow-up", Title: "Launch", CurrentRevisionID: "fork-revision", Metadata: map[string]any{"video_lineage_root_session_id": "source", "video_lineage_root_project_id": "source-project"}}
+	store.projects["excluded-project"] = pebblestore.VideoProjectSnapshot{ID: "excluded-project", AccountScopeID: "account", UserID: "user", SessionID: "other-workspace", Title: "Excluded", CurrentRevisionID: "excluded-revision"}
+	store.revisions["source-project"] = map[string]pebblestore.VideoProjectRevisionSnapshot{"source-revision": {ID: "source-revision", ProjectID: "source-project", SessionID: "source", AccountScopeID: "account", UserID: "user", RevisionNumber: 1}}
+	store.revisions["fork-project"] = map[string]pebblestore.VideoProjectRevisionSnapshot{"fork-revision": {ID: "fork-revision", ProjectID: "fork-project", SessionID: "follow-up", AccountScopeID: "account", UserID: "user", RevisionNumber: 1}}
+
+	items, err := svc.ListWorkspaceCatalog(principal, "/workspace/project", 20)
+	if err != nil {
+		t.Fatalf("list workspace catalog: %v", err)
+	}
+	if len(items) != 2 {
+		t.Fatalf("catalog=%+v, want two videos from requested workspace", items)
+	}
+	for _, item := range items {
+		if len(item.RelatedSessions) != 2 {
+			t.Fatalf("related sessions=%+v, want source and follow-up", item.RelatedSessions)
+		}
+	}
+}
+
+func TestSameWorkspacePathNormalizesEquivalentPaths(t *testing.T) {
+	if !sameWorkspacePath("/workspace/project/../project", "/workspace/project") {
+		t.Fatal("expected equivalent workspace paths to match")
+	}
+	if sameWorkspacePath("/workspace/project", "/workspace/other") {
+		t.Fatal("expected distinct workspace paths not to match")
+	}
+	if sameWorkspacePath("", "/workspace/project") {
+		t.Fatal("expected empty workspace path not to match")
+	}
+}
+
 func TestCreateProjectWithoutTimelineCreatesEmptyBaseRevision(t *testing.T) {
 	store := newFakeSessionStore()
 	svc := NewService(store)

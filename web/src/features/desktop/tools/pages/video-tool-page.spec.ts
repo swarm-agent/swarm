@@ -912,6 +912,46 @@ test('Video Studio exposes the complete launch transition vocabulary', () => {
   assert.equal(transitionLabel('fade_through_black'), 'Fade through black')
 })
 
+test('standalone video library filters videos and related sessions', () => {
+  const items: WorkspaceVideoCatalogItemWire[] = [{
+    project: { id: 'project-1', session_id: 'session-source', title: 'Launch film', description: 'Product reveal', current_revision_id: 'revision-2', current_revision_number: 2, revision_count: 2, created_at: 1, updated_at: 2 },
+    revisions: [
+      { id: 'revision-1', project_id: 'project-1', session_id: 'session-source', revision_number: 1, timeline: { schema_version: 1, clips: [] }, created_at: 1 },
+      { id: 'revision-2', project_id: 'project-1', session_id: 'session-source', revision_number: 2, timeline: { schema_version: 1, clips: [] }, created_at: 2 },
+    ],
+    source_archived: true,
+    source_session_id: 'session-source',
+    source_session_title: 'Original session',
+    related_sessions: [{ session_id: 'session-related', title: 'Follow-up edit' }],
+  }]
+
+  assert.equal(filterWorkspaceVideoCatalog(items, 'follow-up').length, 1)
+  assert.equal(filterWorkspaceVideoCatalog(items, 'missing').length, 0)
+  assert.equal(selectWorkspaceVideoRevision(items[0])?.id, 'revision-2')
+  assert.equal(selectWorkspaceVideoRevision(items[0], 'revision-1')?.id, 'revision-1')
+})
+
+test('workspaceVideoContextMetadata carries exact standalone video revision identity', () => {
+  const item: WorkspaceVideoCatalogItemWire = {
+    project: { id: 'project-1', session_id: 'session-source', title: 'Launch film', current_revision_id: 'revision-2', current_revision_number: 2, revision_count: 2, created_at: 1, updated_at: 2 },
+    revisions: [],
+    source_session_id: 'session-source',
+    related_sessions: [],
+  }
+
+  const metadata = workspaceVideoContextMetadata(item, 'revision-1')
+  assert.equal(metadata.launch_source, 'video_library')
+  assert.equal(metadata.source_session_id, 'session-source')
+  assert.equal(metadata.source_video_project_id, 'project-1')
+  assert.equal(metadata.source_video_revision_id, 'revision-1')
+  assert.deepEqual(metadata.video_context, {
+    source_session_id: 'session-source',
+    source_project_id: 'project-1',
+    source_revision_id: 'revision-1',
+    title: 'Launch film',
+  })
+})
+
 test('videoChildSessionMetadata carries canonical project and revision identity', () => {
   const metadata = videoChildSessionMetadata({
     thread: {

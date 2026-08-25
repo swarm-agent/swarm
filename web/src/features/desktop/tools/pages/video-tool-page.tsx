@@ -814,6 +814,7 @@ export async function createVideoThread(input: {
   folderPath?: string
   clips: VideoClip[]
   metadata?: Record<string, unknown>
+  beforeThreadCreate?: (sessionId: string) => Promise<void>
 }): Promise<VideoThreadRecord> {
   const preference = await fetchDraftModelPreference()
   const createdSession = await createSession({
@@ -826,6 +827,9 @@ export async function createVideoThread(input: {
     route: input.route,
     metadata: input.metadata ?? videoStudioSessionMetadata(),
   })
+  if (input.beforeThreadCreate) {
+    await input.beforeThreadCreate(createdSession.id)
+  }
   const response = await requestJson<{ thread?: VideoThreadWire }>('/v1/workspace/video/threads', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -837,6 +841,7 @@ export async function createVideoThread(input: {
       video_folders: input.folderPath ? [input.folderPath] : [],
       video_clips: input.clips.map(serializeVideoClipForRequest),
       video_clip_order: input.clips.map((clip) => clip.id),
+      metadata: input.metadata,
     }),
   })
   const thread = mapVideoThread(response.thread ?? {})
@@ -1892,13 +1897,15 @@ export function VideoToolPage() {
         route: selectedSessionRoute,
         clips: [],
         metadata: workspaceVideoContextMetadata(selectedLibraryVideo, selectedLibraryRevision.id),
-      })
-      await forkWorkspaceVideoRevision({
-        workspacePath: selectedWorkspacePath,
-        sourceSessionId: selectedLibraryVideo.source_session_id,
-        sourceProjectId: selectedLibraryVideo.project.id,
-        sourceRevisionId: selectedLibraryRevision.id,
-        destinationSessionId: createdThread.id,
+        beforeThreadCreate: async (destinationSessionId) => {
+          await forkWorkspaceVideoRevision({
+            workspacePath: selectedWorkspacePath,
+            sourceSessionId: selectedLibraryVideo.source_session_id,
+            sourceProjectId: selectedLibraryVideo.project.id,
+            sourceRevisionId: selectedLibraryRevision.id,
+            destinationSessionId,
+          })
+        },
       })
       queryClient.setQueryData<VideoThreadRecord[]>(['video-tool-threads', selectedWorkspacePath], (current = []) => [createdThread, ...current.filter((thread) => thread.id !== createdThread.id)])
       await queryClient.invalidateQueries({ queryKey: ['video-library', selectedWorkspacePath] })

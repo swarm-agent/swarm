@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"swarm/packages/swarmd/internal/identity"
@@ -342,6 +343,20 @@ func firstNonEmptyMetadataString(metadata map[string]any, key, fallback string) 
 	return strings.TrimSpace(fallback)
 }
 
+func sameWorkspacePath(left, right string) bool {
+	left = strings.TrimSpace(left)
+	right = strings.TrimSpace(right)
+	if left == "" || right == "" {
+		return false
+	}
+	leftAbs, leftErr := filepath.Abs(left)
+	rightAbs, rightErr := filepath.Abs(right)
+	if leftErr != nil || rightErr != nil {
+		return filepath.Clean(left) == filepath.Clean(right)
+	}
+	return filepath.Clean(leftAbs) == filepath.Clean(rightAbs)
+}
+
 func (s *Service) CreateRevision(ctx context.Context, principal identity.Principal, input CreateRevisionInput) (pebblestore.VideoProjectRevisionSnapshot, pebblestore.VideoProjectSnapshot, error) {
 	if s == nil || s.sessions == nil {
 		return pebblestore.VideoProjectRevisionSnapshot{}, pebblestore.VideoProjectSnapshot{}, errors.New("videoproject service is not configured")
@@ -605,7 +620,7 @@ func (s *Service) ListWorkspaceCatalog(principal identity.Principal, workspacePa
 			}
 			session, archived = tombstone.Session, true
 		}
-		if session.AccountScopeID != principal.AccountScopeID || (session.UserID != "" && session.UserID != principal.UserID) || strings.TrimSpace(session.WorkspacePath) != workspacePath {
+		if session.AccountScopeID != principal.AccountScopeID || (session.UserID != "" && session.UserID != principal.UserID) || !sameWorkspacePath(session.WorkspacePath, workspacePath) {
 			continue
 		}
 		revisions, revisionErr := s.sessions.ListVideoProjectRevisions(principal.AccountScopeID, project.SessionID, project.ID, pebblestore.MaxVideoProjectRevisions)
