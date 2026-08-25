@@ -248,6 +248,37 @@ func TestBuildFFmpegCommandLineTransitions(t *testing.T) {
 	}
 }
 
+func TestBuildFFmpegCommandLinePreservesDeclaredDurationAcrossTransitionOverlap(t *testing.T) {
+	timeline := pebblestore.VideoProjectTimeline{
+		TotalDurationMs: 8000,
+		FPS:             30,
+		Transitions: []pebblestore.VideoTimelineTransition{{
+			ID: "dissolve", Kind: pebblestore.VideoTransitionKindCrossfade,
+			FromClipID: "one", ToClipID: "two", DurationMs: 300,
+		}},
+	}
+	inputs := []MaterializedInput{
+		{Index: 0, ClipID: "one", FilePath: "one.png", IsImage: true, DurationMs: 4000, TimelineEndMs: 4000},
+		{Index: 1, ClipID: "two", FilePath: "two.png", IsImage: true, DurationMs: 4000, TimelineStartMs: 4000, TimelineEndMs: 8000},
+	}
+
+	plan, err := BuildFFmpegCommandLine(timeline, inputs, "output.mp4")
+	if err != nil {
+		t.Fatalf("BuildFFmpegCommandLine() error = %v", err)
+	}
+	if plan.TotalDurationMs != 8000 {
+		t.Fatalf("TotalDurationMs = %d, want 8000", plan.TotalDurationMs)
+	}
+	for _, want := range []string{
+		"tpad=stop_mode=clone:stop_duration=0.300,trim=duration=8.000",
+		"apad=pad_dur=0.300,atrim=duration=8.000",
+	} {
+		if !strings.Contains(plan.FilterComplex, want) {
+			t.Fatalf("filter complex missing %q: %s", want, plan.FilterComplex)
+		}
+	}
+}
+
 func TestBuildFFmpegCommandLineNormalizesTransitionInputs(t *testing.T) {
 	inputs := []MaterializedInput{
 		{Index: 0, ClipID: "one", FilePath: "one.mp4", DurationMs: 1200},

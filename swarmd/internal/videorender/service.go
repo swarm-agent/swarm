@@ -207,16 +207,16 @@ type FrameInspectionRange struct {
 }
 
 type FrameInspectionRequest struct {
-	SessionID        string
+	SessionID         string
 	ArtifactSessionID string
-	ProjectID     string
-	RevisionID    string
-	WorkspacePath string
-	TimestampsMs  []int64
-	Ranges        []FrameInspectionRange
-	MaxWidth      int
-	Timeout       time.Duration
-	RequestID     string
+	ProjectID         string
+	RevisionID        string
+	WorkspacePath     string
+	TimestampsMs      []int64
+	Ranges            []FrameInspectionRange
+	MaxWidth          int
+	Timeout           time.Duration
+	RequestID         string
 }
 
 type InspectedFrame struct {
@@ -225,13 +225,13 @@ type InspectedFrame struct {
 }
 
 type FrameInspectionResult struct {
-	ProjectID       string
-	RevisionID      string
+	ProjectID        string
+	RevisionID       string
 	RevisionEventSeq uint64
-	DurationMs      int64
-	Width           int
-	Height          int
-	Frames          []InspectedFrame
+	DurationMs       int64
+	Width            int
+	Height           int
+	Frames           []InspectedFrame
 }
 
 type RenderJobRequest struct {
@@ -257,7 +257,9 @@ func (s *Service) InspectFrames(ctx context.Context, principal identity.Principa
 	}
 	session, ok, err := s.store.GetSession(sessionID)
 	if err != nil || !ok {
-		if err == nil { err = errors.New("video inspection session not found") }
+		if err == nil {
+			err = errors.New("video inspection session not found")
+		}
 		return FrameInspectionResult{}, err
 	}
 	if session.AccountScopeID != principal.AccountScopeID || (session.UserID != "" && session.UserID != principal.UserID) {
@@ -265,7 +267,9 @@ func (s *Service) InspectFrames(ctx context.Context, principal identity.Principa
 	}
 	project, ok, err := s.store.GetVideoProject(principal.AccountScopeID, sessionID, projectID)
 	if err != nil || !ok {
-		if err == nil { err = fmt.Errorf("video project %q not found", projectID) }
+		if err == nil {
+			err = fmt.Errorf("video project %q not found", projectID)
+		}
 		return FrameInspectionResult{}, err
 	}
 	if project.SessionID != sessionID || project.AccountScopeID != principal.AccountScopeID || (project.UserID != "" && project.UserID != principal.UserID) {
@@ -273,67 +277,107 @@ func (s *Service) InspectFrames(ctx context.Context, principal identity.Principa
 	}
 	revision, ok, err := s.store.GetVideoProjectRevision(principal.AccountScopeID, sessionID, projectID, revisionID)
 	if err != nil || !ok {
-		if err == nil { err = fmt.Errorf("video project revision %q not found", revisionID) }
+		if err == nil {
+			err = fmt.Errorf("video project revision %q not found", revisionID)
+		}
 		return FrameInspectionResult{}, err
 	}
 	if revision.SessionID != sessionID || revision.ProjectID != projectID || revision.AccountScopeID != principal.AccountScopeID || (revision.UserID != "" && revision.UserID != principal.UserID) {
 		return FrameInspectionResult{}, errors.New("video revision ownership does not match authenticated principal")
 	}
 	timestamps, err := normalizeInspectionTimestamps(req, revision.Timeline.TotalDurationMs)
-	if err != nil { return FrameInspectionResult{}, err }
+	if err != nil {
+		return FrameInspectionResult{}, err
+	}
 	if _, err := s.runner.LookPath("ffmpeg"); err != nil {
 		return FrameInspectionResult{}, fmt.Errorf("video frame inspection is unavailable because the checked ffmpeg runtime is missing: %w", err)
 	}
 	jobDir, err := os.MkdirTemp(s.cfg.WorkDir, "swarm-video-inspect-")
-	if err != nil { return FrameInspectionResult{}, fmt.Errorf("create private frame inspection storage: %w", err) }
+	if err != nil {
+		return FrameInspectionResult{}, fmt.Errorf("create private frame inspection storage: %w", err)
+	}
 	defer os.RemoveAll(jobDir)
 	timeout := req.Timeout
-	if timeout <= 0 || timeout > DefaultInspectionTimeout { timeout = DefaultInspectionTimeout }
+	if timeout <= 0 || timeout > DefaultInspectionTimeout {
+		timeout = DefaultInspectionTimeout
+	}
 	inspectCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	inputs, err := s.materializeTimelineInputs(inspectCtx, principal, session, req.WorkspacePath, jobDir, revision.Timeline)
-	if err != nil { return FrameInspectionResult{}, fmt.Errorf("materialize exact revision for frame inspection: %w", err) }
+	if err != nil {
+		return FrameInspectionResult{}, fmt.Errorf("materialize exact revision for frame inspection: %w", err)
+	}
 	previewPath := filepath.Join(jobDir, "inspection.mp4")
 	plan, err := BuildFFmpegCommandLine(revision.Timeline, inputs, previewPath)
-	if err != nil { return FrameInspectionResult{}, fmt.Errorf("build exact revision inspection plan: %w", err) }
+	if err != nil {
+		return FrameInspectionResult{}, fmt.Errorf("build exact revision inspection plan: %w", err)
+	}
 	if _, err := s.runner.RunCommand(inspectCtx, "ffmpeg", plan.FFmpegArgs...); err != nil {
 		return FrameInspectionResult{}, fmt.Errorf("render exact revision for frame inspection: %w", err)
 	}
 	maxWidth := req.MaxWidth
-	if maxWidth <= 0 { maxWidth = DefaultInspectionWidth }
-	if maxWidth > MaxInspectionWidth { return FrameInspectionResult{}, fmt.Errorf("max_width %d exceeds inspection limit %d", maxWidth, MaxInspectionWidth) }
+	if maxWidth <= 0 {
+		maxWidth = DefaultInspectionWidth
+	}
+	if maxWidth > MaxInspectionWidth {
+		return FrameInspectionResult{}, fmt.Errorf("max_width %d exceeds inspection limit %d", maxWidth, MaxInspectionWidth)
+	}
 	dims := plan.Dimensions
 	width := min(dims.Width, maxWidth)
-	if width < 2 { width = 2 }
-	if width%2 != 0 { width-- }
+	if width < 2 {
+		width = 2
+	}
+	if width%2 != 0 {
+		width--
+	}
 	height := int(math.Round(float64(dims.Height) * float64(width) / float64(dims.Width)))
-	if height < 2 { height = 2 }
-	if height%2 != 0 { height-- }
+	if height < 2 {
+		height = 2
+	}
+	if height%2 != 0 {
+		height--
+	}
 	requestID := strings.TrimSpace(req.RequestID)
-	if requestID == "" { requestID = "inspect" }
+	if requestID == "" {
+		requestID = "inspect"
+	}
 	collectionID := "vframes_" + projectID + "_" + revisionID
 	result := FrameInspectionResult{ProjectID: projectID, RevisionID: revisionID, RevisionEventSeq: revision.EventSeq, DurationMs: plan.TotalDurationMs, Width: width, Height: height, Frames: make([]InspectedFrame, 0, len(timestamps))}
 	artifactSessionID := strings.TrimSpace(req.ArtifactSessionID)
-	if artifactSessionID == "" { artifactSessionID = sessionID }
+	if artifactSessionID == "" {
+		artifactSessionID = sessionID
+	}
 	artifactPrincipal := artifact.Principal{SessionID: artifactSessionID, AccountScopeID: principal.AccountScopeID, UserID: principal.UserID}
 	var totalPNGBytes int64
 	for index, timestamp := range timestamps {
 		framePath := filepath.Join(jobDir, fmt.Sprintf("frame_%02d.png", index+1))
-		args := []string{"-v", "error", "-nostdin", "-ss", fmt.Sprintf("%.3f", float64(timestamp)/1000), "-i", previewPath, "-frames:v", "1", "-vf", fmt.Sprintf("scale=%d:%d:flags=lanczos", width, height), "-f", "image2", "-c:v", "png", "-y", framePath}
-		if _, err := s.runner.RunCommand(inspectCtx, "ffmpeg", args...); err != nil { return FrameInspectionResult{}, fmt.Errorf("extract frame at %dms: %w", timestamp, err) }
+		seekTimestamp := inspectionSeekTimestamp(timestamp, plan.TotalDurationMs, plan.FPS)
+		args := []string{"-v", "error", "-nostdin", "-ss", fmt.Sprintf("%.3f", float64(seekTimestamp)/1000), "-i", previewPath, "-frames:v", "1", "-vf", fmt.Sprintf("scale=%d:%d:flags=lanczos", width, height), "-f", "image2", "-c:v", "png", "-y", framePath}
+		if _, err := s.runner.RunCommand(inspectCtx, "ffmpeg", args...); err != nil {
+			return FrameInspectionResult{}, fmt.Errorf("extract frame at %dms: %w", timestamp, err)
+		}
 		info, err := os.Stat(framePath)
 		if err != nil || !info.Mode().IsRegular() || info.Size() <= 0 || info.Size() > MaxInspectionPNGBytes {
 			return FrameInspectionResult{}, fmt.Errorf("frame at %dms did not produce a bounded PNG", timestamp)
 		}
 		totalPNGBytes += info.Size()
-		if totalPNGBytes > MaxInspectionTotalBytes { return FrameInspectionResult{}, errors.New("inspection PNG output exceeds total byte limit") }
+		if totalPNGBytes > MaxInspectionTotalBytes {
+			return FrameInspectionResult{}, errors.New("inspection PNG output exceeds total byte limit")
+		}
 		prefix := make([]byte, 8)
 		file, openErr := os.Open(framePath)
-		if openErr != nil { return FrameInspectionResult{}, openErr }
-		_, readErr := io.ReadFull(file, prefix); file.Close()
-		if readErr != nil || !bytes.Equal(prefix, []byte{137, 80, 78, 71, 13, 10, 26, 10}) { return FrameInspectionResult{}, fmt.Errorf("frame at %dms is not a valid PNG", timestamp) }
+		if openErr != nil {
+			return FrameInspectionResult{}, openErr
+		}
+		_, readErr := io.ReadFull(file, prefix)
+		file.Close()
+		if readErr != nil || !bytes.Equal(prefix, []byte{137, 80, 78, 71, 13, 10, 26, 10}) {
+			return FrameInspectionResult{}, fmt.Errorf("frame at %dms is not a valid PNG", timestamp)
+		}
 		digest, err := computeFileSHA256(framePath)
-		if err != nil { return FrameInspectionResult{}, err }
+		if err != nil {
+			return FrameInspectionResult{}, err
+		}
 		identityDigest := sha256.Sum256([]byte(projectID + "\x00" + revisionID + "\x00" + fmt.Sprint(timestamp)))
 		variantID := fmt.Sprintf("vframe_%03d_%d_%s", index+1, timestamp, hex.EncodeToString(identityDigest[:6]))
 		variant, err := s.artifacts.CreateFromFile(inspectCtx, artifactPrincipal, artifact.CreateFileInput{CreateInput: artifact.CreateInput{
@@ -342,33 +386,75 @@ func (s *Service) InspectFrames(ctx context.Context, principal identity.Principa
 			Filename: fmt.Sprintf("frame_%03d_%dms.png", index+1, timestamp), MediaType: "image/png", Presentation: pebblestore.SessionArtifactPresentation{Kind: "image", Label: fmt.Sprintf("Frame at %dms", timestamp), Previewable: true, Width: width, Height: height},
 			VideoProjectID: projectID, VideoRevisionID: revisionID, VideoRevisionEventSeq: revision.EventSeq,
 		}, SourcePath: framePath})
-		if err != nil { return FrameInspectionResult{}, fmt.Errorf("publish inspected frame at %dms: %w", timestamp, err) }
-		if variant.Status != pebblestore.SessionArtifactStatusReady || variant.EventSeq == 0 { return FrameInspectionResult{}, fmt.Errorf("published frame at %dms is not ready", timestamp) }
+		if err != nil {
+			return FrameInspectionResult{}, fmt.Errorf("publish inspected frame at %dms: %w", timestamp, err)
+		}
+		if variant.Status != pebblestore.SessionArtifactStatusReady || variant.EventSeq == 0 {
+			return FrameInspectionResult{}, fmt.Errorf("published frame at %dms is not ready", timestamp)
+		}
 		result.Frames = append(result.Frames, InspectedFrame{TimestampMs: timestamp, Artifact: pebblestore.SessionArtifactSelectionReference{SessionID: variant.SessionID, CollectionID: variant.CollectionID, VariantID: variant.ID, EventSeq: variant.EventSeq}})
 	}
 	return result, nil
 }
 
+func inspectionSeekTimestamp(timestamp, durationMs int64, fps float64) int64 {
+	if timestamp <= 0 || durationMs <= 1 {
+		return 0
+	}
+	if fps <= 0 {
+		fps = 30
+	}
+	frameDurationMs := int64(math.Ceil(1000 / fps))
+	lastFrameMs := durationMs - frameDurationMs
+	if lastFrameMs < 0 {
+		lastFrameMs = 0
+	}
+	return min(timestamp, lastFrameMs)
+}
+
 func normalizeInspectionTimestamps(req FrameInspectionRequest, durationMs int64) ([]int64, error) {
-	if durationMs <= 0 || durationMs > MaxInspectionDurationMs { return nil, fmt.Errorf("exact revision duration must be between 1ms and %dms for bounded frame inspection", MaxInspectionDurationMs) }
-	if len(req.TimestampsMs) == 0 && len(req.Ranges) == 0 { return nil, errors.New("inspect frames requires timestamps_ms and/or ranges") }
-	if len(req.TimestampsMs)+len(req.Ranges) > MaxInspectionFrames { return nil, fmt.Errorf("inspection request exceeds maximum item count %d", MaxInspectionFrames) }
+	if durationMs <= 0 || durationMs > MaxInspectionDurationMs {
+		return nil, fmt.Errorf("exact revision duration must be between 1ms and %dms for bounded frame inspection", MaxInspectionDurationMs)
+	}
+	if len(req.TimestampsMs) == 0 && len(req.Ranges) == 0 {
+		return nil, errors.New("inspect frames requires timestamps_ms and/or ranges")
+	}
+	if len(req.TimestampsMs)+len(req.Ranges) > MaxInspectionFrames {
+		return nil, fmt.Errorf("inspection request exceeds maximum item count %d", MaxInspectionFrames)
+	}
 	values := append([]int64(nil), req.TimestampsMs...)
 	for index, item := range req.Ranges {
-		if item.Count <= 0 || item.Count > MaxInspectionFrames { return nil, fmt.Errorf("range %d count must be between 1 and %d", index, MaxInspectionFrames) }
-		if item.StartMs < 0 || item.EndMs <= item.StartMs || item.EndMs > durationMs || item.EndMs-item.StartMs > MaxInspectionRangeMs { return nil, fmt.Errorf("range %d must be within the revision and no longer than %dms", index, MaxInspectionRangeMs) }
-		if item.Count == 1 { values = append(values, item.StartMs); continue }
-		span := item.EndMs-item.StartMs
-		for n := 0; n < item.Count; n++ { values = append(values, item.StartMs+(span*int64(n))/int64(item.Count-1)) }
+		if item.Count <= 0 || item.Count > MaxInspectionFrames {
+			return nil, fmt.Errorf("range %d count must be between 1 and %d", index, MaxInspectionFrames)
+		}
+		if item.StartMs < 0 || item.EndMs <= item.StartMs || item.EndMs > durationMs || item.EndMs-item.StartMs > MaxInspectionRangeMs {
+			return nil, fmt.Errorf("range %d must be within the revision and no longer than %dms", index, MaxInspectionRangeMs)
+		}
+		if item.Count == 1 {
+			values = append(values, item.StartMs)
+			continue
+		}
+		span := item.EndMs - item.StartMs
+		for n := 0; n < item.Count; n++ {
+			values = append(values, item.StartMs+(span*int64(n))/int64(item.Count-1))
+		}
 	}
-	if len(values) == 0 || len(values) > MaxInspectionFrames { return nil, fmt.Errorf("inspection resolves to between 1 and %d frames", MaxInspectionFrames) }
+	if len(values) == 0 || len(values) > MaxInspectionFrames {
+		return nil, fmt.Errorf("inspection resolves to between 1 and %d frames", MaxInspectionFrames)
+	}
 	sort.Slice(values, func(i, j int) bool { return values[i] < values[j] })
 	out := values[:0]
 	for _, value := range values {
-		if value < 0 || value >= durationMs { return nil, fmt.Errorf("timestamp %dms is outside exact revision duration %dms", value, durationMs) }
-		if len(out) == 0 || out[len(out)-1] != value { out = append(out, value) }
+		if value < 0 || value >= durationMs {
+			return nil, fmt.Errorf("timestamp %dms is outside exact revision duration %dms", value, durationMs)
+		}
+		if len(out) == 0 || out[len(out)-1] != value {
+			out = append(out, value)
+		}
 	}
-	if out[len(out)-1]-out[0] > MaxInspectionSpanMs { return nil, fmt.Errorf("inspection timestamp span exceeds maximum %dms", MaxInspectionSpanMs) }
+	if out[len(out)-1]-out[0] > MaxInspectionSpanMs {
+		return nil, fmt.Errorf("inspection timestamp span exceeds maximum %dms", MaxInspectionSpanMs)
+	}
 	return out, nil
 }
 

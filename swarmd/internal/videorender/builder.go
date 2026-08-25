@@ -114,6 +114,7 @@ func BuildFFmpegCommandLine(timeline pebblestore.VideoProjectTimeline, inputs []
 
 	clipDurations := make([]int64, len(inputs))
 	var totalDurationMs int64
+	var tailPadMs int64
 	layeredTimeline := false
 	for i, in := range inputs {
 		dur := in.EndMs - in.StartMs
@@ -174,7 +175,10 @@ func BuildFFmpegCommandLine(timeline pebblestore.VideoProjectTimeline, inputs []
 		}
 	} else {
 		totalDurationMs -= overlapMs
-		if timeline.TotalDurationMs > 0 && timeline.TotalDurationMs < totalDurationMs {
+		if timeline.TotalDurationMs > 0 {
+			if timeline.TotalDurationMs > totalDurationMs {
+				tailPadMs = timeline.TotalDurationMs - totalDurationMs
+			}
 			totalDurationMs = timeline.TotalDurationMs
 		}
 	}
@@ -322,6 +326,20 @@ func BuildFFmpegCommandLine(timeline pebblestore.VideoProjectTimeline, inputs []
 		plan.AudioMap = audioOut
 	}
 
+	if !layeredTimeline && timeline.TotalDurationMs > 0 {
+		videoDurationOut := "[v_timeline_duration]"
+		videoDurationFilters := make([]string, 0, 3)
+		if tailPadMs > 0 {
+			videoDurationFilters = append(videoDurationFilters, fmt.Sprintf("tpad=stop_mode=clone:stop_duration=%.3f", float64(tailPadMs)/1000))
+		}
+		videoDurationFilters = append(videoDurationFilters,
+			fmt.Sprintf("trim=duration=%.3f", float64(totalDurationMs)/1000),
+			"setpts=PTS-STARTPTS",
+		)
+		filterParts = append(filterParts, fmt.Sprintf("%s%s%s", plan.VideoMap, strings.Join(videoDurationFilters, ","), videoDurationOut))
+		plan.VideoMap = videoDurationOut
+	}
+
 	if layeredTimeline {
 		for inputIndex, input := range inputs {
 			if input.Track == 0 && !input.IsAudio {
@@ -364,7 +382,12 @@ func BuildFFmpegCommandLine(timeline pebblestore.VideoProjectTimeline, inputs []
 		}
 	}
 	masterAudioOut := "[a_master]"
-	filterParts = append(filterParts, fmt.Sprintf("%svolume=%.2f,atrim=duration=%.3f%s", plan.AudioMap, masterVolume, float64(totalDurationMs)/1000, masterAudioOut))
+	masterAudioFilters := []string{fmt.Sprintf("volume=%.2f", masterVolume)}
+	if tailPadMs > 0 {
+		masterAudioFilters = append(masterAudioFilters, fmt.Sprintf("apad=pad_dur=%.3f", float64(tailPadMs)/1000))
+	}
+	masterAudioFilters = append(masterAudioFilters, fmt.Sprintf("atrim=duration=%.3f", float64(totalDurationMs)/1000))
+	filterParts = append(filterParts, fmt.Sprintf("%s%s%s", plan.AudioMap, strings.Join(masterAudioFilters, ","), masterAudioOut))
 	plan.AudioMap = masterAudioOut
 
 	plan.FilterComplex = strings.Join(filterParts, ";")

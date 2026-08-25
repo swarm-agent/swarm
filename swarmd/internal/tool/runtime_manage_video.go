@@ -181,10 +181,10 @@ func manageVideoEditOperationsSchema() map[string]any {
 		"items": map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"id":            map[string]any{"type": "string"},
-				"type":          map[string]any{"type": "string", "enum": []string{pebblestore.VideoEditOperationAddClip, pebblestore.VideoEditOperationUpdateClip, pebblestore.VideoEditOperationReplaceClip, pebblestore.VideoEditOperationRemoveClip, pebblestore.VideoEditOperationAddTransition, pebblestore.VideoEditOperationUpdateTransition, pebblestore.VideoEditOperationRemoveTransition, "trim_clip", "move_clip", "set_volume", "set_mute", "set_captions", "replace_source"}},
-				"clip_id":       map[string]any{"type": "string", "description": "Existing clip ID required by clip edits, replace_clip, and remove_clip."},
-				"clip":          manageVideoTimelineClipSchema(),
+				"id":              map[string]any{"type": "string"},
+				"type":            map[string]any{"type": "string", "enum": []string{pebblestore.VideoEditOperationAddClip, pebblestore.VideoEditOperationUpdateClip, pebblestore.VideoEditOperationReplaceClip, pebblestore.VideoEditOperationRemoveClip, pebblestore.VideoEditOperationAddTransition, pebblestore.VideoEditOperationUpdateTransition, pebblestore.VideoEditOperationRemoveTransition, "trim_clip", "move_clip", "set_volume", "set_mute", "set_captions", "replace_source"}},
+				"clip_id":         map[string]any{"type": "string", "description": "Existing clip ID required by clip edits, replace_clip, and remove_clip."},
+				"clip":            manageVideoTimelineClipSchema(),
 				"source_start_ms": map[string]any{"type": "integer", "minimum": 0}, "source_end_ms": map[string]any{"type": "integer", "minimum": 0},
 				"timeline_start_ms": map[string]any{"type": "integer", "minimum": 0}, "volume": map[string]any{"type": "number", "minimum": 0, "maximum": 2}, "muted": map[string]any{"type": "boolean"},
 				"captions": manageVideoCaptionsSchema(), "source_kind": map[string]any{"type": "string"}, "source_ref": map[string]any{"type": "string"},
@@ -206,8 +206,8 @@ func manageVideoTimelineClipSchema() map[string]any {
 		"properties": map[string]any{
 			"id": map[string]any{"type": "string"}, "name": map[string]any{"type": "string"},
 			"track": map[string]any{"type": "integer", "minimum": 0}, "sequence": map[string]any{"type": "integer", "minimum": 0}, "layer": map[string]any{"type": "integer", "minimum": 0},
-			"source_kind": map[string]any{"type": "string", "enum": []string{pebblestore.VideoClipSourceKindSourceVideo, pebblestore.VideoClipSourceKindSourceAudio, pebblestore.VideoClipSourceKindManagedArtifact, pebblestore.VideoClipSourceKindColor, pebblestore.VideoClipSourceKindText}},
-			"source_ref":  map[string]any{"type": "string"},
+			"source_kind":  map[string]any{"type": "string", "enum": []string{pebblestore.VideoClipSourceKindSourceVideo, pebblestore.VideoClipSourceKindSourceAudio, pebblestore.VideoClipSourceKindManagedArtifact, pebblestore.VideoClipSourceKindColor, pebblestore.VideoClipSourceKindText}},
+			"source_ref":   map[string]any{"type": "string"},
 			"audio_source": manageVideoAudioSourceSchema(),
 			"artifact_ref": manageVideoArtifactReferenceSchema(), "design_input": manageVideoDesignInputSchema(), "media_type": map[string]any{"type": "string"},
 			"source_start_ms": map[string]any{"type": "integer", "minimum": 0}, "source_end_ms": map[string]any{"type": "integer", "minimum": 0},
@@ -314,43 +314,95 @@ func (r *Runtime) executeManageVideo(ctx context.Context, scope WorkspaceScope, 
 		response["allowed_actions"] = allowedActions
 		contextMetadata := session.Metadata
 		if run.MessageID != "" {
-			if current, found, readErr := r.sessions.GetV3MessageByID(scope.SessionID, run.MessageID); readErr != nil { return "", readErr } else if found && current.Role == "user" { contextMetadata = mergeManageVideoMetadata(session.Metadata, current.Metadata) }
+			if current, found, readErr := r.sessions.GetV3MessageByID(scope.SessionID, run.MessageID); readErr != nil {
+				return "", readErr
+			} else if found && current.Role == "user" {
+				contextMetadata = mergeManageVideoMetadata(session.Metadata, current.Metadata)
+			}
 		}
 		if projectSessionID != session.ID {
-			if parent, found, readErr := r.sessions.GetSession(projectSessionID); readErr != nil { return "", readErr } else if found { contextMetadata = mergeManageVideoMetadata(parent.Metadata, contextMetadata) }
+			if parent, found, readErr := r.sessions.GetSession(projectSessionID); readErr != nil {
+				return "", readErr
+			} else if found {
+				contextMetadata = mergeManageVideoMetadata(parent.Metadata, contextMetadata)
+			}
 		}
-		response["selected_project_id"] = strings.TrimSpace(asString(contextMetadata["video_project_id"]))
-		response["selected_revision_id"] = strings.TrimSpace(asString(contextMetadata["video_revision_id"]))
+		selectedProjectID := strings.TrimSpace(asString(contextMetadata["video_project_id"]))
+		selectedRevisionID := strings.TrimSpace(asString(contextMetadata["video_revision_id"]))
+		response["selected_project_id"] = selectedProjectID
+		response["selected_revision_id"] = selectedRevisionID
 		response["selection"] = manageVideoSelectionContext(contextMetadata)
-		projectID := strings.TrimSpace(asString(contextMetadata["video_project_id"]))
-		if projectID == "" && studio && r.videoProjects != nil {
-			if projects, listErr := r.videoProjects.ListProjects(scope.Principal, projectSessionID, 2); listErr == nil && len(projects) == 1 {
+		projectID := selectedProjectID
+		if projectID == "" && studio {
+			if r.videoProjects == nil {
+				return "", errors.New("inspect_context requires configured video project authority")
+			}
+			projects, listErr := r.videoProjects.ListProjects(scope.Principal, projectSessionID, 2)
+			if listErr != nil {
+				return "", listErr
+			}
+			if len(projects) == 1 {
 				projectID = projects[0].ID
 			}
 		}
-		if projectID != "" && r.videoProjects != nil {
-			project, found, readErr := r.videoProjects.GetProject(scope.Principal, projectSessionID, projectID)
-			if readErr != nil { return "", readErr }
-			if found {
-				response["project"] = safeVideoProject(project)
-				response["project_id"] = project.ID
-				if project.CurrentRevisionID != "" {
-					rev, revisionFound, revisionErr := r.videoProjects.GetRevision(scope.Principal, projectSessionID, project.ID, project.CurrentRevisionID)
-					if revisionErr != nil { return "", revisionErr }
-					if !revisionFound { return "", fmt.Errorf("current video revision %q not found", project.CurrentRevisionID) }
-					response["current_revision"] = safeVideoProjectRevision(&rev)
-				}
-				confirmedID := project.ConfirmedRevisionID; if confirmedID == "" { confirmedID = project.CurrentRevisionID }
-				if confirmedID != "" {
-					rev, revisionFound, revisionErr := r.videoProjects.GetRevision(scope.Principal, projectSessionID, project.ID, confirmedID)
-					if revisionErr != nil { return "", revisionErr }
-					if !revisionFound { return "", fmt.Errorf("confirmed video revision %q not found", confirmedID) }
-					response["confirmed_revision"] = safeVideoProjectRevision(&rev)
-				}
-				proposals, proposalErr := r.videoProjects.ListEditProposals(scope.Principal, projectSessionID, project.ID, 50)
-				if proposalErr != nil { return "", proposalErr }
-				pending := make([]map[string]any, 0); for _, proposal := range proposals { if proposal.Status == pebblestore.VideoEditProposalStatusPending { pending = append(pending, safeVideoEditProposal(proposal)) } }; response["pending_proposals"] = pending
+		if projectID != "" {
+			if r.videoProjects == nil {
+				return "", errors.New("inspect_context requires configured video project authority")
 			}
+			project, found, readErr := r.videoProjects.GetProject(scope.Principal, projectSessionID, projectID)
+			if readErr != nil {
+				return "", readErr
+			}
+			if !found {
+				return "", fmt.Errorf("selected video project %q not found", projectID)
+			}
+			response["project"] = safeVideoProject(project)
+			response["project_id"] = project.ID
+			if selectedRevisionID != "" {
+				rev, revisionFound, revisionErr := r.videoProjects.GetRevision(scope.Principal, projectSessionID, project.ID, selectedRevisionID)
+				if revisionErr != nil {
+					return "", revisionErr
+				}
+				if !revisionFound {
+					return "", fmt.Errorf("selected video revision %q not found", selectedRevisionID)
+				}
+				response["selected_revision"] = safeVideoProjectRevision(&rev)
+			}
+			if project.CurrentRevisionID != "" {
+				rev, revisionFound, revisionErr := r.videoProjects.GetRevision(scope.Principal, projectSessionID, project.ID, project.CurrentRevisionID)
+				if revisionErr != nil {
+					return "", revisionErr
+				}
+				if !revisionFound {
+					return "", fmt.Errorf("current video revision %q not found", project.CurrentRevisionID)
+				}
+				response["current_revision"] = safeVideoProjectRevision(&rev)
+			}
+			confirmedID := project.ConfirmedRevisionID
+			if confirmedID == "" {
+				confirmedID = project.CurrentRevisionID
+			}
+			if confirmedID != "" {
+				rev, revisionFound, revisionErr := r.videoProjects.GetRevision(scope.Principal, projectSessionID, project.ID, confirmedID)
+				if revisionErr != nil {
+					return "", revisionErr
+				}
+				if !revisionFound {
+					return "", fmt.Errorf("confirmed video revision %q not found", confirmedID)
+				}
+				response["confirmed_revision"] = safeVideoProjectRevision(&rev)
+			}
+			proposals, proposalErr := r.videoProjects.ListEditProposals(scope.Principal, projectSessionID, project.ID, 50)
+			if proposalErr != nil {
+				return "", proposalErr
+			}
+			pending := make([]map[string]any, 0)
+			for _, proposal := range proposals {
+				if proposal.Status == pebblestore.VideoEditProposalStatusPending {
+					pending = append(pending, safeVideoEditProposal(proposal))
+				}
+			}
+			response["pending_proposals"] = pending
 		}
 	case "inspect_frames":
 		if r.videoProjects == nil || r.videoRender == nil {
@@ -361,13 +413,21 @@ func (r *Runtime) executeManageVideo(ctx context.Context, scope WorkspaceScope, 
 			return "", errors.New("inspect_frames requires exact project_id and revision_id")
 		}
 		timestamps, parseErr := parseFrameTimestamps(args["timestamps_ms"])
-		if parseErr != nil { return "", parseErr }
+		if parseErr != nil {
+			return "", parseErr
+		}
 		ranges, parseErr := parseFrameRanges(args["ranges"])
-		if parseErr != nil { return "", parseErr }
+		if parseErr != nil {
+			return "", parseErr
+		}
 		result, inspectErr := r.videoRender.InspectFrames(ctx, scope.Principal, videorender.FrameInspectionRequest{SessionID: projectSessionID, ArtifactSessionID: scope.SessionID, ProjectID: projectID, RevisionID: revisionID, WorkspacePath: manageVideoWorkspacePath(session), TimestampsMs: timestamps, Ranges: ranges, MaxWidth: asInt(args["max_width"], 0), RequestID: run.RunID})
-		if inspectErr != nil { return "", inspectErr }
+		if inspectErr != nil {
+			return "", inspectErr
+		}
 		frames := make([]map[string]any, 0, len(result.Frames))
-		for _, frame := range result.Frames { frames = append(frames, map[string]any{"timestamp_ms": frame.TimestampMs, "artifact": frame.Artifact}) }
+		for _, frame := range result.Frames {
+			frames = append(frames, map[string]any{"timestamp_ms": frame.TimestampMs, "artifact": frame.Artifact})
+		}
 		response["project_id"], response["revision_id"], response["revision_event_seq"] = result.ProjectID, result.RevisionID, result.RevisionEventSeq
 		response["duration_ms"], response["width"], response["height"] = result.DurationMs, result.Width, result.Height
 		response["frames"], response["count"] = frames, len(frames)
@@ -832,8 +892,12 @@ func (r *Runtime) executeManageVideo(ctx context.Context, scope WorkspaceScope, 
 		var operations []pebblestore.VideoEditOperation
 		if plan == nil {
 			baseRevision, found, readErr := r.videoProjects.GetRevision(scope.Principal, projectSessionID, projectID, baseRevisionID)
-			if readErr != nil { return "", readErr }
-			if !found { return "", fmt.Errorf("video revision %q not found", baseRevisionID) }
+			if readErr != nil {
+				return "", readErr
+			}
+			if !found {
+				return "", fmt.Errorf("video revision %q not found", baseRevisionID)
+			}
 			operations, err = parseVideoEditOperations(args["operations"], baseRevision.Timeline)
 			if err != nil {
 				return "", err
@@ -1275,60 +1339,120 @@ func parseVideoPlanProposal(raw any) (*pebblestore.VideoPlanProposal, error) {
 
 type manageVideoEditOperationInput struct {
 	ID, Type, ClipID, SourceKind, SourceRef, MediaType string
-	Clip *pebblestore.VideoTimelineClip
-	TransitionID string
-	Transition *pebblestore.VideoTimelineTransition
-	SourceStartMs, SourceEndMs, TimelineStartMs *int64
-	Volume *float64
-	Muted *bool
-	Captions *[]pebblestore.VideoTextOverlay
-	AudioSource *pebblestore.AudioSourceReference
-	ArtifactRef *pebblestore.SessionArtifactSelectionReference
-	DesignInput *pebblestore.VideoDesignInputReference
+	Clip                                               *pebblestore.VideoTimelineClip
+	TransitionID                                       string
+	Transition                                         *pebblestore.VideoTimelineTransition
+	SourceStartMs, SourceEndMs, TimelineStartMs        *int64
+	Volume                                             *float64
+	Muted                                              *bool
+	Captions                                           *[]pebblestore.VideoTextOverlay
+	AudioSource                                        *pebblestore.AudioSourceReference
+	ArtifactRef                                        *pebblestore.SessionArtifactSelectionReference
+	DesignInput                                        *pebblestore.VideoDesignInputReference
 }
 
 func (input *manageVideoEditOperationInput) UnmarshalJSON(data []byte) error {
 	type wire struct {
-		ID string `json:"id"`; Type string `json:"type"`; ClipID string `json:"clip_id"`; Clip *pebblestore.VideoTimelineClip `json:"clip"`
-		TransitionID string `json:"transition_id"`; Transition *pebblestore.VideoTimelineTransition `json:"transition"`
-		SourceStartMs *int64 `json:"source_start_ms"`; SourceEndMs *int64 `json:"source_end_ms"`; TimelineStartMs *int64 `json:"timeline_start_ms"`
-		Volume *float64 `json:"volume"`; Muted *bool `json:"muted"`; Captions *[]pebblestore.VideoTextOverlay `json:"captions"`
-		SourceKind string `json:"source_kind"`; SourceRef string `json:"source_ref"`; MediaType string `json:"media_type"`
-		AudioSource *pebblestore.AudioSourceReference `json:"audio_source"`; ArtifactRef *pebblestore.SessionArtifactSelectionReference `json:"artifact_ref"`; DesignInput *pebblestore.VideoDesignInputReference `json:"design_input"`
+		ID              string                                         `json:"id"`
+		Type            string                                         `json:"type"`
+		ClipID          string                                         `json:"clip_id"`
+		Clip            *pebblestore.VideoTimelineClip                 `json:"clip"`
+		TransitionID    string                                         `json:"transition_id"`
+		Transition      *pebblestore.VideoTimelineTransition           `json:"transition"`
+		SourceStartMs   *int64                                         `json:"source_start_ms"`
+		SourceEndMs     *int64                                         `json:"source_end_ms"`
+		TimelineStartMs *int64                                         `json:"timeline_start_ms"`
+		Volume          *float64                                       `json:"volume"`
+		Muted           *bool                                          `json:"muted"`
+		Captions        *[]pebblestore.VideoTextOverlay                `json:"captions"`
+		SourceKind      string                                         `json:"source_kind"`
+		SourceRef       string                                         `json:"source_ref"`
+		MediaType       string                                         `json:"media_type"`
+		AudioSource     *pebblestore.AudioSourceReference              `json:"audio_source"`
+		ArtifactRef     *pebblestore.SessionArtifactSelectionReference `json:"artifact_ref"`
+		DesignInput     *pebblestore.VideoDesignInputReference         `json:"design_input"`
 	}
 	var value wire
-	decoder := json.NewDecoder(strings.NewReader(string(data))); decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&value); err != nil { return err }
-	*input = manageVideoEditOperationInput{ID:value.ID, Type:value.Type, ClipID:value.ClipID, Clip:value.Clip, TransitionID:value.TransitionID, Transition:value.Transition, SourceStartMs:value.SourceStartMs, SourceEndMs:value.SourceEndMs, TimelineStartMs:value.TimelineStartMs, Volume:value.Volume, Muted:value.Muted, Captions:value.Captions, SourceKind:value.SourceKind, SourceRef:value.SourceRef, MediaType:value.MediaType, AudioSource:value.AudioSource, ArtifactRef:value.ArtifactRef, DesignInput:value.DesignInput}
+	decoder := json.NewDecoder(strings.NewReader(string(data)))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&value); err != nil {
+		return err
+	}
+	*input = manageVideoEditOperationInput{ID: value.ID, Type: value.Type, ClipID: value.ClipID, Clip: value.Clip, TransitionID: value.TransitionID, Transition: value.Transition, SourceStartMs: value.SourceStartMs, SourceEndMs: value.SourceEndMs, TimelineStartMs: value.TimelineStartMs, Volume: value.Volume, Muted: value.Muted, Captions: value.Captions, SourceKind: value.SourceKind, SourceRef: value.SourceRef, MediaType: value.MediaType, AudioSource: value.AudioSource, ArtifactRef: value.ArtifactRef, DesignInput: value.DesignInput}
 	return nil
 }
 
 func parseVideoEditOperations(raw any, timeline pebblestore.VideoProjectTimeline) ([]pebblestore.VideoEditOperation, error) {
-	if raw == nil { return nil, errors.New("create_edit_proposal requires operations") }
-	encoded, err := json.Marshal(raw); if err != nil { return nil, fmt.Errorf("marshal operations: %w", err) }
-	if text, ok := raw.(string); ok { encoded = []byte(strings.TrimSpace(text)) }
+	if raw == nil {
+		return nil, errors.New("create_edit_proposal requires operations")
+	}
+	encoded, err := json.Marshal(raw)
+	if err != nil {
+		return nil, fmt.Errorf("marshal operations: %w", err)
+	}
+	if text, ok := raw.(string); ok {
+		encoded = []byte(strings.TrimSpace(text))
+	}
 	var inputs []manageVideoEditOperationInput
-	decoder := json.NewDecoder(strings.NewReader(string(encoded))); decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&inputs); err != nil { return nil, fmt.Errorf("invalid operations payload: %w", err) }
-	if len(inputs) == 0 || len(inputs) > pebblestore.MaxVideoEditProposalOperations { return nil, errors.New("operations must be non-empty and bounded") }
-	clips := make(map[string]pebblestore.VideoTimelineClip, len(timeline.Clips)); for _, clip := range timeline.Clips { clips[clip.ID] = clip }
+	decoder := json.NewDecoder(strings.NewReader(string(encoded)))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&inputs); err != nil {
+		return nil, fmt.Errorf("invalid operations payload: %w", err)
+	}
+	if len(inputs) == 0 || len(inputs) > pebblestore.MaxVideoEditProposalOperations {
+		return nil, errors.New("operations must be non-empty and bounded")
+	}
+	clips := make(map[string]pebblestore.VideoTimelineClip, len(timeline.Clips))
+	for _, clip := range timeline.Clips {
+		clips[clip.ID] = clip
+	}
 	operations := make([]pebblestore.VideoEditOperation, 0, len(inputs))
 	for _, input := range inputs {
 		op := pebblestore.VideoEditOperation{ID: input.ID, Type: input.Type, ClipID: input.ClipID, Clip: input.Clip, TransitionID: input.TransitionID, Transition: input.Transition}
 		switch input.Type {
 		case "trim_clip", "move_clip", "set_volume", "set_mute", "set_captions", "replace_source":
-			clip, ok := clips[input.ClipID]; if !ok { return nil, fmt.Errorf("operation %q references unknown clip %q", input.ID, input.ClipID) }
+			clip, ok := clips[input.ClipID]
+			if !ok {
+				return nil, fmt.Errorf("operation %q references unknown clip %q", input.ID, input.ClipID)
+			}
 			switch input.Type {
 			case "trim_clip":
-				if input.SourceStartMs != nil { clip.SourceStartMs = *input.SourceStartMs }; if input.SourceEndMs != nil { clip.SourceEndMs = *input.SourceEndMs }
-				if clip.SourceEndMs <= clip.SourceStartMs { return nil, fmt.Errorf("trim_clip %q requires source_end_ms after source_start_ms", input.ID) }
-				clip.DurationMs = clip.SourceEndMs-clip.SourceStartMs; clip.TimelineEndMs = clip.TimelineStartMs+clip.DurationMs
-			case "move_clip": if input.TimelineStartMs == nil { return nil, fmt.Errorf("move_clip %q requires timeline_start_ms", input.ID) }; clip.TimelineStartMs=*input.TimelineStartMs; clip.TimelineEndMs=clip.TimelineStartMs+clip.DurationMs
-			case "set_volume": if input.Volume == nil { return nil, fmt.Errorf("set_volume %q requires volume", input.ID) }; clip.Volume=*input.Volume
-			case "set_mute": if input.Muted == nil { return nil, fmt.Errorf("set_mute %q requires muted", input.ID) }; clip.Muted=*input.Muted
-			case "set_captions": if input.Captions == nil { return nil, fmt.Errorf("set_captions %q requires captions", input.ID) }; clip.Captions=*input.Captions
+				if input.SourceStartMs != nil {
+					clip.SourceStartMs = *input.SourceStartMs
+				}
+				if input.SourceEndMs != nil {
+					clip.SourceEndMs = *input.SourceEndMs
+				}
+				if clip.SourceEndMs <= clip.SourceStartMs {
+					return nil, fmt.Errorf("trim_clip %q requires source_end_ms after source_start_ms", input.ID)
+				}
+				clip.DurationMs = clip.SourceEndMs - clip.SourceStartMs
+				clip.TimelineEndMs = clip.TimelineStartMs + clip.DurationMs
+			case "move_clip":
+				if input.TimelineStartMs == nil {
+					return nil, fmt.Errorf("move_clip %q requires timeline_start_ms", input.ID)
+				}
+				clip.TimelineStartMs = *input.TimelineStartMs
+				clip.TimelineEndMs = clip.TimelineStartMs + clip.DurationMs
+			case "set_volume":
+				if input.Volume == nil {
+					return nil, fmt.Errorf("set_volume %q requires volume", input.ID)
+				}
+				clip.Volume = *input.Volume
+			case "set_mute":
+				if input.Muted == nil {
+					return nil, fmt.Errorf("set_mute %q requires muted", input.ID)
+				}
+				clip.Muted = *input.Muted
+			case "set_captions":
+				if input.Captions == nil {
+					return nil, fmt.Errorf("set_captions %q requires captions", input.ID)
+				}
+				clip.Captions = *input.Captions
 			case "replace_source":
-				if strings.TrimSpace(input.SourceKind)=="" { return nil, fmt.Errorf("replace_source %q requires source_kind", input.ID) }
+				if strings.TrimSpace(input.SourceKind) == "" {
+					return nil, fmt.Errorf("replace_source %q requires source_kind", input.ID)
+				}
 				clip.SourceKind, clip.SourceRef, clip.MediaType, clip.AudioSource, clip.ArtifactRef, clip.DesignInput = input.SourceKind, input.SourceRef, input.MediaType, input.AudioSource, input.ArtifactRef, input.DesignInput
 			}
 			op.Type, op.Clip = pebblestore.VideoEditOperationUpdateClip, &clip
@@ -1339,26 +1463,52 @@ func parseVideoEditOperations(raw any, timeline pebblestore.VideoProjectTimeline
 }
 
 func parseFrameTimestamps(raw any) ([]int64, error) {
-	if raw == nil { return nil, nil }
+	if raw == nil {
+		return nil, nil
+	}
 	encoded, err := json.Marshal(raw)
-	if text, ok := raw.(string); ok { encoded = []byte(strings.TrimSpace(text)) }
-	if err != nil { return nil, fmt.Errorf("marshal timestamps_ms: %w", err) }
+	if text, ok := raw.(string); ok {
+		encoded = []byte(strings.TrimSpace(text))
+	}
+	if err != nil {
+		return nil, fmt.Errorf("marshal timestamps_ms: %w", err)
+	}
 	var values []int64
-	if err := json.Unmarshal(encoded, &values); err != nil { return nil, fmt.Errorf("invalid timestamps_ms payload: %w", err) }
-	if len(values) > videorender.MaxInspectionFrames { return nil, errors.New("timestamps_ms exceeds bounded frame count") }
+	if err := json.Unmarshal(encoded, &values); err != nil {
+		return nil, fmt.Errorf("invalid timestamps_ms payload: %w", err)
+	}
+	if len(values) > videorender.MaxInspectionFrames {
+		return nil, errors.New("timestamps_ms exceeds bounded frame count")
+	}
 	return values, nil
 }
 
 func parseFrameRanges(raw any) ([]videorender.FrameInspectionRange, error) {
-	if raw == nil { return nil, nil }
+	if raw == nil {
+		return nil, nil
+	}
 	encoded, err := json.Marshal(raw)
-	if text, ok := raw.(string); ok { encoded = []byte(strings.TrimSpace(text)) }
-	if err != nil { return nil, fmt.Errorf("marshal ranges: %w", err) }
-	var values []struct { StartMs int64 `json:"start_ms"`; EndMs int64 `json:"end_ms"`; Count int `json:"count"` }
-	if err := json.Unmarshal(encoded, &values); err != nil { return nil, fmt.Errorf("invalid ranges payload: %w", err) }
-	if len(values) > videorender.MaxInspectionFrames { return nil, errors.New("ranges exceeds bounded frame count") }
+	if text, ok := raw.(string); ok {
+		encoded = []byte(strings.TrimSpace(text))
+	}
+	if err != nil {
+		return nil, fmt.Errorf("marshal ranges: %w", err)
+	}
+	var values []struct {
+		StartMs int64 `json:"start_ms"`
+		EndMs   int64 `json:"end_ms"`
+		Count   int   `json:"count"`
+	}
+	if err := json.Unmarshal(encoded, &values); err != nil {
+		return nil, fmt.Errorf("invalid ranges payload: %w", err)
+	}
+	if len(values) > videorender.MaxInspectionFrames {
+		return nil, errors.New("ranges exceeds bounded frame count")
+	}
 	result := make([]videorender.FrameInspectionRange, 0, len(values))
-	for _, value := range values { result = append(result, videorender.FrameInspectionRange{StartMs: value.StartMs, EndMs: value.EndMs, Count: value.Count}) }
+	for _, value := range values {
+		result = append(result, videorender.FrameInspectionRange{StartMs: value.StartMs, EndMs: value.EndMs, Count: value.Count})
+	}
 	return result, nil
 }
 
@@ -1565,33 +1715,75 @@ func nearestManageVideoActions(requested string, limit int) []string {
 }
 
 func nearestManageVideoActionsFrom(requested string, actions []string, limit int) []string {
-	type candidate struct { name string; distance int }
+	type candidate struct {
+		name     string
+		distance int
+	}
 	items := make([]candidate, 0, len(actions))
-	for _, action := range actions { items = append(items, candidate{action, editDistance(requested, action)}) }
-	for i := 0; i < len(items); i++ { for j := i+1; j < len(items); j++ { if items[j].distance < items[i].distance || (items[j].distance == items[i].distance && items[j].name < items[i].name) { items[i], items[j] = items[j], items[i] } } }
-	if limit <= 0 || limit > len(items) { limit = len(items) }
-	out := make([]string, limit); for i := range out { out[i] = items[i].name }; return out
+	for _, action := range actions {
+		items = append(items, candidate{action, editDistance(requested, action)})
+	}
+	for i := 0; i < len(items); i++ {
+		for j := i + 1; j < len(items); j++ {
+			if items[j].distance < items[i].distance || (items[j].distance == items[i].distance && items[j].name < items[i].name) {
+				items[i], items[j] = items[j], items[i]
+			}
+		}
+	}
+	if limit <= 0 || limit > len(items) {
+		limit = len(items)
+	}
+	out := make([]string, limit)
+	for i := range out {
+		out[i] = items[i].name
+	}
+	return out
 }
 
 func editDistance(left, right string) int {
-	previous := make([]int, len(right)+1); for j := range previous { previous[j] = j }
-	for i, l := range left { current := make([]int, len(right)+1); current[0] = i+1; j := 0; for _, r := range right { j++; cost := 0; if l != r { cost = 1 }; current[j] = minInt(current[j-1]+1, previous[j]+1, previous[j-1]+cost) }; previous = current }
+	previous := make([]int, len(right)+1)
+	for j := range previous {
+		previous[j] = j
+	}
+	for i, l := range left {
+		current := make([]int, len(right)+1)
+		current[0] = i + 1
+		j := 0
+		for _, r := range right {
+			j++
+			cost := 0
+			if l != r {
+				cost = 1
+			}
+			current[j] = minInt(minInt(current[j-1]+1, previous[j]+1), previous[j-1]+cost)
+		}
+		previous = current
+	}
 	return previous[len(right)]
 }
 
-func minInt(values ...int) int { result := values[0]; for _, value := range values[1:] { if value < result { result = value } }; return result }
-
 func mergeManageVideoMetadata(base, override map[string]any) map[string]any {
-	merged := make(map[string]any, len(base)+len(override)); for key, value := range base { merged[key] = value }; for key, value := range override { merged[key] = value }; return merged
+	merged := make(map[string]any, len(base)+len(override))
+	for key, value := range base {
+		merged[key] = value
+	}
+	for key, value := range override {
+		merged[key] = value
+	}
+	return merged
 }
 
 func manageVideoSelectionContext(metadata map[string]any) map[string]any {
 	selection := map[string]any{}
 	for _, pair := range [][2]string{{"anchor_clip_id", "video_anchor_clip_id"}, {"kind", "video_selection_kind"}, {"transition_id", "video_transition_id"}, {"transition_kind", "video_transition_kind"}, {"transition_from_clip_id", "video_transition_from_clip_id"}, {"transition_to_clip_id", "video_transition_to_clip_id"}} {
-		if value := strings.TrimSpace(asString(metadata[pair[1]])); value != "" { selection[pair[0]] = value }
+		if value := strings.TrimSpace(asString(metadata[pair[1]])); value != "" {
+			selection[pair[0]] = value
+		}
 	}
 	for _, pair := range [][2]string{{"playhead_ms", "video_playhead_ms"}, {"transition_duration_ms", "video_transition_duration_ms"}} {
-		if _, ok := metadata[pair[1]]; ok { selection[pair[0]] = asInt(metadata[pair[1]], 0) }
+		if _, ok := metadata[pair[1]]; ok {
+			selection[pair[0]] = asInt(metadata[pair[1]], 0)
+		}
 	}
 	return selection
 }
