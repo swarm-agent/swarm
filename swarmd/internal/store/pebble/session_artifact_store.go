@@ -2289,6 +2289,9 @@ func mergeTerminalArtifactVariant(current, incoming SessionArtifactVariant) Sess
 	if incoming.Presentation != (SessionArtifactPresentation{}) {
 		next.Presentation = incoming.Presentation
 	}
+	if incoming.Parts != nil {
+		next.Parts = append([]SessionArtifactPart(nil), incoming.Parts...)
+	}
 	if incoming.Composition != nil {
 		composition := *incoming.Composition
 		composition.Parts = append([]SessionArtifactCompositionPart(nil), incoming.Composition.Parts...)
