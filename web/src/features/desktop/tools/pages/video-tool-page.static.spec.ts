@@ -78,6 +78,18 @@ test('Video Studio exposes only the implemented soundtrack contract and an expli
   assert.doesNotMatch(source, /Waveform|Fade in|Fade out|Loop soundtrack|Duck narration|Beat sync/)
 })
 
+test('Video Studio keeps sessions and standalone retained videos as separate navigation surfaces', async () => {
+  const source = await readFile(pageSourceUrl, 'utf8')
+  assert.match(source, /aria-label="Standalone video library"/)
+  assert.match(source, /placeholder="Filter videos or related sessions"/)
+  assert.match(source, /sessionsLabel="Video sessions"/)
+  assert.match(source, /fetchWorkspaceVideoCatalog\(selectedWorkspacePath\)/)
+  assert.match(source, /Start session from r/)
+  assert.match(source, /source_video_revision_id/)
+  assert.match(source, /source_archived/)
+  assert.doesNotMatch(source, /sessionsLabel="Videos"/)
+})
+
 test('Video Studio keeps a route-backed video selection and exposes session mode', async () => {
   const [source, routerSource, desktopSource] = await Promise.all([
     readFile(pageSourceUrl, 'utf8'),

@@ -1,7 +1,7 @@
 import { type CSSProperties, type PointerEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useMatchRoute, useNavigate } from '@tanstack/react-router'
-import { Download, Eye, EyeOff, Film, FolderOpen, ListVideo, Loader2, MessageSquare, Moon, Music, Pause, Play, RotateCcw, Sparkles, Trash2, Volume2, VolumeX } from 'lucide-react'
+import { Download, Eye, EyeOff, Film, FolderOpen, GitFork, Library, ListVideo, Loader2, MessageSquare, Moon, Music, Pause, Play, RotateCcw, Search, Sparkles, Trash2, Volume2, VolumeX } from 'lucide-react'
 import { Button } from '../../../../components/ui/button'
 import { Dialog, DialogBackdrop, DialogPanel } from '../../../../components/ui/dialog'
 import { ModalCloseButton } from '../../../../components/ui/modal-close-button'
@@ -123,6 +123,57 @@ export type VideoProjectDetailWire = {
   project: VideoProjectSnapshotWire
   current_revision?: VideoProjectRevisionSnapshotWire
   confirmed_revision?: VideoProjectRevisionSnapshotWire
+}
+
+export type WorkspaceVideoRelatedSessionWire = {
+  session_id: string
+  title: string
+  archived?: boolean
+}
+
+export type WorkspaceVideoCatalogItemWire = {
+  project: VideoProjectSnapshotWire
+  revisions: VideoProjectRevisionSnapshotWire[]
+  source_archived?: boolean
+  source_session_id: string
+  source_session_title?: string
+  related_sessions: WorkspaceVideoRelatedSessionWire[]
+}
+
+export function filterWorkspaceVideoCatalog(items: WorkspaceVideoCatalogItemWire[], query: string): WorkspaceVideoCatalogItemWire[] {
+  const normalized = query.trim().toLocaleLowerCase()
+  if (!normalized) return items
+  return items.filter((item) => [
+    item.project.title,
+    item.project.description,
+    item.source_session_title,
+    item.source_session_id,
+    ...item.related_sessions.map((session) => session.title),
+  ].some((value) => String(value ?? '').toLocaleLowerCase().includes(normalized)))
+}
+
+export function selectWorkspaceVideoRevision(item: WorkspaceVideoCatalogItemWire, revisionId?: string | null): VideoProjectRevisionSnapshotWire | null {
+  const exact = revisionId ? item.revisions.find((revision) => revision.id === revisionId) : undefined
+  return exact ?? item.revisions.find((revision) => revision.id === item.project.current_revision_id)
+    ?? [...item.revisions].sort((left, right) => right.revision_number - left.revision_number)[0]
+    ?? null
+}
+
+export function workspaceVideoContextMetadata(item: WorkspaceVideoCatalogItemWire, revisionId: string): Record<string, unknown> {
+  return {
+    experience: 'video_studio',
+    launch_source: 'video_library',
+    lineage_kind: 'video_revision_fork',
+    source_session_id: item.source_session_id,
+    source_video_project_id: item.project.id,
+    source_video_revision_id: revisionId,
+    video_context: {
+      source_session_id: item.source_session_id,
+      source_project_id: item.project.id,
+      source_revision_id: revisionId,
+      title: item.project.title,
+    },
+  }
 }
 
 export type CachedVideoMedia = { src: string; element: HTMLVideoElement }
@@ -666,6 +717,38 @@ async function fetchVideoThreads(workspacePath: string): Promise<VideoThreadReco
     .filter((thread): thread is VideoThreadRecord => Boolean(thread))
 }
 
+export async function fetchWorkspaceVideoCatalog(workspacePath: string): Promise<WorkspaceVideoCatalogItemWire[]> {
+  const search = new URLSearchParams({ workspace_path: workspacePath, limit: '200' })
+  const response = await requestJson<{ videos?: WorkspaceVideoCatalogItemWire[] }>(`/v1/workspace/video/projects?${search.toString()}`)
+  return Array.isArray(response.videos) ? response.videos.map((item) => ({
+    ...item,
+    revisions: Array.isArray(item.revisions) ? item.revisions : [],
+    related_sessions: Array.isArray(item.related_sessions) ? item.related_sessions : [],
+  })) : []
+}
+
+export async function forkWorkspaceVideoRevision(input: {
+  workspacePath: string
+  sourceSessionId: string
+  sourceProjectId: string
+  sourceRevisionId: string
+  destinationSessionId: string
+}): Promise<VideoProjectDetailWire> {
+  const response = await requestJson<{ project?: VideoProjectSnapshotWire; revision?: VideoProjectRevisionSnapshotWire }>('/v1/workspace/video/projects/fork', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      workspace_path: input.workspacePath,
+      source_session_id: input.sourceSessionId,
+      source_project_id: input.sourceProjectId,
+      source_revision_id: input.sourceRevisionId,
+      destination_session_id: input.destinationSessionId,
+    }),
+  })
+  if (!response.project || !response.revision) throw new Error('Video fork returned incomplete state')
+  return { project: response.project, current_revision: response.revision, confirmed_revision: response.revision }
+}
+
 function videoThreadFromSessionProject(
   sessionId: string,
   workspace: WorkspaceEntry | null,
@@ -730,6 +813,7 @@ export async function createVideoThread(input: {
   route: DesktopChatRoute
   folderPath?: string
   clips: VideoClip[]
+  metadata?: Record<string, unknown>
 }): Promise<VideoThreadRecord> {
   const preference = await fetchDraftModelPreference()
   const createdSession = await createSession({
@@ -740,7 +824,7 @@ export async function createVideoThread(input: {
     agentName: VIDEO_STUDIO_AGENT_NAME,
     preference: preference.preference,
     route: input.route,
-    metadata: videoStudioSessionMetadata(),
+    metadata: input.metadata ?? videoStudioSessionMetadata(),
   })
   const response = await requestJson<{ thread?: VideoThreadWire }>('/v1/workspace/video/threads', {
     method: 'POST',
@@ -1198,6 +1282,9 @@ export function VideoToolPage() {
   const [createError, setCreateError] = useState<string | null>(null)
   const [newSessionTitle, setNewSessionTitle] = useState('')
   const [creatingBlankSession, setCreatingBlankSession] = useState(false)
+  const [videoLibraryQuery, setVideoLibraryQuery] = useState('')
+  const [selectedLibraryVideoId, setSelectedLibraryVideoId] = useState<string | null>(null)
+  const [startingFromLibrary, setStartingFromLibrary] = useState(false)
   const [selectedThreadId, setSelectedThreadId] = useState<string | null>(() => {
     if (routeVideoSessionId) return routeVideoSessionId
     if (typeof window === 'undefined') return null
@@ -1283,6 +1370,17 @@ export function VideoToolPage() {
     enabled: selectedWorkspacePath.trim() !== '',
     staleTime: 15_000,
   })
+  const videoLibraryQueryResult = useQuery({
+    queryKey: ['video-library', selectedWorkspacePath],
+    queryFn: () => fetchWorkspaceVideoCatalog(selectedWorkspacePath),
+    enabled: selectedWorkspacePath.trim() !== '',
+    staleTime: 15_000,
+  })
+  const videoLibrary = videoLibraryQueryResult.data ?? []
+  const filteredVideoLibrary = useMemo(() => filterWorkspaceVideoCatalog(videoLibrary, videoLibraryQuery), [videoLibrary, videoLibraryQuery])
+  const selectedLibraryVideo = useMemo(() => videoLibrary.find((item) => item.project.id === selectedLibraryVideoId) ?? null, [selectedLibraryVideoId, videoLibrary])
+  const selectedLibraryRevision = useMemo(() => selectedLibraryVideo ? selectWorkspaceVideoRevision(selectedLibraryVideo, previewRevisionId) : null, [previewRevisionId, selectedLibraryVideo])
+  const libraryReadOnly = selectedLibraryVideo?.source_archived === true
   const routeVideoSession = useDesktopV3CacheSelector((state) => {
     const record = routeVideoSessionId ? state.sessionsById[routeVideoSessionId] : undefined
     return record?.kind === 'full' ? record.session : undefined
@@ -1295,13 +1393,13 @@ export function VideoToolPage() {
   }, [routeVideoSession, routeVideoSessionId, selectedWorkspace, videoThreadsQuery.data])
 
   useEffect(() => {
-    if (routeVideoSessionId && routeVideoSessionId !== selectedThreadId) {
+    if (routeVideoSessionId && !selectedLibraryVideo && routeVideoSessionId !== selectedThreadId) {
       setSelectedThreadId(routeVideoSessionId)
       return
     }
-    if (!selectedThreadId || videoThreadsQuery.isLoading || !videoThreadsQuery.isFetched) return
+    if (!selectedThreadId || selectedLibraryVideo || videoThreadsQuery.isLoading || !videoThreadsQuery.isFetched) return
     if (!videoThreads.some((thread) => thread.id === selectedThreadId)) setSelectedThreadId(null)
-  }, [routeVideoSessionId, selectedThreadId, videoThreads, videoThreadsQuery.isFetched, videoThreadsQuery.isLoading])
+  }, [routeVideoSessionId, selectedLibraryVideo, selectedThreadId, videoThreads, videoThreadsQuery.isFetched, videoThreadsQuery.isLoading])
 
   useEffect(() => {
     if (!selectedThreadId || typeof window === 'undefined') return
@@ -1314,11 +1412,20 @@ export function VideoToolPage() {
   )
 
   const selectedThread = useMemo(() => {
-    if (!selectedThreadId) {
-      return null
+    if (!selectedThreadId) return null
+    const thread = videoThreads.find((candidate) => candidate.id === selectedThreadId)
+    if (thread) return thread
+    if (selectedLibraryVideo?.source_session_id === selectedThreadId) return {
+      id: selectedLibraryVideo.source_session_id,
+      title: selectedLibraryVideo.source_session_title || selectedLibraryVideo.project.title || 'Video source session',
+      workspacePath: selectedWorkspacePath,
+      workspaceName: selectedWorkspaceName,
+      videoFolders: [], videoClips: [], videoClipOrder: [],
+      createdAt: selectedLibraryVideo.project.created_at,
+      updatedAt: selectedLibraryVideo.project.updated_at,
     }
-    return videoThreads.find((thread) => thread.id === selectedThreadId) ?? null
-  }, [selectedThreadId, videoThreads])
+    return null
+  }, [selectedLibraryVideo, selectedThreadId, selectedWorkspaceName, selectedWorkspacePath, videoThreads])
 
   const selectedClips = useMemo(() => orderedClips(selectedThread), [selectedThread])
   const legacyTimelineSegments = useMemo(() => buildTimelineSegments(selectedThread, selectedClips, clipDurations), [clipDurations, selectedClips, selectedThread])
@@ -1372,6 +1479,7 @@ export function VideoToolPage() {
 
   useEffect(() => {
     let cancelled = false
+    if (selectedLibraryVideo) return
     setVideoProjects([])
     setSelectedProjectId(null)
     setVideoProject(null)
@@ -1404,10 +1512,11 @@ export function VideoToolPage() {
       }
     })()
     return () => { cancelled = true }
-  }, [selectedThread?.id])
+  }, [selectedLibraryVideo, selectedThread?.id])
 
   useEffect(() => {
     let cancelled = false
+    if (selectedLibraryVideo) return
     setVideoProject(null)
     setCurrentRevision(null)
     setConfirmedRevision(null)
@@ -1440,7 +1549,7 @@ export function VideoToolPage() {
       }
     })()
     return () => { cancelled = true }
-  }, [selectedProjectId, selectedThread?.id])
+  }, [selectedLibraryVideo, selectedProjectId, selectedThread?.id])
 
   const refreshSelectedVideoProject = useCallback(async () => {
     if (!selectedThread) return
@@ -1748,6 +1857,7 @@ export function VideoToolPage() {
   const handleSelectVideoSession = useCallback((sessionId: string) => {
     const normalizedSessionId = sessionId.trim()
     if (!normalizedSessionId) return
+    setSelectedLibraryVideoId(null)
     setSelectedThreadId(normalizedSessionId)
     const workspaceSlug = routeWorkspaceSlug
       || workspaceSlugByPath.get(selectedWorkspacePath)
@@ -1755,6 +1865,50 @@ export function VideoToolPage() {
     if (!workspaceSlug) return
     void navigate({ to: '/$workspaceSlug/studio/$videoSessionId', params: { workspaceSlug, videoSessionId: normalizedSessionId } })
   }, [navigate, routeWorkspaceSlug, selectedWorkspaceName, selectedWorkspacePath, workspaceSlugByPath])
+
+  const handleSelectLibraryVideo = useCallback((item: WorkspaceVideoCatalogItemWire) => {
+    const revision = selectWorkspaceVideoRevision(item)
+    setSelectedLibraryVideoId(item.project.id)
+    setSelectedThreadId(item.source_session_id)
+    setVideoProjects([item.project])
+    setSelectedProjectId(item.project.id)
+    setVideoProject(item.project)
+    setCurrentRevision(revision)
+    setConfirmedRevision(revision)
+    setProjectRevisions(item.revisions)
+    setPreviewRevisionId(null)
+    setPlayhead(0)
+  }, [])
+
+  const handleStartSessionFromLibrary = useCallback(async () => {
+    if (!selectedLibraryVideo || !selectedLibraryRevision || !selectedSessionRoute || !selectedWorkspacePath || !selectedWorkspaceName) return
+    setStartingFromLibrary(true)
+    setCreateError(null)
+    try {
+      const createdThread = await createVideoThread({
+        title: `${selectedLibraryVideo.project.title || 'Video'} continuation`,
+        workspacePath: selectedWorkspacePath,
+        workspaceName: selectedWorkspaceName,
+        route: selectedSessionRoute,
+        clips: [],
+        metadata: workspaceVideoContextMetadata(selectedLibraryVideo, selectedLibraryRevision.id),
+      })
+      await forkWorkspaceVideoRevision({
+        workspacePath: selectedWorkspacePath,
+        sourceSessionId: selectedLibraryVideo.source_session_id,
+        sourceProjectId: selectedLibraryVideo.project.id,
+        sourceRevisionId: selectedLibraryRevision.id,
+        destinationSessionId: createdThread.id,
+      })
+      queryClient.setQueryData<VideoThreadRecord[]>(['video-tool-threads', selectedWorkspacePath], (current = []) => [createdThread, ...current.filter((thread) => thread.id !== createdThread.id)])
+      await queryClient.invalidateQueries({ queryKey: ['video-library', selectedWorkspacePath] })
+      handleSelectVideoSession(createdThread.id)
+    } catch (error) {
+      setCreateError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setStartingFromLibrary(false)
+    }
+  }, [handleSelectVideoSession, queryClient, selectedLibraryRevision, selectedLibraryVideo, selectedSessionRoute, selectedWorkspaceName, selectedWorkspacePath])
 
   const handleOpenSessionMode = useCallback(() => {
     if (!selectedThread || !routeWorkspaceSlug) return
@@ -2016,7 +2170,7 @@ export function VideoToolPage() {
   }, [handleSelectVideoSession, queryClient, selectedSessionRoute, selectedThread, selectedWorkspaceName, selectedWorkspacePath, workspaceOverviewQuery.error, workspaceOverviewQuery.isError, workspaceOverviewQuery.isPending])
 
   const persistTimelineSegments = useCallback(async (segments: TimelineSegment[], options?: { migration?: boolean; transitionKind?: VideoTransitionKind }) => {
-    if (!selectedThread) return
+    if (!selectedThread || selectedLibraryVideo) return
     setReordering(true)
     try {
       let project = videoProject
@@ -2058,7 +2212,7 @@ export function VideoToolPage() {
     } finally {
       setReordering(false)
     }
-  }, [currentRevision, selectedClips, selectedThread, videoProject])
+  }, [currentRevision, selectedClips, selectedLibraryVideo, selectedThread, videoProject])
 
   useEffect(() => {
     if (!selectedThread || projectLoading || currentRevision || legacyTimelineSegments.length === 0) return
@@ -2188,7 +2342,7 @@ export function VideoToolPage() {
   } : null, [studioComposerContext])
 
   const submitSoundtrackProposal = useCallback(async (type: 'add_clip' | 'update_clip' | 'replace_clip' | 'remove_clip', clip?: VideoTimelineClipWire) => {
-    if (!selectedThread || !videoProject || !currentRevision || pendingProposal) return
+    if (!selectedThread || !videoProject || !currentRevision || pendingProposal || selectedLibraryVideo) return
     const target = clip ?? acceptedSoundtrack
     if (!target) return
     setSoundtrackProposalBusy(true)
@@ -2218,7 +2372,7 @@ export function VideoToolPage() {
     } finally {
       setSoundtrackProposalBusy(false)
     }
-  }, [acceptedSoundtrack, currentRevision, pendingProposal, refreshSelectedVideoProject, selectedThread, videoProject])
+  }, [acceptedSoundtrack, currentRevision, pendingProposal, refreshSelectedVideoProject, selectedLibraryVideo, selectedThread, videoProject])
 
   const handleSelectSoundtrack = useCallback((audio: AudioClip) => {
     const clip = soundtrackTimelineClip({ audio, durationMs: Math.max(1, Math.round(movieDuration * 1000)), existing: acceptedSoundtrack })
@@ -2377,9 +2531,9 @@ export function VideoToolPage() {
               emptySessionsMessage="No video sessions yet. Start session to get started."
               defaultSessionTitle="Video Thread"
               actions={[
-                { id: 'add-folder', label: 'Add folder', icon: <FolderOpen size={14} />, suffix: 'source', onClick: handleOpenPicker, disabled: !selectedThread },
-                { id: 'show-files', label: revealingStorage ? 'Opening…' : 'Show files', icon: <FolderOpen size={14} />, suffix: 'local', onClick: () => void handleRevealVideoStorage(), disabled: !selectedThread || revealingStorage },
-                { id: 'session-mode', label: 'Open session mode', icon: <MessageSquare size={14} />, suffix: 'chat', onClick: handleOpenSessionMode, disabled: !selectedThread || !routeWorkspaceSlug },
+                { id: 'add-folder', label: 'Add folder', icon: <FolderOpen size={14} />, suffix: 'source', onClick: handleOpenPicker, disabled: !selectedThread || Boolean(selectedLibraryVideo) },
+                { id: 'show-files', label: revealingStorage ? 'Opening…' : 'Show files', icon: <FolderOpen size={14} />, suffix: 'local', onClick: () => void handleRevealVideoStorage(), disabled: !selectedThread || revealingStorage || Boolean(selectedLibraryVideo) },
+                { id: 'session-mode', label: 'Open session mode', icon: <MessageSquare size={14} />, suffix: 'chat', onClick: handleOpenSessionMode, disabled: !selectedThread || !routeWorkspaceSlug || Boolean(selectedLibraryVideo) },
               ]}
             >
               {selectedThread ? (
@@ -2407,8 +2561,8 @@ export function VideoToolPage() {
                     <button type="button" className="shrink-0 p-1 text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]" onClick={() => void handleRevealVideoStorage()} disabled={revealingStorage} aria-label="Show stored files" title="Show stored files"><FolderOpen size={13} /></button>
                   </div>
 
-                  {videoProject && currentRevision ? <VideoIterationSidebar key={`${videoProject.id}:${aiRefreshKey}`} sessionId={selectedThread.id} projectId={videoProject.id} currentRevisionId={currentRevision.id} revisions={projectRevisions} onAccepted={refreshSelectedVideoProject} onFeedback={handleIterationFeedback} onPreviewProposal={handlePendingProposalChange} onPreviewRevision={handlePreviewRevision} onFocusChange={handleFocusStep} onAttachChange={handleAttachIterationChange} /> : null}
-                  {previewRevision ? <div className="mt-2 grid gap-2 px-2"><p className="text-[10px] text-amber-300">Previewing r{previewRevision.revision_number}; kept r{keptRevision?.revision_number} is unchanged.</p><div className="grid grid-cols-2 gap-2"><Button variant="outline" className="h-7 px-2 text-[10px]" disabled={previewRevisionIndex <= 0} onClick={() => handlePreviewRevision(projectRevisions[previewRevisionIndex - 1].id)}>Previous</Button><Button variant="outline" className="h-7 px-2 text-[10px]" disabled={previewRevisionIndex < 0 || previewRevisionIndex >= projectRevisions.length - 1} onClick={() => handlePreviewRevision(projectRevisions[previewRevisionIndex + 1].id)}>Next</Button></div><Button variant="outline" className="h-7 px-2 text-[10px]" onClick={() => setPreviewRevisionId(null)}>Return to kept version</Button><Button className="h-7 px-2 text-[10px]" disabled={Boolean(restoringRevisionId)} onClick={() => void handleRestoreRevision(previewRevision.id)}>{restoringRevisionId === previewRevision.id ? <Loader2 size={11} className="animate-spin" /> : <RotateCcw size={11} />}Restore as new version</Button></div> : null}
+                  {videoProject && currentRevision && !selectedLibraryVideo ? <VideoIterationSidebar key={`${videoProject.id}:${aiRefreshKey}`} sessionId={selectedThread.id} projectId={videoProject.id} currentRevisionId={currentRevision.id} revisions={projectRevisions} onAccepted={refreshSelectedVideoProject} onFeedback={handleIterationFeedback} onPreviewProposal={handlePendingProposalChange} onPreviewRevision={handlePreviewRevision} onFocusChange={handleFocusStep} onAttachChange={handleAttachIterationChange} /> : null}
+                  {previewRevision ? <div className="mt-2 grid gap-2 px-2"><p className="text-[10px] text-amber-300">Previewing r{previewRevision.revision_number}; kept r{keptRevision?.revision_number} is unchanged.</p><div className="grid grid-cols-2 gap-2"><Button variant="outline" className="h-7 px-2 text-[10px]" disabled={previewRevisionIndex <= 0} onClick={() => handlePreviewRevision(projectRevisions[previewRevisionIndex - 1].id)}>Previous</Button><Button variant="outline" className="h-7 px-2 text-[10px]" disabled={previewRevisionIndex < 0 || previewRevisionIndex >= projectRevisions.length - 1} onClick={() => handlePreviewRevision(projectRevisions[previewRevisionIndex + 1].id)}>Next</Button></div><Button variant="outline" className="h-7 px-2 text-[10px]" onClick={() => setPreviewRevisionId(null)}>Return to kept version</Button><Button className="h-7 px-2 text-[10px]" disabled={Boolean(restoringRevisionId) || Boolean(selectedLibraryVideo)} onClick={() => void handleRestoreRevision(previewRevision.id)}>{restoringRevisionId === previewRevision.id ? <Loader2 size={11} className="animate-spin" /> : <RotateCcw size={11} />}Restore as new version</Button></div> : null}
 
                   <p className="mb-2 mt-3 px-2 text-[10px] uppercase tracking-[0.18em] text-[var(--app-text-subtle)]">Sources</p>
                   <div className="flex flex-col gap-1">
@@ -2433,8 +2587,21 @@ export function VideoToolPage() {
               <div ref={setStudioArtifactReviewPortalTarget} className="absolute inset-0 z-20 min-h-0 min-w-0 empty:hidden" data-studio-artifact-review-host />
               <div className="mb-4 flex items-center justify-end gap-2 lg:hidden">
                 <Button variant="outline" style={darkOverrideButtonStyle} className={`h-9 w-9 rounded-xl px-0 ${blackModeEnabled ? 'border-[var(--video-tool-user-theme-accent)] bg-[var(--video-tool-user-theme-surface)] text-[var(--video-tool-user-theme-text)] hover:bg-[var(--video-tool-user-theme-surface-hover)]' : ''}`} onClick={() => setBlackModeEnabled((enabled) => !enabled)} aria-label="Toggle dark mode override for this page" aria-pressed={blackModeEnabled} title="Toggle dark mode override for this page"><Moon size={14} aria-hidden="true" /></Button>
-                <Button variant="outline" className="h-9 rounded-xl px-3 text-xs" onClick={handleOpenPicker} disabled={!selectedThread}><FolderOpen size={14} />Add source</Button>
+                <Button variant="outline" className="h-9 rounded-xl px-3 text-xs" onClick={handleOpenPicker} disabled={!selectedThread || Boolean(selectedLibraryVideo)}><FolderOpen size={14} />Add source</Button>
               </div>
+
+              <section className="mb-5 border border-[var(--app-border)] bg-[var(--app-surface)] p-4" aria-label="Standalone video library">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div><div className="flex items-center gap-2"><Library size={16} className="text-[var(--app-primary)]" /><h2 className="text-sm font-semibold">Video library</h2></div><p className="mt-1 text-xs text-[var(--app-text-muted)]">Open retained videos directly, including videos whose source session is archived.</p></div>
+                  <label className="relative min-w-[220px] flex-1 sm:max-w-sm"><Search size={14} className="pointer-events-none absolute left-3 top-2.5 text-[var(--app-text-subtle)]" /><input value={videoLibraryQuery} onChange={(event) => setVideoLibraryQuery(event.target.value)} className="h-9 w-full border border-[var(--app-border)] bg-[var(--app-bg)] pl-9 pr-3 text-xs" placeholder="Filter videos or related sessions" aria-label="Filter video library" /></label>
+                </div>
+                {videoLibraryQueryResult.isLoading ? <p className="mt-4 text-xs text-[var(--app-text-muted)]"><Loader2 size={13} className="mr-2 inline animate-spin" />Loading videos…</p> : videoLibraryQueryResult.isError ? <p className="mt-4 text-xs text-red-400">{videoLibraryQueryResult.error instanceof Error ? videoLibraryQueryResult.error.message : 'Could not load video library.'}</p> : filteredVideoLibrary.length === 0 ? <p className="mt-4 border border-dashed border-[var(--app-border)] p-4 text-xs text-[var(--app-text-muted)]">{videoLibrary.length === 0 ? 'No retained videos in this workspace.' : 'No videos match this filter.'}</p> : <div className="mt-4 grid gap-2 sm:grid-cols-2 xl:grid-cols-3">{filteredVideoLibrary.map((item) => {
+                  const revision = selectWorkspaceVideoRevision(item)
+                  const selected = selectedLibraryVideoId === item.project.id
+                  return <button key={`${item.source_session_id}:${item.project.id}`} type="button" onClick={() => handleSelectLibraryVideo(item)} className={`border p-3 text-left ${selected ? 'border-[var(--app-primary)] bg-[color-mix(in_srgb,var(--app-primary)_8%,transparent)]' : 'border-[var(--app-border)] bg-[var(--app-bg)] hover:border-[var(--app-border-strong)]'}`}><div className="flex items-start justify-between gap-2"><span className="truncate text-sm font-medium">{item.project.title || 'Untitled video'}</span>{item.source_archived ? <span className="shrink-0 text-[9px] uppercase tracking-wider text-amber-400">archived source</span> : null}</div><p className="mt-2 text-[10px] text-[var(--app-text-muted)]">{item.revisions.length} iteration{item.revisions.length === 1 ? '' : 's'} · latest r{revision?.revision_number ?? 0}</p><p className="mt-1 truncate text-[10px] text-[var(--app-text-subtle)]">Source: {item.source_session_title || item.source_session_id}</p></button>
+                })}</div>}
+                {selectedLibraryVideo ? <div className="mt-4 border-t border-[var(--app-border)] pt-4"><div className="flex flex-wrap items-start justify-between gap-3"><div><p className="text-sm font-semibold">{selectedLibraryVideo.project.title || 'Untitled video'}</p><p className="mt-1 text-xs text-[var(--app-text-muted)]">Browsing exact retained revisions. The source remains {libraryReadOnly ? 'archived and read-only' : 'unchanged'}.</p></div><Button onClick={() => void handleStartSessionFromLibrary()} disabled={!selectedLibraryRevision || !selectedSessionRoute || startingFromLibrary}>{startingFromLibrary ? <Loader2 size={13} className="animate-spin" /> : <GitFork size={13} />}Start session from r{selectedLibraryRevision?.revision_number ?? 0}</Button></div><div className="mt-3 flex flex-wrap gap-2" aria-label="Video revisions">{[...selectedLibraryVideo.revisions].sort((a, b) => a.revision_number - b.revision_number).map((revision) => <Button key={revision.id} variant={selectedLibraryRevision?.id === revision.id ? 'default' : 'outline'} className="h-7 px-2 text-[10px]" onClick={() => handlePreviewRevision(revision.id)}>r{revision.revision_number}</Button>)}</div><div className="mt-3"><p className="text-[10px] uppercase tracking-[0.15em] text-[var(--app-text-subtle)]">Related sessions</p><div className="mt-2 flex flex-wrap gap-2">{selectedLibraryVideo.related_sessions.map((session) => <Button key={session.session_id} variant="outline" className="h-7 px-2 text-[10px]" disabled={session.archived} onClick={() => handleSelectVideoSession(session.session_id)}>{session.title || 'Video session'}{session.archived ? ' · archived' : ''}</Button>)}</div></div></div> : null}
+              </section>
 
               {!selectedThread ? (
                 <div className="grid min-h-full place-items-center border border-dashed border-[var(--app-border)] bg-[var(--app-surface)] px-6 py-16 text-center">
@@ -2474,7 +2641,7 @@ export function VideoToolPage() {
                     ) : renderJob?.status === 'ready' ? (
                       <span className="text-xs text-green-500"><Film size={13} className="inline" /> Render ready for playback and export</span>
                     ) : (
-                      <Button variant="outline" className="h-8 rounded-xl px-3 text-xs" onClick={() => void handleStartRender()} disabled={movieDuration <= 0 || rendering || projectLoading || !currentRevision || Boolean(pendingProposal) || hasUnresolvedPlanFrames}>
+                      <Button variant="outline" className="h-8 rounded-xl px-3 text-xs" onClick={() => void handleStartRender()} disabled={movieDuration <= 0 || rendering || projectLoading || !currentRevision || Boolean(pendingProposal) || hasUnresolvedPlanFrames || Boolean(selectedLibraryVideo)}>
                         <Sparkles size={13} /> {pendingProposal ? 'Confirm working cut before render' : hasUnresolvedPlanFrames ? 'Replace planned frames with sources' : 'Render Video'}
                       </Button>
                     )}
@@ -2550,7 +2717,7 @@ export function VideoToolPage() {
                               <Button variant="outline" className="h-7 rounded-lg px-2 text-[10px]" onClick={() => handleRequestStepEdit('source', segment)}>Source</Button>
                               <Button variant="outline" className="h-7 rounded-lg px-2 text-[10px]" onClick={() => void handleRequestStepEdit('move_earlier', segment)} disabled={index === 0}>AI ←</Button>
                               <Button variant="outline" className="h-7 rounded-lg px-2 text-[10px]" onClick={() => void handleRequestStepEdit('move_later', segment)} disabled={index === visualTimelineLayout.length - 1}>AI →</Button>
-                              <Button variant={segment.visible ? 'outline' : 'ghost'} className="h-7 rounded-lg px-2 text-xs" onClick={() => void handleToggleSegment(segment.clipId)} disabled={reordering || Boolean(pendingProposal)}>{segment.visible ? <Eye size={13} /> : <EyeOff size={13} />}</Button>
+                              <Button variant={segment.visible ? 'outline' : 'ghost'} className="h-7 rounded-lg px-2 text-xs" onClick={() => void handleToggleSegment(segment.clipId)} disabled={reordering || Boolean(pendingProposal) || Boolean(selectedLibraryVideo)}>{segment.visible ? <Eye size={13} /> : <EyeOff size={13} />}</Button>
                             </div>
                           )
                         })}
@@ -2606,7 +2773,7 @@ export function VideoToolPage() {
               </>
               )}
             </section>
-            {selectedThread ? <VideoSessionAISidecar key={selectedThread.id} sessionId={selectedThread.id} projectId={videoProject?.id} revisionId={studioComposerContext?.revisionId ?? currentRevision?.id} anchorClipId={studioComposerContext?.anchorClipId ?? activeSegment?.id} playheadMs={studioSidecarPlayheadMs} selectionKind={studioComposerContext?.selectionKind} transition={studioComposerContext?.transition} iterationContext={studioComposerContext?.iteration} routeOptions={studioRouteOptions} draftRequest={composerDraftRequest} artifactSelectionRequest={studioArtifactSelectionRequest} artifactReviewPortalTarget={studioArtifactReviewPortalTarget} contextChip={studioContextChip} onContextChipRemove={handleStudioContextRemove} onArtifactSelectionRequestHandled={handleStudioArtifactSelectionHandled} onActivity={handleStudioActivity} /> : null}
+            {selectedThread && !selectedLibraryVideo ? <VideoSessionAISidecar key={selectedThread.id} sessionId={selectedThread.id} projectId={videoProject?.id} revisionId={studioComposerContext?.revisionId ?? currentRevision?.id} anchorClipId={studioComposerContext?.anchorClipId ?? activeSegment?.id} playheadMs={studioSidecarPlayheadMs} selectionKind={studioComposerContext?.selectionKind} transition={studioComposerContext?.transition} iterationContext={studioComposerContext?.iteration} routeOptions={studioRouteOptions} draftRequest={composerDraftRequest} artifactSelectionRequest={studioArtifactSelectionRequest} artifactReviewPortalTarget={studioArtifactReviewPortalTarget} contextChip={studioContextChip} onContextChipRemove={handleStudioContextRemove} onArtifactSelectionRequestHandled={handleStudioArtifactSelectionHandled} onActivity={handleStudioActivity} /> : null}
           </main>
 
       {soundtrackPickerOpen ? (

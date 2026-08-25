@@ -11,6 +11,9 @@ import {
   preferredVisibleVideoProject,
   createVideoThread,
   ensurePrimaryVideoProject,
+  fetchWorkspaceVideoCatalog,
+  filterWorkspaceVideoCatalog,
+  forkWorkspaceVideoRevision,
   listVideoProjects,
   layoutTimelineSegments,
   projectTimelineToTimelineSegments,
@@ -25,7 +28,10 @@ import {
   VIDEO_STUDIO_AGENT_NAME,
   videoChildSessionMetadata,
   videoStudioSessionMetadata,
+  selectWorkspaceVideoRevision,
+  workspaceVideoContextMetadata,
   type VideoClip,
+  type WorkspaceVideoCatalogItemWire,
   type VideoProjectTimelineWire,
   type VideoTimelineClipWire,
 } from './video-tool-page'
@@ -409,6 +415,57 @@ test('Start new video session completes through the canonical V3 session API wit
   } finally {
     globalThis.fetch = originalFetch
   }
+})
+
+test('Video Studio filters standalone videos across title and related session provenance', () => {
+  const items = [{
+    project: { id: 'project-1', session_id: 'source-1', title: 'Launch film', current_revision_id: 'revision-2', created_at: 1, updated_at: 2 },
+    revisions: [
+      { id: 'revision-1', project_id: 'project-1', session_id: 'source-1', revision_number: 1, timeline: { clips: [] }, created_at: 1 },
+      { id: 'revision-2', project_id: 'project-1', session_id: 'source-1', revision_number: 2, timeline: { clips: [] }, created_at: 2 },
+    ],
+    source_archived: true,
+    source_session_id: 'source-1',
+    source_session_title: 'Original campaign',
+    related_sessions: [{ session_id: 'related-1', title: 'Polish pass' }],
+  }] satisfies WorkspaceVideoCatalogItemWire[]
+  assert.equal(filterWorkspaceVideoCatalog(items, 'launch').length, 1)
+  assert.equal(filterWorkspaceVideoCatalog(items, 'polish').length, 1)
+  assert.equal(filterWorkspaceVideoCatalog(items, 'missing').length, 0)
+  assert.equal(selectWorkspaceVideoRevision(items[0])?.id, 'revision-2')
+  assert.equal(selectWorkspaceVideoRevision(items[0], 'revision-1')?.revision_number, 1)
+})
+
+test('Video Studio loads standalone videos without a destination session and forks exact selected context', async () => {
+  const originalFetch = globalThis.fetch
+  const calls: string[] = []
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input)
+    calls.push(url)
+    if (url === '/v1/workspace/video/projects?workspace_path=%2Fworkspace%2Fvideo&limit=200') return new Response(JSON.stringify({ videos: [{ project: { id: 'project-1', session_id: 'source-1', title: 'Launch', created_at: 1, updated_at: 1 }, revisions: null, related_sessions: null, source_session_id: 'source-1' }] }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    if (url === '/v1/workspace/video/projects/fork') {
+      assert.deepEqual(JSON.parse(String(init?.body)), { workspace_path: '/workspace/video', source_session_id: 'source-1', source_project_id: 'project-1', source_revision_id: 'revision-7', destination_session_id: 'destination-1' })
+      return new Response(JSON.stringify({ project: { id: 'forked', session_id: 'destination-1', title: 'Launch', created_at: 2, updated_at: 2 }, revision: { id: 'forked-revision', project_id: 'forked', session_id: 'destination-1', revision_number: 1, timeline: { clips: [] }, created_at: 2 } }), { status: 201, headers: { 'Content-Type': 'application/json' } })
+    }
+    throw new Error(`unexpected fetch: ${url}`)
+  }) as typeof fetch
+  try {
+    const videos = await fetchWorkspaceVideoCatalog('/workspace/video')
+    assert.deepEqual(videos[0].revisions, [])
+    assert.deepEqual(videos[0].related_sessions, [])
+    const fork = await forkWorkspaceVideoRevision({ workspacePath: '/workspace/video', sourceSessionId: 'source-1', sourceProjectId: 'project-1', sourceRevisionId: 'revision-7', destinationSessionId: 'destination-1' })
+    assert.equal(fork.current_revision?.id, 'forked-revision')
+    assert.deepEqual(calls, ['/v1/workspace/video/projects?workspace_path=%2Fworkspace%2Fvideo&limit=200', '/v1/workspace/video/projects/fork'])
+  } finally { globalThis.fetch = originalFetch }
+})
+
+test('Video Studio session metadata attaches exact standalone video identity for AI context', () => {
+  const item = { project: { id: 'project-1', session_id: 'source-1', title: 'Launch', created_at: 1, updated_at: 1 }, revisions: [], source_session_id: 'source-1', related_sessions: [] } satisfies WorkspaceVideoCatalogItemWire
+  assert.deepEqual(workspaceVideoContextMetadata(item, 'revision-7'), {
+    experience: 'video_studio', launch_source: 'video_library', lineage_kind: 'video_revision_fork',
+    source_session_id: 'source-1', source_video_project_id: 'project-1', source_video_revision_id: 'revision-7',
+    video_context: { source_session_id: 'source-1', source_project_id: 'project-1', source_revision_id: 'revision-7', title: 'Launch' },
+  })
 })
 
 test('Video Studio initializes the primary project with an empty durable base revision', async () => {
