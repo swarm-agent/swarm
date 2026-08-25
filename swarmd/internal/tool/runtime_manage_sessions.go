@@ -490,7 +490,38 @@ func (r *Runtime) manageSessionsGet(scope WorkspaceScope, id string) (string, er
 		state = "archived"
 	}
 	rec := map[string]any{"action": "get", "id": s.ID, "title": s.Title, "updated_at": version, "archived": archived, "state": state, "workspace_path": s.WorkspacePath, "workspace_name": s.WorkspaceName, "worktree_branch": s.WorktreeBranch, "navigation": manageSessionNavigation(s.ID, s.WorkspacePath, s.WorkspaceName, slug), "content_trust": "untrusted"}
+	if videoContext := manageSessionVideoContext(s.Metadata); videoContext != nil {
+		rec["video_context"] = videoContext
+	}
 	return marshalManageSessions(rec)
+}
+
+func manageSessionVideoContext(metadata map[string]any) map[string]any {
+	if !strings.EqualFold(strings.TrimSpace(stringValue(metadata["creative_mode"])), "video") &&
+		!strings.EqualFold(strings.TrimSpace(stringValue(metadata["experience"])), "video_studio") {
+		return nil
+	}
+	projectID := strings.TrimSpace(stringValue(metadata["video_project_id"]))
+	revisionID := strings.TrimSpace(stringValue(metadata["video_revision_id"]))
+	if projectID == "" || revisionID == "" {
+		return nil
+	}
+	context := map[string]any{
+		"attached":                true,
+		"durable":                 true,
+		"destination_project_id":  truncateUTF8Bytes(projectID, 256),
+		"destination_revision_id": truncateUTF8Bytes(revisionID, 256),
+	}
+	for outputKey, metadataKey := range map[string]string{
+		"source_session_id":  "source_session_id",
+		"source_project_id":  "source_video_project_id",
+		"source_revision_id": "source_video_revision_id",
+	} {
+		if value := truncateUTF8Bytes(strings.TrimSpace(stringValue(metadata[metadataKey])), 256); value != "" {
+			context[outputKey] = value
+		}
+	}
+	return context
 }
 
 func (r *Runtime) manageSessionsRead(scope WorkspaceScope, args map[string]any) (string, error) {

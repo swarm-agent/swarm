@@ -47,6 +47,7 @@ type SwarmToolSidebarProps = {
   emptySessionsMessage: string
   defaultSessionTitle: string
   actions?: SwarmToolSidebarAction[]
+  beforeSessions?: ReactNode
   children?: ReactNode
   layoutClassName?: string
   childrenClassName?: string
@@ -84,6 +85,7 @@ export function SwarmToolSidebar({
   emptySessionsMessage,
   defaultSessionTitle,
   actions = [],
+  beforeSessions,
   children,
   layoutClassName,
   childrenClassName,
@@ -158,6 +160,8 @@ export function SwarmToolSidebar({
           </div>
         </>
       ) : null}
+
+      {beforeSessions ? <div className="mt-4 shrink-0">{beforeSessions}</div> : null}
 
       <div className={compactSelectedSession ? 'min-h-0 max-h-32 shrink-0 border-y border-[var(--app-border)] py-3' : 'mt-4 min-h-0 flex-1 border-y border-[var(--app-border)] py-3'}>
         <div className="mb-2 flex items-center justify-between px-2">

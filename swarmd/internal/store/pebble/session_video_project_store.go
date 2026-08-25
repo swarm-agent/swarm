@@ -1861,19 +1861,22 @@ func generateDeterministicOrRandomID(prefix string) string {
 // Store Query Methods
 
 type CreateVideoProjectInput struct {
-	AccountScopeID  string
-	UserID          string
-	SessionID       string
-	WorkspaceID     string
-	ProjectID       string
-	Title           string
-	Description     string
-	OutputPreset    string
-	InitialTimeline *VideoProjectTimeline
-	Metadata        map[string]any
-	ProjectKind     string
-	ClientRequestID string
-	NowUnixMs       int64
+	AccountScopeID    string
+	UserID            string
+	SessionID         string
+	WorkspaceID       string
+	ProjectID         string
+	InitialRevisionID string
+	Title             string
+	Description       string
+	OutputPreset      string
+	InitialTimeline   *VideoProjectTimeline
+	Metadata          map[string]any
+	ProjectKind       string
+	ClientRequestID   string
+	SessionMetadata   map[string]any
+	AttachmentMessage *MessageSnapshot
+	NowUnixMs         int64
 }
 
 func (s *SessionStore) CreateVideoProject(input CreateVideoProjectInput) (VideoProjectSnapshot, *VideoProjectRevisionSnapshot, error) {
@@ -1909,9 +1912,13 @@ func (s *SessionStore) CreateVideoProject(input CreateVideoProjectInput) (VideoP
 	if input.InitialTimeline != nil {
 		timeline := *input.InitialTimeline
 		normalizeVideoTimeline(&timeline)
+		revisionID := strings.TrimSpace(input.InitialRevisionID)
+		if revisionID == "" {
+			revisionID = generateDeterministicOrRandomID("vrev")
+		}
 		rev := VideoProjectRevisionSnapshot{
 			SchemaVersion:  VideoProjectRevisionSchemaVersion,
-			ID:             generateDeterministicOrRandomID("vrev"),
+			ID:             revisionID,
 			ProjectID:      project.ID,
 			RevisionNumber: 1,
 			AccountScopeID: input.AccountScopeID,
@@ -1931,7 +1938,10 @@ func (s *SessionStore) CreateVideoProject(input CreateVideoProjectInput) (VideoP
 		clientReqID = "create_video_project:" + project.ID
 	}
 
-	mutPayload, _ := json.Marshal(map[string]any{"project_id": project.ID, "title": project.Title})
+	mutPayload, _ := json.Marshal(map[string]any{
+		"project_id": project.ID, "initial_revision_id": input.InitialRevisionID, "title": project.Title,
+		"project_metadata": input.Metadata, "session_metadata": input.SessionMetadata, "attachment_message": input.AttachmentMessage,
+	})
 	hash := sha256.Sum256(mutPayload)
 	payloadHash := hex.EncodeToString(hash[:])
 
@@ -1948,6 +1958,35 @@ func (s *SessionStore) CreateVideoProject(input CreateVideoProjectInput) (VideoP
 			Revision: revision,
 		},
 		NowUnixMs: now,
+	}
+	if len(input.SessionMetadata) > 0 || input.AttachmentMessage != nil {
+		session, ok, err := s.GetSession(input.SessionID)
+		if err != nil {
+			return VideoProjectSnapshot{}, nil, err
+		}
+		if !ok {
+			return VideoProjectSnapshot{}, nil, errors.New("video project session not found")
+		}
+		if len(input.SessionMetadata) > 0 {
+			metadata := cloneSessionMetadataMap(session.Metadata)
+			if metadata == nil {
+				metadata = make(map[string]any, len(input.SessionMetadata))
+			}
+			for key, value := range input.SessionMetadata {
+				metadata[key] = cloneSessionMetadataValue(value)
+			}
+			session.Metadata = metadata
+		}
+		if input.AttachmentMessage != nil {
+			session.MessageCount++
+			session.LastMessageAt = now
+			message := *input.AttachmentMessage
+			message.Metadata = cloneSessionMetadataMap(input.AttachmentMessage.Metadata)
+			mutation.Message = &message
+		}
+		if len(input.SessionMetadata) > 0 || input.AttachmentMessage != nil {
+			mutation.Session = &session
+		}
 	}
 
 	if _, err := s.ApplyV3SessionMutation(mutation); err != nil {

@@ -96,6 +96,22 @@ func TestBuildInputProjectsSelectedVideoProjectAndRevisionContext(t *testing.T) 
 	}
 }
 
+func TestBuildInputProjectsDurableVideoLibraryAttachmentSystemContext(t *testing.T) {
+	input := buildInput([]pebblestore.MessageSnapshot{{
+		Role: "system", Content: "Attached the selected exact video revision.",
+		Metadata: map[string]any{"source": "video_library_attachment", "creative_mode": "video", "video_project_id": "destination-project", "video_revision_id": "destination-revision"},
+	}})
+	if len(input) != 1 {
+		t.Fatalf("input = %#v", input)
+	}
+	content := input[0]["content"].([]map[string]any)[0]["text"].(string)
+	for _, want := range []string{"[system] Attached the selected exact video revision.", "Durable Video Studio attachment", "persisted with the session", "selected_project_id=destination-project", "selected_revision_id=destination-revision"} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("durable video attachment context missing %q: %s", want, content)
+		}
+	}
+}
+
 func TestBuildInputProjectsSelectedVideoStepAndPlayheadContext(t *testing.T) {
 	input := buildInput([]pebblestore.MessageSnapshot{{
 		Role: "user", Content: "Add a visual here.", Metadata: map[string]any{

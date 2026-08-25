@@ -495,7 +495,7 @@ func (s *Service) providerManagedVideoStudioImageGeneration(config providerToolI
 	}
 	launchSource := strings.ToLower(strings.TrimSpace(mapString(session.Metadata, "launch_source")))
 	return strings.EqualFold(strings.TrimSpace(mapString(session.Metadata, "experience")), "video_studio") &&
-		(launchSource == "video_tool" || launchSource == "chat_upgrade") &&
+		(launchSource == "video_tool" || launchSource == "video_library" || launchSource == "chat_upgrade") &&
 		strings.EqualFold(strings.TrimSpace(mapString(session.Metadata, "lineage_kind")), "video_project")
 }
 

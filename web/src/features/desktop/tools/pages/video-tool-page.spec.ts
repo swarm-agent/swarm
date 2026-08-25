@@ -30,6 +30,7 @@ import {
   videoStudioSessionMetadata,
   selectWorkspaceVideoRevision,
   workspaceVideoContextMetadata,
+  workspaceVideosForSession,
   type VideoClip,
   type WorkspaceVideoCatalogItemWire,
   type VideoProjectTimelineWire,
@@ -444,7 +445,7 @@ test('Video Studio loads standalone videos without a destination session and for
     calls.push(url)
     if (url === '/v1/workspace/video/projects?workspace_path=%2Fworkspace%2Fvideo&limit=200') return new Response(JSON.stringify({ videos: [{ project: { id: 'project-1', session_id: 'source-1', title: 'Launch', created_at: 1, updated_at: 1 }, revisions: null, related_sessions: null, source_session_id: 'source-1' }] }), { status: 200, headers: { 'Content-Type': 'application/json' } })
     if (url === '/v1/workspace/video/projects/fork') {
-      assert.deepEqual(JSON.parse(String(init?.body)), { workspace_path: '/workspace/video', source_session_id: 'source-1', source_project_id: 'project-1', source_revision_id: 'revision-7', destination_session_id: 'destination-1' })
+      assert.deepEqual(JSON.parse(String(init?.body)), { workspace_path: '/workspace/video', source_session_id: 'source-1', source_project_id: 'project-1', source_revision_id: 'revision-7', destination_session_id: 'destination-1', attach_to_session: false })
       return new Response(JSON.stringify({ project: { id: 'forked', session_id: 'destination-1', title: 'Launch', created_at: 2, updated_at: 2 }, revision: { id: 'forked-revision', project_id: 'forked', session_id: 'destination-1', revision_number: 1, timeline: { clips: [] }, created_at: 2 } }), { status: 201, headers: { 'Content-Type': 'application/json' } })
     }
     throw new Error(`unexpected fetch: ${url}`)
@@ -462,7 +463,7 @@ test('Video Studio loads standalone videos without a destination session and for
 test('Video Studio session metadata attaches exact standalone video identity for AI context', () => {
   const item = { project: { id: 'project-1', session_id: 'source-1', title: 'Launch', created_at: 1, updated_at: 1 }, revisions: [], source_session_id: 'source-1', related_sessions: [] } satisfies WorkspaceVideoCatalogItemWire
   assert.deepEqual(workspaceVideoContextMetadata(item, 'revision-7'), {
-    experience: 'video_studio', launch_source: 'video_library', lineage_kind: 'video_revision_fork',
+    experience: 'video_studio', launch_source: 'video_library', lineage_kind: 'video_project', creative_mode: 'video',
     source_session_id: 'source-1', source_video_project_id: 'project-1', source_video_revision_id: 'revision-7',
     video_context: { source_session_id: 'source-1', source_project_id: 'project-1', source_revision_id: 'revision-7', title: 'Launch' },
   })
@@ -929,6 +930,13 @@ test('standalone video library filters videos and related sessions', () => {
   assert.equal(filterWorkspaceVideoCatalog(items, 'missing').length, 0)
   assert.equal(selectWorkspaceVideoRevision(items[0])?.id, 'revision-2')
   assert.equal(selectWorkspaceVideoRevision(items[0], 'revision-1')?.id, 'revision-1')
+})
+
+test('workspace video session selection resolves one or multiple associated videos', () => {
+  const first = { project: { id: 'video-a', session_id: 'source-a', title: 'A', created_at: 1, updated_at: 1 }, revisions: [], source_session_id: 'source-a', related_sessions: [{ session_id: 'shared', title: 'Shared' }] } satisfies WorkspaceVideoCatalogItemWire
+  const second = { project: { id: 'video-b', session_id: 'source-b', title: 'B', created_at: 1, updated_at: 1 }, revisions: [], source_session_id: 'source-b', related_sessions: [{ session_id: 'shared', title: 'Shared' }] } satisfies WorkspaceVideoCatalogItemWire
+  assert.deepEqual(workspaceVideosForSession([first, second], 'source-a').map((item) => item.project.id), ['video-a'])
+  assert.deepEqual(workspaceVideosForSession([first, second], 'shared').map((item) => item.project.id), ['video-a', 'video-b'])
 })
 
 test('workspaceVideoContextMetadata carries exact standalone video revision identity', () => {

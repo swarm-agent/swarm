@@ -238,6 +238,47 @@ func (s *gitManageSessionService) ListSessionEventsBefore(id string, beforeSeq u
 	return out, nil
 }
 
+func TestManageSessionsGetIncludesDurableVideoStudioContext(t *testing.T) {
+	principal := identity.Principal{AccountScopeID: "account-1", UserID: "user-1"}
+	service := &gitManageSessionService{sessions: map[string]pebblestore.SessionSnapshot{
+		"video-session": {
+			ID: "video-session", AccountScopeID: principal.AccountScopeID, UserID: principal.UserID,
+			WorkspacePath: "/work/video", WorkspaceName: "video", Title: "Video continuation",
+			Metadata: map[string]any{
+				"creative_mode": "video", "experience": "video_studio",
+				"video_project_id": "destination-project", "video_revision_id": "destination-revision",
+				"source_session_id": "source-session", "source_video_project_id": "source-project", "source_video_revision_id": "source-revision",
+			},
+		},
+	}}
+	output, err := (&Runtime{sessions: service}).executeManageSessions(context.Background(), WorkspaceScope{Principal: principal}, map[string]any{"action": "get", "session_id": "video-session"})
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	for _, want := range []string{`"video_context"`, `"attached":true`, `"durable":true`, `"destination_project_id":"destination-project"`, `"destination_revision_id":"destination-revision"`, `"source_session_id":"source-session"`, `"source_project_id":"source-project"`, `"source_revision_id":"source-revision"`} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("get output missing %s: %s", want, output)
+		}
+	}
+}
+
+func TestManageSessionsGetOmitsIncompleteVideoContext(t *testing.T) {
+	principal := identity.Principal{AccountScopeID: "account-1", UserID: "user-1"}
+	service := &gitManageSessionService{sessions: map[string]pebblestore.SessionSnapshot{
+		"video-session": {
+			ID: "video-session", AccountScopeID: principal.AccountScopeID, UserID: principal.UserID,
+			Metadata: map[string]any{"creative_mode": "video", "video_project_id": "project-without-revision"},
+		},
+	}}
+	output, err := (&Runtime{sessions: service}).executeManageSessions(context.Background(), WorkspaceScope{Principal: principal}, map[string]any{"action": "get", "session_id": "video-session"})
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if strings.Contains(output, `"video_context"`) {
+		t.Fatalf("incomplete context must fail closed: %s", output)
+	}
+}
+
 func TestManageSessionsSearchDefaultsToVisibleAuthority(t *testing.T) {
 	service := &gitManageSessionService{searchItems: []pebblestore.V3SessionSearchItem{{ID: "visible-1", Title: "Visible"}}}
 	output, err := (&Runtime{sessions: service}).executeManageSessions(context.Background(), WorkspaceScope{}, map[string]any{"action": "search", "query": "visible"})

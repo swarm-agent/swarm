@@ -1,7 +1,7 @@
 import { type CSSProperties, type PointerEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useMatchRoute, useNavigate } from '@tanstack/react-router'
-import { Download, Eye, EyeOff, Film, FolderOpen, GitFork, Library, ListVideo, Loader2, MessageSquare, Moon, Music, Pause, Play, RotateCcw, Search, Sparkles, Trash2, Volume2, VolumeX } from 'lucide-react'
+import { Download, Eye, EyeOff, Film, FolderOpen, Library, ListVideo, Loader2, MessageSquare, Moon, Music, Pause, Play, RotateCcw, Search, Sparkles, Trash2, Volume2, VolumeX } from 'lucide-react'
 import { Button } from '../../../../components/ui/button'
 import { Dialog, DialogBackdrop, DialogPanel } from '../../../../components/ui/dialog'
 import { ModalCloseButton } from '../../../../components/ui/modal-close-button'
@@ -148,8 +148,15 @@ export function filterWorkspaceVideoCatalog(items: WorkspaceVideoCatalogItemWire
     item.project.description,
     item.source_session_title,
     item.source_session_id,
-    ...item.related_sessions.map((session) => session.title),
+    ...item.related_sessions.flatMap((session) => [session.title, session.session_id]),
   ].some((value) => String(value ?? '').toLocaleLowerCase().includes(normalized)))
+}
+
+export function workspaceVideosForSession(items: WorkspaceVideoCatalogItemWire[], sessionId: string): WorkspaceVideoCatalogItemWire[] {
+  const normalizedSessionId = sessionId.trim()
+  if (!normalizedSessionId) return []
+  return items.filter((item) => item.source_session_id === normalizedSessionId
+    || item.related_sessions.some((session) => session.session_id === normalizedSessionId))
 }
 
 export function selectWorkspaceVideoRevision(item: WorkspaceVideoCatalogItemWire, revisionId?: string | null): VideoProjectRevisionSnapshotWire | null {
@@ -163,7 +170,8 @@ export function workspaceVideoContextMetadata(item: WorkspaceVideoCatalogItemWir
   return {
     experience: 'video_studio',
     launch_source: 'video_library',
-    lineage_kind: 'video_revision_fork',
+    lineage_kind: 'video_project',
+    creative_mode: 'video',
     source_session_id: item.source_session_id,
     source_video_project_id: item.project.id,
     source_video_revision_id: revisionId,
@@ -733,6 +741,7 @@ export async function forkWorkspaceVideoRevision(input: {
   sourceProjectId: string
   sourceRevisionId: string
   destinationSessionId: string
+  attachToSession?: boolean
 }): Promise<VideoProjectDetailWire> {
   const response = await requestJson<{ project?: VideoProjectSnapshotWire; revision?: VideoProjectRevisionSnapshotWire }>('/v1/workspace/video/projects/fork', {
     method: 'POST',
@@ -743,6 +752,7 @@ export async function forkWorkspaceVideoRevision(input: {
       source_project_id: input.sourceProjectId,
       source_revision_id: input.sourceRevisionId,
       destination_session_id: input.destinationSessionId,
+      attach_to_session: input.attachToSession === true,
     }),
   })
   if (!response.project || !response.revision) throw new Error('Video fork returned incomplete state')
@@ -1386,6 +1396,7 @@ export function VideoToolPage() {
   const selectedLibraryVideo = useMemo(() => videoLibrary.find((item) => item.project.id === selectedLibraryVideoId) ?? null, [selectedLibraryVideoId, videoLibrary])
   const selectedLibraryRevision = useMemo(() => selectedLibraryVideo ? selectWorkspaceVideoRevision(selectedLibraryVideo, previewRevisionId) : null, [previewRevisionId, selectedLibraryVideo])
   const libraryReadOnly = selectedLibraryVideo?.source_archived === true
+  const selectedSessionVideos = useMemo(() => workspaceVideosForSession(videoLibrary, selectedThreadId ?? ''), [selectedThreadId, videoLibrary])
   const routeVideoSession = useDesktopV3CacheSelector((state) => {
     const record = routeVideoSessionId ? state.sessionsById[routeVideoSessionId] : undefined
     return record?.kind === 'full' ? record.session : undefined
@@ -1420,8 +1431,8 @@ export function VideoToolPage() {
     if (!selectedThreadId) return null
     const thread = videoThreads.find((candidate) => candidate.id === selectedThreadId)
     if (thread) return thread
-    if (selectedLibraryVideo?.source_session_id === selectedThreadId) return {
-      id: selectedLibraryVideo.source_session_id,
+    if (selectedLibraryVideo && (selectedLibraryVideo.source_session_id === selectedThreadId || selectedLibraryVideo.related_sessions.some((session) => session.session_id === selectedThreadId))) return {
+      id: selectedThreadId,
       title: selectedLibraryVideo.source_session_title || selectedLibraryVideo.project.title || 'Video source session',
       workspacePath: selectedWorkspacePath,
       workspaceName: selectedWorkspaceName,
@@ -1859,22 +1870,10 @@ export function VideoToolPage() {
     }
   }, [navigate, routeWorkspaceSlug])
 
-  const handleSelectVideoSession = useCallback((sessionId: string) => {
-    const normalizedSessionId = sessionId.trim()
-    if (!normalizedSessionId) return
-    setSelectedLibraryVideoId(null)
-    setSelectedThreadId(normalizedSessionId)
-    const workspaceSlug = routeWorkspaceSlug
-      || workspaceSlugByPath.get(selectedWorkspacePath)
-      || workspaceRouteSlugBase({ path: selectedWorkspacePath, workspaceName: selectedWorkspaceName })
-    if (!workspaceSlug) return
-    void navigate({ to: '/$workspaceSlug/studio/$videoSessionId', params: { workspaceSlug, videoSessionId: normalizedSessionId } })
-  }, [navigate, routeWorkspaceSlug, selectedWorkspaceName, selectedWorkspacePath, workspaceSlugByPath])
-
-  const handleSelectLibraryVideo = useCallback((item: WorkspaceVideoCatalogItemWire) => {
+  const applyLibraryVideoSelection = useCallback((item: WorkspaceVideoCatalogItemWire, sessionId = item.source_session_id) => {
     const revision = selectWorkspaceVideoRevision(item)
     setSelectedLibraryVideoId(item.project.id)
-    setSelectedThreadId(item.source_session_id)
+    setSelectedThreadId(sessionId)
     setVideoProjects([item.project])
     setSelectedProjectId(item.project.id)
     setVideoProject(item.project)
@@ -1884,6 +1883,26 @@ export function VideoToolPage() {
     setPreviewRevisionId(null)
     setPlayhead(0)
   }, [])
+
+  const handleSelectVideoSession = useCallback((sessionId: string) => {
+    const normalizedSessionId = sessionId.trim()
+    if (!normalizedSessionId) return
+    const sessionVideos = workspaceVideosForSession(videoLibrary, normalizedSessionId)
+    if (sessionVideos.length === 1) applyLibraryVideoSelection(sessionVideos[0], normalizedSessionId)
+    else {
+      setSelectedLibraryVideoId(null)
+      setSelectedThreadId(normalizedSessionId)
+    }
+    const workspaceSlug = routeWorkspaceSlug
+      || workspaceSlugByPath.get(selectedWorkspacePath)
+      || workspaceRouteSlugBase({ path: selectedWorkspacePath, workspaceName: selectedWorkspaceName })
+    if (!workspaceSlug) return
+    void navigate({ to: '/$workspaceSlug/studio/$videoSessionId', params: { workspaceSlug, videoSessionId: normalizedSessionId } })
+  }, [applyLibraryVideoSelection, navigate, routeWorkspaceSlug, selectedWorkspaceName, selectedWorkspacePath, videoLibrary, workspaceSlugByPath])
+
+  const handleSelectLibraryVideo = useCallback((item: WorkspaceVideoCatalogItemWire) => {
+    applyLibraryVideoSelection(item)
+  }, [applyLibraryVideoSelection])
 
   const handleStartSessionFromLibrary = useCallback(async () => {
     if (!selectedLibraryVideo || !selectedLibraryRevision || !selectedSessionRoute || !selectedWorkspacePath || !selectedWorkspaceName) return
@@ -1904,12 +1923,16 @@ export function VideoToolPage() {
             sourceProjectId: selectedLibraryVideo.project.id,
             sourceRevisionId: selectedLibraryRevision.id,
             destinationSessionId,
+            attachToSession: true,
           })
         },
       })
       queryClient.setQueryData<VideoThreadRecord[]>(['video-tool-threads', selectedWorkspacePath], (current = []) => [createdThread, ...current.filter((thread) => thread.id !== createdThread.id)])
-      await queryClient.invalidateQueries({ queryKey: ['video-library', selectedWorkspacePath] })
+      setSelectedLibraryVideoId(null)
+      setSelectedThreadId(createdThread.id)
       handleSelectVideoSession(createdThread.id)
+      void queryClient.invalidateQueries({ queryKey: ['video-library', selectedWorkspacePath] })
+      void queryClient.invalidateQueries({ queryKey: ['video-tool-threads', selectedWorkspacePath] })
     } catch (error) {
       setCreateError(error instanceof Error ? error.message : String(error))
     } finally {
@@ -2459,6 +2482,39 @@ export function VideoToolPage() {
     }
   }, [movieDuration, playheadX])
 
+  const videoLibraryNavigation = (
+    <section className="border border-[color-mix(in_srgb,var(--app-primary)_38%,var(--app-border))] bg-[color-mix(in_srgb,var(--app-primary)_6%,var(--app-surface))] p-3" aria-label="Standalone video library">
+      <div className="flex items-start gap-2">
+        <span className="grid h-8 w-8 shrink-0 place-items-center bg-[var(--app-primary)] text-[var(--app-primary-foreground)]"><Library size={15} /></span>
+        <div className="min-w-0">
+          <h2 className="text-[12px] font-semibold text-[var(--app-text)]">Browse video library</h2>
+          <p className="mt-1 text-[10px] leading-4 text-[var(--app-text-muted)]">Choose any retained video and iteration. Then start a session with that exact cut already attached for AI.</p>
+        </div>
+        {videoLibraryQueryResult.isLoading ? <Loader2 size={12} className="ml-auto shrink-0 animate-spin" /> : null}
+      </div>
+      <label className="relative mt-3 block">
+        <Search size={12} className="pointer-events-none absolute left-2.5 top-2.5 text-[var(--app-text-subtle)]" />
+        <input value={videoLibraryQuery} onChange={(event) => setVideoLibraryQuery(event.target.value)} className="h-8 w-full border border-[var(--app-border)] bg-[var(--app-bg)] pl-7 pr-2 text-[11px]" placeholder="Filter videos or related sessions" aria-label="Filter video library" />
+      </label>
+      {videoLibraryQueryResult.isError ? <p className="py-2 text-[10px] text-red-400">{videoLibraryQueryResult.error instanceof Error ? videoLibraryQueryResult.error.message : 'Could not load video library.'}</p> : null}
+      <select aria-label="Selected library video" className="mt-2 h-9 w-full border border-[var(--app-border)] bg-[var(--app-bg)] px-2 text-[11px] font-medium text-[var(--app-text)]" value={selectedLibraryVideoId ?? ''} onChange={(event) => { const item = videoLibrary.find((candidate) => candidate.project.id === event.currentTarget.value); if (item) handleSelectLibraryVideo(item) }}>
+        <option value="">{filteredVideoLibrary.length === 0 ? (videoLibrary.length === 0 ? 'No retained videos' : 'No matching videos') : 'Select a video to open…'}</option>
+        {filteredVideoLibrary.map((item) => <option key={`${item.source_session_id}:${item.project.id}`} value={item.project.id}>{item.project.title || 'Untitled video'}{item.source_archived ? ' · archived source' : ''}</option>)}
+      </select>
+      {!selectedLibraryVideo && selectedSessionVideos.length > 1 ? <div className="mt-3"><p className="text-[9px] uppercase tracking-[0.14em] text-[var(--app-text-subtle)]">Videos in this session</p><div className="mt-1 grid gap-1">{selectedSessionVideos.map((item) => <button key={item.project.id} type="button" className="truncate px-2 py-1 text-left text-[10px] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]" onClick={() => handleSelectLibraryVideo(item)}>{item.project.title || 'Untitled video'} · {item.revisions.length} iteration{item.revisions.length === 1 ? '' : 's'}</button>)}</div></div> : null}
+      {selectedLibraryVideo ? <div className="mt-3 border-t border-[var(--app-border)] pt-3">
+        <p className="truncate text-[11px] font-semibold text-[var(--app-text)]">{selectedLibraryVideo.project.title || 'Untitled video'}</p>
+        <p className="mt-1 text-[9px] text-[var(--app-text-subtle)]">{libraryReadOnly ? 'Archived source · remains read-only' : 'Retained video · source stays unchanged'}</p>
+        <label className="mt-3 block text-[9px] uppercase tracking-[0.14em] text-[var(--app-text-subtle)]">Exact iteration
+          <select aria-label="Selected video iteration" className="mt-1 h-8 w-full border border-[var(--app-border)] bg-[var(--app-bg)] px-2 text-[10px] normal-case tracking-normal text-[var(--app-text)]" value={selectedLibraryRevision?.id ?? ''} onChange={(event) => handlePreviewRevision(event.currentTarget.value || null)}>{[...selectedLibraryVideo.revisions].sort((left, right) => left.revision_number - right.revision_number).map((revision) => <option key={revision.id} value={revision.id}>r{revision.revision_number} · {revision.change_summary || revision.id}</option>)}</select>
+        </label>
+        <Button className="mt-3 h-auto min-h-9 w-full justify-center px-3 py-2 text-[11px]" onClick={() => void handleStartSessionFromLibrary()} disabled={!selectedLibraryRevision || !selectedSessionRoute || startingFromLibrary}>{startingFromLibrary ? <Loader2 size={12} className="animate-spin" /> : <MessageSquare size={12} />}Start new session with r{selectedLibraryRevision?.revision_number ?? 0} attached</Button>
+        <p className="mt-2 text-[9px] leading-4 text-[var(--app-text-muted)]">The new session opens immediately, is placed first in Video sessions, and keeps this exact revision in durable AI context.</p>
+        <div className="mt-3"><p className="text-[9px] uppercase tracking-[0.14em] text-[var(--app-text-subtle)]">Related sessions</p><div className="mt-1 grid gap-1">{selectedLibraryVideo.related_sessions.map((session) => <button key={session.session_id} type="button" className={`truncate px-2 py-1 text-left text-[10px] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] ${selectedThreadId === session.session_id ? 'bg-[var(--app-surface-active)] text-[var(--app-text)]' : ''}`} onClick={() => handleSelectVideoSession(session.session_id)}>{session.title || 'Video session'}{session.archived ? ' · archived' : ''}</button>)}</div></div>
+      </div> : null}
+    </section>
+  )
+
   return (
     <div className="absolute inset-0 flex min-h-0 flex-col overflow-hidden bg-[var(--app-bg)] text-[var(--app-text)]">
         <header className="flex min-h-[60px] shrink-0 items-center justify-between gap-3 border-b border-[var(--app-border)] bg-[var(--app-surface)] px-3 pb-2 pt-[calc(var(--app-safe-area-top)+0.5rem)] sm:h-[60px] sm:px-4 sm:py-0">
@@ -2493,7 +2549,7 @@ export function VideoToolPage() {
             <SwarmToolSidebar
               layoutClassName="flex max-h-[48dvh] min-h-0 w-full shrink-0 flex-col overflow-hidden border-b border-[var(--app-border)] px-3 py-2 font-mono text-[12px] text-[var(--app-text-muted)] lg:mr-5 lg:max-h-none lg:w-[300px] lg:flex-none lg:border-b-0 lg:border-r lg:px-0 lg:py-5 lg:pl-3 lg:pr-4"
               childrenClassName="mt-3 min-h-0 flex-1 overflow-y-auto"
-              compactSelectedSession={Boolean(selectedThread)}
+              compactSelectedSession={false}
               backLabel={routeWorkspaceSlug ? 'Workspace' : 'Launcher'}
               onBack={handleBackToWorkspace}
               darkModeEnabled={blackModeEnabled}
@@ -2542,6 +2598,7 @@ export function VideoToolPage() {
                 { id: 'show-files', label: revealingStorage ? 'Opening…' : 'Show files', icon: <FolderOpen size={14} />, suffix: 'local', onClick: () => void handleRevealVideoStorage(), disabled: !selectedThread || revealingStorage || Boolean(selectedLibraryVideo) },
                 { id: 'session-mode', label: 'Open session mode', icon: <MessageSquare size={14} />, suffix: 'chat', onClick: handleOpenSessionMode, disabled: !selectedThread || !routeWorkspaceSlug || Boolean(selectedLibraryVideo) },
               ]}
+              beforeSessions={videoLibraryNavigation}
             >
               {selectedThread ? (
                 <div className="min-h-0">
@@ -2596,19 +2653,6 @@ export function VideoToolPage() {
                 <Button variant="outline" style={darkOverrideButtonStyle} className={`h-9 w-9 rounded-xl px-0 ${blackModeEnabled ? 'border-[var(--video-tool-user-theme-accent)] bg-[var(--video-tool-user-theme-surface)] text-[var(--video-tool-user-theme-text)] hover:bg-[var(--video-tool-user-theme-surface-hover)]' : ''}`} onClick={() => setBlackModeEnabled((enabled) => !enabled)} aria-label="Toggle dark mode override for this page" aria-pressed={blackModeEnabled} title="Toggle dark mode override for this page"><Moon size={14} aria-hidden="true" /></Button>
                 <Button variant="outline" className="h-9 rounded-xl px-3 text-xs" onClick={handleOpenPicker} disabled={!selectedThread || Boolean(selectedLibraryVideo)}><FolderOpen size={14} />Add source</Button>
               </div>
-
-              <section className="mb-5 border border-[var(--app-border)] bg-[var(--app-surface)] p-4" aria-label="Standalone video library">
-                <div className="flex flex-wrap items-center justify-between gap-3">
-                  <div><div className="flex items-center gap-2"><Library size={16} className="text-[var(--app-primary)]" /><h2 className="text-sm font-semibold">Video library</h2></div><p className="mt-1 text-xs text-[var(--app-text-muted)]">Open retained videos directly, including videos whose source session is archived.</p></div>
-                  <label className="relative min-w-[220px] flex-1 sm:max-w-sm"><Search size={14} className="pointer-events-none absolute left-3 top-2.5 text-[var(--app-text-subtle)]" /><input value={videoLibraryQuery} onChange={(event) => setVideoLibraryQuery(event.target.value)} className="h-9 w-full border border-[var(--app-border)] bg-[var(--app-bg)] pl-9 pr-3 text-xs" placeholder="Filter videos or related sessions" aria-label="Filter video library" /></label>
-                </div>
-                {videoLibraryQueryResult.isLoading ? <p className="mt-4 text-xs text-[var(--app-text-muted)]"><Loader2 size={13} className="mr-2 inline animate-spin" />Loading videos…</p> : videoLibraryQueryResult.isError ? <p className="mt-4 text-xs text-red-400">{videoLibraryQueryResult.error instanceof Error ? videoLibraryQueryResult.error.message : 'Could not load video library.'}</p> : filteredVideoLibrary.length === 0 ? <p className="mt-4 border border-dashed border-[var(--app-border)] p-4 text-xs text-[var(--app-text-muted)]">{videoLibrary.length === 0 ? 'No retained videos in this workspace.' : 'No videos match this filter.'}</p> : <div className="mt-4 grid gap-2 sm:grid-cols-2 xl:grid-cols-3">{filteredVideoLibrary.map((item) => {
-                  const revision = selectWorkspaceVideoRevision(item)
-                  const selected = selectedLibraryVideoId === item.project.id
-                  return <button key={`${item.source_session_id}:${item.project.id}`} type="button" onClick={() => handleSelectLibraryVideo(item)} className={`border p-3 text-left ${selected ? 'border-[var(--app-primary)] bg-[color-mix(in_srgb,var(--app-primary)_8%,transparent)]' : 'border-[var(--app-border)] bg-[var(--app-bg)] hover:border-[var(--app-border-strong)]'}`}><div className="flex items-start justify-between gap-2"><span className="truncate text-sm font-medium">{item.project.title || 'Untitled video'}</span>{item.source_archived ? <span className="shrink-0 text-[9px] uppercase tracking-wider text-amber-400">archived source</span> : null}</div><p className="mt-2 text-[10px] text-[var(--app-text-muted)]">{item.revisions.length} iteration{item.revisions.length === 1 ? '' : 's'} · latest r{revision?.revision_number ?? 0}</p><p className="mt-1 truncate text-[10px] text-[var(--app-text-subtle)]">Source: {item.source_session_title || item.source_session_id}</p></button>
-                })}</div>}
-                {selectedLibraryVideo ? <div className="mt-4 border-t border-[var(--app-border)] pt-4"><div className="flex flex-wrap items-start justify-between gap-3"><div><p className="text-sm font-semibold">{selectedLibraryVideo.project.title || 'Untitled video'}</p><p className="mt-1 text-xs text-[var(--app-text-muted)]">Browsing exact retained revisions. The source remains {libraryReadOnly ? 'archived and read-only' : 'unchanged'}.</p></div><Button onClick={() => void handleStartSessionFromLibrary()} disabled={!selectedLibraryRevision || !selectedSessionRoute || startingFromLibrary}>{startingFromLibrary ? <Loader2 size={13} className="animate-spin" /> : <GitFork size={13} />}Start session from r{selectedLibraryRevision?.revision_number ?? 0}</Button></div><div className="mt-3 flex flex-wrap gap-2" aria-label="Video revisions">{[...selectedLibraryVideo.revisions].sort((a, b) => a.revision_number - b.revision_number).map((revision) => <Button key={revision.id} variant={selectedLibraryRevision?.id === revision.id ? 'default' : 'outline'} className="h-7 px-2 text-[10px]" onClick={() => handlePreviewRevision(revision.id)}>r{revision.revision_number}</Button>)}</div><div className="mt-3"><p className="text-[10px] uppercase tracking-[0.15em] text-[var(--app-text-subtle)]">Related sessions</p><div className="mt-2 flex flex-wrap gap-2">{selectedLibraryVideo.related_sessions.map((session) => <Button key={session.session_id} variant="outline" className="h-7 px-2 text-[10px]" disabled={session.archived} onClick={() => handleSelectVideoSession(session.session_id)}>{session.title || 'Video session'}{session.archived ? ' · archived' : ''}</Button>)}</div></div></div> : null}
-              </section>
 
               {!selectedThread ? (
                 <div className="grid min-h-full place-items-center border border-dashed border-[var(--app-border)] bg-[var(--app-surface)] px-6 py-16 text-center">

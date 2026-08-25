@@ -69,6 +69,38 @@ func TestListVideoProjectsForAccountCrossSession(t *testing.T) {
 	}
 }
 
+func TestVideoProjectCreationCanAttachDurableSessionContext(t *testing.T) {
+	store, cleanup := newTestSessionStoreForVideoProject(t)
+	defer cleanup()
+	createTestSession(t, store, "account", "user", "session")
+
+	metadata := map[string]any{"experience": "video_studio", "launch_source": "video_library", "lineage_kind": "video_project", "video_project_id": "project", "video_revision_id": "revision"}
+	project, revision, err := store.CreateVideoProject(CreateVideoProjectInput{
+		AccountScopeID: "account", UserID: "user", SessionID: "session", ProjectID: "project", InitialRevisionID: "revision", Title: "Attached video",
+		InitialTimeline:   &VideoProjectTimeline{OutputPreset: VideoPresetLandscape1080p, Clips: []VideoTimelineClip{}, Transitions: []VideoTimelineTransition{}},
+		SessionMetadata:   metadata,
+		AttachmentMessage: &MessageSnapshot{ID: "attachment-message", Role: "system", Content: "Attached exact video revision.", Metadata: map[string]any{"source": "video_library_attachment", "creative_mode": "video", "video_project_id": "project", "video_revision_id": "revision"}},
+		NowUnixMs:         200,
+	})
+	if err != nil {
+		t.Fatalf("create attached video project: %v", err)
+	}
+	if revision == nil || project.ID != "project" || revision.ID != "revision" {
+		t.Fatalf("unexpected attached project state: project=%+v revision=%+v", project, revision)
+	}
+	session, ok, err := store.GetSession("session")
+	if err != nil || !ok {
+		t.Fatalf("read attached session: found=%v err=%v", ok, err)
+	}
+	if session.Metadata["video_project_id"] != "project" || session.Metadata["video_revision_id"] != "revision" || session.MessageCount != 1 || session.LastMessageAt != 200 || session.UpdatedAt != 200 {
+		t.Fatalf("session attachment context was not persisted and sorted: %+v", session)
+	}
+	messages, err := store.ListMessages("session", 0, 10)
+	if err != nil || len(messages) != 1 || messages[0].ID != "attachment-message" || messages[0].Metadata["source"] != "video_library_attachment" {
+		t.Fatalf("durable attachment message=%+v err=%v", messages, err)
+	}
+}
+
 func TestVideoProjectCreationAndRevisions(t *testing.T) {
 	store, cleanup := newTestSessionStoreForVideoProject(t)
 	defer cleanup()

@@ -727,6 +727,9 @@ func buildInput(messages []pebblestore.MessageSnapshot) []map[string]any {
 			if isToolDBDebugMessage(content) {
 				continue
 			}
+			if videoContext := videoStudioMessageContextForProvider(message.Metadata); videoContext != "" {
+				content = strings.TrimSpace(content + "\n\n" + videoContext)
+			}
 			if attachedPlanText := strings.TrimSpace(mapString(message.Metadata, contextCompactionPlanTextMetadataKey)); attachedPlanText != "" {
 				content = strings.TrimSpace(content + "\n\nActive session plan (still in effect after compaction):\n\n" + attachedPlanText)
 			}
@@ -807,6 +810,9 @@ func videoStudioMessageContextForProvider(metadata map[string]any) string {
 		transitionDurationMs = 0
 	}
 	lines := []string{"Video Studio selection (UI context only; verify durable state with manage_video before proposing edits):"}
+	if strings.EqualFold(strings.TrimSpace(mapString(metadata, "source")), "video_library_attachment") {
+		lines = []string{"Durable Video Studio attachment (persisted with the session; use the destination project and revision as the attached starting state):"}
+	}
 	if projectID != "" {
 		lines = append(lines, "- selected_project_id="+projectID)
 	}
