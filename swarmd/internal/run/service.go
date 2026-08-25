@@ -1822,6 +1822,7 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 		}
 		stepInstructions = strings.TrimSpace(stepInstructions + "\n\n" + runStateInstructions)
 		stepToolDefinitions := MaterializeSessionMediaTool(toolDefinitions, mediaContract)
+		stepToolDefinitions = MaterializeSessionVideoTool(stepToolDefinitions, sessionSnapshot.Metadata)
 		if executionMode == sessionruntime.ModePlan && pebblestore.AgentExitPlanModeEnabled(agentProfile) && planContextGuard.beginDecision() {
 			warning := planContextGuard.warningInstructions()
 			stepInstructions = strings.TrimSpace(stepInstructions + "\n\n" + warning)

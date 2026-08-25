@@ -106,6 +106,12 @@ func manageVideoActionNames(studio bool) []string {
 	return names
 }
 
+// ManageVideoActionNames returns the canonical action enum for provider schema
+// materialization. Video Studio callers receive only actions the runtime allows.
+func ManageVideoActionNames(studio bool) []string {
+	return manageVideoActionNames(studio)
+}
+
 func manageVideoAction(action string) (manageVideoActionSpec, bool) {
 	for _, spec := range manageVideoActionRegistry {
 		if spec.Name == action {
@@ -246,9 +252,6 @@ func (r *Runtime) executeManageVideo(ctx context.Context, scope WorkspaceScope, 
 	}
 	action := strings.ToLower(strings.TrimSpace(asString(args["action"])))
 	requestedAction := action
-	if _, valid := manageVideoAction(action); !valid {
-		return "", fmt.Errorf("unsupported manage_video action %q; nearest valid actions: %s", action, strings.Join(nearestManageVideoActions(action, 3), ", "))
-	}
 	if action == "propose_plan" {
 		// Providers get a purpose-specific action for atomic visual plans while
 		// storage continues to use the revision-gated edit proposal authority.
@@ -290,7 +293,11 @@ func (r *Runtime) executeManageVideo(ctx context.Context, scope WorkspaceScope, 
 		return "", studioErr
 	}
 	allowedActions := manageVideoActionNames(studio)
-	if spec, _ := manageVideoAction(requestedAction); studio && !spec.StudioAllowed {
+	spec, validAction := manageVideoAction(requestedAction)
+	if !validAction {
+		return "", fmt.Errorf("unsupported manage_video action %q; nearest valid actions: %s", requestedAction, strings.Join(nearestManageVideoActionsFrom(requestedAction, allowedActions, 3), ", "))
+	}
+	if studio && !spec.StudioAllowed {
 		return "", fmt.Errorf("Video Studio AI cannot use manage_video action %q; allowed actions: %s", requestedAction, strings.Join(allowedActions, ", "))
 	}
 	response := map[string]any{"tool": "manage_video", "action": action, "status": "ok", "session_id": scope.SessionID, "path_id": toolPathID("manage_video"), "details_truncated": false}
@@ -327,12 +334,22 @@ func (r *Runtime) executeManageVideo(ctx context.Context, scope WorkspaceScope, 
 			if found {
 				response["project"] = safeVideoProject(project)
 				response["project_id"] = project.ID
-				if project.CurrentRevisionID != "" { if rev, ok, e := r.videoProjects.GetRevision(scope.Principal, projectSessionID, project.ID, project.CurrentRevisionID); e == nil && ok { response["current_revision"] = safeVideoProjectRevision(&rev) } }
-				confirmedID := project.ConfirmedRevisionID; if confirmedID == "" { confirmedID = project.CurrentRevisionID }
-				if confirmedID != "" { if rev, ok, e := r.videoProjects.GetRevision(scope.Principal, projectSessionID, project.ID, confirmedID); e == nil && ok { response["confirmed_revision"] = safeVideoProjectRevision(&rev) } }
-				if proposals, e := r.videoProjects.ListEditProposals(scope.Principal, projectSessionID, project.ID, 50); e == nil {
-					pending := make([]map[string]any, 0); for _, proposal := range proposals { if proposal.Status == pebblestore.VideoEditProposalStatusPending { pending = append(pending, safeVideoEditProposal(proposal)) } }; response["pending_proposals"] = pending
+				if project.CurrentRevisionID != "" {
+					rev, revisionFound, revisionErr := r.videoProjects.GetRevision(scope.Principal, projectSessionID, project.ID, project.CurrentRevisionID)
+					if revisionErr != nil { return "", revisionErr }
+					if !revisionFound { return "", fmt.Errorf("current video revision %q not found", project.CurrentRevisionID) }
+					response["current_revision"] = safeVideoProjectRevision(&rev)
 				}
+				confirmedID := project.ConfirmedRevisionID; if confirmedID == "" { confirmedID = project.CurrentRevisionID }
+				if confirmedID != "" {
+					rev, revisionFound, revisionErr := r.videoProjects.GetRevision(scope.Principal, projectSessionID, project.ID, confirmedID)
+					if revisionErr != nil { return "", revisionErr }
+					if !revisionFound { return "", fmt.Errorf("confirmed video revision %q not found", confirmedID) }
+					response["confirmed_revision"] = safeVideoProjectRevision(&rev)
+				}
+				proposals, proposalErr := r.videoProjects.ListEditProposals(scope.Principal, projectSessionID, project.ID, 50)
+				if proposalErr != nil { return "", proposalErr }
+				pending := make([]map[string]any, 0); for _, proposal := range proposals { if proposal.Status == pebblestore.VideoEditProposalStatusPending { pending = append(pending, safeVideoEditProposal(proposal)) } }; response["pending_proposals"] = pending
 			}
 		}
 	case "inspect_frames":
@@ -1544,9 +1561,13 @@ func safeVideoRenderJob(job pebblestore.VideoRenderJobSnapshot) map[string]any {
 }
 
 func nearestManageVideoActions(requested string, limit int) []string {
+	return nearestManageVideoActionsFrom(requested, manageVideoActionNames(false), limit)
+}
+
+func nearestManageVideoActionsFrom(requested string, actions []string, limit int) []string {
 	type candidate struct { name string; distance int }
-	items := make([]candidate, 0, len(manageVideoActionRegistry))
-	for _, spec := range manageVideoActionRegistry { items = append(items, candidate{spec.Name, editDistance(requested, spec.Name)}) }
+	items := make([]candidate, 0, len(actions))
+	for _, action := range actions { items = append(items, candidate{action, editDistance(requested, action)}) }
 	for i := 0; i < len(items); i++ { for j := i+1; j < len(items); j++ { if items[j].distance < items[i].distance || (items[j].distance == items[i].distance && items[j].name < items[i].name) { items[i], items[j] = items[j], items[i] } } }
 	if limit <= 0 || limit > len(items) { limit = len(items) }
 	out := make([]string, limit); for i := range out { out[i] = items[i].name }; return out

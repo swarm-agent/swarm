@@ -52,6 +52,10 @@ func TestManageVideoActionRegistryAndNearestSuggestions(t *testing.T) {
 	for _, forbidden := range []string{"create_revision", "restore_revision", "start_render"} {
 		for _, action := range studio { if action == forbidden { t.Fatalf("studio actions expose %q", forbidden) } }
 	}
+	studioNearest := nearestManageVideoActionsFrom("start_rendr", studio, len(studio))
+	for _, action := range studioNearest {
+		if action == "start_render" { t.Fatalf("studio nearest actions expose forbidden action: %#v", studioNearest) }
+	}
 }
 
 func TestParseMinimalVideoEditsNormalizesCanonicalClips(t *testing.T) {

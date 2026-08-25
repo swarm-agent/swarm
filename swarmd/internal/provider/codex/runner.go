@@ -487,6 +487,12 @@ func sanitizeCodexLiteralArray(value any) []any {
 	switch typed := value.(type) {
 	case []any:
 		return append([]any(nil), typed...)
+	case []string:
+		out := make([]any, len(typed))
+		for i, item := range typed {
+			out[i] = item
+		}
+		return out
 	default:
 		return nil
 	}
