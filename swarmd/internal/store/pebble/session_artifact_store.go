@@ -67,6 +67,7 @@ type SessionArtifactLineage struct {
 	PartID                  string `json:"part_id,omitempty"`
 	PartLabel               string `json:"part_label,omitempty"`
 	PartKind                string `json:"part_kind,omitempty"`
+	SelectedReviewTargetIDs string `json:"selected_review_target_ids,omitempty"`
 	RunID                   string `json:"run_id,omitempty"`
 	PlanID                  string `json:"plan_id,omitempty"`
 	CheckpointID            string `json:"checkpoint_id,omitempty"`
@@ -1161,6 +1162,7 @@ func normalizeArtifactLineage(lineage *SessionArtifactLineage) {
 	lineage.PartID = strings.TrimSpace(lineage.PartID)
 	lineage.PartLabel = strings.TrimSpace(lineage.PartLabel)
 	lineage.PartKind = strings.ToLower(strings.TrimSpace(lineage.PartKind))
+	lineage.SelectedReviewTargetIDs = strings.TrimSpace(lineage.SelectedReviewTargetIDs)
 	lineage.RunID = strings.TrimSpace(lineage.RunID)
 	lineage.PlanID = strings.TrimSpace(lineage.PlanID)
 	lineage.CheckpointID = strings.TrimSpace(lineage.CheckpointID)
@@ -1406,7 +1408,7 @@ func validateArtifactID(label, value string) error {
 }
 
 func validateArtifactLineage(lineage SessionArtifactLineage) error {
-	for _, value := range []string{lineage.ParentSessionID, lineage.SourceSessionID, lineage.SourceCollectionID, lineage.SourceVariantID, lineage.TaskCallID, lineage.ProgramID, lineage.ProgramJobID, lineage.ChildSessionID, lineage.IterationID, lineage.IterationSectionID, lineage.IterationSectionLabel, lineage.PartID, lineage.PartLabel, lineage.PartKind, lineage.RunID, lineage.PlanID, lineage.CheckpointID, lineage.AttemptID} {
+	for _, value := range []string{lineage.ParentSessionID, lineage.SourceSessionID, lineage.SourceCollectionID, lineage.SourceVariantID, lineage.TaskCallID, lineage.ProgramID, lineage.ProgramJobID, lineage.ChildSessionID, lineage.IterationID, lineage.IterationSectionID, lineage.IterationSectionLabel, lineage.PartID, lineage.PartLabel, lineage.PartKind, lineage.SelectedReviewTargetIDs, lineage.RunID, lineage.PlanID, lineage.CheckpointID, lineage.AttemptID} {
 		if len(value) > 256 {
 			return errors.New("artifact lineage metadata exceeds bounds")
 		}
@@ -1430,6 +1432,24 @@ func validateArtifactLineage(lineage SessionArtifactLineage) error {
 		}
 	} else if lineage.PartLabel == "" || lineage.PartKind == "" || lineage.SourceCollectionID == "" || lineage.SourceVariantID == "" || lineage.SourceEventSeq == 0 {
 		return errors.New("artifact part target lineage requires a label, kind, and exact source artifact")
+	}
+	if lineage.SelectedReviewTargetIDs != "" {
+		if lineage.PartID != "" || lineage.SourceCollectionID == "" || lineage.SourceVariantID == "" || lineage.SourceEventSeq == 0 {
+			return errors.New("artifact multi-target review lineage requires only a bounded id set and exact source artifact")
+		}
+		seen := map[string]struct{}{}
+		for _, id := range strings.Split(lineage.SelectedReviewTargetIDs, ",") {
+			if err := validateArtifactID("review target", id); err != nil {
+				return err
+			}
+			if _, duplicate := seen[id]; duplicate {
+				return errors.New("artifact multi-target review lineage contains duplicate ids")
+			}
+			seen[id] = struct{}{}
+		}
+		if len(seen) < 2 || len(seen) > SessionArtifactMaxParts {
+			return errors.New("artifact multi-target review lineage requires a bounded multi-target id set")
+		}
 	}
 	return nil
 }

@@ -99,6 +99,7 @@ type ArtifactRunContext struct {
 	PartLabel               string
 	PartKind                string
 	Part                    *pebblestore.SessionArtifactPart
+	SelectedReviewTargets   []pebblestore.SessionArtifactPart
 	SourceArtifact          *pebblestore.SessionArtifactSelectionReference
 	SourceComposition       *pebblestore.SessionArtifactComposition
 	SourcePartDefinition    *pebblestore.SessionArtifactPartDefinition
@@ -1431,7 +1432,28 @@ func artifactPrincipal(ctx context.Context, scope WorkspaceScope) (artifact.Prin
 		IterationID: strings.TrimSpace(run.IterationID), IterationIndex: run.IterationIndex, IterationLabel: strings.TrimSpace(run.IterationLabel), IterationTheme: strings.TrimSpace(run.IterationTheme),
 		IterationSectionID: strings.TrimSpace(run.IterationSectionID), IterationSectionLabel: strings.TrimSpace(run.IterationSectionLabel), IterationSectionStartMs: run.IterationSectionStartMs, IterationSectionEndMs: run.IterationSectionEndMs,
 		PartID: strings.TrimSpace(run.PartID), PartLabel: strings.TrimSpace(run.PartLabel), PartKind: strings.TrimSpace(run.PartKind),
+		SelectedReviewTargetIDs: artifactReviewTargetIDs(run.SelectedReviewTargets),
 	}, nil
+}
+
+func artifactReviewTargetIDs(targets []pebblestore.SessionArtifactPart) string {
+	if len(targets) == 0 {
+		return ""
+	}
+	ids := make([]string, 0, len(targets))
+	seen := make(map[string]struct{}, len(targets))
+	for _, target := range targets {
+		id := strings.TrimSpace(target.ID)
+		if id == "" {
+			continue
+		}
+		if _, duplicate := seen[id]; duplicate {
+			continue
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, id)
+	}
+	return strings.Join(ids, ",")
 }
 
 func parseArtifactCreate(args map[string]any, sessionID, callID string, packageArtifact bool) (artifact.CreateInput, []artifact.PackageEntry, error) {

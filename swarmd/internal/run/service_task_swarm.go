@@ -506,10 +506,14 @@ func composeTaskSwarmChildPrompt(request taskSwarmHydrationRequest, item taskSwa
 		}
 		if len(request.SectionTargets) != 0 {
 			encoded, _ := json.Marshal(request.SectionTargets)
-			b.WriteString("- selected authoritative artifact parts (immutable server-bound selection): ")
-			b.Write(encoded)
 			if request.FocusedParts {
+				b.WriteString("- selected authoritative artifact parts (immutable server-bound byte selection): ")
+				b.Write(encoded)
 				b.WriteString("\n- multipart contract: call manage_artifact action=read_parts once, edit every selected independently byte-bearing part and no others, then call manage_artifact action=publish_parts exactly once with one replacement per selected part. The server publishes all changed revisions as one atomic candidate composition and preserves every untouched exact part revision. Do not use create/create_package.\n")
+			} else {
+				b.WriteString("- selected source-bound review/edit targets on one complete artifact (immutable server-authenticated locators): ")
+				b.Write(encoded)
+				b.WriteString("\n- monolithic multi-target revision contract: these targets identify every region to change atomically, not separate bytes. Inspect the exact complete source artifact, change all selected regions together, preserve every non-target region, and publish exactly one complete revised artifact with one manage_artifact create or create_package call. Keep a single-file text/html source as text/html; do not call read_parts/publish_parts, convert it to a ZIP, or manufacture initial_parts. Include the source's complete review/edit target set in that same publication, retaining every selected locator.\n")
 			}
 		} else if request.SectionTarget != nil {
 			encoded, _ := json.Marshal(request.SectionTarget)

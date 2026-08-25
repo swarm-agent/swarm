@@ -283,6 +283,15 @@ func managedDesignerArtifactContext(parent pebblestore.SessionSnapshot, taskCall
 		run.SourceArtifact = &sourceCopy
 	}
 	if sectionTarget != nil || len(sectionTargets) != 0 {
+		if len(sectionTargets) != 0 {
+			run.SelectedReviewTargets = make([]pebblestore.SessionArtifactPart, 0, len(sectionTargets))
+			for _, target := range sectionTargets {
+				if target == nil {
+					continue
+				}
+				run.SelectedReviewTargets = append(run.SelectedReviewTargets, pebblestore.SessionArtifactPart{ID: target.ID, Label: target.Label, Kind: target.Kind, Description: target.Description, StartMs: target.StartMs, EndMs: target.EndMs, X: target.X, Y: target.Y, Width: target.Width, Height: target.Height, Page: target.Page, StateID: target.StateID, Selector: target.Selector})
+			}
+		}
 		if composition, ok := spec.SourceArguments["source_composition"].(pebblestore.SessionArtifactComposition); ok {
 			copy := composition
 			run.SourceComposition = &copy
@@ -4280,37 +4289,34 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 				return "", errors.New("task selected part count exceeds the artifact limit")
 			}
 			if sourceVariant.PartGraphState != pebblestore.SessionArtifactGraphAuthoritative || sourceVariant.Composition == nil {
-				if len(targets) != 1 {
-					return "", errors.New("task multiple selected parts require an authoritative artifact composition")
+				boundTargets, bindErr := authenticateTaskReviewTargets(sourceVariant, targets)
+				if bindErr != nil {
+					return "", bindErr
 				}
-				var reviewPart *pebblestore.SessionArtifactPart
-				for index := range sourceVariant.Parts {
-					if strings.TrimSpace(sourceVariant.Parts[index].ID) == strings.TrimSpace(targets[0].ID) {
-						reviewPart = &sourceVariant.Parts[index]
-						break
-					}
-				}
-				if reviewPart == nil {
-					return "", errors.New("task selected review part is unavailable on the authenticated exact source")
-				}
-				boundTarget := taskSectionTargetFromArtifactPart(*reviewPart)
-				if !equalTaskSectionTarget(targets[0], boundTarget) {
-					return "", errors.New("task section target locator does not match the authenticated review part")
-				}
-				// Locator-only review parts identify a bounded region of one complete
+				// Locator-only review parts identify bounded regions of one complete
 				// artifact; they are not independently byte-bearing composition parts.
-				// Keep the exact target in run lineage while leaving the Designer on the
-				// complete-artifact create protocol.
+				// Preserve the complete authenticated selection for worker hydration while
+				// leaving the Designer on the one-shot complete-artifact create protocol.
 				if parsed.Swarm != nil {
-					parsed.Swarm.SectionTarget = boundTarget
-					parsed.Swarm.SectionTargets = nil
+					if len(boundTargets) == 1 {
+						parsed.Swarm.SectionTarget = cloneTaskSwarmSectionTarget(boundTargets[0])
+						parsed.Swarm.SectionTargets = nil
+					} else {
+						parsed.Swarm.SectionTarget = nil
+						parsed.Swarm.SectionTargets = cloneTaskSwarmSectionTargets(boundTargets)
+					}
 				}
 				for index := range launchSpecs {
 					if launchSpecs[index].SourceArguments == nil {
 						launchSpecs[index].SourceArguments = map[string]any{}
 					}
-					launchSpecs[index].SourceArguments["section_target"] = boundTarget
-					delete(launchSpecs[index].SourceArguments, "section_targets")
+					if len(boundTargets) == 1 {
+						launchSpecs[index].SourceArguments["section_target"] = cloneTaskSwarmSectionTarget(boundTargets[0])
+						delete(launchSpecs[index].SourceArguments, "section_targets")
+					} else {
+						launchSpecs[index].SourceArguments["section_targets"] = cloneTaskSwarmSectionTargets(boundTargets)
+						delete(launchSpecs[index].SourceArguments, "section_target")
+					}
 				}
 				targets = nil
 			}
@@ -5676,6 +5682,45 @@ func latestTaskArtifactUseSelection(messages []pebblestore.MessageSnapshot) *peb
 
 func taskSectionTargetFromArtifactPart(part pebblestore.SessionArtifactPart) *taskSwarmSectionTarget {
 	return &taskSwarmSectionTarget{ID: part.ID, Label: part.Label, Kind: part.Kind, Description: part.Description, StartMs: part.StartMs, EndMs: part.EndMs, X: part.X, Y: part.Y, Width: part.Width, Height: part.Height, Page: part.Page, StateID: part.StateID, Selector: part.Selector}
+}
+
+func authenticateTaskReviewTargets(source pebblestore.SessionArtifactVariant, requested []*taskSwarmSectionTarget) ([]*taskSwarmSectionTarget, error) {
+	if len(requested) == 0 || len(requested) > pebblestore.SessionArtifactMaxParts {
+		return nil, errors.New("task selected review target count is invalid")
+	}
+	available := make(map[string]pebblestore.SessionArtifactPart, len(source.Parts))
+	for _, part := range source.Parts {
+		partID := strings.TrimSpace(part.ID)
+		if partID == "" {
+			continue
+		}
+		if _, duplicate := available[partID]; duplicate {
+			return nil, errors.New("task authenticated exact source contains duplicate review part ids")
+		}
+		available[partID] = part
+	}
+	bound := make([]*taskSwarmSectionTarget, 0, len(requested))
+	seen := make(map[string]struct{}, len(requested))
+	for _, target := range requested {
+		if target == nil {
+			return nil, errors.New("task selected review target is invalid")
+		}
+		partID := strings.TrimSpace(target.ID)
+		if _, duplicate := seen[partID]; duplicate {
+			return nil, errors.New("task selected review targets contain a duplicate")
+		}
+		seen[partID] = struct{}{}
+		part, ok := available[partID]
+		if !ok {
+			return nil, errors.New("task selected review part is unavailable on the authenticated exact source")
+		}
+		boundTarget := taskSectionTargetFromArtifactPart(part)
+		if !equalTaskSectionTarget(target, boundTarget) {
+			return nil, errors.New("task section target locator does not match the authenticated review part")
+		}
+		bound = append(bound, boundTarget)
+	}
+	return bound, nil
 }
 
 func taskSectionTargetFromArtifactDefinition(part pebblestore.SessionArtifactPartDefinition) *taskSwarmSectionTarget {

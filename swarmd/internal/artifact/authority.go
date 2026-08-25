@@ -61,6 +61,7 @@ type Principal struct {
 	PartID                  string
 	PartLabel               string
 	PartKind                string
+	SelectedReviewTargetIDs string
 }
 
 type CreateInput struct {
@@ -887,7 +888,8 @@ func (a *Authority) lineage(principal Principal, input CreateInput) pebblestore.
 		IterationID: strings.TrimSpace(principal.IterationID), IterationIndex: principal.IterationIndex, IterationLabel: strings.TrimSpace(principal.IterationLabel), IterationTheme: strings.TrimSpace(principal.IterationTheme),
 		IterationSectionID: strings.TrimSpace(principal.IterationSectionID), IterationSectionLabel: strings.TrimSpace(principal.IterationSectionLabel), IterationSectionStartMs: principal.IterationSectionStartMs, IterationSectionEndMs: principal.IterationSectionEndMs,
 		PartID: strings.TrimSpace(principal.PartID), PartLabel: strings.TrimSpace(principal.PartLabel), PartKind: strings.TrimSpace(principal.PartKind),
-		RunID: strings.TrimSpace(principal.RunID), PlanID: strings.TrimSpace(principal.PlanID), CheckpointID: strings.TrimSpace(principal.CheckpointID), AttemptID: strings.TrimSpace(principal.AttemptID),
+		SelectedReviewTargetIDs: strings.TrimSpace(principal.SelectedReviewTargetIDs),
+		RunID:                   strings.TrimSpace(principal.RunID), PlanID: strings.TrimSpace(principal.PlanID), CheckpointID: strings.TrimSpace(principal.CheckpointID), AttemptID: strings.TrimSpace(principal.AttemptID),
 		VideoProjectID: strings.TrimSpace(input.VideoProjectID), VideoRevisionID: strings.TrimSpace(input.VideoRevisionID), VideoRevisionEventSeq: input.VideoRevisionEventSeq,
 	}
 }

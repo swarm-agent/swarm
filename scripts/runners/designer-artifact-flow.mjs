@@ -18,12 +18,17 @@ const workspacePathOverride = String(option('--workspace-path', process.env.SWAR
 const suppliedToken = String(process.env.SWARM_RUNNER_TOKEN || '').trim()
 const stage = String(option('--stage', process.env.SWARM_RUNNER_STAGE || 'all')).trim().toLowerCase()
 const sessionOverride = String(option('--session-id', process.env.SWARM_RUNNER_SESSION_ID || '')).trim()
+const sourceSessionOverride = String(option('--source-session-id', process.env.SWARM_RUNNER_SOURCE_SESSION_ID || '')).trim()
+const sourceCollectionOverride = String(option('--source-collection-id', process.env.SWARM_RUNNER_SOURCE_COLLECTION_ID || '')).trim()
+const sourceVariantOverride = String(option('--source-variant-id', process.env.SWARM_RUNNER_SOURCE_VARIANT_ID || '')).trim()
+const sourceEventSeqOverride = Number(option('--source-event-seq', process.env.SWARM_RUNNER_SOURCE_EVENT_SEQ || '0'))
 
 if (!apiURL || !/^https?:\/\//.test(apiURL)) throw new Error('--api-url must be an http or https URL')
 if (!provider || !/^[a-z0-9._-]+$/.test(provider)) throw new Error('--provider is invalid')
 if (!Number.isFinite(timeoutMs) || timeoutMs < 300000) throw new Error('--timeout-ms must be at least 300000')
-if (!['root', 'focused', 'whole', 'managed', 'workspace', 'all'].includes(stage)) throw new Error('--stage must be root, focused, whole, managed, workspace, or all')
+if (!['root', 'focused', 'multi2', 'multi3', 'whole', 'managed', 'workspace', 'all'].includes(stage)) throw new Error('--stage must be root, focused, multi2, multi3, whole, managed, workspace, or all')
 if (stage !== 'root' && stage !== 'all' && !sessionOverride) throw new Error('--session-id is required for non-root stages')
+if (['multi2', 'multi3'].includes(stage) && (!sourceSessionOverride || !sourceCollectionOverride || !sourceVariantOverride || !Number.isInteger(sourceEventSeqOverride) || sourceEventSeqOverride <= 0)) throw new Error('multi-target stages require --source-session-id, --source-collection-id, --source-variant-id, and --source-event-seq')
 
 const testID = `designer-artifact-flow-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`
 const partContract = [
@@ -35,6 +40,8 @@ const commonGates = ['provider_runnable', 'model_selected', 'workspace_bound', '
 const stageGates = {
   root: [...commonGates, 'root_single_html', 'root_three_parts'],
   focused: [...commonGates, 'root_single_html', 'root_three_parts', 'focused_five_ready', 'focused_lineage'],
+  multi2: [...commonGates, 'multi_target_ready', 'multi_target_lineage', 'multi_target_parts_preserved'],
+  multi3: [...commonGates, 'multi_target_ready', 'multi_target_lineage', 'multi_target_parts_preserved'],
   whole: [...commonGates, 'focused_five_ready', 'focused_lineage', 'whole_five_ready', 'whole_lineage', 'whole_parts_preserved'],
   managed: [...commonGates, 'whole_five_ready', 'whole_lineage', 'managed_read_ready', 'managed_read_lineage'],
   workspace: [...commonGates, 'whole_five_ready', 'whole_lineage', 'workspace_designer_completed', 'workspace_file_visible'],
@@ -290,6 +297,41 @@ async function main() {
   result.ids.session_id = sessionID
   result.ids.desktop_path = `/${slug(binding.source_workspace_name || 'workspace')}/${sessionID}`
   result.gates.session_created = true
+
+  if (stage === 'multi2' || stage === 'multi3') {
+    const sourceRef = {
+      session_id: sourceSessionOverride,
+      collection_id: sourceCollectionOverride,
+      variant_id: sourceVariantOverride,
+      event_seq: sourceEventSeqOverride,
+    }
+    const targetCount = stage === 'multi2' ? 2 : 3
+    const selectedTargets = stage === 'multi2' ? [partContract[0], partContract[2]] : partContract
+    const targetIDs = selectedTargets.map((item) => item.id)
+    const selection = { ...sourceRef, action: 'use' }
+    const prompt = [
+      `Use the selected exact monolithic HTML artifact and remake exactly these ${targetCount} locator targets together: ${targetIDs.join(', ')}.`,
+      `Launch one managed Designer Iteration Swarm with count=1, source_artifact set to the exact selection, section_targets set to the complete exact ${targetCount}-target list including kind/start_ms/end_ms, and animation_profile motion_ui.`,
+      'The Designer must inspect the exact complete HTML, change every selected target atomically, preserve every non-target target plus all canonical IDs/timings, and publish exactly one complete text/html revision with one manage_artifact create call.',
+      'Do not use read_parts, publish_parts, read_part, publish_part, create_package, ZIP, initial_parts, workspace output, or retries through multipart tools.',
+      'Wait for the one ready candidate and finish.',
+    ].join(' ')
+    await postTurn(sessionID, stage, prompt, [selection])
+    const targetKey = targetIDs.join(',')
+    const candidates = await waitForArtifacts(sessionID, (item) => sameSource(item.lineage, sourceRef)
+      && String(item?.lineage?.selected_review_target_ids || '') === targetKey
+      && item.media_type === 'text/html', 1, `${stage} candidate`)
+    const candidate = candidates.sort((a, b) => Number(b.event_seq || 0) - Number(a.event_seq || 0))[0]
+    assert(hasPartContract(candidate), `${stage} candidate did not preserve the canonical part contract`)
+    result.references.source = sourceRef
+    result.references.multi_target = exactRef(candidate)
+    result.rounds.multi_target = [{ reference: exactRef(candidate), lineage: candidate.lineage, parts: candidate.parts }]
+    result.gates.multi_target_ready = true
+    result.gates.multi_target_lineage = sameSource(candidate.lineage, sourceRef) && String(candidate.lineage?.selected_review_target_ids || '') === targetKey
+    result.gates.multi_target_parts_preserved = hasPartContract(candidate)
+    result.result = 'PASS'
+    return
+  }
 
   if (stage === 'root' || stage === 'all') {
     const rootPrompt = [

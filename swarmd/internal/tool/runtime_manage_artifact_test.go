@@ -21,6 +21,13 @@ import (
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
+func TestArtifactReviewTargetIDsPreservesBoundedOrder(t *testing.T) {
+	targets := []pebblestore.SessionArtifactPart{{ID: "part-1"}, {ID: "part-3"}, {ID: "part-1"}}
+	if got := artifactReviewTargetIDs(targets); got != "part-1,part-3" {
+		t.Fatalf("artifactReviewTargetIDs = %q", got)
+	}
+}
+
 type fakeManagedImageGenerator struct {
 	calls        int
 	req          imagegen.ManagedGenerateRequest
