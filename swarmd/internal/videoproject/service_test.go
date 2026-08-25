@@ -357,7 +357,7 @@ func TestValidateTimelineArtifactsRejectsManagedMP4RangeAndMediaMismatches(t *te
 	store.artifacts["acc/session/motion/clip-1"] = pebblestore.SessionArtifactVariant{ID: "clip-1", CollectionID: "motion", SessionID: "session", AccountScopeID: "acc", Status: pebblestore.SessionArtifactStatusReady, MediaType: "video/mp4", EventSeq: 8}
 	clip := pebblestore.VideoTimelineClip{
 		ID: "motion", SourceKind: pebblestore.VideoClipSourceKindManagedArtifact, MediaType: "video/mp4",
-		ArtifactRef: &pebblestore.SessionArtifactSelectionReference{SessionID: "session", CollectionID: "motion", VariantID: "clip-1", EventSeq: 8},
+		ArtifactRef:   &pebblestore.SessionArtifactSelectionReference{SessionID: "session", CollectionID: "motion", VariantID: "clip-1", EventSeq: 8},
 		SourceStartMs: 500, SourceEndMs: 2500, DurationMs: 2000,
 	}
 	if err := svc.validateTimelineArtifacts(principal, "session", pebblestore.VideoProjectTimeline{Clips: []pebblestore.VideoTimelineClip{clip}}); err != nil {

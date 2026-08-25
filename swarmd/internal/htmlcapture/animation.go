@@ -23,7 +23,7 @@ import (
 )
 
 const (
-	AnimationVersion       = "swarm.animation/v1"
+	AnimationVersion          = "swarm.animation/v1"
 	MaxAnimationDurationMS    = 10 * 60 * 1000
 	MaxAnimationFPS           = 60
 	MaxAnimationFrames        = 36_000
