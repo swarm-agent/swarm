@@ -108,7 +108,7 @@ func (f *fakeArtifactAuthority) Create(_ context.Context, principal artifact.Pri
 	f.principal, f.created = principal, input
 	f.readBody = append([]byte(nil), input.Body...)
 	digest := sha256.Sum256(input.Body)
-	f.variant = pebblestore.SessionArtifactVariant{ID: input.VariantID, CollectionID: input.CollectionID, SessionID: principal.SessionID, EventSeq: 1, Status: pebblestore.SessionArtifactStatusReady, Filename: input.Filename, MediaType: input.MediaType, Size: int64(len(input.Body)), DigestSHA256: hex.EncodeToString(digest[:]), Presentation: input.Presentation, OutputRequirements: input.OutputRequirements, AnimationProfile: input.AnimationProfile}
+	f.variant = pebblestore.SessionArtifactVariant{ID: input.VariantID, CollectionID: input.CollectionID, SessionID: principal.SessionID, EventSeq: 1, Status: pebblestore.SessionArtifactStatusReady, Filename: input.Filename, MediaType: input.MediaType, Size: int64(len(input.Body)), DigestSHA256: hex.EncodeToString(digest[:]), Presentation: input.Presentation, OutputRequirements: input.OutputRequirements, AnimationProfile: input.AnimationProfile, Parts: append([]pebblestore.SessionArtifactPart(nil), input.Parts...)}
 	return f.variant, nil
 }
 func (f *fakeArtifactAuthority) CreateInitialComposition(_ context.Context, principal artifact.Principal, input artifact.CreateInitialCompositionInput) (pebblestore.SessionArtifactVariant, error) {
@@ -183,7 +183,7 @@ func (f *fakeArtifactAuthority) MaterializeBatchReferences(_ context.Context, pr
 }
 func (f *fakeArtifactAuthority) PublishWorkspace(_ context.Context, principal artifact.Principal, input artifact.CreateFileInput) (pebblestore.SessionArtifactVariant, error) {
 	f.principal, f.createdFromFile = principal, input
-	f.variant = pebblestore.SessionArtifactVariant{ID: input.VariantID, CollectionID: input.CollectionID, SessionID: principal.SessionID, EventSeq: 11, Status: pebblestore.SessionArtifactStatusReady, Filename: input.Filename, MediaType: input.MediaType, DigestSHA256: "published-digest", Size: 7, Presentation: input.Presentation, Lineage: pebblestore.SessionArtifactLineage{SourceSessionID: input.SourceSessionID, SourceCollectionID: input.SourceCollectionID, SourceVariantID: input.SourceVariantID, SourceEventSeq: input.SourceEventSeq}}
+	f.variant = pebblestore.SessionArtifactVariant{ID: input.VariantID, CollectionID: input.CollectionID, SessionID: principal.SessionID, EventSeq: 11, Status: pebblestore.SessionArtifactStatusReady, Filename: input.Filename, MediaType: input.MediaType, DigestSHA256: "published-digest", Size: 7, Presentation: input.Presentation, AnimationProfile: input.AnimationProfile, Lineage: pebblestore.SessionArtifactLineage{SourceSessionID: input.SourceSessionID, SourceCollectionID: input.SourceCollectionID, SourceVariantID: input.SourceVariantID, SourceEventSeq: input.SourceEventSeq}}
 	return f.variant, nil
 }
 func (f *fakeArtifactAuthority) Select(principal artifact.Principal, _, collectionID, variantID string) (pebblestore.SessionArtifactSelectionReference, error) {
@@ -1026,7 +1026,7 @@ func TestManageArtifactMaterializeBatchUsesExactReferencesAndReportsDigests(t *t
 }
 
 func TestManageArtifactPublishWorkspaceRejectsUnsafePrivateSourcesAndPreservesLineage(t *testing.T) {
-	authority := &fakeArtifactAuthority{}
+	authority := &fakeArtifactAuthority{variant: pebblestore.SessionArtifactVariant{ID: "source-variant", CollectionID: "source-collection", SessionID: "source-session", EventSeq: 42, Status: pebblestore.SessionArtifactStatusReady, MediaType: "text/plain"}}
 	runtime := NewRuntime(1)
 	runtime.SetArtifactAuthority(authority)
 	ctx, scope := artifactToolContext()
@@ -1070,6 +1070,34 @@ func TestManageArtifactPublishWorkspaceRejectsUnsafePrivateSourcesAndPreservesLi
 	}
 	if _, err := runtime.executeManageArtifact(ctx, scope, "traversal", map[string]any{"action": "publish_workspace", "source": "../outside.txt"}); err == nil || !strings.Contains(err.Error(), "canonical workspace-relative") {
 		t.Fatalf("traversal source error = %v", err)
+	}
+}
+
+func TestManageArtifactPublishWorkspaceInheritsOnlyAuthenticatedAnimationProfile(t *testing.T) {
+	authority := &fakeArtifactAuthority{variant: pebblestore.SessionArtifactVariant{ID: "source-variant", CollectionID: "source-collection", SessionID: "source-session", EventSeq: 42, Status: pebblestore.SessionArtifactStatusReady, MediaType: "text/html", AnimationProfile: reviewedMotionProfile(t)}}
+	runtime := NewRuntime(1)
+	runtime.SetArtifactAuthority(authority)
+	ctx, scope := artifactToolContext()
+	scope.PrimaryPath = t.TempDir()
+	if err := os.WriteFile(filepath.Join(scope.PrimaryPath, "motion.html"), []byte("motion"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	args := map[string]any{"action": "publish_workspace", "source": "motion.html", "source_session_id": "source-session", "source_collection_id": "source-collection", "source_variant_id": "source-variant", "source_event_seq": 42}
+	if _, err := runtime.executeManageArtifact(ctx, scope, "publish-motion", args); err != nil {
+		t.Fatal(err)
+	}
+	if authority.createdFromFile.AnimationProfile == nil || authority.createdFromFile.AnimationProfile.ProfileID != "motion_ui" || authority.reference.EventSeq != 42 {
+		t.Fatalf("workspace profile inheritance = %#v ref=%#v", authority.createdFromFile.AnimationProfile, authority.reference)
+	}
+	badProfile := *reviewedMotionProfile(t)
+	badProfile.RegistryVersion = "untrusted"
+	authority.variant.AnimationProfile = &badProfile
+	if _, err := runtime.executeManageArtifact(ctx, scope, "publish-bad-profile", args); err == nil || !strings.Contains(err.Error(), "incompatible animation profile snapshot") {
+		t.Fatalf("incompatible profile error = %v", err)
+	}
+	delete(args, "source_event_seq")
+	if _, err := runtime.executeManageArtifact(ctx, scope, "publish-incomplete", args); err == nil || !strings.Contains(err.Error(), "all four fields") {
+		t.Fatalf("incomplete source error = %v", err)
 	}
 }
 

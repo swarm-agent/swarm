@@ -64,6 +64,7 @@ func (r *Runtime) exportHTMLAnimation(ctx context.Context, principal artifact.Pr
 	if err != nil {
 		return pebblestore.SessionArtifactVariant{}, ref, nil, animationError("animation_renderer_failed", "canonical landscape video requirements are unavailable")
 	}
+	temporalParts := animationTemporalParts(files[entry], int64(manifest.DurationMS))
 	result, err := r.htmlAnimationCapture.RenderAnimation(ctx, htmlcapture.AnimationRequest{Entry: entry, Files: files, DurationMS: manifest.DurationMS, FPS: manifest.FPS})
 	if err != nil {
 		return pebblestore.SessionArtifactVariant{}, ref, requirements, normalizeAnimationRendererError(err)
@@ -85,7 +86,7 @@ func (r *Runtime) exportHTMLAnimation(ctx context.Context, principal artifact.Pr
 		CollectionID: collectionID, CollectionName: "HTML animation render", VariantID: variantID,
 		Filename: "html-animation.mp4", MediaType: "video/mp4",
 		Presentation:       pebblestore.SessionArtifactPresentation{Kind: "video", Label: "HTML animation", Previewable: true, Width: htmlcapture.Width, Height: htmlcapture.Height},
-		OutputRequirements: requirements, AnimationProfile: profile,
+		OutputRequirements: requirements, AnimationProfile: profile, Parts: temporalParts,
 		SourceSessionID: ref.SessionID, SourceCollectionID: ref.CollectionID, SourceVariantID: ref.VariantID, SourceEventSeq: ref.EventSeq,
 		Body: append([]byte(nil), result.MP4...), AutoAccept: true,
 	}
@@ -132,6 +133,33 @@ func parseAnimationManifest(html []byte) (animationManifest, error) {
 		return animationManifest{}, animationError("animation_manifest_invalid", "animation manifest version, duration, FPS, or frame count is outside fixed bounds")
 	}
 	return manifest, nil
+}
+
+func animationTemporalParts(html []byte, durationMS int64) []pebblestore.SessionArtifactPart {
+	compatible := false
+	for _, script := range artifactHTMLIterationManifest.FindAllSubmatch(html, -1) {
+		if !artifactHTMLIterationID.Match(script[1]) || !artifactHTMLManifestType.Match(script[1]) {
+			continue
+		}
+		var manifest artifactHTMLIterationManifestValue
+		decoder := json.NewDecoder(bytes.NewReader(script[2]))
+		decoder.DisallowUnknownFields()
+		if decoder.Decode(&manifest) == nil && ensureJSONEOF(decoder) == nil && manifest.Version == "swarm.iteration/v1" && manifest.DurationMS == durationMS {
+			compatible = true
+			break
+		}
+	}
+	if !compatible {
+		return nil
+	}
+	derived := deriveArtifactHTMLParts(html, "text/html")
+	parts := make([]pebblestore.SessionArtifactPart, 0, len(derived))
+	for _, part := range derived {
+		if part.Kind == "temporal" && part.StartMs >= 0 && part.EndMs > part.StartMs && part.EndMs <= durationMS {
+			parts = append(parts, part)
+		}
+	}
+	return parts
 }
 
 func validateAnimationMP4(data []byte) error {

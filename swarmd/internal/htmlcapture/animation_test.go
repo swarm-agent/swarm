@@ -14,6 +14,10 @@ func TestValidateAnimationRequestBounds(t *testing.T) {
 	if frames, err := validateAnimationRequest(valid); err != nil || frames != 29 {
 		t.Fatalf("valid request frames=%d err=%v", frames, err)
 	}
+	long := AnimationRequest{Entry: "index.html", Files: valid.Files, DurationMS: 74_920, FPS: 60}
+	if frames, err := validateAnimationRequest(long); err != nil || frames != 4496 {
+		t.Fatalf("long request frames=%d err=%v", frames, err)
+	}
 	for _, invalid := range []AnimationRequest{
 		{Entry: "index.html", Files: valid.Files, DurationMS: 99, FPS: 30},
 		{Entry: "index.html", Files: valid.Files, DurationMS: MaxAnimationDurationMS + 1, FPS: 30},

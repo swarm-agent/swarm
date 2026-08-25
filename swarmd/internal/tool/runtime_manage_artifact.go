@@ -930,10 +930,32 @@ func (r *Runtime) publishWorkspaceArtifact(ctx context.Context, principal artifa
 	if err := enforceArtifactPresentationRequirements(&presentation, requirements); err != nil {
 		return pebblestore.SessionArtifactVariant{}, nil, err
 	}
+	sourceSessionID, sourceCollectionID := strings.TrimSpace(asString(args["source_session_id"])), strings.TrimSpace(asString(args["source_collection_id"]))
+	sourceVariantID, sourceEventSeq := strings.TrimSpace(asString(args["source_variant_id"])), asUint64(args["source_event_seq"])
+	var inheritedAnimationProfile *pebblestore.SessionArtifactAnimationProfile
+	if sourceSessionID != "" || sourceCollectionID != "" || sourceVariantID != "" || sourceEventSeq != 0 {
+		if sourceSessionID == "" || sourceCollectionID == "" || sourceVariantID == "" || sourceEventSeq == 0 {
+			return pebblestore.SessionArtifactVariant{}, nil, errors.New("manage_artifact publish_workspace source lineage requires all four fields of a complete exact source reference")
+		}
+		sourceVariant, sourceErr := r.artifactAuthority.GetReference(principal, pebblestore.SessionArtifactSelectionReference{SessionID: sourceSessionID, CollectionID: sourceCollectionID, VariantID: sourceVariantID, EventSeq: sourceEventSeq})
+		if sourceErr != nil || sourceVariant.Status != pebblestore.SessionArtifactStatusReady {
+			return pebblestore.SessionArtifactVariant{}, nil, errors.New("manage_artifact publish_workspace exact source reference could not be authenticated")
+		}
+		if sourceVariant.AnimationProfile != nil && sourceVariant.AnimationProfile.ProfileID != "final_render" {
+			canonicalProfile, profileErr := artifact.ResolveAnimationProfile(&artifact.AnimationProfileInput{Profile: sourceVariant.AnimationProfile.ProfileID})
+			if profileErr != nil || canonicalProfile == nil || *canonicalProfile != *sourceVariant.AnimationProfile {
+				return pebblestore.SessionArtifactVariant{}, nil, errors.New("manage_artifact publish_workspace exact source carries an incompatible animation profile snapshot")
+			}
+			inheritedAnimationProfile = cloneArtifactAnimationProfile(canonicalProfile)
+		}
+	}
+	if err := validateArtifactAnimationMedia(inheritedAnimationProfile, packageSource, filename, mediaType); err != nil {
+		return pebblestore.SessionArtifactVariant{}, nil, err
+	}
 	create := artifact.CreateInput{
 		RequestID: requestID, CollectionID: collectionID, CollectionName: strings.TrimSpace(asString(args["collection_name"])), CollectionDescription: strings.TrimSpace(asString(args["collection_description"])),
-		VariantID: variantID, Filename: filename, MediaType: mediaType, Presentation: presentation, OutputRequirements: requirements, AutoAccept: true,
-		SourceSessionID: strings.TrimSpace(asString(args["source_session_id"])), SourceCollectionID: strings.TrimSpace(asString(args["source_collection_id"])), SourceVariantID: strings.TrimSpace(asString(args["source_variant_id"])), SourceEventSeq: asUint64(args["source_event_seq"]),
+		VariantID: variantID, Filename: filename, MediaType: mediaType, Presentation: presentation, OutputRequirements: requirements, AnimationProfile: inheritedAnimationProfile, AutoAccept: true,
+		SourceSessionID: sourceSessionID, SourceCollectionID: sourceCollectionID, SourceVariantID: sourceVariantID, SourceEventSeq: sourceEventSeq,
 	}
 	if generatedCollection && create.CollectionName == "" {
 		create.CollectionName = "Workspace publication"

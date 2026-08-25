@@ -24,13 +24,14 @@ import (
 
 const (
 	AnimationVersion       = "swarm.animation/v1"
-	MaxAnimationDurationMS = 10_000
-	MaxAnimationFPS        = 30
-	MaxAnimationFrames     = 300
-	MaxMP4Bytes            = 512 << 20
-	animationTotalTimeout  = 2 * time.Minute
-	animationReadyTimeout  = 5 * time.Second
-	animationFrameTimeout  = 2 * time.Second
+	MaxAnimationDurationMS    = 10 * 60 * 1000
+	MaxAnimationFPS           = 60
+	MaxAnimationFrames        = 36_000
+	MaxAnimationSegmentFrames = 300
+	MaxMP4Bytes               = 512 << 20
+	animationTotalTimeout     = 30 * time.Minute
+	animationReadyTimeout     = 5 * time.Second
+	animationFrameTimeout     = 2 * time.Second
 )
 
 type AnimationRequest struct {
@@ -90,10 +91,6 @@ func (r *ChromedpRenderer) RenderAnimation(parent context.Context, req Animation
 	}
 	_ = os.Chmod(jobDir, 0o700)
 	defer os.RemoveAll(jobDir)
-	frameDir := filepath.Join(jobDir, "frames")
-	if err := os.Mkdir(frameDir, 0o700); err != nil {
-		return AnimationResult{}, NewError("animation_renderer_unavailable", "private animation frame directory could not be created")
-	}
 
 	origin, shutdown, err := serveFiles(ctx, req.Files)
 	if err != nil {
@@ -200,27 +197,44 @@ func (r *ChromedpRenderer) RenderAnimation(parent context.Context, req Animation
 	}
 
 	canonicalLocation := origin + "/" + req.Entry
-	for index := 0; index < frameCount; index++ {
-		timeMS := index * 1000 / req.FPS
-		frame, err := captureAnimationFrame(browserCtx, timeMS)
-		if err != nil {
+	segmentPaths := make([]string, 0, (frameCount+MaxAnimationSegmentFrames-1)/MaxAnimationSegmentFrames)
+	for segmentStart := 0; segmentStart < frameCount; segmentStart += MaxAnimationSegmentFrames {
+		segmentFrames := min(MaxAnimationSegmentFrames, frameCount-segmentStart)
+		frameDir := filepath.Join(jobDir, fmt.Sprintf("frames-%06d", segmentStart))
+		if err := os.Mkdir(frameDir, 0o700); err != nil {
+			return AnimationResult{}, NewError("animation_renderer_unavailable", "private animation frame directory could not be created")
+		}
+		for localIndex := 0; localIndex < segmentFrames; localIndex++ {
+			globalIndex := segmentStart + localIndex
+			timeMS := globalIndex * 1000 / req.FPS
+			frame, err := captureAnimationFrame(browserCtx, timeMS)
+			if err != nil {
+				return AnimationResult{}, err
+			}
+			if wasBlocked, reason := blockedAttempt(); wasBlocked {
+				return AnimationResult{}, newErrorWithCause("animation_network_blocked", "animation document attempted a prohibited network request", errors.New(reason))
+			}
+			var location string
+			if navErr := chromedp.Run(browserCtx, chromedp.Location(&location)); navErr != nil || location != canonicalLocation {
+				return AnimationResult{}, NewError("animation_seek_failed", "animation runtime attempted to navigate away from its canonical document")
+			}
+			name := filepath.Join(frameDir, fmt.Sprintf("frame-%06d.png", localIndex))
+			if err := os.WriteFile(name, frame, 0o600); err != nil {
+				return AnimationResult{}, NewError("animation_renderer_failed", "captured animation frame could not be stored privately")
+			}
+		}
+		segmentPath := filepath.Join(jobDir, fmt.Sprintf("segment-%06d.mp4", len(segmentPaths)))
+		if err := encodeAnimation(ctx, r.EncoderPath, filepath.Join(frameDir, "frame-%06d.png"), segmentPath, req.FPS, segmentFrames); err != nil {
 			return AnimationResult{}, err
 		}
-		if wasBlocked, reason := blockedAttempt(); wasBlocked {
-			return AnimationResult{}, newErrorWithCause("animation_network_blocked", "animation document attempted a prohibited network request", errors.New(reason))
+		if err := os.RemoveAll(frameDir); err != nil {
+			return AnimationResult{}, NewError("animation_renderer_failed", "private animation frame segment could not be removed")
 		}
-		var location string
-		if navErr := chromedp.Run(browserCtx, chromedp.Location(&location)); navErr != nil || location != canonicalLocation {
-			return AnimationResult{}, NewError("animation_seek_failed", "animation runtime attempted to navigate away from its canonical document")
-		}
-		name := filepath.Join(frameDir, fmt.Sprintf("frame-%06d.png", index))
-		if err := os.WriteFile(name, frame, 0o600); err != nil {
-			return AnimationResult{}, NewError("animation_renderer_failed", "captured animation frame could not be stored privately")
-		}
+		segmentPaths = append(segmentPaths, segmentPath)
 	}
 
 	outputPath := filepath.Join(jobDir, "animation.mp4")
-	if err := encodeAnimation(ctx, r.EncoderPath, filepath.Join(frameDir, "frame-%06d.png"), outputPath, req.FPS, frameCount); err != nil {
+	if err := concatAnimationSegments(ctx, r.EncoderPath, jobDir, segmentPaths, outputPath); err != nil {
 		return AnimationResult{}, err
 	}
 	mp4, err := os.ReadFile(outputPath)
@@ -236,7 +250,7 @@ func validateAnimationRequest(req AnimationRequest) (int, error) {
 	}
 	frameCount := (req.DurationMS*req.FPS + 999) / 1000
 	if frameCount < 1 || frameCount > MaxAnimationFrames {
-		return 0, NewError("animation_source_limit_exceeded", "animation frame count exceeds fixed renderer bounds")
+		return 0, NewError("animation_source_limit_exceeded", fmt.Sprintf("animation frame count exceeds the fixed %d-frame renderer bound", MaxAnimationFrames))
 	}
 	return frameCount, nil
 }
@@ -361,6 +375,37 @@ func encodeAnimation(ctx context.Context, encoderPath, inputPattern, outputPath 
 			return NewError("animation_timeout", "MP4 encoding exceeded the fixed deadline")
 		}
 		return newErrorWithCause("animation_encode_failed", "trusted MP4 encoder failed", errors.New(strings.TrimSpace(output.String())))
+	}
+	return nil
+}
+
+func concatAnimationSegments(ctx context.Context, encoderPath, jobDir string, segments []string, outputPath string) error {
+	if len(segments) == 0 {
+		return NewError("animation_encode_failed", "trusted MP4 encoder produced no bounded segments")
+	}
+	if len(segments) == 1 {
+		if err := os.Rename(segments[0], outputPath); err != nil {
+			return newErrorWithCause("animation_encode_failed", "trusted MP4 segment could not be finalized", err)
+		}
+		return nil
+	}
+	var list strings.Builder
+	for index := range segments {
+		fmt.Fprintf(&list, "file 'segment-%06d.mp4'\n", index)
+	}
+	listPath := filepath.Join(jobDir, "segments.txt")
+	if err := os.WriteFile(listPath, []byte(list.String()), 0o600); err != nil {
+		return NewError("animation_encode_failed", "trusted MP4 segment list could not be stored privately")
+	}
+	args := []string{"-v", "error", "-nostdin", "-y", "-f", "concat", "-safe", "1", "-i", listPath, "-an", "-c", "copy", "-map_metadata", "-1", "-movflags", "+faststart", outputPath}
+	output := &boundedCommandOutput{remaining: 16 << 10}
+	cmd := exec.CommandContext(ctx, encoderPath, args...)
+	cmd.Dir, cmd.Stdout, cmd.Stderr = jobDir, output, output
+	if err := cmd.Run(); err != nil {
+		if ctx.Err() != nil {
+			return NewError("animation_timeout", "MP4 concatenation exceeded the fixed deadline")
+		}
+		return newErrorWithCause("animation_concat_failed", "trusted MP4 segment concatenation failed", errors.New(strings.TrimSpace(output.String())))
 	}
 	return nil
 }

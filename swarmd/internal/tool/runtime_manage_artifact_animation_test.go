@@ -43,7 +43,7 @@ func reviewedMotionProfile(t *testing.T) *pebblestore.SessionArtifactAnimationPr
 }
 
 func TestExportHTMLAnimationUsesManifestTimelineAndPublishesExactLineage(t *testing.T) {
-	html := `<!doctype html><script id="swarm-animation-manifest" type="application/json">{"version":"swarm.animation/v1","duration_ms":1200,"fps":24}</script><body></body>`
+	html := `<!doctype html><script id="swarm-animation-manifest" type="application/json">{"version":"swarm.animation/v1","duration_ms":74920,"fps":60}</script><script id="swarm-iteration-manifest" type="application/json">{"version":"swarm.iteration/v1","duration_ms":74920,"sections":[{"id":"opening","label":"Opening","start_ms":0,"end_ms":12000},{"id":"close","label":"Close","start_ms":60000,"end_ms":74920}]}</script><body></body>`
 	authority := &fakeArtifactAuthority{readBody: []byte(html), variant: pebblestore.SessionArtifactVariant{ID: "source-variant", CollectionID: "source-collection", SessionID: "source-session", EventSeq: 7, Status: pebblestore.SessionArtifactStatusReady, MediaType: "text/html", AnimationProfile: reviewedMotionProfile(t)}}
 	renderer := &fakeHTMLAnimationRenderer{}
 	runtime := NewRuntime(1)
@@ -54,13 +54,13 @@ func TestExportHTMLAnimationUsesManifestTimelineAndPublishesExactLineage(t *test
 	if err != nil {
 		t.Fatalf("export_html_animation: %v", err)
 	}
-	if renderer.req.DurationMS != 1200 || renderer.req.FPS != 24 || renderer.req.Entry != "index.html" {
+	if renderer.req.DurationMS != 74920 || renderer.req.FPS != 60 || renderer.req.Entry != "index.html" {
 		t.Fatalf("renderer request = %+v", renderer.req)
 	}
 	if authority.created.SourceSessionID != "source-session" || authority.created.SourceCollectionID != "source-collection" || authority.created.SourceVariantID != "source-variant" || authority.created.SourceEventSeq != 7 {
 		t.Fatalf("lineage = %+v", authority.created)
 	}
-	if authority.created.MediaType != "video/mp4" || authority.created.AnimationProfile == nil || authority.created.AnimationProfile.ProfileID != "final_render" || authority.created.OutputRequirements == nil || authority.created.OutputRequirements.Width != 1920 || authority.created.OutputRequirements.Height != 1080 {
+	if authority.created.MediaType != "video/mp4" || authority.created.AnimationProfile == nil || authority.created.AnimationProfile.ProfileID != "final_render" || authority.created.OutputRequirements == nil || authority.created.OutputRequirements.Width != 1920 || authority.created.OutputRequirements.Height != 1080 || len(authority.created.Parts) != 2 || authority.created.Parts[1].ID != "close" || authority.created.Parts[1].EndMs != 74920 {
 		t.Fatalf("published contract = %+v", authority.created)
 	}
 	if !authority.created.AutoAccept {
@@ -89,7 +89,7 @@ func TestExportHTMLAnimationRejectsManifestBoundsAndUnreviewedProfile(t *testing
 		t.Fatal("renderer called before profile validation")
 	}
 	authority.variant.AnimationProfile = reviewedMotionProfile(t)
-	authority.readBody = []byte(`<!doctype html><script id="swarm-animation-manifest" type="application/json">{"version":"swarm.animation/v1","duration_ms":10001,"fps":30}</script>`)
+	authority.readBody = []byte(`<!doctype html><script id="swarm-animation-manifest" type="application/json">{"version":"swarm.animation/v1","duration_ms":600001,"fps":30}</script>`)
 	if _, err := runtime.executeManageArtifact(ctx, scope, "animation-bounds", args); err == nil || !strings.Contains(err.Error(), "animation_manifest_invalid") {
 		t.Fatalf("manifest bounds error = %v", err)
 	}
