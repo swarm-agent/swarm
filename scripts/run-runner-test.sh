@@ -132,9 +132,9 @@ REMOTE_RUNNER="$(ssh "${TARGET}" 'mktemp -t swarm-runner.XXXXXX.mjs')"
 cleanup() {
   local remote_path
   remote_path="$(quote_remote "${REMOTE_RUNNER}")"
-  ssh "${TARGET}" "bash -c 'rm -f -- \"\$1\"' bash ${remote_path}" >/dev/null 2>&1 || true
+  ssh "${TARGET}" "bash -c 'pid_file=\"\$1.pid\"; if [ -f \"\${pid_file}\" ]; then pid=\"\$(cat \"\${pid_file}\")\"; kill \"\${pid}\" 2>/dev/null || true; fi; rm -f -- \"\$1\" \"\${pid_file}\"' bash ${remote_path}" >/dev/null 2>&1 || true
 }
-trap cleanup EXIT
+trap cleanup EXIT INT TERM
 scp -q "${RUNNER}" "${TARGET}:${REMOTE_RUNNER}"
 
 remote_runner="$(quote_remote "${REMOTE_RUNNER}")"
@@ -144,6 +144,6 @@ remote_timeout="$(quote_remote "${TIMEOUT_MS}")"
 remote_workspace="$(quote_remote "${WORKSPACE_PATH}")"
 remote_model="$(quote_remote "${MODEL}")"
 remote_thinking="$(quote_remote "${THINKING}")"
-remote_script='IFS= read -r token || true; export SWARM_RUNNER_TOKEN="$token"; args=(--api-url "$2" --provider "$3" --timeout-ms "$4"); if [ -n "$5" ]; then args+=(--workspace-path "$5"); fi; if [ -n "$6" ]; then args+=(--model "$6"); fi; if [ -n "$7" ]; then args+=(--thinking "$7"); fi; exec node "$1" "${args[@]}"'
+remote_script='IFS= read -r token || true; export SWARM_RUNNER_TOKEN="$token"; printf "%s\\n" "$$" >"$1.pid"; args=(--api-url "$2" --provider "$3" --timeout-ms "$4"); if [ -n "$5" ]; then args+=(--workspace-path "$5"); fi; if [ -n "$6" ]; then args+=(--model "$6"); fi; if [ -n "$7" ]; then args+=(--thinking "$7"); fi; exec node "$1" "${args[@]}"'
 printf '%s\n' "${SWARM_RUNNER_TOKEN:-}" | ssh "${TARGET}" \
   "bash -c '${remote_script}' bash ${remote_runner} ${remote_api_url} ${remote_provider} ${remote_timeout} ${remote_workspace} ${remote_model} ${remote_thinking}"

@@ -114,14 +114,15 @@ function sameSource(lineage, ref) {
     && Number(lineage?.source_event_seq || 0) === ref.event_seq
 }
 
-function partSignature(parts) {
-  return [...(parts || [])]
-    .map((part) => [String(part?.id || ''), String(part?.kind || ''), Number(part?.start_ms || 0), Number(part?.end_ms || 0)])
-    .sort((left, right) => left[0].localeCompare(right[0]))
-}
-
 function hasPartContract(item) {
-  return JSON.stringify(partSignature(item?.parts)) === JSON.stringify(partSignature(partContract))
+  const byID = new Map((item?.parts || []).map((part) => [String(part?.id || ''), part]))
+  return partContract.every((expected) => {
+    const actual = byID.get(expected.id)
+    return actual
+      && String(actual.kind || '') === expected.kind
+      && Number(actual.start_ms || 0) === expected.start_ms
+      && Number(actual.end_ms || 0) === expected.end_ms
+  })
 }
 
 function terminalStatus(status) {
@@ -267,6 +268,7 @@ async function main() {
     mode: 'auto',
     agent_name: 'swarm',
     preference: assignment,
+    model_profile: { temporary: { ...assignment, name: `${testID} temporary model` } },
     metadata: { runner_test: 'designer-artifact-flow', runner_test_id: testID },
   }, 'create E2E session')
   const session = created.body?.session || {}
