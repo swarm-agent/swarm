@@ -4609,8 +4609,39 @@ export function DesktopAppPage() {
           {mobileActiveSessionNodes.length > 0 ? <span className="text-xs text-[var(--app-text-subtle)]">{mobileActiveSessionNodes.length} active</span> : null}
         </div>
         <div className="grid min-h-0 content-start gap-2 overflow-y-auto px-3 pb-3 [-webkit-overflow-scrolling:touch]" data-testid="mobile-workspace-session-scroll">
+          {videoStudioSessionNodes.length > 0 ? (
+            <section className="grid content-start gap-1.5" aria-labelledby="mobile-video-sessions-heading">
+              <div className="flex min-h-8 items-center gap-1.5 px-1 pt-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-[var(--app-text-subtle)]">
+                <Film size={12} aria-hidden="true" />
+                <span id="mobile-video-sessions-heading">Video sessions</span>
+              </div>
+              <div className="grid gap-2">
+                {videoStudioSessionNodes.map((node) => (
+                  <SessionRow
+                    key={node.session.id}
+                    active={false}
+                    now={sidebarNow}
+                    session={node.session}
+                    workspaceSlug={globalSessionWorkspaceSlug}
+                    agentSummary={EMPTY_SESSION_AGENT_SUMMARY}
+                    agentsExpanded={false}
+                    compactingStartedAt={compactingSession?.sessionId === node.session.id ? compactingSession.startedAt : null}
+                    pendingAction={sidebarSessionActions[node.session.id] ?? null}
+                    onSelect={handleSelectVideoSidebarSession}
+                    onPrefetch={handlePrefetchSession}
+                    onToggleAgents={handleToggleAgentSessions}
+                    onTogglePinned={handleToggleSidebarPinned}
+                    onArchive={handleArchiveSidebarSession}
+                    onRename={handleRenameSidebarSession}
+                  />
+                ))}
+              </div>
+            </section>
+          ) : null}
           {renderMobileSessions(mobileActiveSessionNodes) ?? (
-            <div className="rounded-2xl border border-dashed border-[var(--app-border)] bg-[var(--app-surface)] px-4 py-6 text-center text-sm text-[var(--app-text-subtle)]">No active sessions yet.</div>
+            videoStudioSessionNodes.length === 0 ? (
+              <div className="rounded-2xl border border-dashed border-[var(--app-border)] bg-[var(--app-surface)] px-4 py-6 text-center text-sm text-[var(--app-text-subtle)]">No active sessions yet.</div>
+            ) : null
           )}
           {mobilePreviousSessionNodes.length > 0 ? (
             <div className="mt-1 border-t border-[var(--app-border)] pt-2">
