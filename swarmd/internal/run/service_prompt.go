@@ -809,9 +809,9 @@ func videoStudioMessageContextForProvider(metadata map[string]any) string {
 	if transitionDurationMs < 0 {
 		transitionDurationMs = 0
 	}
-	lines := []string{"Video Studio selection (UI context only; verify durable state with manage_video before proposing edits):"}
+	lines := []string{"Video Studio selection (UI context only; call manage_video action=inspect_context first to verify the exact durable project, revisions, selection, pending proposals, and allowed AI actions before proposing edits):"}
 	if strings.EqualFold(strings.TrimSpace(mapString(metadata, "source")), "video_library_attachment") {
-		lines = []string{"Durable Video Studio attachment (persisted with the session; use the destination project and revision as the attached starting state):"}
+		lines = []string{"Durable Video Studio attachment (persisted with the session; call manage_video action=inspect_context first, then use the verified destination project and revision as the attached starting state):"}
 	}
 	if projectID != "" {
 		lines = append(lines, "- selected_project_id="+projectID)

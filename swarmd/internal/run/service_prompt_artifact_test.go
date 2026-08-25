@@ -89,7 +89,7 @@ func TestBuildInputProjectsSelectedVideoProjectAndRevisionContext(t *testing.T) 
 		t.Fatalf("input = %#v", input)
 	}
 	content := input[0]["content"].([]map[string]any)[0]["text"].(string)
-	for _, want := range []string{"selected_project_id=vproj_selected", "selected_revision_id=vrev_selected", "typed source_video operations", "Verify the durable project with manage_video", "visual review objects", "never prose-only storyboards or detached HTML/Markdown deliverables", "actual ready 16:9 image slide for every planned part", "plan.kind=initial", "complete exact ready visual reference", "plan.kind=revision", "select which proposed replacement parts to accept"} {
+	for _, want := range []string{"selected_project_id=vproj_selected", "selected_revision_id=vrev_selected", "typed source_video operations", "manage_video action=inspect_context first", "Verify the durable project with manage_video", "visual review objects", "never prose-only storyboards or detached HTML/Markdown deliverables", "actual ready 16:9 image slide for every planned part", "plan.kind=initial", "complete exact ready visual reference", "plan.kind=revision", "select which proposed replacement parts to accept"} {
 		if !strings.Contains(content, want) {
 			t.Fatalf("provider content missing %q: %s", want, content)
 		}

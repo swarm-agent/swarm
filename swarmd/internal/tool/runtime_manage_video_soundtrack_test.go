@@ -154,7 +154,7 @@ func TestParseVideoEditOperationsRejectsArbitrarySoundtrackPaths(t *testing.T) {
 			"id": "soundtrack", "track": 1, "sequence": 0, "source_kind": "source_audio", "duration_ms": 1000,
 			"timeline_start_ms": 0, "timeline_end_ms": 1000, "visible": false, "file_path": "/outside/song.mp3",
 		},
-	}})
+	}}, pebblestore.VideoProjectTimeline{})
 	if err == nil || !strings.Contains(err.Error(), "unknown field") {
 		t.Fatalf("arbitrary soundtrack path error=%v", err)
 	}

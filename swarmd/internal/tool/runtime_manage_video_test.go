@@ -37,6 +37,32 @@ func TestManageVideoDefinitionExposesOnlyOpaqueReferences(t *testing.T) {
 	}
 }
 
+func TestManageVideoActionRegistryAndNearestSuggestions(t *testing.T) {
+	definition := manageVideoDefinition()
+	properties := definition.Parameters["properties"].(map[string]any)
+	actions := properties["action"].(map[string]any)["enum"].([]string)
+	if len(actions) != len(manageVideoActionRegistry) || actions[0] != "capabilities" || actions[1] != "inspect_context" {
+		t.Fatalf("schema actions = %#v", actions)
+	}
+	nearest := nearestManageVideoActions("inspect_attachment", 2)
+	if len(nearest) == 0 || nearest[0] != "inspect_attachments" {
+		t.Fatalf("nearest actions = %#v", nearest)
+	}
+	studio := manageVideoActionNames(true)
+	for _, forbidden := range []string{"create_revision", "restore_revision", "start_render"} {
+		for _, action := range studio { if action == forbidden { t.Fatalf("studio actions expose %q", forbidden) } }
+	}
+}
+
+func TestParseMinimalVideoEditsNormalizesCanonicalClips(t *testing.T) {
+	timeline := pebblestore.VideoProjectTimeline{Clips: []pebblestore.VideoTimelineClip{{ID:"clip", Track:2, Sequence:3, SourceKind:pebblestore.VideoClipSourceKindSourceVideo, SourceRef:"videosrc_original", SourceStartMs:100, SourceEndMs:1100, TimelineStartMs:500, TimelineEndMs:1500, DurationMs:1000, Visible:true, Volume:1}}}
+	operations, err := parseVideoEditOperations([]map[string]any{{"id":"volume", "type":"set_volume", "clip_id":"clip", "volume":0.25}, {"id":"move", "type":"move_clip", "clip_id":"clip", "timeline_start_ms":2000}}, timeline)
+	if err != nil { t.Fatal(err) }
+	if len(operations) != 2 || operations[0].Type != pebblestore.VideoEditOperationUpdateClip || operations[0].Clip.Track != 2 || operations[0].Clip.SourceRef != "videosrc_original" || operations[0].Clip.Volume != .25 || operations[1].Clip.TimelineEndMs != 3000 {
+		t.Fatalf("normalized operations = %#v", operations)
+	}
+}
+
 func TestManageVideoDefinitionExposesAdaptiveJobInstructions(t *testing.T) {
 	definition := manageVideoDefinition()
 	raw, err := json.Marshal(definition.Parameters)

@@ -60,6 +60,59 @@ type manageVideoRenderService interface {
 	GetRenderJobStatus(ctx context.Context, principal identity.Principal, sessionID, jobID string) (pebblestore.VideoRenderJobSnapshot, bool, error)
 }
 
+type manageVideoActionSpec struct {
+	Name          string
+	SuccessTitle  string
+	ActivityLabel string
+	StudioAllowed bool
+}
+
+var manageVideoActionRegistry = []manageVideoActionSpec{
+	{"capabilities", "Video capabilities ready", "Checking video capabilities", true},
+	{"inspect_context", "Video context loaded", "Inspecting Video Studio context", true},
+	{"list_source_roots", "Media sources ready", "Finding media sources", true},
+	{"browse_source", "Media source opened", "Browsing media sources", true},
+	{"inspect_attachments", "Video attachments checked", "Checking video attachments", true},
+	{"start_transcription", "Transcription started", "Starting media transcription", true},
+	{"status", "Transcription status checked", "Checking transcription progress", true},
+	{"cancel", "Transcription cancelled", "Cancelling video transcription", true},
+	{"read_transcript", "Transcript ready", "Reading media transcript", true},
+	{"read_audio_analysis", "Audio analysis ready", "Reading deterministic audio analysis", true},
+	{"create_project", "Video project ready", "Setting up video project", true},
+	{"read_project", "Video project loaded", "Loading video project", true},
+	{"get_project", "Video project loaded", "Loading video project", true},
+	{"list_projects", "Video projects loaded", "Loading video projects", true},
+	{"inspect_accepted_cut", "Accepted cut loaded", "Inspecting accepted cut", true},
+	{"create_edit_proposal", "New change added", "Preparing video working change", true},
+	{"propose_plan", "New video change added", "Preparing visual video change", true},
+	{"proposal_status", "Proposal status updated", "Checking edit proposal", true},
+	{"recommend_render_settings", "Render settings recommended", "Reviewing render settings", true},
+	{"create_revision", "Video edit saved", "Saving video edit", false},
+	{"restore_revision", "Video version restored", "Restoring video version", false},
+	{"start_render", "Video render started", "Starting video render", false},
+	{"render_status", "Render status updated", "Checking render progress", true},
+	{"cancel_render", "Video render cancelled", "Cancelling video render", true},
+}
+
+func manageVideoActionNames(studio bool) []string {
+	names := make([]string, 0, len(manageVideoActionRegistry))
+	for _, spec := range manageVideoActionRegistry {
+		if !studio || spec.StudioAllowed {
+			names = append(names, spec.Name)
+		}
+	}
+	return names
+}
+
+func manageVideoAction(action string) (manageVideoActionSpec, bool) {
+	for _, spec := range manageVideoActionRegistry {
+		if spec.Name == action {
+			return spec, true
+		}
+	}
+	return manageVideoActionSpec{}, false
+}
+
 func manageVideoDefinition() Definition {
 	return Definition{
 		Type: "function", Name: "manage_video",
@@ -67,7 +120,7 @@ func manageVideoDefinition() Definition {
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"action":                 map[string]any{"type": "string", "enum": []string{"list_source_roots", "browse_source", "inspect_attachments", "start_transcription", "status", "cancel", "read_transcript", "read_audio_analysis", "create_project", "read_project", "get_project", "list_projects", "inspect_accepted_cut", "create_edit_proposal", "propose_plan", "proposal_status", "recommend_render_settings", "create_revision", "restore_revision", "start_render", "render_status", "cancel_render"}, "description": "Use create_project to create or load the session's project; it always returns project_id and an exact revision_id, even when initial_timeline is omitted. Use propose_plan only for an atomic visual plan and pass that revision_id as base_revision_id. Use create_edit_proposal for typed timeline operations."},
+				"action":                 map[string]any{"type": "string", "enum": manageVideoActionNames(false), "description": "Call capabilities to discover the allowed action set. In Video Studio, call inspect_context first to load the exact attached project, revisions, selection, and proposal state without mutation."},
 				"source_root_ref":        map[string]any{"type": "string", "description": "Opaque root reference returned by list_source_roots."},
 				"relative_path":          map[string]any{"type": "string", "description": "Bounded path under source_root_ref; use directory relative_path values returned by browse_source."},
 				"video_refs":             map[string]any{"type": "array", "maxItems": pebblestore.SessionVideoAttachmentMaxCount, "items": map[string]any{"type": "string"}, "description": "Opaque video references returned by browse_source. With start_transcription, these are transcribed without needing a message attachment."},
@@ -118,9 +171,13 @@ func manageVideoEditOperationsSchema() map[string]any {
 			"type": "object",
 			"properties": map[string]any{
 				"id":            map[string]any{"type": "string"},
-				"type":          map[string]any{"type": "string", "enum": []string{pebblestore.VideoEditOperationAddClip, pebblestore.VideoEditOperationUpdateClip, pebblestore.VideoEditOperationReplaceClip, pebblestore.VideoEditOperationRemoveClip, pebblestore.VideoEditOperationAddTransition, pebblestore.VideoEditOperationUpdateTransition, pebblestore.VideoEditOperationRemoveTransition}},
-				"clip_id":       map[string]any{"type": "string", "description": "Existing clip ID required by replace_clip and remove_clip."},
+				"type":          map[string]any{"type": "string", "enum": []string{pebblestore.VideoEditOperationAddClip, pebblestore.VideoEditOperationUpdateClip, pebblestore.VideoEditOperationReplaceClip, pebblestore.VideoEditOperationRemoveClip, pebblestore.VideoEditOperationAddTransition, pebblestore.VideoEditOperationUpdateTransition, pebblestore.VideoEditOperationRemoveTransition, "trim_clip", "move_clip", "set_volume", "set_mute", "set_captions", "replace_source"}},
+				"clip_id":       map[string]any{"type": "string", "description": "Existing clip ID required by clip edits, replace_clip, and remove_clip."},
 				"clip":          manageVideoTimelineClipSchema(),
+				"source_start_ms": map[string]any{"type": "integer", "minimum": 0}, "source_end_ms": map[string]any{"type": "integer", "minimum": 0},
+				"timeline_start_ms": map[string]any{"type": "integer", "minimum": 0}, "volume": map[string]any{"type": "number", "minimum": 0, "maximum": 2}, "muted": map[string]any{"type": "boolean"},
+				"captions": manageVideoCaptionsSchema(), "source_kind": map[string]any{"type": "string"}, "source_ref": map[string]any{"type": "string"},
+				"audio_source": manageVideoAudioSourceSchema(), "artifact_ref": manageVideoArtifactReferenceSchema(), "design_input": manageVideoDesignInputSchema(), "media_type": map[string]any{"type": "string"},
 				"transition_id": map[string]any{"type": "string"},
 				"transition": map[string]any{"type": "object", "properties": map[string]any{
 					"id": map[string]any{"type": "string"}, "kind": map[string]any{"type": "string"}, "from_clip_id": map[string]any{"type": "string"}, "to_clip_id": map[string]any{"type": "string"}, "duration_ms": map[string]any{"type": "integer", "minimum": 0},
@@ -140,16 +197,39 @@ func manageVideoTimelineClipSchema() map[string]any {
 			"track": map[string]any{"type": "integer", "minimum": 0}, "sequence": map[string]any{"type": "integer", "minimum": 0}, "layer": map[string]any{"type": "integer", "minimum": 0},
 			"source_kind": map[string]any{"type": "string", "enum": []string{pebblestore.VideoClipSourceKindSourceVideo, pebblestore.VideoClipSourceKindSourceAudio, pebblestore.VideoClipSourceKindManagedArtifact, pebblestore.VideoClipSourceKindColor, pebblestore.VideoClipSourceKindText}},
 			"source_ref":  map[string]any{"type": "string"},
-			"audio_source": map[string]any{"type": "object", "description": "Complete exact trusted audio reference returned by browse_source; never substitute a path.", "properties": map[string]any{
-				"ref": map[string]any{"type": "string"}, "name": map[string]any{"type": "string"}, "mime_type": map[string]any{"type": "string"}, "size_bytes": map[string]any{"type": "integer", "minimum": 1}, "source_fingerprint": map[string]any{"type": "string"}, "fingerprint_version": map[string]any{"type": "string"},
-			}, "required": []string{"ref", "name", "mime_type", "size_bytes", "source_fingerprint", "fingerprint_version"}, "additionalProperties": false},
-			"artifact_ref": map[string]any{"type": "object"}, "design_input": map[string]any{"type": "object"}, "media_type": map[string]any{"type": "string"},
+			"audio_source": manageVideoAudioSourceSchema(),
+			"artifact_ref": manageVideoArtifactReferenceSchema(), "design_input": manageVideoDesignInputSchema(), "media_type": map[string]any{"type": "string"},
 			"source_start_ms": map[string]any{"type": "integer", "minimum": 0}, "source_end_ms": map[string]any{"type": "integer", "minimum": 0},
 			"timeline_start_ms": map[string]any{"type": "integer", "minimum": 0}, "timeline_end_ms": map[string]any{"type": "integer", "minimum": 0}, "duration_ms": map[string]any{"type": "integer", "minimum": 1},
-			"visible": map[string]any{"type": "boolean"}, "volume": map[string]any{"type": "number", "minimum": 0, "maximum": 2}, "muted": map[string]any{"type": "boolean"}, "captions": map[string]any{"type": "array", "maxItems": pebblestore.MaxCaptionsPerClip, "items": map[string]any{"type": "object"}},
+			"visible": map[string]any{"type": "boolean"}, "volume": map[string]any{"type": "number", "minimum": 0, "maximum": 2}, "muted": map[string]any{"type": "boolean"}, "captions": manageVideoCaptionsSchema(),
 		},
 		"required": []string{"id", "track", "sequence", "source_kind", "duration_ms", "timeline_start_ms", "timeline_end_ms", "visible"}, "additionalProperties": false,
 	}
+}
+
+func manageVideoAudioSourceSchema() map[string]any {
+	return map[string]any{"type": "object", "description": "Complete exact trusted audio reference returned by browse_source; never substitute a path.", "properties": map[string]any{
+		"ref": map[string]any{"type": "string"}, "name": map[string]any{"type": "string"}, "mime_type": map[string]any{"type": "string"}, "size_bytes": map[string]any{"type": "integer", "minimum": 1}, "source_fingerprint": map[string]any{"type": "string"}, "fingerprint_version": map[string]any{"type": "string"},
+	}, "required": []string{"ref", "name", "mime_type", "size_bytes", "source_fingerprint", "fingerprint_version"}, "additionalProperties": false}
+}
+
+func manageVideoArtifactReferenceSchema() map[string]any {
+	return map[string]any{"type": "object", "properties": map[string]any{
+		"session_id": map[string]any{"type": "string"}, "collection_id": map[string]any{"type": "string"}, "variant_id": map[string]any{"type": "string"}, "event_seq": map[string]any{"type": "integer", "minimum": 1},
+		"label": map[string]any{"type": "string"}, "description": map[string]any{"type": "string"}, "action": map[string]any{"type": "string"}, "part_id": map[string]any{"type": "string"},
+	}, "required": []string{"session_id", "collection_id", "variant_id", "event_seq"}, "additionalProperties": false}
+}
+
+func manageVideoDesignInputSchema() map[string]any {
+	return map[string]any{"type": "object", "properties": map[string]any{
+		"session_id": map[string]any{"type": "string"}, "collection_id": map[string]any{"type": "string"}, "variant_id": map[string]any{"type": "string"}, "event_seq": map[string]any{"type": "integer", "minimum": 1}, "action": map[string]any{"type": "string"}, "overlay_mode": map[string]any{"type": "string", "enum": []string{"pip", "full", "intro", "outro", "watermark"}},
+	}, "required": []string{"collection_id", "variant_id", "event_seq"}, "additionalProperties": false}
+}
+
+func manageVideoCaptionsSchema() map[string]any {
+	return map[string]any{"type": "array", "maxItems": pebblestore.MaxCaptionsPerClip, "items": map[string]any{"type": "object", "properties": map[string]any{
+		"id": map[string]any{"type": "string"}, "text": map[string]any{"type": "string", "maxLength": pebblestore.MaxTextOverlayLength}, "position": map[string]any{"type": "string", "enum": []string{"bottom", "top", "center"}}, "font_size": map[string]any{"type": "integer", "minimum": 1}, "font_color": map[string]any{"type": "string"}, "start_ms": map[string]any{"type": "integer", "minimum": 0}, "end_ms": map[string]any{"type": "integer", "minimum": 1}, "style": map[string]any{"type": "string"},
+	}, "required": []string{"text", "start_ms", "end_ms"}, "additionalProperties": false}}
 }
 
 func (r *Runtime) executeManageVideo(ctx context.Context, scope WorkspaceScope, args map[string]any) (string, error) {
@@ -161,6 +241,9 @@ func (r *Runtime) executeManageVideo(ctx context.Context, scope WorkspaceScope, 
 	}
 	action := strings.ToLower(strings.TrimSpace(asString(args["action"])))
 	requestedAction := action
+	if _, valid := manageVideoAction(action); !valid {
+		return "", fmt.Errorf("unsupported manage_video action %q; nearest valid actions: %s", action, strings.Join(nearestManageVideoActions(action, 3), ", "))
+	}
 	if action == "propose_plan" {
 		// Providers get a purpose-specific action for atomic visual plans while
 		// storage continues to use the revision-gated edit proposal authority.
@@ -197,11 +280,56 @@ func (r *Runtime) executeManageVideo(ctx context.Context, scope WorkspaceScope, 
 			return "", errors.New("manage_video triggering message ownership is invalid")
 		}
 	}
+	projectSessionID, studio, studioErr := r.manageVideoProjectSession(scope.Principal, session)
+	if studioErr != nil {
+		return "", studioErr
+	}
+	allowedActions := manageVideoActionNames(studio)
+	if spec, _ := manageVideoAction(requestedAction); studio && !spec.StudioAllowed {
+		return "", fmt.Errorf("Video Studio AI cannot use manage_video action %q; allowed actions: %s", requestedAction, strings.Join(allowedActions, ", "))
+	}
 	response := map[string]any{"tool": "manage_video", "action": action, "status": "ok", "session_id": scope.SessionID, "path_id": toolPathID("manage_video"), "details_truncated": false}
 	if run.MessageID != "" {
 		response["message_id"] = run.MessageID
 	}
 	switch action {
+	case "capabilities":
+		response["studio"] = studio
+		response["allowed_actions"] = allowedActions
+		response["read_only_actions"] = []string{"capabilities", "inspect_context", "list_source_roots", "browse_source", "inspect_attachments", "status", "read_transcript", "read_audio_analysis", "read_project", "get_project", "list_projects", "inspect_accepted_cut", "proposal_status", "recommend_render_settings", "render_status"}
+	case "inspect_context":
+		response["studio"] = studio
+		response["allowed_actions"] = allowedActions
+		contextMetadata := session.Metadata
+		if run.MessageID != "" {
+			if current, found, readErr := r.sessions.GetV3MessageByID(scope.SessionID, run.MessageID); readErr != nil { return "", readErr } else if found && current.Role == "user" { contextMetadata = mergeManageVideoMetadata(session.Metadata, current.Metadata) }
+		}
+		if projectSessionID != session.ID {
+			if parent, found, readErr := r.sessions.GetSession(projectSessionID); readErr != nil { return "", readErr } else if found { contextMetadata = mergeManageVideoMetadata(parent.Metadata, contextMetadata) }
+		}
+		response["selected_project_id"] = strings.TrimSpace(asString(contextMetadata["video_project_id"]))
+		response["selected_revision_id"] = strings.TrimSpace(asString(contextMetadata["video_revision_id"]))
+		response["selection"] = manageVideoSelectionContext(contextMetadata)
+		projectID := strings.TrimSpace(asString(contextMetadata["video_project_id"]))
+		if projectID == "" && studio && r.videoProjects != nil {
+			if projects, listErr := r.videoProjects.ListProjects(scope.Principal, projectSessionID, 2); listErr == nil && len(projects) == 1 {
+				projectID = projects[0].ID
+			}
+		}
+		if projectID != "" && r.videoProjects != nil {
+			project, found, readErr := r.videoProjects.GetProject(scope.Principal, projectSessionID, projectID)
+			if readErr != nil { return "", readErr }
+			if found {
+				response["project"] = safeVideoProject(project)
+				response["project_id"] = project.ID
+				if project.CurrentRevisionID != "" { if rev, ok, e := r.videoProjects.GetRevision(scope.Principal, projectSessionID, project.ID, project.CurrentRevisionID); e == nil && ok { response["current_revision"] = safeVideoProjectRevision(&rev) } }
+				confirmedID := project.ConfirmedRevisionID; if confirmedID == "" { confirmedID = project.CurrentRevisionID }
+				if confirmedID != "" { if rev, ok, e := r.videoProjects.GetRevision(scope.Principal, projectSessionID, project.ID, confirmedID); e == nil && ok { response["confirmed_revision"] = safeVideoProjectRevision(&rev) } }
+				if proposals, e := r.videoProjects.ListEditProposals(scope.Principal, projectSessionID, project.ID, 50); e == nil {
+					pending := make([]map[string]any, 0); for _, proposal := range proposals { if proposal.Status == pebblestore.VideoEditProposalStatusPending { pending = append(pending, safeVideoEditProposal(proposal)) } }; response["pending_proposals"] = pending
+				}
+			}
+		}
 	case "list_source_roots":
 		if r.videoSources == nil {
 			return "", errors.New("manage_video source service is not configured")
@@ -661,7 +789,10 @@ func (r *Runtime) executeManageVideo(ctx context.Context, scope WorkspaceScope, 
 		}
 		var operations []pebblestore.VideoEditOperation
 		if plan == nil {
-			operations, err = parseVideoEditOperations(args["operations"])
+			baseRevision, found, readErr := r.videoProjects.GetRevision(scope.Principal, projectSessionID, projectID, baseRevisionID)
+			if readErr != nil { return "", readErr }
+			if !found { return "", fmt.Errorf("video revision %q not found", baseRevisionID) }
+			operations, err = parseVideoEditOperations(args["operations"], baseRevision.Timeline)
 			if err != nil {
 				return "", err
 			}
@@ -972,6 +1103,9 @@ func manageVideoPresentation(action string, args, response map[string]any) map[s
 		"cancel_render":             {"Video render cancelled", "Cancelling video render"},
 	}
 	copy := copyByAction[action]
+	if spec, ok := manageVideoAction(action); ok {
+		copy = [2]string{spec.SuccessTitle, spec.ActivityLabel}
+	}
 	if copy[0] == "" {
 		copy = [2]string{"Video task complete", "Working on video"}
 	}
@@ -1097,25 +1231,67 @@ func parseVideoPlanProposal(raw any) (*pebblestore.VideoPlanProposal, error) {
 	return &plan, nil
 }
 
-func parseVideoEditOperations(raw any) ([]pebblestore.VideoEditOperation, error) {
-	if raw == nil {
-		return nil, errors.New("create_edit_proposal requires operations")
+type manageVideoEditOperationInput struct {
+	ID, Type, ClipID, SourceKind, SourceRef, MediaType string
+	Clip *pebblestore.VideoTimelineClip
+	TransitionID string
+	Transition *pebblestore.VideoTimelineTransition
+	SourceStartMs, SourceEndMs, TimelineStartMs *int64
+	Volume *float64
+	Muted *bool
+	Captions *[]pebblestore.VideoTextOverlay
+	AudioSource *pebblestore.AudioSourceReference
+	ArtifactRef *pebblestore.SessionArtifactSelectionReference
+	DesignInput *pebblestore.VideoDesignInputReference
+}
+
+func (input *manageVideoEditOperationInput) UnmarshalJSON(data []byte) error {
+	type wire struct {
+		ID string `json:"id"`; Type string `json:"type"`; ClipID string `json:"clip_id"`; Clip *pebblestore.VideoTimelineClip `json:"clip"`
+		TransitionID string `json:"transition_id"`; Transition *pebblestore.VideoTimelineTransition `json:"transition"`
+		SourceStartMs *int64 `json:"source_start_ms"`; SourceEndMs *int64 `json:"source_end_ms"`; TimelineStartMs *int64 `json:"timeline_start_ms"`
+		Volume *float64 `json:"volume"`; Muted *bool `json:"muted"`; Captions *[]pebblestore.VideoTextOverlay `json:"captions"`
+		SourceKind string `json:"source_kind"`; SourceRef string `json:"source_ref"`; MediaType string `json:"media_type"`
+		AudioSource *pebblestore.AudioSourceReference `json:"audio_source"`; ArtifactRef *pebblestore.SessionArtifactSelectionReference `json:"artifact_ref"`; DesignInput *pebblestore.VideoDesignInputReference `json:"design_input"`
 	}
-	encoded, err := json.Marshal(raw)
-	if err != nil {
-		return nil, fmt.Errorf("marshal operations: %w", err)
-	}
-	var operations []pebblestore.VideoEditOperation
-	if text, ok := raw.(string); ok {
-		encoded = []byte(strings.TrimSpace(text))
-	}
-	decoder := json.NewDecoder(strings.NewReader(string(encoded)))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&operations); err != nil {
-		return nil, fmt.Errorf("invalid operations payload: %w", err)
-	}
-	if len(operations) == 0 || len(operations) > pebblestore.MaxVideoEditProposalOperations {
-		return nil, errors.New("operations must be non-empty and bounded")
+	var value wire
+	decoder := json.NewDecoder(strings.NewReader(string(data))); decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&value); err != nil { return err }
+	*input = manageVideoEditOperationInput{ID:value.ID, Type:value.Type, ClipID:value.ClipID, Clip:value.Clip, TransitionID:value.TransitionID, Transition:value.Transition, SourceStartMs:value.SourceStartMs, SourceEndMs:value.SourceEndMs, TimelineStartMs:value.TimelineStartMs, Volume:value.Volume, Muted:value.Muted, Captions:value.Captions, SourceKind:value.SourceKind, SourceRef:value.SourceRef, MediaType:value.MediaType, AudioSource:value.AudioSource, ArtifactRef:value.ArtifactRef, DesignInput:value.DesignInput}
+	return nil
+}
+
+func parseVideoEditOperations(raw any, timeline pebblestore.VideoProjectTimeline) ([]pebblestore.VideoEditOperation, error) {
+	if raw == nil { return nil, errors.New("create_edit_proposal requires operations") }
+	encoded, err := json.Marshal(raw); if err != nil { return nil, fmt.Errorf("marshal operations: %w", err) }
+	if text, ok := raw.(string); ok { encoded = []byte(strings.TrimSpace(text)) }
+	var inputs []manageVideoEditOperationInput
+	decoder := json.NewDecoder(strings.NewReader(string(encoded))); decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&inputs); err != nil { return nil, fmt.Errorf("invalid operations payload: %w", err) }
+	if len(inputs) == 0 || len(inputs) > pebblestore.MaxVideoEditProposalOperations { return nil, errors.New("operations must be non-empty and bounded") }
+	clips := make(map[string]pebblestore.VideoTimelineClip, len(timeline.Clips)); for _, clip := range timeline.Clips { clips[clip.ID] = clip }
+	operations := make([]pebblestore.VideoEditOperation, 0, len(inputs))
+	for _, input := range inputs {
+		op := pebblestore.VideoEditOperation{ID: input.ID, Type: input.Type, ClipID: input.ClipID, Clip: input.Clip, TransitionID: input.TransitionID, Transition: input.Transition}
+		switch input.Type {
+		case "trim_clip", "move_clip", "set_volume", "set_mute", "set_captions", "replace_source":
+			clip, ok := clips[input.ClipID]; if !ok { return nil, fmt.Errorf("operation %q references unknown clip %q", input.ID, input.ClipID) }
+			switch input.Type {
+			case "trim_clip":
+				if input.SourceStartMs != nil { clip.SourceStartMs = *input.SourceStartMs }; if input.SourceEndMs != nil { clip.SourceEndMs = *input.SourceEndMs }
+				if clip.SourceEndMs <= clip.SourceStartMs { return nil, fmt.Errorf("trim_clip %q requires source_end_ms after source_start_ms", input.ID) }
+				clip.DurationMs = clip.SourceEndMs-clip.SourceStartMs; clip.TimelineEndMs = clip.TimelineStartMs+clip.DurationMs
+			case "move_clip": if input.TimelineStartMs == nil { return nil, fmt.Errorf("move_clip %q requires timeline_start_ms", input.ID) }; clip.TimelineStartMs=*input.TimelineStartMs; clip.TimelineEndMs=clip.TimelineStartMs+clip.DurationMs
+			case "set_volume": if input.Volume == nil { return nil, fmt.Errorf("set_volume %q requires volume", input.ID) }; clip.Volume=*input.Volume
+			case "set_mute": if input.Muted == nil { return nil, fmt.Errorf("set_mute %q requires muted", input.ID) }; clip.Muted=*input.Muted
+			case "set_captions": if input.Captions == nil { return nil, fmt.Errorf("set_captions %q requires captions", input.ID) }; clip.Captions=*input.Captions
+			case "replace_source":
+				if strings.TrimSpace(input.SourceKind)=="" { return nil, fmt.Errorf("replace_source %q requires source_kind", input.ID) }
+				clip.SourceKind, clip.SourceRef, clip.MediaType, clip.AudioSource, clip.ArtifactRef, clip.DesignInput = input.SourceKind, input.SourceRef, input.MediaType, input.AudioSource, input.ArtifactRef, input.DesignInput
+			}
+			op.Type, op.Clip = pebblestore.VideoEditOperationUpdateClip, &clip
+		}
+		operations = append(operations, op)
 	}
 	return operations, nil
 }
@@ -1316,6 +1492,38 @@ func safeVideoRenderJob(job pebblestore.VideoRenderJobSnapshot) map[string]any {
 		res["completed_at"] = job.CompletedAt
 	}
 	return res
+}
+
+func nearestManageVideoActions(requested string, limit int) []string {
+	type candidate struct { name string; distance int }
+	items := make([]candidate, 0, len(manageVideoActionRegistry))
+	for _, spec := range manageVideoActionRegistry { items = append(items, candidate{spec.Name, editDistance(requested, spec.Name)}) }
+	for i := 0; i < len(items); i++ { for j := i+1; j < len(items); j++ { if items[j].distance < items[i].distance || (items[j].distance == items[i].distance && items[j].name < items[i].name) { items[i], items[j] = items[j], items[i] } } }
+	if limit <= 0 || limit > len(items) { limit = len(items) }
+	out := make([]string, limit); for i := range out { out[i] = items[i].name }; return out
+}
+
+func editDistance(left, right string) int {
+	previous := make([]int, len(right)+1); for j := range previous { previous[j] = j }
+	for i, l := range left { current := make([]int, len(right)+1); current[0] = i+1; j := 0; for _, r := range right { j++; cost := 0; if l != r { cost = 1 }; current[j] = minInt(current[j-1]+1, previous[j]+1, previous[j-1]+cost) }; previous = current }
+	return previous[len(right)]
+}
+
+func minInt(values ...int) int { result := values[0]; for _, value := range values[1:] { if value < result { result = value } }; return result }
+
+func mergeManageVideoMetadata(base, override map[string]any) map[string]any {
+	merged := make(map[string]any, len(base)+len(override)); for key, value := range base { merged[key] = value }; for key, value := range override { merged[key] = value }; return merged
+}
+
+func manageVideoSelectionContext(metadata map[string]any) map[string]any {
+	selection := map[string]any{}
+	for _, pair := range [][2]string{{"anchor_clip_id", "video_anchor_clip_id"}, {"kind", "video_selection_kind"}, {"transition_id", "video_transition_id"}, {"transition_kind", "video_transition_kind"}, {"transition_from_clip_id", "video_transition_from_clip_id"}, {"transition_to_clip_id", "video_transition_to_clip_id"}} {
+		if value := strings.TrimSpace(asString(metadata[pair[1]])); value != "" { selection[pair[0]] = value }
+	}
+	for _, pair := range [][2]string{{"playhead_ms", "video_playhead_ms"}, {"transition_duration_ms", "video_transition_duration_ms"}} {
+		if _, ok := metadata[pair[1]]; ok { selection[pair[0]] = asInt(metadata[pair[1]], 0) }
+	}
+	return selection
 }
 
 func actionRequiresVideoTriggeringMessage(action string, args map[string]any) bool {
