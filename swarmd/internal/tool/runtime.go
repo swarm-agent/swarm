@@ -167,6 +167,8 @@ type Runtime struct {
 	artifactAuthority    ArtifactAuthority
 	htmlCapture          htmlcapture.Renderer
 	htmlAnimationCapture htmlcapture.AnimationRenderer
+	animationJobsMu      sync.Mutex
+	animationJobs        map[string]context.CancelFunc
 	imageGeneration      ManagedImageGenerationService
 	video                manageVideoService
 	videoSources         *videosource.Service
@@ -437,6 +439,7 @@ func NewRuntime(maxParallel int) *Runtime {
 	return &Runtime{
 		maxParallel:       maxParallel,
 		searchCoordinator: NewSearchCoordinator(defaultSearchResidentRoots),
+		animationJobs:     make(map[string]context.CancelFunc),
 		httpClient: &http.Client{
 			Timeout: maxWebFetchTimeout + 5*time.Second,
 		},

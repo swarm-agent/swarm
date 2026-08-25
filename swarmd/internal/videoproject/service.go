@@ -2,6 +2,9 @@ package videoproject
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -98,6 +101,18 @@ type CreateEditProposalInput struct {
 	AffectedRanges                                                     []pebblestore.VideoTimelineRange
 	NowUnixMs                                                          int64
 }
+type SelectAnimationCandidateInput struct {
+	SessionID, ProjectID, ProposalID, PartID, CandidateID string
+	SelectedSource                                        *pebblestore.SessionArtifactSelectionReference
+	NowUnixMs                                             int64
+}
+
+type PromoteAnimationDerivativeInput struct {
+	SessionID, ProjectID, ProposalID, PartID, CandidateID string
+	SelectedSource, Derivative                            *pebblestore.SessionArtifactSelectionReference
+	NowUnixMs                                             int64
+}
+
 type AcceptEditProposalInput struct {
 	SessionID, ProjectID, ProposalID, RevisionID, Description, ChangeSummary, AuthorPrincipal string
 	SelectedOperationIDs                                                                      []string
@@ -130,6 +145,80 @@ func (s *Service) CreateEditProposal(ctx context.Context, principal identity.Pri
 	}
 	return s.sessions.CreateVideoEditProposal(pebblestore.CreateVideoEditProposalInput{AccountScopeID: principal.AccountScopeID, UserID: principal.UserID, SessionID: input.SessionID, ProjectID: input.ProjectID, ProposalID: input.ProposalID, BaseRevisionID: input.BaseRevisionID, Title: input.Title, Rationale: input.Rationale, Plan: input.Plan, Operations: input.Operations, AffectedRanges: input.AffectedRanges, NowUnixMs: input.NowUnixMs})
 }
+func (s *Service) SelectAnimationCandidate(ctx context.Context, principal identity.Principal, input SelectAnimationCandidateInput) (pebblestore.VideoEditProposalSnapshot, error) {
+	return s.mutateAnimationCandidate(principal, input.SessionID, input.ProjectID, input.ProposalID, pebblestore.V3SessionMutationSelectVideoAnimationCandidate, pebblestore.VideoAnimationSelectionMutation{PartID: input.PartID, SelectedCandidateID: input.CandidateID, SelectedSource: input.SelectedSource}, input.NowUnixMs)
+}
+
+func (s *Service) PromoteAnimationDerivative(ctx context.Context, principal identity.Principal, input PromoteAnimationDerivativeInput) (pebblestore.VideoEditProposalSnapshot, error) {
+	if input.SelectedSource == nil || input.Derivative == nil {
+		return pebblestore.VideoEditProposalSnapshot{}, errors.New("promotion requires exact selected HTML and MP4 derivative references")
+	}
+	if err := s.validateAnimationArtifact(principal, input.SelectedSource, "text/html"); err != nil {
+		return pebblestore.VideoEditProposalSnapshot{}, err
+	}
+	if err := s.validateAnimationDerivative(principal, input.SelectedSource, input.Derivative); err != nil {
+		return pebblestore.VideoEditProposalSnapshot{}, err
+	}
+	return s.mutateAnimationCandidate(principal, input.SessionID, input.ProjectID, input.ProposalID, pebblestore.V3SessionMutationPromoteVideoAnimationDerivative, pebblestore.VideoAnimationSelectionMutation{PartID: input.PartID, SelectedCandidateID: input.CandidateID, SelectedSource: input.SelectedSource, Derivative: input.Derivative}, input.NowUnixMs)
+}
+
+func (s *Service) mutateAnimationCandidate(principal identity.Principal, sessionID, projectID, proposalID, kind string, selection pebblestore.VideoAnimationSelectionMutation, now int64) (pebblestore.VideoEditProposalSnapshot, error) {
+	if !principal.Valid() {
+		return pebblestore.VideoEditProposalSnapshot{}, errors.New("authenticated principal is required")
+	}
+	proposal, ok, err := s.sessions.GetVideoEditProposal(principal.AccountScopeID, sessionID, projectID, proposalID)
+	if err != nil || !ok {
+		return pebblestore.VideoEditProposalSnapshot{}, errors.New("video edit proposal not found")
+	}
+	if err := s.validateAnimationArtifact(principal, selection.SelectedSource, "text/html"); err != nil {
+		return pebblestore.VideoEditProposalSnapshot{}, err
+	}
+	clientID := fmt.Sprintf("%s:%s:%s:%s", kind, proposalID, selection.PartID, selection.SelectedCandidateID)
+	payload, _ := json.Marshal(selection)
+	sum := sha256.Sum256(payload)
+	applier, ok := s.sessions.(interface {
+		ApplyV3SessionMutation(pebblestore.V3SessionMutationInput) (pebblestore.V3SessionMutationResult, error)
+	})
+	if !ok {
+		return pebblestore.VideoEditProposalSnapshot{}, errors.New("video session mutation authority is not configured")
+	}
+	_, err = applier.ApplyV3SessionMutation(pebblestore.V3SessionMutationInput{SessionID: sessionID, UserID: principal.UserID, AccountScopeID: principal.AccountScopeID, ClientRequestID: clientID, IdempotencyKey: clientID, PayloadHash: hex.EncodeToString(sum[:]), Kind: kind, VideoProject: &pebblestore.V3VideoProjectMutation{EditProposal: &proposal, AnimationSelection: &selection}, NowUnixMs: now})
+	if err != nil {
+		return pebblestore.VideoEditProposalSnapshot{}, err
+	}
+	updated, ok, err := s.sessions.GetVideoEditProposal(principal.AccountScopeID, sessionID, projectID, proposalID)
+	if err != nil || !ok {
+		return pebblestore.VideoEditProposalSnapshot{}, errors.New("updated video edit proposal not found")
+	}
+	return updated, nil
+}
+
+func (s *Service) validateAnimationArtifact(principal identity.Principal, ref *pebblestore.SessionArtifactSelectionReference, expected string) error {
+	if ref == nil || ref.SessionID == "" || ref.CollectionID == "" || ref.VariantID == "" || ref.EventSeq == 0 {
+		return errors.New("complete exact animation artifact reference is required")
+	}
+	variant, ok, err := s.sessions.GetSessionArtifactVariant(principal.AccountScopeID, ref.SessionID, ref.CollectionID, ref.VariantID)
+	if err != nil || !ok || variant.Status != pebblestore.SessionArtifactStatusReady || variant.EventSeq != ref.EventSeq {
+		return errors.New("animation artifact is stale, missing, or not ready")
+	}
+	if strings.ToLower(strings.TrimSpace(variant.MediaType)) != expected {
+		return fmt.Errorf("animation artifact must be %s", expected)
+	}
+	return nil
+}
+
+func (s *Service) validateAnimationDerivative(principal identity.Principal, source, derivative *pebblestore.SessionArtifactSelectionReference) error {
+	if err := s.validateAnimationArtifact(principal, derivative, "video/mp4"); err != nil {
+		return err
+	}
+	variant, _, _ := s.sessions.GetSessionArtifactVariant(principal.AccountScopeID, derivative.SessionID, derivative.CollectionID, derivative.VariantID)
+	lineage := variant.Lineage
+	if lineage.SourceSessionID != source.SessionID || lineage.SourceCollectionID != source.CollectionID || lineage.SourceVariantID != source.VariantID || lineage.SourceEventSeq != source.EventSeq {
+		return errors.New("MP4 derivative lineage does not exactly match the selected HTML animation")
+	}
+	return nil
+}
+
 func (s *Service) GetEditProposal(principal identity.Principal, sessionID, projectID, proposalID string) (pebblestore.VideoEditProposalSnapshot, bool, error) {
 	if !principal.Valid() {
 		return pebblestore.VideoEditProposalSnapshot{}, false, errors.New("authenticated principal is required")
@@ -778,6 +867,26 @@ func (s *Service) normalizeVisualPlanArtifacts(principal identity.Principal, ses
 			return fmt.Errorf("visual artifact variant %q must be an image or video/mp4", variant.ID)
 		}
 		part.VisualMediaType = variant.MediaType
+		if candidates := part.AnimationCandidates; candidates != nil {
+			for _, candidate := range candidates.Candidates {
+				if err := s.validateAnimationArtifact(principal, candidate.Source, "text/html"); err != nil {
+					return fmt.Errorf("video plan part %q candidate %q: %w", part.ID, candidate.ID, err)
+				}
+			}
+			if candidates.SelectedSource != nil {
+				if err := s.validateAnimationArtifact(principal, candidates.SelectedSource, "text/html"); err != nil {
+					return err
+				}
+			}
+			if candidates.Derivative != nil {
+				if candidates.SelectedSource == nil {
+					return fmt.Errorf("video plan part %q derivative requires selected HTML source", part.ID)
+				}
+				if err := s.validateAnimationDerivative(principal, candidates.SelectedSource, candidates.Derivative); err != nil {
+					return err
+				}
+			}
+		}
 	}
 	return nil
 }

@@ -3048,6 +3048,10 @@ func normalizeV3SessionEventType(input V3SessionMutationInput) string {
 		return "session.video_project.render_job.updated"
 	case V3SessionMutationCreateVideoEditProposal:
 		return "session.video_project.edit_proposal.created"
+	case V3SessionMutationSelectVideoAnimationCandidate:
+		return "session.video_project.animation_candidate.selected"
+	case V3SessionMutationPromoteVideoAnimationDerivative:
+		return "session.video_project.animation_derivative.promoted"
 	case V3SessionMutationAcceptVideoEditProposal:
 		return "session.video_project.edit_proposal.accepted"
 	case V3SessionMutationRejectVideoEditProposal:

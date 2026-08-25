@@ -82,6 +82,8 @@ func (m *authorityMetadata) ApplySessionMutation(input pebblestore.V3SessionMuta
 		m.collection.VariantCount, m.collection.StagingCount = 1, 1
 		m.variant = *input.Artifact.Variant
 		m.variant.AccountScopeID, m.variant.SessionID, m.variant.CollectionID, m.variant.Status = input.AccountScopeID, input.SessionID, m.collection.ID, pebblestore.SessionArtifactStatusStaging
+		m.variant.EventSeq, m.variant.ProjectionReservation = 1, input.Artifact.ProjectionOnly
+		projection.Collection, projection.Variant = m.collection, &m.variant
 		if m.partDefinitions == nil {
 			m.partDefinitions = map[string]pebblestore.SessionArtifactPartDefinition{}
 		}
@@ -189,6 +191,26 @@ func TestAuthorityCreatesGitCommitBeforeReadyMetadata(t *testing.T) {
 	body, stored, err := authority.Read(context.Background(), principal, "variant-1", 1024)
 	if err != nil || string(body) != "managed" || stored.ID != "variant-1" {
 		t.Fatalf("read body=%q stored=%+v err=%v", body, stored, err)
+	}
+}
+
+func TestAuthorityReservesThenFinalizesLongRunningOutput(t *testing.T) {
+	authority, metadata, principal := authorityFixture(t)
+	input := CreateInput{RequestID: "reserve-1", CollectionID: "collection-1", CollectionName: "Queued render", VariantID: "variant-1", Filename: "animation.mp4", MediaType: "video/mp4", Presentation: pebblestore.SessionArtifactPresentation{Kind: "video"}, AutoAccept: true}
+	staging, err := authority.Reserve(principal, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if staging.Status != pebblestore.SessionArtifactStatusStaging || !staging.ProjectionReservation || staging.EventSeq == 0 || metadata.readyCalls != 0 {
+		t.Fatalf("reservation = %+v ready calls=%d", staging, metadata.readyCalls)
+	}
+	input.Body = []byte{0, 0, 0, 20, 'f', 't', 'y', 'p', 'i', 's', 'o', 'm'}
+	ready, err := authority.Create(context.Background(), principal, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ready.Status != pebblestore.SessionArtifactStatusReady || ready.ProjectionReservation || metadata.readyCalls != 1 {
+		t.Fatalf("finalized reservation = %+v ready calls=%d", ready, metadata.readyCalls)
 	}
 }
 

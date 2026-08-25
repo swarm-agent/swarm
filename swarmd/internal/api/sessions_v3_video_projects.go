@@ -72,6 +72,19 @@ type sessionV3RejectVideoEditProposalRequest struct {
 	Feedback string `json:"feedback"`
 }
 
+type sessionV3SelectVideoAnimationCandidateRequest struct {
+	PartID              string                                         `json:"part_id"`
+	SelectedCandidateID string                                         `json:"selected_candidate_id"`
+	SelectedSource      *pebblestore.SessionArtifactSelectionReference `json:"selected_source"`
+}
+
+type sessionV3PromoteVideoAnimationDerivativeRequest struct {
+	PartID              string                                         `json:"part_id"`
+	SelectedCandidateID string                                         `json:"selected_candidate_id"`
+	SelectedSource      *pebblestore.SessionArtifactSelectionReference `json:"selected_source"`
+	Derivative          *pebblestore.SessionArtifactSelectionReference `json:"derivative"`
+}
+
 type sessionV3AcceptVideoEditProposalRequest struct {
 	SelectedOperationIDs []string `json:"selected_operation_ids"`
 	RevisionID           string   `json:"revision_id"`
@@ -610,6 +623,32 @@ func (s *Server) handleSessionV3VideoProjectDetail(w http.ResponseWriter, r *htt
 				return
 			}
 			switch action {
+			case "animation-candidate-select":
+				var req sessionV3SelectVideoAnimationCandidateRequest
+				if err := decodeJSON(r, &req); err != nil {
+					writeError(w, http.StatusBadRequest, err)
+					return
+				}
+				proposal, err := s.videoProjects.SelectAnimationCandidate(r.Context(), principal, videoproject.SelectAnimationCandidateInput{SessionID: sessionID, ProjectID: projectID, ProposalID: proposalID, PartID: req.PartID, CandidateID: req.SelectedCandidateID, SelectedSource: req.SelectedSource, NowUnixMs: time.Now().UnixMilli()})
+				if err != nil {
+					writeError(w, http.StatusBadRequest, err)
+					return
+				}
+				writeJSON(w, http.StatusOK, map[string]any{"ok": true, "proposal": proposal, "requires_export": true})
+				return
+			case "animation-derivative-promote":
+				var req sessionV3PromoteVideoAnimationDerivativeRequest
+				if err := decodeJSON(r, &req); err != nil {
+					writeError(w, http.StatusBadRequest, err)
+					return
+				}
+				proposal, err := s.videoProjects.PromoteAnimationDerivative(r.Context(), principal, videoproject.PromoteAnimationDerivativeInput{SessionID: sessionID, ProjectID: projectID, ProposalID: proposalID, PartID: req.PartID, CandidateID: req.SelectedCandidateID, SelectedSource: req.SelectedSource, Derivative: req.Derivative, NowUnixMs: time.Now().UnixMilli()})
+				if err != nil {
+					writeError(w, http.StatusBadRequest, err)
+					return
+				}
+				writeJSON(w, http.StatusOK, map[string]any{"ok": true, "proposal": proposal, "render_ready": true})
+				return
 			case "accept":
 				var req sessionV3AcceptVideoEditProposalRequest
 				if err := decodeJSON(r, &req); err != nil {

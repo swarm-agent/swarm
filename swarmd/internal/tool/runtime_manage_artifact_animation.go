@@ -21,89 +21,195 @@ var (
 	animationManifestType = regexp.MustCompile(`(?i)(?:^|\s)type\s*=\s*["']application/json["'](?:\s|$)`)
 )
 
+const animationSynchronousFrameLimit = 300
+
 type animationManifest struct {
 	Version    string `json:"version"`
 	DurationMS int    `json:"duration_ms"`
 	FPS        int    `json:"fps"`
 }
 
+type animationExportPrepared struct {
+	SourceRef    pebblestore.SessionArtifactSelectionReference
+	Files        map[string][]byte
+	Entry        string
+	Manifest     animationManifest
+	Requirements *pebblestore.SessionArtifactOutputRequirements
+	Input        artifact.CreateInput
+}
+
+// exportHTMLAnimation validates and durably reserves long exports before
+// returning. Small exports retain the synchronous behavior for fast feedback.
 func (r *Runtime) exportHTMLAnimation(ctx context.Context, principal artifact.Principal, callID string, args map[string]any) (pebblestore.SessionArtifactVariant, pebblestore.SessionArtifactSelectionReference, *pebblestore.SessionArtifactOutputRequirements, error) {
+	prepared, err := r.prepareHTMLAnimationExport(ctx, principal, callID, args)
+	if err != nil {
+		return pebblestore.SessionArtifactVariant{}, prepared.SourceRef, prepared.Requirements, err
+	}
+	frameCount := (prepared.Manifest.DurationMS*prepared.Manifest.FPS + 999) / 1000
+	if frameCount <= animationSynchronousFrameLimit {
+		ready, err := r.renderAndPublishHTMLAnimation(ctx, principal, prepared)
+		return ready, prepared.SourceRef, prepared.Requirements, err
+	}
+
+	staging, err := r.artifactAuthority.Reserve(principal, prepared.Input)
+	if err != nil {
+		return pebblestore.SessionArtifactVariant{}, prepared.SourceRef, prepared.Requirements, animationError("animation_publish_failed", "animation export could not be durably queued")
+	}
+	if staging.Status != pebblestore.SessionArtifactStatusStaging {
+		return staging, prepared.SourceRef, prepared.Requirements, nil
+	}
+	jobCtx, cancel := context.WithCancel(context.Background())
+	r.animationJobsMu.Lock()
+	if previous := r.animationJobs[staging.ID]; previous != nil {
+		previous()
+	}
+	r.animationJobs[staging.ID] = cancel
+	r.animationJobsMu.Unlock()
+	go r.runHTMLAnimationExport(jobCtx, principal, prepared, staging.ID)
+	return staging, prepared.SourceRef, prepared.Requirements, nil
+}
+
+func (r *Runtime) prepareHTMLAnimationExport(ctx context.Context, principal artifact.Principal, callID string, args map[string]any) (animationExportPrepared, error) {
+	prepared := animationExportPrepared{}
 	for key := range args {
 		switch key {
 		case "action", "session_id", "collection_id", "variant_id", "event_seq":
 		default:
-			return pebblestore.SessionArtifactVariant{}, pebblestore.SessionArtifactSelectionReference{}, nil, animationError("animation_source_reference_invalid", fmt.Sprintf("export_html_animation contains unsupported field %q", key))
+			return prepared, animationError("animation_source_reference_invalid", fmt.Sprintf("export_html_animation contains unsupported field %q", key))
 		}
 	}
 	if r.htmlAnimationCapture == nil {
-		return pebblestore.SessionArtifactVariant{}, pebblestore.SessionArtifactSelectionReference{}, nil, animationError("animation_renderer_unavailable", "trusted HTML animation renderer is not configured")
+		return prepared, animationError("animation_renderer_unavailable", "trusted HTML animation renderer is not configured")
 	}
 	if err := validateArtifactRetrievalIdentity(args, "export_html_animation", true); err != nil {
-		return pebblestore.SessionArtifactVariant{}, pebblestore.SessionArtifactSelectionReference{}, nil, animationError("animation_source_reference_invalid", "complete exact ready HTML reference is required")
+		return prepared, animationError("animation_source_reference_invalid", "complete exact ready HTML reference is required")
 	}
 	ref, explicit, err := parseArtifactReadReference(args, strings.TrimSpace(asString(args["variant_id"])))
+	prepared.SourceRef = ref
 	if err != nil || !explicit {
-		return pebblestore.SessionArtifactVariant{}, pebblestore.SessionArtifactSelectionReference{}, nil, animationError("animation_source_reference_invalid", "complete exact ready HTML reference is required")
+		return prepared, animationError("animation_source_reference_invalid", "complete exact ready HTML reference is required")
 	}
 	variant, err := r.artifactAuthority.GetReference(principal, ref)
 	if err != nil || variant.Status != pebblestore.SessionArtifactStatusReady {
-		return pebblestore.SessionArtifactVariant{}, ref, nil, animationError("animation_source_reference_invalid", "exact ready HTML reference could not be authenticated")
+		return prepared, animationError("animation_source_reference_invalid", "exact ready HTML reference could not be authenticated")
 	}
 	if variant.AnimationProfile == nil || (variant.AnimationProfile.ProfileID != "motion_ui" && variant.AnimationProfile.ProfileID != "spatial_3d" && variant.AnimationProfile.ProfileID != "vector_playback") || variant.AnimationProfile.Budgets.NetworkAllowed {
-		return pebblestore.SessionArtifactVariant{}, ref, nil, animationError("animation_profile_unsupported", "ready source requires a reviewed non-network animation profile")
+		return prepared, animationError("animation_profile_unsupported", "ready source requires a reviewed non-network animation profile")
 	}
 	files, entry, err := r.readCaptureSource(ctx, principal, ref, variant)
 	if err != nil {
-		return pebblestore.SessionArtifactVariant{}, ref, nil, normalizeAnimationSourceError(err)
+		return prepared, normalizeAnimationSourceError(err)
 	}
 	manifest, err := parseAnimationManifest(files[entry])
 	if err != nil {
-		return pebblestore.SessionArtifactVariant{}, ref, nil, err
+		return prepared, err
 	}
 	requirements, err := artifact.ResolveOutputRequirements(&artifact.OutputRequirementsInput{Preset: "landscape_video"})
+	prepared.Requirements = requirements
 	if err != nil {
-		return pebblestore.SessionArtifactVariant{}, ref, nil, animationError("animation_renderer_failed", "canonical landscape video requirements are unavailable")
-	}
-	temporalParts := animationTemporalParts(files[entry], int64(manifest.DurationMS))
-	result, err := r.htmlAnimationCapture.RenderAnimation(ctx, htmlcapture.AnimationRequest{Entry: entry, Files: files, DurationMS: manifest.DurationMS, FPS: manifest.FPS})
-	if err != nil {
-		return pebblestore.SessionArtifactVariant{}, ref, requirements, normalizeAnimationRendererError(err)
-	}
-	if result.DurationMS != manifest.DurationMS || result.FPS != manifest.FPS || result.FrameCount != (manifest.DurationMS*manifest.FPS+999)/1000 {
-		return pebblestore.SessionArtifactVariant{}, ref, requirements, animationError("animation_renderer_failed", "renderer returned inconsistent deterministic timeline metadata")
-	}
-	if err := validateAnimationMP4(result.MP4); err != nil {
-		return pebblestore.SessionArtifactVariant{}, ref, requirements, err
+		return prepared, animationError("animation_renderer_failed", "canonical landscape video requirements are unavailable")
 	}
 	profile, err := artifact.ResolveAnimationProfile(&artifact.AnimationProfileInput{Profile: "final_render"})
 	if err != nil {
-		return pebblestore.SessionArtifactVariant{}, ref, requirements, animationError("animation_publish_failed", "canonical MP4 playback profile is unavailable")
+		return prepared, animationError("animation_publish_failed", "canonical MP4 playback profile is unavailable")
 	}
 	collectionID := captureOpaqueID("collection-animation", principal.SessionID, callID, ref, fmt.Sprintf("%d/%d", manifest.DurationMS, manifest.FPS))
 	variantID := captureOpaqueID("variant-animation", principal.SessionID, callID, ref, "mp4")
-	input := artifact.CreateInput{
+	prepared.Files, prepared.Entry, prepared.Manifest = files, entry, manifest
+	prepared.Input = artifact.CreateInput{
 		RequestID:    captureOpaqueID("request-export-html-animation", principal.SessionID, callID, ref, "mp4"),
 		CollectionID: collectionID, CollectionName: "HTML animation render", VariantID: variantID,
 		Filename: "html-animation.mp4", MediaType: "video/mp4",
 		Presentation:       pebblestore.SessionArtifactPresentation{Kind: "video", Label: "HTML animation", Previewable: true, Width: htmlcapture.Width, Height: htmlcapture.Height},
-		OutputRequirements: requirements, AnimationProfile: profile, Parts: temporalParts,
+		OutputRequirements: requirements, AnimationProfile: profile, Parts: animationTemporalParts(files[entry], int64(manifest.DurationMS)),
 		SourceSessionID: ref.SessionID, SourceCollectionID: ref.CollectionID, SourceVariantID: ref.VariantID, SourceEventSeq: ref.EventSeq,
-		Body: append([]byte(nil), result.MP4...), AutoAccept: true,
+		AutoAccept: true,
 	}
+	return prepared, nil
+}
+
+func (r *Runtime) renderAndPublishHTMLAnimation(ctx context.Context, principal artifact.Principal, prepared animationExportPrepared) (pebblestore.SessionArtifactVariant, error) {
+	manifest := prepared.Manifest
+	result, err := r.htmlAnimationCapture.RenderAnimation(ctx, htmlcapture.AnimationRequest{Entry: prepared.Entry, Files: prepared.Files, DurationMS: manifest.DurationMS, FPS: manifest.FPS})
+	if err != nil {
+		return pebblestore.SessionArtifactVariant{}, normalizeAnimationRendererError(err)
+	}
+	if result.DurationMS != manifest.DurationMS || result.FPS != manifest.FPS || result.FrameCount != (manifest.DurationMS*manifest.FPS+999)/1000 {
+		return pebblestore.SessionArtifactVariant{}, animationError("animation_renderer_failed", "renderer returned inconsistent deterministic timeline metadata")
+	}
+	if err := validateAnimationMP4(result.MP4); err != nil {
+		return pebblestore.SessionArtifactVariant{}, err
+	}
+	input := prepared.Input
+	input.Body = append([]byte(nil), result.MP4...)
 	published, err := r.artifactAuthority.Create(ctx, principal, input)
 	if err != nil {
-		return pebblestore.SessionArtifactVariant{}, ref, requirements, animationError("animation_publish_failed", "captured MP4 could not be durably published")
+		return pebblestore.SessionArtifactVariant{}, animationError("animation_publish_failed", "captured MP4 could not be durably published")
 	}
 	digest := sha256.Sum256(result.MP4)
 	if published.Status != pebblestore.SessionArtifactStatusReady || published.MediaType != "video/mp4" || published.EventSeq == 0 || published.DigestSHA256 != hex.EncodeToString(digest[:]) {
-		return pebblestore.SessionArtifactVariant{}, ref, requirements, animationError("animation_idempotency_conflict", "published animation metadata conflicts with the trusted capture bytes")
+		return pebblestore.SessionArtifactVariant{}, animationError("animation_idempotency_conflict", "published animation metadata conflicts with the trusted capture bytes")
 	}
 	readyRef := pebblestore.SessionArtifactSelectionReference{SessionID: published.SessionID, CollectionID: published.CollectionID, VariantID: published.ID, EventSeq: published.EventSeq}
 	readyBytes, ready, readErr := r.artifactAuthority.ReadReference(ctx, principal, readyRef, htmlcapture.MaxMP4Bytes)
 	if readErr != nil || ready.Status != pebblestore.SessionArtifactStatusReady || !bytes.Equal(readyBytes, result.MP4) {
-		return pebblestore.SessionArtifactVariant{}, ref, requirements, animationError("animation_publish_failed", "published animation could not be reread as the exact ready MP4")
+		return pebblestore.SessionArtifactVariant{}, animationError("animation_publish_failed", "published animation could not be reread as the exact ready MP4")
 	}
-	return ready, ref, requirements, nil
+	return ready, nil
+}
+
+func (r *Runtime) runHTMLAnimationExport(ctx context.Context, principal artifact.Principal, prepared animationExportPrepared, variantID string) {
+	defer func() {
+		r.animationJobsMu.Lock()
+		delete(r.animationJobs, variantID)
+		r.animationJobsMu.Unlock()
+	}()
+	if _, err := r.renderAndPublishHTMLAnimation(ctx, principal, prepared); err != nil {
+		code := "animation_render_failed"
+		if errors.Is(ctx.Err(), context.Canceled) {
+			code = "animation_cancelled"
+		}
+		_, _ = r.artifactAuthority.MarkFailed(principal, prepared.Input.RequestID+":terminal:"+code, prepared.Input.CollectionID, prepared.Input.VariantID, code)
+	}
+}
+
+func (r *Runtime) cancelHTMLAnimationExport(principal artifact.Principal, callID string, args map[string]any) (pebblestore.SessionArtifactVariant, error) {
+	for key := range args {
+		switch key {
+		case "action", "session_id", "collection_id", "variant_id", "event_seq":
+		default:
+			return pebblestore.SessionArtifactVariant{}, animationError("animation_source_reference_invalid", fmt.Sprintf("cancel_html_animation_export contains unsupported field %q", key))
+		}
+	}
+	collectionID, variantID := strings.TrimSpace(asString(args["collection_id"])), strings.TrimSpace(asString(args["variant_id"]))
+	if strings.TrimSpace(asString(args["session_id"])) != principal.SessionID || collectionID == "" || variantID == "" || asUint64(args["event_seq"]) == 0 {
+		return pebblestore.SessionArtifactVariant{}, animationError("animation_source_reference_invalid", "complete exact staging animation reference is required")
+	}
+	variants, err := r.artifactAuthority.ListVariants(principal, collectionID, manageArtifactMaxListLimit)
+	if err != nil {
+		return pebblestore.SessionArtifactVariant{}, err
+	}
+	var current pebblestore.SessionArtifactVariant
+	for _, candidate := range variants {
+		if candidate.ID == variantID && candidate.EventSeq == asUint64(args["event_seq"]) {
+			current = candidate
+			break
+		}
+	}
+	if current.Status != pebblestore.SessionArtifactStatusStaging {
+		return pebblestore.SessionArtifactVariant{}, animationError("animation_cancel_conflict", "animation export is not an exact cancellable staging job")
+	}
+	r.animationJobsMu.Lock()
+	cancel := r.animationJobs[variantID]
+	r.animationJobsMu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	failed, err := r.artifactAuthority.MarkFailed(principal, managedArtifactRequestID(principal.SessionID, callID, "cancel_html_animation_export"), collectionID, variantID, "animation_cancelled")
+	if err != nil {
+		return pebblestore.SessionArtifactVariant{}, animationError("animation_cancel_failed", "animation export cancellation could not be persisted")
+	}
+	return failed, nil
 }
 
 func parseAnimationManifest(html []byte) (animationManifest, error) {

@@ -197,6 +197,67 @@ func (a *Authority) Create(ctx context.Context, principal Principal, input Creat
 	return a.create(ctx, principal, input, nil, "")
 }
 
+// Reserve publishes a durable projection-only staging variant before expensive
+// byte production begins. The same CreateInput can later be passed to Create to
+// atomically finalize the reserved identity with immutable bytes.
+func (a *Authority) Reserve(principal Principal, input CreateInput) (pebblestore.SessionArtifactVariant, error) {
+	principal, err := a.owned(principal)
+	if err != nil {
+		return pebblestore.SessionArtifactVariant{}, err
+	}
+	input.RequestID = strings.TrimSpace(input.RequestID)
+	input.CollectionID, input.VariantID = strings.TrimSpace(input.CollectionID), strings.TrimSpace(input.VariantID)
+	input.SourceSessionID = strings.TrimSpace(input.SourceSessionID)
+	input.SourceCollectionID, input.SourceVariantID = strings.TrimSpace(input.SourceCollectionID), strings.TrimSpace(input.SourceVariantID)
+	if input.RequestID == "" || input.CollectionID == "" || input.VariantID == "" {
+		return pebblestore.SessionArtifactVariant{}, errors.New("artifact reservation requires request, collection, and variant ids")
+	}
+	if input.SourceSessionID != "" || input.SourceEventSeq != 0 {
+		ref := pebblestore.SessionArtifactSelectionReference{SessionID: input.SourceSessionID, CollectionID: input.SourceCollectionID, VariantID: input.SourceVariantID, EventSeq: input.SourceEventSeq}
+		if _, err := a.GetReference(principal, ref); err != nil {
+			return pebblestore.SessionArtifactVariant{}, fmt.Errorf("resolve source artifact: %w", err)
+		}
+	} else if input.SourceCollectionID != "" || input.SourceVariantID != "" {
+		return pebblestore.SessionArtifactVariant{}, errors.New("source artifact lineage requires source_session_id and source_event_seq")
+	}
+	if err := applyArtifactOutputRequirementsToPresentation(&input.Presentation, input.OutputRequirements); err != nil {
+		return pebblestore.SessionArtifactVariant{}, err
+	}
+	lineage := a.lineage(principal, input)
+	collectionLineage := lineage
+	collectionLineage.SourceSessionID, collectionLineage.SourceCollectionID, collectionLineage.SourceVariantID, collectionLineage.SourceEventSeq = "", "", "", 0
+	collectionLineage.ProgramJobID, collectionLineage.ChildSessionID = "", ""
+	collectionLineage.IterationID, collectionLineage.IterationIndex, collectionLineage.IterationLabel, collectionLineage.IterationTheme = "", 0, "", ""
+	collectionLineage.IterationSectionID, collectionLineage.IterationSectionLabel, collectionLineage.IterationSectionStartMs, collectionLineage.IterationSectionEndMs = "", "", 0, 0
+	collectionLineage.PartID, collectionLineage.PartLabel, collectionLineage.PartKind = "", "", ""
+	collectionLineage.SelectedReviewTargetIDs = ""
+	collectionLineage.VideoProjectID, collectionLineage.VideoRevisionID, collectionLineage.VideoRevisionEventSeq = "", "", 0
+	collection := pebblestore.SessionArtifactCollection{ID: input.CollectionID, Name: strings.TrimSpace(input.CollectionName), Description: strings.TrimSpace(input.CollectionDescription), Lineage: collectionLineage, Presentation: input.Presentation}
+	variant := pebblestore.SessionArtifactVariant{ID: input.VariantID, CollectionID: input.CollectionID, Filename: strings.TrimSpace(input.Filename), MediaType: strings.TrimSpace(input.MediaType), Presentation: input.Presentation, OutputRequirements: cloneOutputRequirements(input.OutputRequirements), AnimationProfile: cloneAnimationProfile(input.AnimationProfile), Parts: append([]pebblestore.SessionArtifactPart(nil), input.Parts...), Lineage: lineage, ArtifactStepID: strings.TrimSpace(input.ArtifactStepID), RevisionRoundID: strings.TrimSpace(input.ArtifactStepID), CandidateIndex: input.CandidateIndex, AutoAccept: input.AutoAccept}
+	if existing, ok, getErr := a.metadata.GetSessionArtifactVariant(principal.AccountScopeID, principal.SessionID, collection.ID, variant.ID); getErr != nil {
+		return pebblestore.SessionArtifactVariant{}, getErr
+	} else if ok {
+		compatible := artifactDestinationLineageCompatible(existing.Lineage, lineage) && existing.Filename == variant.Filename && existing.MediaType == variant.MediaType && equalOutputRequirements(existing.OutputRequirements, variant.OutputRequirements) && equalAnimationProfile(existing.AnimationProfile, variant.AnimationProfile)
+		if !compatible {
+			return pebblestore.SessionArtifactVariant{}, errors.New("artifact reservation conflicts with an existing variant")
+		}
+		switch existing.Status {
+		case pebblestore.SessionArtifactStatusStaging, pebblestore.SessionArtifactStatusReady, pebblestore.SessionArtifactStatusFailed, pebblestore.SessionArtifactStatusUnavailable:
+			return existing, nil
+		default:
+			return pebblestore.SessionArtifactVariant{}, errors.New("artifact reservation conflicts with an existing variant")
+		}
+	}
+	result, err := a.mutateWithArtifact(principal, input.RequestID+":reserve", pebblestore.V3SessionMutationCreateArtifact, pebblestore.V3ArtifactMutation{ProjectionOnly: true, Collection: collection, Variant: &variant})
+	if err != nil {
+		return pebblestore.SessionArtifactVariant{}, err
+	}
+	if result.Artifact == nil || result.Artifact.Variant == nil || result.Artifact.Variant.Status != pebblestore.SessionArtifactStatusStaging {
+		return pebblestore.SessionArtifactVariant{}, errors.New("artifact reservation was not durably staged")
+	}
+	return *result.Artifact.Variant, nil
+}
+
 func (a *Authority) CreatePackage(ctx context.Context, principal Principal, input CreatePackageInput) (pebblestore.SessionArtifactVariant, error) {
 	entries := make([]PackageEntry, len(input.Entries))
 	copy(entries, input.Entries)
@@ -708,7 +769,11 @@ func (a *Authority) MarkFailed(principal Principal, requestID, collectionID, var
 	if variant.FailureCode == "" {
 		return pebblestore.SessionArtifactVariant{}, errors.New("artifact failure code is required")
 	}
-	if _, err := a.mutate(principal, requestID, pebblestore.V3SessionMutationFailArtifact, collection, &variant, nil); err != nil {
+	mutation := pebblestore.V3ArtifactMutation{Collection: collection, Variant: &variant}
+	if variant.ProjectionReservation || variant.GraphState == "" {
+		mutation.ProjectionOnly = true
+	}
+	if _, err := a.mutateWithArtifact(principal, requestID, pebblestore.V3SessionMutationFailArtifact, mutation); err != nil {
 		return pebblestore.SessionArtifactVariant{}, err
 	}
 	stored, ok, err := a.metadata.GetSessionArtifactVariant(principal.AccountScopeID, principal.SessionID, collection.ID, variant.ID)
@@ -901,7 +966,7 @@ func (a *Authority) mutate(principal Principal, requestID, kind string, collecti
 
 func (a *Authority) mutateWithArtifact(principal Principal, requestID, kind string, artifactMutation pebblestore.V3ArtifactMutation) (pebblestore.V3SessionMutationResult, error) {
 	requestID = strings.TrimSpace(requestID)
-	if artifactMutation.Transaction == nil {
+	if artifactMutation.Transaction == nil && !artifactMutation.ProjectionOnly {
 		if err := a.attachGitProjection(context.Background(), principal, requestID, kind, &artifactMutation); err != nil {
 			return pebblestore.V3SessionMutationResult{}, err
 		}

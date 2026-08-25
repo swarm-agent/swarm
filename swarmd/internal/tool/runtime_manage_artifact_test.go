@@ -104,6 +104,19 @@ type fakeArtifactAuthority struct {
 	catalogPage     pebblestore.SessionArtifactCatalogPage
 }
 
+func (f *fakeArtifactAuthority) Reserve(principal artifact.Principal, input artifact.CreateInput) (pebblestore.SessionArtifactVariant, error) {
+	f.principal, f.created = principal, input
+	f.variant = pebblestore.SessionArtifactVariant{ID: input.VariantID, CollectionID: input.CollectionID, SessionID: principal.SessionID, EventSeq: 1, Status: pebblestore.SessionArtifactStatusStaging, Filename: input.Filename, MediaType: input.MediaType, Presentation: input.Presentation, OutputRequirements: input.OutputRequirements, AnimationProfile: input.AnimationProfile, Parts: append([]pebblestore.SessionArtifactPart(nil), input.Parts...)}
+	return f.variant, nil
+}
+
+func (f *fakeArtifactAuthority) MarkFailed(principal artifact.Principal, _ string, collectionID, variantID, failureCode string) (pebblestore.SessionArtifactVariant, error) {
+	f.principal = principal
+	f.variant.CollectionID, f.variant.ID, f.variant.Status, f.variant.FailureCode = collectionID, variantID, pebblestore.SessionArtifactStatusFailed, failureCode
+	f.variant.EventSeq++
+	return f.variant, nil
+}
+
 func (f *fakeArtifactAuthority) Create(_ context.Context, principal artifact.Principal, input artifact.CreateInput) (pebblestore.SessionArtifactVariant, error) {
 	f.principal, f.created = principal, input
 	f.readBody = append([]byte(nil), input.Body...)
@@ -134,6 +147,9 @@ func (f *fakeArtifactAuthority) List(principal artifact.Principal, _ string, _ i
 }
 func (f *fakeArtifactAuthority) ListVariants(principal artifact.Principal, collectionID string, _ int) ([]pebblestore.SessionArtifactVariant, error) {
 	f.principal = principal
+	if f.variant.ID != "" && f.variant.CollectionID == collectionID {
+		return []pebblestore.SessionArtifactVariant{f.variant}, nil
+	}
 	return []pebblestore.SessionArtifactVariant{{ID: "variant-1", CollectionID: collectionID}}, nil
 }
 func (f *fakeArtifactAuthority) SearchCatalog(principal artifact.Principal, options pebblestore.SessionArtifactCatalogOptions) (pebblestore.SessionArtifactCatalogPage, error) {
