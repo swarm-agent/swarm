@@ -45,6 +45,30 @@ func createTestSession(t *testing.T, store *SessionStore, accountScopeID, userID
 	}
 }
 
+func TestListVideoProjectsForAccountCrossSession(t *testing.T) {
+	store, cleanup := newTestSessionStoreForVideoProject(t)
+	defer cleanup()
+	createTestSession(t, store, "account", "user", "session-a")
+	createTestSession(t, store, "account", "user", "session-b")
+	createTestSession(t, store, "foreign", "user", "session-c")
+	for _, input := range []CreateVideoProjectInput{
+		{AccountScopeID: "account", UserID: "user", SessionID: "session-a", ProjectID: "project-a", Title: "A"},
+		{AccountScopeID: "account", UserID: "user", SessionID: "session-b", ProjectID: "project-b", Title: "B"},
+		{AccountScopeID: "foreign", UserID: "user", SessionID: "session-c", ProjectID: "project-c", Title: "C"},
+	} {
+		if _, _, err := store.CreateVideoProject(input); err != nil {
+			t.Fatal(err)
+		}
+	}
+	projects, err := store.ListVideoProjectsForAccount("account", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(projects) != 2 {
+		t.Fatalf("projects=%+v, want two account projects", projects)
+	}
+}
+
 func TestVideoProjectCreationAndRevisions(t *testing.T) {
 	store, cleanup := newTestSessionStoreForVideoProject(t)
 	defer cleanup()

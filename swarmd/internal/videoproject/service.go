@@ -16,6 +16,7 @@ type SessionStore interface {
 	GetVideoProject(accountScopeID, sessionID, projectID string) (pebblestore.VideoProjectSnapshot, bool, error)
 	GetPrimaryVideoToolProject(accountScopeID, sessionID string) (pebblestore.VideoProjectSnapshot, bool, error)
 	ListVideoProjects(accountScopeID, sessionID string, limit int) ([]pebblestore.VideoProjectSnapshot, error)
+	ListVideoProjectsForAccount(accountScopeID string, limit int) ([]pebblestore.VideoProjectSnapshot, error)
 	CreateVideoProjectRevision(input pebblestore.CreateVideoProjectRevisionInput) (pebblestore.VideoProjectRevisionSnapshot, pebblestore.VideoProjectSnapshot, error)
 	GetVideoProjectRevision(accountScopeID, sessionID, projectID, revisionID string) (pebblestore.VideoProjectRevisionSnapshot, bool, error)
 	GetVideoProjectRevisionByNumber(accountScopeID, sessionID, projectID string, revisionNumber int) (pebblestore.VideoProjectRevisionSnapshot, bool, error)
@@ -63,6 +64,16 @@ type CreateRevisionInput struct {
 	Timeline        pebblestore.VideoProjectTimeline
 	AuthorPrincipal string
 	NowUnixMs       int64
+}
+
+type ForkRevisionInput struct {
+	SourceSessionID  string
+	SourceProjectID  string
+	SourceRevisionID string
+	DestinationSessionID string
+	DestinationWorkspaceID string
+	ProjectID string
+	NowUnixMs int64
 }
 
 type RestoreRevisionInput struct {
@@ -298,6 +309,39 @@ func ensureInitialVideoProjectTimeline(input *CreateProjectInput) {
 	}
 }
 
+func (s *Service) ForkRevision(ctx context.Context, principal identity.Principal, input ForkRevisionInput) (pebblestore.VideoProjectSnapshot, *pebblestore.VideoProjectRevisionSnapshot, error) {
+	if !principal.Valid() {
+		return pebblestore.VideoProjectSnapshot{}, nil, errors.New("authenticated principal is required")
+	}
+	sourceProject, ok, err := s.GetProject(principal, input.SourceSessionID, input.SourceProjectID)
+	if err != nil || !ok {
+		return pebblestore.VideoProjectSnapshot{}, nil, errors.New("source video project not found")
+	}
+	sourceRevision, ok, err := s.GetRevision(principal, input.SourceSessionID, input.SourceProjectID, input.SourceRevisionID)
+	if err != nil || !ok {
+		return pebblestore.VideoProjectSnapshot{}, nil, errors.New("source video revision not found")
+	}
+	metadata := map[string]any{
+		"source_session_id": input.SourceSessionID,
+		"source_project_id": input.SourceProjectID,
+		"source_revision_id": input.SourceRevisionID,
+		"video_lineage_root_session_id": firstNonEmptyMetadataString(sourceProject.Metadata, "video_lineage_root_session_id", input.SourceSessionID),
+		"video_lineage_root_project_id": firstNonEmptyMetadataString(sourceProject.Metadata, "video_lineage_root_project_id", input.SourceProjectID),
+	}
+	return s.CreateProject(ctx, principal, CreateProjectInput{
+		SessionID: input.DestinationSessionID, WorkspaceID: input.DestinationWorkspaceID, ProjectID: input.ProjectID,
+		Title: sourceProject.Title, Description: sourceProject.Description, OutputPreset: sourceProject.OutputPreset,
+		InitialTimeline: &sourceRevision.Timeline, Metadata: metadata, ProjectKind: pebblestore.VideoProjectKindVideoTool, NowUnixMs: input.NowUnixMs,
+	})
+}
+
+func firstNonEmptyMetadataString(metadata map[string]any, key, fallback string) string {
+	if value, ok := metadata[key].(string); ok && strings.TrimSpace(value) != "" {
+		return strings.TrimSpace(value)
+	}
+	return strings.TrimSpace(fallback)
+}
+
 func (s *Service) CreateRevision(ctx context.Context, principal identity.Principal, input CreateRevisionInput) (pebblestore.VideoProjectRevisionSnapshot, pebblestore.VideoProjectSnapshot, error) {
 	if s == nil || s.sessions == nil {
 		return pebblestore.VideoProjectRevisionSnapshot{}, pebblestore.VideoProjectSnapshot{}, errors.New("videoproject service is not configured")
@@ -505,6 +549,86 @@ func (s *Service) GetRevision(principal identity.Principal, sessionID, projectID
 		return pebblestore.VideoProjectRevisionSnapshot{}, false, err
 	}
 	return revision, true, nil
+}
+
+type WorkspaceVideoRelatedSession struct {
+	SessionID string `json:"session_id"`
+	Title string `json:"title"`
+	Archived bool `json:"archived,omitempty"`
+}
+
+type WorkspaceVideoCatalogItem struct {
+	Project         pebblestore.VideoProjectSnapshot           `json:"project"`
+	Revisions       []pebblestore.VideoProjectRevisionSnapshot `json:"revisions"`
+	SourceArchived  bool                                        `json:"source_archived,omitempty"`
+	SourceSessionID string                                      `json:"source_session_id"`
+	SourceSessionTitle string                                   `json:"source_session_title,omitempty"`
+	RelatedSessions []WorkspaceVideoRelatedSession              `json:"related_sessions"`
+}
+
+func (s *Service) ListWorkspaceCatalog(principal identity.Principal, workspacePath string, limit int) ([]WorkspaceVideoCatalogItem, error) {
+	if s == nil || s.sessions == nil {
+		return nil, errors.New("videoproject service is not configured")
+	}
+	if !principal.Valid() {
+		return nil, errors.New("authenticated principal is required")
+	}
+	workspacePath = strings.TrimSpace(workspacePath)
+	if workspacePath == "" {
+		return nil, errors.New("workspace path is required")
+	}
+	projects, err := s.sessions.ListVideoProjectsForAccount(principal.AccountScopeID, limit)
+	if err != nil {
+		return nil, err
+	}
+	items := make([]WorkspaceVideoCatalogItem, 0, len(projects))
+	for _, project := range projects {
+		if project.UserID != "" && project.UserID != principal.UserID {
+			continue
+		}
+		session, active, readErr := s.sessions.GetSession(project.SessionID)
+		archived := false
+		if readErr != nil {
+			return nil, readErr
+		}
+		if !active {
+			tombstoneReader, ok := s.sessions.(interface { GetV3SessionTombstone(string) (pebblestore.V3SessionTombstone, bool, error) })
+			if !ok {
+				continue
+			}
+			tombstone, found, tombstoneErr := tombstoneReader.GetV3SessionTombstone(project.SessionID)
+			if tombstoneErr != nil {
+				return nil, tombstoneErr
+			}
+			if !found || tombstone.Deleted || !tombstone.Archived {
+				continue
+			}
+			session, archived = tombstone.Session, true
+		}
+		if session.AccountScopeID != principal.AccountScopeID || (session.UserID != "" && session.UserID != principal.UserID) || strings.TrimSpace(session.WorkspacePath) != workspacePath {
+			continue
+		}
+		revisions, revisionErr := s.sessions.ListVideoProjectRevisions(principal.AccountScopeID, project.SessionID, project.ID, pebblestore.MaxVideoProjectRevisions)
+		if revisionErr != nil {
+			return nil, revisionErr
+		}
+		items = append(items, WorkspaceVideoCatalogItem{Project: project, Revisions: revisions, SourceArchived: archived, SourceSessionID: project.SessionID, SourceSessionTitle: session.Title})
+	}
+	for index := range items {
+		rootSession := firstNonEmptyMetadataString(items[index].Project.Metadata, "video_lineage_root_session_id", items[index].SourceSessionID)
+		rootProject := firstNonEmptyMetadataString(items[index].Project.Metadata, "video_lineage_root_project_id", items[index].Project.ID)
+		seen := map[string]bool{}
+		for _, candidate := range items {
+			candidateRootSession := firstNonEmptyMetadataString(candidate.Project.Metadata, "video_lineage_root_session_id", candidate.SourceSessionID)
+			candidateRootProject := firstNonEmptyMetadataString(candidate.Project.Metadata, "video_lineage_root_project_id", candidate.Project.ID)
+			if candidateRootSession != rootSession || candidateRootProject != rootProject || seen[candidate.SourceSessionID] {
+				continue
+			}
+			seen[candidate.SourceSessionID] = true
+			items[index].RelatedSessions = append(items[index].RelatedSessions, WorkspaceVideoRelatedSession{SessionID: candidate.SourceSessionID, Title: candidate.SourceSessionTitle, Archived: candidate.SourceArchived})
+		}
+	}
+	return items, nil
 }
 
 func (s *Service) ListProjects(principal identity.Principal, sessionID string, limit int) ([]pebblestore.VideoProjectSnapshot, error) {

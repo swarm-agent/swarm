@@ -343,6 +343,10 @@ func VideoProjectPrefix(accountScopeID, sessionID string) string {
 	return fmt.Sprintf("v3/video_project/project/%s/%s/", keyPart(accountScopeID), keyPart(sessionID))
 }
 
+func VideoProjectAccountPrefix(accountScopeID string) string {
+	return fmt.Sprintf("v3/video_project/project/%s/", keyPart(accountScopeID))
+}
+
 func KeyPrimaryVideoToolProject(accountScopeID, sessionID string) string {
 	return fmt.Sprintf("v3/video_project/primary_video_tool/%s/%s", keyPart(accountScopeID), keyPart(sessionID))
 }
@@ -1999,6 +2003,40 @@ func (s *SessionStore) GetPrimaryVideoToolProject(accountScopeID, sessionID stri
 		return VideoProjectSnapshot{}, false, errors.New("primary Video Tool project index is invalid")
 	}
 	return project, true, nil
+}
+
+// ListVideoProjectsForAccount enumerates retained projects without requiring an
+// active source session. Callers must still apply user and workspace scope.
+func (s *SessionStore) ListVideoProjectsForAccount(accountScopeID string, limit int) ([]VideoProjectSnapshot, error) {
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	if accountScopeID == "" {
+		return nil, errors.New("account scope is required")
+	}
+	if limit <= 0 || limit > 1000 {
+		limit = 1000
+	}
+	projects := make([]VideoProjectSnapshot, 0)
+	err := s.store.IteratePrefix(VideoProjectAccountPrefix(accountScopeID), limit+1, func(_ string, value []byte) error {
+		var project VideoProjectSnapshot
+		if err := json.Unmarshal(value, &project); err != nil {
+			return err
+		}
+		projects = append(projects, project)
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	sort.Slice(projects, func(i, j int) bool {
+		if projects[i].UpdatedAt == projects[j].UpdatedAt {
+			return projects[i].ID < projects[j].ID
+		}
+		return projects[i].UpdatedAt > projects[j].UpdatedAt
+	})
+	if len(projects) > limit {
+		projects = projects[:limit]
+	}
+	return projects, nil
 }
 
 func (s *SessionStore) ListVideoProjects(accountScopeID, sessionID string, limit int) ([]VideoProjectSnapshot, error) {

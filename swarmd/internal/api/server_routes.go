@@ -114,6 +114,8 @@ func (s *Server) registerWorkspaceRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/v1/workspace/audio/transcribe/cancel", s.handleWorkspaceAudioTranscribeCancel)
 	mux.HandleFunc("/v1/workspace/audio/analysis/read", s.handleWorkspaceAudioAnalysisRead)
 	mux.HandleFunc("/v1/workspace/video/storage/reveal", s.handleVideoStorageReveal)
+	mux.HandleFunc("/v1/workspace/video/projects", s.handleWorkspaceVideoProjects)
+	mux.HandleFunc("/v1/workspace/video/projects/fork", s.handleWorkspaceVideoProjectFork)
 	mux.HandleFunc("/v1/workspace/video/threads", s.handleWorkspaceVideoThreads)
 	mux.HandleFunc("/v1/workspace/video/threads/", s.handleWorkspaceVideoThread)
 	mux.HandleFunc("/v1/workspace/image/threads", s.handleWorkspaceImageThreads)

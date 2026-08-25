@@ -45,6 +45,7 @@ func (f *fakeSessionStore) CreateVideoProject(input pebblestore.CreateVideoProje
 		Description:           input.Description,
 		OutputPreset:          input.OutputPreset,
 		ProjectKind:           input.ProjectKind,
+		Metadata:              input.Metadata,
 		CurrentRevisionID:     "",
 		CurrentRevisionNumber: 0,
 		RevisionCount:         0,
@@ -93,6 +94,19 @@ func (f *fakeSessionStore) GetPrimaryVideoToolProject(accountScopeID, sessionID 
 		}
 	}
 	return pebblestore.VideoProjectSnapshot{}, false, nil
+}
+
+func (f *fakeSessionStore) ListVideoProjectsForAccount(accountScopeID string, limit int) ([]pebblestore.VideoProjectSnapshot, error) {
+	var list []pebblestore.VideoProjectSnapshot
+	for _, project := range f.projects {
+		if project.AccountScopeID == accountScopeID {
+			list = append(list, project)
+		}
+	}
+	if limit > 0 && len(list) > limit {
+		list = list[:limit]
+	}
+	return list, nil
 }
 
 func (f *fakeSessionStore) ListVideoProjects(accountScopeID, sessionID string, limit int) ([]pebblestore.VideoProjectSnapshot, error) {
@@ -397,6 +411,18 @@ func TestVideoprojectServiceWorkflow(t *testing.T) {
 	}
 	if restored.ParentRevisionID != rev2.ID || restored.RestoredFromRevisionID != rev.ID || restored.Timeline.Clips[0].Volume != rev.Timeline.Clips[0].Volume || restoredProject.CurrentRevisionID != restored.ID {
 		t.Fatalf("restore lineage mismatch: %+v", restored)
+	}
+
+	store.sessions["destination"] = pebblestore.SessionSnapshot{ID: "destination", AccountScopeID: principal.AccountScopeID, UserID: principal.UserID, WorkspacePath: "/workspace"}
+	forked, forkedRevision, err := svc.ForkRevision(ctx, principal, ForkRevisionInput{SourceSessionID: sessionID, SourceProjectID: project.ID, SourceRevisionID: rev.ID, DestinationSessionID: "destination", ProjectID: "forked"})
+	if err != nil {
+		t.Fatalf("fork revision failed: %v", err)
+	}
+	if forkedRevision == nil || forkedRevision.Timeline.Clips[0].Volume != rev.Timeline.Clips[0].Volume || forked.Metadata["source_revision_id"] != rev.ID {
+		t.Fatalf("fork did not preserve exact source and lineage: project=%+v revision=%+v", forked, forkedRevision)
+	}
+	if source, ok := store.projects[project.ID]; !ok || source.CurrentRevisionID != restored.ID {
+		t.Fatalf("fork mutated source project: %+v", source)
 	}
 
 	// 3. Start render job
