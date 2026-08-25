@@ -150,6 +150,14 @@ Prefer maintained scripts over one-off replacements:
 
 Use each script’s `--help`. Do not manually reproduce a script’s contract, hardcode remote paths, pass raw secrets on command lines, or substitute an unrequested host/helper.
 
+### Alias-driven E2E testbench
+
+- Keep local testbench routing in the ignored repository-root `.env`; copy `.env.example` and set only the SSH alias and loopback port numbers. The checked-in runners reject unknown keys and credential-like names. Never put tokens, passwords, cookies, API keys, private keys, provider payloads, or other credentials in this file.
+- Run `./scripts/testbench-e2e-tunnel.sh check` before a live E2E. It verifies the configured SSH alias, local port availability, and remote loopback Desktop/API listeners without opening a persistent tunnel.
+- Run `./scripts/testbench-e2e-tunnel.sh run <command...>` to execute any E2E command with `SWARM_DESKTOP_URL` and `SWARM_PRIMARY_API_URL` exported through loopback-only SSH local forwards. Use `./scripts/run-testbench-desktop-e2e.sh` for the canonical Desktop launch suite.
+- The Desktop listener remains remote-loopback-only. Do not bind test ports to `0.0.0.0`, use raw hosts in runners, or bypass the SSH alias. If the remote test requires a callback to a local loopback service, set both reverse-port variables in `.env`; the tunnel runner adds one bounded `ssh -R remote:127.0.0.1:local` forwarding rule.
+- E2E scripts must use these environment variables or explicit equivalent CLI arguments, produce bounded evidence under an existing ignored `.tmp/` location, clean up tunnel processes, and never persist authentication material.
+
 ## Temporary Data
 
 - Use the run-provided `TMPDIR` for disposable command data.
