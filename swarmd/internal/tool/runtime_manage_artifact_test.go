@@ -21,6 +21,21 @@ import (
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
+func TestManagedCreateInfersHTMLMediaTypeFromFilename(t *testing.T) {
+	authority := &fakeArtifactAuthority{}
+	runtime := NewRuntime(1)
+	runtime.SetArtifactAuthority(authority)
+	ctx, scope := artifactToolContext()
+	source := pebblestore.SessionArtifactSelectionReference{SessionID: "source-session", CollectionID: "source-collection", VariantID: "source-variant", EventSeq: 9}
+	ctx = WithArtifactRunContext(ctx, ArtifactRunContext{SessionID: "session-1", ChildSessionID: "session-1", TaskCallID: "task-1", CollectionID: "collection-1", VariantID: "variant-1", SourceArtifact: &source})
+	if _, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, Call{CallID: "managed-create-html", Name: "manage_artifact", Arguments: `{"action":"create","filename":"revision.html","content":"<h1>revision</h1>"}`}); err != nil {
+		t.Fatal(err)
+	}
+	if authority.created.MediaType != "text/html" {
+		t.Fatalf("managed create media type = %q", authority.created.MediaType)
+	}
+}
+
 func TestArtifactReviewTargetIDsPreservesBoundedOrder(t *testing.T) {
 	targets := []pebblestore.SessionArtifactPart{{ID: "part-1"}, {ID: "part-3"}, {ID: "part-1"}}
 	if got := artifactReviewTargetIDs(targets); got != "part-1,part-3" {

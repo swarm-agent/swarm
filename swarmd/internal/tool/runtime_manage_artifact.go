@@ -435,6 +435,9 @@ func (r *Runtime) executeManageArtifact(ctx context.Context, scope WorkspaceScop
 					return "", errors.New("manage_artifact managed create must omit variant_id; the destination is injected by trusted orchestration")
 				}
 				input.CollectionID, input.VariantID = trustedCollectionID, trustedVariantID
+				if strings.TrimSpace(input.MediaType) == "" && run.SourceArtifact != nil {
+					input.MediaType = canonicalArtifactMediaType(mime.TypeByExtension(filepath.Ext(input.Filename)))
+				}
 				input.OutputRequirements = cloneArtifactOutputRequirements(run.OutputRequirements)
 				if run.SourceArtifact != nil {
 					if input.SourceSessionID != "" && (input.SourceSessionID != run.SourceArtifact.SessionID || input.SourceCollectionID != run.SourceArtifact.CollectionID || input.SourceVariantID != run.SourceArtifact.VariantID || input.SourceEventSeq != run.SourceArtifact.EventSeq) {
