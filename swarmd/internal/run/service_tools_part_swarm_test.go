@@ -49,6 +49,9 @@ func TestMultiLocatorDesignerRunContextCarriesBoundedTargetIDs(t *testing.T) {
 	if run.SelectedReviewTargets[0].ID != "part-1" || run.SelectedReviewTargets[1].ID != "part-3" {
 		t.Fatalf("review targets = %#v", run.SelectedReviewTargets)
 	}
+	if got := taskReviewTargetIDs(run.SelectedReviewTargets); got != "part-1,part-3" {
+		t.Fatalf("review target ids = %q", got)
+	}
 }
 
 func TestFocusedDesignerPromptRequiresPartReadAndPublishOnly(t *testing.T) {

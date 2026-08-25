@@ -500,6 +500,7 @@ func (s *Service) ensureManagedDesignerArtifactPlaceholders(parent pebblestore.S
 			IterationLabel: strings.TrimSpace(run.IterationLabel), IterationTheme: strings.TrimSpace(run.IterationTheme),
 			IterationSectionID: strings.TrimSpace(run.IterationSectionID), IterationSectionLabel: strings.TrimSpace(run.IterationSectionLabel), IterationSectionStartMs: run.IterationSectionStartMs, IterationSectionEndMs: run.IterationSectionEndMs,
 			PartID: strings.TrimSpace(run.PartID), PartLabel: strings.TrimSpace(run.PartLabel), PartKind: strings.TrimSpace(run.PartKind),
+			SelectedReviewTargetIDs: taskReviewTargetIDs(run.SelectedReviewTargets),
 		}
 		if source := launch.SourceArtifact; source != nil {
 			lineage.SourceSessionID = strings.TrimSpace(source.SessionID)
@@ -4921,6 +4922,7 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 				PartID:                  launch.ArtifactRunContext.PartID,
 				PartLabel:               launch.ArtifactRunContext.PartLabel,
 				PartKind:                launch.ArtifactRunContext.PartKind,
+				SelectedReviewTargetIDs: taskReviewTargetIDs(launch.ArtifactRunContext.SelectedReviewTargets),
 			}
 			if s.tools == nil || s.tools.ArtifactAuthority() == nil {
 				markMissing("artifact_authority_unavailable")
@@ -4955,7 +4957,8 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 				lineage.IterationSectionEndMs == launch.ArtifactRunContext.IterationSectionEndMs &&
 				lineage.PartID == launch.ArtifactRunContext.PartID &&
 				lineage.PartLabel == launch.ArtifactRunContext.PartLabel &&
-				lineage.PartKind == launch.ArtifactRunContext.PartKind
+				lineage.PartKind == launch.ArtifactRunContext.PartKind &&
+				lineage.SelectedReviewTargetIDs == taskReviewTargetIDs(launch.ArtifactRunContext.SelectedReviewTargets)
 			compositionMatches := true
 			selectedPartRevisions := launch.ArtifactRunContext.SourcePartRevisions
 			if len(selectedPartRevisions) == 0 && launch.ArtifactRunContext.SourcePartRevision != nil {
@@ -5678,6 +5681,26 @@ func latestTaskArtifactUseSelection(messages []pebblestore.MessageSnapshot) *peb
 		}
 	}
 	return nil
+}
+
+func taskReviewTargetIDs(targets []pebblestore.SessionArtifactPart) string {
+	if len(targets) == 0 {
+		return ""
+	}
+	ids := make([]string, 0, len(targets))
+	seen := make(map[string]struct{}, len(targets))
+	for _, target := range targets {
+		id := strings.TrimSpace(target.ID)
+		if id == "" {
+			continue
+		}
+		if _, duplicate := seen[id]; duplicate {
+			continue
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, id)
+	}
+	return strings.Join(ids, ",")
 }
 
 func taskSectionTargetFromArtifactPart(part pebblestore.SessionArtifactPart) *taskSwarmSectionTarget {
