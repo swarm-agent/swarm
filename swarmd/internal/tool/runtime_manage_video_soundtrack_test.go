@@ -40,6 +40,26 @@ func TestManageVideoDefinitionExposesTypedSoundtrackProposalContract(t *testing.
 	}
 }
 
+func TestManageVideoDefinitionExplainsLiveHTMLSoundtrackPreviewBoundary(t *testing.T) {
+	definition := manageVideoDefinition()
+	raw, err := json.Marshal(definition.Parameters)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(raw)
+	for _, expected := range []string{
+		"immediate live Video Studio preview",
+		"selected HTML plays in a sandboxed swarm-player/v1 iframe while soundtrack audio follows the same playhead",
+		"no HTML-to-MP4 export is needed for preview",
+		"durable acceptance/promotion or final rendering requires an MP4 derivative",
+		"never replace a durable timeline artifact_ref with text/html",
+	} {
+		if !strings.Contains(text, expected) {
+			t.Fatalf("manage_video live HTML schema guidance lacks %q: %s", expected, text)
+		}
+	}
+}
+
 func TestManageVideoCreatesPendingSoundtrackProposalFromExactAudioReference(t *testing.T) {
 	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "manage-video-soundtrack.pebble"))
 	if err != nil {

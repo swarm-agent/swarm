@@ -22,3 +22,37 @@ func TestMasterHarnessRequiresProfiledDesignerAnimationGuidance(t *testing.T) {
 		}
 	}
 }
+
+func TestMasterHarnessPrefersLiveHTMLVideoStudioPreviewBeforeExport(t *testing.T) {
+	prompt := masterHarnessPrompt(t.TempDir())
+	for _, expected := range []string{
+		"submit the pending proposal before any HTML-to-MP4 export",
+		"plays the selected HTML live in a sandboxed swarm-player/v1 iframe while soundtrack audio follows the same playhead",
+		"Do not call export_html_animation merely to preview HTML with soundtrack",
+		"never claim that live HTML plus soundtrack preview is unsupported",
+		"explicit durable acceptance/promotion or final rendering",
+	} {
+		if !strings.Contains(prompt, expected) {
+			t.Fatalf("master harness missing live HTML Video Studio guidance %q", expected)
+		}
+	}
+}
+
+func TestVideoStudioMessageContextPrefersLiveHTMLCandidatePreview(t *testing.T) {
+	prompt := videoStudioMessageContextForProvider(map[string]any{
+		"creative_mode":     "video",
+		"video_project_id":  "project-1",
+		"video_revision_id": "revision-1",
+	})
+	for _, expected := range []string{
+		"attach them as animation_candidates",
+		"previews the selected HTML live in a sandboxed swarm-player/v1 iframe while soundtrack audio follows the same playhead",
+		"Do not export HTML to MP4 merely for live review",
+		"do not submit text/html through replace_source",
+		"durable acceptance/promotion or final rendering",
+	} {
+		if !strings.Contains(prompt, expected) {
+			t.Fatalf("Video Studio context missing live HTML guidance %q: %s", expected, prompt)
+		}
+	}
+}
