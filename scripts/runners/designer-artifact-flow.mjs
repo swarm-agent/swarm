@@ -344,9 +344,11 @@ async function main() {
     ].join(' ')
     await postTurn(sessionID, stage, prompt, [selection])
     const targetKey = targetIDs.join(',')
-    const candidates = await waitForArtifacts(sessionID, (item) => sameSource(item.lineage, sourceRef)
-      && String(item?.lineage?.selected_review_target_ids || '') === targetKey
-      && item.media_type === 'text/html', 1, `${stage} candidate`)
+    const artifacts = await catalog(sessionID)
+    const sourceCandidates = artifacts.filter((item) => sameSource(item.lineage, sourceRef)
+      && String(item?.lineage?.selected_review_target_ids || '') === targetKey)
+    const candidates = sourceCandidates.filter((item) => item?.status === 'ready' && item.media_type === 'text/html')
+    assert(candidates.length >= 1, `${stage} terminal run produced no ready complete candidate; target candidates=${sourceCandidates.map((item) => `${item.artifact_id}:${item.status}:${item.failure_code || 'none'}`).join(',') || 'none'}`)
     const candidate = candidates.sort((a, b) => Number(b.event_seq || 0) - Number(a.event_seq || 0))[0]
     assert(hasPartContract(candidate), `${stage} candidate did not preserve the canonical part contract`)
     result.references.source = sourceRef
