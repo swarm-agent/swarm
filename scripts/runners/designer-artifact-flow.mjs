@@ -28,7 +28,7 @@ if (!apiURL || !/^https?:\/\//.test(apiURL)) throw new Error('--api-url must be 
 if (!provider || !/^[a-z0-9._-]+$/.test(provider)) throw new Error('--provider is invalid')
 if (!Number.isFinite(timeoutMs) || timeoutMs < 300000 || timeoutMs > 600000) throw new Error('--timeout-ms must be between 300000 and 600000; split longer proofs into resumable stages')
 if (!['root', 'focused', 'multi2', 'multi3', 'whole', 'managed', 'workspace', 'all'].includes(stage)) throw new Error('--stage must be root, focused, multi2, multi3, whole, managed, workspace, or all')
-if (stage !== 'root' && stage !== 'all' && !sessionOverride) throw new Error('--session-id is required for non-root stages')
+if (!['root', 'all', 'multi2', 'multi3'].includes(stage) && !sessionOverride) throw new Error('--session-id is required for this resumed stage')
 if (['multi2', 'multi3'].includes(stage) && (!sourceSessionOverride || !sourceCollectionOverride || !sourceVariantOverride || !Number.isInteger(sourceEventSeqOverride) || sourceEventSeqOverride <= 0)) throw new Error('multi-target stages require --source-session-id, --source-collection-id, --source-variant-id, and --source-event-seq')
 
 const testID = `designer-artifact-flow-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`
@@ -296,7 +296,8 @@ async function main() {
   result.gates.workspace_bound = true
 
   let sessionID = sessionOverride
-  if (!sessionID) {
+  const createStageSession = !sessionID && (stage === 'root' || stage === 'all' || stage === 'multi2' || stage === 'multi3')
+  if (createStageSession) {
     const created = await api('POST', '/v3/sessions', {
       client_request_id: `${testID}:create`,
       title: `${testID} Designer artifact proof`,
@@ -314,7 +315,7 @@ async function main() {
     }, 'create E2E session')
     sessionID = String(created.body?.session?.id || '')
     assert(sessionID, 'session creation returned no ID')
-  } else {
+  } else if (sessionID) {
     const existing = await api('GET', `/v3/sessions/${encodeURIComponent(sessionID)}`, undefined, 'read resumed E2E session')
     assert(String(existing.body?.session?.id || existing.body?.id || '') === sessionID, 'resumed session was not found')
   }
@@ -337,6 +338,7 @@ async function main() {
       `Use the selected exact monolithic HTML artifact and remake exactly these ${targetCount} locator targets together: ${targetIDs.join(', ')}.`,
       `Launch one managed Designer Iteration Swarm with count=1, source_artifact set to the exact selection, section_targets set to the complete exact ${targetCount}-target list including kind/start_ms/end_ms, and animation_profile motion_ui.`,
       'The Designer must inspect the exact complete HTML, change every selected target atomically, preserve every non-target target plus all canonical IDs/timings, and publish exactly one complete text/html revision with one manage_artifact create call.',
+      'Do not create or modify a plan. Launch the one Designer swarm directly in this turn.',
       'Do not use read_parts, publish_parts, read_part, publish_part, create_package, ZIP, initial_parts, workspace output, or retries through multipart tools.',
       'Wait for the one ready candidate and finish.',
     ].join(' ')
