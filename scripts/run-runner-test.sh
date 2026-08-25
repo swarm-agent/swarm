@@ -3,7 +3,7 @@ set -euo pipefail
 
 usage() {
   cat >&2 <<'USAGE'
-Usage: scripts/run-runner-test.sh <target> <provider> [test-name] [--api-url <url>] [--workspace-path <path>] [--model <id>] [--thinking <level>] [--timeout-ms <ms>]
+Usage: scripts/run-runner-test.sh <target> <provider> [test-name] [--api-url <url>] [--workspace-path <path>] [--model <id>] [--thinking <level>] [--stage <name>] [--session-id <id>] [--timeout-ms <ms>]
 
 Runs a checked-in runner test against an already-running Swarm target.
 
@@ -17,6 +17,8 @@ Options:
   --workspace-path   Existing bound workspace to use (default: first bound workspace)
   --model            Optional exact model override passed to runners that support it
   --thinking         Optional thinking override passed to runners that support it
+  --stage            Optional resumable stage passed to runners that support it
+  --session-id       Existing session used by a resumed runner stage
   --timeout-ms       Overall runner wait budget (default: 900000)
 
 Environment:
@@ -54,6 +56,8 @@ API_URL=""
 WORKSPACE_PATH=""
 MODEL=""
 THINKING=""
+STAGE=""
+SESSION_ID=""
 TIMEOUT_MS="900000"
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -75,6 +79,16 @@ while [[ $# -gt 0 ]]; do
     --thinking)
       [[ $# -ge 2 ]] || fail "--thinking requires a value"
       THINKING="$2"
+      shift 2
+      ;;
+    --stage)
+      [[ $# -ge 2 ]] || fail "--stage requires a value"
+      STAGE="$2"
+      shift 2
+      ;;
+    --session-id)
+      [[ $# -ge 2 ]] || fail "--session-id requires a value"
+      SESSION_ID="$2"
       shift 2
       ;;
     --timeout-ms)
@@ -112,6 +126,12 @@ fi
 if [[ -n "${THINKING}" ]]; then
   runner_args+=(--thinking "${THINKING}")
 fi
+if [[ -n "${STAGE}" ]]; then
+  runner_args+=(--stage "${STAGE}")
+fi
+if [[ -n "${SESSION_ID}" ]]; then
+  runner_args+=(--session-id "${SESSION_ID}")
+fi
 
 if [[ "${TARGET}" =~ ^https?:// ]]; then
   [[ -z "${API_URL}" ]] || fail "--api-url cannot be used when target is already a URL"
@@ -144,6 +164,8 @@ remote_timeout="$(quote_remote "${TIMEOUT_MS}")"
 remote_workspace="$(quote_remote "${WORKSPACE_PATH}")"
 remote_model="$(quote_remote "${MODEL}")"
 remote_thinking="$(quote_remote "${THINKING}")"
-remote_script='IFS= read -r token || true; export SWARM_RUNNER_TOKEN="$token"; printf "%s\\n" "$$" >"$1.pid"; args=(--api-url "$2" --provider "$3" --timeout-ms "$4"); if [ -n "$5" ]; then args+=(--workspace-path "$5"); fi; if [ -n "$6" ]; then args+=(--model "$6"); fi; if [ -n "$7" ]; then args+=(--thinking "$7"); fi; exec node "$1" "${args[@]}"'
+remote_stage="$(quote_remote "${STAGE}")"
+remote_session="$(quote_remote "${SESSION_ID}")"
+remote_script='IFS= read -r token || true; export SWARM_RUNNER_TOKEN="$token"; printf "%s\\n" "$$" >"$1.pid"; args=(--api-url "$2" --provider "$3" --timeout-ms "$4"); if [ -n "$5" ]; then args+=(--workspace-path "$5"); fi; if [ -n "$6" ]; then args+=(--model "$6"); fi; if [ -n "$7" ]; then args+=(--thinking "$7"); fi; if [ -n "$8" ]; then args+=(--stage "$8"); fi; if [ -n "$9" ]; then args+=(--session-id "$9"); fi; exec node "$1" "${args[@]}"'
 printf '%s\n' "${SWARM_RUNNER_TOKEN:-}" | ssh "${TARGET}" \
-  "bash -c '${remote_script}' bash ${remote_runner} ${remote_api_url} ${remote_provider} ${remote_timeout} ${remote_workspace} ${remote_model} ${remote_thinking}"
+  "bash -c '${remote_script}' bash ${remote_runner} ${remote_api_url} ${remote_provider} ${remote_timeout} ${remote_workspace} ${remote_model} ${remote_thinking} ${remote_stage} ${remote_session}"

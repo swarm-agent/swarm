@@ -16,10 +16,14 @@ const thinkingOverride = String(option('--thinking', process.env.SWARM_RUNNER_TH
 const timeoutMs = Number(option('--timeout-ms', process.env.SWARM_RUNNER_TIMEOUT_MS || '1800000'))
 const workspacePathOverride = String(option('--workspace-path', process.env.SWARM_RUNNER_WORKSPACE_PATH || '')).trim()
 const suppliedToken = String(process.env.SWARM_RUNNER_TOKEN || '').trim()
+const stage = String(option('--stage', process.env.SWARM_RUNNER_STAGE || 'all')).trim().toLowerCase()
+const sessionOverride = String(option('--session-id', process.env.SWARM_RUNNER_SESSION_ID || '')).trim()
 
 if (!apiURL || !/^https?:\/\//.test(apiURL)) throw new Error('--api-url must be an http or https URL')
 if (!provider || !/^[a-z0-9._-]+$/.test(provider)) throw new Error('--provider is invalid')
 if (!Number.isFinite(timeoutMs) || timeoutMs < 300000) throw new Error('--timeout-ms must be at least 300000')
+if (!['root', 'focused', 'whole', 'managed', 'workspace', 'all'].includes(stage)) throw new Error('--stage must be root, focused, whole, managed, workspace, or all')
+if (stage !== 'root' && stage !== 'all' && !sessionOverride) throw new Error('--session-id is required for non-root stages')
 
 const testID = `designer-artifact-flow-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`
 const partContract = [
@@ -27,17 +31,21 @@ const partContract = [
   { id: 'part-2', label: 'Part 2 · Transformation', kind: 'temporal', start_ms: 4000, end_ms: 8000 },
   { id: 'part-3', label: 'Part 3 · Resolution', kind: 'temporal', start_ms: 8000, end_ms: 12000 },
 ]
-const requiredGates = [
-  'provider_runnable', 'model_selected', 'workspace_bound', 'session_created',
-  'root_single_html', 'root_three_parts', 'focused_five_ready', 'focused_lineage',
-  'whole_five_ready', 'whole_lineage', 'whole_parts_preserved', 'managed_read_ready',
-  'managed_read_lineage', 'workspace_designer_completed', 'workspace_file_visible',
-  'no_zip_outputs', 'no_task_failures',
-]
+const commonGates = ['provider_runnable', 'model_selected', 'workspace_bound', 'session_created']
+const stageGates = {
+  root: [...commonGates, 'root_single_html', 'root_three_parts'],
+  focused: [...commonGates, 'root_single_html', 'root_three_parts', 'focused_five_ready', 'focused_lineage'],
+  whole: [...commonGates, 'focused_five_ready', 'focused_lineage', 'whole_five_ready', 'whole_lineage', 'whole_parts_preserved'],
+  managed: [...commonGates, 'whole_five_ready', 'whole_lineage', 'managed_read_ready', 'managed_read_lineage'],
+  workspace: [...commonGates, 'whole_five_ready', 'whole_lineage', 'workspace_designer_completed', 'workspace_file_visible'],
+  all: [...commonGates, 'root_single_html', 'root_three_parts', 'focused_five_ready', 'focused_lineage', 'whole_five_ready', 'whole_lineage', 'whole_parts_preserved', 'managed_read_ready', 'managed_read_lineage', 'workspace_designer_completed', 'workspace_file_visible', 'no_zip_outputs', 'no_task_failures'],
+}
+const requiredGates = stageGates[stage]
 const result = {
   result: 'NOT_DONE',
   test: 'designer-artifact-flow',
   test_id: testID,
+  stage,
   started_at: new Date().toISOString(),
   api_url: apiURL,
   provider,
@@ -256,39 +264,46 @@ async function main() {
   result.workspace_output.workspace_name = String(binding.source_workspace_name || binding.destination_workspace_name || 'workspace')
   result.gates.workspace_bound = true
 
-  const created = await api('POST', '/v3/sessions', {
-    client_request_id: `${testID}:create`,
-    title: `${testID} Designer artifact proof`,
-    workspace_path: workspacePath,
-    workspace_name: String(binding.source_workspace_name || 'designer-e2e'),
-    workspace_binding_id: binding.workspace_binding_id,
-    swarm_id: runtime.swarm_id,
-    target_kind: 'host',
-    target_relationship: 'self',
-    mode: 'auto',
-    agent_name: 'swarm',
-    preference: assignment,
-    model_profile: { temporary: { ...assignment, name: `${testID} temporary model` } },
-    metadata: { runner_test: 'designer-artifact-flow', runner_test_id: testID },
-  }, 'create E2E session')
-  const session = created.body?.session || {}
-  const sessionID = String(session.id || '')
-  assert(sessionID, 'session creation returned no ID')
+  let sessionID = sessionOverride
+  if (!sessionID) {
+    const created = await api('POST', '/v3/sessions', {
+      client_request_id: `${testID}:create`,
+      title: `${testID} Designer artifact proof`,
+      workspace_path: workspacePath,
+      workspace_name: String(binding.source_workspace_name || 'designer-e2e'),
+      workspace_binding_id: binding.workspace_binding_id,
+      swarm_id: runtime.swarm_id,
+      target_kind: 'host',
+      target_relationship: 'self',
+      mode: 'auto',
+      agent_name: 'swarm',
+      preference: assignment,
+      model_profile: { temporary: { ...assignment, name: `${testID} temporary model` } },
+      metadata: { runner_test: 'designer-artifact-flow', runner_test_id: testID },
+    }, 'create E2E session')
+    sessionID = String(created.body?.session?.id || '')
+    assert(sessionID, 'session creation returned no ID')
+  } else {
+    const existing = await api('GET', `/v3/sessions/${encodeURIComponent(sessionID)}`, undefined, 'read resumed E2E session')
+    assert(String(existing.body?.session?.id || existing.body?.id || '') === sessionID, 'resumed session was not found')
+  }
   result.ids.session_id = sessionID
   result.ids.desktop_path = `/${slug(binding.source_workspace_name || 'workspace')}/${sessionID}`
   result.gates.session_created = true
 
-  const rootPrompt = [
-    `Create the root artifact for live E2E ${testID}.`,
-    'Create exactly one ready managed artifact: a self-contained, single-file text/html animated presentation.',
-    'It must use swarm.animation/v1 with duration_ms 12000 and fps 30, plus swarm.iteration/v1 with exactly these ordered sections:',
-    'part-1 "Part 1 · Opening" 0-4000ms; part-2 "Part 2 · Transformation" 4000-8000ms; part-3 "Part 3 · Resolution" 8000-12000ms.',
-    'Install the required deterministic renderAt/ready/seek APIs, self-starting scheduler, swarm-player/v1 bridge, and visible section buttons using those exact IDs and boundaries.',
-    'Keep the artifact monolithic text/html. Use one manage_artifact create call with top-level content. Do not use initial_parts, multipart tools, create_package, ZIP, workspace files, or task delegation.',
-    'Omit top-level parts so the server must derive the three temporal edit targets from the iteration manifest.',
-    'After the artifact is ready, finish the turn without creating extra artifacts.',
-  ].join(' ')
-  await postTurn(sessionID, 'root', rootPrompt)
+  if (stage === 'root' || stage === 'all') {
+    const rootPrompt = [
+      `Create the root artifact for live E2E ${testID}.`,
+      'Create exactly one ready managed artifact: a self-contained, single-file text/html animated presentation.',
+      'It must use swarm.animation/v1 with duration_ms 12000 and fps 30, plus swarm.iteration/v1 with exactly these ordered sections:',
+      'part-1 "Part 1 · Opening" 0-4000ms; part-2 "Part 2 · Transformation" 4000-8000ms; part-3 "Part 3 · Resolution" 8000-12000ms.',
+      'Install the required deterministic renderAt/ready/seek APIs, self-starting scheduler, swarm-player/v1 bridge, and visible section buttons using those exact IDs and boundaries.',
+      'Keep the artifact monolithic text/html. Use one manage_artifact create call with top-level content. Do not use initial_parts, multipart tools, create_package, ZIP, workspace files, or task delegation.',
+      'Omit top-level parts so the server must derive the three temporal edit targets from the iteration manifest.',
+      'After the artifact is ready, finish the turn without creating extra artifacts.',
+    ].join(' ')
+    await postTurn(sessionID, 'root', rootPrompt)
+  }
   const roots = await waitForArtifacts(sessionID, (item) => item.media_type === 'text/html' && !item?.lineage?.source_variant_id && hasPartContract(item), 1, 'root artifact')
   const root = roots.sort((a, b) => Number(b.event_seq || 0) - Number(a.event_seq || 0))[0]
   const rootRef = exactRef(root)
@@ -297,6 +312,10 @@ async function main() {
   result.references.root = rootRef
   result.gates.root_single_html = true
   result.gates.root_three_parts = true
+  if (stage === 'root') {
+    result.result = 'PASS'
+    return
+  }
 
   const focusedSelection = {
     ...rootRef,
@@ -304,14 +323,16 @@ async function main() {
     part_id: 'part-2',
     part: partContract[1],
   }
-  const focusedPrompt = [
-    'Use the selected exact artifact and selected Part 2 target.',
-    'Launch one Designer Iteration Swarm with count=5, source_artifact set to the exact selection, section_target exactly part-2, animation_profile motion_ui, and focused iteration_controls.',
-    'Each Designer must inspect the exact monolithic HTML, change only Part 2 visual treatment, preserve Parts 1 and 3 plus all IDs/times, and publish exactly one complete text/html revision with one manage_artifact create call.',
-    'Do not use read_part, publish_part, multipart payloads, create_package, ZIP, workspace output, or generic unattached Designer launches.',
-    'Wait for all five candidates and then finish.',
-  ].join(' ')
-  await postTurn(sessionID, 'focused', focusedPrompt, [focusedSelection])
+  if (stage === 'focused' || stage === 'all') {
+    const focusedPrompt = [
+      'Use the selected exact artifact and selected Part 2 target.',
+      'Launch one Designer Iteration Swarm with count=5, source_artifact set to the exact selection, section_target exactly part-2, animation_profile motion_ui, and focused iteration_controls.',
+      'Each Designer must inspect the exact monolithic HTML, change only Part 2 visual treatment, preserve Parts 1 and 3 plus all IDs/times, and publish exactly one complete text/html revision with one manage_artifact create call.',
+      'Do not use read_part, publish_part, multipart payloads, create_package, ZIP, workspace output, or generic unattached Designer launches.',
+      'Wait for all five candidates and then finish.',
+    ].join(' ')
+    await postTurn(sessionID, 'focused', focusedPrompt, [focusedSelection])
+  }
   const focused = await waitForArtifacts(sessionID, (item) => sameSource(item.lineage, rootRef)
     && String(item?.lineage?.iteration_section_id || item?.targeted_part_id || '') === 'part-2', 5, 'focused candidates')
   const focusedRound = focused.sort((a, b) => Number(a.candidate_index || 0) - Number(b.candidate_index || 0)).slice(0, 5)
@@ -320,19 +341,25 @@ async function main() {
   result.rounds.focused = focusedRound.map((item) => ({ reference: exactRef(item), candidate_index: item.candidate_index, revision_round_id: item.revision_round_id, targeted_part_id: item.targeted_part_id, lineage: item.lineage }))
   result.gates.focused_five_ready = true
   result.gates.focused_lineage = focusedRound.every((item) => sameSource(item.lineage, rootRef))
+  if (stage === 'focused') {
+    result.result = 'PASS'
+    return
+  }
 
   const selectedFocused = focusedRound[0]
   const selectedFocusedRef = exactRef(selectedFocused)
   result.references.selected_focused = selectedFocusedRef
   const wholeSelection = { ...selectedFocusedRef, action: 'use' }
-  const wholePrompt = [
-    'Take the selected focused candidate as the exact source for a new whole-revision round.',
-    'Launch one Designer Iteration Swarm with count=5 and this exact source_artifact, but do not pass section_target or section_targets.',
-    'Each Designer must read the complete selected HTML and remake the entire animation as a distinct full concept while preserving the canonical three IDs, labels, exact timing boundaries, swarm.animation/v1 and swarm.iteration/v1 contracts.',
-    'Each must publish one complete single-file text/html revision with one manage_artifact create call and exact source lineage. No ZIP, package, multipart, or workspace output.',
-    'Wait for all five complete revisions and finish.',
-  ].join(' ')
-  await postTurn(sessionID, 'whole', wholePrompt, [wholeSelection])
+  if (stage === 'whole' || stage === 'all') {
+    const wholePrompt = [
+      'Take the selected focused candidate as the exact source for a new whole-revision round.',
+      'Launch one Designer Iteration Swarm with count=5 and this exact source_artifact, but do not pass section_target or section_targets.',
+      'Each Designer must read the complete selected HTML and remake the entire animation as a distinct full concept while preserving the canonical three IDs, labels, exact timing boundaries, swarm.animation/v1 and swarm.iteration/v1 contracts.',
+      'Each must publish one complete single-file text/html revision with one manage_artifact create call and exact source lineage. No ZIP, package, multipart, or workspace output.',
+      'Wait for all five complete revisions and finish.',
+    ].join(' ')
+    await postTurn(sessionID, 'whole', wholePrompt, [wholeSelection])
+  }
   const whole = await waitForArtifacts(sessionID, (item) => sameSource(item.lineage, selectedFocusedRef)
     && !String(item?.lineage?.iteration_section_id || '') && !String(item?.targeted_part_id || ''), 5, 'whole candidates')
   const wholeRound = whole.sort((a, b) => Number(a.candidate_index || 0) - Number(b.candidate_index || 0)).slice(0, 5)
@@ -342,23 +369,33 @@ async function main() {
   result.gates.whole_five_ready = true
   result.gates.whole_lineage = wholeRound.every((item) => sameSource(item.lineage, selectedFocusedRef))
   result.gates.whole_parts_preserved = wholeRound.every(hasPartContract)
+  if (stage === 'whole') {
+    result.result = 'PASS'
+    return
+  }
 
   const selectedWhole = wholeRound[0]
   const selectedWholeRef = exactRef(selectedWhole)
   result.references.selected_whole = selectedWholeRef
-  const managedPrompt = [
-    'Use the selected exact whole-revision artifact.',
-    'Launch exactly one regular managed Designer. It must read/inspect the complete exact source, verify all three canonical animation sections are present, make one subtle typography refinement, and publish one complete text/html revision with exact source lineage.',
-    'Do not use focused-part or multipart tools, ZIP, workspace mode, or more than one Designer.',
-    'Wait for it and finish.',
-  ].join(' ')
-  await postTurn(sessionID, 'managed_read', managedPrompt, [{ ...selectedWholeRef, action: 'use' }])
-  const managedRead = await waitForArtifacts(sessionID, (item) => sameSource(item.lineage, selectedWholeRef) && item.media_type === 'text/html', 1, 'managed read revision')
-  const managedItem = managedRead.sort((a, b) => Number(b.event_seq || 0) - Number(a.event_seq || 0))[0]
-  assert(hasPartContract(managedItem), 'managed read Designer did not preserve the three-part contract')
-  result.references.managed_read = exactRef(managedItem)
-  result.gates.managed_read_ready = true
-  result.gates.managed_read_lineage = sameSource(managedItem.lineage, selectedWholeRef)
+  if (stage === 'managed' || stage === 'all') {
+    const managedPrompt = [
+      'Use the selected exact whole-revision artifact.',
+      'Launch exactly one regular managed Designer. It must read/inspect the complete exact source, verify all three canonical animation sections are present, make one subtle typography refinement, and publish one complete text/html revision with exact source lineage.',
+      'Do not use focused-part or multipart tools, ZIP, workspace mode, or more than one Designer.',
+      'Wait for it and finish.',
+    ].join(' ')
+    await postTurn(sessionID, 'managed_read', managedPrompt, [{ ...selectedWholeRef, action: 'use' }])
+    const managedRead = await waitForArtifacts(sessionID, (item) => sameSource(item.lineage, selectedWholeRef) && item.media_type === 'text/html', 1, 'managed read revision')
+    const managedItem = managedRead.sort((a, b) => Number(b.event_seq || 0) - Number(a.event_seq || 0))[0]
+    assert(hasPartContract(managedItem), 'managed read Designer did not preserve the three-part contract')
+    result.references.managed_read = exactRef(managedItem)
+    result.gates.managed_read_ready = true
+    result.gates.managed_read_lineage = sameSource(managedItem.lineage, selectedWholeRef)
+    if (stage === 'managed') {
+      result.result = 'PASS'
+      return
+    }
+  }
 
   const workspaceRelative = `.tmp/${testID}/workspace-designer.html`
   const workspacePrompt = [
@@ -379,6 +416,10 @@ async function main() {
   result.workspace_output.marker = `WORKSPACE_DESIGNER_E2E_OK_${testID}`
   result.gates.workspace_designer_completed = true
   result.gates.workspace_file_visible = true
+  if (stage === 'workspace') {
+    result.result = 'PASS'
+    return
+  }
 
   const allArtifacts = await catalog(sessionID)
   const testArtifacts = allArtifacts.filter((item) => item?.session_id === sessionID)
