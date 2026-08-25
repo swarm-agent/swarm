@@ -265,6 +265,7 @@ func (a *Authority) create(ctx context.Context, principal Principal, input Creat
 	collectionLineage.IterationID, collectionLineage.IterationIndex, collectionLineage.IterationLabel, collectionLineage.IterationTheme = "", 0, "", ""
 	collectionLineage.IterationSectionID, collectionLineage.IterationSectionLabel, collectionLineage.IterationSectionStartMs, collectionLineage.IterationSectionEndMs = "", "", 0, 0
 	collectionLineage.PartID, collectionLineage.PartLabel, collectionLineage.PartKind = "", "", ""
+	collectionLineage.SelectedReviewTargetIDs = ""
 	collectionLineage.VideoProjectID, collectionLineage.VideoRevisionID, collectionLineage.VideoRevisionEventSeq = "", "", 0
 	if err := applyArtifactOutputRequirementsToPresentation(&input.Presentation, input.OutputRequirements); err != nil {
 		return pebblestore.SessionArtifactVariant{}, err

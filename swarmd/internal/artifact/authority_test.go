@@ -233,6 +233,29 @@ func TestAuthorityFinalizesPreallocatedManagedPlaceholder(t *testing.T) {
 	}
 }
 
+func TestAuthorityFinalizesPreallocatedMultiTargetPlaceholder(t *testing.T) {
+	authority, metadata, principal := authorityFixture(t)
+	principal.TaskCallID, principal.ChildSessionID = "call-multi", "child-multi"
+	principal.IterationGroupID, principal.IterationID, principal.IterationIndex = "group-multi", "iteration-multi", 1
+	principal.SelectedReviewTargetIDs = "part-1,part-3"
+	source := CreateInput{SourceSessionID: "source-session", SourceCollectionID: "source-collection", SourceVariantID: "source-variant", SourceEventSeq: 41}
+	metadata.sourceCollection = pebblestore.SessionArtifactCollection{ID: source.SourceCollectionID, AccountScopeID: principal.AccountScopeID, SessionID: source.SourceSessionID, Status: pebblestore.SessionArtifactStatusReady, VariantCount: 1, ReadyCount: 1}
+	metadata.sourceVariant = gitSourceVariant(t, authority, pebblestore.SessionArtifactVariant{ID: source.SourceVariantID, CollectionID: source.SourceCollectionID, AccountScopeID: principal.AccountScopeID, SessionID: source.SourceSessionID, Status: pebblestore.SessionArtifactStatusReady, EventSeq: source.SourceEventSeq, MediaType: "text/html"}, []byte("<h1>source</h1>"))
+	lineage := authority.lineage(principal, source)
+	collectionLineage := lineage
+	collectionLineage.SourceSessionID, collectionLineage.SourceCollectionID, collectionLineage.SourceVariantID, collectionLineage.SourceEventSeq, collectionLineage.ChildSessionID = "", "", "", 0, ""
+	collectionLineage.IterationID, collectionLineage.IterationIndex, collectionLineage.SelectedReviewTargetIDs = "", 0, ""
+	metadata.collection = pebblestore.SessionArtifactCollection{ID: "collection-1", AccountScopeID: principal.AccountScopeID, SessionID: principal.SessionID, Name: "Iterations", Status: pebblestore.SessionArtifactStatusStaging, Lineage: collectionLineage, VariantCount: 1, StagingCount: 1}
+	metadata.variant = pebblestore.SessionArtifactVariant{ID: "variant-1", CollectionID: metadata.collection.ID, AccountScopeID: principal.AccountScopeID, SessionID: principal.SessionID, Status: pebblestore.SessionArtifactStatusStaging, Lineage: lineage}
+	created, err := authority.Create(context.Background(), principal, CreateInput{RequestID: "managed-multi-create", CollectionID: metadata.collection.ID, VariantID: metadata.variant.ID, Filename: "multi.html", MediaType: "text/html", SourceSessionID: source.SourceSessionID, SourceCollectionID: source.SourceCollectionID, SourceVariantID: source.SourceVariantID, SourceEventSeq: source.SourceEventSeq, Body: []byte("<h1>multi</h1>")})
+	if err != nil {
+		t.Fatalf("finalize multi-target placeholder: %v", err)
+	}
+	if created.Status != pebblestore.SessionArtifactStatusReady || created.Lineage.SelectedReviewTargetIDs != "part-1,part-3" {
+		t.Fatalf("multi-target finalized placeholder = %#v", created)
+	}
+}
+
 func TestAuthorityRejectsPreallocatedManagedPlaceholderWithDifferentStableLineage(t *testing.T) {
 	authority, metadata, principal := authorityFixture(t)
 	principal.TaskCallID, principal.ChildSessionID = "call-1", "child-1"
