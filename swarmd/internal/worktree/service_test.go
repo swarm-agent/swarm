@@ -237,8 +237,8 @@ func TestPrepareAndApplyTaskIntegrationIsDeterministic(t *testing.T) {
 	if result.ResultingParentHead == "" || result.ResultingParentHead == base {
 		t.Fatalf("result = %#v", result)
 	}
-	if descends, err := svc.TaskCommitDescendsFrom(repo, head, result.ResultingParentHead); err != nil || descends {
-		t.Fatalf("cherry-picked child unexpectedly reachable by ancestry: descends=%t err=%v", descends, err)
+	if descends, err := svc.TaskCommitDescendsFrom(repo, head, result.ResultingParentHead); err != nil || !descends {
+		t.Fatalf("integrated child is not reachable by ancestry: descends=%t err=%v", descends, err)
 	}
 	if integrated, err := svc.TaskCommitRangeIntegratedInto(repo, base, head, result.ResultingParentHead); err != nil || !integrated {
 		t.Fatalf("cherry-picked child not classified integrated: integrated=%t err=%v", integrated, err)
