@@ -1089,6 +1089,67 @@ func TestManageArtifactPublishWorkspaceRejectsUnsafePrivateSourcesAndPreservesLi
 	}
 }
 
+func TestManageArtifactDeriveTextPreservesUnmatchedBytesAndExactLineage(t *testing.T) {
+	sourceBody := []byte("prefix\nconst duration=74920;\nconst treatment='base';\nsuffix\n")
+	authority := &fakeArtifactAuthority{readBody: sourceBody, variant: pebblestore.SessionArtifactVariant{ID: "source", CollectionID: "source-collection", SessionID: "source-session", EventSeq: 9, Status: pebblestore.SessionArtifactStatusReady, Filename: "intro.html", MediaType: "text/html", AnimationProfile: reviewedMotionProfile(t), OutputRequirements: &pebblestore.SessionArtifactOutputRequirements{PresetID: "landscape_video"}}}
+	runtime := NewRuntime(1)
+	runtime.SetArtifactAuthority(authority)
+	ctx, scope := artifactToolContext()
+	args := map[string]any{
+		"action": "derive_text", "session_id": "source-session", "collection_id": "source-collection", "variant_id": "source", "event_seq": 9,
+		"text_edits": []any{
+			map[string]any{"old_string": "duration=74920", "new_string": "duration=10000"},
+			map[string]any{"old_string": "treatment='base'", "new_string": "treatment='orbital'"},
+		},
+	}
+	if _, err := runtime.executeManageArtifact(ctx, scope, "derive-exact", args); err != nil {
+		t.Fatal(err)
+	}
+	want := "prefix\nconst duration=10000;\nconst treatment='orbital';\nsuffix\n"
+	if string(authority.created.Body) != want {
+		t.Fatalf("derived body = %q", authority.created.Body)
+	}
+	if authority.created.SourceSessionID != "source-session" || authority.created.SourceCollectionID != "source-collection" || authority.created.SourceVariantID != "source" || authority.created.SourceEventSeq != 9 {
+		t.Fatalf("derived lineage = %+v", authority.created)
+	}
+	if authority.created.AnimationProfile == nil || authority.created.OutputRequirements == nil {
+		t.Fatalf("derived snapshot metadata missing: %+v", authority.created)
+	}
+}
+
+func TestManageArtifactDeriveTextFailsBeforePublishingAmbiguousEdit(t *testing.T) {
+	authority := &fakeArtifactAuthority{readBody: []byte("same same"), variant: pebblestore.SessionArtifactVariant{ID: "source", CollectionID: "source-collection", SessionID: "source-session", EventSeq: 9, Status: pebblestore.SessionArtifactStatusReady, Filename: "source.txt", MediaType: "text/plain"}}
+	runtime := NewRuntime(1)
+	runtime.SetArtifactAuthority(authority)
+	ctx, scope := artifactToolContext()
+	_, err := runtime.executeManageArtifact(ctx, scope, "derive-ambiguous", map[string]any{"action": "derive_text", "session_id": "source-session", "collection_id": "source-collection", "variant_id": "source", "event_seq": 9, "text_edits": []any{map[string]any{"old_string": "same", "new_string": "new"}}})
+	if err == nil || !strings.Contains(err.Error(), "matched 2 times") {
+		t.Fatalf("ambiguous derive error = %v", err)
+	}
+	if authority.created.RequestID != "" {
+		t.Fatalf("ambiguous edit published: %+v", authority.created)
+	}
+}
+
+func TestManageArtifactPublishWorkspaceAttachesReviewedAnimationProfileWithoutChangingSource(t *testing.T) {
+	authority := &fakeArtifactAuthority{}
+	runtime := NewRuntime(1)
+	runtime.SetArtifactAuthority(authority)
+	ctx, scope := artifactToolContext()
+	scope.PrimaryPath = t.TempDir()
+	body := []byte(`<!doctype html><script id="swarm-animation-manifest" type="application/json">{"version":"swarm.animation/v1","duration_ms":6000,"fps":30}</script>`)
+	if err := os.WriteFile(filepath.Join(scope.PrimaryPath, "intro.html"), body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := runtime.executeManageArtifact(ctx, scope, "publish-profiled", map[string]any{"action": "publish_workspace", "source": "intro.html", "animation_profile": map[string]any{"profile": "motion_ui"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if authority.createdFromFile.AnimationProfile == nil || authority.createdFromFile.AnimationProfile.ProfileID != "motion_ui" || authority.createdFromFile.SourcePath != filepath.Join(scope.PrimaryPath, "intro.html") {
+		t.Fatalf("profiled workspace publication = %#v", authority.createdFromFile)
+	}
+}
+
 func TestManageArtifactPublishWorkspaceInheritsOnlyAuthenticatedAnimationProfile(t *testing.T) {
 	authority := &fakeArtifactAuthority{variant: pebblestore.SessionArtifactVariant{ID: "source-variant", CollectionID: "source-collection", SessionID: "source-session", EventSeq: 42, Status: pebblestore.SessionArtifactStatusReady, MediaType: "text/html", AnimationProfile: reviewedMotionProfile(t)}}
 	runtime := NewRuntime(1)

@@ -734,6 +734,18 @@ func TestTaskProgramBlockedOutcomePayloadRoundTripsRecoveryFields(t *testing.T) 
 	}
 }
 
+func TestCollectTaskReadyArtifactReferencesExcludesFailedLaunchArtifacts(t *testing.T) {
+	outcomes := []taskLaunchOutcome{
+		{ArtifactReference: &taskArtifactReference{VariantID: "ready", Status: pebblestore.SessionArtifactStatusReady}},
+		{ArtifactReference: &taskArtifactReference{VariantID: "blocked-but-published", Status: pebblestore.SessionArtifactStatusReady}},
+		{ArtifactReference: &taskArtifactReference{VariantID: "failed", Status: pebblestore.SessionArtifactStatusFailed}},
+	}
+	refs := collectTaskReadyArtifactReferences(outcomes, []error{nil, taskChildBlockedError{code: "source_fidelity_not_preserved", message: "inexact"}, nil})
+	if len(refs) != 1 || refs[0].VariantID != "ready" {
+		t.Fatalf("ready artifact references = %#v", refs)
+	}
+}
+
 func TestTaskChildBlockedReportRequiresExplicitMarker(t *testing.T) {
 	var outcome taskLaunchOutcome
 	if err := parseTaskChildBlockedReport("ordinary failure", &outcome); err != nil {

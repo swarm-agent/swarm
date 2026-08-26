@@ -50,6 +50,10 @@ func (r *Runtime) exportHTMLAnimation(ctx context.Context, principal artifact.Pr
 		ready, err := r.renderAndPublishHTMLAnimation(ctx, principal, prepared)
 		return ready, prepared.SourceRef, prepared.Requirements, err
 	}
+	renderRequest := htmlcapture.AnimationRequest{Entry: prepared.Entry, Files: prepared.Files, DurationMS: prepared.Manifest.DurationMS, FPS: prepared.Manifest.FPS}
+	if _, err := r.htmlAnimationCapture.PreflightAnimation(ctx, renderRequest); err != nil {
+		return pebblestore.SessionArtifactVariant{}, prepared.SourceRef, prepared.Requirements, normalizeAnimationRendererError(err)
+	}
 
 	staging, err := r.artifactAuthority.Reserve(principal, prepared.Input)
 	if err != nil {
@@ -69,13 +73,45 @@ func (r *Runtime) exportHTMLAnimation(ctx context.Context, principal artifact.Pr
 	return staging, prepared.SourceRef, prepared.Requirements, nil
 }
 
+func (r *Runtime) exportHTMLAnimationFallback(ctx context.Context, principal artifact.Principal, callID string, args map[string]any) (pebblestore.SessionArtifactVariant, pebblestore.SessionArtifactSelectionReference, *pebblestore.SessionArtifactOutputRequirements, error) {
+	prepared, err := r.prepareHTMLAnimationExport(ctx, principal, callID, args)
+	if err != nil {
+		return pebblestore.SessionArtifactVariant{}, prepared.SourceRef, prepared.Requirements, err
+	}
+	preflight, err := r.htmlAnimationCapture.PreflightAnimation(ctx, htmlcapture.AnimationRequest{Entry: prepared.Entry, Files: prepared.Files, DurationMS: prepared.Manifest.DurationMS, FPS: prepared.Manifest.FPS})
+	if err != nil {
+		return pebblestore.SessionArtifactVariant{}, prepared.SourceRef, prepared.Requirements, normalizeAnimationRendererError(err)
+	}
+	if err := validateCapturePNG(preflight.PreviewPNG); err != nil {
+		return pebblestore.SessionArtifactVariant{}, prepared.SourceRef, prepared.Requirements, animationError("animation_png_invalid", "animation preflight did not produce a valid render-ready fallback frame")
+	}
+	input := artifact.CreateInput{
+		RequestID:      captureOpaqueID("request-export-html-animation-fallback", principal.SessionID, callID, prepared.SourceRef, "png"),
+		CollectionID:   captureOpaqueID("collection-animation-fallback", principal.SessionID, callID, prepared.SourceRef, "png"),
+		CollectionName: "HTML animation fallback", VariantID: captureOpaqueID("variant-animation-fallback", principal.SessionID, callID, prepared.SourceRef, "png"),
+		Filename: "html-animation-fallback.png", MediaType: "image/png",
+		Presentation:       pebblestore.SessionArtifactPresentation{Kind: "image", Label: "HTML animation fallback", Previewable: true, Width: htmlcapture.Width, Height: htmlcapture.Height},
+		OutputRequirements: prepared.Requirements,
+		SourceSessionID:    prepared.SourceRef.SessionID, SourceCollectionID: prepared.SourceRef.CollectionID, SourceVariantID: prepared.SourceRef.VariantID, SourceEventSeq: prepared.SourceRef.EventSeq,
+		Body: append([]byte(nil), preflight.PreviewPNG...), AutoAccept: true,
+	}
+	published, err := r.artifactAuthority.Create(ctx, principal, input)
+	if err != nil {
+		return pebblestore.SessionArtifactVariant{}, prepared.SourceRef, prepared.Requirements, animationError("animation_publish_failed", "animation fallback could not be durably published")
+	}
+	if published.Status != pebblestore.SessionArtifactStatusReady || published.MediaType != "image/png" || published.EventSeq == 0 {
+		return pebblestore.SessionArtifactVariant{}, prepared.SourceRef, prepared.Requirements, animationError("animation_publish_failed", "animation fallback did not publish as a ready PNG")
+	}
+	return published, prepared.SourceRef, prepared.Requirements, nil
+}
+
 func (r *Runtime) prepareHTMLAnimationExport(ctx context.Context, principal artifact.Principal, callID string, args map[string]any) (animationExportPrepared, error) {
 	prepared := animationExportPrepared{}
 	for key := range args {
 		switch key {
 		case "action", "session_id", "collection_id", "variant_id", "event_seq":
 		default:
-			return prepared, animationError("animation_source_reference_invalid", fmt.Sprintf("export_html_animation contains unsupported field %q", key))
+			return prepared, animationError("animation_source_reference_invalid", fmt.Sprintf("HTML animation export contains unsupported field %q", key))
 		}
 	}
 	if r.htmlAnimationCapture == nil {
@@ -165,7 +201,7 @@ func (r *Runtime) runHTMLAnimationExport(ctx context.Context, principal artifact
 		r.animationJobsMu.Unlock()
 	}()
 	if _, err := r.renderAndPublishHTMLAnimation(ctx, principal, prepared); err != nil {
-		code := "animation_render_failed"
+		code := animationFailureCode(err)
 		if errors.Is(ctx.Err(), context.Canceled) {
 			code = "animation_cancelled"
 		}
@@ -281,6 +317,25 @@ func normalizeAnimationRendererError(err error) error {
 		return animationError(animationErr.Code, animationErr.SafeMessage)
 	}
 	return animationError("animation_renderer_failed", "trusted HTML animation capture failed")
+}
+
+func animationFailureCode(err error) string {
+	message := err.Error()
+	const marker = "(code="
+	start := strings.Index(message, marker)
+	if start < 0 {
+		return "animation_renderer_failed"
+	}
+	start += len(marker)
+	end := strings.Index(message[start:], ")")
+	if end <= 0 {
+		return "animation_renderer_failed"
+	}
+	code := strings.TrimSpace(message[start : start+end])
+	if !strings.HasPrefix(code, "animation_") {
+		return "animation_renderer_failed"
+	}
+	return code
 }
 
 func normalizeAnimationSourceError(err error) error {

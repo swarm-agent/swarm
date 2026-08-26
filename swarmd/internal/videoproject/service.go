@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"reflect"
 	"strings"
 
 	"swarm/packages/swarmd/internal/identity"
@@ -194,17 +195,32 @@ func (s *Service) mutateAnimationCandidate(principal identity.Principal, session
 }
 
 func (s *Service) validateAnimationArtifact(principal identity.Principal, ref *pebblestore.SessionArtifactSelectionReference, expected string) error {
+	_, err := s.animationArtifactVariant(principal, ref, expected)
+	return err
+}
+
+func (s *Service) animationArtifactVariant(principal identity.Principal, ref *pebblestore.SessionArtifactSelectionReference, expected string) (pebblestore.SessionArtifactVariant, error) {
 	if ref == nil || ref.SessionID == "" || ref.CollectionID == "" || ref.VariantID == "" || ref.EventSeq == 0 {
-		return errors.New("complete exact animation artifact reference is required")
+		return pebblestore.SessionArtifactVariant{}, errors.New("complete exact animation artifact reference is required")
 	}
 	variant, ok, err := s.sessions.GetSessionArtifactVariant(principal.AccountScopeID, ref.SessionID, ref.CollectionID, ref.VariantID)
 	if err != nil || !ok || variant.Status != pebblestore.SessionArtifactStatusReady || variant.EventSeq != ref.EventSeq {
-		return errors.New("animation artifact is stale, missing, or not ready")
+		return pebblestore.SessionArtifactVariant{}, errors.New("animation artifact is stale, missing, or not ready")
 	}
 	if strings.ToLower(strings.TrimSpace(variant.MediaType)) != expected {
-		return fmt.Errorf("animation artifact must be %s", expected)
+		return pebblestore.SessionArtifactVariant{}, fmt.Errorf("animation artifact must be %s", expected)
 	}
-	return nil
+	return variant, nil
+}
+
+func temporalAnimationDuration(parts []pebblestore.SessionArtifactPart) int64 {
+	var duration int64
+	for _, part := range parts {
+		if part.Kind == "temporal" && part.StartMs == 0 && part.EndMs > duration {
+			duration = part.EndMs
+		}
+	}
+	return duration
 }
 
 func (s *Service) validateAnimationDerivative(principal identity.Principal, source, derivative *pebblestore.SessionArtifactSelectionReference) error {
@@ -868,9 +884,27 @@ func (s *Service) normalizeVisualPlanArtifacts(principal identity.Principal, ses
 		}
 		part.VisualMediaType = variant.MediaType
 		if candidates := part.AnimationCandidates; candidates != nil {
+			var canonicalRequirements *pebblestore.SessionArtifactOutputRequirements
+			var canonicalProfile *pebblestore.SessionArtifactAnimationProfile
+			var canonicalDurationMs int64
 			for _, candidate := range candidates.Candidates {
-				if err := s.validateAnimationArtifact(principal, candidate.Source, "text/html"); err != nil {
+				variant, err := s.animationArtifactVariant(principal, candidate.Source, "text/html")
+				if err != nil {
 					return fmt.Errorf("video plan part %q candidate %q: %w", part.ID, candidate.ID, err)
+				}
+				if variant.AnimationProfile == nil {
+					return fmt.Errorf("video plan part %q candidate %q requires a reviewed animation profile", part.ID, candidate.ID)
+				}
+				durationMs := temporalAnimationDuration(variant.Parts)
+				if durationMs == 0 || durationMs != part.DurationMs {
+					return fmt.Errorf("video plan part %q candidate %q duration does not match part duration_ms", part.ID, candidate.ID)
+				}
+				if canonicalRequirements == nil {
+					canonicalRequirements = variant.OutputRequirements
+					canonicalProfile = variant.AnimationProfile
+					canonicalDurationMs = durationMs
+				} else if !reflect.DeepEqual(canonicalRequirements, variant.OutputRequirements) || !reflect.DeepEqual(canonicalProfile, variant.AnimationProfile) || canonicalDurationMs != durationMs {
+					return fmt.Errorf("video plan part %q animation candidates have incompatible output requirements, animation profile, or duration", part.ID)
 				}
 			}
 			if candidates.SelectedSource != nil {

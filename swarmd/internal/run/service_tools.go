@@ -4929,6 +4929,14 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 				return outcome, errors.New("managed Designer output authority is not configured")
 			}
 			variant, artifactErr := s.tools.ArtifactAuthority().Get(artifactPrincipal, launch.ArtifactRunContext.VariantID)
+			if blockedErr != nil {
+				code := strings.TrimSpace(outcome.BlockerCode)
+				if code == "" {
+					code = "child_reported_blocked"
+				}
+				markMissing(code)
+				return outcome, blockedErr
+			}
 			if artifactErr != nil {
 				markMissing("managed_output_missing")
 				return outcome, fmt.Errorf("managed Designer completed without its required artifact: %w", artifactErr)
@@ -5258,12 +5266,7 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 		swarmStrategy = parsed.Swarm.Strategy
 	}
 	integrationRequired, integrationStatus, readyForDependentWork := taskAssemblyIntegrationState(swarmStrategy, successCount, failedCount, cancelledCount, len(outcomes))
-	artifactReferences := make([]*taskArtifactReference, 0, len(outcomes))
-	for i := range outcomes {
-		if outcomes[i].ArtifactReference != nil {
-			artifactReferences = append(artifactReferences, outcomes[i].ArtifactReference)
-		}
-	}
+	artifactReferences := collectTaskReadyArtifactReferences(outcomes, runErrs)
 	lineageUpdate(overallStatus, outcomes, map[string]any{
 		"success_count":            successCount,
 		"failed_count":             failedCount,
@@ -5367,6 +5370,17 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 		return string(encoded), firstErr
 	}
 	return string(encoded), nil
+}
+
+func collectTaskReadyArtifactReferences(outcomes []taskLaunchOutcome, runErrs []error) []*taskArtifactReference {
+	ready := make([]*taskArtifactReference, 0, len(outcomes))
+	for index := range outcomes {
+		if index >= len(runErrs) || runErrs[index] != nil || outcomes[index].ArtifactReference == nil || outcomes[index].ArtifactReference.Status != pebblestore.SessionArtifactStatusReady {
+			continue
+		}
+		ready = append(ready, outcomes[index].ArtifactReference)
+	}
+	return ready
 }
 
 func taskAssemblyIntegrationState(strategy string, successCount, failedCount, cancelledCount, outcomeCount int) (required bool, status string, readyForDependentWork bool) {
@@ -5538,7 +5552,7 @@ func buildTaskDelegationPrompt(config taskDelegationPromptConfig) string {
 			if agentruntime.IsImageAgentName(config.RequestedSubagent) {
 				b.WriteString("9. For managed Image work, call manage_artifact exactly once with action=generate_image and finish only after it returns the trusted exact ready reference. Do not call another tool or inspect or mutate the checkout.\n")
 			} else {
-				b.WriteString("9. For managed Designer work, publish one complete revision with one successful manage_artifact create or create_package call. Preserve one-file text/html as one file; never create a ZIP only to represent parts. Include accurate complete-revision parts when known, or omit parts for text/html so the server derives source-bound targets from authored manifests and stable semantic-region IDs without splitting or rewriting the HTML. Use initial_parts only for intentionally independent byte payloads. The server injects and atomically finalizes the assigned opaque variant. Never call unsupported update/finalize actions, use write/edit, or mutate the checkout; finish only after the call returns the trusted ready reference.\n")
+				b.WriteString("9. For managed Designer work, publish one complete revision with one successful manage_artifact create or create_package call. Preserve one-file text/html as one file; never create a ZIP only to represent parts. Include accurate complete-revision parts when known, or omit parts for text/html so the server derives source-bound targets from authored manifests and stable semantic-region IDs without splitting or rewriting the HTML. Use initial_parts only for intentionally independent byte payloads. The server injects and atomically finalizes the assigned opaque variant. Never call unsupported update/finalize actions, use write/edit, or mutate the checkout; finish only after the call returns the trusted ready reference. If exact source bytes must be preserved and you cannot reproduce the complete revised bytes from the authenticated source in this one publication, report BLOCKED before publishing anything; never publish a placeholder, reconstruction, resampling, or known-inexact candidate.\n")
 			}
 		} else {
 			b.WriteString("9. For workspace Designer work, do not use Git or manage_artifact. Inspect nearby code as needed and create or revise the assigned reusable variant only within the declared owned scope.\n")

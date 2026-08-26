@@ -38,6 +38,27 @@ func TestMasterHarnessPrefersLiveHTMLVideoStudioPreviewBeforeExport(t *testing.T
 	}
 }
 
+func TestMasterHarnessPreservesOneClipIterationTopology(t *testing.T) {
+	prompt := masterHarnessPrompt(t.TempDir())
+	for _, expected := range []string{
+		"one video clip with multiple iterations",
+		"one stable video-plan part",
+		"not a full-song timeline",
+		"no longer than 12 seconds",
+		"status=awaiting_selection",
+		"manage_artifact derive_text",
+		"consume only its explicitly returned successful ready artifact_references",
+		"export_html_animation_fallback on one valid candidate",
+		"source_audio clip already trimmed to the same intro window in initial_timeline",
+		"publish_workspace on the exact workspace file or package with animation_profile",
+		"representative seek preflight before queueing",
+	} {
+		if !strings.Contains(prompt, expected) {
+			t.Fatalf("master harness missing one-clip iteration requirement %q", expected)
+		}
+	}
+}
+
 func TestVideoStudioMessageContextPrefersLiveHTMLCandidatePreview(t *testing.T) {
 	prompt := videoStudioMessageContextForProvider(map[string]any{
 		"creative_mode":     "video",

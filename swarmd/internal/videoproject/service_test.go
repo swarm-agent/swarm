@@ -270,6 +270,24 @@ func (f *fakeSessionStore) GetAudioSourceRecord(accountScopeID, workspaceID, ref
 	return pebblestore.AudioSourceRecord{}, false, nil
 }
 
+func TestNormalizeVisualPlanArtifactsRejectsIncompatibleAnimationCandidates(t *testing.T) {
+	store := newFakeSessionStore()
+	svc := NewService(store)
+	principal := identity.Principal{Type: identity.PrincipalTypeUser, AccountScopeID: "account", UserID: "user"}
+	store.sessions["studio"] = pebblestore.SessionSnapshot{ID: "studio", AccountScopeID: "account", UserID: "user"}
+	requirements := &pebblestore.SessionArtifactOutputRequirements{PresetID: "landscape_video", Width: 1920, Height: 1080}
+	profile := &pebblestore.SessionArtifactAnimationProfile{ProfileID: "motion_ui"}
+	for index, duration := range []int64{10000, 9000} {
+		variantID := fmt.Sprintf("candidate-%d", index+1)
+		store.artifacts[fmt.Sprintf("account/studio/candidates/%s", variantID)] = pebblestore.SessionArtifactVariant{ID: variantID, CollectionID: "candidates", SessionID: "studio", EventSeq: uint64(index + 1), Status: pebblestore.SessionArtifactStatusReady, MediaType: "text/html", OutputRequirements: requirements, AnimationProfile: profile, Parts: []pebblestore.SessionArtifactPart{{ID: "intro", Kind: "temporal", EndMs: duration}}}
+	}
+	store.artifacts["account/studio/fallback/still"] = pebblestore.SessionArtifactVariant{ID: "still", CollectionID: "fallback", SessionID: "studio", EventSeq: 3, Status: pebblestore.SessionArtifactStatusReady, MediaType: "image/png"}
+	plan := pebblestore.VideoPlanProposal{Kind: pebblestore.VideoPlanKindInitial, Parts: []pebblestore.VideoPlanPart{{ID: "intro", Title: "Intro", DurationMs: 10000, Visual: &pebblestore.SessionArtifactSelectionReference{SessionID: "studio", CollectionID: "fallback", VariantID: "still", EventSeq: 3}, AnimationCandidates: &pebblestore.VideoAnimationCandidateSet{Status: pebblestore.VideoAnimationCandidateStatusAwaitingSelection, Candidates: []pebblestore.VideoAnimationCandidate{{ID: "a", Source: &pebblestore.SessionArtifactSelectionReference{SessionID: "studio", CollectionID: "candidates", VariantID: "candidate-1", EventSeq: 1}}, {ID: "b", Source: &pebblestore.SessionArtifactSelectionReference{SessionID: "studio", CollectionID: "candidates", VariantID: "candidate-2", EventSeq: 2}}}}}}}
+	if err := svc.normalizeVisualPlanArtifacts(principal, "studio", &plan); err == nil || !strings.Contains(err.Error(), "duration does not match") {
+		t.Fatalf("incompatible candidate error = %v", err)
+	}
+}
+
 func TestListWorkspaceCatalogFiltersScopeAndGroupsRelatedSessions(t *testing.T) {
 	store := newFakeSessionStore()
 	svc := NewService(store)

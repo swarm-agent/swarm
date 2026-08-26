@@ -1,9 +1,13 @@
 package tool
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"image"
+	"image/color"
+	"image/png"
 	"strings"
 	"testing"
 	"time"
@@ -13,12 +17,29 @@ import (
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
+func testAnimationFallbackPNG(t *testing.T) []byte {
+	t.Helper()
+	img := image.NewRGBA(image.Rect(0, 0, htmlcapture.Width, htmlcapture.Height))
+	img.Set(0, 0, color.RGBA{R: 1, G: 2, B: 3, A: 255})
+	var body bytes.Buffer
+	if err := png.Encode(&body, img); err != nil {
+		t.Fatal(err)
+	}
+	return body.Bytes()
+}
+
 type fakeHTMLAnimationRenderer struct {
-	req     htmlcapture.AnimationRequest
-	result  htmlcapture.AnimationResult
-	err     error
-	started chan struct{}
-	release chan struct{}
+	req          htmlcapture.AnimationRequest
+	result       htmlcapture.AnimationResult
+	err          error
+	preflightErr error
+	started      chan struct{}
+	release      chan struct{}
+}
+
+func (f *fakeHTMLAnimationRenderer) PreflightAnimation(_ context.Context, req htmlcapture.AnimationRequest) (htmlcapture.AnimationResult, error) {
+	f.req = req
+	return f.result, f.preflightErr
 }
 
 func (f *fakeHTMLAnimationRenderer) RenderAnimation(ctx context.Context, req htmlcapture.AnimationRequest) (htmlcapture.AnimationResult, error) {
@@ -139,6 +160,50 @@ func TestExportHTMLAnimationRejectsManifestBoundsAndUnreviewedProfile(t *testing
 	authority.readBody = []byte(`<!doctype html><script id="swarm-animation-manifest" type="application/json">{"version":"swarm.animation/v1","duration_ms":600001,"fps":30}</script>`)
 	if _, err := runtime.executeManageArtifact(ctx, scope, "animation-bounds", args); err == nil || !strings.Contains(err.Error(), "animation_manifest_invalid") {
 		t.Fatalf("manifest bounds error = %v", err)
+	}
+}
+
+func TestExportHTMLAnimationFallbackPublishesPreflightFrameWithExactLineage(t *testing.T) {
+	html := `<!doctype html><script id="swarm-animation-manifest" type="application/json">{"version":"swarm.animation/v1","duration_ms":10000,"fps":30}</script>`
+	authority := &fakeArtifactAuthority{readBody: []byte(html), variant: pebblestore.SessionArtifactVariant{ID: "source", CollectionID: "collection", SessionID: "source-session", EventSeq: 9, Status: pebblestore.SessionArtifactStatusReady, MediaType: "text/html", AnimationProfile: reviewedMotionProfile(t)}}
+	renderer := &fakeHTMLAnimationRenderer{result: htmlcapture.AnimationResult{PreviewPNG: testAnimationFallbackPNG(t)}}
+	runtime := NewRuntime(1)
+	runtime.SetArtifactAuthority(authority)
+	runtime.SetHTMLAnimationRenderer(renderer)
+	ctx, scope := artifactToolContext()
+	_, err := runtime.executeManageArtifact(ctx, scope, "fallback", map[string]any{"action": "export_html_animation_fallback", "session_id": "source-session", "collection_id": "collection", "variant_id": "source", "event_seq": 9})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if authority.created.MediaType != "image/png" || !bytes.Equal(authority.created.Body, renderer.result.PreviewPNG) || authority.created.SourceSessionID != "source-session" || authority.created.SourceEventSeq != 9 {
+		t.Fatalf("animation fallback publication = %+v", authority.created)
+	}
+}
+
+func TestExportHTMLAnimationPreflightsBeforeQueuingAndPreservesFailureCode(t *testing.T) {
+	html := `<!doctype html><script id="swarm-animation-manifest" type="application/json">{"version":"swarm.animation/v1","duration_ms":12000,"fps":60}</script>`
+	authority := &fakeArtifactAuthority{readBody: []byte(html), variant: pebblestore.SessionArtifactVariant{ID: "source", CollectionID: "collection", SessionID: "source-session", EventSeq: 9, Status: pebblestore.SessionArtifactStatusReady, MediaType: "text/html", AnimationProfile: reviewedMotionProfile(t)}}
+	renderer := &fakeHTMLAnimationRenderer{preflightErr: htmlcapture.NewError("animation_seek_failed", "animation runtime did not acknowledge the renderer-controlled timestamp")}
+	runtime := NewRuntime(1)
+	runtime.SetArtifactAuthority(authority)
+	runtime.SetHTMLAnimationRenderer(renderer)
+	ctx, scope := artifactToolContext()
+	args := map[string]any{"action": "export_html_animation", "session_id": "source-session", "collection_id": "collection", "variant_id": "source", "event_seq": 9}
+	if _, err := runtime.executeManageArtifact(ctx, scope, "preflight", args); err == nil || !strings.Contains(err.Error(), "animation_seek_failed") {
+		t.Fatalf("preflight error = %v", err)
+	}
+	if authority.variant.Status == pebblestore.SessionArtifactStatusStaging {
+		t.Fatalf("invalid animation was queued: %+v", authority.variant)
+	}
+	if got := animationFailureCode(animationError("animation_frame_unstable", "unstable")); got != "animation_frame_unstable" {
+		t.Fatalf("failure code = %q", got)
+	}
+	renderer.preflightErr = nil
+	renderer.err = htmlcapture.NewError("animation_frame_unstable", "animation changed after the renderer selected a deterministic timestamp")
+	prepared := animationExportPrepared{Manifest: animationManifest{DurationMS: 12000, FPS: 60}, Input: artifact.CreateInput{RequestID: "render-request", CollectionID: "render-collection", VariantID: "render-variant"}}
+	runtime.runHTMLAnimationExport(context.Background(), artifact.Principal{SessionID: "source-session"}, prepared, "render-variant")
+	if authority.variant.Status != pebblestore.SessionArtifactStatusFailed || authority.variant.FailureCode != "animation_frame_unstable" {
+		t.Fatalf("background failure = %+v", authority.variant)
 	}
 }
 

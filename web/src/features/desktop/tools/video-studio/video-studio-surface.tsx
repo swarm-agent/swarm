@@ -186,6 +186,14 @@ export async function listVideoEditProposals(sessionId: string, projectId: strin
     : []
 }
 
+export function videoProposalsForConversationTurn(
+  proposals: VideoEditProposalWire[],
+  activeTurnStartedAt?: number,
+): VideoEditProposalWire[] {
+  if (!activeTurnStartedAt) return proposals
+  return proposals.filter((proposal) => proposal.created_at >= activeTurnStartedAt)
+}
+
 export async function loadLatestVideoEditProposals(input: {
   sessionId: string
   projectId: string
@@ -453,6 +461,7 @@ export const VideoIterationSidebar = memo(function VideoIterationSidebar(props: 
   projectId: string
   currentRevisionId: string
   revisions: VideoIterationRevisionWire[]
+  onProposalsLoaded?: (proposals: VideoEditProposalWire[]) => void
   onAccepted: () => Promise<void> | void
   onFeedback: (message: string) => Promise<void> | void
   onPreviewProposal: (proposal: VideoEditProposalWire | null, selectedChangeIds: string[]) => void
@@ -468,10 +477,18 @@ export const VideoIterationSidebar = memo(function VideoIterationSidebar(props: 
   const [error, setError] = useState<string | null>(null)
   const loadRequestSequence = useRef(0)
   const projectionSequence = useDesktopV3CacheSelector(useCallback((state) => videoProposalProjectionSequence(state, props.sessionId), [props.sessionId]))
-  const load = useCallback(async () => loadLatestVideoEditProposals({ sessionId: props.sessionId, projectId: props.projectId, requestSequence: loadRequestSequence, onLoaded: setProposals, onError: setError }), [props.projectId, props.sessionId])
+  const load = useCallback(async () => loadLatestVideoEditProposals({
+    sessionId: props.sessionId,
+    projectId: props.projectId,
+    requestSequence: loadRequestSequence,
+    onLoaded: (loaded) => { setProposals(loaded); props.onProposalsLoaded?.(loaded) },
+    onError: setError,
+  }), [props.onProposalsLoaded, props.projectId, props.sessionId])
   useEffect(() => { void load() }, [load, projectionSequence])
   const iterations = useMemo(() => buildVideoIterationTimeline(proposals, props.revisions), [proposals, props.revisions])
-  const newestPendingIterationId = useMemo(() => iterations.find((iteration) => iteration.proposal?.status === 'pending')?.id ?? null, [iterations])
+  const newestPendingIterationId = useMemo(() => iterations.find((iteration) => iteration.proposal?.status === 'pending' && iteration.proposal.working_revision_id === props.currentRevisionId)?.id
+    ?? iterations.find((iteration) => iteration.proposal?.status === 'pending')?.id
+    ?? null, [iterations, props.currentRevisionId])
 
   useEffect(() => {
     const selectedIteration = previewId ? iterations.find((iteration) => iteration.id === previewId) : null

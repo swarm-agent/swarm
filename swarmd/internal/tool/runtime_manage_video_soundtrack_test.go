@@ -33,7 +33,7 @@ func TestManageVideoDefinitionExposesTypedSoundtrackProposalContract(t *testing.
 			t.Fatalf("manage_video soundtrack schema exposes forbidden path field %q", forbidden)
 		}
 	}
-	for _, guidance := range []string{"complete exact audio", "cannot accept a proposal or start a final render"} {
+	for _, guidance := range []string{"complete exact audio", "registered soundtrack audio must share the initial part playhead", "create_project initial_timeline", "cannot accept a proposal or start a final render"} {
 		if !strings.Contains(definition.Description, guidance) {
 			t.Fatalf("manage_video soundtrack guidance lacks %q", guidance)
 		}
@@ -56,6 +56,17 @@ func TestManageVideoDefinitionExplainsLiveHTMLSoundtrackPreviewBoundary(t *testi
 	} {
 		if !strings.Contains(text, expected) {
 			t.Fatalf("manage_video live HTML schema guidance lacks %q: %s", expected, text)
+		}
+	}
+}
+
+func TestManageVideoDefinitionDocumentsInitialSoundtrackBaseRevision(t *testing.T) {
+	definition := manageVideoDefinition()
+	initial := definition.Parameters["properties"].(map[string]any)["initial_timeline"].(map[string]any)
+	description, _ := initial["description"].(string)
+	for _, expected := range []string{"source_audio", "base revision owns that audio", "subsequent propose_plan preserves it"} {
+		if !strings.Contains(description, expected) {
+			t.Fatalf("initial_timeline guidance lacks %q: %s", expected, description)
 		}
 	}
 }

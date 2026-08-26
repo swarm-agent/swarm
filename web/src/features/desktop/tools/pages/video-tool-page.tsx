@@ -230,6 +230,39 @@ export function acceptedVideoPlan(timeline: VideoProjectTimelineWire): VideoPlan
   return parts.length > 0 ? { kind, summary: typeof plan.summary === 'string' ? plan.summary : undefined, parts } : null
 }
 
+export function videoPlanForPlayback(
+  proposal: VideoEditProposalWire | null,
+  timeline: VideoProjectTimelineWire | null | undefined,
+  interactive = true,
+): VideoPlanProposalWire | null {
+  const plan = proposal?.plan ?? (timeline ? acceptedVideoPlan(timeline) : null)
+  if (!plan || interactive) return plan
+  return {
+    ...plan,
+    parts: plan.parts.map((part) => {
+      const candidates = part.animation_candidates
+      const selected = candidates?.candidates.find((candidate) => candidate.id === candidates.selected_candidate_id)
+      if (!candidates || !selected) {
+        const { animation_candidates: _animationCandidates, ...staticPart } = part
+        return staticPart
+      }
+      return {
+        ...part,
+        animation_candidates: { ...candidates, candidates: [selected] },
+      }
+    }),
+  }
+}
+
+export function proposalOwnsAnimationPart(proposal: VideoEditProposalWire | null, partId: string): boolean {
+  return proposal?.plan?.parts.some((part) => part.id === partId && Boolean(part.animation_candidates)) === true
+}
+
+export function videoAnimationPartAtClip(plan: VideoPlanProposalWire | null, clipId: string | null | undefined): VideoPlanProposalWire['parts'][number] | null {
+  if (!clipId) return null
+  return plan?.parts.find((part) => part.id === clipId && Boolean(part.animation_candidates)) ?? null
+}
+
 export function defaultRenderedVideoExportPath(workspacePath: string, title: string, revisionNumber: number): string {
   const safeTitle = title.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'video'
   const root = workspacePath.replace(/\/+$/, '')
@@ -963,7 +996,10 @@ export function timelineSegmentsToProjectTimeline(
 function visualPlanTimeline(accepted: VideoProjectTimelineWire, plan: VideoPlanProposalWire, proposalId: string): VideoProjectTimelineWire {
   const currentPlan = acceptedVideoPlan(accepted)
   const parts = plan.kind === 'revision' && currentPlan
-    ? currentPlan.parts.map((part) => plan.parts.find((replacement) => replacement.id === part.id) ?? part)
+    ? [
+        ...currentPlan.parts.map((part) => plan.parts.find((replacement) => replacement.id === part.id) ?? part),
+        ...plan.parts.filter((part) => !currentPlan.parts.some((current) => current.id === part.id)),
+      ]
     : plan.parts
   let startMs = 0
   const planClips = parts.map((part, index): VideoTimelineClipWire => {
@@ -1348,6 +1384,7 @@ export function VideoToolPage() {
   const [transitionKind, setTransitionKind] = useState<VideoTransitionKind>('cut')
   const [aiRefreshKey, setAIRefreshKey] = useState(0)
   const [pendingProposal, setPendingProposal] = useState<VideoEditProposalWire | null>(null)
+  const [projectProposals, setProjectProposals] = useState<VideoEditProposalWire[]>([])
   const [pendingSelectedChangeIds, setPendingSelectedChangeIds] = useState<string[]>([])
   const [soundtrackPickerOpen, setSoundtrackPickerOpen] = useState(false)
   const [soundtrackDraft, setSoundtrackDraft] = useState<VideoTimelineClipWire | null>(null)
@@ -1513,8 +1550,15 @@ export function VideoToolPage() {
   const timelineTrackWidthPx = useMemo(() => timelineTrackWidth(movieDuration), [movieDuration])
   const playheadX = movieDuration > 0 ? Math.min(timelineTrackWidthPx, Math.max(0, (playhead / movieDuration) * timelineTrackWidthPx)) : 0
   const activeSegment = useMemo(() => activeTimelineSegment(timelineLayout, playhead), [playhead, timelineLayout])
-  const selectedTimelinePart = useMemo(() => pendingProposal?.plan?.parts.find((part) => part.id === selectedClipId && part.animation_candidates) ?? null, [pendingProposal, selectedClipId])
-  const liveAnimationPart = useMemo(() => selectedTimelinePart ?? pendingProposal?.plan?.parts.find((part) => part.id === activeSegment?.clipId && part.animation_candidates) ?? null, [activeSegment?.clipId, pendingProposal, selectedTimelinePart])
+  const currentWorkingProposal = useMemo(
+    () => projectProposals.find((proposal) => proposal.status === 'pending' && proposal.working_revision_id === playerRevision?.id) ?? null,
+    [playerRevision?.id, projectProposals],
+  )
+  const playbackPlan = useMemo(
+    () => videoPlanForPlayback(currentWorkingProposal, shadowTimeline ?? playerRevision?.timeline, Boolean(currentWorkingProposal)),
+    [currentWorkingProposal, playerRevision, shadowTimeline],
+  )
+  const liveAnimationPart = useMemo(() => videoAnimationPartAtClip(playbackPlan, activeSegment?.clipId), [activeSegment?.clipId, playbackPlan])
   const acceptedPlan = useMemo(() => confirmedRevision ? acceptedVideoPlan(confirmedRevision.timeline) : null, [confirmedRevision])
   const hasUnresolvedPlanFrames = timelineSegments.some((segment) => segment.sourceKind === 'text' || (segment.sourceKind === 'managed_artifact' && !segment.src))
   const selectedClip = selectedClips.find((clip) => clip.id === selectedClipId) ?? selectedClips[0] ?? null
@@ -1542,6 +1586,7 @@ export function VideoToolPage() {
     setProjectRevisions([])
     setPreviewRevisionId(null)
     setPendingProposal(null)
+    setProjectProposals([])
     setPendingSelectedChangeIds([])
     setRenderJob(null)
     if (!selectedThread) return
@@ -1577,6 +1622,7 @@ export function VideoToolPage() {
     setProjectRevisions([])
     setPreviewRevisionId(null)
     setPendingProposal(null)
+    setProjectProposals([])
     setPendingSelectedChangeIds([])
     setRenderJob(null)
     if (!selectedThread || !selectedProjectId) return
@@ -1687,7 +1733,7 @@ export function VideoToolPage() {
     const layout = timelineLayoutByClipId.get(part.id)
     if (layout) handleSeek(layout.timelineStart)
     setLiveAnimationCandidate(candidate)
-    if (pendingProposal && selectedThread && videoProject) {
+    if (proposalOwnsAnimationPart(pendingProposal, part.id) && pendingProposal && selectedThread && videoProject) {
       const startMs = Math.round((layout?.timelineStart ?? 0) * 1000)
       const endMs = startMs + part.duration_ms
       const label = `${part.title} · ${candidate.label || candidate.id}`
@@ -2739,7 +2785,7 @@ export function VideoToolPage() {
                     <button type="button" className="shrink-0 p-1 text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]" onClick={() => void handleRevealVideoStorage()} disabled={revealingStorage} aria-label="Show stored files" title="Show stored files"><FolderOpen size={13} /></button>
                   </div>
 
-                  {videoProject && currentRevision && !selectedLibraryVideo ? <div className="hidden"><VideoIterationSidebar key={`${videoProject.id}:${aiRefreshKey}`} sessionId={selectedThread.id} projectId={videoProject.id} currentRevisionId={currentRevision.id} revisions={projectRevisions} onAccepted={refreshSelectedVideoProject} onFeedback={handleIterationFeedback} onPreviewProposal={handlePendingProposalChange} onPreviewRevision={handlePreviewRevision} onFocusChange={handleFocusStep} onAttachChange={handleAttachIterationChange} /></div> : null}
+                  {videoProject && currentRevision && !selectedLibraryVideo ? <div className="hidden"><VideoIterationSidebar key={`${videoProject.id}:${aiRefreshKey}`} sessionId={selectedThread.id} projectId={videoProject.id} currentRevisionId={currentRevision.id} revisions={projectRevisions} onProposalsLoaded={setProjectProposals} onAccepted={refreshSelectedVideoProject} onFeedback={handleIterationFeedback} onPreviewProposal={handlePendingProposalChange} onPreviewRevision={handlePreviewRevision} onFocusChange={handleFocusStep} onAttachChange={handleAttachIterationChange} /></div> : null}
                   {previewRevision ? <div className="mt-2 grid gap-2 px-2"><p className="text-[10px] text-amber-300">Previewing r{previewRevision.revision_number}; kept r{keptRevision?.revision_number} is unchanged.</p><div className="grid grid-cols-2 gap-2"><Button variant="outline" className="h-7 px-2 text-[10px]" disabled={previewRevisionIndex <= 0} onClick={() => handlePreviewRevision(projectRevisions[previewRevisionIndex - 1].id)}>Previous</Button><Button variant="outline" className="h-7 px-2 text-[10px]" disabled={previewRevisionIndex < 0 || previewRevisionIndex >= projectRevisions.length - 1} onClick={() => handlePreviewRevision(projectRevisions[previewRevisionIndex + 1].id)}>Next</Button></div><Button variant="outline" className="h-7 px-2 text-[10px]" onClick={() => setPreviewRevisionId(null)}>Return to kept version</Button><Button className="h-7 px-2 text-[10px]" disabled={Boolean(restoringRevisionId) || Boolean(selectedLibraryVideo)} onClick={() => void handleRestoreRevision(previewRevision.id)}>{restoringRevisionId === previewRevision.id ? <Loader2 size={11} className="animate-spin" /> : <RotateCcw size={11} />}Restore as new version</Button></div> : null}
 
                   <p className="mb-2 mt-3 px-2 text-[10px] uppercase tracking-[0.18em] text-[var(--app-text-subtle)]">Sources</p>
@@ -2747,7 +2793,7 @@ export function VideoToolPage() {
                     {timelineSegments.length === 0 ? <div className="px-2 py-3 text-[11px] text-[var(--app-text-subtle)]">No clips yet.</div> : timelineSegments.map((segment, index) => {
                       const clip = selectedClips.find((candidate) => candidate.id === segment.clipId)
                       const layoutSegment = timelineLayoutByClipId.get(segment.clipId)
-                      const planPart = pendingProposal?.plan?.parts.find((part) => part.id === segment.clipId)
+                      const planPart = playbackPlan?.parts.find((part) => part.id === segment.clipId)
                       return (
                         <div key={segment.id + '-sidebar'} className={['border-l-2', selectedClipId === segment.clipId ? 'border-[var(--app-primary)] bg-[var(--app-surface-active)]' : 'border-transparent'].join(' ')}>
                           <button type="button" onClick={() => { setSelectedClipId(segment.clipId); if (layoutSegment?.visible) handleSeek(layoutSegment.timelineStart) }} className={['grid w-full grid-cols-[24px_minmax(0,1fr)_18px] items-center gap-2 px-2 py-1.5 text-left hover:bg-[var(--app-surface-hover)]', segment.visible ? '' : 'opacity-55'].filter(Boolean).join(' ')}>
@@ -2755,7 +2801,7 @@ export function VideoToolPage() {
                             <span className="min-w-0 truncate">{planPart?.title || clip?.name || segment.clipId}</span>
                             {segment.visible ? <Eye size={13} className="text-[var(--app-primary)]" /> : <EyeOff size={13} className="text-[var(--app-text-subtle)]" />}
                           </button>
-                          {planPart?.animation_candidates ? <div className="grid gap-1 px-2 pb-2 pl-8" aria-label={`${planPart.title} animation sources`}>
+                          {currentWorkingProposal && planPart?.animation_candidates ? <div className="grid gap-1 px-2 pb-2 pl-8" aria-label={`${planPart.title} animation sources`}>
                             {planPart.animation_candidates.candidates.map((candidate) => <button key={candidate.id} type="button" onClick={() => selectLiveAnimationCandidate(planPart, candidate)} className={`flex items-center justify-between rounded border px-2 py-1 text-left text-[10px] ${planPart.animation_candidates?.selected_candidate_id === candidate.id || (selectedClipId === planPart.id && liveAnimationCandidate?.id === candidate.id) ? 'border-[var(--app-primary)] bg-[var(--app-primary)]/15 text-[var(--app-text)]' : 'border-[var(--app-border)] text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)]'}`}><span className="truncate">{candidate.label || candidate.id}</span><span className="ml-2 shrink-0 text-[9px]">{planPart.animation_candidates?.selected_candidate_id === candidate.id ? 'selected' : 'preview'}</span></button>)}
                           </div> : null}
                         </div>
@@ -2788,9 +2834,9 @@ export function VideoToolPage() {
                 <>
               <div className="relative aspect-video min-h-0 overflow-hidden rounded-xl border border-[var(--app-border)] bg-black sm:min-h-[360px] lg:min-h-[480px] lg:rounded-none">
                 <canvas ref={canvasRef} width={1920} height={1080} className="h-full w-full bg-black object-contain" />
-                {liveAnimationPart && liveAnimationURL ? <iframe ref={liveAnimationFrameRef} title={liveAnimationCandidate?.label || liveAnimationPart.title} src={liveAnimationURL} sandbox="allow-scripts" referrerPolicy="no-referrer" className="absolute inset-0 h-full w-full border-0 bg-black" data-video-studio-live-animation /> : null}
+                {liveAnimationPart && liveAnimationURL ? <div className="absolute inset-0 grid place-items-center overflow-hidden bg-black"><iframe ref={liveAnimationFrameRef} title={liveAnimationCandidate?.label || liveAnimationPart.title} src={liveAnimationURL} sandbox="allow-scripts" referrerPolicy="no-referrer" className="aspect-video h-auto max-h-full w-full max-w-full border-0 bg-black object-contain" data-video-studio-live-animation /></div> : null}
                 {liveAnimationPart?.animation_candidates ? <div className="absolute bottom-3 left-3 right-3 z-10 flex flex-wrap items-center gap-2 rounded bg-black/75 p-2 text-white backdrop-blur"><span className="text-[10px] uppercase tracking-[0.14em] text-white/60">Live animation</span>{liveAnimationPart.animation_candidates.candidates.map((candidate) => <Button key={candidate.id} variant={candidate.id === liveAnimationCandidate?.id ? 'primary' : 'outline'} className="h-7 px-2 text-[10px]" onClick={() => selectLiveAnimationCandidate(liveAnimationPart, candidate)}>{candidate.label || candidate.id}</Button>)}<span className="ml-auto text-[10px] text-white/60">{liveAnimationPart.animation_candidates.status === 'ready' ? 'MP4 ready' : liveAnimationPart.animation_candidates.status === 'awaiting_export' ? 'Selected · export only this candidate' : 'Choose one'}</span></div> : null}
-                {previewRevision ? <div className="pointer-events-none absolute right-4 top-4 border border-sky-300/50 bg-sky-950/80 px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-sky-200">History preview · r{previewRevision.revision_number} · kept r{confirmedRevision?.revision_number} unchanged</div> : pendingProposal ? <div className="pointer-events-none absolute right-4 top-4 border border-amber-300/50 bg-amber-950/80 px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-amber-200">New change added · working r{pendingProposal.working_revision_number ?? currentRevision?.revision_number} · confirm when ready</div> : null}
+                {previewRevision ? <div className="pointer-events-none absolute right-4 top-4 border border-sky-300/50 bg-sky-950/80 px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-sky-200">History preview · r{previewRevision.revision_number} · kept r{confirmedRevision?.revision_number} unchanged</div> : currentWorkingProposal ? <div className="pointer-events-none absolute right-4 top-4 border border-amber-300/50 bg-amber-950/80 px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-amber-200">Pending turn changes · working r{currentWorkingProposal.working_revision_number ?? currentRevision?.revision_number} · confirm when ready</div> : null}
                 {timelineSegments.length === 0 ? (
                   <div className="absolute inset-0 grid place-items-center text-center"><div><Film className="mx-auto text-white/45" size={42} strokeWidth={1.5} /><p className="mt-3 text-sm font-medium text-white/80">No clips in this timeline</p></div></div>
                 ) : null}
@@ -2799,15 +2845,15 @@ export function VideoToolPage() {
                 </div>
               </div>
 
-              {pendingProposal?.plan && liveAnimationPart?.animation_candidates ? <section className="mt-4 border border-[var(--app-border)] bg-[var(--app-surface)] p-3" aria-label="Current turn iterations">
+              {currentWorkingProposal?.plan && liveAnimationPart?.animation_candidates ? <section className="mt-4 border border-[var(--app-border)] bg-[var(--app-surface)] p-3" aria-label="Current turn iterations">
                 <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div className="flex items-center gap-2"><span className="rounded-full bg-[var(--app-primary)]/15 px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-[var(--app-primary)]">Turn {currentRevision?.revision_number ?? 1}</span><div><p className="text-xs font-semibold text-[var(--app-text)]">{liveAnimationPart.title} · choose an iteration</p><p className="text-[10px] text-[var(--app-text-muted)]">Preview with sound, then choose one. The exact selection is attached to the composer automatically.</p></div></div>
+                  <div className="flex items-center gap-2"><span className="rounded-full bg-[var(--app-primary)]/15 px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-[var(--app-primary)]">Video r{activeTurnRevision?.revision_number ?? 1}</span><div><p className="text-xs font-semibold text-[var(--app-text)]">{liveAnimationPart.title} · choose an iteration</p><p className="text-[10px] text-[var(--app-text-muted)]">This pending video revision belongs to the active conversation turn.</p></div></div>
                   <div className="flex items-center gap-1"><Button variant="outline" className="h-7 px-2 text-[10px]" disabled={activeTurnRevisionIndex <= 0} onClick={() => handlePreviewRevision(projectRevisions[activeTurnRevisionIndex - 1]?.id ?? null)}>← Earlier turn</Button><Button variant="outline" className="h-7 px-2 text-[10px]" disabled={activeTurnRevisionIndex < 0 || activeTurnRevisionIndex >= projectRevisions.length - 1} onClick={() => handlePreviewRevision(projectRevisions[activeTurnRevisionIndex + 1]?.id ?? null)}>Later turn →</Button></div>
                 </div>
                 <div className="mt-3 grid gap-2 md:grid-cols-3">
                   {liveAnimationPart.animation_candidates.candidates.map((candidate) => { const selected = liveAnimationPart.animation_candidates?.selected_candidate_id === candidate.id; return <article key={candidate.id} className={`overflow-hidden rounded-lg border ${selected ? 'border-[var(--app-primary)] ring-1 ring-[var(--app-primary)]' : 'border-[var(--app-border)]'}`}><button type="button" className="block w-full text-left" onClick={() => { setLiveAnimationCandidate(candidate); setSelectedClipId(liveAnimationPart.id); const layout = timelineLayoutByClipId.get(liveAnimationPart.id); if (layout) handleSeek(layout.timelineStart) }}><div className="relative aspect-video overflow-hidden bg-black">{iterationCardURLs[candidate.id] ? <iframe title={`${candidate.label || candidate.id} preview`} src={iterationCardURLs[candidate.id]} sandbox="allow-scripts" referrerPolicy="no-referrer" tabIndex={-1} className="pointer-events-none absolute inset-0 h-full w-full border-0" /> : <div className="grid h-full place-items-center text-[10px] text-white/50">Loading preview…</div>}</div><div className="px-3 py-2"><p className="truncate text-[11px] font-semibold text-[var(--app-text)]">{candidate.label || candidate.id}</p><p className="mt-1 text-[9px] text-[var(--app-text-muted)]">Click card to preview with the timeline</p></div></button><Button className="h-8 w-full rounded-none text-[10px]" variant={selected ? 'primary' : 'outline'} onClick={() => selectLiveAnimationCandidate(liveAnimationPart, candidate)}>{selected ? '✓ Chosen for this turn' : 'Choose and attach to Swarm'}</Button></article> })}
                 </div>
-                <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-[var(--app-border)] pt-3"><p className="text-[10px] text-[var(--app-text-muted)]">Pending change · {pendingProposal.title || pendingProposal.id} · {liveAnimationPart.animation_candidates.status.replace(/_/g, ' ')}</p><Button variant="outline" className="h-8 px-3 text-[10px]" disabled={!liveAnimationPart.animation_candidates.selected_candidate_id} onClick={() => setComposerDraftRequest({ id: Date.now(), draft: `Continue from ${liveAnimationPart.title} using ${liveAnimationCandidate?.label || liveAnimationPart.animation_candidates?.selected_candidate_id}. Preserve the current soundtrack and create the next part's iterations.` })}>Continue selected turn in composer →</Button></div>
+                <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-[var(--app-border)] pt-3"><p className="text-[10px] text-[var(--app-text-muted)]">Pending turn change · {currentWorkingProposal.title || currentWorkingProposal.id} · {liveAnimationPart.animation_candidates.status.replace(/_/g, ' ')}</p><Button variant="outline" className="h-8 px-3 text-[10px]" disabled={!liveAnimationPart.animation_candidates.selected_candidate_id} onClick={() => setComposerDraftRequest({ id: Date.now(), draft: `Continue from ${liveAnimationPart.title} using ${liveAnimationCandidate?.label || liveAnimationPart.animation_candidates?.selected_candidate_id}. Preserve the current soundtrack and create the next part's iterations.` })}>Continue selected turn in composer →</Button></div>
               </section> : null}
 
               <section className="mt-5">
@@ -2876,7 +2922,7 @@ export function VideoToolPage() {
                           const left = movieDuration > 0 ? (segment.timelineStart / movieDuration) * timelineTrackWidthPx : 0
                           const width = movieDuration > 0 ? (segment.duration / movieDuration) * timelineTrackWidthPx : 0
                           return (
-                            <button key={segment.id} type="button" onPointerDown={(event) => event.stopPropagation()} onClick={() => { setSelectedClipId(segment.clipId); handleSeek(segment.timelineStart) }} className={`absolute top-0 h-full overflow-hidden border-r border-black/30 text-left transition hover:bg-[color-mix(in_srgb,var(--app-primary)_10%,var(--app-surface))] ${pendingProposal ? 'bg-amber-950/30' : 'bg-[var(--app-surface)]'} ${selectedClip?.id === segment.clipId ? 'outline outline-1 outline-[var(--app-primary)]' : ''}`} style={{ left: `${left}px`, width: `${Math.max(1, width)}px` }}>
+                            <button key={segment.id} type="button" onClick={(event) => { setSelectedClipId(segment.clipId); if (event.detail === 0) handleSeek(segment.timelineStart) }} className={`absolute top-0 h-full overflow-hidden border-r border-black/30 text-left transition hover:bg-[color-mix(in_srgb,var(--app-primary)_10%,var(--app-surface))] ${currentWorkingProposal ? 'bg-amber-950/30' : 'bg-[var(--app-surface)]'} ${selectedClipId === segment.clipId ? 'outline outline-1 outline-[var(--app-primary)]' : ''}`} style={{ left: `${left}px`, width: `${Math.max(1, width)}px` }}>
                               <div className="flex h-full flex-col justify-between px-2 py-2"><div className="flex items-center justify-between gap-2 text-[10px] text-[var(--app-text-subtle)]"><span>{String(visibleIndex + 1).padStart(2, '0')}</span><span className="tabular-nums">{formatTimelineTime(segment.duration)}</span></div><div className="min-w-0"><p className="truncate text-xs font-medium text-[var(--app-text)]">{clip?.name ?? segment.clipId}</p><p className="truncate text-[10px] text-[var(--app-text-muted)]">{formatTimelineTime(segment.timelineStart)} – {formatTimelineTime(segment.timelineEnd)}</p></div></div>
                             </button>
                           )
@@ -2887,7 +2933,7 @@ export function VideoToolPage() {
                         {audioTimelineLayout.length === 0 ? <div className="flex h-full items-center px-3 text-[10px] uppercase tracking-[0.14em] text-violet-300/70"><Music size={12} className="mr-2" />Soundtrack lane · empty</div> : audioTimelineLayout.map((segment) => {
                           const left = movieDuration > 0 ? (segment.timelineStart / movieDuration) * timelineTrackWidthPx : 0
                           const width = movieDuration > 0 ? (segment.duration / movieDuration) * timelineTrackWidthPx : 0
-                          return <div key={`${segment.id}-audio-lane`} className={`absolute inset-y-0 overflow-hidden border-r border-violet-300/30 px-2 py-1 text-violet-100 ${pendingProposal ? 'bg-amber-900/45' : 'bg-violet-700/40'}`} style={{ left: `${left}px`, width: `${Math.max(2, width)}px` }}><p className="truncate text-[10px] font-medium">{segment.title || segment.audioSource?.name || 'Soundtrack'}</p><p className="truncate text-[9px] opacity-70">{segment.muted ? 'muted' : `${Math.round((segment.volume ?? 1) * 100)}%`} · {formatTimelineTime(segment.duration)}</p></div>
+                          return <div key={`${segment.id}-audio-lane`} className={`absolute inset-y-0 overflow-hidden border-r border-violet-300/30 px-2 py-1 text-violet-100 ${currentWorkingProposal ? 'bg-amber-900/45' : 'bg-violet-700/40'}`} style={{ left: `${left}px`, width: `${Math.max(2, width)}px` }}><p className="truncate text-[10px] font-medium">{segment.title || segment.audioSource?.name || 'Soundtrack'}</p><p className="truncate text-[9px] opacity-70">{segment.muted ? 'muted' : `${Math.round((segment.volume ?? 1) * 100)}%`} · {formatTimelineTime(segment.duration)}</p></div>
                         })}
                       </div>
                       <div className="absolute inset-x-0 top-44 flex items-center gap-2">
@@ -2895,7 +2941,7 @@ export function VideoToolPage() {
                           const clip = selectedClips.find((candidate) => candidate.id === segment.clipId)
                           return (
                             <div key={`${segment.id}-controls`} className={`flex min-w-[280px] max-w-[440px] flex-wrap items-center gap-2 border px-2 py-2 text-xs sm:min-w-[320px] ${segment.visible ? 'border-[var(--app-border)] bg-[var(--app-surface)]' : 'border-dashed border-[var(--app-border)] bg-transparent opacity-60'}`}>
-                              <button type="button" onClick={() => handleFocusStep(segment.id, segment.timelineStart * 1000)} className="min-w-[160px] flex-1 text-left"><span className="block truncate font-medium text-[var(--app-text)]">{segment.title || clip?.name || segment.clipId}</span><span className="block truncate font-mono text-[10px] text-[var(--app-text-muted)]">{pendingProposal ? 'Working change' : segment.visible ? 'Included' : 'Hidden'} · {segment.id} · {formatTimelineTime(segment.duration)}</span></button>
+                              <button type="button" onClick={() => handleFocusStep(segment.id, segment.timelineStart * 1000)} className="min-w-[160px] flex-1 text-left"><span className="block truncate font-medium text-[var(--app-text)]">{segment.title || clip?.name || segment.clipId}</span><span className="block truncate font-mono text-[10px] text-[var(--app-text-muted)]">{currentWorkingProposal ? 'Pending turn change' : segment.visible ? 'Included' : 'Hidden'} · {segment.id} · {formatTimelineTime(segment.duration)}</span></button>
                               <Button variant="outline" className="h-7 rounded-lg px-2 text-[10px]" onClick={() => handleRequestStepEdit('visual', segment)}>Visual</Button>
                               <Button variant="outline" className="h-7 rounded-lg px-2 text-[10px]" onClick={() => handleRequestStepEdit('transition', segment)}>Transition</Button>
                               <Button variant="outline" className="h-7 rounded-lg px-2 text-[10px]" onClick={() => handleRequestStepEdit('source', segment)}>Source</Button>

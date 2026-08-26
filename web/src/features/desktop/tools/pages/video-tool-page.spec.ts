@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { VIDEO_TRANSITION_KINDS, buildVideoIterationTimeline, loadLatestVideoEditProposals, proposedVideoPlanClipDetails, rejectVideoEditProposal, renderedVideoArtifactUrl, selectedVideoProposalChangeIDs, transitionLabel, videoPlanPartMessageSelection, videoPlanTransitionMessageSelection, videoProposalFocusClipId, videoProposalProjectionSequence, type VideoEditProposalWire } from '../video-studio/video-studio-surface'
+import { VIDEO_TRANSITION_KINDS, buildVideoIterationTimeline, loadLatestVideoEditProposals, proposedVideoPlanClipDetails, rejectVideoEditProposal, renderedVideoArtifactUrl, selectedVideoProposalChangeIDs, transitionLabel, videoPlanPartMessageSelection, videoPlanTransitionMessageSelection, videoProposalFocusClipId, videoProposalProjectionSequence, videoProposalsForConversationTurn, type VideoEditProposalWire } from '../video-studio/video-studio-surface'
 
 import {
   acceptedVideoPlan,
@@ -9,6 +9,7 @@ import {
   createAdditionalVideoProject,
   defaultRenderedVideoExportPath,
   preferredVisibleVideoProject,
+  proposalOwnsAnimationPart,
   createVideoThread,
   ensurePrimaryVideoProject,
   fetchWorkspaceVideoCatalog,
@@ -25,6 +26,8 @@ import {
   soundtrackTimelineClip,
   timelineSegmentsToProjectTimeline,
   videoPlanClipDetails,
+  videoPlanForPlayback,
+  videoAnimationPartAtClip,
   VIDEO_STUDIO_AGENT_NAME,
   videoChildSessionMetadata,
   videoStudioSessionMetadata,
@@ -171,6 +174,85 @@ test('Video Studio reads an accepted visual plan from canonical revision metadat
     summary: 'Visual launch video',
     parts: [{ id: 'part-1', title: 'Hook', duration_ms: 5000, visual }],
   })
+})
+
+test('Video Studio preserves the accepted live animation while previewing a soundtrack-only proposal', () => {
+  const visual = { session_id: 'session-1', collection_id: 'slides', variant_id: 'slide-1', event_seq: 9 }
+  const candidate = { id: 'scan', source: { session_id: 'session-1', collection_id: 'animations', variant_id: 'scan', event_seq: 12 } }
+  const timeline: VideoProjectTimelineWire = {
+    clips: [],
+    metadata: { accepted_video_plan: { kind: 'initial', parts: [{ id: 'intro', title: 'Intro', duration_ms: 8000, visual, animation_candidates: { candidates: [candidate], selected_candidate_id: 'scan', selected_source: candidate.source, status: 'awaiting_export' } }] } },
+  }
+  const soundtrackProposal: VideoEditProposalWire = {
+    id: 'soundtrack', project_id: 'project-1', base_revision_id: 'revision-1', base_revision_number: 1,
+    status: 'pending', operations: [{ id: 'add-audio', type: 'add_clip', clip: { id: 'audio', source_kind: 'source_audio' } }], created_at: 1, updated_at: 1,
+  }
+
+  assert.equal(videoPlanForPlayback(soundtrackProposal, timeline)?.parts[0].animation_candidates?.selected_candidate_id, 'scan')
+  assert.equal(proposalOwnsAnimationPart(soundtrackProposal, 'intro'), false)
+})
+
+test('Video Studio does not project an older pending proposal into a newer conversation turn', () => {
+  const oldProposal = {
+    id: 'old', project_id: 'project-1', base_revision_id: 'revision-1', base_revision_number: 1,
+    status: 'pending' as const, operations: [], created_at: 100, updated_at: 100,
+  }
+  const currentProposal = { ...oldProposal, id: 'current', created_at: 300, updated_at: 300 }
+
+  assert.deepEqual(videoProposalsForConversationTurn([oldProposal, currentProposal], 200).map((proposal) => proposal.id), ['current'])
+  assert.deepEqual(videoProposalsForConversationTurn([oldProposal], 200), [])
+  assert.deepEqual(videoProposalsForConversationTurn([oldProposal], 0), [oldProposal])
+})
+
+test('Video Studio keeps only the selected animation playing after its iteration turn is over', () => {
+  const visual = { session_id: 'session-1', collection_id: 'slides', variant_id: 'slide-1', event_seq: 9 }
+  const orbit = { id: 'orbit', source: { ...visual, variant_id: 'orbit' } }
+  const scan = { id: 'scan', source: { ...visual, variant_id: 'scan' } }
+  const timeline: VideoProjectTimelineWire = {
+    clips: [],
+    metadata: { accepted_video_plan: { kind: 'initial', parts: [{ id: 'intro', title: 'Intro', duration_ms: 8000, visual, animation_candidates: { candidates: [orbit, scan], selected_candidate_id: 'scan', selected_source: scan.source, status: 'awaiting_export' } }] } },
+  }
+
+  const playback = videoPlanForPlayback(null, timeline, false)?.parts[0].animation_candidates
+  assert.deepEqual(playback?.candidates.map((candidate) => candidate.id), ['scan'])
+  assert.equal(playback?.selected_candidate_id, 'scan')
+  assert.deepEqual(videoPlanForPlayback(null, timeline)?.parts[0].animation_candidates?.candidates.map((candidate) => candidate.id), ['orbit', 'scan'])
+})
+
+test('Video Studio falls back to the still when an older animation turn has no selected candidate', () => {
+  const visual = { session_id: 'session-1', collection_id: 'slides', variant_id: 'slide-1', event_seq: 9 }
+  const timeline: VideoProjectTimelineWire = {
+    clips: [],
+    metadata: { accepted_video_plan: { kind: 'initial', parts: [{ id: 'intro', title: 'Intro', duration_ms: 8000, visual, animation_candidates: { candidates: [{ id: 'scan', source: visual }], status: 'awaiting_selection' } }] } },
+  }
+
+  assert.equal(videoPlanForPlayback(null, timeline, false)?.parts[0].animation_candidates, undefined)
+})
+
+test('Video Studio prefers animation candidates owned by the pending visual proposal', () => {
+  const visual = { session_id: 'session-1', collection_id: 'slides', variant_id: 'slide-1', event_seq: 9 }
+  const proposal: VideoEditProposalWire = {
+    id: 'visual-change', project_id: 'project-1', base_revision_id: 'revision-1', base_revision_number: 1,
+    status: 'pending', operations: [], created_at: 1, updated_at: 1,
+    plan: { kind: 'revision', parts: [{ id: 'intro', title: 'Intro', duration_ms: 8000, visual, animation_candidates: { candidates: [{ id: 'pulse', source: { session_id: 'session-1', collection_id: 'animations', variant_id: 'pulse', event_seq: 13 } }], status: 'awaiting_selection' } }] },
+  }
+
+  assert.equal(videoPlanForPlayback(proposal, { clips: [] }), proposal.plan)
+  assert.equal(proposalOwnsAnimationPart(proposal, 'intro'), true)
+})
+
+test('Video Studio shows live iterations only while their clip owns the playhead', () => {
+  const plan = {
+    kind: 'initial' as const,
+    parts: [
+      { id: 'intro-main', title: 'Intro', duration_ms: 8000, visual: { session_id: 'session-1', collection_id: 'slides', variant_id: 'intro', event_seq: 1 }, animation_candidates: { candidates: [{ id: 'orbit', source: { session_id: 'session-1', collection_id: 'animations', variant_id: 'orbit', event_seq: 2 } }], status: 'awaiting_selection' as const } },
+      { id: 'parallel-build', title: 'Build', duration_ms: 7000, visual: { session_id: 'session-1', collection_id: 'slides', variant_id: 'build', event_seq: 3 } },
+    ],
+  }
+
+  assert.equal(videoAnimationPartAtClip(plan, 'intro-main')?.id, 'intro-main')
+  assert.equal(videoAnimationPartAtClip(plan, 'parallel-build'), null)
+  assert.equal(videoAnimationPartAtClip(plan, null), null)
 })
 
 test('Video Creator selects an accepted reviewable plan ahead of an empty primary project', () => {

@@ -1203,9 +1203,16 @@ func mergeAcceptedVideoPlan(accepted *VideoPlanProposal, proposed VideoPlanPropo
 		merged.Parts[index] = replacement
 		delete(wanted, part.ID)
 	}
+	for _, part := range proposed.Parts {
+		if _, ok := wanted[part.ID]; !ok {
+			continue
+		}
+		merged.Parts = append(merged.Parts, part)
+		delete(wanted, part.ID)
+	}
 	if len(wanted) != 0 {
 		for id := range wanted {
-			return VideoPlanProposal{}, fmt.Errorf("visual plan revision cannot add unknown part %q", id)
+			return VideoPlanProposal{}, fmt.Errorf("selected visual plan part %q is absent from the proposal", id)
 		}
 	}
 	if proposed.Summary != "" {
@@ -1676,19 +1683,8 @@ func (s *SessionStore) prepareV3VideoProjectMutation(input V3SessionMutationInpu
 			if acceptedPlan == nil && proposal.Plan.Kind != VideoPlanKindInitial {
 				return preparedV3VideoProjectMutation{}, errors.New("the first visual video plan must have kind initial")
 			}
-			if acceptedPlan != nil {
-				if proposal.Plan.Kind != VideoPlanKindRevision {
-					return preparedV3VideoProjectMutation{}, errors.New("an accepted visual video plan requires kind revision")
-				}
-				acceptedIDs := make(map[string]struct{}, len(acceptedPlan.Parts))
-				for _, part := range acceptedPlan.Parts {
-					acceptedIDs[part.ID] = struct{}{}
-				}
-				for _, part := range proposal.Plan.Parts {
-					if _, exists := acceptedIDs[part.ID]; !exists {
-						return preparedV3VideoProjectMutation{}, fmt.Errorf("visual plan revision cannot add unknown part %q", part.ID)
-					}
-				}
+			if acceptedPlan != nil && proposal.Plan.Kind != VideoPlanKindRevision {
+				return preparedV3VideoProjectMutation{}, errors.New("an accepted visual video plan requires kind revision")
 			}
 		}
 		if err := validateVideoTimelineRanges(proposal.AffectedRanges, base.Timeline.TotalDurationMs); err != nil {

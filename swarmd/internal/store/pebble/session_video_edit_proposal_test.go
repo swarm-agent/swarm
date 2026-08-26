@@ -194,6 +194,41 @@ func TestVideoPlanProposalIsAtomicUntimedContextAndRejectionKeepsFeedback(t *tes
 	}
 }
 
+func TestVisualVideoPlanRevisionCanAppendSelectedStablePart(t *testing.T) {
+	store, cleanup := newTestSessionStoreForVideoProject(t)
+	defer cleanup()
+	createTestSession(t, store, "acc", "usr", "sess")
+	project, base, err := store.CreateVideoProject(CreateVideoProjectInput{AccountScopeID: "acc", UserID: "usr", SessionID: "sess", ProjectID: "project", Title: "Video", InitialTimeline: &VideoProjectTimeline{OutputPreset: VideoPresetLandscape1080p, Clips: []VideoTimelineClip{}}, NowUnixMs: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	initial := &VideoPlanProposal{Kind: VideoPlanKindInitial, Parts: []VideoPlanPart{videoPlanTestPart("part-1", "Hook", "visual-1")}}
+	proposal, err := store.CreateVideoEditProposal(CreateVideoEditProposalInput{AccountScopeID: "acc", UserID: "usr", SessionID: "sess", ProjectID: project.ID, BaseRevisionID: base.ID, Plan: initial, NowUnixMs: 200})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, acceptedBase, _, err := store.ResolveVideoEditProposal(ResolveVideoEditProposalInput{AccountScopeID: "acc", UserID: "usr", SessionID: "sess", ProjectID: project.ID, ProposalID: proposal.ID, NowUnixMs: 300})
+	if err != nil {
+		t.Fatal(err)
+	}
+	appendedPart := videoPlanTestPart("part-2", "Particle explosion", "visual-2")
+	revisionProposal, err := store.CreateVideoEditProposal(CreateVideoEditProposalInput{AccountScopeID: "acc", UserID: "usr", SessionID: "sess", ProjectID: project.ID, BaseRevisionID: acceptedBase.ID, Plan: &VideoPlanProposal{Kind: VideoPlanKindRevision, Parts: []VideoPlanPart{appendedPart}}, NowUnixMs: 400})
+	if err != nil {
+		t.Fatal(err)
+	}
+	workingRevision, ok, err := store.GetVideoProjectRevision("acc", "sess", project.ID, revisionProposal.WorkingRevisionID)
+	if err != nil || !ok || len(workingRevision.Timeline.Clips) != 2 || workingRevision.Timeline.Clips[1].ID != "part-2" {
+		t.Fatalf("working revision did not append the new stable part: revision=%+v ok=%v err=%v", workingRevision, ok, err)
+	}
+	_, acceptedRevision, _, err := store.ResolveVideoEditProposal(ResolveVideoEditProposalInput{AccountScopeID: "acc", UserID: "usr", SessionID: "sess", ProjectID: project.ID, ProposalID: revisionProposal.ID, SelectedOperationIDs: []string{"part-2"}, NowUnixMs: 500})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(acceptedRevision.Timeline.Clips) != 2 || acceptedRevision.Timeline.Clips[0].ID != "part-1" || acceptedRevision.Timeline.Clips[1].ID != "part-2" {
+		t.Fatalf("accepted revision did not preserve existing parts and append selected part: %+v", acceptedRevision.Timeline.Clips)
+	}
+}
+
 func TestVideoEditProposalsChainFromUnconfirmedWorkingRevision(t *testing.T) {
 	store, cleanup := newTestSessionStoreForVideoProject(t)
 	defer cleanup()

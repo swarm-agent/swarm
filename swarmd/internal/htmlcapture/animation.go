@@ -43,19 +43,31 @@ type AnimationRequest struct {
 
 type AnimationResult struct {
 	MP4        []byte
+	PreviewPNG []byte
 	DurationMS int
 	FPS        int
 	FrameCount int
 }
 
 type AnimationRenderer interface {
+	PreflightAnimation(context.Context, AnimationRequest) (AnimationResult, error)
 	RenderAnimation(context.Context, AnimationRequest) (AnimationResult, error)
+}
+
+// PreflightAnimation verifies readiness and representative deterministic seeks
+// without launching a full frame capture or MP4 encode.
+func (r *ChromedpRenderer) PreflightAnimation(parent context.Context, req AnimationRequest) (AnimationResult, error) {
+	return r.renderAnimation(parent, req, true)
 }
 
 // RenderAnimation captures an author-controlled deterministic timeline. The page
 // owns authored motion, while the renderer owns every sampled timestamp and the
 // final silent MP4 encoding.
 func (r *ChromedpRenderer) RenderAnimation(parent context.Context, req AnimationRequest) (AnimationResult, error) {
+	return r.renderAnimation(parent, req, false)
+}
+
+func (r *ChromedpRenderer) renderAnimation(parent context.Context, req AnimationRequest, preflightOnly bool) (AnimationResult, error) {
 	if r == nil || r.BinaryPath == "." || r.CacheRoot == "." || strings.TrimSpace(r.EncoderPath) == "" {
 		return AnimationResult{}, NewError("animation_renderer_unavailable", "trusted HTML animation renderer is not configured")
 	}
@@ -194,6 +206,34 @@ func (r *ChromedpRenderer) RenderAnimation(parent context.Context, req Animation
 	}
 	if err := prepareAnimation(browserCtx, req); err != nil {
 		return AnimationResult{}, err
+	}
+	if preflightOnly {
+		timestamps := []int{0}
+		if frameCount > 2 {
+			timestamps = append(timestamps, (frameCount/2)*1000/req.FPS)
+		}
+		if frameCount > 1 {
+			timestamps = append(timestamps, (frameCount-1)*1000/req.FPS)
+		}
+		seen := make(map[int]struct{}, len(timestamps))
+		var preview []byte
+		for _, timeMS := range timestamps {
+			if _, duplicate := seen[timeMS]; duplicate {
+				continue
+			}
+			seen[timeMS] = struct{}{}
+			frame, err := captureAnimationFrame(browserCtx, timeMS)
+			if err != nil {
+				return AnimationResult{}, err
+			}
+			if preview == nil {
+				preview = append([]byte(nil), frame...)
+			}
+			if wasBlocked, reason := blockedAttempt(); wasBlocked {
+				return AnimationResult{}, newErrorWithCause("animation_network_blocked", "animation document attempted a prohibited network request", errors.New(reason))
+			}
+		}
+		return AnimationResult{PreviewPNG: preview, DurationMS: req.DurationMS, FPS: req.FPS, FrameCount: frameCount}, nil
 	}
 
 	canonicalLocation := origin + "/" + req.Entry
