@@ -1305,7 +1305,7 @@ func (s *SessionStore) ReplayV3SessionEvents(sessionID string, afterSeq uint64, 
 		NextSeq:  afterSeq,
 	}
 	seenMessages := map[string]bool{}
-	seenRunIntents := map[string]bool{}
+	runIntentIndexByID := map[string]int{}
 	expectedSeq := afterSeq + 1
 	for _, event := range events {
 		if event.SessionID != sessionID {
@@ -1348,14 +1348,18 @@ func (s *SessionStore) ReplayV3SessionEvents(sessionID string, afterSeq uint64, 
 			replay.Messages = append(replay.Messages, message)
 			seenMessages[message.ID] = true
 		}
-		if payload.RunIntent != nil && payload.RunIntent.RunID != "" && !seenRunIntents[payload.RunIntent.RunID] {
+		if payload.RunIntent != nil && payload.RunIntent.RunID != "" {
 			intent := *payload.RunIntent
 			intent.SessionID = sessionID
 			if intent.EventSeq == 0 {
 				intent.EventSeq = event.Seq
 			}
-			replay.RunIntents = append(replay.RunIntents, intent)
-			seenRunIntents[intent.RunID] = true
+			if index, exists := runIntentIndexByID[intent.RunID]; exists {
+				replay.RunIntents[index] = intent
+			} else {
+				runIntentIndexByID[intent.RunID] = len(replay.RunIntents)
+				replay.RunIntents = append(replay.RunIntents, intent)
+			}
 		}
 		replay.HighWatermarkSeq = event.Seq
 	}
@@ -1397,9 +1401,16 @@ func (s *SessionStore) ReplayV3SessionEvents(sessionID string, afterSeq uint64, 
 			if intent.EventSeq > replay.HighWatermarkSeq {
 				continue
 			}
-			if intent.RunID != "" && !seenRunIntents[intent.RunID] {
+			if intent.RunID == "" {
+				continue
+			}
+			if index, exists := runIntentIndexByID[intent.RunID]; exists {
+				if replay.RunIntents[index].EventSeq < intent.EventSeq {
+					replay.RunIntents[index] = intent
+				}
+			} else {
+				runIntentIndexByID[intent.RunID] = len(replay.RunIntents)
 				replay.RunIntents = append(replay.RunIntents, intent)
-				seenRunIntents[intent.RunID] = true
 			}
 		}
 	}

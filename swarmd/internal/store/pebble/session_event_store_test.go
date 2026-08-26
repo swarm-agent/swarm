@@ -1235,6 +1235,58 @@ func TestApplyV3SessionMutationConcurrentDistinctAppendsAllocateContiguousSeq(t 
 	}
 }
 
+func TestReplayV3SessionEventsProjectsLatestRunIntentState(t *testing.T) {
+	store := openV3SessionEventTestStore(t)
+	sessions := NewSessionStore(store)
+	createV3SessionForTest(t, sessions, "session-run-replay-latest")
+
+	transitions := []struct {
+		status    string
+		eventType string
+		now       int64
+	}{
+		{status: V3RunIntentPendingExecutor, eventType: "session.run_intent.recorded", now: 2000},
+		{status: V3RunIntentRunning, eventType: "session.assistant.started", now: 3000},
+		{status: V3RunIntentCompleted, eventType: "session.assistant.completed", now: 4000},
+	}
+	for index, transition := range transitions {
+		_, err := sessions.ApplyV3SessionMutation(V3SessionMutationInput{
+			SessionID:      "session-run-replay-latest",
+			UserID:         "user-1",
+			AccountScopeID: "account-1",
+			IdempotencyKey: fmt.Sprintf("run-transition-%d", index),
+			RequestHash:    fmt.Sprintf("hash-run-transition-%d", index),
+			Kind:           V3SessionMutationRecordRunIntent,
+			EventType:      transition.eventType,
+			RunIntent:      &V3SessionRunIntent{RunID: "run-plan-auto", Status: transition.status},
+			NowUnixMs:      transition.now,
+		})
+		if err != nil {
+			t.Fatalf("record %s run transition: %v", transition.status, err)
+		}
+	}
+
+	replay, err := sessions.ReplayV3SessionEvents("session-run-replay-latest", 0, 20)
+	if err != nil {
+		t.Fatalf("replay run transitions: %v", err)
+	}
+	if len(replay.RunIntents) != 1 || replay.RunIntents[0].RunID != "run-plan-auto" || replay.RunIntents[0].Status != V3RunIntentCompleted {
+		t.Fatalf("replayed run intents = %+v, want one completed latest-state projection", replay.RunIntents)
+	}
+	if replay.RunIntents[0].EventSeq != replay.HighWatermarkSeq {
+		t.Fatalf("replayed run intent seq = %d, high watermark = %d", replay.RunIntents[0].EventSeq, replay.HighWatermarkSeq)
+	}
+	recoverable, err := sessions.ListV3SessionRecoverableRunIntents(5000, 10)
+	if err != nil {
+		t.Fatalf("list recoverable run intents: %v", err)
+	}
+	for _, intent := range recoverable {
+		if intent.RunID == "run-plan-auto" {
+			t.Fatalf("completed run remained recoverable: %+v", intent)
+		}
+	}
+}
+
 func TestV3SessionRunIntentStatusIndexesSupportRecoveryDiscovery(t *testing.T) {
 	store := openV3SessionEventTestStore(t)
 	sessions := NewSessionStore(store)

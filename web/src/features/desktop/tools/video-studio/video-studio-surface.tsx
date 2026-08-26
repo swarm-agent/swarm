@@ -70,6 +70,7 @@ export type VideoPlanPartWire = {
   narration?: string
   on_screen_text?: string
   visual_direction?: string
+  authored_media_kind?: 'still' | 'motion' | 'clip'
   transition_in?: string
   caption?: VideoCaptionWire
   transition?: VideoTransitionWire

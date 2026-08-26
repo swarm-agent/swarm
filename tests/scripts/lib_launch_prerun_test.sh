@@ -66,6 +66,9 @@ ACTUAL_SUITES="$("${ROOT_DIR}/scripts/run-testbench-launch-prerun.sh" --list-sui
 if ! "${ROOT_DIR}/scripts/run-testbench-launch-prerun.sh" --dry-run --suite task-program >/dev/null 2>&1; then
   fail "task-program lane still requires a manually configured linked workspace despite runtime binding discovery"
 fi
+provider_sync_dry_run="$("${ROOT_DIR}/scripts/run-testbench-launch-prerun.sh" --dry-run --suite provider-sync)" || fail "provider-sync dry run still requires manually supplied candidate authority"
+local_head="$(git -C "${ROOT_DIR}" rev-parse HEAD)"
+grep -Fq "SWARM_EXPECTED_COMMIT=${local_head}" <<<"${provider_sync_dry_run}" || fail "provider-sync did not derive candidate authority from local HEAD"
 
 ONBOARDING_GATE="${ROOT_DIR}/tests/swarmd/identity_bootstrap_e2e.sh"
 if grep -Fq 'npm test -- --run' "${ONBOARDING_GATE}" ||

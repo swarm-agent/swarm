@@ -77,6 +77,23 @@ func TestVideoStudioMessageContextBoundsBlockedHTMLClipWork(t *testing.T) {
 	}
 }
 
+func TestMasterHarnessAllowsAtomicMultiPartHTMLVideoProposals(t *testing.T) {
+	prompt := masterHarnessPrompt(t.TempDir())
+	for _, expected := range []string{
+		"one or more such parts atomically only through manage_video propose_html_iteration",
+		"one exact image fallback per part",
+		"one or more stable-id parts",
+		"2 to 16 compatible ready animation_candidates",
+	} {
+		if !strings.Contains(prompt, expected) {
+			t.Fatalf("master harness missing multi-part HTML proposal guidance %q", expected)
+		}
+	}
+	if strings.Contains(prompt, "propose_html_iteration rejects image-only downgrade, multiple parts") {
+		t.Fatal("master harness still forbids multi-part HTML proposals")
+	}
+}
+
 func TestVideoStudioMessageContextPrefersLiveHTMLCandidatePreview(t *testing.T) {
 	prompt := videoStudioMessageContextForProvider(map[string]any{
 		"creative_mode":     "video",
@@ -84,11 +101,14 @@ func TestVideoStudioMessageContextPrefersLiveHTMLCandidatePreview(t *testing.T) 
 		"video_revision_id": "revision-1",
 	})
 	for _, expected := range []string{
-		"attach them as animation_candidates",
+		"and animation_candidates",
+		"propose_html_iteration",
+		"select_animation_candidate",
+		"promote_animation_derivative",
 		"previews the selected HTML live in a sandboxed swarm-player/v1 iframe while soundtrack audio follows the same playhead",
 		"Do not export HTML to MP4 merely for live review",
 		"do not submit text/html through replace_source",
-		"durable acceptance/promotion or final rendering",
+		"MP4 derivative is required",
 	} {
 		if !strings.Contains(prompt, expected) {
 			t.Fatalf("Video Studio context missing live HTML guidance %q: %s", expected, prompt)

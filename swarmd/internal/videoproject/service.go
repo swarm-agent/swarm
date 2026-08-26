@@ -96,11 +96,11 @@ type RestoreRevisionInput struct {
 }
 
 type CreateEditProposalInput struct {
-	SessionID, ProjectID, ProposalID, BaseRevisionID, Title, Rationale string
-	Plan                                                               *pebblestore.VideoPlanProposal
-	Operations                                                         []pebblestore.VideoEditOperation
-	AffectedRanges                                                     []pebblestore.VideoTimelineRange
-	NowUnixMs                                                          int64
+	SessionID, ProjectID, ProposalID, BaseRevisionID, Title, Rationale, Intent string
+	Plan                                                                       *pebblestore.VideoPlanProposal
+	Operations                                                                 []pebblestore.VideoEditOperation
+	AffectedRanges                                                             []pebblestore.VideoTimelineRange
+	NowUnixMs                                                                  int64
 }
 type SelectAnimationCandidateInput struct {
 	SessionID, ProjectID, ProposalID, PartID, CandidateID string
@@ -144,7 +144,7 @@ func (s *Service) CreateEditProposal(ctx context.Context, principal identity.Pri
 			return pebblestore.VideoEditProposalSnapshot{}, err
 		}
 	}
-	return s.sessions.CreateVideoEditProposal(pebblestore.CreateVideoEditProposalInput{AccountScopeID: principal.AccountScopeID, UserID: principal.UserID, SessionID: input.SessionID, ProjectID: input.ProjectID, ProposalID: input.ProposalID, BaseRevisionID: input.BaseRevisionID, Title: input.Title, Rationale: input.Rationale, Plan: input.Plan, Operations: input.Operations, AffectedRanges: input.AffectedRanges, NowUnixMs: input.NowUnixMs})
+	return s.sessions.CreateVideoEditProposal(pebblestore.CreateVideoEditProposalInput{AccountScopeID: principal.AccountScopeID, UserID: principal.UserID, SessionID: input.SessionID, ProjectID: input.ProjectID, ProposalID: input.ProposalID, BaseRevisionID: input.BaseRevisionID, Title: input.Title, Rationale: input.Rationale, Intent: input.Intent, Plan: input.Plan, Operations: input.Operations, AffectedRanges: input.AffectedRanges, NowUnixMs: input.NowUnixMs})
 }
 func (s *Service) SelectAnimationCandidate(ctx context.Context, principal identity.Principal, input SelectAnimationCandidateInput) (pebblestore.VideoEditProposalSnapshot, error) {
 	return s.mutateAnimationCandidate(principal, input.SessionID, input.ProjectID, input.ProposalID, pebblestore.V3SessionMutationSelectVideoAnimationCandidate, pebblestore.VideoAnimationSelectionMutation{PartID: input.PartID, SelectedCandidateID: input.CandidateID, SelectedSource: input.SelectedSource}, input.NowUnixMs)

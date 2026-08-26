@@ -92,6 +92,21 @@ swarm_testbench_validate_env() {
   fi
 }
 
+swarm_testbench_discover_candidate_repo() {
+  local ssh_alias="$1"
+  [[ "${ssh_alias}" =~ ^[A-Za-z0-9._-]+$ ]] || swarm_testbench_fail "candidate repository discovery requires a configured SSH alias"
+  ssh "${ssh_alias}" 'bash -s' <<'REMOTE_DISCOVER_CANDIDATE'
+set -euo pipefail
+for candidate in "$HOME/swarm-go" "$HOME/src/swarm-go" "$HOME/work/swarm-go"; do
+  if [ -d "$candidate/.git" ] && [ -f "$candidate/AGENTS.md" ] && [ -x "$candidate/rebuild" ]; then
+    printf '%s\n' "$candidate"
+    exit 0
+  fi
+done
+exit 1
+REMOTE_DISCOVER_CANDIDATE
+}
+
 swarm_testbench_port_open() {
   local port="$1"
   (exec 3<>"/dev/tcp/127.0.0.1/${port}") >/dev/null 2>&1

@@ -143,7 +143,7 @@ test('testbench Video Studio preserves mixed HTML playback across revisions', { 
 
     const laterVisual = page.getByRole('button', { name: /02\s+/ }).first()
     await laterVisual.click()
-    const iterations = page.getByLabel('Current turn iterations')
+    const iterations = page.getByLabel('Current video turn')
     await iterations.waitFor({ state: 'visible', timeout: 20_000 })
     const laterFrame = page.locator('[data-video-studio-live-animation]')
     const laterBox = await laterFrame.boundingBox()
@@ -164,6 +164,10 @@ test('testbench Video Studio preserves mixed HTML playback across revisions', { 
     await page.waitForTimeout(1_200)
     const historicalPlaying = await page.locator('[data-video-studio-live-animation]').screenshot()
     assert.notDeepEqual(historicalPlaying, historicalStart, 'historical HTML revision did not animate')
+    const workingCut = page.getByLabel('Current video turn')
+    const workingCards = workingCut.locator('[aria-label^="Working clip "]')
+    assert(await workingCards.count() >= 2, 'pending review does not show the complete multi-clip working cut')
+    await workingCut.getByText(/Still image (proposed|locked in)|Video clip (proposed|locked in)/).first().waitFor({ state: 'visible', timeout: 20_000 }).catch(() => undefined)
     assert.equal(errors.length, 0, `browser errors: ${errors.join(' | ')}`)
   } finally {
     await browser.close()

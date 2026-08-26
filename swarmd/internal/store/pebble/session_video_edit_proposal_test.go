@@ -124,6 +124,47 @@ func TestVideoPlanCompilesMP4RangesAndOnlyTypedPresentation(t *testing.T) {
 	}
 }
 
+func TestVideoPlanHTMLIterationIntentRejectsEveryGenericOrDowngradedShape(t *testing.T) {
+	imageOnly := VideoPlanProposal{Kind: VideoPlanKindInitial, Parts: []VideoPlanPart{videoPlanTestPart("intro", "Intro", "fallback")}}
+	if err := validateVideoPlanIntent(VideoEditProposalIntentHTMLIteration, imageOnly); err == nil || !strings.Contains(err.Error(), "image-only downgrade") {
+		t.Fatalf("expected image-only downgrade rejection, got %v", err)
+	}
+
+	part := videoPlanTestPart("intro", "Intro", "fallback")
+	part.AnimationCandidates = &VideoAnimationCandidateSet{Status: VideoAnimationCandidateStatusAwaitingSelection, Candidates: []VideoAnimationCandidate{
+		{ID: "a", Source: &SessionArtifactSelectionReference{SessionID: "sess", CollectionID: "html", VariantID: "a", EventSeq: 1}},
+		{ID: "b", Source: &SessionArtifactSelectionReference{SessionID: "sess", CollectionID: "html", VariantID: "b", EventSeq: 2}},
+	}}
+	htmlPlan := VideoPlanProposal{Kind: VideoPlanKindInitial, Parts: []VideoPlanPart{part}}
+	if err := validateVideoPlanIntent(VideoEditProposalIntentGeneral, htmlPlan); err == nil || !strings.Contains(err.Error(), "purpose-specific html_iteration") {
+		t.Fatalf("expected generic route rejection, got %v", err)
+	}
+	if err := validateVideoPlanIntent(VideoEditProposalIntentHTMLIteration, htmlPlan); err != nil {
+		t.Fatalf("canonical HTML iteration rejected: %v", err)
+	}
+
+	multiple := VideoPlanProposal{Kind: VideoPlanKindInitial, Parts: []VideoPlanPart{part, part}}
+	multiple.Parts[1].ID = "second"
+	multiple.Parts[1].AnimationCandidates = &VideoAnimationCandidateSet{Status: VideoAnimationCandidateStatusAwaitingSelection, Candidates: append([]VideoAnimationCandidate(nil), part.AnimationCandidates.Candidates...)}
+	if err := validateVideoPlanIntent(VideoEditProposalIntentHTMLIteration, multiple); err != nil {
+		t.Fatalf("multi-part HTML iteration rejected: %v", err)
+	}
+
+	missingCandidates := multiple
+	missingCandidates.Parts = append([]VideoPlanPart(nil), multiple.Parts...)
+	missingCandidates.Parts[1].AnimationCandidates = nil
+	if err := validateVideoPlanIntent(VideoEditProposalIntentHTMLIteration, missingCandidates); err == nil || !strings.Contains(err.Error(), `part "second" is an image-only downgrade`) {
+		t.Fatalf("expected per-part image-only downgrade rejection, got %v", err)
+	}
+
+	premature := multiple
+	premature.Parts = append([]VideoPlanPart(nil), multiple.Parts...)
+	premature.Parts[1].VisualMediaType = "video/mp4"
+	if err := validateVideoPlanIntent(VideoEditProposalIntentHTMLIteration, premature); err == nil || !strings.Contains(err.Error(), `part "second"`) || !strings.Contains(err.Error(), "premature MP4") {
+		t.Fatalf("expected per-part premature export rejection, got %v", err)
+	}
+}
+
 func TestVideoPlanRejectsInvalidMP4Range(t *testing.T) {
 	part := videoPlanTestPart("part", "Motion", "motion")
 	part.VisualMediaType = "video/mp4"

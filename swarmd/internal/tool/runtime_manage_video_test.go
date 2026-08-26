@@ -30,7 +30,7 @@ func TestManageVideoDefinitionExposesOnlyOpaqueReferences(t *testing.T) {
 			t.Fatalf("manage_video schema exposes forbidden field %q", forbidden)
 		}
 	}
-	for _, required := range []string{"source_root_ref", "relative_path", "video_refs", "audio_refs", "job_refs", "job_ref", "transcript_ref", "analysis_ref", "source_fingerprint", "waveform_resolution_ms", "focus_notes", "start_ms", "end_ms", "timestamps_ms", "ranges", "max_width", "include_index", "index_only", "base_revision_id", "operations", "affected_ranges"} {
+	for _, required := range []string{"source_root_ref", "relative_path", "video_refs", "audio_refs", "job_refs", "job_ref", "transcript_ref", "analysis_ref", "source_fingerprint", "waveform_resolution_ms", "focus_notes", "start_ms", "end_ms", "timestamps_ms", "ranges", "max_width", "include_index", "index_only", "base_revision_id", "operations", "affected_ranges", "part_id", "selected_candidate_id", "selected_source", "derivative", "propose_html_iteration"} {
 		if !strings.Contains(text, `"`+required+`"`) {
 			t.Fatalf("manage_video schema lacks %q", required)
 		}
@@ -50,6 +50,19 @@ func TestManageVideoDefinitionExposesManagedMP4PlanContract(t *testing.T) {
 	}
 }
 
+func TestManageVideoDefinitionDescribesAtomicMultiPartHTMLIterations(t *testing.T) {
+	raw, err := json.Marshal(manageVideoDefinition().Parameters)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(raw)
+	for _, required := range []string{"accepts one or more stable parts in one atomic proposal", "every part requires 2 to 16 compatible ready text/html", "per-part image-only downgrade"} {
+		if !strings.Contains(text, required) {
+			t.Fatalf("manage_video schema lacks multi-part HTML contract %q", required)
+		}
+	}
+}
+
 func TestManageVideoActionRegistryAndNearestSuggestions(t *testing.T) {
 	definition := manageVideoDefinition()
 	properties := definition.Parameters["properties"].(map[string]any)
@@ -62,6 +75,11 @@ func TestManageVideoActionRegistryAndNearestSuggestions(t *testing.T) {
 		t.Fatalf("nearest actions = %#v", nearest)
 	}
 	studio := manageVideoActionNames(true)
+	for _, required := range []string{"propose_html_iteration", "select_animation_candidate", "promote_animation_derivative"} {
+		if !containsString(studio, required) {
+			t.Fatalf("studio actions lack %q: %#v", required, studio)
+		}
+	}
 	for _, forbidden := range []string{"create_revision", "restore_revision", "start_render"} {
 		for _, action := range studio {
 			if action == forbidden {
@@ -73,6 +91,26 @@ func TestManageVideoActionRegistryAndNearestSuggestions(t *testing.T) {
 	for _, action := range studioNearest {
 		if action == "start_render" {
 			t.Fatalf("studio nearest actions expose forbidden action: %#v", studioNearest)
+		}
+	}
+}
+
+func TestParseManageVideoArtifactReferenceRequiresCompleteExactReference(t *testing.T) {
+	got, err := parseManageVideoArtifactReference(map[string]any{"session_id": "session", "collection_id": "collection", "variant_id": "variant", "event_seq": 7}, "selected_source")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.SessionID != "session" || got.CollectionID != "collection" || got.VariantID != "variant" || got.EventSeq != 7 {
+		t.Fatalf("reference = %+v", got)
+	}
+	for _, incomplete := range []map[string]any{
+		{"collection_id": "collection", "variant_id": "variant", "event_seq": 7},
+		{"session_id": "session", "variant_id": "variant", "event_seq": 7},
+		{"session_id": "session", "collection_id": "collection", "event_seq": 7},
+		{"session_id": "session", "collection_id": "collection", "variant_id": "variant"},
+	} {
+		if _, err := parseManageVideoArtifactReference(incomplete, "selected_source"); err == nil || !strings.Contains(err.Error(), "exact session_id") {
+			t.Fatalf("incomplete reference error = %v", err)
 		}
 	}
 }
@@ -357,7 +395,7 @@ func TestManageVideoDefinitionExposesProjectAndRenderWorkflow(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(raw)
-	for _, action := range []string{"create_project", "read_project", "get_project", "list_projects", "create_edit_proposal", "propose_plan", "create_revision", "restore_revision", "start_render", "render_status", "cancel_render"} {
+	for _, action := range []string{"create_project", "read_project", "get_project", "list_projects", "create_edit_proposal", "propose_plan", "propose_html_iteration", "select_animation_candidate", "promote_animation_derivative", "create_revision", "restore_revision", "start_render", "render_status", "cancel_render"} {
 		if !strings.Contains(text, `"`+action+`"`) {
 			t.Fatalf("schema lacks video project/render action %q", action)
 		}
@@ -899,5 +937,94 @@ func TestManageVideoStudioCreatesThreePartInitialPlanWithoutInitialTimeline(t *t
 	}
 	if project.Title != "How to make dubstep music" {
 		t.Fatalf("unexpected project title: %+v", project)
+	}
+}
+
+func TestManageVideoHTMLIterationHasOneEnforcedProposalPath(t *testing.T) {
+	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "manage-video-html-iteration.pebble"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	principal := identity.Principal{Type: identity.PrincipalTypeUser, SessionID: "studio-html", UserID: "user-1", AccountScopeID: "account-1"}
+	sessionStore := pebblestore.NewSessionStore(store)
+	if err := sessionStore.CreateSession(pebblestore.SessionSnapshot{ID: "studio-html", UserID: principal.UserID, AccountScopeID: principal.AccountScopeID, WorkspacePath: "/ws", Mode: "auto", Metadata: map[string]any{"lineage_kind": "video_project"}}); err != nil {
+		t.Fatal(err)
+	}
+	events, err := pebblestore.NewEventLog(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime := NewRuntime(1)
+	runtime.sessions = sessionruntime.NewService(sessionStore, events)
+	runtime.videoProjects = videoproject.NewService(sessionStore)
+	ctx := WithVideoRunContext(context.Background(), VideoRunContext{SessionID: "studio-html", RunID: "run-html"})
+	scope := WorkspaceScope{SessionID: "studio-html", Principal: principal}
+
+	created, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, Call{CallID: "create-html", Name: "manage_video", Arguments: `{"action":"create_project","title":"One HTML iteration"}`})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var create struct {
+		ProjectID  string `json:"project_id"`
+		RevisionID string `json:"revision_id"`
+	}
+	if err := json.Unmarshal([]byte(created), &create); err != nil {
+		t.Fatal(err)
+	}
+
+	requirements := &pebblestore.SessionArtifactOutputRequirements{PresetID: "landscape_video", Width: 1920, Height: 1080}
+	profile := &pebblestore.SessionArtifactAnimationProfile{ProfileID: "motion_ui"}
+	variants := []pebblestore.SessionArtifactVariant{
+		{Version: pebblestore.SessionArtifactVersion, ID: "fallback", CollectionID: "html-iteration", AccountScopeID: principal.AccountScopeID, SessionID: "studio-html", Status: pebblestore.SessionArtifactStatusReady, Filename: "fallback.png", MediaType: "image/png", EventSeq: 10},
+		{Version: pebblestore.SessionArtifactVersion, ID: "candidate-a", CollectionID: "html-iteration", AccountScopeID: principal.AccountScopeID, SessionID: "studio-html", Status: pebblestore.SessionArtifactStatusReady, Filename: "a.html", MediaType: "text/html", EventSeq: 11, OutputRequirements: requirements, AnimationProfile: profile, Parts: []pebblestore.SessionArtifactPart{{ID: "intro", Kind: "temporal", EndMs: 1000}}},
+		{Version: pebblestore.SessionArtifactVersion, ID: "candidate-b", CollectionID: "html-iteration", AccountScopeID: principal.AccountScopeID, SessionID: "studio-html", Status: pebblestore.SessionArtifactStatusReady, Filename: "b.html", MediaType: "text/html", EventSeq: 12, OutputRequirements: requirements, AnimationProfile: profile, Parts: []pebblestore.SessionArtifactPart{{ID: "intro", Kind: "temporal", EndMs: 1000}}},
+		{Version: pebblestore.SessionArtifactVersion, ID: "fallback-second", CollectionID: "html-iteration", AccountScopeID: principal.AccountScopeID, SessionID: "studio-html", Status: pebblestore.SessionArtifactStatusReady, Filename: "fallback-second.png", MediaType: "image/png", EventSeq: 13},
+		{Version: pebblestore.SessionArtifactVersion, ID: "candidate-c", CollectionID: "html-iteration", AccountScopeID: principal.AccountScopeID, SessionID: "studio-html", Status: pebblestore.SessionArtifactStatusReady, Filename: "c.html", MediaType: "text/html", EventSeq: 14, OutputRequirements: requirements, AnimationProfile: profile, Parts: []pebblestore.SessionArtifactPart{{ID: "second", Kind: "temporal", EndMs: 1000}}},
+		{Version: pebblestore.SessionArtifactVersion, ID: "candidate-d", CollectionID: "html-iteration", AccountScopeID: principal.AccountScopeID, SessionID: "studio-html", Status: pebblestore.SessionArtifactStatusReady, Filename: "d.html", MediaType: "text/html", EventSeq: 15, OutputRequirements: requirements, AnimationProfile: profile, Parts: []pebblestore.SessionArtifactPart{{ID: "second", Kind: "temporal", EndMs: 1000}}},
+	}
+	for _, variant := range variants {
+		if err := store.PutJSON(pebblestore.KeySessionArtifactVariant(principal.AccountScopeID, "studio-html", variant.CollectionID, variant.ID), variant); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ref := func(id string, eventSeq uint64) map[string]any {
+		return map[string]any{"session_id": "studio-html", "collection_id": "html-iteration", "variant_id": id, "event_seq": eventSeq}
+	}
+	candidates := []map[string]any{
+		{"id": "a", "source": ref("candidate-a", 11)},
+		{"id": "b", "source": ref("candidate-b", 12)},
+	}
+	part := map[string]any{
+		"id":                   "intro",
+		"title":                "Intro",
+		"duration_ms":          1000,
+		"visual":               ref("fallback", 10),
+		"animation_candidates": map[string]any{"status": "awaiting_selection", "candidates": candidates},
+	}
+	secondCandidates := []map[string]any{
+		{"id": "c", "source": ref("candidate-c", 14)},
+		{"id": "d", "source": ref("candidate-d", 15)},
+	}
+	secondPart := map[string]any{
+		"id":                   "second",
+		"title":                "Second",
+		"duration_ms":          1000,
+		"visual":               ref("fallback-second", 13),
+		"animation_candidates": map[string]any{"status": "awaiting_selection", "candidates": secondCandidates},
+	}
+	plan := map[string]any{"kind": "initial", "parts": []map[string]any{part, secondPart}}
+	genericArgs, _ := json.Marshal(map[string]any{"action": "propose_plan", "project_id": create.ProjectID, "base_revision_id": create.RevisionID, "plan": plan})
+	if _, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, Call{CallID: "generic-html", Name: "manage_video", Arguments: string(genericArgs)}); err == nil || !strings.Contains(err.Error(), "purpose-specific html_iteration") {
+		t.Fatalf("generic route must reject HTML candidates, got %v", err)
+	}
+
+	canonicalArgs, _ := json.Marshal(map[string]any{"action": "propose_html_iteration", "project_id": create.ProjectID, "base_revision_id": create.RevisionID, "title": "Choose each HTML part", "plan": plan})
+	payload, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, Call{CallID: "canonical-html", Name: "manage_video", Arguments: string(canonicalArgs)})
+	if err != nil {
+		t.Fatalf("canonical HTML iteration path failed: %v", err)
+	}
+	if !strings.Contains(payload, `"action":"propose_html_iteration"`) || !strings.Contains(payload, `"intent":"html_iteration"`) || !strings.Contains(payload, `"proposal_status":"pending"`) || !strings.Contains(payload, `"id":"second"`) {
+		t.Fatalf("canonical HTML iteration payload = %s", payload)
 	}
 }

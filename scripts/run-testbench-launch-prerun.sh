@@ -34,15 +34,17 @@ Options:
   --desktop-timeout-ms <ms>  Desktop lifecycle wait budget (default: 900000)
   --tui-timeout-seconds <n>  TUI per-scenario wait budget (default: 180)
   --runner-timeout-ms <ms>   API runner wait budget (default: 600000)
-  --expected-commit <sha>    Candidate commit required by provider-sync
-  --remote-repo <path>       Candidate checkout on testbench for provider-sync
+  --expected-commit <sha>    Candidate commit override for provider-sync (default: local HEAD)
+  --remote-repo <path>       Candidate checkout override (default: discovered testbench checkout)
   --evidence-dir <path>      Preserve aggregate logs at this ignored path
   --headful                  Show the Desktop Playwright browser
   -h, --help                 Show this help
 
 The ignored .env remains the authority for the SSH alias, loopback ports,
-provider/model posture, and optional linked workspace path. This entrypoint does
-not rebuild or deploy testbench, commit, push, or mutate production.
+provider/model posture, and optional linked workspace path. Provider-sync derives
+candidate authority from local HEAD plus the uniquely discovered testbench Swarm
+checkout unless explicit overrides are supplied. This entrypoint does not rebuild
+or deploy testbench, commit, push, or mutate production.
 USAGE
 }
 
@@ -139,8 +141,13 @@ swarm_testbench_load_env "${ROOT_DIR}" || exit 1
 swarm_testbench_validate_env || exit 1
 LINKED_WORKSPACE_PATH="${LINKED_WORKSPACE_PATH:-${SWARM_TESTBENCH_LINKED_WORKSPACE_PATH:-}}"
 
-if contains provider-sync "${SUITES[@]}" && [[ -z "${EXPECTED_COMMIT}" || -z "${REMOTE_REPO}" ]]; then
-  fail "provider-sync requires --expected-commit and --remote-repo (or SWARM_EXPECTED_COMMIT and SWARM_REMOTE_REPO)"
+if contains provider-sync "${SUITES[@]}"; then
+  if [[ -z "${EXPECTED_COMMIT}" ]]; then
+    EXPECTED_COMMIT="$(git -C "${ROOT_DIR}" rev-parse HEAD 2>/dev/null)" || fail "provider-sync could not resolve the local candidate commit; pass --expected-commit"
+  fi
+  if [[ -z "${REMOTE_REPO}" && "${DRY_RUN}" != "true" ]]; then
+    REMOTE_REPO="$(swarm_testbench_discover_candidate_repo "${SWARM_PRIMARY_SSH}")" || fail "provider-sync could not discover the candidate checkout; pass --remote-repo"
+  fi
 fi
 
 runner_args() {

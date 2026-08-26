@@ -192,8 +192,8 @@ After narrowing the onboarding lane and fixing evidence-only harness blockers, t
 - `tui`: pass; final ordering evidence now comes from canonical durable messages instead of a clipboard rendering that omitted assistant rows.
 - `task-routing`: pass.
 - `task-program`: pass across two runtime-discovered bound repositories and both parent workspace modes; an explicit linked path remains available as an override rather than a required duplicate configuration.
-- `plan-auto`: fail; both checkpoints and their subtasks complete, but the initial and checkpoint run intents remain `pending_executor`, so runtime usage and terminal-intent gates cannot pass. This remains a real launch-path issue to classify or fix.
-- `provider-sync`: not run; the required expected candidate commit and remote candidate repository authority were not configured. The runner correctly refuses to invent these values.
+- `plan-auto`: the live failure was traced to event replay returning each run's first `pending_executor` snapshot instead of its latest terminal transition. The canonical stored run intent and recovery index already reached terminal state; replay now projects the latest state per run ID, with focused coverage for completion and recovery exclusion.
+- `provider-sync`: candidate authority now defaults to the local source `HEAD` plus the same bounded testbench Swarm-checkout discovery contract used by the maintained rebuild workflow. Explicit overrides remain available; the ancestry and clean-checkout gates still fail closed when the deployed candidate does not contain that commit.
 
 No testbench rebuild, deployment, source commit, push, or publication was performed.
 

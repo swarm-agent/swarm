@@ -250,6 +250,9 @@ type VideoPlanPart struct {
 const (
 	VideoPlanKindInitial  = "initial"
 	VideoPlanKindRevision = "revision"
+
+	VideoEditProposalIntentGeneral       = "general"
+	VideoEditProposalIntentHTMLIteration = "html_iteration"
 )
 
 // VideoPlanProposal is a visual review object. Initial plans are accepted as one
@@ -289,6 +292,7 @@ type VideoEditProposalSnapshot struct {
 	Status                string               `json:"status"`
 	Title                 string               `json:"title,omitempty"`
 	Rationale             string               `json:"rationale,omitempty"`
+	Intent                string               `json:"intent"`
 	Plan                  *VideoPlanProposal   `json:"plan,omitempty"`
 	Operations            []VideoEditOperation `json:"operations,omitempty"`
 	AffectedRanges        []VideoTimelineRange `json:"affected_ranges,omitempty"`
@@ -806,6 +810,12 @@ func validateV3VideoProjectMutationInput(input V3SessionMutationInput) error {
 			if proposal.Status != VideoEditProposalStatusPending {
 				return errors.New("new video edit proposal must be pending")
 			}
+			if proposal.Intent == "" {
+				proposal.Intent = VideoEditProposalIntentGeneral
+			}
+			if proposal.Intent != VideoEditProposalIntentGeneral && proposal.Intent != VideoEditProposalIntentHTMLIteration {
+				return fmt.Errorf("video edit proposal has unsupported intent %q", proposal.Intent)
+			}
 			if proposal.Plan != nil {
 				if len(proposal.Operations) != 0 {
 					return errors.New("video plan proposal must be one atomic plan object without timeline operations")
@@ -813,8 +823,16 @@ func validateV3VideoProjectMutationInput(input V3SessionMutationInput) error {
 				if err := validateVideoPlanProposal(*proposal.Plan); err != nil {
 					return err
 				}
-			} else if err := validateVideoEditOperations(proposal.Operations); err != nil {
-				return err
+				if err := validateVideoPlanIntent(proposal.Intent, *proposal.Plan); err != nil {
+					return err
+				}
+			} else {
+				if proposal.Intent == VideoEditProposalIntentHTMLIteration {
+					return errors.New("html_iteration intent requires one typed HTML iteration plan")
+				}
+				if err := validateVideoEditOperations(proposal.Operations); err != nil {
+					return err
+				}
 			}
 		} else if input.Kind == V3SessionMutationAcceptVideoEditProposal {
 			if input.VideoProject.Revision == nil {
@@ -1027,6 +1045,32 @@ func validateAudioTimelineClip(clip VideoTimelineClip) error {
 	}
 	if clip.Volume < 0 || clip.Volume > 2 {
 		return fmt.Errorf("source_audio clip %q gain must be between 0 and 2", clip.ID)
+	}
+	return nil
+}
+
+func validateVideoPlanIntent(intent string, plan VideoPlanProposal) error {
+	if intent == "" {
+		intent = VideoEditProposalIntentGeneral
+	}
+	if intent != VideoEditProposalIntentHTMLIteration {
+		for _, part := range plan.Parts {
+			if part.AnimationCandidates != nil {
+				return errors.New("HTML animation candidates require the purpose-specific html_iteration proposal intent")
+			}
+		}
+		return nil
+	}
+	for _, part := range plan.Parts {
+		if part.AnimationCandidates == nil {
+			return fmt.Errorf("html_iteration intent requires 2 to 16 HTML animation candidates for every part; part %q is an image-only downgrade", part.ID)
+		}
+		if part.AnimationCandidates.Status != VideoAnimationCandidateStatusAwaitingSelection || part.AnimationCandidates.SelectedCandidateID != "" || part.AnimationCandidates.SelectedSource != nil || part.AnimationCandidates.Derivative != nil {
+			return fmt.Errorf("html_iteration intent part %q must begin at awaiting_selection before export or derivative promotion", part.ID)
+		}
+		if !strings.HasPrefix(part.VisualMediaType, "image/") {
+			return fmt.Errorf("html_iteration intent part %q requires one image fallback; premature MP4 export is forbidden", part.ID)
+		}
 	}
 	return nil
 }
@@ -2334,11 +2378,11 @@ func (s *SessionStore) ListVideoProjects(accountScopeID, sessionID string, limit
 }
 
 type CreateVideoEditProposalInput struct {
-	AccountScopeID, UserID, SessionID, ProjectID, ProposalID, BaseRevisionID, Title, Rationale, ClientRequestID string
-	Plan                                                                                                        *VideoPlanProposal
-	Operations                                                                                                  []VideoEditOperation
-	AffectedRanges                                                                                              []VideoTimelineRange
-	NowUnixMs                                                                                                   int64
+	AccountScopeID, UserID, SessionID, ProjectID, ProposalID, BaseRevisionID, Title, Rationale, Intent, ClientRequestID string
+	Plan                                                                                                                *VideoPlanProposal
+	Operations                                                                                                          []VideoEditOperation
+	AffectedRanges                                                                                                      []VideoTimelineRange
+	NowUnixMs                                                                                                           int64
 }
 
 func (s *SessionStore) CreateVideoEditProposal(input CreateVideoEditProposalInput) (VideoEditProposalSnapshot, error) {
@@ -2349,7 +2393,11 @@ func (s *SessionStore) CreateVideoEditProposal(input CreateVideoEditProposalInpu
 	if now == 0 {
 		now = time.Now().UnixMilli()
 	}
-	proposal := VideoEditProposalSnapshot{ID: input.ProposalID, ProjectID: input.ProjectID, BaseRevisionID: input.BaseRevisionID, AccountScopeID: input.AccountScopeID, UserID: input.UserID, SessionID: input.SessionID, Status: VideoEditProposalStatusPending, Title: input.Title, Rationale: input.Rationale, Plan: input.Plan, Operations: input.Operations, AffectedRanges: input.AffectedRanges, CreatedAt: now, UpdatedAt: now}
+	intent := strings.TrimSpace(input.Intent)
+	if intent == "" {
+		intent = VideoEditProposalIntentGeneral
+	}
+	proposal := VideoEditProposalSnapshot{ID: input.ProposalID, ProjectID: input.ProjectID, BaseRevisionID: input.BaseRevisionID, AccountScopeID: input.AccountScopeID, UserID: input.UserID, SessionID: input.SessionID, Status: VideoEditProposalStatusPending, Title: input.Title, Rationale: input.Rationale, Intent: intent, Plan: input.Plan, Operations: input.Operations, AffectedRanges: input.AffectedRanges, CreatedAt: now, UpdatedAt: now}
 	clientID := input.ClientRequestID
 	if clientID == "" {
 		clientID = "create_video_edit_proposal:" + proposal.ID
