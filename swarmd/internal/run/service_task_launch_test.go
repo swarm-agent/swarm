@@ -955,6 +955,7 @@ type taskLaunchWorktreeStub struct {
 	requestedBase     string
 	resolvedPaths     []string
 	allocatedPaths    []string
+	allocatedScopes   [][]string
 	requestedBranch   string
 	requestedNameSeed string
 	cleanupCalls      []string
@@ -971,9 +972,10 @@ func (s *taskLaunchWorktreeStub) ResolveTaskBase(path string) (worktreeruntime.T
 	return s.taskBase, nil
 }
 
-func (s *taskLaunchWorktreeStub) AllocateTaskWorkspace(path string, _ worktreeruntime.TaskBase, _ string) (worktreeruntime.Allocation, error) {
+func (s *taskLaunchWorktreeStub) AllocateTaskWorkspace(path string, _ worktreeruntime.TaskBase, _ string, ownedScopes []string) (worktreeruntime.Allocation, error) {
 	s.allocations++
 	s.allocatedPaths = append(s.allocatedPaths, strings.TrimSpace(path))
+	s.allocatedScopes = append(s.allocatedScopes, append([]string(nil), ownedScopes...))
 	return s.allocation, nil
 }
 
@@ -1418,7 +1420,7 @@ func TestApprovedCoderAllocatesIsolatedWorktreeScope(t *testing.T) {
 		t.Fatalf("resolve task base: %v", err)
 	}
 	launch, err := svc.prepareDelegatedSubagentLaunchWithProfile(parent, sessionruntime.ModeAuto, taskLaunchPrepared{
-		LaunchIndex: 1, RequestedSubagent: "coder", MetaPrompt: "implement", VirtualTarget: virtual, TaskBase: &taskBase,
+		LaunchIndex: 1, RequestedSubagent: "coder", MetaPrompt: "implement", VirtualTarget: virtual, TaskBase: &taskBase, OwnedScope: []string{"swarmd/internal/run/**"}, LogicalTaskID: "test-coder-sparse-scope",
 	}, "implement", "", &profile, source, nil)
 	if err != nil {
 		t.Fatalf("prepare approved Coder: %v", err)
@@ -1426,6 +1428,9 @@ func TestApprovedCoderAllocatesIsolatedWorktreeScope(t *testing.T) {
 	child := launch.ChildSession
 	if stub.allocations != 1 || child.WorkspacePath != clonePath || child.WorktreeRootPath != clonePath || !child.WorktreeEnabled || metadataStringForTest(child.Metadata, "base_commit") != taskBase.BaseCommit {
 		t.Fatalf("Coder isolation facts: allocations=%d child=%#v", stub.allocations, child)
+	}
+	if len(stub.allocatedScopes) != 1 || !slices.Equal(stub.allocatedScopes[0], []string{"swarmd/internal/run/**"}) {
+		t.Fatalf("Coder allocation scopes = %#v", stub.allocatedScopes)
 	}
 	if len(child.TemporaryWorkspaceRoots) != 0 {
 		t.Fatalf("Coder inherited temporary roots: %v", child.TemporaryWorkspaceRoots)

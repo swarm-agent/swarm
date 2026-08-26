@@ -35,6 +35,27 @@ func TestRollbackAllocationRemovesOnlyRecordedAllocation(t *testing.T) {
 	}
 }
 
+func TestRollbackAllocationUnlocksAndRemovesRecordedAllocation(t *testing.T) {
+	repo := initRollbackTestRepository(t)
+	svc := &Service{}
+	allocation, err := svc.allocateSessionWorkspaceWithBranchMode(repo, true, "", "agent/routed-locked", "session-locked", true)
+	if err != nil {
+		t.Fatalf("allocate worktree: %v", err)
+	}
+	if _, err := runGit(repo, "worktree", "lock", "--reason", "session reservation", allocation.WorkspacePath); err != nil {
+		t.Fatalf("lock worktree: %v", err)
+	}
+	if err := svc.RollbackAllocation(allocation); err != nil {
+		t.Fatalf("RollbackAllocation locked worktree: %v", err)
+	}
+	if _, err := os.Stat(allocation.WorkspacePath); !os.IsNotExist(err) {
+		t.Fatalf("locked allocation path still exists or stat failed: %v", err)
+	}
+	if exists, err := localBranchExists(repo, allocation.BranchName); err != nil || exists {
+		t.Fatalf("locked allocation branch exists=%t err=%v", exists, err)
+	}
+}
+
 func TestRollbackAllocationPreservesChangedBranch(t *testing.T) {
 	repo := initRollbackTestRepository(t)
 	svc := &Service{}

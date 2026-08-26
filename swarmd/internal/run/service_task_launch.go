@@ -1772,9 +1772,7 @@ func applyCanonicalCoderOwnedScope(launch *taskLaunchSpec) {
 	if launch == nil || !agentruntime.IsCoderAgentName(launch.RequestedSubagentType) || len(launch.OwnedScope) != 0 {
 		return
 	}
-	// Owned scope is advisory metadata for review and collision detection, not an
-	// isolation boundary. When Coder omitted it, conservatively claim the whole
-	// isolated worktree rather than rejecting an otherwise valid launch.
+	// An omitted scope intentionally retains whole-worktree compatibility.
 	launch.OwnedScope = []string{"."}
 }
 

@@ -46,6 +46,7 @@ func (s *Service) RollbackAllocation(allocation Allocation) error {
 		return fmt.Errorf("inspect worktree allocation for rollback: %w", err)
 	}
 	matched := false
+	locked := false
 	for _, entry := range parseWorktreeList(output) {
 		if !sameCleanPath(entry.Path, worktreePath) {
 			continue
@@ -54,6 +55,7 @@ func (s *Service) RollbackAllocation(allocation Allocation) error {
 			return fmt.Errorf("refuse worktree rollback after allocation ownership changed at %q", worktreePath)
 		}
 		matched = true
+		locked = entry.Locked
 		break
 	}
 	if !matched {
@@ -63,6 +65,11 @@ func (s *Service) RollbackAllocation(allocation Allocation) error {
 	baseHead, baseErr := runGit(repoRoot, "rev-parse", "--verify", baseBranch+"^{commit}")
 	if headErr != nil || baseErr != nil || branchHead != baseHead {
 		return fmt.Errorf("refuse worktree rollback because recorded branch %q changed after allocation", branchName)
+	}
+	if locked {
+		if _, err := runGit(repoRoot, "worktree", "unlock", worktreePath); err != nil {
+			return fmt.Errorf("rollback worktree allocation: unlock worktree: %w", err)
+		}
 	}
 	if _, err := runGit(repoRoot, "worktree", "remove", "--force", worktreePath); err != nil {
 		return fmt.Errorf("rollback worktree allocation: remove worktree: %w", err)

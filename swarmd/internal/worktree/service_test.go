@@ -265,7 +265,7 @@ func TestRemoveIntegratedTaskWorkspaceRemovesOnlyCleanIntegratedManagedChild(t *
 
 	const sessionID = "cleanup-child"
 	svc := &Service{}
-	allocation, err := svc.AllocateTaskWorkspace(repo, TaskBase{RepoRoot: repo, ParentBranch: "dev", BaseCommit: base}, sessionID)
+	allocation, err := svc.AllocateTaskWorkspace(repo, TaskBase{RepoRoot: repo, ParentBranch: "dev", BaseCommit: base}, sessionID, []string{"."})
 	if err != nil {
 		t.Fatalf("allocate task worktree: %v", err)
 	}
@@ -294,7 +294,7 @@ func TestRemoveIntegratedTaskWorkspaceRemovesOnlyCleanIntegratedManagedChild(t *
 	}
 
 	dirtyID := "cleanup-dirty"
-	dirtyAllocation, err := svc.AllocateTaskWorkspace(repo, TaskBase{RepoRoot: repo, ParentBranch: "dev", BaseCommit: strings.TrimSpace(plan.ParentHead)}, dirtyID)
+	dirtyAllocation, err := svc.AllocateTaskWorkspace(repo, TaskBase{RepoRoot: repo, ParentBranch: "dev", BaseCommit: strings.TrimSpace(plan.ParentHead)}, dirtyID, []string{"."})
 	if err != nil {
 		t.Fatalf("allocate dirty task worktree: %v", err)
 	}
@@ -332,7 +332,7 @@ func TestRemoveIntegratedTaskWorkspaceUsesLinkedParentHEAD(t *testing.T) {
 
 	const sessionID = "linked-parent-cleanup"
 	svc := &Service{}
-	allocation, err := svc.AllocateTaskWorkspace(linkedParent, TaskBase{RepoRoot: repo, ParentBranch: "agent/linked-parent", BaseCommit: base}, sessionID)
+	allocation, err := svc.AllocateTaskWorkspace(linkedParent, TaskBase{RepoRoot: repo, ParentBranch: "agent/linked-parent", BaseCommit: base}, sessionID, []string{"."})
 	if err != nil {
 		t.Fatalf("allocate task worktree: %v", err)
 	}

@@ -25,6 +25,7 @@ import (
 
 const (
 	gitCommandTimeout           = 12 * time.Second
+	worktreeAllocationTimeout   = 2 * time.Minute
 	defaultWorktreeBranchName   = "agent/<id>"
 	defaultWorktreeBranchPrefix = "agent"
 	worktreeBranchIDPlaceholder = "<id>"
@@ -307,6 +308,10 @@ func (s *Service) allocateSessionWorkspace(workspacePath string, useCurrentBranc
 }
 
 func (s *Service) allocateSessionWorkspaceWithBranchMode(workspacePath string, useCurrentBranch bool, baseBranch, configuredBranchName, sessionID string, exactBranchName bool) (Allocation, error) {
+	return s.allocateSessionWorkspaceWithOptions(workspacePath, useCurrentBranch, baseBranch, configuredBranchName, sessionID, exactBranchName, nil, false)
+}
+
+func (s *Service) allocateSessionWorkspaceWithOptions(workspacePath string, useCurrentBranch bool, baseBranch, configuredBranchName, sessionID string, exactBranchName bool, ownedScopes []string, sparseTask bool) (Allocation, error) {
 	workspacePath = strings.TrimSpace(workspacePath)
 	sessionID = strings.TrimSpace(sessionID)
 	if workspacePath == "" {
@@ -368,7 +373,7 @@ func (s *Service) allocateSessionWorkspaceWithBranchMode(workspacePath string, u
 			Cause:        fmt.Errorf("branch %q already exists", branchName),
 		}
 	}
-	if _, err := runGitWorktreeAdd(repoRoot, worktreePath, branchName, effectiveBranch); err != nil {
+	if _, err := runGitWorktreeAdd(repoRoot, worktreePath, branchName, effectiveBranch, sparseTask); err != nil {
 		cleanupErr := cleanupFailedWorktreeAllocation(repoRoot, worktreePath)
 		if !branchExisted {
 			cleanupErr = errors.Join(cleanupErr, cleanupPartialBranch(repoRoot, branchName, effectiveBranch))
@@ -378,6 +383,12 @@ func (s *Service) allocateSessionWorkspaceWithBranchMode(workspacePath string, u
 			return Allocation{}, &RequestedWorktreeNameConflictError{WorktreeName: branchName, Cause: cause}
 		}
 		return Allocation{}, fmt.Errorf("create session worktree: %w", cause)
+	}
+	if sparseTask {
+		if err := prepareTaskWorktreeCheckout(worktreePath, ownedScopes); err != nil {
+			cleanupErr := cleanupAllocatedWorktree(repoRoot, worktreePath, branchName)
+			return Allocation{}, fmt.Errorf("prepare sparse task worktree: %w", allocationFailureWithCleanup(err, cleanupErr))
+		}
 	}
 	if err := os.Chmod(worktreePath, appstorage.PrivateDirPerm); err != nil {
 		cleanupErr := cleanupAllocatedWorktree(repoRoot, worktreePath, branchName)
@@ -799,7 +810,7 @@ func (s *Service) InspectTaskWorkspace(workspacePath string) (TaskWorkspaceState
 	}, nil
 }
 
-func (s *Service) AllocateTaskWorkspace(workspacePath string, base TaskBase, nameSeed string) (Allocation, error) {
+func (s *Service) AllocateTaskWorkspace(workspacePath string, base TaskBase, nameSeed string, ownedScopes []string) (Allocation, error) {
 	workspacePath = strings.TrimSpace(workspacePath)
 	if workspacePath == "" {
 		return Allocation{}, errors.New("workspace path is required")
@@ -814,7 +825,7 @@ func (s *Service) AllocateTaskWorkspace(workspacePath string, base TaskBase, nam
 	if !sameCleanPath(resolvedRoot, base.RepoRoot) {
 		return Allocation{}, fmt.Errorf("task base repository %q does not match workspace repository %q", base.RepoRoot, resolvedRoot)
 	}
-	allocation, err := s.allocateSessionWorkspace(workspacePath, false, base.BaseCommit, "", nameSeed)
+	allocation, err := s.allocateSessionWorkspaceWithOptions(workspacePath, false, base.BaseCommit, "", nameSeed, false, ownedScopes, true)
 	if err != nil {
 		return Allocation{}, err
 	}
@@ -1181,9 +1192,11 @@ func resolveGitPath(basePath, reportedPath string) (string, error) {
 }
 
 type gitWorktreeListEntry struct {
-	Path     string
-	Branch   string
-	Detached bool
+	Path         string
+	Branch       string
+	Detached     bool
+	Locked       bool
+	LockedReason string
 }
 
 func normalizeGitWorktreeBranch(branch string) string {
@@ -1222,6 +1235,9 @@ func parseWorktreeList(output string) []gitWorktreeListEntry {
 			current.Branch = strings.TrimSpace(strings.TrimPrefix(line, "branch "))
 		case line == "detached":
 			current.Detached = true
+		case line == "locked" || strings.HasPrefix(line, "locked "):
+			current.Locked = true
+			current.LockedReason = strings.TrimSpace(strings.TrimPrefix(line, "locked"))
 		}
 	}
 	flush()
@@ -1550,9 +1566,9 @@ func (e *gitWorktreeAddError) Error() string {
 
 func (e *gitWorktreeAddError) Unwrap() error { return e.Cause }
 
-func runGitWorktreeAdd(repoRoot, worktreePath, branchName, effectiveBranch string) (string, error) {
-	args := []string{"worktree", "add", "-b", branchName, worktreePath, effectiveBranch}
-	ctx, cancel := context.WithTimeout(context.Background(), gitCommandTimeout)
+func runGitWorktreeAdd(repoRoot, worktreePath, branchName, effectiveBranch string, noCheckout bool) (string, error) {
+	args := worktreeAddArgs(worktreePath, branchName, effectiveBranch, noCheckout)
+	ctx, cancel := context.WithTimeout(context.Background(), worktreeAllocationTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", repoRoot}, args...)...)
 	var stdout bytes.Buffer
@@ -1570,6 +1586,14 @@ func runGitWorktreeAdd(repoRoot, worktreePath, branchName, effectiveBranch strin
 		return "", &gitWorktreeAddError{Args: append([]string(nil), args...), Output: combinedOutput, Cause: err}
 	}
 	return combinedOutput, nil
+}
+
+func worktreeAddArgs(worktreePath, branchName, effectiveBranch string, noCheckout bool) []string {
+	args := []string{"worktree", "add"}
+	if noCheckout {
+		args = append(args, "--no-checkout")
+	}
+	return append(args, "-b", branchName, worktreePath, effectiveBranch)
 }
 
 func nonEmptyStrings(values ...string) []string {

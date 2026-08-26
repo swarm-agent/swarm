@@ -1287,7 +1287,7 @@ func (s *Service) prepareDelegatedSubagentLaunchWithProfile(parentSession pebble
 		if launch.TaskBase == nil {
 			return taskLaunchPrepared{}, errors.New("task failed to allocate Coder worktree: parent Git state was not resolved")
 		}
-		allocation, allocErr := s.worktrees.AllocateTaskWorkspace(targetWorkspacePath, *launch.TaskBase, childSessionID)
+		allocation, allocErr := s.worktrees.AllocateTaskWorkspace(targetWorkspacePath, *launch.TaskBase, childSessionID, launch.OwnedScope)
 		if allocErr != nil {
 			return taskLaunchPrepared{}, fmt.Errorf("task failed to allocate subagent worktree: %w", allocErr)
 		}
@@ -4395,6 +4395,7 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 		}
 		for i := range launchSpecs {
 			row := manifest.Launches[i]
+			launchSpecs[i].OwnedScope = append([]string(nil), row.OwnedScope...)
 			profile, err := cloneTaskAgentProfile(*row.ProfileSnapshot)
 			if err != nil {
 				return "", err

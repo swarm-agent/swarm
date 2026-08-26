@@ -182,7 +182,7 @@ type AITaskBinder interface {
 type worktreeService interface {
 	AttachBranch(workspacePath, sessionID, title string) (string, error)
 	ResolveTaskBase(workspacePath string) (worktreeruntime.TaskBase, error)
-	AllocateTaskWorkspace(workspacePath string, base worktreeruntime.TaskBase, nameSeed string) (worktreeruntime.Allocation, error)
+	AllocateTaskWorkspace(workspacePath string, base worktreeruntime.TaskBase, nameSeed string, ownedScopes []string) (worktreeruntime.Allocation, error)
 	InspectTaskWorkspace(workspacePath string) (worktreeruntime.TaskWorkspaceState, error)
 	TaskCommitDescendsFrom(workspacePath, baseCommit, headCommit string) (bool, error)
 	TaskCommitRangeIntegratedInto(workspacePath, baseCommit, headCommit, parentHead string) (bool, error)
