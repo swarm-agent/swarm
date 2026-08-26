@@ -1206,6 +1206,78 @@ func acceptedVideoPlanFromTimeline(timeline VideoProjectTimeline) (*VideoPlanPro
 	return &plan, nil
 }
 
+// VideoPlanRenderAuthorityProposalID returns the exact visual-plan proposal whose
+// immutable candidate set is carried by a revision timeline.
+func VideoPlanRenderAuthorityProposalID(timeline VideoProjectTimeline) string {
+	proposalID, _ := timeline.Metadata["accepted_video_plan_proposal_id"].(string)
+	return strings.TrimSpace(proposalID)
+}
+
+// ResolveVideoPlanRenderAuthority recovers candidate selections made before the
+// selected HTML authority was copied into working-revision metadata. Recovery is
+// intentionally bounded to the exact proposal named by the revision and to a
+// proposal snapshot that existed no later than that immutable revision. Newer
+// revisions already carry their selected authority directly and take precedence.
+func ResolveVideoPlanRenderAuthority(revision VideoProjectRevisionSnapshot, sourceProposal *VideoEditProposalSnapshot) (*VideoPlanProposal, error) {
+	plan, err := acceptedVideoPlanFromTimeline(revision.Timeline)
+	if err != nil || plan == nil || sourceProposal == nil {
+		return plan, err
+	}
+	proposalID := VideoPlanRenderAuthorityProposalID(revision.Timeline)
+	if proposalID == "" || sourceProposal.ID != proposalID || sourceProposal.Plan == nil || sourceProposal.ProjectID != revision.ProjectID || sourceProposal.SessionID != revision.SessionID {
+		return plan, nil
+	}
+	if sourceProposal.WorkingRevisionID != revision.ID && (revision.CreatedAt == 0 || sourceProposal.UpdatedAt == 0 || sourceProposal.UpdatedAt > revision.CreatedAt) {
+		return plan, nil
+	}
+
+	sourceParts := make(map[string]VideoPlanPart, len(sourceProposal.Plan.Parts))
+	for _, part := range sourceProposal.Plan.Parts {
+		sourceParts[part.ID] = part
+	}
+	for index := range plan.Parts {
+		target := plan.Parts[index].AnimationCandidates
+		if target == nil || target.SelectedCandidateID != "" || target.SelectedSource != nil {
+			continue
+		}
+		sourcePart, ok := sourceParts[plan.Parts[index].ID]
+		if !ok || sourcePart.AnimationCandidates == nil {
+			continue
+		}
+		source := sourcePart.AnimationCandidates
+		if source.SelectedCandidateID == "" || source.SelectedSource == nil {
+			continue
+		}
+		var sourceCandidate *VideoAnimationCandidate
+		for candidateIndex := range source.Candidates {
+			candidate := &source.Candidates[candidateIndex]
+			if candidate.ID == source.SelectedCandidateID && candidate.Source != nil && *candidate.Source == *source.SelectedSource {
+				sourceCandidate = candidate
+				break
+			}
+		}
+		if sourceCandidate == nil {
+			continue
+		}
+		matched := false
+		for _, candidate := range target.Candidates {
+			if candidate.ID == sourceCandidate.ID && candidate.Source != nil && *candidate.Source == *sourceCandidate.Source {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			continue
+		}
+		target.SelectedCandidateID = source.SelectedCandidateID
+		target.SelectedSource = source.SelectedSource
+		target.Derivative = source.Derivative
+		target.Status = source.Status
+		target.FailureReason = source.FailureReason
+	}
+	return plan, nil
+}
+
 func mergeAcceptedVideoPlan(accepted *VideoPlanProposal, proposed VideoPlanProposal, selected []string) (VideoPlanProposal, error) {
 	if accepted == nil {
 		if proposed.Kind != VideoPlanKindInitial {
@@ -1351,6 +1423,26 @@ func videoProposalSelection(proposal VideoEditProposalSnapshot) []string {
 		selected = append(selected, operation.ID)
 	}
 	return selected
+}
+
+func unresolvedSelectedVideoAnimationPart(plan *VideoPlanProposal, selected []string) string {
+	if plan == nil {
+		return ""
+	}
+	selectedParts := make(map[string]struct{}, len(selected))
+	for _, partID := range selected {
+		selectedParts[partID] = struct{}{}
+	}
+	for _, part := range plan.Parts {
+		_, enabled := selectedParts[part.ID]
+		if plan.Kind == VideoPlanKindRevision && !enabled {
+			continue
+		}
+		if part.AnimationCandidates != nil && part.AnimationCandidates.Status != VideoAnimationCandidateStatusReady {
+			return part.ID
+		}
+	}
+	return ""
 }
 
 func applyVideoProposal(base VideoProjectTimeline, proposal VideoEditProposalSnapshot, selected []string) (VideoProjectTimeline, error) {
@@ -1829,11 +1921,16 @@ func (s *SessionStore) prepareV3VideoProjectMutation(input V3SessionMutationInpu
 		if err != nil || !ok {
 			return preparedV3VideoProjectMutation{}, errors.New("video animation working revision not found")
 		}
+		if working.Timeline.Metadata == nil {
+			working.Timeline.Metadata = map[string]any{}
+		}
+		// Keep the exact selected HTML authority on the working revision so an
+		// explicit render can resolve it to MP4 without accepting the proposal.
+		// The durable timeline clip itself remains on its render-safe fallback
+		// until a promoted derivative replaces it.
+		working.Timeline.Metadata["accepted_video_plan"] = *proposal.Plan
 		if input.Kind == V3SessionMutationPromoteVideoAnimationDerivative {
 			working.Timeline = visualVideoPlanTimeline(working.Timeline, *proposal.Plan)
-			if working.Timeline.Metadata == nil {
-				working.Timeline.Metadata = map[string]any{}
-			}
 			working.Timeline.Metadata["accepted_video_plan"] = *proposal.Plan
 		}
 		return preparedV3VideoProjectMutation{Revision: &working, EditProposal: &proposal, Projection: V3VideoProjectProjection{ProjectID: proposal.ProjectID, RevisionID: working.ID, RevisionNumber: working.RevisionNumber, CurrentRevisionID: working.ID, ProposalID: proposal.ID, Status: proposal.Status}}, nil
@@ -1863,12 +1960,8 @@ func (s *SessionStore) prepareV3VideoProjectMutation(input V3SessionMutationInpu
 		if project.CurrentRevisionID != proposal.WorkingRevisionID || project.CurrentRevisionNumber != proposal.WorkingRevisionNumber {
 			return preparedV3VideoProjectMutation{}, fmt.Errorf("stale video edit proposal: working revision %s is not current revision %s", proposal.WorkingRevisionID, project.CurrentRevisionID)
 		}
-		if proposal.Plan != nil {
-			for _, part := range proposal.Plan.Parts {
-				if part.AnimationCandidates != nil && part.AnimationCandidates.Status != VideoAnimationCandidateStatusReady {
-					return preparedV3VideoProjectMutation{}, fmt.Errorf("video plan part %q animation derivative is not ready", part.ID)
-				}
-			}
+		if partID := unresolvedSelectedVideoAnimationPart(proposal.Plan, input.VideoProject.SelectedOperationIDs); partID != "" {
+			return preparedV3VideoProjectMutation{}, fmt.Errorf("video plan part %q animation derivative is not ready", partID)
 		}
 		base, ok, err := s.GetVideoProjectRevision(input.AccountScopeID, input.SessionID, proposal.ProjectID, proposal.BaseRevisionID)
 		if err != nil || !ok {

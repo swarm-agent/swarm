@@ -407,11 +407,15 @@ func New(cfg config.Config) (*Daemon, error) {
 	toolRuntime.SetManageThemeServices(uiSettingsSvc, workspaceSvc)
 	videoTranscriptionSvc := videotranscription.NewService(sessionSvc.Store(), modelSvc, uiSettingsSvc, google.NewVideoTranscriptionAdapter(authStore))
 	videoProjectSvc := videoproject.NewService(sessionSvc.Store())
+	var videoAnimationRenderer htmlcapture.AnimationRenderer
+	if cacheRootErr == nil {
+		videoAnimationRenderer = htmlcapture.NewChromedpRenderer(htmlcapture.SystemChromePath, filepath.Join(cacheRoot, "html-capture"))
+	}
 	videoRenderSvc := videorender.NewService(
 		videorender.Config{},
 		sessionSvc.Store(),
 		artifactAuthority,
-		nil,
+		videoAnimationRenderer,
 		workspaceSvc,
 		nil,
 	)

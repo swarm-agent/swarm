@@ -13,6 +13,31 @@ func proposalTestTimeline() *VideoProjectTimeline {
 	}}
 }
 
+func TestResolveVideoPlanRenderAuthorityRecoversOnlyExactHistoricalSelection(t *testing.T) {
+	orbit := &SessionArtifactSelectionReference{SessionID: "sess", CollectionID: "motion", VariantID: "orbit", EventSeq: 7}
+	pulse := &SessionArtifactSelectionReference{SessionID: "sess", CollectionID: "motion", VariantID: "pulse", EventSeq: 8}
+	unlocked := VideoPlanProposal{Kind: VideoPlanKindInitial, Parts: []VideoPlanPart{{ID: "signal", AnimationCandidates: &VideoAnimationCandidateSet{Status: VideoAnimationCandidateStatusAwaitingSelection, Candidates: []VideoAnimationCandidate{{ID: "orbit", Source: orbit}, {ID: "pulse", Source: pulse}}}}}}
+	locked := unlocked
+	locked.Parts = append([]VideoPlanPart(nil), unlocked.Parts...)
+	candidates := *unlocked.Parts[0].AnimationCandidates
+	candidates.SelectedCandidateID = "orbit"
+	candidates.SelectedSource = orbit
+	candidates.Status = VideoAnimationCandidateStatusAwaitingExport
+	locked.Parts[0].AnimationCandidates = &candidates
+	revision := VideoProjectRevisionSnapshot{ID: "accepted", ProjectID: "project", SessionID: "sess", CreatedAt: 200, Timeline: VideoProjectTimeline{Metadata: map[string]any{"accepted_video_plan": unlocked, "accepted_video_plan_proposal_id": "proposal"}}}
+	proposal := VideoEditProposalSnapshot{ID: "proposal", ProjectID: "project", SessionID: "sess", WorkingRevisionID: "working", UpdatedAt: 150, Plan: &locked}
+
+	resolved, err := ResolveVideoPlanRenderAuthority(revision, &proposal)
+	if err != nil || resolved == nil || resolved.Parts[0].AnimationCandidates.SelectedCandidateID != "orbit" || resolved.Parts[0].AnimationCandidates.SelectedSource == nil {
+		t.Fatalf("legacy render authority was not recovered exactly: plan=%+v err=%v", resolved, err)
+	}
+	proposal.UpdatedAt = 250
+	resolved, err = ResolveVideoPlanRenderAuthority(revision, &proposal)
+	if err != nil || resolved == nil || resolved.Parts[0].AnimationCandidates.SelectedCandidateID != "" {
+		t.Fatalf("newer mutable proposal state leaked into history: plan=%+v err=%v", resolved, err)
+	}
+}
+
 func TestVideoEditProposalAcceptsSelectedOperationsWithoutRendering(t *testing.T) {
 	store, cleanup := newTestSessionStoreForVideoProject(t)
 	defer cleanup()
@@ -162,6 +187,25 @@ func TestVideoPlanHTMLIterationIntentRejectsEveryGenericOrDowngradedShape(t *tes
 	premature.Parts[1].VisualMediaType = "video/mp4"
 	if err := validateVideoPlanIntent(VideoEditProposalIntentHTMLIteration, premature); err == nil || !strings.Contains(err.Error(), `part "second"`) || !strings.Contains(err.Error(), "premature MP4") {
 		t.Fatalf("expected per-part premature export rejection, got %v", err)
+	}
+}
+
+func TestVideoPlanRevisionRequiresReadyAnimationOnlyForSelectedParts(t *testing.T) {
+	ready := videoPlanTestPart("ready", "Ready", "ready-fallback")
+	ready.AnimationCandidates = &VideoAnimationCandidateSet{Status: VideoAnimationCandidateStatusReady}
+	unready := videoPlanTestPart("unready", "Unready", "unready-fallback")
+	unready.AnimationCandidates = &VideoAnimationCandidateSet{Status: VideoAnimationCandidateStatusAwaitingSelection}
+	plan := &VideoPlanProposal{Kind: VideoPlanKindRevision, Parts: []VideoPlanPart{ready, unready}}
+
+	if got := unresolvedSelectedVideoAnimationPart(plan, []string{"ready"}); got != "" {
+		t.Fatalf("unselected animation part blocked acceptance: %q", got)
+	}
+	if got := unresolvedSelectedVideoAnimationPart(plan, []string{"ready", "unready"}); got != "unready" {
+		t.Fatalf("selected unready animation part = %q, want unready", got)
+	}
+	plan.Kind = VideoPlanKindInitial
+	if got := unresolvedSelectedVideoAnimationPart(plan, nil); got != "unready" {
+		t.Fatalf("initial plan must remain atomic; got %q", got)
 	}
 }
 

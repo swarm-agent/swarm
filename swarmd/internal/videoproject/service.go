@@ -174,7 +174,7 @@ func (s *Service) mutateAnimationCandidate(principal identity.Principal, session
 	if err := s.validateAnimationArtifact(principal, selection.SelectedSource, "text/html"); err != nil {
 		return pebblestore.VideoEditProposalSnapshot{}, err
 	}
-	clientID := fmt.Sprintf("%s:%s:%s:%s", kind, proposalID, selection.PartID, selection.SelectedCandidateID)
+	clientID := fmt.Sprintf("%s:%s:%s:%s:%d", kind, proposalID, selection.PartID, selection.SelectedCandidateID, now)
 	payload, _ := json.Marshal(selection)
 	sum := sha256.Sum256(payload)
 	applier, ok := s.sessions.(interface {
@@ -534,6 +534,21 @@ func (s *Service) RestoreRevision(ctx context.Context, principal identity.Princi
 	})
 }
 
+func (s *Service) videoPlanRenderAuthority(principal identity.Principal, revision pebblestore.VideoProjectRevisionSnapshot) (*pebblestore.VideoPlanProposal, error) {
+	proposalID := pebblestore.VideoPlanRenderAuthorityProposalID(revision.Timeline)
+	if proposalID == "" {
+		return pebblestore.ResolveVideoPlanRenderAuthority(revision, nil)
+	}
+	proposal, ok, err := s.sessions.GetVideoEditProposal(principal.AccountScopeID, revision.SessionID, revision.ProjectID, proposalID)
+	if err != nil {
+		return nil, fmt.Errorf("resolve video plan render authority: %w", err)
+	}
+	if !ok || (proposal.UserID != "" && proposal.UserID != principal.UserID) {
+		return pebblestore.ResolveVideoPlanRenderAuthority(revision, nil)
+	}
+	return pebblestore.ResolveVideoPlanRenderAuthority(revision, &proposal)
+}
+
 func (s *Service) StartRenderJob(ctx context.Context, principal identity.Principal, input StartRenderJobInput) (pebblestore.VideoRenderJobSnapshot, error) {
 	if s == nil || s.sessions == nil {
 		return pebblestore.VideoRenderJobSnapshot{}, errors.New("videoproject service is not configured")
@@ -567,6 +582,29 @@ func (s *Service) StartRenderJob(ctx context.Context, principal identity.Princip
 		return pebblestore.VideoRenderJobSnapshot{}, errors.New("video project revision not found")
 	}
 	if revision.Timeline.Metadata["accepted_video_plan"] != nil {
+		if plan, err := s.videoPlanRenderAuthority(principal, revision); err != nil {
+			return pebblestore.VideoRenderJobSnapshot{}, err
+		} else if plan != nil {
+			for _, part := range plan.Parts {
+				candidates := part.AnimationCandidates
+				if candidates == nil {
+					continue
+				}
+				if len(candidates.Candidates) > 1 && (candidates.SelectedCandidateID == "" || candidates.SelectedSource == nil) {
+					return pebblestore.VideoRenderJobSnapshot{}, fmt.Errorf("HTML animation part %q must have one durably locked variant before rendering", part.ID)
+				}
+				if len(candidates.Candidates) == 1 && candidates.Candidates[0].Source == nil {
+					return pebblestore.VideoRenderJobSnapshot{}, fmt.Errorf("HTML animation part %q has no exact source to render", part.ID)
+				}
+				if candidates.Status == pebblestore.VideoAnimationCandidateStatusFailed {
+					reason := strings.TrimSpace(candidates.FailureReason)
+					if reason == "" {
+						reason = "the selected HTML animation export failed"
+					}
+					return pebblestore.VideoRenderJobSnapshot{}, fmt.Errorf("HTML animation part %q is not renderable: %s", part.ID, reason)
+				}
+			}
+		}
 		for _, clip := range revision.Timeline.Clips {
 			if clip.SourceKind == pebblestore.VideoClipSourceKindText || (clip.SourceKind == pebblestore.VideoClipSourceKindManagedArtifact && clip.ArtifactRef == nil) {
 				return pebblestore.VideoRenderJobSnapshot{}, errors.New("accepted video plan still contains unresolved sections; replace them with renderable sources before rendering")

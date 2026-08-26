@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"swarm/packages/swarmd/internal/artifact"
+	"swarm/packages/swarmd/internal/htmlcapture"
 	"swarm/packages/swarmd/internal/identity"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	workspaceruntime "swarm/packages/swarmd/internal/workspace"
@@ -45,6 +46,54 @@ func (f *fakeCommandRunner) RunCommand(ctx context.Context, name string, args ..
 		}
 	}
 	return []byte("ok"), nil
+}
+
+func TestApplySelectedHTMLAnimationSourcesUsesLockedSourceUntilDerivativeReady(t *testing.T) {
+	htmlRef := &pebblestore.SessionArtifactSelectionReference{SessionID: "session", CollectionID: "motion", VariantID: "html", EventSeq: 7}
+	fallbackRef := &pebblestore.SessionArtifactSelectionReference{SessionID: "session", CollectionID: "fallback", VariantID: "still", EventSeq: 6}
+	timeline := pebblestore.VideoProjectTimeline{
+		Clips: []pebblestore.VideoTimelineClip{{ID: "intro", SourceKind: pebblestore.VideoClipSourceKindManagedArtifact, ArtifactRef: fallbackRef, MediaType: "image/png", DurationMs: 1000, SourceEndMs: 1000}},
+		Metadata: map[string]any{"accepted_video_plan": pebblestore.VideoPlanProposal{Kind: pebblestore.VideoPlanKindInitial, Parts: []pebblestore.VideoPlanPart{{
+			ID: "intro", DurationMs: 1000, Visual: fallbackRef, VisualMediaType: "image/png", AnimationCandidates: &pebblestore.VideoAnimationCandidateSet{
+				Status: pebblestore.VideoAnimationCandidateStatusAwaitingExport, SelectedCandidateID: "a", SelectedSource: htmlRef,
+			},
+		}}}},
+	}
+	if err := applySelectedHTMLAnimationSources(&timeline); err != nil {
+		t.Fatalf("apply selected HTML source: %v", err)
+	}
+	clip := timeline.Clips[0]
+	if clip.ArtifactRef == nil || *clip.ArtifactRef != *htmlRef || clip.MediaType != "text/html" || clip.SourceStartMs != 0 || clip.SourceEndMs != clip.DurationMs {
+		t.Fatalf("selected HTML was not applied to exact render timeline: %+v", clip)
+	}
+}
+
+func TestRenderHTMLAnimationClipProducesMaterializedMP4(t *testing.T) {
+	html := []byte(`<!doctype html><script id="swarm-animation-manifest" type="application/json">{"version":"swarm.animation/v1","duration_ms":1000,"fps":30}</script>`)
+	mp4 := append([]byte{0, 0, 0, 12}, []byte("ftypisom")...)
+	renderer := &fakeAnimationRenderer{result: htmlcapture.AnimationResult{MP4: mp4, DurationMS: 1000, FPS: 30, FrameCount: 30}}
+	authority := &fakeArtifactAuthority{body: html}
+	svc := NewService(Config{}, newFakeSessionStore(), authority, renderer, nil, &fakeCommandRunner{})
+	variant := pebblestore.SessionArtifactVariant{ID: "html", CollectionID: "motion", SessionID: "session", EventSeq: 7, Status: pebblestore.SessionArtifactStatusReady, MediaType: "text/html"}
+	ref := pebblestore.SessionArtifactSelectionReference{SessionID: "session", CollectionID: "motion", VariantID: "html", EventSeq: 7}
+	output, err := svc.renderHTMLAnimationClip(context.Background(), artifact.Principal{SessionID: "session", AccountScopeID: "acc", UserID: "user"}, ref, variant, 1000, t.TempDir(), 0)
+	if err != nil {
+		t.Fatalf("render HTML animation clip: %v", err)
+	}
+	body, err := os.ReadFile(output)
+	if err != nil || string(body) != string(mp4) || len(renderer.requests) != 1 {
+		t.Fatalf("materialized HTML animation output=%q requests=%d err=%v", body, len(renderer.requests), err)
+	}
+}
+
+func TestRenderHTMLAnimationClipRejectsDurationMismatch(t *testing.T) {
+	html := []byte(`<!doctype html><script id="swarm-animation-manifest" type="application/json">{"version":"swarm.animation/v1","duration_ms":900,"fps":30}</script>`)
+	svc := NewService(Config{}, newFakeSessionStore(), &fakeArtifactAuthority{body: html}, &fakeAnimationRenderer{}, nil, &fakeCommandRunner{})
+	variant := pebblestore.SessionArtifactVariant{ID: "html", CollectionID: "motion", SessionID: "session", EventSeq: 7, Status: pebblestore.SessionArtifactStatusReady, MediaType: "text/html"}
+	ref := pebblestore.SessionArtifactSelectionReference{SessionID: "session", CollectionID: "motion", VariantID: "html", EventSeq: 7}
+	if _, err := svc.renderHTMLAnimationClip(context.Background(), artifact.Principal{SessionID: "session"}, ref, variant, 1000, t.TempDir(), 0); err == nil || !strings.Contains(err.Error(), "does not match clip duration") {
+		t.Fatalf("duration mismatch error = %v", err)
+	}
 }
 
 func TestProbeInputHasAudioUsesFFprobeStreamResult(t *testing.T) {
@@ -84,6 +133,7 @@ type fakeSessionStore struct {
 	projects      map[string]pebblestore.VideoProjectSnapshot
 	revisions     map[string]pebblestore.VideoProjectRevisionSnapshot
 	jobs          map[string]pebblestore.VideoRenderJobSnapshot
+	proposals     map[string]pebblestore.VideoEditProposalSnapshot
 	sources       map[string]pebblestore.VideoSourceRecord
 	audioSources  map[string]pebblestore.AudioSourceRecord
 	variants      map[string]pebblestore.SessionArtifactVariant
@@ -96,6 +146,7 @@ func newFakeSessionStore() *fakeSessionStore {
 		projects:     make(map[string]pebblestore.VideoProjectSnapshot),
 		revisions:    make(map[string]pebblestore.VideoProjectRevisionSnapshot),
 		jobs:         make(map[string]pebblestore.VideoRenderJobSnapshot),
+		proposals:    make(map[string]pebblestore.VideoEditProposalSnapshot),
 		sources:      make(map[string]pebblestore.VideoSourceRecord),
 		audioSources: make(map[string]pebblestore.AudioSourceRecord),
 		variants:     make(map[string]pebblestore.SessionArtifactVariant),
@@ -121,6 +172,14 @@ func (f *fakeSessionStore) GetVideoProjectRevision(accountScopeID, sessionID, pr
 		return pebblestore.VideoProjectRevisionSnapshot{}, false, nil
 	}
 	return r, true, nil
+}
+
+func (f *fakeSessionStore) GetVideoEditProposal(accountScopeID, sessionID, projectID, proposalID string) (pebblestore.VideoEditProposalSnapshot, bool, error) {
+	proposal, ok := f.proposals[proposalID]
+	if !ok || proposal.AccountScopeID != accountScopeID || proposal.SessionID != sessionID || proposal.ProjectID != projectID {
+		return pebblestore.VideoEditProposalSnapshot{}, false, nil
+	}
+	return proposal, true, nil
 }
 
 func (f *fakeSessionStore) GetVideoRenderJob(accountScopeID, sessionID, jobID string) (pebblestore.VideoRenderJobSnapshot, bool, error) {
@@ -231,6 +290,23 @@ func (f *fakeSessionStore) ListVideoRenderJobs(accountScopeID, sessionID, projec
 type fakeArtifactAuthority struct {
 	createdVariants []pebblestore.SessionArtifactVariant
 	createErr       error
+	body            []byte
+	readVariant     pebblestore.SessionArtifactVariant
+}
+
+type fakeAnimationRenderer struct {
+	requests []htmlcapture.AnimationRequest
+	result   htmlcapture.AnimationResult
+	err      error
+}
+
+func (f *fakeAnimationRenderer) PreflightAnimation(context.Context, htmlcapture.AnimationRequest) (htmlcapture.AnimationResult, error) {
+	return f.result, f.err
+}
+
+func (f *fakeAnimationRenderer) RenderAnimation(_ context.Context, req htmlcapture.AnimationRequest) (htmlcapture.AnimationResult, error) {
+	f.requests = append(f.requests, req)
+	return f.result, f.err
 }
 
 func (f *fakeArtifactAuthority) GetReference(principal artifact.Principal, ref pebblestore.SessionArtifactSelectionReference) (pebblestore.SessionArtifactVariant, error) {
@@ -242,6 +318,9 @@ func (f *fakeArtifactAuthority) GetReference(principal artifact.Principal, ref p
 }
 
 func (f *fakeArtifactAuthority) ReadReference(context.Context, artifact.Principal, pebblestore.SessionArtifactSelectionReference, int64) ([]byte, pebblestore.SessionArtifactVariant, error) {
+	if f.body != nil {
+		return append([]byte(nil), f.body...), f.readVariant, nil
+	}
 	return []byte("fake artifact content"), pebblestore.SessionArtifactVariant{}, nil
 }
 

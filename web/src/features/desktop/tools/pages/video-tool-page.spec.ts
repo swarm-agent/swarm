@@ -20,6 +20,7 @@ import {
   projectTimelineToTimelineSegments,
   replaceCachedImageMedia,
   replaceCachedVideoMedia,
+  replaceVideoEditProposal,
   resolveVideoStudioSessionRoute,
   scanVideoFolder,
   serializeVideoClipForRequest,
@@ -31,6 +32,8 @@ import {
   VIDEO_STUDIO_AGENT_NAME,
   videoChildSessionMetadata,
   videoStudioSessionMetadata,
+  selectVideoAnimationCandidateLocally,
+  unresolvedVideoIterationLockPartIDs,
   selectWorkspaceVideoRevision,
   workspaceVideoContextMetadata,
   workspaceVideosForSession,
@@ -227,6 +230,50 @@ test('Video Studio falls back to the still when an older animation turn has no s
   }
 
   assert.equal(videoPlanForPlayback(null, timeline, false)?.parts[0].animation_candidates, undefined)
+})
+
+test('Video Studio updates only the selected stable part and rejects cross-part candidate combinations', () => {
+  const visual = { session_id: 'session-1', collection_id: 'slides', variant_id: 'fallback', event_seq: 9 }
+  const introA = { id: 'intro-a', source: { session_id: 'session-1', collection_id: 'animations', variant_id: 'intro-a', event_seq: 10 } }
+  const introB = { id: 'intro-b', source: { session_id: 'session-1', collection_id: 'animations', variant_id: 'intro-b', event_seq: 11 } }
+  const outroA = { id: 'outro-a', source: { session_id: 'session-1', collection_id: 'animations', variant_id: 'outro-a', event_seq: 12 } }
+  const proposal: VideoEditProposalWire = {
+    id: 'multi-part', project_id: 'project-1', base_revision_id: 'revision-1', base_revision_number: 1,
+    status: 'pending', operations: [], created_at: 1, updated_at: 1,
+    plan: { kind: 'revision', parts: [
+      { id: 'intro', title: 'Intro', duration_ms: 5000, visual, animation_candidates: { candidates: [introA, introB], status: 'awaiting_selection' } },
+      { id: 'outro', title: 'Outro', duration_ms: 4000, visual, animation_candidates: { candidates: [outroA], status: 'awaiting_selection' } },
+    ] },
+  }
+
+  const selected = selectVideoAnimationCandidateLocally(proposal, 'intro', introB)
+  assert.equal(selected?.plan?.parts[0].animation_candidates?.selected_candidate_id, 'intro-b')
+  assert.equal(selected?.plan?.parts[0].animation_candidates?.status, 'awaiting_export')
+  assert.equal(selected?.plan?.parts[1].animation_candidates?.selected_candidate_id, undefined)
+  assert.equal(selectVideoAnimationCandidateLocally(proposal, 'intro', outroA), null)
+  assert.equal(selectVideoAnimationCandidateLocally(proposal, 'outro', { ...outroA, source: introA.source }), null)
+  assert.equal(replaceVideoEditProposal([proposal], selected ?? proposal)[0], selected)
+  assert.deepEqual(replaceVideoEditProposal([], selected ?? proposal), [selected])
+})
+
+test('Video Studio blocks rendering only when a selected clip has multiple unlocked iterations', () => {
+  const visual = { session_id: 'session-1', collection_id: 'slides', variant_id: 'fallback', event_seq: 9 }
+  const proposal: VideoEditProposalWire = {
+    id: 'render-locks', project_id: 'project-1', base_revision_id: 'revision-1', base_revision_number: 1,
+    status: 'pending', operations: [], created_at: 1, updated_at: 1,
+    plan: { kind: 'revision', parts: [
+      { id: 'plain', title: 'Plain', duration_ms: 3000, visual },
+      { id: 'single', title: 'Single', duration_ms: 3000, visual, animation_candidates: { candidates: [{ id: 'only', source: { ...visual, variant_id: 'only' } }], status: 'awaiting_selection' } },
+      { id: 'multi', title: 'Multi', duration_ms: 3000, visual, animation_candidates: { candidates: [{ id: 'one', source: { ...visual, variant_id: 'one' } }, { id: 'two', source: { ...visual, variant_id: 'two' } }], status: 'awaiting_selection' } },
+    ] },
+  }
+
+  assert.deepEqual(unresolvedVideoIterationLockPartIDs(proposal, ['plain', 'single']), [])
+  assert.deepEqual(unresolvedVideoIterationLockPartIDs(proposal, ['multi']), ['multi'])
+  const locked = selectVideoAnimationCandidateLocally(proposal, 'multi', proposal.plan!.parts[2].animation_candidates!.candidates[1])
+  assert.deepEqual(unresolvedVideoIterationLockPartIDs(locked, ['multi']), [])
+  assert.deepEqual(unresolvedVideoIterationLockPartIDs({ ...proposal, plan: { ...proposal.plan!, kind: 'initial' } }), ['multi'])
+  assert.deepEqual(unresolvedVideoIterationLockPartIDs({ ...proposal, plan: undefined }, ['multi']), [])
 })
 
 test('Video Studio prefers animation candidates owned by the pending visual proposal', () => {

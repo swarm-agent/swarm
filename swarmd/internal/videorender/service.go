@@ -1,23 +1,29 @@
 package videorender
 
 import (
+	"archive/zip"
 	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"math"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"swarm/packages/swarmd/internal/artifact"
+	"swarm/packages/swarmd/internal/htmlcapture"
 	"swarm/packages/swarmd/internal/identity"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	workspaceruntime "swarm/packages/swarmd/internal/workspace"
@@ -40,6 +46,17 @@ const (
 	MaxInspectionPNGBytes    = 16 << 20
 	MaxInspectionTotalBytes  = 64 << 20
 	DefaultInspectionTimeout = 2 * time.Minute
+
+	htmlAnimationMaxSourceBytes = 32 << 20
+	htmlAnimationMaxEntryBytes  = 8 << 20
+	htmlAnimationMaxEntries     = 128
+	htmlAnimationMaxManifest    = 64 << 10
+)
+
+var (
+	htmlAnimationScriptPattern = regexp.MustCompile(`(?is)<script\s+([^>]*)>(.*?)</script\s*>`)
+	htmlAnimationManifestID    = regexp.MustCompile(`(?i)(?:^|\s)id\s*=\s*["']swarm-animation-manifest["'](?:\s|$)`)
+	htmlAnimationManifestType  = regexp.MustCompile(`(?i)(?:^|\s)type\s*=\s*["']application/json["'](?:\s|$)`)
 )
 
 type Config struct {
@@ -147,6 +164,7 @@ type SessionStore interface {
 	GetVideoSourceRecord(accountScopeID, workspaceID, ref string) (pebblestore.VideoSourceRecord, bool, error)
 	GetAudioSourceRecord(accountScopeID, workspaceID, ref string) (pebblestore.AudioSourceRecord, bool, error)
 	GetSessionArtifactVariant(accountScopeID, sessionID, collectionID, variantID string) (pebblestore.SessionArtifactVariant, bool, error)
+	GetVideoEditProposal(accountScopeID, sessionID, projectID, proposalID string) (pebblestore.VideoEditProposalSnapshot, bool, error)
 	ListVideoRenderJobs(accountScopeID, sessionID, projectID string, limit int) ([]pebblestore.VideoRenderJobSnapshot, error)
 	ListRecoverableVideoRenderJobs(limit int) ([]pebblestore.VideoRenderJobSnapshot, error)
 }
@@ -161,6 +179,7 @@ type Service struct {
 	artifacts     ArtifactAuthority
 	workspace     WorkspaceAuthority
 	runner        CommandRunner
+	animation     htmlcapture.AnimationRenderer
 	mu            sync.Mutex
 	cancels       map[string]context.CancelFunc
 	pendingStarts map[string]context.CancelFunc
@@ -170,7 +189,7 @@ type Service struct {
 	idle          chan struct{}
 }
 
-func NewService(cfg Config, store SessionStore, artifacts ArtifactAuthority, _ any, workspace WorkspaceAuthority, runner CommandRunner) *Service {
+func NewService(cfg Config, store SessionStore, artifacts ArtifactAuthority, animation htmlcapture.AnimationRenderer, workspace WorkspaceAuthority, runner CommandRunner) *Service {
 	if cfg.MaxClips <= 0 {
 		cfg.MaxClips = DefaultMaxClips
 	}
@@ -195,6 +214,7 @@ func NewService(cfg Config, store SessionStore, artifacts ArtifactAuthority, _ a
 		artifacts:     artifacts,
 		workspace:     workspace,
 		runner:        runner,
+		animation:     animation,
 		cancels:       make(map[string]context.CancelFunc),
 		pendingStarts: make(map[string]context.CancelFunc),
 	}
@@ -536,11 +556,27 @@ func (s *Service) RenderJob(ctx context.Context, principal identity.Principal, r
 	}
 
 	timeline := revision.Timeline
+	if proposalID := pebblestore.VideoPlanRenderAuthorityProposalID(timeline); proposalID != "" {
+		proposal, found, proposalErr := s.store.GetVideoEditProposal(principal.AccountScopeID, sessionID, projectID, proposalID)
+		if proposalErr != nil {
+			return pebblestore.VideoRenderJobSnapshot{}, fmt.Errorf("resolve video plan render authority: %w", proposalErr)
+		}
+		if found && (proposal.UserID == "" || proposal.UserID == principal.UserID) {
+			if plan, resolveErr := pebblestore.ResolveVideoPlanRenderAuthority(revision, &proposal); resolveErr != nil {
+				return pebblestore.VideoRenderJobSnapshot{}, resolveErr
+			} else if plan != nil {
+				timeline.Metadata["accepted_video_plan"] = *plan
+			}
+		}
+	}
 	if len(timeline.Clips) == 0 {
 		return pebblestore.VideoRenderJobSnapshot{}, errors.New("timeline contains no clips to render")
 	}
 	if len(timeline.Clips) > s.cfg.MaxClips {
 		return pebblestore.VideoRenderJobSnapshot{}, fmt.Errorf("timeline clip count %d exceeds maximum limit %d", len(timeline.Clips), s.cfg.MaxClips)
+	}
+	if err := applySelectedHTMLAnimationSources(&timeline); err != nil {
+		return pebblestore.VideoRenderJobSnapshot{}, err
 	}
 
 	// Update job status to rendering
@@ -925,8 +961,24 @@ func (s *Service) materializeTimelineInputs(ctx context.Context, principal ident
 				return nil, fmt.Errorf("clip %d referenced artifact variant %q with a stale or missing event sequence", i, variant.ID)
 			}
 
+			artifactPrincipal := artifact.Principal{SessionID: session.ID, AccountScopeID: principal.AccountScopeID, UserID: principal.UserID}
+			mediaType := strings.ToLower(strings.TrimSpace(variant.MediaType))
+			if mediaType == "text/html" || mediaType == "application/zip" {
+				animationPath, renderErr := s.renderHTMLAnimationClip(ctx, artifactPrincipal, *targetRef, variant, clip.DurationMs, jobDir, input.Index)
+				if renderErr != nil {
+					return nil, fmt.Errorf("render HTML animation clip %d: %w", i, renderErr)
+				}
+				input.FilePath = animationPath
+				input.StartMs = 0
+				input.EndMs = clip.DurationMs
+				input.IsVideo = true
+				input.IsImage = false
+				input.HasAudio = false
+				break
+			}
+
 			destPath := filepath.Join(jobDir, fmt.Sprintf("input_%d_%s", input.Index, variant.Filename))
-			body, _, err := s.artifacts.ReadReference(ctx, artifact.Principal{SessionID: session.ID, AccountScopeID: principal.AccountScopeID, UserID: principal.UserID}, *targetRef, s.cfg.MaxRenderBytes)
+			body, _, err := s.artifacts.ReadReference(ctx, artifactPrincipal, *targetRef, s.cfg.MaxRenderBytes)
 			if err != nil {
 				return nil, fmt.Errorf("read artifact clip %d: %w", i, err)
 			}
@@ -934,7 +986,7 @@ func (s *Service) materializeTimelineInputs(ctx context.Context, principal ident
 				return nil, err
 			}
 			input.FilePath = destPath
-			if strings.HasPrefix(variant.MediaType, "image/") {
+			if strings.HasPrefix(mediaType, "image/") {
 				input.IsImage = true
 				input.IsVideo = false
 				input.HasAudio = false
@@ -993,6 +1045,203 @@ func (s *Service) materializeTimelineInputs(ctx context.Context, principal ident
 	}
 
 	return inputs, nil
+}
+
+type htmlAnimationManifest struct {
+	Version    string `json:"version"`
+	DurationMS int    `json:"duration_ms"`
+	FPS        int    `json:"fps"`
+}
+
+func applySelectedHTMLAnimationSources(timeline *pebblestore.VideoProjectTimeline) error {
+	if timeline == nil || timeline.Metadata == nil {
+		return nil
+	}
+	raw := timeline.Metadata["accepted_video_plan"]
+	if raw == nil {
+		return nil
+	}
+	encoded, err := json.Marshal(raw)
+	if err != nil {
+		return fmt.Errorf("encode exact video plan for render: %w", err)
+	}
+	var plan pebblestore.VideoPlanProposal
+	if err := json.Unmarshal(encoded, &plan); err != nil {
+		return fmt.Errorf("decode exact video plan for render: %w", err)
+	}
+	clips := make(map[string]*pebblestore.VideoTimelineClip, len(timeline.Clips))
+	for index := range timeline.Clips {
+		clips[timeline.Clips[index].ID] = &timeline.Clips[index]
+	}
+	for _, part := range plan.Parts {
+		candidates := part.AnimationCandidates
+		if candidates == nil {
+			continue
+		}
+		selectedSource := candidates.SelectedSource
+		if candidates.SelectedCandidateID == "" {
+			if len(candidates.Candidates) == 1 {
+				selectedSource = candidates.Candidates[0].Source
+			} else if len(candidates.Candidates) > 1 {
+				return fmt.Errorf("HTML animation part %q has multiple iterations and no durably locked variant", part.ID)
+			} else {
+				continue
+			}
+		}
+		if candidates.Status == pebblestore.VideoAnimationCandidateStatusFailed {
+			reason := strings.TrimSpace(candidates.FailureReason)
+			if reason == "" {
+				reason = "the selected HTML animation export failed"
+			}
+			return fmt.Errorf("HTML animation part %q is not renderable: %s", part.ID, reason)
+		}
+		clip := clips[part.ID]
+		if clip == nil {
+			return fmt.Errorf("HTML animation part %q has no matching timeline clip", part.ID)
+		}
+		if candidates.Derivative != nil && candidates.Status == pebblestore.VideoAnimationCandidateStatusReady {
+			clip.ArtifactRef = candidates.Derivative
+			clip.MediaType = "video/mp4"
+			clip.SourceStartMs = 0
+			clip.SourceEndMs = clip.DurationMs
+			continue
+		}
+		if selectedSource == nil {
+			return fmt.Errorf("HTML animation part %q has a locked candidate but no exact selected source", part.ID)
+		}
+		clip.ArtifactRef = selectedSource
+		clip.MediaType = "text/html"
+		clip.SourceStartMs = 0
+		clip.SourceEndMs = clip.DurationMs
+	}
+	return nil
+}
+
+func (s *Service) renderHTMLAnimationClip(ctx context.Context, principal artifact.Principal, ref pebblestore.SessionArtifactSelectionReference, variant pebblestore.SessionArtifactVariant, expectedDurationMs int64, jobDir string, inputIndex int) (string, error) {
+	if s.animation == nil {
+		return "", errors.New("selected HTML animation requires the trusted HTML-to-MP4 renderer, but it is unavailable")
+	}
+	files, entry, err := s.readHTMLAnimationSource(ctx, principal, ref, variant)
+	if err != nil {
+		return "", err
+	}
+	manifest, err := parseHTMLAnimationManifest(files[entry])
+	if err != nil {
+		return "", err
+	}
+	if expectedDurationMs <= 0 || int64(manifest.DurationMS) != expectedDurationMs {
+		return "", fmt.Errorf("animation manifest duration %dms does not match clip duration %dms", manifest.DurationMS, expectedDurationMs)
+	}
+	result, err := s.animation.RenderAnimation(ctx, htmlcapture.AnimationRequest{Entry: entry, Files: files, DurationMS: manifest.DurationMS, FPS: manifest.FPS})
+	if err != nil {
+		var captureErr *htmlcapture.Error
+		if errors.As(err, &captureErr) {
+			return "", fmt.Errorf("%s: %s", captureErr.Code, captureErr.SafeMessage)
+		}
+		return "", fmt.Errorf("trusted HTML animation capture failed: %w", err)
+	}
+	if result.DurationMS != manifest.DurationMS || result.FPS != manifest.FPS || result.FrameCount != (manifest.DurationMS*manifest.FPS+999)/1000 {
+		return "", errors.New("trusted HTML animation renderer returned inconsistent timeline metadata")
+	}
+	if len(result.MP4) < 12 || len(result.MP4) > htmlcapture.MaxMP4Bytes || string(result.MP4[4:8]) != "ftyp" {
+		return "", errors.New("trusted HTML animation renderer returned an invalid bounded MP4")
+	}
+	destPath := filepath.Join(jobDir, fmt.Sprintf("input_%d_html-animation.mp4", inputIndex))
+	if err := os.WriteFile(destPath, result.MP4, 0o600); err != nil {
+		return "", fmt.Errorf("write rendered HTML animation clip: %w", err)
+	}
+	return destPath, nil
+}
+
+func (s *Service) readHTMLAnimationSource(ctx context.Context, principal artifact.Principal, ref pebblestore.SessionArtifactSelectionReference, variant pebblestore.SessionArtifactVariant) (map[string][]byte, string, error) {
+	mediaType := strings.ToLower(strings.TrimSpace(variant.MediaType))
+	body, _, err := s.artifacts.ReadReference(ctx, principal, ref, htmlAnimationMaxSourceBytes)
+	if err != nil {
+		return nil, "", fmt.Errorf("read exact HTML animation source: %w", err)
+	}
+	switch mediaType {
+	case "text/html":
+		if len(body) == 0 || len(body) > htmlAnimationMaxSourceBytes || !utf8.Valid(body) {
+			return nil, "", errors.New("selected HTML animation is not valid bounded UTF-8")
+		}
+		return map[string][]byte{"index.html": append([]byte(nil), body...)}, "index.html", nil
+	case "application/zip":
+		return readHTMLAnimationPackage(body)
+	default:
+		return nil, "", fmt.Errorf("selected animation artifact has unsupported media type %q", variant.MediaType)
+	}
+}
+
+func readHTMLAnimationPackage(body []byte) (map[string][]byte, string, error) {
+	if len(body) == 0 || len(body) > htmlAnimationMaxSourceBytes {
+		return nil, "", errors.New("HTML animation package exceeds fixed bounds")
+	}
+	archive, err := zip.NewReader(bytes.NewReader(body), int64(len(body)))
+	if err != nil || len(archive.File) == 0 || len(archive.File) > htmlAnimationMaxEntries {
+		return nil, "", errors.New("HTML animation package is malformed or exceeds fixed entry bounds")
+	}
+	files := make(map[string][]byte, len(archive.File))
+	total := 0
+	for _, file := range archive.File {
+		name := file.Name
+		if file.FileInfo().IsDir() || name == "" || len(name) > 1024 || path.Clean(name) != name || strings.Contains(name, "\\") || !file.Mode().IsRegular() {
+			return nil, "", errors.New("HTML animation package contains an unsafe entry")
+		}
+		if _, exists := files[name]; exists || file.UncompressedSize64 > htmlAnimationMaxEntryBytes {
+			return nil, "", errors.New("HTML animation package contains duplicate or oversized entries")
+		}
+		reader, openErr := file.Open()
+		if openErr != nil {
+			return nil, "", errors.New("HTML animation package entry could not be opened")
+		}
+		data, readErr := io.ReadAll(io.LimitReader(reader, htmlAnimationMaxEntryBytes+1))
+		closeErr := reader.Close()
+		if readErr != nil || closeErr != nil || len(data) > htmlAnimationMaxEntryBytes || uint64(len(data)) != file.UncompressedSize64 {
+			return nil, "", errors.New("HTML animation package entry failed bounded validation")
+		}
+		total += len(data)
+		if total > htmlAnimationMaxSourceBytes {
+			return nil, "", errors.New("HTML animation package exceeds fixed expanded bounds")
+		}
+		files[name] = data
+	}
+	if _, ok := files["index.html"]; !ok {
+		return nil, "", errors.New("HTML animation package is missing canonical index.html")
+	}
+	return files, "index.html", nil
+}
+
+func parseHTMLAnimationManifest(html []byte) (htmlAnimationManifest, error) {
+	var manifestBodies [][]byte
+	for _, script := range htmlAnimationScriptPattern.FindAllSubmatch(html, -1) {
+		if htmlAnimationManifestID.Match(script[1]) {
+			if !htmlAnimationManifestType.Match(script[1]) {
+				return htmlAnimationManifest{}, errors.New("HTML animation manifest has an invalid media type")
+			}
+			manifestBodies = append(manifestBodies, script[2])
+		}
+	}
+	if len(manifestBodies) == 0 {
+		return htmlAnimationManifest{}, errors.New("canonical swarm.animation/v1 manifest is missing")
+	}
+	if len(manifestBodies) != 1 || len(manifestBodies[0]) > htmlAnimationMaxManifest {
+		return htmlAnimationManifest{}, errors.New("HTML animation manifest is duplicated or exceeds fixed bounds")
+	}
+	decoder := json.NewDecoder(bytes.NewReader(manifestBodies[0]))
+	decoder.DisallowUnknownFields()
+	var manifest htmlAnimationManifest
+	if err := decoder.Decode(&manifest); err != nil {
+		return htmlAnimationManifest{}, errors.New("HTML animation manifest is malformed")
+	}
+	var extra any
+	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
+		return htmlAnimationManifest{}, errors.New("HTML animation manifest is malformed")
+	}
+	frames := (manifest.DurationMS*manifest.FPS + 999) / 1000
+	if manifest.Version != htmlcapture.AnimationVersion || manifest.DurationMS < 100 || manifest.DurationMS > htmlcapture.MaxAnimationDurationMS || manifest.FPS < 1 || manifest.FPS > htmlcapture.MaxAnimationFPS || frames > htmlcapture.MaxAnimationFrames {
+		return htmlAnimationManifest{}, errors.New("HTML animation manifest version, duration, FPS, or frame count is outside fixed bounds")
+	}
+	return manifest, nil
 }
 
 func probeInputHasAudio(ctx context.Context, runner CommandRunner, filePath string) (bool, error) {
