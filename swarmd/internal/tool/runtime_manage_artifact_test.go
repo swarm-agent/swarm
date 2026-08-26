@@ -36,6 +36,44 @@ func TestManagedCreateInfersHTMLMediaTypeFromFilename(t *testing.T) {
 	}
 }
 
+func TestManagedPackageProjectsShortAnimationDurationForVideoPlans(t *testing.T) {
+	authority := &fakeArtifactAuthority{}
+	runtime := NewRuntime(1)
+	runtime.SetArtifactAuthority(authority)
+	ctx, scope := artifactToolContext()
+	ctx = WithArtifactRunContext(ctx, ArtifactRunContext{SessionID: "session-1", ChildSessionID: "session-1", TaskCallID: "task-1", CollectionID: "collection-1", VariantID: "variant-1", AnimationProfile: reviewedMotionProfile(t)})
+	html := `<!doctype html><script id="swarm-animation-manifest" type="application/json">{"version":"swarm.animation/v1","duration_ms":6000,"fps":30}</script>`
+	arguments, err := json.Marshal(map[string]any{"action": "create_package", "filename": "candidate.zip", "entries": []any{map[string]any{"name": "index.html", "content": html}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, Call{CallID: "managed-package-animation", Name: "manage_artifact", Arguments: string(arguments)}); err != nil {
+		t.Fatal(err)
+	}
+	if len(authority.packaged.Parts) != 1 || authority.packaged.Parts[0].Kind != "temporal" || authority.packaged.Parts[0].EndMs != 6000 {
+		t.Fatalf("managed package animation parts = %+v, want canonical 6000ms duration metadata", authority.packaged.Parts)
+	}
+}
+
+func TestManagedCreateProjectsShortAnimationDurationForVideoPlans(t *testing.T) {
+	authority := &fakeArtifactAuthority{}
+	runtime := NewRuntime(1)
+	runtime.SetArtifactAuthority(authority)
+	ctx, scope := artifactToolContext()
+	ctx = WithArtifactRunContext(ctx, ArtifactRunContext{SessionID: "session-1", ChildSessionID: "session-1", TaskCallID: "task-1", CollectionID: "collection-1", VariantID: "variant-1", AnimationProfile: reviewedMotionProfile(t)})
+	html := `<!doctype html><script id="swarm-animation-manifest" type="application/json">{"version":"swarm.animation/v1","duration_ms":6000,"fps":30}</script>`
+	arguments, err := json.Marshal(map[string]any{"action": "create", "filename": "candidate.html", "media_type": "text/html", "content": html})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, Call{CallID: "managed-create-animation", Name: "manage_artifact", Arguments: string(arguments)}); err != nil {
+		t.Fatal(err)
+	}
+	if len(authority.created.Parts) != 1 || authority.created.Parts[0].Kind != "temporal" || authority.created.Parts[0].EndMs != 6000 {
+		t.Fatalf("managed animation parts = %+v, want canonical 6000ms duration metadata", authority.created.Parts)
+	}
+}
+
 func TestArtifactReviewTargetIDsPreservesBoundedOrder(t *testing.T) {
 	targets := []pebblestore.SessionArtifactPart{{ID: "part-1"}, {ID: "part-3"}, {ID: "part-1"}}
 	if got := artifactReviewTargetIDs(targets); got != "part-1,part-3" {
@@ -1147,6 +1185,9 @@ func TestManageArtifactPublishWorkspaceAttachesReviewedAnimationProfileWithoutCh
 	}
 	if authority.createdFromFile.AnimationProfile == nil || authority.createdFromFile.AnimationProfile.ProfileID != "motion_ui" || authority.createdFromFile.SourcePath != filepath.Join(scope.PrimaryPath, "intro.html") {
 		t.Fatalf("profiled workspace publication = %#v", authority.createdFromFile)
+	}
+	if len(authority.createdFromFile.Parts) != 1 || authority.createdFromFile.Parts[0].Kind != "temporal" || authority.createdFromFile.Parts[0].EndMs != 6000 {
+		t.Fatalf("profiled workspace animation parts = %+v, want canonical 6000ms duration metadata", authority.createdFromFile.Parts)
 	}
 }
 

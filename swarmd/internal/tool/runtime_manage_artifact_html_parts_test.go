@@ -34,3 +34,21 @@ func TestDeriveArtifactHTMLPartsRejectsUnstableOrDuplicateRegionIDs(t *testing.T
 		t.Fatalf("non-HTML parts = %#v", got)
 	}
 }
+
+func TestDeriveArtifactHTMLPartsProjectsShortAnimationDuration(t *testing.T) {
+	html := []byte(`<!doctype html><script id="swarm-animation-manifest" type="application/json">{"version":"swarm.animation/v1","duration_ms":6000,"fps":30}</script>`)
+	parts := deriveArtifactHTMLParts(html, "text/html")
+	if len(parts) != 1 || parts[0].ID != "animation" || parts[0].Kind != "temporal" || parts[0].StartMs != 0 || parts[0].EndMs != 6000 {
+		t.Fatalf("derived short animation parts = %+v, want one 0-6000ms temporal target", parts)
+	}
+}
+
+func TestDeriveArtifactHTMLPartsPreservesIterationSectionsOverAnimationFallback(t *testing.T) {
+	html := []byte(`<!doctype html>
+<script id="swarm-animation-manifest" type="application/json">{"version":"swarm.animation/v1","duration_ms":6000,"fps":30}</script>
+<script id="swarm-iteration-manifest" type="application/json">{"version":"swarm.iteration/v1","duration_ms":6000,"sections":[{"id":"opening","label":"Opening","start_ms":0,"end_ms":3000},{"id":"close","label":"Close","start_ms":3000,"end_ms":6000}]}</script>`)
+	parts := deriveArtifactHTMLParts(html, "text/html")
+	if len(parts) != 2 || parts[0].ID != "opening" || parts[1].ID != "close" {
+		t.Fatalf("derived iteration parts = %+v, want authored section targets only", parts)
+	}
+}

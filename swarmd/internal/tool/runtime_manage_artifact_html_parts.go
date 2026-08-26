@@ -72,6 +72,16 @@ func deriveArtifactHTMLParts(body []byte, mediaType string) []pebblestore.Sessio
 			previousEnd = section.EndMS
 		}
 	}
+	// A short swarm.animation/v1 artifact does not need a long-form iteration
+	// manifest, but Video Studio still needs durable timeline metadata to verify
+	// that every live candidate matches its stable plan part. Preserve authored
+	// iteration sections when present; otherwise project the canonical animation
+	// manifest as one whole-animation temporal review target.
+	if len(parts) == 0 {
+		if manifest, err := parseAnimationManifest(body); err == nil {
+			appendPart(pebblestore.SessionArtifactPart{ID: "animation", Label: "Animation", Kind: "temporal", EndMs: int64(manifest.DurationMS)})
+		}
+	}
 
 	if manifest, err := parseCaptureManifest(body); err == nil {
 		for _, state := range manifest.States {

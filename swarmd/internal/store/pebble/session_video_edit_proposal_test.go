@@ -194,6 +194,31 @@ func TestVideoPlanProposalIsAtomicUntimedContextAndRejectionKeepsFeedback(t *tes
 	}
 }
 
+func TestVisualVideoPlanRevisionPreservesAuxiliarySourceVideo(t *testing.T) {
+	store, cleanup := newTestSessionStoreForVideoProject(t)
+	defer cleanup()
+	createTestSession(t, store, "acc", "usr", "sess")
+	sourceVideo := VideoTimelineClip{ID: "source-video", Track: 0, Sequence: 2, SourceKind: VideoClipSourceKindSourceVideo, SourceRef: "videosrc_trusted", SourceStartMs: 12000, SourceEndMs: 16000, TimelineStartMs: 12000, TimelineEndMs: 16000, DurationMs: 4000, Visible: true}
+	project, base, err := store.CreateVideoProject(CreateVideoProjectInput{AccountScopeID: "acc", UserID: "usr", SessionID: "sess", ProjectID: "project", Title: "Mixed video", InitialTimeline: &VideoProjectTimeline{OutputPreset: VideoPresetLandscape1080p, TotalDurationMs: 16000, Clips: []VideoTimelineClip{sourceVideo}}, NowUnixMs: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, second := videoPlanTestPart("html-1", "First HTML", "html-1-a"), videoPlanTestPart("html-2", "Second HTML", "html-2-a")
+	first.DurationMs, second.DurationMs = 6000, 6000
+	proposal, err := store.CreateVideoEditProposal(CreateVideoEditProposalInput{AccountScopeID: "acc", UserID: "usr", SessionID: "sess", ProjectID: project.ID, BaseRevisionID: base.ID, Plan: &VideoPlanProposal{Kind: VideoPlanKindInitial, Parts: []VideoPlanPart{first, second}}, NowUnixMs: 200})
+	if err != nil {
+		t.Fatal(err)
+	}
+	working, ok, err := store.GetVideoProjectRevision("acc", "sess", project.ID, proposal.WorkingRevisionID)
+	if err != nil || !ok || len(working.Timeline.Clips) != 3 {
+		t.Fatalf("mixed working revision = %+v ok=%v err=%v", working, ok, err)
+	}
+	preserved := working.Timeline.Clips[2]
+	if preserved.ID != sourceVideo.ID || preserved.SourceKind != sourceVideo.SourceKind || preserved.SourceRef != sourceVideo.SourceRef || preserved.SourceStartMs != sourceVideo.SourceStartMs || preserved.SourceEndMs != sourceVideo.SourceEndMs || preserved.TimelineStartMs != sourceVideo.TimelineStartMs || preserved.TimelineEndMs != sourceVideo.TimelineEndMs || preserved.DurationMs != sourceVideo.DurationMs || preserved.Track != sourceVideo.Track || preserved.Sequence != sourceVideo.Sequence {
+		t.Fatalf("source video changed while compiling HTML plan: got %+v want %+v", preserved, sourceVideo)
+	}
+}
+
 func TestVisualVideoPlanRevisionCanAppendSelectedStablePart(t *testing.T) {
 	store, cleanup := newTestSessionStoreForVideoProject(t)
 	defer cleanup()

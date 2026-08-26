@@ -21,6 +21,9 @@ Options:
   --follow-up <text>          Follow-up prompt. Default: asks for TUI_E2E_FOLLOWUP_OK
   --follow-up-marker <text>   Required follow-up marker. Default: TUI_E2E_FOLLOWUP_OK
   --skip-follow-up            Run only the first turn
+  --launch-command <command>  Start and verify a session through a real TUI /new or /task command instead of pre-creating it
+  --expected-mode <mode>      Expected launched session mode for --launch-command: auto or plan
+  --expected-worktree <bool>  Expected launched managed-worktree state for --launch-command
   --expected-tool-order <csv> Require exact TUI tool order, e.g. read:AGENTS.md,read:go.mod
   --provider <provider>       Provider for created session. Default: fireworks
   --model <model>             Model for created session. Default: accounts/fireworks/models/kimi-k2p6
@@ -51,6 +54,9 @@ FIRST_MARKER="${SWARM_TUI_E2E_FIRST_MARKER:-TUI_E2E_HELLO_OK}"
 FOLLOW_UP="${SWARM_TUI_E2E_FOLLOW_UP:-Real TUI E2E follow-up. Reply with exactly TUI_E2E_FOLLOWUP_OK and do not call tools.}"
 FOLLOW_UP_MARKER="${SWARM_TUI_E2E_FOLLOW_UP_MARKER:-TUI_E2E_FOLLOWUP_OK}"
 SKIP_FOLLOW_UP="${SWARM_TUI_E2E_SKIP_FOLLOW_UP:-false}"
+LAUNCH_COMMAND="${SWARM_TUI_E2E_LAUNCH_COMMAND:-}"
+EXPECTED_MODE="${SWARM_TUI_E2E_EXPECTED_MODE:-auto}"
+EXPECTED_WORKTREE="${SWARM_TUI_E2E_EXPECTED_WORKTREE:-false}"
 EXPECTED_TOOL_ORDER="${SWARM_TUI_E2E_EXPECTED_TOOL_ORDER:-}"
 PROVIDER="${SWARM_TUI_E2E_PROVIDER:-fireworks}"
 MODEL="${SWARM_TUI_E2E_MODEL:-accounts/fireworks/models/kimi-k2p6}"
@@ -78,6 +84,9 @@ while [[ $# -gt 0 ]]; do
     --follow-up|--followup) FOLLOW_UP="${2:-}"; shift 2 ;;
     --follow-up-marker) FOLLOW_UP_MARKER="${2:-}"; shift 2 ;;
     --skip-follow-up) SKIP_FOLLOW_UP="true"; shift ;;
+    --launch-command) LAUNCH_COMMAND="${2:-}"; shift 2 ;;
+    --expected-mode) EXPECTED_MODE="${2:-}"; shift 2 ;;
+    --expected-worktree) EXPECTED_WORKTREE="${2:-}"; shift 2 ;;
     --expected-tool-order) EXPECTED_TOOL_ORDER="${2:-}"; shift 2 ;;
     --provider) PROVIDER="${2:-}"; shift 2 ;;
     --model) MODEL="${2:-}"; shift 2 ;;
@@ -109,6 +118,12 @@ fi
 [[ "${OVERALL_TIMEOUT_SECONDS}" =~ ^[0-9]+$ && "${OVERALL_TIMEOUT_SECONDS}" -gt 0 ]] || fail "--overall-timeout-seconds must be a positive integer"
 [[ -n "${TUI_BIN}" ]] || fail "--tui-bin is required"
 [[ -n "${FIRST_MARKER}" ]] || fail "--first-marker is required"
+[[ "${EXPECTED_MODE}" == "auto" || "${EXPECTED_MODE}" == "plan" ]] || fail "--expected-mode must be auto or plan"
+[[ "${EXPECTED_WORKTREE}" == "true" || "${EXPECTED_WORKTREE}" == "false" ]] || fail "--expected-worktree must be true or false"
+if [[ -n "${LAUNCH_COMMAND}" ]]; then
+  [[ "${LAUNCH_COMMAND}" == /new* || "${LAUNCH_COMMAND}" == /task* ]] || fail "--launch-command supports only /new and /task forms"
+  SKIP_FOLLOW_UP="true"
+fi
 if [[ "${SKIP_FOLLOW_UP}" != "true" ]]; then
   [[ -n "${FOLLOW_UP_MARKER}" ]] || fail "--follow-up-marker is required unless --skip-follow-up is set"
 fi
@@ -505,7 +520,7 @@ function toolEventTarget(event) {
   return [args.path, args.query, args.command, args.raw].filter(value => value !== undefined && value !== null && String(value) !== '').map(String).join(' ');
 }
 
-let token = '', sessionID = cfg.sessionID || '', realtime = null, tuiProc = null;
+let token = '', sessionID = cfg.sessionID || '', sessionSearch = cfg.sessionID || '', launchedViaTUI = Boolean(cfg.launchCommand), launchedTaskViaTUI = /^\/task(?:\s|$)/i.test(cfg.launchCommand || ''), realtime = null, tuiProc = null;
 const realtimeEventTypes = [];
 const seen = { hello: false, replayStarted: false, replayComplete: false, subscribed: false, userMessages: 0, assistantStarted: 0, assistantDelta: 0, assistantCompleted: 0, assistantMessageOnRealtime: 0, terminalEvents: 0, cursorErrors: [], runStatuses: [], tuiLifecycleText: false, tuiTimerText: false, tuiSwarmingText: false };
 const hardStop = setTimeout(() => {
@@ -529,25 +544,34 @@ try {
   emit({ stage: 'auth.ok', token_len: token.length, user_id: boot.user_id, username: boot.username });
   endPhase({ token_len: token.length, user_id: boot.user_id, username: boot.username });
 
-  if (!sessionID) {
+  if (!sessionID && !launchedViaTUI) {
     beginPhase('session.create');
     const topology = await apiJSON('GET', '/v1/swarm/topology', token, undefined, 'topology.snapshot');
     const runtime = (topology.runtimes || []).find(item => item.relationship === 'self') || (topology.runtimes || [])[0];
-    const binding = (topology.workspace_bindings || []).find(item => item.state === 'bound' && item.destination_workspace_path) || (topology.workspace_bindings || [])[0];
-    if (!runtime?.swarm_id || !binding?.workspace_binding_id) throw new Error('missing runtime or workspace binding');
+    const normalizedRemoteDir = path.resolve(cfg.remoteDir);
+    const bindings = topology.workspace_bindings || [];
+    const binding = bindings.find(item => item.state === 'bound' && [item.source_workspace_path, item.destination_workspace_path].some(value => value && path.resolve(String(value)) === normalizedRemoteDir));
+    if (!runtime?.swarm_id || !binding?.workspace_binding_id) throw new Error(`missing self runtime or bound workspace authority for ${cfg.remoteDir}`);
     const suffix = `${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
-    const created = await apiJSON('POST', '/v3/sessions', token, { client_request_id: `tui-e2e-create:${suffix}`, title: `TUI PTY E2E ${suffix}`, workspace_path: binding.source_workspace_path, workspace_name: binding.source_workspace_name || 'swarm-go', workspace_binding_id: binding.workspace_binding_id, swarm_id: runtime.swarm_id, target_kind: 'host', target_relationship: 'self', mode: 'auto', agent_name: cfg.agentName, preference: { provider: cfg.provider, model: cfg.model, thinking: cfg.thinking }, metadata: { testbench_tui_pty_e2e: suffix } }, 'sessions.v3.create');
+    const title = `TUI PTY E2E ${suffix}`;
+    const created = await apiJSON('POST', '/v3/sessions', token, { client_request_id: `tui-e2e-create:${suffix}`, title, workspace_path: binding.source_workspace_path, workspace_name: binding.source_workspace_name || 'swarm-go', workspace_binding_id: binding.workspace_binding_id, swarm_id: runtime.swarm_id, target_kind: 'host', target_relationship: 'self', mode: 'auto', agent_name: cfg.agentName, preference: { provider: cfg.provider, model: cfg.model, thinking: cfg.thinking }, metadata: { testbench_tui_pty_e2e: suffix } }, 'sessions.v3.create');
+    sessionSearch = suffix;
     sessionID = created.session?.id;
     if (!sessionID) throw new Error('create did not return session.id');
     emit({ stage: 'session.created', session_id: sessionID });
     endPhase({ session_id: sessionID });
-  } else {
+  } else if (sessionID) {
     beginPhase('session.provided', { session_id: sessionID });
     emit({ stage: 'session.provided', session_id: sessionID });
     endPhase({ session_id: sessionID });
+  } else {
+    beginPhase('session.deferred.to.tui', { launch_command: cfg.launchCommand });
+    emit({ stage: 'session.deferred.to.tui', launch_command: cfg.launchCommand });
+    endPhase({ launch_command: cfg.launchCommand });
   }
 
-  beginPhase('realtime.open');
+  if (sessionID) {
+    beginPhase('realtime.open');
   realtime = await openRealtime(token, (_frame, summary) => {
     emit({ stage: 'realtime.frame', ...summary });
     if (summary.kind === 'hello') seen.hello = true;
@@ -568,8 +592,9 @@ try {
   const subscribe = { protocol: 'v3.realtime', protocol_version: 1, kind: 'subscribe.session', session_id: sessionID, subscription_id: `tui-e2e-${sessionID}` };
   appendJSON(framesPath, { direction: 'client', frame: subscribe });
   realtime.send(subscribe);
-  seen.subscribed = true;
-  endPhase({ subscription_id: subscribe.subscription_id });
+    seen.subscribed = true;
+    endPhase({ subscription_id: subscribe.subscription_id });
+  }
 
   beginPhase('tui.launch.prepare');
   fs.mkdirSync(helperBinDir, { recursive: true });
@@ -608,21 +633,61 @@ try {
   await waitTranscriptMatches([/swarm chat|mode|workspace|sessions|chat/i], 'startup', phaseTimeoutMs);
   endPhase({ transcript_tail: fileTail(tuiCleanPath, 2000) });
 
-  beginPhase('tui.open.session');
-  feedPTY(`/sessions ${sessionID}\r`, `open sessions modal for ${sessionID}`);
-  await waitTranscriptMatches([/sessions|search|open session|chat/i], 'sessions modal', phaseTimeoutMs).catch(() => null);
-  feedPTY('\r', `confirm session ${sessionID}`);
-  await waitTranscriptMatches([new RegExp(sessionID.slice(0, 8)), /chat|No messages yet|Type a prompt|mode/i], 'opened target session', phaseTimeoutMs).catch(() => null);
-  endPhase({ session_id: sessionID, transcript_tail: fileTail(tuiCleanPath, 2000) });
+  if (launchedViaTUI) {
+    beginPhase('tui.launch.session');
+    feedPTY(`${cfg.launchCommand}\r`, `sent launch command: ${cfg.launchCommand}`);
+    const created = await waitFor(async () => {
+      const response = await apiJSON('POST', '/v3/sync/bootstrap', token, { surface: 'tui', selector: { kind: 'recent', global: true, recent: { limit: 100 } }, history: { mode: 'none' }, resources: { current_run_state: true, active_plan: true }, include_active: true }, 'sync.bootstrap.launched');
+      const sessions = response.sessions_by_id || {};
+      for (const id of response.session_order || []) {
+        const session = sessions[id] || {};
+        const tail = await apiJSON('GET', `/v3/sessions/${encodeURIComponent(id)}/messages?tail=true&limit=20`, token, undefined, `messages.tail.discover.${id}`);
+        if ((tail.messages || []).some(message => message.role === 'user' && String(message.content || '').includes(cfg.firstMarker))) return { id, session };
+      }
+      return null;
+    }, phaseTimeoutMs, `launched TUI session ${cfg.firstMarker}`, 500);
+    sessionID = created.id;
+    if (String(created.session.mode || '').toLowerCase() !== cfg.expectedMode) throw new Error(`launched TUI session mode=${created.session.mode}, want ${cfg.expectedMode}`);
+    if (Boolean(created.session.worktree_enabled) !== cfg.expectedWorktree) throw new Error(`launched TUI session worktree=${Boolean(created.session.worktree_enabled)}, want ${cfg.expectedWorktree}`);
+    if (launchedTaskViaTUI) {
+      const hydrated = await apiJSON('GET', `/v3/sessions/${encodeURIComponent(sessionID)}`, token, undefined, 'session.hydrate.launched.task');
+      created.session = { ...created.session, ...(hydrated.session || {}), metadata: { ...(created.session.metadata || {}), ...(hydrated.session?.metadata || {}) } };
+      if (created.session.metadata?.plan_mode_requested !== (cfg.expectedMode === 'plan')) throw new Error('launched TUI task persisted the wrong plan-mode intent');
+    }
+    const settled = await waitForAssistantMarker(sessionID, cfg.firstMarker, 1, 'after.launch');
+    if (launchedTaskViaTUI) {
+      sessionSearch = String(created.session.title || '').trim();
+      if (!sessionSearch) throw new Error('launched TUI task has no visible title');
+      feedPTY(`/sessions ${sessionSearch}\r`, `open launched task session ${sessionID}`);
+      await waitTranscriptMatches([/Sessions \(0\/\d+\)|Sessions \(1\/\d+\)/], 'task sessions modal', phaseTimeoutMs);
+      feedPTY('\x1b[C\x1b[C', 'switch task sessions modal to chats filter');
+      await waitTranscriptMatches([/Sessions \(1\/\d+\)/], 'launched task search result', phaseTimeoutMs);
+      feedPTY('\r', `confirm launched task session ${sessionID}`);
+      await waitTranscriptMatches([new RegExp(sessionSearch.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), /ctx\s*100%|chat|mode/i], 'opened launched task session', phaseTimeoutMs);
+    }
+    await waitTranscriptContains([cfg.firstMarker], 'launch assistant marker', phaseTimeoutMs);
+    endPhase({ session_id: sessionID, mode: created.session.mode, worktree: Boolean(created.session.worktree_enabled), assistant_count: settled.assistants.length, transcript_tail: fileTail(tuiCleanPath, 2000) });
+  } else {
+    beginPhase('tui.open.session');
+    feedPTY(`/sessions ${sessionSearch}\r`, `open sessions modal for ${sessionID}`);
+    await waitTranscriptMatches([/Sessions \(0\/\d+\)|Sessions \(1\/\d+\)/], 'sessions modal', phaseTimeoutMs);
+    feedPTY('\x1b[C\x1b[C', 'switch sessions modal to chats filter');
+    await waitTranscriptMatches([/Sessions \(1\/\d+\)/], 'target session search result', phaseTimeoutMs);
+    feedPTY('\r', `confirm session ${sessionID}`);
+    await waitTranscriptMatches([new RegExp(sessionSearch), /ctx\s*100%|chat|No messages yet|Type a prompt|mode/i], 'opened target session', phaseTimeoutMs);
+    endPhase({ session_id: sessionID, transcript_tail: fileTail(tuiCleanPath, 2000) });
+  }
 
   beginPhase('turn.first');
-  feedPTY(`${cfg.prompt}\r`, `sent first prompt: ${cfg.prompt}`);
+  if (!launchedViaTUI) feedPTY(`${cfg.prompt}\r`, `sent first prompt: ${cfg.prompt}`);
   await waitTranscriptContains([cfg.prompt], 'first prompt echo', Math.min(3000, phaseTimeoutMs)).catch(() => null);
-  const first = await waitForAssistantMarker(sessionID, cfg.firstMarker, 1, 'after.first');
+  const first = launchedViaTUI
+    ? await waitForAssistantMarker(sessionID, cfg.firstMarker, 1, 'after.first.launch')
+    : await waitForAssistantMarker(sessionID, cfg.firstMarker, 1, 'after.first');
   await waitTranscriptContains([cfg.firstMarker], 'first assistant marker', phaseTimeoutMs);
-  await waitTranscriptMatches([/(working|thinking|streaming response|winding up|running)\s+([0-9]+m)?[0-9]+s|working|thinking|streaming response|winding up/i], 'run lifecycle status', Math.min(5000, phaseTimeoutMs)).then(() => { seen.tuiLifecycleText = true; seen.tuiTimerText = true; }).catch(() => null);
+  await waitTranscriptMatches([/(working|thinking|streaming response|winding up|running|completed)\s*(([0-9]+m)?[0-9]+s|[0-9]+:[0-9]{2})|working|thinking|streaming response|winding up/i], 'run lifecycle status', Math.min(5000, phaseTimeoutMs)).then(() => { seen.tuiLifecycleText = true; seen.tuiTimerText = true; }).catch(() => null);
   await waitTranscriptMatches([/Swarming|swarming|\[a:|swarm/i], 'swarming indicator', Math.min(5000, phaseTimeoutMs)).then(() => { seen.tuiSwarmingText = true; }).catch(() => null);
-  await waitFor(() => seen.terminalEvents >= 1, phaseTimeoutMs, 'first turn terminal realtime event');
+  if (!launchedViaTUI) await waitFor(() => seen.terminalEvents >= 1, phaseTimeoutMs, 'first turn terminal realtime event');
   endPhase({ assistant_marker: cfg.firstMarker, assistant_count: first.assistants.length, terminal_events: seen.terminalEvents, transcript_tail: fileTail(tuiCleanPath, 2000) });
 
   let second = null;
@@ -654,7 +719,7 @@ try {
   try { rawTranscript = fs.readFileSync(tuiRawPath, 'utf8'); } catch {}
   const cleanTranscript = stripAnsi(rawTranscript);
   fs.writeFileSync(tuiCleanPath, cleanTranscript);
-  if (!seen.tuiLifecycleText && /(working|thinking|streaming response|winding up|running)\s*([0-9]+m)?[0-9]+s/i.test(cleanTranscript)) { seen.tuiLifecycleText = true; seen.tuiTimerText = true; }
+  if (!seen.tuiLifecycleText && /(working|thinking|streaming response|winding up|running|completed)\s*(([0-9]+m)?[0-9]+s|[0-9]+:[0-9]{2})/i.test(cleanTranscript)) { seen.tuiLifecycleText = true; seen.tuiTimerText = true; }
   if (!seen.tuiSwarmingText && /Swarming|swarming|\[a:|swarm/i.test(cleanTranscript)) seen.tuiSwarmingText = true;
 
   beginPhase('evidence.events');
@@ -667,7 +732,7 @@ try {
   const assistantCompleted = dbEvents.find(e => e.event_type === 'session.assistant.completed');
   const snapshotTimeline = parseSnapshotTimeline(fs.readFileSync(clipboardCapturePath, 'utf8'));
   const snapshotTools = snapshotTimeline.filter(item => item.role === 'tool');
-  const firstUserIndex = snapshotTimeline.findIndex(item => item.role === 'user' && item.text.includes(cfg.prompt));
+  const firstUserIndex = snapshotTimeline.findIndex(item => item.role === 'user' && item.text.includes(launchedViaTUI ? cfg.firstMarker : cfg.prompt));
   const firstAssistantIndex = snapshotTimeline.findIndex(item => item.role === 'assistant' && item.text.includes(cfg.firstMarker));
   const followUpUserIndex = cfg.skipFollowUp ? -1 : snapshotTimeline.findIndex(item => item.role === 'user' && item.text.includes(cfg.followUp));
   const followUpAssistantIndex = cfg.skipFollowUp ? -1 : snapshotTimeline.findIndex(item => item.role === 'assistant' && item.text.includes(cfg.followUpMarker));
@@ -696,9 +761,8 @@ try {
   const followUpOK = cfg.skipFollowUp || Boolean((second?.hit?.content || '').includes(cfg.followUpMarker) && cleanTranscript.includes(cfg.followUpMarker));
   const lifecycleIndicatorsOK = expected.length > 0 || Boolean(seen.tuiLifecycleText && seen.tuiTimerText && seen.tuiSwarmingText);
   const pass = Boolean(
-    sessionID && seen.hello && seen.subscribed && seen.replayStarted && seen.replayComplete &&
-    seen.userMessages >= requiredTurns && seen.assistantStarted >= requiredTurns && seen.assistantCompleted >= requiredTurns &&
-    seen.assistantMessageOnRealtime >= requiredTurns && seen.cursorErrors.length === 0 &&
+    sessionID && (launchedViaTUI || (seen.hello && seen.subscribed && seen.replayStarted && seen.replayComplete)) &&
+    (launchedViaTUI || (seen.userMessages >= requiredTurns && seen.assistantStarted >= requiredTurns && seen.assistantCompleted >= requiredTurns && seen.assistantMessageOnRealtime >= requiredTurns && seen.cursorErrors.length === 0)) &&
     (first.hit?.content || '').includes(cfg.firstMarker) && cleanTranscript.includes(cfg.firstMarker) && followUpOK &&
     durableToolOrderOK && snapshotToolOrderOK && crossTurnTimelineOrderOK && lifecycleIndicatorsOK
   );
@@ -721,9 +785,9 @@ try {
 NODE
 
 CONFIG_LOCAL="${ARTIFACT_DIR}/config.json"
-python3 - "$CONFIG_LOCAL" "$PRIMARY_SSH" "$API_URL" "$REMOTE_DIR" "$SESSION_ID" "$PROMPT" "$FIRST_MARKER" "$FOLLOW_UP" "$FOLLOW_UP_MARKER" "$SKIP_FOLLOW_UP" "$EXPECTED_TOOL_ORDER" "$PROVIDER" "$MODEL" "$THINKING" "$AGENT_NAME" "$TIMEOUT_SECONDS" "$OVERALL_TIMEOUT_SECONDS" "$TUI_BIN" <<'PY'
+python3 - "$CONFIG_LOCAL" "$PRIMARY_SSH" "$API_URL" "$REMOTE_DIR" "$SESSION_ID" "$PROMPT" "$FIRST_MARKER" "$FOLLOW_UP" "$FOLLOW_UP_MARKER" "$SKIP_FOLLOW_UP" "$LAUNCH_COMMAND" "$EXPECTED_MODE" "$EXPECTED_WORKTREE" "$EXPECTED_TOOL_ORDER" "$PROVIDER" "$MODEL" "$THINKING" "$AGENT_NAME" "$TIMEOUT_SECONDS" "$OVERALL_TIMEOUT_SECONDS" "$TUI_BIN" <<'PY'
 import json, sys
-path, primary, api, remote_dir, session_id, prompt, first_marker, follow_up, follow_up_marker, skip_follow_up, expected_tool_order, provider, model, thinking, agent, timeout, overall_timeout, tui_bin = sys.argv[1:]
+path, primary, api, remote_dir, session_id, prompt, first_marker, follow_up, follow_up_marker, skip_follow_up, launch_command, expected_mode, expected_worktree, expected_tool_order, provider, model, thinking, agent, timeout, overall_timeout, tui_bin = sys.argv[1:]
 with open(path, 'w', encoding='utf-8') as f:
     json.dump({
         'primarySSH': primary,
@@ -735,6 +799,9 @@ with open(path, 'w', encoding='utf-8') as f:
         'followUp': follow_up,
         'followUpMarker': follow_up_marker,
         'skipFollowUp': skip_follow_up == 'true',
+        'launchCommand': launch_command,
+        'expectedMode': expected_mode,
+        'expectedWorktree': expected_worktree == 'true',
         'expectedToolOrder': expected_tool_order,
         'provider': provider,
         'model': model,

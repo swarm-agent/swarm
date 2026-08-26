@@ -491,6 +491,14 @@ func (r *Runtime) executeManageArtifact(ctx context.Context, scope WorkspaceScop
 		if actionName == "create" && len(input.Parts) == 0 {
 			input.Parts = deriveArtifactHTMLParts(input.Body, input.MediaType)
 		}
+		if actionName == "create_package" && len(input.Parts) == 0 {
+			for _, entry := range entries {
+				if pathClean(entry.Name) == "index.html" {
+					input.Parts = deriveArtifactHTMLParts(entry.Data, "text/html")
+					break
+				}
+			}
+		}
 		initialParts, err := parseArtifactInitialParts(args["initial_parts"], principal.SessionID, input.CollectionID, input.VariantID, callID)
 		if err != nil {
 			return "", err
@@ -990,9 +998,17 @@ func (r *Runtime) publishWorkspaceArtifact(ctx context.Context, principal artifa
 	if err := validateArtifactAnimationMedia(inheritedAnimationProfile, packageSource, filename, mediaType); err != nil {
 		return pebblestore.SessionArtifactVariant{}, nil, err
 	}
+	var parts []pebblestore.SessionArtifactPart
+	if !packageSource && mediaType == "text/html" {
+		body, readErr := os.ReadFile(absoluteSource)
+		if readErr != nil {
+			return pebblestore.SessionArtifactVariant{}, nil, readErr
+		}
+		parts = deriveArtifactHTMLParts(body, mediaType)
+	}
 	create := artifact.CreateInput{
 		RequestID: requestID, CollectionID: collectionID, CollectionName: strings.TrimSpace(asString(args["collection_name"])), CollectionDescription: strings.TrimSpace(asString(args["collection_description"])),
-		VariantID: variantID, Filename: filename, MediaType: mediaType, Presentation: presentation, OutputRequirements: requirements, AnimationProfile: inheritedAnimationProfile, AutoAccept: true,
+		VariantID: variantID, Filename: filename, MediaType: mediaType, Presentation: presentation, OutputRequirements: requirements, AnimationProfile: inheritedAnimationProfile, Parts: parts, AutoAccept: true,
 		SourceSessionID: sourceSessionID, SourceCollectionID: sourceCollectionID, SourceVariantID: sourceVariantID, SourceEventSeq: sourceEventSeq,
 	}
 	if generatedCollection && create.CollectionName == "" {
