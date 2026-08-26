@@ -8,7 +8,11 @@ const DESKTOP_URL = (process.env.SWARM_DESKTOP_URL || '').replace(/\/+$/, '')
 const WORKSPACE_SLUG = (process.env.SWARM_VIDEO_STUDIO_WORKSPACE_SLUG || 'swarm-go').trim()
 const SESSION_ID = (process.env.SWARM_VIDEO_STUDIO_SESSION_ID || '').trim()
 const PROJECT_ID = (process.env.SWARM_VIDEO_STUDIO_PROJECT_ID || '').trim()
+const EXPECTED_INITIAL_PROPOSAL_ID = (process.env.SWARM_VIDEO_STUDIO_EXPECTED_INITIAL_PROPOSAL_ID || '').trim()
 const EXPECTED_REVISIONS = Number(process.env.SWARM_VIDEO_STUDIO_EXPECTED_REVISIONS || '0')
+const EXPECTED_FLOW = (process.env.SWARM_VIDEO_STUDIO_EXPECTED_FLOW || 'sequential').trim()
+const EXPECTED_FIRST_PART_ID = (process.env.SWARM_VIDEO_STUDIO_EXPECTED_FIRST_PART_ID || '').trim()
+const EXPECTED_SECOND_PART_ID = (process.env.SWARM_VIDEO_STUDIO_EXPECTED_SECOND_PART_ID || '').trim()
 const TIMEOUT_MS = Number(process.env.SWARM_VIDEO_STUDIO_TIMEOUT_MS || '120000')
 
 type JsonRecord = Record<string, unknown>
@@ -20,6 +24,71 @@ async function browserJSON<T>(page: import('playwright').Page, route: string): P
     if (!response.ok) throw new Error(`${innerRoute} HTTP ${response.status}: ${text.slice(0, 1200)}`)
     return JSON.parse(text) as T
   }, route)
+}
+
+function planParts(proposal: JsonRecord): JsonRecord[] {
+  const plan = proposal.plan as JsonRecord | undefined
+  return (plan?.parts as JsonRecord[] | undefined) || []
+}
+
+function animationCandidateCount(part: JsonRecord): number {
+  return (((part.animation_candidates as JsonRecord | undefined)?.candidates as JsonRecord[] | undefined) || []).length
+}
+
+function partIdentity(part: JsonRecord): string {
+  return String(part.id || '').trim()
+}
+
+function visualIdentity(part: JsonRecord): string {
+  const candidates = part.animation_candidates as JsonRecord | undefined
+  const selectedSource = candidates?.selected_source as JsonRecord | undefined
+  const visual = part.visual as JsonRecord | undefined
+  const sources = ((candidates?.candidates as JsonRecord[] | undefined) || []).map((candidate) => {
+    const source = candidate.source as JsonRecord | undefined
+    return `${String(source?.collection_id || '')}:${String(source?.variant_id || '')}:${String(source?.event_seq || '')}`
+  }).join('|')
+  return [
+    String(candidates?.selected_candidate_id || ''),
+    String(selectedSource?.collection_id || ''),
+    String(selectedSource?.variant_id || ''),
+    String(selectedSource?.event_seq || ''),
+    String(visual?.collection_id || ''),
+    String(visual?.variant_id || ''),
+    String(visual?.event_seq || ''),
+    sources,
+  ].join(':')
+}
+
+function assertSequentialFlow(proposals: JsonRecord[]): void {
+  const candidateCounts = proposals.flatMap((proposal) => planParts(proposal).map(animationCandidateCount)).filter((count) => count > 0)
+  assert(candidateCounts.includes(3), `expected a first clip with three iterations, got ${candidateCounts.join(', ')}`)
+  assert(candidateCounts.some((count) => count >= 2), `expected a later clip with iterations, got ${candidateCounts.join(', ')}`)
+}
+
+function assertTwoClipReplacementFlow(proposals: JsonRecord[]): void {
+  assert(EXPECTED_FIRST_PART_ID, 'SWARM_VIDEO_STUDIO_EXPECTED_FIRST_PART_ID is required for two-clip-replacement')
+  assert(EXPECTED_SECOND_PART_ID, 'SWARM_VIDEO_STUDIO_EXPECTED_SECOND_PART_ID is required for two-clip-replacement')
+  const plans = proposals.map((proposal) => ({ proposal, parts: planParts(proposal) })).filter(({ parts }) => parts.length === 2)
+  assert(plans.length >= 2, `expected at least two two-part proposals, got ${plans.length}`)
+  assert(EXPECTED_INITIAL_PROPOSAL_ID, 'SWARM_VIDEO_STUDIO_EXPECTED_INITIAL_PROPOSAL_ID is required for two-clip-replacement')
+  const initial = plans.find(({ proposal, parts }) => proposal.id === EXPECTED_INITIAL_PROPOSAL_ID && parts.some((part) => partIdentity(part) === EXPECTED_FIRST_PART_ID) && parts.some((part) => partIdentity(part) === EXPECTED_SECOND_PART_ID))
+  assert(initial, `no proposal contains both expected parts ${EXPECTED_FIRST_PART_ID}, ${EXPECTED_SECOND_PART_ID}`)
+  const initialFirst = initial.parts.find((part) => partIdentity(part) === EXPECTED_FIRST_PART_ID)!
+  const initialSecond = initial.parts.find((part) => partIdentity(part) === EXPECTED_SECOND_PART_ID)!
+  const replacement = plans.find(({ proposal, parts }) => proposal.id !== initial.proposal.id
+    && String(proposal.status || '') === 'pending'
+    && proposal.base_revision_id === initial.proposal.working_revision_id
+    && parts.some((part) => partIdentity(part) === EXPECTED_FIRST_PART_ID)
+    && parts.some((part) => partIdentity(part) === EXPECTED_SECOND_PART_ID)
+    && visualIdentity(parts.find((part) => partIdentity(part) === EXPECTED_SECOND_PART_ID)!) !== visualIdentity(initialSecond))
+  assert(replacement, `no later proposal replaces only the expected second part ${EXPECTED_SECOND_PART_ID}`)
+  const replacementFirst = replacement.parts.find((part) => partIdentity(part) === EXPECTED_FIRST_PART_ID)!
+  const replacementSecond = replacement.parts.find((part) => partIdentity(part) === EXPECTED_SECOND_PART_ID)!
+  assert.equal(visualIdentity(replacementFirst), visualIdentity(initialFirst), 'the AI continuation changed the chosen first clip')
+  assert.notEqual(visualIdentity(replacementSecond), visualIdentity(initialSecond), 'the AI continuation did not replace the second clip')
+  assert(animationCandidateCount(initialFirst) >= 2, 'the initial first clip has no selectable iterations')
+  assert(animationCandidateCount(initialSecond) >= 2, 'the initial second clip has no selectable iterations')
+  assert(animationCandidateCount(replacementSecond) >= 2, 'the replacement second clip has no selectable iterations')
 }
 
 test('testbench Video Studio preserves mixed HTML playback across revisions', { skip: !ENABLED, timeout: TIMEOUT_MS }, async () => {
@@ -50,6 +119,10 @@ test('testbench Video Studio preserves mixed HTML playback across revisions', { 
     assert.equal(revisions.revisions?.length, EXPECTED_REVISIONS)
     assert.equal(String(project.project?.current_revision_id || ''), String((revisions.revisions || []).at(-1)?.id || ''))
     assert((proposals.proposals || []).some((proposal) => proposal.status === 'pending' && proposal.working_revision_id === project.project?.current_revision_id), 'current revision has no owning pending proposal')
+    const proposalList = proposals.proposals || []
+    if (EXPECTED_FLOW === 'sequential') assertSequentialFlow(proposalList)
+    else if (EXPECTED_FLOW === 'two-clip-replacement') assertTwoClipReplacementFlow(proposalList)
+    else assert.fail(`unsupported SWARM_VIDEO_STUDIO_EXPECTED_FLOW: ${EXPECTED_FLOW}`)
 
     const pendingBadge = page.getByText(/Pending turn changes · working r/i)
     await pendingBadge.waitFor({ state: 'visible', timeout: 20_000 })
@@ -72,8 +145,14 @@ test('testbench Video Studio preserves mixed HTML playback across revisions', { 
     await laterVisual.click()
     const iterations = page.getByLabel('Current turn iterations')
     await iterations.waitFor({ state: 'visible', timeout: 20_000 })
-    const laterBox = await page.locator('[data-video-studio-live-animation]').boundingBox()
+    const laterFrame = page.locator('[data-video-studio-live-animation]')
+    const laterBox = await laterFrame.boundingBox()
     assert(laterBox && Math.abs(laterBox.width / laterBox.height - 16 / 9) < 0.02, `pending HTML frame deformed: ${JSON.stringify(laterBox)}`)
+    const laterStartPixels = await laterFrame.screenshot()
+    await page.getByRole('button', { name: 'Play', exact: true }).click()
+    await page.waitForTimeout(1_200)
+    const laterPlayingPixels = await laterFrame.screenshot()
+    assert.notDeepEqual(laterPlayingPixels, laterStartPixels, 'later HTML clip did not animate')
 
     const earlier = page.getByRole('button', { name: '← Previous revision' })
     await earlier.click()
