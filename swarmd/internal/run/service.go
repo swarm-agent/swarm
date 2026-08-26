@@ -2467,7 +2467,18 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 				continue
 			}
 			feedback := feedbackByCall[strings.TrimSpace(call.CallID)]
-			handled, controlResult, controlErr := s.executeControlPlaneTool(ctx, sessionID, executionMode, agentProfile, step, call, feedback.ApprovedArguments, emit)
+			lifecycleRun := planLifecycleRunContext{
+				RunID:           runID,
+				RunSessionID:    sessionID,
+				ParentSessionID: sessionID,
+				SourceMessageID: strings.TrimSpace(userMessage.ID),
+				Inline:          sessionruntime.NormalizeMode(executionMode) == sessionruntime.ModeAuto,
+			}
+			if options.PlanCheckpointContext != nil {
+				lifecycleRun.ParentSessionID = strings.TrimSpace(firstNonEmptyString(options.PlanCheckpointContext.ParentSessionID, sessionID))
+				lifecycleRun.SourceMessageID = strings.TrimSpace(firstNonEmptyString(options.PlanCheckpointContext.SourceMessageID, userMessage.ID))
+			}
+			handled, controlResult, controlErr := s.executeControlPlaneToolWithLifecycleRunContext(ctx, sessionID, executionMode, agentProfile, step, call, feedback.ApprovedArguments, emit, options.ApplySessionMutation, lifecycleRun)
 			if !handled {
 				runtimeCalls = append(runtimeCalls, call)
 				runtimeTargets = append(runtimeTargets, target)
