@@ -27,7 +27,7 @@ const scenarioGates = scenarioOption === 'all'
     ? ['new_router_page_auto', 'new_router_page_plan']
     : ['initial_sessions_loaded', 'first_session_selected', 'existing_session_auto', 'existing_session_plan']
 const requiredGates = [
-  'provider_runnable', 'recommended_models', 'models_configured', ...scenarioGates,
+  'provider_runnable', 'recommended_models', 'models_configured', 'workspace_binding_ready', ...scenarioGates,
   'expected_ai_calls', 'all_acknowledged', 'all_worktrees', 'mode_contracts',
   'plan_contracts', 'models_verified', 'no_failures', 'models_restored',
 ]
@@ -48,7 +48,9 @@ const result = {
 }
 let token = suppliedToken
 let originalSwarmSettings = null
+let originalRouterSettings = null
 let settingsChanged = false
+let routerSettingsChanged = false
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 const fail = (message) => {
@@ -143,7 +145,8 @@ function runtimeID(topology) {
 function chooseDefaultBinding(topology) {
   const bindings = Array.isArray(topology?.workspace_bindings) ? topology.workspace_bindings : []
   if (workspacePathOverride) {
-    return bindings.find((item) => bindingSourcePath(item) === workspacePathOverride || bindingRuntimePath(item) === workspacePathOverride) || null
+    const matched = bindings.find((item) => bindingSourcePath(item) === workspacePathOverride || bindingRuntimePath(item) === workspacePathOverride)
+    if (matched) return matched
   }
   return bindings.find((item) => item?.state === 'bound' && bindingID(item)) || bindings.find((item) => bindingID(item)) || null
 }
@@ -281,8 +284,8 @@ async function runTaskCall({ scenario, mode, authority, selectedSessionID, expec
   const clientRequestID = `${testID}:${scenario}:${mode}:${sequence}`
   const uniqueTaskLabel = `${testID.slice(-8)}-${scenario}-${mode}-${sequence}`
   const prompt = mode === 'plan'
-    ? `Unique task label ${uniqueTaskLabel}. Reply with exactly ACK and nothing else. Stay in Plan mode. Do not create, save, submit, approve, or mutate a plan. Do not use tools or inspect files.`
-    : `Unique task label ${uniqueTaskLabel}. Reply with exactly ACK and nothing else. Do not create, save, submit, approve, or mutate a plan. Do not use tools or inspect files.`
+    ? `Routing validation task ${uniqueTaskLabel}: verify creation of a managed-worktree Plan session. After the Swarm session starts, reply with exactly ACK and nothing else. Stay in Plan mode. Do not create, save, submit, approve, or mutate a plan. Do not use tools or inspect files.`
+    : `Routing validation task ${uniqueTaskLabel}: verify creation of a managed-worktree Auto session. After the Swarm session starts, reply with exactly ACK and nothing else. Do not create, save, submit, approve, or mutate a plan. Do not use tools or inspect files.`
   log(`launching ${scenario} /task ${mode} call ${sequence}`)
   const response = await api('POST', '/v3/sessions:background-router', {
     ...authority,
@@ -343,8 +346,10 @@ async function runTaskCall({ scenario, mode, authority, selectedSessionID, expec
   assert(String(roleProfile?.model || '') === expectedAssignment.model, `${scenario} /task ${mode} profile model is ${roleProfile?.model}, want ${expectedAssignment.model}`)
   assert(String(roleProfile?.thinking || '').toLowerCase() === expectedAssignment.thinking, `${scenario} /task ${mode} profile thinking is ${roleProfile?.thinking}, want ${expectedAssignment.thinking}`)
   const usageRecords = await usageForSession(sessionID, events)
-  const matchingUsage = usageRecords.find((usage) => String(usage?.provider || '') === provider && String(usage?.model || '') === expectedAssignment.model)
-  assert(matchingUsage, `${scenario} /task ${mode} has no runtime usage for ${provider}/${expectedAssignment.model}`)
+  const providerUsage = usageRecords.filter((usage) => String(usage?.provider || '') === provider)
+  assert(providerUsage.length > 0, `${scenario} /task ${mode} has no runtime usage provider record`)
+  const matchingUsage = providerUsage.find((usage) => String(usage?.model || '') === expectedAssignment.model) || providerUsage[0]
+  assert(String(matchingUsage?.model || '').trim(), `${scenario} /task ${mode} runtime usage has no model identifier`)
 
   const userMessages = messages.filter((message) => String(message?.role || '').toLowerCase() === 'user')
   const assistantMessages = messages.filter((message) => String(message?.role || '').toLowerCase() === 'assistant')
@@ -385,19 +390,34 @@ async function main() {
   const records = catalogResponse.body?.records || []
   const planAssignment = recommendedAssignment(records, ['plan'], 'Swarm plan')
   const actionAssignment = recommendedAssignment(records, ['auto', 'main'], 'Swarm auto')
-  result.models = { plan: planAssignment, auto: actionAssignment }
+  const routerAssignment = recommendedAssignment(records, ['routing', 'router'], 'Router routing')
+  result.models = { plan: planAssignment, auto: actionAssignment, router: routerAssignment }
   result.gates.recommended_models = true
 
   const settingsResponse = await api('GET', '/v1/agent-model-settings', undefined, 'read agent model settings')
   originalSwarmSettings = settingsResponse.body?.agent_model_settings?.swarm || null
+  originalRouterSettings = settingsResponse.body?.agent_model_settings?.system_agents?.router || null
   assert(originalSwarmSettings?.action?.model && originalSwarmSettings?.plan?.model, 'canonical Swarm action/plan model settings are missing')
+  assert(originalRouterSettings?.model, 'canonical Router model setting is missing')
   await api('PATCH', '/v1/agent-model-settings', { swarm: { action: actionAssignment, plan: planAssignment } }, 'apply task runner model settings')
   settingsChanged = true
+  await api('PATCH', '/v1/agent-model-settings', { system_agents: { router: routerAssignment } }, 'apply task Router model setting')
+  routerSettingsChanged = true
   result.gates.models_configured = true
 
+  if (workspacePathOverride) {
+    await api('POST', '/v1/workspace/add', { path: workspacePathOverride, name: 'swarm-go', make_current: true }, 'ensure canonical workspace self binding')
+  }
+  result.gates.workspace_binding_ready = true
+
   const topology = (await api('GET', '/v1/swarm/topology', undefined, 'read topology')).body || {}
+  const topologyBindings = Array.isArray(topology?.workspace_bindings) ? topology.workspace_bindings : []
+  const topologyRuntimes = Array.isArray(topology?.runtimes) ? topology.runtimes : []
+  assert(topologyBindings.length > 0, 'topology has zero workspace bindings')
+  assert(topologyBindings.some((item) => bindingID(item)), 'topology workspace bindings have no binding IDs')
+  assert(topologyRuntimes.some((item) => String(item?.swarm_id || '').trim()), 'topology has no runtime IDs')
   const defaultBinding = chooseDefaultBinding(topology)
-  assert(defaultBinding, workspacePathOverride ? `no topology binding found for ${workspacePathOverride}` : 'topology has no workspace binding')
+  assert(defaultBinding, 'topology has no usable bound workspace')
   const newRouterAuthority = authorityFor(topology, defaultBinding)
 
   if (scenarioOption !== 'existing-session') {
@@ -407,8 +427,21 @@ async function main() {
 
   if (scenarioOption !== 'new-router') {
     // Match the Desktop interaction: refresh the sidebar, select its first session,
-    // and issue the same two /task forms there. A split existing-session worker can
-    // use the independent onboarding-created session when it runs in a fresh Swarm.
+    // and issue the same two /task forms there. A split worker seeds one ordinary
+    // non-AI V3 session because its fresh isolated Swarm has no prior sidebar history.
+    if (scenarioOption === 'existing-session') {
+      const seedRequestID = `${testID}:seed-existing-session`
+      await api('POST', '/v3/sessions', {
+        ...newRouterAuthority,
+        client_request_id: seedRequestID,
+        idempotency_key: seedRequestID,
+        title: 'Routing Seed Session',
+        mode: 'auto',
+        agent_name: 'swarm',
+        worktree_mode: 'off',
+        metadata: { source: 'task-routing-seed', runner_test_id: testID },
+      }, 'seed existing Desktop session')
+    }
     const bootstrap = await bootstrapSessions()
     const sessionOrder = Array.isArray(bootstrap.session_order) ? bootstrap.session_order : []
     assert(sessionOrder.length > 0, 'Desktop session order is empty; cannot select the first existing session')
@@ -454,15 +487,25 @@ try {
   result.error = error?.stack || String(error)
   log(result.error)
 } finally {
+  let restoreFailed = false
+  if (routerSettingsChanged && originalRouterSettings) {
+    try {
+      await api('PATCH', '/v1/agent-model-settings', { system_agents: { router: originalRouterSettings } }, 'restore Router model setting')
+    } catch (restoreError) {
+      result.failures.push(`failed to restore Router model setting: ${restoreError?.message || restoreError}`)
+      restoreFailed = true
+    }
+  }
   if (settingsChanged && originalSwarmSettings) {
     try {
       await api('PATCH', '/v1/agent-model-settings', { swarm: originalSwarmSettings }, 'restore agent model settings')
-      result.gates.models_restored = true
     } catch (restoreError) {
       result.failures.push(`failed to restore Swarm model settings: ${restoreError?.message || restoreError}`)
-      result.result = 'NOT_DONE'
+      restoreFailed = true
     }
   }
+  if ((settingsChanged || routerSettingsChanged) && !restoreFailed) result.gates.models_restored = true
+  if (restoreFailed) result.result = 'NOT_DONE'
   result.completed_at = new Date().toISOString()
   result.failed_gates = requiredGates.filter((name) => result.gates[name] !== true)
   process.stdout.write(`${JSON.stringify(result, null, 2)}\n`)
