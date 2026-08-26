@@ -11,19 +11,25 @@ const apiURL = String(option('--api-url', process.env.SWARM_RUNNER_API_URL || ''
 const provider = String(option('--provider', process.env.SWARM_RUNNER_PROVIDER || '')).trim().toLowerCase()
 const timeoutMs = Number(option('--timeout-ms', process.env.SWARM_RUNNER_TIMEOUT_MS || '900000'))
 const workspacePathOverride = String(option('--workspace-path', process.env.SWARM_RUNNER_WORKSPACE_PATH || '')).trim()
+const scenarioOption = String(option('--scenario', process.env.SWARM_RUNNER_SCENARIO || 'all')).trim().toLowerCase()
 const suppliedToken = String(process.env.SWARM_RUNNER_TOKEN || '').trim()
 
 if (!apiURL || !/^https?:\/\//.test(apiURL)) throw new Error('--api-url must be an http or https URL')
 if (!provider || !/^[a-z0-9._-]+$/.test(provider)) throw new Error('--provider is required and must contain only letters, numbers, dots, underscores, or dashes')
 if (!Number.isFinite(timeoutMs) || timeoutMs < 30000) throw new Error('--timeout-ms must be at least 30000')
+if (!['all', 'new-router', 'existing-session'].includes(scenarioOption)) throw new Error('--scenario must be all, new-router, or existing-session')
 
 const testID = `runner-task-routing-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`
+const expectedCallCount = scenarioOption === 'all' ? 4 : 2
+const scenarioGates = scenarioOption === 'all'
+  ? ['new_router_page_auto', 'new_router_page_plan', 'existing_session_auto', 'existing_session_plan']
+  : scenarioOption === 'new-router'
+    ? ['new_router_page_auto', 'new_router_page_plan']
+    : ['initial_sessions_loaded', 'first_session_selected', 'existing_session_auto', 'existing_session_plan']
 const requiredGates = [
-  'provider_runnable', 'recommended_models', 'models_configured', 'initial_sessions_loaded',
-  'first_session_selected', 'new_router_page_auto', 'new_router_page_plan',
-  'existing_session_auto', 'existing_session_plan', 'four_ai_calls', 'all_acknowledged',
-  'all_worktrees', 'mode_contracts', 'plan_contracts', 'models_verified', 'no_failures',
-  'models_restored',
+  'provider_runnable', 'recommended_models', 'models_configured', ...scenarioGates,
+  'expected_ai_calls', 'all_acknowledged', 'all_worktrees', 'mode_contracts',
+  'plan_contracts', 'models_verified', 'no_failures', 'models_restored',
 ]
 const result = {
   result: 'NOT_DONE',
@@ -32,6 +38,8 @@ const result = {
   started_at: new Date().toISOString(),
   api_url: apiURL,
   provider,
+  scenario: scenarioOption,
+  expected_call_count: expectedCallCount,
   models: {},
   selected_first_session: {},
   calls: [],
@@ -375,8 +383,8 @@ async function main() {
 
   const catalogResponse = await api('GET', `/v1/model/catalog?provider=${encodeURIComponent(provider)}&limit=500`, undefined, 'read model recommendations')
   const records = catalogResponse.body?.records || []
-  const planAssignment = recommendedAssignment(records, ['plan'], 'plan')
-  const actionAssignment = recommendedAssignment(records, ['auto', 'main'], 'auto')
+  const planAssignment = recommendedAssignment(records, ['plan'], 'Swarm plan')
+  const actionAssignment = recommendedAssignment(records, ['auto', 'main'], 'Swarm auto')
   result.models = { plan: planAssignment, auto: actionAssignment }
   result.gates.recommended_models = true
 
@@ -392,40 +400,45 @@ async function main() {
   assert(defaultBinding, workspacePathOverride ? `no topology binding found for ${workspacePathOverride}` : 'topology has no workspace binding')
   const newRouterAuthority = authorityFor(topology, defaultBinding)
 
-  await runTaskCall({ scenario: 'new_router_page', mode: 'auto', authority: newRouterAuthority, selectedSessionID: '', expectedAssignment: actionAssignment })
-  await runTaskCall({ scenario: 'new_router_page', mode: 'plan', authority: newRouterAuthority, selectedSessionID: '', expectedAssignment: planAssignment })
-
-  // Match the Desktop interaction: after launching from the new Router page, refresh
-  // the sidebar, select its first session, and issue the same two /task forms there.
-  const bootstrap = await bootstrapSessions()
-  const sessionOrder = Array.isArray(bootstrap.session_order) ? bootstrap.session_order : []
-  assert(sessionOrder.length > 0, 'Desktop session order is empty; cannot select the first existing session')
-  result.gates.initial_sessions_loaded = true
-  const firstSessionID = String(sessionOrder[0] || '').trim()
-  const firstSession = bootstrap.sessions_by_id?.[firstSessionID]
-  assert(firstSessionID && firstSession, 'Desktop first session is missing from sessions_by_id')
-  const existingBinding = chooseBindingForSession(topology, firstSession, defaultBinding)
-  assert(existingBinding, `first existing session ${firstSessionID} has no usable workspace binding`)
-  const existingAuthority = authorityFor(topology, existingBinding)
-  result.selected_first_session = {
-    session_id: firstSessionID,
-    title: firstSession.title,
-    workspace_path: firstSession.workspace_path,
-    workspace_binding_id: existingAuthority.workspace_binding_id,
+  if (scenarioOption !== 'existing-session') {
+    await runTaskCall({ scenario: 'new_router_page', mode: 'auto', authority: newRouterAuthority, selectedSessionID: '', expectedAssignment: actionAssignment })
+    await runTaskCall({ scenario: 'new_router_page', mode: 'plan', authority: newRouterAuthority, selectedSessionID: '', expectedAssignment: planAssignment })
   }
-  result.gates.first_session_selected = true
 
-  await runTaskCall({ scenario: 'existing_session', mode: 'auto', authority: existingAuthority, selectedSessionID: firstSessionID, expectedAssignment: actionAssignment })
-  await runTaskCall({ scenario: 'existing_session', mode: 'plan', authority: existingAuthority, selectedSessionID: firstSessionID, expectedAssignment: planAssignment })
+  if (scenarioOption !== 'new-router') {
+    // Match the Desktop interaction: refresh the sidebar, select its first session,
+    // and issue the same two /task forms there. A split existing-session worker can
+    // use the independent onboarding-created session when it runs in a fresh Swarm.
+    const bootstrap = await bootstrapSessions()
+    const sessionOrder = Array.isArray(bootstrap.session_order) ? bootstrap.session_order : []
+    assert(sessionOrder.length > 0, 'Desktop session order is empty; cannot select the first existing session')
+    result.gates.initial_sessions_loaded = true
+    const firstSessionID = String(sessionOrder[0] || '').trim()
+    const firstSession = bootstrap.sessions_by_id?.[firstSessionID]
+    assert(firstSessionID && firstSession, 'Desktop first session is missing from sessions_by_id')
+    const existingBinding = chooseBindingForSession(topology, firstSession, defaultBinding)
+    assert(existingBinding, `first existing session ${firstSessionID} has no usable workspace binding`)
+    const existingAuthority = authorityFor(topology, existingBinding)
+    result.selected_first_session = {
+      session_id: firstSessionID,
+      title: firstSession.title,
+      workspace_path: firstSession.workspace_path,
+      workspace_binding_id: existingAuthority.workspace_binding_id,
+    }
+    result.gates.first_session_selected = true
 
-  assert(result.calls.length === 4, `runner completed ${result.calls.length} AI calls, want 4`)
+    await runTaskCall({ scenario: 'existing_session', mode: 'auto', authority: existingAuthority, selectedSessionID: firstSessionID, expectedAssignment: actionAssignment })
+    await runTaskCall({ scenario: 'existing_session', mode: 'plan', authority: existingAuthority, selectedSessionID: firstSessionID, expectedAssignment: planAssignment })
+  }
+
+  assert(result.calls.length === expectedCallCount, `runner completed ${result.calls.length} AI calls, want ${expectedCallCount}`)
   assert(result.calls.every((call) => call.assistant === 'ACK'), 'not every task call returned ACK')
   assert(result.calls.every((call) => call.worktree_root_path && call.worktree_branch), 'not every task call used a durable worktree')
   assert(result.calls.filter((call) => call.mode === 'auto').every((call) => call.has_active_plan === false), 'an Auto task created a plan')
   assert(result.calls.filter((call) => call.mode === 'plan').every((call) => call.has_active_plan === false), 'a Plan acknowledgement unexpectedly created a plan')
   assert(result.calls.filter((call) => call.mode === 'auto').every((call) => call.model_profile.model === actionAssignment.model), 'an Auto task used the wrong model')
   assert(result.calls.filter((call) => call.mode === 'plan').every((call) => call.model_profile.model === planAssignment.model), 'a Plan task used the wrong model')
-  result.gates.four_ai_calls = true
+  result.gates.expected_ai_calls = true
   result.gates.all_acknowledged = true
   result.gates.all_worktrees = true
   result.gates.mode_contracts = true
