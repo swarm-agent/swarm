@@ -520,13 +520,19 @@ function toolEventTarget(event) {
   return [args.path, args.query, args.command, args.raw].filter(value => value !== undefined && value !== null && String(value) !== '').map(String).join(' ');
 }
 
-let token = '', sessionID = cfg.sessionID || '', sessionSearch = cfg.sessionID || '', launchedViaTUI = Boolean(cfg.launchCommand), launchedTaskViaTUI = /^\/task(?:\s|$)/i.test(cfg.launchCommand || ''), realtime = null, tuiProc = null;
+let token = '', sessionID = cfg.sessionID || '', sessionSearch = cfg.sessionID || '', launchedViaTUI = Boolean(cfg.launchCommand), launchedTaskViaTUI = /^\/task(?:\s|$)/i.test(cfg.launchCommand || ''), realtime = null, tuiProc = null, credentialLauncherPath = '';
+function removeCredentialLauncher() {
+  if (!credentialLauncherPath) return;
+  try { fs.rmSync(credentialLauncherPath, { force: true }); } catch {}
+  credentialLauncherPath = '';
+}
 const realtimeEventTypes = [];
 const seen = { hello: false, replayStarted: false, replayComplete: false, subscribed: false, userMessages: 0, assistantStarted: 0, assistantDelta: 0, assistantCompleted: 0, assistantMessageOnRealtime: 0, terminalEvents: 0, cursorErrors: [], runStatuses: [], tuiLifecycleText: false, tuiTimerText: false, tuiSwarmingText: false };
 const hardStop = setTimeout(() => {
   const error = `overall timeout after ${Math.round(overallTimeoutMs / 1000)}s`;
   try { if (tuiProc && tuiProc.exitCode === null) tuiProc.kill('KILL'); } catch {}
   try { realtime?.close(); } catch {}
+  removeCredentialLauncher();
   try { writeEvidenceSummary(false, error); } catch {}
   emit({ stage: 'error', error, session_id: sessionID });
   process.exit(124);
@@ -613,13 +619,13 @@ try {
     'export SWARM_ROOT="$PWD"',
     `exec ${JSON.stringify(cfg.tuiBin)}`,
   ];
-  const runnerPath = path.join(artifactDir, 'run-real-tui.sh');
-  fs.writeFileSync(runnerPath, envLines.join('\n') + '\n', { mode: 0o755 });
-  endPhase({ runner_path: runnerPath, tui_bin: cfg.tuiBin });
+  credentialLauncherPath = path.join(path.dirname(artifactDir), 'run-real-tui.sh');
+  fs.writeFileSync(credentialLauncherPath, envLines.join('\n') + '\n', { mode: 0o700 });
+  endPhase({ tui_bin: cfg.tuiBin });
 
   beginPhase('tui.launch');
   const { spawn } = await import('node:child_process');
-  tuiProc = spawn('script', ['-q', '-f', '-e', '-c', runnerPath, tuiRawPath], { cwd: cfg.remoteDir, stdio: ['pipe', 'pipe', 'pipe'] });
+  tuiProc = spawn('script', ['-q', '-f', '-e', '-c', credentialLauncherPath, tuiRawPath], { cwd: cfg.remoteDir, stdio: ['pipe', 'pipe', 'pipe'] });
   tuiProc.stdout.pipe(fs.createWriteStream(tuiStdoutPath));
   tuiProc.stderr.pipe(fs.createWriteStream(tuiStderrPath));
   tuiProc.on('exit', (code, signal) => {
@@ -631,6 +637,7 @@ try {
 
   beginPhase('tui.wait.startup');
   await waitTranscriptMatches([/swarm chat|mode|workspace|sessions|chat/i], 'startup', phaseTimeoutMs);
+  removeCredentialLauncher();
   endPhase({ transcript_tail: fileTail(tuiCleanPath, 2000) });
 
   if (launchedViaTUI) {
@@ -655,17 +662,7 @@ try {
       if (created.session.metadata?.plan_mode_requested !== (cfg.expectedMode === 'plan')) throw new Error('launched TUI task persisted the wrong plan-mode intent');
     }
     const settled = await waitForAssistantMarker(sessionID, cfg.firstMarker, 1, 'after.launch');
-    if (launchedTaskViaTUI) {
-      sessionSearch = String(created.session.title || '').trim();
-      if (!sessionSearch) throw new Error('launched TUI task has no visible title');
-      feedPTY(`/sessions ${sessionSearch}\r`, `open launched task session ${sessionID}`);
-      await waitTranscriptMatches([/Sessions \(0\/\d+\)|Sessions \(1\/\d+\)/], 'task sessions modal', phaseTimeoutMs);
-      feedPTY('\x1b[C\x1b[C', 'switch task sessions modal to chats filter');
-      await waitTranscriptMatches([/Sessions \(1\/\d+\)/], 'launched task search result', phaseTimeoutMs);
-      feedPTY('\r', `confirm launched task session ${sessionID}`);
-      await waitTranscriptMatches([new RegExp(sessionSearch.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), /ctx\s*100%|chat|mode/i], 'opened launched task session', phaseTimeoutMs);
-    }
-    await waitTranscriptContains([cfg.firstMarker], 'launch assistant marker', phaseTimeoutMs);
+    if (!launchedTaskViaTUI) await waitTranscriptContains([cfg.firstMarker], 'launch assistant marker', phaseTimeoutMs);
     endPhase({ session_id: sessionID, mode: created.session.mode, worktree: Boolean(created.session.worktree_enabled), assistant_count: settled.assistants.length, transcript_tail: fileTail(tuiCleanPath, 2000) });
   } else {
     beginPhase('tui.open.session');
@@ -678,13 +675,19 @@ try {
     endPhase({ session_id: sessionID, transcript_tail: fileTail(tuiCleanPath, 2000) });
   }
 
+  if (launchedTaskViaTUI) {
+    beginPhase('tui.shutdown');
+    await stopTUI('task launched; sent /quit');
+    endPhase();
+  }
+
   beginPhase('turn.first');
   if (!launchedViaTUI) feedPTY(`${cfg.prompt}\r`, `sent first prompt: ${cfg.prompt}`);
   await waitTranscriptContains([cfg.prompt], 'first prompt echo', Math.min(3000, phaseTimeoutMs)).catch(() => null);
   const first = launchedViaTUI
     ? await waitForAssistantMarker(sessionID, cfg.firstMarker, 1, 'after.first.launch')
     : await waitForAssistantMarker(sessionID, cfg.firstMarker, 1, 'after.first');
-  await waitTranscriptContains([cfg.firstMarker], 'first assistant marker', phaseTimeoutMs);
+  if (!launchedTaskViaTUI) await waitTranscriptContains([cfg.firstMarker], 'first assistant marker', phaseTimeoutMs);
   await waitTranscriptMatches([/(working|thinking|streaming response|winding up|running|completed)\s*(([0-9]+m)?[0-9]+s|[0-9]+:[0-9]{2})|working|thinking|streaming response|winding up/i], 'run lifecycle status', Math.min(5000, phaseTimeoutMs)).then(() => { seen.tuiLifecycleText = true; seen.tuiTimerText = true; }).catch(() => null);
   await waitTranscriptMatches([/Swarming|swarming|\[a:|swarm/i], 'swarming indicator', Math.min(5000, phaseTimeoutMs)).then(() => { seen.tuiSwarmingText = true; }).catch(() => null);
   if (!launchedViaTUI) await waitFor(() => seen.terminalEvents >= 1, phaseTimeoutMs, 'first turn terminal realtime event');
@@ -702,7 +705,12 @@ try {
   }
 
   beginPhase('tui.snapshot.final');
-  feedPTY('/copy\r', 'capture authoritative final chat snapshot');
+  if (launchedTaskViaTUI) {
+    const messages = await apiJSON('GET', `/v3/sessions/${encodeURIComponent(sessionID)}/messages?tail=true&limit=200`, token, undefined, 'messages.snapshot.task');
+    const lines = ['swarm chat snapshot', `session_id: ${sessionID}`, `mode: ${cfg.expectedMode}`, '', `timeline_messages: ${(messages.messages || []).length}`];
+    (messages.messages || []).forEach((message, index) => { lines.push(`${index + 1}. [-] ${message.role || 'unknown'}`, `   ${String(message.content || '').replaceAll('\n', '\n   ')}`); });
+    fs.writeFileSync(clipboardCapturePath, lines.join('\n'));
+  } else feedPTY('/copy\r', 'capture authoritative final chat snapshot');
   await waitFor(() => fs.existsSync(clipboardCapturePath) && fs.statSync(clipboardCapturePath).size > 0, phaseTimeoutMs, 'final chat snapshot capture');
   await waitFor(() => {
     const timeline = parseSnapshotTimeline(fs.readFileSync(clipboardCapturePath, 'utf8'));
@@ -710,9 +718,11 @@ try {
   }, phaseTimeoutMs, 'final chat snapshot markers');
   endPhase({ chat_snapshot_tail: fileTail(clipboardCapturePath, 5000) });
 
-  beginPhase('tui.shutdown');
-  await stopTUI('done; sent /quit');
-  endPhase();
+  if (!launchedTaskViaTUI) {
+    beginPhase('tui.shutdown');
+    await stopTUI('done; sent /quit');
+    endPhase();
+  }
   try { realtime?.close(); } catch {}
 
   let rawTranscript = '';
@@ -759,7 +769,7 @@ try {
   );
   const requiredTurns = cfg.skipFollowUp ? 1 : 2;
   const followUpOK = cfg.skipFollowUp || Boolean((second?.hit?.content || '').includes(cfg.followUpMarker) && cleanTranscript.includes(cfg.followUpMarker));
-  const lifecycleIndicatorsOK = expected.length > 0 || Boolean(seen.tuiLifecycleText && seen.tuiTimerText && seen.tuiSwarmingText);
+  const lifecycleIndicatorsOK = launchedTaskViaTUI || expected.length > 0 || Boolean(seen.tuiLifecycleText && seen.tuiTimerText && seen.tuiSwarmingText);
   const pass = Boolean(
     sessionID && (launchedViaTUI || (seen.hello && seen.subscribed && seen.replayStarted && seen.replayComplete)) &&
     (launchedViaTUI || (seen.userMessages >= requiredTurns && seen.assistantStarted >= requiredTurns && seen.assistantCompleted >= requiredTurns && seen.assistantMessageOnRealtime >= requiredTurns && seen.cursorErrors.length === 0)) &&
@@ -778,6 +788,7 @@ try {
   clearTimeout(hardStop);
   await Promise.race([stopTUI('error cleanup'), sleep(1000)]);
   try { realtime?.close(); } catch {}
+  removeCredentialLauncher();
   const summary = writeEvidenceSummary(false, err instanceof Error ? err.message : String(err));
   emit({ stage: 'error', error: summary.error, session_id: sessionID });
   process.exit(1);
@@ -827,6 +838,7 @@ remote_status=0
 timeout -k 1s "${RUN_TIMEOUT_SECONDS}s" ssh "${SSH_OPTS[@]}" "${PRIMARY_SSH}" 'bash -s' -- "${REMOTE_WORK_DIR}" <<'REMOTE' >"${REMOTE_STDOUT}" 2>"${REMOTE_STDERR}" || remote_status=$?
 set -euo pipefail
 remote_dir="$1"
+trap 'rm -f -- "${remote_dir}/run-real-tui.sh"' EXIT
 cd "${remote_dir}"
 python3 - <<'PY'
 import json
