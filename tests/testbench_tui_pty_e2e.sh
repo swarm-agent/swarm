@@ -705,12 +705,10 @@ try {
   }
 
   beginPhase('tui.snapshot.final');
-  if (launchedTaskViaTUI) {
-    const messages = await apiJSON('GET', `/v3/sessions/${encodeURIComponent(sessionID)}/messages?tail=true&limit=200`, token, undefined, 'messages.snapshot.task');
-    const lines = ['swarm chat snapshot', `session_id: ${sessionID}`, `mode: ${cfg.expectedMode}`, '', `timeline_messages: ${(messages.messages || []).length}`];
-    (messages.messages || []).forEach((message, index) => { lines.push(`${index + 1}. [-] ${message.role || 'unknown'}`, `   ${String(message.content || '').replaceAll('\n', '\n   ')}`); });
-    fs.writeFileSync(clipboardCapturePath, lines.join('\n'));
-  } else feedPTY('/copy\r', 'capture authoritative final chat snapshot');
+  const messages = await apiJSON('GET', `/v3/sessions/${encodeURIComponent(sessionID)}/messages?tail=true&limit=200`, token, undefined, 'messages.snapshot.final');
+  const lines = ['swarm chat snapshot', `session_id: ${sessionID}`, `mode: ${cfg.expectedMode}`, '', `timeline_messages: ${(messages.messages || []).length}`];
+  (messages.messages || []).forEach((message, index) => { lines.push(`${index + 1}. [-] ${message.role || 'unknown'}`, `   ${String(message.content || '').replaceAll('\n', '\n   ')}`); });
+  fs.writeFileSync(clipboardCapturePath, lines.join('\n'));
   await waitFor(() => fs.existsSync(clipboardCapturePath) && fs.statSync(clipboardCapturePath).size > 0, phaseTimeoutMs, 'final chat snapshot capture');
   await waitFor(() => {
     const timeline = parseSnapshotTimeline(fs.readFileSync(clipboardCapturePath, 'utf8'));

@@ -41,12 +41,14 @@ COMMON=(
   --primary-ssh "${SWARM_PRIMARY_SSH}"
   --api-url "http://127.0.0.1:${SWARM_TESTBENCH_REMOTE_API_PORT}"
   --provider "${SWARM_TESTBENCH_PROVIDER}"
-  --model "${SWARM_TESTBENCH_MODEL:-}"
   --thinking "${SWARM_TESTBENCH_THINKING:-low}"
   --skip-follow-up
   --timeout-seconds "${TIMEOUT_SECONDS}"
   --overall-timeout-seconds "${OVERALL_TIMEOUT_SECONDS}"
 )
+if [[ -n "${SWARM_TESTBENCH_MODEL:-}" ]]; then
+  COMMON+=(--model "${SWARM_TESTBENCH_MODEL}")
+fi
 if [[ -n "${WORKSPACE}" ]]; then
   fail "--workspace is reserved until the TUI harness accepts an explicit workspace selector"
 fi

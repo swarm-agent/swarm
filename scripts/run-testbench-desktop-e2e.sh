@@ -16,6 +16,16 @@ source "${ROOT_DIR}/scripts/lib-testbench-e2e.sh"
 swarm_testbench_load_env "${ROOT_DIR}" || exit 1
 swarm_testbench_validate_env || exit 1
 
+if [[ -z "${PLAYWRIGHT_BROWSER_EXECUTABLE:-}" ]]; then
+  for candidate in google-chrome-stable google-chrome chromium chromium-browser; do
+    if command -v "${candidate}" >/dev/null 2>&1; then
+      PLAYWRIGHT_BROWSER_EXECUTABLE="$(command -v "${candidate}")"
+      export PLAYWRIGHT_BROWSER_EXECUTABLE
+      break
+    fi
+  done
+fi
+
 case "${1:-}" in
   -h|--help) usage; exit 0 ;;
 esac

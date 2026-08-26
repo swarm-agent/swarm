@@ -3,7 +3,7 @@ set -euo pipefail
 
 usage() {
   cat >&2 <<'USAGE'
-Usage: scripts/run-runner-test.sh <target> <provider> [test-name] [--api-url <url>] [--workspace-path <path>] [--model <id>] [--thinking <level>] [--stage <name>] [--session-id <id>] [--source-session-id <id>] [--source-collection-id <id>] [--source-variant-id <id>] [--source-event-seq <seq>] [--timeout-ms <ms>]
+Usage: scripts/run-runner-test.sh <target> <provider> [test-name] [--api-url <url>] [--workspace-path <path>] [--linked-workspace-path <path>] [--model <id>] [--thinking <level>] [--stage <name>] [--session-id <id>] [--source-session-id <id>] [--source-collection-id <id>] [--source-variant-id <id>] [--source-event-seq <seq>] [--timeout-ms <ms>]
 
 Runs a checked-in runner test against an already-running Swarm target.
 
@@ -15,6 +15,7 @@ Arguments:
 Options:
   --api-url          API URL used from the target host (SSH default: http://127.0.0.1:7781)
   --workspace-path   Existing bound workspace to use (default: first bound workspace)
+  --linked-workspace-path  Optional second bound workspace for multi-repository runners
   --model            Optional exact model override passed to runners that support it
   --thinking         Optional thinking override passed to runners that support it
   --stage            Optional resumable stage passed to runners that support it
@@ -58,6 +59,7 @@ fi
 
 API_URL=""
 WORKSPACE_PATH=""
+LINKED_WORKSPACE_PATH=""
 MODEL=""
 THINKING=""
 STAGE=""
@@ -77,6 +79,11 @@ while [[ $# -gt 0 ]]; do
     --workspace-path)
       [[ $# -ge 2 ]] || fail "--workspace-path requires a value"
       WORKSPACE_PATH="$2"
+      shift 2
+      ;;
+    --linked-workspace-path)
+      [[ $# -ge 2 ]] || fail "--linked-workspace-path requires a value"
+      LINKED_WORKSPACE_PATH="$2"
       shift 2
       ;;
     --model)
@@ -152,6 +159,9 @@ runner_args=(--provider "${PROVIDER}" --timeout-ms "${TIMEOUT_MS}")
 if [[ -n "${WORKSPACE_PATH}" ]]; then
   runner_args+=(--workspace-path "${WORKSPACE_PATH}")
 fi
+if [[ -n "${LINKED_WORKSPACE_PATH}" ]]; then
+  runner_args+=(--linked-workspace-path "${LINKED_WORKSPACE_PATH}")
+fi
 if [[ -n "${MODEL}" ]]; then
   runner_args+=(--model "${MODEL}")
 fi
@@ -206,6 +216,7 @@ remote_api_url="$(quote_remote "${API_URL}")"
 remote_provider="$(quote_remote "${PROVIDER}")"
 remote_timeout="$(quote_remote "${TIMEOUT_MS}")"
 remote_workspace="$(quote_remote "${WORKSPACE_PATH}")"
+remote_linked_workspace="$(quote_remote "${LINKED_WORKSPACE_PATH}")"
 remote_model="$(quote_remote "${MODEL}")"
 remote_thinking="$(quote_remote "${THINKING}")"
 remote_stage="$(quote_remote "${STAGE}")"
@@ -214,6 +225,6 @@ remote_source_session="$(quote_remote "${SOURCE_SESSION_ID}")"
 remote_source_collection="$(quote_remote "${SOURCE_COLLECTION_ID}")"
 remote_source_variant="$(quote_remote "${SOURCE_VARIANT_ID}")"
 remote_source_event_seq="$(quote_remote "${SOURCE_EVENT_SEQ}")"
-remote_script='IFS= read -r token || true; export SWARM_RUNNER_TOKEN="$token"; printf "%s\\n" "$$" >"$1.pid"; args=(--api-url "$2" --provider "$3" --timeout-ms "$4"); if [ -n "$5" ]; then args+=(--workspace-path "$5"); fi; if [ -n "$6" ]; then args+=(--model "$6"); fi; if [ -n "$7" ]; then args+=(--thinking "$7"); fi; if [ -n "$8" ]; then args+=(--stage "$8"); fi; if [ -n "$9" ]; then args+=(--session-id "$9"); fi; if [ -n "${10}" ]; then args+=(--source-session-id "${10}"); fi; if [ -n "${11}" ]; then args+=(--source-collection-id "${11}"); fi; if [ -n "${12}" ]; then args+=(--source-variant-id "${12}"); fi; if [ -n "${13}" ]; then args+=(--source-event-seq "${13}"); fi; exec node "$1" "${args[@]}"'
+remote_script='IFS= read -r token || true; export SWARM_RUNNER_TOKEN="$token"; printf "%s\\n" "$$" >"$1.pid"; args=(--api-url "$2" --provider "$3" --timeout-ms "$4"); if [ -n "$5" ]; then args+=(--workspace-path "$5"); fi; if [ -n "$6" ]; then args+=(--linked-workspace-path "$6"); fi; if [ -n "$7" ]; then args+=(--model "$7"); fi; if [ -n "$8" ]; then args+=(--thinking "$8"); fi; if [ -n "$9" ]; then args+=(--stage "$9"); fi; if [ -n "${10}" ]; then args+=(--session-id "${10}"); fi; if [ -n "${11}" ]; then args+=(--source-session-id "${11}"); fi; if [ -n "${12}" ]; then args+=(--source-collection-id "${12}"); fi; if [ -n "${13}" ]; then args+=(--source-variant-id "${13}"); fi; if [ -n "${14}" ]; then args+=(--source-event-seq "${14}"); fi; exec node "$1" "${args[@]}"'
 printf '%s\n' "${SWARM_RUNNER_TOKEN:-}" | ssh "${TARGET}" \
-  "bash -c '${remote_script}' bash ${remote_runner} ${remote_api_url} ${remote_provider} ${remote_timeout} ${remote_workspace} ${remote_model} ${remote_thinking} ${remote_stage} ${remote_session} ${remote_source_session} ${remote_source_collection} ${remote_source_variant} ${remote_source_event_seq}"
+  "bash -c '${remote_script}' bash ${remote_runner} ${remote_api_url} ${remote_provider} ${remote_timeout} ${remote_workspace} ${remote_linked_workspace} ${remote_model} ${remote_thinking} ${remote_stage} ${remote_session} ${remote_source_session} ${remote_source_collection} ${remote_source_variant} ${remote_source_event_seq}"

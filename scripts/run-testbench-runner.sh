@@ -29,6 +29,7 @@ fi
 model_args=()
 [[ -n "${SWARM_TESTBENCH_MODEL}" ]] && model_args+=(--model "${SWARM_TESTBENCH_MODEL}")
 [[ -n "${SWARM_TESTBENCH_THINKING}" ]] && model_args+=(--thinking "${SWARM_TESTBENCH_THINKING}")
+[[ -n "${SWARM_TESTBENCH_LINKED_WORKSPACE_PATH:-}" ]] && model_args+=(--linked-workspace-path "${SWARM_TESTBENCH_LINKED_WORKSPACE_PATH}")
 
 exec "${ROOT_DIR}/scripts/run-runner-test.sh" \
   "${SWARM_PRIMARY_SSH}" \
