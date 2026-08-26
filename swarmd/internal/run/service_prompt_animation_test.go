@@ -59,6 +59,24 @@ func TestMasterHarnessPreservesOneClipIterationTopology(t *testing.T) {
 	}
 }
 
+func TestVideoStudioMessageContextBoundsBlockedHTMLClipWork(t *testing.T) {
+	prompt := videoStudioMessageContextForProvider(map[string]any{
+		"creative_mode":     "video",
+		"video_project_id":  "project-1",
+		"video_revision_id": "revision-1",
+	})
+	for _, expected := range []string{
+		"revision may append a genuinely new stable part",
+		"make at most one materially different correction",
+		"stop immediately and report the failing action",
+		"Never spend repeated turns recreating equivalent artifacts",
+	} {
+		if !strings.Contains(prompt, expected) {
+			t.Fatalf("Video Studio context missing bounded blocker guidance %q: %s", expected, prompt)
+		}
+	}
+}
+
 func TestVideoStudioMessageContextPrefersLiveHTMLCandidatePreview(t *testing.T) {
 	prompt := videoStudioMessageContextForProvider(map[string]any{
 		"creative_mode":     "video",
