@@ -39,7 +39,10 @@ test('testbench Video Studio preserves mixed HTML playback across revisions', { 
   try {
     await page.goto(`${DESKTOP_URL}/${encodeURIComponent(WORKSPACE_SLUG)}/video/${encodeURIComponent(SESSION_ID)}`, { waitUntil: 'networkidle', timeout: 30_000 })
     await page.getByLabel('Selected video project').selectOption(PROJECT_ID)
-    await page.getByText(`r${EXPECTED_REVISIONS}`, { exact: false }).first().waitFor({ state: 'visible', timeout: 30_000 })
+    const revisionNavigation = page.getByLabel('Video revision navigation')
+    await revisionNavigation.waitFor({ state: 'visible', timeout: 30_000 })
+    const projectSummary = revisionNavigation.locator('..')
+    await projectSummary.getByText(new RegExp(`r${EXPECTED_REVISIONS}(?:\\s|$)`)).waitFor({ state: 'visible', timeout: 30_000 })
 
     const project = await browserJSON<{ project?: JsonRecord; current_revision?: JsonRecord; confirmed_revision?: JsonRecord }>(page, `/v3/sessions/${encodeURIComponent(SESSION_ID)}/video/projects/${encodeURIComponent(PROJECT_ID)}`)
     const revisions = await browserJSON<{ revisions?: JsonRecord[] }>(page, `/v3/sessions/${encodeURIComponent(SESSION_ID)}/video/projects/${encodeURIComponent(PROJECT_ID)}/revisions`)
