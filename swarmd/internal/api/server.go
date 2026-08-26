@@ -3257,7 +3257,7 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		defer s.endActiveRun()
-		result, err := s.runner.RunTurn(identity.ContextWithPrincipal(r.Context(), principal), sessionID, req, runruntime.RunStartMeta{Principal: principal})
+		result, err := s.runner.RunTurn(identity.ContextWithPrincipal(r.Context(), principal), sessionID, req, runruntime.RunStartMeta{Principal: principal, ApplySessionMutation: s.applySessionV3PrimaryMutation})
 		if err != nil {
 			status := http.StatusBadRequest
 			if errors.Is(err, runruntime.ErrSessionAlreadyActive) {
