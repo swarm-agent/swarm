@@ -2512,11 +2512,9 @@ export function VideoToolPage() {
   }, [currentRevision?.id])
   const handleStudioContextRemove = useCallback(() => setStudioComposerContext(null), [])
   const handleStudioArtifactSelectionHandled = useCallback(() => setStudioArtifactSelectionRequest(null), [])
-  const handleStudioActivity = useCallback(() => {
+  const handleStudioMessageSent = useCallback(() => {
     setStudioComposerContext(null)
-    setAIRefreshKey((value) => value + 1)
-    void refreshSelectedVideoProject().catch(() => undefined)
-  }, [refreshSelectedVideoProject])
+  }, [])
   const studioRouteOptions = useMemo(() => selectedSessionRoute ? [selectedSessionRoute] : [], [selectedSessionRoute])
   const studioSidecarPlayheadMs = studioComposerContext?.playheadMs
     ?? Math.round((playhead * 1000) / VIDEO_STUDIO_SIDECAR_PLAYHEAD_INTERVAL_MS) * VIDEO_STUDIO_SIDECAR_PLAYHEAD_INTERVAL_MS
@@ -3010,7 +3008,7 @@ export function VideoToolPage() {
               </>
               )}
             </section>
-            {selectedThread && !selectedLibraryVideo ? <VideoSessionAISidecar key={selectedThread.id} sessionId={selectedThread.id} projectId={videoProject?.id} revisionId={studioComposerContext?.revisionId ?? currentRevision?.id} anchorClipId={studioComposerContext?.anchorClipId ?? activeSegment?.id} playheadMs={studioSidecarPlayheadMs} selectionKind={studioComposerContext?.selectionKind} transition={studioComposerContext?.transition} iterationContext={studioComposerContext?.iteration} routeOptions={studioRouteOptions} draftRequest={composerDraftRequest} artifactSelectionRequest={studioArtifactSelectionRequest} artifactReviewPortalTarget={studioArtifactReviewPortalTarget} contextChip={studioContextChip} onContextChipRemove={handleStudioContextRemove} onArtifactSelectionRequestHandled={handleStudioArtifactSelectionHandled} onActivity={handleStudioActivity} /> : null}
+            {selectedThread && !selectedLibraryVideo ? <VideoSessionAISidecar key={selectedThread.id} sessionId={selectedThread.id} projectId={videoProject?.id} revisionId={studioComposerContext?.revisionId ?? currentRevision?.id} anchorClipId={studioComposerContext?.anchorClipId ?? activeSegment?.id} playheadMs={studioSidecarPlayheadMs} selectionKind={studioComposerContext?.selectionKind} transition={studioComposerContext?.transition} iterationContext={studioComposerContext?.iteration} routeOptions={studioRouteOptions} draftRequest={composerDraftRequest} artifactSelectionRequest={studioArtifactSelectionRequest} artifactReviewPortalTarget={studioArtifactReviewPortalTarget} contextChip={studioContextChip} onContextChipRemove={handleStudioContextRemove} onArtifactSelectionRequestHandled={handleStudioArtifactSelectionHandled} onMessageSent={handleStudioMessageSent} /> : null}
           </main>
 
       {soundtrackPickerOpen ? (

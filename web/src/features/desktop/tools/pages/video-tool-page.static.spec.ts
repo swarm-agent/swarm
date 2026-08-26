@@ -45,6 +45,10 @@ test('Video Studio reviews nested selective iterations in the sidebar and keeps 
   assert.match(source, /playheadMs=\{studioSidecarPlayheadMs\}/)
   assert.match(proposalSource, /memo\(function VideoIterationSidebar/)
   assert.match(proposalSource, /memo\(function VideoSessionAISidecar/)
+  assert.match(source, /onMessageSent=\{handleStudioMessageSent\}/)
+  assert.doesNotMatch(proposalSource, /activityKeyRef/)
+  assert.doesNotMatch(proposalSource, /renderedMessages\.liveRuns\.map\(\(run\)/)
+  assert.doesNotMatch(source, /onActivity=\{handleStudioActivity\}/)
   assert.doesNotMatch(source, /<VideoProposalReview/)
   assert.doesNotMatch(source, /aria-label="Kept video plan"/)
 

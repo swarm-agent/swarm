@@ -571,10 +571,9 @@ export const VideoSessionAISidecar = memo(function VideoSessionAISidecar(props: 
   onContextChipRemove?: () => void
   onArtifactSelectionRequestHandled?: () => void
   artifactReviewPortalTarget?: HTMLElement | null
-  onActivity?: () => void
+  onMessageSent?: () => void
 }) {
   const [hydrateError, setHydrateError] = useState(false)
-  const activityKeyRef = useRef('')
   const renderedMessages = useDesktopV3CacheSelector(
     useCallback((state) => selectRenderedSessionMessages(state, props.sessionId), [props.sessionId]),
     videoSessionRenderedMessagesEqual,
@@ -591,17 +590,8 @@ export const VideoSessionAISidecar = memo(function VideoSessionAISidecar(props: 
 
   useEffect(() => {
     setHydrateError(false)
-    activityKeyRef.current = ''
     void selectAndHydrateDesktopV3Session(props.sessionId).catch(() => setHydrateError(true))
   }, [props.sessionId])
-
-  useEffect(() => {
-    const latestCommitted = renderedMessages.committed[renderedMessages.committed.length - 1]
-    const activityKey = `${latestCommitted?.id ?? ''}:${renderedMessages.liveRuns.map((run) => run.runId).join(',')}`
-    if (!activityKey || activityKey === ':') return
-    if (activityKeyRef.current && activityKeyRef.current !== activityKey) props.onActivity?.()
-    activityKeyRef.current = activityKey
-  }, [props.onActivity, renderedMessages.committed, renderedMessages.liveRuns])
 
   return (
     <aside className="flex min-h-[70dvh] w-full min-w-0 shrink-0 border-t border-[var(--app-border)] bg-[var(--app-bg)] lg:min-h-0 lg:w-[440px] lg:min-w-[360px] lg:max-w-[42vw] lg:border-l lg:border-t-0" aria-label="Video session AI">
@@ -641,7 +631,7 @@ export const VideoSessionAISidecar = memo(function VideoSessionAISidecar(props: 
         contextChip={props.contextChip}
         onContextChipRemove={props.onContextChipRemove}
         onArtifactSelectionRequestHandled={props.onArtifactSelectionRequestHandled}
-        onMessageSent={props.onActivity}
+        onMessageSent={props.onMessageSent}
       />
     </aside>
   )
