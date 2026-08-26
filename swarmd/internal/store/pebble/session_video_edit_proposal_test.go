@@ -372,6 +372,141 @@ func TestVideoEditProposalsChainFromUnconfirmedWorkingRevision(t *testing.T) {
 	}
 }
 
+func TestVideoHTMLIterationMultiPartAuthoritySurvivesAppendAndTargetedReplacement(t *testing.T) {
+	store, cleanup := newTestSessionStoreForVideoProject(t)
+	defer cleanup()
+	createTestSession(t, store, "account", "user", "studio")
+
+	artifactRef := func(collection, variant string, seq uint64) *SessionArtifactSelectionReference {
+		return &SessionArtifactSelectionReference{SessionID: "studio", CollectionID: collection, VariantID: variant, EventSeq: seq}
+	}
+	animatedPart := func(id string, startSeq uint64) VideoPlanPart {
+		fallback := artifactRef("fallback", id+"-still", startSeq)
+		return VideoPlanPart{
+			ID: id, Title: id, DurationMs: 1000, Visual: fallback, VisualMediaType: "image/png",
+			AnimationCandidates: &VideoAnimationCandidateSet{Status: VideoAnimationCandidateStatusAwaitingSelection, Candidates: []VideoAnimationCandidate{
+				{ID: id + "-a", Source: artifactRef("html", id+"-a", startSeq+1)},
+				{ID: id + "-b", Source: artifactRef("html", id+"-b", startSeq+2)},
+			}},
+		}
+	}
+	project, base, err := store.CreateVideoProject(CreateVideoProjectInput{
+		AccountScopeID: "account", UserID: "user", SessionID: "studio", ProjectID: "project", Title: "Iteration regression",
+		InitialTimeline: &VideoProjectTimeline{OutputPreset: VideoPresetLandscape1080p, Clips: []VideoTimelineClip{}}, NowUnixMs: 100,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	initial, err := store.CreateVideoEditProposal(CreateVideoEditProposalInput{
+		AccountScopeID: "account", UserID: "user", SessionID: "studio", ProjectID: project.ID, ProposalID: "initial",
+		BaseRevisionID: base.ID, Intent: VideoEditProposalIntentHTMLIteration,
+		Plan: &VideoPlanProposal{Kind: VideoPlanKindInitial, Parts: []VideoPlanPart{animatedPart("opening", 10), animatedPart("closing", 20)}}, NowUnixMs: 200,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CreateVideoEditProposal(CreateVideoEditProposalInput{
+		AccountScopeID: "account", UserID: "user", SessionID: "studio", ProjectID: project.ID, ProposalID: "stale",
+		BaseRevisionID: base.ID, Operations: []VideoEditOperation{{ID: "noop", Type: VideoEditOperationRemoveClip, ClipID: "missing"}}, NowUnixMs: 210,
+	}); err == nil || !strings.Contains(err.Error(), "base revision") {
+		t.Fatalf("stale base proposal error = %v, want base revision rejection", err)
+	}
+
+	mutateSelection := func(kind, requestID, partID, candidateID string, source, derivative *SessionArtifactSelectionReference, now int64) {
+		t.Helper()
+		_, err := store.ApplyV3SessionMutation(V3SessionMutationInput{
+			SessionID: "studio", UserID: "user", AccountScopeID: "account", ClientRequestID: requestID, IdempotencyKey: requestID,
+			PayloadHash: requestID + "-hash", Kind: kind, NowUnixMs: now,
+			VideoProject: &V3VideoProjectMutation{EditProposal: &VideoEditProposalSnapshot{ID: initial.ID, ProjectID: project.ID}, AnimationSelection: &VideoAnimationSelectionMutation{
+				PartID: partID, SelectedCandidateID: candidateID, SelectedSource: source, Derivative: derivative,
+			}},
+		})
+		if err != nil {
+			t.Fatalf("%s %s: %v", kind, partID, err)
+		}
+	}
+	openingSource := artifactRef("html", "opening-a", 11)
+	openingMP4 := artifactRef("derivative", "opening-a-mp4", 31)
+	closingSource := artifactRef("html", "closing-b", 22)
+	closingMP4 := artifactRef("derivative", "closing-b-mp4", 32)
+	mutateSelection(V3SessionMutationSelectVideoAnimationCandidate, "select-opening", "opening", "opening-a", openingSource, nil, 220)
+	mutateSelection(V3SessionMutationPromoteVideoAnimationDerivative, "promote-opening", "opening", "opening-a", openingSource, openingMP4, 230)
+	mutateSelection(V3SessionMutationSelectVideoAnimationCandidate, "select-closing", "closing", "closing-b", closingSource, nil, 240)
+	mutateSelection(V3SessionMutationPromoteVideoAnimationDerivative, "promote-closing", "closing", "closing-b", closingSource, closingMP4, 250)
+
+	locked, ok, err := store.GetVideoEditProposal("account", "studio", project.ID, initial.ID)
+	if err != nil || !ok {
+		t.Fatalf("read locked proposal: ok=%v err=%v", ok, err)
+	}
+	for index, want := range []struct {
+		id, candidate string
+		source, derivative *SessionArtifactSelectionReference
+	}{{"opening", "opening-a", openingSource, openingMP4}, {"closing", "closing-b", closingSource, closingMP4}} {
+		part := locked.Plan.Parts[index]
+		if part.ID != want.id || part.VisualMediaType != "video/mp4" || part.AnimationCandidates.Status != VideoAnimationCandidateStatusReady ||
+			part.AnimationCandidates.SelectedCandidateID != want.candidate || part.AnimationCandidates.SelectedSource == nil || *part.AnimationCandidates.SelectedSource != *want.source ||
+			part.AnimationCandidates.Derivative == nil || *part.AnimationCandidates.Derivative != *want.derivative || part.Visual == nil || *part.Visual != *want.derivative {
+			t.Fatalf("locked part %d authority mismatch: %+v", index, part)
+		}
+	}
+	_, accepted, _, err := store.ResolveVideoEditProposal(ResolveVideoEditProposalInput{
+		AccountScopeID: "account", UserID: "user", SessionID: "studio", ProjectID: project.ID, ProposalID: initial.ID, RevisionID: "accepted-initial", NowUnixMs: 300,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	appended := videoPlanTestPart("credits", "Credits", "credits-still")
+	appendProposal, err := store.CreateVideoEditProposal(CreateVideoEditProposalInput{
+		AccountScopeID: "account", UserID: "user", SessionID: "studio", ProjectID: project.ID, ProposalID: "append", BaseRevisionID: accepted.ID,
+		Plan: &VideoPlanProposal{Kind: VideoPlanKindRevision, Parts: []VideoPlanPart{appended}}, NowUnixMs: 400,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, appendedRevision, _, err := store.ResolveVideoEditProposal(ResolveVideoEditProposalInput{
+		AccountScopeID: "account", UserID: "user", SessionID: "studio", ProjectID: project.ID, ProposalID: appendProposal.ID,
+		SelectedOperationIDs: []string{"credits"}, RevisionID: "accepted-append", NowUnixMs: 500,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(appendedRevision.Timeline.Clips) != 3 {
+		t.Fatalf("appended timeline clips = %+v, want three", appendedRevision.Timeline.Clips)
+	}
+	for index, want := range []*SessionArtifactSelectionReference{openingMP4, closingMP4} {
+		clip := appendedRevision.Timeline.Clips[index]
+		if clip.ArtifactRef == nil || *clip.ArtifactRef != *want || clip.MediaType != "video/mp4" || clip.ID != []string{"opening", "closing"}[index] {
+			t.Fatalf("append changed established clip %d: %+v", index, clip)
+		}
+	}
+
+	replacement := videoPlanTestPart("credits", "Credits revised", "credits-revised")
+	replaceProposal, err := store.CreateVideoEditProposal(CreateVideoEditProposalInput{
+		AccountScopeID: "account", UserID: "user", SessionID: "studio", ProjectID: project.ID, ProposalID: "replace-credits", BaseRevisionID: appendedRevision.ID,
+		Plan: &VideoPlanProposal{Kind: VideoPlanKindRevision, Parts: []VideoPlanPart{replacement}}, NowUnixMs: 600,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, replaced, _, err := store.ResolveVideoEditProposal(ResolveVideoEditProposalInput{
+		AccountScopeID: "account", UserID: "user", SessionID: "studio", ProjectID: project.ID, ProposalID: replaceProposal.ID,
+		SelectedOperationIDs: []string{"credits"}, RevisionID: "accepted-replacement", NowUnixMs: 700,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(replaced.Timeline.Clips) != 3 || replaced.Timeline.Clips[2].ArtifactRef == nil || replaced.Timeline.Clips[2].ArtifactRef.VariantID != "credits-revised" {
+		t.Fatalf("targeted replacement did not update only appended part: %+v", replaced.Timeline.Clips)
+	}
+	for index, want := range []*SessionArtifactSelectionReference{openingMP4, closingMP4} {
+		clip := replaced.Timeline.Clips[index]
+		if clip.ArtifactRef == nil || *clip.ArtifactRef != *want || clip.MediaType != "video/mp4" {
+			t.Fatalf("targeted replacement changed non-target authority %d: %+v", index, clip)
+		}
+	}
+}
+
 func TestVisualVideoPlanRevisionAcceptsSelectedStablePart(t *testing.T) {
 	store, cleanup := newTestSessionStoreForVideoProject(t)
 	defer cleanup()
