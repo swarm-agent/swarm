@@ -216,7 +216,7 @@ func (s *Service) animationArtifactVariant(principal identity.Principal, ref *pe
 func temporalAnimationDuration(parts []pebblestore.SessionArtifactPart) int64 {
 	var duration int64
 	for _, part := range parts {
-		if part.Kind == "temporal" && part.StartMs == 0 && part.EndMs > duration {
+		if part.Kind == "temporal" && part.EndMs > duration {
 			duration = part.EndMs
 		}
 	}

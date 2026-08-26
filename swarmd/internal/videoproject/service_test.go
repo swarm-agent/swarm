@@ -10,6 +10,17 @@ import (
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
+func TestTemporalAnimationDurationUsesOrderedSectionEnd(t *testing.T) {
+	parts := []pebblestore.SessionArtifactPart{
+		{ID: "part-1", Kind: "temporal", StartMs: 0, EndMs: 4000},
+		{ID: "part-2", Kind: "temporal", StartMs: 4000, EndMs: 8000},
+		{ID: "part-3", Kind: "temporal", StartMs: 8000, EndMs: 12000},
+	}
+	if got := temporalAnimationDuration(parts); got != 12000 {
+		t.Fatalf("temporalAnimationDuration() = %d, want 12000", got)
+	}
+}
+
 type fakeSessionStore struct {
 	sessions  map[string]pebblestore.SessionSnapshot
 	projects  map[string]pebblestore.VideoProjectSnapshot
