@@ -21,6 +21,18 @@ const CONTINUATION_PROMPT = (process.env.SWARM_VIDEO_STUDIO_CONTINUATION_PROMPT 
   'Replace only the second HTML clip with a new 16:9 live HTML treatment that has at least two selectable iterations.',
   'Return one pending Video Studio revision with the same stable HTML part ids and do not flatten or remove the source video.',
 ].join(' ')).trim()
+const APPEND_PROMPT = (process.env.SWARM_VIDEO_STUDIO_APPEND_PROMPT || [
+  'Build on the current working Video Studio revision without changing or reordering any existing clip.',
+  'Append exactly one new 6-second 16:9 live HTML clip after the existing source-video clip.',
+  'Give the new clip at least two selectable animation iterations and one new stable part id.',
+  'Return one pending Video Studio revision containing the two existing HTML parts, the unchanged source-video clip, and the new HTML part.',
+].join(' ')).trim()
+const REPLACE_APPENDED_PROMPT = (process.env.SWARM_VIDEO_STUDIO_REPLACE_APPENDED_PROMPT || [
+  'Build on the current four-clip working Video Studio revision.',
+  'Replace only the newly appended HTML clip with a different 16:9 live HTML treatment and at least two selectable iterations.',
+  'Keep both earlier HTML parts and the source-video clip byte-for-byte and identity-for-identity unchanged and in the same order.',
+  'Keep the appended clip stable part id and return one pending Video Studio revision.',
+].join(' ')).trim()
 const TIMEOUT_MS = Number(process.env.SWARM_VIDEO_STUDIO_TIMEOUT_MS || '600000')
 
 type JsonRecord = Record<string, unknown>
@@ -267,6 +279,42 @@ function timelineClips(revision: JsonRecord | undefined): JsonRecord[] {
   return (timeline?.clips as JsonRecord[] | undefined) || []
 }
 
+type IdentityLedger = {
+  proposal: string
+  baseRevision: string
+  workingRevision: string
+  partOrder: string[]
+  partVisuals: Record<string, string>
+  timelineOrder: string[]
+  clipIdentities: Record<string, string>
+}
+
+function clipIdentity(clip: JsonRecord): string {
+  const artifact = clip.artifact_ref as JsonRecord | undefined
+  return [clip.id, clip.source_kind, clip.source_ref, artifact?.session_id, artifact?.collection_id, artifact?.variant_id, artifact?.event_seq, clip.source_start_ms, clip.source_end_ms, clip.timeline_start_ms, clip.timeline_end_ms, clip.duration_ms, clip.track, clip.sequence]
+    .map((value) => String(value ?? '')).join(':')
+}
+
+function identityLedger(proposal: JsonRecord, revision: JsonRecord | undefined): IdentityLedger {
+  const proposalParts = parts(proposal)
+  const clips = timelineClips(revision)
+  return {
+    proposal: String(proposal.id || ''),
+    baseRevision: String(proposal.base_revision_id || ''),
+    workingRevision: String(proposal.working_revision_id || ''),
+    partOrder: proposalParts.map(partID),
+    partVisuals: Object.fromEntries(proposalParts.map((part) => [partID(part), visualIdentity(part)])),
+    timelineOrder: clips.map((clip) => String(clip.id || '')),
+    clipIdentities: Object.fromEntries(clips.map((clip) => [String(clip.id || ''), clipIdentity(clip)])),
+  }
+}
+
+function assertPreservedIdentities(before: IdentityLedger, after: IdentityLedger, preservedPartIDs: string[], preservedClipIDs: string[]): void {
+  for (const id of preservedPartIDs) assert.equal(after.partVisuals[id], before.partVisuals[id], `non-target HTML part ${id} changed`)
+  for (const id of preservedClipIDs) assert.equal(after.clipIdentities[id], before.clipIdentities[id], `non-target timeline clip ${id} changed`)
+  assert.deepEqual(after.timelineOrder.filter((id) => preservedClipIDs.includes(id)), before.timelineOrder.filter((id) => preservedClipIDs.includes(id)), 'preserved timeline clips were reordered')
+}
+
 function sourceVideoIdentity(clip: JsonRecord): string {
   return [
     clip.id,
@@ -327,7 +375,7 @@ async function assertSourceVideoPlays(page: Page, clip: JsonRecord): Promise<voi
   await page.getByRole('button', { name: 'Pause', exact: true }).click()
 }
 
-test('Video Studio builds on mixed source-video and iterated HTML clips without corrupting preserved clips', { skip: !ENABLED, timeout: TIMEOUT_MS }, async () => {
+test('Video Studio preserves exact identities through four mixed-media iteration turns and rejects stale actions', { skip: !ENABLED, timeout: TIMEOUT_MS }, async () => {
   assert(DESKTOP_URL, 'SWARM_DESKTOP_URL is required')
   assert(Number.isFinite(TIMEOUT_MS) && TIMEOUT_MS >= 60_000, 'SWARM_VIDEO_STUDIO_TIMEOUT_MS must be at least 60000')
 
@@ -380,6 +428,7 @@ test('Video Studio builds on mixed source-video and iterated HTML clips without 
     assert(selectedProposalResponse.ok() && selectedProposalBody.proposal, 'second clip candidate selection did not persist')
     const selectedFirstPart = parts(selectedProposalBody.proposal).find((part) => partID(part) === partID(firstPart))!
     const selectedSecondPart = parts(selectedProposalBody.proposal).find((part) => partID(part) === partID(secondPart))!
+    const initialLedger = identityLedger(selectedProposalBody.proposal, initialDetail.current_revision)
     // Candidate selection itself anchors this exact clip/iteration in the AI composer.
     const secondRun = await sendMessage(page, CONTINUATION_PROMPT)
     await waitForRun(page, secondRun)
@@ -403,12 +452,61 @@ test('Video Studio builds on mixed source-video and iterated HTML clips without 
     assert.equal(replacementSourceVideos.length, 1, `replacement mixed timeline must retain exactly one source-video clip: ${JSON.stringify(replacementTimelineClips)}`)
     assert.equal(sourceVideoIdentity(replacementSourceVideos[0]), sourceVideoIdentity(initialSourceVideo), 'AI continuation changed or repositioned the preserved source-video clip')
     assert.equal(replacementTimelineClips.filter((clip) => clip.source_kind === 'managed_artifact').length, 2, `replacement mixed timeline must retain two managed HTML clips: ${JSON.stringify(replacementTimelineClips)}`)
+    const replacementLedger = identityLedger(replacement, replacementDetail.current_revision)
+    assert.equal(replacementLedger.baseRevision, initialLedger.workingRevision, 'second turn did not chain from the first working revision')
+    assertPreservedIdentities(initialLedger, replacementLedger, [partID(firstPart)], [String(initialSourceVideo.id || '')])
 
-    await assertClipAnimates(page, replacementFirst)
-    await assertClipAnimates(page, replacementSecond)
-    await assertSourceVideoPlays(page, replacementSourceVideos[0])
+    const staleCandidate = ((selectedSecondPart.animation_candidates as JsonRecord).candidates as JsonRecord[])[0]
+    assert(staleCandidate, 'initial second HTML part has no candidate for the stale-action proof')
+    const staleResponse = await page.evaluate(async ({ route, partId, candidate }) => {
+      const response = await fetch(route, { credentials: 'include', method: 'POST', headers: { Accept: 'application/json', 'Content-Type': 'application/json' }, body: JSON.stringify({ part_id: partId, candidate }) })
+      return { status: response.status, body: await response.text() }
+    }, { route: `/v3/sessions/${SESSION_ID}/video/projects/${projectID}/edit-proposals/${initial.id}/animation-candidate-select`, partId: partID(secondPart), candidate: staleCandidate })
+    assert(staleResponse.status === 409 || staleResponse.status === 412, `stale selection from proposal ${initial.id} was not rejected after ${replacement.id}: HTTP ${staleResponse.status} ${staleResponse.body.slice(0, 600)}`)
+
+    const appendRun = await sendMessage(page, APPEND_PROMPT)
+    await waitForRun(page, appendRun)
+    const appended = await waitForProposal(page, projectID, (proposal) => proposal.status === 'pending'
+      && proposal.id !== replacement.id
+      && proposal.base_revision_id === replacement.working_revision_id
+      && parts(proposal).length === 3
+      && parts(proposal).filter((part) => !replacementLedger.partOrder.includes(partID(part))).length === 1, 'appended third HTML part proposal')
+    const appendedPart = parts(appended).find((part) => !replacementLedger.partOrder.includes(partID(part)))!
+    assert(candidateCount(appendedPart) >= 2, 'appended HTML part has fewer than two iterations')
+    const appendedDetail = await projectDetail(page, projectID)
+    const appendedLedger = identityLedger(appended, appendedDetail.current_revision)
+    const sourceVideoID = String(initialSourceVideo.id || '')
+    assertPreservedIdentities(replacementLedger, appendedLedger, replacementLedger.partOrder, [...replacementLedger.timelineOrder])
+    assert.deepEqual(appendedLedger.partOrder, [...replacementLedger.partOrder, partID(appendedPart)], 'new HTML part was not appended after the existing stable parts')
+    assert.equal(timelineClips(appendedDetail.current_revision).filter((clip) => clip.source_kind === 'source_video').length, 1, 'append turn duplicated or removed the source video')
+
+    const replaceAppendedRun = await sendMessage(page, REPLACE_APPENDED_PROMPT)
+    await waitForRun(page, replaceAppendedRun)
+    const finalProposal = await waitForProposal(page, projectID, (proposal) => proposal.status === 'pending'
+      && proposal.id !== appended.id
+      && proposal.base_revision_id === appended.working_revision_id
+      && parts(proposal).length === 3
+      && parts(proposal).some((part) => partID(part) === partID(appendedPart)), 'targeted appended-part replacement proposal')
+    const finalDetail = await projectDetail(page, projectID)
+    const finalLedger = identityLedger(finalProposal, finalDetail.current_revision)
+    assertPreservedIdentities(appendedLedger, finalLedger, replacementLedger.partOrder, appendedLedger.timelineOrder.filter((id) => id !== partID(appendedPart)))
+    assert.notEqual(finalLedger.partVisuals[partID(appendedPart)], appendedLedger.partVisuals[partID(appendedPart)], 'fourth turn did not replace the targeted appended HTML part')
+    assert.deepEqual(finalLedger.partOrder, appendedLedger.partOrder, 'fourth turn changed stable part order')
+    assert.equal(finalLedger.clipIdentities[sourceVideoID], appendedLedger.clipIdentities[sourceVideoID], 'fourth turn changed the retained source video')
+
+    await page.reload({ waitUntil: 'networkidle', timeout: 30_000 })
+    await page.getByLabel('Selected video project').selectOption(projectID)
+    await page.getByText(new RegExp(`Pending turn changes · working r${String(finalProposal.working_revision_number || '')}`, 'i')).waitFor({ state: 'visible', timeout: 30_000 })
+    await assertClipAnimates(page, parts(finalProposal).find((part) => partID(part) === partID(firstPart))!)
+    await assertClipAnimates(page, parts(finalProposal).find((part) => partID(part) === partID(secondPart))!)
+    await assertClipAnimates(page, parts(finalProposal).find((part) => partID(part) === partID(appendedPart))!)
+    await assertSourceVideoPlays(page, timelineClips(finalDetail.current_revision).find((clip) => clip.source_kind === 'source_video')!)
+    const activeFrame = page.locator('[data-video-studio-live-animation]')
+    assert.equal(await activeFrame.count(), 1, 'player mounted duplicate live animation frames')
+    const activeTitle = await activeFrame.getAttribute('title')
+    assert(activeTitle, 'active HTML player does not expose its candidate identity')
     assert.equal(browserErrors.length, 0, `browser errors: ${browserErrors.join(' | ')}`)
-    console.log(JSON.stringify({ result: 'PASS', flow: 'mixed-source-video-html-multi-clip-iteration', session_id: SESSION_ID, project_id: projectID, initial_proposal_id: initial.id, replacement_proposal_id: replacement.id, first_part_id: partID(firstPart), second_part_id: partID(secondPart), source_video_clip_id: replacementSourceVideos[0].id }, null, 2))
+    console.log(JSON.stringify({ result: 'PASS', flow: 'four-turn-mixed-source-video-html-iteration', session_id: SESSION_ID, project_id: projectID, proposal_ids: [initial.id, replacement.id, appended.id, finalProposal.id], part_ids: finalLedger.partOrder, source_video_clip_id: sourceVideoID }, null, 2))
   } finally {
     await browser.close()
   }

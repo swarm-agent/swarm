@@ -84,6 +84,23 @@ test('Video Studio reviews nested selective iterations in the sidebar and keeps 
   assert.match(proposalSource, /video_iteration_range_end_ms/)
 })
 
+test('Video Studio pins one clip-owned animation selection surface and an identity-led active 16:9 player', async () => {
+  const source = await readFile(pageSourceUrl, 'utf8')
+
+  assert.match(source, /className="relative aspect-video w-full max-w-full overflow-hidden" style=\{\{ maxHeight: '100%' \}\}/)
+  assert.match(source, /data-video-studio-live-animation/)
+  assert.match(source, /title=\{liveAnimationCandidate\?\.label \|\| liveAnimationPart\.title\}/)
+  assert.match(source, /iterationCardURLs\[`\$\{part\?\.id\}:\$\{candidate\.id\}`\]/)
+  assert.match(source, /This variant does not belong to \$\{part\.title\}\./)
+  assert.match(source, /HTML selected · MP4 export required/)
+  assert.match(source, /Choose one HTML motion variant/)
+  assert.match(source, /Motion derivative ready/)
+
+  const selectionCalls = source.match(/selectLiveAnimationCandidate\(part, candidate\)/g) ?? []
+  assert.equal(selectionCalls.length, 1, 'candidate persistence must have one clip-card control; preview and source navigation must not duplicate selection')
+  assert.doesNotMatch(source, /animation sources`}>[\s\S]*selectLiveAnimationCandidate\(planPart, candidate\)/)
+})
+
 test('Video Studio exposes only the implemented soundtrack contract and an explicit audio lane', async () => {
   const source = await readFile(pageSourceUrl, 'utf8')
   const proposalSource = await readFile(new URL('../video-studio/video-studio-surface.tsx', import.meta.url), 'utf8')
