@@ -68,6 +68,24 @@ func TestApplySelectedHTMLAnimationSourcesUsesLockedSourceUntilDerivativeReady(t
 	}
 }
 
+func TestApplySelectedHTMLAnimationSourcesIgnoresPlanPartRemovedFromTimeline(t *testing.T) {
+	htmlRef := &pebblestore.SessionArtifactSelectionReference{SessionID: "session", CollectionID: "motion", VariantID: "html", EventSeq: 7}
+	fallbackRef := &pebblestore.SessionArtifactSelectionReference{SessionID: "session", CollectionID: "fallback", VariantID: "still", EventSeq: 6}
+	timeline := pebblestore.VideoProjectTimeline{
+		Clips: []pebblestore.VideoTimelineClip{{ID: "kept", SourceKind: pebblestore.VideoClipSourceKindManagedArtifact, ArtifactRef: fallbackRef, MediaType: "image/png", DurationMs: 1000, SourceEndMs: 1000}},
+		Metadata: map[string]any{"accepted_video_plan": pebblestore.VideoPlanProposal{Kind: pebblestore.VideoPlanKindInitial, Parts: []pebblestore.VideoPlanPart{
+			{ID: "kept", DurationMs: 1000, Visual: fallbackRef, AnimationCandidates: &pebblestore.VideoAnimationCandidateSet{Status: pebblestore.VideoAnimationCandidateStatusAwaitingExport, SelectedCandidateID: "kept-a", SelectedSource: htmlRef}},
+			{ID: "removed", DurationMs: 1000, Visual: fallbackRef, AnimationCandidates: &pebblestore.VideoAnimationCandidateSet{Status: pebblestore.VideoAnimationCandidateStatusAwaitingExport, SelectedCandidateID: "removed-a", SelectedSource: htmlRef}},
+		}}},
+	}
+	if err := applySelectedHTMLAnimationSources(&timeline); err != nil {
+		t.Fatalf("apply selected HTML sources with removed historical part: %v", err)
+	}
+	if clip := timeline.Clips[0]; clip.ArtifactRef == nil || *clip.ArtifactRef != *htmlRef || clip.MediaType != "text/html" {
+		t.Fatalf("kept selected HTML source was not applied: %+v", clip)
+	}
+}
+
 func TestRenderHTMLAnimationClipProducesMaterializedMP4(t *testing.T) {
 	html := []byte(`<!doctype html><script id="swarm-animation-manifest" type="application/json">{"version":"swarm.animation/v1","duration_ms":1000,"fps":30}</script>`)
 	mp4 := append([]byte{0, 0, 0, 12}, []byte("ftypisom")...)
@@ -860,6 +878,25 @@ func TestStartRenderJobQueueGraceAllowsImmediateCancellation(t *testing.T) {
 	}
 	if got := store.jobs["job_cancel"].Status; got != pebblestore.VideoRenderJobStatusCancelled {
 		t.Fatalf("durable status = %s, want cancelled", got)
+	}
+}
+
+func TestStartRenderJobMarksQueuedPreflightFailureTerminal(t *testing.T) {
+	principal := identity.Principal{Type: identity.PrincipalTypeUser, AccountScopeID: "acc_1", UserID: "usr_1"}
+	store := newFakeSessionStore()
+	store.jobs["job_preflight"] = pebblestore.VideoRenderJobSnapshot{ID: "job_preflight", AccountScopeID: principal.AccountScopeID, UserID: principal.UserID, SessionID: "sess_1", ProjectID: "proj_missing", RevisionID: "rev_missing", Status: pebblestore.VideoRenderJobStatusQueued}
+	store.sessions["sess_1"] = pebblestore.SessionSnapshot{ID: "sess_1", AccountScopeID: principal.AccountScopeID, UserID: principal.UserID}
+	svc := NewService(Config{}, store, nil, nil, nil, &fakeCommandRunner{})
+
+	svc.StartRenderJob(principal, RenderJobRequest{SessionID: "sess_1", ProjectID: "proj_missing", RevisionID: "rev_missing", JobID: "job_preflight"})
+	waitCtx, cancelWait := context.WithTimeout(context.Background(), time.Second)
+	defer cancelWait()
+	if err := svc.WaitForIdle(waitCtx); err != nil {
+		t.Fatalf("WaitForIdle() error = %v", err)
+	}
+	job := store.jobs["job_preflight"]
+	if job.Status != pebblestore.VideoRenderJobStatusFailed || job.FailureCode != "render_preflight_error" || !strings.Contains(job.FailureReason, "video project") {
+		t.Fatalf("preflight failure job = %+v", job)
 	}
 }
 

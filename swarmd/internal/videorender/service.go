@@ -1097,7 +1097,11 @@ func applySelectedHTMLAnimationSources(timeline *pebblestore.VideoProjectTimelin
 		}
 		clip := clips[part.ID]
 		if clip == nil {
-			return fmt.Errorf("HTML animation part %q has no matching timeline clip", part.ID)
+			// A later accepted partial revision may remove a clip while retaining
+			// the earlier full-plan metadata for immutable history. The current
+			// timeline is the render authority, so stale plan-only parts do not
+			// participate in this render.
+			continue
 		}
 		if candidates.Derivative != nil && candidates.Status == pebblestore.VideoAnimationCandidateStatusReady {
 			clip.ArtifactRef = candidates.Derivative
@@ -1326,7 +1330,15 @@ func (s *Service) StartRenderJob(principal identity.Principal, req RenderJobRequ
 				return
 			}
 		}
-		_, _ = s.RenderJob(startCtx, principal, req)
+		if _, err := s.RenderJob(startCtx, principal, req); err != nil && startCtx.Err() == nil {
+			// RenderJob can reject invalid pinned input before it transitions the
+			// durable job out of queued. Never leave that preflight failure looking
+			// like live 0% work indefinitely.
+			current, ok, _ := s.store.GetVideoRenderJob(principal.AccountScopeID, req.SessionID, req.JobID)
+			if ok && current.Status == pebblestore.VideoRenderJobStatusQueued {
+				s.failJob(principal, req.SessionID, req.JobID, "render_preflight_error", err.Error())
+			}
+		}
 	}()
 }
 
