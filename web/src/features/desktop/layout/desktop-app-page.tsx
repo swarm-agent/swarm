@@ -88,6 +88,7 @@ import { DesktopQuickActionsModal, type DesktopQuickActionItem } from '../shortc
 import { DesktopWorkspacePicker } from '../shortcuts/components/desktop-workspace-picker'
 import { DesktopCodexUsageModal } from '../codex/desktop-codex-usage-modal'
 import { buildReviewWorktreeFixPrompt, ReviewWorktreesModal, type ReviewWorktreeIntegrationFailure } from './review-worktrees-modal'
+import { DesktopFeedbackModal } from '../feedback/desktop-feedback-modal'
 import { reviewDesktopV3Worktrees } from '../session-v3/review-worktrees-api'
 import { IntegrationConfirmation } from './integration-confirmation'
 import {
@@ -2677,6 +2678,7 @@ export function DesktopAppPage() {
   const [backgroundTaskError, setBackgroundTaskError] = useState<string | null>(null)
   const [expandedAgentSessions, setExpandedAgentSessions] = useState<Record<string, boolean>>({})
   const [notificationsOpen, setNotificationsOpen] = useState(false)
+  const [feedbackOpen, setFeedbackOpen] = useState(false)
   const [codexUsageOpen, setCodexUsageOpen] = useState(false)
   const [notificationActionError, setNotificationActionError] = useState<string | null>(null)
   const [searchModalOpen, setSearchModalOpen] = useState(false)
@@ -4006,6 +4008,10 @@ export function DesktopAppPage() {
       case 'open-plan-modal':
         if (routeSessionId) openPlanModalForSession(routeSessionId)
         else setDesktopToast({ message: 'Open an existing session to view its plan.', tone: 'info' })
+        return
+      case 'open-feedback':
+        setFeedbackOpen(true)
+        setMobileSidebarOpen(false)
         return
       case 'open-quick-actions':
         setQuickActionsOpen(true)
@@ -5682,6 +5688,8 @@ export function DesktopAppPage() {
           handleOpenSettingsTab('auth')
         }}
       />
+
+      <DesktopFeedbackModal open={feedbackOpen} onOpenChange={setFeedbackOpen} />
 
       <DesktopNotificationsModal
         open={notificationsOpen}

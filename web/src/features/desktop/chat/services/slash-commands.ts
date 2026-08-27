@@ -22,6 +22,7 @@ export type DesktopSlashCommandAction =
   | { kind: 'start-background-router-session' }
   | { kind: 'show-help' }
   | { kind: 'open-artifact-viewer' }
+  | { kind: 'open-feedback' }
 
 export interface DesktopSlashCommand {
   id: string
@@ -65,6 +66,16 @@ const DESKTOP_SLASH_COMMANDS: DesktopSlashCommand[] = [
     tips: ['Type / to browse commands', 'Press Enter to open a quick action', 'Press Tab to insert a command into the composer'],
     state: 'ready',
     action: { kind: 'show-help' },
+  },
+  {
+    id: 'feedback',
+    command: '/feedback',
+    aliases: [],
+    hint: 'Send an issue, comment, or suggestion',
+    actionLabel: 'Open Feedback',
+    tips: ['/feedback', 'Choose Issue, Comment, or Suggestion and send a message'],
+    state: 'ready',
+    action: { kind: 'open-feedback' },
   },
   {
     id: 'auth',

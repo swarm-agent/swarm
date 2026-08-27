@@ -157,6 +157,7 @@ func (s *Server) registerRuntimeRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/v1/notifications", s.handleNotifications)
 	mux.HandleFunc("/v1/notifications/", s.handleNotifications)
 	mux.HandleFunc("/v1/notifications/summary", s.handleNotifications)
+	mux.HandleFunc("/v1/feedback", s.handleDesktopFeedback)
 	mux.HandleFunc(webPushRoutePrefix, s.handleWebPush)
 	mux.HandleFunc(webPushRoutePrefix+"/", s.handleWebPush)
 	mux.HandleFunc("/v1/update/status", s.handleUpdateStatus)

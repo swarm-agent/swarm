@@ -330,6 +330,13 @@ func New(cfg config.Config) (*Daemon, error) {
 	permissionSvc.SetNotificationService(notificationSvc)
 	discoverySvc := discovery.NewService()
 	swarmSvc := swarmruntime.NewService(swarmStore, events, hub.Publish)
+	swarmSvc.SetSecretStore(secretStore)
+	if err := swarmSvc.EnsureActivationCredentialPending(); err != nil {
+		_ = secretStore.Close()
+		_ = store.Close()
+		_ = lk.Release()
+		return nil, fmt.Errorf("prepare activation credential recovery: %w", err)
+	}
 	// The local swarm ID is daemon identity, not onboarding state. Mint and
 	// durably store it before topology or any V3 session path can resolve self.
 	if _, err := swarmSvc.EnsureLocalState(swarmruntime.EnsureLocalStateInput{}); err != nil {
@@ -574,6 +581,7 @@ func New(cfg config.Config) (*Daemon, error) {
 	apiServer.SetActionService(actionSvc)
 	apiServer.SetIntegrationService(integrationSvc)
 	apiServer.SetSwarmService(swarmSvc)
+	apiServer.SetPublicAPIClient(swarmruntime.NewPublicAPIClient(swarmSvc))
 	apiServer.SetSwarmStore(swarmStore)
 	apiServer.SetUpdateService(updateSvc)
 	apiServer.SetTopologyService(topologySvc)

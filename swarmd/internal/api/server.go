@@ -123,6 +123,7 @@ type Server struct {
 	actionRuns                  *actionruntime.Runner
 	aiTasks                     aiTaskEnqueuer
 	swarm                       swarmService
+	publicAPI                   *swarmruntime.PublicAPIClient
 	update                      *update.Service
 	topology                    *topologyruntime.Service
 	swarmDesktopTargetSelection *pebblestore.SwarmDesktopTargetSelectionStore
@@ -557,6 +558,13 @@ func (s *Server) SetImageThreadStore(store *pebblestore.ImageThreadStore) {
 	if s.imageGen != nil {
 		s.imageGen.SetImageThreadStore(store)
 	}
+}
+
+func (s *Server) SetPublicAPIClient(client *swarmruntime.PublicAPIClient) {
+	if s == nil {
+		return
+	}
+	s.publicAPI = client
 }
 
 func (s *Server) SetSwarmService(swarmSvc swarmService) {

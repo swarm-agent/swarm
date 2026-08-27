@@ -7,6 +7,16 @@ function assert(condition: boolean, message: string): void {
   }
 }
 
+function testFeedbackCommandOpensModal(): void {
+  const feedback = getDesktopSlashCommands().find((command) => command.id === 'feedback')
+  assert(Boolean(feedback), 'expected /feedback command to exist')
+  assert(feedback?.state === 'ready', 'expected /feedback command to be ready')
+  assert(feedback?.action.kind === 'open-feedback', 'expected /feedback to open the feedback modal')
+  const palette = buildDesktopSlashPaletteState('/feedback')
+  assert(palette.exactMatch?.id === 'feedback', 'expected /feedback to resolve exactly')
+  assert(palette.matches[0]?.id === 'feedback', 'expected /feedback to lead palette matches')
+}
+
 function testPlanCommandIsReady(): void {
   const plan = getDesktopSlashCommands().find((command) => command.id === 'plan')
   assert(Boolean(plan), 'expected /plan command to exist')
@@ -226,6 +236,7 @@ function testKeybindingsWarnsAboutDesktopShortcuts(): void {
 }
 
 function main(): void {
+  testFeedbackCommandOpensModal()
   testPlanCommandIsReady()
   testSlashPaletteMatchesPlan()
   testCodexOpensUsageWithoutChangingModels()
