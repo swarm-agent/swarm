@@ -93,7 +93,10 @@ test('Video Studio reviews nested selective iterations in the sidebar and keeps 
 test('Video Studio pins one clip-owned animation selection surface and an identity-led active 16:9 player', async () => {
   const source = await readFile(pageSourceUrl, 'utf8')
 
-  assert.match(source, /className="relative aspect-video w-full max-w-full overflow-hidden" style=\{\{ maxHeight: '100%' \}\}/)
+  assert.match(source, /className="relative aspect-video w-full shrink-0 overflow-hidden[^"]*" data-video-studio-player-viewport/)
+  assert.match(source, /<canvas[^>]*className="absolute inset-0 h-full w-full bg-black object-contain"/)
+  assert.match(source, /<div className="absolute inset-0 overflow-hidden bg-black"><iframe[^>]*data-video-studio-live-animation/)
+  assert.doesNotMatch(source, /sm:min-h-\[360px\]|lg:min-h-\[480px\]|style=\{\{ maxHeight: '100%' \}\}/)
   assert.match(source, /data-video-studio-live-animation/)
   assert.match(source, /title=\{activeCandidate\?\.label \|\| liveAnimationPart\.title\}/)
   assert.match(source, /iterationCardURLs\[`\$\{part\?\.id\}:\$\{candidate\.id\}`\]/)
