@@ -6,6 +6,7 @@ import (
 	"time"
 
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
+	"swarm/packages/swarmd/internal/videocomposition"
 )
 
 type SessionMutationInput = pebblestore.V3SessionMutationInput
@@ -33,6 +34,13 @@ type VideoProjectRevisionSnapshot = pebblestore.VideoProjectRevisionSnapshot
 type VideoRenderJobSnapshot = pebblestore.VideoRenderJobSnapshot
 type VideoProjectTimeline = pebblestore.VideoProjectTimeline
 type VideoTimelineClip = pebblestore.VideoTimelineClip
+type VideoPlanProposal = pebblestore.VideoPlanProposal
+type VideoPlanPart = pebblestore.VideoPlanPart
+type VideoCompositionCatalog = videocomposition.Catalog
+type VideoCompositionLayout = videocomposition.Layout
+type VideoCompositionSlot = videocomposition.Slot
+type VideoCompositionLink = videocomposition.Link
+type VideoCompositionSlotOverride = videocomposition.SlotOverride
 type VideoProjectMutation = pebblestore.V3VideoProjectMutation
 type VideoProjectProjection = pebblestore.V3VideoProjectProjection
 

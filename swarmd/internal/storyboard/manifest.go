@@ -9,6 +9,8 @@ import (
 	"regexp"
 	"strings"
 	"unicode/utf8"
+
+	"swarm/packages/swarmd/internal/videocomposition"
 )
 
 const (
@@ -32,8 +34,9 @@ var (
 )
 
 type Manifest struct {
-	Version  string    `json:"version"`
-	Sections []Section `json:"sections"`
+	Version      string                    `json:"version"`
+	Compositions *videocomposition.Catalog `json:"compositions,omitempty"`
+	Sections     []Section                 `json:"sections"`
 }
 
 type Section struct {
@@ -45,7 +48,8 @@ type Section struct {
 	OnScreenText        string   `json:"on_screen_text,omitempty"`
 	CreativeDirection   string   `json:"creative_direction"`
 	FilmingRequirements []string `json:"filming_requirements"`
-	ProductionState     string   `json:"production_state"`
+	ProductionState     string                 `json:"production_state"`
+	Composition         *videocomposition.Link `json:"composition,omitempty"`
 }
 
 type Error struct {
@@ -102,6 +106,10 @@ func ParseHTML(html []byte, captureStateIDs []string) (Manifest, error) {
 	for _, id := range captureStateIDs {
 		captureStates[id] = struct{}{}
 	}
+	if err := videocomposition.ValidateCatalog(manifest.Compositions); err != nil {
+		return Manifest{}, newError("storyboard_composition_invalid", err.Error())
+	}
+
 	seenSections := make(map[string]struct{}, len(manifest.Sections))
 	seenStates := make(map[string]struct{}, len(manifest.Sections))
 	for index := range manifest.Sections {
@@ -153,6 +161,9 @@ func ParseHTML(html []byte, captureStateIDs []string) (Manifest, error) {
 		case ProductionStatePending, ProductionStateReady:
 		default:
 			return Manifest{}, newError("storyboard_production_state_invalid", "storyboard production_state must be pending or ready")
+		}
+		if err := videocomposition.ValidateLink(manifest.Compositions, section.Composition, section.DurationMs); err != nil {
+			return Manifest{}, newError("storyboard_composition_invalid", err.Error())
 		}
 	}
 	return manifest, nil

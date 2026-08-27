@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/cockroachdb/pebble"
+
+	"swarm/packages/swarmd/internal/videocomposition"
 )
 
 const (
@@ -159,7 +161,10 @@ type VideoProjectTimeline struct {
 	Clips           []VideoTimelineClip       `json:"clips"`
 	Transitions     []VideoTimelineTransition `json:"transitions,omitempty"`
 	AudioPolicy     *VideoAudioPolicy         `json:"audio_policy,omitempty"`
-	Metadata        map[string]any            `json:"metadata,omitempty"`
+	// CompositionCatalog is timeline-owned reusable geometry. Parts only link
+	// to it and carry sparse shot-local overrides.
+	CompositionCatalog *videocomposition.Catalog `json:"composition_catalog,omitempty"`
+	Metadata           map[string]any            `json:"metadata,omitempty"`
 }
 
 // VideoProjectSnapshot represents a durable session-owned video project.
@@ -250,6 +255,7 @@ type VideoPlanPart struct {
 	SourceStartMs       int64                              `json:"source_start_ms,omitempty"`
 	SourceEndMs         int64                              `json:"source_end_ms,omitempty"`
 	AnimationCandidates *VideoAnimationCandidateSet        `json:"animation_candidates,omitempty"`
+	Composition         *videocomposition.Link              `json:"composition,omitempty"`
 }
 
 const (
@@ -267,9 +273,10 @@ const (
 // VideoPlanProposal is a visual review object. Initial plans are accepted as one
 // complete structure; revision plans may replace selected stable parts.
 type VideoPlanProposal struct {
-	Kind    string          `json:"kind,omitempty"`
-	Summary string          `json:"summary,omitempty"`
-	Parts   []VideoPlanPart `json:"parts"`
+	Kind               string                    `json:"kind,omitempty"`
+	Summary            string                    `json:"summary,omitempty"`
+	CompositionCatalog *videocomposition.Catalog `json:"composition_catalog,omitempty"`
+	Parts              []VideoPlanPart           `json:"parts"`
 }
 
 // VideoEditOperation is a bounded typed change. Exactly the payload required by Type is used.
@@ -933,6 +940,9 @@ func validateVideoTimeline(timeline VideoProjectTimeline) error {
 	if len(timeline.Transitions) > MaxTransitionsPerTimeline {
 		return fmt.Errorf("timeline transition count %d exceeds maximum %d", len(timeline.Transitions), MaxTransitionsPerTimeline)
 	}
+	if err := videocomposition.ValidateCatalog(timeline.CompositionCatalog); err != nil {
+		return fmt.Errorf("timeline composition catalog invalid: %w", err)
+	}
 	if timeline.AudioPolicy != nil && (timeline.AudioPolicy.MasterVolume < 0 || timeline.AudioPolicy.MasterVolume > 2) {
 		return errors.New("timeline master volume must be between 0 and 2")
 	}
@@ -1129,6 +1139,9 @@ func validateVideoTimelineRanges(ranges []VideoTimelineRange, durationMs int64) 
 }
 
 func validateVideoPlanProposal(plan VideoPlanProposal) error {
+	if err := videocomposition.ValidateCatalog(plan.CompositionCatalog); err != nil {
+		return fmt.Errorf("video plan composition catalog invalid: %w", err)
+	}
 	if len(plan.Parts) == 0 || len(plan.Parts) > MaxClipsPerTimeline {
 		return errors.New("video plan parts must be non-empty and bounded")
 	}
@@ -1218,6 +1231,9 @@ func validateVideoPlanProposal(plan VideoPlanProposal) error {
 		}
 		if part.StoryboardStill != nil && (part.StoryboardStill.SessionID == "" || part.StoryboardStill.CollectionID == "" || part.StoryboardStill.VariantID == "" || part.StoryboardStill.EventSeq == 0) {
 			return fmt.Errorf("video plan part %q storyboard still reference is incomplete", part.ID)
+		}
+		if err := videocomposition.ValidateLink(plan.CompositionCatalog, part.Composition, part.DurationMs); err != nil {
+			return fmt.Errorf("video plan part %q composition is invalid: %w", part.ID, err)
 		}
 		if part.Caption != nil {
 			if part.Caption.ID == "" || part.Caption.Text == "" || part.Caption.StartMs < 0 || part.Caption.EndMs <= part.Caption.StartMs || part.Caption.EndMs > part.DurationMs {
@@ -1386,6 +1402,9 @@ func mergeAcceptedVideoPlan(accepted *VideoPlanProposal, proposed VideoPlanPropo
 	if proposed.Summary != "" {
 		merged.Summary = proposed.Summary
 	}
+	if proposed.CompositionCatalog != nil {
+		merged.CompositionCatalog = proposed.CompositionCatalog
+	}
 	return merged, nil
 }
 
@@ -1400,6 +1419,9 @@ func mergeStoryboardReplacement(existing, replacement VideoPlanPart) VideoPlanPa
 	replacement.StoryboardStill = existing.StoryboardStill
 	replacement.CaptureStateID = existing.CaptureStateID
 	replacement.FilmingRequirements = append([]string(nil), existing.FilmingRequirements...)
+	if replacement.Composition == nil {
+		replacement.Composition = existing.Composition
+	}
 	if replacement.ProductionState == "" {
 		replacement.ProductionState = VideoProductionStateReady
 	}
@@ -1430,6 +1452,9 @@ func mergeWorkingVideoPlanMutation(timeline VideoProjectTimeline, proposed Video
 	}
 	if proposed.Summary != "" {
 		merged.Summary = proposed.Summary
+	}
+	if proposed.CompositionCatalog != nil {
+		merged.CompositionCatalog = proposed.CompositionCatalog
 	}
 	return merged, nil
 }
@@ -1519,6 +1544,7 @@ func visualVideoPlanTimeline(base VideoProjectTimeline, plan VideoPlanProposal) 
 	}
 	timeline.Clips = append(timeline.Clips, preservedClips...)
 	timeline.Transitions = append(timeline.Transitions, preservedTransitions...)
+	timeline.CompositionCatalog = plan.CompositionCatalog
 	for _, clip := range preservedClips {
 		endMs := clip.TimelineEndMs
 		if endMs == 0 {
@@ -1548,6 +1574,35 @@ func videoProposalSelection(proposal VideoEditProposalSnapshot) []string {
 		selected = append(selected, operation.ID)
 	}
 	return selected
+}
+
+func unresolvedSelectedVideoCompositionPart(plan *VideoPlanProposal, selected []string) string {
+	if plan == nil {
+		return ""
+	}
+	selectedParts := make(map[string]struct{}, len(selected))
+	for _, partID := range selected {
+		selectedParts[partID] = struct{}{}
+	}
+	for _, part := range plan.Parts {
+		_, enabled := selectedParts[part.ID]
+		if plan.Kind == VideoPlanKindRevision && !enabled {
+			continue
+		}
+		if part.Composition == nil || part.Composition.Disabled {
+			continue
+		}
+		resolved, err := videocomposition.Resolve(plan.CompositionCatalog, part.Composition, 1920, 1080, part.DurationMs)
+		if err != nil {
+			return part.ID
+		}
+		for _, slot := range resolved {
+			if slot.Source == nil {
+				return part.ID
+			}
+		}
+	}
+	return ""
 }
 
 func unresolvedSelectedVideoAnimationPart(plan *VideoPlanProposal, selected []string) string {
@@ -2093,6 +2148,9 @@ func (s *SessionStore) prepareV3VideoProjectMutation(input V3SessionMutationInpu
 		}
 		if partID := unresolvedSelectedVideoAnimationPart(proposal.Plan, input.VideoProject.SelectedOperationIDs); partID != "" {
 			return preparedV3VideoProjectMutation{}, fmt.Errorf("video plan part %q animation derivative is not ready", partID)
+		}
+		if partID := unresolvedSelectedVideoCompositionPart(proposal.Plan, input.VideoProject.SelectedOperationIDs); partID != "" {
+			return preparedV3VideoProjectMutation{}, fmt.Errorf("video plan part %q composition has unresolved source requirements", partID)
 		}
 		base, ok, err := s.GetVideoProjectRevision(input.AccountScopeID, input.SessionID, proposal.ProjectID, proposal.BaseRevisionID)
 		if err != nil || !ok {
