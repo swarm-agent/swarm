@@ -9,7 +9,7 @@ func testSlot(id string, x float64) Slot {
 	return Slot{
 		ID: id, Requirement: "Portrait phone video",
 		Geometry: NormalizedRect{X: x, Y: .1, Width: .25, Height: .8},
-		ZIndex: 1, Fit: FitCover, AlignmentX: .5, AlignmentY: .5,
+		ZIndex:   1, Fit: FitCover, AlignmentX: .5, AlignmentY: .5,
 		Mask: Mask{Kind: MaskRoundedRect, Radius: .05}, AspectLock: 9.0 / 16.0,
 	}
 }
@@ -64,7 +64,7 @@ func TestValidationRejectsCyclesBoundsAndAmbiguousOverrides(t *testing.T) {
 		want    string
 	}{
 		{"cycle", &Catalog{SchemaVersion: 1, Layouts: []Layout{{ID: "a", ExtendsLayoutID: "b"}, {ID: "b", ExtendsLayoutID: "a"}}}, nil, "cycle"},
-		{"bounds", &Catalog{SchemaVersion: 1, Layouts: []Layout{{ID: "a", Slots: []Slot{{ID: "bad", Requirement: "x", Geometry: NormalizedRect{X: .9, Y: 0, Width: .2, Height: 1}, Fit: FitContain, Mask: Mask{Kind: MaskNone}}}}}, nil, "geometry"},
+		{"bounds", &Catalog{SchemaVersion: 1, Layouts: []Layout{{ID: "a", Slots: []Slot{{ID: "bad", Requirement: "x", Geometry: NormalizedRect{X: .9, Y: 0, Width: .2, Height: 1}, Fit: FitContain, Mask: Mask{Kind: MaskNone}}}}}}, nil, "geometry"},
 		{"override", &Catalog{SchemaVersion: 1, Layouts: []Layout{{ID: "a", Slots: []Slot{testSlot("one", 0)}}}}, &Link{LayoutID: "a", Overrides: []SlotOverride{{SlotID: "missing"}}}, "missing slot"},
 	}
 	for _, tc := range cases {
