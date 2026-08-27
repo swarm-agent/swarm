@@ -64,6 +64,7 @@ import {
   desktopV3ArtifactStudioPresentationGroupKey,
   desktopV3ArtifactStudioSectionAlternatives,
   desktopV3ArtifactStudioSectionLineage,
+  desktopV3ArtifactStudioStoryboard,
   desktopV3ArtifactStudioTurns,
 } from '../../session-v3/artifact-studio-model'
 import { useDesktopV3ArtifactPreviewVisibility } from './desktop-v3-artifact-preview-thumbnail'
@@ -337,7 +338,8 @@ export function DesktopV3ArtifactGallery({
   const selectedChainEntries = selected ? desktopV3ArtifactStudioEntries(artifacts, selected) : []
   const selectedHead = selected ? desktopV3ArtifactStudioHead(artifacts, selected) : undefined
   const selectedRounds = selected ? desktopV3ArtifactStudioRounds(artifacts, selected) : []
-  const selectedTurns = selected ? desktopV3ArtifactStudioTurns(artifacts, selected) : []
+  const selectedStoryboard = selected ? desktopV3ArtifactStudioStoryboard(artifacts, selected) : undefined
+  const selectedTurns = selectedStoryboard ? desktopV3ArtifactStudioTurns(artifacts, selectedStoryboard.source) : selected ? desktopV3ArtifactStudioTurns(artifacts, selected) : []
   const latestSelectedTurnId = selectedTurns[selectedTurns.length - 1]?.id ?? ''
   const selectedRound = selected
     ? selectedRounds.find((round) => round.candidates.some((candidate) => artifactSelectionKey(candidate) === artifactSelectionKey(selected)))
@@ -370,7 +372,7 @@ export function DesktopV3ArtifactGallery({
   const selectedAcceptedPartCount = selected?.composition?.parts.filter((part) => selectedAcceptedPartHeads.some((accepted) => desktopV3ArtifactStudioSamePartRevision(part, accepted))).length ?? 0
   const studioSectionLineage = selected ? desktopV3ArtifactStudioSectionLineage(artifacts, selected) : undefined
   const studioSectionId = iterationSection?.id ?? studioSectionLineage?.iterationSectionId ?? ''
-  const studioModeActive = Boolean(iterationDescriptor || studioSectionId || selectedTurns.length)
+  const studioModeActive = Boolean(selectedStoryboard || iterationDescriptor || studioSectionId || selectedTurns.length)
   const iterationAlternativesForSection = (sectionId: string) => selected
     ? desktopV3ArtifactStudioSectionAlternatives(artifacts, selected, sectionId)
     : []
@@ -1339,7 +1341,19 @@ export function DesktopV3ArtifactGallery({
                         })}
                       </div>
                     </section> : null}
-                    {selectedTurns.length ? <section className="mb-3 rounded-xl border border-[var(--app-border)] bg-[var(--app-bg)] p-2" aria-label="Artifact turn progression" data-artifact-studio-turns>
+                    {selectedStoryboard ? <section className="mb-3 rounded-xl border border-[var(--app-primary)] bg-[var(--app-bg)] p-2" aria-label="Storyboard initial proposal" data-artifact-studio-storyboard>
+                      <div className="px-1 pb-1.5"><p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-[var(--app-text-subtle)]">Initial proposal</p><p className="mt-0.5 text-[10px] text-[var(--app-text-muted)]">One storyboard · {selectedStoryboard.parts.length} ordered parts. Choose a part to view its exact still in context.</p></div>
+                      <div className="grid gap-1.5">{selectedStoryboard.parts.map((part, index) => {
+                        const target = part.still ?? part.source
+                        const viewing = Boolean(selected && artifactSelectionKey(selected) === artifactSelectionKey(target))
+                        const status = part.still?.status === 'staging' ? 'Generating' : part.still?.status === 'failed' || part.still?.status === 'unavailable' ? 'Failed' : part.still ? 'Ready' : 'Source'
+                        return <button key={part.id} type="button" className={cn('flex min-w-0 items-center gap-2 rounded-lg border px-2 py-2 text-left transition', viewing ? 'border-[var(--app-primary)] bg-[var(--app-primary-soft)] text-[var(--app-primary)]' : 'border-[var(--app-border)] bg-[var(--app-surface)] text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)]')} aria-current={viewing ? 'step' : undefined} onClick={() => selectPartIterationArtifact(target, part.id)} data-artifact-studio-storyboard-part={part.id}>
+                          <span className="grid size-5 shrink-0 place-items-center rounded-full border border-current/20 font-mono text-[9px]">{index + 1}</span>
+                          <span className="min-w-0 flex-1 truncate text-[10px] font-semibold">{part.label}</span>
+                          <span className="shrink-0 text-[9px] opacity-75">{viewing ? 'Viewing' : status}</span>
+                        </button>
+                      })}</div>
+                    </section> : selectedTurns.length ? <section className="mb-3 rounded-xl border border-[var(--app-border)] bg-[var(--app-bg)] p-2" aria-label="Artifact turn progression" data-artifact-studio-turns>
                       <div className="px-1 pb-1.5"><p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-[var(--app-text-subtle)]">Artifact progression</p><p className="mt-0.5 text-[10px] text-[var(--app-text-muted)]">Every AI creation round is one turn. Compare complete iterations here; changed parts stay summarized inside the turn.</p></div>
                       <div className="grid gap-2">{selectedTurns.map((turn) => {
                         const currentTurn = turn.id === latestSelectedTurnId

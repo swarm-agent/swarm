@@ -390,6 +390,38 @@ func TestCreateEditProposalNormalizesAndValidatesVisualPlanReferences(t *testing
 	}
 }
 
+func TestStartRenderJobBlocksPendingStoryboardPartsWithActionableCount(t *testing.T) {
+	store := newFakeSessionStore()
+	svc := NewService(store)
+	principal := identity.Principal{Type: identity.PrincipalTypeUser, AccountScopeID: "acc", UserID: "user"}
+	store.sessions["session"] = pebblestore.SessionSnapshot{ID: "session", AccountScopeID: "acc", UserID: "user"}
+	store.projects["project"] = pebblestore.VideoProjectSnapshot{ID: "project", AccountScopeID: "acc", UserID: "user", SessionID: "session", CurrentRevisionID: "storyboard"}
+	ref := &pebblestore.SessionArtifactSelectionReference{SessionID: "session", CollectionID: "stills", VariantID: "opening", EventSeq: 1}
+	plan := pebblestore.VideoPlanProposal{Kind: pebblestore.VideoPlanKindInitial, Parts: []pebblestore.VideoPlanPart{
+		{ID: "opening", DurationMs: 1000, ProductionState: "pending", Visual: ref, StoryboardStill: ref, VisualMediaType: "image/png"},
+		{ID: "proof", DurationMs: 1000, ProductionState: "pending", Visual: ref, StoryboardStill: ref, VisualMediaType: "image/png"},
+	}}
+	store.revisions["project"] = map[string]pebblestore.VideoProjectRevisionSnapshot{"storyboard": {ID: "storyboard", ProjectID: "project", SessionID: "session", AccountScopeID: "acc", UserID: "user", Timeline: pebblestore.VideoProjectTimeline{Clips: []pebblestore.VideoTimelineClip{{ID: "opening", SourceKind: pebblestore.VideoClipSourceKindManagedArtifact, ArtifactRef: ref, DurationMs: 1000}, {ID: "proof", SourceKind: pebblestore.VideoClipSourceKindManagedArtifact, ArtifactRef: ref, DurationMs: 1000}}, Metadata: map[string]any{"accepted_video_plan": plan}}}}
+	_, err := svc.StartRenderJob(context.Background(), principal, StartRenderJobInput{SessionID: "session", ProjectID: "project", RevisionID: "storyboard", JobID: "job"})
+	if err == nil || !strings.Contains(err.Error(), "2 storyboard part(s) remain pending") || !strings.Contains(err.Error(), "opening, proof") {
+		t.Fatalf("pending storyboard render error = %v", err)
+	}
+}
+
+func TestStartRenderJobAllowsLegacyPlansWithoutProductionState(t *testing.T) {
+	store := newFakeSessionStore()
+	svc := NewService(store)
+	principal := identity.Principal{Type: identity.PrincipalTypeUser, AccountScopeID: "acc", UserID: "user"}
+	store.sessions["session"] = pebblestore.SessionSnapshot{ID: "session", AccountScopeID: "acc", UserID: "user"}
+	store.projects["project"] = pebblestore.VideoProjectSnapshot{ID: "project", AccountScopeID: "acc", UserID: "user", SessionID: "session", CurrentRevisionID: "legacy"}
+	ref := &pebblestore.SessionArtifactSelectionReference{SessionID: "session", CollectionID: "stills", VariantID: "legacy", EventSeq: 1}
+	plan := pebblestore.VideoPlanProposal{Kind: pebblestore.VideoPlanKindInitial, Parts: []pebblestore.VideoPlanPart{{ID: "legacy", DurationMs: 1000, Visual: ref, VisualMediaType: "image/png"}}}
+	store.revisions["project"] = map[string]pebblestore.VideoProjectRevisionSnapshot{"legacy": {ID: "legacy", ProjectID: "project", SessionID: "session", AccountScopeID: "acc", UserID: "user", Timeline: pebblestore.VideoProjectTimeline{Clips: []pebblestore.VideoTimelineClip{{ID: "legacy", SourceKind: pebblestore.VideoClipSourceKindManagedArtifact, ArtifactRef: ref, DurationMs: 1000}}, Metadata: map[string]any{"accepted_video_plan": plan}}}}
+	if _, err := svc.StartRenderJob(context.Background(), principal, StartRenderJobInput{SessionID: "session", ProjectID: "project", RevisionID: "legacy", JobID: "job"}); err != nil {
+		t.Fatalf("legacy video plan should remain renderable: %v", err)
+	}
+}
+
 func TestStartRenderJobAllowsLockedHTMLAnimationForExactWorkingRevision(t *testing.T) {
 	store := newFakeSessionStore()
 	svc := NewService(store)

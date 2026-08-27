@@ -585,7 +585,11 @@ func (s *Service) StartRenderJob(ctx context.Context, principal identity.Princip
 		if plan, err := s.videoPlanRenderAuthority(principal, revision); err != nil {
 			return pebblestore.VideoRenderJobSnapshot{}, err
 		} else if plan != nil {
+			pendingParts := make([]string, 0)
 			for _, part := range plan.Parts {
+				if part.ProductionState == pebblestore.VideoProductionStatePending {
+					pendingParts = append(pendingParts, part.ID)
+				}
 				candidates := part.AnimationCandidates
 				if candidates == nil {
 					continue
@@ -603,6 +607,9 @@ func (s *Service) StartRenderJob(ctx context.Context, principal identity.Princip
 					}
 					return pebblestore.VideoRenderJobSnapshot{}, fmt.Errorf("HTML animation part %q is not renderable: %s", part.ID, reason)
 				}
+			}
+			if len(pendingParts) > 0 {
+				return pebblestore.VideoRenderJobSnapshot{}, fmt.Errorf("final render blocked: %d storyboard part(s) remain pending (%s); replace each pending part with finished still, MP4, or promoted HTML animation media", len(pendingParts), strings.Join(pendingParts, ", "))
 			}
 		}
 		for _, clip := range revision.Timeline.Clips {
@@ -921,6 +928,32 @@ func (s *Service) normalizeVisualPlanArtifacts(principal identity.Principal, ses
 			return fmt.Errorf("visual artifact variant %q must be an image or video/mp4", variant.ID)
 		}
 		part.VisualMediaType = variant.MediaType
+		if part.StoryboardSource != nil {
+			storyboardRef := part.StoryboardSource
+			if part.StoryboardStill == nil {
+				return fmt.Errorf("video plan part %q must retain its exact exported storyboard still", part.ID)
+			}
+			storyboardSession, owned, readErr := s.sessions.GetSession(storyboardRef.SessionID)
+			if readErr != nil || !owned || storyboardSession.AccountScopeID != principal.AccountScopeID || (storyboardSession.UserID != "" && storyboardSession.UserID != principal.UserID) {
+				return fmt.Errorf("storyboard source session %q is not owned by the authenticated principal", storyboardRef.SessionID)
+			}
+			storyboardVariant, found, readErr := s.sessions.GetSessionArtifactVariant(principal.AccountScopeID, storyboardRef.SessionID, storyboardRef.CollectionID, storyboardRef.VariantID)
+			if readErr != nil || !found || storyboardVariant.Status != pebblestore.SessionArtifactStatusReady || storyboardVariant.EventSeq != storyboardRef.EventSeq {
+				return fmt.Errorf("storyboard source for video plan part %q is stale, missing, or not ready", part.ID)
+			}
+			stillRef := part.StoryboardStill
+			stillVariant, found, readErr := s.sessions.GetSessionArtifactVariant(principal.AccountScopeID, stillRef.SessionID, stillRef.CollectionID, stillRef.VariantID)
+			if readErr != nil || !found || stillVariant.Status != pebblestore.SessionArtifactStatusReady || stillVariant.EventSeq != stillRef.EventSeq || !strings.HasPrefix(strings.ToLower(stillVariant.MediaType), "image/") {
+				return fmt.Errorf("storyboard still for video plan part %q is stale, missing, or not ready", part.ID)
+			}
+			lineage := stillVariant.Lineage
+			if lineage.SourceSessionID != storyboardRef.SessionID || lineage.SourceCollectionID != storyboardRef.CollectionID || lineage.SourceVariantID != storyboardRef.VariantID || lineage.SourceEventSeq != storyboardRef.EventSeq {
+				return fmt.Errorf("video plan part %q storyboard still does not descend from its exact storyboard source", part.ID)
+			}
+			if part.ProductionState == pebblestore.VideoProductionStatePending && *part.Visual != *stillRef {
+				return fmt.Errorf("pending video plan part %q must use its exact storyboard still as the visual", part.ID)
+			}
+		}
 		if candidates := part.AnimationCandidates; candidates != nil {
 			var canonicalRequirements *pebblestore.SessionArtifactOutputRequirements
 			var canonicalProfile *pebblestore.SessionArtifactAnimationProfile

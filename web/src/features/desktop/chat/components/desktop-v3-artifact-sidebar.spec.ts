@@ -212,6 +212,15 @@ test('sidebar distinguishes accepted byte heads from pending locked candidates',
   assert.match(source, /acceptedCurrent \? 'Accepted head' : currentSlot\?\.locked \? 'Locked pending' : 'History'/)
 })
 
+test('sidebar presents one storyboard proposal with its ordered parts and exact viewer navigation', async () => {
+  const source = await readFile(new URL('./desktop-v3-artifact-sidebar.tsx', import.meta.url), 'utf8')
+  assert.match(source, /desktopV3ArtifactStudioStoryboard\(artifacts, representative\)/)
+  assert.match(source, /One initial proposal/)
+  assert.match(source, /data-artifact-sidebar-storyboard-part/)
+  assert.match(source, /storyboard\.parts\.map/)
+  assert.match(source, /onOpenArtifact\(target, part\.id\)/)
+})
+
 test('sidebar turn copy keeps multi-part rounds at the complete-iteration level', async () => {
   const source = await readFile(new URL('./desktop-v3-artifact-sidebar.tsx', import.meta.url), 'utf8')
   assert.match(source, /Current authored turn/)

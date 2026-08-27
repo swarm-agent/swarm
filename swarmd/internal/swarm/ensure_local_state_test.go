@@ -131,7 +131,9 @@ func newTestService(t *testing.T) (*Service, *pebblestore.SwarmStore) {
 	}
 	t.Cleanup(func() { _ = store.Close() })
 	swarmStore := pebblestore.NewSwarmStore(store)
-	return NewService(swarmStore, nil, nil), swarmStore
+	service := NewService(swarmStore, nil, nil)
+	service.SetSecretStore(store)
+	return service, swarmStore
 }
 
 func TestEnsureLocalStateIgnoresManagedRoleInputWhenDBUnpaired(t *testing.T) {

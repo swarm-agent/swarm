@@ -12,6 +12,7 @@ import {
   desktopV3ArtifactStudioRounds,
   desktopV3ArtifactStudioSamePartRevision,
   desktopV3ArtifactStudioSectionAlternatives,
+  desktopV3ArtifactStudioStoryboard,
   desktopV3ArtifactStudioTurns,
 } from './artifact-studio-model'
 
@@ -275,6 +276,40 @@ test('artifact studio preserves three Body candidates, a locked official merge, 
   assert.equal(desktopV3ArtifactStudioEntries(entries, bodyCandidates[0]!).some((entry) => entry.artifactId === 'merged-body-b'), true)
   assert.equal(turns[1]?.parts[0]?.accepted?.part?.revision.partRevisionId, 'b21')
   assert.equal(merged.composition?.parts[1]?.locked, true)
+})
+
+test('capture-state storyboard exports remain one initial proposal with ordered parts', () => {
+  const sourceRef = ref('storyboard', 10)
+  const source = artifact({ id: 'storyboard', eventSeq: 10, step: 'storyboard-root', revision: 1, candidates: [sourceRef], accepted: sourceRef, head: sourceRef })
+  source.parts = ['scene-1', 'scene-2', 'scene-3'].map((id, index) => ({ id, label: `Scene ${index + 1}`, kind: 'state' as const, description: '', startMs: 0, endMs: 0, x: 0, y: 0, width: 0, height: 0, page: 0, stateId: id, selector: '' }))
+  source.chain = { ...source.chain!, revisionCount: 2 }
+  const stills = source.parts.map((part, index) => {
+    const stillRef = ref(`still-${index + 1}`, index + 11)
+    const still = artifact({ id: stillRef.variantId, eventSeq: stillRef.eventSeq, step: `capture-${index + 1}`, revision: 2, candidates: [stillRef], parent: sourceRef, head: sourceRef })
+    still.mediaType = 'image/png'
+    still.kind = 'image'
+    still.label = part.id
+    still.filename = `capture-${part.id}.png`
+    still.lineage.sourceSessionId = source.sessionId
+    still.lineage.sourceCollectionId = source.collectionId!
+    still.lineage.sourceVariantId = source.artifactId
+    still.lineage.sourceEventSeq = source.eventSeq
+    still.chain = source.chain
+    return still
+  })
+  const entries = [stills[2]!, source, stills[0]!, stills[1]!]
+
+  const storyboard = desktopV3ArtifactStudioStoryboard(entries, stills[1]!)
+  assert.equal(storyboard?.source.artifactId, 'storyboard')
+  assert.deepEqual(storyboard?.parts.map((part) => [part.id, part.still?.artifactId]), [
+    ['scene-1', 'still-1'],
+    ['scene-2', 'still-2'],
+    ['scene-3', 'still-3'],
+  ])
+  assert.deepEqual(desktopV3ArtifactStudioTurns(entries, source).map((turn) => turn.id), ['storyboard-root'])
+  assert.deepEqual(desktopV3ArtifactStudioEntries(entries, source).map((entry) => entry.artifactId), ['storyboard'])
+  assert.equal(desktopV3ArtifactStudioHead(entries, stills[0]!)?.artifactId, 'storyboard')
+  assert.equal(desktopV3ArtifactStudioPresentationGroupKey(entries, stills[2]!), 'chain:chain-1')
 })
 
 test('render-only fallback lineage cannot add or masquerade as an authored turn', () => {

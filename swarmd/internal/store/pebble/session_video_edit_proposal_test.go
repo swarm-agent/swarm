@@ -149,6 +149,42 @@ func TestVideoPlanCompilesMP4RangesAndOnlyTypedPresentation(t *testing.T) {
 	}
 }
 
+func TestStoryboardImportIntentRequiresCanonicalStoryboardFields(t *testing.T) {
+	ref := &SessionArtifactSelectionReference{SessionID: "session", CollectionID: "collection", VariantID: "variant", EventSeq: 1}
+	plan := VideoPlanProposal{Kind: VideoPlanKindInitial, Parts: []VideoPlanPart{{ID: "intro", Title: "Intro", DurationMs: 1000, Visual: ref, VisualMediaType: "image/png", CaptureStateID: "intro-state", FilmingRequirements: []string{"Locked camera"}, ProductionState: "pending", StoryboardSource: ref, StoryboardStill: ref}}}
+	if err := validateVideoPlanIntent(VideoEditProposalIntentStoryboardImport, plan); err != nil {
+		t.Fatal(err)
+	}
+	missing := plan
+	missing.Parts = append([]VideoPlanPart(nil), plan.Parts...)
+	missing.Parts[0].StoryboardSource = nil
+	if err := validateVideoPlanIntent(VideoEditProposalIntentStoryboardImport, missing); err == nil || !strings.Contains(err.Error(), "canonical storyboard fields") {
+		t.Fatalf("missing storyboard fields error = %v", err)
+	}
+}
+
+func TestStoryboardReplacementMaturesOnlySelectedPartAndPreservesProvenance(t *testing.T) {
+	storyboard := &SessionArtifactSelectionReference{SessionID: "session", CollectionID: "storyboard", VariantID: "source", EventSeq: 1}
+	openingStill := &SessionArtifactSelectionReference{SessionID: "session", CollectionID: "stills", VariantID: "opening", EventSeq: 2}
+	proofStill := &SessionArtifactSelectionReference{SessionID: "session", CollectionID: "stills", VariantID: "proof", EventSeq: 3}
+	accepted := &VideoPlanProposal{Kind: VideoPlanKindInitial, Parts: []VideoPlanPart{
+		{ID: "opening", Title: "Opening", DurationMs: 1000, CaptureStateID: "opening-state", FilmingRequirements: []string{"Locked camera"}, ProductionState: "pending", StoryboardSource: storyboard, StoryboardStill: openingStill, Visual: openingStill, VisualMediaType: "image/png"},
+		{ID: "proof", Title: "Proof", DurationMs: 1000, CaptureStateID: "proof-state", FilmingRequirements: []string{"Macro shot"}, ProductionState: "pending", StoryboardSource: storyboard, StoryboardStill: proofStill, Visual: proofStill, VisualMediaType: "image/png"},
+	}}
+	finished := &SessionArtifactSelectionReference{SessionID: "session", CollectionID: "footage", VariantID: "proof-final", EventSeq: 4}
+	merged, err := mergeAcceptedVideoPlan(accepted, VideoPlanProposal{Kind: VideoPlanKindRevision, Parts: []VideoPlanPart{{ID: "proof", Title: "Proof final", DurationMs: 1000, Visual: finished, VisualMediaType: "video/mp4", SourceEndMs: 1000}}}, []string{"proof"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if merged.Parts[0].ProductionState != "pending" || merged.Parts[0].Visual != openingStill {
+		t.Fatalf("unselected storyboard part changed: %+v", merged.Parts[0])
+	}
+	replaced := merged.Parts[1]
+	if replaced.ProductionState != "ready" || replaced.Visual != finished || replaced.StoryboardSource != storyboard || replaced.StoryboardStill != proofStill || replaced.CaptureStateID != "proof-state" || len(replaced.FilmingRequirements) != 1 {
+		t.Fatalf("storyboard replacement lost state or provenance: %+v", replaced)
+	}
+}
+
 func TestVideoPlanHTMLIterationIntentRejectsEveryGenericOrDowngradedShape(t *testing.T) {
 	imageOnly := VideoPlanProposal{Kind: VideoPlanKindInitial, Parts: []VideoPlanPart{videoPlanTestPart("intro", "Intro", "fallback")}}
 	if err := validateVideoPlanIntent(VideoEditProposalIntentHTMLIteration, imageOnly); err == nil || !strings.Contains(err.Error(), "image-only downgrade") {

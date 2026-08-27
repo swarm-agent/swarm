@@ -127,6 +127,22 @@ func TestBuildInputProjectsSelectedVideoStepAndPlayheadContext(t *testing.T) {
 	}
 }
 
+func TestBuildInputProjectsSelectedStoryboardPartContext(t *testing.T) {
+	input := buildInput([]pebblestore.MessageSnapshot{{
+		Role: "user", Content: "Replace this storyboard section with the filmed take.", Metadata: map[string]any{
+			"creative_mode": "video", "video_project_id": "vproj_selected", "video_revision_id": "vrev_selected", "video_selection_kind": "iteration",
+			"video_storyboard_part_id": "intro", "video_storyboard_capture_state_id": "opening", "video_storyboard_production_state": "pending",
+			"video_storyboard_filming_requirements": []any{"Locked camera", "Hold final pose"},
+		},
+	}})
+	content := input[0]["content"].([]map[string]any)[0]["text"].(string)
+	for _, want := range []string{"selected_storyboard_part_id=intro", "selected_storyboard_capture_state_id=opening", "selected_storyboard_production_state=pending", `selected_storyboard_filming_requirements=["Locked camera","Hold final pose"]`, "Preserve this stable storyboard part", "exact source/still lineage"} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("provider content missing %q: %s", want, content)
+		}
+	}
+}
+
 func TestBuildInputProjectsSelectedVideoTransitionContext(t *testing.T) {
 	input := buildInput([]pebblestore.MessageSnapshot{{
 		Role: "user", Content: "Make this transition slower.", Metadata: map[string]any{
@@ -195,8 +211,13 @@ func TestMasterHarnessPromptGuidesNormalizedHTMLStillExportAndPendingVideoPlan(t
 		"action=export_html_stills",
 		"complete exact session_id, collection_id, variant_id, and event_seq",
 		"managed image/png variants",
-		"manage_video propose_plan part.visual values",
-		"never accept it or start final rendering for the user",
+		"#swarm-storyboard-manifest",
+		"swarm.storyboard/v1",
+		"non-empty filming_requirements",
+		"storyboard_handoff",
+		"manage_video import_storyboard",
+		"Do not stop after HTML authoring or still export",
+		"never accept or start final rendering for the user while pending storyboard placeholders remain",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("master prompt missing HTML still workflow guidance %q", want)

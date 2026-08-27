@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { VIDEO_TRANSITION_KINDS, buildVideoIterationTimeline, loadLatestVideoEditProposals, proposedVideoPlanClipDetails, rejectVideoEditProposal, renderedVideoArtifactUrl, selectedVideoProposalChangeIDs, transitionLabel, videoPlanPartMessageSelection, videoPlanTransitionMessageSelection, videoProposalFocusClipId, videoProposalProjectionSequence, videoProposalsForConversationTurn, type VideoEditProposalWire } from '../video-studio/video-studio-surface'
+import { VIDEO_TRANSITION_KINDS, buildVideoIterationTimeline, loadLatestVideoEditProposals, proposedVideoPlanClipDetails, rejectVideoEditProposal, renderedVideoArtifactUrl, selectedVideoProposalChangeIDs, transitionLabel, videoPlanPartMessageSelection, videoPlanPartStoryboardContext, videoPlanTransitionMessageSelection, videoProposalFocusClipId, videoProposalProjectionSequence, videoProposalsForConversationTurn, type VideoEditProposalWire } from '../video-studio/video-studio-surface'
 
 import {
   acceptedVideoPlan,
@@ -320,6 +320,42 @@ test('Video Studio reports one concise human review state for each clip media st
   assert.deepEqual(videoClipReviewState(part('ready', true), 'video/mp4', 'video'), { mediaKind: 'Motion', state: 'Motion ready' })
   assert.deepEqual(videoClipReviewState(undefined, 'video/mp4', 'video'), { mediaKind: 'Video', state: 'Video' })
   assert.deepEqual(videoClipReviewState(undefined, 'image/png', 'image'), { mediaKind: 'Still', state: 'Still' })
+})
+
+test('Video Studio exposes storyboard placeholders, filming guidance, and exact lineage', () => {
+  const source = { session_id: 'storyboard-session', collection_id: 'storyboards', variant_id: 'launch-v1', event_seq: 7 }
+  const still = { session_id: 'video-session', collection_id: 'storyboard-stills', variant_id: 'opening', event_seq: 12 }
+  const part = {
+    id: 'intro', title: 'Opening', duration_ms: 2500, capture_state_id: 'opening',
+    filming_requirements: ['Locked camera', 'Hold final pose'], production_state: 'pending' as const,
+    storyboard_source: source, storyboard_still: still, visual: still,
+  }
+
+  assert.deepEqual(videoClipReviewState(part, 'image/png', 'image'), { mediaKind: 'Storyboard still', state: 'Placeholder · filming needed' })
+  assert.deepEqual(videoPlanPartStoryboardContext(part), {
+    partId: 'intro', captureStateId: 'opening', productionState: 'pending',
+    filmingRequirements: ['Locked camera', 'Hold final pose'], source, still,
+  })
+  assert.deepEqual(videoPlanPartMessageSelection(part), {
+    ...still,
+    label: 'Opening',
+    description: 'Stable storyboard part intro · capture state opening · pending. Locked camera · Hold final pose',
+    action: 'select',
+  })
+})
+
+test('Video Studio iteration context retains storyboard lineage for stable-part replacement', () => {
+  const source = { session_id: 'storyboard-session', collection_id: 'storyboards', variant_id: 'launch-v1', event_seq: 7 }
+  const still = { session_id: 'video-session', collection_id: 'storyboard-stills', variant_id: 'opening', event_seq: 12 }
+  const proposal: VideoEditProposalWire = {
+    id: 'storyboard-import', project_id: 'project-1', base_revision_id: 'revision-1', base_revision_number: 1,
+    working_revision_id: 'revision-2', status: 'pending', operations: [], created_at: 1, updated_at: 1,
+    plan: { kind: 'initial', parts: [{ id: 'intro', title: 'Opening', duration_ms: 2500, capture_state_id: 'opening', filming_requirements: ['Locked camera'], production_state: 'pending', storyboard_source: source, storyboard_still: still, visual: still }] },
+  }
+  const [entry] = buildVideoIterationTimeline([proposal], [])
+  assert.equal(entry.changes[0].storyboard?.partId, 'intro')
+  assert.equal(entry.changes[0].storyboard?.source.event_seq, 7)
+  assert.equal(entry.changes[0].storyboard?.still.event_seq, 12)
 })
 
 test('Video Studio shows live iterations only while their clip owns the playhead', () => {

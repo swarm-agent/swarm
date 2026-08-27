@@ -70,6 +70,11 @@ export type VideoPlanPartWire = {
   narration?: string
   on_screen_text?: string
   visual_direction?: string
+  capture_state_id?: string
+  filming_requirements?: string[]
+  production_state?: 'pending' | 'ready'
+  storyboard_source?: VideoPlanVisualWire
+  storyboard_still?: VideoPlanVisualWire
   authored_media_kind?: 'still' | 'motion' | 'clip'
   transition_in?: string
   caption?: VideoCaptionWire
@@ -123,14 +128,38 @@ export function videoPlanPartArtifact(part: VideoPlanPartWire): DesktopV3Artifac
 
 export function videoPlanPartMessageSelection(part: VideoPlanPartWire): DesktopV3ArtifactMessageSelection {
   if (!part.visual?.session_id || !part.visual.collection_id || !part.visual.variant_id || !part.visual.event_seq) throw new Error('Visual plan feedback requires the exact accepted visual')
+  const storyboard = videoPlanPartStoryboardContext(part)
   return {
     session_id: part.visual.session_id,
     collection_id: part.visual.collection_id,
     variant_id: part.visual.variant_id,
     event_seq: part.visual.event_seq,
     label: part.visual.label || part.title,
-    description: part.visual.description || part.visual_direction || undefined,
+    description: storyboard
+      ? `Stable storyboard part ${part.id} · capture state ${storyboard.captureStateId} · ${storyboard.productionState}. ${storyboard.filmingRequirements.join(' · ')}`
+      : part.visual.description || part.visual_direction || undefined,
     action: 'select',
+  }
+}
+
+export type VideoStoryboardContext = {
+  partId: string
+  captureStateId: string
+  productionState: 'pending' | 'ready'
+  filmingRequirements: string[]
+  source: VideoPlanVisualWire
+  still: VideoPlanVisualWire
+}
+
+export function videoPlanPartStoryboardContext(part: VideoPlanPartWire | undefined): VideoStoryboardContext | null {
+  if (!part?.storyboard_source || !part.storyboard_still || !part.capture_state_id || !part.production_state) return null
+  return {
+    partId: part.id,
+    captureStateId: part.capture_state_id,
+    productionState: part.production_state,
+    filmingRequirements: Array.isArray(part.filming_requirements) ? part.filming_requirements.filter(Boolean) : [],
+    source: part.storyboard_source,
+    still: part.storyboard_still,
   }
 }
 
@@ -368,6 +397,7 @@ export type VideoIterationChange = {
   startMs: number
   endMs: number
   artifact: VideoPlanVisualWire | null
+  storyboard: VideoStoryboardContext | null
   planPart?: VideoPlanPartWire
   operation?: VideoEditOperationWire
 }
@@ -394,6 +424,7 @@ export type VideoIterationComposerContext = {
   endMs: number
   label: string
   artifact: VideoPlanVisualWire | null
+  storyboard?: VideoStoryboardContext | null
 }
 
 function proposalChanges(proposal: VideoEditProposalWire): VideoIterationChange[] {
@@ -404,7 +435,7 @@ function proposalChanges(proposal: VideoEditProposalWire): VideoIterationChange[
       return plan.parts.map((part) => {
         const startMs = cursor
         cursor += Math.max(0, part.duration_ms)
-        return { id: part.id, key: `${proposal.id}:part:${part.id}`, label: `Changed clip · ${part.title}`, clipId: part.id, startMs, endMs: cursor, artifact: part.visual ?? null, planPart: part }
+        return { id: part.id, key: `${proposal.id}:part:${part.id}`, label: `Changed clip · ${part.title}`, clipId: part.id, startMs, endMs: cursor, artifact: part.visual ?? null, storyboard: videoPlanPartStoryboardContext(part), planPart: part }
       })
     })()
     : proposal.operations.map((operation, index) => {
@@ -413,7 +444,7 @@ function proposalChanges(proposal: VideoEditProposalWire): VideoIterationChange[
       const startMs = typeof clip.timeline_start_ms === 'number' ? clip.timeline_start_ms : fallback?.start_ms ?? 0
       const endMs = typeof clip.timeline_end_ms === 'number' ? clip.timeline_end_ms : fallback?.end_ms ?? startMs
       const clipId = String(clip.id ?? operation.clip_id ?? operation.transition?.to_clip_id ?? operation.transition_id ?? '').trim()
-      return { id: operation.id, key: `${proposal.id}:${operation.id}`, label: `Changed clip · ${operationLabel(operation)}`, clipId, startMs, endMs, artifact: null, operation }
+      return { id: operation.id, key: `${proposal.id}:${operation.id}`, label: `Changed clip · ${operationLabel(operation)}`, clipId, startMs, endMs, artifact: null, storyboard: null, operation }
     })
   if (proposal.status !== 'accepted' || !proposal.accepted_operation_ids?.length) return changes
   const acceptedIds = new Set(proposal.accepted_operation_ids)
@@ -530,8 +561,8 @@ export const VideoIterationSidebar = memo(function VideoIterationSidebar(props: 
               return <div key={change.key} className={`mt-2 border-l-2 pl-2 ${enabled ? 'border-[var(--app-primary)]' : 'border-[var(--app-border)] opacity-55'}`}>
                 <div className="flex items-start gap-2">
                   {proposal?.status === 'pending' && proposal.plan?.kind !== 'initial' ? <input className="mt-0.5" type="checkbox" checked={enabled} aria-label={`Enable ${change.label}`} onChange={(event) => { setSelected((current) => ({ ...current, [change.key]: event.target.checked })); setPreviewId(iteration.id) }} /> : null}
-                  <button type="button" className="min-w-0 flex-1 text-left" onClick={() => props.onFocusChange(change.clipId, change.startMs)}><span className="block truncate text-[10px] text-[var(--app-text)]">{change.label}</span><span className="mt-0.5 block font-mono text-[9px] text-[var(--app-text-subtle)]">{change.id} · {rangeLabel(change.startMs, change.endMs)}</span></button>
-                  {proposal ? <button type="button" className="shrink-0 p-1 text-[var(--app-primary)] hover:bg-[var(--app-surface-hover)]" aria-label={`Attach ${change.label} to AI composer`} onClick={() => { props.onFocusChange(change.clipId, change.startMs); props.onAttachChange({ proposalId: proposal.id, parentRevisionId: iteration.parentRevisionId, candidateRevisionId: iteration.candidateRevisionId, changeId: change.id, anchorClipId: change.clipId, startMs: change.startMs, endMs: change.endMs, label: change.label, artifact: change.artifact }) }}><Paperclip size={12} /></button> : null}
+                  <button type="button" className="min-w-0 flex-1 text-left" onClick={() => props.onFocusChange(change.clipId, change.startMs)}><span className="block truncate text-[10px] text-[var(--app-text)]">{change.label}</span><span className="mt-0.5 block font-mono text-[9px] text-[var(--app-text-subtle)]">{change.id} · {rangeLabel(change.startMs, change.endMs)}</span>{change.storyboard ? <span className={`mt-1 block text-[9px] ${change.storyboard.productionState === 'pending' ? 'text-amber-300' : 'text-green-400'}`}>{change.storyboard.productionState === 'pending' ? 'Storyboard placeholder · filming needed' : 'Production ready'} · {change.storyboard.filmingRequirements.join(' · ')}</span> : null}</button>
+                  {proposal ? <button type="button" className="shrink-0 p-1 text-[var(--app-primary)] hover:bg-[var(--app-surface-hover)]" aria-label={`Attach ${change.label} to AI composer`} onClick={() => { props.onFocusChange(change.clipId, change.startMs); props.onAttachChange({ proposalId: proposal.id, parentRevisionId: iteration.parentRevisionId, candidateRevisionId: iteration.candidateRevisionId, changeId: change.id, anchorClipId: change.clipId, startMs: change.startMs, endMs: change.endMs, label: change.label, artifact: change.artifact, storyboard: change.storyboard }) }}><Paperclip size={12} /></button> : null}
                 </div>
               </div>
             })}
@@ -565,6 +596,7 @@ export const VideoSessionAISidecar = memo(function VideoSessionAISidecar(props: 
   selectionKind?: 'visual' | 'transition' | 'iteration'
   transition?: VideoTransitionWire | null
   iterationContext?: VideoIterationComposerContext | null
+  storyboardContext?: VideoStoryboardContext | null
   routeOptions?: DesktopChatRoute[]
   draftRequest?: { id: number; draft: string }
   artifactSelectionRequest?: DesktopV3ArtifactMessageSelection | null
@@ -622,6 +654,14 @@ export const VideoSessionAISidecar = memo(function VideoSessionAISidecar(props: 
             video_iteration_change_id: props.iterationContext.changeId,
             video_iteration_range_start_ms: props.iterationContext.startMs,
             video_iteration_range_end_ms: props.iterationContext.endMs,
+          } : {}),
+          ...(props.storyboardContext ? {
+            video_storyboard_part_id: props.storyboardContext.partId,
+            video_storyboard_capture_state_id: props.storyboardContext.captureStateId,
+            video_storyboard_production_state: props.storyboardContext.productionState,
+            video_storyboard_filming_requirements: props.storyboardContext.filmingRequirements,
+            video_storyboard_source: props.storyboardContext.source,
+            video_storyboard_still: props.storyboardContext.still,
           } : {}),
         }}
         presentation="sidebar"

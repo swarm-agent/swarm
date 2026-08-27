@@ -238,6 +238,11 @@ type VideoPlanPart struct {
 	OnScreenText        string                             `json:"on_screen_text,omitempty"`
 	VisualDirection     string                             `json:"visual_direction,omitempty"`
 	TransitionIn        string                             `json:"transition_in,omitempty"`
+	CaptureStateID      string                             `json:"capture_state_id,omitempty"`
+	FilmingRequirements []string                           `json:"filming_requirements,omitempty"`
+	ProductionState     string                             `json:"production_state,omitempty"`
+	StoryboardSource    *SessionArtifactSelectionReference `json:"storyboard_source,omitempty"`
+	StoryboardStill     *SessionArtifactSelectionReference `json:"storyboard_still,omitempty"`
 	Caption             *VideoTextOverlay                  `json:"caption,omitempty"`
 	Transition          *VideoTimelineTransition           `json:"transition,omitempty"`
 	Visual              *SessionArtifactSelectionReference `json:"visual"`
@@ -251,8 +256,12 @@ const (
 	VideoPlanKindInitial  = "initial"
 	VideoPlanKindRevision = "revision"
 
-	VideoEditProposalIntentGeneral       = "general"
-	VideoEditProposalIntentHTMLIteration = "html_iteration"
+	VideoEditProposalIntentGeneral          = "general"
+	VideoEditProposalIntentHTMLIteration    = "html_iteration"
+	VideoEditProposalIntentStoryboardImport = "storyboard_import"
+
+	VideoProductionStatePending = "pending"
+	VideoProductionStateReady   = "ready"
 )
 
 // VideoPlanProposal is a visual review object. Initial plans are accepted as one
@@ -512,6 +521,17 @@ func normalizeV3VideoProjectMutation(input *V3SessionMutationInput) {
 				part.OnScreenText = strings.TrimSpace(part.OnScreenText)
 				part.VisualDirection = strings.TrimSpace(part.VisualDirection)
 				part.TransitionIn = strings.TrimSpace(part.TransitionIn)
+				part.CaptureStateID = strings.TrimSpace(part.CaptureStateID)
+				part.ProductionState = strings.ToLower(strings.TrimSpace(part.ProductionState))
+				for requirementIndex := range part.FilmingRequirements {
+					part.FilmingRequirements[requirementIndex] = strings.TrimSpace(part.FilmingRequirements[requirementIndex])
+				}
+				if part.StoryboardSource != nil {
+					normalizeVideoArtifactReference(part.StoryboardSource)
+				}
+				if part.StoryboardStill != nil {
+					normalizeVideoArtifactReference(part.StoryboardStill)
+				}
 				part.VisualMediaType = strings.ToLower(strings.TrimSpace(part.VisualMediaType))
 				if part.Caption != nil {
 					part.Caption.ID = strings.TrimSpace(part.Caption.ID)
@@ -814,7 +834,7 @@ func validateV3VideoProjectMutationInput(input V3SessionMutationInput) error {
 			if proposal.Intent == "" {
 				proposal.Intent = VideoEditProposalIntentGeneral
 			}
-			if proposal.Intent != VideoEditProposalIntentGeneral && proposal.Intent != VideoEditProposalIntentHTMLIteration {
+			if proposal.Intent != VideoEditProposalIntentGeneral && proposal.Intent != VideoEditProposalIntentHTMLIteration && proposal.Intent != VideoEditProposalIntentStoryboardImport {
 				return fmt.Errorf("video edit proposal has unsupported intent %q", proposal.Intent)
 			}
 			if proposal.Plan != nil {
@@ -830,6 +850,9 @@ func validateV3VideoProjectMutationInput(input V3SessionMutationInput) error {
 			} else {
 				if proposal.Intent == VideoEditProposalIntentHTMLIteration {
 					return errors.New("html_iteration intent requires one typed HTML iteration plan")
+				}
+				if proposal.Intent == VideoEditProposalIntentStoryboardImport {
+					return errors.New("storyboard_import intent requires one typed storyboard plan")
 				}
 				if err := validateVideoEditOperations(proposal.Operations); err != nil {
 					return err
@@ -1054,6 +1077,20 @@ func validateVideoPlanIntent(intent string, plan VideoPlanProposal) error {
 	if intent == "" {
 		intent = VideoEditProposalIntentGeneral
 	}
+	if intent == VideoEditProposalIntentStoryboardImport {
+		if plan.Kind != VideoPlanKindInitial {
+			return errors.New("storyboard_import intent requires an initial video plan")
+		}
+		for _, part := range plan.Parts {
+			if part.CaptureStateID == "" || len(part.FilmingRequirements) == 0 || part.StoryboardSource == nil || part.StoryboardStill == nil || (part.ProductionState != VideoProductionStatePending && part.ProductionState != VideoProductionStateReady) {
+				return fmt.Errorf("storyboard_import intent part %q is missing canonical storyboard fields", part.ID)
+			}
+			if *part.Visual != *part.StoryboardStill {
+				return fmt.Errorf("storyboard_import intent part %q visual must be its exact exported storyboard still", part.ID)
+			}
+		}
+		return nil
+	}
 	if intent != VideoEditProposalIntentHTMLIteration {
 		for _, part := range plan.Parts {
 			if part.AnimationCandidates != nil {
@@ -1163,10 +1200,24 @@ func validateVideoPlanProposal(plan VideoPlanProposal) error {
 			return fmt.Errorf("duplicate video plan part id %q", part.ID)
 		}
 		seen[part.ID] = struct{}{}
-		for _, value := range []string{part.Title, part.Narration, part.OnScreenText, part.VisualDirection, part.TransitionIn} {
+		for _, value := range []string{part.Title, part.Narration, part.OnScreenText, part.VisualDirection, part.TransitionIn, part.CaptureStateID, part.ProductionState} {
 			if len(value) > MaxTextOverlayLength {
 				return fmt.Errorf("video plan part %q field exceeds maximum %d characters", part.ID, MaxTextOverlayLength)
 			}
+		}
+		if len(part.FilmingRequirements) > 16 {
+			return fmt.Errorf("video plan part %q filming requirements exceed fixed bounds", part.ID)
+		}
+		for _, requirement := range part.FilmingRequirements {
+			if strings.TrimSpace(requirement) == "" || len(requirement) > 1000 {
+				return fmt.Errorf("video plan part %q contains an invalid filming requirement", part.ID)
+			}
+		}
+		if part.StoryboardSource != nil && (part.StoryboardSource.SessionID == "" || part.StoryboardSource.CollectionID == "" || part.StoryboardSource.VariantID == "" || part.StoryboardSource.EventSeq == 0) {
+			return fmt.Errorf("video plan part %q storyboard source reference is incomplete", part.ID)
+		}
+		if part.StoryboardStill != nil && (part.StoryboardStill.SessionID == "" || part.StoryboardStill.CollectionID == "" || part.StoryboardStill.VariantID == "" || part.StoryboardStill.EventSeq == 0) {
+			return fmt.Errorf("video plan part %q storyboard still reference is incomplete", part.ID)
 		}
 		if part.Caption != nil {
 			if part.Caption.ID == "" || part.Caption.Text == "" || part.Caption.StartMs < 0 || part.Caption.EndMs <= part.Caption.StartMs || part.Caption.EndMs > part.DurationMs {
@@ -1317,7 +1368,7 @@ func mergeAcceptedVideoPlan(accepted *VideoPlanProposal, proposed VideoPlanPropo
 		if !exists {
 			return VideoPlanProposal{}, fmt.Errorf("selected visual plan part %q is absent from the proposal", part.ID)
 		}
-		merged.Parts[index] = replacement
+		merged.Parts[index] = mergeStoryboardReplacement(part, replacement)
 		delete(wanted, part.ID)
 	}
 	for _, part := range proposed.Parts {
@@ -1338,6 +1389,23 @@ func mergeAcceptedVideoPlan(accepted *VideoPlanProposal, proposed VideoPlanPropo
 	return merged, nil
 }
 
+func mergeStoryboardReplacement(existing, replacement VideoPlanPart) VideoPlanPart {
+	if existing.StoryboardSource == nil {
+		return replacement
+	}
+	// Storyboard identity and filming guidance are immutable provenance for a
+	// stable part. A revision supplies only the new finished visual authority;
+	// omitted storyboard fields are inherited and the part matures to ready.
+	replacement.StoryboardSource = existing.StoryboardSource
+	replacement.StoryboardStill = existing.StoryboardStill
+	replacement.CaptureStateID = existing.CaptureStateID
+	replacement.FilmingRequirements = append([]string(nil), existing.FilmingRequirements...)
+	if replacement.ProductionState == "" {
+		replacement.ProductionState = VideoProductionStateReady
+	}
+	return replacement
+}
+
 func mergeWorkingVideoPlanMutation(timeline VideoProjectTimeline, proposed VideoPlanProposal) (VideoPlanProposal, error) {
 	working, err := acceptedVideoPlanFromTimeline(timeline)
 	if err != nil {
@@ -1354,7 +1422,7 @@ func mergeWorkingVideoPlanMutation(timeline VideoProjectTimeline, proposed Video
 	}
 	for _, part := range proposed.Parts {
 		if index, ok := indices[part.ID]; ok {
-			merged.Parts[index] = part
+			merged.Parts[index] = mergeStoryboardReplacement(merged.Parts[index], part)
 			continue
 		}
 		indices[part.ID] = len(merged.Parts)

@@ -32,6 +32,60 @@ export function desktopV3ArtifactStudioAuthoredEntry(entry: DesktopV3ArtifactCat
   return entry.role !== 'render_only'
 }
 
+export interface DesktopV3ArtifactStudioStoryboardPart {
+  id: string
+  label: string
+  stateId: string
+  source: DesktopV3ArtifactCatalogEntry
+  still?: DesktopV3ArtifactCatalogEntry
+}
+
+export interface DesktopV3ArtifactStudioStoryboard {
+  source: DesktopV3ArtifactCatalogEntry
+  parts: DesktopV3ArtifactStudioStoryboardPart[]
+}
+
+function sameLineageSource(entry: DesktopV3ArtifactCatalogEntry, source: DesktopV3ArtifactCatalogEntry): boolean {
+  return entry.lineage?.sourceSessionId === source.sessionId
+    && entry.lineage.sourceCollectionId === source.collectionId
+    && entry.lineage.sourceVariantId === source.artifactId
+    && (!entry.lineage.sourceEventSeq || entry.lineage.sourceEventSeq === source.eventSeq)
+}
+
+/**
+ * Resolves an authored capture-state storyboard and its renderer-produced stills.
+ * Exported stills are presentation children of one proposal, not new AI turns.
+ */
+export function desktopV3ArtifactStudioStoryboard(
+  entries: readonly DesktopV3ArtifactCatalogEntry[],
+  entry: DesktopV3ArtifactCatalogEntry,
+): DesktopV3ArtifactStudioStoryboard | undefined {
+  const source = (entry.mediaType === 'text/html' && (entry.parts?.filter((part) => part.kind === 'state').length ?? 0) > 1)
+    ? entry
+    : entries.find((candidate) => candidate.mediaType === 'text/html'
+      && (candidate.parts?.filter((part) => part.kind === 'state').length ?? 0) > 1
+      && sameLineageSource(entry, candidate))
+  if (!source) return undefined
+  const stateParts = (source.parts ?? []).filter((part) => part.kind === 'state')
+  if (stateParts.length < 2) return undefined
+  const derivatives = entries.filter((candidate) => candidate.mediaType.startsWith('image/') && sameLineageSource(candidate, source))
+  const parts = stateParts.map((part): DesktopV3ArtifactStudioStoryboardPart => {
+    const stateId = part.stateId || part.id
+    const still = [...derivatives].sort((left, right) => {
+      const leftMatch = Number(left.label === stateId || left.filename === `capture-${stateId}.png`)
+      const rightMatch = Number(right.label === stateId || right.filename === `capture-${stateId}.png`)
+      return rightMatch - leftMatch || Number(right.status === 'ready') - Number(left.status === 'ready') || right.updatedAt - left.updatedAt
+    }).find((candidate) => candidate.label === stateId || candidate.filename === `capture-${stateId}.png`)
+    return { id: part.id, label: part.label, stateId, source, ...(still ? { still } : {}) }
+  })
+  return { source, parts }
+}
+
+function captureStoryboardDerivative(entries: readonly DesktopV3ArtifactCatalogEntry[], entry: DesktopV3ArtifactCatalogEntry): boolean {
+  const storyboard = desktopV3ArtifactStudioStoryboard(entries, entry)
+  return Boolean(storyboard && storyboard.source !== entry && storyboard.parts.some((part) => part.still === entry))
+}
+
 function gitProjected(entry: DesktopV3ArtifactCatalogEntry): boolean {
   return desktopV3ArtifactStudioAuthoredEntry(entry)
     && entry.graphState === 'git_projection'
@@ -65,11 +119,14 @@ export function desktopV3ArtifactStudioPresentationGroupKey(
     return `supporting:${entry.sessionId}:${entry.collectionId || entry.artifactId}`
   }
   const owningSessionId = entry.lineage?.parentSessionId || entry.sessionId
+  const storyboard = desktopV3ArtifactStudioStoryboard(entries, entry)
   const chainHasMultipleTurns = Boolean(chainKey && entries.some((candidate) =>
     desktopV3ArtifactStudioChainKey(candidate) === chainKey
+      && !captureStoryboardDerivative(entries, candidate)
       && ((candidate.step?.revisionNumber ?? candidate.revisionNumber ?? 0) > 1
         || (candidate.chain?.revisionCount ?? 0) > 1)
   ))
+  if (chainKey && storyboard) return `chain:${chainKey}`
   if (chainHasMultipleTurns) return `chain:${chainKey}`
   const iterationGroupId = entry.lineage?.iterationGroupId.trim() ?? ''
   if (iterationGroupId) return `turn:${owningSessionId}:${iterationGroupId}`
@@ -81,7 +138,9 @@ export function desktopV3ArtifactStudioPresentationGroupKey(
 export function desktopV3ArtifactStudioEntries(entries: readonly DesktopV3ArtifactCatalogEntry[], entry: DesktopV3ArtifactCatalogEntry): DesktopV3ArtifactCatalogEntry[] {
   const chainKey = desktopV3ArtifactStudioChainKey(entry)
   if (!chainKey) return [entry]
-  return entries.filter((candidate) => gitProjected(candidate) && candidate.artifactChainId === chainKey)
+  return entries.filter((candidate) => gitProjected(candidate)
+      && candidate.artifactChainId === chainKey
+      && !captureStoryboardDerivative(entries, candidate))
     .sort((left, right) => left.step!.revisionNumber - right.step!.revisionNumber
       || (left.candidateIndex ?? 0) - (right.candidateIndex ?? 0)
       || left.updatedAt - right.updatedAt)
@@ -89,6 +148,8 @@ export function desktopV3ArtifactStudioEntries(entries: readonly DesktopV3Artifa
 
 export function desktopV3ArtifactStudioHead(entries: readonly DesktopV3ArtifactCatalogEntry[], entry: DesktopV3ArtifactCatalogEntry): DesktopV3ArtifactCatalogEntry | undefined {
   if (!gitProjected(entry)) return undefined
+  const storyboard = desktopV3ArtifactStudioStoryboard(entries, entry)
+  if (storyboard) return storyboard.source
   return desktopV3ArtifactStudioEntries(entries, entry).find((candidate) => sameReference(candidate, entry.chain?.head))
 }
 

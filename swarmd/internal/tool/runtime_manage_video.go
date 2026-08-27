@@ -89,6 +89,7 @@ var manageVideoActionRegistry = []manageVideoActionSpec{
 	{"inspect_accepted_cut", "Accepted cut loaded", "Inspecting accepted cut", true},
 	{"create_edit_proposal", "New change added", "Preparing video working change", true},
 	{"propose_plan", "New video change added", "Preparing visual video change", true},
+	{"import_storyboard", "Storyboard proposal added", "Importing trusted storyboard", true},
 	{"propose_html_iteration", "HTML iteration added", "Preparing live HTML iteration", true},
 	{"select_animation_candidate", "Animation candidate selected", "Selecting exact HTML animation candidate", true},
 	{"promote_animation_derivative", "Animation derivative promoted", "Promoting exact MP4 animation derivative", true},
@@ -129,7 +130,7 @@ func manageVideoAction(action string) (manageVideoActionSpec, bool) {
 func manageVideoDefinition() Definition {
 	return Definition{
 		Type: "function", Name: "manage_video",
-		Description: "Inspect trusted video and audio sources, browse registered source-media folders, inspect triggering-message video attachments, transcribe selected opaque video or audio references, inspect transcripts and the accepted immutable cut, extract bounded deterministic PNG frames from one exact project revision as ready parent-session managed artifacts, create a project, and submit atomic visual video-plan proposals with one exact ready image slide per part or typed edit proposals against one exact base revision. Exact ready image/png references returned by manage_artifact export_html_stills are valid visual inputs without download, materialization, or workspace duplication. One-shot initial-plan workflow: call create_project without initial_timeline when no accepted media must precede the visual plan, use the returned project_id and revision_id, then call propose_plan with base_revision_id set to that revision and plan.kind=initial. When registered soundtrack audio must share the initial part playhead, browse it first, copy the complete exact audio object, and pass its complete exact trimmed source_audio clip in create_project initial_timeline; the returned base revision then owns that audio and propose_plan preserves it. propose_plan creates only a pending whole-plan review object; it never accepts or applies the plan. Later stable-part revisions support selective acceptance. For authored HTML motion, select_animation_candidate records the exact reviewed HTML source, manage_artifact export_html_animation publishes its silent MP4 derivative, and promote_animation_derivative replaces only that pending part's render fallback with the exact derivative. These actions never accept the proposal. An owned chat session with an attached video project is durably upgraded to Video Studio when it first proposes an edit, regardless of whether it was entered from Chat or Studio. Later soundtrack changes use add_clip, update_clip, replace_clip, or remove_clip operations with affected_ranges against the exact base revision. AI may propose edits, select/promote exact animation media, and recommend render settings, but cannot accept a proposal or start a final render. Existing non-Studio project and render actions remain compatible. Arbitrary paths, provider URIs, credentials, and provider payloads are never accepted or returned.",
+		Description: "Inspect trusted video and audio sources, browse registered source-media folders, inspect triggering-message video attachments, transcribe selected opaque video or audio references, inspect transcripts and the accepted immutable cut, extract bounded deterministic PNG frames from one exact project revision as ready parent-session managed artifacts, create a project, and submit atomic visual video-plan proposals with one exact ready image slide per part or typed edit proposals against one exact base revision. For pre-production requests, prefer a self-contained HTML swarm.storyboard/v1 source plus swarm.capture/v1 states: export_html_stills returns the exact source/PNG handoff, then import_storyboard authenticates all lineage and atomically creates the pending initial Video Studio proposal. Each imported stable part retains its storyboard source, capture state, exported still, filming requirements, and pending/ready production state; the still remains the visible placeholder until a later plan.kind=revision replaces that same part ID with finished media. Do not stop after HTML authoring or still export, reconstruct plan JSON manually, or start final rendering while storyboard parts remain pending. One-shot initial-plan workflow: call create_project without initial_timeline when no accepted media must precede the visual plan, use the returned project_id and revision_id, then call propose_plan with base_revision_id set to that revision and plan.kind=initial. When registered soundtrack audio must share the initial part playhead, browse it first, copy the complete exact audio object, and pass its complete exact trimmed source_audio clip in create_project initial_timeline; the returned base revision then owns that audio and propose_plan preserves it. propose_plan creates only a pending whole-plan review object; it never accepts or applies the plan. Later stable-part revisions support selective acceptance. For authored HTML motion, select_animation_candidate records the exact reviewed HTML source, manage_artifact export_html_animation publishes its silent MP4 derivative, and promote_animation_derivative replaces only that pending part's render fallback with the exact derivative. These actions never accept the proposal. An owned chat session with an attached video project is durably upgraded to Video Studio when it first proposes an edit, regardless of whether it was entered from Chat or Studio. Later soundtrack changes use add_clip, update_clip, replace_clip, or remove_clip operations with affected_ranges against the exact base revision. AI may propose edits, select/promote exact animation media, and recommend render settings, but cannot accept a proposal or start a final render. Existing non-Studio project and render actions remain compatible. Arbitrary paths, provider URIs, credentials, and provider payloads are never accepted or returned.",
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -167,10 +168,12 @@ func manageVideoDefinition() Definition {
 				"initial_timeline":       map[string]any{"type": "object", "description": "Optional initial structured timeline when creating a video project. Omit it for a new visual plan without accepted media. When registered soundtrack audio must share the initial part playhead, include one exact trimmed source_audio clip here; the returned base revision owns that audio and a subsequent propose_plan preserves it."},
 				"metadata":               map[string]any{"type": "object", "description": "Optional unstructured metadata for the video project."},
 				"proposal_id":            map[string]any{"type": "string", "description": "Opaque edit proposal identifier."},
-				"part_id":                map[string]any{"type": "string", "description": "Stable video-plan part id for animation candidate selection or derivative promotion."},
+				"part_id":                map[string]any{"type": "string", "description": "Stable video-plan part id for animation candidate selection, storyboard replacement, or derivative promotion."},
 				"selected_candidate_id":  map[string]any{"type": "string", "description": "Exact candidate id already declared on the stable video-plan part."},
 				"selected_source":        manageVideoArtifactReferenceSchema(),
 				"derivative":             manageVideoArtifactReferenceSchema(),
+				"storyboard_source":      manageVideoArtifactReferenceSchema(),
+				"exports":                map[string]any{"type": "array", "minItems": 1, "maxItems": 16, "description": "Exact export_html_stills state/reference objects for every swarm.storyboard/v1 section. Required only for import_storyboard.", "items": map[string]any{"type": "object", "properties": map[string]any{"state_id": map[string]any{"type": "string"}, "reference": manageVideoArtifactReferenceSchema()}, "required": []string{"state_id", "reference"}, "additionalProperties": false}},
 				"base_revision_id":       map[string]any{"type": "string", "description": "Required exact immutable revision for propose_plan or create_edit_proposal. For a new visual plan, copy revision_id directly from create_project."},
 				"rationale":              map[string]any{"type": "string", "description": "Concise rationale for the proposed edit."},
 				"plan":                   map[string]any{"type": "object", "description": "Atomic visual video-plan proposal. Every part must include an exact ready image/* or video/mp4 render-ready fallback. Generic propose_plan is for still or MP4 plans and rejects HTML animation candidates. Live HTML alternatives have exactly one AI path: propose_html_iteration, which accepts one or more stable parts in one atomic proposal; every part requires 2 to 16 compatible ready text/html animation_candidates in awaiting_selection and one image fallback, and the action rejects any per-part image-only downgrade or premature MP4 export. Video Studio plays the selected HTML in a sandboxed swarm-player/v1 iframe while soundtrack audio follows the same playhead. Do not export HTML merely for preview and do not pass text/html through replace_source; export only the selected candidate when durable acceptance/promotion or final rendering requires its MP4 derivative. MP4 fallback parts require an explicit source range. Descriptive on_screen_text and transition_in never create timeline presentation; use typed caption and transition objects when presentation is intended. Use kind=initial for the first whole-plan review and kind=revision with stable existing part IDs for selectable replacements.", "properties": map[string]any{"kind": map[string]any{"type": "string", "enum": []string{pebblestore.VideoPlanKindInitial, pebblestore.VideoPlanKindRevision}}, "summary": map[string]any{"type": "string"}, "parts": map[string]any{"type": "array", "minItems": 1, "maxItems": pebblestore.MaxClipsPerTimeline, "items": map[string]any{"type": "object", "properties": map[string]any{"id": map[string]any{"type": "string"}, "title": map[string]any{"type": "string"}, "duration_ms": map[string]any{"type": "integer", "minimum": 1, "maximum": pebblestore.MaxVideoTimelineDurationMs}, "narration": map[string]any{"type": "string"}, "on_screen_text": map[string]any{"type": "string"}, "visual_direction": map[string]any{"type": "string"}, "transition_in": map[string]any{"type": "string", "description": "Descriptive guidance only; does not emit a timeline transition."}, "caption": manageVideoPlanCaptionSchema(), "transition": manageVideoPlanTransitionSchema(), "source_start_ms": map[string]any{"type": "integer", "minimum": 0, "description": "Required for video/mp4 visuals; inclusive source start."}, "source_end_ms": map[string]any{"type": "integer", "minimum": 1, "description": "Required for video/mp4 visuals; exclusive source end."}, "animation_candidates": manageVideoAnimationCandidatesSchema(), "visual": map[string]any{"type": "object", "description": "Complete exact ready managed image/* or video/mp4 reference returned by manage_artifact; copy all four fields from one returned reference without preview/download substitution.", "properties": map[string]any{"session_id": map[string]any{"type": "string"}, "collection_id": map[string]any{"type": "string"}, "variant_id": map[string]any{"type": "string"}, "event_seq": map[string]any{"type": "integer", "minimum": 1}}, "required": []string{"session_id", "collection_id", "variant_id", "event_seq"}, "additionalProperties": false}}, "required": []string{"id", "title", "duration_ms", "visual"}, "additionalProperties": false}}}, "required": []string{"kind", "parts"}, "additionalProperties": false},
@@ -283,7 +286,7 @@ func (r *Runtime) executeManageVideo(ctx context.Context, scope WorkspaceScope, 
 	}
 	action := strings.ToLower(strings.TrimSpace(asString(args["action"])))
 	requestedAction := action
-	if action == "propose_plan" || action == "propose_html_iteration" {
+	if action == "propose_plan" || action == "propose_html_iteration" || action == "import_storyboard" {
 		// Providers get purpose-specific actions while storage continues to use
 		// the revision-gated edit proposal authority.
 		action = "create_edit_proposal"
@@ -911,13 +914,21 @@ func (r *Runtime) executeManageVideo(ctx context.Context, scope WorkspaceScope, 
 			response["session_upgraded_to_video_studio"] = true
 		}
 		if projectID == "" || baseRevisionID == "" {
+			if requestedAction == "import_storyboard" {
+				return "", errors.New("import_storyboard requires project_id and exact base_revision_id")
+			}
 			return "", errors.New("create_edit_proposal requires project_id and exact base_revision_id")
 		}
-		plan, err := parseVideoPlanProposal(args["plan"])
+		var plan *pebblestore.VideoPlanProposal
+		if requestedAction == "import_storyboard" {
+			plan, err = r.importStoryboardPlan(ctx, scope.Principal, projectSessionID, projectID, baseRevisionID, args)
+		} else {
+			plan, err = parseVideoPlanProposal(args["plan"])
+		}
 		if err != nil {
 			return "", err
 		}
-		if (requestedAction == "propose_plan" || requestedAction == "propose_html_iteration") && plan == nil {
+		if (requestedAction == "propose_plan" || requestedAction == "propose_html_iteration" || requestedAction == "import_storyboard") && plan == nil {
 			return "", fmt.Errorf("%s requires one atomic plan", requestedAction)
 		}
 		var operations []pebblestore.VideoEditOperation
@@ -943,6 +954,8 @@ func (r *Runtime) executeManageVideo(ctx context.Context, scope WorkspaceScope, 
 		intent := pebblestore.VideoEditProposalIntentGeneral
 		if requestedAction == "propose_html_iteration" {
 			intent = pebblestore.VideoEditProposalIntentHTMLIteration
+		} else if requestedAction == "import_storyboard" {
+			intent = pebblestore.VideoEditProposalIntentStoryboardImport
 		}
 		proposal, err := r.videoProjects.CreateEditProposal(ctx, scope.Principal, videoproject.CreateEditProposalInput{SessionID: projectSessionID, ProjectID: projectID, ProposalID: strings.TrimSpace(asString(args["proposal_id"])), BaseRevisionID: baseRevisionID, Title: strings.TrimSpace(asString(args["title"])), Rationale: strings.TrimSpace(asString(args["rationale"])), Intent: intent, Plan: plan, Operations: operations, AffectedRanges: affectedRanges})
 		if err != nil {
@@ -950,7 +963,7 @@ func (r *Runtime) executeManageVideo(ctx context.Context, scope WorkspaceScope, 
 		}
 		response["proposal"] = safeVideoEditProposal(proposal)
 		response["proposal_id"], response["project_id"], response["revision_id"] = proposal.ID, proposal.ProjectID, proposal.BaseRevisionID
-		if requestedAction == "propose_plan" || requestedAction == "propose_html_iteration" {
+		if requestedAction == "propose_plan" || requestedAction == "propose_html_iteration" || requestedAction == "import_storyboard" {
 			response["action"] = requestedAction
 		}
 		response["proposal_status"], response["stale_base"] = proposal.Status, false
@@ -1245,7 +1258,7 @@ func (r *Runtime) executeManageVideo(ctx context.Context, scope WorkspaceScope, 
 		return "", fmt.Errorf("unsupported manage_video action %q", action)
 	}
 	presentationAction := action
-	if requestedAction == "propose_plan" || requestedAction == "propose_html_iteration" {
+	if requestedAction == "propose_plan" || requestedAction == "propose_html_iteration" || requestedAction == "import_storyboard" {
 		presentationAction = requestedAction
 	}
 	response["presentation"] = manageVideoPresentation(presentationAction, args, response)
@@ -1864,6 +1877,27 @@ func manageVideoSelectionContext(metadata map[string]any) map[string]any {
 	for _, pair := range [][2]string{{"anchor_clip_id", "video_anchor_clip_id"}, {"kind", "video_selection_kind"}, {"transition_id", "video_transition_id"}, {"transition_kind", "video_transition_kind"}, {"transition_from_clip_id", "video_transition_from_clip_id"}, {"transition_to_clip_id", "video_transition_to_clip_id"}} {
 		if value := strings.TrimSpace(asString(metadata[pair[1]])); value != "" {
 			selection[pair[0]] = value
+		}
+	}
+	for _, pair := range [][2]string{{"storyboard_part_id", "video_storyboard_part_id"}, {"storyboard_capture_state_id", "video_storyboard_capture_state_id"}, {"storyboard_production_state", "video_storyboard_production_state"}} {
+		if value := strings.TrimSpace(asString(metadata[pair[1]])); value != "" {
+			selection[pair[0]] = value
+		}
+	}
+	if values, ok := metadata["video_storyboard_filming_requirements"].([]string); ok {
+		selection["storyboard_filming_requirements"] = append([]string(nil), values...)
+	} else if raw, ok := metadata["video_storyboard_filming_requirements"].([]any); ok {
+		values := make([]string, 0, len(raw))
+		for _, item := range raw {
+			if value := strings.TrimSpace(asString(item)); value != "" {
+				values = append(values, value)
+			}
+		}
+		selection["storyboard_filming_requirements"] = values
+	}
+	for _, pair := range [][2]string{{"storyboard_source", "video_storyboard_source"}, {"storyboard_still", "video_storyboard_still"}} {
+		if ref, err := parseManageVideoArtifactReference(metadata[pair[1]], pair[1]); err == nil {
+			selection[pair[0]] = ref
 		}
 	}
 	for _, pair := range [][2]string{{"playhead_ms", "video_playhead_ms"}, {"transition_duration_ms", "video_transition_duration_ms"}} {

@@ -30,10 +30,40 @@ func TestManageVideoDefinitionExposesOnlyOpaqueReferences(t *testing.T) {
 			t.Fatalf("manage_video schema exposes forbidden field %q", forbidden)
 		}
 	}
-	for _, required := range []string{"source_root_ref", "relative_path", "video_refs", "audio_refs", "job_refs", "job_ref", "transcript_ref", "analysis_ref", "source_fingerprint", "waveform_resolution_ms", "focus_notes", "start_ms", "end_ms", "timestamps_ms", "ranges", "max_width", "include_index", "index_only", "base_revision_id", "operations", "affected_ranges", "part_id", "selected_candidate_id", "selected_source", "derivative", "propose_html_iteration"} {
+	for _, required := range []string{"source_root_ref", "relative_path", "video_refs", "audio_refs", "job_refs", "job_ref", "transcript_ref", "analysis_ref", "source_fingerprint", "waveform_resolution_ms", "focus_notes", "start_ms", "end_ms", "timestamps_ms", "ranges", "max_width", "include_index", "index_only", "base_revision_id", "operations", "affected_ranges", "part_id", "selected_candidate_id", "selected_source", "derivative", "propose_html_iteration", "import_storyboard", "storyboard_source", "exports"} {
 		if !strings.Contains(text, `"`+required+`"`) {
 			t.Fatalf("manage_video schema lacks %q", required)
 		}
+	}
+}
+
+func TestManageVideoDefinitionDescribesStoryboardFirstPreProductionWorkflow(t *testing.T) {
+	definition := manageVideoDefinition()
+	for _, required := range []string{"prefer a self-contained HTML swarm.storyboard/v1 source", "export_html_stills", "import_storyboard", "filming requirements", "still remains the visible placeholder", "plan.kind=revision", "Do not stop after HTML authoring or still export", "storyboard parts remain pending"} {
+		if !strings.Contains(definition.Description, required) {
+			t.Fatalf("manage_video description lacks storyboard workflow %q", required)
+		}
+	}
+}
+
+func TestManageVideoSelectionContextRetainsStoryboardLineage(t *testing.T) {
+	ref := map[string]any{"session_id": "source-session", "collection_id": "storyboards", "variant_id": "launch", "event_seq": 7}
+	still := map[string]any{"session_id": "video-session", "collection_id": "stills", "variant_id": "opening", "event_seq": 12}
+	selection := manageVideoSelectionContext(map[string]any{
+		"video_storyboard_part_id": "intro", "video_storyboard_capture_state_id": "opening", "video_storyboard_production_state": "pending",
+		"video_storyboard_filming_requirements": []any{"Locked camera", "Hold final pose"}, "video_storyboard_source": ref, "video_storyboard_still": still,
+	})
+	if selection["storyboard_part_id"] != "intro" || selection["storyboard_capture_state_id"] != "opening" || selection["storyboard_production_state"] != "pending" {
+		t.Fatalf("selection = %#v", selection)
+	}
+	if got := selection["storyboard_filming_requirements"].([]string); len(got) != 2 || got[0] != "Locked camera" {
+		t.Fatalf("filming requirements = %#v", got)
+	}
+	if got := selection["storyboard_source"].(*pebblestore.SessionArtifactSelectionReference); got.EventSeq != 7 {
+		t.Fatalf("storyboard source = %#v", got)
+	}
+	if got := selection["storyboard_still"].(*pebblestore.SessionArtifactSelectionReference); got.EventSeq != 12 {
+		t.Fatalf("storyboard still = %#v", got)
 	}
 }
 
@@ -75,7 +105,7 @@ func TestManageVideoActionRegistryAndNearestSuggestions(t *testing.T) {
 		t.Fatalf("nearest actions = %#v", nearest)
 	}
 	studio := manageVideoActionNames(true)
-	for _, required := range []string{"propose_html_iteration", "select_animation_candidate", "promote_animation_derivative"} {
+	for _, required := range []string{"propose_html_iteration", "import_storyboard", "select_animation_candidate", "promote_animation_derivative"} {
 		if !containsString(studio, required) {
 			t.Fatalf("studio actions lack %q: %#v", required, studio)
 		}
@@ -395,7 +425,7 @@ func TestManageVideoDefinitionExposesProjectAndRenderWorkflow(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(raw)
-	for _, action := range []string{"create_project", "read_project", "get_project", "list_projects", "create_edit_proposal", "propose_plan", "propose_html_iteration", "select_animation_candidate", "promote_animation_derivative", "create_revision", "restore_revision", "start_render", "render_status", "cancel_render"} {
+	for _, action := range []string{"create_project", "read_project", "get_project", "list_projects", "create_edit_proposal", "propose_plan", "import_storyboard", "propose_html_iteration", "select_animation_candidate", "promote_animation_derivative", "create_revision", "restore_revision", "start_render", "render_status", "cancel_render"} {
 		if !strings.Contains(text, `"`+action+`"`) {
 			t.Fatalf("schema lacks video project/render action %q", action)
 		}
