@@ -67,6 +67,7 @@ test('artifact studio keeps source-free root iterations together until one candi
 
   const nextRef = { ...ref('first-v2', 3), collectionId: 'first-v2-collection' }
   const next = artifact({ id: 'first-v2', eventSeq: 3, step: 'first-turn-2', revision: 2, candidates: [nextRef], parent: firstGroupRef, head: nextRef })
+  next.collectionId = nextRef.collectionId
   next.artifactChainId = 'chain-first'
   next.chain = { ...next.chain!, id: 'chain-first', root: firstGroupRef, revisionCount: 2 }
   next.step = { ...next.step!, artifactChainId: 'chain-first' }

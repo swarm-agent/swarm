@@ -147,32 +147,38 @@ test('source-free overall iteration roots stay grouped before artifact turns beg
 })
 
 test('a candidate becomes a turn-based artifact only after its chain gains another revision', () => {
+  const rootReference = { sessionId: 'session-a', collectionId: 'collection-overall', variantId: 'variant-root', eventSeq: 1 }
+  const nextReference = { sessionId: 'session-a', collectionId: 'collection-turn-2', variantId: 'variant-turn-2', eventSeq: 2 }
   const root = {
     ...artifact('session-a', 'variant-root'),
     collectionId: 'collection-overall',
     collectionName: 'Overall concepts',
+    eventSeq: 1,
     graphState: 'git_projection' as const,
     artifactChainId: 'chain-selected',
     artifactStepId: 'step-root',
     candidateIndex: 1,
-    chain: { name: 'Selected concept', revisionCount: 2 },
-    step: { id: 'step-root', revisionNumber: 1 },
+    chain: { id: 'chain-selected', graphState: 'git_projection', name: 'Selected concept', root: rootReference, head: nextReference, revisionCount: 2, lastRoundId: 'step-turn-2' },
+    step: { id: 'step-root', graphState: 'git_projection', artifactChainId: 'chain-selected', revisionNumber: 1, candidates: [rootReference] },
   } as DesktopV3ArtifactCatalogEntry
   const nextTurn = {
     ...root,
     artifactId: 'variant-turn-2',
     collectionId: 'collection-turn-2',
+    eventSeq: 2,
     artifactStepId: 'step-turn-2',
-    step: { id: 'step-turn-2', revisionNumber: 2 },
+    step: { id: 'step-turn-2', graphState: 'git_projection', artifactChainId: 'chain-selected', revisionNumber: 2, parent: rootReference, candidates: [nextReference] },
   } as DesktopV3ArtifactCatalogEntry
+  const otherReference = { sessionId: 'session-a', collectionId: 'collection-overall', variantId: 'variant-other', eventSeq: 3 }
   const unselectedRoot = {
     ...root,
     artifactId: 'variant-other',
+    eventSeq: 3,
     artifactChainId: 'chain-other',
     artifactStepId: 'step-overall',
     candidateIndex: 2,
-    chain: { name: 'Other concept', revisionCount: 1 },
-    step: { id: 'step-overall', revisionNumber: 1 },
+    chain: { id: 'chain-other', graphState: 'git_projection', name: 'Other concept', root: otherReference, head: otherReference, revisionCount: 1, lastRoundId: 'step-overall' },
+    step: { id: 'step-overall', graphState: 'git_projection', artifactChainId: 'chain-other', revisionNumber: 1, candidates: [otherReference] },
   } as DesktopV3ArtifactCatalogEntry
 
   const groups = desktopV3ArtifactSidebarGroups([unselectedRoot, nextTurn, root])
