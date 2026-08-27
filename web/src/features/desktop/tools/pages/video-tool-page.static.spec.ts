@@ -90,10 +90,12 @@ test('Video Studio reviews nested selective iterations in the sidebar and keeps 
   assert.match(proposalSource, /video_iteration_range_end_ms/)
 })
 
-test('Video Studio pins one clip-owned animation selection surface and an identity-led active 16:9 player', async () => {
+test('Video Studio pins one clip-owned animation selection surface and an identity-led exact-aspect player', async () => {
   const source = await readFile(pageSourceUrl, 'utf8')
 
-  assert.match(source, /className="relative aspect-video w-full shrink-0 overflow-hidden[^"]*" data-video-studio-player-viewport/)
+  assert.match(source, /className="relative w-full shrink-0 overflow-hidden[^"]*" data-video-studio-player-viewport style=\{\{ aspectRatio:/)
+  assert.match(source, /width=\{\(shadowTimeline \?\? playerRevision\?\.timeline\)\?\.width \?\? 1920\}/)
+  assert.match(source, /height=\{\(shadowTimeline \?\? playerRevision\?\.timeline\)\?\.height \?\? 1080\}/)
   assert.match(source, /<canvas[^>]*className="absolute inset-0 h-full w-full bg-black object-contain"/)
   assert.match(source, /<div className="absolute inset-0 overflow-hidden bg-black"><iframe[^>]*data-video-studio-live-animation/)
   assert.doesNotMatch(source, /sm:min-h-\[360px\]|lg:min-h-\[480px\]|style=\{\{ maxHeight: '100%' \}\}/)
@@ -126,6 +128,23 @@ test('Video Studio places the timeline directly below the player before clip rev
   assert.ok(clipReviewIndex > playerIndex)
   assert.match(source.slice(timelineIndex - 80, timelineIndex + 80), /order-1/)
   assert.match(source.slice(clipReviewIndex - 80, clipReviewIndex + 80), /order-2/)
+})
+
+test('Video Studio exposes exact-aspect pending spatial composition controls', async () => {
+  const source = await readFile(pageSourceUrl, 'utf8')
+  const compositionSource = await readFile(new URL('../video-studio/video-composition.tsx', import.meta.url), 'utf8')
+  assert.match(source, /<VideoCompositionOverlay/)
+  assert.match(source, /<VideoCompositionEditor/)
+  assert.match(source, /Propose composition changes/)
+  assert.match(source, /Linked layout/)
+  assert.match(compositionSource, /Apply to linked shots/)
+  assert.match(compositionSource, /Detach shot/)
+  assert.match(compositionSource, /Relink/)
+  assert.match(compositionSource, /Composition source/)
+  assert.match(compositionSource, /Composition fit/)
+  assert.match(compositionSource, /Composition mask/)
+  assert.match(compositionSource, /Composition audio/)
+  assert.match(compositionSource, /All changes create a pending proposal/)
 })
 
 test('Video Studio exposes only the implemented soundtrack contract and an explicit audio lane', async () => {

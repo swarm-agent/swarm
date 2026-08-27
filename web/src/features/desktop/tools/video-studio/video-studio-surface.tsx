@@ -9,6 +9,7 @@ import type { DesktopV3CacheState } from '../../state/desktop-v3-cache-types'
 import { selectAndHydrateDesktopV3Session } from '../../state/desktop-v3-session-hydrator'
 import type { DesktopChatRoute } from '../../chat/services/chat-routing'
 import type { DesktopV3ArtifactCatalogEntry, DesktopV3ArtifactMessageSelection } from '../../session-v3/artifact-api'
+import type { VideoCompositionCatalogWire, VideoCompositionLinkWire } from './video-composition'
 
 export const VIDEO_TRANSITION_KINDS = ['cut', 'fade_through_black', 'crossfade', 'fade_to_black', 'fade_from_black'] as const
 export type VideoTransitionKind = typeof VIDEO_TRANSITION_KINDS[number]
@@ -84,11 +85,13 @@ export type VideoPlanPartWire = {
   source_start_ms?: number
   source_end_ms?: number
   animation_candidates?: VideoAnimationCandidateSetWire
+  composition?: VideoCompositionLinkWire
 }
 
 export type VideoPlanProposalWire = {
   kind: 'initial' | 'revision'
   summary?: string
+  composition_catalog?: VideoCompositionCatalogWire
   parts: VideoPlanPartWire[]
 }
 
@@ -252,6 +255,7 @@ export async function createVideoEditProposal(input: {
   rationale?: string
   operations: VideoEditOperationWire[]
   affectedRanges: Array<{ start_ms: number; end_ms: number }>
+  plan?: VideoPlanProposalWire
 }): Promise<VideoEditProposalWire> {
   const response = await requestJson<{ proposal?: VideoEditProposalWire }>(`/v3/sessions/${encodeURIComponent(input.sessionId)}/video/projects/${encodeURIComponent(input.projectId)}/edit-proposals`, {
     method: 'POST',
@@ -262,6 +266,7 @@ export async function createVideoEditProposal(input: {
       rationale: input.rationale,
       operations: input.operations,
       affected_ranges: input.affectedRanges,
+      plan: input.plan,
     }),
   })
   if (!response.proposal) throw new Error('Video edit proposal response returned no proposal')

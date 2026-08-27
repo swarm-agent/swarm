@@ -20,6 +20,7 @@ import { VIDEO_TRANSITION_KINDS, VideoIterationSidebar, VideoSessionAISidecar, a
 import { fetchDesktopV3ArtifactPreviewAccess } from '../../session-v3/artifact-api'
 import { desktopV3ArtifactIterationMessage } from '../../session-v3/artifact-iteration-protocol'
 import { saveVideoSessionViewPreference } from '../video-studio/video-session-view-preference'
+import { VideoCompositionEditor, VideoCompositionOverlay, resolveVideoComposition, type VideoCompositionCatalogWire, type VideoCompositionLinkWire } from '../video-studio/video-composition'
 import { useDesktopV3CacheSelector } from '../../state/desktop-v3-cache-store'
 
 export type VideoClip = {
@@ -72,6 +73,8 @@ export type VideoTimelineClipWire = {
     start_ms?: number
     end_ms?: number
   }>
+  composition_part_id?: string
+  composition?: VideoCompositionLinkWire
 }
 
 export type VideoProjectTimelineWire = {
@@ -83,6 +86,7 @@ export type VideoProjectTimelineWire = {
   total_duration_ms?: number
   clips: VideoTimelineClipWire[]
   transitions?: VideoTransitionWire[]
+  composition_catalog?: VideoCompositionCatalogWire
   metadata?: Record<string, unknown>
 }
 
@@ -227,7 +231,7 @@ export function acceptedVideoPlan(timeline: VideoProjectTimelineWire): VideoPlan
   if (!Array.isArray(plan.parts) || plan.parts.length === 0) return null
   const parts = plan.parts.filter((part) => part && typeof part.id === 'string' && typeof part.title === 'string' && typeof part.duration_ms === 'number' && Boolean(part.visual?.session_id && part.visual.collection_id && part.visual.variant_id && part.visual.event_seq))
   const kind = plan.kind === 'revision' ? 'revision' : 'initial'
-  return parts.length > 0 ? { kind, summary: typeof plan.summary === 'string' ? plan.summary : undefined, parts } : null
+  return parts.length > 0 ? { kind, summary: typeof plan.summary === 'string' ? plan.summary : undefined, composition_catalog: plan.composition_catalog, parts } : null
 }
 
 export function videoPlanForPlayback(
@@ -536,6 +540,8 @@ export type TimelineSegment = {
   audioSource?: AudioSourceWire
   transitionIn?: VideoTransitionWire
   captions?: NonNullable<VideoTimelineClipWire['captions']>
+  compositionPartId?: string
+  composition?: VideoCompositionLinkWire
 }
 
 type TimelineLayoutSegment = TimelineSegment & {
@@ -1133,6 +1139,8 @@ export function timelineSegmentsToProjectTimeline(
       duration_ms: Math.round(dur * 1000),
       visible: seg.visible,
       volume: 1.0,
+      composition_part_id: seg.compositionPartId,
+      composition: seg.composition,
     }
   })
   const [width, height] = outputPreset.startsWith('portrait') ? [1080, 1920] : outputPreset.startsWith('square') ? [1080, 1080] : [1920, 1080]
@@ -1161,7 +1169,10 @@ function visualPlanTimeline(accepted: VideoProjectTimelineWire, plan: VideoPlanP
   const currentPlan = acceptedVideoPlan(accepted)
   const parts = plan.kind === 'revision' && currentPlan
     ? [
-        ...currentPlan.parts.map((part) => plan.parts.find((replacement) => replacement.id === part.id) ?? part),
+        ...currentPlan.parts.map((part) => {
+          const replacement = plan.parts.find((candidate) => candidate.id === part.id)
+          return replacement ? { ...part, ...replacement, composition: replacement.composition ?? part.composition } : part
+        }),
         ...plan.parts.filter((part) => !currentPlan.parts.some((current) => current.id === part.id)),
       ]
     : plan.parts
@@ -1183,6 +1194,8 @@ function visualPlanTimeline(accepted: VideoProjectTimelineWire, plan: VideoPlanP
       source_start_ms: part.source_start_ms ?? 0,
       source_end_ms: part.source_end_ms ?? ((part.visual_media_type || part.visual?.media_type) === 'video/mp4' ? undefined : part.duration_ms),
       captions: part.caption ? [{ ...part.caption, start_ms: startMs + (part.caption.start_ms ?? 0), end_ms: startMs + (part.caption.end_ms ?? part.duration_ms) }] : [],
+      composition_part_id: part.composition ? part.id : undefined,
+      composition: part.composition,
     }
     startMs = endMs
     return clip
@@ -1195,9 +1208,10 @@ function visualPlanTimeline(accepted: VideoProjectTimelineWire, plan: VideoPlanP
     ...(accepted.transitions ?? []).filter((transition) => !planPartIds.has(transition.from_clip_id) || !planPartIds.has(transition.to_clip_id)),
   ]
   const totalDurationMs = auxiliaryClips.reduce((duration, clip) => Math.max(duration, clip.timeline_end_ms ?? ((clip.timeline_start_ms ?? 0) + (clip.duration_ms ?? 0))), startMs)
-  const mergedPlan: VideoPlanProposalWire = { kind: 'initial', summary: plan.summary || currentPlan?.summary, parts }
+  const mergedPlan: VideoPlanProposalWire = { kind: 'initial', summary: plan.summary || currentPlan?.summary, composition_catalog: plan.composition_catalog ?? currentPlan?.composition_catalog, parts }
   return {
     ...accepted,
+    composition_catalog: mergedPlan.composition_catalog,
     total_duration_ms: totalDurationMs,
     clips,
     transitions,
@@ -1318,6 +1332,8 @@ export function projectTimelineToTimelineSegments(
       audioSource: clipWire.audio_source,
       transitionIn,
       captions: clipWire.captions?.map((caption) => ({ ...caption })),
+      compositionPartId: clipWire.composition_part_id,
+      composition: clipWire.composition,
     }
   }).sort((left, right) => left.start - right.start
     || (left.layer ?? left.track ?? 0) - (right.layer ?? right.track ?? 0)
@@ -1550,6 +1566,8 @@ export function VideoToolPage() {
   const [pendingProposal, setPendingProposal] = useState<VideoEditProposalWire | null>(null)
   const [projectProposals, setProjectProposals] = useState<VideoEditProposalWire[]>([])
   const [pendingSelectedChangeIds, setPendingSelectedChangeIds] = useState<string[]>([])
+  const [compositionEditing, setCompositionEditing] = useState(false)
+  const [compositionProposalBusy, setCompositionProposalBusy] = useState(false)
   const [soundtrackPickerOpen, setSoundtrackPickerOpen] = useState(false)
   const [soundtrackDraft, setSoundtrackDraft] = useState<VideoTimelineClipWire | null>(null)
   const [soundtrackProposalBusy, setSoundtrackProposalBusy] = useState(false)
@@ -1750,6 +1768,9 @@ export function VideoToolPage() {
     })
     : null, [activeCandidate, currentWorkingProposal, liveAnimationPart, playerRevision, videoProject])
   const activeClipReviewState = videoClipReviewState(liveAnimationPart ?? undefined, activeSegment?.artifactRef?.media_type ?? '', activeSegment?.type ?? 'frame')
+  const activeCompositionPart = useMemo(() => playbackPlan?.parts.find((part) => part.id === activeSegment?.compositionPartId || part.id === activeSegment?.clipId) ?? null, [activeSegment?.clipId, activeSegment?.compositionPartId, playbackPlan])
+  const activeCompositionCatalog = playbackPlan?.composition_catalog ?? (shadowTimeline ?? playerRevision?.timeline)?.composition_catalog
+  const activeCompositionSlots = useMemo(() => resolveVideoComposition(activeCompositionCatalog, activeCompositionPart?.composition ?? activeSegment?.composition, (shadowTimeline ?? playerRevision?.timeline)?.width ?? 1920, (shadowTimeline ?? playerRevision?.timeline)?.height ?? 1080), [activeCompositionCatalog, activeCompositionPart?.composition, activeSegment?.composition, playerRevision?.timeline, shadowTimeline])
   const currentTurnParts = useMemo(() => currentWorkingProposal?.plan?.parts ?? [], [currentWorkingProposal])
   const currentTurnVariantPartCount = currentTurnParts.filter((part) => (part.animation_candidates?.candidates.length ?? 0) > 0).length
   const currentTurnStaticFallbackCount = currentTurnParts.filter((part) => (part.visual_media_type || part.visual?.media_type || '').startsWith('image/')).length
@@ -1774,7 +1795,12 @@ export function VideoToolPage() {
   const hasUnresolvedPlanFrames = timelineSegments.some((segment) => segment.sourceKind === 'text' || (segment.sourceKind === 'managed_artifact' && !segment.src))
   const renderRevision = playerRevision
   const renderBlockedByIterations = !previewRevision && unresolvedIterationLockPartIDs.length > 0
-  const renderBlockedByStoryboard = pendingStoryboardPartIDs.length > 0
+  const renderBlockedByStoryboard = pendingStoryboardPartIDs.some((partID) => {
+    const part = playbackPlan?.parts.find((candidate) => candidate.id === partID)
+    if (!part?.composition || part.composition.disabled) return true
+    const slots = resolveVideoComposition(playbackPlan?.composition_catalog, part.composition, playerRevision?.timeline.width ?? 1920, playerRevision?.timeline.height ?? 1080)
+    return slots.length === 0 || slots.some((slot) => !slot.source)
+  })
   const selectedClip = selectedClips.find((clip) => clip.id === selectedClipId) ?? selectedClips[0] ?? null
   const acceptedSoundtrack = useMemo(() => (keptRevision?.timeline.clips ?? []).find((clip) => clip.source_kind === 'source_audio') ?? null, [keptRevision])
   const playbackSoundtrack = audioTimelineLayout[0] ?? null
@@ -2757,6 +2783,7 @@ export function VideoToolPage() {
   }, [handleSeek, timelineLayout])
 
   const handlePendingProposalChange = useCallback((proposal: VideoEditProposalWire | null, selectedChangeIds: string[]) => {
+    setCompositionEditing(false)
     animationSelectionRequestSequenceRef.current += 1
     setAnimationSelectionBusyPartId(null)
     setActivePreviewIdentity(null)
@@ -2879,6 +2906,34 @@ export function VideoToolPage() {
     const clip = soundtrackTimelineClip({ audio, durationMs: Math.max(1, Math.round(movieDuration * 1000)), existing: acceptedSoundtrack })
     setSoundtrackDraft(clip)
   }, [acceptedSoundtrack, movieDuration])
+
+  const proposeCompositionChange = useCallback(async (catalog: VideoCompositionCatalogWire, link: VideoCompositionLinkWire, summary: string) => {
+    if (!selectedThread || !videoProject || !currentRevision || !activeCompositionPart || pendingProposal || selectedLibraryVideo) return
+    setCompositionProposalBusy(true)
+    setCreateError(null)
+    try {
+      const accepted = acceptedVideoPlan(currentRevision.timeline)
+      const part = (accepted?.parts ?? playbackPlan?.parts ?? []).find((candidate) => candidate.id === activeCompositionPart.id) ?? activeCompositionPart
+      const proposalPart = { ...part, composition: link, production_state: link.disabled ? 'ready' as const : part.production_state }
+      await createVideoEditProposal({
+        sessionId: selectedThread.id,
+        projectId: videoProject.id,
+        baseRevisionId: currentRevision.id,
+        title: summary,
+        rationale: 'Spatial composition edited in Video Studio. This remains pending until explicitly confirmed.',
+        plan: { kind: 'initial', summary, composition_catalog: catalog, parts: accepted ? accepted.parts.map((candidate) => candidate.id === proposalPart.id ? proposalPart : candidate) : [proposalPart] },
+        operations: [],
+        affectedRanges: [{ start_ms: Math.round((activeSegment?.timelineStart ?? 0) * 1000), end_ms: Math.round((activeSegment?.timelineEnd ?? 0) * 1000) }],
+      })
+      setCompositionEditing(false)
+      setAIRefreshKey((value) => value + 1)
+      await refreshSelectedVideoProject()
+    } catch (error) {
+      setCreateError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setCompositionProposalBusy(false)
+    }
+  }, [activeCompositionPart, activeSegment?.timelineEnd, activeSegment?.timelineStart, currentRevision, pendingProposal, playbackPlan?.parts, refreshSelectedVideoProject, selectedLibraryVideo, selectedThread, videoProject])
 
   const handleRequestStepEdit = useCallback((action: VideoStepEditAction, segment: TimelineLayoutSegment) => {
     if (!videoProject || !currentRevision) return
@@ -3152,8 +3207,9 @@ export function VideoToolPage() {
                 </div>
               ) : (
                 <>
-              <div className="relative aspect-video w-full shrink-0 overflow-hidden rounded-xl border border-[var(--app-border)] bg-black lg:rounded-none" data-video-studio-player-viewport>
-                <canvas ref={canvasRef} width={1920} height={1080} className="absolute inset-0 h-full w-full bg-black object-contain" />
+              <div className="relative w-full shrink-0 overflow-hidden rounded-xl border border-[var(--app-border)] bg-black lg:rounded-none" data-video-studio-player-viewport style={{ aspectRatio: `${(shadowTimeline ?? playerRevision?.timeline)?.width ?? 1920} / ${(shadowTimeline ?? playerRevision?.timeline)?.height ?? 1080}` }}>
+                <canvas ref={canvasRef} width={(shadowTimeline ?? playerRevision?.timeline)?.width ?? 1920} height={(shadowTimeline ?? playerRevision?.timeline)?.height ?? 1080} className="absolute inset-0 h-full w-full bg-black object-contain" />
+                {activeCompositionSlots.length > 0 && activeSegment ? <VideoCompositionOverlay slots={activeCompositionSlots} outputWidth={(shadowTimeline ?? playerRevision?.timeline)?.width ?? 1920} outputHeight={(shadowTimeline ?? playerRevision?.timeline)?.height ?? 1080} playheadMs={Math.round(playhead * 1000)} partStartMs={Math.round(activeSegment.timelineStart * 1000)} playing={isPlaying} sourceURL={(sourceRef) => selectedThread ? `/v3/sessions/${encodeURIComponent(selectedThread.id)}/video/sources/media?source_ref=${encodeURIComponent(sourceRef)}` : ''} editing={compositionEditing} /> : null}
                 {liveAnimationPart && liveAnimationURL && !liveAnimationError ? <div className="absolute inset-0 overflow-hidden bg-black"><iframe ref={liveAnimationFrameRef} title={activeCandidate?.label || liveAnimationPart.title} src={liveAnimationURL} sandbox="allow-scripts" referrerPolicy="no-referrer" className="absolute inset-0 h-full w-full border-0 bg-black" data-video-studio-live-animation onError={() => setLiveAnimationError(`Could not play ${activeCandidate?.label || activeCandidate?.id || liveAnimationPart.title}.`)} /></div> : null}
                 {liveAnimationPart && liveAnimationError ? <div className="absolute inset-0 z-10 grid place-items-center bg-black px-8 text-center"><div><p className="text-sm font-semibold text-red-300">Live HTML preview failed</p><p className="mt-2 max-w-xl text-xs leading-5 text-red-200/80">{liveAnimationError}</p><p className="mt-2 text-[10px] text-white/50">The still fallback is not substituted for the selected motion source.</p></div></div> : null}
                 {previewRevision ? <div className="pointer-events-none absolute right-4 top-4 border border-sky-300/50 bg-sky-950/80 px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-sky-200">History preview · r{previewRevision.revision_number} · kept r{confirmedRevision?.revision_number} unchanged</div> : currentWorkingProposal ? <div className="pointer-events-none absolute right-4 top-4 border border-amber-300/50 bg-amber-950/80 px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-amber-200">Pending turn changes · working r{currentWorkingProposal.working_revision_number ?? currentRevision?.revision_number} · confirm when ready</div> : null}
@@ -3164,6 +3220,8 @@ export function VideoToolPage() {
                   {activeSegment ? `Clip ${Math.max(1, visualTimelineLayout.findIndex((segment) => segment.clipId === activeSegment.clipId) + 1)} · ${liveAnimationPart?.title || activeSegment.title || selectedClip?.name || activeSegment.clipId} · ${activeCandidate?.label || activeClipReviewState.mediaKind} · ${liveAnimationPart ? 'Live HTML' : activeClipReviewState.mediaKind} · ${formatTimelineTime(playhead)} / ${formatTimelineTime(movieDuration)}` : 'Timeline player'}
                 </div>
               </div>
+
+              {activeCompositionPart?.composition && activeCompositionCatalog && !currentWorkingProposal ? <><div className="mt-2 flex items-center justify-between border border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-2"><div><p className="text-[10px] font-medium">Spatial composition · {activeCompositionSlots.length} slot{activeCompositionSlots.length === 1 ? '' : 's'}</p><p className="text-[9px] text-[var(--app-text-muted)]">{activeCompositionPart.composition.detached ? 'Detached shot override' : `Linked layout ${activeCompositionPart.composition.layout_id}`} · {activeCompositionSlots.filter((slot) => !slot.source).length} unassigned</p></div><Button variant="outline" className="h-7 px-2 text-[10px]" disabled={Boolean(pendingProposal) || Boolean(selectedLibraryVideo)} onClick={() => setCompositionEditing((value) => !value)}>{compositionEditing ? 'Close composition editor' : 'Edit boxes'}</Button></div>{compositionEditing ? <VideoCompositionEditor catalog={activeCompositionCatalog} link={activeCompositionPart.composition} partTitle={activeCompositionPart.title} durationMs={activeCompositionPart.duration_ms} sources={selectedClips.map((clip) => ({ sourceRef: clip.sourceRef, name: clip.name, mediaType: 'video/mp4', durationMs: Math.round((clipDurations[clip.id] ?? activeCompositionPart.duration_ms / 1000) * 1000) }))} pending={Boolean(currentWorkingProposal)} disabled={compositionProposalBusy || Boolean(pendingProposal)} onPropose={proposeCompositionChange} /> : null}</> : null}
 
               {currentWorkingProposal ? <section className="order-2 mt-4 border border-[var(--app-border)] bg-[var(--app-surface)] p-3" aria-label="Current video turn">
                 <div className="flex flex-wrap items-start justify-between gap-3">

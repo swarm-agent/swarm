@@ -46,6 +46,7 @@ import {
   type VideoProjectTimelineWire,
   type VideoTimelineClipWire,
 } from './video-tool-page'
+import type { VideoCompositionCatalogWire } from '../video-studio/video-composition'
 import type { WorkspaceEntry } from '../../../workspaces/launcher/types/workspace'
 import type { WorkspaceOverviewSwarmTarget, WorkspaceOverviewTopologyRoute } from '../../../workspaces/launcher/types/workspace-overview'
 
@@ -917,6 +918,23 @@ test('pending visual plan consumes typed MP4 ranges, captions, and transitions w
   assert.deepEqual([segments[0].type, segments[0].sourceStart, segments[0].duration], ['video', 0.5, 2])
   assert.equal(segments[0].src, '/v3/sessions/session-1/artifacts/clip-1')
   assert.deepEqual(segments[1].captions, shadow.clips[1].captions)
+})
+
+test('pending storyboard composition projects catalog and links into the working cut only', () => {
+  const visual = { session_id: 'session-1', collection_id: 'stills', variant_id: 'frame', event_seq: 1 }
+  const compositionCatalog: VideoCompositionCatalogWire = { schema_version: 1, layouts: [{ id: 'phones', slots: [{ id: 'left', requirement: 'Left portrait', geometry: { x: .1, y: .1, width: .3, height: .8 }, z_index: 1, fit: 'cover', alignment_x: .5, alignment_y: .5, mask: { kind: 'none' } }, { id: 'right', requirement: 'Right portrait', geometry: { x: .6, y: .1, width: .3, height: .8 }, z_index: 2, fit: 'cover', alignment_x: .5, alignment_y: .5, mask: { kind: 'none' } }] }] }
+  const accepted: VideoProjectTimelineWire = { schema_version: 1, clips: [], transitions: [] }
+  const shadow = applyPendingVideoProposal(accepted, {
+    id: 'composition', project_id: 'project-1', base_revision_id: 'revision-1', base_revision_number: 1, status: 'pending', operations: [], created_at: 1, updated_at: 1,
+    plan: { kind: 'initial', composition_catalog: compositionCatalog, parts: [{ id: 'shot', title: 'Phones', duration_ms: 4000, visual, composition: { layout_id: 'phones' } }] },
+  })
+  assert.equal(accepted.composition_catalog, undefined)
+  assert.equal(shadow.composition_catalog?.layouts[0].id, 'phones')
+  assert.equal(shadow.clips[0].composition_part_id, 'shot')
+  assert.equal(shadow.clips[0].composition?.layout_id, 'phones')
+  const [segment] = projectTimelineToTimelineSegments(shadow, {}, [], 'session-1')
+  assert.equal(segment.compositionPartId, 'shot')
+  assert.equal(segment.composition?.layout_id, 'phones')
 })
 
 test('pending selective still revision preserves accepted auxiliary footage in the live shadow cut', () => {
