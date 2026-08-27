@@ -392,7 +392,10 @@ func TestVideoHTMLIterationMultiPartAuthoritySurvivesAppendAndTargetedReplacemen
 	}
 	project, base, err := store.CreateVideoProject(CreateVideoProjectInput{
 		AccountScopeID: "account", UserID: "user", SessionID: "studio", ProjectID: "project", Title: "Iteration regression",
-		InitialTimeline: &VideoProjectTimeline{OutputPreset: VideoPresetLandscape1080p, Clips: []VideoTimelineClip{}}, NowUnixMs: 100,
+		InitialTimeline: &VideoProjectTimeline{OutputPreset: VideoPresetLandscape1080p, Clips: []VideoTimelineClip{{
+			ID: "retained-video", Track: 0, Sequence: 3, SourceKind: VideoClipSourceKindSourceVideo, SourceRef: "videosrc-retained",
+			MediaType: "video/mp4", TimelineStartMs: 2000, TimelineEndMs: 3000, DurationMs: 1000, SourceStartMs: 0, SourceEndMs: 1000, Visible: true,
+		}}}, NowUnixMs: 100,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -479,11 +482,14 @@ func TestVideoHTMLIterationMultiPartAuthoritySurvivesAppendAndTargetedReplacemen
 	if err != nil || !ok {
 		t.Fatalf("read revision working timeline: ok=%v err=%v", ok, err)
 	}
-	if len(revisionWorking.Timeline.Clips) != 2 || revisionWorking.Timeline.Clips[0].ID != "opening" || revisionWorking.Timeline.Clips[0].ArtifactRef == nil || *revisionWorking.Timeline.Clips[0].ArtifactRef != *openingMP4 {
+	if len(revisionWorking.Timeline.Clips) != 3 || revisionWorking.Timeline.Clips[0].ID != "opening" || revisionWorking.Timeline.Clips[0].ArtifactRef == nil || *revisionWorking.Timeline.Clips[0].ArtifactRef != *openingMP4 {
 		t.Fatalf("targeted working promotion dropped or changed preserved opening: %+v", revisionWorking.Timeline.Clips)
 	}
 	if revisionWorking.Timeline.Clips[1].ID != "closing" || revisionWorking.Timeline.Clips[1].ArtifactRef == nil || *revisionWorking.Timeline.Clips[1].ArtifactRef != *revisionMP4 {
 		t.Fatalf("targeted working promotion did not replace closing: %+v", revisionWorking.Timeline.Clips)
+	}
+	if retained := revisionWorking.Timeline.Clips[2]; retained.ID != "retained-video" || retained.SourceRef != "videosrc-retained" || retained.TimelineStartMs != 2000 || retained.TimelineEndMs != 3000 {
+		t.Fatalf("targeted working promotion changed retained video: %+v", retained)
 	}
 
 	_, accepted, _, err := store.ResolveVideoEditProposal(ResolveVideoEditProposalInput{
@@ -508,14 +514,17 @@ func TestVideoHTMLIterationMultiPartAuthoritySurvivesAppendAndTargetedReplacemen
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(appendedRevision.Timeline.Clips) != 3 {
-		t.Fatalf("appended timeline clips = %+v, want three", appendedRevision.Timeline.Clips)
+	if len(appendedRevision.Timeline.Clips) != 4 {
+		t.Fatalf("appended timeline clips = %+v, want four", appendedRevision.Timeline.Clips)
 	}
 	for index, want := range []*SessionArtifactSelectionReference{openingMP4, revisionMP4} {
 		clip := appendedRevision.Timeline.Clips[index]
 		if clip.ArtifactRef == nil || *clip.ArtifactRef != *want || clip.MediaType != "video/mp4" || clip.ID != []string{"opening", "closing"}[index] {
 			t.Fatalf("append changed established clip %d: %+v", index, clip)
 		}
+	}
+	if retained := appendedRevision.Timeline.Clips[3]; retained.ID != "retained-video" || retained.SourceRef != "videosrc-retained" || retained.TimelineStartMs != 3000 || retained.TimelineEndMs != 4000 {
+		t.Fatalf("append did not move retained video after the new HTML part: %+v", retained)
 	}
 
 	replacement := videoPlanTestPart("credits", "Credits revised", "credits-revised")
@@ -533,7 +542,7 @@ func TestVideoHTMLIterationMultiPartAuthoritySurvivesAppendAndTargetedReplacemen
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(replaced.Timeline.Clips) != 3 || replaced.Timeline.Clips[2].ArtifactRef == nil || replaced.Timeline.Clips[2].ArtifactRef.VariantID != "credits-revised" {
+	if len(replaced.Timeline.Clips) != 4 || replaced.Timeline.Clips[2].ArtifactRef == nil || replaced.Timeline.Clips[2].ArtifactRef.VariantID != "credits-revised" {
 		t.Fatalf("targeted replacement did not update only appended part: %+v", replaced.Timeline.Clips)
 	}
 	for index, want := range []*SessionArtifactSelectionReference{openingMP4, revisionMP4} {
@@ -541,6 +550,9 @@ func TestVideoHTMLIterationMultiPartAuthoritySurvivesAppendAndTargetedReplacemen
 		if clip.ArtifactRef == nil || *clip.ArtifactRef != *want || clip.MediaType != "video/mp4" {
 			t.Fatalf("targeted replacement changed non-target authority %d: %+v", index, clip)
 		}
+	}
+	if retained := replaced.Timeline.Clips[3]; retained.ID != "retained-video" || retained.SourceRef != "videosrc-retained" || retained.TimelineStartMs != 3000 || retained.TimelineEndMs != 4000 {
+		t.Fatalf("targeted replacement changed retained video timing or authority: %+v", retained)
 	}
 }
 

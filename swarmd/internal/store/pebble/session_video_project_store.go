@@ -1421,6 +1421,25 @@ func visualVideoPlanTimeline(base VideoProjectTimeline, plan VideoPlanProposal) 
 		}
 		startMs = endMs
 	}
+	if len(preservedClips) > 0 {
+		preservedStartMs := int64(-1)
+		for _, clip := range preservedClips {
+			if preservedStartMs == -1 || clip.TimelineStartMs < preservedStartMs {
+				preservedStartMs = clip.TimelineStartMs
+			}
+		}
+		if preservedStartMs >= 0 && startMs > preservedStartMs {
+			shiftMs := startMs - preservedStartMs
+			for index := range preservedClips {
+				preservedClips[index].TimelineStartMs += shiftMs
+				preservedClips[index].TimelineEndMs += shiftMs
+				for captionIndex := range preservedClips[index].Captions {
+					preservedClips[index].Captions[captionIndex].StartMs += shiftMs
+					preservedClips[index].Captions[captionIndex].EndMs += shiftMs
+				}
+			}
+		}
+	}
 	timeline.Clips = append(timeline.Clips, preservedClips...)
 	timeline.Transitions = append(timeline.Transitions, preservedTransitions...)
 	for _, clip := range preservedClips {

@@ -83,7 +83,9 @@ export function normalizeVideoSnapshot(input) {
   const clips = arrayOf(timeline, ['clips']).concat(arrayOf(working, ['clips'])).concat(arrayOf(project, ['clips'])).filter((item, index, all) => all.indexOf(item) === index).map(normalizeClip)
   const partByID = new Map()
   for (const item of arrayOf(acceptedPlan, ['parts']).concat(arrayOf(project, ['parts'])).concat(arrayOf(input, ['parts'])).concat(arrayOf(proposal, ['parts'])).concat(arrayOf(proposalPlan, ['parts']))) {
-    const part = normalizePart(item, partByID.size)
+    const itemID = idOf(item, ['part_id', 'partId', 'id'])
+    const existing = partByID.get(itemID)
+    const part = normalizePart(item, existing ? existing.order : partByID.size)
     if (part.id) partByID.set(part.id, part)
   }
   const parts = [...partByID.values()]
