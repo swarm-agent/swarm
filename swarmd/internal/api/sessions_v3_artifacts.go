@@ -130,6 +130,7 @@ type sessionsV3ArtifactCatalogItem struct {
 	Filename              string                                         `json:"filename"`
 	MediaType             string                                         `json:"media_type"`
 	Kind                  string                                         `json:"kind"`
+	Role                  string                                         `json:"role,omitempty"`
 	Status                string                                         `json:"status,omitempty"`
 	FailureCode           string                                         `json:"failure_code,omitempty"`
 	Previewable           bool                                           `json:"previewable"`
@@ -470,7 +471,7 @@ func (s *Server) handleSessionsV3Artifacts(w http.ResponseWriter, r *http.Reques
 						PlanID: lineage.PlanID, CheckpointID: lineage.CheckpointID,
 						WorkspacePath: workspacePath, WorkspaceName: workspaceName,
 						Label: firstNonEmpty(variant.Presentation.Label, collection.Name, variant.Filename), Description: firstNonEmpty(variant.Presentation.Description, collection.Description),
-						CollectionName: collection.Name, CollectionDescription: collection.Description, Filename: variant.Filename, MediaType: variant.MediaType, Kind: kind, Status: variant.Status, FailureCode: variant.FailureCode,
+						CollectionName: collection.Name, CollectionDescription: collection.Description, Filename: variant.Filename, MediaType: variant.MediaType, Kind: kind, Role: variant.Role, Status: variant.Status, FailureCode: variant.FailureCode,
 						Previewable: previewable, Selected: chain.Head.SessionID == variant.SessionID && chain.Head.CollectionID == variant.CollectionID && chain.Head.VariantID == variant.ID,
 						Category: sessionsV3ManagedArtifactCategory(variant), UpdatedAt: variant.UpdatedAt, EventSeq: variant.EventSeq, Progress: &progress, Lineage: &lineage, OutputRequirements: cloneSessionsV3ArtifactOutputRequirements(variant.OutputRequirements), AnimationProfile: cloneSessionsV3ArtifactAnimationProfile(variant.AnimationProfile),
 						Chain: &chain, Step: step, GraphState: variant.GraphState, ParentArtifact: variant.ParentArtifact, ArtifactChainID: variant.ArtifactChainID, ArtifactStepID: variant.ArtifactStepID, RevisionNumber: variant.RevisionNumber, RevisionRoundID: variant.RevisionRoundID, CandidateIndex: variant.CandidateIndex, Parts: append([]pebblestore.SessionArtifactPart(nil), variant.Parts...),

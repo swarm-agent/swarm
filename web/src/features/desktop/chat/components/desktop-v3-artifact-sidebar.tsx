@@ -217,8 +217,16 @@ function sidebarCollectionLabel(entry: DesktopV3ArtifactCatalogEntry): string {
 export function desktopV3ArtifactSidebarGroups(
   artifacts: readonly DesktopV3ArtifactCatalogEntry[],
 ): DesktopV3ArtifactSidebarGroup[] {
-  const activeChainIds = new Set(artifacts.flatMap((artifact) => artifact.role !== 'render_only' && artifact.graphState === 'git_projection' && artifact.artifactChainId
-    && ((artifact.chain?.revisionCount ?? 0) > 1 || (artifact.step?.revisionNumber ?? 0) > 1) ? [artifact.artifactChainId] : []))
+  const authoredChainEntries = artifacts.filter((artifact) => artifact.role !== 'render_only' && artifact.graphState === 'git_projection' && artifact.artifactChainId
+    && ((artifact.chain?.revisionCount ?? 0) > 1 || (artifact.step?.revisionNumber ?? 0) > 1))
+  const activeChainId = [...authoredChainEntries].sort((left, right) => {
+    const leftHead = left.chain?.head
+    const rightHead = right.chain?.head
+    const leftIsHead = Boolean(leftHead && left.sessionId === leftHead.sessionId && left.collectionId === leftHead.collectionId && left.artifactId === leftHead.variantId && left.eventSeq === leftHead.eventSeq)
+    const rightIsHead = Boolean(rightHead && right.sessionId === rightHead.sessionId && right.collectionId === rightHead.collectionId && right.artifactId === rightHead.variantId && right.eventSeq === rightHead.eventSeq)
+    return Number(rightIsHead) - Number(leftIsHead) || right.updatedAt - left.updatedAt
+  })[0]?.artifactChainId ?? ''
+  const activeChainIds = new Set(activeChainId ? [activeChainId] : [])
   const groups = new Map<string, DesktopV3ArtifactCatalogEntry[]>()
   for (const artifact of artifacts) {
     const section = desktopV3ArtifactSidebarSection(artifact, activeChainIds)

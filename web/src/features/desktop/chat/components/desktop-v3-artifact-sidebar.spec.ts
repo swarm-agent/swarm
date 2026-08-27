@@ -231,6 +231,22 @@ test('sidebar prioritizes an active authored chain and groups documents and rend
   assert.deepEqual(groups.find((group) => group.section === 'supporting')?.entries.map((entry) => entry.artifactId), ['atlas-fallback'])
 })
 
+test('sidebar pins only the newest authoritative active chain', () => {
+  const projectedChain = (chainId: string, eventSeq: number) => {
+    const rootRef = { sessionId: 'session-a', collectionId: `${chainId}-root`, variantId: `${chainId}-root`, eventSeq: eventSeq - 1 }
+    const headRef = { sessionId: 'session-a', collectionId: `${chainId}-head`, variantId: `${chainId}-head`, eventSeq }
+    const chain = { id: chainId, graphState: 'git_projection' as const, name: chainId, root: rootRef, head: headRef, revisionCount: 2, lastRoundId: `${chainId}-step-2` }
+    const root = { ...artifact('session-a', rootRef.variantId), collectionId: rootRef.collectionId, eventSeq: rootRef.eventSeq, updatedAt: rootRef.eventSeq, graphState: 'git_projection' as const, artifactChainId: chainId, artifactStepId: `${chainId}-step-1`, chain, step: { id: `${chainId}-step-1`, graphState: 'git_projection', artifactChainId: chainId, revisionNumber: 1, candidates: [rootRef] } } as DesktopV3ArtifactCatalogEntry
+    const head = { ...root, artifactId: headRef.variantId, collectionId: headRef.collectionId, eventSeq, updatedAt: eventSeq, artifactStepId: `${chainId}-step-2`, step: { id: `${chainId}-step-2`, graphState: 'git_projection', artifactChainId: chainId, revisionNumber: 2, parent: rootRef, candidates: [headRef] } } as DesktopV3ArtifactCatalogEntry
+    return [root, head]
+  }
+
+  const groups = desktopV3ArtifactSidebarGroups([...projectedChain('older-chain', 20), ...projectedChain('newer-chain', 40)])
+  assert.equal(groups.filter((group) => group.section === 'active').length, 1)
+  assert.equal(groups.find((group) => group.section === 'active')?.key, 'chain:newer-chain')
+  assert.equal(groups.find((group) => group.key === 'chain:older-chain')?.section, 'motion')
+})
+
 test('sidebar renders compact filename-first document rows and collapsed supporting assets', async () => {
   const source = await readFile(new URL('./desktop-v3-artifact-sidebar.tsx', import.meta.url), 'utf8')
   assert.match(source, /data-artifact-sidebar-document-row/)
