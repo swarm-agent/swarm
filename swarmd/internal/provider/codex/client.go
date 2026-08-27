@@ -48,6 +48,8 @@ const (
 	clientID                                   = "app_EMoamEEZ73f0CkXaXp7hrann"
 	maxCodexResponseBodyBytes            int64 = 32 << 20
 	maxCodexStreamEventBytes                   = 8 << 20
+	maxCodexStreamLineBytes                    = maxCodexStreamEventBytes + 64
+	maxCodexWebsocketMessageBytes        int64 = 256 << 20
 	maxCodexRawEvents                          = 4_096
 	transportRetryAttempts                     = 2
 	transportRetryBaseDelay                    = 300 * time.Millisecond
@@ -1721,7 +1723,13 @@ func (c *Client) sendWebsocketMap(ctx context.Context, record pebblestore.CodexA
 		if activeConn == nil {
 			return errors.New("websocket connection is unavailable")
 		}
-		activeConn.SetReadLimit(maxCodexResponseBodyBytes)
+		// Responses websocket events are streamed individually, but the terminal
+		// response.completed snapshot can legitimately be much larger than a
+		// unary HTTP response for long tool-heavy sessions. Keep a bounded
+		// transport envelope above the per-event admission limit so oversized
+		// frames reach the explicit event classifier below instead of failing as
+		// an opaque websocket close 1009.
+		activeConn.SetReadLimit(maxCodexWebsocketMessageBytes)
 		writeDeadline := time.Now().Add(websocketWriteTimeout)
 		if deadline, ok := ctx.Deadline(); ok && deadline.Before(writeDeadline) {
 			writeDeadline = deadline
@@ -1829,9 +1837,13 @@ func (c *Client) sendWebsocketMap(ctx context.Context, record pebblestore.CodexA
 		providerdiagnostics.LogWebsocketResponseContext(ctx, "codex", "responses.websocket", message)
 		var decoded map[string]any
 		if len(message) > maxCodexStreamEventBytes {
-			return nil, 0, errors.New("codex websocket event byte limit exceeded")
-		}
-		if err := json.Unmarshal(message, &decoded); err != nil {
+			if err := json.Unmarshal(message, &decoded); err != nil {
+				return nil, 0, errors.New("codex websocket event byte limit exceeded")
+			}
+			if !strings.EqualFold(strings.TrimSpace(asString(decoded["type"])), "response.completed") {
+				return nil, 0, errors.New("codex websocket event byte limit exceeded")
+			}
+		} else if err := json.Unmarshal(message, &decoded); err != nil {
 			codexThinkingDebugEvent("event.decode_error", map[string]any{
 				"tag":           "websocket",
 				"payload_chars": len(payloadText),
@@ -3623,7 +3635,9 @@ func finalizeStreamDecodeState(state *streamDecodeState) (map[string]any, error)
 
 func parseEventStreamReader(reader io.Reader, onEvent func(StreamEvent)) (map[string]any, error) {
 	scanner := bufio.NewScanner(reader)
-	scanner.Buffer(make([]byte, 0, 64*1024), maxCodexStreamEventBytes)
+	// Leave bounded room for the SSE field prefix so the explicit decoded-data
+	// limit below remains the authority and returns a stable diagnostic.
+	scanner.Buffer(make([]byte, 0, 64*1024), maxCodexStreamLineBytes)
 
 	state := &streamDecodeState{}
 	eventName := ""

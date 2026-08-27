@@ -734,6 +734,65 @@ func TestResponsesTransportCompatibilityKeySeparatesCredentialsProviderModelAndE
 	}
 }
 
+func TestCodexWebsocketAllowsLargeCompletedSnapshot(t *testing.T) {
+	largeText := strings.Repeat("x", maxCodexStreamEventBytes)
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		if _, _, err := conn.ReadMessage(); err != nil {
+			return
+		}
+		completed := map[string]any{"type": "response.completed", "response": map[string]any{"id": "resp-large", "model": "gpt-5.4", "output": []any{map[string]any{"type": "message", "role": "assistant", "content": []any{map[string]any{"type": "output_text", "text": largeText}}}}}}
+		_ = conn.WriteJSON(completed)
+	}))
+	defer server.Close()
+
+	client := NewClient(nil)
+	client.responsesWSURL = "ws" + strings.TrimPrefix(server.URL, "http") + "/v1/responses"
+	record := pebblestore.CodexAuthRecord{Provider: "codex", Type: pebblestore.CodexAuthTypeOAuth, AccountScopeID: "account-a", ID: "credential-a", AccountID: "chatgpt-a", AccessToken: "token"}
+	response, err := client.CreateResponseWithAuth(context.Background(), record, Request{
+		Model: "gpt-5.4",
+		Input: []map[string]any{{"role": "user", "content": "large completion"}},
+	})
+	if err != nil {
+		t.Fatalf("large completed snapshot request: %v", err)
+	}
+	if response.ID != "resp-large" || len(response.Text) != len(largeText) {
+		t.Fatalf("large completed response = id %q text bytes %d, want resp-large and %d", response.ID, len(response.Text), len(largeText))
+	}
+}
+
+func TestCodexWebsocketRejectsLargeNonCompletedEvent(t *testing.T) {
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		if _, _, err := conn.ReadMessage(); err != nil {
+			return
+		}
+		_ = conn.WriteJSON(map[string]any{"type": "response.in_progress", "padding": strings.Repeat("x", maxCodexStreamEventBytes)})
+	}))
+	defer server.Close()
+
+	client := NewClient(nil)
+	client.responsesWSURL = "ws" + strings.TrimPrefix(server.URL, "http") + "/v1/responses"
+	record := pebblestore.CodexAuthRecord{Provider: "codex", Type: pebblestore.CodexAuthTypeOAuth, AccountScopeID: "account-a", ID: "credential-a", AccountID: "chatgpt-a", AccessToken: "token"}
+	_, err := client.CreateResponseWithAuth(context.Background(), record, Request{
+		Model: "gpt-5.4",
+		Input: []map[string]any{{"role": "user", "content": "oversized event"}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "websocket event byte limit exceeded") {
+		t.Fatalf("large non-completed event error = %v, want explicit event byte limit", err)
+	}
+}
+
 func TestOpenAIAPIKeyResponsesWebsocketFreshEpochReusesSocketAndRotatesChain(t *testing.T) {
 	var connections atomic.Int32
 	var payloadsMu sync.Mutex
