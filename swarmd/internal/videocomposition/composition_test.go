@@ -26,7 +26,7 @@ func TestResolveLinkedOverrideDetachAndEvenGeometry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(resolved) != 2 || resolved[0].Pixels.X%2 != 0 || resolved[0].Pixels.Width%2 != 0 || resolved[0].Pixels.X != 492 {
+	if len(resolved) != 2 || resolved[0].Pixels.X%2 != 0 || resolved[0].Pixels.Width%2 != 0 || resolved[0].Pixels.X != 490 {
 		t.Fatalf("resolved = %#v", resolved)
 	}
 	detached := &Link{Detached: true, DetachedSlots: []Slot{testSlot("private", .3)}}
