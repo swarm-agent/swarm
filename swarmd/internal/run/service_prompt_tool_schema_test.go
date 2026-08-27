@@ -49,6 +49,8 @@ func TestMasterHarnessPromptRequiresTopLevelTaskPrompt(t *testing.T) {
 	for _, want := range []string{
 		"Every task spawn call—including regular launches, single-launch shorthand, Iteration Swarms, and new inline Task Program starts—requires a non-empty top-level `prompt`",
 		"Do not assume `meta_prompt`, `description`, `launches`, or `program` replaces it",
+		"Never send `max_concurrency` at the task-call top level",
+		"approved-checkpoint Task Program start, omit both `program` and `max_concurrency`",
 		`task (staged Task Program for a multi-subsystem build): {"action":"start","prompt":"`,
 	} {
 		if !strings.Contains(prompt, want) {
@@ -110,8 +112,18 @@ func TestTaskToolSchemaExposesOnlyDesignerOutputModeSelection(t *testing.T) {
 	if _, ok := launchProperties["output_mode"]; !ok {
 		t.Fatal("task launch schema omits output_mode")
 	}
+	if _, exposedAtTopLevel := properties["max_concurrency"]; exposedAtTopLevel {
+		t.Fatal("task schema exposes max_concurrency at the task-call top level")
+	}
 	program := properties["program"].(map[string]any)
 	programProperties := program["properties"].(map[string]any)
+	maxConcurrency, ok := programProperties["max_concurrency"].(map[string]any)
+	if !ok {
+		t.Fatal("task program schema omits nested max_concurrency")
+	}
+	if description, _ := maxConcurrency["description"].(string); !strings.Contains(description, "program-only") || !strings.Contains(description, "Never place this field at the task-call top level") || !strings.Contains(description, "Prefer omitting it") {
+		t.Fatalf("task program max_concurrency description = %q", description)
+	}
 	jobs := programProperties["jobs"].(map[string]any)
 	jobItems := jobs["items"].(map[string]any)
 	jobProperties := jobItems["properties"].(map[string]any)

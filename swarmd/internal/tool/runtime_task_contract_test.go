@@ -38,6 +38,8 @@ func TestTaskDefinitionKeepsProviderSchemaSimpleAndDocumentsRuntimeRequirements(
 	for _, want := range []string{
 		"Every spawn call, including an inline Task Program start, requires a non-empty top-level prompt",
 		"meta_prompt, description, launches, and program do not replace it",
+		"max_concurrency belongs only inside program and should normally be omitted; it is never a task-call top-level field",
+		"Approved-checkpoint starts omit program and max_concurrency",
 		"Only status calls and starts that load the canonical task_program from the active approved checkpoint may omit prompt",
 	} {
 		if !definitionTextContains(taskDefinition, want) {
