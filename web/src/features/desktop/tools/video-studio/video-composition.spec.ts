@@ -33,6 +33,21 @@ test('linked geometry edit updates catalog while shot edit creates an override',
   assert.deepEqual(catalog.layouts[0].slots[0].geometry, { x: .05, y: .1, width: .25, height: .8 })
 })
 
+test('linked edits materialize inherited slots and detached edits mutate private geometry', () => {
+  const inherited: VideoCompositionCatalogWire = { schema_version: 1, layouts: [
+    { id: 'base', slots: [portraitSlot('inherited', .1)] },
+    { id: 'child', extends_layout_id: 'base', slots: [] },
+  ] }
+  const linked = updateVideoCompositionGeometry({ catalog: inherited, link: { layout_id: 'child' }, slotId: 'inherited', geometry: { x: .2, y: .2, width: .3, height: .5 }, scope: 'linked' })
+  assert.equal(linked.catalog.layouts[1].slots[0].id, 'inherited')
+  assert.equal(resolveVideoComposition(linked.catalog, linked.link, 1920, 1080)[0].geometry.x, .2)
+
+  const detached = detachVideoComposition(catalog, link)
+  const privateEdit = updateVideoCompositionGeometry({ catalog, link: detached, slotId: 'a', geometry: { x: .2, y: .25, width: .2, height: .5 }, scope: 'shot' })
+  assert.equal(privateEdit.link.overrides, undefined)
+  assert.equal(privateEdit.link.detached_slots?.[0].geometry.y, .25)
+})
+
 test('shot override wins and detach materializes independent slots', () => {
   const overridden = resolveVideoComposition(catalog, { ...link, overrides: [{ slot_id: 'b', fit: 'contain', geometry: { x: .4, y: .2, width: .2, height: .6 } }] }, 1920, 1080)
   assert.equal(overridden[1].fit, 'contain')

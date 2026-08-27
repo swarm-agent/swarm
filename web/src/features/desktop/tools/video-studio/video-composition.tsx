@@ -130,6 +130,12 @@ export function resolveVideoComposition(
   }).sort((left, right) => left.z_index - right.z_index || left.id.localeCompare(right.id))
 }
 
+function materializeSlot(resolved: ResolvedVideoCompositionSlot): VideoCompositionSlotWire {
+  const { pixels, ...slot } = resolved
+  void pixels
+  return slot
+}
+
 export function updateVideoCompositionGeometry(input: {
   catalog: VideoCompositionCatalogWire
   link: VideoCompositionLinkWire
@@ -144,10 +150,19 @@ export function updateVideoCompositionGeometry(input: {
   geometry.width = Math.min(geometry.width, 1 - geometry.x)
   geometry.height = Math.min(geometry.height, 1 - geometry.y)
   if (input.scope === 'linked' && !input.link.detached && input.link.layout_id) {
-    const catalog = { ...input.catalog, layouts: input.catalog.layouts.map((layout) => layout.id === input.link.layout_id
-      ? { ...layout, slots: layout.slots.map((slot) => slot.id === input.slotId ? { ...slot, geometry } : slot) }
-      : layout) }
-    return { catalog, link: input.link }
+    const targetLayout = input.catalog.layouts.find((layout) => layout.id === input.link.layout_id)
+    const inheritedSlot = resolveVideoComposition(input.catalog, input.link, 1920, 1080).find((slot) => slot.id === input.slotId)
+    if (targetLayout && inheritedSlot) {
+      const catalog = { ...input.catalog, layouts: input.catalog.layouts.map((layout) => layout.id === input.link.layout_id
+        ? { ...layout, slots: layout.slots.some((slot) => slot.id === input.slotId)
+          ? layout.slots.map((slot) => slot.id === input.slotId ? { ...slot, geometry } : slot)
+          : [...layout.slots, { ...materializeSlot(inheritedSlot), geometry }] }
+        : layout) }
+      return { catalog, link: input.link }
+    }
+  }
+  if (input.link.detached) {
+    return { catalog: input.catalog, link: { ...input.link, detached_slots: (input.link.detached_slots ?? []).map((slot) => slot.id === input.slotId ? { ...slot, geometry } : slot) } }
   }
   const overrides = [...(input.link.overrides ?? [])]
   const index = overrides.findIndex((override) => override.slot_id === input.slotId)
@@ -158,11 +173,7 @@ export function updateVideoCompositionGeometry(input: {
 }
 
 export function detachVideoComposition(catalog: VideoCompositionCatalogWire, link: VideoCompositionLinkWire): VideoCompositionLinkWire {
-  const slots = resolveVideoComposition(catalog, link, 1920, 1080).map((resolved) => {
-    const { pixels, ...slot } = resolved
-    void pixels
-    return slot
-  })
+  const slots = resolveVideoComposition(catalog, link, 1920, 1080).map(materializeSlot)
   return { detached: true, detached_slots: slots }
 }
 
@@ -230,18 +241,20 @@ export function VideoCompositionEditor(props: {
   durationMs: number
   sources: VideoCompositionEditorSource[]
   pending: boolean
+  productionState?: 'pending' | 'ready'
   disabled?: boolean
-  onPropose: (catalog: VideoCompositionCatalogWire, link: VideoCompositionLinkWire, summary: string) => Promise<void>
+  onPropose: (catalog: VideoCompositionCatalogWire, link: VideoCompositionLinkWire, summary: string, productionState: 'pending' | 'ready') => Promise<void>
 }) {
   const [catalog, setCatalog] = useState(props.catalog)
   const [link, setLink] = useState(props.link)
   const [selectedSlotId, setSelectedSlotId] = useState('')
   const [scope, setScope] = useState<'linked' | 'shot'>('shot')
+  const [productionState, setProductionState] = useState<'pending' | 'ready'>(props.productionState ?? 'ready')
   const [busy, setBusy] = useState(false)
   const slots = useMemo(() => resolveVideoComposition(catalog, link, 1920, 1080), [catalog, link])
   const selected = slots.find((slot) => slot.id === selectedSlotId) ?? slots[0]
   useEffect(() => { if (!selectedSlotId && slots[0]) setSelectedSlotId(slots[0].id) }, [selectedSlotId, slots])
-  useEffect(() => { setCatalog(props.catalog); setLink(props.link) }, [props.catalog, props.link])
+  useEffect(() => { setCatalog(props.catalog); setLink(props.link); setProductionState(props.productionState ?? 'ready'); setSelectedSlotId('') }, [props.catalog, props.link, props.productionState])
   const setGeometry = (geometry: VideoCompositionRectWire) => {
     if (!selected) return
     const next = updateVideoCompositionGeometry({ catalog, link, slotId: selected.id, geometry, scope })
@@ -249,6 +262,10 @@ export function VideoCompositionEditor(props: {
   }
   const setOverride = (patch: Partial<VideoCompositionSlotOverrideWire>) => {
     if (!selected) return
+    if (link.detached) {
+      setLink({ ...link, detached_slots: (link.detached_slots ?? []).map((slot) => slot.id === selected.id ? mergeSlot(slot, { slot_id: selected.id, ...patch }) : slot) })
+      return
+    }
     const overrides = [...(link.overrides ?? [])]
     const index = overrides.findIndex((item) => item.slot_id === selected.id)
     const next = { ...(index >= 0 ? overrides[index] : { slot_id: selected.id }), ...patch }
@@ -275,7 +292,9 @@ export function VideoCompositionEditor(props: {
   }
   if (!selected) return null
   const source = selected.source
-  const changed = JSON.stringify(catalog) !== JSON.stringify(props.catalog) || JSON.stringify(link) !== JSON.stringify(props.link)
+  const unresolvedSources = slots.filter((slot) => !slot.source).length
+  const effectiveProductionState = unresolvedSources > 0 && productionState === 'ready' ? 'pending' : productionState
+  const changed = JSON.stringify(catalog) !== JSON.stringify(props.catalog) || JSON.stringify(link) !== JSON.stringify(props.link) || effectiveProductionState !== (props.productionState ?? 'ready')
   const boundedSecondsInput = (value: number, onChange: (value: number) => void, label: string) => <label className="text-[9px] uppercase tracking-[0.12em] text-[var(--app-text-subtle)]">{label}<input aria-label={`Composition ${label}`} type="number" min="0" step="0.1" value={Number(value.toFixed(3))} onChange={(event) => onChange(Math.max(0, Number(event.target.value) || 0))} className="mt-1 h-7 w-full border border-[var(--app-border)] bg-[var(--app-bg)] px-2 text-[10px] normal-case tracking-normal" /></label>
   return <section className="order-2 mt-4 border border-amber-300/30 bg-[var(--app-surface)] p-3" aria-label="Spatial composition editor" data-video-composition-editor>
     <div className="flex flex-wrap items-start justify-between gap-3"><div><p className="text-xs font-semibold">Spatial composition · {props.partTitle}</p><p className="mt-1 text-[10px] text-[var(--app-text-muted)]">{link.detached ? 'Detached shot layout' : `Linked layout · ${link.layout_id}`} · {slots.length} slot{slots.length === 1 ? '' : 's'} · {props.pending ? 'pending proposal' : 'accepted cut'}</p></div><div className="flex gap-2"><select aria-label="Composition slot" value={selected.id} onChange={(event) => setSelectedSlotId(event.target.value)} className="h-8 border border-[var(--app-border)] bg-[var(--app-bg)] px-2 text-[10px]">{slots.map((slot) => <option key={slot.id} value={slot.id}>{slot.id}</option>)}</select>{!link.detached ? <Button variant="outline" className="h-8 px-2 text-[10px]" onClick={() => setLink(detachVideoComposition(catalog, link))}>Detach shot</Button> : props.catalog.layouts[0] ? <Button variant="outline" className="h-8 px-2 text-[10px]" onClick={() => setLink({ layout_id: props.catalog.layouts[0].id })}>Relink</Button> : null}<Button variant="ghost" className="h-8 px-2 text-[10px] text-red-400" onClick={() => setLink({ disabled: true })}>Remove</Button></div></div>
@@ -286,10 +305,10 @@ export function VideoCompositionEditor(props: {
         <div className="grid grid-cols-4 gap-2">{numberInput(selected.geometry.x, (x) => setGeometry({ ...selected.geometry, x }), 'x')}{numberInput(selected.geometry.y, (y) => setGeometry({ ...selected.geometry, y }), 'y')}{numberInput(selected.geometry.width, (width) => setGeometry({ ...selected.geometry, width }), 'width')}{numberInput(selected.geometry.height, (height) => setGeometry({ ...selected.geometry, height }), 'height')}</div>
         <div className="grid grid-cols-2 gap-2 sm:grid-cols-4"><label className="text-[9px] uppercase">Aspect<input aria-label="Composition aspect lock" type="number" min="0" step="0.01" value={selected.aspect_lock ?? 0} onChange={(event) => setOverride({ aspect_lock: Number(event.target.value) })} className="mt-1 h-7 w-full border bg-[var(--app-bg)] px-2" /></label><label className="text-[9px] uppercase">Fit<select aria-label="Composition fit" value={selected.fit} onChange={(event) => setOverride({ fit: event.target.value as 'contain' | 'cover' })} className="mt-1 h-7 w-full border bg-[var(--app-bg)] px-2"><option value="cover">Cover</option><option value="contain">Contain</option></select></label><label className="text-[9px] uppercase">Mask<select aria-label="Composition mask" value={selected.mask.kind} onChange={(event) => setOverride({ mask: { kind: event.target.value as VideoCompositionMaskWire['kind'], radius: event.target.value === 'rounded_rect' ? selected.mask.radius ?? .04 : undefined } })} className="mt-1 h-7 w-full border bg-[var(--app-bg)] px-2"><option value="none">None</option><option value="rounded_rect">Rounded</option><option value="ellipse">Ellipse</option></select></label><label className="text-[9px] uppercase">Layer<input aria-label="Composition layer" type="number" min="0" max="255" value={selected.z_index} onChange={(event) => setOverride({ z_index: Number(event.target.value) })} className="mt-1 h-7 w-full border bg-[var(--app-bg)] px-2" /></label></div>
         <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">{numberInput(selected.alignment_x, (alignment_x) => setOverride({ alignment_x }), 'align x')}{numberInput(selected.alignment_y, (alignment_y) => setOverride({ alignment_y }), 'align y')}{numberInput(selected.crop?.left ?? 0, (left) => setOverride({ crop: { ...(selected.crop ?? {}), left } }), 'crop left')}{numberInput(selected.crop?.top ?? 0, (top) => setOverride({ crop: { ...(selected.crop ?? {}), top } }), 'crop top')}</div>
-        <label className="text-[9px] uppercase tracking-[0.12em]">Source<select aria-label="Composition source" value={source?.source_ref ?? ''} onChange={(event) => { const selectedSource = props.sources.find((item) => item.sourceRef === event.target.value); setOverride(selectedSource ? { clear_source: false, source: { source_ref: selectedSource.sourceRef, media_type: selectedSource.mediaType || 'video/mp4', source_start_ms: 0, source_end_ms: selectedSource.durationMs ?? props.durationMs, timeline_start_ms: 0, timeline_end_ms: Math.min(props.durationMs, selectedSource.durationMs ?? props.durationMs), audio_policy: 'mute' } } : { source: undefined, clear_source: true }) }} className="mt-1 h-8 w-full border bg-[var(--app-bg)] px-2 text-[10px] normal-case tracking-normal"><option value="">Unassigned · {selected.requirement}</option>{props.sources.map((item) => <option key={item.sourceRef} value={item.sourceRef}>{item.name} · {item.sourceRef}</option>)}</select></label>
+        <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_140px]"><label className="text-[9px] uppercase tracking-[0.12em]">Source<select aria-label="Composition source" value={source?.source_ref ?? ''} onChange={(event) => { const selectedSource = props.sources.find((item) => item.sourceRef === event.target.value); setOverride(selectedSource ? { clear_source: false, source: { source_ref: selectedSource.sourceRef, media_type: selectedSource.mediaType || 'video/mp4', source_start_ms: 0, source_end_ms: selectedSource.durationMs ?? props.durationMs, timeline_start_ms: 0, timeline_end_ms: Math.min(props.durationMs, selectedSource.durationMs ?? props.durationMs), audio_policy: 'mute' } } : { source: undefined, clear_source: true }) }} className="mt-1 h-8 w-full border bg-[var(--app-bg)] px-2 text-[10px] normal-case tracking-normal"><option value="">Unassigned · {selected.requirement}</option>{props.sources.map((item) => <option key={item.sourceRef} value={item.sourceRef}>{item.name} · {item.sourceRef}</option>)}</select></label><label className="text-[9px] uppercase tracking-[0.12em]">Production<select aria-label="Composition production state" value={effectiveProductionState} onChange={(event) => setProductionState(event.target.value as 'pending' | 'ready')} className="mt-1 h-8 w-full border bg-[var(--app-bg)] px-2 text-[10px] normal-case tracking-normal"><option value="pending">Pending</option><option value="ready" disabled={unresolvedSources > 0}>Ready{unresolvedSources > 0 ? ` · ${unresolvedSources} source${unresolvedSources === 1 ? '' : 's'} needed` : ''}</option></select></label></div>
         {source ? <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">{boundedSecondsInput(source.source_start_ms / 1000, (value) => setOverride({ source: { ...source, source_start_ms: Math.round(value * 1000) } }), 'trim in')}{boundedSecondsInput(source.source_end_ms / 1000, (value) => setOverride({ source: { ...source, source_end_ms: Math.round(value * 1000) } }), 'trim out')}{boundedSecondsInput(source.timeline_start_ms / 1000, (value) => setOverride({ source: { ...source, timeline_start_ms: Math.round(value * 1000) } }), 'start')}{boundedSecondsInput(source.timeline_end_ms / 1000, (value) => setOverride({ source: { ...source, timeline_end_ms: Math.round(value * 1000) } }), 'end')}<label className="text-[9px] uppercase">Audio<select aria-label="Composition audio" value={source.audio_policy} onChange={(event) => setOverride({ source: { ...source, audio_policy: event.target.value as 'mute' | 'include', gain: event.target.value === 'mute' ? 0 : source.gain || 1 } })} className="mt-1 h-7 w-full border bg-[var(--app-bg)] px-2"><option value="mute">Mute</option><option value="include">Include</option></select></label></div> : null}
       </div>
     </div>
-    <div className="mt-3 flex items-center justify-between border-t border-[var(--app-border)] pt-3"><p className="text-[10px] text-[var(--app-text-muted)]">All changes create a pending proposal. The accepted cut is unchanged until confirmation.</p><Button className="h-8 px-3 text-[10px]" disabled={!changed || busy || props.disabled} onClick={() => { setBusy(true); void props.onPropose(catalog, link, `${scope === 'linked' ? 'Update linked layout' : 'Update shot composition'} · ${selected.id}`).finally(() => setBusy(false)) }}>{busy ? 'Proposing…' : 'Propose composition changes'}</Button></div>
+    <div className="mt-3 flex items-center justify-between border-t border-[var(--app-border)] pt-3"><p className="text-[10px] text-[var(--app-text-muted)]">All changes create or update a pending proposal. The accepted cut is unchanged until confirmation.</p><Button className="h-8 px-3 text-[10px]" disabled={!changed || busy || props.disabled} onClick={() => { setBusy(true); void props.onPropose(catalog, link, `${scope === 'linked' ? 'Update linked layout' : 'Update shot composition'} · ${selected.id}`, effectiveProductionState).finally(() => setBusy(false)) }}>{busy ? 'Proposing…' : 'Propose composition changes'}</Button></div>
   </section>
 }

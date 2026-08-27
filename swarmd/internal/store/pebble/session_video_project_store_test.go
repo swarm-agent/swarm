@@ -617,6 +617,24 @@ func TestPendingSelectedVideoProductionPartBlocksAcceptance(t *testing.T) {
 	}
 }
 
+func TestCompositionUpdateRevisionPlanKeepsUntargetedWorkingParts(t *testing.T) {
+	catalog, link := durableCompositionFixture()
+	visual := &SessionArtifactSelectionReference{SessionID: "session", CollectionID: "collection", VariantID: "visual", EventSeq: 1}
+	working := VideoPlanProposal{Kind: VideoPlanKindInitial, CompositionCatalog: catalog, Parts: []VideoPlanPart{
+		{ID: "one", Title: "One", DurationMs: 1000, Visual: visual, VisualMediaType: "image/png", Composition: link},
+		{ID: "two", Title: "Two", DurationMs: 1000, Visual: visual, VisualMediaType: "image/png"},
+	}}
+	timeline := visualVideoPlanTimeline(VideoProjectTimeline{}, working)
+	timeline.Metadata = map[string]any{"accepted_video_plan": working}
+	changed := working.Parts[0]
+	changed.Composition = &videocomposition.Link{Disabled: true}
+	updated, err := mergeWorkingVideoPlanMutation(timeline, VideoPlanProposal{Kind: VideoPlanKindRevision, CompositionCatalog: catalog, Parts: []VideoPlanPart{changed}})
+	if err != nil { t.Fatal(err) }
+	if len(updated.Parts) != 2 || updated.Parts[0].Composition == nil || !updated.Parts[0].Composition.Disabled || updated.Parts[1].ID != "two" {
+		t.Fatalf("updated working plan = %#v", updated)
+	}
+}
+
 func TestVideoPlanCompositionRejectsMissingLayoutAndUnsafeTiming(t *testing.T) {
 	catalog, link := durableCompositionFixture()
 	visual := &SessionArtifactSelectionReference{SessionID: "session", CollectionID: "collection", VariantID: "variant", EventSeq: 1}

@@ -273,6 +273,21 @@ export async function createVideoEditProposal(input: {
   return response.proposal
 }
 
+export async function updateVideoCompositionProposal(input: {
+  sessionId: string
+  projectId: string
+  proposalId: string
+  expectedRevisionId: string
+  plan: VideoPlanProposalWire
+}): Promise<VideoEditProposalWire> {
+  const response = await requestJson<{ proposal?: VideoEditProposalWire }>(`/v3/sessions/${encodeURIComponent(input.sessionId)}/video/projects/${encodeURIComponent(input.projectId)}/edit-proposals/${encodeURIComponent(input.proposalId)}/composition-update`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ expected_revision_id: input.expectedRevisionId, plan: input.plan }),
+  })
+  if (!response.proposal) throw new Error('Composition update returned no proposal')
+  return response.proposal
+}
+
 export async function selectVideoAnimationCandidate(input: {
   sessionId: string
   projectId: string

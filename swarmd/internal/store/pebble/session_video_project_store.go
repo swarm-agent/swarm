@@ -2125,6 +2125,13 @@ func (s *SessionStore) prepareV3VideoProjectMutation(input V3SessionMutationInpu
 		}
 		originalParts := make(map[string]VideoPlanPart, len(proposal.Plan.Parts))
 		for _, part := range proposal.Plan.Parts { originalParts[part.ID] = part }
+		if previousWorkingPlan, planErr := acceptedVideoPlanFromTimeline(working.Timeline); planErr != nil {
+			return preparedV3VideoProjectMutation{}, planErr
+		} else if previousWorkingPlan != nil {
+			for _, part := range previousWorkingPlan.Parts {
+				if _, exists := originalParts[part.ID]; !exists { originalParts[part.ID] = part }
+			}
+		}
 		for _, part := range updatedPlan.Parts {
 			original, exists := originalParts[part.ID]
 			if !exists {
@@ -2137,12 +2144,15 @@ func (s *SessionStore) prepareV3VideoProjectMutation(input V3SessionMutationInpu
 				return preparedV3VideoProjectMutation{}, fmt.Errorf("composition update may only change composition and production_state for part %q", part.ID)
 			}
 		}
-		oldPlan := proposal.Plan
 		proposal.Plan = &updatedPlan
 		proposal.UpdatedAt = now
+		workingPlan, mergeErr := mergeWorkingVideoPlanMutation(working.Timeline, updatedPlan)
+		if mergeErr != nil {
+			return preparedV3VideoProjectMutation{}, mergeErr
+		}
 		baseForRebuild := working.Timeline
-		planPartIDs := make(map[string]struct{}, len(oldPlan.Parts))
-		for _, part := range oldPlan.Parts { planPartIDs[part.ID] = struct{}{} }
+		planPartIDs := make(map[string]struct{}, len(workingPlan.Parts))
+		for _, part := range workingPlan.Parts { planPartIDs[part.ID] = struct{}{} }
 		baseForRebuild.Clips = nil
 		for _, clip := range working.Timeline.Clips {
 			if _, planClip := planPartIDs[clip.ID]; !planClip { baseForRebuild.Clips = append(baseForRebuild.Clips, clip) }
@@ -2153,11 +2163,11 @@ func (s *SessionStore) prepareV3VideoProjectMutation(input V3SessionMutationInpu
 			_, toPlan := planPartIDs[transition.ToClipID]
 			if !fromPlan || !toPlan { baseForRebuild.Transitions = append(baseForRebuild.Transitions, transition) }
 		}
-		working.Timeline = visualVideoPlanTimeline(baseForRebuild, updatedPlan)
+		working.Timeline = visualVideoPlanTimeline(baseForRebuild, workingPlan)
 		if working.Timeline.Metadata == nil {
 			working.Timeline.Metadata = map[string]any{}
 		}
-		working.Timeline.Metadata["accepted_video_plan"] = updatedPlan
+		working.Timeline.Metadata["accepted_video_plan"] = workingPlan
 		working.Timeline.Metadata["accepted_video_plan_proposal_id"] = proposal.ID
 		working.ChangeSummary = "Updated pending spatial composition"
 		if err := validateVideoTimeline(working.Timeline); err != nil {

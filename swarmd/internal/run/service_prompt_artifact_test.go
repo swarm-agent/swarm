@@ -243,6 +243,12 @@ func TestMasterHarnessPromptGuidesNormalizedHTMLStillExportAndPendingVideoPlan(t
 		"manage_video import_storyboard",
 		"Do not stop after HTML authoring or still export",
 		"never accept or start final rendering for the user while pending storyboard placeholders remain",
+		"manage_video inspect_composition",
+		"list_source_roots and browse_source",
+		"exact expected_revision_id",
+		"update_composition",
+		"use inspect_frames on the exact working revision",
+		"AI must never accept the proposal or start final rendering",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("master prompt missing HTML still workflow guidance %q", want)

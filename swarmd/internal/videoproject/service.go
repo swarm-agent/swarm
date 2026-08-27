@@ -176,6 +176,10 @@ func (s *Service) UpdateComposition(ctx context.Context, principal identity.Prin
 	if proposal.Status != pebblestore.VideoEditProposalStatusPending || proposal.Plan == nil || proposal.WorkingRevisionID != input.ExpectedRevisionID {
 		return pebblestore.VideoEditProposalSnapshot{}, errors.New("stale composition update: expected revision is not the pending working revision")
 	}
+	project, ok, err := s.sessions.GetVideoProject(principal.AccountScopeID, input.SessionID, input.ProjectID)
+	if err != nil || !ok || (project.UserID != "" && project.UserID != principal.UserID) || project.CurrentRevisionID != input.ExpectedRevisionID {
+		return pebblestore.VideoEditProposalSnapshot{}, errors.New("stale composition update: expected revision is not the current project revision")
+	}
 	if err := s.validateCompositionSources(principal, input.SessionID, input.Plan); err != nil {
 		return pebblestore.VideoEditProposalSnapshot{}, err
 	}
