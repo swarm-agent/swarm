@@ -32,36 +32,39 @@ import (
 )
 
 const (
-	responsesURL                               = "https://chatgpt.com/backend-api/codex/responses"
-	openAIResponsesURL                         = "https://api.openai.com/v1/responses"
-	openAIBetaHeader                           = "OpenAI-Beta"
-	responsesWebsocketBetaHeaderV2             = "responses_websockets=2026-02-06"
-	originatorHeader                           = "originator"
-	defaultOriginatorHeaderValue               = "codex_cli_rs"
-	userAgentHeader                            = "User-Agent"
-	defaultCodexTransportUserAgent             = "codex_cli_rs/swarm-go"
-	defaultOpenAITransportUserAgent            = "swarm-go/openai-responses"
-	defaultCodexTextVerbosity                  = "low"
-	includeReasoningEncryptedContentPath       = "reasoning.encrypted_content"
-	chatGPTAccountIDHeader                     = "ChatGPT-Account-ID"
-	tokenURL                                   = "https://auth.openai.com/oauth/token"
-	clientID                                   = "app_EMoamEEZ73f0CkXaXp7hrann"
-	maxCodexResponseBodyBytes            int64 = 32 << 20
-	maxCodexStreamEventBytes                   = 8 << 20
-	maxCodexStreamLineBytes                    = maxCodexStreamEventBytes + 64
-	maxCodexWebsocketMessageBytes        int64 = 256 << 20
-	maxCodexRawEvents                          = 4_096
-	transportRetryAttempts                     = 2
-	transportRetryBaseDelay                    = 300 * time.Millisecond
-	startedWebsocketStreamRetryLimit           = 3
-	websocketIdleTimeoutAttempts               = 3
-	defaultWebsocketIdleTimeout                = 5 * time.Minute
-	websocketWriteTimeout                      = 30 * time.Second
-	maxPromptCacheKeyLength                    = 64
-	codexTransportMetadataKey                  = "_swarm_transport"
-	codexConnectedViaWSMetadataKey             = "_swarm_connected_via_websocket"
-	codexTransportWebsocket                    = "websocket"
-	codexTransportResponsesHTTP                = "responses_http"
+	responsesURL                                 = "https://chatgpt.com/backend-api/codex/responses"
+	openAIResponsesURL                           = "https://api.openai.com/v1/responses"
+	openAIBetaHeader                             = "OpenAI-Beta"
+	responsesWebsocketBetaHeaderV2               = "responses_websockets=2026-02-06"
+	originatorHeader                             = "originator"
+	defaultOriginatorHeaderValue                 = "codex_cli_rs"
+	userAgentHeader                              = "User-Agent"
+	defaultCodexTransportUserAgent               = "codex_cli_rs/swarm-go"
+	defaultOpenAITransportUserAgent              = "swarm-go/openai-responses"
+	defaultCodexTextVerbosity                    = "low"
+	includeReasoningEncryptedContentPath         = "reasoning.encrypted_content"
+	chatGPTAccountIDHeader                       = "ChatGPT-Account-ID"
+	tokenURL                                     = "https://auth.openai.com/oauth/token"
+	clientID                                     = "app_EMoamEEZ73f0CkXaXp7hrann"
+	maxCodexResponseBodyBytes              int64 = 32 << 20
+	maxCodexStreamEventBytes                     = 8 << 20
+	maxCodexStreamLineBytes                      = maxCodexStreamEventBytes + 64
+	maxCodexWebsocketMessageBytes          int64 = 256 << 20
+	maxCodexCompletedSnapshotBytes               = maxCodexWebsocketMessageBytes
+	maxCodexWebsocketCompactedMessageBytes int64 = 1 << 30
+	maxCodexCompletedMetadataBytes               = 1 << 20
+	maxCodexRawEvents                            = 4_096
+	transportRetryAttempts                       = 2
+	transportRetryBaseDelay                      = 300 * time.Millisecond
+	startedWebsocketStreamRetryLimit             = 3
+	websocketIdleTimeoutAttempts                 = 3
+	defaultWebsocketIdleTimeout                  = 5 * time.Minute
+	websocketWriteTimeout                        = 30 * time.Second
+	maxPromptCacheKeyLength                      = 64
+	codexTransportMetadataKey                    = "_swarm_transport"
+	codexConnectedViaWSMetadataKey               = "_swarm_connected_via_websocket"
+	codexTransportWebsocket                      = "websocket"
+	codexTransportResponsesHTTP                  = "responses_http"
 )
 
 var (
@@ -1723,13 +1726,11 @@ func (c *Client) sendWebsocketMap(ctx context.Context, record pebblestore.CodexA
 		if activeConn == nil {
 			return errors.New("websocket connection is unavailable")
 		}
-		// Responses websocket events are streamed individually, but the terminal
-		// response.completed snapshot can legitimately be much larger than a
-		// unary HTTP response for long tool-heavy sessions. Keep a bounded
-		// transport envelope above the per-event admission limit so oversized
-		// frames reach the explicit event classifier below instead of failing as
-		// an opaque websocket close 1009.
-		activeConn.SetReadLimit(maxCodexWebsocketMessageBytes)
+		// Terminal response.completed frames can repeat a long native continuation
+		// chain. Admit a larger but still bounded wire frame so it can be streamed
+		// through the compacting decoder below instead of being materialized or
+		// failing as an opaque websocket close 1009.
+		activeConn.SetReadLimit(maxCodexWebsocketCompactedMessageBytes)
 		writeDeadline := time.Now().Add(websocketWriteTimeout)
 		if deadline, ok := ctx.Deadline(); ok && deadline.Before(writeDeadline) {
 			writeDeadline = deadline
@@ -1804,7 +1805,7 @@ func (c *Client) sendWebsocketMap(ctx context.Context, record pebblestore.CodexA
 			}
 			return nil, 0, fmt.Errorf("set websocket idle deadline: %w", err)
 		}
-		messageType, message, err := conn.ReadMessage()
+		messageType, message, compacted, messageBytes, err := readCodexWebsocketEvent(conn)
 		if err != nil {
 			if session != nil {
 				closeCachedWebsocketSessionLocked(session)
@@ -1835,6 +1836,17 @@ func (c *Client) sendWebsocketMap(ctx context.Context, record pebblestore.CodexA
 
 		payloadText := string(message)
 		providerdiagnostics.LogWebsocketResponseContext(ctx, "codex", "responses.websocket", message)
+		if compacted {
+			providerdiagnostics.RecordContext(ctx, providerdiagnostics.Event{
+				Provider:  "codex",
+				Operation: "responses.websocket",
+				Stage:     "response_compacted",
+				Extra: map[string]any{
+					"wire_bytes":     messageBytes,
+					"retained_bytes": len(message),
+				},
+			})
+		}
 		var decoded map[string]any
 		if len(message) > maxCodexStreamEventBytes {
 			if err := json.Unmarshal(message, &decoded); err != nil {
@@ -1891,6 +1903,170 @@ func (c *Client) sendWebsocketMap(ctx context.Context, record pebblestore.CodexA
 		session.lastOutput = normalizeCodexResponseOutputMapsForReplay(state.outputItemsDone)
 	}
 	return decoded, http.StatusOK, nil
+}
+
+func readCodexWebsocketEvent(conn *websocket.Conn) (messageType int, message []byte, compacted bool, wireBytes int64, err error) {
+	if conn == nil {
+		return 0, nil, false, 0, errors.New("websocket connection is unavailable")
+	}
+	messageType, reader, err := conn.NextReader()
+	if err != nil {
+		return 0, nil, false, 0, err
+	}
+
+	var prefix bytes.Buffer
+	readBytes, readErr := io.CopyN(&prefix, reader, maxCodexCompletedSnapshotBytes+1)
+	if readErr != nil {
+		if errors.Is(readErr, io.EOF) {
+			return messageType, prefix.Bytes(), false, readBytes, nil
+		}
+		return 0, nil, false, readBytes, readErr
+	}
+
+	counted := &countingReader{Reader: io.MultiReader(bytes.NewReader(prefix.Bytes()), reader)}
+	compactedMessage, compactErr := compactCodexCompletedSnapshot(counted)
+	if compactErr != nil {
+		return 0, nil, false, counted.BytesRead, compactErr
+	}
+	if counted.BytesRead > maxCodexWebsocketCompactedMessageBytes {
+		return 0, nil, false, counted.BytesRead, errors.New("codex websocket message byte limit exceeded")
+	}
+	return messageType, compactedMessage, true, counted.BytesRead, nil
+}
+
+type countingReader struct {
+	io.Reader
+	BytesRead int64
+}
+
+func (r *countingReader) Read(p []byte) (int, error) {
+	n, err := r.Reader.Read(p)
+	r.BytesRead += int64(n)
+	return n, err
+}
+
+func compactCodexCompletedSnapshot(reader io.Reader) ([]byte, error) {
+	decoder := json.NewDecoder(reader)
+	start, err := decoder.Token()
+	if err != nil {
+		return nil, fmt.Errorf("decode oversized codex websocket event: %w", err)
+	}
+	if delimiter, ok := start.(json.Delim); !ok || delimiter != '{' {
+		return nil, errors.New("codex websocket event byte limit exceeded")
+	}
+
+	compacted := make(map[string]any, 3)
+	for decoder.More() {
+		keyToken, err := decoder.Token()
+		if err != nil {
+			return nil, fmt.Errorf("decode oversized codex websocket event: %w", err)
+		}
+		key, ok := keyToken.(string)
+		if !ok {
+			return nil, errors.New("decode oversized codex websocket event: invalid object key")
+		}
+		switch key {
+		case "type", "sequence_number":
+			var value any
+			if err := decoder.Decode(&value); err != nil {
+				return nil, fmt.Errorf("decode oversized codex websocket event %s: %w", key, err)
+			}
+			compacted[key] = value
+		case "response":
+			response, err := compactCodexCompletedResponse(decoder)
+			if err != nil {
+				return nil, err
+			}
+			compacted[key] = response
+		default:
+			if err := skipCodexJSONValue(decoder); err != nil {
+				return nil, err
+			}
+		}
+	}
+	if _, err := decoder.Token(); err != nil {
+		return nil, fmt.Errorf("decode oversized codex websocket event: %w", err)
+	}
+	if !strings.EqualFold(strings.TrimSpace(asString(compacted["type"])), "response.completed") {
+		return nil, errors.New("codex websocket event byte limit exceeded")
+	}
+	encoded, err := json.Marshal(compacted)
+	if err != nil {
+		return nil, fmt.Errorf("encode compacted codex websocket event: %w", err)
+	}
+	if len(encoded) > maxCodexCompletedMetadataBytes {
+		return nil, errors.New("codex websocket completion metadata byte limit exceeded")
+	}
+	return encoded, nil
+}
+
+func compactCodexCompletedResponse(decoder *json.Decoder) (map[string]any, error) {
+	start, err := decoder.Token()
+	if err != nil {
+		return nil, fmt.Errorf("decode oversized codex response.completed response: %w", err)
+	}
+	if start == nil {
+		return map[string]any{}, nil
+	}
+	if delimiter, ok := start.(json.Delim); !ok || delimiter != '{' {
+		return nil, errors.New("decode oversized codex response.completed response: invalid response object")
+	}
+
+	response := make(map[string]any, 10)
+	for decoder.More() {
+		keyToken, err := decoder.Token()
+		if err != nil {
+			return nil, fmt.Errorf("decode oversized codex response.completed response: %w", err)
+		}
+		key, ok := keyToken.(string)
+		if !ok {
+			return nil, errors.New("decode oversized codex response.completed response: invalid object key")
+		}
+		switch key {
+		case "id", "model", "status", "stop_reason", "incomplete_details", "error", "usage", "service_tier":
+			var value any
+			if err := decoder.Decode(&value); err != nil {
+				return nil, fmt.Errorf("decode oversized codex response.completed response %s: %w", key, err)
+			}
+			response[key] = value
+		default:
+			if err := skipCodexJSONValue(decoder); err != nil {
+				return nil, err
+			}
+		}
+	}
+	if _, err := decoder.Token(); err != nil {
+		return nil, fmt.Errorf("decode oversized codex response.completed response: %w", err)
+	}
+	return response, nil
+}
+
+func skipCodexJSONValue(decoder *json.Decoder) error {
+	token, err := decoder.Token()
+	if err != nil {
+		return fmt.Errorf("decode oversized codex websocket event: %w", err)
+	}
+	delimiter, ok := token.(json.Delim)
+	if !ok {
+		return nil
+	}
+	if delimiter != '{' && delimiter != '[' {
+		return errors.New("decode oversized codex websocket event: invalid value")
+	}
+	for decoder.More() {
+		if delimiter == '{' {
+			if _, err := decoder.Token(); err != nil {
+				return fmt.Errorf("decode oversized codex websocket event key: %w", err)
+			}
+		}
+		if err := skipCodexJSONValue(decoder); err != nil {
+			return err
+		}
+	}
+	if _, err := decoder.Token(); err != nil {
+		return fmt.Errorf("decode oversized codex websocket event: %w", err)
+	}
+	return nil
 }
 
 func websocketTimeoutError(err error) bool {

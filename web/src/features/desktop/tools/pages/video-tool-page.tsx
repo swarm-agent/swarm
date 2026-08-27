@@ -1739,6 +1739,16 @@ export function VideoToolPage() {
     ?? liveAnimationPart?.animation_candidates?.candidates.find((candidate) => candidate.id === liveAnimationPart.animation_candidates?.selected_candidate_id)
     ?? liveAnimationPart?.animation_candidates?.candidates[0]
     ?? null
+  const activePreviewRequestIdentity = useMemo(() => videoProject && playerRevision && liveAnimationPart && activeCandidate
+    ? videoActivePreviewIdentity({
+      projectId: videoProject.id,
+      proposal: currentWorkingProposal,
+      revisionId: playerRevision.id,
+      timelineClipId: liveAnimationPart.id,
+      part: liveAnimationPart,
+      candidate: activeCandidate,
+    })
+    : null, [activeCandidate, currentWorkingProposal, liveAnimationPart, playerRevision, videoProject])
   const activeClipReviewState = videoClipReviewState(liveAnimationPart ?? undefined, activeSegment?.artifactRef?.media_type ?? '', activeSegment?.type ?? 'frame')
   const currentTurnParts = useMemo(() => currentWorkingProposal?.plan?.parts ?? [], [currentWorkingProposal])
   const currentTurnVariantPartCount = currentTurnParts.filter((part) => (part.animation_candidates?.candidates.length ?? 0) > 0).length
@@ -2015,20 +2025,12 @@ export function VideoToolPage() {
   }, [animationSelectionBusyPartId, currentWorkingProposal, pendingSelectedChangeIds, previewCurrentTurnPart, selectedThread, timelineLayoutByClipId, videoProject])
 
   useEffect(() => {
-    if (!videoProject || !playerRevision || !liveAnimationPart || !activeCandidate) {
+    if (!videoProject || !playerRevision || !liveAnimationPart || !activePreviewRequestIdentity) {
       setActivePreviewIdentity(null)
       setLiveAnimationURL('')
       setLiveAnimationError(null)
       return
     }
-    const canonical = videoActivePreviewIdentity({
-      projectId: videoProject.id,
-      proposal: currentWorkingProposal,
-      revisionId: playerRevision.id,
-      timelineClipId: liveAnimationPart.id,
-      part: liveAnimationPart,
-      candidate: activeCandidate,
-    })
     setActivePreviewIdentity((current) => current && videoActivePreviewCandidate({
       identity: current,
       projectId: videoProject.id,
@@ -2036,8 +2038,8 @@ export function VideoToolPage() {
       revisionId: playerRevision.id,
       timelineClipId: liveAnimationPart.id,
       part: liveAnimationPart,
-    }) ? current : canonical)
-  }, [activeCandidate, currentWorkingProposal, liveAnimationPart, playerRevision, videoProject])
+    }) ? current : activePreviewRequestIdentity)
+  }, [activePreviewRequestIdentity, currentWorkingProposal, liveAnimationPart, playerRevision, videoProject])
 
   useEffect(() => {
     let cancelled = false
@@ -2055,17 +2057,14 @@ export function VideoToolPage() {
     let cancelled = false
     setLiveAnimationURL('')
     setLiveAnimationError(null)
-    const requestIdentity = activePreviewIdentity
-    if (!activeCandidate || !requestIdentity) return
+    if (!activeCandidate || !activePreviewRequestIdentity) return
     void fetchDesktopV3ArtifactPreviewAccess(activeCandidate.source.session_id, activeCandidate.source.variant_id).then((access) => {
-      if (!cancelled && activePreviewIdentity === requestIdentity) setLiveAnimationURL(access.url)
+      if (!cancelled) setLiveAnimationURL(access.url)
     }).catch((error) => {
-      if (!cancelled && activePreviewIdentity === requestIdentity) {
-        setLiveAnimationError(error instanceof Error ? error.message : String(error))
-      }
+      if (!cancelled) setLiveAnimationError(error instanceof Error ? error.message : String(error))
     })
     return () => { cancelled = true }
-  }, [activeCandidate, activePreviewIdentity])
+  }, [activeCandidate, activePreviewRequestIdentity])
 
   useEffect(() => {
     const frame = liveAnimationFrameRef.current?.contentWindow

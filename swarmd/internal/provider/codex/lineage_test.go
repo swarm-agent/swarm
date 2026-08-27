@@ -766,6 +766,83 @@ func TestCodexWebsocketAllowsLargeCompletedSnapshot(t *testing.T) {
 	}
 }
 
+func TestCodexWebsocketCompactsCompletedSnapshotBeyondTransportEnvelope(t *testing.T) {
+	largePadding := strings.Repeat("x", int(maxCodexWebsocketMessageBytes/2)+1)
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		if _, _, err := conn.ReadMessage(); err != nil {
+			return
+		}
+		done := map[string]any{
+			"type":         "response.output_item.done",
+			"output_index": 0,
+			"item": map[string]any{
+				"id":     "msg-compacted",
+				"type":   "message",
+				"role":   "assistant",
+				"status": "completed",
+				"content": []any{map[string]any{
+					"type": "output_text",
+					"text": "preserved final answer",
+				}},
+			},
+		}
+		if err := conn.WriteJSON(done); err != nil {
+			return
+		}
+		completed := map[string]any{
+			"type":            "response.completed",
+			"sequence_number": 42,
+			"response": map[string]any{
+				"id":           "resp-compacted",
+				"model":        "gpt-5.4",
+				"status":       "completed",
+				"service_tier": "priority",
+				"usage":        map[string]any{"input_tokens": 11, "output_tokens": 7, "total_tokens": 18},
+				"output":       []any{map[string]any{"type": "reasoning", "encrypted_content": largePadding}, map[string]any{"type": "reasoning", "encrypted_content": largePadding}, done["item"]},
+			},
+		}
+		_ = conn.WriteJSON(completed)
+	}))
+	defer server.Close()
+
+	client := NewClient(nil)
+	client.responsesWSURL = "ws" + strings.TrimPrefix(server.URL, "http") + "/v1/responses"
+	record := pebblestore.CodexAuthRecord{Provider: "codex", Type: pebblestore.CodexAuthTypeOAuth, AccountScopeID: "account-a", ID: "credential-a", AccountID: "chatgpt-a", AccessToken: "token"}
+	response, err := client.CreateResponseStreamingWithAuth(context.Background(), record, Request{
+		Model: "gpt-5.4",
+		Input: []map[string]any{{"role": "user", "content": "oversized completion"}},
+	}, nil)
+	if err != nil {
+		t.Fatalf("oversized completed snapshot request: %v", err)
+	}
+	if response.ID != "resp-compacted" || response.Model != "gpt-5.4" || response.StopReason != "" {
+		t.Fatalf("compacted response metadata = %#v", response)
+	}
+	if response.Usage.InputTokens != 11 || response.Usage.OutputTokens != 7 || response.Usage.TotalTokens != 18 || response.Usage.ServiceTier != "priority" {
+		t.Fatalf("compacted response usage = %#v", response.Usage)
+	}
+	if response.Text != "preserved final answer" || len(response.Raw) == 0 {
+		t.Fatalf("compacted response payload = text %q raw keys %d", response.Text, len(response.Raw))
+	}
+	responseObj := response.Raw
+	if nested, ok := response.Raw["response"].(map[string]any); ok {
+		responseObj = nested
+	}
+	output := asSlice(responseObj["output"])
+	if len(output) != 1 {
+		t.Fatalf("compacted raw response output items = %d, want one streamed item", len(output))
+	}
+	if got := extractOutputTextFromOutputItem(output[0].(map[string]any)); got != "preserved final answer" {
+		t.Fatalf("compacted raw response output text = %q", got)
+	}
+}
+
 func TestCodexWebsocketRejectsLargeNonCompletedEvent(t *testing.T) {
 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -790,6 +867,14 @@ func TestCodexWebsocketRejectsLargeNonCompletedEvent(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "websocket event byte limit exceeded") {
 		t.Fatalf("large non-completed event error = %v, want explicit event byte limit", err)
+	}
+}
+
+func TestCompactCodexCompletedSnapshotRejectsOversizedNonCompletedEvent(t *testing.T) {
+	payload := `{"type":"response.in_progress","padding":"not-completed"}`
+	_, err := compactCodexCompletedSnapshot(strings.NewReader(payload))
+	if err == nil || !strings.Contains(err.Error(), "websocket event byte limit exceeded") {
+		t.Fatalf("oversized non-completed compaction error = %v, want event byte limit", err)
 	}
 }
 
