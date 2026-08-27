@@ -121,16 +121,17 @@ async function fetchAllEvents(sessionID) {
   fail('session event replay exceeded 20 pages')
 }
 
-function planManageOutputs(events) {
-  const outputs = []
+function planManageCalls(events) {
+  const calls = []
   for (const event of events) {
     if (String(event?.event_type || '') !== 'session.tool.completed') continue
     const payload = objectPayload(event?.payload)
     if (String(payload?.tool_name || payload?.name || '') !== 'plan_manage') continue
-    const decoded = objectPayload(payload?.output ?? payload?.result ?? payload?.completed_output ?? '')
-    if (decoded && typeof decoded === 'object') outputs.push(decoded)
+    const argumentsValue = objectPayload(payload?.arguments)
+    const output = objectPayload(payload?.output ?? payload?.result ?? payload?.completed_output ?? '')
+    calls.push({ arguments: argumentsValue, output, run_id: String(payload?.run_id || '') })
   }
-  return outputs
+  return calls
 }
 
 function attemptsFor(checkpoint) {
@@ -167,15 +168,15 @@ async function waitForRecovered(sessionID, recoveryParentRunID, blockedAttempt) 
     const checkpoint = latestPlan?.document?.checkpoints?.[0]
     const attempts = attemptsFor(checkpoint)
     const completedAttempt = [...attempts].reverse().find((attempt) => String(attempt?.status || attempt?.outcome || '') === 'completed')
-    const outputs = planManageOutputs(latestReplay.events)
-    const resolveOutput = outputs.find((output) => String(output?.action || '') === 'resolve_blocked_checkpoint')
-    if (checkpoint?.status === 'completed' && completedAttempt?.run_id && resolveOutput) {
-      return { plan: latestPlan, replay: latestReplay, checkpoint, completedAttempt, resolveOutput }
+    const calls = planManageCalls(latestReplay.events)
+    const resolveCall = calls.find((call) => String(call?.arguments?.action || call?.output?.action || '') === 'resolve_blocked_checkpoint')
+    if (checkpoint?.status === 'completed' && completedAttempt?.run_id && resolveCall) {
+      return { plan: latestPlan, replay: latestReplay, checkpoint, completedAttempt, resolveCall }
     }
     const runIntents = latestReplay.replay?.run_intents || []
     const parentIntent = runIntents.find((intent) => String(intent?.run_id || '') === recoveryParentRunID)
     if (Date.now() - lastBeat >= 15000) {
-      log(`waiting for recovery; parent=${parentIntent?.status || 'pending'} checkpoint=${checkpoint?.status || 'unknown'} attempts=${attempts.length} resolve=${Boolean(resolveOutput)}`)
+      log(`waiting for recovery; parent=${parentIntent?.status || 'pending'} checkpoint=${checkpoint?.status || 'unknown'} attempts=${attempts.length} resolve=${Boolean(resolveCall)}`)
       lastBeat = Date.now()
     }
     const terminalFailure = runIntents.find((intent) => ['failed', 'cancelled', 'expired', 'interrupted'].includes(String(intent?.status || '')))
@@ -302,9 +303,9 @@ async function main() {
     status: completedAttempt?.status || completedAttempt?.outcome || '',
   }
   result.diagnostics.resolve_action = {
-    action: recovered.resolveOutput?.action || '',
-    checkpoint_id: recovered.resolveOutput?.checkpoint_id || '',
-    run_id: recovered.resolveOutput?.run_id || recovered.resolveOutput?.run_ownership?.run_id || '',
+    action: recovered.resolveCall?.arguments?.action || recovered.resolveCall?.output?.action || '',
+    checkpoint_id: recovered.resolveCall?.arguments?.checkpoint_id || recovered.resolveCall?.output?.checkpoint_id || '',
+    run_id: recovered.resolveCall?.run_id || recovered.resolveCall?.output?.run_id || recovered.resolveCall?.output?.run_ownership?.run_id || '',
   }
   result.gates.fresh_ownership_observed = true
   result.gates.checkpoint_completed = true
