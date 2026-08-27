@@ -108,7 +108,7 @@ func TestBuildPlanCheckpointRunInputUsesOnlyPlanContextWithoutStartLifecycleMess
 	if strings.Contains(text, "Prior handoff details must stay canonical") {
 		t.Fatalf("prompt embedded prior checkpoint handoff content instead of the orientation index: %s", text)
 	}
-	for _, want := range []string{"docs/plan-brief.md", "out/shared-result.json", "consume the cited prior checkpoint result", "out/user-summary.md", "workspace-relative metadata or exact managed artifact references, not embedded file contents", "Read only artifacts with role=input", "role=deliverable", "publish a managed artifact directly with manage_artifact create/create_package", "without staging it in the workspace", "create a workspace file only when the requested deliverable is itself a workspace or repository file", "use a path for workspace files", "Do not emit a separate assistant completion report"} {
+	for _, want := range []string{"docs/plan-brief.md", "out/shared-result.json", "consume the cited prior checkpoint result", "out/user-summary.md", "workspace-relative metadata, exact managed artifact references, or exact videosrc_ references", "Read only artifacts with role=input", "role=deliverable", "publish a managed artifact directly with manage_artifact create/create_package", "without staging it in the workspace", "create a workspace file only when the requested deliverable is itself a workspace or repository file", "use a path for workspace files", "Do not emit a separate assistant completion report"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("prompt missing artifact contract %q: %s", want, text)
 		}
@@ -160,7 +160,7 @@ func TestBuildPlanCheckpointRunInputUsesOnlyPlanContextWithoutStartLifecycleMess
 		"include it in copyable_code_blocks so clients expose a copy affordance",
 		"suggested_prompts as ordinary user messages for likely next steps",
 		"client presents that evidence collapsed beneath the compact blocked handoff",
-		"Use mark_failed only for a nonrecoverable execution error after reasonable recovery attempts",
+		"Use mark_failed only for a nonrecoverable execution error after bounded reasonable recovery",
 		"backend durable plan state decides continuation",
 	} {
 		if !strings.Contains(text, want) {
@@ -240,6 +240,50 @@ func TestBuildPlanCheckpointRunInputUsesOnlyPlanContextWithoutStartLifecycleMess
 	}
 	if len(outbox) != 0 {
 		t.Fatalf("checkpoint prompt builder unexpectedly wrote realtime outbox: %#v", outbox)
+	}
+}
+
+func TestRenderCheckpointRunPromptCarriesResolvedBlockerContext(t *testing.T) {
+	payload := checkpointRunPromptPayload{
+		PlanID:          "plan-recovery",
+		ExecutionPolicy: pebblestore.SessionPlanExecutionPolicy{Mode: sessionruntime.PlanExecutionPolicyModeAutomatic, Shape: sessionruntime.PlanExecutionShapeCheckpointed},
+		Checkpoint: pebblestore.SessionPlanCheckpoint{
+			ID:                 "cp-1",
+			Title:              "Recover blocked checkpoint",
+			Status:             sessionruntime.PlanCheckpointStatusInProgress,
+			Objective:          "Finish after RECOVERY_GATE is available",
+			Tasks:              []string{"Confirm gate", "Complete proof"},
+			AcceptanceCriteria: []string{"RECOVERY_GATE was confirmed", "Proof completes"},
+			Result:             "blocker_resolved_resume_required",
+			Report:             "Blocked waiting for RECOVERY_GATE.\n\nBlocker confirmed resolved. Resume this checkpoint and decide its normal outcome after finishing any remaining work.",
+		},
+		RecoveryContext: "Blocked waiting for RECOVERY_GATE.\n\nBlocker confirmed resolved. Resume this checkpoint and decide its normal outcome after finishing any remaining work.",
+	}
+	text, err := renderCheckpointRunPrompt(payload)
+	if err != nil {
+		t.Fatalf("render recovery prompt: %v", err)
+	}
+	for _, want := range []string{
+		`"recovery_context": "Blocked waiting for RECOVERY_GATE.\n\nBlocker confirmed resolved.`,
+		"prior parent run already confirmed and durably resolved the named blocker",
+		"Treat recovery_context as authoritative resolution evidence",
+		"do not require the original user confirmation to appear again",
+		"do not re-block solely because that earlier message is absent",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("recovery prompt missing %q: %s", want, text)
+		}
+	}
+}
+
+func TestCheckpointRunRecoveryContextRequiresResolvedSentinel(t *testing.T) {
+	resolved := pebblestore.SessionPlanCheckpoint{Result: "blocker_resolved_resume_required", Report: "Blocker confirmed resolved."}
+	if got := checkpointRunRecoveryContext(resolved); got != "Blocker confirmed resolved." {
+		t.Fatalf("resolved recovery context = %q", got)
+	}
+	ordinary := pebblestore.SessionPlanCheckpoint{Result: "ordinary_result", Report: "ordinary report"}
+	if got := checkpointRunRecoveryContext(ordinary); got != "" {
+		t.Fatalf("ordinary checkpoint leaked recovery context %q", got)
 	}
 }
 
