@@ -829,6 +829,34 @@ function activeTimelineSegment(layout: TimelineLayoutSegment[], playhead: number
   return visual[visual.length - 1] ?? active[active.length - 1] ?? null
 }
 
+export function syncTimelineAudioPlayback(
+  layout: TimelineLayoutSegment[],
+  audioElements: Map<string, HTMLAudioElement>,
+  playhead: number,
+  playing: boolean,
+): void {
+  const activeAudioSegments = activeTimelineSegments(layout, playhead).filter((segment) => segment.type === 'audio')
+  const activeAudioClipIds = new Set(activeAudioSegments.map((segment) => segment.clipId))
+  for (const [clipId, audio] of audioElements.entries()) {
+    if (!activeAudioClipIds.has(clipId) && !audio.paused) audio.pause()
+  }
+  for (const segment of activeAudioSegments) {
+    const audio = audioElements.get(segment.clipId)
+    if (!audio) continue
+    audio.volume = Math.max(0, Math.min(1, segment.volume ?? 1))
+    audio.muted = segment.muted === true
+    const sourceTime = segment.sourceStart + Math.max(0, playhead - segment.timelineStart)
+    if (Number.isFinite(sourceTime) && Math.abs(audio.currentTime - sourceTime) > 0.12) {
+      try { audio.currentTime = sourceTime } catch { /* Retry after metadata loads. */ }
+    }
+    // Playback entry points call this synchronously from the user's click so
+    // audible media receives browser activation. The render loop reuses the
+    // same path to keep audio locked to the canonical visual playhead.
+    if (playing && audio.paused) void audio.play().catch(() => undefined)
+    if (!playing && !audio.paused) audio.pause()
+  }
+}
+
 function transitionPreviewOpacity(segments: TimelineLayoutSegment[], index: number, playhead: number): number {
   if (segments.length < 2) return 1
   const incoming = segments[segments.length - 1]
@@ -1904,6 +1932,18 @@ export function VideoToolPage() {
     playheadRef.current = playhead
   }, [playhead])
 
+  const beginTimelinePlayback = useCallback((startAt: number) => {
+    playheadRef.current = startAt
+    setPlayhead(startAt)
+    playbackStartPlayheadRef.current = startAt
+    playbackStartRef.current = performance.now()
+    // Prime audible media while this callback still has the browser's user
+    // activation. Starting it later from requestAnimationFrame is commonly
+    // rejected by autoplay policy and leaves the visual playing silently.
+    syncTimelineAudioPlayback(timelineLayout, audioElementsRef.current, startAt, true)
+    setIsPlaying(true)
+  }, [timelineLayout])
+
   const previewCurrentTurnPart = useCallback((part: NonNullable<VideoPlanProposalWire['parts'][number]>, candidate?: VideoAnimationCandidateWire) => {
     const layout = timelineLayoutByClipId.get(part.id)
     const startAt = layout?.timelineStart ?? 0
@@ -1916,12 +1956,8 @@ export function VideoToolPage() {
       part,
       candidate,
     }))
-    playheadRef.current = startAt
-    setPlayhead(startAt)
-    playbackStartPlayheadRef.current = startAt
-    playbackStartRef.current = performance.now()
-    setIsPlaying(true)
-  }, [currentWorkingProposal, playerRevision, timelineLayoutByClipId, videoProject])
+    beginTimelinePlayback(startAt)
+  }, [beginTimelinePlayback, currentWorkingProposal, playerRevision, timelineLayoutByClipId, videoProject])
 
   const selectLiveAnimationCandidate = useCallback((part: NonNullable<VideoPlanProposalWire['parts'][number]>, candidate: VideoAnimationCandidateWire) => {
     if (!currentWorkingProposal || !selectedThread || !videoProject || animationSelectionBusyPartId) return
@@ -2106,6 +2142,17 @@ export function VideoToolPage() {
       if (!audio) {
         audio = document.createElement('audio')
         audio.preload = 'auto'
+        let authRetryPending = false
+        let authRetryAttempted = false
+        audio.addEventListener('error', () => {
+          if (authRetryPending || authRetryAttempted) return
+          authRetryPending = true
+          authRetryAttempted = true
+          void ensureDesktopSession(true).then(() => {
+            audio!.src = segment.src
+            audio!.load()
+          }).catch(() => undefined).finally(() => { authRetryPending = false })
+        })
         audio.src = segment.src
         audio.load()
         cache.set(clipId, audio)
@@ -2169,24 +2216,8 @@ export function VideoToolPage() {
       context.fillStyle = 'black'
       context.fillRect(0, 0, canvas.width, canvas.height)
       const activeSegments = activeTimelineSegments(timelineLayout, nextPlayhead)
-      const activeAudioSegments = activeSegments.filter((segment) => segment.type === 'audio')
       const activeVisualSegments = activeSegments.filter((segment) => segment.type !== 'audio')
-      const activeAudioClipIds = new Set(activeAudioSegments.map((segment) => segment.clipId))
-      for (const [clipId, audio] of audioElementsRef.current.entries()) {
-        if (!activeAudioClipIds.has(clipId) && !audio.paused) audio.pause()
-      }
-      for (const segment of activeAudioSegments) {
-        const audio = audioElementsRef.current.get(segment.clipId)
-        if (!audio) continue
-        audio.volume = Math.max(0, Math.min(1, segment.volume ?? 1))
-        audio.muted = segment.muted === true
-        const sourceTime = segment.sourceStart + Math.max(0, nextPlayhead - segment.timelineStart)
-        if (Number.isFinite(sourceTime) && Math.abs(audio.currentTime - sourceTime) > 0.12) {
-          try { audio.currentTime = sourceTime } catch { /* Retry on the next frame after metadata loads. */ }
-        }
-        if (isPlaying && audio.paused) void audio.play().catch(() => undefined)
-        if (!isPlaying && !audio.paused) audio.pause()
-      }
+      syncTimelineAudioPlayback(timelineLayout, audioElementsRef.current, nextPlayhead, isPlaying)
       const activeLiveAnimation = activeVisualSegments.some((segment) => segment.clipId === liveAnimationPart?.id && Boolean(liveAnimationURL))
       if (activeVisualSegments.length === 0) {
         for (const cachedVideo of videoElementsRef.current.values()) {
@@ -2709,12 +2740,8 @@ export function VideoToolPage() {
       return
     }
     const startAt = playhead >= movieDuration ? 0 : playhead
-    playheadRef.current = startAt
-    setPlayhead(startAt)
-    playbackStartPlayheadRef.current = startAt
-    playbackStartRef.current = performance.now()
-    setIsPlaying(true)
-  }, [isPlaying, movieDuration, playhead])
+    beginTimelinePlayback(startAt)
+  }, [beginTimelinePlayback, isPlaying, movieDuration, playhead])
 
   const handleSeek = useCallback((value: number) => {
     const next = Math.max(0, Math.min(movieDuration, value))
@@ -3107,7 +3134,7 @@ export function VideoToolPage() {
             </SwarmToolSidebar>
           </div>
 
-            <section className="relative flex min-w-0 shrink-0 flex-col px-3 py-4 sm:px-4 lg:min-h-0 lg:flex-1 lg:shrink lg:overflow-y-auto lg:px-0 lg:py-0">
+            <section className="relative flex min-w-0 shrink-0 flex-col px-3 py-4 sm:px-4 lg:min-h-0 lg:flex-1 lg:shrink lg:overflow-y-auto lg:px-0 lg:py-0" aria-label="Video player and timeline">
               <div ref={setStudioArtifactReviewPortalTarget} className="absolute inset-0 z-20 min-h-0 min-w-0 empty:hidden" data-studio-artifact-review-host />
               <div className="mb-4 flex items-center justify-end gap-2 lg:hidden">
                 <Button variant="outline" style={darkOverrideButtonStyle} className={`h-9 w-9 rounded-xl px-0 ${blackModeEnabled ? 'border-[var(--video-tool-user-theme-accent)] bg-[var(--video-tool-user-theme-surface)] text-[var(--video-tool-user-theme-text)] hover:bg-[var(--video-tool-user-theme-surface-hover)]' : ''}`} onClick={() => setBlackModeEnabled((enabled) => !enabled)} aria-label="Toggle dark mode override for this page" aria-pressed={blackModeEnabled} title="Toggle dark mode override for this page"><Moon size={14} aria-hidden="true" /></Button>
@@ -3139,7 +3166,7 @@ export function VideoToolPage() {
                 </div>
               </div>
 
-              {currentWorkingProposal ? <section className="mt-4 border border-[var(--app-border)] bg-[var(--app-surface)] p-3" aria-label="Current video turn">
+              {currentWorkingProposal ? <section className="order-2 mt-4 border border-[var(--app-border)] bg-[var(--app-surface)] p-3" aria-label="Current video turn">
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div className="min-w-0"><div className="flex items-center gap-2"><span className="rounded-full bg-[var(--app-primary)]/15 px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-[var(--app-primary)]">Working cut r{activeTurnRevision?.revision_number ?? 1}</span><span className="text-[10px] uppercase tracking-[0.12em] text-amber-300">Pending review</span></div><p className="mt-2 text-xs font-semibold text-[var(--app-text)]">What changed in this turn</p><p className="mt-1 max-w-4xl text-[11px] leading-5 text-[var(--app-text-muted)]">{currentTurnSummary}</p><p className="mt-1 text-[10px] text-[var(--app-text-subtle)]">{currentTurnParts.length} stable clips · {currentTurnVariantPartCount} with live variants · {currentTurnStaticFallbackCount} render-ready image fallbacks</p></div>
                   <div className="flex items-center gap-1"><Button variant="outline" className="h-7 px-2 text-[10px]" disabled={activeTurnRevisionIndex <= 0} onClick={() => handlePreviewRevision(projectRevisions[activeTurnRevisionIndex - 1]?.id ?? null)}>← Previous revision</Button><Button variant="outline" className="h-7 px-2 text-[10px]" disabled={activeTurnRevisionIndex < 0 || activeTurnRevisionIndex >= projectRevisions.length - 1} onClick={() => handlePreviewRevision(projectRevisions[activeTurnRevisionIndex + 1]?.id ?? null)}>Next revision →</Button></div>
@@ -3177,7 +3204,7 @@ export function VideoToolPage() {
                 <div className="mt-3 flex flex-wrap items-center justify-between gap-3 border-t border-[var(--app-border)] pt-3"><p className="max-w-3xl text-[10px] text-[var(--app-text-muted)]">{currentWorkingProposal.plan?.kind === 'initial' ? `First round: review all ${currentWorkingVisualLayout.length} clips, then confirm them once as the initial kept cut.` : currentWorkingProposal.plan ? `Review the complete ${currentWorkingVisualLayout.length}-clip working cut. Only checked pending clips are confirmed.` : `Review ${currentWorkingProposal.operations.length} pending timeline change${currentWorkingProposal.operations.length === 1 ? '' : 's'}. Confirmation updates the kept cut; rendering the displayed working revision does not.`}{currentTurnUnreadyAnimations.length > 0 ? ` ${currentTurnUnreadyAnimations.length} HTML clip${currentTurnUnreadyAnimations.length === 1 ? '' : 's'} still require selection and MP4 promotion before confirmation.` : ''}</p><div className="flex items-center gap-2"><Button variant="ghost" className="h-8 px-3 text-[10px]" disabled={workingCutReviewBusy} onClick={() => void handleReviseWorkingCut()}><RotateCcw size={12} />Revise this turn</Button><Button className="h-8 px-3 text-[10px]" disabled={!currentTurnCanConfirm || workingCutReviewBusy} onClick={() => void handleConfirmWorkingCut()}>{workingCutReviewBusy ? <Loader2 size={12} className="animate-spin" /> : null}{currentTurnUnreadyAnimations.length > 0 ? 'Finish HTML motion first' : currentWorkingProposal.plan?.kind === 'initial' ? `Confirm all ${currentWorkingVisualLayout.length} clips` : `Confirm ${currentTurnConfirmIDs.length} selected change${currentTurnConfirmIDs.length === 1 ? '' : 's'}`}</Button></div></div>
               </section> : null}
 
-              <section className="mt-5">
+              <section className="order-1 mt-4" aria-label="Video timeline">
                 <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
                   <div className="flex items-center gap-3">
                     <Button className="h-9 rounded-xl px-3" onClick={handleTogglePlayback} disabled={movieDuration <= 0}>{isPlaying ? <Pause size={15} /> : <Play size={15} />}{isPlaying ? 'Pause' : 'Play'}</Button>
@@ -3281,7 +3308,7 @@ export function VideoToolPage() {
               </section>
 
               {currentRevision?.timeline.clips?.some((clip) => clip.source_kind === 'text') ? (
-                <section className="mt-6 border border-[var(--app-border)] bg-[var(--app-surface)] p-4" aria-label="Still production plan">
+                <section className="order-3 mt-6 border border-[var(--app-border)] bg-[var(--app-surface)] p-4" aria-label="Still production plan">
                   <div className="mb-4 flex items-start justify-between gap-4">
                     <div>
                       <div className="flex items-center gap-2"><Sparkles size={16} className="text-[var(--app-primary)]" /><h2 className="text-sm font-semibold text-[var(--app-text)]">Still production plan</h2></div>
@@ -3307,7 +3334,7 @@ export function VideoToolPage() {
                 </section>
               ) : null}
 
-              <section className="mt-6">
+              <section className="order-3 mt-6">
                 <div className="mb-3 flex items-center justify-between gap-3"><div className="flex items-center gap-2"><ListVideo size={16} className="text-[var(--app-primary)]" /><h2 className="text-sm font-semibold text-[var(--app-text)]">Playlist sources</h2></div>{reordering ? <span className="text-xs text-[var(--app-text-subtle)]">Saving…</span> : null}</div>
                 <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
                   {timelineSegments.length === 0 ? <div className="border border-[var(--app-border)] bg-[var(--app-surface)] px-4 py-4 text-sm text-[var(--app-text-muted)]">No accepted clips are stored in this video thread yet.</div> : timelineSegments.map((segment, index) => {

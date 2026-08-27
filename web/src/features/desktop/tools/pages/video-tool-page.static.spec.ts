@@ -112,6 +112,19 @@ test('Video Studio pins one clip-owned animation selection surface and an identi
   assert.doesNotMatch(source, /animation sources`}>[\s\S]*selectLiveAnimationCandidate\(planPart, candidate\)/)
 })
 
+test('Video Studio places the timeline directly below the player before clip review cards', async () => {
+  const source = await readFile(pageSourceUrl, 'utf8')
+  const playerIndex = source.indexOf('aria-label="Video player and timeline"')
+  const timelineIndex = source.indexOf('aria-label="Video timeline"')
+  const clipReviewIndex = source.indexOf('aria-label="Current video turn"')
+
+  assert.ok(playerIndex >= 0)
+  assert.ok(timelineIndex > playerIndex)
+  assert.ok(clipReviewIndex > playerIndex)
+  assert.match(source.slice(timelineIndex - 80, timelineIndex + 80), /order-1/)
+  assert.match(source.slice(clipReviewIndex - 80, clipReviewIndex + 80), /order-2/)
+})
+
 test('Video Studio exposes only the implemented soundtrack contract and an explicit audio lane', async () => {
   const source = await readFile(pageSourceUrl, 'utf8')
   const proposalSource = await readFile(new URL('../video-studio/video-studio-surface.tsx', import.meta.url), 'utf8')
@@ -121,6 +134,8 @@ test('Video Studio exposes only the implemented soundtrack contract and an expli
   assert.match(source, /aria-label="Choose trusted soundtrack"/)
   assert.match(source, /Playing pending working audio/)
   assert.match(source, /No soundtrack in this player revision/)
+  assert.match(source, /syncTimelineAudioPlayback\(timelineLayout, audioElementsRef\.current, startAt, true\)/)
+  assert.match(source, /syncTimelineAudioPlayback\(timelineLayout, audioElementsRef\.current, nextPlayhead, isPlaying\)/)
   assert.doesNotMatch(source, /workingSoundtrack\?\.name/)
   assert.match(source, /source_kind: 'source_audio'/)
   assert.match(source, /Propose placement \/ trim \/ volume change/)

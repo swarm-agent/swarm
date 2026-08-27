@@ -25,6 +25,7 @@ import {
   scanVideoFolder,
   serializeVideoClipForRequest,
   soundtrackTimelineClip,
+  syncTimelineAudioPlayback,
   timelineSegmentsToProjectTimeline,
   videoPlanClipDetails,
   videoPlanForPlayback,
@@ -157,6 +158,38 @@ test('Video Studio maps accepted and pending source audio into its dedicated pre
   assert.equal(segments[1].type, 'audio')
   assert.equal(segments[1].src, '/v3/sessions/session-1/video/sources/media?source_ref=audiosrc_exact')
   assert.deepEqual([segments[1].start, segments[1].sourceStart, segments[1].duration, segments[1].volume, segments[1].muted], [1, 0.5, 3, 0.65, false])
+})
+
+test('Video Studio starts soundtrack at the selected clip playhead and keeps it synchronized', () => {
+  const timeline: VideoProjectTimelineWire = { schema_version: 1, clips: [
+    { id: 'visual-1', source_kind: 'color', duration_ms: 5000, timeline_start_ms: 0, timeline_end_ms: 5000, visible: true },
+    { id: 'visual-2', source_kind: 'color', duration_ms: 5000, timeline_start_ms: 5000, timeline_end_ms: 10000, visible: true },
+    { id: 'soundtrack', source_kind: 'source_audio', audio_source: { ref: 'audiosrc_exact', name: 'theme.wav', mime_type: 'audio/wav', size_bytes: 42, source_fingerprint: 'fingerprint', fingerprint_version: 'v1' }, duration_ms: 10000, source_start_ms: 1000, source_end_ms: 11000, timeline_start_ms: 0, timeline_end_ms: 10000, volume: 0.65 },
+  ] }
+  const layout = layoutTimelineSegments(projectTimelineToTimelineSegments(timeline, {}, [], 'session-1'))
+  let playCalls = 0
+  let pauseCalls = 0
+  const audio = {
+    paused: true,
+    currentTime: 0,
+    volume: 1,
+    muted: false,
+    play() { playCalls += 1; this.paused = false; return Promise.resolve() },
+    pause() { pauseCalls += 1; this.paused = true },
+  } as unknown as HTMLAudioElement
+
+  syncTimelineAudioPlayback(layout, new Map([['soundtrack', audio]]), 5, true)
+  assert.equal(audio.currentTime, 6)
+  assert.equal(audio.volume, 0.65)
+  assert.equal(playCalls, 1)
+
+  audio.currentTime = 5
+  syncTimelineAudioPlayback(layout, new Map([['soundtrack', audio]]), 7, true)
+  assert.equal(audio.currentTime, 8)
+  assert.equal(playCalls, 1)
+
+  syncTimelineAudioPlayback(layout, new Map([['soundtrack', audio]]), 7, false)
+  assert.equal(pauseCalls, 1)
 })
 
 test('Video Studio preserves a timeline clip exact artifact reference for composer attachment fallback', () => {
