@@ -111,21 +111,27 @@ export function normalizeVideoSnapshot(input) {
 export class IdentityLedger {
   constructor() { this.rows = [] }
   record(label, raw) { const row = normalizeVideoSnapshot(raw); this.rows.push({ label, row }); return row }
-  assertNoDrift(before, after, { mutablePartIDs = [], mutableClipIDs = [], allowAppendedParts = false, allowAppendedClips = false } = {}) {
+  assertNoDrift(before, after, { mutablePartIDs = [], mutableClipIDs = [], retimedClipIDs = [], allowAppendedParts = false, allowAppendedClips = false } = {}) {
     if (before.project_id !== after.project_id) throw new Error('project identity drifted')
-    const compare = (kind, prior, next, mutable, allowAppend) => {
+    const compare = (kind, prior, next, mutable, allowAppend, retimed = []) => {
       const nextByID = new Map(next.map((item) => [item.id, item]))
       for (const item of prior) {
         if (!item.id) throw new Error(`${kind} has no identity`)
         const found = nextByID.get(item.id)
         if (!found) throw new Error(`${kind} ${item.id} disappeared`)
-        if (!mutable.includes(item.id) && JSON.stringify(item) !== JSON.stringify(found)) throw new Error(`non-target ${kind} ${item.id} drifted`)
+        let left = item, right = found
+        if (retimed.includes(item.id)) {
+          const { start_ms: _leftStart, end_ms: _leftEnd, order: _leftOrder, ...leftStable } = item
+          const { start_ms: _rightStart, end_ms: _rightEnd, order: _rightOrder, ...rightStable } = found
+          left = leftStable; right = rightStable
+        }
+        if (!mutable.includes(item.id) && JSON.stringify(left) !== JSON.stringify(right)) throw new Error(`non-target ${kind} ${item.id} drifted`)
       }
       if (!allowAppend && next.length !== prior.length) throw new Error(`${kind} count drifted`)
       if (allowAppend && next.length < prior.length) throw new Error(`${kind} count shrank`)
     }
     compare('part', before.parts, after.parts, mutablePartIDs, allowAppendedParts)
-    compare('clip', before.clips, after.clips, mutableClipIDs, allowAppendedClips)
+    compare('clip', before.clips, after.clips, mutableClipIDs, allowAppendedClips, retimedClipIDs)
   }
   summary() { return this.rows.map(({ label, row }) => ({ label, digest: fingerprint(row), clips: row.clips.length, parts: row.parts.length, candidates: row.parts.reduce((sum, part) => sum + part.candidates.length, 0) })) }
 }
@@ -236,7 +242,7 @@ async function run() {
     const beforeAppend = state
     await postTurn(3, `${common} Append exactly one new 10-second HTML part at the end with exactly two live HTML candidates. Select one candidate, export it, and promote its derivative. Do not change any existing part. Report marker VIDEO_STUDIO_TURN_3_DONE.`)
     state = await snapshot('turn-3')
-    ledger.assertNoDrift(beforeAppend, state, { allowAppendedParts: true, allowAppendedClips: true }); assert(state.parts.length === beforeAppend.parts.length + 1, 'turn 3 did not append exactly one part')
+    ledger.assertNoDrift(beforeAppend, state, { retimedClipIDs: [videoClip.id], allowAppendedParts: true, allowAppendedClips: true }); assert(state.parts.length === beforeAppend.parts.length + 1, 'turn 3 did not append exactly one part')
     const newPart = state.parts.find((part) => !beforeAppend.parts.some((old) => old.id === part.id)); assert(newPart, 'appended part identity unavailable')
     const staleProposal = beforeAppend.proposal_id, staleRevision = beforeAppend.working_revision_id, beforeReplace = state
     await postTurn(4, `${common} First deliberately call the appropriate Video Studio mutation with stale proposal ${staleProposal} and stale base/working revision ${staleRevision}; require the tool to reject it explicitly and do not retry that stale action. Then use the current exact proposal/revision to replace only appended part ${newPart.id} with exactly two new live HTML candidates, select one, export it, and promote its derivative. Report the explicit stale rejection plus marker VIDEO_STUDIO_TURN_4_DONE.`)

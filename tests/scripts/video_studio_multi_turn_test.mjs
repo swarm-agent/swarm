@@ -28,6 +28,10 @@ const replaced = ledger.record('replace-b', snapshot({ proposal: 'proposal-2', r
 ledger.assertNoDrift(first, replaced, { mutablePartIDs: ['part-b'], mutableClipIDs: ['clip-b'] })
 const appended = ledger.record('append-c', snapshot({ proposal: 'proposal-3', revision: 'revision-3', second: 'b2', includeThird: true }))
 ledger.assertNoDrift(replaced, appended, { allowAppendedParts: true, allowAppendedClips: true })
+const retimedVideoBefore = normalizeVideoSnapshot({ ...snapshot({ proposal: 'proposal-video-1', revision: 'revision-video-1' }), clips: [...snapshot().clips, { id: 'video', media_type: 'video/mp4', start_ms: 20000, end_ms: 30000, order: 2 }] })
+const retimedVideoAfter = normalizeVideoSnapshot({ ...snapshot({ proposal: 'proposal-video-2', revision: 'revision-video-2', includeThird: true }), clips: [...snapshot({ includeThird: true }).clips, { id: 'video', media_type: 'video/mp4', start_ms: 30000, end_ms: 40000, order: 3 }] })
+ledger.assertNoDrift(retimedVideoBefore, retimedVideoAfter, { retimedClipIDs: ['video'], allowAppendedParts: true, allowAppendedClips: true })
+assert.throws(() => ledger.assertNoDrift(retimedVideoBefore, retimedVideoAfter, { allowAppendedParts: true, allowAppendedClips: true }), /non-target clip video drifted/)
 assert.throws(() => ledger.assertNoDrift(first, replaced), /non-target part part-b drifted/)
 
 const nested = normalizeVideoSnapshot({ project: { id: 'p' }, working_revision: { id: 'work', timeline: { clips: [{ id: 'clip', media_type: 'video/mp4', timeline_start_ms: 0, timeline_end_ms: 1000 }] } }, proposal: { id: 'proposal', base_revision_id: 'base', working_revision_id: 'work', plan: { parts: [{ id: 'part', duration_ms: 1000, visual_media_type: 'image/png', animation_candidates: { status: 'awaiting_export', selected_candidate_id: 'candidate', selected_source: ref('candidate'), candidates: [{ id: 'candidate', source: ref('candidate') }, { id: 'candidate-alt', source: ref('candidate-alt') }] } }] } } })
