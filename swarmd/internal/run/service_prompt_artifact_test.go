@@ -182,6 +182,31 @@ func TestMasterHarnessPromptGuidesPriorArtifactWorkspaceWorkflow(t *testing.T) {
 	}
 }
 
+func TestMasterHarnessPromptRequiresExactRenderedPixelVerification(t *testing.T) {
+	prompt := masterHarnessPrompt("/workspace")
+	for _, want := range []string{
+		"use media_inspect with the complete exact ready artifact reference",
+		"inspect every exact ready image state",
+		"clipping and overflow",
+		"aspect ratio and object sizing",
+		"requested-element fidelity",
+		"text legibility",
+		"unintended overlaps",
+		"scrollbars or capture chrome/overlays",
+		"each state against its brief",
+		"renderer does not judge aesthetics",
+		"none of those checks substitutes for pixel inspection",
+		"new exact-lineage derived revision",
+		"never mutate or silently replace the published variant",
+		"single-publication Designer repaired its already-published output",
+		"report the specific visual defect and bounded limitation honestly",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("master prompt missing rendered visual verification guidance %q", want)
+		}
+	}
+}
+
 func TestMasterHarnessPromptGuidesManagedArtifactParts(t *testing.T) {
 	prompt := masterHarnessPrompt("/workspace")
 	for _, want := range []string{

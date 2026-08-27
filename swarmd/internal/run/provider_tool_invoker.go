@@ -920,6 +920,57 @@ func (s *Service) executeProviderManagedMediaInspect(ctx context.Context, config
 		if asset.ContractHash != currentContract.Hash || asset.ProviderID != providerID || asset.Model != modelID {
 			return result, errors.New("media asset admission contract does not match the current run")
 		}
+	} else if args.ArtifactReference != nil {
+		if s.tools == nil || s.tools.ArtifactAuthority() == nil {
+			return result, errors.New("media_inspect artifact reference requires the authenticated artifact authority")
+		}
+		maxBytes, err := mediaInspectImageReadLimit(currentContract)
+		if err != nil {
+			return result, err
+		}
+		artifactPrincipal := artifact.Principal{SessionID: session.ID, AccountScopeID: principal.AccountScopeID, UserID: principal.UserID}
+		artifactRef := pebblestore.SessionArtifactSelectionReference{
+			SessionID: args.ArtifactReference.SessionID, CollectionID: args.ArtifactReference.CollectionID,
+			VariantID: args.ArtifactReference.VariantID, EventSeq: args.ArtifactReference.EventSeq,
+		}
+		var variant pebblestore.SessionArtifactVariant
+		var readErr error
+		payload, variant, readErr = s.tools.ArtifactAuthority().ReadReference(ctx, artifactPrincipal, artifactRef, maxBytes)
+		if readErr != nil {
+			return result, fmt.Errorf("read media artifact reference: %w", readErr)
+		}
+		declaredMIME := strings.ToLower(strings.TrimSpace(strings.SplitN(variant.MediaType, ";", 2)[0]))
+		if !strings.HasPrefix(declaredMIME, "image/") {
+			return result, errors.New("media_inspect artifact reference is not an image")
+		}
+		mimeType := strings.ToLower(strings.TrimSpace(http.DetectContentType(payload)))
+		fileType := strings.ToLower(strings.TrimPrefix(filepath.Ext(variant.Filename), "."))
+		capability, err := validateMediaInspectInvocation(currentContract, "image", mimeType, fileType)
+		if err != nil {
+			return result, err
+		}
+		if declaredMIME != mimeType {
+			return result, errors.New("media_inspect artifact media type does not match its exact bytes")
+		}
+		if len(payload) == 0 {
+			return result, errors.New("media_inspect artifact payload is empty")
+		}
+		if capability.MaxBytes <= 0 || int64(len(payload)) > capability.MaxBytes {
+			return result, errors.New("media_inspect artifact exceeds the current run byte limit")
+		}
+		if variant.Size != int64(len(payload)) {
+			return result, errors.New("media_inspect artifact size does not match its exact bytes")
+		}
+		digest := sha256.Sum256(payload)
+		digestHex := hex.EncodeToString(digest[:])
+		if strings.TrimSpace(variant.DigestSHA256) == "" || !strings.EqualFold(strings.TrimSpace(variant.DigestSHA256), digestHex) {
+			return result, errors.New("media_inspect artifact digest does not match its exact bytes")
+		}
+		asset = pebblestore.SessionMediaAsset{
+			ID: "artifact_" + digestHex, Modality: "image", DetectedMIMEType: mimeType,
+			FileType: fileType, Size: int64(len(payload)), DigestSHA256: digestHex,
+			ContractHash: currentContract.Hash, ProviderID: providerID, Model: modelID,
+		}
 	} else {
 		workspaceCtx, err := s.providerManagedWorkspaceContext(config, principal)
 		if err != nil {
@@ -967,8 +1018,11 @@ func (s *Service) executeProviderManagedMediaInspect(ctx context.Context, config
 	if err != nil {
 		return result, err
 	}
-	if int64(len(payload)) != asset.Size || capability.MaxBytes > 0 && asset.Size > capability.MaxBytes {
-		return result, errors.New("media asset exceeds the current run limit or failed its size check")
+	if int64(len(payload)) != asset.Size {
+		return result, errors.New("media asset size does not match its exact bytes")
+	}
+	if capability.MaxBytes <= 0 || asset.Size > capability.MaxBytes {
+		return result, errors.New("media asset exceeds the current run byte limit")
 	}
 	output, err := mediaInspectResult(asset, capability, currentContract)
 	if err != nil {
@@ -980,6 +1034,23 @@ func (s *Service) executeProviderManagedMediaInspect(ctx context.Context, config
 		DigestSHA256: asset.DigestSHA256, Size: asset.Size, Bytes: append([]byte(nil), payload...),
 	}
 	return result, nil
+}
+
+func mediaInspectImageReadLimit(contract provideriface.SessionMediaContract) (int64, error) {
+	for _, capability := range allowedSessionMediaCapabilities(contract) {
+		if capability.Modality != "image" {
+			continue
+		}
+		if capability.MaxCount < 1 || capability.MaxBytes <= 0 {
+			break
+		}
+		maxBytes := capability.MaxBytes
+		if maxBytes > pebblestore.SessionMediaDefaultMaxBytes {
+			maxBytes = pebblestore.SessionMediaDefaultMaxBytes
+		}
+		return maxBytes, nil
+	}
+	return 0, errors.New("media_inspect image type is denied by the current run contract")
 }
 
 func resolveProviderMediaWorkspacePath(workspaceCtx runWorkspaceContext, requested string) (string, error) {

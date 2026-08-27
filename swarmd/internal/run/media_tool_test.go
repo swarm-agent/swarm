@@ -51,7 +51,7 @@ func TestSessionMediaToolSchemaAndInstructionsShareContract(t *testing.T) {
 		t.Fatalf("materialized tools = %#v", tools)
 	}
 	raw := mustProviderToolInvokerJSON(t, tools[1].Parameters)
-	for _, expected := range []string{`"asset_id"`, `"path"`, `"anyOf"`} {
+	for _, expected := range []string{`"asset_id"`, `"path"`, `"artifact_reference"`, `"session_id"`, `"collection_id"`, `"variant_id"`, `"event_seq"`, `"oneOf"`} {
 		if !strings.Contains(raw, expected) {
 			t.Fatalf("media schema missing %q: %s", expected, raw)
 		}
@@ -62,7 +62,7 @@ func TestSessionMediaToolSchemaAndInstructionsShareContract(t *testing.T) {
 		}
 	}
 	instructions := AppendSessionMediaInstructions("base", contract)
-	for _, expected := range []string{"media_inspect", "image/png", "semantics=native", "max_bytes=1024", "All unlisted media kinds"} {
+	for _, expected := range []string{"media_inspect", "complete exact ready managed artifact reference", "session_id", "collection_id", "variant_id", "event_seq", "image/png", "semantics=native", "max_bytes=1024", "All unlisted media kinds"} {
 		if !strings.Contains(instructions, expected) {
 			t.Fatalf("media instructions missing %q: %s", expected, instructions)
 		}
@@ -117,6 +117,15 @@ func TestMediaInspectInvocationRejectsForgedStaleAndDeniedCalls(t *testing.T) {
 	}
 	if _, err := decodeMediaInspectArguments(`{"asset_id":"a","path":"secret"}`); err == nil {
 		t.Fatal("media invocation accepted both asset_id and path")
+	}
+	if _, err := decodeMediaInspectArguments(`{"path":"secret","artifact_reference":{"session_id":"s","collection_id":"c","variant_id":"v","event_seq":1}}`); err == nil {
+		t.Fatal("media invocation accepted both path and artifact_reference")
+	}
+	if _, err := decodeMediaInspectArguments(`{"artifact_reference":{"session_id":"s","collection_id":"c","variant_id":"v"}}`); err == nil || !strings.Contains(err.Error(), "requires session_id, collection_id, variant_id, and event_seq") {
+		t.Fatalf("incomplete artifact reference error = %v", err)
+	}
+	if args, err := decodeMediaInspectArguments(`{"artifact_reference":{"session_id":" s ","collection_id":" c ","variant_id":" v ","event_seq":7}}`); err != nil || args.ArtifactReference == nil || args.ArtifactReference.SessionID != "s" || args.ArtifactReference.CollectionID != "c" || args.ArtifactReference.VariantID != "v" || args.ArtifactReference.EventSeq != 7 {
+		t.Fatalf("exact artifact reference rejected or not normalized: args=%+v err=%v", args, err)
 	}
 	if args, err := decodeMediaInspectArguments(`{"path":"web/public/pwa-icon-512.png"}`); err != nil || args.Path == "" {
 		t.Fatalf("workspace media path rejected: args=%+v err=%v", args, err)
