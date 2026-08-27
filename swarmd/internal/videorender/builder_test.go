@@ -353,6 +353,9 @@ func TestBuildFFmpegCommandLinePlacesLayeredClipAtRequestedTimelineRange(t *test
 	if plan.TotalDurationMs != 20000 {
 		t.Fatalf("TotalDurationMs = %d, want 20000", plan.TotalDurationMs)
 	}
+	if strings.Contains(plan.FilterComplex, "[asilence3]") {
+		t.Fatalf("muted overlay created an unconnected silence stream: %s", plan.FilterComplex)
+	}
 	for _, want := range []string{
 		"[v2][v3]", // guard against accidentally appending the overlay after step 3
 		"[v3]setpts=PTS-STARTPTS+0.000/TB[v_layer_shift_3]",

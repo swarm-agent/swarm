@@ -282,11 +282,15 @@ func BuildFFmpegCommandLine(timeline pebblestore.VideoProjectTimeline, inputs []
 			)
 			filterParts = append(filterParts, fmt.Sprintf("%s%s%s", aIn, strings.Join(aFilters, ","), aOut))
 			audioStreams = append(audioStreams, aOut)
-		} else {
-			// Generate silent audio for consistent stream matching
+		} else if input.IsAudio || input.Track == 0 {
+			// Primary-track visuals need deterministic silence so joins always
+			// receive matched audio streams. Muted/non-audio overlay inputs are
+			// never mixed and must not leave an unconnected filter output.
 			silenceOut := fmt.Sprintf("[asilence%d]", i)
 			filterParts = append(filterParts, fmt.Sprintf("aevalsrc=0:d=%.3f:s=48000:c=stereo%s", durSec, silenceOut))
 			audioStreams = append(audioStreams, silenceOut)
+		} else {
+			audioStreams = append(audioStreams, "")
 		}
 	}
 
