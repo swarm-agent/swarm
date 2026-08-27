@@ -26,6 +26,7 @@ import (
 	"swarm/packages/swarmd/internal/htmlcapture"
 	"swarm/packages/swarmd/internal/identity"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
+	"swarm/packages/swarmd/internal/videocomposition"
 	workspaceruntime "swarm/packages/swarmd/internal/workspace"
 )
 
@@ -305,7 +306,33 @@ func (s *Service) InspectFrames(ctx context.Context, principal identity.Principa
 	if revision.SessionID != sessionID || revision.ProjectID != projectID || revision.AccountScopeID != principal.AccountScopeID || (revision.UserID != "" && revision.UserID != principal.UserID) {
 		return FrameInspectionResult{}, errors.New("video revision ownership does not match authenticated principal")
 	}
-	timestamps, err := normalizeInspectionTimestamps(req, revision.Timeline.TotalDurationMs)
+	timeline := revision.Timeline
+	if proposalID := pebblestore.VideoPlanRenderAuthorityProposalID(timeline); proposalID != "" {
+		proposal, found, proposalErr := s.store.GetVideoEditProposal(principal.AccountScopeID, sessionID, projectID, proposalID)
+		if proposalErr != nil {
+			return FrameInspectionResult{}, fmt.Errorf("resolve video plan inspection authority: %w", proposalErr)
+		}
+		if !found {
+			return FrameInspectionResult{}, fmt.Errorf("video plan inspection authority proposal %q not found", proposalID)
+		}
+		if proposal.UserID != "" && proposal.UserID != principal.UserID {
+			return FrameInspectionResult{}, errors.New("video plan inspection authority ownership does not match authenticated principal")
+		}
+		plan, resolveErr := pebblestore.ResolveVideoPlanRenderAuthority(revision, &proposal)
+		if resolveErr != nil {
+			return FrameInspectionResult{}, resolveErr
+		}
+		if plan != nil {
+			if timeline.Metadata == nil {
+				timeline.Metadata = make(map[string]any)
+			}
+			timeline.Metadata["accepted_video_plan"] = *plan
+		}
+	}
+	if err := applySelectedHTMLAnimationSources(&timeline); err != nil {
+		return FrameInspectionResult{}, err
+	}
+	timestamps, err := normalizeInspectionTimestamps(req, timeline.TotalDurationMs)
 	if err != nil {
 		return FrameInspectionResult{}, err
 	}
@@ -323,12 +350,12 @@ func (s *Service) InspectFrames(ctx context.Context, principal identity.Principa
 	}
 	inspectCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	inputs, err := s.materializeTimelineInputs(inspectCtx, principal, session, req.WorkspacePath, jobDir, revision.Timeline)
+	inputs, err := s.materializeTimelineInputs(inspectCtx, principal, session, req.WorkspacePath, jobDir, timeline)
 	if err != nil {
 		return FrameInspectionResult{}, fmt.Errorf("materialize exact revision for frame inspection: %w", err)
 	}
 	previewPath := filepath.Join(jobDir, "inspection.mp4")
-	plan, err := BuildFFmpegCommandLine(revision.Timeline, inputs, previewPath)
+	plan, err := BuildFFmpegCommandLine(timeline, inputs, previewPath)
 	if err != nil {
 		return FrameInspectionResult{}, fmt.Errorf("build exact revision inspection plan: %w", err)
 	}
@@ -561,12 +588,19 @@ func (s *Service) RenderJob(ctx context.Context, principal identity.Principal, r
 		if proposalErr != nil {
 			return pebblestore.VideoRenderJobSnapshot{}, fmt.Errorf("resolve video plan render authority: %w", proposalErr)
 		}
-		if found && (proposal.UserID == "" || proposal.UserID == principal.UserID) {
-			if plan, resolveErr := pebblestore.ResolveVideoPlanRenderAuthority(revision, &proposal); resolveErr != nil {
-				return pebblestore.VideoRenderJobSnapshot{}, resolveErr
-			} else if plan != nil {
-				timeline.Metadata["accepted_video_plan"] = *plan
+		if !found {
+			return pebblestore.VideoRenderJobSnapshot{}, fmt.Errorf("video plan render authority proposal %q not found", proposalID)
+		}
+		if proposal.UserID != "" && proposal.UserID != principal.UserID {
+			return pebblestore.VideoRenderJobSnapshot{}, errors.New("video plan render authority ownership does not match authenticated principal")
+		}
+		if plan, resolveErr := pebblestore.ResolveVideoPlanRenderAuthority(revision, &proposal); resolveErr != nil {
+			return pebblestore.VideoRenderJobSnapshot{}, resolveErr
+		} else if plan != nil {
+			if timeline.Metadata == nil {
+				timeline.Metadata = make(map[string]any)
 			}
+			timeline.Metadata["accepted_video_plan"] = *plan
 		}
 	}
 	if len(timeline.Clips) == 0 {
@@ -847,6 +881,11 @@ func (s *Service) materializeTimelineInputs(ctx context.Context, principal ident
 		}
 	}
 
+	compositionPlacements, err := resolveTimelineCompositionPlacements(timeline)
+	if err != nil {
+		return nil, err
+	}
+
 	for i, clip := range timeline.Clips {
 		if !clip.Visible && clip.SourceKind != pebblestore.VideoClipSourceKindSourceAudio {
 			continue
@@ -1044,9 +1083,14 @@ func (s *Service) materializeTimelineInputs(ctx context.Context, principal ident
 
 		case pebblestore.VideoClipSourceKindColor:
 			input.IsSynthetic = true
+			input.IsImage = true
+			input.IsVideo = false
 			input.HasAudio = false
-			// Lavfi synthetic color input
-			input.FilePath = ""
+			input.FilePath = filepath.Join(jobDir, fmt.Sprintf("input_%d_color.ppm", input.Index))
+			dims := ResolveDimensions(timeline)
+			if err := writePPMColorFrame(input.FilePath, dims.Width, dims.Height, clip.Name); err != nil {
+				return nil, fmt.Errorf("materialize color clip %d: %w", i, err)
+			}
 
 		default:
 			return nil, fmt.Errorf("clip %d has unsupported source_kind %q", i, clip.SourceKind)
@@ -1087,9 +1131,183 @@ func (s *Service) materializeTimelineInputs(ctx context.Context, principal ident
 		}
 
 		inputs = append(inputs, input)
+		if clip.Track != 0 {
+			continue
+		}
+		for _, placement := range compositionPlacements[clip.ID] {
+			if len(inputs) >= s.cfg.MaxClips {
+				return nil, fmt.Errorf("materialized clip and composition input count exceeds maximum limit %d", s.cfg.MaxClips)
+			}
+			slotInput, materializeErr := s.materializeCompositionInput(ctx, principal, session, workspaceID, registeredRoots, jobDir, clip, placement, len(inputs))
+			if materializeErr != nil {
+				return nil, fmt.Errorf("materialize composition for clip %q slot %q: %w", clip.ID, placement.SlotID, materializeErr)
+			}
+			inputs = append(inputs, slotInput)
+		}
 	}
 
 	return inputs, nil
+}
+
+func writePPMColorFrame(filePath string, width, height int, color string) error {
+	if width < 2 || height < 2 || width > 3840 || height > 3840 {
+		return errors.New("color frame dimensions are outside render bounds")
+	}
+	r, g, b := byte(0), byte(0), byte(0)
+	switch strings.ToLower(strings.TrimSpace(color)) {
+	case "white":
+		r, g, b = 255, 255, 255
+	case "red":
+		r = 255
+	case "green":
+		g = 128
+	case "blue":
+		b = 255
+	}
+	file, err := os.OpenFile(filePath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	if err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(file, "P6\n%d %d\n255\n", width, height); err != nil {
+		_ = file.Close()
+		return err
+	}
+	pixelRow := make([]byte, width*3)
+	for x := 0; x < width; x++ {
+		pixelRow[x*3], pixelRow[x*3+1], pixelRow[x*3+2] = r, g, b
+	}
+	for y := 0; y < height; y++ {
+		if _, err := file.Write(pixelRow); err != nil {
+			_ = file.Close()
+			return err
+		}
+	}
+	return file.Close()
+}
+
+type resolvedCompositionPlacement struct {
+	CompositionPlacement
+	Source videocomposition.SourceBinding
+}
+
+func resolveTimelineCompositionPlacements(timeline pebblestore.VideoProjectTimeline) (map[string][]resolvedCompositionPlacement, error) {
+	placements := make(map[string][]resolvedCompositionPlacement)
+	catalog := timeline.CompositionCatalog
+	links := make(map[string]*videocomposition.Link)
+	if timeline.Metadata != nil && timeline.Metadata["accepted_video_plan"] != nil {
+		encoded, err := json.Marshal(timeline.Metadata["accepted_video_plan"])
+		if err != nil {
+			return nil, fmt.Errorf("encode accepted composition plan: %w", err)
+		}
+		var plan pebblestore.VideoPlanProposal
+		if err := json.Unmarshal(encoded, &plan); err != nil {
+			return nil, fmt.Errorf("decode accepted composition plan: %w", err)
+		}
+		if catalog == nil {
+			catalog = plan.CompositionCatalog
+		}
+		for index := range plan.Parts {
+			links[plan.Parts[index].ID] = plan.Parts[index].Composition
+		}
+	}
+	if catalog == nil {
+		return placements, nil
+	}
+	dims := ResolveDimensions(timeline)
+	for _, clip := range timeline.Clips {
+		link := links[clip.ID]
+		if link == nil {
+			continue
+		}
+		resolved, err := videocomposition.Resolve(catalog, link, dims.Width, dims.Height, clip.DurationMs)
+		if err != nil {
+			return nil, fmt.Errorf("resolve clip %q composition: %w", clip.ID, err)
+		}
+		includedAudioSlot := ""
+		for _, slot := range resolved {
+			if slot.Source == nil {
+				continue
+			}
+			if slot.Source.AudioPolicy == videocomposition.AudioInclude {
+				if includedAudioSlot != "" {
+					return nil, fmt.Errorf("clip %q composition permits one included audio source; slots %q and %q both request audio", clip.ID, includedAudioSlot, slot.ID)
+				}
+				includedAudioSlot = slot.ID
+			}
+			placements[clip.ID] = append(placements[clip.ID], resolvedCompositionPlacement{
+				CompositionPlacement: CompositionPlacement{
+					SlotID: slot.ID, X: slot.Pixels.X, Y: slot.Pixels.Y, Width: slot.Pixels.Width, Height: slot.Pixels.Height,
+					Fit: slot.Fit, AlignmentX: slot.AlignmentX, AlignmentY: slot.AlignmentY,
+					CropTop: slot.Crop.Top, CropRight: slot.Crop.Right, CropBottom: slot.Crop.Bottom, CropLeft: slot.Crop.Left,
+					MaskKind: slot.Mask.Kind, MaskRadius: slot.Mask.Radius, ZIndex: slot.ZIndex,
+					SourceSpanMs: slot.Source.SourceEndMs - slot.Source.SourceStartMs,
+					TimelineSpanMs: slot.Source.TimelineEndMs - slot.Source.TimelineStartMs,
+				},
+				Source: *slot.Source,
+			})
+		}
+	}
+	return placements, nil
+}
+
+func (s *Service) materializeCompositionInput(ctx context.Context, principal identity.Principal, session pebblestore.SessionSnapshot, workspaceID string, registeredRoots map[string]struct{}, jobDir string, parent pebblestore.VideoTimelineClip, placement resolvedCompositionPlacement, index int) (MaterializedInput, error) {
+	workspaceIDs := sessionVideoWorkspaceIDs(session)
+	if workspaceID != "" {
+		workspaceIDs = append([]string{workspaceID}, workspaceIDs...)
+	}
+	var record pebblestore.VideoSourceRecord
+	found := false
+	for _, candidate := range workspaceIDs {
+		resolved, ok, err := s.store.GetVideoSourceRecord(principal.AccountScopeID, candidate, placement.Source.SourceRef)
+		if err != nil {
+			return MaterializedInput{}, err
+		}
+		if ok {
+			record, found = resolved, true
+			break
+		}
+	}
+	if !found {
+		return MaterializedInput{}, fmt.Errorf("registered video source %q not found in workspace scope", placement.Source.SourceRef)
+	}
+	if !strings.EqualFold(record.MIMEType, placement.Source.MediaType) {
+		return MaterializedInput{}, fmt.Errorf("registered video source media type %q does not match exact binding %q", record.MIMEType, placement.Source.MediaType)
+	}
+	if registeredRoots != nil && len(registeredRoots) > 0 {
+		if _, ok := registeredRoots[filepath.Clean(record.RootPath)]; !ok {
+			return MaterializedInput{}, errors.New("registered video source no longer belongs to a source root")
+		}
+	}
+	if err := pebblestore.ValidateVideoSourceRecord(record); err != nil {
+		return MaterializedInput{}, fmt.Errorf("source fingerprint mismatch or invalid: %w", err)
+	}
+	source, err := pebblestore.OpenValidatedVideoSource(record)
+	if err != nil {
+		return MaterializedInput{}, err
+	}
+	defer source.Close()
+	destination := filepath.Join(jobDir, fmt.Sprintf("composition_%d_%s", index, filepath.Base(record.RelativePath)))
+	if err := copyBoundedFile(destination, source, record.SizeBytes); err != nil {
+		return MaterializedInput{}, err
+	}
+	hasAudio, err := probeInputHasAudio(ctx, s.runner, destination)
+	if err != nil {
+		return MaterializedInput{}, err
+	}
+	start := parent.TimelineStartMs + placement.Source.TimelineStartMs
+	end := parent.TimelineStartMs + placement.Source.TimelineEndMs
+	includeAudio := placement.Source.AudioPolicy == videocomposition.AudioInclude
+	if includeAudio && !hasAudio {
+		return MaterializedInput{}, errors.New("composition source requests included audio but has no audio stream")
+	}
+	return MaterializedInput{
+		Index: index, ClipID: parent.ID + ":" + placement.SlotID, FilePath: destination, IsVideo: true,
+		HasAudio: hasAudio, Muted: !includeAudio, Volume: placement.Source.Gain,
+		StartMs: placement.Source.SourceStartMs, EndMs: placement.Source.SourceEndMs,
+		DurationMs: placement.Source.TimelineEndMs - placement.Source.TimelineStartMs,
+		Track: max(parent.Track+1, 1), Layer: placement.ZIndex, TimelineStartMs: start, TimelineEndMs: end,
+		Composition: &placement.CompositionPlacement,
+	}, nil
 }
 
 type htmlAnimationManifest struct {

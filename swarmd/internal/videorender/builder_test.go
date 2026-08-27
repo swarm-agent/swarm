@@ -358,7 +358,7 @@ func TestBuildFFmpegCommandLinePlacesLayeredClipAtRequestedTimelineRange(t *test
 	}
 	for _, want := range []string{
 		"[v2][v3]", // guard against accidentally appending the overlay after step 3
-		"[v3]setpts=PTS-STARTPTS+0.000/TB[v_layer_shift_3]",
+		"[v3]setpts=PTS+0.000/TB[v_layer_shift_3]",
 		"overlay=eof_action=pass:enable='between(t,0.000,1.000)'[v_layer_3]",
 	} {
 		if want == "[v2][v3]" {
