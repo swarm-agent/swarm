@@ -1490,15 +1490,24 @@ func visualVideoPlanTimeline(base VideoProjectTimeline, plan VideoPlanProposal) 
 		startMs = endMs
 	}
 	if len(preservedClips) > 0 {
-		preservedStartMs := int64(-1)
+		preservedVisualStartMs := int64(-1)
 		for _, clip := range preservedClips {
-			if preservedStartMs == -1 || clip.TimelineStartMs < preservedStartMs {
-				preservedStartMs = clip.TimelineStartMs
+			if clip.SourceKind == VideoClipSourceKindSourceAudio {
+				continue
+			}
+			if preservedVisualStartMs == -1 || clip.TimelineStartMs < preservedVisualStartMs {
+				preservedVisualStartMs = clip.TimelineStartMs
 			}
 		}
-		if preservedStartMs >= 0 && startMs > preservedStartMs {
-			shiftMs := startMs - preservedStartMs
+		if preservedVisualStartMs >= 0 && startMs > preservedVisualStartMs {
+			shiftMs := startMs - preservedVisualStartMs
 			for index := range preservedClips {
+				// Source audio is independently positioned on its own track and must
+				// remain on the same playhead while visual plan clips change. Only
+				// preserved non-audio clips retain the append/shift contract.
+				if preservedClips[index].SourceKind == VideoClipSourceKindSourceAudio {
+					continue
+				}
 				preservedClips[index].TimelineStartMs += shiftMs
 				preservedClips[index].TimelineEndMs += shiftMs
 				for captionIndex := range preservedClips[index].Captions {

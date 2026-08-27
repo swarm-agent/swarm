@@ -68,6 +68,64 @@ func TestAudioOnlyTimelineClipValidatesAndRoundTrips(t *testing.T) {
 	}
 }
 
+func TestVisualVideoPlanTimelinePreservesSamePlayheadAudio(t *testing.T) {
+	const durationMs = int64(224680)
+	soundtrack := validAudioTimelineClip("soundtrack")
+	soundtrack.Sequence = 1
+	soundtrack.SourceStartMs = 0
+	soundtrack.SourceEndMs = durationMs
+	soundtrack.TimelineStartMs = 0
+	soundtrack.TimelineEndMs = durationMs
+	soundtrack.DurationMs = durationMs
+
+	plan := VideoPlanProposal{Kind: VideoPlanKindInitial, Parts: []VideoPlanPart{{
+		ID: "visual", Title: "Nocturnal Pulse", DurationMs: durationMs,
+		Visual:          &SessionArtifactSelectionReference{SessionID: "sess", CollectionID: "fallback", VariantID: "visual", EventSeq: 1},
+		VisualMediaType: "image/png",
+	}}}
+	timeline := visualVideoPlanTimeline(VideoProjectTimeline{
+		OutputPreset:    VideoPresetLandscape1080p,
+		TotalDurationMs: durationMs,
+		Clips:           []VideoTimelineClip{soundtrack},
+	}, plan)
+
+	if len(timeline.Clips) != 2 {
+		t.Fatalf("compiled timeline clips = %+v, want visual plus soundtrack", timeline.Clips)
+	}
+	preserved := timeline.Clips[1]
+	if preserved.SourceKind != VideoClipSourceKindSourceAudio || preserved.Track != soundtrack.Track || preserved.Sequence != soundtrack.Sequence || preserved.TimelineStartMs != 0 || preserved.TimelineEndMs != durationMs {
+		t.Fatalf("soundtrack timing or placement changed: got %+v want %+v", preserved, soundtrack)
+	}
+	if timeline.TotalDurationMs != durationMs {
+		t.Fatalf("compiled timeline duration = %d, want max overlapping end %d", timeline.TotalDurationMs, durationMs)
+	}
+}
+
+func TestVisualVideoPlanTimelineStillShiftsPreservedNonAudioClips(t *testing.T) {
+	preservedVisual := VideoTimelineClip{
+		ID: "outro", Track: 0, Sequence: 1, SourceKind: VideoClipSourceKindColor,
+		TimelineStartMs: 1000, TimelineEndMs: 2000, DurationMs: 1000, Visible: true,
+		Captions: []VideoTextOverlay{{ID: "outro-caption", Text: "Outro", StartMs: 1100, EndMs: 1900}},
+	}
+	plan := VideoPlanProposal{Kind: VideoPlanKindInitial, Parts: []VideoPlanPart{{
+		ID: "visual", Title: "Opening", DurationMs: 3000,
+		Visual:          &SessionArtifactSelectionReference{SessionID: "sess", CollectionID: "slides", VariantID: "opening", EventSeq: 1},
+		VisualMediaType: "image/png",
+	}}}
+	timeline := visualVideoPlanTimeline(VideoProjectTimeline{OutputPreset: VideoPresetLandscape1080p, Clips: []VideoTimelineClip{preservedVisual}}, plan)
+
+	if len(timeline.Clips) != 2 {
+		t.Fatalf("compiled timeline clips = %+v, want plan clip plus preserved visual", timeline.Clips)
+	}
+	preserved := timeline.Clips[1]
+	if preserved.TimelineStartMs != 3000 || preserved.TimelineEndMs != 4000 || len(preserved.Captions) != 1 || preserved.Captions[0].StartMs != 3100 || preserved.Captions[0].EndMs != 3900 {
+		t.Fatalf("preserved non-audio clip did not retain append/shift behavior: %+v", preserved)
+	}
+	if timeline.TotalDurationMs != 4000 {
+		t.Fatalf("compiled timeline duration = %d, want 4000", timeline.TotalDurationMs)
+	}
+}
+
 func TestAudioOnlyTimelineClipRejectsAmbiguousOrVisualSemantics(t *testing.T) {
 	cases := []struct {
 		name    string
