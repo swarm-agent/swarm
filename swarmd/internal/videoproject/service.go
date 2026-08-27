@@ -10,9 +10,11 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"time"
 
 	"swarm/packages/swarmd/internal/identity"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
+	"swarm/packages/swarmd/internal/videocomposition"
 )
 
 type SessionStore interface {
@@ -114,6 +116,12 @@ type PromoteAnimationDerivativeInput struct {
 	NowUnixMs                                             int64
 }
 
+type UpdateCompositionInput struct {
+	SessionID, ProjectID, ProposalID, ExpectedRevisionID string
+	Plan                                                  *pebblestore.VideoPlanProposal
+	NowUnixMs                                             int64
+}
+
 type AcceptEditProposalInput struct {
 	SessionID, ProjectID, ProposalID, RevisionID, Description, ChangeSummary, AuthorPrincipal string
 	SelectedOperationIDs                                                                      []string
@@ -148,6 +156,118 @@ func (s *Service) CreateEditProposal(ctx context.Context, principal identity.Pri
 }
 func (s *Service) SelectAnimationCandidate(ctx context.Context, principal identity.Principal, input SelectAnimationCandidateInput) (pebblestore.VideoEditProposalSnapshot, error) {
 	return s.mutateAnimationCandidate(principal, input.SessionID, input.ProjectID, input.ProposalID, pebblestore.V3SessionMutationSelectVideoAnimationCandidate, pebblestore.VideoAnimationSelectionMutation{PartID: input.PartID, SelectedCandidateID: input.CandidateID, SelectedSource: input.SelectedSource}, input.NowUnixMs)
+}
+
+func (s *Service) UpdateComposition(ctx context.Context, principal identity.Principal, input UpdateCompositionInput) (pebblestore.VideoEditProposalSnapshot, error) {
+	if s == nil || s.sessions == nil {
+		return pebblestore.VideoEditProposalSnapshot{}, errors.New("videoproject service is not configured")
+	}
+	if !principal.Valid() || input.Plan == nil {
+		return pebblestore.VideoEditProposalSnapshot{}, errors.New("authenticated principal and complete composition plan are required")
+	}
+	input.SessionID, input.ProjectID, input.ProposalID, input.ExpectedRevisionID = strings.TrimSpace(input.SessionID), strings.TrimSpace(input.ProjectID), strings.TrimSpace(input.ProposalID), strings.TrimSpace(input.ExpectedRevisionID)
+	if input.SessionID == "" || input.ProjectID == "" || input.ProposalID == "" || input.ExpectedRevisionID == "" {
+		return pebblestore.VideoEditProposalSnapshot{}, errors.New("composition update requires session, project, proposal, and exact expected revision")
+	}
+	proposal, ok, err := s.sessions.GetVideoEditProposal(principal.AccountScopeID, input.SessionID, input.ProjectID, input.ProposalID)
+	if err != nil || !ok || (proposal.UserID != "" && proposal.UserID != principal.UserID) {
+		return pebblestore.VideoEditProposalSnapshot{}, errors.New("video edit proposal not found")
+	}
+	if proposal.Status != pebblestore.VideoEditProposalStatusPending || proposal.Plan == nil || proposal.WorkingRevisionID != input.ExpectedRevisionID {
+		return pebblestore.VideoEditProposalSnapshot{}, errors.New("stale composition update: expected revision is not the pending working revision")
+	}
+	if err := s.validateCompositionSources(principal, input.SessionID, input.Plan); err != nil {
+		return pebblestore.VideoEditProposalSnapshot{}, err
+	}
+	applier, ok := s.sessions.(interface {
+		ApplyV3SessionMutation(pebblestore.V3SessionMutationInput) (pebblestore.V3SessionMutationResult, error)
+	})
+	if !ok {
+		return pebblestore.VideoEditProposalSnapshot{}, errors.New("video session mutation authority is not configured")
+	}
+	payload, err := json.Marshal(input.Plan)
+	if err != nil {
+		return pebblestore.VideoEditProposalSnapshot{}, fmt.Errorf("encode composition update: %w", err)
+	}
+	sum := sha256.Sum256(payload)
+	if input.NowUnixMs == 0 {
+		input.NowUnixMs = time.Now().UnixMilli()
+	}
+	clientID := fmt.Sprintf("%s:%s:%s:%x", pebblestore.V3SessionMutationUpdateVideoComposition, input.ProposalID, input.ExpectedRevisionID, sum[:8])
+	_, err = applier.ApplyV3SessionMutation(pebblestore.V3SessionMutationInput{SessionID: input.SessionID, UserID: principal.UserID, AccountScopeID: principal.AccountScopeID, ClientRequestID: clientID, IdempotencyKey: clientID, PayloadHash: hex.EncodeToString(sum[:]), Kind: pebblestore.V3SessionMutationUpdateVideoComposition, VideoProject: &pebblestore.V3VideoProjectMutation{EditProposal: &proposal, CompositionPlan: input.Plan, ExpectedRevisionID: input.ExpectedRevisionID}, NowUnixMs: input.NowUnixMs})
+	if err != nil {
+		return pebblestore.VideoEditProposalSnapshot{}, err
+	}
+	updated, ok, err := s.sessions.GetVideoEditProposal(principal.AccountScopeID, input.SessionID, input.ProjectID, input.ProposalID)
+	if err != nil || !ok {
+		return pebblestore.VideoEditProposalSnapshot{}, errors.New("updated video edit proposal not found")
+	}
+	return updated, nil
+}
+
+func (s *Service) validateCompositionSources(principal identity.Principal, sessionID string, plan *pebblestore.VideoPlanProposal) error {
+	if plan == nil {
+		return errors.New("composition plan is required")
+	}
+	type sourceRequirement struct{ ref, mediaType string }
+	seen := map[string]struct{}{}
+	requirements := make([]sourceRequirement, 0)
+	for _, part := range plan.Parts {
+		if part.Composition == nil || part.Composition.Disabled {
+			continue
+		}
+		resolved, resolveErr := videocomposition.Resolve(plan.CompositionCatalog, part.Composition, 1920, 1080, part.DurationMs)
+		if resolveErr != nil {
+			return fmt.Errorf("video plan part %q composition is invalid: %w", part.ID, resolveErr)
+		}
+		for _, slot := range resolved {
+			if slot.Source == nil {
+				continue
+			}
+			if _, duplicate := seen[slot.Source.SourceRef]; duplicate {
+				continue
+			}
+			seen[slot.Source.SourceRef] = struct{}{}
+			requirements = append(requirements, sourceRequirement{slot.Source.SourceRef, slot.Source.MediaType})
+		}
+	}
+	if len(requirements) == 0 {
+		return nil
+	}
+	session, ok, err := s.sessions.GetSession(sessionID)
+	if err != nil || !ok {
+		return errors.New("video project session not found")
+	}
+	workspaceID, _ := session.Metadata["workspace_id"].(string)
+	workspaceID = strings.TrimSpace(workspaceID)
+	if workspaceID == "" {
+		workspaceID, _ = session.Metadata["swarm_v3_source_workspace_id"].(string)
+		workspaceID = strings.TrimSpace(workspaceID)
+	}
+	if workspaceID == "" {
+		return errors.New("video project workspace authority is unavailable")
+	}
+	videoSourceStore, ok := s.sessions.(interface {
+		GetVideoSourceRecord(accountScopeID, workspaceID, ref string) (pebblestore.VideoSourceRecord, bool, error)
+	})
+	if !ok {
+		return errors.New("registered video source authority is unavailable")
+	}
+	for _, requirement := range requirements {
+		record, found, readErr := videoSourceStore.GetVideoSourceRecord(principal.AccountScopeID, workspaceID, requirement.ref)
+		if readErr != nil || !found || !strings.EqualFold(record.MIMEType, requirement.mediaType) {
+			return fmt.Errorf("composition source %q is not an exact registered video in the project workspace", requirement.ref)
+		}
+		if err := pebblestore.ValidateVideoSourceRecord(record); err != nil {
+			return fmt.Errorf("composition source %q is stale or unavailable: %w", requirement.ref, err)
+		}
+		file, openErr := pebblestore.OpenValidatedVideoSource(record)
+		if openErr != nil {
+			return fmt.Errorf("composition source %q is stale or unavailable: %w", requirement.ref, openErr)
+		}
+		_ = file.Close()
+	}
+	return nil
 }
 
 func (s *Service) PromoteAnimationDerivative(ctx context.Context, principal identity.Principal, input PromoteAnimationDerivativeInput) (pebblestore.VideoEditProposalSnapshot, error) {
@@ -586,9 +706,22 @@ func (s *Service) StartRenderJob(ctx context.Context, principal identity.Princip
 			return pebblestore.VideoRenderJobSnapshot{}, err
 		} else if plan != nil {
 			pendingParts := make([]string, 0)
+			unresolvedCompositionParts := make([]string, 0)
 			for _, part := range plan.Parts {
 				if part.ProductionState == pebblestore.VideoProductionStatePending {
 					pendingParts = append(pendingParts, part.ID)
+				}
+				if part.Composition != nil && !part.Composition.Disabled {
+					resolved, resolveErr := videocomposition.Resolve(plan.CompositionCatalog, part.Composition, revision.Timeline.Width, revision.Timeline.Height, part.DurationMs)
+					if resolveErr != nil {
+						return pebblestore.VideoRenderJobSnapshot{}, fmt.Errorf("composition part %q is invalid: %w", part.ID, resolveErr)
+					}
+					for _, slot := range resolved {
+						if slot.Source == nil {
+							unresolvedCompositionParts = append(unresolvedCompositionParts, part.ID)
+							break
+						}
+					}
 				}
 				candidates := part.AnimationCandidates
 				if candidates == nil {
@@ -610,6 +743,9 @@ func (s *Service) StartRenderJob(ctx context.Context, principal identity.Princip
 			}
 			if len(pendingParts) > 0 {
 				return pebblestore.VideoRenderJobSnapshot{}, fmt.Errorf("final render blocked: %d storyboard part(s) remain pending (%s); replace each pending part with finished still, MP4, or promoted HTML animation media", len(pendingParts), strings.Join(pendingParts, ", "))
+			}
+			if len(unresolvedCompositionParts) > 0 {
+				return pebblestore.VideoRenderJobSnapshot{}, fmt.Errorf("final render blocked: spatial composition source requirements remain unresolved (%s)", strings.Join(unresolvedCompositionParts, ", "))
 			}
 		}
 		for _, clip := range revision.Timeline.Clips {

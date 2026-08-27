@@ -606,6 +606,17 @@ func TestVideoPlanCompositionDurabilityRevisionAndAcceptanceGate(t *testing.T) {
 	}
 }
 
+func TestPendingSelectedVideoProductionPartBlocksAcceptance(t *testing.T) {
+	plan := &VideoPlanProposal{Kind: VideoPlanKindInitial, Parts: []VideoPlanPart{{ID: "shot", ProductionState: VideoProductionStatePending}}}
+	if got := pendingSelectedVideoProductionPart(plan, nil); got != "shot" {
+		t.Fatalf("pending=%q", got)
+	}
+	plan.Parts[0].ProductionState = VideoProductionStateReady
+	if got := pendingSelectedVideoProductionPart(plan, nil); got != "" {
+		t.Fatalf("pending=%q", got)
+	}
+}
+
 func TestVideoPlanCompositionRejectsMissingLayoutAndUnsafeTiming(t *testing.T) {
 	catalog, link := durableCompositionFixture()
 	visual := &SessionArtifactSelectionReference{SessionID: "session", CollectionID: "collection", VariantID: "variant", EventSeq: 1}

@@ -74,6 +74,7 @@ const (
 	V3SessionMutationCreateVideoEditProposal         = "video.edit_proposal.create"
 	V3SessionMutationSelectVideoAnimationCandidate   = "video.edit_proposal.animation.select"
 	V3SessionMutationPromoteVideoAnimationDerivative = "video.edit_proposal.animation.promote"
+	V3SessionMutationUpdateVideoComposition          = "video.edit_proposal.composition.update"
 	V3SessionMutationAcceptVideoEditProposal         = "video.edit_proposal.accept"
 	V3SessionMutationRejectVideoEditProposal         = "video.edit_proposal.reject"
 
@@ -361,6 +362,8 @@ type V3VideoProjectMutation struct {
 	EditProposal         *VideoEditProposalSnapshot       `json:"edit_proposal,omitempty"`
 	SelectedOperationIDs []string                         `json:"selected_operation_ids,omitempty"`
 	AnimationSelection   *VideoAnimationSelectionMutation `json:"animation_selection,omitempty"`
+	CompositionPlan      *VideoPlanProposal               `json:"composition_plan,omitempty"`
+	ExpectedRevisionID   string                           `json:"expected_revision_id,omitempty"`
 	ExpectedStatus       string                           `json:"expected_status,omitempty"`
 }
 
@@ -459,6 +462,7 @@ func isV3VideoProjectMutationKind(kind string) bool {
 		V3SessionMutationCreateVideoEditProposal,
 		V3SessionMutationSelectVideoAnimationCandidate,
 		V3SessionMutationPromoteVideoAnimationDerivative,
+		V3SessionMutationUpdateVideoComposition,
 		V3SessionMutationAcceptVideoEditProposal,
 		V3SessionMutationRejectVideoEditProposal:
 		return true
@@ -816,7 +820,7 @@ func validateV3VideoProjectMutationInput(input V3SessionMutationInput) error {
 		if err := validateVideoTimeline(r.Timeline); err != nil {
 			return fmt.Errorf("video timeline validation failed: %w", err)
 		}
-	case V3SessionMutationCreateVideoEditProposal, V3SessionMutationSelectVideoAnimationCandidate, V3SessionMutationPromoteVideoAnimationDerivative, V3SessionMutationAcceptVideoEditProposal, V3SessionMutationRejectVideoEditProposal:
+	case V3SessionMutationCreateVideoEditProposal, V3SessionMutationSelectVideoAnimationCandidate, V3SessionMutationPromoteVideoAnimationDerivative, V3SessionMutationUpdateVideoComposition, V3SessionMutationAcceptVideoEditProposal, V3SessionMutationRejectVideoEditProposal:
 		proposal := input.VideoProject.EditProposal
 		if proposal == nil {
 			return errors.New("video edit proposal snapshot is required")
@@ -827,7 +831,14 @@ func validateV3VideoProjectMutationInput(input V3SessionMutationInput) error {
 		if err := validateV3MutationEmbeddedOwnership(input, "video edit proposal", proposal.SessionID, proposal.UserID, proposal.AccountScopeID); err != nil {
 			return err
 		}
-		if input.Kind == V3SessionMutationSelectVideoAnimationCandidate || input.Kind == V3SessionMutationPromoteVideoAnimationDerivative {
+		if input.Kind == V3SessionMutationUpdateVideoComposition {
+			if input.VideoProject.CompositionPlan == nil || strings.TrimSpace(input.VideoProject.ExpectedRevisionID) == "" {
+				return errors.New("composition update requires a complete plan and exact expected_revision_id")
+			}
+			if err := validateVideoPlanProposal(*input.VideoProject.CompositionPlan); err != nil {
+				return fmt.Errorf("composition update plan invalid: %w", err)
+			}
+		} else if input.Kind == V3SessionMutationSelectVideoAnimationCandidate || input.Kind == V3SessionMutationPromoteVideoAnimationDerivative {
 			if input.VideoProject.AnimationSelection == nil || input.VideoProject.AnimationSelection.PartID == "" || input.VideoProject.AnimationSelection.SelectedCandidateID == "" {
 				return errors.New("animation candidate mutation requires part_id and selected_candidate_id")
 			}
@@ -1605,6 +1616,26 @@ func unresolvedSelectedVideoCompositionPart(plan *VideoPlanProposal, selected []
 	return ""
 }
 
+func pendingSelectedVideoProductionPart(plan *VideoPlanProposal, selected []string) string {
+	if plan == nil {
+		return ""
+	}
+	selectedParts := make(map[string]struct{}, len(selected))
+	for _, partID := range selected {
+		selectedParts[partID] = struct{}{}
+	}
+	for _, part := range plan.Parts {
+		_, enabled := selectedParts[part.ID]
+		if plan.Kind == VideoPlanKindRevision && !enabled {
+			continue
+		}
+		if part.ProductionState == VideoProductionStatePending {
+			return part.ID
+		}
+	}
+	return ""
+}
+
 func unresolvedSelectedVideoAnimationPart(plan *VideoPlanProposal, selected []string) string {
 	if plan == nil {
 		return ""
@@ -2047,6 +2078,93 @@ func (s *SessionStore) prepareV3VideoProjectMutation(input V3SessionMutationInpu
 			Projection: V3VideoProjectProjection{ProjectID: proposal.ProjectID, RevisionID: workingRevision.ID, RevisionNumber: workingRevision.RevisionNumber, CurrentRevisionID: workingRevision.ID, ProposalID: proposal.ID, Status: proposal.Status},
 		}, nil
 
+	case V3SessionMutationUpdateVideoComposition:
+		incoming := input.VideoProject.EditProposal
+		proposal, ok, err := s.GetVideoEditProposal(input.AccountScopeID, input.SessionID, incoming.ProjectID, incoming.ID)
+		if err != nil || !ok {
+			return preparedV3VideoProjectMutation{}, errors.New("video edit proposal not found")
+		}
+		if proposal.UserID != "" && proposal.UserID != input.UserID {
+			return preparedV3VideoProjectMutation{}, errors.New("video edit proposal ownership does not match authenticated principal")
+		}
+		if proposal.Status != VideoEditProposalStatusPending || proposal.Plan == nil {
+			return preparedV3VideoProjectMutation{}, errors.New("composition updates require a pending visual plan proposal")
+		}
+		project, ok, err := s.GetVideoProject(input.AccountScopeID, input.SessionID, proposal.ProjectID)
+		if err != nil || !ok {
+			return preparedV3VideoProjectMutation{}, errors.New("video project not found")
+		}
+		if project.UserID != "" && project.UserID != input.UserID {
+			return preparedV3VideoProjectMutation{}, errors.New("video project ownership does not match authenticated principal")
+		}
+		if project.CurrentRevisionID != input.VideoProject.ExpectedRevisionID || proposal.WorkingRevisionID != input.VideoProject.ExpectedRevisionID {
+			return preparedV3VideoProjectMutation{}, errors.New("stale composition update: expected_revision_id is not the current pending working revision")
+		}
+		working, ok, err := s.GetVideoProjectRevision(input.AccountScopeID, input.SessionID, proposal.ProjectID, proposal.WorkingRevisionID)
+		if err != nil || !ok {
+			return preparedV3VideoProjectMutation{}, errors.New("composition working revision not found")
+		}
+		updatedPlan := *input.VideoProject.CompositionPlan
+		if err := validateVideoPlanIntent(proposal.Intent, updatedPlan); err != nil {
+			return preparedV3VideoProjectMutation{}, fmt.Errorf("composition update intent invalid: %w", err)
+		}
+		if updatedPlan.Kind != proposal.Plan.Kind || updatedPlan.Summary != proposal.Plan.Summary || len(updatedPlan.Parts) != len(proposal.Plan.Parts) {
+			return preparedV3VideoProjectMutation{}, errors.New("composition update must preserve the pending plan kind and complete stable part set")
+		}
+		if updatedPlan.CompositionCatalog == nil && proposal.Plan.CompositionCatalog != nil {
+			for _, part := range updatedPlan.Parts {
+				if part.Composition != nil && !part.Composition.Detached && !part.Composition.Disabled {
+					return preparedV3VideoProjectMutation{}, errors.New("composition update cannot remove the shared catalog while linked parts remain")
+				}
+			}
+		}
+		for index := range updatedPlan.Parts {
+			if updatedPlan.Parts[index].ID != proposal.Plan.Parts[index].ID {
+				return preparedV3VideoProjectMutation{}, errors.New("composition update must preserve stable part order")
+			}
+		}
+		originalParts := make(map[string]VideoPlanPart, len(proposal.Plan.Parts))
+		for _, part := range proposal.Plan.Parts { originalParts[part.ID] = part }
+		for _, part := range updatedPlan.Parts {
+			original, exists := originalParts[part.ID]
+			if !exists {
+				return preparedV3VideoProjectMutation{}, fmt.Errorf("composition update references unknown stable part %q", part.ID)
+			}
+			original.Composition, original.ProductionState = part.Composition, part.ProductionState
+			updated, updatedErr := json.Marshal(original)
+			candidate, candidateErr := json.Marshal(part)
+			if updatedErr != nil || candidateErr != nil || string(updated) != string(candidate) {
+				return preparedV3VideoProjectMutation{}, fmt.Errorf("composition update may only change composition and production_state for part %q", part.ID)
+			}
+		}
+		oldPlan := proposal.Plan
+		proposal.Plan = &updatedPlan
+		proposal.UpdatedAt = now
+		baseForRebuild := working.Timeline
+		planPartIDs := make(map[string]struct{}, len(oldPlan.Parts))
+		for _, part := range oldPlan.Parts { planPartIDs[part.ID] = struct{}{} }
+		baseForRebuild.Clips = nil
+		for _, clip := range working.Timeline.Clips {
+			if _, planClip := planPartIDs[clip.ID]; !planClip { baseForRebuild.Clips = append(baseForRebuild.Clips, clip) }
+		}
+		baseForRebuild.Transitions = nil
+		for _, transition := range working.Timeline.Transitions {
+			_, fromPlan := planPartIDs[transition.FromClipID]
+			_, toPlan := planPartIDs[transition.ToClipID]
+			if !fromPlan || !toPlan { baseForRebuild.Transitions = append(baseForRebuild.Transitions, transition) }
+		}
+		working.Timeline = visualVideoPlanTimeline(baseForRebuild, updatedPlan)
+		if working.Timeline.Metadata == nil {
+			working.Timeline.Metadata = map[string]any{}
+		}
+		working.Timeline.Metadata["accepted_video_plan"] = updatedPlan
+		working.Timeline.Metadata["accepted_video_plan_proposal_id"] = proposal.ID
+		working.ChangeSummary = "Updated pending spatial composition"
+		if err := validateVideoTimeline(working.Timeline); err != nil {
+			return preparedV3VideoProjectMutation{}, fmt.Errorf("composition working revision validation failed: %w", err)
+		}
+		return preparedV3VideoProjectMutation{Revision: &working, EditProposal: &proposal, Projection: V3VideoProjectProjection{ProjectID: proposal.ProjectID, RevisionID: working.ID, RevisionNumber: working.RevisionNumber, CurrentRevisionID: working.ID, ProposalID: proposal.ID, Status: proposal.Status}}, nil
+
 	case V3SessionMutationSelectVideoAnimationCandidate, V3SessionMutationPromoteVideoAnimationDerivative:
 		incoming := input.VideoProject.EditProposal
 		selection := input.VideoProject.AnimationSelection
@@ -2151,6 +2269,9 @@ func (s *SessionStore) prepareV3VideoProjectMutation(input V3SessionMutationInpu
 		}
 		if partID := unresolvedSelectedVideoCompositionPart(proposal.Plan, input.VideoProject.SelectedOperationIDs); partID != "" {
 			return preparedV3VideoProjectMutation{}, fmt.Errorf("video plan part %q composition has unresolved source requirements", partID)
+		}
+		if partID := pendingSelectedVideoProductionPart(proposal.Plan, input.VideoProject.SelectedOperationIDs); partID != "" {
+			return preparedV3VideoProjectMutation{}, fmt.Errorf("video plan part %q remains in pending production state", partID)
 		}
 		base, ok, err := s.GetVideoProjectRevision(input.AccountScopeID, input.SessionID, proposal.ProjectID, proposal.BaseRevisionID)
 		if err != nil || !ok {

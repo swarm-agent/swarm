@@ -400,9 +400,9 @@ func (r *Runtime) executeManageArtifact(ctx context.Context, scope WorkspaceScop
 			}
 			for _, section := range storyboardManifest.Sections {
 				exported := exportByState[section.CaptureStateID]
-				sections = append(sections, map[string]any{"id": section.ID, "capture_state_id": section.CaptureStateID, "title": section.Title, "duration_ms": section.DurationMs, "narration": section.Narration, "on_screen_text": section.OnScreenText, "creative_direction": section.CreativeDirection, "filming_requirements": section.FilmingRequirements, "production_state": section.ProductionState, "visual": exported["reference"]})
+				sections = append(sections, map[string]any{"id": section.ID, "capture_state_id": section.CaptureStateID, "title": section.Title, "duration_ms": section.DurationMs, "narration": section.Narration, "on_screen_text": section.OnScreenText, "creative_direction": section.CreativeDirection, "filming_requirements": section.FilmingRequirements, "production_state": section.ProductionState, "composition": section.Composition, "visual": exported["reference"]})
 			}
-			response["storyboard_handoff"] = map[string]any{"version": storyboardManifest.Version, "source_reference": response["source_reference"], "sections": sections}
+			response["storyboard_handoff"] = map[string]any{"version": storyboardManifest.Version, "source_reference": response["source_reference"], "compositions": storyboardManifest.Compositions, "sections": sections}
 		}
 	case "export_html_animation_fallback":
 		variant, sourceRef, requirements, err := r.exportHTMLAnimationFallback(ctx, principal, callID, args)

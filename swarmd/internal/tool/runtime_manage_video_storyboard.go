@@ -10,6 +10,7 @@ import (
 	"swarm/packages/swarmd/internal/identity"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/storyboard"
+	"swarm/packages/swarmd/internal/videocomposition"
 )
 
 func (r *Runtime) importStoryboardPlan(ctx context.Context, principal identity.Principal, projectSessionID, projectID, baseRevisionID string, args map[string]any) (*pebblestore.VideoPlanProposal, error) {
@@ -98,12 +99,28 @@ func (r *Runtime) importStoryboardPlan(ctx context.Context, principal identity.P
 		}
 		sourceCopy := *sourceRef
 		visualCopy := visual
-		parts = append(parts, pebblestore.VideoPlanPart{ID: section.ID, Title: section.Title, DurationMs: section.DurationMs, Narration: section.Narration, OnScreenText: section.OnScreenText, VisualDirection: section.CreativeDirection, CaptureStateID: section.CaptureStateID, FilmingRequirements: append([]string(nil), section.FilmingRequirements...), ProductionState: section.ProductionState, StoryboardSource: &sourceCopy, StoryboardStill: &visualCopy, Visual: &visualCopy, VisualMediaType: "image/png"})
+		var compositionCopy *videocomposition.Link
+		if section.Composition != nil {
+			value := *section.Composition
+			value.Overrides = append([]videocomposition.SlotOverride(nil), section.Composition.Overrides...)
+			value.DetachedSlots = append([]videocomposition.Slot(nil), section.Composition.DetachedSlots...)
+			compositionCopy = &value
+		}
+		parts = append(parts, pebblestore.VideoPlanPart{ID: section.ID, Title: section.Title, DurationMs: section.DurationMs, Narration: section.Narration, OnScreenText: section.OnScreenText, VisualDirection: section.CreativeDirection, CaptureStateID: section.CaptureStateID, FilmingRequirements: append([]string(nil), section.FilmingRequirements...), ProductionState: section.ProductionState, StoryboardSource: &sourceCopy, StoryboardStill: &visualCopy, Visual: &visualCopy, VisualMediaType: "image/png", Composition: compositionCopy})
 	}
 	if len(seenExports) != len(exports) {
 		return nil, storyboardImportError("storyboard_export_unknown", "storyboard exports contain an undeclared capture state")
 	}
-	return &pebblestore.VideoPlanProposal{Kind: pebblestore.VideoPlanKindInitial, Summary: strings.TrimSpace(asString(args["rationale"])), Parts: parts}, nil
+	var catalogCopy *videocomposition.Catalog
+	if manifest.Compositions != nil {
+		value := *manifest.Compositions
+		value.Layouts = append([]videocomposition.Layout(nil), manifest.Compositions.Layouts...)
+		for index := range value.Layouts {
+			value.Layouts[index].Slots = append([]videocomposition.Slot(nil), value.Layouts[index].Slots...)
+		}
+		catalogCopy = &value
+	}
+	return &pebblestore.VideoPlanProposal{Kind: pebblestore.VideoPlanKindInitial, Summary: strings.TrimSpace(asString(args["rationale"])), CompositionCatalog: catalogCopy, Parts: parts}, nil
 }
 
 func parseStoryboardExports(raw any) (map[string]pebblestore.SessionArtifactSelectionReference, error) {

@@ -94,7 +94,7 @@ func TestExportHTMLStillsReturnsExactStoryboardHandoffAndRequiresCompleteCapture
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{`"storyboard_handoff"`, `"id":"intro"`, `"capture_state_id":"opening"`, `"duration_ms":2500`, `"creative_direction":"Slow push."`, `"production_state":"pending"`, `"variant_id":"variant-`} {
+	for _, want := range []string{`"storyboard_handoff"`, `"compositions":null`, `"composition":null`, `"id":"intro"`, `"capture_state_id":"opening"`, `"duration_ms":2500`, `"creative_direction":"Slow push."`, `"production_state":"pending"`, `"variant_id":"variant-`} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("storyboard output lacks %s: %s", want, output)
 		}

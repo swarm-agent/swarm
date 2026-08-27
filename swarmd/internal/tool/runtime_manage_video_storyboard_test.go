@@ -90,11 +90,15 @@ func (*storyboardProjectService) PromoteAnimationDerivative(context.Context, ide
 	return pebblestore.VideoEditProposalSnapshot{}, nil
 }
 
+func (*storyboardProjectService) UpdateComposition(context.Context, identity.Principal, videoproject.UpdateCompositionInput) (pebblestore.VideoEditProposalSnapshot, error) {
+	return pebblestore.VideoEditProposalSnapshot{}, nil
+}
+
 func TestImportStoryboardPlanAuthenticatesManifestExportsLineageAndRevision(t *testing.T) {
 	sourceRef := pebblestore.SessionArtifactSelectionReference{SessionID: "artifact-session", CollectionID: "source-collection", VariantID: "storyboard", EventSeq: 7}
 	openingRef := pebblestore.SessionArtifactSelectionReference{SessionID: "artifact-session", CollectionID: "captures", VariantID: "opening-png", EventSeq: 11}
 	proofRef := pebblestore.SessionArtifactSelectionReference{SessionID: "artifact-session", CollectionID: "captures", VariantID: "proof-png", EventSeq: 12}
-	html := []byte(`<!doctype html><script id="swarm-capture-manifest" type="application/json">{"version":"swarm.capture/v1","states":[{"id":"opening"},{"id":"proof"}]}</script><script id="swarm-storyboard-manifest" type="application/json">{"version":"swarm.storyboard/v1","sections":[{"id":"intro","capture_state_id":"opening","title":"Intro","duration_ms":2500,"narration":"Meet Swarm.","creative_direction":"Slow push.","filming_requirements":["Locked camera"],"production_state":"pending"},{"id":"proof","capture_state_id":"proof","title":"Proof","duration_ms":3000,"creative_direction":"Over shoulder.","filming_requirements":["Readable screen"],"production_state":"ready"}]}</script>`)
+	html := []byte(`<!doctype html><script id="swarm-capture-manifest" type="application/json">{"version":"swarm.capture/v1","states":[{"id":"opening"},{"id":"proof"}]}</script><script id="swarm-storyboard-manifest" type="application/json">{"version":"swarm.storyboard/v1","compositions":{"schema_version":1,"layouts":[{"id":"phone","slots":[{"id":"screen","requirement":"Portrait screen recording","geometry":{"x":0.1,"y":0.1,"width":0.3,"height":0.8},"z_index":1,"fit":"cover","alignment_x":0.5,"alignment_y":0.5,"mask":{"kind":"rounded_rect","radius":0.04}}]}]},"sections":[{"id":"intro","capture_state_id":"opening","title":"Intro","duration_ms":2500,"narration":"Meet Swarm.","creative_direction":"Slow push.","filming_requirements":["Locked camera"],"production_state":"pending","composition":{"layout_id":"phone"}},{"id":"proof","capture_state_id":"proof","title":"Proof","duration_ms":3000,"creative_direction":"Over shoulder.","filming_requirements":["Readable screen"],"production_state":"ready"}]}</script>`)
 	lineage := pebblestore.SessionArtifactLineage{SourceSessionID: sourceRef.SessionID, SourceCollectionID: sourceRef.CollectionID, SourceVariantID: sourceRef.VariantID, SourceEventSeq: sourceRef.EventSeq}
 	authority := &storyboardArtifactAuthority{fakeArtifactAuthority: &fakeArtifactAuthority{}, variants: map[string]pebblestore.SessionArtifactVariant{
 		storyboardRefKey(sourceRef):  {ID: sourceRef.VariantID, CollectionID: sourceRef.CollectionID, SessionID: sourceRef.SessionID, EventSeq: sourceRef.EventSeq, Status: pebblestore.SessionArtifactStatusReady, MediaType: "text/html"},
@@ -113,7 +117,7 @@ func TestImportStoryboardPlanAuthenticatesManifestExportsLineageAndRevision(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
-	if plan.Kind != pebblestore.VideoPlanKindInitial || len(plan.Parts) != 2 || plan.Parts[0].ID != "intro" || plan.Parts[0].Visual.VariantID != openingRef.VariantID || plan.Parts[0].StoryboardStill == nil || *plan.Parts[0].StoryboardStill != *plan.Parts[0].Visual || plan.Parts[0].StoryboardSource.EventSeq != sourceRef.EventSeq || plan.Parts[0].ProductionState != "pending" {
+	if plan.Kind != pebblestore.VideoPlanKindInitial || len(plan.Parts) != 2 || plan.Parts[0].ID != "intro" || plan.Parts[0].Visual.VariantID != openingRef.VariantID || plan.Parts[0].StoryboardStill == nil || *plan.Parts[0].StoryboardStill != *plan.Parts[0].Visual || plan.Parts[0].StoryboardSource.EventSeq != sourceRef.EventSeq || plan.Parts[0].ProductionState != "pending" || plan.CompositionCatalog == nil || plan.Parts[0].Composition == nil || plan.Parts[0].Composition.LayoutID != "phone" {
 		t.Fatalf("plan = %#v", plan)
 	}
 

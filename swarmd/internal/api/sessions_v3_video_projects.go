@@ -78,6 +78,11 @@ type sessionV3SelectVideoAnimationCandidateRequest struct {
 	SelectedSource      *pebblestore.SessionArtifactSelectionReference `json:"selected_source"`
 }
 
+type sessionV3UpdateVideoCompositionRequest struct {
+	ExpectedRevisionID string                           `json:"expected_revision_id"`
+	Plan               *pebblestore.VideoPlanProposal `json:"plan"`
+}
+
 type sessionV3PromoteVideoAnimationDerivativeRequest struct {
 	PartID              string                                         `json:"part_id"`
 	SelectedCandidateID string                                         `json:"selected_candidate_id"`
@@ -623,6 +628,19 @@ func (s *Server) handleSessionV3VideoProjectDetail(w http.ResponseWriter, r *htt
 				return
 			}
 			switch action {
+			case "composition-update":
+				var req sessionV3UpdateVideoCompositionRequest
+				if err := decodeJSON(r, &req); err != nil {
+					writeError(w, http.StatusBadRequest, err)
+					return
+				}
+				proposal, err := s.videoProjects.UpdateComposition(r.Context(), principal, videoproject.UpdateCompositionInput{SessionID: sessionID, ProjectID: projectID, ProposalID: proposalID, ExpectedRevisionID: req.ExpectedRevisionID, Plan: req.Plan, NowUnixMs: time.Now().UnixMilli()})
+				if err != nil {
+					writeError(w, http.StatusConflict, err)
+					return
+				}
+				writeJSON(w, http.StatusOK, map[string]any{"ok": true, "proposal": proposal, "working_revision_id": proposal.WorkingRevisionID, "requires_user_acceptance": true})
+				return
 			case "animation-candidate-select":
 				var req sessionV3SelectVideoAnimationCandidateRequest
 				if err := decodeJSON(r, &req); err != nil {

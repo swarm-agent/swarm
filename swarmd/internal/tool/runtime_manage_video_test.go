@@ -30,7 +30,7 @@ func TestManageVideoDefinitionExposesOnlyOpaqueReferences(t *testing.T) {
 			t.Fatalf("manage_video schema exposes forbidden field %q", forbidden)
 		}
 	}
-	for _, required := range []string{"source_root_ref", "relative_path", "video_refs", "audio_refs", "job_refs", "job_ref", "transcript_ref", "analysis_ref", "source_fingerprint", "waveform_resolution_ms", "focus_notes", "start_ms", "end_ms", "timestamps_ms", "ranges", "max_width", "include_index", "index_only", "base_revision_id", "operations", "affected_ranges", "part_id", "selected_candidate_id", "selected_source", "derivative", "propose_html_iteration", "import_storyboard", "storyboard_source", "exports"} {
+	for _, required := range []string{"source_root_ref", "relative_path", "video_refs", "audio_refs", "job_refs", "job_ref", "transcript_ref", "analysis_ref", "source_fingerprint", "waveform_resolution_ms", "focus_notes", "start_ms", "end_ms", "timestamps_ms", "ranges", "max_width", "include_index", "index_only", "base_revision_id", "operations", "affected_ranges", "part_id", "selected_candidate_id", "selected_source", "derivative", "propose_html_iteration", "import_storyboard", "storyboard_source", "exports", "inspect_composition", "update_composition", "expected_revision_id", "composition_catalog", "detached_slots", "clear_source", "audio_policy"} {
 		if !strings.Contains(text, `"`+required+`"`) {
 			t.Fatalf("manage_video schema lacks %q", required)
 		}
@@ -105,7 +105,7 @@ func TestManageVideoActionRegistryAndNearestSuggestions(t *testing.T) {
 		t.Fatalf("nearest actions = %#v", nearest)
 	}
 	studio := manageVideoActionNames(true)
-	for _, required := range []string{"propose_html_iteration", "import_storyboard", "select_animation_candidate", "promote_animation_derivative"} {
+	for _, required := range []string{"propose_html_iteration", "import_storyboard", "select_animation_candidate", "promote_animation_derivative", "inspect_composition", "update_composition"} {
 		if !containsString(studio, required) {
 			t.Fatalf("studio actions lack %q: %#v", required, studio)
 		}
