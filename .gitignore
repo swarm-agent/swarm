@@ -61,6 +61,7 @@ coverage.out
 /.tmp-tools/
 /audit/
 /docs/*
+!/docs/swarm-atlas.md
 !/docs/checkpoints/
 !/docs/checkpoints/*.md
 !/docs/identity/
