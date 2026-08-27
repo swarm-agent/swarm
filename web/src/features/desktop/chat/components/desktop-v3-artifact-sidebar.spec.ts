@@ -219,6 +219,11 @@ test('sidebar presents one storyboard proposal with its ordered parts and exact 
   assert.match(source, /data-artifact-sidebar-storyboard-part/)
   assert.match(source, /storyboard\.parts\.map/)
   assert.match(source, /onOpenArtifact\(target, part\.id\)/)
+  assert.match(source, /const initialStoryboardPart = storyboard\?\.parts\[0\]/)
+  assert.match(source, /const openTarget = initialStoryboardPart\?\.still \?\? storyboard\?\.source \?\? representative/)
+  assert.match(source, /const openPartId = initialStoryboardPart\?\.id \?\? ''/)
+  assert.match(source, /href=\{artifactHref\(openTarget\)\}/)
+  assert.match(source, /onOpenArtifact\(openTarget, openPartId\)/)
 })
 
 test('sidebar turn copy keeps multi-part rounds at the complete-iteration level', async () => {
