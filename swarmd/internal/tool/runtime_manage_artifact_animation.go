@@ -89,7 +89,7 @@ func (r *Runtime) exportHTMLAnimationFallback(ctx context.Context, principal art
 		RequestID:      captureOpaqueID("request-export-html-animation-fallback", principal.SessionID, callID, prepared.SourceRef, "png"),
 		CollectionID:   captureOpaqueID("collection-animation-fallback", principal.SessionID, callID, prepared.SourceRef, "png"),
 		CollectionName: "HTML animation fallback", VariantID: captureOpaqueID("variant-animation-fallback", principal.SessionID, callID, prepared.SourceRef, "png"),
-		Filename: "html-animation-fallback.png", MediaType: "image/png",
+		Filename: "html-animation-fallback.png", MediaType: "image/png", Role: pebblestore.SessionArtifactRoleRenderOnly,
 		Presentation:       pebblestore.SessionArtifactPresentation{Kind: "image", Label: "HTML animation fallback", Previewable: true, Width: htmlcapture.Width, Height: htmlcapture.Height},
 		OutputRequirements: prepared.Requirements,
 		SourceSessionID:    prepared.SourceRef.SessionID, SourceCollectionID: prepared.SourceRef.CollectionID, SourceVariantID: prepared.SourceRef.VariantID, SourceEventSeq: prepared.SourceRef.EventSeq,

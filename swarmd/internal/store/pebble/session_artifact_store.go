@@ -197,6 +197,8 @@ type SessionArtifactStep struct {
 	EventSeq         uint64                              `json:"event_seq"`
 }
 
+const SessionArtifactRoleRenderOnly = "render_only"
+
 type SessionArtifactVariant struct {
 	Version               int                                `json:"version"`
 	ID                    string                             `json:"id"`
@@ -206,6 +208,7 @@ type SessionArtifactVariant struct {
 	Status                string                             `json:"status"`
 	Filename              string                             `json:"filename,omitempty"`
 	MediaType             string                             `json:"media_type,omitempty"`
+	Role                  string                             `json:"role,omitempty"`
 	DigestSHA256          string                             `json:"digest_sha256,omitempty"`
 	Size                  int64                              `json:"size,omitempty"`
 	FailureCode           string                             `json:"failure_code,omitempty"`
@@ -1048,6 +1051,7 @@ func normalizeV3ArtifactMutation(input *V3SessionMutationInput) {
 		variant.Status = strings.ToLower(strings.TrimSpace(variant.Status))
 		variant.Filename = strings.TrimSpace(variant.Filename)
 		variant.MediaType = strings.ToLower(strings.TrimSpace(variant.MediaType))
+		variant.Role = strings.ToLower(strings.TrimSpace(variant.Role))
 		variant.DigestSHA256 = strings.ToLower(strings.TrimSpace(variant.DigestSHA256))
 		variant.FailureCode = strings.ToLower(strings.TrimSpace(variant.FailureCode))
 		variant.ArtifactChainID = strings.TrimSpace(variant.ArtifactChainID)
@@ -1220,8 +1224,11 @@ func validateV3ArtifactMutation(input V3SessionMutationInput) error {
 		if variant.CollectionID != "" && variant.CollectionID != collection.ID {
 			return errors.New("artifact variant collection id does not match collection")
 		}
-		if len(variant.Filename) > 255 || len(variant.MediaType) > 255 || len(variant.FailureCode) > 128 {
+		if len(variant.Filename) > 255 || len(variant.MediaType) > 255 || len(variant.Role) > 64 || len(variant.FailureCode) > 128 {
 			return errors.New("artifact variant metadata exceeds bounds")
+		}
+		if variant.Role != "" && variant.Role != SessionArtifactRoleRenderOnly {
+			return errors.New("artifact variant role is unsupported")
 		}
 		if variant.FailureCode != "" {
 			if err := validateArtifactID("failure code", variant.FailureCode); err != nil {
@@ -2293,6 +2300,9 @@ func mergeTerminalArtifactVariant(current, incoming SessionArtifactVariant) Sess
 	}
 	if incoming.MediaType != "" {
 		next.MediaType = incoming.MediaType
+	}
+	if incoming.Role != "" {
+		next.Role = incoming.Role
 	}
 	if incoming.DigestSHA256 != "" {
 		next.DigestSHA256 = incoming.DigestSHA256

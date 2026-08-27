@@ -72,6 +72,7 @@ type CreateInput struct {
 	VariantID             string
 	Filename              string
 	MediaType             string
+	Role                  string
 	Presentation          pebblestore.SessionArtifactPresentation
 	OutputRequirements    *pebblestore.SessionArtifactOutputRequirements
 	AnimationProfile      *pebblestore.SessionArtifactAnimationProfile
@@ -209,6 +210,10 @@ func (a *Authority) Reserve(principal Principal, input CreateInput) (pebblestore
 	input.CollectionID, input.VariantID = strings.TrimSpace(input.CollectionID), strings.TrimSpace(input.VariantID)
 	input.SourceSessionID = strings.TrimSpace(input.SourceSessionID)
 	input.SourceCollectionID, input.SourceVariantID = strings.TrimSpace(input.SourceCollectionID), strings.TrimSpace(input.SourceVariantID)
+	input.Role = strings.TrimSpace(input.Role)
+	if input.Role != "" && input.Role != pebblestore.SessionArtifactRoleRenderOnly {
+		return pebblestore.SessionArtifactVariant{}, errors.New("artifact role is unsupported")
+	}
 	if input.RequestID == "" || input.CollectionID == "" || input.VariantID == "" {
 		return pebblestore.SessionArtifactVariant{}, errors.New("artifact reservation requires request, collection, and variant ids")
 	}
@@ -233,11 +238,11 @@ func (a *Authority) Reserve(principal Principal, input CreateInput) (pebblestore
 	collectionLineage.SelectedReviewTargetIDs = ""
 	collectionLineage.VideoProjectID, collectionLineage.VideoRevisionID, collectionLineage.VideoRevisionEventSeq = "", "", 0
 	collection := pebblestore.SessionArtifactCollection{ID: input.CollectionID, Name: strings.TrimSpace(input.CollectionName), Description: strings.TrimSpace(input.CollectionDescription), Lineage: collectionLineage, Presentation: input.Presentation}
-	variant := pebblestore.SessionArtifactVariant{ID: input.VariantID, CollectionID: input.CollectionID, Filename: strings.TrimSpace(input.Filename), MediaType: strings.TrimSpace(input.MediaType), Presentation: input.Presentation, OutputRequirements: cloneOutputRequirements(input.OutputRequirements), AnimationProfile: cloneAnimationProfile(input.AnimationProfile), Parts: append([]pebblestore.SessionArtifactPart(nil), input.Parts...), Lineage: lineage, ArtifactStepID: strings.TrimSpace(input.ArtifactStepID), RevisionRoundID: strings.TrimSpace(input.ArtifactStepID), CandidateIndex: input.CandidateIndex, AutoAccept: input.AutoAccept}
+	variant := pebblestore.SessionArtifactVariant{ID: input.VariantID, CollectionID: input.CollectionID, Filename: strings.TrimSpace(input.Filename), MediaType: strings.TrimSpace(input.MediaType), Role: strings.TrimSpace(input.Role), Presentation: input.Presentation, OutputRequirements: cloneOutputRequirements(input.OutputRequirements), AnimationProfile: cloneAnimationProfile(input.AnimationProfile), Parts: append([]pebblestore.SessionArtifactPart(nil), input.Parts...), Lineage: lineage, ArtifactStepID: strings.TrimSpace(input.ArtifactStepID), RevisionRoundID: strings.TrimSpace(input.ArtifactStepID), CandidateIndex: input.CandidateIndex, AutoAccept: input.AutoAccept}
 	if existing, ok, getErr := a.metadata.GetSessionArtifactVariant(principal.AccountScopeID, principal.SessionID, collection.ID, variant.ID); getErr != nil {
 		return pebblestore.SessionArtifactVariant{}, getErr
 	} else if ok {
-		compatible := artifactDestinationLineageCompatible(existing.Lineage, lineage) && existing.Filename == variant.Filename && existing.MediaType == variant.MediaType && equalOutputRequirements(existing.OutputRequirements, variant.OutputRequirements) && equalAnimationProfile(existing.AnimationProfile, variant.AnimationProfile)
+		compatible := artifactDestinationLineageCompatible(existing.Lineage, lineage) && existing.Filename == variant.Filename && existing.MediaType == variant.MediaType && existing.Role == variant.Role && equalOutputRequirements(existing.OutputRequirements, variant.OutputRequirements) && equalAnimationProfile(existing.AnimationProfile, variant.AnimationProfile)
 		if !compatible {
 			return pebblestore.SessionArtifactVariant{}, errors.New("artifact reservation conflicts with an existing variant")
 		}
@@ -300,6 +305,10 @@ func (a *Authority) create(ctx context.Context, principal Principal, input Creat
 	input.SourceSessionID = strings.TrimSpace(input.SourceSessionID)
 	input.SourceCollectionID = strings.TrimSpace(input.SourceCollectionID)
 	input.SourceVariantID = strings.TrimSpace(input.SourceVariantID)
+	input.Role = strings.TrimSpace(input.Role)
+	if input.Role != "" && input.Role != pebblestore.SessionArtifactRoleRenderOnly {
+		return pebblestore.SessionArtifactVariant{}, errors.New("artifact role is unsupported")
+	}
 	if input.SourceSessionID != "" || input.SourceEventSeq != 0 {
 		ref := pebblestore.SessionArtifactSelectionReference{SessionID: input.SourceSessionID, CollectionID: input.SourceCollectionID, VariantID: input.SourceVariantID, EventSeq: input.SourceEventSeq}
 		if _, err := a.GetReference(principal, ref); err != nil {
@@ -332,12 +341,13 @@ func (a *Authority) create(ctx context.Context, principal Principal, input Creat
 		return pebblestore.SessionArtifactVariant{}, err
 	}
 	collection := pebblestore.SessionArtifactCollection{ID: strings.TrimSpace(input.CollectionID), Name: strings.TrimSpace(input.CollectionName), Description: strings.TrimSpace(input.CollectionDescription), Lineage: collectionLineage, Presentation: input.Presentation}
-	variant := pebblestore.SessionArtifactVariant{ID: strings.TrimSpace(input.VariantID), CollectionID: collection.ID, AccountScopeID: principal.AccountScopeID, SessionID: principal.SessionID, Filename: strings.TrimSpace(input.Filename), MediaType: strings.TrimSpace(input.MediaType), Presentation: input.Presentation, OutputRequirements: cloneOutputRequirements(input.OutputRequirements), AnimationProfile: cloneAnimationProfile(input.AnimationProfile), Parts: append([]pebblestore.SessionArtifactPart(nil), input.Parts...), Lineage: lineage, ArtifactStepID: strings.TrimSpace(input.ArtifactStepID), RevisionRoundID: strings.TrimSpace(input.ArtifactStepID), CandidateIndex: input.CandidateIndex, AutoAccept: input.AutoAccept}
+	variant := pebblestore.SessionArtifactVariant{ID: strings.TrimSpace(input.VariantID), CollectionID: collection.ID, AccountScopeID: principal.AccountScopeID, SessionID: principal.SessionID, Filename: strings.TrimSpace(input.Filename), MediaType: strings.TrimSpace(input.MediaType), Role: strings.TrimSpace(input.Role), Presentation: input.Presentation, OutputRequirements: cloneOutputRequirements(input.OutputRequirements), AnimationProfile: cloneAnimationProfile(input.AnimationProfile), Parts: append([]pebblestore.SessionArtifactPart(nil), input.Parts...), Lineage: lineage, ArtifactStepID: strings.TrimSpace(input.ArtifactStepID), RevisionRoundID: strings.TrimSpace(input.ArtifactStepID), CandidateIndex: input.CandidateIndex, AutoAccept: input.AutoAccept}
 	existingStaging := false
 	if existing, ok, getErr := a.metadata.GetSessionArtifactVariant(principal.AccountScopeID, principal.SessionID, collection.ID, variant.ID); getErr != nil {
 		return pebblestore.SessionArtifactVariant{}, getErr
 	} else if ok {
 		lineageCompatible := existing.Lineage == (pebblestore.SessionArtifactLineage{}) || artifactDestinationLineageCompatible(existing.Lineage, lineage)
+		roleCompatible := existing.Role == variant.Role
 		presentationCompatible := artifactPresentationRequirementsCompatible(existing.Presentation, variant.Presentation, existing.OutputRequirements)
 		if existing.OutputRequirements != nil && variant.OutputRequirements == nil {
 			if (variant.Presentation.Width != 0 && variant.Presentation.Width != existing.OutputRequirements.Width) || (variant.Presentation.Height != 0 && variant.Presentation.Height != existing.OutputRequirements.Height) {
@@ -355,7 +365,7 @@ func (a *Authority) create(ctx context.Context, principal Principal, input Creat
 			if existing.AnimationProfile != nil && variant.AnimationProfile == nil {
 				readyAnimationCompatible = true
 			}
-			if !lineageCompatible || !readyRequirementsCompatible || !readyAnimationCompatible || !presentationCompatible {
+			if !lineageCompatible || !roleCompatible || !readyRequirementsCompatible || !readyAnimationCompatible || !presentationCompatible {
 				return pebblestore.SessionArtifactVariant{}, fmt.Errorf("artifact variant %q already exists with incompatible metadata, lineage, requirements, or presentation", variant.ID)
 			}
 			return existing, nil
@@ -371,7 +381,7 @@ func (a *Authority) create(ctx context.Context, principal Principal, input Creat
 		if existing.AnimationProfile != nil && variant.AnimationProfile == nil {
 			animationCompatible = true
 		}
-		if existing.Status != pebblestore.SessionArtifactStatusStaging || !metadataCompatible || !lineageCompatible || !requirementsCompatible || !animationCompatible || !presentationCompatible {
+		if existing.Status != pebblestore.SessionArtifactStatusStaging || !metadataCompatible || !roleCompatible || !lineageCompatible || !requirementsCompatible || !animationCompatible || !presentationCompatible {
 			return pebblestore.SessionArtifactVariant{}, fmt.Errorf("artifact variant %q already exists with incompatible status, metadata, or lineage, or with incompatible requirements or presentation", variant.ID)
 		}
 		storedCollection, collectionOK, collectionErr := a.metadata.GetSessionArtifactCollection(principal.AccountScopeID, principal.SessionID, collection.ID)

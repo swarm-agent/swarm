@@ -1,6 +1,7 @@
 package pebblestore
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -22,7 +23,11 @@ func TestSearchSessionArtifactCatalogPaginatesOwnedReadyReferencesWithoutGaps(t 
 	putReady := func(account, session, collection, variant string, created int64, name, description, filename, mediaType, label string) {
 		t.Helper()
 		collectionRow := SessionArtifactCollection{Version: SessionArtifactVersion, ID: collection, AccountScopeID: account, SessionID: session, Status: SessionArtifactStatusReady, Name: name, Description: description, VariantCount: 1, ReadyCount: 1, CreatedAt: created, UpdatedAt: created, EventSeq: uint64(created)}
-		variantRow := SessionArtifactVariant{Version: SessionArtifactVersion, ID: variant, CollectionID: collection, AccountScopeID: account, SessionID: session, Status: SessionArtifactStatusReady, Filename: filename, MediaType: mediaType, Presentation: SessionArtifactPresentation{Label: label}, GraphState: SessionArtifactGraphProjection, RepositoryID: "catalog-repository", CommitOID: strings.Repeat("a", 64), CreatedAt: created, UpdatedAt: created, EventSeq: uint64(created)}
+		role := ""
+		if variant == "variant-001" {
+			role = SessionArtifactRoleRenderOnly
+		}
+		variantRow := SessionArtifactVariant{Version: SessionArtifactVersion, ID: variant, CollectionID: collection, AccountScopeID: account, SessionID: session, Status: SessionArtifactStatusReady, Filename: filename, MediaType: mediaType, Role: role, Presentation: SessionArtifactPresentation{Label: label}, GraphState: SessionArtifactGraphProjection, RepositoryID: "catalog-repository", CommitOID: strings.Repeat("a", 64), CreatedAt: created, UpdatedAt: created, EventSeq: uint64(created)}
 		if err := store.PutJSON(KeySessionArtifactCollection(account, session, collection), collectionRow); err != nil {
 			t.Fatal(err)
 		}
@@ -70,6 +75,14 @@ func TestSearchSessionArtifactCatalogPaginatesOwnedReadyReferencesWithoutGaps(t 
 	}
 	if len(seen) != 125 {
 		t.Fatalf("catalog count = %d, want 125", len(seen))
+	}
+	rolePage, err := sessions.SearchSessionArtifactCatalog("account-1", "user-1", SessionArtifactCatalogOptions{Query: "campaign-001.png", Limit: 1})
+	if err != nil || len(rolePage.Items) != 1 || rolePage.Items[0].Variant.Role != SessionArtifactRoleRenderOnly {
+		t.Fatalf("catalog did not preserve durable artifact role: page=%+v err=%v", rolePage, err)
+	}
+	payload, err := json.Marshal(rolePage)
+	if err != nil || !strings.Contains(string(payload), `"role":"render_only"`) {
+		t.Fatalf("catalog JSON omitted durable artifact role: payload=%s err=%v", payload, err)
 	}
 }
 

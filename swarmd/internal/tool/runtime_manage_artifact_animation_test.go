@@ -175,7 +175,7 @@ func TestExportHTMLAnimationFallbackPublishesPreflightFrameWithExactLineage(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
-	if authority.created.MediaType != "image/png" || !bytes.Equal(authority.created.Body, renderer.result.PreviewPNG) || authority.created.SourceSessionID != "source-session" || authority.created.SourceEventSeq != 9 {
+	if authority.created.MediaType != "image/png" || authority.created.Role != pebblestore.SessionArtifactRoleRenderOnly || !bytes.Equal(authority.created.Body, renderer.result.PreviewPNG) || authority.created.SourceSessionID != "source-session" || authority.created.SourceCollectionID != "collection" || authority.created.SourceVariantID != "source" || authority.created.SourceEventSeq != 9 {
 		t.Fatalf("animation fallback publication = %+v", authority.created)
 	}
 }
