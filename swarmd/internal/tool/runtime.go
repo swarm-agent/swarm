@@ -188,8 +188,15 @@ type ExaRuntimeConfig struct {
 }
 
 type WorkspaceScope struct {
-	PrimaryPath         string
-	Roots               []string
+	PrimaryPath string
+	Roots       []string
+	// ReadOnlyRoots contains narrowly authenticated paths that filesystem reads
+	// may access without treating them as workspace roots or mutation targets.
+	ReadOnlyRoots []string
+	// MutationScopes contains the task-owned workspace-relative paths that may
+	// be changed by generic filesystem tools. An empty list preserves the normal
+	// whole-workspace contract; a non-empty list is enforced before mutation.
+	MutationScopes      []string
 	SessionID           string
 	Principal           identity.Principal
 	WorktreeEnabled     bool
@@ -335,8 +342,16 @@ func WithWorkspaceScope(parent context.Context, scope WorkspaceScope) context.Co
 		parent = context.Background()
 	}
 	normalized := normalizeWorkspaceScope(scope.PrimaryPath, scope.Roots)
+	normalized.ReadOnlyRoots = append([]string(nil), scope.ReadOnlyRoots...)
+	normalized.MutationScopes = append([]string(nil), scope.MutationScopes...)
 	normalized.SessionID = strings.TrimSpace(scope.SessionID)
 	normalized.Principal = scope.Principal
+	normalized.WorktreeEnabled = scope.WorktreeEnabled
+	normalized.WorktreeRootPath = strings.TrimSpace(scope.WorktreeRootPath)
+	normalized.WorktreeBranch = strings.TrimSpace(scope.WorktreeBranch)
+	normalized.WorktreeBaseBranch = strings.TrimSpace(scope.WorktreeBaseBranch)
+	normalized.WorktreeBaseCommit = strings.TrimSpace(scope.WorktreeBaseCommit)
+	normalized.SourceWorkspacePath = strings.TrimSpace(scope.SourceWorkspacePath)
 	return context.WithValue(parent, workspaceScopeContextKey{}, normalized)
 }
 
@@ -386,8 +401,16 @@ func workspaceScopeFromContext(ctx context.Context, workspacePath string) Worksp
 		return scope
 	}
 	normalized := normalizeWorkspaceScope(override.PrimaryPath, override.Roots)
+	normalized.ReadOnlyRoots = append([]string(nil), override.ReadOnlyRoots...)
+	normalized.MutationScopes = append([]string(nil), override.MutationScopes...)
 	normalized.SessionID = strings.TrimSpace(override.SessionID)
 	normalized.Principal = override.Principal
+	normalized.WorktreeEnabled = override.WorktreeEnabled
+	normalized.WorktreeRootPath = strings.TrimSpace(override.WorktreeRootPath)
+	normalized.WorktreeBranch = strings.TrimSpace(override.WorktreeBranch)
+	normalized.WorktreeBaseBranch = strings.TrimSpace(override.WorktreeBaseBranch)
+	normalized.WorktreeBaseCommit = strings.TrimSpace(override.WorktreeBaseCommit)
+	normalized.SourceWorkspacePath = strings.TrimSpace(override.SourceWorkspacePath)
 	return normalized
 }
 
@@ -2116,11 +2139,22 @@ func executeGitAdd(parent context.Context, scope WorkspaceScope, args map[string
 	argv := []string{"add"}
 	pathspec := asStringSlice(args["pathspec"])
 	all := asBool(args["all"])
-	if all {
-		argv = append(argv, "--all")
-	}
 	if len(pathspec) == 0 && !all {
 		return "", errors.New("git_add requires pathspec or all=true")
+	}
+	if len(scope.MutationScopes) > 0 {
+		if len(pathspec) == 0 {
+			pathspec = append([]string(nil), scope.MutationScopes...)
+		}
+		for _, requested := range pathspec {
+			candidate, _, err := normalizeWorkspaceCandidatePath(scope.PrimaryPath, requested)
+			if err != nil || !workspaceMutationAllowed(scope, candidate) {
+				return "", fmt.Errorf("git_add rejected pathspec %q outside the Coder owned scope", requested)
+			}
+		}
+	}
+	if all {
+		argv = append(argv, "--all")
 	}
 	if len(pathspec) > 0 {
 		argv = append(argv, "--")
@@ -9517,8 +9551,24 @@ func normalizeScopePath(path string) string {
 
 func resolveAllowedRoots(scope WorkspaceScope) []string {
 	normalized := normalizeWorkspaceScope(scope.PrimaryPath, scope.Roots)
-	if len(normalized.Roots) > 0 {
-		return normalized.Roots
+	roots := append([]string(nil), normalized.Roots...)
+	seen := make(map[string]struct{}, len(roots)+len(scope.ReadOnlyRoots))
+	for _, root := range roots {
+		seen[root] = struct{}{}
+	}
+	for _, root := range scope.ReadOnlyRoots {
+		root = normalizeScopePath(root)
+		if root == "" {
+			continue
+		}
+		if _, ok := seen[root]; ok {
+			continue
+		}
+		seen[root] = struct{}{}
+		roots = append(roots, root)
+	}
+	if len(roots) > 0 {
+		return roots
 	}
 	if strings.TrimSpace(normalized.PrimaryPath) != "" {
 		return []string{normalized.PrimaryPath}

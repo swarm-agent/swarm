@@ -780,12 +780,12 @@ func (s *Service) executeProviderManagedToolCall(ctx context.Context, config pro
 							Metadata:     cloneGenericMap(metadata),
 						})
 					}
-					runtimeCtx := tool.WithWorkspaceScope(ctx, tool.WorkspaceScope{
-						PrimaryPath: workspaceCtx.WorkspacePath,
-						Roots:       append([]string(nil), workspaceCtx.WorkspaceRoots...),
-						Principal:   principal,
-						SessionID:   strings.TrimSpace(config.sessionID),
-					})
+					runtimeScope := workspaceCtx.Scope
+					runtimeScope.PrimaryPath = workspaceCtx.WorkspacePath
+					runtimeScope.Roots = append([]string(nil), workspaceCtx.WorkspaceRoots...)
+					runtimeScope.Principal = principal
+					runtimeScope.SessionID = strings.TrimSpace(config.sessionID)
+					runtimeCtx := tool.WithWorkspaceScope(ctx, runtimeScope)
 					runtimeCtx = tool.WithArtifactRunContext(runtimeCtx, s.providerManagedArtifactRunContext(config))
 					runtimeCtx = tool.WithVideoRunContext(runtimeCtx, tool.VideoRunContext{SessionID: config.sessionID, RunID: config.runID, MessageID: config.sourceMessageID})
 					executed := s.tools.ExecuteBatchStreamingWithProgress(runtimeCtx, workspaceCtx.WorkspacePath, runtimeCalls, func(_ int, current tool.Call, progress tool.Progress) {

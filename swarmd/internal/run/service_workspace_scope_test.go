@@ -3,6 +3,7 @@ package run
 import (
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -111,6 +112,58 @@ func TestRunWorkspaceScopeUsesManagedWorktreeAsPrimaryAndPromptsToolRoot(t *test
 		if !strings.Contains(instructions, want) {
 			t.Fatalf("worktree instructions missing %q\n--- instructions ---\n%s", want, instructions)
 		}
+	}
+}
+
+func TestRunWorkspaceScopeCoderAllowsOnlyCanonicalLinkedWorktreeGitAdminRoot(t *testing.T) {
+	repo := t.TempDir()
+	runTestGit(t, repo, "init", "-b", "dev")
+	runTestGit(t, repo, "config", "user.email", "test@example.com")
+	runTestGit(t, repo, "config", "user.name", "Test User")
+	writeTestFile(t, filepath.Join(repo, "tracked.txt"), "tracked")
+	runTestGit(t, repo, "add", "tracked.txt")
+	runTestGit(t, repo, "commit", "-m", "base")
+
+	worktree := filepath.Join(t.TempDir(), "child")
+	runTestGit(t, repo, "worktree", "add", "-b", "agent/test-linked-admin", worktree)
+	gitAdminRoot := strings.TrimSpace(runTestGit(t, worktree, "rev-parse", "--path-format=absolute", "--git-dir"))
+
+	principal := testRunPrincipal()
+	runSvc := NewService(nil, nil, nil, nil, nil, nil, discovery.NewService(), nil)
+	scope, err := runSvc.resolveRunWorkspaceScope(pebblestore.SessionSnapshot{
+		ID:                 "session-coder-linked-admin",
+		UserID:             principal.UserID,
+		AccountScopeID:     principal.AccountScopeID,
+		WorkspacePath:      repo,
+		WorktreeEnabled:    true,
+		WorktreeRootPath:   worktree,
+		WorktreeBranch:     "agent/test-linked-admin",
+		WorktreeBaseBranch: "dev",
+		Metadata: map[string]any{
+			"requested_subagent": "coder",
+			"owned_scope":        []string{"src/**"},
+		},
+	}, principal)
+	if err != nil {
+		t.Fatalf("resolve Coder linked-worktree scope: %v", err)
+	}
+	assertStringSliceNotContains(t, scope.Roots, gitAdminRoot)
+	assertStringSliceContains(t, scope.ReadOnlyRoots, gitAdminRoot)
+	if len(scope.MutationScopes) != 1 || scope.MutationScopes[0] != "src/**" {
+		t.Fatalf("Coder mutation scopes = %#v, want declared owned scope", scope.MutationScopes)
+	}
+	request, needed, err := tool.ScopeExpansionForCall(scope, tool.Call{Name: "read", Arguments: mustJSON(t, map[string]any{"path": filepath.Join(gitAdminRoot, "gitdir")})})
+	if err != nil || needed {
+		t.Fatalf("own Git admin read requested expansion: needed=%t request=%+v err=%v", needed, request, err)
+	}
+	otherAdmin := filepath.Join(filepath.Dir(gitAdminRoot), "other-worktree", "gitdir")
+	if err := os.MkdirAll(filepath.Dir(otherAdmin), 0o755); err != nil {
+		t.Fatalf("create unrelated Git admin fixture: %v", err)
+	}
+	writeTestFile(t, otherAdmin, filepath.Join(t.TempDir(), ".git"))
+	_, needed, err = tool.ScopeExpansionForCall(scope, tool.Call{Name: "read", Arguments: mustJSON(t, map[string]any{"path": otherAdmin})})
+	if err != nil || !needed {
+		t.Fatalf("unrelated Git admin path expansion = %t err=%v, want permission", needed, err)
 	}
 }
 
@@ -360,6 +413,16 @@ func testRunPrincipal() identity.Principal {
 		UserID:         "user-1",
 		AccountScopeID: "account-1",
 	}
+}
+
+func runTestGit(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, output)
+	}
+	return string(output)
 }
 
 func writeTestFile(t *testing.T, path, content string) {

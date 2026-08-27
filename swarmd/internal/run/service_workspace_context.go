@@ -4,9 +4,11 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 
+	agentruntime "swarm/packages/swarmd/internal/agent"
 	"swarm/packages/swarmd/internal/identity"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/tool"
@@ -20,6 +22,7 @@ func resolveRunWorkspaceContext(execCtx resolvedRunExecutionContext) runWorkspac
 		WorkspaceRoots:       append([]string(nil), scope.Roots...),
 		OriginWorkspacePath:  execCtx.WorkspacePath,
 		OriginWorkspaceRoots: append([]string(nil), originRoots...),
+		Scope:                scope,
 	}
 }
 
@@ -51,9 +54,21 @@ func (s *Service) resolveRunWorkspaceScope(session pebblestore.SessionSnapshot, 
 		if err != nil {
 			return tool.WorkspaceScope{}, err
 		}
+		mutationScopes := []string(nil)
+		gitAdminRoots := []string(nil)
+		if agentruntime.IsCoderAgentName(mapString(session.Metadata, "requested_subagent")) {
+			mutationScopes = mapStringSlice(session.Metadata, "owned_scope")
+			if gitAdminRoot, gitErr := linkedWorktreeGitAdminRoot(resolvedPath); gitErr != nil {
+				return tool.WorkspaceScope{}, gitErr
+			} else if gitAdminRoot != "" {
+				gitAdminRoots = append(gitAdminRoots, gitAdminRoot)
+			}
+		}
 		return tool.WorkspaceScope{
 			PrimaryPath:         resolvedPath,
 			Roots:               roots,
+			ReadOnlyRoots:       gitAdminRoots,
+			MutationScopes:      mutationScopes,
 			Principal:           principal,
 			SessionID:           strings.TrimSpace(session.ID),
 			WorktreeEnabled:     true,
@@ -96,6 +111,44 @@ func (s *Service) resolveRunWorkspaceScope(session pebblestore.SessionSnapshot, 
 		Principal:   principal,
 		SessionID:   strings.TrimSpace(session.ID),
 	}, nil
+}
+
+func linkedWorktreeGitAdminRoot(worktreePath string) (string, error) {
+	worktreePath = strings.TrimSpace(worktreePath)
+	if worktreePath == "" {
+		return "", nil
+	}
+	cmd := exec.Command("git", "-C", worktreePath, "rev-parse", "--path-format=absolute", "--git-dir")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("resolve linked worktree Git admin path: %s", strings.TrimSpace(string(output)))
+	}
+	gitDir := filepath.Clean(strings.TrimSpace(string(output)))
+	if gitDir == "" || !filepath.IsAbs(gitDir) {
+		return "", fmt.Errorf("resolve linked worktree Git admin path: Git returned %q", strings.TrimSpace(string(output)))
+	}
+	worktreeRoot := filepath.Clean(worktreePath)
+	if rel, relErr := filepath.Rel(worktreeRoot, gitDir); relErr == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", nil
+	}
+	info, err := os.Stat(filepath.Join(gitDir, "gitdir"))
+	if err != nil || !info.Mode().IsRegular() {
+		return "", errors.New("resolve linked worktree Git admin path: canonical gitdir marker is missing")
+	}
+	marker, err := os.ReadFile(filepath.Join(gitDir, "gitdir"))
+	if err != nil {
+		return "", fmt.Errorf("resolve linked worktree Git admin path marker: %w", err)
+	}
+	markerPath := strings.TrimSpace(string(marker))
+	if !filepath.IsAbs(markerPath) {
+		markerPath = filepath.Join(gitDir, markerPath)
+	}
+	markerPath = filepath.Clean(markerPath)
+	wantMarker := filepath.Join(worktreeRoot, ".git")
+	if markerPath != wantMarker {
+		return "", fmt.Errorf("resolve linked worktree Git admin path: marker %q does not identify %q", markerPath, wantMarker)
+	}
+	return gitDir, nil
 }
 
 func principalForRunWorkspaceScope(session pebblestore.SessionSnapshot, principal identity.Principal) (identity.Principal, error) {

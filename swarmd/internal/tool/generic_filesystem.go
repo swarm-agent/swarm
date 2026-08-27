@@ -17,6 +17,7 @@ type rootedWorkspacePath struct {
 	root         *os.Root
 	relative     string
 	absolutePath string
+	mutable      bool
 }
 
 func openRootedWorkspacePath(scope WorkspaceScope, requested string) (*rootedWorkspacePath, error) {
@@ -60,7 +61,12 @@ func openRootedWorkspacePath(scope WorkspaceScope, requested string) (*rootedWor
 	if err != nil {
 		return nil, fmt.Errorf("open workspace root: %w", err)
 	}
-	return &rootedWorkspacePath{root: root, relative: selectedRelative, absolutePath: candidate}, nil
+	return &rootedWorkspacePath{
+		root:         root,
+		relative:     selectedRelative,
+		absolutePath: candidate,
+		mutable:      workspaceMutationAllowed(scope, candidate),
+	}, nil
 }
 
 func (p *rootedWorkspacePath) Close() error {
@@ -79,6 +85,9 @@ func (p *rootedWorkspacePath) stat() (fs.FileInfo, error) {
 }
 
 func (p *rootedWorkspacePath) mkdirParent() error {
+	if !p.mutable {
+		return errors.New("mutation rejected: path is outside the Coder owned scope")
+	}
 	parent := filepath.Dir(p.relative)
 	if parent == "." || parent == "" {
 		return nil
@@ -106,6 +115,9 @@ func (p *rootedWorkspacePath) writeFile(data []byte, perm fs.FileMode) error {
 }
 
 func (p *rootedWorkspacePath) openMutable(flags int, perm fs.FileMode) (*os.File, error) {
+	if !p.mutable {
+		return nil, errors.New("mutation rejected: path is outside the Coder owned scope")
+	}
 	file, err := p.root.OpenFile(p.relative, flags, perm)
 	if err != nil {
 		return nil, err
@@ -129,6 +141,37 @@ func (p *rootedWorkspacePath) openMutable(flags int, perm fs.FileMode) (*os.File
 		return nil, fmt.Errorf("mutation rejected: target has %d hard links", links)
 	}
 	return file, nil
+}
+
+func workspaceMutationAllowed(scope WorkspaceScope, candidate string) bool {
+	if len(scope.MutationScopes) == 0 {
+		return true
+	}
+	workspaceRoot := normalizeScopePath(scope.PrimaryPath)
+	candidate = normalizeScopePath(candidate)
+	if workspaceRoot == "" || candidate == "" || !pathWithinAllowedRoots([]string{workspaceRoot}, candidate) {
+		return false
+	}
+	for _, raw := range scope.MutationScopes {
+		raw = strings.TrimSpace(filepath.ToSlash(raw))
+		if raw == "" {
+			continue
+		}
+		if raw == "." || raw == "*" || raw == "**" || raw == "./**" {
+			return true
+		}
+		raw = strings.TrimPrefix(raw, "./")
+		raw = strings.TrimSuffix(strings.TrimSuffix(raw, "/**"), "/*")
+		clean := filepath.ToSlash(filepath.Clean(filepath.FromSlash(raw)))
+		if clean == "." || clean == ".." || strings.HasPrefix(clean, "../") || filepath.IsAbs(filepath.FromSlash(raw)) || clean != raw || strings.ContainsAny(raw, "*?[]!\\") {
+			continue
+		}
+		ownedRoot := filepath.Join(workspaceRoot, filepath.FromSlash(clean))
+		if pathWithinAllowedRoots([]string{ownedRoot}, candidate) {
+			return true
+		}
+	}
+	return false
 }
 
 // FileInfo.Sys is platform-specific. Reflection keeps the generic tool build

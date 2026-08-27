@@ -10,6 +10,22 @@ import (
 	"testing"
 )
 
+func TestGitAddRejectsPathOutsideCoderOwnedScope(t *testing.T) {
+	repo := t.TempDir()
+	runGitTestCommand(t, repo, "init")
+	outside := filepath.Join(repo, "tests", "outside.txt")
+	if err := os.MkdirAll(filepath.Dir(outside), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(outside, []byte("outside"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	scope := WorkspaceScope{PrimaryPath: repo, MutationScopes: []string{"src/**"}}
+	if _, err := executeGitAdd(context.Background(), scope, map[string]any{"pathspec": []any{"tests/outside.txt"}}); err == nil || !strings.Contains(err.Error(), "outside the Coder owned scope") {
+		t.Fatalf("git_add error = %v, want owned-scope rejection", err)
+	}
+}
+
 func TestExecuteGitCommitUsesConfiguredIdentityAndIgnoresEnvironmentOverrides(t *testing.T) {
 	repo := t.TempDir()
 	runGitTestCommand(t, repo, "init")

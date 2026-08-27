@@ -76,6 +76,25 @@ func TestGenericFilesystemWriteSupportsMissingInRootParents(t *testing.T) {
 	}
 }
 
+func TestGenericFilesystemMutationRejectsPathOutsideCoderOwnedScopeBeforeCreation(t *testing.T) {
+	workspace := t.TempDir()
+	scope := normalizeWorkspaceScope(workspace, nil)
+	scope.MutationScopes = []string{"src/**"}
+
+	if _, err := executeWrite(scope, map[string]any{"path": "tests/outside.txt", "content": "blocked"}); err == nil || !strings.Contains(err.Error(), "outside the Coder owned scope") {
+		t.Fatalf("out-of-scope write error = %v, want owned-scope rejection", err)
+	}
+	if _, err := os.Stat(filepath.Join(workspace, "tests", "outside.txt")); !os.IsNotExist(err) {
+		t.Fatalf("out-of-scope write created a file: %v", err)
+	}
+	if _, err := executeWrite(scope, map[string]any{"path": "src/inside.txt", "content": "allowed"}); err != nil {
+		t.Fatalf("in-scope write failed: %v", err)
+	}
+	if content, err := os.ReadFile(filepath.Join(workspace, "src", "inside.txt")); err != nil || string(content) != "allowed" {
+		t.Fatalf("in-scope content = %q err=%v", content, err)
+	}
+}
+
 func TestGenericFilesystemMutationRejectsHardlinks(t *testing.T) {
 	workspace := t.TempDir()
 	outside := t.TempDir()

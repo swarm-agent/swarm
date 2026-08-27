@@ -323,6 +323,7 @@ func (s *Service) syncWorkspaceScopeFromSession(
 	workspaceCtx.OriginWorkspaceRoots = hostRoots
 	workspaceCtx.WorkspacePath = hostPrimary
 	workspaceCtx.WorkspaceRoots = append([]string(nil), hostRoots...)
+	workspaceCtx.Scope = scope
 
 	return beforePrimary != workspaceCtx.OriginWorkspacePath || !sameTrimmedStrings(beforeRoots, workspaceCtx.OriginWorkspaceRoots), nil
 }

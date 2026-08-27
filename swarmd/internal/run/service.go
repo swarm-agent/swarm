@@ -677,6 +677,7 @@ type runWorkspaceContext struct {
 	WorkspaceRoots       []string
 	OriginWorkspacePath  string
 	OriginWorkspaceRoots []string
+	Scope                tool.WorkspaceScope
 }
 
 func NewService(sessions *sessionruntime.Service, modelSvc *model.Service, providers *registry.Registry, tools *tool.Runtime, permissions *permission.Service, agents *agentruntime.Service, discoverySvc *discovery.Service, events *pebblestore.EventLog) *Service {
@@ -1316,12 +1317,12 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 	workspaceCtx := resolveRunWorkspaceContext(resolvedExecutionContext)
 	runMessageMetadata := buildRunTurnMessageMetadata(activeAgent, providerID, resolvedPreference.Preference, runID, targetKind, targetName)
 
-	baseInstructions := s.composeInstructionsForScope(tool.WorkspaceScope{
-		PrimaryPath: workspaceCtx.WorkspacePath,
-		Roots:       append([]string(nil), workspaceCtx.WorkspaceRoots...),
-		Principal:   options.Principal,
-		SessionID:   strings.TrimSpace(sessionSnapshot.ID),
-	}, agentProfile, options.Instructions)
+	instructionScope := workspaceCtx.Scope
+	instructionScope.PrimaryPath = workspaceCtx.WorkspacePath
+	instructionScope.Roots = append([]string(nil), workspaceCtx.WorkspaceRoots...)
+	instructionScope.Principal = options.Principal
+	instructionScope.SessionID = strings.TrimSpace(sessionSnapshot.ID)
+	baseInstructions := s.composeInstructionsForScope(instructionScope, agentProfile, options.Instructions)
 	baseInstructions = appendHostRuntimeContext(baseInstructions, workspaceCtx.WorkspacePath, workspaceCtx.WorkspaceRoots)
 
 	runFailed := true
@@ -2561,21 +2562,21 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 			markToolCompleted(step, runtimeCalls[i], result)
 		}
 		if scopeChanged {
-			baseInstructions = s.composeInstructionsForScope(tool.WorkspaceScope{
-				PrimaryPath: workspaceCtx.WorkspacePath,
-				Roots:       append([]string(nil), workspaceCtx.WorkspaceRoots...),
-				Principal:   options.Principal,
-				SessionID:   strings.TrimSpace(sessionSnapshot.ID),
-			}, agentProfile, options.Instructions)
+			instructionScope = workspaceCtx.Scope
+			instructionScope.PrimaryPath = workspaceCtx.WorkspacePath
+			instructionScope.Roots = append([]string(nil), workspaceCtx.WorkspaceRoots...)
+			instructionScope.Principal = options.Principal
+			instructionScope.SessionID = strings.TrimSpace(sessionSnapshot.ID)
+			baseInstructions = s.composeInstructionsForScope(instructionScope, agentProfile, options.Instructions)
 			baseInstructions = appendHostRuntimeContext(baseInstructions, workspaceCtx.WorkspacePath, workspaceCtx.WorkspaceRoots)
 		}
 
-		runtimeCtx := tool.WithWorkspaceScope(ctx, tool.WorkspaceScope{
-			PrimaryPath: workspaceCtx.WorkspacePath,
-			Roots:       append([]string(nil), workspaceCtx.WorkspaceRoots...),
-			Principal:   options.Principal,
-			SessionID:   strings.TrimSpace(sessionSnapshot.ID),
-		})
+		runtimeScope := workspaceCtx.Scope
+		runtimeScope.PrimaryPath = workspaceCtx.WorkspacePath
+		runtimeScope.Roots = append([]string(nil), workspaceCtx.WorkspaceRoots...)
+		runtimeScope.Principal = options.Principal
+		runtimeScope.SessionID = strings.TrimSpace(sessionSnapshot.ID)
+		runtimeCtx := tool.WithWorkspaceScope(ctx, runtimeScope)
 		runtimeCtx = tool.WithArtifactRunContext(runtimeCtx, s.providerManagedArtifactRunContext(providerToolInvokerConfig{
 			sessionID:          sessionID,
 			runID:              runID,

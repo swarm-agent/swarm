@@ -17,7 +17,9 @@ type ScopeExpansionRequest struct {
 }
 
 func ScopeExpansionForCall(scope WorkspaceScope, call Call) (ScopeExpansionRequest, bool, error) {
+	readOnlyRoots := append([]string(nil), scope.ReadOnlyRoots...)
 	scope = normalizeWorkspaceScope(scope.PrimaryPath, scope.Roots)
+	scope.ReadOnlyRoots = readOnlyRoots
 	if strings.TrimSpace(scope.PrimaryPath) == "" {
 		return ScopeExpansionRequest{}, false, nil
 	}
