@@ -39,9 +39,9 @@ func TestDurableRunStateInstructionsUsesActivePlanInsteadOfTranscript(t *testing
 		"backend has already reactivated the paused checkpoint", "treat it as nonterminal", "do not call resume_checkpoint", "do not wait for the user to click Resume", "Treat a plain request to continue as authority to keep working in the same checkpoint",
 		"inquiry or guidance only means respond without plan mutation", "localized additive patch whose existing checklist remains valid means add_subtask", "continue the same checkpoint and attempt", `"action":"add_subtask","checkpoint_id":"cp-1","subtask":{"title":"Measure Swarm hosting capacity"}`, "subtask must be a JSON object with a non-empty title", "do not issue a partial call to discover the format", "feedback that supersedes the current checklist means replace_subtasks with the complete authoritative list",
 		"redefinition that invalidates the objective or acceptance criteria means restart_checkpoint with change_request and complete replacement title/tasks/acceptance_criteria/notes", "you must restart the checkpoint with the full replacement contract", "Do not refuse or conversationally dismiss the redirection", "complete or re-complete the superseded checkpoint", "treat it as terminal post-handoff conversation", "emit a final handoff instead of restarting",
-		"independently shippable work or a separate review/failure boundary means request_followup_checkpoint", "use request_new_plan with the current plan_id to replace the whole plan", "Why is the hero headline blue?", "Make the hero headline blue", "Also build an email template",
+		"independently shippable work or a separate review/failure boundary from a parent provider turn means transition_checkpoint_boundary", "use request_new_plan with the current plan_id to replace the whole plan", "Why is the hero headline blue?", "Make the hero headline blue", "Also build an email template",
 		"preserve checkpoint identity and attempt history", "Do not use add_subtask to clear blocked or failed state",
-		"selected checkpoint's current objective governs its run", "earlier plan goals and checkpoint objectives are historical context", "objective is derived only from the current request",
+		"selected checkpoint's current objective governs its run", "earlier plan goals and checkpoint objectives are historical context", "self-contained objective derived only from the current request",
 	} {
 		if !strings.Contains(instructions, want) {
 			t.Fatalf("run state missing %q: %s", want, instructions)
@@ -50,6 +50,41 @@ func TestDurableRunStateInstructionsUsesActivePlanInsteadOfTranscript(t *testing
 	for _, forbidden := range []string{"No active plan exists", "for a clear bounded task call plan_manage start_session_checkpoint", "make exactly one approval-gated plan_manage request_new_plan call"} {
 		if strings.Contains(instructions, forbidden) {
 			t.Fatalf("active-plan run state unexpectedly contains %q: %s", forbidden, instructions)
+		}
+	}
+}
+
+func TestDurableRunStateInstructionsRoutesBlockedCheckpointThroughResolution(t *testing.T) {
+	svc, sessionID, cleanup := newCheckpointRunPromptTestService(t)
+	defer cleanup()
+	if _, _, err := svc.sessions.SavePlanWithMetadata(sessionID, "plan-blocked", "Blocked Plan", "# ignored", "approved", "approved", true, sessionruntime.PlanSaveMetadata{Document: &pebblestore.SessionPlanDocument{
+		ID:                 "plan-blocked",
+		Title:              "Blocked Plan",
+		ExecutionOrigin:    sessionruntime.PlanExecutionOriginApprovedPlan,
+		ExecutionPolicy:    pebblestore.SessionPlanExecutionPolicy{Mode: sessionruntime.PlanExecutionPolicyModeAutomatic, Shape: sessionruntime.PlanExecutionShapeCheckpointed},
+		ExecutionState:     &pebblestore.SessionPlanExecutionState{Status: sessionruntime.PlanExecutionStateBlocked, LastCheckpointID: "cp-4", LastAttemptID: "attempt-3", LastOutcome: sessionruntime.PlanCheckpointStatusBlocked, ParentSessionID: sessionID},
+		Checkpoints:        []pebblestore.SessionPlanCheckpoint{{ID: "cp-4", Title: "Live proof", Status: sessionruntime.PlanCheckpointStatusBlocked, AttemptID: "attempt-3", RunID: "old-run", SessionID: sessionID}},
+		ActiveCheckpointID: "cp-4",
+	}}); err != nil {
+		t.Fatalf("save blocked plan: %v", err)
+	}
+
+	instructions, err := svc.durableRunStateInstructions(sessionID, sessionruntime.ModeAuto, "new-parent-run", RunOptions{})
+	if err != nil {
+		t.Fatalf("blocked run state: %v", err)
+	}
+	for _, want := range []string{
+		`"blocked":true`, `"next_lifecycle_action":"remain_blocked"`,
+		"this parent run does not own its terminal outcome", "Do not continue implementation, run validation", "complete_checkpoint/mark_needs_review/mark_blocked/mark_failed", "will fail run-ownership checks",
+		"action=resolve_blocked_checkpoint", "checkpoint_id=cp-4", "start_next=true", "do not pass stale attempt_id or run_id values", "creates a fresh attempt and provider run owning the same checkpoint",
+	} {
+		if !strings.Contains(instructions, want) {
+			t.Fatalf("blocked run state missing %q: %s", want, instructions)
+		}
+	}
+	for _, forbidden := range []string{"localized additive patch whose existing checklist remains valid means add_subtask", "Treat a plain request to continue as authority to keep working"} {
+		if strings.Contains(instructions, forbidden) {
+			t.Fatalf("blocked run state unexpectedly contains runnable instruction %q: %s", forbidden, instructions)
 		}
 	}
 }
@@ -65,7 +100,7 @@ func TestDurableRunStateInstructionsRoutesAutoModeWithoutActivePlan(t *testing.T
 	for _, want := range []string{
 		`"session_mode":"auto"`, `"active_plan_present":false`,
 		"Do not call plan_manage get-active merely to determine whether a plan exists",
-		"Auto session mode does not mean an active plan exists", "Never call request_followup_checkpoint in this state",
+		"Auto session mode does not mean an active plan exists", "The retired request_followup_checkpoint action and aliases are always invalid",
 		"for a clear bounded task call plan_manage start_session_checkpoint directly", "that single action atomically creates and starts the checkpoint in the current run", "do not call start_checkpoint afterward",
 		"make exactly one approval-gated plan_manage request_new_plan call with a complete multi-checkpoint structured document",
 		"Do not create a draft with new/save", "do not propose a plan and then manually start it",
