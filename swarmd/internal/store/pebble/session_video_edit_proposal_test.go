@@ -439,7 +439,7 @@ func TestVideoHTMLIterationMultiPartAuthoritySurvivesAppendAndTargetedReplacemen
 		t.Fatalf("read locked proposal: ok=%v err=%v", ok, err)
 	}
 	for index, want := range []struct {
-		id, candidate string
+		id, candidate      string
 		source, derivative *SessionArtifactSelectionReference
 	}{{"opening", "opening-a", openingSource, openingMP4}, {"closing", "closing-b", closingSource, closingMP4}} {
 		part := locked.Plan.Parts[index]
@@ -449,8 +449,45 @@ func TestVideoHTMLIterationMultiPartAuthoritySurvivesAppendAndTargetedReplacemen
 			t.Fatalf("locked part %d authority mismatch: %+v", index, part)
 		}
 	}
+	revisionPart := animatedPart("closing", 40)
+	revisionProposal, err := store.CreateVideoEditProposal(CreateVideoEditProposalInput{
+		AccountScopeID: "account", UserID: "user", SessionID: "studio", ProjectID: project.ID, ProposalID: "replace-closing",
+		BaseRevisionID: initial.WorkingRevisionID, Intent: VideoEditProposalIntentHTMLIteration,
+		Plan: &VideoPlanProposal{Kind: VideoPlanKindRevision, Parts: []VideoPlanPart{revisionPart}}, NowUnixMs: 260,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	revisionSource := artifactRef("html", "closing-a", 41)
+	revisionMP4 := artifactRef("derivative", "closing-a-mp4", 51)
+	mutateRevisionSelection := func(kind, requestID string, derivative *SessionArtifactSelectionReference, now int64) {
+		t.Helper()
+		_, mutationErr := store.ApplyV3SessionMutation(V3SessionMutationInput{
+			SessionID: "studio", UserID: "user", AccountScopeID: "account", ClientRequestID: requestID, IdempotencyKey: requestID,
+			PayloadHash: requestID + "-hash", Kind: kind, NowUnixMs: now,
+			VideoProject: &V3VideoProjectMutation{EditProposal: &VideoEditProposalSnapshot{ID: revisionProposal.ID, ProjectID: project.ID, BaseRevisionID: revisionProposal.BaseRevisionID}, AnimationSelection: &VideoAnimationSelectionMutation{
+				PartID: "closing", SelectedCandidateID: "closing-a", SelectedSource: revisionSource, Derivative: derivative,
+			}},
+		})
+		if mutationErr != nil {
+			t.Fatalf("%s revision closing: %v", kind, mutationErr)
+		}
+	}
+	mutateRevisionSelection(V3SessionMutationSelectVideoAnimationCandidate, "select-revision-closing", nil, 270)
+	mutateRevisionSelection(V3SessionMutationPromoteVideoAnimationDerivative, "promote-revision-closing", revisionMP4, 280)
+	revisionWorking, ok, err := store.GetVideoProjectRevision("account", "studio", project.ID, revisionProposal.WorkingRevisionID)
+	if err != nil || !ok {
+		t.Fatalf("read revision working timeline: ok=%v err=%v", ok, err)
+	}
+	if len(revisionWorking.Timeline.Clips) != 2 || revisionWorking.Timeline.Clips[0].ID != "opening" || revisionWorking.Timeline.Clips[0].ArtifactRef == nil || *revisionWorking.Timeline.Clips[0].ArtifactRef != *openingMP4 {
+		t.Fatalf("targeted working promotion dropped or changed preserved opening: %+v", revisionWorking.Timeline.Clips)
+	}
+	if revisionWorking.Timeline.Clips[1].ID != "closing" || revisionWorking.Timeline.Clips[1].ArtifactRef == nil || *revisionWorking.Timeline.Clips[1].ArtifactRef != *revisionMP4 {
+		t.Fatalf("targeted working promotion did not replace closing: %+v", revisionWorking.Timeline.Clips)
+	}
+
 	_, accepted, _, err := store.ResolveVideoEditProposal(ResolveVideoEditProposalInput{
-		AccountScopeID: "account", UserID: "user", SessionID: "studio", ProjectID: project.ID, ProposalID: initial.ID, RevisionID: "accepted-initial", NowUnixMs: 300,
+		AccountScopeID: "account", UserID: "user", SessionID: "studio", ProjectID: project.ID, ProposalID: revisionProposal.ID, SelectedOperationIDs: []string{"closing"}, RevisionID: "accepted-initial", NowUnixMs: 300,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -474,7 +511,7 @@ func TestVideoHTMLIterationMultiPartAuthoritySurvivesAppendAndTargetedReplacemen
 	if len(appendedRevision.Timeline.Clips) != 3 {
 		t.Fatalf("appended timeline clips = %+v, want three", appendedRevision.Timeline.Clips)
 	}
-	for index, want := range []*SessionArtifactSelectionReference{openingMP4, closingMP4} {
+	for index, want := range []*SessionArtifactSelectionReference{openingMP4, revisionMP4} {
 		clip := appendedRevision.Timeline.Clips[index]
 		if clip.ArtifactRef == nil || *clip.ArtifactRef != *want || clip.MediaType != "video/mp4" || clip.ID != []string{"opening", "closing"}[index] {
 			t.Fatalf("append changed established clip %d: %+v", index, clip)
@@ -499,7 +536,7 @@ func TestVideoHTMLIterationMultiPartAuthoritySurvivesAppendAndTargetedReplacemen
 	if len(replaced.Timeline.Clips) != 3 || replaced.Timeline.Clips[2].ArtifactRef == nil || replaced.Timeline.Clips[2].ArtifactRef.VariantID != "credits-revised" {
 		t.Fatalf("targeted replacement did not update only appended part: %+v", replaced.Timeline.Clips)
 	}
-	for index, want := range []*SessionArtifactSelectionReference{openingMP4, closingMP4} {
+	for index, want := range []*SessionArtifactSelectionReference{openingMP4, revisionMP4} {
 		clip := replaced.Timeline.Clips[index]
 		if clip.ArtifactRef == nil || *clip.ArtifactRef != *want || clip.MediaType != "video/mp4" {
 			t.Fatalf("targeted replacement changed non-target authority %d: %+v", index, clip)

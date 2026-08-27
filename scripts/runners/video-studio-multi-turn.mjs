@@ -79,8 +79,14 @@ export function normalizeVideoSnapshot(input) {
   const proposal = project?.proposal || project?.pending_proposal || project?.pendingProposal || input?.proposal || {}
   const proposalPlan = proposal?.plan || proposal?.video_plan || proposal?.videoPlan || {}
   const timeline = working?.timeline || project?.timeline || input?.timeline || {}
+  const acceptedPlan = timeline?.metadata?.accepted_video_plan || timeline?.metadata?.acceptedVideoPlan || {}
   const clips = arrayOf(timeline, ['clips']).concat(arrayOf(working, ['clips'])).concat(arrayOf(project, ['clips'])).filter((item, index, all) => all.indexOf(item) === index).map(normalizeClip)
-  const parts = arrayOf(proposalPlan, ['parts']).concat(arrayOf(proposal, ['parts'])).concat(arrayOf(project, ['parts'])).concat(arrayOf(input, ['parts'])).filter((item, index, all) => all.indexOf(item) === index).map(normalizePart)
+  const partByID = new Map()
+  for (const item of arrayOf(acceptedPlan, ['parts']).concat(arrayOf(project, ['parts'])).concat(arrayOf(input, ['parts'])).concat(arrayOf(proposal, ['parts'])).concat(arrayOf(proposalPlan, ['parts']))) {
+    const part = normalizePart(item, partByID.size)
+    if (part.id) partByID.set(part.id, part)
+  }
+  const parts = [...partByID.values()]
   let nextPartStart = 0
   for (const part of parts.sort((a, b) => a.order - b.order)) {
     if (part.order > 0 && part.start_ms === 0) part.start_ms = nextPartStart
@@ -165,7 +171,7 @@ async function run() {
       return { ok: response.ok, status: response.status, body: decoded, text }
     } finally { clearTimeout(timer) }
   }
-  const hydrate = async () => (await api('POST', '/v3/sync/hydrate', { surface: 'desktop', session_ids: [sessionID], history: { mode: 'tail', max_messages_per_session: 200, max_events_per_session: 1000, manifest_policy: 'manifest' }, resources: { messages: true, events: true, run_intents: true, current_run_state: true, session_view: true }, include_active: true }, 'hydrate session')).body || {}
+  const hydrate = async () => (await api('POST', '/v3/sync/hydrate', { surface: 'desktop', session_ids: [sessionID], history: { mode: 'tail', max_messages_per_session: 200, max_events_per_session: 200, manifest_policy: 'manifest' }, resources: { messages: true, events: true, run_intents: true, current_run_state: true, session_view: true }, include_active: true }, 'hydrate session')).body || {}
   let projectID = ''
   const readVideoState = async (label) => {
     const listed = (await api('GET', `/v3/sessions/${encodeURIComponent(sessionID)}/video/projects?limit=32`, undefined, `${label} list projects`)).body?.projects || []

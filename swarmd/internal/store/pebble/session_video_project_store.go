@@ -1338,6 +1338,34 @@ func mergeAcceptedVideoPlan(accepted *VideoPlanProposal, proposed VideoPlanPropo
 	return merged, nil
 }
 
+func mergeWorkingVideoPlanMutation(timeline VideoProjectTimeline, proposed VideoPlanProposal) (VideoPlanProposal, error) {
+	working, err := acceptedVideoPlanFromTimeline(timeline)
+	if err != nil {
+		return VideoPlanProposal{}, err
+	}
+	if working == nil || proposed.Kind == VideoPlanKindInitial {
+		return proposed, nil
+	}
+	merged := *working
+	merged.Parts = append([]VideoPlanPart(nil), working.Parts...)
+	indices := make(map[string]int, len(merged.Parts))
+	for index, part := range merged.Parts {
+		indices[part.ID] = index
+	}
+	for _, part := range proposed.Parts {
+		if index, ok := indices[part.ID]; ok {
+			merged.Parts[index] = part
+			continue
+		}
+		indices[part.ID] = len(merged.Parts)
+		merged.Parts = append(merged.Parts, part)
+	}
+	if proposed.Summary != "" {
+		merged.Summary = proposed.Summary
+	}
+	return merged, nil
+}
+
 func visualVideoPlanTimeline(base VideoProjectTimeline, plan VideoPlanProposal) VideoProjectTimeline {
 	timeline := base
 	if timeline.Width <= 0 || timeline.Height <= 0 {
@@ -1927,12 +1955,18 @@ func (s *SessionStore) prepareV3VideoProjectMutation(input V3SessionMutationInpu
 		}
 		// Keep the exact selected HTML authority on the working revision so an
 		// explicit render can resolve it to MP4 without accepting the proposal.
-		// The durable timeline clip itself remains on its render-safe fallback
-		// until a promoted derivative replaces it.
-		working.Timeline.Metadata["accepted_video_plan"] = *proposal.Plan
+		// Revision proposals carry only their targeted parts, so merge those
+		// mutated parts back into the complete working plan before persisting
+		// metadata or rebuilding timeline clips. Otherwise promoting one later
+		// part can silently remove every preserved non-target part.
+		workingPlan, mergeErr := mergeWorkingVideoPlanMutation(working.Timeline, *proposal.Plan)
+		if mergeErr != nil {
+			return preparedV3VideoProjectMutation{}, mergeErr
+		}
+		working.Timeline.Metadata["accepted_video_plan"] = workingPlan
 		if input.Kind == V3SessionMutationPromoteVideoAnimationDerivative {
-			working.Timeline = visualVideoPlanTimeline(working.Timeline, *proposal.Plan)
-			working.Timeline.Metadata["accepted_video_plan"] = *proposal.Plan
+			working.Timeline = visualVideoPlanTimeline(working.Timeline, workingPlan)
+			working.Timeline.Metadata["accepted_video_plan"] = workingPlan
 		}
 		return preparedV3VideoProjectMutation{Revision: &working, EditProposal: &proposal, Projection: V3VideoProjectProjection{ProjectID: proposal.ProjectID, RevisionID: working.ID, RevisionNumber: working.RevisionNumber, CurrentRevisionID: working.ID, ProposalID: proposal.ID, Status: proposal.Status}}, nil
 
