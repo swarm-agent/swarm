@@ -42,11 +42,27 @@ func TestChromedpRendererCapturesDeterministicAnimationWithSystemRuntimes(t *tes
 	renderer := NewChromedpRenderer(SystemChromePath, t.TempDir())
 	var browserOutput strings.Builder
 	renderer.browserOutput = &browserOutput
-	result, err := renderer.RenderAnimation(context.Background(), AnimationRequest{Entry: "index.html", Files: map[string][]byte{"index.html": html}, DurationMS: 400, FPS: 10})
+	var progress []AnimationProgress
+	result, err := renderer.RenderAnimation(context.Background(), AnimationRequest{Entry: "index.html", Files: map[string][]byte{"index.html": html}, DurationMS: 400, FPS: 10, Progress: func(update AnimationProgress) { progress = append(progress, update) }})
 	if err != nil {
 		t.Fatalf("RenderAnimation: %v; cause: %v; browser output: %s", err, errors.Unwrap(err), browserOutput.String())
 	}
 	if result.DurationMS != 400 || result.FPS != 10 || result.FrameCount != 4 || len(result.MP4) < 12 || !bytes.Equal(result.MP4[4:8], []byte("ftyp")) {
 		t.Fatalf("result = %+v, bytes=%d", result, len(result.MP4))
+	}
+	seenCaptureProgress := false
+	lastCapture := 0
+	for _, update := range progress {
+		if update.Stage != "frame_capture" {
+			continue
+		}
+		seenCaptureProgress = true
+		if update.Completed < lastCapture {
+			t.Fatalf("frame progress regressed: %+v", progress)
+		}
+		lastCapture = update.Completed
+	}
+	if !seenCaptureProgress || lastCapture != result.FrameCount || result.Timings["readiness_preflight"] <= 0 {
+		t.Fatalf("missing measured render progress: progress=%+v timings=%+v", progress, result.Timings)
 	}
 }

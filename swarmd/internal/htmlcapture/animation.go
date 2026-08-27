@@ -34,11 +34,19 @@ const (
 	animationFrameTimeout     = 2 * time.Second
 )
 
+type AnimationProgress struct {
+	Stage     string
+	Completed int
+	Total     int
+	Elapsed   time.Duration
+}
+
 type AnimationRequest struct {
 	Entry      string
 	Files      map[string][]byte
 	DurationMS int
 	FPS        int
+	Progress   func(AnimationProgress)
 }
 
 type AnimationResult struct {
@@ -47,6 +55,7 @@ type AnimationResult struct {
 	DurationMS int
 	FPS        int
 	FrameCount int
+	Timings    map[string]time.Duration
 }
 
 type AnimationRenderer interface {
@@ -68,6 +77,13 @@ func (r *ChromedpRenderer) RenderAnimation(parent context.Context, req Animation
 }
 
 func (r *ChromedpRenderer) renderAnimation(parent context.Context, req AnimationRequest, preflightOnly bool) (AnimationResult, error) {
+	startedAt := time.Now()
+	timings := make(map[string]time.Duration)
+	emit := func(stage string, completed, total int) {
+		if req.Progress != nil {
+			req.Progress(AnimationProgress{Stage: stage, Completed: completed, Total: total, Elapsed: time.Since(startedAt)})
+		}
+	}
 	if r == nil || r.BinaryPath == "." || r.CacheRoot == "." || strings.TrimSpace(r.EncoderPath) == "" {
 		return AnimationResult{}, NewError("animation_renderer_unavailable", "trusted HTML animation renderer is not configured")
 	}
@@ -81,8 +97,12 @@ func (r *ChromedpRenderer) renderAnimation(parent context.Context, req Animation
 	if err != nil {
 		return AnimationResult{}, err
 	}
+	queueStartedAt := time.Now()
+	emit("queue_wait", 0, 1)
 	select {
 	case r.sem <- struct{}{}:
+		timings["queue_wait"] = time.Since(queueStartedAt)
+		emit("queue_wait", 1, 1)
 		defer func() { <-r.sem }()
 	case <-parent.Done():
 		return AnimationResult{}, NewError("animation_timeout", "animation request was cancelled before renderer capacity became available")
@@ -204,9 +224,13 @@ func (r *ChromedpRenderer) renderAnimation(parent context.Context, req Animation
 	if wasBlocked, reason := blockedAttempt(); wasBlocked {
 		return AnimationResult{}, newErrorWithCause("animation_network_blocked", "animation document attempted a prohibited network request", errors.New(reason))
 	}
+	preflightStartedAt := time.Now()
+	emit("readiness_preflight", 0, 1)
 	if err := prepareAnimation(browserCtx, req); err != nil {
 		return AnimationResult{}, err
 	}
+	timings["readiness_preflight"] = time.Since(preflightStartedAt)
+	emit("readiness_preflight", 1, 1)
 	if preflightOnly {
 		timestamps := []int{0}
 		if frameCount > 2 {
@@ -222,7 +246,7 @@ func (r *ChromedpRenderer) renderAnimation(parent context.Context, req Animation
 				continue
 			}
 			seen[timeMS] = struct{}{}
-			frame, err := captureAnimationFrame(browserCtx, timeMS)
+			frame, err := captureAnimationFrame(browserCtx, timeMS, true)
 			if err != nil {
 				return AnimationResult{}, err
 			}
@@ -233,9 +257,32 @@ func (r *ChromedpRenderer) renderAnimation(parent context.Context, req Animation
 				return AnimationResult{}, newErrorWithCause("animation_network_blocked", "animation document attempted a prohibited network request", errors.New(reason))
 			}
 		}
-		return AnimationResult{PreviewPNG: preview, DurationMS: req.DurationMS, FPS: req.FPS, FrameCount: frameCount}, nil
+		return AnimationResult{PreviewPNG: preview, DurationMS: req.DurationMS, FPS: req.FPS, FrameCount: frameCount, Timings: timings}, nil
 	}
 
+	// Preserve full stability audits at representative timestamps, then capture
+	// each production frame once. Previously every one of up to 36,000 frames
+	// paid for two full-size PNG screenshots and a pixel decode/compare.
+	auditStartedAt := time.Now()
+	emit("deterministic_preflight", 0, 3)
+	representative := []int{0, (frameCount / 2) * 1000 / req.FPS, (frameCount - 1) * 1000 / req.FPS}
+	seenRepresentative := make(map[int]struct{}, len(representative))
+	audited := 0
+	for _, timeMS := range representative {
+		if _, seen := seenRepresentative[timeMS]; seen {
+			continue
+		}
+		seenRepresentative[timeMS] = struct{}{}
+		if _, err := captureAnimationFrame(browserCtx, timeMS, true); err != nil {
+			return AnimationResult{}, err
+		}
+		audited++
+		emit("deterministic_preflight", audited, len(representative))
+	}
+	timings["deterministic_preflight"] = time.Since(auditStartedAt)
+
+	captureStartedAt := time.Now()
+	emit("frame_capture", 0, frameCount)
 	canonicalLocation := origin + "/" + req.Entry
 	segmentPaths := make([]string, 0, (frameCount+MaxAnimationSegmentFrames-1)/MaxAnimationSegmentFrames)
 	for segmentStart := 0; segmentStart < frameCount; segmentStart += MaxAnimationSegmentFrames {
@@ -247,7 +294,7 @@ func (r *ChromedpRenderer) renderAnimation(parent context.Context, req Animation
 		for localIndex := 0; localIndex < segmentFrames; localIndex++ {
 			globalIndex := segmentStart + localIndex
 			timeMS := globalIndex * 1000 / req.FPS
-			frame, err := captureAnimationFrame(browserCtx, timeMS)
+			frame, err := captureAnimationFrame(browserCtx, timeMS, false)
 			if err != nil {
 				return AnimationResult{}, err
 			}
@@ -262,7 +309,11 @@ func (r *ChromedpRenderer) renderAnimation(parent context.Context, req Animation
 			if err := os.WriteFile(name, frame, 0o600); err != nil {
 				return AnimationResult{}, NewError("animation_renderer_failed", "captured animation frame could not be stored privately")
 			}
+			emit("frame_capture", globalIndex+1, frameCount)
 		}
+		timings["frame_capture"] += time.Since(captureStartedAt)
+		encodeStartedAt := time.Now()
+		emit("segment_encode", len(segmentPaths), (frameCount+MaxAnimationSegmentFrames-1)/MaxAnimationSegmentFrames)
 		segmentPath := filepath.Join(jobDir, fmt.Sprintf("segment-%06d.mp4", len(segmentPaths)))
 		if err := encodeAnimation(ctx, r.EncoderPath, filepath.Join(frameDir, "frame-%06d.png"), segmentPath, req.FPS, segmentFrames); err != nil {
 			return AnimationResult{}, err
@@ -271,17 +322,24 @@ func (r *ChromedpRenderer) renderAnimation(parent context.Context, req Animation
 			return AnimationResult{}, NewError("animation_renderer_failed", "private animation frame segment could not be removed")
 		}
 		segmentPaths = append(segmentPaths, segmentPath)
+		timings["segment_encode"] += time.Since(encodeStartedAt)
+		emit("segment_encode", len(segmentPaths), (frameCount+MaxAnimationSegmentFrames-1)/MaxAnimationSegmentFrames)
+		captureStartedAt = time.Now()
 	}
 
+	concatStartedAt := time.Now()
+	emit("segment_concatenation", 0, 1)
 	outputPath := filepath.Join(jobDir, "animation.mp4")
 	if err := concatAnimationSegments(ctx, r.EncoderPath, jobDir, segmentPaths, outputPath); err != nil {
 		return AnimationResult{}, err
 	}
+	timings["segment_concatenation"] = time.Since(concatStartedAt)
+	emit("segment_concatenation", 1, 1)
 	mp4, err := os.ReadFile(outputPath)
 	if err != nil || len(mp4) == 0 || len(mp4) > MaxMP4Bytes {
 		return AnimationResult{}, NewError("animation_mp4_invalid", "encoded MP4 is missing or exceeds fixed bounds")
 	}
-	return AnimationResult{MP4: mp4, DurationMS: req.DurationMS, FPS: req.FPS, FrameCount: frameCount}, nil
+	return AnimationResult{MP4: mp4, DurationMS: req.DurationMS, FPS: req.FPS, FrameCount: frameCount, Timings: timings}, nil
 }
 
 func validateAnimationRequest(req AnimationRequest) (int, error) {
@@ -337,7 +395,7 @@ return {code:"ok"};
 	return nil
 }
 
-func captureAnimationFrame(browserCtx context.Context, timeMS int) ([]byte, error) {
+func captureAnimationFrame(browserCtx context.Context, timeMS int, auditStability bool) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(browserCtx, animationFrameTimeout)
 	defer cancel()
 	var audit animationAudit
@@ -360,6 +418,9 @@ return {code:"ok"};
 	first, err := animationScreenshot(ctx)
 	if err != nil {
 		return nil, err
+	}
+	if !auditStability {
+		return first, nil
 	}
 	select {
 	case <-time.After(10 * time.Millisecond):

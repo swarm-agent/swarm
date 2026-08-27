@@ -44,13 +44,19 @@ function normalizeCandidate(candidate, order) {
   }
 }
 function normalizePart(part, order) {
-  const candidates = arrayOf(part, ['animation_candidates', 'animationCandidates', 'candidates']).map(normalizeCandidate)
+  const animation = scalar(part, ['animation_candidates', 'animationCandidates'], null)
+  const candidates = (animation ? arrayOf(animation, ['candidates']) : arrayOf(part, ['candidates']))
+    .map((candidate, candidateOrder) => ({ ...normalizeCandidate(candidate, candidateOrder), media_type: String(scalar(candidate, ['media_type', 'mediaType', 'mime_type', 'mimeType'], 'text/html')) }))
+  const durationMs = Number(scalar(part, ['duration_ms', 'durationMs'], 0))
   return {
-    id: idOf(part, ['part_id', 'partId', 'id']), clip_id: idOf(part, ['clip_id', 'clipId']),
-    candidates, selected_source: exactRef(scalar(part, ['selected_source', 'selectedSource', 'selected_animation_source', 'selectedAnimationSource'], null)),
-    derivative: exactRef(scalar(part, ['derivative', 'animation_derivative', 'animationDerivative', 'rendered_artifact'], null)),
-    media_type: String(scalar(part, ['media_type', 'mediaType', 'mime_type', 'mimeType'], candidates[0]?.media_type || '')),
-    start_ms: Number(scalar(part, ['start_ms', 'startMs'], 0)), end_ms: Number(scalar(part, ['end_ms', 'endMs'], 0)),
+    id: idOf(part, ['part_id', 'partId', 'id']), clip_id: idOf(part, ['clip_id', 'clipId', 'id']),
+    candidates,
+    selected_candidate_id: String(scalar(animation || part, ['selected_candidate_id', 'selectedCandidateId'], '')),
+    selected_source: exactRef(scalar(animation || part, ['selected_source', 'selectedSource', 'selected_animation_source', 'selectedAnimationSource'], null)),
+    derivative: exactRef(scalar(animation || part, ['derivative', 'animation_derivative', 'animationDerivative', 'rendered_artifact'], null)),
+    media_type: String(scalar(part, ['visual_media_type', 'visualMediaType', 'media_type', 'mediaType', 'mime_type', 'mimeType'], candidates.length ? 'text/html' : '')),
+    start_ms: Number(scalar(part, ['start_ms', 'startMs'], 0)), end_ms: Number(scalar(part, ['end_ms', 'endMs'], durationMs)),
+    duration_ms: durationMs,
     order: Number(scalar(part, ['order', 'index'], order)),
   }
 }
@@ -71,13 +77,20 @@ export function normalizeVideoSnapshot(input) {
   const working = project?.working_revision || project?.workingRevision || input?.working_revision || input?.workingRevision || {}
   const base = project?.base_revision || project?.baseRevision || input?.base_revision || input?.baseRevision || {}
   const proposal = project?.proposal || project?.pending_proposal || project?.pendingProposal || input?.proposal || {}
+  const proposalPlan = proposal?.plan || proposal?.video_plan || proposal?.videoPlan || {}
   const timeline = working?.timeline || project?.timeline || input?.timeline || {}
   const clips = arrayOf(timeline, ['clips']).concat(arrayOf(working, ['clips'])).concat(arrayOf(project, ['clips'])).filter((item, index, all) => all.indexOf(item) === index).map(normalizeClip)
-  const parts = arrayOf(proposal, ['parts']).concat(arrayOf(project, ['parts'])).concat(arrayOf(input, ['parts'])).filter((item, index, all) => all.indexOf(item) === index).map(normalizePart)
+  const parts = arrayOf(proposalPlan, ['parts']).concat(arrayOf(proposal, ['parts'])).concat(arrayOf(project, ['parts'])).concat(arrayOf(input, ['parts'])).filter((item, index, all) => all.indexOf(item) === index).map(normalizePart)
+  let nextPartStart = 0
+  for (const part of parts.sort((a, b) => a.order - b.order)) {
+    if (part.order > 0 && part.start_ms === 0) part.start_ms = nextPartStart
+    if (part.end_ms <= part.start_ms && part.duration_ms > 0) part.end_ms = part.start_ms + part.duration_ms
+    nextPartStart = Math.max(nextPartStart, part.end_ms)
+  }
   const row = {
     project_id: idOf(project, ['project_id', 'projectId', 'id']),
-    base_revision_id: idOf(base, ['revision_id', 'revisionId', 'id']) || idOf(project, ['base_revision_id', 'baseRevisionId']),
-    working_revision_id: idOf(working, ['revision_id', 'revisionId', 'id']) || idOf(project, ['working_revision_id', 'workingRevisionId', 'current_revision_id', 'currentRevisionId']),
+    base_revision_id: idOf(base, ['revision_id', 'revisionId', 'id']) || idOf(proposal, ['base_revision_id', 'baseRevisionId']) || idOf(project, ['base_revision_id', 'baseRevisionId']),
+    working_revision_id: idOf(working, ['revision_id', 'revisionId', 'id']) || idOf(proposal, ['working_revision_id', 'workingRevisionId']) || idOf(project, ['working_revision_id', 'workingRevisionId', 'current_revision_id', 'currentRevisionId']),
     proposal_id: idOf(proposal, ['proposal_id', 'proposalId', 'id']) || idOf(project, ['proposal_id', 'proposalId', 'pending_proposal_id', 'pendingProposalId']),
     clips: clips.sort((a, b) => a.order - b.order), parts: parts.sort((a, b) => a.order - b.order),
   }
@@ -118,14 +131,6 @@ export function assertSyntheticDumpTopology() {
   return row
 }
 
-function findSnapshots(value, found = [], seen = new Set()) {
-  if (!value || typeof value !== 'object' || seen.has(value)) return found
-  seen.add(value)
-  try { found.push(normalizeVideoSnapshot(value)) } catch {}
-  for (const nested of Object.values(value)) findSnapshots(nested, found, seen)
-  return found
-}
-
 async function run() {
   const argv = process.argv.slice(2)
   const option = (name, fallback = '') => { const i = argv.indexOf(name); return i >= 0 && i + 1 < argv.length ? argv[i + 1] : fallback }
@@ -161,6 +166,17 @@ async function run() {
     } finally { clearTimeout(timer) }
   }
   const hydrate = async () => (await api('POST', '/v3/sync/hydrate', { surface: 'desktop', session_ids: [sessionID], history: { mode: 'tail', max_messages_per_session: 200, max_events_per_session: 1000, manifest_policy: 'manifest' }, resources: { messages: true, events: true, run_intents: true, current_run_state: true, session_view: true }, include_active: true }, 'hydrate session')).body || {}
+  let projectID = ''
+  const readVideoState = async (label) => {
+    const listed = (await api('GET', `/v3/sessions/${encodeURIComponent(sessionID)}/video/projects?limit=32`, undefined, `${label} list projects`)).body?.projects || []
+    if (!projectID) projectID = String([...listed].sort((left, right) => Number(right?.updated_at || 0) - Number(left?.updated_at || 0))[0]?.id || '')
+    assert(projectID, `${label} exposed no Video Studio project`)
+    const detail = (await api('GET', `/v3/sessions/${encodeURIComponent(sessionID)}/video/projects/${encodeURIComponent(projectID)}`, undefined, `${label} read project`)).body || {}
+    const proposals = (await api('GET', `/v3/sessions/${encodeURIComponent(sessionID)}/video/projects/${encodeURIComponent(projectID)}/edit-proposals`, undefined, `${label} list proposals`)).body?.proposals || []
+    const proposal = [...proposals].filter((item) => String(item?.status || '') === 'pending').sort((left, right) => Number(right?.updated_at || 0) - Number(left?.updated_at || 0))[0] || proposals.at(-1)
+    assert(proposal?.id, `${label} exposed no Video Studio proposal`)
+    return { project: detail.project || listed.find((item) => String(item?.id || '') === projectID), working_revision: detail.current_revision, proposal }
+  }
   const approve = async () => {
     const pending = (await api('GET', `/v3/sessions/${encodeURIComponent(sessionID)}/permissions?status=pending&limit=50`, undefined, 'list permissions')).body?.permissions || []
     if (pending.length) await api('POST', `/v3/sessions/${encodeURIComponent(sessionID)}/permissions/resolve_all`, { action: 'allow_once', reason: `${testID} checked-in E2E` }, 'approve permissions')
@@ -180,12 +196,7 @@ async function run() {
     }
     fail(`turn ${number} exceeded overall timeout`)
   }
-  const snapshot = (hydrated, label) => {
-    const candidates = findSnapshots(hydrated)
-    assert(candidates.length > 0, `${label} exposed no complete Video Studio project snapshot in durable hydrate state`)
-    const row = candidates.sort((a, b) => (b.parts.length + b.clips.length) - (a.parts.length + a.clips.length))[0]
-    return ledger.record(label, row)
-  }
+  const snapshot = async (label) => ledger.record(label, await readVideoState(label))
   try {
     if (!token) { token = String((await api('GET', '/v1/auth/desktop/session', undefined, 'desktop auth')).body?.token || ''); assert(token, 'desktop auth returned no token') }
     const providers = (await api('GET', '/v1/providers', undefined, 'providers')).body?.providers || []
@@ -205,19 +216,23 @@ async function run() {
     const created = await api('POST', '/v3/sessions', { client_request_id: `${testID}:create`, title: `${testID} Video Studio regression`, workspace_path: workspacePath, workspace_name: String(binding.source_workspace_name || 'runner-test'), workspace_binding_id: binding.workspace_binding_id, swarm_id: runtime.swarm_id, target_kind: 'host', target_relationship: 'self', mode: 'auto', agent_name: 'swarm', preference: assignment, model_profile: { temporary: { ...assignment, name: `${testID} temporary model` } }, metadata: { runner_test: 'video-studio-multi-turn', runner_test_id: testID } }, 'create isolated session')
     sessionID = String(created.body?.session?.id || ''); assert(sessionID, 'session creation returned no ID'); result.session = { id: sessionID }
     const common = 'Use only managed artifacts and Video Studio tools. Finish the requested operation in this turn. Do not accept a proposal or start final render. Preserve exact IDs, timing, order, selected sources, derivatives, and media types for every non-target part.'
-    let state = snapshot(await postTurn(1, `${common} Create a new Video Studio project with exactly three ordered 10-second parts: HTML part html-1 with exactly two live HTML animation candidates; HTML part html-2 with exactly two live HTML animation candidates; and source-video part video-1 backed by one registered source video discovered through list_source_roots/browse_source. Select one candidate and promote its exported derivative for each HTML part. Submit this as one pending HTML iteration. Report marker VIDEO_STUDIO_TURN_1_DONE.`), 'turn-1')
-    assert(state.parts.length === 3 && state.parts.filter((p) => p.media_type === 'text/html').length === 2, 'turn 1 topology is not two HTML parts plus one source-video part')
-    assert(state.parts.filter((p) => p.media_type === 'text/html').every((p) => p.candidates.length === 2), 'turn 1 HTML parts must each have two candidates')
-    const htmlParts = state.parts.filter((p) => p.media_type === 'text/html'); const videoPart = state.parts.find((p) => p.media_type !== 'text/html')
+    await postTurn(1, `${common} Create a new Video Studio project whose working timeline has exactly three ordered 10-second clips: HTML part html-1 with exactly two live HTML animation candidates; HTML part html-2 with exactly two live HTML animation candidates; and source-video clip video-1 backed by one registered source video discovered through list_source_roots/browse_source. Select one candidate and promote its exported derivative for each HTML part. Keep one pending HTML iteration proposal for the two HTML parts. Report marker VIDEO_STUDIO_TURN_1_DONE.`)
+    let state = await snapshot('turn-1')
+    assert(state.parts.length === 2 && state.parts.every((p) => p.candidates.length === 2), 'turn 1 proposal is not two independently iterable HTML parts')
+    assert(state.clips.length === 3 && state.clips.filter((clip) => clip.media_type === 'video/mp4' || !clip.source).length >= 1, 'turn 1 working timeline is not two HTML-derived clips plus one source-video clip')
+    const htmlParts = state.parts; const videoClip = state.clips.find((clip) => !htmlParts.some((part) => part.id === clip.id)) || state.clips.at(-1)
     const prior = state
-    state = snapshot(await postTurn(2, `${common} On the existing pending project replace only HTML part ${htmlParts[1].id} with exactly two new live HTML candidates, select one, export it, and promote that derivative. Do not change HTML part ${htmlParts[0].id} or source-video part ${videoPart.id}. Report marker VIDEO_STUDIO_TURN_2_DONE.`), 'turn-2')
+    await postTurn(2, `${common} On the existing pending project replace only HTML part ${htmlParts[1].id} with exactly two new live HTML candidates, select one, export it, and promote that derivative. Do not change HTML part ${htmlParts[0].id} or source-video clip ${videoClip.id}. Report marker VIDEO_STUDIO_TURN_2_DONE.`)
+    state = await snapshot('turn-2')
     ledger.assertNoDrift(prior, state, { mutablePartIDs: [htmlParts[1].id], mutableClipIDs: [htmlParts[1].clip_id].filter(Boolean) })
     const beforeAppend = state
-    state = snapshot(await postTurn(3, `${common} Append exactly one new 10-second HTML part at the end with exactly two live HTML candidates. Select one candidate, export it, and promote its derivative. Do not change any existing part. Report marker VIDEO_STUDIO_TURN_3_DONE.`), 'turn-3')
+    await postTurn(3, `${common} Append exactly one new 10-second HTML part at the end with exactly two live HTML candidates. Select one candidate, export it, and promote its derivative. Do not change any existing part. Report marker VIDEO_STUDIO_TURN_3_DONE.`)
+    state = await snapshot('turn-3')
     ledger.assertNoDrift(beforeAppend, state, { allowAppendedParts: true, allowAppendedClips: true }); assert(state.parts.length === beforeAppend.parts.length + 1, 'turn 3 did not append exactly one part')
     const newPart = state.parts.find((part) => !beforeAppend.parts.some((old) => old.id === part.id)); assert(newPart, 'appended part identity unavailable')
     const staleProposal = beforeAppend.proposal_id, staleRevision = beforeAppend.working_revision_id, beforeReplace = state
-    state = snapshot(await postTurn(4, `${common} First deliberately call the appropriate Video Studio mutation with stale proposal ${staleProposal} and stale base/working revision ${staleRevision}; require the tool to reject it explicitly and do not retry that stale action. Then use the current exact proposal/revision to replace only appended part ${newPart.id} with exactly two new live HTML candidates, select one, export it, and promote its derivative. Report the explicit stale rejection plus marker VIDEO_STUDIO_TURN_4_DONE.`), 'turn-4')
+    await postTurn(4, `${common} First deliberately call the appropriate Video Studio mutation with stale proposal ${staleProposal} and stale base/working revision ${staleRevision}; require the tool to reject it explicitly and do not retry that stale action. Then use the current exact proposal/revision to replace only appended part ${newPart.id} with exactly two new live HTML candidates, select one, export it, and promote its derivative. Report the explicit stale rejection plus marker VIDEO_STUDIO_TURN_4_DONE.`)
+    state = await snapshot('turn-4')
     ledger.assertNoDrift(beforeReplace, state, { mutablePartIDs: [newPart.id], mutableClipIDs: [newPart.clip_id].filter(Boolean) })
     const finalHydrate = await hydrate(); const events = finalHydrate.events_by_session?.[sessionID] || []; const messages = finalHydrate.messages_by_session?.[sessionID] || []
     const staleEvidence = JSON.stringify([...events, ...messages]).toLowerCase()

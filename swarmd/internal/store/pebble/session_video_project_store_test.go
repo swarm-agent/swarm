@@ -342,13 +342,22 @@ func TestVideoRenderJobLifecycle(t *testing.T) {
 		Status:         VideoRenderJobStatusRendering,
 		ExpectedStatus: VideoRenderJobStatusQueued,
 		Progress:       0.45,
+		ProgressStage:  "Capturing HTML animation frames",
 		NowUnixMs:      1200,
 	})
 	if err != nil {
 		t.Fatalf("update to rendering failed: %v", err)
 	}
-	if renderingJob.Status != VideoRenderJobStatusRendering || renderingJob.Progress != 0.45 || renderingJob.StartedAt != 1200 {
+	if renderingJob.Status != VideoRenderJobStatusRendering || renderingJob.Progress != 0.45 || renderingJob.ProgressStage != "Capturing HTML animation frames" || renderingJob.StartedAt != 1200 {
 		t.Fatalf("unexpected rendering job state: %+v", renderingJob)
+	}
+	staleProgress, err := store.UpdateVideoRenderJob(UpdateVideoRenderJobInput{
+		AccountScopeID: account, UserID: user, SessionID: sessionID, JobID: job.ID,
+		Status: VideoRenderJobStatusRendering, ExpectedStatus: VideoRenderJobStatusRendering,
+		Progress: 0.40, ProgressStage: "stale stage", NowUnixMs: 1250,
+	})
+	if err != nil || staleProgress.Progress != 0.45 || staleProgress.ProgressStage != "Capturing HTML animation frames" {
+		t.Fatalf("render progress regressed: job=%+v err=%v", staleProgress, err)
 	}
 	recoverable, err := store.ListRecoverableVideoRenderJobs(10)
 	if err != nil || len(recoverable) != 1 || recoverable[0].ID != job.ID {

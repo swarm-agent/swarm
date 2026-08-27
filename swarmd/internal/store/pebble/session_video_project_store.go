@@ -319,6 +319,7 @@ type VideoRenderJobSnapshot struct {
 	SessionID          string                             `json:"session_id"`
 	Status             string                             `json:"status"`
 	Progress           float64                            `json:"progress"`
+	ProgressStage      string                             `json:"progress_stage,omitempty"`
 	FailureCode        string                             `json:"failure_code,omitempty"`
 	FailureReason      string                             `json:"failure_reason,omitempty"`
 	OutputPreset       string                             `json:"output_preset,omitempty"`
@@ -2093,8 +2094,11 @@ func (s *SessionStore) prepareV3VideoProjectMutation(input V3SessionMutationInpu
 		}
 
 		existing.Status = incomingJob.Status
-		if incomingJob.Progress > 0 {
+		if incomingJob.Progress > existing.Progress {
 			existing.Progress = incomingJob.Progress
+		}
+		if incomingJob.ProgressStage != "" && (incomingJob.Status != VideoRenderJobStatusRendering || incomingJob.Progress >= existing.Progress) {
+			existing.ProgressStage = incomingJob.ProgressStage
 		}
 		if incomingJob.FailureCode != "" {
 			existing.FailureCode = incomingJob.FailureCode
@@ -2844,6 +2848,7 @@ type UpdateVideoRenderJobInput struct {
 	Status             string
 	ExpectedStatus     string
 	Progress           float64
+	ProgressStage      string
 	FailureCode        string
 	FailureReason      string
 	OutputPreset       string
@@ -2875,6 +2880,7 @@ func (s *SessionStore) UpdateVideoRenderJob(input UpdateVideoRenderJobInput) (Vi
 		SessionID:          input.SessionID,
 		Status:             strings.ToLower(strings.TrimSpace(input.Status)),
 		Progress:           input.Progress,
+		ProgressStage:      strings.TrimSpace(input.ProgressStage),
 		FailureCode:        strings.ToLower(strings.TrimSpace(input.FailureCode)),
 		FailureReason:      strings.TrimSpace(input.FailureReason),
 		OutputPreset:       normalizeVideoPreset(input.OutputPreset),
@@ -2893,7 +2899,7 @@ func (s *SessionStore) UpdateVideoRenderJob(input UpdateVideoRenderJobInput) (Vi
 		clientReqID = fmt.Sprintf("update_render_job:%s:%s:%d", input.JobID, job.Status, now)
 	}
 
-	mutPayload, _ := json.Marshal(map[string]any{"job_id": job.ID, "status": job.Status, "progress": job.Progress})
+	mutPayload, _ := json.Marshal(map[string]any{"job_id": job.ID, "status": job.Status, "progress": job.Progress, "progress_stage": job.ProgressStage})
 	hash := sha256.Sum256(mutPayload)
 	payloadHash := hex.EncodeToString(hash[:])
 

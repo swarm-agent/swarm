@@ -588,6 +588,7 @@ func (s *Service) RenderJob(ctx context.Context, principal identity.Principal, r
 		Status:         pebblestore.VideoRenderJobStatusRendering,
 		ExpectedStatus: pebblestore.VideoRenderJobStatusQueued,
 		Progress:       0.05,
+		ProgressStage:  "Preparing trusted render workspace",
 		NowUnixMs:      time.Now().UnixMilli(),
 	})
 	if err != nil {
@@ -619,10 +620,33 @@ func (s *Service) RenderJob(ctx context.Context, principal identity.Principal, r
 		s.mu.Unlock()
 	}()
 
-	// Materialize inputs
-	materialized, err := s.materializeTimelineInputs(renderCtx, principal, session, req.WorkspacePath, jobDir, timeline)
+	// Materialize inputs. HTML conversion reports bounded deterministic capture
+	// progress directly into the durable render job.
+	materialized, err := s.materializeTimelineInputs(renderCtx, principal, session, req.WorkspacePath, jobDir, timeline, func(progress htmlcapture.AnimationProgress) {
+		fraction := 0.0
+		if progress.Total > 0 {
+			fraction = math.Max(0, math.Min(1, float64(progress.Completed)/float64(progress.Total)))
+		}
+		base, span := 0.08, 0.16
+		stage := "Converting selected HTML animation"
+		switch progress.Stage {
+		case "queue_wait":
+			base, span, stage = 0.06, 0.01, "Waiting for trusted HTML renderer"
+		case "readiness_preflight":
+			base, span, stage = 0.07, 0.02, "Checking HTML animation readiness"
+		case "deterministic_preflight":
+			base, span, stage = 0.09, 0.02, "Auditing deterministic animation frames"
+		case "frame_capture":
+			base, span, stage = 0.11, 0.10, "Capturing HTML animation frames"
+		case "segment_encode":
+			base, span, stage = 0.21, 0.03, "Encoding HTML animation segments"
+		case "segment_concatenation":
+			base, span, stage = 0.24, 0.01, "Finalizing HTML animation derivative"
+		}
+		s.updateProgress(principal, sessionID, jobID, base+span*fraction, stage)
+	})
 	if err != nil {
-		s.failJob(principal, sessionID, jobID, "input_materialization_error", err.Error())
+		s.failJob(principal, sessionID, jobID, renderFailureCode(err, "input_materialization_error"), renderFailureReason(err))
 		return pebblestore.VideoRenderJobSnapshot{}, fmt.Errorf("materialize inputs: %w", err)
 	}
 
@@ -642,11 +666,16 @@ func (s *Service) RenderJob(ctx context.Context, principal identity.Principal, r
 		JobID:          jobID,
 		Status:         pebblestore.VideoRenderJobStatusRendering,
 		Progress:       0.30,
+		ProgressStage:  "Composing project timeline",
 		NowUnixMs:      time.Now().UnixMilli(),
 	})
 
-	// Run FFmpeg command
+	// Run FFmpeg command. A bounded heartbeat makes long project composition
+	// visibly live without claiming byte-level ffmpeg progress.
+	heartbeatDone := make(chan struct{})
+	go s.progressHeartbeat(renderCtx, principal, sessionID, jobID, 0.30, 0.82, "Composing final project", heartbeatDone)
 	_, err = s.runner.RunCommand(renderCtx, "ffmpeg", plan.FFmpegArgs...)
+	close(heartbeatDone)
 	if err != nil {
 		if renderCtx.Err() != nil {
 			current, currentOK, _ := s.store.GetVideoRenderJob(principal.AccountScopeID, sessionID, jobID)
@@ -664,7 +693,7 @@ func (s *Service) RenderJob(ctx context.Context, principal identity.Principal, r
 					NowUnixMs: time.Now().UnixMilli(),
 				})
 			} else {
-				s.cancelJob(principal, sessionID, jobID, "Render timed out")
+				s.failJob(principal, sessionID, jobID, "render_timeout", "Render exceeded the configured deadline")
 			}
 			return pebblestore.VideoRenderJobSnapshot{}, renderCtx.Err()
 		}
@@ -698,6 +727,7 @@ func (s *Service) RenderJob(ctx context.Context, principal identity.Principal, r
 		JobID:          jobID,
 		Status:         pebblestore.VideoRenderJobStatusRendering,
 		Progress:       0.85,
+		ProgressStage:  "Publishing managed video artifact",
 		NowUnixMs:      time.Now().UnixMilli(),
 	})
 
@@ -778,6 +808,7 @@ func (s *Service) RenderJob(ctx context.Context, principal identity.Principal, r
 		JobID:              jobID,
 		Status:             pebblestore.VideoRenderJobStatusReady,
 		Progress:           1.0,
+		ProgressStage:      "Render ready",
 		OutputPreset:       outputPreset,
 		OutputWidth:        plan.Dimensions.Width,
 		OutputHeight:       plan.Dimensions.Height,
@@ -795,8 +826,12 @@ func (s *Service) RenderJob(ctx context.Context, principal identity.Principal, r
 	return readyJob, nil
 }
 
-func (s *Service) materializeTimelineInputs(ctx context.Context, principal identity.Principal, session pebblestore.SessionSnapshot, workspacePath string, jobDir string, timeline pebblestore.VideoProjectTimeline) ([]MaterializedInput, error) {
+func (s *Service) materializeTimelineInputs(ctx context.Context, principal identity.Principal, session pebblestore.SessionSnapshot, workspacePath string, jobDir string, timeline pebblestore.VideoProjectTimeline, progress ...func(htmlcapture.AnimationProgress)) ([]MaterializedInput, error) {
 	var inputs []MaterializedInput
+	// One exact HTML source and duration has one conversion authority per render.
+	// Repeated clips may reuse the immutable materialized MP4, while different
+	// exact refs remain isolated and can never borrow another part's derivative.
+	htmlAnimationPaths := make(map[string]string)
 
 	var registeredRoots map[string]struct{}
 	var workspaceID string
@@ -964,9 +999,19 @@ func (s *Service) materializeTimelineInputs(ctx context.Context, principal ident
 			artifactPrincipal := artifact.Principal{SessionID: session.ID, AccountScopeID: principal.AccountScopeID, UserID: principal.UserID}
 			mediaType := strings.ToLower(strings.TrimSpace(variant.MediaType))
 			if mediaType == "text/html" || mediaType == "application/zip" {
-				animationPath, renderErr := s.renderHTMLAnimationClip(ctx, artifactPrincipal, *targetRef, variant, clip.DurationMs, jobDir, input.Index)
-				if renderErr != nil {
-					return nil, fmt.Errorf("render HTML animation clip %d: %w", i, renderErr)
+				cacheKey := fmt.Sprintf("%s\x00%s\x00%s\x00%d\x00%d", targetRef.SessionID, targetRef.CollectionID, targetRef.VariantID, targetRef.EventSeq, clip.DurationMs)
+				animationPath := htmlAnimationPaths[cacheKey]
+				if animationPath == "" {
+					var progressFn func(htmlcapture.AnimationProgress)
+					if len(progress) > 0 {
+						progressFn = progress[0]
+					}
+					var renderErr error
+					animationPath, renderErr = s.renderHTMLAnimationClip(ctx, artifactPrincipal, *targetRef, variant, clip.DurationMs, jobDir, input.Index, progressFn)
+					if renderErr != nil {
+						return nil, fmt.Errorf("render HTML animation clip %d: %w", i, renderErr)
+					}
+					htmlAnimationPaths[cacheKey] = animationPath
 				}
 				input.FilePath = animationPath
 				input.StartMs = 0
@@ -1121,7 +1166,7 @@ func applySelectedHTMLAnimationSources(timeline *pebblestore.VideoProjectTimelin
 	return nil
 }
 
-func (s *Service) renderHTMLAnimationClip(ctx context.Context, principal artifact.Principal, ref pebblestore.SessionArtifactSelectionReference, variant pebblestore.SessionArtifactVariant, expectedDurationMs int64, jobDir string, inputIndex int) (string, error) {
+func (s *Service) renderHTMLAnimationClip(ctx context.Context, principal artifact.Principal, ref pebblestore.SessionArtifactSelectionReference, variant pebblestore.SessionArtifactVariant, expectedDurationMs int64, jobDir string, inputIndex int, progress ...func(htmlcapture.AnimationProgress)) (string, error) {
 	if s.animation == nil {
 		return "", errors.New("selected HTML animation requires the trusted HTML-to-MP4 renderer, but it is unavailable")
 	}
@@ -1136,7 +1181,11 @@ func (s *Service) renderHTMLAnimationClip(ctx context.Context, principal artifac
 	if expectedDurationMs <= 0 || int64(manifest.DurationMS) != expectedDurationMs {
 		return "", fmt.Errorf("animation manifest duration %dms does not match clip duration %dms", manifest.DurationMS, expectedDurationMs)
 	}
-	result, err := s.animation.RenderAnimation(ctx, htmlcapture.AnimationRequest{Entry: entry, Files: files, DurationMS: manifest.DurationMS, FPS: manifest.FPS})
+	var progressFn func(htmlcapture.AnimationProgress)
+	if len(progress) > 0 {
+		progressFn = progress[0]
+	}
+	result, err := s.animation.RenderAnimation(ctx, htmlcapture.AnimationRequest{Entry: entry, Files: files, DurationMS: manifest.DurationMS, FPS: manifest.FPS, Progress: progressFn})
 	if err != nil {
 		var captureErr *htmlcapture.Error
 		if errors.As(err, &captureErr) {
@@ -1336,7 +1385,7 @@ func (s *Service) StartRenderJob(principal identity.Principal, req RenderJobRequ
 			// like live 0% work indefinitely.
 			current, ok, _ := s.store.GetVideoRenderJob(principal.AccountScopeID, req.SessionID, req.JobID)
 			if ok && current.Status == pebblestore.VideoRenderJobStatusQueued {
-				s.failJob(principal, req.SessionID, req.JobID, "render_preflight_error", err.Error())
+				s.failJob(principal, req.SessionID, req.JobID, renderFailureCode(err, "render_preflight_error"), renderFailureReason(err))
 			}
 		}
 	}()
@@ -1415,6 +1464,7 @@ func (s *Service) CancelRenderJob(ctx context.Context, principal identity.Princi
 			SessionID:      sessionID,
 			JobID:          jobID,
 			Status:         pebblestore.VideoRenderJobStatusCancelled,
+			ProgressStage:  "Render cancelled",
 			FailureCode:    "cancelled_by_user",
 			FailureReason:  "Render job was cancelled",
 			ExpectedStatus: job.Status,
@@ -1494,7 +1544,7 @@ func (s *Service) restoreReadyArtifact(job pebblestore.VideoRenderJobSnapshot) b
 	}
 	_, err = s.store.UpdateVideoRenderJob(pebblestore.UpdateVideoRenderJobInput{
 		AccountScopeID: job.AccountScopeID, UserID: job.UserID, SessionID: job.SessionID, JobID: job.ID,
-		Status: pebblestore.VideoRenderJobStatusReady, ExpectedStatus: job.Status, Progress: 1,
+		Status: pebblestore.VideoRenderJobStatusReady, ExpectedStatus: job.Status, Progress: 1, ProgressStage: "Render ready",
 		OutputSizeBytes: variant.Size,
 		OutputArtifact:  &pebblestore.SessionArtifactSelectionReference{SessionID: job.SessionID, CollectionID: collectionID, VariantID: variant.ID, EventSeq: variant.EventSeq},
 		NowUnixMs:       time.Now().UnixMilli(),
@@ -1554,6 +1604,81 @@ func (s *Service) GetRenderJobStatus(ctx context.Context, principal identity.Pri
 	return s.store.GetVideoRenderJob(principal.AccountScopeID, sessionID, jobID)
 }
 
+func renderFailureCode(err error, fallback string) string {
+	if err == nil {
+		return fallback
+	}
+	message := strings.ToLower(err.Error())
+	for _, code := range []string{
+		"animation_renderer_unavailable", "animation_encoder_unavailable", "animation_runtime_missing",
+		"animation_not_ready", "animation_seek_failed", "animation_frame_unstable", "animation_network_blocked",
+		"animation_timeout", "animation_encode_failed", "animation_concat_failed", "animation_mp4_invalid",
+	} {
+		if strings.Contains(message, code) {
+			return code
+		}
+	}
+	switch {
+	case strings.Contains(message, "requires the trusted html-to-mp4 renderer"):
+		return "animation_renderer_unavailable"
+	case strings.Contains(message, "animation manifest"), strings.Contains(message, "swarm.animation/v1 manifest"):
+		return "animation_manifest_invalid"
+	case strings.Contains(message, "pinned to revision"):
+		return "stale_pinned_revision"
+	case strings.Contains(message, "video project revision") && strings.Contains(message, "not found"):
+		return "invalid_pinned_revision"
+	default:
+		return fallback
+	}
+}
+
+func renderFailureReason(err error) string {
+	if err == nil {
+		return "Render failed"
+	}
+	var captureErr *htmlcapture.Error
+	if errors.As(err, &captureErr) {
+		return captureErr.SafeMessage
+	}
+	message := strings.TrimSpace(err.Error())
+	if len(message) > 512 {
+		message = message[:512]
+	}
+	return message
+}
+
+func (s *Service) updateProgress(principal identity.Principal, sessionID, jobID string, progress float64, stage string) {
+	if s == nil || s.store == nil {
+		return
+	}
+	current, ok, err := s.store.GetVideoRenderJob(principal.AccountScopeID, sessionID, jobID)
+	if err != nil || !ok || current.Status != pebblestore.VideoRenderJobStatusRendering || progress <= current.Progress {
+		return
+	}
+	_, _ = s.store.UpdateVideoRenderJob(pebblestore.UpdateVideoRenderJobInput{
+		AccountScopeID: principal.AccountScopeID, UserID: principal.UserID, SessionID: sessionID, JobID: jobID,
+		Status: pebblestore.VideoRenderJobStatusRendering, ExpectedStatus: pebblestore.VideoRenderJobStatusRendering,
+		Progress: progress, ProgressStage: stage, NowUnixMs: time.Now().UnixMilli(),
+	})
+}
+
+func (s *Service) progressHeartbeat(ctx context.Context, principal identity.Principal, sessionID, jobID string, start, limit float64, stage string, done <-chan struct{}) {
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+	progress := start
+	for {
+		select {
+		case <-done:
+			return
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			progress = math.Min(limit, progress+0.02)
+			s.updateProgress(principal, sessionID, jobID, progress, stage)
+		}
+	}
+}
+
 func (s *Service) failJob(principal identity.Principal, sessionID, jobID, code, reason string) {
 	if s != nil && s.store != nil {
 		_, _ = s.store.UpdateVideoRenderJob(pebblestore.UpdateVideoRenderJobInput{
@@ -1562,6 +1687,7 @@ func (s *Service) failJob(principal identity.Principal, sessionID, jobID, code, 
 			SessionID:      sessionID,
 			JobID:          jobID,
 			Status:         pebblestore.VideoRenderJobStatusFailed,
+			ProgressStage:  "Render failed",
 			FailureCode:    code,
 			FailureReason:  reason,
 			NowUnixMs:      time.Now().UnixMilli(),
@@ -1577,6 +1703,7 @@ func (s *Service) cancelJob(principal identity.Principal, sessionID, jobID, reas
 			SessionID:      sessionID,
 			JobID:          jobID,
 			Status:         pebblestore.VideoRenderJobStatusCancelled,
+			ProgressStage:  "Render cancelled",
 			FailureCode:    "context_cancelled",
 			FailureReason:  reason,
 			NowUnixMs:      time.Now().UnixMilli(),

@@ -30,8 +30,12 @@ const appended = ledger.record('append-c', snapshot({ proposal: 'proposal-3', re
 ledger.assertNoDrift(replaced, appended, { allowAppendedParts: true, allowAppendedClips: true })
 assert.throws(() => ledger.assertNoDrift(first, replaced), /non-target part part-b drifted/)
 
-const nested = normalizeVideoSnapshot({ project: { id: 'p', base_revision: { id: 'base' }, working_revision: { id: 'work', timeline: { clips: [{ id: 'clip', media_type: 'video/mp4', start_ms: 0, end_ms: 1000 }] } }, proposal: { id: 'proposal', parts: [{ id: 'part', media_type: 'video/mp4', start_ms: 0, end_ms: 1000, candidates: [{ id: 'candidate' }] }] } } })
+const nested = normalizeVideoSnapshot({ project: { id: 'p' }, working_revision: { id: 'work', timeline: { clips: [{ id: 'clip', media_type: 'video/mp4', timeline_start_ms: 0, timeline_end_ms: 1000 }] } }, proposal: { id: 'proposal', base_revision_id: 'base', working_revision_id: 'work', plan: { parts: [{ id: 'part', duration_ms: 1000, visual_media_type: 'image/png', animation_candidates: { status: 'awaiting_export', selected_candidate_id: 'candidate', selected_source: ref('candidate'), candidates: [{ id: 'candidate', source: ref('candidate') }, { id: 'candidate-alt', source: ref('candidate-alt') }] } }] } } })
 assert.equal(nested.project_id, 'p')
+assert.equal(nested.base_revision_id, 'base')
 assert.equal(nested.clips[0].media_type, 'video/mp4')
+assert.equal(nested.parts[0].media_type, 'image/png')
+assert.equal(nested.parts[0].selected_candidate_id, 'candidate')
+assert.equal(nested.parts[0].candidates.length, 2)
 assert.equal(ledger.summary().length, 3)
 process.stdout.write('video studio identity ledger contracts: PASS\n')

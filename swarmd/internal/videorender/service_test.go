@@ -104,6 +104,56 @@ func TestRenderHTMLAnimationClipProducesMaterializedMP4(t *testing.T) {
 	}
 }
 
+func TestRenderHTMLAnimationClipReportsProgress(t *testing.T) {
+	html := []byte(`<!doctype html><script id="swarm-animation-manifest" type="application/json">{"version":"swarm.animation/v1","duration_ms":1000,"fps":30}</script>`)
+	mp4 := append([]byte{0, 0, 0, 12}, []byte("ftypisom")...)
+	renderer := &fakeAnimationRenderer{result: htmlcapture.AnimationResult{MP4: mp4, DurationMS: 1000, FPS: 30, FrameCount: 30}}
+	svc := NewService(Config{}, newFakeSessionStore(), &fakeArtifactAuthority{body: html}, renderer, nil, &fakeCommandRunner{})
+	variant := pebblestore.SessionArtifactVariant{ID: "html", CollectionID: "motion", SessionID: "session", EventSeq: 7, Status: pebblestore.SessionArtifactStatusReady, MediaType: "text/html"}
+	ref := pebblestore.SessionArtifactSelectionReference{SessionID: "session", CollectionID: "motion", VariantID: "html", EventSeq: 7}
+	var observed htmlcapture.AnimationProgress
+	if _, err := svc.renderHTMLAnimationClip(context.Background(), artifact.Principal{SessionID: "session"}, ref, variant, 1000, t.TempDir(), 0, func(progress htmlcapture.AnimationProgress) { observed = progress }); err != nil {
+		t.Fatalf("render HTML animation clip: %v", err)
+	}
+	if renderer.requests[0].Progress == nil {
+		t.Fatal("render progress callback was not forwarded")
+	}
+	renderer.requests[0].Progress(htmlcapture.AnimationProgress{Stage: "frame_capture", Completed: 15, Total: 30})
+	if observed.Stage != "frame_capture" || observed.Completed != 15 || observed.Total != 30 {
+		t.Fatalf("observed progress = %+v", observed)
+	}
+}
+
+func TestMaterializeTimelineInputsReusesOnlySameExactHTMLSource(t *testing.T) {
+	html := []byte(`<!doctype html><script id="swarm-animation-manifest" type="application/json">{"version":"swarm.animation/v1","duration_ms":1000,"fps":30}</script>`)
+	mp4 := append([]byte{0, 0, 0, 12}, []byte("ftypisom")...)
+	renderer := &fakeAnimationRenderer{result: htmlcapture.AnimationResult{MP4: mp4, DurationMS: 1000, FPS: 30, FrameCount: 30}}
+	authority := &fakeArtifactAuthority{body: html}
+	store := newFakeSessionStore()
+	for _, id := range []string{"same", "other"} {
+		store.variants["acc/session/motion/"+id] = pebblestore.SessionArtifactVariant{ID: id, CollectionID: "motion", SessionID: "session", EventSeq: 7, Status: pebblestore.SessionArtifactStatusReady, MediaType: "text/html"}
+	}
+	svc := NewService(Config{}, store, authority, renderer, nil, &fakeCommandRunner{})
+	ref := func(id string) *pebblestore.SessionArtifactSelectionReference {
+		return &pebblestore.SessionArtifactSelectionReference{SessionID: "session", CollectionID: "motion", VariantID: id, EventSeq: 7}
+	}
+	timeline := pebblestore.VideoProjectTimeline{Clips: []pebblestore.VideoTimelineClip{
+		{ID: "part-a", SourceKind: pebblestore.VideoClipSourceKindManagedArtifact, ArtifactRef: ref("same"), MediaType: "text/html", DurationMs: 1000, Visible: true},
+		{ID: "part-b", SourceKind: pebblestore.VideoClipSourceKindManagedArtifact, ArtifactRef: ref("same"), MediaType: "text/html", DurationMs: 1000, Visible: true},
+		{ID: "part-c", SourceKind: pebblestore.VideoClipSourceKindManagedArtifact, ArtifactRef: ref("other"), MediaType: "text/html", DurationMs: 1000, Visible: true},
+	}}
+	inputs, err := svc.materializeTimelineInputs(context.Background(), identity.Principal{Type: identity.PrincipalTypeUser, AccountScopeID: "acc", UserID: "user"}, pebblestore.SessionSnapshot{ID: "session"}, "", t.TempDir(), timeline)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(renderer.requests) != 2 {
+		t.Fatalf("HTML conversion count = %d, want one for repeated exact source plus one isolated source", len(renderer.requests))
+	}
+	if len(inputs) != 3 || inputs[0].FilePath != inputs[1].FilePath || inputs[2].FilePath == inputs[0].FilePath {
+		t.Fatalf("materialized HTML reuse/isolation = %+v", inputs)
+	}
+}
+
 func TestRenderHTMLAnimationClipRejectsDurationMismatch(t *testing.T) {
 	html := []byte(`<!doctype html><script id="swarm-animation-manifest" type="application/json">{"version":"swarm.animation/v1","duration_ms":900,"fps":30}</script>`)
 	svc := NewService(Config{}, newFakeSessionStore(), &fakeArtifactAuthority{body: html}, &fakeAnimationRenderer{}, nil, &fakeCommandRunner{})
@@ -222,8 +272,11 @@ func (f *fakeSessionStore) UpdateVideoRenderJob(input pebblestore.UpdateVideoRen
 	if input.Status != "" {
 		j.Status = input.Status
 	}
-	if input.Progress > 0 {
+	if input.Progress > j.Progress {
 		j.Progress = input.Progress
+	}
+	if input.ProgressStage != "" {
+		j.ProgressStage = input.ProgressStage
 	}
 	if input.FailureCode != "" {
 		j.FailureCode = input.FailureCode
@@ -648,6 +701,76 @@ func TestRenderJobRejectsRevisionDifferentFromPinnedJob(t *testing.T) {
 	}
 	if got := store.jobs["job_1"].Status; got != pebblestore.VideoRenderJobStatusQueued {
 		t.Fatalf("job status = %s, want queued after rejected revision override", got)
+	}
+}
+
+func TestRenderJobProgressIsMonotonicAndNamesStages(t *testing.T) {
+	principal := identity.Principal{Type: identity.PrincipalTypeUser, AccountScopeID: "acc", UserID: "user"}
+	store := newFakeSessionStore()
+	store.jobs["job"] = pebblestore.VideoRenderJobSnapshot{ID: "job", AccountScopeID: "acc", UserID: "user", SessionID: "session", Status: pebblestore.VideoRenderJobStatusRendering, Progress: 0.20}
+	svc := NewService(Config{}, store, nil, nil, nil, nil)
+	svc.updateProgress(principal, "session", "job", 0.15, "old")
+	if store.jobs["job"].Progress != 0.20 {
+		t.Fatalf("progress regressed to %v", store.jobs["job"].Progress)
+	}
+	svc.updateProgress(principal, "session", "job", 0.25, "Capturing HTML animation frames")
+	if store.jobs["job"].Progress != 0.25 || store.jobs["job"].ProgressStage != "Capturing HTML animation frames" {
+		t.Fatalf("progress update = %+v", store.jobs["job"])
+	}
+}
+
+func TestApplySelectedHTMLAnimationSourcesUsesExactReadyDerivativeWithoutCapture(t *testing.T) {
+	htmlRef := &pebblestore.SessionArtifactSelectionReference{SessionID: "session", CollectionID: "motion", VariantID: "html", EventSeq: 7}
+	derivativeRef := &pebblestore.SessionArtifactSelectionReference{SessionID: "session", CollectionID: "motion-render", VariantID: "mp4", EventSeq: 9}
+	fallbackRef := &pebblestore.SessionArtifactSelectionReference{SessionID: "session", CollectionID: "fallback", VariantID: "still", EventSeq: 6}
+	timeline := pebblestore.VideoProjectTimeline{Clips: []pebblestore.VideoTimelineClip{{ID: "intro", SourceKind: pebblestore.VideoClipSourceKindManagedArtifact, ArtifactRef: fallbackRef, MediaType: "image/png", DurationMs: 1000}}, Metadata: map[string]any{"accepted_video_plan": pebblestore.VideoPlanProposal{Parts: []pebblestore.VideoPlanPart{{ID: "intro", AnimationCandidates: &pebblestore.VideoAnimationCandidateSet{Status: pebblestore.VideoAnimationCandidateStatusReady, SelectedCandidateID: "a", SelectedSource: htmlRef, Derivative: derivativeRef}}}}}}
+	if err := applySelectedHTMLAnimationSources(&timeline); err != nil {
+		t.Fatal(err)
+	}
+	if timeline.Clips[0].ArtifactRef == nil || *timeline.Clips[0].ArtifactRef != *derivativeRef || timeline.Clips[0].MediaType != "video/mp4" {
+		t.Fatalf("ready derivative not reused: %+v", timeline.Clips[0])
+	}
+}
+
+func TestRenderFailureCodesPreserveSafeSpecificAnimationAndRevisionReasons(t *testing.T) {
+	cases := []struct {
+		err  error
+		want string
+	}{
+		{htmlcapture.NewError("animation_encode_failed", "trusted MP4 encoder failed"), "animation_encode_failed"},
+		{errors.New("selected HTML animation requires the trusted HTML-to-MP4 renderer, but it is unavailable"), "animation_renderer_unavailable"},
+		{errors.New(`render job "job" is pinned to revision "old"`), "stale_pinned_revision"},
+		{errors.New(`video project revision "missing" not found`), "invalid_pinned_revision"},
+	}
+	for _, tc := range cases {
+		if got := renderFailureCode(tc.err, "fallback"); got != tc.want {
+			t.Fatalf("renderFailureCode(%v) = %q, want %q", tc.err, got, tc.want)
+		}
+	}
+	long := errors.New(strings.Repeat("x", 700))
+	if reason := renderFailureReason(long); len(reason) != 512 {
+		t.Fatalf("safe reason length = %d", len(reason))
+	}
+}
+
+func TestRenderJobTimeoutBecomesNamedFailure(t *testing.T) {
+	principal := identity.Principal{Type: identity.PrincipalTypeUser, AccountScopeID: "acc", UserID: "user"}
+	store := newFakeSessionStore()
+	store.sessions["session"] = pebblestore.SessionSnapshot{ID: "session", AccountScopeID: "acc", UserID: "user"}
+	store.projects["project"] = pebblestore.VideoProjectSnapshot{ID: "project", AccountScopeID: "acc", UserID: "user", SessionID: "session", CurrentRevisionID: "revision"}
+	store.revisions["revision"] = pebblestore.VideoProjectRevisionSnapshot{ID: "revision", ProjectID: "project", AccountScopeID: "acc", UserID: "user", SessionID: "session", Timeline: pebblestore.VideoProjectTimeline{Clips: []pebblestore.VideoTimelineClip{{ID: "color", SourceKind: pebblestore.VideoClipSourceKindColor, DurationMs: 1000, Visible: true}}}}
+	store.jobs["job"] = pebblestore.VideoRenderJobSnapshot{ID: "job", ProjectID: "project", RevisionID: "revision", AccountScopeID: "acc", UserID: "user", SessionID: "session", Status: pebblestore.VideoRenderJobStatusQueued}
+	runner := &fakeCommandRunner{runHook: func(ctx context.Context, _ string, _ ...string) ([]byte, error) {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}}
+	svc := NewService(Config{}, store, &fakeArtifactAuthority{}, nil, nil, runner)
+	if _, err := svc.RenderJob(context.Background(), principal, RenderJobRequest{SessionID: "session", ProjectID: "project", RevisionID: "revision", JobID: "job", Timeout: time.Millisecond}); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("RenderJob timeout error = %v", err)
+	}
+	job := store.jobs["job"]
+	if job.Status != pebblestore.VideoRenderJobStatusFailed || job.FailureCode != "render_timeout" || job.ProgressStage != "Render failed" {
+		t.Fatalf("timeout terminal job = %+v", job)
 	}
 }
 

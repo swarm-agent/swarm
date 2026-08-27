@@ -28,7 +28,10 @@ import {
   timelineSegmentsToProjectTimeline,
   videoPlanClipDetails,
   videoPlanForPlayback,
+  videoActivePreviewCandidate,
+  videoActivePreviewIdentity,
   videoAnimationPartAtClip,
+  videoClipReviewState,
   VIDEO_STUDIO_AGENT_NAME,
   videoChildSessionMetadata,
   videoStudioSessionMetadata,
@@ -286,6 +289,37 @@ test('Video Studio prefers animation candidates owned by the pending visual prop
 
   assert.equal(videoPlanForPlayback(proposal, { clips: [] }), proposal.plan)
   assert.equal(proposalOwnsAnimationPart(proposal, 'intro'), true)
+})
+
+test('Video Studio binds active HTML preview to exact project, proposal, revision, clip, part, candidate, and source lineage', () => {
+  const visual = { session_id: 'session-1', collection_id: 'fallbacks', variant_id: 'still', event_seq: 9 }
+  const candidate = { id: 'orbit', source: { session_id: 'session-1', collection_id: 'animations', variant_id: 'orbit-v2', event_seq: 12 } }
+  const part = { id: 'intro', title: 'Intro', duration_ms: 8000, visual, animation_candidates: { candidates: [candidate], selected_candidate_id: 'orbit', selected_source: candidate.source, status: 'awaiting_export' as const } }
+  const proposal: VideoEditProposalWire = {
+    id: 'proposal-2', project_id: 'project-1', base_revision_id: 'revision-1', base_revision_number: 1,
+    working_revision_id: 'revision-2', status: 'pending', operations: [], created_at: 1, updated_at: 1,
+    plan: { kind: 'revision', parts: [part] },
+  }
+  const identity = videoActivePreviewIdentity({ projectId: 'project-1', proposal, revisionId: 'revision-2', timelineClipId: 'intro', part, candidate })
+
+  assert.equal(videoActivePreviewCandidate({ identity, projectId: 'project-1', proposal, revisionId: 'revision-2', timelineClipId: 'intro', part })?.id, 'orbit')
+  assert.equal(videoActivePreviewCandidate({ identity, projectId: 'project-1', proposal, revisionId: 'revision-2', timelineClipId: 'outro', part }), null)
+  assert.equal(videoActivePreviewCandidate({ identity, projectId: 'project-1', proposal: { ...proposal, id: 'proposal-3' }, revisionId: 'revision-2', timelineClipId: 'intro', part }), null)
+  assert.equal(videoActivePreviewCandidate({ identity, projectId: 'project-1', proposal: { ...proposal, working_revision_id: 'revision-3' }, revisionId: 'revision-3', timelineClipId: 'intro', part }), null)
+  assert.equal(videoActivePreviewCandidate({ identity, projectId: 'project-1', proposal, revisionId: 'revision-2', timelineClipId: 'intro', part: { ...part, animation_candidates: { ...part.animation_candidates, candidates: [{ ...candidate, source: { ...candidate.source, event_seq: 13 } }] } } }), null)
+})
+
+test('Video Studio reports one concise human review state for each clip media state', () => {
+  const source = { session_id: 'session-1', collection_id: 'animations', variant_id: 'orbit', event_seq: 1 }
+  const part = (status: 'awaiting_selection' | 'awaiting_export' | 'ready' | 'failed', selected = false) => ({
+    id: 'intro', title: 'Intro', duration_ms: 1000,
+    animation_candidates: { candidates: [{ id: 'orbit', source }], ...(selected ? { selected_candidate_id: 'orbit', selected_source: source } : {}), status },
+  })
+  assert.deepEqual(videoClipReviewState(part('awaiting_selection'), 'image/png', 'image'), { mediaKind: 'Live HTML', state: 'Choose motion' })
+  assert.deepEqual(videoClipReviewState(part('awaiting_export', true), 'image/png', 'image'), { mediaKind: 'Live HTML', state: 'Motion selected · converting' })
+  assert.deepEqual(videoClipReviewState(part('ready', true), 'video/mp4', 'video'), { mediaKind: 'Motion', state: 'Motion ready' })
+  assert.deepEqual(videoClipReviewState(undefined, 'video/mp4', 'video'), { mediaKind: 'Video', state: 'Video' })
+  assert.deepEqual(videoClipReviewState(undefined, 'image/png', 'image'), { mediaKind: 'Still', state: 'Still' })
 })
 
 test('Video Studio shows live iterations only while their clip owns the playhead', () => {

@@ -417,7 +417,7 @@ func TestVideoHTMLIterationMultiPartAuthoritySurvivesAppendAndTargetedReplacemen
 		_, err := store.ApplyV3SessionMutation(V3SessionMutationInput{
 			SessionID: "studio", UserID: "user", AccountScopeID: "account", ClientRequestID: requestID, IdempotencyKey: requestID,
 			PayloadHash: requestID + "-hash", Kind: kind, NowUnixMs: now,
-			VideoProject: &V3VideoProjectMutation{EditProposal: &VideoEditProposalSnapshot{ID: initial.ID, ProjectID: project.ID}, AnimationSelection: &VideoAnimationSelectionMutation{
+			VideoProject: &V3VideoProjectMutation{EditProposal: &VideoEditProposalSnapshot{ID: initial.ID, ProjectID: project.ID, BaseRevisionID: initial.BaseRevisionID}, AnimationSelection: &VideoAnimationSelectionMutation{
 				PartID: partID, SelectedCandidateID: candidateID, SelectedSource: source, Derivative: derivative,
 			}},
 		})
