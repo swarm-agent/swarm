@@ -1801,7 +1801,7 @@ export function VideoToolPage() {
   const renderRevision = playerRevision
   const renderBlockedByIterations = !previewRevision && unresolvedIterationLockPartIDs.length > 0
   const renderBlockedByStoryboard = pendingStoryboardPartIDs.length > 0
-  const renderBlockedByComposition = (playbackPlan?.parts ?? []).some((part) => part.composition && !part.composition.disabled && resolveVideoComposition(playbackPlan.composition_catalog, part.composition, playerRevision?.timeline.width ?? 1920, playerRevision?.timeline.height ?? 1080).some((slot) => !slot.source))
+  const renderBlockedByComposition = (playbackPlan?.parts ?? []).some((part) => part.composition && !part.composition.disabled && resolveVideoComposition(playbackPlan?.composition_catalog, part.composition, playerRevision?.timeline.width ?? 1920, playerRevision?.timeline.height ?? 1080).some((slot) => !slot.source))
   const selectedClip = selectedClips.find((clip) => clip.id === selectedClipId) ?? selectedClips[0] ?? null
   const acceptedSoundtrack = useMemo(() => (keptRevision?.timeline.clips ?? []).find((clip) => clip.source_kind === 'source_audio') ?? null, [keptRevision])
   const playbackSoundtrack = audioTimelineLayout[0] ?? null
