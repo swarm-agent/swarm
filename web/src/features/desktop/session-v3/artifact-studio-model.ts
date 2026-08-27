@@ -28,8 +28,13 @@ export function desktopV3ArtifactStudioSamePartRevision(left: DesktopV3ArtifactC
     && left.revision.mediaType === right.revision.mediaType
 }
 
+export function desktopV3ArtifactStudioAuthoredEntry(entry: DesktopV3ArtifactCatalogEntry): boolean {
+  return entry.role !== 'render_only'
+}
+
 function gitProjected(entry: DesktopV3ArtifactCatalogEntry): boolean {
-  return entry.graphState === 'git_projection'
+  return desktopV3ArtifactStudioAuthoredEntry(entry)
+    && entry.graphState === 'git_projection'
     && Boolean(entry.artifactChainId && entry.artifactStepId && entry.chain && entry.step)
     && entry.chain?.graphState === 'git_projection'
     && entry.chain.id === entry.artifactChainId
@@ -56,15 +61,18 @@ export function desktopV3ArtifactStudioPresentationGroupKey(
   entry: DesktopV3ArtifactCatalogEntry,
 ): string {
   const chainKey = desktopV3ArtifactStudioChainKey(entry)
-  const iterationGroupId = entry.lineage?.iterationGroupId.trim() ?? ''
+  if (!desktopV3ArtifactStudioAuthoredEntry(entry)) {
+    return `supporting:${entry.sessionId}:${entry.collectionId || entry.artifactId}`
+  }
   const owningSessionId = entry.lineage?.parentSessionId || entry.sessionId
-  if (iterationGroupId) return `turn:${owningSessionId}:${iterationGroupId}`
   const chainHasMultipleTurns = Boolean(chainKey && entries.some((candidate) =>
     desktopV3ArtifactStudioChainKey(candidate) === chainKey
       && ((candidate.step?.revisionNumber ?? candidate.revisionNumber ?? 0) > 1
         || (candidate.chain?.revisionCount ?? 0) > 1)
   ))
   if (chainHasMultipleTurns) return `chain:${chainKey}`
+  const iterationGroupId = entry.lineage?.iterationGroupId.trim() ?? ''
+  if (iterationGroupId) return `turn:${owningSessionId}:${iterationGroupId}`
   return entry.collectionId
     ? `collection:${owningSessionId}:${entry.collectionId}`
     : `standalone:${entry.sessionId}:${entry.artifactId}`
@@ -178,8 +186,8 @@ function turnCandidate(
   entries: readonly DesktopV3ArtifactCatalogEntry[],
   reference: DesktopV3ArtifactChainReference,
 ): DesktopV3ArtifactStudioTurnCandidate {
-  const entry = entries.find((candidate) => sameReference(candidate, reference))
-    ?? entries.find((candidate) => candidate.sessionId === reference.sessionId
+  const entry = entries.find((candidate) => desktopV3ArtifactStudioAuthoredEntry(candidate) && sameReference(candidate, reference))
+    ?? entries.find((candidate) => desktopV3ArtifactStudioAuthoredEntry(candidate) && candidate.sessionId === reference.sessionId
       && candidate.collectionId === reference.collectionId
       && candidate.artifactId === reference.variantId)
   return { reference, ...(entry ? { entry } : {}) }

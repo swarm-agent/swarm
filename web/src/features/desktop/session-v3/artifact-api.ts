@@ -3,6 +3,7 @@ import type { DesktopV3ArtifactLocalRuntimeAssets } from './artifact-animation-r
 
 export type DesktopV3ArtifactCategory = 'plan' | 'visual' | 'document'
 export type DesktopV3ArtifactStatus = '' | 'staging' | 'ready' | 'failed' | 'unavailable'
+export type DesktopV3ArtifactRole = '' | 'render_only'
 export type DesktopV3ArtifactOutputOrientation = 'landscape' | 'portrait' | 'square'
 
 /** Trusted, server-resolved output intent. This describes the requested target, not measured binary metadata. */
@@ -230,6 +231,8 @@ export interface DesktopV3ArtifactCatalogEntry {
   filename: string
   mediaType: string
   kind: string
+  /** Durable server-authored role. Render-only assets are supporting output, never editable turns. */
+  role?: DesktopV3ArtifactRole
   status?: DesktopV3ArtifactStatus
   failureCode?: string
   previewable: boolean
@@ -642,6 +645,8 @@ export function normalizeDesktopV3ArtifactCatalogEntry(value: unknown): DesktopV
   if (!artifactId || !sessionId) return null
   const rawCategory = artifactCatalogString(record.category)
   const category: DesktopV3ArtifactCategory = rawCategory === 'plan' || rawCategory === 'visual' ? rawCategory : 'document'
+  const rawRole = artifactCatalogString(record.role)
+  const role: DesktopV3ArtifactRole = rawRole === 'render_only' ? rawRole : ''
   const rawStatus = artifactCatalogString(record.status)
   const status: DesktopV3ArtifactStatus = rawStatus === 'staging' || rawStatus === 'ready' || rawStatus === 'failed' || rawStatus === 'unavailable'
     ? rawStatus
@@ -699,6 +704,7 @@ export function normalizeDesktopV3ArtifactCatalogEntry(value: unknown): DesktopV
     filename: artifactCatalogString(record.filename),
     mediaType: artifactCatalogString(record.media_type) || 'application/octet-stream',
     kind: artifactCatalogString(record.kind),
+    role,
     status,
     failureCode: artifactCatalogString(record.failure_code),
     previewable: record.previewable === true,

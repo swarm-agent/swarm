@@ -208,17 +208,38 @@ test('sidebar distinguishes accepted byte heads from pending locked candidates',
 
 test('sidebar turn copy keeps multi-part rounds at the complete-iteration level', async () => {
   const source = await readFile(new URL('./desktop-v3-artifact-sidebar.tsx', import.meta.url), 'utf8')
-  assert.match(source, /Latest turn/)
-  assert.match(source, /Turn history/)
-  assert.match(source, /Composition head/)
+  assert.match(source, /Current authored turn/)
+  assert.match(source, /Authored turn history/)
+  assert.match(source, /Authoritative head/)
   assert.match(source, /Decision recorded/)
   assert.match(source, /turn\.parts\.length === 1/)
   assert.match(source, /parts changed together/)
   assert.match(source, />Open iteration</)
 })
 
-test('ordinary artifacts remain separate sidebar entries', () => {
-  assert.deepEqual(desktopV3ArtifactSidebarGroups([artifact('session-a', 'one'), artifact('session-a', 'two')]).map((group) => group.entries.length), [1, 1])
+test('sidebar prioritizes an active authored chain and groups documents and render-only helpers by durable media role', () => {
+  const original = { ...artifact('session-a', 'atlas-original'), collectionId: 'atlas-original', eventSeq: 3231, updatedAt: 3231, graphState: 'git_projection' as const, artifactChainId: 'atlas-chain', artifactStepId: 'atlas-step-1', chain: { id: 'atlas-chain', graphState: 'git_projection', name: 'Atlas gyroscope', root: { sessionId: 'session-a', collectionId: 'atlas-original', variantId: 'atlas-original', eventSeq: 3231 }, head: { sessionId: 'session-a', collectionId: 'atlas-derived', variantId: 'atlas-derived', eventSeq: 3443 }, revisionCount: 2, lastRoundId: 'atlas-step-2' }, step: { id: 'atlas-step-1', graphState: 'git_projection', artifactChainId: 'atlas-chain', revisionNumber: 1, candidates: [{ sessionId: 'session-a', collectionId: 'atlas-original', variantId: 'atlas-original', eventSeq: 3231 }] } } as DesktopV3ArtifactCatalogEntry
+  const derived = { ...original, artifactId: 'atlas-derived', collectionId: 'atlas-derived', eventSeq: 3443, updatedAt: 3443, artifactStepId: 'atlas-step-2', step: { id: 'atlas-step-2', graphState: 'git_projection', artifactChainId: 'atlas-chain', revisionNumber: 2, parent: original.step!.candidates[0], candidates: [{ sessionId: 'session-a', collectionId: 'atlas-derived', variantId: 'atlas-derived', eventSeq: 3443 }] } } as DesktopV3ArtifactCatalogEntry
+  const markdown = (id: string) => ({ ...artifact('session-a', id), filename: `${id}.md`, mediaType: 'text/markdown', kind: 'text', category: 'document' as const })
+  const image = { ...artifact('session-a', 'visual'), mediaType: 'image/png', kind: 'image' }
+  const fallback = { ...image, artifactId: 'atlas-fallback', role: 'render_only' as const, collectionId: 'fallback', eventSeq: 3468, updatedAt: 3468, lineage: { ...image.lineage, sourceSessionId: 'session-a', sourceCollectionId: 'atlas-derived', sourceVariantId: 'atlas-derived', sourceEventSeq: 3443 } }
+
+  const groups = desktopV3ArtifactSidebarGroups([markdown('notes-1'), fallback, image, derived, markdown('notes-2'), original])
+  assert.deepEqual(groups.map((group) => group.section), ['active', 'visual', 'documents', 'supporting'])
+  assert.deepEqual(groups[0]?.entries.map((entry) => entry.artifactId), ['atlas-original', 'atlas-derived'])
+  assert.deepEqual(groups.find((group) => group.section === 'documents')?.entries.map((entry) => entry.filename), ['notes-1.md', 'notes-2.md'])
+  assert.deepEqual(groups.find((group) => group.section === 'supporting')?.entries.map((entry) => entry.artifactId), ['atlas-fallback'])
+})
+
+test('sidebar renders compact filename-first document rows and collapsed supporting assets', async () => {
+  const source = await readFile(new URL('./desktop-v3-artifact-sidebar.tsx', import.meta.url), 'utf8')
+  assert.match(source, /data-artifact-sidebar-document-row/)
+  assert.match(source, /artifact\.filename \|\| artifact\.label/)
+  assert.match(source, /open=\{group\.section === 'documents'\}/)
+  assert.match(source, /Show supporting render assets/)
+  assert.match(source, /Current authored turn/)
+  assert.match(source, /Authoritative head/)
+  assert.match(source, /onOpenArtifact\(target, turnPart\.partId\)/)
 })
 
 test('pending visual swarms are identified from durable staging lineage', () => {

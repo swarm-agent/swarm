@@ -170,13 +170,29 @@ const DesktopV3ArtifactThumbnail = memo(function DesktopV3ArtifactThumbnail({ ar
   return <span ref={previewRef} className="relative grid size-full place-items-center overflow-hidden" data-artifact-live-preview={previewEnabled && artifact.mediaType === 'text/html' ? true : undefined} data-artifact-preview-visible={previewEnabled || undefined} data-artifact-animation-profile={artifact.animationProfile?.profileId} data-artifact-animation-active={previewEnabled && Boolean(artifact.animationProfile) || undefined}>{thumbnail}</span>
 }, sidebarArtifactThumbnailEqual)
 
+export type DesktopV3ArtifactSidebarSection = 'active' | 'motion' | 'visual' | 'documents' | 'supporting'
+
 export interface DesktopV3ArtifactSidebarGroup {
   key: string
   collectionId: string
+  section: DesktopV3ArtifactSidebarSection
   entries: DesktopV3ArtifactCatalogEntry[]
   progress: DesktopV3ArtifactCollectionProgress
   label: string
 }
+
+export function desktopV3ArtifactSidebarSection(entry: DesktopV3ArtifactCatalogEntry, activeChainIds: ReadonlySet<string>): DesktopV3ArtifactSidebarSection {
+  if (entry.role === 'render_only') return 'supporting'
+  if (entry.artifactChainId && activeChainIds.has(entry.artifactChainId)) return 'active'
+  const mediaType = entry.mediaType.split(';', 1)[0]?.trim().toLowerCase() ?? ''
+  const kind = entry.kind.trim().toLowerCase()
+  if (mediaType === 'text/html' || kind === 'html' || Boolean(entry.animationProfile)) return 'motion'
+  if (mediaType.startsWith('image/') || mediaType.startsWith('video/') || kind === 'image' || kind === 'video' || entry.category === 'visual') return 'visual'
+  return 'documents'
+}
+
+const sidebarSectionOrder: Record<DesktopV3ArtifactSidebarSection, number> = { active: 0, motion: 1, visual: 2, documents: 3, supporting: 4 }
+const sidebarSectionLabel: Record<DesktopV3ArtifactSidebarSection, string> = { active: 'Active artifact', motion: 'HTML & motion', visual: 'Visuals', documents: 'Documents', supporting: 'Supporting renders' }
 
 function sidebarCollectionProgress(entries: readonly DesktopV3ArtifactCatalogEntry[]): DesktopV3ArtifactCollectionProgress {
   const reported = entries.find((entry) => entry.progress)?.progress
@@ -201,22 +217,31 @@ function sidebarCollectionLabel(entry: DesktopV3ArtifactCatalogEntry): string {
 export function desktopV3ArtifactSidebarGroups(
   artifacts: readonly DesktopV3ArtifactCatalogEntry[],
 ): DesktopV3ArtifactSidebarGroup[] {
+  const activeChainIds = new Set(artifacts.flatMap((artifact) => artifact.role !== 'render_only' && artifact.graphState === 'git_projection' && artifact.artifactChainId
+    && ((artifact.chain?.revisionCount ?? 0) > 1 || (artifact.step?.revisionNumber ?? 0) > 1) ? [artifact.artifactChainId] : []))
   const groups = new Map<string, DesktopV3ArtifactCatalogEntry[]>()
   for (const artifact of artifacts) {
-    const key = desktopV3ArtifactStudioPresentationGroupKey(artifacts, artifact)
+    const section = desktopV3ArtifactSidebarSection(artifact, activeChainIds)
+    const presentationKey = desktopV3ArtifactStudioPresentationGroupKey(artifacts, artifact)
+    const key = section === 'documents' || section === 'supporting' ? `media:${section}` : presentationKey
     groups.set(key, [...(groups.get(key) ?? []), artifact])
   }
   return [...groups.entries()].map(([key, entries]) => ({
     key,
     collectionId: entries[0]?.collectionId?.trim() ?? '',
+    section: desktopV3ArtifactSidebarSection(entries[0]!, activeChainIds),
     entries: [...entries].sort((left, right) => (left.step?.revisionNumber ?? 0) - (right.step?.revisionNumber ?? 0)
       || (left.candidateIndex || left.lineage?.iterationIndex || 0) - (right.candidateIndex || right.lineage?.iterationIndex || 0)
       || left.updatedAt - right.updatedAt),
     progress: sidebarCollectionProgress(entries),
-    label: key.startsWith('chain:')
-      ? entries[0]?.chain?.name || (entries[0] ? sidebarCollectionLabel(entries[0]) : 'Artifact')
-      : entries[0] ? sidebarCollectionLabel(entries[0]) : 'Artifact',
-  }))
+    label: key.startsWith('media:')
+      ? sidebarSectionLabel[desktopV3ArtifactSidebarSection(entries[0]!, activeChainIds)]
+      : key.startsWith('chain:')
+        ? entries[0]?.chain?.name || (entries[0] ? sidebarCollectionLabel(entries[0]) : 'Artifact')
+        : entries[0] ? sidebarCollectionLabel(entries[0]) : 'Artifact',
+  })).sort((left, right) => sidebarSectionOrder[left.section] - sidebarSectionOrder[right.section]
+    || Math.max(...right.entries.map((entry) => entry.updatedAt)) - Math.max(...left.entries.map((entry) => entry.updatedAt))
+    || left.label.localeCompare(right.label))
 }
 
 function sidebarProgressLabel(group: DesktopV3ArtifactSidebarGroup): string {
@@ -301,7 +326,7 @@ export function DesktopV3ArtifactSidebar({
           data-artifact-thumbnail-rail
         >
           {groups.map((group) => {
-            const projected = group.entries.find((entry) => entry.graphState === 'git_projection' && entry.chain?.head)
+            const projected = group.entries.find((entry) => entry.role !== 'render_only' && entry.graphState === 'git_projection' && entry.chain?.head)
             const head = projected?.chain?.head
             const representative = head
               ? group.entries.find((entry) => entry.sessionId === head.sessionId
@@ -311,10 +336,11 @@ export function DesktopV3ArtifactSidebar({
               : group.entries[0]
             if (!representative) return null
             const grouped = Boolean(group.collectionId)
-            const turnBased = group.key.startsWith('chain:')
-            const artifactTurns = turnBased ? desktopV3ArtifactStudioTurns(group.entries, representative) : []
+            const turnBased = group.key.startsWith('chain:') && group.section === 'active'
+            const compactRows = group.section === 'documents' || group.section === 'supporting'
+            const artifactTurns = turnBased ? desktopV3ArtifactStudioTurns(artifacts, representative) : []
             const authoritativeHead = head
-              ? group.entries.find((entry) => entry.sessionId === head.sessionId && entry.collectionId === head.collectionId && entry.artifactId === head.variantId && entry.eventSeq === head.eventSeq)
+              ? artifacts.find((entry) => entry.role !== 'render_only' && entry.sessionId === head.sessionId && entry.collectionId === head.collectionId && entry.artifactId === head.variantId && entry.eventSeq === head.eventSeq)
               : undefined
             const currentComposition = authoritativeHead?.composition ?? representative.composition
             const currentPartDefinitions = authoritativeHead?.partDefinitions ?? representative.partDefinitions ?? []
@@ -326,12 +352,15 @@ export function DesktopV3ArtifactSidebar({
               return <a key={group.key} href={artifactHref(representative)} className="group relative grid size-10 place-items-center overflow-hidden rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-primary)]" onClick={(event: MouseEvent<HTMLAnchorElement>) => { if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return; event.preventDefault(); onOpenArtifact(representative) }} aria-label={`Open ${grouped ? group.label : representative.label} in full artifact view`}><DesktopV3ArtifactThumbnail artifact={representative} />{group.progress.staging > 0 ? <span className="absolute bottom-0 right-0 size-2 rounded-full bg-[var(--app-primary)]" aria-label={sidebarProgressLabel(group)} /> : null}</a>
             }
             return (
-              <section key={group.key} className={cn('min-w-0 overflow-hidden rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)]', embedded ? 'w-64 shrink-0' : 'w-full')} data-artifact-collection-group={grouped ? group.collectionId : undefined}>
+              <section key={group.key} className={cn('min-w-0 overflow-hidden rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)]', embedded ? 'w-64 shrink-0' : 'w-full')} data-artifact-collection-group={grouped ? group.collectionId : undefined} data-artifact-sidebar-section={group.section}>
                 <a href={artifactHref(representative)} className="flex min-w-0 items-center justify-between gap-2 border-b border-[var(--app-border)] px-3 py-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-primary)]" onClick={(event: MouseEvent<HTMLAnchorElement>) => { if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return; event.preventDefault(); onOpenArtifact(representative) }}>
-                  <span className="min-w-0"><span className="block truncate text-xs font-semibold">{turnBased ? (representative.chain?.name || representative.label) : grouped ? group.label : representative.label}</span><span className="mt-0.5 block text-[10px] text-[var(--app-text-subtle)]">{turnBased ? `${artifactTurns.length} turn${artifactTurns.length === 1 ? '' : 's'} · current head Turn ${authoritativeHead?.step?.revisionNumber || representative.step?.revisionNumber || 1}` : grouped ? `Overall iterations · ${sidebarProgressLabel(group)}` : `Unstructured · ${representative.status === 'staging' ? 'Generating' : representative.kind || representative.mediaType}`}</span>{requirementLabel ? <span className="mt-0.5 block truncate text-[9px] text-[var(--app-text-subtle)]" data-artifact-output-requirements>{requirementLabel}</span> : null}{animationLabel ? <span className="mt-0.5 block truncate text-[9px] text-[var(--app-text-subtle)]" data-artifact-animation-profile-label>{animationLabel}</span> : null}</span>
+                  <span className="min-w-0"><span className="block truncate text-xs font-semibold">{turnBased ? (representative.chain?.name || representative.label) : compactRows ? group.label : grouped ? group.label : representative.label}</span><span className="mt-0.5 block text-[10px] text-[var(--app-text-subtle)]">{turnBased ? `${artifactTurns.length} authored turn${artifactTurns.length === 1 ? '' : 's'} · Current head · Turn ${authoritativeHead?.step?.revisionNumber || representative.step?.revisionNumber || 1}` : compactRows ? `${group.entries.length} ${group.section === 'supporting' ? 'render asset' : 'document'}${group.entries.length === 1 ? '' : 's'}` : grouped ? `Overall iterations · ${sidebarProgressLabel(group)}` : `Unstructured · ${representative.status === 'staging' ? 'Generating' : representative.kind || representative.mediaType}`}</span>{requirementLabel ? <span className="mt-0.5 block truncate text-[9px] text-[var(--app-text-subtle)]" data-artifact-output-requirements>{requirementLabel}</span> : null}{animationLabel ? <span className="mt-0.5 block truncate text-[9px] text-[var(--app-text-subtle)]" data-artifact-animation-profile-label>{animationLabel}</span> : null}</span>
                   {group.progress.staging > 0 ? <Loader2 className="size-4 shrink-0 motion-safe:animate-spin motion-reduce:animate-none text-[var(--app-primary)]" aria-label="Iteration Swarm generating" /> : <Maximize2 className="size-4 shrink-0 text-[var(--app-text-subtle)]" aria-hidden="true" />}
                 </a>
-                {artifactTurns.length > 0 ? <div className="grid gap-2 border-b border-[var(--app-border)] bg-[var(--app-bg-alt)] p-2" aria-label="Artifact turn progression" data-artifact-sidebar-turn-progression>
+                {compactRows ? <details className="border-b border-[var(--app-border)]" open={group.section === 'documents'} data-artifact-sidebar-compact-group={group.section}>
+                  <summary className="cursor-pointer px-3 py-1.5 text-[10px] font-semibold text-[var(--app-text-muted)]">{group.section === 'supporting' ? 'Show supporting render assets' : 'Session documents'}</summary>
+                  <div className="grid divide-y divide-[var(--app-border)]">{group.entries.map((artifact) => <a key={`${artifact.sessionId}:${artifact.collectionId ?? ''}:${artifact.artifactId}`} href={artifactHref(artifact)} className="flex min-w-0 items-center gap-2 px-3 py-2 text-left hover:bg-[var(--app-surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-primary)]" onClick={(event: MouseEvent<HTMLAnchorElement>) => { if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return; event.preventDefault(); onOpenArtifact(artifact) }} data-artifact-sidebar-document-row={group.section === 'documents' || undefined} data-artifact-sidebar-supporting-row={group.section === 'supporting' || undefined}><FileText className="size-3.5 shrink-0 text-[var(--app-text-muted)]" aria-hidden="true" /><span className="min-w-0 flex-1"><span className="block truncate text-[10px] font-semibold">{artifact.filename || artifact.label}</span><span className="block truncate text-[9px] text-[var(--app-text-subtle)]">{artifact.label !== artifact.filename ? artifact.label : artifact.mediaType}</span></span></a>)}</div>
+                </details> : artifactTurns.length > 0 ? <div className="grid gap-2 border-b border-[var(--app-border)] bg-[var(--app-bg-alt)] p-2" aria-label="Artifact turn progression" data-artifact-sidebar-turn-progression>
                   {artifactTurns.map((turn, turnIndex) => {
                     const turnAccepted = turn.accepted?.entry
                     const turnTarget = turnAccepted ?? turn.candidates.find((candidate) => candidate.entry)?.entry
@@ -344,7 +373,7 @@ export function DesktopV3ArtifactSidebar({
                     return <section key={turn.id} className="overflow-hidden rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)]" data-artifact-sidebar-turn={turn.id}>
                       <button type="button" className="flex w-full items-center justify-between gap-2 px-2 py-1.5 text-left hover:bg-[var(--app-surface-hover)] disabled:opacity-50" disabled={!turnTarget} onClick={() => { if (turnTarget) onOpenArtifact(turnTarget) }}>
                         <span className="text-[10px] font-semibold">Turn {turn.revisionNumber}</span>
-                        <span className="text-[9px] text-[var(--app-text-subtle)]">{currentTurn ? 'Latest turn' : 'Turn history'} · {headTurn ? 'Composition head' : turn.accepted ? 'Decision recorded' : 'No decision'} · {turn.candidates.length} option{turn.candidates.length === 1 ? '' : 's'}</span>
+                        <span className="text-[9px] text-[var(--app-text-subtle)]">{currentTurn ? 'Current authored turn' : 'Authored turn history'} · {headTurn ? 'Authoritative head' : turn.accepted ? 'Decision recorded' : 'No decision'} · {turn.candidates.length} option{turn.candidates.length === 1 ? '' : 's'}</span>
                       </button>
                       {turn.parts.length === 1 ? <div className="grid gap-1 border-t border-[var(--app-border)] p-1.5"><p className="px-0.5 text-[9px] text-[var(--app-text-subtle)]">1 changed part</p>
                         {turn.parts.map((turnPart) => {

@@ -98,6 +98,11 @@ const managedCatalogWire = {
   },
 }
 
+test('artifact catalog normalizes durable render-only role without accepting arbitrary role values', () => {
+  assert.equal(normalizeDesktopV3ArtifactCatalogEntry({ ...managedCatalogWire, role: 'render_only' })?.role, 'render_only')
+  assert.equal(normalizeDesktopV3ArtifactCatalogEntry({ ...managedCatalogWire, role: 'misleading-label' })?.role, '')
+})
+
 test('artifact catalog normalizes managed collection, progress, selection, lineage, status, and event sequence', () => {
   assert.deepEqual(normalizeDesktopV3ArtifactCatalogEntry(managedCatalogWire), {
     artifactId: 'variant-1',
@@ -118,6 +123,7 @@ test('artifact catalog normalizes managed collection, progress, selection, linea
     filename: '',
     mediaType: 'text/html',
     kind: 'html',
+    role: '',
     status: 'ready',
     failureCode: '',
     previewable: true,

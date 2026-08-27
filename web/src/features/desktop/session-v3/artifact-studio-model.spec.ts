@@ -276,6 +276,26 @@ test('artifact studio preserves three Body candidates, a locked official merge, 
   assert.equal(merged.composition?.parts[1]?.locked, true)
 })
 
+test('render-only fallback lineage cannot add or masquerade as an authored turn', () => {
+  const baseRef = ref('atlas-original', 3231)
+  const derivedRef = ref('atlas-derived', 3443)
+  const base = artifact({ id: 'atlas-original', eventSeq: 3231, step: 'atlas-step-1', revision: 1, candidates: [baseRef], accepted: baseRef, head: derivedRef })
+  const derived = artifact({ id: 'atlas-derived', eventSeq: 3443, step: 'atlas-step-2', revision: 2, candidates: [derivedRef], parent: baseRef, accepted: derivedRef, head: derivedRef, section: 'hero' })
+  const fallback = artifact({ id: 'atlas-fallback', eventSeq: 3468, step: 'atlas-fallback-step', revision: 3, candidates: [ref('atlas-fallback', 3468)], parent: derivedRef, head: derivedRef })
+  fallback.role = 'render_only'
+  fallback.mediaType = 'image/png'
+  fallback.kind = 'image'
+  fallback.lineage.sourceSessionId = derived.sessionId
+  fallback.lineage.sourceCollectionId = derived.collectionId!
+  fallback.lineage.sourceVariantId = derived.artifactId
+  fallback.lineage.sourceEventSeq = derived.eventSeq
+
+  const entries = [fallback, derived, base]
+  assert.deepEqual(desktopV3ArtifactStudioTurns(entries, derived).map((turn) => turn.id), ['atlas-step-1', 'atlas-step-2'])
+  assert.deepEqual(desktopV3ArtifactStudioEntries(entries, derived).map((entry) => entry.artifactId), ['atlas-original', 'atlas-derived'])
+  assert.match(desktopV3ArtifactStudioPresentationGroupKey(entries, fallback), /^supporting:/)
+})
+
 test('artifact studio never infers lineage or a head for legacy unstructured entries', () => {
   const legacy = artifact({ id: 'legacy', eventSeq: 20, step: 'legacy-step', revision: 3, candidates: [ref('legacy', 20)], head: ref('legacy', 20) })
   legacy.graphState = 'legacy_unproven'
