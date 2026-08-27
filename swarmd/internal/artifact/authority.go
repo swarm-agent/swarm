@@ -753,6 +753,39 @@ func (a *Authority) SelectReference(principal Principal, requestID, collectionID
 	return *result.Artifact.Selection, nil
 }
 
+func (a *Authority) UpdateProgress(principal Principal, requestID, collectionID, variantID string, progress pebblestore.SessionArtifactProgress) (pebblestore.SessionArtifactVariant, error) {
+	principal, err := a.owned(principal)
+	if err != nil {
+		return pebblestore.SessionArtifactVariant{}, err
+	}
+	collection, ok, err := a.metadata.GetSessionArtifactCollection(principal.AccountScopeID, principal.SessionID, strings.TrimSpace(collectionID))
+	if err != nil {
+		return pebblestore.SessionArtifactVariant{}, err
+	}
+	if !ok {
+		return pebblestore.SessionArtifactVariant{}, fmt.Errorf("artifact collection %q was not found", collectionID)
+	}
+	variant, ok, err := a.metadata.GetSessionArtifactVariant(principal.AccountScopeID, principal.SessionID, collection.ID, strings.TrimSpace(variantID))
+	if err != nil {
+		return pebblestore.SessionArtifactVariant{}, err
+	}
+	if !ok {
+		return pebblestore.SessionArtifactVariant{}, fmt.Errorf("artifact variant %q was not found", variantID)
+	}
+	if variant.Status != pebblestore.SessionArtifactStatusStaging || !variant.ProjectionReservation {
+		return variant, nil
+	}
+	variant.Progress = &progress
+	result, err := a.mutateWithArtifact(principal, requestID, pebblestore.V3SessionMutationUpdateArtifact, pebblestore.V3ArtifactMutation{ProjectionOnly: true, Collection: collection, Variant: &variant})
+	if err != nil {
+		return pebblestore.SessionArtifactVariant{}, err
+	}
+	if result.Artifact == nil || result.Artifact.Variant == nil {
+		return pebblestore.SessionArtifactVariant{}, errors.New("artifact progress metadata was not persisted")
+	}
+	return *result.Artifact.Variant, nil
+}
+
 func (a *Authority) MarkFailed(principal Principal, requestID, collectionID, variantID, failureCode string) (pebblestore.SessionArtifactVariant, error) {
 	principal, err := a.owned(principal)
 	if err != nil {

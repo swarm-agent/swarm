@@ -37,6 +37,19 @@ func TestMergeTerminalArtifactVariantPersistsProducedLocatorParts(t *testing.T) 
 	}
 }
 
+func TestMergeTerminalArtifactVariantPreservesProgressUntilTerminalStateClearsIt(t *testing.T) {
+	progress := &SessionArtifactProgress{Stage: "frame_capture", Completed: 5, Total: 10, Percent: 47.5, HeartbeatAt: 1000}
+	merged := mergeTerminalArtifactVariant(SessionArtifactVariant{Progress: progress}, SessionArtifactVariant{})
+	if merged.Progress != progress {
+		t.Fatalf("progress = %#v, want preserved pointer", merged.Progress)
+	}
+	incoming := &SessionArtifactProgress{Stage: "segment_encode", Completed: 1, Total: 2, Percent: 94, HeartbeatAt: 2000}
+	merged = mergeTerminalArtifactVariant(merged, SessionArtifactVariant{Progress: incoming})
+	if merged.Progress == incoming || merged.Progress.Stage != incoming.Stage || merged.Progress.Percent != incoming.Percent {
+		t.Fatalf("merged progress = %#v", merged.Progress)
+	}
+}
+
 func TestMergeTerminalArtifactVariantPreservesLocatorPartsWhenIncomingOmitsThem(t *testing.T) {
 	current := SessionArtifactVariant{Parts: []SessionArtifactPart{{ID: "hero", Label: "Hero", Kind: "semantic"}}}
 	merged := mergeTerminalArtifactVariant(current, SessionArtifactVariant{Filename: "candidate.html", MediaType: "text/html"})

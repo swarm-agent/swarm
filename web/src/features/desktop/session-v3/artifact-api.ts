@@ -55,6 +55,16 @@ export interface DesktopV3ArtifactCollectionProgress {
   unavailable: number
 }
 
+export interface DesktopV3ArtifactRenderProgress {
+  stage: string
+  completed: number
+  total: number
+  percent: number
+  elapsedMs: number
+  estimatedRemainingMs: number
+  heartbeatAt: number
+}
+
 export interface DesktopV3ArtifactPartRevisionReference {
   artifactChainId: string
   partId: string
@@ -241,6 +251,7 @@ export interface DesktopV3ArtifactCatalogEntry {
   updatedAt: number
   eventSeq?: number
   progress?: DesktopV3ArtifactCollectionProgress | null
+  renderProgress?: DesktopV3ArtifactRenderProgress | null
   lineage?: DesktopV3ArtifactLineage | null
   outputRequirements?: DesktopV3ArtifactOutputRequirements
   animationProfile?: DesktopV3ArtifactAnimationProfile
@@ -318,6 +329,23 @@ function normalizeArtifactProgress(value: unknown): DesktopV3ArtifactCollectionP
     ready: artifactCatalogCount(record.ready),
     failed: artifactCatalogCount(record.failed),
     unavailable: artifactCatalogCount(record.unavailable),
+  }
+}
+
+function normalizeArtifactRenderProgress(value: unknown): DesktopV3ArtifactRenderProgress | null {
+  const record = artifactCatalogRecord(value)
+  const stage = artifactCatalogString(record?.stage)
+  const heartbeatAt = artifactCatalogCount(record?.heartbeat_at)
+  if (!record || !stage || !heartbeatAt) return null
+  const percent = typeof record.percent === 'number' && Number.isFinite(record.percent) && record.percent >= 0 && record.percent <= 100 ? record.percent : 0
+  return {
+    stage,
+    completed: artifactCatalogCount(record.completed),
+    total: artifactCatalogCount(record.total),
+    percent,
+    elapsedMs: artifactCatalogCount(record.elapsed_ms),
+    estimatedRemainingMs: artifactCatalogCount(record.estimated_remaining_ms),
+    heartbeatAt,
   }
 }
 
@@ -713,6 +741,7 @@ export function normalizeDesktopV3ArtifactCatalogEntry(value: unknown): DesktopV
     updatedAt: Number.isFinite(updatedAt) ? updatedAt : 0,
     eventSeq: artifactCatalogEventSeq(record.event_seq),
     progress: normalizeArtifactProgress(record.progress),
+    renderProgress: normalizeArtifactRenderProgress(record.render_progress),
     lineage: normalizeArtifactLineage(record.lineage),
     ...(chain ? { chain } : {}),
     ...(step ? { step } : {}),

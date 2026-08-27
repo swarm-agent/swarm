@@ -199,6 +199,16 @@ type SessionArtifactStep struct {
 
 const SessionArtifactRoleRenderOnly = "render_only"
 
+type SessionArtifactProgress struct {
+	Stage                string  `json:"stage"`
+	Completed            int     `json:"completed,omitempty"`
+	Total                int     `json:"total,omitempty"`
+	Percent              float64 `json:"percent,omitempty"`
+	ElapsedMS            int64   `json:"elapsed_ms,omitempty"`
+	EstimatedRemainingMS int64   `json:"estimated_remaining_ms,omitempty"`
+	HeartbeatAt          int64   `json:"heartbeat_at"`
+}
+
 type SessionArtifactVariant struct {
 	Version               int                                `json:"version"`
 	ID                    string                             `json:"id"`
@@ -212,6 +222,7 @@ type SessionArtifactVariant struct {
 	DigestSHA256          string                             `json:"digest_sha256,omitempty"`
 	Size                  int64                              `json:"size,omitempty"`
 	FailureCode           string                             `json:"failure_code,omitempty"`
+	Progress              *SessionArtifactProgress           `json:"progress,omitempty"`
 	Lineage               SessionArtifactLineage             `json:"lineage,omitempty"`
 	Presentation          SessionArtifactPresentation        `json:"presentation,omitempty"`
 	OutputRequirements    *SessionArtifactOutputRequirements `json:"output_requirements,omitempty"`
@@ -1261,7 +1272,7 @@ func validateV3ArtifactMutation(input V3SessionMutationInput) error {
 		if !input.Artifact.ProjectionOnly {
 			return errors.New("artifact mutation requires an authoritative Git transaction projection")
 		}
-		if (input.Kind != V3SessionMutationCreateArtifact && input.Kind != V3SessionMutationFailArtifact && input.Kind != V3SessionMutationUnavailableArtifact) || len(input.Artifact.Locks) != 0 || len(input.Artifact.PartDefinitions) != 0 || len(input.Artifact.PartRevisions) != 0 || input.Artifact.Composition != nil || input.Artifact.Selection != nil {
+		if (input.Kind != V3SessionMutationCreateArtifact && input.Kind != V3SessionMutationUpdateArtifact && input.Kind != V3SessionMutationFailArtifact && input.Kind != V3SessionMutationUnavailableArtifact) || len(input.Artifact.Locks) != 0 || len(input.Artifact.PartDefinitions) != 0 || len(input.Artifact.PartRevisions) != 0 || input.Artifact.Composition != nil || input.Artifact.Selection != nil {
 			return errors.New("artifact projection-only mutation accepts only collection and non-byte variant metadata")
 		}
 		if variant := input.Artifact.Variant; variant != nil && (variant.RepositoryID != "" || variant.CommitOID != "" || variant.TreeOID != "" || variant.CandidateRef != "" || len(variant.ParentCommitOIDs) != 0 || variant.GraphState != "" || variant.PartGraphState != "" || variant.Composition != nil || len(variant.PartDefinitions) != 0 || variant.DigestSHA256 != "" || variant.Size != 0) {
@@ -2023,6 +2034,14 @@ func (s *SessionStore) prepareV3ArtifactMutation(input V3SessionMutationInput, s
 			next.DigestSHA256 = ""
 			next.Size = 0
 			next.FailureCode = ""
+			if next.Progress != nil {
+				progress := *next.Progress
+				progress.Stage = strings.TrimSpace(progress.Stage)
+				if progress.Stage == "" || len(progress.Stage) > 64 || progress.Completed < 0 || progress.Total < 0 || progress.Completed > progress.Total || progress.Percent < 0 || progress.Percent > 100 || progress.ElapsedMS < 0 || progress.EstimatedRemainingMS < 0 || progress.HeartbeatAt <= 0 {
+					return preparedV3ArtifactMutation{}, errors.New("artifact staging progress is invalid")
+				}
+				next.Progress = &progress
+			}
 		case V3SessionMutationFinalizeArtifact:
 			if current.Status == SessionArtifactStatusReady {
 				return preparedV3ArtifactMutation{}, errors.New("finalized artifact variant is immutable")
@@ -2032,6 +2051,7 @@ func (s *SessionStore) prepareV3ArtifactMutation(input V3SessionMutationInput, s
 			}
 			next.Status = SessionArtifactStatusReady
 			next.FailureCode = ""
+			next.Progress = nil
 			if err := adjustArtifactCollectionStatusCount(&collection, current.Status, -1); err != nil {
 				return preparedV3ArtifactMutation{}, err
 			}
@@ -2060,6 +2080,7 @@ func (s *SessionStore) prepareV3ArtifactMutation(input V3SessionMutationInput, s
 			collection.Status = artifactCollectionStatusFromCounts(collection)
 			next.DigestSHA256 = ""
 			next.Size = 0
+			next.Progress = nil
 		}
 		next.UpdatedAt = now
 		next.EventSeq = seq
@@ -2312,6 +2333,10 @@ func mergeTerminalArtifactVariant(current, incoming SessionArtifactVariant) Sess
 	}
 	if incoming.FailureCode != "" {
 		next.FailureCode = incoming.FailureCode
+	}
+	if incoming.Progress != nil {
+		progress := *incoming.Progress
+		next.Progress = &progress
 	}
 	if incoming.Lineage != (SessionArtifactLineage{}) {
 		next.Lineage = incoming.Lineage

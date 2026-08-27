@@ -10,6 +10,8 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"sync"
+	"time"
 
 	"swarm/packages/swarmd/internal/artifact"
 	"swarm/packages/swarmd/internal/htmlcapture"
@@ -21,7 +23,10 @@ var (
 	animationManifestType = regexp.MustCompile(`(?i)(?:^|\s)type\s*=\s*["']application/json["'](?:\s|$)`)
 )
 
-const animationSynchronousFrameLimit = 300
+const (
+	animationSynchronousFrameLimit = 300
+	animationProgressHeartbeat     = 5 * time.Second
+)
 
 type animationManifest struct {
 	Version    string `json:"version"`
@@ -47,7 +52,7 @@ func (r *Runtime) exportHTMLAnimation(ctx context.Context, principal artifact.Pr
 	}
 	frameCount := (prepared.Manifest.DurationMS*prepared.Manifest.FPS + 999) / 1000
 	if frameCount <= animationSynchronousFrameLimit {
-		ready, err := r.renderAndPublishHTMLAnimation(ctx, principal, prepared)
+		ready, err := r.renderAndPublishHTMLAnimation(ctx, principal, prepared, nil)
 		return ready, prepared.SourceRef, prepared.Requirements, err
 	}
 	renderRequest := htmlcapture.AnimationRequest{Entry: prepared.Entry, Files: prepared.Files, DurationMS: prepared.Manifest.DurationMS, FPS: prepared.Manifest.FPS}
@@ -69,6 +74,12 @@ func (r *Runtime) exportHTMLAnimation(ctx context.Context, principal artifact.Pr
 	}
 	r.animationJobs[staging.ID] = cancel
 	r.animationJobsMu.Unlock()
+	staging, err = r.artifactAuthority.UpdateProgress(principal, prepared.Input.RequestID+":progress:queued", staging.CollectionID, staging.ID, pebblestore.SessionArtifactProgress{Stage: "queued", Total: frameCount, HeartbeatAt: time.Now().UnixMilli()})
+	if err != nil {
+		cancel()
+		_, _ = r.artifactAuthority.MarkFailed(principal, prepared.Input.RequestID+":terminal:animation_progress_failed", prepared.Input.CollectionID, prepared.Input.VariantID, "animation_progress_failed")
+		return pebblestore.SessionArtifactVariant{}, prepared.SourceRef, prepared.Requirements, animationError("animation_progress_failed", "animation export progress could not be durably initialized")
+	}
 	go r.runHTMLAnimationExport(jobCtx, principal, prepared, staging.ID)
 	return staging, prepared.SourceRef, prepared.Requirements, nil
 }
@@ -164,9 +175,9 @@ func (r *Runtime) prepareHTMLAnimationExport(ctx context.Context, principal arti
 	return prepared, nil
 }
 
-func (r *Runtime) renderAndPublishHTMLAnimation(ctx context.Context, principal artifact.Principal, prepared animationExportPrepared) (pebblestore.SessionArtifactVariant, error) {
+func (r *Runtime) renderAndPublishHTMLAnimation(ctx context.Context, principal artifact.Principal, prepared animationExportPrepared, progress func(htmlcapture.AnimationProgress)) (pebblestore.SessionArtifactVariant, error) {
 	manifest := prepared.Manifest
-	result, err := r.htmlAnimationCapture.RenderAnimation(ctx, htmlcapture.AnimationRequest{Entry: prepared.Entry, Files: prepared.Files, DurationMS: manifest.DurationMS, FPS: manifest.FPS})
+	result, err := r.htmlAnimationCapture.RenderAnimation(ctx, htmlcapture.AnimationRequest{Entry: prepared.Entry, Files: prepared.Files, DurationMS: manifest.DurationMS, FPS: manifest.FPS, Progress: progress})
 	if err != nil {
 		return pebblestore.SessionArtifactVariant{}, normalizeAnimationRendererError(err)
 	}
@@ -200,12 +211,57 @@ func (r *Runtime) runHTMLAnimationExport(ctx context.Context, principal artifact
 		delete(r.animationJobs, variantID)
 		r.animationJobsMu.Unlock()
 	}()
-	if _, err := r.renderAndPublishHTMLAnimation(ctx, principal, prepared); err != nil {
+	progress := r.animationProgressReporter(principal, prepared)
+	if _, err := r.renderAndPublishHTMLAnimation(ctx, principal, prepared, progress); err != nil {
 		code := animationFailureCode(err)
 		if errors.Is(ctx.Err(), context.Canceled) {
 			code = "animation_cancelled"
 		}
 		_, _ = r.artifactAuthority.MarkFailed(principal, prepared.Input.RequestID+":terminal:"+code, prepared.Input.CollectionID, prepared.Input.VariantID, code)
+	}
+}
+
+func (r *Runtime) animationProgressReporter(principal artifact.Principal, prepared animationExportPrepared) func(htmlcapture.AnimationProgress) {
+	var mu sync.Mutex
+	lastPersisted, lastStage, lastPercent := time.Time{}, "", -1.0
+	return func(update htmlcapture.AnimationProgress) {
+		mu.Lock()
+		defer mu.Unlock()
+		percent := max(lastPercent, animationOverallProgress(update))
+		now := time.Now()
+		if update.Stage == lastStage && percent < lastPercent+1 && now.Sub(lastPersisted) < animationProgressHeartbeat {
+			return
+		}
+		remaining := int64(0)
+		if percent > 0 && percent < 100 {
+			remaining = int64(float64(update.Elapsed.Milliseconds()) * (100 - percent) / percent)
+		}
+		progress := pebblestore.SessionArtifactProgress{Stage: update.Stage, Completed: update.Completed, Total: update.Total, Percent: percent, ElapsedMS: update.Elapsed.Milliseconds(), EstimatedRemainingMS: remaining, HeartbeatAt: now.UnixMilli()}
+		requestID := fmt.Sprintf("%s:progress:%s:%d:%d", prepared.Input.RequestID, update.Stage, update.Completed, now.Unix()/5)
+		if _, err := r.artifactAuthority.UpdateProgress(principal, requestID, prepared.Input.CollectionID, prepared.Input.VariantID, progress); err == nil {
+			lastPersisted, lastStage, lastPercent = now, update.Stage, max(lastPercent, percent)
+		}
+	}
+}
+
+func animationOverallProgress(update htmlcapture.AnimationProgress) float64 {
+	ratio := 0.0
+	if update.Total > 0 {
+		ratio = float64(update.Completed) / float64(update.Total)
+	}
+	switch update.Stage {
+	case "queue_wait":
+		return ratio
+	case "readiness_preflight":
+		return 1 + ratio
+	case "deterministic_preflight":
+		return 2 + 3*ratio
+	case "frame_capture", "segment_encode":
+		return 5 + 90*ratio
+	case "segment_concatenation":
+		return 95 + 4*ratio
+	default:
+		return 0
 	}
 }
 

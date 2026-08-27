@@ -29,7 +29,8 @@ const (
 	MaxAnimationFrames        = 36_000
 	MaxAnimationSegmentFrames = 300
 	MaxMP4Bytes               = 512 << 20
-	animationTotalTimeout     = 30 * time.Minute
+	animationMinimumTimeout   = 30 * time.Minute
+	animationTimeoutPerFrame  = 250 * time.Millisecond
 	animationReadyTimeout     = 5 * time.Second
 	animationFrameTimeout     = 2 * time.Second
 )
@@ -97,18 +98,31 @@ func (r *ChromedpRenderer) renderAnimation(parent context.Context, req Animation
 	if err != nil {
 		return AnimationResult{}, err
 	}
+	capacity := r.sem
+	if preflightOnly {
+		capacity = r.preflightSem
+	}
 	queueStartedAt := time.Now()
 	emit("queue_wait", 0, 1)
-	select {
-	case r.sem <- struct{}{}:
-		timings["queue_wait"] = time.Since(queueStartedAt)
-		emit("queue_wait", 1, 1)
-		defer func() { <-r.sem }()
-	case <-parent.Done():
-		return AnimationResult{}, NewError("animation_timeout", "animation request was cancelled before renderer capacity became available")
+	queueHeartbeat := time.NewTicker(5 * time.Second)
+	defer queueHeartbeat.Stop()
+	for {
+		select {
+		case capacity <- struct{}{}:
+			timings["queue_wait"] = time.Since(queueStartedAt)
+			emit("queue_wait", 1, 1)
+			defer func() { <-capacity }()
+			goto rendererCapacityAcquired
+		case <-queueHeartbeat.C:
+			emit("queue_wait", 0, 1)
+		case <-parent.Done():
+			return AnimationResult{}, NewError("animation_timeout", "animation request was cancelled before renderer capacity became available")
+		}
 	}
 
-	ctx, cancel := context.WithTimeout(parent, animationTotalTimeout)
+rendererCapacityAcquired:
+
+	ctx, cancel := context.WithTimeout(parent, animationRenderTimeout(frameCount))
 	defer cancel()
 	if err := os.MkdirAll(r.CacheRoot, 0o700); err != nil {
 		return AnimationResult{}, NewError("animation_renderer_unavailable", "private animation cache is unavailable")
@@ -342,6 +356,14 @@ func (r *ChromedpRenderer) renderAnimation(parent context.Context, req Animation
 	return AnimationResult{MP4: mp4, DurationMS: req.DurationMS, FPS: req.FPS, FrameCount: frameCount, Timings: timings}, nil
 }
 
+func animationRenderTimeout(frameCount int) time.Duration {
+	timeout := 5*time.Minute + time.Duration(frameCount)*animationTimeoutPerFrame
+	if timeout < animationMinimumTimeout {
+		return animationMinimumTimeout
+	}
+	return timeout
+}
+
 func validateAnimationRequest(req AnimationRequest) (int, error) {
 	if req.Entry == "" || len(req.Files) == 0 || req.DurationMS < 100 || req.DurationMS > MaxAnimationDurationMS || req.FPS < 1 || req.FPS > MaxAnimationFPS {
 		return 0, NewError("animation_source_limit_exceeded", "animation request exceeds fixed renderer bounds")
@@ -452,6 +474,9 @@ func animationScreenshot(ctx context.Context) ([]byte, error) {
 		data, captureErr = page.CaptureScreenshot().WithFormat(page.CaptureScreenshotFormatPng).WithCaptureBeyondViewport(false).Do(execCtx)
 		return captureErr
 	})); err != nil {
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) || errors.Is(err, context.DeadlineExceeded) {
+			return nil, NewError("animation_timeout", "animation frame capture exceeded the quality-adjusted deadline")
+		}
 		return nil, newErrorWithCause("animation_renderer_failed", "renderer could not capture an animation frame", err)
 	}
 	if len(data) == 0 || len(data) > MaxPNGBytes {
@@ -464,8 +489,8 @@ func encodeAnimation(ctx context.Context, encoderPath, inputPattern, outputPath 
 	args := []string{
 		"-v", "error", "-nostdin", "-y",
 		"-framerate", fmt.Sprint(fps), "-start_number", "0", "-i", inputPattern,
-		"-frames:v", fmt.Sprint(frames), "-an", "-c:v", "libx264", "-preset", "medium",
-		"-pix_fmt", "yuv420p", "-threads", "1", "-fflags", "+bitexact", "-flags:v", "+bitexact",
+		"-frames:v", fmt.Sprint(frames), "-an", "-c:v", "libx264", "-preset", "veryfast",
+		"-pix_fmt", "yuv420p", "-threads", "2", "-fflags", "+bitexact", "-flags:v", "+bitexact",
 		"-map_metadata", "-1", "-movflags", "+faststart", outputPath,
 	}
 	output := &boundedCommandOutput{remaining: 16 << 10}

@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	goruntime "runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -196,6 +197,13 @@ func ensurePrivateDirectory(path string) error {
 	return os.Chmod(path, 0o700)
 }
 
+func htmlCaptureConcurrency() int {
+	if goruntime.NumCPU() >= 8 {
+		return 2
+	}
+	return 1
+}
+
 func New(cfg config.Config) (*Daemon, error) {
 	if err := ensurePrivateDirectory(cfg.DataDir); err != nil {
 		return nil, fmt.Errorf("secure data directory: %w", err)
@@ -253,7 +261,7 @@ func New(cfg config.Config) (*Daemon, error) {
 	toolRuntime := tool.NewRuntime(8)
 	cacheRoot, cacheRootErr := storagecontract.ResolveRoot(storagecontract.RootCache, storagecontract.Options{})
 	if cacheRootErr == nil {
-		toolRuntime.SetHTMLCaptureRenderer(htmlcapture.NewChromedpRenderer(htmlcapture.SystemChromePath, filepath.Join(cacheRoot, "html-capture")))
+		toolRuntime.SetHTMLCaptureRenderer(htmlcapture.NewChromedpRendererWithConcurrency(htmlcapture.SystemChromePath, filepath.Join(cacheRoot, "html-capture"), htmlCaptureConcurrency()))
 	}
 	agentSvc := agentruntime.NewService(pebblestore.NewAgentStore(store), events)
 	if err := agentSvc.EnsureSystemAgentRegistry(); err != nil {

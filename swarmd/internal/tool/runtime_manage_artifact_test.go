@@ -148,6 +148,13 @@ func (f *fakeArtifactAuthority) Reserve(principal artifact.Principal, input arti
 	return f.variant, nil
 }
 
+func (f *fakeArtifactAuthority) UpdateProgress(principal artifact.Principal, _ string, collectionID, variantID string, progress pebblestore.SessionArtifactProgress) (pebblestore.SessionArtifactVariant, error) {
+	f.principal = principal
+	f.variant.CollectionID, f.variant.ID, f.variant.Status, f.variant.Progress = collectionID, variantID, pebblestore.SessionArtifactStatusStaging, &progress
+	f.variant.EventSeq++
+	return f.variant, nil
+}
+
 func (f *fakeArtifactAuthority) MarkFailed(principal artifact.Principal, _ string, collectionID, variantID, failureCode string) (pebblestore.SessionArtifactVariant, error) {
 	f.principal = principal
 	f.variant.CollectionID, f.variant.ID, f.variant.Status, f.variant.FailureCode = collectionID, variantID, pebblestore.SessionArtifactStatusFailed, failureCode

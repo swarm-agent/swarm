@@ -126,7 +126,7 @@ func TestExportHTMLAnimationQueuesLongTimelineWithoutHoldingToolCall(t *testing.
 	if elapsed := time.Since(startedAt); elapsed > time.Second {
 		t.Fatalf("long animation tool call blocked for %s", elapsed)
 	}
-	if !strings.Contains(output, `"status":"staging"`) || authority.created.SourceEventSeq != 7 || len(authority.created.Parts) != 2 || authority.created.Parts[1].EndMs != 74920 {
+	if !strings.Contains(output, `"status":"staging"`) || !strings.Contains(output, `"stage":"queued"`) || authority.created.SourceEventSeq != 7 || len(authority.created.Parts) != 2 || authority.created.Parts[1].EndMs != 74920 {
 		t.Fatalf("queued output/lineage/parts = %s / %+v", output, authority.created)
 	}
 	select {
@@ -204,6 +204,23 @@ func TestExportHTMLAnimationPreflightsBeforeQueuingAndPreservesFailureCode(t *te
 	runtime.runHTMLAnimationExport(context.Background(), artifact.Principal{SessionID: "source-session"}, prepared, "render-variant")
 	if authority.variant.Status != pebblestore.SessionArtifactStatusFailed || authority.variant.FailureCode != "animation_frame_unstable" {
 		t.Fatalf("background failure = %+v", authority.variant)
+	}
+}
+
+func TestAnimationOverallProgress(t *testing.T) {
+	cases := []struct {
+		progress htmlcapture.AnimationProgress
+		want     float64
+	}{
+		{htmlcapture.AnimationProgress{Stage: "queue_wait", Completed: 0, Total: 1}, 0},
+		{htmlcapture.AnimationProgress{Stage: "frame_capture", Completed: 50, Total: 100}, 50},
+		{htmlcapture.AnimationProgress{Stage: "segment_encode", Completed: 5, Total: 10}, 50},
+		{htmlcapture.AnimationProgress{Stage: "segment_concatenation", Completed: 1, Total: 1}, 99},
+	}
+	for _, tc := range cases {
+		if got := animationOverallProgress(tc.progress); got != tc.want {
+			t.Fatalf("%s progress = %v, want %v", tc.progress.Stage, got, tc.want)
+		}
 	}
 }
 

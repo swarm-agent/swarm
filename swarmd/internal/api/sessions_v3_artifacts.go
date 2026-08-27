@@ -139,6 +139,7 @@ type sessionsV3ArtifactCatalogItem struct {
 	UpdatedAt             int64                                          `json:"updated_at"`
 	EventSeq              uint64                                         `json:"event_seq,omitempty"`
 	Progress              *sessionsV3ArtifactCollectionProgress          `json:"progress,omitempty"`
+	RenderProgress        *pebblestore.SessionArtifactProgress           `json:"render_progress,omitempty"`
 	Lineage               *pebblestore.SessionArtifactLineage            `json:"lineage,omitempty"`
 	OutputRequirements    *pebblestore.SessionArtifactOutputRequirements `json:"output_requirements,omitempty"`
 	AnimationProfile      *pebblestore.SessionArtifactAnimationProfile   `json:"animation_profile,omitempty"`
@@ -473,7 +474,7 @@ func (s *Server) handleSessionsV3Artifacts(w http.ResponseWriter, r *http.Reques
 						Label: firstNonEmpty(variant.Presentation.Label, collection.Name, variant.Filename), Description: firstNonEmpty(variant.Presentation.Description, collection.Description),
 						CollectionName: collection.Name, CollectionDescription: collection.Description, Filename: variant.Filename, MediaType: variant.MediaType, Kind: kind, Role: variant.Role, Status: variant.Status, FailureCode: variant.FailureCode,
 						Previewable: previewable, Selected: chain.Head.SessionID == variant.SessionID && chain.Head.CollectionID == variant.CollectionID && chain.Head.VariantID == variant.ID,
-						Category: sessionsV3ManagedArtifactCategory(variant), UpdatedAt: variant.UpdatedAt, EventSeq: variant.EventSeq, Progress: &progress, Lineage: &lineage, OutputRequirements: cloneSessionsV3ArtifactOutputRequirements(variant.OutputRequirements), AnimationProfile: cloneSessionsV3ArtifactAnimationProfile(variant.AnimationProfile),
+						Category: sessionsV3ManagedArtifactCategory(variant), UpdatedAt: variant.UpdatedAt, EventSeq: variant.EventSeq, Progress: &progress, RenderProgress: variant.Progress, Lineage: &lineage, OutputRequirements: cloneSessionsV3ArtifactOutputRequirements(variant.OutputRequirements), AnimationProfile: cloneSessionsV3ArtifactAnimationProfile(variant.AnimationProfile),
 						Chain: &chain, Step: step, GraphState: variant.GraphState, ParentArtifact: variant.ParentArtifact, ArtifactChainID: variant.ArtifactChainID, ArtifactStepID: variant.ArtifactStepID, RevisionNumber: variant.RevisionNumber, RevisionRoundID: variant.RevisionRoundID, CandidateIndex: variant.CandidateIndex, Parts: append([]pebblestore.SessionArtifactPart(nil), variant.Parts...),
 						PartGraphState: sessionsV3ArtifactCatalogPartGraphState(variant), PartDefinitions: partDefinitions, PartRevisions: partRevisions, Composition: composition, TargetedPartID: targetedPartID, TargetedPartIDs: sessionsV3ArtifactTargetedPartIDs(variant, composition), AcceptedPartHeads: acceptedPartHeads,
 					})

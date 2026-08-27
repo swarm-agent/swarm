@@ -52,6 +52,7 @@ type ArtifactAuthority interface {
 	Create(context.Context, artifact.Principal, artifact.CreateInput) (pebblestore.SessionArtifactVariant, error)
 	Reserve(artifact.Principal, artifact.CreateInput) (pebblestore.SessionArtifactVariant, error)
 	MarkFailed(artifact.Principal, string, string, string, string) (pebblestore.SessionArtifactVariant, error)
+	UpdateProgress(artifact.Principal, string, string, string, pebblestore.SessionArtifactProgress) (pebblestore.SessionArtifactVariant, error)
 	CreateInitialComposition(context.Context, artifact.Principal, artifact.CreateInitialCompositionInput) (pebblestore.SessionArtifactVariant, error)
 	CreatePackage(context.Context, artifact.Principal, artifact.CreatePackageInput) (pebblestore.SessionArtifactVariant, error)
 	List(artifact.Principal, string, int) ([]pebblestore.SessionArtifactCollection, error)
@@ -1976,7 +1977,7 @@ func managedArtifactPresentation(p pebblestore.SessionArtifactPresentation) map[
 }
 
 func managedArtifactVariant(v pebblestore.SessionArtifactVariant) map[string]any {
-	result := map[string]any{"id": v.ID, "collection_id": v.CollectionID, "session_id": v.SessionID, "status": v.Status, "filename": v.Filename, "media_type": v.MediaType, "digest_sha256": v.DigestSHA256, "size": v.Size, "failure_code": v.FailureCode, "presentation": managedArtifactPresentation(v.Presentation), "output_requirements": v.OutputRequirements, "animation_profile": v.AnimationProfile, "part_graph_state": v.PartGraphState, "created_at": v.CreatedAt, "updated_at": v.UpdatedAt, "event_seq": v.EventSeq}
+	result := map[string]any{"id": v.ID, "collection_id": v.CollectionID, "session_id": v.SessionID, "status": v.Status, "filename": v.Filename, "media_type": v.MediaType, "digest_sha256": v.DigestSHA256, "size": v.Size, "failure_code": v.FailureCode, "progress": v.Progress, "presentation": managedArtifactPresentation(v.Presentation), "output_requirements": v.OutputRequirements, "animation_profile": v.AnimationProfile, "part_graph_state": v.PartGraphState, "created_at": v.CreatedAt, "updated_at": v.UpdatedAt, "event_seq": v.EventSeq}
 	if v.PartGraphState == pebblestore.SessionArtifactGraphAuthoritative && v.Composition != nil {
 		result["artifact_chain_id"] = v.ArtifactChainID
 		result["part_definitions"] = v.PartDefinitions

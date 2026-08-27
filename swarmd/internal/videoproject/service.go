@@ -118,8 +118,8 @@ type PromoteAnimationDerivativeInput struct {
 
 type UpdateCompositionInput struct {
 	SessionID, ProjectID, ProposalID, ExpectedRevisionID string
-	Plan                                                  *pebblestore.VideoPlanProposal
-	NowUnixMs                                             int64
+	Plan                                                 *pebblestore.VideoPlanProposal
+	NowUnixMs                                            int64
 }
 
 type AcceptEditProposalInput struct {
@@ -141,6 +141,9 @@ func (s *Service) CreateEditProposal(ctx context.Context, principal identity.Pri
 	}
 	if input.Plan != nil {
 		if err := s.normalizeVisualPlanArtifacts(principal, input.SessionID, input.Plan); err != nil {
+			return pebblestore.VideoEditProposalSnapshot{}, err
+		}
+		if err := s.validateCompositionSources(principal, input.SessionID, input.Plan); err != nil {
 			return pebblestore.VideoEditProposalSnapshot{}, err
 		}
 	}

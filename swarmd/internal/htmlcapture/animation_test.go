@@ -29,6 +29,15 @@ func TestValidateAnimationRequestBounds(t *testing.T) {
 	}
 }
 
+func TestAnimationRenderTimeoutScalesWithDeclaredFrameCount(t *testing.T) {
+	if got := animationRenderTimeout(300); got != animationMinimumTimeout {
+		t.Fatalf("small render timeout = %s", got)
+	}
+	if got := animationRenderTimeout(MaxAnimationFrames); got <= animationMinimumTimeout {
+		t.Fatalf("maximum-quality render timeout did not scale: %s", got)
+	}
+}
+
 func TestChromedpRendererCapturesDeterministicAnimationWithSystemRuntimes(t *testing.T) {
 	if _, err := os.Stat(SystemChromePath); err != nil {
 		t.Skipf("system-managed Chrome unavailable: %v", err)

@@ -50,6 +50,7 @@ const managedCatalogWire = {
   kind: 'html',
   status: 'ready',
   failure_code: '',
+  render_progress: { stage: 'frame_capture', completed: 120, total: 240, percent: 47.5, elapsed_ms: 12000, estimated_remaining_ms: 13263, heartbeat_at: 1787855000000 },
   previewable: true,
   selected: true,
   category: 'visual',
@@ -142,6 +143,7 @@ test('artifact catalog normalizes managed collection, progress, selection, linea
       budgets: { maxSimultaneousLivePreviews: 1, maxWebGLContexts: 1, maxDevicePixelRatio: 1.5, maxCanvasPixels: 2073600, maxParticles: 2000, maxDrawCallsPerFrame: 200, pauseWhenOffscreen: true, stopWhenDocumentHidden: true, reducedMotionBehavior: 'static_first_frame', networkAllowed: false },
     },
     progress: { total: 3, staging: 1, ready: 1, failed: 1, unavailable: 0 },
+    renderProgress: { stage: 'frame_capture', completed: 120, total: 240, percent: 47.5, elapsedMs: 12000, estimatedRemainingMs: 13263, heartbeatAt: 1787855000000 },
     lineage: {
       parentSessionId: 'session-1', sourceSessionId: 'child-1', sourceCollectionId: 'source-collection',
       sourceVariantId: 'source-variant', sourceEventSeq: 41, taskCallId: 'call-1', programId: 'program-1', programJobId: 'job-1',
