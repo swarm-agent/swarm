@@ -508,6 +508,19 @@ func (f *fakeSessionStore) GetVideoEditProposal(accountScopeID, sessionID, proje
 	return proposal, true, nil
 }
 
+func (f *fakeSessionStore) ListVideoEditProposals(accountScopeID, sessionID, projectID string, limit int) ([]pebblestore.VideoEditProposalSnapshot, error) {
+	proposals := make([]pebblestore.VideoEditProposalSnapshot, 0, len(f.proposals))
+	for _, proposal := range f.proposals {
+		if proposal.AccountScopeID == accountScopeID && proposal.SessionID == sessionID && proposal.ProjectID == projectID {
+			proposals = append(proposals, proposal)
+		}
+	}
+	if limit > 0 && len(proposals) > limit {
+		proposals = proposals[:limit]
+	}
+	return proposals, nil
+}
+
 func (f *fakeSessionStore) GetVideoRenderJob(accountScopeID, sessionID, jobID string) (pebblestore.VideoRenderJobSnapshot, bool, error) {
 	j, ok := f.jobs[jobID]
 	if !ok || j.AccountScopeID != accountScopeID || j.SessionID != sessionID {
@@ -913,6 +926,27 @@ func TestRenderJobSuccessfulFlow(t *testing.T) {
 	}
 	if ffmpegCalls != 1 {
 		t.Fatalf("expected 1 ffmpeg call, got: %d (%v)", ffmpegCalls, runner.calls)
+	}
+}
+
+func TestRenderJobRejectsPendingWorkingRevisionBeforeMaterialization(t *testing.T) {
+	principal := identity.Principal{Type: identity.PrincipalTypeUser, AccountScopeID: "acc", UserID: "user"}
+	const sessionID, projectID, revisionID, jobID = "session", "project", "working", "job"
+	store := newFakeSessionStore()
+	store.sessions[sessionID] = pebblestore.SessionSnapshot{ID: sessionID, AccountScopeID: principal.AccountScopeID, UserID: principal.UserID}
+	store.projects[projectID] = pebblestore.VideoProjectSnapshot{ID: projectID, AccountScopeID: principal.AccountScopeID, UserID: principal.UserID, SessionID: sessionID, CurrentRevisionID: revisionID}
+	store.revisions[revisionID] = pebblestore.VideoProjectRevisionSnapshot{ID: revisionID, ProjectID: projectID, AccountScopeID: principal.AccountScopeID, UserID: principal.UserID, SessionID: sessionID, Timeline: pebblestore.VideoProjectTimeline{Clips: []pebblestore.VideoTimelineClip{{ID: "visual", SourceKind: pebblestore.VideoClipSourceKindColor, DurationMs: 1000, TimelineEndMs: 1000, Visible: true}}}}
+	store.proposals["pending"] = pebblestore.VideoEditProposalSnapshot{ID: "pending", ProjectID: projectID, AccountScopeID: principal.AccountScopeID, UserID: principal.UserID, SessionID: sessionID, WorkingRevisionID: revisionID, Status: pebblestore.VideoEditProposalStatusPending}
+	store.jobs[jobID] = pebblestore.VideoRenderJobSnapshot{ID: jobID, ProjectID: projectID, RevisionID: revisionID, AccountScopeID: principal.AccountScopeID, UserID: principal.UserID, SessionID: sessionID, Status: pebblestore.VideoRenderJobStatusQueued}
+	runner := &fakeCommandRunner{}
+	svc := NewService(Config{}, store, &fakeArtifactAuthority{}, nil, nil, runner)
+
+	_, err := svc.RenderJob(context.Background(), principal, RenderJobRequest{SessionID: sessionID, ProjectID: projectID, RevisionID: revisionID, JobID: jobID})
+	if err == nil || !strings.Contains(err.Error(), "pending working cut") || !strings.Contains(err.Error(), "confirm or reject") {
+		t.Fatalf("pending working render error = %v", err)
+	}
+	if len(runner.calls) != 0 || len(store.jobUpdates) != 0 {
+		t.Fatalf("pending render performed work: calls=%v updates=%v", runner.calls, store.jobUpdates)
 	}
 }
 

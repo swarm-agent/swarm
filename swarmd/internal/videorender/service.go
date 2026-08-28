@@ -166,6 +166,7 @@ type SessionStore interface {
 	GetAudioSourceRecord(accountScopeID, workspaceID, ref string) (pebblestore.AudioSourceRecord, bool, error)
 	GetSessionArtifactVariant(accountScopeID, sessionID, collectionID, variantID string) (pebblestore.SessionArtifactVariant, bool, error)
 	GetVideoEditProposal(accountScopeID, sessionID, projectID, proposalID string) (pebblestore.VideoEditProposalSnapshot, bool, error)
+	ListVideoEditProposals(accountScopeID, sessionID, projectID string, limit int) ([]pebblestore.VideoEditProposalSnapshot, error)
 	ListVideoRenderJobs(accountScopeID, sessionID, projectID string, limit int) ([]pebblestore.VideoRenderJobSnapshot, error)
 	ListRecoverableVideoRenderJobs(limit int) ([]pebblestore.VideoRenderJobSnapshot, error)
 }
@@ -583,6 +584,13 @@ func (s *Service) RenderJob(ctx context.Context, principal identity.Principal, r
 	}
 
 	timeline := revision.Timeline
+	proposals, err := s.store.ListVideoEditProposals(principal.AccountScopeID, sessionID, projectID, 100)
+	if err != nil {
+		return pebblestore.VideoRenderJobSnapshot{}, fmt.Errorf("inspect pending video proposals before render: %w", err)
+	}
+	if pending := pebblestore.PendingVideoEditProposalForRevision(revision, proposals); pending != nil {
+		return pebblestore.VideoRenderJobSnapshot{}, fmt.Errorf("final render blocked: revision %q is the pending working cut for proposal %q; confirm or reject the pending changes before rendering", revision.ID, pending.ID)
+	}
 	if proposalID := pebblestore.VideoPlanRenderAuthorityProposalID(timeline); proposalID != "" {
 		proposal, found, proposalErr := s.store.GetVideoEditProposal(principal.AccountScopeID, sessionID, projectID, proposalID)
 		if proposalErr != nil {

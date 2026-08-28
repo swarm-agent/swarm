@@ -13,6 +13,23 @@ func proposalTestTimeline() *VideoProjectTimeline {
 	}}
 }
 
+func TestPendingVideoEditProposalForRevisionMatchesExactPendingOwner(t *testing.T) {
+	revision := VideoProjectRevisionSnapshot{ID: "working", ProjectID: "project", SessionID: "session", AccountScopeID: "account", UserID: "user"}
+	proposals := []VideoEditProposalSnapshot{
+		{ID: "accepted", ProjectID: "project", SessionID: "session", AccountScopeID: "account", UserID: "user", WorkingRevisionID: "working", Status: VideoEditProposalStatusAccepted},
+		{ID: "other-revision", ProjectID: "project", SessionID: "session", AccountScopeID: "account", UserID: "user", WorkingRevisionID: "other", Status: VideoEditProposalStatusPending},
+		{ID: "other-user", ProjectID: "project", SessionID: "session", AccountScopeID: "account", UserID: "other", WorkingRevisionID: "working", Status: VideoEditProposalStatusPending},
+		{ID: "pending", ProjectID: "project", SessionID: "session", AccountScopeID: "account", UserID: "user", WorkingRevisionID: "working", Status: VideoEditProposalStatusPending},
+	}
+
+	if got := PendingVideoEditProposalForRevision(revision, proposals); got == nil || got.ID != "pending" {
+		t.Fatalf("pending owner = %+v, want exact proposal pending", got)
+	}
+	if got := PendingVideoEditProposalForRevision(revision, proposals[:3]); got != nil {
+		t.Fatalf("unrelated proposal matched revision: %+v", got)
+	}
+}
+
 func TestResolveVideoPlanRenderAuthorityRecoversOnlyExactHistoricalSelection(t *testing.T) {
 	orbit := &SessionArtifactSelectionReference{SessionID: "sess", CollectionID: "motion", VariantID: "orbit", EventSeq: 7}
 	pulse := &SessionArtifactSelectionReference{SessionID: "sess", CollectionID: "motion", VariantID: "pulse", EventSeq: 8}

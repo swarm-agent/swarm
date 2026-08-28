@@ -708,6 +708,13 @@ func (s *Service) StartRenderJob(ctx context.Context, principal identity.Princip
 	if err != nil || !ok {
 		return pebblestore.VideoRenderJobSnapshot{}, errors.New("video project revision not found")
 	}
+	proposals, err := s.sessions.ListVideoEditProposals(principal.AccountScopeID, input.SessionID, input.ProjectID, 100)
+	if err != nil {
+		return pebblestore.VideoRenderJobSnapshot{}, fmt.Errorf("inspect pending video proposals before render: %w", err)
+	}
+	if pending := pebblestore.PendingVideoEditProposalForRevision(revision, proposals); pending != nil {
+		return pebblestore.VideoRenderJobSnapshot{}, fmt.Errorf("final render blocked: revision %q is the pending working cut for proposal %q; confirm or reject the pending changes before rendering", revision.ID, pending.ID)
+	}
 	if revision.Timeline.Metadata["accepted_video_plan"] != nil {
 		if plan, err := s.videoPlanRenderAuthority(principal, revision); err != nil {
 			return pebblestore.VideoRenderJobSnapshot{}, err

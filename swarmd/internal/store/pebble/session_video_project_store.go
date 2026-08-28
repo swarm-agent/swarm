@@ -1296,6 +1296,23 @@ func VideoPlanRenderAuthorityProposalID(timeline VideoProjectTimeline) string {
 	return strings.TrimSpace(proposalID)
 }
 
+// PendingVideoEditProposalForRevision returns the pending proposal that owns an
+// exact working revision. Final rendering must use a confirmed immutable cut,
+// never the mutable review revision of any visual-plan or typed timeline edit.
+func PendingVideoEditProposalForRevision(revision VideoProjectRevisionSnapshot, proposals []VideoEditProposalSnapshot) *VideoEditProposalSnapshot {
+	for index := range proposals {
+		proposal := &proposals[index]
+		if proposal.Status != VideoEditProposalStatusPending || proposal.WorkingRevisionID != revision.ID ||
+			proposal.ProjectID != revision.ProjectID || proposal.SessionID != revision.SessionID ||
+			(proposal.AccountScopeID != "" && revision.AccountScopeID != "" && proposal.AccountScopeID != revision.AccountScopeID) ||
+			(proposal.UserID != "" && revision.UserID != "" && proposal.UserID != revision.UserID) {
+			continue
+		}
+		return proposal
+	}
+	return nil
+}
+
 // ResolveVideoPlanRenderAuthority recovers candidate selections made before the
 // selected HTML authority was copied into working-revision metadata. Recovery is
 // intentionally bounded to the exact proposal named by the revision and to a

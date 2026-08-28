@@ -422,7 +422,28 @@ func TestStartRenderJobAllowsLegacyPlansWithoutProductionState(t *testing.T) {
 	}
 }
 
-func TestStartRenderJobAllowsLockedHTMLAnimationForExactWorkingRevision(t *testing.T) {
+func TestStartRenderJobBlocksPendingWorkingRevision(t *testing.T) {
+	store := newFakeSessionStore()
+	svc := NewService(store)
+	principal := identity.Principal{Type: identity.PrincipalTypeUser, AccountScopeID: "acc", UserID: "user"}
+	store.sessions["session"] = pebblestore.SessionSnapshot{ID: "session", AccountScopeID: "acc", UserID: "user"}
+	store.projects["project"] = pebblestore.VideoProjectSnapshot{ID: "project", AccountScopeID: "acc", UserID: "user", SessionID: "session", CurrentRevisionID: "working"}
+	store.revisions["project"] = map[string]pebblestore.VideoProjectRevisionSnapshot{"working": {
+		ID: "working", ProjectID: "project", SessionID: "session", AccountScopeID: "acc", UserID: "user",
+		Timeline: pebblestore.VideoProjectTimeline{Clips: []pebblestore.VideoTimelineClip{{ID: "intro", SourceKind: pebblestore.VideoClipSourceKindColor, DurationMs: 1000, TimelineEndMs: 1000, Visible: true}}},
+	}}
+	store.proposals["pending"] = pebblestore.VideoEditProposalSnapshot{ID: "pending", ProjectID: "project", SessionID: "session", AccountScopeID: "acc", UserID: "user", WorkingRevisionID: "working", Status: pebblestore.VideoEditProposalStatusPending}
+
+	_, err := svc.StartRenderJob(context.Background(), principal, StartRenderJobInput{SessionID: "session", ProjectID: "project", RevisionID: "working", JobID: "job"})
+	if err == nil || !strings.Contains(err.Error(), "pending working cut") || !strings.Contains(err.Error(), "confirm or reject") {
+		t.Fatalf("pending working revision render error = %v", err)
+	}
+	if len(store.jobs) != 0 {
+		t.Fatalf("blocked pending render created job: %+v", store.jobs)
+	}
+}
+
+func TestStartRenderJobAllowsConfirmedLockedHTMLAnimation(t *testing.T) {
 	store := newFakeSessionStore()
 	svc := NewService(store)
 	principal := identity.Principal{Type: identity.PrincipalTypeUser, AccountScopeID: "acc", UserID: "user"}
@@ -440,7 +461,7 @@ func TestStartRenderJobAllowsLockedHTMLAnimationForExactWorkingRevision(t *testi
 		Timeline: pebblestore.VideoProjectTimeline{Clips: []pebblestore.VideoTimelineClip{{ID: "intro", SourceKind: pebblestore.VideoClipSourceKindManagedArtifact, ArtifactRef: fallback, MediaType: "image/png", DurationMs: 1000, SourceEndMs: 1000}}, Metadata: map[string]any{"accepted_video_plan": plan}},
 	}}
 	if _, err := svc.StartRenderJob(context.Background(), principal, StartRenderJobInput{SessionID: "session", ProjectID: "project", RevisionID: "working", JobID: "job"}); err != nil {
-		t.Fatalf("locked HTML working revision should be renderable: %v", err)
+		t.Fatalf("confirmed locked HTML revision should be renderable: %v", err)
 	}
 }
 
