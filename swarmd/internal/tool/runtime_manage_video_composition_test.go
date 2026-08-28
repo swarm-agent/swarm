@@ -158,6 +158,27 @@ func TestManageVideoCompositionProposalPreservesPlanAndProviderContract(t *testi
 	if err != nil || !strings.Contains(inspected, source.Ref) || !strings.Contains(inspected, `"width":1920`) || !strings.Contains(inspected, `"height":1080`) {
 		t.Fatalf("inspect_composition did not expose the preserved source and resolved geometry: payload=%s err=%v", inspected, err)
 	}
+
+	// Provider-authored composition updates carry exact visual references but not
+	// the server-resolved visual_media_type. UpdateComposition must hydrate that
+	// internal field just as initial proposal creation does.
+	updatedPlan := *response.Proposal.Plan
+	updatedPlan.Parts = append([]pebblestore.VideoPlanPart(nil), response.Proposal.Plan.Parts...)
+	updatedPlan.Parts[0].VisualMediaType = ""
+	updateArgs, err := json.Marshal(map[string]any{
+		"action":               "update_composition",
+		"project_id":           create.ProjectID,
+		"proposal_id":          response.Proposal.ID,
+		"expected_revision_id": response.Proposal.WorkingRevisionID,
+		"plan":                 updatedPlan,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	updatedPayload, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, Call{CallID: "update", Name: "manage_video", Arguments: string(updateArgs)})
+	if err != nil || !strings.Contains(updatedPayload, `"visual_media_type":"image/png"`) {
+		t.Fatalf("update_composition did not rehydrate the exact ready fallback media type: payload=%s err=%v", updatedPayload, err)
+	}
 }
 
 func TestParseVideoPlanProposalRejectsUnknownSpatialFields(t *testing.T) {
