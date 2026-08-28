@@ -1440,6 +1440,29 @@ func mergeAcceptedVideoPlan(accepted *VideoPlanProposal, proposed VideoPlanPropo
 	return merged, nil
 }
 
+func hydrateRevisionVideoPlanCatalog(accepted *VideoPlanProposal, proposed *VideoPlanProposal) error {
+	if proposed == nil || proposed.Kind != VideoPlanKindRevision || proposed.CompositionCatalog != nil {
+		return nil
+	}
+	linkedLayoutID := ""
+	for _, part := range proposed.Parts {
+		if part.Composition != nil && !part.Composition.Detached && !part.Composition.Disabled {
+			linkedLayoutID = strings.TrimSpace(part.Composition.LayoutID)
+			if linkedLayoutID != "" {
+				break
+			}
+		}
+	}
+	if linkedLayoutID == "" {
+		return nil
+	}
+	if accepted == nil || accepted.CompositionCatalog == nil {
+		return fmt.Errorf("composition link %q requires a catalog on the accepted base plan", linkedLayoutID)
+	}
+	proposed.CompositionCatalog = accepted.CompositionCatalog
+	return nil
+}
+
 func mergeStoryboardReplacement(existing, replacement VideoPlanPart) VideoPlanPart {
 	if existing.StoryboardSource == nil {
 		return replacement
@@ -2985,6 +3008,22 @@ func (s *SessionStore) CreateVideoEditProposal(input CreateVideoEditProposalInpu
 	intent := strings.TrimSpace(input.Intent)
 	if intent == "" {
 		intent = VideoEditProposalIntentGeneral
+	}
+	if input.Plan != nil && input.Plan.Kind == VideoPlanKindRevision && input.Plan.CompositionCatalog == nil {
+		base, ok, err := s.GetVideoProjectRevision(input.AccountScopeID, input.SessionID, input.ProjectID, input.BaseRevisionID)
+		if err != nil {
+			return VideoEditProposalSnapshot{}, err
+		}
+		if !ok {
+			return VideoEditProposalSnapshot{}, fmt.Errorf("base revision %q not found", input.BaseRevisionID)
+		}
+		accepted, err := acceptedVideoPlanFromTimeline(base.Timeline)
+		if err != nil {
+			return VideoEditProposalSnapshot{}, err
+		}
+		if err := hydrateRevisionVideoPlanCatalog(accepted, input.Plan); err != nil {
+			return VideoEditProposalSnapshot{}, err
+		}
 	}
 	proposal := VideoEditProposalSnapshot{ID: input.ProposalID, ProjectID: input.ProjectID, BaseRevisionID: input.BaseRevisionID, AccountScopeID: input.AccountScopeID, UserID: input.UserID, SessionID: input.SessionID, Status: VideoEditProposalStatusPending, Title: input.Title, Rationale: input.Rationale, Intent: intent, Plan: input.Plan, Operations: input.Operations, AffectedRanges: input.AffectedRanges, CreatedAt: now, UpdatedAt: now}
 	clientID := input.ClientRequestID

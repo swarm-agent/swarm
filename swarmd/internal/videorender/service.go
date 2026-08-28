@@ -1986,7 +1986,7 @@ func renderFailureCode(err error, fallback string) string {
 	message := strings.ToLower(err.Error())
 	for _, code := range []string{
 		"animation_renderer_unavailable", "animation_encoder_unavailable", "animation_runtime_missing",
-		"animation_not_ready", "animation_seek_failed", "animation_frame_unstable", "animation_network_blocked",
+		"animation_not_ready", "animation_seek_rejected", "animation_seek_timeout", "animation_seek_ack_mismatch", "animation_seek_failed", "animation_frame_unstable", "animation_network_blocked",
 		"animation_timeout", "animation_encode_failed", "animation_concat_failed", "animation_mp4_invalid",
 	} {
 		if strings.Contains(message, code) {

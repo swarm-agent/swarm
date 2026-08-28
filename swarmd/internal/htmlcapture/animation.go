@@ -570,9 +570,13 @@ func captureAnimationFrame(browserCtx context.Context, timeMS int, auditStabilit
 	var audit animationAudit
 	expression := fmt.Sprintf(`(async () => {
 const time=%d, api=globalThis.__SWARM_ANIMATION_V1__;
-let ack; try { ack=await Promise.race([Promise.resolve().then(()=>api.seek(time)),new Promise(resolve=>setTimeout(()=>resolve({__swarm_outcome:"seek_timeout"}),%d))]); } catch (_) { return {code:"animation_seek_failed",outcome:"seek_rejected"}; }
-if (ack&&typeof ack.__swarm_outcome==="string") return {code:"animation_seek_failed",outcome:ack.__swarm_outcome};
-if (!ack || Object.keys(ack).length!==1 || ack.time_ms!==time || document.documentElement.dataset.swarmAnimationTimeMs!==String(time)) return {code:"animation_seek_failed",outcome:"seek_ack_mismatch"};
+let ack; try { ack=await Promise.race([Promise.resolve().then(()=>api.seek(time)),new Promise(resolve=>setTimeout(()=>resolve({__swarm_outcome:"seek_timeout"}),%d))]); } catch (_) { return {code:"animation_seek_rejected",outcome:"seek_rejected"}; }
+if (ack&&typeof ack.__swarm_outcome==="string") {
+  if (ack.__swarm_outcome==="seek_rejected") return {code:"animation_seek_rejected",outcome:ack.__swarm_outcome};
+  if (ack.__swarm_outcome==="seek_timeout") return {code:"animation_seek_timeout",outcome:ack.__swarm_outcome};
+  return {code:"animation_seek_failed",outcome:ack.__swarm_outcome};
+}
+if (!ack || Object.keys(ack).length!==1 || ack.time_ms!==time || document.documentElement.dataset.swarmAnimationTimeMs!==String(time)) return {code:"animation_seek_ack_mismatch",outcome:"seek_ack_mismatch"};
 for (const animation of document.getAnimations()) animation.pause();
 return {code:"ok",outcome:"seek_acknowledged"};
 })()`, timeMS, animationSeekTimeoutMS)
@@ -950,8 +954,12 @@ func animationSafeMessage(code string) string {
 		return "animation runtime did not acknowledge complete readiness"
 	case "animation_timeout":
 		return "animation runtime exceeded the fixed readiness deadline"
-	case "animation_seek_failed":
-		return "animation runtime did not acknowledge the renderer-controlled timestamp before the fixed deadline"
+	case "animation_seek_rejected":
+		return "animation runtime rejected the renderer-controlled timestamp"
+	case "animation_seek_timeout":
+		return "animation runtime did not settle the renderer-controlled timestamp before the fixed deadline"
+	case "animation_seek_ack_mismatch", "animation_seek_failed":
+		return "animation runtime returned an invalid renderer-controlled timestamp acknowledgement"
 	case "animation_blocked":
 		return "animation document contains blocking UI"
 	case "animation_viewport_overflow":

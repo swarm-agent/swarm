@@ -32,24 +32,28 @@ import (
 )
 
 const (
-	responsesURL                                 = "https://chatgpt.com/backend-api/codex/responses"
-	openAIResponsesURL                           = "https://api.openai.com/v1/responses"
-	openAIBetaHeader                             = "OpenAI-Beta"
-	responsesWebsocketBetaHeaderV2               = "responses_websockets=2026-02-06"
-	originatorHeader                             = "originator"
-	defaultOriginatorHeaderValue                 = "codex_cli_rs"
-	userAgentHeader                              = "User-Agent"
-	defaultCodexTransportUserAgent               = "codex_cli_rs/swarm-go"
-	defaultOpenAITransportUserAgent              = "swarm-go/openai-responses"
-	defaultCodexTextVerbosity                    = "low"
-	includeReasoningEncryptedContentPath         = "reasoning.encrypted_content"
-	chatGPTAccountIDHeader                       = "ChatGPT-Account-ID"
-	tokenURL                                     = "https://auth.openai.com/oauth/token"
-	clientID                                     = "app_EMoamEEZ73f0CkXaXp7hrann"
-	maxCodexResponseBodyBytes              int64 = 32 << 20
-	maxCodexStreamEventBytes                     = 8 << 20
-	maxCodexStreamLineBytes                      = maxCodexStreamEventBytes + 64
-	maxCodexWebsocketMessageBytes          int64 = 256 << 20
+	responsesURL                               = "https://chatgpt.com/backend-api/codex/responses"
+	openAIResponsesURL                         = "https://api.openai.com/v1/responses"
+	openAIBetaHeader                           = "OpenAI-Beta"
+	responsesWebsocketBetaHeaderV2             = "responses_websockets=2026-02-06"
+	originatorHeader                           = "originator"
+	defaultOriginatorHeaderValue               = "codex_cli_rs"
+	userAgentHeader                            = "User-Agent"
+	defaultCodexTransportUserAgent             = "codex_cli_rs/swarm-go"
+	defaultOpenAITransportUserAgent            = "swarm-go/openai-responses"
+	defaultCodexTextVerbosity                  = "low"
+	includeReasoningEncryptedContentPath       = "reasoning.encrypted_content"
+	chatGPTAccountIDHeader                     = "ChatGPT-Account-ID"
+	tokenURL                                   = "https://auth.openai.com/oauth/token"
+	clientID                                   = "app_EMoamEEZ73f0CkXaXp7hrann"
+	maxCodexResponseBodyBytes            int64 = 32 << 20
+	maxCodexStreamEventBytes                   = 8 << 20
+	maxCodexStreamLineBytes                    = maxCodexStreamEventBytes + 64
+	maxCodexWebsocketMessageBytes        int64 = 256 << 20
+	// Full replay can otherwise base64-expand every prior media_inspect result
+	// into one oversized websocket request. Keep only the newest bounded raw
+	// media suffix; native continuation still sends each new image exactly once.
+	maxCodexFullReplayMediaBytes           int64 = 20 << 20
 	maxCodexCompletedSnapshotBytes               = maxCodexWebsocketMessageBytes
 	maxCodexWebsocketCompactedMessageBytes int64 = 1 << 30
 	maxCodexCompletedMetadataBytes               = 1 << 20
@@ -928,9 +932,15 @@ func normalizeCodexRequestTools(tools []ToolDefinition) []ToolDefinition {
 }
 
 func materializeSessionMediaInput(req Request, input []map[string]any) ([]map[string]any, error) {
+	return materializeSessionMediaInputWithReplayBudget(req, input, maxCodexFullReplayMediaBytes)
+}
+
+func materializeSessionMediaInputWithReplayBudget(req Request, input []map[string]any, replayBudget int64) ([]map[string]any, error) {
 	if len(input) == 0 {
 		return nil, nil
 	}
+	remainingMediaBytes := sessionMediaInputBytes(input)
+	boundCodexReplay := strings.EqualFold(strings.TrimSpace(req.MediaContract.ProviderID), "codex") && replayBudget > 0
 	out := make([]map[string]any, 0, len(input))
 	mediaCounts := map[string]int{}
 	for _, item := range input {
@@ -950,6 +960,15 @@ func materializeSessionMediaInput(req Request, input []map[string]any) ([]map[st
 			if !ok {
 				return nil, errors.New("provider media input is malformed")
 			}
+			omitFromReplay := boundCodexReplay && remainingMediaBytes > replayBudget
+			remainingMediaBytes -= int64(len(payload.Bytes))
+			if omitFromReplay {
+				materialized = append(materialized, map[string]any{
+					"type": "input_text",
+					"text": "An earlier image payload was omitted from this full provider replay to keep the Codex websocket request bounded. The rest of its durable message or tool context remains; inspect the image again only if its pixels are still required.",
+				})
+				continue
+			}
 			capability, err := validateProviderMediaPayload(req, payload, mediaCounts)
 			if err != nil {
 				return nil, err
@@ -964,6 +983,26 @@ func materializeSessionMediaInput(req Request, input []map[string]any) ([]map[st
 		out = append(out, cloned)
 	}
 	return out, nil
+}
+
+func sessionMediaInputBytes(input []map[string]any) int64 {
+	var total int64
+	for _, item := range input {
+		content, ok := inputContentMaps(item["content"])
+		if !ok {
+			continue
+		}
+		for _, part := range content {
+			if !strings.EqualFold(strings.TrimSpace(asString(part["type"])), "session_media") {
+				continue
+			}
+			payload, ok := part["media"].(provideriface.SessionMediaPayload)
+			if ok {
+				total += int64(len(payload.Bytes))
+			}
+		}
+	}
+	return total
 }
 
 func inputContentMaps(value any) ([]map[string]any, bool) {
@@ -1646,8 +1685,12 @@ func (c *Client) codexWebsocketRequestPayload(ctx context.Context, req Request) 
 		payload, err := buildCodexRequestBody(req, req.Input)
 		return payload, properties, requestInputLen, err
 	}
+	deltaInput, err := materializeSessionMediaInput(req, req.Input[baselineLen:])
+	if err != nil {
+		return nil, nil, 0, err
+	}
 	payload := cloneMapAny(properties)
-	payload["input"] = sanitizeCodexRequestDeltaInput(req.Input[baselineLen:])
+	payload["input"] = sanitizeCodexRequestDeltaInput(deltaInput)
 	payload["previous_response_id"] = strings.TrimSpace(session.lastResponseID)
 	return payload, properties, requestInputLen, nil
 }

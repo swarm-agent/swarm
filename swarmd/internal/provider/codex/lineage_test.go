@@ -418,6 +418,60 @@ func TestCodexWebsocketRequestPayloadUsesIncrementalDeltaWithoutFullPayloadBuild
 	}
 }
 
+func TestCodexWebsocketContinuationMaterializesMediaInspectDelta(t *testing.T) {
+	client := NewClient(nil)
+	ctx := contextWithCodexTransportContext(context.Background(), codexTransportContext{
+		PromptCacheKey:            "cache-lineage-key",
+		SessionAffinityKey:        "affinity-media-key",
+		NativeContinuationAllowed: true,
+	})
+	session := client.cachedWebsocketSession("affinity-media-key")
+	session.lastRequestProperties = map[string]any{
+		"model":            "gpt-5.3-codex",
+		"stream":           true,
+		"store":            false,
+		"prompt_cache_key": "cache-lineage-key",
+		"text":             map[string]any{"verbosity": defaultCodexTextVerbosity},
+	}
+	session.lastInputLen = 1
+	session.lastResponseID = "resp-media"
+	body := []byte("image-bytes")
+	payload := testMediaPayload("image", "image/png", "", body)
+	contract := allowedMediaContract("codex", "chatgpt_codex", "codex_oauth", "codex-chatgpt-v1", provideriface.MediaContractCapability{
+		Modality: "image", State: provideriface.MediaCapabilityStateAllowed, Semantics: pebblestore.ModelCatalogMediaSemanticsNative,
+		MIMETypes: []string{"image/png"}, ContentTypes: []string{"input_image"}, MaxBytes: 1024, MaxCount: 20,
+	})
+
+	got, _, _, err := client.codexWebsocketRequestPayload(ctx, Request{
+		ProviderCacheKey:          "cache-lineage-key",
+		SessionAffinityKey:        "affinity-media-key",
+		ProviderConfigurationHash: "configuration-hash",
+		Model:                     "gpt-5.3-codex",
+		NativeContinuationAllowed: true,
+		MediaContract:             contract,
+		Input: []map[string]any{
+			{"role": "user", "content": "inspect"},
+			{"role": "user", "content": []map[string]any{{"type": "session_media", "media": payload}}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("continuation media payload: %v", err)
+	}
+	if asString(got["previous_response_id"]) != "resp-media" {
+		t.Fatalf("previous_response_id = %q, want resp-media", asString(got["previous_response_id"]))
+	}
+	input := asSlice(got["input"])
+	if len(input) != 1 {
+		t.Fatalf("media delta input length = %d, want 1: %#v", len(input), input)
+	}
+	item, _ := input[0].(map[string]any)
+	content := asSlice(item["content"])
+	media, _ := content[0].(map[string]any)
+	if media["type"] != "input_image" || !strings.HasPrefix(asString(media["image_url"]), "data:image/png;base64,") {
+		t.Fatalf("media delta was not materialized: %#v", input)
+	}
+}
+
 func TestCodexFreshWebsocketPayloadDoesNotReusePreviousResponseEvenWithSameProviderCacheKey(t *testing.T) {
 	current := map[string]any{
 		"model":            "gpt-5.3-codex",

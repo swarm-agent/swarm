@@ -550,8 +550,12 @@ func animationRendererSafeMessage(code string) string {
 		return "animation runtime did not become ready"
 	case "animation_manifest_mismatch":
 		return "animation runtime acknowledgement does not match the manifest"
-	case "animation_seek_failed":
-		return "animation runtime did not acknowledge the exact renderer-controlled timestamp"
+	case "animation_seek_rejected":
+		return "animation runtime rejected the exact renderer-controlled timestamp"
+	case "animation_seek_timeout":
+		return "animation runtime did not settle the exact renderer-controlled timestamp before the fixed deadline"
+	case "animation_seek_ack_mismatch", "animation_seek_failed":
+		return "animation runtime returned an invalid exact renderer-controlled timestamp acknowledgement"
 	case "animation_frame_unstable":
 		return "animation pixels changed after the renderer selected a deterministic timestamp"
 	case "animation_viewport_overflow":

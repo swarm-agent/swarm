@@ -35,7 +35,7 @@ func TestValidateAnimationRequestBounds(t *testing.T) {
 }
 
 func TestAnimationSafeMessagesDoNotEchoAuthorContent(t *testing.T) {
-	for _, code := range []string{"animation_bind_timeout", "animation_manifest_mismatch", "animation_seek_failed", "animation_viewport_overflow", "private source"} {
+	for _, code := range []string{"animation_bind_timeout", "animation_manifest_mismatch", "animation_seek_rejected", "animation_seek_timeout", "animation_seek_ack_mismatch", "animation_seek_failed", "animation_viewport_overflow", "private source"} {
 		message := animationSafeMessage(code)
 		if message == "" || strings.Contains(message, code) {
 			t.Fatalf("unsafe message for %q: %q", code, message)
@@ -206,10 +206,22 @@ func TestAnimationPreflightRejectsSeekAckMismatch(t *testing.T) {
 	script := `<!doctype html><html><head><script>globalThis.__SWARM_ANIMATION_BIND__({version:"swarm.animation/v1",ready(){return {duration_ms:400,fps:10}},seek(){return {time_ms:-1}}});</script></head><body></body></html>`
 	result, err := preflightHTML(t, script, 400, 10)
 	var captureErr *Error
-	if !errors.As(err, &captureErr) || captureErr.Code != "animation_seek_failed" {
+	if !errors.As(err, &captureErr) || captureErr.Code != "animation_seek_ack_mismatch" {
 		t.Fatalf("error = %v; result=%+v", err, result)
 	}
 	if len(result.Diagnostics) < 2 || result.Diagnostics[1].Outcome != "seek_ack_mismatch" || result.Diagnostics[1].TimestampMS == nil || *result.Diagnostics[1].TimestampMS != 0 {
+		t.Fatalf("diagnostics = %+v", result.Diagnostics)
+	}
+}
+
+func TestAnimationPreflightRejectsLateSeekRejectionAfterDatasetUpdate(t *testing.T) {
+	script := `<!doctype html><html><head><script>globalThis.__SWARM_ANIMATION_BIND__({version:"swarm.animation/v1",ready(){return {duration_ms:400,fps:10}},seek(timeMs){document.documentElement.dataset.swarmAnimationTimeMs=String(timeMs);if(timeMs>0)throw new TypeError("private late render failure");return {time_ms:timeMs}}});</script></head><body></body></html>`
+	result, err := preflightHTML(t, script, 400, 10)
+	var captureErr *Error
+	if !errors.As(err, &captureErr) || captureErr.Code != "animation_seek_rejected" || strings.Contains(captureErr.Error(), "private late render failure") {
+		t.Fatalf("error = %v; result=%+v", err, result)
+	}
+	if len(result.Diagnostics) < 4 || result.Diagnostics[len(result.Diagnostics)-1].Outcome != "seek_rejected" || result.Diagnostics[len(result.Diagnostics)-1].TimestampMS == nil || *result.Diagnostics[len(result.Diagnostics)-1].TimestampMS == 0 {
 		t.Fatalf("diagnostics = %+v", result.Diagnostics)
 	}
 }
@@ -218,7 +230,7 @@ func TestAnimationPreflightRejectsSeekRejectionWithoutEcho(t *testing.T) {
 	script := `<!doctype html><html><head><script>globalThis.__SWARM_ANIMATION_BIND__({version:"swarm.animation/v1",ready(){return {duration_ms:400,fps:10}},seek(){throw new Error("private seek")}});</script></head><body></body></html>`
 	result, err := preflightHTML(t, script, 400, 10)
 	var captureErr *Error
-	if !errors.As(err, &captureErr) || captureErr.Code != "animation_seek_failed" || strings.Contains(captureErr.Error(), "private seek") {
+	if !errors.As(err, &captureErr) || captureErr.Code != "animation_seek_rejected" || strings.Contains(captureErr.Error(), "private seek") {
 		t.Fatalf("error = %v; result=%+v", err, result)
 	}
 	if len(result.Diagnostics) < 2 || result.Diagnostics[1].Outcome != "seek_rejected" {
@@ -230,7 +242,7 @@ func TestAnimationPreflightRejectsSeekTimeout(t *testing.T) {
 	script := `<!doctype html><html><head><script>globalThis.__SWARM_ANIMATION_BIND__({version:"swarm.animation/v1",ready(){return {duration_ms:400,fps:10}},seek(){return new Promise(()=>{})}});</script></head><body></body></html>`
 	result, err := preflightHTML(t, script, 400, 10)
 	var captureErr *Error
-	if !errors.As(err, &captureErr) || captureErr.Code != "animation_seek_failed" {
+	if !errors.As(err, &captureErr) || captureErr.Code != "animation_seek_timeout" {
 		t.Fatalf("error = %v; result=%+v", err, result)
 	}
 	if len(result.Diagnostics) < 2 || result.Diagnostics[1].Outcome != "seek_timeout" || result.Diagnostics[1].TimestampMS == nil || *result.Diagnostics[1].TimestampMS != 0 {
@@ -294,7 +306,7 @@ func TestAnimationPreflightRejectsMalformedSeekAck(t *testing.T) {
 	script := `<!doctype html><html><head><script>globalThis.__SWARM_ANIMATION_BIND__({version:"swarm.animation/v1",ready(){return {duration_ms:400,fps:10}},seek(timeMs){document.documentElement.dataset.swarmAnimationTimeMs=String(timeMs);return {time_ms:timeMs,extra:true}}});</script></head><body></body></html>`
 	result, err := preflightHTML(t, script, 400, 10)
 	var captureErr *Error
-	if !errors.As(err, &captureErr) || captureErr.Code != "animation_seek_failed" || len(result.Diagnostics) < 2 || result.Diagnostics[1].Outcome != "seek_ack_mismatch" {
+	if !errors.As(err, &captureErr) || captureErr.Code != "animation_seek_ack_mismatch" || len(result.Diagnostics) < 2 || result.Diagnostics[1].Outcome != "seek_ack_mismatch" {
 		t.Fatalf("error = %v; result=%+v", err, result)
 	}
 }

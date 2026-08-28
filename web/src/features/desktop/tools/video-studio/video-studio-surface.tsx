@@ -447,15 +447,21 @@ export type VideoIterationComposerContext = {
   storyboard?: VideoStoryboardContext | null
 }
 
-function proposalChanges(proposal: VideoEditProposalWire): VideoIterationChange[] {
+export function videoPlanProposalChanges(proposal: VideoEditProposalWire, basePartOrder: Array<{ id: string; duration_ms: number }> = []): VideoIterationChange[] {
   const plan = proposal.plan
   const changes = plan
     ? (() => {
-      let cursor = 0
+      const starts = new Map<string, number>()
+      let baseCursor = 0
+      for (const part of basePartOrder) {
+        starts.set(part.id, baseCursor)
+        baseCursor += Math.max(0, part.duration_ms)
+      }
+      let appendedCursor = baseCursor
       return plan.parts.map((part) => {
-        const startMs = cursor
-        cursor += Math.max(0, part.duration_ms)
-        return { id: part.id, key: `${proposal.id}:part:${part.id}`, label: `Changed clip · ${part.title}`, clipId: part.id, startMs, endMs: cursor, artifact: part.visual ?? null, storyboard: videoPlanPartStoryboardContext(part), planPart: part }
+        const startMs = starts.get(part.id) ?? appendedCursor
+        if (!starts.has(part.id)) appendedCursor += Math.max(0, part.duration_ms)
+        return { id: part.id, key: `${proposal.id}:part:${part.id}`, label: `Changed clip · ${part.title}`, clipId: part.id, startMs, endMs: startMs + Math.max(0, part.duration_ms), artifact: part.visual ?? null, storyboard: videoPlanPartStoryboardContext(part), planPart: part }
       })
     })()
     : proposal.operations.map((operation, index) => {
@@ -471,7 +477,7 @@ function proposalChanges(proposal: VideoEditProposalWire): VideoIterationChange[
   return changes.filter((change) => acceptedIds.has(change.id))
 }
 
-export function buildVideoIterationTimeline(proposals: VideoEditProposalWire[], revisions: VideoIterationRevisionWire[]): VideoIterationEntry[] {
+export function buildVideoIterationTimeline(proposals: VideoEditProposalWire[], revisions: VideoIterationRevisionWire[], basePartOrder: Array<{ id: string; duration_ms: number }> = []): VideoIterationEntry[] {
   const revisionByProposal = new Map<string, VideoIterationRevisionWire>()
   for (const revision of revisions) if (revision.origin_proposal_id) revisionByProposal.set(revision.origin_proposal_id, revision)
   const proposalIds = new Set(proposals.map((proposal) => proposal.id))
@@ -486,7 +492,7 @@ export function buildVideoIterationTimeline(proposals: VideoEditProposalWire[], 
       status: proposal.status,
       title: proposal.title || proposal.plan?.summary || proposal.rationale || 'AI video iteration',
       createdAt: proposal.created_at,
-      changes: proposalChanges(proposal),
+      changes: videoPlanProposalChanges(proposal, basePartOrder),
     }
   })
   const revisionEntries = revisions.filter((revision) => !revision.origin_proposal_id || !proposalIds.has(revision.origin_proposal_id)).map((revision): VideoIterationEntry => ({
@@ -513,6 +519,7 @@ export const VideoIterationSidebar = memo(function VideoIterationSidebar(props: 
   projectId: string
   currentRevisionId: string
   revisions: VideoIterationRevisionWire[]
+  basePartOrder?: Array<{ id: string; duration_ms: number }>
   onProposalsLoaded?: (proposals: VideoEditProposalWire[]) => void
   onAccepted: () => Promise<void> | void
   onFeedback: (message: string) => Promise<void> | void
@@ -537,15 +544,15 @@ export const VideoIterationSidebar = memo(function VideoIterationSidebar(props: 
     onError: setError,
   }), [props.onProposalsLoaded, props.projectId, props.sessionId])
   useEffect(() => { void load() }, [load, projectionSequence])
-  const iterations = useMemo(() => buildVideoIterationTimeline(proposals, props.revisions), [proposals, props.revisions])
+  const iterations = useMemo(() => buildVideoIterationTimeline(proposals, props.revisions, props.basePartOrder), [proposals, props.basePartOrder, props.revisions])
   const newestPendingIterationId = useMemo(() => iterations.find((iteration) => iteration.proposal?.status === 'pending' && iteration.proposal.working_revision_id === props.currentRevisionId)?.id
     ?? iterations.find((iteration) => iteration.proposal?.status === 'pending')?.id
     ?? null, [iterations, props.currentRevisionId])
 
   useEffect(() => {
     const selectedIteration = previewId ? iterations.find((iteration) => iteration.id === previewId) : null
-    if (selectedIteration?.proposal?.status === 'pending') return
-    if (!previewId || !selectedIteration) setPreviewId(newestPendingIterationId)
+    if (selectedIteration?.proposal?.status === 'pending' && selectedIteration.id === newestPendingIterationId) return
+    if (previewId !== newestPendingIterationId) setPreviewId(newestPendingIterationId)
   }, [iterations, newestPendingIterationId, previewId])
 
   const previewProposal = useMemo(() => {

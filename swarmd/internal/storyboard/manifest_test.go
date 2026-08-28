@@ -21,16 +21,43 @@ func TestParseHTMLPreservesOrderedCanonicalSections(t *testing.T) {
 func TestParseHTMLPreservesOptionalCompositionContract(t *testing.T) {
 	html := []byte(`<script id="swarm-storyboard-manifest" type="application/json">{"version":"swarm.storyboard/v1","compositions":{"schema_version":1,"layouts":[{"id":"phone-grid","slots":[{"id":"phone-a","requirement":"Portrait product capture","geometry":{"x":0.1,"y":0.1,"width":0.3,"height":0.8},"z_index":1,"fit":"cover","alignment_x":0.5,"alignment_y":0.5,"mask":{"kind":"rounded_rect","radius":0.05},"aspect_lock":0.5625}]}]},"sections":[{"id":"opening","capture_state_id":"opening-still","title":"Opening","duration_ms":2500,"creative_direction":"Product hero.","filming_requirements":["Capture portrait video"],"production_state":"pending","composition":{"layout_id":"phone-grid"}}]}</script>`)
 	manifest, err := ParseHTML(html, []string{"opening-still"})
-	if err != nil { t.Fatal(err) }
-	if manifest.Compositions == nil || manifest.Sections[0].Composition == nil || manifest.Sections[0].Composition.LayoutID != "phone-grid" { t.Fatalf("manifest=%#v", manifest) }
+	if err != nil {
+		t.Fatal(err)
+	}
+	if manifest.Compositions == nil || manifest.Sections[0].Composition == nil || manifest.Sections[0].Composition.LayoutID != "phone-grid" {
+		t.Fatalf("manifest=%#v", manifest)
+	}
 	resolved, err := videocomposition.Resolve(manifest.Compositions, manifest.Sections[0].Composition, 1920, 1080, manifest.Sections[0].DurationMs)
-	if err != nil || len(resolved) != 1 || resolved[0].Pixels.Width%2 != 0 { t.Fatalf("resolved=%#v err=%v", resolved, err) }
+	if err != nil || len(resolved) != 1 || resolved[0].Pixels.Width%2 != 0 {
+		t.Fatalf("resolved=%#v err=%v", resolved, err)
+	}
+}
+
+func TestParseHTMLAcceptsCompositionCatalogField(t *testing.T) {
+	html := []byte(`<script id="swarm-storyboard-manifest" type="application/json">{"version":"swarm.storyboard/v1","composition_catalog":{"schema_version":1,"layouts":[{"id":"product-frame","slots":[{"id":"product","requirement":"Public-safe product capture","geometry":{"x":0.3,"y":0.1,"width":0.6,"height":0.7},"z_index":1,"fit":"contain","alignment_x":0.5,"alignment_y":0.5,"crop":{},"mask":{"kind":"rounded_rect","radius":0.04},"aspect_lock":1.7777777778}]}]},"sections":[{"id":"opening","capture_state_id":"opening-still","title":"Opening","duration_ms":2500,"creative_direction":"Product hero.","filming_requirements":["Capture product video"],"production_state":"pending"}]}</script>`)
+	manifest, err := ParseHTML(html, []string{"opening-still"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if manifest.Compositions == nil || manifest.CompositionCatalog != nil || len(manifest.Compositions.Layouts) != 1 || manifest.Compositions.Layouts[0].ID != "product-frame" {
+		t.Fatalf("manifest=%#v", manifest)
+	}
+}
+
+func TestParseHTMLRejectsDuplicateCompositionCatalogFields(t *testing.T) {
+	html := []byte(`<script id="swarm-storyboard-manifest" type="application/json">{"version":"swarm.storyboard/v1","compositions":{"schema_version":1,"layouts":[]},"composition_catalog":{"schema_version":1,"layouts":[]},"sections":[{"id":"opening","capture_state_id":"opening-still","title":"Opening","duration_ms":2500,"creative_direction":"Product hero.","filming_requirements":["Capture"],"production_state":"pending"}]}</script>`)
+	_, err := ParseHTML(html, []string{"opening-still"})
+	if err == nil || !strings.Contains(err.Error(), "storyboard_composition_invalid") {
+		t.Fatalf("err=%v", err)
+	}
 }
 
 func TestParseHTMLRejectsInvalidComposition(t *testing.T) {
 	html := []byte(`<script id="swarm-storyboard-manifest" type="application/json">{"version":"swarm.storyboard/v1","compositions":{"schema_version":1,"layouts":[{"id":"bad","extends_layout_id":"bad","slots":[]}]},"sections":[{"id":"opening","capture_state_id":"opening-still","title":"Opening","duration_ms":2500,"creative_direction":"Product hero.","filming_requirements":["Capture"],"production_state":"pending","composition":{"layout_id":"bad"}}]}</script>`)
 	_, err := ParseHTML(html, []string{"opening-still"})
-	if err == nil || !strings.Contains(err.Error(), "storyboard_composition_invalid") { t.Fatalf("err=%v", err) }
+	if err == nil || !strings.Contains(err.Error(), "storyboard_composition_invalid") {
+		t.Fatalf("err=%v", err)
+	}
 }
 
 func TestParseHTMLRejectsMalformedDuplicateAndMissingState(t *testing.T) {

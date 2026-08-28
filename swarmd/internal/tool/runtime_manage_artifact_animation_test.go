@@ -235,6 +235,9 @@ func TestManagedAnimationFailureCodeExtractionIsBoundedAndRejectsSuffixInjection
 		want string
 	}{
 		{err: nil, want: "animation_renderer_failed"},
+		{err: animationError("animation_seek_rejected", "safe"), want: "animation_seek_rejected"},
+		{err: animationError("animation_seek_timeout", "safe"), want: "animation_seek_timeout"},
+		{err: animationError("animation_seek_ack_mismatch", "safe"), want: "animation_seek_ack_mismatch"},
 		{err: animationError("animation_seek_failed", "safe"), want: "animation_seek_failed"},
 		{err: errors.New("manage_artifact HTML animation failed (code=animation_seek_failed private): unsafe"), want: "animation_renderer_failed"},
 		{err: errors.New("manage_artifact HTML animation failed (code=animation_seek_failed/../../private): unsafe"), want: "animation_renderer_failed"},

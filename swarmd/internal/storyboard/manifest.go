@@ -34,20 +34,21 @@ var (
 )
 
 type Manifest struct {
-	Version      string                    `json:"version"`
-	Compositions *videocomposition.Catalog `json:"compositions,omitempty"`
-	Sections     []Section                 `json:"sections"`
+	Version            string                    `json:"version"`
+	Compositions       *videocomposition.Catalog `json:"compositions,omitempty"`
+	CompositionCatalog *videocomposition.Catalog `json:"composition_catalog,omitempty"`
+	Sections           []Section                 `json:"sections"`
 }
 
 type Section struct {
-	ID                  string   `json:"id"`
-	CaptureStateID      string   `json:"capture_state_id"`
-	Title               string   `json:"title"`
-	DurationMs          int64    `json:"duration_ms"`
-	Narration           string   `json:"narration,omitempty"`
-	OnScreenText        string   `json:"on_screen_text,omitempty"`
-	CreativeDirection   string   `json:"creative_direction"`
-	FilmingRequirements []string `json:"filming_requirements"`
+	ID                  string                 `json:"id"`
+	CaptureStateID      string                 `json:"capture_state_id"`
+	Title               string                 `json:"title"`
+	DurationMs          int64                  `json:"duration_ms"`
+	Narration           string                 `json:"narration,omitempty"`
+	OnScreenText        string                 `json:"on_screen_text,omitempty"`
+	CreativeDirection   string                 `json:"creative_direction"`
+	FilmingRequirements []string               `json:"filming_requirements"`
 	ProductionState     string                 `json:"production_state"`
 	Composition         *videocomposition.Link `json:"composition,omitempty"`
 }
@@ -101,6 +102,13 @@ func ParseHTML(html []byte, captureStateIDs []string) (Manifest, error) {
 	if manifest.Version != Version || len(manifest.Sections) < 1 || len(manifest.Sections) > MaxSections {
 		return Manifest{}, newError("storyboard_manifest_invalid", "storyboard manifest version or section count is invalid")
 	}
+	if manifest.Compositions != nil && manifest.CompositionCatalog != nil {
+		return Manifest{}, newError("storyboard_composition_invalid", "storyboard manifest must declare only one composition catalog field")
+	}
+	if manifest.Compositions == nil {
+		manifest.Compositions = manifest.CompositionCatalog
+	}
+	manifest.CompositionCatalog = nil
 
 	captureStates := make(map[string]struct{}, len(captureStateIDs))
 	for _, id := range captureStateIDs {

@@ -60,9 +60,13 @@ const evenCeil = (value: number) => Math.ceil(value / 2) * 2
 
 export function videoCompositionViewport(containerWidth: number, containerHeight: number, outputWidth: number, outputHeight: number) {
   const scale = Math.min(containerWidth / Math.max(1, outputWidth), containerHeight / Math.max(1, outputHeight))
-  const width = outputWidth * scale
-  const height = outputHeight * scale
-  return { x: (containerWidth - width) / 2, y: (containerHeight - height) / 2, width, height, scale }
+  const rawWidth = outputWidth * scale
+  const rawHeight = outputHeight * scale
+  const width = Math.abs(rawWidth - containerWidth) < 1e-9 ? containerWidth : rawWidth
+  const height = Math.abs(rawHeight - containerHeight) < 1e-9 ? containerHeight : rawHeight
+  const rawX = (containerWidth - width) / 2
+  const rawY = (containerHeight - height) / 2
+  return { x: Math.abs(rawX) < 1e-9 ? 0 : rawX, y: Math.abs(rawY) < 1e-9 ? 0 : rawY, width, height, scale }
 }
 
 function mergeSlot(base: VideoCompositionSlotWire, override: VideoCompositionSlotOverrideWire): VideoCompositionSlotWire {
@@ -197,11 +201,16 @@ export function CompositionVideo(props: { slot: ResolvedVideoCompositionSlot; lo
     const sourceSpan = source.source_end_ms - source.source_start_ms
     const timelineSpan = source.timeline_end_ms - source.timeline_start_ms
     const sourceMs = source.source_start_ms + Math.max(0, props.localTime - source.timeline_start_ms) * sourceSpan / Math.max(1, timelineSpan)
-    if (Math.abs(video.currentTime * 1000 - sourceMs) > 100) try { video.currentTime = sourceMs / 1000 } catch { /* metadata is not ready */ }
+    const seek = () => {
+      if (Math.abs(video.currentTime * 1000 - sourceMs) > 100) try { video.currentTime = sourceMs / 1000 } catch { /* metadata is not ready */ }
+    }
+    if (video.readyState >= HTMLMediaElement.HAVE_METADATA) seek()
+    else video.addEventListener('loadedmetadata', seek, { once: true })
     video.volume = clamp(source.gain ?? 1, 0, 1)
     video.muted = source.audio_policy === 'mute'
     if (props.playing && video.paused) void video.play().catch(() => undefined)
     if (!props.playing && !video.paused) video.pause()
+    return () => video.removeEventListener('loadedmetadata', seek)
   }, [props.localTime, props.playing, props.slot.source, props.src])
   return <video ref={ref} src={props.src} preload="auto" playsInline crossOrigin="use-credentials" style={{ ...cropStyle(props.slot), position: 'absolute', objectFit: props.slot.fit, objectPosition: `${props.slot.alignment_x * 100}% ${props.slot.alignment_y * 100}%` }} />
 }

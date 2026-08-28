@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { VIDEO_TRANSITION_KINDS, buildVideoIterationTimeline, loadLatestVideoEditProposals, proposedVideoPlanClipDetails, rejectVideoEditProposal, renderedVideoArtifactUrl, selectedVideoProposalChangeIDs, transitionLabel, videoAnimationReadyForConfirmation, videoPlanPartMessageSelection, videoPlanPartStoryboardContext, videoPlanTransitionMessageSelection, videoProposalFocusClipId, videoProposalProjectionSequence, videoProposalsForConversationTurn, type VideoEditProposalWire } from '../video-studio/video-studio-surface'
+import { VIDEO_TRANSITION_KINDS, buildVideoIterationTimeline, loadLatestVideoEditProposals, proposedVideoPlanClipDetails, rejectVideoEditProposal, renderedVideoArtifactUrl, selectedVideoProposalChangeIDs, transitionLabel, videoAnimationReadyForConfirmation, videoPlanPartMessageSelection, videoPlanPartStoryboardContext, videoPlanProposalChanges, videoPlanTransitionMessageSelection, videoProposalFocusClipId, videoProposalProjectionSequence, videoProposalsForConversationTurn, type VideoEditProposalWire } from '../video-studio/video-studio-surface'
 
 import {
   acceptedVideoPlan,
@@ -14,6 +14,7 @@ import {
   ensurePrimaryVideoProject,
   fetchWorkspaceVideoCatalog,
   filterWorkspaceVideoCatalog,
+  focusedVideoReviewPartLocked,
   forkWorkspaceVideoRevision,
   listVideoProjects,
   layoutTimelineSegments,
@@ -245,6 +246,21 @@ test('Video Studio does not project an older pending proposal into a newer conve
   assert.deepEqual(videoProposalsForConversationTurn([oldProposal], 0), [oldProposal])
 })
 
+test('Video Studio places a targeted revision part on its stable base-plan range', () => {
+  const proposal: VideoEditProposalWire = {
+    id: 'r5', project_id: 'project-1', base_revision_id: 'r4', base_revision_number: 4,
+    status: 'pending', operations: [], created_at: 1, updated_at: 1,
+    plan: { kind: 'revision', parts: [{ id: 'step-2', title: 'Step 2', duration_ms: 5500 }] },
+  }
+  const [change] = videoPlanProposalChanges(proposal, [
+    { id: 'step-1', duration_ms: 8000 },
+    { id: 'step-2', duration_ms: 5500 },
+    { id: 'step-3', duration_ms: 5500 },
+  ])
+  assert.equal(change.startMs, 8000)
+  assert.equal(change.endMs, 13500)
+})
+
 test('Video Studio keeps only the selected animation playing after its iteration turn is over', () => {
   const visual = { session_id: 'session-1', collection_id: 'slides', variant_id: 'slide-1', event_seq: 9 }
   const orbit = { id: 'orbit', source: { ...visual, variant_id: 'orbit' } }
@@ -295,6 +311,15 @@ test('Video Studio updates only the selected stable part and rejects cross-part 
   assert.equal(selectVideoAnimationCandidateLocally(proposal, 'outro', { ...outroA, source: introA.source }), null)
   assert.equal(replaceVideoEditProposal([proposal], selected ?? proposal)[0], selected)
   assert.deepEqual(replaceVideoEditProposal([], selected ?? proposal), [selected])
+})
+
+test('Video Studio focused review locks static parts and exact selected candidates', () => {
+  const source = { session_id: 'session-1', collection_id: 'animations', variant_id: 'orbit', event_seq: 1 }
+  const candidate = { id: 'orbit', source }
+  assert.equal(focusedVideoReviewPartLocked({ id: 'still', title: 'Still', duration_ms: 1000 }), true)
+  assert.equal(focusedVideoReviewPartLocked({ id: 'intro', title: 'Intro', duration_ms: 1000, animation_candidates: { candidates: [candidate], status: 'awaiting_selection' } }), false)
+  assert.equal(focusedVideoReviewPartLocked({ id: 'intro', title: 'Intro', duration_ms: 1000, animation_candidates: { candidates: [candidate], selected_candidate_id: 'orbit', selected_source: source, status: 'awaiting_export' } }), true)
+  assert.equal(focusedVideoReviewPartLocked({ id: 'intro', title: 'Intro', duration_ms: 1000, animation_candidates: { candidates: [candidate], selected_candidate_id: 'orbit', selected_source: { ...source, event_seq: 2 }, status: 'awaiting_export' } }), false)
 })
 
 test('Video Studio blocks rendering only when a selected clip has multiple unlocked iterations', () => {

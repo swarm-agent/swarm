@@ -89,6 +89,41 @@ func TestBuildRequestPayloadMaterializesOpenAIImageAndPDF(t *testing.T) {
 	}
 }
 
+func TestMaterializeSessionMediaInputBoundsCodexFullReplayToNewestImages(t *testing.T) {
+	contract := allowedMediaContract("codex", "chatgpt_codex", "codex_oauth", "codex-chatgpt-v1", provideriface.MediaContractCapability{
+		Modality: "image", State: provideriface.MediaCapabilityStateAllowed, Semantics: pebblestore.ModelCatalogMediaSemanticsNative,
+		MIMETypes: []string{"image/png"}, ContentTypes: []string{"input_image"}, MaxBytes: 1024, MaxCount: 20,
+	})
+	input := make([]map[string]any, 0, 3)
+	for _, body := range [][]byte{[]byte("old1"), []byte("new2"), []byte("new3")} {
+		input = append(input, map[string]any{
+			"role":    "user",
+			"content": []map[string]any{{"type": "session_media", "media": testMediaPayload("image", "image/png", "", body)}},
+		})
+	}
+
+	materialized, err := materializeSessionMediaInputWithReplayBudget(Request{
+		ProviderConfigurationHash: "configuration-hash",
+		MediaContract:             contract,
+	}, input, 10)
+	if err != nil {
+		t.Fatalf("materializeSessionMediaInputWithReplayBudget: %v", err)
+	}
+	if len(materialized) != 3 {
+		t.Fatalf("materialized input count = %d, want 3", len(materialized))
+	}
+	oldContent, _ := inputContentMaps(materialized[0]["content"])
+	if len(oldContent) != 1 || oldContent[0]["type"] != "input_text" || !strings.Contains(asString(oldContent[0]["text"]), "omitted") {
+		t.Fatalf("old replay media was not replaced by an explicit marker: %#v", materialized[0])
+	}
+	for i := 1; i < len(materialized); i++ {
+		content, _ := inputContentMaps(materialized[i]["content"])
+		if len(content) != 1 || content[0]["type"] != "input_image" || !strings.HasPrefix(asString(content[0]["image_url"]), "data:image/png;base64,") {
+			t.Fatalf("new replay media %d was not retained: %#v", i, materialized[i])
+		}
+	}
+}
+
 func TestBuildRequestPayloadAcceptsImageExtensionWhenMIMEIsAuthoritative(t *testing.T) {
 	payload := testMediaPayload("image", "image/png", "png", []byte("image-bytes"))
 	capability := provideriface.MediaContractCapability{Modality: "image", State: provideriface.MediaCapabilityStateAllowed, Semantics: pebblestore.ModelCatalogMediaSemanticsNative, MIMETypes: []string{"image/png"}, ContentTypes: []string{"input_image"}, MaxBytes: 1024, MaxCount: 1}

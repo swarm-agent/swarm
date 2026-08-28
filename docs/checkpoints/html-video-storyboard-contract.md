@@ -4,7 +4,7 @@
 
 ## Author
 
-Embed exactly one `#swarm-storyboard-manifest` JSON script in the same HTML as the capture manifest/runtime. Each storyboard section uses a stable `id`, references one exact capture state with `capture_state_id`, and declares `title`, `duration_ms`, `creative_direction`, non-empty `filming_requirements`, and `production_state` (`pending` or `ready`). Optional narration and on-screen text stay descriptive until represented by typed timeline objects.
+Embed exactly one `#swarm-storyboard-manifest` JSON script in the same HTML as the capture manifest/runtime. Each storyboard section uses a stable `id`, references one exact capture state with `capture_state_id`, and declares `title`, `duration_ms`, `creative_direction`, non-empty `filming_requirements`, and `production_state` (`pending` or `ready`). Optional narration and on-screen text stay descriptive until represented by typed timeline objects. Optional reusable layout geometry uses `composition_catalog`; the legacy `compositions` spelling remains accepted for existing authored sources, but a manifest must not declare both fields.
 
 ```json
 {

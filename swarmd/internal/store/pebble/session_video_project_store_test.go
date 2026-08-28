@@ -606,6 +606,31 @@ func TestVideoPlanCompositionDurabilityRevisionAndAcceptanceGate(t *testing.T) {
 	}
 }
 
+func TestHydrateRevisionVideoPlanCatalogUsesAcceptedBase(t *testing.T) {
+	catalog, link := durableCompositionFixture()
+	visual := &SessionArtifactSelectionReference{SessionID: "session", CollectionID: "collection", VariantID: "variant", EventSeq: 1}
+	accepted := &VideoPlanProposal{Kind: VideoPlanKindInitial, CompositionCatalog: catalog, Parts: []VideoPlanPart{{ID: "part", Title: "Part", DurationMs: 1000, Visual: visual, VisualMediaType: "image/png", Composition: link}}}
+	proposed := &VideoPlanProposal{Kind: VideoPlanKindRevision, Parts: []VideoPlanPart{{ID: "part", Title: "Replacement", DurationMs: 1000, Visual: visual, VisualMediaType: "image/png", Composition: link}}}
+	if err := hydrateRevisionVideoPlanCatalog(accepted, proposed); err != nil {
+		t.Fatal(err)
+	}
+	if proposed.CompositionCatalog != catalog {
+		t.Fatalf("revision catalog = %#v, want accepted catalog", proposed.CompositionCatalog)
+	}
+	if err := validateVideoPlanProposal(*proposed); err != nil {
+		t.Fatalf("hydrated revision must validate: %v", err)
+	}
+}
+
+func TestHydrateRevisionVideoPlanCatalogStillRejectsUnresolvedAuthority(t *testing.T) {
+	_, link := durableCompositionFixture()
+	visual := &SessionArtifactSelectionReference{SessionID: "session", CollectionID: "collection", VariantID: "variant", EventSeq: 1}
+	proposed := &VideoPlanProposal{Kind: VideoPlanKindRevision, Parts: []VideoPlanPart{{ID: "part", Title: "Replacement", DurationMs: 1000, Visual: visual, VisualMediaType: "image/png", Composition: link}}}
+	if err := hydrateRevisionVideoPlanCatalog(nil, proposed); err == nil || !strings.Contains(err.Error(), "accepted base plan") {
+		t.Fatalf("missing accepted catalog must fail closed, got %v", err)
+	}
+}
+
 func TestPendingSelectedVideoProductionPartBlocksAcceptance(t *testing.T) {
 	plan := &VideoPlanProposal{Kind: VideoPlanKindInitial, Parts: []VideoPlanPart{{ID: "shot", ProductionState: VideoProductionStatePending}}}
 	if got := pendingSelectedVideoProductionPart(plan, nil); got != "shot" {

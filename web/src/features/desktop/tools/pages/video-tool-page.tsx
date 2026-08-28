@@ -1,7 +1,7 @@
 import { type CSSProperties, type PointerEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useMatchRoute, useNavigate } from '@tanstack/react-router'
-import { Download, Eye, EyeOff, Film, FolderOpen, Library, ListVideo, Loader2, MessageSquare, Moon, Music, Pause, Play, RotateCcw, Search, Sparkles, Trash2, Volume2, VolumeX } from 'lucide-react'
+import { Check, Download, Eye, EyeOff, Film, FolderOpen, Library, ListVideo, Loader2, LockKeyhole, MessageSquare, Moon, Music, Pause, Play, RotateCcw, Search, Sparkles, Trash2, Volume2, VolumeX } from 'lucide-react'
 import { Button } from '../../../../components/ui/button'
 import { Dialog, DialogBackdrop, DialogPanel } from '../../../../components/ui/dialog'
 import { ModalCloseButton } from '../../../../components/ui/modal-close-button'
@@ -16,7 +16,7 @@ import { buildDesktopChatRouteOptions, getDesktopSessionCreateTarget, type Deskt
 import type { WorkspaceBrowseResult, WorkspaceEntry } from '../../../workspaces/launcher/types/workspace'
 import type { WorkspaceOverviewSwarmTarget } from '../../../workspaces/launcher/types/workspace-overview'
 import { SwarmToolSidebar } from '../components/swarm-tool-sidebar'
-import { VIDEO_TRANSITION_KINDS, VideoIterationSidebar, VideoSessionAISidecar, acceptVideoEditProposal, createVideoEditProposal, rejectVideoEditProposal, renderedVideoArtifactUrl, requestVideoRenderCancellation, selectVideoAnimationCandidate, transitionLabel, updateVideoCompositionProposal, videoAnimationReadyForConfirmation, videoPlanPartMessageSelection, videoPlanPartStoryboardContext, videoPlanTransitionMessageSelection, videoProposalProjectionSequence, type VideoAnimationCandidateWire, type VideoEditProposalWire, type VideoIterationComposerContext, type VideoPlanProposalWire, type VideoStepEditAction, type VideoTransitionKind, type VideoTransitionWire } from '../video-studio/video-studio-surface'
+import { VIDEO_TRANSITION_KINDS, VideoIterationSidebar, VideoSessionAISidecar, acceptVideoEditProposal, createVideoEditProposal, renderedVideoArtifactUrl, requestVideoRenderCancellation, selectVideoAnimationCandidate, transitionLabel, updateVideoCompositionProposal, videoAnimationReadyForConfirmation, videoPlanPartMessageSelection, videoPlanPartStoryboardContext, videoPlanTransitionMessageSelection, videoProposalProjectionSequence, type VideoAnimationCandidateWire, type VideoEditProposalWire, type VideoIterationComposerContext, type VideoPlanProposalWire, type VideoStepEditAction, type VideoTransitionKind, type VideoTransitionWire } from '../video-studio/video-studio-surface'
 import { fetchDesktopV3ArtifactPreviewAccess } from '../../session-v3/artifact-api'
 import { desktopV3ArtifactIterationMessage } from '../../session-v3/artifact-iteration-protocol'
 import { saveVideoSessionViewPreference } from '../video-studio/video-session-view-preference'
@@ -276,6 +276,10 @@ export function replaceVideoEditProposal(
     : [...proposals, updated]
 }
 
+export function focusedVideoReviewPartLocked(part: VideoPlanProposalWire['parts'][number]): boolean {
+  return !part.animation_candidates || videoAnimationReadyForConfirmation(part)
+}
+
 export function unresolvedVideoIterationLockPartIDs(
   proposal: VideoEditProposalWire | null,
   selectedChangeIds: string[] = [],
@@ -285,7 +289,7 @@ export function unresolvedVideoIterationLockPartIDs(
   return proposal.plan.parts
     .filter((part) => proposal.plan?.kind === 'initial' || selected.has(part.id))
     .filter((part) => (part.animation_candidates?.candidates.length ?? 0) > 1
-      && !part.animation_candidates?.selected_candidate_id)
+      && !focusedVideoReviewPartLocked(part))
     .map((part) => part.id)
 }
 
@@ -1608,7 +1612,6 @@ export function VideoToolPage() {
   const [animationSelectionBusyPartId, setAnimationSelectionBusyPartId] = useState<string | null>(null)
   const [liveAnimationURL, setLiveAnimationURL] = useState('')
   const [liveAnimationError, setLiveAnimationError] = useState<string | null>(null)
-  const [iterationCardURLs, setIterationCardURLs] = useState<Record<string, string>>({})
   const liveAnimationFrameRef = useRef<HTMLIFrameElement | null>(null)
   const [playhead, setPlayhead] = useState(0)
   const [clipDurations, setClipDurations] = useState<Record<string, number>>({})
@@ -1786,15 +1789,13 @@ export function VideoToolPage() {
   const activeCompositionPart = useMemo(() => playbackPlan?.parts.find((part) => part.id === activeSegment?.compositionPartId || part.id === activeSegment?.clipId) ?? null, [activeSegment?.clipId, activeSegment?.compositionPartId, playbackPlan])
   const activeCompositionCatalog = playbackPlan?.composition_catalog ?? (shadowTimeline ?? playerRevision?.timeline)?.composition_catalog
   const activeCompositionSlots = useMemo(() => resolveVideoComposition(activeCompositionCatalog, activeCompositionPart?.composition ?? activeSegment?.composition, (shadowTimeline ?? playerRevision?.timeline)?.width ?? 1920, (shadowTimeline ?? playerRevision?.timeline)?.height ?? 1080), [activeCompositionCatalog, activeCompositionPart?.composition, activeSegment?.composition, playerRevision?.timeline, shadowTimeline])
+  const activeCompositionVideoCount = activeCompositionSlots.filter((slot) => Boolean(slot.source)).length
   const currentTurnParts = useMemo(() => currentWorkingProposal?.plan?.parts ?? [], [currentWorkingProposal])
-  const currentTurnVariantPartCount = currentTurnParts.filter((part) => (part.animation_candidates?.candidates.length ?? 0) > 0).length
-  const currentTurnStaticFallbackCount = currentTurnParts.filter((part) => (part.visual_media_type || part.visual?.media_type || '').startsWith('image/')).length
   const currentTurnSummary = currentWorkingProposal?.title || currentWorkingProposal?.plan?.summary || currentWorkingProposal?.rationale || 'Review the clips created by this pending Video Studio change.'
   const currentWorkingTimelineSegments = useMemo(() => currentRevision
     ? projectTimelineToTimelineSegments(currentRevision.timeline, clipDurations, selectedClips, selectedThread?.id ?? '')
     : [], [clipDurations, currentRevision, selectedClips, selectedThread?.id])
   const currentWorkingVisualLayout = useMemo(() => layoutTimelineSegments(currentWorkingTimelineSegments).filter((segment) => segment.type !== 'audio' && segment.visible && segment.duration > 0), [currentWorkingTimelineSegments])
-  const currentTurnPartByID = useMemo(() => new Map(currentTurnParts.map((part) => [part.id, part])), [currentTurnParts])
   const currentTurnConfirmIDs = currentWorkingProposal?.plan?.kind === 'initial' ? [] : pendingSelectedChangeIds
   const currentTurnUnreadyAnimations = currentTurnParts.filter((part) => !videoAnimationReadyForConfirmation(part)
     && (currentWorkingProposal?.plan?.kind === 'initial' || currentTurnConfirmIDs.includes(part.id)))
@@ -1804,6 +1805,10 @@ export function VideoToolPage() {
   const unresolvedTurnCompositionPartIDs = selectedTurnParts.filter((part) => part.composition && !part.composition.disabled && resolveVideoComposition(currentWorkingProposal?.plan?.composition_catalog, part.composition, currentRevision?.timeline.width ?? 1920, currentRevision?.timeline.height ?? 1080).some((slot) => !slot.source)).map((part) => part.id)
   const pendingTurnProductionPartIDs = selectedTurnParts.filter((part) => part.production_state === 'pending').map((part) => part.id)
   const currentTurnCanConfirm = Boolean(currentWorkingProposal) && currentTurnUnreadyAnimations.length === 0 && unresolvedTurnCompositionPartIDs.length === 0 && pendingTurnProductionPartIDs.length === 0 && (currentWorkingProposal?.plan?.kind === 'initial' || currentTurnConfirmIDs.length > 0)
+  const focusedReviewParts = currentTurnParts
+  const focusedReviewLockedParts = focusedReviewParts.filter(focusedVideoReviewPartLocked)
+  const focusedReviewUnlockedParts = focusedReviewParts.filter((part) => !focusedVideoReviewPartLocked(part))
+  const focusedReviewReady = focusedReviewParts.length > 0 && focusedReviewUnlockedParts.length === 0
   const unresolvedIterationLockPartIDs = useMemo(
     () => unresolvedVideoIterationLockPartIDs(currentWorkingProposal, currentTurnConfirmIDs),
     [currentTurnConfirmIDs, currentWorkingProposal],
@@ -2082,18 +2087,6 @@ export function VideoToolPage() {
       part: liveAnimationPart,
     }) ? current : activePreviewRequestIdentity)
   }, [activePreviewRequestIdentity, currentWorkingProposal, liveAnimationPart, playerRevision, videoProject])
-
-  useEffect(() => {
-    let cancelled = false
-    const candidates = currentTurnParts.flatMap((part) => (part.animation_candidates?.candidates ?? []).map((candidate) => ({ partId: part.id, candidate })))
-    setIterationCardURLs({})
-    if (candidates.length === 0) return
-    void Promise.all(candidates.map(async ({ partId, candidate }) => {
-      const access = await fetchDesktopV3ArtifactPreviewAccess(candidate.source.session_id, candidate.source.variant_id)
-      return [`${partId}:${candidate.id}`, access.url] as const
-    })).then((entries) => { if (!cancelled) setIterationCardURLs(Object.fromEntries(entries)) }).catch(() => { if (!cancelled) setIterationCardURLs({}) })
-    return () => { cancelled = true }
-  }, [currentTurnParts])
 
   useEffect(() => {
     let cancelled = false
@@ -2861,21 +2854,6 @@ export function VideoToolPage() {
       setWorkingCutReviewBusy(false)
     }
   }, [currentTurnCanConfirm, currentTurnConfirmIDs, currentWorkingProposal, refreshSelectedVideoProject, selectedThread, videoProject, workingCutReviewBusy])
-  const handleReviseWorkingCut = useCallback(async () => {
-    if (!selectedThread || !videoProject || !currentWorkingProposal || workingCutReviewBusy) return
-    const feedback = `Restore the accepted parent of iteration ${currentWorkingProposal.id} and revise only the clips I describe: `
-    setWorkingCutReviewBusy(true)
-    setCreateError(null)
-    try {
-      await rejectVideoEditProposal(selectedThread.id, videoProject.id, currentWorkingProposal.id, feedback)
-      setComposerDraftRequest({ id: Date.now(), draft: feedback })
-      await refreshSelectedVideoProject()
-    } catch (error) {
-      setCreateError(error instanceof Error ? error.message : String(error))
-    } finally {
-      setWorkingCutReviewBusy(false)
-    }
-  }, [currentWorkingProposal, refreshSelectedVideoProject, selectedThread, videoProject, workingCutReviewBusy])
   const handleIterationFeedback = useCallback((message: string) => {
     setComposerDraftRequest({ id: Date.now(), draft: message })
   }, [])
@@ -2904,6 +2882,17 @@ export function VideoToolPage() {
   const handleStudioMessageSent = useCallback(() => {
     setStudioComposerContext(null)
   }, [])
+  const handleContinueFocusedReview = useCallback(() => {
+    if (!currentWorkingProposal || !focusedReviewReady || focusedReviewParts.length === 0) return
+    const lockedChoices = focusedReviewParts.map((part) => {
+      const selectedCandidate = part.animation_candidates?.candidates.find((candidate) => candidate.id === part.animation_candidates?.selected_candidate_id)
+      return `${part.title}: ${selectedCandidate?.label || selectedCandidate?.id || 'current proposed media'}`
+    })
+    setComposerDraftRequest({
+      id: Date.now(),
+      draft: `Continue with AI using the locked current-turn choices: ${lockedChoices.join('; ')}. Keep the proposal pending for my explicit confirmation; do not accept it or render the video.`,
+    })
+  }, [currentWorkingProposal, focusedReviewParts, focusedReviewReady])
   const studioRouteOptions = useMemo(() => selectedSessionRoute ? [selectedSessionRoute] : [], [selectedSessionRoute])
   const studioSidecarPlayheadMs = studioComposerContext?.playheadMs
     ?? Math.round((playhead * 1000) / VIDEO_STUDIO_SIDECAR_PLAYHEAD_INTERVAL_MS) * VIDEO_STUDIO_SIDECAR_PLAYHEAD_INTERVAL_MS
@@ -3141,7 +3130,7 @@ export function VideoToolPage() {
         <main className="flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-contain lg:flex-row lg:overflow-hidden">
           <div className="contents">
             <SwarmToolSidebar
-              layoutClassName="flex max-h-[48dvh] min-h-0 w-full shrink-0 flex-col overflow-hidden border-b border-[var(--app-border)] px-3 py-2 font-mono text-[12px] text-[var(--app-text-muted)] lg:mr-5 lg:max-h-none lg:w-[300px] lg:flex-none lg:border-b-0 lg:border-r lg:px-0 lg:py-5 lg:pl-3 lg:pr-4"
+              layoutClassName="flex max-h-[42dvh] min-h-0 w-full shrink-0 flex-col overflow-hidden border-b border-[var(--app-border)] px-3 py-2 font-mono text-[12px] text-[var(--app-text-muted)] lg:max-h-none lg:w-[220px] lg:flex-none lg:border-b-0 lg:border-r lg:px-0 lg:py-4 lg:pl-3 lg:pr-3"
               childrenClassName="mt-3 min-h-0 flex-1 overflow-y-auto"
               compactSelectedSession={Boolean(selectedThread && !selectedLibraryVideo)}
               prioritizeChildren={Boolean(selectedThread && !selectedLibraryVideo)}
@@ -3226,7 +3215,7 @@ export function VideoToolPage() {
                     </div>
                   </div>
 
-                  {videoProject && currentRevision && !selectedLibraryVideo ? <div className="hidden"><VideoIterationSidebar key={`${videoProject.id}:${aiRefreshKey}`} sessionId={selectedThread.id} projectId={videoProject.id} currentRevisionId={currentRevision.id} revisions={projectRevisions} onProposalsLoaded={setProjectProposals} onAccepted={refreshSelectedVideoProject} onFeedback={handleIterationFeedback} onPreviewProposal={handlePendingProposalChange} onPreviewRevision={handlePreviewRevision} onFocusChange={handleFocusStep} onAttachChange={handleAttachIterationChange} /></div> : null}
+                  {videoProject && currentRevision && !selectedLibraryVideo ? <div className="hidden"><VideoIterationSidebar key={`${videoProject.id}:${aiRefreshKey}`} sessionId={selectedThread.id} projectId={videoProject.id} currentRevisionId={currentRevision.id} revisions={projectRevisions} basePartOrder={(confirmedRevision ? acceptedVideoPlan(confirmedRevision.timeline)?.parts : null) ?? []} onProposalsLoaded={setProjectProposals} onAccepted={refreshSelectedVideoProject} onFeedback={handleIterationFeedback} onPreviewProposal={handlePendingProposalChange} onPreviewRevision={handlePreviewRevision} onFocusChange={handleFocusStep} onAttachChange={handleAttachIterationChange} /></div> : null}
                   {previewRevision ? <div className="mt-2 grid gap-2 px-2"><p className="text-[10px] text-amber-300">Previewing r{previewRevision.revision_number}; kept r{keptRevision?.revision_number} is unchanged.</p><div className="grid grid-cols-2 gap-2"><Button variant="outline" className="h-7 px-2 text-[10px]" disabled={previewRevisionIndex <= 0} onClick={() => handlePreviewRevision(projectRevisions[previewRevisionIndex - 1].id)}>Previous</Button><Button variant="outline" className="h-7 px-2 text-[10px]" disabled={previewRevisionIndex < 0 || previewRevisionIndex >= projectRevisions.length - 1} onClick={() => handlePreviewRevision(projectRevisions[previewRevisionIndex + 1].id)}>Next</Button></div><Button variant="outline" className="h-7 px-2 text-[10px]" onClick={() => setPreviewRevisionId(null)}>Return to kept version</Button><Button className="h-7 px-2 text-[10px]" disabled={Boolean(restoringRevisionId) || Boolean(selectedLibraryVideo)} onClick={() => void handleRestoreRevision(previewRevision.id)}>{restoringRevisionId === previewRevision.id ? <Loader2 size={11} className="animate-spin" /> : <RotateCcw size={11} />}Restore as new version</Button></div> : null}
 
                   <p className="mb-2 mt-3 px-2 text-[10px] uppercase tracking-[0.18em] text-[var(--app-text-subtle)]">Sources</p>
@@ -3237,7 +3226,7 @@ export function VideoToolPage() {
                       const planPart = playbackPlan?.parts.find((part) => part.id === segment.clipId)
                       const reviewState = videoClipReviewState(planPart, segment.artifactRef?.media_type ?? '', segment.type)
                       return (
-                        <button key={segment.id + '-sidebar'} type="button" onClick={() => { setSelectedClipId(segment.clipId); if (layoutSegment?.visible) handleSeek(layoutSegment.timelineStart) }} className={['grid w-full grid-cols-[24px_minmax(0,1fr)] gap-2 border-l-2 px-2 py-2 text-left hover:bg-[var(--app-surface-hover)]', selectedClipId === segment.clipId ? 'border-[var(--app-primary)] bg-[var(--app-surface-active)]' : 'border-transparent', segment.visible ? '' : 'opacity-55'].filter(Boolean).join(' ')}>
+                        <button key={segment.id + '-sidebar'} type="button" onClick={() => { setSelectedClipId(segment.clipId); if (layoutSegment?.visible) beginTimelinePlayback(layoutSegment.timelineStart) }} className={['grid w-full grid-cols-[24px_minmax(0,1fr)] gap-2 border-l-2 px-2 py-2 text-left hover:bg-[var(--app-surface-hover)]', selectedClipId === segment.clipId ? 'border-[var(--app-primary)] bg-[var(--app-surface-active)]' : 'border-transparent', segment.visible ? '' : 'opacity-55'].filter(Boolean).join(' ')}>
                           <span className="pt-0.5 text-[10px] text-[var(--app-text-subtle)]">{String(index + 1).padStart(2, '0')}</span>
                           <span className="min-w-0">
                             <span className="block truncate text-[11px] text-[var(--app-text)]">{planPart?.title || clip?.name || segment.clipId}</span>
@@ -3254,7 +3243,45 @@ export function VideoToolPage() {
             </SwarmToolSidebar>
           </div>
 
-            <section className="relative flex min-w-0 shrink-0 flex-col px-3 py-4 sm:px-4 lg:min-h-0 lg:flex-1 lg:shrink lg:overflow-y-auto lg:px-0 lg:py-0" aria-label="Video player and timeline">
+          {selectedThread && !selectedLibraryVideo && currentWorkingProposal ? <aside className="flex max-h-[55dvh] min-h-0 w-full shrink-0 flex-col overflow-hidden border-b border-[var(--app-border)] bg-[color-mix(in_srgb,var(--app-surface)_78%,black)] lg:max-h-none lg:w-[340px] lg:border-b-0 lg:border-r" aria-label="Pending turn review">
+            <div className="shrink-0 border-b border-[var(--app-border)] px-4 py-4">
+              <div className="flex items-center justify-between gap-3"><div><p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-[var(--app-primary)]">New pending confirmation · r{currentWorkingProposal.working_revision_number ?? currentRevision?.revision_number}</p><h2 className="mt-1 text-sm font-semibold text-[var(--app-text)]">Review pending clips</h2></div><span className="rounded-full border border-[var(--app-border)] px-2 py-1 text-[9px] uppercase tracking-[0.12em] text-[var(--app-text-muted)]">Pending</span></div>
+              <p className="mt-2 text-[10px] leading-4 text-[var(--app-text-muted)]">{currentTurnSummary}</p>
+              <div className="mt-3 flex items-center justify-between text-[10px]"><span className="text-[var(--app-text-muted)]">{focusedReviewLockedParts.length} of {focusedReviewParts.length} locked</span><span className={focusedReviewReady ? 'text-emerald-400' : 'text-amber-300'}>{focusedReviewReady ? 'Ready for AI' : `${focusedReviewUnlockedParts.length} unresolved`}</span></div>
+              <div className="mt-2 h-1 overflow-hidden rounded-full bg-[var(--app-bg)]"><div className="h-full bg-[var(--app-primary)] transition-[width]" style={{ width: `${focusedReviewParts.length ? (focusedReviewLockedParts.length / focusedReviewParts.length) * 100 : 0}%` }} /></div>
+            </div>
+            <div className="min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain px-3 py-3" data-video-focused-review-scroll>
+              {focusedReviewParts.map((part, partIndex) => {
+                const candidates = part.animation_candidates?.candidates ?? []
+                const selectedCandidateID = part.animation_candidates?.selected_candidate_id
+                const locked = focusedVideoReviewPartLocked(part)
+                const layout = currentWorkingVisualLayout.find((segment) => segment.clipId === part.id)
+                const composedVideoCount = resolveVideoComposition(currentWorkingProposal.plan?.composition_catalog, part.composition, currentRevision?.timeline.width ?? 1920, currentRevision?.timeline.height ?? 1080).filter((slot) => Boolean(slot.source)).length
+                return <article key={part.id} className={`border p-3 ${locked ? 'border-emerald-400/35 bg-emerald-950/10' : 'border-amber-300/35 bg-amber-950/10'}`}>
+                  <button type="button" className="flex w-full items-start gap-3 text-left" onClick={() => previewCurrentTurnPart(part, candidates.find((candidate) => candidate.id === selectedCandidateID))}>
+                    <span className={`grid h-6 w-6 shrink-0 place-items-center rounded-full border text-[10px] ${locked ? 'border-emerald-400/50 text-emerald-300' : 'border-amber-300/50 text-amber-200'}`}>{locked ? <Check size={12} /> : partIndex + 1}</span>
+                    <span className="min-w-0 flex-1"><span className="block truncate text-[11px] font-semibold text-[var(--app-text)]">{part.title}</span><span className="mt-1 block text-[9px] text-[var(--app-text-muted)]">{formatTimelineTime(layout?.timelineStart ?? 0)}–{formatTimelineTime(layout?.timelineEnd ?? (part.duration_ms / 1000))} · {locked ? 'Locked' : 'Choose a variant'}</span></span>
+                    {locked ? <LockKeyhole size={12} className="shrink-0 text-emerald-300" /> : null}
+                  </button>
+                  {candidates.length > 0 ? <div className="mt-3 grid gap-1" aria-label={`${part.title} candidate links`}>
+                    {candidates.map((candidate, candidateIndex) => {
+                      const selected = candidate.id === selectedCandidateID
+                      return <div key={candidate.id} className={`grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2 border px-2 py-2 ${selected ? 'border-[var(--app-primary)] bg-[var(--app-primary)]/10' : 'border-[var(--app-border)] bg-[var(--app-bg)]'}`}>
+                        <button type="button" className="min-w-0 text-left" onClick={() => previewCurrentTurnPart(part, candidate)}><span className="block truncate text-[10px] font-medium text-[var(--app-text)]">{String.fromCharCode(65 + candidateIndex)} · {candidate.label || candidate.id}</span><span className="mt-0.5 block text-[9px] text-[var(--app-text-muted)]">Play in main player + soundtrack</span></button>
+                        <button type="button" className={`shrink-0 border px-2 py-1 text-[9px] font-semibold ${selected ? 'border-emerald-400/45 text-emerald-300' : 'border-[var(--app-border)] text-[var(--app-text-muted)] hover:border-[var(--app-primary)] hover:text-[var(--app-text)]'}`} disabled={Boolean(animationSelectionBusyPartId) || part.animation_candidates?.status === 'ready'} onClick={() => selectLiveAnimationCandidate(part, candidate)}>{animationSelectionBusyPartId === part.id ? 'Saving…' : selected ? 'Locked' : selectedCandidateID ? 'Switch' : 'Lock'}</button>
+                      </div>
+                    })}
+                  </div> : <p className="mt-3 text-[9px] text-emerald-300">{composedVideoCount > 0 ? `Still base + ${composedVideoCount} composed video slot${composedVideoCount === 1 ? '' : 's'} · click the part to play` : 'Current proposed media is locked for this part.'}</p>}
+                </article>
+              })}
+            </div>
+            <div className="shrink-0 border-t border-[var(--app-border)] p-3">
+              <Button className="h-9 w-full justify-center text-[11px]" disabled={!focusedReviewReady || workingCutReviewBusy} onClick={handleContinueFocusedReview}>Continue with AI</Button>
+              <p className="mt-2 text-center text-[9px] leading-4 text-[var(--app-text-subtle)]">This sends the locked choices to the composer. It does not accept the pending proposal or render.</p>
+            </div>
+          </aside> : null}
+
+            <section className="relative flex min-w-0 shrink-0 flex-col overflow-y-auto px-3 py-4 sm:px-4 lg:min-h-0 lg:flex-1 lg:shrink lg:overscroll-contain lg:px-0 lg:py-0" aria-label="Video player and timeline">
               <div ref={setStudioArtifactReviewPortalTarget} className="absolute inset-0 z-20 min-h-0 min-w-0 empty:hidden" data-studio-artifact-review-host />
               <div className="mb-4 flex items-center justify-end gap-2 lg:hidden">
                 <Button variant="outline" style={darkOverrideButtonStyle} className={`h-9 w-9 rounded-xl px-0 ${blackModeEnabled ? 'border-[var(--video-tool-user-theme-accent)] bg-[var(--video-tool-user-theme-surface)] text-[var(--video-tool-user-theme-text)] hover:bg-[var(--video-tool-user-theme-surface-hover)]' : ''}`} onClick={() => setBlackModeEnabled((enabled) => !enabled)} aria-label="Toggle dark mode override for this page" aria-pressed={blackModeEnabled} title="Toggle dark mode override for this page"><Moon size={14} aria-hidden="true" /></Button>
@@ -3283,7 +3310,7 @@ export function VideoToolPage() {
                   <div className="absolute inset-0 grid place-items-center text-center"><div><Film className="mx-auto text-white/45" size={42} strokeWidth={1.5} /><p className="mt-3 text-sm font-medium text-white/80">No clips in this timeline</p></div></div>
                 ) : null}
                 <div className="pointer-events-none absolute left-4 top-4 rounded bg-black/55 px-2 py-1 text-xs text-white/70">
-                  {activeSegment ? `Clip ${Math.max(1, visualTimelineLayout.findIndex((segment) => segment.clipId === activeSegment.clipId) + 1)} · ${liveAnimationPart?.title || activeSegment.title || selectedClip?.name || activeSegment.clipId} · ${activeCandidate?.label || activeClipReviewState.mediaKind} · ${liveAnimationPart ? 'Live HTML' : activeClipReviewState.mediaKind} · ${formatTimelineTime(playhead)} / ${formatTimelineTime(movieDuration)}` : 'Timeline player'}
+                  {activeSegment ? `Clip ${Math.max(1, visualTimelineLayout.findIndex((segment) => segment.clipId === activeSegment.clipId) + 1)} · ${liveAnimationPart?.title || activeSegment.title || selectedClip?.name || activeSegment.clipId} · ${activeCompositionVideoCount > 0 ? `Still + ${activeCompositionVideoCount} composed video` : activeCandidate?.label || activeClipReviewState.mediaKind} · ${liveAnimationPart ? 'Live HTML' : activeCompositionVideoCount > 0 ? 'Composed playback' : activeClipReviewState.mediaKind} · ${formatTimelineTime(playhead)} / ${formatTimelineTime(movieDuration)}` : 'Timeline player'}
                 </div>
               </div>
 
@@ -3293,44 +3320,6 @@ export function VideoToolPage() {
               </div> : null}
 
               {activeCompositionPart?.composition && activeCompositionCatalog ? <><div className="mt-2 flex items-center justify-between border border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-2"><div><p className="text-[10px] font-medium">Spatial composition · {activeCompositionSlots.length} slot{activeCompositionSlots.length === 1 ? '' : 's'}</p><p className="text-[9px] text-[var(--app-text-muted)]">{activeCompositionPart.composition.detached ? 'Detached shot override' : `Linked layout ${activeCompositionPart.composition.layout_id}`} · {activeCompositionSlots.filter((slot) => !slot.source).length} unassigned · {currentWorkingProposal ? 'pending working cut' : 'accepted cut'}</p></div><Button variant="outline" className="h-7 px-2 text-[10px]" disabled={Boolean(selectedLibraryVideo) || Boolean(pendingProposal && !currentWorkingProposal?.plan)} onClick={() => setCompositionEditing((value) => !value)}>{compositionEditing ? 'Close composition editor' : 'Edit boxes'}</Button></div>{compositionEditing ? <VideoCompositionEditor catalog={activeCompositionCatalog} link={activeCompositionPart.composition} partTitle={activeCompositionPart.title} durationMs={activeCompositionPart.duration_ms} sources={selectedClips.map((clip) => ({ sourceRef: clip.sourceRef, name: clip.name, mediaType: 'video/mp4', durationMs: Math.round((clipDurations[clip.id] ?? activeCompositionPart.duration_ms / 1000) * 1000) }))} pending={Boolean(currentWorkingProposal)} productionState={activeCompositionPart.production_state} disabled={compositionProposalBusy || Boolean(pendingProposal && !currentWorkingProposal?.plan)} onPropose={proposeCompositionChange} /> : null}</> : null}
-
-              {currentWorkingProposal ? <section className="order-2 mt-4 border border-[var(--app-border)] bg-[var(--app-surface)] p-3" aria-label="Current video turn">
-                <div className="flex flex-wrap items-start justify-between gap-3">
-                  <div className="min-w-0"><div className="flex items-center gap-2"><span className="rounded-full bg-[var(--app-primary)]/15 px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-[var(--app-primary)]">Working cut r{activeTurnRevision?.revision_number ?? 1}</span><span className="text-[10px] uppercase tracking-[0.12em] text-amber-300">Pending review</span></div><p className="mt-2 text-xs font-semibold text-[var(--app-text)]">What changed in this turn</p><p className="mt-1 max-w-4xl text-[11px] leading-5 text-[var(--app-text-muted)]">{currentTurnSummary}</p><p className="mt-1 text-[10px] text-[var(--app-text-subtle)]">{currentTurnParts.length} stable clips · {currentTurnVariantPartCount} with live variants · {currentTurnStaticFallbackCount} render-ready image fallbacks</p></div>
-                  <div className="flex items-center gap-1"><Button variant="outline" className="h-7 px-2 text-[10px]" disabled={activeTurnRevisionIndex <= 0} onClick={() => handlePreviewRevision(projectRevisions[activeTurnRevisionIndex - 1]?.id ?? null)}>← Previous revision</Button><Button variant="outline" className="h-7 px-2 text-[10px]" disabled={activeTurnRevisionIndex < 0 || activeTurnRevisionIndex >= projectRevisions.length - 1} onClick={() => handlePreviewRevision(projectRevisions[activeTurnRevisionIndex + 1]?.id ?? null)}>Next revision →</Button></div>
-                </div>
-                {currentWorkingProposal.plan ? <div className="mt-3 grid gap-2 md:grid-cols-2" data-video-turn-parts>
-                  {currentWorkingVisualLayout.map((segment, clipIndex) => {
-                    const part = currentTurnPartByID.get(segment.clipId)
-                    const candidates = part?.animation_candidates?.candidates ?? []
-                    const selectedCandidate = candidates.find((candidate) => candidate.id === part?.animation_candidates?.selected_candidate_id)
-                    const exactPreviewURL = segment.artifactRef?.session_id && segment.artifactRef.variant_id
-                      ? `/v3/sessions/${encodeURIComponent(segment.artifactRef.session_id)}/artifacts/${encodeURIComponent(segment.artifactRef.variant_id)}`
-                      : segment.src
-                    const isProposed = Boolean(part)
-                    const storyboard = videoPlanPartStoryboardContext(part)
-                    const mediaStatus = storyboard
-                      ? storyboard.productionState === 'pending' ? 'Storyboard placeholder · filming needed' : 'Storyboard section · production ready'
-                      : part?.animation_candidates
-                      ? part.animation_candidates.status === 'ready' ? 'Motion derivative ready' : videoAnimationReadyForConfirmation(part) ? 'Live HTML selected · ready to confirm' : part.animation_candidates.status === 'failed' ? `Animation failed · ${part.animation_candidates.failure_reason || 'fix before confirmation'}` : 'Choose one HTML motion variant'
-                      : segment.type === 'image' ? isProposed ? 'Still image proposed' : 'Still image locked in'
-                        : segment.type === 'video' ? isProposed ? 'Video clip proposed' : 'Video clip locked in'
-                          : isProposed ? 'Clip proposed' : 'Clip locked in'
-                    const preview = <div className="relative aspect-video overflow-hidden bg-black">{segment.type === 'video' && exactPreviewURL ? <video src={exactPreviewURL} muted playsInline preload="metadata" className="h-full w-full object-contain" /> : segment.type === 'image' && exactPreviewURL ? <img src={exactPreviewURL} alt="" className="h-full w-full object-contain" /> : <div className="grid h-full place-items-center px-4 text-center text-[10px] text-white/55">{mediaStatus}</div>}</div>
-                    return <article key={segment.id} className={`overflow-hidden border ${activeSegment?.clipId === segment.clipId ? 'border-[var(--app-primary)] bg-[var(--app-primary)]/5' : 'border-[var(--app-border)] bg-[var(--app-bg)]'}`} aria-label={`Working clip ${clipIndex + 1}: ${part?.title || segment.title || segment.clipId}`}>
-                      <button type="button" className="block w-full text-left" onClick={() => part ? selectedCandidate ? previewCurrentTurnPart(part, selectedCandidate) : previewCurrentTurnPart(part) : handleFocusStep(segment.clipId, Math.round(segment.timelineStart * 1000))}>{preview}</button>
-                      <div className="p-3"><div className="flex flex-wrap items-start justify-between gap-2"><button type="button" className="min-w-0 flex-1 text-left" onClick={() => part ? selectedCandidate ? previewCurrentTurnPart(part, selectedCandidate) : previewCurrentTurnPart(part) : handleFocusStep(segment.clipId, Math.round(segment.timelineStart * 1000))}><span className="text-[9px] uppercase tracking-[0.14em] text-[var(--app-text-subtle)]">Clip {clipIndex + 1} · {formatTimelineTime(segment.timelineStart)}–{formatTimelineTime(segment.timelineEnd)} · {isProposed ? 'pending' : 'locked'}</span><span className="mt-1 block text-xs font-semibold text-[var(--app-text)]">{part?.title || segment.title || segment.clipId}</span><span className="mt-1 block text-[10px] leading-4 text-[var(--app-text-muted)]">{part?.visual_direction || part?.on_screen_text || mediaStatus}</span></button><Button variant="outline" className="h-7 shrink-0 px-2 text-[10px]" onClick={() => part ? selectedCandidate ? previewCurrentTurnPart(part, selectedCandidate) : previewCurrentTurnPart(part) : handleFocusStep(segment.clipId, Math.round(segment.timelineStart * 1000))}>Play clip + soundtrack</Button></div>
-                      <p className={`mt-2 text-[9px] uppercase tracking-[0.12em] ${(part?.animation_candidates && part.animation_candidates.status !== 'ready') || storyboard?.productionState === 'pending' ? 'text-amber-300' : storyboard?.productionState === 'ready' ? 'text-green-400' : 'text-[var(--app-text-subtle)]'}`}>{mediaStatus}</p>
-                      {storyboard ? <div className="mt-2 border-l-2 border-amber-300/60 pl-2 text-[10px] leading-4 text-[var(--app-text-muted)]"><p className="font-medium text-[var(--app-text)]">Filming guide</p><p>{storyboard.filmingRequirements.join(' · ')}</p><p className="mt-1 font-mono text-[9px] text-[var(--app-text-subtle)]">Stable part {storyboard.partId} · capture {storyboard.captureStateId}</p></div> : null}
-                      {candidates.length > 0 ? <div className="mt-3"><p className="mb-2 text-[9px] uppercase tracking-[0.14em] text-[var(--app-text-subtle)]">{candidates.length} variants for this clip · choose one to keep</p><div className="grid gap-2 sm:grid-cols-2">{candidates.map((candidate) => { const selected = part?.animation_candidates?.selected_candidate_id === candidate.id; const previewURL = iterationCardURLs[`${part?.id}:${candidate.id}`]; return <div key={candidate.id} className={`overflow-hidden rounded-lg border ${selected ? 'border-[var(--app-primary)] ring-1 ring-[var(--app-primary)]' : 'border-[var(--app-border)]'}`}><button type="button" className="block w-full text-left" onClick={() => part && previewCurrentTurnPart(part, candidate)}><div className="relative aspect-video overflow-hidden bg-black">{previewURL ? <iframe title={`${candidate.label || candidate.id} preview`} src={previewURL} sandbox="allow-scripts" referrerPolicy="no-referrer" tabIndex={-1} className="pointer-events-none absolute inset-0 h-full w-full border-0" /> : <div className="grid h-full place-items-center text-[10px] text-white/50">Loading preview…</div>}</div><div className="px-3 py-2"><p className="truncate text-[11px] font-semibold text-[var(--app-text)]">{candidate.label || candidate.id}</p><p className="mt-1 text-[9px] text-[var(--app-text-muted)]">Preview at this clip’s soundtrack position</p></div></button><Button className="h-8 w-full rounded-none text-[10px]" variant={selected ? 'primary' : 'outline'} disabled={selected || Boolean(animationSelectionBusyPartId) || part?.animation_candidates?.status === 'ready' || (currentWorkingProposal.plan?.kind === 'revision' && !pendingSelectedChangeIds.includes(part?.id ?? ''))} onClick={() => part && selectLiveAnimationCandidate(part, candidate)}>{selected ? '✓ Locked in for this clip' : animationSelectionBusyPartId === part?.id ? 'Locking in…' : currentWorkingProposal.plan?.kind === 'revision' && !pendingSelectedChangeIds.includes(part?.id ?? '') ? 'Enable clip to choose' : 'Lock in this variant'}</Button></div> })}</div></div> : null}
-                      {currentWorkingProposal.plan?.kind === 'revision' && part ? <label className="mt-3 flex items-center gap-2 text-[10px] text-[var(--app-text-muted)]"><input type="checkbox" checked={pendingSelectedChangeIds.includes(part.id)} onChange={(event) => setPendingSelectedChangeIds((current) => event.target.checked ? Array.from(new Set([...current, part.id])) : current.filter((id) => id !== part.id))} />Keep this proposed clip in the confirmed cut</label> : null}
-                    </div></article>
-                  })}
-                </div> : <div className="mt-3 grid gap-2" data-video-turn-operations>
-                  {currentWorkingProposal.operations.map((operation) => <label key={operation.id} className="flex items-start gap-2 border border-[var(--app-border)] bg-[var(--app-bg)] p-2 text-[10px] text-[var(--app-text-muted)]"><input className="mt-0.5" type="checkbox" checked={pendingSelectedChangeIds.includes(operation.id)} onChange={(event) => setPendingSelectedChangeIds((current) => event.target.checked ? Array.from(new Set([...current, operation.id])) : current.filter((id) => id !== operation.id))} /><span><span className="block font-medium text-[var(--app-text)]">{operation.type.replace(/_/g, ' ')}</span><span className="mt-1 block">{String(operation.clip?.name || operation.clip?.id || operation.clip_id || operation.transition_id || 'Timeline change')}</span></span></label>)}
-                </div>}
-                <div className="mt-3 flex flex-wrap items-center justify-between gap-3 border-t border-[var(--app-border)] pt-3"><p className="max-w-3xl text-[10px] text-[var(--app-text-muted)]">{currentWorkingProposal.plan?.kind === 'initial' ? `First round: review all ${currentWorkingVisualLayout.length} clips, then confirm them once as the initial kept cut.` : currentWorkingProposal.plan ? `Review the complete ${currentWorkingVisualLayout.length}-clip working cut. Only checked pending clips are confirmed.` : `Review ${currentWorkingProposal.operations.length} pending timeline change${currentWorkingProposal.operations.length === 1 ? '' : 's'}. Confirmation updates the kept cut; rendering remains unavailable until then.`}{currentTurnUnreadyAnimations.length > 0 ? ` ${currentTurnUnreadyAnimations.length} HTML clip${currentTurnUnreadyAnimations.length === 1 ? '' : 's'} still require a selected live motion source before confirmation.` : ''}{unresolvedTurnCompositionPartIDs.length > 0 ? ` ${unresolvedTurnCompositionPartIDs.length} selected composition${unresolvedTurnCompositionPartIDs.length === 1 ? '' : 's'} still need exact video sources.` : ''}{pendingTurnProductionPartIDs.length > 0 ? ` ${pendingTurnProductionPartIDs.length} selected storyboard part${pendingTurnProductionPartIDs.length === 1 ? '' : 's'} remain pending production.` : ''}</p><div className="flex items-center gap-2"><Button variant="ghost" className="h-8 px-3 text-[10px]" disabled={workingCutReviewBusy} onClick={() => void handleReviseWorkingCut()}><RotateCcw size={12} />Revise this turn</Button><Button className="h-8 px-3 text-[10px]" disabled={!currentTurnCanConfirm || workingCutReviewBusy} onClick={() => void handleConfirmWorkingCut()}>{workingCutReviewBusy ? <Loader2 size={12} className="animate-spin" /> : null}{currentTurnUnreadyAnimations.length > 0 ? 'Choose HTML motion first' : unresolvedTurnCompositionPartIDs.length > 0 ? 'Assign composition sources first' : pendingTurnProductionPartIDs.length > 0 ? 'Finish storyboard production first' : currentWorkingProposal.plan?.kind === 'initial' ? `Confirm all ${currentWorkingVisualLayout.length} clips` : `Confirm ${currentTurnConfirmIDs.length} selected change${currentTurnConfirmIDs.length === 1 ? '' : 's'}`}</Button></div></div>
-              </section> : null}
 
               <section className="order-1 mt-4" aria-label="Video timeline">
                 <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
@@ -3399,7 +3388,7 @@ export function VideoToolPage() {
                           const left = movieDuration > 0 ? (segment.timelineStart / movieDuration) * timelineTrackWidthPx : 0
                           const width = movieDuration > 0 ? (segment.duration / movieDuration) * timelineTrackWidthPx : 0
                           return (
-                            <button key={segment.id} type="button" onClick={(event) => { setSelectedClipId(segment.clipId); if (event.detail === 0) handleSeek(segment.timelineStart) }} className={`absolute top-0 h-full overflow-hidden border-r border-black/30 text-left transition hover:bg-[color-mix(in_srgb,var(--app-primary)_10%,var(--app-surface))] ${currentWorkingProposal ? 'bg-amber-950/30' : 'bg-[var(--app-surface)]'} ${selectedClipId === segment.clipId ? 'outline outline-1 outline-[var(--app-primary)]' : ''}`} style={{ left: `${left}px`, width: `${Math.max(1, width)}px` }}>
+                            <button key={segment.id} type="button" onClick={() => { setSelectedClipId(segment.clipId); beginTimelinePlayback(segment.timelineStart) }} className={`absolute top-0 h-full overflow-hidden border-r border-black/30 text-left transition hover:bg-[color-mix(in_srgb,var(--app-primary)_10%,var(--app-surface))] ${currentWorkingProposal ? 'bg-amber-950/30' : 'bg-[var(--app-surface)]'} ${selectedClipId === segment.clipId ? 'outline outline-1 outline-[var(--app-primary)]' : ''}`} style={{ left: `${left}px`, width: `${Math.max(1, width)}px` }}>
                               <div className="flex h-full flex-col justify-between px-2 py-2"><div className="flex items-center justify-between gap-2 text-[10px] text-[var(--app-text-subtle)]"><span>{String(visibleIndex + 1).padStart(2, '0')}</span><span className="tabular-nums">{formatTimelineTime(segment.duration)}</span></div><div className="min-w-0"><p className="truncate text-xs font-medium text-[var(--app-text)]">{storyboardPart?.title || clip?.name || segment.clipId}</p><p className={`truncate text-[10px] ${storyboardPart?.production_state === 'pending' ? 'text-amber-300' : 'text-[var(--app-text-muted)]'}`}>{storyboardPart ? storyboardPart.production_state === 'pending' ? 'Storyboard · film this section' : 'Storyboard · ready' : `${formatTimelineTime(segment.timelineStart)} – ${formatTimelineTime(segment.timelineEnd)}`}</p></div></div>
                             </button>
                           )
