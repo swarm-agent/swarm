@@ -786,6 +786,11 @@ func (s *Service) ScopeForPathForPrincipal(principal identity.Principal, path st
 	if err := requirePrincipal(principal); err != nil {
 		return Scope{}, err
 	}
+	requested, err := filepath.Abs(strings.TrimSpace(path))
+	if err != nil {
+		return Scope{}, err
+	}
+	requested = filepath.Clean(requested)
 	resolved, err := resolvePath(path)
 	if err != nil {
 		return Scope{}, err
@@ -805,7 +810,7 @@ func (s *Service) ScopeForPathForPrincipal(principal identity.Principal, path st
 			roots = []string{entry.Path}
 		}
 		for _, root := range roots {
-			if !pathWithinRoot(root, resolved) {
+			if !pathWithinRoot(root, requested) {
 				continue
 			}
 			canonicalRoot, err := revalidateStoredDirectory(root)

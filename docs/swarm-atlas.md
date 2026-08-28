@@ -42,9 +42,9 @@ Tests show intended or guarded behavior, but do not prove production behavior or
 ### Atlas revision
 
 - **Implementation as-of commit:** `5bc65fe066abff78785fd573328c654d94b615fe`.
-- **Atlas fact-check input commit:** `55e63033b0bed7d94bda06694abaf3817615b0ca` (the sparse fact-check worktree contains the atlas plus repository contracts; implementation evidence was independently collected from the implementation as-of commit and reconciled here).
-- **Inspection method:** bounded static reads/searches only; no tests or product code were run.
-- **Revision rule:** update this hash and the revision ledger whenever a material route, trust boundary, storage authority, client owner, agent/tool contract, or release gate changes. Re-check every affected citation against code; do not merely edit prose.
+- **Latest atlas audit input commit:** `2f827cc9c6f64d605dd2f221a12cad1d100e812f` (implementation remained at the as-of commit above; the audit challenged the integrated atlas revision against checked-in authorities).
+- **Inspection method:** bounded static reads/searches by five independent domain scopes plus parent reconciliation; no tests or product code were run during that audit. Revision 4 adds executable validation evidence below.
+- **Revision rule:** update this hash and the revision ledger whenever a material route, trust boundary, storage authority, client owner, agent/tool contract, critical test manifest, or release gate changes. Re-check every affected citation against code; do not merely edit prose. `AGENTS.md`, “Swarm Atlas Maintenance,” defines mandatory same-change triggers; `scripts/check-atlas-sync.sh` is the conservative static backstop.
 - **Line anchors are navigational:** symbols and paths are primary because line numbers drift.
 
 ## 3. Mission, goals, boundaries
@@ -139,7 +139,7 @@ swarm launcher / swarmtui                 React Desktop
 - `Server.withAuth` accepts a validated identity session, a narrowly validated artifact-preview request, trusted local transport, or a valid attach token. Otherwise it returns 401 (`api/server.go:3922-3970`). Artifact preview admission is GET-only, AEAD-authenticated, expiration-bounded, and tied to the exact session/artifact content-preview path (`validateSessionV3ArtifactPreviewRequest` in `api/sessions_v3_artifacts.go`).
 - Auth exemptions are narrowly enumerated for health/readiness, eligible Desktop bootstrap, initial onboarding, and admitted/pending Tailscale origin approval (`Server.isAuthExemptRequest`, `api/server.go:3984-3998`).
 - Browser-origin checks compare admitted/local origin, referer, host/scheme, and `Sec-Fetch-Site` (`isSameOriginBrowserRequest`, `api/server.go:4001-4040`; `api/desktop_boundary.go`).
-- A locked vault gates non-vault routes (**policy visible in `Server.Handler`; inspect `Server.withVaultGate` in `api/vault.go` before changing exceptions**).
+- A locked vault gates authenticated account routes except the explicit health/readiness, Desktop-session bootstrap, vault-management, and system-shutdown paths enumerated by `isVaultExemptRequest` (`api/vault.go:247-253`). Vault exemption does not itself bypass authentication; middleware boundaries remain separate.
 
 ### Principal and scope
 
@@ -159,12 +159,12 @@ The durable scope is account + user/principal + workspace/session. Sync cursors 
 
 ### Agents, models, providers, prompts, and tools
 
-- **System agents:** immutable definitions and tool contracts live in `agent/system_agent_registry.go`. `NewSystemAgentRegistry` rejects duplicate/invalid definitions, delegation-enabled subagents, and primary agents without `plan_auto` (`lines 69-110`).
-- **Current compiled identities:** Swarm, Plan/AI sidechats, Compact, Finder, Coder, Designer, Image, Idea, AI Task Preparer, Review Commit, Workspace Definition, and Router (`system_agent_registry.go:13-39` and `builtinSystemAgentDefinitions`).
+- **System agents:** immutable definitions and tool contracts live in `agent/system_agent_registry.go`. `NewSystemAgentRegistry` rejects duplicate/invalid definitions, delegation-enabled subagents, and primary agents without `plan_auto` (`lines 69-120`).
+- **Current compiled identities:** 13 definitions—Swarm, Plan and AI sidechats, Compact, Finder, Coder, Designer, Image, Idea, AI Task Preparer, Review Commit, Workspace Definition, and Router (`builtinSystemAgentDefinitions`, `system_agent_registry.go:201-293`; IDs/names at lines 13-39).
 - **Model authority:** account-scoped `agentmodelsettings.Service`; canonical route constant `AgentModelSettingsPath = /v1/agent-model-settings` (`api/swarm_mode_settings.go:14-16`).
 - **Provider boundary:** generic orchestration stays in `run/`; wire/auth/stream translation belongs in `provider/*`. Registration truth is `runtime/daemon.go:455-471`, not directory presence.
 - **Prompt assembly:** `run/service_prompt.go` composes the mandatory harness and agent overlay with workspace scope, then appends backend-authoritative run/checkpoint context from `run_state_prompt.go` and `checkpoint_prompt.go`; inspect those symbols for exact ordering. Runtime and durable state injections override stale transcript claims, but this is a construction/enforcement mechanism—not a claim that arbitrary repository text is intrinsically safe.
-- **Tools/permissions:** implementation is under `tool/`, `run/service_tools.go`, and `permission/`. The compiled Coder contract disables bash, delegation, session/plan/settings mutations, and enables dedicated Git tools (`CoderAgentToolContract`, `system_agent_registry.go:446-457`). Designer has distinct managed-artifact and workspace-edit contracts so the same run cannot silently combine both authorities; Idea is tool-free (`DesignerAgentToolContract`, workspace Designer contract, and `IdeaAgentToolContract` in `system_agent_registry.go`). Runtime profiles can narrow capabilities further.
+- **Tools/permissions:** implementation is under `tool/`, `run/service_tools.go`, and `permission/`. The compiled Coder contract disables bash, delegation, session/plan/settings mutations, and enables dedicated Git tools (`CoderAgentToolContract`, `system_agent_registry.go:446-457`). Designer has distinct managed-artifact and workspace-edit contracts so the same run cannot silently combine both authorities; Idea is tool-free (`DesignerAgentToolContract`, `DesignerWorkspaceAgentToolContract`, and `IdeaAgentToolContract` in `system_agent_registry.go`). Runtime profiles can narrow capabilities further.
 - **Delegation forms:** regular dependency-ready waves are handled by task launch code; Task Programs schedule declared stage/job dependencies and terminalize failures/blockers durably (`service_task_program*.go`); Iteration Swarms fan out Designer/Image/Idea alternatives with mode-specific routing (`service_task_swarm.go`). Child session lineage and generation rotation are persisted in `store/pebble/delegated_child_rotation_store.go`.
 
 ### Workspaces, worktrees, actions, discovery, Git
@@ -184,7 +184,7 @@ The durable scope is account + user/principal + workspace/session. Sync cursors 
 ### Artifacts, media, image, HTML, video, voice
 
 - Managed artifact authority and lineage are in `artifact/authority*.go`; bytes/manifests are in private `artifactgit` repositories. Workspace materialization must pass destination containment (`artifact/materialize.go`).
-- Pre-session media ingress is `mediastaging.Service`: put/read/delete/expire, bounded `CleanupExpired`, and atomic binding (`mediastaging/service.go:50-196`).
+- Pre-session media ingress is `mediastaging.Service`: put/read/delete/expire, bounded `CleanupExpired`, account-preflighted `CleanupAbandoned`, and atomic binding (`mediastaging/service.go:50-196`).
 - Image generation is `imagegen.Service`. `ManagedImageCapabilities` issues a capability snapshot/token and generation validates it; managed parallelism is bounded to 4, Gemini slots to 10 (`imagegen/service.go:35-36,197-252,568`; `gemini.go:322`).
 - HTML still capture enforces `swarm.capture/v1` and 1920x1080 (`htmlcapture/renderer.go:36,268-285`). Animation enforces `swarm.animation/v1` and deterministic ready/seek behavior (`htmlcapture/animation.go`). These are executable-content boundaries, not ordinary static files.
 - Video sources use opaque references (`videosource/`); projects/proposals/revisions use `videoproject.Service`; rendering is `videorender/`; transcription/analysis is `videotranscription/`. `AcceptEditProposal` is a distinct operation from proposal creation (`videoproject/service.go:123,258`).
@@ -210,15 +210,15 @@ All listed routes are registered by the eight `register*Routes` methods called b
 | `/v2/custom-tools*`, `/v2/agents*` | `handleCustomToolsV2`, `handleAgentsV2`; legacy profile consumers | account; **compatibility/deprecated authority** | `agent_v2_contract_test.go`, `agent_v2_summary_test.go`, `agent_v2_visibility_test.go` |
 | `/v1/codex/account/{usage,reset-credits,reset-credits/consume}` | Codex account handlers; usage/settings | account/provider; **current** | `codex_usage_test.go`, provider Codex tests |
 | `/v1/image/{providers,generations,assets,storage/reveal}`, `/v1/media/settings/catalog` | image/media handlers -> `imagegen.Service`; Desktop media tools | account/workspace; external generation is permission-sensitive; **current** | `image_generation_test.go`, `image_threads_test.go`, `media_settings_test.go`, `media_reveal_test.go` |
-| `/v1/model`, `/model/catalog{,/check}`, `/model-profiles*`, `/models/favorites*`, `/providers` | model preference/catalog/profile handlers; model controls | account; **current** | `model_profiles_test.go`, `agentmodel/resolver_test.go` |
+| `/v1/model`, `/v1/model/catalog{,/check}`, `/v1/model-profiles*`, `/v1/models/favorites*`, `/v1/providers` | model preference/catalog/profile handlers; model controls | account; **current** | `model_profiles_test.go`, `agentmodel/resolver_test.go` |
 | `/v1/stt/transcribe`, `/v1/voice/*` | STT/voice handlers -> `voice.Service`; TUI/Desktop voice | account/device/media; **experimental product surface** | `voice/*_test.go`, provider transcription security tests |
 | `/v1/ui/settings`, `/v1/settings/tailscale{,/approve,/revoke}`, `/v1/onboarding/tailscale-origin` | UI/Tailscale handlers; Desktop/TUI settings and origin approval | account/network; onboarding approval has a narrow exemption; **current** | `ui_settings_test.go`, `tailscale_settings_test.go`, `desktop_boundary_test.go` |
 | `/v1/workspace/{resolve,select,current,list,overview,cwd/resolve,discover,browse}` | workspace handlers -> workspace store/service; launcher/Desktop/TUI | account + contained path; **current, critical** | `workspace_cwd_resolve_test.go`, `workspace_add_self_binding_test.go`, `workspace/path_containment_security_test.go` |
 | `/v1/workspace/{folders/create,add,directories/*,source-media/*,theme,icon,rename,move,delete}` | workspace mutation handlers; workspace settings/sidebar | account + workspace generation/path; **current** | workspace/api focused tests; `workspace/source_media_directories_test.go` |
 | `/v1/workspace/todos`, `/v1/workspace/skills/delete`, `/v1/workspace/definitions/refresh` | todo/discovery handlers; workspace panels/runtime prompt preparation | account + workspace; **current** | `workspace_todos_test.go`, `workspace_definition_refresh_test.go`, `discovery/*_test.go` |
-| `/v1/workspace/actions`, `/v1/workspace/actions/run`, `/v1/workspace/actions/runs{,/cancel}` | definition service vs action runner; Actions UI | account/workspace; execution is a separate user gesture; **current, execution-critical** | `workspace_actions_test.go`, `action/*_test.go` |
+| `/v1/workspace/actions`, `/v1/workspace/actions/run`, `/v1/workspace/actions/runs{,/cancel}` | definition service vs action runner; Actions UI | account/workspace; execution is a separate user gesture; **current, execution-critical** | `api/workspace_actions_test.go`, `store/pebble/action_store_test.go` |
 | `/v1/workspace/git/{status,commit,commit/suggestion,realtime}`, `/v1/worktrees`, `/v1/manage-worktree` | Git/worktree handlers; Desktop Git and delegation integration | contained repository + principal; **current, VCS-critical** | `git_commit_test.go`, `git_realtime_test.go`, `worktrees_test.go`, `worktree/*_test.go` |
-| `/v1/workspace/video/{scan,transcribe*,storage/reveal,projects*,threads*}`, `/audio/{transcribe*,analysis/read}`, `/image/threads*` | media/video/image thread handlers; Desktop media studios | account + workspace + opaque source refs; **current** | `audio_transcription_test.go`, `video_security_test.go`, `video_studio_integration_test.go`, `image_threads_test.go` |
+| `/v1/workspace/video/{scan,transcribe*,storage/reveal,projects*,threads*}`, `/v1/workspace/audio/{transcribe*,analysis/read}`, `/v1/workspace/image/threads*` | media/video/image thread handlers; Desktop media studios | account + workspace + opaque source refs; **current** | `audio_transcription_test.go`, `video_security_test.go`, `video_studio_integration_test.go`, `image_threads_test.go` |
 | `/v1/context/sources`, `/v1/permissions*` | context and permission handlers; runtime controls | account/session; **current, critical** | `permissions_*_test.go`, tool policy tests |
 | `/v1/system/shutdown`, `/v1/update/{status,apply,run}` | daemon lifecycle/update handlers; launcher/Desktop | authenticated local admin; update apply/run require owner IPC or admitted same-origin Desktop—not an ordinary remote attach token; **current, operationally critical** | `update_test.go`, `update_helper_launch_test.go` |
 | `/v1/alerts*`, `/v1/notifications*`, web-push prefix | notification handlers/realtime resources; Desktop | account/user; **current** (`alerts` appears alias-like; inspect before removal) | `webpush_test.go`, notifications store/API tests |
@@ -228,7 +228,7 @@ All listed routes are registered by the eight `register*Routes` methods called b
 | routed/background session constants | `handleRoutedSessionStart`, `handleBackgroundRouterSessionStart`; Desktop/router orchestration | account/workspace + V3 session mutation; **current** | `routed_sessions_*_test.go`, `background_router_sessions_test.go` |
 | `/v3/sync/{bootstrap,hydrate,stream}` | sync handlers; Desktop/TUI recovery and hydration | signed exact scope; **current canonical sync** despite stale “future” comments | `sessions_v3_sync_*_test.go`, contract test |
 | `/v3/realtime/stream` | `handleV3RealtimeStream`; Desktop/TUI live/replay client | `v3.realtime` v1, signed scoped cursor; **current canonical live transport** | `sessions_v3_realtime_*_test.go` |
-| `/v3/sessions` and `/v3/sessions/` | collection plus custom nested dispatcher for messages, runs/streams, plans/plan mode, permissions, artifacts, video, media, settings/preferences/model profile, metadata/title/usage, archive and compaction; Desktop/TUI/session API | account/user/workspace + mutation authority; **current canonical session API**; inspect `handleSessionsV3Primary` subpath parsing before adding/changing suffixes | `sessions_v3_primary_test.go`, resources/model/plan/media tests |
+| `/v3/sessions` and `/v3/sessions/` | `handleSessionsV3Primary` owns collection operations; `handleSessionV3PrimaryByID` and `parseSessionsV3PrimaryPath` dispatch nested messages, runs/streams, plans/plan mode, permissions, artifacts, video, media, settings/preferences/model profile, metadata/title/usage, archive and compaction; Desktop/TUI/session API | account/user/workspace + mutation authority; **current canonical session API**; inspect both handlers and parser before adding/changing suffixes | `sessions_v3_primary_test.go`, resources/model/plan/media tests |
 | `/v3/sessions:{reconnect,discover,search,archive,review-worktrees,unarchive,delete}`, `/v3/subagents:stop` | specialized V3 lifecycle handlers; clients and task UI | account/session; **current** | matching `sessions_v3_*_test.go` files |
 | `/v3/artifacts` | session artifact handler; Desktop artifact gallery/tools | principal/session lineage; **current** | `sessions_v3_artifacts_test.go`, artifact contract tests |
 | `/v3/sessions:workset`, `/v3/tui/sessions:workset`, `/v3/tui/sessions*` | legacy workset/TUI handlers | **compatibility; explicit removal gates** | `sessions_v3_sync_contract_test.go`, `sessions_v3_workset_test.go`, `sessions_v3_tui_test.go` |
@@ -240,13 +240,15 @@ Before deleting or changing a route, search exact route constants/strings in `we
 
 ## 9. Operational and release gates
 
-- `scripts/check-precommit.sh`: formatting/static policy, path/secret/privacy/dependency checks; tests remain opt-in (`README.md:201-208`; script source).
-- `scripts/check-prepush.sh`: pre-push gate; do not bypass for protected branches.
+- `scripts/check-precommit.sh`: formatting/static policy, path/secret/privacy/dependency checks, plus `scripts/check-atlas-sync.sh`; the legacy broad Go test path remains opt-in (`README.md:201-208`; script source).
+- `scripts/run-critical-tests.sh {fast,deep,agents,all}`: the explicit atlas-driven executable manifest. `fast` covers deterministic security/authority failures and critical Desktop V3 state/realtime behavior; `deep` covers Pebble mutation/outbox/replay/restart/concurrency, executor idempotency, delegated Git integration, and artifact Git integrity; `agents` covers system-agent identity/tool authority, launch trust rejection, Task Program and Iteration Swarm scheduling, subagent capacity/approval, durable child lineage/recovery, and Desktop child/realtime presentation. Every invocation is package/function-bounded and uses explicit Go/Node test timeouts.
+- `scripts/check-prepush.sh`: pre-push gate for protected branches; runs precommit plus the critical `fast` suite and must not be bypassed.
+- `.github/workflows/critical-tests.yml`: runs all three critical tiers on `dev`/`main` pull requests and `dev` pushes. `.github/workflows/build-main.yml` reruns `all` before the release archive is built.
 - `scripts/check-launch-readiness.sh --require-clean`: composes launch defaults with cleanliness/public-repo checks (`scripts/check-launch-readiness.sh`).
 - `scripts/run-testbench-launch-prerun.sh`: canonical bounded live suite manifest for onboarding, Desktop, TUI, plan-auto, task routing, Task Programs, and provider sync/realtime (`--list-suites` is the manifest authority).
 - `docs/main-deploy-checklist.md` and release workflows are the publication authority when present at the target revision.
 
-These gates are commands, not claims that the repository currently passes. This atlas creation ran none of them by task constraint.
+These gates are commands, not timeless claims that the repository passes. Revision 4 records the exact focused executions performed when this manifest was introduced; later revisions must record their own evidence.
 
 ## 10. Security- and durability-critical matrix
 
@@ -259,19 +261,19 @@ These gates are commands, not claims that the repository currently passes. This 
 | Sync/realtime | cursors are signed/scoped/opaque; races cannot fall between snapshot and replay; hub loss repairs durably | `V3SyncContractText`, sync/realtime handlers | sync strict/contract/cursor tests, realtime strict/WS tests |
 | Run recovery/plans | durable intents/checkpoint attempts do not duplicate, vanish, or falsely succeed after restart | `sessions_v3_executor.go`, stale recovery, plan lifecycle services | executor idempotency, durable progress, stale recovery, plan invariant tests |
 | Account/principal isolation | production session reads/writes filter account and user; supplied IDs cannot widen authority. Explicit exception to track: the `dev_mode` session-dump operator endpoint selects by session ID without account-scope equality enforcement | identity context + store selectors/mutation checks; `api/session_dump.go` | topology account, protected identity, session access/scope tests; `session_dump_test.go` |
-| Workspace containment | traversal, symlink, linked-root, and materialization paths cannot escape approved roots | `storagecontract.Join`, workspace/worktree/action/artifact path resolvers | workspace/discovery containment, artifact promotion security, sparse worktree tests |
-| Command/action execution | definitions do not execute; entrypoints are relative/contained; argv is structured; permission decision is explicit | `action.Service`, `action.Runner`, API run handlers, permission/tool runtime | action tests, permissions/bash-profile tests, tool runtime tests |
+| Workspace containment | traversal, symlink, linked-root, and materialization paths cannot escape approved roots; principal-backed scope resolution validates the requested stored root before accepting its canonical target | `storagecontract.Join`, `workspace.Service.ScopeForPathForPrincipal`, workspace/worktree/action/artifact path resolvers | `workspace/path_containment_security_test.go`, discovery containment, artifact promotion security, sparse worktree tests |
+| Command/action execution | definitions do not execute; entrypoints are relative/contained; argv is structured; run snapshots are exact-scope; permission decision is explicit | `action.Service`, `action.Runner`, API run handlers, permission/tool runtime | `action/runner_test.go`, `api/workspace_actions_test.go`, permissions/bash-profile tests, tool runtime tests |
 | Delegated Git integration | child base/head/branch/path and clean commit lineage are verified before integration | `worktree.Service` integration methods | worktree service/sparse tests, routed worktree integration tests |
 | Provider boundary | credentials are account-scoped; adapters cannot bypass generic tool/session policy; dormant providers stay unregistered | `runtime/daemon.go`, `provider/registry`, provider adapters | provider runner/auth tests, system agent runtime-contract tests |
 | Managed artifacts | immutable lineage, Git config isolation, blob/part limits, and contained materialization | `artifact/authority*.go`, `artifactgit/repository.go` | artifact Git authority, repository, promotion security tests |
 | Media/image ingress | MIME/digest/size/capability/TTL checks precede durable binding or external generation | `mediastaging`, `imagegen`, session media store | media staging, image generation/service, session media tests |
 | HTML execution/render | manifest/runtime contract, network/file isolation, viewport stability, bounded frames/output | `htmlcapture/renderer.go`, `animation.go` | renderer/animation tests; trusted export tool tests |
 | Video proposals/render | AI proposals cannot silently become accepted revisions/final renders; source refs/timing remain exact | `videoproject.Service`, `videorender`, manage-video tool runtime | video security/integration, project store, render service/builder tests |
-| Updates/releases | update cannot activate unverified/unsafe artifacts or hide rollback failure | launcher/update API/scripts | update helper/apply tests, precommit/readiness scripts |
+| Updates/releases | update cannot activate unverified/unsafe artifacts or hide rollback failure; apply/run remain restricted to owner IPC or an admitted same-origin local Desktop administrative request | launcher/update API/scripts; `isLocalAdministrativeRequest` | update helper/apply tests, local-auth tests, precommit/readiness scripts |
 
 ## 11. Test topology and mapping guidance
 
-Tests exist across multiple ecosystems: Go `_test.go` files in the root and `swarmd` modules, TypeScript/React `*.spec.*` files under `web`, shell/static harnesses under `tests` and `scripts`, and live E2E/testbench runners. Benchmarks and contract/static-source tests answer different questions from behavior tests.
+Tests exist across multiple ecosystems: Go `_test.go` files in the root and `swarmd` modules, TypeScript/React `*.spec.*` files under `web`, shell/static harnesses under `tests` and `scripts`, and live E2E/testbench runners. Benchmarks and contract/static-source tests answer different questions from behavior tests. `docs/testing/test-audit-ledger.tsv` is the two-pass classification authority for the wider inherited corpus; `scripts/run-critical-tests.sh` is the smaller executable build-blocking manifest selected from inspected assertions.
 
 For a critical behavior, build a **requirement-first map**:
 
@@ -280,9 +282,13 @@ For a critical behavior, build a **requirement-first map**:
 3. list direct tests, contract/static guards, integration tests, and live gates separately;
 4. inspect assertions and fixtures—not names—to record what each test actually proves;
 5. record missing negative, concurrency, restart, cross-account, traversal, and failure-injection cases;
-6. run only the separately approved, narrow validation plan later.
+6. run the narrow package/function or the appropriate checked-in `fast`/`deep` manifest; never substitute an unbounded module-wide run.
 
 Never use test count as coverage. Never infer “covered,” “secure,” or “passing” from file presence. A route-to-test entry in §8 means “start inspection here.”
+
+### Critical-suite growth rule
+
+Promote tests into `scripts/run-critical-tests.sh` one invariant at a time. The next high-value gaps are direct Workspace Action execution lifecycle/TOCTOU tests, vault interruption/failure injection, Pebble commit failure injection, account-isolated developer diagnostics, HTML renderer network/file escape tests, media multipart concurrency, video/FFmpeg source-path confinement, and a hermetic full Task Program executor simulation spanning child launch → committed handoff → parent integration → dependent-stage unlock. Each addition requires inspected assertions, a negative or injected-failure case, a bounded timeout, successful repeated focused execution, an atlas §10 update, and first-/second-pass evidence in `docs/testing/test-audit-ledger.tsv`. Tests that encode retired contracts stay outside the build gate until corrected; do not weaken current production contracts to make inherited tests pass.
 
 ## 12. Known uncertainties and fact-check notes
 
@@ -290,14 +296,16 @@ Never use test count as coverage. Never infer “covered,” “secure,” or �
 2. `/ws`, `/v1/sessions*`, v2 agent/custom-tool routes, and V3 workset/TUI routes are registered, but registration alone does not identify all active consumers. Follow the consumer verification rule before removal.
 3. The provider registry includes OpenAI in addition to the README’s named support list; Copilot is deliberately dormant. Use runtime registration, not README or directory names, for availability.
 4. This atlas statically inspected representative handlers, registrations, contracts, authorities, and tests. It did not exhaustively prove each handler’s accepted HTTP methods or every client caller. Handler-level method tables should be generated only from inspected switch logic, not guessed from REST naming.
-5. No test was run, so no statement here asserts passing coverage or runtime health.
+5. Atlas revisions 1–3 ran no tests and asserted no runtime health. Revision 4 introduced and executed bounded critical manifests; that evidence applies only to the named manifest at that working revision, not to the wider repository test corpus.
 6. `dev_mode` session dump is an operator/debug surface, not a tenant-isolated production read: at this revision it accepts an authenticated principal but looks up the requested session by ID without requiring matching `AccountScopeID`. Keep development mode disabled outside its intended environment and treat this as a security-review item.
 7. Admitted Desktop/Tailscale origin persistence across daemon restart was not established strongly enough in this pass; inspect the origin store and restart path before documenting persistence semantics.
 8. Video rendering executes local host FFmpeg rather than a retired container sandbox. Its security therefore depends on opaque registered source references, path validation, bounded invocation, and process controls; no stronger OS-isolation claim is made.
+9. Initial critical-suite execution exposed inherited tests that encode stale contracts (including mutable system-agent profiles, non-loopback startup, agent creation without a tool contract, legacy empty-user sessions, and routed starts without `agent_name`). The agent-suite audit additionally found stale prose-literal assertions in `runtime_task_contract_test.go` and `service_task_swarm_test.go`, repaired a positive-auth fixture that omitted the now-required tool contract, and exposed obsolete Desktop startup-profile expectations, an extensionless ESM import failure in `desktop-chat-panel.badge.spec.ts`, and independently unstable/failing full `v3-realtime-controller.spec.ts` cases. These remain outside the build-blocking manifests pending two-pass correction; production contracts were not weakened to admit them.
+10. The deterministic `agents` tier proves agent/delegation contracts without external providers, and the checked-in testbench has provider-backed `task-routing` and `task-program` suites. Those live suites require the configured loopback SSH testbench and are not CI/build gates; passing unit/integration tiers must not be represented as proof of a real provider successfully launching agents.
 
 ### Independent fact-check performed for this revision
 
-Four independent adversarial review scopes (API, security, runtime/orchestration, and product boundaries) were reconciled against implementation evidence rather than accepted as authority. Corrections in this pass include exact Tailscale/Swarm/workspace route prefixes, production-vs-test citations, `/v3/sessions/` nested dispatch, fail-closed listener validation, preview-ticket scope, the `dev_mode` session-dump isolation exception, Task Programs/Iteration Swarms, durable delegated-child rotation, and dual Designer/tool-free Idea contracts. Conflicting or weak claims were resolved in favor of registration/implementation evidence or retained as explicit unknowns. Unsupported specifics (notably exhaustive HTTP methods, universal consumers, passing coverage, admitted-origin persistence, and container-like video isolation) were omitted or marked unresolved.
+The first fact-check used four independent adversarial scopes (API, security, runtime/orchestration, and product boundaries). This subsequent audit used five fresh scopes: API/middleware, V3 durability/runtime, workspace/execution security, artifacts/media, and product/client/revision integrity. Parent reconciliation confirmed the core architecture and exposed additional concrete errors: missing `/v1` and `/v1/workspace` route prefixes, an over-broad vault-gate summary, a nonexistent Action test path, imprecise V3 collection/nested-dispatch attribution, and system-agent/tool-contract citation gaps. Conflicting or weak claims were resolved in favor of registration/implementation evidence or retained as explicit unknowns. Unsupported specifics (notably exhaustive HTTP methods, universal consumers, passing coverage, admitted-origin persistence, and container-like video isolation) remain omitted or unresolved.
 
 ## 13. Glossary
 
@@ -322,6 +330,9 @@ Four independent adversarial review scopes (API, security, runtime/orchestration
 |---|---|---|---|---|
 | 1 | `5bc65fe066abff78785fd573328c654d94b615fe` | 2026-08-27 | Initial top-down atlas, API families, security/durability map, test guidance | Initial static synthesis; no tests run |
 | 2 | implementation `5bc65fe066abff78785fd573328c654d94b615fe`; atlas input `55e63033b0bed7d94bda06694abaf3817615b0ca` | 2026-08-27 | Independent API, security, runtime, and product fact-check; corrected routes, trust exceptions, orchestration and lineage | Four independent review scopes reconciled to implementation evidence; bounded static checks only; no tests run |
+| 3 | implementation `5bc65fe066abff78785fd573328c654d94b615fe`; atlas input `2f827cc9c6f64d605dd2f221a12cad1d100e812f` | 2026-08-27 | Fresh five-scope audit; corrected route prefixes, vault exemptions, Action test evidence, nested session dispatch, agent contracts, and update boundary | Five independent Finder reviews plus parent source reconciliation; bounded static checks only; no tests run |
+| 4 | working tree based on `2f827cc9c6f64d605dd2f221a12cad1d100e812f` | 2026-08-27 | Introduced atlas governance, sync enforcement, bounded critical fast/deep suites, CI/build wiring, Desktop critical manifest, and direct Action runner security tests | Four independent test/build/governance investigations plus parent assertion inspection; exact validation results recorded in the checkpoint handoff |
+| 5 | working tree based on `2f827cc9c6f64d605dd2f221a12cad1d100e812f` | 2026-08-27 | Added an independently audited deterministic agent/delegation tier; tightened agent/auth/outbox/worktree manifest selection and documented live-provider limits | Five independent assertion/authority/gate reviews plus parent source reconciliation; exact fast/deep/agents execution results recorded in the checkpoint handoff |
 
 Copy this row when updating:
 
@@ -338,4 +349,6 @@ Update checklist:
 - [ ] Current/compatibility/experimental/retired labels revalidated.
 - [ ] Relevant tests inspected by assertions; no coverage claim inferred.
 - [ ] Validation actually run is listed; skipped validation is explicit.
+- [ ] `bash scripts/check-atlas-sync.sh` passes.
+- [ ] If a §10 invariant or its evidence changed, `scripts/run-critical-tests.sh` and the two-pass audit ledger were reconciled.
 - [ ] Known uncertainties updated rather than silently removed.

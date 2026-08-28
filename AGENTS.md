@@ -105,6 +105,16 @@ Do not diagnose from or silently reuse old home/XDG config locations. `/workspac
 - FFF bindings under `internal/fff/` and `swarmd/internal/fff/` are intentional runtime dependencies. Do not delete or replace their vendored libraries without packaging verification.
 - `docs/` includes both tracked contracts and ignored historical/scratch material. Check `git ls-files` and current code before treating a document as authoritative.
 
+## Swarm Atlas Maintenance
+
+`docs/swarm-atlas.md` is the canonical top-down architecture and evidence index for agents. It must track the code rather than become a second implementation authority.
+
+- Update the atlas in the same change whenever adding, changing, moving, or removing an API route or nested session subpath; a storage or mutation authority; an auth, vault, origin, principal, permission, or path-containment boundary; a listener or system path default; a system-agent, model, provider, prompt, or tool contract; a workspace, Action, worktree, artifact, media, HTML, video, or update execution boundary; a compatibility/retired status; or a critical test/build/release gate.
+- A material implementation change in an atlas-covered domain requires re-reading the affected registration, handler/service/store boundary, clients, and actual test assertions. Update affected paths/symbols, API and critical-area rows, uncertainties, and the revision ledger. Never update only the revision hash or claim coverage from a filename.
+- New APIs must enter the §8 catalog with route family, handler/service, consumers, scope/lifecycle, and inspected test evidence. New security or durability boundaries must also enter §10 with the invariant, likely attack point, authority, and high-value negative/failure evidence.
+- Run `bash scripts/check-atlas-sync.sh` for atlas-sensitive changes. Its path trigger is a conservative backstop, not permission to skip an atlas update when a material change occurs outside its watched paths.
+- `docs/testing/test-audit-ledger.tsv` remains the two-pass evidence ledger for classifying the wider inherited test corpus. New critical tests must be requirement-first, added to the curated runner when stable, and recorded in the atlas; they do not bypass independent test review.
+
 ## 2. Task Execution Policy
 
 ### Work style
@@ -130,10 +140,13 @@ Do not diagnose from or silently reuse old home/XDG config locations. `/workspac
 
 ### Validation and release gates
 
-- Do not run tests or validation unless the user explicitly asks, except for required push, PR, and publication gates.
-- Never run broad suites by default (`go test ./...`, module-wide/internal-wide Go suites, full npm suites, or equivalents). When validation is requested, use the narrowest directly relevant test or check.
+- Do not run tests or validation unless the user explicitly asks, except for required push, PR, build, and publication gates.
+- Never run broad suites by default (`go test ./...`, module-wide/internal-wide Go suites, full npm suites, or equivalents). Use the requirement-first flow in atlas §11: state the invariant and threat, inspect production authority and assertions, add negative/failure cases, then run the narrowest relevant package/function or curated suite.
+- `bash scripts/run-critical-tests.sh fast` is the bounded pre-push/build gate for deterministic security and authority checks. `bash scripts/run-critical-tests.sh deep` adds temp-store durability, restart/concurrency, delegated Git, and artifact integrity checks. `all` runs both. Do not broaden these manifests casually or add network/provider/live-daemon tests to them.
+- A test may enter a critical manifest only after its assertions are inspected and it is deterministic, isolated, bounded by explicit timeouts, free of real credentials/external providers, and mapped to an atlas §10 invariant. A critical regression must be fixed, not skipped, weakened, or silently removed from the manifest.
+- New or materially changed tests still follow the two-pass classification/evidence workflow in `docs/testing/test-audit-ledger.tsv`. The curated critical manifest is a build gate, not a replacement for auditing the rest of the test corpus.
 - Routine local commits do not require `./scripts/check-precommit.sh`.
-- Before opening/updating a PR, run `./scripts/check-precommit.sh` once on the reviewed head.
+- Before opening/updating a PR, run `./scripts/check-precommit.sh` and the relevant critical suite on the reviewed head. CI runs both critical tiers for `dev`/`main` integration.
 - Pushes to protected branches must use the checked-in pre-push hook; never bypass it.
 - Release readiness additionally uses `bash scripts/check-launch-readiness.sh --require-clean` and the exact archive/evidence workflows documented in `docs/main-deploy-checklist.md`.
 - Before publishing, run the checked-in publish/release gates and retain evidence for the exact candidate SHA. Never reuse evidence from another commit.

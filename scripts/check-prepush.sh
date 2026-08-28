@@ -54,4 +54,6 @@ fi
 
 echo "[prepush] running repository guard checks before objects are sent"
 "${SCRIPT_DIR}/check-precommit.sh"
+echo "[prepush] running atlas-driven critical fast tests"
+bash "${SCRIPT_DIR}/run-critical-tests.sh" fast
 echo "[prepush] PASS"
