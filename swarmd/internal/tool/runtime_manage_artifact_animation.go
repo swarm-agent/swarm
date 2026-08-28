@@ -332,7 +332,7 @@ func (r *Runtime) reserveAndPreflightManagedAnimation(ctx context.Context, princ
 		return true, animationError("animation_publication_conflict", "profiled HTML animation publication already reached a terminal state; retry with a fresh tool call")
 	}
 	if err == nil && r.htmlAnimationCapture == nil {
-		err = htmlcapture.NewError("animation_renderer_unavailable", "trusted HTML animation renderer is not configured")
+		err = normalizeAnimationRendererError(htmlcapture.NewError("animation_renderer_unavailable", "trusted HTML animation renderer is not configured"))
 	}
 	if err == nil {
 		result, preflightErr := r.htmlAnimationCapture.PreflightAnimation(ctx, htmlcapture.AnimationRequest{Entry: entry, Files: files, DurationMS: manifest.DurationMS, FPS: manifest.FPS})

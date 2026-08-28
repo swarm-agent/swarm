@@ -338,7 +338,7 @@ func TestAnimationPreflightReportsFixedRightInsetPseudoOverflow(t *testing.T) {
 }
 
 func TestAnimationPreflightReportsScrollOverflow(t *testing.T) {
-	script := `<!doctype html><html><head><script>globalThis.__SWARM_ANIMATION_BIND__({version:"swarm.animation/v1",ready(){return {duration_ms:400,fps:10}},seek(timeMs){document.documentElement.dataset.swarmAnimationTimeMs=String(timeMs);return {time_ms:timeMs}}});</script></head><body style="margin:0"><div style="position:fixed;left:0;top:0;width:1921px;height:10px"></div></body></html>`
+	script := `<!doctype html><html><head><script>globalThis.__SWARM_ANIMATION_BIND__({version:"swarm.animation/v1",ready(){return {duration_ms:400,fps:10}},seek(timeMs){document.documentElement.dataset.swarmAnimationTimeMs=String(timeMs);return {time_ms:timeMs}}});</script></head><body style="margin:0"><div style="position:absolute;left:0;top:0;width:1921px;height:10px"></div></body></html>`
 	result, err := preflightHTML(t, script, 400, 10)
 	var captureErr *Error
 	if !errors.As(err, &captureErr) || captureErr.Code != "animation_viewport_overflow" {
