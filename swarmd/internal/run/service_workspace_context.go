@@ -71,6 +71,21 @@ func (s *Service) resolveRunWorkspaceScope(session pebblestore.SessionSnapshot, 
 				}
 				sourceWorkspacePath = normalizedSource
 				readOnlyRoots = append(readOnlyRoots, normalizedSource)
+				if s != nil && s.workspace != nil {
+					// A delegated Coder writes only in its isolated worktree, but it may
+					// need to inspect another directory already linked to the source
+					// workspace (for example, a sibling product repository used as
+					// source authority). Re-authenticate the account-scoped saved
+					// workspace at run time and expose its linked directories as
+					// read-only roots. Do not inherit session-only temporary roots.
+					linkedScope, linkedErr := s.workspace.ScopeForPathForPrincipal(principal, normalizedSource)
+					if linkedErr != nil {
+						return tool.WorkspaceScope{}, fmt.Errorf("resolve Coder linked read-only roots: %w", linkedErr)
+					}
+					if linkedScope.Matched {
+						readOnlyRoots = mergeSessionWorkspaceRoots(readOnlyRoots, linkedScope.Directories)
+					}
+				}
 			}
 		}
 		return tool.WorkspaceScope{
