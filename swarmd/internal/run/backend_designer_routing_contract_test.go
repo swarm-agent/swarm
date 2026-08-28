@@ -115,6 +115,19 @@ func TestBackendDesignerWorkspaceModeRejectsImplicitOrOverlappingRepositoryTarge
 	}
 }
 
+func TestCollectTaskReadyArtifactReferencesExcludesFailedAnimationInspectionSlot(t *testing.T) {
+	ready := &taskArtifactReference{SessionID: "parent", CollectionID: "collection", VariantID: "ready", Status: pebblestore.SessionArtifactStatusReady}
+	failedInspection := &taskArtifactReference{SessionID: "parent", CollectionID: "collection", VariantID: "failed-inspection", Status: pebblestore.SessionArtifactStatusFailed, FailureCode: "animation_inspection_failed"}
+	outcomes := []taskLaunchOutcome{
+		{ArtifactReference: ready},
+		{ArtifactReference: failedInspection, Phase: "failed", Reason: "representative-frame inspection failed"},
+	}
+	references := collectTaskReadyArtifactReferences(outcomes, []error{nil, errContractRenderFailed{}})
+	if len(references) != 1 || references[0] != ready {
+		t.Fatalf("successful variant references = %#v, want only ready slot", references)
+	}
+}
+
 func TestBackendTaskProgramPartialFailurePreservesContextForNewProgram(t *testing.T) {
 	spec := &taskProgramSpec{ID: "artifact_program", Jobs: []taskProgramJob{
 		{ID: "ready", StageID: "variants", RequestedSubagentType: "designer", OutputMode: taskOutputModeManaged},

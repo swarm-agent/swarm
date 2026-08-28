@@ -157,36 +157,37 @@ type taskLaunchOutcome struct {
 	WorktreeClean       bool
 	ChangedFiles        []string
 	LaunchStartedAtMS   int64
-	CurrentTool         string
-	CurrentToolIdentity string
-	CurrentToolRunCount int
-	CurrentToolDisplay  string
-	CurrentToolStarted  int64
-	CurrentToolMS       int64
-	ElapsedMS           int64
-	ToolStarted         int
-	ToolCompleted       int
-	ToolFailed          int
-	ToolOrder           []string
-	ReasoningSummary    string
-	CurrentPreviewKind  string
-	CurrentPreviewText  string
-	Phase               string
-	ReportChars         int
-	ReportExcerpt       string
-	ReportRef           *taskReportRef
-	ReportTruncated     bool
-	Summary             string
-	Error               string
-	Reason              string
-	BlockerCode         string
-	BlockerEvidence     []string
-	CompletedScope      []string
-	ResolutionRequired  string
-	StreamKey           string
-	SwarmMode           bool
-	SwarmStrategy       string
-	AssemblyPart        *taskSwarmAssemblyPart
+	CurrentTool           string
+	CurrentToolIdentity   string
+	CurrentToolRunCount   int
+	CurrentToolDisplay    string
+	CurrentToolStarted    int64
+	CurrentToolMS         int64
+	ElapsedMS             int64
+	ToolStarted           int
+	ToolCompleted         int
+	ToolFailed            int
+	MediaInspectCompleted int
+	ToolOrder             []string
+	ReasoningSummary      string
+	CurrentPreviewKind    string
+	CurrentPreviewText    string
+	Phase                 string
+	ReportChars           int
+	ReportExcerpt         string
+	ReportRef             *taskReportRef
+	ReportTruncated       bool
+	Summary               string
+	Error                 string
+	Reason                string
+	BlockerCode           string
+	BlockerEvidence       []string
+	CompletedScope        []string
+	ResolutionRequired    string
+	StreamKey             string
+	SwarmMode             bool
+	SwarmStrategy         string
+	AssemblyPart          *taskSwarmAssemblyPart
 	IntegrationContract string
 	IntegrationRequired bool
 	OutputMode          string
@@ -900,6 +901,7 @@ func buildTaskStreamLaunchPayload(launch taskLaunchOutcome, status, phase string
 		"tool_started":               launch.ToolStarted,
 		"tool_completed":             launch.ToolCompleted,
 		"tool_failed":                launch.ToolFailed,
+		"media_inspect_completed":    launch.MediaInspectCompleted,
 		"tool_order":                 append([]string(nil), launch.ToolOrder...),
 		"summary":                    strings.TrimSpace(launch.Summary),
 		"error":                      strings.TrimSpace(launch.Error),
@@ -1013,6 +1015,7 @@ func buildTaskStreamLaunchPatchPayload(launch taskLaunchOutcome, status, phase s
 		"tool_started":               launch.ToolStarted,
 		"tool_completed":             launch.ToolCompleted,
 		"tool_failed":                launch.ToolFailed,
+		"media_inspect_completed":    launch.MediaInspectCompleted,
 		"tool_order":                 append([]string(nil), launch.ToolOrder...),
 		"summary":                    strings.TrimSpace(launch.Summary),
 		"error":                      strings.TrimSpace(launch.Error),
@@ -4654,10 +4657,11 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 				"current_tool_display":   firstNonEmptyString(strings.TrimSpace(launch.CurrentToolDisplay), toolProgressionDisplay(launch.CurrentToolIdentity, launch.CurrentToolRunCount)),
 				"current_tool_ms":        currentToolMS,
 				"elapsed_ms":             elapsedMS,
-				"tool_started":           launch.ToolStarted,
-				"tool_completed":         launch.ToolCompleted,
-				"tool_failed":            launch.ToolFailed,
-				"tool_order":             append([]string(nil), launch.ToolOrder...),
+				"tool_started":            launch.ToolStarted,
+				"tool_completed":          launch.ToolCompleted,
+				"tool_failed":             launch.ToolFailed,
+				"media_inspect_completed": launch.MediaInspectCompleted,
+				"tool_order":              append([]string(nil), launch.ToolOrder...),
 				"error":                  strings.TrimSpace(launch.Error),
 				"reason":                 strings.TrimSpace(launch.Reason),
 				"blocker_code":           strings.TrimSpace(launch.BlockerCode),
@@ -4804,6 +4808,8 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 				if strings.TrimSpace(event.Error) != "" {
 					outcome.ToolFailed++
 					toolPhase = "tool.failed"
+				} else if strings.EqualFold(strings.ReplaceAll(completedTool, "-", "_"), "media_inspect") {
+					outcome.MediaInspectCompleted++
 				}
 				summary := fmt.Sprintf("launch %d completed %s", outcome.LaunchIndex, completedTool)
 				if strings.TrimSpace(event.Error) != "" {
@@ -5032,6 +5038,14 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 					}
 				}
 				return outcome, fmt.Errorf("managed Designer artifact %q is %q or has invalid trusted lineage; want ready at collection %q", variant.ID, variant.Status, launch.ArtifactRunContext.CollectionID)
+			}
+			if agentruntime.IsDesignerAgentName(launch.RequestedSubagent) && launch.AnimationProfile != nil && strings.EqualFold(strings.TrimSpace(variant.MediaType), "text/html") {
+				if inspectionErr := validateManagedAnimatedDesignerInspectionEvidence(outcome, report); inspectionErr != nil {
+					outcome.ArtifactReference.Status = pebblestore.SessionArtifactStatusFailed
+					outcome.ArtifactReference.FailureCode = "animation_inspection_failed"
+					s.markManagedDesignerArtifactFailed(parentSession, launch.ArtifactRunContext, launch.ChildSession.ID, "animation_inspection_failed", launch.SourceArtifact)
+					return outcome, inspectionErr
+				}
 			}
 		}
 		if agentruntime.IsCoderAgentName(launch.RequestedSubagent) && s.worktrees != nil {
@@ -5373,6 +5387,53 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 	return string(encoded), nil
 }
 
+func validateManagedAnimatedDesignerInspectionEvidence(outcome taskLaunchOutcome, report string) error {
+	if outcome.ArtifactReference == nil || outcome.ArtifactReference.Status != pebblestore.SessionArtifactStatusReady {
+		return errors.New("managed animated Designer inspection requires the exact ready publication reference")
+	}
+	if outcome.MediaInspectCompleted < 3 {
+		return fmt.Errorf("managed animated Designer inspection requires three successful media_inspect calls; got %d", outcome.MediaInspectCompleted)
+	}
+	requiredChecks := []string{
+		"clipping/overflow",
+		"sizing/aspect ratio",
+		"requested elements",
+		"text legibility",
+		"unintended overlaps",
+		"scrollbars/capture chrome",
+		"brief fidelity",
+	}
+	frames := map[string]bool{"start": false, "middle": false, "exit": false}
+	for _, line := range strings.Split(strings.ToLower(report), "\n") {
+		line = strings.TrimSpace(line)
+		for frame := range frames {
+			if !strings.Contains(line, "animation_inspection") || !strings.Contains(line, "frame="+frame) || !strings.Contains(line, "status=pass") {
+				continue
+			}
+			complete := true
+			for _, check := range requiredChecks {
+				if !strings.Contains(line, check) {
+					complete = false
+					break
+				}
+			}
+			if complete {
+				frames[frame] = true
+			}
+		}
+	}
+	missing := make([]string, 0, len(frames))
+	for _, frame := range []string{"start", "middle", "exit"} {
+		if !frames[frame] {
+			missing = append(missing, frame)
+		}
+	}
+	if len(missing) != 0 {
+		return fmt.Errorf("managed animated Designer inspection evidence is missing passing compact frame record(s): %s", strings.Join(missing, ", "))
+	}
+	return nil
+}
+
 func collectTaskReadyArtifactReferences(outcomes []taskLaunchOutcome, runErrs []error) []*taskArtifactReference {
 	ready := make([]*taskArtifactReference, 0, len(outcomes))
 	for index := range outcomes {
@@ -5554,6 +5615,9 @@ func buildTaskDelegationPrompt(config taskDelegationPromptConfig) string {
 				b.WriteString("9. For managed Image work, call manage_artifact exactly once with action=generate_image and finish only after it returns the trusted exact ready reference. Do not call another tool or inspect or mutate the checkout.\n")
 			} else {
 				b.WriteString("9. For managed Designer work, publish one complete revision with one successful manage_artifact create or create_package call. Preserve one-file text/html as one file; never create a ZIP only to represent parts. Include accurate complete-revision parts when known, or omit parts for text/html so the server derives source-bound targets from authored manifests and stable semantic-region IDs without splitting or rewriting the HTML. Use initial_parts only for intentionally independent byte payloads. The server injects and atomically finalizes the assigned opaque variant. Never call unsupported update/finalize actions, use write/edit, or mutate the checkout; finish only after the call returns the trusted ready reference. If exact source bytes must be preserved and you cannot reproduce the complete revised bytes from the authenticated source in this one publication, report BLOCKED before publishing anything; never publish a placeholder, reconstruction, resampling, or known-inexact candidate.\n")
+				if config.AnimationProfile != nil {
+					b.WriteString("10. For managed animated HTML, ready status is necessary but not sufficient for child success. The successful publication response is authoritative evidence that server-owned runtime binding, exact-seek, stable-pixel, and viewport-containment preflight passed. After publication, use media_inspect on the exact ready revision at the start, resolved-phrase/middle, and exit frames. End with exactly one compact line per frame in this form: ANIMATION_INSPECTION frame=start|middle|exit status=pass checks=clipping/overflow; sizing/aspect ratio; requested elements; text legibility; unintended overlaps; scrollbars/capture chrome; brief fidelity evidence=<bounded observation>. If publication preflight or any representative-frame inspection fails or is missing, report that explicit failed slot and do not count it as a successful variant; do not publish another replacement from the same single-publication run.\n")
+				}
 			}
 		} else {
 			b.WriteString("9. For workspace Designer work, do not use Git or manage_artifact. Inspect nearby code as needed and create or revise the assigned reusable variant only within the declared owned scope.\n")
