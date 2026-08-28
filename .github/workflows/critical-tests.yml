@@ -24,6 +24,21 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          fetch-depth: 0
+
+      - name: Run pre-PR repository policy and atlas checks
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || '' }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || '' }}
+        run: |
+          ./scripts/check-hardcoded-paths.sh
+          ./scripts/check-daemon-storage-paths.sh --self-test
+          ./scripts/check-secrets.sh
+          ./scripts/check-hidden-text.sh
+          bash ./scripts/check-policy-guardrails.sh
+          bash ./scripts/check-atlas-sync.sh
+          bash ./scripts/check-changelog.sh --self-test
 
       - name: Set up Go
         uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6

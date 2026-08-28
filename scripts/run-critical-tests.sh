@@ -95,6 +95,11 @@ run_fast() {
   echo "[critical/fast] root safety defaults and private storage"
   run_root_tests 'Test(ResolveRoots|ResolveRoot|ValidateRoot|Overrides|JoinRejects|WritePreservesIdentity)'
 
+  echo "[critical/fast] daemon listener rejects non-loopback exposure"
+  run_swarmd_tests 30s \
+    './internal/config' \
+    '^TestParseRejectsNonLoopbackListen$'
+
   echo "[critical/fast] system-agent and tool authority"
   run_swarmd_tests 30s \
     './internal/agent' \
@@ -105,10 +110,15 @@ run_fast() {
     './internal/workspace ./internal/discovery ./internal/artifact ./internal/action ./internal/videoproject' \
     'Test(ResolvePath|ScopeForPath|CreateFolderForPrincipal|ScanScope|ArtifactMaterializationTraversal|ResolveActionEntrypoint|AssembleActionArguments|RunnerSnapshotsAreExactScopeBound|VideoprojectSecurityRejections)'
 
+  echo "[critical/fast] account-scoped media, image, video-source, and render boundaries"
+  run_swarmd_tests 60s \
+    './internal/mediastaging ./internal/imagegen ./internal/videosource ./internal/videorender' \
+    '^Test(ServiceUsesAccountScopedStoreWithoutSessionAuthority|CleanupAbandonedPreflightsAccountAndProtectsBoundRecords|ResolveAssetPathRejectsPathOutsideManagedStorage|GenerateRejectsNonPNGPayloadBeforeSaving|ServiceRejectsTraversalUnknownRootAndSymlink|AudioReferencesRejectUnregisteredRootsAndStaleFiles|RenderJobSecurityAndRejections|EscapeFFmpegDrawText)$'
+
   echo "[critical/fast] auth, origin, privacy, and signed cursor failures"
   run_swarmd_tests 60s \
     './internal/api' \
-    'Test(DesktopBoundary|ProtectedCreateAPIsRequire|ProtectedCreateAPIsReject|ProtectedCreateAPIsSucceed|DesktopSessionBootstrapFails|DesktopSessionBootstrapIssues|DesktopSessionRejects|XSwarmTokenPrincipal|ExtractAttachToken|PanicRecovery|V3SyncCursor|V3RealtimeRejects)'
+    'Test(DesktopBoundary|ProtectedCreateAPIsRequire|ProtectedCreateAPIsReject|ProtectedCreateAPIsSucceed|DesktopSessionBootstrapFails|DesktopSessionBootstrapIssues|DesktopSessionRejects|XSwarmTokenPrincipal|ExtractAttachToken|PanicRecovery|VaultGate|V3SyncCursor|V3RealtimeRejects)'
 
   echo "[critical/fast] Desktop V3 durable state and realtime repair"
   run_web_critical_tests
