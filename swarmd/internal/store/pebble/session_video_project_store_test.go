@@ -574,7 +574,7 @@ func durableCompositionFixture() (*videocomposition.Catalog, *videocomposition.L
 		ID: "phones", Slots: []videocomposition.Slot{{
 			ID: "phone", Requirement: "Portrait capture",
 			Geometry: videocomposition.NormalizedRect{X: .1, Y: .1, Width: .3, Height: .8},
-			ZIndex: 1, Fit: videocomposition.FitCover, AlignmentX: .5, AlignmentY: .5,
+			ZIndex:   1, Fit: videocomposition.FitCover, AlignmentX: .5, AlignmentY: .5,
 			Mask: videocomposition.Mask{Kind: videocomposition.MaskRoundedRect, Radius: .05},
 		}},
 	}}}
@@ -617,6 +617,51 @@ func TestPendingSelectedVideoProductionPartBlocksAcceptance(t *testing.T) {
 	}
 }
 
+func TestMergeVideoCompositionUpdateHydratesBoundedStoryboardParts(t *testing.T) {
+	catalog, link := durableCompositionFixture()
+	visual := &SessionArtifactSelectionReference{SessionID: "session", CollectionID: "collection", VariantID: "visual", EventSeq: 1}
+	pending := VideoPlanProposal{Kind: VideoPlanKindInitial, Summary: "Imported storyboard", CompositionCatalog: catalog}
+	for index, id := range []string{"one", "two", "three", "four"} {
+		pending.Parts = append(pending.Parts, VideoPlanPart{
+			ID: id, Title: strings.ToUpper(id), DurationMs: int64(index+1) * 1000,
+			Visual: visual, VisualMediaType: "image/png", CaptureStateID: "state-" + id,
+			FilmingRequirements: []string{"Record " + id}, ProductionState: VideoProductionStatePending,
+			StoryboardSource: visual, StoryboardStill: visual, Composition: link,
+		})
+	}
+	assigned := &videocomposition.Link{LayoutID: "phones", Overrides: []videocomposition.SlotOverride{{
+		SlotID: "phone", Source: &videocomposition.SourceBinding{SourceRef: "videosrc_exact", MediaType: "video/mp4", SourceStartMs: 0, SourceEndMs: 1000, TimelineStartMs: 0, TimelineEndMs: 1000, AudioPolicy: videocomposition.AudioMute},
+	}}}
+	patch := VideoPlanProposal{Kind: VideoPlanKindRevision, Parts: []VideoPlanPart{
+		{ID: "one", Composition: assigned, ProductionState: VideoProductionStateReady},
+		{ID: "three", Composition: assigned, ProductionState: VideoProductionStateReady},
+	}}
+	merged, err := MergeVideoCompositionUpdate(pending, patch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if merged.Kind != VideoPlanKindInitial || merged.Summary != pending.Summary || len(merged.Parts) != 4 || merged.Parts[1].ID != "two" || merged.Parts[1].ProductionState != VideoProductionStatePending {
+		t.Fatalf("bounded merge did not preserve pending plan: %#v", merged)
+	}
+	for _, index := range []int{0, 2} {
+		part := merged.Parts[index]
+		if part.Composition != assigned || part.ProductionState != VideoProductionStateReady || part.Title == "" || part.StoryboardSource == nil || part.StoryboardStill == nil || len(part.FilmingRequirements) == 0 {
+			t.Fatalf("targeted part %d was not canonically hydrated: %#v", index, part)
+		}
+	}
+	if err := validateVideoPlanIntent(VideoEditProposalIntentStoryboardImport, merged); err != nil {
+		t.Fatalf("merged storyboard plan lost canonical import fields: %v", err)
+	}
+	unknown := VideoPlanProposal{Parts: []VideoPlanPart{{ID: "missing", Composition: assigned}}}
+	if _, err := MergeVideoCompositionUpdate(pending, unknown); err == nil || !strings.Contains(err.Error(), "unknown stable part") {
+		t.Fatalf("unknown stable part must fail atomically, got %v", err)
+	}
+	mutated := VideoPlanProposal{Parts: []VideoPlanPart{{ID: "one", Title: "Changed", Composition: assigned}}}
+	if _, err := MergeVideoCompositionUpdate(pending, mutated); err == nil || !strings.Contains(err.Error(), "only change composition") {
+		t.Fatalf("non-composition mutation must fail atomically, got %v", err)
+	}
+}
+
 func TestCompositionUpdateRevisionPlanKeepsUntargetedWorkingParts(t *testing.T) {
 	catalog, link := durableCompositionFixture()
 	visual := &SessionArtifactSelectionReference{SessionID: "session", CollectionID: "collection", VariantID: "visual", EventSeq: 1}
@@ -629,7 +674,9 @@ func TestCompositionUpdateRevisionPlanKeepsUntargetedWorkingParts(t *testing.T) 
 	changed := working.Parts[0]
 	changed.Composition = &videocomposition.Link{Disabled: true}
 	updated, err := mergeWorkingVideoPlanMutation(timeline, VideoPlanProposal{Kind: VideoPlanKindRevision, CompositionCatalog: catalog, Parts: []VideoPlanPart{changed}})
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(updated.Parts) != 2 || updated.Parts[0].Composition == nil || !updated.Parts[0].Composition.Disabled || updated.Parts[1].ID != "two" {
 		t.Fatalf("updated working plan = %#v", updated)
 	}

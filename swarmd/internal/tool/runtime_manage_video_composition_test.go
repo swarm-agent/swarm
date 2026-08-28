@@ -108,7 +108,10 @@ func TestManageVideoCompositionProposalPreservesPlanAndProviderContract(t *testi
 				"z_index": 1, "fit": "cover", "alignment_x": 0.5, "alignment_y": 0.5, "mask": map[string]any{"kind": "none"}, "source": sourceBinding,
 			}},
 		}}},
-		"parts": []map[string]any{{"id": "part-1", "title": "Spatial shot", "duration_ms": 1000, "visual": visual, "composition": map[string]any{"layout_id": "split"}}},
+		"parts": []map[string]any{
+			{"id": "part-1", "title": "Spatial shot", "duration_ms": 1000, "visual": visual, "composition": map[string]any{"layout_id": "split"}},
+			{"id": "part-2", "title": "Untargeted shot", "duration_ms": 1000, "visual": visual},
+		},
 	}
 	proposalArgs, err := json.Marshal(map[string]any{"action": "propose_plan", "project_id": create.ProjectID, "base_revision_id": create.RevisionID, "plan": plan})
 	if err != nil {
@@ -128,7 +131,7 @@ func TestManageVideoCompositionProposalPreservesPlanAndProviderContract(t *testi
 	if err := json.Unmarshal([]byte(payload), &response); err != nil {
 		t.Fatal(err)
 	}
-	if response.Proposal.Plan == nil || response.Proposal.Plan.CompositionCatalog == nil || len(response.Proposal.Plan.Parts) != 1 || response.Proposal.Plan.Parts[0].Composition == nil {
+	if response.Proposal.Plan == nil || response.Proposal.Plan.CompositionCatalog == nil || len(response.Proposal.Plan.Parts) != 2 || response.Proposal.Plan.Parts[0].Composition == nil {
 		t.Fatalf("proposal lost spatial composition data: %s", payload)
 	}
 	resolved, err := videocomposition.Resolve(response.Proposal.Plan.CompositionCatalog, response.Proposal.Plan.Parts[0].Composition, 1920, 1080, 1000)
@@ -149,7 +152,7 @@ func TestManageVideoCompositionProposalPreservesPlanAndProviderContract(t *testi
 		t.Fatal(err)
 	}
 	var accepted pebblestore.VideoPlanProposal
-	if err := json.Unmarshal(acceptedBytes, &accepted); err != nil || accepted.CompositionCatalog == nil || len(accepted.Parts) != 1 || accepted.Parts[0].Composition == nil {
+	if err := json.Unmarshal(acceptedBytes, &accepted); err != nil || accepted.CompositionCatalog == nil || len(accepted.Parts) != 2 || accepted.Parts[0].Composition == nil {
 		t.Fatalf("working revision metadata lost spatial plan: value=%#v err=%v", working.Timeline.Metadata["accepted_video_plan"], err)
 	}
 
@@ -162,9 +165,9 @@ func TestManageVideoCompositionProposalPreservesPlanAndProviderContract(t *testi
 	// Provider-authored composition updates carry exact visual references but not
 	// the server-resolved visual_media_type. UpdateComposition must hydrate that
 	// internal field just as initial proposal creation does.
-	updatedPlan := *response.Proposal.Plan
-	updatedPlan.Parts = append([]pebblestore.VideoPlanPart(nil), response.Proposal.Plan.Parts...)
-	updatedPlan.Parts[0].VisualMediaType = ""
+	updatedPlan := pebblestore.VideoPlanProposal{Kind: pebblestore.VideoPlanKindRevision, Parts: []pebblestore.VideoPlanPart{{
+		ID: "part-1", Composition: response.Proposal.Plan.Parts[0].Composition,
+	}}}
 	updateArgs, err := json.Marshal(map[string]any{
 		"action":               "update_composition",
 		"project_id":           create.ProjectID,
@@ -178,6 +181,14 @@ func TestManageVideoCompositionProposalPreservesPlanAndProviderContract(t *testi
 	updatedPayload, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, Call{CallID: "update", Name: "manage_video", Arguments: string(updateArgs)})
 	if err != nil || !strings.Contains(updatedPayload, `"visual_media_type":"image/png"`) {
 		t.Fatalf("update_composition did not rehydrate the exact ready fallback media type: payload=%s err=%v", updatedPayload, err)
+	}
+	var updatedResponse struct {
+		Proposal struct {
+			Plan *pebblestore.VideoPlanProposal `json:"plan"`
+		} `json:"proposal"`
+	}
+	if err := json.Unmarshal([]byte(updatedPayload), &updatedResponse); err != nil || updatedResponse.Proposal.Plan == nil || len(updatedResponse.Proposal.Plan.Parts) != 2 || updatedResponse.Proposal.Plan.Parts[1].ID != "part-2" || updatedResponse.Proposal.Plan.Parts[1].Title != "Untargeted shot" {
+		t.Fatalf("bounded update_composition did not preserve the omitted stable part: payload=%s err=%v", updatedPayload, err)
 	}
 }
 

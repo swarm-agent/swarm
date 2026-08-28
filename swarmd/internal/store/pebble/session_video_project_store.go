@@ -837,7 +837,7 @@ func validateV3VideoProjectMutationInput(input V3SessionMutationInput) error {
 		}
 		if input.Kind == V3SessionMutationUpdateVideoComposition {
 			if input.VideoProject.CompositionPlan == nil || strings.TrimSpace(input.VideoProject.ExpectedRevisionID) == "" {
-				return errors.New("composition update requires a complete plan and exact expected_revision_id")
+				return errors.New("composition update requires a bounded stable-part patch and exact expected_revision_id")
 			}
 			if err := validateVideoPlanProposal(*input.VideoProject.CompositionPlan); err != nil {
 				return fmt.Errorf("composition update plan invalid: %w", err)
@@ -1458,6 +1458,105 @@ func mergeStoryboardReplacement(existing, replacement VideoPlanPart) VideoPlanPa
 		replacement.ProductionState = VideoProductionStateReady
 	}
 	return replacement
+}
+
+// MergeVideoCompositionUpdate authenticates a bounded composition patch against
+// the exact pending plan. Callers may send only the stable parts they are
+// changing; omitted plan fields and parts retain their server-owned values.
+func MergeVideoCompositionUpdate(pending, patch VideoPlanProposal) (VideoPlanProposal, error) {
+	if len(patch.Parts) == 0 || len(patch.Parts) > len(pending.Parts) {
+		return VideoPlanProposal{}, errors.New("composition update parts must be a non-empty bounded subset of the pending plan")
+	}
+	merged := pending
+	merged.Parts = append([]VideoPlanPart(nil), pending.Parts...)
+	if patch.CompositionCatalog != nil {
+		merged.CompositionCatalog = patch.CompositionCatalog
+	}
+	indices := make(map[string]int, len(merged.Parts))
+	for index, part := range merged.Parts {
+		indices[part.ID] = index
+	}
+	seen := make(map[string]struct{}, len(patch.Parts))
+	for _, update := range patch.Parts {
+		index, ok := indices[update.ID]
+		if !ok {
+			return VideoPlanProposal{}, fmt.Errorf("composition update references unknown stable part %q", update.ID)
+		}
+		if _, duplicate := seen[update.ID]; duplicate {
+			return VideoPlanProposal{}, fmt.Errorf("composition update repeats stable part %q", update.ID)
+		}
+		seen[update.ID] = struct{}{}
+
+		existing := merged.Parts[index]
+		hydrated := update
+		hydrated.ID = existing.ID
+		if hydrated.Title == "" {
+			hydrated.Title = existing.Title
+		}
+		if hydrated.DurationMs == 0 {
+			hydrated.DurationMs = existing.DurationMs
+		}
+		if hydrated.Narration == "" {
+			hydrated.Narration = existing.Narration
+		}
+		if hydrated.OnScreenText == "" {
+			hydrated.OnScreenText = existing.OnScreenText
+		}
+		if hydrated.VisualDirection == "" {
+			hydrated.VisualDirection = existing.VisualDirection
+		}
+		if hydrated.TransitionIn == "" {
+			hydrated.TransitionIn = existing.TransitionIn
+		}
+		if hydrated.CaptureStateID == "" {
+			hydrated.CaptureStateID = existing.CaptureStateID
+		}
+		if hydrated.FilmingRequirements == nil {
+			hydrated.FilmingRequirements = existing.FilmingRequirements
+		}
+		if hydrated.StoryboardSource == nil {
+			hydrated.StoryboardSource = existing.StoryboardSource
+		}
+		if hydrated.StoryboardStill == nil {
+			hydrated.StoryboardStill = existing.StoryboardStill
+		}
+		if hydrated.Caption == nil {
+			hydrated.Caption = existing.Caption
+		}
+		if hydrated.Transition == nil {
+			hydrated.Transition = existing.Transition
+		}
+		if hydrated.Visual == nil {
+			hydrated.Visual = existing.Visual
+		}
+		if hydrated.VisualMediaType == "" {
+			hydrated.VisualMediaType = existing.VisualMediaType
+		}
+		if hydrated.SourceStartMs == 0 {
+			hydrated.SourceStartMs = existing.SourceStartMs
+		}
+		if hydrated.SourceEndMs == 0 {
+			hydrated.SourceEndMs = existing.SourceEndMs
+		}
+		if hydrated.AnimationCandidates == nil {
+			hydrated.AnimationCandidates = existing.AnimationCandidates
+		}
+		if hydrated.Composition == nil {
+			hydrated.Composition = existing.Composition
+		}
+		if hydrated.ProductionState == "" {
+			hydrated.ProductionState = existing.ProductionState
+		}
+
+		expected := existing
+		expected.Composition = hydrated.Composition
+		expected.ProductionState = hydrated.ProductionState
+		if !reflect.DeepEqual(hydrated, expected) {
+			return VideoPlanProposal{}, fmt.Errorf("composition update may only change composition and production_state for part %q", update.ID)
+		}
+		merged.Parts[index] = hydrated
+	}
+	return merged, nil
 }
 
 func mergeWorkingVideoPlanMutation(timeline VideoProjectTimeline, proposed VideoPlanProposal) (VideoPlanProposal, error) {
@@ -2166,6 +2265,9 @@ func (s *SessionStore) prepareV3VideoProjectMutation(input V3SessionMutationInpu
 			return preparedV3VideoProjectMutation{}, errors.New("composition working revision not found")
 		}
 		updatedPlan := *input.VideoProject.CompositionPlan
+		if updatedPlan.Kind != proposal.Plan.Kind || updatedPlan.Summary != proposal.Plan.Summary || len(updatedPlan.Parts) != len(proposal.Plan.Parts) {
+			return preparedV3VideoProjectMutation{}, errors.New("composition update must be canonically merged with the pending plan before durable mutation")
+		}
 		if err := validateVideoPlanIntent(proposal.Intent, updatedPlan); err != nil {
 			return preparedV3VideoProjectMutation{}, fmt.Errorf("composition update intent invalid: %w", err)
 		}

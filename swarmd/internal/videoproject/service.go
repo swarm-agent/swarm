@@ -183,6 +183,11 @@ func (s *Service) UpdateComposition(ctx context.Context, principal identity.Prin
 	if err != nil || !ok || (project.UserID != "" && project.UserID != principal.UserID) || project.CurrentRevisionID != input.ExpectedRevisionID {
 		return pebblestore.VideoEditProposalSnapshot{}, errors.New("stale composition update: expected revision is not the current project revision")
 	}
+	mergedPlan, err := pebblestore.MergeVideoCompositionUpdate(*proposal.Plan, *input.Plan)
+	if err != nil {
+		return pebblestore.VideoEditProposalSnapshot{}, err
+	}
+	input.Plan = &mergedPlan
 	if err := s.normalizeVisualPlanArtifacts(principal, input.SessionID, input.Plan); err != nil {
 		return pebblestore.VideoEditProposalSnapshot{}, err
 	}
