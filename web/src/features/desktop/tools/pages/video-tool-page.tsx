@@ -2222,10 +2222,12 @@ export function VideoToolPage() {
   }, [requestCanvasRender, timelineSegments])
 
   useEffect(() => {
-    const canvas = canvasRef.current
-    if (!canvas) return
-    const context = canvas.getContext('2d')
-    if (!context) return
+    const canvasElement = canvasRef.current
+    if (!canvasElement) return
+    const renderingContext = canvasElement.getContext('2d')
+    if (!renderingContext) return
+    const canvas = canvasElement
+    const context = renderingContext
 
     let frame = 0
     let disposed = false
