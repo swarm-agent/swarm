@@ -1,6 +1,7 @@
 package run
 
 import (
+	"context"
 	"errors"
 	"os"
 	"os/exec"
@@ -164,6 +165,54 @@ func TestRunWorkspaceScopeCoderAllowsOnlyCanonicalLinkedWorktreeGitAdminRoot(t *
 	_, needed, err = tool.ScopeExpansionForCall(scope, tool.Call{Name: "read", Arguments: mustJSON(t, map[string]any{"path": otherAdmin})})
 	if err != nil || !needed {
 		t.Fatalf("unrelated Git admin path expansion = %t err=%v, want permission", needed, err)
+	}
+}
+
+func TestWorkspaceScopeGatePreservesCoderGitAdminReadAuthorization(t *testing.T) {
+	worktree := t.TempDir()
+	gitAdmin := t.TempDir()
+	principal := testRunPrincipal()
+	workspaceCtx := runWorkspaceContext{
+		WorkspacePath:        worktree,
+		WorkspaceRoots:       []string{worktree},
+		OriginWorkspacePath:  worktree,
+		OriginWorkspaceRoots: []string{worktree},
+		Scope: tool.WorkspaceScope{
+			PrimaryPath:    worktree,
+			Roots:          []string{worktree},
+			ReadOnlyRoots:  []string{gitAdmin},
+			MutationScopes: []string{"src/**"},
+		},
+	}
+
+	scope := workspaceScopeForGate(&workspaceCtx, principal, "child-session")
+	if scope.PrimaryPath != worktree || scope.SessionID != "child-session" || scope.Principal.AccountScopeID != principal.AccountScopeID {
+		t.Fatalf("workspace gate scope identity = %#v", scope)
+	}
+	assertStringSliceContains(t, scope.ReadOnlyRoots, gitAdmin)
+	if len(scope.MutationScopes) != 1 || scope.MutationScopes[0] != "src/**" {
+		t.Fatalf("workspace gate mutation scopes = %#v", scope.MutationScopes)
+	}
+	calls := []tool.Call{
+		{CallID: "read-gitdir", Name: "read", Arguments: mustJSON(t, map[string]any{"path": filepath.Join(gitAdmin, "gitdir")})},
+		{CallID: "list-git-admin", Name: "list", Arguments: mustJSON(t, map[string]any{"path": gitAdmin})},
+	}
+	for _, call := range calls {
+		request, needed, err := tool.ScopeExpansionForCall(scope, call)
+		if err != nil || needed {
+			t.Fatalf("%s inside authenticated Coder Git admin root requested expansion: needed=%t request=%+v err=%v", call.Name, needed, request, err)
+		}
+	}
+	_, approved, indexes, changed, waitMS, err := (&Service{}).gateWorkspaceScopeCalls(
+		context.Background(), "child-session", "parent-session", "child-run", 1, sessionruntime.ModeAuto,
+		worktree, "child", principal, &workspaceCtx, calls, nil,
+	)
+	if err != nil || len(approved) != len(calls) || len(indexes) != len(calls) || changed || waitMS != 0 {
+		t.Fatalf("workspace gate prompted for authenticated Coder reads: approved=%d indexes=%v changed=%t wait_ms=%d err=%v", len(approved), indexes, changed, waitMS, err)
+	}
+	outside := t.TempDir()
+	if _, needed, err := tool.ScopeExpansionForCall(scope, tool.Call{Name: "list", Arguments: mustJSON(t, map[string]any{"path": outside})}); err != nil || !needed {
+		t.Fatalf("unrelated list expansion = %t err=%v, want permission", needed, err)
 	}
 }
 

@@ -52,12 +52,7 @@ func (s *Service) gateWorkspaceScopeCalls(
 	scopeChanged := false
 	permissionWaitMS := int64(0)
 
-	hostScope := tool.WorkspaceScope{
-		PrimaryPath: strings.TrimSpace(workspaceCtx.OriginWorkspacePath),
-		Roots:       append([]string(nil), workspaceCtx.OriginWorkspaceRoots...),
-		Principal:   principal,
-		SessionID:   strings.TrimSpace(sessionID),
-	}
+	hostScope := workspaceScopeForGate(workspaceCtx, principal, sessionID)
 	for i := range calls {
 		results[i] = tool.Result{
 			CallID: strings.TrimSpace(calls[i].CallID),
@@ -107,17 +102,30 @@ func (s *Service) gateWorkspaceScopeCalls(
 		if changed {
 			scopeChanged = true
 		}
-		hostScope = tool.WorkspaceScope{
-			PrimaryPath: strings.TrimSpace(workspaceCtx.OriginWorkspacePath),
-			Roots:       append([]string(nil), workspaceCtx.OriginWorkspaceRoots...),
-			Principal:   principal,
-			SessionID:   strings.TrimSpace(sessionID),
-		}
+		hostScope = workspaceScopeForGate(workspaceCtx, principal, sessionID)
 		approvedCalls = append(approvedCalls, call)
 		approvedIndexes = append(approvedIndexes, i)
 	}
 
 	return results, approvedCalls, approvedIndexes, scopeChanged, permissionWaitMS, nil
+}
+
+func workspaceScopeForGate(workspaceCtx *runWorkspaceContext, principal identity.Principal, sessionID string) tool.WorkspaceScope {
+	if workspaceCtx == nil {
+		return tool.WorkspaceScope{Principal: principal, SessionID: strings.TrimSpace(sessionID)}
+	}
+	// Preserve the resolved runtime scope's authenticated read-only roots and
+	// mutation limits. Rebuilding this value from only PrimaryPath and Roots
+	// drops a Coder worktree's canonical linked-Git administrative root, causing
+	// ordinary Git-backed read/list discovery to request workspace expansion.
+	scope := workspaceCtx.Scope
+	scope.PrimaryPath = strings.TrimSpace(workspaceCtx.OriginWorkspacePath)
+	scope.Roots = append([]string(nil), workspaceCtx.OriginWorkspaceRoots...)
+	scope.ReadOnlyRoots = append([]string(nil), workspaceCtx.Scope.ReadOnlyRoots...)
+	scope.MutationScopes = append([]string(nil), workspaceCtx.Scope.MutationScopes...)
+	scope.Principal = principal
+	scope.SessionID = strings.TrimSpace(sessionID)
+	return scope
 }
 
 func (s *Service) requestWorkspaceScopePermission(
