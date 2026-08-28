@@ -610,6 +610,8 @@ func TestVideoprojectServiceWorkflow(t *testing.T) {
 						VariantID:    "var_intro_v1",
 						EventSeq:     1,
 					},
+					SourceStartMs:   0,
+					SourceEndMs:     4000,
 					DurationMs:      4000,
 					TimelineStartMs: 0,
 					TimelineEndMs:   4000,

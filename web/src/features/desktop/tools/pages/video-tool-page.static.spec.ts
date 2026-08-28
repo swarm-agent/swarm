@@ -96,6 +96,7 @@ test('Video Studio reviews nested selective iterations in the sidebar and keeps 
 
 test('Video Studio pins one clip-owned animation selection surface and an identity-led exact-aspect player', async () => {
   const source = await readFile(pageSourceUrl, 'utf8')
+  const proposalSource = await readFile(new URL('../video-studio/video-studio-surface.tsx', import.meta.url), 'utf8')
 
   assert.match(source, /className="relative w-full shrink-0 overflow-hidden[^"]*" data-video-studio-player-viewport style=\{\{ aspectRatio:/)
   assert.match(source, /width=\{\(shadowTimeline \?\? playerRevision\?\.timeline\)\?\.width \?\? 1920\}/)
@@ -145,7 +146,7 @@ test('Video Studio exposes exact-aspect pending spatial composition controls', a
   const compositionSource = await readFile(new URL('../video-studio/video-composition.tsx', import.meta.url), 'utf8')
   assert.match(source, /<VideoCompositionOverlay/)
   assert.match(source, /<VideoCompositionEditor/)
-  assert.match(source, /Propose composition changes/)
+  assert.match(source, /proposeCompositionChange/)
   assert.match(source, /Linked layout/)
   assert.match(compositionSource, /Apply to linked shots/)
   assert.match(compositionSource, /Detach shot/)
@@ -154,7 +155,7 @@ test('Video Studio exposes exact-aspect pending spatial composition controls', a
   assert.match(compositionSource, /Composition fit/)
   assert.match(compositionSource, /Composition mask/)
   assert.match(compositionSource, /Composition audio/)
-  assert.match(compositionSource, /All changes create a pending proposal/)
+  assert.match(compositionSource, /All changes create or update a pending proposal/)
 })
 
 test('Video Studio exposes only the implemented soundtrack contract and an explicit audio lane', async () => {

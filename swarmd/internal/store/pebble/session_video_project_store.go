@@ -260,7 +260,7 @@ type VideoPlanPart struct {
 	SourceStartMs       int64                              `json:"source_start_ms,omitempty"`
 	SourceEndMs         int64                              `json:"source_end_ms,omitempty"`
 	AnimationCandidates *VideoAnimationCandidateSet        `json:"animation_candidates,omitempty"`
-	Composition         *videocomposition.Link              `json:"composition,omitempty"`
+	Composition         *videocomposition.Link             `json:"composition,omitempty"`
 }
 
 const (
@@ -1578,7 +1578,7 @@ func visualVideoPlanTimeline(base VideoProjectTimeline, plan VideoPlanProposal) 
 	if len(preservedClips) > 0 {
 		preservedVisualStartMs := int64(-1)
 		for _, clip := range preservedClips {
-			if clip.SourceKind == VideoClipSourceKindSourceAudio {
+			if clip.SourceKind == VideoClipSourceKindSourceAudio || clip.Track != 0 {
 				continue
 			}
 			if preservedVisualStartMs == -1 || clip.TimelineStartMs < preservedVisualStartMs {
@@ -1588,10 +1588,10 @@ func visualVideoPlanTimeline(base VideoProjectTimeline, plan VideoPlanProposal) 
 		if preservedVisualStartMs >= 0 && startMs > preservedVisualStartMs {
 			shiftMs := startMs - preservedVisualStartMs
 			for index := range preservedClips {
-				// Source audio is independently positioned on its own track and must
-				// remain on the same playhead while visual plan clips change. Only
-				// preserved non-audio clips retain the append/shift contract.
-				if preservedClips[index].SourceKind == VideoClipSourceKindSourceAudio {
+				// Track-zero footage retains the sequential append/shift contract.
+				// Source audio and auxiliary overlay tracks are independently
+				// positioned and must remain on their exact playhead ranges.
+				if preservedClips[index].SourceKind == VideoClipSourceKindSourceAudio || preservedClips[index].Track != 0 {
 					continue
 				}
 				preservedClips[index].TimelineStartMs += shiftMs
@@ -2185,12 +2185,16 @@ func (s *SessionStore) prepareV3VideoProjectMutation(input V3SessionMutationInpu
 			}
 		}
 		originalParts := make(map[string]VideoPlanPart, len(proposal.Plan.Parts))
-		for _, part := range proposal.Plan.Parts { originalParts[part.ID] = part }
+		for _, part := range proposal.Plan.Parts {
+			originalParts[part.ID] = part
+		}
 		if previousWorkingPlan, planErr := acceptedVideoPlanFromTimeline(working.Timeline); planErr != nil {
 			return preparedV3VideoProjectMutation{}, planErr
 		} else if previousWorkingPlan != nil {
 			for _, part := range previousWorkingPlan.Parts {
-				if _, exists := originalParts[part.ID]; !exists { originalParts[part.ID] = part }
+				if _, exists := originalParts[part.ID]; !exists {
+					originalParts[part.ID] = part
+				}
 			}
 		}
 		for _, part := range updatedPlan.Parts {
@@ -2213,16 +2217,22 @@ func (s *SessionStore) prepareV3VideoProjectMutation(input V3SessionMutationInpu
 		}
 		baseForRebuild := working.Timeline
 		planPartIDs := make(map[string]struct{}, len(workingPlan.Parts))
-		for _, part := range workingPlan.Parts { planPartIDs[part.ID] = struct{}{} }
+		for _, part := range workingPlan.Parts {
+			planPartIDs[part.ID] = struct{}{}
+		}
 		baseForRebuild.Clips = nil
 		for _, clip := range working.Timeline.Clips {
-			if _, planClip := planPartIDs[clip.ID]; !planClip { baseForRebuild.Clips = append(baseForRebuild.Clips, clip) }
+			if _, planClip := planPartIDs[clip.ID]; !planClip {
+				baseForRebuild.Clips = append(baseForRebuild.Clips, clip)
+			}
 		}
 		baseForRebuild.Transitions = nil
 		for _, transition := range working.Timeline.Transitions {
 			_, fromPlan := planPartIDs[transition.FromClipID]
 			_, toPlan := planPartIDs[transition.ToClipID]
-			if !fromPlan || !toPlan { baseForRebuild.Transitions = append(baseForRebuild.Transitions, transition) }
+			if !fromPlan || !toPlan {
+				baseForRebuild.Transitions = append(baseForRebuild.Transitions, transition)
+			}
 		}
 		working.Timeline = visualVideoPlanTimeline(baseForRebuild, workingPlan)
 		if working.Timeline.Metadata == nil {

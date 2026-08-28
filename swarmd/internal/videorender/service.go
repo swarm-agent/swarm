@@ -307,7 +307,10 @@ func (s *Service) InspectFrames(ctx context.Context, principal identity.Principa
 	if revision.SessionID != sessionID || revision.ProjectID != projectID || revision.AccountScopeID != principal.AccountScopeID || (revision.UserID != "" && revision.UserID != principal.UserID) {
 		return FrameInspectionResult{}, errors.New("video revision ownership does not match authenticated principal")
 	}
-	timeline := revision.Timeline
+	timeline, err := cloneVideoTimeline(revision.Timeline)
+	if err != nil {
+		return FrameInspectionResult{}, fmt.Errorf("copy exact revision for frame inspection: %w", err)
+	}
 	if proposalID := pebblestore.VideoPlanRenderAuthorityProposalID(timeline); proposalID != "" {
 		proposal, found, proposalErr := s.store.GetVideoEditProposal(principal.AccountScopeID, sessionID, projectID, proposalID)
 		if proposalErr != nil {
@@ -583,7 +586,10 @@ func (s *Service) RenderJob(ctx context.Context, principal identity.Principal, r
 		return pebblestore.VideoRenderJobSnapshot{}, err
 	}
 
-	timeline := revision.Timeline
+	timeline, err := cloneVideoTimeline(revision.Timeline)
+	if err != nil {
+		return pebblestore.VideoRenderJobSnapshot{}, fmt.Errorf("copy exact revision for render: %w", err)
+	}
 	proposals, err := s.store.ListVideoEditProposals(principal.AccountScopeID, sessionID, projectID, 100)
 	if err != nil {
 		return pebblestore.VideoRenderJobSnapshot{}, fmt.Errorf("inspect pending video proposals before render: %w", err)
@@ -1261,7 +1267,7 @@ func resolveTimelineCompositionPlacements(timeline pebblestore.VideoProjectTimel
 					Fit: slot.Fit, AlignmentX: slot.AlignmentX, AlignmentY: slot.AlignmentY,
 					CropTop: slot.Crop.Top, CropRight: slot.Crop.Right, CropBottom: slot.Crop.Bottom, CropLeft: slot.Crop.Left,
 					MaskKind: slot.Mask.Kind, MaskRadius: slot.Mask.Radius, ZIndex: slot.ZIndex,
-					SourceSpanMs: slot.Source.SourceEndMs - slot.Source.SourceStartMs,
+					SourceSpanMs:   slot.Source.SourceEndMs - slot.Source.SourceStartMs,
 					TimelineSpanMs: slot.Source.TimelineEndMs - slot.Source.TimelineStartMs,
 				},
 				Source: *slot.Source,
@@ -1326,7 +1332,7 @@ func (s *Service) materializeCompositionInput(ctx context.Context, principal ide
 		HasAudio: hasAudio, Muted: !includeAudio, Volume: placement.Source.Gain,
 		StartMs: placement.Source.SourceStartMs, EndMs: placement.Source.SourceEndMs,
 		DurationMs: placement.Source.TimelineEndMs - placement.Source.TimelineStartMs,
-		Track: max(parent.Track+1, 1), Layer: placement.ZIndex, TimelineStartMs: start, TimelineEndMs: end,
+		Track:      max(parent.Track+1, 1), Layer: placement.ZIndex, TimelineStartMs: start, TimelineEndMs: end,
 		Composition: &placement.CompositionPlacement,
 	}, nil
 }
@@ -1335,6 +1341,18 @@ type htmlAnimationManifest struct {
 	Version    string `json:"version"`
 	DurationMS int    `json:"duration_ms"`
 	FPS        int    `json:"fps"`
+}
+
+func cloneVideoTimeline(source pebblestore.VideoProjectTimeline) (pebblestore.VideoProjectTimeline, error) {
+	encoded, err := json.Marshal(source)
+	if err != nil {
+		return pebblestore.VideoProjectTimeline{}, err
+	}
+	var cloned pebblestore.VideoProjectTimeline
+	if err := json.Unmarshal(encoded, &cloned); err != nil {
+		return pebblestore.VideoProjectTimeline{}, err
+	}
+	return cloned, nil
 }
 
 func applySelectedHTMLAnimationSources(timeline *pebblestore.VideoProjectTimeline) error {

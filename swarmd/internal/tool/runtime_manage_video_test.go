@@ -764,8 +764,26 @@ func TestManageVideoStudioInitialTimelineCreatesDistinctProjectAndPreservesInput
 	defer store.Close()
 
 	principal := identity.Principal{Type: identity.PrincipalTypeUser, SessionID: "studio", UserID: "user-1", AccountScopeID: "account-1"}
+	workspacePath, mediaPath := t.TempDir(), t.TempDir()
+	workspaceService := workspace.NewService(pebblestore.NewWorkspaceStore(store))
+	workspaceResolution, err := workspaceService.AddForPrincipal(principal, workspacePath, "workspace", "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := workspaceService.AddSourceMediaDirectoryForPrincipal(principal, workspacePath, mediaPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(mediaPath, "soundtrack.wav"), []byte("RIFF\x04\x00\x00\x00WAVE"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	sessionStore := pebblestore.NewSessionStore(store)
-	if err := sessionStore.CreateSession(pebblestore.SessionSnapshot{ID: "studio", UserID: principal.UserID, AccountScopeID: principal.AccountScopeID, WorkspacePath: "/ws", Mode: "auto", Metadata: map[string]any{"lineage_kind": "video_project"}}); err != nil {
+	if err := sessionStore.CreateSession(pebblestore.SessionSnapshot{ID: "studio", UserID: principal.UserID, AccountScopeID: principal.AccountScopeID, WorkspacePath: workspacePath, Mode: "auto", Metadata: map[string]any{"lineage_kind": "video_project", "workspace_id": workspaceResolution.WorkspaceID}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.PutJSON(pebblestore.KeySessionArtifactCollection(principal.AccountScopeID, "studio", "media"), pebblestore.SessionArtifactCollection{ID: "media", AccountScopeID: principal.AccountScopeID, SessionID: "studio", Status: pebblestore.SessionArtifactStatusReady}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.PutJSON(pebblestore.KeySessionArtifactVariant(principal.AccountScopeID, "studio", "media", "clip"), pebblestore.SessionArtifactVariant{ID: "clip", CollectionID: "media", AccountScopeID: principal.AccountScopeID, SessionID: "studio", Status: pebblestore.SessionArtifactStatusReady, MediaType: "video/mp4", EventSeq: 7}); err != nil {
 		t.Fatal(err)
 	}
 	events, err := pebblestore.NewEventLog(store)
@@ -774,9 +792,34 @@ func TestManageVideoStudioInitialTimelineCreatesDistinctProjectAndPreservesInput
 	}
 	runtime := NewRuntime(1)
 	runtime.sessions = sessionruntime.NewService(sessionStore, events)
+	runtime.videoSources = videosource.NewService(workspaceService, sessionStore)
 	runtime.videoProjects = videoproject.NewService(sessionStore)
 	ctx := WithVideoRunContext(context.Background(), VideoRunContext{SessionID: "studio", RunID: "run-initial-timeline"})
 	scope := WorkspaceScope{SessionID: "studio", Principal: principal}
+	rootsPayload, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, Call{CallID: "roots", Name: "manage_video", Arguments: `{"action":"list_source_roots"}`})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var roots struct {
+		Roots []struct {
+			Ref string `json:"ref"`
+		} `json:"roots"`
+	}
+	if err := json.Unmarshal([]byte(rootsPayload), &roots); err != nil || len(roots.Roots) != 1 {
+		t.Fatalf("roots payload=%s err=%v", rootsPayload, err)
+	}
+	browseArgs, _ := json.Marshal(map[string]any{"action": "browse_source", "source_root_ref": roots.Roots[0].Ref})
+	browsePayload, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, Call{CallID: "browse", Name: "manage_video", Arguments: string(browseArgs)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var browse struct {
+		Audio []pebblestore.AudioSourceReference `json:"audio"`
+	}
+	if err := json.Unmarshal([]byte(browsePayload), &browse); err != nil || len(browse.Audio) != 1 {
+		t.Fatalf("browse payload=%s err=%v", browsePayload, err)
+	}
+	soundtrackSource := browse.Audio[0]
 
 	primaryPayload, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, Call{CallID: "primary", Name: "manage_video", Arguments: `{"action":"create_project","title":"Primary project"}`})
 	if err != nil {
@@ -807,13 +850,13 @@ func TestManageVideoStudioInitialTimelineCreatesDistinctProjectAndPreservesInput
 		"clips": []map[string]any{
 			{
 				"id": "visual", "track": 0, "sequence": 0, "source_kind": "managed_artifact", "media_type": "video/mp4",
-				"artifact_ref": map[string]any{"session_id": "studio", "collection_id": "media", "variant_id": "clip", "event_seq": 7},
+				"artifact_ref":    map[string]any{"session_id": "studio", "collection_id": "media", "variant_id": "clip", "event_seq": 7},
 				"source_start_ms": 0, "source_end_ms": 2000, "timeline_start_ms": 0, "timeline_end_ms": 2000,
 				"duration_ms": 2000, "visible": true, "volume": 1,
 			},
 			{
 				"id": "soundtrack", "track": 1, "sequence": 1, "source_kind": "source_audio", "media_type": "audio/wav",
-				"audio_source": map[string]any{"ref": "audiosrc_soundtrack", "name": "soundtrack.wav", "mime_type": "audio/wav", "size_bytes": 4096, "source_fingerprint": strings.Repeat("a", 64), "fingerprint_version": pebblestore.AudioSourceFingerprintV1},
+				"audio_source":    soundtrackSource,
 				"source_start_ms": 0, "source_end_ms": 2000, "timeline_start_ms": 0, "timeline_end_ms": 2000,
 				"duration_ms": 2000, "visible": false, "volume": 0.8,
 			},
