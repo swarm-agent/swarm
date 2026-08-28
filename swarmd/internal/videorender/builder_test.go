@@ -407,6 +407,31 @@ func TestBuildFFmpegCommandLineMixesAudioOnlyInputWithoutVideoFilter(t *testing.
 	}
 }
 
+func TestBuildFFmpegCommandLineComposesHTMLCaptureAndSamePlayheadSoundtrack(t *testing.T) {
+	timeline := pebblestore.VideoProjectTimeline{Width: 1920, Height: 1080, FPS: 30, TotalDurationMs: 224680}
+	inputs := []MaterializedInput{
+		{Index: 0, ClipID: "accepted-html", FilePath: "job-private-html-capture.mp4", IsVideo: true, DurationMs: 224680, TimelineStartMs: 0, TimelineEndMs: 224680},
+		{Index: 1, ClipID: "registered-soundtrack", FilePath: "registered-soundtrack.wav", IsAudio: true, HasAudio: true, DurationMs: 224680, EndMs: 224680, Track: 1, TimelineStartMs: 0, TimelineEndMs: 224680, Volume: 1},
+	}
+	plan, err := BuildFFmpegCommandLine(timeline, inputs, "final-project.mp4")
+	if err != nil {
+		t.Fatalf("BuildFFmpegCommandLine() error = %v", err)
+	}
+	if plan.TotalDurationMs != 224680 {
+		t.Fatalf("TotalDurationMs = %d, want 224680", plan.TotalDurationMs)
+	}
+	for _, want := range []string{
+		"-i job-private-html-capture.mp4 -i registered-soundtrack.wav",
+		"[1:a]atrim=start=0.000:duration=224.680",
+		"amix=inputs=2:duration=first:dropout_transition=0:normalize=0",
+		"atrim=duration=224.680[a_master]",
+	} {
+		if !strings.Contains(strings.Join(plan.FFmpegArgs, " "), want) {
+			t.Fatalf("final one-shot HTML plus audio command missing %q: %s", want, strings.Join(plan.FFmpegArgs, " "))
+		}
+	}
+}
+
 func TestBuildFFmpegCommandLineMutesSoundtrackAndTimelineMaster(t *testing.T) {
 	timeline := pebblestore.VideoProjectTimeline{
 		TotalDurationMs: 3000,

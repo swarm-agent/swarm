@@ -813,7 +813,10 @@ func (s *Service) RenderJob(ctx context.Context, principal identity.Principal, r
 				Width:       plan.Dimensions.Width,
 				Height:      plan.Dimensions.Height,
 			},
-			OutputRequirements: outputRequirements,
+			OutputRequirements:    outputRequirements,
+			VideoProjectID:        projectID,
+			VideoRevisionID:       revision.ID,
+			VideoRevisionEventSeq: revision.EventSeq,
 		},
 		SourcePath: outputPath,
 	})
@@ -1035,10 +1038,19 @@ func (s *Service) materializeTimelineInputs(ctx context.Context, principal ident
 				return nil, fmt.Errorf("clip %d referenced artifact variant %q with a stale or missing event sequence", i, variant.ID)
 			}
 
-			artifactPrincipal := artifact.Principal{SessionID: session.ID, AccountScopeID: principal.AccountScopeID, UserID: principal.UserID}
 			mediaType := strings.ToLower(strings.TrimSpace(variant.MediaType))
 			if mediaType == "text/html" || mediaType == "application/zip" {
-				cacheKey := fmt.Sprintf("%s\x00%s\x00%s\x00%d\x00%d", targetRef.SessionID, targetRef.CollectionID, targetRef.VariantID, targetRef.EventSeq, clip.DurationMs)
+				if strings.TrimSpace(targetRef.SessionID) == "" || strings.TrimSpace(targetRef.CollectionID) == "" || strings.TrimSpace(targetRef.VariantID) == "" || targetRef.EventSeq == 0 {
+					return nil, fmt.Errorf("clip %d selected HTML animation requires all four exact reference fields", i)
+				}
+				if strings.TrimSpace(variant.SessionID) == "" || variant.SessionID != targetSessionID || variant.CollectionID != targetRef.CollectionID || variant.ID != targetRef.VariantID || variant.EventSeq != targetRef.EventSeq || variant.AccountScopeID != "" && variant.AccountScopeID != principal.AccountScopeID {
+					return nil, fmt.Errorf("clip %d selected HTML animation authority does not match the exact authenticated reference", i)
+				}
+				if err := validateHTMLAnimationAuthority(variant); err != nil {
+					return nil, fmt.Errorf("clip %d selected HTML animation authority: %w", i, err)
+				}
+				artifactPrincipal := artifact.Principal{SessionID: targetSessionID, AccountScopeID: principal.AccountScopeID, UserID: principal.UserID}
+				cacheKey := fmt.Sprintf("%s\x00%s\x00%s\x00%d\x00%d", targetSessionID, targetRef.CollectionID, targetRef.VariantID, targetRef.EventSeq, clip.DurationMs)
 				animationPath := htmlAnimationPaths[cacheKey]
 				if animationPath == "" {
 					var progressFn func(htmlcapture.AnimationProgress)
@@ -1061,6 +1073,7 @@ func (s *Service) materializeTimelineInputs(ctx context.Context, principal ident
 				break
 			}
 
+			artifactPrincipal := artifact.Principal{SessionID: targetSessionID, AccountScopeID: principal.AccountScopeID, UserID: principal.UserID}
 			destPath := filepath.Join(jobDir, fmt.Sprintf("input_%d_%s", input.Index, variant.Filename))
 			body, _, err := s.artifacts.ReadReference(ctx, artifactPrincipal, *targetRef, s.cfg.MaxRenderBytes)
 			if err != nil {
@@ -1341,23 +1354,6 @@ func applySelectedHTMLAnimationSources(timeline *pebblestore.VideoProjectTimelin
 		if candidates == nil {
 			continue
 		}
-		selectedSource := candidates.SelectedSource
-		if candidates.SelectedCandidateID == "" {
-			if len(candidates.Candidates) == 1 {
-				selectedSource = candidates.Candidates[0].Source
-			} else if len(candidates.Candidates) > 1 {
-				return fmt.Errorf("HTML animation part %q has multiple iterations and no durably locked variant", part.ID)
-			} else {
-				continue
-			}
-		}
-		if candidates.Status == pebblestore.VideoAnimationCandidateStatusFailed {
-			reason := strings.TrimSpace(candidates.FailureReason)
-			if reason == "" {
-				reason = "the selected HTML animation export failed"
-			}
-			return fmt.Errorf("HTML animation part %q is not renderable: %s", part.ID, reason)
-		}
 		clip := clips[part.ID]
 		if clip == nil {
 			// A later accepted partial revision may remove a clip while retaining
@@ -1366,7 +1362,56 @@ func applySelectedHTMLAnimationSources(timeline *pebblestore.VideoProjectTimelin
 			// participate in this render.
 			continue
 		}
+		if part.DurationMs <= 0 || part.DurationMs != clip.DurationMs {
+			return fmt.Errorf("HTML animation part %q duration %dms does not match timeline clip duration %dms", part.ID, part.DurationMs, clip.DurationMs)
+		}
+		switch candidates.Status {
+		case pebblestore.VideoAnimationCandidateStatusAwaitingSelection, pebblestore.VideoAnimationCandidateStatusAwaitingExport, pebblestore.VideoAnimationCandidateStatusReady, pebblestore.VideoAnimationCandidateStatusFailed:
+		default:
+			return fmt.Errorf("HTML animation part %q has unsupported render status %q", part.ID, candidates.Status)
+		}
+		if candidates.Status == pebblestore.VideoAnimationCandidateStatusAwaitingSelection && len(candidates.Candidates) > 1 {
+			return fmt.Errorf("HTML animation part %q is still awaiting explicit candidate selection", part.ID)
+		}
+		if len(candidates.Candidates) == 0 {
+			return fmt.Errorf("HTML animation part %q has no exact candidate source set", part.ID)
+		}
+		selectedSource := candidates.SelectedSource
+		if candidates.SelectedCandidateID == "" {
+			if len(candidates.Candidates) == 1 {
+				selectedSource = candidates.Candidates[0].Source
+			} else {
+				return fmt.Errorf("HTML animation part %q has no durably locked candidate", part.ID)
+			}
+		} else {
+			var lockedSource *pebblestore.SessionArtifactSelectionReference
+			for _, candidate := range candidates.Candidates {
+				if candidate.ID == candidates.SelectedCandidateID {
+					lockedSource = candidate.Source
+					break
+				}
+			}
+			if lockedSource == nil {
+				return fmt.Errorf("HTML animation part %q selected candidate %q is missing from its exact candidate set", part.ID, candidates.SelectedCandidateID)
+			}
+			if !sameExactArtifactReference(selectedSource, lockedSource) {
+				return fmt.Errorf("HTML animation part %q selected source does not match its durably locked candidate", part.ID)
+			}
+		}
+		if candidates.Status == pebblestore.VideoAnimationCandidateStatusFailed {
+			reason := strings.TrimSpace(candidates.FailureReason)
+			if reason == "" {
+				reason = "the selected HTML animation export failed"
+			}
+			if len(reason) > 512 {
+				reason = reason[:512]
+			}
+			return fmt.Errorf("HTML animation part %q is not renderable: %s", part.ID, reason)
+		}
 		if candidates.Derivative != nil && candidates.Status == pebblestore.VideoAnimationCandidateStatusReady {
+			if strings.TrimSpace(candidates.Derivative.SessionID) == "" || strings.TrimSpace(candidates.Derivative.CollectionID) == "" || strings.TrimSpace(candidates.Derivative.VariantID) == "" || candidates.Derivative.EventSeq == 0 {
+				return fmt.Errorf("HTML animation part %q promoted derivative requires all four exact reference fields", part.ID)
+			}
 			clip.ArtifactRef = candidates.Derivative
 			clip.MediaType = "video/mp4"
 			clip.SourceStartMs = 0
@@ -1375,6 +1420,9 @@ func applySelectedHTMLAnimationSources(timeline *pebblestore.VideoProjectTimelin
 		}
 		if selectedSource == nil {
 			return fmt.Errorf("HTML animation part %q has a locked candidate but no exact selected source", part.ID)
+		}
+		if strings.TrimSpace(selectedSource.SessionID) == "" || strings.TrimSpace(selectedSource.CollectionID) == "" || strings.TrimSpace(selectedSource.VariantID) == "" || selectedSource.EventSeq == 0 {
+			return fmt.Errorf("HTML animation part %q selected source requires all four exact reference fields", part.ID)
 		}
 		clip.ArtifactRef = selectedSource
 		clip.MediaType = "text/html"
@@ -1385,6 +1433,12 @@ func applySelectedHTMLAnimationSources(timeline *pebblestore.VideoProjectTimelin
 }
 
 func (s *Service) renderHTMLAnimationClip(ctx context.Context, principal artifact.Principal, ref pebblestore.SessionArtifactSelectionReference, variant pebblestore.SessionArtifactVariant, expectedDurationMs int64, jobDir string, inputIndex int, progress ...func(htmlcapture.AnimationProgress)) (string, error) {
+	if err := validateHTMLAnimationAuthority(variant); err != nil {
+		return "", err
+	}
+	if !sameExactArtifactReference(&ref, &pebblestore.SessionArtifactSelectionReference{SessionID: variant.SessionID, CollectionID: variant.CollectionID, VariantID: variant.ID, EventSeq: variant.EventSeq}) {
+		return "", errors.New("selected HTML animation does not match the exact authenticated variant")
+	}
 	if s.animation == nil {
 		return "", errors.New("selected HTML animation requires the trusted HTML-to-MP4 renderer, but it is unavailable")
 	}
@@ -1398,6 +1452,9 @@ func (s *Service) renderHTMLAnimationClip(ctx context.Context, principal artifac
 	}
 	if expectedDurationMs <= 0 || int64(manifest.DurationMS) != expectedDurationMs {
 		return "", fmt.Errorf("animation manifest duration %dms does not match clip duration %dms", manifest.DurationMS, expectedDurationMs)
+	}
+	if duration := temporalAnimationDuration(variant.Parts); duration <= 0 || duration != expectedDurationMs {
+		return "", fmt.Errorf("reviewed animation temporal authority duration %dms does not match clip duration %dms", duration, expectedDurationMs)
 	}
 	var progressFn func(htmlcapture.AnimationProgress)
 	if len(progress) > 0 {
@@ -1414,7 +1471,10 @@ func (s *Service) renderHTMLAnimationClip(ctx context.Context, principal artifac
 	if result.DurationMS != manifest.DurationMS || result.FPS != manifest.FPS || result.FrameCount != (manifest.DurationMS*manifest.FPS+999)/1000 {
 		return "", errors.New("trusted HTML animation renderer returned inconsistent timeline metadata")
 	}
-	if len(result.MP4) < 12 || len(result.MP4) > htmlcapture.MaxMP4Bytes || string(result.MP4[4:8]) != "ftyp" {
+	if ctx.Err() != nil {
+		return "", ctx.Err()
+	}
+	if len(result.MP4) < 12 || len(result.MP4) > htmlcapture.MaxMP4Bytes || string(result.MP4[4:8]) != "ftyp" || int64(len(result.MP4)) > s.cfg.MaxRenderBytes {
 		return "", errors.New("trusted HTML animation renderer returned an invalid bounded MP4")
 	}
 	destPath := filepath.Join(jobDir, fmt.Sprintf("input_%d_html-animation.mp4", inputIndex))
@@ -1424,11 +1484,82 @@ func (s *Service) renderHTMLAnimationClip(ctx context.Context, principal artifac
 	return destPath, nil
 }
 
+func sameExactArtifactReference(left, right *pebblestore.SessionArtifactSelectionReference) bool {
+	return left != nil && right != nil && strings.TrimSpace(left.SessionID) != "" && left.SessionID == right.SessionID && strings.TrimSpace(left.CollectionID) != "" && left.CollectionID == right.CollectionID && strings.TrimSpace(left.VariantID) != "" && left.VariantID == right.VariantID && left.EventSeq != 0 && left.EventSeq == right.EventSeq
+}
+
+func validateHTMLAnimationAuthority(variant pebblestore.SessionArtifactVariant) error {
+	if strings.ToLower(strings.TrimSpace(variant.MediaType)) != "text/html" && strings.ToLower(strings.TrimSpace(variant.MediaType)) != "application/zip" {
+		return fmt.Errorf("reviewed animation source media type %q is not HTML authority", variant.MediaType)
+	}
+	if variant.Status != pebblestore.SessionArtifactStatusReady || variant.EventSeq == 0 {
+		return errors.New("reviewed animation source is not an exact ready revision")
+	}
+	profile := variant.AnimationProfile
+	if profile == nil {
+		return errors.New("a reviewed animation profile is required")
+	}
+	switch profile.ProfileID {
+	case "motion_ui", "spatial_3d", "vector_playback":
+	default:
+		return fmt.Errorf("reviewed animation profile %q is not renderable HTML authority", profile.ProfileID)
+	}
+	canonicalProfile, err := artifact.ResolveAnimationProfile(&artifact.AnimationProfileInput{Profile: profile.ProfileID})
+	if err != nil || canonicalProfile == nil || *canonicalProfile != *profile || profile.Budgets.NetworkAllowed {
+		return errors.New("reviewed animation profile does not match the canonical non-network runtime and budget snapshot")
+	}
+	canonicalOutput, err := artifact.ResolveOutputRequirements(&artifact.OutputRequirementsInput{Preset: "landscape_video"})
+	if err != nil || canonicalOutput == nil || variant.OutputRequirements == nil || *canonicalOutput != *variant.OutputRequirements {
+		return fmt.Errorf("reviewed animation output requirements must authenticate canonical %dx%d output", htmlcapture.Width, htmlcapture.Height)
+	}
+	if duration := temporalAnimationDuration(variant.Parts); duration <= 0 || duration > htmlcapture.MaxAnimationDurationMS {
+		return errors.New("reviewed animation temporal authority is missing or outside fixed bounds")
+	}
+	if variant.Presentation.Width != 0 && variant.Presentation.Width != canonicalOutput.Width || variant.Presentation.Height != 0 && variant.Presentation.Height != canonicalOutput.Height {
+		return fmt.Errorf("reviewed animation presentation must match canonical %dx%d output", canonicalOutput.Width, canonicalOutput.Height)
+	}
+	return nil
+}
+
+func temporalAnimationDuration(parts []pebblestore.SessionArtifactPart) int64 {
+	var duration int64
+	for _, part := range parts {
+		if part.Kind != "temporal" {
+			continue
+		}
+		if strings.TrimSpace(part.ID) == "" || part.StartMs < 0 || part.EndMs <= part.StartMs {
+			return -1
+		}
+		if part.EndMs > duration {
+			duration = part.EndMs
+		}
+	}
+	return duration
+}
+
 func (s *Service) readHTMLAnimationSource(ctx context.Context, principal artifact.Principal, ref pebblestore.SessionArtifactSelectionReference, variant pebblestore.SessionArtifactVariant) (map[string][]byte, string, error) {
+	if s == nil || s.artifacts == nil {
+		return nil, "", errors.New("artifact authority is unavailable for exact HTML animation source")
+	}
 	mediaType := strings.ToLower(strings.TrimSpace(variant.MediaType))
-	body, _, err := s.artifacts.ReadReference(ctx, principal, ref, htmlAnimationMaxSourceBytes)
+	body, resolved, err := s.artifacts.ReadReference(ctx, principal, ref, htmlAnimationMaxSourceBytes)
 	if err != nil {
 		return nil, "", fmt.Errorf("read exact HTML animation source: %w", err)
+	}
+	if resolved.SessionID != ref.SessionID || resolved.CollectionID != ref.CollectionID || resolved.ID != ref.VariantID || resolved.EventSeq != ref.EventSeq || resolved.Status != pebblestore.SessionArtifactStatusReady {
+		return nil, "", errors.New("artifact authority did not return the exact authenticated ready HTML revision")
+	}
+	if !strings.EqualFold(strings.TrimSpace(resolved.MediaType), strings.TrimSpace(variant.MediaType)) || resolved.Size != variant.Size || resolved.DigestSHA256 != variant.DigestSHA256 || resolved.AnimationProfile == nil || variant.AnimationProfile == nil || *resolved.AnimationProfile != *variant.AnimationProfile || resolved.OutputRequirements == nil || variant.OutputRequirements == nil || *resolved.OutputRequirements != *variant.OutputRequirements {
+		return nil, "", errors.New("artifact authority returned HTML bytes with inconsistent immutable metadata")
+	}
+	if resolved.Size > 0 && resolved.Size != int64(len(body)) {
+		return nil, "", errors.New("artifact authority returned HTML bytes with an invalid immutable size")
+	}
+	if strings.TrimSpace(resolved.DigestSHA256) != "" {
+		digest := sha256.Sum256(body)
+		if hex.EncodeToString(digest[:]) != resolved.DigestSHA256 {
+			return nil, "", errors.New("artifact authority returned HTML bytes with an invalid immutable digest")
+		}
 	}
 	switch mediaType {
 	case "text/html":
