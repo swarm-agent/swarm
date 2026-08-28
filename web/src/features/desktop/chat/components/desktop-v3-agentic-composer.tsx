@@ -660,17 +660,23 @@ export function DesktopV3AgenticComposer({
     if (dictationButtonDisabled) return
     if (dictationEnabledRef.current) {
       stopDictation(true)
-      return
+    } else {
+      dictationCanRunRef.current = true
+      dictationAcceptLateResultRef.current = false
+      dictationBaseDraftRef.current = draft
+      dictationFinalTranscriptRef.current = ''
+      dictationInterimTranscriptRef.current = ''
+      dictationEnabledRef.current = true
+      setDictationEnabled(true)
+      setDictationError(null)
+      startRecognition()
     }
-    dictationCanRunRef.current = true
-    dictationAcceptLateResultRef.current = false
-    dictationBaseDraftRef.current = draft
-    dictationFinalTranscriptRef.current = ''
-    dictationInterimTranscriptRef.current = ''
-    dictationEnabledRef.current = true
-    setDictationEnabled(true)
-    setDictationError(null)
-    startRecognition()
+    const textarea = textareaRef.current
+    if (textarea) {
+      textarea.focus()
+      const cursorPosition = textarea.value.length
+      textarea.setSelectionRange(cursorPosition, cursorPosition)
+    }
   }, [dictationButtonDisabled, draft, startRecognition, stopDictation])
 
   const loadVideoRoot = useCallback(async (rootPath: string, relativePath = '.') => {

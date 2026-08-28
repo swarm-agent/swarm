@@ -90,6 +90,7 @@ assert.doesNotMatch(markup, /ChatMarkdown/, "sidechat must reuse canonical Deskt
 assert.doesNotMatch(markup, /Parent conversation context for this plan review/, "raw parent context must not render");
 
 assert.match(source, /event\.key !== "Enter" \|\| event\.shiftKey \|\| event\.nativeEvent\.isComposing/, "Enter should submit while Shift+Enter and IME composition preserve multiline input");
+assert.match(source, /const toggleDictation[\s\S]*const textarea = textareaRef\.current;[\s\S]*textarea\.focus\(\);[\s\S]*textarea\.setSelectionRange\(cursorPosition, cursorPosition\);/, "Plan microphone should return focus to the input so Enter submits the dictated message");
 assert.match(source, /if \(!textarea\.value\)[\s\S]*removeProperty\("height"\)[\s\S]*textarea\.style\.height = "auto"[\s\S]*Math\.min\(textarea\.scrollHeight, viewportMaxHeight\)/, "Plan textarea should keep its baseline while empty and auto-grow only from typed content");
 assert.match(source, /speechRecognitionConstructor\(\)[\s\S]*recognition\.onresult[\s\S]*setDraft\(appendDictation/, "Plan microphone should feed browser dictation into the draft");
 assert.match(source, /DesktopV3CompactButton[\s\S]*remaining_tokens[\s\S]*Remaining context[\s\S]*compactDesktopV3Session/, "Plan should reuse the canonical compact button, display remaining context, and compact its durable sidechat session");

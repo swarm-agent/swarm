@@ -94,6 +94,16 @@ test('Desktop workspace Actions require in-place confirmation before inputless l
   assert.equal((panel.match(/startWorkspaceAction\(/g) ?? []).length, 1)
 })
 
+test('Desktop V3 microphone returns focus to the message input so Enter sends dictation', async () => {
+  const source = await readFile(new URL('./desktop-v3-agentic-composer.tsx', import.meta.url), 'utf8')
+  const toggle = source.match(/const handleDictationToggle[\s\S]*?(?=\n  const loadVideoRoot)/)?.[0] ?? ''
+
+  assert.match(toggle, /const textarea = textareaRef\.current/)
+  assert.match(toggle, /textarea\.focus\(\)/)
+  assert.match(toggle, /textarea\.setSelectionRange\(cursorPosition, cursorPosition\)/)
+  assert.match(source, /onKeyDown=\{handleKeyDown\}/)
+})
+
 test('Desktop V3 composer warnings and errors can be dismissed without a refresh', async () => {
   const source = await readFile(new URL('./desktop-v3-agentic-composer.tsx', import.meta.url), 'utf8')
 

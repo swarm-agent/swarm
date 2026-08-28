@@ -212,15 +212,21 @@ export function DesktopPlanAgentSidecar({
     if (dictationEnabled) {
       recognition.stop();
       setDictationEnabled(false);
-      return;
+    } else {
+      dictationBaseRef.current = draft;
+      setSidechat((current) => ({ ...current, error: null }));
+      try {
+        recognition.start();
+        setDictationEnabled(true);
+      } catch (cause) {
+        setSidechat((current) => ({ ...current, error: cause instanceof Error ? cause.message : "Browser speech recognition failed to start." }));
+      }
     }
-    dictationBaseRef.current = draft;
-    setSidechat((current) => ({ ...current, error: null }));
-    try {
-      recognition.start();
-      setDictationEnabled(true);
-    } catch (cause) {
-      setSidechat((current) => ({ ...current, error: cause instanceof Error ? cause.message : "Browser speech recognition failed to start." }));
+    const textarea = textareaRef.current;
+    if (textarea) {
+      textarea.focus();
+      const cursorPosition = textarea.value.length;
+      textarea.setSelectionRange(cursorPosition, cursorPosition);
     }
   }, [dictationEnabled, draft, sidechat.busy, sidechat.sessionId]);
 
