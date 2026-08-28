@@ -20,8 +20,9 @@ import (
 )
 
 var (
-	animationManifestID   = regexp.MustCompile(`(?i)(?:^|\s)id\s*=\s*["']swarm-animation-manifest["'](?:\s|$)`)
-	animationManifestType = regexp.MustCompile(`(?i)(?:^|\s)type\s*=\s*["']application/json["'](?:\s|$)`)
+	animationManifestID       = regexp.MustCompile(`(?i)(?:^|\s)id\s*=\s*["']swarm-animation-manifest["'](?:\s|$)`)
+	animationManifestType     = regexp.MustCompile(`(?i)(?:^|\s)type\s*=\s*["']application/json["'](?:\s|$)`)
+	animationFailureCodeValue = regexp.MustCompile(`^animation_[a-z0-9]+(?:_[a-z0-9]+)*$`)
 )
 
 const (
@@ -531,7 +532,7 @@ func animationFailureCode(err error) string {
 		return "animation_renderer_failed"
 	}
 	code := strings.TrimSpace(message[start : start+end])
-	if !strings.HasPrefix(code, "animation_") {
+	if !animationFailureCodeValue.MatchString(code) {
 		return "animation_renderer_failed"
 	}
 	return code
