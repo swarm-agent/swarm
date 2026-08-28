@@ -183,25 +183,6 @@ async function fetchAllEvents(sessionID) {
   fail('session event replay exceeded 20 pages')
 }
 
-async function waitForSettledReplay(sessionID, initialRunID) {
-  const deadline = Date.now() + timeoutMs
-  let latest = null
-  while (Date.now() < deadline) {
-    latest = await fetchAllEvents(sessionID)
-    const runIntents = latest.replay?.run_intents || []
-    const initialIntent = runIntents.find((intent) => String(intent?.run_id || '') === initialRunID)
-    const checkpointIntents = runIntents.filter((intent) => String(intent?.checkpoint_id || '') && String(intent?.run_id || '') !== initialRunID)
-    const failed = runIntents.filter((intent) => /failed|cancelled|expired|interrupted/.test(String(intent?.status || '')))
-    if (failed.length > 0) fail(`session has failed run intents: ${failed.map((intent) => `${intent.run_id}:${intent.status}`).join(', ')}`)
-    if (initialIntent?.status === 'completed' && checkpointIntents.length === 2 && checkpointIntents.every((intent) => intent?.status === 'completed')) {
-      return { ...latest, initialIntent, checkpointIntents }
-    }
-    await sleep(1000)
-  }
-  const intents = latest?.replay?.run_intents || []
-  fail(`timed out waiting for plan and checkpoint runs to settle: ${intents.map((intent) => `${intent.run_id}:${intent.status}`).join(', ')}`)
-}
-
 function objectPayload(value) {
   if (value && typeof value === 'object') return value
   try {
@@ -337,7 +318,13 @@ async function main() {
   result.gates.checkpoints_completed = true
   result.gates.subtasks_completed = true
 
-  const { events, replay, checkpointIntents } = await waitForSettledReplay(sessionID, initialRunID)
+  const { events, replay } = await fetchAllEvents(sessionID)
+  const runIntents = replay?.run_intents || []
+  const failedReplayIntents = runIntents.filter((intent) => /failed|cancelled|expired|interrupted/.test(String(intent?.status || '')))
+  assert(failedReplayIntents.length === 0, `session has failed run intents: ${failedReplayIntents.map((intent) => `${intent.run_id}:${intent.status}`).join(', ')}`)
+  const expectedCheckpointRunIDs = new Set(result.ids.checkpoint_run_ids)
+  const checkpointIntents = runIntents.filter((intent) => expectedCheckpointRunIDs.has(String(intent?.run_id || '')))
+  assert(checkpointIntents.length === expectedCheckpointRunIDs.size && checkpointIntents.every((intent) => intent?.status === 'completed'), 'completed checkpoint run intents are missing from event replay')
   result.ids.checkpoint_run_ids = checkpointIntents.map((intent) => String(intent.run_id || '')).filter(Boolean)
   const usageFromEvents = usageRecordsFromEvents(events)
   const usageResponse = await api('GET', `/v1/sessions/${encodeURIComponent(sessionID)}/usage?limit=100`, undefined, 'read usage evidence')

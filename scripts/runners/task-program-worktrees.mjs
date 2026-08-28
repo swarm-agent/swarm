@@ -87,7 +87,8 @@ function bindingID(binding) { return String(binding?.workspace_binding_id || bin
 function chooseBinding(bindings, wanted, excluded = '') {
   if (wanted) {
     const match = bindings.find((item) => bindingPath(item) === wanted || bindingRuntimePath(item) === wanted)
-    if (match) return match
+    if (match && bindingPath(match) !== excluded) return match
+    return null
   }
   return bindings.find((item) => item?.state === 'bound' && bindingID(item) && bindingPath(item) !== excluded)
     || bindings.find((item) => bindingID(item) && bindingPath(item) !== excluded) || null
