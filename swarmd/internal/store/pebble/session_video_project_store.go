@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"sort"
 	"strings"
 	"time"
@@ -223,7 +224,9 @@ type VideoAnimationCandidate struct {
 }
 
 // VideoAnimationCandidateSet keeps one-of-many HTML review authority separate
-// from the selected MP4 derivative used by the durable timeline and renderer.
+// from its optional MP4 derivative. A selected exact HTML source is durable
+// render authority in its own right; Derivative is only populated after an
+// explicit export and promotion.
 type VideoAnimationCandidateSet struct {
 	Candidates          []VideoAnimationCandidate          `json:"candidates"`
 	SelectedCandidateID string                             `json:"selected_candidate_id,omitempty"`
@@ -233,9 +236,10 @@ type VideoAnimationCandidateSet struct {
 	FailureReason       string                             `json:"failure_reason,omitempty"`
 }
 
-// VideoPlanPart is one stable pre-production section. Visual is the render-ready
-// image/MP4 authority; AnimationCandidates optionally supplies live HTML choices
-// before a selected HTML source is exported and promoted into Visual.
+// VideoPlanPart is one stable pre-production section. Visual is its raster/video
+// fallback timeline clip. AnimationCandidates optionally supplies live HTML
+// authority; a selected exact HTML source remains authoritative even when no MP4
+// derivative has been exported or promoted into Visual.
 type VideoPlanPart struct {
 	ID                  string                             `json:"id"`
 	Title               string                             `json:"title"`
@@ -1470,6 +1474,35 @@ func mergeWorkingVideoPlanMutation(timeline VideoProjectTimeline, proposed Video
 	return merged, nil
 }
 
+func validateVisualPlanAudioPreservation(base, compiled VideoProjectTimeline) error {
+	baseAudio := make(map[string]VideoTimelineClip)
+	for _, clip := range base.Clips {
+		if clip.SourceKind == VideoClipSourceKindSourceAudio {
+			baseAudio[clip.ID] = clip
+		}
+	}
+	compiledAudio := make(map[string]VideoTimelineClip)
+	for _, clip := range compiled.Clips {
+		if clip.SourceKind == VideoClipSourceKindSourceAudio {
+			compiledAudio[clip.ID] = clip
+		}
+	}
+	for id, before := range baseAudio {
+		after, ok := compiledAudio[id]
+		if !ok {
+			return fmt.Errorf("visual plan part id %q collides with a source_audio clip; visual plans must preserve soundtrack clip ids, tracks, playhead ranges, trims, and gain exactly", id)
+		}
+		if !reflect.DeepEqual(before, after) {
+			return fmt.Errorf("visual plan changed source_audio clip %q; soundtrack track, sequence, playhead range, source trim, gain, and mute state must remain exact", id)
+		}
+		delete(compiledAudio, id)
+	}
+	for id := range compiledAudio {
+		return fmt.Errorf("visual plan introduced source_audio clip %q; soundtrack topology can only be changed with typed audio clip operations", id)
+	}
+	return nil
+}
+
 func visualVideoPlanTimeline(base VideoProjectTimeline, plan VideoPlanProposal) VideoProjectTimeline {
 	timeline := base
 	if timeline.Width <= 0 || timeline.Height <= 0 {
@@ -1649,9 +1682,15 @@ func unresolvedSelectedVideoAnimationPart(plan *VideoPlanProposal, selected []st
 		if plan.Kind == VideoPlanKindRevision && !enabled {
 			continue
 		}
-		if part.AnimationCandidates != nil && part.AnimationCandidates.Status != VideoAnimationCandidateStatusReady {
-			return part.ID
+		candidates := part.AnimationCandidates
+		if candidates == nil {
+			continue
 		}
+		if candidates.Status == VideoAnimationCandidateStatusReady ||
+			(candidates.Status == VideoAnimationCandidateStatusAwaitingExport && candidates.SelectedCandidateID != "" && candidates.SelectedSource != nil && candidates.Derivative == nil) {
+			continue
+		}
+		return part.ID
 	}
 	return ""
 }
@@ -2050,6 +2089,11 @@ func (s *SessionStore) prepareV3VideoProjectMutation(input V3SessionMutationInpu
 		if err != nil {
 			return preparedV3VideoProjectMutation{}, fmt.Errorf("build video working revision: %w", err)
 		}
+		if proposal.Plan != nil {
+			if err := validateVisualPlanAudioPreservation(base.Timeline, workingTimeline); err != nil {
+				return preparedV3VideoProjectMutation{}, fmt.Errorf("visual plan soundtrack topology invalid: %w", err)
+			}
+		}
 		if err := validateVideoTimeline(workingTimeline); err != nil {
 			return preparedV3VideoProjectMutation{}, fmt.Errorf("video working revision validation failed: %w", err)
 		}
@@ -2275,7 +2319,7 @@ func (s *SessionStore) prepareV3VideoProjectMutation(input V3SessionMutationInpu
 			return preparedV3VideoProjectMutation{}, fmt.Errorf("stale video edit proposal: working revision %s is not current revision %s", proposal.WorkingRevisionID, project.CurrentRevisionID)
 		}
 		if partID := unresolvedSelectedVideoAnimationPart(proposal.Plan, input.VideoProject.SelectedOperationIDs); partID != "" {
-			return preparedV3VideoProjectMutation{}, fmt.Errorf("video plan part %q animation derivative is not ready", partID)
+			return preparedV3VideoProjectMutation{}, fmt.Errorf("video plan part %q has no selected exact HTML animation or promoted MP4 derivative", partID)
 		}
 		if partID := unresolvedSelectedVideoCompositionPart(proposal.Plan, input.VideoProject.SelectedOperationIDs); partID != "" {
 			return preparedV3VideoProjectMutation{}, fmt.Errorf("video plan part %q composition has unresolved source requirements", partID)

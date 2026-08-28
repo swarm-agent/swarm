@@ -226,7 +226,7 @@ func TestVideoPlanHTMLIterationIntentRejectsEveryGenericOrDowngradedShape(t *tes
 	}
 }
 
-func TestVideoPlanRevisionRequiresReadyAnimationOnlyForSelectedParts(t *testing.T) {
+func TestVideoPlanRevisionRequiresSelectedAnimationAuthorityOnlyForSelectedParts(t *testing.T) {
 	ready := videoPlanTestPart("ready", "Ready", "ready-fallback")
 	ready.AnimationCandidates = &VideoAnimationCandidateSet{Status: VideoAnimationCandidateStatusReady}
 	unready := videoPlanTestPart("unready", "Unready", "unready-fallback")
@@ -239,9 +239,82 @@ func TestVideoPlanRevisionRequiresReadyAnimationOnlyForSelectedParts(t *testing.
 	if got := unresolvedSelectedVideoAnimationPart(plan, []string{"ready", "unready"}); got != "unready" {
 		t.Fatalf("selected unready animation part = %q, want unready", got)
 	}
+	selectedHTML := &SessionArtifactSelectionReference{SessionID: "sess", CollectionID: "html", VariantID: "selected", EventSeq: 3}
+	unready.AnimationCandidates = &VideoAnimationCandidateSet{
+		Status:              VideoAnimationCandidateStatusAwaitingExport,
+		SelectedCandidateID: "selected",
+		SelectedSource:      selectedHTML,
+		Candidates:          []VideoAnimationCandidate{{ID: "selected", Source: selectedHTML}},
+	}
+	plan.Parts[1] = unready
+	if got := unresolvedSelectedVideoAnimationPart(plan, []string{"unready"}); got != "" {
+		t.Fatalf("selected exact HTML authority blocked acceptance: %q", got)
+	}
 	plan.Kind = VideoPlanKindInitial
+	if got := unresolvedSelectedVideoAnimationPart(plan, nil); got != "" {
+		t.Fatalf("initial plan rejected selected exact HTML authority: %q", got)
+	}
+	plan.Parts[1].AnimationCandidates.SelectedSource = nil
 	if got := unresolvedSelectedVideoAnimationPart(plan, nil); got != "unready" {
-		t.Fatalf("initial plan must remain atomic; got %q", got)
+		t.Fatalf("initial plan must remain atomic without selected authority; got %q", got)
+	}
+}
+
+func TestSelectedExactHTMLCanBeAcceptedWithoutMP4Derivative(t *testing.T) {
+	store, cleanup := newTestSessionStoreForVideoProject(t)
+	defer cleanup()
+	createTestSession(t, store, "acc", "usr", "sess")
+
+	project, base, err := store.CreateVideoProject(CreateVideoProjectInput{
+		AccountScopeID: "acc", UserID: "usr", SessionID: "sess", ProjectID: "project", Title: "Selected HTML",
+		InitialTimeline: &VideoProjectTimeline{OutputPreset: VideoPresetLandscape1080p, Clips: []VideoTimelineClip{}}, NowUnixMs: 100,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fallback := &SessionArtifactSelectionReference{SessionID: "sess", CollectionID: "fallback", VariantID: "still", EventSeq: 1}
+	selected := &SessionArtifactSelectionReference{SessionID: "sess", CollectionID: "html", VariantID: "selected", EventSeq: 2}
+	alternative := &SessionArtifactSelectionReference{SessionID: "sess", CollectionID: "html", VariantID: "alternative", EventSeq: 3}
+	proposal, err := store.CreateVideoEditProposal(CreateVideoEditProposalInput{
+		AccountScopeID: "acc", UserID: "usr", SessionID: "sess", ProjectID: project.ID, ProposalID: "html", BaseRevisionID: base.ID,
+		Intent: VideoEditProposalIntentHTMLIteration,
+		Plan: &VideoPlanProposal{Kind: VideoPlanKindInitial, Parts: []VideoPlanPart{{
+			ID: "intro", Title: "Intro", DurationMs: 1000, Visual: fallback, VisualMediaType: "image/png",
+			AnimationCandidates: &VideoAnimationCandidateSet{Status: VideoAnimationCandidateStatusAwaitingSelection, Candidates: []VideoAnimationCandidate{
+				{ID: "selected", Source: selected}, {ID: "alternative", Source: alternative},
+			}},
+		}}}, NowUnixMs: 200,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = store.ApplyV3SessionMutation(V3SessionMutationInput{
+		SessionID: "sess", UserID: "usr", AccountScopeID: "acc", ClientRequestID: "select-html", IdempotencyKey: "select-html", PayloadHash: "select-html",
+		Kind: V3SessionMutationSelectVideoAnimationCandidate, NowUnixMs: 250,
+		VideoProject: &V3VideoProjectMutation{
+			EditProposal:       &VideoEditProposalSnapshot{ID: proposal.ID, ProjectID: project.ID, BaseRevisionID: proposal.BaseRevisionID},
+			AnimationSelection: &VideoAnimationSelectionMutation{PartID: "intro", SelectedCandidateID: "selected", SelectedSource: selected},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	acceptedProposal, accepted, _, err := store.ResolveVideoEditProposal(ResolveVideoEditProposalInput{
+		AccountScopeID: "acc", UserID: "usr", SessionID: "sess", ProjectID: project.ID, ProposalID: proposal.ID, RevisionID: "accepted-html", NowUnixMs: 300,
+	})
+	if err != nil {
+		t.Fatalf("accept selected HTML without derivative: %v", err)
+	}
+	if acceptedProposal.Status != VideoEditProposalStatusAccepted || len(accepted.Timeline.Clips) != 1 || accepted.Timeline.Clips[0].ArtifactRef == nil || *accepted.Timeline.Clips[0].ArtifactRef != *fallback {
+		t.Fatalf("accepted fallback timeline changed unexpectedly: proposal=%+v timeline=%+v", acceptedProposal, accepted.Timeline)
+	}
+	plan, err := acceptedVideoPlanFromTimeline(accepted.Timeline)
+	if err != nil || plan == nil || len(plan.Parts) != 1 {
+		t.Fatalf("accepted HTML authority missing: plan=%+v err=%v", plan, err)
+	}
+	candidates := plan.Parts[0].AnimationCandidates
+	if candidates == nil || candidates.Status != VideoAnimationCandidateStatusAwaitingExport || candidates.SelectedCandidateID != "selected" || candidates.SelectedSource == nil || *candidates.SelectedSource != *selected || candidates.Derivative != nil {
+		t.Fatalf("accepted exact HTML authority changed: %+v", candidates)
 	}
 }
 
