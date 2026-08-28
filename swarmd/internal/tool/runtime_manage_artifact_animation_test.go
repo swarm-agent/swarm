@@ -74,6 +74,24 @@ func testAnimationMP4() []byte {
 	return []byte{0, 0, 0, 20, 'f', 't', 'y', 'p', 'i', 's', 'o', 'm', 0, 0, 2, 0, 'i', 's', 'o', 'm'}
 }
 
+func testAnimationInspectionFrames(t *testing.T, durationMS, fps int) []htmlcapture.AnimationInspectionFrame {
+	t.Helper()
+	frame := testAnimationFallbackPNG(t)
+	frameCount := (durationMS*fps + 999) / 1000
+	return []htmlcapture.AnimationInspectionFrame{
+		{Slot: "start", TimestampMS: 0, PNG: frame},
+		{Slot: "middle", TimestampMS: (frameCount / 2) * 1000 / fps, PNG: frame},
+		{Slot: "exit", TimestampMS: (frameCount - 1) * 1000 / fps, PNG: frame},
+	}
+}
+
+func testAnimationPreflightResult(t *testing.T, durationMS, fps int) htmlcapture.AnimationResult {
+	return htmlcapture.AnimationResult{
+		PreviewPNG: testAnimationFallbackPNG(t), InspectionFrames: testAnimationInspectionFrames(t, durationMS, fps),
+		DurationMS: durationMS, FPS: fps, FrameCount: (durationMS*fps + 999) / 1000,
+	}
+}
+
 func reviewedMotionProfile(t *testing.T) *pebblestore.SessionArtifactAnimationProfile {
 	t.Helper()
 	profile, err := artifact.ResolveAnimationProfile(&artifact.AnimationProfileInput{Profile: "motion_ui"})
@@ -252,11 +270,11 @@ func TestManagedAnimationCreatePreflightsBeforeReadyAndPersistsTerminalFailure(t
 		t.Fatalf("failed replay published bytes: reserve=%d create=%d", authority.reserveCalls, authority.createCalls)
 	}
 	renderer.preflightErr = nil
-	renderer.result = htmlcapture.AnimationResult{PreviewPNG: testAnimationFallbackPNG(t), DurationMS: 1000, FPS: 30, FrameCount: 30}
+	renderer.result = testAnimationPreflightResult(t, 1000, 30)
 	if _, err := runtime.executeManageArtifact(ctx, scope, "managed-animation-retry", args); err != nil {
 		t.Fatalf("fresh tool-call retry: %v", err)
 	}
-	if authority.variant.ID == failedVariantID || authority.createCalls != 1 || authority.variant.Status != pebblestore.SessionArtifactStatusReady {
+	if authority.variant.ID == failedVariantID || authority.createCalls != 4 || len(authority.inspectionCreates) != 3 || authority.variant.Status != pebblestore.SessionArtifactStatusReady {
 		t.Fatalf("fresh retry did not use a new ready identity: failed=%s variant=%+v", failedVariantID, authority.variant)
 	}
 }
@@ -270,12 +288,12 @@ func TestManagedAnimationCreateAndPackageFinalizeOnlyAfterTrustedPreflight(t *te
 		wantCreate int
 		wantPack   int
 	}{
-		{name: "create", action: "create", args: map[string]any{"action": "create", "filename": "intro.html", "media_type": "text/html", "content": html, "animation_profile": map[string]any{"profile": "motion_ui"}}, wantCreate: 1},
-		{name: "package", action: "create_package", args: map[string]any{"action": "create_package", "filename": "intro.zip", "entries": []any{map[string]any{"name": "index.html", "content": html}}, "animation_profile": map[string]any{"profile": "motion_ui"}}, wantPack: 1},
+		{name: "create", action: "create", args: map[string]any{"action": "create", "filename": "intro.html", "media_type": "text/html", "content": html, "animation_profile": map[string]any{"profile": "motion_ui"}}, wantCreate: 4},
+		{name: "package", action: "create_package", args: map[string]any{"action": "create_package", "filename": "intro.zip", "entries": []any{map[string]any{"name": "index.html", "content": html}}, "animation_profile": map[string]any{"profile": "motion_ui"}}, wantCreate: 3, wantPack: 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			authority := &fakeArtifactAuthority{}
-			renderer := &fakeHTMLAnimationRenderer{result: htmlcapture.AnimationResult{PreviewPNG: testAnimationFallbackPNG(t), DurationMS: 1000, FPS: 30, FrameCount: 30}}
+			renderer := &fakeHTMLAnimationRenderer{result: testAnimationPreflightResult(t, 1000, 30)}
 			runtime := NewRuntime(1)
 			runtime.SetArtifactAuthority(authority)
 			runtime.SetHTMLAnimationRenderer(renderer)
@@ -284,7 +302,7 @@ func TestManagedAnimationCreateAndPackageFinalizeOnlyAfterTrustedPreflight(t *te
 			if err != nil {
 				t.Fatalf("%s: %v", tc.action, err)
 			}
-			if !strings.Contains(output, `"trusted_animation_preflight":true`) {
+			if !strings.Contains(output, `"trusted_animation_preflight":true`) || !strings.Contains(output, `"animation_inspection_references"`) {
 				t.Fatalf("%s output omitted trusted preflight evidence: %s", tc.action, output)
 			}
 			if authority.reserveCalls != 1 || authority.createCalls != tc.wantCreate || authority.packageCalls != tc.wantPack || authority.variant.Status != pebblestore.SessionArtifactStatusReady {
@@ -299,14 +317,14 @@ func TestManagedDesignerProfiledAnimationUsesInjectedGate(t *testing.T) {
 	authority := &fakeArtifactAuthority{}
 	runtime := NewRuntime(1)
 	runtime.SetArtifactAuthority(authority)
-	runtime.SetHTMLAnimationRenderer(&fakeHTMLAnimationRenderer{result: htmlcapture.AnimationResult{PreviewPNG: testAnimationFallbackPNG(t), DurationMS: 1000, FPS: 30, FrameCount: 30}})
+	runtime.SetHTMLAnimationRenderer(&fakeHTMLAnimationRenderer{result: testAnimationPreflightResult(t, 1000, 30)})
 	scope := WorkspaceScope{SessionID: "child-1", Principal: identity.Principal{SessionID: "parent-1", AccountScopeID: "account-1", UserID: "user-1"}}
 	ctx := WithArtifactRunContext(context.Background(), ArtifactRunContext{SessionID: "parent-1", ChildSessionID: "child-1", TaskCallID: "task-1", CollectionID: "collection-1", VariantID: "variant-1", AnimationProfile: reviewedMotionProfile(t)})
 	output, err := runtime.executeManageArtifact(ctx, scope, "managed-designer-animation", map[string]any{"action": "create", "filename": "intro.html", "media_type": "text/html", "content": html})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if authority.created.CollectionID != "collection-1" || authority.created.VariantID != "variant-1" || authority.created.SourceSessionID != "" || authority.reserveCalls != 1 || authority.createCalls != 1 || !strings.Contains(output, `"trusted_animation_preflight":true`) {
+	if authority.created.CollectionID != "collection-1" || authority.created.VariantID != "variant-1" || authority.created.SourceSessionID != "" || authority.reserveCalls != 1 || authority.createCalls != 4 || len(authority.inspectionCreates) != 3 || !strings.Contains(output, `"trusted_animation_preflight":true`) || !strings.Contains(output, `"animation_inspection_references"`) {
 		t.Fatalf("managed Designer animation gate: created=%+v reserve=%d create=%d output=%s", authority.created, authority.reserveCalls, authority.createCalls, output)
 	}
 }
@@ -333,7 +351,7 @@ func TestWorkspaceAnimationPackagePublishesExactPreflightedEntries(t *testing.T)
 	authority := &fakeArtifactAuthority{}
 	runtime := NewRuntime(1)
 	runtime.SetArtifactAuthority(authority)
-	runtime.SetHTMLAnimationRenderer(&fakeHTMLAnimationRenderer{result: htmlcapture.AnimationResult{PreviewPNG: testAnimationFallbackPNG(t), DurationMS: 1000, FPS: 30, FrameCount: 30}})
+	runtime.SetHTMLAnimationRenderer(&fakeHTMLAnimationRenderer{result: testAnimationPreflightResult(t, 1000, 30)})
 	ctx, scope := artifactToolContext()
 	scope.PrimaryPath = t.TempDir()
 	packageRoot := filepath.Join(scope.PrimaryPath, "intro")

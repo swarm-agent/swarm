@@ -17,7 +17,6 @@ import (
 	"swarm/packages/swarmd/internal/uisettings"
 
 	"swarm/packages/swarmd/internal/artifact"
-	"swarm/packages/swarmd/internal/htmlcapture"
 	"swarm/packages/swarmd/internal/identity"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
@@ -48,7 +47,7 @@ func TestManagedPackageProjectsShortAnimationDurationForVideoPlans(t *testing.T)
 	authority := &fakeArtifactAuthority{}
 	runtime := NewRuntime(1)
 	runtime.SetArtifactAuthority(authority)
-	runtime.SetHTMLAnimationRenderer(&fakeHTMLAnimationRenderer{result: htmlcapture.AnimationResult{PreviewPNG: testAnimationFallbackPNG(t), DurationMS: 6000, FPS: 30, FrameCount: 180}})
+	runtime.SetHTMLAnimationRenderer(&fakeHTMLAnimationRenderer{result: testAnimationPreflightResult(t, 6000, 30)})
 	ctx, scope := artifactToolContext()
 	ctx = WithArtifactRunContext(ctx, ArtifactRunContext{SessionID: "session-1", ChildSessionID: "session-1", TaskCallID: "task-1", CollectionID: "collection-1", VariantID: "variant-1", AnimationProfile: reviewedMotionProfile(t)})
 	html := `<!doctype html><script id="swarm-animation-manifest" type="application/json">{"version":"swarm.animation/v1","duration_ms":6000,"fps":30}</script>`
@@ -68,7 +67,7 @@ func TestManagedCreateProjectsShortAnimationDurationForVideoPlans(t *testing.T) 
 	authority := &fakeArtifactAuthority{}
 	runtime := NewRuntime(1)
 	runtime.SetArtifactAuthority(authority)
-	runtime.SetHTMLAnimationRenderer(&fakeHTMLAnimationRenderer{result: htmlcapture.AnimationResult{PreviewPNG: testAnimationFallbackPNG(t), DurationMS: 6000, FPS: 30, FrameCount: 180}})
+	runtime.SetHTMLAnimationRenderer(&fakeHTMLAnimationRenderer{result: testAnimationPreflightResult(t, 6000, 30)})
 	ctx, scope := artifactToolContext()
 	ctx = WithArtifactRunContext(ctx, ArtifactRunContext{SessionID: "session-1", ChildSessionID: "session-1", TaskCallID: "task-1", CollectionID: "collection-1", VariantID: "variant-1", AnimationProfile: reviewedMotionProfile(t)})
 	html := `<!doctype html><script id="swarm-animation-manifest" type="application/json">{"version":"swarm.animation/v1","duration_ms":6000,"fps":30}</script>`
@@ -129,31 +128,32 @@ func (f *fakeImageUISettings) SetForAccount(_ string, settings uisettings.UISett
 }
 
 type fakeArtifactAuthority struct {
-	principal       artifact.Principal
-	created         artifact.CreateInput
-	initial         artifact.CreateInitialCompositionInput
-	packaged        artifact.CreatePackageInput
-	readBody        []byte
-	readErr         error
-	packageReadErr  error
-	packageManifest []artifact.PackageManifestEntry
-	variant         pebblestore.SessionArtifactVariant
-	reference       pebblestore.SessionArtifactSelectionReference
-	referenceRead   bool
-	deleted         string
-	materializedRef pebblestore.SessionArtifactSelectionReference
-	batchItems      []artifact.MaterializeBatchItem
-	batchVariants   []pebblestore.SessionArtifactVariant
-	workspaceRoot   string
-	destination     string
-	reserveCalls    int
-	createCalls     int
-	packageCalls    int
-	publishCalls    int
-	overwrite       bool
-	createdFromFile artifact.CreateFileInput
-	catalogOptions  pebblestore.SessionArtifactCatalogOptions
-	catalogPage     pebblestore.SessionArtifactCatalogPage
+	principal         artifact.Principal
+	created           artifact.CreateInput
+	inspectionCreates []artifact.CreateInput
+	initial           artifact.CreateInitialCompositionInput
+	packaged          artifact.CreatePackageInput
+	readBody          []byte
+	readErr           error
+	packageReadErr    error
+	packageManifest   []artifact.PackageManifestEntry
+	variant           pebblestore.SessionArtifactVariant
+	reference         pebblestore.SessionArtifactSelectionReference
+	referenceRead     bool
+	deleted           string
+	materializedRef   pebblestore.SessionArtifactSelectionReference
+	batchItems        []artifact.MaterializeBatchItem
+	batchVariants     []pebblestore.SessionArtifactVariant
+	workspaceRoot     string
+	destination       string
+	reserveCalls      int
+	createCalls       int
+	packageCalls      int
+	publishCalls      int
+	overwrite         bool
+	createdFromFile   artifact.CreateFileInput
+	catalogOptions    pebblestore.SessionArtifactCatalogOptions
+	catalogPage       pebblestore.SessionArtifactCatalogPage
 }
 
 func (f *fakeArtifactAuthority) Reserve(principal artifact.Principal, input artifact.CreateInput) (pebblestore.SessionArtifactVariant, error) {
@@ -182,10 +182,16 @@ func (f *fakeArtifactAuthority) MarkFailed(principal artifact.Principal, _ strin
 
 func (f *fakeArtifactAuthority) Create(_ context.Context, principal artifact.Principal, input artifact.CreateInput) (pebblestore.SessionArtifactVariant, error) {
 	f.createCalls++
-	f.principal, f.created = principal, input
-	f.readBody = append([]byte(nil), input.Body...)
+	f.principal = principal
 	digest := sha256.Sum256(input.Body)
-	f.variant = pebblestore.SessionArtifactVariant{ID: input.VariantID, CollectionID: input.CollectionID, SessionID: principal.SessionID, EventSeq: 1, Status: pebblestore.SessionArtifactStatusReady, Filename: input.Filename, MediaType: input.MediaType, Size: int64(len(input.Body)), DigestSHA256: hex.EncodeToString(digest[:]), Presentation: input.Presentation, OutputRequirements: input.OutputRequirements, AnimationProfile: input.AnimationProfile, Parts: append([]pebblestore.SessionArtifactPart(nil), input.Parts...)}
+	created := pebblestore.SessionArtifactVariant{ID: input.VariantID, CollectionID: input.CollectionID, SessionID: principal.SessionID, EventSeq: uint64(f.createCalls), Status: pebblestore.SessionArtifactStatusReady, Filename: input.Filename, MediaType: input.MediaType, Size: int64(len(input.Body)), DigestSHA256: hex.EncodeToString(digest[:]), Presentation: input.Presentation, OutputRequirements: input.OutputRequirements, AnimationProfile: input.AnimationProfile, Parts: append([]pebblestore.SessionArtifactPart(nil), input.Parts...)}
+	if input.Role == pebblestore.SessionArtifactRoleRenderOnly {
+		f.inspectionCreates = append(f.inspectionCreates, input)
+		return created, nil
+	}
+	f.created = input
+	f.readBody = append([]byte(nil), input.Body...)
+	f.variant = created
 	return f.variant, nil
 }
 func (f *fakeArtifactAuthority) CreateInitialComposition(_ context.Context, principal artifact.Principal, input artifact.CreateInitialCompositionInput) (pebblestore.SessionArtifactVariant, error) {
@@ -1243,7 +1249,7 @@ func TestManageArtifactPublishWorkspaceAttachesReviewedAnimationProfileWithoutCh
 	authority := &fakeArtifactAuthority{}
 	runtime := NewRuntime(1)
 	runtime.SetArtifactAuthority(authority)
-	runtime.SetHTMLAnimationRenderer(&fakeHTMLAnimationRenderer{result: htmlcapture.AnimationResult{PreviewPNG: testAnimationFallbackPNG(t), DurationMS: 6000, FPS: 30, FrameCount: 180}})
+	runtime.SetHTMLAnimationRenderer(&fakeHTMLAnimationRenderer{result: testAnimationPreflightResult(t, 6000, 30)})
 	ctx, scope := artifactToolContext()
 	scope.PrimaryPath = t.TempDir()
 	body := []byte(`<!doctype html><script id="swarm-animation-manifest" type="application/json">{"version":"swarm.animation/v1","duration_ms":6000,"fps":30}</script>`)

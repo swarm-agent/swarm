@@ -24,14 +24,14 @@ import (
 )
 
 const (
-	AnimationVersion          = "swarm.animation/v1"
-	MaxAnimationDurationMS    = 10 * 60 * 1000
-	MaxAnimationFPS           = 60
-	MaxAnimationFrames        = 36_000
-	MaxAnimationSegmentFrames = 300
-	MaxMP4Bytes               = 512 << 20
-	animationMinimumTimeout   = 30 * time.Minute
-	animationTimeoutPerFrame  = 250 * time.Millisecond
+	AnimationVersion            = "swarm.animation/v1"
+	MaxAnimationDurationMS      = 10 * 60 * 1000
+	MaxAnimationFPS             = 60
+	MaxAnimationFrames          = 36_000
+	MaxAnimationSegmentFrames   = 300
+	MaxMP4Bytes                 = 512 << 20
+	animationMinimumTimeout     = 30 * time.Minute
+	animationTimeoutPerFrame    = 250 * time.Millisecond
 	animationBindTimeoutMS      = 4_000
 	animationSeekTimeoutMS      = 4_000
 	animationReadyTimeout       = 7 * time.Second
@@ -79,14 +79,21 @@ type AnimationDiagnostic struct {
 	ScanTruncated bool             `json:"scan_truncated,omitempty"`
 }
 
+type AnimationInspectionFrame struct {
+	Slot        string
+	TimestampMS int
+	PNG         []byte
+}
+
 type AnimationResult struct {
-	MP4         []byte
-	PreviewPNG  []byte
-	DurationMS  int
-	FPS         int
-	FrameCount  int
-	Timings     map[string]time.Duration
-	Diagnostics []AnimationDiagnostic
+	MP4              []byte
+	PreviewPNG       []byte
+	InspectionFrames []AnimationInspectionFrame
+	DurationMS       int
+	FPS              int
+	FrameCount       int
+	Timings          map[string]time.Duration
+	Diagnostics      []AnimationDiagnostic
 }
 
 type AnimationRenderer interface {
@@ -285,25 +292,21 @@ rendererCapacityAcquired:
 	emit("readiness_preflight", 1, 1)
 	diagnostics := []AnimationDiagnostic{readinessDiagnostic}
 	if preflightOnly {
-		timestamps := []int{0}
-		if frameCount > 2 {
-			timestamps = append(timestamps, (frameCount/2)*1000/req.FPS)
+		timestamps := []AnimationInspectionFrame{
+			{Slot: "start", TimestampMS: 0},
+			{Slot: "middle", TimestampMS: (frameCount / 2) * 1000 / req.FPS},
+			{Slot: "exit", TimestampMS: (frameCount - 1) * 1000 / req.FPS},
 		}
-		if frameCount > 1 {
-			timestamps = append(timestamps, (frameCount-1)*1000/req.FPS)
-		}
-		seen := make(map[int]struct{}, len(timestamps))
+		frames := make([]AnimationInspectionFrame, 0, len(timestamps))
 		var preview []byte
-		for _, timeMS := range timestamps {
-			if _, duplicate := seen[timeMS]; duplicate {
-				continue
-			}
-			seen[timeMS] = struct{}{}
-			frame, frameDiagnostics, err := captureAnimationFrame(browserCtx, timeMS, true)
+		for _, inspection := range timestamps {
+			frame, frameDiagnostics, err := captureAnimationFrame(browserCtx, inspection.TimestampMS, true)
 			diagnostics = append(diagnostics, frameDiagnostics...)
 			if err != nil {
 				return AnimationResult{DurationMS: req.DurationMS, FPS: req.FPS, FrameCount: frameCount, Timings: timings, Diagnostics: boundedAnimationDiagnostics(diagnostics)}, err
 			}
+			inspection.PNG = append([]byte(nil), frame...)
+			frames = append(frames, inspection)
 			if preview == nil {
 				preview = append([]byte(nil), frame...)
 			}
@@ -311,7 +314,7 @@ rendererCapacityAcquired:
 				return AnimationResult{DurationMS: req.DurationMS, FPS: req.FPS, FrameCount: frameCount, Timings: timings, Diagnostics: boundedAnimationDiagnostics(diagnostics)}, newErrorWithCause("animation_network_blocked", "animation document attempted a prohibited network request", errors.New(reason))
 			}
 		}
-		return AnimationResult{PreviewPNG: preview, DurationMS: req.DurationMS, FPS: req.FPS, FrameCount: frameCount, Timings: timings, Diagnostics: boundedAnimationDiagnostics(diagnostics)}, nil
+		return AnimationResult{PreviewPNG: preview, InspectionFrames: frames, DurationMS: req.DurationMS, FPS: req.FPS, FrameCount: frameCount, Timings: timings, Diagnostics: boundedAnimationDiagnostics(diagnostics)}, nil
 	}
 
 	// Preserve full stability audits at representative timestamps, then capture

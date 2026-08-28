@@ -214,6 +214,44 @@ func TestAuthorityReservesThenFinalizesLongRunningOutput(t *testing.T) {
 	}
 }
 
+func TestAuthorityReservesPreallocatedManagedPlaceholderForPreflight(t *testing.T) {
+	authority, metadata, principal := authorityFixture(t)
+	principal.TaskCallID, principal.ChildSessionID = "call-1", "child-1"
+	profile, err := ResolveAnimationProfile(&AnimationProfileInput{Profile: "motion_ui"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	requirements, err := ResolveOutputRequirements(&OutputRequirementsInput{Preset: "landscape_video"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	lineage := authority.lineage(principal, CreateInput{})
+	collectionLineage := lineage
+	collectionLineage.SourceSessionID, collectionLineage.ChildSessionID = "", ""
+	metadata.collection = pebblestore.SessionArtifactCollection{ID: "collection-1", AccountScopeID: principal.AccountScopeID, SessionID: principal.SessionID, Name: "Animations", Status: pebblestore.SessionArtifactStatusStaging, Lineage: collectionLineage, VariantCount: 1, StagingCount: 1}
+	metadata.variant = pebblestore.SessionArtifactVariant{
+		ID: "variant-1", CollectionID: metadata.collection.ID, AccountScopeID: principal.AccountScopeID, SessionID: principal.SessionID,
+		Status: pebblestore.SessionArtifactStatusStaging, ProjectionReservation: true, Lineage: lineage,
+		Presentation:       pebblestore.SessionArtifactPresentation{Width: requirements.Width, Height: requirements.Height},
+		OutputRequirements: requirements, AnimationProfile: profile,
+	}
+	input := CreateInput{
+		RequestID: "managed-preflight", CollectionID: metadata.collection.ID, VariantID: metadata.variant.ID,
+		Filename: "animation.html", MediaType: "text/html", Presentation: pebblestore.SessionArtifactPresentation{Kind: "html", Previewable: true},
+		OutputRequirements: requirements, AnimationProfile: profile,
+	}
+	reserved, err := authority.Reserve(principal, input)
+	if err != nil {
+		t.Fatalf("reserve managed placeholder: %v", err)
+	}
+	if reserved.ID != metadata.variant.ID || reserved.Status != pebblestore.SessionArtifactStatusStaging || !reserved.ProjectionReservation {
+		t.Fatalf("managed placeholder reservation = %+v", reserved)
+	}
+	if reserved.Filename != "" || reserved.MediaType != "" {
+		t.Fatalf("reservation mutated parent placeholder metadata before preflight: %+v", reserved)
+	}
+}
+
 func TestAuthorityMetadataFailureNeverPublishesReady(t *testing.T) {
 	authority, metadata, principal := authorityFixture(t)
 	metadata.failReady = true

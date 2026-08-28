@@ -242,7 +242,8 @@ func (a *Authority) Reserve(principal Principal, input CreateInput) (pebblestore
 	if existing, ok, getErr := a.metadata.GetSessionArtifactVariant(principal.AccountScopeID, principal.SessionID, collection.ID, variant.ID); getErr != nil {
 		return pebblestore.SessionArtifactVariant{}, getErr
 	} else if ok {
-		compatible := artifactDestinationLineageCompatible(existing.Lineage, lineage) && existing.Filename == variant.Filename && existing.MediaType == variant.MediaType && existing.Role == variant.Role && equalOutputRequirements(existing.OutputRequirements, variant.OutputRequirements) && equalAnimationProfile(existing.AnimationProfile, variant.AnimationProfile)
+		metadataCompatible := (existing.Filename == "" && existing.MediaType == "") || (existing.Filename == variant.Filename && existing.MediaType == variant.MediaType)
+		compatible := artifactDestinationLineageCompatible(existing.Lineage, lineage) && metadataCompatible && existing.Role == variant.Role && equalOutputRequirements(existing.OutputRequirements, variant.OutputRequirements) && equalAnimationProfile(existing.AnimationProfile, variant.AnimationProfile)
 		if !compatible {
 			return pebblestore.SessionArtifactVariant{}, errors.New("artifact reservation conflicts with an existing variant")
 		}

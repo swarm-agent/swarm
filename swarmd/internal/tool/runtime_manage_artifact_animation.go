@@ -45,6 +45,10 @@ type animationExportPrepared struct {
 	Input        artifact.CreateInput
 }
 
+type managedAnimationPreflight struct {
+	Frames []htmlcapture.AnimationInspectionFrame
+}
+
 // exportHTMLAnimation validates and durably reserves long exports before
 // returning. Small exports retain the synchronous behavior for fast feedback.
 func (r *Runtime) exportHTMLAnimation(ctx context.Context, principal artifact.Principal, callID string, args map[string]any) (pebblestore.SessionArtifactVariant, pebblestore.SessionArtifactSelectionReference, *pebblestore.SessionArtifactOutputRequirements, error) {
@@ -312,46 +316,95 @@ func (r *Runtime) cancelHTMLAnimationExport(principal artifact.Principal, callID
 // containment. The durable reservation is terminally failed with the renderer's
 // bounded code so a retry must use a fresh tool-call identity rather than replay
 // the failed reference.
-func (r *Runtime) reserveAndPreflightManagedAnimation(ctx context.Context, principal artifact.Principal, input artifact.CreateInput, entries []artifact.PackageEntry, packageArtifact bool) (bool, error) {
+func (r *Runtime) reserveAndPreflightManagedAnimation(ctx context.Context, principal artifact.Principal, input artifact.CreateInput, entries []artifact.PackageEntry, packageArtifact bool) (*managedAnimationPreflight, error) {
 	files, entry, manifest, gated, err := managedAnimationPublicationSource(input, entries, packageArtifact)
 	if !gated {
-		return false, nil
+		return nil, nil
 	}
 	if strings.TrimSpace(input.RequestID) == "" || strings.TrimSpace(input.CollectionID) == "" || strings.TrimSpace(input.VariantID) == "" {
-		return true, animationError("animation_publish_failed", "profiled HTML animation requires trusted request, collection, and variant identities before preflight")
+		return nil, animationError("animation_publish_failed", "profiled HTML animation requires trusted request, collection, and variant identities before preflight")
 	}
 	if r.artifactAuthority == nil {
-		return true, animationError("animation_publish_failed", "managed artifact authority is unavailable for profiled HTML animation preflight")
+		return nil, animationError("animation_publish_failed", "managed artifact authority is unavailable for profiled HTML animation preflight")
 	}
 	input.Body = nil
 	reserved, reserveErr := r.artifactAuthority.Reserve(principal, input)
 	if reserveErr != nil {
-		return true, animationError("animation_publish_failed", "profiled HTML animation could not be durably reserved for trusted preflight")
+		return nil, animationError("animation_publish_failed", "profiled HTML animation could not be durably reserved for trusted preflight")
 	}
 	if reserved.Status != pebblestore.SessionArtifactStatusStaging || !reserved.ProjectionReservation {
-		return true, animationError("animation_publication_conflict", "profiled HTML animation publication already reached a terminal state; retry with a fresh tool call")
+		return nil, animationError("animation_publication_conflict", "profiled HTML animation publication already reached a terminal state; retry with a fresh tool call")
 	}
 	if err == nil && r.htmlAnimationCapture == nil {
 		err = normalizeAnimationRendererError(htmlcapture.NewError("animation_renderer_unavailable", "trusted HTML animation renderer is not configured"))
 	}
+	var result htmlcapture.AnimationResult
 	if err == nil {
-		result, preflightErr := r.htmlAnimationCapture.PreflightAnimation(ctx, htmlcapture.AnimationRequest{Entry: entry, Files: files, DurationMS: manifest.DurationMS, FPS: manifest.FPS})
+		var preflightErr error
+		result, preflightErr = r.htmlAnimationCapture.PreflightAnimation(ctx, htmlcapture.AnimationRequest{Entry: entry, Files: files, DurationMS: manifest.DurationMS, FPS: manifest.FPS})
 		if preflightErr != nil {
 			err = normalizeAnimationRendererError(preflightErr)
 		} else if result.DurationMS != manifest.DurationMS || result.FPS != manifest.FPS || result.FrameCount != (manifest.DurationMS*manifest.FPS+999)/1000 {
 			err = animationError("animation_renderer_failed", "trusted animation preflight returned inconsistent deterministic timeline metadata")
 		} else if previewErr := validateAnimationPreviewPNG(result.PreviewPNG); previewErr != nil {
 			err = previewErr
+		} else if framesErr := validateAnimationInspectionFrames(result.InspectionFrames); framesErr != nil {
+			err = framesErr
 		}
 	}
 	if err != nil {
 		code := animationFailureCode(err)
 		if _, markErr := r.artifactAuthority.MarkFailed(principal, input.RequestID+":terminal:"+code, input.CollectionID, input.VariantID, code); markErr != nil {
-			return true, animationError("animation_publish_failed", "profiled HTML animation failed trusted preflight and its terminal failure could not be persisted")
+			return nil, animationError("animation_publish_failed", "profiled HTML animation failed trusted preflight and its terminal failure could not be persisted")
 		}
-		return true, err
+		return nil, err
 	}
-	return true, nil
+	return &managedAnimationPreflight{Frames: result.InspectionFrames}, nil
+}
+
+func validateAnimationInspectionFrames(frames []htmlcapture.AnimationInspectionFrame) error {
+	if len(frames) != 3 {
+		return animationError("animation_png_invalid", "trusted animation preflight did not produce three representative inspection frames")
+	}
+	for index, slot := range []string{"start", "middle", "exit"} {
+		if frames[index].Slot != slot || frames[index].TimestampMS < 0 {
+			return animationError("animation_png_invalid", "trusted animation preflight returned invalid representative inspection frame metadata")
+		}
+		if err := validateAnimationPreviewPNG(frames[index].PNG); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (r *Runtime) publishManagedAnimationInspectionFrames(ctx context.Context, principal artifact.Principal, source pebblestore.SessionArtifactVariant, preflight *managedAnimationPreflight) ([]map[string]any, error) {
+	if preflight == nil {
+		return nil, nil
+	}
+	if source.Status != pebblestore.SessionArtifactStatusReady || source.EventSeq == 0 {
+		return nil, animationError("animation_publish_failed", "representative inspection frames require an exact ready HTML source")
+	}
+	refs := make([]map[string]any, 0, len(preflight.Frames))
+	for _, frame := range preflight.Frames {
+		input := artifact.CreateInput{
+			RequestID:      managedArtifactOpaqueID("request-animation-inspection-"+frame.Slot, principal.SessionID, source.ID),
+			CollectionID:   managedArtifactOpaqueID("collection-animation-inspection", principal.SessionID, source.ID),
+			CollectionName: "HTML animation inspection frames",
+			VariantID:      managedArtifactOpaqueID("variant-animation-inspection-"+frame.Slot, principal.SessionID, source.ID),
+			Filename:       "html-animation-" + frame.Slot + ".png", MediaType: "image/png", Role: pebblestore.SessionArtifactRoleRenderOnly,
+			Presentation:    pebblestore.SessionArtifactPresentation{Kind: "image", Label: "HTML animation " + frame.Slot + " frame", Previewable: true, Width: htmlcapture.Width, Height: htmlcapture.Height},
+			SourceSessionID: source.SessionID, SourceCollectionID: source.CollectionID, SourceVariantID: source.ID, SourceEventSeq: source.EventSeq,
+			Body: append([]byte(nil), frame.PNG...), AutoAccept: true,
+		}
+		published, err := r.artifactAuthority.Create(ctx, principal, input)
+		if err != nil || published.Status != pebblestore.SessionArtifactStatusReady || published.MediaType != "image/png" || published.EventSeq == 0 {
+			return nil, animationError("animation_publish_failed", "representative animation inspection frame could not be durably published")
+		}
+		ref := managedArtifactReferenceWithSession(published.SessionID, published.CollectionID, published.ID, published.EventSeq)
+		ref["slot"], ref["timestamp_ms"] = frame.Slot, frame.TimestampMS
+		refs = append(refs, ref)
+	}
+	return refs, nil
 }
 
 func managedHTMLAnimationProfile(profile *pebblestore.SessionArtifactAnimationProfile) bool {

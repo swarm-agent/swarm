@@ -16,6 +16,10 @@ func TestMasterHarnessRequiresProfiledDesignerAnimationGuidance(t *testing.T) {
 		"vector_playback for licensed dotLottie/Rive imports",
 		"final_render for MP4 playback",
 		`"animation_profile":{"profile":"motion_ui"}`,
+		"parser-executed classic `head` script",
+		"immediately calls globalThis.__SWARM_ANIMATION_BIND__(runtime) when that trusted binder exists",
+		"otherwise assigning the runtime to globalThis.__SWARM_ANIMATION_V1__ for standalone preview",
+		"never defer bootstrap behind a module, event, promise, import, or asset load",
 	} {
 		if !strings.Contains(prompt, expected) {
 			t.Fatalf("master harness missing Designer animation requirement %q", expected)

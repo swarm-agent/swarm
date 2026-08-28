@@ -131,32 +131,32 @@ func (e taskChildBlockedError) Error() string {
 }
 
 type taskLaunchOutcome struct {
-	LaunchIndex         int
-	VirtualTarget       bool
-	RequestedSubagent   string
-	ResolvedSubagent    string
-	MetaPrompt          string
-	AssignmentLabel     string
-	OwnedScope          []string
-	SubagentProvider    string
-	SubagentModel       string
-	ChildSessionID      string
-	ChildRunID          string
-	ChildMode           string
-	TargetWorkspacePath string
-	WorkspacePath       string
-	WorkspaceName       string
-	WorktreeEnabled     bool
-	WorktreeRootPath    string
-	WorktreeBaseBranch  string
-	WorktreeBranch      string
-	BaseCommit          string
-	ParentBranch        string
-	HeadCommit          string
-	GitStatus           string
-	WorktreeClean       bool
-	ChangedFiles        []string
-	LaunchStartedAtMS   int64
+	LaunchIndex           int
+	VirtualTarget         bool
+	RequestedSubagent     string
+	ResolvedSubagent      string
+	MetaPrompt            string
+	AssignmentLabel       string
+	OwnedScope            []string
+	SubagentProvider      string
+	SubagentModel         string
+	ChildSessionID        string
+	ChildRunID            string
+	ChildMode             string
+	TargetWorkspacePath   string
+	WorkspacePath         string
+	WorkspaceName         string
+	WorktreeEnabled       bool
+	WorktreeRootPath      string
+	WorktreeBaseBranch    string
+	WorktreeBranch        string
+	BaseCommit            string
+	ParentBranch          string
+	HeadCommit            string
+	GitStatus             string
+	WorktreeClean         bool
+	ChangedFiles          []string
+	LaunchStartedAtMS     int64
 	CurrentTool           string
 	CurrentToolIdentity   string
 	CurrentToolRunCount   int
@@ -188,12 +188,12 @@ type taskLaunchOutcome struct {
 	SwarmMode             bool
 	SwarmStrategy         string
 	AssemblyPart          *taskSwarmAssemblyPart
-	IntegrationContract string
-	IntegrationRequired bool
-	OutputMode          string
-	OutputRequirements  *pebblestore.SessionArtifactOutputRequirements
-	AnimationProfile    *pebblestore.SessionArtifactAnimationProfile
-	ArtifactReference   *taskArtifactReference
+	IntegrationContract   string
+	IntegrationRequired   bool
+	OutputMode            string
+	OutputRequirements    *pebblestore.SessionArtifactOutputRequirements
+	AnimationProfile      *pebblestore.SessionArtifactAnimationProfile
+	ArtifactReference     *taskArtifactReference
 }
 
 const taskLaunchReasonMaxRunes = 512
@@ -4627,56 +4627,56 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 		for _, launch := range launches {
 			elapsedMS, currentToolMS := taskLaunchProgressDurations(launch, strings.EqualFold(strings.TrimSpace(status), "ok") || strings.EqualFold(strings.TrimSpace(status), "error"))
 			launchRow := map[string]any{
-				"launch_index":           launch.LaunchIndex,
-				"requested_subagent":     strings.TrimSpace(launch.RequestedSubagent),
-				"subagent":               strings.TrimSpace(launch.ResolvedSubagent),
-				"meta_prompt":            strings.TrimSpace(launch.MetaPrompt),
-				"assignment_label":       strings.TrimSpace(launch.AssignmentLabel),
-				"owned_scope":            append([]string(nil), launch.OwnedScope...),
-				"subagent_provider":      strings.TrimSpace(launch.SubagentProvider),
-				"subagent_model":         strings.TrimSpace(launch.SubagentModel),
-				"child_session_id":       strings.TrimSpace(launch.ChildSessionID),
-				"child_run_id":           strings.TrimSpace(launch.ChildRunID),
-				"child_mode":             strings.TrimSpace(launch.ChildMode),
-				"parent_workspace_path":  strings.TrimSpace(launch.TargetWorkspacePath),
-				"workspace_path":         strings.TrimSpace(launch.WorkspacePath),
-				"workspace_name":         strings.TrimSpace(launch.WorkspaceName),
-				"worktree_enabled":       launch.WorktreeEnabled,
-				"worktree_root_path":     strings.TrimSpace(launch.WorktreeRootPath),
-				"worktree_base_branch":   strings.TrimSpace(launch.WorktreeBaseBranch),
-				"worktree_branch":        strings.TrimSpace(launch.WorktreeBranch),
-				"parent_branch":          strings.TrimSpace(launch.ParentBranch),
-				"base_commit":            strings.TrimSpace(launch.BaseCommit),
-				"head_commit":            strings.TrimSpace(launch.HeadCommit),
-				"worktree_clean":         launch.WorktreeClean,
-				"git_status":             strings.TrimSpace(launch.GitStatus),
-				"changed_files":          append([]string(nil), launch.ChangedFiles...),
-				"current_tool":           strings.TrimSpace(launch.CurrentTool),
-				"current_tool_identity":  strings.TrimSpace(launch.CurrentToolIdentity),
-				"current_tool_run_count": launch.CurrentToolRunCount,
-				"current_tool_display":   firstNonEmptyString(strings.TrimSpace(launch.CurrentToolDisplay), toolProgressionDisplay(launch.CurrentToolIdentity, launch.CurrentToolRunCount)),
-				"current_tool_ms":        currentToolMS,
-				"elapsed_ms":             elapsedMS,
+				"launch_index":            launch.LaunchIndex,
+				"requested_subagent":      strings.TrimSpace(launch.RequestedSubagent),
+				"subagent":                strings.TrimSpace(launch.ResolvedSubagent),
+				"meta_prompt":             strings.TrimSpace(launch.MetaPrompt),
+				"assignment_label":        strings.TrimSpace(launch.AssignmentLabel),
+				"owned_scope":             append([]string(nil), launch.OwnedScope...),
+				"subagent_provider":       strings.TrimSpace(launch.SubagentProvider),
+				"subagent_model":          strings.TrimSpace(launch.SubagentModel),
+				"child_session_id":        strings.TrimSpace(launch.ChildSessionID),
+				"child_run_id":            strings.TrimSpace(launch.ChildRunID),
+				"child_mode":              strings.TrimSpace(launch.ChildMode),
+				"parent_workspace_path":   strings.TrimSpace(launch.TargetWorkspacePath),
+				"workspace_path":          strings.TrimSpace(launch.WorkspacePath),
+				"workspace_name":          strings.TrimSpace(launch.WorkspaceName),
+				"worktree_enabled":        launch.WorktreeEnabled,
+				"worktree_root_path":      strings.TrimSpace(launch.WorktreeRootPath),
+				"worktree_base_branch":    strings.TrimSpace(launch.WorktreeBaseBranch),
+				"worktree_branch":         strings.TrimSpace(launch.WorktreeBranch),
+				"parent_branch":           strings.TrimSpace(launch.ParentBranch),
+				"base_commit":             strings.TrimSpace(launch.BaseCommit),
+				"head_commit":             strings.TrimSpace(launch.HeadCommit),
+				"worktree_clean":          launch.WorktreeClean,
+				"git_status":              strings.TrimSpace(launch.GitStatus),
+				"changed_files":           append([]string(nil), launch.ChangedFiles...),
+				"current_tool":            strings.TrimSpace(launch.CurrentTool),
+				"current_tool_identity":   strings.TrimSpace(launch.CurrentToolIdentity),
+				"current_tool_run_count":  launch.CurrentToolRunCount,
+				"current_tool_display":    firstNonEmptyString(strings.TrimSpace(launch.CurrentToolDisplay), toolProgressionDisplay(launch.CurrentToolIdentity, launch.CurrentToolRunCount)),
+				"current_tool_ms":         currentToolMS,
+				"elapsed_ms":              elapsedMS,
 				"tool_started":            launch.ToolStarted,
 				"tool_completed":          launch.ToolCompleted,
 				"tool_failed":             launch.ToolFailed,
 				"media_inspect_completed": launch.MediaInspectCompleted,
 				"tool_order":              append([]string(nil), launch.ToolOrder...),
-				"error":                  strings.TrimSpace(launch.Error),
-				"reason":                 strings.TrimSpace(launch.Reason),
-				"blocker_code":           strings.TrimSpace(launch.BlockerCode),
-				"blocker_evidence":       append([]string(nil), launch.BlockerEvidence...),
-				"completed_scope":        append([]string(nil), launch.CompletedScope...),
-				"resolution_requirement": strings.TrimSpace(launch.ResolutionRequired),
-				"phase":                  strings.TrimSpace(launch.Phase),
-				"swarm_mode":             launch.SwarmMode,
-				"swarm_strategy":         strings.TrimSpace(launch.SwarmStrategy),
-				"assembly_part":          launch.AssemblyPart,
-				"integration_contract":   strings.TrimSpace(launch.IntegrationContract),
-				"integration_required":   launch.IntegrationRequired,
-				"output_mode":            strings.TrimSpace(launch.OutputMode),
-				"output_requirements":    launch.OutputRequirements,
-				"animation_profile":      launch.AnimationProfile,
+				"error":                   strings.TrimSpace(launch.Error),
+				"reason":                  strings.TrimSpace(launch.Reason),
+				"blocker_code":            strings.TrimSpace(launch.BlockerCode),
+				"blocker_evidence":        append([]string(nil), launch.BlockerEvidence...),
+				"completed_scope":         append([]string(nil), launch.CompletedScope...),
+				"resolution_requirement":  strings.TrimSpace(launch.ResolutionRequired),
+				"phase":                   strings.TrimSpace(launch.Phase),
+				"swarm_mode":              launch.SwarmMode,
+				"swarm_strategy":          strings.TrimSpace(launch.SwarmStrategy),
+				"assembly_part":           launch.AssemblyPart,
+				"integration_contract":    strings.TrimSpace(launch.IntegrationContract),
+				"integration_required":    launch.IntegrationRequired,
+				"output_mode":             strings.TrimSpace(launch.OutputMode),
+				"output_requirements":     launch.OutputRequirements,
+				"animation_profile":       launch.AnimationProfile,
 			}
 			if launch.ArtifactReference != nil {
 				launchRow["artifact_reference"] = launch.ArtifactReference
@@ -5459,10 +5459,11 @@ func collectTaskReadyArtifactReferences(outcomes []taskLaunchOutcome, runErrs []
 }
 
 func taskAssemblyIntegrationState(strategy string, successCount, failedCount, cancelledCount, outcomeCount int) (required bool, status string, readyForDependentWork bool) {
+	incomplete := failedCount > 0 || cancelledCount > 0 || successCount != outcomeCount
 	if !strings.EqualFold(strings.TrimSpace(strategy), taskSwarmStrategyAssembly) {
-		return false, "not_required", true
+		return false, "not_required", !incomplete
 	}
-	if failedCount > 0 || cancelledCount > 0 || successCount != outcomeCount {
+	if incomplete {
 		return true, "incomplete_children", false
 	}
 	return true, "pending_parent_assembly", false
@@ -5629,7 +5630,7 @@ func buildTaskDelegationPrompt(config taskDelegationPromptConfig) string {
 			} else {
 				b.WriteString("9. For managed Designer work, publish one complete revision with one successful manage_artifact create or create_package call. Preserve one-file text/html as one file; never create a ZIP only to represent parts. Include accurate complete-revision parts when known, or omit parts for text/html so the server derives source-bound targets from authored manifests and stable semantic-region IDs without splitting or rewriting the HTML. Use initial_parts only for intentionally independent byte payloads. The server injects and atomically finalizes the assigned opaque variant. Never call unsupported update/finalize actions, use write/edit, or mutate the checkout; finish only after the call returns the trusted ready reference. If exact source bytes must be preserved and you cannot reproduce the complete revised bytes from the authenticated source in this one publication, report BLOCKED before publishing anything; never publish a placeholder, reconstruction, resampling, or known-inexact candidate.\n")
 				if config.AnimationProfile != nil {
-					b.WriteString("10. For managed animated HTML, ready status is necessary but not sufficient for child success. The successful publication response is authoritative evidence that server-owned runtime binding, exact-seek, stable-pixel, and viewport-containment preflight passed. After publication, use media_inspect on the exact ready revision at the start, resolved-phrase/middle, and exit frames. End with exactly one compact line per frame in this form: ANIMATION_INSPECTION frame=start|middle|exit status=pass checks=clipping/overflow; sizing/aspect ratio; requested elements; text legibility; unintended overlaps; scrollbars/capture chrome; brief fidelity evidence=<bounded observation>. If publication preflight or any representative-frame inspection fails or is missing, report that explicit failed slot and do not count it as a successful variant; do not publish another replacement from the same single-publication run.\n")
+					b.WriteString("10. For managed animated HTML, ready status is necessary but not sufficient for child success. The successful publication response is authoritative evidence that server-owned runtime binding, exact-seek, stable-pixel, and viewport-containment preflight passed and includes exactly three animation_inspection_references for the start, resolved-phrase/middle, and exit frames. Call media_inspect once on each complete exact image reference; never pass the text/html source reference to media_inspect. End with exactly one compact line per frame in this form: ANIMATION_INSPECTION frame=start|middle|exit status=pass checks=clipping/overflow; sizing/aspect ratio; requested elements; text legibility; unintended overlaps; scrollbars/capture chrome; brief fidelity evidence=<bounded observation>. If publication preflight or any representative-frame inspection fails or is missing, report that explicit failed slot and do not count it as a successful variant; do not publish another replacement from the same single-publication run.\n")
 				}
 			}
 		} else {

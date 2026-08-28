@@ -211,6 +211,22 @@ func TestCumulativeProjectSwarmContractTransitionsFromExploreToParentAssembly(t 
 	if required, status, ready := taskAssemblyIntegrationState(assembly.Swarm.Strategy, 2, 0, 0, 2); !required || status != "pending_parent_assembly" || ready {
 		t.Fatalf("pre-integration Assembly closure = required:%v status:%q ready:%v", required, status, ready)
 	}
+	for _, test := range []struct {
+		name                                 string
+		success, failed, cancelled, outcomes int
+		wantReady                            bool
+	}{
+		{name: "regular complete", success: 1, outcomes: 1, wantReady: true},
+		{name: "regular failed inspection gate", failed: 1, outcomes: 1, wantReady: false},
+		{name: "regular cancelled", cancelled: 1, outcomes: 1, wantReady: false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			required, status, ready := taskAssemblyIntegrationState("", test.success, test.failed, test.cancelled, test.outcomes)
+			if required || status != "not_required" || ready != test.wantReady {
+				t.Fatalf("regular closure = required:%v status:%q ready:%v, want ready:%v", required, status, ready, test.wantReady)
+			}
+		})
+	}
 	// The task result deliberately cannot transition to ready_for_dependent_work.
 	// Parent recall, ordered atomic Coder integration, shared-checkout Designer wiring,
 	// clean-state validation, and the next checkpoint remain parent-owned lifecycle work.

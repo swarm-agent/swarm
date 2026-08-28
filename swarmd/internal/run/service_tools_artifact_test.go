@@ -104,6 +104,8 @@ func TestManagedAnimatedDesignerPromptRequiresTrustedPreflightAndThreeFrameInspe
 		"ready status is necessary but not sufficient",
 		"server-owned runtime binding, exact-seek, stable-pixel, and viewport-containment preflight passed",
 		"start, resolved-phrase/middle, and exit frames",
+		"animation_inspection_references",
+		"never pass the text/html source reference to media_inspect",
 		"ANIMATION_INSPECTION frame=start|middle|exit status=pass",
 		"clipping/overflow",
 		"scrollbars/capture chrome",

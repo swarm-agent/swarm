@@ -520,13 +520,14 @@ func (r *Runtime) executeManageArtifact(ctx context.Context, scope WorkspaceScop
 			return "", animationError("animation_source_invalid", "profiled HTML animation must publish one complete preflightable HTML document or package")
 		}
 		var variant pebblestore.SessionArtifactVariant
-		gatedAnimation := false
+		var animationPreflight *managedAnimationPreflight
 		if len(initialParts) == 0 {
-			gatedAnimation, err = r.reserveAndPreflightManagedAnimation(ctx, principal, input, entries, actionName == "create_package")
+			animationPreflight, err = r.reserveAndPreflightManagedAnimation(ctx, principal, input, entries, actionName == "create_package")
 			if err != nil {
 				return "", err
 			}
 		}
+		gatedAnimation := animationPreflight != nil
 		switch {
 		case len(initialParts) != 0:
 			if actionName != "create" {
@@ -549,7 +550,12 @@ func (r *Runtime) executeManageArtifact(ctx context.Context, scope WorkspaceScop
 			return "", animationError("animation_publish_failed", "profiled HTML animation did not finalize as a ready artifact after trusted preflight")
 		}
 		if gatedAnimation {
+			inspectionRefs, inspectionErr := r.publishManagedAnimationInspectionFrames(ctx, principal, variant, animationPreflight)
+			if inspectionErr != nil {
+				return "", inspectionErr
+			}
 			response["trusted_animation_preflight"] = true
+			response["animation_inspection_references"] = inspectionRefs
 		}
 		response["artifact"] = managedArtifactVariant(variant)
 		response["reference"] = managedArtifactReferenceWithSession(variant.SessionID, variant.CollectionID, variant.ID, variant.EventSeq)
@@ -1066,10 +1072,11 @@ func (r *Runtime) publishWorkspaceArtifact(ctx context.Context, principal artifa
 		create.CollectionName, create.CollectionDescription = "", ""
 	}
 	create.Body = animationBody
-	gatedAnimation, err := r.reserveAndPreflightManagedAnimation(ctx, principal, create, animationEntries, packageSource)
+	animationPreflight, err := r.reserveAndPreflightManagedAnimation(ctx, principal, create, animationEntries, packageSource)
 	if err != nil {
 		return pebblestore.SessionArtifactVariant{}, nil, err
 	}
+	gatedAnimation := animationPreflight != nil
 	var variant pebblestore.SessionArtifactVariant
 	if gatedAnimation && packageSource {
 		variant, err = r.artifactAuthority.CreatePackage(ctx, principal, artifact.CreatePackageInput{CreateInput: create, Entries: animationEntries})
@@ -1086,7 +1093,12 @@ func (r *Runtime) publishWorkspaceArtifact(ctx context.Context, principal artifa
 	}
 	published := map[string]any{"source": filepath.ToSlash(source), "package": packageSource, "files": sourceInfo.files, "bytes": sourceInfo.bytes, "digest_sha256": variant.DigestSHA256, "media_type": variant.MediaType}
 	if gatedAnimation {
+		inspectionRefs, inspectionErr := r.publishManagedAnimationInspectionFrames(ctx, principal, variant, animationPreflight)
+		if inspectionErr != nil {
+			return pebblestore.SessionArtifactVariant{}, nil, inspectionErr
+		}
 		published["trusted_animation_preflight"] = true
+		published["animation_inspection_references"] = inspectionRefs
 	}
 	return variant, published, nil
 }
