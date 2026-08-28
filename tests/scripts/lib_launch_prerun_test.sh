@@ -69,6 +69,10 @@ if ! "${ROOT_DIR}/scripts/run-testbench-launch-prerun.sh" --dry-run --suite task
   fail "task-program lane still requires a manually configured linked workspace despite runtime binding discovery"
 fi
 provider_sync_dry_run="$("${ROOT_DIR}/scripts/run-testbench-launch-prerun.sh" --dry-run --suite provider-sync)" || fail "provider-sync dry run still requires manually supplied candidate authority"
+grep -Fq 'SWARM_LIVE_STREAM_MODEL=gpt-5.6-luna' <<<"${provider_sync_dry_run}" || fail "provider-sync does not use the configured credit-saving action model"
+RUNNER_WRAPPER="${ROOT_DIR}/scripts/run-testbench-runner.sh"
+grep -Fq 'SWARM_TESTBENCH_CODER_MODEL' "${RUNNER_WRAPPER}" || fail "runner wrapper does not pass the configured Coder model"
+grep -Fq 'SWARM_TESTBENCH_DESIGNER_MODEL' "${RUNNER_WRAPPER}" || fail "runner wrapper does not pass the configured Designer model"
 local_head="$(git -C "${ROOT_DIR}" rev-parse HEAD)"
 grep -Fq "SWARM_EXPECTED_COMMIT=${local_head}" <<<"${provider_sync_dry_run}" || fail "provider-sync did not derive candidate authority from local HEAD"
 

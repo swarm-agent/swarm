@@ -42,7 +42,7 @@ Options:
   -h, --help                 Show this help
 
 The ignored .env remains the authority for the SSH alias, loopback ports,
-provider/model posture, and optional linked workspace path. Provider-sync derives
+provider/per-role model posture, and optional linked workspace path. Provider-sync derives
 candidate authority from local HEAD plus the uniquely discovered testbench Swarm
 checkout unless explicit overrides are supplied. This entrypoint does not rebuild
 or deploy testbench, commit, push, or mutate production.
@@ -193,7 +193,7 @@ suite_command() {
       if [[ -n "${LINKED_WORKSPACE_PATH}" ]]; then built+=(--linked-workspace-path "${LINKED_WORKSPACE_PATH}"); fi
       ;;
     provider-sync)
-      built=(env SWARM_EXPECTED_COMMIT="${EXPECTED_COMMIT}" SWARM_REMOTE_REPO="${REMOTE_REPO}" SWARM_LIVE_STREAM_PROVIDER="${SWARM_TESTBENCH_PROVIDER}" SWARM_LIVE_STREAM_MODEL="${SWARM_TESTBENCH_MODEL:-}" "${ROOT_DIR}/scripts/v3-sync-fireworks-e2e-testbench.sh" "${SWARM_PRIMARY_SSH}")
+      built=(env SWARM_EXPECTED_COMMIT="${EXPECTED_COMMIT}" SWARM_REMOTE_REPO="${REMOTE_REPO}" SWARM_LIVE_STREAM_PROVIDER="${SWARM_TESTBENCH_PROVIDER}" SWARM_LIVE_STREAM_MODEL="${SWARM_TESTBENCH_ACTION_MODEL}" "${ROOT_DIR}/scripts/v3-sync-fireworks-e2e-testbench.sh" "${SWARM_PRIMARY_SSH}")
       ;;
     *) fail "unsupported suite ${suite}" ;;
   esac

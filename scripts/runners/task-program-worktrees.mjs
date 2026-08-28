@@ -12,8 +12,8 @@ const provider = String(option('--provider', process.env.SWARM_RUNNER_PROVIDER |
 const timeoutMs = Number(option('--timeout-ms', process.env.SWARM_RUNNER_TIMEOUT_MS || '600000'))
 const workspacePathOverride = String(option('--workspace-path', process.env.SWARM_RUNNER_WORKSPACE_PATH || '')).trim()
 const linkedWorkspacePathOverride = String(option('--linked-workspace-path', process.env.SWARM_RUNNER_LINKED_WORKSPACE_PATH || '')).trim()
-const suppliedModel = String(option('--model', process.env.SWARM_RUNNER_MODEL || '')).trim()
-const suppliedThinking = String(option('--thinking', process.env.SWARM_RUNNER_THINKING || 'medium')).trim().toLowerCase()
+const suppliedModel = String(option('--coder-model', option('--model', process.env.SWARM_RUNNER_CODER_MODEL || process.env.SWARM_RUNNER_MODEL || ''))).trim()
+const suppliedThinking = String(option('--coder-thinking', option('--thinking', process.env.SWARM_RUNNER_CODER_THINKING || process.env.SWARM_RUNNER_THINKING || 'medium'))).trim().toLowerCase()
 const suppliedToken = String(process.env.SWARM_RUNNER_TOKEN || '').trim()
 
 if (!apiURL || !/^https?:\/\//.test(apiURL)) throw new Error('--api-url must be an http or https URL')
@@ -244,11 +244,26 @@ async function main() {
   modelAssignment = assignmentFor(records)
   result.model = modelAssignment
   result.gates.model_available = true
-  await api('PATCH', '/v1/agent-model-settings', { swarm: { action: modelAssignment, plan: modelAssignment } }, 'configure Swarm model')
+  const actionModel = String(option('--action-model', process.env.SWARM_RUNNER_ACTION_MODEL || suppliedModel)).trim()
+  const actionThinking = String(option('--action-thinking', process.env.SWARM_RUNNER_ACTION_THINKING || suppliedThinking)).trim().toLowerCase()
+  const planModel = String(option('--plan-model', process.env.SWARM_RUNNER_PLAN_MODEL || actionModel)).trim()
+  const planThinking = String(option('--plan-thinking', process.env.SWARM_RUNNER_PLAN_THINKING || actionThinking)).trim().toLowerCase()
+  const designerModel = String(option('--designer-model', process.env.SWARM_RUNNER_DESIGNER_MODEL || suppliedModel)).trim()
+  const designerThinking = String(option('--designer-thinking', process.env.SWARM_RUNNER_DESIGNER_THINKING || suppliedThinking)).trim().toLowerCase()
+  const exact = (model, thinking, label) => {
+    assert(records.some((record) => String(record?.model || '').trim() === model), `model catalog does not contain ${provider}/${model} for ${label}`)
+    return { provider, model, thinking, service_tier: 'fast' }
+  }
+  const actionAssignment = exact(actionModel, actionThinking, 'Swarm auto')
+  const planAssignment = exact(planModel, planThinking, 'Swarm plan')
+  const designerAssignment = exact(designerModel, designerThinking, 'Designer')
+  await api('PATCH', '/v1/agent-model-settings', { swarm: { action: actionAssignment, plan: planAssignment } }, 'configure Swarm models')
   await api('PATCH', '/v1/agent-model-settings', { system_agents: { coder: modelAssignment } }, 'configure Coder model')
+  await api('PATCH', '/v1/agent-model-settings', { system_agents: { designer: designerAssignment } }, 'configure Designer model')
   const settings = (await api('GET', '/v1/agent-model-settings', undefined, 'verify model settings')).body?.agent_model_settings || {}
-  assert(settings?.swarm?.action?.model === modelAssignment.model && settings?.swarm?.plan?.model === modelAssignment.model, 'Swarm model settings did not persist')
+  assert(settings?.swarm?.action?.model === actionAssignment.model && settings?.swarm?.plan?.model === planAssignment.model, 'Swarm model settings did not persist')
   assert(settings?.system_agents?.coder?.model === modelAssignment.model, 'Coder model setting did not persist')
+  assert(settings?.system_agents?.designer?.model === designerAssignment.model, 'Designer model setting did not persist')
   result.gates.models_configured = true
 
   if (workspacePathOverride) {

@@ -11,11 +11,16 @@ const apiURL = String(option('--api-url', process.env.SWARM_RUNNER_API_URL || ''
 const provider = String(option('--provider', process.env.SWARM_RUNNER_PROVIDER || '')).trim().toLowerCase()
 const timeoutMs = Number(option('--timeout-ms', process.env.SWARM_RUNNER_TIMEOUT_MS || '900000'))
 const workspacePathOverride = String(option('--workspace-path', process.env.SWARM_RUNNER_WORKSPACE_PATH || '')).trim()
+const actionModel = String(option('--action-model', process.env.SWARM_RUNNER_ACTION_MODEL || '')).trim()
+const actionThinking = String(option('--action-thinking', process.env.SWARM_RUNNER_ACTION_THINKING || 'medium')).trim().toLowerCase()
+const planModel = String(option('--plan-model', process.env.SWARM_RUNNER_PLAN_MODEL || '')).trim()
+const planThinking = String(option('--plan-thinking', process.env.SWARM_RUNNER_PLAN_THINKING || 'high')).trim().toLowerCase()
 const suppliedToken = String(process.env.SWARM_RUNNER_TOKEN || '').trim()
 
 if (!apiURL || !/^https?:\/\//.test(apiURL)) throw new Error('--api-url must be an http or https URL')
 if (!provider || !/^[a-z0-9._-]+$/.test(provider)) throw new Error('--provider is required and must contain only letters, numbers, dots, underscores, or dashes')
 if (!Number.isFinite(timeoutMs) || timeoutMs < 30000) throw new Error('--timeout-ms must be at least 30000')
+if (![actionThinking, planThinking].every((value) => ['low', 'medium', 'high', 'xhigh'].includes(value))) throw new Error('role thinking must be low, medium, high, or xhigh')
 
 const startedAt = new Date().toISOString()
 const testID = `runner-basic-plan-auto-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`
@@ -91,6 +96,12 @@ async function api(method, route, body, label = route, allowError = false) {
 function recommendationFor(record, roles) {
   const recommendations = Array.isArray(record?.recommendations) ? record.recommendations : []
   return recommendations.find((item) => roles.includes(String(item?.role || '').trim().toLowerCase())) || null
+}
+
+function exactAssignment(records, model, thinking, label) {
+  if (!model) return null
+  assert(records.some((record) => String(record?.model || '').trim() === model), `model catalog does not contain ${provider}/${model} for ${label}`)
+  return { provider, model, thinking, service_tier: 'fast' }
 }
 
 function recommendedAssignment(records, roles, label) {
@@ -179,7 +190,7 @@ async function waitForSettledReplay(sessionID, initialRunID) {
     latest = await fetchAllEvents(sessionID)
     const runIntents = latest.replay?.run_intents || []
     const initialIntent = runIntents.find((intent) => String(intent?.run_id || '') === initialRunID)
-    const checkpointIntents = runIntents.filter((intent) => String(intent?.checkpoint_id || ''))
+    const checkpointIntents = runIntents.filter((intent) => String(intent?.checkpoint_id || '') && String(intent?.run_id || '') !== initialRunID)
     const failed = runIntents.filter((intent) => /failed|cancelled|expired|interrupted/.test(String(intent?.status || '')))
     if (failed.length > 0) fail(`session has failed run intents: ${failed.map((intent) => `${intent.run_id}:${intent.status}`).join(', ')}`)
     if (initialIntent?.status === 'completed' && checkpointIntents.length === 2 && checkpointIntents.every((intent) => intent?.status === 'completed')) {
@@ -225,8 +236,8 @@ async function main() {
 
   const catalogResponse = await api('GET', `/v1/model/catalog?provider=${encodeURIComponent(provider)}&limit=500`, undefined, 'read model recommendations')
   const records = catalogResponse.body?.records || []
-  const planAssignment = recommendedAssignment(records, ['plan'], 'plan')
-  const actionAssignment = recommendedAssignment(records, ['auto', 'main'], 'auto')
+  const planAssignment = exactAssignment(records, planModel, planThinking, 'plan') || recommendedAssignment(records, ['plan'], 'plan')
+  const actionAssignment = exactAssignment(records, actionModel, actionThinking, 'auto') || recommendedAssignment(records, ['auto', 'main'], 'auto')
   result.models = { plan: planAssignment, auto: actionAssignment }
   result.gates.recommended_models = true
   log(`using ${provider} plan=${planAssignment.model} auto=${actionAssignment.model}`)

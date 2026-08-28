@@ -27,8 +27,10 @@ if [[ $# -gt 0 && "${1}" != --* ]]; then
 fi
 
 model_args=()
-[[ -n "${SWARM_TESTBENCH_MODEL}" ]] && model_args+=(--model "${SWARM_TESTBENCH_MODEL}")
-[[ -n "${SWARM_TESTBENCH_THINKING}" ]] && model_args+=(--thinking "${SWARM_TESTBENCH_THINKING}")
+model_args+=(--action-model "${SWARM_TESTBENCH_ACTION_MODEL}" --action-thinking "${SWARM_TESTBENCH_ACTION_THINKING}")
+model_args+=(--plan-model "${SWARM_TESTBENCH_PLAN_MODEL}" --plan-thinking "${SWARM_TESTBENCH_PLAN_THINKING}")
+model_args+=(--coder-model "${SWARM_TESTBENCH_CODER_MODEL}" --coder-thinking "${SWARM_TESTBENCH_CODER_THINKING}")
+model_args+=(--designer-model "${SWARM_TESTBENCH_DESIGNER_MODEL}" --designer-thinking "${SWARM_TESTBENCH_DESIGNER_THINKING}")
 [[ -n "${SWARM_TESTBENCH_LINKED_WORKSPACE_PATH:-}" ]] && model_args+=(--linked-workspace-path "${SWARM_TESTBENCH_LINKED_WORKSPACE_PATH}")
 
 exec "${ROOT_DIR}/scripts/run-runner-test.sh" \

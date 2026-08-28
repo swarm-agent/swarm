@@ -12,6 +12,10 @@ const provider = String(option('--provider', process.env.SWARM_RUNNER_PROVIDER |
 const timeoutMs = Number(option('--timeout-ms', process.env.SWARM_RUNNER_TIMEOUT_MS || '900000'))
 const workspacePathOverride = String(option('--workspace-path', process.env.SWARM_RUNNER_WORKSPACE_PATH || '')).trim()
 const scenarioOption = String(option('--scenario', process.env.SWARM_RUNNER_SCENARIO || 'all')).trim().toLowerCase()
+const actionModel = String(option('--action-model', process.env.SWARM_RUNNER_ACTION_MODEL || '')).trim()
+const actionThinking = String(option('--action-thinking', process.env.SWARM_RUNNER_ACTION_THINKING || 'medium')).trim().toLowerCase()
+const planModel = String(option('--plan-model', process.env.SWARM_RUNNER_PLAN_MODEL || '')).trim()
+const planThinking = String(option('--plan-thinking', process.env.SWARM_RUNNER_PLAN_THINKING || 'high')).trim().toLowerCase()
 const suppliedToken = String(process.env.SWARM_RUNNER_TOKEN || '').trim()
 
 if (!apiURL || !/^https?:\/\//.test(apiURL)) throw new Error('--api-url must be an http or https URL')
@@ -99,6 +103,12 @@ async function api(method, route, body, label = route, allowError = false) {
 function recommendationFor(record, roles) {
   const recommendations = Array.isArray(record?.recommendations) ? record.recommendations : []
   return recommendations.find((item) => roles.includes(String(item?.role || '').trim().toLowerCase())) || null
+}
+
+function exactAssignment(records, model, thinking, label) {
+  if (!model) return null
+  assert(records.some((record) => String(record?.model || '').trim() === model), `model catalog does not contain ${provider}/${model} for ${label}`)
+  return { provider, model, thinking, service_tier: 'fast' }
 }
 
 function recommendedAssignment(records, roles, label) {
@@ -388,9 +398,9 @@ async function main() {
 
   const catalogResponse = await api('GET', `/v1/model/catalog?provider=${encodeURIComponent(provider)}&limit=500`, undefined, 'read model recommendations')
   const records = catalogResponse.body?.records || []
-  const planAssignment = recommendedAssignment(records, ['plan'], 'Swarm plan')
-  const actionAssignment = recommendedAssignment(records, ['auto', 'main'], 'Swarm auto')
-  const routerAssignment = recommendedAssignment(records, ['routing', 'router'], 'Router routing')
+  const planAssignment = exactAssignment(records, planModel, planThinking, 'Swarm plan') || recommendedAssignment(records, ['plan'], 'Swarm plan')
+  const actionAssignment = exactAssignment(records, actionModel, actionThinking, 'Swarm auto') || recommendedAssignment(records, ['auto', 'main'], 'Swarm auto')
+  const routerAssignment = exactAssignment(records, actionModel, actionThinking, 'Router routing') || recommendedAssignment(records, ['routing', 'router'], 'Router routing')
   result.models = { plan: planAssignment, auto: actionAssignment, router: routerAssignment }
   result.gates.recommended_models = true
 
