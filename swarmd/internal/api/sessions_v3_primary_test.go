@@ -6705,7 +6705,8 @@ func TestSessionsV3ExecutorUserContinuationResumesBlockedCheckpointBeforeAdvanci
 		t.Fatalf("save blocked continuation plan: %v", err)
 	}
 
-	postSessionsV3PrimaryTestMessage(t, server, created.ID, "provider-blocked-continue-message", "The dependency is resolved; continue")
+	const unblockUserMessage = "The dependency is resolved; continue"
+	postSessionsV3PrimaryTestMessage(t, server, created.ID, "provider-blocked-continue-message", unblockUserMessage)
 	waitForSessionsV3RunIntentStatus(t, sessionSvc, created.ID, sessionruntime.RunIntentCompleted)
 
 	deadline := time.Now().Add(2 * time.Second)
@@ -6732,11 +6733,24 @@ func TestSessionsV3ExecutorUserContinuationResumesBlockedCheckpointBeforeAdvanci
 	if err != nil {
 		t.Fatalf("list blocked continuation run intents: %v", err)
 	}
-	if len(intents) != 3 || intents[0].CheckpointID != "" || intents[1].CheckpointID != "cp-1" || intents[2].CheckpointID != "cp-2" {
+	if len(intents) != 3 {
 		t.Fatalf("blocked continuation run intents = %+v", intents)
 	}
-	if len(runner.requests) != 3 || !strings.Contains(fmt.Sprint(runner.requests[1].Input), "integration still pending") || !strings.Contains(fmt.Sprint(runner.requests[1].Input), "user confirmed continuation") {
-		t.Fatalf("resumed checkpoint did not receive preserved progress and resolution context: %+v", runner.requests)
+	intentCheckpointIDs := map[string]bool{}
+	for _, intent := range intents {
+		intentCheckpointIDs[intent.CheckpointID] = true
+	}
+	if !intentCheckpointIDs[""] || !intentCheckpointIDs["cp-1"] || !intentCheckpointIDs["cp-2"] {
+		t.Fatalf("blocked continuation run intents = %+v", intents)
+	}
+	if len(runner.requests) != 3 || !strings.Contains(fmt.Sprint(runner.requests[0].Input), unblockUserMessage) || !strings.Contains(fmt.Sprint(runner.requests[1].Input), "integration still pending") || !strings.Contains(fmt.Sprint(runner.requests[1].Input), "user confirmed continuation") {
+		t.Fatalf("resumed checkpoint did not receive the resolver turn, preserved progress, and resolution context: %+v", runner.requests)
+	}
+	if strings.Contains(fmt.Sprint(runner.requests[1].Input), unblockUserMessage) {
+		t.Fatalf("resumed checkpoint replayed the unblock user message to the AI: %+v", runner.requests[1].Input)
+	}
+	if !runner.requests[1].ForceFreshProviderContext || runner.requests[1].NativeContinuationAllowed || runner.requests[1].AllowContinuation {
+		t.Fatalf("resumed checkpoint retained resolver provider lineage: %+v", runner.requests[1])
 	}
 }
 

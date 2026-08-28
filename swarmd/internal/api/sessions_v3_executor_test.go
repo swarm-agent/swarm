@@ -261,15 +261,15 @@ func TestSessionV3OrdinaryAgentResolutionKeepsCurrentAccountToolContract(t *test
 	}
 }
 
-func TestSessionV3ProviderCheckpointOwnershipKeepsProviderContext(t *testing.T) {
+func TestSessionV3ProviderCheckpointOwnershipKeepsProviderContextUnlessLifecycleRequiresFreshContext(t *testing.T) {
 	for _, job := range []sessionV3ExecutorJob{{CheckpointID: "cp-1"}, {CheckpointID: "cp-1", ResumeContext: true}} {
 		scope := sessionV3ProviderJobCheckpointScope(job)
 		if scope.FreshContext || sessionV3ProviderCheckpointFreshContext(job, scope) {
 			t.Fatalf("checkpoint ownership unexpectedly requested fresh provider context: job=%#v scope=%#v", job, scope)
 		}
 	}
-	if sessionV3ProviderCheckpointFreshContext(sessionV3ExecutorJob{CheckpointID: "cp-1"}, sessionV3ProviderCheckpointScope{FreshContext: true}) {
-		t.Fatal("checkpoint routing metadata must not override execution-epoch lineage")
+	if !sessionV3ProviderCheckpointFreshContext(sessionV3ExecutorJob{CheckpointID: "cp-1"}, sessionV3ProviderCheckpointScope{FreshContext: true}) {
+		t.Fatal("explicit fresh-context checkpoint lifecycle transition did not reset provider lineage")
 	}
 }
 

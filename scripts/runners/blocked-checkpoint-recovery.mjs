@@ -273,9 +273,10 @@ async function main() {
 
   const recoveryPrompt = [
     `RECOVERY_GATE is now available for live proof ${testID}.`,
-    'Continue the existing blocked checkpoint; do not create, restart, replace, or append a checkpoint.',
-    'Follow the durable blocked-checkpoint recovery route first.',
-    'The fresh resumed checkpoint owner must then complete cp-1 with result BLOCKED_RECOVERY_OK without inspecting or modifying workspace files.',
+    'This raw user message is resolver-only input.',
+    'If you are the non-owning recovery parent, follow the durable blocked-checkpoint recovery route first; do not create, restart, replace, or append a checkpoint.',
+    'If you are instead the fresh resumed checkpoint owner and can read this raw user message, call mark_failed for cp-1 with result BLOCKED_RECOVERY_MESSAGE_REPLAYED because resolver-only input leaked across the fresh-context boundary.',
+    'When the fresh resumed checkpoint correctly receives only normalized recovery context, complete cp-1 with result BLOCKED_RECOVERY_OK without inspecting or modifying workspace files.',
   ].join(' ')
   const recoveryMessage = await api('POST', `/v3/sessions/${encodeURIComponent(sessionID)}/messages`, {
     client_request_id: `${testID}:recovery-message`,
@@ -322,6 +323,8 @@ async function main() {
 
   const failedEvents = recovered.replay.events.filter((event) => /failed|cancelled|expired|interrupted/.test(String(event?.event_type || '')))
   const failedIntents = relevantIntents.filter((intent) => ['failed', 'cancelled', 'expired', 'interrupted'].includes(String(intent?.status || '')))
+  const replaySentinelObserved = JSON.stringify(planManageCalls(recovered.replay.events)).includes('BLOCKED_RECOVERY_MESSAGE_REPLAYED') || JSON.stringify(recovered.checkpoint).includes('BLOCKED_RECOVERY_MESSAGE_REPLAYED')
+  assert(!replaySentinelObserved, 'fresh resumed checkpoint observed the resolver-only unblock user message')
   assert(failedEvents.length === 0, `session contains failure events: ${failedEvents.map((event) => event.event_type).join(', ')}`)
   assert(failedIntents.length === 0, `session contains failed relevant intents: ${failedIntents.map((intent) => `${intent.run_id}:${intent.status}`).join(', ')}`)
   result.gates.no_failures = true

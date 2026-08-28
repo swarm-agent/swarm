@@ -1895,7 +1895,7 @@ func (e *sessionV3Executor) sessionV3ProviderRunner(resolved sessionV3ResolvedRu
 }
 
 func (e *sessionV3Executor) sessionV3ProviderBaseRequest(job sessionV3ExecutorJob, resolved sessionV3ResolvedRuntime, input []map[string]any) (provideriface.Request, error) {
-	return e.sessionV3ProviderBaseRequestWithCheckpointScope(job, resolved, input, sessionV3ProviderJobCheckpointScope(job))
+	return e.sessionV3ProviderBaseRequestWithCheckpointScope(job, resolved, input, e.sessionV3ProviderCheckpointScope(job))
 }
 
 func (e *sessionV3Executor) sessionV3ProviderBaseRequestWithCheckpointScope(job sessionV3ExecutorJob, resolved sessionV3ResolvedRuntime, input []map[string]any, checkpointScope sessionV3ProviderCheckpointScope) (provideriface.Request, error) {
@@ -1974,7 +1974,9 @@ func (e *sessionV3Executor) sessionV3ProviderBaseRequestWithCheckpointScope(job 
 	providerCacheKey := sessionV3ProviderScopedKey("cache", epochID+"-"+lineageID)
 	sessionAffinityKey := sessionV3ProviderScopedKey("affinity", epochID+"-"+lineageID)
 	boundaryReason := "session_turn"
-	if !previousOK {
+	if sessionV3ProviderCheckpointFreshContext(job, checkpointScope) {
+		boundaryReason = "checkpoint_fresh_context"
+	} else if !previousOK {
 		boundaryReason = "epoch_fresh_context"
 	} else if !nativeContinuationAllowed {
 		boundaryReason = "provider_model_runtime_handoff"
@@ -1991,7 +1993,7 @@ func (e *sessionV3Executor) sessionV3ProviderBaseRequestWithCheckpointScope(job 
 		HandoffSummaryMessageID: previousState.HandoffSummaryMessageID,
 		HandoffSummaryGlobalSeq: previousState.HandoffSummaryGlobalSeq,
 	}
-	providerContinuationAllowed := lifecycle.ContextMode == provideriface.ExecutionEpochContextResponsesChain && nativeContinuationAllowed
+	providerContinuationAllowed := lifecycle.ContextMode == provideriface.ExecutionEpochContextResponsesChain && nativeContinuationAllowed && !sessionV3ProviderCheckpointFreshContext(job, checkpointScope)
 	baseReq := provideriface.Request{
 		SessionID:                     job.SessionID,
 		ProviderLineageID:             lineageID,
@@ -2331,7 +2333,7 @@ func sessionV3ProviderCheckpointScopeFromPayload(scope sessionV3ProviderCheckpoi
 	if payload == nil {
 		return scope
 	}
-	freshContext := sessionV3ProviderCheckpointRunNextAction(sessionsV3MapString(payload, "next_action"))
+	freshContext := strings.EqualFold(strings.TrimSpace(sessionsV3MapString(payload, "next_action")), "run_checkpoint_with_fresh_context")
 	if freshContext {
 		scope.FreshContext = true
 	}
@@ -2479,10 +2481,12 @@ func sessionV3ProviderForceFreshContext(job sessionV3ExecutorJob, previousLineag
 	return !sessionV3ProviderNativeContinuationAllowed(previousLineageID, lineageID)
 }
 
-func sessionV3ProviderCheckpointFreshContext(_ sessionV3ExecutorJob, _ sessionV3ProviderCheckpointScope) bool {
-	// Checkpoint ownership is routing metadata inside an execution epoch. Only an
-	// epoch change (or an explicit provider/runtime handoff) resets lineage.
-	return false
+func sessionV3ProviderCheckpointFreshContext(_ sessionV3ExecutorJob, scope sessionV3ProviderCheckpointScope) bool {
+	// Ordinary checkpoint ownership is routing metadata inside an execution
+	// epoch. An explicit fresh-context lifecycle transition (notably blocked
+	// checkpoint recovery) must still reset provider lineage so the resolver
+	// turn is not retained implicitly by a native response chain.
+	return scope.FreshContext
 }
 
 func sessionV3ProviderBoundaryReasonWithOverride(current, override string) string {
