@@ -517,6 +517,13 @@ func (r *Runtime) executeManageArtifact(ctx context.Context, scope WorkspaceScop
 			return "", err
 		}
 		var variant pebblestore.SessionArtifactVariant
+		gatedAnimation := false
+		if len(initialParts) == 0 {
+			gatedAnimation, err = r.reserveAndPreflightManagedAnimation(ctx, principal, input, entries, actionName == "create_package")
+			if err != nil {
+				return "", err
+			}
+		}
 		switch {
 		case len(initialParts) != 0:
 			if actionName != "create" {
@@ -534,6 +541,12 @@ func (r *Runtime) executeManageArtifact(ctx context.Context, scope WorkspaceScop
 		}
 		if err != nil {
 			return "", err
+		}
+		if gatedAnimation && variant.Status != pebblestore.SessionArtifactStatusReady {
+			return "", animationError("animation_publish_failed", "profiled HTML animation did not finalize as a ready artifact after trusted preflight")
+		}
+		if gatedAnimation {
+			response["trusted_animation_preflight"] = true
 		}
 		response["artifact"] = managedArtifactVariant(variant)
 		response["reference"] = managedArtifactReferenceWithSession(variant.SessionID, variant.CollectionID, variant.ID, variant.EventSeq)
@@ -807,6 +820,9 @@ func (r *Runtime) executeManageArtifact(ctx context.Context, scope WorkspaceScop
 		response["artifact"] = managedArtifactVariant(variant)
 		response["reference"] = managedArtifactReferenceWithSession(variant.SessionID, variant.CollectionID, variant.ID, variant.EventSeq)
 		response["published"] = sourceInfo
+		if preflight, _ := sourceInfo["trusted_animation_preflight"].(bool); preflight {
+			response["trusted_animation_preflight"] = true
+		}
 	case "select":
 		collectionID, err := requireArtifactArgument(args, "collection_id")
 		if err != nil {
@@ -1012,12 +1028,28 @@ func (r *Runtime) publishWorkspaceArtifact(ctx context.Context, principal artifa
 		return pebblestore.SessionArtifactVariant{}, nil, err
 	}
 	var parts []pebblestore.SessionArtifactPart
-	if !packageSource && mediaType == "text/html" {
-		body, readErr := os.ReadFile(absoluteSource)
-		if readErr != nil {
-			return pebblestore.SessionArtifactVariant{}, nil, readErr
+	var animationBody []byte
+	var animationEntries []artifact.PackageEntry
+	if packageSource && managedHTMLAnimationProfile(inheritedAnimationProfile) {
+		animationEntries, err = readWorkspaceAnimationPackage(ctx, absoluteSource)
+		if err != nil {
+			return pebblestore.SessionArtifactVariant{}, nil, err
 		}
-		parts = deriveArtifactHTMLParts(body, mediaType)
+	}
+	if !packageSource && mediaType == "text/html" {
+		animationBody, err = os.ReadFile(absoluteSource)
+		if err != nil {
+			return pebblestore.SessionArtifactVariant{}, nil, err
+		}
+		parts = deriveArtifactHTMLParts(animationBody, mediaType)
+	}
+	if packageSource && len(animationEntries) != 0 {
+		for _, entry := range animationEntries {
+			if entry.Name == "index.html" {
+				parts = deriveArtifactHTMLParts(entry.Data, "text/html")
+				break
+			}
+		}
 	}
 	create := artifact.CreateInput{
 		RequestID: requestID, CollectionID: collectionID, CollectionName: strings.TrimSpace(asString(args["collection_name"])), CollectionDescription: strings.TrimSpace(asString(args["collection_description"])),
@@ -1030,17 +1062,77 @@ func (r *Runtime) publishWorkspaceArtifact(ctx context.Context, principal artifa
 	if !generatedCollection {
 		create.CollectionName, create.CollectionDescription = "", ""
 	}
-	variant, err := r.artifactAuthority.PublishWorkspace(ctx, principal, artifact.CreateFileInput{CreateInput: create, SourcePath: absoluteSource, Package: packageSource})
+	create.Body = animationBody
+	gatedAnimation, err := r.reserveAndPreflightManagedAnimation(ctx, principal, create, animationEntries, packageSource)
 	if err != nil {
 		return pebblestore.SessionArtifactVariant{}, nil, err
 	}
+	var variant pebblestore.SessionArtifactVariant
+	if gatedAnimation && packageSource {
+		variant, err = r.artifactAuthority.CreatePackage(ctx, principal, artifact.CreatePackageInput{CreateInput: create, Entries: animationEntries})
+	} else if gatedAnimation {
+		variant, err = r.artifactAuthority.Create(ctx, principal, create)
+	} else {
+		variant, err = r.artifactAuthority.PublishWorkspace(ctx, principal, artifact.CreateFileInput{CreateInput: create, SourcePath: absoluteSource, Package: packageSource})
+	}
+	if err != nil {
+		return pebblestore.SessionArtifactVariant{}, nil, err
+	}
+	if gatedAnimation && variant.Status != pebblestore.SessionArtifactStatusReady {
+		return pebblestore.SessionArtifactVariant{}, nil, animationError("animation_publish_failed", "profiled workspace HTML animation did not finalize as a ready artifact after trusted preflight")
+	}
 	published := map[string]any{"source": filepath.ToSlash(source), "package": packageSource, "files": sourceInfo.files, "bytes": sourceInfo.bytes, "digest_sha256": variant.DigestSHA256, "media_type": variant.MediaType}
+	if gatedAnimation {
+		published["trusted_animation_preflight"] = true
+	}
 	return variant, published, nil
 }
 
 type workspacePublishSourceInfo struct {
 	files int
 	bytes int64
+}
+
+func readWorkspaceAnimationPackage(ctx context.Context, root string) ([]artifact.PackageEntry, error) {
+	entries := make([]artifact.PackageEntry, 0, manageArtifactMaxPackageFiles)
+	var total int
+	err := filepath.WalkDir(root, func(candidate string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if candidate == root || entry.IsDir() {
+			return nil
+		}
+		info, err := entry.Info()
+		if err != nil || !info.Mode().IsRegular() || entry.Type()&os.ModeSymlink != 0 {
+			return errors.New("manage_artifact publish_workspace animation package contains an unsafe entry")
+		}
+		relative, err := filepath.Rel(root, candidate)
+		if err != nil {
+			return err
+		}
+		name := filepath.ToSlash(relative)
+		if pathClean(name) != name || len(entries) >= manageArtifactMaxPackageFiles || info.Size() > manageArtifactMaxPackageBytes-int64(total) {
+			return artifact.ErrQuotaExceeded
+		}
+		body, err := os.ReadFile(candidate)
+		if err != nil {
+			return err
+		}
+		total += len(body)
+		entries = append(entries, artifact.PackageEntry{Name: name, Data: body})
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	if len(entries) == 0 {
+		return nil, errors.New("manage_artifact publish_workspace animation package is empty")
+	}
+	return entries, nil
 }
 
 func validateWorkspacePublishSource(ctx context.Context, workspaceRoot, source string) (string, workspacePublishSourceInfo, bool, error) {

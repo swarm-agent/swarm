@@ -8,12 +8,15 @@ import (
 	"image"
 	"image/color"
 	"image/png"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"swarm/packages/swarmd/internal/artifact"
 	"swarm/packages/swarmd/internal/htmlcapture"
+	"swarm/packages/swarmd/internal/identity"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
@@ -204,6 +207,209 @@ func TestExportHTMLAnimationPreflightsBeforeQueuingAndPreservesFailureCode(t *te
 	runtime.runHTMLAnimationExport(context.Background(), artifact.Principal{SessionID: "source-session"}, prepared, "render-variant")
 	if authority.variant.Status != pebblestore.SessionArtifactStatusFailed || authority.variant.FailureCode != "animation_frame_unstable" {
 		t.Fatalf("background failure = %+v", authority.variant)
+	}
+}
+
+func TestManagedAnimationCreatePreflightsBeforeReadyAndPersistsTerminalFailure(t *testing.T) {
+	html := `<!doctype html><script id="swarm-animation-manifest" type="application/json">{"version":"swarm.animation/v1","duration_ms":1000,"fps":30}</script>`
+	authority := &fakeArtifactAuthority{}
+	renderer := &fakeHTMLAnimationRenderer{preflightErr: htmlcapture.NewError("animation_viewport_overflow", "private/source/path: author exception secret")}
+	runtime := NewRuntime(1)
+	runtime.SetArtifactAuthority(authority)
+	runtime.SetHTMLAnimationRenderer(renderer)
+	ctx, scope := artifactToolContext()
+	args := map[string]any{"action": "create", "filename": "intro.html", "media_type": "text/html", "content": html, "animation_profile": map[string]any{"profile": "motion_ui"}}
+	if _, err := runtime.executeManageArtifact(ctx, scope, "managed-animation-failure", args); err == nil || !strings.Contains(err.Error(), "animation_viewport_overflow") || strings.Contains(err.Error(), "private/source/path") || strings.Contains(err.Error(), "secret") {
+		t.Fatalf("managed animation preflight error = %v", err)
+	}
+	if authority.reserveCalls != 1 || authority.createCalls != 0 || len(authority.created.Body) != 0 || authority.variant.Status != pebblestore.SessionArtifactStatusFailed || authority.variant.FailureCode != "animation_viewport_overflow" {
+		t.Fatalf("managed animation failure state = %+v reserve=%d create=%d", authority.variant, authority.reserveCalls, authority.createCalls)
+	}
+	failedVariantID := authority.variant.ID
+	if _, err := runtime.executeManageArtifact(ctx, scope, "managed-animation-failure", args); err == nil || !strings.Contains(err.Error(), "animation_publication_conflict") {
+		t.Fatalf("failed reference replay error = %v", err)
+	}
+	if authority.reserveCalls != 2 || authority.createCalls != 0 {
+		t.Fatalf("failed replay published bytes: reserve=%d create=%d", authority.reserveCalls, authority.createCalls)
+	}
+	renderer.preflightErr = nil
+	renderer.result = htmlcapture.AnimationResult{PreviewPNG: testAnimationFallbackPNG(t), DurationMS: 1000, FPS: 30, FrameCount: 30}
+	if _, err := runtime.executeManageArtifact(ctx, scope, "managed-animation-retry", args); err != nil {
+		t.Fatalf("fresh tool-call retry: %v", err)
+	}
+	if authority.variant.ID == failedVariantID || authority.createCalls != 1 || authority.variant.Status != pebblestore.SessionArtifactStatusReady {
+		t.Fatalf("fresh retry did not use a new ready identity: failed=%s variant=%+v", failedVariantID, authority.variant)
+	}
+}
+
+func TestManagedAnimationCreateAndPackageFinalizeOnlyAfterTrustedPreflight(t *testing.T) {
+	html := `<!doctype html><script id="swarm-animation-manifest" type="application/json">{"version":"swarm.animation/v1","duration_ms":1000,"fps":30}</script>`
+	for _, tc := range []struct {
+		name       string
+		action     string
+		args       map[string]any
+		wantCreate int
+		wantPack   int
+	}{
+		{name: "create", action: "create", args: map[string]any{"action": "create", "filename": "intro.html", "media_type": "text/html", "content": html, "animation_profile": map[string]any{"profile": "motion_ui"}}, wantCreate: 1},
+		{name: "package", action: "create_package", args: map[string]any{"action": "create_package", "filename": "intro.zip", "entries": []any{map[string]any{"name": "index.html", "content": html}}, "animation_profile": map[string]any{"profile": "motion_ui"}}, wantPack: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			authority := &fakeArtifactAuthority{}
+			renderer := &fakeHTMLAnimationRenderer{result: htmlcapture.AnimationResult{PreviewPNG: testAnimationFallbackPNG(t), DurationMS: 1000, FPS: 30, FrameCount: 30}}
+			runtime := NewRuntime(1)
+			runtime.SetArtifactAuthority(authority)
+			runtime.SetHTMLAnimationRenderer(renderer)
+			ctx, scope := artifactToolContext()
+			output, err := runtime.executeManageArtifact(ctx, scope, "managed-animation-"+tc.name, tc.args)
+			if err != nil {
+				t.Fatalf("%s: %v", tc.action, err)
+			}
+			if !strings.Contains(output, `"trusted_animation_preflight":true`) {
+				t.Fatalf("%s output omitted trusted preflight evidence: %s", tc.action, output)
+			}
+			if authority.reserveCalls != 1 || authority.createCalls != tc.wantCreate || authority.packageCalls != tc.wantPack || authority.variant.Status != pebblestore.SessionArtifactStatusReady {
+				t.Fatalf("publication order/result: reserve=%d create=%d package=%d variant=%+v", authority.reserveCalls, authority.createCalls, authority.packageCalls, authority.variant)
+			}
+		})
+	}
+}
+
+func TestManagedDesignerProfiledAnimationUsesInjectedGate(t *testing.T) {
+	html := `<!doctype html><script id="swarm-animation-manifest" type="application/json">{"version":"swarm.animation/v1","duration_ms":1000,"fps":30}</script>`
+	authority := &fakeArtifactAuthority{}
+	runtime := NewRuntime(1)
+	runtime.SetArtifactAuthority(authority)
+	runtime.SetHTMLAnimationRenderer(&fakeHTMLAnimationRenderer{result: htmlcapture.AnimationResult{PreviewPNG: testAnimationFallbackPNG(t), DurationMS: 1000, FPS: 30, FrameCount: 30}})
+	scope := WorkspaceScope{SessionID: "child-1", Principal: identity.Principal{SessionID: "parent-1", AccountScopeID: "account-1", UserID: "user-1"}}
+	ctx := WithArtifactRunContext(context.Background(), ArtifactRunContext{SessionID: "parent-1", ChildSessionID: "child-1", TaskCallID: "task-1", CollectionID: "collection-1", VariantID: "variant-1", AnimationProfile: reviewedMotionProfile(t)})
+	output, err := runtime.executeManageArtifact(ctx, scope, "managed-designer-animation", map[string]any{"action": "create", "filename": "intro.html", "media_type": "text/html", "content": html})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if authority.created.CollectionID != "collection-1" || authority.created.VariantID != "variant-1" || authority.created.SourceSessionID != "" || authority.reserveCalls != 1 || authority.createCalls != 1 || !strings.Contains(output, `"trusted_animation_preflight":true`) {
+		t.Fatalf("managed Designer animation gate: created=%+v reserve=%d create=%d output=%s", authority.created, authority.reserveCalls, authority.createCalls, output)
+	}
+}
+
+func TestWorkspaceAnimationPublicationFailsTerminallyBeforeReady(t *testing.T) {
+	html := `<!doctype html><script id="swarm-animation-manifest" type="application/json">{"version":"swarm.animation/v1","duration_ms":1000,"fps":30}</script>`
+	authority := &fakeArtifactAuthority{}
+	runtime := NewRuntime(1)
+	runtime.SetArtifactAuthority(authority)
+	runtime.SetHTMLAnimationRenderer(&fakeHTMLAnimationRenderer{preflightErr: htmlcapture.NewError("animation_frame_unstable", "representative frame changed")})
+	ctx, scope := artifactToolContext()
+	scope.PrimaryPath = t.TempDir()
+	if err := os.WriteFile(filepath.Join(scope.PrimaryPath, "intro.html"), []byte(html), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := runtime.executeManageArtifact(ctx, scope, "workspace-animation-failure", map[string]any{"action": "publish_workspace", "source": "intro.html", "animation_profile": map[string]any{"profile": "motion_ui"}})
+	if err == nil || !strings.Contains(err.Error(), "animation_frame_unstable") || authority.variant.Status != pebblestore.SessionArtifactStatusFailed || authority.publishCalls != 0 || authority.createCalls != 0 {
+		t.Fatalf("workspace animation failure: err=%v variant=%+v publish=%d create=%d", err, authority.variant, authority.publishCalls, authority.createCalls)
+	}
+}
+
+func TestWorkspaceAnimationPackagePublishesExactPreflightedEntries(t *testing.T) {
+	html := `<!doctype html><script id="swarm-animation-manifest" type="application/json">{"version":"swarm.animation/v1","duration_ms":1000,"fps":30}</script><script src="app.js"></script>`
+	authority := &fakeArtifactAuthority{}
+	runtime := NewRuntime(1)
+	runtime.SetArtifactAuthority(authority)
+	runtime.SetHTMLAnimationRenderer(&fakeHTMLAnimationRenderer{result: htmlcapture.AnimationResult{PreviewPNG: testAnimationFallbackPNG(t), DurationMS: 1000, FPS: 30, FrameCount: 30}})
+	ctx, scope := artifactToolContext()
+	scope.PrimaryPath = t.TempDir()
+	packageRoot := filepath.Join(scope.PrimaryPath, "intro")
+	if err := os.Mkdir(packageRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(packageRoot, "index.html"), []byte(html), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(packageRoot, "app.js"), []byte("const exact = true;"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	output, err := runtime.executeManageArtifact(ctx, scope, "workspace-animation-package", map[string]any{"action": "publish_workspace", "source": "intro", "animation_profile": map[string]any{"profile": "motion_ui"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if authority.publishCalls != 0 || authority.packageCalls != 1 || len(authority.packaged.Entries) != 2 || !strings.Contains(output, `"trusted_animation_preflight":true`) {
+		t.Fatalf("workspace animation package result: publish=%d package=%d entries=%+v output=%s", authority.publishCalls, authority.packageCalls, authority.packaged.Entries, output)
+	}
+	entries := map[string]string{}
+	for _, entry := range authority.packaged.Entries {
+		entries[entry.Name] = string(entry.Data)
+	}
+	if entries["index.html"] != html || entries["app.js"] != "const exact = true;" {
+		t.Fatalf("workspace animation package bytes changed: %+v", entries)
+	}
+}
+
+func TestManagedAnimationRendererUnavailablePersistsTerminalFailure(t *testing.T) {
+	html := `<!doctype html><script id="swarm-animation-manifest" type="application/json">{"version":"swarm.animation/v1","duration_ms":1000,"fps":30}</script>`
+	authority := &fakeArtifactAuthority{}
+	runtime := NewRuntime(1)
+	runtime.SetArtifactAuthority(authority)
+	ctx, scope := artifactToolContext()
+	_, err := runtime.executeManageArtifact(ctx, scope, "managed-renderer-missing", map[string]any{"action": "create", "filename": "intro.html", "media_type": "text/html", "content": html, "animation_profile": map[string]any{"profile": "motion_ui"}})
+	if err == nil || !strings.Contains(err.Error(), "animation_renderer_unavailable") || authority.variant.Status != pebblestore.SessionArtifactStatusFailed || authority.variant.FailureCode != "animation_renderer_unavailable" {
+		t.Fatalf("renderer-unavailable publication: err=%v variant=%+v", err, authority.variant)
+	}
+}
+
+func TestNonHTMLProfiledPublicationDoesNotRequireAnimationRenderer(t *testing.T) {
+	authority := &fakeArtifactAuthority{}
+	runtime := NewRuntime(1)
+	runtime.SetArtifactAuthority(authority)
+	ctx, scope := artifactToolContext()
+	output, err := runtime.executeManageArtifact(ctx, scope, "profiled-css", map[string]any{"action": "create", "filename": "motion.css", "media_type": "text/css", "content": "@keyframes fade{}", "animation_profile": map[string]any{"profile": "motion_ui"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if authority.reserveCalls != 0 || authority.createCalls != 1 || strings.Contains(output, "trusted_animation_preflight") {
+		t.Fatalf("non-HTML profiled publication was gated: reserve=%d create=%d output=%s", authority.reserveCalls, authority.createCalls, output)
+	}
+}
+
+func TestManagedAnimationPublicationRequiresManifestAndCanonicalPreview(t *testing.T) {
+	tests := []struct {
+		name       string
+		html       string
+		result     htmlcapture.AnimationResult
+		wantCode   string
+		wantCalled bool
+	}{
+		{name: "manifest", html: `<!doctype html><body></body>`, wantCode: "animation_manifest_missing"},
+		{name: "preview", html: `<!doctype html><script id="swarm-animation-manifest" type="application/json">{"version":"swarm.animation/v1","duration_ms":1000,"fps":30}</script>`, result: htmlcapture.AnimationResult{DurationMS: 1000, FPS: 30, FrameCount: 30, PreviewPNG: testPNGImage()}, wantCode: "animation_png_invalid", wantCalled: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			authority := &fakeArtifactAuthority{}
+			renderer := &fakeHTMLAnimationRenderer{result: tc.result}
+			runtime := NewRuntime(1)
+			runtime.SetArtifactAuthority(authority)
+			runtime.SetHTMLAnimationRenderer(renderer)
+			ctx, scope := artifactToolContext()
+			_, err := runtime.executeManageArtifact(ctx, scope, "managed-invalid-"+tc.name, map[string]any{"action": "create", "filename": "intro.html", "media_type": "text/html", "content": tc.html, "animation_profile": map[string]any{"profile": "motion_ui"}})
+			if err == nil || !strings.Contains(err.Error(), tc.wantCode) || authority.variant.Status != pebblestore.SessionArtifactStatusFailed || authority.createCalls != 0 {
+				t.Fatalf("invalid publication: err=%v variant=%+v create=%d", err, authority.variant, authority.createCalls)
+			}
+			if (renderer.req.Entry != "") != tc.wantCalled {
+				t.Fatalf("renderer called=%v want=%v", renderer.req.Entry != "", tc.wantCalled)
+			}
+		})
+	}
+}
+
+func TestAnimationExportActionsUseActionSpecificExactReferenceValidation(t *testing.T) {
+	authority := &fakeArtifactAuthority{}
+	runtime := NewRuntime(1)
+	runtime.SetArtifactAuthority(authority)
+	runtime.SetHTMLAnimationRenderer(&fakeHTMLAnimationRenderer{})
+	ctx, scope := artifactToolContext()
+	for _, action := range []string{"export_html_animation", "export_html_animation_fallback"} {
+		_, err := runtime.executeManageArtifact(ctx, scope, "exact-"+action, map[string]any{"action": action, "variant_id": "source"})
+		if err == nil || !strings.Contains(err.Error(), action+" requires a complete exact ready HTML reference") {
+			t.Fatalf("%s exact-reference error = %v", action, err)
+		}
 	}
 }
 

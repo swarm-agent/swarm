@@ -17,6 +17,7 @@ import (
 	"swarm/packages/swarmd/internal/uisettings"
 
 	"swarm/packages/swarmd/internal/artifact"
+	"swarm/packages/swarmd/internal/htmlcapture"
 	"swarm/packages/swarmd/internal/identity"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
@@ -28,11 +29,18 @@ func TestManagedCreateInfersHTMLMediaTypeFromFilename(t *testing.T) {
 	ctx, scope := artifactToolContext()
 	source := pebblestore.SessionArtifactSelectionReference{SessionID: "source-session", CollectionID: "source-collection", VariantID: "source-variant", EventSeq: 9}
 	ctx = WithArtifactRunContext(ctx, ArtifactRunContext{SessionID: "session-1", ChildSessionID: "session-1", TaskCallID: "task-1", CollectionID: "collection-1", VariantID: "variant-1", SourceArtifact: &source})
-	if _, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, Call{CallID: "managed-create-html", Name: "manage_artifact", Arguments: `{"action":"create","filename":"revision.html","content":"<h1>revision</h1>"}`}); err != nil {
+	output, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, Call{CallID: "managed-create-html", Name: "manage_artifact", Arguments: `{"action":"create","filename":"revision.html","content":"<h1>revision</h1>"}`})
+	if err != nil {
 		t.Fatal(err)
 	}
 	if authority.created.MediaType != "text/html" {
 		t.Fatalf("managed create media type = %q", authority.created.MediaType)
+	}
+	if authority.reserveCalls != 0 {
+		t.Fatalf("unprofiled HTML entered animation preflight gate: %d", authority.reserveCalls)
+	}
+	if strings.Contains(output, "trusted_animation_preflight") {
+		t.Fatalf("unprofiled HTML claimed trusted animation preflight: %s", output)
 	}
 }
 
@@ -40,6 +48,7 @@ func TestManagedPackageProjectsShortAnimationDurationForVideoPlans(t *testing.T)
 	authority := &fakeArtifactAuthority{}
 	runtime := NewRuntime(1)
 	runtime.SetArtifactAuthority(authority)
+	runtime.SetHTMLAnimationRenderer(&fakeHTMLAnimationRenderer{result: htmlcapture.AnimationResult{PreviewPNG: testAnimationFallbackPNG(t), DurationMS: 6000, FPS: 30, FrameCount: 180}})
 	ctx, scope := artifactToolContext()
 	ctx = WithArtifactRunContext(ctx, ArtifactRunContext{SessionID: "session-1", ChildSessionID: "session-1", TaskCallID: "task-1", CollectionID: "collection-1", VariantID: "variant-1", AnimationProfile: reviewedMotionProfile(t)})
 	html := `<!doctype html><script id="swarm-animation-manifest" type="application/json">{"version":"swarm.animation/v1","duration_ms":6000,"fps":30}</script>`
@@ -59,6 +68,7 @@ func TestManagedCreateProjectsShortAnimationDurationForVideoPlans(t *testing.T) 
 	authority := &fakeArtifactAuthority{}
 	runtime := NewRuntime(1)
 	runtime.SetArtifactAuthority(authority)
+	runtime.SetHTMLAnimationRenderer(&fakeHTMLAnimationRenderer{result: htmlcapture.AnimationResult{PreviewPNG: testAnimationFallbackPNG(t), DurationMS: 6000, FPS: 30, FrameCount: 180}})
 	ctx, scope := artifactToolContext()
 	ctx = WithArtifactRunContext(ctx, ArtifactRunContext{SessionID: "session-1", ChildSessionID: "session-1", TaskCallID: "task-1", CollectionID: "collection-1", VariantID: "variant-1", AnimationProfile: reviewedMotionProfile(t)})
 	html := `<!doctype html><script id="swarm-animation-manifest" type="application/json">{"version":"swarm.animation/v1","duration_ms":6000,"fps":30}</script>`
@@ -136,6 +146,10 @@ type fakeArtifactAuthority struct {
 	batchVariants   []pebblestore.SessionArtifactVariant
 	workspaceRoot   string
 	destination     string
+	reserveCalls    int
+	createCalls     int
+	packageCalls    int
+	publishCalls    int
 	overwrite       bool
 	createdFromFile artifact.CreateFileInput
 	catalogOptions  pebblestore.SessionArtifactCatalogOptions
@@ -143,8 +157,12 @@ type fakeArtifactAuthority struct {
 }
 
 func (f *fakeArtifactAuthority) Reserve(principal artifact.Principal, input artifact.CreateInput) (pebblestore.SessionArtifactVariant, error) {
+	f.reserveCalls++
 	f.principal, f.created = principal, input
-	f.variant = pebblestore.SessionArtifactVariant{ID: input.VariantID, CollectionID: input.CollectionID, SessionID: principal.SessionID, EventSeq: 1, Status: pebblestore.SessionArtifactStatusStaging, Filename: input.Filename, MediaType: input.MediaType, Presentation: input.Presentation, OutputRequirements: input.OutputRequirements, AnimationProfile: input.AnimationProfile, Parts: append([]pebblestore.SessionArtifactPart(nil), input.Parts...)}
+	if f.variant.ID == input.VariantID && f.variant.CollectionID == input.CollectionID && (f.variant.Status == pebblestore.SessionArtifactStatusFailed || f.variant.Status == pebblestore.SessionArtifactStatusReady) {
+		return f.variant, nil
+	}
+	f.variant = pebblestore.SessionArtifactVariant{ID: input.VariantID, CollectionID: input.CollectionID, SessionID: principal.SessionID, EventSeq: 1, Status: pebblestore.SessionArtifactStatusStaging, ProjectionReservation: true, Filename: input.Filename, MediaType: input.MediaType, Presentation: input.Presentation, OutputRequirements: input.OutputRequirements, AnimationProfile: input.AnimationProfile, Parts: append([]pebblestore.SessionArtifactPart(nil), input.Parts...)}
 	return f.variant, nil
 }
 
@@ -163,6 +181,7 @@ func (f *fakeArtifactAuthority) MarkFailed(principal artifact.Principal, _ strin
 }
 
 func (f *fakeArtifactAuthority) Create(_ context.Context, principal artifact.Principal, input artifact.CreateInput) (pebblestore.SessionArtifactVariant, error) {
+	f.createCalls++
 	f.principal, f.created = principal, input
 	f.readBody = append([]byte(nil), input.Body...)
 	digest := sha256.Sum256(input.Body)
@@ -182,6 +201,7 @@ func (f *fakeArtifactAuthority) CreateInitialComposition(_ context.Context, prin
 	return f.variant, nil
 }
 func (f *fakeArtifactAuthority) CreatePackage(_ context.Context, principal artifact.Principal, input artifact.CreatePackageInput) (pebblestore.SessionArtifactVariant, error) {
+	f.packageCalls++
 	f.principal, f.packaged = principal, input
 	f.variant = pebblestore.SessionArtifactVariant{ID: input.VariantID, CollectionID: input.CollectionID, SessionID: principal.SessionID, EventSeq: 1, Status: pebblestore.SessionArtifactStatusReady, Filename: input.Filename, MediaType: "application/zip", Size: 1, Presentation: input.Presentation, OutputRequirements: input.OutputRequirements, AnimationProfile: input.AnimationProfile}
 	return f.variant, nil
@@ -243,6 +263,7 @@ func (f *fakeArtifactAuthority) MaterializeBatchReferences(_ context.Context, pr
 	return materialized, variants, nil
 }
 func (f *fakeArtifactAuthority) PublishWorkspace(_ context.Context, principal artifact.Principal, input artifact.CreateFileInput) (pebblestore.SessionArtifactVariant, error) {
+	f.publishCalls++
 	f.principal, f.createdFromFile = principal, input
 	f.variant = pebblestore.SessionArtifactVariant{ID: input.VariantID, CollectionID: input.CollectionID, SessionID: principal.SessionID, EventSeq: 11, Status: pebblestore.SessionArtifactStatusReady, Filename: input.Filename, MediaType: input.MediaType, DigestSHA256: "published-digest", Size: 7, Presentation: input.Presentation, AnimationProfile: input.AnimationProfile, Lineage: pebblestore.SessionArtifactLineage{SourceSessionID: input.SourceSessionID, SourceCollectionID: input.SourceCollectionID, SourceVariantID: input.SourceVariantID, SourceEventSeq: input.SourceEventSeq}}
 	return f.variant, nil
@@ -807,12 +828,15 @@ func TestManageArtifactAnimationProfileCreateContract(t *testing.T) {
 	runtime.SetArtifactAuthority(authority)
 	ctx, scope := artifactToolContext()
 
-	output, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, Call{CallID: "motion", Name: "manage_artifact", Arguments: `{"action":"create","filename":"motion.html","media_type":"text/html","content":"animated","animation_profile":{"profile":"motion_ui"}}`})
+	output, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, Call{CallID: "motion", Name: "manage_artifact", Arguments: `{"action":"create","filename":"motion.css","media_type":"text/css","content":"animated","animation_profile":{"profile":"motion_ui"}}`})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if authority.created.AnimationProfile == nil || authority.created.AnimationProfile.ProfileID != "motion_ui" || authority.created.AnimationProfile.RuntimeKind != "native_css_waapi_svg" || authority.created.AnimationProfile.RuntimePackage != "" || authority.created.AnimationProfile.Budgets.NetworkAllowed || !strings.Contains(output, `"animation_profile"`) {
 		t.Fatalf("created=%#v output=%s", authority.created, output)
+	}
+	if authority.reserveCalls != 0 {
+		t.Fatalf("non-HTML profiled artifact entered animation publication gate: %+v", authority)
 	}
 	if _, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, Call{CallID: "override", Name: "manage_artifact", Arguments: `{"action":"create","filename":"motion.html","media_type":"text/html","content":"animated","animation_profile":{"profile":"motion_ui","runtime_version":"latest"}}`}); err == nil || !strings.Contains(err.Error(), "must contain only profile") {
 		t.Fatalf("animation override error = %v", err)
@@ -841,7 +865,7 @@ func TestManagedArtifactAnimationProfileIsInjectedAndOverrideRejected(t *testing
 	if _, err := runtime.executeManageArtifact(ctx, scope, "override", map[string]any{"action": "create", "filename": "motion.html", "media_type": "text/html", "content": "animated", "animation_profile": map[string]any{"profile": "spatial_3d"}}); err == nil || !strings.Contains(err.Error(), "must omit animation_profile") {
 		t.Fatalf("managed override error = %v", err)
 	}
-	output, err := runtime.executeManageArtifact(ctx, scope, "valid", map[string]any{"action": "create", "filename": "motion.html", "media_type": "text/html", "content": "animated"})
+	output, err := runtime.executeManageArtifact(ctx, scope, "valid", map[string]any{"action": "create", "filename": "motion.css", "media_type": "text/css", "content": "animated"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1136,7 +1160,7 @@ func TestManageArtifactPublishWorkspaceRejectsUnsafePrivateSourcesAndPreservesLi
 
 func TestManageArtifactDeriveTextPreservesUnmatchedBytesAndExactLineage(t *testing.T) {
 	sourceBody := []byte("prefix\nconst duration=74920;\nconst treatment='base';\nsuffix\n")
-	authority := &fakeArtifactAuthority{readBody: sourceBody, variant: pebblestore.SessionArtifactVariant{ID: "source", CollectionID: "source-collection", SessionID: "source-session", EventSeq: 9, Status: pebblestore.SessionArtifactStatusReady, Filename: "intro.html", MediaType: "text/html", AnimationProfile: reviewedMotionProfile(t), OutputRequirements: &pebblestore.SessionArtifactOutputRequirements{PresetID: "landscape_video"}}}
+	authority := &fakeArtifactAuthority{readBody: sourceBody, variant: pebblestore.SessionArtifactVariant{ID: "source", CollectionID: "source-collection", SessionID: "source-session", EventSeq: 9, Status: pebblestore.SessionArtifactStatusReady, Filename: "source.txt", MediaType: "text/plain", OutputRequirements: &pebblestore.SessionArtifactOutputRequirements{PresetID: "landscape_video"}}}
 	runtime := NewRuntime(1)
 	runtime.SetArtifactAuthority(authority)
 	ctx, scope := artifactToolContext()
@@ -1157,7 +1181,7 @@ func TestManageArtifactDeriveTextPreservesUnmatchedBytesAndExactLineage(t *testi
 	if authority.created.SourceSessionID != "source-session" || authority.created.SourceCollectionID != "source-collection" || authority.created.SourceVariantID != "source" || authority.created.SourceEventSeq != 9 {
 		t.Fatalf("derived lineage = %+v", authority.created)
 	}
-	if authority.created.AnimationProfile == nil || authority.created.OutputRequirements == nil {
+	if authority.created.OutputRequirements == nil {
 		t.Fatalf("derived snapshot metadata missing: %+v", authority.created)
 	}
 }
@@ -1180,38 +1204,45 @@ func TestManageArtifactPublishWorkspaceAttachesReviewedAnimationProfileWithoutCh
 	authority := &fakeArtifactAuthority{}
 	runtime := NewRuntime(1)
 	runtime.SetArtifactAuthority(authority)
+	runtime.SetHTMLAnimationRenderer(&fakeHTMLAnimationRenderer{result: htmlcapture.AnimationResult{PreviewPNG: testAnimationFallbackPNG(t), DurationMS: 6000, FPS: 30, FrameCount: 180}})
 	ctx, scope := artifactToolContext()
 	scope.PrimaryPath = t.TempDir()
 	body := []byte(`<!doctype html><script id="swarm-animation-manifest" type="application/json">{"version":"swarm.animation/v1","duration_ms":6000,"fps":30}</script>`)
 	if err := os.WriteFile(filepath.Join(scope.PrimaryPath, "intro.html"), body, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	_, err := runtime.executeManageArtifact(ctx, scope, "publish-profiled", map[string]any{"action": "publish_workspace", "source": "intro.html", "animation_profile": map[string]any{"profile": "motion_ui"}})
+	output, err := runtime.executeManageArtifact(ctx, scope, "publish-profiled", map[string]any{"action": "publish_workspace", "source": "intro.html", "animation_profile": map[string]any{"profile": "motion_ui"}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if authority.createdFromFile.AnimationProfile == nil || authority.createdFromFile.AnimationProfile.ProfileID != "motion_ui" || authority.createdFromFile.SourcePath != filepath.Join(scope.PrimaryPath, "intro.html") {
-		t.Fatalf("profiled workspace publication = %#v", authority.createdFromFile)
+	if !strings.Contains(output, `"trusted_animation_preflight":true`) {
+		t.Fatalf("profiled workspace publication omitted trusted preflight evidence: %s", output)
 	}
-	if len(authority.createdFromFile.Parts) != 1 || authority.createdFromFile.Parts[0].Kind != "temporal" || authority.createdFromFile.Parts[0].EndMs != 6000 {
-		t.Fatalf("profiled workspace animation parts = %+v, want canonical 6000ms duration metadata", authority.createdFromFile.Parts)
+	if authority.created.AnimationProfile == nil || authority.created.AnimationProfile.ProfileID != "motion_ui" || authority.created.Body == nil || authority.publishCalls != 0 || authority.createCalls != 1 {
+		t.Fatalf("profiled workspace publication = create=%#v file=%#v", authority.created, authority.createdFromFile)
+	}
+	if string(authority.created.Body) != string(body) {
+		t.Fatalf("profiled workspace source bytes changed")
+	}
+	if len(authority.created.Parts) != 1 || authority.created.Parts[0].Kind != "temporal" || authority.created.Parts[0].EndMs != 6000 {
+		t.Fatalf("profiled workspace animation parts = %+v, want canonical 6000ms duration metadata", authority.created.Parts)
 	}
 }
 
 func TestManageArtifactPublishWorkspaceInheritsOnlyAuthenticatedAnimationProfile(t *testing.T) {
-	authority := &fakeArtifactAuthority{variant: pebblestore.SessionArtifactVariant{ID: "source-variant", CollectionID: "source-collection", SessionID: "source-session", EventSeq: 42, Status: pebblestore.SessionArtifactStatusReady, MediaType: "text/html", AnimationProfile: reviewedMotionProfile(t)}}
+	authority := &fakeArtifactAuthority{variant: pebblestore.SessionArtifactVariant{ID: "source-variant", CollectionID: "source-collection", SessionID: "source-session", EventSeq: 42, Status: pebblestore.SessionArtifactStatusReady, MediaType: "text/css", AnimationProfile: reviewedMotionProfile(t)}}
 	runtime := NewRuntime(1)
 	runtime.SetArtifactAuthority(authority)
 	ctx, scope := artifactToolContext()
 	scope.PrimaryPath = t.TempDir()
-	if err := os.WriteFile(filepath.Join(scope.PrimaryPath, "motion.html"), []byte("motion"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(scope.PrimaryPath, "motion.css"), []byte("motion"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	args := map[string]any{"action": "publish_workspace", "source": "motion.html", "source_session_id": "source-session", "source_collection_id": "source-collection", "source_variant_id": "source-variant", "source_event_seq": 42}
+	args := map[string]any{"action": "publish_workspace", "source": "motion.css", "source_session_id": "source-session", "source_collection_id": "source-collection", "source_variant_id": "source-variant", "source_event_seq": 42}
 	if _, err := runtime.executeManageArtifact(ctx, scope, "publish-motion", args); err != nil {
 		t.Fatal(err)
 	}
-	if authority.createdFromFile.AnimationProfile == nil || authority.createdFromFile.AnimationProfile.ProfileID != "motion_ui" || authority.reference.EventSeq != 42 {
+	if authority.createdFromFile.AnimationProfile == nil || authority.createdFromFile.AnimationProfile.ProfileID != "motion_ui" || authority.reference.EventSeq != 42 || authority.reserveCalls != 0 || authority.publishCalls != 1 {
 		t.Fatalf("workspace profile inheritance = %#v ref=%#v", authority.createdFromFile.AnimationProfile, authority.reference)
 	}
 	badProfile := *reviewedMotionProfile(t)

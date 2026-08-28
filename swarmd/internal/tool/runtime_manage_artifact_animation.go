@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image/png"
 	"regexp"
 	"strings"
 	"sync"
@@ -46,7 +47,7 @@ type animationExportPrepared struct {
 // exportHTMLAnimation validates and durably reserves long exports before
 // returning. Small exports retain the synchronous behavior for fast feedback.
 func (r *Runtime) exportHTMLAnimation(ctx context.Context, principal artifact.Principal, callID string, args map[string]any) (pebblestore.SessionArtifactVariant, pebblestore.SessionArtifactSelectionReference, *pebblestore.SessionArtifactOutputRequirements, error) {
-	prepared, err := r.prepareHTMLAnimationExport(ctx, principal, callID, args)
+	prepared, err := r.prepareHTMLAnimationExport(ctx, principal, callID, "export_html_animation", args)
 	if err != nil {
 		return pebblestore.SessionArtifactVariant{}, prepared.SourceRef, prepared.Requirements, err
 	}
@@ -85,7 +86,7 @@ func (r *Runtime) exportHTMLAnimation(ctx context.Context, principal artifact.Pr
 }
 
 func (r *Runtime) exportHTMLAnimationFallback(ctx context.Context, principal artifact.Principal, callID string, args map[string]any) (pebblestore.SessionArtifactVariant, pebblestore.SessionArtifactSelectionReference, *pebblestore.SessionArtifactOutputRequirements, error) {
-	prepared, err := r.prepareHTMLAnimationExport(ctx, principal, callID, args)
+	prepared, err := r.prepareHTMLAnimationExport(ctx, principal, callID, "export_html_animation_fallback", args)
 	if err != nil {
 		return pebblestore.SessionArtifactVariant{}, prepared.SourceRef, prepared.Requirements, err
 	}
@@ -116,8 +117,11 @@ func (r *Runtime) exportHTMLAnimationFallback(ctx context.Context, principal art
 	return published, prepared.SourceRef, prepared.Requirements, nil
 }
 
-func (r *Runtime) prepareHTMLAnimationExport(ctx context.Context, principal artifact.Principal, callID string, args map[string]any) (animationExportPrepared, error) {
+func (r *Runtime) prepareHTMLAnimationExport(ctx context.Context, principal artifact.Principal, callID, actionName string, args map[string]any) (animationExportPrepared, error) {
 	prepared := animationExportPrepared{}
+	if err := validateArtifactRetrievalIdentity(args, actionName, true); err != nil {
+		return prepared, animationError("animation_source_reference_invalid", fmt.Sprintf("%s requires a complete exact ready HTML reference", actionName))
+	}
 	for key := range args {
 		switch key {
 		case "action", "session_id", "collection_id", "variant_id", "event_seq":
@@ -127,9 +131,6 @@ func (r *Runtime) prepareHTMLAnimationExport(ctx context.Context, principal arti
 	}
 	if r.htmlAnimationCapture == nil {
 		return prepared, animationError("animation_renderer_unavailable", "trusted HTML animation renderer is not configured")
-	}
-	if err := validateArtifactRetrievalIdentity(args, "export_html_animation", true); err != nil {
-		return prepared, animationError("animation_source_reference_invalid", "complete exact ready HTML reference is required")
 	}
 	ref, explicit, err := parseArtifactReadReference(args, strings.TrimSpace(asString(args["variant_id"])))
 	prepared.SourceRef = ref
@@ -304,6 +305,104 @@ func (r *Runtime) cancelHTMLAnimationExport(principal artifact.Principal, callID
 	return failed, nil
 }
 
+// reserveAndPreflightManagedAnimation prevents a profiled HTML animation from
+// becoming ready until the trusted renderer has verified its bootstrap binding,
+// exact timeline acknowledgements, stable representative pixels, and viewport
+// containment. The durable reservation is terminally failed with the renderer's
+// bounded code so a retry must use a fresh tool-call identity rather than replay
+// the failed reference.
+func (r *Runtime) reserveAndPreflightManagedAnimation(ctx context.Context, principal artifact.Principal, input artifact.CreateInput, entries []artifact.PackageEntry, packageArtifact bool) (bool, error) {
+	files, entry, manifest, gated, err := managedAnimationPublicationSource(input, entries, packageArtifact)
+	if !gated {
+		return false, nil
+	}
+	if strings.TrimSpace(input.RequestID) == "" || strings.TrimSpace(input.CollectionID) == "" || strings.TrimSpace(input.VariantID) == "" {
+		return true, animationError("animation_publish_failed", "profiled HTML animation requires trusted request, collection, and variant identities before preflight")
+	}
+	if r.artifactAuthority == nil {
+		return true, animationError("animation_publish_failed", "managed artifact authority is unavailable for profiled HTML animation preflight")
+	}
+	input.Body = nil
+	reserved, reserveErr := r.artifactAuthority.Reserve(principal, input)
+	if reserveErr != nil {
+		return true, animationError("animation_publish_failed", "profiled HTML animation could not be durably reserved for trusted preflight")
+	}
+	if reserved.Status != pebblestore.SessionArtifactStatusStaging || !reserved.ProjectionReservation {
+		return true, animationError("animation_publication_conflict", "profiled HTML animation publication already reached a terminal state; retry with a fresh tool call")
+	}
+	if err == nil && r.htmlAnimationCapture == nil {
+		err = htmlcapture.NewError("animation_renderer_unavailable", "trusted HTML animation renderer is not configured")
+	}
+	if err == nil {
+		result, preflightErr := r.htmlAnimationCapture.PreflightAnimation(ctx, htmlcapture.AnimationRequest{Entry: entry, Files: files, DurationMS: manifest.DurationMS, FPS: manifest.FPS})
+		if preflightErr != nil {
+			err = normalizeAnimationRendererError(preflightErr)
+		} else if result.DurationMS != manifest.DurationMS || result.FPS != manifest.FPS || result.FrameCount != (manifest.DurationMS*manifest.FPS+999)/1000 {
+			err = animationError("animation_renderer_failed", "trusted animation preflight returned inconsistent deterministic timeline metadata")
+		} else if previewErr := validateAnimationPreviewPNG(result.PreviewPNG); previewErr != nil {
+			err = previewErr
+		}
+	}
+	if err != nil {
+		code := animationFailureCode(err)
+		if _, markErr := r.artifactAuthority.MarkFailed(principal, input.RequestID+":terminal:"+code, input.CollectionID, input.VariantID, code); markErr != nil {
+			return true, animationError("animation_publish_failed", "profiled HTML animation failed trusted preflight and its terminal failure could not be persisted")
+		}
+		return true, err
+	}
+	return true, nil
+}
+
+func managedHTMLAnimationProfile(profile *pebblestore.SessionArtifactAnimationProfile) bool {
+	if profile == nil {
+		return false
+	}
+	switch profile.ProfileID {
+	case "motion_ui", "spatial_3d", "vector_playback":
+		return true
+	default:
+		return false
+	}
+}
+
+func managedAnimationPublicationSource(input artifact.CreateInput, entries []artifact.PackageEntry, packageArtifact bool) (map[string][]byte, string, animationManifest, bool, error) {
+	if !managedHTMLAnimationProfile(input.AnimationProfile) {
+		return nil, "", animationManifest{}, false, nil
+	}
+	files := make(map[string][]byte)
+	entry := "index.html"
+	if packageArtifact {
+		for _, candidate := range entries {
+			name := pathClean(candidate.Name)
+			if name == "" || name != candidate.Name {
+				return nil, entry, animationManifest{}, true, animationError("animation_source_invalid", "profiled HTML animation package contains a non-canonical entry")
+			}
+			files[name] = append([]byte(nil), candidate.Data...)
+		}
+		if _, ok := files[entry]; !ok {
+			return files, entry, animationManifest{}, true, animationError("animation_manifest_missing", "profiled HTML animation package requires index.html with the canonical animation manifest")
+		}
+	} else {
+		if canonicalArtifactMediaType(input.MediaType) != "text/html" {
+			return nil, "", animationManifest{}, false, nil
+		}
+		files[entry] = append([]byte(nil), input.Body...)
+	}
+	manifest, err := parseAnimationManifest(files[entry])
+	return files, entry, manifest, true, err
+}
+
+func validateAnimationPreviewPNG(data []byte) error {
+	if len(data) == 0 || len(data) > manageArtifactMaxImageReadBytes {
+		return animationError("animation_png_invalid", "trusted animation preflight did not produce a bounded preview frame")
+	}
+	config, err := png.DecodeConfig(bytes.NewReader(data))
+	if err != nil || config.Width != htmlcapture.Width || config.Height != htmlcapture.Height {
+		return animationError("animation_png_invalid", "trusted animation preflight did not produce the canonical 1920x1080 preview frame")
+	}
+	return nil
+}
+
 func parseAnimationManifest(html []byte) (animationManifest, error) {
 	scripts := captureScriptPattern.FindAllSubmatch(html, -1)
 	manifests := make([][]byte, 0, 1)
@@ -370,9 +469,50 @@ func validateAnimationMP4(data []byte) error {
 func normalizeAnimationRendererError(err error) error {
 	var animationErr *htmlcapture.Error
 	if errors.As(err, &animationErr) {
-		return animationError(animationErr.Code, animationErr.SafeMessage)
+		code := animationErr.Code
+		if !strings.HasPrefix(code, "animation_") {
+			code = "animation_renderer_failed"
+		}
+		return animationError(code, animationRendererSafeMessage(code))
 	}
 	return animationError("animation_renderer_failed", "trusted HTML animation capture failed")
+}
+
+func animationRendererSafeMessage(code string) string {
+	switch code {
+	case "animation_renderer_unavailable", "animation_encoder_unavailable":
+		return "trusted HTML animation renderer is unavailable"
+	case "animation_renderer_failed":
+		return "trusted HTML animation capture failed"
+	case "animation_source_limit_exceeded":
+		return "animation request exceeds fixed renderer bounds"
+	case "animation_bootstrap_missing":
+		return "trusted animation bootstrap is missing or invalid"
+	case "animation_runtime_missing_before_dom_content_loaded":
+		return "animation runtime did not bind before DOMContentLoaded"
+	case "animation_bind_timeout":
+		return "animation runtime binding exceeded the fixed deadline"
+	case "animation_not_ready":
+		return "animation runtime did not become ready"
+	case "animation_manifest_mismatch":
+		return "animation runtime acknowledgement does not match the manifest"
+	case "animation_seek_failed":
+		return "animation runtime did not acknowledge the exact renderer-controlled timestamp"
+	case "animation_frame_unstable":
+		return "animation pixels changed after the renderer selected a deterministic timestamp"
+	case "animation_viewport_overflow":
+		return "animation content escapes the canonical viewport"
+	case "animation_network_blocked":
+		return "animation document attempted a prohibited network request"
+	case "animation_blocked":
+		return "animation document contains visible blocking UI"
+	case "animation_timeout":
+		return "animation runtime exceeded a fixed renderer deadline"
+	case "animation_png_invalid":
+		return "animation renderer returned an invalid PNG frame"
+	default:
+		return "trusted HTML animation capture failed"
+	}
 }
 
 func animationFailureCode(err error) string {
@@ -406,5 +546,5 @@ func normalizeAnimationSourceError(err error) error {
 }
 
 func animationError(code, message string) error {
-	return fmt.Errorf("manage_artifact export_html_animation failed (code=%s): %s", code, message)
+	return fmt.Errorf("manage_artifact HTML animation failed (code=%s): %s", code, message)
 }
