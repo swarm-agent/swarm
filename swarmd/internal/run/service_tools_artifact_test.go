@@ -138,6 +138,16 @@ func TestValidateManagedAnimatedDesignerInspectionEvidenceRequiresThreeToolsAndF
 	if err := validateManagedAnimatedDesignerInspectionEvidence(outcome, strings.Replace(report, "frame=middle status=pass", "frame=middle status=fail", 1)); err == nil || !strings.Contains(err.Error(), "middle") {
 		t.Fatalf("failed middle frame error = %v", err)
 	}
+	for _, malformed := range []string{
+		strings.Replace(report, "evidence=clean", "evidence=", 1),
+		strings.Replace(report, "frame=start status=pass", "frame=startup status=pass", 1),
+		strings.Replace(report, "status=pass checks=", "status=pass status=pass checks=", 1),
+		strings.Replace(report, "checks=clipping/overflow", "checks=brief fidelity; clipping/overflow", 1),
+	} {
+		if err := validateManagedAnimatedDesignerInspectionEvidence(outcome, malformed); err == nil {
+			t.Fatalf("malformed inspection record accepted: %q", malformed)
+		}
+	}
 }
 
 func TestManagedStaticDesignerPromptDoesNotRequireAnimationInspection(t *testing.T) {

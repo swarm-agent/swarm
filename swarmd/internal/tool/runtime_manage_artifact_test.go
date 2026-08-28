@@ -723,6 +723,45 @@ func TestManageArtifactCreateDerivesHTMLReviewTargetsWithoutMultipartPayloads(t 
 	}
 }
 
+func TestManagedProfiledHTMLRejectsInitialPartsThatBypassTrustedPreflight(t *testing.T) {
+	authority := &fakeArtifactAuthority{}
+	runtime := NewRuntime(1)
+	runtime.SetArtifactAuthority(authority)
+	ctx, scope := artifactToolContext()
+	ctx = WithArtifactRunContext(ctx, ArtifactRunContext{SessionID: "session-1", ChildSessionID: "session-1", TaskCallID: "task-1", CollectionID: "collection-1", VariantID: "variant-1", AnimationProfile: reviewedMotionProfile(t)})
+	_, err := runtime.executeManageArtifact(ctx, scope, "profiled-initial-parts", map[string]any{
+		"action": "create", "filename": "composed.html", "media_type": "text/html",
+		"initial_parts": []any{
+			map[string]any{"id": "shell", "label": "Shell", "media_type": "text/html", "content": `<!doctype html><script id="swarm-animation-manifest" type="application/json">{"version":"swarm.animation/v1","duration_ms":1000,"fps":30}</script>`},
+			map[string]any{"id": "runtime", "label": "Runtime", "media_type": "text/javascript", "content": "const animated = true;"},
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "animation_source_invalid") {
+		t.Fatalf("profiled initial_parts error = %v", err)
+	}
+	if authority.reserveCalls != 0 || authority.createCalls != 0 || len(authority.initial.Parts) != 0 {
+		t.Fatalf("profiled initial_parts bypassed preflight: reserve=%d create=%d initial=%#v", authority.reserveCalls, authority.createCalls, authority.initial)
+	}
+}
+
+func TestProfiledNonHTMLInitialPartsRemainSupported(t *testing.T) {
+	authority := &fakeArtifactAuthority{}
+	runtime := NewRuntime(1)
+	runtime.SetArtifactAuthority(authority)
+	ctx, scope := artifactToolContext()
+	ctx = WithArtifactRunContext(ctx, ArtifactRunContext{SessionID: "session-1", ChildSessionID: "session-1", TaskCallID: "task-1", CollectionID: "collection-1", VariantID: "variant-1", AnimationProfile: reviewedMotionProfile(t)})
+	_, err := runtime.executeManageArtifact(ctx, scope, "profiled-text-parts", map[string]any{
+		"action": "create", "filename": "composed.txt", "media_type": "text/plain",
+		"initial_parts": []any{
+			map[string]any{"id": "first", "label": "First", "media_type": "text/plain", "content": "first"},
+			map[string]any{"id": "second", "label": "Second", "media_type": "text/plain", "content": "second"},
+		},
+	})
+	if err != nil || len(authority.initial.Parts) != 2 || authority.reserveCalls != 0 {
+		t.Fatalf("profiled non-HTML initial_parts: err=%v reserve=%d initial=%#v", err, authority.reserveCalls, authority.initial)
+	}
+}
+
 func TestManageArtifactCreateInitialPartsUsesAuthoritativeCompositionContract(t *testing.T) {
 	authority := &fakeArtifactAuthority{}
 	runtime := NewRuntime(1)

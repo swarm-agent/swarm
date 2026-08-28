@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/chromedp/cdproto/browser"
 	"github.com/chromedp/cdproto/cdp"
@@ -633,9 +634,60 @@ func boundedAnimationDiagnostics(groups ...[]AnimationDiagnostic) []AnimationDia
 		if len(group) > remaining {
 			group = group[:remaining]
 		}
-		result = append(result, group...)
+		for _, diagnostic := range group {
+			result = append(result, sanitizeAnimationDiagnostic(diagnostic))
+		}
 	}
 	return result
+}
+
+func sanitizeAnimationDiagnostic(diagnostic AnimationDiagnostic) AnimationDiagnostic {
+	stage := diagnostic.Stage
+	switch stage {
+	case "readiness", "seek", "viewport", "stability":
+	default:
+		stage = "renderer"
+	}
+	outcome := diagnostic.Outcome
+	if len(outcome) == 0 || len(outcome) > 48 {
+		outcome = "invalid_outcome"
+	}
+	lifecycle := diagnostic.Lifecycle
+	if len(lifecycle) > 8 {
+		lifecycle = lifecycle[:8]
+	}
+	filteredLifecycle := make([]string, 0, len(lifecycle))
+	for _, item := range lifecycle {
+		switch item {
+		case "bind_claimed", "duplicate_bind", "bound", "invalid", "bind_rejected", "bind_timeout", "missing_before_dom_content_loaded":
+			filteredLifecycle = append(filteredLifecycle, item)
+		default:
+			filteredLifecycle = append(filteredLifecycle, "invalid")
+		}
+	}
+	audit := animationAudit{
+		Outcome:       outcome,
+		Selector:      diagnostic.Selector,
+		Pseudo:        diagnostic.Pseudo,
+		Bounds:        diagnostic.Bounds,
+		Lifecycle:     filteredLifecycle,
+		ScanTruncated: diagnostic.ScanTruncated,
+	}
+	return diagnosticFromAudit(stage, diagnostic.TimestampMS, audit)
+}
+
+func truncateAnimationDiagnosticUTF8(value string, maxBytes int) string {
+	if maxBytes <= 0 {
+		return ""
+	}
+	for len(value) > maxBytes {
+		_, size := utf8.DecodeLastRuneInString(value)
+		if size <= 0 {
+			return ""
+		}
+		value = value[:len(value)-size]
+	}
+	return value
 }
 
 func diagnosticFromAudit(stage string, timestampMS *int, audit animationAudit) AnimationDiagnostic {
@@ -662,7 +714,7 @@ func diagnosticFromAudit(stage string, timestampMS *int, audit animationAudit) A
 		return r
 	}, audit.Selector)
 	if len(selector) > maxAnimationSelectorBytes {
-		selector = selector[:maxAnimationSelectorBytes]
+		selector = truncateAnimationDiagnosticUTF8(selector, maxAnimationSelectorBytes)
 	}
 	pseudo := audit.Pseudo
 	if pseudo != "" && pseudo != "::before" && pseudo != "::after" {

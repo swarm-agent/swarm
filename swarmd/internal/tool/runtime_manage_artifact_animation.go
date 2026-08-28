@@ -516,6 +516,9 @@ func animationRendererSafeMessage(code string) string {
 }
 
 func animationFailureCode(err error) string {
+	if err == nil {
+		return "animation_renderer_failed"
+	}
 	message := err.Error()
 	const marker = "(code="
 	start := strings.Index(message, marker)

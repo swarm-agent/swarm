@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func TestValidateAnimationRequestBounds(t *testing.T) {
@@ -65,6 +66,15 @@ func TestBoundedAnimationDiagnostics(t *testing.T) {
 	diagnostic := diagnosticFromAudit("invalid-stage", nil, animationAudit{Code: "ok", Outcome: strings.Repeat("x", 49), Selector: longSelector, Pseudo: "::invalid", Bounds: &AnimationBounds{Left: nan}})
 	if len(diagnostic.Selector) != maxAnimationSelectorBytes || strings.ContainsRune(diagnostic.Selector, '\x00') || diagnostic.Pseudo != "" || diagnostic.Stage != "renderer" || diagnostic.Outcome != "invalid_outcome" || diagnostic.Bounds != nil {
 		t.Fatalf("diagnostic sanitization = %+v", diagnostic)
+	}
+	unicodeDiagnostic := diagnosticFromAudit("viewport", nil, animationAudit{Code: "ok", Outcome: "viewport_contained", Selector: strings.Repeat("界", maxAnimationSelectorBytes)})
+	if len(unicodeDiagnostic.Selector) > maxAnimationSelectorBytes || !utf8.ValidString(unicodeDiagnostic.Selector) {
+		t.Fatalf("diagnostic selector is not bounded valid UTF-8: %q", unicodeDiagnostic.Selector)
+	}
+	raw := AnimationDiagnostic{Stage: "private-stage", Outcome: strings.Repeat("o", 64), Selector: longSelector, Pseudo: "::private", Bounds: &AnimationBounds{Left: nan}, Lifecycle: []string{"bind_claimed", "bound", "private/path", "secret", "overflow", "six", "seven", "eight", "nine"}}
+	bounded := boundedAnimationDiagnostics([]AnimationDiagnostic{raw})
+	if len(bounded) != 1 || bounded[0].Stage != "renderer" || bounded[0].Outcome != "invalid_outcome" || len(bounded[0].Selector) != maxAnimationSelectorBytes || strings.ContainsRune(bounded[0].Selector, '\x00') || bounded[0].Pseudo != "" || bounded[0].Bounds != nil || len(bounded[0].Lifecycle) != 8 || strings.Contains(strings.Join(bounded[0].Lifecycle, ","), "private") || strings.Contains(strings.Join(bounded[0].Lifecycle, ","), "secret") {
+		t.Fatalf("raw diagnostic bypassed sanitization: %+v", bounded)
 	}
 }
 

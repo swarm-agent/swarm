@@ -516,6 +516,9 @@ func (r *Runtime) executeManageArtifact(ctx context.Context, scope WorkspaceScop
 		if err != nil {
 			return "", err
 		}
+		if len(initialParts) != 0 && managedHTMLAnimationProfile(input.AnimationProfile) && canonicalArtifactMediaType(input.MediaType) == "text/html" {
+			return "", animationError("animation_source_invalid", "profiled HTML animation must publish one complete preflightable HTML document or package")
+		}
 		var variant pebblestore.SessionArtifactVariant
 		gatedAnimation := false
 		if len(initialParts) == 0 {

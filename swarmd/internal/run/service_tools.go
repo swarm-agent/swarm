@@ -5404,22 +5404,13 @@ func validateManagedAnimatedDesignerInspectionEvidence(outcome taskLaunchOutcome
 		"brief fidelity",
 	}
 	frames := map[string]bool{"start": false, "middle": false, "exit": false}
-	for _, line := range strings.Split(strings.ToLower(report), "\n") {
+	for _, line := range strings.Split(report, "\n") {
 		line = strings.TrimSpace(line)
 		for frame := range frames {
-			if !strings.Contains(line, "animation_inspection") || !strings.Contains(line, "frame="+frame) || !strings.Contains(line, "status=pass") {
+			if !validManagedAnimationInspectionRecord(line, frame, requiredChecks) {
 				continue
 			}
-			complete := true
-			for _, check := range requiredChecks {
-				if !strings.Contains(line, check) {
-					complete = false
-					break
-				}
-			}
-			if complete {
-				frames[frame] = true
-			}
+			frames[frame] = true
 		}
 	}
 	missing := make([]string, 0, len(frames))
@@ -5432,6 +5423,28 @@ func validateManagedAnimatedDesignerInspectionEvidence(outcome taskLaunchOutcome
 		return fmt.Errorf("managed animated Designer inspection evidence is missing passing compact frame record(s): %s", strings.Join(missing, ", "))
 	}
 	return nil
+}
+
+func validManagedAnimationInspectionRecord(line, frame string, requiredChecks []string) bool {
+	line = strings.ToLower(strings.TrimSpace(line))
+	prefix := "animation_inspection frame=" + frame + " status=pass checks="
+	if !strings.HasPrefix(line, prefix) {
+		return false
+	}
+	checksValue, evidence, ok := strings.Cut(strings.TrimPrefix(line, prefix), " evidence=")
+	if !ok || strings.TrimSpace(evidence) == "" || strings.Contains(evidence, " evidence=") {
+		return false
+	}
+	checks := strings.Split(checksValue, ";")
+	if len(checks) != len(requiredChecks) {
+		return false
+	}
+	for index, required := range requiredChecks {
+		if strings.TrimSpace(checks[index]) != required {
+			return false
+		}
+	}
+	return true
 }
 
 func collectTaskReadyArtifactReferences(outcomes []taskLaunchOutcome, runErrs []error) []*taskArtifactReference {

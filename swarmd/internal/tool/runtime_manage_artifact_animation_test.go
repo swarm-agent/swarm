@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"image"
 	"image/color"
 	"image/png"
@@ -207,6 +208,24 @@ func TestExportHTMLAnimationPreflightsBeforeQueuingAndPreservesFailureCode(t *te
 	runtime.runHTMLAnimationExport(context.Background(), artifact.Principal{SessionID: "source-session"}, prepared, "render-variant")
 	if authority.variant.Status != pebblestore.SessionArtifactStatusFailed || authority.variant.FailureCode != "animation_frame_unstable" {
 		t.Fatalf("background failure = %+v", authority.variant)
+	}
+}
+
+func TestManagedAnimationFailureCodeExtractionIsBoundedAndRejectsSuffixInjection(t *testing.T) {
+	cases := []struct {
+		err  error
+		want string
+	}{
+		{err: nil, want: "animation_renderer_failed"},
+		{err: animationError("animation_seek_failed", "safe"), want: "animation_seek_failed"},
+		{err: errors.New("manage_artifact HTML animation failed (code=animation_seek_failed private): unsafe"), want: "animation_renderer_failed"},
+		{err: errors.New("manage_artifact HTML animation failed (code=animation_seek_failed/../../private): unsafe"), want: "animation_renderer_failed"},
+		{err: errors.New("private animation_seek_failed text"), want: "animation_renderer_failed"},
+	}
+	for _, tc := range cases {
+		if got := animationFailureCode(tc.err); got != tc.want {
+			t.Fatalf("animationFailureCode(%v) = %q, want %q", tc.err, got, tc.want)
+		}
 	}
 }
 
