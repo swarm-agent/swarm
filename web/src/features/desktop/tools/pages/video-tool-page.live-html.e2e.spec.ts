@@ -101,12 +101,13 @@ test('testbench Video Studio preserves mixed HTML playback across revisions', { 
     headless: true,
     executablePath: process.env.PLAYWRIGHT_BROWSER_EXECUTABLE || undefined,
   })
-  const page = await browser.newPage({ viewport: { width: 1600, height: 1000 } })
+  const page = await browser.newPage({ viewport: { width: 1920, height: 1080 } })
   const errors: string[] = []
   page.on('pageerror', (error) => errors.push(error.message))
   page.on('console', (message) => { if (message.type() === 'error') errors.push(message.text()) })
   try {
-    await page.goto(`${DESKTOP_URL}/${encodeURIComponent(WORKSPACE_SLUG)}/video/${encodeURIComponent(SESSION_ID)}`, { waitUntil: 'networkidle', timeout: 30_000 })
+    await page.goto(`${DESKTOP_URL}/${encodeURIComponent(WORKSPACE_SLUG)}/studio/${encodeURIComponent(SESSION_ID)}`, { waitUntil: 'networkidle', timeout: 30_000 })
+    assert.equal(new URL(page.url()).pathname, `/${encodeURIComponent(WORKSPACE_SLUG)}/studio/${encodeURIComponent(SESSION_ID)}`)
     await page.getByLabel('Selected video project').selectOption(PROJECT_ID)
     const revisionNavigation = page.getByLabel('Video revision navigation')
     await revisionNavigation.waitFor({ state: 'visible', timeout: 30_000 })
@@ -126,6 +127,14 @@ test('testbench Video Studio preserves mixed HTML playback across revisions', { 
 
     const pendingBadge = page.getByText(/Pending turn changes · working r/i)
     await pendingBadge.waitFor({ state: 'visible', timeout: 20_000 })
+    const pendingConfirmation = page.getByLabel('Pending video confirmation')
+    await pendingConfirmation.waitFor({ state: 'visible', timeout: 20_000 })
+    await pendingConfirmation.getByRole('button', { name: /Confirm|Choose HTML motion|Assign composition|Finish storyboard/i }).waitFor({ state: 'visible' })
+    const renderButton = page.getByRole('button', { name: 'Confirm pending changes to render' })
+    assert.equal(await renderButton.isDisabled(), true)
+    const viewport = page.locator('[data-video-studio-player-viewport]')
+    const viewportBox = await viewport.boundingBox()
+    assert(viewportBox && Math.abs(viewportBox.width / viewportBox.height - 1920 / 1080) < 0.02, `1920x1080 routed player deformed: ${JSON.stringify(viewportBox)}`)
     const timelineLabels = await page.locator('button').filter({ hasText: /00:00 –|00:12 –/ }).allTextContents()
     assert(timelineLabels.length >= 2, `expected mixed timeline clips, got ${timelineLabels.join(' | ')}`)
 

@@ -380,7 +380,7 @@ test('Video Studio preserves exact identities through four mixed-media iteration
   assert(Number.isFinite(TIMEOUT_MS) && TIMEOUT_MS >= 60_000, 'SWARM_VIDEO_STUDIO_TIMEOUT_MS must be at least 60000')
 
   const browser = await chromium.launch({ headless: true, executablePath: process.env.PLAYWRIGHT_BROWSER_EXECUTABLE || undefined })
-  const page = await browser.newPage({ viewport: { width: 1600, height: 1000 } })
+  const page = await browser.newPage({ viewport: { width: 1920, height: 1080 } })
   const browserErrors: string[] = []
   page.on('pageerror', (error) => browserErrors.push(error.message))
   page.on('console', (message) => { if (message.type() === 'error') browserErrors.push(message.text()) })
@@ -400,8 +400,11 @@ test('Video Studio preserves exact identities through four mixed-media iteration
     const createdProject = await waitForProject(page, beforeProjectIDs)
     const projectID = String(createdProject?.id || '').trim()
     assert(projectID, 'first AI turn created no Video Studio project')
-    await page.goto(`${DESKTOP_URL}/${encodeURIComponent(WORKSPACE_SLUG)}/video/${encodeURIComponent(SESSION_ID)}`, { waitUntil: 'networkidle', timeout: 30_000 })
+    await page.goto(`${DESKTOP_URL}/${encodeURIComponent(WORKSPACE_SLUG)}/studio/${encodeURIComponent(SESSION_ID)}`, { waitUntil: 'networkidle', timeout: 30_000 })
+    assert.equal(new URL(page.url()).pathname, `/${encodeURIComponent(WORKSPACE_SLUG)}/studio/${encodeURIComponent(SESSION_ID)}`)
     await page.getByLabel('Selected video project').selectOption(projectID)
+    const playerViewport = await page.locator('[data-video-studio-player-viewport]').boundingBox()
+    assert(playerViewport && Math.abs(playerViewport.width / playerViewport.height - 1920 / 1080) < 0.02, `1920x1080 routed player deformed: ${JSON.stringify(playerViewport)}`)
 
     const initial = await waitForProposal(page, projectID, (proposal) => proposal.status === 'pending' && parts(proposal).length === 2 && parts(proposal).every((part) => candidateCount(part) >= 2), 'initial two-clip iterated proposal')
     const initialParts = parts(initial)
@@ -420,7 +423,8 @@ test('Video Studio preserves exact identities through four mixed-media iteration
       if (response.request().method() !== 'POST') return false
       try { return new URL(response.url()).pathname === `/v3/sessions/${SESSION_ID}/video/projects/${projectID}/edit-proposals/${initial.id}/animation-candidate-select` } catch { return false }
     }, { timeout: 30_000 })
-    const secondCandidates = page.getByLabel(`${String(secondPart.title || partID(secondPart))} animation sources`).getByRole('button')
+    const secondClipCard = page.getByLabel(`Working clip 2: ${String(secondPart.title || partID(secondPart))}`)
+    const secondCandidates = secondClipCard.getByRole('button', { name: 'Lock in this variant' })
     assert(await secondCandidates.count() >= 2, 'second clip exposes fewer than two candidate controls')
     await secondCandidates.nth(1).click()
     const selectedProposalResponse = await selectionResponse

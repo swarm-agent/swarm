@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { VIDEO_TRANSITION_KINDS, buildVideoIterationTimeline, loadLatestVideoEditProposals, proposedVideoPlanClipDetails, rejectVideoEditProposal, renderedVideoArtifactUrl, selectedVideoProposalChangeIDs, transitionLabel, videoPlanPartMessageSelection, videoPlanPartStoryboardContext, videoPlanTransitionMessageSelection, videoProposalFocusClipId, videoProposalProjectionSequence, videoProposalsForConversationTurn, type VideoEditProposalWire } from '../video-studio/video-studio-surface'
+import { VIDEO_TRANSITION_KINDS, buildVideoIterationTimeline, loadLatestVideoEditProposals, proposedVideoPlanClipDetails, rejectVideoEditProposal, renderedVideoArtifactUrl, selectedVideoProposalChangeIDs, transitionLabel, videoAnimationReadyForConfirmation, videoPlanPartMessageSelection, videoPlanPartStoryboardContext, videoPlanTransitionMessageSelection, videoProposalFocusClipId, videoProposalProjectionSequence, videoProposalsForConversationTurn, type VideoEditProposalWire } from '../video-studio/video-studio-surface'
 
 import {
   acceptedVideoPlan,
@@ -37,6 +37,7 @@ import {
   videoChildSessionMetadata,
   videoStudioSessionMetadata,
   selectVideoAnimationCandidateLocally,
+  shouldScheduleVideoCanvasFrame,
   unresolvedVideoIterationLockPartIDs,
   selectWorkspaceVideoRevision,
   workspaceVideoContextMetadata,
@@ -286,6 +287,9 @@ test('Video Studio updates only the selected stable part and rejects cross-part 
   const selected = selectVideoAnimationCandidateLocally(proposal, 'intro', introB)
   assert.equal(selected?.plan?.parts[0].animation_candidates?.selected_candidate_id, 'intro-b')
   assert.equal(selected?.plan?.parts[0].animation_candidates?.status, 'awaiting_export')
+  assert.equal(videoAnimationReadyForConfirmation(selected!.plan!.parts[0]), true)
+  assert.equal(videoAnimationReadyForConfirmation(selected!.plan!.parts[1]), false)
+  assert.equal(videoAnimationReadyForConfirmation({ ...selected!.plan!.parts[0], animation_candidates: { ...selected!.plan!.parts[0].animation_candidates!, selected_source: { ...introB.source, event_seq: 99 } } }), false)
   assert.equal(selected?.plan?.parts[1].animation_candidates?.selected_candidate_id, undefined)
   assert.equal(selectVideoAnimationCandidateLocally(proposal, 'intro', outroA), null)
   assert.equal(selectVideoAnimationCandidateLocally(proposal, 'outro', { ...outroA, source: introA.source }), null)
@@ -350,10 +354,16 @@ test('Video Studio reports one concise human review state for each clip media st
     animation_candidates: { candidates: [{ id: 'orbit', source }], ...(selected ? { selected_candidate_id: 'orbit', selected_source: source } : {}), status },
   })
   assert.deepEqual(videoClipReviewState(part('awaiting_selection'), 'image/png', 'image'), { mediaKind: 'Live HTML', state: 'Choose motion' })
-  assert.deepEqual(videoClipReviewState(part('awaiting_export', true), 'image/png', 'image'), { mediaKind: 'Live HTML', state: 'Motion selected · converting' })
+  assert.deepEqual(videoClipReviewState(part('awaiting_export', true), 'image/png', 'image'), { mediaKind: 'Live HTML', state: 'Motion selected · ready' })
   assert.deepEqual(videoClipReviewState(part('ready', true), 'video/mp4', 'video'), { mediaKind: 'Motion', state: 'Motion ready' })
   assert.deepEqual(videoClipReviewState(undefined, 'video/mp4', 'video'), { mediaKind: 'Video', state: 'Video' })
   assert.deepEqual(videoClipReviewState(undefined, 'image/png', 'image'), { mediaKind: 'Still', state: 'Still' })
+})
+
+test('Video Studio schedules continuous canvas work only during visible playback', () => {
+  assert.equal(shouldScheduleVideoCanvasFrame(true, 'visible'), true)
+  assert.equal(shouldScheduleVideoCanvasFrame(false, 'visible'), false)
+  assert.equal(shouldScheduleVideoCanvasFrame(true, 'hidden'), false)
 })
 
 test('Video Studio exposes storyboard placeholders, filming guidance, and exact lineage', () => {

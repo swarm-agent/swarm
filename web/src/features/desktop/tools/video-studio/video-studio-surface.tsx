@@ -95,6 +95,22 @@ export type VideoPlanProposalWire = {
   parts: VideoPlanPartWire[]
 }
 
+// Candidate artifacts are already server-validated before they enter an
+// animation-candidate set; confirmation only needs the selected exact lineage.
+export function videoAnimationReadyForConfirmation(part: VideoPlanPartWire): boolean {
+  const animation = part.animation_candidates
+  if (!animation) return true
+  if (animation.status === 'failed') return false
+  if (animation.status === 'ready') return true
+  if (!animation.selected_candidate_id || !animation.selected_source) return false
+  const selected = animation.candidates.find((candidate) => candidate.id === animation.selected_candidate_id)
+  return Boolean(selected
+    && selected.source.session_id === animation.selected_source.session_id
+    && selected.source.collection_id === animation.selected_source.collection_id
+    && selected.source.variant_id === animation.selected_source.variant_id
+    && selected.source.event_seq === animation.selected_source.event_seq)
+}
+
 export type VideoEditProposalWire = {
   id: string
   project_id: string
@@ -300,22 +316,6 @@ export async function selectVideoAnimationCandidate(input: {
     body: JSON.stringify({ part_id: input.partId, selected_candidate_id: input.candidate.id, selected_source: input.candidate.source }),
   })
   if (!response.proposal) throw new Error('Animation candidate selection returned no proposal')
-  return response.proposal
-}
-
-export async function promoteVideoAnimationDerivative(input: {
-  sessionId: string
-  projectId: string
-  proposalId: string
-  partId: string
-  candidate: VideoAnimationCandidateWire
-  derivative: VideoPlanVisualWire
-}): Promise<VideoEditProposalWire> {
-  const response = await requestJson<{ proposal?: VideoEditProposalWire }>(`/v3/sessions/${encodeURIComponent(input.sessionId)}/video/projects/${encodeURIComponent(input.projectId)}/edit-proposals/${encodeURIComponent(input.proposalId)}/animation-derivative-promote`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ part_id: input.partId, selected_candidate_id: input.candidate.id, selected_source: input.candidate.source, derivative: input.derivative }),
-  })
-  if (!response.proposal) throw new Error('Animation derivative promotion returned no proposal')
   return response.proposal
 }
 
@@ -587,8 +587,8 @@ export const VideoIterationSidebar = memo(function VideoIterationSidebar(props: 
               </div>
             })}
             {proposal?.status === 'pending' ? <div className="mt-3 grid gap-1">
-              {proposal.plan?.parts.flatMap((part) => part.animation_candidates?.candidates ?? []).length ? <p className="text-[9px] text-amber-200">Choose one live HTML candidate in the player. Only that source is exported; confirmation stays locked until its exact MP4 derivative is promoted.</p> : null}
-              <Button className="h-7 px-2 text-[10px]" disabled={Boolean(busyId) || stale || proposal.plan?.parts.some((part) => part.animation_candidates && part.animation_candidates.status !== 'ready') || (proposal.plan?.kind !== 'initial' && enabledIds.length === 0)} onClick={() => void (async () => { setBusyId(proposal.id); try { await acceptVideoEditProposal({ sessionId: props.sessionId, projectId: props.projectId, proposalId: proposal.id, selectedOperationIds: enabledIds, changeSummary: proposal.title || proposal.plan?.summary || proposal.rationale }); setPreviewId(null); await props.onAccepted(); await load() } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)) } finally { setBusyId(null) } })()}><Check size={12} />Confirm enabled changes</Button>
+              {proposal.plan?.parts.flatMap((part) => part.animation_candidates?.candidates ?? []).length ? <p className="text-[9px] text-amber-200">Choose one live HTML candidate in the player. The selected canonical source can be confirmed directly.</p> : null}
+              <Button className="h-7 px-2 text-[10px]" disabled={Boolean(busyId) || stale || proposal.plan?.parts.some((part) => (proposal.plan?.kind === 'initial' || enabledIds.includes(part.id)) && !videoAnimationReadyForConfirmation(part)) || (proposal.plan?.kind !== 'initial' && enabledIds.length === 0)} onClick={() => void (async () => { setBusyId(proposal.id); try { await acceptVideoEditProposal({ sessionId: props.sessionId, projectId: props.projectId, proposalId: proposal.id, selectedOperationIds: enabledIds, changeSummary: proposal.title || proposal.plan?.summary || proposal.rationale }); setPreviewId(null); await props.onAccepted(); await load() } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)) } finally { setBusyId(null) } })()}><Check size={12} />Confirm enabled changes</Button>
               <Button variant="ghost" className="h-7 px-2 text-[10px]" disabled={Boolean(busyId)} onClick={() => void (async () => { const feedback = `Restore the accepted parent of iteration ${proposal.id} and revise only the changes I describe: `; setBusyId(proposal.id); try { await rejectVideoEditProposal(props.sessionId, props.projectId, proposal.id, feedback); setPreviewId(null); await props.onFeedback(feedback); await load() } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)) } finally { setBusyId(null) } })()}><RotateCcw size={12} />Restore parent and revise</Button>
             </div> : null}
           </div> : null}
