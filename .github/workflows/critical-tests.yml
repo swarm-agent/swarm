@@ -29,8 +29,9 @@ jobs:
 
       - name: Run pre-PR repository policy and atlas checks
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha || '' }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha || '' }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before || github.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          TMPDIR: ${{ runner.temp }}
         run: |
           ./scripts/check-hardcoded-paths.sh
           ./scripts/check-daemon-storage-paths.sh --self-test
