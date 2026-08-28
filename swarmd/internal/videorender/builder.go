@@ -31,18 +31,18 @@ type TimelinePlan struct {
 // composition source. It is produced from the revision-owned composition catalog
 // during materialization and consumed by both frame inspection and final render.
 type CompositionPlacement struct {
-	SlotID        string
-	X             int
-	Y             int
-	Width         int
-	Height        int
-	Fit           string
-	AlignmentX    float64
-	AlignmentY    float64
-	CropTop       float64
-	CropRight     float64
-	CropBottom    float64
-	CropLeft      float64
+	SlotID         string
+	X              int
+	Y              int
+	Width          int
+	Height         int
+	Fit            string
+	AlignmentX     float64
+	AlignmentY     float64
+	CropTop        float64
+	CropRight      float64
+	CropBottom     float64
+	CropLeft       float64
 	MaskKind       string
 	MaskRadius     float64
 	ZIndex         int
@@ -401,7 +401,7 @@ func BuildFFmpegCommandLine(timeline pebblestore.VideoProjectTimeline, inputs []
 		overlayIndexes := make([]int, 0, len(inputs))
 		for inputIndex, input := range inputs {
 			if input.Track != 0 || input.IsAudio || input.Composition != nil {
-					overlayIndexes = append(overlayIndexes, inputIndex)
+				overlayIndexes = append(overlayIndexes, inputIndex)
 			}
 		}
 		sort.SliceStable(overlayIndexes, func(i, j int) bool {

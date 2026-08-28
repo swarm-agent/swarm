@@ -15,7 +15,9 @@ func TestCompositionVideoFiltersContainCropAndRoundedMask(t *testing.T) {
 		CropTop: .1, CropRight: .05, CropBottom: .1, CropLeft: .05,
 		MaskKind: "rounded_rect", MaskRadius: .08,
 	})
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	joined := strings.Join(filters, ",")
 	for _, want := range []string{
 		"crop=w=trunc(iw*0.900000/2)*2:h=trunc(ih*0.800000/2)*2",
@@ -23,7 +25,9 @@ func TestCompositionVideoFiltersContainCropAndRoundedMask(t *testing.T) {
 		"pad=480:820:trunc((ow-iw)*0.250000/2)*2:trunc((oh-ih)*0.750000/2)*2:color=black@0",
 		"format=pix_fmts=yuva420p", "geq=", "a='if(",
 	} {
-		if !strings.Contains(joined, want) { t.Errorf("filters missing %q: %s", want, joined) }
+		if !strings.Contains(joined, want) {
+			t.Errorf("filters missing %q: %s", want, joined)
+		}
 	}
 }
 
@@ -32,14 +36,18 @@ func TestCompositionVideoFiltersCoverAndEllipse(t *testing.T) {
 		SlotID: "phone-b", Width: 360, Height: 720, Fit: "cover",
 		AlignmentX: 1, AlignmentY: 0, MaskKind: "ellipse",
 	})
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	joined := strings.Join(filters, ",")
 	for _, want := range []string{
 		"scale=360:720:force_original_aspect_ratio=increase",
 		"crop=360:720:trunc((iw-ow)*1.000000/2)*2:trunc((ih-oh)*0.000000/2)*2",
 		"pow((X-W/2)/(W/2),2)",
 	} {
-		if !strings.Contains(joined, want) { t.Errorf("filters missing %q: %s", want, joined) }
+		if !strings.Contains(joined, want) {
+			t.Errorf("filters missing %q: %s", want, joined)
+		}
 	}
 }
 
@@ -51,7 +59,9 @@ func TestBuildFFmpegCommandLineComposesThreeSlotsInZOrder(t *testing.T) {
 		{Index: 3, ClipID: "shot:right", FilePath: "right.mp4", IsVideo: true, HasAudio: true, Volume: .4, DurationMs: 2000, StartMs: 500, EndMs: 2500, Track: 1, Layer: 20, TimelineStartMs: 2000, TimelineEndMs: 4000, Composition: &CompositionPlacement{SlotID: "right", X: 960, Y: 120, Width: 400, Height: 800, Fit: "cover", AlignmentX: 1, AlignmentY: 0, MaskKind: "ellipse", ZIndex: 20, SourceSpanMs: 2000, TimelineSpanMs: 2000}},
 	}
 	plan, err := BuildFFmpegCommandLine(structTimeline(6000), inputs, "output.mp4")
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	filter := plan.FilterComplex
 	for _, want := range []string{
 		"trim=start=1.000:duration=4.000", "setpts=(PTS-STARTPTS)*2.000000000", "[v2]setpts=PTS+1.000/TB",
@@ -67,8 +77,12 @@ func TestBuildFFmpegCommandLineComposesThreeSlotsInZOrder(t *testing.T) {
 	center := strings.Index(filter, "overlay=x=520")
 	right := strings.Index(filter, "overlay=x=960")
 	left := strings.Index(filter, "overlay=x=80")
-	if center < 0 || right < center || left < right { t.Fatalf("composition z-order is not 10,20,30: %s", filter) }
-	if strings.Contains(filter, "[1:a]") || strings.Contains(filter, "[2:a]") { t.Fatalf("muted composition slots entered audio graph: %s", filter) }
+	if center < 0 || right < center || left < right {
+		t.Fatalf("composition z-order is not 10,20,30: %s", filter)
+	}
+	if strings.Contains(filter, "[1:a]") || strings.Contains(filter, "[2:a]") {
+		t.Fatalf("muted composition slots entered audio graph: %s", filter)
+	}
 }
 
 func structTimeline(duration int64) pebblestore.VideoProjectTimeline {
@@ -106,6 +120,8 @@ func TestCompositionVideoFiltersRejectUnsafeGeometry(t *testing.T) {
 		{Width: 100, Height: 100, Fit: "cover", AlignmentX: math.NaN()},
 		{Width: 100, Height: 100, Fit: "cover", CropTop: math.Inf(1)},
 	} {
-		if _, err := compositionVideoFilters(placement); err == nil { t.Fatalf("unsafe placement accepted: %+v", placement) }
+		if _, err := compositionVideoFilters(placement); err == nil {
+			t.Fatalf("unsafe placement accepted: %+v", placement)
+		}
 	}
 }

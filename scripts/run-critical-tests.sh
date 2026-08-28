@@ -58,8 +58,22 @@ run_go() {
   "${GO_BIN}" "$@"
 }
 
+require_listed_tests() {
+  local module="$1"
+  local packages="$2"
+  local pattern="$3"
+  local listing
+  # shellcheck disable=SC2086
+  listing="$(cd "${module}" && run_go test ${packages} -list "${pattern}")"
+  if ! grep -Eq '^Test[^[:space:]]*$' <<<"${listing}"; then
+    echo "critical manifest pattern matched no tests: packages=${packages} pattern=${pattern}" >&2
+    return 1
+  fi
+}
+
 run_root_tests() {
   local pattern="$1"
+  require_listed_tests "${ROOT_DIR}" './pkg/startupconfig ./pkg/storagecontract' "${pattern}"
   run_go test -count=1 -timeout=30s ./pkg/startupconfig ./pkg/storagecontract -run "${pattern}"
 }
 
@@ -67,6 +81,7 @@ run_swarmd_tests() {
   local timeout="$1"
   local packages="$2"
   local pattern="$3"
+  require_listed_tests "${ROOT_DIR}/swarmd" "${packages}" "${pattern}"
   (
     cd "${ROOT_DIR}/swarmd"
     # shellcheck disable=SC2086

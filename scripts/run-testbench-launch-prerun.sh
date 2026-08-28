@@ -11,6 +11,7 @@ parallelism. Every selected suite is allowed to finish so the aggregate reports
 all failures instead of hiding later results behind the first failure.
 
 Default suites:
+  critical      local deterministic atlas-driven critical test gate
   onboarding    isolated local onboarding/bootstrap persistence gate
   desktop       real Desktop /new, /task, worktree, Plan-to-Auto lifecycle gate
   tui           real TUI /new, /task, worktree, and Plan launch gate
@@ -59,7 +60,7 @@ source "${ROOT_DIR}/scripts/lib-testbench-e2e.sh"
 # shellcheck source=scripts/lib-launch-prerun.sh
 source "${ROOT_DIR}/scripts/lib-launch-prerun.sh"
 
-DEFAULT_SUITES=(onboarding desktop tui plan-auto task-routing task-program provider-sync)
+DEFAULT_SUITES=(critical onboarding desktop tui plan-auto task-routing task-program provider-sync)
 ALL_SUITES=("${DEFAULT_SUITES[@]}")
 JOBS=4
 DRY_RUN="false"
@@ -163,6 +164,9 @@ suite_command() {
   local -n output_ref="$2"
   local -a built=() args=()
   case "${suite}" in
+    critical)
+      built=("${ROOT_DIR}/scripts/run-critical-tests.sh" all)
+      ;;
     onboarding)
       built=("${ROOT_DIR}/tests/swarmd/identity_bootstrap_e2e.sh")
       if [[ -n "${RUN_DIR:-}" ]]; then built+=("${RUN_DIR}/onboarding"); fi

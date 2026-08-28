@@ -54,7 +54,7 @@ func reviewedHTMLAnimationVariant(sessionID, collectionID, variantID string, eve
 	return pebblestore.SessionArtifactVariant{
 		ID: variantID, CollectionID: collectionID, SessionID: sessionID, EventSeq: eventSeq,
 		Status: pebblestore.SessionArtifactStatusReady, MediaType: "text/html",
-		Presentation: pebblestore.SessionArtifactPresentation{Width: htmlcapture.Width, Height: htmlcapture.Height},
+		Presentation:       pebblestore.SessionArtifactPresentation{Width: htmlcapture.Width, Height: htmlcapture.Height},
 		OutputRequirements: requirements, AnimationProfile: profile,
 		Parts: []pebblestore.SessionArtifactPart{{ID: "full", Kind: "temporal", StartMs: 0, EndMs: durationMs}},
 	}
@@ -173,7 +173,7 @@ func TestMaterializeTimelineInputsReusesOnlySameExactHTMLSource(t *testing.T) {
 		store.variants["acc/session/motion/"+id] = reviewedHTMLAnimationVariant("session", "motion", id, 7, 1000)
 	}
 	authority := &fakeArtifactAuthority{body: html, readVariants: map[string]pebblestore.SessionArtifactVariant{
-		"session/motion/same": store.variants["acc/session/motion/same"],
+		"session/motion/same":  store.variants["acc/session/motion/same"],
 		"session/motion/other": store.variants["acc/session/motion/other"],
 	}}
 	svc := NewService(Config{}, store, authority, renderer, nil, &fakeCommandRunner{})

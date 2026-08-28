@@ -79,7 +79,7 @@ type sessionV3SelectVideoAnimationCandidateRequest struct {
 }
 
 type sessionV3UpdateVideoCompositionRequest struct {
-	ExpectedRevisionID string                           `json:"expected_revision_id"`
+	ExpectedRevisionID string                         `json:"expected_revision_id"`
 	Plan               *pebblestore.VideoPlanProposal `json:"plan"`
 }
 

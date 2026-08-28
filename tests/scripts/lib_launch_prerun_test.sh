@@ -60,9 +60,11 @@ nine_status=$?
 set -e
 [[ "${zero_status}" != "0" && "${nine_status}" != "0" ]] || fail "invalid job limits were accepted"
 
-EXPECTED_SUITES=$'onboarding\ndesktop\ntui\nplan-auto\ntask-routing\ntask-program\nprovider-sync'
+EXPECTED_SUITES=$'critical\nonboarding\ndesktop\ntui\nplan-auto\ntask-routing\ntask-program\nprovider-sync'
 ACTUAL_SUITES="$("${ROOT_DIR}/scripts/run-testbench-launch-prerun.sh" --list-suites)"
-[[ "${ACTUAL_SUITES}" == "${EXPECTED_SUITES}" ]] || fail "canonical seven-suite manifest changed unexpectedly"
+[[ "${ACTUAL_SUITES}" == "${EXPECTED_SUITES}" ]] || fail "canonical eight-suite manifest changed unexpectedly"
+critical_dry_run="$("${ROOT_DIR}/scripts/run-testbench-launch-prerun.sh" --dry-run --suite critical)" || fail "critical lane dry run failed"
+grep -Fq 'scripts/run-critical-tests.sh all' <<<"${critical_dry_run}" || fail "critical lane does not run the complete deterministic gate"
 if ! "${ROOT_DIR}/scripts/run-testbench-launch-prerun.sh" --dry-run --suite task-program >/dev/null 2>&1; then
   fail "task-program lane still requires a manually configured linked workspace despite runtime binding discovery"
 fi

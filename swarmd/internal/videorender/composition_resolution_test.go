@@ -18,10 +18,16 @@ func TestResolveTimelineCompositionPlacementsUsesAcceptedImmutablePlan(t *testin
 		"accepted_video_plan": pebblestore.VideoPlanProposal{CompositionCatalog: catalog, Parts: []pebblestore.VideoPlanPart{{ID: "shot", DurationMs: 4000, Composition: link}}},
 	}}
 	got, err := resolveTimelineCompositionPlacements(timeline)
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	slots := got["shot"]
-	if len(slots) != 3 { t.Fatalf("resolved slots = %+v", slots) }
-	if slots[0].SlotID != "center" || slots[1].SlotID != "right" || slots[2].SlotID != "left" { t.Fatalf("z-order = %+v", slots) }
+	if len(slots) != 3 {
+		t.Fatalf("resolved slots = %+v", slots)
+	}
+	if slots[0].SlotID != "center" || slots[1].SlotID != "right" || slots[2].SlotID != "left" {
+		t.Fatalf("z-order = %+v", slots)
+	}
 	if slots[0].Width != 480 || slots[0].Height != 864 || slots[0].SourceSpanMs != 1000 || slots[0].TimelineSpanMs != 2000 {
 		t.Fatalf("center placement = %+v", slots[0])
 	}
@@ -44,8 +50,12 @@ func TestResolveTimelineCompositionPlacementsRejectsMultipleIncludedAudioSources
 }
 
 func TestResolveTimelineCompositionPlacementsRejectsUnacceptedOrInvalidPlan(t *testing.T) {
-	if got, err := resolveTimelineCompositionPlacements(pebblestore.VideoProjectTimeline{Width: 1920, Height: 1080}); err != nil || len(got) != 0 { t.Fatalf("empty composition = %+v, %v", got, err) }
+	if got, err := resolveTimelineCompositionPlacements(pebblestore.VideoProjectTimeline{Width: 1920, Height: 1080}); err != nil || len(got) != 0 {
+		t.Fatalf("empty composition = %+v, %v", got, err)
+	}
 	catalog := &videocomposition.Catalog{SchemaVersion: 1, Layouts: []videocomposition.Layout{{ID: "layout", Slots: []videocomposition.Slot{{ID: "slot", Requirement: "capture", Geometry: videocomposition.NormalizedRect{Width: 1, Height: 1}, Fit: videocomposition.FitCover, Mask: videocomposition.Mask{Kind: videocomposition.MaskNone}}}}}}
 	timeline := pebblestore.VideoProjectTimeline{Width: 1920, Height: 1080, CompositionCatalog: catalog, Clips: []pebblestore.VideoTimelineClip{{ID: "shot", DurationMs: 1000}}}
-	if got, err := resolveTimelineCompositionPlacements(timeline); err != nil || len(got) != 0 { t.Fatalf("catalog without accepted links must not render = %+v, %v", got, err) }
+	if got, err := resolveTimelineCompositionPlacements(timeline); err != nil || len(got) != 0 {
+		t.Fatalf("catalog without accepted links must not render = %+v, %v", got, err)
+	}
 }
