@@ -55,19 +55,28 @@ func (s *Service) resolveRunWorkspaceScope(session pebblestore.SessionSnapshot, 
 			return tool.WorkspaceScope{}, err
 		}
 		mutationScopes := []string(nil)
-		gitAdminRoots := []string(nil)
+		readOnlyRoots := []string(nil)
+		sourceWorkspacePath := strings.TrimSpace(mapString(session.Metadata, "swarm_v3_source_workspace_path"))
 		if agentruntime.IsCoderAgentName(mapString(session.Metadata, "requested_subagent")) {
 			mutationScopes = mapStringSlice(session.Metadata, "owned_scope")
 			if gitAdminRoot, gitErr := linkedWorktreeGitAdminRoot(resolvedPath); gitErr != nil {
 				return tool.WorkspaceScope{}, gitErr
 			} else if gitAdminRoot != "" {
-				gitAdminRoots = append(gitAdminRoots, gitAdminRoot)
+				readOnlyRoots = append(readOnlyRoots, gitAdminRoot)
+			}
+			if sourceWorkspacePath != "" && sourceWorkspacePath != resolvedPath {
+				normalizedSource, sourceErr := normalizeRunScopePath(sourceWorkspacePath)
+				if sourceErr != nil {
+					return tool.WorkspaceScope{}, fmt.Errorf("resolve Coder source workspace: %w", sourceErr)
+				}
+				sourceWorkspacePath = normalizedSource
+				readOnlyRoots = append(readOnlyRoots, normalizedSource)
 			}
 		}
 		return tool.WorkspaceScope{
 			PrimaryPath:         resolvedPath,
 			Roots:               roots,
-			ReadOnlyRoots:       gitAdminRoots,
+			ReadOnlyRoots:       readOnlyRoots,
 			MutationScopes:      mutationScopes,
 			Principal:           principal,
 			SessionID:           strings.TrimSpace(session.ID),
@@ -76,7 +85,7 @@ func (s *Service) resolveRunWorkspaceScope(session pebblestore.SessionSnapshot, 
 			WorktreeBranch:      strings.TrimSpace(session.WorktreeBranch),
 			WorktreeBaseBranch:  strings.TrimSpace(session.WorktreeBaseBranch),
 			WorktreeBaseCommit:  strings.TrimSpace(mapString(session.Metadata, "base_commit")),
-			SourceWorkspacePath: strings.TrimSpace(mapString(session.Metadata, "swarm_v3_source_workspace_path")),
+			SourceWorkspacePath: sourceWorkspacePath,
 		}, nil
 	}
 	if s != nil && s.workspace != nil {

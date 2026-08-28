@@ -445,7 +445,7 @@ Finish successful work with one scoped commit and a clean worktree. If permissio
 
 func CoderAgentToolContract() *pebblestore.AgentToolContract {
 	return &pebblestore.AgentToolContract{Preset: "custom", Tools: map[string]pebblestore.AgentToolConfig{
-		"read": {Enabled: pebblestore.BoolPtr(true)}, "media_inspect": {Enabled: pebblestore.BoolPtr(true)}, "search": {Enabled: pebblestore.BoolPtr(true)}, "list": {Enabled: pebblestore.BoolPtr(true)},
+		"read": {Enabled: pebblestore.BoolPtr(true)}, "media_inspect": {Enabled: pebblestore.BoolPtr(true)}, "search": {Enabled: pebblestore.BoolPtr(true)}, "find": {Enabled: pebblestore.BoolPtr(true)}, "list": {Enabled: pebblestore.BoolPtr(true)},
 		"write": {Enabled: pebblestore.BoolPtr(true)}, "edit": {Enabled: pebblestore.BoolPtr(true)},
 		"websearch": {Enabled: pebblestore.BoolPtr(true)}, "webfetch": {Enabled: pebblestore.BoolPtr(true)}, "webdownload": {Enabled: pebblestore.BoolPtr(true)},
 		"git_status": {Enabled: pebblestore.BoolPtr(true)}, "git_diff": {Enabled: pebblestore.BoolPtr(true)},

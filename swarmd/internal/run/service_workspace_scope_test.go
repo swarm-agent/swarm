@@ -168,6 +168,100 @@ func TestRunWorkspaceScopeCoderAllowsOnlyCanonicalLinkedWorktreeGitAdminRoot(t *
 	}
 }
 
+func TestRunWorkspaceScopeCoderSourceWorkspaceReadDoesNotRequestPermission(t *testing.T) {
+	repo := t.TempDir()
+	runTestGit(t, repo, "init", "-b", "dev")
+	runTestGit(t, repo, "config", "user.email", "test@example.com")
+	runTestGit(t, repo, "config", "user.name", "Test User")
+	sourceFile := filepath.Join(repo, "source-only.txt")
+	writeTestFile(t, sourceFile, "source content")
+	runTestGit(t, repo, "add", "source-only.txt")
+	runTestGit(t, repo, "commit", "-m", "base")
+
+	worktree := filepath.Join(t.TempDir(), "child")
+	runTestGit(t, repo, "worktree", "add", "-b", "agent/test-source-read", worktree)
+
+	principal := testRunPrincipal()
+	runSvc := NewService(nil, nil, nil, nil, nil, nil, discovery.NewService(), nil)
+	scope, err := runSvc.resolveRunWorkspaceScope(pebblestore.SessionSnapshot{
+		ID:                 "session-coder-source-read",
+		UserID:             principal.UserID,
+		AccountScopeID:     principal.AccountScopeID,
+		WorkspacePath:      worktree,
+		WorktreeEnabled:    true,
+		WorktreeRootPath:   worktree,
+		WorktreeBranch:     "agent/test-source-read",
+		WorktreeBaseBranch: "dev",
+		Metadata: map[string]any{
+			"requested_subagent":              "coder",
+			"owned_scope":                     []string{"src/**"},
+			"swarm_v3_source_workspace_path":  repo,
+			"swarm_v3_runtime_workspace_path": worktree,
+		},
+	}, principal)
+	if err != nil {
+		t.Fatalf("resolve Coder source-workspace scope: %v", err)
+	}
+	if scope.SourceWorkspacePath != repo {
+		t.Fatalf("Coder source workspace = %q, want %q", scope.SourceWorkspacePath, repo)
+	}
+	assertStringSliceContains(t, scope.ReadOnlyRoots, repo)
+	assertStringSliceNotContains(t, scope.Roots, repo)
+
+	for _, tc := range []struct {
+		name string
+		args map[string]any
+	}{
+		{name: "read", args: map[string]any{"path": sourceFile}},
+		{name: "list", args: map[string]any{"path": repo}},
+		{name: "search", args: map[string]any{"query": "source content", "path": repo}},
+		{name: "find", args: map[string]any{"query": "source-only", "path": repo}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			request, needed, err := tool.ScopeExpansionForCall(scope, tool.Call{
+				CallID:    tc.name + "-source-workspace",
+				Name:      tc.name,
+				Arguments: mustJSON(t, tc.args),
+			})
+			if err != nil || needed {
+				t.Fatalf("Coder source-workspace %s requested permission: needed=%t request=%+v err=%v scope=%#v", tc.name, needed, request, err, scope)
+			}
+		})
+	}
+
+	for _, tc := range []struct {
+		name string
+		args map[string]any
+	}{
+		{name: "write", args: map[string]any{"path": sourceFile, "content": "changed"}},
+		{name: "edit", args: map[string]any{"path": sourceFile, "old_string": "source", "new_string": "changed"}},
+		{name: "webdownload", args: map[string]any{"url": "https://example.com", "output_dir": repo}},
+	} {
+		t.Run(tc.name+"-still-prompts", func(t *testing.T) {
+			request, needed, err := tool.ScopeExpansionForCall(scope, tool.Call{
+				CallID:    tc.name + "-source-workspace",
+				Name:      tc.name,
+				Arguments: mustJSON(t, tc.args),
+			})
+			if err != nil || !needed {
+				t.Fatalf("Coder source-workspace %s expansion = %t request=%+v err=%v, want permission", tc.name, needed, request, err)
+			}
+		})
+	}
+
+	outside := t.TempDir()
+	for _, name := range []string{"read", "list", "search", "find"} {
+		request, needed, err := tool.ScopeExpansionForCall(scope, tool.Call{
+			CallID:    name + "-outside",
+			Name:      name,
+			Arguments: mustJSON(t, map[string]any{"path": outside, "query": "outside"}),
+		})
+		if err != nil || !needed {
+			t.Fatalf("unrelated %s expansion = %t request=%+v err=%v, want permission", name, needed, request, err)
+		}
+	}
+}
+
 func TestWorkspaceScopeGatePreservesCoderGitAdminReadAuthorization(t *testing.T) {
 	worktree := t.TempDir()
 	gitAdmin := t.TempDir()

@@ -1075,6 +1075,12 @@ func resolveProviderMediaWorkspacePath(workspaceCtx runWorkspaceContext, request
 		return "", fmt.Errorf("resolve media path symlinks: %w", err)
 	}
 	roots := normalizeExecutionRoots(workspaceCtx.WorkspacePath, workspaceCtx.WorkspaceRoots)
+	for _, root := range workspaceCtx.Scope.ReadOnlyRoots {
+		root = strings.TrimSpace(root)
+		if root != "" {
+			roots = append(roots, root)
+		}
+	}
 	if !runPathWithinRoots(roots, resolved) {
 		return "", fmt.Errorf("media path %q escapes workspace scope", requested)
 	}

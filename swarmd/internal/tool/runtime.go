@@ -4704,9 +4704,16 @@ func resolveWebDownloadOutputDir(scope WorkspaceScope, outputDirArg string) (str
 		}
 		return path, filepath.ToSlash(path), nil
 	}
-	path, err := resolveWorkspacePath(scope, outputDirArg)
+	_, path, err := normalizeWorkspaceCandidatePath(scope.PrimaryPath, outputDirArg)
 	if err != nil {
 		return "", "", err
+	}
+	if len(scope.MutationScopes) > 0 {
+		if !workspaceMutationAllowed(scope, path) {
+			return "", "", errors.New("mutation rejected: path is outside the Coder owned scope")
+		}
+	} else if !pathWithinAllowedRoots(resolveMutableRoots(scope), path) {
+		return "", "", fmt.Errorf("path %q escapes mutable workspace scope", outputDirArg)
 	}
 	if err := os.MkdirAll(path, 0o755); err != nil {
 		return "", "", fmt.Errorf("create download directory: %w", err)
@@ -9549,9 +9556,14 @@ func normalizeScopePath(path string) string {
 	return abs
 }
 
-func resolveAllowedRoots(scope WorkspaceScope) []string {
+func resolveMutableRoots(scope WorkspaceScope) []string {
 	normalized := normalizeWorkspaceScope(scope.PrimaryPath, scope.Roots)
-	roots := append([]string(nil), normalized.Roots...)
+	return append([]string(nil), normalized.Roots...)
+}
+
+func resolveAllowedRoots(scope WorkspaceScope) []string {
+	roots := resolveMutableRoots(scope)
+	normalized := normalizeWorkspaceScope(scope.PrimaryPath, scope.Roots)
 	seen := make(map[string]struct{}, len(roots)+len(scope.ReadOnlyRoots))
 	for _, root := range roots {
 		seen[root] = struct{}{}

@@ -520,6 +520,35 @@ func TestProviderManagedMediaInspectSkipsPermissionGateButStillRunsBackendValida
 	}
 }
 
+func TestResolveProviderMediaWorkspacePathAllowsReadOnlyRoot(t *testing.T) {
+	workspace := t.TempDir()
+	readOnly := t.TempDir()
+	imagePath := filepath.Join(readOnly, "reference.png")
+	if err := os.WriteFile(imagePath, []byte("image fixture"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	workspaceCtx := runWorkspaceContext{
+		WorkspacePath:  workspace,
+		WorkspaceRoots: []string{workspace},
+		Scope: tool.WorkspaceScope{
+			PrimaryPath:   workspace,
+			Roots:         []string{workspace},
+			ReadOnlyRoots: []string{readOnly},
+		},
+	}
+	resolved, err := resolveProviderMediaWorkspacePath(workspaceCtx, imagePath)
+	if err != nil || resolved != imagePath {
+		t.Fatalf("resolve media path in read-only root = %q err=%v, want %q", resolved, err, imagePath)
+	}
+	outside := filepath.Join(t.TempDir(), "outside.png")
+	if err := os.WriteFile(outside, []byte("outside fixture"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := resolveProviderMediaWorkspacePath(workspaceCtx, outside); err == nil || !strings.Contains(err.Error(), "escapes workspace scope") {
+		t.Fatalf("unrelated media path error = %v, want scope rejection", err)
+	}
+}
+
 func TestProviderManagedV3ControlPlaneToolRequestsPermission(t *testing.T) {
 	workspace := t.TempDir()
 	svc, sessionID, permissions, cleanup := newProviderManagedV3PermissionTestService(t, workspace)

@@ -101,6 +101,16 @@ func TestBuiltInManageSessionsDefaultIsSwarmOnly(t *testing.T) {
 	}
 }
 
+func TestCoderWorkspaceDiscoveryToolsIncludeFind(t *testing.T) {
+	contract := CoderAgentToolContract()
+	for _, name := range []string{"read", "media_inspect", "search", "find", "list"} {
+		cfg, ok := contract.Tools[name]
+		if !ok || cfg.Enabled == nil || !*cfg.Enabled {
+			t.Fatalf("Coder %s config = %+v, want enabled", name, cfg)
+		}
+	}
+}
+
 func TestManagedArtifactToolIsRestrictedToSwarmAndDesigner(t *testing.T) {
 	contracts := map[string]*pebblestore.AgentToolContract{
 		"swarm":    SwarmAgentToolContract(),

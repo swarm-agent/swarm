@@ -18,22 +18,33 @@ type ScopeExpansionRequest struct {
 
 func ScopeExpansionForCall(scope WorkspaceScope, call Call) (ScopeExpansionRequest, bool, error) {
 	readOnlyRoots := append([]string(nil), scope.ReadOnlyRoots...)
+	mutationScopes := append([]string(nil), scope.MutationScopes...)
 	scope = normalizeWorkspaceScope(scope.PrimaryPath, scope.Roots)
 	scope.ReadOnlyRoots = readOnlyRoots
+	scope.MutationScopes = mutationScopes
 	if strings.TrimSpace(scope.PrimaryPath) == "" {
 		return ScopeExpansionRequest{}, false, nil
 	}
 
-	argumentName, requestedPath, ok := scopeExpansionArgument(call)
+	argumentName, requestedPaths, ok := scopeExpansionArguments(call)
 	if !ok {
 		return ScopeExpansionRequest{}, false, nil
 	}
+	for _, requestedPath := range requestedPaths {
+		request, needed, err := scopeExpansionForPath(scope, call.Name, argumentName, requestedPath)
+		if err != nil || needed {
+			return request, needed, err
+		}
+	}
+	return ScopeExpansionRequest{}, false, nil
+}
 
+func scopeExpansionForPath(scope WorkspaceScope, toolName, argumentName, requestedPath string) (ScopeExpansionRequest, bool, error) {
 	targetPath, resolvedTarget, err := normalizeWorkspaceCandidatePath(scope.PrimaryPath, requestedPath)
 	if err != nil {
 		return ScopeExpansionRequest{}, false, err
 	}
-	if pathWithinAllowedRoots(resolveAllowedRoots(scope), resolvedTarget) {
+	if pathAllowedForScopeCall(scope, toolName, resolvedTarget) {
 		return ScopeExpansionRequest{}, false, nil
 	}
 
@@ -41,17 +52,36 @@ func ScopeExpansionForCall(scope WorkspaceScope, call Call) (ScopeExpansionReque
 	if err != nil {
 		return ScopeExpansionRequest{}, false, err
 	}
-	if pathWithinAllowedRoots(resolveAllowedRoots(scope), directoryPath) {
+	if pathAllowedForScopeCall(scope, toolName, directoryPath) {
 		return ScopeExpansionRequest{}, false, nil
 	}
 
 	return ScopeExpansionRequest{
-		ToolName:      strings.TrimSpace(call.Name),
+		ToolName:      strings.TrimSpace(toolName),
 		ArgumentName:  argumentName,
 		RequestedPath: requestedPath,
 		TargetPath:    targetPath,
 		DirectoryPath: directoryPath,
 	}, true, nil
+}
+
+func pathAllowedForScopeCall(scope WorkspaceScope, toolName, candidate string) bool {
+	if scopeCallMutatesWorkspace(toolName) {
+		if len(scope.MutationScopes) > 0 {
+			return workspaceMutationAllowed(scope, candidate)
+		}
+		return pathWithinAllowedRoots(resolveMutableRoots(scope), candidate)
+	}
+	return pathWithinAllowedRoots(resolveAllowedRoots(scope), candidate)
+}
+
+func scopeCallMutatesWorkspace(toolName string) bool {
+	switch strings.ToLower(strings.TrimSpace(toolName)) {
+	case "write", "edit", "webdownload":
+		return true
+	default:
+		return false
+	}
 }
 
 func normalizeWorkspaceCandidatePath(workspacePath, requested string) (string, string, error) {
@@ -89,10 +119,10 @@ func normalizeWorkspaceCandidatePath(workspacePath, requested string) (string, s
 	return candidateAbs, resolvedCandidate, nil
 }
 
-func scopeExpansionArgument(call Call) (string, string, bool) {
+func scopeExpansionArguments(call Call) (string, []string, bool) {
 	name := strings.ToLower(strings.TrimSpace(call.Name))
 	if name == "" {
-		return "", "", false
+		return "", nil, false
 	}
 
 	raw := strings.TrimSpace(call.Arguments)
@@ -101,46 +131,61 @@ func scopeExpansionArgument(call Call) (string, string, bool) {
 	}
 	var args map[string]any
 	if err := json.Unmarshal([]byte(raw), &args); err != nil {
-		return "", "", false
+		return "", nil, false
 	}
 
 	switch name {
-	case "read", "write", "edit", "list", "search", "agentic_search":
+	case "read", "write", "edit", "list", "search", "find", "agentic_search":
 		path := strings.TrimSpace(asString(args["path"]))
-		if path == "" {
-			paths := asStringSlice(args["paths"])
-			if len(paths) == 0 {
-				return "", "", false
-			}
-			path = strings.TrimSpace(paths[0])
-			if path == "" {
-				return "", "", false
-			}
-			return "paths", path, true
+		if path != "" {
+			return "path", []string{path}, true
 		}
-		return "path", path, true
+		paths := asStringSlice(args["paths"])
+		requested := make([]string, 0, len(paths))
+		for _, candidate := range paths {
+			if candidate = strings.TrimSpace(candidate); candidate != "" {
+				requested = append(requested, candidate)
+			}
+		}
+		if len(requested) == 0 {
+			return "", nil, false
+		}
+		return "paths", requested, true
 	case "task":
+		requested := make([]string, 0)
 		if launches, ok := args["launches"].([]any); ok {
 			for _, raw := range launches {
 				row, _ := raw.(map[string]any)
 				if path := strings.TrimSpace(asString(row["workspace_path"])); path != "" {
-					return "workspace_path", path, true
+					requested = append(requested, path)
 				}
 			}
 		}
-		path := strings.TrimSpace(asString(args["workspace_path"]))
-		if path == "" {
-			return "", "", false
+		if program, ok := args["program"].(map[string]any); ok {
+			if jobs, ok := program["jobs"].([]any); ok {
+				for _, raw := range jobs {
+					row, _ := raw.(map[string]any)
+					if path := strings.TrimSpace(asString(row["workspace_path"])); path != "" {
+						requested = append(requested, path)
+					}
+				}
+			}
 		}
-		return "workspace_path", path, true
+		if path := strings.TrimSpace(asString(args["workspace_path"])); path != "" {
+			requested = append(requested, path)
+		}
+		if len(requested) == 0 {
+			return "", nil, false
+		}
+		return "workspace_path", requested, true
 	case "webdownload":
 		path := strings.TrimSpace(asString(args["output_dir"]))
 		if path == "" {
-			return "", "", false
+			return "", nil, false
 		}
-		return "output_dir", path, true
+		return "output_dir", []string{path}, true
 	default:
-		return "", "", false
+		return "", nil, false
 	}
 }
 
