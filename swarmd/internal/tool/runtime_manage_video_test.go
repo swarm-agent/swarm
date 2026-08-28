@@ -756,6 +756,110 @@ func TestManageVideoStudioCreatesAdditionalProjectWithExplicitID(t *testing.T) {
 	}
 }
 
+func TestManageVideoStudioInitialTimelineCreatesDistinctProjectAndPreservesInputs(t *testing.T) {
+	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "manage-video-initial-timeline-project.pebble"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	principal := identity.Principal{Type: identity.PrincipalTypeUser, SessionID: "studio", UserID: "user-1", AccountScopeID: "account-1"}
+	sessionStore := pebblestore.NewSessionStore(store)
+	if err := sessionStore.CreateSession(pebblestore.SessionSnapshot{ID: "studio", UserID: principal.UserID, AccountScopeID: principal.AccountScopeID, WorkspacePath: "/ws", Mode: "auto", Metadata: map[string]any{"lineage_kind": "video_project"}}); err != nil {
+		t.Fatal(err)
+	}
+	events, err := pebblestore.NewEventLog(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime := NewRuntime(1)
+	runtime.sessions = sessionruntime.NewService(sessionStore, events)
+	runtime.videoProjects = videoproject.NewService(sessionStore)
+	ctx := WithVideoRunContext(context.Background(), VideoRunContext{SessionID: "studio", RunID: "run-initial-timeline"})
+	scope := WorkspaceScope{SessionID: "studio", Principal: principal}
+
+	primaryPayload, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, Call{CallID: "primary", Name: "manage_video", Arguments: `{"action":"create_project","title":"Primary project"}`})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var primary struct {
+		ProjectID  string `json:"project_id"`
+		RevisionID string `json:"revision_id"`
+	}
+	if err := json.Unmarshal([]byte(primaryPayload), &primary); err != nil || primary.ProjectID == "" || primary.RevisionID == "" {
+		t.Fatalf("primary project payload=%s err=%v", primaryPayload, err)
+	}
+	primaryAgain, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, Call{CallID: "primary-again", Name: "manage_video", Arguments: `{"action":"create_project","title":"Ignored by primary ensure"}`})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ensured struct {
+		ProjectID  string `json:"project_id"`
+		RevisionID string `json:"revision_id"`
+	}
+	if err := json.Unmarshal([]byte(primaryAgain), &ensured); err != nil || ensured != primary {
+		t.Fatalf("primary ensure was not idempotent: first=%+v second=%+v payload=%s err=%v", primary, ensured, primaryAgain, err)
+	}
+
+	initialTimeline := map[string]any{
+		"output_preset":     "portrait_720p",
+		"total_duration_ms": 2000,
+		"clips": []map[string]any{
+			{
+				"id": "visual", "track": 0, "sequence": 0, "source_kind": "managed_artifact", "media_type": "video/mp4",
+				"artifact_ref": map[string]any{"session_id": "studio", "collection_id": "media", "variant_id": "clip", "event_seq": 7},
+				"source_start_ms": 0, "source_end_ms": 2000, "timeline_start_ms": 0, "timeline_end_ms": 2000,
+				"duration_ms": 2000, "visible": true, "volume": 1,
+			},
+			{
+				"id": "soundtrack", "track": 1, "sequence": 1, "source_kind": "source_audio", "media_type": "audio/wav",
+				"audio_source": map[string]any{"ref": "audiosrc_soundtrack", "name": "soundtrack.wav", "mime_type": "audio/wav", "size_bytes": 4096, "source_fingerprint": strings.Repeat("a", 64), "fingerprint_version": pebblestore.AudioSourceFingerprintV1},
+				"source_start_ms": 0, "source_end_ms": 2000, "timeline_start_ms": 0, "timeline_end_ms": 2000,
+				"duration_ms": 2000, "visible": false, "volume": 0.8,
+			},
+		},
+	}
+	createArgs, _ := json.Marshal(map[string]any{
+		"action": "create_project", "title": "MP4 plus soundtrack", "description": "Exact authored cut", "output_preset": "portrait_720p", "initial_timeline": initialTimeline,
+	})
+	createdPayload, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, Call{CallID: "authored", Name: "manage_video", Arguments: string(createArgs)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var created struct {
+		ProjectID  string `json:"project_id"`
+		RevisionID string `json:"revision_id"`
+		Project    struct {
+			Title        string `json:"title"`
+			Description  string `json:"description"`
+			OutputPreset string `json:"output_preset"`
+		} `json:"project"`
+		Revision struct {
+			Timeline pebblestore.VideoProjectTimeline `json:"timeline"`
+		} `json:"revision"`
+	}
+	if err := json.Unmarshal([]byte(createdPayload), &created); err != nil {
+		t.Fatalf("decode authored project payload=%s err=%v", createdPayload, err)
+	}
+	if created.ProjectID == "" || created.ProjectID == primary.ProjectID || created.RevisionID == "" || created.RevisionID == primary.RevisionID {
+		t.Fatalf("initial_timeline must create a distinct project: primary=%+v created=%+v", primary, created)
+	}
+	if created.Project.Title != "MP4 plus soundtrack" || created.Project.Description != "Exact authored cut" || created.Project.OutputPreset != "portrait_720p" {
+		t.Fatalf("authored project inputs were not preserved: %+v", created.Project)
+	}
+	if created.Revision.Timeline.OutputPreset != "portrait_720p" || created.Revision.Timeline.TotalDurationMs != 2000 || len(created.Revision.Timeline.Clips) != 2 {
+		t.Fatalf("initial timeline was not preserved: %+v", created.Revision.Timeline)
+	}
+	visual, soundtrack := created.Revision.Timeline.Clips[0], created.Revision.Timeline.Clips[1]
+	if visual.MediaType != "video/mp4" || visual.TimelineStartMs != 0 || visual.TimelineEndMs != 2000 || soundtrack.SourceKind != pebblestore.VideoClipSourceKindSourceAudio || soundtrack.TimelineStartMs != 0 || soundtrack.TimelineEndMs != 2000 {
+		t.Fatalf("same-playhead MP4 and source_audio clips were not preserved: visual=%+v soundtrack=%+v", visual, soundtrack)
+	}
+	projects, err := runtime.videoProjects.ListProjects(principal, "studio", 10)
+	if err != nil || len(projects) != 2 {
+		t.Fatalf("projects=%+v err=%v", projects, err)
+	}
+}
+
 func TestManageVideoChatSessionUpgradesWhenCreatingProposal(t *testing.T) {
 	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "manage-video-chat-upgrade.pebble"))
 	if err != nil {

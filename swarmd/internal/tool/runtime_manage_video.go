@@ -826,7 +826,7 @@ func (r *Runtime) executeManageVideo(ctx context.Context, scope WorkspaceScope, 
 		}
 		var project pebblestore.VideoProjectSnapshot
 		var revision *pebblestore.VideoProjectRevisionSnapshot
-		if primaryProject && projectID == "" {
+		if primaryProject && projectID == "" && initialTimeline == nil {
 			project, revision, err = r.videoProjects.GetOrCreatePrimaryVideoToolProject(ctx, scope.Principal, createInput)
 		} else {
 			project, revision, err = r.videoProjects.CreateProject(ctx, scope.Principal, createInput)
