@@ -231,7 +231,12 @@ export function acceptedVideoPlan(timeline: VideoProjectTimelineWire): VideoPlan
   if (!Array.isArray(plan.parts) || plan.parts.length === 0) return null
   const parts = plan.parts.filter((part) => part && typeof part.id === 'string' && typeof part.title === 'string' && typeof part.duration_ms === 'number' && Boolean(part.visual?.session_id && part.visual.collection_id && part.visual.variant_id && part.visual.event_seq))
   const kind = plan.kind === 'revision' ? 'revision' : 'initial'
-  return parts.length > 0 ? { kind, summary: typeof plan.summary === 'string' ? plan.summary : undefined, composition_catalog: plan.composition_catalog, parts } : null
+  return parts.length > 0 ? {
+    kind,
+    summary: typeof plan.summary === 'string' ? plan.summary : undefined,
+    ...(plan.composition_catalog ? { composition_catalog: plan.composition_catalog } : {}),
+    parts,
+  } : null
 }
 
 export function videoPlanForPlayback(
@@ -793,7 +798,7 @@ export function layoutTimelineSegments(segments: TimelineSegment[]): TimelineLay
   return segments.map((segment) => {
     const track = segment.track ?? 0
     const trackEnd = trackEnds.get(track) ?? 0
-    if (!segment.visible || segment.duration <= 0) {
+    if ((segment.type !== 'audio' && !segment.visible) || segment.duration <= 0) {
       const timelineStart = segment.timelinePositioned ? Math.max(0, segment.start) : trackEnd
       return { ...segment, start: timelineStart, timelineStart, timelineEnd: timelineStart }
     }
@@ -845,7 +850,11 @@ export function syncTimelineAudioPlayback(
   playhead: number,
   playing: boolean,
 ): void {
-  const activeAudioSegments = activeTimelineSegments(layout, playhead).filter((segment) => segment.type === 'audio')
+  const activeAudioSegments = layout.filter((segment) => segment.type === 'audio'
+    && segment.duration > 0
+    && segment.timelineEnd > segment.timelineStart
+    && playhead >= segment.timelineStart
+    && playhead < segment.timelineEnd)
   const activeAudioClipIds = new Set(activeAudioSegments.map((segment) => segment.clipId))
   for (const [clipId, audio] of audioElements.entries()) {
     if (!activeAudioClipIds.has(clipId) && !audio.paused) audio.pause()
@@ -1143,8 +1152,8 @@ export function timelineSegmentsToProjectTimeline(
       duration_ms: Math.round(dur * 1000),
       visible: seg.visible,
       volume: 1.0,
-      composition_part_id: seg.compositionPartId,
-      composition: seg.composition,
+      ...(seg.compositionPartId ? { composition_part_id: seg.compositionPartId } : {}),
+      ...(seg.composition ? { composition: seg.composition } : {}),
     }
   })
   const [width, height] = outputPreset.startsWith('portrait') ? [1080, 1920] : outputPreset.startsWith('square') ? [1080, 1080] : [1920, 1080]
@@ -1323,9 +1332,9 @@ export function projectTimelineToTimelineSegments(
       title: details.title,
       onScreenText: details.onScreenText,
       frameDirection: details.still,
-      track: clipWire.track ?? 0,
+      track: clipWire.track ?? (audioSource ? 1 : 0),
       sequence: clipWire.sequence ?? originalIndex,
-      layer: clipWire.layer ?? clipWire.track ?? 0,
+      layer: clipWire.layer ?? clipWire.track ?? (audioSource ? 1 : 0),
       timelinePositioned: typeof explicitStartMs === 'number' && explicitStartMs >= 0,
       start,
       sourceStart: sourceStartSec,
