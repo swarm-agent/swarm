@@ -551,14 +551,37 @@ func (s *Service) resolveRunExecutionContext(session pebblestore.SessionSnapshot
 
 	roots := normalizeExecutionRoots(resolvedCWD, baseRoots)
 	effectiveWorktreeMode := RunWorktreeModeOff
+	resolvedScope := tool.WorkspaceScope{
+		PrimaryPath: resolvedCWD,
+		Roots:       roots,
+	}
 	if worktreeEnabled {
 		effectiveWorktreeMode = RunWorktreeModeOn
+		// The live provider path constructs its execution scope here rather than
+		// through ResolveRuntimeWorkspaceScope. Preserve the authenticated Coder
+		// source-checkout and linked-Git read-only roots (plus owned mutation
+		// limits) when this run still targets the session's managed worktree.
+		sessionScope, scopeErr := s.resolveRunWorkspaceScope(session, principal)
+		if scopeErr != nil {
+			return resolvedRunExecutionContext{}, scopeErr
+		}
+		selectedWorktreeRoot, rootErr := normalizeRunScopePath(firstNonEmptyString(worktreeRootPath, resolvedWorkspacePath))
+		if rootErr != nil {
+			return resolvedRunExecutionContext{}, rootErr
+		}
+		if sessionScope.WorktreeEnabled && sessionScope.WorktreeRootPath == selectedWorktreeRoot {
+			resolvedScope.ReadOnlyRoots = append([]string(nil), sessionScope.ReadOnlyRoots...)
+			resolvedScope.MutationScopes = append([]string(nil), sessionScope.MutationScopes...)
+			resolvedScope.WorktreeEnabled = true
+			resolvedScope.WorktreeRootPath = sessionScope.WorktreeRootPath
+			resolvedScope.WorktreeBranch = strings.TrimSpace(worktreeBranch)
+			resolvedScope.WorktreeBaseBranch = strings.TrimSpace(worktreeBaseBranch)
+			resolvedScope.WorktreeBaseCommit = sessionScope.WorktreeBaseCommit
+			resolvedScope.SourceWorkspacePath = sessionScope.SourceWorkspacePath
+		}
 	}
 	return resolvedRunExecutionContext{
-		Scope: tool.WorkspaceScope{
-			PrimaryPath: resolvedCWD,
-			Roots:       roots,
-		},
+		Scope:              resolvedScope,
 		WorkspacePath:      resolvedWorkspacePath,
 		CWD:                resolvedCWD,
 		WorktreeMode:       effectiveWorktreeMode,

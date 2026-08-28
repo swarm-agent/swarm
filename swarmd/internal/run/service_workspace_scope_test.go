@@ -262,6 +262,69 @@ func TestRunWorkspaceScopeCoderSourceWorkspaceReadDoesNotRequestPermission(t *te
 	}
 }
 
+func TestRunExecutionContextPreservesCoderSourceWorkspaceReadAuthorization(t *testing.T) {
+	repo := t.TempDir()
+	runTestGit(t, repo, "init", "-b", "dev")
+	runTestGit(t, repo, "config", "user.email", "test@example.com")
+	runTestGit(t, repo, "config", "user.name", "Test User")
+	sourceFile := filepath.Join(repo, "projects", "source-only.txt")
+	writeTestFile(t, sourceFile, "source content")
+	runTestGit(t, repo, "add", "projects/source-only.txt")
+	runTestGit(t, repo, "commit", "-m", "base")
+
+	worktree := filepath.Join(t.TempDir(), "child")
+	runTestGit(t, repo, "worktree", "add", "-b", "agent/test-live-source-read", worktree)
+
+	principal := testRunPrincipal()
+	runSvc := NewService(nil, nil, nil, nil, nil, nil, discovery.NewService(), nil)
+	session := pebblestore.SessionSnapshot{
+		ID:                 "session-coder-live-source-read",
+		UserID:             principal.UserID,
+		AccountScopeID:     principal.AccountScopeID,
+		WorkspacePath:      worktree,
+		WorktreeEnabled:    true,
+		WorktreeRootPath:   worktree,
+		WorktreeBranch:     "agent/test-live-source-read",
+		WorktreeBaseBranch: "dev",
+		Metadata: map[string]any{
+			"requested_subagent":              "coder",
+			"owned_scope":                     []string{"projects/output/**"},
+			"swarm_v3_source_workspace_path":  repo,
+			"swarm_v3_runtime_workspace_path": worktree,
+		},
+	}
+
+	resolved, err := runSvc.resolveRunExecutionContext(session, RunExecutionContext{WorktreeMode: RunWorktreeModeInherit}, principal)
+	if err != nil {
+		t.Fatalf("resolve live Coder execution context: %v", err)
+	}
+	assertStringSliceContains(t, resolved.Scope.ReadOnlyRoots, repo)
+	assertStringSliceNotContains(t, resolved.Scope.Roots, repo)
+	if len(resolved.Scope.MutationScopes) != 1 || resolved.Scope.MutationScopes[0] != "projects/output/**" {
+		t.Fatalf("live Coder mutation scopes = %#v", resolved.Scope.MutationScopes)
+	}
+
+	workspaceCtx := resolveRunWorkspaceContext(resolved)
+	gateScope := workspaceScopeForGate(&workspaceCtx, principal, session.ID)
+	for _, call := range []tool.Call{
+		{Name: "list", Arguments: mustJSON(t, map[string]any{"path": filepath.Dir(sourceFile)})},
+		{Name: "read", Arguments: mustJSON(t, map[string]any{"path": sourceFile})},
+	} {
+		request, needed, err := tool.ScopeExpansionForCall(gateScope, call)
+		if err != nil || needed {
+			t.Fatalf("live provider %s requested source-workspace permission: needed=%t request=%+v err=%v scope=%#v", call.Name, needed, request, err, gateScope)
+		}
+	}
+
+	request, needed, err := tool.ScopeExpansionForCall(gateScope, tool.Call{
+		Name:      "write",
+		Arguments: mustJSON(t, map[string]any{"path": sourceFile, "content": "changed"}),
+	})
+	if err != nil || !needed {
+		t.Fatalf("live provider source-workspace write expansion = %t request=%+v err=%v, want permission", needed, request, err)
+	}
+}
+
 func TestWorkspaceScopeGatePreservesCoderGitAdminReadAuthorization(t *testing.T) {
 	worktree := t.TempDir()
 	gitAdmin := t.TempDir()
