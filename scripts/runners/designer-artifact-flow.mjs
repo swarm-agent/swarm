@@ -27,9 +27,9 @@ const sourceEventSeqOverride = Number(option('--source-event-seq', process.env.S
 if (!apiURL || !/^https?:\/\//.test(apiURL)) throw new Error('--api-url must be an http or https URL')
 if (!provider || !/^[a-z0-9._-]+$/.test(provider)) throw new Error('--provider is invalid')
 if (!Number.isFinite(timeoutMs) || timeoutMs < 300000 || timeoutMs > 600000) throw new Error('--timeout-ms must be between 300000 and 600000; split longer proofs into resumable stages')
-if (!['root', 'focused', 'multi2', 'multi3', 'whole', 'managed', 'workspace', 'all'].includes(stage)) throw new Error('--stage must be root, focused, multi2, multi3, whole, managed, workspace, or all')
-if (!['root', 'all', 'multi2', 'multi3'].includes(stage) && !sessionOverride) throw new Error('--session-id is required for this resumed stage')
-if (['multi2', 'multi3'].includes(stage) && (!sourceSessionOverride || !sourceCollectionOverride || !sourceVariantOverride || !Number.isInteger(sourceEventSeqOverride) || sourceEventSeqOverride <= 0)) throw new Error('multi-target stages require --source-session-id, --source-collection-id, --source-variant-id, and --source-event-seq')
+if (!['root', 'focused', 'grouping', 'pinning', 'multi2', 'multi3', 'multi23', 'whole', 'managed', 'workspace', 'all'].includes(stage)) throw new Error('--stage must be root, focused, grouping, pinning, multi2, multi3, multi23, whole, managed, workspace, or all')
+if (!['root', 'all', 'multi2', 'multi3', 'multi23'].includes(stage) && !sessionOverride) throw new Error('--session-id is required for this resumed stage')
+if (['multi2', 'multi3', 'multi23'].includes(stage) && (!sourceSessionOverride || !sourceCollectionOverride || !sourceVariantOverride || !Number.isInteger(sourceEventSeqOverride) || sourceEventSeqOverride <= 0)) throw new Error('multi-target stages require --source-session-id, --source-collection-id, --source-variant-id, and --source-event-seq')
 
 const testID = `designer-artifact-flow-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`
 const partContract = [
@@ -40,9 +40,12 @@ const partContract = [
 const commonGates = ['provider_runnable', 'model_selected', 'workspace_bound', 'session_created']
 const stageGates = {
   root: [...commonGates, 'root_single_html', 'root_three_parts'],
-  focused: [...commonGates, 'root_single_html', 'root_three_parts', 'focused_five_ready', 'focused_lineage'],
+  focused: [...commonGates, 'root_single_html', 'root_three_parts', 'focused_five_ready', 'focused_lineage', 'focused_grouping'],
+  grouping: [...commonGates, 'iteration_groups_durable'],
+  pinning: [...commonGates, 'in_progress_pin_durable'],
   multi2: [...commonGates, 'multi_target_ready', 'multi_target_lineage', 'multi_target_parts_preserved'],
   multi3: [...commonGates, 'multi_target_ready', 'multi_target_lineage', 'multi_target_parts_preserved'],
+  multi23: [...commonGates, 'multi_target_ready', 'multi_target_lineage', 'multi_target_parts_preserved', 'multi_target_three_ready', 'multi_target_grouping'],
   whole: [...commonGates, 'focused_five_ready', 'focused_lineage', 'whole_five_ready', 'whole_lineage', 'whole_parts_preserved'],
   managed: [...commonGates, 'whole_five_ready', 'whole_lineage', 'managed_read_ready', 'managed_read_lineage'],
   workspace: [...commonGates, 'whole_five_ready', 'whole_lineage', 'workspace_designer_completed', 'workspace_file_visible'],
@@ -61,6 +64,7 @@ const result = {
   ids: {},
   references: {},
   rounds: {},
+  catalog_state: {},
   workspace_output: {},
   permissions_approved: [],
   gates: {},
@@ -296,7 +300,7 @@ async function main() {
   result.gates.workspace_bound = true
 
   let sessionID = sessionOverride
-  const createStageSession = !sessionID && (stage === 'root' || stage === 'all' || stage === 'multi2' || stage === 'multi3')
+  const createStageSession = !sessionID && (stage === 'root' || stage === 'all' || stage === 'multi2' || stage === 'multi3' || stage === 'multi23')
   if (createStageSession) {
     const created = await api('POST', '/v3/sessions', {
       client_request_id: `${testID}:create`,
@@ -323,24 +327,54 @@ async function main() {
   result.ids.desktop_path = `/${slug(binding.source_workspace_name || 'workspace')}/${sessionID}`
   result.gates.session_created = true
 
-  if (stage === 'multi2' || stage === 'multi3') {
+  if (stage === 'grouping' || stage === 'pinning') {
+    const artifacts = (await catalog(sessionID)).filter((item) => item?.session_id === sessionID || item?.lineage?.parent_session_id === sessionID)
+    const iterationGroups = new Map()
+    for (const item of artifacts) {
+      const groupID = String(item?.lineage?.iteration_group_id || item?.composition?.iteration_group_id || '').trim()
+      if (!groupID) continue
+      iterationGroups.set(groupID, [...(iterationGroups.get(groupID) || []), item])
+    }
+    result.catalog_state.iteration_groups = [...iterationGroups.entries()].map(([group_id, entries]) => ({
+      group_id,
+      count: entries.length,
+      collections: [...new Set(entries.map((item) => String(item?.collection_id || '')).filter(Boolean))],
+      chains: [...new Set(entries.map((item) => String(item?.artifact_chain_id || '')).filter(Boolean))],
+      statuses: entries.map((item) => `${item?.artifact_id || 'unknown'}:${item?.status || 'unknown'}`),
+    }))
+    if (stage === 'grouping') {
+      assert(result.catalog_state.iteration_groups.some((group) => group.count > 1), `catalog has no durable multi-candidate iteration group; groups=${JSON.stringify(result.catalog_state.iteration_groups)}`)
+      result.gates.iteration_groups_durable = true
+      result.result = 'PASS'
+      return
+    }
+    const explicitlyPinned = artifacts.filter((item) => item?.in_progress === true || item?.chain?.in_progress === true || item?.artifact_state === 'in_progress')
+    result.catalog_state.in_progress_candidates = explicitlyPinned.map((item) => exactRef(item))
+    assert(explicitlyPinned.length === 1, `catalog does not expose exactly one explicit durable In Progress artifact; found=${explicitlyPinned.length}; revised_chains=${[...new Set(artifacts.filter((item) => (item?.chain?.revision_count || item?.revision_number || 0) > 1).map((item) => item?.artifact_chain_id).filter(Boolean))].join(',') || 'none'}`)
+    result.gates.in_progress_pin_durable = true
+    result.result = 'PASS'
+    return
+  }
+
+  if (stage === 'multi2' || stage === 'multi3' || stage === 'multi23') {
     const sourceRef = {
       session_id: sourceSessionOverride,
       collection_id: sourceCollectionOverride,
       variant_id: sourceVariantOverride,
       event_seq: sourceEventSeqOverride,
     }
-    const targetCount = stage === 'multi2' ? 2 : 3
-    const selectedTargets = stage === 'multi2' ? [partContract[0], partContract[2]] : partContract
+    const targetCount = stage === 'multi3' ? 3 : 2
+    const candidateCount = stage === 'multi23' ? 3 : 1
+    const selectedTargets = stage === 'multi3' ? partContract : stage === 'multi23' ? [partContract[1], partContract[2]] : [partContract[0], partContract[2]]
     const targetIDs = selectedTargets.map((item) => item.id)
     const selection = { ...sourceRef, action: 'use' }
     const prompt = [
       `Use the selected exact monolithic HTML artifact and remake exactly these ${targetCount} locator targets together: ${targetIDs.join(', ')}.`,
-      `Launch one managed Designer Iteration Swarm with count=1, source_artifact set to the exact selection, section_targets set to the complete exact ${targetCount}-target list including kind/start_ms/end_ms, and animation_profile motion_ui.`,
+      `Launch one managed Designer Iteration Swarm with count=${candidateCount}, source_artifact set to the exact selection, section_targets set to the complete exact ${targetCount}-target list including kind/start_ms/end_ms, and animation_profile motion_ui.`,
       'The Designer must inspect the exact complete HTML, change every selected target atomically, preserve every non-target target plus all canonical IDs/timings, and publish exactly one complete text/html revision with one manage_artifact create call.',
       'Do not create or modify a plan. Launch the one Designer swarm directly in this turn.',
       'Do not use read_parts, publish_parts, read_part, publish_part, create_package, ZIP, initial_parts, workspace output, or retries through multipart tools.',
-      'Wait for the one ready candidate and finish.',
+      `Wait for all ${candidateCount} ready candidate${candidateCount === 1 ? '' : 's'} and finish.`,
     ].join(' ')
     await postTurn(sessionID, stage, prompt, [selection])
     const targetKey = targetIDs.join(',')
@@ -348,15 +382,24 @@ async function main() {
     const sourceCandidates = artifacts.filter((item) => sameSource(item.lineage, sourceRef)
       && String(item?.lineage?.selected_review_target_ids || '') === targetKey)
     const candidates = sourceCandidates.filter((item) => item?.status === 'ready' && item.media_type === 'text/html')
-    assert(candidates.length >= 1, `${stage} terminal run produced no ready complete candidate; target candidates=${sourceCandidates.map((item) => `${item.artifact_id}:${item.status}:${item.failure_code || 'none'}`).join(',') || 'none'}`)
-    const candidate = candidates.sort((a, b) => Number(b.event_seq || 0) - Number(a.event_seq || 0))[0]
-    assert(hasPartContract(candidate), `${stage} candidate did not preserve the canonical part contract`)
+    assert(candidates.length >= candidateCount, `${stage} terminal run produced ${candidates.length}/${candidateCount} ready complete candidates; target candidates=${sourceCandidates.map((item) => `${item.artifact_id}:${item.status}:${item.failure_code || 'none'}`).join(',') || 'none'}`)
+    const orderedCandidates = candidates.sort((a, b) => Number(a.candidate_index || 0) - Number(b.candidate_index || 0) || Number(a.event_seq || 0) - Number(b.event_seq || 0)).slice(0, candidateCount)
+    const candidate = orderedCandidates[0]
+    assert(orderedCandidates.every(hasPartContract), `${stage} candidate did not preserve the canonical part contract`)
     result.references.source = sourceRef
     result.references.multi_target = exactRef(candidate)
-    result.rounds.multi_target = [{ reference: exactRef(candidate), lineage: candidate.lineage, parts: candidate.parts }]
+    result.rounds.multi_target = orderedCandidates.map((item) => ({ reference: exactRef(item), candidate_index: item.candidate_index, revision_round_id: item.revision_round_id, lineage: item.lineage, parts: item.parts }))
     result.gates.multi_target_ready = true
-    result.gates.multi_target_lineage = sameSource(candidate.lineage, sourceRef) && String(candidate.lineage?.selected_review_target_ids || '') === targetKey
-    result.gates.multi_target_parts_preserved = hasPartContract(candidate)
+    result.gates.multi_target_lineage = orderedCandidates.every((item) => sameSource(item.lineage, sourceRef) && String(item.lineage?.selected_review_target_ids || '') === targetKey)
+    result.gates.multi_target_parts_preserved = orderedCandidates.every(hasPartContract)
+    if (stage === 'multi23') {
+      const indexes = new Set(orderedCandidates.map((item) => Number(item.candidate_index || 0)))
+      const groups = new Set(orderedCandidates.map((item) => String(item?.lineage?.iteration_group_id || item?.composition?.iteration_group_id || '')).filter(Boolean))
+      result.gates.multi_target_three_ready = orderedCandidates.length === 3 && indexes.size === 3
+      result.gates.multi_target_grouping = groups.size === 1
+      assert(result.gates.multi_target_three_ready, `multi23 candidates do not expose three distinct candidate indexes: ${[...indexes].join(',')}`)
+      assert(result.gates.multi_target_grouping, `multi23 candidates do not share one durable iteration group: ${[...groups].join(',') || 'none'}`)
+    }
     result.result = 'PASS'
     return
   }
@@ -368,7 +411,7 @@ async function main() {
       'It must use swarm.animation/v1 with duration_ms 12000 and fps 30, plus swarm.iteration/v1 with exactly these ordered sections:',
       'part-1 "Part 1 · Opening" 0-4000ms; part-2 "Part 2 · Transformation" 4000-8000ms; part-3 "Part 3 · Resolution" 8000-12000ms.',
       'Install the required deterministic renderAt/ready/seek APIs, self-starting scheduler, swarm-player/v1 bridge, and visible section buttons using those exact IDs and boundaries.',
-      'Keep the artifact monolithic text/html. Use one manage_artifact create call with top-level content. Do not use initial_parts, multipart tools, create_package, ZIP, workspace files, or task delegation.',
+      'Keep the artifact monolithic text/html. Use one manage_artifact create call with top-level content and animation_profile motion_ui so the trusted publication preflight must pass before ready. Do not use initial_parts, multipart tools, create_package, ZIP, workspace files, or task delegation.',
       'Omit top-level parts so the server must derive the three temporal edit targets from the iteration manifest.',
       'After the artifact is ready, finish the turn without creating extra artifacts.',
     ].join(' ')
@@ -411,6 +454,9 @@ async function main() {
   result.rounds.focused = focusedRound.map((item) => ({ reference: exactRef(item), candidate_index: item.candidate_index, revision_round_id: item.revision_round_id, targeted_part_id: item.targeted_part_id, lineage: item.lineage }))
   result.gates.focused_five_ready = true
   result.gates.focused_lineage = focusedRound.every((item) => sameSource(item.lineage, rootRef))
+  const focusedGroupIDs = new Set(focusedRound.map((item) => String(item?.lineage?.iteration_group_id || item?.composition?.iteration_group_id || '')).filter(Boolean))
+  result.gates.focused_grouping = focusedGroupIDs.size === 1
+  assert(result.gates.focused_grouping, `focused candidates do not share one durable iteration group: ${[...focusedGroupIDs].join(',') || 'none'}`)
   if (stage === 'focused') {
     result.result = 'PASS'
     return

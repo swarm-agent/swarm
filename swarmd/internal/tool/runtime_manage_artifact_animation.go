@@ -319,6 +319,9 @@ func (r *Runtime) cancelHTMLAnimationExport(principal artifact.Principal, callID
 func (r *Runtime) reserveAndPreflightManagedAnimation(ctx context.Context, principal artifact.Principal, input artifact.CreateInput, entries []artifact.PackageEntry, packageArtifact bool) (*managedAnimationPreflight, error) {
 	files, entry, manifest, gated, err := managedAnimationPublicationSource(input, entries, packageArtifact)
 	if !gated {
+		if err != nil {
+			return nil, err
+		}
 		return nil, nil
 	}
 	if strings.TrimSpace(input.RequestID) == "" || strings.TrimSpace(input.CollectionID) == "" || strings.TrimSpace(input.VariantID) == "" {
@@ -341,7 +344,7 @@ func (r *Runtime) reserveAndPreflightManagedAnimation(ctx context.Context, princ
 	var result htmlcapture.AnimationResult
 	if err == nil {
 		var preflightErr error
-		result, preflightErr = r.htmlAnimationCapture.PreflightAnimation(ctx, htmlcapture.AnimationRequest{Entry: entry, Files: files, DurationMS: manifest.DurationMS, FPS: manifest.FPS})
+		result, preflightErr = r.htmlAnimationCapture.PreflightAnimation(ctx, htmlcapture.AnimationRequest{Entry: entry, Files: files, DurationMS: manifest.DurationMS, FPS: manifest.FPS, RequireLivePlayback: input.AnimationProfile != nil && input.AnimationProfile.ProfileID == "motion_ui"})
 		if preflightErr != nil {
 			err = normalizeAnimationRendererError(preflightErr)
 		} else if result.DurationMS != manifest.DurationMS || result.FPS != manifest.FPS || result.FrameCount != (manifest.DurationMS*manifest.FPS+999)/1000 {
@@ -420,7 +423,22 @@ func managedHTMLAnimationProfile(profile *pebblestore.SessionArtifactAnimationPr
 }
 
 func managedAnimationPublicationSource(input artifact.CreateInput, entries []artifact.PackageEntry, packageArtifact bool) (map[string][]byte, string, animationManifest, bool, error) {
-	if !managedHTMLAnimationProfile(input.AnimationProfile) {
+	profiled := managedHTMLAnimationProfile(input.AnimationProfile)
+	declared := false
+	if packageArtifact {
+		for _, candidate := range entries {
+			if pathClean(candidate.Name) == "index.html" {
+				declared = animationManifestID.Match(candidate.Data)
+				break
+			}
+		}
+	} else if canonicalArtifactMediaType(input.MediaType) == "text/html" {
+		declared = animationManifestID.Match(input.Body)
+	}
+	if declared && !profiled {
+		return nil, "", animationManifest{}, false, animationError("animation_profile_required", "HTML declaring swarm.animation/v1 requires a reviewed animation profile and trusted preflight")
+	}
+	if !profiled {
 		return nil, "", animationManifest{}, false, nil
 	}
 	files := make(map[string][]byte)
@@ -548,6 +566,10 @@ func animationRendererSafeMessage(code string) string {
 		return "animation runtime binding exceeded the fixed deadline"
 	case "animation_not_ready":
 		return "animation runtime did not become ready"
+	case "animation_playback_missing":
+		return "motion_ui animation did not start its own visible requestAnimationFrame playback"
+	case "animation_profile_required":
+		return "HTML declaring swarm.animation/v1 requires a reviewed animation profile"
 	case "animation_manifest_mismatch":
 		return "animation runtime acknowledgement does not match the manifest"
 	case "animation_seek_rejected":

@@ -143,6 +143,24 @@ func TestAnimationPreflightDoesNotRequireEncoder(t *testing.T) {
 	}
 }
 
+func TestAnimationPreflightRejectsMissingArtifactOwnedPlayback(t *testing.T) {
+	script := `<!doctype html><html><head><script>globalThis.__SWARM_ANIMATION_BIND__({version:"swarm.animation/v1",ready(){return {duration_ms:400,fps:10}},seek(timeMs){document.documentElement.dataset.swarmAnimationTimeMs=String(timeMs);return {time_ms:timeMs}},stop(){}});</script></head><body></body></html>`
+	renderer := requireAnimationRuntime(t)
+	_, err := renderer.PreflightAnimation(context.Background(), AnimationRequest{Entry: "index.html", Files: map[string][]byte{"index.html": []byte(script)}, DurationMS: 400, FPS: 10, RequireLivePlayback: true})
+	var captureErr *Error
+	if !errors.As(err, &captureErr) || captureErr.Code != "animation_playback_missing" {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestAnimationPreflightAcceptsArtifactOwnedPlayback(t *testing.T) {
+	script := `<!doctype html><html><head><script>let raf=0;const renderAt=timeMs=>{document.documentElement.dataset.frame=String(timeMs)};const tick=time=>{renderAt(time);raf=requestAnimationFrame(tick)};const runtime={version:"swarm.animation/v1",ready(){return {duration_ms:400,fps:10}},seek(timeMs){cancelAnimationFrame(raf);renderAt(timeMs);document.documentElement.dataset.swarmAnimationTimeMs=String(timeMs);return {time_ms:timeMs}},stop(){cancelAnimationFrame(raf)}};globalThis.__SWARM_ANIMATION_BIND__(runtime);raf=requestAnimationFrame(tick);</script></head><body></body></html>`
+	renderer := requireAnimationRuntime(t)
+	if _, err := renderer.PreflightAnimation(context.Background(), AnimationRequest{Entry: "index.html", Files: map[string][]byte{"index.html": []byte(script)}, DurationMS: 400, FPS: 10, RequireLivePlayback: true}); err != nil {
+		t.Fatalf("self-starting preflight: %v", err)
+	}
+}
+
 func TestAnimationBootstrapReportsMissingBeforeDOMContentLoaded(t *testing.T) {
 	result, err := preflightHTML(t, `<!doctype html><html><head><style>html,body{margin:0;width:100%;height:100%;background:#08111f}</style></head><body></body></html>`, 400, 10)
 	var captureErr *Error

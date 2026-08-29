@@ -698,6 +698,19 @@ test('artifact collection URLs preserve collection-level viewer state', () => {
   assert.equal(location && desktopV3ArtifactCatalogEntryForViewerLocation([first, selected], location), undefined)
 })
 
+test('artifact collection URLs preserve an exact presentation group across collections', () => {
+  const target = { sessionId: 'session-1', collectionId: 'collection-1', groupKey: 'turn:session-1:group-9' }
+  assert.deepEqual(desktopV3ArtifactCollectionViewerSearch(target), { artifactSession: 'session-1', collection: 'collection-1', artifactGroup: 'turn:session-1:group-9' })
+  assert.equal(
+    desktopV3ArtifactCollectionViewerHref('my workspace', target),
+    '/my%20workspace/session-1?artifactSession=session-1&collection=collection-1&artifactGroup=turn%3Asession-1%3Agroup-9',
+  )
+  assert.deepEqual(
+    desktopV3ArtifactViewerLocation('session-1', desktopV3ArtifactCollectionViewerSearch(target)),
+    { sessionId: 'session-1', collectionId: 'collection-1', groupKey: 'turn:session-1:group-9' },
+  )
+})
+
 test('artifact viewer resolves delegated entries against parent-session URLs', () => {
   const delegated = normalizeDesktopV3ArtifactCatalogEntry({
     ...managedCatalogWire,

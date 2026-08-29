@@ -945,17 +945,20 @@ export interface DesktopV3ArtifactViewerSearch {
   artifactSession: string
   collection?: string
   artifact?: string
+  artifactGroup?: string
 }
 
 export interface DesktopV3ArtifactViewerLocation {
   sessionId: string
   collectionId?: string
   artifactId?: string
+  groupKey?: string
 }
 
 export interface DesktopV3ArtifactCollectionViewerTarget {
   sessionId: string
   collectionId: string
+  groupKey?: string
 }
 
 function desktopV3ArtifactViewerPath(
@@ -971,6 +974,7 @@ function desktopV3ArtifactViewerPath(
   const search = new URLSearchParams({ artifactSession: viewerSearch.artifactSession })
   if (viewerSearch.collection) search.set('collection', viewerSearch.collection)
   if (viewerSearch.artifact) search.set('artifact', viewerSearch.artifact)
+  if (viewerSearch.artifactGroup) search.set('artifactGroup', viewerSearch.artifactGroup)
   return `/${encodeURIComponent(normalizedWorkspaceSlug)}/${encodeURIComponent(normalizedSessionId)}?${search.toString()}`
 }
 
@@ -980,8 +984,9 @@ export function desktopV3ArtifactCollectionViewerSearch(
 ): DesktopV3ArtifactViewerSearch {
   const sessionId = collection.sessionId.trim()
   const collectionId = collection.collectionId.trim()
+  const groupKey = collection.groupKey?.trim() ?? ''
   if (!sessionId || !collectionId) throw new Error('Artifact collection URL requires a session and collection ID')
-  return { artifactSession: sessionId, collection: collectionId }
+  return { artifactSession: sessionId, collection: collectionId, ...(groupKey ? { artifactGroup: groupKey } : {}) }
 }
 
 /** Canonical search identity for one exact artifact or managed iteration. */
@@ -1020,17 +1025,19 @@ export function desktopV3ArtifactViewerHref(
 /** Parses collection-base and iteration-specific viewer URLs without crossing session authority. */
 export function desktopV3ArtifactViewerLocation(
   sessionId: string,
-  search: { artifactSession?: unknown; artifact?: unknown; collection?: unknown },
+  search: { artifactSession?: unknown; artifact?: unknown; collection?: unknown; artifactGroup?: unknown },
 ): DesktopV3ArtifactViewerLocation | null {
   const normalizedSessionId = sessionId.trim()
   const artifactSessionId = typeof search.artifactSession === 'string' ? search.artifactSession.trim() : ''
   const artifactId = typeof search.artifact === 'string' ? search.artifact.trim() : ''
   const collectionId = typeof search.collection === 'string' ? search.collection.trim() : ''
+  const groupKey = typeof search.artifactGroup === 'string' ? search.artifactGroup.trim() : ''
   if (!normalizedSessionId || artifactSessionId !== normalizedSessionId || (!artifactId && !collectionId)) return null
   return {
     sessionId: normalizedSessionId,
     ...(collectionId ? { collectionId } : {}),
     ...(artifactId ? { artifactId } : {}),
+    ...(groupKey ? { groupKey } : {}),
   }
 }
 

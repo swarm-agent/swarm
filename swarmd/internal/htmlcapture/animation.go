@@ -51,11 +51,12 @@ type AnimationProgress struct {
 }
 
 type AnimationRequest struct {
-	Entry      string
-	Files      map[string][]byte
-	DurationMS int
-	FPS        int
-	Progress   func(AnimationProgress)
+	Entry               string
+	Files               map[string][]byte
+	DurationMS          int
+	FPS                 int
+	RequireLivePlayback bool
+	Progress            func(AnimationProgress)
 }
 
 // AnimationBounds uses CSS pixel coordinates in the fixed 1920x1080 viewport.
@@ -427,6 +428,9 @@ const animationBootstrapScriptPrefix = `(function () {
 "use strict";
 const prior=globalThis.__SWARM_ANIMATION_V1__;
 let claimed=false, settled=false, bound=null, resolveBind;
+let liveFrameRequests=0, liveFrameCallbacks=0;
+const nativeRequestAnimationFrame=globalThis.requestAnimationFrame.bind(globalThis);
+Object.defineProperty(globalThis,"requestAnimationFrame",{value:callback=>{liveFrameRequests++;return nativeRequestAnimationFrame(timestamp=>{liveFrameCallbacks++;return callback(timestamp)})},writable:false,configurable:false,enumerable:false});
 const lifecycle=[];
 const allowedOutcomes=new Set(["bind_claimed","duplicate_bind","bound","invalid","bind_rejected","bind_timeout","missing_before_dom_content_loaded"]);
 const record=outcome=>{if(lifecycle.length<8&&allowedOutcomes.has(outcome))lifecycle.push(outcome)};
@@ -469,7 +473,7 @@ const runtime={
 };
 Object.defineProperty(globalThis,"__SWARM_ANIMATION_V1__",{value:runtime,writable:false,configurable:false,enumerable:true});
 Object.defineProperty(globalThis,"__SWARM_ANIMATION_BIND__",{value:bind,writable:false,configurable:false,enumerable:false});
-Object.defineProperty(globalThis,"__SWARM_ANIMATION_BOOTSTRAP_V1__",{value:{version:"swarm.animation.bootstrap/v1",get settled(){return settled},get lifecycle(){return lifecycle.slice()}},writable:false,configurable:false,enumerable:false});
+Object.defineProperty(globalThis,"__SWARM_ANIMATION_BOOTSTRAP_V1__",{value:{version:"swarm.animation.bootstrap/v1",get settled(){return settled},get lifecycle(){return lifecycle.slice()},get live_frame_requests(){return liveFrameRequests},get live_frame_callbacks(){return liveFrameCallbacks}},writable:false,configurable:false,enumerable:false});
 if (valid(prior)) bind(prior);
 })();`
 
@@ -517,6 +521,10 @@ if (ack && typeof ack.__swarm_outcome==="string") {
 const finalLifecycle=bootstrap.lifecycle;
 if (finalLifecycle.filter(item=>item==="bound").length!==1||finalLifecycle[0]!=="bind_claimed") return {code:"animation_bootstrap_missing",outcome:"lifecycle_invalid",lifecycle:finalLifecycle};
 if (!ack || Object.keys(ack).length!==2 || ack.duration_ms!==%d || ack.fps!==%d) return {code:"animation_manifest_mismatch",outcome:"manifest_mismatch",lifecycle:finalLifecycle};
+if (%t) {
+  await new Promise(resolve=>setTimeout(resolve,50));
+  if (bootstrap.live_frame_requests<2 || bootstrap.live_frame_callbacks<1) return {code:"animation_playback_missing",outcome:"live_playback_missing",lifecycle:finalLifecycle};
+}
 try { await document.fonts.ready; await Promise.all(Array.from(document.images, async img => { if (!img.complete || img.naturalWidth===0) throw new Error(); await img.decode(); })); } catch (_) { return {code:"animation_not_ready",outcome:"assets_not_ready",lifecycle:finalLifecycle}; }
 const visible=node=>{const s=getComputedStyle(node),r=node.getBoundingClientRect();return s.display!=="none"&&s.visibility!=="hidden"&&Number(s.opacity)!==0&&r.width>0&&r.height>0};
 let blockers=Array.from(document.querySelectorAll('[data-swarm-capture-blocking],[role="dialog"][aria-modal="true"],dialog[open]'));
@@ -529,7 +537,7 @@ const transparent=color=>color==='transparent'||/^rgba\([^)]*,\s*0(?:\.0+)?\s*\)
 const needsOpaqueCanvas=transparent(getComputedStyle(document.documentElement).backgroundColor)&&transparent(getComputedStyle(document.body).backgroundColor);
 const style=document.createElement('style'); style.setAttribute('data-swarm-renderer-style','animation-v1'); style.textContent='*,*::before,*::after{scroll-behavior:auto!important;caret-color:transparent!important;cursor:none!important;pointer-events:none!important}html,body{width:1920px!important;height:1080px!important;max-width:1920px!important;max-height:1080px!important;margin:0!important;overflow:hidden!important}'+(needsOpaqueCanvas?'html{background:#fff!important}':''); document.head.append(style);
 return {code:"ok",outcome:"ready",lifecycle:finalLifecycle};
-})()`, AnimationVersion, req.DurationMS, req.FPS)
+})()`, AnimationVersion, req.DurationMS, req.FPS, req.RequireLivePlayback)
 	if err := chromedp.Run(ctx, chromedp.Evaluate(expression, &audit, awaitPromise)); err != nil {
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 			diagnostic := AnimationDiagnostic{Stage: "readiness", Outcome: "ready_timeout"}
@@ -952,6 +960,8 @@ func animationSafeMessage(code string) string {
 		return "animation runtime duration or FPS does not match the declared manifest"
 	case "animation_not_ready":
 		return "animation runtime did not acknowledge complete readiness"
+	case "animation_playback_missing":
+		return "motion_ui animation did not start artifact-owned requestAnimationFrame playback"
 	case "animation_timeout":
 		return "animation runtime exceeded the fixed readiness deadline"
 	case "animation_seek_rejected":

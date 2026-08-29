@@ -146,7 +146,7 @@ test('sidebar groups a focused iteration turn under its exact artifact part', ()
 
   const entries = [base, ...candidates]
   base.chain = { ...chain, head: candidateReferences[0]! }
-  const group = desktopV3ArtifactSidebarGroups(entries).find((candidate) => candidate.key === 'chain:chain-hero')!
+  const group = desktopV3ArtifactSidebarGroups(entries).find((candidate) => candidate.key === 'turn:session-a:hero-group')!
   const iterationGroup = desktopV3ArtifactSidebarIterationGroup(entries, group)
   assert.equal(iterationGroup?.iterationCount, 10)
   assert.equal(iterationGroup?.partId, 'hero')
@@ -260,10 +260,10 @@ test('sidebar presents one storyboard proposal with its ordered parts and exact 
   assert.match(source, /storyboard\.parts\.map/)
   assert.match(source, /onOpenArtifact\(target, part\.id\)/)
   assert.match(source, /const initialStoryboardPart = storyboard\?\.parts\[0\]/)
-  assert.match(source, /const openTarget = initialStoryboardPart\?\.still \?\? storyboard\?\.source \?\? representative/)
-  assert.match(source, /const openPartId = initialStoryboardPart\?\.id \?\? ''/)
+  assert.match(source, /const openTarget = iterationGroup\?\.target \?\? initialStoryboardPart\?\.still \?\? storyboard\?\.source \?\? representative/)
+  assert.match(source, /const openPartId = iterationGroup\?\.partId \?\? initialStoryboardPart\?\.id \?\? ''/)
   assert.match(source, /href=\{artifactHref\(openTarget\)\}/)
-  assert.match(source, /onOpenArtifact\(openTarget, openPartId\)/)
+  assert.match(source, /onOpenArtifact\(openTarget, openPartId, group\.key\)/)
 })
 
 test('sidebar turn copy keeps multi-part rounds at the complete-iteration level', async () => {
@@ -277,7 +277,7 @@ test('sidebar turn copy keeps multi-part rounds at the complete-iteration level'
   assert.match(source, />Open iteration</)
 })
 
-test('sidebar prioritizes an active authored chain and groups documents and render-only helpers by durable media role', () => {
+test('sidebar groups documents and render-only helpers by durable media role without inventing In Progress', () => {
   const original = { ...artifact('session-a', 'atlas-original'), collectionId: 'atlas-original', eventSeq: 3231, updatedAt: 3231, graphState: 'git_projection' as const, artifactChainId: 'atlas-chain', artifactStepId: 'atlas-step-1', chain: { id: 'atlas-chain', graphState: 'git_projection', name: 'Atlas gyroscope', root: { sessionId: 'session-a', collectionId: 'atlas-original', variantId: 'atlas-original', eventSeq: 3231 }, head: { sessionId: 'session-a', collectionId: 'atlas-derived', variantId: 'atlas-derived', eventSeq: 3443 }, revisionCount: 2, lastRoundId: 'atlas-step-2' }, step: { id: 'atlas-step-1', graphState: 'git_projection', artifactChainId: 'atlas-chain', revisionNumber: 1, candidates: [{ sessionId: 'session-a', collectionId: 'atlas-original', variantId: 'atlas-original', eventSeq: 3231 }] } } as DesktopV3ArtifactCatalogEntry
   const derived = { ...original, artifactId: 'atlas-derived', collectionId: 'atlas-derived', eventSeq: 3443, updatedAt: 3443, artifactStepId: 'atlas-step-2', step: { id: 'atlas-step-2', graphState: 'git_projection', artifactChainId: 'atlas-chain', revisionNumber: 2, parent: original.step!.candidates[0], candidates: [{ sessionId: 'session-a', collectionId: 'atlas-derived', variantId: 'atlas-derived', eventSeq: 3443 }] } } as DesktopV3ArtifactCatalogEntry
   const markdown = (id: string) => ({ ...artifact('session-a', id), filename: `${id}.md`, mediaType: 'text/markdown', kind: 'text', category: 'document' as const })
@@ -285,13 +285,13 @@ test('sidebar prioritizes an active authored chain and groups documents and rend
   const fallback = { ...image, artifactId: 'atlas-fallback', role: 'render_only' as const, collectionId: 'fallback', eventSeq: 3468, updatedAt: 3468, lineage: { ...image.lineage, sourceSessionId: 'session-a', sourceCollectionId: 'atlas-derived', sourceVariantId: 'atlas-derived', sourceEventSeq: 3443 } }
 
   const groups = desktopV3ArtifactSidebarGroups([markdown('notes-1'), fallback, image, derived, markdown('notes-2'), original])
-  assert.deepEqual(groups.map((group) => group.section), ['active', 'visual', 'documents', 'supporting'])
+  assert.deepEqual(groups.map((group) => group.section), ['motion', 'visual', 'documents', 'supporting'])
   assert.deepEqual(groups[0]?.entries.map((entry) => entry.artifactId), ['atlas-original', 'atlas-derived'])
   assert.deepEqual(groups.find((group) => group.section === 'documents')?.entries.map((entry) => entry.filename), ['notes-1.md', 'notes-2.md'])
   assert.deepEqual(groups.find((group) => group.section === 'supporting')?.entries.map((entry) => entry.artifactId), ['atlas-fallback'])
 })
 
-test('sidebar pins only the newest authoritative active chain', () => {
+test('sidebar pins the first focused chain and keeps later iteration groups visible', () => {
   const projectedChain = (chainId: string, eventSeq: number) => {
     const rootRef = { sessionId: 'session-a', collectionId: `${chainId}-root`, variantId: `${chainId}-root`, eventSeq: eventSeq - 1 }
     const headRef = { sessionId: 'session-a', collectionId: `${chainId}-head`, variantId: `${chainId}-head`, eventSeq }
@@ -301,10 +301,28 @@ test('sidebar pins only the newest authoritative active chain', () => {
     return [root, head]
   }
 
-  const groups = desktopV3ArtifactSidebarGroups([...projectedChain('older-chain', 20), ...projectedChain('newer-chain', 40)])
+  const [olderRoot, olderHead] = projectedChain('older-chain', 20)
+  const [newerRoot, newerHead] = projectedChain('newer-chain', 40)
+  olderHead!.targetedPartId = 'part-2'
+  olderHead!.lineage = { ...olderHead!.lineage!, iterationGroupId: 'older-focused', iterationGroup: 'Part 2 directions', partId: 'part-2', partLabel: 'Part 2' }
+  newerHead!.targetedPartIds = ['part-2', 'part-3']
+  newerHead!.lineage = { ...newerHead!.lineage!, iterationGroupId: 'newer-focused', iterationGroup: 'Part 2 + Part 3 directions' }
+
+  const groups = desktopV3ArtifactSidebarGroups([newerHead!, newerRoot!, olderHead!, olderRoot!])
   assert.equal(groups.filter((group) => group.section === 'active').length, 1)
-  assert.equal(groups.find((group) => group.section === 'active')?.key, 'chain:newer-chain')
-  assert.equal(groups.find((group) => group.key === 'chain:older-chain')?.section, 'motion')
+  assert.equal(groups.find((group) => group.section === 'active')?.key, 'chain:older-chain')
+  assert.deepEqual(groups.filter((group) => group.key.startsWith('turn:')).map((group) => group.label), ['Part 2 directions', 'Part 2 + Part 3 directions'])
+})
+
+test('sidebar exact group navigation uses a durable presentation key while In Progress opens its head', async () => {
+  const sidebar = await readFile(new URL('./desktop-v3-artifact-sidebar.tsx', import.meta.url), 'utf8')
+  const gallery = await readFile(new URL('./desktop-v3-artifact-gallery.tsx', import.meta.url), 'utf8')
+  const pane = await readFile(new URL('./desktop-v3-existing-conversation-pane.tsx', import.meta.url), 'utf8')
+  assert.match(sidebar, /onOpenArtifact\(openTarget, openPartId, group\.key\)/)
+  assert.match(gallery, /initialGroupKey\?/)
+  assert.match(gallery, /groups\.find\(\(group\) => group\.key === initialGroupKey\)/)
+  assert.match(pane, /setArtifactGalleryInitialGroupKey\(groupKey\)/)
+  assert.match(pane, /groupKey\.startsWith\("turn:"\)/)
 })
 
 test('sidebar renders compact filename-first document rows and collapsed supporting assets', async () => {

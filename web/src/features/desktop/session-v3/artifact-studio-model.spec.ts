@@ -9,6 +9,7 @@ import {
   desktopV3ArtifactStudioParent,
   desktopV3ArtifactStudioPartIterations,
   desktopV3ArtifactStudioPresentationGroupKey,
+  desktopV3ArtifactStudioProjection,
   desktopV3ArtifactStudioRounds,
   desktopV3ArtifactStudioSamePartRevision,
   desktopV3ArtifactStudioSectionAlternatives,
@@ -89,6 +90,60 @@ test('artifact studio groups one generating turn across collections by durable i
 
   assert.equal(desktopV3ArtifactStudioPresentationGroupKey([first, second], first), 'turn:session-1:task-turn-9')
   assert.equal(desktopV3ArtifactStudioPresentationGroupKey([first, second], second), 'turn:session-1:task-turn-9')
+})
+
+test('artifact studio projection keeps named groups visible and pins the first focused chain', () => {
+  const grouped = (id: string, eventSeq: number, groupId: string, chainId: string) => {
+    const entry = artifact({ id, eventSeq, step: `${id}-root`, revision: 1, candidates: [ref(id, eventSeq)], head: ref(id, eventSeq) })
+    entry.artifactChainId = chainId
+    entry.chain = { ...entry.chain!, id: chainId, name: chainId, root: ref(id, eventSeq), head: ref(id, eventSeq), revisionCount: 1 }
+    entry.step = { ...entry.step!, artifactChainId: chainId }
+    entry.lineage.iterationGroupId = groupId
+    entry.lineage.iterationGroup = groupId === 'group-a' ? 'First concepts' : 'Second concepts'
+    return entry
+  }
+  const first = grouped('first', 1, 'group-a', 'chain-first')
+  const second = grouped('second', 2, 'group-b', 'chain-second')
+  const firstFocused = artifact({ id: 'first-focused', eventSeq: 10, step: 'first-focused-step', revision: 2, candidates: [ref('first-focused', 10)], parent: ref('first', 1), head: ref('first-focused', 10), section: 'part-2' })
+  firstFocused.artifactChainId = 'chain-first'
+  firstFocused.chain = { ...firstFocused.chain!, id: 'chain-first', name: 'Chosen concept', root: ref('first', 1), head: ref('first-focused', 10), revisionCount: 2 }
+  firstFocused.step = { ...firstFocused.step!, artifactChainId: 'chain-first' }
+  firstFocused.targetedPartIds = ['part-2', 'part-3']
+  firstFocused.lineage.iterationGroupId = 'focused-a'
+  const newerFocused = artifact({ id: 'newer-focused', eventSeq: 20, step: 'newer-focused-step', revision: 2, candidates: [ref('newer-focused', 20)], parent: ref('second', 2), head: ref('newer-focused', 20), section: 'part-3' })
+  newerFocused.artifactChainId = 'chain-second'
+  newerFocused.chain = { ...newerFocused.chain!, id: 'chain-second', name: 'Newer concept', root: ref('second', 2), head: ref('newer-focused', 20), revisionCount: 2 }
+  newerFocused.step = { ...newerFocused.step!, artifactChainId: 'chain-second' }
+  newerFocused.targetedPartIds = ['part-3']
+  newerFocused.lineage.iterationGroupId = 'focused-b'
+  first.chain = firstFocused.chain
+  second.chain = newerFocused.chain
+
+  const projection = desktopV3ArtifactStudioProjection([newerFocused, second, firstFocused, first])
+  assert.deepEqual(projection.iterationGroups.map((group) => [group.id, group.label, group.partIds]), [
+    ['group-a', 'First concepts', []],
+    ['group-b', 'Second concepts', []],
+    ['focused-a', 'Chosen concept', ['part-2', 'part-3']],
+    ['focused-b', 'Newer concept', ['part-3']],
+  ])
+  assert.equal(projection.inProgress?.chainId, 'chain-first')
+  assert.equal(projection.inProgress?.head.artifactId, 'first-focused')
+  assert.equal(projection.iterationGroups.some((group) => group.entries.includes(firstFocused)), true)
+})
+
+test('artifact studio projection retains failed and staging candidates without pinning an unfocused chain', () => {
+  const staging = artifact({ id: 'staging', eventSeq: 1, step: 'staging-step', revision: 1, candidates: [ref('staging', 1)], head: ref('staging', 1) })
+  const failed = artifact({ id: 'failed', eventSeq: 2, step: 'failed-step', revision: 1, candidates: [ref('failed', 2)], head: ref('failed', 2) })
+  staging.status = 'staging'
+  failed.status = 'failed'
+  staging.lineage.iterationGroupId = 'partial'
+  failed.lineage.iterationGroupId = 'partial'
+  staging.lineage.iterationGroup = 'Partial group'
+  failed.lineage.iterationGroup = 'Partial group'
+
+  const projection = desktopV3ArtifactStudioProjection([failed, staging])
+  assert.deepEqual(projection.iterationGroups[0]?.progress, { total: 2, staging: 1, ready: 0, failed: 1, unavailable: 0 })
+  assert.equal(projection.inProgress, undefined)
 })
 
 test('artifact studio groups section-targeted revision turns by part', () => {

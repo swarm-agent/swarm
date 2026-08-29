@@ -1,8 +1,9 @@
-import { memo, useEffect, useMemo, useState, type MouseEvent } from 'react'
+import { memo, useEffect, useMemo, useState, type FocusEvent, type MouseEvent } from 'react'
 import { FileText, GalleryHorizontal, Loader2, Maximize2, MessageSquarePlus, TriangleAlert } from 'lucide-react'
 
 import { cn } from '../../../../lib/cn'
 import {
+  desktopV3ArtifactDirectContentURL,
   fetchDesktopV3ArtifactPreviewAccess,
   preflightDesktopV3ArtifactDirectContent,
   formatDesktopV3ArtifactAnimationProfile,
@@ -16,7 +17,7 @@ import {
   type DesktopV3ArtifactCollectionProgress,
 } from '../../session-v3/artifact-api'
 import type { DesktopSidebarDisplayMode, DesktopV3SessionSidebarView } from './desktop-sidebar-display'
-import { desktopV3ArtifactStudioPresentationGroupKey, desktopV3ArtifactStudioSamePartRevision, desktopV3ArtifactStudioStoryboard, desktopV3ArtifactStudioTurns } from '../../session-v3/artifact-studio-model'
+import { desktopV3ArtifactStudioPresentationGroupKey, desktopV3ArtifactStudioProjection, desktopV3ArtifactStudioSamePartRevision, desktopV3ArtifactStudioStoryboard, desktopV3ArtifactStudioTurns } from '../../session-v3/artifact-studio-model'
 import { refreshOpenDesktopV3ArtifactCatalogs } from '../../session-v3/artifact-catalog-refresh'
 import { useDesktopV3ArtifactPreviewVisibility } from './desktop-v3-artifact-preview-thumbnail'
 
@@ -80,6 +81,24 @@ export interface DesktopV3ArtifactSidebarProps {
   onAddToChat?: (selections: DesktopV3ArtifactMessageSelection[]) => void
 }
 
+function sidebarArtifactPreviewKey(artifact: DesktopV3ArtifactCatalogEntry): string {
+  return `${artifact.sessionId}:${artifact.collectionId ?? ''}:${artifact.artifactId}`
+}
+
+function sidebarArtifactNeedsExclusiveLivePreview(artifact: DesktopV3ArtifactCatalogEntry): boolean {
+  return artifact.mediaType === 'text/html' && !artifact.animationProfile
+}
+
+function sidebarArtifactNeedsMotionPermission(artifact: DesktopV3ArtifactCatalogEntry): boolean {
+  if (artifact.animationProfile?.profileId === 'final_render') return false
+  return Boolean(artifact.animationProfile)
+    || artifact.mediaType === 'image/svg+xml'
+    || artifact.mediaType === 'image/gif'
+    || artifact.mediaType === 'text/html'
+    || artifact.mediaType.startsWith('video/')
+    || artifact.kind === 'video'
+}
+
 function sidebarArtifactAnimationProfileKey(artifact: DesktopV3ArtifactCatalogEntry): string {
   const profile = artifact.animationProfile
   if (!profile) return ''
@@ -133,11 +152,16 @@ export function desktopV3ArtifactSidebarPartChatSelection(
   return desktopV3ArtifactPartMessageSelection(artifact, partId, 'use')
 }
 
-const DesktopV3ArtifactThumbnail = memo(function DesktopV3ArtifactThumbnail({ artifact }: { artifact: DesktopV3ArtifactCatalogEntry }) {
+const DesktopV3ArtifactThumbnail = memo(function DesktopV3ArtifactThumbnail({ artifact, live }: { artifact: DesktopV3ArtifactCatalogEntry; live: boolean }) {
   const [previewURL, setPreviewURL] = useState('')
   const [failed, setFailed] = useState(false)
-  const { previewRef, previewVisible } = useDesktopV3ArtifactPreviewVisibility<HTMLSpanElement>()
+  const exclusive = sidebarArtifactNeedsExclusiveLivePreview(artifact)
+  const { previewRef, previewVisible, previewMotionAllowed } = useDesktopV3ArtifactPreviewVisibility<HTMLSpanElement>(
+    !exclusive || live,
+  )
   const previewEnabled = previewVisible
+    && (!exclusive || live)
+    && (!sidebarArtifactNeedsMotionPermission(artifact) || previewMotionAllowed)
 
   useEffect(() => {
     setPreviewURL('')
@@ -147,7 +171,7 @@ const DesktopV3ArtifactThumbnail = memo(function DesktopV3ArtifactThumbnail({ ar
     const controller = new AbortController()
     const resolveURL = artifact.mediaType === 'text/html'
       ? fetchDesktopV3ArtifactPreviewAccess(artifact.sessionId, artifact.artifactId, controller.signal).then((access) => access.url)
-      : preflightDesktopV3ArtifactDirectContent(artifact, controller.signal)
+      : preflightDesktopV3ArtifactDirectContent(artifact, controller.signal).then(() => desktopV3ArtifactDirectContentURL(artifact))
     void resolveURL
       .then((url) => {
         if (!controller.signal.aborted) setPreviewURL(url)
@@ -167,7 +191,7 @@ const DesktopV3ArtifactThumbnail = memo(function DesktopV3ArtifactThumbnail({ ar
   else if (previewEnabled && artifact.mediaType === 'text/html' && previewURL) thumbnail = <iframe title={`${artifact.label} thumbnail`} src={previewURL} sandbox="allow-scripts" referrerPolicy="no-referrer" tabIndex={-1} className="pointer-events-none absolute left-0 top-0 size-[400%] origin-top-left scale-25 border-0 bg-white" onError={() => { setFailed(true); setPreviewURL('') }} />
   else if (previewEnabled && artifact.mediaType === 'application/pdf' && previewURL) thumbnail = <iframe title={`${artifact.label} thumbnail`} src={previewURL} sandbox="" referrerPolicy="no-referrer" tabIndex={-1} className="pointer-events-none size-full border-0 bg-white" onError={() => { setFailed(true); setPreviewURL('') }} />
 
-  return <span ref={previewRef} className="relative grid size-full place-items-center overflow-hidden" data-artifact-live-preview={previewEnabled && artifact.mediaType === 'text/html' ? true : undefined} data-artifact-preview-visible={previewEnabled || undefined} data-artifact-animation-profile={artifact.animationProfile?.profileId} data-artifact-animation-active={previewEnabled && Boolean(artifact.animationProfile) || undefined}>{thumbnail}</span>
+  return <span ref={previewRef} className="relative grid size-full place-items-center overflow-hidden" data-artifact-live-preview={previewEnabled && exclusive ? true : undefined} data-artifact-preview-visible={previewEnabled || undefined} data-artifact-animation-profile={artifact.animationProfile?.profileId} data-artifact-animation-active={previewEnabled && Boolean(artifact.animationProfile) || undefined}>{thumbnail}</span>
 }, sidebarArtifactThumbnailEqual)
 
 export type DesktopV3ArtifactSidebarSection = 'active' | 'motion' | 'visual' | 'documents' | 'supporting'
@@ -200,7 +224,7 @@ export function desktopV3ArtifactSidebarSection(entry: DesktopV3ArtifactCatalogE
 }
 
 const sidebarSectionOrder: Record<DesktopV3ArtifactSidebarSection, number> = { active: 0, motion: 1, visual: 2, documents: 3, supporting: 4 }
-const sidebarSectionLabel: Record<DesktopV3ArtifactSidebarSection, string> = { active: 'Active artifact', motion: 'HTML & motion', visual: 'Visuals', documents: 'Documents', supporting: 'Supporting renders' }
+const sidebarSectionLabel: Record<DesktopV3ArtifactSidebarSection, string> = { active: 'In Progress', motion: 'Iteration groups', visual: 'Iteration groups', documents: 'Documents', supporting: 'Supporting renders' }
 
 function sidebarCollectionProgress(entries: readonly DesktopV3ArtifactCatalogEntry[]): DesktopV3ArtifactCollectionProgress {
   const collectionKeys = new Set(entries.map((entry) => `${entry.sessionId}:${entry.collectionId ?? ''}`))
@@ -226,38 +250,57 @@ function sidebarCollectionLabel(entry: DesktopV3ArtifactCatalogEntry): string {
 export function desktopV3ArtifactSidebarGroups(
   artifacts: readonly DesktopV3ArtifactCatalogEntry[],
 ): DesktopV3ArtifactSidebarGroup[] {
-  const authoredChainEntries = artifacts.filter((artifact) => artifact.role !== 'render_only' && artifact.graphState === 'git_projection' && artifact.artifactChainId
-    && ((artifact.chain?.revisionCount ?? 0) > 1 || (artifact.step?.revisionNumber ?? 0) > 1))
-  const activeChainId = [...authoredChainEntries].sort((left, right) => {
-    const leftHead = left.chain?.head
-    const rightHead = right.chain?.head
-    const leftIsHead = Boolean(leftHead && left.sessionId === leftHead.sessionId && left.collectionId === leftHead.collectionId && left.artifactId === leftHead.variantId && left.eventSeq === leftHead.eventSeq)
-    const rightIsHead = Boolean(rightHead && right.sessionId === rightHead.sessionId && right.collectionId === rightHead.collectionId && right.artifactId === rightHead.variantId && right.eventSeq === rightHead.eventSeq)
-    return Number(rightIsHead) - Number(leftIsHead) || right.updatedAt - left.updatedAt
-  })[0]?.artifactChainId ?? ''
-  const activeChainIds = new Set(activeChainId ? [activeChainId] : [])
-  const groups = new Map<string, DesktopV3ArtifactCatalogEntry[]>()
-  for (const artifact of artifacts) {
-    const section = desktopV3ArtifactSidebarSection(artifact, activeChainIds)
+  const projection = desktopV3ArtifactStudioProjection(artifacts)
+  const groups: DesktopV3ArtifactSidebarGroup[] = projection.iterationGroups.map((iteration) => {
+    const representative = iteration.entries[0]!
+    return {
+      key: iteration.key,
+      collectionId: representative.collectionId?.trim() ?? '',
+      section: desktopV3ArtifactSidebarSection(representative, new Set()),
+      entries: iteration.entries,
+      progress: iteration.progress,
+      label: iteration.label,
+    }
+  })
+  if (projection.inProgress) {
+    groups.push({
+      key: projection.inProgress.key,
+      collectionId: projection.inProgress.head.collectionId?.trim() ?? '',
+      section: 'active',
+      entries: projection.inProgress.entries,
+      progress: sidebarCollectionProgress(projection.inProgress.entries),
+      label: projection.inProgress.label,
+    })
+  }
+
+  const remaining = new Map<string, DesktopV3ArtifactCatalogEntry[]>()
+  for (const artifact of projection.supporting) {
+    const section = desktopV3ArtifactSidebarSection(artifact, new Set())
     const presentationKey = desktopV3ArtifactStudioPresentationGroupKey(artifacts, artifact)
     const key = section === 'documents' || section === 'supporting' ? `media:${section}` : presentationKey
-    groups.set(key, [...(groups.get(key) ?? []), artifact])
+    remaining.set(key, [...(remaining.get(key) ?? []), artifact])
   }
-  return [...groups.entries()].map(([key, entries]) => ({
-    key,
-    collectionId: entries[0]?.collectionId?.trim() ?? '',
-    section: desktopV3ArtifactSidebarSection(entries[0]!, activeChainIds),
-    entries: [...entries].sort((left, right) => (left.step?.revisionNumber ?? 0) - (right.step?.revisionNumber ?? 0)
-      || (left.candidateIndex || left.lineage?.iterationIndex || 0) - (right.candidateIndex || right.lineage?.iterationIndex || 0)
-      || left.updatedAt - right.updatedAt),
-    progress: sidebarCollectionProgress(entries),
-    label: key.startsWith('media:')
-      ? sidebarSectionLabel[desktopV3ArtifactSidebarSection(entries[0]!, activeChainIds)]
-      : key.startsWith('chain:')
-        ? entries[0]?.chain?.name || (entries[0] ? sidebarCollectionLabel(entries[0]) : 'Artifact')
-        : entries[0] ? sidebarCollectionLabel(entries[0]) : 'Artifact',
-  })).sort((left, right) => sidebarSectionOrder[left.section] - sidebarSectionOrder[right.section]
-    || Math.max(...right.entries.map((entry) => entry.updatedAt)) - Math.max(...left.entries.map((entry) => entry.updatedAt))
+  for (const [key, entries] of remaining) {
+    const section = desktopV3ArtifactSidebarSection(entries[0]!, new Set())
+    groups.push({
+      key,
+      collectionId: entries[0]?.collectionId?.trim() ?? '',
+      section,
+      entries: [...entries].sort((left, right) => (left.step?.revisionNumber ?? 0) - (right.step?.revisionNumber ?? 0)
+        || (left.candidateIndex || left.lineage?.iterationIndex || 0) - (right.candidateIndex || right.lineage?.iterationIndex || 0)
+        || left.updatedAt - right.updatedAt),
+      progress: sidebarCollectionProgress(entries),
+      label: key.startsWith('media:')
+        ? sidebarSectionLabel[section]
+        : key.startsWith('chain:')
+          ? entries[0]?.chain?.name || (entries[0] ? sidebarCollectionLabel(entries[0]) : 'Artifact')
+          : entries[0] ? sidebarCollectionLabel(entries[0]) : 'Artifact',
+    })
+  }
+  return groups.sort((left, right) => sidebarSectionOrder[left.section] - sidebarSectionOrder[right.section]
+    || (left.section === 'motion' || left.section === 'visual'
+      ? Math.min(...left.entries.map((entry) => entry.eventSeq || entry.updatedAt)) - Math.min(...right.entries.map((entry) => entry.eventSeq || entry.updatedAt))
+      : Math.max(...right.entries.map((entry) => entry.updatedAt)) - Math.max(...left.entries.map((entry) => entry.updatedAt)))
     || left.label.localeCompare(right.label))
 }
 
@@ -273,7 +316,7 @@ export function desktopV3ArtifactSidebarIterationGroup(
   const hasIterationLineage = group.entries.some((entry) => Boolean(entry.lineage?.iterationGroupId?.trim()
     || entry.composition?.iterationGroupId?.trim()))
   const representative = group.entries[0]
-  if (!representative) return undefined
+  if (!representative || group.section === 'active') return undefined
 
   if (group.key.startsWith('chain:')) {
     const turns = desktopV3ArtifactStudioTurns(artifacts, representative)
@@ -332,6 +375,31 @@ export function DesktopV3ArtifactSidebar({
   const thin = displayMode === 'thin'
   const compact = displayMode === 'compact'
   const groups = useMemo(() => desktopV3ArtifactSidebarGroups(artifacts), [artifacts])
+  const [requestedLivePreviewKey, setRequestedLivePreviewKey] = useState('')
+  const selectedLivePreviewKey = useMemo(() => {
+    const selected = artifacts.find((artifact) => artifact.selected && artifact.status === 'ready' && sidebarArtifactNeedsExclusiveLivePreview(artifact))
+    return selected ? sidebarArtifactPreviewKey(selected) : ''
+  }, [artifacts])
+  const fallbackLivePreviewKey = useMemo(() => {
+    for (const group of groups) {
+      const representative = group.entries.find((entry) => entry.selected)
+        ?? group.entries.find((entry) => entry.status === 'ready')
+        ?? group.entries[0]
+      if (representative?.status === 'ready' && sidebarArtifactNeedsExclusiveLivePreview(representative)) return sidebarArtifactPreviewKey(representative)
+    }
+    return ''
+  }, [groups])
+  const requestedArtifact = artifacts.find((artifact) => sidebarArtifactPreviewKey(artifact) === requestedLivePreviewKey)
+  const livePreviewKey = (requestedArtifact?.status === 'ready' && sidebarArtifactNeedsExclusiveLivePreview(requestedArtifact) ? requestedLivePreviewKey : '')
+    || selectedLivePreviewKey
+    || fallbackLivePreviewKey
+  const requestLivePreview = (artifact: DesktopV3ArtifactCatalogEntry) => {
+    if (artifact.status === 'ready' && sidebarArtifactNeedsExclusiveLivePreview(artifact)) setRequestedLivePreviewKey(sidebarArtifactPreviewKey(artifact))
+  }
+  const releaseLivePreview = (artifact: DesktopV3ArtifactCatalogEntry, event: FocusEvent<HTMLElement> | MouseEvent<HTMLElement>) => {
+    if ('relatedTarget' in event && event.currentTarget.contains(event.relatedTarget as Node | null)) return
+    setRequestedLivePreviewKey((current) => current === sidebarArtifactPreviewKey(artifact) ? '' : current)
+  }
   const [partSelectionPending, setPartSelectionPending] = useState('')
   const [partSelectionError, setPartSelectionError] = useState('')
 
@@ -405,7 +473,7 @@ export function DesktopV3ArtifactSidebar({
               : group.entries[0]
             if (!representative) return null
             const grouped = group.entries.length > 1 || Boolean(iterationGroup)
-            const turnBased = group.key.startsWith('chain:') && group.section === 'active'
+            const turnBased = group.section === 'active'
             const compactRows = group.section === 'documents' || group.section === 'supporting'
             const artifactTurns = turnBased ? desktopV3ArtifactStudioTurns(artifacts, representative) : []
             const storyboard = turnBased ? desktopV3ArtifactStudioStoryboard(artifacts, representative) : undefined
@@ -422,15 +490,15 @@ export function DesktopV3ArtifactSidebar({
             const requirementLabel = formatDesktopV3ArtifactOutputRequirements(representative.outputRequirements)
             const animationLabel = formatDesktopV3ArtifactAnimationProfile(representative.animationProfile)
             if (thin) {
-              return <a key={group.key} href={artifactHref(openTarget)} className="group relative grid size-10 place-items-center overflow-hidden rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-primary)]" onClick={(event: MouseEvent<HTMLAnchorElement>) => { if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return; event.preventDefault(); onOpenArtifact(openTarget, openPartId, iterationGroup?.collectionId) }} aria-label={`Open ${grouped ? group.label : representative.label} in full artifact view`}><DesktopV3ArtifactThumbnail artifact={representative} />{group.progress.staging > 0 ? <span className="absolute bottom-0 right-0 size-2 rounded-full bg-[var(--app-primary)]" aria-label={sidebarProgressLabel(group)} /> : null}</a>
+              return <a key={group.key} href={artifactHref(openTarget)} onMouseEnter={() => requestLivePreview(representative)} onMouseLeave={(event) => releaseLivePreview(representative, event)} onFocus={() => requestLivePreview(representative)} onBlur={(event) => releaseLivePreview(representative, event)} className="group relative grid size-10 place-items-center overflow-hidden rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-primary)]" onClick={(event: MouseEvent<HTMLAnchorElement>) => { if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return; event.preventDefault(); onOpenArtifact(openTarget, openPartId, group.key) }} aria-label={`Open ${grouped ? group.label : representative.label} in full artifact view`}><DesktopV3ArtifactThumbnail artifact={representative} live={sidebarArtifactPreviewKey(representative) === livePreviewKey} />{group.progress.staging > 0 ? <span className="absolute bottom-0 right-0 size-2 rounded-full bg-[var(--app-primary)]" aria-label={sidebarProgressLabel(group)} /> : null}</a>
             }
             return (
               <section key={group.key} className={cn('min-w-0 overflow-hidden rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)]', embedded ? 'w-64 shrink-0' : 'w-full')} data-artifact-collection-group={grouped ? group.collectionId : undefined} data-artifact-sidebar-section={group.section}>
-                <a href={artifactHref(openTarget)} className="flex min-w-0 items-center justify-between gap-2 border-b border-[var(--app-border)] px-3 py-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-primary)]" onClick={(event: MouseEvent<HTMLAnchorElement>) => { if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return; event.preventDefault(); onOpenArtifact(openTarget, openPartId, iterationGroup?.collectionId) }}>
-                  <span className="min-w-0"><span className="block truncate text-xs font-semibold">{turnBased ? (representative.chain?.name || representative.label) : compactRows ? group.label : grouped ? group.label : representative.label}</span><span className="mt-0.5 block text-[10px] text-[var(--app-text-subtle)]">{storyboard ? `One initial proposal · ${storyboard.parts.length} ordered parts · Current proposal` : iterationGroup ? `${iterationGroup.partLabel ? `${iterationGroup.partLabel} · ` : 'Overall · '}${iterationGroup.iterationCount} iteration${iterationGroup.iterationCount === 1 ? '' : 's'} · Click to open group` : turnBased ? `${artifactTurns.length} authored turn${artifactTurns.length === 1 ? '' : 's'} · Current head · Turn ${authoritativeHead?.step?.revisionNumber || representative.step?.revisionNumber || 1}` : compactRows ? `${group.entries.length} ${group.section === 'supporting' ? 'render asset' : 'document'}${group.entries.length === 1 ? '' : 's'}` : grouped ? `Overall iterations · ${sidebarProgressLabel(group)}` : `Unstructured · ${representative.status === 'staging' ? 'Generating' : representative.kind || representative.mediaType}`}</span>{requirementLabel ? <span className="mt-0.5 block truncate text-[9px] text-[var(--app-text-subtle)]" data-artifact-output-requirements>{requirementLabel}</span> : null}{animationLabel ? <span className="mt-0.5 block truncate text-[9px] text-[var(--app-text-subtle)]" data-artifact-animation-profile-label>{animationLabel}</span> : null}</span>
+                <a href={artifactHref(openTarget)} className="flex min-w-0 items-center justify-between gap-2 border-b border-[var(--app-border)] px-3 py-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-primary)]" onClick={(event: MouseEvent<HTMLAnchorElement>) => { if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return; event.preventDefault(); onOpenArtifact(openTarget, openPartId, group.key) }}>
+                  <span className="min-w-0"><span className="block truncate text-xs font-semibold">{turnBased ? `In Progress · ${representative.chain?.name || group.label || representative.label}` : compactRows ? group.label : grouped ? group.label : representative.label}</span><span className="mt-0.5 block text-[10px] text-[var(--app-text-subtle)]">{storyboard ? `One initial proposal · ${storyboard.parts.length} ordered parts · Current proposal` : iterationGroup ? `${iterationGroup.partLabel ? `${iterationGroup.partLabel} · ` : 'Overall · '}${iterationGroup.iterationCount} iteration${iterationGroup.iterationCount === 1 ? '' : 's'} · Click to open group` : turnBased ? `${artifactTurns.length} authored turn${artifactTurns.length === 1 ? '' : 's'} · Current head · Turn ${authoritativeHead?.step?.revisionNumber || representative.step?.revisionNumber || 1}` : compactRows ? `${group.entries.length} ${group.section === 'supporting' ? 'render asset' : 'document'}${group.entries.length === 1 ? '' : 's'}` : grouped ? `Overall iterations · ${sidebarProgressLabel(group)}` : `Unstructured · ${representative.status === 'staging' ? 'Generating' : representative.kind || representative.mediaType}`}</span>{requirementLabel ? <span className="mt-0.5 block truncate text-[9px] text-[var(--app-text-subtle)]" data-artifact-output-requirements>{requirementLabel}</span> : null}{animationLabel ? <span className="mt-0.5 block truncate text-[9px] text-[var(--app-text-subtle)]" data-artifact-animation-profile-label>{animationLabel}</span> : null}</span>
                   {group.progress.staging > 0 ? <Loader2 className="size-4 shrink-0 motion-safe:animate-spin motion-reduce:animate-none text-[var(--app-primary)]" aria-label="Iteration Swarm generating" /> : <Maximize2 className="size-4 shrink-0 text-[var(--app-text-subtle)]" aria-hidden="true" />}
                 </a>
-                {iterationGroup ? <button type="button" className="flex w-full items-center justify-between gap-2 border-b border-[var(--app-border)] bg-[var(--app-bg-alt)] px-3 py-2 text-left text-[10px] hover:bg-[var(--app-surface-hover)]" onClick={() => onOpenArtifact(iterationGroup.target, iterationGroup.partId, iterationGroup.collectionId)} data-artifact-sidebar-iteration-group={group.key}><span className="min-w-0 truncate font-semibold">{iterationGroup.partLabel ? `${iterationGroup.partLabel} iterations` : 'Initial iterations'}</span><span className="shrink-0 text-[var(--app-text-subtle)]">{iterationGroup.iterationCount} grouped</span></button> : compactRows ? <details className="border-b border-[var(--app-border)]" open={group.section === 'documents'} data-artifact-sidebar-compact-group={group.section}>
+                {iterationGroup ? <button type="button" className="flex w-full items-center justify-between gap-2 border-b border-[var(--app-border)] bg-[var(--app-bg-alt)] px-3 py-2 text-left text-[10px] hover:bg-[var(--app-surface-hover)]" onClick={() => onOpenArtifact(iterationGroup.target, iterationGroup.partId, group.key)} data-artifact-sidebar-iteration-group={group.key}><span className="min-w-0 truncate font-semibold">{iterationGroup.partLabel ? `${iterationGroup.partLabel} iterations` : 'Initial iterations'}</span><span className="shrink-0 text-[var(--app-text-subtle)]">{iterationGroup.iterationCount} grouped</span></button> : compactRows ? <details className="border-b border-[var(--app-border)]" open={group.section === 'documents'} data-artifact-sidebar-compact-group={group.section}>
                   <summary className="cursor-pointer px-3 py-1.5 text-[10px] font-semibold text-[var(--app-text-muted)]">{group.section === 'supporting' ? 'Show supporting render assets' : 'Session documents'}</summary>
                   <div className="grid divide-y divide-[var(--app-border)]">{group.entries.map((artifact) => <a key={`${artifact.sessionId}:${artifact.collectionId ?? ''}:${artifact.artifactId}`} href={artifactHref(artifact)} className="flex min-w-0 items-center gap-2 px-3 py-2 text-left hover:bg-[var(--app-surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-primary)]" onClick={(event: MouseEvent<HTMLAnchorElement>) => { if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return; event.preventDefault(); onOpenArtifact(artifact) }} data-artifact-sidebar-document-row={group.section === 'documents' || undefined} data-artifact-sidebar-supporting-row={group.section === 'supporting' || undefined}><FileText className="size-3.5 shrink-0 text-[var(--app-text-muted)]" aria-hidden="true" /><span className="min-w-0 flex-1"><span className="block truncate text-[10px] font-semibold">{artifact.filename || artifact.label}</span><span className="block truncate text-[9px] text-[var(--app-text-subtle)]">{artifact.label !== artifact.filename ? artifact.label : artifact.mediaType}</span></span></a>)}</div>
                 </details> : iterationGroup ? null : storyboard ? <div className="grid gap-2 border-b border-[var(--app-border)] bg-[var(--app-bg-alt)] p-2" aria-label="Storyboard proposal" data-artifact-sidebar-storyboard>
@@ -496,9 +564,9 @@ export function DesktopV3ArtifactSidebar({
                   {authoritativeHead && currentComposition?.parts.some((part) => part.locked) ? <div className="flex flex-wrap gap-1">{currentComposition.parts.filter((part) => part.locked).map((part) => <button key={part.partId} type="button" className="rounded border border-[var(--app-border)] px-1.5 py-0.5 text-[9px] font-semibold text-[var(--app-text-muted)] hover:bg-[var(--app-surface-active)] disabled:opacity-50" disabled={Boolean(partSelectionPending)} onClick={() => void applyPartChoice(authoritativeHead, authoritativeHead, part.partId, false)}>Unlock {partDefinitionsById.get(part.partId)?.label || part.partId}</button>)}</div> : null}
                 </div> : <div className={cn('grid gap-1 p-2', grouped && 'grid-cols-2')} aria-label={grouped ? `${group.label} iterations` : undefined}>
                   {group.entries.map((artifact, index) => (
-                    <div key={`${artifact.sessionId}:${artifact.collectionId ?? ''}:${artifact.artifactId}`} className="group relative min-w-0 overflow-hidden rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)]">
+                    <div key={`${artifact.sessionId}:${artifact.collectionId ?? ''}:${artifact.artifactId}`} onMouseEnter={() => requestLivePreview(artifact)} onMouseLeave={(event) => releaseLivePreview(artifact, event)} onFocus={() => requestLivePreview(artifact)} onBlur={(event) => releaseLivePreview(artifact, event)} className="group relative min-w-0 overflow-hidden rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)]">
                       <a href={artifactHref(artifact)} className="block min-w-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-primary)]" onClick={(event: MouseEvent<HTMLAnchorElement>) => { if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return; event.preventDefault(); onOpenArtifact(artifact) }} aria-label={`Open ${artifact.label} in full artifact view`}>
-                        <span className="relative grid h-20 place-items-center overflow-hidden"><DesktopV3ArtifactThumbnail artifact={artifact} /></span>
+                        <span className="relative grid h-20 place-items-center overflow-hidden"><DesktopV3ArtifactThumbnail artifact={artifact} live={sidebarArtifactPreviewKey(artifact) === livePreviewKey} /></span>
                         <span className="block min-w-0 px-2 py-1.5"><span className="block truncate text-[10px] font-semibold">{artifact.lineage?.iterationIndex ? `${artifact.lineage.iterationIndex}. ${artifact.lineage.iterationLabel || artifact.lineage.iterationTheme || artifact.label}` : artifact.label}</span><span className="block truncate text-[9px] text-[var(--app-text-subtle)]">{artifact.status === 'staging' ? 'Generating' : artifact.status === 'failed' || artifact.status === 'unavailable' ? 'Failed' : grouped ? `Iteration ${artifact.lineage?.iterationIndex || index + 1}` : artifact.kind || artifact.mediaType}</span></span>
                       </a>
                       {onAddToChat && artifact.status === 'ready' && artifact.collectionId && (artifact.eventSeq ?? 0) > 0 ? <button type="button" className="absolute right-1 top-1 grid size-7 place-items-center rounded-md bg-[var(--app-primary)] text-white opacity-0 shadow-md transition hover:opacity-90 group-hover:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white" aria-label={`Attach ${artifact.label} for chat changes`} title={artifact.mediaType.startsWith('image/') ? 'Attach to chat for remixing' : 'Attach to chat'} onClick={() => onAddToChat([desktopV3ArtifactMessageSelection(artifact, 'select')])}><MessageSquarePlus size={13} aria-hidden="true" /></button> : null}

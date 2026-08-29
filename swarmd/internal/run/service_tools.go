@@ -591,6 +591,7 @@ func (s *Service) markManagedDesignerArtifactFailed(parent pebblestore.SessionSn
 		IterationID: run.IterationID, IterationIndex: run.IterationIndex, IterationLabel: run.IterationLabel, IterationTheme: run.IterationTheme,
 		IterationSectionID: run.IterationSectionID, IterationSectionLabel: run.IterationSectionLabel, IterationSectionStartMs: run.IterationSectionStartMs, IterationSectionEndMs: run.IterationSectionEndMs,
 		PartID: run.PartID, PartLabel: run.PartLabel, PartKind: run.PartKind,
+		SelectedReviewTargetIDs: taskReviewTargetIDs(run.SelectedReviewTargets),
 	}
 	if len(sourceArtifacts) > 0 && sourceArtifacts[0] != nil {
 		source := sourceArtifacts[0]
@@ -5081,6 +5082,8 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 				lineage.TaskCallID == launch.ArtifactRunContext.TaskCallID &&
 				lineage.ProgramID == launch.ArtifactRunContext.ProgramID &&
 				lineage.ProgramJobID == launch.ArtifactRunContext.ProgramJobID &&
+				lineage.IterationGroupID == launch.ArtifactRunContext.IterationGroupID &&
+				lineage.IterationGroup == launch.ArtifactRunContext.IterationGroup &&
 				lineage.IterationID == launch.ArtifactRunContext.IterationID &&
 				lineage.IterationIndex == launch.ArtifactRunContext.IterationIndex &&
 				lineage.IterationSectionID == launch.ArtifactRunContext.IterationSectionID &&
@@ -5090,7 +5093,10 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 				lineage.PartID == launch.ArtifactRunContext.PartID &&
 				lineage.PartLabel == launch.ArtifactRunContext.PartLabel &&
 				lineage.PartKind == launch.ArtifactRunContext.PartKind &&
-				lineage.SelectedReviewTargetIDs == taskReviewTargetIDs(launch.ArtifactRunContext.SelectedReviewTargets)
+				lineage.SelectedReviewTargetIDs == taskReviewTargetIDs(launch.ArtifactRunContext.SelectedReviewTargets) &&
+				variant.ArtifactStepID == launch.ArtifactRunContext.ArtifactStepID &&
+				variant.RevisionRoundID == launch.ArtifactRunContext.ArtifactStepID &&
+				variant.CandidateIndex == launch.ArtifactRunContext.CandidateIndex
 			compositionMatches := true
 			selectedPartRevisions := launch.ArtifactRunContext.SourcePartRevisions
 			if len(selectedPartRevisions) == 0 && launch.ArtifactRunContext.SourcePartRevision != nil {

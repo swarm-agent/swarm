@@ -108,6 +108,7 @@ export interface DesktopV3ArtifactGalleryProps {
   title?: string
   initialArtifactKey?: string
   initialCollectionId?: string
+  initialGroupKey?: string
   initialPartId?: string
   artifactHref?: (artifact: DesktopV3ArtifactGalleryEntry) => string
   collectionHref?: (artifact: DesktopV3ArtifactGalleryEntry) => string
@@ -240,6 +241,7 @@ export function DesktopV3ArtifactGallery({
   title = 'Artifact Studio',
   initialArtifactKey = '',
   initialCollectionId = '',
+  initialGroupKey = '',
   initialPartId = '',
   artifactHref,
   collectionHref,
@@ -532,13 +534,15 @@ export function DesktopV3ArtifactGallery({
   }, [artifacts, initialArtifactKey, initialPartId, iterationPlayerReadyVersion, open])
 
   useEffect(() => {
-    if (!open || !initialCollectionId || initialArtifactKey) return
-    const requested = groups.find((group) => group.entries.some((artifact) => artifact.collectionId === initialCollectionId))
+    if (!open || (!initialGroupKey && !initialCollectionId) || initialArtifactKey) return
+    const requested = initialGroupKey
+      ? groups.find((group) => group.key === initialGroupKey)
+      : groups.find((group) => group.entries.some((artifact) => artifact.collectionId === initialCollectionId))
     if (requested) {
       setSelectedId('')
       setOverviewCollectionKey(requested.key)
     }
-  }, [groups, initialArtifactKey, initialCollectionId, open])
+  }, [groups, initialArtifactKey, initialCollectionId, initialGroupKey, open])
 
   useEffect(() => {
     if (!open) return undefined

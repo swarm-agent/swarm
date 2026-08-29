@@ -113,7 +113,7 @@ func TestExportHTMLAnimationUsesManifestTimelineAndPublishesExactLineage(t *test
 	if err != nil {
 		t.Fatalf("export_html_animation: %v", err)
 	}
-	if renderer.req.DurationMS != 1000 || renderer.req.FPS != 30 || renderer.req.Entry != "index.html" {
+	if renderer.req.DurationMS != 1000 || renderer.req.FPS != 30 || renderer.req.Entry != "index.html" || renderer.req.RequireLivePlayback {
 		t.Fatalf("renderer request = %+v", renderer.req)
 	}
 	if authority.created.SourceSessionID != "source-session" || authority.created.SourceCollectionID != "source-collection" || authority.created.SourceVariantID != "source-variant" || authority.created.SourceEventSeq != 7 {
@@ -229,6 +229,31 @@ func TestExportHTMLAnimationPreflightsBeforeQueuingAndPreservesFailureCode(t *te
 	}
 }
 
+func TestDeclaredAnimationHTMLRequiresReviewedProfileBeforePublication(t *testing.T) {
+	html := `<!doctype html><script id="swarm-animation-manifest" type="application/json">{"version":"swarm.animation/v1","duration_ms":1000,"fps":30}</script>`
+	for _, tc := range []struct {
+		name string
+		args map[string]any
+	}{
+		{name: "create", args: map[string]any{"action": "create", "filename": "intro.html", "media_type": "text/html", "content": html}},
+		{name: "package", args: map[string]any{"action": "create_package", "filename": "intro.zip", "entries": []any{map[string]any{"name": "index.html", "content": html}}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			authority := &fakeArtifactAuthority{}
+			runtime := NewRuntime(1)
+			runtime.SetArtifactAuthority(authority)
+			ctx, scope := artifactToolContext()
+			_, err := runtime.executeManageArtifact(ctx, scope, "unprofiled-animation-"+tc.name, tc.args)
+			if err == nil || !strings.Contains(err.Error(), "animation_profile_required") {
+				t.Fatalf("unprofiled declared animation error = %v", err)
+			}
+			if authority.reserveCalls != 0 || authority.createCalls != 0 || authority.packageCalls != 0 {
+				t.Fatalf("unprofiled animation reached publication: reserve=%d create=%d package=%d", authority.reserveCalls, authority.createCalls, authority.packageCalls)
+			}
+		})
+	}
+}
+
 func TestManagedAnimationFailureCodeExtractionIsBoundedAndRejectsSuffixInjection(t *testing.T) {
 	cases := []struct {
 		err  error
@@ -327,9 +352,14 @@ func TestManagedDesignerProfiledAnimationUsesInjectedGate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if authority.created.CollectionID != "collection-1" || authority.created.VariantID != "variant-1" || authority.created.SourceSessionID != "" || authority.reserveCalls != 1 || authority.createCalls != 4 || len(authority.inspectionCreates) != 3 || !strings.Contains(output, `"trusted_animation_preflight":true`) || !strings.Contains(output, `"animation_inspection_references"`) {
+	if authority.created.CollectionID != "collection-1" || authority.created.VariantID != "variant-1" || authority.created.SourceSessionID != "" || authority.reserveCalls != 1 || authority.createCalls != 4 || len(authority.inspectionCreates) != 3 || !rendererRequiresLivePlayback(runtime.htmlAnimationCapture) || !strings.Contains(output, `"trusted_animation_preflight":true`) || !strings.Contains(output, `"animation_inspection_references"`) {
 		t.Fatalf("managed Designer animation gate: created=%+v reserve=%d create=%d output=%s", authority.created, authority.reserveCalls, authority.createCalls, output)
 	}
+}
+
+func rendererRequiresLivePlayback(renderer htmlcapture.AnimationRenderer) bool {
+	fake, ok := renderer.(*fakeHTMLAnimationRenderer)
+	return ok && fake.req.RequireLivePlayback
 }
 
 func TestWorkspaceAnimationPublicationFailsTerminallyBeforeReady(t *testing.T) {

@@ -336,6 +336,24 @@ func TestManagedDesignerRoutingAllocatesParentOwnedUniqueVariants(t *testing.T) 
 	}
 }
 
+func TestManagedDesignerRoutingPreservesOrderedMultiTargetIdentity(t *testing.T) {
+	parent := pebblestore.SessionSnapshot{ID: "parent-session", UserID: "user-1", AccountScopeID: "account-1"}
+	targets := []*taskSwarmSectionTarget{
+		{ID: "part-2", Label: "Part 2", Kind: "temporal", StartMs: 4000, EndMs: 8000},
+		{ID: "part-3", Label: "Part 3", Kind: "temporal", StartMs: 8000, EndMs: 12000},
+	}
+	first := taskLaunchSpec{RequestedSubagentType: "designer", OutputMode: taskOutputModeManaged, SwarmMode: true, SourceArguments: map[string]any{"swarm_index": 1, "swarm_count": 3, "section_targets": targets}}
+	second := taskLaunchSpec{RequestedSubagentType: "designer", OutputMode: taskOutputModeManaged, SwarmMode: true, SourceArguments: map[string]any{"swarm_index": 2, "swarm_count": 3, "section_targets": targets}}
+	left := managedDesignerArtifactContext(parent, "call-multi", first, 1)
+	right := managedDesignerArtifactContext(parent, "call-multi", second, 2)
+	if left == nil || right == nil || left.IterationGroupID == "" || left.IterationGroupID != right.IterationGroupID || left.CandidateIndex != 1 || right.CandidateIndex != 2 {
+		t.Fatalf("multi-target group/candidate identity = left=%#v right=%#v", left, right)
+	}
+	if got := taskReviewTargetIDs(left.SelectedReviewTargets); got != "part-2,part-3" || got != taskReviewTargetIDs(right.SelectedReviewTargets) {
+		t.Fatalf("ordered selected target identity = %q / %q", got, taskReviewTargetIDs(right.SelectedReviewTargets))
+	}
+}
+
 func TestRegularManagedDesignerRoutingPreservesSectionMetadata(t *testing.T) {
 	parent := pebblestore.SessionSnapshot{ID: "parent-session", UserID: "user-1", AccountScopeID: "account-1"}
 	spec := taskLaunchSpec{
