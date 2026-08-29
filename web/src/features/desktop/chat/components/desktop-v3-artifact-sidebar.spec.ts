@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises'
 import test from 'node:test'
 
 import type { DesktopV3ArtifactCatalogEntry } from '../../session-v3/artifact-api'
-import { desktopV3ArtifactSidebarGroups, desktopV3ArtifactSidebarPartChatSelection, desktopV3ArtifactsForSession, desktopV3HasPendingVisualSwarm, desktopV3MobileVisualSwarmArtifactToOpen, desktopV3NextSessionSidebarView } from './desktop-v3-artifact-sidebar'
+import { desktopV3ArtifactSidebarGroups, desktopV3ArtifactSidebarIterationGroup, desktopV3ArtifactSidebarPartChatSelection, desktopV3ArtifactsForSession, desktopV3HasPendingVisualSwarm, desktopV3MobileVisualSwarmArtifactToOpen, desktopV3NextSessionSidebarView } from './desktop-v3-artifact-sidebar'
 
 function artifact(sessionId: string, artifactId: string, parentSessionId = ''): DesktopV3ArtifactCatalogEntry {
   return {
@@ -111,6 +111,46 @@ test('sidebar groups staged Iteration Swarm variants and preserves canonical pro
   assert.deepEqual(groups[0]?.entries.map((entry) => entry.artifactId), ['variant-1', 'variant-2', 'variant-3'])
   assert.deepEqual(groups[0]?.progress, { total: 3, staging: 2, ready: 1, failed: 0, unavailable: 0 })
   assert.deepEqual(groups[0]?.entries.map((entry) => entry.outputRequirements?.presetId), ['twitter_header', 'twitter_header', 'twitter_header'])
+})
+
+test('sidebar collapses ten initial iterations into one clickable group entry', () => {
+  const entries = Array.from({ length: 10 }, (_, index) => ({
+    ...artifact(`child-${index + 1}`, `variant-${index + 1}`, 'session-a'),
+    collectionId: 'collection-10',
+    collectionName: 'Landing page directions',
+    status: index < 8 ? 'ready' as const : 'staging' as const,
+    progress: { total: 10, staging: 2, ready: 8, failed: 0, unavailable: 0 },
+    lineage: {
+      ...artifact(`child-${index + 1}`, `variant-${index + 1}`, 'session-a').lineage,
+      iterationGroupId: 'group-10',
+      iterationGroup: 'Landing page directions',
+      iterationIndex: index + 1,
+    },
+  }))
+
+  const groups = desktopV3ArtifactSidebarGroups(entries)
+  const iterationGroup = desktopV3ArtifactSidebarIterationGroup(entries, groups[0]!)
+  assert.equal(groups.length, 1)
+  assert.equal(iterationGroup?.iterationCount, 10)
+  assert.equal(iterationGroup?.collectionId, 'collection-10')
+  assert.equal(iterationGroup?.partId, '')
+  assert.equal(iterationGroup?.target.artifactId, 'variant-1')
+})
+
+test('sidebar groups a focused iteration turn under its exact artifact part', () => {
+  const rootReference = { sessionId: 'session-a', collectionId: 'base', variantId: 'base', eventSeq: 1 }
+  const candidateReferences = Array.from({ length: 10 }, (_, index) => ({ sessionId: 'session-a', collectionId: 'hero-round', variantId: `hero-${index + 1}`, eventSeq: index + 2 }))
+  const chain = { id: 'chain-hero', graphState: 'git_projection' as const, name: 'Landing page', root: rootReference, head: candidateReferences[0]!, revisionCount: 2, lastRoundId: 'hero-round' }
+  const base = { ...artifact('session-a', 'base'), collectionId: 'base', eventSeq: 1, graphState: 'git_projection' as const, artifactChainId: 'chain-hero', artifactStepId: 'root', chain, step: { id: 'root', graphState: 'git_projection' as const, artifactChainId: 'chain-hero', revisionNumber: 1, candidates: [rootReference] }, partGraphState: 'git_projection' as const, partDefinitions: [{ id: 'hero', label: 'Hero', description: '', locator: null }], composition: { id: 'base-composition', artifactChainId: 'chain-hero', parts: [{ partId: 'hero', definitionOwnerSessionId: 'session-a', revision: { artifactChainId: 'chain-hero', partId: 'hero', partRevisionId: 'hero-base', ownerSessionId: 'session-a', digestSha256: 'a'.repeat(64), size: 10, mediaType: 'text/html' } }] } } as DesktopV3ArtifactCatalogEntry
+  const candidates = candidateReferences.map((reference, index) => ({ ...base, artifactId: reference.variantId, collectionId: reference.collectionId, eventSeq: reference.eventSeq, artifactStepId: 'hero-round', candidateIndex: index + 1, step: { id: 'hero-round', graphState: 'git_projection' as const, artifactChainId: 'chain-hero', revisionNumber: 2, parent: rootReference, candidates: candidateReferences }, lineage: { ...base.lineage, iterationGroupId: 'hero-group', partId: 'hero', partLabel: 'Hero' }, composition: { id: `hero-composition-${index}`, artifactChainId: 'chain-hero', iterationGroupId: 'hero-group', iterationTurnId: 'hero-round', parts: [{ partId: 'hero', definitionOwnerSessionId: 'session-a', revision: { artifactChainId: 'chain-hero', partId: 'hero', partRevisionId: `hero-${index + 1}`, ownerSessionId: 'session-a', digestSha256: String(index + 1).padStart(64, 'b').slice(-64), size: 10, mediaType: 'text/html' } }] }, partRevisions: [{ reference: { artifactChainId: 'chain-hero', partId: 'hero', partRevisionId: `hero-${index + 1}`, ownerSessionId: 'session-a', digestSha256: String(index + 1).padStart(64, 'b').slice(-64), size: 10, mediaType: 'text/html' }, iterationTurnId: 'hero-round', iterationGroupId: 'hero-group', eventSeq: reference.eventSeq }] })) as DesktopV3ArtifactCatalogEntry[]
+
+  const entries = [base, ...candidates]
+  base.chain = { ...chain, head: candidateReferences[0]! }
+  const group = desktopV3ArtifactSidebarGroups(entries).find((candidate) => candidate.key === 'chain:chain-hero')!
+  const iterationGroup = desktopV3ArtifactSidebarIterationGroup(entries, group)
+  assert.equal(iterationGroup?.iterationCount, 10)
+  assert.equal(iterationGroup?.partId, 'hero')
+  assert.equal(iterationGroup?.partLabel, 'Hero')
 })
 
 test('delegated collection variants group under their parent session', () => {
