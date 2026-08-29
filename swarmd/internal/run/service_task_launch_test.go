@@ -1009,6 +1009,8 @@ func (s *taskLaunchWorktreeStub) AllocateDetachedWorkspaceRequestedForPrincipal(
 	return s.allocation, nil
 }
 
+func (s *taskLaunchWorktreeStub) RollbackAllocation(_ worktreeruntime.Allocation) error { return nil }
+
 func TestDelegatedSubagentRunStartMetaKeepsPreparedProfileSnapshot(t *testing.T) {
 	prepared := pebblestore.AgentProfile{Name: "reviewer", Prompt: "prepared prompt", RuntimeMode: pebblestore.AgentRuntimeModeRead}
 	launch := taskLaunchPrepared{SubagentProfile: prepared}
@@ -1397,6 +1399,15 @@ func TestApprovedCoderAllocatesFromSelectedSharedWorkspace(t *testing.T) {
 	}
 }
 
+func TestCoderPromptMakesAllocatedWorktreeAuthoritativeAndBaseCheckoutReadOnly(t *testing.T) {
+	prompt := agentruntime.CoderAgentPrompt()
+	for _, required := range []string{"isolated worktree", "authoritative project root", "Never edit the captured source checkout or its base branch"} {
+		if !strings.Contains(prompt, required) {
+			t.Fatalf("Coder prompt missing %q: %s", required, prompt)
+		}
+	}
+}
+
 func TestApprovedCoderAllocatesIsolatedWorktreeScope(t *testing.T) {
 	svc, parentSessionID, cleanup := newTaskLaunchPermissionTestService(t)
 	defer cleanup()
@@ -1420,7 +1431,7 @@ func TestApprovedCoderAllocatesIsolatedWorktreeScope(t *testing.T) {
 		t.Fatalf("resolve task base: %v", err)
 	}
 	launch, err := svc.prepareDelegatedSubagentLaunchWithProfile(parent, sessionruntime.ModeAuto, taskLaunchPrepared{
-		LaunchIndex: 1, RequestedSubagent: "coder", MetaPrompt: "implement", VirtualTarget: virtual, TaskBase: &taskBase, OwnedScope: []string{"swarmd/internal/run/**"}, LogicalTaskID: "test-coder-sparse-scope",
+		LaunchIndex: 1, RequestedSubagent: "coder", MetaPrompt: "implement", VirtualTarget: virtual, TaskBase: &taskBase, OwnedScope: []string{"swarmd/internal/run/**"}, LogicalTaskID: "isolated-coder-task",
 	}, "implement", "", &profile, source, nil)
 	if err != nil {
 		t.Fatalf("prepare approved Coder: %v", err)
@@ -1432,8 +1443,11 @@ func TestApprovedCoderAllocatesIsolatedWorktreeScope(t *testing.T) {
 	if len(stub.allocatedScopes) != 1 || !slices.Equal(stub.allocatedScopes[0], []string{"swarmd/internal/run/**"}) {
 		t.Fatalf("Coder allocation scopes = %#v", stub.allocatedScopes)
 	}
-	if len(child.TemporaryWorkspaceRoots) != 0 {
-		t.Fatalf("Coder inherited temporary roots: %v", child.TemporaryWorkspaceRoots)
+	if len(child.TemporaryWorkspaceRoots) != 0 || len(child.WorkspaceGrants) != 0 {
+		t.Fatalf("Coder inherited parent roots or grants: temporary=%v grants=%v", child.TemporaryWorkspaceRoots, child.WorkspaceGrants)
+	}
+	if child.WorkspacePath == parent.WorkspacePath || child.WorktreeRootPath == parent.WorktreeRootPath || child.WorktreeBranch == parent.WorktreeBranch || child.WorktreeBranch == child.WorktreeBaseBranch {
+		t.Fatalf("Coder did not receive a distinct managed worktree lane: child=%#v parent=%#v", child, parent)
 	}
 	principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: "test-user", AccountScopeID: parent.AccountScopeID, SessionID: parent.ID, AccountScopeSource: identity.AccountScopeSourceSession}
 	scope, err := svc.resolveRunWorkspaceScope(child, principal)

@@ -58,7 +58,7 @@ interface PermissionResetResponse {
 }
 
 export const BASH_APPROVAL_PROFILES: ReadonlyArray<{ value: BashApprovalProfile; label: string; description: string }> = [
-  { value: 'current_rules', label: 'Default', description: 'Asks every permission and follows your saved permission rules.' },
+  { value: 'current_rules', label: 'Default', description: 'Requires approval unless a saved rule allows the exact operation.' },
   { value: 'allow_every_read', label: 'Allow every read', description: 'Auto-approve every command the AI designates as a read, including critical reads.' },
   { value: 'only_critical_prompts', label: 'Only critical prompts', description: 'Auto-approve commands the AI designates as noncritical; prompt for critical operations and every delete.' },
 ]
@@ -440,7 +440,7 @@ export function PermissionsSettingsPage() {
               )
             })}
           </div>
-          <div className="mt-3 rounded-xl border border-[var(--app-warning-border)] bg-[var(--app-warning-bg)] px-3 py-2 text-xs leading-5 text-[var(--app-warning)]">Every profile still respects your saved permission rules for all permission types. Deny rules override profile auto-approvals. Profile safety prompts still win over existing Allow rules. The AI designates command types and criticality, so auto-approval profiles are less safe than Default. Allow every read intentionally does not stop critical reads.</div>
+          <div className="mt-3 rounded-xl border border-[var(--app-warning-border)] bg-[var(--app-warning-bg)] px-3 py-2 text-xs leading-5 text-[var(--app-warning)]">Require escalation means the operation still asks even when a broader Allow rule exists. Deny rules override profile auto-approvals, and operation-specific policy stays separate from generic tool policy. The AI designates command types and criticality, so auto-approval profiles are less safe than Default. Allow every read intentionally does not stop critical reads.</div>
           {bypassPermissions ? <div className="mt-2 text-xs text-[var(--app-text-muted)]">Permissions are OFF. This profile is preserved and will apply when permissions are turned back ON.</div> : null}
         </section>
 

@@ -25,6 +25,7 @@ import (
 	"swarm/packages/swarmd/internal/tool"
 	topologyruntime "swarm/packages/swarmd/internal/topology"
 	"swarm/packages/swarmd/internal/workspace"
+	worktreeruntime "swarm/packages/swarmd/internal/worktree"
 )
 
 func TestRoutedSessionStartFailuresLeaveNoDurableAuthority(t *testing.T) {
@@ -39,14 +40,17 @@ func TestRoutedSessionStartFailuresLeaveNoDurableAuthority(t *testing.T) {
 		wantRouterCalls   int
 	}{
 		{name: "workspace failure", workspaceEnabled: false, routerResponse: `{"title":"unused"}`, wantRouterCalls: 0},
-		{name: "Router failure", workspaceEnabled: true, routerErr: errors.New("Router unavailable"), managedWorktree: true, wantRouterCalls: 1},
-		{name: "capability failure", workspaceEnabled: true, routerResponse: `{"title":"Capability check","worktree_name":"capability-check"}`, breakCapabilities: true, managedWorktree: true, wantRouterCalls: 1},
+		{name: "worktree failure", workspaceEnabled: true, routerErr: errors.New("worktree unavailable"), managedWorktree: true, wantRouterCalls: 0},
+		{name: "capability failure", workspaceEnabled: true, routerResponse: `{"title":"Capability check","worktree_name":"capability-check"}`, breakCapabilities: true, managedWorktree: true, wantRouterCalls: 0},
 	}
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			runner := &sessionRouterRecordingRunner{id: "recording", response: provideriface.Response{Text: test.routerResponse}, err: test.routerErr}
 			server, sessions, principal := newRoutedSessionAtomicityServer(t, runner, test.planEnabled, test.workspaceEnabled)
+			if test.routerErr != nil && test.workspaceEnabled {
+				server.SetWorktreeService(&fakeWorktreeService{allocationErr: test.routerErr})
+			}
 			if test.breakCapabilities {
 				// Agent resolution must compile the stored V3 tool contract before any
 				// session authority is committed.
@@ -54,9 +58,11 @@ func TestRoutedSessionStartFailuresLeaveNoDurableAuthority(t *testing.T) {
 			}
 
 			const requestID = "failed-routed-start"
-			recorder := postRoutedSessionAtomicityRequest(t, server, principal, map[string]any{
-				"input": "route this request", "client_request_id": requestID, "managed_worktree_requested": test.managedWorktree,
-			})
+			body := map[string]any{"input": "route this request", "client_request_id": requestID}
+			if test.managedWorktree {
+				body["worktree_name"] = "test-worktree"
+			}
+			recorder := postRoutedSessionAtomicityRequest(t, server, principal, body)
 			if recorder.Code == http.StatusOK {
 				t.Fatalf("failure returned success: %s", recorder.Body.String())
 			}
@@ -215,9 +221,6 @@ func decodeRoutedSessionAtomicityResponse(t *testing.T, recorder *httptest.Respo
 func postRoutedSessionAtomicityRequest(t *testing.T, server *Server, principal identity.Principal, body map[string]any) *httptest.ResponseRecorder {
 	t.Helper()
 	addRoutedSessionTestAuthority(body)
-	if _, ok := body["managed_worktree_requested"]; !ok {
-		body["managed_worktree_requested"] = false
-	}
 	if _, ok := body["plan_mode_requested"]; !ok {
 		body["plan_mode_requested"] = false
 	}
@@ -326,11 +329,15 @@ func newRoutedSessionAtomicityServer(t *testing.T, routerRunner *sessionRouterRe
 	workspaceStore := pebblestore.NewWorkspaceStore(store)
 	workspaceService := workspace.NewService(workspaceStore)
 	workspacePath := filepath.Join(t.TempDir(), "workspace")
+	workspaceID := ""
+	workspaceGeneration := int64(0)
 	if workspaceEnabled {
 		entry, err := workspaceStore.AddForAccount(principal.AccountScopeID, workspacePath, "Routed Workspace")
 		if err != nil {
 			t.Fatalf("add routed workspace: %v", err)
 		}
+		workspaceID = entry.WorkspaceID
+		workspaceGeneration = entry.WorkspaceGeneration
 		pending, err := workspaceStore.MarkDefinitionPendingForAccount(principal.AccountScopeID, entry.Path)
 		if err != nil {
 			t.Fatalf("mark routed workspace definition pending: %v", err)
@@ -382,7 +389,7 @@ func newRoutedSessionAtomicityServer(t *testing.T, routerRunner *sessionRouterRe
 	if workspaceEnabled {
 		if _, err := topologyStore.PutWorkspaceBindingForAccount(principal.AccountScopeID, pebblestore.TopologyWorkspaceBindingRecord{
 			BindingID: "routed-binding", UserID: principal.UserID, AccountScopeID: principal.AccountScopeID,
-			SourceWorkspaceID: "routed-workspace", SourceWorkspaceGeneration: 1, SourceWorkspacePath: workspacePath, SourceWorkspaceName: "Routed Workspace",
+			SourceWorkspaceID: workspaceID, SourceWorkspaceGeneration: workspaceGeneration, SourceWorkspacePath: workspacePath, SourceWorkspaceName: "Routed Workspace",
 			DestinationRuntimeSwarmID: "local-swarm", DestinationAuthorityHostSwarmID: "local-swarm", DestinationHostSwarmID: "local-swarm", DestinationRuntimeKind: pebblestore.TopologyRuntimeKindHost,
 			DestinationWorkspacePath: workspacePath, PlacementGeneration: 1, BindingGeneration: 1, State: pebblestore.TopologyWorkspaceBindingStateBound,
 			AccessMode: pebblestore.TopologyWorkspaceBindingAccessModeReadWrite, MaterializationKind: pebblestore.TopologyWorkspaceBindingMaterializationSource,
@@ -393,5 +400,12 @@ func newRoutedSessionAtomicityServer(t *testing.T, routerRunner *sessionRouterRe
 	}
 	server.SetTopologyService(topologyruntime.NewService(topologyStore, swarmStore))
 	server.SetSwarmStore(swarmStore)
+	if workspaceEnabled {
+		managedPath := filepath.Join(t.TempDir(), "managed-worktree")
+		server.SetWorktreeService(&routedWorktreeServiceStub{fakeWorktreeService: fakeWorktreeService{
+			config:     worktreeruntime.Config{UseCurrentBranch: true, BranchName: "agent/<id>"},
+			allocation: worktreeruntime.Allocation{WorkspacePath: managedPath, RepoRoot: workspacePath, BranchName: "agent/session", WorkspaceID: "session-worktree"},
+		}})
+	}
 	return server, sessionService, principal
 }

@@ -1461,7 +1461,21 @@ func (s *Service) gateToolCalls(ctx context.Context, sessionID, runID string, st
 			decisions[i].Result.Error = message
 			continue
 		}
-		permissionArguments, err := s.permissionArgumentsForCall(sessionID, sessionMode, toolCalls[i])
+		permissionMode := sessionMode
+		permissionArguments := strings.TrimSpace(toolCalls[i].Arguments)
+		var err error
+		if canonicalToolName(toolCalls[i].Name) == "manage_workspace" && manageWorkspaceMutationAction(toolCalls[i].Arguments) == "map_update" {
+			payload, payloadErr := s.buildManageWorkspacePermissionPayload(sessionID, toolCalls[i].Arguments)
+			if payloadErr != nil {
+				err = payloadErr
+			} else {
+				raw, marshalErr := json.Marshal(payload)
+				err = marshalErr
+				permissionArguments = string(raw)
+			}
+		} else {
+			permissionArguments, err = s.permissionArgumentsForCall(sessionID, sessionMode, toolCalls[i])
+		}
 		if err != nil {
 			message := fmt.Sprintf("invalid tool arguments: %v", err)
 			decisions[i].Err = err
@@ -1559,16 +1573,37 @@ func (s *Service) gateToolCalls(ctx context.Context, sessionID, runID string, st
 			}
 			sessionDeployReservation = &reserved
 		}
+		authorizationToolName := toolCalls[i].Name
+		if canonicalToolName(toolCalls[i].Name) == "manage_workspace" {
+			if action := manageWorkspaceMutationAction(toolCalls[i].Arguments); action != "" {
+				// Persistent policy rules bind to the action-specific capability, not
+				// the shared transport tool, so each persistent action can be allowed
+				// independently without broadening another workspace mutation.
+				authorizationToolName = "workspace_" + action
+				if action == "map_update" {
+					authorizationToolName = "workspace_map_update"
+				}
+				parts := strings.Split(permissionMode, "+")
+				modeBase := strings.ToLower(strings.TrimSpace(parts[0]))
+				if modeBase == "yolo" || modeBase == "read" || modeBase == "readwrite" {
+					permissionMode = sessionruntime.ModeAuto
+				}
+				// Catalog and account-map updates always begin with an explicit decision.
+				// Do not let the generic bypass suffix silently skip the first prompt;
+				// persistent action-specific rules remain the opt-in automation path.
+				permissionMode = strings.Split(permissionMode, "+")[0]
+			}
+		}
 		auth, err := s.permissions.AuthorizeToolCall(permission.AuthorizationInput{
 			SessionID:                sessionID,
 			AccountScopeID:           accountScopeID,
 			RunID:                    runID,
 			Step:                     step,
 			CallID:                   toolCalls[i].CallID,
-			ToolName:                 toolCalls[i].Name,
+			ToolName:                 authorizationToolName,
 			ToolArguments:            permissionArguments,
 			ToolCallArguments:        strings.TrimSpace(toolCalls[i].Arguments),
-			Mode:                     sessionMode,
+			Mode:                     permissionMode,
 			Overlay:                  overlay,
 			SubagentReservation:      subagentReservation,
 			SessionDeployReservation: sessionDeployReservation,
@@ -1779,6 +1814,78 @@ func (s *Service) executeControlPlaneToolWithLifecycleRunContext(ctx context.Con
 		return true, result, err
 	case "manage_worktree":
 		output, err := s.executeManageWorktreeTool(ctx, sessionID, call, approvedArguments)
+		result.Output = output
+		return true, result, err
+	case "manage_workspace":
+		// This single-purpose control-plane tool owns account workspace selection
+		// and canonical V3 session routing; standalone runtime execution is rejected.
+		if !strings.EqualFold(strings.TrimSpace(agentProfile.Name), "swarm") || !strings.EqualFold(strings.TrimSpace(agentProfile.Mode), "primary") {
+			return true, result, errors.New("manage_workspace is restricted to the compiled Swarm primary agent")
+		}
+		principal, _ := identity.PrincipalFromContext(ctx)
+		if !principal.Valid() && s.sessions != nil {
+			if session, ok, lookupErr := s.sessions.GetSession(strings.TrimSpace(sessionID)); lookupErr != nil {
+				return true, result, lookupErr
+			} else if ok {
+				principal = identity.Principal{Type: identity.PrincipalTypeUser, UserID: session.UserID, AccountScopeID: session.AccountScopeID, SessionID: session.ID, AccountScopeSource: identity.AccountScopeSourceSession}
+			}
+		}
+		arguments := strings.TrimSpace(call.Arguments)
+		if manageWorkspaceMutationAction(call.Arguments) != "" {
+			if strings.TrimSpace(approvedArguments) == "" {
+				return true, result, errors.New("manage_workspace catalog mutation requires approved canonical arguments")
+			}
+			var permissionPayload map[string]any
+			// Permission resolution returns the stored structured permission payload;
+			// unwrap its backend-owned approved_arguments before execution.
+			if json.Unmarshal([]byte(strings.TrimSpace(approvedArguments)), &permissionPayload) != nil {
+				return true, result, errors.New("manage_workspace approved permission payload is invalid")
+			}
+			approved, ok := permissionPayload["approved_arguments"].(map[string]any)
+			if !ok {
+				// Older permission resolvers may already return the canonical nested
+				// arguments directly; accept only when the backend scope binding exists.
+				approved = permissionPayload
+			}
+			approvedAction := manageWorkspaceMutationAction(manageWorkspaceArgumentsJSON(approved))
+			requestedAction := manageWorkspaceMutationAction(call.Arguments)
+			if len(approved) == 0 || approvedAction != requestedAction {
+				return true, result, errors.New("manage_workspace approved arguments do not match the requested action")
+			}
+			expectedScope := "workspace_" + manageWorkspaceMutationAction(call.Arguments)
+			if requestedAction == "map_update" {
+				expectedScope = "workspace_map_update"
+			}
+			if approvedScope := strings.TrimSpace(mapString(approved, "permission_scope")); approvedScope != expectedScope {
+				return true, result, errors.New("manage_workspace approved permission scope is invalid")
+			}
+			if strings.TrimSpace(mapString(approved, "intent")) == "" {
+				return true, result, errors.New("manage_workspace approved intent is missing")
+			}
+			if requestedAction == "map_update" {
+				requestedArgs, parseErr := parseManageWorkspaceArguments(call.Arguments)
+				if parseErr != nil {
+					return true, result, parseErr
+				}
+				approvedContent, normalizeErr := pebblestore.NormalizeWorkspaceMapContent(mapString(approved, "content"))
+				if normalizeErr != nil {
+					return true, result, normalizeErr
+				}
+				requestedContent, normalizeErr := pebblestore.NormalizeWorkspaceMapContent(requestedArgs.Content)
+				if normalizeErr != nil {
+					return true, result, normalizeErr
+				}
+				if manageWorkspaceInt64(approved["expected_revision"]) != requestedArgs.ExpectedRevision || strings.TrimSpace(mapString(approved, "intent")) != requestedArgs.Intent || approvedContent != requestedContent {
+					return true, result, errors.New("manage_workspace approved map arguments do not match the requested revision, intent, and content")
+				}
+			}
+			rawApproved, marshalErr := json.Marshal(approved)
+			if marshalErr != nil {
+				return true, result, marshalErr
+			}
+			arguments = string(rawApproved)
+		}
+		output, err := s.executeManageWorkspaceTool(sessionID, arguments, principal, applySessionMutation)
 		result.Output = output
 		return true, result, err
 	case "manage_actions":
@@ -4162,6 +4269,16 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 		}
 	}
 	parsed.Launches = append([]taskLaunchSpec(nil), launchSpecs...)
+	if parsed.Program != nil {
+		definition, _, definitionErr := taskProgramDefinitionFromSpec(parsed.Program)
+		if definitionErr != nil {
+			return "", definitionErr
+		}
+		preflight := taskProgramScheduler{parentSession: parentSession, parsed: parsed, record: pebblestore.TaskProgramRecord{Definition: definition}}
+		if _, laneErr := preflight.programWorkspacePath(); laneErr != nil {
+			return "", laneErr
+		}
+	}
 	taskCallID := strings.TrimSpace(call.CallID)
 	if taskCallID == "" {
 		taskCallID = fmt.Sprintf("task_%d", time.Now().UnixMilli())
@@ -5665,7 +5782,7 @@ func buildTaskParentSessionContext(session pebblestore.SessionSnapshot, permissi
 		b.WriteString(mode)
 		b.WriteString("\n")
 	}
-	if workspacePath := strings.TrimSpace(session.WorkspacePath); workspacePath != "" {
+	if workspacePath := strings.TrimSpace(firstNonEmptyString(session.WorktreeRootPath, session.WorkspacePath)); workspacePath != "" {
 		b.WriteString("- workspace_path: ")
 		b.WriteString(workspacePath)
 		b.WriteString("\n")
@@ -6073,21 +6190,23 @@ func parseTaskChildBlockedReport(report string, outcome *taskLaunchOutcome) erro
 
 func taskDisabledTools(allowBash bool) map[string]bool {
 	disabled := map[string]bool{
-		"ask_user":       true,
-		"ask-user":       true,
-		"exit_plan_mode": true,
-		"exit-plan-mode": true,
-		"plan_manage":    true,
-		"plan-manage":    true,
-		"manage_actions": true,
-		"manage-actions": true,
-		"manage_video":   true,
-		"manage-video":   true,
-		"manage_todos":   true,
-		"manage-todos":   true,
-		"manage_agent":   true,
-		"manage-agent":   true,
-		"task":           true,
+		"ask_user":         true,
+		"ask-user":         true,
+		"exit_plan_mode":   true,
+		"exit-plan-mode":   true,
+		"plan_manage":      true,
+		"plan-manage":      true,
+		"manage_actions":   true,
+		"manage-actions":   true,
+		"manage_workspace": true,
+		"manage-workspace": true,
+		"manage_video":     true,
+		"manage-video":     true,
+		"manage_todos":     true,
+		"manage-todos":     true,
+		"manage_agent":     true,
+		"manage-agent":     true,
+		"task":             true,
 	}
 	if !allowBash {
 		disabled["bash"] = true
@@ -6167,6 +6286,8 @@ func canonicalToolName(name string) string {
 		return "manage_sessions"
 	case "manage-worktree", "manage_worktree":
 		return "manage_worktree"
+	case "manage-workspace", "manage_workspace":
+		return "manage_workspace"
 	case "manage-actions", "manage_actions":
 		return "manage_actions"
 	case "manage-video", "manage_video":
@@ -6191,6 +6312,33 @@ func isManageActionsMutation(arguments string) bool {
 	}
 }
 
+func manageWorkspaceArgumentsJSON(arguments map[string]any) string {
+	raw, err := json.Marshal(arguments)
+	if err != nil {
+		return ""
+	}
+	return string(raw)
+}
+
+func manageWorkspaceMutationAction(arguments string) string {
+	var args map[string]any
+	if err := json.Unmarshal([]byte(strings.TrimSpace(arguments)), &args); err != nil {
+		return ""
+	}
+	switch strings.ToLower(strings.TrimSpace(mapString(args, "action"))) {
+	case "create":
+		return "create"
+	case "edit", "update":
+		return "update"
+	case "delete":
+		return "delete"
+	case "update_map":
+		return "map_update"
+	default:
+		return ""
+	}
+}
+
 func permissionRequirement(mode, toolName, arguments string) (string, bool) {
 	mode = strings.TrimSpace(strings.ToLower(mode))
 	toolName = canonicalToolName(toolName)
@@ -6209,6 +6357,16 @@ func permissionRequirement(mode, toolName, arguments string) (string, bool) {
 	case "manage_artifact":
 		if permission.ShouldApproveManageArtifactGenerateImage(arguments) && !bypass {
 			return "manage_artifact_generate_image", true
+		}
+		return toolName, false
+	case "manage_workspace":
+		// Catalog and account-map updates are intentional user decisions even when
+		// generic permission bypass is enabled. Persistent rules remain action-specific.
+		if action := manageWorkspaceMutationAction(arguments); action != "" {
+			if action == "map_update" {
+				return "workspace_map_update", true
+			}
+			return "workspace_" + action, true
 		}
 		return toolName, false
 	case "read", "search", "websearch", "webfetch", "agentic_search", "list", "skill_use", "manage_worktree", "manage_video", "manage_todos", "manage_theme", "edit_pending_plan":

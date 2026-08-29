@@ -15,12 +15,12 @@ const (
 	requestedWorktreeRetryIdentifierRange = int64(90000)
 )
 
-// CanonicalizeRequestedWorktreeName converts a Router-supplied worktree name
+// CanonicalizeRequestedWorktreeName converts a caller-authored worktree name
 // into the exact branch name used for allocation. The configured branch name
 // may be either a prefix (for example, "agent") or the existing <id> template
 // form (for example, "agent/<id>").
 //
-// Router names are untrusted. This function deliberately rejects Git ref and
+// Requested names are untrusted. This function deliberately rejects Git ref and
 // path constructs rather than attempting to repair them. Within a valid name,
 // letter case is normalized and human-readable separators are collapsed to a
 // single hyphen.
@@ -44,7 +44,7 @@ func CanonicalizeRequestedWorktreeName(requestedName, configuredBranchName strin
 }
 
 // CanonicalizeRequestedWorktreeNameRetry returns the sole duplicate-name retry
-// candidate. A random five-digit identifier is appended to the original Router
+// candidate. A random five-digit identifier is appended to the original requested
 // name before the same canonical validation and prefix application as the first
 // allocation attempt.
 func CanonicalizeRequestedWorktreeNameRetry(requestedName, configuredBranchName string) (branchName, retryRequestedName string, err error) {

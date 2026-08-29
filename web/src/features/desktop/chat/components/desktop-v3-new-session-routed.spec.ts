@@ -15,10 +15,10 @@ test('new Desktop chat uses only the routed controller and endpoint before activ
   assert.match(source, /controller\.submit\(\{/)
   assert.match(source, /initialPrompt\?: string/)
   assert.match(source, /initialControllerState\.phase === 'failed' \? '' : initialPrompt\.trim\(\)/)
-  assert.match(source, /const commandPrompt = initialPrompt\.trim\(\)[\s\S]*initialWorktreeRequested[\s\S]*routedController\.primeWorktree\(commandPrompt, snapshot\)[\s\S]*routedController\.startDraft\(commandPrompt, snapshot\)/)
-  assert.match(source, /const initialCommandStarting = Boolean\(initialCommandPrompt\)[\s\S]*const activationPending = initialCommandStarting[\s\S]*routedState\.phase === 'routing'[\s\S]*routedState\.phase === 'resolved'[\s\S]*const pendingState = routedState\.phase === 'failed' \|\| routedState\.phase === 'worktree-primed'[\s\S]*: 'draft'/)
-  assert.match(source, /initialCommandPrompt[\s\S]*initialPromptSubmittedRef\.current[\s\S]*handleSubmit\(createDesktopV3RoutedComposerSnapshot\(\{[\s\S]*prompt: initialCommandPrompt[\s\S]*worktreePrimed: initialWorktreeRequested[\s\S]*planModeRequested: initialPlanModeRequested/)
-  assert.match(source, /controller\.submit\(\{[\s\S]*snapshot: captured[\s\S]*metadata: encodeDesktopRoutedWorktreeIntentMetadata/)
+  assert.match(source, /const commandPrompt = initialPrompt\.trim\(\)[\s\S]*routedController\.startDraft\(commandPrompt, snapshot\)/)
+  assert.match(source, /const initialCommandStarting = Boolean\(initialCommandPrompt\)[\s\S]*const activationPending = initialCommandStarting[\s\S]*routedState\.phase === 'routing'[\s\S]*routedState\.phase === 'resolved'[\s\S]*const pendingState = routedState\.phase === 'failed' \? routedState\.phase : 'draft'/)
+  assert.match(source, /initialCommandPrompt[\s\S]*initialPromptSubmittedRef\.current[\s\S]*handleSubmit\(createDesktopV3RoutedComposerSnapshot\(\{[\s\S]*prompt: initialCommandPrompt[\s\S]*planModeRequested: initialPlanModeRequested/)
+  assert.match(source, /controller\.submit\(\{[\s\S]*snapshot: captured[\s\S]*metadata: desktopRoutedSessionMetadata\(\{ source: 'desktop-v3' \}\)/)
   assert.match(source, /controller\.retry\(\)/)
   assert.match(source, /controller\.prepareOperationIdentity\(\)/)
   assert.match(source, /stageDesktopComposerAttachments\(\{/)
@@ -49,15 +49,15 @@ test('routed pending and failure stay local and retry the persisted controller i
   const paneSource = await readFile(paneURL, 'utf8')
   const composerSource = await readFile(composerURL, 'utf8')
 
-  assert.match(paneSource, /<DesktopV3ChatHeader[\s\S]*title=\{newChatUsesWorktree \? 'New worktree chat' : 'New chat'\}[\s\S]*workspaceName=\{workspace\.workspaceName\}[\s\S]*runStatus=\{headerStatus\}/)
-  assert.match(paneSource, /const headerStatus:[\s\S]*activationPending[\s\S]*'Opening…'[\s\S]*'Routing…'[\s\S]*'Starting…'[\s\S]*'Start failed'/)
-  assert.match(paneSource, /<DesktopV3RoutedPendingShell[\s\S]*state=\{pendingState\}[\s\S]*startPath=\{routedState\.snapshot\.worktreePrimed \? 'router' : 'session'\}[\s\S]*pendingPrompt=\{routedState\.prompt\}/)
+  assert.match(paneSource, /<DesktopV3ChatHeader[\s\S]*title="New chat"[\s\S]*workspaceName=\{workspace\.workspaceName\}[\s\S]*runStatus=\{headerStatus\}/)
+  assert.match(paneSource, /const headerStatus:[\s\S]*activationPending[\s\S]*'Opening…'[\s\S]*'Routing…'[\s\S]*'Start failed'/)
+  assert.match(paneSource, /<DesktopV3RoutedPendingShell[\s\S]*state=\{pendingState\}[\s\S]*startPath="router"[\s\S]*pendingPrompt=\{routedState\.prompt\}/)
   assert.match(paneSource, /routedState\.phase === 'failed'[\s\S]*controller\.retry\(\)/)
   assert.match(paneSource, /const visibleAttachments = restoredAttachments\.filter[\s\S]*visibleAttachments\.length !== current\.snapshot\.attachments\.length[\s\S]*controller\.retry\(\)/)
   assert.match(paneSource, /removedStagedAttachmentIdsRef\.current\.add\(stagingId\)/)
   assert.match(paneSource, /stagedAttachmentsRef\.current = visibleAttachments/)
   assert.match(paneSource, /setDraft\(routedState\.snapshot\.prompt\)/)
-  assert.match(paneSource, /setWorktreeIntent\(createDesktopRoutedWorktreeIntent\(routedState\.snapshot\.worktreePrimed\)\)/)
+  assert.doesNotMatch(paneSource, /setWorktreeIntent/)
   assert.match(paneSource, /setMode\(routedState\.snapshot\.planModeRequested \? 'plan' : 'auto'\)/)
   assert.match(paneSource, /setRestoredSnapshot\(routedState\.snapshot\)/)
   assert.match(paneSource, /routedState\.phase === 'draft'/)
@@ -65,7 +65,7 @@ test('routed pending and failure stay local and retry the persisted controller i
   assert.match(composerSource, /attachments: desktopComposerStagedMediaInput\(routedStagedAttachments\)/)
   assert.match(composerSource, /selectedAction: selectedWorkspaceAction/)
   assert.match(composerSource, /selectedSkill: selectedWorkspaceSkill/)
-  assert.match(composerSource, /worktreePrimed: routedWorktreeRequested/)
+  assert.doesNotMatch(composerSource, /worktreePrimed/)
   assert.match(composerSource, /planModeRequested: mode === 'plan'/)
   assert.match(composerSource, /setSelectedWorkspaceAction\(\(routedComposerSnapshot\.selectedAction as WorkspaceAction \| null\) \?\? null\)/)
   assert.match(composerSource, /setSelectedWorkspaceSkill\(\(routedComposerSnapshot\.selectedSkill as WorkspaceSkill \| null\) \?\? null\)/)
@@ -81,8 +81,8 @@ test('all successful direct starts retain the new-chat surface until destination
   const source = await readFile(paneURL, 'utf8')
 
   assert.match(source, /const activationPending = initialCommandStarting[\s\S]*routedState\.phase === 'routing'[\s\S]*routedState\.phase === 'resolved'/)
-  assert.match(source, /const pendingState = routedState\.phase === 'failed' \|\| routedState\.phase === 'worktree-primed'[\s\S]*: 'draft'/)
-  assert.match(source, /startPath=\{routedState\.snapshot\.worktreePrimed \? 'router' : 'session'\}/)
+  assert.match(source, /const pendingState = routedState\.phase === 'failed' \? routedState\.phase : 'draft'/)
+  assert.match(source, /startPath="router"/)
   assert.match(source, /<DesktopV3AgenticComposer[\s\S]*disabled=\{activationPending\}[\s\S]*busy=\{activationPending\}/)
   assert.doesNotMatch(source, /activationPending \? 'routing'/)
   assert.doesNotMatch(source, /showComposer/)
@@ -99,16 +99,13 @@ test('Shift+Tab primes Plan only in the routed new-session composer', async () =
   assert.doesNotMatch(source, /window\.addEventListener\('keydown'[\s\S]*Shift\+Tab/)
 })
 
-test('/wt on enables worktree intent only for a routed new-session composer', async () => {
+test('worktree isolation has no routed composer toggle or command', async () => {
   const source = await readFile(composerURL, 'utf8')
 
-  assert.match(source, /command\.action\.kind === 'enable-new-session-worktree'/)
-  assert.match(source, /if \(routedNewSession\) \{\s*onRoutedWorktreeRequestedChange\?\.\(true\)/)
-  assert.match(source, /Use \/wt on only in a new-session composer\. Worktree intent was not changed\./)
-  assert.match(source, /role="alert"[\s\S]*worktreeCommandWarning/)
+  assert.doesNotMatch(source, /worktreePrimed|enable-new-session-worktree|onRoutedWorktreeRequestedChange|worktreeCommandWarning/)
 })
 
-test('routed new-chat composer exposes explicit Worktree and Plan intent with a waiting model bar', async () => {
+test('routed new-chat composer exposes Plan as its only execution-mode choice with a waiting model bar', async () => {
   const source = await readFile(composerURL, 'utf8')
 
   assert.match(source, /routedNewSession\?: boolean/)
@@ -116,7 +113,7 @@ test('routed new-chat composer exposes explicit Worktree and Plan intent with a 
   assert.match(source, /<DesktopComposerPlanToggle[\s\S]*active=\{mode === 'plan'\}[\s\S]*onActiveChange=\{\(active\) => onModeSelect\?\.\(active \? 'plan' : 'auto'\)\}[\s\S]*allowDisable/)
   assert.match(source, /resolvedSessionControls && showModePicker && mode === 'plan'[\s\S]*<DesktopComposerPlanToggle active readOnly/)
   assert.match(source, /onAttach=\{routedNewSession \? \(onRoutedStageAttachments/)
-  assert.match(source, /<DesktopRoutedWorktreePrime requested=\{routedWorktreeRequested\}/)
+  assert.doesNotMatch(source, /DesktopRoutedWorktreePrime|routedWorktreeRequested/)
   assert.match(source, /statusLabel=\{modelStatusLabel\}/)
   assert.doesNotMatch(source, /Attachments will be available after routed staging is connected/)
 })

@@ -37,7 +37,7 @@ func delegatedGenerationRecordFromCurrentLaunch(launch taskLaunchPrepared, sessi
 		ReservationSessionID:           strings.TrimSpace(launch.ReservationSessionID),
 		ReservationRunID:               strings.TrimSpace(launch.ParentRunID),
 		ReservationCallID:              strings.TrimSpace(launch.TaskCallID),
-		WorkspacePath:                  strings.TrimSpace(session.WorkspacePath),
+		WorkspacePath:                  strings.TrimSpace(firstNonEmptyString(session.WorktreeRootPath, session.WorkspacePath)),
 		WorktreeBranch:                 worktreeBranch,
 		ParentBranch:                   strings.TrimSpace(mapString(metadata, "parent_branch")),
 		ImmutableBaseCommit:            strings.TrimSpace(mapString(metadata, "base_commit")),
@@ -47,9 +47,6 @@ func delegatedGenerationRecordFromCurrentLaunch(launch taskLaunchPrepared, sessi
 		ManagedArtifactTaskCallID:      strings.TrimSpace(mapString(metadata, "managed_artifact_task_call_id")),
 		ManagedArtifactProgramID:       strings.TrimSpace(mapString(metadata, "managed_artifact_program_id")),
 		ManagedArtifactProgramJobID:    strings.TrimSpace(mapString(metadata, "managed_artifact_program_job_id")),
-	}
-	if record.WorkspacePath == "" {
-		record.WorkspacePath = strings.TrimSpace(session.WorktreeRootPath)
 	}
 	return record
 }

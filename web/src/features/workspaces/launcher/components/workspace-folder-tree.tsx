@@ -51,7 +51,7 @@ export function WorkspaceFolderTree({
   workspaces,
   selectingPath,
   savingPath,
-  useFolderLabel = 'Use as temp',
+  useFolderLabel = 'Use folder for this chat only',
   showTemporaryAction = true,
   openCreatedFolder = false,
   showPathInWorkspaceAction = false,
@@ -127,8 +127,8 @@ export function WorkspaceFolderTree({
     : currentSaved
       ? 'Open workspace'
       : showPathInWorkspaceAction && currentPath
-        ? `Add ${currentPathLabel} as workspace`
-        : 'Add as workspace'
+        ? `Add folder ${currentPathLabel} as a new workspace`
+        : 'Add folder as a new workspace'
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -136,7 +136,7 @@ export function WorkspaceFolderTree({
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
             <h2 className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[var(--app-text)]">Explorer</h2>
-            <p className="mt-1 truncate text-xs text-[var(--app-text-muted)]">Navigate folders and add workspaces.</p>
+            <p className="mt-1 truncate text-xs text-[var(--app-text-muted)]">Use a folder for this chat only or add it as a new workspace.</p>
           </div>
           <span className="flex size-7 shrink-0 items-center justify-center rounded-lg border border-[color-mix(in_oklab,var(--app-border)_52%,transparent)] bg-[var(--app-surface-subtle)] text-[11px] font-medium tabular-nums text-[var(--app-text-subtle)]">{browser?.entries.length ?? 0}</span>
         </div>
@@ -281,8 +281,8 @@ export function WorkspaceFolderTree({
                             lastModified: 0,
                           })
                         }}
-                        aria-label={isSaved ? `Open workspace ${entry.name}` : `Add ${entry.name} as workspace`}
-                        title={isSaved ? 'Open workspace' : 'Add as workspace'}
+                        aria-label={isSaved ? `Open workspace ${entry.name}` : `Add folder ${entry.name} as a new workspace`}
+                        title={isSaved ? 'Open workspace' : 'Add folder as a new workspace'}
                       >
                         {entryBusy ? <RefreshCw size={13} className="animate-spin" /> : isSaved ? <Folder size={13} /> : <Plus size={14} />}
                       </button>

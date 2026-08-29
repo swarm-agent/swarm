@@ -160,7 +160,7 @@ func (s *Server) resolveWorkspaceActionSessionScope(principal identity.Principal
 	if !found || strings.TrimSpace(session.AccountScopeID) != strings.TrimSpace(principal.AccountScopeID) || strings.TrimSpace(session.UserID) != strings.TrimSpace(principal.UserID) {
 		return actionruntime.Scope{}, errors.New("session not found")
 	}
-	if filepath.Clean(strings.TrimSpace(session.WorkspacePath)) != filepath.Clean(runtimePath) {
+	if filepath.Clean(strings.TrimSpace(firstNonEmpty(session.WorktreeRootPath, session.WorkspacePath))) != filepath.Clean(runtimePath) {
 		return actionruntime.Scope{}, errors.New("session workspace path does not match")
 	}
 	binding, found, err := s.sessionWorkspaceBindingFromLineage(principal, session)

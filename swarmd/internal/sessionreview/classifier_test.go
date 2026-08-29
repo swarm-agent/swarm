@@ -27,6 +27,9 @@ func reviewSession(updatedAt int64) pebblestore.SessionSnapshot {
 
 func TestClassifySnapshotRetainsDirtyWorktree(t *testing.T) {
 	got := ClassifySnapshot(context.Background(), stubGit{}, reviewSession(1), gitstatus.Snapshot{HasGit: true, HeadOID: "abc", Clean: false, DirtyCount: 2}, time.Now(), time.Hour)
+	if got.SourceHead != "abc" {
+		t.Fatalf("source head = %q, want abc", got.SourceHead)
+	}
 	if got.Classification != "retained" || got.Reason != "uncommitted_work" || !got.CommitEligible {
 		t.Fatalf("classification = %#v", got)
 	}

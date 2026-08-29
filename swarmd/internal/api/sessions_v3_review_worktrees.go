@@ -30,7 +30,11 @@ type sessionsV3ReviewWorktreesRequest struct {
 	SessionIDs    []string `json:"session_ids,omitempty"`
 	ArchiveIDs    []string `json:"archive_session_ids,omitempty"`
 	ArchiveAll    bool     `json:"archive_all,omitempty"`
-	IntegrateIDs  []string `json:"integrate_session_ids,omitempty"`
+	LegacyIntegrateIDs []string          `json:"integrate_session_ids,omitempty"`
+	PromoteIDs         []string          `json:"promote_session_ids,omitempty"`
+	SourceHeads        map[string]string `json:"source_head_by_session_id,omitempty"`
+	TargetBranch       string            `json:"target_branch,omitempty"`
+	TargetHead         string            `json:"target_head,omitempty"`
 	CommitIDs     []string `json:"commit_session_ids,omitempty"`
 	Automatic     bool     `json:"automatic,omitempty"`
 	GraceHours    string   `json:"grace_hours,omitempty"`
@@ -68,6 +72,12 @@ func (s *Server) handleSessionsV3ReviewWorktrees(w http.ResponseWriter, r *http.
 }
 
 func (s *Server) classifySessionsV3ReviewWorktrees(ctx context.Context, principal identity.Principal, req sessionsV3ReviewWorktreesRequest) (map[string]any, error) {
+	if len(compactStrings(req.LegacyIntegrateIDs)) > 0 {
+		return nil, errors.New("integrate_session_ids is retired; use explicit promotion with exact source and target lineage")
+	}
+	if req.Automatic && len(compactStrings(req.PromoteIDs)) > 0 {
+		return nil, errors.New("worktree promotion requires an explicit user action")
+	}
 	checkoutSnapshot, checkoutCommonDir := sessionsV3ReviewCheckoutTarget(ctx, req.WorkspacePath)
 	repository := newSessionsV3ReviewRepository(ctx, checkoutSnapshot, checkoutCommonDir)
 	checkoutBranch := strings.TrimSpace(checkoutSnapshot.Branch)
@@ -109,8 +119,8 @@ func (s *Server) classifySessionsV3ReviewWorktrees(ctx context.Context, principa
 			return nil, err
 		}
 	}
-	if len(compactStrings(req.IntegrateIDs)) > 0 {
-		if err := s.integrateSessionsV3ReviewWorktrees(ctx, principal, req.WorkspacePath, req.IntegrateIDs, now); err != nil {
+	if len(compactStrings(req.PromoteIDs)) > 0 {
+		if err := s.promoteSessionsV3ReviewWorktrees(ctx, principal, req.WorkspacePath, req.PromoteIDs, req.SourceHeads, req.TargetBranch, req.TargetHead, now); err != nil {
 			return nil, err
 		}
 		search, err = searchSessionsV3ReviewWorktreePages(s.sessions.SearchSessions, pebblestore.V3SessionSearchOptions{
@@ -266,6 +276,7 @@ func (s *Server) classifySessionsV3ReviewWorktrees(ctx context.Context, principa
 		"ok":                        true,
 		"target_detection":          "current_checkout_branch_for_matching_repository_then_session_worktree_base_branch",
 		"current_target_branch":     checkoutBranch,
+		"current_target_head":       strings.TrimSpace(checkoutSnapshot.HeadOID),
 		"comparison":                "git cherry target_branch worktree_head (patch-equivalent and conflict-resolved cherry-picks with matching author identity, message, and changed paths count as integrated)",
 		"retained":                  retained,
 		"done":                      done,
@@ -650,46 +661,57 @@ func sessionsV3ReviewWorktreeMatchesCheckout(ctx context.Context, worktreePath, 
 	return err == nil && gitstatus.NormalizePath(watch.CommonDir) == checkoutCommonDir
 }
 
-func (s *Server) integrateSessionsV3ReviewWorktrees(ctx context.Context, principal identity.Principal, workspacePath string, ids []string, now time.Time) error {
+func (s *Server) promoteSessionsV3ReviewWorktrees(ctx context.Context, principal identity.Principal, workspacePath string, ids []string, sourceHeads map[string]string, expectedTargetBranch, expectedTargetHead string, now time.Time) error {
 	ids = compactStrings(ids)
 	workspacePath = strings.TrimSpace(workspacePath)
 	if workspacePath == "" {
-		return errors.New("workspace_path is required for integration")
+		return errors.New("workspace_path is required for promotion")
+	}
+	expectedTargetBranch = strings.TrimSpace(expectedTargetBranch)
+	expectedTargetHead = strings.TrimSpace(expectedTargetHead)
+	if expectedTargetBranch == "" || expectedTargetHead == "" || len(sourceHeads) == 0 {
+		return errors.New("promotion requires exact target_branch, target_head, and source_head_by_session_id lineage")
 	}
 	parent, commonDir := sessionsV3ReviewCheckoutTarget(ctx, workspacePath)
 	if !parent.HasGit || !parent.Clean || parent.HeadOID == "" || commonDir == "" {
-		return errors.New("current checkout must be a clean available Git repository before integration")
+		return errors.New("captured checkout must be a clean available Git repository before promotion")
+	}
+	if parent.Branch != expectedTargetBranch || parent.HeadOID != expectedTargetHead {
+		return errors.New("promotion target branch or HEAD changed; refresh exact lineage before retrying")
 	}
 	children := make([]worktreeruntime.TaskIntegrationChild, 0, len(ids))
 	sessions := make([]pebblestore.SessionSnapshot, 0, len(ids))
 	for _, id := range ids {
 		session, found, err := s.sessions.GetSession(id)
 		if err != nil || !found || session.AccountScopeID != principal.AccountScopeID || session.UserID != principal.UserID {
-			return errors.New("integration selection contains an unavailable session")
+			return errors.New("promotion selection contains an unavailable or unowned session")
 		}
 		if !session.WorktreeEnabled || !sessionsV3ReviewWorktreeMatchesCheckout(ctx, session.WorktreeRootPath, commonDir) {
-			return errors.New("integration selection contains an unrelated or unmanaged worktree")
+			return errors.New("promotion selection contains an unrelated or unmanaged worktree")
+		}
+		if strings.TrimSpace(session.WorktreeBaseBranch) != expectedTargetBranch || strings.TrimSpace(sessionsV3MetadataString(session.Metadata, "swarm_v3_source_workspace_path")) != workspacePath || strings.TrimSpace(sessionsV3MetadataString(session.Metadata, "base_commit")) != expectedTargetHead {
+			return errors.New("promotion selection does not match the exact captured path, branch, and HEAD")
 		}
 		classification := sessionreview.ClassifyAgainstTarget(ctx, sessionreview.ExecGitRunner{}, session, now, sessionreview.DefaultGracePeriod, parent.Branch)
 		if !classification.IntegrateEligible {
-			return errors.New("integration selection contains a session that is not committed and integration-ready")
+			return errors.New("promotion selection contains a session that is not committed and promotion-ready")
 		}
 		state, inspectErr := (&worktreeruntime.Service{}).InspectTaskWorkspace(session.WorktreeRootPath)
-		if inspectErr != nil || !state.Clean || state.BranchName != session.WorktreeBranch {
-			return errors.New("integration selection contains a changed, dirty, or unavailable worktree")
+		if inspectErr != nil || !state.Clean || state.BranchName != session.WorktreeBranch || state.HeadCommit != strings.TrimSpace(sourceHeads[session.ID]) {
+			return errors.New("promotion selection source branch or HEAD changed; refresh exact lineage before retrying")
 		}
 		base := strings.TrimSpace(sessionsV3MetadataString(session.Metadata, "base_commit"))
 		if base == "" {
 			base, inspectErr = (sessionreview.ExecGitRunner{}).Run(ctx, session.WorktreeRootPath, "merge-base", parent.HeadOID, state.HeadCommit)
 			if inspectErr != nil || strings.TrimSpace(base) == "" {
-				return errors.New("integration selection is missing verifiable base-commit lineage")
+				return errors.New("promotion selection is missing verifiable base-commit lineage")
 			}
 		}
 		children = append(children, worktreeruntime.TaskIntegrationChild{SessionID: session.ID, BaseCommit: strings.TrimSpace(base), HeadCommit: state.HeadCommit})
 		sessions = append(sessions, session)
 	}
 	worktreeSvc := &worktreeruntime.Service{}
-	plan, err := worktreeSvc.PrepareTaskIntegration(workspacePath, parent.HeadOID, children)
+	plan, err := worktreeSvc.PrepareTaskIntegration(workspacePath, parent.Branch, parent.HeadOID, children)
 	if err != nil {
 		return err
 	}

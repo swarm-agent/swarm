@@ -17,8 +17,7 @@ export type DesktopSlashCommandAction =
   | { kind: 'open-action-chooser' }
   | { kind: 'open-quick-actions' }
   | { kind: 'compact-session' }
-  | { kind: 'enable-new-session-worktree' }
-  | { kind: 'new-session'; worktreeRequested: boolean; planModeRequested: boolean }
+  | { kind: 'new-session'; planModeRequested: boolean }
   | { kind: 'start-background-router-session' }
   | { kind: 'show-help' }
   | { kind: 'open-artifact-viewer' }
@@ -57,7 +56,6 @@ export interface DesktopTaskCommandRequest {
 
 export interface DesktopNewSessionCommandRequest {
   prompt: string
-  worktreeRequested: boolean
   planModeRequested: boolean
 }
 
@@ -103,16 +101,6 @@ const DESKTOP_SLASH_COMMANDS: DesktopSlashCommand[] = [
     action: { kind: 'open-quick-settings', tab: 'worktrees' },
   },
   {
-    id: 'worktree-on',
-    command: '/wt on',
-    aliases: [],
-    hint: 'Enable a managed worktree for this new session',
-    actionLabel: 'Enable Worktree',
-    tips: ['/wt on', 'Available only before starting a new session'],
-    state: 'ready',
-    action: { kind: 'enable-new-session-worktree' },
-  },
-  {
     id: 'workspace',
     command: '/workspace',
     aliases: ['/workspaces'],
@@ -130,17 +118,7 @@ const DESKTOP_SLASH_COMMANDS: DesktopSlashCommand[] = [
     actionLabel: 'New Session',
     tips: ['/new [<prompt>]', 'Bare opens an editable composer; a prompt starts immediately'],
     state: 'ready',
-    action: { kind: 'new-session', worktreeRequested: false, planModeRequested: false },
-  },
-  {
-    id: 'new-worktree',
-    command: '/new worktree',
-    aliases: [],
-    hint: 'Start fresh in a worktree, optionally with <prompt>',
-    actionLabel: 'New + Worktree',
-    tips: ['/new worktree [<prompt>]', 'A non-empty prompt starts the routed worktree session immediately'],
-    state: 'ready',
-    action: { kind: 'new-session', worktreeRequested: true, planModeRequested: false },
+    action: { kind: 'new-session', planModeRequested: false },
   },
   {
     id: 'new-plan',
@@ -150,17 +128,7 @@ const DESKTOP_SLASH_COMMANDS: DesktopSlashCommand[] = [
     actionLabel: 'New + Plan',
     tips: ['/new plan [<prompt>]', 'A non-empty prompt starts the routed plan session immediately'],
     state: 'ready',
-    action: { kind: 'new-session', worktreeRequested: false, planModeRequested: true },
-  },
-  {
-    id: 'new-wp',
-    command: '/new wp',
-    aliases: [],
-    hint: 'Start fresh with Worktree and Plan, optionally with <prompt>',
-    actionLabel: 'New + Both',
-    tips: ['/new wp [<prompt>]', 'A non-empty prompt starts with both chips enabled'],
-    state: 'ready',
-    action: { kind: 'new-session', worktreeRequested: true, planModeRequested: true },
+    action: { kind: 'new-session', planModeRequested: true },
   },
   {
     id: 'task',
@@ -417,29 +385,21 @@ export function getDesktopSlashCommands(options: DesktopSlashCommandOptions = {}
   return availableDesktopSlashCommands(options).slice()
 }
 
-export function isDesktopWorktreeOnCommand(input: string): boolean {
-  return /^\/wt\s+on$/i.test(input.trim())
-}
-
 export function parseDesktopNewSessionCommand(input: string): DesktopNewSessionCommandRequest | null {
   const match = input.trim().match(/^\/new(?:\s+([\s\S]*))?$/i)
   if (!match) return null
 
   const body = (match[1] ?? '').trim()
-  if (!body) return { prompt: '', worktreeRequested: false, planModeRequested: false }
+  if (!body) return { prompt: '', planModeRequested: false }
 
   const firstToken = body.match(/^(\S+)(?:\s+([\s\S]*))?$/)
   const directive = firstToken?.[1].toLowerCase() ?? ''
   const promptAfterDirective = (firstToken?.[2] ?? '').trim()
   switch (directive) {
-    case 'worktree':
-      return { prompt: promptAfterDirective, worktreeRequested: true, planModeRequested: false }
     case 'plan':
-      return { prompt: promptAfterDirective, worktreeRequested: false, planModeRequested: true }
-    case 'wp':
-      return { prompt: promptAfterDirective, worktreeRequested: true, planModeRequested: true }
+      return { prompt: promptAfterDirective, planModeRequested: true }
     default:
-      return { prompt: body, worktreeRequested: false, planModeRequested: false }
+      return { prompt: body, planModeRequested: false }
   }
 }
 

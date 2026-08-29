@@ -3,6 +3,7 @@ import type { ModelProfileChoice, ModelProfileSelectionRecord } from '../chat/ty
 import type { DesktopSessionMode } from '../settings/swarm/types/swarm-settings'
 import type { DesktopV3ArtifactMessageSelection } from './artifact-api'
 import type { DesktopVideoSourceAttachment } from '../chat/services/video-source-attachments'
+import { desktopRoutedSessionMetadata } from '../chat/services/desktop-routed-worktree-intent'
 
 import type {
   DesktopV3MediaCapability,
@@ -132,7 +133,6 @@ export interface DesktopV3RoutedSessionStartRequest extends DesktopV3RoutedWorks
   idempotency_key?: string
   agent_name: string
   metadata?: Record<string, unknown>
-  managed_worktree_requested: boolean
   plan_mode_requested: boolean
   media?: DesktopV3RoutedSessionMediaRequest[]
   staging_ids?: string[]
@@ -302,9 +302,6 @@ export async function postDesktopV3RoutedSessionStart(
   if (idempotencyKey !== clientRequestId) {
     throw new Error('Desktop V3 routed start requires one stable client_request_id/idempotency identity')
   }
-  if (typeof input.managed_worktree_requested !== 'boolean') {
-    throw new Error('Desktop V3 routed start requires explicit managed_worktree_requested intent')
-  }
   if (typeof input.plan_mode_requested !== 'boolean') {
     throw new Error('Desktop V3 routed start requires explicit plan_mode_requested intent')
   }
@@ -323,8 +320,7 @@ export async function postDesktopV3RoutedSessionStart(
     client_request_id: clientRequestId,
     idempotency_key: clientRequestId,
     agent_name: agentName,
-    ...(input.metadata ? { metadata: input.metadata } : {}),
-    managed_worktree_requested: input.managed_worktree_requested,
+    ...(input.metadata ? { metadata: desktopRoutedSessionMetadata(input.metadata) } : {}),
     plan_mode_requested: input.plan_mode_requested,
     ...(input.model_profile ? { model_profile: input.model_profile } : {}),
     ...(input.media?.length ? { media: input.media } : {}),
@@ -367,7 +363,7 @@ export async function postDesktopV3BackgroundRouterSessionStart(
     client_request_id: clientRequestId,
     idempotency_key: clientRequestId,
     ...(input.agent_name?.trim() ? { agent_name: input.agent_name.trim() } : {}),
-    ...(input.metadata ? { metadata: input.metadata } : {}),
+    ...(input.metadata ? { metadata: desktopRoutedSessionMetadata(input.metadata) } : {}),
     plan_mode_requested: input.plan_mode_requested,
     ...(input.media?.length ? { media: input.media } : {}),
     ...(input.staging_ids?.length ? { staging_ids: input.staging_ids } : {}),

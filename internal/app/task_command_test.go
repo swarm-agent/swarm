@@ -71,6 +71,9 @@ func TestTaskCommandReturnsBeforeRoutedDispatchCompletes(t *testing.T) {
 			case <-time.After(time.Second):
 				t.Fatal("task command did not dispatch the routed request")
 			}
+			if _, ok := body["managed_worktree_requested"]; ok {
+				t.Fatalf("retired managed_worktree_requested was sent: %#v", body)
+			}
 			if got := body["plan_mode_requested"]; got != (test.wantMode == "plan") {
 				t.Fatalf("plan_mode_requested = %#v", got)
 			}

@@ -236,7 +236,7 @@ type manageWorktreeConfigService interface {
 	InspectTaskWorkspace(workspacePath string) (worktreeruntime.TaskWorkspaceState, error)
 	TaskCommitDescendsFrom(workspacePath, baseCommit, headCommit string) (bool, error)
 	VerifyTaskIntegrationWorkspace(parentPath, childPath, sessionID, branchName, baseCommit, headCommit string) (worktreeruntime.TaskWorkspaceState, error)
-	PrepareTaskIntegration(parentPath, expectedParentHead string, children []worktreeruntime.TaskIntegrationChild) (worktreeruntime.TaskIntegrationPlan, error)
+	PrepareTaskIntegration(parentPath, expectedParentBranch, expectedParentHead string, children []worktreeruntime.TaskIntegrationChild) (worktreeruntime.TaskIntegrationPlan, error)
 	ApplyTaskIntegration(parentPath string, plan worktreeruntime.TaskIntegrationPlan) (worktreeruntime.TaskIntegrationResult, error)
 }
 
@@ -1229,18 +1229,50 @@ func (r *Runtime) Definitions() []Definition {
 		manageSessionsDefinition(),
 		{
 			Type:        "function",
-			Name:        "manage-worktree",
-			Description: "Recall durable Coder child lineage or atomically integrate a committed child batch. For large waves, pass action=integrate with task_call_id so the tool selects every Coder child from that durable task call without copying session IDs. Explicit session_ids remain supported. The tool validates the full selection, preflights the complete ordered stack, applies automatically without confirmation, and propagates errors without partially mutating the parent.",
+			Name:        "manage_workspace",
+			Description: "Inspect every saved account workspace and the account Workspace Map; update that map only for an explicit user request with expected-revision concurrency; create, update, or unlink saved workspace catalog entries through the canonical account-scoped authority; move the same active Swarm session through the canonical V3 mutation path; or explicitly adopt a session-owned managed worktree. Persistent changes are separately permissioned and expose the exact target, requested changes, user-readable intent, and safety behavior. Workspace Map updates are bounded, account-isolated, and become visible on the next provider step. Delete never removes filesystem contents. Stale identities, revisions, generations, ownership conflicts, and dirty moves fail closed.",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"action":         map[string]any{"type": "string", "description": "Action: inspect|list|recall|integrate"},
-					"session_ids":    map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Explicit selected Coder child session ids from durable current-parent lineage; mutually exclusive with task_call_id"},
-					"task_call_id":   map[string]any{"type": "string", "description": "Durable parent task call to recall or integrate as one complete Coder wave; mutually exclusive with session_ids for integrate"},
-					"workspace_path": map[string]any{"type": "string", "description": "Optional workspace path; defaults to current/active workspace scope"},
-					"branch_name":    map[string]any{"type": "string", "description": "Optional worktree branch family/prefix override such as agent or foo"},
-					"limit":          map[string]any{"type": "integer", "description": "Page size for returned children (default 25, max 100)"},
-					"cursor":         map[string]any{"type": "integer", "description": "0-based result offset for pagination"},
+					"action":                 map[string]any{"type": "string", "enum": []string{"inspect", "list", "inspect_map", "get_map", "update_map", "create", "update", "delete", "set_session", "set_default", "adopt_worktree"}},
+					"workspace_id":           map[string]any{"type": "string", "description": "Stable target workspace identity. Required with workspace_generation for update/delete; also used by selection actions."},
+					"workspace_generation":   map[string]any{"type": "integer", "minimum": 1, "description": "Expected target generation. Required for update/delete; stale generations fail before mutation."},
+					"workspace_path":         map[string]any{"type": "string", "description": "create: existing directory to save. update: optional existing replacement directory; no files are moved or created."},
+					"workspace_name":         map[string]any{"type": "string", "description": "create/update: user-visible workspace name."},
+					"theme_id":               map[string]any{"type": "string", "description": "create/update: optional workspace theme id; an explicit empty value clears it on update."},
+					"intent":                 map[string]any{"type": "string", "maxLength": 500, "description": "Short user-readable reason for a persistent catalog or Workspace Map change. update_map requires an explicit user request and intent. Do not include unrelated private content."},
+					"expected_revision":      map[string]any{"type": "integer", "minimum": 1, "description": "update_map only: exact current Workspace Map revision returned by inspect_map/get_map; stale revisions fail without mutation."},
+					"content":                map[string]any{"type": "string", "maxLength": 32768, "description": "update_map only: complete replacement Markdown document. It must begin with '# Workspace Map'."},
+					"workspace_ids":          map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Authorized workspace identities granted to this session."},
+					"primary_workspace_id":   map[string]any{"type": "string", "description": "Workspace identity used for navigation and sidebar grouping; it is added to workspace_ids when omitted there."},
+					"worktree_name":          map[string]any{"type": "string", "description": "adopt_worktree only: short requested name used to allocate a new managed worktree for this same session."},
+					"worktree_path":          map[string]any{"type": "string", "description": "adopt_worktree only: exact prior managed worktree path already recorded as owned by this same session."},
+					"expected_worktree_path": map[string]any{"type": "string", "description": "adopt_worktree only: optional stale-reference guard for the session's current worktree path; use an empty omission for the first adoption."},
+				},
+				"required":             []string{"action"},
+				"additionalProperties": false,
+			},
+		},
+		{
+			Type:        "function",
+			Name:        "manage-worktree",
+			Description: "Recall durable Coder child lineage, atomically integrate a committed child batch into the authenticated parent session lane, or explicitly promote an owned session lane into its captured checkout. Internal integrate never advances dev or another captured checkout. Promote is a separately permissioned operation bound to exact source session/branch/HEAD and target branch/HEAD. The tool validates and preflights complete ordered changes and propagates errors without partial mutation.",
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"action":                map[string]any{"type": "string", "description": "Action: inspect|list|recall|integrate|promote"},
+					"session_ids":           map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Explicit selected Coder child session ids from durable current-parent lineage; mutually exclusive with task_call_id"},
+					"task_call_id":          map[string]any{"type": "string", "description": "Durable parent task call to recall or integrate as one complete Coder wave; mutually exclusive with session_ids for integrate"},
+					"workspace_path":        map[string]any{"type": "string", "description": "Optional workspace path; defaults to current/active workspace scope"},
+					"source_session_id":     map[string]any{"type": "string", "description": "Promote only: exact owned session lane source session id"},
+					"source_branch":         map[string]any{"type": "string", "description": "Promote only: exact expected source lane branch"},
+					"source_head":           map[string]any{"type": "string", "description": "Promote only: exact expected source lane HEAD"},
+					"target_workspace_path": map[string]any{"type": "string", "description": "Promote only: captured checkout path to advance"},
+					"target_branch":         map[string]any{"type": "string", "description": "Promote only: exact expected captured target branch"},
+					"target_head":           map[string]any{"type": "string", "description": "Promote only: exact expected captured target HEAD"},
+					"branch_name":           map[string]any{"type": "string", "description": "Optional worktree branch family/prefix override such as agent or foo"},
+					"limit":                 map[string]any{"type": "integer", "description": "Page size for returned children (default 25, max 100)"},
+					"cursor":                map[string]any{"type": "integer", "description": "0-based result offset for pagination"},
 				},
 				"required":             []string{"action"},
 				"additionalProperties": false,
@@ -1820,6 +1852,8 @@ func (r *Runtime) executeOne(ctx context.Context, scope WorkspaceScope, call Cal
 		return r.executeManageTheme(scope, args)
 	case "manage-sessions", "manage_sessions":
 		return r.executeManageSessions(ctx, scope, args)
+	case "manage-workspace", "manage_workspace":
+		return "", errors.New("manage_workspace must be handled by run-service control-plane")
 	case "manage-worktree", "manage_worktree":
 		return r.executeManageWorktree(scope, args)
 	case "manage-actions", "manage_actions":
@@ -6276,6 +6310,8 @@ func (r *Runtime) executeManageWorktree(scope WorkspaceScope, args map[string]an
 		return r.manageWorktreeRecall(scope, args)
 	case "integrate":
 		return r.manageWorktreeIntegrate(scope, args)
+	case "promote":
+		return r.manageWorktreePromote(scope, args)
 	default:
 		return "", fmt.Errorf("manage-worktree action %q is unsupported", action)
 	}
@@ -6507,6 +6543,68 @@ func manageWorktreeLaunchRows(entry map[string]any) []any {
 	return rows
 }
 
+func (r *Runtime) manageWorktreePromote(scope WorkspaceScope, args map[string]any) (string, error) {
+	if r == nil || r.sessions == nil || r.worktrees == nil {
+		return "", errors.New("manage-worktree promote requires session and worktree services")
+	}
+	sourceSessionID := strings.TrimSpace(asString(args["source_session_id"]))
+	sourceBranch := strings.TrimSpace(asString(args["source_branch"]))
+	sourceHead := strings.TrimSpace(asString(args["source_head"]))
+	targetWorkspacePath := strings.TrimSpace(asString(args["target_workspace_path"]))
+	targetBranch := strings.TrimSpace(asString(args["target_branch"]))
+	targetHead := strings.TrimSpace(asString(args["target_head"]))
+	if sourceSessionID == "" || sourceBranch == "" || sourceHead == "" || targetWorkspacePath == "" || targetBranch == "" || targetHead == "" {
+		return "", errors.New("promote requires exact source_session_id, source_branch, source_head, target_workspace_path, target_branch, and target_head")
+	}
+	source, found, err := r.sessions.GetSession(sourceSessionID)
+	if err != nil {
+		return "", err
+	}
+	if !found || source.AccountScopeID != scope.Principal.AccountScopeID || source.UserID != scope.Principal.UserID {
+		return "", errors.New("promotion source is not an owned session")
+	}
+	sourcePath := strings.TrimSpace(source.WorktreeRootPath)
+	capturedPath := strings.TrimSpace(asString(source.Metadata["swarm_v3_source_workspace_path"]))
+	capturedHead := strings.TrimSpace(asString(source.Metadata["base_commit"]))
+	if !source.WorktreeEnabled || sourcePath == "" || source.WorktreeBranch != sourceBranch || source.WorktreeBaseBranch != targetBranch || capturedPath == "" || capturedHead == "" {
+		return "", errors.New("promotion source is not a complete session-owned lane with captured lineage")
+	}
+	resolvedTarget, err := r.manageWorktreeResolveWorkspacePath(scope, targetWorkspacePath)
+	if err != nil {
+		return "", fmt.Errorf("resolve promotion target: %w", err)
+	}
+	if filepath.Clean(resolvedTarget) != filepath.Clean(capturedPath) || targetHead != capturedHead {
+		return "", errors.New("promotion target does not match the source session's exact captured path and HEAD")
+	}
+	sourceState, err := r.worktrees.InspectTaskWorkspace(sourcePath)
+	if err != nil || !sourceState.Clean || sourceState.BranchName != sourceBranch || sourceState.HeadCommit != sourceHead {
+		return "", errors.New("promotion source branch or HEAD changed; refresh exact lineage before retrying")
+	}
+	targetState, err := r.worktrees.InspectTaskWorkspace(resolvedTarget)
+	if err != nil || !targetState.Clean || targetState.BranchName != targetBranch || targetState.HeadCommit != targetHead {
+		return "", errors.New("promotion target branch or HEAD changed; refresh exact lineage before retrying")
+	}
+	plan, err := r.worktrees.PrepareTaskIntegration(resolvedTarget, targetBranch, targetHead, []worktreeruntime.TaskIntegrationChild{{SessionID: sourceSessionID, BaseCommit: targetHead, HeadCommit: sourceHead}})
+	if err != nil {
+		return "", err
+	}
+	result, err := r.worktrees.ApplyTaskIntegration(resolvedTarget, plan)
+	if err != nil {
+		return "", err
+	}
+	encoded, err := json.Marshal(map[string]any{
+		"status": "ok", "action": "promote", "source_session_id": sourceSessionID,
+		"source_branch": sourceBranch, "source_head": sourceHead, "target_workspace_path": resolvedTarget,
+		"target_branch": targetBranch, "previous_target_head": targetHead,
+		"resulting_target_head": result.ResultingParentHead, "promotion": result,
+		"path_id": toolPathID("manage-worktree"),
+	})
+	if err != nil {
+		return "", err
+	}
+	return string(encoded), nil
+}
+
 func (r *Runtime) manageWorktreeIntegrate(scope WorkspaceScope, args map[string]any) (string, error) {
 	if r == nil || r.sessions == nil || r.worktrees == nil {
 		return "", errors.New("manage-worktree integrate requires session and worktree services")
@@ -6518,6 +6616,12 @@ func (r *Runtime) manageWorktreeIntegrate(scope WorkspaceScope, args map[string]
 	}
 	if !ok {
 		return "", fmt.Errorf("parent session %q not found", parentSessionID)
+	}
+	if parent.AccountScopeID != scope.Principal.AccountScopeID || parent.UserID != scope.Principal.UserID {
+		return "", errors.New("manage-worktree integrate parent is not owned by the authenticated principal")
+	}
+	if !parent.WorktreeEnabled || strings.TrimSpace(parent.WorktreeRootPath) == "" || strings.TrimSpace(parent.WorktreeBranch) == "" {
+		return "", errors.New("manage-worktree integrate requires an authenticated session-owned parent lane; use promote for a captured checkout")
 	}
 	parentPath, err := r.manageWorktreeResolveWorkspacePath(scope, "")
 	if err != nil {
@@ -6638,7 +6742,7 @@ func (r *Runtime) manageWorktreeIntegrate(scope WorkspaceScope, args map[string]
 	if inspectErr != nil {
 		return "", fmt.Errorf("inspect current parent before integration: %w", inspectErr)
 	}
-	plan, err := r.worktrees.PrepareTaskIntegration(integrationParentPath, parentState.HeadCommit, children)
+	plan, err := r.worktrees.PrepareTaskIntegration(integrationParentPath, parentState.BranchName, parentState.HeadCommit, children)
 	if err != nil {
 		var conflict *worktreeruntime.TaskIntegrationConflictError
 		if errors.As(err, &conflict) {
@@ -8808,6 +8912,8 @@ func manageAgentCanonicalToolName(name string) string {
 		return "manage_theme"
 	case "manage-worktree", "manage_worktree":
 		return "manage_worktree"
+	case "manage-workspace", "manage_workspace":
+		return "manage_workspace"
 	case "manage-actions", "manage_actions":
 		return "manage_actions"
 	case "manage-artifact", "manage_artifact":
@@ -9391,6 +9497,8 @@ func canonicalStubToolName(raw string) string {
 		return "manage_agent"
 	case "manage-worktree", "manage_worktree":
 		return "manage_worktree"
+	case "manage-workspace", "manage_workspace":
+		return "manage_workspace"
 	case "manage-actions", "manage_actions":
 		return "manage_actions"
 	case "manage-artifact", "manage_artifact":

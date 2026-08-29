@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	agentruntime "swarm/packages/swarmd/internal/agent"
@@ -14,7 +15,7 @@ import (
 )
 
 type taskProgramIntegrationService interface {
-	PrepareTaskIntegration(parentPath, expectedParentHead string, children []worktreeruntime.TaskIntegrationChild) (worktreeruntime.TaskIntegrationPlan, error)
+	PrepareTaskIntegration(parentPath, expectedParentBranch, expectedParentHead string, children []worktreeruntime.TaskIntegrationChild) (worktreeruntime.TaskIntegrationPlan, error)
 	ApplyTaskIntegration(parentPath string, plan worktreeruntime.TaskIntegrationPlan) (worktreeruntime.TaskIntegrationResult, error)
 	RemoveIntegratedTaskWorkspace(parentPath, childPath, sessionID, branchName, baseCommit, headCommit string) error
 }
@@ -50,6 +51,9 @@ func (s *Service) executeTaskProgram(ctx context.Context, sessionMode string, st
 		return "", errors.New("task program scheduler reservation is missing active capacity")
 	}
 	scheduler := taskProgramScheduler{service: s, ctx: ctx, sessionMode: sessionMode, step: step, call: call, emit: emit, req: req, parentSession: parentSession, description: description, prompt: prompt, parsed: parsed, record: record, reservationCap: reservation.ActiveCount}
+	if _, err := scheduler.programWorkspacePath(); err != nil {
+		return "", err
+	}
 	scheduler.emitProgramProgress("program.started", "Task Program started")
 	return scheduler.run()
 }
@@ -205,9 +209,24 @@ func taskProgramLaunchPatch(launch map[string]any, programID, jobID, stageID, ph
 
 func (p *taskProgramScheduler) runCohort(indexes []int) error {
 	executionLaunches := make(map[int]taskLaunchSpec, len(indexes))
+	programWorkspacePath, err := p.programWorkspacePath()
+	if err != nil {
+		return err
+	}
 	for _, index := range indexes {
 		launch := p.parsed.Launches[index]
-		definition := p.record.Definition.Jobs[index]
+		definitionIndex := taskProgramDefinitionJobIndex(p.record, p.record.Jobs[index].JobID)
+		if definitionIndex < 0 {
+			return fmt.Errorf("job %q is missing its durable definition", p.record.Jobs[index].JobID)
+		}
+		definition := p.record.Definition.Jobs[definitionIndex]
+		if agentruntime.IsCoderAgentName(launch.RequestedSubagentType) {
+			launch.TargetWorkspacePath = programWorkspacePath
+			if launch.SourceArguments == nil {
+				launch.SourceArguments = map[string]any{}
+			}
+			launch.SourceArguments["workspace_path"] = programWorkspacePath
+		}
 		launch.AnimationProfile = cloneTaskAnimationProfile(definition.AnimationProfile)
 		if launch.SourceArguments == nil {
 			launch.SourceArguments = map[string]any{}
@@ -257,7 +276,6 @@ func (p *taskProgramScheduler) runCohort(indexes []int) error {
 		running = append(running, pebblestore.TaskProgramJobTransition{JobID: job.JobID, ExpectedState: pebblestore.TaskProgramJobDeclared, State: pebblestore.TaskProgramJobRunning, AttemptNumber: job.AttemptNumber + 1})
 	}
 	state, next := pebblestore.TaskProgramStateRunning, "await_running_jobs"
-	var err error
 	p.record, _, err = p.service.sessions.TransitionTaskProgram(p.parentSession.ID, p.record.ProgramID, pebblestore.TaskProgramTransition{ExpectedRevision: p.record.Revision, MutationID: fmt.Sprintf("running:%d", p.record.Revision), State: &state, NextAction: &next, Jobs: running})
 	if err != nil {
 		return err
@@ -699,21 +717,78 @@ func taskProgramErrorsFromPayload(payload map[string]any, fallback error, count 
 	return out
 }
 
-func (p *taskProgramScheduler) programWorkspacePath() string {
+func (p *taskProgramScheduler) programWorkspacePath() (string, error) {
+	parent := p.parentSession
+	hasCoder := false
 	for _, definition := range p.record.Definition.Jobs {
 		if agentruntime.IsCoderAgentName(definition.AgentType) {
-			return strings.TrimSpace(firstNonEmptyString(definition.WorkspacePath, p.parentSession.WorkspacePath))
+			hasCoder = true
+			break
 		}
 	}
-	return strings.TrimSpace(p.parentSession.WorkspacePath)
+	if !hasCoder {
+		return strings.TrimSpace(parent.WorkspacePath), nil
+	}
+	lanePath := strings.TrimSpace(parent.WorktreeRootPath)
+	sourcePath := strings.TrimSpace(mapString(parent.Metadata, "swarm_v3_source_workspace_path"))
+	worktreeBranch := strings.TrimSpace(parent.WorktreeBranch)
+	baseBranch := strings.TrimSpace(parent.WorktreeBaseBranch)
+	if !parent.WorktreeEnabled || lanePath == "" || worktreeBranch == "" || baseBranch == "" || sourcePath == "" {
+		return "", errors.New("Task Program requires an authenticated session-owned parent lane; captured checkouts cannot receive internal stage integration")
+	}
+	if sameTaskProgramPath(lanePath, sourcePath) {
+		return "", errors.New("Task Program parent lane must be a distinct managed worktree, not the captured source checkout")
+	}
+	if worktreeBranch == baseBranch {
+		return "", errors.New("Task Program parent lane must use a distinct worktree branch, not its captured base branch")
+	}
+	if runtimePath := strings.TrimSpace(mapString(parent.Metadata, "swarm_v3_runtime_workspace_path")); runtimePath != "" && !sameTaskProgramPath(runtimePath, lanePath) {
+		return "", errors.New("Task Program parent session lane does not match its authenticated runtime workspace")
+	}
+	requested := ""
+	for _, definition := range p.record.Definition.Jobs {
+		if !agentruntime.IsCoderAgentName(definition.AgentType) {
+			continue
+		}
+		candidate := strings.TrimSpace(firstNonEmptyString(definition.WorkspacePath, p.parsed.ProgramWorkspacePath, sourcePath))
+		if requested == "" {
+			requested = candidate
+		} else if !sameTaskProgramPath(requested, candidate) {
+			return "", errors.New("Task Program Coder jobs must target one repository")
+		}
+	}
+	if requested == "" {
+		requested = sourcePath
+	}
+	if !sameTaskProgramPath(requested, sourcePath) && !sameTaskProgramPath(requested, lanePath) {
+		return "", fmt.Errorf("Task Program cross-workspace target %q lacks a session-owned repository lane", requested)
+	}
+	return lanePath, nil
+}
+
+func sameTaskProgramPath(left, right string) bool {
+	left, right = strings.TrimSpace(left), strings.TrimSpace(right)
+	if left == "" || right == "" {
+		return false
+	}
+	leftAbs, leftErr := filepath.Abs(left)
+	rightAbs, rightErr := filepath.Abs(right)
+	if leftErr != nil || rightErr != nil {
+		return filepath.Clean(left) == filepath.Clean(right)
+	}
+	return filepath.Clean(leftAbs) == filepath.Clean(rightAbs)
 }
 
 func (p *taskProgramScheduler) integrateStage(stageIndex int) error {
 	stageID := p.record.Definition.Stages[stageIndex].ID
-	programWorkspacePath := p.programWorkspacePath()
+	programWorkspacePath, err := p.programWorkspacePath()
+	if err != nil {
+		return err
+	}
 	children := make([]worktreeruntime.TaskIntegrationChild, 0)
 	updates := make([]pebblestore.TaskProgramJobTransition, 0)
 	expectedHead := strings.TrimSpace(p.record.ParentHead)
+	expectedBranch := ""
 	if expectedHead == "" && p.service.worktrees != nil {
 		if base, err := p.service.worktrees.ResolveTaskBase(programWorkspacePath); err == nil {
 			expectedHead = strings.TrimSpace(base.BaseCommit)
@@ -730,6 +805,12 @@ func (p *taskProgramScheduler) integrateStage(stageIndex int) error {
 		}
 		definition := p.record.Definition.Jobs[definitionIndex]
 		if agentruntime.IsCoderAgentName(definition.AgentType) {
+			if expectedBranch == "" {
+				expectedBranch = strings.TrimSpace(job.ParentBranch)
+			} else if strings.TrimSpace(job.ParentBranch) != expectedBranch {
+				p.barrierJobID = job.JobID
+				return fmt.Errorf("Coder job %q parent branch %s does not match captured stage branch %s", job.JobID, job.ParentBranch, expectedBranch)
+			}
 			if job.State != pebblestore.TaskProgramJobHandoffReady || job.ImmutableStageBase == "" || job.ChildHead == "" {
 				p.barrierJobID = job.JobID
 				return fmt.Errorf("Coder job %q is not ready for integration", job.JobID)
@@ -753,7 +834,7 @@ func (p *taskProgramScheduler) integrateStage(stageIndex int) error {
 		if !ok {
 			return errors.New("worktree service does not support canonical task integration")
 		}
-		plan, err := integrator.PrepareTaskIntegration(programWorkspacePath, expectedHead, children)
+		plan, err := integrator.PrepareTaskIntegration(programWorkspacePath, expectedBranch, expectedHead, children)
 		if err != nil {
 			return err
 		}
@@ -776,7 +857,6 @@ func (p *taskProgramScheduler) integrateStage(stageIndex int) error {
 		}
 	}
 	next := "advance_stage"
-	var err error
 	p.record, _, err = p.service.sessions.TransitionTaskProgram(p.parentSession.ID, p.record.ProgramID, pebblestore.TaskProgramTransition{ExpectedRevision: p.record.Revision, MutationID: fmt.Sprintf("integrate:%d", p.record.Revision), ParentHead: &parentHead, NextAction: &next, Jobs: updates})
 	if err != nil || len(children) == 0 {
 		return err
@@ -800,8 +880,12 @@ func (p *taskProgramScheduler) cleanupIntegratedStageWorktrees(stageID string) e
 			continue
 		}
 		integrationState := "integrated_worktree_removed"
+		parentPath, pathErr := p.programWorkspacePath()
+		if pathErr != nil {
+			return pathErr
+		}
 		if cleanupErr := cleaner.RemoveIntegratedTaskWorkspace(
-			p.programWorkspacePath(),
+			parentPath,
 			job.WorkspacePath,
 			firstNonEmptyString(job.CurrentSessionID, job.ChildSessionID),
 			job.WorktreeBranch,

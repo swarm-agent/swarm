@@ -466,6 +466,9 @@ func (s *Service) resolveRunExecutionContext(session pebblestore.SessionSnapshot
 	workspacePath := strings.TrimSpace(session.WorkspacePath)
 	worktreeEnabled := session.WorktreeEnabled
 	worktreeRootPath := strings.TrimSpace(session.WorktreeRootPath)
+	if worktreeEnabled && worktreeRootPath != "" {
+		workspacePath = worktreeRootPath
+	}
 	worktreeBranch := strings.TrimSpace(session.WorktreeBranch)
 	worktreeBaseBranch := strings.TrimSpace(session.WorktreeBaseBranch)
 
@@ -474,10 +477,11 @@ func (s *Service) resolveRunExecutionContext(session pebblestore.SessionSnapshot
 		if path := strings.TrimSpace(requested.WorkspacePath); path != "" {
 			workspacePath = path
 		} else if worktreeEnabled {
-			if worktreeRootPath == "" {
-				return resolvedRunExecutionContext{}, errors.New("worktree-backed session is missing worktree_root_path")
+			if source := strings.TrimSpace(mapString(session.Metadata, "swarm_v3_source_workspace_path")); source != "" {
+				workspacePath = source
+			} else {
+				workspacePath = strings.TrimSpace(session.WorkspacePath)
 			}
-			workspacePath = worktreeRootPath
 		}
 		worktreeEnabled = false
 		worktreeRootPath = ""
@@ -493,7 +497,7 @@ func (s *Service) resolveRunExecutionContext(session pebblestore.SessionSnapshot
 		} else if !worktreeEnabled {
 			return resolvedRunExecutionContext{}, errors.New("worktree_mode=on requires a worktree-backed source session or explicit worktree_root_path")
 		} else if path := strings.TrimSpace(requested.WorkspacePath); path != "" {
-			current, currentErr := normalizeRunScopePath(session.WorkspacePath)
+			current, currentErr := normalizeRunScopePath(firstNonEmptyString(session.WorktreeRootPath, session.WorkspacePath))
 			requestedPath, requestedErr := normalizeRunScopePath(path)
 			if currentErr != nil || requestedErr != nil || !strings.EqualFold(current, requestedPath) {
 				return resolvedRunExecutionContext{}, errors.New("worktree_mode=on with an overridden workspace_path requires explicit worktree_root_path")
@@ -508,7 +512,7 @@ func (s *Service) resolveRunExecutionContext(session pebblestore.SessionSnapshot
 	case RunWorktreeModeInherit:
 		if path := strings.TrimSpace(requested.WorkspacePath); path != "" {
 			if worktreeEnabled && strings.TrimSpace(requested.WorktreeRootPath) == "" {
-				current, currentErr := normalizeRunScopePath(session.WorkspacePath)
+				current, currentErr := normalizeRunScopePath(firstNonEmptyString(session.WorktreeRootPath, session.WorkspacePath))
 				requestedPath, requestedErr := normalizeRunScopePath(path)
 				if currentErr != nil || requestedErr != nil || !strings.EqualFold(current, requestedPath) {
 					return resolvedRunExecutionContext{}, errors.New("overriding workspace_path for a worktree-backed inherited run requires explicit worktree_root_path or worktree_mode=off")
@@ -601,7 +605,16 @@ func (s *Service) resolveExecutionRoots(session pebblestore.SessionSnapshot, wor
 		return nil, err
 	}
 	if worktreeEnabled {
-		return normalizeExecutionRoots(workspacePath, mergeSessionWorkspaceRoots([]string{workspacePath}, validatedRoots)), nil
+		principal, err = principalForRunWorkspaceScope(session, principal)
+		if err != nil {
+			return nil, err
+		}
+		roots := mergeSessionWorkspaceRoots([]string{workspacePath}, validatedRoots)
+		roots, err = s.mergeAuthorizedSessionWorkspaceGrantRoots(principal, roots, session.WorkspaceGrants)
+		if err != nil {
+			return nil, err
+		}
+		return normalizeExecutionRoots(workspacePath, roots), nil
 	}
 	principal, err = principalForRunWorkspaceScope(session, principal)
 	if err != nil {
@@ -612,7 +625,9 @@ func (s *Service) resolveExecutionRoots(session pebblestore.SessionSnapshot, wor
 		if err != nil {
 			return nil, fmt.Errorf("resolve account-scoped execution roots: %w", err)
 		}
-		return normalizeExecutionRoots(workspacePath, mergeSessionWorkspaceRoots(resolved.Directories, validatedRoots)), nil
+		if resolved.Matched {
+			return normalizeExecutionRoots(workspacePath, mergeSessionWorkspaceRoots(resolved.Directories, validatedRoots)), nil
+		}
 	}
 	return normalizeExecutionRoots(workspacePath, mergeSessionWorkspaceRoots([]string{workspacePath}, validatedRoots)), nil
 }

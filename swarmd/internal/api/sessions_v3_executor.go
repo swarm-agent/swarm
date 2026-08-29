@@ -1562,7 +1562,7 @@ func (e *sessionV3Executor) generateSessionV3CompactTitle(session pebblestore.Se
 		ContextMode:               strings.TrimSpace(preference.ContextMode),
 		ContextWindow:             contextWindow,
 		ModelCatalog:              catalogRecord,
-		WorkspacePath:             strings.TrimSpace(session.WorkspacePath),
+		WorkspacePath:             strings.TrimSpace(firstNonEmpty(session.WorktreeRootPath, session.WorkspacePath)),
 	}
 	bgCtx := context.Background()
 	if principal.Valid() {
@@ -3141,6 +3141,22 @@ func sessionV3ProviderCanonicalToolCallKey(call provideriface.FunctionCall) stri
 	return name + ":" + canonicalArgs
 }
 
+func sessionV3ProviderToolPrincipal(job sessionV3ExecutorJob, session pebblestore.SessionSnapshot) (identity.Principal, error) {
+	principal := job.Principal
+	sessionID := strings.TrimSpace(job.SessionID)
+	if sessionID == "" || strings.TrimSpace(session.ID) != sessionID {
+		return identity.Principal{}, errors.New("v3 provider tool execution requires the resolved run session")
+	}
+	if !principal.Valid() || strings.TrimSpace(principal.UserID) != strings.TrimSpace(session.UserID) || strings.TrimSpace(principal.AccountScopeID) != strings.TrimSpace(session.AccountScopeID) {
+		return identity.Principal{}, errors.New("v3 provider tool principal does not own the resolved run session")
+	}
+	// Request principals may carry the authenticated Desktop/API session id. Tool
+	// execution is scoped to the durable V3 session instead, after the ownership
+	// check above, so bind that canonical identity explicitly.
+	principal.SessionID = sessionID
+	return principal, nil
+}
+
 func (e *sessionV3Executor) newSessionV3ProviderToolInvoker(resolved sessionV3ResolvedRuntime, job sessionV3ExecutorJob, step int, toolProgression *runruntime.ToolProgressionState, planContextGuard *runruntime.PlanContextGuard) (provideriface.ToolInvoker, error) {
 	if e == nil || e.server == nil || e.server.sessions == nil {
 		return nil, errors.New("v3 executor is not configured")
@@ -3162,6 +3178,10 @@ func (e *sessionV3Executor) newSessionV3ProviderToolInvoker(resolved sessionV3Re
 	if step <= 0 {
 		step = 1
 	}
+	principal, err := sessionV3ProviderToolPrincipal(job, resolved.Session)
+	if err != nil {
+		return nil, err
+	}
 	invoker := builder.NewProviderManagedToolInvoker(runruntime.ProviderManagedToolInvokerConfig{
 		SessionID:            job.SessionID,
 		PermissionSessionID:  job.SessionID,
@@ -3174,7 +3194,7 @@ func (e *sessionV3Executor) newSessionV3ProviderToolInvoker(resolved sessionV3Re
 		WorkspaceOriginPath:  workspacePath,
 		WorkspaceOriginRoots: roots,
 		WorkspaceName:        resolved.Session.WorkspaceName,
-		Principal:            job.Principal,
+		Principal:            principal,
 		Emit:                 e.emitSessionV3ProviderToolEvent(job),
 		ApplySessionMutation: e.applySessionV3ProviderToolMutation(job),
 		ProviderManagedV3:    true,

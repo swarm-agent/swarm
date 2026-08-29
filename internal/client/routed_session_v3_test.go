@@ -11,6 +11,7 @@ import (
 
 func TestStartRoutedSessionV3UsesOneExplicitIdempotencyIdentity(t *testing.T) {
 	var request RoutedSessionV3StartRequest
+	var rawRequest map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost || r.URL.Path != routedSessionV3Path {
 			t.Fatalf("request = %s %s", r.Method, r.URL.Path)
@@ -18,7 +19,14 @@ func TestStartRoutedSessionV3UsesOneExplicitIdempotencyIdentity(t *testing.T) {
 		if got := r.Header.Get("Idempotency-Key"); got != "route-1" {
 			t.Fatalf("Idempotency-Key = %q", got)
 		}
-		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		if err := json.NewDecoder(r.Body).Decode(&rawRequest); err != nil {
+			t.Fatal(err)
+		}
+		encoded, err := json.Marshal(rawRequest)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := json.Unmarshal(encoded, &request); err != nil {
 			t.Fatal(err)
 		}
 		_ = json.NewEncoder(w).Encode(validRoutedSessionV3Response("session-1"))
@@ -28,14 +36,17 @@ func TestStartRoutedSessionV3UsesOneExplicitIdempotencyIdentity(t *testing.T) {
 	api := New(server.URL)
 	api.SetToken("token")
 	response, err := api.StartRoutedSessionV3(context.Background(), RoutedSessionV3StartRequest{
-		Input: "  build it  ", ClientRequestID: " route-1 ", ManagedWorktreeRequested: true, PlanModeRequested: true,
+		Input: "  build it  ", ClientRequestID: " route-1 ", PlanModeRequested: true,
 		WorkspacePath: "/source", HostWorkspacePath: "/source", RuntimeWorkspacePath: "/source",
 		WorkspaceBindingID: "binding-1", SwarmID: "swarm-1", TargetKind: "host", TargetRelationship: "self",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if request.Input != "build it" || request.ClientRequestID != "route-1" || request.IdempotencyKey != "route-1" || !request.ManagedWorktreeRequested || !request.PlanModeRequested || request.WorkspacePath != "/source" || request.WorkspaceBindingID != "binding-1" || request.SwarmID != "swarm-1" || request.TargetKind != "host" || request.TargetRelationship != "self" {
+	if _, ok := rawRequest["managed_worktree_requested"]; ok {
+		t.Fatalf("retired managed_worktree_requested was sent: %#v", rawRequest)
+	}
+	if request.Input != "build it" || request.ClientRequestID != "route-1" || request.IdempotencyKey != "route-1" || !request.PlanModeRequested || request.WorkspacePath != "/source" || request.WorkspaceBindingID != "binding-1" || request.SwarmID != "swarm-1" || request.TargetKind != "host" || request.TargetRelationship != "self" {
 		t.Fatalf("request = %#v", request)
 	}
 	if response.SessionID != "session-1" || response.Session.SessionAPI != "v3" {

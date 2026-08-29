@@ -134,6 +134,7 @@ export interface DesktopComposerStagedAttachment {
   size: number
   createdAt: number
   expiresAt: number
+  file?: File
 }
 
 export interface StageDesktopComposerAttachmentsInput {
@@ -166,6 +167,7 @@ function stagedAttachmentFromRecord(
     size: record.size,
     createdAt: record.created_at,
     expiresAt: record.expires_at,
+    file,
   }
 }
 

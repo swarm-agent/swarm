@@ -29,7 +29,7 @@ func TestManageWorktreeDefinitionKeepsIntegrateInputMinimal(t *testing.T) {
 			t.Fatalf("manage-worktree exposes model-authored %s", forbidden)
 		}
 	}
-	for _, required := range []string{"action", "session_ids", "task_call_id"} {
+	for _, required := range []string{"action", "session_ids", "task_call_id", "source_session_id", "source_branch", "source_head", "target_workspace_path", "target_branch", "target_head"} {
 		if _, ok := properties[required]; !ok {
 			t.Fatalf("manage-worktree missing %s", required)
 		}
@@ -84,7 +84,7 @@ func (s *coderLineageWorktreeService) VerifyTaskIntegrationWorkspace(_, childPat
 	return state, nil
 }
 
-func (s *coderLineageWorktreeService) PrepareTaskIntegration(_ string, expectedParentHead string, children []worktreeruntime.TaskIntegrationChild) (worktreeruntime.TaskIntegrationPlan, error) {
+func (s *coderLineageWorktreeService) PrepareTaskIntegration(_ string, expectedParentBranch, expectedParentHead string, children []worktreeruntime.TaskIntegrationChild) (worktreeruntime.TaskIntegrationPlan, error) {
 	s.preparedChildren = append([]worktreeruntime.TaskIntegrationChild(nil), children...)
 	if s.prepareErr != nil {
 		return worktreeruntime.TaskIntegrationPlan{}, s.prepareErr
@@ -95,7 +95,7 @@ func (s *coderLineageWorktreeService) PrepareTaskIntegration(_ string, expectedP
 		entries = append(entries, worktreeruntime.TaskIntegrationEntry{SessionID: child.SessionID, BaseCommit: child.BaseCommit, HeadCommit: child.HeadCommit, Commits: []string{child.HeadCommit}})
 		commits = append(commits, child.HeadCommit)
 	}
-	return worktreeruntime.TaskIntegrationPlan{ParentHead: expectedParentHead, Entries: entries, Commits: commits}, nil
+	return worktreeruntime.TaskIntegrationPlan{ParentBranch: expectedParentBranch, ParentHead: expectedParentHead, Entries: entries, Commits: commits}, nil
 }
 
 func (s *coderLineageWorktreeService) ApplyTaskIntegration(_ string, plan worktreeruntime.TaskIntegrationPlan) (worktreeruntime.TaskIntegrationResult, error) {
@@ -113,6 +113,42 @@ func (s *coderLineageWorktreeService) ApplyTaskIntegration(_ string, plan worktr
 	parent.HeadCommit = s.applyResult.ResultingParentHead
 	s.states["/repo"] = parent
 	return s.applyResult, nil
+}
+
+func TestManageWorktreeIntegrateRejectsCapturedCheckoutParent(t *testing.T) {
+	runtime, scope, worktrees, childIDs := newCoderLineageRuntime(t)
+	sessions := runtime.sessions.(*coderLineageSessionService)
+	sessions.parent.WorktreeEnabled = false
+	sessions.parent.WorktreeRootPath = ""
+	sessions.parent.WorktreeBranch = ""
+	_, err := runtime.manageWorktreeIntegrate(scope, map[string]any{"session_ids": []any{childIDs[0]}})
+	if err == nil || !strings.Contains(err.Error(), "session-owned parent lane") {
+		t.Fatalf("captured parent integration error = %v", err)
+	}
+	if worktrees.applyCalls != 0 {
+		t.Fatalf("captured parent was advanced %d times", worktrees.applyCalls)
+	}
+}
+
+func TestManageWorktreePromoteRequiresExactLineage(t *testing.T) {
+	runtime, scope, worktrees, _ := newCoderLineageRuntime(t)
+	scope.Roots = append(scope.Roots, "/captured")
+	sessions := runtime.sessions.(*coderLineageSessionService)
+	source := sessions.parent
+	source.Metadata["swarm_v3_source_workspace_path"] = "/captured"
+	source.Metadata["base_commit"] = "captured-head"
+	sessions.parent = source
+	worktrees.states["/captured"] = worktreeruntime.TaskWorkspaceState{WorkspacePath: "/captured", BranchName: "dev", HeadCommit: "captured-head", Clean: true}
+	_, err := runtime.manageWorktreePromote(scope, map[string]any{
+		"source_session_id": source.ID, "source_branch": source.WorktreeBranch, "source_head": "stale-source-head",
+		"target_workspace_path": "/captured", "target_branch": "dev", "target_head": "captured-head",
+	})
+	if err == nil || !strings.Contains(err.Error(), "source branch or HEAD changed") {
+		t.Fatalf("stale promotion error = %v", err)
+	}
+	if worktrees.applyCalls != 0 {
+		t.Fatalf("stale promotion applied %d times", worktrees.applyCalls)
+	}
 }
 
 func TestManageWorktreeRecallFindsParallelCoderLineage(t *testing.T) {
@@ -407,7 +443,7 @@ func newCoderLineageRuntime(t *testing.T) (*Runtime, WorkspaceScope, *coderLinea
 	launches := map[string]any{}
 	children := map[string]pebblestore.SessionSnapshot{}
 	states := map[string]worktreeruntime.TaskWorkspaceState{
-		parentPath: {WorkspacePath: parentPath, BranchName: "dev", HeadCommit: "parent-head", Clean: true},
+		parentPath: {WorkspacePath: parentPath, BranchName: "agent/parent-session", HeadCommit: "parent-head", Clean: true},
 	}
 	for index, id := range childIDs {
 		callID := "call-b"
@@ -427,7 +463,7 @@ func newCoderWaveRuntime(t *testing.T, count int) (*Runtime, WorkspaceScope, *co
 	childIDs := make([]string, 0, count)
 	children := map[string]pebblestore.SessionSnapshot{}
 	states := map[string]worktreeruntime.TaskWorkspaceState{
-		parentPath: {WorkspacePath: parentPath, BranchName: "dev", HeadCommit: "parent-head", Clean: true},
+		parentPath: {WorkspacePath: parentPath, BranchName: "agent/parent-session", HeadCommit: "parent-head", Clean: true},
 	}
 	rows := make([]any, 0, count)
 	for index := 0; index < count; index++ {
@@ -461,7 +497,7 @@ func coderLineageRow(parentID, id string, launchIndex int, states map[string]wor
 }
 
 func coderLineageRuntime(parentID, parentPath string, launches map[string]any, states map[string]worktreeruntime.TaskWorkspaceState, children map[string]pebblestore.SessionSnapshot, childIDs []string) (*Runtime, WorkspaceScope, *coderLineageWorktreeService, []string) {
-	parent := pebblestore.SessionSnapshot{ID: parentID, AccountScopeID: "account", UserID: "user", WorkspacePath: parentPath, Metadata: map[string]any{"task_launches": launches}}
+	parent := pebblestore.SessionSnapshot{ID: parentID, AccountScopeID: "account", UserID: "user", WorkspacePath: parentPath, WorktreeEnabled: true, WorktreeRootPath: parentPath, WorktreeBranch: "agent/parent-session", WorktreeBaseBranch: "dev", Metadata: map[string]any{"task_launches": launches}}
 	worktrees := &coderLineageWorktreeService{states: states}
 	runtime := &Runtime{sessions: &coderLineageSessionService{parent: parent, children: children}, worktrees: worktrees}
 	scope := WorkspaceScope{PrimaryPath: parentPath, Roots: []string{parentPath}, SessionID: parentID, Principal: identity.Principal{Type: identity.PrincipalTypeUser, UserID: "user", AccountScopeID: "account", SessionID: parentID}}

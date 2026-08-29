@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"swarm/packages/swarmd/internal/identity"
+	runruntime "swarm/packages/swarmd/internal/run"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	topologyruntime "swarm/packages/swarmd/internal/topology"
 )
@@ -71,6 +72,9 @@ func (s *Server) SetTopologyService(service *topologyruntime.Service) {
 		return
 	}
 	s.topology = service
+	if workspaceCanonical, ok := s.runner.(interface{ SetSessionWorkspaceCanonicalizer(runruntime.SessionWorkspaceCanonicalizer) }); ok && workspaceCanonical != nil {
+		workspaceCanonical.SetSessionWorkspaceCanonicalizer(s.CanonicalizeSessionWorkspace)
+	}
 }
 
 func topologyPrincipalFromRequest(r *http.Request) (identity.Principal, error) {

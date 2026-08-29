@@ -3,17 +3,16 @@ package api
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 
 	"swarm/packages/swarmd/internal/identity"
-	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
 	worktreeruntime "swarm/packages/swarmd/internal/worktree"
 )
 
-func TestBackgroundRouterSessionStartUsesCanonicalRouterWithRequiredWorktree(t *testing.T) {
+func TestBackgroundRouterSessionStartUsesMandatoryLaneWithoutRouter(t *testing.T) {
 	tests := []struct {
 		name          string
 		planRequested bool
@@ -24,7 +23,7 @@ func TestBackgroundRouterSessionStartUsesCanonicalRouterWithRequiredWorktree(t *
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			runner := &sessionRouterRecordingRunner{id: "recording", response: provideriface.Response{Text: `{"title":"Background Router","worktree_name":"background-router"}`}}
+			runner := &sessionRouterRecordingRunner{id: "recording", err: errors.New("Router must not be called")}
 			server, sessions, principal := newRoutedSessionAtomicityServer(t, runner, true, true)
 			managedPath := t.TempDir()
 			worktrees := &routedWorktreeServiceStub{fakeWorktreeService: fakeWorktreeService{
@@ -55,7 +54,7 @@ func TestBackgroundRouterSessionStartUsesCanonicalRouterWithRequiredWorktree(t *
 			if stored.Metadata["background"] != true || stored.Metadata["launch_mode"] != "background" || stored.Metadata["background_router_session"] != true || stored.Metadata["owner_transport"] != "background_router_api" {
 				t.Fatalf("background Router metadata=%+v", stored.Metadata)
 			}
-			if stored.Metadata["managed_worktree_requested"] != true || stored.Metadata["plan_mode_requested"] != test.planRequested {
+			if stored.Metadata["routed_worktree_requested"] != true || stored.Metadata["plan_mode_requested"] != test.planRequested {
 				t.Fatalf("background Router intent metadata=%+v", stored.Metadata)
 			}
 			if stored.Metadata["swarm_v3_workspace_binding_id"] != "routed-binding" || stored.Metadata["swarm_v3_runtime_swarm_id"] != "local-swarm" || stored.Metadata["swarm_v3_source_workspace_path"] == "" {
@@ -64,23 +63,15 @@ func TestBackgroundRouterSessionStartUsesCanonicalRouterWithRequiredWorktree(t *
 			if got := stored.Metadata["routed_start_request_hash"]; got == nil || got == "" {
 				t.Fatalf("background Router session is missing routed transaction hash: %+v", stored.Metadata)
 			}
-			if runner.createCalls != 1 || runner.streamingCalls != 0 || worktrees.allocationCalls != 1 || worktrees.lastWorkspace == "" || worktrees.lastNameSeed == "" || worktrees.lastBranchName != "agent/background-router" {
+			if runner.createCalls != 0 || runner.streamingCalls != 0 || worktrees.allocationCalls != 1 || worktrees.lastWorkspace == "" || worktrees.lastNameSeed == "" {
 				t.Fatalf("Router calls=%d/%d worktree calls=%d source=%q seed=%q branch=%q", runner.createCalls, runner.streamingCalls, worktrees.allocationCalls, worktrees.lastWorkspace, worktrees.lastNameSeed, worktrees.lastBranchName)
-			}
-			if len(runner.requests) != 1 {
-				t.Fatalf("Router requests=%d, want one", len(runner.requests))
-			}
-			for _, forbidden := range []string{"Routed Workspace", "routed-binding", worktrees.lastWorkspace} {
-				if forbidden != "" && strings.Contains(runner.requests[0].Instructions, forbidden) {
-					t.Fatalf("background Router instructions leaked workspace authority %q: %s", forbidden, runner.requests[0].Instructions)
-				}
 			}
 		})
 	}
 }
 
 func TestBackgroundRouterSessionStartDoesNotConsumeOrdinaryRoutedIdentity(t *testing.T) {
-	runner := &sessionRouterRecordingRunner{id: "recording", response: provideriface.Response{Text: `{"title":"Background Router","worktree_name":"background-router"}`}}
+	runner := &sessionRouterRecordingRunner{id: "recording", err: errors.New("Router must not be called")}
 	server, _, principal := newRoutedSessionAtomicityServer(t, runner, true, true)
 	managedPath := t.TempDir()
 	server.SetWorktreeService(&routedWorktreeServiceStub{fakeWorktreeService: fakeWorktreeService{
@@ -104,20 +95,25 @@ func TestBackgroundRouterSessionStartDoesNotConsumeOrdinaryRoutedIdentity(t *tes
 	}
 }
 
-func TestBackgroundRouterSessionStartRejectsWorktreeOverride(t *testing.T) {
-	runner := &sessionRouterRecordingRunner{id: "recording", response: provideriface.Response{Text: `{"title":"unused","worktree_name":"unused"}`}}
+func TestBackgroundRouterSessionStartToleratesRetiredWorktreeOverride(t *testing.T) {
+	runner := &sessionRouterRecordingRunner{id: "recording", err: errors.New("Router must not be called")}
 	server, _, principal := newRoutedSessionAtomicityServer(t, runner, true, true)
+	managedPath := t.TempDir()
+	server.SetWorktreeService(&routedWorktreeServiceStub{fakeWorktreeService: fakeWorktreeService{
+		config: worktreeruntime.Config{Enabled: true, UseCurrentBranch: true, BranchName: "agent/<id>"},
+		allocation: worktreeruntime.Allocation{WorkspacePath: managedPath, RepoRoot: managedPath, BranchName: "agent/background-router", WorkspaceID: "background-router"},
+	}})
 	response := postBackgroundRouterSessionRequest(t, server, principal, map[string]any{
 		"input":                      "do work",
 		"client_request_id":          "background-router-worktree-override",
 		"plan_mode_requested":        false,
 		"managed_worktree_requested": false,
 	})
-	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "unknown field") {
-		t.Fatalf("worktree override status=%d body=%s", response.Code, response.Body.String())
+	if response.Code != http.StatusOK {
+		t.Fatalf("retired worktree field status=%d body=%s", response.Code, response.Body.String())
 	}
 	if runner.createCalls != 0 {
-		t.Fatalf("worktree override reached Router %d times", runner.createCalls)
+		t.Fatalf("retired worktree field unexpectedly reached Router %d times", runner.createCalls)
 	}
 }
 

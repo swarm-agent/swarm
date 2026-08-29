@@ -32,7 +32,10 @@ func TestCreateRoutedTaskSessionPinsWorktreeAndMode(t *testing.T) {
 				if body["input"] != "fix routing" || body["client_request_id"] != "task-request" || body["agent_name"] != "swarm" {
 					t.Fatalf("routed task identity = %#v", body)
 				}
-				if body["managed_worktree_requested"] != true || body["plan_mode_requested"] != test.planMode {
+				if _, ok := body["managed_worktree_requested"]; ok {
+					t.Fatalf("retired managed_worktree_requested was sent: %#v", body)
+				}
+				if body["plan_mode_requested"] != test.planMode {
 					t.Fatalf("routed task intent = %#v", body)
 				}
 				if body["workspace_path"] != "/source-workspace" || body["host_workspace_path"] != "/source-workspace" || body["runtime_workspace_path"] != "/source-workspace" || body["workspace_binding_id"] != "source-binding" || body["swarm_id"] != "host-swarm" || body["target_kind"] != "host" || body["target_relationship"] != "self" {

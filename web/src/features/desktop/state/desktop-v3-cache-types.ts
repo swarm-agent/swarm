@@ -51,12 +51,31 @@ export interface KnownSessionState {
   endpoint_cursor?: string
 }
 
+export interface WorkspaceGrant {
+  kind: 'primary' | 'worktree' | 'temporary' | string
+  workspace_id?: string
+  workspace_generation?: number
+  path: string
+  name?: string
+  available?: boolean
+}
+
+export interface WorkspaceUsageProjection {
+  kind: 'primary' | 'worktree' | 'temporary' | string
+  workspace_id?: string
+  workspace_generation?: number
+  name?: string
+  available?: boolean
+}
+
 export interface SessionSnapshot {
   id: string
   user_id?: string
   account_scope_id?: string
   workspace_path: string
   workspace_name: string
+  workspace_grants?: WorkspaceGrant[]
+  workspace_usage?: WorkspaceUsageProjection[]
   temporary_workspace_roots?: string[]
   title: string
   mode: string
@@ -155,6 +174,7 @@ export interface V3SessionProjection {
   last_event_seq: number
   projection_high_watermark_seq: number
   updated_at: number
+  workspace_usage?: WorkspaceUsageProjection[]
 }
 
 export interface V3ExecutionEpochRef {

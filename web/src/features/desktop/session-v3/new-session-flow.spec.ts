@@ -9,7 +9,6 @@ import {
   createDesktopV3RoutedDraftState,
   desktopV3RoutedRequestInput,
   createDesktopV3RoutedStartOperation,
-  createDesktopV3RoutedWorktreePrimedState,
   loadDesktopV3RoutedStartOperation,
   persistDesktopV3RoutedStartOperation,
   restoreDesktopV3RoutedNewSessionState,
@@ -161,15 +160,9 @@ test('routed draft defaults to current workspace while preserving explicit local
   assert.deepEqual(createDesktopV3RoutedDraftState('draft'), {
     phase: 'draft',
     prompt: 'draft',
-    snapshot: { prompt: 'draft', attachments: [], videoAttachments: [], artifactSelections: [], selectedAction: null, selectedSkill: null, worktreePrimed: false, planModeRequested: false },
-  })
-  assert.deepEqual(createDesktopV3RoutedWorktreePrimedState('primed'), {
-    phase: 'worktree-primed',
-    prompt: 'primed',
-    snapshot: { prompt: 'primed', attachments: [], videoAttachments: [], artifactSelections: [], selectedAction: null, selectedSkill: null, worktreePrimed: true, planModeRequested: false },
+    snapshot: { prompt: 'draft', attachments: [], videoAttachments: [], artifactSelections: [], selectedAction: null, selectedSkill: null, planModeRequested: false },
   })
   assert.equal('sessionId' in createDesktopV3RoutedDraftState(), false)
-  assert.equal('workspace' in createDesktopV3RoutedWorktreePrimedState(), false)
 })
 
 test('routed operation persists one stable transport identity across reload', () => withSessionStorage(() => {
@@ -178,7 +171,6 @@ test('routed operation persists one stable transport identity across reload', ()
     attachments: [{ staging_id: ' staged-1 ', modality: ' image ', file_type: ' png ' }],
     selectedAction: { id: 'action-1', arguments: ['--exact', ' value '] },
     selectedSkill: { canonicalName: 'skill/example', scope: 'workspace' },
-    worktreePrimed: true,
     planModeRequested: true,
   })
   const operation = createDesktopV3RoutedStartOperation({ workspace: workspaceAuthority, agentName: ' swarm ',
@@ -186,10 +178,10 @@ test('routed operation persists one stable transport identity across reload', ()
     metadata: { source: 'desktop-v3' },
   })
 
-  assert.equal(operation.version, 2)
+  assert.equal(operation.version, 3)
   assert.deepEqual(operation.snapshot, snapshot)
   assert.equal(operation.request.input, 'route this')
-  assert.equal(operation.request.managed_worktree_requested, true)
+  assert.equal(Object.hasOwn(operation.request, 'managed_worktree_requested'), false)
   assert.equal(operation.request.plan_mode_requested, true)
   assert.equal(operation.request.agent_name, 'swarm')
   assert.equal(operation.request.client_request_id, `desktop-v3-routed:${operation.operationId}`)
@@ -230,18 +222,18 @@ test('routed first message preserves cross-session artifact source refs and stab
   })
 })
 
-test('routed worktree prime carries explicit request authority without mutating user input or introducing a name field', () => {
-  const snapshot = createDesktopV3RoutedComposerSnapshot({ prompt: 'route me', worktreePrimed: true })
+test('routed worktree isolation is implicit and does not mutate user input', () => {
+  const snapshot = createDesktopV3RoutedComposerSnapshot({ prompt: 'route me' })
   assert.equal(desktopV3RoutedRequestInput(snapshot), 'route me')
-  assert.equal(createDesktopV3RoutedStartOperation({ workspace: workspaceAuthority, agentName: 'swarm', snapshot }).request.managed_worktree_requested, true)
-  assert.deepEqual(Object.keys(snapshot), ['prompt', 'attachments', 'videoAttachments', 'artifactSelections', 'selectedAction', 'selectedSkill', 'worktreePrimed', 'planModeRequested'])
+  assert.equal(Object.hasOwn(createDesktopV3RoutedStartOperation({ workspace: workspaceAuthority, agentName: 'swarm', snapshot }).request, 'managed_worktree_requested'), false)
+  assert.deepEqual(Object.keys(snapshot), ['prompt', 'attachments', 'videoAttachments', 'artifactSelections', 'selectedAction', 'selectedSkill', 'planModeRequested'])
 })
 
 test('routed operation captures complete workspace authority', () => {
   const operation = createDesktopV3RoutedStartOperation({ workspace: workspaceAuthority, agentName: 'swarm', prompt: 'route me' })
 
   assert.deepEqual(Object.keys(operation.request).sort(), [
-    'agent_name', 'artifact_selections', 'client_request_id', 'host_workspace_path', 'idempotency_key', 'input', 'managed_worktree_requested', 'media', 'metadata',
+    'agent_name', 'artifact_selections', 'client_request_id', 'host_workspace_path', 'idempotency_key', 'input', 'media', 'metadata',
     'model_profile', 'plan_mode_requested', 'runtime_workspace_path', 'swarm_id', 'target_kind', 'target_relationship', 'video_attachments', 'workspace_binding_id', 'workspace_path',
   ])
 })
@@ -319,7 +311,6 @@ test('routed activation rejection restores the exact operation and retry identit
     attachments: [{ staging_id: 'staged-1', modality: 'image', file_type: 'png' }],
     selectedAction: { id: 'action-1' },
     selectedSkill: { canonicalName: 'skill-1' },
-    worktreePrimed: true,
   })
 
   const resolved = await controller.submit({ workspace: workspaceAuthority, agentName: 'swarm', snapshot })
@@ -356,7 +347,6 @@ test('routed failure restores the exact composer snapshot and retries the same o
     ],
     selectedAction: { id: 'action-7', name: 'Deploy', arguments: ['--keep-order'] },
     selectedSkill: { canonicalName: 'skill/release', description: ' exact ' },
-    worktreePrimed: true,
   })
 
   const failed = await controller.submit({ workspace: workspaceAuthority, agentName: 'swarm', snapshot })
@@ -366,7 +356,7 @@ test('routed failure restores the exact composer snapshot and retries the same o
     assert.deepEqual(failed.snapshot, snapshot)
     assert.equal(failed.prompt, snapshot.prompt)
     assert.equal(failed.operation.request.input, snapshot.prompt.trim())
-    assert.equal(failed.operation.request.managed_worktree_requested, true)
+    assert.equal(Object.hasOwn(failed.operation.request, 'managed_worktree_requested'), false)
     assert.deepEqual(failed.operation.request.media, snapshot.attachments)
   }
   const resolved = await controller.retry()
@@ -377,6 +367,7 @@ test('routed failure restores the exact composer snapshot and retries the same o
 
 test('routed interruption recovery discards legacy authority-free state and retains exact valid authority', () => withSessionStorage((storage) => {
   storage.set('swarm.desktop.v3.routed-new-session.v1', JSON.stringify({ version: 1, operationId: 'legacy' }))
+  storage.set('swarm.desktop.v3.routed-new-session.v2', JSON.stringify({ version: 2, operationId: 'retired-worktree-intent' }))
   assert.equal(loadDesktopV3RoutedStartOperation(), null)
   assert.equal(storage.size, 0)
 
@@ -385,7 +376,6 @@ test('routed interruption recovery discards legacy authority-free state and reta
     attachments: [{ staging_id: 'stage-a', modality: 'image' }],
     selectedAction: { id: 'action-a' },
     selectedSkill: { canonicalName: 'skill-a' },
-    worktreePrimed: false,
   })
   const operation = createDesktopV3RoutedStartOperation({ workspace: workspaceAuthority, agentName: 'swarm', snapshot })
   persistDesktopV3RoutedStartOperation(operation)
@@ -400,7 +390,7 @@ test('routed interruption recovery discards legacy authority-free state and reta
 
   const corrupted = JSON.parse([...storage.values()][0] ?? '{}')
   corrupted.request.workspace_binding_id = ''
-  storage.set('swarm.desktop.v3.routed-new-session.v2', JSON.stringify(corrupted))
+  storage.set('swarm.desktop.v3.routed-new-session.v3', JSON.stringify(corrupted))
   assert.equal(loadDesktopV3RoutedStartOperation(), null)
   assert.equal(storage.size, 0)
 }))
@@ -411,7 +401,6 @@ test('routed interruption recovery rejects corrupted snapshots and retains exact
     attachments: [{ staging_id: 'stage-a', modality: 'image' }],
     selectedAction: { id: 'action-a' },
     selectedSkill: { canonicalName: 'skill-a' },
-    worktreePrimed: false,
   })
   const operation = createDesktopV3RoutedStartOperation({ workspace: workspaceAuthority, agentName: 'swarm', snapshot })
   persistDesktopV3RoutedStartOperation(operation)
@@ -425,7 +414,7 @@ test('routed interruption recovery rejects corrupted snapshots and retains exact
 
   const corrupted = JSON.parse([...storage.values()][0] ?? '{}')
   corrupted.snapshot.attachments[0].staging_id = ''
-  storage.set('swarm.desktop.v3.routed-new-session.v2', JSON.stringify(corrupted))
+  storage.set('swarm.desktop.v3.routed-new-session.v3', JSON.stringify(corrupted))
   assert.equal(loadDesktopV3RoutedStartOperation(), null)
   assert.equal(storage.size, 0)
 }))
@@ -440,7 +429,6 @@ test('routed invalidation clears only the invalidated operation and preserves th
     attachments: [{ staging_id: 'old-stage' }],
     selectedAction: { id: 'old-action' },
     selectedSkill: null,
-    worktreePrimed: true,
   })
   const pending = controller.submit({ workspace: workspaceAuthority, agentName: 'swarm', snapshot: oldSnapshot })
 
@@ -449,7 +437,6 @@ test('routed invalidation clears only the invalidated operation and preserves th
     attachments: [{ staging_id: 'new-stage' }],
     selectedAction: null,
     selectedSkill: { canonicalName: 'new-skill' },
-    worktreePrimed: false,
   })
   const draft = controller.startDraft(newSnapshot.prompt, newSnapshot)
   assert.deepEqual(draft.snapshot, newSnapshot)

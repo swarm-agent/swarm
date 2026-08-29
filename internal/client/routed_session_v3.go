@@ -23,7 +23,6 @@ type RoutedSessionV3StartRequest struct {
 	IdempotencyKey           string                        `json:"idempotency_key"`
 	AgentName                string                        `json:"agent_name,omitempty"`
 	Metadata                 map[string]any                `json:"metadata,omitempty"`
-	ManagedWorktreeRequested bool                          `json:"managed_worktree_requested"`
 	PlanModeRequested        bool                          `json:"plan_mode_requested"`
 	WorkspacePath            string                        `json:"workspace_path"`
 	HostWorkspacePath        string                        `json:"host_workspace_path,omitempty"`

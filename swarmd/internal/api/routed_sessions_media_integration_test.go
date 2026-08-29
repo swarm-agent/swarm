@@ -27,6 +27,7 @@ import (
 	"swarm/packages/swarmd/internal/tool"
 	topologyruntime "swarm/packages/swarmd/internal/topology"
 	"swarm/packages/swarmd/internal/workspace"
+	worktreeruntime "swarm/packages/swarmd/internal/worktree"
 )
 
 type routedMediaTestRunner struct {
@@ -151,6 +152,10 @@ func newRoutedMediaTestFixture(t *testing.T) *routedMediaTestFixture {
 	}
 	server.SetTopologyService(topologyruntime.NewService(topologyStore, swarmStore))
 	server.SetSwarmStore(swarmStore)
+	server.SetWorktreeService(&routedWorktreeServiceStub{fakeWorktreeService: fakeWorktreeService{
+		config: worktreeruntime.Config{UseCurrentBranch: true, BranchName: "agent/<id>"},
+		allocation: worktreeruntime.Allocation{WorkspacePath: filepath.Join(t.TempDir(), "managed-worktree"), RepoRoot: workspacePath, BranchName: "agent/session", WorkspaceID: "session-worktree"},
+	}})
 
 	staging := mediastaging.NewService(pebblestore.NewMediaStagingStore(store))
 	server.SetMediaStagingService(staging)
@@ -183,7 +188,10 @@ func (f *routedMediaTestFixture) postWithWorktreeIntent(t *testing.T, account, r
 	for key, value := range media {
 		item[key] = value
 	}
-	payload := map[string]any{"input": "inspect this image", "client_request_id": requestID, "managed_worktree_requested": managedWorktreeRequested, "plan_mode_requested": false, "media": []any{item}, "workspace_binding_id": "binding-routed", "swarm_id": "local-swarm", "target_kind": "host", "target_relationship": "self"}
+	payload := map[string]any{"input": "inspect this image", "client_request_id": requestID, "plan_mode_requested": false, "media": []any{item}, "workspace_binding_id": "binding-routed", "swarm_id": "local-swarm", "target_kind": "host", "target_relationship": "self"}
+	if managedWorktreeRequested {
+		payload["worktree_name"] = "inspect-staged-image"
+	}
 	body, err := json.Marshal(payload)
 	if err != nil {
 		t.Fatalf("marshal routed request: %v", err)

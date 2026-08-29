@@ -40,6 +40,7 @@ import {
   parseTaskLaunchPermission,
   type TaskLaunchPayload,
   type TaskLaunchResolvedTools,
+  parseWorkspaceMutationPermission,
   parseWorkspaceScopePermission,
   permissionDisplayToolName,
   permissionKind,
@@ -2072,16 +2073,6 @@ function WorkspaceScopeModal({
             >
               <span className="min-w-0 whitespace-normal text-center leading-5">{payload.sessionAllow.label}</span>
             </Button>
-            <Button
-              type="button"
-              variant="outline"
-              className="order-2 w-full sm:w-auto"
-              title={payload.addToWorkspace.label}
-              onClick={() => void resolve('approve', buildWorkspaceScopeResolutionReason(payload.addToWorkspace.decision))}
-              disabled={loading || !payload.addToWorkspace.available}
-            >
-              <span className="min-w-0 whitespace-normal text-center leading-5">{payload.addToWorkspace.label}</span>
-            </Button>
             <Button type="button" variant="ghost" className="order-3 w-full sm:order-1 sm:w-auto" onClick={() => void resolve('deny', '')} disabled={loading}>
               Deny
             </Button>
@@ -2104,7 +2095,7 @@ function WorkspaceScopeModal({
             <div className="mt-2 break-all font-mono text-sm text-[var(--app-text)]">{payload.requestedPath || 'Unavailable'}</div>
           </section>
           <section className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4">
-            <div className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Session scope root</div>
+            <div className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Temporary access root</div>
             <div className="mt-2 break-all font-mono text-sm text-[var(--app-text)]">{payload.directoryPath || payload.resolvedPath || payload.requestedPath || 'Unavailable'}</div>
           </section>
           <section className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4">
@@ -2117,24 +2108,11 @@ function WorkspaceScopeModal({
           </section>
         </div>
 
-        <div className="grid gap-3 lg:grid-cols-2">
+        <div className="grid gap-3">
           <section className="flex h-full flex-col rounded-2xl border border-[var(--app-border-accent)] bg-[color-mix(in_oklab,var(--app-primary)_8%,var(--app-surface))] p-4">
-            <div className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Temporary access</div>
+            <div className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">This chat only</div>
             <h3 className="mt-2 text-base font-semibold text-[var(--app-text)]">{payload.sessionAllow.label}</h3>
             <p className="mt-2 flex-1 text-sm leading-6 text-[var(--app-text-muted)]">{payload.sessionAllow.description || payload.temporaryBehavior}</p>
-          </section>
-
-          <section
-            className={cn(
-              'flex h-full flex-col rounded-2xl border p-4',
-              payload.addToWorkspace.available
-                ? 'border-[var(--app-border)] bg-[var(--app-surface)]'
-                : 'border-[var(--app-border)] bg-[var(--app-bg-alt)] opacity-75',
-            )}
-          >
-            <div className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Persistent access</div>
-            <h3 className="mt-2 text-base font-semibold text-[var(--app-text)]">{payload.addToWorkspace.label}</h3>
-            <p className="mt-2 flex-1 text-sm leading-6 text-[var(--app-text-muted)]">{payload.addToWorkspace.description || payload.persistentBehavior}</p>
           </section>
         </div>
       </div>
@@ -3226,6 +3204,56 @@ function AgentChangeModal({
   )
 }
 
+function WorkspaceMutationModal(props: DesktopPermissionModalProps) {
+  const { open, permission, pendingCount, sessionMode, onOpenChange, onResolve } = props
+  const [loading, setLoading] = useState(false)
+  const payload = useMemo(() => permission ? parseWorkspaceMutationPermission(permission) : null, [permission])
+  if (!permission || !payload) return null
+  const resolve = async (action: 'approve' | 'deny' | 'approve_always' | 'always_deny') => {
+    setLoading(true)
+    try { await onResolve(action, '') } finally { setLoading(false) }
+  }
+  const actionTone = payload.action === 'delete' ? 'text-[var(--app-danger)]' : 'text-[var(--app-primary)]'
+  return (
+    <ModalShell
+      open={open}
+      title={payload.title}
+      subtitle="Review exactly what Swarm will change"
+      pendingCount={pendingCount}
+      sessionMode={sessionMode}
+      widthClassName="w-[min(760px,calc(100vw-24px))]"
+      bodyClassName="px-4 py-4 sm:px-5"
+      footer={<PermissionActionBar loading={loading} onApprove={() => void resolve('approve')} onDeny={() => void resolve('deny')} onAlwaysAllow={() => void resolve('approve_always')} onAlwaysDeny={() => void resolve('always_deny')} showPersistentActions note="" onNoteChange={() => undefined} noteLabel="Response note" notePlaceholder="Optional note…" />}
+      onOpenChange={onOpenChange}
+      onPrimaryShortcut={() => void resolve('approve')}
+      onDenyShortcut={() => void resolve('deny')}
+      shortcutsDisabled={loading}
+      showSessionMeta={false}
+    >
+      <div className="grid gap-4">
+        <section className="grid gap-3 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4">
+          <div className={`text-base font-semibold ${actionTone}`}>{payload.title}</div>
+          {payload.intent ? <p className="text-sm text-[var(--app-text-muted)]">{payload.intent}</p> : null}
+          <div className="grid gap-2 text-sm">
+            {payload.workspaceName ? <div><span className="text-[var(--app-text-subtle)]">Workspace: </span><span className="font-medium">{payload.workspaceName}</span></div> : null}
+            {payload.workspacePath ? <div className="break-all"><span className="text-[var(--app-text-subtle)]">Path: </span><code>{payload.workspacePath}</code></div> : null}
+            {payload.workspaceId ? <div className="break-all text-xs text-[var(--app-text-subtle)]">ID: {payload.workspaceId}</div> : null}
+          </div>
+          {payload.changes.length ? <div className="grid gap-2 border-t border-[var(--app-border)] pt-3">{payload.changes.map((change) => <div key={change.label} className="grid grid-cols-[7rem_1fr] gap-2 text-sm"><span className="text-[var(--app-text-subtle)]">{change.label}</span><span className="break-all font-medium">{change.value || '(clear)'}</span></div>)}</div> : null}
+        </section>
+        <section className="rounded-xl border border-[color-mix(in_oklab,var(--app-primary)_25%,var(--app-border))] bg-[color-mix(in_oklab,var(--app-primary)_7%,var(--app-surface))] p-3 text-sm text-[var(--app-text-muted)]">
+          <div className="font-medium text-[var(--app-text)]">Active-session safety</div>
+          <p className="mt-1">{payload.safetySummary}</p>
+        </section>
+        <section className="rounded-xl border border-[var(--app-border)] p-3 text-xs text-[var(--app-text-muted)]">
+          <div className="font-medium text-[var(--app-text)]">Action-specific permission</div>
+          <p className="mt-1">{payload.permissionSummary}</p>
+        </section>
+      </div>
+    </ModalShell>
+  )
+}
+
 function genericPermissionSupportsPersistentActions(permission: DesktopPermissionRecord): boolean {
   const toolName = permissionDisplayToolName(permission.toolName)
   return toolName !== 'ask-user' && toolName !== 'exit_plan_mode' && toolName !== 'manage_sessions'
@@ -3282,6 +3310,9 @@ export function DesktopPermissionModal(props: DesktopPermissionModalProps) {
 
   if (kind === 'workspace-scope') {
     return <WorkspaceScopeModal {...props} />
+  }
+  if (kind === 'workspace-mutation') {
+    return <WorkspaceMutationModal {...props} />
   }
   if (kind === 'exit-plan') {
     return <ExitPlanModal {...props} />

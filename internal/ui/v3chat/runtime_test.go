@@ -278,7 +278,7 @@ func TestRoutedDraftFailureRestoresLocalIntentAndRetryKeepsIdentity(t *testing.T
 	}
 	failed := runtime.Store().Snapshot()
 	draft, ok = SelectRoutedDraft(failed)
-	if !ok || draft.Status != RoutedDraftFailed || draft.Prompt != "route this" || !draft.PlanModeRequested || !draft.ManagedWorktreeRequested || draft.ClientRequestID != identity || failed.Session.ID != "" {
+	if !ok || draft.Status != RoutedDraftFailed || draft.Prompt != "route this" || !draft.PlanModeRequested || draft.ClientRequestID != identity || failed.Session.ID != "" {
 		t.Fatalf("failed draft = %#v state=%#v", draft, failed)
 	}
 	if _, err := runtime.RetryRoutedDraft(context.Background()); err != nil {
@@ -304,7 +304,7 @@ func TestRoutedDraftFailureRestoresLocalIntentAndRetryKeepsIdentity(t *testing.T
 
 func routedTestDraft(prompt string, plan bool) RoutedDraft {
 	return RoutedDraft{
-		Prompt: prompt, PlanModeRequested: plan, ManagedWorktreeRequested: true,
+		Prompt: prompt, PlanModeRequested: plan,
 		AgentName: "swarm", WorkspacePath: "/source", HostWorkspacePath: "/source", RuntimeWorkspacePath: "/source",
 		WorkspaceBindingID: "binding-1", SwarmID: "swarm-1", TargetKind: "host", TargetRelationship: "self",
 		Metadata: map[string]any{"source": "tui"},
@@ -449,7 +449,6 @@ func TestDraftModeUpdatesEffectiveSelectionAndPrimedCreateLosslesslyUntilHydrati
 		Metadata:                 metadata,
 		Preference:               autoPreference,
 		ModelProfile:             &client.SessionV3ModelProfileChoice{UseAccountDefault: &useAccountDefault},
-		WorktreeMode:             "on",
 		WorktreeUseCurrentBranch: &useCurrentBranch,
 		WorktreeBaseBranch:       "dev",
 		WorktreeBranchName:       "agent/draft",

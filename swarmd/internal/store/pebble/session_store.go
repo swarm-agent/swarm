@@ -63,6 +63,8 @@ type SessionSnapshot struct {
 	AccountScopeID          string                       `json:"account_scope_id,omitempty"`
 	WorkspacePath           string                       `json:"workspace_path"`
 	WorkspaceName           string                       `json:"workspace_name"`
+	WorkspaceGrants         []WorkspaceGrant             `json:"workspace_grants,omitempty"`
+	WorkspaceUsage          []WorkspaceUsageProjection   `json:"workspace_usage,omitempty"`
 	TemporaryWorkspaceRoots []string                     `json:"temporary_workspace_roots,omitempty"`
 	Title                   string                       `json:"title"`
 	Mode                    string                       `json:"mode"`

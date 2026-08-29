@@ -495,6 +495,72 @@ func TestTaskProgramSchedulerRetainsQueuedJobsAcrossCapacityCohorts(t *testing.T
 	}
 }
 
+func TestTaskProgramSchedulerRequiresSessionOwnedRepositoryLane(t *testing.T) {
+	definition := pebblestore.TaskProgramDefinition{Jobs: []pebblestore.TaskProgramJobSpec{{ID: "coder", AgentType: "coder", WorkspacePath: "/repos/product"}}}
+	for _, tc := range []struct {
+		name   string
+		parent pebblestore.SessionSnapshot
+		want   string
+		err    string
+	}{
+		{
+			name: "routes source repository into parent lane",
+			parent: pebblestore.SessionSnapshot{
+				WorkspacePath: "/lanes/session-product", WorktreeEnabled: true, WorktreeRootPath: "/lanes/session-product",
+				WorktreeBaseBranch: "dev", WorktreeBranch: "agent/session-product",
+				Metadata: map[string]any{"swarm_v3_source_workspace_path": "/repos/product", "swarm_v3_runtime_workspace_path": "/lanes/session-product"},
+			},
+			want: "/lanes/session-product",
+		},
+		{
+			name:   "rejects captured checkout",
+			parent: pebblestore.SessionSnapshot{WorkspacePath: "/repos/product", Metadata: map[string]any{"swarm_v3_source_workspace_path": "/repos/product"}},
+			err:    "session-owned parent lane",
+		},
+		{
+			name: "rejects source checkout disguised as worktree",
+			parent: pebblestore.SessionSnapshot{
+				WorkspacePath: "/repos/product", WorktreeEnabled: true, WorktreeRootPath: "/repos/product",
+				WorktreeBaseBranch: "dev", WorktreeBranch: "agent/session-product",
+				Metadata: map[string]any{"swarm_v3_source_workspace_path": "/repos/product", "swarm_v3_runtime_workspace_path": "/repos/product"},
+			},
+			err: "distinct managed worktree",
+		},
+		{
+			name: "rejects base branch as parent lane branch",
+			parent: pebblestore.SessionSnapshot{
+				WorkspacePath: "/lanes/session-product", WorktreeEnabled: true, WorktreeRootPath: "/lanes/session-product",
+				WorktreeBaseBranch: "dev", WorktreeBranch: "dev",
+				Metadata: map[string]any{"swarm_v3_source_workspace_path": "/repos/product", "swarm_v3_runtime_workspace_path": "/lanes/session-product"},
+			},
+			err: "distinct worktree branch",
+		},
+		{
+			name: "rejects cross workspace without lane",
+			parent: pebblestore.SessionSnapshot{
+				WorkspacePath: "/lanes/session-product", WorktreeEnabled: true, WorktreeRootPath: "/lanes/session-product",
+				WorktreeBaseBranch: "dev", WorktreeBranch: "agent/session-product",
+				Metadata: map[string]any{"swarm_v3_source_workspace_path": "/repos/other", "swarm_v3_runtime_workspace_path": "/lanes/session-product"},
+			},
+			err: "lacks a session-owned repository lane",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			scheduler := taskProgramScheduler{parentSession: tc.parent, record: pebblestore.TaskProgramRecord{Definition: definition}}
+			got, err := scheduler.programWorkspacePath()
+			if tc.err != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.err) {
+					t.Fatalf("program lane error = %v, want %q", err, tc.err)
+				}
+				return
+			}
+			if err != nil || got != tc.want {
+				t.Fatalf("program lane = %q err=%v, want %q", got, err, tc.want)
+			}
+		})
+	}
+}
+
 func TestTaskProgramSchedulerRecordsIntegratedWorktreeCleanupOutcome(t *testing.T) {
 	tests := []struct {
 		name            string
@@ -512,6 +578,12 @@ func TestTaskProgramSchedulerRecordsIntegratedWorktreeCleanupOutcome(t *testing.
 			if err != nil || !ok {
 				t.Fatalf("load parent: ok=%v err=%v", ok, err)
 			}
+			parent.WorkspacePath = "/shared/repo"
+			parent.WorktreeEnabled = true
+			parent.WorktreeRootPath = "/shared/repo"
+			parent.WorktreeBaseBranch = "dev"
+			parent.WorktreeBranch = "agent/parent-lane"
+			parent.Metadata = map[string]any{"swarm_v3_source_workspace_path": "/captured/repo", "swarm_v3_runtime_workspace_path": "/shared/repo"}
 			stub := &taskProgramCleanupWorktreeStub{taskLaunchWorktreeStub: taskLaunchWorktreeStub{cleanupErr: tc.cleanupErr}}
 			svc.SetWorktreeService(stub)
 			record, _, err := svc.sessions.CreateTaskProgram(pebblestore.TaskProgramRecord{
@@ -519,7 +591,7 @@ func TestTaskProgramSchedulerRecordsIntegratedWorktreeCleanupOutcome(t *testing.
 				Definition: pebblestore.TaskProgramDefinition{
 					Stages: []pebblestore.TaskProgramStageSpec{{ID: "build", DependencyEvidence: "ready"}},
 					Jobs: []pebblestore.TaskProgramJobSpec{
-						{ID: "api", StageID: "build", AgentType: "coder", WorkspacePath: "/shared/repo", DependencyEvidence: "ready"},
+						{ID: "api", StageID: "build", AgentType: "coder", WorkspacePath: "/captured/repo", DependencyEvidence: "ready"},
 						{ID: "recoverable", StageID: "build", AgentType: "coder", DependencyEvidence: "ready"},
 						{ID: "failed", StageID: "build", AgentType: "coder", DependencyEvidence: "ready"},
 					},
@@ -562,8 +634,8 @@ func (s *taskProgramCleanupWorktreeStub) RemoveIntegratedTaskWorkspace(parentPat
 	return s.taskLaunchWorktreeStub.RemoveIntegratedTaskWorkspace(parentPath, childPath, sessionID, branchName, baseCommit, headCommit)
 }
 
-func (s *taskProgramCleanupWorktreeStub) PrepareTaskIntegration(_ string, expectedParentHead string, children []worktreeruntime.TaskIntegrationChild) (worktreeruntime.TaskIntegrationPlan, error) {
-	return worktreeruntime.TaskIntegrationPlan{ParentHead: expectedParentHead}, nil
+func (s *taskProgramCleanupWorktreeStub) PrepareTaskIntegration(_ string, expectedParentBranch, expectedParentHead string, children []worktreeruntime.TaskIntegrationChild) (worktreeruntime.TaskIntegrationPlan, error) {
+	return worktreeruntime.TaskIntegrationPlan{ParentBranch: expectedParentBranch, ParentHead: expectedParentHead}, nil
 }
 
 func (s *taskProgramCleanupWorktreeStub) ApplyTaskIntegration(_ string, plan worktreeruntime.TaskIntegrationPlan) (worktreeruntime.TaskIntegrationResult, error) {

@@ -529,7 +529,50 @@ func TestRunWorkspaceScopeRequiresPrincipalForPrincipalBackedRuntime(t *testing.
 	}
 }
 
-func TestPersistentWorkspaceScopeApprovalAddsAccountScopedDirectory(t *testing.T) {
+func TestResolveRunWorkspaceScopeIncludesEveryAccountSavedWorkspaceWithoutSwitch(t *testing.T) {
+	primary := t.TempDir()
+	secondary := t.TempDir()
+	external := t.TempDir()
+	principal := testRunPrincipal()
+	workspaceSvc, _, _, cleanup := newTestRunWorkspaceServiceWithRawStore(t)
+	defer cleanup()
+	primaryResolution, err := workspaceSvc.AddForPrincipal(principal, primary, "primary", "", true)
+	if err != nil {
+		t.Fatalf("save primary workspace: %v", err)
+	}
+	secondaryResolution, err := workspaceSvc.AddForPrincipal(principal, secondary, "secondary", "", false)
+	if err != nil {
+		t.Fatalf("save secondary workspace: %v", err)
+	}
+
+	runSvc := NewService(nil, nil, nil, nil, nil, nil, discovery.NewService(), nil)
+	runSvc.SetWorkspaceService(workspaceSvc)
+	scope, err := runSvc.resolveRunWorkspaceScope(pebblestore.SessionSnapshot{
+		ID: "session-global-saved-workspaces", UserID: principal.UserID, AccountScopeID: principal.AccountScopeID,
+		WorkspacePath: primary, WorkspaceName: "primary",
+		Metadata: map[string]any{"swarm_v3_source_workspace_id": primaryResolution.WorkspaceID, "swarm_v3_source_workspace_generation": primaryResolution.WorkspaceGeneration},
+	}, principal)
+	if err != nil {
+		t.Fatalf("resolve global saved workspace scope: %v", err)
+	}
+	if scope.PrimaryPath != primary {
+		t.Fatalf("primary path switched: got %q want %q", scope.PrimaryPath, primary)
+	}
+	assertStringSliceContains(t, scope.Roots, primary)
+	assertStringSliceContains(t, scope.Roots, secondary)
+	if _, needsApproval, err := tool.ScopeExpansionForCall(scope, tool.Call{Name: "write", Arguments: `{"path":"` + filepath.Join(secondary, "allowed.txt") + `"}`}); err != nil || needsApproval {
+		t.Fatalf("saved secondary workspace required expansion: approval=%t err=%v", needsApproval, err)
+	}
+	request, needsApproval, err := tool.ScopeExpansionForCall(scope, tool.Call{Name: "write", Arguments: `{"path":"` + filepath.Join(external, "blocked.txt") + `"}`})
+	if err != nil || !needsApproval || request.DirectoryPath != external {
+		t.Fatalf("unsaved external workspace decision: approval=%t request=%+v err=%v", needsApproval, request, err)
+	}
+	if secondaryResolution.WorkspaceID == "" {
+		t.Fatal("secondary saved workspace lost identity")
+	}
+}
+
+func TestWorkspaceScopeApprovalAddsSessionTemporaryGrantWithoutMutatingWorkspaceCatalog(t *testing.T) {
 	primary := t.TempDir()
 	linked := t.TempDir()
 	principal := testRunPrincipal()
@@ -540,17 +583,16 @@ func TestPersistentWorkspaceScopeApprovalAddsAccountScopedDirectory(t *testing.T
 		t.Fatalf("save primary workspace: %v", err)
 	}
 
-	sessionID := "session-persistent-add-dir"
+	sessionID := "session-temporary-workspace-scope"
 	if err := pebblestore.NewSessionStore(rawStore).CreateSessionForAccount(pebblestore.SessionSnapshot{
 		ID:            sessionID,
 		WorkspacePath: primary,
 		WorkspaceName: "primary",
-		Title:         "Persistent add-dir",
+		Title:         "Temporary workspace scope",
 	}, principal.UserID, principal.AccountScopeID); err != nil {
 		t.Fatalf("create session: %v", err)
 	}
 	sessionSvc := sessionruntime.NewService(pebblestore.NewSessionStore(rawStore), nil)
-
 	runSvc := NewService(sessionSvc, nil, nil, nil, nil, nil, discovery.NewService(), nil)
 	runSvc.SetWorkspaceService(workspaceSvc)
 	workspaceCtx := runWorkspaceContext{
@@ -559,34 +601,45 @@ func TestPersistentWorkspaceScopeApprovalAddsAccountScopedDirectory(t *testing.T
 		OriginWorkspacePath:  primary,
 		OriginWorkspaceRoots: []string{primary},
 	}
-	changed, err := runSvc.applyPersistentWorkspaceScopeAccess(
+
+	changed, err := runSvc.applyWorkspaceScopeApproval(
 		sessionID,
 		primary,
 		"primary",
 		principal,
+		workspaceScopeDecisionSessionAllow,
 		tool.ScopeExpansionRequest{DirectoryPath: linked},
 		&workspaceCtx,
 	)
 	if err != nil {
-		t.Fatalf("apply persistent workspace scope access: %v", err)
+		t.Fatalf("apply session workspace scope approval: %v", err)
 	}
 	if !changed {
-		t.Fatalf("persistent add-dir did not report a workspace scope change")
+		t.Fatalf("session workspace scope approval did not report a scope change")
 	}
 
-	accountEntry, ok, err := workspaceStore.GetForAccount(principal.AccountScopeID, primary)
+	session, ok, err := sessionSvc.GetSession(sessionID)
 	if err != nil || !ok {
-		t.Fatalf("account workspace entry missing after add-dir: ok=%t err=%v", ok, err)
+		t.Fatalf("session missing after workspace scope approval: ok=%t err=%v", ok, err)
 	}
-	assertStringSliceContains(t, accountEntry.Directories, linked)
-	if legacyEntry, ok, err := workspaceStore.GetLegacy(primary); err != nil || ok || len(legacyEntry.Directories) != 0 {
-		t.Fatalf("persistent add-dir wrote legacy workspace entry: entry=%+v ok=%t err=%v", legacyEntry, ok, err)
+	assertStringSliceContains(t, session.TemporaryWorkspaceRoots, linked)
+	if len(session.WorkspaceGrants) != 1 || session.WorkspaceGrants[0].Kind != pebblestore.WorkspaceGrantTemporary || session.WorkspaceGrants[0].Path != linked {
+		t.Fatalf("session workspace grants = %+v, want one temporary grant for %q", session.WorkspaceGrants, linked)
 	}
 	assertStringSliceContains(t, workspaceCtx.OriginWorkspaceRoots, linked)
 	assertStringSliceContains(t, workspaceCtx.WorkspaceRoots, linked)
+
+	accountEntry, ok, err := workspaceStore.GetForAccount(principal.AccountScopeID, primary)
+	if err != nil || !ok {
+		t.Fatalf("account workspace entry missing after approval: ok=%t err=%v", ok, err)
+	}
+	assertStringSliceNotContains(t, accountEntry.Directories, linked)
+	if legacyEntry, ok, err := workspaceStore.GetLegacy(primary); err != nil || ok || len(legacyEntry.Directories) != 0 {
+		t.Fatalf("session approval mutated legacy workspace entry: entry=%+v ok=%t err=%v", legacyEntry, ok, err)
+	}
 }
 
-func TestPersistentWorkspaceScopeApprovalAllowsDirectorySharedByWorkspaces(t *testing.T) {
+func TestWorkspaceScopeApprovalDoesNotShareTemporaryGrantAcrossWorkspaces(t *testing.T) {
 	left := t.TempDir()
 	right := t.TempDir()
 	shared := t.TempDir()
@@ -604,12 +657,12 @@ func TestPersistentWorkspaceScopeApprovalAllowsDirectorySharedByWorkspaces(t *te
 		t.Fatalf("link shared directory to left workspace: %v", err)
 	}
 
-	sessionID := "session-shared-persistent-add-dir"
+	sessionID := "session-shared-temporary-scope"
 	if err := pebblestore.NewSessionStore(rawStore).CreateSessionForAccount(pebblestore.SessionSnapshot{
 		ID:            sessionID,
 		WorkspacePath: right,
 		WorkspaceName: "right",
-		Title:         "Shared persistent add-dir",
+		Title:         "Shared temporary scope",
 	}, principal.UserID, principal.AccountScopeID); err != nil {
 		t.Fatalf("create session: %v", err)
 	}
@@ -623,28 +676,57 @@ func TestPersistentWorkspaceScopeApprovalAllowsDirectorySharedByWorkspaces(t *te
 		OriginWorkspaceRoots: []string{right},
 	}
 
-	changed, err := runSvc.applyPersistentWorkspaceScopeAccess(
+	changed, err := runSvc.applyWorkspaceScopeApproval(
 		sessionID,
 		right,
 		"right",
 		principal,
+		workspaceScopeDecisionSessionAllow,
 		tool.ScopeExpansionRequest{DirectoryPath: shared},
 		&workspaceCtx,
 	)
 	if err != nil {
-		t.Fatalf("apply shared persistent workspace scope access: %v", err)
+		t.Fatalf("apply temporary shared workspace scope: %v", err)
 	}
 	if !changed {
-		t.Fatalf("shared persistent add-dir did not report a workspace scope change")
-	}
-	for _, workspacePath := range []string{left, right} {
-		entry, ok, err := workspaceStore.GetForAccount(principal.AccountScopeID, workspacePath)
-		if err != nil || !ok {
-			t.Fatalf("workspace %q missing after shared add-dir: ok=%t err=%v", workspacePath, ok, err)
-		}
-		assertStringSliceContains(t, entry.Directories, shared)
+		t.Fatalf("temporary shared workspace scope did not report a scope change")
 	}
 	assertStringSliceContains(t, workspaceCtx.OriginWorkspaceRoots, shared)
+
+	leftEntry, ok, err := workspaceStore.GetForAccount(principal.AccountScopeID, left)
+	if err != nil || !ok {
+		t.Fatalf("left workspace missing after approval: ok=%t err=%v", ok, err)
+	}
+	assertStringSliceContains(t, leftEntry.Directories, shared)
+	rightEntry, ok, err := workspaceStore.GetForAccount(principal.AccountScopeID, right)
+	if err != nil || !ok {
+		t.Fatalf("right workspace missing after approval: ok=%t err=%v", ok, err)
+	}
+	assertStringSliceNotContains(t, rightEntry.Directories, shared)
+}
+
+func TestResolveRunWorkspaceScopeRejectsStaleCapturedWorkspaceGeneration(t *testing.T) {
+	primary := t.TempDir()
+	principal := testRunPrincipal()
+	workspaceSvc, _, _, cleanup := newTestRunWorkspaceServiceWithRawStore(t)
+	defer cleanup()
+	created, err := workspaceSvc.AddForPrincipal(principal, primary, "primary", "", true)
+	if err != nil {
+		t.Fatalf("save primary workspace: %v", err)
+	}
+	runSvc := NewService(nil, nil, nil, nil, nil, nil, discovery.NewService(), nil)
+	runSvc.SetWorkspaceService(workspaceSvc)
+	session := pebblestore.SessionSnapshot{
+		ID: "session-stale-generation", UserID: principal.UserID, AccountScopeID: principal.AccountScopeID, WorkspacePath: primary,
+		Metadata: map[string]any{
+			"swarm_v3_source_workspace_id":         created.WorkspaceID,
+			"swarm_v3_source_workspace_generation": "2",
+		},
+	}
+	_, err = runSvc.resolveRunWorkspaceScope(session, principal)
+	if err == nil || !strings.Contains(err.Error(), "workspace generation is stale") {
+		t.Fatalf("resolve stale generation error = %v", err)
+	}
 }
 
 func TestResolveRunWorkspaceScopeRejectsTemporaryRootChangedToSymlink(t *testing.T) {

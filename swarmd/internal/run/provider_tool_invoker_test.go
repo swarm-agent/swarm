@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"swarm/packages/swarmd/internal/artifact"
+	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/permission"
 	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
 	sessionruntime "swarm/packages/swarmd/internal/session"
@@ -71,6 +72,19 @@ func TestNormalizeAskUserPermissionArgumentsAppendsOwnedCustomResponse(t *testin
 		if custom["label"] != askUserCustomResponseLabel || custom["value"] != askUserCustomResponseValue || custom["allow_custom"] != true {
 			t.Fatalf("question %d custom response = %#v", index+1, custom)
 		}
+	}
+}
+
+func TestProviderManagedExecutionPrincipalPreservesBoundV3Session(t *testing.T) {
+	configured := identity.Principal{Type: identity.PrincipalTypeUser, UserID: "user-1", AccountScopeID: "account-1", SessionID: "v3-session"}
+	contextPrincipal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: "user-1", AccountScopeID: "account-1", SessionID: "desktop-session"}
+	ctx := identity.ContextWithPrincipal(context.Background(), contextPrincipal)
+
+	if got := providerManagedExecutionPrincipal(ctx, providerToolInvokerConfig{principal: configured, providerManagedV3: true}); got != configured {
+		t.Fatalf("provider-managed V3 principal = %+v, want configured session-bound principal %+v", got, configured)
+	}
+	if got := providerManagedExecutionPrincipal(ctx, providerToolInvokerConfig{principal: configured}); got != contextPrincipal {
+		t.Fatalf("non-V3 principal = %+v, want request context principal %+v", got, contextPrincipal)
 	}
 }
 

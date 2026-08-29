@@ -13,6 +13,13 @@ func TestRollbackAllocationRemovesOnlyRecordedAllocation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("allocate worktree: %v", err)
 	}
+	wantBase, err := runGit(repo, "rev-parse", "--verify", "HEAD^{commit}")
+	if err != nil {
+		t.Fatalf("resolve fixture base: %v", err)
+	}
+	if allocation.BaseCommit != wantBase {
+		t.Fatalf("allocation base commit = %q, want %q", allocation.BaseCommit, wantBase)
+	}
 	unrelated := filepath.Join(t.TempDir(), "unrelated")
 	if _, err := runGit(repo, "worktree", "add", "-b", "agent/unrelated", unrelated, "HEAD"); err != nil {
 		t.Fatalf("add unrelated worktree: %v", err)

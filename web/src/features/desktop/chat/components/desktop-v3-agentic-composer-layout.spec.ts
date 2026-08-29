@@ -149,7 +149,7 @@ test('Desktop V3 composer exposes only backend-projected media and preserves dur
   assert.match(api, /media\?: DesktopV3MediaReference\[\]/)
 })
 
-test('Desktop V3 composer keeps new-session Worktree before Plan and omits resolved Worktree clutter', async () => {
+test('Desktop V3 composer keeps mandatory worktree isolation implicit beside Plan controls', async () => {
   const source = await readFile(new URL('./desktop-v3-agentic-composer.tsx', import.meta.url), 'utf8')
   const control = await readFile(new URL('./composer-plan-model-control.tsx', import.meta.url), 'utf8')
   const plan = await readFile(new URL('./desktop-composer-plan-toggle.tsx', import.meta.url), 'utf8')
@@ -158,7 +158,7 @@ test('Desktop V3 composer keeps new-session Worktree before Plan and omits resol
   assert.equal((source.match(/renderComposerControl\(openAgentSetup, false\)/g) ?? []).length, 2)
   assert.equal((source.match(/<DesktopComposerActionMenu/g) ?? []).length, 1)
   assert.doesNotMatch(source, /ProfileAgentPicker|showFavoriteSelector/)
-  assert.match(source, /<DesktopRoutedWorktreePrime[\s\S]*?<DesktopComposerPlanToggle/)
+  assert.doesNotMatch(source, /DesktopRoutedWorktreePrime|worktreePrimed|managed_worktree_requested/)
   assert.match(source, /routedNewSession && showModePicker/)
   assert.match(source, /resolvedSessionControls && showModePicker && mode === 'plan'/)
   assert.doesNotMatch(source, /durableWorktreeActive/)

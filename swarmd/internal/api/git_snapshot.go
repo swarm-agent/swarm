@@ -89,7 +89,7 @@ func (s *Server) resolveSessionGitWorkspacePath(principal identity.Principal, se
 		return "", false, nil
 	}
 	worktreePath := strings.TrimSpace(session.WorktreeRootPath)
-	if worktreePath == "" || worktreePath != strings.TrimSpace(session.WorkspacePath) {
+	if worktreePath == "" {
 		return "", false, errors.New("session worktree path is incomplete")
 	}
 	return worktreePath, true, nil

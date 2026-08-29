@@ -4,7 +4,10 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
+	"sync"
 )
+
+var workspaceMapMutationMu sync.Mutex
 
 const (
 	KeyAuthCodexDefault                            = "auth/codex/default" // legacy single-record key; retained for migration.
@@ -55,6 +58,7 @@ const (
 	KeyWorkspaceEntryPrefix                        = "workspace/entry/" // legacy global entry prefix; retained for explicit migration only.
 	KeyWorkspaceEntryAccountPrefix                 = "workspace/entry_by_account/"
 	KeyWorkspaceEntryByIDAccountPrefix             = "workspace/entry_by_id_by_account/"
+	KeyWorkspaceMapAccountPrefix                   = "workspace/map_by_account/"
 	KeyWorkspaceTodoItemPrefix                     = "workspace_todo/item/" // legacy unscoped records; recovery must terminalize active AI tasks.
 	KeyWorkspaceTodoItemAccountPrefix              = "workspace_todo/item_by_account/"
 	KeyWorkspaceActionAccountPrefix                = "workspace_action/item_by_account/"
@@ -621,6 +625,10 @@ func WorkspaceEntryByIDPrefixForAccount(accountScopeID string) string {
 
 func KeyWorkspaceCurrentForAccount(accountScopeID, userID string) string {
 	return fmt.Sprintf("%s%s/%s", KeyWorkspaceCurrentAccountPrefix, keyPart(accountScopeID), keyPart(userID))
+}
+
+func KeyWorkspaceMapForAccount(accountScopeID string) string {
+	return KeyWorkspaceMapAccountPrefix + keyPart(accountScopeID)
 }
 
 func KeyVideoThread(threadID string) string {

@@ -447,11 +447,11 @@ func TestSessionsV3PrimaryWorktreeOnCreatesRequestedBranchSession(t *testing.T) 
 	if fake.lastWorkspace != "/host/swarm-go" || fake.lastNameSeed != "v3-wt-create" || fake.lastBaseBranch != "dev" || fake.lastBranchName != "agent/v3-requested" {
 		t.Fatalf("allocation request workspace=%q seed=%q base=%q branch=%q", fake.lastWorkspace, fake.lastNameSeed, fake.lastBaseBranch, fake.lastBranchName)
 	}
-	if !payload.Session.WorktreeEnabled || payload.Session.WorkspacePath != "/host/swarm-go/.swarm/worktrees/agent-v3-requested" || payload.Session.WorktreeRootPath != payload.Session.WorkspacePath || payload.Session.WorktreeBaseBranch != "dev" || payload.Session.WorktreeBranch != "agent/v3-requested" {
+	if !payload.Session.WorktreeEnabled || payload.Session.WorkspacePath != "/host/swarm-go" || payload.Session.WorktreeRootPath != "/host/swarm-go/.swarm/worktrees/agent-v3-requested" || payload.Session.WorktreeBaseBranch != "dev" || payload.Session.WorktreeBranch != "agent/v3-requested" {
 		t.Fatalf("session worktree facts = %+v", payload.Session)
 	}
-	if payload.Session.Metadata["workspace_id"] != "agent-v3-requested" {
-		t.Fatalf("workspace_id metadata = %v, want agent-v3-requested", payload.Session.Metadata["workspace_id"])
+	if payload.Session.Metadata["workspace_id"] == "agent-v3-requested" || payload.Session.Metadata["swarm_v3_source_workspace_id"] == "" {
+		t.Fatalf("source workspace metadata was replaced by worktree identity: %+v", payload.Session.Metadata)
 	}
 }
 
@@ -3644,6 +3644,17 @@ func assertNoSessionsForAccount(t *testing.T, sessionSvc *sessionruntime.Service
 	sessions, err := sessionSvc.ListSessionsForAccount(testPrincipal().AccountScopeID, 10)
 	if err != nil || len(sessions) != 0 {
 		t.Fatalf("sessions = %+v err=%v, want none", sessions, err)
+	}
+}
+
+func TestMergeSessionsV3MetadataUpdatePreservesCapturedBaseCommit(t *testing.T) {
+	current := map[string]any{"agent_name": "swarm", "base_commit": "abc123", "client_note": "old"}
+	merged := mergeSessionsV3MetadataUpdate(current, map[string]any{"client_note": "new", "base_commit": "forged"})
+	if got := sessionsV3MetadataString(merged, "base_commit"); got != "abc123" {
+		t.Fatalf("base_commit = %q, want captured value", got)
+	}
+	if got := sessionsV3MetadataString(merged, "client_note"); got != "new" {
+		t.Fatalf("client_note = %q, want requested value", got)
 	}
 }
 

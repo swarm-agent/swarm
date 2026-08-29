@@ -96,6 +96,13 @@ export interface DesktopSessionRecord {
   worktreeRootPath?: string
   worktreeBaseBranch?: string
   worktreeBranch?: string
+  workspaceUsage?: Array<{
+    kind: string
+    workspace_id?: string
+    workspace_generation?: number
+    name?: string
+    available?: boolean
+  }>
   gitBranch?: string
   gitHasGit?: boolean
   gitClean?: boolean

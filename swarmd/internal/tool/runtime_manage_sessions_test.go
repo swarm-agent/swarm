@@ -46,7 +46,9 @@ func TestManageSessionsDefinitionConstrainsModelUsageAndApproval(t *testing.T) {
 		t.Fatalf("proposal trust boundary = %#v", proposal)
 	}
 	proposalProperties := proposal["properties"].(map[string]any)
-	worktree := proposalProperties["worktree"].(map[string]any)
+	if _, exposed := proposalProperties["worktree"]; exposed {
+		t.Fatalf("proposal still exposes optional worktree control: %#v", proposalProperties)
+	}
 	worktreeName := proposalProperties["worktree_name"].(map[string]any)
 	searchMode := properties["search_mode"].(map[string]any)
 	if got := searchMode["enum"].([]string); len(got) != 2 || got[0] != "visible" || got[1] != "durable_log" || !strings.Contains(searchMode["description"].(string), "never auto-upgrade") {
@@ -55,7 +57,7 @@ func TestManageSessionsDefinitionConstrainsModelUsageAndApproval(t *testing.T) {
 	if !strings.Contains(definition.Description, "Never automatically escalate") || !strings.Contains(definition.Description, "explicitly asks for raw database") {
 		t.Fatalf("durable-log guidance missing: %s", definition.Description)
 	}
-	if !strings.Contains(worktree["description"].(string), "Omitted defaults to true") || !strings.Contains(worktreeName["description"].(string), "AI-suggested") {
+	if !strings.Contains(worktreeName["description"].(string), "Swarm-authored") || !strings.Contains(worktreeName["description"].(string), "server") {
 		t.Fatalf("proposal worktree schema = %#v", proposalProperties)
 	}
 	expectedByID := properties["expected_updated_at_by_id"].(map[string]any)

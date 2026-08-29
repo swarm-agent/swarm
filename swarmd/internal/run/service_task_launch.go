@@ -2165,6 +2165,19 @@ func (s *Service) permissionArgumentsForCall(sessionID, sessionMode string, call
 		return marshalPayload(payload)
 	case "manage_worktree":
 		return arguments, nil
+	case "manage_workspace":
+		args, parseErr := parseManageWorkspaceArguments(arguments)
+		if parseErr != nil {
+			return "", parseErr
+		}
+		if args.Action != "create" && args.Action != "update" && args.Action != "edit" && args.Action != "delete" {
+			return arguments, nil
+		}
+		payload, err := s.buildManageWorkspacePermissionPayload(sessionID, arguments)
+		if err != nil {
+			return "", err
+		}
+		return marshalPayload(payload)
 	case "manage_todos":
 		payload, err := s.buildManageTodosPermissionPayload(sessionID, call)
 		if err != nil {
@@ -2371,7 +2384,7 @@ func (s *Service) buildManageTodosPermissionPayload(sessionID string, call tool.
 		payload = map[string]any{}
 	}
 	if strings.TrimSpace(mapString(payload, "workspace_path")) == "" {
-		payload["workspace_path"] = strings.TrimSpace(session.WorkspacePath)
+		payload["workspace_path"] = strings.TrimSpace(firstNonEmptyString(session.WorktreeRootPath, session.WorkspacePath))
 	}
 	action := strings.ToLower(strings.TrimSpace(mapString(payload, "action")))
 	ownerKind := strings.ToLower(strings.TrimSpace(mapString(payload, "owner_kind")))
@@ -3024,7 +3037,7 @@ func taskPathWithinRoot(root, target string) bool {
 func (s *Service) resolveTaskTargetWorkspace(parentSession pebblestore.SessionSnapshot, principal identity.Principal, launch taskLaunchSpec) (string, string, error) {
 	requested := strings.TrimSpace(launch.TargetWorkspacePath)
 	if requested == "" {
-		return strings.TrimSpace(parentSession.WorkspacePath), strings.TrimSpace(parentSession.WorkspaceName), nil
+		return strings.TrimSpace(firstNonEmptyString(parentSession.WorktreeRootPath, parentSession.WorkspacePath)), strings.TrimSpace(parentSession.WorkspaceName), nil
 	}
 	if !agentruntime.IsCoderAgentName(launch.RequestedSubagentType) && !agentruntime.IsFinderAgentName(launch.RequestedSubagentType) {
 		return "", "", errors.New("task workspace_path is supported only for Coder or Finder launches")
@@ -3345,7 +3358,7 @@ func (s *Service) buildTaskLaunchPermissionPayload(sessionID, sessionMode string
 		}
 		if parent, found := s.lookupTaskLaunchParentSession(sessionID, manifest.ParentMode); found {
 			manifest.Parent = parent
-			manifest.TargetWorkspacePath = strings.TrimSpace(parent.WorkspacePath)
+			manifest.TargetWorkspacePath = strings.TrimSpace(firstNonEmptyString(parent.WorktreeRootPath, parent.WorkspacePath))
 			manifest.TargetWorkspaceName = strings.TrimSpace(parent.WorkspaceName)
 		}
 		digest, digestErr := taskLaunchManifestDigest(manifest)
@@ -3548,7 +3561,7 @@ func (s *Service) buildTaskLaunchPermissionPayload(sessionID, sessionMode string
 			for _, job := range parsed.Program.Jobs {
 				if agentruntime.IsCoderAgentName(job.RequestedSubagentType) {
 					hasCoder = true
-					coderWorkspacePath = strings.TrimSpace(firstNonEmptyString(job.TargetWorkspacePath, parent.WorkspacePath))
+					coderWorkspacePath = strings.TrimSpace(firstNonEmptyString(job.TargetWorkspacePath, parent.WorktreeRootPath, parent.WorkspacePath))
 				}
 			}
 			if hasCoder {
@@ -3561,7 +3574,7 @@ func (s *Service) buildTaskLaunchPermissionPayload(sessionID, sessionMode string
 			}
 		}
 		manifest.Parent = parent
-		manifest.TargetWorkspacePath = strings.TrimSpace(parent.WorkspacePath)
+		manifest.TargetWorkspacePath = strings.TrimSpace(firstNonEmptyString(parent.WorktreeRootPath, parent.WorkspacePath))
 		manifest.TargetWorkspaceName = strings.TrimSpace(parent.WorkspaceName)
 	}
 
@@ -3577,7 +3590,7 @@ func (s *Service) buildTaskLaunchPermissionPayload(sessionID, sessionMode string
 }
 
 func buildPermissionWorkspaceScope(session pebblestore.SessionSnapshot) tool.WorkspaceScope {
-	workspacePath := strings.TrimSpace(session.WorkspacePath)
+	workspacePath := strings.TrimSpace(firstNonEmptyString(session.WorktreeRootPath, session.WorkspacePath))
 	if workspacePath == "" {
 		workspacePath = "."
 	}
@@ -4045,7 +4058,7 @@ func buildTaskLaunchParentInfo(session pebblestore.SessionSnapshot, mode, permis
 		SessionID:           strings.TrimSpace(session.ID),
 		PermissionSessionID: strings.TrimSpace(permissionSessionID),
 		Mode:                sessionruntime.NormalizeMode(mode),
-		WorkspacePath:       strings.TrimSpace(session.WorkspacePath),
+		WorkspacePath:       strings.TrimSpace(firstNonEmptyString(session.WorktreeRootPath, session.WorkspacePath)),
 		WorkspaceName:       strings.TrimSpace(session.WorkspaceName),
 		WorktreeEnabled:     session.WorktreeEnabled,
 		WorktreeRootPath:    strings.TrimSpace(session.WorktreeRootPath),

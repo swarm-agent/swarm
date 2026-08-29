@@ -66,6 +66,15 @@ func parseApprovedManageSessionsDeploy(raw string) (manageSessionsDeployApproved
 	if len(approved.SelectedProposalIDs) == 0 {
 		return approved, errors.New("session deployment requires at least one selected proposal")
 	}
+	selected := make(map[string]struct{}, len(approved.SelectedProposalIDs))
+	for _, id := range approved.SelectedProposalIDs {
+		selected[strings.TrimSpace(id)] = struct{}{}
+	}
+	for _, proposal := range approved.Proposals {
+		if _, wanted := selected[proposal.ID]; wanted && !proposal.ManagedWorktree {
+			return approved, fmt.Errorf("proposal %q must use a session-owned managed worktree", proposal.ID)
+		}
+	}
 	return approved, nil
 }
 
@@ -235,45 +244,63 @@ func (s *Service) executeManageSessionsDeployBound(ctx context.Context, parentSe
 		runID    string
 	}
 	ready := make([]prepared, 0, len(proposals))
+	allocated := make([]worktreeruntime.Allocation, 0, len(proposals))
+	rollbackAllocations := func(cause error) error {
+		var rollbackErrs []error
+		for i := len(allocated) - 1; i >= 0; i-- {
+			if rollbackErr := s.worktrees.RollbackAllocation(allocated[i]); rollbackErr != nil {
+				rollbackErrs = append(rollbackErrs, rollbackErr)
+			}
+		}
+		allocated = nil
+		if rollbackErr := errors.Join(rollbackErrs...); rollbackErr != nil {
+			return fmt.Errorf("%w; rollback managed session lanes: %v", cause, rollbackErr)
+		}
+		return cause
+	}
 	for _, proposal := range proposals {
 		resolution, found, agentErr := s.resolveManageSessionsDeployAgent(profiles, proposal.AgentName)
 		if agentErr != nil {
-			return "", fmt.Errorf("proposal %q agent resolution: %w", proposal.ID, agentErr)
+			return "", rollbackAllocations(fmt.Errorf("proposal %q agent resolution: %w", proposal.ID, agentErr))
 		}
 		profile := resolution.ExecutionProfile
 		if !found || !profile.Enabled || profile.Mode != proposal.AgentMode {
-			return "", fmt.Errorf("proposal %q agent binding is no longer valid", proposal.ID)
+			return "", rollbackAllocations(fmt.Errorf("proposal %q agent binding is no longer valid", proposal.ID))
 		}
 		scope, scopeErr := s.workspace.ScopeForPathForPrincipal(principal, proposal.WorkspacePath)
 		if scopeErr != nil || !scope.Matched || scope.WorkspaceID != proposal.WorkspaceID || scope.WorkspaceGeneration != proposal.WorkspaceGeneration {
-			return "", fmt.Errorf("proposal %q workspace binding is no longer valid", proposal.ID)
+			return "", rollbackAllocations(fmt.Errorf("proposal %q workspace binding is no longer valid", proposal.ID))
 		}
 		sessionID := deterministicDeployID(digest, proposal.ID, "session")
 		runID := "session-deploy-run:" + deterministicDeployID(digest, proposal.ID, "run")
 		workspacePath, workspaceName := scope.WorkspacePath, scope.WorkspaceName
 		var allocation worktreeruntime.Allocation
+		if !proposal.ManagedWorktree {
+			return "", rollbackAllocations(fmt.Errorf("proposal %q must use a session-owned managed worktree", proposal.ID))
+		}
 		existing, exists, getErr := s.sessions.GetSession(sessionID)
 		if getErr != nil {
-			return "", getErr
+			return "", rollbackAllocations(getErr)
 		}
 		if exists {
 			if mapString(existing.Metadata, "deployment_manifest_digest") != digest || mapString(existing.Metadata, "deployment_proposal_id") != proposal.ID {
-				return "", fmt.Errorf("proposal %q deterministic session id is already bound to another deployment", proposal.ID)
+				return "", rollbackAllocations(fmt.Errorf("proposal %q deterministic session id is already bound to another deployment", proposal.ID))
 			}
 			workspacePath, workspaceName = existing.WorkspacePath, existing.WorkspaceName
 			allocation = worktreeruntime.Allocation{WorkspacePath: existing.WorktreeRootPath, BaseBranch: existing.WorktreeBaseBranch, BranchName: existing.WorktreeBranch}
-		} else if proposal.ManagedWorktree {
+		} else {
 			if s.worktrees == nil {
-				return "", fmt.Errorf("proposal %q requires the managed worktree service", proposal.ID)
+				return "", rollbackAllocations(fmt.Errorf("proposal %q requires the managed worktree service", proposal.ID))
 			}
 			branchName := strings.TrimSpace(proposal.WorktreeBranch)
 			if branchName == "" {
-				return "", fmt.Errorf("proposal %q requires a canonical worktree branch", proposal.ID)
+				return "", rollbackAllocations(fmt.Errorf("proposal %q requires a canonical worktree branch", proposal.ID))
 			}
-			allocation, err = s.worktrees.AllocateDetachedWorkspaceRequestedForPrincipal(principal, scope.WorkspacePath, sessionID, proposal.WorktreeBaseBranch, branchName)
+			allocation, err = s.allocateSessionDeployWorktree(principal, scope.WorkspacePath, sessionID, proposal.WorktreeBaseBranch, branchName)
 			if err != nil {
-				return "", fmt.Errorf("proposal %q allocate managed worktree: %w", proposal.ID, err)
+				return "", rollbackAllocations(fmt.Errorf("proposal %q allocate managed worktree: %w", proposal.ID, err))
 			}
+			allocated = append(allocated, allocation)
 			workspacePath = allocation.WorkspacePath
 			workspaceName = scope.WorkspaceName
 		}
@@ -291,45 +318,49 @@ func (s *Service) executeManageSessionsDeployBound(ctx context.Context, parentSe
 		}
 		canonical, canonicalErr := s.sessionDeployCanonicalize(SessionDeployCanonicalizeInput{Principal: principal, WorkspacePath: scope.WorkspacePath, WorkspaceBindingID: proposal.WorkspaceBindingID, AgentProfile: profile, ModelProfile: cloneManageSessionsDeployModelProfile(proposal.ModelProfile), RuntimeMode: proposal.RuntimeMode, Metadata: lineageMetadata})
 		if canonicalErr != nil {
-			return "", fmt.Errorf("proposal %q resolve canonical V3 session metadata: %w", proposal.ID, canonicalErr)
+			return "", rollbackAllocations(fmt.Errorf("proposal %q resolve canonical V3 session metadata: %w", proposal.ID, canonicalErr))
 		}
 		if canonical.SourceWorkspaceID != proposal.WorkspaceID || canonical.SourceWorkspaceGeneration != proposal.WorkspaceGeneration {
-			return "", fmt.Errorf("proposal %q canonical V3 workspace binding changed", proposal.ID)
+			return "", rollbackAllocations(fmt.Errorf("proposal %q canonical V3 workspace binding changed", proposal.ID))
 		}
 		metadata := canonical.Metadata
 		if metadata == nil {
-			return "", fmt.Errorf("proposal %q canonical V3 session metadata is empty", proposal.ID)
+			return "", rollbackAllocations(fmt.Errorf("proposal %q canonical V3 session metadata is empty", proposal.ID))
 		}
 		workspaceName = firstNonEmptyString(canonical.SourceWorkspaceName, workspaceName)
-		if proposal.ManagedWorktree {
-			metadata["workspace_id"] = allocation.WorkspaceID
-			metadata["swarm_v3_source_workspace_path"] = canonical.SourceWorkspacePath
-			metadata["swarm_v3_runtime_workspace_path"] = workspacePath
-		} else {
-			workspacePath = canonical.RuntimeWorkspacePath
+		metadata["swarm_v3_source_workspace_path"] = canonical.SourceWorkspacePath
+		metadata["swarm_v3_runtime_workspace_path"] = workspacePath
+		available := true
+		workspaceGrants := []pebblestore.WorkspaceGrant{
+			{Kind: pebblestore.WorkspaceGrantPrimary, WorkspaceID: canonical.SourceWorkspaceID, WorkspaceGeneration: canonical.SourceWorkspaceGeneration, Path: canonical.SourceWorkspacePath, Name: workspaceName, Available: &available},
+			{Kind: pebblestore.WorkspaceGrantWorktree, Path: allocation.WorkspacePath, Available: &available},
 		}
-		snapshot := pebblestore.SessionSnapshot{ID: sessionID, UserID: parent.UserID, AccountScopeID: parent.AccountScopeID, WorkspacePath: workspacePath, WorkspaceName: workspaceName, Title: title, Mode: proposal.Mode, Preference: pebblestore.ModelPreference{Provider: proposal.Provider, Model: proposal.Model, Thinking: proposal.Thinking, ServiceTier: proposal.ServiceTier, ContextMode: proposal.ContextMode}, ModelProfile: cloneManageSessionsDeployModelProfile(proposal.ModelProfile), Metadata: metadata, CreatedAt: now, UpdatedAt: now, WorktreeEnabled: proposal.ManagedWorktree, WorktreeRootPath: allocation.WorkspacePath, WorktreeBaseBranch: allocation.BaseBranch, WorktreeBranch: allocation.BranchName}
-		if !proposal.ManagedWorktree {
-			snapshot.WorktreeBranch = sessionruntime.DetectCurrentBranch(snapshot.WorkspacePath)
-		}
+		snapshot := pebblestore.SessionSnapshot{ID: sessionID, UserID: parent.UserID, AccountScopeID: parent.AccountScopeID, WorkspacePath: canonical.SourceWorkspacePath, WorkspaceName: workspaceName, Title: title, Mode: proposal.Mode, Preference: pebblestore.ModelPreference{Provider: proposal.Provider, Model: proposal.Model, Thinking: proposal.Thinking, ServiceTier: proposal.ServiceTier, ContextMode: proposal.ContextMode}, ModelProfile: cloneManageSessionsDeployModelProfile(proposal.ModelProfile), Metadata: metadata, WorkspaceGrants: workspaceGrants, WorkspaceUsage: pebblestore.WorkspaceUsageFromGrants(workspaceGrants), CreatedAt: now, UpdatedAt: now, WorktreeEnabled: true, WorktreeRootPath: allocation.WorkspacePath, WorktreeBaseBranch: allocation.BaseBranch, WorktreeBranch: allocation.BranchName}
 		ready = append(ready, prepared{proposal: proposal, profile: profile, session: snapshot, runID: runID})
 	}
 	if apply == nil {
-		return "", errors.New("session deployment requires the canonical V3 mutation publisher")
+		return "", rollbackAllocations(errors.New("session deployment requires the canonical V3 mutation publisher"))
 	}
 	results := make([]manageSessionsDeployResult, len(ready))
 	replayedPending := make([]bool, len(ready))
 	for i, item := range ready {
-		results[i] = manageSessionsDeployResult{ProposalID: item.proposal.ID, SessionID: item.session.ID, Title: item.session.Title, Mode: item.proposal.Mode, Agent: item.profile.Name, Workspace: item.session.WorkspacePath, Worktree: item.proposal.ManagedWorktree, Status: "created", Navigation: deploySessionNavigation(item.session)}
+		results[i] = manageSessionsDeployResult{ProposalID: item.proposal.ID, SessionID: item.session.ID, Title: item.session.Title, Mode: item.proposal.Mode, Agent: item.profile.Name, Workspace: firstNonEmptyString(item.session.WorktreeRootPath, item.session.WorkspacePath), Worktree: item.proposal.ManagedWorktree, Status: "created", Navigation: deploySessionNavigation(item.session)}
 		createKey := "session-deploy:create:" + digest + ":" + item.proposal.ID
 		_, createErr := apply(sessionruntime.SessionMutationInput{SessionID: item.session.ID, UserID: parent.UserID, AccountScopeID: parent.AccountScopeID, ClientRequestID: createKey, IdempotencyKey: createKey, PayloadHash: createKey, RequestHash: createKey, Kind: sessionruntime.SessionMutationCreateSession, Session: &item.session, NowUnixMs: time.Now().UnixMilli()})
 		if createErr == nil && aiTask != nil && s.aiTaskBinder != nil {
 			_ = s.aiTaskBinder.AppendAITaskAudit(aiTask.AccountScopeID, aiTask.WorkspacePath, aiTask.TaskID, pebblestore.AITaskAuditRecord{StageKey: "000002_final_session", Stage: "final_session", FinalSessionID: item.session.ID, FinalRunID: item.runID, Disposition: "created_or_reused", CreatedAt: time.Now().UnixMilli()})
 		}
 		if createErr != nil {
+			createErr = rollbackAllocations(createErr)
 			results[i].Status = "error"
 			results[i].Error = createErr.Error()
 			continue
+		}
+		for allocationIndex := range allocated {
+			if allocated[allocationIndex].WorkspacePath == item.session.WorktreeRootPath {
+				allocated = append(allocated[:allocationIndex], allocated[allocationIndex+1:]...)
+				break
+			}
 		}
 		message := pebblestore.MessageSnapshot{ID: deterministicDeployID(digest, item.proposal.ID, "message"), SessionID: item.session.ID, UserID: parent.UserID, AccountScopeID: parent.AccountScopeID, Role: "user", Content: item.proposal.Prompt, Metadata: map[string]any{"source": "session_deploy"}, CreatedAt: time.Now().UnixMilli()}
 		intentParentSessionID := parent.ID
@@ -407,6 +438,23 @@ func (s *Service) executeManageSessionsDeployBound(ctx context.Context, parentSe
 	payload := map[string]any{"tool": "manage_sessions", "action": "deploy", "manifest_digest": digest, "selected_count": len(results), "results": results}
 	raw, err := json.Marshal(payload)
 	return string(raw), err
+}
+
+func (s *Service) allocateSessionDeployWorktree(principal identity.Principal, workspacePath, sessionID, baseBranch, branchName string) (worktreeruntime.Allocation, error) {
+	allocation, err := s.worktrees.AllocateDetachedWorkspaceRequestedForPrincipal(principal, workspacePath, sessionID, baseBranch, branchName)
+	if err == nil || !worktreeruntime.IsRequestedWorktreeNameConflict(err) {
+		return allocation, err
+	}
+	separator := strings.LastIndex(branchName, "/")
+	seed, prefix := branchName, ""
+	if separator >= 0 {
+		prefix, seed = branchName[:separator], branchName[separator+1:]
+	}
+	retryBranch, _, retryErr := worktreeruntime.CanonicalizeRequestedWorktreeNameRetry(seed, prefix)
+	if retryErr != nil {
+		return worktreeruntime.Allocation{}, fmt.Errorf("canonicalize collision retry: %w", retryErr)
+	}
+	return s.worktrees.AllocateDetachedWorkspaceRequestedForPrincipal(principal, workspacePath, sessionID, baseBranch, retryBranch)
 }
 
 func cloneStringAnyMap(input map[string]any) map[string]any {

@@ -89,7 +89,6 @@ test('postDesktopV3RoutedSessionStart sends only routed input authority with sta
       client_request_id: 'desktop-routed:stable-1',
       agent_name: ' swarm ',
       metadata: { source: 'desktop-v3' },
-      managed_worktree_requested: true,
       plan_mode_requested: true,
       media: [{ staging_id: 'staged-1', modality: 'image', file_type: 'png' }],
     })
@@ -113,7 +112,6 @@ test('postDesktopV3RoutedSessionStart sends only routed input authority with sta
     idempotency_key: 'desktop-routed:stable-1',
     agent_name: 'swarm',
     metadata: { source: 'desktop-v3' },
-    managed_worktree_requested: true,
     plan_mode_requested: true,
     media: [{ staging_id: 'staged-1', modality: 'image', file_type: 'png' }],
   })
@@ -159,7 +157,6 @@ test('artifact message transport strips Studio graph identity from strict portab
       input: 'Use this',
       client_request_id: 'desktop-routed:artifact',
       agent_name: 'swarm',
-      managed_worktree_requested: false,
       plan_mode_requested: false,
       artifact_selections: [selection],
     })
@@ -234,7 +231,6 @@ test('routed start accepts staging IDs without inventing route selections', asyn
       input: 'Replay this',
       client_request_id: 'desktop-routed:stable-2',
       agent_name: 'swarm',
-      managed_worktree_requested: false,
       plan_mode_requested: false,
       staging_ids: ['staged-2'],
     })
@@ -268,7 +264,6 @@ test('routed start rejects missing agent_name before transport', async () => {
       input: 'Do work',
       client_request_id: 'desktop-routed:missing-agent',
       agent_name: '   ',
-      managed_worktree_requested: false,
       plan_mode_requested: false,
     }),
     /agent_name/,
@@ -283,7 +278,6 @@ test('routed start rejects conflicting idempotency identities before transport',
       client_request_id: 'desktop-routed:one',
       idempotency_key: 'desktop-routed:two',
       agent_name: 'swarm',
-      managed_worktree_requested: false,
       plan_mode_requested: false,
     }),
     /one stable client_request_id\/idempotency identity/,

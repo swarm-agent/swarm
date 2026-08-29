@@ -19,29 +19,30 @@ func isBackgroundRouterSessionRequest(r *http.Request) bool {
 }
 
 // backgroundRouterSessionStartRequest is the dedicated public contract for a
-// background Router session. Managed worktree isolation is intentionally not a
-// client option: this endpoint always authorizes and requires it.
+// background Router session. Session-owned worktree isolation is intentionally
+// not a client option: the canonical routed boundary always requires it.
 type backgroundRouterSessionStartRequest struct {
-	Input                string                      `json:"input"`
-	ClientRequestID      string                      `json:"client_request_id,omitempty"`
-	IdempotencyKey       string                      `json:"idempotency_key,omitempty"`
-	AgentName            string                      `json:"agent_name,omitempty"`
-	Metadata             map[string]any              `json:"metadata,omitempty"`
-	PlanModeRequested    *bool                       `json:"plan_mode_requested"`
-	WorkspacePath        string                      `json:"workspace_path"`
-	HostWorkspacePath    string                      `json:"host_workspace_path,omitempty"`
-	RuntimeWorkspacePath string                      `json:"runtime_workspace_path,omitempty"`
-	WorkspaceBindingID   string                      `json:"workspace_binding_id"`
-	SwarmID              string                      `json:"swarm_id"`
-	TargetKind           string                      `json:"target_kind"`
-	TargetRelationship   string                      `json:"target_relationship"`
-	Media                []routedSessionMediaRequest `json:"media,omitempty"`
-	StagingIDs           []string                    `json:"staging_ids,omitempty"`
+	Input                          string                      `json:"input"`
+	ClientRequestID                string                      `json:"client_request_id,omitempty"`
+	IdempotencyKey                 string                      `json:"idempotency_key,omitempty"`
+	AgentName                      string                      `json:"agent_name,omitempty"`
+	Metadata                       map[string]any              `json:"metadata,omitempty"`
+	PlanModeRequested              *bool                       `json:"plan_mode_requested"`
+	LegacyManagedWorktreeRequested json.RawMessage             `json:"managed_worktree_requested,omitempty"` // rolling decode only
+	WorkspacePath                  string                      `json:"workspace_path"`
+	HostWorkspacePath              string                      `json:"host_workspace_path,omitempty"`
+	RuntimeWorkspacePath           string                      `json:"runtime_workspace_path,omitempty"`
+	WorkspaceBindingID             string                      `json:"workspace_binding_id"`
+	SwarmID                        string                      `json:"swarm_id"`
+	TargetKind                     string                      `json:"target_kind"`
+	TargetRelationship             string                      `json:"target_relationship"`
+	Media                          []routedSessionMediaRequest `json:"media,omitempty"`
+	StagingIDs                     []string                    `json:"staging_ids,omitempty"`
 }
 
 // handleBackgroundRouterSessionStart preserves the canonical routed-session
 // transaction while giving background Router sessions a distinct API contract.
-// It has no todo/AI-task fallback and cannot disable managed worktree isolation.
+// It has no todo/AI-task fallback and cannot disable session-owned isolation.
 func (s *Server) handleBackgroundRouterSessionStart(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		methodNotAllowed(w)
@@ -58,6 +59,9 @@ func (s *Server) handleBackgroundRouterSessionStart(w http.ResponseWriter, r *ht
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	// Rolling clients may still send the retired field. Worktree isolation is
+	// server-owned and always enabled, so the value is intentionally ignored and
+	// never forwarded into the canonical routed JSON contract.
 	metadata := cloneSessionsV3Metadata(req.Metadata)
 	if metadata == nil {
 		metadata = make(map[string]any)
@@ -66,14 +70,13 @@ func (s *Server) handleBackgroundRouterSessionStart(w http.ResponseWriter, r *ht
 	metadata["launch_mode"] = "background"
 	metadata["background_router_session"] = true
 	metadata["owner_transport"] = "background_router_api"
-	managedWorktreeRequested := true
+	delete(metadata, "managed_worktree_requested")
 	canonical := routedSessionStartRequest{
 		Input:                    req.Input,
 		ClientRequestID:          req.ClientRequestID,
 		IdempotencyKey:           req.IdempotencyKey,
 		AgentName:                req.AgentName,
 		Metadata:                 metadata,
-		ManagedWorktreeRequested: &managedWorktreeRequested,
 		PlanModeRequested:        req.PlanModeRequested,
 		WorkspacePath:            req.WorkspacePath,
 		HostWorkspacePath:        req.HostWorkspacePath,

@@ -115,14 +115,16 @@ type Service struct {
 	agents                    *agentruntime.Service
 	discovery                 *discovery.Service
 	workspace                 *workspaceruntime.Service
+	workspaceMap              workspaceMapService
 	uiSettings                *uisettings.Service
 	agentModelSettings        *agentmodelsettings.Service
 	worktrees                 worktreeService
 	events                    *pebblestore.EventLog
 	eventPublish              func(pebblestore.EventEnvelope)
-	sessionDeployCanonicalize SessionDeployCanonicalizer
-	sessionDeployEnqueue      SessionDeployEnqueuer
-	aiTaskBinder              AITaskBinder
+	sessionDeployCanonicalize    SessionDeployCanonicalizer
+	sessionDeployEnqueue         SessionDeployEnqueuer
+	sessionWorkspaceCanonicalize SessionWorkspaceCanonicalizer
+	aiTaskBinder                 AITaskBinder
 	runCounter                atomic.Uint64
 	lifecycleMu               sync.Mutex
 	activeRuns                map[string]*activeSessionRun
@@ -160,6 +162,28 @@ type SessionDeployCanonicalization struct {
 type SessionDeployCanonicalizer func(SessionDeployCanonicalizeInput) (SessionDeployCanonicalization, error)
 type SessionDeployEnqueuer func(identity.Principal, string, string, string) bool
 
+type SessionWorkspaceCanonicalizeInput struct {
+	Principal           identity.Principal
+	WorkspaceID         string
+	WorkspaceGeneration int64
+}
+
+type SessionWorkspaceCanonicalization struct {
+	WorkspaceID               string
+	WorkspaceGeneration       int64
+	WorkspaceState            string
+	WorkspaceName             string
+	SourceWorkspacePath       string
+	RuntimeWorkspacePath      string
+	WorkspaceBindingID        string
+	RuntimeSwarmID            string
+	PlacementGeneration       int
+	BindingGeneration         int
+	AuthorityHostSwarmID      string
+}
+
+type SessionWorkspaceCanonicalizer func(SessionWorkspaceCanonicalizeInput) (SessionWorkspaceCanonicalization, error)
+
 type AITaskBindInput struct {
 	WorkspacePath    string
 	TaskID           string
@@ -179,6 +203,11 @@ type AITaskBinder interface {
 	AppendAITaskAudit(accountScopeID, workspacePath, taskID string, record pebblestore.AITaskAuditRecord) error
 }
 
+type workspaceMapService interface {
+	GetOrCreateDefault(accountScopeID string) (pebblestore.WorkspaceMap, error)
+	Update(accountScopeID string, expectedRevision int64, content string) (pebblestore.WorkspaceMap, error)
+}
+
 type worktreeService interface {
 	AttachBranch(workspacePath, sessionID, title string) (string, error)
 	ResolveTaskBase(workspacePath string) (worktreeruntime.TaskBase, error)
@@ -189,6 +218,7 @@ type worktreeService interface {
 	RemoveIntegratedTaskWorkspace(parentPath, childPath, sessionID, branchName, baseCommit, headCommit string) error
 	GetConfigForPrincipal(principal identity.Principal, workspacePath string) (worktreeruntime.Config, error)
 	AllocateDetachedWorkspaceRequestedForPrincipal(principal identity.Principal, workspacePath, nameSeed, baseBranch, branchName string) (worktreeruntime.Allocation, error)
+	RollbackAllocation(allocation worktreeruntime.Allocation) error
 }
 
 type RunContinuationBoundaryDecision struct {
@@ -701,7 +731,7 @@ func (s *Service) ExecuteToolForSessionScope(ctx context.Context, workspacePath 
 	principal, _ := identity.PrincipalFromContext(ctx)
 	scope := tool.WorkspaceScope{PrimaryPath: strings.TrimSpace(workspacePath), Roots: []string{strings.TrimSpace(workspacePath)}, Principal: principal}
 	if s.workspace != nil {
-		if resolved, err := s.workspace.ScopeForPathForPrincipal(principal, workspacePath); err == nil {
+		if resolved, err := s.workspace.ScopeForPathForPrincipal(principal, workspacePath); err == nil && resolved.Matched {
 			roots := mergeSessionWorkspaceRoots(resolved.Directories, nil)
 			if len(roots) == 0 {
 				roots = []string{strings.TrimSpace(resolved.WorkspacePath)}
@@ -717,6 +747,21 @@ func (s *Service) SetWorkspaceService(workspaceSvc *workspaceruntime.Service) {
 		return
 	}
 	s.workspace = workspaceSvc
+}
+
+// SetWorkspaceMapService installs the account-scoped Workspace Map authority.
+// It is separate from per-workspace catalog state because the map is one durable
+// account document shared by every workspace and session.
+func (s *Service) SetWorkspaceMapService(workspaceMapSvc workspaceMapService) {
+	if s != nil {
+		s.workspaceMap = workspaceMapSvc
+	}
+}
+
+func (s *Service) SetSessionWorkspaceCanonicalizer(canonicalize SessionWorkspaceCanonicalizer) {
+	if s != nil {
+		s.sessionWorkspaceCanonicalize = canonicalize
+	}
 }
 
 func (s *Service) SetModelProfileService(modelProfileSvc *modelprofile.Service) {
@@ -1809,6 +1854,26 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 		if modeWarning != "" {
 			emit(StreamEvent{Type: StreamEventSessionWarning, Step: step, Warning: modeWarning})
 		}
+		// Recompose on every provider step. Workspace Map updates can happen in a
+		// tool call on the preceding step, so a run-start snapshot would make a
+		// same-run checkpoint continuation stale.
+		instructionPrincipal := options.Principal
+		if strings.TrimSpace(instructionPrincipal.AccountScopeID) == "" {
+			instructionPrincipal.UserID = strings.TrimSpace(sessionSnapshot.UserID)
+			instructionPrincipal.AccountScopeID = strings.TrimSpace(sessionSnapshot.AccountScopeID)
+			instructionPrincipal.SessionID = strings.TrimSpace(sessionSnapshot.ID)
+			instructionPrincipal.Type = identity.PrincipalTypeUser
+			instructionPrincipal.AccountScopeSource = identity.AccountScopeSourceSession
+		} else if strings.TrimSpace(instructionPrincipal.SessionID) == "" {
+			instructionPrincipal.SessionID = strings.TrimSpace(sessionSnapshot.ID)
+		}
+		baseInstructions = s.composeInstructionsForScope(tool.WorkspaceScope{
+			PrimaryPath: workspaceCtx.WorkspacePath,
+			Roots:       append([]string(nil), workspaceCtx.WorkspaceRoots...),
+			Principal:   instructionPrincipal,
+			SessionID:   strings.TrimSpace(sessionSnapshot.ID),
+		}, agentProfile, options.Instructions)
+		baseInstructions = appendHostRuntimeContext(baseInstructions, workspaceCtx.WorkspacePath, workspaceCtx.WorkspaceRoots)
 		stepInstructions := composeModeAwareInstructions(baseInstructions, executionMode, s.permissions != nil && s.permissions.BypassPermissions(), agentProfile)
 		mediaExecutionMode := requestMode
 		mediaContract := CompileSessionMediaContract(SessionMediaContractInput{

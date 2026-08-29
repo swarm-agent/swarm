@@ -128,6 +128,7 @@ type TaskIntegrationEntry struct {
 }
 
 type TaskIntegrationPlan struct {
+	ParentBranch             string                 `json:"parent_branch"`
 	ParentHead               string                 `json:"parent_head"`
 	Entries                  []TaskIntegrationEntry `json:"entries"`
 	Commits                  []string               `json:"commits"`
@@ -394,10 +395,19 @@ func (s *Service) allocateSessionWorkspaceWithOptions(workspacePath string, useC
 		cleanupErr := cleanupAllocatedWorktree(repoRoot, worktreePath, branchName)
 		return Allocation{}, fmt.Errorf("set worktree directory permissions: %w", allocationFailureWithCleanup(err, cleanupErr))
 	}
+	baseCommit, err := runGit(workspacePath, "rev-parse", "--verify", "HEAD^{commit}")
+	if err != nil || strings.TrimSpace(baseCommit) == "" {
+		if err == nil {
+			err = errors.New("empty commit")
+		}
+		cleanupErr := cleanupAllocatedWorktree(repoRoot, worktreePath, branchName)
+		return Allocation{}, fmt.Errorf("capture worktree base commit: %w", allocationFailureWithCleanup(err, cleanupErr))
+	}
 	return Allocation{
 		WorkspacePath: worktreePath,
 		RepoRoot:      repoRoot,
 		BaseBranch:    effectiveBranch,
+		BaseCommit:    baseCommit,
 		BranchName:    branchName,
 		WorkspaceID:   workspaceID,
 	}, nil
@@ -455,11 +465,12 @@ func (s *Service) TaskCommitDescendsFrom(workspacePath, baseCommit, headCommit s
 	return true, nil
 }
 
-func (s *Service) PrepareTaskIntegration(parentPath, expectedParentHead string, children []TaskIntegrationChild) (TaskIntegrationPlan, error) {
+func (s *Service) PrepareTaskIntegration(parentPath, expectedParentBranch, expectedParentHead string, children []TaskIntegrationChild) (TaskIntegrationPlan, error) {
 	parentPath = strings.TrimSpace(parentPath)
+	expectedParentBranch = strings.TrimSpace(expectedParentBranch)
 	expectedParentHead = strings.TrimSpace(expectedParentHead)
-	if parentPath == "" || expectedParentHead == "" || len(children) == 0 {
-		return TaskIntegrationPlan{}, errors.New("parent path, expected parent HEAD, and at least one child are required")
+	if parentPath == "" || expectedParentBranch == "" || expectedParentHead == "" || len(children) == 0 {
+		return TaskIntegrationPlan{}, errors.New("parent path, expected parent branch, expected parent HEAD, and at least one child are required")
 	}
 	state, err := s.InspectTaskWorkspace(parentPath)
 	if err != nil {
@@ -468,13 +479,16 @@ func (s *Service) PrepareTaskIntegration(parentPath, expectedParentHead string, 
 	if !state.Clean {
 		return TaskIntegrationPlan{}, fmt.Errorf("parent worktree is dirty:\n%s", state.Status)
 	}
+	if state.BranchName != expectedParentBranch {
+		return TaskIntegrationPlan{}, fmt.Errorf("stale parent branch: expected %s, found %s", expectedParentBranch, state.BranchName)
+	}
 	if !validCommitID(expectedParentHead) {
 		return TaskIntegrationPlan{}, errors.New("expected parent HEAD must be a full hexadecimal commit id")
 	}
 	if state.HeadCommit != expectedParentHead {
 		return TaskIntegrationPlan{}, fmt.Errorf("stale parent HEAD: expected %s, found %s", expectedParentHead, state.HeadCommit)
 	}
-	plan := TaskIntegrationPlan{ParentHead: state.HeadCommit}
+	plan := TaskIntegrationPlan{ParentBranch: state.BranchName, ParentHead: state.HeadCommit}
 	owners := map[string]string{}
 	for _, child := range children {
 		child.SessionID = strings.TrimSpace(child.SessionID)
@@ -550,7 +564,7 @@ func (s *Service) ApplyTaskIntegration(parentPath string, plan TaskIntegrationPl
 	}
 	defer integrationLock.Release()
 
-	current, err := s.PrepareTaskIntegration(parentPath, plan.ParentHead, integrationChildrenFromPlan(plan))
+	current, err := s.PrepareTaskIntegration(parentPath, plan.ParentBranch, plan.ParentHead, integrationChildrenFromPlan(plan))
 	if err != nil {
 		return TaskIntegrationResult{}, err
 	}

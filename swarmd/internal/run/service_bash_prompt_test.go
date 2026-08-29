@@ -25,6 +25,25 @@ func TestMasterHarnessPromptRequiresConciseRiskFocusedBashIntent(t *testing.T) {
 	}
 }
 
+func TestMasterHarnessPromptDefinesFlatGlobalWorkspaceAccessLanguage(t *testing.T) {
+	prompt := masterHarnessPrompt(t.TempDir())
+
+	for _, want := range []string{
+		"request temporary access for this chat session",
+		"add that folder as its own new workspace from the workspace picker",
+		"Never describe this as adding or linking the folder to the current workspace or a workspace group",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("workspace access guidance missing %q", want)
+		}
+	}
+	for _, retired := range []string{"persistent add-dir option", "workspace_add_dir"} {
+		if strings.Contains(prompt, retired) {
+			t.Fatalf("workspace access guidance retains retired wording %q", retired)
+		}
+	}
+}
+
 func TestMasterHarnessPromptDefinesEffectAwareBashClassification(t *testing.T) {
 	prompt := masterHarnessPrompt(t.TempDir())
 

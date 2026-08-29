@@ -118,6 +118,16 @@ func (s *terminalPlanToolState) IsTerminal() bool {
 	return s.terminal
 }
 
+func providerManagedExecutionPrincipal(ctx context.Context, config providerToolInvokerConfig) identity.Principal {
+	principal := config.principal
+	if !config.providerManagedV3 || !principal.Valid() {
+		if contextPrincipal, ok := identity.PrincipalFromContext(ctx); ok && contextPrincipal.Valid() {
+			principal = contextPrincipal
+		}
+	}
+	return principal
+}
+
 type providerToolInvokerConfig struct {
 	sessionID            string
 	permissionSessionID  string
@@ -658,10 +668,7 @@ func (s *Service) executeProviderManagedToolCall(ctx context.Context, config pro
 			feedback = permissionFeedback[0]
 		}
 
-		principal, _ := identity.PrincipalFromContext(ctx)
-		if !principal.Valid() {
-			principal = config.principal
-		}
+		principal := providerManagedExecutionPrincipal(ctx, config)
 		ctx = identity.ContextWithPrincipal(ctx, principal)
 		boundaryProgressEmitted := false
 		if providerManagedCheckpointBoundaryCall(call) {

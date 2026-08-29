@@ -242,6 +242,89 @@ func (s *Service) AddForPrincipalWithEntryWithoutSelection(principal identity.Pr
 	return s.addForPrincipalWithEntrySelection(principal, path, name, themeID, false)
 }
 
+// CreateCatalogEntryForPrincipal creates a new saved workspace without changing
+// the user's current selection. Existing paths are rejected instead of being
+// silently updated.
+func (s *Service) CreateCatalogEntryForPrincipal(principal identity.Principal, path, name, themeID string) (Resolution, error) {
+	if s == nil || s.store == nil {
+		return Resolution{}, fmt.Errorf("workspace service is not configured")
+	}
+	if err := requirePrincipal(principal); err != nil {
+		return Resolution{}, err
+	}
+	resolved, err := resolvePath(path)
+	if err != nil {
+		return Resolution{}, err
+	}
+	if err := ensureWorkspaceDirectory(resolved); err != nil {
+		return Resolution{}, err
+	}
+	name = strings.TrimSpace(name)
+	if name == "" {
+		name = defaultWorkspaceName(resolved)
+	}
+	entry, created, err := s.store.CreateForAccountIfAbsent(principal.AccountScopeID, resolved, name, themeID)
+	if err != nil {
+		return Resolution{}, fmt.Errorf("create workspace entry: %w", err)
+	}
+	if !created {
+		return Resolution{}, fmt.Errorf("workspace already exists for path %q with id %q", resolved, entry.WorkspaceID)
+	}
+	return resolutionForEntry(path, resolved, entry, entry.Name), nil
+}
+
+// UpdateCatalogEntryForPrincipal edits the exact saved workspace identity and
+// generation. The destination directory must already exist; no filesystem
+// content is created or moved by this operation.
+func (s *Service) UpdateCatalogEntryForPrincipal(principal identity.Principal, workspaceID string, expectedGeneration int64, newPath string, name, themeID *string) (Resolution, error) {
+	if s == nil || s.store == nil {
+		return Resolution{}, fmt.Errorf("workspace service is not configured")
+	}
+	if err := requirePrincipal(principal); err != nil {
+		return Resolution{}, err
+	}
+	entry, ok, err := s.store.GetByWorkspaceIDForAccount(principal.AccountScopeID, strings.TrimSpace(workspaceID))
+	if err != nil {
+		return Resolution{}, err
+	}
+	if !ok {
+		return Resolution{}, fmt.Errorf("workspace id %q not found", strings.TrimSpace(workspaceID))
+	}
+	resolvedPath := strings.TrimSpace(newPath)
+	if resolvedPath != "" {
+		resolvedPath, err = resolvePath(resolvedPath)
+		if err != nil {
+			return Resolution{}, err
+		}
+		if err := ensureWorkspaceDirectory(resolvedPath); err != nil {
+			return Resolution{}, err
+		}
+	}
+	updated, err := s.store.UpdateForWorkspaceIDForAccountGuarded(principal.AccountScopeID, principal.UserID, entry.WorkspaceID, pebblestore.WorkspaceCatalogUpdate{
+		ExpectedGeneration: expectedGeneration, NewPath: resolvedPath, Name: name, ThemeID: themeID,
+	})
+	if err != nil {
+		return Resolution{}, fmt.Errorf("update workspace entry: %w", err)
+	}
+	return resolutionForEntry(entry.Path, updated.Path, updated, updated.Name), nil
+}
+
+// DeleteCatalogEntryForPrincipal unlinks the exact saved catalog identity. It
+// deliberately does not remove the workspace directory or any filesystem data.
+func (s *Service) DeleteCatalogEntryForPrincipal(principal identity.Principal, workspaceID string, expectedGeneration int64) (Resolution, error) {
+	if s == nil || s.store == nil {
+		return Resolution{}, fmt.Errorf("workspace service is not configured")
+	}
+	if err := requirePrincipal(principal); err != nil {
+		return Resolution{}, err
+	}
+	entry, err := s.store.DeleteForWorkspaceIDForAccountGuarded(principal.AccountScopeID, principal.UserID, strings.TrimSpace(workspaceID), expectedGeneration)
+	if err != nil {
+		return Resolution{}, fmt.Errorf("delete workspace entry: %w", err)
+	}
+	return resolutionForEntry(entry.Path, entry.Path, entry, entry.Name), nil
+}
+
 func (s *Service) addForPrincipalWithEntrySelection(principal identity.Principal, path, name, themeID string, selectCurrent bool) (Resolution, pebblestore.WorkspaceEntry, bool, error) {
 	if s == nil || s.store == nil {
 		return Resolution{}, pebblestore.WorkspaceEntry{}, false, fmt.Errorf("workspace service is not configured")
@@ -331,31 +414,19 @@ func (s *Service) AddDirectory(path, directory string) (Resolution, error) {
 	return Resolution{}, identity.ErrPrincipalRequired
 }
 
+// AddDirectoryForPrincipal preserves the old API shape while enforcing the flat
+// catalog contract: the requested directory becomes its own workspace. The
+// parent path is accepted only for compatibility and is never membership
+// authority.
 func (s *Service) AddDirectoryForPrincipal(principal identity.Principal, path, directory string) (Resolution, error) {
 	if err := requirePrincipal(principal); err != nil {
 		return Resolution{}, err
 	}
-	workspacePath, err := resolvePath(path)
-	if err != nil {
+	if _, err := resolvePath(path); err != nil {
 		return Resolution{}, err
 	}
-	targetPath, err := resolvePath(directory)
-	if err != nil {
-		return Resolution{}, err
-	}
-	if err := ensureWorkspaceDirectory(targetPath); err != nil {
-		return Resolution{}, err
-	}
-
-	entry, err := s.store.AddDirectoryForAccount(principal.AccountScopeID, workspacePath, targetPath)
-	if err != nil {
-		return Resolution{}, fmt.Errorf("add workspace directory: %w", err)
-	}
-	name := strings.TrimSpace(entry.Name)
-	if name == "" {
-		name = defaultWorkspaceName(entry.Path)
-	}
-	return resolutionForEntry(directory, targetPath, entry, name), nil
+	resolution, _, _, err := s.AddForPrincipalWithEntryWithoutSelection(principal, directory, "", "")
+	return resolution, err
 }
 
 func (s *Service) ListSourceMediaDirectoriesForPrincipal(principal identity.Principal, path string) (Resolution, error) {
@@ -445,28 +516,17 @@ func (s *Service) RemoveDirectory(path, directory string) (Resolution, error) {
 	return Resolution{}, identity.ErrPrincipalRequired
 }
 
+// RemoveDirectoryForPrincipal preserves the old API shape while enforcing the
+// flat catalog contract: unlinking is an explicit deletion of the independently
+// saved workspace. The parent path is never consulted as membership authority.
 func (s *Service) RemoveDirectoryForPrincipal(principal identity.Principal, path, directory string) (Resolution, error) {
 	if err := requirePrincipal(principal); err != nil {
 		return Resolution{}, err
 	}
-	workspacePath, err := resolvePath(path)
-	if err != nil {
+	if _, err := resolvePath(path); err != nil {
 		return Resolution{}, err
 	}
-	targetPath, err := resolvePath(directory)
-	if err != nil {
-		return Resolution{}, err
-	}
-
-	entry, err := s.store.RemoveDirectoryForAccount(principal.AccountScopeID, workspacePath, targetPath)
-	if err != nil {
-		return Resolution{}, fmt.Errorf("remove workspace directory: %w", err)
-	}
-	name := strings.TrimSpace(entry.Name)
-	if name == "" {
-		name = defaultWorkspaceName(entry.Path)
-	}
-	return resolutionForEntry(directory, targetPath, entry, name), nil
+	return s.DeleteForPrincipal(principal, directory)
 }
 
 func (s *Service) Rename(path, name string) (Resolution, error) {
@@ -786,11 +846,10 @@ func (s *Service) ScopeForPathForPrincipal(principal identity.Principal, path st
 	if err := requirePrincipal(principal); err != nil {
 		return Scope{}, err
 	}
-	requested, err := filepath.Abs(strings.TrimSpace(path))
+	requested, err := absoluteWorkspacePath(path)
 	if err != nil {
 		return Scope{}, err
 	}
-	requested = filepath.Clean(requested)
 	resolved, err := resolvePath(path)
 	if err != nil {
 		return Scope{}, err
@@ -805,12 +864,11 @@ func (s *Service) ScopeForPathForPrincipal(principal identity.Principal, path st
 	bestIsPrimary := false
 	for i, entry := range entries {
 		primaryPath := strings.TrimSpace(entry.Path)
-		roots := entry.Directories
-		if len(roots) == 0 {
-			roots = []string{entry.Path}
-		}
+		// Flat catalog entries resolve only through their canonical primary path.
+		// Directories is a response compatibility field, not scope authority.
+		roots := []string{primaryPath}
 		for _, root := range roots {
-			if !pathWithinRoot(root, requested) {
+			if !pathWithinRoot(root, requested) && !pathWithinRoot(root, resolved) {
 				continue
 			}
 			canonicalRoot, err := revalidateStoredDirectory(root)
@@ -837,10 +895,7 @@ func (s *Service) ScopeForPathForPrincipal(principal identity.Principal, path st
 	if name == "" {
 		name = defaultWorkspaceName(entry.Path)
 	}
-	directories := append([]string(nil), entry.Directories...)
-	if len(directories) == 0 {
-		directories = []string{entry.Path}
-	}
+	directories := []string{entry.Path}
 	return scopeForEntry(path, resolved, entry, name, directories, true), nil
 }
 
@@ -862,10 +917,7 @@ func (s *Service) ScopeForWorkspace(path string) (Scope, error) {
 	if name == "" {
 		name = defaultWorkspaceName(entry.Path)
 	}
-	directories := append([]string(nil), entry.Directories...)
-	if len(directories) == 0 {
-		directories = []string{entry.Path}
-	}
+	directories := []string{entry.Path}
 	return scopeForEntry(path, resolved, entry, name, directories, true), nil
 }
 
@@ -888,10 +940,7 @@ func (s *Service) ScopeForWorkspaceForPrincipal(principal identity.Principal, pa
 	if name == "" {
 		name = defaultWorkspaceName(entry.Path)
 	}
-	directories := append([]string(nil), entry.Directories...)
-	if len(directories) == 0 {
-		directories = []string{entry.Path}
-	}
+	directories := []string{entry.Path}
 	return scopeForEntry(path, resolved, entry, name, directories, true), nil
 }
 
@@ -1037,7 +1086,7 @@ func normalizeWorkspaceThemeID(raw string) string {
 	return strings.Trim(b.String(), "-")
 }
 
-func resolvePath(input string) (string, error) {
+func absoluteWorkspacePath(input string) (string, error) {
 	target := strings.TrimSpace(input)
 	if target == "" {
 		cwd, err := os.Getwd()
@@ -1047,10 +1096,17 @@ func resolvePath(input string) (string, error) {
 		target = cwd
 	}
 	target = expandHomePath(target)
-
 	abs, err := filepath.Abs(target)
 	if err != nil {
 		return "", fmt.Errorf("resolve absolute path for %q: %w", target, err)
+	}
+	return filepath.Clean(abs), nil
+}
+
+func resolvePath(input string) (string, error) {
+	abs, err := absoluteWorkspacePath(input)
+	if err != nil {
+		return "", err
 	}
 
 	resolved, err := filepath.EvalSymlinks(abs)
@@ -1126,6 +1182,10 @@ func resolveBrowseHomePath() (string, error) {
 // entries. It must remain unexported and must never be used as a fallback from
 // principal-backed runtime resolution.
 func (s *Service) legacyScopeForPath(path string) (Scope, error) {
+	requested, err := absoluteWorkspacePath(path)
+	if err != nil {
+		return Scope{}, err
+	}
 	resolved, err := resolvePath(path)
 	if err != nil {
 		return Scope{}, err
@@ -1139,12 +1199,11 @@ func (s *Service) legacyScopeForPath(path string) (Scope, error) {
 	bestIsPrimary := false
 	for i, entry := range entries {
 		primaryPath := strings.TrimSpace(entry.Path)
-		roots := entry.Directories
-		if len(roots) == 0 {
-			roots = []string{entry.Path}
-		}
+		// Flat catalog entries resolve only through their canonical primary path.
+		// Directories is a response compatibility field, not scope authority.
+		roots := []string{primaryPath}
 		for _, root := range roots {
-			if !pathWithinRoot(root, resolved) {
+			if !pathWithinRoot(root, requested) && !pathWithinRoot(root, resolved) {
 				continue
 			}
 			canonicalRoot, err := revalidateStoredDirectory(root)
@@ -1170,10 +1229,7 @@ func (s *Service) legacyScopeForPath(path string) (Scope, error) {
 	if name == "" {
 		name = defaultWorkspaceName(entry.Path)
 	}
-	directories := append([]string(nil), entry.Directories...)
-	if len(directories) == 0 {
-		directories = []string{entry.Path}
-	}
+	directories := []string{entry.Path}
 	return scopeForEntry(path, resolved, entry, name, directories, true), nil
 }
 

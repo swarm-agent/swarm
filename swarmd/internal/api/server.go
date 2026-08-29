@@ -301,6 +301,12 @@ func NewServer(authSvc *auth.Service, agentSvc *agentruntime.Service, modelSvc *
 	if server.desktopLocalSessions != nil {
 		server.desktopLocalSessions.server = server
 	}
+	if workspaceAware, ok := runSvc.(interface{ SetWorkspaceService(*workspace.Service) }); ok && workspaceAware != nil {
+		workspaceAware.SetWorkspaceService(workspaceSvc)
+	}
+	if workspaceCanonical, ok := runSvc.(interface{ SetSessionWorkspaceCanonicalizer(runruntime.SessionWorkspaceCanonicalizer) }); ok && workspaceCanonical != nil {
+		workspaceCanonical.SetSessionWorkspaceCanonicalizer(server.CanonicalizeSessionWorkspace)
+	}
 	if permissionSvc, ok := permSvc.(*permission.Service); ok {
 		permissionSvc.SetSummaryRealtimePublisher(server.publishPermissionSummaryV3Realtime)
 		permissionSvc.SetPermissionRealtimePublisher(func(sessionID string, record pebblestore.PermissionRecord) error {
@@ -1996,9 +2002,35 @@ func (s *Server) handleWorkspaceDirectoryAdd(w http.ResponseWriter, r *http.Requ
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	// The compatibility route now creates a normal flat-catalog workspace, so it
+	// must establish the same local topology identity as /v1/workspace/add.
+	if s.topology == nil {
+		writeError(w, http.StatusInternalServerError, errors.New("topology service not configured"))
+		return
+	}
+	if _, err := s.topology.EnsureLocalSelfPlacementForPrincipal(principal.AccountScopeID, principal.UserID); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	entry, ok, err := s.workspace.GetByWorkspaceIDForPrincipal(principal, resolution.WorkspaceID)
+	if err != nil || !ok {
+		if err == nil {
+			err = errors.New("flat workspace entry was not found after save")
+		}
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	binding, err := s.topology.EnsureLocalWorkspaceSelfBindingForPrincipal(principal.AccountScopeID, principal.UserID, entry)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	resolution.LocalWorkspaceBindingID = binding.BindingID
 	writeJSON(w, http.StatusOK, map[string]any{
-		"ok":        true,
-		"workspace": resolution,
+		"ok":                         true,
+		"workspace":                  resolution,
+		"workspace_id":               resolution.WorkspaceID,
+		"local_workspace_binding_id": binding.BindingID,
 	})
 }
 

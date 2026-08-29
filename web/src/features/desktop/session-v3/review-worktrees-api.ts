@@ -21,6 +21,7 @@ export interface ReviewWorktreeCandidate {
   updated_at: number
   worktree_branch?: string
   worktree_path?: string
+  source_head?: string
   target_branch?: string
   classification: 'retained' | 'done'
   reason: ReviewWorktreeReason
@@ -56,6 +57,7 @@ export interface ReviewWorktreesResponse {
   ok: boolean
   target_detection: string
   current_target_branch?: string
+  current_target_head?: string
   comparison: string
   retained: ReviewWorktreeCandidate[]
   done: ReviewWorktreeCandidate[]
@@ -112,7 +114,10 @@ export async function reviewDesktopV3Worktrees(input: {
   sessionIds?: string[]
   archiveSessionIds?: string[]
   archiveAll?: boolean
-  integrateSessionIds?: string[]
+  promoteSessionIds?: string[]
+  sourceHeadBySessionId?: Record<string, string>
+  targetBranch?: string
+  targetHead?: string
   commitSessionIds?: string[]
   automatic?: boolean
   graceHours?: number
@@ -125,7 +130,10 @@ export async function reviewDesktopV3Worktrees(input: {
       session_ids: input.sessionIds,
       archive_session_ids: input.archiveSessionIds,
       archive_all: input.archiveAll,
-      integrate_session_ids: input.integrateSessionIds,
+      promote_session_ids: input.promoteSessionIds,
+      source_head_by_session_id: input.sourceHeadBySessionId,
+      target_branch: input.targetBranch?.trim() || undefined,
+      target_head: input.targetHead?.trim() || undefined,
       commit_session_ids: input.commitSessionIds,
       automatic: input.automatic,
       grace_hours: input.graceHours ? String(input.graceHours) : undefined,

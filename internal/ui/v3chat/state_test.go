@@ -23,7 +23,7 @@ func TestGitStatusActionRefreshesCachedHeaderState(t *testing.T) {
 
 func TestRoutedDraftReducerStaysLocalUntilCanonicalResponse(t *testing.T) {
 	state := Reduce(NewState(), PrimeRoutedDraftAction{Draft: RoutedDraft{
-		Prompt: "draft prompt", PlanModeRequested: true, ManagedWorktreeRequested: true,
+		Prompt: "draft prompt", PlanModeRequested: true,
 		ClientRequestID: "route-1", Metadata: map[string]any{"source": "tui"},
 	}})
 	if state.Session.ID != "" || state.EndpointCursor != "" || state.Connection != ConnectionDisconnected || len(state.Messages) != 0 {
@@ -36,7 +36,7 @@ func TestRoutedDraftReducerStaysLocalUntilCanonicalResponse(t *testing.T) {
 	state = Reduce(state, RoutedDraftRoutingAction{})
 	state = Reduce(state, RoutedDraftFailedAction{Error: "failed"})
 	draft, _ = SelectRoutedDraft(state)
-	if draft.Status != RoutedDraftFailed || draft.Error != "failed" || draft.Prompt != "draft prompt" || draft.ClientRequestID != "route-1" || !draft.PlanModeRequested || !draft.ManagedWorktreeRequested {
+	if draft.Status != RoutedDraftFailed || draft.Error != "failed" || draft.Prompt != "draft prompt" || draft.ClientRequestID != "route-1" || !draft.PlanModeRequested {
 		t.Fatalf("failed draft lost retry intent: %#v", draft)
 	}
 
@@ -45,6 +45,22 @@ func TestRoutedDraftReducerStaysLocalUntilCanonicalResponse(t *testing.T) {
 	draft, _ = SelectRoutedDraft(state)
 	if state.Session.ID != "session-1" || len(state.Messages) != 1 || state.Messages[0].Content != "route this" || state.EndpointCursor != "" || draft.Status != RoutedDraftResolved {
 		t.Fatalf("resolved routed state = %#v", state)
+	}
+}
+
+func TestRealtimeWorkspaceMetadataUpdatesOpenSessionImmediately(t *testing.T) {
+	store := NewStore()
+	store.Dispatch(HydrateAction{Snapshot: client.SessionV3Hydrated{
+		Session:    client.SessionSummary{ID: "session-1", WorkspacePath: "/repo-a", WorkspaceName: "Repo A"},
+		Projection: client.SessionV3Projection{SessionID: "session-1", LastEventSeq: 1},
+	}})
+	payload, _ := json.Marshal(map[string]any{"workspace_path": "/repo-b", "workspace_name": "Repo B"})
+	store.Dispatch(RealtimeFrameAction{Frame: client.V3RealtimeFrame{Kind: "event", Event: &client.SessionV3Event{
+		ID: "workspace-2", SessionID: "session-1", Seq: 2, EventType: "session.workspace.updated", Payload: payload,
+	}}})
+	state := store.Snapshot()
+	if state.Session.WorkspacePath != "/repo-b" || state.Session.WorkspaceName != "Repo B" {
+		t.Fatalf("realtime workspace session = %#v", state.Session)
 	}
 }
 

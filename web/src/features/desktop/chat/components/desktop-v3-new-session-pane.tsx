@@ -12,35 +12,28 @@ import type { AgentModelControlConfirmInput } from './agent-model-control'
 import { modelOptionKey } from '../services/model-options'
 import type { ModelProfileRecord } from '../types/chat'
 import {
-  DesktopV3RoutedNewSessionController,
-  createDesktopV3RoutedComposerSnapshot,
+  appendFirstDesktopV3Message,
+  createDesktopV3NewSessionOperation,
+  startDesktopV3CreateOnlySession,
+  startNewDesktopV3Session,
   type DesktopV3RoutedComposerSnapshot,
-  type DesktopV3RoutedNewSessionState,
   type DesktopV3RoutedWorkspaceAuthority,
-  type DesktopV3RoutedStartResult,
 } from '../../session-v3/new-session-flow'
-import { postDesktopV3RoutedSessionStart } from '../../session-v3/write-api'
 import { DesktopV3AgenticComposer } from './desktop-v3-agentic-composer'
 import { DesktopV3ChatHeader } from './desktop-v3-chat-header'
 import type { DesktopV3RunStatusModel } from './desktop-v3-run-status'
 import { DesktopV3RoutedPendingShell } from './desktop-v3-routed-pending-shell'
 import {
-  reconcileDesktopComposerStagedAttachments,
   stageDesktopComposerAttachments,
   type DesktopComposerStagedAttachment,
 } from '../services/composer-attachments'
-import { DESKTOP_V3_MEDIA_STAGING_MAX_TTL_SECONDS } from '../../session-v3/media-staging-api'
 import type { DesktopV3ArtifactMessageSelection } from '../../session-v3/artifact-api'
-import {
-  createDesktopRoutedWorktreeIntent,
-  encodeDesktopRoutedWorktreeIntentMetadata,
-  setDesktopRoutedWorktreeIntent,
-} from '../services/desktop-routed-worktree-intent'
+import { getDesktopV3MediaCapability, uploadDesktopV3MediaAsset } from '../../session-v3/write-api'
 
 export interface DesktopV3NewSessionPaneProps {
   workspace: WorkspaceEntry
   workspaceAuthority: DesktopV3RoutedWorkspaceAuthority
-  onRoutedSessionResolved: (result: DesktopV3RoutedStartResult, authority: DesktopV3RoutedWorkspaceAuthority) => void | Promise<void>
+  onSessionStarted: (sessionId: string) => void | Promise<void>
   mobileSessionQuickMenu?: ReactNode
   onSlashCommand?: (command: DesktopSlashCommand, draft: string) => void | Promise<void>
   developerMode?: boolean
@@ -50,7 +43,6 @@ export interface DesktopV3NewSessionPaneProps {
   onOpenActionSettings?: () => void
   composerFocusSignal?: number
   initialPrompt?: string
-  initialWorktreeRequested?: boolean
   initialPlanModeRequested?: boolean
   agentSettingsOpenSignal?: number
   agentSettingsInitialAgent?: string
@@ -59,14 +51,14 @@ export interface DesktopV3NewSessionPaneProps {
 }
 
 /**
- * Owns only the local draft/routing shell. The app-level owner activates the
- * validated routed result through onRoutedSessionResolved; this component does
- * not write pending state into the V3 cache, realtime controller, sidebar, or URL.
+ * Creates one ordinary durable Swarm session and appends its first message.
+ * Worktree allocation is intentionally absent here: the running primary Swarm
+ * agent owns same-session worktree adoption through manage_workspace.
  */
 export function DesktopV3NewSessionPane({
   workspace,
   workspaceAuthority,
-  onRoutedSessionResolved,
+  onSessionStarted,
   mobileSessionQuickMenu,
   onSlashCommand,
   developerMode = false,
@@ -76,7 +68,6 @@ export function DesktopV3NewSessionPane({
   onOpenActionSettings,
   composerFocusSignal = 0,
   initialPrompt = '',
-  initialWorktreeRequested = false,
   initialPlanModeRequested = false,
   agentSettingsOpenSignal = 0,
   agentSettingsInitialAgent = '',
@@ -101,119 +92,23 @@ export function DesktopV3NewSessionPane({
   const stagedAttachmentsRef = useRef<DesktopComposerStagedAttachment[]>([])
   const stagedAttachmentHistoryRef = useRef<DesktopComposerStagedAttachment[]>([])
   const removedStagedAttachmentIdsRef = useRef(new Set<string>())
-  const operationAttachmentsRef = useRef<DesktopComposerStagedAttachment[] | null>(null)
-  const [controller] = useState(() => {
-    const routedController = new DesktopV3RoutedNewSessionController(async (request) => {
-      const result = await postDesktopV3RoutedSessionStart(request)
-      const submittedAttachments = operationAttachmentsRef.current ?? []
-      if (submittedAttachments.length > 0 && submittedAttachments.every((attachment) => attachment.size > 0)) {
-        reconcileDesktopComposerStagedAttachments(submittedAttachments, result.first_message)
-      } else if ((result.first_message.media?.length ?? 0) !== submittedAttachments.length) {
-        throw new Error('Routed session returned a different attachment count')
-      }
-      return result
-    })
-    const commandPrompt = initialPrompt.trim()
-    if (routedController.getState().phase === 'draft' && commandPrompt) {
-      const snapshot = createDesktopV3RoutedComposerSnapshot({
-        prompt: commandPrompt,
-        worktreePrimed: initialWorktreeRequested,
-        planModeRequested: initialPlanModeRequested,
-      })
-      if (initialWorktreeRequested) routedController.primeWorktree(commandPrompt, snapshot)
-      else routedController.startDraft(commandPrompt, snapshot)
-    }
-    return routedController
-  })
-  const [routedState, setRoutedState] = useState<DesktopV3RoutedNewSessionState>(() => controller.getState())
-  const initialControllerState = controller.getState()
-  const initialCommandPrompt = initialControllerState.phase === 'failed' ? '' : initialPrompt.trim()
-  const [draft, setDraft] = useState(() => initialControllerState.phase === 'failed' ? initialControllerState.snapshot.prompt : initialCommandPrompt)
-  const [mode, setMode] = useState<'auto' | 'plan'>(() => initialControllerState.phase === 'failed'
-    ? (initialControllerState.snapshot.planModeRequested ? 'plan' : 'auto')
-    : (initialPlanModeRequested ? 'plan' : 'auto'))
-  const initialStagedAttachments = initialControllerState.phase === 'failed'
-    ? initialControllerState.snapshot.attachments.map((attachment, index) => ({
-        id: `restored:${index}:${attachment.staging_id}`,
-        stagingId: attachment.staging_id,
-        idempotencyKey: `${initialControllerState.operation.request.client_request_id}:media:${index}`,
-        name: `Staged attachment ${index + 1}`,
-        mimeType: 'application/octet-stream',
-        fileType: attachment.file_type,
-        modality: attachment.modality ?? 'document',
-        size: 0,
-        createdAt: initialControllerState.operation.createdAt,
-        expiresAt: initialControllerState.operation.createdAt + (DESKTOP_V3_MEDIA_STAGING_MAX_TTL_SECONDS * 1000),
-      }))
-    : []
-  const [stagedAttachments, setStagedAttachments] = useState<DesktopComposerStagedAttachment[]>(initialStagedAttachments)
-  const [worktreeIntent, setWorktreeIntent] = useState(() => createDesktopRoutedWorktreeIntent(initialControllerState.phase === 'failed'
-    ? initialControllerState.snapshot.worktreePrimed
-    : initialWorktreeRequested))
-  const [restoredSnapshot, setRestoredSnapshot] = useState<DesktopV3RoutedComposerSnapshot | null>(() => initialControllerState.phase === 'failed' ? initialControllerState.snapshot : null)
+  const operationIdRef = useRef(crypto.randomUUID())
+  const [draft, setDraft] = useState(() => initialPrompt.trim())
+  const [mode, setMode] = useState<'auto' | 'plan'>(() => initialPlanModeRequested ? 'plan' : 'auto')
+  const [stagedAttachments, setStagedAttachments] = useState<DesktopComposerStagedAttachment[]>([])
+  const [restoredSnapshot, setRestoredSnapshot] = useState<DesktopV3RoutedComposerSnapshot | null>(null)
   const [localError, setLocalError] = useState<string | null>(null)
   const [tipsSaving, setTipsSaving] = useState(false)
-  const resolvedCallbackRef = useRef(onRoutedSessionResolved)
-  const activatingOperationRef = useRef('')
+  const startedCallbackRef = useRef(onSessionStarted)
+  const [starting, setStarting] = useState(false)
   const initialPromptSubmittedRef = useRef(false)
-  if (operationAttachmentsRef.current === null && initialControllerState.phase === 'failed') {
-    operationAttachmentsRef.current = initialStagedAttachments
-    stagedAttachmentsRef.current = initialStagedAttachments
-    stagedAttachmentHistoryRef.current = initialStagedAttachments
-  }
-
   useEffect(() => {
-    resolvedCallbackRef.current = onRoutedSessionResolved
-  }, [onRoutedSessionResolved])
-
-  useEffect(() => controller.subscribe(setRoutedState), [controller])
+    startedCallbackRef.current = onSessionStarted
+  }, [onSessionStarted])
 
   useEffect(() => {
     stagedAttachmentsRef.current = stagedAttachments
   }, [stagedAttachments])
-
-  useEffect(() => {
-    if (routedState.phase === 'failed') {
-      activatingOperationRef.current = ''
-      setLocalError(null)
-      const restoredAttachments = operationAttachmentsRef.current ?? []
-      const visibleAttachments = restoredAttachments.filter((attachment) => !removedStagedAttachmentIdsRef.current.has(attachment.stagingId))
-      stagedAttachmentsRef.current = visibleAttachments
-      setStagedAttachments(visibleAttachments)
-      setDraft(routedState.snapshot.prompt)
-      setMode(routedState.snapshot.planModeRequested ? 'plan' : 'auto')
-      setWorktreeIntent(createDesktopRoutedWorktreeIntent(routedState.snapshot.worktreePrimed))
-      setRestoredSnapshot(routedState.snapshot)
-      return
-    }
-    if (routedState.phase !== 'resolved') return
-    if (activatingOperationRef.current === routedState.operation.operationId) return
-    activatingOperationRef.current = routedState.operation.operationId
-    setLocalError(null)
-    let cancelled = false
-    const operationId = routedState.operation.operationId
-    void Promise.resolve()
-      .then(() => resolvedCallbackRef.current(routedState.result, routedState.operation.request))
-      .then(() => {
-        controller.acknowledgeResolved(operationId)
-        operationAttachmentsRef.current = null
-        stagedAttachmentHistoryRef.current = []
-        removedStagedAttachmentIdsRef.current.clear()
-        stagedAttachmentsRef.current = []
-        if (cancelled) return
-        setStagedAttachments([])
-        setRestoredSnapshot(null)
-        setMode('auto')
-        setWorktreeIntent(createDesktopRoutedWorktreeIntent())
-      })
-      .catch((error) => {
-        activatingOperationRef.current = ''
-        if (controller.getState().phase === 'resolved') {
-          controller.rejectResolved(operationId, error)
-        }
-      })
-    return () => { cancelled = true }
-  }, [controller, routedState])
 
   async function handleDisableTips() {
     if (tipsSaving) return
@@ -257,72 +152,127 @@ export function DesktopV3NewSessionPane({
     }
   }
 
-  function handleSubmit(snapshot: DesktopV3RoutedComposerSnapshot): Promise<DesktopV3RoutedNewSessionState> {
+  async function handleSubmit(snapshot: DesktopV3RoutedComposerSnapshot): Promise<void> {
+    if (starting) return
+    const prompt = snapshot.prompt.trim()
+      || (snapshot.attachments.length > 0 ? 'Please review the attached file(s).' : '')
+      || (snapshot.videoAttachments.length > 0 ? 'Please review the attached video(s).' : '')
+      || (snapshot.artifactSelections.length > 0 ? 'Please review the selected artifact(s).' : '')
+    if (!prompt) {
+      setLocalError('A first prompt or attachment is required.')
+      return
+    }
+    const selectedModel = chatOnlyModelProfile ?? actionModel
+    if (!selectedModel?.provider?.trim() || !selectedModel.model?.trim() || !selectedModel.thinking?.trim()) {
+      setLocalError('The Swarm action model is unavailable.')
+      return
+    }
+    const operation = createDesktopV3NewSessionOperation({
+      workspacePath: workspace.path,
+      workspaceName: workspace.workspaceName,
+      route: {
+        id: 'primary',
+        label: 'Primary',
+        swarmId: workspaceAuthority.swarm_id,
+        workspaceBindingId: workspaceAuthority.workspace_binding_id,
+        hostSwarmId: workspaceAuthority.swarm_id,
+        hostSwarmName: 'Primary',
+        hostWorkspacePath: workspaceAuthority.host_workspace_path,
+        hostWorkspaceName: workspace.workspaceName,
+        runtimeWorkspacePath: workspaceAuthority.runtime_workspace_path,
+        workspaceName: workspace.workspaceName,
+        targetKind: workspaceAuthority.target_kind,
+        targetRelationship: workspaceAuthority.target_relationship,
+      },
+      prompt,
+      mode,
+      agentName: 'swarm',
+      preference: {
+        provider: selectedModel.provider,
+        model: selectedModel.model,
+        thinking: selectedModel.thinking,
+        serviceTier: selectedModel.serviceTier,
+        contextMode: selectedModel.contextMode,
+      },
+      modelProfileChoice: chatOnlyModelProfile ? {
+        kind: 'temporary',
+        profile: chatOnlyModelProfile,
+      } : { kind: 'agent-default' },
+      sessionMetadata: { source: 'desktop-v3' },
+      messageMetadata: { source: 'desktop-v3' },
+      worktree: { mode: 'off' },
+    })
+    if (snapshot.attachments.length > 0) {
+      const createResult = await startDesktopV3CreateOnlySession({ operation })
+      const capability = await getDesktopV3MediaCapability(createResult.sessionId)
+      const contractToken = capability.contract_token?.trim() ?? ''
+      if (!contractToken) throw new Error('The new session did not expose a media upload contract')
+      operation.firstMessageRequest.media = await Promise.all(snapshot.attachments.map(async (attachment, index) => {
+        const staged = stagedAttachmentsRef.current[index]
+        if (!staged?.file || staged.stagingId !== attachment.staging_id) {
+          throw new Error('Staged attachment state changed before session start')
+        }
+        return uploadDesktopV3MediaAsset({
+          sessionId: createResult.sessionId,
+          file: staged.file,
+          mimeType: staged.mimeType,
+          modality: staged.modality,
+          fileType: staged.fileType,
+          contractToken,
+        })
+      }))
+      operation.firstMessageRequest.video_attachments = snapshot.videoAttachments
+      operation.firstMessageRequest.artifact_selections = snapshot.artifactSelections
+      const messageResponse = await appendFirstDesktopV3Message({ operation })
+      await startedCallbackRef.current(messageResponse.session_id)
+      stagedAttachmentHistoryRef.current = []
+      removedStagedAttachmentIdsRef.current.clear()
+      stagedAttachmentsRef.current = []
+      setStagedAttachments([])
+      setRestoredSnapshot(null)
+      return
+    }
+    operation.firstMessageRequest.video_attachments = snapshot.videoAttachments
+    operation.firstMessageRequest.artifact_selections = snapshot.artifactSelections
+    setStarting(true)
+    setLocalError(null)
+    setRestoredSnapshot(snapshot)
     try {
-      const prompt = snapshot.prompt.trim()
-        || (snapshot.attachments.length > 0 ? 'Please review the attached file(s).' : '')
-        || (snapshot.videoAttachments.length > 0 ? 'Please review the attached video(s).' : '')
-        || (snapshot.artifactSelections.length > 0 ? 'Please review the selected artifact(s).' : '')
-      if (!prompt || routedState.phase === 'routing' || routedState.phase === 'resolved') {
-        throw new Error('Routed Desktop start is not editable in its current state')
-      }
-
-      const captured = createDesktopV3RoutedComposerSnapshot({
-        ...snapshot,
-        prompt,
-        attachments: snapshot.attachments,
-        modelProfileChoice: chatOnlyModelProfile ? {
-          kind: 'temporary',
-          profile: {
-            name: chatOnlyModelProfile.name,
-            provider: chatOnlyModelProfile.provider,
-            model: chatOnlyModelProfile.model,
-            thinking: chatOnlyModelProfile.thinking,
-            serviceTier: chatOnlyModelProfile.serviceTier,
-            contextMode: chatOnlyModelProfile.contextMode,
-          },
-        } : null,
-      })
-      if (routedState.phase !== 'failed' && captured.attachments.length !== stagedAttachmentsRef.current.length) {
-        throw new Error('Routed composer staged attachment state changed before submit')
-      }
-      if (routedState.phase === 'failed') return controller.retry()
-      setLocalError(null)
-      operationAttachmentsRef.current = [...stagedAttachmentsRef.current]
-      return controller.submit({
-        workspace: workspaceAuthority,
-        snapshot: captured,
-        agentName: 'swarm',
-        metadata: encodeDesktopRoutedWorktreeIntentMetadata(
-          createDesktopRoutedWorktreeIntent(captured.worktreePrimed),
-          { source: 'desktop-v3' },
-        ),
-      })
+      const result = await startNewDesktopV3Session({ operation })
+      await startedCallbackRef.current(result.sessionId)
+      stagedAttachmentHistoryRef.current = []
+      removedStagedAttachmentIdsRef.current.clear()
+      stagedAttachmentsRef.current = []
+      setStagedAttachments([])
+      setRestoredSnapshot(null)
     } catch (cause) {
-      setLocalError(cause instanceof Error ? cause.message : 'Routed session start failed.')
-      return Promise.resolve(controller.getState())
+      setLocalError(cause instanceof Error ? cause.message : 'Session start failed.')
+    } finally {
+      setStarting(false)
     }
   }
 
   useEffect(() => {
+    const initialCommandPrompt = initialPrompt.trim()
     if (!initialCommandPrompt || initialPromptSubmittedRef.current) return
     initialPromptSubmittedRef.current = true
-    void handleSubmit(createDesktopV3RoutedComposerSnapshot({
+    void handleSubmit({
       prompt: initialCommandPrompt,
-      worktreePrimed: initialWorktreeRequested,
+      attachments: [],
+      artifactSelections: [],
+      videoAttachments: [],
+      selectedAction: null,
+      selectedSkill: null,
       planModeRequested: initialPlanModeRequested,
-    }))
-  }, [initialCommandPrompt, initialPlanModeRequested, initialWorktreeRequested])
+    })
+  }, [initialPrompt, initialPlanModeRequested])
 
   async function handleStageAttachments(files: File[], signal: AbortSignal) {
-    if (controller.getState().phase === 'failed') {
-      throw new Error('Retry or start a new routed session before changing staged attachments')
-    }
-    const identity = controller.prepareOperationIdentity()
+    if (starting) throw new Error('Wait for the current session start to finish.')
     const history = stagedAttachmentHistoryRef.current
     const stagedHistory = await stageDesktopComposerAttachments({
       files,
-      routedClientRequestId: identity.clientRequestId,
+      routedClientRequestId: operationIdRef.current,
       existing: history,
       signal,
     })
@@ -332,49 +282,10 @@ export function DesktopV3NewSessionPane({
     setStagedAttachments(staged)
   }
 
-  function handleRetry() {
-    const current = controller.getState()
-    if (current.phase !== 'failed') return
-    const restoredAttachments = operationAttachmentsRef.current ?? []
-    const visibleAttachments = restoredAttachments.filter((attachment) => !removedStagedAttachmentIdsRef.current.has(attachment.stagingId))
-    if (visibleAttachments.length !== current.snapshot.attachments.length) {
-      setLocalError('Restore every staged attachment before retrying this routed session.')
-      return
-    }
-    stagedAttachmentsRef.current = visibleAttachments
-    setStagedAttachments(visibleAttachments)
-    setDraft(current.snapshot.prompt)
-    setMode(current.snapshot.planModeRequested ? 'plan' : 'auto')
-    setWorktreeIntent(createDesktopRoutedWorktreeIntent(current.snapshot.worktreePrimed))
-    setRestoredSnapshot(current.snapshot)
-    void controller.retry()
-  }
-
-  const initialCommandStarting = Boolean(initialCommandPrompt)
-    && !initialPromptSubmittedRef.current
-    && (routedState.phase === 'draft' || routedState.phase === 'worktree-primed')
-  const activationPending = initialCommandStarting
-    || routedState.phase === 'routing'
-    || routedState.phase === 'resolved'
-  // Keep the current new-chat surface mounted until the durable destination is
-  // activated. Swapping it for the routed pending shell causes a visible page
-  // flash on fast starts and is unnecessary because the composer can own the
-  // transient busy state without publishing another session authority.
-  const pendingState = routedState.phase === 'failed' || routedState.phase === 'worktree-primed'
-    ? routedState.phase
-    : 'draft'
-  const newChatUsesWorktree = routedState.snapshot.worktreePrimed || worktreeIntent.requested
-  const headerStatus: DesktopV3RunStatusModel | null = activationPending
-    ? {
-        kind: 'starting',
-        label: routedState.phase === 'resolved'
-          ? 'Opening…'
-          : newChatUsesWorktree
-            ? 'Routing…'
-            : 'Starting…',
-        active: false,
-      }
-    : routedState.phase === 'failed'
+  const activationPending = starting
+  const headerStatus: DesktopV3RunStatusModel | null = starting
+    ? { kind: 'starting', label: 'Starting…', active: false }
+    : localError
       ? { kind: 'failed', label: 'Start failed', active: false }
       : null
 
@@ -383,10 +294,10 @@ export function DesktopV3NewSessionPane({
       className="relative flex min-h-0 flex-1 flex-col bg-[var(--app-bg)]"
       data-desktop-chat-drop-zone
       data-testid="desktop-v3-new-session-pane"
-      data-routed-phase={routedState.phase}
+      data-start-phase={starting ? 'starting' : localError ? 'failed' : 'draft'}
     >
       <DesktopV3ChatHeader
-        title={newChatUsesWorktree ? 'New worktree chat' : 'New chat'}
+        title="New chat"
         workspaceName={workspace.workspaceName}
         runStatus={headerStatus}
       />
@@ -402,11 +313,10 @@ export function DesktopV3NewSessionPane({
       ) : null}
 
       <DesktopV3RoutedPendingShell
-        state={pendingState}
-        startPath={routedState.snapshot.worktreePrimed ? 'router' : 'session'}
-        pendingPrompt={routedState.prompt}
-        error={routedState.phase === 'failed' ? routedState.error : undefined}
-        onRetry={routedState.phase === 'failed' ? handleRetry : undefined}
+        state="draft"
+        startPath="direct"
+        pendingPrompt={draft}
+        error={localError ?? undefined}
         showTips={showTips}
         onDisableTips={tipsSaving ? undefined : () => { void handleDisableTips() }}
         workspace={workspace}
@@ -422,7 +332,7 @@ export function DesktopV3NewSessionPane({
           focusSignal={composerFocusSignal}
           onDraftChange={setDraft}
           placeholder="What would you like to work on?"
-          inputLabel="Start a routed Desktop V3 session"
+          inputLabel="Start a Desktop V3 session"
           disabled={activationPending}
           busy={activationPending}
           canSubmit={Boolean(draft.trim()) || stagedAttachments.length > 0 || Boolean(artifactSelectionRequest)}
@@ -431,20 +341,16 @@ export function DesktopV3NewSessionPane({
           onArtifactSelectionRequestHandled={onArtifactSelectionRequestHandled}
           onRoutedSubmit={handleSubmit}
           routedStagedAttachments={stagedAttachments}
-          onRoutedStageAttachments={routedState.phase === 'failed' || activationPending ? undefined : handleStageAttachments}
-          onRoutedRemoveStagedAttachment={routedState.phase === 'failed' || activationPending ? undefined : (stagingId) => setStagedAttachments((current) => {
+          onRoutedStageAttachments={activationPending ? undefined : handleStageAttachments}
+          onRoutedRemoveStagedAttachment={activationPending ? undefined : (stagingId) => setStagedAttachments((current) => {
             removedStagedAttachmentIdsRef.current.add(stagingId)
             const next = current.filter((attachment) => attachment.stagingId !== stagingId)
             stagedAttachmentsRef.current = next
             return next
           })}
           routedComposerSnapshot={restoredSnapshot}
-          routedWorktreeRequested={worktreeIntent.requested}
           mode={mode}
-          onModeSelect={routedState.phase === 'failed' || activationPending ? undefined : setMode}
-          onRoutedWorktreeRequestedChange={routedState.phase === 'failed' || activationPending ? undefined : (requested) => {
-            setWorktreeIntent((current) => setDesktopRoutedWorktreeIntent(current, requested))
-          }}
+          onModeSelect={activationPending ? undefined : setMode}
           currentAgent="swarm"
           selectedPrimaryAgent="swarm"
           agents={agentStateQuery.data?.profiles ?? []}
@@ -461,7 +367,7 @@ export function DesktopV3NewSessionPane({
           onConfirmAgentSettings={handleConfirmAgentSettings}
           onApplyModelFavoriteChatOnly={(profile) => setChatOnlyModelProfile(profile)}
           agentModelControlBusy={agentModelSaving}
-          error={localError ?? (routedState.phase === 'failed' ? routedState.error : null)}
+          error={localError}
           routedNewSession
           onSlashCommand={onSlashCommand}
           developerMode={developerMode}

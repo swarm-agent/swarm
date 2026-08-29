@@ -3,13 +3,41 @@ package api
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
+	"swarm/packages/swarmd/internal/identity"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/uisettings"
 )
+
+func TestSessionsV3ReviewRejectsLegacyIntegrationAuthority(t *testing.T) {
+	server := &Server{}
+	_, err := server.classifySessionsV3ReviewWorktrees(context.Background(), identity.Principal{UserID: "user", AccountScopeID: "account"}, sessionsV3ReviewWorktreesRequest{LegacyIntegrateIDs: []string{"session-lane"}})
+	if err == nil || !strings.Contains(err.Error(), "is retired") {
+		t.Fatalf("legacy integration error = %v", err)
+	}
+}
+
+func TestSessionsV3ReviewPromotionContractRequiresExplicitExactLineage(t *testing.T) {
+	req := sessionsV3ReviewWorktreesRequest{
+		PromoteIDs:   []string{"session-lane"},
+		SourceHeads:  map[string]string{"session-lane": "source-head"},
+		TargetBranch: "dev",
+		TargetHead:   "target-head",
+	}
+	if len(req.PromoteIDs) != 1 || req.SourceHeads[req.PromoteIDs[0]] == "" || req.TargetBranch == "" || req.TargetHead == "" {
+		t.Fatalf("incomplete promotion contract: %+v", req)
+	}
+	server := &Server{}
+	req.Automatic = true
+	_, err := server.classifySessionsV3ReviewWorktrees(context.Background(), identity.Principal{UserID: "user", AccountScopeID: "account"}, req)
+	if err == nil || !strings.Contains(err.Error(), "explicit user action") {
+		t.Fatalf("automatic promotion error = %v", err)
+	}
+}
 
 func TestSessionsV3ReviewArchiveDeadlineUsesPerSessionMessageActivity(t *testing.T) {
 	const doneAt int64 = 1_000_000

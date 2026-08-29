@@ -598,6 +598,20 @@ func (s *tuiSessionStore) applyEventPayloadLocked(sessionID string, event client
 			changed = true
 		}
 	}
+	if raw := firstRaw(payload, "workspace_path"); len(raw) > 0 {
+		var workspacePath string
+		if json.Unmarshal(raw, &workspacePath) == nil && strings.TrimSpace(workspacePath) != "" {
+			summary.WorkspacePath = strings.TrimSpace(workspacePath)
+			changed = true
+		}
+	}
+	if raw := firstRaw(payload, "workspace_name"); len(raw) > 0 {
+		var workspaceName string
+		if json.Unmarshal(raw, &workspaceName) == nil && strings.TrimSpace(workspaceName) != "" {
+			summary.WorkspaceName = strings.TrimSpace(workspaceName)
+			changed = true
+		}
+	}
 	if raw := firstRaw(payload, "metadata"); len(raw) > 0 {
 		var metadata map[string]any
 		if json.Unmarshal(raw, &metadata) == nil {

@@ -118,6 +118,10 @@ func (b *artifactMetadataBoundary) ApplySessionMutation(input pebblestore.V3Sess
 	return result, nil
 }
 
+func newWorkspaceMapService(store *pebblestore.Store) *pebblestore.WorkspaceMapService {
+	return pebblestore.NewWorkspaceMapService(pebblestore.NewWorkspaceMapStore(store))
+}
+
 type Daemon struct {
 	cfg                       config.Config
 	lock                      *lock.FileLock
@@ -489,6 +493,7 @@ func New(cfg config.Config) (*Daemon, error) {
 	runSvc := run.NewService(sessionSvc, modelSvc, providers, toolRuntime, permissionSvc, agentSvc, discoverySvc, events)
 	runSvc.SetModelProfileService(modelProfileSvc)
 	runSvc.SetWorkspaceService(workspaceSvc)
+	runSvc.SetWorkspaceMapService(newWorkspaceMapService(store))
 	runSvc.SetUISettingsService(uiSettingsSvc)
 	runSvc.SetAgentModelSettingsService(agentModelSettingsSvc)
 	runSvc.SetWorktreeService(worktreeSvc)

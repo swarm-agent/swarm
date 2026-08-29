@@ -1511,7 +1511,13 @@ func authorizationRequirement(mode, toolName, toolArguments string) string {
 			return "manage_artifact_generate_image"
 		}
 		return "manage_artifact"
+	case "manage_workspace":
+		identity, _ := manageWorkspacePolicyIdentity(toolArguments)
+		return identity
 	case "manage_worktree":
+		if ShouldApproveManageWorktreePromotion(toolArguments) {
+			return "worktree_promotion"
+		}
 		return "manage_worktree"
 	case "manage_sessions":
 		if ShouldApproveManageSessionsDeploy(toolArguments) {
@@ -1536,6 +1542,13 @@ func authorizationRequirement(mode, toolName, toolArguments string) string {
 
 func ShouldApproveManageArtifactGenerateImage(toolArguments string) bool {
 	return manageAction(toolArguments) == "generate_image"
+}
+
+// ShouldApproveManageWorktreePromotion identifies the distinct authority that
+// may advance a captured checkout branch. Internal child-to-session-lane
+// integration remains approval-free because it cannot promote into dev.
+func ShouldApproveManageWorktreePromotion(toolArguments string) bool {
+	return manageAction(toolArguments) == "promote"
 }
 
 func ShouldApproveManageSkillMutation(toolArguments string) bool {
@@ -2149,6 +2162,34 @@ func permissionNotificationActionSummary(record pebblestore.PermissionRecord) pe
 			return permissionNotificationSummary{title: "Plan approval requested", body: "Review and approve the proposed plan.", label: "plan approval"}
 		}
 		return permissionNotificationSummary{title: "Plan approval requested: " + plan, body: "Review and approve the plan: " + plan + ".", label: "plan approval: " + plan}
+	case "manage_workspace":
+		action := strings.ToLower(strings.TrimSpace(firstNonEmpty(mapStringAny(args["action"]), mapStringAny(args["op"]))))
+		workspace := boundedNotificationText(firstNonEmpty(
+			mapStringAny(args["name"]),
+			mapStringAny(args["workspace_name"]),
+			mapStringAny(args["workspace_id"]),
+		), 100)
+		operation := "workspace change"
+		switch action {
+		case "create":
+			operation = "workspace creation"
+		case "edit", "update":
+			operation = "workspace edit"
+		case "delete", "remove":
+			operation = "workspace deletion"
+		}
+		if workspace != "" {
+			return permissionNotificationSummary{
+				title: "Approve " + operation + ": " + workspace,
+				body:  "Review and approve the requested " + operation + " for " + workspace + ".",
+				label: operation + ": " + workspace,
+			}
+		}
+		return permissionNotificationSummary{
+			title: "Approve " + operation,
+			body:  "Review and approve the requested " + operation + ".",
+			label: operation,
+		}
 	case "plan_manage":
 		action := strings.ToLower(strings.TrimSpace(mapStringAny(args["action"])))
 		label := planPermissionActionLabel(action)

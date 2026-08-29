@@ -88,3 +88,40 @@ func TestScopeExpansionForTaskWorkspaceTarget(t *testing.T) {
 		t.Fatalf("task workspace request = %#v", request)
 	}
 }
+
+func TestScopeExpansionForTaskChecksEveryLaunchWorkspace(t *testing.T) {
+	parent := t.TempDir()
+	external := t.TempDir()
+	arguments, err := json.Marshal(map[string]any{
+		"launches": []any{
+			map[string]any{"workspace_path": parent, "subagent_type": "coder"},
+			map[string]any{"workspace_path": external, "subagent_type": "coder"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request, needsApproval, err := ScopeExpansionForCall(WorkspaceScope{PrimaryPath: parent, Roots: []string{parent}}, Call{Name: "task", Arguments: string(arguments)})
+	if err != nil || !needsApproval {
+		t.Fatalf("task workspace expansion: needed=%t request=%#v err=%v", needsApproval, request, err)
+	}
+	if request.ArgumentName != "workspace_path" || request.DirectoryPath != filepath.Clean(external) {
+		t.Fatalf("task workspace request = %#v", request)
+	}
+}
+
+func TestScopeExpansionChecksEverySearchPath(t *testing.T) {
+	parent := t.TempDir()
+	external := t.TempDir()
+	arguments, err := json.Marshal(map[string]any{"paths": []string{parent, external}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request, needsApproval, err := ScopeExpansionForCall(WorkspaceScope{PrimaryPath: parent, Roots: []string{parent}}, Call{Name: "search", Arguments: string(arguments)})
+	if err != nil || !needsApproval {
+		t.Fatalf("search workspace expansion: needed=%t request=%#v err=%v", needsApproval, request, err)
+	}
+	if request.ArgumentName != "paths" || request.DirectoryPath != filepath.Clean(external) {
+		t.Fatalf("search workspace request = %#v", request)
+	}
+}

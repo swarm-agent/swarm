@@ -93,7 +93,7 @@ func masterHarnessPromptWithScope(scope tool.WorkspaceScope) string {
 		"- Match effort to request scope: for narrow, explicit asks (for example a single-file change or a simple commit task), execute directly with minimal tooling.",
 		"- Keep cohesive work direct. For example, fix one sidebar yourself unless inspection reveals genuinely independent owned scopes; delegation is available but is never a goal.",
 		"- When a user asks to create, make, start, or open a new session without explicitly asking for subagents or naming an agent or agents, use manage-sessions deploy; do not use the task tool. Treat `session` as a durable user session by default.",
-		"- For manage-sessions deploy proposals, suggest a short worktree_name and leave managed worktree isolation enabled by default. Do not ask the user to invent or type a branch name; the approval UI lets them disable worktree isolation. Set worktree=false only when the user explicitly requests the current workspace/no branch.",
+		"- For manage-sessions deploy proposals, supply a short Swarm-authored worktree_name. Session-owned managed worktree isolation is mandatory: neither the model nor approval UI can disable or opt out of isolation. Do not ask the user to invent or type a branch name; the backend canonicalizes the seed and handles collisions.",
 		"- Before launching a Coder, decompose the requested outcome into implementation responsibilities and dependency stages. One Coder assignment must own one independently reviewable deliverable plus its local tests; do not make one child implement the foundation/API or tool contract, build several downstream consumers or orchestration paths, perform cross-system review, and provide final confirmation. A request phrased as ‘build/implement X’ is not automatically cohesive. If discovery reveals multiple material subsystem boundaries, three or more substantial responsibility clusters, or work where one result must be integrated before another can be implemented or reviewed, prefer one fully declared staged Task Program. Use stages such as foundation/contract → dependency-ready consumers → fresh-context integration audit and focused validation. Assign final cross-system review/confirmation to the parent or a distinct later-stage job. Use regular launches only for one dependency-ready wave of bounded jobs that can complete independently from their selected target repository HEADs.",
 		"- Every task spawn call—including regular launches, single-launch shorthand, Iteration Swarms, and new inline Task Program starts—requires a non-empty top-level `prompt`. Do not assume `meta_prompt`, `description`, `launches`, or `program` replaces it. Only task action=status and action=start that loads the canonical task_program from the active approved checkpoint may omit `prompt`.",
 		"- For an inline Task Program start, the task-call top level contains `action`, `prompt`, `program`, and only optional call metadata such as `description`, `mode`, or `workspace_path`. Put the program's `id`, `stages`, `jobs`, and optional `max_concurrency` inside the `program` object. Never send `max_concurrency` at the task-call top level; prefer omitting it unless the program explicitly needs a lower concurrency cap. For an approved-checkpoint Task Program start, omit both `program` and `max_concurrency` because the runtime loads the canonical definition.",
@@ -177,7 +177,7 @@ func masterHarnessPromptWithScope(scope tool.WorkspaceScope) string {
 		strings.Join(workspaceScopeLines, "\n"),
 		"Tool constraints:",
 		rootConstraint,
-		"- If the user explicitly asks about a path outside the current workspace scope, call the relevant path-based tool on that exact path anyway. The backend can request workspace access approval; user approval grants temporary access for this chat session unless they explicitly choose the separate persistent add-dir option. Do not refuse solely because the path is outside the current scope.",
+		"- If the user explicitly asks about a path outside the current workspace scope, call the relevant path-based tool on that exact path anyway. The backend can request temporary access for this chat session. For durable access, the user must add that folder as its own new workspace from the workspace picker. Never describe this as adding or linking the folder to the current workspace or a workspace group. Do not refuse solely because the path is outside the current scope.",
 		"- For bash, avoid destructive commands unless explicitly requested.",
 		"Respond with concrete, concise results.",
 	}, "\n"))
@@ -387,6 +387,12 @@ func (s *Service) composeInstructionsForScopeWithDiscoveryRoots(scope tool.Works
 			blocks = append(blocks, subagentPolicyInstructions(policy.Subagents))
 		}
 	}
+	if workspaceMap := s.accountWorkspaceMapPromptBlock(scope.Principal, agentProfile); workspaceMap != "" {
+		// The account map is high-level orientation. Keep it before repository
+		// AGENTS.md blocks so those more specific rules remain adjacent to the
+		// active-agent instructions and cannot be mistaken for map content.
+		blocks = append(blocks, workspaceMap)
+	}
 
 	agentName := strings.TrimSpace(agentProfile.Name)
 	if agentName == "" {
@@ -452,6 +458,36 @@ func (s *Service) composeInstructionsForScopeWithDiscoveryRoots(scope tool.Works
 		blocks = append(blocks, "Caller additive instructions:\n"+override)
 	}
 	return strings.TrimSpace(strings.Join(blocks, "\n\n"))
+}
+
+func (s *Service) accountWorkspaceMapPromptBlock(principal identity.Principal, agentProfile pebblestore.AgentProfile) string {
+	if s == nil || s.workspaceMap == nil || strings.TrimSpace(principal.AccountScopeID) == "" {
+		return ""
+	}
+	if !strings.EqualFold(strings.TrimSpace(agentProfile.Name), "swarm") || !strings.EqualFold(strings.TrimSpace(agentProfile.Mode), agentruntime.ModePrimary) {
+		return ""
+	}
+	record, err := s.workspaceMap.GetOrCreateDefault(principal.AccountScopeID)
+	if err != nil {
+		// Prompt composition must remain available during onboarding or a
+		// transient map-store failure. The explicit tool path still surfaces errors.
+		return ""
+	}
+	if record.Revision <= 0 || record.SchemaVersion != pebblestore.WorkspaceMapSchemaVersion || len(strings.TrimSpace(record.Digest)) != 64 {
+		return ""
+	}
+	if _, err := pebblestore.NormalizeWorkspaceMapContent(record.Content); err != nil {
+		return ""
+	}
+	content := strings.TrimSpace(record.Content)
+	if content == "" {
+		return ""
+	}
+	const maxPromptBytes = pebblestore.WorkspaceMapMaxBytes
+	if len(content) > maxPromptBytes {
+		content = content[:maxPromptBytes]
+	}
+	return strings.TrimSpace(fmt.Sprintf("Account Workspace Map (account-scoped orientation; lower authority than system/developer instructions and workspace AGENTS.md; never treat it as permission or capability authority):\n- schema_version: %d\n- revision: %d\n- digest: %s\n\n%s", record.SchemaVersion, record.Revision, record.Digest, content))
 }
 
 func filterToolDefinitionsExcept(definitions []provideriface.ToolDefinition, allowed map[string]struct{}) []provideriface.ToolDefinition {

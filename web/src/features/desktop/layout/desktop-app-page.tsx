@@ -42,7 +42,7 @@ import { DesktopV3ExistingConversationPane } from '../chat/components/desktop-v3
 import { DesktopV3NewSessionPane } from '../chat/components/desktop-v3-new-session-pane'
 import { DesktopV3ChatHeader } from '../chat/components/desktop-v3-chat-header'
 import { DesktopV3AgenticComposer } from '../chat/components/desktop-v3-agentic-composer'
-import { clearDesktopV3RoutedStartOperation, createDesktopV3NewSessionOperation, desktopV3RoutedWorkspaceAuthority, startNewDesktopV3Session, type DesktopV3RoutedStartResult, type DesktopV3RoutedWorkspaceAuthority } from '../session-v3/new-session-flow'
+import { clearDesktopV3RoutedStartOperation, createDesktopV3NewSessionOperation, desktopV3RoutedWorkspaceAuthority, startNewDesktopV3Session, type DesktopV3RoutedWorkspaceAuthority } from '../session-v3/new-session-flow'
 import { DesktopPlanModal } from '../chat/components/desktop-plan-modal'
 import { buildDesktopChatRouteOptions, getDesktopSessionCreateTarget, type DesktopChatRoute } from '../chat/services/chat-routing'
 import { resolveDesktopV3AgentModelLock } from '../chat/services/agent-model-preferences'
@@ -62,9 +62,9 @@ import {
   sessionParentSessionID,
   type SidebarSessionNodeKind,
 } from './sidebar-session-lineage'
-import { commitDesktopV3CacheSnapshot, dispatchDesktopV3Cache, getDesktopV3CacheSnapshot, useDesktopV3CacheSelector } from '../state/desktop-v3-cache-store'
+import { dispatchDesktopV3Cache, useDesktopV3CacheSelector } from '../state/desktop-v3-cache-store'
 import { isDesktopV3SessionTailReady, selectDesktopSidebarRows, selectDesktopVideoStudioRows, selectNotificationSummary, selectOrderedNotifications, selectRenderedSessionMessages } from '../state/desktop-v3-cache-selectors'
-import { messageMutationResponseToAction, selectSession, sessionCreateResponseToAction } from '../state/desktop-v3-cache-wire'
+import { selectSession } from '../state/desktop-v3-cache-wire'
 import { selectAndHydrateDesktopV3Session } from '../state/desktop-v3-session-hydrator'
 import type { DesktopV3SidebarRow, RenderedSessionMessages } from '../state/desktop-v3-cache-selectors'
 import { fetchAndApplyDesktopV3PlanSnapshot } from '../state/desktop-v3-session-api'
@@ -73,11 +73,8 @@ import { preferredVideoSessionView, saveVideoSessionViewPreference } from '../to
 import { archiveDesktopV3Sessions } from '../session-v3/plan-execution-api'
 import { DESKTOP_V3_SIDEBAR_PINNED_METADATA_KEY, updateAndApplySessionV3DesktopSidebarPinned, updateSessionV3Title } from '../session-v3/api'
 import { sessionWorkspaceBindingId } from '../services/session-workspace'
-import type { DesktopV3SessionView, SessionCreateMutationResponse, SessionMessageMutationResponse, V3SessionRunIntent, V3SessionRunState } from '../state/desktop-v3-cache-types'
-import { desktopV3CacheReducer } from '../state/desktop-v3-cache-reducer'
-import { requireDesktopV3RealtimeControllerReady } from '../realtime/v3-realtime-controller'
-import { bootstrapDesktopV3SidebarMetadataOnly } from '../state/desktop-v3-bootstrap-controller'
-import { normalizeDesktopV3RoutedSessionStartResponse, postDesktopV3BackgroundRouterSessionStart, type DesktopV3RoutedSessionStartResponse } from '../session-v3/write-api'
+import type { V3SessionRunIntent, WorkspaceUsageProjection } from '../state/desktop-v3-cache-types'
+import { postDesktopV3BackgroundRouterSessionStart } from '../session-v3/write-api'
 import { isDesktopV3NavigationHiddenRecord, isDesktopV3VideoStudioMetadata, isDesktopV3VideoStudioRecord } from '../state/desktop-v3-session-visibility'
 import { clearNotifications, updateNotification } from '../notifications/api'
 import { DesktopNotificationsModal } from '../notifications/components/desktop-notifications-modal'
@@ -273,199 +270,6 @@ interface DesktopRepairSessionAuthority {
   workspace: WorkspaceEntry
   route: DesktopChatRoute
   workspaceSlug: string
-}
-
-interface DesktopV3RoutedActivationDeps {
-  getSnapshot: typeof getDesktopV3CacheSnapshot
-  commitSnapshot: typeof commitDesktopV3CacheSnapshot
-  requireRealtimeController: typeof requireDesktopV3RealtimeControllerReady
-  ensureSidebarBootstrap: typeof bootstrapDesktopV3SidebarMetadataOnly
-  currentURL: () => string
-  replaceURL: (url: string) => void
-}
-
-function currentDesktopURL(): string {
-  if (typeof window === 'undefined') return ''
-  return `${window.location.pathname}${window.location.search}${window.location.hash}`
-}
-
-const desktopV3RoutedActivationDeps: DesktopV3RoutedActivationDeps = {
-  getSnapshot: getDesktopV3CacheSnapshot,
-  commitSnapshot: commitDesktopV3CacheSnapshot,
-  requireRealtimeController: requireDesktopV3RealtimeControllerReady,
-  ensureSidebarBootstrap: bootstrapDesktopV3SidebarMetadataOnly,
-  currentURL: currentDesktopURL,
-  replaceURL: (url) => {
-    if (typeof window === 'undefined' || !url) return
-    window.history.replaceState(window.history.state, '', url)
-    window.dispatchEvent(new PopStateEvent('popstate', { state: window.history.state }))
-  },
-}
-
-function desktopV3RoutedResultResponse(result: DesktopV3RoutedStartResult): DesktopV3RoutedSessionStartResponse {
-  return normalizeDesktopV3RoutedSessionStartResponse(result)
-}
-
-function desktopV3RoutedSessionView(response: DesktopV3RoutedSessionStartResponse): DesktopV3SessionView {
-  return response.session_view as unknown as DesktopV3SessionView
-}
-
-function desktopV3RoutedRecord(value: unknown): Record<string, unknown> | null {
-  return value !== null && typeof value === 'object' && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : null
-}
-
-function desktopV3RoutedRequiredString(value: unknown, field: string): string {
-  const normalized = typeof value === 'string' ? value.trim() : ''
-  if (!normalized) throw new Error(`Routed Desktop activation requires canonical ${field}`)
-  return normalized
-}
-
-function validateDesktopV3RoutedActivationResponse(response: DesktopV3RoutedSessionStartResponse): void {
-  const identity = response.session_view.identity
-  const settings = desktopV3RoutedRecord(response.session_view.agentic_settings)
-  const mediaCapability = desktopV3RoutedRecord(response.session_view.media_capability)
-  const sessionId = response.session_id.trim()
-  const title = response.title.trim()
-  desktopV3RoutedRequiredString(identity.source_workspace_name, 'source workspace name')
-  desktopV3RoutedRequiredString(identity.source_workspace_path, 'source workspace')
-  const runtimeWorkspacePath = desktopV3RoutedRequiredString(identity.runtime_workspace_path, 'runtime workspace')
-  if (desktopV3RoutedRequiredString(identity.session_id, 'session identity') !== sessionId
-    || desktopV3RoutedRequiredString(identity.title, 'session title') !== title) {
-    throw new Error('Routed Desktop activation received inconsistent canonical identity')
-  }
-  desktopV3RoutedRequiredString(response.first_message.content, 'first message')
-  if (desktopV3RoutedRequiredString(response.session.workspace_path, 'runtime workspace') !== runtimeWorkspacePath
-    || desktopV3RoutedRequiredString(response.session.title, 'session title') !== title) {
-    throw new Error('Routed Desktop activation received inconsistent canonical session authority')
-  }
-  if (!settings || response.session.mode !== response.starting_mode || settings.mode !== response.starting_mode) {
-    throw new Error('Routed Desktop activation received inconsistent canonical mode authority')
-  }
-  desktopV3RoutedRequiredString(settings.agent_name, 'agent')
-  desktopV3RoutedRequiredString(settings.resolved_agent_name, 'resolved agent')
-  const effectivePreference = desktopV3RoutedRecord(settings.effective_preference)
-  desktopV3RoutedRequiredString(effectivePreference?.provider, 'model provider')
-  desktopV3RoutedRequiredString(effectivePreference?.model, 'model')
-  if (!mediaCapability || !Array.isArray(mediaCapability.capabilities)) {
-    throw new Error('Routed Desktop activation requires canonical media capability')
-  }
-  if (typeof identity.worktree_enabled !== 'boolean') {
-    throw new Error('Routed Desktop activation requires canonical worktree intent')
-  }
-  if (identity.requested_worktree_name !== undefined && typeof identity.requested_worktree_name !== 'string') {
-    throw new Error('Routed Desktop activation received invalid requested worktree authority')
-  }
-  if (identity.worktree_enabled) {
-    const worktreeRootPath = desktopV3RoutedRequiredString(identity.worktree_root_path, 'worktree root')
-    const worktreeBranch = desktopV3RoutedRequiredString(identity.worktree_branch, 'worktree branch')
-    if (response.session.worktree_enabled !== true
-      || response.session.worktree_root_path?.trim() !== worktreeRootPath
-      || response.session.worktree_branch?.trim() !== worktreeBranch) {
-      throw new Error('Routed Desktop activation received inconsistent canonical worktree authority')
-    }
-  } else if (response.session.worktree_enabled === true) {
-    throw new Error('Routed Desktop activation received inconsistent disabled worktree authority')
-  }
-}
-
-/**
- * Publishes one already-durable routed result only after validation and realtime
- * connection succeed. Any later publish/navigation failure restores the exact
- * prior cache selection/sidebar snapshot and URL while the activation still owns
- * the state it published.
- */
-export async function activateDesktopV3RoutedSession(
-  result: DesktopV3RoutedStartResult,
-  deps: DesktopV3RoutedActivationDeps,
-  shouldActivate: () => boolean,
-  onActivated?: (response: DesktopV3RoutedSessionStartResponse) => Promise<void> | void,
-): Promise<DesktopV3RoutedSessionStartResponse> {
-  const response = desktopV3RoutedResultResponse(result)
-  validateDesktopV3RoutedActivationResponse(response)
-  const sessionId = response.session_id
-  if (!shouldActivate()) throw new Error('Routed Desktop activation is stale')
-
-  let previousState = deps.getSnapshot()
-  let sidebarScopeId = previousState.desktopSidebarBootstrap.scopeId?.trim()
-  if (!sidebarScopeId) {
-    await deps.ensureSidebarBootstrap({ preferredSessionId: sessionId })
-    if (!shouldActivate()) throw new Error('Routed Desktop activation is stale')
-    previousState = deps.getSnapshot()
-    sidebarScopeId = previousState.desktopSidebarBootstrap.scopeId?.trim()
-  }
-  if (!sidebarScopeId) throw new Error('Routed Desktop activation could not bootstrap the canonical sidebar scope')
-
-  const previousURL = deps.currentURL()
-  const previousSelectedSessionId = previousState.selectedSessionId
-  const previousSidebarOrderByScope = structuredClone(previousState.sessionOrderByScope)
-
-  const createResponse: SessionCreateMutationResponse = {
-    ok: true,
-    session_id: sessionId,
-    session: response.session,
-    projection: response.projection,
-    mutation: response.mutation,
-    realtime_outbox: response.mutation.realtime_outbox ?? null,
-  }
-  const mutationResources = response.mutation as typeof response.mutation & {
-    run_intent?: V3SessionRunIntent | null
-    usage_summary?: unknown
-  }
-  const messageResponse: SessionMessageMutationResponse = {
-    ok: true,
-    session_id: sessionId,
-    session: response.session,
-    projection: response.projection,
-    message: response.first_message,
-    run_intent: mutationResources.run_intent ?? null,
-    current_run_state: response.session_view.current_run_state as V3SessionRunState | undefined,
-    usage_summary: mutationResources.usage_summary ?? response.session_view.usage_summary,
-    mutation: response.mutation,
-    realtime_outbox: response.mutation.realtime_outbox ?? null,
-  }
-  const actions = [
-    sessionCreateResponseToAction(createResponse, sidebarScopeId),
-    messageMutationResponseToAction(messageResponse, `desktop-v3-routed:activation:${sessionId}`, response.first_message.id),
-    selectSession(sessionId),
-  ] as const
-
-  const controller = await deps.requireRealtimeController()
-  if (!shouldActivate()) throw new Error('Routed Desktop activation is stale')
-  await controller.ensureSessionConnected(sessionId)
-  if (!shouldActivate()) throw new Error('Routed Desktop activation is stale')
-
-  let nextState = structuredClone(previousState)
-  for (const action of actions) nextState = desktopV3CacheReducer(nextState, action)
-  const routedView = desktopV3RoutedSessionView(response)
-  nextState.sessionViewsById[sessionId] = routedView
-  const routedSettings = routedView.agentic_settings
-  if (!routedSettings) throw new Error('Routed Desktop activation requires canonical agentic settings')
-  nextState.preferencesBySession[sessionId] = routedSettings.effective_preference
-    ?? routedSettings.stored_preference
-  nextState.agentModelPolicyBySession[sessionId] = routedSettings.agent_model_policy
-  if (routedView.has_active_plan !== undefined) nextState.hasActivePlanBySession[sessionId] = routedView.has_active_plan
-  if (routedView.active_plan !== undefined) nextState.plansBySession[sessionId] = routedView.active_plan
-
-  let published = false
-  try {
-    if (!shouldActivate()) throw new Error('Routed Desktop activation is stale')
-    published = true
-    deps.commitSnapshot(previousState, nextState, [...actions])
-    await onActivated?.(response)
-    return response
-  } catch (error) {
-    const ownsPublishedState = published && deps.getSnapshot() === nextState
-      && previousState.selectedSessionId === previousSelectedSessionId
-      && JSON.stringify(previousState.sessionOrderByScope) === JSON.stringify(previousSidebarOrderByScope)
-    const currentURL = deps.currentURL()
-    const routedSessionSuffix = `/${encodeURIComponent(sessionId)}`
-    const ownsRoute = shouldActivate() || (ownsPublishedState && currentURL.split(/[?#]/, 1)[0]?.endsWith(routedSessionSuffix) === true)
-    if (ownsPublishedState) deps.commitSnapshot(nextState, previousState, [])
-    if (ownsRoute && currentURL !== previousURL) deps.replaceURL(previousURL)
-    throw error
-  }
 }
 
 function desktopRunIntentFromV3(runIntent: V3SessionRunIntent | undefined) {
@@ -678,6 +482,8 @@ function sessionRecordEqual(left: DesktopV3SidebarRow['record'], right: DesktopV
     && a.worktree_root_path === b.worktree_root_path
     && a.worktree_base_branch === b.worktree_base_branch
     && a.worktree_branch === b.worktree_branch
+    && JSON.stringify(a.workspace_grants ?? []) === JSON.stringify(b.workspace_grants ?? [])
+    && JSON.stringify(a.workspace_usage ?? []) === JSON.stringify(b.workspace_usage ?? [])
     && shallowRecordEqual(a.metadata, b.metadata)
 }
 
@@ -688,6 +494,7 @@ function projectionEqual(left: DesktopV3SidebarRow['projection'], right: Desktop
     && left.last_event_seq === right.last_event_seq
     && left.projection_high_watermark_seq === right.projection_high_watermark_seq
     && left.updated_at === right.updated_at
+    && JSON.stringify(left.workspace_usage ?? []) === JSON.stringify(right.workspace_usage ?? [])
 }
 
 function runIntentRecordEqual(left: Record<string, V3SessionRunIntent>, right: Record<string, V3SessionRunIntent>): boolean {
@@ -754,10 +561,20 @@ function metadataStringValue(metadata: Record<string, unknown> | undefined, key:
   return typeof value === 'string' ? value.trim() : ''
 }
 
+function primaryWorkspaceUsage(usages: readonly WorkspaceUsageProjection[] | undefined): WorkspaceUsageProjection | null {
+  return usages?.find((usage) => usage.kind === 'primary' && Boolean(usage.workspace_id?.trim())) ?? null
+}
+
 export function desktopSidebarWorkspacePathForSession(
-  session: Pick<DesktopSessionRecord, 'workspacePath' | 'metadata'>,
+  session: Pick<DesktopSessionRecord, 'workspacePath' | 'metadata' | 'workspaceUsage'>,
   workspacePathByBindingId?: ReadonlyMap<string, string>,
+  workspacePathById?: ReadonlyMap<string, string>,
 ): string {
+  const usageWorkspaceID = primaryWorkspaceUsage(session.workspaceUsage)?.workspace_id?.trim() ?? ''
+  if (usageWorkspaceID) {
+    return workspacePathById?.get(usageWorkspaceID)?.trim() ?? ''
+  }
+
   const bindingID = sessionWorkspaceBindingId(session.metadata)
   if (bindingID) {
     const boundPath = workspacePathByBindingId?.get(bindingID)?.trim()
@@ -771,10 +588,16 @@ export function desktopSidebarWorkspacePathForSession(
 }
 
 export function desktopRouteWorkspacePathForSession(
-  session: Pick<DesktopSessionRecord, 'workspacePath' | 'metadata'>,
+  session: Pick<DesktopSessionRecord, 'workspacePath' | 'metadata' | 'workspaceUsage'>,
   workspacePathByBindingId: ReadonlyMap<string, string>,
   knownWorkspacePaths: ReadonlySet<string>,
+  workspacePathById?: ReadonlyMap<string, string>,
 ): string {
+  const usageWorkspaceID = primaryWorkspaceUsage(session.workspaceUsage)?.workspace_id?.trim() ?? ''
+  if (usageWorkspaceID) {
+    return workspacePathById?.get(usageWorkspaceID)?.trim() ?? ''
+  }
+
   const bindingID = sessionWorkspaceBindingId(session.metadata)
   if (bindingID) {
     const boundPath = workspacePathByBindingId.get(bindingID)?.trim()
@@ -826,6 +649,7 @@ export function desktopSessionRecordFromV3SidebarRow(row: DesktopV3SidebarRow): 
     worktreeRootPath: session.worktree_root_path,
     worktreeBaseBranch: session.worktree_base_branch,
     worktreeBranch: session.worktree_branch,
+    workspaceUsage: row.projection?.workspace_usage ?? session.workspace_usage ?? [],
     lifecycle: null,
     runIntent,
     metadata: {
@@ -2639,27 +2463,23 @@ function renderSidebarSessionGroups(input: RenderSidebarSessionGroupsInput): JSX
 export function DesktopAppPage() {
   const queryClient = useQueryClient()
   const navigate = useNavigate()
-  const search = useSearch({ strict: false }) as { agentSetup?: unknown; agent?: unknown; newWorktree?: unknown; newPlan?: unknown }
+  const search = useSearch({ strict: false }) as { agentSetup?: unknown; agent?: unknown; newPlan?: unknown }
   const requestedAgentSetup = search.agentSetup === '1'
-  const requestedNewWorktree = search.newWorktree === '1'
   const requestedNewPlan = search.newPlan === '1'
   const requestedAgentName = typeof search.agent === 'string' ? search.agent.trim() : 'swarm'
   const agentSettingsOpenSignal = requestedAgentSetup ? 1 : 0
   const matchRoute = useMatchRoute()
   const workspaceTaskMatch = matchRoute({ to: '/$workspaceSlug/task', fuzzy: false })
-  const workspaceWorktreeMatch = matchRoute({ to: '/$workspaceSlug/worktree', fuzzy: false })
   const workspaceSessionMatch = matchRoute({ to: '/$workspaceSlug/$sessionId', fuzzy: false })
   const workspaceMatch = matchRoute({ to: '/$workspaceSlug', fuzzy: false })
   const routeWorkspaceSlug = (workspaceTaskMatch
     ? workspaceTaskMatch.workspaceSlug
-    : workspaceWorktreeMatch
-      ? workspaceWorktreeMatch.workspaceSlug
-      : workspaceSessionMatch
-        ? workspaceSessionMatch.workspaceSlug
-        : workspaceMatch
-          ? workspaceMatch.workspaceSlug
-          : '').trim()
-  const mobileCreationPage = workspaceTaskMatch ? 'task' : workspaceWorktreeMatch ? 'worktree' : null
+    : workspaceSessionMatch
+      ? workspaceSessionMatch.workspaceSlug
+      : workspaceMatch
+        ? workspaceMatch.workspaceSlug
+        : '').trim()
+  const mobileCreationPage = workspaceTaskMatch ? 'task' : null
   const routeSessionId = mobileCreationPage
     ? ''
     : (workspaceSessionMatch ? workspaceSessionMatch.sessionId : '').trim()
@@ -2741,8 +2561,6 @@ export function DesktopAppPage() {
   const aiTaskLifecycleByID = useDesktopV3CacheSelector((state) => state.aiTasksById)
   const aiTaskObservedStateRef = useRef(new Map<string, WorkspaceTodoItem['aiState']>())
   const aiTaskTerminalToastRef = useRef(new Set<string>())
-  const routedActivationGenerationRef = useRef(0)
-  const routedActivationWorkspaceRef = useRef('')
   const sidebarBodyRef = useRef<HTMLDivElement | null>(null)
   const workspaceDropdownRef = useRef<HTMLDivElement | null>(null)
   const mobileSidebarSwipeRef = useRef<MobileSidebarSwipeState | null>(null)
@@ -2756,6 +2574,13 @@ export function DesktopAppPage() {
       .filter(([bindingID]) => bindingID !== '')),
     [workspaces],
   )
+  const workspacePathById = useMemo<Map<string, string>>(
+    () => new Map(workspaces
+      .filter((workspace) => workspace.state !== 'unavailable')
+      .map((workspace) => [workspace.workspaceId?.trim() ?? '', workspace.path] as const)
+      .filter(([workspaceID]) => workspaceID !== '')),
+    [workspaces],
+  )
   const knownWorkspacePaths = useMemo<Set<string>>(
     () => new Set(workspaces.map((workspace) => workspace.path)),
     [workspaces],
@@ -2764,7 +2589,6 @@ export function DesktopAppPage() {
     () => (routeWorkspaceSlug ? resolveWorkspaceBySlug(workspaces, routeWorkspaceSlug) : null),
     [routeWorkspaceSlug, workspaces],
   )
-  routedActivationWorkspaceRef.current = routeSessionId ? '' : routeWorkspace?.path.trim() ?? ''
   useEffect(() => {
     if (!workspaceDropdownOpen) return
     const dismiss = (event: MouseEvent) => {
@@ -3227,7 +3051,7 @@ export function DesktopAppPage() {
   const selectedGitWorkspacePath = activeGitSession?.worktreeEnabled
     ? activeGitSession.worktreeRootPath?.trim() || ''
     : activeGitSession
-      ? desktopRouteWorkspacePathForSession(activeGitSession, workspacePathByBindingId, knownWorkspacePaths)
+      ? desktopRouteWorkspacePathForSession(activeGitSession, workspacePathByBindingId, knownWorkspacePaths, workspacePathById)
       : ''
   const gitStatusQuery = useQuery({
     queryKey: gitStatusQueryKey(selectedGitWorkspacePath, selectedGitSessionId),
@@ -3240,7 +3064,7 @@ export function DesktopAppPage() {
   const activeSessionWorktree = Boolean(activeGitSession?.worktreeEnabled && selectedGitWorkspacePath)
   const activeSessionCommits = activeSessionWorktree ? gitSnapshot?.session_commits ?? [] : []
   const activeSessionTargetBranch = activeGitSession?.worktreeBaseBranch?.trim() || 'target branch'
-  const activeSessionTargetWorkspacePath = activeGitSession ? desktopSidebarWorkspacePathForSession(activeGitSession, workspacePathByBindingId) : ''
+  const activeSessionTargetWorkspacePath = activeGitSession ? desktopSidebarWorkspacePathForSession(activeGitSession, workspacePathByBindingId, workspacePathById) : ''
   const activeSessionNeedsReview = metadataStringValue(activeGitSession?.metadata, 'swarm_v3_sidebar_group') === 'needs_review'
   // Ordinary session activation only needs scoped status. The full review inventory
   // remains explicit in Review Worktrees instead of scanning every sibling here.
@@ -3342,20 +3166,20 @@ export function DesktopAppPage() {
     return route ? desktopV3RoutedWorkspaceAuthority(topWorkspace.path, route) : null
   }, [currentSwarmTarget?.swarm_id, swarmName, topWorkspace])
   const globalSessionWorkspaceSlug = useCallback((session: DesktopSessionRecord): string => {
-    const workspacePath = desktopRouteWorkspacePathForSession(session, workspacePathByBindingId, knownWorkspacePaths)
+    const workspacePath = desktopRouteWorkspacePathForSession(session, workspacePathByBindingId, knownWorkspacePaths, workspacePathById)
       || selectedWorkspacePath
       || visibleWorkspacePaths[0]
       || ''
     if (!workspacePath) return topWorkspaceSlug || routeWorkspaceSlug || 'workspace'
     return workspaceSlugByPath.get(workspacePath)
       ?? workspaceRouteSlugBase({ path: workspacePath, workspaceName: session.workspaceName || fallbackWorkspaceNameFromPath(workspacePath) })
-  }, [knownWorkspacePaths, routeWorkspaceSlug, selectedWorkspacePath, topWorkspaceSlug, visibleWorkspacePaths, workspacePathByBindingId, workspaceSlugByPath])
+  }, [knownWorkspacePaths, routeWorkspaceSlug, selectedWorkspacePath, topWorkspaceSlug, visibleWorkspacePaths, workspacePathByBindingId, workspacePathById, workspaceSlugByPath])
   const resolveDesktopRepairSessionAuthority = useCallback((owningWorkspacePath: string, sourceSessionId: string): DesktopRepairSessionAuthority | null => {
     const normalizedOwningPath = owningWorkspacePath.trim()
     const sourceSession = sessionById.get(sourceSessionId.trim()) ?? null
     const sourceBindingId = sessionWorkspaceBindingId(sourceSession?.metadata)
     const sourceWorkspacePath = sourceSession
-      ? desktopSidebarWorkspacePathForSession(sourceSession, workspacePathByBindingId)
+      ? desktopSidebarWorkspacePathForSession(sourceSession, workspacePathByBindingId, workspacePathById)
       : ''
     const workspace = workspaceByPath.get(normalizedOwningPath)
       ?? (sourceBindingId ? workspaceByPath.get(workspacePathByBindingId.get(sourceBindingId) ?? '') : null)
@@ -3383,7 +3207,7 @@ export function DesktopAppPage() {
       workspaceSlug: workspaceSlugByPath.get(workspace.path)
         ?? workspaceRouteSlugBase({ path: workspace.path, workspaceName: workspace.workspaceName }),
     }
-  }, [currentSwarmTarget?.swarm_id, mergedSidebarWorkspaceEntries, sessionById, swarmName, workspaceByPath, workspacePathByBindingId, workspaceSlugByPath])
+  }, [currentSwarmTarget?.swarm_id, mergedSidebarWorkspaceEntries, sessionById, swarmName, workspaceByPath, workspacePathByBindingId, workspacePathById, workspaceSlugByPath])
 
   const launchDesktopRepairSession = useCallback(async (input: DesktopRepairSessionLaunchInput): Promise<void> => {
     const authority = resolveDesktopRepairSessionAuthority(input.owningWorkspacePath, input.sourceSessionId)
@@ -3551,7 +3375,7 @@ export function DesktopAppPage() {
     if (!session) {
       return
     }
-    const workspacePath = desktopRouteWorkspacePathForSession(session, workspacePathByBindingId, knownWorkspacePaths)
+    const workspacePath = desktopRouteWorkspacePathForSession(session, workspacePathByBindingId, knownWorkspacePaths, workspacePathById)
     if (!workspacePath) {
       return
     }
@@ -3565,7 +3389,7 @@ export function DesktopAppPage() {
       params: { workspaceSlug: canonicalWorkspaceSlug, sessionId: session.id },
       replace: true,
     })
-  }, [knownWorkspacePaths, navigate, routeSessionId, routeWorkspaceSlug, sessionById, workspacePathByBindingId, workspaceSlugByPath])
+  }, [knownWorkspacePaths, navigate, routeSessionId, routeWorkspaceSlug, sessionById, workspacePathByBindingId, workspacePathById, workspaceSlugByPath])
 
 
 
@@ -3596,7 +3420,7 @@ export function DesktopAppPage() {
     if (!session) {
       return false
     }
-    const workspacePath = desktopRouteWorkspacePathForSession(session, workspacePathByBindingId, knownWorkspacePaths)
+    const workspacePath = desktopRouteWorkspacePathForSession(session, workspacePathByBindingId, knownWorkspacePaths, workspacePathById)
       || selectedWorkspacePath
       || visibleWorkspacePaths[0]
       || ''
@@ -3615,7 +3439,7 @@ export function DesktopAppPage() {
       },
     })
     return true
-  }, [handleClearSidebarSelection, knownWorkspacePaths, navigate, selectedWorkspacePath, sessionById, visibleWorkspacePaths, workspacePathByBindingId, workspaceSlugByPath])
+  }, [handleClearSidebarSelection, knownWorkspacePaths, navigate, selectedWorkspacePath, sessionById, visibleWorkspacePaths, workspacePathByBindingId, workspacePathById, workspaceSlugByPath])
 
 
 
@@ -3635,92 +3459,46 @@ export function DesktopAppPage() {
   const handleStartNewSessionInWorkspace = useCallback((
     wsPath: string,
     wsName: string,
-    options: { prompt?: string; worktreeRequested?: boolean; planModeRequested?: boolean } = {},
+    options: { prompt?: string; planModeRequested?: boolean } = {},
   ) => {
     const nextIntent = {
       workspacePath: wsPath,
       prompt: options.prompt?.trim() ?? '',
-      worktreeRequested: options.worktreeRequested === true,
       planModeRequested: options.planModeRequested === true,
     }
     // An explicit New Session gesture is an abandonment boundary, not an
     // interrupted-start retry. Drop persisted retry identity and force a fresh
     // pane even when navigation targets the workspace URL already on screen.
     clearDesktopV3RoutedStartOperation()
-    routedActivationGenerationRef.current += 1
     setNewSessionEpoch((current) => current + 1)
     setNewSessionIntent(nextIntent)
     dispatchDesktopV3Cache(selectSession(undefined))
     setMobileSidebarOpen(false)
     const workspaceSlug = workspaceSlugByPath.get(wsPath)
       ?? workspaceRouteSlugBase({ path: wsPath, workspaceName: wsName })
-    const search = {
-      ...(nextIntent.worktreeRequested ? { newWorktree: '1' } : {}),
-      ...(nextIntent.planModeRequested ? { newPlan: '1' } : {}),
-    }
+    const search = nextIntent.planModeRequested ? { newPlan: '1' } : {}
     void navigate({ to: '/$workspaceSlug', params: { workspaceSlug }, search })
     setComposerFocusSignal((current) => current + 1)
   }, [navigate, workspaceSlugByPath])
 
-  const handleRoutedSessionResolved = useCallback(async (result: DesktopV3RoutedStartResult, authority: DesktopV3RoutedWorkspaceAuthority): Promise<void> => {
-    const expectedWorkspacePath = authority.workspace_path.trim()
-    if (!expectedWorkspacePath || routedActivationWorkspaceRef.current !== expectedWorkspacePath) {
-      throw new Error('Routed Desktop activation is stale')
-    }
-    const activationGeneration = ++routedActivationGenerationRef.current
-    let canonicalWorkspace: WorkspaceEntry
-    try {
-      const returnedAuthority = desktopV3RoutedResultResponse(result).session_view.identity
-      const sourceWorkspacePath = returnedAuthority.source_workspace_path.trim()
-      const runtimeWorkspacePath = returnedAuthority.runtime_workspace_path.trim()
-      const expectedRuntimeWorkspacePath = authority.runtime_workspace_path.trim()
-      const runtimeAuthorityMatches = returnedAuthority.worktree_enabled
-        ? runtimeWorkspacePath === returnedAuthority.worktree_root_path?.trim()
-        : runtimeWorkspacePath === expectedRuntimeWorkspacePath
-      if (sourceWorkspacePath !== expectedWorkspacePath
-        || returnedAuthority.workspace_binding_id?.trim() !== authority.workspace_binding_id
-        || returnedAuthority.runtime_swarm_id?.trim() !== authority.swarm_id
-        || !runtimeAuthorityMatches) {
-        throw new Error('Routed Desktop start returned authority for a different workspace')
-      }
-      canonicalWorkspace = workspaceByPath.get(sourceWorkspacePath)
-        ?? workspaces.find((workspace) => workspace.workspaceId && workspace.workspaceId === returnedAuthority.source_workspace_id)
-        ?? (() => { throw new Error('Routed Desktop start returned an unknown source workspace') })()
-    } catch (error) {
-      setDesktopToast({ message: error instanceof Error ? error.message : 'Routed session authority is invalid.', tone: 'error' })
-      throw error
-    }
-    const activationStillCurrent = () => activationGeneration === routedActivationGenerationRef.current
-      && routedActivationWorkspaceRef.current === expectedWorkspacePath
-    await activateDesktopV3RoutedSession(
-      result,
-      desktopV3RoutedActivationDeps,
-      activationStillCurrent,
-      async (response) => {
-        if (!activationStillCurrent()) throw new Error('Routed Desktop activation is stale')
-        const identity = response.session_view.identity
-        const workspaceSlug = workspaceSlugByPath.get(canonicalWorkspace.path)
-          ?? workspaceRouteSlugBase({ path: canonicalWorkspace.path, workspaceName: identity.source_workspace_name })
-        await navigate({
-          to: '/$workspaceSlug/$sessionId',
-          params: { workspaceSlug, sessionId: response.session_id },
-          replace: true,
-        })
-        setMobileSidebarOpen(false)
-      },
-    ).catch((error) => {
-      if (activationStillCurrent()) {
-        setDesktopToast({ message: error instanceof Error ? error.message : 'Failed to activate routed session.', tone: 'error' })
-      }
-      throw error
+  const handleNewSessionStarted = useCallback(async (sessionId: string): Promise<void> => {
+    const workspace = topWorkspace
+    if (!workspace?.path) throw new Error('Desktop session start lost its source workspace')
+    const workspaceSlug = workspaceSlugByPath.get(workspace.path)
+      ?? workspaceRouteSlugBase({ path: workspace.path, workspaceName: workspace.workspaceName })
+    await navigate({
+      to: '/$workspaceSlug/$sessionId',
+      params: { workspaceSlug, sessionId },
+      replace: true,
     })
-  }, [navigate, workspaceByPath, workspaces, workspaceSlugByPath])
+    setMobileSidebarOpen(false)
+  }, [navigate, topWorkspace, workspaceSlugByPath])
 
   const handleArchivePlanSession = useCallback((sessionId: string) => {
     const normalizedSessionId = sessionId.trim()
     const routeSession = normalizedSessionId ? sessionById.get(normalizedSessionId) : null
     const workspacePath = routeSession
-      ? desktopRouteWorkspacePathForSession(routeSession, workspacePathByBindingId, knownWorkspacePaths)
+      ? desktopRouteWorkspacePathForSession(routeSession, workspacePathByBindingId, knownWorkspacePaths, workspacePathById)
         || selectedWorkspacePath
         || routeWorkspace?.path
         || ''
@@ -3736,7 +3514,7 @@ export function DesktopAppPage() {
       return
     }
     void navigate({ to: '/' })
-  }, [handleOpenWorkspace, knownWorkspacePaths, navigate, routeWorkspace?.path, routeWorkspace?.workspaceName, routeWorkspaceSlug, selectedWorkspace?.workspaceName, selectedWorkspacePath, sessionById, workspacePathByBindingId])
+  }, [handleOpenWorkspace, knownWorkspacePaths, navigate, routeWorkspace?.path, routeWorkspace?.workspaceName, routeWorkspaceSlug, selectedWorkspace?.workspaceName, selectedWorkspacePath, sessionById, workspacePathByBindingId, workspacePathById])
 
   const handleToggleSidebarPinned = useCallback((sessionId: string) => {
     const normalizedSessionId = sessionId.trim()
@@ -4024,7 +3802,6 @@ export function DesktopAppPage() {
       case 'new-session': {
         const parsed = parseDesktopNewSessionCommand(draft) ?? {
           prompt: '',
-          worktreeRequested: action.worktreeRequested,
           planModeRequested: action.planModeRequested,
         }
         if (!routeSessionId) {
@@ -4100,7 +3877,6 @@ export function DesktopAppPage() {
       case 'open-model-picker':
       case 'toggle-thinking':
       case 'compact-session':
-      case 'enable-new-session-worktree':
         return
       default: {
         const _exhaustive: never = action
@@ -4539,11 +4315,6 @@ export function DesktopAppPage() {
     })
   }, [activeWorkspaceAuthority, backgroundTaskRequest, mobileCreationPage, navigate, routeWorkspaceSlug])
 
-  const openRouteWorkspaceWorktree = useCallback((workspace: WorkspaceEntry | null = routeWorkspace) => {
-    if (!workspace?.path) return
-    handleStartNewSessionInWorkspace(workspace.path, workspace.workspaceName, { worktreeRequested: true })
-  }, [handleStartNewSessionInWorkspace, routeWorkspace])
-
   const renderMobileSessions = (nodes: SidebarSessionNode[]) => renderSidebarSessionGroups({
     nodes,
     presentation: 'mobile',
@@ -4670,10 +4441,6 @@ export function DesktopAppPage() {
     setMobileSidebarOpen(false)
   }, [routeSessionId, routeWorkspaceSlug])
 
-  useEffect(() => {
-    routedActivationGenerationRef.current += 1
-  }, [routeSessionId, routeWorkspace?.path])
-
   const handleCompactingSessionChange = useCallback((sessionId: string, startedAt: number | null) => {
     const normalizedSessionId = sessionId.trim()
     if (!normalizedSessionId) return
@@ -4686,9 +4453,20 @@ export function DesktopAppPage() {
   }, [])
 
   const integrateSessionWorktree = async (input: GitIntegrateModalState) => {
+    const review = await reviewDesktopV3Worktrees({ workspacePath: input.workspacePath, graceHours: 1 })
+    const candidate = [...(review.retained ?? []), ...(review.done ?? [])].find((item) => item.session_id === input.sessionId)
+    const sourceHead = candidate?.source_head?.trim()
+    const targetBranch = review.current_target_branch?.trim()
+    const targetHead = review.current_target_head?.trim()
+    if (!sourceHead || !targetBranch || !targetHead) {
+      throw new Error('Promotion lineage is incomplete. Recheck worktrees before promoting.')
+    }
     await reviewDesktopV3Worktrees({
       workspacePath: input.workspacePath,
-      integrateSessionIds: [input.sessionId],
+      promoteSessionIds: [input.sessionId],
+      sourceHeadBySessionId: { [input.sessionId]: sourceHead },
+      targetBranch,
+      targetHead,
       graceHours: 1,
     })
   }
@@ -5332,20 +5110,6 @@ export function DesktopAppPage() {
                     >
                       <MessageSquare size={13} strokeWidth={1.8} className="shrink-0" />
                     </button>
-                    <button
-                      type="button"
-                      className={SIDEBAR_ACTION_BUTTON_CLASS}
-                      onClick={() => {
-                        if (topWorkspace && topWorkspacePath) {
-                          openRouteWorkspaceWorktree(topWorkspace)
-                        }
-                      }}
-                      disabled={!topWorkspace}
-                      aria-label={`New worktree for ${topWorkspaceLabel}`}
-                      title="Worktree"
-                    >
-                      <GitBranch size={13} strokeWidth={1.8} className="shrink-0" />
-                    </button>
                   </div>
                   {videoStudioSessionNodes.length > 0 ? (
                     <section className="group/video-section grid content-start gap-1.5" aria-labelledby="desktop-video-sessions-heading">
@@ -5518,14 +5282,6 @@ export function DesktopAppPage() {
             onSubmit={(request) => { void handleStartBackgroundRouterSession(request) }}
             onClose={closeBackgroundTaskModal}
           />
-        ) : mobileCreationPage === 'worktree' && routeWorkspace ? (
-          <div className="flex h-full flex-1 items-center justify-center px-6">
-            <Card className="max-w-lg border-[var(--app-border)] bg-[var(--app-surface)] p-6 text-center">
-              <div className="text-lg font-semibold">Managed worktree</div>
-              <p className="mt-2 text-sm text-[var(--app-text-muted)]">Worktree intent is chosen before routing; Swarm chooses the branch only after you send the new chat.</p>
-              <Button className="mt-4" onClick={() => openRouteWorkspaceWorktree()}>Use a managed worktree</Button>
-            </Card>
-          </div>
         ) : routeSessionUnavailable ? (
           <div className="flex h-full flex-1 items-center justify-center px-6">
             <Card className="max-w-lg border-[var(--app-border)] bg-[var(--app-surface)] p-6 text-center">
@@ -5547,7 +5303,7 @@ export function DesktopAppPage() {
             loadedMessageCount={selectedDesktopV3LoadedMessageCount}
             session={sessionById.get(routeSessionId) ?? null}
             routeOptions={sessionById.get(routeSessionId) ? (() => {
-              const sessionWorkspacePath = desktopRouteWorkspacePathForSession(sessionById.get(routeSessionId)!, workspacePathByBindingId, knownWorkspacePaths)
+              const sessionWorkspacePath = desktopRouteWorkspacePathForSession(sessionById.get(routeSessionId)!, workspacePathByBindingId, knownWorkspacePaths, workspacePathById)
               const sessionWorkspace = mergedSidebarWorkspaceEntries.find((workspace) => workspace.path === sessionWorkspacePath) ?? null
               return buildDesktopChatRouteOptions({
                 hostSwarmName: swarmName,
@@ -5583,7 +5339,7 @@ export function DesktopAppPage() {
             onNewSession={() => {
               const routeSession = sessionById.get(routeSessionId)
               const workspacePath = routeSession
-                ? desktopRouteWorkspacePathForSession(routeSession, workspacePathByBindingId, knownWorkspacePaths)
+                ? desktopRouteWorkspacePathForSession(routeSession, workspacePathByBindingId, knownWorkspacePaths, workspacePathById)
                   || selectedWorkspacePath
                   || ''
                 : ''
@@ -5628,10 +5384,9 @@ export function DesktopAppPage() {
             key={`new:${topWorkspace.path}:${newSessionEpoch}`}
             workspace={topWorkspace}
             workspaceAuthority={activeWorkspaceAuthority}
-            onRoutedSessionResolved={handleRoutedSessionResolved}
+            onSessionStarted={handleNewSessionStarted}
             composerFocusSignal={composerFocusSignal}
             initialPrompt={newSessionIntent?.workspacePath === topWorkspace.path ? newSessionIntent.prompt : undefined}
-            initialWorktreeRequested={newSessionIntent?.workspacePath === topWorkspace.path ? newSessionIntent.worktreeRequested : requestedNewWorktree}
             initialPlanModeRequested={newSessionIntent?.workspacePath === topWorkspace.path ? newSessionIntent.planModeRequested : requestedNewPlan}
             agentSettingsOpenSignal={agentSettingsOpenSignal}
             agentSettingsInitialAgent={requestedAgentName}

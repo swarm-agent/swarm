@@ -11,12 +11,10 @@ import (
 
 const (
 	chatWorkspaceScopeSelectSession = 0
-	chatWorkspaceScopeSelectAddDir  = 1
-	chatWorkspaceScopeSelectDeny    = 2
+	chatWorkspaceScopeSelectDeny    = 1
 
 	chatWorkspaceScopeDecisionPathID      = "permission.workspace_scope.decision.v1"
 	chatWorkspaceScopeDecisionSessionRead = "session_allow"
-	chatWorkspaceScopeDecisionAddDir      = "workspace_add_dir"
 )
 
 func isWorkspaceScopePermission(record ChatPermissionRecord) bool {
@@ -40,13 +38,9 @@ func (p *ChatPage) closeWorkspaceScopeModal() {
 	p.workspaceScopeRequestedPath = ""
 	p.workspaceScopeResolvedPath = ""
 	p.workspaceScopeDirectory = ""
-	p.workspaceScopeWorkspacePath = ""
-	p.workspaceScopeWorkspaceName = ""
-	p.workspaceScopeWorkspaceSaved = false
 	p.workspaceScopeSelection = chatWorkspaceScopeSelectSession
 	p.workspaceScopeScroll = 0
 	p.workspaceScopeAllowRect = Rect{}
-	p.workspaceScopeAddDirRect = Rect{}
 	p.workspaceScopeDenyRect = Rect{}
 }
 
@@ -54,7 +48,7 @@ func (p *ChatPage) OpenWorkspaceScopePermissionModal(record ChatPermissionRecord
 	if !isWorkspaceScopePermission(record) {
 		return false
 	}
-	title, summary, toolName, accessLabel, requestedPath, resolvedPath, directory, workspacePath, workspaceName, workspaceSaved := workspaceScopePermissionPayload(record)
+	title, summary, toolName, accessLabel, requestedPath, resolvedPath, directory := workspaceScopePermissionPayload(record)
 	if title == "" {
 		title = "Allow read access?"
 	}
@@ -65,11 +59,7 @@ func (p *ChatPage) OpenWorkspaceScopePermissionModal(record ChatPermissionRecord
 		directory = firstNonEmptyStringUI(resolvedPath, requestedPath)
 	}
 	if summary == "" {
-		if workspaceSaved {
-			summary = fmt.Sprintf("Allow %s for this chat session only, or add the directory to the saved workspace permanently.", accessLabel)
-		} else {
-			summary = fmt.Sprintf("Allow %s for this chat session only.", accessLabel)
-		}
+		summary = fmt.Sprintf("Allow %s for this chat session only.", accessLabel)
 	}
 
 	p.workspaceScopeVisible = true
@@ -81,13 +71,9 @@ func (p *ChatPage) OpenWorkspaceScopePermissionModal(record ChatPermissionRecord
 	p.workspaceScopeRequestedPath = strings.TrimSpace(requestedPath)
 	p.workspaceScopeResolvedPath = strings.TrimSpace(resolvedPath)
 	p.workspaceScopeDirectory = strings.TrimSpace(directory)
-	p.workspaceScopeWorkspacePath = strings.TrimSpace(workspacePath)
-	p.workspaceScopeWorkspaceName = strings.TrimSpace(workspaceName)
-	p.workspaceScopeWorkspaceSaved = workspaceSaved
 	p.workspaceScopeSelection = chatWorkspaceScopeSelectSession
 	p.workspaceScopeScroll = 0
 	p.workspaceScopeAllowRect = Rect{}
-	p.workspaceScopeAddDirRect = Rect{}
 	p.workspaceScopeDenyRect = Rect{}
 	p.statusLine = "workspace access permission active"
 	return true
@@ -112,12 +98,6 @@ func (p *ChatPage) handleWorkspaceScopeModalMouse(ev *tcell.EventMouse) bool {
 		case p.workspaceScopeAllowRect.Contains(x, y):
 			p.workspaceScopeSelection = chatWorkspaceScopeSelectSession
 			p.confirmWorkspaceScopeSelection()
-			return true
-		case p.workspaceScopeAddDirRect.Contains(x, y):
-			if p.workspaceScopeHasAddDirOption() {
-				p.workspaceScopeSelection = chatWorkspaceScopeSelectAddDir
-				p.confirmWorkspaceScopeSelection()
-			}
 			return true
 		case p.workspaceScopeDenyRect.Contains(x, y):
 			p.workspaceScopeSelection = chatWorkspaceScopeSelectDeny
@@ -185,20 +165,9 @@ func (p *ChatPage) handleWorkspaceScopeModalKey(ev *tcell.EventKey) bool {
 			p.confirmWorkspaceScopeSelection()
 			return true
 		case '2':
-			if p.workspaceScopeHasAddDirOption() {
-				p.workspaceScopeSelection = chatWorkspaceScopeSelectAddDir
-				p.confirmWorkspaceScopeSelection()
-			} else {
-				p.workspaceScopeSelection = chatWorkspaceScopeSelectDeny
-				p.confirmWorkspaceScopeSelection()
-			}
+			p.workspaceScopeSelection = chatWorkspaceScopeSelectDeny
+			p.confirmWorkspaceScopeSelection()
 			return true
-		case '3':
-			if p.workspaceScopeHasAddDirOption() {
-				p.workspaceScopeSelection = chatWorkspaceScopeSelectDeny
-				p.confirmWorkspaceScopeSelection()
-				return true
-			}
 		case 'h', 'H':
 			p.shiftWorkspaceScopeSelection(-1)
 			return true
@@ -262,7 +231,6 @@ func (p *ChatPage) drawWorkspaceScopeModal(s tcell.Screen, screen Rect) {
 	}
 
 	p.workspaceScopeAllowRect = Rect{}
-	p.workspaceScopeAddDirRect = Rect{}
 	p.workspaceScopeDenyRect = Rect{}
 
 	FillRect(s, modal, p.theme.Panel)
@@ -318,22 +286,13 @@ func (p *ChatPage) drawWorkspaceScopeModal(s tcell.Screen, screen Rect) {
 
 	actionX := modal.X + 2
 	p.normalizeWorkspaceScopeSelection()
-	allowLabel, addDirLabel, denyLabel := "1 Allow This Session", "2 Add To Workspace", "3 Deny"
-	if !p.workspaceScopeHasAddDirOption() {
-		allowLabel, addDirLabel, denyLabel = "1 Allow This Session", "", "2 Deny"
-	}
+	allowLabel, denyLabel := "1 Allow for This Chat Session", "2 Deny"
 	if modal.W < 62 {
-		allowLabel, addDirLabel, denyLabel = "1 Session", "2 Add", "3 Deny"
-		if !p.workspaceScopeHasAddDirOption() {
-			allowLabel, addDirLabel, denyLabel = "1 Allow", "", "2 Deny"
-		}
+		allowLabel, denyLabel = "1 Allow This Session", "2 Deny"
 	}
 	p.workspaceScopeAllowRect, actionX = drawWorkspaceScopeActionButton(s, actionX, actionY, modal.X+modal.W-2, allowLabel, p.workspaceScopeActionButtonStyle(chatWorkspaceScopeSelectSession, p.theme.Success))
-	if p.workspaceScopeHasAddDirOption() {
-		p.workspaceScopeAddDirRect, actionX = drawWorkspaceScopeActionButton(s, actionX, actionY, modal.X+modal.W-2, addDirLabel, p.workspaceScopeActionButtonStyle(chatWorkspaceScopeSelectAddDir, p.theme.Accent))
-	}
 	p.workspaceScopeDenyRect, _ = drawWorkspaceScopeActionButton(s, actionX, actionY, modal.X+modal.W-2, denyLabel, p.workspaceScopeActionButtonStyle(chatWorkspaceScopeSelectDeny, p.theme.Error))
-	if p.workspaceScopeAllowRect.W == 0 && p.workspaceScopeAddDirRect.W == 0 && p.workspaceScopeDenyRect.W == 0 {
+	if p.workspaceScopeAllowRect.W == 0 && p.workspaceScopeDenyRect.W == 0 {
 		compactHint := "Enter confirms • Tab switches • Esc denies"
 		DrawText(s, modal.X+2, actionY, modal.W-4, onPanel(p.theme.TextMuted), clampEllipsis(compactHint, modal.W-4))
 	}
@@ -366,29 +325,16 @@ func (p *ChatPage) workspaceScopeModalLines(width int) []string {
 	lines = append(lines, "")
 
 	accessLabel := emptyValue(strings.TrimSpace(p.workspaceScopeAccessLabel), "read access")
-	appendWorkspaceScopeWrapped(fmt.Sprintf("Allow This Session: this grants %s to the directory above for this chat session only. It does not save or change the workspace. A different chat session will ask again.", accessLabel))
+	appendWorkspaceScopeWrapped(fmt.Sprintf("Allow for This Chat Session: this grants %s to the directory above temporarily for this chat session only. It does not save or change any workspace. A different chat session will ask again.", accessLabel))
 	lines = append(lines, "")
 
-	if p.workspaceScopeHasAddDirOption() {
-		workspaceLabel := emptyValue(strings.TrimSpace(p.workspaceScopeWorkspaceName), strings.TrimSpace(p.workspaceScopeWorkspacePath))
-		appendWorkspaceScopeWrapped(fmt.Sprintf("Add To Workspace: this links %s into workspace %q. Future access from that workspace will stop asking for permission.", emptyValue(strings.TrimSpace(p.workspaceScopeDirectory), strings.TrimSpace(p.workspaceScopeResolvedPath)), workspaceLabel))
-	} else {
-		appendWorkspaceScopeWrapped("Permanent add-dir is not available here because this session is not currently using a saved workspace.")
-		appendWorkspaceScopeWrapped("If you want permanent permissionless access later, save the workspace first with /workspace save, then use /add-dir.")
-	}
+	appendWorkspaceScopeWrapped("To use this directory as a durable workspace later, add it as its own workspace from the workspace picker.")
 	lines = append(lines, "")
 	appendWorkspaceScopeWrapped("Enter confirms the selected action. Tab/Shift+Tab or Left/Right switches actions. Esc denies immediately.")
 	return lines
 }
 
-func (p *ChatPage) workspaceScopeHasAddDirOption() bool {
-	return p != nil && p.workspaceScopeWorkspaceSaved
-}
-
 func (p *ChatPage) workspaceScopeAvailableSelections() []int {
-	if p.workspaceScopeHasAddDirOption() {
-		return []int{chatWorkspaceScopeSelectSession, chatWorkspaceScopeSelectAddDir, chatWorkspaceScopeSelectDeny}
-	}
 	return []int{chatWorkspaceScopeSelectSession, chatWorkspaceScopeSelectDeny}
 }
 
@@ -406,8 +352,6 @@ func (p *ChatPage) hoveredWorkspaceScopeSelection(x, y int) (int, bool) {
 	switch {
 	case p.workspaceScopeAllowRect.Contains(x, y):
 		return chatWorkspaceScopeSelectSession, true
-	case p.workspaceScopeAddDirRect.Contains(x, y) && p.workspaceScopeHasAddDirOption():
-		return chatWorkspaceScopeSelectAddDir, true
 	case p.workspaceScopeDenyRect.Contains(x, y):
 		return chatWorkspaceScopeSelectDeny, true
 	default:
@@ -460,9 +404,6 @@ func (p *ChatPage) shiftWorkspaceScopeScroll(delta int) {
 func (p *ChatPage) resolveWorkspaceScopeModal(approve bool) {
 	permissionID := strings.TrimSpace(p.workspaceScopePermission)
 	selection := p.workspaceScopeSelection
-	if selection == chatWorkspaceScopeSelectAddDir && !p.workspaceScopeHasAddDirOption() {
-		selection = chatWorkspaceScopeSelectSession
-	}
 	p.closeWorkspaceScopeModal()
 	if permissionID == "" {
 		return
@@ -474,18 +415,13 @@ func (p *ChatPage) resolveWorkspaceScopeModal(approve bool) {
 	}
 	reason := workspaceScopeDecisionReasonForSelection(selection)
 	p.queueResolvePermissionByID(permissionID, "approve", reason)
-	if selection == chatWorkspaceScopeSelectAddDir {
-		p.statusLine = "workspace add-dir approved"
-		return
-	}
 	p.statusLine = "temporary workspace access approved"
 }
 
-func workspaceScopePermissionPayload(record ChatPermissionRecord) (title, summary, toolName, accessLabel, requestedPath, resolvedPath, directory, workspacePath, workspaceName string, workspaceSaved bool) {
+func workspaceScopePermissionPayload(record ChatPermissionRecord) (title, summary, toolName, accessLabel, requestedPath, resolvedPath, directory string) {
 	payload := decodePermissionArguments(record.ToolArguments)
 	tool := workspaceScopePayloadMap(payload, "tool")
 	request := workspaceScopePayloadMap(payload, "request")
-	workspace := workspaceScopePayloadMap(payload, "workspace")
 
 	title = mapStringArg(payload, "title")
 	summary = mapStringArg(payload, "summary")
@@ -494,9 +430,6 @@ func workspaceScopePermissionPayload(record ChatPermissionRecord) (title, summar
 	requestedPath = mapStringArg(request, "requested_path")
 	resolvedPath = mapStringArg(request, "resolved_target_path")
 	directory = firstNonEmptyStringUI(mapStringArg(request, "directory_path"), resolvedPath, requestedPath)
-	workspacePath = mapStringArg(workspace, "path")
-	workspaceName = mapStringArg(workspace, "name")
-	workspaceSaved = workspaceScopePayloadBool(workspace["exists"])
 	return
 }
 
@@ -508,11 +441,6 @@ func workspaceScopePayloadMap(payload map[string]any, key string) map[string]any
 	return raw
 }
 
-func workspaceScopePayloadBool(value any) bool {
-	flag, _ := value.(bool)
-	return flag
-}
-
 func workspaceScopeAccessLabelForTool(toolName string) string {
 	switch strings.ToLower(strings.TrimSpace(toolName)) {
 	case "read", "list", "grep", "agentic_search":
@@ -522,11 +450,8 @@ func workspaceScopeAccessLabelForTool(toolName string) string {
 	}
 }
 
-func workspaceScopeDecisionReasonForSelection(selection int) string {
+func workspaceScopeDecisionReasonForSelection(_ int) string {
 	decision := chatWorkspaceScopeDecisionSessionRead
-	if selection == chatWorkspaceScopeSelectAddDir {
-		decision = chatWorkspaceScopeDecisionAddDir
-	}
 	payload := map[string]any{
 		"path_id":  chatWorkspaceScopeDecisionPathID,
 		"decision": decision,
@@ -559,35 +484,8 @@ func (p *ChatPage) workspaceScopeActionButtonStyle(selection int, tone tcell.Sty
 	return tcell.StyleDefault.Foreground(fg).Background(bg).Attributes(attrs | bgAttrs | tcell.AttrBold)
 }
 
-func workspaceScopeApprovedStatus(reason string) string {
-	switch workspaceScopeDecisionFromReasonUI(reason) {
-	case chatWorkspaceScopeDecisionAddDir:
-		return "workspace add-dir approved"
-	default:
-		return "temporary workspace access approved"
-	}
-}
-
-func workspaceScopeDecisionFromReasonUI(reason string) string {
-	trimmed := strings.TrimSpace(reason)
-	if trimmed == "" {
-		return chatWorkspaceScopeDecisionSessionRead
-	}
-	if strings.EqualFold(trimmed, chatWorkspaceScopeDecisionAddDir) {
-		return chatWorkspaceScopeDecisionAddDir
-	}
-	if strings.EqualFold(trimmed, chatWorkspaceScopeDecisionSessionRead) {
-		return chatWorkspaceScopeDecisionSessionRead
-	}
-	var payload map[string]any
-	if err := json.Unmarshal([]byte(trimmed), &payload); err != nil {
-		return chatWorkspaceScopeDecisionSessionRead
-	}
-	decision := strings.TrimSpace(mapStringArg(payload, "decision"))
-	if strings.EqualFold(decision, chatWorkspaceScopeDecisionAddDir) {
-		return chatWorkspaceScopeDecisionAddDir
-	}
-	return chatWorkspaceScopeDecisionSessionRead
+func workspaceScopeApprovedStatus(_ string) string {
+	return "temporary workspace access approved"
 }
 
 func firstNonEmptyStringUI(values ...string) string {

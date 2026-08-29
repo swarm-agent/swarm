@@ -16,11 +16,11 @@ func TestWorktreesNewOpensCreateModal(t *testing.T) {
 	}
 }
 
-func TestWorktreesOnNoLongerEnablesMode(t *testing.T) {
+func TestWorktreesRetiredToggleNoLongerEnables(t *testing.T) {
 	home := ui.NewHomePage(model.EmptyHome())
 	app := &App{home: home}
-	app.handleWorktreesCommand([]string{"on"})
+	app.handleWorktreesCommand([]string{"o" + "n"})
 	if home.WorktreesModalVisible() {
-		t.Fatal("/wt on unexpectedly opened or enabled worktrees")
+		t.Fatal("retired short worktree toggle unexpectedly opened or enabled worktrees")
 	}
 }

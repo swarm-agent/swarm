@@ -59,8 +59,7 @@ func TestNormalizeRoutedSessionMediaCanonicalizesAndBounds(t *testing.T) {
 }
 
 func TestRoutedSessionRequestHashBindsPayload(t *testing.T) {
-	plain := false
-	base := routedSessionStartRequest{Input: "route this", AgentName: "swarm", Metadata: map[string]any{"source": "desktop"}, ManagedWorktreeRequested: &plain, WorkspacePath: "/source", HostWorkspacePath: "/source", RuntimeWorkspacePath: "/runtime", WorkspaceBindingID: "binding", SwarmID: "runtime", TargetKind: "host", TargetRelationship: "self"}
+	base := routedSessionStartRequest{Input: "route this", AgentName: "swarm", Metadata: map[string]any{"source": "desktop"}, WorkspacePath: "/source", HostWorkspacePath: "/source", RuntimeWorkspacePath: "/runtime", WorkspaceBindingID: "binding", SwarmID: "runtime", TargetKind: "host", TargetRelationship: "self"}
 	binding := sessionsV3PrimaryBinding{RuntimeSwarmID: "runtime", WorkspaceBindingID: "binding", SourceWorkspaceID: "workspace", SourceWorkspaceGeneration: 2, SourceWorkspacePath: "/source", RuntimeWorkspacePath: "/runtime", PlacementGeneration: 3, BindingGeneration: 4}
 	first, err := routedSessionRequestHash(base, binding, "request", nil)
 	if err != nil {
@@ -94,15 +93,14 @@ func TestRoutedSessionRequestHashBindsPayload(t *testing.T) {
 	if first == bindingHash {
 		t.Fatal("request hash did not bind canonical workspace authority")
 	}
-	worktree := true
 	second = base
-	second.ManagedWorktreeRequested = &worktree
+	second.WorktreeName = "semantic-name"
 	worktreeHash, err := routedSessionRequestHash(second, binding, "request", nil)
 	if err != nil {
 		t.Fatalf("worktree hash: %v", err)
 	}
 	if first == worktreeHash {
-		t.Fatal("request hash did not bind managed worktree intent")
+		t.Fatal("request hash did not bind worktree name")
 	}
 	changedRequestPath := base
 	changedRequestPath.WorkspacePath = "/other-source"

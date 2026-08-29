@@ -59,6 +59,11 @@ func TestWorkspaceKeybindsAreRegisteredAndRestoreOverrides(t *testing.T) {
 	if registered != WorkspaceSlotCount+1 {
 		t.Fatalf("registered workspace keybinds = %d, want %d", registered, WorkspaceSlotCount+1)
 	}
+	for _, retired := range []KeybindID{KeybindWorkspaceLinkDirectory, KeybindWorkspaceUnlinkDirectory} {
+		if _, ok := LookupKeybindDefinition(retired); ok {
+			t.Fatalf("retired linked-directory keybind %q is still registered", retired)
+		}
+	}
 	if _, ok := WorkspaceSlotKeybindID(0); ok {
 		t.Fatal("slot 0 unexpectedly has a keybind id")
 	}

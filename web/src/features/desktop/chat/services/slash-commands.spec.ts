@@ -1,4 +1,4 @@
-import { buildDesktopFlagTaskPrompt, getDesktopSlashCommands, buildDesktopSlashPaletteState, isDesktopWorktreeOnCommand, parseDesktopNewSessionCommand, parseDesktopTaskCommand } from './slash-commands'
+import { buildDesktopFlagTaskPrompt, getDesktopSlashCommands, buildDesktopSlashPaletteState, parseDesktopNewSessionCommand, parseDesktopTaskCommand } from './slash-commands'
 import type { DesktopSlashCommandAction } from './slash-commands'
 
 function assert(condition: boolean, message: string): void {
@@ -85,18 +85,10 @@ function testMCPCommandIsDeferredAndExaRequiresAPIKey(): void {
   assert(mcp?.tips.every((tip) => !tip.includes('Free Exa MCP search')), 'expected /mcp tips not to advertise free Exa MCP search')
 }
 
-function testWorktreeOnCommandIsReady(): void {
-  const command = getDesktopSlashCommands().find((candidate) => candidate.command === '/wt on')
-  assert(Boolean(command), 'expected /wt on command to exist')
-  assert(command?.state === 'ready', 'expected /wt on command to be ready')
-  assert(command?.action.kind === 'enable-new-session-worktree', 'expected /wt on to enable new-session worktree intent')
-
-  const palette = buildDesktopSlashPaletteState('/wt on')
-  assert(palette.exactMatch?.id === 'worktree-on', 'expected /wt on to resolve exactly')
-  assert(palette.matches[0]?.id === 'worktree-on', 'expected /wt on to lead palette matches')
-  assert(isDesktopWorktreeOnCommand(' /WT   on '), 'expected /wt on parser to ignore case and repeated whitespace')
-  assert(!isDesktopWorktreeOnCommand('/wt on extra'), 'expected /wt on parser to reject extra arguments')
-  assert(!isDesktopWorktreeOnCommand('/wt'), 'expected bare /wt to keep its worktree settings behavior')
+function testWorktreeOnCommandIsRetired(): void {
+  const commands = getDesktopSlashCommands()
+  assert(commands.every((candidate) => candidate.command !== '/wt on'), 'expected /wt on command to be absent')
+  assert(buildDesktopSlashPaletteState('/wt on').exactMatch?.id !== 'worktree-on', 'expected /wt on not to resolve a worktree toggle')
 }
 
 function testWorktreeCommandIsRetiredAndWorktreesRemains(): void {
@@ -110,55 +102,27 @@ function testWorktreeCommandIsRetiredAndWorktreesRemains(): void {
   assert(palette.matches.length === 0, 'expected /worktree not to be suggested')
 }
 
-function testNewSessionCommandVariantsPrimeRouterChips(): void {
+function testNewSessionCommandVariantsPrimePlanOnly(): void {
   const commands = getDesktopSlashCommands()
   const expected = [
-    ['/new', false, false],
-    ['/new worktree', true, false],
-    ['/new plan', false, true],
-    ['/new wp', true, true],
+    ['/new', false],
+    ['/new plan', true],
   ] as const
 
-  for (const [commandText, worktreeRequested, planModeRequested] of expected) {
+  for (const [commandText, planModeRequested] of expected) {
     const command = commands.find((candidate) => candidate.command === commandText)
     assert(Boolean(command), `expected ${commandText} to be listed`)
     assert(command?.action.kind === 'new-session', `expected ${commandText} to open a new session`)
     if (command?.action.kind === 'new-session') {
-      assert(command.action.worktreeRequested === worktreeRequested, `expected ${commandText} worktree priming to match`)
       assert(command.action.planModeRequested === planModeRequested, `expected ${commandText} plan priming to match`)
     }
     assert(buildDesktopSlashPaletteState(commandText).exactMatch?.command === commandText, `expected ${commandText} to resolve exactly`)
-    const parsed = parseDesktopNewSessionCommand(commandText)
-    assert(parsed?.prompt === '', `expected bare ${commandText} to have no prompt`)
-    assert(parsed?.worktreeRequested === worktreeRequested, `expected ${commandText} parser worktree priming to match`)
-    assert(parsed?.planModeRequested === planModeRequested, `expected ${commandText} parser plan priming to match`)
   }
 
-  const promptCases = [
-    ['/new fix the sidebar', 'fix the sidebar', false, false, 'new'],
-    ['/new worktree fix the sidebar', 'fix the sidebar', true, false, 'new-worktree'],
-    ['/new plan fix the sidebar', 'fix the sidebar', false, true, 'new-plan'],
-    ['/new wp fix the sidebar', 'fix the sidebar', true, true, 'new-wp'],
-  ] as const
-  for (const [input, prompt, worktreeRequested, planModeRequested, commandID] of promptCases) {
-    const parsed = parseDesktopNewSessionCommand(input)
-    assert(parsed?.prompt === prompt, `expected ${input} prompt to be preserved`)
-    assert(parsed?.worktreeRequested === worktreeRequested, `expected ${input} worktree intent to match`)
-    assert(parsed?.planModeRequested === planModeRequested, `expected ${input} plan intent to match`)
-    const palette = buildDesktopSlashPaletteState(input)
-    assert(palette.exactMatch?.id === commandID, `expected ${input} to resolve its longest command prefix`)
-    assert(palette.matches[0]?.id === commandID, `expected ${input} to select its compound palette entry`)
-  }
-}
-
-function testNewWpForwardsOnlyItsPromptToRouter(): void {
-  const input = '  /NEW   wp   Keep WP in the prompt\nwith exact body text  '
-  const parsed = parseDesktopNewSessionCommand(input)
-
-  assert(parsed?.prompt === 'Keep WP in the prompt\nwith exact body text', 'expected /new wp to remove only its command prefix')
-  assert(parsed?.worktreeRequested === true, 'expected /new wp to preserve managed-worktree intent')
-  assert(parsed?.planModeRequested === true, 'expected /new wp to preserve plan-mode intent')
-  assert(buildDesktopSlashPaletteState(input).exactMatch?.id === 'new-wp', 'expected /new wp prompt input to dispatch the compound command')
+  const parsed = parseDesktopNewSessionCommand('/new plan fix the sidebar')
+  assert(parsed?.prompt === 'fix the sidebar', 'expected /new plan prompt to be preserved')
+  assert(parsed?.planModeRequested === true, 'expected /new plan to prime plan mode')
+  assert(commands.every((command) => command.command !== '/new worktree' && command.command !== '/new wp'), 'expected worktree-specific new-session commands to be absent')
 }
 
 function testTaskCommandAcceptsFullArguments(): void {
@@ -270,10 +234,9 @@ function main(): void {
   testAICommitCommandTriggersCanonicalWorkflow()
   testFastCommandIsRetired()
   testMCPCommandIsDeferredAndExaRequiresAPIKey()
-  testWorktreeOnCommandIsReady()
+  testWorktreeOnCommandIsRetired()
   testWorktreeCommandIsRetiredAndWorktreesRemains()
-  testNewSessionCommandVariantsPrimeRouterChips()
-  testNewWpForwardsOnlyItsPromptToRouter()
+  testNewSessionCommandVariantsPrimePlanOnly()
   testTaskCommandAcceptsFullArguments()
   testFlagCommandIsDevOnlyAndBuildsDiagnosticTask()
   testTaskCommandParsesModeDirective()

@@ -578,13 +578,9 @@ type ChatPage struct {
 	workspaceScopeRequestedPath  string
 	workspaceScopeResolvedPath   string
 	workspaceScopeDirectory      string
-	workspaceScopeWorkspacePath  string
-	workspaceScopeWorkspaceName  string
-	workspaceScopeWorkspaceSaved bool
 	workspaceScopeSelection      int
 	workspaceScopeScroll         int
 	workspaceScopeAllowRect      Rect
-	workspaceScopeAddDirRect     Rect
 	workspaceScopeDenyRect       Rect
 
 	themeChangePermission  string

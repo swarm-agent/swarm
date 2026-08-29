@@ -273,8 +273,6 @@ var keybindDefinitions = []KeybindDefinition{
 	{ID: KeybindWorkspaceNew, Group: "Workspace Modal", Action: "Open new editor", Default: "n", Editable: true},
 	{ID: KeybindWorkspaceActivate, Group: "Workspace Modal", Action: "Activate selected", Default: "a", Editable: true},
 	{ID: KeybindWorkspaceEdit, Group: "Workspace Modal", Action: "Edit selected", Default: "e", Editable: true},
-	{ID: KeybindWorkspaceLinkDirectory, Group: "Workspace Modal", Action: "Link directory", Default: "l", Editable: true},
-	{ID: KeybindWorkspaceUnlinkDirectory, Group: "Workspace Modal", Action: "Unlink directory", Default: "u", Editable: true},
 	{ID: KeybindWorkspaceDelete, Group: "Workspace Modal", Action: "Delete selected", Default: "d", Editable: true},
 	{ID: KeybindWorkspaceMoveUp, Group: "Workspace Modal", Action: "Move selected up", Default: "shift+k", Editable: true},
 	{ID: KeybindWorkspaceMoveDown, Group: "Workspace Modal", Action: "Move selected down", Default: "shift+j", Editable: true},

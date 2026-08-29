@@ -144,7 +144,7 @@ func (r *Runtime) startRoutedDraft(ctx context.Context, allowResolved bool) (cli
 	response, err := r.transport.StartRoutedSessionV3(ctx, client.RoutedSessionV3StartRequest{
 		Input: draft.Prompt, ClientRequestID: draft.ClientRequestID, IdempotencyKey: draft.ClientRequestID,
 		AgentName: draft.AgentName, Metadata: cloneMetadata(draft.Metadata),
-		ManagedWorktreeRequested: draft.ManagedWorktreeRequested, PlanModeRequested: draft.PlanModeRequested,
+		PlanModeRequested: draft.PlanModeRequested,
 		WorkspacePath: draft.WorkspacePath, HostWorkspacePath: draft.HostWorkspacePath,
 		RuntimeWorkspacePath: draft.RuntimeWorkspacePath, WorkspaceBindingID: draft.WorkspaceBindingID,
 		SwarmID: draft.SwarmID, TargetKind: draft.TargetKind, TargetRelationship: draft.TargetRelationship,
@@ -184,7 +184,7 @@ func (r *Runtime) startRoutedDraft(ctx context.Context, allowResolved bool) (cli
 
 // UpdateRoutedDraftIntent changes only an uncommitted local primer. A routing,
 // failed, resolved, or durable session keeps the submitted operation immutable.
-func (r *Runtime) UpdateRoutedDraftIntent(prompt string, planModeRequested, managedWorktreeRequested bool) error {
+func (r *Runtime) UpdateRoutedDraftIntent(prompt string, planModeRequested bool) error {
 	if r == nil || r.store == nil {
 		return errors.New("v3 routed draft is not primed")
 	}
@@ -195,7 +195,6 @@ func (r *Runtime) UpdateRoutedDraftIntent(prompt string, planModeRequested, mana
 	}
 	draft.Prompt = strings.TrimSpace(prompt)
 	draft.PlanModeRequested = planModeRequested
-	draft.ManagedWorktreeRequested = managedWorktreeRequested
 	if draft.Prompt == "" {
 		draft.ClientRequestID = ""
 	}

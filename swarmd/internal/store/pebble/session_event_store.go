@@ -214,7 +214,8 @@ type V3SessionProjection struct {
 	SessionID                  string `json:"session_id"`
 	LastEventSeq               uint64 `json:"last_event_seq"`
 	ProjectionHighWatermarkSeq uint64 `json:"projection_high_watermark_seq"`
-	UpdatedAt                  int64  `json:"updated_at"`
+	UpdatedAt                  int64                      `json:"updated_at"`
+	WorkspaceUsage             []WorkspaceUsageProjection `json:"workspace_usage,omitempty"`
 }
 
 const v3RealtimeOutboxReferenceVersion = 1
@@ -265,11 +266,13 @@ type V3RealtimeOutboxMembership struct {
 	WorktreeRootPath        string         `json:"worktree_root_path,omitempty"`
 	WorktreeBaseBranch      string         `json:"worktree_base_branch,omitempty"`
 	WorktreeBranch          string         `json:"worktree_branch,omitempty"`
-	TemporaryWorkspaceRoots []string       `json:"temporary_workspace_roots,omitempty"`
-	Metadata                map[string]any `json:"metadata,omitempty"`
-	Deleted                 bool           `json:"deleted,omitempty"`
-	TombstoneKind           string         `json:"tombstone_kind,omitempty"`
-	CapturedAt              int64          `json:"captured_at"`
+	TemporaryWorkspaceRoots []string                     `json:"temporary_workspace_roots,omitempty"`
+	WorkspaceGrants         []WorkspaceGrant             `json:"workspace_grants,omitempty"`
+	WorkspaceUsage          []WorkspaceUsageProjection   `json:"workspace_usage,omitempty"`
+	Metadata                map[string]any               `json:"metadata,omitempty"`
+	Deleted                 bool                         `json:"deleted,omitempty"`
+	TombstoneKind           string                       `json:"tombstone_kind,omitempty"`
+	CapturedAt              int64                        `json:"captured_at"`
 }
 
 func marshalV3RealtimeOutboxReference(record V3RealtimeOutboxRecord) ([]byte, error) {
@@ -322,6 +325,8 @@ func newV3RealtimeOutboxMembershipFromSession(session SessionSnapshot, now int64
 		WorktreeBaseBranch:      strings.TrimSpace(session.WorktreeBaseBranch),
 		WorktreeBranch:          strings.TrimSpace(session.WorktreeBranch),
 		TemporaryWorkspaceRoots: append([]string(nil), session.TemporaryWorkspaceRoots...),
+		WorkspaceGrants:         NormalizeSessionWorkspaceGrants(session),
+		WorkspaceUsage:          WorkspaceUsageFromGrants(NormalizeSessionWorkspaceGrants(session)),
 		Metadata:                v3RealtimeMembershipMetadata(session.Metadata),
 		CapturedAt:              now,
 	}
@@ -345,7 +350,10 @@ func v3RealtimeMembershipMetadata(metadata map[string]any) map[string]any {
 	out := map[string]any{}
 	for _, key := range []string{
 		"navigation_hidden", "system_session", "system_sidechat", "lineage_kind",
-		"swarm_v3_source_workspace_path", "routed_worktree_name",
+		"swarm_v3_workspace_binding_id", "local_workspace_binding_id", "workspace_id",
+		"swarm_v3_source_workspace_id", "swarm_v3_source_workspace_generation", "swarm_v3_source_workspace_name", "swarm_v3_source_workspace_path",
+		"swarm_v3_runtime_workspace_path", "swarm_v3_runtime_swarm_id", "swarm_v3_runtime_kind", "swarm_v3_authority_host_swarm_id",
+		"swarm_v3_placement_generation", "swarm_v3_binding_generation", "routed_worktree_name",
 		"swarm_v3_tui_cwd_path", "swarm_v3_tui_original_cwd_path", "swarm_v3_tui_worktree_path",
 	} {
 		if value, ok := metadata[key]; ok {
@@ -887,7 +895,7 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 	if archivedReactivation {
 		event.EventType = "session.reactivated"
 	}
-	projection := V3SessionProjection{SessionID: input.SessionID, LastEventSeq: seq, ProjectionHighWatermarkSeq: seq, UpdatedAt: now}
+	projection := V3SessionProjection{SessionID: input.SessionID, LastEventSeq: seq, ProjectionHighWatermarkSeq: seq, UpdatedAt: now, WorkspaceUsage: WorkspaceUsageFromGrants(NormalizeSessionWorkspaceGrants(membershipSession))}
 	storedResult := V3SessionMutationStoredResult{
 		SessionID:                  input.SessionID,
 		FirstSeq:                   seq,

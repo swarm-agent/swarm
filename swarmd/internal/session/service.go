@@ -691,6 +691,9 @@ func (s *Service) SetWorkspacePath(sessionID, workspacePath string) (pebblestore
 	return session, &env, nil
 }
 
+// AddTemporaryWorkspaceRoot is retained for non-V3 compatibility callers.
+// New V3 execution paths must use ApplySessionMutation so session, projection,
+// event, and realtime outbox state remain atomic.
 func (s *Service) AddTemporaryWorkspaceRoot(sessionID, root string) (pebblestore.SessionSnapshot, *pebblestore.EventEnvelope, error) {
 	sessionID = strings.TrimSpace(sessionID)
 	root = strings.TrimSpace(root)

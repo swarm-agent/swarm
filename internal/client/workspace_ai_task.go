@@ -25,8 +25,8 @@ type RoutedTaskWorkspaceAuthority struct {
 
 // CreateRoutedTaskSession asks the Router to create and start a background
 // session. The caller supplies canonical source-workspace authority while the
-// Router owns task naming and worktree routing. Task commands always authorize
-// and require a managed worktree; Plan remains an explicit caller-owned intent.
+// Router owns task naming and mandatory managed-worktree routing. Plan remains
+// the only caller-owned routing intent.
 func (c *API) CreateRoutedTaskSession(ctx context.Context, request, idempotencyKey string, planMode bool, originSessionID string, authority RoutedTaskWorkspaceAuthority) (RoutedTaskSessionResponse, error) {
 	request = strings.TrimSpace(request)
 	idempotencyKey = strings.TrimSpace(idempotencyKey)
@@ -48,7 +48,6 @@ func (c *API) CreateRoutedTaskSession(ctx context.Context, request, idempotencyK
 		"client_request_id":          idempotencyKey,
 		"idempotency_key":            idempotencyKey,
 		"agent_name":                 "swarm",
-		"managed_worktree_requested": true,
 		"plan_mode_requested":        planMode,
 		"workspace_path":             authority.WorkspacePath,
 		"host_workspace_path":        authority.WorkspacePath,

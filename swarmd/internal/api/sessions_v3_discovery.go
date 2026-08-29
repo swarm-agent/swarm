@@ -98,6 +98,8 @@ type sessionsV3DiscoverySession struct {
 	AccountScopeID          string                                `json:"account_scope_id,omitempty"`
 	WorkspacePath           string                                `json:"workspace_path"`
 	WorkspaceName           string                                `json:"workspace_name"`
+	WorkspaceGrants         []pebblestore.WorkspaceGrant          `json:"workspace_grants,omitempty"`
+	WorkspaceUsage          []pebblestore.WorkspaceUsageProjection `json:"workspace_usage,omitempty"`
 	TemporaryWorkspaceRoots []string                              `json:"temporary_workspace_roots,omitempty"`
 	Title                   string                                `json:"title"`
 	Mode                    string                                `json:"mode"`
@@ -135,6 +137,8 @@ func sessionsV3DiscoverySessions(source map[string]pebblestore.SessionSnapshot) 
 			AccountScopeID:          session.AccountScopeID,
 			WorkspacePath:           session.WorkspacePath,
 			WorkspaceName:           session.WorkspaceName,
+			WorkspaceGrants:         pebblestore.NormalizeSessionWorkspaceGrants(session),
+			WorkspaceUsage:          pebblestore.WorkspaceUsageFromGrants(pebblestore.NormalizeSessionWorkspaceGrants(session)),
 			TemporaryWorkspaceRoots: session.TemporaryWorkspaceRoots,
 			Title:                   session.Title,
 			Mode:                    session.Mode,

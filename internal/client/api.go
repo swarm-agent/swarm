@@ -554,7 +554,6 @@ type SessionCreateOptions struct {
 	Metadata                 map[string]any
 	Preference               ModelPreference
 	ModelProfile             *SessionV3ModelProfileChoice
-	WorktreeMode             string
 	WorktreeUseCurrentBranch *bool
 	WorktreeBaseBranch       string
 	WorktreeBranchName       string
@@ -1449,7 +1448,6 @@ type RunToolScope struct {
 type RunExecutionContext struct {
 	WorkspacePath      string `json:"workspace_path,omitempty"`
 	CWD                string `json:"cwd,omitempty"`
-	WorktreeMode       string `json:"worktree_mode,omitempty"`
 	WorktreeRootPath   string `json:"worktree_root_path,omitempty"`
 	WorktreeBranch     string `json:"worktree_branch,omitempty"`
 	WorktreeBaseBranch string `json:"worktree_base_branch,omitempty"`
@@ -3117,9 +3115,6 @@ func sessionV3ModelProfileCreateRequest(choice *SessionV3ModelProfileChoice) map
 func appendSessionV3WorktreeCreateOptions(req map[string]any, options SessionCreateOptions) {
 	if req == nil {
 		return
-	}
-	if mode := strings.ToLower(strings.TrimSpace(options.WorktreeMode)); mode != "" {
-		req["worktree_mode"] = mode
 	}
 	if options.WorktreeUseCurrentBranch != nil {
 		req["worktree_use_current_branch"] = *options.WorktreeUseCurrentBranch

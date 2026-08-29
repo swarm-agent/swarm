@@ -37,7 +37,6 @@ interface SavedWorkspaceSectionProps
     | 'onOpenWorkspace'
     | 'onEditWorkspace'
     | 'onDeleteWorkspace'
-    | 'onToggleWorktree'
     | 'onMoveWorkspaceToIndex'
     | 'onDraggingWorkspaceChange'
   > {
@@ -62,7 +61,6 @@ export function SavedWorkspaceSection({
   onOpenWorkspace,
   onEditWorkspace,
   onDeleteWorkspace,
-  onToggleWorktree,
   onMoveWorkspaceToIndex,
   onDraggingWorkspaceChange,
   title = 'Saved workspaces',
@@ -110,7 +108,6 @@ export function SavedWorkspaceSection({
               onOpen={onOpenWorkspace}
               onEdit={onEditWorkspace}
               onDelete={onDeleteWorkspace}
-              onToggleWorktree={onToggleWorktree}
               onMoveToIndex={onMoveWorkspaceToIndex}
               onDraggingChange={onDraggingWorkspaceChange}
               density={density}
@@ -145,7 +142,7 @@ export function DiscoveredDirectorySection({
   onBrowsePath,
   onUseFolderTemporarily,
   title = 'Folders on this computer',
-  description = 'Browse likely project folders and create a workspace when you find the right one.',
+  description = 'Browse likely project folders, use one for this chat only, or add one as a new workspace.',
   compact = false,
   className,
   headerAside,
@@ -201,10 +198,10 @@ export function DiscoveredDirectorySection({
                 </button>
                 <div className="flex flex-wrap justify-end gap-2">
                   <Button type="button" variant="ghost" disabled={savingPath === entry.path} onClick={() => onUseFolderTemporarily(entry.path)}>
-                    Use temporarily
+                    Use for this chat only
                   </Button>
                   <Button type="button" disabled={savingPath === entry.path} onClick={() => onSaveDiscovered(entry)}>
-                    {savingPath === entry.path ? 'Saving…' : 'Create workspace'}
+                    {savingPath === entry.path ? 'Saving…' : 'Add folder as a new workspace'}
                   </Button>
                 </div>
               </article>

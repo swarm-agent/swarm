@@ -20,9 +20,18 @@ func sessionWorkspaceScopeIndexPaths(session SessionSnapshot) []string {
 		seen[normalized] = struct{}{}
 		paths = append(paths, normalized)
 	}
+	canonicalSource := sessionMetadataString(session.Metadata, "swarm_v3_source_workspace_path")
+	if canonicalSource != "" {
+		appendPath(canonicalSource)
+		return paths
+	}
 	appendPath(session.WorkspacePath)
+	// Legacy sessions without canonical source metadata may still need their
+	// historical aliases for migration/recovery grouping.
 	appendPath(session.WorktreeRootPath)
-	appendPath(sessionMetadataString(session.Metadata, "swarm_v3_source_workspace_path"))
+	for _, grant := range NormalizeSessionWorkspaceGrants(session) {
+		appendPath(grant.Path)
+	}
 	appendPath(sessionMetadataString(session.Metadata, "swarm_v3_tui_cwd_path"))
 	appendPath(sessionMetadataString(session.Metadata, "swarm_v3_tui_original_cwd_path"))
 	return paths
