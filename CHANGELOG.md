@@ -47,7 +47,7 @@ Release entries are the source checkpoint for public docs verification. Each ent
 - Fixed TUI launches from unsaved Git repositories so they retain the configured default workspace while showing actionable `/workspace save` guidance; nested repositories are no longer hidden by broad saved workspace roots.
 - Allowed first-run OpenAI onboarding to accept credentials without depending on a live provider availability check; credentials remain explicitly unverified until a real provider request succeeds.
 - Allowed authenticated same-origin Tailscale Desktop requests admitted by daemon origin policy to trigger host update actions while spoofed requests remain fail-closed.
-- Updated the daemon cryptography dependency to the fixed release for CVE-2026-56854 and made PR critical checks fetch and test the exact declared head/base commits.
+- Updated the daemon cryptography dependency to the fixed release for CVE-2026-56854 and made PR critical checks install their required repository-policy tool before fetching and testing the exact declared head/base commits.
 
 ### Docs impact
 

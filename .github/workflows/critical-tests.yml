@@ -39,6 +39,11 @@ jobs:
             git cat-file -e "${sha}^{commit}"
           done
 
+      - name: Install repository policy dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends --yes ripgrep
+
       - name: Run pre-PR repository policy and atlas checks
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before || github.sha }}
