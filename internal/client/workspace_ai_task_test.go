@@ -5,8 +5,41 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
+
+func TestCreateRoutedTaskSessionRejectsMissingRouterTitleOrOwnedWorktree(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		title      string
+		worktree  bool
+		rootPath  string
+		wantError string
+	}{
+		{name: "missing title", worktree: true, rootPath: "/worktree", wantError: "no task title"},
+		{name: "worktree disabled", title: "Fix routing", rootPath: "/worktree", wantError: "required owned-worktree"},
+		{name: "worktree path missing", title: "Fix routing", worktree: true, wantError: "required owned-worktree"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"ok": true, "session_id": "session-task", "title": test.title, "starting_mode": "auto",
+					"session": map[string]any{"id": "session-task", "title": test.title, "mode": "auto", "worktree_enabled": test.worktree, "worktree_root_path": test.rootPath},
+				})
+			}))
+			defer server.Close()
+			api := New(server.URL)
+			api.SetToken("test-token")
+			_, err := api.CreateRoutedTaskSession(context.Background(), "fix routing", "task-request", false, "", RoutedTaskWorkspaceAuthority{
+				WorkspacePath: "/source-workspace", WorkspaceBindingID: "source-binding", SwarmID: "host-swarm",
+			})
+			if err == nil || !strings.Contains(err.Error(), test.wantError) {
+				t.Fatalf("error = %v, want %q", err, test.wantError)
+			}
+		})
+	}
+}
 
 func TestCreateRoutedTaskSessionPinsWorktreeAndMode(t *testing.T) {
 	for _, test := range []struct {
