@@ -365,6 +365,8 @@ func canonicalWorktreeSessionStateError(session pebblestore.SessionSnapshot, mis
 // handleRoutedSessionStart is the compatibility routed-start transaction.
 // It validates submitted self-runtime workspace authority and allocates the
 // session-owned managed worktree before publishing any durable run authority.
+// Background Router requests additionally route their original text exactly once
+// after replay detection and use only that validated title/worktree naming result.
 func (s *Server) handleRoutedSessionStart(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		methodNotAllowed(w)
@@ -466,6 +468,15 @@ func (s *Server) handleRoutedSessionStart(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	var routerDecision sessionRouterDecision
+	if backgroundRouterRequest {
+		routerDecision, err = s.routeSessionOnce(r.Context(), principal, req.Input)
+		if err != nil {
+			writeRoutedSessionError(w, err)
+			return
+		}
+	}
+
 	planModeRequested := *req.PlanModeRequested
 	now := time.Now().UnixMilli()
 	resolvedAgent, err := s.resolveSessionsV3PrimaryCreateAgent(principal, req.AgentName)
@@ -523,10 +534,23 @@ func (s *Server) handleRoutedSessionStart(w http.ResponseWriter, r *http.Request
 	candidate.Metadata["title_pending"] = true
 	candidate.Metadata["title_locked"] = false
 	delete(candidate.Metadata, "title_source")
+	if backgroundRouterRequest {
+		titleRequest := sessionCreateRequest{Metadata: candidate.Metadata}
+		if err := applyRoutedSessionRouterTitle(&titleRequest, routerDecision.Result.Title); err != nil {
+			writeRoutedSessionError(w, err)
+			return
+		}
+		candidate.Title = titleRequest.Title
+		candidate.Metadata = titleRequest.Metadata
+	}
 	candidate.Metadata["routed_start"] = true
 	candidate.Metadata["routed_start_request_hash"] = requestHash
 	candidate.Metadata["plan_mode_requested"] = planModeRequested
-	if req.WorktreeName != "" {
+	worktreeName := req.WorktreeName
+	if backgroundRouterRequest && routerDecision.Result.WorktreeName != nil {
+		worktreeName = strings.TrimSpace(*routerDecision.Result.WorktreeName)
+	}
+	if worktreeName != "" {
 		candidate.Metadata["routed_worktree_requested"] = true
 	} else {
 		delete(candidate.Metadata, "routed_worktree_requested")
@@ -549,7 +573,7 @@ func (s *Server) handleRoutedSessionStart(w http.ResponseWriter, r *http.Request
 			log.Printf("routed session worktree rollback failed session_id=%q path=%q branch=%q err=%v", sessionID, worktreeAllocation.WorkspacePath, worktreeAllocation.BranchName, rollbackErr)
 		}
 	}()
-	worktreeAllocation, err = s.applyRoutedSessionWorktreeDecision(&candidate, principal, sessionID, req.WorktreeName)
+	worktreeAllocation, err = s.applyRoutedSessionWorktreeDecision(&candidate, principal, sessionID, worktreeName)
 	if err != nil {
 		writeRoutedSessionError(w, err)
 		return
