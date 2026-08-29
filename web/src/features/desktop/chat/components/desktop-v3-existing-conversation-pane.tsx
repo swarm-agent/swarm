@@ -2236,18 +2236,28 @@ export function DesktopV3ExistingConversationPane({
       collectionId: artifact.collectionId,
     });
   }, [routeWorkspaceSlug]);
-  const openArtifactFullView = useCallback((artifact: DesktopV3ArtifactCatalogEntry, partId = "") => {
+  const openArtifactFullView = useCallback((artifact: DesktopV3ArtifactCatalogEntry, partId = "", iterationCollectionId = "") => {
     const artifactKey = desktopV3ArtifactCatalogEntryKey(artifact);
+    const groupCollectionId = iterationCollectionId.trim();
+    const openAsIterationGroup = Boolean(groupCollectionId);
     dismissedArtifactViewerLocationKeyRef.current = "";
-    setArtifactGalleryInitialCollectionId("");
+    setArtifactGalleryInitialCollectionId(groupCollectionId);
     setArtifactGalleryInitialPartId(partId);
-    setArtifactGalleryInitialKey(artifactKey);
+    setArtifactGalleryInitialKey(openAsIterationGroup ? "" : artifactKey);
     setArtifactGalleryOpen(true);
     if (artifactReviewPresentation === "embedded" || !routeWorkspaceSlug) return;
+    const ownerSessionId = artifact.lineage?.parentSessionId || artifact.sessionId;
     void navigate({
       to: "/$workspaceSlug/$sessionId",
-      params: { workspaceSlug: routeWorkspaceSlug, sessionId: artifact.sessionId },
-      search: (previous) => ({ ...previous, artifact: undefined, collection: undefined, ...desktopV3ArtifactViewerSearch(artifact) }),
+      params: { workspaceSlug: routeWorkspaceSlug, sessionId: openAsIterationGroup ? ownerSessionId : artifact.sessionId },
+      search: (previous) => ({
+        ...previous,
+        artifact: undefined,
+        collection: undefined,
+        ...(openAsIterationGroup
+          ? desktopV3ArtifactCollectionViewerSearch({ sessionId: ownerSessionId, collectionId: groupCollectionId })
+          : desktopV3ArtifactViewerSearch(artifact)),
+      }),
     });
   }, [artifactReviewPresentation, navigate, routeWorkspaceSlug]);
   const navigateArtifactViewer = useCallback((artifact: DesktopV3ArtifactCatalogEntry) => {
