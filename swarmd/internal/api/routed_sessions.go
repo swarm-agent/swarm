@@ -363,8 +363,8 @@ func canonicalWorktreeSessionStateError(session pebblestore.SessionSnapshot, mis
 }
 
 // handleRoutedSessionStart is the compatibility routed-start transaction.
-// It validates submitted self-runtime workspace authority and preserves the
-// selected current checkout unless the caller explicitly requests a worktree.
+// It validates submitted self-runtime workspace authority and allocates the
+// session-owned managed worktree before publishing any durable run authority.
 func (s *Server) handleRoutedSessionStart(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		methodNotAllowed(w)
@@ -549,14 +549,10 @@ func (s *Server) handleRoutedSessionStart(w http.ResponseWriter, r *http.Request
 			log.Printf("routed session worktree rollback failed session_id=%q path=%q branch=%q err=%v", sessionID, worktreeAllocation.WorkspacePath, worktreeAllocation.BranchName, rollbackErr)
 		}
 	}()
-	if req.WorktreeName != "" {
-		worktreeAllocation, err = s.applyRoutedSessionWorktreeDecision(&candidate, principal, sessionID, req.WorktreeName)
-		if err != nil {
-			writeRoutedSessionError(w, err)
-			return
-		}
-	} else {
-		candidate.WorktreeBranch = sessionruntime.DetectCurrentBranch(candidate.WorkspacePath)
+	worktreeAllocation, err = s.applyRoutedSessionWorktreeDecision(&candidate, principal, sessionID, req.WorktreeName)
+	if err != nil {
+		writeRoutedSessionError(w, err)
+		return
 	}
 
 	var mediaPlan runruntime.PreSessionMediaBindingPlan
@@ -726,6 +722,8 @@ func applyRoutedSessionWorktreeAllocation(candidate *pebblestore.SessionSnapshot
 	candidate.Metadata["swarm_v3_source_workspace_path"] = strings.TrimSpace(sourceWorkspacePath)
 	candidate.Metadata["swarm_v3_source_workspace_name"] = strings.TrimSpace(candidate.WorkspaceName)
 	candidate.Metadata["swarm_v3_runtime_workspace_path"] = strings.TrimSpace(allocation.WorkspacePath)
+	candidate.Metadata["swarm_v3_mandatory_worktree"] = true
+	candidate.Metadata["swarm_v3_worktree_owner_session_id"] = strings.TrimSpace(candidate.ID)
 	available := true
 	candidate.WorkspaceGrants = append(candidate.WorkspaceGrants, pebblestore.WorkspaceGrant{Kind: pebblestore.WorkspaceGrantWorktree, Path: allocation.WorkspacePath, Available: &available})
 	candidate.WorkspaceUsage = pebblestore.WorkspaceUsageFromGrants(candidate.WorkspaceGrants)
@@ -735,6 +733,7 @@ func applyRoutedSessionWorktreeAllocation(candidate *pebblestore.SessionSnapshot
 	candidate.Metadata["routed_worktree_branch"] = strings.TrimSpace(allocation.BranchName)
 	if baseCommit := strings.TrimSpace(allocation.BaseCommit); baseCommit != "" {
 		candidate.Metadata["base_commit"] = baseCommit
+		candidate.Metadata["swarm_v3_worktree_base_commit"] = baseCommit
 	}
 }
 

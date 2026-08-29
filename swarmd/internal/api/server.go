@@ -255,6 +255,7 @@ type worktreeService interface {
 	ListManagedForPrincipal(principal identity.Principal, workspacePath string) ([]worktreeruntime.ManagedWorktree, error)
 	PruneManaged(workspacePath string) (worktreeruntime.PruneResult, error)
 	PruneManagedForPrincipal(principal identity.Principal, workspacePath string) (worktreeruntime.PruneResult, error)
+	InspectTaskWorkspace(workspacePath string) (worktreeruntime.TaskWorkspaceState, error)
 }
 
 type mcpService interface {
@@ -304,7 +305,9 @@ func NewServer(authSvc *auth.Service, agentSvc *agentruntime.Service, modelSvc *
 	if workspaceAware, ok := runSvc.(interface{ SetWorkspaceService(*workspace.Service) }); ok && workspaceAware != nil {
 		workspaceAware.SetWorkspaceService(workspaceSvc)
 	}
-	if workspaceCanonical, ok := runSvc.(interface{ SetSessionWorkspaceCanonicalizer(runruntime.SessionWorkspaceCanonicalizer) }); ok && workspaceCanonical != nil {
+	if workspaceCanonical, ok := runSvc.(interface {
+		SetSessionWorkspaceCanonicalizer(runruntime.SessionWorkspaceCanonicalizer)
+	}); ok && workspaceCanonical != nil {
 		workspaceCanonical.SetSessionWorkspaceCanonicalizer(server.CanonicalizeSessionWorkspace)
 	}
 	if permissionSvc, ok := permSvc.(*permission.Service); ok {
@@ -471,6 +474,15 @@ func (s *Server) SetWorktreeService(worktreeSvc worktreeService) {
 		return
 	}
 	s.worktrees = worktreeSvc
+	if inspector, ok := s.runner.(interface {
+		SetSessionWorktreeInspector(func(string) (worktreeruntime.TaskWorkspaceState, error))
+	}); ok {
+		if worktreeSvc == nil {
+			inspector.SetSessionWorktreeInspector(nil)
+		} else {
+			inspector.SetSessionWorktreeInspector(worktreeSvc.InspectTaskWorkspace)
+		}
+	}
 }
 
 func (s *Server) SetMCPService(mcpSvc mcpService) {

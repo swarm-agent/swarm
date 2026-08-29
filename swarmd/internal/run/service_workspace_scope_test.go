@@ -3,6 +3,7 @@ package run
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -16,6 +17,7 @@ import (
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/tool"
 	workspaceruntime "swarm/packages/swarmd/internal/workspace"
+	worktreeruntime "swarm/packages/swarmd/internal/worktree"
 )
 
 func TestRunWorkspaceScopeInjectsAccountScopedLinkedAgentsInstructions(t *testing.T) {
@@ -384,6 +386,67 @@ func TestRunExecutionContextPreservesCoderLinkedWorkspaceReadAuthorization(t *te
 		if !errors.Is(err, tool.ErrWorkspaceScopeExpansionRejected) || needed {
 			t.Fatalf("live provider protected %s expansion = %t request=%+v err=%v, want fail-closed rejection", call.Name, needed, request, err)
 		}
+	}
+}
+
+// Requirement: sessions admitted with the mandatory worktree contract must be
+// revalidated immediately before provider execution. This prevents stale or
+// client-overridden execution contexts from redirecting a write-capable run to
+// the shared source checkout after durable admission.
+func TestMandatorySessionWorktreeRunRevalidation(t *testing.T) {
+	source := t.TempDir()
+	worktree := t.TempDir()
+	principal := testRunPrincipal()
+	state := worktreeruntime.TaskWorkspaceState{WorkspacePath: worktree, BranchName: "agent/session-owned", Clean: true}
+	runSvc := NewService(nil, nil, nil, nil, nil, nil, discovery.NewService(), nil)
+	runSvc.SetSessionWorktreeInspector(func(path string) (worktreeruntime.TaskWorkspaceState, error) {
+		if path != worktree {
+			return worktreeruntime.TaskWorkspaceState{}, fmt.Errorf("unexpected worktree path %q", path)
+		}
+		return state, nil
+	})
+	session := pebblestore.SessionSnapshot{
+		ID: "session-owned", UserID: principal.UserID, AccountScopeID: principal.AccountScopeID,
+		WorkspacePath: source, WorktreeEnabled: true, WorktreeRootPath: worktree, WorktreeBranch: state.BranchName, WorktreeBaseBranch: "dev",
+		Metadata: map[string]any{
+			"swarm_v3_source_workspace_path": source, "swarm_v3_runtime_workspace_path": worktree,
+			"swarm_v3_mandatory_worktree": true, "swarm_v3_worktree_owner_session_id": "session-owned",
+		},
+	}
+
+	resolved, err := runSvc.resolveRunExecutionContext(session, RunExecutionContext{WorktreeMode: RunWorktreeModeInherit}, principal)
+	if err != nil {
+		t.Fatalf("resolve mandatory worktree context: %v", err)
+	}
+	if resolved.Scope.PrimaryPath != worktree || !resolved.Scope.WorktreeEnabled || len(resolved.Scope.MutationScopes) != 1 || resolved.Scope.MutationScopes[0] != "." {
+		t.Fatalf("mandatory worktree scope = %+v", resolved.Scope)
+	}
+
+	for _, test := range []struct {
+		name    string
+		request RunExecutionContext
+		mutate  func(*pebblestore.SessionSnapshot)
+		want    string
+	}{
+		{name: "off prohibited", request: RunExecutionContext{WorktreeMode: RunWorktreeModeOff}, want: "worktree_mode=off is prohibited"},
+		{name: "source override prohibited", request: RunExecutionContext{WorktreeMode: RunWorktreeModeInherit, WorkspacePath: source}, want: "workspace_path must identify"},
+		{name: "foreign owner rejected", request: RunExecutionContext{WorktreeMode: RunWorktreeModeInherit}, mutate: func(s *pebblestore.SessionSnapshot) {
+			s.Metadata["swarm_v3_worktree_owner_session_id"] = "other-session"
+		}, want: "ownership or lineage is incomplete"},
+		{name: "branch drift rejected", request: RunExecutionContext{WorktreeMode: RunWorktreeModeInherit}, mutate: func(*pebblestore.SessionSnapshot) { state.BranchName = "dev" }, want: "branch changed"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			candidate := session
+			candidate.Metadata = cloneGenericMap(session.Metadata)
+			state.BranchName = "agent/session-owned"
+			if test.mutate != nil {
+				test.mutate(&candidate)
+			}
+			_, err := runSvc.resolveRunExecutionContext(candidate, test.request, principal)
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("error = %v, want substring %q", err, test.want)
+			}
+		})
 	}
 }
 

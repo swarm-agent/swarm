@@ -106,28 +106,29 @@ var (
 )
 
 type Service struct {
-	sessions                  *sessionruntime.Service
-	model                     *model.Service
-	modelProfiles             *modelprofile.Service
-	providers                 *registry.Registry
-	tools                     *tool.Runtime
-	permissions               *permission.Service
-	agents                    *agentruntime.Service
-	discovery                 *discovery.Service
-	workspace                 *workspaceruntime.Service
-	workspaceMap              workspaceMapService
-	uiSettings                *uisettings.Service
-	agentModelSettings        *agentmodelsettings.Service
-	worktrees                 worktreeService
-	events                    *pebblestore.EventLog
-	eventPublish              func(pebblestore.EventEnvelope)
+	sessions                     *sessionruntime.Service
+	model                        *model.Service
+	modelProfiles                *modelprofile.Service
+	providers                    *registry.Registry
+	tools                        *tool.Runtime
+	permissions                  *permission.Service
+	agents                       *agentruntime.Service
+	discovery                    *discovery.Service
+	workspace                    *workspaceruntime.Service
+	workspaceMap                 workspaceMapService
+	uiSettings                   *uisettings.Service
+	agentModelSettings           *agentmodelsettings.Service
+	worktrees                    worktreeService
+	worktreeInspect              func(string) (worktreeruntime.TaskWorkspaceState, error)
+	events                       *pebblestore.EventLog
+	eventPublish                 func(pebblestore.EventEnvelope)
 	sessionDeployCanonicalize    SessionDeployCanonicalizer
 	sessionDeployEnqueue         SessionDeployEnqueuer
 	sessionWorkspaceCanonicalize SessionWorkspaceCanonicalizer
 	aiTaskBinder                 AITaskBinder
-	runCounter                atomic.Uint64
-	lifecycleMu               sync.Mutex
-	activeRuns                map[string]*activeSessionRun
+	runCounter                   atomic.Uint64
+	lifecycleMu                  sync.Mutex
+	activeRuns                   map[string]*activeSessionRun
 }
 
 func (s *Service) LongSessionSnapshot() map[string]any {
@@ -169,17 +170,17 @@ type SessionWorkspaceCanonicalizeInput struct {
 }
 
 type SessionWorkspaceCanonicalization struct {
-	WorkspaceID               string
-	WorkspaceGeneration       int64
-	WorkspaceState            string
-	WorkspaceName             string
-	SourceWorkspacePath       string
-	RuntimeWorkspacePath      string
-	WorkspaceBindingID        string
-	RuntimeSwarmID            string
-	PlacementGeneration       int
-	BindingGeneration         int
-	AuthorityHostSwarmID      string
+	WorkspaceID          string
+	WorkspaceGeneration  int64
+	WorkspaceState       string
+	WorkspaceName        string
+	SourceWorkspacePath  string
+	RuntimeWorkspacePath string
+	WorkspaceBindingID   string
+	RuntimeSwarmID       string
+	PlacementGeneration  int
+	BindingGeneration    int
+	AuthorityHostSwarmID string
 }
 
 type SessionWorkspaceCanonicalizer func(SessionWorkspaceCanonicalizeInput) (SessionWorkspaceCanonicalization, error)
@@ -820,6 +821,20 @@ func (s *Service) SetWorktreeService(worktreeSvc worktreeService) {
 		return
 	}
 	s.worktrees = worktreeSvc
+	if worktreeSvc == nil {
+		s.worktreeInspect = nil
+	} else {
+		s.worktreeInspect = worktreeSvc.InspectTaskWorkspace
+	}
+}
+
+// SetSessionWorktreeInspector wires the narrow provider-start revalidation
+// authority for API-owned session worktree allocation services.
+func (s *Service) SetSessionWorktreeInspector(inspect func(string) (worktreeruntime.TaskWorkspaceState, error)) {
+	if s == nil {
+		return
+	}
+	s.worktreeInspect = inspect
 }
 
 func (s *Service) SetEventPublisher(publish func(pebblestore.EventEnvelope)) {

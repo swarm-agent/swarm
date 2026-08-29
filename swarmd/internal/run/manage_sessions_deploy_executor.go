@@ -330,6 +330,10 @@ func (s *Service) executeManageSessionsDeployBound(ctx context.Context, parentSe
 		workspaceName = firstNonEmptyString(canonical.SourceWorkspaceName, workspaceName)
 		metadata["swarm_v3_source_workspace_path"] = canonical.SourceWorkspacePath
 		metadata["swarm_v3_runtime_workspace_path"] = workspacePath
+		metadata["swarm_v3_mandatory_worktree"] = true
+		metadata["swarm_v3_worktree_owner_session_id"] = sessionID
+		metadata["swarm_v3_worktree_base_commit"] = allocation.BaseCommit
+		metadata["base_commit"] = allocation.BaseCommit
 		available := true
 		workspaceGrants := []pebblestore.WorkspaceGrant{
 			{Kind: pebblestore.WorkspaceGrantPrimary, WorkspaceID: canonical.SourceWorkspaceID, WorkspaceGeneration: canonical.SourceWorkspaceGeneration, Path: canonical.SourceWorkspacePath, Name: workspaceName, Available: &available},

@@ -796,9 +796,9 @@ func (s *Service) buildManageWorkspacePermissionPayload(sessionID, callArguments
 		approved := map[string]any{"action": "update_map", "expected_revision": args.ExpectedRevision, "content": normalizedContent, "intent": args.Intent, "permission_scope": "workspace_map_update"}
 		return map[string]any{
 			"action": "update_map", "permission_scope": "workspace_map_update", "intent": args.Intent,
-			"target": map[string]any{"account_scoped": true, "revision": current.Revision, "digest": current.Digest},
-			"requested_changes": map[string]any{"content_bytes": len(args.Content)},
-			"safety": map[string]any{"account_scoped": true, "optimistic_concurrency": true, "filesystem_contents_changed": false},
+			"target":             map[string]any{"account_scoped": true, "revision": current.Revision, "digest": current.Digest},
+			"requested_changes":  map[string]any{"content_bytes": len(args.Content)},
+			"safety":             map[string]any{"account_scoped": true, "optimistic_concurrency": true, "filesystem_contents_changed": false},
 			"approved_arguments": approved,
 		}, nil
 	}
@@ -978,6 +978,7 @@ func (s *Service) adoptSessionWorktree(sessionID string, principal identity.Prin
 	next.WorktreeEnabled, next.WorktreeRootPath = true, allocation.WorkspacePath
 	next.WorktreeBaseBranch, next.WorktreeBranch = allocation.BaseBranch, allocation.BranchName
 	next.Metadata["swarm_v3_runtime_workspace_path"] = next.WorktreeRootPath
+	next.Metadata["swarm_v3_mandatory_worktree"] = true
 	next.Metadata["swarm_v3_worktree_owner_session_id"] = sessionID
 	next.Metadata["swarm_v3_worktree_base_commit"] = allocation.BaseCommit
 	next.Metadata["base_commit"] = allocation.BaseCommit

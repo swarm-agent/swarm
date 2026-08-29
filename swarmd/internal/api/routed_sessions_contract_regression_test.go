@@ -19,7 +19,7 @@ import (
 
 // TestRoutedSessionContractRegression protects the routed-start boundary as one
 // server-owned transaction: the client supplies intent and canonical workspace
-// authority, while the current checkout is preserved unless isolation is explicit.
+// authority, while every Git-backed routed session is admitted into an owned lane.
 func TestRoutedSessionContractRegression(t *testing.T) {
 	t.Run("client cannot supply pre-session route authority", func(t *testing.T) {
 		runner := &sessionRouterRecordingRunner{id: "recording", response: provideriface.Response{Text: `{"title":"Router title"}`}}
@@ -96,8 +96,11 @@ func TestRoutedSessionContractRegression(t *testing.T) {
 		if result.Session.WorkspaceName != "Routed Workspace" || result.Session.Metadata["swarm_v3_workspace_binding_id"] != "routed-binding" || result.Session.Metadata["swarm_v3_runtime_swarm_id"] != "local-swarm" {
 			t.Fatalf("plain start did not retain selected binding authority: %+v", result.Session)
 		}
-		if result.Session.WorktreeEnabled || result.Session.WorktreeRootPath != "" || len(result.Session.WorkspaceGrants) < 3 || len(result.Session.WorkspaceUsage) < 3 {
-			t.Fatalf("plain start did not preserve the current checkout with all account workspaces: %+v", result.Session)
+		if !result.Session.WorktreeEnabled || result.Session.WorktreeRootPath == "" || result.Session.WorktreeBranch == "" || len(result.Session.WorkspaceGrants) < 4 || len(result.Session.WorkspaceUsage) < 3 {
+			t.Fatalf("plain start did not allocate a session-owned worktree with all account workspaces: %+v", result.Session)
+		}
+		if result.Session.Metadata["swarm_v3_mandatory_worktree"] != true || result.Session.Metadata["swarm_v3_worktree_owner_session_id"] != result.Session.ID || result.Session.Metadata["swarm_v3_runtime_workspace_path"] != result.Session.WorktreeRootPath {
+			t.Fatalf("plain start did not persist mandatory worktree lineage: %+v", result.Session.Metadata)
 		}
 		if result.Mutation.RunIntent == nil || result.Mutation.RunIntent.Status != "pending_executor" {
 			t.Fatalf("plain start did not enqueue its run independently of Router: %+v", result.Mutation.RunIntent)

@@ -32,6 +32,7 @@ type fakeWorktreeService struct {
 	lastNameSeed    string
 	lastBaseBranch  string
 	lastBranchName  string
+	inspectStates   map[string]worktreeruntime.TaskWorkspaceState
 }
 
 func TestSessionsV3ReviewSearchItemPreservesWorktreeClassificationFields(t *testing.T) {
@@ -264,6 +265,17 @@ func (f *fakeWorktreeService) PruneManaged(workspacePath string) (worktreeruntim
 
 func (f *fakeWorktreeService) PruneManagedForPrincipal(principal identity.Principal, workspacePath string) (worktreeruntime.PruneResult, error) {
 	return f.PruneManaged(workspacePath)
+}
+
+func (f *fakeWorktreeService) InspectTaskWorkspace(workspacePath string) (worktreeruntime.TaskWorkspaceState, error) {
+	if state, ok := f.inspectStates[workspacePath]; ok {
+		return state, nil
+	}
+	branch := strings.TrimSpace(f.lastBranchName)
+	if branch == "" {
+		branch = strings.TrimSpace(f.allocation.BranchName)
+	}
+	return worktreeruntime.TaskWorkspaceState{WorkspacePath: workspacePath, BranchName: branch, Clean: true}, nil
 }
 
 func testPrincipal() identity.Principal {

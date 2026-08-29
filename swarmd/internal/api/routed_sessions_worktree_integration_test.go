@@ -138,23 +138,23 @@ func TestApplyRoutedSessionWorktreeDecisionAlwaysAllocatesAndUsesRequestedName(t
 		allocation: worktreeruntime.Allocation{WorkspacePath: "/managed/fix-api", RepoRoot: "/source/repo", BaseBranch: "dev", WorkspaceID: "fix-api"},
 	}}
 	server := &Server{worktrees: stub}
-	candidate := pebblestore.SessionSnapshot{WorkspacePath: "/source/repo", WorkspaceName: "repo"}
+	candidate := pebblestore.SessionSnapshot{ID: "session-1", WorkspacePath: "/source/repo", WorkspaceName: "repo"}
 	allocation, err := server.applyRoutedSessionWorktreeDecision(&candidate, identity.Principal{UserID: "user", AccountScopeID: "account"}, "session-1", "Fix API")
 	if err != nil {
 		t.Fatalf("mandatory lane decision: %v", err)
 	}
-	if stub.allocationCalls != 1 || candidate.WorkspacePath != allocation.WorkspacePath || !candidate.WorktreeEnabled || candidate.WorktreeBranch != "agent/fix-api" {
+	if stub.allocationCalls != 1 || candidate.WorkspacePath != "/source/repo" || candidate.WorktreeRootPath != allocation.WorkspacePath || !candidate.WorktreeEnabled || candidate.WorktreeBranch != "agent/fix-api" {
 		t.Fatalf("mandatory allocation=%+v candidate=%+v calls=%d", allocation, candidate, stub.allocationCalls)
 	}
 }
 
 func TestApplyRoutedSessionWorktreeDecisionUsesDeterministicFallbackWithoutRouter(t *testing.T) {
 	stub := &routedWorktreeServiceStub{fakeWorktreeService: fakeWorktreeService{
-		config: worktreeruntime.Config{UseCurrentBranch: true, BranchName: "agent"},
+		config:     worktreeruntime.Config{UseCurrentBranch: true, BranchName: "agent"},
 		allocation: worktreeruntime.Allocation{WorkspacePath: "/managed/fallback", RepoRoot: "/source/repo", WorkspaceID: "fallback"},
 	}}
 	server := &Server{worktrees: stub}
-	candidate := pebblestore.SessionSnapshot{WorkspacePath: "/source/repo", WorkspaceName: "repo"}
+	candidate := pebblestore.SessionSnapshot{ID: "abcdef1234567890", WorkspacePath: "/source/repo", WorkspaceName: "repo"}
 	if _, err := server.applyRoutedSessionWorktreeDecision(&candidate, identity.Principal{UserID: "user", AccountScopeID: "account"}, "abcdef1234567890", ""); err != nil {
 		t.Fatalf("fallback decision: %v", err)
 	}
@@ -164,11 +164,11 @@ func TestApplyRoutedSessionWorktreeDecisionUsesDeterministicFallbackWithoutRoute
 }
 
 func TestApplyRoutedSessionWorktreeAllocationPreservesSourceAndRecordsFacts(t *testing.T) {
-	candidate := pebblestore.SessionSnapshot{WorkspacePath: "/source/repo", WorkspaceName: "repo", Metadata: map[string]any{"existing": true}}
+	candidate := pebblestore.SessionSnapshot{ID: "session-1", WorkspacePath: "/source/repo", WorkspaceName: "repo", Metadata: map[string]any{"existing": true}}
 	allocation := worktreeruntime.Allocation{WorkspacePath: "/managed/router-fix-api-12345", RepoRoot: "/source/repo", BaseBranch: "dev", BaseCommit: "abc123", BranchName: "router/fix-api-12345", WorkspaceID: "router-fix-api-12345"}
 	applyRoutedSessionWorktreeAllocation(&candidate, "/source/repo", " Fix API ", "Fix API 12345", allocation)
 
-	if candidate.WorkspacePath != allocation.WorkspacePath || !candidate.WorktreeEnabled || candidate.WorktreeRootPath != allocation.WorkspacePath || candidate.WorktreeBaseBranch != "dev" || candidate.WorktreeBranch != "router/fix-api-12345" {
+	if candidate.WorkspacePath != "/source/repo" || !candidate.WorktreeEnabled || candidate.WorktreeRootPath != allocation.WorkspacePath || candidate.WorktreeBaseBranch != "dev" || candidate.WorktreeBranch != "router/fix-api-12345" {
 		t.Fatalf("candidate worktree facts = %+v", candidate)
 	}
 	for _, legacyKey := range []string{"routed_worktree_final_requested_name", "routed_worktree_final_branch"} {
@@ -177,15 +177,17 @@ func TestApplyRoutedSessionWorktreeAllocationPreservesSourceAndRecordsFacts(t *t
 		}
 	}
 	want := map[string]any{
-		"swarm_v3_source_workspace_path":  "/source/repo",
-		"swarm_v3_runtime_workspace_path": allocation.WorkspacePath,
-		"routed_worktree_name":            "Fix API 12345",
-		"routed_worktree_original_name":   "Fix API",
-		"routed_worktree_requested_name":  "Fix API 12345",
-		"routed_worktree_branch":          "router/fix-api-12345",
-		"workspace_id":                    "router-fix-api-12345",
-		"base_commit":                     "abc123",
-		"existing":                        true,
+		"swarm_v3_source_workspace_path":     "/source/repo",
+		"swarm_v3_runtime_workspace_path":    allocation.WorkspacePath,
+		"swarm_v3_mandatory_worktree":        true,
+		"swarm_v3_worktree_owner_session_id": "session-1",
+		"swarm_v3_worktree_base_commit":      "abc123",
+		"routed_worktree_name":               "Fix API 12345",
+		"routed_worktree_original_name":      "Fix API",
+		"routed_worktree_requested_name":     "Fix API 12345",
+		"routed_worktree_branch":             "router/fix-api-12345",
+		"base_commit":                        "abc123",
+		"existing":                           true,
 	}
 	for key, value := range want {
 		if candidate.Metadata[key] != value {
