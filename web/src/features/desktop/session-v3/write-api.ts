@@ -398,6 +398,25 @@ export function normalizeDesktopV3RoutedSessionStartResponse(payload: unknown): 
     || requiredString(payload.session_view.identity.session_id, 'session_view.identity.session_id') !== sessionId) {
     throw new Error('Desktop V3 routed start session_view does not match session_id')
   }
+  const sourceWorkspacePath = typeof payload.session_view.identity.source_workspace_path === 'string'
+    ? payload.session_view.identity.source_workspace_path.trim()
+    : ''
+  const runtimeWorkspacePath = typeof payload.session_view.identity.runtime_workspace_path === 'string'
+    ? payload.session_view.identity.runtime_workspace_path.trim()
+    : ''
+  const worktreeRootPath = typeof payload.session_view.identity.worktree_root_path === 'string'
+    ? payload.session_view.identity.worktree_root_path.trim()
+    : ''
+  if (payload.session_view.identity.worktree_enabled !== true
+    || !sourceWorkspacePath
+    || !runtimeWorkspacePath
+    || !worktreeRootPath
+    || runtimeWorkspacePath !== worktreeRootPath
+    || sourceWorkspacePath === runtimeWorkspacePath
+    || typeof payload.session_view.identity.worktree_branch !== 'string'
+    || payload.session_view.identity.worktree_branch.trim() === '') {
+    throw new Error('Desktop V3 routed start returned no owned worktree authority')
+  }
   if (!isRecord(payload.first_message)
     || requiredString(payload.first_message.session_id, 'first_message.session_id') !== sessionId
     || payload.first_message.role !== 'user') {

@@ -55,6 +55,7 @@ function routedResponse(overrides: Record<string, unknown> = {}) {
         source_workspace_path: '/workspace/source',
         runtime_workspace_path: session.workspace_path,
         worktree_enabled: true,
+        worktree_root_path: '/workspace/runtime',
         worktree_branch: 'agent/routed-flow',
       },
       agentic_settings: {},
@@ -213,6 +214,39 @@ test('background Router start uses its dedicated endpoint without exposing workt
     plan_mode_requested: false,
   })
   assert.equal(Object.hasOwn(body, 'managed_worktree_requested'), false)
+})
+
+test('routed response normalization rejects missing owned-worktree authority', () => {
+  const missingRoot = routedResponse()
+  delete ((missingRoot.session_view as Record<string, unknown>).identity as Record<string, unknown>).worktree_root_path
+  assert.throws(
+    () => normalizeDesktopV3RoutedSessionStartResponse(missingRoot),
+    /no owned worktree authority/,
+  )
+
+  const disabled = routedResponse()
+  const disabledIdentity = (disabled.session_view as Record<string, unknown>).identity as Record<string, unknown>
+  disabledIdentity.worktree_enabled = false
+  assert.throws(
+    () => normalizeDesktopV3RoutedSessionStartResponse(disabled),
+    /no owned worktree authority/,
+  )
+
+  const missingBranch = routedResponse()
+  delete ((missingBranch.session_view as Record<string, unknown>).identity as Record<string, unknown>).worktree_branch
+  assert.throws(
+    () => normalizeDesktopV3RoutedSessionStartResponse(missingBranch),
+    /no owned worktree authority/,
+  )
+
+  const sharedCheckout = routedResponse()
+  const sharedIdentity = (sharedCheckout.session_view as Record<string, unknown>).identity as Record<string, unknown>
+  sharedIdentity.runtime_workspace_path = '/workspace/source'
+  sharedIdentity.worktree_root_path = '/workspace/source'
+  assert.throws(
+    () => normalizeDesktopV3RoutedSessionStartResponse(sharedCheckout),
+    /no owned worktree authority/,
+  )
 })
 
 test('routed start accepts staging IDs without inventing route selections', async () => {
