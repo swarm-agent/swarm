@@ -109,6 +109,7 @@ export async function unarchiveDesktopV3ReviewSessions(versions: Record<string, 
 
 export async function reviewDesktopV3Worktrees(input: {
   workspacePath?: string
+  sessionIds?: string[]
   archiveSessionIds?: string[]
   archiveAll?: boolean
   integrateSessionIds?: string[]
@@ -121,6 +122,7 @@ export async function reviewDesktopV3Worktrees(input: {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       workspace_path: input.workspacePath?.trim() || undefined,
+      session_ids: input.sessionIds,
       archive_session_ids: input.archiveSessionIds,
       archive_all: input.archiveAll,
       integrate_session_ids: input.integrateSessionIds,

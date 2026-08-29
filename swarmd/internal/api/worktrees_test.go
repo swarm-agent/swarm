@@ -34,6 +34,23 @@ type fakeWorktreeService struct {
 	lastBranchName  string
 }
 
+func TestSessionsV3ReviewSearchItemPreservesWorktreeClassificationFields(t *testing.T) {
+	session := pebblestore.SessionSnapshot{
+		ID: "session-one", UserID: "user-one", AccountScopeID: "account-one",
+		WorkspacePath: "/workspace", WorkspaceName: "workspace", Title: "Review", Mode: "auto",
+		WorktreeEnabled: true, WorktreeRootPath: "/worktree", WorktreeBaseBranch: "dev", WorktreeBranch: "agent/review",
+		Metadata: map[string]any{"swarm_v3_source_workspace_path": "/workspace"}, CreatedAt: 1, UpdatedAt: 2,
+	}
+
+	item := sessionsV3ReviewSearchItem(session)
+	if item.ID != session.ID || item.WorktreeRootPath != session.WorktreeRootPath || item.WorktreeBaseBranch != session.WorktreeBaseBranch || item.WorktreeBranch != session.WorktreeBranch {
+		t.Fatalf("search item lost review authority: %+v", item)
+	}
+	if got := item.Metadata["swarm_v3_source_workspace_path"]; got != "/workspace" {
+		t.Fatalf("source workspace = %v, want /workspace", got)
+	}
+}
+
 func TestSearchSessionsV3ReviewWorktreePagesIncludesOlderUnresolvedSessions(t *testing.T) {
 	items := make([]pebblestore.V3SessionSearchItem, 57)
 	for i := range items {

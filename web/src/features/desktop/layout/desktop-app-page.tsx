@@ -3241,12 +3241,15 @@ export function DesktopAppPage() {
   const activeSessionCommits = activeSessionWorktree ? gitSnapshot?.session_commits ?? [] : []
   const activeSessionTargetBranch = activeGitSession?.worktreeBaseBranch?.trim() || 'target branch'
   const activeSessionTargetWorkspacePath = activeGitSession ? desktopSidebarWorkspacePathForSession(activeGitSession, workspacePathByBindingId) : ''
+  const activeSessionNeedsReview = metadataStringValue(activeGitSession?.metadata, 'swarm_v3_sidebar_group') === 'needs_review'
+  // Ordinary session activation only needs scoped status. The full review inventory
+  // remains explicit in Review Worktrees instead of scanning every sibling here.
   const gitReviewQuery = useQuery({
     queryKey: ['session-worktree-review', selectedGitSessionId, activeSessionTargetWorkspacePath, gitSnapshot?.head_oid ?? '', gitSnapshot?.clean ?? false],
-    queryFn: () => reviewDesktopV3Worktrees({ workspacePath: activeSessionTargetWorkspacePath, graceHours: 1 }),
-    enabled: activeSessionWorktree && activeSessionTargetWorkspacePath !== '',
-    staleTime: 2_000,
-    refetchOnWindowFocus: true,
+    queryFn: () => reviewDesktopV3Worktrees({ workspacePath: activeSessionTargetWorkspacePath, sessionIds: [selectedGitSessionId], graceHours: 1 }),
+    enabled: activeSessionWorktree && activeSessionNeedsReview && activeSessionTargetWorkspacePath !== '' && gitSnapshot !== null,
+    staleTime: 30_000,
+    refetchOnWindowFocus: false,
   })
   const activeSessionReviewCandidate = activeSessionWorktree
     ? [...(gitReviewQuery.data?.retained ?? []), ...(gitReviewQuery.data?.done ?? [])].find((item) => item.session_id === selectedGitSessionId) ?? null
