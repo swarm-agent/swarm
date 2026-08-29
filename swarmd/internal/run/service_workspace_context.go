@@ -109,18 +109,19 @@ func (s *Service) resolveRunWorkspaceScope(session pebblestore.SessionSnapshot, 
 			}
 		}
 		return tool.WorkspaceScope{
-			PrimaryPath:         resolvedPath,
-			Roots:               roots,
-			ReadOnlyRoots:       readOnlyRoots,
-			MutationScopes:      mutationScopes,
-			Principal:           principal,
-			SessionID:           strings.TrimSpace(session.ID),
-			WorktreeEnabled:     true,
-			WorktreeRootPath:    resolvedPath,
-			WorktreeBranch:      strings.TrimSpace(session.WorktreeBranch),
-			WorktreeBaseBranch:  strings.TrimSpace(session.WorktreeBaseBranch),
-			WorktreeBaseCommit:  strings.TrimSpace(mapString(session.Metadata, "base_commit")),
-			SourceWorkspacePath: sourceWorkspacePath,
+			PrimaryPath:          resolvedPath,
+			Roots:                roots,
+			ReadOnlyRoots:        readOnlyRoots,
+			MutationScopes:       mutationScopes,
+			RejectScopeExpansion: agentruntime.IsCoderAgentName(mapString(session.Metadata, "requested_subagent")),
+			Principal:            principal,
+			SessionID:            strings.TrimSpace(session.ID),
+			WorktreeEnabled:      true,
+			WorktreeRootPath:     resolvedPath,
+			WorktreeBranch:       strings.TrimSpace(session.WorktreeBranch),
+			WorktreeBaseBranch:   strings.TrimSpace(session.WorktreeBaseBranch),
+			WorktreeBaseCommit:   strings.TrimSpace(mapString(session.Metadata, "base_commit")),
+			SourceWorkspacePath:  sourceWorkspacePath,
 		}, nil
 	}
 	if s != nil && s.workspace != nil {

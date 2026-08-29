@@ -2,6 +2,7 @@ package tool
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -16,12 +17,16 @@ type ScopeExpansionRequest struct {
 	DirectoryPath string
 }
 
+var ErrWorkspaceScopeExpansionRejected = errors.New("workspace scope expansion rejected")
+
 func ScopeExpansionForCall(scope WorkspaceScope, call Call) (ScopeExpansionRequest, bool, error) {
 	readOnlyRoots := append([]string(nil), scope.ReadOnlyRoots...)
 	mutationScopes := append([]string(nil), scope.MutationScopes...)
+	rejectScopeExpansion := scope.RejectScopeExpansion
 	scope = normalizeWorkspaceScope(scope.PrimaryPath, scope.Roots)
 	scope.ReadOnlyRoots = readOnlyRoots
 	scope.MutationScopes = mutationScopes
+	scope.RejectScopeExpansion = rejectScopeExpansion
 	if strings.TrimSpace(scope.PrimaryPath) == "" {
 		return ScopeExpansionRequest{}, false, nil
 	}
@@ -32,8 +37,14 @@ func ScopeExpansionForCall(scope WorkspaceScope, call Call) (ScopeExpansionReque
 	}
 	for _, requestedPath := range requestedPaths {
 		request, needed, err := scopeExpansionForPath(scope, call.Name, argumentName, requestedPath)
-		if err != nil || needed {
+		if err != nil {
 			return request, needed, err
+		}
+		if needed && scope.RejectScopeExpansion {
+			return request, false, fmt.Errorf("%w: delegated Coder access must remain within its assigned worktree and owned scope", ErrWorkspaceScopeExpansionRejected)
+		}
+		if needed {
+			return request, true, nil
 		}
 	}
 	return ScopeExpansionRequest{}, false, nil

@@ -45,7 +45,7 @@ func (s *sameSessionWorktreeStub) AttachBranch(_, _, _ string) (string, error) {
 func (s *sameSessionWorktreeStub) ResolveTaskBase(string) (worktreeruntime.TaskBase, error) {
 	return worktreeruntime.TaskBase{}, nil
 }
-func (s *sameSessionWorktreeStub) AllocateTaskWorkspace(string, worktreeruntime.TaskBase, string) (worktreeruntime.Allocation, error) {
+func (s *sameSessionWorktreeStub) AllocateTaskWorkspace(string, worktreeruntime.TaskBase, string, []string) (worktreeruntime.Allocation, error) {
 	return worktreeruntime.Allocation{}, nil
 }
 func (s *sameSessionWorktreeStub) InspectTaskWorkspace(path string) (worktreeruntime.TaskWorkspaceState, error) {

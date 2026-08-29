@@ -122,6 +122,7 @@ func workspaceScopeForGate(workspaceCtx *runWorkspaceContext, principal identity
 	scope.Roots = append([]string(nil), workspaceCtx.OriginWorkspaceRoots...)
 	scope.ReadOnlyRoots = append([]string(nil), workspaceCtx.Scope.ReadOnlyRoots...)
 	scope.MutationScopes = append([]string(nil), workspaceCtx.Scope.MutationScopes...)
+	scope.RejectScopeExpansion = workspaceCtx.Scope.RejectScopeExpansion
 	scope.Principal = principal
 	scope.SessionID = strings.TrimSpace(sessionID)
 	return scope

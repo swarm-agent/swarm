@@ -576,6 +576,7 @@ func (s *Service) resolveRunExecutionContext(session pebblestore.SessionSnapshot
 		if sessionScope.WorktreeEnabled && sessionScope.WorktreeRootPath == selectedWorktreeRoot {
 			resolvedScope.ReadOnlyRoots = append([]string(nil), sessionScope.ReadOnlyRoots...)
 			resolvedScope.MutationScopes = append([]string(nil), sessionScope.MutationScopes...)
+			resolvedScope.RejectScopeExpansion = sessionScope.RejectScopeExpansion
 			resolvedScope.WorktreeEnabled = true
 			resolvedScope.WorktreeRootPath = sessionScope.WorktreeRootPath
 			resolvedScope.WorktreeBranch = strings.TrimSpace(worktreeBranch)

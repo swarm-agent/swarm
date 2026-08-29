@@ -11,6 +11,7 @@ import (
 
 	"swarm/packages/swarmd/internal/discovery"
 	"swarm/packages/swarmd/internal/identity"
+	"swarm/packages/swarmd/internal/permission"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/tool"
@@ -153,6 +154,9 @@ func TestRunWorkspaceScopeCoderAllowsOnlyCanonicalLinkedWorktreeGitAdminRoot(t *
 	if len(scope.MutationScopes) != 1 || scope.MutationScopes[0] != "src/**" {
 		t.Fatalf("Coder mutation scopes = %#v, want declared owned scope", scope.MutationScopes)
 	}
+	if !scope.RejectScopeExpansion {
+		t.Fatal("Coder worktree scope permits user-approved expansion")
+	}
 	request, needed, err := tool.ScopeExpansionForCall(scope, tool.Call{Name: "read", Arguments: mustJSON(t, map[string]any{"path": filepath.Join(gitAdminRoot, "gitdir")})})
 	if err != nil || needed {
 		t.Fatalf("own Git admin read requested expansion: needed=%t request=%+v err=%v", needed, request, err)
@@ -163,8 +167,8 @@ func TestRunWorkspaceScopeCoderAllowsOnlyCanonicalLinkedWorktreeGitAdminRoot(t *
 	}
 	writeTestFile(t, otherAdmin, filepath.Join(t.TempDir(), ".git"))
 	_, needed, err = tool.ScopeExpansionForCall(scope, tool.Call{Name: "read", Arguments: mustJSON(t, map[string]any{"path": otherAdmin})})
-	if err != nil || !needed {
-		t.Fatalf("unrelated Git admin path expansion = %t err=%v, want permission", needed, err)
+	if !errors.Is(err, tool.ErrWorkspaceScopeExpansionRejected) || needed {
+		t.Fatalf("unrelated Git admin path expansion = %t err=%v, want fail-closed rejection", needed, err)
 	}
 }
 
@@ -237,14 +241,14 @@ func TestRunWorkspaceScopeCoderSourceWorkspaceReadDoesNotRequestPermission(t *te
 		{name: "edit", args: map[string]any{"path": sourceFile, "old_string": "source", "new_string": "changed"}},
 		{name: "webdownload", args: map[string]any{"url": "https://example.com", "output_dir": repo}},
 	} {
-		t.Run(tc.name+"-still-prompts", func(t *testing.T) {
+		t.Run(tc.name+"-fails-closed", func(t *testing.T) {
 			request, needed, err := tool.ScopeExpansionForCall(scope, tool.Call{
 				CallID:    tc.name + "-source-workspace",
 				Name:      tc.name,
 				Arguments: mustJSON(t, tc.args),
 			})
-			if err != nil || !needed {
-				t.Fatalf("Coder source-workspace %s expansion = %t request=%+v err=%v, want permission", tc.name, needed, request, err)
+			if !errors.Is(err, tool.ErrWorkspaceScopeExpansionRejected) || needed {
+				t.Fatalf("Coder source-workspace %s expansion = %t request=%+v err=%v, want fail-closed rejection", tc.name, needed, request, err)
 			}
 		})
 	}
@@ -256,9 +260,52 @@ func TestRunWorkspaceScopeCoderSourceWorkspaceReadDoesNotRequestPermission(t *te
 			Name:      name,
 			Arguments: mustJSON(t, map[string]any{"path": outside, "query": "outside"}),
 		})
-		if err != nil || !needed {
-			t.Fatalf("unrelated %s expansion = %t request=%+v err=%v, want permission", name, needed, request, err)
+		if !errors.Is(err, tool.ErrWorkspaceScopeExpansionRejected) || needed {
+			t.Fatalf("unrelated %s expansion = %t request=%+v err=%v, want fail-closed rejection", name, needed, request, err)
 		}
+	}
+}
+
+func TestWorkspaceScopeGateRejectsCoderEscapeBeforePermissionCreation(t *testing.T) {
+	worktree := t.TempDir()
+	outside := t.TempDir()
+	principal := testRunPrincipal()
+	workspaceCtx := runWorkspaceContext{
+		WorkspacePath:        worktree,
+		WorkspaceRoots:       []string{worktree},
+		OriginWorkspacePath:  worktree,
+		OriginWorkspaceRoots: []string{worktree},
+		Scope: tool.WorkspaceScope{
+			PrimaryPath: worktree, Roots: []string{worktree}, WorktreeEnabled: true,
+			WorktreeRootPath: worktree, RejectScopeExpansion: true,
+		},
+	}
+	permissionStore, err := pebblestore.Open(filepath.Join(t.TempDir(), "permissions.pebble"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer permissionStore.Close()
+	permissions := permission.NewService(pebblestore.NewPermissionStore(permissionStore), nil, nil)
+	runSvc := NewService(nil, nil, nil, nil, permissions, nil, discovery.NewService(), nil)
+
+	results, approved, indexes, changed, waitMS, err := runSvc.gateWorkspaceScopeCalls(
+		context.Background(), "coder-child", "coder-parent", "coder-run", 1, sessionruntime.ModeAuto,
+		worktree, "coder", principal, &workspaceCtx, []tool.Call{{
+			CallID: "outside-edit", Name: "edit", Arguments: mustJSON(t, map[string]any{"path": filepath.Join(outside, "README.md"), "old_string": "a", "new_string": "b"}),
+		}}, nil,
+	)
+	if err != nil || len(approved) != 0 || len(indexes) != 0 || changed || waitMS != 0 {
+		t.Fatalf("Coder escape gate result: approved=%d indexes=%v changed=%t wait=%d err=%v", len(approved), indexes, changed, waitMS, err)
+	}
+	if len(results) != 1 || !strings.Contains(results[0].Error, "workspace scope expansion rejected") {
+		t.Fatalf("Coder escape result = %#v", results)
+	}
+	pending, err := permissions.ListPending("coder-parent", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pending) != 0 {
+		t.Fatalf("Coder escape created user-facing permissions: %#v", pending)
 	}
 }
 
@@ -334,8 +381,8 @@ func TestRunExecutionContextPreservesCoderLinkedWorkspaceReadAuthorization(t *te
 		{Name: "search", Arguments: mustJSON(t, map[string]any{"query": "outside", "path": unrelated})},
 	} {
 		request, needed, err := tool.ScopeExpansionForCall(gateScope, call)
-		if err != nil || !needed {
-			t.Fatalf("live provider protected %s expansion = %t request=%+v err=%v, want permission", call.Name, needed, request, err)
+		if !errors.Is(err, tool.ErrWorkspaceScopeExpansionRejected) || needed {
+			t.Fatalf("live provider protected %s expansion = %t request=%+v err=%v, want fail-closed rejection", call.Name, needed, request, err)
 		}
 	}
 }
@@ -398,8 +445,8 @@ func TestRunExecutionContextPreservesCoderSourceWorkspaceReadAuthorization(t *te
 		Name:      "write",
 		Arguments: mustJSON(t, map[string]any{"path": sourceFile, "content": "changed"}),
 	})
-	if err != nil || !needed {
-		t.Fatalf("live provider source-workspace write expansion = %t request=%+v err=%v, want permission", needed, request, err)
+	if !errors.Is(err, tool.ErrWorkspaceScopeExpansionRejected) || needed {
+		t.Fatalf("live provider source-workspace write expansion = %t request=%+v err=%v, want fail-closed rejection", needed, request, err)
 	}
 }
 
@@ -413,10 +460,11 @@ func TestWorkspaceScopeGatePreservesCoderGitAdminReadAuthorization(t *testing.T)
 		OriginWorkspacePath:  worktree,
 		OriginWorkspaceRoots: []string{worktree},
 		Scope: tool.WorkspaceScope{
-			PrimaryPath:    worktree,
-			Roots:          []string{worktree},
-			ReadOnlyRoots:  []string{gitAdmin},
-			MutationScopes: []string{"src/**"},
+			PrimaryPath:          worktree,
+			Roots:                []string{worktree},
+			ReadOnlyRoots:        []string{gitAdmin},
+			MutationScopes:       []string{"src/**"},
+			RejectScopeExpansion: true,
 		},
 	}
 
@@ -446,8 +494,8 @@ func TestWorkspaceScopeGatePreservesCoderGitAdminReadAuthorization(t *testing.T)
 		t.Fatalf("workspace gate prompted for authenticated Coder reads: approved=%d indexes=%v changed=%t wait_ms=%d err=%v", len(approved), indexes, changed, waitMS, err)
 	}
 	outside := t.TempDir()
-	if _, needed, err := tool.ScopeExpansionForCall(scope, tool.Call{Name: "list", Arguments: mustJSON(t, map[string]any{"path": outside})}); err != nil || !needed {
-		t.Fatalf("unrelated list expansion = %t err=%v, want permission", needed, err)
+	if _, needed, err := tool.ScopeExpansionForCall(scope, tool.Call{Name: "list", Arguments: mustJSON(t, map[string]any{"path": outside})}); !errors.Is(err, tool.ErrWorkspaceScopeExpansionRejected) || needed {
+		t.Fatalf("unrelated list expansion = %t err=%v, want fail-closed rejection", needed, err)
 	}
 }
 

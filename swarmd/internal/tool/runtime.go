@@ -196,15 +196,19 @@ type WorkspaceScope struct {
 	// MutationScopes contains the task-owned workspace-relative paths that may
 	// be changed by generic filesystem tools. An empty list preserves the normal
 	// whole-workspace contract; a non-empty list is enforced before mutation.
-	MutationScopes      []string
-	SessionID           string
-	Principal           identity.Principal
-	WorktreeEnabled     bool
-	WorktreeRootPath    string
-	WorktreeBranch      string
-	WorktreeBaseBranch  string
-	WorktreeBaseCommit  string
-	SourceWorkspacePath string
+	MutationScopes []string
+	// RejectScopeExpansion marks an isolated delegated lane whose existing roots
+	// are immutable for the run. Calls outside those roots fail before the
+	// workspace permission subsystem can create a user-facing request.
+	RejectScopeExpansion bool
+	SessionID            string
+	Principal            identity.Principal
+	WorktreeEnabled      bool
+	WorktreeRootPath     string
+	WorktreeBranch       string
+	WorktreeBaseBranch   string
+	WorktreeBaseCommit   string
+	SourceWorkspacePath  string
 }
 
 type manageSessionService interface {

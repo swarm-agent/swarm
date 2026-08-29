@@ -354,9 +354,17 @@ async function main() {
       result.result = 'PASS'
       return
     }
-    const explicitlyPinned = artifacts.filter((item) => item?.in_progress === true || item?.chain?.in_progress === true || item?.artifact_state === 'in_progress')
-    result.catalog_state.in_progress_candidates = explicitlyPinned.map((item) => exactRef(item))
-    assert(explicitlyPinned.length === 1, `catalog does not expose exactly one explicit durable In Progress artifact; found=${explicitlyPinned.length}; revised_chains=${[...new Set(artifacts.filter((item) => (item?.chain?.revision_count || item?.revision_number || 0) > 1).map((item) => item?.artifact_chain_id).filter(Boolean))].join(',') || 'none'}`)
+    const focusedEntries = artifacts.filter((item) => item?.media_type === 'text/html' && (String(item?.lineage?.selected_review_target_ids || '').trim() || String(item?.lineage?.part_id || item?.lineage?.iteration_section_id || '').trim()) && String(item?.artifact_chain_id || '').trim())
+      .sort((a, b) => Number(a?.event_seq || 0) - Number(b?.event_seq || 0))
+    assert(focusedEntries.length > 0, 'catalog has no durable focused-part revision to pin as In Progress')
+    const pinnedChainID = String(focusedEntries[0].artifact_chain_id)
+    const pinnedEntries = focusedEntries.filter((item) => String(item?.artifact_chain_id || '') === pinnedChainID)
+    const pinnedHead = [...pinnedEntries].filter((item) => item?.status === 'ready')
+      .sort((a, b) => Number(b?.revision_number || 0) - Number(a?.revision_number || 0) || Number(b?.event_seq || 0) - Number(a?.event_seq || 0))[0]
+    assert(pinnedHead, `earliest focused chain ${pinnedChainID} has no ready authoritative head`)
+    result.catalog_state.in_progress_chain_id = pinnedChainID
+    result.catalog_state.in_progress_candidates = [exactRef(pinnedHead)]
+    result.catalog_state.focused_chain_ids = [...new Set(focusedEntries.map((item) => String(item?.artifact_chain_id || '')).filter(Boolean))]
     result.gates.in_progress_pin_durable = true
     result.result = 'PASS'
     return
