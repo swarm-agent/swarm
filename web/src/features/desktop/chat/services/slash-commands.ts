@@ -33,6 +33,11 @@ export interface DesktopSlashCommand {
   tips: string[]
   state: DesktopSlashCommandState
   action: DesktopSlashCommandAction
+  developerOnly?: boolean
+}
+
+export interface DesktopSlashCommandOptions {
+  developerMode?: boolean
 }
 
 export interface DesktopSlashPaletteState {
@@ -166,6 +171,17 @@ const DESKTOP_SLASH_COMMANDS: DesktopSlashCommand[] = [
     tips: ['/task <prompt>', 'Runs in auto mode through the background Router endpoint'],
     state: 'ready',
     action: { kind: 'start-background-router-session' },
+  },
+  {
+    id: 'flag',
+    command: '/flag',
+    aliases: [],
+    hint: 'Investigate a problem using the prior session dump',
+    actionLabel: 'Start Diagnostic Task',
+    tips: ['/flag <problem>', 'Dev mode only; starts /task with the prior session ID'],
+    state: 'ready',
+    action: { kind: 'start-background-router-session' },
+    developerOnly: true,
   },
   {
     id: 'task-plan',
@@ -393,8 +409,12 @@ function sortCommands(left: DesktopSlashCommand, right: DesktopSlashCommand, que
   return left.command.localeCompare(right.command)
 }
 
-export function getDesktopSlashCommands(): DesktopSlashCommand[] {
-  return DESKTOP_SLASH_COMMANDS.slice()
+function availableDesktopSlashCommands(options: DesktopSlashCommandOptions = {}): DesktopSlashCommand[] {
+  return DESKTOP_SLASH_COMMANDS.filter((command) => !command.developerOnly || options.developerMode === true)
+}
+
+export function getDesktopSlashCommands(options: DesktopSlashCommandOptions = {}): DesktopSlashCommand[] {
+  return availableDesktopSlashCommands(options).slice()
 }
 
 export function isDesktopWorktreeOnCommand(input: string): boolean {
@@ -423,6 +443,25 @@ export function parseDesktopNewSessionCommand(input: string): DesktopNewSessionC
   }
 }
 
+export function buildDesktopFlagTaskPrompt(input: string, priorSessionId: string): string | null {
+  const match = input.trim().match(/^\/flag(?:\s+([\s\S]*))?$/i)
+  if (!match) return null
+
+  const problem = (match[1] ?? '').trim()
+  const sessionId = priorSessionId.trim()
+  if (!problem || !sessionId) return null
+
+  return [
+    'Investigate a developer flag from a prior Swarm session.',
+    '',
+    `Prior session ID: ${sessionId}`,
+    'Reported problem:',
+    problem,
+    '',
+    'First dump and inspect that session through the canonical development session-dump path. Use ./scripts/session-dump-via-api.sh with the matching loopback Desktop session URL; never inspect Pebble directly. Use the dump as evidence, then search the current workspace for the code paths responsible for the reported problem. Diagnose the likely cause, make a safe scoped correction when the evidence supports one, and report validation plus relevant filepaths. If the dump is unavailable, report the exact blocker instead of bypassing the canonical path.',
+  ].join('\n')
+}
+
 export function parseDesktopTaskCommand(input: string): DesktopTaskCommandRequest {
   const taskBody = input.trimStart().replace(/^\/task(?:\s+|$)/i, '').trim()
   if (!taskBody) {
@@ -435,7 +474,8 @@ export function parseDesktopTaskCommand(input: string): DesktopTaskCommandReques
   return { request: taskBody, mode: 'auto' }
 }
 
-export function buildDesktopSlashPaletteState(input: string): DesktopSlashPaletteState {
+export function buildDesktopSlashPaletteState(input: string, options: DesktopSlashCommandOptions = {}): DesktopSlashPaletteState {
+  const commands = availableDesktopSlashCommands(options)
   const trimmedStart = input.trimStart()
   if (!trimmedStart.startsWith('/')) {
     return {
@@ -455,17 +495,17 @@ export function buildDesktopSlashPaletteState(input: string): DesktopSlashPalett
   const fullQuery = normalizeSlashToken(trimmedBody)
   const exactMatch = query === ''
     ? null
-    : DESKTOP_SLASH_COMMANDS
+    : commands
         .flatMap((command) => commandTokens(command).map((token) => ({ command, token })))
         .filter(({ token }) => fullQuery === token || fullQuery.startsWith(`${token} `))
         .sort((left, right) => right.token.length - left.token.length)[0]?.command
-      ?? DESKTOP_SLASH_COMMANDS.find((command) => commandTokens(command).includes(query))
+      ?? commands.find((command) => commandTokens(command).includes(query))
       ?? null
 
   const exactMatchHasPrefix = Boolean(exactMatch && commandTokens(exactMatch).some((token) => fullQuery === token || fullQuery.startsWith(`${token} `)))
   const matches = (hasArguments && exactMatch && exactMatchHasPrefix
     ? [exactMatch]
-    : DESKTOP_SLASH_COMMANDS
+    : commands
         .filter((command) => commandMatchRank(command, query) > 0)
         .sort((left, right) => sortCommands(left, right, query)))
 

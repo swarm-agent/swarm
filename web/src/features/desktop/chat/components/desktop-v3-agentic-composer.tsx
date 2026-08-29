@@ -9,7 +9,7 @@ import type { ActiveModelProfileState, AgentProfileRecord, ModelOptionRecord, Mo
 import type { DesktopSessionMode } from '../../settings/swarm/types/swarm-settings'
 import type { DesktopV3MediaCapability, DesktopV3MediaReference } from '../../state/desktop-v3-cache-types'
 import type { DesktopV3RoutedComposerSnapshot, DesktopV3RoutedNewSessionState } from '../../session-v3/new-session-flow'
-import { buildDesktopSlashPaletteState, isDesktopWorktreeOnCommand, parseDesktopNewSessionCommand, type DesktopSlashCommand, type DesktopSlashPaletteState } from '../services/slash-commands'
+import { buildDesktopFlagTaskPrompt, buildDesktopSlashPaletteState, isDesktopWorktreeOnCommand, parseDesktopNewSessionCommand, type DesktopSlashCommand, type DesktopSlashPaletteState } from '../services/slash-commands'
 import { desktopComposerBackgroundRouterCommand, submitDesktopComposer } from '../services/composer-submit'
 import {
   DESKTOP_COMPOSER_TEXT_FILE_MAX_COUNT,
@@ -211,6 +211,7 @@ export interface DesktopV3AgenticComposerProps {
   focusSignal?: number
   workspacePath?: string
   sessionId?: string
+  developerMode?: boolean
   onOpenActionSettings?: () => void
   /** Pre-route composer state; agent/model controls remain visible before the first send. */
   routedNewSession?: boolean
@@ -316,6 +317,7 @@ export function DesktopV3AgenticComposer({
   focusSignal = 0,
   workspacePath = '',
   sessionId = '',
+  developerMode = false,
   onOpenActionSettings,
   routedNewSession = false,
   slashCommandContext = 'existing-session',
@@ -384,7 +386,7 @@ export function DesktopV3AgenticComposer({
     () => normalizeMentionSubagents(subagents.length > 0 ? subagents : selectableAgents.filter((agent) => (agent.mode || '').toLowerCase() === 'subagent').map((agent) => agent.name)),
     [selectableAgents, subagents],
   )
-  const slashPalette = useMemo(() => buildDesktopSlashPaletteState(draft), [draft])
+  const slashPalette = useMemo(() => buildDesktopSlashPaletteState(draft, { developerMode: developerMode && Boolean(sessionId.trim()) }), [developerMode, draft, sessionId])
   const slashCommands = useMemo(
     () => slashPalette.matches.filter((command) => command.state === 'ready'
       && (slashCommandContext !== 'new-session' || command.action.kind !== 'new-session')),
@@ -800,6 +802,12 @@ export function DesktopV3AgenticComposer({
       handleWorktreeOnCommand()
       return
     }
+    const flagCommandSelected = slashPalette.exactMatch?.id === 'flag'
+    const flagTaskPrompt = flagCommandSelected ? buildDesktopFlagTaskPrompt(rawDraft, sessionId) : null
+    if (flagCommandSelected && !flagTaskPrompt) {
+      setAttachmentError(sessionId.trim() ? 'Enter a problem after /flag.' : '/flag requires an existing session to investigate.')
+      return
+    }
     const newSessionCommand = routedNewSession ? parseDesktopNewSessionCommand(rawDraft) : null
     if (newSessionCommand && !newSessionCommand.prompt) {
       onRoutedWorktreeRequestedChange?.(newSessionCommand.worktreeRequested)
@@ -812,7 +820,7 @@ export function DesktopV3AgenticComposer({
       }
       return
     }
-    const commandDraft = newSessionCommand?.prompt ?? rawDraft
+    const commandDraft = flagTaskPrompt ? `/task ${flagTaskPrompt}` : newSessionCommand?.prompt ?? rawDraft
     const textAttachmentDraft = textAttachments.reduce(
       (nextDraft, attachment) => appendComposerTextFile(nextDraft, attachment.name, attachment.fileType, attachment.content),
       commandDraft,
@@ -891,7 +899,7 @@ export function DesktopV3AgenticComposer({
       onStop,
       onSlashCommand,
     })
-  }, [artifactSelections, attachments, canStop, clearComposerForSubmit, dictationComposer, handleWorktreeOnCommand, mode, onDraftChange, onModeSelect, onRoutedSubmit, onRoutedWorktreeRequestedChange, onSlashCommand, onStop, onSubmit, primedTaskMode, resizeTextareaElement, routedNewSession, routedStagedAttachments, routedWorktreeRequested, selectedWorkspaceAction, selectedWorkspaceSkill, slashPalette.exactMatch?.action.kind, slashPalette.hasArguments, textAttachments, uploadingAttachment, videoAttachments])
+  }, [artifactSelections, attachments, canStop, clearComposerForSubmit, dictationComposer, handleWorktreeOnCommand, mode, onDraftChange, onModeSelect, onRoutedSubmit, onRoutedWorktreeRequestedChange, onSlashCommand, onStop, onSubmit, primedTaskMode, resizeTextareaElement, routedNewSession, routedStagedAttachments, routedWorktreeRequested, selectedWorkspaceAction, selectedWorkspaceSkill, sessionId, slashPalette.exactMatch?.action.kind, slashPalette.exactMatch?.id, slashPalette.hasArguments, textAttachments, uploadingAttachment, videoAttachments])
 
   const handleMentionInsert = useCallback((agent: string) => {
     const trimmedStartLength = draft.length - draft.replace(/^[\s\t\r\n]+/, '').length

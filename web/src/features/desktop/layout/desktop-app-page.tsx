@@ -5590,6 +5590,7 @@ export function DesktopAppPage() {
               if (routeSession && workspacePath) handleStartNewSessionInWorkspace(workspacePath, routeSession.workspaceName)
             }}
             onSlashCommand={handleSlashCommand}
+            developerMode={updateDevMode}
             agentSettingsOpenSignal={agentSettingsOpenSignal}
             agentSettingsInitialAgent={requestedAgentName}
             onOpenPlan={() => openPlanModalForSession(routeSessionId)}
@@ -5636,6 +5637,7 @@ export function DesktopAppPage() {
             agentSettingsInitialAgent={requestedAgentName}
             mobileSessionQuickMenu={mobileSessionQuickMenu}
             onSlashCommand={handleSlashCommand}
+            developerMode={updateDevMode}
             workspaces={mergedSidebarWorkspaceEntries}
             onSelectWorkspace={mergedSidebarWorkspaceEntries.length > 1 ? handleSelectWorkspaceFromPicker : undefined}
             onSetWorkspaceIcon={setWorkspaceIcon}

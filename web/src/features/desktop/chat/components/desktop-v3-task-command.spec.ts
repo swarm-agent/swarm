@@ -49,3 +49,18 @@ test('bare /task forms stay editable on the shared missing-request validation pa
   const app = await readFile(new URL('../../layout/desktop-app-page.tsx', import.meta.url), 'utf8')
   assert.match(app, /const \{ request, mode \} = parseDesktopTaskCommand\(draft\)[\s\S]*?if \(!request\)[\s\S]*?Enter a task request after \/task\.[\s\S]*?throw error/)
 })
+
+test('/flag is dev-only, requires an existing session, and expands through /task', async () => {
+  const composer = await readFile(new URL('./desktop-v3-agentic-composer.tsx', import.meta.url), 'utf8')
+  const existingPane = await readFile(new URL('./desktop-v3-existing-conversation-pane.tsx', import.meta.url), 'utf8')
+  const newPane = await readFile(new URL('./desktop-v3-new-session-pane.tsx', import.meta.url), 'utf8')
+  const app = await readFile(new URL('../../layout/desktop-app-page.tsx', import.meta.url), 'utf8')
+
+  assert.match(composer, /buildDesktopSlashPaletteState\(draft, \{ developerMode: developerMode && Boolean\(sessionId\.trim\(\)\) \}\)/)
+  assert.match(composer, /buildDesktopFlagTaskPrompt\(rawDraft, sessionId\)/)
+  assert.match(composer, /const commandDraft = flagTaskPrompt \? `\/task \$\{flagTaskPrompt\}`/)
+  assert.ok(composer.indexOf('const commandDraft = flagTaskPrompt') < composer.indexOf('desktopComposerBackgroundRouterCommand(submittedDraft)'))
+  assert.match(existingPane, /sessionId=\{normalizedSessionId\}[\s\S]*?developerMode=\{developerMode\}/)
+  assert.match(newPane, /developerMode=\{developerMode\}/)
+  assert.match(app, /onSlashCommand=\{handleSlashCommand\}[\s\S]*?developerMode=\{updateDevMode\}/)
+})

@@ -43,6 +43,7 @@ export interface DesktopV3NewSessionPaneProps {
   onRoutedSessionResolved: (result: DesktopV3RoutedStartResult, authority: DesktopV3RoutedWorkspaceAuthority) => void | Promise<void>
   mobileSessionQuickMenu?: ReactNode
   onSlashCommand?: (command: DesktopSlashCommand, draft: string) => void | Promise<void>
+  developerMode?: boolean
   workspaces?: WorkspaceEntry[]
   onSelectWorkspace?: (workspace: WorkspaceEntry) => void
   onSetWorkspaceIcon?: (path: string, iconPNGDataURL: string) => Promise<void>
@@ -68,6 +69,7 @@ export function DesktopV3NewSessionPane({
   onRoutedSessionResolved,
   mobileSessionQuickMenu,
   onSlashCommand,
+  developerMode = false,
   workspaces = [workspace],
   onSelectWorkspace,
   onSetWorkspaceIcon,
@@ -462,6 +464,7 @@ export function DesktopV3NewSessionPane({
           error={localError ?? (routedState.phase === 'failed' ? routedState.error : null)}
           routedNewSession
           onSlashCommand={onSlashCommand}
+          developerMode={developerMode}
           onOpenActionSettings={onOpenActionSettings}
           slashCommandContext="new-session"
         />

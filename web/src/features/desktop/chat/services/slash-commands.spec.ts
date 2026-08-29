@@ -1,4 +1,4 @@
-import { getDesktopSlashCommands, buildDesktopSlashPaletteState, isDesktopWorktreeOnCommand, parseDesktopNewSessionCommand, parseDesktopTaskCommand } from './slash-commands'
+import { buildDesktopFlagTaskPrompt, getDesktopSlashCommands, buildDesktopSlashPaletteState, isDesktopWorktreeOnCommand, parseDesktopNewSessionCommand, parseDesktopTaskCommand } from './slash-commands'
 import type { DesktopSlashCommandAction } from './slash-commands'
 
 function assert(condition: boolean, message: string): void {
@@ -182,6 +182,32 @@ function testTaskCommandAcceptsFullArguments(): void {
   assert(planPalette.matches[0]?.id === 'task-plan', 'expected /task plan to lead the palette matches')
 }
 
+function testFlagCommandIsDevOnlyAndBuildsDiagnosticTask(): void {
+  const productionCommands = getDesktopSlashCommands()
+  assert(productionCommands.every((command) => command.id !== 'flag'), 'expected /flag to be hidden outside dev mode')
+  assert(buildDesktopSlashPaletteState('/flag problem').exactMatch === null, 'expected /flag not to resolve outside dev mode')
+
+  const devCommands = getDesktopSlashCommands({ developerMode: true })
+  const flag = devCommands.find((command) => command.id === 'flag')
+  assert(Boolean(flag), 'expected /flag to be listed in dev mode')
+  assert(flag?.action.kind === 'start-background-router-session', 'expected /flag to use the existing /task launch action')
+
+  const devPalette = buildDesktopSlashPaletteState('/flag composer freezes', { developerMode: true })
+  assert(devPalette.exactMatch?.id === 'flag', 'expected /flag arguments to resolve in dev mode')
+  assert(devPalette.matches[0]?.id === 'flag', 'expected /flag to lead dev-mode palette matches')
+
+  const prompt = buildDesktopFlagTaskPrompt('/FLAG   composer freezes\nwhen sending', ' prior-session-123 ')
+  assert(Boolean(prompt), 'expected a complete /flag command to build a task prompt')
+  assert(prompt?.includes('Prior session ID: prior-session-123') === true, 'expected the task prompt to include the prior session ID')
+  assert(prompt?.includes('composer freezes\nwhen sending') === true, 'expected the task prompt to preserve the reported problem')
+  assert(prompt?.includes('./scripts/session-dump-via-api.sh') === true, 'expected the task prompt to direct Swarm to the canonical dump helper')
+  assert(prompt?.includes('never inspect Pebble directly') === true, 'expected the task prompt to prohibit direct database inspection')
+  assert(prompt?.includes('search the current workspace') === true, 'expected the task prompt to request code search after dump inspection')
+  assert(buildDesktopFlagTaskPrompt('/flag', 'prior-session-123') === null, 'expected bare /flag to require a problem')
+  assert(buildDesktopFlagTaskPrompt('/flag problem', '') === null, 'expected /flag to require a prior session ID')
+  assert(buildDesktopFlagTaskPrompt('/task problem', 'prior-session-123') === null, 'expected non-flag commands not to build flag prompts')
+}
+
 function testTaskCommandParsesModeDirective(): void {
   const automatic = parseDesktopTaskCommand('/task fix the sidebar plan later')
   assert(automatic.mode === 'auto', 'expected ordinary /task to default to auto')
@@ -249,6 +275,7 @@ function main(): void {
   testNewSessionCommandVariantsPrimeRouterChips()
   testNewWpForwardsOnlyItsPromptToRouter()
   testTaskCommandAcceptsFullArguments()
+  testFlagCommandIsDevOnlyAndBuildsDiagnosticTask()
   testTaskCommandParsesModeDirective()
   testRetiredCommandsAreNotSuggested()
   testTipsCommandIsReadyAndAcceptsArguments()

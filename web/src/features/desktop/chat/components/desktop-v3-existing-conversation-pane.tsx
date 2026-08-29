@@ -1529,6 +1529,7 @@ export interface DesktopV3ExistingConversationPaneProps {
     command: DesktopSlashCommand,
     draft: string,
   ) => void | Promise<void>;
+  developerMode?: boolean;
   agentSettingsOpenSignal?: number;
   agentSettingsInitialAgent?: string;
   composerFocusSignal?: number;
@@ -1639,6 +1640,7 @@ export function DesktopV3ExistingConversationPane({
   studioMode = null,
   onToggleStudioMode,
   onSlashCommand,
+  developerMode = false,
   agentSettingsOpenSignal = 0,
   agentSettingsInitialAgent = "",
   composerFocusSignal = 0,
@@ -3463,6 +3465,7 @@ export function DesktopV3ExistingConversationPane({
             contextTooltip={contextTooltip}
             compactDisabled={compacting || sending || Boolean(currentRun)}
             onSlashCommand={onSlashCommand}
+            developerMode={developerMode}
             onOpenActionSettings={onOpenActionSettings}
           />
         </div>
