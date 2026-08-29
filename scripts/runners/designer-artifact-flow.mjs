@@ -32,6 +32,8 @@ if (!['root', 'all', 'multi2', 'multi3', 'multi23'].includes(stage) && !sessionO
 if (['multi2', 'multi3', 'multi23'].includes(stage) && (!sourceSessionOverride || !sourceCollectionOverride || !sourceVariantOverride || !Number.isInteger(sourceEventSeqOverride) || sourceEventSeqOverride <= 0)) throw new Error('multi-target stages require --source-session-id, --source-collection-id, --source-variant-id, and --source-event-seq')
 
 const testID = `designer-artifact-flow-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`
+const stageStartedAt = Date.now()
+const stageDeadline = stageStartedAt + timeoutMs
 const partContract = [
   { id: 'part-1', label: 'Part 1 · Opening', kind: 'temporal', start_ms: 0, end_ms: 4000 },
   { id: 'part-2', label: 'Part 2 · Transformation', kind: 'temporal', start_ms: 4000, end_ms: 8000 },
@@ -185,7 +187,7 @@ async function approvePending(sessionID) {
 
 async function waitForTurn(sessionID, runID, label) {
   const startedAt = Date.now()
-  const deadline = startedAt + timeoutMs
+  const deadline = stageDeadline
   let latest = null
   let nextHeartbeatAt = startedAt
   let lastStatus = ''
@@ -238,7 +240,7 @@ async function catalog(sessionID) {
 
 async function waitForArtifacts(sessionID, predicate, count, label) {
   const startedAt = Date.now()
-  const deadline = startedAt + timeoutMs
+  const deadline = stageDeadline
   let matches = []
   let nextHeartbeatAt = startedAt
   let lastCount = -1
@@ -246,6 +248,10 @@ async function waitForArtifacts(sessionID, predicate, count, label) {
     const artifacts = await catalog(sessionID)
     matches = artifacts.filter((item) => item?.status === 'ready' && predicate(item))
     const staging = artifacts.filter((item) => item?.status === 'staging' && predicate(item)).length
+    const failed = artifacts.filter((item) => item?.status === 'failed' && predicate(item))
+    if (failed.length > 0) {
+      fail(`${label} recorded a durable failed artifact: ${failed.map((item) => `${item?.artifact_id || 'unknown'}:${item?.failure_code || 'unknown_failure'}`).join(',')}`)
+    }
     if (matches.length !== lastCount || Date.now() >= nextHeartbeatAt) {
       log(`${label} progress elapsed=${Math.floor((Date.now() - startedAt) / 1000)}s ready=${matches.length}/${count} staging=${staging}`)
       lastCount = matches.length
@@ -411,6 +417,7 @@ async function main() {
       'It must use swarm.animation/v1 with duration_ms 12000 and fps 30, plus swarm.iteration/v1 with exactly these ordered sections:',
       'part-1 "Part 1 · Opening" 0-4000ms; part-2 "Part 2 · Transformation" 4000-8000ms; part-3 "Part 3 · Resolution" 8000-12000ms.',
       'Install the required deterministic renderAt/ready/seek APIs, self-starting scheduler, swarm-player/v1 bridge, and visible section buttons using those exact IDs and boundaries.',
+      'The trusted viewport audit is strict: set html/body margin 0, width/height 100%, overflow hidden, and border-box sizing; keep every visible element and pseudo-element fully inside 1920x1080 at all representative timestamps. Use opacity or inset clipping for transitions instead of translating visible content beyond viewport bounds, and keep shadows/glows inset from every edge.',
       'Keep the artifact monolithic text/html. Use one manage_artifact create call with top-level content and animation_profile motion_ui so the trusted publication preflight must pass before ready. Do not use initial_parts, multipart tools, create_package, ZIP, workspace files, or task delegation.',
       'Omit top-level parts so the server must derive the three temporal edit targets from the iteration manifest.',
       'After the artifact is ready, finish the turn without creating extra artifacts.',
