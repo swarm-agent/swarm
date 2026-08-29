@@ -52,6 +52,8 @@ export type DesktopTaskMode = 'plan' | 'auto'
 export interface DesktopTaskCommandRequest {
   request: string
   mode: DesktopTaskMode
+  workspaceSelector?: string
+  workspaceSelectionInvalid?: boolean
 }
 
 export interface DesktopNewSessionCommandRequest {
@@ -136,7 +138,7 @@ const DESKTOP_SLASH_COMMANDS: DesktopSlashCommand[] = [
     aliases: [],
     hint: 'Start an automatic background Router task with <prompt>',
     actionLabel: 'Start Background Router Session',
-    tips: ['/task <prompt>', 'Runs in auto mode through the background Router endpoint'],
+    tips: ['/task [--workspace <saved-workspace>] <prompt>', 'Defaults to the active workspace; a selector must match the saved workspace catalog'],
     state: 'ready',
     action: { kind: 'start-background-router-session' },
   },
@@ -157,7 +159,7 @@ const DESKTOP_SLASH_COMMANDS: DesktopSlashCommand[] = [
     aliases: [],
     hint: 'Start a planned background Router task with <prompt>',
     actionLabel: 'Start Background Router Plan',
-    tips: ['/task plan <prompt>', 'Requests plan mode through the background Router endpoint'],
+    tips: ['/task plan [--workspace <saved-workspace>] <prompt>', 'Requests plan mode in the active or selected saved workspace'],
     state: 'ready',
     action: { kind: 'start-background-router-session' },
   },
@@ -423,15 +425,25 @@ export function buildDesktopFlagTaskPrompt(input: string, priorSessionId: string
 }
 
 export function parseDesktopTaskCommand(input: string): DesktopTaskCommandRequest {
-  const taskBody = input.trimStart().replace(/^\/task(?:\s+|$)/i, '').trim()
-  if (!taskBody) {
-    return { request: '', mode: 'auto' }
-  }
+  let taskBody = input.trimStart().replace(/^\/task(?:\s+|$)/i, '').trim()
+  if (!taskBody) return { request: '', mode: 'auto' }
+
+  let mode: DesktopTaskMode = 'auto'
   const firstToken = taskBody.match(/^(\S+)(?:\s+([\s\S]*))?$/)
   if (firstToken?.[1].toLowerCase() === 'plan') {
-    return { request: (firstToken[2] ?? '').trim(), mode: 'plan' }
+    mode = 'plan'
+    taskBody = (firstToken[2] ?? '').trim()
   }
-  return { request: taskBody, mode: 'auto' }
+
+  if (!/^--workspace(?:\s+|$)/i.test(taskBody)) return { request: taskBody, mode }
+  const workspaceOption = taskBody.match(/^--workspace\s+(?:"([^"]+)"|'([^']+)'|(\S+))(?:\s+([\s\S]*))?$/i)
+  const workspaceSelector = (workspaceOption?.[1] ?? workspaceOption?.[2] ?? workspaceOption?.[3] ?? '').trim()
+  if (!workspaceOption || !workspaceSelector) return { request: '', mode, workspaceSelectionInvalid: true }
+  return {
+    request: (workspaceOption[4] ?? '').trim(),
+    mode,
+    workspaceSelector,
+  }
 }
 
 export function buildDesktopSlashPaletteState(input: string, options: DesktopSlashCommandOptions = {}): DesktopSlashPaletteState {

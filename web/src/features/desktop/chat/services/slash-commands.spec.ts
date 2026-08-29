@@ -134,8 +134,8 @@ function testTaskCommandAcceptsFullArguments(): void {
   assert(task?.state === 'ready', 'expected /task command to be ready')
   assert((task?.action as DesktopSlashCommandAction | undefined)?.kind === 'start-background-router-session', 'expected /task to start a background Router session')
   assert((taskPlan?.action as DesktopSlashCommandAction | undefined)?.kind === 'start-background-router-session', 'expected /task plan to start a background Router session')
-  assert(task?.tips.some((tip) => tip.includes('/task <prompt>')) === true, 'expected /task guidance to show required prompt syntax')
-  assert(taskPlan?.tips.some((tip) => tip.includes('/task plan <prompt>')) === true, 'expected /task plan guidance to show required prompt syntax')
+  assert(task?.tips.some((tip) => tip.includes('/task [--workspace <saved-workspace>] <prompt>')) === true, 'expected /task guidance to show optional saved-workspace syntax')
+  assert(taskPlan?.tips.some((tip) => tip.includes('/task plan [--workspace <saved-workspace>] <prompt>')) === true, 'expected /task plan guidance to show optional saved-workspace syntax')
 
   const palette = buildDesktopSlashPaletteState('/task fix the sidebar now')
   assert(palette.exactMatch?.id === 'task', 'expected /task arguments to preserve the exact command match')
@@ -184,6 +184,25 @@ function testTaskCommandParsesModeDirective(): void {
   const planWordLater = parseDesktopTaskCommand('/task fix plan handling')
   assert(planWordLater.mode === 'auto', 'expected plan outside the first token to remain request text')
   assert(planWordLater.request === 'fix plan handling', 'expected later plan text to remain intact')
+
+  const selected = parseDesktopTaskCommand('/task --workspace workspace-alpha fix the sidebar')
+  assert(selected.mode === 'auto', 'expected workspace selection not to change automatic mode')
+  assert(selected.workspaceSelector === 'workspace-alpha', 'expected workspace selector to be parsed explicitly')
+  assert(selected.request === 'fix the sidebar', 'expected workspace selector to be removed from the request')
+
+  const selectedPlan = parseDesktopTaskCommand('/task plan --workspace "Alpha App" fix the sidebar')
+  assert(selectedPlan.mode === 'plan', 'expected plan mode before workspace selection')
+  assert(selectedPlan.workspaceSelector === 'Alpha App', 'expected quoted plan workspace selector to preserve its value')
+  assert(selectedPlan.request === 'fix the sidebar', 'expected plan workspace selector to be removed from the request')
+
+  const laterOption = parseDesktopTaskCommand('/task fix --workspace handling')
+  assert(laterOption.workspaceSelector === undefined, 'expected only the leading option to select a workspace')
+  assert(laterOption.request === 'fix --workspace handling', 'expected later workspace text to remain request content')
+
+  const missingSelector = parseDesktopTaskCommand('/task --workspace')
+  assert(missingSelector.request === '', 'expected a missing workspace selector to fail the task request guard')
+  assert(missingSelector.workspaceSelector === undefined, 'expected a missing selector not to become request text')
+  assert(missingSelector.workspaceSelectionInvalid === true, 'expected a missing selector to carry explicit invalid-option state')
 }
 
 function testRetiredCommandsAreNotSuggested(): void {

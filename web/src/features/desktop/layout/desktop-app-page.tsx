@@ -48,6 +48,7 @@ import { buildDesktopChatRouteOptions, getDesktopSessionCreateTarget, type Deskt
 import { resolveDesktopV3AgentModelLock } from '../chat/services/agent-model-preferences'
 import { preferenceFromModelProfile } from '../chat/services/model-profiles'
 import { parseDesktopNewSessionCommand, parseDesktopTaskCommand, type DesktopNewSessionCommandRequest, type DesktopSlashCommand } from '../chat/services/slash-commands'
+import { resolveDesktopTaskWorkspace } from '../chat/services/task-workspace-selection'
 import { executeDesktopTipsCommand } from '../chat/services/home-tips'
 import { commitWorkspaceChanges, fetchGitStatus, gitStatusQueryKey, startGitRealtime, suggestWorkspaceCommitMessage } from '../git/api'
 import type { GitFileStatus, GitSnapshot } from '../git/types'
@@ -3153,18 +3154,21 @@ export function DesktopAppPage() {
   const sidebarWorkspaceContext = sidebarWorkspaceContextLabel(masterWorkspaceName || topWorkspaceLabel, sidebarWorkspaceBranch)
   const defaultNewChatWorkspacePath = topWorkspacePath
   const defaultNewChatWorkspaceLabel = topWorkspaceLabel
-  const activeWorkspaceAuthority = useMemo<DesktopV3RoutedWorkspaceAuthority | null>(() => {
-    if (!topWorkspace) return null
+  const workspaceAuthorityFor = useCallback((workspace: WorkspaceEntry): DesktopV3RoutedWorkspaceAuthority | null => {
     const route = buildDesktopChatRouteOptions({
       hostSwarmName: swarmName,
-      workspacePath: topWorkspace.path,
-      workspaceName: topWorkspace.workspaceName,
-      topologyRoutes: topWorkspace.topologyRoutes,
-      localWorkspaceBindingId: topWorkspace.localWorkspaceBindingId,
+      workspacePath: workspace.path,
+      workspaceName: workspace.workspaceName,
+      topologyRoutes: workspace.topologyRoutes,
+      localWorkspaceBindingId: workspace.localWorkspaceBindingId,
       hostSwarmId: currentSwarmTarget?.swarm_id ?? null,
     }).find((option) => getDesktopSessionCreateTarget(option).endpoint === '/v3/sessions')
-    return route ? desktopV3RoutedWorkspaceAuthority(topWorkspace.path, route) : null
-  }, [currentSwarmTarget?.swarm_id, swarmName, topWorkspace])
+    return route ? desktopV3RoutedWorkspaceAuthority(workspace.path, route) : null
+  }, [currentSwarmTarget?.swarm_id, swarmName])
+  const activeWorkspaceAuthority = useMemo<DesktopV3RoutedWorkspaceAuthority | null>(
+    () => topWorkspace ? workspaceAuthorityFor(topWorkspace) : null,
+    [topWorkspace, workspaceAuthorityFor],
+  )
   const globalSessionWorkspaceSlug = useCallback((session: DesktopSessionRecord): string => {
     const workspacePath = desktopRouteWorkspacePathForSession(session, workspacePathByBindingId, knownWorkspacePaths, workspacePathById)
       || selectedWorkspacePath
@@ -3815,18 +3819,28 @@ export function DesktopAppPage() {
         return
       }
       case 'start-background-router-session': {
-        const { request, mode } = parseDesktopTaskCommand(draft)
+        const { request, mode, workspaceSelector, workspaceSelectionInvalid } = parseDesktopTaskCommand(draft)
         if (!request) {
-          const error = new Error('Enter a task request after /task.')
+          const error = new Error(workspaceSelectionInvalid
+            ? 'Enter a saved workspace selector and task request after --workspace.'
+            : workspaceSelector
+              ? 'Enter a task request after the /task workspace selector.'
+              : 'Enter a task request after /task.')
           setDesktopToast({ message: error.message, tone: 'error' })
           throw error
         }
         const clientRequestId = `desktop-v3-background-router:${globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`}`
         let launch: ReturnType<typeof postDesktopV3BackgroundRouterSessionStart>
         try {
-          if (!activeWorkspaceAuthority) throw new Error('Background Router session requires the active workspace authority')
+          const targetWorkspace = resolveDesktopTaskWorkspace({
+            selector: workspaceSelector,
+            activeWorkspace: topWorkspace,
+            savedWorkspaces: workspaces,
+          })
+          const targetWorkspaceAuthority = workspaceAuthorityFor(targetWorkspace)
+          if (!targetWorkspaceAuthority) throw new Error('Background Router session requires the selected workspace authority')
           launch = postDesktopV3BackgroundRouterSessionStart({
-            ...activeWorkspaceAuthority,
+            ...targetWorkspaceAuthority,
             input: request,
             client_request_id: clientRequestId,
             agent_name: 'swarm',
@@ -3883,7 +3897,7 @@ export function DesktopAppPage() {
         return _exhaustive
       }
     }
-  }, [activeWorkspaceAuthority, handleAICommit, handleOpenSettingsTab, handleStartNewSessionInWorkspace, openMainWorktreeGitPanel, openPlanModalForSession, queryClient, routeSessionId, selectedGitSessionId, selectedGitWorkspacePath, selectedWorkspace?.path, selectedWorkspace?.workspaceName, selectedWorkspacePath, sessionById, topWorkspacePath, uiSettings, uiSettingsQuery.data])
+  }, [handleAICommit, handleOpenSettingsTab, handleStartNewSessionInWorkspace, openMainWorktreeGitPanel, openPlanModalForSession, queryClient, routeSessionId, selectedGitSessionId, selectedGitWorkspacePath, selectedWorkspace?.path, selectedWorkspace?.workspaceName, selectedWorkspacePath, sessionById, topWorkspace, topWorkspacePath, uiSettings, uiSettingsQuery.data, workspaces, workspaceAuthorityFor])
 
   const latestNeedsApprovalSession = useMemo(() => {
     return desktopStateSessions
