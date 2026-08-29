@@ -47,6 +47,7 @@ Release entries are the source checkpoint for public docs verification. Each ent
 - Fixed TUI launches from unsaved Git repositories so they retain the configured default workspace while showing actionable `/workspace save` guidance; nested repositories are no longer hidden by broad saved workspace roots.
 - Allowed first-run OpenAI onboarding to accept credentials without depending on a live provider availability check; credentials remain explicitly unverified until a real provider request succeeds.
 - Allowed authenticated same-origin Tailscale Desktop requests admitted by daemon origin policy to trigger host update actions while spoofed requests remain fail-closed.
+- Updated the daemon cryptography dependency to the fixed release for CVE-2026-56854 and made PR critical checks fetch and test the exact declared head/base commits.
 
 ### Docs impact
 
@@ -61,7 +62,7 @@ Release entries are the source checkpoint for public docs verification. Each ent
 - Public command docs should describe `/voice` as experimental terminal voice input only, not as a fully supported voice product.
 - Public TUI workspace guidance should explain that `/workspace save` saves and switches to an unsaved Git launch directory.
 - Public video documentation should cover deterministic HTML animation export, trusted registered audio sources, transcription and deterministic audio analysis, reviewed soundtrack proposals, and the current no-fades/no-looping/no-ducking limits.
-- Docs impact: none for the Tailscale host-update authorization correction, plan execution badge cleanup, Desktop sidebar responsiveness refinements, or internal test-governance and release-gate wiring.
+- Docs impact: none for the Tailscale host-update authorization correction, cryptography dependency correction, plan execution badge cleanup, Desktop sidebar responsiveness refinements, or internal test-governance and release-gate wiring.
 
 ## v0.1.19 - 2026-05-01
 
