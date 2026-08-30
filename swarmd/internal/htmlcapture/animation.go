@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -28,8 +29,8 @@ const (
 	MaxAnimationDurationMS      = 10 * 60 * 1000
 	MaxAnimationFPS             = 60
 	MaxAnimationFrames          = 36_000
-	MaxAnimationSegmentFrames   = 300
 	MaxMP4Bytes                 = 512 << 20
+	MaxAnimationCaptureWorkers  = 4
 	animationMinimumTimeout     = 30 * time.Minute
 	animationTimeoutPerFrame    = 250 * time.Millisecond
 	animationBindTimeoutMS      = 4_000
@@ -43,6 +44,15 @@ const (
 	maxAnimationSelectorBytes   = 240
 )
 
+type AnimationQuality string
+
+const (
+	AnimationQualityPreview  AnimationQuality = "preview"
+	AnimationQualityStandard AnimationQuality = "standard"
+	AnimationQualityHigh     AnimationQuality = "high"
+	AnimationQualityMaster   AnimationQuality = "master"
+)
+
 type AnimationProgress struct {
 	Stage     string
 	Completed int
@@ -54,7 +64,11 @@ type AnimationRequest struct {
 	Entry               string
 	Files               map[string][]byte
 	DurationMS          int
+	// FPS is the authored animation manifest rate. OutputFPS may select a
+	// server-allowlisted 30 or 60 FPS derivative without changing that manifest.
 	FPS                 int
+	OutputFPS           int
+	Quality             AnimationQuality
 	RequireLivePlayback bool
 	Progress            func(AnimationProgress)
 }
@@ -92,6 +106,7 @@ type AnimationResult struct {
 	InspectionFrames []AnimationInspectionFrame
 	DurationMS       int
 	FPS              int
+	Quality          AnimationQuality
 	FrameCount       int
 	Timings          map[string]time.Duration
 	Diagnostics      []AnimationDiagnostic
@@ -136,6 +151,18 @@ func (r *ChromedpRenderer) renderAnimation(parent context.Context, req Animation
 	frameCount, err := validateAnimationRequest(req)
 	if err != nil {
 		return AnimationResult{}, err
+	}
+	encoding, err := resolveAnimationEncoding(req)
+	if err != nil {
+		return AnimationResult{}, err
+	}
+	renderFPS := encoding.FPS
+	if preflightOnly {
+		renderFPS = req.FPS
+	}
+	frameCount = (req.DurationMS*renderFPS + 999) / 1000
+	if frameCount < 1 || frameCount > MaxAnimationFrames {
+		return AnimationResult{}, NewError("animation_source_limit_exceeded", fmt.Sprintf("animation frame count exceeds the fixed %d-frame renderer bound", MaxAnimationFrames))
 	}
 	capacity := r.sem
 	if preflightOnly {
@@ -204,7 +231,7 @@ rendererCapacityAcquired:
 		chromedp.Flag("force-device-scale-factor", "1"),
 		chromedp.Flag("window-size", fmt.Sprintf("%d,%d", Width, Height)),
 		chromedp.Flag("host-resolver-rules", "MAP * ~NOTFOUND, EXCLUDE 127.0.0.1"),
-		chromedp.Flag("renderer-process-limit", "2"),
+		chromedp.Flag("renderer-process-limit", fmt.Sprint(MaxAnimationCaptureWorkers+1)),
 	)
 	if r.browserOutput != nil {
 		opts = append(opts, chromedp.CombinedOutput(r.browserOutput))
@@ -295,8 +322,8 @@ rendererCapacityAcquired:
 	if preflightOnly {
 		timestamps := []AnimationInspectionFrame{
 			{Slot: "start", TimestampMS: 0},
-			{Slot: "middle", TimestampMS: (frameCount / 2) * 1000 / req.FPS},
-			{Slot: "exit", TimestampMS: (frameCount - 1) * 1000 / req.FPS},
+			{Slot: "middle", TimestampMS: (frameCount / 2) * 1000 / renderFPS},
+			{Slot: "exit", TimestampMS: (frameCount - 1) * 1000 / renderFPS},
 		}
 		frames := make([]AnimationInspectionFrame, 0, len(timestamps))
 		var preview []byte
@@ -315,7 +342,7 @@ rendererCapacityAcquired:
 				return AnimationResult{DurationMS: req.DurationMS, FPS: req.FPS, FrameCount: frameCount, Timings: timings, Diagnostics: boundedAnimationDiagnostics(diagnostics)}, newErrorWithCause("animation_network_blocked", "animation document attempted a prohibited network request", errors.New(reason))
 			}
 		}
-		return AnimationResult{PreviewPNG: preview, InspectionFrames: frames, DurationMS: req.DurationMS, FPS: req.FPS, FrameCount: frameCount, Timings: timings, Diagnostics: boundedAnimationDiagnostics(diagnostics)}, nil
+		return AnimationResult{PreviewPNG: preview, InspectionFrames: frames, DurationMS: req.DurationMS, FPS: req.FPS, Quality: encoding.Quality, FrameCount: frameCount, Timings: timings, Diagnostics: boundedAnimationDiagnostics(diagnostics)}, nil
 	}
 
 	// Preserve full stability audits at representative timestamps, then capture
@@ -323,7 +350,7 @@ rendererCapacityAcquired:
 	// paid for two full-size PNG screenshots and a pixel decode/compare.
 	auditStartedAt := time.Now()
 	emit("deterministic_preflight", 0, 3)
-	representative := []int{0, (frameCount / 2) * 1000 / req.FPS, (frameCount - 1) * 1000 / req.FPS}
+	representative := []int{0, (frameCount / 2) * 1000 / renderFPS, (frameCount - 1) * 1000 / renderFPS}
 	seenRepresentative := make(map[int]struct{}, len(representative))
 	audited := 0
 	for _, timeMS := range representative {
@@ -344,62 +371,75 @@ rendererCapacityAcquired:
 	captureStartedAt := time.Now()
 	emit("frame_capture", 0, frameCount)
 	canonicalLocation := origin + "/" + req.Entry
-	segmentPaths := make([]string, 0, (frameCount+MaxAnimationSegmentFrames-1)/MaxAnimationSegmentFrames)
-	for segmentStart := 0; segmentStart < frameCount; segmentStart += MaxAnimationSegmentFrames {
-		segmentFrames := min(MaxAnimationSegmentFrames, frameCount-segmentStart)
-		frameDir := filepath.Join(jobDir, fmt.Sprintf("frames-%06d", segmentStart))
-		if err := os.Mkdir(frameDir, 0o700); err != nil {
-			return AnimationResult{DurationMS: req.DurationMS, FPS: req.FPS, FrameCount: frameCount, Timings: timings, Diagnostics: boundedAnimationDiagnostics(diagnostics)}, NewError("animation_renderer_unavailable", "private animation frame directory could not be created")
+	workerPages := []context.Context{browserCtx}
+	workerCancels := make([]context.CancelFunc, 0, encoding.Workers-1)
+	defer func() {
+		for _, workerCancel := range workerCancels {
+			workerCancel()
 		}
-		for localIndex := 0; localIndex < segmentFrames; localIndex++ {
-			globalIndex := segmentStart + localIndex
-			timeMS := globalIndex * 1000 / req.FPS
-			frame, frameDiagnostics, err := captureAnimationFrame(browserCtx, timeMS, false)
-			if err != nil {
-				return AnimationResult{DurationMS: req.DurationMS, FPS: req.FPS, FrameCount: frameCount, Timings: timings, Diagnostics: boundedAnimationDiagnostics(diagnostics, frameDiagnostics)}, err
+	}()
+	for worker := 1; worker < encoding.Workers; worker++ {
+		workerCtx, workerCancel, workerErr := startAnimationWorkerPage(browserCtx, origin, req, faviconURL, markBlocked)
+		if workerErr != nil {
+			workerCancel()
+			for _, startedCancel := range workerCancels {
+				startedCancel()
 			}
-			if wasBlocked, reason := blockedAttempt(); wasBlocked {
-				return AnimationResult{DurationMS: req.DurationMS, FPS: req.FPS, FrameCount: frameCount, Timings: timings, Diagnostics: boundedAnimationDiagnostics(diagnostics)}, newErrorWithCause("animation_network_blocked", "animation document attempted a prohibited network request", errors.New(reason))
-			}
-			var location string
-			if navErr := chromedp.Run(browserCtx, chromedp.Location(&location)); navErr != nil || location != canonicalLocation {
-				return AnimationResult{DurationMS: req.DurationMS, FPS: req.FPS, FrameCount: frameCount, Timings: timings, Diagnostics: boundedAnimationDiagnostics(diagnostics)}, NewError("animation_seek_failed", "animation runtime attempted to navigate away from its canonical document")
-			}
-			name := filepath.Join(frameDir, fmt.Sprintf("frame-%06d.png", localIndex))
-			if err := os.WriteFile(name, frame, 0o600); err != nil {
-				return AnimationResult{DurationMS: req.DurationMS, FPS: req.FPS, FrameCount: frameCount, Timings: timings, Diagnostics: boundedAnimationDiagnostics(diagnostics)}, NewError("animation_renderer_failed", "captured animation frame could not be stored privately")
-			}
-			emit("frame_capture", globalIndex+1, frameCount)
+			return AnimationResult{DurationMS: req.DurationMS, FPS: encoding.FPS, Quality: encoding.Quality, FrameCount: frameCount, Timings: timings, Diagnostics: boundedAnimationDiagnostics(diagnostics)}, workerErr
 		}
-		timings["frame_capture"] += time.Since(captureStartedAt)
-		encodeStartedAt := time.Now()
-		emit("segment_encode", len(segmentPaths), (frameCount+MaxAnimationSegmentFrames-1)/MaxAnimationSegmentFrames)
-		segmentPath := filepath.Join(jobDir, fmt.Sprintf("segment-%06d.mp4", len(segmentPaths)))
-		if err := encodeAnimation(ctx, r.EncoderPath, filepath.Join(frameDir, "frame-%06d.png"), segmentPath, req.FPS, segmentFrames); err != nil {
-			return AnimationResult{DurationMS: req.DurationMS, FPS: req.FPS, FrameCount: frameCount, Timings: timings, Diagnostics: boundedAnimationDiagnostics(diagnostics)}, err
-		}
-		if err := os.RemoveAll(frameDir); err != nil {
-			return AnimationResult{DurationMS: req.DurationMS, FPS: req.FPS, FrameCount: frameCount, Timings: timings, Diagnostics: boundedAnimationDiagnostics(diagnostics)}, NewError("animation_renderer_failed", "private animation frame segment could not be removed")
-		}
-		segmentPaths = append(segmentPaths, segmentPath)
-		timings["segment_encode"] += time.Since(encodeStartedAt)
-		emit("segment_encode", len(segmentPaths), (frameCount+MaxAnimationSegmentFrames-1)/MaxAnimationSegmentFrames)
-		captureStartedAt = time.Now()
+		workerPages = append(workerPages, workerCtx)
+		workerCancels = append(workerCancels, workerCancel)
 	}
 
-	concatStartedAt := time.Now()
-	emit("segment_concatenation", 0, 1)
 	outputPath := filepath.Join(jobDir, "animation.mp4")
-	if err := concatAnimationSegments(ctx, r.EncoderPath, jobDir, segmentPaths, outputPath); err != nil {
-		return AnimationResult{DurationMS: req.DurationMS, FPS: req.FPS, FrameCount: frameCount, Timings: timings, Diagnostics: boundedAnimationDiagnostics(diagnostics)}, err
+	encoder, encoderInput, encoderOutput, err := startAnimationEncoder(ctx, r.EncoderPath, outputPath, encoding)
+	if err != nil {
+		return AnimationResult{DurationMS: req.DurationMS, FPS: encoding.FPS, Quality: encoding.Quality, FrameCount: frameCount, Timings: timings, Diagnostics: boundedAnimationDiagnostics(diagnostics)}, err
 	}
-	timings["segment_concatenation"] = time.Since(concatStartedAt)
-	emit("segment_concatenation", 1, 1)
+	capture := func(captureCtx context.Context, worker, index int) ([]byte, error) {
+		if err := captureCtx.Err(); err != nil {
+			return nil, newErrorWithCause("animation_timeout", "animation frame capture was cancelled", err)
+		}
+		frame, frameDiagnostics, captureErr := captureAnimationFrame(workerPages[worker], index*1000/encoding.FPS, false)
+		if captureErr != nil {
+			return nil, captureErr
+		}
+		if len(frameDiagnostics) > 1 {
+			return nil, NewError("animation_renderer_failed", "production frame returned unexpected diagnostics")
+		}
+		if wasBlocked, reason := blockedAttempt(); wasBlocked {
+			return nil, newErrorWithCause("animation_network_blocked", "animation document attempted a prohibited network request", errors.New(reason))
+		}
+		var location string
+		if navErr := chromedp.Run(workerPages[worker], chromedp.Location(&location)); navErr != nil || location != canonicalLocation {
+			return nil, NewError("animation_seek_failed", "animation runtime attempted to navigate away from its canonical document")
+		}
+		return frame, nil
+	}
+	writeFrame := func(frame []byte) error { return writeAll(encoderInput, frame) }
+	pipelineErr := runOrderedFramePipeline(ctx, frameCount, encoding.Workers, encoding.BufferFrames, capture, writeFrame, func(completed int) {
+		emit("frame_capture", completed, frameCount)
+	})
+	closeErr := encoderInput.Close()
+	if pipelineErr != nil {
+		cancel()
+	}
+	waitErr := encoder.Wait()
+	if pipelineErr != nil {
+		return AnimationResult{DurationMS: req.DurationMS, FPS: encoding.FPS, Quality: encoding.Quality, FrameCount: frameCount, Timings: timings, Diagnostics: boundedAnimationDiagnostics(diagnostics)}, pipelineErr
+	}
+	if closeErr != nil || waitErr != nil {
+		if ctx.Err() != nil {
+			return AnimationResult{DurationMS: req.DurationMS, FPS: encoding.FPS, Quality: encoding.Quality, FrameCount: frameCount, Timings: timings, Diagnostics: boundedAnimationDiagnostics(diagnostics)}, NewError("animation_timeout", "MP4 encoding was cancelled before completion")
+		}
+		return AnimationResult{DurationMS: req.DurationMS, FPS: encoding.FPS, Quality: encoding.Quality, FrameCount: frameCount, Timings: timings, Diagnostics: boundedAnimationDiagnostics(diagnostics)}, newErrorWithCause("animation_encode_failed", "trusted MP4 encoder failed", errors.New(strings.TrimSpace(encoderOutput.String())))
+	}
+	timings["frame_capture_and_encode"] = time.Since(captureStartedAt)
 	mp4, err := os.ReadFile(outputPath)
 	if err != nil || len(mp4) == 0 || len(mp4) > MaxMP4Bytes {
-		return AnimationResult{DurationMS: req.DurationMS, FPS: req.FPS, FrameCount: frameCount, Timings: timings, Diagnostics: boundedAnimationDiagnostics(diagnostics)}, NewError("animation_mp4_invalid", "encoded MP4 is missing or exceeds fixed bounds")
+		return AnimationResult{DurationMS: req.DurationMS, FPS: encoding.FPS, Quality: encoding.Quality, FrameCount: frameCount, Timings: timings, Diagnostics: boundedAnimationDiagnostics(diagnostics)}, NewError("animation_mp4_invalid", "encoded MP4 is missing or exceeds fixed bounds")
 	}
-	return AnimationResult{MP4: mp4, DurationMS: req.DurationMS, FPS: req.FPS, FrameCount: frameCount, Timings: timings, Diagnostics: boundedAnimationDiagnostics(diagnostics)}, nil
+	return AnimationResult{MP4: mp4, DurationMS: req.DurationMS, FPS: encoding.FPS, Quality: encoding.Quality, FrameCount: frameCount, Timings: timings, Diagnostics: boundedAnimationDiagnostics(diagnostics)}, nil
 }
 
 func animationRenderTimeout(frameCount int) time.Duration {
@@ -420,6 +460,45 @@ func validateAnimationRequest(req AnimationRequest) (int, error) {
 		return 0, NewError("animation_source_limit_exceeded", fmt.Sprintf("animation frame count exceeds the fixed %d-frame renderer bound", MaxAnimationFrames))
 	}
 	return frameCount, nil
+}
+
+type animationEncoding struct {
+	Quality      AnimationQuality
+	FPS          int
+	Workers      int
+	BufferFrames int
+	Preset       string
+	CRF          int
+}
+
+func resolveAnimationEncoding(req AnimationRequest) (animationEncoding, error) {
+	quality := req.Quality
+	if quality == "" {
+		quality = AnimationQualityHigh
+	}
+	encoding := animationEncoding{Quality: quality, FPS: req.FPS, Workers: 3, BufferFrames: 6, Preset: "veryfast", CRF: 20}
+	switch quality {
+	case AnimationQualityPreview:
+		encoding.FPS, encoding.Workers, encoding.BufferFrames, encoding.Preset, encoding.CRF = 30, 2, 4, "ultrafast", 30
+	case AnimationQualityStandard:
+		encoding.FPS, encoding.Workers, encoding.BufferFrames, encoding.Preset, encoding.CRF = 30, 3, 6, "veryfast", 23
+	case AnimationQualityHigh:
+		encoding.Preset, encoding.CRF = "veryfast", 18
+	case AnimationQualityMaster:
+		encoding.FPS, encoding.Workers, encoding.BufferFrames, encoding.Preset, encoding.CRF = 60, 4, 8, "fast", 15
+	default:
+		return animationEncoding{}, NewError("animation_quality_invalid", "animation render quality is not server-allowlisted")
+	}
+	if req.OutputFPS != 0 {
+		if req.OutputFPS != 30 && req.OutputFPS != 60 {
+			return animationEncoding{}, NewError("animation_quality_invalid", "animation output frame rate is not server-allowlisted")
+		}
+		encoding.FPS = req.OutputFPS
+	}
+	if encoding.FPS < 1 || encoding.FPS > MaxAnimationFPS {
+		return animationEncoding{}, NewError("animation_quality_invalid", "animation output frame rate exceeds fixed renderer bounds")
+	}
+	return encoding, nil
 }
 
 // The bootstrap is installed through Page.addScriptToEvaluateOnNewDocument, so
@@ -494,6 +573,48 @@ func installAnimationBootstrap(browserCtx context.Context) error {
 		return newErrorWithCause("animation_renderer_failed", "trusted animation bootstrap could not be installed", err)
 	}
 	return nil
+}
+
+func startAnimationWorkerPage(browserCtx context.Context, origin string, req AnimationRequest, faviconURL string, markBlocked func(string)) (context.Context, context.CancelFunc, error) {
+	workerCtx, workerCancel := chromedp.NewContext(browserCtx)
+	chromedp.ListenTarget(workerCtx, func(ev any) {
+		paused, ok := ev.(*fetch.EventRequestPaused)
+		if !ok {
+			return
+		}
+		allowed := paused.Request.URL == "about:blank" || paused.Request.URL == faviconURL || paused.Request.URL == origin || strings.HasPrefix(paused.Request.URL, origin+"/")
+		if !allowed {
+			markBlocked(paused.Request.URL)
+		}
+		go func() {
+			execCtx := cdp.WithExecutor(workerCtx, chromedp.FromContext(workerCtx).Target)
+			if allowed {
+				_ = fetch.ContinueRequest(paused.RequestID).Do(execCtx)
+			} else {
+				_ = fetch.FailRequest(paused.RequestID, network.ErrorReasonBlockedByClient).Do(execCtx)
+			}
+		}()
+	})
+	if err := chromedp.Run(workerCtx); err != nil {
+		return workerCtx, workerCancel, newErrorWithCause("animation_renderer_failed", "concurrent browser page could not start", err)
+	}
+	if err := installAnimationBootstrap(workerCtx); err != nil {
+		return workerCtx, workerCancel, err
+	}
+	loadCtx, loadCancel := context.WithTimeout(workerCtx, documentTimeout)
+	defer loadCancel()
+	if err := chromedp.Run(loadCtx,
+		fetch.Enable().WithPatterns([]*fetch.RequestPattern{{URLPattern: "*"}}),
+		chromedp.EmulateViewport(Width, Height),
+		chromedp.Navigate(origin+"/"+req.Entry),
+		chromedp.WaitReady("body", chromedp.ByQuery),
+	); err != nil {
+		return workerCtx, workerCancel, newErrorWithCause("animation_renderer_failed", "concurrent animation document could not be loaded", err)
+	}
+	if _, err := prepareAnimation(workerCtx, req); err != nil {
+		return workerCtx, workerCancel, err
+	}
+	return workerCtx, workerCancel, nil
 }
 
 type animationAudit struct {
@@ -860,53 +981,139 @@ func animationScreenshot(ctx context.Context) ([]byte, error) {
 	return data, nil
 }
 
-func encodeAnimation(ctx context.Context, encoderPath, inputPattern, outputPath string, fps, frames int) error {
-	args := []string{
-		"-v", "error", "-nostdin", "-y",
-		"-framerate", fmt.Sprint(fps), "-start_number", "0", "-i", inputPattern,
-		"-frames:v", fmt.Sprint(frames), "-an", "-c:v", "libx264", "-preset", "veryfast",
+func animationEncoderArgs(outputPath string, encoding animationEncoding) []string {
+	return []string{
+		"-v", "error", "-nostdin", "-y", "-f", "image2pipe", "-framerate", fmt.Sprint(encoding.FPS), "-vcodec", "png", "-i", "pipe:0",
+		"-an", "-c:v", "libx264", "-preset", encoding.Preset, "-crf", fmt.Sprint(encoding.CRF),
 		"-pix_fmt", "yuv420p", "-threads", "2", "-fflags", "+bitexact", "-flags:v", "+bitexact",
 		"-map_metadata", "-1", "-movflags", "+faststart", outputPath,
 	}
+}
+
+func startAnimationEncoder(ctx context.Context, encoderPath, outputPath string, encoding animationEncoding) (*exec.Cmd, io.WriteCloser, *boundedCommandOutput, error) {
+	args := animationEncoderArgs(outputPath, encoding)
 	output := &boundedCommandOutput{remaining: 16 << 10}
 	cmd := exec.CommandContext(ctx, encoderPath, args...)
 	cmd.Stdout, cmd.Stderr = output, output
-	if err := cmd.Run(); err != nil {
-		if ctx.Err() != nil {
-			return NewError("animation_timeout", "MP4 encoding exceeded the fixed deadline")
+	input, err := cmd.StdinPipe()
+	if err != nil {
+		return nil, nil, output, newErrorWithCause("animation_encode_failed", "trusted MP4 encoder input could not be created", err)
+	}
+	if err := cmd.Start(); err != nil {
+		_ = input.Close()
+		return nil, nil, output, newErrorWithCause("animation_encode_failed", "trusted MP4 encoder could not start", err)
+	}
+	return cmd, input, output, nil
+}
+
+type animationCapturedFrame struct {
+	Index int
+	Data  []byte
+	Err   error
+}
+
+// runOrderedFramePipeline bounds capture fan-out and memory while allowing pages
+// to finish out of order. The writer consumes only the next canonical frame, so
+// FFmpeg sees the exact deterministic timeline and naturally applies backpressure.
+func runOrderedFramePipeline(ctx context.Context, frames, workers, bufferFrames int, capture func(context.Context, int, int) ([]byte, error), writeFrame func([]byte) error, progress func(int)) error {
+	if err := ctx.Err(); err != nil {
+		return newErrorWithCause("animation_timeout", "concurrent frame pipeline was cancelled before capture", err)
+	}
+	if frames < 1 || workers < 1 || workers > MaxAnimationCaptureWorkers || bufferFrames < workers || bufferFrames > MaxAnimationCaptureWorkers*2 {
+		return NewError("animation_renderer_failed", "concurrent frame pipeline exceeds fixed bounds")
+	}
+	pipelineCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	jobs := make(chan int)
+	results := make(chan animationCapturedFrame, bufferFrames)
+	permits := make(chan struct{}, bufferFrames)
+	var group sync.WaitGroup
+	for worker := 0; worker < workers; worker++ {
+		group.Add(1)
+		go func(worker int) {
+			defer group.Done()
+			for {
+				select {
+				case <-pipelineCtx.Done():
+					return
+				case index, ok := <-jobs:
+					if !ok {
+						return
+					}
+					data, err := capture(pipelineCtx, worker, index)
+					select {
+					case results <- animationCapturedFrame{Index: index, Data: data, Err: err}:
+					case <-pipelineCtx.Done():
+						return
+					}
+					if err != nil {
+						return
+					}
+				}
+			}
+		}(worker)
+	}
+	go func() {
+		defer close(jobs)
+		for index := 0; index < frames; index++ {
+			select {
+			case permits <- struct{}{}:
+			case <-pipelineCtx.Done():
+				return
+			}
+			select {
+			case jobs <- index:
+			case <-pipelineCtx.Done():
+				return
+			}
 		}
-		return newErrorWithCause("animation_encode_failed", "trusted MP4 encoder failed", errors.New(strings.TrimSpace(output.String())))
+	}()
+	go func() { group.Wait(); close(results) }()
+
+	pending := make(map[int][]byte, bufferFrames)
+	next := 0
+	for result := range results {
+		if result.Err != nil {
+			cancel()
+			return result.Err
+		}
+		pending[result.Index] = result.Data
+		for {
+			frame, ok := pending[next]
+			if !ok {
+				break
+			}
+			if err := writeFrame(frame); err != nil {
+				cancel()
+				if ctx.Err() != nil {
+					return NewError("animation_timeout", "MP4 streaming was cancelled before completion")
+				}
+				return newErrorWithCause("animation_encode_failed", "trusted MP4 encoder rejected a streamed frame", err)
+			}
+			delete(pending, next)
+			<-permits
+			next++
+			if progress != nil {
+				progress(next)
+			}
+		}
+	}
+	if next != frames {
+		return NewError("animation_renderer_failed", "concurrent frame pipeline ended before all ordered frames were written")
 	}
 	return nil
 }
 
-func concatAnimationSegments(ctx context.Context, encoderPath, jobDir string, segments []string, outputPath string) error {
-	if len(segments) == 0 {
-		return NewError("animation_encode_failed", "trusted MP4 encoder produced no bounded segments")
-	}
-	if len(segments) == 1 {
-		if err := os.Rename(segments[0], outputPath); err != nil {
-			return newErrorWithCause("animation_encode_failed", "trusted MP4 segment could not be finalized", err)
+func writeAll(writer io.Writer, payload []byte) error {
+	for len(payload) > 0 {
+		written, err := writer.Write(payload)
+		if err != nil {
+			return err
 		}
-		return nil
-	}
-	var list strings.Builder
-	for index := range segments {
-		fmt.Fprintf(&list, "file 'segment-%06d.mp4'\n", index)
-	}
-	listPath := filepath.Join(jobDir, "segments.txt")
-	if err := os.WriteFile(listPath, []byte(list.String()), 0o600); err != nil {
-		return NewError("animation_encode_failed", "trusted MP4 segment list could not be stored privately")
-	}
-	args := []string{"-v", "error", "-nostdin", "-y", "-f", "concat", "-safe", "1", "-i", listPath, "-an", "-c", "copy", "-map_metadata", "-1", "-movflags", "+faststart", outputPath}
-	output := &boundedCommandOutput{remaining: 16 << 10}
-	cmd := exec.CommandContext(ctx, encoderPath, args...)
-	cmd.Dir, cmd.Stdout, cmd.Stderr = jobDir, output, output
-	if err := cmd.Run(); err != nil {
-		if ctx.Err() != nil {
-			return NewError("animation_timeout", "MP4 concatenation exceeded the fixed deadline")
+		if written <= 0 {
+			return io.ErrShortWrite
 		}
-		return newErrorWithCause("animation_concat_failed", "trusted MP4 segment concatenation failed", errors.New(strings.TrimSpace(output.String())))
+		payload = payload[written:]
 	}
 	return nil
 }

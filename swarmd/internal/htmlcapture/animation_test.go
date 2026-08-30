@@ -4,10 +4,14 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"math"
 	"os"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 	"unicode/utf8"
 )
 
@@ -31,6 +35,133 @@ func TestValidateAnimationRequestBounds(t *testing.T) {
 		if _, err := validateAnimationRequest(invalid); err == nil {
 			t.Fatalf("expected bounds error for %+v", invalid)
 		}
+	}
+}
+
+// Requirement: render quality is a closed server-owned contract. Untrusted
+// requests must not inject encoder names, presets, frame rates, or arbitrary
+// process fan-out. This unit boundary is the narrowest proof of that allowlist.
+func TestResolveAnimationEncodingAllowlist(t *testing.T) {
+	base := AnimationRequest{FPS: 60}
+	cases := []struct {
+		quality AnimationQuality
+		fps     int
+		workers int
+	}{
+		{AnimationQualityPreview, 30, 2},
+		{AnimationQualityStandard, 30, 3},
+		{AnimationQualityHigh, 60, 3},
+		{AnimationQualityMaster, 60, 4},
+	}
+	for _, test := range cases {
+		base.Quality = test.quality
+		encoding, err := resolveAnimationEncoding(base)
+		if err != nil || encoding.FPS != test.fps || encoding.Workers != test.workers || encoding.Workers > MaxAnimationCaptureWorkers || encoding.BufferFrames > MaxAnimationCaptureWorkers*2 {
+			t.Fatalf("quality %q encoding=%+v err=%v", test.quality, encoding, err)
+		}
+	}
+	base.Quality, base.OutputFPS = "", 0
+	if encoding, err := resolveAnimationEncoding(base); err != nil || encoding.Quality != AnimationQualityHigh || encoding.FPS != 60 {
+		t.Fatalf("default encoding=%+v err=%v", encoding, err)
+	}
+	for _, invalid := range []AnimationRequest{
+		{FPS: 60, Quality: "private-encoder"},
+		{FPS: 60, Quality: AnimationQualityHigh, OutputFPS: 24},
+	} {
+		if _, err := resolveAnimationEncoding(invalid); err == nil {
+			t.Fatalf("accepted invalid encoding request: %+v", invalid)
+		}
+	}
+	base.Quality, base.OutputFPS = AnimationQualityMaster, 30
+	if encoding, err := resolveAnimationEncoding(base); err != nil || encoding.FPS != 30 {
+		t.Fatalf("allowlisted output FPS override encoding=%+v err=%v", encoding, err)
+	}
+}
+
+// Requirement: production frames must be streamed into one persistent encoder;
+// they must not regress to frame files or segmented concat. The argument builder
+// is the narrowest hermetic boundary proving that process contract.
+func TestAnimationEncoderUsesSingleImagePipe(t *testing.T) {
+	encoding, err := resolveAnimationEncoding(AnimationRequest{FPS: 60, Quality: AnimationQualityMaster})
+	if err != nil {
+		t.Fatal(err)
+	}
+	args := strings.Join(animationEncoderArgs("animation.mp4", encoding), " ")
+	if !strings.Contains(args, "-f image2pipe") || !strings.Contains(args, "-i pipe:0") || strings.Contains(args, "frame-%") || strings.Contains(args, " concat ") {
+		t.Fatalf("encoder is not a persistent image pipe: %s", args)
+	}
+}
+
+// Requirement: captures may complete concurrently, but FFmpeg must receive
+// exactly ordered frames and no more than the configured bounded window may be
+// captured ahead. This prevents temporal corruption and unbounded PNG memory.
+func TestOrderedFramePipelineOrdersAndBackpressures(t *testing.T) {
+	var active atomic.Int32
+	var peak atomic.Int32
+	var started atomic.Int32
+	var mu sync.Mutex
+	written := make([]string, 0, 12)
+	capture := func(ctx context.Context, worker, index int) ([]byte, error) {
+		current := active.Add(1)
+		defer active.Add(-1)
+		started.Add(1)
+		for {
+			observed := peak.Load()
+			if current <= observed || peak.CompareAndSwap(observed, current) {
+				break
+			}
+		}
+		if index%3 == 0 {
+			time.Sleep(3 * time.Millisecond)
+		}
+		return []byte(fmt.Sprint(index)), nil
+	}
+	write := func(frame []byte) error {
+		mu.Lock()
+		written = append(written, string(frame))
+		mu.Unlock()
+		time.Sleep(time.Millisecond)
+		return nil
+	}
+	if err := runOrderedFramePipeline(context.Background(), 12, 4, 4, capture, write, nil); err != nil {
+		t.Fatalf("pipeline: %v", err)
+	}
+	for index, value := range written {
+		if value != fmt.Sprint(index) {
+			t.Fatalf("out-of-order output at %d: %q (%v)", index, value, written)
+		}
+	}
+	if peak.Load() > 4 || started.Load() != 12 {
+		t.Fatalf("fan-out peak=%d started=%d", peak.Load(), started.Load())
+	}
+}
+
+// Requirement: capture and encoder failures cancel the bounded producer pool
+// rather than hanging, leaking work, or reporting a partial stream as success.
+func TestOrderedFramePipelineCancelsOnCaptureAndWriteErrors(t *testing.T) {
+	captureFailure := errors.New("capture failed")
+	capture := func(ctx context.Context, worker, index int) ([]byte, error) {
+		if index == 3 {
+			return nil, captureFailure
+		}
+		return []byte{byte(index)}, nil
+	}
+	if err := runOrderedFramePipeline(context.Background(), 20, 3, 6, capture, func([]byte) error { return nil }, nil); !errors.Is(err, captureFailure) {
+		t.Fatalf("capture error = %v", err)
+	}
+	writeFailure := errors.New("pipe closed")
+	if err := runOrderedFramePipeline(context.Background(), 20, 3, 6, func(ctx context.Context, worker, index int) ([]byte, error) {
+		return []byte{byte(index)}, nil
+	}, func([]byte) error { return writeFailure }, nil); !errors.Is(err, writeFailure) {
+		t.Fatalf("write error = %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := runOrderedFramePipeline(ctx, 20, 3, 6, func(ctx context.Context, worker, index int) ([]byte, error) {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}, func([]byte) error { return nil }, nil); err == nil {
+		t.Fatal("cancelled pipeline succeeded")
 	}
 }
 
