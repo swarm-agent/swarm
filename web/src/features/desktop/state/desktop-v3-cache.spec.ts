@@ -1009,6 +1009,69 @@ test('routed first message survives an empty route-triggered hydrate and reconci
   assert.equal(state.messagesBySession[sessionB.id].source, 'network')
 })
 
+test('routed first user message survives post-response hydrate after mutation provenance is reconciled', () => {
+  const state = createEmptyDesktopV3CacheState()
+  const routedSession: SessionSnapshot = {
+    ...sessionB,
+    mode: 'auto',
+    message_count: 1,
+    metadata: {
+      routed_start: true,
+      background_router_session: true,
+    },
+  }
+  state.sessionsById[sessionB.id] = { kind: 'full', session: routedSession, needsHydrate: false }
+  state.projectionsBySession[sessionB.id] = { ...projectionB, last_event_seq: 2, projection_high_watermark_seq: 2 }
+  upsertCommittedMessage(state, sessionB.id, messageB1)
+
+  applyHydrateSnapshot(state, hydrateSnapshotFixture({
+    sessions_by_id: { [sessionB.id]: routedSession },
+    projections_by_session: { [sessionB.id]: { ...projectionB, last_event_seq: 2, projection_high_watermark_seq: 2 } },
+    messages_by_session: { [sessionB.id]: [messageB1] },
+  }), [sessionB.id])
+  assert.equal(state.messagesBySession[sessionB.id].source, 'network')
+
+  const assistant: MessageSnapshot = {
+    id: 'msg-b-2',
+    session_id: sessionB.id,
+    global_seq: 3,
+    role: 'assistant',
+    content: 'done',
+    created_at: 30,
+  }
+  applyHydrateSnapshot(state, hydrateSnapshotFixture({
+    sessions_by_id: { [sessionB.id]: { ...routedSession, message_count: 2, last_message_at: 30, updated_at: 30 } },
+    projections_by_session: { [sessionB.id]: { ...projectionB, last_event_seq: 3, projection_high_watermark_seq: 3, updated_at: 30 } },
+    messages_by_session: { [sessionB.id]: [assistant] },
+  }), [sessionB.id])
+
+  assert.deepEqual(
+    state.messagesBySession[sessionB.id].items.map((message) => [message.role, message.content]),
+    [['user', messageB1.content], ['assistant', assistant.content]],
+  )
+})
+
+test('ordinary hydrated session still accepts an authoritative transcript replacement', () => {
+  const state = bootstrappedState()
+  applyHydrateSnapshot(state, hydrateSnapshotFixture(), [sessionB.id])
+  const assistant: MessageSnapshot = {
+    id: 'msg-b-replacement',
+    session_id: sessionB.id,
+    global_seq: 3,
+    role: 'assistant',
+    content: 'authoritative replacement',
+    created_at: 30,
+  }
+
+  applyHydrateSnapshot(state, hydrateSnapshotFixture({
+    sessions_by_id: { [sessionB.id]: { ...sessionB, message_count: 1, last_message_at: 30, updated_at: 30 } },
+    projections_by_session: { [sessionB.id]: { ...projectionB, last_event_seq: 3, projection_high_watermark_seq: 3, updated_at: 30 } },
+    messages_by_session: { [sessionB.id]: [assistant] },
+  }), [sessionB.id])
+
+  assert.deepEqual(state.messagesBySession[sessionB.id].items.map((message) => message.id), [assistant.id])
+})
+
 test('metadata-only hydrate validates subset but ignores empty message payload when messages are out of scope', () => {
   const state = bootstrappedState()
   applyHydrateSnapshot(state, hydrateSnapshotFixture(), [sessionB.id])
