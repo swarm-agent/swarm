@@ -37,6 +37,6 @@ trap cleanup EXIT INT TERM
 "${ROOT_DIR}/scripts/render-testbench-model-config.sh" >"${config}"
 chmod 0600 "${config}"
 
-ssh "${SWARM_PRIMARY_SSH}" 'set -euo pipefail; install -d -m 0700 /var/cache/swarm-testbench-model-config; umask 077; cat >/var/cache/swarm-testbench-model-config/pending.conf; chmod 0600 /var/cache/swarm-testbench-model-config/pending.conf' <"${config}"
+ssh "${SWARM_PRIMARY_SSH}" "bash -c 'set -euo pipefail; install -d -m 0700 /var/cache/swarm-testbench-model-config; umask 077; cat >/var/cache/swarm-testbench-model-config/pending.conf; chmod 0600 /var/cache/swarm-testbench-model-config/pending.conf'" <"${config}"
 ssh "${SWARM_PRIMARY_SSH}" 'sudo -n /usr/local/sbin/swarm-testbench-admin gate-sync-models'
 printf 'sync-testbench-model-config: testbench Fireworks model configuration synchronized\n'
