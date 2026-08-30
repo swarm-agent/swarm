@@ -84,6 +84,8 @@ for runner in "${BASIC_RUNNER}" "${TASK_ROUTING_RUNNER}"; do
   if grep -Fq 'recommendedAssignment' "${runner}"; then fail "$(basename "${runner}") still discovers model recommendations"; fi
   if grep -Fq "service_tier: 'fast'" "${runner}"; then fail "$(basename "${runner}") still hardcodes a Codex-era fast tier for Fireworks"; fi
 done
+grep -Fq "ensure basic plan workspace binding" "${BASIC_RUNNER}" || fail "basic Plan/Auto runner does not idempotently ensure its requested workspace binding"
+grep -Fq "workspace_binding_ready" "${BASIC_RUNNER}" || fail "basic Plan/Auto runner does not report its workspace-binding gate"
 grep -Fq -- '--coder-model is required' "${TASK_PROGRAM_RUNNER}" || fail "task-program runner does not fail closed without the configured Coder model"
 if grep -Fq "includes('5.6-luna')" "${TASK_PROGRAM_RUNNER}"; then fail "task-program runner still discovers a model fallback"; fi
 if grep -Fq "service_tier: 'fast'" "${TASK_PROGRAM_RUNNER}"; then fail "task-program runner still hardcodes a Codex-era fast tier for Fireworks"; fi

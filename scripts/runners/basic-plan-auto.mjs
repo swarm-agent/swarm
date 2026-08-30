@@ -26,7 +26,7 @@ if (![actionThinking, planThinking].every((value) => ['low', 'medium', 'high', '
 const startedAt = new Date().toISOString()
 const testID = `runner-basic-plan-auto-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`
 const requiredGates = [
-  'provider_runnable', 'explicit_models', 'models_configured', 'plan_mode_created',
+  'provider_runnable', 'explicit_models', 'models_configured', 'workspace_binding_ready', 'plan_mode_created',
   'model_profile_snapshot', 'two_checkpoint_proposal', 'plan_approved_automatically',
   'mode_switched_to_auto', 'checkpoints_completed', 'subtasks_completed',
   'plan_model_verified', 'auto_model_verified', 'no_failures', 'models_restored',
@@ -207,6 +207,9 @@ async function main() {
   settingsChanged = true
   result.gates.models_configured = true
 
+  if (workspacePathOverride) {
+    await api('POST', '/v1/workspace/add', { path: workspacePathOverride, name: 'basic-plan-auto-primary', make_current: true }, 'ensure basic plan workspace binding')
+  }
   const topology = (await api('GET', '/v1/swarm/topology', undefined, 'read topology')).body
   const runtime = (topology?.runtimes || []).find((item) => item?.relationship === 'self') || (topology?.runtimes || [])[0]
   const binding = workspacePathOverride
@@ -216,6 +219,7 @@ async function main() {
   assert(binding?.workspace_binding_id, workspacePathOverride ? `no topology binding found for ${workspacePathOverride}` : 'topology has no workspace binding')
   const workspacePath = String(binding?.source_workspace_path || binding?.destination_workspace_path || '').trim()
   assert(workspacePath, 'selected workspace binding has no source or destination path')
+  result.gates.workspace_binding_ready = true
 
   const createResponse = await api('POST', '/v3/sessions', {
     client_request_id: `${testID}:create`,
