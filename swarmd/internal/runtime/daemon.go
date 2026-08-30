@@ -722,25 +722,6 @@ func New(cfg config.Config) (*Daemon, error) {
 	return d, nil
 }
 
-// startVideoRenderRecovery re-admits durable queued and interrupted renders
-// after daemon construction. Recovery is detached from request lifetimes but
-// remains owned by the daemon background context.
-func startVideoRenderRecovery(ctx context.Context, service *videorender.Service) {
-	if service == nil {
-		return
-	}
-	go func() {
-		count, err := service.RecoverJobs(ctx)
-		if err != nil && ctx.Err() == nil {
-			log.Printf("warning: recover durable video renders: %v", err)
-			return
-		}
-		if count > 0 {
-			log.Printf("recovered durable video renders count=%d", count)
-		}
-	}()
-}
-
 func seedUISwarmName(configPath string, uiSettingsSvc *uisettings.Service) error {
 	if uiSettingsSvc == nil {
 		return fmt.Errorf("ui settings service not configured")
