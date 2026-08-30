@@ -6573,12 +6573,9 @@ func (r *Runtime) manageWorktreePromote(scope WorkspaceScope, args map[string]an
 	if !source.WorktreeEnabled || sourcePath == "" || source.WorktreeBranch != sourceBranch || source.WorktreeBaseBranch != targetBranch || capturedPath == "" || capturedHead == "" {
 		return "", errors.New("promotion source is not a complete session-owned lane with captured lineage")
 	}
-	resolvedTarget, err := r.manageWorktreeResolveWorkspacePath(scope, targetWorkspacePath)
+	resolvedTarget, err := r.manageWorktreeResolvePromotionTarget(scope, targetWorkspacePath, capturedPath)
 	if err != nil {
 		return "", fmt.Errorf("resolve promotion target: %w", err)
-	}
-	if filepath.Clean(resolvedTarget) != filepath.Clean(capturedPath) || targetHead != capturedHead {
-		return "", errors.New("promotion target does not match the source session's exact captured path and HEAD")
 	}
 	sourceState, err := r.worktrees.InspectTaskWorkspace(sourcePath)
 	if err != nil || !sourceState.Clean || sourceState.BranchName != sourceBranch || sourceState.HeadCommit != sourceHead {
@@ -6588,7 +6585,7 @@ func (r *Runtime) manageWorktreePromote(scope WorkspaceScope, args map[string]an
 	if err != nil || !targetState.Clean || targetState.BranchName != targetBranch || targetState.HeadCommit != targetHead {
 		return "", errors.New("promotion target branch or HEAD changed; refresh exact lineage before retrying")
 	}
-	plan, err := r.worktrees.PrepareTaskIntegration(resolvedTarget, targetBranch, targetHead, []worktreeruntime.TaskIntegrationChild{{SessionID: sourceSessionID, BaseCommit: targetHead, HeadCommit: sourceHead}})
+	plan, err := r.worktrees.PrepareTaskIntegration(resolvedTarget, targetBranch, targetHead, []worktreeruntime.TaskIntegrationChild{{SessionID: sourceSessionID, BaseCommit: capturedHead, HeadCommit: sourceHead}})
 	if err != nil {
 		return "", err
 	}
@@ -7154,6 +7151,50 @@ done`, branchGlob, branchGlob)
 		})
 	}
 	return items, len(items), currentBranch, nil
+}
+
+func (r *Runtime) manageWorktreeResolvePromotionTarget(scope WorkspaceScope, requested, captured string) (string, error) {
+	requested = strings.TrimSpace(requested)
+	captured = strings.TrimSpace(captured)
+	if requested == "" || captured == "" {
+		return "", errors.New("promotion target and captured source workspace path are required")
+	}
+	requestedAbs, requestedResolved, err := normalizeWorkspaceCandidatePath(scope.PrimaryPath, requested)
+	if err != nil {
+		return "", err
+	}
+	_, capturedResolved, err := normalizeWorkspaceCandidatePath(scope.PrimaryPath, captured)
+	if err != nil {
+		return "", fmt.Errorf("resolve captured source workspace: %w", err)
+	}
+	if filepath.Clean(requestedResolved) != filepath.Clean(capturedResolved) {
+		return "", errors.New("promotion target does not match the source session's exact captured workspace")
+	}
+	if pathWithinAllowedRoots(resolveAllowedRoots(scope), requestedResolved) {
+		return requestedAbs, nil
+	}
+	if r == nil || r.workspace == nil {
+		return "", errors.New("captured promotion target is outside the active scope and authenticated workspace authority is unavailable")
+	}
+	workspaceScope, err := r.workspace.ScopeForPathForPrincipal(scope.Principal, requestedAbs)
+	if err != nil {
+		return "", fmt.Errorf("authenticate captured promotion target: %w", err)
+	}
+	if !workspaceScope.Matched {
+		return "", errors.New("captured promotion target is not an account-owned workspace")
+	}
+	workspaceRoot := strings.TrimSpace(workspaceScope.WorkspacePath)
+	if workspaceRoot == "" {
+		workspaceRoot = strings.TrimSpace(workspaceScope.ResolvedPath)
+	}
+	_, workspaceResolved, err := normalizeWorkspaceCandidatePath(scope.PrimaryPath, workspaceRoot)
+	if err != nil {
+		return "", fmt.Errorf("resolve authenticated workspace root: %w", err)
+	}
+	if filepath.Clean(workspaceResolved) != filepath.Clean(capturedResolved) {
+		return "", errors.New("authenticated workspace root does not match the source session's captured workspace")
+	}
+	return requestedAbs, nil
 }
 
 func (r *Runtime) manageWorktreeResolveWorkspacePath(scope WorkspaceScope, requested string) (string, error) {

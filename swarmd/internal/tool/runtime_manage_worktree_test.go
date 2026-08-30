@@ -151,6 +151,57 @@ func TestManageWorktreePromoteRequiresExactLineage(t *testing.T) {
 	}
 }
 
+// TestManageWorktreePromoteAllowsExactCapturedAccountWorkspaceOutsideActiveLane proves the promotion authority can reach only the source session's exact captured account-owned checkout, even when the active mutation lane is the owned worktree. This prevents the active-lane containment rule from making guarded delivery impossible while retaining principal-backed target authentication; the tool runtime is the narrowest layer that owns this resolver and no-apply boundary.
+func TestManageWorktreePromoteAllowsExactCapturedAccountWorkspaceOutsideActiveLane(t *testing.T) {
+	runtime, scope, worktrees, _ := newCoderLineageRuntime(t)
+	sessions := runtime.sessions.(*coderLineageSessionService)
+	source := sessions.parent
+	source.Metadata["swarm_v3_source_workspace_path"] = "/captured"
+	source.Metadata["base_commit"] = "captured-base"
+	sessions.parent = source
+	worktrees.states["/captured"] = worktreeruntime.TaskWorkspaceState{WorkspacePath: "/captured", BranchName: "dev", HeadCommit: "current-dev-head", Clean: true}
+	runtime.workspace = &gitManageWorkspaceService{owned: map[string]bool{"/captured": true}}
+
+	output, err := runtime.manageWorktreePromote(scope, map[string]any{
+		"source_session_id": source.ID, "source_branch": source.WorktreeBranch, "source_head": "parent-head",
+		"target_workspace_path": "/captured", "target_branch": "dev", "target_head": "current-dev-head",
+	})
+	if err != nil {
+		t.Fatalf("promote exact captured account workspace: %v", err)
+	}
+	if worktrees.applyCalls != 1 {
+		t.Fatalf("promotion applied %d times, want 1", worktrees.applyCalls)
+	}
+	if len(worktrees.preparedChildren) != 1 || worktrees.preparedChildren[0].BaseCommit != "captured-base" {
+		t.Fatalf("prepared children = %#v, want captured base lineage", worktrees.preparedChildren)
+	}
+	if !strings.Contains(output, `"target_workspace_path":"/captured"`) {
+		t.Fatalf("promotion response = %s", output)
+	}
+}
+
+// TestManageWorktreePromoteRejectsForeignTargetOutsideActiveLane proves a model-supplied path cannot use captured-lineage metadata to promote into a checkout the authenticated account does not own. The regression threat is cross-workspace mutation outside the active lane; the tool runtime is the narrowest layer that can assert rejection before integration apply.
+func TestManageWorktreePromoteRejectsForeignTargetOutsideActiveLane(t *testing.T) {
+	runtime, scope, worktrees, _ := newCoderLineageRuntime(t)
+	sessions := runtime.sessions.(*coderLineageSessionService)
+	source := sessions.parent
+	source.Metadata["swarm_v3_source_workspace_path"] = "/captured"
+	source.Metadata["base_commit"] = "captured-base"
+	sessions.parent = source
+	runtime.workspace = &gitManageWorkspaceService{owned: map[string]bool{"/captured": false}}
+
+	_, err := runtime.manageWorktreePromote(scope, map[string]any{
+		"source_session_id": source.ID, "source_branch": source.WorktreeBranch, "source_head": "parent-head",
+		"target_workspace_path": "/captured", "target_branch": "dev", "target_head": "current-dev-head",
+	})
+	if err == nil || !strings.Contains(err.Error(), "not an account-owned workspace") {
+		t.Fatalf("foreign promotion error = %v", err)
+	}
+	if worktrees.applyCalls != 0 {
+		t.Fatalf("foreign promotion applied %d times", worktrees.applyCalls)
+	}
+}
+
 func TestManageWorktreeRecallFindsParallelCoderLineage(t *testing.T) {
 	runtime, scope, _, childIDs := newCoderLineageRuntime(t)
 	output, err := runtime.manageWorktreeRecall(scope, map[string]any{"limit": 25})
