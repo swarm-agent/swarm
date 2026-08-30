@@ -107,6 +107,11 @@ func (s *Service) resolveRunWorkspaceScope(session pebblestore.SessionSnapshot, 
 					}
 				}
 			}
+			pooledReadOnlyRoots, pooledErr := s.mergeAccountSavedWorkspaceRoots(principal, nil)
+			if pooledErr != nil {
+				return tool.WorkspaceScope{}, fmt.Errorf("resolve Coder account workspace pool: %w", pooledErr)
+			}
+			readOnlyRoots = mergeSessionWorkspaceRoots(readOnlyRoots, pooledReadOnlyRoots)
 		}
 		return tool.WorkspaceScope{
 			PrimaryPath:          resolvedPath,
@@ -133,7 +138,11 @@ func (s *Service) resolveRunWorkspaceScope(session pebblestore.SessionSnapshot, 
 			if err := validateSessionWorkspaceIdentity(session, resolved.WorkspaceID, resolved.WorkspaceGeneration); err != nil {
 				return tool.WorkspaceScope{}, err
 			}
-			roots, err := mergeValidatedTemporaryWorkspaceRoots(resolved.Directories, session.TemporaryWorkspaceRoots)
+			roots, err := s.mergeAccountSavedWorkspaceRoots(principal, resolved.Directories)
+			if err != nil {
+				return tool.WorkspaceScope{}, err
+			}
+			roots, err = mergeValidatedTemporaryWorkspaceRoots(roots, session.TemporaryWorkspaceRoots)
 			if err != nil {
 				return tool.WorkspaceScope{}, err
 			}
@@ -156,7 +165,11 @@ func (s *Service) resolveRunWorkspaceScope(session pebblestore.SessionSnapshot, 
 	if err != nil {
 		return tool.WorkspaceScope{}, err
 	}
-	roots, err := mergeValidatedTemporaryWorkspaceRoots([]string{resolvedPath}, session.TemporaryWorkspaceRoots)
+	roots, err := s.mergeAccountSavedWorkspaceRoots(principal, []string{resolvedPath})
+	if err != nil {
+		return tool.WorkspaceScope{}, err
+	}
+	roots, err = mergeValidatedTemporaryWorkspaceRoots(roots, session.TemporaryWorkspaceRoots)
 	if err != nil {
 		return tool.WorkspaceScope{}, err
 	}
@@ -170,6 +183,19 @@ func (s *Service) resolveRunWorkspaceScope(session pebblestore.SessionSnapshot, 
 		Principal:   principal,
 		SessionID:   strings.TrimSpace(session.ID),
 	}, nil
+}
+
+func (s *Service) mergeAccountSavedWorkspaceRoots(principal identity.Principal, baseRoots []string) ([]string, error) {
+	if s == nil || s.workspace == nil {
+		return mergeSessionWorkspaceRoots(baseRoots, nil), nil
+	}
+	pooledRoots, err := s.workspace.AvailableSavedRootsForPrincipal(principal)
+	if err != nil {
+		return nil, fmt.Errorf("list account-scoped workspace roots: %w", err)
+	}
+	roots := append([]string(nil), baseRoots...)
+	roots = append(roots, pooledRoots...)
+	return mergeSessionWorkspaceRoots(roots, nil), nil
 }
 
 func linkedWorktreeGitAdminRoot(worktreePath string) (string, error) {

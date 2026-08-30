@@ -747,6 +747,38 @@ func (s *Service) ListKnown(limit int) ([]Entry, error) {
 	return out, nil
 }
 
+// AvailableSavedRootsForPrincipal returns the canonical, currently available
+// primary path of every active workspace in the principal's account catalog.
+// Invalid, missing, or identity-drifted paths are omitted rather than widening
+// authority to their current target or making an unrelated saved workspace
+// prevent a run in another valid workspace.
+func (s *Service) AvailableSavedRootsForPrincipal(principal identity.Principal) ([]string, error) {
+	if err := requirePrincipal(principal); err != nil {
+		return nil, err
+	}
+	entries, err := s.store.ListForAccount(principal.AccountScopeID, 100000)
+	if err != nil {
+		return nil, err
+	}
+	roots := make([]string, 0, len(entries))
+	seen := make(map[string]struct{}, len(entries))
+	for _, entry := range entries {
+		if !strings.EqualFold(strings.TrimSpace(entry.State), "active") {
+			continue
+		}
+		root, err := revalidateStoredDirectory(entry.Path)
+		if err != nil {
+			continue
+		}
+		if _, ok := seen[root]; ok {
+			continue
+		}
+		seen[root] = struct{}{}
+		roots = append(roots, root)
+	}
+	return roots, nil
+}
+
 func (s *Service) ListKnownForPrincipal(principal identity.Principal, limit int) ([]Entry, error) {
 	if err := requirePrincipal(principal); err != nil {
 		return nil, err

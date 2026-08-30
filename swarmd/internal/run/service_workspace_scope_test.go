@@ -640,6 +640,11 @@ func TestRunWorkspaceScopeRequiresPrincipalForPrincipalBackedRuntime(t *testing.
 	}
 }
 
+// Requirement: every active account-saved workspace is already user-authorized
+// filesystem scope. The regression threat is a provider call under a different
+// saved root entering requestWorkspaceScopePermission and interrupting the user.
+// This run-scope/gate test is the narrowest layer that proves every path-bearing
+// tool classification and the unsaved-path negative case before tool execution.
 func TestResolveRunWorkspaceScopeIncludesEveryAccountSavedWorkspaceWithoutSwitch(t *testing.T) {
 	primary := t.TempDir()
 	secondary := t.TempDir()
@@ -671,12 +676,53 @@ func TestResolveRunWorkspaceScopeIncludesEveryAccountSavedWorkspaceWithoutSwitch
 	}
 	assertStringSliceContains(t, scope.Roots, primary)
 	assertStringSliceContains(t, scope.Roots, secondary)
-	if _, needsApproval, err := tool.ScopeExpansionForCall(scope, tool.Call{Name: "write", Arguments: `{"path":"` + filepath.Join(secondary, "allowed.txt") + `"}`}); err != nil || needsApproval {
-		t.Fatalf("saved secondary workspace required expansion: approval=%t err=%v", needsApproval, err)
+	secondaryFile := filepath.Join(secondary, "allowed.txt")
+	if err := os.WriteFile(secondaryFile, []byte("saved workspace"), 0o600); err != nil {
+		t.Fatalf("seed saved secondary workspace: %v", err)
 	}
-	request, needsApproval, err := tool.ScopeExpansionForCall(scope, tool.Call{Name: "write", Arguments: `{"path":"` + filepath.Join(external, "blocked.txt") + `"}`})
-	if err != nil || !needsApproval || request.DirectoryPath != external {
-		t.Fatalf("unsaved external workspace decision: approval=%t request=%+v err=%v", needsApproval, request, err)
+	calls := []tool.Call{
+		{CallID: "read-saved", Name: "read", Arguments: mustJSON(t, map[string]any{"path": secondaryFile})},
+		{CallID: "list-saved", Name: "list", Arguments: mustJSON(t, map[string]any{"path": secondary})},
+		{CallID: "search-saved", Name: "search", Arguments: mustJSON(t, map[string]any{"path": secondary, "query": "saved workspace"})},
+		{CallID: "find-saved", Name: "find", Arguments: mustJSON(t, map[string]any{"path": secondary, "query": "allowed.txt"})},
+		{CallID: "search-saved-paths", Name: "search", Arguments: mustJSON(t, map[string]any{"paths": []string{secondary}, "query": "saved workspace"})},
+		{CallID: "agentic-search-saved", Name: "agentic_search", Arguments: mustJSON(t, map[string]any{"path": secondary, "query": "saved workspace"})},
+		{CallID: "task-saved", Name: "task", Arguments: mustJSON(t, map[string]any{"workspace_path": secondary, "prompt": "inspect"})},
+		{CallID: "write-saved", Name: "write", Arguments: mustJSON(t, map[string]any{"path": filepath.Join(secondary, "new.txt"), "content": "new"})},
+		{CallID: "edit-saved", Name: "edit", Arguments: mustJSON(t, map[string]any{"path": secondaryFile, "old_string": "saved", "new_string": "pooled"})},
+		{CallID: "download-saved", Name: "webdownload", Arguments: mustJSON(t, map[string]any{"url": "https://example.com", "output_dir": secondary})},
+	}
+	for _, call := range calls {
+		if request, needsApproval, err := tool.ScopeExpansionForCall(scope, call); err != nil || needsApproval {
+			t.Fatalf("saved secondary workspace %s required expansion: approval=%t request=%+v err=%v", call.Name, needsApproval, request, err)
+		}
+	}
+	workspaceCtx := runWorkspaceContext{
+		WorkspacePath: primary, WorkspaceRoots: append([]string(nil), scope.Roots...),
+		OriginWorkspacePath: primary, OriginWorkspaceRoots: append([]string(nil), scope.Roots...), Scope: scope,
+	}
+	_, approved, indexes, changed, waitMS, err := runSvc.gateWorkspaceScopeCalls(
+		context.Background(), "session-global-saved-workspaces", "session-global-saved-workspaces", "run-global-saved-workspaces", 1, sessionruntime.ModeAuto,
+		primary, "primary", principal, &workspaceCtx, calls, nil,
+	)
+	if err != nil || len(approved) != len(calls) || len(indexes) != len(calls) || changed || waitMS != 0 {
+		t.Fatalf("saved workspace tools prompted for permission: approved=%d indexes=%v changed=%t wait_ms=%d err=%v", len(approved), indexes, changed, waitMS, err)
+	}
+	for _, call := range []tool.Call{
+		{Name: "read", Arguments: mustJSON(t, map[string]any{"path": filepath.Join(external, "blocked.txt")})},
+		{Name: "list", Arguments: mustJSON(t, map[string]any{"path": external})},
+		{Name: "search", Arguments: mustJSON(t, map[string]any{"path": external, "query": "blocked"})},
+		{Name: "find", Arguments: mustJSON(t, map[string]any{"path": external, "query": "blocked.txt"})},
+		{Name: "agentic_search", Arguments: mustJSON(t, map[string]any{"path": external, "query": "blocked"})},
+		{Name: "task", Arguments: mustJSON(t, map[string]any{"workspace_path": external, "prompt": "inspect"})},
+		{Name: "write", Arguments: mustJSON(t, map[string]any{"path": filepath.Join(external, "blocked.txt"), "content": "blocked"})},
+		{Name: "edit", Arguments: mustJSON(t, map[string]any{"path": filepath.Join(external, "blocked.txt"), "old_string": "a", "new_string": "b"})},
+		{Name: "webdownload", Arguments: mustJSON(t, map[string]any{"url": "https://example.com", "output_dir": external})},
+	} {
+		request, needsApproval, err := tool.ScopeExpansionForCall(scope, call)
+		if err != nil || !needsApproval || request.DirectoryPath != external {
+			t.Fatalf("unsaved external %s decision: approval=%t request=%+v err=%v", call.Name, needsApproval, request, err)
+		}
 	}
 	if secondaryResolution.WorkspaceID == "" {
 		t.Fatal("secondary saved workspace lost identity")

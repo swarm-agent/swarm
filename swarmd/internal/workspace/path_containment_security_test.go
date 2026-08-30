@@ -71,6 +71,52 @@ func TestScopeForPathRevalidatesStoredDirectoryIdentity(t *testing.T) {
 	}
 }
 
+// Requirement: the account workspace pool authorizes only active saved roots
+// that still exist at their exact canonical identity. The regression threat is
+// either granting a symlink replacement or making one unavailable saved entry
+// break unrelated valid workspace reads. This service test is the narrowest
+// layer that proves the catalog-to-root security boundary and its omissions.
+func TestAvailableSavedRootsForPrincipalOmitsUnavailableAndIdentityDrift(t *testing.T) {
+	store, cleanup := newTestWorkspaceStore(t)
+	defer cleanup()
+	svc := NewService(store)
+	principal := testPrincipal()
+	valid := t.TempDir()
+	missing := t.TempDir()
+	base := t.TempDir()
+	drifted := filepath.Join(base, "drifted")
+	other := filepath.Join(base, "other")
+	if err := os.Mkdir(drifted, 0o755); err != nil {
+		t.Fatalf("create drifted workspace: %v", err)
+	}
+	if err := os.Mkdir(other, 0o755); err != nil {
+		t.Fatalf("create replacement target: %v", err)
+	}
+	for _, path := range []string{valid, missing, drifted} {
+		if _, err := svc.AddForPrincipal(principal, path, filepath.Base(path), "", false); err != nil {
+			t.Fatalf("save workspace %q: %v", path, err)
+		}
+	}
+	if err := os.Remove(missing); err != nil {
+		t.Fatalf("remove saved workspace: %v", err)
+	}
+	moved := drifted + "-old"
+	if err := os.Rename(drifted, moved); err != nil {
+		t.Fatalf("move saved workspace: %v", err)
+	}
+	if err := os.Symlink(other, drifted); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	roots, err := svc.AvailableSavedRootsForPrincipal(principal)
+	if err != nil {
+		t.Fatalf("resolve available workspace roots: %v", err)
+	}
+	if len(roots) != 1 || roots[0] != valid {
+		t.Fatalf("available roots = %v, want only %q", roots, valid)
+	}
+}
+
 func TestCreateFolderForPrincipalUsesCanonicalOpenedParent(t *testing.T) {
 	store, cleanup := newTestWorkspaceStore(t)
 	defer cleanup()
