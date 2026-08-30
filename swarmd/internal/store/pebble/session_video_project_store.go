@@ -41,6 +41,11 @@ const (
 	VideoRenderJobStatusCancelled = "cancelled"
 	VideoRenderJobStatusStale     = "stale"
 
+	VideoRenderQualityPreview  = "preview"
+	VideoRenderQualityStandard = "standard"
+	VideoRenderQualityHigh     = "high"
+	VideoRenderQualityMaster   = "master"
+
 	VideoProjectKindVideoTool = "video_tool"
 
 	VideoClipSourceKindSourceVideo     = "source_video"
@@ -338,11 +343,16 @@ type VideoRenderJobSnapshot struct {
 	UserID             string                             `json:"user_id,omitempty"`
 	WorkspaceID        string                             `json:"workspace_id,omitempty"`
 	SessionID          string                             `json:"session_id"`
-	Status             string                             `json:"status"`
-	Progress           float64                            `json:"progress"`
-	ProgressStage      string                             `json:"progress_stage,omitempty"`
-	FailureCode        string                             `json:"failure_code,omitempty"`
-	FailureReason      string                             `json:"failure_reason,omitempty"`
+	Status               string                             `json:"status"`
+	Progress             float64                            `json:"progress"`
+	ProgressStage        string                             `json:"progress_stage,omitempty"`
+	RenderQuality        string                             `json:"render_quality"`
+	RenderFPS            int                                `json:"render_fps"`
+	ElapsedMs            int64                              `json:"elapsed_ms,omitempty"`
+	EstimatedRemainingMs int64                              `json:"estimated_remaining_ms,omitempty"`
+	ReusedFromJobID      string                             `json:"reused_from_job_id,omitempty"`
+	FailureCode          string                             `json:"failure_code,omitempty"`
+	FailureReason        string                             `json:"failure_reason,omitempty"`
 	OutputPreset       string                             `json:"output_preset,omitempty"`
 	OutputWidth        int                                `json:"output_width,omitempty"`
 	OutputHeight       int                                `json:"output_height,omitempty"`
@@ -2570,6 +2580,9 @@ func (s *SessionStore) prepareV3VideoProjectMutation(input V3SessionMutationInpu
 		incomingJob.SchemaVersion = VideoRenderJobSchemaVersion
 		incomingJob.Status = VideoRenderJobStatusQueued
 		incomingJob.Progress = 0.0
+		if !isValidRenderQuality(incomingJob.RenderQuality) || (incomingJob.RenderFPS != 30 && incomingJob.RenderFPS != 60) {
+			return preparedV3VideoProjectMutation{}, errors.New("video render job settings are not server-allowlisted")
+		}
 		if incomingJob.CreatedAt == 0 {
 			incomingJob.CreatedAt = now
 		}
@@ -2615,6 +2628,15 @@ func (s *SessionStore) prepareV3VideoProjectMutation(input V3SessionMutationInpu
 		if incomingJob.ProgressStage != "" && (incomingJob.Status != VideoRenderJobStatusRendering || incomingJob.Progress >= existing.Progress) {
 			existing.ProgressStage = incomingJob.ProgressStage
 		}
+		if incomingJob.ElapsedMs > 0 {
+			existing.ElapsedMs = incomingJob.ElapsedMs
+		}
+		if incomingJob.EstimatedRemainingMs > 0 || isTerminalRenderJobStatus(incomingJob.Status) {
+			existing.EstimatedRemainingMs = incomingJob.EstimatedRemainingMs
+		}
+		if incomingJob.ReusedFromJobID != "" {
+			existing.ReusedFromJobID = incomingJob.ReusedFromJobID
+		}
 		if incomingJob.FailureCode != "" {
 			existing.FailureCode = incomingJob.FailureCode
 		}
@@ -2646,11 +2668,26 @@ func (s *SessionStore) prepareV3VideoProjectMutation(input V3SessionMutationInpu
 			existing.OutputArtifact = incomingJob.OutputArtifact
 		}
 
+		if incomingJob.Status == VideoRenderJobStatusQueued {
+			existing.StartedAt = 0
+			existing.ElapsedMs = 0
+			existing.EstimatedRemainingMs = 0
+		}
 		if incomingJob.Status == VideoRenderJobStatusRendering && existing.StartedAt == 0 {
 			existing.StartedAt = now
 		}
+		if incomingJob.Status == VideoRenderJobStatusRendering && existing.StartedAt > 0 {
+			existing.ElapsedMs = max(int64(0), now-existing.StartedAt)
+			if existing.Progress > 0 && existing.Progress < 1 {
+				existing.EstimatedRemainingMs = int64(float64(existing.ElapsedMs) * (1-existing.Progress) / existing.Progress)
+			}
+		}
 		if isTerminalRenderJobStatus(incomingJob.Status) && existing.CompletedAt == 0 {
 			existing.CompletedAt = now
+			existing.EstimatedRemainingMs = 0
+			if existing.StartedAt > 0 {
+				existing.ElapsedMs = max(int64(0), now-existing.StartedAt)
+			}
 		}
 		existing.UpdatedAt = now
 
@@ -2666,6 +2703,15 @@ func (s *SessionStore) prepareV3VideoProjectMutation(input V3SessionMutationInpu
 	}
 
 	return preparedV3VideoProjectMutation{}, errors.New("unhandled video project mutation kind")
+}
+
+func isValidRenderQuality(quality string) bool {
+	switch quality {
+	case VideoRenderQualityPreview, VideoRenderQualityStandard, VideoRenderQualityHigh, VideoRenderQualityMaster:
+		return true
+	default:
+		return false
+	}
 }
 
 func isTerminalRenderJobStatus(status string) bool {
@@ -3302,6 +3348,8 @@ type CreateVideoRenderJobInput struct {
 	ProjectID       string
 	RevisionID      string
 	JobID           string
+	RenderQuality   string
+	RenderFPS       int
 	ClientRequestID string
 	NowUnixMs       int64
 }
@@ -3320,6 +3368,14 @@ func (s *SessionStore) CreateVideoRenderJob(input CreateVideoRenderJobInput) (Vi
 		now = time.Now().UnixMilli()
 	}
 
+	quality := strings.ToLower(strings.TrimSpace(input.RenderQuality))
+	if quality == "" {
+		quality = VideoRenderQualityHigh
+	}
+	fps := input.RenderFPS
+	if fps == 0 {
+		fps = 60
+	}
 	job := VideoRenderJobSnapshot{
 		SchemaVersion:  VideoRenderJobSchemaVersion,
 		ID:             input.JobID,
@@ -3329,6 +3385,8 @@ func (s *SessionStore) CreateVideoRenderJob(input CreateVideoRenderJobInput) (Vi
 		UserID:         input.UserID,
 		SessionID:      input.SessionID,
 		Status:         VideoRenderJobStatusQueued,
+		RenderQuality:  quality,
+		RenderFPS:      fps,
 		CreatedAt:      now,
 		UpdatedAt:      now,
 	}
@@ -3338,7 +3396,7 @@ func (s *SessionStore) CreateVideoRenderJob(input CreateVideoRenderJobInput) (Vi
 		clientReqID = fmt.Sprintf("create_render_job:%s:%s", input.ProjectID, job.ID)
 	}
 
-	mutPayload, _ := json.Marshal(map[string]any{"job_id": job.ID, "project_id": input.ProjectID, "revision_id": input.RevisionID})
+	mutPayload, _ := json.Marshal(map[string]any{"job_id": job.ID, "project_id": input.ProjectID, "revision_id": input.RevisionID, "render_quality": quality, "render_fps": fps})
 	hash := sha256.Sum256(mutPayload)
 	payloadHash := hex.EncodeToString(hash[:])
 
@@ -3379,7 +3437,10 @@ type UpdateVideoRenderJobInput struct {
 	Status             string
 	ExpectedStatus     string
 	Progress           float64
-	ProgressStage      string
+	ProgressStage        string
+	ElapsedMs            int64
+	EstimatedRemainingMs int64
+	ReusedFromJobID      string
 	FailureCode        string
 	FailureReason      string
 	OutputPreset       string
@@ -3412,6 +3473,9 @@ func (s *SessionStore) UpdateVideoRenderJob(input UpdateVideoRenderJobInput) (Vi
 		Status:             strings.ToLower(strings.TrimSpace(input.Status)),
 		Progress:           input.Progress,
 		ProgressStage:      strings.TrimSpace(input.ProgressStage),
+		ElapsedMs:            input.ElapsedMs,
+		EstimatedRemainingMs: input.EstimatedRemainingMs,
+		ReusedFromJobID:      strings.TrimSpace(input.ReusedFromJobID),
 		FailureCode:        strings.ToLower(strings.TrimSpace(input.FailureCode)),
 		FailureReason:      strings.TrimSpace(input.FailureReason),
 		OutputPreset:       normalizeVideoPreset(input.OutputPreset),
@@ -3524,7 +3588,7 @@ func (s *SessionStore) ListVideoRenderJobs(accountScopeID, sessionID, projectID 
 		prefix = VideoRenderJobByProjectPrefix(accountScopeID, sessionID, projectID)
 	}
 	jobs := make([]VideoRenderJobSnapshot, 0)
-	err := s.store.IteratePrefix(prefix, limit+1, func(_ string, value []byte) error {
+	err := s.store.IteratePrefix(prefix, 0, func(_ string, value []byte) error {
 		var j VideoRenderJobSnapshot
 		if err := json.Unmarshal(value, &j); err != nil {
 			return err
@@ -3536,7 +3600,10 @@ func (s *SessionStore) ListVideoRenderJobs(accountScopeID, sessionID, projectID 
 		return nil, err
 	}
 	sort.Slice(jobs, func(i, j int) bool {
-		return jobs[i].CreatedAt < jobs[j].CreatedAt
+		if jobs[i].CreatedAt == jobs[j].CreatedAt {
+			return jobs[i].ID > jobs[j].ID
+		}
+		return jobs[i].CreatedAt > jobs[j].CreatedAt
 	})
 	if len(jobs) > limit {
 		jobs = jobs[:limit]

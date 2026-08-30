@@ -99,9 +99,10 @@ type sessionV3AcceptVideoEditProposalRequest struct {
 }
 
 type sessionV3StartVideoRenderRequest struct {
-	RevisionID string `json:"revision_id"`
-	JobID      string `json:"job_id"`
-	TimeoutMs  int64  `json:"timeout_ms"`
+	RevisionID    string `json:"revision_id"`
+	JobID         string `json:"job_id"`
+	RenderQuality string `json:"render_quality"`
+	RenderFPS     int    `json:"render_fps"`
 }
 
 type sessionV3ExportVideoRequest struct {
@@ -396,6 +397,25 @@ func (s *Server) handleSessionV3VideoSubpath(w http.ResponseWriter, r *http.Requ
 		s.handleSessionV3VideoProjectDetail(w, r, principal, sessionID, strings.TrimPrefix(subpath, "projects/"))
 		return
 	}
+	if subpath == "render-jobs" {
+		if r.Method != http.MethodGet {
+			methodNotAllowed(w)
+			return
+		}
+		limit := 50
+		if raw := r.URL.Query().Get("limit"); raw != "" {
+			if parsed, err := strconv.Atoi(raw); err == nil && parsed > 0 {
+				limit = parsed
+			}
+		}
+		jobs, err := s.videoProjects.ListSessionRenderJobs(principal, sessionID, limit)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "render_jobs": jobs, "count": len(jobs)})
+		return
+	}
 	if strings.HasPrefix(subpath, "render-jobs/") {
 		jobPath := strings.TrimPrefix(subpath, "render-jobs/")
 		jobID, action, hasAction := strings.Cut(jobPath, "/")
@@ -553,15 +573,11 @@ func (s *Server) handleSessionV3VideoProjectDetail(w http.ResponseWriter, r *htt
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
-		if s.videoRender != nil {
+		if s.videoRender != nil && job.Status == pebblestore.VideoRenderJobStatusQueued && (req.JobID == "" || job.ID == req.JobID) {
 			session, _, _ := s.sessions.GetSession(sessionID)
 			wsPath := session.WorkspacePath
 			if val, ok := session.Metadata["swarm_v3_source_workspace_path"].(string); ok && val != "" {
 				wsPath = val
-			}
-			var timeout time.Duration
-			if req.TimeoutMs > 0 {
-				timeout = time.Duration(req.TimeoutMs) * time.Millisecond
 			}
 			renderReq := videorender.RenderJobRequest{
 				SessionID:     sessionID,
@@ -569,7 +585,6 @@ func (s *Server) handleSessionV3VideoProjectDetail(w http.ResponseWriter, r *htt
 				RevisionID:    job.RevisionID,
 				JobID:         job.ID,
 				WorkspacePath: wsPath,
-				Timeout:       timeout,
 			}
 			s.videoRender.StartRenderJob(principal, renderReq)
 		}
@@ -970,10 +985,12 @@ func videoprojectCreateRevisionInput(sessionID, projectID string, req sessionV3C
 
 func videoprojectStartRenderJobInput(sessionID, projectID string, req sessionV3StartVideoRenderRequest) videoproject.StartRenderJobInput {
 	return videoproject.StartRenderJobInput{
-		SessionID:  sessionID,
-		ProjectID:  projectID,
-		RevisionID: req.RevisionID,
-		JobID:      req.JobID,
-		NowUnixMs:  time.Now().UnixMilli(),
+		SessionID:     sessionID,
+		ProjectID:     projectID,
+		RevisionID:    req.RevisionID,
+		JobID:         req.JobID,
+		RenderQuality: req.RenderQuality,
+		RenderFPS:     req.RenderFPS,
+		NowUnixMs:     time.Now().UnixMilli(),
 	}
 }

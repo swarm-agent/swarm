@@ -431,11 +431,13 @@ func (s *Service) RejectEditProposal(ctx context.Context, principal identity.Pri
 }
 
 type StartRenderJobInput struct {
-	SessionID  string
-	ProjectID  string
-	RevisionID string
-	JobID      string
-	NowUnixMs  int64
+	SessionID     string
+	ProjectID     string
+	RevisionID    string
+	JobID         string
+	RenderQuality string
+	RenderFPS     int
+	NowUnixMs     int64
 }
 
 type CompleteRenderJobInput struct {
@@ -684,6 +686,29 @@ func (s *Service) videoPlanRenderAuthority(principal identity.Principal, revisio
 	return pebblestore.ResolveVideoPlanRenderAuthority(revision, &proposal)
 }
 
+func NormalizeRenderSettings(quality string, fps int) (string, int, error) {
+	quality = strings.ToLower(strings.TrimSpace(quality))
+	if quality == "" {
+		quality = pebblestore.VideoRenderQualityHigh
+	}
+	switch quality {
+	case pebblestore.VideoRenderQualityPreview, pebblestore.VideoRenderQualityStandard:
+		if fps == 0 {
+			fps = 30
+		}
+	case pebblestore.VideoRenderQualityHigh, pebblestore.VideoRenderQualityMaster:
+		if fps == 0 {
+			fps = 60
+		}
+	default:
+		return "", 0, errors.New("render quality is not server-allowlisted")
+	}
+	if fps != 30 && fps != 60 {
+		return "", 0, errors.New("render FPS must be one of 30 or 60")
+	}
+	return quality, fps, nil
+}
+
 func (s *Service) StartRenderJob(ctx context.Context, principal identity.Principal, input StartRenderJobInput) (pebblestore.VideoRenderJobSnapshot, error) {
 	if s == nil || s.sessions == nil {
 		return pebblestore.VideoRenderJobSnapshot{}, errors.New("videoproject service is not configured")
@@ -716,6 +741,23 @@ func (s *Service) StartRenderJob(ctx context.Context, principal identity.Princip
 	if err != nil || !ok {
 		return pebblestore.VideoRenderJobSnapshot{}, errors.New("video project revision not found")
 	}
+	input.RenderQuality, input.RenderFPS, err = NormalizeRenderSettings(input.RenderQuality, input.RenderFPS)
+	if err != nil {
+		return pebblestore.VideoRenderJobSnapshot{}, err
+	}
+	jobs, err := s.sessions.ListVideoRenderJobs(principal.AccountScopeID, input.SessionID, input.ProjectID, pebblestore.MaxVideoRenderJobsPerProject)
+	if err != nil {
+		return pebblestore.VideoRenderJobSnapshot{}, fmt.Errorf("inspect matching video renders: %w", err)
+	}
+	for _, existing := range jobs {
+		if existing.RevisionID == revID && existing.RenderQuality == input.RenderQuality && existing.RenderFPS == input.RenderFPS && existing.Status == pebblestore.VideoRenderJobStatusReady && existing.OutputArtifact != nil {
+			variant, ok, readErr := s.sessions.GetSessionArtifactVariant(principal.AccountScopeID, existing.OutputArtifact.SessionID, existing.OutputArtifact.CollectionID, existing.OutputArtifact.VariantID)
+			if readErr == nil && ok && variant.Status == pebblestore.SessionArtifactStatusReady && variant.EventSeq == existing.OutputArtifact.EventSeq && strings.EqualFold(variant.MediaType, "video/mp4") {
+				return existing, nil
+			}
+		}
+	}
+
 	proposals, err := s.sessions.ListVideoEditProposals(principal.AccountScopeID, input.SessionID, input.ProjectID, 100)
 	if err != nil {
 		return pebblestore.VideoRenderJobSnapshot{}, fmt.Errorf("inspect pending video proposals before render: %w", err)
@@ -784,6 +826,8 @@ func (s *Service) StartRenderJob(ctx context.Context, principal identity.Princip
 		ProjectID:      input.ProjectID,
 		RevisionID:     revID,
 		JobID:          input.JobID,
+		RenderQuality:  input.RenderQuality,
+		RenderFPS:      input.RenderFPS,
 		NowUnixMs:      input.NowUnixMs,
 	})
 }
@@ -1037,6 +1081,20 @@ func (s *Service) TransitionRecoverableRenderJob(job pebblestore.VideoRenderJobS
 		FailureCode: code, FailureReason: reason,
 		ClientRequestID: fmt.Sprintf("recover_render_job:%s:%s:%s", job.ID, expectedStatus, nextStatus), NowUnixMs: nowUnixMs,
 	})
+}
+
+func (s *Service) ListSessionRenderJobs(principal identity.Principal, sessionID string, limit int) ([]pebblestore.VideoRenderJobSnapshot, error) {
+	if s == nil || s.sessions == nil {
+		return nil, errors.New("videoproject service is not configured")
+	}
+	if !principal.Valid() {
+		return nil, errors.New("authenticated principal is required")
+	}
+	session, ok, err := s.sessions.GetSession(sessionID)
+	if err != nil || !ok || session.AccountScopeID != principal.AccountScopeID || (session.UserID != "" && session.UserID != principal.UserID) {
+		return nil, errors.New("video session not found")
+	}
+	return s.sessions.ListVideoRenderJobs(principal.AccountScopeID, sessionID, "", limit)
 }
 
 func (s *Service) ListRenderJobs(principal identity.Principal, sessionID, projectID string, limit int) ([]pebblestore.VideoRenderJobSnapshot, error) {

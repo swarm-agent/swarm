@@ -198,7 +198,7 @@ func TestSessionsV3VideoProjectWorkflow(t *testing.T) {
 
 	// 6. POST /v3/sessions/{id}/video/projects/{project_id}/render -> start render job
 	renderReqBody, _ := json.Marshal(sessionV3StartVideoRenderRequest{
-		JobID: "job-1",
+		JobID: "job-1", RenderQuality: pebblestore.VideoRenderQualityStandard, RenderFPS: 30,
 	})
 	renderReq := httptest.NewRequest(http.MethodPost, "/v3/sessions/"+createdSession.ID+"/video/projects/vproj-1/render", bytes.NewReader(renderReqBody))
 	renderRec := httptest.NewRecorder()
@@ -214,8 +214,15 @@ func TestSessionsV3VideoProjectWorkflow(t *testing.T) {
 	if err := json.Unmarshal(renderRec.Body.Bytes(), &renderResp); err != nil {
 		t.Fatalf("unmarshal render response: %v", err)
 	}
-	if renderResp.RenderJob.ID != "job-1" || renderResp.RenderJob.Status != pebblestore.VideoRenderJobStatusQueued {
+	if renderResp.RenderJob.ID != "job-1" || renderResp.RenderJob.Status != pebblestore.VideoRenderJobStatusQueued || renderResp.RenderJob.RenderQuality != pebblestore.VideoRenderQualityStandard || renderResp.RenderJob.RenderFPS != 30 {
 		t.Fatalf("unexpected render job: %+v", renderResp.RenderJob)
+	}
+
+	invalidReq := httptest.NewRequest(http.MethodPost, "/v3/sessions/"+createdSession.ID+"/video/projects/vproj-1/render", bytes.NewReader([]byte(`{"job_id":"job-invalid","render_quality":"private-lossless"}`)))
+	invalidRec := httptest.NewRecorder()
+	server.handleSessionV3PrimaryByID(invalidRec, invalidReq.WithContext(identity.ContextWithPrincipal(invalidReq.Context(), principal)))
+	if invalidRec.Code != http.StatusBadRequest {
+		t.Fatalf("invalid render quality status = %d, want 400; body=%s", invalidRec.Code, invalidRec.Body.String())
 	}
 
 	// 7. GET /v3/sessions/{id}/video/render-jobs/{job_id} -> get render job
@@ -225,6 +232,12 @@ func TestSessionsV3VideoProjectWorkflow(t *testing.T) {
 
 	if jobRec.Code != http.StatusOK {
 		t.Fatalf("get render job status = %d, want 200", jobRec.Code)
+	}
+	listJobsReq := httptest.NewRequest(http.MethodGet, "/v3/sessions/"+createdSession.ID+"/video/render-jobs", nil)
+	listJobsRec := httptest.NewRecorder()
+	server.handleSessionV3PrimaryByID(listJobsRec, listJobsReq.WithContext(identity.ContextWithPrincipal(listJobsReq.Context(), principal)))
+	if listJobsRec.Code != http.StatusOK || !bytes.Contains(listJobsRec.Body.Bytes(), []byte(`"render_quality":"standard"`)) {
+		t.Fatalf("list render jobs status=%d body=%s", listJobsRec.Code, listJobsRec.Body.String())
 	}
 }
 

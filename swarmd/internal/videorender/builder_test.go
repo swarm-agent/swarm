@@ -7,6 +7,21 @@ import (
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
+// TestBuildFFmpegCommandLineRenderQuality verifies durable allowlisted quality
+// settings select server-owned encoder parameters instead of caller-supplied args.
+func TestBuildFFmpegCommandLineRenderQuality(t *testing.T) {
+	timeline := pebblestore.VideoProjectTimeline{FPS: 30, TotalDurationMs: 1000, Metadata: map[string]any{"render_quality": pebblestore.VideoRenderQualityMaster}, Clips: []pebblestore.VideoTimelineClip{{ID: "video", SourceKind: pebblestore.VideoClipSourceKindSourceVideo, SourceStartMs: 0, SourceEndMs: 1000, DurationMs: 1000, Visible: true}, {ID: "audio", SourceKind: pebblestore.VideoClipSourceKindSourceAudio, SourceStartMs: 0, SourceEndMs: 1000, DurationMs: 1000}}}
+	inputs := []MaterializedInput{{Index: 0, ClipID: "video", FilePath: "video.mp4", IsVideo: true, DurationMs: 1000, EndMs: 1000}, {Index: 1, ClipID: "audio", FilePath: "audio.wav", IsAudio: true, HasAudio: true, DurationMs: 1000, EndMs: 1000}}
+	plan, err := BuildFFmpegCommandLine(timeline, inputs, "out.mp4")
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(plan.FFmpegArgs, " ")
+	if !strings.Contains(joined, "-preset fast -crf 15") {
+		t.Fatalf("master quality args missing: %s", joined)
+	}
+}
+
 func TestResolveDimensions(t *testing.T) {
 	tests := []struct {
 		name     string

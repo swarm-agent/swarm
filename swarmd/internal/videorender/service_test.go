@@ -120,6 +120,21 @@ func TestRenderHTMLAnimationClipProducesMaterializedMP4(t *testing.T) {
 	}
 }
 
+func TestRenderHTMLAnimationClipPinsQuality(t *testing.T) {
+	html := []byte(`<!doctype html><script id="swarm-animation-manifest" type="application/json">{"version":"swarm.animation/v1","duration_ms":1000,"fps":60}</script>`)
+	mp4 := append([]byte{0, 0, 0, 12}, []byte("ftypisom")...)
+	renderer := &fakeAnimationRenderer{result: htmlcapture.AnimationResult{MP4: mp4, DurationMS: 1000, FPS: 30, FrameCount: 30}}
+	variant := reviewedHTMLAnimationVariant("session", "motion", "html", 7, 1000)
+	svc := NewService(Config{}, newFakeSessionStore(), &fakeArtifactAuthority{body: html, readVariant: variant}, renderer, nil, &fakeCommandRunner{})
+	ref := pebblestore.SessionArtifactSelectionReference{SessionID: "session", CollectionID: "motion", VariantID: "html", EventSeq: 7}
+	if _, err := svc.renderHTMLAnimationClip(context.Background(), artifact.Principal{SessionID: "session"}, ref, variant, 1000, t.TempDir(), 0, pebblestore.VideoRenderQualityStandard, 30); err != nil {
+		t.Fatal(err)
+	}
+	if renderer.requests[0].Quality != htmlcapture.AnimationQualityStandard || renderer.requests[0].OutputFPS != 30 {
+		t.Fatalf("quality settings were not pinned: %+v", renderer.requests[0])
+	}
+}
+
 func TestRenderHTMLAnimationClipReportsProgress(t *testing.T) {
 	html := []byte(`<!doctype html><script id="swarm-animation-manifest" type="application/json">{"version":"swarm.animation/v1","duration_ms":1000,"fps":30}</script>`)
 	mp4 := append([]byte{0, 0, 0, 12}, []byte("ftypisom")...)
@@ -133,6 +148,9 @@ func TestRenderHTMLAnimationClipReportsProgress(t *testing.T) {
 	}
 	if renderer.requests[0].Progress == nil {
 		t.Fatal("render progress callback was not forwarded")
+	}
+	if renderer.requests[0].Quality != "" || renderer.requests[0].OutputFPS != 0 {
+		t.Fatalf("legacy render options changed: %+v", renderer.requests[0])
 	}
 	renderer.requests[0].Progress(htmlcapture.AnimationProgress{Stage: "frame_capture", Completed: 15, Total: 30})
 	if observed.Stage != "frame_capture" || observed.Completed != 15 || observed.Total != 30 {
@@ -1444,6 +1462,24 @@ func TestCancelRenderJob(t *testing.T) {
 	if job.Status != pebblestore.VideoRenderJobStatusCancelled {
 		t.Fatalf("expected cancelled status, got: %s", job.Status)
 	}
+}
+
+// TestRenderAdmissionBound verifies that server-owned admission permits bounded
+// concurrency while excess jobs remain queued instead of starting unbounded work.
+func TestRenderAdmissionBound(t *testing.T) {
+	svc := NewService(Config{MaxConcurrentJobs: 2}, newFakeSessionStore(), nil, nil, nil, nil)
+	if cap(svc.admission) != 2 {
+		t.Fatalf("admission capacity = %d, want 2", cap(svc.admission))
+	}
+	svc.admission <- struct{}{}
+	svc.admission <- struct{}{}
+	select {
+	case svc.admission <- struct{}{}:
+		t.Fatal("third render was admitted beyond the server-owned bound")
+	default:
+	}
+	<-svc.admission
+	<-svc.admission
 }
 
 func TestCancelRenderJobRejectsTerminalStates(t *testing.T) {

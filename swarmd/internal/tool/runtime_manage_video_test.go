@@ -632,6 +632,8 @@ func TestManageVideoProjectLifecycle(t *testing.T) {
 		"action":         "start_render",
 		"project_id":     projectID,
 		"revision_id":    revRes.RevisionID,
+		"render_quality": pebblestore.VideoRenderQualityStandard,
+		"render_fps":     30,
 		"queue_grace_ms": 5000,
 	})
 	payload, err = runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, Call{CallID: "call-4", Name: "manage_video", Arguments: string(renderArgs)})

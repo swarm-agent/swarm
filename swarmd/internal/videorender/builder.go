@@ -496,6 +496,17 @@ func BuildFFmpegCommandLine(timeline pebblestore.VideoProjectTimeline, inputs []
 
 	plan.FilterComplex = strings.Join(filterParts, ";")
 
+	qualityPreset, qualityCRF := "veryfast", "18"
+	if timeline.Metadata != nil {
+		switch strings.ToLower(strings.TrimSpace(fmt.Sprint(timeline.Metadata["render_quality"]))) {
+		case pebblestore.VideoRenderQualityPreview:
+			qualityPreset, qualityCRF = "ultrafast", "30"
+		case pebblestore.VideoRenderQualityStandard:
+			qualityPreset, qualityCRF = "veryfast", "23"
+		case pebblestore.VideoRenderQualityMaster:
+			qualityPreset, qualityCRF = "fast", "15"
+		}
+	}
 	args = append(args,
 		"-filter_complex", plan.FilterComplex,
 		"-map", plan.VideoMap,
@@ -504,8 +515,8 @@ func BuildFFmpegCommandLine(timeline pebblestore.VideoProjectTimeline, inputs []
 		"-pix_fmt", "yuv420p",
 		"-profile:v", "high",
 		"-level", "4.1",
-		"-preset", "medium",
-		"-crf", "23",
+		"-preset", qualityPreset,
+		"-crf", qualityCRF,
 		"-c:a", "aac",
 		"-b:a", "192k",
 		"-ar", "48000",

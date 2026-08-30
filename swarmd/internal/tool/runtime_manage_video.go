@@ -164,6 +164,8 @@ func manageVideoDefinition() Definition {
 				"revision_id":            map[string]any{"type": "string", "description": "Optional opaque project revision identifier."},
 				"source_revision_id":     map[string]any{"type": "string", "description": "Exact immutable revision to copy when restoring a project."},
 				"render_job_id":          map[string]any{"type": "string", "description": "Opaque render job identifier for checking status or cancelling a render."},
+				"render_quality":         map[string]any{"type": "string", "enum": []string{pebblestore.VideoRenderQualityPreview, pebblestore.VideoRenderQualityStandard, pebblestore.VideoRenderQualityHigh, pebblestore.VideoRenderQualityMaster}, "description": "Server-allowlisted durable final render quality."},
+				"render_fps":             map[string]any{"type": "integer", "enum": []int{30, 60}, "description": "Server-allowlisted durable output frame rate."},
 				"queue_grace_ms":         map[string]any{"type": "integer", "minimum": 0, "maximum": int(videorender.MaxQueueGracePeriod.Milliseconds()), "description": "Optional bounded delay before a new render leaves queued status, allowing deterministic immediate cancellation without weakening terminal-state rules."},
 				"title":                  map[string]any{"type": "string", "description": "Human-readable video project title."},
 				"description":            map[string]any{"type": "string", "description": "Optional description for a video project or revision."},
@@ -1304,15 +1306,17 @@ func (r *Runtime) executeManageVideo(ctx context.Context, scope WorkspaceScope, 
 			return "", err
 		}
 		job, err := r.videoProjects.StartRenderJob(ctx, scope.Principal, videoproject.StartRenderJobInput{
-			SessionID:  projectSessionID,
-			ProjectID:  projectID,
-			RevisionID: revisionID,
-			JobID:      jobID,
+			SessionID:    projectSessionID,
+			ProjectID:    projectID,
+			RevisionID:   revisionID,
+			JobID:        jobID,
+			RenderQuality: strings.TrimSpace(asString(args["render_quality"])),
+			RenderFPS:    asInt(args["render_fps"], 0),
 		})
 		if err != nil {
 			return "", err
 		}
-		if r.videoRender != nil {
+		if r.videoRender != nil && job.Status == pebblestore.VideoRenderJobStatusQueued && (jobID == "" || job.ID == jobID) {
 			queueGrace := time.Duration(asInt(args["queue_grace_ms"], 0)) * time.Millisecond
 			r.videoRender.StartRenderJob(scope.Principal, videorender.RenderJobRequest{
 				SessionID:     projectSessionID,
@@ -1901,15 +1905,23 @@ func safeVideoRenderJobs(jobs []pebblestore.VideoRenderJobSnapshot) []map[string
 
 func safeVideoRenderJob(job pebblestore.VideoRenderJobSnapshot) map[string]any {
 	res := map[string]any{
-		"id":              job.ID,
-		"project_id":      job.ProjectID,
-		"revision_id":     job.RevisionID,
-		"revision_number": job.RevisionNumber,
-		"session_id":      job.SessionID,
-		"status":          job.Status,
-		"progress":        job.Progress,
-		"created_at":      job.CreatedAt,
-		"updated_at":      job.UpdatedAt,
+		"id":                     job.ID,
+		"project_id":             job.ProjectID,
+		"revision_id":            job.RevisionID,
+		"revision_number":        job.RevisionNumber,
+		"session_id":             job.SessionID,
+		"status":                 job.Status,
+		"progress":               job.Progress,
+		"progress_stage":         job.ProgressStage,
+		"render_quality":         job.RenderQuality,
+		"render_fps":             job.RenderFPS,
+		"elapsed_ms":             job.ElapsedMs,
+		"estimated_remaining_ms": job.EstimatedRemainingMs,
+		"created_at":             job.CreatedAt,
+		"updated_at":             job.UpdatedAt,
+	}
+	if job.ReusedFromJobID != "" {
+		res["reused_from_job_id"] = job.ReusedFromJobID
 	}
 	if job.FailureCode != "" {
 		res["failure_code"] = job.FailureCode

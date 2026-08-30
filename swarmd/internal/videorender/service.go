@@ -34,9 +34,9 @@ const (
 	DefaultMaxClips          = 100
 	DefaultMaxDurationMs     = 3600000 // 1 hour
 	DefaultMaxRenderBytes    = 2 << 30 // 2 GB
-	DefaultRenderTimeout     = 10 * time.Minute
 	DefaultCommandErrorLimit = 16 << 10
 	DefaultRecoveryLimit     = 50
+	DefaultMaxConcurrentJobs = 2
 	MaxQueueGracePeriod      = 30 * time.Second
 	MaxInspectionFrames      = 12
 	MaxInspectionRangeMs     = 60_000
@@ -64,9 +64,9 @@ type Config struct {
 	MaxClips       int
 	MaxDurationMs  int64
 	MaxRenderBytes int64
-	DefaultTimeout time.Duration
 	WorkDir        string
-	RecoveryLimit  int
+	RecoveryLimit      int
+	MaxConcurrentJobs int
 }
 
 type CommandRunner interface {
@@ -185,6 +185,7 @@ type Service struct {
 	mu            sync.Mutex
 	cancels       map[string]context.CancelFunc
 	pendingStarts map[string]context.CancelFunc
+	admission     chan struct{}
 	workers       sync.WaitGroup
 	workerMu      sync.Mutex
 	workerN       int
@@ -201,11 +202,11 @@ func NewService(cfg Config, store SessionStore, artifacts ArtifactAuthority, ani
 	if cfg.MaxRenderBytes <= 0 {
 		cfg.MaxRenderBytes = DefaultMaxRenderBytes
 	}
-	if cfg.DefaultTimeout <= 0 {
-		cfg.DefaultTimeout = DefaultRenderTimeout
-	}
 	if cfg.RecoveryLimit <= 0 {
 		cfg.RecoveryLimit = DefaultRecoveryLimit
+	}
+	if cfg.MaxConcurrentJobs <= 0 {
+		cfg.MaxConcurrentJobs = DefaultMaxConcurrentJobs
 	}
 	if runner == nil {
 		runner = &osCommandRunner{}
@@ -219,6 +220,7 @@ func NewService(cfg Config, store SessionStore, artifacts ArtifactAuthority, ani
 		animation:     animation,
 		cancels:       make(map[string]context.CancelFunc),
 		pendingStarts: make(map[string]context.CancelFunc),
+		admission:     make(chan struct{}, cfg.MaxConcurrentJobs),
 	}
 }
 
@@ -626,8 +628,34 @@ func (s *Service) RenderJob(ctx context.Context, principal identity.Principal, r
 	if err := applySelectedHTMLAnimationSources(&timeline); err != nil {
 		return pebblestore.VideoRenderJobSnapshot{}, err
 	}
+	if job.RenderFPS > 0 {
+		timeline.FPS = float64(job.RenderFPS)
+	}
+	if timeline.Metadata == nil {
+		timeline.Metadata = make(map[string]any)
+	}
+	timeline.Metadata["render_quality"] = job.RenderQuality
 
-	// Update job status to rendering
+	_, _ = s.store.UpdateVideoRenderJob(pebblestore.UpdateVideoRenderJobInput{
+		AccountScopeID: principal.AccountScopeID, UserID: principal.UserID, SessionID: sessionID, JobID: jobID,
+		Status: pebblestore.VideoRenderJobStatusQueued, ExpectedStatus: pebblestore.VideoRenderJobStatusQueued,
+		ProgressStage: "Queued for render capacity", NowUnixMs: time.Now().UnixMilli(),
+	})
+	select {
+	case s.admission <- struct{}{}:
+		defer func() { <-s.admission }()
+	case <-ctx.Done():
+		return job, ctx.Err()
+	}
+	current, found, readErr := s.store.GetVideoRenderJob(principal.AccountScopeID, sessionID, jobID)
+	if readErr != nil || !found || current.Status != pebblestore.VideoRenderJobStatusQueued {
+		if readErr != nil {
+			return pebblestore.VideoRenderJobSnapshot{}, readErr
+		}
+		return current, fmt.Errorf("render job %q left the durable queue before admission", jobID)
+	}
+
+	// Update job status to rendering.
 	job, err = s.store.UpdateVideoRenderJob(pebblestore.UpdateVideoRenderJobInput{
 		AccountScopeID: principal.AccountScopeID,
 		UserID:         principal.UserID,
@@ -654,10 +682,13 @@ func (s *Service) RenderJob(ctx context.Context, principal identity.Principal, r
 	}()
 
 	timeout := req.Timeout
-	if timeout <= 0 {
-		timeout = s.cfg.DefaultTimeout
+	var renderCtx context.Context
+	var cancel context.CancelFunc
+	if timeout > 0 {
+		renderCtx, cancel = context.WithTimeout(ctx, timeout)
+	} else {
+		renderCtx, cancel = context.WithCancel(ctx)
 	}
-	renderCtx, cancel := context.WithTimeout(ctx, timeout)
 	s.mu.Lock()
 	s.cancels[jobID] = cancel
 	s.mu.Unlock()
@@ -670,7 +701,7 @@ func (s *Service) RenderJob(ctx context.Context, principal identity.Principal, r
 
 	// Materialize inputs. HTML conversion reports bounded deterministic capture
 	// progress directly into the durable render job.
-	materialized, err := s.materializeTimelineInputs(renderCtx, principal, session, req.WorkspacePath, jobDir, timeline, func(progress htmlcapture.AnimationProgress) {
+	materialized, err := s.materializeTimelineInputs(renderCtx, principal, session, req.WorkspacePath, jobDir, timeline, job, func(progress htmlcapture.AnimationProgress) {
 		fraction := 0.0
 		if progress.Total > 0 {
 			fraction = math.Max(0, math.Min(1, float64(progress.Completed)/float64(progress.Total)))
@@ -731,7 +762,7 @@ func (s *Service) RenderJob(ctx context.Context, principal identity.Principal, r
 				return pebblestore.VideoRenderJobSnapshot{}, renderCtx.Err()
 			}
 			if ctx.Err() != nil {
-				// Losing the daemon/request lifetime is an interruption, not a user
+				// Losing the daemon background lifetime is an interruption, not a user
 				// cancellation. Put the pinned job back on the durable queue so the
 				// next recovery pass can safely rematerialize private scratch and retry.
 				_, _ = s.store.UpdateVideoRenderJob(pebblestore.UpdateVideoRenderJobInput{
@@ -741,7 +772,7 @@ func (s *Service) RenderJob(ctx context.Context, principal identity.Principal, r
 					NowUnixMs: time.Now().UnixMilli(),
 				})
 			} else {
-				s.failJob(principal, sessionID, jobID, "render_timeout", "Render exceeded the configured deadline")
+				s.failJob(principal, sessionID, jobID, "render_timeout", "Render exceeded an explicit internal deadline")
 			}
 			return pebblestore.VideoRenderJobSnapshot{}, renderCtx.Err()
 		}
@@ -877,8 +908,18 @@ func (s *Service) RenderJob(ctx context.Context, principal identity.Principal, r
 	return readyJob, nil
 }
 
-func (s *Service) materializeTimelineInputs(ctx context.Context, principal identity.Principal, session pebblestore.SessionSnapshot, workspacePath string, jobDir string, timeline pebblestore.VideoProjectTimeline, progress ...func(htmlcapture.AnimationProgress)) ([]MaterializedInput, error) {
+func (s *Service) materializeTimelineInputs(ctx context.Context, principal identity.Principal, session pebblestore.SessionSnapshot, workspacePath string, jobDir string, timeline pebblestore.VideoProjectTimeline, jobs ...any) ([]MaterializedInput, error) {
 	var inputs []MaterializedInput
+	var renderJob pebblestore.VideoRenderJobSnapshot
+	var progressFn func(htmlcapture.AnimationProgress)
+	for _, option := range jobs {
+		switch typed := option.(type) {
+		case pebblestore.VideoRenderJobSnapshot:
+			renderJob = typed
+		case func(htmlcapture.AnimationProgress):
+			progressFn = typed
+		}
+	}
 	// One exact HTML source and duration has one conversion authority per render.
 	// Repeated clips may reuse the immutable materialized MP4, while different
 	// exact refs remain isolated and can never borrow another part's derivative.
@@ -1067,12 +1108,8 @@ func (s *Service) materializeTimelineInputs(ctx context.Context, principal ident
 				cacheKey := fmt.Sprintf("%s\x00%s\x00%s\x00%d\x00%d", targetSessionID, targetRef.CollectionID, targetRef.VariantID, targetRef.EventSeq, clip.DurationMs)
 				animationPath := htmlAnimationPaths[cacheKey]
 				if animationPath == "" {
-					var progressFn func(htmlcapture.AnimationProgress)
-					if len(progress) > 0 {
-						progressFn = progress[0]
-					}
 					var renderErr error
-					animationPath, renderErr = s.renderHTMLAnimationClip(ctx, artifactPrincipal, *targetRef, variant, clip.DurationMs, jobDir, input.Index, progressFn)
+					animationPath, renderErr = s.renderHTMLAnimationClip(ctx, artifactPrincipal, *targetRef, variant, clip.DurationMs, jobDir, input.Index, renderJob.RenderQuality, renderJob.RenderFPS, progressFn)
 					if renderErr != nil {
 						return nil, fmt.Errorf("render HTML animation clip %d: %w", i, renderErr)
 					}
@@ -1458,7 +1495,20 @@ func applySelectedHTMLAnimationSources(timeline *pebblestore.VideoProjectTimelin
 	return nil
 }
 
-func (s *Service) renderHTMLAnimationClip(ctx context.Context, principal artifact.Principal, ref pebblestore.SessionArtifactSelectionReference, variant pebblestore.SessionArtifactVariant, expectedDurationMs int64, jobDir string, inputIndex int, progress ...func(htmlcapture.AnimationProgress)) (string, error) {
+func (s *Service) renderHTMLAnimationClip(ctx context.Context, principal artifact.Principal, ref pebblestore.SessionArtifactSelectionReference, variant pebblestore.SessionArtifactVariant, expectedDurationMs int64, jobDir string, inputIndex int, options ...any) (string, error) {
+	var quality string
+	var outputFPS int
+	var progressFn func(htmlcapture.AnimationProgress)
+	for _, option := range options {
+		switch typed := option.(type) {
+		case string:
+			quality = typed
+		case int:
+			outputFPS = typed
+		case func(htmlcapture.AnimationProgress):
+			progressFn = typed
+		}
+	}
 	if err := validateHTMLAnimationAuthority(variant); err != nil {
 		return "", err
 	}
@@ -1482,11 +1532,12 @@ func (s *Service) renderHTMLAnimationClip(ctx context.Context, principal artifac
 	if duration := temporalAnimationDuration(variant.Parts); duration <= 0 || duration != expectedDurationMs {
 		return "", fmt.Errorf("reviewed animation temporal authority duration %dms does not match clip duration %dms", duration, expectedDurationMs)
 	}
-	var progressFn func(htmlcapture.AnimationProgress)
-	if len(progress) > 0 {
-		progressFn = progress[0]
+	request := htmlcapture.AnimationRequest{Entry: entry, Files: files, DurationMS: manifest.DurationMS, FPS: manifest.FPS, Progress: progressFn}
+	if quality != "" {
+		request.Quality = htmlcapture.AnimationQuality(quality)
+		request.OutputFPS = outputFPS
 	}
-	result, err := s.animation.RenderAnimation(ctx, htmlcapture.AnimationRequest{Entry: entry, Files: files, DurationMS: manifest.DurationMS, FPS: manifest.FPS, Progress: progressFn})
+	result, err := s.animation.RenderAnimation(ctx, request)
 	if err != nil {
 		var captureErr *htmlcapture.Error
 		if errors.As(err, &captureErr) {
@@ -1494,7 +1545,11 @@ func (s *Service) renderHTMLAnimationClip(ctx context.Context, principal artifac
 		}
 		return "", fmt.Errorf("trusted HTML animation capture failed: %w", err)
 	}
-	if result.DurationMS != manifest.DurationMS || result.FPS != manifest.FPS || result.FrameCount != (manifest.DurationMS*manifest.FPS+999)/1000 {
+	expectedFPS := manifest.FPS
+	if outputFPS > 0 {
+		expectedFPS = outputFPS
+	}
+	if result.DurationMS != manifest.DurationMS || result.FPS != expectedFPS || result.FrameCount != (manifest.DurationMS*expectedFPS+999)/1000 {
 		return "", errors.New("trusted HTML animation renderer returned inconsistent timeline metadata")
 	}
 	if ctx.Err() != nil {
@@ -1866,12 +1921,19 @@ func (s *Service) RecoverJobs(ctx context.Context) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	var recovered sync.WaitGroup
 	for _, job := range jobs {
 		if ctx.Err() != nil {
 			break
 		}
-		s.recoverJob(ctx, job)
+		job := job
+		recovered.Add(1)
+		go func() {
+			defer recovered.Done()
+			s.recoverJob(ctx, job)
+		}()
 	}
+	recovered.Wait()
 	return len(jobs), nil
 }
 
