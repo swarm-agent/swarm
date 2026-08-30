@@ -70,7 +70,7 @@ if ! "${ROOT_DIR}/scripts/run-testbench-launch-prerun.sh" --dry-run --suite task
 fi
 provider_sync_dry_run="$("${ROOT_DIR}/scripts/run-testbench-launch-prerun.sh" --dry-run --suite provider-sync)" || fail "provider-sync dry run still requires manually supplied candidate authority"
 grep -Fq 'SWARM_LIVE_STREAM_PROVIDER=fireworks' <<<"${provider_sync_dry_run}" || fail "provider-sync is not Fireworks-only"
-grep -Fq 'SWARM_LIVE_STREAM_MODEL=accounts/fireworks/models/deepseek-v4-flash-0731' <<<"${provider_sync_dry_run}" || fail "provider-sync does not use the configured Fireworks action model"
+grep -Fq 'SWARM_LIVE_STREAM_MODEL=deepseek-v4-flash-0731' <<<"${provider_sync_dry_run}" || fail "provider-sync does not use the configured Fireworks action model"
 RUNNER_WRAPPER="${ROOT_DIR}/scripts/run-testbench-runner.sh"
 grep -Fq 'SWARM_TESTBENCH_ACTION_MODEL' "${RUNNER_WRAPPER}" || fail "runner wrapper does not pass the configured Action model"
 grep -Fq 'SWARM_TESTBENCH_PLAN_MODEL' "${RUNNER_WRAPPER}" || fail "runner wrapper does not pass the configured Plan model"

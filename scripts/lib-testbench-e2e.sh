@@ -99,7 +99,7 @@ swarm_testbench_validate_env() {
   local model_name thinking_name model_value thinking_value
   for model_name in SWARM_TESTBENCH_MODEL SWARM_TESTBENCH_ACTION_MODEL SWARM_TESTBENCH_PLAN_MODEL SWARM_TESTBENCH_CODER_MODEL SWARM_TESTBENCH_DESIGNER_MODEL; do
     model_value="${!model_name}"
-    [[ "${model_value}" =~ ^accounts/fireworks/models/[A-Za-z0-9._-]+$ ]] || swarm_testbench_fail "${model_name} must be an explicit Fireworks catalog model ID"
+    [[ "${model_value}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || swarm_testbench_fail "${model_name} must be an explicit Fireworks catalog model ID, not a request path"
   done
   for thinking_name in SWARM_TESTBENCH_THINKING SWARM_TESTBENCH_ACTION_THINKING SWARM_TESTBENCH_PLAN_THINKING SWARM_TESTBENCH_CODER_THINKING SWARM_TESTBENCH_DESIGNER_THINKING; do
     thinking_value="${!thinking_name}"
