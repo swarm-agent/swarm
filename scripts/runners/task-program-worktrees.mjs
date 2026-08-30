@@ -70,7 +70,7 @@ async function api(method, route, body, label = route, allowError = false) {
 function assignmentFor(records) {
   const record = records.find((item) => String(item?.model || '') === suppliedModel)
   assert(record, `model catalog does not contain ${provider}/${suppliedModel}`)
-  return { provider, model: suppliedModel, thinking: suppliedThinking, service_tier: 'fast' }
+  return { provider, model: suppliedModel, thinking: suppliedThinking }
 }
 
 function bindingPath(binding) {
@@ -251,7 +251,7 @@ async function main() {
   assert([actionThinking, planThinking, designerThinking].every((value) => ['low', 'medium', 'high', 'xhigh'].includes(value)), 'explicit role thinking values must be low, medium, high, or xhigh')
   const exact = (model, thinking, label) => {
     assert(records.some((record) => String(record?.model || '').trim() === model), `model catalog does not contain ${provider}/${model} for ${label}`)
-    return { provider, model, thinking, service_tier: 'fast' }
+    return { provider, model, thinking }
   }
   const actionAssignment = exact(actionModel, actionThinking, 'Swarm auto')
   const planAssignment = exact(planModel, planThinking, 'Swarm plan')

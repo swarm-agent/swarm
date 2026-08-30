@@ -96,7 +96,7 @@ async function api(method, route, body, label = route, allowError = false) {
 
 function exactAssignment(records, model, thinking, label) {
   assert(records.some((record) => String(record?.model || '').trim() === model), `model catalog does not contain ${provider}/${model} for ${label}`)
-  return { provider, model, thinking, service_tier: 'fast' }
+  return { provider, model, thinking }
 }
 
 function parseToolArguments(permission) {
