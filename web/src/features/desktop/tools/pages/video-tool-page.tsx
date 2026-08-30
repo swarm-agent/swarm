@@ -21,6 +21,7 @@ import { fetchDesktopV3ArtifactPreviewAccess } from '../../session-v3/artifact-a
 import { desktopV3ArtifactIterationMessage } from '../../session-v3/artifact-iteration-protocol'
 import { saveVideoSessionViewPreference } from '../video-studio/video-session-view-preference'
 import { VideoCompositionEditor, VideoCompositionOverlay, resolveVideoComposition, type VideoCompositionCatalogWire, type VideoCompositionLinkWire } from '../video-studio/video-composition'
+import { VIDEO_RENDER_PRESETS, VideoRenderCenter, videoRenderJobActive, type VideoRenderJobSnapshotWire, type VideoRenderPreset } from '../video-studio/video-render-center'
 import { useDesktopV3CacheSelector } from '../../state/desktop-v3-cache-store'
 
 export type VideoClip = {
@@ -447,30 +448,6 @@ export function videoPlanClipDetails(clip: VideoTimelineClipWire): {
     still: (parts.find((part) => part.startsWith('Planned still:')) ?? '').replace(/^Planned still:\s*/, ''),
     onScreenText: clip.captions?.map((caption) => caption.text.trim()).filter(Boolean).join(' · ') ?? '',
   }
-}
-
-export type VideoRenderJobSnapshotWire = {
-  schema_version?: number
-  id: string
-  project_id: string
-  revision_id: string
-  revision_number: number
-  session_id: string
-  status: 'queued' | 'rendering' | 'ready' | 'failed' | 'cancelled' | 'stale'
-  progress: number
-  progress_stage?: string
-  failure_code?: string
-  failure_reason?: string
-  output_preset?: string
-  output_duration_ms?: number
-  output_size_bytes?: number
-  output_digest_sha256?: string
-  output_artifact?: {
-    collection_id: string
-    variant_id: string
-  }
-  created_at: number
-  updated_at: number
 }
 
 type VideoClipWire = {
@@ -1479,13 +1456,13 @@ export function videoChildSessionMetadata(input: {
   }
 }
 
-export async function startVideoRender(sessionId: string, projectId: string, revisionId: string): Promise<VideoRenderJobSnapshotWire> {
+export async function startVideoRender(sessionId: string, projectId: string, revisionId: string, preset: VideoRenderPreset): Promise<VideoRenderJobSnapshotWire> {
   const response = await requestJson<{ ok?: boolean; render_job?: VideoRenderJobSnapshotWire }>(
     `/v3/sessions/${encodeURIComponent(sessionId)}/video/projects/${encodeURIComponent(projectId)}/render`,
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ revision_id: revisionId }),
+      body: JSON.stringify({ revision_id: revisionId, quality: preset.quality, quality_preset: preset.id, fps: preset.fps }),
     },
   )
   if (!response.render_job) {
@@ -1494,14 +1471,11 @@ export async function startVideoRender(sessionId: string, projectId: string, rev
   return response.render_job
 }
 
-export async function getVideoRenderJob(sessionId: string, jobId: string): Promise<VideoRenderJobSnapshotWire> {
-  const response = await requestJson<{ ok?: boolean; render_job?: VideoRenderJobSnapshotWire }>(
-    `/v3/sessions/${encodeURIComponent(sessionId)}/video/render-jobs/${encodeURIComponent(jobId)}`,
+export async function listVideoRenderJobs(sessionId: string, projectId: string): Promise<VideoRenderJobSnapshotWire[]> {
+  const response = await requestJson<{ render_jobs?: VideoRenderJobSnapshotWire[]; jobs?: VideoRenderJobSnapshotWire[] }>(
+    `/v3/sessions/${encodeURIComponent(sessionId)}/video/render-jobs?project_id=${encodeURIComponent(projectId)}&limit=100`,
   )
-  if (!response.render_job) {
-    throw new Error('Get video render job returned no job')
-  }
-  return response.render_job
+  return Array.isArray(response.render_jobs) ? response.render_jobs : Array.isArray(response.jobs) ? response.jobs : []
 }
 
 export async function exportRenderedVideo(
@@ -1595,7 +1569,14 @@ export function VideoToolPage() {
   const [studioComposerContext, setStudioComposerContext] = useState<{ revisionId: string; anchorClipId: string; label: string; playheadMs: number; selectionKind: 'visual' | 'transition' | 'iteration'; transition: VideoTransitionWire | null; iteration?: VideoIterationComposerContext; storyboard?: ReturnType<typeof videoPlanPartStoryboardContext> } | null>(null)
   const [revealingStorage, setRevealingStorage] = useState(false)
   const [rendering, setRendering] = useState(false)
+  const [renderSettingsOpen, setRenderSettingsOpen] = useState(false)
+  const [renderCenterOpen, setRenderCenterOpen] = useState(false)
+  const [renderPresetId, setRenderPresetId] = useState<VideoRenderPreset['id']>('high')
   const [renderJob, setRenderJob] = useState<VideoRenderJobSnapshotWire | null>(null)
+  const [renderJobs, setRenderJobs] = useState<VideoRenderJobSnapshotWire[]>([])
+  const [renderJobsLoading, setRenderJobsLoading] = useState(false)
+  const [renderJobsError, setRenderJobsError] = useState<string | null>(null)
+  const [cancellingRenderJobId, setCancellingRenderJobId] = useState<string | null>(null)
   const [renderProgress, setRenderProgress] = useState(0)
   const [renderError, setRenderError] = useState<string | null>(null)
   const [exportPath, setExportPath] = useState('')
@@ -1627,6 +1608,8 @@ export function VideoToolPage() {
   const playbackStartPlayheadRef = useRef(0)
   const lastPublishedPlayheadRef = useRef(0)
   const refreshRequestSequenceRef = useRef(0)
+  const renderJobsRequestSequenceRef = useRef(0)
+  const selectedRenderJobIdRef = useRef<string | null>(null)
   const animationSelectionRequestSequenceRef = useRef(0)
 
   const workspaceOverviewQuery = useQuery(workspaceOverviewQueryOptions([], 25))
@@ -2511,18 +2494,57 @@ export function VideoToolPage() {
     }
   }, [selectedThread])
 
-  const handleCancelRender = useCallback(async () => {
-    if (!selectedThread || !renderJob) return
-    setRenderError(null)
-    try {
-      await requestVideoRenderCancellation(selectedThread.id, renderJob.id)
-      const cancelled = await getVideoRenderJob(selectedThread.id, renderJob.id)
-      setRenderJob(cancelled)
-      setRendering(false)
-    } catch (error) {
-      setRenderError(error instanceof Error ? error.message : String(error))
+  const refreshRenderJobs = useCallback(async (showLoading = true) => {
+    if (!selectedThread || !videoProject) {
+      setRenderJobs([])
+      setRenderJobsError(null)
+      selectedRenderJobIdRef.current = null
+      return
     }
-  }, [renderJob, selectedThread])
+    const sequence = ++renderJobsRequestSequenceRef.current
+    if (showLoading) setRenderJobsLoading(true)
+    try {
+      const jobs = await listVideoRenderJobs(selectedThread.id, videoProject.id)
+      if (sequence !== renderJobsRequestSequenceRef.current) return
+      setRenderJobs(jobs)
+      setRenderJobsError(null)
+      setRenderJob((current) => {
+        const latest = jobs.find((job) => job.id === selectedRenderJobIdRef.current) ?? jobs[0] ?? current
+        if (latest) {
+          selectedRenderJobIdRef.current = latest.id
+          setRenderProgress(latest.progress)
+        }
+        return latest
+      })
+    } catch (error) {
+      if (sequence === renderJobsRequestSequenceRef.current) setRenderJobsError(error instanceof Error ? error.message : String(error))
+    } finally {
+      if (sequence === renderJobsRequestSequenceRef.current && showLoading) setRenderJobsLoading(false)
+    }
+  }, [selectedThread, videoProject])
+
+  useEffect(() => {
+    if (!selectedThread || !videoProject) return
+    void refreshRenderJobs()
+    const poll = window.setInterval(() => { void refreshRenderJobs(false) }, 2_000)
+    return () => window.clearInterval(poll)
+  }, [refreshRenderJobs, selectedThread, videoProject])
+
+  const handleCancelRender = useCallback(async (targetJob: VideoRenderJobSnapshotWire = renderJob!) => {
+    if (!selectedThread || !targetJob || !videoRenderJobActive(targetJob)) return
+    setRenderError(null)
+    setCancellingRenderJobId(targetJob.id)
+    try {
+      await requestVideoRenderCancellation(selectedThread.id, targetJob.id)
+      await refreshRenderJobs(false)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      setRenderError(message)
+      setRenderJobsError(message)
+    } finally {
+      setCancellingRenderJobId(null)
+    }
+  }, [refreshRenderJobs, renderJob, selectedThread])
 
   const handleExportRender = useCallback(async () => {
     if (!selectedThread || !videoProject || !renderJob || renderJob.status !== 'ready' || !exportPath.trim()) return
@@ -2540,6 +2562,11 @@ export function VideoToolPage() {
     }
   }, [exportPath, renderJob, selectedThread, videoProject])
 
+  const handleOpenRenderSettings = useCallback(() => {
+    setRenderError(null)
+    setRenderSettingsOpen(true)
+  }, [])
+
   const handleStartRender = useCallback(async () => {
     if (!selectedThread) return
     setRendering(true)
@@ -2548,34 +2575,24 @@ export function VideoToolPage() {
       if (!videoProject || !renderRevision?.id) throw new Error('Save a timeline revision before rendering')
       if (renderBlockedByPendingProposal) throw new Error('Confirm or revise the pending Video Studio changes before final rendering')
       if (renderBlockedByIterations) throw new Error(`Lock in one variant for each clip with multiple iterations before rendering (${unresolvedIterationLockPartIDs.length} remaining)`)
-      const job = await startVideoRender(selectedThread.id, videoProject.id, renderRevision.id)
+      if (renderBlockedByStoryboard) throw new Error('Replace every pending storyboard placeholder before final rendering')
+      if (renderBlockedByComposition) throw new Error('Assign every required composition source before final rendering')
+      if (hasUnresolvedPlanFrames) throw new Error('Replace every planned frame with a renderable source before final rendering')
+      const preset = VIDEO_RENDER_PRESETS.find((candidate) => candidate.id === renderPresetId) ?? VIDEO_RENDER_PRESETS[1]
+      const job = await startVideoRender(selectedThread.id, videoProject.id, renderRevision.id, preset)
+      selectedRenderJobIdRef.current = job.id
       setRenderJob(job)
-      const pollInterval = window.setInterval(async () => {
-        try {
-          const updated = await getVideoRenderJob(selectedThread.id, job.id)
-          setRenderJob(updated)
-          setRenderProgress(updated.progress)
-          if (updated.status === 'ready' || updated.status === 'failed' || updated.status === 'cancelled') {
-            window.clearInterval(pollInterval)
-            setRendering(false)
-            if (updated.status === 'ready') {
-              setExportPath((current) => current.trim() || defaultRenderedVideoExportPath(selectedWorkspacePath, videoProject.title || selectedThread.title, updated.revision_number))
-              setExportedPath('')
-            }
-            if (updated.status === 'failed') {
-              setRenderError(updated.failure_reason || updated.failure_code || 'Render failed')
-            }
-          }
-        } catch {
-          window.clearInterval(pollInterval)
-          setRendering(false)
-        }
-      }, 1000)
+      setRenderJobs((current) => [job, ...current.filter((candidate) => candidate.id !== job.id)])
+      setRenderProgress(job.progress)
+      setRenderSettingsOpen(false)
+      setRenderCenterOpen(true)
+      setRendering(false)
+      await refreshRenderJobs(false)
     } catch (error) {
       setRenderError(error instanceof Error ? error.message : String(error))
       setRendering(false)
     }
-  }, [renderBlockedByIterations, renderBlockedByPendingProposal, renderRevision, selectedThread, selectedWorkspacePath, unresolvedIterationLockPartIDs.length, videoProject])
+  }, [hasUnresolvedPlanFrames, refreshRenderJobs, renderBlockedByComposition, renderBlockedByIterations, renderBlockedByPendingProposal, renderBlockedByStoryboard, renderPresetId, renderRevision, selectedThread, unresolvedIterationLockPartIDs.length, videoProject])
 
   const handleOpenPicker = useCallback(() => {
     setCreateError(null)
@@ -3107,18 +3124,23 @@ export function VideoToolPage() {
             {selectedThread ? <span className="truncate text-xs text-[var(--app-text-muted)]">/ {selectedThread.title || 'Video session'}</span> : null}
           </div>
           {selectedThread && routeWorkspaceSlug ? (
-            <button
-              type="button"
-              className="inline-flex h-9 shrink-0 items-center gap-1.5 rounded-xl border border-transparent bg-transparent px-2 text-xs font-medium text-[var(--app-text-muted)] transition hover:bg-[var(--app-surface-subtle)] hover:text-[var(--app-text)] active:bg-[var(--app-surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-focus-ring)]"
-              onClick={handleOpenSessionMode}
-              aria-label="Switch to session mode"
-              aria-pressed="true"
-              title="Video Studio is on. Switch back to the session chat."
-              data-testid="video-studio-session-toggle"
-            >
-              <MessageSquare size={15} aria-hidden="true" />
-              <span>Chat</span>
-            </button>
+            <div className="flex items-center gap-1">
+              <button type="button" className={`inline-flex h-9 shrink-0 items-center gap-1.5 rounded-xl px-2 text-xs font-medium transition hover:bg-[var(--app-surface-subtle)] ${renderCenterOpen ? 'bg-[var(--app-surface-active)] text-[var(--app-text)]' : 'text-[var(--app-text-muted)]'}`} onClick={() => setRenderCenterOpen((open) => !open)} aria-label={renderCenterOpen ? 'Return to video editor' : 'Open video renders'} aria-pressed={renderCenterOpen}>
+                <ListVideo size={15} aria-hidden="true" /><span>{renderCenterOpen ? 'Editor' : `Renders${renderJobs.some(videoRenderJobActive) ? ` (${renderJobs.filter(videoRenderJobActive).length})` : ''}`}</span>
+              </button>
+              <button
+                type="button"
+                className="inline-flex h-9 shrink-0 items-center gap-1.5 rounded-xl border border-transparent bg-transparent px-2 text-xs font-medium text-[var(--app-text-muted)] transition hover:bg-[var(--app-surface-subtle)] hover:text-[var(--app-text)] active:bg-[var(--app-surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-focus-ring)]"
+                onClick={handleOpenSessionMode}
+                aria-label="Switch to session mode"
+                aria-pressed="true"
+                title="Video Studio is on. Switch back to the session chat."
+                data-testid="video-studio-session-toggle"
+              >
+                <MessageSquare size={15} aria-hidden="true" />
+                <span>Chat</span>
+              </button>
+            </div>
           ) : null}
         </header>
         {createError ? (
@@ -3127,7 +3149,7 @@ export function VideoToolPage() {
           </div>
         ) : null}
 
-        <main className="flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-contain lg:flex-row lg:overflow-hidden">
+        {renderCenterOpen && selectedThread && videoProject ? <VideoRenderCenter jobs={renderJobs} loading={renderJobsLoading} error={renderJobsError} cancellingJobId={cancellingRenderJobId} onRefresh={() => void refreshRenderJobs()} onCancel={(job) => void handleCancelRender(job)} onOpenOutput={(job) => { selectedRenderJobIdRef.current = job.id; setRenderJob(job); setRenderProgress(job.progress); setRenderCenterOpen(false); setExportPath((current) => current.trim() || defaultRenderedVideoExportPath(selectedWorkspacePath, videoProject.title || selectedThread.title, job.revision_number)); setExportedPath('') }} /> : <main className="flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-contain lg:flex-row lg:overflow-hidden">
           <div className="contents">
             <SwarmToolSidebar
               layoutClassName="flex max-h-[42dvh] min-h-0 w-full shrink-0 flex-col overflow-hidden border-b border-[var(--app-border)] px-3 py-2 font-mono text-[12px] text-[var(--app-text-muted)] lg:max-h-none lg:w-[220px] lg:flex-none lg:border-b-0 lg:border-r lg:px-0 lg:py-4 lg:pl-3 lg:pr-3"
@@ -3178,6 +3200,7 @@ export function VideoToolPage() {
               emptySessionsMessage="No video sessions yet. Start session to get started."
               defaultSessionTitle="Video Thread"
               actions={[
+                { id: 'renders', label: 'Renders', icon: <ListVideo size={14} />, suffix: renderJobs.some(videoRenderJobActive) ? `${renderJobs.filter(videoRenderJobActive).length} active` : 'queue', onClick: () => setRenderCenterOpen(true), disabled: !selectedThread || !videoProject || Boolean(selectedLibraryVideo) },
                 { id: 'add-folder', label: 'Add folder', icon: <FolderOpen size={14} />, suffix: 'source', onClick: handleOpenPicker, disabled: !selectedThread || Boolean(selectedLibraryVideo) },
                 { id: 'show-files', label: revealingStorage ? 'Opening…' : 'Show files', icon: <FolderOpen size={14} />, suffix: 'local', onClick: () => void handleRevealVideoStorage(), disabled: !selectedThread || revealingStorage || Boolean(selectedLibraryVideo) },
                 { id: 'session-mode', label: 'Open session mode', icon: <MessageSquare size={14} />, suffix: 'chat', onClick: handleOpenSessionMode, disabled: !selectedThread || !routeWorkspaceSlug || Boolean(selectedLibraryVideo) },
@@ -3329,19 +3352,13 @@ export function VideoToolPage() {
                   </div>
                   <div className="flex items-center gap-2">
                     <span className="text-xs text-[var(--app-text-muted)]">{visibleTimelineLayout.length} included · {hiddenTimelineLayout.length} hidden</span>
-                    {rendering ? (
-                      <Button variant="outline" className="h-8 rounded-xl px-3 text-xs" onClick={() => void handleCancelRender()}>
-                        <Loader2 size={13} className="animate-spin" /> {renderJob?.progress_stage || 'Rendering'} · {Math.round(renderProgress * 100)}% · Cancel
-                      </Button>
-                    ) : renderJob?.status === 'ready' ? (
-                      <span className="text-xs text-green-500"><Film size={13} className="inline" /> Render ready for playback and export</span>
-                    ) : (
-                      <Button variant="outline" className="h-8 rounded-xl px-3 text-xs" onClick={() => void handleStartRender()} disabled={movieDuration <= 0 || rendering || projectLoading || !renderRevision || renderBlockedByPendingProposal || renderBlockedByIterations || renderBlockedByStoryboard || renderBlockedByComposition || hasUnresolvedPlanFrames || Boolean(selectedLibraryVideo)}>
-                        <Sparkles size={13} /> {renderBlockedByPendingProposal ? 'Confirm pending changes to render' : renderBlockedByIterations ? `Lock ${unresolvedIterationLockPartIDs.length} clip variant${unresolvedIterationLockPartIDs.length === 1 ? '' : 's'} to render` : renderBlockedByStoryboard ? `Replace ${pendingStoryboardPartIDs.length} storyboard placeholder${pendingStoryboardPartIDs.length === 1 ? '' : 's'} to render` : renderBlockedByComposition ? 'Assign all composition sources to render' : hasUnresolvedPlanFrames ? 'Replace planned frames with sources' : `Render r${renderRevision?.revision_number ?? ''}`}
-                      </Button>
-                    )}
+                    <Button variant="ghost" className="h-8 rounded-xl px-3 text-xs" onClick={() => setRenderCenterOpen(true)} disabled={!videoProject}><ListVideo size={13} />Renders{renderJobs.some(videoRenderJobActive) ? ` · ${renderJobs.filter(videoRenderJobActive).length} active` : ''}</Button>
+                    <Button variant="outline" className="h-8 rounded-xl px-3 text-xs" onClick={handleOpenRenderSettings} disabled={movieDuration <= 0 || projectLoading || !renderRevision || renderBlockedByPendingProposal || renderBlockedByIterations || renderBlockedByStoryboard || renderBlockedByComposition || hasUnresolvedPlanFrames || Boolean(selectedLibraryVideo)}>
+                      <Sparkles size={13} /> {renderBlockedByPendingProposal ? 'Confirm pending changes to render' : renderBlockedByIterations ? `Lock ${unresolvedIterationLockPartIDs.length} clip variant${unresolvedIterationLockPartIDs.length === 1 ? '' : 's'} to render` : renderBlockedByStoryboard ? `Replace ${pendingStoryboardPartIDs.length} storyboard placeholder${pendingStoryboardPartIDs.length === 1 ? '' : 's'} to render` : renderBlockedByComposition ? 'Assign all composition sources to render' : hasUnresolvedPlanFrames ? 'Replace planned frames with sources' : `Render r${renderRevision?.revision_number ?? ''}`}
+                    </Button>
                   </div>
                 </div>
+                {renderJob && videoRenderJobActive(renderJob) ? <div className="mb-3 flex items-center justify-between gap-3 border border-sky-400/25 bg-sky-950/15 px-3 py-2 text-xs"><span><Loader2 size={13} className="mr-1 inline animate-spin" />{renderJob.progress_stage || renderJob.status} · {Math.round(renderProgress * 100)}%</span><button type="button" className="text-[var(--app-primary)] hover:underline" onClick={() => setRenderCenterOpen(true)}>View render queue</button></div> : null}
                 {renderJob?.status === 'ready' ? (
                   <div className="mb-3 grid gap-2 border border-[var(--app-border)] bg-[var(--app-surface)] p-3">
                     {renderedVideoArtifactUrl(selectedThread.id, renderJob) ? <video controls preload="metadata" className="max-h-72 w-full bg-black" src={renderedVideoArtifactUrl(selectedThread.id, renderJob)} /> : <p className="text-xs text-[var(--app-text-muted)]">Rendered artifact is ready, but its exact output reference is unavailable.</p>}
@@ -3471,7 +3488,22 @@ export function VideoToolPage() {
               )}
             </section>
             {selectedThread && !selectedLibraryVideo ? <VideoSessionAISidecar key={selectedThread.id} sessionId={selectedThread.id} projectId={videoProject?.id} revisionId={studioComposerContext?.revisionId ?? currentRevision?.id} anchorClipId={studioComposerContext?.anchorClipId ?? activeSegment?.id} playheadMs={studioSidecarPlayheadMs} selectionKind={studioComposerContext?.selectionKind} transition={studioComposerContext?.transition} iterationContext={studioComposerContext?.iteration} storyboardContext={studioComposerContext?.storyboard} routeOptions={studioRouteOptions} draftRequest={composerDraftRequest} artifactSelectionRequest={studioArtifactSelectionRequest} artifactReviewPortalTarget={studioArtifactReviewPortalTarget} contextChip={studioContextChip} onContextChipRemove={handleStudioContextRemove} onArtifactSelectionRequestHandled={handleStudioArtifactSelectionHandled} onMessageSent={handleStudioMessageSent} /> : null}
-          </main>
+          </main>}
+
+      {renderSettingsOpen ? (
+        <Dialog role="dialog" aria-modal="true" aria-label="Render quality settings" className="z-[90] p-4 sm:p-6">
+          <DialogBackdrop onClick={() => { if (!rendering) setRenderSettingsOpen(false) }} />
+          <DialogPanel className="mx-auto mt-[10vh] w-[min(680px,calc(100vw-24px))] overflow-hidden rounded-3xl border border-[var(--app-border-strong)] bg-[var(--app-surface)] shadow-[var(--shadow-panel)]">
+            <div className="flex items-start justify-between gap-4 border-b border-[var(--app-border)] px-5 py-4"><div><p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-[var(--app-primary)]">Final video</p><h2 className="mt-1 text-xl font-semibold">Choose render quality</h2><p className="mt-2 text-sm text-[var(--app-text-muted)]">Select an allowlisted quality and frame-rate preset. The durable job continues if you close Video Studio.</p></div><ModalCloseButton onClick={() => { if (!rendering) setRenderSettingsOpen(false) }} aria-label="Close render settings" /></div>
+            <div className="grid gap-3 p-5">
+              {VIDEO_RENDER_PRESETS.map((preset) => <label key={preset.id} className={`cursor-pointer border p-4 ${renderPresetId === preset.id ? 'border-[var(--app-primary)] bg-[color-mix(in_srgb,var(--app-primary)_8%,transparent)]' : 'border-[var(--app-border)] bg-[var(--app-bg)]'}`}><span className="flex items-start gap-3"><input type="radio" name="video-render-preset" className="mt-1" checked={renderPresetId === preset.id} onChange={() => setRenderPresetId(preset.id)} /><span><span className="block text-sm font-semibold">{preset.label} · {preset.fps} FPS</span><span className="mt-1 block text-xs leading-5 text-[var(--app-text-muted)]">{preset.description}</span></span></span></label>)}
+              <p className="text-[10px] leading-4 text-[var(--app-text-subtle)]">All presets preserve the project aspect ratio and soundtrack. 60 FPS doubles authored frames and generally takes longer; it is optional rather than required for high resolution.</p>
+              {renderError ? <p className="text-xs text-red-400">{renderError}</p> : null}
+              <Button className="mt-1 h-10 w-full justify-center" disabled={rendering} onClick={() => void handleStartRender()}>{rendering ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />}{rendering ? 'Submitting durable render…' : 'Start render'}</Button>
+            </div>
+          </DialogPanel>
+        </Dialog>
+      ) : null}
 
       {soundtrackPickerOpen ? (
         <Dialog role="dialog" aria-modal="true" aria-label="Choose trusted soundtrack" className="z-[85] p-4 sm:p-6">

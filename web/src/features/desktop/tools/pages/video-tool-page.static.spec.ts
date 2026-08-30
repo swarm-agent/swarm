@@ -164,6 +164,25 @@ test('Video Studio exposes exact-aspect pending spatial composition controls', a
   assert.match(compositionSource, /All changes create or update a pending proposal/)
 })
 
+test('Video Studio submits selectable durable renders and exposes a resilient project render center', async () => {
+  const source = await readFile(pageSourceUrl, 'utf8')
+  const renderCenterSource = await readFile(new URL('../video-studio/video-render-center.tsx', import.meta.url), 'utf8')
+
+  assert.match(source, /aria-label="Render quality settings"/)
+  assert.match(source, /VIDEO_RENDER_PRESETS\.map/)
+  assert.match(source, /quality: preset\.quality, quality_preset: preset\.id, fps: preset\.fps/)
+  assert.match(source, /listVideoRenderJobs\(selectedThread\.id, videoProject\.id\)/)
+  assert.match(source, /window\.setInterval\(\(\) => \{ void refreshRenderJobs\(false\) \}, 2_000\)/)
+  assert.match(renderCenterSource, /Existing jobs are retained and polling will retry automatically/)
+  assert.doesNotMatch(source, /catch \{[\s\S]{0,100}clearInterval\(pollInterval\)/)
+  assert.match(renderCenterSource, /aria-label="Video renders"/)
+  assert.match(renderCenterSource, /Durable render queue/)
+  assert.match(renderCenterSource, /queued'[\s\S]*'rendering'[\s\S]*'ready'[\s\S]*'failed'[\s\S]*'cancelled'/)
+  assert.match(renderCenterSource, /videoRenderRemainingMs/)
+  assert.match(renderCenterSource, /props\.onCancel\(job\)/)
+  assert.match(renderCenterSource, /Multiple renders may run concurrently/)
+})
+
 test('Video Studio exposes only the implemented soundtrack contract and an explicit audio lane', async () => {
   const source = await readFile(pageSourceUrl, 'utf8')
   const proposalSource = await readFile(new URL('../video-studio/video-studio-surface.tsx', import.meta.url), 'utf8')
