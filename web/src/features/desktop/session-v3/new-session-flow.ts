@@ -27,6 +27,7 @@ import {
   postDesktopV3CreateSession,
   type DesktopV3AppendMessageRequest,
   type DesktopV3CreateSessionRequest,
+  type DesktopV3RoutedSessionStartResponse,
 } from './write-api'
 
 export interface DesktopV3CreateOnlySessionOperation {
@@ -536,6 +537,24 @@ export interface DesktopV3RoutedStartResult {
   first_message: { id?: string; session_id?: string; media?: DesktopV3MediaReference[] }
   projection: { session_id?: string }
   mutation: { session_id?: string }
+}
+
+export function applyDesktopV3RoutedStartResponse(response: DesktopV3RoutedSessionStartResponse): void {
+  const firstMessageResult: SessionMessageMutationResponse = {
+    ok: true,
+    session_id: response.session_id,
+    session: response.session,
+    projection: response.projection,
+    message: response.first_message,
+    run_intent: response.mutation.run_intent ?? null,
+    mutation: response.mutation,
+    realtime_outbox: response.mutation.realtime_outbox ?? null,
+  }
+  flowDeps.dispatch(messageMutationResponseToAction(
+    firstMessageResult,
+    response.first_message.id,
+    response.first_message.id,
+  ))
 }
 
 export interface DesktopV3RoutedRoutingState {

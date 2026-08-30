@@ -38,7 +38,6 @@ type routedSessionStartRequest struct {
 	IdempotencyKey                 string                                          `json:"idempotency_key,omitempty"`
 	AgentName                      string                                          `json:"agent_name"`
 	Metadata                       map[string]any                                  `json:"metadata,omitempty"`
-	WorktreeName                   string                                          `json:"worktree_name,omitempty"`
 	PlanModeRequested              *bool                                           `json:"plan_mode_requested"`
 	LegacyManagedWorktreeRequested json.RawMessage                                 `json:"managed_worktree_requested,omitempty"` // rolling decode only
 	WorkspacePath                  string                                          `json:"workspace_path"`
@@ -365,8 +364,8 @@ func canonicalWorktreeSessionStateError(session pebblestore.SessionSnapshot, mis
 // handleRoutedSessionStart is the compatibility routed-start transaction.
 // It validates submitted self-runtime workspace authority and allocates the
 // session-owned managed worktree before publishing any durable run authority.
-// Background Router requests additionally route their original text exactly once
-// after replay detection and use only that validated title/worktree naming result.
+// Every ordinary routed start asks the hidden Router to derive title/worktree
+// naming exactly once after replay detection; clients never own either name.
 func (s *Server) handleRoutedSessionStart(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		methodNotAllowed(w)
@@ -392,7 +391,6 @@ func (s *Server) handleRoutedSessionStart(w http.ResponseWriter, r *http.Request
 	req.SwarmID = strings.TrimSpace(req.SwarmID)
 	req.TargetKind = strings.TrimSpace(req.TargetKind)
 	req.TargetRelationship = strings.TrimSpace(req.TargetRelationship)
-	req.WorktreeName = strings.TrimSpace(req.WorktreeName)
 	if req.AgentName == "" {
 		req.AgentName = "swarm"
 	}
@@ -468,13 +466,10 @@ func (s *Server) handleRoutedSessionStart(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	var routerDecision sessionRouterDecision
-	if backgroundRouterRequest {
-		routerDecision, err = s.routeSessionOnce(r.Context(), principal, req.Input)
-		if err != nil {
-			writeRoutedSessionError(w, err)
-			return
-		}
+	routerDecision, err := s.routeSessionOnce(r.Context(), principal, req.Input)
+	if err != nil {
+		writeRoutedSessionError(w, err)
+		return
 	}
 
 	planModeRequested := *req.PlanModeRequested
@@ -534,20 +529,18 @@ func (s *Server) handleRoutedSessionStart(w http.ResponseWriter, r *http.Request
 	candidate.Metadata["title_pending"] = true
 	candidate.Metadata["title_locked"] = false
 	delete(candidate.Metadata, "title_source")
-	if backgroundRouterRequest {
-		titleRequest := sessionCreateRequest{Metadata: candidate.Metadata}
-		if err := applyRoutedSessionRouterTitle(&titleRequest, routerDecision.Result.Title); err != nil {
-			writeRoutedSessionError(w, err)
-			return
-		}
-		candidate.Title = titleRequest.Title
-		candidate.Metadata = titleRequest.Metadata
+	titleRequest := sessionCreateRequest{Metadata: candidate.Metadata}
+	if err := applyRoutedSessionRouterTitle(&titleRequest, routerDecision.Result.Title); err != nil {
+		writeRoutedSessionError(w, err)
+		return
 	}
+	candidate.Title = titleRequest.Title
+	candidate.Metadata = titleRequest.Metadata
 	candidate.Metadata["routed_start"] = true
 	candidate.Metadata["routed_start_request_hash"] = requestHash
 	candidate.Metadata["plan_mode_requested"] = planModeRequested
-	worktreeName := req.WorktreeName
-	if backgroundRouterRequest && routerDecision.Result.WorktreeName != nil {
+	worktreeName := ""
+	if routerDecision.Result.WorktreeName != nil {
 		worktreeName = strings.TrimSpace(*routerDecision.Result.WorktreeName)
 	}
 	if worktreeName != "" {
@@ -799,14 +792,13 @@ func routedSessionRequestHash(req routedSessionStartRequest, binding sessionsV3P
 		SourceWorkspaceID, SourceWorkspaceName, SourceWorkspacePath       string
 		SourceWorkspaceGeneration                                         int64
 		PlacementGeneration, BindingGeneration                            int
-		WorktreeName                                                      string
 		PlanModeRequested                                                 *bool
 		Metadata                                                          map[string]any
 		Media                                                             []routedSessionMediaRequest
 		VideoAttachments                                                  []pebblestore.SessionVideoAttachmentReference
 		ArtifactSelections                                                []pebblestore.SessionArtifactSelectionReference
 		ModelProfile                                                      *sessionsV3ModelProfileChoice
-	}{req.Input, clientRequestID, req.AgentName, req.WorkspacePath, req.HostWorkspacePath, req.RuntimeWorkspacePath, req.WorkspaceBindingID, req.SwarmID, req.TargetKind, req.TargetRelationship, binding.WorkspaceBindingID, binding.RuntimeSwarmID, binding.RuntimeWorkspacePath, binding.SourceWorkspaceID, binding.SourceWorkspaceName, binding.SourceWorkspacePath, binding.SourceWorkspaceGeneration, binding.PlacementGeneration, binding.BindingGeneration, strings.TrimSpace(req.WorktreeName), req.PlanModeRequested, cloneSessionsV3Metadata(req.Metadata), media, req.VideoAttachments, req.ArtifactSelections, req.ModelProfile})
+	}{req.Input, clientRequestID, req.AgentName, req.WorkspacePath, req.HostWorkspacePath, req.RuntimeWorkspacePath, req.WorkspaceBindingID, req.SwarmID, req.TargetKind, req.TargetRelationship, binding.WorkspaceBindingID, binding.RuntimeSwarmID, binding.RuntimeWorkspacePath, binding.SourceWorkspaceID, binding.SourceWorkspaceName, binding.SourceWorkspacePath, binding.SourceWorkspaceGeneration, binding.PlacementGeneration, binding.BindingGeneration, req.PlanModeRequested, cloneSessionsV3Metadata(req.Metadata), media, req.VideoAttachments, req.ArtifactSelections, req.ModelProfile})
 	if err != nil {
 		return "", err
 	}

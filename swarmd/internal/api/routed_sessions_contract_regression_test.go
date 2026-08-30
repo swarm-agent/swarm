@@ -1,7 +1,6 @@
 package api
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -10,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"swarm/packages/swarmd/internal/agentmodelsettings"
 	"swarm/packages/swarmd/internal/identity"
 	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -57,14 +55,9 @@ func TestRoutedSessionContractRegression(t *testing.T) {
 		}
 	})
 
-	t.Run("plain start asynchronously commits Compact title and realtime", func(t *testing.T) {
-		routerRunner := &sessionRouterRecordingRunner{id: "router", err: errors.New("Router unavailable")}
+	t.Run("plain start uses Router title and worktree name before durable execution", func(t *testing.T) {
+		routerRunner := &sessionRouterRecordingRunner{id: "router", response: provideriface.Response{Text: `{"title":"Router Session Title","worktree_name":"router-session"}`}}
 		server, sessions, principal := newRoutedSessionAtomicityServer(t, routerRunner, false, true)
-		compactRunner := &sessionRouterRecordingRunner{id: "compact", response: provideriface.Response{Text: "Durable Compact Title"}, allowStreaming: true}
-		server.providers.RegisterRunner(compactRunner)
-		if _, err := server.agentModelSettings.UpdateSystemAgent(identity.ContextWithPrincipal(context.Background(), principal), "compact", agentmodelsettings.Assignment{Provider: "compact", Model: "compact-model", Thinking: "low"}); err != nil {
-			t.Fatalf("configure Compact title settings: %v", err)
-		}
 		server.v3SessionExecutor = newSessionV3Executor(server)
 		t.Cleanup(func() {
 			server.CancelInFlightRuns()
@@ -105,56 +98,26 @@ func TestRoutedSessionContractRegression(t *testing.T) {
 		if result.Mutation.RunIntent == nil || result.Mutation.RunIntent.Status != "pending_executor" {
 			t.Fatalf("plain start did not enqueue its run independently of Router: %+v", result.Mutation.RunIntent)
 		}
-		deadline := time.Now().Add(2 * time.Second)
-		for {
-			stored, ok, err := sessions.GetSession(result.SessionID)
-			if err != nil || !ok {
-				t.Fatalf("plain routed session exists=%t err=%v", ok, err)
-			}
-			if stored.Title == "Durable Compact Title" {
-				if stored.Metadata["title_source"] != "compact" || stored.Metadata["title_locked"] != true || stored.Metadata["title_pending"] != false {
-					t.Fatalf("Compact title metadata=%+v", stored.Metadata)
-				}
-				events, eventErr := sessions.ListSessionEvents(result.SessionID, 0, 10)
-				outbox, outboxErr := sessions.Store().ListV3RealtimeOutboxForSessionAfterSeq(result.SessionID, 0, 10)
-				if eventErr != nil || outboxErr != nil {
-					t.Fatalf("read Compact title events/outbox: %v/%v", eventErr, outboxErr)
-				}
-				foundTitleEvent := false
-				for _, event := range events {
-					if event.EventType == "session.title.updated" {
-						foundTitleEvent = true
-					}
-				}
-				if len(events) < 2 || len(outbox) < 2 || !foundTitleEvent {
-					t.Fatalf("Compact durable title events=%+v outbox=%+v errors=%v/%v", events, outbox, eventErr, outboxErr)
-				}
-				foundTitleOutbox := false
-				for _, record := range outbox {
-					if record.Event.EventType == "session.title.updated" {
-						foundTitleOutbox = true
-					}
-				}
-				if !foundTitleOutbox {
-					t.Fatalf("Compact title realtime outbox missing: %+v", outbox)
-				}
-				break
-			}
-			if time.Now().After(deadline) {
-				t.Fatalf("Compact title did not commit; session=%+v streaming_calls=%d", stored, compactRunner.streamingCalls)
-			}
-			time.Sleep(10 * time.Millisecond)
+		stored, ok, err := sessions.GetSession(result.SessionID)
+		if err != nil || !ok {
+			t.Fatalf("plain routed session exists=%t err=%v", ok, err)
 		}
-		if routerRunner.createCalls != 0 || routerRunner.streamingCalls != 0 || compactRunner.streamingCalls != 1 {
-			t.Fatalf("provider calls Router=%d/%d Compact streaming=%d", routerRunner.createCalls, routerRunner.streamingCalls, compactRunner.streamingCalls)
+		if stored.Title != "Router Session Title" || stored.Metadata["title_source"] != "router" || stored.Metadata["title_locked"] != true || stored.Metadata["title_pending"] != false {
+			t.Fatalf("Router title authority=%+v metadata=%+v", stored.Title, stored.Metadata)
 		}
-		if len(compactRunner.requests) != 1 {
-			t.Fatalf("Compact title requests=%d, want one", len(compactRunner.requests))
+		if stored.Metadata["routed_worktree_original_name"] != "router-session" || stored.Metadata["routed_worktree_name"] != "router-session" || stored.WorktreeBranch != "agent/router-session" {
+			t.Fatalf("Router worktree authority=%+v metadata=%+v", stored, stored.Metadata)
 		}
-		compactInstructions := compactRunner.requests[0].Instructions
+		if routerRunner.createCalls != 1 || routerRunner.streamingCalls != 0 {
+			t.Fatalf("provider calls Router=%d/%d", routerRunner.createCalls, routerRunner.streamingCalls)
+		}
+		if len(routerRunner.requests) != 1 {
+			t.Fatalf("Router requests=%d, want one", len(routerRunner.requests))
+		}
+		routerInstructions := routerRunner.requests[0].Instructions
 		for _, forbidden := range []string{"Routed Workspace", "routed-binding", "confidential alpha routing definition", "confidential beta routing definition", "Distractor Alpha", "Distractor Beta"} {
-			if strings.Contains(compactInstructions, forbidden) {
-				t.Fatalf("Compact title instructions leaked workspace authority %q: %s", forbidden, compactInstructions)
+			if strings.Contains(routerInstructions, forbidden) {
+				t.Fatalf("Router instructions leaked workspace authority %q: %s", forbidden, routerInstructions)
 			}
 		}
 		server.CancelInFlightRuns()
@@ -172,7 +135,7 @@ func TestRoutedSessionContractRegression(t *testing.T) {
 		}
 		for _, test := range tests {
 			t.Run(test.name, func(t *testing.T) {
-				runner := &sessionRouterRecordingRunner{id: "recording", err: errors.New("Router must not be called")}
+				runner := &sessionRouterRecordingRunner{id: "recording", response: provideriface.Response{Text: `{"title":"Router Canonical","worktree_name":"router-canonical"}`}}
 				server, sessions, principal := newRoutedSessionAtomicityServer(t, runner, true, true)
 				managedPath := t.TempDir()
 				worktrees := &routedWorktreeServiceStub{fakeWorktreeService: fakeWorktreeService{
@@ -181,7 +144,7 @@ func TestRoutedSessionContractRegression(t *testing.T) {
 				}}
 				server.SetWorktreeService(worktrees)
 				created := postRoutedSessionAtomicityRequest(t, server, principal, map[string]any{
-					"input": "implement this work", "client_request_id": "router-canonical-" + strings.ToLower(test.name), "plan_mode_requested": test.planRequested, "worktree_name": "router-canonical",
+					"input": "implement this work", "client_request_id": "router-canonical-" + strings.ToLower(test.name), "plan_mode_requested": test.planRequested,
 				})
 				if created.Code != http.StatusOK {
 					t.Fatalf("canonical routed start status=%d body=%s", created.Code, created.Body.String())
@@ -194,13 +157,13 @@ func TestRoutedSessionContractRegression(t *testing.T) {
 				if err != nil || !ok {
 					t.Fatalf("canonical routed session exists=%t err=%v", ok, err)
 				}
-				if stored.Title != sessionV3TitleDefault || stored.Mode != test.wantMode || stored.WorkspaceName != "Routed Workspace" || stored.WorkspacePath == "" {
+				if stored.Title != "Router Canonical" || stored.Mode != test.wantMode || stored.WorkspaceName != "Routed Workspace" || stored.WorkspacePath == "" {
 					t.Fatalf("routed authority was not canonical: %+v", stored)
 				}
-				if stored.Metadata["title_locked"] != false || stored.Metadata["title_pending"] != true || stored.Metadata["swarm_v3_workspace_binding_id"] != "routed-binding" || stored.Metadata["swarm_v3_runtime_swarm_id"] != "local-swarm" {
+				if stored.Metadata["title_locked"] != true || stored.Metadata["title_pending"] != false || stored.Metadata["title_source"] != "router" || stored.Metadata["swarm_v3_workspace_binding_id"] != "routed-binding" || stored.Metadata["swarm_v3_runtime_swarm_id"] != "local-swarm" {
 					t.Fatalf("managed worktree title/runtime metadata=%+v", stored.Metadata)
 				}
-				if runner.createCalls != 0 || runner.streamingCalls != 0 || worktrees.allocationCalls != 1 || worktrees.lastWorkspace == "" || worktrees.lastNameSeed == "" || worktrees.lastBranchName != "agent/router-canonical" {
+				if runner.createCalls != 1 || runner.streamingCalls != 0 || worktrees.allocationCalls != 1 || worktrees.lastWorkspace == "" || worktrees.lastNameSeed == "" || worktrees.lastBranchName != "agent/router-canonical" {
 					t.Fatalf("Router calls create=%d streaming=%d allocation=%d source=%q seed=%q branch=%q", runner.createCalls, runner.streamingCalls, worktrees.allocationCalls, worktrees.lastWorkspace, worktrees.lastNameSeed, worktrees.lastBranchName)
 				}
 			})
@@ -209,7 +172,7 @@ func TestRoutedSessionContractRegression(t *testing.T) {
 
 	t.Run("media commit failure rolls back the allocated worktree and cannot replay", func(t *testing.T) {
 		fixture := newRoutedMediaTestFixture(t)
-		fixture.runner.response.Text = `{"title":"Worktree contract"}`
+		fixture.runner.response.Text = `{"title":"Worktree contract","worktree_name":"contract-worktree"}`
 		managedPath := t.TempDir()
 		worktrees := &routedContractRollbackWorktree{routedWorktreeServiceStub: routedWorktreeServiceStub{fakeWorktreeService: fakeWorktreeService{
 			config:     worktreeruntime.Config{Enabled: true, UseCurrentBranch: false, BaseBranch: "dev", BranchName: "agent/<id>"},
@@ -231,8 +194,8 @@ func TestRoutedSessionContractRegression(t *testing.T) {
 		}
 		fixture.assertNoRoutedSession(t, "contract-rollback")
 		assertRoutedMediaStagingState(t, fixture, fixture.principal.AccountScopeID, staged.ID, pebblestore.MediaStagingStateDeleted)
-		if fixture.runner.createCalls != 0 {
-			t.Fatalf("Router calls=%d, want zero", fixture.runner.createCalls)
+		if fixture.runner.createCalls != 1 {
+			t.Fatalf("Router calls=%d, want one", fixture.runner.createCalls)
 		}
 
 		replay := fixture.postWithWorktreeIntent(t, fixture.principal.AccountScopeID, "contract-rollback", staged.ID, map[string]string{"modality": "image", "file_type": "png"}, true)

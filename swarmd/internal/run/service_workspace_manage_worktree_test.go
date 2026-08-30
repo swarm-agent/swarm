@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"swarm/packages/swarmd/internal/identity"
+	"swarm/packages/swarmd/internal/permission"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/tool"
@@ -636,6 +637,49 @@ func TestManageWorkspaceActiveDeleteRemainsSafeAndLeavesFiles(t *testing.T) {
 	safety, _ := payload["safety"].(map[string]any)
 	if safety["left_in_safe_workspace"] != true || safety["delete_restore_valid"] != false {
 		t.Fatalf("delete safety = %#v", safety)
+	}
+}
+
+// Requirement: an automatically approved Workspace Map mutation must carry the
+// backend-built canonical payload into control-plane execution. The regression
+// threat is an approved call with empty arguments that fails after authorization;
+// gateToolCalls is the narrowest layer that proves the handoff contract.
+func TestManageWorkspaceAutomaticPolicyApprovalReturnsCanonicalMapArguments(t *testing.T) {
+	svc, sessionID, permissions, cleanup := newTaskLaunchPermissionServiceWithPermissions(t)
+	defer cleanup()
+	mapStore, err := pebblestore.Open(filepath.Join(t.TempDir(), "workspace-map.pebble"))
+	if err != nil {
+		t.Fatalf("open workspace map store: %v", err)
+	}
+	defer mapStore.Close()
+	svc.SetWorkspaceMapService(pebblestore.NewWorkspaceMapService(pebblestore.NewWorkspaceMapStore(mapStore)))
+	if _, err := permissions.UpsertRuleForAccount("test-account", permission.PolicyRule{Kind: permission.PolicyRuleKindTool, Decision: permission.PolicyDecisionAllow, Tool: "workspace_map_update"}); err != nil {
+		t.Fatalf("persist workspace map mutation rule: %v", err)
+	}
+	content := "# Workspace Map\n\n- billing means the payments workspace.\n"
+	arguments := mustJSON(t, map[string]any{
+		"action":            "update_map",
+		"expected_revision": 1,
+		"content":           content,
+		"intent":            "Record the user's billing workspace keyword.",
+	})
+	_, approved, _, mask, feedback, err := svc.gateToolCalls(context.Background(), sessionID, "run-map-update", 1, sessionruntime.ModeAuto, []tool.Call{{CallID: "call-map-update", Name: "manage_workspace", Arguments: arguments}}, nil, nil)
+	if err != nil {
+		t.Fatalf("gate workspace map update: %v", err)
+	}
+	if len(approved) != 1 || len(mask) != 1 || !mask[0] || len(feedback) != 1 {
+		t.Fatalf("automatic workspace map approval = approved=%#v mask=%v feedback=%#v", approved, mask, feedback)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(feedback[0].ApprovedArguments), &payload); err != nil {
+		t.Fatalf("decode approved workspace map payload: %v", err)
+	}
+	canonical, ok := payload["approved_arguments"].(map[string]any)
+	if !ok {
+		t.Fatalf("approved workspace map payload = %#v, want wrapped canonical arguments", payload)
+	}
+	if mapString(canonical, "action") != "update_map" || mapString(canonical, "permission_scope") != "workspace_map_update" || manageWorkspaceInt64(canonical["expected_revision"]) != 1 || mapString(canonical, "content") != content {
+		t.Fatalf("canonical workspace map arguments = %#v", canonical)
 	}
 }
 

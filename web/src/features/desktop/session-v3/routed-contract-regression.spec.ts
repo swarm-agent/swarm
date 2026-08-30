@@ -127,7 +127,7 @@ test('new-session pane keeps resolved authority behind pending shell until activ
 
   assert.match(source, /const pendingState = routedState\.phase === 'failed' \? routedState\.phase : 'draft'/)
   assert.match(source, /routedState\.phase === 'failed'[\s\S]*setDraft\(routedState\.snapshot\.prompt\)[\s\S]*setMode\(routedState\.snapshot\.planModeRequested \? 'plan' : 'auto'\)[\s\S]*setRestoredSnapshot\(routedState\.snapshot\)/)
-  assert.match(source, /routedState\.phase !== 'resolved'[\s\S]*resolvedCallbackRef\.current\(routedState\.result, routedState\.operation\.request\)/)
+  assert.match(source, /routedState\.phase !== 'resolved'[\s\S]*resolvedCallbackRef\.current\(routedState\.result\)/)
   assert.match(source, /const activationPending = initialCommandStarting[\s\S]*routedState\.phase === 'routing'[\s\S]*routedState\.phase === 'resolved'/)
   assert.doesNotMatch(source, /dispatchDesktopV3Cache|selectSession|ensureSessionConnected|navigate\(/)
 })

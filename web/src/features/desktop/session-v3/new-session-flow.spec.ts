@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 
 import {
   DesktopV3RoutedNewSessionController,
+  applyDesktopV3RoutedStartResponse,
   createDesktopV3CreateOnlySessionOperation,
   createDesktopV3NewSessionOperation,
   createDesktopV3RoutedComposerSnapshot,
@@ -29,6 +30,7 @@ import type {
   SessionMessageMutationResponse,
 } from '../state/desktop-v3-cache-types'
 import type { DesktopChatRoute } from '../chat/services/chat-routing'
+import type { DesktopV3RoutedSessionStartResponse } from './write-api'
 
 const workspaceAuthority = {
   workspace_path: '/workspace',
@@ -141,20 +143,90 @@ async function withAsyncSessionStorage(run: (storage: Map<string, string>) => Pr
   }
 }
 
-function makeRoutedResult(sessionId: string) {
+function makeRoutedResult(sessionId: string): DesktopV3RoutedSessionStartResponse {
+  const firstMessage = {
+    id: 'message-1',
+    session_id: sessionId,
+    global_seq: 1,
+    role: 'user',
+    content: 'route me',
+    created_at: 2,
+  }
+  const projection = {
+    session_id: sessionId,
+    last_event_seq: 2,
+    projection_high_watermark_seq: 2,
+    updated_at: 2,
+  }
   return {
     ok: true as const,
     session_id: sessionId,
     title: 'Router title',
-    starting_mode: 'auto',
+    starting_mode: 'auto' as const,
     replayed: false,
-    session: { id: sessionId },
-    session_view: { identity: { session_id: sessionId } },
-    first_message: { id: 'message-1', session_id: sessionId },
-    projection: { session_id: sessionId, last_event_seq: 1 },
-    mutation: { session_id: sessionId, message: { id: 'message-1' } },
+    session: {
+      id: sessionId,
+      workspace_path: '/workspace',
+      workspace_name: 'workspace',
+      title: 'Router title',
+      mode: 'auto',
+      created_at: 1,
+      updated_at: 2,
+      message_count: 1,
+      last_message_at: 2,
+    },
+    session_view: {
+      identity: {
+        session_id: sessionId,
+        title: 'Router title',
+        source_workspace_name: 'workspace',
+        source_workspace_path: '/workspace',
+        runtime_workspace_path: '/workspace/worktree',
+        worktree_enabled: true,
+        worktree_root_path: '/workspace/worktree',
+        worktree_branch: 'agent/router-title',
+      },
+      agentic_settings: {},
+      media_capability: { status: 'unavailable', contract_version: 1, capabilities: [] },
+      pending_permissions: [],
+    },
+    first_message: firstMessage,
+    projection,
+    mutation: {
+      session_id: sessionId,
+      message: firstMessage,
+      projection,
+      run_intent: {
+        session_id: sessionId,
+        run_id: 'run-1',
+        status: 'pending_executor',
+        created_at: 2,
+        updated_at: 2,
+        event_seq: 2,
+      },
+    },
   }
 }
+
+test('routed response applies the first durable message and run intent before activation', () => {
+  const actions: DesktopV3CacheAction[] = []
+  const restore = setDesktopV3NewSessionFlowDepsForTests({
+    dispatch: (action) => actions.push(action),
+  })
+
+  try {
+    const result = makeRoutedResult('canonical-session')
+    applyDesktopV3RoutedStartResponse(result)
+    assert.equal(actions.length, 1)
+    assert.equal(actions[0]?.type, 'mutation.messageResult')
+    if (actions[0]?.type !== 'mutation.messageResult') throw new Error('expected message mutation action')
+    assert.equal(actions[0].raw.message, result.first_message)
+    assert.equal(actions[0].raw.run_intent?.run_id, 'run-1')
+    assert.equal(actions[0].messageId, result.first_message.id)
+  } finally {
+    restore()
+  }
+})
 
 test('routed draft defaults to current workspace while preserving explicit local composer state', () => {
   assert.deepEqual(createDesktopV3RoutedDraftState('draft'), {

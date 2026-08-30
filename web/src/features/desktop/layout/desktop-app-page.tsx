@@ -42,7 +42,7 @@ import { DesktopV3ExistingConversationPane } from '../chat/components/desktop-v3
 import { DesktopV3NewSessionPane } from '../chat/components/desktop-v3-new-session-pane'
 import { DesktopV3ChatHeader } from '../chat/components/desktop-v3-chat-header'
 import { DesktopV3AgenticComposer } from '../chat/components/desktop-v3-agentic-composer'
-import { clearDesktopV3RoutedStartOperation, createDesktopV3NewSessionOperation, desktopV3RoutedWorkspaceAuthority, startNewDesktopV3Session, type DesktopV3RoutedWorkspaceAuthority } from '../session-v3/new-session-flow'
+import { applyDesktopV3RoutedStartResponse, clearDesktopV3RoutedStartOperation, createDesktopV3NewSessionOperation, desktopV3RoutedWorkspaceAuthority, startNewDesktopV3Session, type DesktopV3RoutedStartResult, type DesktopV3RoutedWorkspaceAuthority } from '../session-v3/new-session-flow'
 import { DesktopPlanModal } from '../chat/components/desktop-plan-modal'
 import { buildDesktopChatRouteOptions, getDesktopSessionCreateTarget, type DesktopChatRoute } from '../chat/services/chat-routing'
 import { resolveDesktopV3AgentModelLock } from '../chat/services/agent-model-preferences'
@@ -75,7 +75,7 @@ import { archiveDesktopV3Sessions } from '../session-v3/plan-execution-api'
 import { DESKTOP_V3_SIDEBAR_PINNED_METADATA_KEY, updateAndApplySessionV3DesktopSidebarPinned, updateSessionV3Title } from '../session-v3/api'
 import { sessionWorkspaceBindingId } from '../services/session-workspace'
 import type { V3SessionRunIntent, WorkspaceUsageProjection } from '../state/desktop-v3-cache-types'
-import { postDesktopV3BackgroundRouterSessionStart } from '../session-v3/write-api'
+import { normalizeDesktopV3RoutedSessionStartResponse, postDesktopV3BackgroundRouterSessionStart } from '../session-v3/write-api'
 import { isDesktopV3NavigationHiddenRecord, isDesktopV3VideoStudioMetadata, isDesktopV3VideoStudioRecord } from '../state/desktop-v3-session-visibility'
 import { clearNotifications, updateNotification } from '../notifications/api'
 import { DesktopNotificationsModal } from '../notifications/components/desktop-notifications-modal'
@@ -3498,6 +3498,23 @@ export function DesktopAppPage() {
     setMobileSidebarOpen(false)
   }, [navigate, topWorkspace, workspaceSlugByPath])
 
+  const handleRoutedSessionResolved = useCallback(async (
+    result: DesktopV3RoutedStartResult,
+  ): Promise<void> => {
+    const response = normalizeDesktopV3RoutedSessionStartResponse(result)
+    const authority = activeWorkspaceAuthority
+    if (!authority) throw new Error('Routed Desktop activation lost its workspace authority')
+    const identity = response.session_view.identity
+    if (identity.source_workspace_path.trim() !== authority.workspace_path.trim()
+      || identity.workspace_binding_id?.trim() !== authority.workspace_binding_id.trim()
+      || identity.runtime_swarm_id?.trim() !== authority.swarm_id.trim()) {
+      throw new Error('Routed Desktop start returned authority for a different workspace')
+    }
+    applyDesktopV3RoutedStartResponse(response)
+    await selectAndHydrateDesktopV3Session(response.session_id)
+    await handleNewSessionStarted(response.session_id)
+  }, [activeWorkspaceAuthority, handleNewSessionStarted])
+
   const handleArchivePlanSession = useCallback((sessionId: string) => {
     const normalizedSessionId = sessionId.trim()
     const routeSession = normalizedSessionId ? sessionById.get(normalizedSessionId) : null
@@ -5398,7 +5415,7 @@ export function DesktopAppPage() {
             key={`new:${topWorkspace.path}:${newSessionEpoch}`}
             workspace={topWorkspace}
             workspaceAuthority={activeWorkspaceAuthority}
-            onSessionStarted={handleNewSessionStarted}
+            onRoutedSessionResolved={handleRoutedSessionResolved}
             composerFocusSignal={composerFocusSignal}
             initialPrompt={newSessionIntent?.workspacePath === topWorkspace.path ? newSessionIntent.prompt : undefined}
             initialPlanModeRequested={newSessionIntent?.workspacePath === topWorkspace.path ? newSessionIntent.planModeRequested : requestedNewPlan}

@@ -1629,7 +1629,7 @@ func (s *Service) gateToolCalls(ctx context.Context, sessionID, runID string, st
 				}
 			}
 			planAcceptance := canonical == "exit_plan_mode" || (canonical == "plan_manage" && permission.IsPlanAcceptanceLifecycleRequirement(permission.PlanManageLifecycleRequirement(toolCalls[i].Arguments)))
-			if canonical == "task" || canonical == "manage_skill" || planAcceptance || (canonical == "manage_sessions" && (isCanonicalManageSessionsMutation(permission.ManageSessionsAction(toolCalls[i].Arguments)) || permission.ManageSessionsAction(toolCalls[i].Arguments) == "deploy")) {
+			if canonical == "task" || canonical == "manage_skill" || canonical == "manage_workspace" || planAcceptance || (canonical == "manage_sessions" && (isCanonicalManageSessionsMutation(permission.ManageSessionsAction(toolCalls[i].Arguments)) || permission.ManageSessionsAction(toolCalls[i].Arguments) == "deploy")) {
 				var permissionPayload map[string]any
 				if json.Unmarshal([]byte(permissionArguments), &permissionPayload) == nil {
 					if approved, ok := permissionPayload["approved_arguments"].(map[string]any); ok {

@@ -10,28 +10,38 @@ async function readNewSessionPane(): Promise<string> {
   return readFile(new URL('../chat/components/desktop-v3-new-session-pane.tsx', import.meta.url), 'utf8')
 }
 
-test('Desktop new-session startup creates an ordinary Swarm session without routed activation', async () => {
+test('Desktop new-session startup uses the Router-owned worktree transaction', async () => {
   const [app, pane] = await Promise.all([readDesktopAppPage(), readNewSessionPane()])
 
-  assert.match(pane, /createDesktopV3NewSessionOperation\(\{/)
-  assert.match(pane, /startNewDesktopV3Session\(\{ operation \}\)/)
-  assert.match(pane, /startDesktopV3CreateOnlySession\(\{ operation \}\)[\s\S]*getDesktopV3MediaCapability[\s\S]*uploadDesktopV3MediaAsset[\s\S]*appendFirstDesktopV3Message\(\{ operation \}\)/)
+  assert.match(pane, /DesktopV3RoutedNewSessionController/)
+  assert.match(pane, /postDesktopV3RoutedSessionStart\(request\)/)
   assert.match(pane, /agentName: 'swarm'/)
-  assert.match(pane, /worktree: \{ mode: 'off' \}/)
-  assert.match(pane, /onSessionStarted: \(sessionId: string\)/)
-  assert.match(app, /onSessionStarted=\{handleNewSessionStarted\}/)
-  assert.doesNotMatch(pane, /postDesktopV3RoutedSessionStart|DesktopV3RoutedNewSessionController/)
-  assert.doesNotMatch(app, /activateDesktopV3RoutedSession|validateDesktopV3RoutedActivationResponse|handleRoutedSessionResolved/)
+  assert.match(pane, /onRoutedSessionResolved: \(result: DesktopV3RoutedStartResult\)/)
+  assert.match(app, /onRoutedSessionResolved=\{handleRoutedSessionResolved\}/)
+  assert.match(app, /applyDesktopV3RoutedStartResponse\(response\)[\s\S]*await selectAndHydrateDesktopV3Session\(response\.session_id\)/)
+  assert.doesNotMatch(pane, /createDesktopV3NewSessionOperation|startNewDesktopV3Session|worktree: \{ mode: 'off' \}/)
 })
 
-test('Desktop direct startup keeps the user current checkout unless isolation is explicitly requested', async () => {
+test('Desktop routed activation applies the first durable user message before hydration and navigation', async () => {
+  const app = await readDesktopAppPage()
+  const handlerStart = app.indexOf('const handleRoutedSessionResolved = useCallback')
+  const handlerEnd = app.indexOf('const handleArchivePlanSession', handlerStart)
+  const handler = app.slice(handlerStart, handlerEnd)
+
+  assert.ok(handlerStart >= 0 && handlerEnd > handlerStart)
+  const messageResult = handler.indexOf('applyDesktopV3RoutedStartResponse(response)')
+  const hydrate = handler.indexOf('await selectAndHydrateDesktopV3Session(response.session_id)')
+  const navigate = handler.indexOf('await handleNewSessionStarted(response.session_id)')
+  assert.ok(messageResult >= 0 && hydrate > messageResult && navigate > hydrate)
+})
+
+test('Desktop ordinary startup cannot opt out of the Router-owned worktree', async () => {
   const pane = await readNewSessionPane()
 
-  assert.match(pane, /Worktree allocation is intentionally absent here/)
-  assert.match(pane, /worktree: \{ mode: 'off' \}/)
-  assert.match(pane, /sessionMetadata: \{ source: 'desktop-v3' \}/)
-  assert.match(pane, /startPath="direct"/)
-  assert.doesNotMatch(pane, /managed_worktree_requested|worktree_name|worktree_branch_name/)
+  assert.match(pane, /never creates a direct dev-bound session/)
+  assert.match(pane, /startPath="router"/)
+  assert.match(pane, /desktopRoutedSessionMetadata\(\{ source: 'desktop-v3' \}\)/)
+  assert.doesNotMatch(pane, /managed_worktree_requested|worktree_name|worktree_branch_name|startPath="direct"/)
 })
 
 test('V3 session workspace updates drive client route changes without workspace polling', async () => {

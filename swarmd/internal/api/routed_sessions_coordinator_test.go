@@ -93,15 +93,6 @@ func TestRoutedSessionRequestHashBindsPayload(t *testing.T) {
 	if first == bindingHash {
 		t.Fatal("request hash did not bind canonical workspace authority")
 	}
-	second = base
-	second.WorktreeName = "semantic-name"
-	worktreeHash, err := routedSessionRequestHash(second, binding, "request", nil)
-	if err != nil {
-		t.Fatalf("worktree hash: %v", err)
-	}
-	if first == worktreeHash {
-		t.Fatal("request hash did not bind worktree name")
-	}
 	changedRequestPath := base
 	changedRequestPath.WorkspacePath = "/other-source"
 	pathHash, err := routedSessionRequestHash(changedRequestPath, binding, "request", nil)

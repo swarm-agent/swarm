@@ -77,7 +77,7 @@ func TestRoutedSessionStartFailuresLeaveNoDurableAuthority(t *testing.T) {
 }
 
 func TestRoutedSessionStartCommitsAndReplaysOneAtomicMutation(t *testing.T) {
-	runner := &sessionRouterRecordingRunner{id: "recording", err: errors.New("Router must not be called for plain starts")}
+	runner := &sessionRouterRecordingRunner{id: "recording", response: provideriface.Response{Text: `{"title":"Atomic Routed Session","worktree_name":"atomic-routed"}`}}
 	server, sessions, principal := newRoutedSessionAtomicityServer(t, runner, false, true)
 	const requestID = "atomic-routed-start"
 	requestBody := map[string]any{
@@ -93,24 +93,24 @@ func TestRoutedSessionStartCommitsAndReplaysOneAtomicMutation(t *testing.T) {
 	if !firstResponse.OK || firstResponse.Replayed || firstResponse.SessionID == "" || firstResponse.StartingMode != sessionruntime.ModeAuto {
 		t.Fatalf("first routed response = %+v", firstResponse)
 	}
-	if runner.createCalls != 0 || runner.streamingCalls != 0 {
-		t.Fatalf("plain start reached Router: create=%d streaming=%d", runner.createCalls, runner.streamingCalls)
+	if runner.createCalls != 1 || runner.streamingCalls != 0 {
+		t.Fatalf("plain start Router calls create=%d streaming=%d", runner.createCalls, runner.streamingCalls)
 	}
 
 	stored, ok, err := sessions.GetSession(firstResponse.SessionID)
 	if err != nil || !ok {
 		t.Fatalf("durable session exists=%t err=%v", ok, err)
 	}
-	if stored.Title != sessionV3TitleDefault || stored.Mode != sessionruntime.ModeAuto || stored.WorkspacePath == "" {
+	if stored.Title != "Atomic Routed Session" || stored.Mode != sessionruntime.ModeAuto || stored.WorkspacePath == "" {
 		t.Fatalf("durable routed session = %+v", stored)
 	}
-	if stored.Metadata["title_locked"] != false || stored.Metadata["title_pending"] != true || stored.Metadata["title_source"] != nil {
-		t.Fatalf("plain asynchronous title metadata = %+v", stored.Metadata)
+	if stored.Metadata["title_locked"] != true || stored.Metadata["title_pending"] != false || stored.Metadata["title_source"] != "router" {
+		t.Fatalf("Router title metadata = %+v", stored.Metadata)
 	}
 	if stored.Metadata["swarm_v3_workspace_binding_id"] != "routed-binding" || stored.Metadata["swarm_v3_runtime_swarm_id"] != "local-swarm" || stored.Metadata["swarm_v3_source_workspace_path"] == "" {
 		t.Fatalf("plain workspace authority = %+v", stored.Metadata)
 	}
-	if firstResponse.Session.ID != stored.ID || firstResponse.Session.Title != stored.Title || firstResponse.Session.Metadata["title_pending"] != true {
+	if firstResponse.Session.ID != stored.ID || firstResponse.Session.Title != stored.Title || firstResponse.Session.Metadata["title_pending"] != false {
 		t.Fatalf("response session is not canonical: response=%+v durable=%+v", firstResponse.Session, stored)
 	}
 
@@ -165,8 +165,8 @@ func TestRoutedSessionStartCommitsAndReplaysOneAtomicMutation(t *testing.T) {
 	if !replayResponse.Replayed || replayResponse.SessionID != stored.ID || replayResponse.FirstMessage.ID != messages[0].ID || !replayResponse.Mutation.Replayed {
 		t.Fatalf("replay response = %+v", replayResponse)
 	}
-	if runner.createCalls != 0 {
-		t.Fatalf("exact replay called Router %d times, want zero", runner.createCalls)
+	if runner.createCalls != 1 {
+		t.Fatalf("exact replay called Router %d total times, want one", runner.createCalls)
 	}
 	assertRoutedSessionAtomicityCardinality(t, sessions, stored.ID, 1, 1, 1)
 
@@ -178,8 +178,8 @@ func TestRoutedSessionStartCommitsAndReplaysOneAtomicMutation(t *testing.T) {
 	if planConflict.Code != http.StatusConflict {
 		t.Fatalf("Plan intent conflict status=%d body=%s", planConflict.Code, planConflict.Body.String())
 	}
-	if runner.createCalls != 0 {
-		t.Fatalf("Plan intent conflict called Router %d times, want zero", runner.createCalls)
+	if runner.createCalls != 1 {
+		t.Fatalf("Plan intent conflict called Router %d total times, want one", runner.createCalls)
 	}
 	assertRoutedSessionAtomicityCardinality(t, sessions, stored.ID, 1, 1, 1)
 
@@ -191,8 +191,8 @@ func TestRoutedSessionStartCommitsAndReplaysOneAtomicMutation(t *testing.T) {
 	if conflict.Code != http.StatusConflict {
 		t.Fatalf("payload conflict status=%d body=%s", conflict.Code, conflict.Body.String())
 	}
-	if runner.createCalls != 0 {
-		t.Fatalf("payload conflict called Router %d times, want zero", runner.createCalls)
+	if runner.createCalls != 1 {
+		t.Fatalf("payload conflict called Router %d total times, want one", runner.createCalls)
 	}
 	assertRoutedSessionAtomicityCardinality(t, sessions, stored.ID, 1, 1, 1)
 }

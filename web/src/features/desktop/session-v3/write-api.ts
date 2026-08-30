@@ -16,6 +16,7 @@ import type {
   SessionMutationResult,
   SessionSnapshot,
   V3SessionProjection,
+  V3SessionRunIntent,
 } from '../state/desktop-v3-cache-types'
 
 export interface DesktopV3CreateSessionRequest {
@@ -186,6 +187,7 @@ export interface DesktopV3RoutedSessionMutation extends SessionMutationResult {
   session_id: string
   projection: V3SessionProjection
   message: MessageSnapshot
+  run_intent?: V3SessionRunIntent | null
   replayed?: boolean
 }
 
