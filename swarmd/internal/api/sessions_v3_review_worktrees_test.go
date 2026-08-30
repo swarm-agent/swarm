@@ -39,6 +39,31 @@ func TestSessionsV3ReviewPromotionContractRequiresExplicitExactLineage(t *testin
 	}
 }
 
+// Requirement: an exact promotion targets the source session's captured checkout
+// path and base branch, while target_head authenticates the checkout's current
+// clean HEAD. Comparing target_head to the historical base commit permanently
+// rejects any lane after the captured checkout advances. This helper-level test
+// is the narrowest layer that proves current-HEAD movement does not weaken path
+// or branch matching before Git preflight performs the remaining lineage checks.
+func TestSessionsV3ReviewPromotionMatchesCapturedCheckoutAfterTargetAdvances(t *testing.T) {
+	session := pebblestore.SessionSnapshot{
+		WorktreeBaseBranch: "dev",
+		Metadata: map[string]any{
+			"swarm_v3_source_workspace_path": "/repo",
+			"base_commit":                    "historical-base-head",
+		},
+	}
+	if !sessionsV3ReviewPromotionMatchesCapturedCheckout(session, "/repo", "dev") {
+		t.Fatal("captured checkout should remain promotion-eligible after its current HEAD advances beyond the historical base")
+	}
+	if sessionsV3ReviewPromotionMatchesCapturedCheckout(session, "/other-repo", "dev") {
+		t.Fatal("foreign checkout path unexpectedly matched captured promotion lineage")
+	}
+	if sessionsV3ReviewPromotionMatchesCapturedCheckout(session, "/repo", "main") {
+		t.Fatal("foreign target branch unexpectedly matched captured promotion lineage")
+	}
+}
+
 func TestSessionsV3ReviewArchiveDeadlineUsesPerSessionMessageActivity(t *testing.T) {
 	const doneAt int64 = 1_000_000
 	delay := 15 * time.Minute

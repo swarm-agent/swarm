@@ -26,18 +26,18 @@ const (
 )
 
 type sessionsV3ReviewWorktreesRequest struct {
-	WorkspacePath string   `json:"workspace_path,omitempty"`
-	SessionIDs    []string `json:"session_ids,omitempty"`
-	ArchiveIDs    []string `json:"archive_session_ids,omitempty"`
-	ArchiveAll    bool     `json:"archive_all,omitempty"`
+	WorkspacePath      string            `json:"workspace_path,omitempty"`
+	SessionIDs         []string          `json:"session_ids,omitempty"`
+	ArchiveIDs         []string          `json:"archive_session_ids,omitempty"`
+	ArchiveAll         bool              `json:"archive_all,omitempty"`
 	LegacyIntegrateIDs []string          `json:"integrate_session_ids,omitempty"`
 	PromoteIDs         []string          `json:"promote_session_ids,omitempty"`
 	SourceHeads        map[string]string `json:"source_head_by_session_id,omitempty"`
 	TargetBranch       string            `json:"target_branch,omitempty"`
 	TargetHead         string            `json:"target_head,omitempty"`
-	CommitIDs     []string `json:"commit_session_ids,omitempty"`
-	Automatic     bool     `json:"automatic,omitempty"`
-	GraceHours    string   `json:"grace_hours,omitempty"`
+	CommitIDs          []string          `json:"commit_session_ids,omitempty"`
+	Automatic          bool              `json:"automatic,omitempty"`
+	GraceHours         string            `json:"grace_hours,omitempty"`
 }
 
 type sessionsV3UnarchiveRequest struct {
@@ -689,8 +689,8 @@ func (s *Server) promoteSessionsV3ReviewWorktrees(ctx context.Context, principal
 		if !session.WorktreeEnabled || !sessionsV3ReviewWorktreeMatchesCheckout(ctx, session.WorktreeRootPath, commonDir) {
 			return errors.New("promotion selection contains an unrelated or unmanaged worktree")
 		}
-		if strings.TrimSpace(session.WorktreeBaseBranch) != expectedTargetBranch || strings.TrimSpace(sessionsV3MetadataString(session.Metadata, "swarm_v3_source_workspace_path")) != workspacePath || strings.TrimSpace(sessionsV3MetadataString(session.Metadata, "base_commit")) != expectedTargetHead {
-			return errors.New("promotion selection does not match the exact captured path, branch, and HEAD")
+		if !sessionsV3ReviewPromotionMatchesCapturedCheckout(session, workspacePath, expectedTargetBranch) {
+			return errors.New("promotion selection does not match the exact captured path and branch")
 		}
 		classification := sessionreview.ClassifyAgainstTarget(ctx, sessionreview.ExecGitRunner{}, session, now, sessionreview.DefaultGracePeriod, parent.Branch)
 		if !classification.IntegrateEligible {
@@ -734,6 +734,11 @@ func (s *Server) promoteSessionsV3ReviewWorktrees(ctx context.Context, principal
 		}
 	}
 	return nil
+}
+
+func sessionsV3ReviewPromotionMatchesCapturedCheckout(session pebblestore.SessionSnapshot, workspacePath, targetBranch string) bool {
+	return strings.TrimSpace(session.WorktreeBaseBranch) == strings.TrimSpace(targetBranch) &&
+		strings.TrimSpace(sessionsV3MetadataString(session.Metadata, "swarm_v3_source_workspace_path")) == strings.TrimSpace(workspacePath)
 }
 
 func sessionsV3MetadataInt64(metadata map[string]any, key string) int64 {
