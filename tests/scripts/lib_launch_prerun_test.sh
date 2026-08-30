@@ -69,10 +69,29 @@ if ! "${ROOT_DIR}/scripts/run-testbench-launch-prerun.sh" --dry-run --suite task
   fail "task-program lane still requires a manually configured linked workspace despite runtime binding discovery"
 fi
 provider_sync_dry_run="$("${ROOT_DIR}/scripts/run-testbench-launch-prerun.sh" --dry-run --suite provider-sync)" || fail "provider-sync dry run still requires manually supplied candidate authority"
-grep -Fq 'SWARM_LIVE_STREAM_MODEL=gpt-5.6-luna' <<<"${provider_sync_dry_run}" || fail "provider-sync does not use the configured credit-saving action model"
+grep -Fq 'SWARM_LIVE_STREAM_PROVIDER=fireworks' <<<"${provider_sync_dry_run}" || fail "provider-sync is not Fireworks-only"
+grep -Fq 'SWARM_LIVE_STREAM_MODEL=accounts/fireworks/models/deepseek-v4-flash-0731' <<<"${provider_sync_dry_run}" || fail "provider-sync does not use the configured Fireworks action model"
 RUNNER_WRAPPER="${ROOT_DIR}/scripts/run-testbench-runner.sh"
+grep -Fq 'SWARM_TESTBENCH_ACTION_MODEL' "${RUNNER_WRAPPER}" || fail "runner wrapper does not pass the configured Action model"
+grep -Fq 'SWARM_TESTBENCH_PLAN_MODEL' "${RUNNER_WRAPPER}" || fail "runner wrapper does not pass the configured Plan model"
 grep -Fq 'SWARM_TESTBENCH_CODER_MODEL' "${RUNNER_WRAPPER}" || fail "runner wrapper does not pass the configured Coder model"
 grep -Fq 'SWARM_TESTBENCH_DESIGNER_MODEL' "${RUNNER_WRAPPER}" || fail "runner wrapper does not pass the configured Designer model"
+BASIC_RUNNER="${ROOT_DIR}/scripts/runners/basic-plan-auto.mjs"
+TASK_ROUTING_RUNNER="${ROOT_DIR}/scripts/runners/task-routing.mjs"
+TASK_PROGRAM_RUNNER="${ROOT_DIR}/scripts/runners/task-program-worktrees.mjs"
+for runner in "${BASIC_RUNNER}" "${TASK_ROUTING_RUNNER}"; do
+  grep -Fq -- '--action-model and --plan-model are required' "${runner}" || fail "$(basename "${runner}") does not fail closed without explicit Action/Plan models"
+  if grep -Fq 'recommendedAssignment' "${runner}"; then fail "$(basename "${runner}") still discovers model recommendations"; fi
+done
+grep -Fq -- '--coder-model is required' "${TASK_PROGRAM_RUNNER}" || fail "task-program runner does not fail closed without the configured Coder model"
+if grep -Fq "includes('5.6-luna')" "${TASK_PROGRAM_RUNNER}"; then fail "task-program runner still discovers a model fallback"; fi
+MODEL_RENDERER="${ROOT_DIR}/scripts/render-testbench-model-config.sh"
+MODEL_SYNC="${ROOT_DIR}/scripts/sync-testbench-model-config.sh"
+grep -Fq 'SWARM_RELEASE_GATE_PROVIDER=${SWARM_TESTBENCH_PROVIDER}' "${MODEL_RENDERER}" || fail "model renderer does not use the .env provider"
+grep -Fq 'SWARM_RELEASE_GATE_ACTION_MODEL=${SWARM_TESTBENCH_ACTION_MODEL}' "${MODEL_RENDERER}" || fail "model renderer does not use the .env Action model"
+grep -Fq 'SWARM_RELEASE_GATE_PLAN_MODEL=${SWARM_TESTBENCH_PLAN_MODEL}' "${MODEL_RENDERER}" || fail "model renderer does not use the .env Plan model"
+grep -Fq 'gate-sync-models' "${MODEL_SYNC}" || fail "model sync does not invoke the fixed testbench action"
+grep -Fq '/var/cache/swarm-testbench-model-config/pending.conf' "${MODEL_SYNC}" || fail "model sync does not use the fixed testbench pending path"
 local_head="$(git -C "${ROOT_DIR}" rev-parse HEAD)"
 grep -Fq "SWARM_EXPECTED_COMMIT=${local_head}" <<<"${provider_sync_dry_run}" || fail "provider-sync did not derive candidate authority from local HEAD"
 

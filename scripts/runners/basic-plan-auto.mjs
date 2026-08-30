@@ -20,12 +20,13 @@ const suppliedToken = String(process.env.SWARM_RUNNER_TOKEN || '').trim()
 if (!apiURL || !/^https?:\/\//.test(apiURL)) throw new Error('--api-url must be an http or https URL')
 if (!provider || !/^[a-z0-9._-]+$/.test(provider)) throw new Error('--provider is required and must contain only letters, numbers, dots, underscores, or dashes')
 if (!Number.isFinite(timeoutMs) || timeoutMs < 30000) throw new Error('--timeout-ms must be at least 30000')
+if (!actionModel || !planModel) throw new Error('--action-model and --plan-model are required; use scripts/run-testbench-runner.sh so the ignored .env supplies the explicit Fireworks role models')
 if (![actionThinking, planThinking].every((value) => ['low', 'medium', 'high', 'xhigh'].includes(value))) throw new Error('role thinking must be low, medium, high, or xhigh')
 
 const startedAt = new Date().toISOString()
 const testID = `runner-basic-plan-auto-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`
 const requiredGates = [
-  'provider_runnable', 'recommended_models', 'models_configured', 'plan_mode_created',
+  'provider_runnable', 'explicit_models', 'models_configured', 'plan_mode_created',
   'model_profile_snapshot', 'two_checkpoint_proposal', 'plan_approved_automatically',
   'mode_switched_to_auto', 'checkpoints_completed', 'subtasks_completed',
   'plan_model_verified', 'auto_model_verified', 'no_failures', 'models_restored',
@@ -93,33 +94,9 @@ async function api(method, route, body, label = route, allowError = false) {
   }
 }
 
-function recommendationFor(record, roles) {
-  const recommendations = Array.isArray(record?.recommendations) ? record.recommendations : []
-  return recommendations.find((item) => roles.includes(String(item?.role || '').trim().toLowerCase())) || null
-}
-
 function exactAssignment(records, model, thinking, label) {
-  if (!model) return null
   assert(records.some((record) => String(record?.model || '').trim() === model), `model catalog does not contain ${provider}/${model} for ${label}`)
   return { provider, model, thinking, service_tier: 'fast' }
-}
-
-function recommendedAssignment(records, roles, label) {
-  for (const record of records) {
-    const recommendation = recommendationFor(record, roles)
-    if (!recommendation) continue
-    const model = String(record?.model || '').trim()
-    const thinking = String(recommendation?.thinking || record?.default_thinking || '').trim().toLowerCase()
-    if (!model || !thinking) continue
-    const serving = String(recommendation?.serving || '').trim().toLowerCase()
-    return {
-      provider,
-      model,
-      thinking,
-      ...(serving === 'fast' || serving === 'priority' ? { service_tier: 'priority' } : {}),
-    }
-  }
-  fail(`model catalog has no complete ${label} recommendation for provider ${provider}`)
 }
 
 function parseToolArguments(permission) {
@@ -217,10 +194,10 @@ async function main() {
 
   const catalogResponse = await api('GET', `/v1/model/catalog?provider=${encodeURIComponent(provider)}&limit=500`, undefined, 'read model recommendations')
   const records = catalogResponse.body?.records || []
-  const planAssignment = exactAssignment(records, planModel, planThinking, 'plan') || recommendedAssignment(records, ['plan'], 'plan')
-  const actionAssignment = exactAssignment(records, actionModel, actionThinking, 'auto') || recommendedAssignment(records, ['auto', 'main'], 'auto')
+  const planAssignment = exactAssignment(records, planModel, planThinking, 'plan')
+  const actionAssignment = exactAssignment(records, actionModel, actionThinking, 'auto')
   result.models = { plan: planAssignment, auto: actionAssignment }
-  result.gates.recommended_models = true
+  result.gates.explicit_models = true
   log(`using ${provider} plan=${planAssignment.model} auto=${actionAssignment.model}`)
 
   const settingsResponse = await api('GET', '/v1/agent-model-settings', undefined, 'read agent model settings')

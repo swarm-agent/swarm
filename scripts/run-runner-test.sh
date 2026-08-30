@@ -9,23 +9,23 @@ Runs a checked-in runner test against an already-running Swarm target.
 
 Arguments:
   target       SSH alias, or an http(s) URL for direct execution
-  provider     Provider id whose catalog recommendations select Plan and Auto models
+  provider     Exact provider id paired with explicit role models
   test-name    Runner under scripts/runners without .mjs (default: basic-plan-auto)
 
 Options:
   --api-url          API URL used from the target host (SSH default: http://127.0.0.1:7781)
   --workspace-path   Existing bound workspace to use (default: first bound workspace)
   --linked-workspace-path  Optional second bound workspace for multi-repository runners
-  --model            Optional exact model override passed to runners that support it
-  --thinking         Legacy shared thinking override passed to runners that support it
-  --action-model     Exact Auto/action model override
-  --action-thinking  Auto/action thinking override
-  --plan-model       Exact Plan model override
-  --plan-thinking    Plan thinking override
-  --coder-model      Exact Coder model override
-  --coder-thinking   Coder thinking override
-  --designer-model   Exact Designer model override
-  --designer-thinking Designer thinking override
+  --model            Explicit shared model for TUI-compatible runners
+  --thinking         Explicit shared thinking level for TUI-compatible runners
+  --action-model     Required exact Auto/action model for role-aware runners
+  --action-thinking  Required Auto/action thinking for role-aware runners
+  --plan-model       Required exact Plan model for role-aware runners
+  --plan-thinking    Required Plan thinking for role-aware runners
+  --coder-model      Required exact Coder model for task-program runners
+  --coder-thinking   Required Coder thinking for task-program runners
+  --designer-model   Required exact Designer model for task-program runners
+  --designer-thinking Required Designer thinking for task-program runners
   --stage            Optional resumable stage passed to runners that support it
   --session-id       Existing destination session used by a resumed runner stage
   --source-session-id     Exact source artifact session for supported resumed stages
