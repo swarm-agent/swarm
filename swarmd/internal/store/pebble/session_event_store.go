@@ -211,9 +211,9 @@ type V3SessionEvent struct {
 }
 
 type V3SessionProjection struct {
-	SessionID                  string `json:"session_id"`
-	LastEventSeq               uint64 `json:"last_event_seq"`
-	ProjectionHighWatermarkSeq uint64 `json:"projection_high_watermark_seq"`
+	SessionID                  string                     `json:"session_id"`
+	LastEventSeq               uint64                     `json:"last_event_seq"`
+	ProjectionHighWatermarkSeq uint64                     `json:"projection_high_watermark_seq"`
 	UpdatedAt                  int64                      `json:"updated_at"`
 	WorkspaceUsage             []WorkspaceUsageProjection `json:"workspace_usage,omitempty"`
 }
@@ -256,23 +256,23 @@ type V3RealtimeOutboxRecord struct {
 }
 
 type V3RealtimeOutboxMembership struct {
-	SessionID               string         `json:"session_id"`
-	UserID                  string         `json:"user_id,omitempty"`
-	AccountScopeID          string         `json:"account_scope_id,omitempty"`
-	WorkspacePath           string         `json:"workspace_path,omitempty"`
-	WorkspaceName           string         `json:"workspace_name,omitempty"`
-	WorktreeEnabled         bool           `json:"worktree_enabled,omitempty"`
-	RequestedWorktreeName   string         `json:"requested_worktree_name,omitempty"`
-	WorktreeRootPath        string         `json:"worktree_root_path,omitempty"`
-	WorktreeBaseBranch      string         `json:"worktree_base_branch,omitempty"`
-	WorktreeBranch          string         `json:"worktree_branch,omitempty"`
-	TemporaryWorkspaceRoots []string                     `json:"temporary_workspace_roots,omitempty"`
-	WorkspaceGrants         []WorkspaceGrant             `json:"workspace_grants,omitempty"`
-	WorkspaceUsage          []WorkspaceUsageProjection   `json:"workspace_usage,omitempty"`
-	Metadata                map[string]any               `json:"metadata,omitempty"`
-	Deleted                 bool                         `json:"deleted,omitempty"`
-	TombstoneKind           string                       `json:"tombstone_kind,omitempty"`
-	CapturedAt              int64                        `json:"captured_at"`
+	SessionID               string                     `json:"session_id"`
+	UserID                  string                     `json:"user_id,omitempty"`
+	AccountScopeID          string                     `json:"account_scope_id,omitempty"`
+	WorkspacePath           string                     `json:"workspace_path,omitempty"`
+	WorkspaceName           string                     `json:"workspace_name,omitempty"`
+	WorktreeEnabled         bool                       `json:"worktree_enabled,omitempty"`
+	RequestedWorktreeName   string                     `json:"requested_worktree_name,omitempty"`
+	WorktreeRootPath        string                     `json:"worktree_root_path,omitempty"`
+	WorktreeBaseBranch      string                     `json:"worktree_base_branch,omitempty"`
+	WorktreeBranch          string                     `json:"worktree_branch,omitempty"`
+	TemporaryWorkspaceRoots []string                   `json:"temporary_workspace_roots,omitempty"`
+	WorkspaceGrants         []WorkspaceGrant           `json:"workspace_grants,omitempty"`
+	WorkspaceUsage          []WorkspaceUsageProjection `json:"workspace_usage,omitempty"`
+	Metadata                map[string]any             `json:"metadata,omitempty"`
+	Deleted                 bool                       `json:"deleted,omitempty"`
+	TombstoneKind           string                     `json:"tombstone_kind,omitempty"`
+	CapturedAt              int64                      `json:"captured_at"`
 }
 
 func marshalV3RealtimeOutboxReference(record V3RealtimeOutboxRecord) ([]byte, error) {

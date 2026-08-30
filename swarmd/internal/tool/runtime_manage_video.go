@@ -1306,12 +1306,12 @@ func (r *Runtime) executeManageVideo(ctx context.Context, scope WorkspaceScope, 
 			return "", err
 		}
 		job, err := r.videoProjects.StartRenderJob(ctx, scope.Principal, videoproject.StartRenderJobInput{
-			SessionID:    projectSessionID,
-			ProjectID:    projectID,
-			RevisionID:   revisionID,
-			JobID:        jobID,
+			SessionID:     projectSessionID,
+			ProjectID:     projectID,
+			RevisionID:    revisionID,
+			JobID:         jobID,
 			RenderQuality: strings.TrimSpace(asString(args["render_quality"])),
-			RenderFPS:    asInt(args["render_fps"], 0),
+			RenderFPS:     asInt(args["render_fps"], 0),
 		})
 		if err != nil {
 			return "", err

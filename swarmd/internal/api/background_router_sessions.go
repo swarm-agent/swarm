@@ -72,21 +72,21 @@ func (s *Server) handleBackgroundRouterSessionStart(w http.ResponseWriter, r *ht
 	metadata["owner_transport"] = "background_router_api"
 	delete(metadata, "managed_worktree_requested")
 	canonical := routedSessionStartRequest{
-		Input:                    req.Input,
-		ClientRequestID:          req.ClientRequestID,
-		IdempotencyKey:           req.IdempotencyKey,
-		AgentName:                req.AgentName,
-		Metadata:                 metadata,
-		PlanModeRequested:        req.PlanModeRequested,
-		WorkspacePath:            req.WorkspacePath,
-		HostWorkspacePath:        req.HostWorkspacePath,
-		RuntimeWorkspacePath:     req.RuntimeWorkspacePath,
-		WorkspaceBindingID:       req.WorkspaceBindingID,
-		SwarmID:                  req.SwarmID,
-		TargetKind:               req.TargetKind,
-		TargetRelationship:       req.TargetRelationship,
-		Media:                    req.Media,
-		StagingIDs:               req.StagingIDs,
+		Input:                req.Input,
+		ClientRequestID:      req.ClientRequestID,
+		IdempotencyKey:       req.IdempotencyKey,
+		AgentName:            req.AgentName,
+		Metadata:             metadata,
+		PlanModeRequested:    req.PlanModeRequested,
+		WorkspacePath:        req.WorkspacePath,
+		HostWorkspacePath:    req.HostWorkspacePath,
+		RuntimeWorkspacePath: req.RuntimeWorkspacePath,
+		WorkspaceBindingID:   req.WorkspaceBindingID,
+		SwarmID:              req.SwarmID,
+		TargetKind:           req.TargetKind,
+		TargetRelationship:   req.TargetRelationship,
+		Media:                req.Media,
+		StagingIDs:           req.StagingIDs,
 	}
 	body, err := json.Marshal(canonical)
 	if err != nil {

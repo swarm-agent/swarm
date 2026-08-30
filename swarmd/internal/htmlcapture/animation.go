@@ -61,9 +61,9 @@ type AnimationProgress struct {
 }
 
 type AnimationRequest struct {
-	Entry               string
-	Files               map[string][]byte
-	DurationMS          int
+	Entry      string
+	Files      map[string][]byte
+	DurationMS int
 	// FPS is the authored animation manifest rate. OutputFPS may select a
 	// server-allowlisted 30 or 60 FPS derivative without changing that manifest.
 	FPS                 int

@@ -118,7 +118,7 @@ func TestBackgroundRouterSessionStartFailuresLeaveNoDurableAuthority(t *testing.
 		server, sessions, principal := newRoutedSessionAtomicityServer(t, runner, true, true)
 		worktrees := &routedContractRollbackWorktree{routedWorktreeServiceStub: routedWorktreeServiceStub{
 			fakeWorktreeService: fakeWorktreeService{config: worktreeruntime.Config{Enabled: true, UseCurrentBranch: true, BranchName: "agent/<id>"}},
-			allocationErrs: []error{errors.New("worktree unavailable")},
+			allocationErrs:      []error{errors.New("worktree unavailable")},
 		}}
 		server.SetWorktreeService(worktrees)
 		const requestID = "background-router-allocation-failure"
@@ -197,7 +197,7 @@ func TestBackgroundRouterSessionStartToleratesRetiredWorktreeOverride(t *testing
 	server, _, principal := newRoutedSessionAtomicityServer(t, runner, true, true)
 	managedPath := t.TempDir()
 	server.SetWorktreeService(&routedWorktreeServiceStub{fakeWorktreeService: fakeWorktreeService{
-		config: worktreeruntime.Config{Enabled: true, UseCurrentBranch: true, BranchName: "agent/<id>"},
+		config:     worktreeruntime.Config{Enabled: true, UseCurrentBranch: true, BranchName: "agent/<id>"},
 		allocation: worktreeruntime.Allocation{WorkspacePath: managedPath, BranchName: "agent/do-work", WorkspaceID: "background-router"},
 	}})
 	response := postBackgroundRouterSessionRequest(t, server, principal, map[string]any{

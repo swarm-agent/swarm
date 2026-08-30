@@ -116,7 +116,7 @@ func WorkspaceUsageFromGrants(grants []WorkspaceGrant) []WorkspaceUsageProjectio
 		out = append(out, WorkspaceUsageProjection{
 			Kind: grant.Kind, WorkspaceID: grant.WorkspaceID,
 			WorkspaceGeneration: grant.WorkspaceGeneration,
-			Name: grant.Name, Available: grant.Available,
+			Name:                grant.Name, Available: grant.Available,
 		})
 	}
 	if len(out) == 0 {

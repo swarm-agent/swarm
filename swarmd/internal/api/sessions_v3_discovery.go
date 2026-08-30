@@ -93,26 +93,26 @@ func sessionsV3DiscoveryOptionsFromRequest(principal identity.Principal, req ses
 }
 
 type sessionsV3DiscoverySession struct {
-	ID                      string                                `json:"id"`
-	UserID                  string                                `json:"user_id,omitempty"`
-	AccountScopeID          string                                `json:"account_scope_id,omitempty"`
-	WorkspacePath           string                                `json:"workspace_path"`
-	WorkspaceName           string                                `json:"workspace_name"`
-	WorkspaceGrants         []pebblestore.WorkspaceGrant          `json:"workspace_grants,omitempty"`
+	ID                      string                                 `json:"id"`
+	UserID                  string                                 `json:"user_id,omitempty"`
+	AccountScopeID          string                                 `json:"account_scope_id,omitempty"`
+	WorkspacePath           string                                 `json:"workspace_path"`
+	WorkspaceName           string                                 `json:"workspace_name"`
+	WorkspaceGrants         []pebblestore.WorkspaceGrant           `json:"workspace_grants,omitempty"`
 	WorkspaceUsage          []pebblestore.WorkspaceUsageProjection `json:"workspace_usage,omitempty"`
-	TemporaryWorkspaceRoots []string                              `json:"temporary_workspace_roots,omitempty"`
-	Title                   string                                `json:"title"`
-	Mode                    string                                `json:"mode"`
-	WorktreeEnabled         bool                                  `json:"worktree_enabled,omitempty"`
-	WorktreeRootPath        string                                `json:"worktree_root_path,omitempty"`
-	WorktreeBaseBranch      string                                `json:"worktree_base_branch,omitempty"`
-	WorktreeBranch          string                                `json:"worktree_branch,omitempty"`
-	Metadata                map[string]any                        `json:"metadata,omitempty"`
-	CreatedAt               int64                                 `json:"created_at"`
-	UpdatedAt               int64                                 `json:"updated_at"`
-	MessageCount            int                                   `json:"message_count"`
-	LastMessageAt           int64                                 `json:"last_message_at"`
-	Lifecycle               *pebblestore.SessionLifecycleSnapshot `json:"lifecycle,omitempty"`
+	TemporaryWorkspaceRoots []string                               `json:"temporary_workspace_roots,omitempty"`
+	Title                   string                                 `json:"title"`
+	Mode                    string                                 `json:"mode"`
+	WorktreeEnabled         bool                                   `json:"worktree_enabled,omitempty"`
+	WorktreeRootPath        string                                 `json:"worktree_root_path,omitempty"`
+	WorktreeBaseBranch      string                                 `json:"worktree_base_branch,omitempty"`
+	WorktreeBranch          string                                 `json:"worktree_branch,omitempty"`
+	Metadata                map[string]any                         `json:"metadata,omitempty"`
+	CreatedAt               int64                                  `json:"created_at"`
+	UpdatedAt               int64                                  `json:"updated_at"`
+	MessageCount            int                                    `json:"message_count"`
+	LastMessageAt           int64                                  `json:"last_message_at"`
+	Lifecycle               *pebblestore.SessionLifecycleSnapshot  `json:"lifecycle,omitempty"`
 }
 
 func sessionsV3DiscoveryResponse(workset pebblestore.V3SessionWorksetResult, snapshotEndpointCursor string) map[string]any {

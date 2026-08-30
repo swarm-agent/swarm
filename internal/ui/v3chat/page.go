@@ -2207,15 +2207,15 @@ func (p *Page) drawCanonicalFooter(screen tcell.Screen, rect footerbar.Rect, sta
 		localRoutedDraft = true
 	}
 	footerState := footerbar.State{
-		RouteLabel:        strings.TrimSpace(routeLabel),
-		DisplayedMode:     displayedMode,
-		Agent:             "swarm",
-		ModelLabel:        displayModelLabel(modelState.Preference),
-		Thinking:          strings.TrimSpace(modelState.Preference.Thinking),
-		ServiceTier:       strings.TrimSpace(modelState.Preference.ServiceTier),
-		PlanToggle:        planToggle,
-		HideAgentModel:    localRoutedDraft,
-		RightFacts:        conversationContextFacts(usage, modelState.ContextWindow),
+		RouteLabel:     strings.TrimSpace(routeLabel),
+		DisplayedMode:  displayedMode,
+		Agent:          "swarm",
+		ModelLabel:     displayModelLabel(modelState.Preference),
+		Thinking:       strings.TrimSpace(modelState.Preference.Thinking),
+		ServiceTier:    strings.TrimSpace(modelState.Preference.ServiceTier),
+		PlanToggle:     planToggle,
+		HideAgentModel: localRoutedDraft,
+		RightFacts:     conversationContextFacts(usage, modelState.ContextWindow),
 	}
 	footerbar.Draw(screen, footerbar.Styles{Border: p.styles.Border, Accent: p.styles.Accent, Secondary: p.styles.Secondary, Text: p.styles.Text}, rect, footerState, func(target footerbar.Rect, token footerbar.Token) {
 		if token.Action == "open-agents-modal" {

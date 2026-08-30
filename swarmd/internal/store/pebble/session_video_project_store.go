@@ -334,15 +334,15 @@ type VideoEditProposalSnapshot struct {
 
 // VideoRenderJobSnapshot tracks the lifecycle and output of a render operation.
 type VideoRenderJobSnapshot struct {
-	SchemaVersion      int                                `json:"schema_version"`
-	ID                 string                             `json:"id"`
-	ProjectID          string                             `json:"project_id"`
-	RevisionID         string                             `json:"revision_id"`
-	RevisionNumber     int                                `json:"revision_number"`
-	AccountScopeID     string                             `json:"account_scope_id"`
-	UserID             string                             `json:"user_id,omitempty"`
-	WorkspaceID        string                             `json:"workspace_id,omitempty"`
-	SessionID          string                             `json:"session_id"`
+	SchemaVersion        int                                `json:"schema_version"`
+	ID                   string                             `json:"id"`
+	ProjectID            string                             `json:"project_id"`
+	RevisionID           string                             `json:"revision_id"`
+	RevisionNumber       int                                `json:"revision_number"`
+	AccountScopeID       string                             `json:"account_scope_id"`
+	UserID               string                             `json:"user_id,omitempty"`
+	WorkspaceID          string                             `json:"workspace_id,omitempty"`
+	SessionID            string                             `json:"session_id"`
 	Status               string                             `json:"status"`
 	Progress             float64                            `json:"progress"`
 	ProgressStage        string                             `json:"progress_stage,omitempty"`
@@ -353,19 +353,19 @@ type VideoRenderJobSnapshot struct {
 	ReusedFromJobID      string                             `json:"reused_from_job_id,omitempty"`
 	FailureCode          string                             `json:"failure_code,omitempty"`
 	FailureReason        string                             `json:"failure_reason,omitempty"`
-	OutputPreset       string                             `json:"output_preset,omitempty"`
-	OutputWidth        int                                `json:"output_width,omitempty"`
-	OutputHeight       int                                `json:"output_height,omitempty"`
-	OutputFPS          float64                            `json:"output_fps,omitempty"`
-	OutputDurationMs   int64                              `json:"output_duration_ms,omitempty"`
-	OutputSizeBytes    int64                              `json:"output_size_bytes,omitempty"`
-	OutputDigestSHA256 string                             `json:"output_digest_sha256,omitempty"`
-	OutputArtifact     *SessionArtifactSelectionReference `json:"output_artifact,omitempty"`
-	CreatedAt          int64                              `json:"created_at"`
-	UpdatedAt          int64                              `json:"updated_at"`
-	StartedAt          int64                              `json:"started_at,omitempty"`
-	CompletedAt        int64                              `json:"completed_at,omitempty"`
-	EventSeq           uint64                             `json:"event_seq,omitempty"`
+	OutputPreset         string                             `json:"output_preset,omitempty"`
+	OutputWidth          int                                `json:"output_width,omitempty"`
+	OutputHeight         int                                `json:"output_height,omitempty"`
+	OutputFPS            float64                            `json:"output_fps,omitempty"`
+	OutputDurationMs     int64                              `json:"output_duration_ms,omitempty"`
+	OutputSizeBytes      int64                              `json:"output_size_bytes,omitempty"`
+	OutputDigestSHA256   string                             `json:"output_digest_sha256,omitempty"`
+	OutputArtifact       *SessionArtifactSelectionReference `json:"output_artifact,omitempty"`
+	CreatedAt            int64                              `json:"created_at"`
+	UpdatedAt            int64                              `json:"updated_at"`
+	StartedAt            int64                              `json:"started_at,omitempty"`
+	CompletedAt          int64                              `json:"completed_at,omitempty"`
+	EventSeq             uint64                             `json:"event_seq,omitempty"`
 }
 
 // V3VideoProjectMutation wraps payloads for video project mutations.
@@ -2683,7 +2683,7 @@ func (s *SessionStore) prepareV3VideoProjectMutation(input V3SessionMutationInpu
 		if incomingJob.Status == VideoRenderJobStatusRendering && existing.StartedAt > 0 {
 			existing.ElapsedMs = max(int64(0), now-existing.StartedAt)
 			if existing.Progress > 0 && existing.Progress < 1 {
-				existing.EstimatedRemainingMs = int64(float64(existing.ElapsedMs) * (1-existing.Progress) / existing.Progress)
+				existing.EstimatedRemainingMs = int64(float64(existing.ElapsedMs) * (1 - existing.Progress) / existing.Progress)
 			}
 		}
 		if isTerminalRenderJobStatus(incomingJob.Status) && existing.CompletedAt == 0 {
@@ -3434,29 +3434,29 @@ func (s *SessionStore) CreateVideoRenderJob(input CreateVideoRenderJobInput) (Vi
 }
 
 type UpdateVideoRenderJobInput struct {
-	AccountScopeID     string
-	UserID             string
-	SessionID          string
-	JobID              string
-	Status             string
-	ExpectedStatus     string
-	Progress           float64
+	AccountScopeID       string
+	UserID               string
+	SessionID            string
+	JobID                string
+	Status               string
+	ExpectedStatus       string
+	Progress             float64
 	ProgressStage        string
 	ElapsedMs            int64
 	EstimatedRemainingMs int64
 	ReusedFromJobID      string
-	FailureCode        string
-	FailureReason      string
-	OutputPreset       string
-	OutputWidth        int
-	OutputHeight       int
-	OutputFPS          float64
-	OutputDurationMs   int64
-	OutputSizeBytes    int64
-	OutputDigestSHA256 string
-	OutputArtifact     *SessionArtifactSelectionReference
-	ClientRequestID    string
-	NowUnixMs          int64
+	FailureCode          string
+	FailureReason        string
+	OutputPreset         string
+	OutputWidth          int
+	OutputHeight         int
+	OutputFPS            float64
+	OutputDurationMs     int64
+	OutputSizeBytes      int64
+	OutputDigestSHA256   string
+	OutputArtifact       *SessionArtifactSelectionReference
+	ClientRequestID      string
+	NowUnixMs            int64
 }
 
 func (s *SessionStore) UpdateVideoRenderJob(input UpdateVideoRenderJobInput) (VideoRenderJobSnapshot, error) {
@@ -3470,27 +3470,27 @@ func (s *SessionStore) UpdateVideoRenderJob(input UpdateVideoRenderJobInput) (Vi
 	}
 
 	job := VideoRenderJobSnapshot{
-		ID:                 input.JobID,
-		AccountScopeID:     input.AccountScopeID,
-		UserID:             input.UserID,
-		SessionID:          input.SessionID,
-		Status:             strings.ToLower(strings.TrimSpace(input.Status)),
-		Progress:           input.Progress,
-		ProgressStage:      strings.TrimSpace(input.ProgressStage),
+		ID:                   input.JobID,
+		AccountScopeID:       input.AccountScopeID,
+		UserID:               input.UserID,
+		SessionID:            input.SessionID,
+		Status:               strings.ToLower(strings.TrimSpace(input.Status)),
+		Progress:             input.Progress,
+		ProgressStage:        strings.TrimSpace(input.ProgressStage),
 		ElapsedMs:            input.ElapsedMs,
 		EstimatedRemainingMs: input.EstimatedRemainingMs,
 		ReusedFromJobID:      strings.TrimSpace(input.ReusedFromJobID),
-		FailureCode:        strings.ToLower(strings.TrimSpace(input.FailureCode)),
-		FailureReason:      strings.TrimSpace(input.FailureReason),
-		OutputPreset:       normalizeVideoPreset(input.OutputPreset),
-		OutputWidth:        input.OutputWidth,
-		OutputHeight:       input.OutputHeight,
-		OutputFPS:          input.OutputFPS,
-		OutputDurationMs:   input.OutputDurationMs,
-		OutputSizeBytes:    input.OutputSizeBytes,
-		OutputDigestSHA256: strings.ToLower(strings.TrimSpace(input.OutputDigestSHA256)),
-		OutputArtifact:     input.OutputArtifact,
-		UpdatedAt:          now,
+		FailureCode:          strings.ToLower(strings.TrimSpace(input.FailureCode)),
+		FailureReason:        strings.TrimSpace(input.FailureReason),
+		OutputPreset:         normalizeVideoPreset(input.OutputPreset),
+		OutputWidth:          input.OutputWidth,
+		OutputHeight:         input.OutputHeight,
+		OutputFPS:            input.OutputFPS,
+		OutputDurationMs:     input.OutputDurationMs,
+		OutputSizeBytes:      input.OutputSizeBytes,
+		OutputDigestSHA256:   strings.ToLower(strings.TrimSpace(input.OutputDigestSHA256)),
+		OutputArtifact:       input.OutputArtifact,
+		UpdatedAt:            now,
 	}
 
 	clientReqID := input.ClientRequestID

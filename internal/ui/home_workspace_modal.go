@@ -731,12 +731,12 @@ func (p *HomePage) submitWorkspaceModalEditor() {
 	makeCurrent := editor.Selected >= 0 && editor.Selected < len(editor.Fields) && editor.Fields[editor.Selected].Key == "save_and_switch"
 	p.workspaceModal.Editor = nil
 	p.enqueueWorkspaceModalAction(WorkspaceModalAction{
-		Kind:            WorkspaceModalActionSave,
-		Path:            path,
-		Name:            name,
-		ThemeID:         themeID,
-		MakeCurrent:     makeCurrent,
-		StatusHint:      fmt.Sprintf("Saving workspace %s ...", name),
+		Kind:        WorkspaceModalActionSave,
+		Path:        path,
+		Name:        name,
+		ThemeID:     themeID,
+		MakeCurrent: makeCurrent,
+		StatusHint:  fmt.Sprintf("Saving workspace %s ...", name),
 	})
 }
 

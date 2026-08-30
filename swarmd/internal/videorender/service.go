@@ -61,11 +61,11 @@ var (
 )
 
 type Config struct {
-	MaxClips       int
-	MaxDurationMs  int64
-	MaxRenderBytes int64
-	WorkDir        string
-	RecoveryLimit      int
+	MaxClips          int
+	MaxDurationMs     int64
+	MaxRenderBytes    int64
+	WorkDir           string
+	RecoveryLimit     int
 	MaxConcurrentJobs int
 }
 

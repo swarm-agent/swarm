@@ -145,7 +145,7 @@ func (r *Runtime) startRoutedDraft(ctx context.Context, allowResolved bool) (cli
 		Input: draft.Prompt, ClientRequestID: draft.ClientRequestID, IdempotencyKey: draft.ClientRequestID,
 		AgentName: draft.AgentName, Metadata: cloneMetadata(draft.Metadata),
 		PlanModeRequested: draft.PlanModeRequested,
-		WorkspacePath: draft.WorkspacePath, HostWorkspacePath: draft.HostWorkspacePath,
+		WorkspacePath:     draft.WorkspacePath, HostWorkspacePath: draft.HostWorkspacePath,
 		RuntimeWorkspacePath: draft.RuntimeWorkspacePath, WorkspaceBindingID: draft.WorkspaceBindingID,
 		SwarmID: draft.SwarmID, TargetKind: draft.TargetKind, TargetRelationship: draft.TargetRelationship,
 	})
