@@ -471,7 +471,10 @@ const runtime={
     try { return await bound.seek(timeMs); } catch (_) { return {__swarm_outcome:"seek_rejected"}; }
   }
 };
-Object.defineProperty(globalThis,"__SWARM_ANIMATION_V1__",{value:runtime,writable:false,configurable:false,enumerable:true});
+// Keep the trusted proxy immutable while accepting the original parser-time
+// publication form. The setter translates assignment into the same one-shot
+// bind lifecycle; author code never replaces the proxy returned by the getter.
+Object.defineProperty(globalThis,"__SWARM_ANIMATION_V1__",{get:()=>runtime,set:bind,configurable:false,enumerable:true});
 Object.defineProperty(globalThis,"__SWARM_ANIMATION_BIND__",{value:bind,writable:false,configurable:false,enumerable:false});
 Object.defineProperty(globalThis,"__SWARM_ANIMATION_BOOTSTRAP_V1__",{value:{version:"swarm.animation.bootstrap/v1",get settled(){return settled},get lifecycle(){return lifecycle.slice()},get live_frame_requests(){return liveFrameRequests},get live_frame_callbacks(){return liveFrameCallbacks}},writable:false,configurable:false,enumerable:false});
 if (valid(prior)) bind(prior);

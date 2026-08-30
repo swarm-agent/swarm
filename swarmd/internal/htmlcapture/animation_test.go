@@ -172,6 +172,43 @@ func TestAnimationBootstrapReportsMissingBeforeDOMContentLoaded(t *testing.T) {
 	}
 }
 
+// Requirement: animation HTML published before the trusted binder existed used
+// the original parser-time global assignment contract. The trusted renderer must
+// translate that synchronous assignment into its one-shot immutable proxy rather
+// than rejecting otherwise renderable, already-published artifacts. This browser
+// preflight is the narrowest layer that proves the author cannot replace the
+// proxy while the assigned runtime still passes the complete readiness contract.
+func TestAnimationBootstrapAcceptsParserTimeGlobalAssignment(t *testing.T) {
+	script := `<!doctype html><html><head><script>
+const runtime={version:"swarm.animation/v1",ready(){return {duration_ms:400,fps:10}},seek(timeMs){document.documentElement.dataset.swarmAnimationTimeMs=String(timeMs);return {time_ms:timeMs}}};
+globalThis.__SWARM_ANIMATION_V1__=runtime;
+if (globalThis.__SWARM_ANIMATION_V1__===runtime || typeof globalThis.__SWARM_ANIMATION_V1__.bind!=="function") throw new Error("trusted proxy replaced");
+</script><style>html,body{margin:0;width:100%;height:100%;background:#08111f}</style></head><body></body></html>`
+	result, err := preflightHTML(t, script, 400, 10)
+	if err != nil {
+		t.Fatalf("PreflightAnimation: %v", err)
+	}
+	if len(result.Diagnostics) < 1 || strings.Join(result.Diagnostics[0].Lifecycle, ",") != "bind_claimed,bound" {
+		t.Fatalf("unexpected bootstrap lifecycle: %+v", result.Diagnostics)
+	}
+}
+
+func TestAnimationBootstrapRejectsDuplicateParserTimeGlobalAssignment(t *testing.T) {
+	script := `<!doctype html><html><head><script>
+const first={version:"swarm.animation/v1",ready(){return {duration_ms:400,fps:10}},seek(timeMs){document.documentElement.dataset.swarmAnimationTimeMs=String(timeMs);return {time_ms:timeMs}}};
+const second={version:"swarm.animation/v1",ready(){throw new Error("duplicate runtime executed")},seek(){throw new Error("duplicate runtime executed")}};
+globalThis.__SWARM_ANIMATION_V1__=first;
+globalThis.__SWARM_ANIMATION_V1__=second;
+</script><style>html,body{margin:0;width:100%;height:100%;background:#08111f}</style></head><body></body></html>`
+	result, err := preflightHTML(t, script, 400, 10)
+	if err != nil {
+		t.Fatalf("PreflightAnimation: %v", err)
+	}
+	if len(result.Diagnostics) < 1 || strings.Join(result.Diagnostics[0].Lifecycle, ",") != "bind_claimed,bound,duplicate_bind" {
+		t.Fatalf("unexpected bootstrap lifecycle: %+v", result.Diagnostics)
+	}
+}
+
 func TestAnimationBootstrapRejectsInvalidBindPayload(t *testing.T) {
 	script := `<!doctype html><html><head><script>globalThis.__SWARM_ANIMATION_BIND__({version:"swarm.animation/v1"});</script></head><body></body></html>`
 	result, err := preflightHTML(t, script, 400, 10)
