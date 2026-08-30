@@ -73,6 +73,14 @@ function assignmentFor(records) {
   return { provider, model: suppliedModel, thinking: suppliedThinking }
 }
 
+function sameRuntimeModel(actual, expected) {
+  const left = String(actual || '').trim()
+  const right = String(expected || '').trim()
+  if (left === right) return true
+  if (provider !== 'fireworks') return false
+  return left.split('/').filter(Boolean).at(-1) === right.split('/').filter(Boolean).at(-1)
+}
+
 function bindingPath(binding) {
   return String(binding?.source_workspace_path || binding?.host_workspace_path || binding?.destination_workspace_path || '').trim()
 }
@@ -309,7 +317,7 @@ async function main() {
     const response = await api('GET', `/v1/sessions/${encodeURIComponent(program.parent_session_id)}/usage?limit=100`, undefined, `read usage for ${program.label}`)
     usage.push(...(response.body?.turn_usage_records || []))
   }
-  const matchingUsage = usage.filter((item) => String(item?.model || '') === modelAssignment.model)
+  const matchingUsage = usage.filter((item) => String(item?.provider || '') === provider && sameRuntimeModel(item?.model, modelAssignment.model))
   assert(matchingUsage.length >= 2, `runtime usage has ${matchingUsage.length} records for ${modelAssignment.model}, want at least 2`)
   const configured = (await api('GET', '/v1/agent-model-settings', undefined, 'verify final model settings')).body?.agent_model_settings || {}
   assert(configured?.swarm?.action?.model === modelAssignment.model && configured?.swarm?.action?.thinking === modelAssignment.thinking, 'final Swarm action assignment does not match the requested model posture')

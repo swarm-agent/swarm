@@ -110,6 +110,14 @@ function exactAssignment(records, model, thinking, label) {
   return { provider, model, thinking }
 }
 
+function sameRuntimeModel(actual, expected) {
+  const left = String(actual || '').trim()
+  const right = String(expected || '').trim()
+  if (left === right) return true
+  if (provider !== 'fireworks') return false
+  return left.split('/').filter(Boolean).at(-1) === right.split('/').filter(Boolean).at(-1)
+}
+
 function metadataString(metadata, key) {
   const value = metadata && typeof metadata === 'object' ? metadata[key] : ''
   return typeof value === 'string' ? value.trim() : ''
@@ -340,7 +348,7 @@ async function runTaskCall({ scenario, mode, authority, selectedSessionID, expec
   assert(String(roleProfile?.thinking || '').toLowerCase() === expectedAssignment.thinking, `${scenario} /task ${mode} profile thinking is ${roleProfile?.thinking}, want ${expectedAssignment.thinking}`)
   const usageRecords = await usageForSession(sessionID, events)
   const providerUsage = usageRecords.filter((usage) => String(usage?.provider || '') === provider)
-  const matchingUsage = providerUsage.find((usage) => String(usage?.model || '') === expectedAssignment.model) || providerUsage[0] || null
+  const matchingUsage = providerUsage.find((usage) => sameRuntimeModel(usage?.model, expectedAssignment.model)) || providerUsage[0] || null
   result.provider_runtime.push({
     scenario, mode, session_id: sessionID,
     status: matchingUsage ? 'observed' : 'pending',

@@ -83,12 +83,14 @@ for runner in "${BASIC_RUNNER}" "${TASK_ROUTING_RUNNER}"; do
   grep -Fq -- '--action-model and --plan-model are required' "${runner}" || fail "$(basename "${runner}") does not fail closed without explicit Action/Plan models"
   if grep -Fq 'recommendedAssignment' "${runner}"; then fail "$(basename "${runner}") still discovers model recommendations"; fi
   if grep -Fq "service_tier: 'fast'" "${runner}"; then fail "$(basename "${runner}") still hardcodes a Codex-era fast tier for Fireworks"; fi
+  grep -Fq "function sameRuntimeModel" "${runner}" || fail "$(basename "${runner}") does not normalize Fireworks runtime request paths to catalog IDs"
 done
 grep -Fq "ensure basic plan workspace binding" "${BASIC_RUNNER}" || fail "basic Plan/Auto runner does not idempotently ensure its requested workspace binding"
 grep -Fq "workspace_binding_ready" "${BASIC_RUNNER}" || fail "basic Plan/Auto runner does not report its workspace-binding gate"
 grep -Fq -- '--coder-model is required' "${TASK_PROGRAM_RUNNER}" || fail "task-program runner does not fail closed without the configured Coder model"
 if grep -Fq "includes('5.6-luna')" "${TASK_PROGRAM_RUNNER}"; then fail "task-program runner still discovers a model fallback"; fi
 if grep -Fq "service_tier: 'fast'" "${TASK_PROGRAM_RUNNER}"; then fail "task-program runner still hardcodes a Codex-era fast tier for Fireworks"; fi
+grep -Fq "function sameRuntimeModel" "${TASK_PROGRAM_RUNNER}" || fail "task-program runner does not normalize Fireworks runtime request paths to catalog IDs"
 MODEL_RENDERER="${ROOT_DIR}/scripts/render-testbench-model-config.sh"
 MODEL_SYNC="${ROOT_DIR}/scripts/sync-testbench-model-config.sh"
 grep -Fq 'SWARM_RELEASE_GATE_PROVIDER=${SWARM_TESTBENCH_PROVIDER}' "${MODEL_RENDERER}" || fail "model renderer does not use the .env provider"

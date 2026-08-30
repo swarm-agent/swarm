@@ -169,6 +169,14 @@ function objectPayload(value) {
   }
 }
 
+function sameRuntimeModel(actual, expected) {
+  const left = String(actual || '').trim()
+  const right = String(expected || '').trim()
+  if (left === right) return true
+  if (provider !== 'fireworks') return false
+  return left.split('/').filter(Boolean).at(-1) === right.split('/').filter(Boolean).at(-1)
+}
+
 function usageRecordsFromEvents(events) {
   const records = []
   for (const event of events) {
@@ -314,10 +322,10 @@ async function main() {
     const usageRunID = String(usage?.run_id || '')
     return usageRunID === runID || usageRunID.startsWith(`${runID}/`)
   }
-  const planUsage = usageRecords.find((usage) => usageBelongsToRun(usage, initialRunID) && String(usage?.provider || '') === provider && String(usage?.model || '') === planAssignment.model)
+  const planUsage = usageRecords.find((usage) => usageBelongsToRun(usage, initialRunID) && String(usage?.provider || '') === provider && sameRuntimeModel(usage?.model, planAssignment.model))
   assert(planUsage, `no runtime usage evidence found for plan model ${provider}/${planAssignment.model} on run ${initialRunID}`)
   const checkpointRunIDs = new Set(result.ids.checkpoint_run_ids)
-  const autoUsage = usageRecords.filter((usage) => [...checkpointRunIDs].some((runID) => usageBelongsToRun(usage, runID)) && String(usage?.provider || '') === provider && String(usage?.model || '') === actionAssignment.model)
+  const autoUsage = usageRecords.filter((usage) => [...checkpointRunIDs].some((runID) => usageBelongsToRun(usage, runID)) && String(usage?.provider || '') === provider && sameRuntimeModel(usage?.model, actionAssignment.model))
   assert(autoUsage.length >= 2, `found ${autoUsage.length} checkpoint usage records for auto model ${provider}/${actionAssignment.model}, want at least 2`)
   result.diagnostics.runtime_usage = {
     plan: { run_id: initialRunID, provider: planUsage.provider, model: planUsage.model },
