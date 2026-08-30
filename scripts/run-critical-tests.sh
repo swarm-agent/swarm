@@ -77,6 +77,12 @@ run_root_tests() {
   run_go test -count=1 -timeout=30s ./pkg/startupconfig ./pkg/storagecontract -run "${pattern}"
 }
 
+run_tui_task_routing_tests() {
+  local pattern='^Test(TaskCommand|ParseTaskCommand|CreateRoutedTaskSession)'
+  require_listed_tests "${ROOT_DIR}" './internal/app ./internal/client' "${pattern}"
+  run_go test -count=1 -timeout=45s ./internal/app ./internal/client -run "${pattern}"
+}
+
 run_swarmd_tests() {
   local timeout="$1"
   local packages="$2"
@@ -130,12 +136,15 @@ run_fast() {
     './internal/mediastaging ./internal/imagegen ./internal/videosource ./internal/videorender' \
     '^Test(ServiceUsesAccountScopedStoreWithoutSessionAuthority|CleanupAbandonedPreflightsAccountAndProtectsBoundRecords|ResolveAssetPathRejectsPathOutsideManagedStorage|GenerateRejectsNonPNGPayloadBeforeSaving|ServiceRejectsTraversalUnknownRootAndSymlink|AudioReferencesRejectUnregisteredRootsAndStaleFiles|RenderJobSecurityAndRejections|EscapeFFmpegDrawText)$'
 
-  echo "[critical/fast] auth, origin, privacy, and signed cursor failures"
+  echo "[critical/fast] auth, origin, privacy, signed cursor failures, and background task routing"
   run_swarmd_tests 60s \
     './internal/api' \
-    'Test(DesktopBoundary|ProtectedCreateAPIsRequire|ProtectedCreateAPIsReject|ProtectedCreateAPIsSucceed|DesktopSessionBootstrapFails|DesktopSessionBootstrapIssues|DesktopSessionRejects|XSwarmTokenPrincipal|ExtractAttachToken|PanicRecovery|VaultGate|V3SyncCursor|V3RealtimeRejects)'
+    'Test(DesktopBoundary|ProtectedCreateAPIsRequire|ProtectedCreateAPIsReject|ProtectedCreateAPIsSucceed|DesktopSessionBootstrapFails|DesktopSessionBootstrapIssues|DesktopSessionRejects|XSwarmTokenPrincipal|ExtractAttachToken|PanicRecovery|VaultGate|V3SyncCursor|V3RealtimeRejects|BackgroundRouterSessionStart)'
 
-  echo "[critical/fast] Desktop V3 durable state and realtime repair"
+  echo "[critical/fast] TUI and client /task workspace routing"
+  run_tui_task_routing_tests
+
+  echo "[critical/fast] Desktop V3 durable state, realtime repair, and /task workspace routing"
   run_web_critical_tests
 }
 

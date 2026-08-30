@@ -16,7 +16,7 @@ Default suites:
   desktop       real Desktop /new, /task, worktree, Plan-to-Auto lifecycle gate
   tui           real TUI /new, /task, worktree, and Plan launch gate
   plan-auto     API Plan-to-Auto two-checkpoint lifecycle runner
-  task-routing  API /task Auto/Plan routing from new and existing sessions
+  task-routing  API /task Auto/Plan routing from current, explicit saved, and existing sessions
   task-program  live same/linked-repo Task Programs across both parent modes
   provider-sync signed sync/realtime repair plus one real provider response
                 (uses the configured testbench provider/model; despite the
@@ -186,6 +186,7 @@ suite_command() {
     task-routing)
       runner_args args
       built=("${ROOT_DIR}/scripts/run-testbench-runner.sh" task-routing "${args[@]}")
+      if [[ -n "${LINKED_WORKSPACE_PATH}" ]]; then built+=(--linked-workspace-path "${LINKED_WORKSPACE_PATH}"); fi
       ;;
     task-program)
       runner_args args

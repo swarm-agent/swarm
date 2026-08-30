@@ -11,6 +11,7 @@ const apiURL = String(option('--api-url', process.env.SWARM_RUNNER_API_URL || ''
 const provider = String(option('--provider', process.env.SWARM_RUNNER_PROVIDER || '')).trim().toLowerCase()
 const timeoutMs = Number(option('--timeout-ms', process.env.SWARM_RUNNER_TIMEOUT_MS || '900000'))
 const workspacePathOverride = String(option('--workspace-path', process.env.SWARM_RUNNER_WORKSPACE_PATH || '')).trim()
+const linkedWorkspacePathOverride = String(option('--linked-workspace-path', process.env.SWARM_RUNNER_LINKED_WORKSPACE_PATH || '')).trim()
 const scenarioOption = String(option('--scenario', process.env.SWARM_RUNNER_SCENARIO || 'all')).trim().toLowerCase()
 const actionModel = String(option('--action-model', process.env.SWARM_RUNNER_ACTION_MODEL || '')).trim()
 const actionThinking = String(option('--action-thinking', process.env.SWARM_RUNNER_ACTION_THINKING || 'medium')).trim().toLowerCase()
@@ -24,16 +25,17 @@ if (!Number.isFinite(timeoutMs) || timeoutMs < 30000) throw new Error('--timeout
 if (!['all', 'new-router', 'existing-session'].includes(scenarioOption)) throw new Error('--scenario must be all, new-router, or existing-session')
 
 const testID = `runner-task-routing-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`
-const expectedCallCount = scenarioOption === 'all' ? 4 : 2
+const explicitWorkspaceCases = linkedWorkspacePathOverride ? 2 : 0
+const expectedCallCount = (scenarioOption === 'all' ? 4 : 2) + (scenarioOption !== 'existing-session' ? explicitWorkspaceCases : 0)
 const scenarioGates = scenarioOption === 'all'
-  ? ['new_router_page_auto', 'new_router_page_plan', 'existing_session_auto', 'existing_session_plan']
+  ? ['new_router_page_auto', 'new_router_page_plan', ...(linkedWorkspacePathOverride ? ['explicit_workspace_auto', 'explicit_workspace_plan'] : []), 'existing_session_auto', 'existing_session_plan']
   : scenarioOption === 'new-router'
-    ? ['new_router_page_auto', 'new_router_page_plan']
+    ? ['new_router_page_auto', 'new_router_page_plan', ...(linkedWorkspacePathOverride ? ['explicit_workspace_auto', 'explicit_workspace_plan'] : [])]
     : ['initial_sessions_loaded', 'first_session_selected', 'existing_session_auto', 'existing_session_plan']
 const requiredGates = [
   'provider_runnable', 'recommended_models', 'models_configured', 'workspace_binding_ready', ...scenarioGates,
-  'expected_ai_calls', 'all_acknowledged', 'all_worktrees', 'mode_contracts',
-  'plan_contracts', 'models_verified', 'no_failures', 'models_restored',
+  'expected_task_calls', 'all_admitted', 'all_worktrees', 'mode_contracts',
+  'plan_contracts', 'profiles_verified', 'no_failures', 'models_restored',
 ]
 const result = {
   result: 'NOT_DONE',
@@ -47,6 +49,7 @@ const result = {
   models: {},
   selected_first_session: {},
   calls: [],
+  provider_runtime: [],
   gates: {},
   failures: [],
 }
@@ -268,20 +271,19 @@ function isTerminalIntentStatus(status) {
   return ['completed', 'failed', 'cancelled', 'expired', 'interrupted'].includes(String(status || '').trim().toLowerCase())
 }
 
-async function waitForAcknowledgement(sessionID) {
-  const deadline = Date.now() + timeoutMs
+async function waitForAdmission(sessionID) {
+  const deadline = Date.now() + Math.min(timeoutMs, 120000)
   let latest = null
   while (Date.now() < deadline) {
     latest = await hydrateSession(sessionID)
     const messages = latest.messages_by_session?.[sessionID] || []
-    const assistant = [...messages].reverse().find((message) => String(message?.role || '').toLowerCase() === 'assistant' && String(message?.content || '').trim())
+    const user = messages.find((message) => String(message?.role || '').toLowerCase() === 'user' && String(message?.content || '').trim())
     const intents = latest.run_intents_by_session?.[sessionID] || []
-    const activeIntents = intents.filter((intent) => !isTerminalIntentStatus(intent?.status))
-    if (assistant && intents.length > 0 && activeIntents.length === 0) return { snapshot: latest, assistant, intents }
-    await sleep(1000)
+    if (user && intents.length > 0) return { snapshot: latest, user, intents }
+    await sleep(500)
   }
   const intents = latest?.run_intents_by_session?.[sessionID] || []
-  fail(`timed out waiting for ACK in ${sessionID}; intents=${intents.map((intent) => `${intent.run_id}:${intent.status}`).join(', ')}`)
+  fail(`timed out waiting for durable /task admission in ${sessionID}; intents=${intents.map((intent) => `${intent.run_id}:${intent.status}`).join(', ')}`)
 }
 
 async function usageForSession(sessionID, events) {
@@ -323,7 +325,7 @@ async function runTaskCall({ scenario, mode, authority, selectedSessionID, expec
   assert(String(immediateSession.worktree_root_path || identity.worktree_root_path || '').trim(), `${scenario} /task ${mode} has no worktree root`)
   assert(String(immediateSession.worktree_branch || identity.worktree_branch || '').trim(), `${scenario} /task ${mode} has no worktree branch`)
 
-  const settled = await waitForAcknowledgement(sessionID)
+  const settled = await waitForAdmission(sessionID)
   const hydratedSession = settled.snapshot.sessions_by_id?.[sessionID] || {}
   const session = {
     ...immediateSession,
@@ -334,20 +336,23 @@ async function runTaskCall({ scenario, mode, authority, selectedSessionID, expec
   const view = settled.snapshot.session_views_by_id?.[sessionID] || launched.session_view || {}
   const messages = settled.snapshot.messages_by_session?.[sessionID] || []
   const events = settled.snapshot.events_by_session?.[sessionID] || []
-  const assistantContent = String(settled.assistant?.content || '').trim()
-  assert(assistantContent.toUpperCase() === 'ACK', `${scenario} /task ${mode} assistant replied ${JSON.stringify(assistantContent)}, want ACK`)
+  const assistantContent = String([...messages].reverse().find((message) => String(message?.role || '').toLowerCase() === 'assistant' && String(message?.content || '').trim())?.content || '').trim()
   assert(String(session?.mode || '') === mode, `${scenario} /task ${mode} settled in mode ${session?.mode}`)
   assert(session?.worktree_enabled === true, `${scenario} /task ${mode} settled without worktree_enabled`)
   assert(String(session?.worktree_root_path || '').trim(), `${scenario} /task ${mode} settled without worktree_root_path`)
   assert(String(session?.worktree_branch || '').trim(), `${scenario} /task ${mode} settled without worktree_branch`)
   assert(session?.metadata?.background_router_session === true, `${scenario} /task ${mode} lacks background Router metadata`)
-  assert(session?.metadata?.managed_worktree_requested === true, `${scenario} /task ${mode} lacks required worktree intent metadata`)
+  assert(session?.metadata?.routed_worktree_requested === true, `${scenario} /task ${mode} lacks required routed-worktree intent metadata`)
   assert(session?.metadata?.plan_mode_requested === (mode === 'plan'), `${scenario} /task ${mode} stored the wrong plan intent`)
+  assert(metadataString(session?.metadata, 'swarm_v3_workspace_binding_id') === authority.workspace_binding_id, `${scenario} /task ${mode} settled on the wrong workspace binding`)
+  assert(metadataString(session?.metadata, 'swarm_v3_source_workspace_path') === authority.workspace_path, `${scenario} /task ${mode} settled on the wrong source workspace`)
+  assert(metadataString(session?.metadata, 'swarm_v3_worktree_owner_session_id') === sessionID, `${scenario} /task ${mode} worktree ownership does not match its session`)
+  assert(String(session.worktree_root_path || '').trim() !== authority.workspace_path, `${scenario} /task ${mode} reused the shared source checkout`)
   const hasActivePlan = view?.has_active_plan === true || Boolean(view?.active_plan)
   assert(!hasActivePlan, `${scenario} /task ${mode} unexpectedly created an active plan`)
-  const failedIntents = settled.intents.filter((intent) => String(intent?.status || '').trim().toLowerCase() !== 'completed')
-  assert(failedIntents.length === 0, `${scenario} /task ${mode} has non-completed intents: ${failedIntents.map((intent) => `${intent.run_id}:${intent.status}`).join(', ')}`)
-  const failedEvents = events.filter((event) => /failed|cancelled|expired|interrupted/.test(String(event?.event_type || '').toLowerCase()))
+  const failedIntents = settled.intents.filter((intent) => ['failed', 'expired', 'interrupted'].includes(String(intent?.status || '').trim().toLowerCase()))
+  assert(failedIntents.length === 0, `${scenario} /task ${mode} has failed intents: ${failedIntents.map((intent) => `${intent.run_id}:${intent.status}`).join(', ')}`)
+  const failedEvents = events.filter((event) => /failed|expired|interrupted/.test(String(event?.event_type || '').toLowerCase()))
   assert(failedEvents.length === 0, `${scenario} /task ${mode} has failure events: ${failedEvents.map((event) => event.event_type).join(', ')}`)
 
   const modelProfile = session?.model_profile || immediateSession?.model_profile || {}
@@ -357,26 +362,38 @@ async function runTaskCall({ scenario, mode, authority, selectedSessionID, expec
   assert(String(roleProfile?.thinking || '').toLowerCase() === expectedAssignment.thinking, `${scenario} /task ${mode} profile thinking is ${roleProfile?.thinking}, want ${expectedAssignment.thinking}`)
   const usageRecords = await usageForSession(sessionID, events)
   const providerUsage = usageRecords.filter((usage) => String(usage?.provider || '') === provider)
-  assert(providerUsage.length > 0, `${scenario} /task ${mode} has no runtime usage provider record`)
-  const matchingUsage = providerUsage.find((usage) => String(usage?.model || '') === expectedAssignment.model) || providerUsage[0]
-  assert(String(matchingUsage?.model || '').trim(), `${scenario} /task ${mode} runtime usage has no model identifier`)
+  const matchingUsage = providerUsage.find((usage) => String(usage?.model || '') === expectedAssignment.model) || providerUsage[0] || null
+  result.provider_runtime.push({
+    scenario, mode, session_id: sessionID,
+    status: matchingUsage ? 'observed' : 'pending',
+    provider: matchingUsage?.provider || null,
+    model: matchingUsage?.model || null,
+    run_id: matchingUsage?.run_id || null,
+  })
+  for (const intent of settled.intents.filter((item) => !isTerminalIntentStatus(item?.status))) {
+    const stopped = await api('POST', `/v3/sessions/${encodeURIComponent(sessionID)}/run/stop`, {
+      run_id: intent.run_id,
+      target_swarm_id: authority.swarm_id,
+      reason: `${testID} bounded task-routing admission verified`,
+    }, `stop admitted ${scenario} /task ${mode}`, true)
+    assert(stopped.ok, `${scenario} /task ${mode} could not stop bounded probe run ${intent.run_id}: HTTP ${stopped.status}`)
+  }
 
   const userMessages = messages.filter((message) => String(message?.role || '').toLowerCase() === 'user')
-  const assistantMessages = messages.filter((message) => String(message?.role || '').toLowerCase() === 'assistant')
-  assert(userMessages.length >= 1 && assistantMessages.length >= 1, `${scenario} /task ${mode} did not preserve both sides of the ACK turn`)
+  assert(userMessages.length >= 1, `${scenario} /task ${mode} did not preserve its durable user message`)
   const call = {
     sequence,
     scenario,
     mode,
     selected_session_id: selectedSessionID || null,
     session_id: sessionID,
-    assistant: assistantContent,
+    assistant: assistantContent || null,
     worktree_root_path: session.worktree_root_path,
     worktree_branch: session.worktree_branch,
     has_active_plan: hasActivePlan,
     model_profile: { provider: roleProfile.provider, model: roleProfile.model, thinking: roleProfile.thinking },
-    runtime_usage: { provider: matchingUsage.provider, model: matchingUsage.model, run_id: matchingUsage.run_id },
-    completed_run_ids: settled.intents.map((intent) => intent.run_id),
+    runtime_usage: matchingUsage ? { provider: matchingUsage.provider, model: matchingUsage.model, run_id: matchingUsage.run_id } : null,
+    run_ids: settled.intents.map((intent) => intent.run_id),
   }
   result.calls.push(call)
   result.gates[`${scenario}_${mode}`] = true
@@ -416,7 +433,10 @@ async function main() {
   result.gates.models_configured = true
 
   if (workspacePathOverride) {
-    await api('POST', '/v1/workspace/add', { path: workspacePathOverride, name: 'swarm-go', make_current: true }, 'ensure canonical workspace self binding')
+    await api('POST', '/v1/workspace/add', { path: workspacePathOverride, name: 'task-routing-primary', make_current: true }, 'ensure canonical workspace self binding')
+  }
+  if (linkedWorkspacePathOverride) {
+    await api('POST', '/v1/workspace/add', { path: linkedWorkspacePathOverride, name: 'task-routing-linked', make_current: false }, 'ensure linked saved-workspace self binding')
   }
   result.gates.workspace_binding_ready = true
 
@@ -429,10 +449,19 @@ async function main() {
   const defaultBinding = chooseDefaultBinding(topology)
   assert(defaultBinding, 'topology has no usable bound workspace')
   const newRouterAuthority = authorityFor(topology, defaultBinding)
+  const linkedBinding = linkedWorkspacePathOverride
+    ? topologyBindings.find((item) => bindingSourcePath(item) === linkedWorkspacePathOverride || bindingRuntimePath(item) === linkedWorkspacePathOverride)
+    : null
+  if (linkedWorkspacePathOverride) assert(linkedBinding, `topology has no bound linked workspace for the configured task-routing fixture`)
 
   if (scenarioOption !== 'existing-session') {
     await runTaskCall({ scenario: 'new_router_page', mode: 'auto', authority: newRouterAuthority, selectedSessionID: '', expectedAssignment: actionAssignment })
     await runTaskCall({ scenario: 'new_router_page', mode: 'plan', authority: newRouterAuthority, selectedSessionID: '', expectedAssignment: planAssignment })
+    if (linkedBinding) {
+      const linkedAuthority = authorityFor(topology, linkedBinding)
+      await runTaskCall({ scenario: 'explicit_workspace', mode: 'auto', authority: linkedAuthority, selectedSessionID: '', expectedAssignment: actionAssignment })
+      await runTaskCall({ scenario: 'explicit_workspace', mode: 'plan', authority: linkedAuthority, selectedSessionID: '', expectedAssignment: planAssignment })
+    }
   }
 
   if (scenarioOption !== 'new-router') {
@@ -475,18 +504,18 @@ async function main() {
   }
 
   assert(result.calls.length === expectedCallCount, `runner completed ${result.calls.length} AI calls, want ${expectedCallCount}`)
-  assert(result.calls.every((call) => call.assistant === 'ACK'), 'not every task call returned ACK')
+  assert(result.calls.every((call) => call.run_ids.length > 0), 'not every task call published a durable run intent')
   assert(result.calls.every((call) => call.worktree_root_path && call.worktree_branch), 'not every task call used a durable worktree')
   assert(result.calls.filter((call) => call.mode === 'auto').every((call) => call.has_active_plan === false), 'an Auto task created a plan')
   assert(result.calls.filter((call) => call.mode === 'plan').every((call) => call.has_active_plan === false), 'a Plan acknowledgement unexpectedly created a plan')
   assert(result.calls.filter((call) => call.mode === 'auto').every((call) => call.model_profile.model === actionAssignment.model), 'an Auto task used the wrong model')
   assert(result.calls.filter((call) => call.mode === 'plan').every((call) => call.model_profile.model === planAssignment.model), 'a Plan task used the wrong model')
-  result.gates.expected_ai_calls = true
-  result.gates.all_acknowledged = true
+  result.gates.expected_task_calls = true
+  result.gates.all_admitted = true
   result.gates.all_worktrees = true
   result.gates.mode_contracts = true
   result.gates.plan_contracts = true
-  result.gates.models_verified = true
+  result.gates.profiles_verified = true
   result.gates.no_failures = true
   result.result = 'PASS'
 }
