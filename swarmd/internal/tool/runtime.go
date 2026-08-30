@@ -1260,7 +1260,7 @@ func (r *Runtime) Definitions() []Definition {
 		{
 			Type:        "function",
 			Name:        "manage-worktree",
-			Description: "Recall durable Coder child lineage, atomically integrate a committed child batch into the authenticated parent session lane, or explicitly promote an owned session lane into its captured checkout. Internal integrate never advances dev or another captured checkout. Promote is a separately permissioned operation bound to exact source session/branch/HEAD and target branch/HEAD. The tool validates and preflights complete ordered changes and propagates errors without partial mutation.",
+			Description: "Recall durable Coder child lineage, atomically integrate a committed child batch into the authenticated parent session lane, or explicitly promote an owned session lane into its captured checkout. Internal integrate never advances dev or another captured checkout. Promote is a separately permissioned operation bound to exact source session/branch/full HEAD and a clean exact target branch/full HEAD. Use the source head_oid returned by manage-sessions git_status and the full target git rev-parse HEAD; abbreviated OIDs and dirty targets are rejected with current-state diagnostics. The tool validates and preflights complete ordered changes and propagates errors without partial mutation.",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -1270,10 +1270,10 @@ func (r *Runtime) Definitions() []Definition {
 					"workspace_path":        map[string]any{"type": "string", "description": "Optional workspace path; defaults to current/active workspace scope"},
 					"source_session_id":     map[string]any{"type": "string", "description": "Promote only: exact owned session lane source session id"},
 					"source_branch":         map[string]any{"type": "string", "description": "Promote only: exact expected source lane branch"},
-					"source_head":           map[string]any{"type": "string", "description": "Promote only: exact expected source lane HEAD"},
+					"source_head":           map[string]any{"type": "string", "description": "Promote only: full exact source lane head_oid returned by manage-sessions git_status; abbreviated OIDs are rejected"},
 					"target_workspace_path": map[string]any{"type": "string", "description": "Promote only: captured checkout path to advance"},
 					"target_branch":         map[string]any{"type": "string", "description": "Promote only: exact expected captured target branch"},
-					"target_head":           map[string]any{"type": "string", "description": "Promote only: exact expected captured target HEAD"},
+					"target_head":           map[string]any{"type": "string", "description": "Promote only: full exact git rev-parse HEAD of the clean captured target checkout; dirty targets and abbreviated OIDs are rejected"},
 					"branch_name":           map[string]any{"type": "string", "description": "Optional worktree branch family/prefix override such as agent or foo"},
 					"limit":                 map[string]any{"type": "integer", "description": "Page size for returned children (default 25, max 100)"},
 					"cursor":                map[string]any{"type": "integer", "description": "0-based result offset for pagination"},
@@ -6578,12 +6578,24 @@ func (r *Runtime) manageWorktreePromote(scope WorkspaceScope, args map[string]an
 		return "", fmt.Errorf("resolve promotion target: %w", err)
 	}
 	sourceState, err := r.worktrees.InspectTaskWorkspace(sourcePath)
-	if err != nil || !sourceState.Clean || sourceState.BranchName != sourceBranch || sourceState.HeadCommit != sourceHead {
-		return "", errors.New("promotion source branch or HEAD changed; refresh exact lineage before retrying")
+	if err != nil {
+		return "", fmt.Errorf("inspect promotion source lane: %w", err)
+	}
+	if !sourceState.Clean {
+		return "", errors.New("promotion source lane is dirty; commit the intended source changes, then refresh exact lineage before retrying")
+	}
+	if sourceState.BranchName != sourceBranch || sourceState.HeadCommit != sourceHead {
+		return "", fmt.Errorf("promotion source branch or HEAD changed; expected branch %q at full HEAD %q, found branch %q at full HEAD %q; use manage-sessions git_status head_oid and retry", sourceBranch, sourceHead, sourceState.BranchName, sourceState.HeadCommit)
 	}
 	targetState, err := r.worktrees.InspectTaskWorkspace(resolvedTarget)
-	if err != nil || !targetState.Clean || targetState.BranchName != targetBranch || targetState.HeadCommit != targetHead {
-		return "", errors.New("promotion target branch or HEAD changed; refresh exact lineage before retrying")
+	if err != nil {
+		return "", fmt.Errorf("inspect promotion target checkout: %w", err)
+	}
+	if !targetState.Clean {
+		return "", fmt.Errorf("promotion target checkout is dirty at branch %q full HEAD %q; preserve or finish those changes before promotion, then refresh target_branch and target_head", targetState.BranchName, targetState.HeadCommit)
+	}
+	if targetState.BranchName != targetBranch || targetState.HeadCommit != targetHead {
+		return "", fmt.Errorf("promotion target branch or HEAD changed; expected branch %q at full HEAD %q, found branch %q at full HEAD %q; refresh both values from the captured checkout before retrying", targetBranch, targetHead, targetState.BranchName, targetState.HeadCommit)
 	}
 	plan, err := r.worktrees.PrepareTaskIntegration(resolvedTarget, targetBranch, targetHead, []worktreeruntime.TaskIntegrationChild{{SessionID: sourceSessionID, BaseCommit: capturedHead, HeadCommit: sourceHead}})
 	if err != nil {

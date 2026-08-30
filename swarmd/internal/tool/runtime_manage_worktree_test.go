@@ -143,11 +143,56 @@ func TestManageWorktreePromoteRequiresExactLineage(t *testing.T) {
 		"source_session_id": source.ID, "source_branch": source.WorktreeBranch, "source_head": "stale-source-head",
 		"target_workspace_path": "/captured", "target_branch": "dev", "target_head": "captured-head",
 	})
-	if err == nil || !strings.Contains(err.Error(), "source branch or HEAD changed") {
+	if err == nil || !strings.Contains(err.Error(), `expected branch "agent/parent-session" at full HEAD "stale-source-head", found branch "agent/parent-session" at full HEAD "parent-head"`) || !strings.Contains(err.Error(), "manage-sessions git_status head_oid") {
 		t.Fatalf("stale promotion error = %v", err)
 	}
 	if worktrees.applyCalls != 0 {
 		t.Fatalf("stale promotion applied %d times", worktrees.applyCalls)
+	}
+}
+
+// TestManageWorktreePromoteReportsDirtyTargetBeforeApply proves promotion keeps the exact target clean-state guard while telling the model what state blocked delivery. The regression threat is an opaque branch/HEAD error that sends the model into repeated stale-lineage retries or unsafe app restarts; the tool runtime is the narrowest layer that owns this no-apply preflight.
+func TestManageWorktreePromoteReportsDirtyTargetBeforeApply(t *testing.T) {
+	runtime, scope, worktrees, _ := newCoderLineageRuntime(t)
+	scope.Roots = append(scope.Roots, "/captured")
+	sessions := runtime.sessions.(*coderLineageSessionService)
+	source := sessions.parent
+	source.Metadata["swarm_v3_source_workspace_path"] = "/captured"
+	source.Metadata["base_commit"] = "captured-head"
+	sessions.parent = source
+	worktrees.states["/captured"] = worktreeruntime.TaskWorkspaceState{WorkspacePath: "/captured", BranchName: "dev", HeadCommit: "captured-head", Status: " M docs/swarm-atlas.md", Clean: false}
+
+	_, err := runtime.manageWorktreePromote(scope, map[string]any{
+		"source_session_id": source.ID, "source_branch": source.WorktreeBranch, "source_head": "parent-head",
+		"target_workspace_path": "/captured", "target_branch": "dev", "target_head": "captured-head",
+	})
+	if err == nil || !strings.Contains(err.Error(), `target checkout is dirty at branch "dev" full HEAD "captured-head"`) || !strings.Contains(err.Error(), "preserve or finish those changes before promotion") {
+		t.Fatalf("dirty target promotion error = %v", err)
+	}
+	if worktrees.applyCalls != 0 {
+		t.Fatalf("dirty target promotion applied %d times", worktrees.applyCalls)
+	}
+}
+
+func TestManageWorktreePromoteReportsCurrentTargetLineageBeforeApply(t *testing.T) {
+	runtime, scope, worktrees, _ := newCoderLineageRuntime(t)
+	scope.Roots = append(scope.Roots, "/captured")
+	sessions := runtime.sessions.(*coderLineageSessionService)
+	source := sessions.parent
+	source.Metadata["swarm_v3_source_workspace_path"] = "/captured"
+	source.Metadata["base_commit"] = "captured-base"
+	sessions.parent = source
+	worktrees.states["/captured"] = worktreeruntime.TaskWorkspaceState{WorkspacePath: "/captured", BranchName: "dev", HeadCommit: "current-dev-head", Clean: true}
+
+	_, err := runtime.manageWorktreePromote(scope, map[string]any{
+		"source_session_id": source.ID, "source_branch": source.WorktreeBranch, "source_head": "parent-head",
+		"target_workspace_path": "/captured", "target_branch": "dev", "target_head": "stale-dev-head",
+	})
+	if err == nil || !strings.Contains(err.Error(), `expected branch "dev" at full HEAD "stale-dev-head", found branch "dev" at full HEAD "current-dev-head"`) || !strings.Contains(err.Error(), "refresh both values") {
+		t.Fatalf("stale target promotion error = %v", err)
+	}
+	if worktrees.applyCalls != 0 {
+		t.Fatalf("stale target promotion applied %d times", worktrees.applyCalls)
 	}
 }
 
