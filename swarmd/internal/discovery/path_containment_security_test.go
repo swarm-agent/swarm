@@ -6,7 +6,11 @@ import (
 	"testing"
 )
 
+// TestScanScopeRejectsWorkspaceInstructionSymlinkEscape proves Service.ScanScope
+// cannot read an AGENTS.md symlink outside its rooted workspace. The package test
+// is the narrowest layer that exercises discovery's rooted file-open boundary.
 func TestScanScopeRejectsWorkspaceInstructionSymlinkEscape(t *testing.T) {
+	configureDiscoveryTestStorage(t)
 	workspace := t.TempDir()
 	outside := filepath.Join(t.TempDir(), "outside-agents.md")
 	if err := os.WriteFile(outside, []byte("outside instruction"), 0o600); err != nil {
@@ -27,7 +31,11 @@ func TestScanScopeRejectsWorkspaceInstructionSymlinkEscape(t *testing.T) {
 	}
 }
 
+// TestScanScopeRejectsWorkspaceSkillSymlinkEscape proves Service.ScanScope
+// cannot admit a workspace skill directory symlink that escapes its discovery
+// root; the package test directly exercises scanSkillDir and rooted reads.
 func TestScanScopeRejectsWorkspaceSkillSymlinkEscape(t *testing.T) {
+	configureDiscoveryTestStorage(t)
 	workspace := t.TempDir()
 	skillRoot := filepath.Join(workspace, ".agents", "skills")
 	if err := os.MkdirAll(skillRoot, 0o755); err != nil {
@@ -56,7 +64,11 @@ func TestScanScopeRejectsWorkspaceSkillSymlinkEscape(t *testing.T) {
 	}
 }
 
+// TestScanScopeCapturesRootedContentSnapshot proves Service.ScanScope returns
+// bytes from the same rooted regular files it authenticated, preventing later
+// ambient-path rereads; the package boundary is the narrowest observable layer.
 func TestScanScopeCapturesRootedContentSnapshot(t *testing.T) {
+	configureDiscoveryTestStorage(t)
 	workspace := t.TempDir()
 	instruction := []byte("rooted instruction")
 	if err := os.WriteFile(filepath.Join(workspace, "AGENTS.md"), instruction, 0o600); err != nil {
@@ -90,4 +102,23 @@ func TestScanScopeCapturesRootedContentSnapshot(t *testing.T) {
 	if !found {
 		t.Fatal("safe rooted skill was not discovered")
 	}
+}
+
+// configureDiscoveryTestStorage keeps discovery package tests on explicit
+// storagecontract roots outside their synthetic HOME. This prevents ambient
+// system defaults or CI home placement from masking the ScanScope invariant.
+func configureDiscoveryTestStorage(t *testing.T) string {
+	t.Helper()
+	root := t.TempDir()
+	home := filepath.Join(root, "home")
+	dataRoot := filepath.Join(root, "swarmd-data")
+	if err := os.MkdirAll(home, 0o755); err != nil {
+		t.Fatalf("create test home: %v", err)
+	}
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, ".local", "share"))
+	t.Setenv("STATE_DIRECTORY", dataRoot)
+	t.Setenv("SWARM_CONFIG", "")
+	return home
 }
