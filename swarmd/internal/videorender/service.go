@@ -716,11 +716,7 @@ func (s *Service) RenderJob(ctx context.Context, principal identity.Principal, r
 		case "deterministic_preflight":
 			base, span, stage = 0.09, 0.02, "Auditing deterministic animation frames"
 		case "frame_capture":
-			base, span, stage = 0.11, 0.10, "Capturing HTML animation frames"
-		case "segment_encode":
-			base, span, stage = 0.21, 0.03, "Encoding HTML animation segments"
-		case "segment_concatenation":
-			base, span, stage = 0.24, 0.01, "Finalizing HTML animation derivative"
+			base, span, stage = 0.11, 0.13, "Capturing and streaming HTML animation frames"
 		}
 		s.updateProgress(principal, sessionID, jobID, base+span*fraction, stage)
 	})

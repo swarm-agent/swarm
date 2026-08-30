@@ -19,6 +19,8 @@ function renderJob(overrides: Partial<VideoRenderJobSnapshotWire> = {}): VideoRe
     session_id: 'session-1',
     status: 'rendering',
     progress: 0.25,
+    render_quality: 'high',
+    render_fps: 30,
     created_at: 1_000_000_000_000,
     started_at: 1_000_000_000_000,
     updated_at: 1_000_000_001_000,
@@ -28,9 +30,10 @@ function renderJob(overrides: Partial<VideoRenderJobSnapshotWire> = {}): VideoRe
 
 test('Video Studio exposes only allowlisted quality and FPS presets', () => {
   assert.deepEqual(VIDEO_RENDER_PRESETS.map(({ id, quality, fps }) => ({ id, quality, fps })), [
-    { id: 'draft', quality: 'draft', fps: 30 },
+    { id: 'preview', quality: 'preview', fps: 30 },
+    { id: 'standard', quality: 'standard', fps: 30 },
     { id: 'high', quality: 'high', fps: 30 },
-    { id: 'maximum', quality: 'high', fps: 60 },
+    { id: 'master', quality: 'master', fps: 60 },
   ])
 })
 

@@ -152,6 +152,7 @@ type Daemon struct {
 	bgCancel                  context.CancelFunc
 	copilot                   *copilot.Manager
 	toolRuntime               *tool.Runtime
+	videoRenderService        *videorender.Service
 	aiTaskDispatcher          *run.AITaskV2Dispatcher
 	localTransportRuntimeName string
 	localTransportBaseURL     string
@@ -636,6 +637,7 @@ func New(cfg config.Config) (*Daemon, error) {
 		stopCh:                    make(chan string, 1),
 		copilot:                   copilotManager,
 		toolRuntime:               toolRuntime,
+		videoRenderService:        videoRenderSvc,
 		aiTaskDispatcher:          aiTaskDispatcher,
 		localTransportRuntimeName: localTransportRuntimeName,
 	}
@@ -720,6 +722,25 @@ func New(cfg config.Config) (*Daemon, error) {
 	return d, nil
 }
 
+// startVideoRenderRecovery re-admits durable queued and interrupted renders
+// after daemon construction. Recovery is detached from request lifetimes but
+// remains owned by the daemon background context.
+func startVideoRenderRecovery(ctx context.Context, service *videorender.Service) {
+	if service == nil {
+		return
+	}
+	go func() {
+		count, err := service.RecoverJobs(ctx)
+		if err != nil && ctx.Err() == nil {
+			log.Printf("warning: recover durable video renders: %v", err)
+			return
+		}
+		if count > 0 {
+			log.Printf("recovered durable video renders count=%d", count)
+		}
+	}()
+}
+
 func seedUISwarmName(configPath string, uiSettingsSvc *uisettings.Service) error {
 	if uiSettingsSvc == nil {
 		return fmt.Errorf("ui settings service not configured")
@@ -773,6 +794,12 @@ func (d *Daemon) cleanup() error {
 				errs = append(errs, fmt.Errorf("close long-session diagnostics: %w", err))
 			}
 			d.longSessionDiagnostics = nil
+		}
+		if d.videoRenderService != nil {
+			waitCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+			_ = d.videoRenderService.WaitForIdle(waitCtx)
+			cancel()
+			d.videoRenderService = nil
 		}
 		if d.aiTaskDispatcher != nil {
 			d.aiTaskDispatcher.Close()

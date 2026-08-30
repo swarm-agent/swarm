@@ -1462,7 +1462,7 @@ export async function startVideoRender(sessionId: string, projectId: string, rev
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ revision_id: revisionId, quality: preset.quality, quality_preset: preset.id, fps: preset.fps }),
+      body: JSON.stringify({ revision_id: revisionId, render_quality: preset.quality, render_fps: preset.fps }),
     },
   )
   if (!response.render_job) {

@@ -2580,6 +2580,7 @@ func (s *SessionStore) prepareV3VideoProjectMutation(input V3SessionMutationInpu
 		incomingJob.SchemaVersion = VideoRenderJobSchemaVersion
 		incomingJob.Status = VideoRenderJobStatusQueued
 		incomingJob.Progress = 0.0
+		incomingJob.ProgressStage = "Queued for render capacity"
 		if !isValidRenderQuality(incomingJob.RenderQuality) || (incomingJob.RenderFPS != 30 && incomingJob.RenderFPS != 60) {
 			return preparedV3VideoProjectMutation{}, errors.New("video render job settings are not server-allowlisted")
 		}
@@ -2672,6 +2673,9 @@ func (s *SessionStore) prepareV3VideoProjectMutation(input V3SessionMutationInpu
 			existing.StartedAt = 0
 			existing.ElapsedMs = 0
 			existing.EstimatedRemainingMs = 0
+			if incomingJob.ProgressStage == "" {
+				existing.ProgressStage = "Queued for render capacity"
+			}
 		}
 		if incomingJob.Status == VideoRenderJobStatusRendering && existing.StartedAt == 0 {
 			existing.StartedAt = now

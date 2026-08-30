@@ -170,7 +170,7 @@ test('Video Studio submits selectable durable renders and exposes a resilient pr
 
   assert.match(source, /aria-label="Render quality settings"/)
   assert.match(source, /VIDEO_RENDER_PRESETS\.map/)
-  assert.match(source, /quality: preset\.quality, quality_preset: preset\.id, fps: preset\.fps/)
+  assert.match(source, /render_quality: preset\.quality, render_fps: preset\.fps/)
   assert.match(source, /listVideoRenderJobs\(selectedThread\.id, videoProject\.id\)/)
   assert.match(source, /window\.setInterval\(\(\) => \{ void refreshRenderJobs\(false\) \}, 2_000\)/)
   assert.match(renderCenterSource, /Existing jobs are retained and polling will retry automatically/)

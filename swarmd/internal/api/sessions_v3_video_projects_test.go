@@ -233,10 +233,10 @@ func TestSessionsV3VideoProjectWorkflow(t *testing.T) {
 	if jobRec.Code != http.StatusOK {
 		t.Fatalf("get render job status = %d, want 200", jobRec.Code)
 	}
-	listJobsReq := httptest.NewRequest(http.MethodGet, "/v3/sessions/"+createdSession.ID+"/video/render-jobs", nil)
+	listJobsReq := httptest.NewRequest(http.MethodGet, "/v3/sessions/"+createdSession.ID+"/video/render-jobs?project_id=vproj-1", nil)
 	listJobsRec := httptest.NewRecorder()
 	server.handleSessionV3PrimaryByID(listJobsRec, listJobsReq.WithContext(identity.ContextWithPrincipal(listJobsReq.Context(), principal)))
-	if listJobsRec.Code != http.StatusOK || !bytes.Contains(listJobsRec.Body.Bytes(), []byte(`"render_quality":"standard"`)) {
+	if listJobsRec.Code != http.StatusOK || !bytes.Contains(listJobsRec.Body.Bytes(), []byte(`"render_quality":"standard"`)) || !bytes.Contains(listJobsRec.Body.Bytes(), []byte(`"progress_stage":"Queued for render capacity"`)) {
 		t.Fatalf("list render jobs status=%d body=%s", listJobsRec.Code, listJobsRec.Body.String())
 	}
 }

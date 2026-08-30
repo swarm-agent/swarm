@@ -403,12 +403,19 @@ func (s *Server) handleSessionV3VideoSubpath(w http.ResponseWriter, r *http.Requ
 			return
 		}
 		limit := 50
+		projectID := strings.TrimSpace(r.URL.Query().Get("project_id"))
 		if raw := r.URL.Query().Get("limit"); raw != "" {
 			if parsed, err := strconv.Atoi(raw); err == nil && parsed > 0 {
 				limit = parsed
 			}
 		}
-		jobs, err := s.videoProjects.ListSessionRenderJobs(principal, sessionID, limit)
+		var jobs []pebblestore.VideoRenderJobSnapshot
+		var err error
+		if projectID == "" {
+			jobs, err = s.videoProjects.ListSessionRenderJobs(principal, sessionID, limit)
+		} else {
+			jobs, err = s.videoProjects.ListRenderJobs(principal, sessionID, projectID, limit)
+		}
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return
