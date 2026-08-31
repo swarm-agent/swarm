@@ -97,7 +97,10 @@ func NewChromedpRendererWithConcurrency(binaryPath, cacheRoot string, concurrenc
 	if concurrency > 4 {
 		concurrency = 4
 	}
-	return &ChromedpRenderer{BinaryPath: filepath.Clean(strings.TrimSpace(binaryPath)), EncoderPath: filepath.Clean(strings.TrimSpace(encoderPath)), CacheRoot: filepath.Clean(strings.TrimSpace(cacheRoot)), sem: make(chan struct{}, concurrency), preflightSem: make(chan struct{}, 1)}
+	// Preflight uses the same daemon-owned bounded capacity as full capture. This
+	// lets one regular managed-Designer wave validate independent animations in
+	// parallel without exceeding the existing host-size and four-worker cap.
+	return &ChromedpRenderer{BinaryPath: filepath.Clean(strings.TrimSpace(binaryPath)), EncoderPath: filepath.Clean(strings.TrimSpace(encoderPath)), CacheRoot: filepath.Clean(strings.TrimSpace(cacheRoot)), sem: make(chan struct{}, concurrency), preflightSem: make(chan struct{}, concurrency)}
 }
 
 func (r *ChromedpRenderer) Capture(parent context.Context, req Request) ([]Result, error) {

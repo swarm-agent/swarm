@@ -10,6 +10,30 @@ import (
 	"testing"
 )
 
+func TestChromedpRendererConcurrencyBoundsCaptureAndPreflightTogether(t *testing.T) {
+	tests := []struct {
+		name          string
+		requested     int
+		wantCapture   int
+		wantPreflight int
+	}{
+		{name: "minimum", requested: 0, wantCapture: 1, wantPreflight: 1},
+		{name: "parallel wave", requested: 2, wantCapture: 2, wantPreflight: 2},
+		{name: "absolute cap", requested: 8, wantCapture: 4, wantPreflight: 4},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			renderer := NewChromedpRendererWithConcurrency(SystemChromePath, t.TempDir(), test.requested)
+			if got := cap(renderer.sem); got != test.wantCapture {
+				t.Fatalf("capture concurrency = %d, want %d", got, test.wantCapture)
+			}
+			if got := cap(renderer.preflightSem); got != test.wantPreflight {
+				t.Fatalf("preflight concurrency = %d, want %d", got, test.wantPreflight)
+			}
+		})
+	}
+}
+
 func TestChromedpRendererCapturesStableStateWithSystemChrome(t *testing.T) {
 	if _, err := os.Stat(SystemChromePath); err != nil {
 		t.Skipf("system-managed Chrome unavailable: %v", err)
