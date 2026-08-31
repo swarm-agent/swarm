@@ -95,6 +95,7 @@ const regular3Prompt = () => [
   'Every Designer must independently publish exactly one self-contained single-file text/html animation using animation_profile motion_ui.',
   'Every animation must use swarm.animation/v1 with duration_ms 12000 and fps 30 plus swarm.iteration/v1 with exactly three ordered temporal sections: part-1 "Part 1 · Opening" 0-4000ms; part-2 "Part 2 · Transformation" 4000-8000ms; part-3 "Part 3 · Resolution" 8000-12000ms.',
   'Each assignment must explicitly require a minimal parser-time runtime that binds before any DOM/Canvas/Path2D scene construction, a shared deterministic renderAt/ready/seek/stop timeline, a self-starting scheduler, a swarm-player/v1 bridge, and a direct fixed 1920x1080 stage at x=0/y=0 with no responsive scale wrapper.',
+  'Every animation must render a substantive, intentional, legible opening composition at exactly time_ms=0; no blank, near-black, empty-background, or fade-in-only prelude is allowed because the trusted start-frame inspection occurs at t=0.',
   'Wait for that one task call to return all three ready exact artifact references, then finish successfully. Do not export, create a video project, relaunch a successful or failed slot, or make any additional managed artifact.',
 ].join(' ')
 const fail = (message) => {
@@ -687,6 +688,7 @@ try {
     assert(prompt.includes('orbital signal system') && prompt.includes('kinetic typographic relay') && prompt.includes('modular architecture assembly'), 'regular3 prompt lost distinct assignments')
     assert(partContract.length === 3 && prompt.includes('part-1') && prompt.includes('part-2') && prompt.includes('part-3'), 'regular3 prompt lost three-part contract')
     assert(prompt.includes('binds before any DOM/Canvas/Path2D scene construction') && prompt.includes('direct fixed 1920x1080 stage at x=0/y=0') && prompt.includes('no responsive scale wrapper'), 'regular3 prompt lost bounded parser-time or viewport authoring guidance')
+    assert(prompt.includes('opening composition at exactly time_ms=0') && prompt.includes('no blank, near-black, empty-background, or fade-in-only prelude'), 'regular3 prompt lost start-frame inspection guidance')
     const workspace = { workspace_id: 'workspace-live', workspace_generation: 2, state: 'active', path: '/workspace/live' }
     const stale = { workspace_binding_id: 'binding-stale', source_workspace_id: workspace.workspace_id, source_workspace_generation: 1, source_workspace_path: workspace.path, destination_workspace_path: workspace.path, state: 'bound' }
     const current = { ...stale, workspace_binding_id: 'binding-live', source_workspace_generation: 2 }
