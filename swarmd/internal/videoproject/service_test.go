@@ -10,11 +10,23 @@ import (
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
+func TestTemporalAnimationDurationUsesOrderedSectionEnd(t *testing.T) {
+	parts := []pebblestore.SessionArtifactPart{
+		{ID: "part-1", Kind: "temporal", StartMs: 0, EndMs: 4000},
+		{ID: "part-2", Kind: "temporal", StartMs: 4000, EndMs: 8000},
+		{ID: "part-3", Kind: "temporal", StartMs: 8000, EndMs: 12000},
+	}
+	if got := temporalAnimationDuration(parts); got != 12000 {
+		t.Fatalf("temporalAnimationDuration() = %d, want 12000", got)
+	}
+}
+
 type fakeSessionStore struct {
 	sessions  map[string]pebblestore.SessionSnapshot
 	projects  map[string]pebblestore.VideoProjectSnapshot
 	revisions map[string]map[string]pebblestore.VideoProjectRevisionSnapshot
 	jobs      map[string]pebblestore.VideoRenderJobSnapshot
+	proposals map[string]pebblestore.VideoEditProposalSnapshot
 	artifacts map[string]pebblestore.SessionArtifactVariant
 }
 
@@ -24,6 +36,7 @@ func newFakeSessionStore() *fakeSessionStore {
 		projects:  make(map[string]pebblestore.VideoProjectSnapshot),
 		revisions: make(map[string]map[string]pebblestore.VideoProjectRevisionSnapshot),
 		jobs:      make(map[string]pebblestore.VideoRenderJobSnapshot),
+		proposals: make(map[string]pebblestore.VideoEditProposalSnapshot),
 		artifacts: make(map[string]pebblestore.SessionArtifactVariant),
 	}
 }
@@ -45,6 +58,7 @@ func (f *fakeSessionStore) CreateVideoProject(input pebblestore.CreateVideoProje
 		Description:           input.Description,
 		OutputPreset:          input.OutputPreset,
 		ProjectKind:           input.ProjectKind,
+		Metadata:              input.Metadata,
 		CurrentRevisionID:     "",
 		CurrentRevisionNumber: 0,
 		RevisionCount:         0,
@@ -93,6 +107,19 @@ func (f *fakeSessionStore) GetPrimaryVideoToolProject(accountScopeID, sessionID 
 		}
 	}
 	return pebblestore.VideoProjectSnapshot{}, false, nil
+}
+
+func (f *fakeSessionStore) ListVideoProjectsForAccount(accountScopeID string, limit int) ([]pebblestore.VideoProjectSnapshot, error) {
+	var list []pebblestore.VideoProjectSnapshot
+	for _, project := range f.projects {
+		if project.AccountScopeID == accountScopeID {
+			list = append(list, project)
+		}
+	}
+	if limit > 0 && len(list) > limit {
+		list = list[:limit]
+	}
+	return list, nil
 }
 
 func (f *fakeSessionStore) ListVideoProjects(accountScopeID, sessionID string, limit int) ([]pebblestore.VideoProjectSnapshot, error) {
@@ -179,10 +206,20 @@ func (f *fakeSessionStore) CreateVideoEditProposal(input pebblestore.CreateVideo
 	return pebblestore.VideoEditProposalSnapshot{}, nil
 }
 func (f *fakeSessionStore) GetVideoEditProposal(accountScopeID, sessionID, projectID, proposalID string) (pebblestore.VideoEditProposalSnapshot, bool, error) {
-	return pebblestore.VideoEditProposalSnapshot{}, false, nil
+	proposal, ok := f.proposals[proposalID]
+	if !ok || proposal.AccountScopeID != accountScopeID || proposal.SessionID != sessionID || proposal.ProjectID != projectID {
+		return pebblestore.VideoEditProposalSnapshot{}, false, nil
+	}
+	return proposal, true, nil
 }
 func (f *fakeSessionStore) ListVideoEditProposals(accountScopeID, sessionID, projectID string, limit int) ([]pebblestore.VideoEditProposalSnapshot, error) {
-	return nil, nil
+	var proposals []pebblestore.VideoEditProposalSnapshot
+	for _, proposal := range f.proposals {
+		if proposal.AccountScopeID == accountScopeID && proposal.SessionID == sessionID && proposal.ProjectID == projectID {
+			proposals = append(proposals, proposal)
+		}
+	}
+	return proposals, nil
 }
 func (f *fakeSessionStore) ResolveVideoEditProposal(input pebblestore.ResolveVideoEditProposalInput) (pebblestore.VideoEditProposalSnapshot, *pebblestore.VideoProjectRevisionSnapshot, *pebblestore.VideoProjectSnapshot, error) {
 	return pebblestore.VideoEditProposalSnapshot{}, nil, nil, nil
@@ -256,6 +293,63 @@ func (f *fakeSessionStore) GetAudioSourceRecord(accountScopeID, workspaceID, ref
 	return pebblestore.AudioSourceRecord{}, false, nil
 }
 
+func TestNormalizeVisualPlanArtifactsRejectsIncompatibleAnimationCandidates(t *testing.T) {
+	store := newFakeSessionStore()
+	svc := NewService(store)
+	principal := identity.Principal{Type: identity.PrincipalTypeUser, AccountScopeID: "account", UserID: "user"}
+	store.sessions["studio"] = pebblestore.SessionSnapshot{ID: "studio", AccountScopeID: "account", UserID: "user"}
+	requirements := &pebblestore.SessionArtifactOutputRequirements{PresetID: "landscape_video", Width: 1920, Height: 1080}
+	profile := &pebblestore.SessionArtifactAnimationProfile{ProfileID: "motion_ui"}
+	for index, duration := range []int64{10000, 9000} {
+		variantID := fmt.Sprintf("candidate-%d", index+1)
+		store.artifacts[fmt.Sprintf("account/studio/candidates/%s", variantID)] = pebblestore.SessionArtifactVariant{ID: variantID, CollectionID: "candidates", SessionID: "studio", EventSeq: uint64(index + 1), Status: pebblestore.SessionArtifactStatusReady, MediaType: "text/html", OutputRequirements: requirements, AnimationProfile: profile, Parts: []pebblestore.SessionArtifactPart{{ID: "intro", Kind: "temporal", EndMs: duration}}}
+	}
+	store.artifacts["account/studio/fallback/still"] = pebblestore.SessionArtifactVariant{ID: "still", CollectionID: "fallback", SessionID: "studio", EventSeq: 3, Status: pebblestore.SessionArtifactStatusReady, MediaType: "image/png"}
+	plan := pebblestore.VideoPlanProposal{Kind: pebblestore.VideoPlanKindInitial, Parts: []pebblestore.VideoPlanPart{{ID: "intro", Title: "Intro", DurationMs: 10000, Visual: &pebblestore.SessionArtifactSelectionReference{SessionID: "studio", CollectionID: "fallback", VariantID: "still", EventSeq: 3}, AnimationCandidates: &pebblestore.VideoAnimationCandidateSet{Status: pebblestore.VideoAnimationCandidateStatusAwaitingSelection, Candidates: []pebblestore.VideoAnimationCandidate{{ID: "a", Source: &pebblestore.SessionArtifactSelectionReference{SessionID: "studio", CollectionID: "candidates", VariantID: "candidate-1", EventSeq: 1}}, {ID: "b", Source: &pebblestore.SessionArtifactSelectionReference{SessionID: "studio", CollectionID: "candidates", VariantID: "candidate-2", EventSeq: 2}}}}}}}
+	if err := svc.normalizeVisualPlanArtifacts(principal, "studio", &plan); err == nil || !strings.Contains(err.Error(), "duration does not match") {
+		t.Fatalf("incompatible candidate error = %v", err)
+	}
+}
+
+func TestListWorkspaceCatalogFiltersScopeAndGroupsRelatedSessions(t *testing.T) {
+	store := newFakeSessionStore()
+	svc := NewService(store)
+	principal := identity.Principal{Type: identity.PrincipalTypeUser, AccountScopeID: "account", UserID: "user"}
+	store.sessions["source"] = pebblestore.SessionSnapshot{ID: "source", AccountScopeID: "account", UserID: "user", WorkspacePath: "/workspace/project", Title: "Original"}
+	store.sessions["follow-up"] = pebblestore.SessionSnapshot{ID: "follow-up", AccountScopeID: "account", UserID: "user", WorkspacePath: "/workspace/project/../project", Title: "Follow-up"}
+	store.sessions["other-workspace"] = pebblestore.SessionSnapshot{ID: "other-workspace", AccountScopeID: "account", UserID: "user", WorkspacePath: "/workspace/other", Title: "Other"}
+	store.projects["source-project"] = pebblestore.VideoProjectSnapshot{ID: "source-project", AccountScopeID: "account", UserID: "user", SessionID: "source", Title: "Launch", CurrentRevisionID: "source-revision"}
+	store.projects["fork-project"] = pebblestore.VideoProjectSnapshot{ID: "fork-project", AccountScopeID: "account", UserID: "user", SessionID: "follow-up", Title: "Launch", CurrentRevisionID: "fork-revision", Metadata: map[string]any{"video_lineage_root_session_id": "source", "video_lineage_root_project_id": "source-project"}}
+	store.projects["excluded-project"] = pebblestore.VideoProjectSnapshot{ID: "excluded-project", AccountScopeID: "account", UserID: "user", SessionID: "other-workspace", Title: "Excluded", CurrentRevisionID: "excluded-revision"}
+	store.revisions["source-project"] = map[string]pebblestore.VideoProjectRevisionSnapshot{"source-revision": {ID: "source-revision", ProjectID: "source-project", SessionID: "source", AccountScopeID: "account", UserID: "user", RevisionNumber: 1}}
+	store.revisions["fork-project"] = map[string]pebblestore.VideoProjectRevisionSnapshot{"fork-revision": {ID: "fork-revision", ProjectID: "fork-project", SessionID: "follow-up", AccountScopeID: "account", UserID: "user", RevisionNumber: 1}}
+
+	items, err := svc.ListWorkspaceCatalog(principal, "/workspace/project", 20)
+	if err != nil {
+		t.Fatalf("list workspace catalog: %v", err)
+	}
+	if len(items) != 2 {
+		t.Fatalf("catalog=%+v, want two videos from requested workspace", items)
+	}
+	for _, item := range items {
+		if len(item.RelatedSessions) != 2 {
+			t.Fatalf("related sessions=%+v, want source and follow-up", item.RelatedSessions)
+		}
+	}
+}
+
+func TestSameWorkspacePathNormalizesEquivalentPaths(t *testing.T) {
+	if !sameWorkspacePath("/workspace/project/../project", "/workspace/project") {
+		t.Fatal("expected equivalent workspace paths to match")
+	}
+	if sameWorkspacePath("/workspace/project", "/workspace/other") {
+		t.Fatal("expected distinct workspace paths not to match")
+	}
+	if sameWorkspacePath("", "/workspace/project") {
+		t.Fatal("expected empty workspace path not to match")
+	}
+}
+
 func TestCreateProjectWithoutTimelineCreatesEmptyBaseRevision(t *testing.T) {
 	store := newFakeSessionStore()
 	svc := NewService(store)
@@ -283,12 +377,189 @@ func TestCreateEditProposalNormalizesAndValidatesVisualPlanReferences(t *testing
 	store.sessions["session"] = pebblestore.SessionSnapshot{ID: "session", AccountScopeID: principal.AccountScopeID, UserID: principal.UserID}
 	store.projects["project"] = pebblestore.VideoProjectSnapshot{ID: "project", AccountScopeID: principal.AccountScopeID, UserID: principal.UserID, SessionID: "session"}
 	store.artifacts["acc/session/slides/slide-1"] = pebblestore.SessionArtifactVariant{ID: "slide-1", CollectionID: "slides", SessionID: "session", AccountScopeID: "acc", Status: pebblestore.SessionArtifactStatusReady, MediaType: "image/png", EventSeq: 7}
-	plan := &pebblestore.VideoPlanProposal{Kind: pebblestore.VideoPlanKindInitial, Parts: []pebblestore.VideoPlanPart{{ID: "part-1", Title: "Hook", DurationMs: 3000, Visual: &pebblestore.SessionArtifactSelectionReference{CollectionID: "slides", VariantID: "slide-1", EventSeq: 7}}}}
+	store.artifacts["acc/session/motion/clip-1"] = pebblestore.SessionArtifactVariant{ID: "clip-1", CollectionID: "motion", SessionID: "session", AccountScopeID: "acc", Status: pebblestore.SessionArtifactStatusReady, MediaType: "video/mp4", EventSeq: 8}
+	plan := &pebblestore.VideoPlanProposal{Kind: pebblestore.VideoPlanKindInitial, Parts: []pebblestore.VideoPlanPart{
+		{ID: "part-1", Title: "Hook", DurationMs: 3000, Visual: &pebblestore.SessionArtifactSelectionReference{CollectionID: "slides", VariantID: "slide-1", EventSeq: 7}},
+		{ID: "part-2", Title: "Motion", DurationMs: 2000, SourceStartMs: 500, SourceEndMs: 2500, Visual: &pebblestore.SessionArtifactSelectionReference{CollectionID: "motion", VariantID: "clip-1", EventSeq: 8}},
+	}}
 	if _, err := svc.CreateEditProposal(context.Background(), principal, CreateEditProposalInput{SessionID: "session", ProjectID: "project", Plan: plan}); err != nil {
 		t.Fatalf("create visual plan proposal: %v", err)
 	}
-	if plan.Parts[0].Visual.SessionID != "session" || plan.Parts[0].VisualMediaType != "image/png" {
-		t.Fatalf("visual plan reference was not normalized: %+v", plan.Parts[0])
+	if plan.Parts[0].Visual.SessionID != "session" || plan.Parts[0].VisualMediaType != "image/png" || plan.Parts[1].Visual.SessionID != "session" || plan.Parts[1].VisualMediaType != "video/mp4" {
+		t.Fatalf("visual plan references were not normalized: %+v", plan.Parts)
+	}
+}
+
+func TestStartRenderJobBlocksPendingStoryboardPartsWithActionableCount(t *testing.T) {
+	store := newFakeSessionStore()
+	svc := NewService(store)
+	principal := identity.Principal{Type: identity.PrincipalTypeUser, AccountScopeID: "acc", UserID: "user"}
+	store.sessions["session"] = pebblestore.SessionSnapshot{ID: "session", AccountScopeID: "acc", UserID: "user"}
+	store.projects["project"] = pebblestore.VideoProjectSnapshot{ID: "project", AccountScopeID: "acc", UserID: "user", SessionID: "session", CurrentRevisionID: "storyboard"}
+	ref := &pebblestore.SessionArtifactSelectionReference{SessionID: "session", CollectionID: "stills", VariantID: "opening", EventSeq: 1}
+	plan := pebblestore.VideoPlanProposal{Kind: pebblestore.VideoPlanKindInitial, Parts: []pebblestore.VideoPlanPart{
+		{ID: "opening", DurationMs: 1000, ProductionState: "pending", Visual: ref, StoryboardStill: ref, VisualMediaType: "image/png"},
+		{ID: "proof", DurationMs: 1000, ProductionState: "pending", Visual: ref, StoryboardStill: ref, VisualMediaType: "image/png"},
+	}}
+	store.revisions["project"] = map[string]pebblestore.VideoProjectRevisionSnapshot{"storyboard": {ID: "storyboard", ProjectID: "project", SessionID: "session", AccountScopeID: "acc", UserID: "user", Timeline: pebblestore.VideoProjectTimeline{Clips: []pebblestore.VideoTimelineClip{{ID: "opening", SourceKind: pebblestore.VideoClipSourceKindManagedArtifact, ArtifactRef: ref, DurationMs: 1000}, {ID: "proof", SourceKind: pebblestore.VideoClipSourceKindManagedArtifact, ArtifactRef: ref, DurationMs: 1000}}, Metadata: map[string]any{"accepted_video_plan": plan}}}}
+	_, err := svc.StartRenderJob(context.Background(), principal, StartRenderJobInput{SessionID: "session", ProjectID: "project", RevisionID: "storyboard", JobID: "job"})
+	if err == nil || !strings.Contains(err.Error(), "2 storyboard part(s) remain pending") || !strings.Contains(err.Error(), "opening, proof") {
+		t.Fatalf("pending storyboard render error = %v", err)
+	}
+}
+
+func TestStartRenderJobAllowsLegacyPlansWithoutProductionState(t *testing.T) {
+	store := newFakeSessionStore()
+	svc := NewService(store)
+	principal := identity.Principal{Type: identity.PrincipalTypeUser, AccountScopeID: "acc", UserID: "user"}
+	store.sessions["session"] = pebblestore.SessionSnapshot{ID: "session", AccountScopeID: "acc", UserID: "user"}
+	store.projects["project"] = pebblestore.VideoProjectSnapshot{ID: "project", AccountScopeID: "acc", UserID: "user", SessionID: "session", CurrentRevisionID: "legacy"}
+	ref := &pebblestore.SessionArtifactSelectionReference{SessionID: "session", CollectionID: "stills", VariantID: "legacy", EventSeq: 1}
+	plan := pebblestore.VideoPlanProposal{Kind: pebblestore.VideoPlanKindInitial, Parts: []pebblestore.VideoPlanPart{{ID: "legacy", DurationMs: 1000, Visual: ref, VisualMediaType: "image/png"}}}
+	store.revisions["project"] = map[string]pebblestore.VideoProjectRevisionSnapshot{"legacy": {ID: "legacy", ProjectID: "project", SessionID: "session", AccountScopeID: "acc", UserID: "user", Timeline: pebblestore.VideoProjectTimeline{Clips: []pebblestore.VideoTimelineClip{{ID: "legacy", SourceKind: pebblestore.VideoClipSourceKindManagedArtifact, ArtifactRef: ref, DurationMs: 1000}}, Metadata: map[string]any{"accepted_video_plan": plan}}}}
+	if _, err := svc.StartRenderJob(context.Background(), principal, StartRenderJobInput{SessionID: "session", ProjectID: "project", RevisionID: "legacy", JobID: "job"}); err != nil {
+		t.Fatalf("legacy video plan should remain renderable: %v", err)
+	}
+}
+
+func TestStartRenderJobBlocksPendingWorkingRevision(t *testing.T) {
+	store := newFakeSessionStore()
+	svc := NewService(store)
+	principal := identity.Principal{Type: identity.PrincipalTypeUser, AccountScopeID: "acc", UserID: "user"}
+	store.sessions["session"] = pebblestore.SessionSnapshot{ID: "session", AccountScopeID: "acc", UserID: "user"}
+	store.projects["project"] = pebblestore.VideoProjectSnapshot{ID: "project", AccountScopeID: "acc", UserID: "user", SessionID: "session", CurrentRevisionID: "working"}
+	store.revisions["project"] = map[string]pebblestore.VideoProjectRevisionSnapshot{"working": {
+		ID: "working", ProjectID: "project", SessionID: "session", AccountScopeID: "acc", UserID: "user",
+		Timeline: pebblestore.VideoProjectTimeline{Clips: []pebblestore.VideoTimelineClip{{ID: "intro", SourceKind: pebblestore.VideoClipSourceKindColor, DurationMs: 1000, TimelineEndMs: 1000, Visible: true}}},
+	}}
+	store.proposals["pending"] = pebblestore.VideoEditProposalSnapshot{ID: "pending", ProjectID: "project", SessionID: "session", AccountScopeID: "acc", UserID: "user", WorkingRevisionID: "working", Status: pebblestore.VideoEditProposalStatusPending}
+
+	_, err := svc.StartRenderJob(context.Background(), principal, StartRenderJobInput{SessionID: "session", ProjectID: "project", RevisionID: "working", JobID: "job"})
+	if err == nil || !strings.Contains(err.Error(), "pending working cut") || !strings.Contains(err.Error(), "confirm or reject") {
+		t.Fatalf("pending working revision render error = %v", err)
+	}
+	if len(store.jobs) != 0 {
+		t.Fatalf("blocked pending render created job: %+v", store.jobs)
+	}
+}
+
+func TestStartRenderJobAllowsConfirmedLockedHTMLAnimation(t *testing.T) {
+	store := newFakeSessionStore()
+	svc := NewService(store)
+	principal := identity.Principal{Type: identity.PrincipalTypeUser, AccountScopeID: "acc", UserID: "user"}
+	store.sessions["session"] = pebblestore.SessionSnapshot{ID: "session", AccountScopeID: "acc", UserID: "user"}
+	store.projects["project"] = pebblestore.VideoProjectSnapshot{ID: "project", AccountScopeID: "acc", UserID: "user", SessionID: "session", CurrentRevisionID: "working"}
+	htmlRef := &pebblestore.SessionArtifactSelectionReference{SessionID: "session", CollectionID: "motion", VariantID: "html", EventSeq: 7}
+	fallback := &pebblestore.SessionArtifactSelectionReference{SessionID: "session", CollectionID: "fallback", VariantID: "still", EventSeq: 6}
+	plan := pebblestore.VideoPlanProposal{Kind: pebblestore.VideoPlanKindInitial, Parts: []pebblestore.VideoPlanPart{{
+		ID: "intro", DurationMs: 1000, Visual: fallback, VisualMediaType: "image/png", AnimationCandidates: &pebblestore.VideoAnimationCandidateSet{
+			Status: pebblestore.VideoAnimationCandidateStatusAwaitingExport, SelectedCandidateID: "a", SelectedSource: htmlRef,
+		},
+	}}}
+	store.revisions["project"] = map[string]pebblestore.VideoProjectRevisionSnapshot{"working": {
+		ID: "working", ProjectID: "project", SessionID: "session", AccountScopeID: "acc", UserID: "user",
+		Timeline: pebblestore.VideoProjectTimeline{Clips: []pebblestore.VideoTimelineClip{{ID: "intro", SourceKind: pebblestore.VideoClipSourceKindManagedArtifact, ArtifactRef: fallback, MediaType: "image/png", DurationMs: 1000, SourceEndMs: 1000}}, Metadata: map[string]any{"accepted_video_plan": plan}},
+	}}
+	if _, err := svc.StartRenderJob(context.Background(), principal, StartRenderJobInput{SessionID: "session", ProjectID: "project", RevisionID: "working", JobID: "job"}); err != nil {
+		t.Fatalf("confirmed locked HTML revision should be renderable: %v", err)
+	}
+}
+
+func TestStartRenderJobRecoversExactLegacyLockedHTMLAuthority(t *testing.T) {
+	store := newFakeSessionStore()
+	svc := NewService(store)
+	principal := identity.Principal{Type: identity.PrincipalTypeUser, AccountScopeID: "acc", UserID: "user"}
+	store.sessions["session"] = pebblestore.SessionSnapshot{ID: "session", AccountScopeID: "acc", UserID: "user"}
+	store.projects["project"] = pebblestore.VideoProjectSnapshot{ID: "project", AccountScopeID: "acc", UserID: "user", SessionID: "session", CurrentRevisionID: "accepted"}
+	htmlRef := &pebblestore.SessionArtifactSelectionReference{SessionID: "session", CollectionID: "motion", VariantID: "html", EventSeq: 7}
+	fallback := &pebblestore.SessionArtifactSelectionReference{SessionID: "session", CollectionID: "fallback", VariantID: "still", EventSeq: 6}
+	unlocked := pebblestore.VideoPlanProposal{Kind: pebblestore.VideoPlanKindInitial, Parts: []pebblestore.VideoPlanPart{{ID: "signal", DurationMs: 1000, Visual: fallback, AnimationCandidates: &pebblestore.VideoAnimationCandidateSet{Status: pebblestore.VideoAnimationCandidateStatusAwaitingSelection, Candidates: []pebblestore.VideoAnimationCandidate{{ID: "orbit", Source: htmlRef}, {ID: "pulse", Source: &pebblestore.SessionArtifactSelectionReference{SessionID: "session", CollectionID: "motion", VariantID: "other", EventSeq: 8}}}}}}}
+	locked := unlocked
+	locked.Parts = append([]pebblestore.VideoPlanPart(nil), unlocked.Parts...)
+	lockedCandidates := *unlocked.Parts[0].AnimationCandidates
+	lockedCandidates.SelectedCandidateID = "orbit"
+	lockedCandidates.SelectedSource = htmlRef
+	lockedCandidates.Status = pebblestore.VideoAnimationCandidateStatusAwaitingExport
+	locked.Parts[0].AnimationCandidates = &lockedCandidates
+	store.revisions["project"] = map[string]pebblestore.VideoProjectRevisionSnapshot{"accepted": {ID: "accepted", ProjectID: "project", SessionID: "session", AccountScopeID: "acc", UserID: "user", CreatedAt: 200, Timeline: pebblestore.VideoProjectTimeline{Clips: []pebblestore.VideoTimelineClip{{ID: "signal", SourceKind: pebblestore.VideoClipSourceKindManagedArtifact, ArtifactRef: fallback, MediaType: "image/png", DurationMs: 1000, SourceEndMs: 1000}}, Metadata: map[string]any{"accepted_video_plan": unlocked, "accepted_video_plan_proposal_id": "initial-proposal"}}}}
+	store.proposals["initial-proposal"] = pebblestore.VideoEditProposalSnapshot{ID: "initial-proposal", ProjectID: "project", SessionID: "session", AccountScopeID: "acc", UserID: "user", Plan: &locked, WorkingRevisionID: "working", UpdatedAt: 150}
+
+	if _, err := svc.StartRenderJob(context.Background(), principal, StartRenderJobInput{SessionID: "session", ProjectID: "project", RevisionID: "accepted", JobID: "legacy-job"}); err != nil {
+		t.Fatalf("legacy exact proposal selection should remain renderable: %v", err)
+	}
+}
+
+func TestStartRenderJobDoesNotUseProposalSelectionNewerThanRevision(t *testing.T) {
+	store := newFakeSessionStore()
+	svc := NewService(store)
+	principal := identity.Principal{Type: identity.PrincipalTypeUser, AccountScopeID: "acc", UserID: "user"}
+	store.sessions["session"] = pebblestore.SessionSnapshot{ID: "session", AccountScopeID: "acc", UserID: "user"}
+	store.projects["project"] = pebblestore.VideoProjectSnapshot{ID: "project", AccountScopeID: "acc", UserID: "user", SessionID: "session", CurrentRevisionID: "history"}
+	htmlRef := &pebblestore.SessionArtifactSelectionReference{SessionID: "session", CollectionID: "motion", VariantID: "html", EventSeq: 7}
+	fallback := &pebblestore.SessionArtifactSelectionReference{SessionID: "session", CollectionID: "fallback", VariantID: "still", EventSeq: 6}
+	unlocked := pebblestore.VideoPlanProposal{Kind: pebblestore.VideoPlanKindInitial, Parts: []pebblestore.VideoPlanPart{{ID: "signal", DurationMs: 1000, Visual: fallback, AnimationCandidates: &pebblestore.VideoAnimationCandidateSet{Status: pebblestore.VideoAnimationCandidateStatusAwaitingSelection, Candidates: []pebblestore.VideoAnimationCandidate{{ID: "orbit", Source: htmlRef}, {ID: "pulse", Source: &pebblestore.SessionArtifactSelectionReference{SessionID: "session", CollectionID: "motion", VariantID: "other", EventSeq: 8}}}}}}}
+	locked := unlocked
+	locked.Parts = append([]pebblestore.VideoPlanPart(nil), unlocked.Parts...)
+	lockedCandidates := *unlocked.Parts[0].AnimationCandidates
+	lockedCandidates.SelectedCandidateID = "orbit"
+	lockedCandidates.SelectedSource = htmlRef
+	locked.Parts[0].AnimationCandidates = &lockedCandidates
+	store.revisions["project"] = map[string]pebblestore.VideoProjectRevisionSnapshot{"history": {ID: "history", ProjectID: "project", SessionID: "session", AccountScopeID: "acc", UserID: "user", CreatedAt: 100, Timeline: pebblestore.VideoProjectTimeline{Clips: []pebblestore.VideoTimelineClip{{ID: "signal", SourceKind: pebblestore.VideoClipSourceKindManagedArtifact, ArtifactRef: fallback, MediaType: "image/png", DurationMs: 1000, SourceEndMs: 1000}}, Metadata: map[string]any{"accepted_video_plan": unlocked, "accepted_video_plan_proposal_id": "initial-proposal"}}}}
+	store.proposals["initial-proposal"] = pebblestore.VideoEditProposalSnapshot{ID: "initial-proposal", ProjectID: "project", SessionID: "session", AccountScopeID: "acc", UserID: "user", Plan: &locked, WorkingRevisionID: "working", UpdatedAt: 150}
+
+	if _, err := svc.StartRenderJob(context.Background(), principal, StartRenderJobInput{SessionID: "session", ProjectID: "project", RevisionID: "history", JobID: "history-job"}); err == nil || !strings.Contains(err.Error(), "durably locked") {
+		t.Fatalf("newer proposal selection must not rewrite historical render authority: %v", err)
+	}
+}
+
+func TestStartRenderJobRejectsFailedHTMLAnimation(t *testing.T) {
+	store := newFakeSessionStore()
+	svc := NewService(store)
+	principal := identity.Principal{Type: identity.PrincipalTypeUser, AccountScopeID: "acc", UserID: "user"}
+	store.sessions["session"] = pebblestore.SessionSnapshot{ID: "session", AccountScopeID: "acc", UserID: "user"}
+	store.projects["project"] = pebblestore.VideoProjectSnapshot{ID: "project", AccountScopeID: "acc", UserID: "user", SessionID: "session", CurrentRevisionID: "working"}
+	ref := &pebblestore.SessionArtifactSelectionReference{SessionID: "session", CollectionID: "motion", VariantID: "html", EventSeq: 7}
+	plan := pebblestore.VideoPlanProposal{Kind: pebblestore.VideoPlanKindInitial, Parts: []pebblestore.VideoPlanPart{{ID: "intro", DurationMs: 1000, Visual: ref, AnimationCandidates: &pebblestore.VideoAnimationCandidateSet{Status: pebblestore.VideoAnimationCandidateStatusFailed, SelectedCandidateID: "a", SelectedSource: ref, FailureReason: "animation_seek_unstable"}}}}
+	store.revisions["project"] = map[string]pebblestore.VideoProjectRevisionSnapshot{"working": {ID: "working", ProjectID: "project", SessionID: "session", AccountScopeID: "acc", UserID: "user", Timeline: pebblestore.VideoProjectTimeline{Clips: []pebblestore.VideoTimelineClip{{ID: "intro", SourceKind: pebblestore.VideoClipSourceKindManagedArtifact, ArtifactRef: ref, DurationMs: 1000}}, Metadata: map[string]any{"accepted_video_plan": plan}}}}
+	if _, err := svc.StartRenderJob(context.Background(), principal, StartRenderJobInput{SessionID: "session", ProjectID: "project", RevisionID: "working", JobID: "job"}); err == nil || !strings.Contains(err.Error(), "animation_seek_unstable") {
+		t.Fatalf("failed HTML render error = %v", err)
+	}
+}
+
+func TestValidateTimelineArtifactsRejectsManagedMP4RangeAndMediaMismatches(t *testing.T) {
+	store := newFakeSessionStore()
+	svc := NewService(store)
+	principal := identity.Principal{Type: identity.PrincipalTypeUser, AccountScopeID: "acc", UserID: "user"}
+	store.sessions["session"] = pebblestore.SessionSnapshot{ID: "session", AccountScopeID: "acc", UserID: "user"}
+	store.artifacts["acc/session/motion/clip-1"] = pebblestore.SessionArtifactVariant{ID: "clip-1", CollectionID: "motion", SessionID: "session", AccountScopeID: "acc", Status: pebblestore.SessionArtifactStatusReady, MediaType: "video/mp4", EventSeq: 8}
+	clip := pebblestore.VideoTimelineClip{
+		ID: "motion", SourceKind: pebblestore.VideoClipSourceKindManagedArtifact, MediaType: "video/mp4",
+		ArtifactRef:   &pebblestore.SessionArtifactSelectionReference{SessionID: "session", CollectionID: "motion", VariantID: "clip-1", EventSeq: 8},
+		SourceStartMs: 500, SourceEndMs: 2500, DurationMs: 2000,
+	}
+	if err := svc.validateTimelineArtifacts(principal, "session", pebblestore.VideoProjectTimeline{Clips: []pebblestore.VideoTimelineClip{clip}}); err != nil {
+		t.Fatalf("valid managed MP4 range rejected: %v", err)
+	}
+	clip.SourceEndMs = 2400
+	if err := svc.validateTimelineArtifacts(principal, "session", pebblestore.VideoProjectTimeline{Clips: []pebblestore.VideoTimelineClip{clip}}); err == nil || !strings.Contains(err.Error(), "duration must match") {
+		t.Fatalf("expected managed MP4 duration mismatch, got %v", err)
+	}
+	clip.SourceEndMs, clip.MediaType = 2500, "image/png"
+	if err := svc.validateTimelineArtifacts(principal, "session", pebblestore.VideoProjectTimeline{Clips: []pebblestore.VideoTimelineClip{clip}}); err == nil || !strings.Contains(err.Error(), "media_type does not match") {
+		t.Fatalf("expected managed artifact media mismatch, got %v", err)
+	}
+}
+
+func TestValidateTimelineArtifactsRejectsUnownedCrossSessionReference(t *testing.T) {
+	store := newFakeSessionStore()
+	svc := NewService(store)
+	principal := identity.Principal{Type: identity.PrincipalTypeUser, AccountScopeID: "acc", UserID: "user"}
+	store.sessions["session"] = pebblestore.SessionSnapshot{ID: "session", AccountScopeID: "acc", UserID: "user"}
+	store.sessions["other"] = pebblestore.SessionSnapshot{ID: "other", AccountScopeID: "acc", UserID: "other-user"}
+	store.artifacts["acc/other/slides/slide-1"] = pebblestore.SessionArtifactVariant{ID: "slide-1", CollectionID: "slides", SessionID: "other", AccountScopeID: "acc", Status: pebblestore.SessionArtifactStatusReady, MediaType: "image/png", EventSeq: 3}
+	clip := pebblestore.VideoTimelineClip{ID: "still", SourceKind: pebblestore.VideoClipSourceKindManagedArtifact, MediaType: "image/png", DurationMs: 1000, ArtifactRef: &pebblestore.SessionArtifactSelectionReference{SessionID: "other", CollectionID: "slides", VariantID: "slide-1", EventSeq: 3}}
+	if err := svc.validateTimelineArtifacts(principal, "session", pebblestore.VideoProjectTimeline{Clips: []pebblestore.VideoTimelineClip{clip}}); err == nil || !strings.Contains(err.Error(), "not owned") {
+		t.Fatalf("expected cross-session ownership rejection, got %v", err)
 	}
 }
 
@@ -339,6 +610,8 @@ func TestVideoprojectServiceWorkflow(t *testing.T) {
 						VariantID:    "var_intro_v1",
 						EventSeq:     1,
 					},
+					SourceStartMs:   0,
+					SourceEndMs:     4000,
 					DurationMs:      4000,
 					TimelineStartMs: 0,
 					TimelineEndMs:   4000,
@@ -397,6 +670,18 @@ func TestVideoprojectServiceWorkflow(t *testing.T) {
 	}
 	if restored.ParentRevisionID != rev2.ID || restored.RestoredFromRevisionID != rev.ID || restored.Timeline.Clips[0].Volume != rev.Timeline.Clips[0].Volume || restoredProject.CurrentRevisionID != restored.ID {
 		t.Fatalf("restore lineage mismatch: %+v", restored)
+	}
+
+	store.sessions["destination"] = pebblestore.SessionSnapshot{ID: "destination", AccountScopeID: principal.AccountScopeID, UserID: principal.UserID, WorkspacePath: "/workspace"}
+	forked, forkedRevision, err := svc.ForkRevision(ctx, principal, ForkRevisionInput{SourceSessionID: sessionID, SourceProjectID: project.ID, SourceRevisionID: rev.ID, DestinationSessionID: "destination", ProjectID: "forked"})
+	if err != nil {
+		t.Fatalf("fork revision failed: %v", err)
+	}
+	if forkedRevision == nil || forkedRevision.Timeline.Clips[0].Volume != rev.Timeline.Clips[0].Volume || forked.Metadata["source_revision_id"] != rev.ID {
+		t.Fatalf("fork did not preserve exact source and lineage: project=%+v revision=%+v", forked, forkedRevision)
+	}
+	if source, ok := store.projects[project.ID]; !ok || source.CurrentRevisionID != restored.ID {
+		t.Fatalf("fork mutated source project: %+v", source)
 	}
 
 	// 3. Start render job

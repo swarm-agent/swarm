@@ -27,6 +27,29 @@ type TimelinePlan struct {
 	FFmpegArgs      []string
 }
 
+// CompositionPlacement is immutable, pixel-resolved spatial information for one
+// composition source. It is produced from the revision-owned composition catalog
+// during materialization and consumed by both frame inspection and final render.
+type CompositionPlacement struct {
+	SlotID         string
+	X              int
+	Y              int
+	Width          int
+	Height         int
+	Fit            string
+	AlignmentX     float64
+	AlignmentY     float64
+	CropTop        float64
+	CropRight      float64
+	CropBottom     float64
+	CropLeft       float64
+	MaskKind       string
+	MaskRadius     float64
+	ZIndex         int
+	SourceSpanMs   int64
+	TimelineSpanMs int64
+}
+
 type MaterializedInput struct {
 	Index           int
 	ClipID          string
@@ -48,6 +71,7 @@ type MaterializedInput struct {
 	OverlayMode     string
 	Captions        []pebblestore.VideoTextOverlay
 	DesignInputs    []MaterializedInput
+	Composition     *CompositionPlacement
 }
 
 // ResolveDimensions derives target pixel dimensions from timeline settings and preset.
@@ -114,26 +138,29 @@ func BuildFFmpegCommandLine(timeline pebblestore.VideoProjectTimeline, inputs []
 
 	clipDurations := make([]int64, len(inputs))
 	var totalDurationMs int64
+	var tailPadMs int64
 	layeredTimeline := false
 	for i, in := range inputs {
 		dur := in.EndMs - in.StartMs
-		if dur <= 0 {
+		if in.Composition != nil && in.Composition.TimelineSpanMs > 0 {
+			dur = in.Composition.TimelineSpanMs
+		} else if dur <= 0 {
 			dur = in.DurationMs
 		}
 		if dur <= 0 {
 			dur = 1000
 		}
 		clipDurations[i] = dur
-		if !in.IsAudio {
+		if !in.IsAudio && in.Composition == nil && in.Track == 0 {
 			totalDurationMs += dur
 		}
-		if in.IsAudio || in.Track != 0 || in.Layer != 0 {
+		if in.IsAudio || in.Track != 0 || in.Layer != 0 || in.Composition != nil {
 			layeredTimeline = true
 		}
 	}
 	primaryInputIndexes := make([]int, 0, len(inputs))
 	for index, input := range inputs {
-		if input.IsAudio {
+		if input.IsAudio || input.Composition != nil {
 			continue
 		}
 		if !layeredTimeline || input.Track == 0 {
@@ -174,7 +201,10 @@ func BuildFFmpegCommandLine(timeline pebblestore.VideoProjectTimeline, inputs []
 		}
 	} else {
 		totalDurationMs -= overlapMs
-		if timeline.TotalDurationMs > 0 && timeline.TotalDurationMs < totalDurationMs {
+		if timeline.TotalDurationMs > 0 {
+			if timeline.TotalDurationMs > totalDurationMs {
+				tailPadMs = timeline.TotalDurationMs - totalDurationMs
+			}
 			totalDurationMs = timeline.TotalDurationMs
 		}
 	}
@@ -216,11 +246,16 @@ func BuildFFmpegCommandLine(timeline pebblestore.VideoProjectTimeline, inputs []
 		aOut := fmt.Sprintf("[a%d]", i)
 
 		durSec := float64(input.EndMs-input.StartMs) / 1000.0
-		if durSec <= 0 {
+		if input.Composition != nil && input.Composition.TimelineSpanMs > 0 {
+			durSec = float64(input.Composition.TimelineSpanMs) / 1000.0
+		} else if durSec <= 0 {
 			durSec = float64(input.DurationMs) / 1000.0
 		}
 		if durSec <= 0 {
 			durSec = 1.0
+		}
+		if input.Composition != nil && (input.Composition.SourceSpanMs <= 0 || input.Composition.TimelineSpanMs <= 0) {
+			return nil, fmt.Errorf("composition slot %q requires positive source and timeline spans", input.Composition.SlotID)
 		}
 		startSec := float64(input.StartMs) / 1000.0
 		if startSec < 0 {
@@ -234,21 +269,43 @@ func BuildFFmpegCommandLine(timeline pebblestore.VideoProjectTimeline, inputs []
 			// never be referenced through an ffmpeg video stream selector.
 			var vFilters []string
 			if startSec > 0 || (input.EndMs > input.StartMs && input.EndMs > 0) {
-				vFilters = append(vFilters, fmt.Sprintf("trim=start=%.3f:duration=%.3f", startSec, durSec))
+				sourceDurationSec := durSec
+				if input.Composition != nil && input.EndMs > input.StartMs {
+					sourceDurationSec = float64(input.EndMs-input.StartMs) / 1000.0
+				}
+				vFilters = append(vFilters, fmt.Sprintf("trim=start=%.3f:duration=%.3f", startSec, sourceDurationSec))
 			}
-			vFilters = append(vFilters,
-				fmt.Sprintf("scale=%d:%d:force_original_aspect_ratio=decrease", dims.Width, dims.Height),
-				fmt.Sprintf("pad=%d:%d:(ow-iw)/2:(oh-ih)/2:black", dims.Width, dims.Height),
-				"setsar=1",
-				fmt.Sprintf("fps=%.2f", fps),
-				"format=pix_fmts=yuv420p",
-				// concat emits AVTB (1/1000000) while fps commonly emits 1/FPS.
-				// Normalize every source before any join so a cut followed by xfade
-				// cannot feed xfade mismatched timebases. Reset timestamps for source
-				// files whose first decoded frame does not begin at zero as well.
-				"settb=AVTB",
-				"setpts=PTS-STARTPTS",
-			)
+			if input.Composition != nil {
+				placementFilters, err := compositionVideoFilters(*input.Composition)
+				if err != nil {
+					return nil, fmt.Errorf("composition slot %q: %w", input.Composition.SlotID, err)
+				}
+				vFilters = append(vFilters, placementFilters...)
+				vFilters = append(vFilters,
+					"setsar=1",
+					fmt.Sprintf("fps=%.2f", fps),
+					"settb=AVTB",
+				)
+				if input.Composition.SourceSpanMs > 0 && input.Composition.TimelineSpanMs > 0 && input.Composition.SourceSpanMs != input.Composition.TimelineSpanMs {
+					vFilters = append(vFilters, fmt.Sprintf("setpts=(PTS-STARTPTS)*%.9f", float64(input.Composition.TimelineSpanMs)/float64(input.Composition.SourceSpanMs)))
+				} else {
+					vFilters = append(vFilters, "setpts=PTS-STARTPTS")
+				}
+			} else {
+				vFilters = append(vFilters,
+					fmt.Sprintf("scale=%d:%d:force_original_aspect_ratio=decrease", dims.Width, dims.Height),
+					fmt.Sprintf("pad=%d:%d:(ow-iw)/2:(oh-ih)/2:black", dims.Width, dims.Height),
+					"setsar=1",
+					fmt.Sprintf("fps=%.2f", fps),
+					"format=pix_fmts=yuv420p",
+					// concat emits AVTB (1/1000000) while fps commonly emits 1/FPS.
+					// Normalize every source before any join so a cut followed by xfade
+					// cannot feed xfade mismatched timebases. Reset timestamps for source
+					// files whose first decoded frame does not begin at zero as well.
+					"settb=AVTB",
+					"setpts=PTS-STARTPTS",
+				)
+			}
 
 			for _, caption := range input.Captions {
 				drawFilter := formatCaptionFilter(caption, dims)
@@ -264,7 +321,7 @@ func BuildFFmpegCommandLine(timeline pebblestore.VideoProjectTimeline, inputs []
 		// Audio filter chain for this input
 		if input.HasAudio && !input.Muted {
 			vol := input.Volume
-			if vol <= 0 {
+			if vol <= 0 && input.Composition == nil {
 				vol = 1.0
 			}
 			var aFilters []string
@@ -278,11 +335,15 @@ func BuildFFmpegCommandLine(timeline pebblestore.VideoProjectTimeline, inputs []
 			)
 			filterParts = append(filterParts, fmt.Sprintf("%s%s%s", aIn, strings.Join(aFilters, ","), aOut))
 			audioStreams = append(audioStreams, aOut)
-		} else {
-			// Generate silent audio for consistent stream matching
+		} else if input.IsAudio || input.Track == 0 {
+			// Primary-track visuals need deterministic silence so joins always
+			// receive matched audio streams. Muted/non-audio overlay inputs are
+			// never mixed and must not leave an unconnected filter output.
 			silenceOut := fmt.Sprintf("[asilence%d]", i)
 			filterParts = append(filterParts, fmt.Sprintf("aevalsrc=0:d=%.3f:s=48000:c=stereo%s", durSec, silenceOut))
 			audioStreams = append(audioStreams, silenceOut)
+		} else {
+			audioStreams = append(audioStreams, "")
 		}
 	}
 
@@ -322,32 +383,90 @@ func BuildFFmpegCommandLine(timeline pebblestore.VideoProjectTimeline, inputs []
 		plan.AudioMap = audioOut
 	}
 
+	if !layeredTimeline && timeline.TotalDurationMs > 0 {
+		videoDurationOut := "[v_timeline_duration]"
+		videoDurationFilters := make([]string, 0, 3)
+		if tailPadMs > 0 {
+			videoDurationFilters = append(videoDurationFilters, fmt.Sprintf("tpad=stop_mode=clone:stop_duration=%.3f", float64(tailPadMs)/1000))
+		}
+		videoDurationFilters = append(videoDurationFilters,
+			fmt.Sprintf("trim=duration=%.3f", float64(totalDurationMs)/1000),
+			"setpts=PTS-STARTPTS",
+		)
+		filterParts = append(filterParts, fmt.Sprintf("%s%s%s", plan.VideoMap, strings.Join(videoDurationFilters, ","), videoDurationOut))
+		plan.VideoMap = videoDurationOut
+	}
+
 	if layeredTimeline {
+		overlayIndexes := make([]int, 0, len(inputs))
 		for inputIndex, input := range inputs {
-			if input.Track == 0 && !input.IsAudio {
-				continue
+			if input.Track != 0 || input.IsAudio || input.Composition != nil {
+				overlayIndexes = append(overlayIndexes, inputIndex)
+			}
+		}
+		sort.SliceStable(overlayIndexes, func(i, j int) bool {
+			left, right := inputs[overlayIndexes[i]], inputs[overlayIndexes[j]]
+			leftLayer, rightLayer := left.Layer, right.Layer
+			if left.Composition != nil {
+				leftLayer = left.Composition.ZIndex
+			}
+			if right.Composition != nil {
+				rightLayer = right.Composition.ZIndex
+			}
+			if leftLayer != rightLayer {
+				return leftLayer < rightLayer
+			}
+			if left.TimelineStartMs != right.TimelineStartMs {
+				return left.TimelineStartMs < right.TimelineStartMs
+			}
+			return left.ClipID < right.ClipID
+		})
+		for _, inputIndex := range overlayIndexes {
+			input := inputs[inputIndex]
+			if input.TimelineStartMs < 0 {
+				if input.Composition != nil {
+					return nil, fmt.Errorf("composition input %q has negative timeline start", input.ClipID)
+				}
+				input.TimelineStartMs = 0
 			}
 			startSec := float64(input.TimelineStartMs) / 1000
 			endMs := input.TimelineEndMs
 			if endMs <= input.TimelineStartMs {
 				endMs = input.TimelineStartMs + clipDurations[inputIndex]
 			}
+			if endMs > totalDurationMs {
+				if input.Composition != nil {
+					return nil, fmt.Errorf("composition input %q exceeds total timeline duration", input.ClipID)
+				}
+				endMs = totalDurationMs
+			}
 			if !input.IsAudio {
 				endSec := float64(endMs) / 1000
 				shiftedVideo := fmt.Sprintf("[v_layer_shift_%d]", inputIndex)
 				videoOut := fmt.Sprintf("[v_layer_%d]", inputIndex)
+				overlay := "overlay=eof_action=pass"
+				if input.Composition != nil {
+					overlay = fmt.Sprintf("overlay=x=%d:y=%d:eof_action=pass", input.Composition.X, input.Composition.Y)
+				}
 				filterParts = append(filterParts,
-					fmt.Sprintf("%ssetpts=PTS-STARTPTS+%.3f/TB%s", videoStreams[inputIndex], startSec, shiftedVideo),
-					fmt.Sprintf("%s%soverlay=eof_action=pass:enable='between(t,%.3f,%.3f)'%s", plan.VideoMap, shiftedVideo, startSec, endSec, videoOut),
+					fmt.Sprintf("%ssetpts=PTS+%.3f/TB%s", videoStreams[inputIndex], startSec, shiftedVideo),
+					fmt.Sprintf("%s%s%s:enable='between(t,%.3f,%.3f)'%s", plan.VideoMap, shiftedVideo, overlay, startSec, endSec, videoOut),
 				)
 				plan.VideoMap = videoOut
 			}
 			if input.HasAudio && !input.Muted {
+				if plan.AudioMap == "" {
+					return nil, errors.New("included overlay audio requires a primary timeline audio authority")
+				}
 				shiftedAudio := fmt.Sprintf("[a_layer_shift_%d]", inputIndex)
 				audioOut := fmt.Sprintf("[a_layer_%d]", inputIndex)
 				delayMs := max(input.TimelineStartMs, 0)
+				audioShift := fmt.Sprintf("adelay=%d|%d", delayMs, delayMs)
+				if input.Composition != nil {
+					audioShift += fmt.Sprintf(",apad,atrim=duration=%.3f", float64(totalDurationMs)/1000)
+				}
 				filterParts = append(filterParts,
-					fmt.Sprintf("%sadelay=%d|%d%s", audioStreams[inputIndex], delayMs, delayMs, shiftedAudio),
+					fmt.Sprintf("%s%s%s", audioStreams[inputIndex], audioShift, shiftedAudio),
 					fmt.Sprintf("%s%samix=inputs=2:duration=first:dropout_transition=0:normalize=0%s", plan.AudioMap, shiftedAudio, audioOut),
 				)
 				plan.AudioMap = audioOut
@@ -355,6 +474,9 @@ func BuildFFmpegCommandLine(timeline pebblestore.VideoProjectTimeline, inputs []
 		}
 	}
 
+	if plan.AudioMap == "" {
+		return nil, errors.New("video render requires a primary timeline audio authority")
+	}
 	masterVolume := 1.0
 	if timeline.AudioPolicy != nil {
 		if timeline.AudioPolicy.Muted {
@@ -364,11 +486,27 @@ func BuildFFmpegCommandLine(timeline pebblestore.VideoProjectTimeline, inputs []
 		}
 	}
 	masterAudioOut := "[a_master]"
-	filterParts = append(filterParts, fmt.Sprintf("%svolume=%.2f,atrim=duration=%.3f%s", plan.AudioMap, masterVolume, float64(totalDurationMs)/1000, masterAudioOut))
+	masterAudioFilters := []string{fmt.Sprintf("volume=%.2f", masterVolume)}
+	if tailPadMs > 0 {
+		masterAudioFilters = append(masterAudioFilters, fmt.Sprintf("apad=pad_dur=%.3f", float64(tailPadMs)/1000))
+	}
+	masterAudioFilters = append(masterAudioFilters, fmt.Sprintf("atrim=duration=%.3f", float64(totalDurationMs)/1000))
+	filterParts = append(filterParts, fmt.Sprintf("%s%s%s", plan.AudioMap, strings.Join(masterAudioFilters, ","), masterAudioOut))
 	plan.AudioMap = masterAudioOut
 
 	plan.FilterComplex = strings.Join(filterParts, ";")
 
+	qualityPreset, qualityCRF := "veryfast", "18"
+	if timeline.Metadata != nil {
+		switch strings.ToLower(strings.TrimSpace(fmt.Sprint(timeline.Metadata["render_quality"]))) {
+		case pebblestore.VideoRenderQualityPreview:
+			qualityPreset, qualityCRF = "ultrafast", "30"
+		case pebblestore.VideoRenderQualityStandard:
+			qualityPreset, qualityCRF = "veryfast", "23"
+		case pebblestore.VideoRenderQualityMaster:
+			qualityPreset, qualityCRF = "fast", "15"
+		}
+	}
 	args = append(args,
 		"-filter_complex", plan.FilterComplex,
 		"-map", plan.VideoMap,
@@ -377,8 +515,8 @@ func BuildFFmpegCommandLine(timeline pebblestore.VideoProjectTimeline, inputs []
 		"-pix_fmt", "yuv420p",
 		"-profile:v", "high",
 		"-level", "4.1",
-		"-preset", "medium",
-		"-crf", "23",
+		"-preset", qualityPreset,
+		"-crf", qualityCRF,
 		"-c:a", "aac",
 		"-b:a", "192k",
 		"-ar", "48000",
@@ -389,6 +527,73 @@ func BuildFFmpegCommandLine(timeline pebblestore.VideoProjectTimeline, inputs []
 
 	plan.FFmpegArgs = args
 	return plan, nil
+}
+
+func compositionVideoFilters(placement CompositionPlacement) ([]string, error) {
+	if placement.Width < 2 || placement.Height < 2 || placement.Width%2 != 0 || placement.Height%2 != 0 || placement.X < 0 || placement.Y < 0 || placement.X%2 != 0 || placement.Y%2 != 0 {
+		return nil, errors.New("placement must use non-negative even coordinates and positive even dimensions")
+	}
+	if math.IsNaN(placement.AlignmentX) || math.IsNaN(placement.AlignmentY) || math.IsInf(placement.AlignmentX, 0) || math.IsInf(placement.AlignmentY, 0) ||
+		placement.AlignmentX < 0 || placement.AlignmentX > 1 || placement.AlignmentY < 0 || placement.AlignmentY > 1 {
+		return nil, errors.New("alignment must be finite and within 0..1")
+	}
+	crops := []float64{placement.CropTop, placement.CropRight, placement.CropBottom, placement.CropLeft}
+	for _, crop := range crops {
+		if math.IsNaN(crop) || math.IsInf(crop, 0) || crop < 0 {
+			return nil, errors.New("crop must be finite and non-negative")
+		}
+	}
+	if placement.CropLeft+placement.CropRight >= 1 || placement.CropTop+placement.CropBottom >= 1 {
+		return nil, errors.New("crop must leave a positive source area")
+	}
+	filters := make([]string, 0, 8)
+	if placement.CropTop != 0 || placement.CropRight != 0 || placement.CropBottom != 0 || placement.CropLeft != 0 {
+		cropWidth := 1 - placement.CropLeft - placement.CropRight
+		cropHeight := 1 - placement.CropTop - placement.CropBottom
+		filters = append(filters, fmt.Sprintf("crop=w=trunc(iw*%.6f/2)*2:h=trunc(ih*%.6f/2)*2:x=trunc(iw*%.6f/2)*2:y=trunc(ih*%.6f/2)*2", cropWidth, cropHeight, placement.CropLeft, placement.CropTop))
+	}
+	switch placement.Fit {
+	case "contain":
+		padX := fmt.Sprintf("trunc((ow-iw)*%.6f/2)*2", placement.AlignmentX)
+		padY := fmt.Sprintf("trunc((oh-ih)*%.6f/2)*2", placement.AlignmentY)
+		filters = append(filters,
+			fmt.Sprintf("scale=%d:%d:force_original_aspect_ratio=decrease", placement.Width, placement.Height),
+			fmt.Sprintf("pad=%d:%d:%s:%s:color=black@0", placement.Width, placement.Height, padX, padY),
+		)
+	case "cover":
+		cropX := fmt.Sprintf("trunc((iw-ow)*%.6f/2)*2", placement.AlignmentX)
+		cropY := fmt.Sprintf("trunc((ih-oh)*%.6f/2)*2", placement.AlignmentY)
+		filters = append(filters,
+			fmt.Sprintf("scale=%d:%d:force_original_aspect_ratio=increase", placement.Width, placement.Height),
+			fmt.Sprintf("crop=%d:%d:%s:%s", placement.Width, placement.Height, cropX, cropY),
+		)
+	default:
+		return nil, fmt.Errorf("unsupported fit %q", placement.Fit)
+	}
+
+	switch placement.MaskKind {
+	case "", "none":
+		filters = append(filters, "format=pix_fmts=yuva420p")
+	case "ellipse":
+		filters = append(filters,
+			"format=pix_fmts=yuva420p",
+			"geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='if(lte(pow((X-W/2)/(W/2),2)+pow((Y-H/2)/(H/2),2),1),255,0)'",
+		)
+	case "rounded_rect":
+		if math.IsNaN(placement.MaskRadius) || math.IsInf(placement.MaskRadius, 0) || placement.MaskRadius < 0 || placement.MaskRadius > .5 {
+			return nil, errors.New("rounded rectangle radius must be within 0..0.5")
+		}
+		radiusPixels := int(math.Round(placement.MaskRadius * float64(min(placement.Width, placement.Height))))
+		if radiusPixels < 1 {
+			filters = append(filters, "format=pix_fmts=yuva420p")
+			break
+		}
+		alpha := fmt.Sprintf("if(gte(min(min(X,W-1-X),min(Y,H-1-Y)),%d),255,if(lte(pow(max(%d-min(X,W-1-X),0),2)+pow(max(%d-min(Y,H-1-Y),0),2),pow(%d,2)),255,0))", radiusPixels, radiusPixels, radiusPixels, radiusPixels)
+		filters = append(filters, "format=pix_fmts=yuva420p", fmt.Sprintf("geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='%s'", alpha))
+	default:
+		return nil, fmt.Errorf("unsupported mask %q", placement.MaskKind)
+	}
+	return filters, nil
 }
 
 func resolveRenderTransitions(timeline pebblestore.VideoProjectTimeline, inputs []MaterializedInput, durations []int64) ([]pebblestore.VideoTimelineTransition, int64, error) {

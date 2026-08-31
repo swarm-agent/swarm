@@ -32,15 +32,11 @@ func TestParseManageSessionsDeployArgumentsBoundsAndModes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(parsed) != 1 || parsed[0].Mode != "auto" || !parsed[0].Worktree {
+	if len(parsed) != 1 || parsed[0].Mode != "auto" {
 		t.Fatalf("parsed = %#v", parsed)
 	}
-	disabled, err := parseManageSessionsDeployArguments(`{"action":"deploy","proposals":[{"prompt":"work","worktree":false}]}`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(disabled) != 1 || disabled[0].Worktree {
-		t.Fatalf("explicit worktree override = %#v", disabled)
+	if _, err := parseManageSessionsDeployArguments(`{"action":"deploy","proposals":[{"prompt":"work","worktree":false}]}`); err == nil || !strings.Contains(err.Error(), `rejects untrusted field "worktree"`) {
+		t.Fatalf("legacy worktree opt-out error = %v", err)
 	}
 	named, err := parseManageSessionsDeployArguments(`{"action":"deploy","proposals":[{"prompt":"work","worktree_name":"subagent live cards"}]}`)
 	if err != nil {
@@ -214,6 +210,13 @@ func TestManageSessionsDeployDigestStableAndBound(t *testing.T) {
 	}
 }
 
+func TestParseApprovedManageSessionsDeployRejectsOptionalLane(t *testing.T) {
+	_, err := parseApprovedManageSessionsDeploy(`{"action":"deploy","manifest_version":1,"manifest_digest":"digest","selected_proposal_ids":["proposal-1"],"proposals":[{"id":"proposal-1","prompt":"work","mode":"auto","agent_name":"swarm","managed_worktree":false}]}`)
+	if err == nil || !strings.Contains(err.Error(), "session-owned managed worktree") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
 func TestParseApprovedManageSessionsDeployRejectsEmptySelection(t *testing.T) {
 	_, err := parseApprovedManageSessionsDeploy(`{"action":"deploy","manifest_version":1,"manifest_digest":"digest","selected_proposal_ids":[],"proposals":[{"id":"proposal-1","prompt":"work","mode":"auto","agent_name":"swarm"}]}`)
 	if err == nil || !strings.Contains(err.Error(), "at least one selected") {
@@ -223,28 +226,28 @@ func TestParseApprovedManageSessionsDeployRejectsEmptySelection(t *testing.T) {
 
 func TestResolveManageSessionsDeployBindingPathUsesSourceWorkspaceFromManagedParent(t *testing.T) {
 	parent := pebblestore.SessionSnapshot{WorkspacePath: "/managed/worktree", WorktreeEnabled: true, Metadata: map[string]any{"swarm_v3_source_workspace_path": "/bound/workspace"}}
-	path, err := resolveManageSessionsDeployBindingPath(parent, manageSessionsDeployInput{Worktree: true})
+	path, err := resolveManageSessionsDeployBindingPath(parent, manageSessionsDeployInput{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if path != "/bound/workspace" {
 		t.Fatalf("path = %q, want source workspace", path)
 	}
-	if explicit, err := resolveManageSessionsDeployBindingPath(parent, manageSessionsDeployInput{WorkspacePath: "/explicit", Worktree: false}); err != nil || explicit != "/explicit" {
+	if explicit, err := resolveManageSessionsDeployBindingPath(parent, manageSessionsDeployInput{WorkspacePath: "/explicit"}); err != nil || explicit != "/explicit" {
 		t.Fatalf("explicit path = %q, err = %v", explicit, err)
 	}
 }
 
 func TestResolveManageSessionsDeployBindingPathNamesMissingSourceField(t *testing.T) {
-	_, err := resolveManageSessionsDeployBindingPath(pebblestore.SessionSnapshot{WorkspacePath: "/managed/worktree", WorktreeEnabled: true}, manageSessionsDeployInput{Worktree: false})
+	_, err := resolveManageSessionsDeployBindingPath(pebblestore.SessionSnapshot{WorkspacePath: "/managed/worktree", WorktreeEnabled: true}, manageSessionsDeployInput{})
 	if err == nil || !strings.Contains(err.Error(), "swarm_v3_source_workspace_path") {
 		t.Fatalf("err = %v", err)
 	}
 }
 
-func TestCanonicalDeployWorktreeBranchUsesDesktopStylePrefixAndTitle(t *testing.T) {
-	if got := canonicalDeployWorktreeBranch("agent/<id>", canonicalDeployWorktreeBranchSuffix("AI suggested cards worktree", "session-1")); got != "agent/ai-suggested-cards-worktree" {
-		t.Fatalf("suggested branch = %q", got)
+func TestCanonicalDeployWorktreeBranchUsesSwarmSeedWithoutRouter(t *testing.T) {
+	if got := canonicalDeployWorktreeBranch("agent/<id>", canonicalDeployWorktreeBranchSuffix("Swarm authored cards lane", "session-1")); got != "agent/swarm-authored-cards-lane" {
+		t.Fatalf("Swarm-authored branch = %q", got)
 	}
 	if got := canonicalDeployWorktreeBranch("agent/<id>", canonicalDeployWorktreeBranchSuffix("Test: 2-checkpoint plan exit", "session-1")); got != "agent/test-2-checkpoint-plan-exit" {
 		t.Fatalf("branch = %q", got)

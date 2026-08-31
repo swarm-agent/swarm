@@ -8,9 +8,12 @@ import {
   desktopV3ArtifactStudioHead,
   desktopV3ArtifactStudioParent,
   desktopV3ArtifactStudioPartIterations,
+  desktopV3ArtifactStudioPresentationGroupKey,
+  desktopV3ArtifactStudioProjection,
   desktopV3ArtifactStudioRounds,
   desktopV3ArtifactStudioSamePartRevision,
   desktopV3ArtifactStudioSectionAlternatives,
+  desktopV3ArtifactStudioStoryboard,
   desktopV3ArtifactStudioTurns,
 } from './artifact-studio-model'
 
@@ -43,6 +46,104 @@ test('artifact studio renders authoritative ordered steps with ten candidates an
   assert.deepEqual(desktopV3ArtifactStudioRounds(entries, candidates[0]!).map((step) => [step.id, step.candidates.length, step.accepted?.artifactId]), [['step-1', 1, 'base'], ['step-2', 10, 'candidate-7']])
   assert.equal(desktopV3ArtifactStudioParent(entries, candidates[0]!)?.artifactId, 'base')
   assert.equal(desktopV3ArtifactStudioSectionAlternatives(entries, candidates[0]!, 'hero').length, 10)
+})
+
+test('artifact studio keeps source-free root iterations together until one candidate gains a later turn', () => {
+  const firstRef = ref('first', 1)
+  const secondRef = ref('second', 2)
+  const first = artifact({ id: 'first', eventSeq: 1, step: 'root-first', revision: 1, candidates: [firstRef], head: firstRef })
+  const second = artifact({ id: 'second', eventSeq: 2, step: 'root-second', revision: 1, candidates: [secondRef], head: secondRef })
+  const firstGroupRef = { ...firstRef, collectionId: 'overall-wave' }
+  const secondGroupRef = { ...secondRef, collectionId: 'overall-wave' }
+  first.collectionId = 'overall-wave'
+  second.collectionId = 'overall-wave'
+  first.artifactChainId = 'chain-first'
+  first.chain = { ...first.chain!, id: 'chain-first', root: firstGroupRef, head: firstGroupRef, revisionCount: 1 }
+  first.step = { ...first.step!, artifactChainId: 'chain-first', candidates: [firstGroupRef] }
+  second.artifactChainId = 'chain-second'
+  second.chain = { ...second.chain!, id: 'chain-second', root: secondGroupRef, head: secondGroupRef, revisionCount: 1 }
+  second.step = { ...second.step!, artifactChainId: 'chain-second', candidates: [secondGroupRef] }
+
+  assert.equal(desktopV3ArtifactStudioPresentationGroupKey([first, second], first), 'collection:session-1:overall-wave')
+  assert.equal(desktopV3ArtifactStudioPresentationGroupKey([first, second], second), 'collection:session-1:overall-wave')
+
+  const nextRef = { ...ref('first-v2', 3), collectionId: 'first-v2-collection' }
+  const next = artifact({ id: 'first-v2', eventSeq: 3, step: 'first-turn-2', revision: 2, candidates: [nextRef], parent: firstGroupRef, head: nextRef })
+  next.collectionId = nextRef.collectionId
+  next.artifactChainId = 'chain-first'
+  next.chain = { ...next.chain!, id: 'chain-first', root: firstGroupRef, revisionCount: 2 }
+  next.step = { ...next.step!, artifactChainId: 'chain-first' }
+  first.chain = { ...first.chain!, revisionCount: 2 }
+
+  assert.equal(desktopV3ArtifactStudioPresentationGroupKey([first, second, next], first), 'chain:chain-first')
+  assert.equal(desktopV3ArtifactStudioPresentationGroupKey([first, second, next], next), 'chain:chain-first')
+  assert.equal(desktopV3ArtifactStudioPresentationGroupKey([first, second, next], second), 'collection:session-1:overall-wave')
+})
+
+test('artifact studio groups one generating turn across collections by durable iteration group', () => {
+  const first = artifact({ id: 'first', eventSeq: 1, step: 'first', revision: 1, candidates: [ref('first', 1)], head: ref('first', 1) })
+  const second = artifact({ id: 'second', eventSeq: 2, step: 'second', revision: 1, candidates: [ref('second', 2)], head: ref('second', 2) })
+  first.collectionId = 'collection-a'
+  second.collectionId = 'collection-b'
+  first.lineage.iterationGroupId = 'task-turn-9'
+  second.lineage.iterationGroupId = 'task-turn-9'
+
+  assert.equal(desktopV3ArtifactStudioPresentationGroupKey([first, second], first), 'turn:session-1:task-turn-9')
+  assert.equal(desktopV3ArtifactStudioPresentationGroupKey([first, second], second), 'turn:session-1:task-turn-9')
+})
+
+test('artifact studio projection keeps named groups visible and pins the first focused chain', () => {
+  const grouped = (id: string, eventSeq: number, groupId: string, chainId: string) => {
+    const entry = artifact({ id, eventSeq, step: `${id}-root`, revision: 1, candidates: [ref(id, eventSeq)], head: ref(id, eventSeq) })
+    entry.artifactChainId = chainId
+    entry.chain = { ...entry.chain!, id: chainId, name: chainId, root: ref(id, eventSeq), head: ref(id, eventSeq), revisionCount: 1 }
+    entry.step = { ...entry.step!, artifactChainId: chainId }
+    entry.lineage.iterationGroupId = groupId
+    entry.lineage.iterationGroup = groupId === 'group-a' ? 'First concepts' : 'Second concepts'
+    return entry
+  }
+  const first = grouped('first', 1, 'group-a', 'chain-first')
+  const second = grouped('second', 2, 'group-b', 'chain-second')
+  const firstFocused = artifact({ id: 'first-focused', eventSeq: 10, step: 'first-focused-step', revision: 2, candidates: [ref('first-focused', 10)], parent: ref('first', 1), head: ref('first-focused', 10), section: 'part-2' })
+  firstFocused.artifactChainId = 'chain-first'
+  firstFocused.chain = { ...firstFocused.chain!, id: 'chain-first', name: 'Chosen concept', root: ref('first', 1), head: ref('first-focused', 10), revisionCount: 2 }
+  firstFocused.step = { ...firstFocused.step!, artifactChainId: 'chain-first' }
+  firstFocused.targetedPartIds = ['part-2', 'part-3']
+  firstFocused.lineage.iterationGroupId = 'focused-a'
+  const newerFocused = artifact({ id: 'newer-focused', eventSeq: 20, step: 'newer-focused-step', revision: 2, candidates: [ref('newer-focused', 20)], parent: ref('second', 2), head: ref('newer-focused', 20), section: 'part-3' })
+  newerFocused.artifactChainId = 'chain-second'
+  newerFocused.chain = { ...newerFocused.chain!, id: 'chain-second', name: 'Newer concept', root: ref('second', 2), head: ref('newer-focused', 20), revisionCount: 2 }
+  newerFocused.step = { ...newerFocused.step!, artifactChainId: 'chain-second' }
+  newerFocused.targetedPartIds = ['part-3']
+  newerFocused.lineage.iterationGroupId = 'focused-b'
+  first.chain = firstFocused.chain
+  second.chain = newerFocused.chain
+
+  const projection = desktopV3ArtifactStudioProjection([newerFocused, second, firstFocused, first])
+  assert.deepEqual(projection.iterationGroups.map((group) => [group.id, group.label, group.partIds]), [
+    ['group-a', 'First concepts', []],
+    ['group-b', 'Second concepts', []],
+    ['focused-a', 'Chosen concept', ['part-2', 'part-3']],
+    ['focused-b', 'Newer concept', ['part-3']],
+  ])
+  assert.equal(projection.inProgress?.chainId, 'chain-first')
+  assert.equal(projection.inProgress?.head.artifactId, 'first-focused')
+  assert.equal(projection.iterationGroups.some((group) => group.entries.includes(firstFocused)), true)
+})
+
+test('artifact studio projection retains failed and staging candidates without pinning an unfocused chain', () => {
+  const staging = artifact({ id: 'staging', eventSeq: 1, step: 'staging-step', revision: 1, candidates: [ref('staging', 1)], head: ref('staging', 1) })
+  const failed = artifact({ id: 'failed', eventSeq: 2, step: 'failed-step', revision: 1, candidates: [ref('failed', 2)], head: ref('failed', 2) })
+  staging.status = 'staging'
+  failed.status = 'failed'
+  staging.lineage.iterationGroupId = 'partial'
+  failed.lineage.iterationGroupId = 'partial'
+  staging.lineage.iterationGroup = 'Partial group'
+  failed.lineage.iterationGroup = 'Partial group'
+
+  const projection = desktopV3ArtifactStudioProjection([failed, staging])
+  assert.deepEqual(projection.iterationGroups[0]?.progress, { total: 2, staging: 1, ready: 0, failed: 1, unavailable: 0 })
+  assert.equal(projection.inProgress, undefined)
 })
 
 test('artifact studio groups section-targeted revision turns by part', () => {
@@ -230,6 +331,60 @@ test('artifact studio preserves three Body candidates, a locked official merge, 
   assert.equal(desktopV3ArtifactStudioEntries(entries, bodyCandidates[0]!).some((entry) => entry.artifactId === 'merged-body-b'), true)
   assert.equal(turns[1]?.parts[0]?.accepted?.part?.revision.partRevisionId, 'b21')
   assert.equal(merged.composition?.parts[1]?.locked, true)
+})
+
+test('capture-state storyboard exports remain one initial proposal with ordered parts', () => {
+  const sourceRef = ref('storyboard', 10)
+  const source = artifact({ id: 'storyboard', eventSeq: 10, step: 'storyboard-root', revision: 1, candidates: [sourceRef], accepted: sourceRef, head: sourceRef })
+  source.parts = ['scene-1', 'scene-2', 'scene-3'].map((id, index) => ({ id, label: `Scene ${index + 1}`, kind: 'state' as const, description: '', startMs: 0, endMs: 0, x: 0, y: 0, width: 0, height: 0, page: 0, stateId: id, selector: '' }))
+  source.chain = { ...source.chain!, revisionCount: 2 }
+  const stills = source.parts.map((part, index) => {
+    const stillRef = ref(`still-${index + 1}`, index + 11)
+    const still = artifact({ id: stillRef.variantId, eventSeq: stillRef.eventSeq, step: `capture-${index + 1}`, revision: 2, candidates: [stillRef], parent: sourceRef, head: sourceRef })
+    still.mediaType = 'image/png'
+    still.kind = 'image'
+    still.label = part.id
+    still.filename = `capture-${part.id}.png`
+    still.lineage.sourceSessionId = source.sessionId
+    still.lineage.sourceCollectionId = source.collectionId!
+    still.lineage.sourceVariantId = source.artifactId
+    still.lineage.sourceEventSeq = source.eventSeq
+    still.chain = source.chain
+    return still
+  })
+  const entries = [stills[2]!, source, stills[0]!, stills[1]!]
+
+  const storyboard = desktopV3ArtifactStudioStoryboard(entries, stills[1]!)
+  assert.equal(storyboard?.source.artifactId, 'storyboard')
+  assert.deepEqual(storyboard?.parts.map((part) => [part.id, part.still?.artifactId]), [
+    ['scene-1', 'still-1'],
+    ['scene-2', 'still-2'],
+    ['scene-3', 'still-3'],
+  ])
+  assert.deepEqual(desktopV3ArtifactStudioTurns(entries, source).map((turn) => turn.id), ['storyboard-root'])
+  assert.deepEqual(desktopV3ArtifactStudioEntries(entries, source).map((entry) => entry.artifactId), ['storyboard'])
+  assert.equal(desktopV3ArtifactStudioHead(entries, stills[0]!)?.artifactId, 'storyboard')
+  assert.equal(desktopV3ArtifactStudioPresentationGroupKey(entries, stills[2]!), 'chain:chain-1')
+})
+
+test('render-only fallback lineage cannot add or masquerade as an authored turn', () => {
+  const baseRef = ref('atlas-original', 3231)
+  const derivedRef = ref('atlas-derived', 3443)
+  const base = artifact({ id: 'atlas-original', eventSeq: 3231, step: 'atlas-step-1', revision: 1, candidates: [baseRef], accepted: baseRef, head: derivedRef })
+  const derived = artifact({ id: 'atlas-derived', eventSeq: 3443, step: 'atlas-step-2', revision: 2, candidates: [derivedRef], parent: baseRef, accepted: derivedRef, head: derivedRef, section: 'hero' })
+  const fallback = artifact({ id: 'atlas-fallback', eventSeq: 3468, step: 'atlas-fallback-step', revision: 3, candidates: [ref('atlas-fallback', 3468)], parent: derivedRef, head: derivedRef })
+  fallback.role = 'render_only'
+  fallback.mediaType = 'image/png'
+  fallback.kind = 'image'
+  fallback.lineage.sourceSessionId = derived.sessionId
+  fallback.lineage.sourceCollectionId = derived.collectionId!
+  fallback.lineage.sourceVariantId = derived.artifactId
+  fallback.lineage.sourceEventSeq = derived.eventSeq
+
+  const entries = [fallback, derived, base]
+  assert.deepEqual(desktopV3ArtifactStudioTurns(entries, derived).map((turn) => turn.id), ['atlas-step-1', 'atlas-step-2'])
+  assert.deepEqual(desktopV3ArtifactStudioEntries(entries, derived).map((entry) => entry.artifactId), ['atlas-original', 'atlas-derived'])
+  assert.match(desktopV3ArtifactStudioPresentationGroupKey(entries, fallback), /^supporting:/)
 })
 
 test('artifact studio never infers lineage or a head for legacy unstructured entries', () => {

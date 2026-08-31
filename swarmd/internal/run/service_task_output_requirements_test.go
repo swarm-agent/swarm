@@ -248,6 +248,18 @@ func TestTaskAnimationProfileAllDesignerModes(t *testing.T) {
 	assertSpatial3DProfile(t, regular.Launches[0].AnimationProfile)
 	assertSpatial3DProfile(t, taskAnimationProfileFromAny(t, regular.SourceArguments["animation_profile"]))
 
+	workspace, err := parseTaskCallArguments(mustJSON(t, map[string]any{"prompt": "animate", "subagent_type": "designer", "meta_prompt": "create motion", "output_mode": "workspace", "owned_scope": []any{"design/motion"}, "animation_profile": map[string]any{"profile": "spatial_3d"}}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertSpatial3DProfile(t, workspace.Launches[0].AnimationProfile)
+	workspacePrompt := buildTaskDelegationPrompt(taskDelegationPromptConfig{Description: "motion", Prompt: "create", RequestedSubagent: "designer", OwnedScope: workspace.Launches[0].OwnedScope, OutputMode: taskOutputModeWorkspace, AnimationProfile: workspace.Launches[0].AnimationProfile})
+	for _, expected := range []string{"output mode: workspace", "exact animation profile", "sustained frame time"} {
+		if !strings.Contains(workspacePrompt, expected) {
+			t.Fatalf("workspace animation prompt missing %q: %s", expected, workspacePrompt)
+		}
+	}
+
 	swarm, err := parseTaskCallArguments(mustJSON(t, map[string]any{"mode": "swarm", "prompt": "animate", "agent_type": "designer", "count": 2, "animation_profile": map[string]any{"profile": "spatial_3d"}}))
 	if err != nil {
 		t.Fatal(err)

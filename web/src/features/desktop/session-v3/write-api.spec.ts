@@ -55,6 +55,7 @@ function routedResponse(overrides: Record<string, unknown> = {}) {
         source_workspace_path: '/workspace/source',
         runtime_workspace_path: session.workspace_path,
         worktree_enabled: true,
+        worktree_root_path: '/workspace/runtime',
         worktree_branch: 'agent/routed-flow',
       },
       agentic_settings: {},
@@ -89,7 +90,6 @@ test('postDesktopV3RoutedSessionStart sends only routed input authority with sta
       client_request_id: 'desktop-routed:stable-1',
       agent_name: ' swarm ',
       metadata: { source: 'desktop-v3' },
-      managed_worktree_requested: true,
       plan_mode_requested: true,
       media: [{ staging_id: 'staged-1', modality: 'image', file_type: 'png' }],
     })
@@ -113,7 +113,6 @@ test('postDesktopV3RoutedSessionStart sends only routed input authority with sta
     idempotency_key: 'desktop-routed:stable-1',
     agent_name: 'swarm',
     metadata: { source: 'desktop-v3' },
-    managed_worktree_requested: true,
     plan_mode_requested: true,
     media: [{ staging_id: 'staged-1', modality: 'image', file_type: 'png' }],
   })
@@ -159,7 +158,6 @@ test('artifact message transport strips Studio graph identity from strict portab
       input: 'Use this',
       client_request_id: 'desktop-routed:artifact',
       agent_name: 'swarm',
-      managed_worktree_requested: false,
       plan_mode_requested: false,
       artifact_selections: [selection],
     })
@@ -218,6 +216,39 @@ test('background Router start uses its dedicated endpoint without exposing workt
   assert.equal(Object.hasOwn(body, 'managed_worktree_requested'), false)
 })
 
+test('routed response normalization rejects missing owned-worktree authority', () => {
+  const missingRoot = routedResponse()
+  delete ((missingRoot.session_view as Record<string, unknown>).identity as Record<string, unknown>).worktree_root_path
+  assert.throws(
+    () => normalizeDesktopV3RoutedSessionStartResponse(missingRoot),
+    /no owned worktree authority/,
+  )
+
+  const disabled = routedResponse()
+  const disabledIdentity = (disabled.session_view as Record<string, unknown>).identity as Record<string, unknown>
+  disabledIdentity.worktree_enabled = false
+  assert.throws(
+    () => normalizeDesktopV3RoutedSessionStartResponse(disabled),
+    /no owned worktree authority/,
+  )
+
+  const missingBranch = routedResponse()
+  delete ((missingBranch.session_view as Record<string, unknown>).identity as Record<string, unknown>).worktree_branch
+  assert.throws(
+    () => normalizeDesktopV3RoutedSessionStartResponse(missingBranch),
+    /no owned worktree authority/,
+  )
+
+  const sharedCheckout = routedResponse()
+  const sharedIdentity = (sharedCheckout.session_view as Record<string, unknown>).identity as Record<string, unknown>
+  sharedIdentity.runtime_workspace_path = '/workspace/source'
+  sharedIdentity.worktree_root_path = '/workspace/source'
+  assert.throws(
+    () => normalizeDesktopV3RoutedSessionStartResponse(sharedCheckout),
+    /no owned worktree authority/,
+  )
+})
+
 test('routed start accepts staging IDs without inventing route selections', async () => {
   let body: Record<string, unknown> = {}
   globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
@@ -234,7 +265,6 @@ test('routed start accepts staging IDs without inventing route selections', asyn
       input: 'Replay this',
       client_request_id: 'desktop-routed:stable-2',
       agent_name: 'swarm',
-      managed_worktree_requested: false,
       plan_mode_requested: false,
       staging_ids: ['staged-2'],
     })
@@ -268,7 +298,6 @@ test('routed start rejects missing agent_name before transport', async () => {
       input: 'Do work',
       client_request_id: 'desktop-routed:missing-agent',
       agent_name: '   ',
-      managed_worktree_requested: false,
       plan_mode_requested: false,
     }),
     /agent_name/,
@@ -283,7 +312,6 @@ test('routed start rejects conflicting idempotency identities before transport',
       client_request_id: 'desktop-routed:one',
       idempotency_key: 'desktop-routed:two',
       agent_name: 'swarm',
-      managed_worktree_requested: false,
       plan_mode_requested: false,
     }),
     /one stable client_request_id\/idempotency identity/,

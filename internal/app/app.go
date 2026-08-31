@@ -75,22 +75,21 @@ func buildHomeCommandSuggestions(devMode bool) []ui.CommandSuggestion {
 		{Command: "/home", Hint: "Return to home without ending the chat session"},
 		{Command: "/keybinds", Hint: "Open keybindings modal", QuickTips: []string{"/keybinds list", "/keybinds reset [all]"}},
 		{Command: "/mouse", Hint: "Toggle mouse click capture", QuickTips: []string{"/mouse toggle", "/mouse status"}},
-		{Command: "/new", Hint: "Open a local session draft; explicit worktree forms route", QuickTips: []string{"/new [<prompt>]", "/new worktree [<prompt>]", "/new plan [<prompt>]", "/new wp [<prompt>]"}},
+		{Command: "/new", Hint: "Open a managed-worktree session draft", QuickTips: []string{"/new [<prompt>]", "/new plan [<prompt>]"}},
 		{Command: "/permissions", Hint: "Show global permission policy", QuickTips: []string{"/permissions show", "/permissions allow tool <name>", "/permissions allow bash-prefix <command>", "/permissions deny phrase <text>"}},
 		{Command: "/plan", Hint: "Show or close the existing session plan"},
 		{Command: "/program", Hint: "Collapse or expand the latest Task Program card"},
 		{Command: "/quit", Hint: "Exit swarmtui"},
 		{Command: "/rebuild", Hint: "Rebuild the current lane and exit swarmtui"},
 		{Command: "/sessions", Hint: "Open the card-style session manager (active conversations first)"},
-		{Command: "/task", Hint: "Queue a durable AI task for Swarm", QuickTips: []string{"/task <request>", "/task plan <request>"}},
+		{Command: "/task", Hint: "Queue a Router-named task in a new owned worktree", QuickTips: []string{"/task <request>", "/task plan <request>", "/task --workspace <saved-workspace> <request>"}},
 		{Command: "/update", Hint: updateHint, QuickTips: updateQuickTips},
 		{Command: "/themes", Hint: "Open theme modal with live preview", QuickTips: []string{"/themes list", "/themes set <id>", "/themes create <id> from <base>", "/themes edit <id> <slot> <#RRGGBB>", "/themes delete <id>"}},
 		{Command: "/thinking", Hint: "Use /thinking on, /thinking off, or /thinking status", QuickTips: []string{"/thinking on", "/thinking off", "/thinking status"}},
 		{Command: "/tips", Hint: "Show or hide launch tips", QuickTips: []string{"/tips on", "/tips off", "/tips toggle", "/tips status"}},
 		{Command: "/workspace", Hint: "Open workspace manager", QuickTips: []string{"/workspaces", "/workspace save", "/workspace scan [query]"}},
-		{Command: "/worktree", Hint: "Switch a local draft between direct and routed worktree start", QuickTips: []string{"/worktree on", "/worktree off"}},
 		{Command: "/worktrees new", Hint: "Create a new session in its own worktree"},
-		{Command: "/wt", Hint: "Prime the local draft or manage worktrees", QuickTips: []string{"/wt on", "/wt off", "/wt new"}},
+		{Command: "/wt", Hint: "Manage worktrees", QuickTips: []string{"/wt new", "/wt status"}},
 	}
 	sort.SliceStable(items, func(i, j int) bool {
 		return strings.ToLower(items[i].Command) < strings.ToLower(items[j].Command)
@@ -2177,16 +2176,10 @@ func (a *App) executeCommand(raw string) {
 		a.handleOutputCommand(args)
 	case "program":
 		a.handleProgramCommand(args)
-	case "worktree":
-		a.handleWorktreePrimerCommand(raw)
 	case "worktrees":
 		a.handleWorktreesCommand(args)
 	case "wt":
-		if _, matched, err := v3chat.ParseWorktreeCommand(raw); matched && err == nil {
-			a.handleWorktreePrimerCommand(raw)
-		} else {
-			a.handleWorktreesCommand(args)
-		}
+		a.handleWorktreesCommand(args)
 	case "profiles":
 		a.openProfilesModal()
 	case "agents", "agent":
@@ -2229,9 +2222,8 @@ func (a *App) showHelp() {
 	keybinds := a.activeKeyBindings()
 	lines := []string{
 		fmt.Sprintf("/sessions   (open session manager; shortcut %s)", keybinds.Label(ui.KeybindHomeOpenSessions)),
-		"/new [<prompt>]   (open a local session draft; a prompt starts immediately)",
-		"/new plan [<prompt>]   (open a direct Plan-mode draft or start)",
-		"/new worktree|wp [<prompt>]   (route an explicit worktree start)",
+		"/new [<prompt>]   (open a managed-worktree session draft; a prompt starts immediately)",
+		"/new plan [<prompt>]   (open a managed-worktree Plan-mode draft or start)",
 		"/home   (return to home from chat)",
 		"/plan   (show or close the existing session plan)",
 		"/task <request>   (queue a durable AI task in automatic mode)",
@@ -2258,8 +2250,6 @@ func (a *App) showHelp() {
 		"/permissions reset",
 		"/permissions explain <tool> [arguments json or text]",
 		"Permissions modal: b toggles global permissions (OFF requires confirmation)",
-		"/worktree on|off   (switch the current local draft between direct and routed worktree start)",
-		"/wt on|off   (short local draft control; other forms use /worktrees management)",
 		"/worktrees   (open worktrees menu)",
 		"/worktrees new   (create a worktree session with title and editable branch)",
 		"/worktrees [new|open|off|status|branch <name>]",
@@ -2527,59 +2517,17 @@ func (a *App) handleNewCommand(raw string) {
 	command, matched := v3chat.ParseNewCommand(raw)
 	if !matched {
 		a.home.ClearCommandOverlay()
-		a.home.SetStatus("usage: /new [worktree|plan|wp] [<prompt>]")
+		a.home.SetStatus("usage: /new [plan] [<prompt>]")
 		return
 	}
 	intent := a.home.SessionIntent()
 	intent.InitialPrompt = strings.TrimSpace(command.Prompt)
 	intent.Mode = map[bool]string{true: "plan", false: "auto"}[command.PlanModeRequested]
-	intent.WorktreeRequested = command.ManagedWorktreeRequested
 	route := a.selectedChatRouteForWorkspace(a.activeContextPath())
 	if err := a.openNewV3Chat(intent, route, ""); err != nil {
 		a.home.ClearCommandOverlay()
 		a.home.SetStatus(fmt.Sprintf("/new failed: %v", err))
 	}
-}
-
-func (a *App) handleWorktreePrimerCommand(raw string) {
-	command, matched, err := v3chat.ParseWorktreeCommand(raw)
-	if !matched {
-		return
-	}
-	if err != nil {
-		a.home.ClearCommandOverlay()
-		a.home.SetStatus(err.Error())
-		return
-	}
-	if a.route == "home" {
-		a.home.ClearCommandOverlay()
-		a.home.SetWorktreeRequested(command.Enabled)
-		return
-	}
-	if a.route == "v3chat" && a.v3Chat != nil && a.v3Chat.Runtime() != nil && a.v3Chat.Runtime().Store() != nil {
-		state := a.v3Chat.Runtime().Store().Snapshot()
-		if strings.TrimSpace(state.Session.ID) != "" {
-			a.home.SetStatus("worktree priming is available only on home or a new session draft")
-			a.v3Chat.SetStatus(a.home.Status())
-			return
-		}
-		intent := a.home.SessionIntent()
-		intent.InitialPrompt = ""
-		intent.Mode = emptyFallback(strings.TrimSpace(state.Session.Mode), intent.Mode)
-		intent.WorktreeRequested = command.Enabled
-		route := a.selectedChatRouteForWorkspace(a.activeContextPath())
-		if err = a.openNewV3Chat(intent, route, ""); err != nil {
-			a.home.SetStatus(err.Error())
-			a.v3Chat.SetStatus(a.home.Status())
-			return
-		}
-		status := "Worktree: " + map[bool]string{true: "on", false: "off"}[command.Enabled]
-		a.home.SetStatus(status)
-		a.v3Chat.SetStatus(status)
-		return
-	}
-	a.home.ClearCommandOverlay()
-	a.home.SetStatus("worktree priming is available only on home or a new session draft")
 }
 
 func (a *App) handlePlanCommand(args []string) {
@@ -3873,7 +3821,6 @@ func backgroundSessionSummariesForSessions(summaries []model.SessionSummary, exi
 		}
 		if ctx != nil {
 			record.CWD = consumeStringMetadata(ctx, "cwd")
-			record.WorktreeMode = consumeStringMetadata(ctx, "worktree_mode")
 			record.WorktreeRootPath = consumeStringMetadata(ctx, "worktree_root_path")
 			record.WorktreeBranch = consumeStringMetadata(ctx, "worktree_branch")
 			record.WorktreeBaseBranch = consumeStringMetadata(ctx, "worktree_base_branch")
@@ -4123,37 +4070,10 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
-func commitUsesCurrentWorktreePath(summary model.SessionSummary, ctx *client.RunExecutionContext) bool {
-	worktreeRootPath := strings.TrimSpace(summary.WorktreeRootPath)
-	if worktreeRootPath == "" && ctx != nil {
-		worktreeRootPath = strings.TrimSpace(ctx.WorktreeRootPath)
-	}
-	if worktreeRootPath == "" {
-		return false
-	}
-	if summary.WorktreeEnabled {
-		return true
-	}
-	if strings.TrimSpace(summary.WorktreeBranch) != "" || strings.TrimSpace(summary.WorktreeBaseBranch) != "" {
-		return true
-	}
-	if ctx != nil {
-		if strings.TrimSpace(ctx.WorktreeBranch) != "" || strings.TrimSpace(ctx.WorktreeBaseBranch) != "" {
-			return true
-		}
-		workspacePath := firstNonEmpty(strings.TrimSpace(ctx.WorkspacePath), strings.TrimSpace(ctx.CWD), strings.TrimSpace(summary.WorkspacePath))
-		if workspacePath != "" && !pathsEqual(workspacePath, worktreeRootPath) {
-			return true
-		}
-	}
-	return false
-}
-
 func (a *App) commitExecutionContext(summary model.SessionSummary) *client.RunExecutionContext {
 	ctx := &client.RunExecutionContext{
 		WorkspacePath: strings.TrimSpace(summary.WorkspacePath),
 		CWD:           strings.TrimSpace(summary.WorkspacePath),
-		WorktreeMode:  "inherit",
 	}
 	if metadata := summary.Metadata; len(metadata) > 0 {
 		if execCtx := metadataMap(metadata, "execution_context"); execCtx != nil {
@@ -4162,9 +4082,6 @@ func (a *App) commitExecutionContext(summary model.SessionSummary) *client.RunEx
 			}
 			if cwd := consumeStringMetadata(execCtx, "cwd"); cwd != "" {
 				ctx.CWD = cwd
-			}
-			if mode := consumeStringMetadata(execCtx, "worktree_mode"); mode != "" {
-				ctx.WorktreeMode = mode
 			}
 			ctx.WorktreeRootPath = consumeStringMetadata(execCtx, "worktree_root_path")
 			ctx.WorktreeBranch = consumeStringMetadata(execCtx, "worktree_branch")
@@ -4197,11 +4114,6 @@ func (a *App) commitExecutionContext(summary model.SessionSummary) *client.RunEx
 	}
 	if ctx.WorkspacePath == "" {
 		ctx.WorkspacePath = ctx.CWD
-	}
-	if commitUsesCurrentWorktreePath(summary, ctx) {
-		ctx.WorktreeMode = "off"
-	} else if ctx.WorktreeMode == "" {
-		ctx.WorktreeMode = "inherit"
 	}
 	return ctx
 }
@@ -5277,7 +5189,7 @@ func (a *App) consumeBackgroundSessionsModalSelection() bool {
 			WorkspaceName:    emptyFallback(strings.TrimSpace(record.WorkspaceName), strings.TrimSpace(selected.WorkspaceName)),
 			Title:            emptyFallback(strings.TrimSpace(record.ChildTitle), strings.TrimSpace(selected.Title)),
 			Mode:             "auto",
-			WorktreeEnabled:  strings.EqualFold(strings.TrimSpace(record.WorktreeMode), "on"),
+			WorktreeEnabled:  strings.TrimSpace(record.WorktreeRootPath) != "",
 			WorktreeRootPath: strings.TrimSpace(record.WorktreeRootPath),
 			WorktreeBranch:   strings.TrimSpace(record.WorktreeBranch),
 		}); err != nil {

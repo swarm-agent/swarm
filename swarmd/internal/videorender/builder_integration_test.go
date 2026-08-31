@@ -1,6 +1,8 @@
 package videorender
 
 import (
+	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -51,6 +53,59 @@ func TestFFmpegRenderMixedTimebasesAcrossCutThenCrossfade(t *testing.T) {
 	}
 	if output, commandErr := exec.Command(ffmpeg, plan.FFmpegArgs...).CombinedOutput(); commandErr != nil {
 		t.Fatalf("ffmpeg render failed for mixed timebases: %v: %s\nfilter=%s", commandErr, output, plan.FilterComplex)
+	}
+}
+
+func TestFFmpegRenderPreservesDeclaredDurationAcrossCrossfade(t *testing.T) {
+	ffmpeg, err := exec.LookPath("ffmpeg")
+	if err != nil {
+		t.Skip("requires local ffmpeg runtime")
+	}
+	ffprobe, err := exec.LookPath("ffprobe")
+	if err != nil {
+		t.Skip("requires local ffprobe runtime")
+	}
+
+	dir := t.TempDir()
+	inputPaths := []string{filepath.Join(dir, "one.png"), filepath.Join(dir, "two.png")}
+	for index, color := range []string{"red", "blue"} {
+		if output, commandErr := exec.Command(ffmpeg, "-v", "error", "-f", "lavfi", "-i", "color=c="+color+":s=320x240", "-frames:v", "1", inputPaths[index]).CombinedOutput(); commandErr != nil {
+			t.Fatalf("fixture generation failed: %v: %s", commandErr, output)
+		}
+	}
+
+	outputPath := filepath.Join(dir, "duration.mp4")
+	plan, err := BuildFFmpegCommandLine(pebblestore.VideoProjectTimeline{
+		Width: 320, Height: 240, FPS: 30, TotalDurationMs: 8000,
+		Transitions: []pebblestore.VideoTimelineTransition{{
+			ID: "dissolve", Kind: pebblestore.VideoTransitionKindCrossfade,
+			FromClipID: "one", ToClipID: "two", DurationMs: 300,
+		}},
+	}, []MaterializedInput{
+		{Index: 0, ClipID: "one", FilePath: inputPaths[0], IsImage: true, DurationMs: 4000, TimelineEndMs: 4000},
+		{Index: 1, ClipID: "two", FilePath: inputPaths[1], IsImage: true, DurationMs: 4000, TimelineStartMs: 4000, TimelineEndMs: 8000},
+	}, outputPath)
+	if err != nil {
+		t.Fatalf("BuildFFmpegCommandLine() error = %v", err)
+	}
+	if output, commandErr := exec.Command(ffmpeg, plan.FFmpegArgs...).CombinedOutput(); commandErr != nil {
+		t.Fatalf("ffmpeg render failed: %v: %s\nfilter=%s", commandErr, output, plan.FilterComplex)
+	}
+
+	probe, err := exec.Command(ffprobe, "-v", "error", "-show_entries", "format=duration", "-of", "default=nw=1:nk=1", outputPath).CombinedOutput()
+	if err != nil {
+		t.Fatalf("ffprobe failed: %v: %s", err, probe)
+	}
+	if got := strings.TrimSpace(string(probe)); got != "8.000000" {
+		t.Fatalf("rendered duration = %s, want 8.000000", got)
+	}
+	framePath := filepath.Join(dir, "near-end.png")
+	seekTimestamp := inspectionSeekTimestamp(7999, plan.TotalDurationMs, plan.FPS)
+	if output, commandErr := exec.Command(ffmpeg, "-v", "error", "-ss", fmt.Sprintf("%.3f", float64(seekTimestamp)/1000), "-i", outputPath, "-frames:v", "1", "-f", "image2", "-c:v", "png", framePath).CombinedOutput(); commandErr != nil {
+		t.Fatalf("near-end frame extraction failed: %v: %s", commandErr, output)
+	}
+	if info, statErr := os.Stat(framePath); statErr != nil || info.Size() == 0 {
+		t.Fatalf("near-end frame was not produced: info=%v err=%v", info, statErr)
 	}
 }
 

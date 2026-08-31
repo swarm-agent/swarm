@@ -21,20 +21,21 @@ import (
 const sessionsV3TUIPrefix = "/v3/tui/sessions/"
 
 type sessionsV3TUICreateRequest struct {
-	SessionID                string                        `json:"session_id,omitempty"`
-	ClientRequestID          string                        `json:"client_request_id,omitempty"`
-	IdempotencyKey           string                        `json:"idempotency_key,omitempty"`
-	CWDPath                  string                        `json:"cwd_path"`
-	Title                    string                        `json:"title,omitempty"`
-	Mode                     string                        `json:"mode,omitempty"`
-	AgentName                string                        `json:"agent_name,omitempty"`
-	Preference               pebblestore.ModelPreference   `json:"preference,omitempty"`
-	WorktreeMode             string                        `json:"worktree_mode,omitempty"`
-	WorktreeUseCurrentBranch *bool                         `json:"worktree_use_current_branch,omitempty"`
-	WorktreeBaseBranch       string                        `json:"worktree_base_branch,omitempty"`
-	WorktreeBranchName       string                        `json:"worktree_branch_name,omitempty"`
-	Metadata                 map[string]any                `json:"metadata,omitempty"`
-	ModelProfile             *sessionsV3ModelProfileChoice `json:"model_profile,omitempty"`
+	SessionID                      string                        `json:"session_id,omitempty"`
+	ClientRequestID                string                        `json:"client_request_id,omitempty"`
+	IdempotencyKey                 string                        `json:"idempotency_key,omitempty"`
+	CWDPath                        string                        `json:"cwd_path"`
+	Title                          string                        `json:"title,omitempty"`
+	Mode                           string                        `json:"mode,omitempty"`
+	AgentName                      string                        `json:"agent_name,omitempty"`
+	Preference                     pebblestore.ModelPreference   `json:"preference,omitempty"`
+	LegacyManagedWorktreeRequested json.RawMessage               `json:"managed_worktree_requested,omitempty"` // rolling decode only
+	WorktreeMode                   string                        `json:"worktree_mode,omitempty"`
+	WorktreeUseCurrentBranch       *bool                         `json:"worktree_use_current_branch,omitempty"`
+	WorktreeBaseBranch             string                        `json:"worktree_base_branch,omitempty"`
+	WorktreeBranchName             string                        `json:"worktree_branch_name,omitempty"`
+	Metadata                       map[string]any                `json:"metadata,omitempty"`
+	ModelProfile                   *sessionsV3ModelProfileChoice `json:"model_profile,omitempty"`
 }
 
 type sessionsV3TUIRebindRequest struct {
@@ -119,6 +120,8 @@ func (s *Server) handleSessionsV3TUICreate(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	// managed_worktree_requested is tolerated for rolling TUI clients only; the
+	// canonical request and persisted metadata use worktree_mode instead.
 	requestedWorktreeMode, err := validateSessionsV3CreateWorktreeRequest(req.WorktreeMode, req.WorktreeUseCurrentBranch, req.WorktreeBaseBranch, req.WorktreeBranchName, "")
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
@@ -161,19 +164,54 @@ func (s *Server) handleSessionsV3TUICreate(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	metadata := sessionsV3ModelProfileMetadata(sessionsV3TUICreateServerMetadata(req.Metadata, resolvedAgent, runtimeSwarmID, cwdPath), modelProfileSnapshot)
+	available := true
+	// Saved account workspaces carry stable identities immediately. Unsaved CWD
+	// sessions remain anonymous temporary grants until the explicit rebind path.
+	directoryGrantKind := pebblestore.WorkspaceGrantTemporary
+	if s.workspace != nil {
+		scope, scopeErr := s.workspace.ScopeForPathForPrincipal(principal, cwdPath)
+		if scopeErr != nil {
+			writeError(w, http.StatusBadRequest, scopeErr)
+			return
+		}
+		if scope.Matched && strings.TrimSpace(scope.WorkspaceID) != "" {
+			if filepath.Clean(strings.TrimSpace(scope.WorkspacePath)) != filepath.Clean(cwdPath) || scope.WorkspaceGeneration <= 0 || !strings.EqualFold(strings.TrimSpace(scope.WorkspaceState), "active") {
+				writeError(w, http.StatusBadRequest, errors.New("tui workspace identity is stale or inactive"))
+				return
+			}
+			directoryGrantKind = pebblestore.WorkspaceGrantPrimary
+			workspaceName = firstNonEmpty(strings.TrimSpace(scope.WorkspaceName), workspaceName)
+			metadata["workspace_id"] = scope.WorkspaceID
+			metadata["swarm_v3_source_workspace_id"] = scope.WorkspaceID
+			metadata["swarm_v3_source_workspace_generation"] = fmt.Sprintf("%d", scope.WorkspaceGeneration)
+			metadata["swarm_v3_source_workspace_name"] = workspaceName
+			metadata["swarm_v3_source_workspace_path"] = scope.WorkspacePath
+			metadata["swarm_v3_runtime_workspace_path"] = scope.WorkspacePath
+			delete(metadata, "swarm_v3_tui_directory_session")
+		}
+	}
+	directoryGrant := pebblestore.WorkspaceGrant{Kind: directoryGrantKind, Path: cwdPath, Available: &available}
+	if directoryGrantKind == pebblestore.WorkspaceGrantPrimary {
+		directoryGrant.WorkspaceID = sessionsV3MetadataString(metadata, "swarm_v3_source_workspace_id")
+		directoryGrant.WorkspaceGeneration = sessionsV3SidechatInt64(metadata["swarm_v3_source_workspace_generation"])
+		directoryGrant.Name = workspaceName
+	}
+	directoryGrants := []pebblestore.WorkspaceGrant{directoryGrant}
 	session := pebblestore.SessionSnapshot{
-		ID:             sessionID,
-		UserID:         strings.TrimSpace(principal.UserID),
-		AccountScopeID: strings.TrimSpace(principal.AccountScopeID),
-		WorkspacePath:  cwdPath,
-		WorkspaceName:  workspaceName,
-		Title:          title,
-		Mode:           sessionruntime.NormalizeMode(req.Mode),
-		Preference:     normalizeSessionsV3ModelPreference(req.Preference),
-		ModelProfile:   modelProfileSnapshot,
-		Metadata:       metadata,
-		CreatedAt:      now,
-		UpdatedAt:      now,
+		ID:              sessionID,
+		UserID:          strings.TrimSpace(principal.UserID),
+		AccountScopeID:  strings.TrimSpace(principal.AccountScopeID),
+		WorkspacePath:   cwdPath,
+		WorkspaceName:   workspaceName,
+		WorkspaceGrants: directoryGrants,
+		WorkspaceUsage:  pebblestore.WorkspaceUsageFromGrants(directoryGrants),
+		Title:           title,
+		Mode:            sessionruntime.NormalizeMode(req.Mode),
+		Preference:      normalizeSessionsV3ModelPreference(req.Preference),
+		ModelProfile:    modelProfileSnapshot,
+		Metadata:        metadata,
+		CreatedAt:       now,
+		UpdatedAt:       now,
 	}
 	if profilePreference, ok := sessionsV3ProfilePreference(session); ok {
 		session.Preference = normalizeSessionsV3ModelPreference(profilePreference)
@@ -192,7 +230,6 @@ func (s *Server) handleSessionsV3TUICreate(w http.ResponseWriter, r *http.Reques
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
-		session.WorkspacePath = strings.TrimSpace(allocation.WorkspacePath)
 		session.WorktreeEnabled = true
 		session.WorktreeRootPath = strings.TrimSpace(allocation.WorkspacePath)
 		session.WorktreeBaseBranch = strings.TrimSpace(allocation.BaseBranch)
@@ -200,8 +237,10 @@ func (s *Server) handleSessionsV3TUICreate(w http.ResponseWriter, r *http.Reques
 		if session.Metadata == nil {
 			session.Metadata = make(map[string]any, 4)
 		}
-		session.Metadata["workspace_id"] = strings.TrimSpace(allocation.WorkspaceID)
 		session.Metadata["swarm_v3_tui_worktree_path"] = strings.TrimSpace(allocation.WorkspacePath)
+		session.Metadata["swarm_v3_runtime_workspace_path"] = strings.TrimSpace(allocation.WorkspacePath)
+		session.WorkspaceGrants = append(session.WorkspaceGrants, pebblestore.WorkspaceGrant{Kind: pebblestore.WorkspaceGrantWorktree, Path: allocation.WorkspacePath, Available: &available})
+		session.WorkspaceUsage = pebblestore.WorkspaceUsageFromGrants(session.WorkspaceGrants)
 	} else {
 		session.WorktreeBranch = sessionruntime.DetectCurrentBranch(session.WorkspacePath)
 	}
@@ -234,7 +273,7 @@ func (s *Server) handleSessionsV3TUICreate(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusInternalServerError, errors.New("created sessions v3 tui projection was not found"))
 		return
 	}
-	fields := gitStatusResponseForPath(hydrated.Session.WorkspacePath)
+	fields := gitStatusResponseForPath(firstNonEmpty(hydrated.Session.WorktreeRootPath, hydrated.Session.WorkspacePath))
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":         true,
 		"session":    hydratedSessionSummaryResponse(hydrated.Session, fields),
@@ -263,7 +302,7 @@ func (s *Server) handleSessionV3TUIOpen(w http.ResponseWriter, r *http.Request, 
 		writeSessionNotFound(w)
 		return
 	}
-	writeJSON(w, http.StatusOK, sessionsV3HydratedResponse(hydrated, gitStatusResponseForPath(hydrated.Session.WorkspacePath)))
+	writeJSON(w, http.StatusOK, sessionsV3HydratedResponse(hydrated, gitStatusResponseForPath(firstNonEmpty(hydrated.Session.WorktreeRootPath, hydrated.Session.WorkspacePath))))
 }
 
 func (s *Server) handleSessionV3TUIRebind(w http.ResponseWriter, r *http.Request, principal identity.Principal, sessionID string) {
@@ -326,20 +365,47 @@ func (s *Server) handleSessionV3TUIRebind(w http.ResponseWriter, r *http.Request
 		return
 	}
 	metadata := sessionsV3CreateServerMetadata(session.Metadata, agent, binding)
-	metadata["swarm_v3_tui_directory_session"] = false
-	metadata["swarm_v3_tui_original_cwd_path"] = cwdPath
+	delete(metadata, "swarm_v3_tui_directory_session")
 	delete(metadata, "swarm_v3_tui_cwd_path")
+	delete(metadata, "swarm_v3_tui_original_cwd_path")
 	session.WorkspacePath = binding.SourceWorkspacePath
 	session.WorkspaceName = binding.SourceWorkspaceName
 	if strings.TrimSpace(session.WorkspaceName) == "" {
 		session.WorkspaceName = filepath.Base(session.WorkspacePath)
 	}
+	if session.WorktreeEnabled {
+		metadata["swarm_v3_runtime_workspace_path"] = firstNonEmpty(sessionsV3MetadataString(session.Metadata, "swarm_v3_runtime_workspace_path"), session.WorktreeRootPath)
+	} else {
+		metadata["swarm_v3_runtime_workspace_path"] = binding.RuntimeWorkspacePath
+	}
+	grants, err := s.sessionsV3InitialWorkspaceGrants(principal, binding)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if session.WorktreeEnabled && strings.TrimSpace(session.WorktreeRootPath) != "" {
+		available := true
+		grants = append(grants, pebblestore.WorkspaceGrant{Kind: pebblestore.WorkspaceGrantWorktree, Path: session.WorktreeRootPath, Available: &available})
+	}
+	session.WorkspaceGrants = grants
+	session.WorkspaceUsage = pebblestore.WorkspaceUsageFromGrants(grants)
 	session.Metadata = metadata
+	eventPayload, eventPayloadErr := json.Marshal(map[string]any{
+		"session_id": sessionID, "workspace_id": binding.SourceWorkspaceID,
+		"workspace_generation": binding.SourceWorkspaceGeneration, "workspace_name": session.WorkspaceName,
+		"workspace_grants": grants, "workspace_usage": session.WorkspaceUsage,
+	})
+	if eventPayloadErr != nil {
+		writeError(w, http.StatusBadRequest, eventPayloadErr)
+		return
+	}
 	payloadHash, err := sessionsV3UpdatePayloadHash(sessionID, "session.tui.rebind", map[string]any{
 		"cwd_path":             cwdPath,
 		"workspace_path":       binding.SourceWorkspacePath,
 		"workspace_binding_id": binding.WorkspaceBindingID,
 		"swarm_id":             binding.RuntimeSwarmID,
+		"workspace_grants":     grants,
+		"workspace_usage":      session.WorkspaceUsage,
 	})
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
@@ -354,8 +420,9 @@ func (s *Server) handleSessionV3TUIRebind(w http.ResponseWriter, r *http.Request
 		IdempotencyKey:  clientRequestID,
 		PayloadHash:     payloadHash,
 		RequestHash:     payloadHash,
-		Kind:            sessionruntime.SessionMutationUpdateMetadata,
+		Kind:            sessionruntime.SessionMutationUpdateSettings,
 		EventType:       "session.tui.rebound",
+		EventPayload:    eventPayload,
 		Session:         &session,
 		NowUnixMs:       now,
 	})
@@ -438,6 +505,7 @@ func sessionsV3TUICreateServerMetadata(clientMetadata map[string]any, agent sess
 	metadata["swarm_v3_authority_host_swarm_id"] = strings.TrimSpace(runtimeSwarmID)
 	metadata["swarm_v3_tui_directory_session"] = true
 	metadata["swarm_v3_tui_cwd_path"] = strings.TrimSpace(cwdPath)
+	delete(metadata, "managed_worktree_requested")
 	if agent.ToolContractPreset != "" {
 		metadata["tool_contract_preset"] = agent.ToolContractPreset
 	}

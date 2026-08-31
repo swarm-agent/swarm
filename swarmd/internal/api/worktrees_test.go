@@ -32,6 +32,24 @@ type fakeWorktreeService struct {
 	lastNameSeed    string
 	lastBaseBranch  string
 	lastBranchName  string
+	inspectStates   map[string]worktreeruntime.TaskWorkspaceState
+}
+
+func TestSessionsV3ReviewSearchItemPreservesWorktreeClassificationFields(t *testing.T) {
+	session := pebblestore.SessionSnapshot{
+		ID: "session-one", UserID: "user-one", AccountScopeID: "account-one",
+		WorkspacePath: "/workspace", WorkspaceName: "workspace", Title: "Review", Mode: "auto",
+		WorktreeEnabled: true, WorktreeRootPath: "/worktree", WorktreeBaseBranch: "dev", WorktreeBranch: "agent/review",
+		Metadata: map[string]any{"swarm_v3_source_workspace_path": "/workspace"}, CreatedAt: 1, UpdatedAt: 2,
+	}
+
+	item := sessionsV3ReviewSearchItem(session)
+	if item.ID != session.ID || item.WorktreeRootPath != session.WorktreeRootPath || item.WorktreeBaseBranch != session.WorktreeBaseBranch || item.WorktreeBranch != session.WorktreeBranch {
+		t.Fatalf("search item lost review authority: %+v", item)
+	}
+	if got := item.Metadata["swarm_v3_source_workspace_path"]; got != "/workspace" {
+		t.Fatalf("source workspace = %v, want /workspace", got)
+	}
 }
 
 func TestSearchSessionsV3ReviewWorktreePagesIncludesOlderUnresolvedSessions(t *testing.T) {
@@ -247,6 +265,17 @@ func (f *fakeWorktreeService) PruneManaged(workspacePath string) (worktreeruntim
 
 func (f *fakeWorktreeService) PruneManagedForPrincipal(principal identity.Principal, workspacePath string) (worktreeruntime.PruneResult, error) {
 	return f.PruneManaged(workspacePath)
+}
+
+func (f *fakeWorktreeService) InspectTaskWorkspace(workspacePath string) (worktreeruntime.TaskWorkspaceState, error) {
+	if state, ok := f.inspectStates[workspacePath]; ok {
+		return state, nil
+	}
+	branch := strings.TrimSpace(f.lastBranchName)
+	if branch == "" {
+		branch = strings.TrimSpace(f.allocation.BranchName)
+	}
+	return worktreeruntime.TaskWorkspaceState{WorkspacePath: workspacePath, BranchName: branch, Clean: true}, nil
 }
 
 func testPrincipal() identity.Principal {

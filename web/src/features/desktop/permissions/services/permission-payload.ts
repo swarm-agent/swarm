@@ -130,9 +130,22 @@ export interface WorkspaceScopePayload {
   workspaceName: string
   workspaceExists: boolean
   temporaryBehavior: string
-  persistentBehavior: string
   sessionAllow: WorkspaceScopeAction
-  addToWorkspace: WorkspaceScopeAction
+}
+
+export interface WorkspaceMutationPayload {
+  action: 'create' | 'update' | 'delete'
+  title: string
+  intent: string
+  workspaceId: string
+  workspaceName: string
+  workspacePath: string
+  changes: Array<{ label: string; value: string }>
+  sessionSwitchRequired: boolean
+  restoreAfterMutation: boolean
+  remainInSafeWorkspace: boolean
+  safetySummary: string
+  permissionSummary: string
 }
 
 export interface TaskLaunchResolvedTools {
@@ -314,7 +327,7 @@ export interface SkillChangePermissionPayload {
   approvedArguments: Record<string, unknown>
 }
 
-export type DesktopPermissionKind = 'generic' | 'exit-plan' | 'plan-update' | 'plan-followup-request' | 'plan-amendment-request' | 'plan-new-request' | 'manage-todos' | 'session-commit' | 'session-archive' | 'session-unarchive' | 'session-deploy' | 'skill-change' | 'ask-user' | 'workspace-scope' | 'task-launch' | 'agent-change'
+export type DesktopPermissionKind = 'generic' | 'exit-plan' | 'plan-update' | 'plan-followup-request' | 'plan-amendment-request' | 'plan-new-request' | 'manage-todos' | 'session-commit' | 'session-archive' | 'session-unarchive' | 'session-deploy' | 'skill-change' | 'ask-user' | 'workspace-scope' | 'workspace-mutation' | 'task-launch' | 'agent-change'
 
 function decodePermissionArguments(raw: string): Record<string, unknown> | null {
   const trimmed = raw.trim()
@@ -606,6 +619,8 @@ export function permissionKind(permission: DesktopPermissionRecord): DesktopPerm
       }
     case 'manage_todos':
       return 'manage-todos'
+    case 'manage_workspace':
+      return ['workspace_create', 'workspace_update', 'workspace_delete'].includes(requirement) ? 'workspace-mutation' : 'generic'
     case 'manage_skill':
       return requirement === 'skill_change' ? 'skill-change' : 'generic'
     case 'manage_sessions':
@@ -1813,6 +1828,53 @@ function parseWorkspaceScopeAction(
   }
 }
 
+export function parseWorkspaceMutationPermission(permission: DesktopPermissionRecord): WorkspaceMutationPayload {
+  const payload = decodePermissionArguments(permission.toolArguments) ?? {}
+  const target = mapObjectArg(payload, 'target')
+  const requestedChanges = mapObjectArg(payload, 'requested_changes')
+  const safety = mapObjectArg(payload, 'safety')
+  const requirement = safeString(permission.requirement).toLowerCase()
+  const rawAction = mapStringArg(payload, 'action').toLowerCase()
+  const action: WorkspaceMutationPayload['action'] = requirement === 'workspace_delete' || rawAction === 'delete'
+    ? 'delete'
+    : requirement === 'workspace_update' || rawAction === 'update' || rawAction === 'edit'
+      ? 'update'
+      : 'create'
+  const labels: Record<string, string> = {
+    workspace_name: 'New name',
+    workspace_path: 'New path',
+    theme_id: 'Theme',
+  }
+  const changes = Object.entries(requestedChanges)
+    .filter(([, value]) => ['string', 'number', 'boolean'].includes(typeof value))
+    .slice(0, 6)
+    .map(([key, value]) => ({ label: labels[key] || key.split('_').join(' '), value: safeString(value) || String(value) }))
+  const sessionSwitchRequired = mapBoolArg(safety, 'session_switch_required')
+  const restoreAfterMutation = mapBoolArg(safety, 'restore_after_mutation')
+  const remainInSafeWorkspace = mapBoolArg(safety, 'remain_in_safe_workspace')
+  let safetySummary = 'This changes only the saved workspace catalog; workspace files are not changed.'
+  if (sessionSwitchRequired && restoreAfterMutation) {
+    safetySummary = 'Swarm will switch to another authorized workspace before the change, then restore this session after the mutation succeeds.'
+  } else if (sessionSwitchRequired && remainInSafeWorkspace) {
+    safetySummary = 'Swarm will switch to another authorized workspace before unlinking this workspace and will remain there so the active session is not stranded.'
+  }
+  const actionLabel = action === 'create' ? 'Create workspace' : action === 'update' ? 'Edit workspace' : 'Delete workspace'
+  return {
+    action,
+    title: actionLabel,
+    intent: mapStringArg(payload, 'intent'),
+    workspaceId: mapStringArg(target, 'workspace_id'),
+    workspaceName: mapStringArg(target, 'workspace_name'),
+    workspacePath: mapStringArg(target, 'workspace_path'),
+    changes,
+    sessionSwitchRequired,
+    restoreAfterMutation,
+    remainInSafeWorkspace,
+    safetySummary,
+    permissionSummary: `Always allow applies only to workspace ${action} requests; it does not approve the other workspace actions.`,
+  }
+}
+
 export function parseWorkspaceScopePermission(permission: DesktopPermissionRecord): WorkspaceScopePayload {
   const payload = decodePermissionArguments(permission.toolArguments) ?? {}
   const tool = mapObjectArg(payload, 'tool')
@@ -1833,22 +1895,14 @@ export function parseWorkspaceScopePermission(permission: DesktopPermissionRecor
   const workspaceName = mapStringArg(workspace, 'name')
   const temporaryBehavior = firstNonEmptyString(
     mapStringArg(request, 'temporary_behavior'),
-    `Approving this allows ${accessLabel} to ${directoryPath || 'the requested directory'} for this chat session only. It does not save or change the workspace.`,
-  )
-  const persistentBehavior = firstNonEmptyString(
-    mapStringArg(workspace, 'persistent_behavior'),
-    workspaceExists
-      ? `You can instead add ${directoryPath || 'the requested directory'} to the saved workspace. Future access inside that workspace stops asking for permission.`
-      : 'No saved workspace is active for this session, so permanent add-dir access is not available here.',
+    `Approving this allows ${accessLabel} to ${directoryPath || 'the requested directory'} temporarily for this chat only. To keep using the folder, add it as a new workspace from Workspaces.`,
   )
 
   return {
     title: mapStringArg(payload, 'title') || `Allow ${accessLabel} outside the current workspace?`,
     summary: firstNonEmptyString(
       mapStringArg(payload, 'summary'),
-      workspaceExists
-        ? `Allow ${accessLabel} for this chat session only, or add the directory to the saved workspace permanently.`
-        : `Allow ${accessLabel} for this chat session only.`,
+      `Allow ${accessLabel} temporarily for this chat only. This does not add or change a workspace.`,
     ),
     toolName,
     accessLabel,
@@ -1859,26 +1913,20 @@ export function parseWorkspaceScopePermission(permission: DesktopPermissionRecor
     workspaceName,
     workspaceExists,
     temporaryBehavior,
-    persistentBehavior,
-    sessionAllow: parseWorkspaceScopeAction(mapObjectArg(actions, 'session_allow'), {
-      decision: 'session_allow',
-      label: 'Allow This Session',
-      description: temporaryBehavior,
-      available: true,
-    }),
-    addToWorkspace: parseWorkspaceScopeAction(mapObjectArg(actions, 'workspace_add_dir'), {
-      decision: 'workspace_add_dir',
-      label: 'Add To Workspace',
-      description: persistentBehavior,
-      available: workspaceExists,
-    }),
+    sessionAllow: {
+      ...parseWorkspaceScopeAction(mapObjectArg(actions, 'session_allow'), {
+        decision: 'session_allow',
+        label: 'Allow temporarily for this chat',
+        description: temporaryBehavior,
+        available: true,
+      }),
+      label: 'Allow temporarily for this chat',
+    },
   }
 }
 
-export function buildWorkspaceScopeResolutionReason(decision: string): string {
-  const normalizedDecision = decision.trim().toLowerCase() === 'workspace_add_dir'
-    ? 'workspace_add_dir'
-    : 'session_allow'
+export function buildWorkspaceScopeResolutionReason(_decision: string): string {
+  const normalizedDecision = 'session_allow'
   return JSON.stringify({
     path_id: 'permission.workspace_scope.decision.v1',
     decision: normalizedDecision,

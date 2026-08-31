@@ -67,10 +67,14 @@ type SessionArtifactLineage struct {
 	PartID                  string `json:"part_id,omitempty"`
 	PartLabel               string `json:"part_label,omitempty"`
 	PartKind                string `json:"part_kind,omitempty"`
+	SelectedReviewTargetIDs string `json:"selected_review_target_ids,omitempty"`
 	RunID                   string `json:"run_id,omitempty"`
 	PlanID                  string `json:"plan_id,omitempty"`
 	CheckpointID            string `json:"checkpoint_id,omitempty"`
 	AttemptID               string `json:"attempt_id,omitempty"`
+	VideoProjectID          string `json:"video_project_id,omitempty"`
+	VideoRevisionID         string `json:"video_revision_id,omitempty"`
+	VideoRevisionEventSeq   uint64 `json:"video_revision_event_seq,omitempty"`
 }
 
 // SessionArtifactPresentation contains bounded client display hints. It is
@@ -193,6 +197,18 @@ type SessionArtifactStep struct {
 	EventSeq         uint64                              `json:"event_seq"`
 }
 
+const SessionArtifactRoleRenderOnly = "render_only"
+
+type SessionArtifactProgress struct {
+	Stage                string  `json:"stage"`
+	Completed            int     `json:"completed,omitempty"`
+	Total                int     `json:"total,omitempty"`
+	Percent              float64 `json:"percent,omitempty"`
+	ElapsedMS            int64   `json:"elapsed_ms,omitempty"`
+	EstimatedRemainingMS int64   `json:"estimated_remaining_ms,omitempty"`
+	HeartbeatAt          int64   `json:"heartbeat_at"`
+}
+
 type SessionArtifactVariant struct {
 	Version               int                                `json:"version"`
 	ID                    string                             `json:"id"`
@@ -202,9 +218,11 @@ type SessionArtifactVariant struct {
 	Status                string                             `json:"status"`
 	Filename              string                             `json:"filename,omitempty"`
 	MediaType             string                             `json:"media_type,omitempty"`
+	Role                  string                             `json:"role,omitempty"`
 	DigestSHA256          string                             `json:"digest_sha256,omitempty"`
 	Size                  int64                              `json:"size,omitempty"`
 	FailureCode           string                             `json:"failure_code,omitempty"`
+	Progress              *SessionArtifactProgress           `json:"progress,omitempty"`
 	Lineage               SessionArtifactLineage             `json:"lineage,omitempty"`
 	Presentation          SessionArtifactPresentation        `json:"presentation,omitempty"`
 	OutputRequirements    *SessionArtifactOutputRequirements `json:"output_requirements,omitempty"`
@@ -1044,6 +1062,7 @@ func normalizeV3ArtifactMutation(input *V3SessionMutationInput) {
 		variant.Status = strings.ToLower(strings.TrimSpace(variant.Status))
 		variant.Filename = strings.TrimSpace(variant.Filename)
 		variant.MediaType = strings.ToLower(strings.TrimSpace(variant.MediaType))
+		variant.Role = strings.ToLower(strings.TrimSpace(variant.Role))
 		variant.DigestSHA256 = strings.ToLower(strings.TrimSpace(variant.DigestSHA256))
 		variant.FailureCode = strings.ToLower(strings.TrimSpace(variant.FailureCode))
 		variant.ArtifactChainID = strings.TrimSpace(variant.ArtifactChainID)
@@ -1158,6 +1177,7 @@ func normalizeArtifactLineage(lineage *SessionArtifactLineage) {
 	lineage.PartID = strings.TrimSpace(lineage.PartID)
 	lineage.PartLabel = strings.TrimSpace(lineage.PartLabel)
 	lineage.PartKind = strings.ToLower(strings.TrimSpace(lineage.PartKind))
+	lineage.SelectedReviewTargetIDs = strings.TrimSpace(lineage.SelectedReviewTargetIDs)
 	lineage.RunID = strings.TrimSpace(lineage.RunID)
 	lineage.PlanID = strings.TrimSpace(lineage.PlanID)
 	lineage.CheckpointID = strings.TrimSpace(lineage.CheckpointID)
@@ -1215,8 +1235,11 @@ func validateV3ArtifactMutation(input V3SessionMutationInput) error {
 		if variant.CollectionID != "" && variant.CollectionID != collection.ID {
 			return errors.New("artifact variant collection id does not match collection")
 		}
-		if len(variant.Filename) > 255 || len(variant.MediaType) > 255 || len(variant.FailureCode) > 128 {
+		if len(variant.Filename) > 255 || len(variant.MediaType) > 255 || len(variant.Role) > 64 || len(variant.FailureCode) > 128 {
 			return errors.New("artifact variant metadata exceeds bounds")
+		}
+		if variant.Role != "" && variant.Role != SessionArtifactRoleRenderOnly {
+			return errors.New("artifact variant role is unsupported")
 		}
 		if variant.FailureCode != "" {
 			if err := validateArtifactID("failure code", variant.FailureCode); err != nil {
@@ -1249,7 +1272,7 @@ func validateV3ArtifactMutation(input V3SessionMutationInput) error {
 		if !input.Artifact.ProjectionOnly {
 			return errors.New("artifact mutation requires an authoritative Git transaction projection")
 		}
-		if (input.Kind != V3SessionMutationCreateArtifact && input.Kind != V3SessionMutationFailArtifact && input.Kind != V3SessionMutationUnavailableArtifact) || len(input.Artifact.Locks) != 0 || len(input.Artifact.PartDefinitions) != 0 || len(input.Artifact.PartRevisions) != 0 || input.Artifact.Composition != nil || input.Artifact.Selection != nil {
+		if (input.Kind != V3SessionMutationCreateArtifact && input.Kind != V3SessionMutationUpdateArtifact && input.Kind != V3SessionMutationFailArtifact && input.Kind != V3SessionMutationUnavailableArtifact) || len(input.Artifact.Locks) != 0 || len(input.Artifact.PartDefinitions) != 0 || len(input.Artifact.PartRevisions) != 0 || input.Artifact.Composition != nil || input.Artifact.Selection != nil {
 			return errors.New("artifact projection-only mutation accepts only collection and non-byte variant metadata")
 		}
 		if variant := input.Artifact.Variant; variant != nil && (variant.RepositoryID != "" || variant.CommitOID != "" || variant.TreeOID != "" || variant.CandidateRef != "" || len(variant.ParentCommitOIDs) != 0 || variant.GraphState != "" || variant.PartGraphState != "" || variant.Composition != nil || len(variant.PartDefinitions) != 0 || variant.DigestSHA256 != "" || variant.Size != 0) {
@@ -1403,7 +1426,7 @@ func validateArtifactID(label, value string) error {
 }
 
 func validateArtifactLineage(lineage SessionArtifactLineage) error {
-	for _, value := range []string{lineage.ParentSessionID, lineage.SourceSessionID, lineage.SourceCollectionID, lineage.SourceVariantID, lineage.TaskCallID, lineage.ProgramID, lineage.ProgramJobID, lineage.ChildSessionID, lineage.IterationID, lineage.IterationSectionID, lineage.IterationSectionLabel, lineage.PartID, lineage.PartLabel, lineage.PartKind, lineage.RunID, lineage.PlanID, lineage.CheckpointID, lineage.AttemptID} {
+	for _, value := range []string{lineage.ParentSessionID, lineage.SourceSessionID, lineage.SourceCollectionID, lineage.SourceVariantID, lineage.TaskCallID, lineage.ProgramID, lineage.ProgramJobID, lineage.ChildSessionID, lineage.IterationID, lineage.IterationSectionID, lineage.IterationSectionLabel, lineage.PartID, lineage.PartLabel, lineage.PartKind, lineage.SelectedReviewTargetIDs, lineage.RunID, lineage.PlanID, lineage.CheckpointID, lineage.AttemptID} {
 		if len(value) > 256 {
 			return errors.New("artifact lineage metadata exceeds bounds")
 		}
@@ -1427,6 +1450,24 @@ func validateArtifactLineage(lineage SessionArtifactLineage) error {
 		}
 	} else if lineage.PartLabel == "" || lineage.PartKind == "" || lineage.SourceCollectionID == "" || lineage.SourceVariantID == "" || lineage.SourceEventSeq == 0 {
 		return errors.New("artifact part target lineage requires a label, kind, and exact source artifact")
+	}
+	if lineage.SelectedReviewTargetIDs != "" {
+		if lineage.PartID != "" || lineage.SourceSessionID == "" || lineage.SourceCollectionID == "" || lineage.SourceVariantID == "" || lineage.SourceEventSeq == 0 {
+			return errors.New("artifact multi-target review lineage requires only a bounded id set and exact source artifact")
+		}
+		seen := map[string]struct{}{}
+		for _, id := range strings.Split(lineage.SelectedReviewTargetIDs, ",") {
+			if err := validateArtifactID("review target", id); err != nil {
+				return err
+			}
+			if _, duplicate := seen[id]; duplicate {
+				return errors.New("artifact multi-target review lineage contains duplicate ids")
+			}
+			seen[id] = struct{}{}
+		}
+		if len(seen) < 2 || len(seen) > SessionArtifactMaxParts {
+			return errors.New("artifact multi-target review lineage requires a bounded multi-target id set")
+		}
 	}
 	return nil
 }
@@ -1993,6 +2034,14 @@ func (s *SessionStore) prepareV3ArtifactMutation(input V3SessionMutationInput, s
 			next.DigestSHA256 = ""
 			next.Size = 0
 			next.FailureCode = ""
+			if next.Progress != nil {
+				progress := *next.Progress
+				progress.Stage = strings.TrimSpace(progress.Stage)
+				if progress.Stage == "" || len(progress.Stage) > 64 || progress.Completed < 0 || progress.Total < 0 || progress.Completed > progress.Total || progress.Percent < 0 || progress.Percent > 100 || progress.ElapsedMS < 0 || progress.EstimatedRemainingMS < 0 || progress.HeartbeatAt <= 0 {
+					return preparedV3ArtifactMutation{}, errors.New("artifact staging progress is invalid")
+				}
+				next.Progress = &progress
+			}
 		case V3SessionMutationFinalizeArtifact:
 			if current.Status == SessionArtifactStatusReady {
 				return preparedV3ArtifactMutation{}, errors.New("finalized artifact variant is immutable")
@@ -2002,6 +2051,7 @@ func (s *SessionStore) prepareV3ArtifactMutation(input V3SessionMutationInput, s
 			}
 			next.Status = SessionArtifactStatusReady
 			next.FailureCode = ""
+			next.Progress = nil
 			if err := adjustArtifactCollectionStatusCount(&collection, current.Status, -1); err != nil {
 				return preparedV3ArtifactMutation{}, err
 			}
@@ -2030,6 +2080,7 @@ func (s *SessionStore) prepareV3ArtifactMutation(input V3SessionMutationInput, s
 			collection.Status = artifactCollectionStatusFromCounts(collection)
 			next.DigestSHA256 = ""
 			next.Size = 0
+			next.Progress = nil
 		}
 		next.UpdatedAt = now
 		next.EventSeq = seq
@@ -2271,6 +2322,9 @@ func mergeTerminalArtifactVariant(current, incoming SessionArtifactVariant) Sess
 	if incoming.MediaType != "" {
 		next.MediaType = incoming.MediaType
 	}
+	if incoming.Role != "" {
+		next.Role = incoming.Role
+	}
 	if incoming.DigestSHA256 != "" {
 		next.DigestSHA256 = incoming.DigestSHA256
 	}
@@ -2280,11 +2334,18 @@ func mergeTerminalArtifactVariant(current, incoming SessionArtifactVariant) Sess
 	if incoming.FailureCode != "" {
 		next.FailureCode = incoming.FailureCode
 	}
+	if incoming.Progress != nil {
+		progress := *incoming.Progress
+		next.Progress = &progress
+	}
 	if incoming.Lineage != (SessionArtifactLineage{}) {
 		next.Lineage = incoming.Lineage
 	}
 	if incoming.Presentation != (SessionArtifactPresentation{}) {
 		next.Presentation = incoming.Presentation
+	}
+	if incoming.Parts != nil {
+		next.Parts = append([]SessionArtifactPart(nil), incoming.Parts...)
 	}
 	if incoming.Composition != nil {
 		composition := *incoming.Composition

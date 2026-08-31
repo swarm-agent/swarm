@@ -7,11 +7,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/cockroachdb/pebble"
+
+	"swarm/packages/swarmd/internal/videocomposition"
 )
 
 const (
@@ -37,6 +40,11 @@ const (
 	VideoRenderJobStatusFailed    = "failed"
 	VideoRenderJobStatusCancelled = "cancelled"
 	VideoRenderJobStatusStale     = "stale"
+
+	VideoRenderQualityPreview  = "preview"
+	VideoRenderQualityStandard = "standard"
+	VideoRenderQualityHigh     = "high"
+	VideoRenderQualityMaster   = "master"
 
 	VideoProjectKindVideoTool = "video_tool"
 
@@ -64,14 +72,17 @@ const (
 	VideoEditOperationUpdateTransition = "update_transition"
 	VideoEditOperationRemoveTransition = "remove_transition"
 
-	V3SessionMutationCreateVideoProject         = "video.project.create"
-	V3SessionMutationUpdateVideoProject         = "video.project.update"
-	V3SessionMutationCreateVideoProjectRevision = "video.project.revision.create"
-	V3SessionMutationCreateVideoRenderJob       = "video.render_job.create"
-	V3SessionMutationUpdateVideoRenderJob       = "video.render_job.update"
-	V3SessionMutationCreateVideoEditProposal    = "video.edit_proposal.create"
-	V3SessionMutationAcceptVideoEditProposal    = "video.edit_proposal.accept"
-	V3SessionMutationRejectVideoEditProposal    = "video.edit_proposal.reject"
+	V3SessionMutationCreateVideoProject              = "video.project.create"
+	V3SessionMutationUpdateVideoProject              = "video.project.update"
+	V3SessionMutationCreateVideoProjectRevision      = "video.project.revision.create"
+	V3SessionMutationCreateVideoRenderJob            = "video.render_job.create"
+	V3SessionMutationUpdateVideoRenderJob            = "video.render_job.update"
+	V3SessionMutationCreateVideoEditProposal         = "video.edit_proposal.create"
+	V3SessionMutationSelectVideoAnimationCandidate   = "video.edit_proposal.animation.select"
+	V3SessionMutationPromoteVideoAnimationDerivative = "video.edit_proposal.animation.promote"
+	V3SessionMutationUpdateVideoComposition          = "video.edit_proposal.composition.update"
+	V3SessionMutationAcceptVideoEditProposal         = "video.edit_proposal.accept"
+	V3SessionMutationRejectVideoEditProposal         = "video.edit_proposal.reject"
 
 	MaxVideoProjectsPerSession     = 32
 	MaxVideoProjectRevisions       = 100
@@ -157,7 +168,10 @@ type VideoProjectTimeline struct {
 	Clips           []VideoTimelineClip       `json:"clips"`
 	Transitions     []VideoTimelineTransition `json:"transitions,omitempty"`
 	AudioPolicy     *VideoAudioPolicy         `json:"audio_policy,omitempty"`
-	Metadata        map[string]any            `json:"metadata,omitempty"`
+	// CompositionCatalog is timeline-owned reusable geometry. Parts only link
+	// to it and carry sparse shot-local overrides.
+	CompositionCatalog *videocomposition.Catalog `json:"composition_catalog,omitempty"`
+	Metadata           map[string]any            `json:"metadata,omitempty"`
 }
 
 // VideoProjectSnapshot represents a durable session-owned video project.
@@ -206,31 +220,73 @@ type VideoProjectRevisionSnapshot struct {
 	EventSeq               uint64               `json:"event_seq,omitempty"`
 }
 
-// VideoPlanPart is one stable pre-production section with the exact ready visual
-// that the viewer will see. Stable IDs carry the part through later revisions.
+// VideoAnimationCandidate is one exact ready HTML animation that can be reviewed
+// live through swarm-player/v1 without becoming render-ready timeline media.
+type VideoAnimationCandidate struct {
+	ID     string                             `json:"id"`
+	Source *SessionArtifactSelectionReference `json:"source"`
+	Label  string                             `json:"label,omitempty"`
+}
+
+// VideoAnimationCandidateSet keeps one-of-many HTML review authority separate
+// from its optional MP4 derivative. A selected exact HTML source is durable
+// render authority in its own right; Derivative is only populated after an
+// explicit export and promotion.
+type VideoAnimationCandidateSet struct {
+	Candidates          []VideoAnimationCandidate          `json:"candidates"`
+	SelectedCandidateID string                             `json:"selected_candidate_id,omitempty"`
+	SelectedSource      *SessionArtifactSelectionReference `json:"selected_source,omitempty"`
+	Derivative          *SessionArtifactSelectionReference `json:"derivative,omitempty"`
+	Status              string                             `json:"status"` // awaiting_selection, awaiting_export, ready, failed
+	FailureReason       string                             `json:"failure_reason,omitempty"`
+}
+
+// VideoPlanPart is one stable pre-production section. Visual is its raster/video
+// fallback timeline clip. AnimationCandidates optionally supplies live HTML
+// authority; a selected exact HTML source remains authoritative even when no MP4
+// derivative has been exported or promoted into Visual.
 type VideoPlanPart struct {
-	ID              string                             `json:"id"`
-	Title           string                             `json:"title"`
-	DurationMs      int64                              `json:"duration_ms"`
-	Narration       string                             `json:"narration,omitempty"`
-	OnScreenText    string                             `json:"on_screen_text,omitempty"`
-	VisualDirection string                             `json:"visual_direction,omitempty"`
-	TransitionIn    string                             `json:"transition_in,omitempty"`
-	Visual          *SessionArtifactSelectionReference `json:"visual"`
-	VisualMediaType string                             `json:"visual_media_type,omitempty"`
+	ID                  string                             `json:"id"`
+	Title               string                             `json:"title"`
+	DurationMs          int64                              `json:"duration_ms"`
+	Narration           string                             `json:"narration,omitempty"`
+	OnScreenText        string                             `json:"on_screen_text,omitempty"`
+	VisualDirection     string                             `json:"visual_direction,omitempty"`
+	TransitionIn        string                             `json:"transition_in,omitempty"`
+	CaptureStateID      string                             `json:"capture_state_id,omitempty"`
+	FilmingRequirements []string                           `json:"filming_requirements,omitempty"`
+	ProductionState     string                             `json:"production_state,omitempty"`
+	StoryboardSource    *SessionArtifactSelectionReference `json:"storyboard_source,omitempty"`
+	StoryboardStill     *SessionArtifactSelectionReference `json:"storyboard_still,omitempty"`
+	Caption             *VideoTextOverlay                  `json:"caption,omitempty"`
+	Transition          *VideoTimelineTransition           `json:"transition,omitempty"`
+	Visual              *SessionArtifactSelectionReference `json:"visual"`
+	VisualMediaType     string                             `json:"visual_media_type,omitempty"`
+	SourceStartMs       int64                              `json:"source_start_ms,omitempty"`
+	SourceEndMs         int64                              `json:"source_end_ms,omitempty"`
+	AnimationCandidates *VideoAnimationCandidateSet        `json:"animation_candidates,omitempty"`
+	Composition         *videocomposition.Link             `json:"composition,omitempty"`
 }
 
 const (
 	VideoPlanKindInitial  = "initial"
 	VideoPlanKindRevision = "revision"
+
+	VideoEditProposalIntentGeneral          = "general"
+	VideoEditProposalIntentHTMLIteration    = "html_iteration"
+	VideoEditProposalIntentStoryboardImport = "storyboard_import"
+
+	VideoProductionStatePending = "pending"
+	VideoProductionStateReady   = "ready"
 )
 
 // VideoPlanProposal is a visual review object. Initial plans are accepted as one
 // complete structure; revision plans may replace selected stable parts.
 type VideoPlanProposal struct {
-	Kind    string          `json:"kind,omitempty"`
-	Summary string          `json:"summary,omitempty"`
-	Parts   []VideoPlanPart `json:"parts"`
+	Kind               string                    `json:"kind,omitempty"`
+	Summary            string                    `json:"summary,omitempty"`
+	CompositionCatalog *videocomposition.Catalog `json:"composition_catalog,omitempty"`
+	Parts              []VideoPlanPart           `json:"parts"`
 }
 
 // VideoEditOperation is a bounded typed change. Exactly the payload required by Type is used.
@@ -262,6 +318,7 @@ type VideoEditProposalSnapshot struct {
 	Status                string               `json:"status"`
 	Title                 string               `json:"title,omitempty"`
 	Rationale             string               `json:"rationale,omitempty"`
+	Intent                string               `json:"intent"`
 	Plan                  *VideoPlanProposal   `json:"plan,omitempty"`
 	Operations            []VideoEditOperation `json:"operations,omitempty"`
 	AffectedRanges        []VideoTimelineRange `json:"affected_ranges,omitempty"`
@@ -277,42 +334,60 @@ type VideoEditProposalSnapshot struct {
 
 // VideoRenderJobSnapshot tracks the lifecycle and output of a render operation.
 type VideoRenderJobSnapshot struct {
-	SchemaVersion      int                                `json:"schema_version"`
-	ID                 string                             `json:"id"`
-	ProjectID          string                             `json:"project_id"`
-	RevisionID         string                             `json:"revision_id"`
-	RevisionNumber     int                                `json:"revision_number"`
-	AccountScopeID     string                             `json:"account_scope_id"`
-	UserID             string                             `json:"user_id,omitempty"`
-	WorkspaceID        string                             `json:"workspace_id,omitempty"`
-	SessionID          string                             `json:"session_id"`
-	Status             string                             `json:"status"`
-	Progress           float64                            `json:"progress"`
-	FailureCode        string                             `json:"failure_code,omitempty"`
-	FailureReason      string                             `json:"failure_reason,omitempty"`
-	OutputPreset       string                             `json:"output_preset,omitempty"`
-	OutputWidth        int                                `json:"output_width,omitempty"`
-	OutputHeight       int                                `json:"output_height,omitempty"`
-	OutputFPS          float64                            `json:"output_fps,omitempty"`
-	OutputDurationMs   int64                              `json:"output_duration_ms,omitempty"`
-	OutputSizeBytes    int64                              `json:"output_size_bytes,omitempty"`
-	OutputDigestSHA256 string                             `json:"output_digest_sha256,omitempty"`
-	OutputArtifact     *SessionArtifactSelectionReference `json:"output_artifact,omitempty"`
-	CreatedAt          int64                              `json:"created_at"`
-	UpdatedAt          int64                              `json:"updated_at"`
-	StartedAt          int64                              `json:"started_at,omitempty"`
-	CompletedAt        int64                              `json:"completed_at,omitempty"`
-	EventSeq           uint64                             `json:"event_seq,omitempty"`
+	SchemaVersion        int                                `json:"schema_version"`
+	ID                   string                             `json:"id"`
+	ProjectID            string                             `json:"project_id"`
+	RevisionID           string                             `json:"revision_id"`
+	RevisionNumber       int                                `json:"revision_number"`
+	AccountScopeID       string                             `json:"account_scope_id"`
+	UserID               string                             `json:"user_id,omitempty"`
+	WorkspaceID          string                             `json:"workspace_id,omitempty"`
+	SessionID            string                             `json:"session_id"`
+	Status               string                             `json:"status"`
+	Progress             float64                            `json:"progress"`
+	ProgressStage        string                             `json:"progress_stage,omitempty"`
+	RenderQuality        string                             `json:"render_quality"`
+	RenderFPS            int                                `json:"render_fps"`
+	ElapsedMs            int64                              `json:"elapsed_ms,omitempty"`
+	EstimatedRemainingMs int64                              `json:"estimated_remaining_ms,omitempty"`
+	ReusedFromJobID      string                             `json:"reused_from_job_id,omitempty"`
+	FailureCode          string                             `json:"failure_code,omitempty"`
+	FailureReason        string                             `json:"failure_reason,omitempty"`
+	OutputPreset         string                             `json:"output_preset,omitempty"`
+	OutputWidth          int                                `json:"output_width,omitempty"`
+	OutputHeight         int                                `json:"output_height,omitempty"`
+	OutputFPS            float64                            `json:"output_fps,omitempty"`
+	OutputDurationMs     int64                              `json:"output_duration_ms,omitempty"`
+	OutputSizeBytes      int64                              `json:"output_size_bytes,omitempty"`
+	OutputDigestSHA256   string                             `json:"output_digest_sha256,omitempty"`
+	OutputArtifact       *SessionArtifactSelectionReference `json:"output_artifact,omitempty"`
+	CreatedAt            int64                              `json:"created_at"`
+	UpdatedAt            int64                              `json:"updated_at"`
+	StartedAt            int64                              `json:"started_at,omitempty"`
+	CompletedAt          int64                              `json:"completed_at,omitempty"`
+	EventSeq             uint64                             `json:"event_seq,omitempty"`
 }
 
 // V3VideoProjectMutation wraps payloads for video project mutations.
 type V3VideoProjectMutation struct {
-	Project              *VideoProjectSnapshot         `json:"project,omitempty"`
-	Revision             *VideoProjectRevisionSnapshot `json:"revision,omitempty"`
-	RenderJob            *VideoRenderJobSnapshot       `json:"render_job,omitempty"`
-	EditProposal         *VideoEditProposalSnapshot    `json:"edit_proposal,omitempty"`
-	SelectedOperationIDs []string                      `json:"selected_operation_ids,omitempty"`
-	ExpectedStatus       string                        `json:"expected_status,omitempty"`
+	Project              *VideoProjectSnapshot            `json:"project,omitempty"`
+	Revision             *VideoProjectRevisionSnapshot    `json:"revision,omitempty"`
+	RenderJob            *VideoRenderJobSnapshot          `json:"render_job,omitempty"`
+	EditProposal         *VideoEditProposalSnapshot       `json:"edit_proposal,omitempty"`
+	SelectedOperationIDs []string                         `json:"selected_operation_ids,omitempty"`
+	AnimationSelection   *VideoAnimationSelectionMutation `json:"animation_selection,omitempty"`
+	CompositionPlan      *VideoPlanProposal               `json:"composition_plan,omitempty"`
+	ExpectedRevisionID   string                           `json:"expected_revision_id,omitempty"`
+	ExpectedStatus       string                           `json:"expected_status,omitempty"`
+}
+
+// VideoAnimationSelectionMutation updates one stable plan part. Promotion carries
+// the exact selected HTML source and its ready MP4 derivative in one mutation.
+type VideoAnimationSelectionMutation struct {
+	PartID              string                             `json:"part_id"`
+	SelectedCandidateID string                             `json:"selected_candidate_id"`
+	SelectedSource      *SessionArtifactSelectionReference `json:"selected_source,omitempty"`
+	Derivative          *SessionArtifactSelectionReference `json:"derivative,omitempty"`
 }
 
 // V3VideoProjectProjection summarizes the projection update resulting from a mutation.
@@ -341,6 +416,10 @@ func KeyVideoProject(accountScopeID, sessionID, projectID string) string {
 
 func VideoProjectPrefix(accountScopeID, sessionID string) string {
 	return fmt.Sprintf("v3/video_project/project/%s/%s/", keyPart(accountScopeID), keyPart(sessionID))
+}
+
+func VideoProjectAccountPrefix(accountScopeID string) string {
+	return fmt.Sprintf("v3/video_project/project/%s/", keyPart(accountScopeID))
 }
 
 func KeyPrimaryVideoToolProject(accountScopeID, sessionID string) string {
@@ -395,6 +474,9 @@ func isV3VideoProjectMutationKind(kind string) bool {
 		V3SessionMutationCreateVideoRenderJob,
 		V3SessionMutationUpdateVideoRenderJob,
 		V3SessionMutationCreateVideoEditProposal,
+		V3SessionMutationSelectVideoAnimationCandidate,
+		V3SessionMutationPromoteVideoAnimationDerivative,
+		V3SessionMutationUpdateVideoComposition,
 		V3SessionMutationAcceptVideoEditProposal,
 		V3SessionMutationRejectVideoEditProposal:
 		return true
@@ -464,11 +546,47 @@ func normalizeV3VideoProjectMutation(input *V3SessionMutationInput) {
 				part.OnScreenText = strings.TrimSpace(part.OnScreenText)
 				part.VisualDirection = strings.TrimSpace(part.VisualDirection)
 				part.TransitionIn = strings.TrimSpace(part.TransitionIn)
+				part.CaptureStateID = strings.TrimSpace(part.CaptureStateID)
+				part.ProductionState = strings.ToLower(strings.TrimSpace(part.ProductionState))
+				for requirementIndex := range part.FilmingRequirements {
+					part.FilmingRequirements[requirementIndex] = strings.TrimSpace(part.FilmingRequirements[requirementIndex])
+				}
+				if part.StoryboardSource != nil {
+					normalizeVideoArtifactReference(part.StoryboardSource)
+				}
+				if part.StoryboardStill != nil {
+					normalizeVideoArtifactReference(part.StoryboardStill)
+				}
 				part.VisualMediaType = strings.ToLower(strings.TrimSpace(part.VisualMediaType))
+				if part.Caption != nil {
+					part.Caption.ID = strings.TrimSpace(part.Caption.ID)
+					part.Caption.Text = strings.TrimSpace(part.Caption.Text)
+					part.Caption.Position = strings.ToLower(strings.TrimSpace(part.Caption.Position))
+				}
+				if part.Transition != nil {
+					normalizeVideoTransition(part.Transition)
+				}
 				if part.Visual != nil {
-					part.Visual.SessionID = strings.TrimSpace(part.Visual.SessionID)
-					part.Visual.CollectionID = strings.TrimSpace(part.Visual.CollectionID)
-					part.Visual.VariantID = strings.TrimSpace(part.Visual.VariantID)
+					normalizeVideoArtifactReference(part.Visual)
+				}
+				if candidates := part.AnimationCandidates; candidates != nil {
+					candidates.SelectedCandidateID = strings.TrimSpace(candidates.SelectedCandidateID)
+					candidates.Status = strings.ToLower(strings.TrimSpace(candidates.Status))
+					candidates.FailureReason = strings.TrimSpace(candidates.FailureReason)
+					if candidates.SelectedSource != nil {
+						normalizeVideoArtifactReference(candidates.SelectedSource)
+					}
+					if candidates.Derivative != nil {
+						normalizeVideoArtifactReference(candidates.Derivative)
+					}
+					for candidateIndex := range candidates.Candidates {
+						candidate := &candidates.Candidates[candidateIndex]
+						candidate.ID = strings.TrimSpace(candidate.ID)
+						candidate.Label = strings.TrimSpace(candidate.Label)
+						if candidate.Source != nil {
+							normalizeVideoArtifactReference(candidate.Source)
+						}
+					}
 				}
 			}
 		}
@@ -629,6 +747,15 @@ func normalizeVideoTimeline(timeline *VideoProjectTimeline) {
 	}
 }
 
+func normalizeVideoArtifactReference(ref *SessionArtifactSelectionReference) {
+	if ref == nil {
+		return
+	}
+	ref.SessionID = strings.TrimSpace(ref.SessionID)
+	ref.CollectionID = strings.TrimSpace(ref.CollectionID)
+	ref.VariantID = strings.TrimSpace(ref.VariantID)
+}
+
 func normalizeVideoTransition(transition *VideoTimelineTransition) {
 	if transition == nil {
 		return
@@ -707,7 +834,7 @@ func validateV3VideoProjectMutationInput(input V3SessionMutationInput) error {
 		if err := validateVideoTimeline(r.Timeline); err != nil {
 			return fmt.Errorf("video timeline validation failed: %w", err)
 		}
-	case V3SessionMutationCreateVideoEditProposal, V3SessionMutationAcceptVideoEditProposal, V3SessionMutationRejectVideoEditProposal:
+	case V3SessionMutationCreateVideoEditProposal, V3SessionMutationSelectVideoAnimationCandidate, V3SessionMutationPromoteVideoAnimationDerivative, V3SessionMutationUpdateVideoComposition, V3SessionMutationAcceptVideoEditProposal, V3SessionMutationRejectVideoEditProposal:
 		proposal := input.VideoProject.EditProposal
 		if proposal == nil {
 			return errors.New("video edit proposal snapshot is required")
@@ -718,9 +845,29 @@ func validateV3VideoProjectMutationInput(input V3SessionMutationInput) error {
 		if err := validateV3MutationEmbeddedOwnership(input, "video edit proposal", proposal.SessionID, proposal.UserID, proposal.AccountScopeID); err != nil {
 			return err
 		}
-		if input.Kind == V3SessionMutationCreateVideoEditProposal {
+		if input.Kind == V3SessionMutationUpdateVideoComposition {
+			if input.VideoProject.CompositionPlan == nil || strings.TrimSpace(input.VideoProject.ExpectedRevisionID) == "" {
+				return errors.New("composition update requires a bounded stable-part patch and exact expected_revision_id")
+			}
+			if err := validateVideoPlanProposal(*input.VideoProject.CompositionPlan); err != nil {
+				return fmt.Errorf("composition update plan invalid: %w", err)
+			}
+		} else if input.Kind == V3SessionMutationSelectVideoAnimationCandidate || input.Kind == V3SessionMutationPromoteVideoAnimationDerivative {
+			if input.VideoProject.AnimationSelection == nil || input.VideoProject.AnimationSelection.PartID == "" || input.VideoProject.AnimationSelection.SelectedCandidateID == "" {
+				return errors.New("animation candidate mutation requires part_id and selected_candidate_id")
+			}
+			if input.Kind == V3SessionMutationPromoteVideoAnimationDerivative && input.VideoProject.AnimationSelection.Derivative == nil {
+				return errors.New("animation derivative promotion requires a derivative reference")
+			}
+		} else if input.Kind == V3SessionMutationCreateVideoEditProposal {
 			if proposal.Status != VideoEditProposalStatusPending {
 				return errors.New("new video edit proposal must be pending")
+			}
+			if proposal.Intent == "" {
+				proposal.Intent = VideoEditProposalIntentGeneral
+			}
+			if proposal.Intent != VideoEditProposalIntentGeneral && proposal.Intent != VideoEditProposalIntentHTMLIteration && proposal.Intent != VideoEditProposalIntentStoryboardImport {
+				return fmt.Errorf("video edit proposal has unsupported intent %q", proposal.Intent)
 			}
 			if proposal.Plan != nil {
 				if len(proposal.Operations) != 0 {
@@ -729,8 +876,19 @@ func validateV3VideoProjectMutationInput(input V3SessionMutationInput) error {
 				if err := validateVideoPlanProposal(*proposal.Plan); err != nil {
 					return err
 				}
-			} else if err := validateVideoEditOperations(proposal.Operations); err != nil {
-				return err
+				if err := validateVideoPlanIntent(proposal.Intent, *proposal.Plan); err != nil {
+					return err
+				}
+			} else {
+				if proposal.Intent == VideoEditProposalIntentHTMLIteration {
+					return errors.New("html_iteration intent requires one typed HTML iteration plan")
+				}
+				if proposal.Intent == VideoEditProposalIntentStoryboardImport {
+					return errors.New("storyboard_import intent requires one typed storyboard plan")
+				}
+				if err := validateVideoEditOperations(proposal.Operations); err != nil {
+					return err
+				}
 			}
 		} else if input.Kind == V3SessionMutationAcceptVideoEditProposal {
 			if input.VideoProject.Revision == nil {
@@ -777,6 +935,13 @@ func validateV3VideoProjectMutationInput(input V3SessionMutationInput) error {
 	return nil
 }
 
+const (
+	VideoAnimationCandidateStatusAwaitingSelection = "awaiting_selection"
+	VideoAnimationCandidateStatusAwaitingExport    = "awaiting_export"
+	VideoAnimationCandidateStatusReady             = "ready"
+	VideoAnimationCandidateStatusFailed            = "failed"
+)
+
 func isValidRenderJobStatus(status string) bool {
 	switch status {
 	case VideoRenderJobStatusQueued, VideoRenderJobStatusRendering, VideoRenderJobStatusReady,
@@ -799,6 +964,9 @@ func validateVideoTimeline(timeline VideoProjectTimeline) error {
 	}
 	if len(timeline.Transitions) > MaxTransitionsPerTimeline {
 		return fmt.Errorf("timeline transition count %d exceeds maximum %d", len(timeline.Transitions), MaxTransitionsPerTimeline)
+	}
+	if err := videocomposition.ValidateCatalog(timeline.CompositionCatalog); err != nil {
+		return fmt.Errorf("timeline composition catalog invalid: %w", err)
 	}
 	if timeline.AudioPolicy != nil && (timeline.AudioPolicy.MasterVolume < 0 || timeline.AudioPolicy.MasterVolume > 2) {
 		return errors.New("timeline master volume must be between 0 and 2")
@@ -940,6 +1108,46 @@ func validateAudioTimelineClip(clip VideoTimelineClip) error {
 	return nil
 }
 
+func validateVideoPlanIntent(intent string, plan VideoPlanProposal) error {
+	if intent == "" {
+		intent = VideoEditProposalIntentGeneral
+	}
+	if intent == VideoEditProposalIntentStoryboardImport {
+		if plan.Kind != VideoPlanKindInitial {
+			return errors.New("storyboard_import intent requires an initial video plan")
+		}
+		for _, part := range plan.Parts {
+			if part.CaptureStateID == "" || len(part.FilmingRequirements) == 0 || part.StoryboardSource == nil || part.StoryboardStill == nil || (part.ProductionState != VideoProductionStatePending && part.ProductionState != VideoProductionStateReady) {
+				return fmt.Errorf("storyboard_import intent part %q is missing canonical storyboard fields", part.ID)
+			}
+			if *part.Visual != *part.StoryboardStill {
+				return fmt.Errorf("storyboard_import intent part %q visual must be its exact exported storyboard still", part.ID)
+			}
+		}
+		return nil
+	}
+	if intent != VideoEditProposalIntentHTMLIteration {
+		for _, part := range plan.Parts {
+			if part.AnimationCandidates != nil {
+				return errors.New("HTML animation candidates require the purpose-specific html_iteration proposal intent")
+			}
+		}
+		return nil
+	}
+	for _, part := range plan.Parts {
+		if part.AnimationCandidates == nil {
+			return fmt.Errorf("html_iteration intent requires 2 to 16 HTML animation candidates for every part; part %q is an image-only downgrade", part.ID)
+		}
+		if part.AnimationCandidates.Status != VideoAnimationCandidateStatusAwaitingSelection || part.AnimationCandidates.SelectedCandidateID != "" || part.AnimationCandidates.SelectedSource != nil || part.AnimationCandidates.Derivative != nil {
+			return fmt.Errorf("html_iteration intent part %q must begin at awaiting_selection before export or derivative promotion", part.ID)
+		}
+		if !strings.HasPrefix(part.VisualMediaType, "image/") {
+			return fmt.Errorf("html_iteration intent part %q requires one image fallback; premature MP4 export is forbidden", part.ID)
+		}
+	}
+	return nil
+}
+
 func validateVideoTimelineRanges(ranges []VideoTimelineRange, durationMs int64) error {
 	if len(ranges) > MaxVideoEditProposalOperations {
 		return errors.New("video edit proposal affected ranges must be bounded")
@@ -956,6 +1164,9 @@ func validateVideoTimelineRanges(ranges []VideoTimelineRange, durationMs int64) 
 }
 
 func validateVideoPlanProposal(plan VideoPlanProposal) error {
+	if err := videocomposition.ValidateCatalog(plan.CompositionCatalog); err != nil {
+		return fmt.Errorf("video plan composition catalog invalid: %w", err)
+	}
 	if len(plan.Parts) == 0 || len(plan.Parts) > MaxClipsPerTimeline {
 		return errors.New("video plan parts must be non-empty and bounded")
 	}
@@ -971,18 +1182,101 @@ func validateVideoPlanProposal(plan VideoPlanProposal) error {
 			return fmt.Errorf("video plan part %q requires a positive bounded duration_ms", part.ID)
 		}
 		if part.Visual == nil || part.Visual.SessionID == "" || part.Visual.CollectionID == "" || part.Visual.VariantID == "" || part.Visual.EventSeq == 0 {
-			return fmt.Errorf("video plan part %q requires one complete exact ready visual reference", part.ID)
+			return fmt.Errorf("video plan part %q requires one complete exact render-ready visual reference", part.ID)
 		}
-		if !strings.HasPrefix(part.VisualMediaType, "image/") {
-			return fmt.Errorf("video plan part %q visual must resolve to an image slide", part.ID)
+		if candidates := part.AnimationCandidates; candidates != nil {
+			if len(candidates.Candidates) < 2 || len(candidates.Candidates) > 16 {
+				return fmt.Errorf("video plan part %q animation candidates must contain 2 to 16 choices", part.ID)
+			}
+			seenCandidates := make(map[string]struct{}, len(candidates.Candidates))
+			for _, candidate := range candidates.Candidates {
+				if candidate.ID == "" || candidate.Source == nil || candidate.Source.SessionID == "" || candidate.Source.CollectionID == "" || candidate.Source.VariantID == "" || candidate.Source.EventSeq == 0 {
+					return fmt.Errorf("video plan part %q requires complete exact HTML animation candidates", part.ID)
+				}
+				if _, duplicate := seenCandidates[candidate.ID]; duplicate {
+					return fmt.Errorf("video plan part %q has duplicate animation candidate %q", part.ID, candidate.ID)
+				}
+				seenCandidates[candidate.ID] = struct{}{}
+			}
+			switch candidates.Status {
+			case VideoAnimationCandidateStatusAwaitingSelection:
+				if candidates.SelectedCandidateID != "" || candidates.SelectedSource != nil || candidates.Derivative != nil {
+					return fmt.Errorf("video plan part %q awaiting_selection cannot carry a selection or derivative", part.ID)
+				}
+			case VideoAnimationCandidateStatusAwaitingExport:
+				if _, ok := seenCandidates[candidates.SelectedCandidateID]; !ok || candidates.SelectedSource == nil || candidates.Derivative != nil {
+					return fmt.Errorf("video plan part %q awaiting_export requires one selected HTML source and no derivative", part.ID)
+				}
+			case VideoAnimationCandidateStatusReady:
+				if _, ok := seenCandidates[candidates.SelectedCandidateID]; !ok || candidates.SelectedSource == nil || candidates.Derivative == nil {
+					return fmt.Errorf("video plan part %q ready animation requires selected HTML source and MP4 derivative", part.ID)
+				}
+			case VideoAnimationCandidateStatusFailed:
+				if candidates.FailureReason == "" {
+					return fmt.Errorf("video plan part %q failed animation requires a failure reason", part.ID)
+				}
+			default:
+				return fmt.Errorf("video plan part %q has unsupported animation candidate status %q", part.ID, candidates.Status)
+			}
+		}
+		isImage := strings.HasPrefix(part.VisualMediaType, "image/")
+		isVideo := part.VisualMediaType == "video/mp4"
+		if !isImage && !isVideo {
+			return fmt.Errorf("video plan part %q visual must resolve to an image or video/mp4 artifact", part.ID)
+		}
+		if isVideo {
+			if part.SourceStartMs < 0 || part.SourceEndMs <= part.SourceStartMs {
+				return fmt.Errorf("video plan part %q requires a non-empty MP4 source range", part.ID)
+			}
+			if part.SourceEndMs-part.SourceStartMs != part.DurationMs {
+				return fmt.Errorf("video plan part %q duration_ms must match its MP4 source range", part.ID)
+			}
+		} else if part.SourceStartMs != 0 || part.SourceEndMs != 0 {
+			return fmt.Errorf("video plan part %q image visual cannot declare an MP4 source range", part.ID)
 		}
 		if _, exists := seen[part.ID]; exists {
 			return fmt.Errorf("duplicate video plan part id %q", part.ID)
 		}
 		seen[part.ID] = struct{}{}
-		for _, value := range []string{part.Title, part.Narration, part.OnScreenText, part.VisualDirection, part.TransitionIn} {
+		for _, value := range []string{part.Title, part.Narration, part.OnScreenText, part.VisualDirection, part.TransitionIn, part.CaptureStateID, part.ProductionState} {
 			if len(value) > MaxTextOverlayLength {
 				return fmt.Errorf("video plan part %q field exceeds maximum %d characters", part.ID, MaxTextOverlayLength)
+			}
+		}
+		if len(part.FilmingRequirements) > 16 {
+			return fmt.Errorf("video plan part %q filming requirements exceed fixed bounds", part.ID)
+		}
+		for _, requirement := range part.FilmingRequirements {
+			if strings.TrimSpace(requirement) == "" || len(requirement) > 1000 {
+				return fmt.Errorf("video plan part %q contains an invalid filming requirement", part.ID)
+			}
+		}
+		if part.StoryboardSource != nil && (part.StoryboardSource.SessionID == "" || part.StoryboardSource.CollectionID == "" || part.StoryboardSource.VariantID == "" || part.StoryboardSource.EventSeq == 0) {
+			return fmt.Errorf("video plan part %q storyboard source reference is incomplete", part.ID)
+		}
+		if part.StoryboardStill != nil && (part.StoryboardStill.SessionID == "" || part.StoryboardStill.CollectionID == "" || part.StoryboardStill.VariantID == "" || part.StoryboardStill.EventSeq == 0) {
+			return fmt.Errorf("video plan part %q storyboard still reference is incomplete", part.ID)
+		}
+		if err := videocomposition.ValidateLink(plan.CompositionCatalog, part.Composition, part.DurationMs); err != nil {
+			return fmt.Errorf("video plan part %q composition is invalid: %w", part.ID, err)
+		}
+		if part.Caption != nil {
+			if part.Caption.ID == "" || part.Caption.Text == "" || part.Caption.StartMs < 0 || part.Caption.EndMs <= part.Caption.StartMs || part.Caption.EndMs > part.DurationMs {
+				return fmt.Errorf("video plan part %q caption requires a stable id, text, and bounded part-relative range", part.ID)
+			}
+			if len(part.Caption.Text) > MaxTextOverlayLength {
+				return fmt.Errorf("video plan part %q caption exceeds maximum %d characters", part.ID, MaxTextOverlayLength)
+			}
+		}
+		if part.Transition != nil {
+			if part.Transition.ID == "" || part.Transition.Kind == "" || part.Transition.FromClipID == "" || part.Transition.ToClipID != part.ID {
+				return fmt.Errorf("video plan part %q transition requires a stable id, kind, from_clip_id, and matching to_clip_id", part.ID)
+			}
+			if part.Transition.Kind != VideoTransitionKindCut && part.Transition.Kind != VideoTransitionKindCrossfade {
+				return fmt.Errorf("video plan part %q transition kind is unsupported", part.ID)
+			}
+			if part.Transition.DurationMs < 0 || (part.Transition.Kind == VideoTransitionKindCut && part.Transition.DurationMs != 0) || (part.Transition.Kind == VideoTransitionKindCrossfade && part.Transition.DurationMs <= 0) {
+				return fmt.Errorf("video plan part %q transition duration is invalid", part.ID)
 			}
 		}
 	}
@@ -1003,6 +1297,95 @@ func acceptedVideoPlanFromTimeline(timeline VideoProjectTimeline) (*VideoPlanPro
 		return nil, fmt.Errorf("decode accepted video plan: %w", err)
 	}
 	return &plan, nil
+}
+
+// VideoPlanRenderAuthorityProposalID returns the exact visual-plan proposal whose
+// immutable candidate set is carried by a revision timeline.
+func VideoPlanRenderAuthorityProposalID(timeline VideoProjectTimeline) string {
+	proposalID, _ := timeline.Metadata["accepted_video_plan_proposal_id"].(string)
+	return strings.TrimSpace(proposalID)
+}
+
+// PendingVideoEditProposalForRevision returns the pending proposal that owns an
+// exact working revision. Final rendering must use a confirmed immutable cut,
+// never the mutable review revision of any visual-plan or typed timeline edit.
+func PendingVideoEditProposalForRevision(revision VideoProjectRevisionSnapshot, proposals []VideoEditProposalSnapshot) *VideoEditProposalSnapshot {
+	for index := range proposals {
+		proposal := &proposals[index]
+		if proposal.Status != VideoEditProposalStatusPending || proposal.WorkingRevisionID != revision.ID ||
+			proposal.ProjectID != revision.ProjectID || proposal.SessionID != revision.SessionID ||
+			(proposal.AccountScopeID != "" && revision.AccountScopeID != "" && proposal.AccountScopeID != revision.AccountScopeID) ||
+			(proposal.UserID != "" && revision.UserID != "" && proposal.UserID != revision.UserID) {
+			continue
+		}
+		return proposal
+	}
+	return nil
+}
+
+// ResolveVideoPlanRenderAuthority recovers candidate selections made before the
+// selected HTML authority was copied into working-revision metadata. Recovery is
+// intentionally bounded to the exact proposal named by the revision and to a
+// proposal snapshot that existed no later than that immutable revision. Newer
+// revisions already carry their selected authority directly and take precedence.
+func ResolveVideoPlanRenderAuthority(revision VideoProjectRevisionSnapshot, sourceProposal *VideoEditProposalSnapshot) (*VideoPlanProposal, error) {
+	plan, err := acceptedVideoPlanFromTimeline(revision.Timeline)
+	if err != nil || plan == nil || sourceProposal == nil {
+		return plan, err
+	}
+	proposalID := VideoPlanRenderAuthorityProposalID(revision.Timeline)
+	if proposalID == "" || sourceProposal.ID != proposalID || sourceProposal.Plan == nil || sourceProposal.ProjectID != revision.ProjectID || sourceProposal.SessionID != revision.SessionID {
+		return plan, nil
+	}
+	if sourceProposal.WorkingRevisionID != revision.ID && (revision.CreatedAt == 0 || sourceProposal.UpdatedAt == 0 || sourceProposal.UpdatedAt > revision.CreatedAt) {
+		return plan, nil
+	}
+
+	sourceParts := make(map[string]VideoPlanPart, len(sourceProposal.Plan.Parts))
+	for _, part := range sourceProposal.Plan.Parts {
+		sourceParts[part.ID] = part
+	}
+	for index := range plan.Parts {
+		target := plan.Parts[index].AnimationCandidates
+		if target == nil || target.SelectedCandidateID != "" || target.SelectedSource != nil {
+			continue
+		}
+		sourcePart, ok := sourceParts[plan.Parts[index].ID]
+		if !ok || sourcePart.AnimationCandidates == nil {
+			continue
+		}
+		source := sourcePart.AnimationCandidates
+		if source.SelectedCandidateID == "" || source.SelectedSource == nil {
+			continue
+		}
+		var sourceCandidate *VideoAnimationCandidate
+		for candidateIndex := range source.Candidates {
+			candidate := &source.Candidates[candidateIndex]
+			if candidate.ID == source.SelectedCandidateID && candidate.Source != nil && *candidate.Source == *source.SelectedSource {
+				sourceCandidate = candidate
+				break
+			}
+		}
+		if sourceCandidate == nil {
+			continue
+		}
+		matched := false
+		for _, candidate := range target.Candidates {
+			if candidate.ID == sourceCandidate.ID && candidate.Source != nil && *candidate.Source == *sourceCandidate.Source {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			continue
+		}
+		target.SelectedCandidateID = source.SelectedCandidateID
+		target.SelectedSource = source.SelectedSource
+		target.Derivative = source.Derivative
+		target.Status = source.Status
+		target.FailureReason = source.FailureReason
+	}
+	return plan, nil
 }
 
 func mergeAcceptedVideoPlan(accepted *VideoPlanProposal, proposed VideoPlanProposal, selected []string) (VideoPlanProposal, error) {
@@ -1043,18 +1426,230 @@ func mergeAcceptedVideoPlan(accepted *VideoPlanProposal, proposed VideoPlanPropo
 		if !exists {
 			return VideoPlanProposal{}, fmt.Errorf("selected visual plan part %q is absent from the proposal", part.ID)
 		}
-		merged.Parts[index] = replacement
+		merged.Parts[index] = mergeStoryboardReplacement(part, replacement)
+		delete(wanted, part.ID)
+	}
+	for _, part := range proposed.Parts {
+		if _, ok := wanted[part.ID]; !ok {
+			continue
+		}
+		merged.Parts = append(merged.Parts, part)
 		delete(wanted, part.ID)
 	}
 	if len(wanted) != 0 {
 		for id := range wanted {
-			return VideoPlanProposal{}, fmt.Errorf("visual plan revision cannot add unknown part %q", id)
+			return VideoPlanProposal{}, fmt.Errorf("selected visual plan part %q is absent from the proposal", id)
 		}
 	}
 	if proposed.Summary != "" {
 		merged.Summary = proposed.Summary
 	}
+	if proposed.CompositionCatalog != nil {
+		merged.CompositionCatalog = proposed.CompositionCatalog
+	}
 	return merged, nil
+}
+
+func hydrateRevisionVideoPlanCatalog(accepted *VideoPlanProposal, proposed *VideoPlanProposal) error {
+	if proposed == nil || proposed.Kind != VideoPlanKindRevision || proposed.CompositionCatalog != nil {
+		return nil
+	}
+	linkedLayoutID := ""
+	for _, part := range proposed.Parts {
+		if part.Composition != nil && !part.Composition.Detached && !part.Composition.Disabled {
+			linkedLayoutID = strings.TrimSpace(part.Composition.LayoutID)
+			if linkedLayoutID != "" {
+				break
+			}
+		}
+	}
+	if linkedLayoutID == "" {
+		return nil
+	}
+	if accepted == nil || accepted.CompositionCatalog == nil {
+		return fmt.Errorf("composition link %q requires a catalog on the accepted base plan", linkedLayoutID)
+	}
+	proposed.CompositionCatalog = accepted.CompositionCatalog
+	return nil
+}
+
+func mergeStoryboardReplacement(existing, replacement VideoPlanPart) VideoPlanPart {
+	if existing.StoryboardSource == nil {
+		return replacement
+	}
+	// Storyboard identity and filming guidance are immutable provenance for a
+	// stable part. A revision supplies only the new finished visual authority;
+	// omitted storyboard fields are inherited and the part matures to ready.
+	replacement.StoryboardSource = existing.StoryboardSource
+	replacement.StoryboardStill = existing.StoryboardStill
+	replacement.CaptureStateID = existing.CaptureStateID
+	replacement.FilmingRequirements = append([]string(nil), existing.FilmingRequirements...)
+	if replacement.Composition == nil {
+		replacement.Composition = existing.Composition
+	}
+	if replacement.ProductionState == "" {
+		replacement.ProductionState = VideoProductionStateReady
+	}
+	return replacement
+}
+
+// MergeVideoCompositionUpdate authenticates a bounded composition patch against
+// the exact pending plan. Callers may send only the stable parts they are
+// changing; omitted plan fields and parts retain their server-owned values.
+func MergeVideoCompositionUpdate(pending, patch VideoPlanProposal) (VideoPlanProposal, error) {
+	if len(patch.Parts) == 0 || len(patch.Parts) > len(pending.Parts) {
+		return VideoPlanProposal{}, errors.New("composition update parts must be a non-empty bounded subset of the pending plan")
+	}
+	merged := pending
+	merged.Parts = append([]VideoPlanPart(nil), pending.Parts...)
+	if patch.CompositionCatalog != nil {
+		merged.CompositionCatalog = patch.CompositionCatalog
+	}
+	indices := make(map[string]int, len(merged.Parts))
+	for index, part := range merged.Parts {
+		indices[part.ID] = index
+	}
+	seen := make(map[string]struct{}, len(patch.Parts))
+	for _, update := range patch.Parts {
+		index, ok := indices[update.ID]
+		if !ok {
+			return VideoPlanProposal{}, fmt.Errorf("composition update references unknown stable part %q", update.ID)
+		}
+		if _, duplicate := seen[update.ID]; duplicate {
+			return VideoPlanProposal{}, fmt.Errorf("composition update repeats stable part %q", update.ID)
+		}
+		seen[update.ID] = struct{}{}
+
+		existing := merged.Parts[index]
+		hydrated := update
+		hydrated.ID = existing.ID
+		if hydrated.Title == "" {
+			hydrated.Title = existing.Title
+		}
+		if hydrated.DurationMs == 0 {
+			hydrated.DurationMs = existing.DurationMs
+		}
+		if hydrated.Narration == "" {
+			hydrated.Narration = existing.Narration
+		}
+		if hydrated.OnScreenText == "" {
+			hydrated.OnScreenText = existing.OnScreenText
+		}
+		if hydrated.VisualDirection == "" {
+			hydrated.VisualDirection = existing.VisualDirection
+		}
+		if hydrated.TransitionIn == "" {
+			hydrated.TransitionIn = existing.TransitionIn
+		}
+		if hydrated.CaptureStateID == "" {
+			hydrated.CaptureStateID = existing.CaptureStateID
+		}
+		if hydrated.FilmingRequirements == nil {
+			hydrated.FilmingRequirements = existing.FilmingRequirements
+		}
+		if hydrated.StoryboardSource == nil {
+			hydrated.StoryboardSource = existing.StoryboardSource
+		}
+		if hydrated.StoryboardStill == nil {
+			hydrated.StoryboardStill = existing.StoryboardStill
+		}
+		if hydrated.Caption == nil {
+			hydrated.Caption = existing.Caption
+		}
+		if hydrated.Transition == nil {
+			hydrated.Transition = existing.Transition
+		}
+		if hydrated.Visual == nil {
+			hydrated.Visual = existing.Visual
+		}
+		if hydrated.VisualMediaType == "" {
+			hydrated.VisualMediaType = existing.VisualMediaType
+		}
+		if hydrated.SourceStartMs == 0 {
+			hydrated.SourceStartMs = existing.SourceStartMs
+		}
+		if hydrated.SourceEndMs == 0 {
+			hydrated.SourceEndMs = existing.SourceEndMs
+		}
+		if hydrated.AnimationCandidates == nil {
+			hydrated.AnimationCandidates = existing.AnimationCandidates
+		}
+		if hydrated.Composition == nil {
+			hydrated.Composition = existing.Composition
+		}
+		if hydrated.ProductionState == "" {
+			hydrated.ProductionState = existing.ProductionState
+		}
+
+		expected := existing
+		expected.Composition = hydrated.Composition
+		expected.ProductionState = hydrated.ProductionState
+		if !reflect.DeepEqual(hydrated, expected) {
+			return VideoPlanProposal{}, fmt.Errorf("composition update may only change composition and production_state for part %q", update.ID)
+		}
+		merged.Parts[index] = hydrated
+	}
+	return merged, nil
+}
+
+func mergeWorkingVideoPlanMutation(timeline VideoProjectTimeline, proposed VideoPlanProposal) (VideoPlanProposal, error) {
+	working, err := acceptedVideoPlanFromTimeline(timeline)
+	if err != nil {
+		return VideoPlanProposal{}, err
+	}
+	if working == nil || proposed.Kind == VideoPlanKindInitial {
+		return proposed, nil
+	}
+	merged := *working
+	merged.Parts = append([]VideoPlanPart(nil), working.Parts...)
+	indices := make(map[string]int, len(merged.Parts))
+	for index, part := range merged.Parts {
+		indices[part.ID] = index
+	}
+	for _, part := range proposed.Parts {
+		if index, ok := indices[part.ID]; ok {
+			merged.Parts[index] = mergeStoryboardReplacement(merged.Parts[index], part)
+			continue
+		}
+		indices[part.ID] = len(merged.Parts)
+		merged.Parts = append(merged.Parts, part)
+	}
+	if proposed.Summary != "" {
+		merged.Summary = proposed.Summary
+	}
+	if proposed.CompositionCatalog != nil {
+		merged.CompositionCatalog = proposed.CompositionCatalog
+	}
+	return merged, nil
+}
+
+func validateVisualPlanAudioPreservation(base, compiled VideoProjectTimeline) error {
+	baseAudio := make(map[string]VideoTimelineClip)
+	for _, clip := range base.Clips {
+		if clip.SourceKind == VideoClipSourceKindSourceAudio {
+			baseAudio[clip.ID] = clip
+		}
+	}
+	compiledAudio := make(map[string]VideoTimelineClip)
+	for _, clip := range compiled.Clips {
+		if clip.SourceKind == VideoClipSourceKindSourceAudio {
+			compiledAudio[clip.ID] = clip
+		}
+	}
+	for id, before := range baseAudio {
+		after, ok := compiledAudio[id]
+		if !ok {
+			return fmt.Errorf("visual plan part id %q collides with a source_audio clip; visual plans must preserve soundtrack clip ids, tracks, playhead ranges, trims, and gain exactly", id)
+		}
+		if !reflect.DeepEqual(before, after) {
+			return fmt.Errorf("visual plan changed source_audio clip %q; soundtrack track, sequence, playhead range, source trim, gain, and mute state must remain exact", id)
+		}
+		delete(compiledAudio, id)
+	}
+	for id := range compiledAudio {
+		return fmt.Errorf("visual plan introduced source_audio clip %q; soundtrack topology can only be changed with typed audio clip operations", id)
+	}
+	return nil
 }
 
 func visualVideoPlanTimeline(base VideoProjectTimeline, plan VideoPlanProposal) VideoProjectTimeline {
@@ -1091,24 +1686,58 @@ func visualVideoPlanTimeline(base VideoProjectTimeline, plan VideoPlanProposal) 
 	startMs := int64(0)
 	for index, part := range plan.Parts {
 		endMs := startMs + part.DurationMs
-		caption := VideoTextOverlay{ID: part.ID + "-caption", Text: part.OnScreenText, Position: "center", StartMs: startMs, EndMs: endMs}
 		clip := VideoTimelineClip{
 			ID: part.ID, Name: part.Title + " | Narration: " + part.Narration + " | Planned still: " + part.VisualDirection,
 			Track: 0, Sequence: index, SourceKind: VideoClipSourceKindManagedArtifact, ArtifactRef: part.Visual,
 			MediaType: part.VisualMediaType, TimelineStartMs: startMs, TimelineEndMs: endMs, DurationMs: part.DurationMs,
-			SourceStartMs: 0, SourceEndMs: part.DurationMs, Visible: true,
+			SourceStartMs: part.SourceStartMs, SourceEndMs: part.SourceEndMs, Visible: true,
 		}
-		if part.OnScreenText != "" {
+		if part.VisualMediaType != "video/mp4" {
+			clip.SourceEndMs = part.DurationMs
+		}
+		if part.Caption != nil {
+			caption := *part.Caption
+			caption.StartMs += startMs
+			caption.EndMs += startMs
 			clip.Captions = []VideoTextOverlay{caption}
 		}
 		timeline.Clips = append(timeline.Clips, clip)
-		if index > 0 {
-			timeline.Transitions = append(timeline.Transitions, VideoTimelineTransition{ID: "transition-" + part.ID, Kind: VideoTransitionKindCrossfade, FromClipID: plan.Parts[index-1].ID, ToClipID: part.ID, DurationMs: 300})
+		if part.Transition != nil {
+			timeline.Transitions = append(timeline.Transitions, *part.Transition)
 		}
 		startMs = endMs
 	}
+	if len(preservedClips) > 0 {
+		preservedVisualStartMs := int64(-1)
+		for _, clip := range preservedClips {
+			if clip.SourceKind == VideoClipSourceKindSourceAudio || clip.Track != 0 {
+				continue
+			}
+			if preservedVisualStartMs == -1 || clip.TimelineStartMs < preservedVisualStartMs {
+				preservedVisualStartMs = clip.TimelineStartMs
+			}
+		}
+		if preservedVisualStartMs >= 0 && startMs > preservedVisualStartMs {
+			shiftMs := startMs - preservedVisualStartMs
+			for index := range preservedClips {
+				// Track-zero footage retains the sequential append/shift contract.
+				// Source audio and auxiliary overlay tracks are independently
+				// positioned and must remain on their exact playhead ranges.
+				if preservedClips[index].SourceKind == VideoClipSourceKindSourceAudio || preservedClips[index].Track != 0 {
+					continue
+				}
+				preservedClips[index].TimelineStartMs += shiftMs
+				preservedClips[index].TimelineEndMs += shiftMs
+				for captionIndex := range preservedClips[index].Captions {
+					preservedClips[index].Captions[captionIndex].StartMs += shiftMs
+					preservedClips[index].Captions[captionIndex].EndMs += shiftMs
+				}
+			}
+		}
+	}
 	timeline.Clips = append(timeline.Clips, preservedClips...)
 	timeline.Transitions = append(timeline.Transitions, preservedTransitions...)
+	timeline.CompositionCatalog = plan.CompositionCatalog
 	for _, clip := range preservedClips {
 		endMs := clip.TimelineEndMs
 		if endMs == 0 {
@@ -1138,6 +1767,81 @@ func videoProposalSelection(proposal VideoEditProposalSnapshot) []string {
 		selected = append(selected, operation.ID)
 	}
 	return selected
+}
+
+func unresolvedSelectedVideoCompositionPart(plan *VideoPlanProposal, selected []string) string {
+	if plan == nil {
+		return ""
+	}
+	selectedParts := make(map[string]struct{}, len(selected))
+	for _, partID := range selected {
+		selectedParts[partID] = struct{}{}
+	}
+	for _, part := range plan.Parts {
+		_, enabled := selectedParts[part.ID]
+		if plan.Kind == VideoPlanKindRevision && !enabled {
+			continue
+		}
+		if part.Composition == nil || part.Composition.Disabled {
+			continue
+		}
+		resolved, err := videocomposition.Resolve(plan.CompositionCatalog, part.Composition, 1920, 1080, part.DurationMs)
+		if err != nil {
+			return part.ID
+		}
+		for _, slot := range resolved {
+			if slot.Source == nil {
+				return part.ID
+			}
+		}
+	}
+	return ""
+}
+
+func pendingSelectedVideoProductionPart(plan *VideoPlanProposal, selected []string) string {
+	if plan == nil {
+		return ""
+	}
+	selectedParts := make(map[string]struct{}, len(selected))
+	for _, partID := range selected {
+		selectedParts[partID] = struct{}{}
+	}
+	for _, part := range plan.Parts {
+		_, enabled := selectedParts[part.ID]
+		if plan.Kind == VideoPlanKindRevision && !enabled {
+			continue
+		}
+		if part.ProductionState == VideoProductionStatePending {
+			return part.ID
+		}
+	}
+	return ""
+}
+
+func unresolvedSelectedVideoAnimationPart(plan *VideoPlanProposal, selected []string) string {
+	if plan == nil {
+		return ""
+	}
+	selectedParts := make(map[string]struct{}, len(selected))
+	for _, partID := range selected {
+		selectedParts[partID] = struct{}{}
+	}
+	for _, part := range plan.Parts {
+		_, enabled := selectedParts[part.ID]
+		if plan.Kind == VideoPlanKindRevision && !enabled {
+			continue
+		}
+		candidates := part.AnimationCandidates
+		if candidates == nil {
+			continue
+		}
+		if candidates.Status == VideoAnimationCandidateStatusReady ||
+			(candidates.Status == VideoAnimationCandidateStatusAwaitingExport && candidates.SelectedCandidateID != "" && candidates.SelectedSource != nil && candidates.Derivative == nil) {
+			continue
+		}
+		return part.ID
+	}
+	return ""
 }
 
 func applyVideoProposal(base VideoProjectTimeline, proposal VideoEditProposalSnapshot, selected []string) (VideoProjectTimeline, error) {
@@ -1514,19 +2218,8 @@ func (s *SessionStore) prepareV3VideoProjectMutation(input V3SessionMutationInpu
 			if acceptedPlan == nil && proposal.Plan.Kind != VideoPlanKindInitial {
 				return preparedV3VideoProjectMutation{}, errors.New("the first visual video plan must have kind initial")
 			}
-			if acceptedPlan != nil {
-				if proposal.Plan.Kind != VideoPlanKindRevision {
-					return preparedV3VideoProjectMutation{}, errors.New("an accepted visual video plan requires kind revision")
-				}
-				acceptedIDs := make(map[string]struct{}, len(acceptedPlan.Parts))
-				for _, part := range acceptedPlan.Parts {
-					acceptedIDs[part.ID] = struct{}{}
-				}
-				for _, part := range proposal.Plan.Parts {
-					if _, exists := acceptedIDs[part.ID]; !exists {
-						return preparedV3VideoProjectMutation{}, fmt.Errorf("visual plan revision cannot add unknown part %q", part.ID)
-					}
-				}
+			if acceptedPlan != nil && proposal.Plan.Kind != VideoPlanKindRevision {
+				return preparedV3VideoProjectMutation{}, errors.New("an accepted visual video plan requires kind revision")
 			}
 		}
 		if err := validateVideoTimelineRanges(proposal.AffectedRanges, base.Timeline.TotalDurationMs); err != nil {
@@ -1544,6 +2237,11 @@ func (s *SessionStore) prepareV3VideoProjectMutation(input V3SessionMutationInpu
 		workingTimeline, err := applyVideoProposal(base.Timeline, proposal, videoProposalSelection(proposal))
 		if err != nil {
 			return preparedV3VideoProjectMutation{}, fmt.Errorf("build video working revision: %w", err)
+		}
+		if proposal.Plan != nil {
+			if err := validateVisualPlanAudioPreservation(base.Timeline, workingTimeline); err != nil {
+				return preparedV3VideoProjectMutation{}, fmt.Errorf("visual plan soundtrack topology invalid: %w", err)
+			}
 		}
 		if err := validateVideoTimeline(workingTimeline); err != nil {
 			return preparedV3VideoProjectMutation{}, fmt.Errorf("video working revision validation failed: %w", err)
@@ -1573,6 +2271,190 @@ func (s *SessionStore) prepareV3VideoProjectMutation(input V3SessionMutationInpu
 			Projection: V3VideoProjectProjection{ProjectID: proposal.ProjectID, RevisionID: workingRevision.ID, RevisionNumber: workingRevision.RevisionNumber, CurrentRevisionID: workingRevision.ID, ProposalID: proposal.ID, Status: proposal.Status},
 		}, nil
 
+	case V3SessionMutationUpdateVideoComposition:
+		incoming := input.VideoProject.EditProposal
+		proposal, ok, err := s.GetVideoEditProposal(input.AccountScopeID, input.SessionID, incoming.ProjectID, incoming.ID)
+		if err != nil || !ok {
+			return preparedV3VideoProjectMutation{}, errors.New("video edit proposal not found")
+		}
+		if proposal.UserID != "" && proposal.UserID != input.UserID {
+			return preparedV3VideoProjectMutation{}, errors.New("video edit proposal ownership does not match authenticated principal")
+		}
+		if proposal.Status != VideoEditProposalStatusPending || proposal.Plan == nil {
+			return preparedV3VideoProjectMutation{}, errors.New("composition updates require a pending visual plan proposal")
+		}
+		project, ok, err := s.GetVideoProject(input.AccountScopeID, input.SessionID, proposal.ProjectID)
+		if err != nil || !ok {
+			return preparedV3VideoProjectMutation{}, errors.New("video project not found")
+		}
+		if project.UserID != "" && project.UserID != input.UserID {
+			return preparedV3VideoProjectMutation{}, errors.New("video project ownership does not match authenticated principal")
+		}
+		if project.CurrentRevisionID != input.VideoProject.ExpectedRevisionID || proposal.WorkingRevisionID != input.VideoProject.ExpectedRevisionID {
+			return preparedV3VideoProjectMutation{}, errors.New("stale composition update: expected_revision_id is not the current pending working revision")
+		}
+		working, ok, err := s.GetVideoProjectRevision(input.AccountScopeID, input.SessionID, proposal.ProjectID, proposal.WorkingRevisionID)
+		if err != nil || !ok {
+			return preparedV3VideoProjectMutation{}, errors.New("composition working revision not found")
+		}
+		updatedPlan := *input.VideoProject.CompositionPlan
+		if updatedPlan.Kind != proposal.Plan.Kind || updatedPlan.Summary != proposal.Plan.Summary || len(updatedPlan.Parts) != len(proposal.Plan.Parts) {
+			return preparedV3VideoProjectMutation{}, errors.New("composition update must be canonically merged with the pending plan before durable mutation")
+		}
+		if err := validateVideoPlanIntent(proposal.Intent, updatedPlan); err != nil {
+			return preparedV3VideoProjectMutation{}, fmt.Errorf("composition update intent invalid: %w", err)
+		}
+		if updatedPlan.Kind != proposal.Plan.Kind || updatedPlan.Summary != proposal.Plan.Summary || len(updatedPlan.Parts) != len(proposal.Plan.Parts) {
+			return preparedV3VideoProjectMutation{}, errors.New("composition update must preserve the pending plan kind and complete stable part set")
+		}
+		if updatedPlan.CompositionCatalog == nil && proposal.Plan.CompositionCatalog != nil {
+			for _, part := range updatedPlan.Parts {
+				if part.Composition != nil && !part.Composition.Detached && !part.Composition.Disabled {
+					return preparedV3VideoProjectMutation{}, errors.New("composition update cannot remove the shared catalog while linked parts remain")
+				}
+			}
+		}
+		for index := range updatedPlan.Parts {
+			if updatedPlan.Parts[index].ID != proposal.Plan.Parts[index].ID {
+				return preparedV3VideoProjectMutation{}, errors.New("composition update must preserve stable part order")
+			}
+		}
+		originalParts := make(map[string]VideoPlanPart, len(proposal.Plan.Parts))
+		for _, part := range proposal.Plan.Parts {
+			originalParts[part.ID] = part
+		}
+		if previousWorkingPlan, planErr := acceptedVideoPlanFromTimeline(working.Timeline); planErr != nil {
+			return preparedV3VideoProjectMutation{}, planErr
+		} else if previousWorkingPlan != nil {
+			for _, part := range previousWorkingPlan.Parts {
+				if _, exists := originalParts[part.ID]; !exists {
+					originalParts[part.ID] = part
+				}
+			}
+		}
+		for _, part := range updatedPlan.Parts {
+			original, exists := originalParts[part.ID]
+			if !exists {
+				return preparedV3VideoProjectMutation{}, fmt.Errorf("composition update references unknown stable part %q", part.ID)
+			}
+			original.Composition, original.ProductionState = part.Composition, part.ProductionState
+			updated, updatedErr := json.Marshal(original)
+			candidate, candidateErr := json.Marshal(part)
+			if updatedErr != nil || candidateErr != nil || string(updated) != string(candidate) {
+				return preparedV3VideoProjectMutation{}, fmt.Errorf("composition update may only change composition and production_state for part %q", part.ID)
+			}
+		}
+		proposal.Plan = &updatedPlan
+		proposal.UpdatedAt = now
+		workingPlan, mergeErr := mergeWorkingVideoPlanMutation(working.Timeline, updatedPlan)
+		if mergeErr != nil {
+			return preparedV3VideoProjectMutation{}, mergeErr
+		}
+		baseForRebuild := working.Timeline
+		planPartIDs := make(map[string]struct{}, len(workingPlan.Parts))
+		for _, part := range workingPlan.Parts {
+			planPartIDs[part.ID] = struct{}{}
+		}
+		baseForRebuild.Clips = nil
+		for _, clip := range working.Timeline.Clips {
+			if _, planClip := planPartIDs[clip.ID]; !planClip {
+				baseForRebuild.Clips = append(baseForRebuild.Clips, clip)
+			}
+		}
+		baseForRebuild.Transitions = nil
+		for _, transition := range working.Timeline.Transitions {
+			_, fromPlan := planPartIDs[transition.FromClipID]
+			_, toPlan := planPartIDs[transition.ToClipID]
+			if !fromPlan || !toPlan {
+				baseForRebuild.Transitions = append(baseForRebuild.Transitions, transition)
+			}
+		}
+		working.Timeline = visualVideoPlanTimeline(baseForRebuild, workingPlan)
+		if working.Timeline.Metadata == nil {
+			working.Timeline.Metadata = map[string]any{}
+		}
+		working.Timeline.Metadata["accepted_video_plan"] = workingPlan
+		working.Timeline.Metadata["accepted_video_plan_proposal_id"] = proposal.ID
+		working.ChangeSummary = "Updated pending spatial composition"
+		if err := validateVideoTimeline(working.Timeline); err != nil {
+			return preparedV3VideoProjectMutation{}, fmt.Errorf("composition working revision validation failed: %w", err)
+		}
+		return preparedV3VideoProjectMutation{Revision: &working, EditProposal: &proposal, Projection: V3VideoProjectProjection{ProjectID: proposal.ProjectID, RevisionID: working.ID, RevisionNumber: working.RevisionNumber, CurrentRevisionID: working.ID, ProposalID: proposal.ID, Status: proposal.Status}}, nil
+
+	case V3SessionMutationSelectVideoAnimationCandidate, V3SessionMutationPromoteVideoAnimationDerivative:
+		incoming := input.VideoProject.EditProposal
+		selection := input.VideoProject.AnimationSelection
+		proposal, ok, err := s.GetVideoEditProposal(input.AccountScopeID, input.SessionID, incoming.ProjectID, incoming.ID)
+		if err != nil || !ok {
+			return preparedV3VideoProjectMutation{}, errors.New("video edit proposal not found")
+		}
+		if proposal.Status != VideoEditProposalStatusPending || proposal.Plan == nil {
+			return preparedV3VideoProjectMutation{}, errors.New("animation candidates require a pending visual plan proposal")
+		}
+		partIndex, candidateIndex := -1, -1
+		for index := range proposal.Plan.Parts {
+			if proposal.Plan.Parts[index].ID != selection.PartID {
+				continue
+			}
+			partIndex = index
+			if proposal.Plan.Parts[index].AnimationCandidates != nil {
+				for candidate := range proposal.Plan.Parts[index].AnimationCandidates.Candidates {
+					if proposal.Plan.Parts[index].AnimationCandidates.Candidates[candidate].ID == selection.SelectedCandidateID {
+						candidateIndex = candidate
+						break
+					}
+				}
+			}
+			break
+		}
+		if partIndex < 0 || candidateIndex < 0 {
+			return preparedV3VideoProjectMutation{}, errors.New("selected animation candidate was not found on the stable video part")
+		}
+		part := &proposal.Plan.Parts[partIndex]
+		candidates := part.AnimationCandidates
+		candidate := candidates.Candidates[candidateIndex]
+		if selection.SelectedSource == nil || *selection.SelectedSource != *candidate.Source {
+			return preparedV3VideoProjectMutation{}, errors.New("selected HTML source must exactly match the chosen candidate")
+		}
+		candidates.SelectedCandidateID = selection.SelectedCandidateID
+		candidates.SelectedSource = selection.SelectedSource
+		candidates.FailureReason = ""
+		if input.Kind == V3SessionMutationSelectVideoAnimationCandidate {
+			candidates.Status = VideoAnimationCandidateStatusAwaitingExport
+			candidates.Derivative = nil
+		} else {
+			candidates.Status = VideoAnimationCandidateStatusReady
+			candidates.Derivative = selection.Derivative
+			part.Visual = selection.Derivative
+			part.VisualMediaType = "video/mp4"
+			part.SourceStartMs = 0
+			part.SourceEndMs = part.DurationMs
+		}
+		proposal.UpdatedAt = now
+		working, ok, err := s.GetVideoProjectRevision(input.AccountScopeID, input.SessionID, proposal.ProjectID, proposal.WorkingRevisionID)
+		if err != nil || !ok {
+			return preparedV3VideoProjectMutation{}, errors.New("video animation working revision not found")
+		}
+		if working.Timeline.Metadata == nil {
+			working.Timeline.Metadata = map[string]any{}
+		}
+		// Keep the exact selected HTML authority on the working revision so an
+		// explicit render can resolve it to MP4 without accepting the proposal.
+		// Revision proposals carry only their targeted parts, so merge those
+		// mutated parts back into the complete working plan before persisting
+		// metadata or rebuilding timeline clips. Otherwise promoting one later
+		// part can silently remove every preserved non-target part.
+		workingPlan, mergeErr := mergeWorkingVideoPlanMutation(working.Timeline, *proposal.Plan)
+		if mergeErr != nil {
+			return preparedV3VideoProjectMutation{}, mergeErr
+		}
+		working.Timeline.Metadata["accepted_video_plan"] = workingPlan
+		if input.Kind == V3SessionMutationPromoteVideoAnimationDerivative {
+			working.Timeline = visualVideoPlanTimeline(working.Timeline, workingPlan)
+			working.Timeline.Metadata["accepted_video_plan"] = workingPlan
+		}
+		return preparedV3VideoProjectMutation{Revision: &working, EditProposal: &proposal, Projection: V3VideoProjectProjection{ProjectID: proposal.ProjectID, RevisionID: working.ID, RevisionNumber: working.RevisionNumber, CurrentRevisionID: working.ID, ProposalID: proposal.ID, Status: proposal.Status}}, nil
+
 	case V3SessionMutationAcceptVideoEditProposal:
 		incoming := input.VideoProject.EditProposal
 		proposal, ok, err := s.GetVideoEditProposal(input.AccountScopeID, input.SessionID, incoming.ProjectID, incoming.ID)
@@ -1597,6 +2479,15 @@ func (s *SessionStore) prepareV3VideoProjectMutation(input V3SessionMutationInpu
 		}
 		if project.CurrentRevisionID != proposal.WorkingRevisionID || project.CurrentRevisionNumber != proposal.WorkingRevisionNumber {
 			return preparedV3VideoProjectMutation{}, fmt.Errorf("stale video edit proposal: working revision %s is not current revision %s", proposal.WorkingRevisionID, project.CurrentRevisionID)
+		}
+		if partID := unresolvedSelectedVideoAnimationPart(proposal.Plan, input.VideoProject.SelectedOperationIDs); partID != "" {
+			return preparedV3VideoProjectMutation{}, fmt.Errorf("video plan part %q has no selected exact HTML animation or promoted MP4 derivative", partID)
+		}
+		if partID := unresolvedSelectedVideoCompositionPart(proposal.Plan, input.VideoProject.SelectedOperationIDs); partID != "" {
+			return preparedV3VideoProjectMutation{}, fmt.Errorf("video plan part %q composition has unresolved source requirements", partID)
+		}
+		if partID := pendingSelectedVideoProductionPart(proposal.Plan, input.VideoProject.SelectedOperationIDs); partID != "" {
+			return preparedV3VideoProjectMutation{}, fmt.Errorf("video plan part %q remains in pending production state", partID)
 		}
 		base, ok, err := s.GetVideoProjectRevision(input.AccountScopeID, input.SessionID, proposal.ProjectID, proposal.BaseRevisionID)
 		if err != nil || !ok {
@@ -1689,6 +2580,10 @@ func (s *SessionStore) prepareV3VideoProjectMutation(input V3SessionMutationInpu
 		incomingJob.SchemaVersion = VideoRenderJobSchemaVersion
 		incomingJob.Status = VideoRenderJobStatusQueued
 		incomingJob.Progress = 0.0
+		incomingJob.ProgressStage = "Queued for render capacity"
+		if !isValidRenderQuality(incomingJob.RenderQuality) || (incomingJob.RenderFPS != 30 && incomingJob.RenderFPS != 60) {
+			return preparedV3VideoProjectMutation{}, errors.New("video render job settings are not server-allowlisted")
+		}
 		if incomingJob.CreatedAt == 0 {
 			incomingJob.CreatedAt = now
 		}
@@ -1728,8 +2623,20 @@ func (s *SessionStore) prepareV3VideoProjectMutation(input V3SessionMutationInpu
 		}
 
 		existing.Status = incomingJob.Status
-		if incomingJob.Progress > 0 {
+		if incomingJob.Progress > existing.Progress {
 			existing.Progress = incomingJob.Progress
+		}
+		if incomingJob.ProgressStage != "" && (incomingJob.Status != VideoRenderJobStatusRendering || incomingJob.Progress >= existing.Progress) {
+			existing.ProgressStage = incomingJob.ProgressStage
+		}
+		if incomingJob.ElapsedMs > 0 {
+			existing.ElapsedMs = incomingJob.ElapsedMs
+		}
+		if incomingJob.EstimatedRemainingMs > 0 || isTerminalRenderJobStatus(incomingJob.Status) {
+			existing.EstimatedRemainingMs = incomingJob.EstimatedRemainingMs
+		}
+		if incomingJob.ReusedFromJobID != "" {
+			existing.ReusedFromJobID = incomingJob.ReusedFromJobID
 		}
 		if incomingJob.FailureCode != "" {
 			existing.FailureCode = incomingJob.FailureCode
@@ -1762,11 +2669,29 @@ func (s *SessionStore) prepareV3VideoProjectMutation(input V3SessionMutationInpu
 			existing.OutputArtifact = incomingJob.OutputArtifact
 		}
 
+		if incomingJob.Status == VideoRenderJobStatusQueued {
+			existing.StartedAt = 0
+			existing.ElapsedMs = 0
+			existing.EstimatedRemainingMs = 0
+			if incomingJob.ProgressStage == "" {
+				existing.ProgressStage = "Queued for render capacity"
+			}
+		}
 		if incomingJob.Status == VideoRenderJobStatusRendering && existing.StartedAt == 0 {
 			existing.StartedAt = now
 		}
+		if incomingJob.Status == VideoRenderJobStatusRendering && existing.StartedAt > 0 {
+			existing.ElapsedMs = max(int64(0), now-existing.StartedAt)
+			if existing.Progress > 0 && existing.Progress < 1 {
+				existing.EstimatedRemainingMs = int64(float64(existing.ElapsedMs) * (1 - existing.Progress) / existing.Progress)
+			}
+		}
 		if isTerminalRenderJobStatus(incomingJob.Status) && existing.CompletedAt == 0 {
 			existing.CompletedAt = now
+			existing.EstimatedRemainingMs = 0
+			if existing.StartedAt > 0 {
+				existing.ElapsedMs = max(int64(0), now-existing.StartedAt)
+			}
 		}
 		existing.UpdatedAt = now
 
@@ -1782,6 +2707,15 @@ func (s *SessionStore) prepareV3VideoProjectMutation(input V3SessionMutationInpu
 	}
 
 	return preparedV3VideoProjectMutation{}, errors.New("unhandled video project mutation kind")
+}
+
+func isValidRenderQuality(quality string) bool {
+	switch quality {
+	case VideoRenderQualityPreview, VideoRenderQualityStandard, VideoRenderQualityHigh, VideoRenderQualityMaster:
+		return true
+	default:
+		return false
+	}
 }
 
 func isTerminalRenderJobStatus(status string) bool {
@@ -1857,19 +2791,22 @@ func generateDeterministicOrRandomID(prefix string) string {
 // Store Query Methods
 
 type CreateVideoProjectInput struct {
-	AccountScopeID  string
-	UserID          string
-	SessionID       string
-	WorkspaceID     string
-	ProjectID       string
-	Title           string
-	Description     string
-	OutputPreset    string
-	InitialTimeline *VideoProjectTimeline
-	Metadata        map[string]any
-	ProjectKind     string
-	ClientRequestID string
-	NowUnixMs       int64
+	AccountScopeID    string
+	UserID            string
+	SessionID         string
+	WorkspaceID       string
+	ProjectID         string
+	InitialRevisionID string
+	Title             string
+	Description       string
+	OutputPreset      string
+	InitialTimeline   *VideoProjectTimeline
+	Metadata          map[string]any
+	ProjectKind       string
+	ClientRequestID   string
+	SessionMetadata   map[string]any
+	AttachmentMessage *MessageSnapshot
+	NowUnixMs         int64
 }
 
 func (s *SessionStore) CreateVideoProject(input CreateVideoProjectInput) (VideoProjectSnapshot, *VideoProjectRevisionSnapshot, error) {
@@ -1905,9 +2842,13 @@ func (s *SessionStore) CreateVideoProject(input CreateVideoProjectInput) (VideoP
 	if input.InitialTimeline != nil {
 		timeline := *input.InitialTimeline
 		normalizeVideoTimeline(&timeline)
+		revisionID := strings.TrimSpace(input.InitialRevisionID)
+		if revisionID == "" {
+			revisionID = generateDeterministicOrRandomID("vrev")
+		}
 		rev := VideoProjectRevisionSnapshot{
 			SchemaVersion:  VideoProjectRevisionSchemaVersion,
-			ID:             generateDeterministicOrRandomID("vrev"),
+			ID:             revisionID,
 			ProjectID:      project.ID,
 			RevisionNumber: 1,
 			AccountScopeID: input.AccountScopeID,
@@ -1927,7 +2868,10 @@ func (s *SessionStore) CreateVideoProject(input CreateVideoProjectInput) (VideoP
 		clientReqID = "create_video_project:" + project.ID
 	}
 
-	mutPayload, _ := json.Marshal(map[string]any{"project_id": project.ID, "title": project.Title})
+	mutPayload, _ := json.Marshal(map[string]any{
+		"project_id": project.ID, "initial_revision_id": input.InitialRevisionID, "title": project.Title,
+		"project_metadata": input.Metadata, "session_metadata": input.SessionMetadata, "attachment_message": input.AttachmentMessage,
+	})
 	hash := sha256.Sum256(mutPayload)
 	payloadHash := hex.EncodeToString(hash[:])
 
@@ -1944,6 +2888,35 @@ func (s *SessionStore) CreateVideoProject(input CreateVideoProjectInput) (VideoP
 			Revision: revision,
 		},
 		NowUnixMs: now,
+	}
+	if len(input.SessionMetadata) > 0 || input.AttachmentMessage != nil {
+		session, ok, err := s.GetSession(input.SessionID)
+		if err != nil {
+			return VideoProjectSnapshot{}, nil, err
+		}
+		if !ok {
+			return VideoProjectSnapshot{}, nil, errors.New("video project session not found")
+		}
+		if len(input.SessionMetadata) > 0 {
+			metadata := cloneSessionMetadataMap(session.Metadata)
+			if metadata == nil {
+				metadata = make(map[string]any, len(input.SessionMetadata))
+			}
+			for key, value := range input.SessionMetadata {
+				metadata[key] = cloneSessionMetadataValue(value)
+			}
+			session.Metadata = metadata
+		}
+		if input.AttachmentMessage != nil {
+			session.MessageCount++
+			session.LastMessageAt = now
+			message := *input.AttachmentMessage
+			message.Metadata = cloneSessionMetadataMap(input.AttachmentMessage.Metadata)
+			mutation.Message = &message
+		}
+		if len(input.SessionMetadata) > 0 || input.AttachmentMessage != nil {
+			mutation.Session = &session
+		}
 	}
 
 	if _, err := s.ApplyV3SessionMutation(mutation); err != nil {
@@ -2001,6 +2974,40 @@ func (s *SessionStore) GetPrimaryVideoToolProject(accountScopeID, sessionID stri
 	return project, true, nil
 }
 
+// ListVideoProjectsForAccount enumerates retained projects without requiring an
+// active source session. Callers must still apply user and workspace scope.
+func (s *SessionStore) ListVideoProjectsForAccount(accountScopeID string, limit int) ([]VideoProjectSnapshot, error) {
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	if accountScopeID == "" {
+		return nil, errors.New("account scope is required")
+	}
+	if limit <= 0 || limit > 1000 {
+		limit = 1000
+	}
+	projects := make([]VideoProjectSnapshot, 0)
+	err := s.store.IteratePrefix(VideoProjectAccountPrefix(accountScopeID), limit+1, func(_ string, value []byte) error {
+		var project VideoProjectSnapshot
+		if err := json.Unmarshal(value, &project); err != nil {
+			return err
+		}
+		projects = append(projects, project)
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	sort.Slice(projects, func(i, j int) bool {
+		if projects[i].UpdatedAt == projects[j].UpdatedAt {
+			return projects[i].ID < projects[j].ID
+		}
+		return projects[i].UpdatedAt > projects[j].UpdatedAt
+	})
+	if len(projects) > limit {
+		projects = projects[:limit]
+	}
+	return projects, nil
+}
+
 func (s *SessionStore) ListVideoProjects(accountScopeID, sessionID string, limit int) ([]VideoProjectSnapshot, error) {
 	accountScopeID = strings.TrimSpace(accountScopeID)
 	sessionID = strings.TrimSpace(sessionID)
@@ -2033,11 +3040,11 @@ func (s *SessionStore) ListVideoProjects(accountScopeID, sessionID string, limit
 }
 
 type CreateVideoEditProposalInput struct {
-	AccountScopeID, UserID, SessionID, ProjectID, ProposalID, BaseRevisionID, Title, Rationale, ClientRequestID string
-	Plan                                                                                                        *VideoPlanProposal
-	Operations                                                                                                  []VideoEditOperation
-	AffectedRanges                                                                                              []VideoTimelineRange
-	NowUnixMs                                                                                                   int64
+	AccountScopeID, UserID, SessionID, ProjectID, ProposalID, BaseRevisionID, Title, Rationale, Intent, ClientRequestID string
+	Plan                                                                                                                *VideoPlanProposal
+	Operations                                                                                                          []VideoEditOperation
+	AffectedRanges                                                                                                      []VideoTimelineRange
+	NowUnixMs                                                                                                           int64
 }
 
 func (s *SessionStore) CreateVideoEditProposal(input CreateVideoEditProposalInput) (VideoEditProposalSnapshot, error) {
@@ -2048,7 +3055,27 @@ func (s *SessionStore) CreateVideoEditProposal(input CreateVideoEditProposalInpu
 	if now == 0 {
 		now = time.Now().UnixMilli()
 	}
-	proposal := VideoEditProposalSnapshot{ID: input.ProposalID, ProjectID: input.ProjectID, BaseRevisionID: input.BaseRevisionID, AccountScopeID: input.AccountScopeID, UserID: input.UserID, SessionID: input.SessionID, Status: VideoEditProposalStatusPending, Title: input.Title, Rationale: input.Rationale, Plan: input.Plan, Operations: input.Operations, AffectedRanges: input.AffectedRanges, CreatedAt: now, UpdatedAt: now}
+	intent := strings.TrimSpace(input.Intent)
+	if intent == "" {
+		intent = VideoEditProposalIntentGeneral
+	}
+	if input.Plan != nil && input.Plan.Kind == VideoPlanKindRevision && input.Plan.CompositionCatalog == nil {
+		base, ok, err := s.GetVideoProjectRevision(input.AccountScopeID, input.SessionID, input.ProjectID, input.BaseRevisionID)
+		if err != nil {
+			return VideoEditProposalSnapshot{}, err
+		}
+		if !ok {
+			return VideoEditProposalSnapshot{}, fmt.Errorf("base revision %q not found", input.BaseRevisionID)
+		}
+		accepted, err := acceptedVideoPlanFromTimeline(base.Timeline)
+		if err != nil {
+			return VideoEditProposalSnapshot{}, err
+		}
+		if err := hydrateRevisionVideoPlanCatalog(accepted, input.Plan); err != nil {
+			return VideoEditProposalSnapshot{}, err
+		}
+	}
+	proposal := VideoEditProposalSnapshot{ID: input.ProposalID, ProjectID: input.ProjectID, BaseRevisionID: input.BaseRevisionID, AccountScopeID: input.AccountScopeID, UserID: input.UserID, SessionID: input.SessionID, Status: VideoEditProposalStatusPending, Title: input.Title, Rationale: input.Rationale, Intent: intent, Plan: input.Plan, Operations: input.Operations, AffectedRanges: input.AffectedRanges, CreatedAt: now, UpdatedAt: now}
 	clientID := input.ClientRequestID
 	if clientID == "" {
 		clientID = "create_video_edit_proposal:" + proposal.ID
@@ -2325,6 +3352,8 @@ type CreateVideoRenderJobInput struct {
 	ProjectID       string
 	RevisionID      string
 	JobID           string
+	RenderQuality   string
+	RenderFPS       int
 	ClientRequestID string
 	NowUnixMs       int64
 }
@@ -2343,6 +3372,14 @@ func (s *SessionStore) CreateVideoRenderJob(input CreateVideoRenderJobInput) (Vi
 		now = time.Now().UnixMilli()
 	}
 
+	quality := strings.ToLower(strings.TrimSpace(input.RenderQuality))
+	if quality == "" {
+		quality = VideoRenderQualityHigh
+	}
+	fps := input.RenderFPS
+	if fps == 0 {
+		fps = 60
+	}
 	job := VideoRenderJobSnapshot{
 		SchemaVersion:  VideoRenderJobSchemaVersion,
 		ID:             input.JobID,
@@ -2352,6 +3389,8 @@ func (s *SessionStore) CreateVideoRenderJob(input CreateVideoRenderJobInput) (Vi
 		UserID:         input.UserID,
 		SessionID:      input.SessionID,
 		Status:         VideoRenderJobStatusQueued,
+		RenderQuality:  quality,
+		RenderFPS:      fps,
 		CreatedAt:      now,
 		UpdatedAt:      now,
 	}
@@ -2361,7 +3400,7 @@ func (s *SessionStore) CreateVideoRenderJob(input CreateVideoRenderJobInput) (Vi
 		clientReqID = fmt.Sprintf("create_render_job:%s:%s", input.ProjectID, job.ID)
 	}
 
-	mutPayload, _ := json.Marshal(map[string]any{"job_id": job.ID, "project_id": input.ProjectID, "revision_id": input.RevisionID})
+	mutPayload, _ := json.Marshal(map[string]any{"job_id": job.ID, "project_id": input.ProjectID, "revision_id": input.RevisionID, "render_quality": quality, "render_fps": fps})
 	hash := sha256.Sum256(mutPayload)
 	payloadHash := hex.EncodeToString(hash[:])
 
@@ -2395,25 +3434,29 @@ func (s *SessionStore) CreateVideoRenderJob(input CreateVideoRenderJobInput) (Vi
 }
 
 type UpdateVideoRenderJobInput struct {
-	AccountScopeID     string
-	UserID             string
-	SessionID          string
-	JobID              string
-	Status             string
-	ExpectedStatus     string
-	Progress           float64
-	FailureCode        string
-	FailureReason      string
-	OutputPreset       string
-	OutputWidth        int
-	OutputHeight       int
-	OutputFPS          float64
-	OutputDurationMs   int64
-	OutputSizeBytes    int64
-	OutputDigestSHA256 string
-	OutputArtifact     *SessionArtifactSelectionReference
-	ClientRequestID    string
-	NowUnixMs          int64
+	AccountScopeID       string
+	UserID               string
+	SessionID            string
+	JobID                string
+	Status               string
+	ExpectedStatus       string
+	Progress             float64
+	ProgressStage        string
+	ElapsedMs            int64
+	EstimatedRemainingMs int64
+	ReusedFromJobID      string
+	FailureCode          string
+	FailureReason        string
+	OutputPreset         string
+	OutputWidth          int
+	OutputHeight         int
+	OutputFPS            float64
+	OutputDurationMs     int64
+	OutputSizeBytes      int64
+	OutputDigestSHA256   string
+	OutputArtifact       *SessionArtifactSelectionReference
+	ClientRequestID      string
+	NowUnixMs            int64
 }
 
 func (s *SessionStore) UpdateVideoRenderJob(input UpdateVideoRenderJobInput) (VideoRenderJobSnapshot, error) {
@@ -2427,23 +3470,27 @@ func (s *SessionStore) UpdateVideoRenderJob(input UpdateVideoRenderJobInput) (Vi
 	}
 
 	job := VideoRenderJobSnapshot{
-		ID:                 input.JobID,
-		AccountScopeID:     input.AccountScopeID,
-		UserID:             input.UserID,
-		SessionID:          input.SessionID,
-		Status:             strings.ToLower(strings.TrimSpace(input.Status)),
-		Progress:           input.Progress,
-		FailureCode:        strings.ToLower(strings.TrimSpace(input.FailureCode)),
-		FailureReason:      strings.TrimSpace(input.FailureReason),
-		OutputPreset:       normalizeVideoPreset(input.OutputPreset),
-		OutputWidth:        input.OutputWidth,
-		OutputHeight:       input.OutputHeight,
-		OutputFPS:          input.OutputFPS,
-		OutputDurationMs:   input.OutputDurationMs,
-		OutputSizeBytes:    input.OutputSizeBytes,
-		OutputDigestSHA256: strings.ToLower(strings.TrimSpace(input.OutputDigestSHA256)),
-		OutputArtifact:     input.OutputArtifact,
-		UpdatedAt:          now,
+		ID:                   input.JobID,
+		AccountScopeID:       input.AccountScopeID,
+		UserID:               input.UserID,
+		SessionID:            input.SessionID,
+		Status:               strings.ToLower(strings.TrimSpace(input.Status)),
+		Progress:             input.Progress,
+		ProgressStage:        strings.TrimSpace(input.ProgressStage),
+		ElapsedMs:            input.ElapsedMs,
+		EstimatedRemainingMs: input.EstimatedRemainingMs,
+		ReusedFromJobID:      strings.TrimSpace(input.ReusedFromJobID),
+		FailureCode:          strings.ToLower(strings.TrimSpace(input.FailureCode)),
+		FailureReason:        strings.TrimSpace(input.FailureReason),
+		OutputPreset:         normalizeVideoPreset(input.OutputPreset),
+		OutputWidth:          input.OutputWidth,
+		OutputHeight:         input.OutputHeight,
+		OutputFPS:            input.OutputFPS,
+		OutputDurationMs:     input.OutputDurationMs,
+		OutputSizeBytes:      input.OutputSizeBytes,
+		OutputDigestSHA256:   strings.ToLower(strings.TrimSpace(input.OutputDigestSHA256)),
+		OutputArtifact:       input.OutputArtifact,
+		UpdatedAt:            now,
 	}
 
 	clientReqID := input.ClientRequestID
@@ -2451,7 +3498,7 @@ func (s *SessionStore) UpdateVideoRenderJob(input UpdateVideoRenderJobInput) (Vi
 		clientReqID = fmt.Sprintf("update_render_job:%s:%s:%d", input.JobID, job.Status, now)
 	}
 
-	mutPayload, _ := json.Marshal(map[string]any{"job_id": job.ID, "status": job.Status, "progress": job.Progress})
+	mutPayload, _ := json.Marshal(map[string]any{"job_id": job.ID, "status": job.Status, "progress": job.Progress, "progress_stage": job.ProgressStage})
 	hash := sha256.Sum256(mutPayload)
 	payloadHash := hex.EncodeToString(hash[:])
 
@@ -2545,7 +3592,7 @@ func (s *SessionStore) ListVideoRenderJobs(accountScopeID, sessionID, projectID 
 		prefix = VideoRenderJobByProjectPrefix(accountScopeID, sessionID, projectID)
 	}
 	jobs := make([]VideoRenderJobSnapshot, 0)
-	err := s.store.IteratePrefix(prefix, limit+1, func(_ string, value []byte) error {
+	err := s.store.IteratePrefix(prefix, 0, func(_ string, value []byte) error {
 		var j VideoRenderJobSnapshot
 		if err := json.Unmarshal(value, &j); err != nil {
 			return err
@@ -2557,7 +3604,10 @@ func (s *SessionStore) ListVideoRenderJobs(accountScopeID, sessionID, projectID 
 		return nil, err
 	}
 	sort.Slice(jobs, func(i, j int) bool {
-		return jobs[i].CreatedAt < jobs[j].CreatedAt
+		if jobs[i].CreatedAt == jobs[j].CreatedAt {
+			return jobs[i].ID > jobs[j].ID
+		}
+		return jobs[i].CreatedAt > jobs[j].CreatedAt
 	})
 	if len(jobs) > limit {
 		jobs = jobs[:limit]

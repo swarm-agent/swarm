@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { VIDEO_TRANSITION_KINDS, buildVideoIterationTimeline, loadLatestVideoEditProposals, proposedVideoPlanClipDetails, rejectVideoEditProposal, renderedVideoArtifactUrl, selectedVideoProposalChangeIDs, transitionLabel, videoPlanPartMessageSelection, videoPlanTransitionMessageSelection, videoProposalFocusClipId, videoProposalProjectionSequence, type VideoEditProposalWire } from '../video-studio/video-studio-surface'
+import { VIDEO_TRANSITION_KINDS, buildVideoIterationTimeline, loadLatestVideoEditProposals, proposedVideoPlanClipDetails, rejectVideoEditProposal, renderedVideoArtifactUrl, selectedVideoProposalChangeIDs, transitionLabel, videoAnimationReadyForConfirmation, videoPlanPartMessageSelection, videoPlanPartStoryboardContext, videoPlanProposalChanges, videoPlanTransitionMessageSelection, videoProposalFocusClipId, videoProposalProjectionSequence, videoProposalsForConversationTurn, type VideoEditProposalWire } from '../video-studio/video-studio-surface'
 
 import {
   acceptedVideoPlan,
@@ -9,26 +9,46 @@ import {
   createAdditionalVideoProject,
   defaultRenderedVideoExportPath,
   preferredVisibleVideoProject,
+  proposalOwnsAnimationPart,
   createVideoThread,
   ensurePrimaryVideoProject,
+  fetchWorkspaceVideoCatalog,
+  filterWorkspaceVideoCatalog,
+  focusedVideoReviewPartLocked,
+  forkWorkspaceVideoRevision,
   listVideoProjects,
   layoutTimelineSegments,
   projectTimelineToTimelineSegments,
   replaceCachedImageMedia,
   replaceCachedVideoMedia,
+  replaceVideoEditProposal,
   resolveVideoStudioSessionRoute,
   scanVideoFolder,
   serializeVideoClipForRequest,
   soundtrackTimelineClip,
+  syncTimelineAudioPlayback,
   timelineSegmentsToProjectTimeline,
   videoPlanClipDetails,
+  videoPlanForPlayback,
+  videoActivePreviewCandidate,
+  videoActivePreviewIdentity,
+  videoAnimationPartAtClip,
+  videoClipReviewState,
   VIDEO_STUDIO_AGENT_NAME,
   videoChildSessionMetadata,
   videoStudioSessionMetadata,
+  selectVideoAnimationCandidateLocally,
+  shouldScheduleVideoCanvasFrame,
+  unresolvedVideoIterationLockPartIDs,
+  selectWorkspaceVideoRevision,
+  workspaceVideoContextMetadata,
+  workspaceVideosForSession,
   type VideoClip,
+  type WorkspaceVideoCatalogItemWire,
   type VideoProjectTimelineWire,
   type VideoTimelineClipWire,
 } from './video-tool-page'
+import type { VideoCompositionCatalogWire } from '../video-studio/video-composition'
 import type { WorkspaceEntry } from '../../../workspaces/launcher/types/workspace'
 import type { WorkspaceOverviewSwarmTarget, WorkspaceOverviewTopologyRoute } from '../../../workspaces/launcher/types/workspace-overview'
 
@@ -143,6 +163,38 @@ test('Video Studio maps accepted and pending source audio into its dedicated pre
   assert.deepEqual([segments[1].start, segments[1].sourceStart, segments[1].duration, segments[1].volume, segments[1].muted], [1, 0.5, 3, 0.65, false])
 })
 
+test('Video Studio starts soundtrack at the selected clip playhead and keeps it synchronized', () => {
+  const timeline: VideoProjectTimelineWire = { schema_version: 1, clips: [
+    { id: 'visual-1', source_kind: 'color', duration_ms: 5000, timeline_start_ms: 0, timeline_end_ms: 5000, visible: true },
+    { id: 'visual-2', source_kind: 'color', duration_ms: 5000, timeline_start_ms: 5000, timeline_end_ms: 10000, visible: true },
+    { id: 'soundtrack', source_kind: 'source_audio', audio_source: { ref: 'audiosrc_exact', name: 'theme.wav', mime_type: 'audio/wav', size_bytes: 42, source_fingerprint: 'fingerprint', fingerprint_version: 'v1' }, duration_ms: 10000, source_start_ms: 1000, source_end_ms: 11000, timeline_start_ms: 0, timeline_end_ms: 10000, volume: 0.65 },
+  ] }
+  const layout = layoutTimelineSegments(projectTimelineToTimelineSegments(timeline, {}, [], 'session-1'))
+  let playCalls = 0
+  let pauseCalls = 0
+  const audio = {
+    paused: true,
+    currentTime: 0,
+    volume: 1,
+    muted: false,
+    play() { playCalls += 1; this.paused = false; return Promise.resolve() },
+    pause() { pauseCalls += 1; this.paused = true },
+  } as unknown as HTMLAudioElement
+
+  syncTimelineAudioPlayback(layout, new Map([['soundtrack', audio]]), 5, true)
+  assert.equal(audio.currentTime, 6)
+  assert.equal(audio.volume, 0.65)
+  assert.equal(playCalls, 1)
+
+  audio.currentTime = 5
+  syncTimelineAudioPlayback(layout, new Map([['soundtrack', audio]]), 7, true)
+  assert.equal(audio.currentTime, 8)
+  assert.equal(playCalls, 1)
+
+  syncTimelineAudioPlayback(layout, new Map([['soundtrack', audio]]), 7, false)
+  assert.equal(pauseCalls, 1)
+})
+
 test('Video Studio preserves a timeline clip exact artifact reference for composer attachment fallback', () => {
   const artifactRef: NonNullable<VideoTimelineClipWire['artifact_ref']> = {
     session_id: 'session-1', collection_id: 'slides', variant_id: 'slide-1', event_seq: 9, media_type: 'image/png',
@@ -164,6 +216,229 @@ test('Video Studio reads an accepted visual plan from canonical revision metadat
     summary: 'Visual launch video',
     parts: [{ id: 'part-1', title: 'Hook', duration_ms: 5000, visual }],
   })
+})
+
+test('Video Studio preserves the accepted live animation while previewing a soundtrack-only proposal', () => {
+  const visual = { session_id: 'session-1', collection_id: 'slides', variant_id: 'slide-1', event_seq: 9 }
+  const candidate = { id: 'scan', source: { session_id: 'session-1', collection_id: 'animations', variant_id: 'scan', event_seq: 12 } }
+  const timeline: VideoProjectTimelineWire = {
+    clips: [],
+    metadata: { accepted_video_plan: { kind: 'initial', parts: [{ id: 'intro', title: 'Intro', duration_ms: 8000, visual, animation_candidates: { candidates: [candidate], selected_candidate_id: 'scan', selected_source: candidate.source, status: 'awaiting_export' } }] } },
+  }
+  const soundtrackProposal: VideoEditProposalWire = {
+    id: 'soundtrack', project_id: 'project-1', base_revision_id: 'revision-1', base_revision_number: 1,
+    status: 'pending', operations: [{ id: 'add-audio', type: 'add_clip', clip: { id: 'audio', source_kind: 'source_audio' } }], created_at: 1, updated_at: 1,
+  }
+
+  assert.equal(videoPlanForPlayback(soundtrackProposal, timeline)?.parts[0].animation_candidates?.selected_candidate_id, 'scan')
+  assert.equal(proposalOwnsAnimationPart(soundtrackProposal, 'intro'), false)
+})
+
+test('Video Studio does not project an older pending proposal into a newer conversation turn', () => {
+  const oldProposal = {
+    id: 'old', project_id: 'project-1', base_revision_id: 'revision-1', base_revision_number: 1,
+    status: 'pending' as const, operations: [], created_at: 100, updated_at: 100,
+  }
+  const currentProposal = { ...oldProposal, id: 'current', created_at: 300, updated_at: 300 }
+
+  assert.deepEqual(videoProposalsForConversationTurn([oldProposal, currentProposal], 200).map((proposal) => proposal.id), ['current'])
+  assert.deepEqual(videoProposalsForConversationTurn([oldProposal], 200), [])
+  assert.deepEqual(videoProposalsForConversationTurn([oldProposal], 0), [oldProposal])
+})
+
+test('Video Studio places a targeted revision part on its stable base-plan range', () => {
+  const proposal: VideoEditProposalWire = {
+    id: 'r5', project_id: 'project-1', base_revision_id: 'r4', base_revision_number: 4,
+    status: 'pending', operations: [], created_at: 1, updated_at: 1,
+    plan: { kind: 'revision', parts: [{ id: 'step-2', title: 'Step 2', duration_ms: 5500 }] },
+  }
+  const [change] = videoPlanProposalChanges(proposal, [
+    { id: 'step-1', duration_ms: 8000 },
+    { id: 'step-2', duration_ms: 5500 },
+    { id: 'step-3', duration_ms: 5500 },
+  ])
+  assert.equal(change.startMs, 8000)
+  assert.equal(change.endMs, 13500)
+})
+
+test('Video Studio keeps only the selected animation playing after its iteration turn is over', () => {
+  const visual = { session_id: 'session-1', collection_id: 'slides', variant_id: 'slide-1', event_seq: 9 }
+  const orbit = { id: 'orbit', source: { ...visual, variant_id: 'orbit' } }
+  const scan = { id: 'scan', source: { ...visual, variant_id: 'scan' } }
+  const timeline: VideoProjectTimelineWire = {
+    clips: [],
+    metadata: { accepted_video_plan: { kind: 'initial', parts: [{ id: 'intro', title: 'Intro', duration_ms: 8000, visual, animation_candidates: { candidates: [orbit, scan], selected_candidate_id: 'scan', selected_source: scan.source, status: 'awaiting_export' } }] } },
+  }
+
+  const playback = videoPlanForPlayback(null, timeline, false)?.parts[0].animation_candidates
+  assert.deepEqual(playback?.candidates.map((candidate) => candidate.id), ['scan'])
+  assert.equal(playback?.selected_candidate_id, 'scan')
+  assert.deepEqual(videoPlanForPlayback(null, timeline)?.parts[0].animation_candidates?.candidates.map((candidate) => candidate.id), ['orbit', 'scan'])
+})
+
+test('Video Studio falls back to the still when an older animation turn has no selected candidate', () => {
+  const visual = { session_id: 'session-1', collection_id: 'slides', variant_id: 'slide-1', event_seq: 9 }
+  const timeline: VideoProjectTimelineWire = {
+    clips: [],
+    metadata: { accepted_video_plan: { kind: 'initial', parts: [{ id: 'intro', title: 'Intro', duration_ms: 8000, visual, animation_candidates: { candidates: [{ id: 'scan', source: visual }], status: 'awaiting_selection' } }] } },
+  }
+
+  assert.equal(videoPlanForPlayback(null, timeline, false)?.parts[0].animation_candidates, undefined)
+})
+
+test('Video Studio updates only the selected stable part and rejects cross-part candidate combinations', () => {
+  const visual = { session_id: 'session-1', collection_id: 'slides', variant_id: 'fallback', event_seq: 9 }
+  const introA = { id: 'intro-a', source: { session_id: 'session-1', collection_id: 'animations', variant_id: 'intro-a', event_seq: 10 } }
+  const introB = { id: 'intro-b', source: { session_id: 'session-1', collection_id: 'animations', variant_id: 'intro-b', event_seq: 11 } }
+  const outroA = { id: 'outro-a', source: { session_id: 'session-1', collection_id: 'animations', variant_id: 'outro-a', event_seq: 12 } }
+  const proposal: VideoEditProposalWire = {
+    id: 'multi-part', project_id: 'project-1', base_revision_id: 'revision-1', base_revision_number: 1,
+    status: 'pending', operations: [], created_at: 1, updated_at: 1,
+    plan: { kind: 'revision', parts: [
+      { id: 'intro', title: 'Intro', duration_ms: 5000, visual, animation_candidates: { candidates: [introA, introB], status: 'awaiting_selection' } },
+      { id: 'outro', title: 'Outro', duration_ms: 4000, visual, animation_candidates: { candidates: [outroA], status: 'awaiting_selection' } },
+    ] },
+  }
+
+  const selected = selectVideoAnimationCandidateLocally(proposal, 'intro', introB)
+  assert.equal(selected?.plan?.parts[0].animation_candidates?.selected_candidate_id, 'intro-b')
+  assert.equal(selected?.plan?.parts[0].animation_candidates?.status, 'awaiting_export')
+  assert.equal(videoAnimationReadyForConfirmation(selected!.plan!.parts[0]), true)
+  assert.equal(videoAnimationReadyForConfirmation(selected!.plan!.parts[1]), false)
+  assert.equal(videoAnimationReadyForConfirmation({ ...selected!.plan!.parts[0], animation_candidates: { ...selected!.plan!.parts[0].animation_candidates!, selected_source: { ...introB.source, event_seq: 99 } } }), false)
+  assert.equal(selected?.plan?.parts[1].animation_candidates?.selected_candidate_id, undefined)
+  assert.equal(selectVideoAnimationCandidateLocally(proposal, 'intro', outroA), null)
+  assert.equal(selectVideoAnimationCandidateLocally(proposal, 'outro', { ...outroA, source: introA.source }), null)
+  assert.equal(replaceVideoEditProposal([proposal], selected ?? proposal)[0], selected)
+  assert.deepEqual(replaceVideoEditProposal([], selected ?? proposal), [selected])
+})
+
+test('Video Studio focused review locks static parts and exact selected candidates', () => {
+  const source = { session_id: 'session-1', collection_id: 'animations', variant_id: 'orbit', event_seq: 1 }
+  const candidate = { id: 'orbit', source }
+  assert.equal(focusedVideoReviewPartLocked({ id: 'still', title: 'Still', duration_ms: 1000 }), true)
+  assert.equal(focusedVideoReviewPartLocked({ id: 'intro', title: 'Intro', duration_ms: 1000, animation_candidates: { candidates: [candidate], status: 'awaiting_selection' } }), false)
+  assert.equal(focusedVideoReviewPartLocked({ id: 'intro', title: 'Intro', duration_ms: 1000, animation_candidates: { candidates: [candidate], selected_candidate_id: 'orbit', selected_source: source, status: 'awaiting_export' } }), true)
+  assert.equal(focusedVideoReviewPartLocked({ id: 'intro', title: 'Intro', duration_ms: 1000, animation_candidates: { candidates: [candidate], selected_candidate_id: 'orbit', selected_source: { ...source, event_seq: 2 }, status: 'awaiting_export' } }), false)
+})
+
+test('Video Studio blocks rendering only when a selected clip has multiple unlocked iterations', () => {
+  const visual = { session_id: 'session-1', collection_id: 'slides', variant_id: 'fallback', event_seq: 9 }
+  const proposal: VideoEditProposalWire = {
+    id: 'render-locks', project_id: 'project-1', base_revision_id: 'revision-1', base_revision_number: 1,
+    status: 'pending', operations: [], created_at: 1, updated_at: 1,
+    plan: { kind: 'revision', parts: [
+      { id: 'plain', title: 'Plain', duration_ms: 3000, visual },
+      { id: 'single', title: 'Single', duration_ms: 3000, visual, animation_candidates: { candidates: [{ id: 'only', source: { ...visual, variant_id: 'only' } }], status: 'awaiting_selection' } },
+      { id: 'multi', title: 'Multi', duration_ms: 3000, visual, animation_candidates: { candidates: [{ id: 'one', source: { ...visual, variant_id: 'one' } }, { id: 'two', source: { ...visual, variant_id: 'two' } }], status: 'awaiting_selection' } },
+    ] },
+  }
+
+  assert.deepEqual(unresolvedVideoIterationLockPartIDs(proposal, ['plain', 'single']), [])
+  assert.deepEqual(unresolvedVideoIterationLockPartIDs(proposal, ['multi']), ['multi'])
+  const locked = selectVideoAnimationCandidateLocally(proposal, 'multi', proposal.plan!.parts[2].animation_candidates!.candidates[1])
+  assert.deepEqual(unresolvedVideoIterationLockPartIDs(locked, ['multi']), [])
+  assert.deepEqual(unresolvedVideoIterationLockPartIDs({ ...proposal, plan: { ...proposal.plan!, kind: 'initial' } }), ['multi'])
+  assert.deepEqual(unresolvedVideoIterationLockPartIDs({ ...proposal, plan: undefined }, ['multi']), [])
+})
+
+test('Video Studio prefers animation candidates owned by the pending visual proposal', () => {
+  const visual = { session_id: 'session-1', collection_id: 'slides', variant_id: 'slide-1', event_seq: 9 }
+  const proposal: VideoEditProposalWire = {
+    id: 'visual-change', project_id: 'project-1', base_revision_id: 'revision-1', base_revision_number: 1,
+    status: 'pending', operations: [], created_at: 1, updated_at: 1,
+    plan: { kind: 'revision', parts: [{ id: 'intro', title: 'Intro', duration_ms: 8000, visual, animation_candidates: { candidates: [{ id: 'pulse', source: { session_id: 'session-1', collection_id: 'animations', variant_id: 'pulse', event_seq: 13 } }], status: 'awaiting_selection' } }] },
+  }
+
+  assert.equal(videoPlanForPlayback(proposal, { clips: [] }), proposal.plan)
+  assert.equal(proposalOwnsAnimationPart(proposal, 'intro'), true)
+})
+
+test('Video Studio binds active HTML preview to exact project, proposal, revision, clip, part, candidate, and source lineage', () => {
+  const visual = { session_id: 'session-1', collection_id: 'fallbacks', variant_id: 'still', event_seq: 9 }
+  const candidate = { id: 'orbit', source: { session_id: 'session-1', collection_id: 'animations', variant_id: 'orbit-v2', event_seq: 12 } }
+  const part = { id: 'intro', title: 'Intro', duration_ms: 8000, visual, animation_candidates: { candidates: [candidate], selected_candidate_id: 'orbit', selected_source: candidate.source, status: 'awaiting_export' as const } }
+  const proposal: VideoEditProposalWire = {
+    id: 'proposal-2', project_id: 'project-1', base_revision_id: 'revision-1', base_revision_number: 1,
+    working_revision_id: 'revision-2', status: 'pending', operations: [], created_at: 1, updated_at: 1,
+    plan: { kind: 'revision', parts: [part] },
+  }
+  const identity = videoActivePreviewIdentity({ projectId: 'project-1', proposal, revisionId: 'revision-2', timelineClipId: 'intro', part, candidate })
+
+  assert.equal(videoActivePreviewCandidate({ identity, projectId: 'project-1', proposal, revisionId: 'revision-2', timelineClipId: 'intro', part })?.id, 'orbit')
+  assert.equal(videoActivePreviewCandidate({ identity, projectId: 'project-1', proposal, revisionId: 'revision-2', timelineClipId: 'outro', part }), null)
+  assert.equal(videoActivePreviewCandidate({ identity, projectId: 'project-1', proposal: { ...proposal, id: 'proposal-3' }, revisionId: 'revision-2', timelineClipId: 'intro', part }), null)
+  assert.equal(videoActivePreviewCandidate({ identity, projectId: 'project-1', proposal: { ...proposal, working_revision_id: 'revision-3' }, revisionId: 'revision-3', timelineClipId: 'intro', part }), null)
+  assert.equal(videoActivePreviewCandidate({ identity, projectId: 'project-1', proposal, revisionId: 'revision-2', timelineClipId: 'intro', part: { ...part, animation_candidates: { ...part.animation_candidates, candidates: [{ ...candidate, source: { ...candidate.source, event_seq: 13 } }] } } }), null)
+})
+
+test('Video Studio reports one concise human review state for each clip media state', () => {
+  const source = { session_id: 'session-1', collection_id: 'animations', variant_id: 'orbit', event_seq: 1 }
+  const part = (status: 'awaiting_selection' | 'awaiting_export' | 'ready' | 'failed', selected = false) => ({
+    id: 'intro', title: 'Intro', duration_ms: 1000,
+    animation_candidates: { candidates: [{ id: 'orbit', source }], ...(selected ? { selected_candidate_id: 'orbit', selected_source: source } : {}), status },
+  })
+  assert.deepEqual(videoClipReviewState(part('awaiting_selection'), 'image/png', 'image'), { mediaKind: 'Live HTML', state: 'Choose motion' })
+  assert.deepEqual(videoClipReviewState(part('awaiting_export', true), 'image/png', 'image'), { mediaKind: 'Live HTML', state: 'Motion selected · ready' })
+  assert.deepEqual(videoClipReviewState(part('ready', true), 'video/mp4', 'video'), { mediaKind: 'Motion', state: 'Motion ready' })
+  assert.deepEqual(videoClipReviewState(undefined, 'video/mp4', 'video'), { mediaKind: 'Video', state: 'Video' })
+  assert.deepEqual(videoClipReviewState(undefined, 'image/png', 'image'), { mediaKind: 'Still', state: 'Still' })
+})
+
+test('Video Studio schedules continuous canvas work only during visible playback', () => {
+  assert.equal(shouldScheduleVideoCanvasFrame(true, 'visible'), true)
+  assert.equal(shouldScheduleVideoCanvasFrame(false, 'visible'), false)
+  assert.equal(shouldScheduleVideoCanvasFrame(true, 'hidden'), false)
+})
+
+test('Video Studio exposes storyboard placeholders, filming guidance, and exact lineage', () => {
+  const source = { session_id: 'storyboard-session', collection_id: 'storyboards', variant_id: 'launch-v1', event_seq: 7 }
+  const still = { session_id: 'video-session', collection_id: 'storyboard-stills', variant_id: 'opening', event_seq: 12 }
+  const part = {
+    id: 'intro', title: 'Opening', duration_ms: 2500, capture_state_id: 'opening',
+    filming_requirements: ['Locked camera', 'Hold final pose'], production_state: 'pending' as const,
+    storyboard_source: source, storyboard_still: still, visual: still,
+  }
+
+  assert.deepEqual(videoClipReviewState(part, 'image/png', 'image'), { mediaKind: 'Storyboard still', state: 'Placeholder · filming needed' })
+  assert.deepEqual(videoPlanPartStoryboardContext(part), {
+    partId: 'intro', captureStateId: 'opening', productionState: 'pending',
+    filmingRequirements: ['Locked camera', 'Hold final pose'], source, still,
+  })
+  assert.deepEqual(videoPlanPartMessageSelection(part), {
+    ...still,
+    label: 'Opening',
+    description: 'Stable storyboard part intro · capture state opening · pending. Locked camera · Hold final pose',
+    action: 'select',
+  })
+})
+
+test('Video Studio iteration context retains storyboard lineage for stable-part replacement', () => {
+  const source = { session_id: 'storyboard-session', collection_id: 'storyboards', variant_id: 'launch-v1', event_seq: 7 }
+  const still = { session_id: 'video-session', collection_id: 'storyboard-stills', variant_id: 'opening', event_seq: 12 }
+  const proposal: VideoEditProposalWire = {
+    id: 'storyboard-import', project_id: 'project-1', base_revision_id: 'revision-1', base_revision_number: 1,
+    working_revision_id: 'revision-2', status: 'pending', operations: [], created_at: 1, updated_at: 1,
+    plan: { kind: 'initial', parts: [{ id: 'intro', title: 'Opening', duration_ms: 2500, capture_state_id: 'opening', filming_requirements: ['Locked camera'], production_state: 'pending', storyboard_source: source, storyboard_still: still, visual: still }] },
+  }
+  const [entry] = buildVideoIterationTimeline([proposal], [])
+  assert.equal(entry.changes[0].storyboard?.partId, 'intro')
+  assert.equal(entry.changes[0].storyboard?.source.event_seq, 7)
+  assert.equal(entry.changes[0].storyboard?.still.event_seq, 12)
+})
+
+test('Video Studio shows live iterations only while their clip owns the playhead', () => {
+  const plan = {
+    kind: 'initial' as const,
+    parts: [
+      { id: 'intro-main', title: 'Intro', duration_ms: 8000, visual: { session_id: 'session-1', collection_id: 'slides', variant_id: 'intro', event_seq: 1 }, animation_candidates: { candidates: [{ id: 'orbit', source: { session_id: 'session-1', collection_id: 'animations', variant_id: 'orbit', event_seq: 2 } }], status: 'awaiting_selection' as const } },
+      { id: 'parallel-build', title: 'Build', duration_ms: 7000, visual: { session_id: 'session-1', collection_id: 'slides', variant_id: 'build', event_seq: 3 } },
+    ],
+  }
+
+  assert.equal(videoAnimationPartAtClip(plan, 'intro-main')?.id, 'intro-main')
+  assert.equal(videoAnimationPartAtClip(plan, 'parallel-build'), null)
+  assert.equal(videoAnimationPartAtClip(plan, null), null)
 })
 
 test('Video Creator selects an accepted reviewable plan ahead of an empty primary project', () => {
@@ -411,6 +686,57 @@ test('Start new video session completes through the canonical V3 session API wit
   }
 })
 
+test('Video Studio filters standalone videos across title and related session provenance', () => {
+  const items = [{
+    project: { id: 'project-1', session_id: 'source-1', title: 'Launch film', current_revision_id: 'revision-2', created_at: 1, updated_at: 2 },
+    revisions: [
+      { id: 'revision-1', project_id: 'project-1', session_id: 'source-1', revision_number: 1, timeline: { clips: [] }, created_at: 1 },
+      { id: 'revision-2', project_id: 'project-1', session_id: 'source-1', revision_number: 2, timeline: { clips: [] }, created_at: 2 },
+    ],
+    source_archived: true,
+    source_session_id: 'source-1',
+    source_session_title: 'Original campaign',
+    related_sessions: [{ session_id: 'related-1', title: 'Polish pass' }],
+  }] satisfies WorkspaceVideoCatalogItemWire[]
+  assert.equal(filterWorkspaceVideoCatalog(items, 'launch').length, 1)
+  assert.equal(filterWorkspaceVideoCatalog(items, 'polish').length, 1)
+  assert.equal(filterWorkspaceVideoCatalog(items, 'missing').length, 0)
+  assert.equal(selectWorkspaceVideoRevision(items[0])?.id, 'revision-2')
+  assert.equal(selectWorkspaceVideoRevision(items[0], 'revision-1')?.revision_number, 1)
+})
+
+test('Video Studio loads standalone videos without a destination session and forks exact selected context', async () => {
+  const originalFetch = globalThis.fetch
+  const calls: string[] = []
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input)
+    calls.push(url)
+    if (url === '/v1/workspace/video/projects?workspace_path=%2Fworkspace%2Fvideo&limit=200') return new Response(JSON.stringify({ videos: [{ project: { id: 'project-1', session_id: 'source-1', title: 'Launch', created_at: 1, updated_at: 1 }, revisions: null, related_sessions: null, source_session_id: 'source-1' }] }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    if (url === '/v1/workspace/video/projects/fork') {
+      assert.deepEqual(JSON.parse(String(init?.body)), { workspace_path: '/workspace/video', source_session_id: 'source-1', source_project_id: 'project-1', source_revision_id: 'revision-7', destination_session_id: 'destination-1', attach_to_session: false })
+      return new Response(JSON.stringify({ project: { id: 'forked', session_id: 'destination-1', title: 'Launch', created_at: 2, updated_at: 2 }, revision: { id: 'forked-revision', project_id: 'forked', session_id: 'destination-1', revision_number: 1, timeline: { clips: [] }, created_at: 2 } }), { status: 201, headers: { 'Content-Type': 'application/json' } })
+    }
+    throw new Error(`unexpected fetch: ${url}`)
+  }) as typeof fetch
+  try {
+    const videos = await fetchWorkspaceVideoCatalog('/workspace/video')
+    assert.deepEqual(videos[0].revisions, [])
+    assert.deepEqual(videos[0].related_sessions, [])
+    const fork = await forkWorkspaceVideoRevision({ workspacePath: '/workspace/video', sourceSessionId: 'source-1', sourceProjectId: 'project-1', sourceRevisionId: 'revision-7', destinationSessionId: 'destination-1' })
+    assert.equal(fork.current_revision?.id, 'forked-revision')
+    assert.deepEqual(calls, ['/v1/workspace/video/projects?workspace_path=%2Fworkspace%2Fvideo&limit=200', '/v1/workspace/video/projects/fork'])
+  } finally { globalThis.fetch = originalFetch }
+})
+
+test('Video Studio session metadata attaches exact standalone video identity for AI context', () => {
+  const item = { project: { id: 'project-1', session_id: 'source-1', title: 'Launch', created_at: 1, updated_at: 1 }, revisions: [], source_session_id: 'source-1', related_sessions: [] } satisfies WorkspaceVideoCatalogItemWire
+  assert.deepEqual(workspaceVideoContextMetadata(item, 'revision-7'), {
+    experience: 'video_studio', launch_source: 'video_library', lineage_kind: 'video_project', creative_mode: 'video',
+    source_session_id: 'source-1', source_video_project_id: 'project-1', source_video_revision_id: 'revision-7',
+    video_context: { source_session_id: 'source-1', source_project_id: 'project-1', source_revision_id: 'revision-7', title: 'Launch' },
+  })
+})
+
 test('Video Studio initializes the primary project with an empty durable base revision', async () => {
   const originalFetch = globalThis.fetch
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -605,6 +931,45 @@ test('pending visual plan tolerates an empty legacy base revision', () => {
   })
   assert.equal(shadow.clips.length, 1)
   assert.equal(shadow.clips[0].artifact_ref?.variant_id, 'still-1')
+})
+
+test('pending visual plan consumes typed MP4 ranges, captions, and transitions without synthesizing presentation', () => {
+  const shadow = applyPendingVideoProposal({ schema_version: 1, clips: [], transitions: [] }, {
+    id: 'proposal-motion', project_id: 'project-1', base_revision_id: 'revision-1', base_revision_number: 1,
+    status: 'pending', created_at: 1, updated_at: 1, operations: [],
+    plan: {
+      kind: 'initial',
+      parts: [
+        { id: 'motion-1', title: 'Motion', duration_ms: 2000, on_screen_text: 'descriptive only', transition_in: 'descriptive only', visual_media_type: 'video/mp4', source_start_ms: 500, source_end_ms: 2500, visual: { session_id: 'session-1', collection_id: 'motion', variant_id: 'clip-1', event_seq: 7 } },
+        { id: 'still-2', title: 'Still', duration_ms: 1000, caption: { id: 'caption-2', text: 'Explicit', position: 'bottom', start_ms: 100, end_ms: 900 }, transition: { id: 'cut-1-2', kind: 'cut', from_clip_id: 'motion-1', to_clip_id: 'still-2' }, visual: { session_id: 'session-1', collection_id: 'stills', variant_id: 'still-2', event_seq: 8 } },
+      ],
+    },
+  })
+
+  assert.deepEqual([shadow.clips[0].source_start_ms, shadow.clips[0].source_end_ms, shadow.clips[0].captions], [500, 2500, []])
+  assert.deepEqual(shadow.clips[1].captions, [{ id: 'caption-2', text: 'Explicit', position: 'bottom', start_ms: 2100, end_ms: 2900 }])
+  assert.deepEqual(shadow.transitions, [{ id: 'cut-1-2', kind: 'cut', from_clip_id: 'motion-1', to_clip_id: 'still-2' }])
+  const segments = projectTimelineToTimelineSegments(shadow, {}, [], 'session-1')
+  assert.deepEqual([segments[0].type, segments[0].sourceStart, segments[0].duration], ['video', 0.5, 2])
+  assert.equal(segments[0].src, '/v3/sessions/session-1/artifacts/clip-1')
+  assert.deepEqual(segments[1].captions, shadow.clips[1].captions)
+})
+
+test('pending storyboard composition projects catalog and links into the working cut only', () => {
+  const visual = { session_id: 'session-1', collection_id: 'stills', variant_id: 'frame', event_seq: 1 }
+  const compositionCatalog: VideoCompositionCatalogWire = { schema_version: 1, layouts: [{ id: 'phones', slots: [{ id: 'left', requirement: 'Left portrait', geometry: { x: .1, y: .1, width: .3, height: .8 }, z_index: 1, fit: 'cover', alignment_x: .5, alignment_y: .5, mask: { kind: 'none' } }, { id: 'right', requirement: 'Right portrait', geometry: { x: .6, y: .1, width: .3, height: .8 }, z_index: 2, fit: 'cover', alignment_x: .5, alignment_y: .5, mask: { kind: 'none' } }] }] }
+  const accepted: VideoProjectTimelineWire = { schema_version: 1, clips: [], transitions: [] }
+  const shadow = applyPendingVideoProposal(accepted, {
+    id: 'composition', project_id: 'project-1', base_revision_id: 'revision-1', base_revision_number: 1, status: 'pending', operations: [], created_at: 1, updated_at: 1,
+    plan: { kind: 'initial', composition_catalog: compositionCatalog, parts: [{ id: 'shot', title: 'Phones', duration_ms: 4000, visual, composition: { layout_id: 'phones' } }] },
+  })
+  assert.equal(accepted.composition_catalog, undefined)
+  assert.equal(shadow.composition_catalog?.layouts[0].id, 'phones')
+  assert.equal(shadow.clips[0].composition_part_id, 'shot')
+  assert.equal(shadow.clips[0].composition?.layout_id, 'phones')
+  const [segment] = projectTimelineToTimelineSegments(shadow, {}, [], 'session-1')
+  assert.equal(segment.compositionPartId, 'shot')
+  assert.equal(segment.composition?.layout_id, 'phones')
 })
 
 test('pending selective still revision preserves accepted auxiliary footage in the live shadow cut', () => {
@@ -853,6 +1218,53 @@ test('Video Studio keeps all changed sections enabled by default and omits disab
 test('Video Studio exposes the complete launch transition vocabulary', () => {
   assert.deepEqual(VIDEO_TRANSITION_KINDS, ['cut', 'fade_through_black', 'crossfade', 'fade_to_black', 'fade_from_black'])
   assert.equal(transitionLabel('fade_through_black'), 'Fade through black')
+})
+
+test('standalone video library filters videos and related sessions', () => {
+  const items: WorkspaceVideoCatalogItemWire[] = [{
+    project: { id: 'project-1', session_id: 'session-source', title: 'Launch film', description: 'Product reveal', current_revision_id: 'revision-2', current_revision_number: 2, revision_count: 2, created_at: 1, updated_at: 2 },
+    revisions: [
+      { id: 'revision-1', project_id: 'project-1', session_id: 'session-source', revision_number: 1, timeline: { schema_version: 1, clips: [] }, created_at: 1 },
+      { id: 'revision-2', project_id: 'project-1', session_id: 'session-source', revision_number: 2, timeline: { schema_version: 1, clips: [] }, created_at: 2 },
+    ],
+    source_archived: true,
+    source_session_id: 'session-source',
+    source_session_title: 'Original session',
+    related_sessions: [{ session_id: 'session-related', title: 'Follow-up edit' }],
+  }]
+
+  assert.equal(filterWorkspaceVideoCatalog(items, 'follow-up').length, 1)
+  assert.equal(filterWorkspaceVideoCatalog(items, 'missing').length, 0)
+  assert.equal(selectWorkspaceVideoRevision(items[0])?.id, 'revision-2')
+  assert.equal(selectWorkspaceVideoRevision(items[0], 'revision-1')?.id, 'revision-1')
+})
+
+test('workspace video session selection resolves one or multiple associated videos', () => {
+  const first = { project: { id: 'video-a', session_id: 'source-a', title: 'A', created_at: 1, updated_at: 1 }, revisions: [], source_session_id: 'source-a', related_sessions: [{ session_id: 'shared', title: 'Shared' }] } satisfies WorkspaceVideoCatalogItemWire
+  const second = { project: { id: 'video-b', session_id: 'source-b', title: 'B', created_at: 1, updated_at: 1 }, revisions: [], source_session_id: 'source-b', related_sessions: [{ session_id: 'shared', title: 'Shared' }] } satisfies WorkspaceVideoCatalogItemWire
+  assert.deepEqual(workspaceVideosForSession([first, second], 'source-a').map((item) => item.project.id), ['video-a'])
+  assert.deepEqual(workspaceVideosForSession([first, second], 'shared').map((item) => item.project.id), ['video-a', 'video-b'])
+})
+
+test('workspaceVideoContextMetadata carries exact standalone video revision identity', () => {
+  const item: WorkspaceVideoCatalogItemWire = {
+    project: { id: 'project-1', session_id: 'session-source', title: 'Launch film', current_revision_id: 'revision-2', current_revision_number: 2, revision_count: 2, created_at: 1, updated_at: 2 },
+    revisions: [],
+    source_session_id: 'session-source',
+    related_sessions: [],
+  }
+
+  const metadata = workspaceVideoContextMetadata(item, 'revision-1')
+  assert.equal(metadata.launch_source, 'video_library')
+  assert.equal(metadata.source_session_id, 'session-source')
+  assert.equal(metadata.source_video_project_id, 'project-1')
+  assert.equal(metadata.source_video_revision_id, 'revision-1')
+  assert.deepEqual(metadata.video_context, {
+    source_session_id: 'session-source',
+    source_project_id: 'project-1',
+    source_revision_id: 'revision-1',
+    title: 'Launch film',
+  })
 })
 
 test('videoChildSessionMetadata carries canonical project and revision identity', () => {

@@ -28,8 +28,67 @@ export function desktopV3ArtifactStudioSamePartRevision(left: DesktopV3ArtifactC
     && left.revision.mediaType === right.revision.mediaType
 }
 
+export function desktopV3ArtifactStudioAuthoredEntry(entry: DesktopV3ArtifactCatalogEntry): boolean {
+  return entry.role !== 'render_only'
+}
+
+export interface DesktopV3ArtifactStudioStoryboardPart {
+  id: string
+  label: string
+  stateId: string
+  source: DesktopV3ArtifactCatalogEntry
+  still?: DesktopV3ArtifactCatalogEntry
+}
+
+export interface DesktopV3ArtifactStudioStoryboard {
+  source: DesktopV3ArtifactCatalogEntry
+  parts: DesktopV3ArtifactStudioStoryboardPart[]
+}
+
+function sameLineageSource(entry: DesktopV3ArtifactCatalogEntry, source: DesktopV3ArtifactCatalogEntry): boolean {
+  return entry.lineage?.sourceSessionId === source.sessionId
+    && entry.lineage.sourceCollectionId === source.collectionId
+    && entry.lineage.sourceVariantId === source.artifactId
+    && (!entry.lineage.sourceEventSeq || entry.lineage.sourceEventSeq === source.eventSeq)
+}
+
+/**
+ * Resolves an authored capture-state storyboard and its renderer-produced stills.
+ * Exported stills are presentation children of one proposal, not new AI turns.
+ */
+export function desktopV3ArtifactStudioStoryboard(
+  entries: readonly DesktopV3ArtifactCatalogEntry[],
+  entry: DesktopV3ArtifactCatalogEntry,
+): DesktopV3ArtifactStudioStoryboard | undefined {
+  const source = (entry.mediaType === 'text/html' && (entry.parts?.filter((part) => part.kind === 'state').length ?? 0) > 1)
+    ? entry
+    : entries.find((candidate) => candidate.mediaType === 'text/html'
+      && (candidate.parts?.filter((part) => part.kind === 'state').length ?? 0) > 1
+      && sameLineageSource(entry, candidate))
+  if (!source) return undefined
+  const stateParts = (source.parts ?? []).filter((part) => part.kind === 'state')
+  if (stateParts.length < 2) return undefined
+  const derivatives = entries.filter((candidate) => candidate.mediaType.startsWith('image/') && sameLineageSource(candidate, source))
+  const parts = stateParts.map((part): DesktopV3ArtifactStudioStoryboardPart => {
+    const stateId = part.stateId || part.id
+    const still = [...derivatives].sort((left, right) => {
+      const leftMatch = Number(left.label === stateId || left.filename === `capture-${stateId}.png`)
+      const rightMatch = Number(right.label === stateId || right.filename === `capture-${stateId}.png`)
+      return rightMatch - leftMatch || Number(right.status === 'ready') - Number(left.status === 'ready') || right.updatedAt - left.updatedAt
+    }).find((candidate) => candidate.label === stateId || candidate.filename === `capture-${stateId}.png`)
+    return { id: part.id, label: part.label, stateId, source, ...(still ? { still } : {}) }
+  })
+  return { source, parts }
+}
+
+function captureStoryboardDerivative(entries: readonly DesktopV3ArtifactCatalogEntry[], entry: DesktopV3ArtifactCatalogEntry): boolean {
+  const storyboard = desktopV3ArtifactStudioStoryboard(entries, entry)
+  return Boolean(storyboard && storyboard.source !== entry && storyboard.parts.some((part) => part.still === entry))
+}
+
 function gitProjected(entry: DesktopV3ArtifactCatalogEntry): boolean {
-  return entry.graphState === 'git_projection'
+  return desktopV3ArtifactStudioAuthoredEntry(entry)
+    && entry.graphState === 'git_projection'
     && Boolean(entry.artifactChainId && entry.artifactStepId && entry.chain && entry.step)
     && entry.chain?.graphState === 'git_projection'
     && entry.chain.id === entry.artifactChainId
@@ -44,10 +103,177 @@ export function desktopV3ArtifactStudioChainKey(entry: DesktopV3ArtifactCatalogE
   return gitProjected(entry) ? entry.artifactChainId! : ''
 }
 
+/**
+ * Returns the user-visible artifact group for a session catalog. The durable
+ * iteration-group identity is the generating AI turn and can span collections;
+ * source-free legacy waves fall back to their shared collection. Once an
+ * ungrouped chain gains a later revision, that chain becomes the stable artifact
+ * whose turns should be browsed chronologically.
+ */
+export function desktopV3ArtifactStudioPresentationGroupKey(
+  entries: readonly DesktopV3ArtifactCatalogEntry[],
+  entry: DesktopV3ArtifactCatalogEntry,
+): string {
+  const chainKey = desktopV3ArtifactStudioChainKey(entry)
+  if (!desktopV3ArtifactStudioAuthoredEntry(entry)) {
+    return `supporting:${entry.sessionId}:${entry.collectionId || entry.artifactId}`
+  }
+  const owningSessionId = entry.lineage?.parentSessionId || entry.sessionId
+  const storyboard = desktopV3ArtifactStudioStoryboard(entries, entry)
+  const chainHasMultipleTurns = Boolean(chainKey && entries.some((candidate) =>
+    desktopV3ArtifactStudioChainKey(candidate) === chainKey
+      && !captureStoryboardDerivative(entries, candidate)
+      && ((candidate.step?.revisionNumber ?? candidate.revisionNumber ?? 0) > 1
+        || (candidate.chain?.revisionCount ?? 0) > 1)
+  ))
+  if (chainKey && storyboard) return `chain:${chainKey}`
+  if (chainHasMultipleTurns) return `chain:${chainKey}`
+  const iterationGroupId = entry.lineage?.iterationGroupId.trim() ?? ''
+  if (iterationGroupId) return `turn:${owningSessionId}:${iterationGroupId}`
+  return entry.collectionId
+    ? `collection:${owningSessionId}:${entry.collectionId}`
+    : `standalone:${entry.sessionId}:${entry.artifactId}`
+}
+
+export interface DesktopV3ArtifactStudioProgress {
+  total: number
+  staging: number
+  ready: number
+  failed: number
+  unavailable: number
+}
+
+export interface DesktopV3ArtifactStudioIterationGroup {
+  key: string
+  id: string
+  label: string
+  entries: DesktopV3ArtifactCatalogEntry[]
+  progress: DesktopV3ArtifactStudioProgress
+  partIds: string[]
+  firstUpdatedAt: number
+}
+
+export interface DesktopV3ArtifactStudioInProgress {
+  key: string
+  chainId: string
+  label: string
+  entries: DesktopV3ArtifactCatalogEntry[]
+  head: DesktopV3ArtifactCatalogEntry
+  firstFocusedAt: number
+}
+
+export interface DesktopV3ArtifactStudioProjection {
+  iterationGroups: DesktopV3ArtifactStudioIterationGroup[]
+  inProgress?: DesktopV3ArtifactStudioInProgress
+  supporting: DesktopV3ArtifactCatalogEntry[]
+}
+
+function projectionProgress(entries: readonly DesktopV3ArtifactCatalogEntry[]): DesktopV3ArtifactStudioProgress {
+  const reported = entries.map((entry) => entry.progress).filter((progress): progress is NonNullable<typeof progress> => Boolean(progress))
+  const first = reported[0]
+  if (first && reported.every((progress) => progress.total === first.total
+    && progress.staging === first.staging
+    && progress.ready === first.ready
+    && progress.failed === first.failed
+    && progress.unavailable === first.unavailable)) return { ...first }
+  return entries.reduce<DesktopV3ArtifactStudioProgress>((progress, entry) => {
+    progress.total += 1
+    if (entry.status === 'staging') progress.staging += 1
+    else if (entry.status === 'failed') progress.failed += 1
+    else if (entry.status === 'unavailable') progress.unavailable += 1
+    else progress.ready += 1
+    return progress
+  }, { total: 0, staging: 0, ready: 0, failed: 0, unavailable: 0 })
+}
+
+function projectionIterationGroupId(entry: DesktopV3ArtifactCatalogEntry): string {
+  return entry.lineage?.iterationGroupId?.trim() || entry.composition?.iterationGroupId?.trim() || ''
+}
+
+function projectionPartIds(entry: DesktopV3ArtifactCatalogEntry): string[] {
+  return [...new Set([
+    ...(entry.targetedPartIds ?? []),
+    entry.targetedPartId ?? '',
+    entry.lineage?.partId ?? '',
+    entry.lineage?.iterationSectionId ?? '',
+  ].map((partId) => partId.trim()).filter(Boolean))]
+}
+
+function projectionEntryOrder(entry: DesktopV3ArtifactCatalogEntry): number {
+  return entry.eventSeq || entry.updatedAt || Number.MAX_SAFE_INTEGER
+}
+
+/**
+ * Pure session-catalog projection used by Artifact Studio navigation. Iteration
+ * groups and the focused artifact chain intentionally overlap: a generating turn
+ * remains browsable after its first focused edit pins that chain In Progress.
+ * The pin is selected by the earliest durable focused-part entry, never by the
+ * newest chain or catalog order.
+ */
+export function desktopV3ArtifactStudioProjection(entries: readonly DesktopV3ArtifactCatalogEntry[]): DesktopV3ArtifactStudioProjection {
+  const authored = entries.filter(desktopV3ArtifactStudioAuthoredEntry)
+  const iterationEntries = new Map<string, DesktopV3ArtifactCatalogEntry[]>()
+  for (const entry of authored) {
+    const id = projectionIterationGroupId(entry)
+    if (!id) continue
+    const ownerSessionId = entry.lineage?.parentSessionId || entry.sessionId
+    const key = `turn:${ownerSessionId}:${id}`
+    iterationEntries.set(key, [...(iterationEntries.get(key) ?? []), entry])
+  }
+  const iterationGroups = [...iterationEntries.entries()].map(([key, groupEntries]): DesktopV3ArtifactStudioIterationGroup => {
+    const ordered = [...groupEntries].sort((left, right) => (left.candidateIndex || left.lineage?.iterationIndex || 0) - (right.candidateIndex || right.lineage?.iterationIndex || 0)
+      || projectionEntryOrder(left) - projectionEntryOrder(right)
+      || left.artifactId.localeCompare(right.artifactId))
+    const first = ordered[0]!
+    const id = projectionIterationGroupId(first)
+    return {
+      key,
+      id,
+      label: first.lineage?.iterationGroup?.trim() || first.chain?.name?.trim() || first.collectionName.trim() || 'Iteration group',
+      entries: ordered,
+      progress: projectionProgress(ordered),
+      partIds: [...new Set(ordered.flatMap(projectionPartIds))],
+      firstUpdatedAt: Math.min(...ordered.map(projectionEntryOrder)),
+    }
+  }).sort((left, right) => left.firstUpdatedAt - right.firstUpdatedAt || left.key.localeCompare(right.key))
+
+  const focused = authored.filter((entry) => gitProjected(entry)
+    && (entry.step?.revisionNumber ?? entry.revisionNumber ?? 0) > 1
+    && projectionPartIds(entry).length > 0)
+    .sort((left, right) => projectionEntryOrder(left) - projectionEntryOrder(right)
+      || (left.step?.revisionNumber ?? 0) - (right.step?.revisionNumber ?? 0)
+      || left.artifactChainId!.localeCompare(right.artifactChainId!))
+  const firstFocused = focused[0]
+  let inProgress: DesktopV3ArtifactStudioInProgress | undefined
+  if (firstFocused) {
+    const chainEntries = authored.filter((entry) => gitProjected(entry) && entry.artifactChainId === firstFocused.artifactChainId)
+    const head = desktopV3ArtifactStudioHead(chainEntries, firstFocused)
+    if (head) {
+      inProgress = {
+        key: `chain:${firstFocused.artifactChainId}`,
+        chainId: firstFocused.artifactChainId!,
+        label: firstFocused.chain?.name.trim() || head.label.trim() || 'Artifact',
+        entries: desktopV3ArtifactStudioEntries(chainEntries, firstFocused),
+        head,
+        firstFocusedAt: projectionEntryOrder(firstFocused),
+      }
+    }
+  }
+
+  const iterationEntryKeys = new Set(iterationGroups.flatMap((group) => group.entries.map((entry) => desktopV3ArtifactCatalogEntryKey(entry))))
+  const inProgressEntryKeys = new Set(inProgress?.entries.map((entry) => desktopV3ArtifactCatalogEntryKey(entry)) ?? [])
+  const supporting = entries.filter((entry) => entry.role === 'render_only'
+    || (!iterationEntryKeys.has(desktopV3ArtifactCatalogEntryKey(entry)) && !inProgressEntryKeys.has(desktopV3ArtifactCatalogEntryKey(entry))))
+    .sort((left, right) => projectionEntryOrder(left) - projectionEntryOrder(right) || left.artifactId.localeCompare(right.artifactId))
+  return { iterationGroups, ...(inProgress ? { inProgress } : {}), supporting }
+}
+
 export function desktopV3ArtifactStudioEntries(entries: readonly DesktopV3ArtifactCatalogEntry[], entry: DesktopV3ArtifactCatalogEntry): DesktopV3ArtifactCatalogEntry[] {
   const chainKey = desktopV3ArtifactStudioChainKey(entry)
   if (!chainKey) return [entry]
-  return entries.filter((candidate) => gitProjected(candidate) && candidate.artifactChainId === chainKey)
+  return entries.filter((candidate) => gitProjected(candidate)
+      && candidate.artifactChainId === chainKey
+      && !captureStoryboardDerivative(entries, candidate))
     .sort((left, right) => left.step!.revisionNumber - right.step!.revisionNumber
       || (left.candidateIndex ?? 0) - (right.candidateIndex ?? 0)
       || left.updatedAt - right.updatedAt)
@@ -55,6 +281,8 @@ export function desktopV3ArtifactStudioEntries(entries: readonly DesktopV3Artifa
 
 export function desktopV3ArtifactStudioHead(entries: readonly DesktopV3ArtifactCatalogEntry[], entry: DesktopV3ArtifactCatalogEntry): DesktopV3ArtifactCatalogEntry | undefined {
   if (!gitProjected(entry)) return undefined
+  const storyboard = desktopV3ArtifactStudioStoryboard(entries, entry)
+  if (storyboard) return storyboard.source
   return desktopV3ArtifactStudioEntries(entries, entry).find((candidate) => sameReference(candidate, entry.chain?.head))
 }
 
@@ -152,8 +380,8 @@ function turnCandidate(
   entries: readonly DesktopV3ArtifactCatalogEntry[],
   reference: DesktopV3ArtifactChainReference,
 ): DesktopV3ArtifactStudioTurnCandidate {
-  const entry = entries.find((candidate) => sameReference(candidate, reference))
-    ?? entries.find((candidate) => candidate.sessionId === reference.sessionId
+  const entry = entries.find((candidate) => desktopV3ArtifactStudioAuthoredEntry(candidate) && sameReference(candidate, reference))
+    ?? entries.find((candidate) => desktopV3ArtifactStudioAuthoredEntry(candidate) && candidate.sessionId === reference.sessionId
       && candidate.collectionId === reference.collectionId
       && candidate.artifactId === reference.variantId)
   return { reference, ...(entry ? { entry } : {}) }

@@ -115,7 +115,7 @@ func (s *Service) ExecutePreparedAITask(ctx context.Context, parentSessionID, us
 	// Queued AI tasks always deploy through the managed-worktree branch of the
 	// canonical session deploy path. The manifest builder resolves the user's
 	// worktree base branch and branch family for both plan and auto modes.
-	arguments, _ := json.Marshal(map[string]any{"action": "deploy", "proposals": []map[string]any{{"title": preparation.Title, "prompt": originalRequest, "mode": mode, "workspace_path": workspacePath, "worktree": true, "worktree_name": preparation.WorktreeName}}})
+	arguments, _ := json.Marshal(map[string]any{"action": "deploy", "proposals": []map[string]any{{"title": preparation.Title, "prompt": originalRequest, "mode": mode, "workspace_path": workspacePath, "worktree_name": preparation.WorktreeName}}})
 	call := tool.Call{Name: "manage_sessions", Arguments: string(arguments)}
 	aiTaskBinding := &AITaskDeployBinding{UserID: userID, AccountScopeID: accountScopeID, WorkspacePath: workspacePath, TaskID: taskID, ModelProfile: cloneManageSessionsDeployModelProfile(modelProfile), PreparationSessionID: parentSessionID}
 	manifest, err := s.buildManageSessionsDeployManifestBound(parentSessionID, call, aiTaskBinding)

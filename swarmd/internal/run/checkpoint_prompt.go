@@ -30,6 +30,7 @@ type checkpointRunPromptPayload struct {
 	RunSessionID     string                                     `json:"run_session_id,omitempty"`
 	ParentSessionID  string                                     `json:"parent_session_id,omitempty"`
 	SourceMessageID  string                                     `json:"source_message_id,omitempty"`
+	RecoveryContext  string                                     `json:"recovery_context,omitempty"`
 }
 
 type checkpointRunOrientation struct {
@@ -119,6 +120,7 @@ func (s *Service) buildPlanCheckpointRunInput(sessionID, runID string, options R
 		RunSessionID:     sessionID,
 		ParentSessionID:  parentSessionID,
 		SourceMessageID:  strings.TrimSpace(ctx.SourceMessageID),
+		RecoveryContext:  checkpointRunRecoveryContext(checkpoint),
 	}
 	prompt, err := renderCheckpointRunPrompt(payload)
 	if err != nil {
@@ -151,6 +153,9 @@ func renderCheckpointRunPrompt(payload checkpointRunPromptPayload) (string, erro
 		"Checkpoint plans own approval, blocker, review, and terminal lifecycle. A checkpoint.task_program, when present, is the canonical approved implementation-stage graph rather than a second lifecycle plan. Do not reconstruct or rewrite it from prose. Start it with task action=start and omit program; the runtime loads and revalidates the active checkpoint definition. If execution reports a problem, inspect the durable program with task action=status and its returned program_id.",
 		"Do not call plan_manage update_checkpoint or structured document patches merely to record routine progress or summarize completed work. Keep typed subtask state durable while a multi-task checkpoint is underway: at a genuine boundary call complete_subtask for one task, or pass subtask_ids to atomically record every task completed since the last progress call. If work continues, that transition advances the next task and makes live client state visible. Do not call complete_subtask for discovery-only activity or for a single-step checkpoint. If new user feedback reaches this current run, route it by contract impact: inquiry/guidance only requires no plan mutation; a bounded same-deliverable refinement whose existing checklist remains valid uses add_subtask and continues here without changing checkpoint identity or attempt history; same-contract feedback that supersedes the checklist uses replace_subtasks with the complete authoritative list; feedback that invalidates the objective or acceptance criteria requires parent-owned restart_checkpoint; independently shippable work or a separate review/failure boundary requires a later parent-owned transition_checkpoint_boundary. Prefer the least disruptive valid route and do not classify by imperative wording alone. Never use add_subtask to clear blocked or failed state.",
 	}
+	if strings.TrimSpace(payload.RecoveryContext) != "" {
+		parts = append(parts, "This is a fresh blocked-checkpoint recovery attempt. The prior parent run already confirmed and durably resolved the named blocker before creating this attempt. Treat recovery_context as authoritative resolution evidence; do not require the original user confirmation to appear again in this fresh provider context and do not re-block solely because that earlier message is absent. Finish any remaining work and record the normal checkpoint outcome.")
+	}
 	if len(payload.Artifacts) > 0 {
 		parts = append(parts, "Artifact references are workspace-relative metadata, exact managed artifact references, or exact videosrc_ references returned by manage_video browse_source for final video deliverables; they never embed file contents or host paths. Read only artifacts with role=input that are needed for this checkpoint, using the workspace file tools or manage_artifact; do not bulk-read them. Create each role=deliverable through its intended authority before terminal completion: publish a managed artifact directly with manage_artifact create/create_package content or entries without staging it in the workspace; create a workspace file only when the requested deliverable is itself a workspace or repository file; or verify a final video through manage_video browse_source. Include the resulting reference in the terminal plan_manage artifacts argument: use a path for workspace files, the exact ready reference for managed artifacts, or source_ref plus video media_type for a browsed video. For brainstorming, concepts, prototypes, or planning documents, prefer self-contained readable HTML for rich visual deliverables and Markdown for simpler documents; managed artifacts remain in the session without repository writes. Only concrete files produced for the deliverable belong there; never manufacture artifact references for tool-free Idea swarm answers or other prose-only work. Eligible viewable deliverables may appear as an authenticated final-handoff gallery. Do not emit a separate assistant completion report merely to deliver or link an artifact.")
 	}
@@ -172,6 +177,13 @@ func renderCheckpointRunPrompt(payload checkpointRunPromptPayload) (string, erro
 		string(raw),
 	)
 	return strings.TrimSpace(strings.Join(parts, "\n\n")), nil
+}
+
+func checkpointRunRecoveryContext(checkpoint pebblestore.SessionPlanCheckpoint) string {
+	if strings.TrimSpace(checkpoint.Result) != "blocker_resolved_resume_required" {
+		return ""
+	}
+	return strings.TrimSpace(checkpoint.Report)
 }
 
 func checkpointRunOrientationIndex(checkpoints []pebblestore.SessionPlanCheckpoint) []checkpointRunOrientation {

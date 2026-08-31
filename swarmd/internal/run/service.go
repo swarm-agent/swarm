@@ -106,26 +106,29 @@ var (
 )
 
 type Service struct {
-	sessions                  *sessionruntime.Service
-	model                     *model.Service
-	modelProfiles             *modelprofile.Service
-	providers                 *registry.Registry
-	tools                     *tool.Runtime
-	permissions               *permission.Service
-	agents                    *agentruntime.Service
-	discovery                 *discovery.Service
-	workspace                 *workspaceruntime.Service
-	uiSettings                *uisettings.Service
-	agentModelSettings        *agentmodelsettings.Service
-	worktrees                 worktreeService
-	events                    *pebblestore.EventLog
-	eventPublish              func(pebblestore.EventEnvelope)
-	sessionDeployCanonicalize SessionDeployCanonicalizer
-	sessionDeployEnqueue      SessionDeployEnqueuer
-	aiTaskBinder              AITaskBinder
-	runCounter                atomic.Uint64
-	lifecycleMu               sync.Mutex
-	activeRuns                map[string]*activeSessionRun
+	sessions                     *sessionruntime.Service
+	model                        *model.Service
+	modelProfiles                *modelprofile.Service
+	providers                    *registry.Registry
+	tools                        *tool.Runtime
+	permissions                  *permission.Service
+	agents                       *agentruntime.Service
+	discovery                    *discovery.Service
+	workspace                    *workspaceruntime.Service
+	workspaceMap                 workspaceMapService
+	uiSettings                   *uisettings.Service
+	agentModelSettings           *agentmodelsettings.Service
+	worktrees                    worktreeService
+	worktreeInspect              func(string) (worktreeruntime.TaskWorkspaceState, error)
+	events                       *pebblestore.EventLog
+	eventPublish                 func(pebblestore.EventEnvelope)
+	sessionDeployCanonicalize    SessionDeployCanonicalizer
+	sessionDeployEnqueue         SessionDeployEnqueuer
+	sessionWorkspaceCanonicalize SessionWorkspaceCanonicalizer
+	aiTaskBinder                 AITaskBinder
+	runCounter                   atomic.Uint64
+	lifecycleMu                  sync.Mutex
+	activeRuns                   map[string]*activeSessionRun
 }
 
 func (s *Service) LongSessionSnapshot() map[string]any {
@@ -160,6 +163,28 @@ type SessionDeployCanonicalization struct {
 type SessionDeployCanonicalizer func(SessionDeployCanonicalizeInput) (SessionDeployCanonicalization, error)
 type SessionDeployEnqueuer func(identity.Principal, string, string, string) bool
 
+type SessionWorkspaceCanonicalizeInput struct {
+	Principal           identity.Principal
+	WorkspaceID         string
+	WorkspaceGeneration int64
+}
+
+type SessionWorkspaceCanonicalization struct {
+	WorkspaceID          string
+	WorkspaceGeneration  int64
+	WorkspaceState       string
+	WorkspaceName        string
+	SourceWorkspacePath  string
+	RuntimeWorkspacePath string
+	WorkspaceBindingID   string
+	RuntimeSwarmID       string
+	PlacementGeneration  int
+	BindingGeneration    int
+	AuthorityHostSwarmID string
+}
+
+type SessionWorkspaceCanonicalizer func(SessionWorkspaceCanonicalizeInput) (SessionWorkspaceCanonicalization, error)
+
 type AITaskBindInput struct {
 	WorkspacePath    string
 	TaskID           string
@@ -179,16 +204,22 @@ type AITaskBinder interface {
 	AppendAITaskAudit(accountScopeID, workspacePath, taskID string, record pebblestore.AITaskAuditRecord) error
 }
 
+type workspaceMapService interface {
+	GetOrCreateDefault(accountScopeID string) (pebblestore.WorkspaceMap, error)
+	Update(accountScopeID string, expectedRevision int64, content string) (pebblestore.WorkspaceMap, error)
+}
+
 type worktreeService interface {
 	AttachBranch(workspacePath, sessionID, title string) (string, error)
 	ResolveTaskBase(workspacePath string) (worktreeruntime.TaskBase, error)
-	AllocateTaskWorkspace(workspacePath string, base worktreeruntime.TaskBase, nameSeed string) (worktreeruntime.Allocation, error)
+	AllocateTaskWorkspace(workspacePath string, base worktreeruntime.TaskBase, nameSeed string, ownedScopes []string) (worktreeruntime.Allocation, error)
 	InspectTaskWorkspace(workspacePath string) (worktreeruntime.TaskWorkspaceState, error)
 	TaskCommitDescendsFrom(workspacePath, baseCommit, headCommit string) (bool, error)
 	TaskCommitRangeIntegratedInto(workspacePath, baseCommit, headCommit, parentHead string) (bool, error)
 	RemoveIntegratedTaskWorkspace(parentPath, childPath, sessionID, branchName, baseCommit, headCommit string) error
 	GetConfigForPrincipal(principal identity.Principal, workspacePath string) (worktreeruntime.Config, error)
 	AllocateDetachedWorkspaceRequestedForPrincipal(principal identity.Principal, workspacePath, nameSeed, baseBranch, branchName string) (worktreeruntime.Allocation, error)
+	RollbackAllocation(allocation worktreeruntime.Allocation) error
 }
 
 type RunContinuationBoundaryDecision struct {
@@ -677,6 +708,7 @@ type runWorkspaceContext struct {
 	WorkspaceRoots       []string
 	OriginWorkspacePath  string
 	OriginWorkspaceRoots []string
+	Scope                tool.WorkspaceScope
 }
 
 func NewService(sessions *sessionruntime.Service, modelSvc *model.Service, providers *registry.Registry, tools *tool.Runtime, permissions *permission.Service, agents *agentruntime.Service, discoverySvc *discovery.Service, events *pebblestore.EventLog) *Service {
@@ -700,7 +732,7 @@ func (s *Service) ExecuteToolForSessionScope(ctx context.Context, workspacePath 
 	principal, _ := identity.PrincipalFromContext(ctx)
 	scope := tool.WorkspaceScope{PrimaryPath: strings.TrimSpace(workspacePath), Roots: []string{strings.TrimSpace(workspacePath)}, Principal: principal}
 	if s.workspace != nil {
-		if resolved, err := s.workspace.ScopeForPathForPrincipal(principal, workspacePath); err == nil {
+		if resolved, err := s.workspace.ScopeForPathForPrincipal(principal, workspacePath); err == nil && resolved.Matched {
 			roots := mergeSessionWorkspaceRoots(resolved.Directories, nil)
 			if len(roots) == 0 {
 				roots = []string{strings.TrimSpace(resolved.WorkspacePath)}
@@ -716,6 +748,21 @@ func (s *Service) SetWorkspaceService(workspaceSvc *workspaceruntime.Service) {
 		return
 	}
 	s.workspace = workspaceSvc
+}
+
+// SetWorkspaceMapService installs the account-scoped Workspace Map authority.
+// It is separate from per-workspace catalog state because the map is one durable
+// account document shared by every workspace and session.
+func (s *Service) SetWorkspaceMapService(workspaceMapSvc workspaceMapService) {
+	if s != nil {
+		s.workspaceMap = workspaceMapSvc
+	}
+}
+
+func (s *Service) SetSessionWorkspaceCanonicalizer(canonicalize SessionWorkspaceCanonicalizer) {
+	if s != nil {
+		s.sessionWorkspaceCanonicalize = canonicalize
+	}
 }
 
 func (s *Service) SetModelProfileService(modelProfileSvc *modelprofile.Service) {
@@ -774,6 +821,20 @@ func (s *Service) SetWorktreeService(worktreeSvc worktreeService) {
 		return
 	}
 	s.worktrees = worktreeSvc
+	if worktreeSvc == nil {
+		s.worktreeInspect = nil
+	} else {
+		s.worktreeInspect = worktreeSvc.InspectTaskWorkspace
+	}
+}
+
+// SetSessionWorktreeInspector wires the narrow provider-start revalidation
+// authority for API-owned session worktree allocation services.
+func (s *Service) SetSessionWorktreeInspector(inspect func(string) (worktreeruntime.TaskWorkspaceState, error)) {
+	if s == nil {
+		return
+	}
+	s.worktreeInspect = inspect
 }
 
 func (s *Service) SetEventPublisher(publish func(pebblestore.EventEnvelope)) {
@@ -1316,12 +1377,12 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 	workspaceCtx := resolveRunWorkspaceContext(resolvedExecutionContext)
 	runMessageMetadata := buildRunTurnMessageMetadata(activeAgent, providerID, resolvedPreference.Preference, runID, targetKind, targetName)
 
-	baseInstructions := s.composeInstructionsForScope(tool.WorkspaceScope{
-		PrimaryPath: workspaceCtx.WorkspacePath,
-		Roots:       append([]string(nil), workspaceCtx.WorkspaceRoots...),
-		Principal:   options.Principal,
-		SessionID:   strings.TrimSpace(sessionSnapshot.ID),
-	}, agentProfile, options.Instructions)
+	instructionScope := workspaceCtx.Scope
+	instructionScope.PrimaryPath = workspaceCtx.WorkspacePath
+	instructionScope.Roots = append([]string(nil), workspaceCtx.WorkspaceRoots...)
+	instructionScope.Principal = options.Principal
+	instructionScope.SessionID = strings.TrimSpace(sessionSnapshot.ID)
+	baseInstructions := s.composeInstructionsForScope(instructionScope, agentProfile, options.Instructions)
 	baseInstructions = appendHostRuntimeContext(baseInstructions, workspaceCtx.WorkspacePath, workspaceCtx.WorkspaceRoots)
 
 	runFailed := true
@@ -1808,6 +1869,26 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 		if modeWarning != "" {
 			emit(StreamEvent{Type: StreamEventSessionWarning, Step: step, Warning: modeWarning})
 		}
+		// Recompose on every provider step. Workspace Map updates can happen in a
+		// tool call on the preceding step, so a run-start snapshot would make a
+		// same-run checkpoint continuation stale.
+		instructionPrincipal := options.Principal
+		if strings.TrimSpace(instructionPrincipal.AccountScopeID) == "" {
+			instructionPrincipal.UserID = strings.TrimSpace(sessionSnapshot.UserID)
+			instructionPrincipal.AccountScopeID = strings.TrimSpace(sessionSnapshot.AccountScopeID)
+			instructionPrincipal.SessionID = strings.TrimSpace(sessionSnapshot.ID)
+			instructionPrincipal.Type = identity.PrincipalTypeUser
+			instructionPrincipal.AccountScopeSource = identity.AccountScopeSourceSession
+		} else if strings.TrimSpace(instructionPrincipal.SessionID) == "" {
+			instructionPrincipal.SessionID = strings.TrimSpace(sessionSnapshot.ID)
+		}
+		baseInstructions = s.composeInstructionsForScope(tool.WorkspaceScope{
+			PrimaryPath: workspaceCtx.WorkspacePath,
+			Roots:       append([]string(nil), workspaceCtx.WorkspaceRoots...),
+			Principal:   instructionPrincipal,
+			SessionID:   strings.TrimSpace(sessionSnapshot.ID),
+		}, agentProfile, options.Instructions)
+		baseInstructions = appendHostRuntimeContext(baseInstructions, workspaceCtx.WorkspacePath, workspaceCtx.WorkspaceRoots)
 		stepInstructions := composeModeAwareInstructions(baseInstructions, executionMode, s.permissions != nil && s.permissions.BypassPermissions(), agentProfile)
 		mediaExecutionMode := requestMode
 		mediaContract := CompileSessionMediaContract(SessionMediaContractInput{
@@ -1822,6 +1903,7 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 		}
 		stepInstructions = strings.TrimSpace(stepInstructions + "\n\n" + runStateInstructions)
 		stepToolDefinitions := MaterializeSessionMediaTool(toolDefinitions, mediaContract)
+		stepToolDefinitions = MaterializeSessionVideoTool(stepToolDefinitions, sessionSnapshot.Metadata)
 		if executionMode == sessionruntime.ModePlan && pebblestore.AgentExitPlanModeEnabled(agentProfile) && planContextGuard.beginDecision() {
 			warning := planContextGuard.warningInstructions()
 			stepInstructions = strings.TrimSpace(stepInstructions + "\n\n" + warning)
@@ -2466,7 +2548,18 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 				continue
 			}
 			feedback := feedbackByCall[strings.TrimSpace(call.CallID)]
-			handled, controlResult, controlErr := s.executeControlPlaneTool(ctx, sessionID, executionMode, agentProfile, step, call, feedback.ApprovedArguments, emit)
+			lifecycleRun := planLifecycleRunContext{
+				RunID:           runID,
+				RunSessionID:    sessionID,
+				ParentSessionID: sessionID,
+				SourceMessageID: strings.TrimSpace(userMessage.ID),
+				Inline:          sessionruntime.NormalizeMode(executionMode) == sessionruntime.ModeAuto,
+			}
+			if options.PlanCheckpointContext != nil {
+				lifecycleRun.ParentSessionID = strings.TrimSpace(firstNonEmptyString(options.PlanCheckpointContext.ParentSessionID, sessionID))
+				lifecycleRun.SourceMessageID = strings.TrimSpace(firstNonEmptyString(options.PlanCheckpointContext.SourceMessageID, userMessage.ID))
+			}
+			handled, controlResult, controlErr := s.executeControlPlaneToolWithLifecycleRunContext(ctx, sessionID, executionMode, agentProfile, step, call, feedback.ApprovedArguments, emit, options.ApplySessionMutation, lifecycleRun)
 			if !handled {
 				runtimeCalls = append(runtimeCalls, call)
 				runtimeTargets = append(runtimeTargets, target)
@@ -2549,21 +2642,21 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 			markToolCompleted(step, runtimeCalls[i], result)
 		}
 		if scopeChanged {
-			baseInstructions = s.composeInstructionsForScope(tool.WorkspaceScope{
-				PrimaryPath: workspaceCtx.WorkspacePath,
-				Roots:       append([]string(nil), workspaceCtx.WorkspaceRoots...),
-				Principal:   options.Principal,
-				SessionID:   strings.TrimSpace(sessionSnapshot.ID),
-			}, agentProfile, options.Instructions)
+			instructionScope = workspaceCtx.Scope
+			instructionScope.PrimaryPath = workspaceCtx.WorkspacePath
+			instructionScope.Roots = append([]string(nil), workspaceCtx.WorkspaceRoots...)
+			instructionScope.Principal = options.Principal
+			instructionScope.SessionID = strings.TrimSpace(sessionSnapshot.ID)
+			baseInstructions = s.composeInstructionsForScope(instructionScope, agentProfile, options.Instructions)
 			baseInstructions = appendHostRuntimeContext(baseInstructions, workspaceCtx.WorkspacePath, workspaceCtx.WorkspaceRoots)
 		}
 
-		runtimeCtx := tool.WithWorkspaceScope(ctx, tool.WorkspaceScope{
-			PrimaryPath: workspaceCtx.WorkspacePath,
-			Roots:       append([]string(nil), workspaceCtx.WorkspaceRoots...),
-			Principal:   options.Principal,
-			SessionID:   strings.TrimSpace(sessionSnapshot.ID),
-		})
+		runtimeScope := workspaceCtx.Scope
+		runtimeScope.PrimaryPath = workspaceCtx.WorkspacePath
+		runtimeScope.Roots = append([]string(nil), workspaceCtx.WorkspaceRoots...)
+		runtimeScope.Principal = options.Principal
+		runtimeScope.SessionID = strings.TrimSpace(sessionSnapshot.ID)
+		runtimeCtx := tool.WithWorkspaceScope(ctx, runtimeScope)
 		runtimeCtx = tool.WithArtifactRunContext(runtimeCtx, s.providerManagedArtifactRunContext(providerToolInvokerConfig{
 			sessionID:          sessionID,
 			runID:              runID,

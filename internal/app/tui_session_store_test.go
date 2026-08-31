@@ -365,6 +365,31 @@ func TestTUISessionStoreRealtimeOrderingAcceptsSparseSequencesAndTerminalFrames(
 	}
 }
 
+func TestTUISessionStoreRealtimeWorkspaceMetadataMovesSessionImmediately(t *testing.T) {
+	store := newTUISessionStore()
+	store.ResetFromWorkset(client.SessionV3Workset{
+		SessionsByID:         map[string]client.SessionSummary{"a": {ID: "a", SessionAPI: "v3", WorkspacePath: "/repo-a", WorkspaceName: "Repo A"}},
+		ProjectionsBySession: map[string]client.SessionV3Projection{"a": {SessionID: "a", LastEventSeq: 1}},
+		SessionOrder:         []string{"a"},
+	})
+
+	result := store.ApplyRealtimeFrame(realtimeEventFrame("a", 2, "session.workspace.updated", map[string]any{
+		"workspace_path": "/repo-b",
+		"workspace_name": "Repo B",
+		"metadata":       map[string]any{"swarm_v3_source_workspace_id": "workspace-b"},
+	}))
+	if !result.Changed || result.NeedsRehydrate {
+		t.Fatalf("workspace update result = %#v", result)
+	}
+	snapshot, ok := store.ChatSnapshot("a")
+	if !ok || snapshot.Session.WorkspacePath != "/repo-b" || snapshot.Session.WorkspaceName != "Repo B" || snapshot.Session.Metadata["swarm_v3_source_workspace_id"] != "workspace-b" {
+		t.Fatalf("workspace update snapshot = %#v, ok=%v", snapshot.Session, ok)
+	}
+	if sessions := store.HomeSessions(); len(sessions) != 1 || sessions[0].WorkspacePath != "/repo-b" || sessions[0].WorkspaceName != "Repo B" {
+		t.Fatalf("workspace update home sessions = %#v", sessions)
+	}
+}
+
 func TestTUISessionStorePermissionAndHydrationState(t *testing.T) {
 	store := newTUISessionStore()
 	store.ResetFromWorkset(client.SessionV3Workset{

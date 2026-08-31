@@ -137,6 +137,11 @@ export interface WorkspaceOverviewResponseWire {
   current_workspace?: WorkspaceResolutionWire | null
   workspaces?: WorkspaceOverviewWorkspaceWire[]
   directories?: WorkspaceDiscoverEntryWire[]
+  cursor?: number
+  limit?: number
+  next_cursor?: number
+  has_more?: boolean
+  total_workspaces?: number
   swarm_target?: WorkspaceOverviewSwarmTargetWire | null
 }
 

@@ -19,7 +19,6 @@ import {
   type DesktopV3RoutedWorkspaceAuthority,
   type DesktopV3RoutedStartResult,
 } from '../../session-v3/new-session-flow'
-import { postDesktopV3RoutedSessionStart } from '../../session-v3/write-api'
 import { DesktopV3AgenticComposer } from './desktop-v3-agentic-composer'
 import { DesktopV3ChatHeader } from './desktop-v3-chat-header'
 import type { DesktopV3RunStatusModel } from './desktop-v3-run-status'
@@ -31,25 +30,22 @@ import {
 } from '../services/composer-attachments'
 import { DESKTOP_V3_MEDIA_STAGING_MAX_TTL_SECONDS } from '../../session-v3/media-staging-api'
 import type { DesktopV3ArtifactMessageSelection } from '../../session-v3/artifact-api'
-import {
-  createDesktopRoutedWorktreeIntent,
-  encodeDesktopRoutedWorktreeIntentMetadata,
-  setDesktopRoutedWorktreeIntent,
-} from '../services/desktop-routed-worktree-intent'
+import { postDesktopV3RoutedSessionStart } from '../../session-v3/write-api'
+import { desktopRoutedSessionMetadata } from '../services/desktop-routed-worktree-intent'
 
 export interface DesktopV3NewSessionPaneProps {
   workspace: WorkspaceEntry
   workspaceAuthority: DesktopV3RoutedWorkspaceAuthority
-  onRoutedSessionResolved: (result: DesktopV3RoutedStartResult, authority: DesktopV3RoutedWorkspaceAuthority) => void | Promise<void>
+  onRoutedSessionResolved: (result: DesktopV3RoutedStartResult) => void | Promise<void>
   mobileSessionQuickMenu?: ReactNode
   onSlashCommand?: (command: DesktopSlashCommand, draft: string) => void | Promise<void>
+  developerMode?: boolean
   workspaces?: WorkspaceEntry[]
   onSelectWorkspace?: (workspace: WorkspaceEntry) => void
   onSetWorkspaceIcon?: (path: string, iconPNGDataURL: string) => Promise<void>
   onOpenActionSettings?: () => void
   composerFocusSignal?: number
   initialPrompt?: string
-  initialWorktreeRequested?: boolean
   initialPlanModeRequested?: boolean
   agentSettingsOpenSignal?: number
   agentSettingsInitialAgent?: string
@@ -58,9 +54,8 @@ export interface DesktopV3NewSessionPaneProps {
 }
 
 /**
- * Owns only the local draft/routing shell. The app-level owner activates the
- * validated routed result through onRoutedSessionResolved; this component does
- * not write pending state into the V3 cache, realtime controller, sidebar, or URL.
+ * Owns only the local Router/worktree start shell. The app-level owner activates
+ * the validated atomic result; this pane never creates a direct dev-bound session.
  */
 export function DesktopV3NewSessionPane({
   workspace,
@@ -68,13 +63,13 @@ export function DesktopV3NewSessionPane({
   onRoutedSessionResolved,
   mobileSessionQuickMenu,
   onSlashCommand,
+  developerMode = false,
   workspaces = [workspace],
   onSelectWorkspace,
   onSetWorkspaceIcon,
   onOpenActionSettings,
   composerFocusSignal = 0,
   initialPrompt = '',
-  initialWorktreeRequested = false,
   initialPlanModeRequested = false,
   agentSettingsOpenSignal = 0,
   agentSettingsInitialAgent = '',
@@ -115,11 +110,9 @@ export function DesktopV3NewSessionPane({
     if (routedController.getState().phase === 'draft' && commandPrompt) {
       const snapshot = createDesktopV3RoutedComposerSnapshot({
         prompt: commandPrompt,
-        worktreePrimed: initialWorktreeRequested,
         planModeRequested: initialPlanModeRequested,
       })
-      if (initialWorktreeRequested) routedController.primeWorktree(commandPrompt, snapshot)
-      else routedController.startDraft(commandPrompt, snapshot)
+      routedController.startDraft(commandPrompt, snapshot)
     }
     return routedController
   })
@@ -145,9 +138,6 @@ export function DesktopV3NewSessionPane({
       }))
     : []
   const [stagedAttachments, setStagedAttachments] = useState<DesktopComposerStagedAttachment[]>(initialStagedAttachments)
-  const [worktreeIntent, setWorktreeIntent] = useState(() => createDesktopRoutedWorktreeIntent(initialControllerState.phase === 'failed'
-    ? initialControllerState.snapshot.worktreePrimed
-    : initialWorktreeRequested))
   const [restoredSnapshot, setRestoredSnapshot] = useState<DesktopV3RoutedComposerSnapshot | null>(() => initialControllerState.phase === 'failed' ? initialControllerState.snapshot : null)
   const [localError, setLocalError] = useState<string | null>(null)
   const [tipsSaving, setTipsSaving] = useState(false)
@@ -180,7 +170,6 @@ export function DesktopV3NewSessionPane({
       setStagedAttachments(visibleAttachments)
       setDraft(routedState.snapshot.prompt)
       setMode(routedState.snapshot.planModeRequested ? 'plan' : 'auto')
-      setWorktreeIntent(createDesktopRoutedWorktreeIntent(routedState.snapshot.worktreePrimed))
       setRestoredSnapshot(routedState.snapshot)
       return
     }
@@ -191,7 +180,7 @@ export function DesktopV3NewSessionPane({
     let cancelled = false
     const operationId = routedState.operation.operationId
     void Promise.resolve()
-      .then(() => resolvedCallbackRef.current(routedState.result, routedState.operation.request))
+      .then(() => resolvedCallbackRef.current(routedState.result))
       .then(() => {
         controller.acknowledgeResolved(operationId)
         operationAttachmentsRef.current = null
@@ -202,7 +191,6 @@ export function DesktopV3NewSessionPane({
         setStagedAttachments([])
         setRestoredSnapshot(null)
         setMode('auto')
-        setWorktreeIntent(createDesktopRoutedWorktreeIntent())
       })
       .catch((error) => {
         activatingOperationRef.current = ''
@@ -269,6 +257,7 @@ export function DesktopV3NewSessionPane({
         ...snapshot,
         prompt,
         attachments: snapshot.attachments,
+        planModeRequested: mode === 'plan',
         modelProfileChoice: chatOnlyModelProfile ? {
           kind: 'temporary',
           profile: {
@@ -291,10 +280,7 @@ export function DesktopV3NewSessionPane({
         workspace: workspaceAuthority,
         snapshot: captured,
         agentName: 'swarm',
-        metadata: encodeDesktopRoutedWorktreeIntentMetadata(
-          createDesktopRoutedWorktreeIntent(captured.worktreePrimed),
-          { source: 'desktop-v3' },
-        ),
+        metadata: desktopRoutedSessionMetadata({ source: 'desktop-v3' }),
       })
     } catch (cause) {
       setLocalError(cause instanceof Error ? cause.message : 'Routed session start failed.')
@@ -307,10 +293,9 @@ export function DesktopV3NewSessionPane({
     initialPromptSubmittedRef.current = true
     void handleSubmit(createDesktopV3RoutedComposerSnapshot({
       prompt: initialCommandPrompt,
-      worktreePrimed: initialWorktreeRequested,
       planModeRequested: initialPlanModeRequested,
     }))
-  }, [initialCommandPrompt, initialPlanModeRequested, initialWorktreeRequested])
+  }, [initialCommandPrompt, initialPlanModeRequested])
 
   async function handleStageAttachments(files: File[], signal: AbortSignal) {
     if (controller.getState().phase === 'failed') {
@@ -343,33 +328,21 @@ export function DesktopV3NewSessionPane({
     setStagedAttachments(visibleAttachments)
     setDraft(current.snapshot.prompt)
     setMode(current.snapshot.planModeRequested ? 'plan' : 'auto')
-    setWorktreeIntent(createDesktopRoutedWorktreeIntent(current.snapshot.worktreePrimed))
     setRestoredSnapshot(current.snapshot)
     void controller.retry()
   }
 
   const initialCommandStarting = Boolean(initialCommandPrompt)
     && !initialPromptSubmittedRef.current
-    && (routedState.phase === 'draft' || routedState.phase === 'worktree-primed')
+    && routedState.phase === 'draft'
   const activationPending = initialCommandStarting
     || routedState.phase === 'routing'
     || routedState.phase === 'resolved'
-  // Keep the current new-chat surface mounted until the durable destination is
-  // activated. Swapping it for the routed pending shell causes a visible page
-  // flash on fast starts and is unnecessary because the composer can own the
-  // transient busy state without publishing another session authority.
-  const pendingState = routedState.phase === 'failed' || routedState.phase === 'worktree-primed'
-    ? routedState.phase
-    : 'draft'
-  const newChatUsesWorktree = routedState.snapshot.worktreePrimed || worktreeIntent.requested
+  const pendingState = routedState.phase === 'failed' ? routedState.phase : activationPending ? 'routing' : 'draft'
   const headerStatus: DesktopV3RunStatusModel | null = activationPending
     ? {
         kind: 'starting',
-        label: routedState.phase === 'resolved'
-          ? 'Opening…'
-          : newChatUsesWorktree
-            ? 'Routing…'
-            : 'Starting…',
+        label: routedState.phase === 'resolved' ? 'Opening…' : 'Routing…',
         active: false,
       }
     : routedState.phase === 'failed'
@@ -384,7 +357,7 @@ export function DesktopV3NewSessionPane({
       data-routed-phase={routedState.phase}
     >
       <DesktopV3ChatHeader
-        title={newChatUsesWorktree ? 'New worktree chat' : 'New chat'}
+        title="New chat"
         workspaceName={workspace.workspaceName}
         runStatus={headerStatus}
       />
@@ -401,7 +374,7 @@ export function DesktopV3NewSessionPane({
 
       <DesktopV3RoutedPendingShell
         state={pendingState}
-        startPath={routedState.snapshot.worktreePrimed ? 'router' : 'session'}
+        startPath="router"
         pendingPrompt={routedState.prompt}
         error={routedState.phase === 'failed' ? routedState.error : undefined}
         onRetry={routedState.phase === 'failed' ? handleRetry : undefined}
@@ -437,12 +410,8 @@ export function DesktopV3NewSessionPane({
             return next
           })}
           routedComposerSnapshot={restoredSnapshot}
-          routedWorktreeRequested={worktreeIntent.requested}
           mode={mode}
           onModeSelect={routedState.phase === 'failed' || activationPending ? undefined : setMode}
-          onRoutedWorktreeRequestedChange={routedState.phase === 'failed' || activationPending ? undefined : (requested) => {
-            setWorktreeIntent((current) => setDesktopRoutedWorktreeIntent(current, requested))
-          }}
           currentAgent="swarm"
           selectedPrimaryAgent="swarm"
           agents={agentStateQuery.data?.profiles ?? []}
@@ -462,6 +431,7 @@ export function DesktopV3NewSessionPane({
           error={localError ?? (routedState.phase === 'failed' ? routedState.error : null)}
           routedNewSession
           onSlashCommand={onSlashCommand}
+          developerMode={developerMode}
           onOpenActionSettings={onOpenActionSettings}
           slashCommandContext="new-session"
         />

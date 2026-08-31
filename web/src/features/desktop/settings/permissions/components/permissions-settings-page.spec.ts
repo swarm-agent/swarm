@@ -16,7 +16,7 @@ test('Bash approvals expose Default and the two explicit auto-approval profiles'
   assert.equal(normalizeBashApprovalProfile('allow_safe_reads'), 'current_rules')
   assert.equal(normalizeBashApprovalProfile('unknown'), 'current_rules')
   assert.deepEqual(BASH_APPROVAL_PROFILES.map((profile) => profile.description), [
-    'Asks every permission and follows your saved permission rules.',
+    'Requires approval unless a saved rule allows the exact operation.',
     'Auto-approve every command the AI designates as a read, including critical reads.',
     'Auto-approve commands the AI designates as noncritical; prompt for critical operations and every delete.',
   ])
@@ -35,10 +35,10 @@ test('Bash approvals render immediately below global permissions as disabled rad
 })
 
 test('Bash profile guidance explains saved-rule precedence and AI-designated safety', () => {
-  assert.match(settingsSource, /Every profile still respects your saved permission rules for all permission types/)
+  assert.match(settingsSource, /Require escalation means the operation still asks even when a broader Allow rule exists/)
   assert.match(settingsSource, /Deny rules override profile auto-approvals/)
   assert.doesNotMatch(settingsSource, /Allow and Ask rules apply when the profile leaves an operation undecided/)
-  assert.match(settingsSource, /Profile safety prompts still win over existing Allow rules/)
+  assert.match(settingsSource, /operation-specific policy stays separate from generic tool policy/)
   assert.match(settingsSource, /The AI designates command types and criticality, so auto-approval profiles are less safe than Default/)
   assert.match(settingsSource, /Allow every read intentionally does not stop critical reads/)
 })

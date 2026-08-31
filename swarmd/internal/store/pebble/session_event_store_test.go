@@ -936,11 +936,9 @@ func TestV3RealtimeOutboxAuthScopeIndexReturnsOnlyAuthorizedRowsInEndpointOrder(
 	sessions := NewSessionStore(store)
 	createV3SessionForStoreTest(t, sessions, "session-auth-a", "user-a", "account-a")
 	createV3SessionForStoreTest(t, sessions, "session-auth-b", "user-b", "account-b")
-	createV3SessionForStoreTest(t, sessions, "session-auth-empty-legacy", "", "account-a")
 
 	a1 := appendV3SessionMessageForStoreTest(t, sessions, "session-auth-a", "auth-a-1", "a one", "user-a", "account-a")
 	b1 := appendV3SessionMessageForStoreTest(t, sessions, "session-auth-b", "auth-b-1", "b one", "user-b", "account-b")
-	legacy := appendV3SessionMessageForStoreTest(t, sessions, "session-auth-empty-legacy", "auth-empty-legacy-1", "legacy", "", "account-a")
 	a2 := appendV3SessionMessageForStoreTest(t, sessions, "session-auth-a", "auth-a-2", "a two", "user-a", "account-a")
 
 	records, err := sessions.ListV3RealtimeOutboxForAuthScopeAfter("account-a", "user-a", a1.RealtimeOutbox.EndpointSeq-1, 10)
@@ -955,8 +953,8 @@ func TestV3RealtimeOutboxAuthScopeIndexReturnsOnlyAuthorizedRowsInEndpointOrder(
 		if record.Event.ID != wantIDs[i] {
 			t.Fatalf("auth-scoped row[%d] = event %q session %q, want event %q; all=%+v", i, record.Event.ID, record.SessionID, wantIDs[i], records)
 		}
-		if record.Event.ID == b1.Event.ID || record.Event.ID == legacy.Event.ID || record.AccountScopeID == "account-b" || record.UserID == "user-b" || record.UserID == "" {
-			t.Fatalf("auth-scoped replay leaked unauthorized or legacy row: %+v", record)
+		if record.Event.ID == b1.Event.ID || record.AccountScopeID == "account-b" || record.UserID == "user-b" || record.UserID == "" {
+			t.Fatalf("auth-scoped replay leaked an unauthorized or identity-free row: %+v", record)
 		}
 	}
 	if records[len(records)-1].EndpointSeq != a2.RealtimeOutbox.EndpointSeq {
@@ -1232,6 +1230,58 @@ func TestApplyV3SessionMutationConcurrentDistinctAppendsAllocateContiguousSeq(t 
 	}
 	if updated.MessageCount != workers {
 		t.Fatalf("message count = %d, want %d", updated.MessageCount, workers)
+	}
+}
+
+func TestReplayV3SessionEventsProjectsLatestRunIntentState(t *testing.T) {
+	store := openV3SessionEventTestStore(t)
+	sessions := NewSessionStore(store)
+	createV3SessionForTest(t, sessions, "session-run-replay-latest")
+
+	transitions := []struct {
+		status    string
+		eventType string
+		now       int64
+	}{
+		{status: V3RunIntentPendingExecutor, eventType: "session.run_intent.recorded", now: 2000},
+		{status: V3RunIntentRunning, eventType: "session.assistant.started", now: 3000},
+		{status: V3RunIntentCompleted, eventType: "session.assistant.completed", now: 4000},
+	}
+	for index, transition := range transitions {
+		_, err := sessions.ApplyV3SessionMutation(V3SessionMutationInput{
+			SessionID:      "session-run-replay-latest",
+			UserID:         "user-1",
+			AccountScopeID: "account-1",
+			IdempotencyKey: fmt.Sprintf("run-transition-%d", index),
+			RequestHash:    fmt.Sprintf("hash-run-transition-%d", index),
+			Kind:           V3SessionMutationRecordRunIntent,
+			EventType:      transition.eventType,
+			RunIntent:      &V3SessionRunIntent{RunID: "run-plan-auto", Status: transition.status},
+			NowUnixMs:      transition.now,
+		})
+		if err != nil {
+			t.Fatalf("record %s run transition: %v", transition.status, err)
+		}
+	}
+
+	replay, err := sessions.ReplayV3SessionEvents("session-run-replay-latest", 0, 20)
+	if err != nil {
+		t.Fatalf("replay run transitions: %v", err)
+	}
+	if len(replay.RunIntents) != 1 || replay.RunIntents[0].RunID != "run-plan-auto" || replay.RunIntents[0].Status != V3RunIntentCompleted {
+		t.Fatalf("replayed run intents = %+v, want one completed latest-state projection", replay.RunIntents)
+	}
+	if replay.RunIntents[0].EventSeq != replay.HighWatermarkSeq {
+		t.Fatalf("replayed run intent seq = %d, high watermark = %d", replay.RunIntents[0].EventSeq, replay.HighWatermarkSeq)
+	}
+	recoverable, err := sessions.ListV3SessionRecoverableRunIntents(5000, 10)
+	if err != nil {
+		t.Fatalf("list recoverable run intents: %v", err)
+	}
+	for _, intent := range recoverable {
+		if intent.RunID == "run-plan-auto" {
+			t.Fatalf("completed run remained recoverable: %+v", intent)
+		}
 	}
 }
 

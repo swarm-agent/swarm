@@ -23,6 +23,19 @@ func TestReadOnlyDiscoveryToolsDefaultAllow(t *testing.T) {
 	}
 }
 
+// Workspace inspection and safe selection are constrained by the compiled
+// primary-agent control plane and authenticated account catalog. They stay
+// automatic while catalog CRUD uses separate approval identities.
+func TestManageWorkspaceDefaultsToAutomaticAccountAuthority(t *testing.T) {
+	for _, action := range []string{"inspect", "list", "set_session", "set_default", "adopt_worktree"} {
+		arguments := fmt.Sprintf(`{"action":%q}`, action)
+		got := ExplainPolicy("auto", "manage_workspace", arguments, DefaultPolicy())
+		if got.Decision != PolicyDecisionAllow {
+			t.Fatalf("manage_workspace %s decision = %q source=%q reason=%q", action, got.Decision, got.Source, got.Reason)
+		}
+	}
+}
+
 func TestManageArtifactDefaultsToAutomaticPrivateAuthority(t *testing.T) {
 	for _, action := range []string{"create", "create_package", "list", "get", "read", "select", "delete", "materialize", "promote"} {
 		arguments := fmt.Sprintf(`{"action":%q}`, action)
@@ -338,7 +351,7 @@ func TestBashProfileGranularRulePrecedence(t *testing.T) {
 	}
 }
 
-func TestManageWorktreeIntegrateFlowsWithoutPermissionRoundTrip(t *testing.T) {
+func TestManageWorktreeSeparatesInternalIntegrationFromPromotionApproval(t *testing.T) {
 	policy := NormalizePolicy(Policy{})
 	integrate := ExplainPolicy("auto", "manage_worktree", `{"action":"integrate","session_ids":["child-a","child-b"]}`, policy)
 	if integrate.Decision != PolicyDecisionAllow {
@@ -347,6 +360,16 @@ func TestManageWorktreeIntegrateFlowsWithoutPermissionRoundTrip(t *testing.T) {
 	recall := ExplainPolicy("auto", "manage_worktree", `{"action":"recall"}`, policy)
 	if recall.Decision != PolicyDecisionAllow {
 		t.Fatalf("recall decision = %s, want allow", recall.Decision)
+	}
+	promotionArgs := `{"action":"promote","source_session_id":"session-a","source_branch":"agent/a","source_head":"abc","target_workspace_path":"/repo","target_branch":"dev","target_head":"def"}`
+	for _, mode := range []string{"auto", "auto+bypass_permissions"} {
+		promotion := ExplainPolicy(mode, "manage_worktree", promotionArgs, policy)
+		if promotion.Decision != PolicyDecisionAsk || promotion.ToolName != "worktree_promotion" {
+			t.Fatalf("%s promotion = %+v, want distinct approval", mode, promotion)
+		}
+	}
+	if requirement := authorizationRequirement("auto", "manage_worktree", promotionArgs); requirement != "worktree_promotion" {
+		t.Fatalf("promotion authorization requirement = %q", requirement)
 	}
 }
 
@@ -507,6 +530,63 @@ func TestManageSkillPolicySeparatesCreateFromPersistentMutationApproval(t *testi
 	}
 	if got := ExplainPolicy(sessionruntime.ModeAuto, "manage-agent", `{"action":"update","agent":"example"}`, policy); got.Decision == PolicyDecisionAllow {
 		t.Fatalf("skill mutation rule broadened to manage-agent: %+v", got)
+	}
+}
+
+func TestLaneE_E2E019_E2E020PermissionDenyCancelRemainNonPersistent(t *testing.T) {
+	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "permission-deny-cancel.pebble"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	events, err := pebblestore.NewEventLog(store)
+	if err != nil {
+		t.Fatalf("new event log: %v", err)
+	}
+	sessionSvc := sessionruntime.NewService(pebblestore.NewSessionStore(store), events)
+	session, _, err := sessionSvc.CreateSessionWithOptions(sessionruntime.CreateSessionOptions{
+		SessionID: "session-workspace-deny-cancel", Title: "Workspace deny cancel", WorkspacePath: "/workspace", WorkspaceName: "workspace", Mode: sessionruntime.ModeAuto,
+		UserID: "user-a", AccountScopeID: "account-a", Preference: &pebblestore.ModelPreference{Provider: "test", Model: "test", Thinking: "medium"},
+	})
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	permissionStore := pebblestore.NewPermissionStore(store)
+	svc := NewService(permissionStore, events, nil)
+	svc.SetSessionResolver(sessionSvc)
+
+	for _, tc := range []struct {
+		name          string
+		action        string
+		wantStatus    string
+		wantExecution string
+	}{{name: "deny", action: ActionDenyOnce, wantStatus: pebblestore.PermissionStatusDenied, wantExecution: pebblestore.PermissionExecSkipped}, {name: "cancel", action: ActionCancel, wantStatus: pebblestore.PermissionStatusCancelled, wantExecution: pebblestore.PermissionExecCancelled}} {
+		t.Run(tc.name, func(t *testing.T) {
+			pending, err := svc.CreatePending(CreateInput{
+				SessionID: session.ID, RunID: "run-" + tc.name, CallID: "call-" + tc.name, ToolName: "write",
+				ToolArguments: `{"path":"/external/blocked.txt","content":"blocked"}`, Requirement: "workspace_scope", Mode: sessionruntime.ModeAuto,
+			})
+			if err != nil {
+				t.Fatalf("create pending: %v", err)
+			}
+			resolved, err := svc.Resolve(session.ID, pending.ID, tc.action, tc.name)
+			if err != nil {
+				t.Fatalf("resolve %s: %v", tc.name, err)
+			}
+			if resolved.Status != tc.wantStatus || resolved.ExecutionStatus != tc.wantExecution || resolved.ResolvedAt == 0 {
+				t.Fatalf("resolved %s record = %+v", tc.name, resolved)
+			}
+		})
+	}
+	if policy, err := svc.CurrentPolicyForAccount("account-a"); err != nil || len(policy.Rules) != len(DefaultPolicy().Rules) {
+		t.Fatalf("deny/cancel persisted policy state: rules=%+v err=%v", policy.Rules, err)
+	}
+	records, err := permissionStore.ListPermissions(session.ID, 10)
+	if err != nil || len(records) != 2 {
+		t.Fatalf("permission decision records=%+v err=%v", records, err)
+	}
+	if pending, err := permissionStore.ListPendingPermissions(session.ID, 10); err != nil || len(pending) != 0 {
+		t.Fatalf("pending permissions remained after deny/cancel: %+v err=%v", pending, err)
 	}
 }
 

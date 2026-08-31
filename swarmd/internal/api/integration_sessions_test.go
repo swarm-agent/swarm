@@ -67,7 +67,7 @@ func TestIntegrationWorkspaceOpenCreatesLatestChildAndContext(t *testing.T) {
 
 func TestIntegrationWorkspaceSessionNewSwitchAndRunContext(t *testing.T) {
 	runner := &recordingRunService{}
-	server, _, closeStore := newIntegrationSessionTestServer(t, runner)
+	server, sessions, closeStore := newIntegrationSessionTestServer(t, runner)
 	defer closeStore()
 	handler := withTargetedAgentTestPrincipal(server.Handler())
 
@@ -125,6 +125,27 @@ func TestIntegrationWorkspaceSessionNewSwitchAndRunContext(t *testing.T) {
 	}
 	if runner.sessionID != created.Session.ID {
 		t.Fatalf("runner session = %q, want %q", runner.sessionID, created.Session.ID)
+	}
+	if runner.meta.ApplySessionMutation == nil {
+		t.Fatal("direct session run did not receive the canonical V3 mutation callback")
+	}
+	prepared, err := sessions.PreparePlanSaveWithMetadata(created.Session.ID, "plan-direct-run", "Direct run", "# Direct run", "approved", "approved", true, sessionruntime.PlanSaveMetadata{Document: &pebblestore.SessionPlanDocument{
+		Title: "Direct run",
+		Info:  pebblestore.SessionPlanInfo{Goal: "prove direct run plan persistence"},
+		Checkpoints: []pebblestore.SessionPlanCheckpoint{{
+			ID: "cp-1", Title: "Run task program", Status: sessionruntime.PlanCheckpointStatusPending,
+			Tasks: []string{"launch the approved task program"}, AcceptanceCriteria: []string{"task program launch is reachable"},
+		}},
+	}})
+	if err != nil {
+		t.Fatalf("prepare direct-run plan save: %v", err)
+	}
+	mutation, err := sessions.CommitPreparedPlanSave(prepared, runner.meta.ApplySessionMutation)
+	if err != nil {
+		t.Fatalf("commit direct-run plan save through canonical callback: %v", err)
+	}
+	if mutation.Plan == nil || mutation.RealtimeOutbox == nil || mutation.RealtimeOutbox.EndpointSeq == 0 {
+		t.Fatalf("direct-run plan mutation was not durably committed: %+v", mutation)
 	}
 }
 

@@ -131,68 +131,69 @@ func (e taskChildBlockedError) Error() string {
 }
 
 type taskLaunchOutcome struct {
-	LaunchIndex         int
-	VirtualTarget       bool
-	RequestedSubagent   string
-	ResolvedSubagent    string
-	MetaPrompt          string
-	AssignmentLabel     string
-	OwnedScope          []string
-	SubagentProvider    string
-	SubagentModel       string
-	ChildSessionID      string
-	ChildRunID          string
-	ChildMode           string
-	TargetWorkspacePath string
-	WorkspacePath       string
-	WorkspaceName       string
-	WorktreeEnabled     bool
-	WorktreeRootPath    string
-	WorktreeBaseBranch  string
-	WorktreeBranch      string
-	BaseCommit          string
-	ParentBranch        string
-	HeadCommit          string
-	GitStatus           string
-	WorktreeClean       bool
-	ChangedFiles        []string
-	LaunchStartedAtMS   int64
-	CurrentTool         string
-	CurrentToolIdentity string
-	CurrentToolRunCount int
-	CurrentToolDisplay  string
-	CurrentToolStarted  int64
-	CurrentToolMS       int64
-	ElapsedMS           int64
-	ToolStarted         int
-	ToolCompleted       int
-	ToolFailed          int
-	ToolOrder           []string
-	ReasoningSummary    string
-	CurrentPreviewKind  string
-	CurrentPreviewText  string
-	Phase               string
-	ReportChars         int
-	ReportExcerpt       string
-	ReportRef           *taskReportRef
-	ReportTruncated     bool
-	Summary             string
-	Error               string
-	Reason              string
-	BlockerCode         string
-	BlockerEvidence     []string
-	CompletedScope      []string
-	ResolutionRequired  string
-	StreamKey           string
-	SwarmMode           bool
-	SwarmStrategy       string
-	AssemblyPart        *taskSwarmAssemblyPart
-	IntegrationContract string
-	IntegrationRequired bool
-	OutputMode          string
-	OutputRequirements  *pebblestore.SessionArtifactOutputRequirements
-	AnimationProfile    *pebblestore.SessionArtifactAnimationProfile
-	ArtifactReference   *taskArtifactReference
+	LaunchIndex           int
+	VirtualTarget         bool
+	RequestedSubagent     string
+	ResolvedSubagent      string
+	MetaPrompt            string
+	AssignmentLabel       string
+	OwnedScope            []string
+	SubagentProvider      string
+	SubagentModel         string
+	ChildSessionID        string
+	ChildRunID            string
+	ChildMode             string
+	TargetWorkspacePath   string
+	WorkspacePath         string
+	WorkspaceName         string
+	WorktreeEnabled       bool
+	WorktreeRootPath      string
+	WorktreeBaseBranch    string
+	WorktreeBranch        string
+	BaseCommit            string
+	ParentBranch          string
+	HeadCommit            string
+	GitStatus             string
+	WorktreeClean         bool
+	ChangedFiles          []string
+	LaunchStartedAtMS     int64
+	CurrentTool           string
+	CurrentToolIdentity   string
+	CurrentToolRunCount   int
+	CurrentToolDisplay    string
+	CurrentToolStarted    int64
+	CurrentToolMS         int64
+	ElapsedMS             int64
+	ToolStarted           int
+	ToolCompleted         int
+	ToolFailed            int
+	MediaInspectCompleted int
+	ToolOrder             []string
+	ReasoningSummary      string
+	CurrentPreviewKind    string
+	CurrentPreviewText    string
+	Phase                 string
+	ReportChars           int
+	ReportExcerpt         string
+	ReportRef             *taskReportRef
+	ReportTruncated       bool
+	Summary               string
+	Error                 string
+	Reason                string
+	BlockerCode           string
+	BlockerEvidence       []string
+	CompletedScope        []string
+	ResolutionRequired    string
+	StreamKey             string
+	SwarmMode             bool
+	SwarmStrategy         string
+	AssemblyPart          *taskSwarmAssemblyPart
+	IntegrationContract   string
+	IntegrationRequired   bool
+	OutputMode            string
+	OutputRequirements    *pebblestore.SessionArtifactOutputRequirements
+	AnimationProfile      *pebblestore.SessionArtifactAnimationProfile
+	ArtifactReference     *taskArtifactReference
 }
 
 const taskLaunchReasonMaxRunes = 512
@@ -283,6 +284,15 @@ func managedDesignerArtifactContext(parent pebblestore.SessionSnapshot, taskCall
 		run.SourceArtifact = &sourceCopy
 	}
 	if sectionTarget != nil || len(sectionTargets) != 0 {
+		if len(sectionTargets) != 0 {
+			run.SelectedReviewTargets = make([]pebblestore.SessionArtifactPart, 0, len(sectionTargets))
+			for _, target := range sectionTargets {
+				if target == nil {
+					continue
+				}
+				run.SelectedReviewTargets = append(run.SelectedReviewTargets, pebblestore.SessionArtifactPart{ID: target.ID, Label: target.Label, Kind: target.Kind, Description: target.Description, StartMs: target.StartMs, EndMs: target.EndMs, X: target.X, Y: target.Y, Width: target.Width, Height: target.Height, Page: target.Page, StateID: target.StateID, Selector: target.Selector})
+			}
+		}
 		if composition, ok := spec.SourceArguments["source_composition"].(pebblestore.SessionArtifactComposition); ok {
 			copy := composition
 			run.SourceComposition = &copy
@@ -491,6 +501,7 @@ func (s *Service) ensureManagedDesignerArtifactPlaceholders(parent pebblestore.S
 			IterationLabel: strings.TrimSpace(run.IterationLabel), IterationTheme: strings.TrimSpace(run.IterationTheme),
 			IterationSectionID: strings.TrimSpace(run.IterationSectionID), IterationSectionLabel: strings.TrimSpace(run.IterationSectionLabel), IterationSectionStartMs: run.IterationSectionStartMs, IterationSectionEndMs: run.IterationSectionEndMs,
 			PartID: strings.TrimSpace(run.PartID), PartLabel: strings.TrimSpace(run.PartLabel), PartKind: strings.TrimSpace(run.PartKind),
+			SelectedReviewTargetIDs: taskReviewTargetIDs(run.SelectedReviewTargets),
 		}
 		if source := launch.SourceArtifact; source != nil {
 			lineage.SourceSessionID = strings.TrimSpace(source.SessionID)
@@ -580,6 +591,7 @@ func (s *Service) markManagedDesignerArtifactFailed(parent pebblestore.SessionSn
 		IterationID: run.IterationID, IterationIndex: run.IterationIndex, IterationLabel: run.IterationLabel, IterationTheme: run.IterationTheme,
 		IterationSectionID: run.IterationSectionID, IterationSectionLabel: run.IterationSectionLabel, IterationSectionStartMs: run.IterationSectionStartMs, IterationSectionEndMs: run.IterationSectionEndMs,
 		PartID: run.PartID, PartLabel: run.PartLabel, PartKind: run.PartKind,
+		SelectedReviewTargetIDs: taskReviewTargetIDs(run.SelectedReviewTargets),
 	}
 	if len(sourceArtifacts) > 0 && sourceArtifacts[0] != nil {
 		source := sourceArtifacts[0]
@@ -890,6 +902,7 @@ func buildTaskStreamLaunchPayload(launch taskLaunchOutcome, status, phase string
 		"tool_started":               launch.ToolStarted,
 		"tool_completed":             launch.ToolCompleted,
 		"tool_failed":                launch.ToolFailed,
+		"media_inspect_completed":    launch.MediaInspectCompleted,
 		"tool_order":                 append([]string(nil), launch.ToolOrder...),
 		"summary":                    strings.TrimSpace(launch.Summary),
 		"error":                      strings.TrimSpace(launch.Error),
@@ -1003,6 +1016,7 @@ func buildTaskStreamLaunchPatchPayload(launch taskLaunchOutcome, status, phase s
 		"tool_started":               launch.ToolStarted,
 		"tool_completed":             launch.ToolCompleted,
 		"tool_failed":                launch.ToolFailed,
+		"media_inspect_completed":    launch.MediaInspectCompleted,
 		"tool_order":                 append([]string(nil), launch.ToolOrder...),
 		"summary":                    strings.TrimSpace(launch.Summary),
 		"error":                      strings.TrimSpace(launch.Error),
@@ -1277,7 +1291,7 @@ func (s *Service) prepareDelegatedSubagentLaunchWithProfile(parentSession pebble
 		if launch.TaskBase == nil {
 			return taskLaunchPrepared{}, errors.New("task failed to allocate Coder worktree: parent Git state was not resolved")
 		}
-		allocation, allocErr := s.worktrees.AllocateTaskWorkspace(targetWorkspacePath, *launch.TaskBase, childSessionID)
+		allocation, allocErr := s.worktrees.AllocateTaskWorkspace(targetWorkspacePath, *launch.TaskBase, childSessionID, launch.OwnedScope)
 		if allocErr != nil {
 			return taskLaunchPrepared{}, fmt.Errorf("task failed to allocate subagent worktree: %w", allocErr)
 		}
@@ -1448,7 +1462,21 @@ func (s *Service) gateToolCalls(ctx context.Context, sessionID, runID string, st
 			decisions[i].Result.Error = message
 			continue
 		}
-		permissionArguments, err := s.permissionArgumentsForCall(sessionID, sessionMode, toolCalls[i])
+		permissionMode := sessionMode
+		permissionArguments := strings.TrimSpace(toolCalls[i].Arguments)
+		var err error
+		if canonicalToolName(toolCalls[i].Name) == "manage_workspace" && manageWorkspaceMutationAction(toolCalls[i].Arguments) == "map_update" {
+			payload, payloadErr := s.buildManageWorkspacePermissionPayload(sessionID, toolCalls[i].Arguments)
+			if payloadErr != nil {
+				err = payloadErr
+			} else {
+				raw, marshalErr := json.Marshal(payload)
+				err = marshalErr
+				permissionArguments = string(raw)
+			}
+		} else {
+			permissionArguments, err = s.permissionArgumentsForCall(sessionID, sessionMode, toolCalls[i])
+		}
 		if err != nil {
 			message := fmt.Sprintf("invalid tool arguments: %v", err)
 			decisions[i].Err = err
@@ -1546,16 +1574,37 @@ func (s *Service) gateToolCalls(ctx context.Context, sessionID, runID string, st
 			}
 			sessionDeployReservation = &reserved
 		}
+		authorizationToolName := toolCalls[i].Name
+		if canonicalToolName(toolCalls[i].Name) == "manage_workspace" {
+			if action := manageWorkspaceMutationAction(toolCalls[i].Arguments); action != "" {
+				// Persistent policy rules bind to the action-specific capability, not
+				// the shared transport tool, so each persistent action can be allowed
+				// independently without broadening another workspace mutation.
+				authorizationToolName = "workspace_" + action
+				if action == "map_update" {
+					authorizationToolName = "workspace_map_update"
+				}
+				parts := strings.Split(permissionMode, "+")
+				modeBase := strings.ToLower(strings.TrimSpace(parts[0]))
+				if modeBase == "yolo" || modeBase == "read" || modeBase == "readwrite" {
+					permissionMode = sessionruntime.ModeAuto
+				}
+				// Catalog and account-map updates always begin with an explicit decision.
+				// Do not let the generic bypass suffix silently skip the first prompt;
+				// persistent action-specific rules remain the opt-in automation path.
+				permissionMode = strings.Split(permissionMode, "+")[0]
+			}
+		}
 		auth, err := s.permissions.AuthorizeToolCall(permission.AuthorizationInput{
 			SessionID:                sessionID,
 			AccountScopeID:           accountScopeID,
 			RunID:                    runID,
 			Step:                     step,
 			CallID:                   toolCalls[i].CallID,
-			ToolName:                 toolCalls[i].Name,
+			ToolName:                 authorizationToolName,
 			ToolArguments:            permissionArguments,
 			ToolCallArguments:        strings.TrimSpace(toolCalls[i].Arguments),
-			Mode:                     sessionMode,
+			Mode:                     permissionMode,
 			Overlay:                  overlay,
 			SubagentReservation:      subagentReservation,
 			SessionDeployReservation: sessionDeployReservation,
@@ -1580,7 +1629,7 @@ func (s *Service) gateToolCalls(ctx context.Context, sessionID, runID string, st
 				}
 			}
 			planAcceptance := canonical == "exit_plan_mode" || (canonical == "plan_manage" && permission.IsPlanAcceptanceLifecycleRequirement(permission.PlanManageLifecycleRequirement(toolCalls[i].Arguments)))
-			if canonical == "task" || canonical == "manage_skill" || planAcceptance || (canonical == "manage_sessions" && (isCanonicalManageSessionsMutation(permission.ManageSessionsAction(toolCalls[i].Arguments)) || permission.ManageSessionsAction(toolCalls[i].Arguments) == "deploy")) {
+			if canonical == "task" || canonical == "manage_skill" || canonical == "manage_workspace" || planAcceptance || (canonical == "manage_sessions" && (isCanonicalManageSessionsMutation(permission.ManageSessionsAction(toolCalls[i].Arguments)) || permission.ManageSessionsAction(toolCalls[i].Arguments) == "deploy")) {
 				var permissionPayload map[string]any
 				if json.Unmarshal([]byte(permissionArguments), &permissionPayload) == nil {
 					if approved, ok := permissionPayload["approved_arguments"].(map[string]any); ok {
@@ -1766,6 +1815,78 @@ func (s *Service) executeControlPlaneToolWithLifecycleRunContext(ctx context.Con
 		return true, result, err
 	case "manage_worktree":
 		output, err := s.executeManageWorktreeTool(ctx, sessionID, call, approvedArguments)
+		result.Output = output
+		return true, result, err
+	case "manage_workspace":
+		// This single-purpose control-plane tool owns account workspace selection
+		// and canonical V3 session routing; standalone runtime execution is rejected.
+		if !strings.EqualFold(strings.TrimSpace(agentProfile.Name), "swarm") || !strings.EqualFold(strings.TrimSpace(agentProfile.Mode), "primary") {
+			return true, result, errors.New("manage_workspace is restricted to the compiled Swarm primary agent")
+		}
+		principal, _ := identity.PrincipalFromContext(ctx)
+		if !principal.Valid() && s.sessions != nil {
+			if session, ok, lookupErr := s.sessions.GetSession(strings.TrimSpace(sessionID)); lookupErr != nil {
+				return true, result, lookupErr
+			} else if ok {
+				principal = identity.Principal{Type: identity.PrincipalTypeUser, UserID: session.UserID, AccountScopeID: session.AccountScopeID, SessionID: session.ID, AccountScopeSource: identity.AccountScopeSourceSession}
+			}
+		}
+		arguments := strings.TrimSpace(call.Arguments)
+		if manageWorkspaceMutationAction(call.Arguments) != "" {
+			if strings.TrimSpace(approvedArguments) == "" {
+				return true, result, errors.New("manage_workspace catalog mutation requires approved canonical arguments")
+			}
+			var permissionPayload map[string]any
+			// Permission resolution returns the stored structured permission payload;
+			// unwrap its backend-owned approved_arguments before execution.
+			if json.Unmarshal([]byte(strings.TrimSpace(approvedArguments)), &permissionPayload) != nil {
+				return true, result, errors.New("manage_workspace approved permission payload is invalid")
+			}
+			approved, ok := permissionPayload["approved_arguments"].(map[string]any)
+			if !ok {
+				// Older permission resolvers may already return the canonical nested
+				// arguments directly; accept only when the backend scope binding exists.
+				approved = permissionPayload
+			}
+			approvedAction := manageWorkspaceMutationAction(manageWorkspaceArgumentsJSON(approved))
+			requestedAction := manageWorkspaceMutationAction(call.Arguments)
+			if len(approved) == 0 || approvedAction != requestedAction {
+				return true, result, errors.New("manage_workspace approved arguments do not match the requested action")
+			}
+			expectedScope := "workspace_" + manageWorkspaceMutationAction(call.Arguments)
+			if requestedAction == "map_update" {
+				expectedScope = "workspace_map_update"
+			}
+			if approvedScope := strings.TrimSpace(mapString(approved, "permission_scope")); approvedScope != expectedScope {
+				return true, result, errors.New("manage_workspace approved permission scope is invalid")
+			}
+			if strings.TrimSpace(mapString(approved, "intent")) == "" {
+				return true, result, errors.New("manage_workspace approved intent is missing")
+			}
+			if requestedAction == "map_update" {
+				requestedArgs, parseErr := parseManageWorkspaceArguments(call.Arguments)
+				if parseErr != nil {
+					return true, result, parseErr
+				}
+				approvedContent, normalizeErr := pebblestore.NormalizeWorkspaceMapContent(mapString(approved, "content"))
+				if normalizeErr != nil {
+					return true, result, normalizeErr
+				}
+				requestedContent, normalizeErr := pebblestore.NormalizeWorkspaceMapContent(requestedArgs.Content)
+				if normalizeErr != nil {
+					return true, result, normalizeErr
+				}
+				if manageWorkspaceInt64(approved["expected_revision"]) != requestedArgs.ExpectedRevision || strings.TrimSpace(mapString(approved, "intent")) != requestedArgs.Intent || approvedContent != requestedContent {
+					return true, result, errors.New("manage_workspace approved map arguments do not match the requested revision, intent, and content")
+				}
+			}
+			rawApproved, marshalErr := json.Marshal(approved)
+			if marshalErr != nil {
+				return true, result, marshalErr
+			}
+			arguments = string(rawApproved)
+		}
+		output, err := s.executeManageWorkspaceTool(sessionID, arguments, principal, applySessionMutation)
 		result.Output = output
 		return true, result, err
 	case "manage_actions":
@@ -3971,6 +4092,69 @@ type taskExecutionRequest struct {
 	ApplySessionMutation func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error)
 }
 
+func applyTaskSourceAnimationProfile(source pebblestore.SessionArtifactVariant, launches []taskLaunchSpec) error {
+	if source.AnimationProfile == nil {
+		return nil
+	}
+	for index := range launches {
+		if !agentruntime.IsDesignerAgentName(launches[index].RequestedSubagentType) {
+			continue
+		}
+		if launches[index].AnimationProfile != nil && !reflect.DeepEqual(launches[index].AnimationProfile, source.AnimationProfile) {
+			return fmt.Errorf("task launches[%d] animation_profile conflicts with the exact source artifact snapshot", index)
+		}
+		launches[index].AnimationProfile = cloneTaskAnimationProfile(source.AnimationProfile)
+		if launches[index].SourceArguments == nil {
+			launches[index].SourceArguments = map[string]any{}
+		}
+		launches[index].SourceArguments["animation_profile"] = cloneTaskAnimationProfile(source.AnimationProfile)
+	}
+	return nil
+}
+
+func (s *Service) materializeWorkspaceDesignerSources(ctx context.Context, parent pebblestore.SessionSnapshot, launches []taskLaunchSpec) error {
+	if s == nil || s.tools == nil || s.tools.ArtifactAuthority() == nil {
+		for index := range launches {
+			if agentruntime.IsDesignerAgentName(launches[index].RequestedSubagentType) && launches[index].OutputMode == taskOutputModeWorkspace && launches[index].SourceArtifact != nil {
+				return errors.New("workspace Designer source_artifact requires the authenticated artifact authority")
+			}
+		}
+		return nil
+	}
+	principal := artifact.Principal{SessionID: parent.ID, AccountScopeID: parent.AccountScopeID, UserID: parent.UserID}
+	for index := range launches {
+		launch := &launches[index]
+		if !agentruntime.IsDesignerAgentName(launch.RequestedSubagentType) || launch.OutputMode != taskOutputModeWorkspace || launch.SourceArtifact == nil {
+			continue
+		}
+		if len(launch.OwnedScope) != 1 {
+			return fmt.Errorf("task launches[%d] workspace Designer source_artifact requires exactly one owned_scope output target", index)
+		}
+		workspaceRoot := strings.TrimSpace(firstNonEmptyString(launch.TargetWorkspacePath, parent.WorkspacePath))
+		destination := strings.TrimSpace(launch.OwnedScope[0])
+		if workspaceRoot == "" || destination == "" {
+			return fmt.Errorf("task launches[%d] workspace Designer source_artifact requires a resolved workspace and output target", index)
+		}
+		if _, statErr := os.Lstat(filepath.Join(workspaceRoot, filepath.FromSlash(destination))); statErr == nil {
+			return fmt.Errorf("task launches[%d] workspace Designer source artifact destination %q already exists", index, destination)
+		} else if !errors.Is(statErr, os.ErrNotExist) {
+			return fmt.Errorf("task launches[%d] preflight workspace Designer source destination: %w", index, statErr)
+		}
+	}
+	for index := range launches {
+		launch := &launches[index]
+		if !agentruntime.IsDesignerAgentName(launch.RequestedSubagentType) || launch.OutputMode != taskOutputModeWorkspace || launch.SourceArtifact == nil {
+			continue
+		}
+		workspaceRoot := strings.TrimSpace(firstNonEmptyString(launch.TargetWorkspacePath, parent.WorkspacePath))
+		destination := strings.TrimSpace(launch.OwnedScope[0])
+		if _, err := s.tools.ArtifactAuthority().MaterializeReference(ctx, principal, *launch.SourceArtifact, workspaceRoot, destination, false); err != nil {
+			return fmt.Errorf("task launches[%d] materialize source_artifact into workspace output %q: %w", index, destination, err)
+		}
+	}
+	return nil
+}
+
 func executeTaskLaunchesInParallel[T any](ctx context.Context, launchCount int, runOne func(context.Context, int) (T, error)) ([]T, []error) {
 	if launchCount <= 0 {
 		return nil, nil
@@ -4086,6 +4270,16 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 		}
 	}
 	parsed.Launches = append([]taskLaunchSpec(nil), launchSpecs...)
+	if parsed.Program != nil {
+		definition, _, definitionErr := taskProgramDefinitionFromSpec(parsed.Program)
+		if definitionErr != nil {
+			return "", definitionErr
+		}
+		preflight := taskProgramScheduler{parentSession: parentSession, parsed: parsed, record: pebblestore.TaskProgramRecord{Definition: definition}}
+		if _, laneErr := preflight.programWorkspacePath(); laneErr != nil {
+			return "", laneErr
+		}
+	}
 	taskCallID := strings.TrimSpace(call.CallID)
 	if taskCallID == "" {
 		taskCallID = fmt.Sprintf("task_%d", time.Now().UnixMilli())
@@ -4157,28 +4351,29 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 			}
 		}
 		for i := range launchSpecs {
-			if (agentruntime.IsDesignerAgentName(launchSpecs[i].RequestedSubagentType) || agentruntime.IsImageAgentName(launchSpecs[i].RequestedSubagentType)) && launchSpecs[i].OutputMode == taskOutputModeManaged {
-				if launchSpecs[i].SourceArguments == nil {
-					launchSpecs[i].SourceArguments = map[string]any{}
+			if !agentruntime.IsDesignerAgentName(launchSpecs[i].RequestedSubagentType) && !agentruntime.IsImageAgentName(launchSpecs[i].RequestedSubagentType) {
+				continue
+			}
+			if launchSpecs[i].SourceArguments == nil {
+				launchSpecs[i].SourceArguments = map[string]any{}
+			}
+			if launchSpecs[i].SourceArtifact != nil && !equalTaskImageSourceArtifact(launchSpecs[i].SourceArtifact, boundSource) {
+				return "", errors.New("task launch source_artifact does not match the authenticated Artifact Studio selection")
+			}
+			launchSpecs[i].SourceArtifact = cloneTaskImageSourceArtifact(boundSource)
+			if boundSelection.Part != nil {
+				if requestedTargets, _ := parseTaskSwarmSectionTargets(launchSpecs[i].SourceArguments["section_targets"]); len(requestedTargets) > 1 {
+					return "", errors.New("task authenticated message selection contains one part but launch section_targets requests multiple parts")
 				}
-				if launchSpecs[i].SourceArtifact != nil && !equalTaskImageSourceArtifact(launchSpecs[i].SourceArtifact, boundSource) {
-					return "", errors.New("task launch source_artifact does not match the authenticated Artifact Studio selection")
+				boundTarget := taskSectionTargetFromArtifactPart(*boundSelection.Part)
+				requested, targetErr := parseTaskSwarmSectionTarget(launchSpecs[i].SourceArguments["section_target"])
+				if targetErr != nil {
+					return "", targetErr
 				}
-				launchSpecs[i].SourceArtifact = cloneTaskImageSourceArtifact(boundSource)
-				if boundSelection.Part != nil {
-					if requestedTargets, _ := parseTaskSwarmSectionTargets(launchSpecs[i].SourceArguments["section_targets"]); len(requestedTargets) > 1 {
-						return "", errors.New("task authenticated message selection contains one part but launch section_targets requests multiple parts")
-					}
-					boundTarget := taskSectionTargetFromArtifactPart(*boundSelection.Part)
-					requested, targetErr := parseTaskSwarmSectionTarget(launchSpecs[i].SourceArguments["section_target"])
-					if targetErr != nil {
-						return "", targetErr
-					}
-					if requested != nil && !equalTaskSectionTarget(requested, boundTarget) {
-						return "", errors.New("task section_target does not match the authenticated Artifact Studio part")
-					}
-					launchSpecs[i].SourceArguments["section_target"] = boundTarget
+				if requested != nil && !equalTaskSectionTarget(requested, boundTarget) {
+					return "", errors.New("task section_target does not match the authenticated Artifact Studio part")
 				}
+				launchSpecs[i].SourceArguments["section_target"] = boundTarget
 			}
 		}
 	}
@@ -4193,6 +4388,9 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 		sourceVariant, sourceErr := s.tools.ArtifactAuthority().GetReference(principal, *sourceArtifact)
 		if sourceErr != nil {
 			return "", fmt.Errorf("task source_artifact is unavailable: %w", sourceErr)
+		}
+		if profileErr := applyTaskSourceAnimationProfile(sourceVariant, launchSpecs); profileErr != nil {
+			return "", profileErr
 		}
 		var targets []*taskSwarmSectionTarget
 		if parsed.Mode == taskModeSwarm && parsed.Swarm != nil && agentruntime.IsDesignerAgentName(parsed.Swarm.AgentType) {
@@ -4213,37 +4411,34 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 				return "", errors.New("task selected part count exceeds the artifact limit")
 			}
 			if sourceVariant.PartGraphState != pebblestore.SessionArtifactGraphAuthoritative || sourceVariant.Composition == nil {
-				if len(targets) != 1 {
-					return "", errors.New("task multiple selected parts require an authoritative artifact composition")
+				boundTargets, bindErr := authenticateTaskReviewTargets(sourceVariant, targets)
+				if bindErr != nil {
+					return "", bindErr
 				}
-				var reviewPart *pebblestore.SessionArtifactPart
-				for index := range sourceVariant.Parts {
-					if strings.TrimSpace(sourceVariant.Parts[index].ID) == strings.TrimSpace(targets[0].ID) {
-						reviewPart = &sourceVariant.Parts[index]
-						break
-					}
-				}
-				if reviewPart == nil {
-					return "", errors.New("task selected review part is unavailable on the authenticated exact source")
-				}
-				boundTarget := taskSectionTargetFromArtifactPart(*reviewPart)
-				if !equalTaskSectionTarget(targets[0], boundTarget) {
-					return "", errors.New("task section target locator does not match the authenticated review part")
-				}
-				// Locator-only review parts identify a bounded region of one complete
+				// Locator-only review parts identify bounded regions of one complete
 				// artifact; they are not independently byte-bearing composition parts.
-				// Keep the exact target in run lineage while leaving the Designer on the
-				// complete-artifact create protocol.
+				// Preserve the complete authenticated selection for worker hydration while
+				// leaving the Designer on the one-shot complete-artifact create protocol.
 				if parsed.Swarm != nil {
-					parsed.Swarm.SectionTarget = boundTarget
-					parsed.Swarm.SectionTargets = nil
+					if len(boundTargets) == 1 {
+						parsed.Swarm.SectionTarget = cloneTaskSwarmSectionTarget(boundTargets[0])
+						parsed.Swarm.SectionTargets = nil
+					} else {
+						parsed.Swarm.SectionTarget = nil
+						parsed.Swarm.SectionTargets = cloneTaskSwarmSectionTargets(boundTargets)
+					}
 				}
 				for index := range launchSpecs {
 					if launchSpecs[index].SourceArguments == nil {
 						launchSpecs[index].SourceArguments = map[string]any{}
 					}
-					launchSpecs[index].SourceArguments["section_target"] = boundTarget
-					delete(launchSpecs[index].SourceArguments, "section_targets")
+					if len(boundTargets) == 1 {
+						launchSpecs[index].SourceArguments["section_target"] = cloneTaskSwarmSectionTarget(boundTargets[0])
+						delete(launchSpecs[index].SourceArguments, "section_targets")
+					} else {
+						launchSpecs[index].SourceArguments["section_targets"] = cloneTaskSwarmSectionTargets(boundTargets)
+						delete(launchSpecs[index].SourceArguments, "section_target")
+					}
 				}
 				targets = nil
 			}
@@ -4321,6 +4516,7 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 		}
 		for i := range launchSpecs {
 			row := manifest.Launches[i]
+			launchSpecs[i].OwnedScope = append([]string(nil), row.OwnedScope...)
 			profile, err := cloneTaskAgentProfile(*row.ProfileSnapshot)
 			if err != nil {
 				return "", err
@@ -4373,6 +4569,9 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 			trustedProfiles[i] = &profile
 			trustedSources[i] = strings.TrimSpace(row.SourceAgentName)
 		}
+	}
+	if err := s.materializeWorkspaceDesignerSources(ctx, parentSession, launchSpecs); err != nil {
+		return "", err
 	}
 
 	coderIndexes := make([]int, 0, len(launchSpecs))
@@ -4546,55 +4745,56 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 		for _, launch := range launches {
 			elapsedMS, currentToolMS := taskLaunchProgressDurations(launch, strings.EqualFold(strings.TrimSpace(status), "ok") || strings.EqualFold(strings.TrimSpace(status), "error"))
 			launchRow := map[string]any{
-				"launch_index":           launch.LaunchIndex,
-				"requested_subagent":     strings.TrimSpace(launch.RequestedSubagent),
-				"subagent":               strings.TrimSpace(launch.ResolvedSubagent),
-				"meta_prompt":            strings.TrimSpace(launch.MetaPrompt),
-				"assignment_label":       strings.TrimSpace(launch.AssignmentLabel),
-				"owned_scope":            append([]string(nil), launch.OwnedScope...),
-				"subagent_provider":      strings.TrimSpace(launch.SubagentProvider),
-				"subagent_model":         strings.TrimSpace(launch.SubagentModel),
-				"child_session_id":       strings.TrimSpace(launch.ChildSessionID),
-				"child_run_id":           strings.TrimSpace(launch.ChildRunID),
-				"child_mode":             strings.TrimSpace(launch.ChildMode),
-				"parent_workspace_path":  strings.TrimSpace(launch.TargetWorkspacePath),
-				"workspace_path":         strings.TrimSpace(launch.WorkspacePath),
-				"workspace_name":         strings.TrimSpace(launch.WorkspaceName),
-				"worktree_enabled":       launch.WorktreeEnabled,
-				"worktree_root_path":     strings.TrimSpace(launch.WorktreeRootPath),
-				"worktree_base_branch":   strings.TrimSpace(launch.WorktreeBaseBranch),
-				"worktree_branch":        strings.TrimSpace(launch.WorktreeBranch),
-				"parent_branch":          strings.TrimSpace(launch.ParentBranch),
-				"base_commit":            strings.TrimSpace(launch.BaseCommit),
-				"head_commit":            strings.TrimSpace(launch.HeadCommit),
-				"worktree_clean":         launch.WorktreeClean,
-				"git_status":             strings.TrimSpace(launch.GitStatus),
-				"changed_files":          append([]string(nil), launch.ChangedFiles...),
-				"current_tool":           strings.TrimSpace(launch.CurrentTool),
-				"current_tool_identity":  strings.TrimSpace(launch.CurrentToolIdentity),
-				"current_tool_run_count": launch.CurrentToolRunCount,
-				"current_tool_display":   firstNonEmptyString(strings.TrimSpace(launch.CurrentToolDisplay), toolProgressionDisplay(launch.CurrentToolIdentity, launch.CurrentToolRunCount)),
-				"current_tool_ms":        currentToolMS,
-				"elapsed_ms":             elapsedMS,
-				"tool_started":           launch.ToolStarted,
-				"tool_completed":         launch.ToolCompleted,
-				"tool_failed":            launch.ToolFailed,
-				"tool_order":             append([]string(nil), launch.ToolOrder...),
-				"error":                  strings.TrimSpace(launch.Error),
-				"reason":                 strings.TrimSpace(launch.Reason),
-				"blocker_code":           strings.TrimSpace(launch.BlockerCode),
-				"blocker_evidence":       append([]string(nil), launch.BlockerEvidence...),
-				"completed_scope":        append([]string(nil), launch.CompletedScope...),
-				"resolution_requirement": strings.TrimSpace(launch.ResolutionRequired),
-				"phase":                  strings.TrimSpace(launch.Phase),
-				"swarm_mode":             launch.SwarmMode,
-				"swarm_strategy":         strings.TrimSpace(launch.SwarmStrategy),
-				"assembly_part":          launch.AssemblyPart,
-				"integration_contract":   strings.TrimSpace(launch.IntegrationContract),
-				"integration_required":   launch.IntegrationRequired,
-				"output_mode":            strings.TrimSpace(launch.OutputMode),
-				"output_requirements":    launch.OutputRequirements,
-				"animation_profile":      launch.AnimationProfile,
+				"launch_index":            launch.LaunchIndex,
+				"requested_subagent":      strings.TrimSpace(launch.RequestedSubagent),
+				"subagent":                strings.TrimSpace(launch.ResolvedSubagent),
+				"meta_prompt":             strings.TrimSpace(launch.MetaPrompt),
+				"assignment_label":        strings.TrimSpace(launch.AssignmentLabel),
+				"owned_scope":             append([]string(nil), launch.OwnedScope...),
+				"subagent_provider":       strings.TrimSpace(launch.SubagentProvider),
+				"subagent_model":          strings.TrimSpace(launch.SubagentModel),
+				"child_session_id":        strings.TrimSpace(launch.ChildSessionID),
+				"child_run_id":            strings.TrimSpace(launch.ChildRunID),
+				"child_mode":              strings.TrimSpace(launch.ChildMode),
+				"parent_workspace_path":   strings.TrimSpace(launch.TargetWorkspacePath),
+				"workspace_path":          strings.TrimSpace(launch.WorkspacePath),
+				"workspace_name":          strings.TrimSpace(launch.WorkspaceName),
+				"worktree_enabled":        launch.WorktreeEnabled,
+				"worktree_root_path":      strings.TrimSpace(launch.WorktreeRootPath),
+				"worktree_base_branch":    strings.TrimSpace(launch.WorktreeBaseBranch),
+				"worktree_branch":         strings.TrimSpace(launch.WorktreeBranch),
+				"parent_branch":           strings.TrimSpace(launch.ParentBranch),
+				"base_commit":             strings.TrimSpace(launch.BaseCommit),
+				"head_commit":             strings.TrimSpace(launch.HeadCommit),
+				"worktree_clean":          launch.WorktreeClean,
+				"git_status":              strings.TrimSpace(launch.GitStatus),
+				"changed_files":           append([]string(nil), launch.ChangedFiles...),
+				"current_tool":            strings.TrimSpace(launch.CurrentTool),
+				"current_tool_identity":   strings.TrimSpace(launch.CurrentToolIdentity),
+				"current_tool_run_count":  launch.CurrentToolRunCount,
+				"current_tool_display":    firstNonEmptyString(strings.TrimSpace(launch.CurrentToolDisplay), toolProgressionDisplay(launch.CurrentToolIdentity, launch.CurrentToolRunCount)),
+				"current_tool_ms":         currentToolMS,
+				"elapsed_ms":              elapsedMS,
+				"tool_started":            launch.ToolStarted,
+				"tool_completed":          launch.ToolCompleted,
+				"tool_failed":             launch.ToolFailed,
+				"media_inspect_completed": launch.MediaInspectCompleted,
+				"tool_order":              append([]string(nil), launch.ToolOrder...),
+				"error":                   strings.TrimSpace(launch.Error),
+				"reason":                  strings.TrimSpace(launch.Reason),
+				"blocker_code":            strings.TrimSpace(launch.BlockerCode),
+				"blocker_evidence":        append([]string(nil), launch.BlockerEvidence...),
+				"completed_scope":         append([]string(nil), launch.CompletedScope...),
+				"resolution_requirement":  strings.TrimSpace(launch.ResolutionRequired),
+				"phase":                   strings.TrimSpace(launch.Phase),
+				"swarm_mode":              launch.SwarmMode,
+				"swarm_strategy":          strings.TrimSpace(launch.SwarmStrategy),
+				"assembly_part":           launch.AssemblyPart,
+				"integration_contract":    strings.TrimSpace(launch.IntegrationContract),
+				"integration_required":    launch.IntegrationRequired,
+				"output_mode":             strings.TrimSpace(launch.OutputMode),
+				"output_requirements":     launch.OutputRequirements,
+				"animation_profile":       launch.AnimationProfile,
 			}
 			if launch.ArtifactReference != nil {
 				launchRow["artifact_reference"] = launch.ArtifactReference
@@ -4726,6 +4926,8 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 				if strings.TrimSpace(event.Error) != "" {
 					outcome.ToolFailed++
 					toolPhase = "tool.failed"
+				} else if strings.EqualFold(strings.ReplaceAll(completedTool, "-", "_"), "media_inspect") {
+					outcome.MediaInspectCompleted++
 				}
 				summary := fmt.Sprintf("launch %d completed %s", outcome.LaunchIndex, completedTool)
 				if strings.TrimSpace(event.Error) != "" {
@@ -4845,12 +5047,21 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 				PartID:                  launch.ArtifactRunContext.PartID,
 				PartLabel:               launch.ArtifactRunContext.PartLabel,
 				PartKind:                launch.ArtifactRunContext.PartKind,
+				SelectedReviewTargetIDs: taskReviewTargetIDs(launch.ArtifactRunContext.SelectedReviewTargets),
 			}
 			if s.tools == nil || s.tools.ArtifactAuthority() == nil {
 				markMissing("artifact_authority_unavailable")
 				return outcome, errors.New("managed Designer output authority is not configured")
 			}
 			variant, artifactErr := s.tools.ArtifactAuthority().Get(artifactPrincipal, launch.ArtifactRunContext.VariantID)
+			if blockedErr != nil {
+				code := strings.TrimSpace(outcome.BlockerCode)
+				if code == "" {
+					code = "child_reported_blocked"
+				}
+				markMissing(code)
+				return outcome, blockedErr
+			}
 			if artifactErr != nil {
 				markMissing("managed_output_missing")
 				return outcome, fmt.Errorf("managed Designer completed without its required artifact: %w", artifactErr)
@@ -4871,6 +5082,8 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 				lineage.TaskCallID == launch.ArtifactRunContext.TaskCallID &&
 				lineage.ProgramID == launch.ArtifactRunContext.ProgramID &&
 				lineage.ProgramJobID == launch.ArtifactRunContext.ProgramJobID &&
+				lineage.IterationGroupID == launch.ArtifactRunContext.IterationGroupID &&
+				lineage.IterationGroup == launch.ArtifactRunContext.IterationGroup &&
 				lineage.IterationID == launch.ArtifactRunContext.IterationID &&
 				lineage.IterationIndex == launch.ArtifactRunContext.IterationIndex &&
 				lineage.IterationSectionID == launch.ArtifactRunContext.IterationSectionID &&
@@ -4879,7 +5092,11 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 				lineage.IterationSectionEndMs == launch.ArtifactRunContext.IterationSectionEndMs &&
 				lineage.PartID == launch.ArtifactRunContext.PartID &&
 				lineage.PartLabel == launch.ArtifactRunContext.PartLabel &&
-				lineage.PartKind == launch.ArtifactRunContext.PartKind
+				lineage.PartKind == launch.ArtifactRunContext.PartKind &&
+				lineage.SelectedReviewTargetIDs == taskReviewTargetIDs(launch.ArtifactRunContext.SelectedReviewTargets) &&
+				variant.ArtifactStepID == launch.ArtifactRunContext.ArtifactStepID &&
+				variant.RevisionRoundID == launch.ArtifactRunContext.ArtifactStepID &&
+				variant.CandidateIndex == launch.ArtifactRunContext.CandidateIndex
 			compositionMatches := true
 			selectedPartRevisions := launch.ArtifactRunContext.SourcePartRevisions
 			if len(selectedPartRevisions) == 0 && launch.ArtifactRunContext.SourcePartRevision != nil {
@@ -4944,6 +5161,14 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 					}
 				}
 				return outcome, fmt.Errorf("managed Designer artifact %q is %q or has invalid trusted lineage; want ready at collection %q", variant.ID, variant.Status, launch.ArtifactRunContext.CollectionID)
+			}
+			if agentruntime.IsDesignerAgentName(launch.RequestedSubagent) && launch.AnimationProfile != nil && strings.EqualFold(strings.TrimSpace(variant.MediaType), "text/html") {
+				if inspectionErr := validateManagedAnimatedDesignerInspectionEvidence(outcome, report); inspectionErr != nil {
+					outcome.ArtifactReference.Status = pebblestore.SessionArtifactStatusFailed
+					outcome.ArtifactReference.FailureCode = "animation_inspection_failed"
+					s.markManagedDesignerArtifactFailed(parentSession, launch.ArtifactRunContext, launch.ChildSession.ID, "animation_inspection_failed", launch.SourceArtifact)
+					return outcome, inspectionErr
+				}
 			}
 		}
 		if agentruntime.IsCoderAgentName(launch.RequestedSubagent) && s.worktrees != nil {
@@ -5179,12 +5404,7 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 		swarmStrategy = parsed.Swarm.Strategy
 	}
 	integrationRequired, integrationStatus, readyForDependentWork := taskAssemblyIntegrationState(swarmStrategy, successCount, failedCount, cancelledCount, len(outcomes))
-	artifactReferences := make([]*taskArtifactReference, 0, len(outcomes))
-	for i := range outcomes {
-		if outcomes[i].ArtifactReference != nil {
-			artifactReferences = append(artifactReferences, outcomes[i].ArtifactReference)
-		}
-	}
+	artifactReferences := collectTaskReadyArtifactReferences(outcomes, runErrs)
 	lineageUpdate(overallStatus, outcomes, map[string]any{
 		"success_count":            successCount,
 		"failed_count":             failedCount,
@@ -5290,11 +5510,83 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 	return string(encoded), nil
 }
 
-func taskAssemblyIntegrationState(strategy string, successCount, failedCount, cancelledCount, outcomeCount int) (required bool, status string, readyForDependentWork bool) {
-	if !strings.EqualFold(strings.TrimSpace(strategy), taskSwarmStrategyAssembly) {
-		return false, "not_required", true
+func validateManagedAnimatedDesignerInspectionEvidence(outcome taskLaunchOutcome, report string) error {
+	if outcome.ArtifactReference == nil || outcome.ArtifactReference.Status != pebblestore.SessionArtifactStatusReady {
+		return errors.New("managed animated Designer inspection requires the exact ready publication reference")
 	}
-	if failedCount > 0 || cancelledCount > 0 || successCount != outcomeCount {
+	if outcome.MediaInspectCompleted < 3 {
+		return fmt.Errorf("managed animated Designer inspection requires three successful media_inspect calls; got %d", outcome.MediaInspectCompleted)
+	}
+	requiredChecks := []string{
+		"clipping/overflow",
+		"sizing/aspect ratio",
+		"requested elements",
+		"text legibility",
+		"unintended overlaps",
+		"scrollbars/capture chrome",
+		"brief fidelity",
+	}
+	frames := map[string]bool{"start": false, "middle": false, "exit": false}
+	for _, line := range strings.Split(report, "\n") {
+		line = strings.TrimSpace(line)
+		for frame := range frames {
+			if !validManagedAnimationInspectionRecord(line, frame, requiredChecks) {
+				continue
+			}
+			frames[frame] = true
+		}
+	}
+	missing := make([]string, 0, len(frames))
+	for _, frame := range []string{"start", "middle", "exit"} {
+		if !frames[frame] {
+			missing = append(missing, frame)
+		}
+	}
+	if len(missing) != 0 {
+		return fmt.Errorf("managed animated Designer inspection evidence is missing passing compact frame record(s): %s", strings.Join(missing, ", "))
+	}
+	return nil
+}
+
+func validManagedAnimationInspectionRecord(line, frame string, requiredChecks []string) bool {
+	line = strings.ToLower(strings.TrimSpace(line))
+	prefix := "animation_inspection frame=" + frame + " status=pass checks="
+	if !strings.HasPrefix(line, prefix) {
+		return false
+	}
+	checksValue, evidence, ok := strings.Cut(strings.TrimPrefix(line, prefix), " evidence=")
+	if !ok || strings.TrimSpace(evidence) == "" || strings.Contains(evidence, " evidence=") {
+		return false
+	}
+	checks := strings.Split(checksValue, ";")
+	if len(checks) != len(requiredChecks) {
+		return false
+	}
+	for index, required := range requiredChecks {
+		if strings.TrimSpace(checks[index]) != required {
+			return false
+		}
+	}
+	return true
+}
+
+func collectTaskReadyArtifactReferences(outcomes []taskLaunchOutcome, runErrs []error) []*taskArtifactReference {
+	ready := make([]*taskArtifactReference, 0, len(outcomes))
+	for index := range outcomes {
+		if index >= len(runErrs) || runErrs[index] != nil || outcomes[index].ArtifactReference == nil || outcomes[index].ArtifactReference.Status != pebblestore.SessionArtifactStatusReady {
+			continue
+		}
+		ready = append(ready, outcomes[index].ArtifactReference)
+	}
+	return ready
+}
+
+func taskAssemblyIntegrationState(strategy string, successCount, failedCount, cancelledCount, outcomeCount int) (required bool, status string, readyForDependentWork bool) {
+	incomplete := failedCount > 0 || cancelledCount > 0 || successCount != outcomeCount
+	if !strings.EqualFold(strings.TrimSpace(strategy), taskSwarmStrategyAssembly) {
+		return false, "not_required", !incomplete
+	}
+	if incomplete {
 		return true, "incomplete_children", false
 	}
 	return true, "pending_parent_assembly", false
@@ -5404,7 +5696,7 @@ func buildTaskDelegationPrompt(config taskDelegationPromptConfig) string {
 			if agentruntime.IsImageAgentName(config.RequestedSubagent) {
 				b.WriteString("\n- artifact contract: make one manage_artifact generate_image call and omit provider/model/collection_id/variant_id/output_requirements; trusted orchestration resolves the account image model, injects the immutable requirements, and atomically finalizes the preallocated destination. Completion without the returned exact ready reference is a failed handoff. Do not inspect or mutate the workspace\n")
 			} else {
-				b.WriteString("\n- artifact contract: make one manage_artifact create or create_package call and omit collection_id/variant_id/output_requirements/animation_profile; trusted orchestration injects the immutable requirements and animation profile and atomically finalizes the preallocated destination. In that same call, include accurate parts for every meaningful authored review/edit target: stable IDs and labels, kind-appropriate locator fields, and for swarm.iteration/v1 animations one temporal part matching every manifest section's exact id, label, start_ms, and end_ms. Do not invent generic parts or omit them from an explicitly sectioned/editable deliverable. Do not call unsupported update/finalize actions. Completion without the returned ready reference is a failed handoff; do not choose or override destination lineage. Do not use workspace write/edit or Git\n")
+				b.WriteString("\n- artifact contract: make one manage_artifact create or create_package call and omit collection_id/variant_id/output_requirements/animation_profile; trusted orchestration injects the immutable requirements and animation profile and atomically finalizes the preallocated destination. Prefer one self-contained text/html file when that is the authored product; never create a ZIP merely to represent review/edit targets. Include accurate complete-revision parts when known, or omit parts for text/html and let the server derive source-bound targets from authored manifests and stable semantic-region IDs without splitting or rewriting the file. Use initial_parts only for intentionally independent byte payloads. Do not call unsupported update/finalize actions. Completion without the returned ready reference is a failed handoff; do not choose or override destination lineage. Do not use workspace write/edit or Git\n")
 			}
 		case taskOutputModeWorkspace:
 			b.WriteString("- output mode: workspace\n")
@@ -5412,6 +5704,12 @@ func buildTaskDelegationPrompt(config taskDelegationPromptConfig) string {
 			b.WriteString("- owned scope/output target: ")
 			b.WriteString(strings.Join(config.OwnedScope, ", "))
 			b.WriteString("\n- output contract: create or revise ordinary reusable workspace artifacts only within that declared target; do not use manage_artifact; artifacts remain available after this child finishes\n")
+			if config.SourceArtifact != nil {
+				b.WriteString("- exact source artifact (backend supplied; immutable input): ")
+				encoded, _ := json.Marshal(config.SourceArtifact)
+				b.Write(encoded)
+				b.WriteString("\n- source artifact contract: trusted orchestration has authenticated and materialized this exact ready artifact at the declared owned-scope destination before launch. Inspect and revise those workspace bytes in place; never guess another path or publish a managed artifact.\n")
+			}
 		default:
 			b.WriteString("- output contract: invalid or missing; fail without mutating the checkout or managed artifacts\n")
 		}
@@ -5453,7 +5751,10 @@ func buildTaskDelegationPrompt(config taskDelegationPromptConfig) string {
 			if agentruntime.IsImageAgentName(config.RequestedSubagent) {
 				b.WriteString("9. For managed Image work, call manage_artifact exactly once with action=generate_image and finish only after it returns the trusted exact ready reference. Do not call another tool or inspect or mutate the checkout.\n")
 			} else {
-				b.WriteString("9. For managed Designer work, publish with one successful manage_artifact create or create_package call; include accurate parts in that same call for each meaningful authored review/edit target, using stable IDs and kind-appropriate locators. For swarm.iteration/v1 animations, every manifest section must have one matching temporal part with the exact same id, label, start_ms, and end_ms. The server injects and atomically finalizes the assigned opaque variant. Never call unsupported update/finalize actions, use write/edit, or mutate the checkout; finish only after the call returns the trusted ready reference.\n")
+				b.WriteString("9. For managed Designer work, publish one complete revision with one successful manage_artifact create or create_package call. Preserve one-file text/html as one file; never create a ZIP only to represent parts. Include accurate complete-revision parts when known, or omit parts for text/html so the server derives source-bound targets from authored manifests and stable semantic-region IDs without splitting or rewriting the HTML. Use initial_parts only for intentionally independent byte payloads. The server injects and atomically finalizes the assigned opaque variant. Never call unsupported update/finalize actions, use write/edit, or mutate the checkout; finish only after the call returns the trusted ready reference. If exact source bytes must be preserved and you cannot reproduce the complete revised bytes from the authenticated source in this one publication, report BLOCKED before publishing anything; never publish a placeholder, reconstruction, resampling, or known-inexact candidate.\n")
+				if config.AnimationProfile != nil {
+					b.WriteString("10. For managed animated HTML, ready status is necessary but not sufficient for child success. The successful publication response is authoritative evidence that server-owned runtime binding, exact-seek, stable-pixel, and viewport-containment preflight passed and includes exactly three animation_inspection_references for the start, resolved-phrase/middle, and exit frames. Call media_inspect once on each complete exact image reference; never pass the text/html source reference to media_inspect. End with exactly one compact line per frame in this form: ANIMATION_INSPECTION frame=start|middle|exit status=pass checks=clipping/overflow; sizing/aspect ratio; requested elements; text legibility; unintended overlaps; scrollbars/capture chrome; brief fidelity evidence=<bounded observation>. If publication preflight or any representative-frame inspection fails or is missing, report that explicit failed slot and do not count it as a successful variant; do not publish another replacement from the same single-publication run.\n")
+				}
 			}
 		} else {
 			b.WriteString("9. For workspace Designer work, do not use Git or manage_artifact. Inspect nearby code as needed and create or revise the assigned reusable variant only within the declared owned scope.\n")
@@ -5487,7 +5788,7 @@ func buildTaskParentSessionContext(session pebblestore.SessionSnapshot, permissi
 		b.WriteString(mode)
 		b.WriteString("\n")
 	}
-	if workspacePath := strings.TrimSpace(session.WorkspacePath); workspacePath != "" {
+	if workspacePath := strings.TrimSpace(firstNonEmptyString(session.WorktreeRootPath, session.WorkspacePath)); workspacePath != "" {
 		b.WriteString("- workspace_path: ")
 		b.WriteString(workspacePath)
 		b.WriteString("\n")
@@ -5598,8 +5899,67 @@ func latestTaskArtifactUseSelection(messages []pebblestore.MessageSnapshot) *peb
 	return nil
 }
 
+func taskReviewTargetIDs(targets []pebblestore.SessionArtifactPart) string {
+	if len(targets) == 0 {
+		return ""
+	}
+	ids := make([]string, 0, len(targets))
+	seen := make(map[string]struct{}, len(targets))
+	for _, target := range targets {
+		id := strings.TrimSpace(target.ID)
+		if id == "" {
+			continue
+		}
+		if _, duplicate := seen[id]; duplicate {
+			continue
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, id)
+	}
+	return strings.Join(ids, ",")
+}
+
 func taskSectionTargetFromArtifactPart(part pebblestore.SessionArtifactPart) *taskSwarmSectionTarget {
 	return &taskSwarmSectionTarget{ID: part.ID, Label: part.Label, Kind: part.Kind, Description: part.Description, StartMs: part.StartMs, EndMs: part.EndMs, X: part.X, Y: part.Y, Width: part.Width, Height: part.Height, Page: part.Page, StateID: part.StateID, Selector: part.Selector}
+}
+
+func authenticateTaskReviewTargets(source pebblestore.SessionArtifactVariant, requested []*taskSwarmSectionTarget) ([]*taskSwarmSectionTarget, error) {
+	if len(requested) == 0 || len(requested) > pebblestore.SessionArtifactMaxParts {
+		return nil, errors.New("task selected review target count is invalid")
+	}
+	available := make(map[string]pebblestore.SessionArtifactPart, len(source.Parts))
+	for _, part := range source.Parts {
+		partID := strings.TrimSpace(part.ID)
+		if partID == "" {
+			continue
+		}
+		if _, duplicate := available[partID]; duplicate {
+			return nil, errors.New("task authenticated exact source contains duplicate review part ids")
+		}
+		available[partID] = part
+	}
+	bound := make([]*taskSwarmSectionTarget, 0, len(requested))
+	seen := make(map[string]struct{}, len(requested))
+	for _, target := range requested {
+		if target == nil {
+			return nil, errors.New("task selected review target is invalid")
+		}
+		partID := strings.TrimSpace(target.ID)
+		if _, duplicate := seen[partID]; duplicate {
+			return nil, errors.New("task selected review targets contain a duplicate")
+		}
+		seen[partID] = struct{}{}
+		part, ok := available[partID]
+		if !ok {
+			return nil, errors.New("task selected review part is unavailable on the authenticated exact source")
+		}
+		boundTarget := taskSectionTargetFromArtifactPart(part)
+		if !equalTaskSectionTarget(target, boundTarget) {
+			return nil, errors.New("task section target locator does not match the authenticated review part")
+		}
+		bound = append(bound, boundTarget)
+	}
+	return bound, nil
 }
 
 func taskSectionTargetFromArtifactDefinition(part pebblestore.SessionArtifactPartDefinition) *taskSwarmSectionTarget {
@@ -5836,21 +6196,23 @@ func parseTaskChildBlockedReport(report string, outcome *taskLaunchOutcome) erro
 
 func taskDisabledTools(allowBash bool) map[string]bool {
 	disabled := map[string]bool{
-		"ask_user":       true,
-		"ask-user":       true,
-		"exit_plan_mode": true,
-		"exit-plan-mode": true,
-		"plan_manage":    true,
-		"plan-manage":    true,
-		"manage_actions": true,
-		"manage-actions": true,
-		"manage_video":   true,
-		"manage-video":   true,
-		"manage_todos":   true,
-		"manage-todos":   true,
-		"manage_agent":   true,
-		"manage-agent":   true,
-		"task":           true,
+		"ask_user":         true,
+		"ask-user":         true,
+		"exit_plan_mode":   true,
+		"exit-plan-mode":   true,
+		"plan_manage":      true,
+		"plan-manage":      true,
+		"manage_actions":   true,
+		"manage-actions":   true,
+		"manage_workspace": true,
+		"manage-workspace": true,
+		"manage_video":     true,
+		"manage-video":     true,
+		"manage_todos":     true,
+		"manage-todos":     true,
+		"manage_agent":     true,
+		"manage-agent":     true,
+		"task":             true,
 	}
 	if !allowBash {
 		disabled["bash"] = true
@@ -5930,6 +6292,8 @@ func canonicalToolName(name string) string {
 		return "manage_sessions"
 	case "manage-worktree", "manage_worktree":
 		return "manage_worktree"
+	case "manage-workspace", "manage_workspace":
+		return "manage_workspace"
 	case "manage-actions", "manage_actions":
 		return "manage_actions"
 	case "manage-video", "manage_video":
@@ -5954,6 +6318,33 @@ func isManageActionsMutation(arguments string) bool {
 	}
 }
 
+func manageWorkspaceArgumentsJSON(arguments map[string]any) string {
+	raw, err := json.Marshal(arguments)
+	if err != nil {
+		return ""
+	}
+	return string(raw)
+}
+
+func manageWorkspaceMutationAction(arguments string) string {
+	var args map[string]any
+	if err := json.Unmarshal([]byte(strings.TrimSpace(arguments)), &args); err != nil {
+		return ""
+	}
+	switch strings.ToLower(strings.TrimSpace(mapString(args, "action"))) {
+	case "create":
+		return "create"
+	case "edit", "update":
+		return "update"
+	case "delete":
+		return "delete"
+	case "update_map":
+		return "map_update"
+	default:
+		return ""
+	}
+}
+
 func permissionRequirement(mode, toolName, arguments string) (string, bool) {
 	mode = strings.TrimSpace(strings.ToLower(mode))
 	toolName = canonicalToolName(toolName)
@@ -5972,6 +6363,16 @@ func permissionRequirement(mode, toolName, arguments string) (string, bool) {
 	case "manage_artifact":
 		if permission.ShouldApproveManageArtifactGenerateImage(arguments) && !bypass {
 			return "manage_artifact_generate_image", true
+		}
+		return toolName, false
+	case "manage_workspace":
+		// Catalog and account-map updates are intentional user decisions even when
+		// generic permission bypass is enabled. Persistent rules remain action-specific.
+		if action := manageWorkspaceMutationAction(arguments); action != "" {
+			if action == "map_update" {
+				return "workspace_map_update", true
+			}
+			return "workspace_" + action, true
 		}
 		return toolName, false
 	case "read", "search", "websearch", "webfetch", "agentic_search", "list", "skill_use", "manage_worktree", "manage_video", "manage_todos", "manage_theme", "edit_pending_plan":

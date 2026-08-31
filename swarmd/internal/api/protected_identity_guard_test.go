@@ -168,7 +168,11 @@ func TestProtectedCreateAPIsSucceedAfterBootstrapWithValidProductJWT(t *testing.
 	}
 
 	agentRec := httptest.NewRecorder()
-	server.DesktopHandler().ServeHTTP(agentRec, newProtectedJSONRequest(t, http.MethodPut, "/v2/agents/slice15-created", map[string]any{"mode": "subagent", "description": "created after jwt"}, cookie))
+	server.DesktopHandler().ServeHTTP(agentRec, newProtectedJSONRequest(t, http.MethodPut, "/v2/agents/slice15-created", map[string]any{
+		"mode":          "subagent",
+		"description":   "created after jwt",
+		"tool_contract": map[string]any{"preset": "read_only"},
+	}, cookie))
 	if agentRec.Code != http.StatusOK {
 		t.Fatalf("agent create status=%d body=%s", agentRec.Code, agentRec.Body.String())
 	}

@@ -40,8 +40,11 @@ func TestSessionV3ClientUsesPrimaryRoutes(t *testing.T) {
 			if profile["saved_profile_id"] != "profile-1" {
 				t.Fatalf("v3 create model_profile = %#v", body["model_profile"])
 			}
-			if body["worktree_mode"] != "on" || body["worktree_base_branch"] != "dev" || body["worktree_branch_name"] != "agent/client-v3" {
-				t.Fatalf("v3 create worktree fields = %#v", body)
+			if _, ok := body["worktree_mode"]; ok {
+				t.Fatalf("v3 create sent retired worktree_mode toggle: %#v", body)
+			}
+			if body["worktree_base_branch"] != "dev" || body["worktree_branch_name"] != "agent/client-v3" {
+				t.Fatalf("v3 create worktree routing fields = %#v", body)
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"ok":                true,
@@ -94,7 +97,7 @@ func TestSessionV3ClientUsesPrimaryRoutes(t *testing.T) {
 
 	api := New(server.URL)
 	api.SetToken("test-token")
-	created, err := api.CreateSessionV3WithOptions(context.Background(), SessionCreateOptions{Title: "V3", WorkspacePath: "/workspace", WorkspaceName: "workspace", WorkspaceBindingID: "binding-primary", SwarmID: "host-swarm", TargetKind: "host", TargetRelationship: "self", Mode: "auto", AgentName: "swarm", ModelProfile: &SessionV3ModelProfileChoice{SavedProfileID: "profile-1"}, WorktreeMode: "on", WorktreeBaseBranch: "dev", WorktreeBranchName: "agent/client-v3"})
+	created, err := api.CreateSessionV3WithOptions(context.Background(), SessionCreateOptions{Title: "V3", WorkspacePath: "/workspace", WorkspaceName: "workspace", WorkspaceBindingID: "binding-primary", SwarmID: "host-swarm", TargetKind: "host", TargetRelationship: "self", Mode: "auto", AgentName: "swarm", ModelProfile: &SessionV3ModelProfileChoice{SavedProfileID: "profile-1"}, WorktreeBaseBranch: "dev", WorktreeBranchName: "agent/client-v3"})
 	if err != nil {
 		t.Fatalf("CreateSessionV3WithOptions() error = %v", err)
 	}

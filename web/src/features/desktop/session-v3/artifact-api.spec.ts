@@ -50,6 +50,7 @@ const managedCatalogWire = {
   kind: 'html',
   status: 'ready',
   failure_code: '',
+  render_progress: { stage: 'frame_capture', completed: 120, total: 240, percent: 47.5, elapsed_ms: 12000, estimated_remaining_ms: 13263, heartbeat_at: 1787855000000 },
   previewable: true,
   selected: true,
   category: 'visual',
@@ -98,6 +99,11 @@ const managedCatalogWire = {
   },
 }
 
+test('artifact catalog normalizes durable render-only role without accepting arbitrary role values', () => {
+  assert.equal(normalizeDesktopV3ArtifactCatalogEntry({ ...managedCatalogWire, role: 'render_only' })?.role, 'render_only')
+  assert.equal(normalizeDesktopV3ArtifactCatalogEntry({ ...managedCatalogWire, role: 'misleading-label' })?.role, '')
+})
+
 test('artifact catalog normalizes managed collection, progress, selection, lineage, status, and event sequence', () => {
   assert.deepEqual(normalizeDesktopV3ArtifactCatalogEntry(managedCatalogWire), {
     artifactId: 'variant-1',
@@ -118,6 +124,7 @@ test('artifact catalog normalizes managed collection, progress, selection, linea
     filename: '',
     mediaType: 'text/html',
     kind: 'html',
+    role: '',
     status: 'ready',
     failureCode: '',
     previewable: true,
@@ -136,6 +143,7 @@ test('artifact catalog normalizes managed collection, progress, selection, linea
       budgets: { maxSimultaneousLivePreviews: 1, maxWebGLContexts: 1, maxDevicePixelRatio: 1.5, maxCanvasPixels: 2073600, maxParticles: 2000, maxDrawCallsPerFrame: 200, pauseWhenOffscreen: true, stopWhenDocumentHidden: true, reducedMotionBehavior: 'static_first_frame', networkAllowed: false },
     },
     progress: { total: 3, staging: 1, ready: 1, failed: 1, unavailable: 0 },
+    renderProgress: { stage: 'frame_capture', completed: 120, total: 240, percent: 47.5, elapsedMs: 12000, estimatedRemainingMs: 13263, heartbeatAt: 1787855000000 },
     lineage: {
       parentSessionId: 'session-1', sourceSessionId: 'child-1', sourceCollectionId: 'source-collection',
       sourceVariantId: 'source-variant', sourceEventSeq: 41, taskCallId: 'call-1', programId: 'program-1', programJobId: 'job-1',
@@ -688,6 +696,19 @@ test('artifact collection URLs preserve collection-level viewer state', () => {
   const location = desktopV3ArtifactViewerLocation('session-1', desktopV3ArtifactCollectionViewerSearch(target))
   assert.deepEqual(location, { sessionId: 'session-1', collectionId: 'collection-1' })
   assert.equal(location && desktopV3ArtifactCatalogEntryForViewerLocation([first, selected], location), undefined)
+})
+
+test('artifact collection URLs preserve an exact presentation group across collections', () => {
+  const target = { sessionId: 'session-1', collectionId: 'collection-1', groupKey: 'turn:session-1:group-9' }
+  assert.deepEqual(desktopV3ArtifactCollectionViewerSearch(target), { artifactSession: 'session-1', collection: 'collection-1', artifactGroup: 'turn:session-1:group-9' })
+  assert.equal(
+    desktopV3ArtifactCollectionViewerHref('my workspace', target),
+    '/my%20workspace/session-1?artifactSession=session-1&collection=collection-1&artifactGroup=turn%3Asession-1%3Agroup-9',
+  )
+  assert.deepEqual(
+    desktopV3ArtifactViewerLocation('session-1', desktopV3ArtifactCollectionViewerSearch(target)),
+    { sessionId: 'session-1', collectionId: 'collection-1', groupKey: 'turn:session-1:group-9' },
+  )
 })
 
 test('artifact viewer resolves delegated entries against parent-session URLs', () => {

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"swarm/packages/swarmd/internal/artifact"
+	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/permission"
 	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
 	sessionruntime "swarm/packages/swarmd/internal/session"
@@ -71,6 +72,19 @@ func TestNormalizeAskUserPermissionArgumentsAppendsOwnedCustomResponse(t *testin
 		if custom["label"] != askUserCustomResponseLabel || custom["value"] != askUserCustomResponseValue || custom["allow_custom"] != true {
 			t.Fatalf("question %d custom response = %#v", index+1, custom)
 		}
+	}
+}
+
+func TestProviderManagedExecutionPrincipalPreservesBoundV3Session(t *testing.T) {
+	configured := identity.Principal{Type: identity.PrincipalTypeUser, UserID: "user-1", AccountScopeID: "account-1", SessionID: "v3-session"}
+	contextPrincipal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: "user-1", AccountScopeID: "account-1", SessionID: "desktop-session"}
+	ctx := identity.ContextWithPrincipal(context.Background(), contextPrincipal)
+
+	if got := providerManagedExecutionPrincipal(ctx, providerToolInvokerConfig{principal: configured, providerManagedV3: true}); got != configured {
+		t.Fatalf("provider-managed V3 principal = %+v, want configured session-bound principal %+v", got, configured)
+	}
+	if got := providerManagedExecutionPrincipal(ctx, providerToolInvokerConfig{principal: configured}); got != contextPrincipal {
+		t.Fatalf("non-V3 principal = %+v, want request context principal %+v", got, contextPrincipal)
 	}
 }
 
@@ -517,6 +531,35 @@ func TestProviderManagedMediaInspectSkipsPermissionGateButStillRunsBackendValida
 	}
 	if len(pending) != 0 {
 		t.Fatalf("media_inspect created permission records: %#v", pending)
+	}
+}
+
+func TestResolveProviderMediaWorkspacePathAllowsReadOnlyRoot(t *testing.T) {
+	workspace := t.TempDir()
+	readOnly := t.TempDir()
+	imagePath := filepath.Join(readOnly, "reference.png")
+	if err := os.WriteFile(imagePath, []byte("image fixture"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	workspaceCtx := runWorkspaceContext{
+		WorkspacePath:  workspace,
+		WorkspaceRoots: []string{workspace},
+		Scope: tool.WorkspaceScope{
+			PrimaryPath:   workspace,
+			Roots:         []string{workspace},
+			ReadOnlyRoots: []string{readOnly},
+		},
+	}
+	resolved, err := resolveProviderMediaWorkspacePath(workspaceCtx, imagePath)
+	if err != nil || resolved != imagePath {
+		t.Fatalf("resolve media path in read-only root = %q err=%v, want %q", resolved, err, imagePath)
+	}
+	outside := filepath.Join(t.TempDir(), "outside.png")
+	if err := os.WriteFile(outside, []byte("outside fixture"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := resolveProviderMediaWorkspacePath(workspaceCtx, outside); err == nil || !strings.Contains(err.Error(), "escapes workspace scope") {
+		t.Fatalf("unrelated media path error = %v, want scope rejection", err)
 	}
 }
 

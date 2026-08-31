@@ -17,11 +17,11 @@ export type DesktopSlashCommandAction =
   | { kind: 'open-action-chooser' }
   | { kind: 'open-quick-actions' }
   | { kind: 'compact-session' }
-  | { kind: 'enable-new-session-worktree' }
-  | { kind: 'new-session'; worktreeRequested: boolean; planModeRequested: boolean }
+  | { kind: 'new-session'; planModeRequested: boolean }
   | { kind: 'start-background-router-session' }
   | { kind: 'show-help' }
   | { kind: 'open-artifact-viewer' }
+  | { kind: 'open-feedback' }
 
 export interface DesktopSlashCommand {
   id: string
@@ -32,6 +32,11 @@ export interface DesktopSlashCommand {
   tips: string[]
   state: DesktopSlashCommandState
   action: DesktopSlashCommandAction
+  developerOnly?: boolean
+}
+
+export interface DesktopSlashCommandOptions {
+  developerMode?: boolean
 }
 
 export interface DesktopSlashPaletteState {
@@ -47,11 +52,12 @@ export type DesktopTaskMode = 'plan' | 'auto'
 export interface DesktopTaskCommandRequest {
   request: string
   mode: DesktopTaskMode
+  workspaceSelector?: string
+  workspaceSelectionInvalid?: boolean
 }
 
 export interface DesktopNewSessionCommandRequest {
   prompt: string
-  worktreeRequested: boolean
   planModeRequested: boolean
 }
 
@@ -65,6 +71,16 @@ const DESKTOP_SLASH_COMMANDS: DesktopSlashCommand[] = [
     tips: ['Type / to browse commands', 'Press Enter to open a quick action', 'Press Tab to insert a command into the composer'],
     state: 'ready',
     action: { kind: 'show-help' },
+  },
+  {
+    id: 'feedback',
+    command: '/feedback',
+    aliases: [],
+    hint: 'Send an issue, comment, or suggestion',
+    actionLabel: 'Open Feedback',
+    tips: ['/feedback', 'Choose Issue, Comment, or Suggestion and send a message'],
+    state: 'ready',
+    action: { kind: 'open-feedback' },
   },
   {
     id: 'auth',
@@ -87,16 +103,6 @@ const DESKTOP_SLASH_COMMANDS: DesktopSlashCommand[] = [
     action: { kind: 'open-quick-settings', tab: 'worktrees' },
   },
   {
-    id: 'worktree-on',
-    command: '/wt on',
-    aliases: [],
-    hint: 'Enable a managed worktree for this new session',
-    actionLabel: 'Enable Worktree',
-    tips: ['/wt on', 'Available only before starting a new session'],
-    state: 'ready',
-    action: { kind: 'enable-new-session-worktree' },
-  },
-  {
     id: 'workspace',
     command: '/workspace',
     aliases: ['/workspaces'],
@@ -114,17 +120,7 @@ const DESKTOP_SLASH_COMMANDS: DesktopSlashCommand[] = [
     actionLabel: 'New Session',
     tips: ['/new [<prompt>]', 'Bare opens an editable composer; a prompt starts immediately'],
     state: 'ready',
-    action: { kind: 'new-session', worktreeRequested: false, planModeRequested: false },
-  },
-  {
-    id: 'new-worktree',
-    command: '/new worktree',
-    aliases: [],
-    hint: 'Start fresh in a worktree, optionally with <prompt>',
-    actionLabel: 'New + Worktree',
-    tips: ['/new worktree [<prompt>]', 'A non-empty prompt starts the routed worktree session immediately'],
-    state: 'ready',
-    action: { kind: 'new-session', worktreeRequested: true, planModeRequested: false },
+    action: { kind: 'new-session', planModeRequested: false },
   },
   {
     id: 'new-plan',
@@ -134,17 +130,7 @@ const DESKTOP_SLASH_COMMANDS: DesktopSlashCommand[] = [
     actionLabel: 'New + Plan',
     tips: ['/new plan [<prompt>]', 'A non-empty prompt starts the routed plan session immediately'],
     state: 'ready',
-    action: { kind: 'new-session', worktreeRequested: false, planModeRequested: true },
-  },
-  {
-    id: 'new-wp',
-    command: '/new wp',
-    aliases: [],
-    hint: 'Start fresh with Worktree and Plan, optionally with <prompt>',
-    actionLabel: 'New + Both',
-    tips: ['/new wp [<prompt>]', 'A non-empty prompt starts with both chips enabled'],
-    state: 'ready',
-    action: { kind: 'new-session', worktreeRequested: true, planModeRequested: true },
+    action: { kind: 'new-session', planModeRequested: true },
   },
   {
     id: 'task',
@@ -152,9 +138,20 @@ const DESKTOP_SLASH_COMMANDS: DesktopSlashCommand[] = [
     aliases: [],
     hint: 'Start an automatic background Router task with <prompt>',
     actionLabel: 'Start Background Router Session',
-    tips: ['/task <prompt>', 'Runs in auto mode through the background Router endpoint'],
+    tips: ['/task [--workspace <saved-workspace>] <prompt>', 'Defaults to the active workspace; a selector must match the saved workspace catalog'],
     state: 'ready',
     action: { kind: 'start-background-router-session' },
+  },
+  {
+    id: 'flag',
+    command: '/flag',
+    aliases: [],
+    hint: 'Investigate a problem using the prior session dump',
+    actionLabel: 'Start Diagnostic Task',
+    tips: ['/flag <problem>', 'Dev mode only; starts /task with the prior session ID'],
+    state: 'ready',
+    action: { kind: 'start-background-router-session' },
+    developerOnly: true,
   },
   {
     id: 'task-plan',
@@ -162,7 +159,7 @@ const DESKTOP_SLASH_COMMANDS: DesktopSlashCommand[] = [
     aliases: [],
     hint: 'Start a planned background Router task with <prompt>',
     actionLabel: 'Start Background Router Plan',
-    tips: ['/task plan <prompt>', 'Requests plan mode through the background Router endpoint'],
+    tips: ['/task plan [--workspace <saved-workspace>] <prompt>', 'Requests plan mode in the active or selected saved workspace'],
     state: 'ready',
     action: { kind: 'start-background-router-session' },
   },
@@ -382,12 +379,12 @@ function sortCommands(left: DesktopSlashCommand, right: DesktopSlashCommand, que
   return left.command.localeCompare(right.command)
 }
 
-export function getDesktopSlashCommands(): DesktopSlashCommand[] {
-  return DESKTOP_SLASH_COMMANDS.slice()
+function availableDesktopSlashCommands(options: DesktopSlashCommandOptions = {}): DesktopSlashCommand[] {
+  return DESKTOP_SLASH_COMMANDS.filter((command) => !command.developerOnly || options.developerMode === true)
 }
 
-export function isDesktopWorktreeOnCommand(input: string): boolean {
-  return /^\/wt\s+on$/i.test(input.trim())
+export function getDesktopSlashCommands(options: DesktopSlashCommandOptions = {}): DesktopSlashCommand[] {
+  return availableDesktopSlashCommands(options).slice()
 }
 
 export function parseDesktopNewSessionCommand(input: string): DesktopNewSessionCommandRequest | null {
@@ -395,36 +392,62 @@ export function parseDesktopNewSessionCommand(input: string): DesktopNewSessionC
   if (!match) return null
 
   const body = (match[1] ?? '').trim()
-  if (!body) return { prompt: '', worktreeRequested: false, planModeRequested: false }
+  if (!body) return { prompt: '', planModeRequested: false }
 
   const firstToken = body.match(/^(\S+)(?:\s+([\s\S]*))?$/)
   const directive = firstToken?.[1].toLowerCase() ?? ''
   const promptAfterDirective = (firstToken?.[2] ?? '').trim()
   switch (directive) {
-    case 'worktree':
-      return { prompt: promptAfterDirective, worktreeRequested: true, planModeRequested: false }
     case 'plan':
-      return { prompt: promptAfterDirective, worktreeRequested: false, planModeRequested: true }
-    case 'wp':
-      return { prompt: promptAfterDirective, worktreeRequested: true, planModeRequested: true }
+      return { prompt: promptAfterDirective, planModeRequested: true }
     default:
-      return { prompt: body, worktreeRequested: false, planModeRequested: false }
+      return { prompt: body, planModeRequested: false }
   }
+}
+
+export function buildDesktopFlagTaskPrompt(input: string, priorSessionId: string): string | null {
+  const match = input.trim().match(/^\/flag(?:\s+([\s\S]*))?$/i)
+  if (!match) return null
+
+  const problem = (match[1] ?? '').trim()
+  const sessionId = priorSessionId.trim()
+  if (!problem || !sessionId) return null
+
+  return [
+    'Investigate a developer flag from a prior Swarm session.',
+    '',
+    `Prior session ID: ${sessionId}`,
+    'Reported problem:',
+    problem,
+    '',
+    'First dump and inspect that session through the canonical development session-dump path. Use ./scripts/session-dump-via-api.sh with the matching loopback Desktop session URL; never inspect Pebble directly. Use the dump as evidence, then search the current workspace for the code paths responsible for the reported problem. Diagnose the likely cause, make a safe scoped correction when the evidence supports one, and report validation plus relevant filepaths. If the dump is unavailable, report the exact blocker instead of bypassing the canonical path.',
+  ].join('\n')
 }
 
 export function parseDesktopTaskCommand(input: string): DesktopTaskCommandRequest {
-  const taskBody = input.trimStart().replace(/^\/task(?:\s+|$)/i, '').trim()
-  if (!taskBody) {
-    return { request: '', mode: 'auto' }
-  }
+  let taskBody = input.trimStart().replace(/^\/task(?:\s+|$)/i, '').trim()
+  if (!taskBody) return { request: '', mode: 'auto' }
+
+  let mode: DesktopTaskMode = 'auto'
   const firstToken = taskBody.match(/^(\S+)(?:\s+([\s\S]*))?$/)
   if (firstToken?.[1].toLowerCase() === 'plan') {
-    return { request: (firstToken[2] ?? '').trim(), mode: 'plan' }
+    mode = 'plan'
+    taskBody = (firstToken[2] ?? '').trim()
   }
-  return { request: taskBody, mode: 'auto' }
+
+  if (!/^--workspace(?:\s+|$)/i.test(taskBody)) return { request: taskBody, mode }
+  const workspaceOption = taskBody.match(/^--workspace\s+(?:"([^"]+)"|'([^']+)'|(\S+))(?:\s+([\s\S]*))?$/i)
+  const workspaceSelector = (workspaceOption?.[1] ?? workspaceOption?.[2] ?? workspaceOption?.[3] ?? '').trim()
+  if (!workspaceOption || !workspaceSelector) return { request: '', mode, workspaceSelectionInvalid: true }
+  return {
+    request: (workspaceOption[4] ?? '').trim(),
+    mode,
+    workspaceSelector,
+  }
 }
 
-export function buildDesktopSlashPaletteState(input: string): DesktopSlashPaletteState {
+export function buildDesktopSlashPaletteState(input: string, options: DesktopSlashCommandOptions = {}): DesktopSlashPaletteState {
+  const commands = availableDesktopSlashCommands(options)
   const trimmedStart = input.trimStart()
   if (!trimmedStart.startsWith('/')) {
     return {
@@ -444,17 +467,17 @@ export function buildDesktopSlashPaletteState(input: string): DesktopSlashPalett
   const fullQuery = normalizeSlashToken(trimmedBody)
   const exactMatch = query === ''
     ? null
-    : DESKTOP_SLASH_COMMANDS
+    : commands
         .flatMap((command) => commandTokens(command).map((token) => ({ command, token })))
         .filter(({ token }) => fullQuery === token || fullQuery.startsWith(`${token} `))
         .sort((left, right) => right.token.length - left.token.length)[0]?.command
-      ?? DESKTOP_SLASH_COMMANDS.find((command) => commandTokens(command).includes(query))
+      ?? commands.find((command) => commandTokens(command).includes(query))
       ?? null
 
   const exactMatchHasPrefix = Boolean(exactMatch && commandTokens(exactMatch).some((token) => fullQuery === token || fullQuery.startsWith(`${token} `)))
   const matches = (hasArguments && exactMatch && exactMatchHasPrefix
     ? [exactMatch]
-    : DESKTOP_SLASH_COMMANDS
+    : commands
         .filter((command) => commandMatchRank(command, query) > 0)
         .sort((left, right) => sortCommands(left, right, query)))
 

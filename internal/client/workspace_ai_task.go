@@ -6,7 +6,7 @@ import (
 	"strings"
 )
 
-const routedTaskSessionsPath = "/v3/sessions:routed"
+const routedTaskSessionsPath = "/v3/sessions:background-router"
 
 type RoutedTaskSessionResponse struct {
 	OK           bool           `json:"ok"`
@@ -23,10 +23,11 @@ type RoutedTaskWorkspaceAuthority struct {
 	SwarmID            string
 }
 
-// CreateRoutedTaskSession asks the Router to create and start a background
-// session. The caller supplies canonical source-workspace authority while the
-// Router owns task naming and worktree routing. Task commands always authorize
-// and require a managed worktree; Plan remains an explicit caller-owned intent.
+// CreateRoutedTaskSession asks the dedicated background Router to create and
+// start a task session. The caller supplies canonical source-workspace
+// authority while the Router owns task naming and the worktree-name seed; the
+// backend owns mandatory managed-worktree routing. Plan remains the only
+// caller-owned routing intent.
 func (c *API) CreateRoutedTaskSession(ctx context.Context, request, idempotencyKey string, planMode bool, originSessionID string, authority RoutedTaskWorkspaceAuthority) (RoutedTaskSessionResponse, error) {
 	request = strings.TrimSpace(request)
 	idempotencyKey = strings.TrimSpace(idempotencyKey)
@@ -44,19 +45,18 @@ func (c *API) CreateRoutedTaskSession(ctx context.Context, request, idempotencyK
 		return RoutedTaskSessionResponse{}, errors.New("routed task requires source workspace path, binding, and swarm authority")
 	}
 	payload := map[string]any{
-		"input":                      request,
-		"client_request_id":          idempotencyKey,
-		"idempotency_key":            idempotencyKey,
-		"agent_name":                 "swarm",
-		"managed_worktree_requested": true,
-		"plan_mode_requested":        planMode,
-		"workspace_path":             authority.WorkspacePath,
-		"host_workspace_path":        authority.WorkspacePath,
-		"runtime_workspace_path":     authority.WorkspacePath,
-		"workspace_binding_id":       authority.WorkspaceBindingID,
-		"swarm_id":                   authority.SwarmID,
-		"target_kind":                "host",
-		"target_relationship":        "self",
+		"input":                  request,
+		"client_request_id":      idempotencyKey,
+		"idempotency_key":        idempotencyKey,
+		"agent_name":             "swarm",
+		"plan_mode_requested":    planMode,
+		"workspace_path":         authority.WorkspacePath,
+		"host_workspace_path":    authority.WorkspacePath,
+		"runtime_workspace_path": authority.WorkspacePath,
+		"workspace_binding_id":   authority.WorkspaceBindingID,
+		"swarm_id":               authority.SwarmID,
+		"target_kind":            "host",
+		"target_relationship":    "self",
 		"metadata": map[string]any{
 			"task_command": true,
 		},
@@ -71,8 +71,11 @@ func (c *API) CreateRoutedTaskSession(ctx context.Context, request, idempotencyK
 	if strings.TrimSpace(response.SessionID) == "" || strings.TrimSpace(response.Session.ID) != strings.TrimSpace(response.SessionID) {
 		return RoutedTaskSessionResponse{}, errors.New("routed task returned no canonical session")
 	}
-	if !response.Session.WorktreeEnabled {
-		return RoutedTaskSessionResponse{}, errors.New("routed task did not create the required worktree session")
+	if strings.TrimSpace(response.Title) == "" && strings.TrimSpace(response.Session.Title) == "" {
+		return RoutedTaskSessionResponse{}, errors.New("background Router returned no task title")
+	}
+	if !response.Session.WorktreeEnabled || strings.TrimSpace(response.Session.WorktreeRootPath) == "" {
+		return RoutedTaskSessionResponse{}, errors.New("background Router did not create the required owned-worktree session")
 	}
 	wantMode := "auto"
 	if planMode {

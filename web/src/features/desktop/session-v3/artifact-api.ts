@@ -3,6 +3,7 @@ import type { DesktopV3ArtifactLocalRuntimeAssets } from './artifact-animation-r
 
 export type DesktopV3ArtifactCategory = 'plan' | 'visual' | 'document'
 export type DesktopV3ArtifactStatus = '' | 'staging' | 'ready' | 'failed' | 'unavailable'
+export type DesktopV3ArtifactRole = '' | 'render_only'
 export type DesktopV3ArtifactOutputOrientation = 'landscape' | 'portrait' | 'square'
 
 /** Trusted, server-resolved output intent. This describes the requested target, not measured binary metadata. */
@@ -52,6 +53,16 @@ export interface DesktopV3ArtifactCollectionProgress {
   ready: number
   failed: number
   unavailable: number
+}
+
+export interface DesktopV3ArtifactRenderProgress {
+  stage: string
+  completed: number
+  total: number
+  percent: number
+  elapsedMs: number
+  estimatedRemainingMs: number
+  heartbeatAt: number
 }
 
 export interface DesktopV3ArtifactPartRevisionReference {
@@ -230,6 +241,8 @@ export interface DesktopV3ArtifactCatalogEntry {
   filename: string
   mediaType: string
   kind: string
+  /** Durable server-authored role. Render-only assets are supporting output, never editable turns. */
+  role?: DesktopV3ArtifactRole
   status?: DesktopV3ArtifactStatus
   failureCode?: string
   previewable: boolean
@@ -238,6 +251,7 @@ export interface DesktopV3ArtifactCatalogEntry {
   updatedAt: number
   eventSeq?: number
   progress?: DesktopV3ArtifactCollectionProgress | null
+  renderProgress?: DesktopV3ArtifactRenderProgress | null
   lineage?: DesktopV3ArtifactLineage | null
   outputRequirements?: DesktopV3ArtifactOutputRequirements
   animationProfile?: DesktopV3ArtifactAnimationProfile
@@ -315,6 +329,23 @@ function normalizeArtifactProgress(value: unknown): DesktopV3ArtifactCollectionP
     ready: artifactCatalogCount(record.ready),
     failed: artifactCatalogCount(record.failed),
     unavailable: artifactCatalogCount(record.unavailable),
+  }
+}
+
+function normalizeArtifactRenderProgress(value: unknown): DesktopV3ArtifactRenderProgress | null {
+  const record = artifactCatalogRecord(value)
+  const stage = artifactCatalogString(record?.stage)
+  const heartbeatAt = artifactCatalogCount(record?.heartbeat_at)
+  if (!record || !stage || !heartbeatAt) return null
+  const percent = typeof record.percent === 'number' && Number.isFinite(record.percent) && record.percent >= 0 && record.percent <= 100 ? record.percent : 0
+  return {
+    stage,
+    completed: artifactCatalogCount(record.completed),
+    total: artifactCatalogCount(record.total),
+    percent,
+    elapsedMs: artifactCatalogCount(record.elapsed_ms),
+    estimatedRemainingMs: artifactCatalogCount(record.estimated_remaining_ms),
+    heartbeatAt,
   }
 }
 
@@ -642,6 +673,8 @@ export function normalizeDesktopV3ArtifactCatalogEntry(value: unknown): DesktopV
   if (!artifactId || !sessionId) return null
   const rawCategory = artifactCatalogString(record.category)
   const category: DesktopV3ArtifactCategory = rawCategory === 'plan' || rawCategory === 'visual' ? rawCategory : 'document'
+  const rawRole = artifactCatalogString(record.role)
+  const role: DesktopV3ArtifactRole = rawRole === 'render_only' ? rawRole : ''
   const rawStatus = artifactCatalogString(record.status)
   const status: DesktopV3ArtifactStatus = rawStatus === 'staging' || rawStatus === 'ready' || rawStatus === 'failed' || rawStatus === 'unavailable'
     ? rawStatus
@@ -699,6 +732,7 @@ export function normalizeDesktopV3ArtifactCatalogEntry(value: unknown): DesktopV
     filename: artifactCatalogString(record.filename),
     mediaType: artifactCatalogString(record.media_type) || 'application/octet-stream',
     kind: artifactCatalogString(record.kind),
+    role,
     status,
     failureCode: artifactCatalogString(record.failure_code),
     previewable: record.previewable === true,
@@ -707,6 +741,7 @@ export function normalizeDesktopV3ArtifactCatalogEntry(value: unknown): DesktopV
     updatedAt: Number.isFinite(updatedAt) ? updatedAt : 0,
     eventSeq: artifactCatalogEventSeq(record.event_seq),
     progress: normalizeArtifactProgress(record.progress),
+    renderProgress: normalizeArtifactRenderProgress(record.render_progress),
     lineage: normalizeArtifactLineage(record.lineage),
     ...(chain ? { chain } : {}),
     ...(step ? { step } : {}),
@@ -910,17 +945,20 @@ export interface DesktopV3ArtifactViewerSearch {
   artifactSession: string
   collection?: string
   artifact?: string
+  artifactGroup?: string
 }
 
 export interface DesktopV3ArtifactViewerLocation {
   sessionId: string
   collectionId?: string
   artifactId?: string
+  groupKey?: string
 }
 
 export interface DesktopV3ArtifactCollectionViewerTarget {
   sessionId: string
   collectionId: string
+  groupKey?: string
 }
 
 function desktopV3ArtifactViewerPath(
@@ -936,6 +974,7 @@ function desktopV3ArtifactViewerPath(
   const search = new URLSearchParams({ artifactSession: viewerSearch.artifactSession })
   if (viewerSearch.collection) search.set('collection', viewerSearch.collection)
   if (viewerSearch.artifact) search.set('artifact', viewerSearch.artifact)
+  if (viewerSearch.artifactGroup) search.set('artifactGroup', viewerSearch.artifactGroup)
   return `/${encodeURIComponent(normalizedWorkspaceSlug)}/${encodeURIComponent(normalizedSessionId)}?${search.toString()}`
 }
 
@@ -945,8 +984,9 @@ export function desktopV3ArtifactCollectionViewerSearch(
 ): DesktopV3ArtifactViewerSearch {
   const sessionId = collection.sessionId.trim()
   const collectionId = collection.collectionId.trim()
+  const groupKey = collection.groupKey?.trim() ?? ''
   if (!sessionId || !collectionId) throw new Error('Artifact collection URL requires a session and collection ID')
-  return { artifactSession: sessionId, collection: collectionId }
+  return { artifactSession: sessionId, collection: collectionId, ...(groupKey ? { artifactGroup: groupKey } : {}) }
 }
 
 /** Canonical search identity for one exact artifact or managed iteration. */
@@ -985,17 +1025,19 @@ export function desktopV3ArtifactViewerHref(
 /** Parses collection-base and iteration-specific viewer URLs without crossing session authority. */
 export function desktopV3ArtifactViewerLocation(
   sessionId: string,
-  search: { artifactSession?: unknown; artifact?: unknown; collection?: unknown },
+  search: { artifactSession?: unknown; artifact?: unknown; collection?: unknown; artifactGroup?: unknown },
 ): DesktopV3ArtifactViewerLocation | null {
   const normalizedSessionId = sessionId.trim()
   const artifactSessionId = typeof search.artifactSession === 'string' ? search.artifactSession.trim() : ''
   const artifactId = typeof search.artifact === 'string' ? search.artifact.trim() : ''
   const collectionId = typeof search.collection === 'string' ? search.collection.trim() : ''
+  const groupKey = typeof search.artifactGroup === 'string' ? search.artifactGroup.trim() : ''
   if (!normalizedSessionId || artifactSessionId !== normalizedSessionId || (!artifactId && !collectionId)) return null
   return {
     sessionId: normalizedSessionId,
     ...(collectionId ? { collectionId } : {}),
     ...(artifactId ? { artifactId } : {}),
+    ...(groupKey ? { groupKey } : {}),
   }
 }
 

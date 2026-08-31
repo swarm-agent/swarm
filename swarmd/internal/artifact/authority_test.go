@@ -82,6 +82,8 @@ func (m *authorityMetadata) ApplySessionMutation(input pebblestore.V3SessionMuta
 		m.collection.VariantCount, m.collection.StagingCount = 1, 1
 		m.variant = *input.Artifact.Variant
 		m.variant.AccountScopeID, m.variant.SessionID, m.variant.CollectionID, m.variant.Status = input.AccountScopeID, input.SessionID, m.collection.ID, pebblestore.SessionArtifactStatusStaging
+		m.variant.EventSeq, m.variant.ProjectionReservation = 1, input.Artifact.ProjectionOnly
+		projection.Collection, projection.Variant = m.collection, &m.variant
 		if m.partDefinitions == nil {
 			m.partDefinitions = map[string]pebblestore.SessionArtifactPartDefinition{}
 		}
@@ -192,6 +194,64 @@ func TestAuthorityCreatesGitCommitBeforeReadyMetadata(t *testing.T) {
 	}
 }
 
+func TestAuthorityReservesThenFinalizesLongRunningOutput(t *testing.T) {
+	authority, metadata, principal := authorityFixture(t)
+	input := CreateInput{RequestID: "reserve-1", CollectionID: "collection-1", CollectionName: "Queued render", VariantID: "variant-1", Filename: "animation.mp4", MediaType: "video/mp4", Presentation: pebblestore.SessionArtifactPresentation{Kind: "video"}, AutoAccept: true}
+	staging, err := authority.Reserve(principal, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if staging.Status != pebblestore.SessionArtifactStatusStaging || !staging.ProjectionReservation || staging.EventSeq == 0 || metadata.readyCalls != 0 {
+		t.Fatalf("reservation = %+v ready calls=%d", staging, metadata.readyCalls)
+	}
+	input.Body = []byte{0, 0, 0, 20, 'f', 't', 'y', 'p', 'i', 's', 'o', 'm'}
+	ready, err := authority.Create(context.Background(), principal, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ready.Status != pebblestore.SessionArtifactStatusReady || ready.ProjectionReservation || metadata.readyCalls != 1 {
+		t.Fatalf("finalized reservation = %+v ready calls=%d", ready, metadata.readyCalls)
+	}
+}
+
+func TestAuthorityReservesPreallocatedManagedPlaceholderForPreflight(t *testing.T) {
+	authority, metadata, principal := authorityFixture(t)
+	principal.TaskCallID, principal.ChildSessionID = "call-1", "child-1"
+	profile, err := ResolveAnimationProfile(&AnimationProfileInput{Profile: "motion_ui"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	requirements, err := ResolveOutputRequirements(&OutputRequirementsInput{Preset: "landscape_video"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	lineage := authority.lineage(principal, CreateInput{})
+	collectionLineage := lineage
+	collectionLineage.SourceSessionID, collectionLineage.ChildSessionID = "", ""
+	metadata.collection = pebblestore.SessionArtifactCollection{ID: "collection-1", AccountScopeID: principal.AccountScopeID, SessionID: principal.SessionID, Name: "Animations", Status: pebblestore.SessionArtifactStatusStaging, Lineage: collectionLineage, VariantCount: 1, StagingCount: 1}
+	metadata.variant = pebblestore.SessionArtifactVariant{
+		ID: "variant-1", CollectionID: metadata.collection.ID, AccountScopeID: principal.AccountScopeID, SessionID: principal.SessionID,
+		Status: pebblestore.SessionArtifactStatusStaging, ProjectionReservation: true, Lineage: lineage,
+		Presentation:       pebblestore.SessionArtifactPresentation{Width: requirements.Width, Height: requirements.Height},
+		OutputRequirements: requirements, AnimationProfile: profile,
+	}
+	input := CreateInput{
+		RequestID: "managed-preflight", CollectionID: metadata.collection.ID, VariantID: metadata.variant.ID,
+		Filename: "animation.html", MediaType: "text/html", Presentation: pebblestore.SessionArtifactPresentation{Kind: "html", Previewable: true},
+		OutputRequirements: requirements, AnimationProfile: profile,
+	}
+	reserved, err := authority.Reserve(principal, input)
+	if err != nil {
+		t.Fatalf("reserve managed placeholder: %v", err)
+	}
+	if reserved.ID != metadata.variant.ID || reserved.Status != pebblestore.SessionArtifactStatusStaging || !reserved.ProjectionReservation {
+		t.Fatalf("managed placeholder reservation = %+v", reserved)
+	}
+	if reserved.Filename != "" || reserved.MediaType != "" {
+		t.Fatalf("reservation mutated parent placeholder metadata before preflight: %+v", reserved)
+	}
+}
+
 func TestAuthorityMetadataFailureNeverPublishesReady(t *testing.T) {
 	authority, metadata, principal := authorityFixture(t)
 	metadata.failReady = true
@@ -230,6 +290,29 @@ func TestAuthorityFinalizesPreallocatedManagedPlaceholder(t *testing.T) {
 	}
 	if created.Status != pebblestore.SessionArtifactStatusReady || created.Filename != "compact.html" || created.MediaType != "text/html" || created.Lineage != lineage || metadata.readyCalls != 1 {
 		t.Fatalf("finalized placeholder = %#v calls=%d", created, metadata.readyCalls)
+	}
+}
+
+func TestAuthorityFinalizesPreallocatedMultiTargetPlaceholder(t *testing.T) {
+	authority, metadata, principal := authorityFixture(t)
+	principal.TaskCallID, principal.ChildSessionID = "call-multi", "child-multi"
+	principal.IterationGroupID, principal.IterationID, principal.IterationIndex = "group-multi", "iteration-multi", 1
+	principal.SelectedReviewTargetIDs = "part-1,part-3"
+	source := CreateInput{SourceSessionID: "source-session", SourceCollectionID: "source-collection", SourceVariantID: "source-variant", SourceEventSeq: 41}
+	metadata.sourceCollection = pebblestore.SessionArtifactCollection{ID: source.SourceCollectionID, AccountScopeID: principal.AccountScopeID, SessionID: source.SourceSessionID, Status: pebblestore.SessionArtifactStatusReady, VariantCount: 1, ReadyCount: 1}
+	metadata.sourceVariant = gitSourceVariant(t, authority, pebblestore.SessionArtifactVariant{ID: source.SourceVariantID, CollectionID: source.SourceCollectionID, AccountScopeID: principal.AccountScopeID, SessionID: source.SourceSessionID, Status: pebblestore.SessionArtifactStatusReady, EventSeq: source.SourceEventSeq, MediaType: "text/html"}, []byte("<h1>source</h1>"))
+	lineage := authority.lineage(principal, source)
+	collectionLineage := lineage
+	collectionLineage.SourceSessionID, collectionLineage.SourceCollectionID, collectionLineage.SourceVariantID, collectionLineage.SourceEventSeq, collectionLineage.ChildSessionID = "", "", "", 0, ""
+	collectionLineage.IterationID, collectionLineage.IterationIndex, collectionLineage.SelectedReviewTargetIDs = "", 0, ""
+	metadata.collection = pebblestore.SessionArtifactCollection{ID: "collection-1", AccountScopeID: principal.AccountScopeID, SessionID: principal.SessionID, Name: "Iterations", Status: pebblestore.SessionArtifactStatusStaging, Lineage: collectionLineage, VariantCount: 1, StagingCount: 1}
+	metadata.variant = pebblestore.SessionArtifactVariant{ID: "variant-1", CollectionID: metadata.collection.ID, AccountScopeID: principal.AccountScopeID, SessionID: principal.SessionID, Status: pebblestore.SessionArtifactStatusStaging, Lineage: lineage}
+	created, err := authority.Create(context.Background(), principal, CreateInput{RequestID: "managed-multi-create", CollectionID: metadata.collection.ID, VariantID: metadata.variant.ID, Filename: "multi.html", MediaType: "text/html", SourceSessionID: source.SourceSessionID, SourceCollectionID: source.SourceCollectionID, SourceVariantID: source.SourceVariantID, SourceEventSeq: source.SourceEventSeq, Body: []byte("<h1>multi</h1>")})
+	if err != nil {
+		t.Fatalf("finalize multi-target placeholder: %v", err)
+	}
+	if created.Status != pebblestore.SessionArtifactStatusReady || created.Lineage.SelectedReviewTargetIDs != "part-1,part-3" {
+		t.Fatalf("multi-target finalized placeholder = %#v", created)
 	}
 }
 

@@ -46,7 +46,9 @@ func TestManageSessionsDefinitionConstrainsModelUsageAndApproval(t *testing.T) {
 		t.Fatalf("proposal trust boundary = %#v", proposal)
 	}
 	proposalProperties := proposal["properties"].(map[string]any)
-	worktree := proposalProperties["worktree"].(map[string]any)
+	if _, exposed := proposalProperties["worktree"]; exposed {
+		t.Fatalf("proposal still exposes optional worktree control: %#v", proposalProperties)
+	}
 	worktreeName := proposalProperties["worktree_name"].(map[string]any)
 	searchMode := properties["search_mode"].(map[string]any)
 	if got := searchMode["enum"].([]string); len(got) != 2 || got[0] != "visible" || got[1] != "durable_log" || !strings.Contains(searchMode["description"].(string), "never auto-upgrade") {
@@ -55,7 +57,7 @@ func TestManageSessionsDefinitionConstrainsModelUsageAndApproval(t *testing.T) {
 	if !strings.Contains(definition.Description, "Never automatically escalate") || !strings.Contains(definition.Description, "explicitly asks for raw database") {
 		t.Fatalf("durable-log guidance missing: %s", definition.Description)
 	}
-	if !strings.Contains(worktree["description"].(string), "Omitted defaults to true") || !strings.Contains(worktreeName["description"].(string), "AI-suggested") {
+	if !strings.Contains(worktreeName["description"].(string), "Swarm-authored") || !strings.Contains(worktreeName["description"].(string), "server") {
 		t.Fatalf("proposal worktree schema = %#v", proposalProperties)
 	}
 	expectedByID := properties["expected_updated_at_by_id"].(map[string]any)
@@ -236,6 +238,47 @@ func (s *gitManageSessionService) ListSessionEventsBefore(id string, beforeSeq u
 		}
 	}
 	return out, nil
+}
+
+func TestManageSessionsGetIncludesDurableVideoStudioContext(t *testing.T) {
+	principal := identity.Principal{AccountScopeID: "account-1", UserID: "user-1"}
+	service := &gitManageSessionService{sessions: map[string]pebblestore.SessionSnapshot{
+		"video-session": {
+			ID: "video-session", AccountScopeID: principal.AccountScopeID, UserID: principal.UserID,
+			WorkspacePath: "/work/video", WorkspaceName: "video", Title: "Video continuation",
+			Metadata: map[string]any{
+				"creative_mode": "video", "experience": "video_studio",
+				"video_project_id": "destination-project", "video_revision_id": "destination-revision",
+				"source_session_id": "source-session", "source_video_project_id": "source-project", "source_video_revision_id": "source-revision",
+			},
+		},
+	}}
+	output, err := (&Runtime{sessions: service}).executeManageSessions(context.Background(), WorkspaceScope{Principal: principal}, map[string]any{"action": "get", "session_id": "video-session"})
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	for _, want := range []string{`"video_context"`, `"attached":true`, `"durable":true`, `"destination_project_id":"destination-project"`, `"destination_revision_id":"destination-revision"`, `"source_session_id":"source-session"`, `"source_project_id":"source-project"`, `"source_revision_id":"source-revision"`} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("get output missing %s: %s", want, output)
+		}
+	}
+}
+
+func TestManageSessionsGetOmitsIncompleteVideoContext(t *testing.T) {
+	principal := identity.Principal{AccountScopeID: "account-1", UserID: "user-1"}
+	service := &gitManageSessionService{sessions: map[string]pebblestore.SessionSnapshot{
+		"video-session": {
+			ID: "video-session", AccountScopeID: principal.AccountScopeID, UserID: principal.UserID,
+			Metadata: map[string]any{"creative_mode": "video", "video_project_id": "project-without-revision"},
+		},
+	}}
+	output, err := (&Runtime{sessions: service}).executeManageSessions(context.Background(), WorkspaceScope{Principal: principal}, map[string]any{"action": "get", "session_id": "video-session"})
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if strings.Contains(output, `"video_context"`) {
+		t.Fatalf("incomplete context must fail closed: %s", output)
+	}
 }
 
 func TestManageSessionsSearchDefaultsToVisibleAuthority(t *testing.T) {

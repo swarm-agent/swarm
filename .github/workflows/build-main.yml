@@ -57,6 +57,15 @@ jobs:
           corepack enable
           corepack pnpm --version
 
+      - name: Install Desktop dependencies
+        working-directory: web
+        run: corepack pnpm install --frozen-lockfile
+
+      - name: Run atlas-driven critical tests
+        env:
+          TMPDIR: ${{ runner.temp }}
+        run: bash scripts/run-critical-tests.sh all
+
       - name: Resolve candidate version
         id: version
         shell: bash

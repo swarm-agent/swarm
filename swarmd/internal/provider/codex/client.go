@@ -48,18 +48,27 @@ const (
 	clientID                                   = "app_EMoamEEZ73f0CkXaXp7hrann"
 	maxCodexResponseBodyBytes            int64 = 32 << 20
 	maxCodexStreamEventBytes                   = 8 << 20
-	maxCodexRawEvents                          = 4_096
-	transportRetryAttempts                     = 2
-	transportRetryBaseDelay                    = 300 * time.Millisecond
-	startedWebsocketStreamRetryLimit           = 3
-	websocketIdleTimeoutAttempts               = 3
-	defaultWebsocketIdleTimeout                = 5 * time.Minute
-	websocketWriteTimeout                      = 30 * time.Second
-	maxPromptCacheKeyLength                    = 64
-	codexTransportMetadataKey                  = "_swarm_transport"
-	codexConnectedViaWSMetadataKey             = "_swarm_connected_via_websocket"
-	codexTransportWebsocket                    = "websocket"
-	codexTransportResponsesHTTP                = "responses_http"
+	maxCodexStreamLineBytes                    = maxCodexStreamEventBytes + 64
+	maxCodexWebsocketMessageBytes        int64 = 256 << 20
+	// Full replay can otherwise base64-expand every prior media_inspect result
+	// into one oversized websocket request. Keep only the newest bounded raw
+	// media suffix; native continuation still sends each new image exactly once.
+	maxCodexFullReplayMediaBytes           int64 = 20 << 20
+	maxCodexCompletedSnapshotBytes               = maxCodexWebsocketMessageBytes
+	maxCodexWebsocketCompactedMessageBytes int64 = 1 << 30
+	maxCodexCompletedMetadataBytes               = 1 << 20
+	maxCodexRawEvents                            = 4_096
+	transportRetryAttempts                       = 2
+	transportRetryBaseDelay                      = 300 * time.Millisecond
+	startedWebsocketStreamRetryLimit             = 3
+	websocketIdleTimeoutAttempts                 = 3
+	defaultWebsocketIdleTimeout                  = 5 * time.Minute
+	websocketWriteTimeout                        = 30 * time.Second
+	maxPromptCacheKeyLength                      = 64
+	codexTransportMetadataKey                    = "_swarm_transport"
+	codexConnectedViaWSMetadataKey               = "_swarm_connected_via_websocket"
+	codexTransportWebsocket                      = "websocket"
+	codexTransportResponsesHTTP                  = "responses_http"
 )
 
 var (
@@ -923,9 +932,15 @@ func normalizeCodexRequestTools(tools []ToolDefinition) []ToolDefinition {
 }
 
 func materializeSessionMediaInput(req Request, input []map[string]any) ([]map[string]any, error) {
+	return materializeSessionMediaInputWithReplayBudget(req, input, maxCodexFullReplayMediaBytes)
+}
+
+func materializeSessionMediaInputWithReplayBudget(req Request, input []map[string]any, replayBudget int64) ([]map[string]any, error) {
 	if len(input) == 0 {
 		return nil, nil
 	}
+	remainingMediaBytes := sessionMediaInputBytes(input)
+	boundCodexReplay := strings.EqualFold(strings.TrimSpace(req.MediaContract.ProviderID), "codex") && replayBudget > 0
 	out := make([]map[string]any, 0, len(input))
 	mediaCounts := map[string]int{}
 	for _, item := range input {
@@ -945,6 +960,15 @@ func materializeSessionMediaInput(req Request, input []map[string]any) ([]map[st
 			if !ok {
 				return nil, errors.New("provider media input is malformed")
 			}
+			omitFromReplay := boundCodexReplay && remainingMediaBytes > replayBudget
+			remainingMediaBytes -= int64(len(payload.Bytes))
+			if omitFromReplay {
+				materialized = append(materialized, map[string]any{
+					"type": "input_text",
+					"text": "An earlier image payload was omitted from this full provider replay to keep the Codex websocket request bounded. The rest of its durable message or tool context remains; inspect the image again only if its pixels are still required.",
+				})
+				continue
+			}
 			capability, err := validateProviderMediaPayload(req, payload, mediaCounts)
 			if err != nil {
 				return nil, err
@@ -959,6 +983,26 @@ func materializeSessionMediaInput(req Request, input []map[string]any) ([]map[st
 		out = append(out, cloned)
 	}
 	return out, nil
+}
+
+func sessionMediaInputBytes(input []map[string]any) int64 {
+	var total int64
+	for _, item := range input {
+		content, ok := inputContentMaps(item["content"])
+		if !ok {
+			continue
+		}
+		for _, part := range content {
+			if !strings.EqualFold(strings.TrimSpace(asString(part["type"])), "session_media") {
+				continue
+			}
+			payload, ok := part["media"].(provideriface.SessionMediaPayload)
+			if ok {
+				total += int64(len(payload.Bytes))
+			}
+		}
+	}
+	return total
 }
 
 func inputContentMaps(value any) ([]map[string]any, bool) {
@@ -1641,8 +1685,12 @@ func (c *Client) codexWebsocketRequestPayload(ctx context.Context, req Request) 
 		payload, err := buildCodexRequestBody(req, req.Input)
 		return payload, properties, requestInputLen, err
 	}
+	deltaInput, err := materializeSessionMediaInput(req, req.Input[baselineLen:])
+	if err != nil {
+		return nil, nil, 0, err
+	}
 	payload := cloneMapAny(properties)
-	payload["input"] = sanitizeCodexRequestDeltaInput(req.Input[baselineLen:])
+	payload["input"] = sanitizeCodexRequestDeltaInput(deltaInput)
 	payload["previous_response_id"] = strings.TrimSpace(session.lastResponseID)
 	return payload, properties, requestInputLen, nil
 }
@@ -1721,7 +1769,11 @@ func (c *Client) sendWebsocketMap(ctx context.Context, record pebblestore.CodexA
 		if activeConn == nil {
 			return errors.New("websocket connection is unavailable")
 		}
-		activeConn.SetReadLimit(maxCodexResponseBodyBytes)
+		// Terminal response.completed frames can repeat a long native continuation
+		// chain. Admit a larger but still bounded wire frame so it can be streamed
+		// through the compacting decoder below instead of being materialized or
+		// failing as an opaque websocket close 1009.
+		activeConn.SetReadLimit(maxCodexWebsocketCompactedMessageBytes)
 		writeDeadline := time.Now().Add(websocketWriteTimeout)
 		if deadline, ok := ctx.Deadline(); ok && deadline.Before(writeDeadline) {
 			writeDeadline = deadline
@@ -1796,7 +1848,7 @@ func (c *Client) sendWebsocketMap(ctx context.Context, record pebblestore.CodexA
 			}
 			return nil, 0, fmt.Errorf("set websocket idle deadline: %w", err)
 		}
-		messageType, message, err := conn.ReadMessage()
+		messageType, message, compacted, messageBytes, err := readCodexWebsocketEvent(conn)
 		if err != nil {
 			if session != nil {
 				closeCachedWebsocketSessionLocked(session)
@@ -1827,11 +1879,26 @@ func (c *Client) sendWebsocketMap(ctx context.Context, record pebblestore.CodexA
 
 		payloadText := string(message)
 		providerdiagnostics.LogWebsocketResponseContext(ctx, "codex", "responses.websocket", message)
+		if compacted {
+			providerdiagnostics.RecordContext(ctx, providerdiagnostics.Event{
+				Provider:  "codex",
+				Operation: "responses.websocket",
+				Stage:     "response_compacted",
+				Extra: map[string]any{
+					"wire_bytes":     messageBytes,
+					"retained_bytes": len(message),
+				},
+			})
+		}
 		var decoded map[string]any
 		if len(message) > maxCodexStreamEventBytes {
-			return nil, 0, errors.New("codex websocket event byte limit exceeded")
-		}
-		if err := json.Unmarshal(message, &decoded); err != nil {
+			if err := json.Unmarshal(message, &decoded); err != nil {
+				return nil, 0, errors.New("codex websocket event byte limit exceeded")
+			}
+			if !strings.EqualFold(strings.TrimSpace(asString(decoded["type"])), "response.completed") {
+				return nil, 0, errors.New("codex websocket event byte limit exceeded")
+			}
+		} else if err := json.Unmarshal(message, &decoded); err != nil {
 			codexThinkingDebugEvent("event.decode_error", map[string]any{
 				"tag":           "websocket",
 				"payload_chars": len(payloadText),
@@ -1879,6 +1946,170 @@ func (c *Client) sendWebsocketMap(ctx context.Context, record pebblestore.CodexA
 		session.lastOutput = normalizeCodexResponseOutputMapsForReplay(state.outputItemsDone)
 	}
 	return decoded, http.StatusOK, nil
+}
+
+func readCodexWebsocketEvent(conn *websocket.Conn) (messageType int, message []byte, compacted bool, wireBytes int64, err error) {
+	if conn == nil {
+		return 0, nil, false, 0, errors.New("websocket connection is unavailable")
+	}
+	messageType, reader, err := conn.NextReader()
+	if err != nil {
+		return 0, nil, false, 0, err
+	}
+
+	var prefix bytes.Buffer
+	readBytes, readErr := io.CopyN(&prefix, reader, maxCodexCompletedSnapshotBytes+1)
+	if readErr != nil {
+		if errors.Is(readErr, io.EOF) {
+			return messageType, prefix.Bytes(), false, readBytes, nil
+		}
+		return 0, nil, false, readBytes, readErr
+	}
+
+	counted := &countingReader{Reader: io.MultiReader(bytes.NewReader(prefix.Bytes()), reader)}
+	compactedMessage, compactErr := compactCodexCompletedSnapshot(counted)
+	if compactErr != nil {
+		return 0, nil, false, counted.BytesRead, compactErr
+	}
+	if counted.BytesRead > maxCodexWebsocketCompactedMessageBytes {
+		return 0, nil, false, counted.BytesRead, errors.New("codex websocket message byte limit exceeded")
+	}
+	return messageType, compactedMessage, true, counted.BytesRead, nil
+}
+
+type countingReader struct {
+	io.Reader
+	BytesRead int64
+}
+
+func (r *countingReader) Read(p []byte) (int, error) {
+	n, err := r.Reader.Read(p)
+	r.BytesRead += int64(n)
+	return n, err
+}
+
+func compactCodexCompletedSnapshot(reader io.Reader) ([]byte, error) {
+	decoder := json.NewDecoder(reader)
+	start, err := decoder.Token()
+	if err != nil {
+		return nil, fmt.Errorf("decode oversized codex websocket event: %w", err)
+	}
+	if delimiter, ok := start.(json.Delim); !ok || delimiter != '{' {
+		return nil, errors.New("codex websocket event byte limit exceeded")
+	}
+
+	compacted := make(map[string]any, 3)
+	for decoder.More() {
+		keyToken, err := decoder.Token()
+		if err != nil {
+			return nil, fmt.Errorf("decode oversized codex websocket event: %w", err)
+		}
+		key, ok := keyToken.(string)
+		if !ok {
+			return nil, errors.New("decode oversized codex websocket event: invalid object key")
+		}
+		switch key {
+		case "type", "sequence_number":
+			var value any
+			if err := decoder.Decode(&value); err != nil {
+				return nil, fmt.Errorf("decode oversized codex websocket event %s: %w", key, err)
+			}
+			compacted[key] = value
+		case "response":
+			response, err := compactCodexCompletedResponse(decoder)
+			if err != nil {
+				return nil, err
+			}
+			compacted[key] = response
+		default:
+			if err := skipCodexJSONValue(decoder); err != nil {
+				return nil, err
+			}
+		}
+	}
+	if _, err := decoder.Token(); err != nil {
+		return nil, fmt.Errorf("decode oversized codex websocket event: %w", err)
+	}
+	if !strings.EqualFold(strings.TrimSpace(asString(compacted["type"])), "response.completed") {
+		return nil, errors.New("codex websocket event byte limit exceeded")
+	}
+	encoded, err := json.Marshal(compacted)
+	if err != nil {
+		return nil, fmt.Errorf("encode compacted codex websocket event: %w", err)
+	}
+	if len(encoded) > maxCodexCompletedMetadataBytes {
+		return nil, errors.New("codex websocket completion metadata byte limit exceeded")
+	}
+	return encoded, nil
+}
+
+func compactCodexCompletedResponse(decoder *json.Decoder) (map[string]any, error) {
+	start, err := decoder.Token()
+	if err != nil {
+		return nil, fmt.Errorf("decode oversized codex response.completed response: %w", err)
+	}
+	if start == nil {
+		return map[string]any{}, nil
+	}
+	if delimiter, ok := start.(json.Delim); !ok || delimiter != '{' {
+		return nil, errors.New("decode oversized codex response.completed response: invalid response object")
+	}
+
+	response := make(map[string]any, 10)
+	for decoder.More() {
+		keyToken, err := decoder.Token()
+		if err != nil {
+			return nil, fmt.Errorf("decode oversized codex response.completed response: %w", err)
+		}
+		key, ok := keyToken.(string)
+		if !ok {
+			return nil, errors.New("decode oversized codex response.completed response: invalid object key")
+		}
+		switch key {
+		case "id", "model", "status", "stop_reason", "incomplete_details", "error", "usage", "service_tier":
+			var value any
+			if err := decoder.Decode(&value); err != nil {
+				return nil, fmt.Errorf("decode oversized codex response.completed response %s: %w", key, err)
+			}
+			response[key] = value
+		default:
+			if err := skipCodexJSONValue(decoder); err != nil {
+				return nil, err
+			}
+		}
+	}
+	if _, err := decoder.Token(); err != nil {
+		return nil, fmt.Errorf("decode oversized codex response.completed response: %w", err)
+	}
+	return response, nil
+}
+
+func skipCodexJSONValue(decoder *json.Decoder) error {
+	token, err := decoder.Token()
+	if err != nil {
+		return fmt.Errorf("decode oversized codex websocket event: %w", err)
+	}
+	delimiter, ok := token.(json.Delim)
+	if !ok {
+		return nil
+	}
+	if delimiter != '{' && delimiter != '[' {
+		return errors.New("decode oversized codex websocket event: invalid value")
+	}
+	for decoder.More() {
+		if delimiter == '{' {
+			if _, err := decoder.Token(); err != nil {
+				return fmt.Errorf("decode oversized codex websocket event key: %w", err)
+			}
+		}
+		if err := skipCodexJSONValue(decoder); err != nil {
+			return err
+		}
+	}
+	if _, err := decoder.Token(); err != nil {
+		return fmt.Errorf("decode oversized codex websocket event: %w", err)
+	}
+	return nil
 }
 
 func websocketTimeoutError(err error) bool {
@@ -3623,7 +3854,9 @@ func finalizeStreamDecodeState(state *streamDecodeState) (map[string]any, error)
 
 func parseEventStreamReader(reader io.Reader, onEvent func(StreamEvent)) (map[string]any, error) {
 	scanner := bufio.NewScanner(reader)
-	scanner.Buffer(make([]byte, 0, 64*1024), maxCodexStreamEventBytes)
+	// Leave bounded room for the SSE field prefix so the explicit decoded-data
+	// limit below remains the authority and returns a stable diagnostic.
+	scanner.Buffer(make([]byte, 0, 64*1024), maxCodexStreamLineBytes)
 
 	state := &streamDecodeState{}
 	eventName := ""

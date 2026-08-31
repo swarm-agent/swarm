@@ -23,7 +23,7 @@ func TestBackendArtifactCatalogRequiresAuthenticationAndHidesManagedStorage(t *t
 	authority := artifact.NewAuthority(registry, sessionSvc)
 	variant, err := authority.Create(context.Background(), artifact.Principal{SessionID: "artifact-session", AccountScopeID: principal.AccountScopeID, UserID: principal.UserID}, artifact.CreateInput{
 		RequestID: "api-contract-create", CollectionID: "api-contract-collection", CollectionName: "Alternatives",
-		VariantID: "api-contract-variant", Filename: "design.txt", MediaType: "text/plain",
+		VariantID: "api-contract-variant", Filename: "design.txt", MediaType: "text/plain", Role: pebblestore.SessionArtifactRoleRenderOnly,
 		Presentation: pebblestore.SessionArtifactPresentation{Kind: "text", Label: "Selected design", Previewable: true}, Body: []byte("private bytes"),
 	})
 	if err != nil {
@@ -51,7 +51,7 @@ func TestBackendArtifactCatalogRequiresAuthenticationAndHidesManagedStorage(t *t
 	for _, item := range catalog.Artifacts {
 		if item.ArtifactID == variant.ID {
 			found = true
-			if item.SessionID != variant.SessionID || item.CollectionID != variant.CollectionID || item.EventSeq != variant.EventSeq || item.Status != pebblestore.SessionArtifactStatusReady {
+			if item.SessionID != variant.SessionID || item.CollectionID != variant.CollectionID || item.EventSeq != variant.EventSeq || item.Status != pebblestore.SessionArtifactStatusReady || item.Role != pebblestore.SessionArtifactRoleRenderOnly {
 				t.Fatalf("managed catalog item = %#v", item)
 			}
 		}

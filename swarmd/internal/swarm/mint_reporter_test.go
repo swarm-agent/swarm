@@ -36,7 +36,7 @@ func TestMintReporterSendsOnlyDerivedVersionedIdentifierAndCompletes(t *testing.
 		}
 		return &http.Response{
 			StatusCode: http.StatusAccepted,
-			Body:       io.NopCloser(strings.NewReader(`{"accepted":true}`)),
+			Body:       io.NopCloser(strings.NewReader(`{"accepted":true,"credential":"desktop-credential"}`)),
 			Header:     http.Header{"Content-Type": []string{"application/json"}},
 		}, nil
 	})}
@@ -57,6 +57,9 @@ func TestMintReporterSendsOnlyDerivedVersionedIdentifierAndCompletes(t *testing.
 	if _, pending, err := svc.PendingMintReport(); err != nil || pending {
 		t.Fatalf("report still pending=%t err=%v", pending, err)
 	}
+	if credential, err := svc.ActivationCredential(); err != nil || credential != "desktop-credential" {
+		t.Fatalf("activation credential = %q err=%v", credential, err)
+	}
 }
 
 func TestMintReporterFailuresLeaveReportPending(t *testing.T) {
@@ -69,6 +72,7 @@ func TestMintReporterFailuresLeaveReportPending(t *testing.T) {
 		{name: "remote error", statusCode: http.StatusServiceUnavailable, body: `{}`},
 		{name: "malformed response", statusCode: http.StatusAccepted, body: `not-json`},
 		{name: "not accepted", statusCode: http.StatusAccepted, body: `{"accepted":false}`},
+		{name: "missing credential", statusCode: http.StatusAccepted, body: `{"accepted":true}`},
 		{name: "oversized response", statusCode: http.StatusAccepted, body: strings.Repeat("x", mintReportMaxResponseBytes+1)},
 		{name: "unexpected content type", statusCode: http.StatusAccepted, body: `{"accepted":true}`},
 	}

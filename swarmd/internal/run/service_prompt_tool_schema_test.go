@@ -44,6 +44,21 @@ func TestConvertToolDefinitionsPreservesEmptyRequiredArrayForWebsearch(t *testin
 	}
 }
 
+func TestMasterHarnessPromptRequiresTopLevelTaskPrompt(t *testing.T) {
+	prompt := masterHarnessPrompt("/workspace")
+	for _, want := range []string{
+		"Every task spawn call—including regular launches, single-launch shorthand, Iteration Swarms, and new inline Task Program starts—requires a non-empty top-level `prompt`",
+		"Do not assume `meta_prompt`, `description`, `launches`, or `program` replaces it",
+		"Never send `max_concurrency` at the task-call top level",
+		"approved-checkpoint Task Program start, omit both `program` and `max_concurrency`",
+		`task (staged Task Program for a multi-subsystem build): {"action":"start","prompt":"`,
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("master harness prompt missing task prompt guidance %q", want)
+		}
+	}
+}
+
 func TestTaskToolSchemaExposesOnlyDesignerOutputModeSelection(t *testing.T) {
 	definitions := tool.NewRuntime(1).Definitions()
 	var properties map[string]any
@@ -68,7 +83,7 @@ func TestTaskToolSchemaExposesOnlyDesignerOutputModeSelection(t *testing.T) {
 	if !reflect.DeepEqual(source["required"], []string{"session_id", "collection_id", "variant_id", "event_seq"}) || sourceProperties["event_seq"] == nil {
 		t.Fatalf("task source_artifact schema = %#v", source)
 	}
-	if description, _ := source["description"].(string); !strings.Contains(description, "managed Designer work") || !strings.Contains(description, "Regular mode requires every launch to be a managed Designer") || !strings.Contains(description, "passes the opaque reference to each worker") {
+	if description, _ := source["description"].(string); !strings.Contains(description, "Regular workspace Designers") || !strings.Contains(description, "materializes the artifact") || !strings.Contains(description, "Managed Designers receive the opaque reference") {
 		t.Fatalf("task source_artifact description = %q", description)
 	}
 	sectionTarget, ok := properties["section_target"].(map[string]any)
@@ -97,8 +112,18 @@ func TestTaskToolSchemaExposesOnlyDesignerOutputModeSelection(t *testing.T) {
 	if _, ok := launchProperties["output_mode"]; !ok {
 		t.Fatal("task launch schema omits output_mode")
 	}
+	if _, exposedAtTopLevel := properties["max_concurrency"]; exposedAtTopLevel {
+		t.Fatal("task schema exposes max_concurrency at the task-call top level")
+	}
 	program := properties["program"].(map[string]any)
 	programProperties := program["properties"].(map[string]any)
+	maxConcurrency, ok := programProperties["max_concurrency"].(map[string]any)
+	if !ok {
+		t.Fatal("task program schema omits nested max_concurrency")
+	}
+	if description, _ := maxConcurrency["description"].(string); !strings.Contains(description, "program-only") || !strings.Contains(description, "Never place this field at the task-call top level") || !strings.Contains(description, "Prefer omitting it") {
+		t.Fatalf("task program max_concurrency description = %q", description)
+	}
 	jobs := programProperties["jobs"].(map[string]any)
 	jobItems := jobs["items"].(map[string]any)
 	jobProperties := jobItems["properties"].(map[string]any)

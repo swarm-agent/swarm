@@ -72,6 +72,24 @@ type sessionV3RejectVideoEditProposalRequest struct {
 	Feedback string `json:"feedback"`
 }
 
+type sessionV3SelectVideoAnimationCandidateRequest struct {
+	PartID              string                                         `json:"part_id"`
+	SelectedCandidateID string                                         `json:"selected_candidate_id"`
+	SelectedSource      *pebblestore.SessionArtifactSelectionReference `json:"selected_source"`
+}
+
+type sessionV3UpdateVideoCompositionRequest struct {
+	ExpectedRevisionID string                         `json:"expected_revision_id"`
+	Plan               *pebblestore.VideoPlanProposal `json:"plan"`
+}
+
+type sessionV3PromoteVideoAnimationDerivativeRequest struct {
+	PartID              string                                         `json:"part_id"`
+	SelectedCandidateID string                                         `json:"selected_candidate_id"`
+	SelectedSource      *pebblestore.SessionArtifactSelectionReference `json:"selected_source"`
+	Derivative          *pebblestore.SessionArtifactSelectionReference `json:"derivative"`
+}
+
 type sessionV3AcceptVideoEditProposalRequest struct {
 	SelectedOperationIDs []string `json:"selected_operation_ids"`
 	RevisionID           string   `json:"revision_id"`
@@ -81,9 +99,10 @@ type sessionV3AcceptVideoEditProposalRequest struct {
 }
 
 type sessionV3StartVideoRenderRequest struct {
-	RevisionID string `json:"revision_id"`
-	JobID      string `json:"job_id"`
-	TimeoutMs  int64  `json:"timeout_ms"`
+	RevisionID    string `json:"revision_id"`
+	JobID         string `json:"job_id"`
+	RenderQuality string `json:"render_quality"`
+	RenderFPS     int    `json:"render_fps"`
 }
 
 type sessionV3ExportVideoRequest struct {
@@ -378,6 +397,32 @@ func (s *Server) handleSessionV3VideoSubpath(w http.ResponseWriter, r *http.Requ
 		s.handleSessionV3VideoProjectDetail(w, r, principal, sessionID, strings.TrimPrefix(subpath, "projects/"))
 		return
 	}
+	if subpath == "render-jobs" {
+		if r.Method != http.MethodGet {
+			methodNotAllowed(w)
+			return
+		}
+		limit := 50
+		projectID := strings.TrimSpace(r.URL.Query().Get("project_id"))
+		if raw := r.URL.Query().Get("limit"); raw != "" {
+			if parsed, err := strconv.Atoi(raw); err == nil && parsed > 0 {
+				limit = parsed
+			}
+		}
+		var jobs []pebblestore.VideoRenderJobSnapshot
+		var err error
+		if projectID == "" {
+			jobs, err = s.videoProjects.ListSessionRenderJobs(principal, sessionID, limit)
+		} else {
+			jobs, err = s.videoProjects.ListRenderJobs(principal, sessionID, projectID, limit)
+		}
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "render_jobs": jobs, "count": len(jobs)})
+		return
+	}
 	if strings.HasPrefix(subpath, "render-jobs/") {
 		jobPath := strings.TrimPrefix(subpath, "render-jobs/")
 		jobID, action, hasAction := strings.Cut(jobPath, "/")
@@ -535,15 +580,11 @@ func (s *Server) handleSessionV3VideoProjectDetail(w http.ResponseWriter, r *htt
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
-		if s.videoRender != nil {
+		if s.videoRender != nil && job.Status == pebblestore.VideoRenderJobStatusQueued && (req.JobID == "" || job.ID == req.JobID) {
 			session, _, _ := s.sessions.GetSession(sessionID)
 			wsPath := session.WorkspacePath
 			if val, ok := session.Metadata["swarm_v3_source_workspace_path"].(string); ok && val != "" {
 				wsPath = val
-			}
-			var timeout time.Duration
-			if req.TimeoutMs > 0 {
-				timeout = time.Duration(req.TimeoutMs) * time.Millisecond
 			}
 			renderReq := videorender.RenderJobRequest{
 				SessionID:     sessionID,
@@ -551,7 +592,6 @@ func (s *Server) handleSessionV3VideoProjectDetail(w http.ResponseWriter, r *htt
 				RevisionID:    job.RevisionID,
 				JobID:         job.ID,
 				WorkspacePath: wsPath,
-				Timeout:       timeout,
 			}
 			s.videoRender.StartRenderJob(principal, renderReq)
 		}
@@ -610,6 +650,45 @@ func (s *Server) handleSessionV3VideoProjectDetail(w http.ResponseWriter, r *htt
 				return
 			}
 			switch action {
+			case "composition-update":
+				var req sessionV3UpdateVideoCompositionRequest
+				if err := decodeJSON(r, &req); err != nil {
+					writeError(w, http.StatusBadRequest, err)
+					return
+				}
+				proposal, err := s.videoProjects.UpdateComposition(r.Context(), principal, videoproject.UpdateCompositionInput{SessionID: sessionID, ProjectID: projectID, ProposalID: proposalID, ExpectedRevisionID: req.ExpectedRevisionID, Plan: req.Plan, NowUnixMs: time.Now().UnixMilli()})
+				if err != nil {
+					writeError(w, http.StatusConflict, err)
+					return
+				}
+				writeJSON(w, http.StatusOK, map[string]any{"ok": true, "proposal": proposal, "working_revision_id": proposal.WorkingRevisionID, "requires_user_acceptance": true})
+				return
+			case "animation-candidate-select":
+				var req sessionV3SelectVideoAnimationCandidateRequest
+				if err := decodeJSON(r, &req); err != nil {
+					writeError(w, http.StatusBadRequest, err)
+					return
+				}
+				proposal, err := s.videoProjects.SelectAnimationCandidate(r.Context(), principal, videoproject.SelectAnimationCandidateInput{SessionID: sessionID, ProjectID: projectID, ProposalID: proposalID, PartID: req.PartID, CandidateID: req.SelectedCandidateID, SelectedSource: req.SelectedSource, NowUnixMs: time.Now().UnixMilli()})
+				if err != nil {
+					writeError(w, http.StatusBadRequest, err)
+					return
+				}
+				writeJSON(w, http.StatusOK, map[string]any{"ok": true, "proposal": proposal, "requires_export": true})
+				return
+			case "animation-derivative-promote":
+				var req sessionV3PromoteVideoAnimationDerivativeRequest
+				if err := decodeJSON(r, &req); err != nil {
+					writeError(w, http.StatusBadRequest, err)
+					return
+				}
+				proposal, err := s.videoProjects.PromoteAnimationDerivative(r.Context(), principal, videoproject.PromoteAnimationDerivativeInput{SessionID: sessionID, ProjectID: projectID, ProposalID: proposalID, PartID: req.PartID, CandidateID: req.SelectedCandidateID, SelectedSource: req.SelectedSource, Derivative: req.Derivative, NowUnixMs: time.Now().UnixMilli()})
+				if err != nil {
+					writeError(w, http.StatusBadRequest, err)
+					return
+				}
+				writeJSON(w, http.StatusOK, map[string]any{"ok": true, "proposal": proposal, "render_ready": true})
+				return
 			case "accept":
 				var req sessionV3AcceptVideoEditProposalRequest
 				if err := decodeJSON(r, &req); err != nil {
@@ -913,10 +992,12 @@ func videoprojectCreateRevisionInput(sessionID, projectID string, req sessionV3C
 
 func videoprojectStartRenderJobInput(sessionID, projectID string, req sessionV3StartVideoRenderRequest) videoproject.StartRenderJobInput {
 	return videoproject.StartRenderJobInput{
-		SessionID:  sessionID,
-		ProjectID:  projectID,
-		RevisionID: req.RevisionID,
-		JobID:      req.JobID,
-		NowUnixMs:  time.Now().UnixMilli(),
+		SessionID:     sessionID,
+		ProjectID:     projectID,
+		RevisionID:    req.RevisionID,
+		JobID:         req.JobID,
+		RenderQuality: req.RenderQuality,
+		RenderFPS:     req.RenderFPS,
+		NowUnixMs:     time.Now().UnixMilli(),
 	}
 }

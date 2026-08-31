@@ -21,6 +21,75 @@ import (
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
+func TestManagedCreateInfersHTMLMediaTypeFromFilename(t *testing.T) {
+	authority := &fakeArtifactAuthority{}
+	runtime := NewRuntime(1)
+	runtime.SetArtifactAuthority(authority)
+	ctx, scope := artifactToolContext()
+	source := pebblestore.SessionArtifactSelectionReference{SessionID: "source-session", CollectionID: "source-collection", VariantID: "source-variant", EventSeq: 9}
+	ctx = WithArtifactRunContext(ctx, ArtifactRunContext{SessionID: "session-1", ChildSessionID: "session-1", TaskCallID: "task-1", CollectionID: "collection-1", VariantID: "variant-1", SourceArtifact: &source})
+	output, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, Call{CallID: "managed-create-html", Name: "manage_artifact", Arguments: `{"action":"create","filename":"revision.html","content":"<h1>revision</h1>"}`})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if authority.created.MediaType != "text/html" {
+		t.Fatalf("managed create media type = %q", authority.created.MediaType)
+	}
+	if authority.reserveCalls != 0 {
+		t.Fatalf("unprofiled HTML entered animation preflight gate: %d", authority.reserveCalls)
+	}
+	if strings.Contains(output, "trusted_animation_preflight") {
+		t.Fatalf("unprofiled HTML claimed trusted animation preflight: %s", output)
+	}
+}
+
+func TestManagedPackageProjectsShortAnimationDurationForVideoPlans(t *testing.T) {
+	authority := &fakeArtifactAuthority{}
+	runtime := NewRuntime(1)
+	runtime.SetArtifactAuthority(authority)
+	runtime.SetHTMLAnimationRenderer(&fakeHTMLAnimationRenderer{result: testAnimationPreflightResult(t, 6000, 30)})
+	ctx, scope := artifactToolContext()
+	ctx = WithArtifactRunContext(ctx, ArtifactRunContext{SessionID: "session-1", ChildSessionID: "session-1", TaskCallID: "task-1", CollectionID: "collection-1", VariantID: "variant-1", AnimationProfile: reviewedMotionProfile(t)})
+	html := `<!doctype html><script id="swarm-animation-manifest" type="application/json">{"version":"swarm.animation/v1","duration_ms":6000,"fps":30}</script>`
+	arguments, err := json.Marshal(map[string]any{"action": "create_package", "filename": "candidate.zip", "entries": []any{map[string]any{"name": "index.html", "content": html}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, Call{CallID: "managed-package-animation", Name: "manage_artifact", Arguments: string(arguments)}); err != nil {
+		t.Fatal(err)
+	}
+	if len(authority.packaged.Parts) != 1 || authority.packaged.Parts[0].Kind != "temporal" || authority.packaged.Parts[0].EndMs != 6000 {
+		t.Fatalf("managed package animation parts = %+v, want canonical 6000ms duration metadata", authority.packaged.Parts)
+	}
+}
+
+func TestManagedCreateProjectsShortAnimationDurationForVideoPlans(t *testing.T) {
+	authority := &fakeArtifactAuthority{}
+	runtime := NewRuntime(1)
+	runtime.SetArtifactAuthority(authority)
+	runtime.SetHTMLAnimationRenderer(&fakeHTMLAnimationRenderer{result: testAnimationPreflightResult(t, 6000, 30)})
+	ctx, scope := artifactToolContext()
+	ctx = WithArtifactRunContext(ctx, ArtifactRunContext{SessionID: "session-1", ChildSessionID: "session-1", TaskCallID: "task-1", CollectionID: "collection-1", VariantID: "variant-1", AnimationProfile: reviewedMotionProfile(t)})
+	html := `<!doctype html><script id="swarm-animation-manifest" type="application/json">{"version":"swarm.animation/v1","duration_ms":6000,"fps":30}</script>`
+	arguments, err := json.Marshal(map[string]any{"action": "create", "filename": "candidate.html", "media_type": "text/html", "content": html})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, Call{CallID: "managed-create-animation", Name: "manage_artifact", Arguments: string(arguments)}); err != nil {
+		t.Fatal(err)
+	}
+	if len(authority.created.Parts) != 1 || authority.created.Parts[0].Kind != "temporal" || authority.created.Parts[0].EndMs != 6000 {
+		t.Fatalf("managed animation parts = %+v, want canonical 6000ms duration metadata", authority.created.Parts)
+	}
+}
+
+func TestArtifactReviewTargetIDsPreservesBoundedOrder(t *testing.T) {
+	targets := []pebblestore.SessionArtifactPart{{ID: "part-1"}, {ID: "part-3"}, {ID: "part-1"}}
+	if got := artifactReviewTargetIDs(targets); got != "part-1,part-3" {
+		t.Fatalf("artifactReviewTargetIDs = %q", got)
+	}
+}
+
 type fakeManagedImageGenerator struct {
 	calls        int
 	req          imagegen.ManagedGenerateRequest
@@ -59,34 +128,70 @@ func (f *fakeImageUISettings) SetForAccount(_ string, settings uisettings.UISett
 }
 
 type fakeArtifactAuthority struct {
-	principal       artifact.Principal
-	created         artifact.CreateInput
-	initial         artifact.CreateInitialCompositionInput
-	packaged        artifact.CreatePackageInput
-	readBody        []byte
-	readErr         error
-	packageReadErr  error
-	packageManifest []artifact.PackageManifestEntry
-	variant         pebblestore.SessionArtifactVariant
-	reference       pebblestore.SessionArtifactSelectionReference
-	referenceRead   bool
-	deleted         string
-	materializedRef pebblestore.SessionArtifactSelectionReference
-	batchItems      []artifact.MaterializeBatchItem
-	batchVariants   []pebblestore.SessionArtifactVariant
-	workspaceRoot   string
-	destination     string
-	overwrite       bool
-	createdFromFile artifact.CreateFileInput
-	catalogOptions  pebblestore.SessionArtifactCatalogOptions
-	catalogPage     pebblestore.SessionArtifactCatalogPage
+	principal         artifact.Principal
+	created           artifact.CreateInput
+	inspectionCreates []artifact.CreateInput
+	initial           artifact.CreateInitialCompositionInput
+	packaged          artifact.CreatePackageInput
+	readBody          []byte
+	readErr           error
+	packageReadErr    error
+	packageManifest   []artifact.PackageManifestEntry
+	variant           pebblestore.SessionArtifactVariant
+	reference         pebblestore.SessionArtifactSelectionReference
+	referenceRead     bool
+	deleted           string
+	materializedRef   pebblestore.SessionArtifactSelectionReference
+	batchItems        []artifact.MaterializeBatchItem
+	batchVariants     []pebblestore.SessionArtifactVariant
+	workspaceRoot     string
+	destination       string
+	reserveCalls      int
+	createCalls       int
+	packageCalls      int
+	publishCalls      int
+	overwrite         bool
+	createdFromFile   artifact.CreateFileInput
+	catalogOptions    pebblestore.SessionArtifactCatalogOptions
+	catalogPage       pebblestore.SessionArtifactCatalogPage
+}
+
+func (f *fakeArtifactAuthority) Reserve(principal artifact.Principal, input artifact.CreateInput) (pebblestore.SessionArtifactVariant, error) {
+	f.reserveCalls++
+	f.principal, f.created = principal, input
+	if f.variant.ID == input.VariantID && f.variant.CollectionID == input.CollectionID && (f.variant.Status == pebblestore.SessionArtifactStatusFailed || f.variant.Status == pebblestore.SessionArtifactStatusReady) {
+		return f.variant, nil
+	}
+	f.variant = pebblestore.SessionArtifactVariant{ID: input.VariantID, CollectionID: input.CollectionID, SessionID: principal.SessionID, EventSeq: 1, Status: pebblestore.SessionArtifactStatusStaging, ProjectionReservation: true, Filename: input.Filename, MediaType: input.MediaType, Presentation: input.Presentation, OutputRequirements: input.OutputRequirements, AnimationProfile: input.AnimationProfile, Parts: append([]pebblestore.SessionArtifactPart(nil), input.Parts...)}
+	return f.variant, nil
+}
+
+func (f *fakeArtifactAuthority) UpdateProgress(principal artifact.Principal, _ string, collectionID, variantID string, progress pebblestore.SessionArtifactProgress) (pebblestore.SessionArtifactVariant, error) {
+	f.principal = principal
+	f.variant.CollectionID, f.variant.ID, f.variant.Status, f.variant.Progress = collectionID, variantID, pebblestore.SessionArtifactStatusStaging, &progress
+	f.variant.EventSeq++
+	return f.variant, nil
+}
+
+func (f *fakeArtifactAuthority) MarkFailed(principal artifact.Principal, _ string, collectionID, variantID, failureCode string) (pebblestore.SessionArtifactVariant, error) {
+	f.principal = principal
+	f.variant.CollectionID, f.variant.ID, f.variant.Status, f.variant.FailureCode = collectionID, variantID, pebblestore.SessionArtifactStatusFailed, failureCode
+	f.variant.EventSeq++
+	return f.variant, nil
 }
 
 func (f *fakeArtifactAuthority) Create(_ context.Context, principal artifact.Principal, input artifact.CreateInput) (pebblestore.SessionArtifactVariant, error) {
-	f.principal, f.created = principal, input
-	f.readBody = append([]byte(nil), input.Body...)
+	f.createCalls++
+	f.principal = principal
 	digest := sha256.Sum256(input.Body)
-	f.variant = pebblestore.SessionArtifactVariant{ID: input.VariantID, CollectionID: input.CollectionID, SessionID: principal.SessionID, EventSeq: 1, Status: pebblestore.SessionArtifactStatusReady, Filename: input.Filename, MediaType: input.MediaType, Size: int64(len(input.Body)), DigestSHA256: hex.EncodeToString(digest[:]), Presentation: input.Presentation, OutputRequirements: input.OutputRequirements, AnimationProfile: input.AnimationProfile}
+	created := pebblestore.SessionArtifactVariant{ID: input.VariantID, CollectionID: input.CollectionID, SessionID: principal.SessionID, EventSeq: uint64(f.createCalls), Status: pebblestore.SessionArtifactStatusReady, Filename: input.Filename, MediaType: input.MediaType, Size: int64(len(input.Body)), DigestSHA256: hex.EncodeToString(digest[:]), Presentation: input.Presentation, OutputRequirements: input.OutputRequirements, AnimationProfile: input.AnimationProfile, Parts: append([]pebblestore.SessionArtifactPart(nil), input.Parts...)}
+	if input.Role == pebblestore.SessionArtifactRoleRenderOnly {
+		f.inspectionCreates = append(f.inspectionCreates, input)
+		return created, nil
+	}
+	f.created = input
+	f.readBody = append([]byte(nil), input.Body...)
+	f.variant = created
 	return f.variant, nil
 }
 func (f *fakeArtifactAuthority) CreateInitialComposition(_ context.Context, principal artifact.Principal, input artifact.CreateInitialCompositionInput) (pebblestore.SessionArtifactVariant, error) {
@@ -102,6 +207,7 @@ func (f *fakeArtifactAuthority) CreateInitialComposition(_ context.Context, prin
 	return f.variant, nil
 }
 func (f *fakeArtifactAuthority) CreatePackage(_ context.Context, principal artifact.Principal, input artifact.CreatePackageInput) (pebblestore.SessionArtifactVariant, error) {
+	f.packageCalls++
 	f.principal, f.packaged = principal, input
 	f.variant = pebblestore.SessionArtifactVariant{ID: input.VariantID, CollectionID: input.CollectionID, SessionID: principal.SessionID, EventSeq: 1, Status: pebblestore.SessionArtifactStatusReady, Filename: input.Filename, MediaType: "application/zip", Size: 1, Presentation: input.Presentation, OutputRequirements: input.OutputRequirements, AnimationProfile: input.AnimationProfile}
 	return f.variant, nil
@@ -112,6 +218,9 @@ func (f *fakeArtifactAuthority) List(principal artifact.Principal, _ string, _ i
 }
 func (f *fakeArtifactAuthority) ListVariants(principal artifact.Principal, collectionID string, _ int) ([]pebblestore.SessionArtifactVariant, error) {
 	f.principal = principal
+	if f.variant.ID != "" && f.variant.CollectionID == collectionID {
+		return []pebblestore.SessionArtifactVariant{f.variant}, nil
+	}
 	return []pebblestore.SessionArtifactVariant{{ID: "variant-1", CollectionID: collectionID}}, nil
 }
 func (f *fakeArtifactAuthority) SearchCatalog(principal artifact.Principal, options pebblestore.SessionArtifactCatalogOptions) (pebblestore.SessionArtifactCatalogPage, error) {
@@ -160,8 +269,9 @@ func (f *fakeArtifactAuthority) MaterializeBatchReferences(_ context.Context, pr
 	return materialized, variants, nil
 }
 func (f *fakeArtifactAuthority) PublishWorkspace(_ context.Context, principal artifact.Principal, input artifact.CreateFileInput) (pebblestore.SessionArtifactVariant, error) {
+	f.publishCalls++
 	f.principal, f.createdFromFile = principal, input
-	f.variant = pebblestore.SessionArtifactVariant{ID: input.VariantID, CollectionID: input.CollectionID, SessionID: principal.SessionID, EventSeq: 11, Status: pebblestore.SessionArtifactStatusReady, Filename: input.Filename, MediaType: input.MediaType, DigestSHA256: "published-digest", Size: 7, Presentation: input.Presentation, Lineage: pebblestore.SessionArtifactLineage{SourceSessionID: input.SourceSessionID, SourceCollectionID: input.SourceCollectionID, SourceVariantID: input.SourceVariantID, SourceEventSeq: input.SourceEventSeq}}
+	f.variant = pebblestore.SessionArtifactVariant{ID: input.VariantID, CollectionID: input.CollectionID, SessionID: principal.SessionID, EventSeq: 11, Status: pebblestore.SessionArtifactStatusReady, Filename: input.Filename, MediaType: input.MediaType, DigestSHA256: "published-digest", Size: 7, Presentation: input.Presentation, AnimationProfile: input.AnimationProfile, Lineage: pebblestore.SessionArtifactLineage{SourceSessionID: input.SourceSessionID, SourceCollectionID: input.SourceCollectionID, SourceVariantID: input.SourceVariantID, SourceEventSeq: input.SourceEventSeq}}
 	return f.variant, nil
 }
 func (f *fakeArtifactAuthority) Select(principal artifact.Principal, _, collectionID, variantID string) (pebblestore.SessionArtifactSelectionReference, error) {
@@ -543,13 +653,13 @@ func TestManageArtifactDefinitionExplainsKindSpecificPartsContract(t *testing.T)
 	parts := properties["parts"].(map[string]any)
 	partsDescription := parts["description"].(string)
 	for _, want := range []string{
-		"legacy/unproven locator-only",
-		"never create or prove real part identities",
-		"meaningful authored region or section",
-		"swarm.iteration/v1 animation",
-		"same id, label, start_ms, and end_ms",
-		"Do not invent generic parts",
-		"Use initial_parts instead",
+		"source-bound review/edit targets",
+		"never create or prove independently replaceable bytes",
+		"For text/html, omit parts",
+		"server derive useful targets",
+		"without splitting or rewriting the file",
+		"explicitly supplied parts remain authoritative",
+		"Use initial_parts only",
 	} {
 		if !strings.Contains(partsDescription, want) {
 			t.Fatalf("parts description missing %q: %s", want, partsDescription)
@@ -596,6 +706,65 @@ func TestManageArtifactCreateCarriesReviewParts(t *testing.T) {
 	}
 	if part := authority.created.Parts[1]; part.ID != "hero" || part.Kind != "spatial" || part.X != 0.1 || part.Y != 0.2 || part.Width != 0.8 || part.Height != 0.5 {
 		t.Fatalf("spatial part = %#v", part)
+	}
+}
+
+func TestManageArtifactCreateDerivesHTMLReviewTargetsWithoutMultipartPayloads(t *testing.T) {
+	authority := &fakeArtifactAuthority{}
+	runtime := NewRuntime(1)
+	runtime.SetArtifactAuthority(authority)
+	ctx, scope := artifactToolContext()
+	html := `<!doctype html><main id="hero" aria-label="Hero"></main><footer id="proof"></footer>`
+	_, err := runtime.executeManageArtifact(ctx, scope, "derived-html-parts", map[string]any{
+		"action": "create", "filename": "page.html", "media_type": "text/html", "content": html,
+	})
+	if err != nil {
+		t.Fatalf("create monolithic HTML: %v", err)
+	}
+	if string(authority.created.Body) != html || len(authority.created.Parts) != 2 || authority.created.Parts[0].ID != "hero" || authority.created.Parts[1].ID != "proof" {
+		t.Fatalf("monolithic HTML publication = %#v", authority.created)
+	}
+	if len(authority.initial.Parts) != 0 {
+		t.Fatalf("derived review targets entered multipart composition: %#v", authority.initial)
+	}
+}
+
+func TestManagedProfiledHTMLRejectsInitialPartsThatBypassTrustedPreflight(t *testing.T) {
+	authority := &fakeArtifactAuthority{}
+	runtime := NewRuntime(1)
+	runtime.SetArtifactAuthority(authority)
+	ctx, scope := artifactToolContext()
+	ctx = WithArtifactRunContext(ctx, ArtifactRunContext{SessionID: "session-1", ChildSessionID: "session-1", TaskCallID: "task-1", CollectionID: "collection-1", VariantID: "variant-1", AnimationProfile: reviewedMotionProfile(t)})
+	_, err := runtime.executeManageArtifact(ctx, scope, "profiled-initial-parts", map[string]any{
+		"action": "create", "filename": "composed.html", "media_type": "text/html",
+		"initial_parts": []any{
+			map[string]any{"id": "shell", "label": "Shell", "media_type": "text/html", "content": `<!doctype html><script id="swarm-animation-manifest" type="application/json">{"version":"swarm.animation/v1","duration_ms":1000,"fps":30}</script>`},
+			map[string]any{"id": "runtime", "label": "Runtime", "media_type": "text/javascript", "content": "const animated = true;"},
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "animation_source_invalid") {
+		t.Fatalf("profiled initial_parts error = %v", err)
+	}
+	if authority.reserveCalls != 0 || authority.createCalls != 0 || len(authority.initial.Parts) != 0 {
+		t.Fatalf("profiled initial_parts bypassed preflight: reserve=%d create=%d initial=%#v", authority.reserveCalls, authority.createCalls, authority.initial)
+	}
+}
+
+func TestProfiledNonHTMLInitialPartsRemainSupported(t *testing.T) {
+	authority := &fakeArtifactAuthority{}
+	runtime := NewRuntime(1)
+	runtime.SetArtifactAuthority(authority)
+	ctx, scope := artifactToolContext()
+	ctx = WithArtifactRunContext(ctx, ArtifactRunContext{SessionID: "session-1", ChildSessionID: "session-1", TaskCallID: "task-1", CollectionID: "collection-1", VariantID: "variant-1", AnimationProfile: reviewedMotionProfile(t)})
+	_, err := runtime.executeManageArtifact(ctx, scope, "profiled-text-parts", map[string]any{
+		"action": "create", "filename": "composed.txt", "media_type": "text/plain",
+		"initial_parts": []any{
+			map[string]any{"id": "first", "label": "First", "media_type": "text/plain", "content": "first"},
+			map[string]any{"id": "second", "label": "Second", "media_type": "text/plain", "content": "second"},
+		},
+	})
+	if err != nil || len(authority.initial.Parts) != 2 || authority.reserveCalls != 0 {
+		t.Fatalf("profiled non-HTML initial_parts: err=%v reserve=%d initial=%#v", err, authority.reserveCalls, authority.initial)
 	}
 }
 
@@ -704,12 +873,15 @@ func TestManageArtifactAnimationProfileCreateContract(t *testing.T) {
 	runtime.SetArtifactAuthority(authority)
 	ctx, scope := artifactToolContext()
 
-	output, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, Call{CallID: "motion", Name: "manage_artifact", Arguments: `{"action":"create","filename":"motion.html","media_type":"text/html","content":"animated","animation_profile":{"profile":"motion_ui"}}`})
+	output, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, Call{CallID: "motion", Name: "manage_artifact", Arguments: `{"action":"create","filename":"motion.css","media_type":"text/css","content":"animated","animation_profile":{"profile":"motion_ui"}}`})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if authority.created.AnimationProfile == nil || authority.created.AnimationProfile.ProfileID != "motion_ui" || authority.created.AnimationProfile.RuntimeKind != "native_css_waapi_svg" || authority.created.AnimationProfile.RuntimePackage != "" || authority.created.AnimationProfile.Budgets.NetworkAllowed || !strings.Contains(output, `"animation_profile"`) {
 		t.Fatalf("created=%#v output=%s", authority.created, output)
+	}
+	if authority.reserveCalls != 0 {
+		t.Fatalf("non-HTML profiled artifact entered animation publication gate: %+v", authority)
 	}
 	if _, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, Call{CallID: "override", Name: "manage_artifact", Arguments: `{"action":"create","filename":"motion.html","media_type":"text/html","content":"animated","animation_profile":{"profile":"motion_ui","runtime_version":"latest"}}`}); err == nil || !strings.Contains(err.Error(), "must contain only profile") {
 		t.Fatalf("animation override error = %v", err)
@@ -738,7 +910,7 @@ func TestManagedArtifactAnimationProfileIsInjectedAndOverrideRejected(t *testing
 	if _, err := runtime.executeManageArtifact(ctx, scope, "override", map[string]any{"action": "create", "filename": "motion.html", "media_type": "text/html", "content": "animated", "animation_profile": map[string]any{"profile": "spatial_3d"}}); err == nil || !strings.Contains(err.Error(), "must omit animation_profile") {
 		t.Fatalf("managed override error = %v", err)
 	}
-	output, err := runtime.executeManageArtifact(ctx, scope, "valid", map[string]any{"action": "create", "filename": "motion.html", "media_type": "text/html", "content": "animated"})
+	output, err := runtime.executeManageArtifact(ctx, scope, "valid", map[string]any{"action": "create", "filename": "motion.css", "media_type": "text/css", "content": "animated"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -984,7 +1156,7 @@ func TestManageArtifactMaterializeBatchUsesExactReferencesAndReportsDigests(t *t
 }
 
 func TestManageArtifactPublishWorkspaceRejectsUnsafePrivateSourcesAndPreservesLineage(t *testing.T) {
-	authority := &fakeArtifactAuthority{}
+	authority := &fakeArtifactAuthority{variant: pebblestore.SessionArtifactVariant{ID: "source-variant", CollectionID: "source-collection", SessionID: "source-session", EventSeq: 42, Status: pebblestore.SessionArtifactStatusReady, MediaType: "text/plain"}}
 	runtime := NewRuntime(1)
 	runtime.SetArtifactAuthority(authority)
 	ctx, scope := artifactToolContext()
@@ -1028,6 +1200,105 @@ func TestManageArtifactPublishWorkspaceRejectsUnsafePrivateSourcesAndPreservesLi
 	}
 	if _, err := runtime.executeManageArtifact(ctx, scope, "traversal", map[string]any{"action": "publish_workspace", "source": "../outside.txt"}); err == nil || !strings.Contains(err.Error(), "canonical workspace-relative") {
 		t.Fatalf("traversal source error = %v", err)
+	}
+}
+
+func TestManageArtifactDeriveTextPreservesUnmatchedBytesAndExactLineage(t *testing.T) {
+	sourceBody := []byte("prefix\nconst duration=74920;\nconst treatment='base';\nsuffix\n")
+	authority := &fakeArtifactAuthority{readBody: sourceBody, variant: pebblestore.SessionArtifactVariant{ID: "source", CollectionID: "source-collection", SessionID: "source-session", EventSeq: 9, Status: pebblestore.SessionArtifactStatusReady, Filename: "source.txt", MediaType: "text/plain", OutputRequirements: &pebblestore.SessionArtifactOutputRequirements{PresetID: "landscape_video"}}}
+	runtime := NewRuntime(1)
+	runtime.SetArtifactAuthority(authority)
+	ctx, scope := artifactToolContext()
+	args := map[string]any{
+		"action": "derive_text", "session_id": "source-session", "collection_id": "source-collection", "variant_id": "source", "event_seq": 9,
+		"text_edits": []any{
+			map[string]any{"old_string": "duration=74920", "new_string": "duration=10000"},
+			map[string]any{"old_string": "treatment='base'", "new_string": "treatment='orbital'"},
+		},
+	}
+	if _, err := runtime.executeManageArtifact(ctx, scope, "derive-exact", args); err != nil {
+		t.Fatal(err)
+	}
+	want := "prefix\nconst duration=10000;\nconst treatment='orbital';\nsuffix\n"
+	if string(authority.created.Body) != want {
+		t.Fatalf("derived body = %q", authority.created.Body)
+	}
+	if authority.created.SourceSessionID != "source-session" || authority.created.SourceCollectionID != "source-collection" || authority.created.SourceVariantID != "source" || authority.created.SourceEventSeq != 9 {
+		t.Fatalf("derived lineage = %+v", authority.created)
+	}
+	if authority.created.OutputRequirements == nil {
+		t.Fatalf("derived snapshot metadata missing: %+v", authority.created)
+	}
+}
+
+func TestManageArtifactDeriveTextFailsBeforePublishingAmbiguousEdit(t *testing.T) {
+	authority := &fakeArtifactAuthority{readBody: []byte("same same"), variant: pebblestore.SessionArtifactVariant{ID: "source", CollectionID: "source-collection", SessionID: "source-session", EventSeq: 9, Status: pebblestore.SessionArtifactStatusReady, Filename: "source.txt", MediaType: "text/plain"}}
+	runtime := NewRuntime(1)
+	runtime.SetArtifactAuthority(authority)
+	ctx, scope := artifactToolContext()
+	_, err := runtime.executeManageArtifact(ctx, scope, "derive-ambiguous", map[string]any{"action": "derive_text", "session_id": "source-session", "collection_id": "source-collection", "variant_id": "source", "event_seq": 9, "text_edits": []any{map[string]any{"old_string": "same", "new_string": "new"}}})
+	if err == nil || !strings.Contains(err.Error(), "matched 2 times") {
+		t.Fatalf("ambiguous derive error = %v", err)
+	}
+	if authority.created.RequestID != "" {
+		t.Fatalf("ambiguous edit published: %+v", authority.created)
+	}
+}
+
+func TestManageArtifactPublishWorkspaceAttachesReviewedAnimationProfileWithoutChangingSource(t *testing.T) {
+	authority := &fakeArtifactAuthority{}
+	runtime := NewRuntime(1)
+	runtime.SetArtifactAuthority(authority)
+	runtime.SetHTMLAnimationRenderer(&fakeHTMLAnimationRenderer{result: testAnimationPreflightResult(t, 6000, 30)})
+	ctx, scope := artifactToolContext()
+	scope.PrimaryPath = t.TempDir()
+	body := []byte(`<!doctype html><script id="swarm-animation-manifest" type="application/json">{"version":"swarm.animation/v1","duration_ms":6000,"fps":30}</script>`)
+	if err := os.WriteFile(filepath.Join(scope.PrimaryPath, "intro.html"), body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	output, err := runtime.executeManageArtifact(ctx, scope, "publish-profiled", map[string]any{"action": "publish_workspace", "source": "intro.html", "animation_profile": map[string]any{"profile": "motion_ui"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(output, `"trusted_animation_preflight":true`) {
+		t.Fatalf("profiled workspace publication omitted trusted preflight evidence: %s", output)
+	}
+	if authority.created.AnimationProfile == nil || authority.created.AnimationProfile.ProfileID != "motion_ui" || authority.created.Body == nil || authority.publishCalls != 0 || authority.createCalls != 1 {
+		t.Fatalf("profiled workspace publication = create=%#v file=%#v", authority.created, authority.createdFromFile)
+	}
+	if string(authority.created.Body) != string(body) {
+		t.Fatalf("profiled workspace source bytes changed")
+	}
+	if len(authority.created.Parts) != 1 || authority.created.Parts[0].Kind != "temporal" || authority.created.Parts[0].EndMs != 6000 {
+		t.Fatalf("profiled workspace animation parts = %+v, want canonical 6000ms duration metadata", authority.created.Parts)
+	}
+}
+
+func TestManageArtifactPublishWorkspaceInheritsOnlyAuthenticatedAnimationProfile(t *testing.T) {
+	authority := &fakeArtifactAuthority{variant: pebblestore.SessionArtifactVariant{ID: "source-variant", CollectionID: "source-collection", SessionID: "source-session", EventSeq: 42, Status: pebblestore.SessionArtifactStatusReady, MediaType: "text/css", AnimationProfile: reviewedMotionProfile(t)}}
+	runtime := NewRuntime(1)
+	runtime.SetArtifactAuthority(authority)
+	ctx, scope := artifactToolContext()
+	scope.PrimaryPath = t.TempDir()
+	if err := os.WriteFile(filepath.Join(scope.PrimaryPath, "motion.css"), []byte("motion"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	args := map[string]any{"action": "publish_workspace", "source": "motion.css", "source_session_id": "source-session", "source_collection_id": "source-collection", "source_variant_id": "source-variant", "source_event_seq": 42}
+	if _, err := runtime.executeManageArtifact(ctx, scope, "publish-motion", args); err != nil {
+		t.Fatal(err)
+	}
+	if authority.createdFromFile.AnimationProfile == nil || authority.createdFromFile.AnimationProfile.ProfileID != "motion_ui" || authority.reference.EventSeq != 42 || authority.reserveCalls != 0 || authority.publishCalls != 1 {
+		t.Fatalf("workspace profile inheritance = %#v ref=%#v", authority.createdFromFile.AnimationProfile, authority.reference)
+	}
+	badProfile := *reviewedMotionProfile(t)
+	badProfile.RegistryVersion = "untrusted"
+	authority.variant.AnimationProfile = &badProfile
+	if _, err := runtime.executeManageArtifact(ctx, scope, "publish-bad-profile", args); err == nil || !strings.Contains(err.Error(), "incompatible animation profile snapshot") {
+		t.Fatalf("incompatible profile error = %v", err)
+	}
+	delete(args, "source_event_seq")
+	if _, err := runtime.executeManageArtifact(ctx, scope, "publish-incomplete", args); err == nil || !strings.Contains(err.Error(), "all four fields") {
+		t.Fatalf("incomplete source error = %v", err)
 	}
 }
 

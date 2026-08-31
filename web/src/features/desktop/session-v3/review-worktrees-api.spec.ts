@@ -3,7 +3,7 @@ import test from 'node:test'
 
 import { createEmptyDesktopV3CacheState } from '../state/desktop-v3-cache-reducer'
 import { getDesktopV3CacheSnapshot, resetDesktopV3CacheForTests } from '../state/desktop-v3-cache-store'
-import { unarchiveDesktopV3ReviewSessions } from './review-worktrees-api'
+import { reviewDesktopV3Worktrees, unarchiveDesktopV3ReviewSessions } from './review-worktrees-api'
 
 const originalFetch = globalThis.fetch
 
@@ -20,6 +20,33 @@ function sessionSnapshot(id: string) {
     last_message_at: 0,
   }
 }
+
+test('promotion sends explicit exact source and target lineage', async () => {
+  const calls: Array<{ url: string; body: Record<string, unknown> }> = []
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    calls.push({ url: String(input), body: init?.body ? JSON.parse(String(init.body)) as Record<string, unknown> : {} })
+    return new Response(JSON.stringify({
+      ok: true, target_detection: '', current_target_branch: 'dev', current_target_head: 'target-head', comparison: '',
+      retained: [], done: [], archived_session_ids: [], recently_archived: [], grace_period_ms: 1,
+      checkout_dirty: false, checkout_dirty_count: 0, blocked_by_checkout_count: 0, complete: true,
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+  }) as typeof fetch
+  try {
+    await reviewDesktopV3Worktrees({
+      workspacePath: '/workspace', promoteSessionIds: ['session-lane'],
+      sourceHeadBySessionId: { 'session-lane': 'source-head' }, targetBranch: 'dev', targetHead: 'target-head',
+    })
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+  assert.equal(calls[0]?.url, '/v3/sessions:review-worktrees')
+  assert.equal(calls[0]?.body.workspace_path, '/workspace')
+  assert.deepEqual(calls[0]?.body.promote_session_ids, ['session-lane'])
+  assert.deepEqual(calls[0]?.body.source_head_by_session_id, { 'session-lane': 'source-head' })
+  assert.equal(calls[0]?.body.target_branch, 'dev')
+  assert.equal(calls[0]?.body.target_head, 'target-head')
+  assert.equal('integrate_session_ids' in (calls[0]?.body || {}), false)
+})
 
 test('unarchive applies committed reactivation and authoritative hydrate to the Desktop cache', async () => {
   const state = createEmptyDesktopV3CacheState()

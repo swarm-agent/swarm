@@ -47,10 +47,12 @@ type SwarmToolSidebarProps = {
   emptySessionsMessage: string
   defaultSessionTitle: string
   actions?: SwarmToolSidebarAction[]
+  beforeSessions?: ReactNode
   children?: ReactNode
   layoutClassName?: string
   childrenClassName?: string
   compactSelectedSession?: boolean
+  prioritizeChildren?: boolean
 }
 
 export function SwarmToolSidebar({
@@ -84,10 +86,12 @@ export function SwarmToolSidebar({
   emptySessionsMessage,
   defaultSessionTitle,
   actions = [],
+  beforeSessions,
   children,
   layoutClassName,
   childrenClassName,
   compactSelectedSession = false,
+  prioritizeChildren = false,
 }: SwarmToolSidebarProps) {
   return (
     <aside className={layoutClassName ?? 'flex min-h-0 w-full shrink-0 flex-1 flex-col overflow-hidden py-2 font-mono text-[12px] text-[var(--app-text-muted)] lg:mr-5 lg:w-[276px] lg:flex-none lg:border-r lg:border-[var(--app-border)] lg:py-5 lg:pl-3 lg:pr-4'}>
@@ -159,7 +163,9 @@ export function SwarmToolSidebar({
         </>
       ) : null}
 
-      <div className={compactSelectedSession ? 'min-h-0 max-h-32 shrink-0 border-y border-[var(--app-border)] py-3' : 'mt-4 min-h-0 flex-1 border-y border-[var(--app-border)] py-3'}>
+      {beforeSessions ? <div className={`${prioritizeChildren ? 'order-4 max-h-48 overflow-y-auto' : ''} mt-4 shrink-0`}>{beforeSessions}</div> : null}
+
+      <div className={`${prioritizeChildren ? 'order-5' : ''} ${compactSelectedSession ? 'min-h-0 max-h-32 shrink-0 border-y border-[var(--app-border)] py-3' : 'mt-4 min-h-0 flex-1 border-y border-[var(--app-border)] py-3'}`}>
         <div className="mb-2 flex items-center justify-between px-2">
           <p className="text-[10px] uppercase tracking-[0.18em] text-[var(--app-text-subtle)]">{sessionsLabel}</p>
           {sessionsLoading ? <Loader2 size={12} className="animate-spin" /> : null}
@@ -188,7 +194,7 @@ export function SwarmToolSidebar({
       </div>
 
       {actions.length > 0 ? (
-        <div className={`${compactSelectedSession ? 'mt-3' : 'mt-4'} flex flex-col gap-1 border-b border-[var(--app-border)] pb-3`}>
+        <div className={`${prioritizeChildren ? 'order-6' : ''} ${compactSelectedSession ? 'mt-3' : 'mt-4'} flex flex-col gap-1 border-b border-[var(--app-border)] pb-3`}>
           {actions.map((action) => (
             <button key={action.id} type="button" onClick={action.onClick} disabled={action.disabled} className="flex min-h-[30px] items-center justify-between gap-2 px-2 text-left disabled:cursor-not-allowed disabled:opacity-50 hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]">
               <span className="flex min-w-0 items-center gap-2">{action.icon}<span className="truncate">{action.label}</span></span>
@@ -198,7 +204,7 @@ export function SwarmToolSidebar({
         </div>
       ) : null}
 
-      {children ? <div className={childrenClassName ?? 'hidden lg:contents'}>{children}</div> : null}
+      {children ? <div className={`${prioritizeChildren ? 'order-1 min-h-0 flex-1 overflow-y-auto' : ''} ${childrenClassName ?? 'hidden lg:contents'}`}>{children}</div> : null}
     </aside>
   )
 }

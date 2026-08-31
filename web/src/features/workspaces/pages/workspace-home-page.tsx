@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, type DragEvent, type ReactNode } from 'react'
 import { Link, useNavigate } from '@tanstack/react-router'
-import { ArrowUp, Check, ChevronRight, Eye, EyeOff, FileText, Folder, FolderPlus, GitBranch, GripVertical, Home, MessageSquare, Plus, RefreshCw, Search, Settings, X } from 'lucide-react'
+import { ArrowUp, ChevronRight, Eye, EyeOff, FileText, Folder, FolderPlus, GitBranch, GripVertical, Home, MessageSquare, Plus, RefreshCw, Search, Settings, X } from 'lucide-react'
 import { Card } from '../../../components/ui/card'
 import { Button } from '../../../components/ui/button'
 import { Badge } from '../../../components/ui/badge'
@@ -37,16 +37,7 @@ function isSamePath(left: string, right: string): boolean {
   return normalizeComparePath(left) === normalizeComparePath(right)
 }
 
-function isPathInside(childPath: string, parentPath: string): boolean {
-  const child = normalizeComparePath(childPath)
-  const parent = normalizeComparePath(parentPath)
-  if (!child || !parent || child === parent) {
-    return false
-  }
-  return child.startsWith(`${parent}/`) || child.startsWith(`${parent}\\`)
-}
-
-type ExplorerDrawerMode = 'browse' | 'workspace-folder' | 'linked-folders' | null
+type ExplorerDrawerMode = 'browse' | 'workspace-folder' | null
 
 function useMediaQuery(query: string): boolean {
   const [matches, setMatches] = useState(() => (typeof window === 'undefined' ? false : window.matchMedia(query).matches))
@@ -300,8 +291,6 @@ interface MobileExplorerDrawerProps {
   browserLoading: boolean
   browserError: string | null
   workspaces: WorkspaceEntry[]
-  workspacePath: string
-  linkedDirectories: string[]
   selectingPath: string | null
   savingPath: string | null
   onClose: () => void
@@ -310,7 +299,6 @@ interface MobileExplorerDrawerProps {
   onCreateWorkspace: (entry: WorkspaceDiscoverEntry) => void
   onUseFolderTemporarily: (path: string) => void
   onPickWorkspaceFolder: (path: string) => void
-  onAddLinkedDirectories: (paths: string[]) => void
   onCreateFolder: (parentPath: string, name: string) => Promise<string>
 }
 
@@ -321,8 +309,6 @@ function MobileExplorerDrawer({
   browserLoading,
   browserError,
   workspaces,
-  workspacePath,
-  linkedDirectories,
   selectingPath,
   savingPath,
   onClose,
@@ -331,18 +317,15 @@ function MobileExplorerDrawer({
   onCreateWorkspace,
   onUseFolderTemporarily,
   onPickWorkspaceFolder,
-  onAddLinkedDirectories,
   onCreateFolder,
 }: MobileExplorerDrawerProps) {
   const [search, setSearch] = useState('')
-  const [selectedLinkedFolders, setSelectedLinkedFolders] = useState<Set<string>>(() => new Set())
   const [fullHeight, setFullHeight] = useState(false)
   const [createdFolderName, setCreatedFolderName] = useState<string | null>(null)
 
   useEffect(() => {
     if (!open) {
       setSearch('')
-      setSelectedLinkedFolders(new Set())
       setFullHeight(false)
     }
   }, [open])
@@ -350,28 +333,20 @@ function MobileExplorerDrawer({
   const currentPath = browser?.resolvedPath ?? ''
   const currentPathLabel = currentPath ? formatWorkspacePath(currentPath) : '—'
   const savedPaths = useMemo(() => new Set(workspaces.map((workspace) => normalizeComparePath(workspace.path))), [workspaces])
-  const linkedPathSet = useMemo(() => new Set(linkedDirectories.map(normalizeComparePath)), [linkedDirectories])
   const searchValue = search.trim().toLowerCase()
   const visibleEntries = useMemo(() => {
     const entries = browser?.entries ?? []
     if (!searchValue) return entries
     return entries.filter((entry) => entry.name.toLowerCase().includes(searchValue) || entry.path.toLowerCase().includes(searchValue))
   }, [browser?.entries, searchValue])
-  const selectedAddableFolders = useMemo(() => Array.from(selectedLinkedFolders).filter((path) => {
-    const normalized = normalizeComparePath(path)
-    return normalized !== '' && !isSamePath(path, workspacePath) && !linkedPathSet.has(normalized)
-  }), [linkedPathSet, selectedLinkedFolders, workspacePath])
-
   if (!open || !mode) {
     return null
   }
 
-  const title = mode === 'linked-folders' ? 'Select linked folders' : mode === 'workspace-folder' ? 'Choose workspace folder' : 'Explorer'
-  const description = mode === 'linked-folders'
-    ? 'Select folders agents may access from this workspace.'
-    : mode === 'workspace-folder'
-      ? 'Choose the main folder for this workspace.'
-      : 'Navigate folders and add any folder as a workspace.'
+  const title = mode === 'workspace-folder' ? 'Choose workspace folder' : 'Explorer'
+  const description = mode === 'workspace-folder'
+    ? 'Choose the main folder for this workspace.'
+    : 'Navigate folders, use one for this chat only, or add one as a new workspace.'
   const currentSaved = currentPath ? savedPaths.has(normalizeComparePath(currentPath)) : false
   const currentBusy = Boolean(currentPath && (savingPath === currentPath || selectingPath === currentPath))
 
@@ -399,25 +374,6 @@ function MobileExplorerDrawer({
     onClose()
   }
 
-  const toggleLinkedFolder = (path: string) => {
-    setSelectedLinkedFolders((current) => {
-      const next = new Set(current)
-      const existing = Array.from(next).find((value) => isSamePath(value, path))
-      if (existing) {
-        next.delete(existing)
-      } else {
-        next.add(path)
-      }
-      return next
-    })
-  }
-
-  const confirmLinkedFolders = () => {
-    if (selectedAddableFolders.length === 0) return
-    onAddLinkedDirectories(selectedAddableFolders)
-    onClose()
-  }
-
   return (
     <div className="fixed inset-0 z-[80] lg:hidden" role="dialog" aria-modal="true" aria-label={title}>
       <div className="absolute inset-0 bg-black/55 backdrop-blur-[1px]" onClick={onClose} />
@@ -434,7 +390,6 @@ function MobileExplorerDrawer({
           <div className="min-w-0">
             <div className="flex items-center gap-2">
               <h2 className="text-base font-semibold text-[var(--app-text)]">{title}</h2>
-              {mode === 'linked-folders' ? <span className="text-xs text-[var(--app-text-muted)]">{selectedAddableFolders.length} selected</span> : null}
             </div>
             <p className="mt-0.5 text-xs leading-5 text-[var(--app-text-muted)]">{description}</p>
           </div>
@@ -476,25 +431,16 @@ function MobileExplorerDrawer({
             <div className="-mx-1 mt-1 min-h-0 flex-1 overflow-y-auto pb-2">
               {visibleEntries.map((entry) => {
                 const meta = formatBrowseMeta(entry)
-                const checked = Array.from(selectedLinkedFolders).some((path) => isSamePath(path, entry.path))
-                const alreadyLinked = linkedPathSet.has(normalizeComparePath(entry.path))
-                const isMainFolder = isSamePath(entry.path, workspacePath)
-                const nestedInMain = isPathInside(entry.path, workspacePath)
-                const disabledSelection = mode === 'linked-folders' && (alreadyLinked || isMainFolder || nestedInMain)
                 const isSaved = savedPaths.has(normalizeComparePath(entry.path))
                 const entryBusy = savingPath === entry.path || selectingPath === entry.path
 
                 return (
-                  <div key={entry.path} className={cn('grid min-h-12 grid-cols-[minmax(0,1fr)_auto] items-center gap-1 rounded-lg px-1 text-sm hover:bg-[var(--app-surface-hover)]', checked && 'bg-[color-mix(in_oklab,var(--app-primary)_10%,transparent)]', disabledSelection && 'opacity-55')} title={formatWorkspacePath(entry.path)}>
-                    <button type="button" className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)] items-center gap-3 rounded-md px-1 py-2 text-left" disabled={disabledSelection} onClick={() => (mode === 'linked-folders' ? toggleLinkedFolder(entry.path) : onBrowsePath(entry.path))}>
-                      {mode === 'linked-folders' ? (
-                        <span className={cn('flex size-5 shrink-0 items-center justify-center rounded border', checked ? 'border-[var(--app-border-accent)] bg-[var(--app-primary)] text-[var(--app-bg)]' : 'border-[var(--app-border)] text-transparent')}><Check size={13} /></span>
-                      ) : (
-                        <Folder size={16} className="shrink-0 text-[var(--app-text-muted)]" />
-                      )}
+                  <div key={entry.path} className="grid min-h-12 grid-cols-[minmax(0,1fr)_auto] items-center gap-1 rounded-lg px-1 text-sm hover:bg-[var(--app-surface-hover)]" title={formatWorkspacePath(entry.path)}>
+                    <button type="button" className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)] items-center gap-3 rounded-md px-1 py-2 text-left" onClick={() => onBrowsePath(entry.path)}>
+                      <Folder size={16} className="shrink-0 text-[var(--app-text-muted)]" />
                       <span className="min-w-0">
                         <span className="block truncate font-medium text-[var(--app-text)]">{entry.name}</span>
-                        <span className="block truncate text-xs text-[var(--app-text-subtle)]">{[meta || null, alreadyLinked ? 'linked' : null, isMainFolder ? 'main folder' : null, nestedInMain ? 'inside main folder' : null].filter(Boolean).join(' · ')}</span>
+                        <span className="block truncate text-xs text-[var(--app-text-subtle)]">{meta}</span>
                       </span>
                     </button>
                     {mode === 'browse' && !isSaved ? (
@@ -505,7 +451,7 @@ function MobileExplorerDrawer({
                           onCreateWorkspace({ path: entry.path, name: entry.name, isGitRepo: entry.isGitRepo, hasClaude: entry.hasClaude, hasSwarm: entry.hasSwarm, lastModified: 0 })
                           onClose()
                         }}
-                        aria-label={`Add ${entry.name} as workspace`}
+                        aria-label={`Add folder ${entry.name} as a new workspace`}
                       >
                         <Plus size={16} />
                       </button>
@@ -522,12 +468,7 @@ function MobileExplorerDrawer({
         </div>
 
         <div className="shrink-0 border-t border-[color-mix(in_oklab,var(--app-border)_48%,transparent)] bg-[color-mix(in_oklab,var(--app-surface)_92%,var(--app-bg))] px-4 pb-[calc(env(safe-area-inset-bottom)+14px)] pt-3">
-          {mode === 'linked-folders' ? (
-            <div className="grid grid-cols-[1fr_1.4fr] gap-3">
-              <Button type="button" onClick={onClose}>Cancel</Button>
-              <Button type="button" disabled={selectedAddableFolders.length === 0} onClick={confirmLinkedFolders}>Add {selectedAddableFolders.length} folder{selectedAddableFolders.length === 1 ? '' : 's'}</Button>
-            </div>
-          ) : mode === 'workspace-folder' ? (
+          {mode === 'workspace-folder' ? (
             <div className="grid gap-2">
               <div className="truncate text-[11px] text-[var(--app-text-subtle)]" title={currentPath || undefined}>Current: {currentPathLabel}</div>
               <Button type="button" disabled={!currentPath || browserLoading} onClick={() => { onPickWorkspaceFolder(currentPath); onClose() }}>Use this folder</Button>
@@ -537,9 +478,9 @@ function MobileExplorerDrawer({
               <div className="truncate text-[11px] text-[var(--app-text-subtle)]" title={currentPath || undefined}>Current: {currentPathLabel}</div>
               <Button type="button" className="w-full" disabled={!currentPath || currentBusy} onClick={() => (currentSaved ? onOpenWorkspace(currentPath) : addCurrentFolder())}>
                 {currentBusy ? <RefreshCw size={14} className="animate-spin" /> : currentSaved ? <Folder size={15} /> : <Plus size={15} />}
-                {currentBusy ? 'Working…' : currentSaved ? 'Open workspace' : 'Add current folder as workspace'}
+                {currentBusy ? 'Working…' : currentSaved ? 'Open workspace' : 'Add folder as a new workspace'}
               </Button>
-              <button type="button" className="h-8 rounded-md text-xs text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] disabled:opacity-50" disabled={!currentPath || selectingPath === currentPath} onClick={() => onUseFolderTemporarily(currentPath)}>Use current folder as temp</button>
+              <button type="button" className="h-8 rounded-md text-xs text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] disabled:opacity-50" disabled={!currentPath || selectingPath === currentPath} onClick={() => onUseFolderTemporarily(currentPath)}>Use folder for this chat only</button>
             </div>
           )}
         </div>
@@ -578,7 +519,6 @@ export function WorkspaceHomePage() {
     openWorkspace,
     useFolderTemporarily,
     deleteWorkspace,
-    unlinkWorkspaceDirectory,
     saveWorkspace,
     createFolder,
     moveWorkspaceToIndex,
@@ -708,31 +648,6 @@ export function WorkspaceHomePage() {
     setDeleteTargetPath(null)
   }
 
-  const addLinkedDirectories = (paths: string[]) => {
-    setModalState((current) => {
-      if (!current) {
-        return current
-      }
-      const workspaceComparePath = normalizeComparePath(current.workspacePath)
-      const existing = new Set(current.sourcePaths.map(normalizeComparePath))
-      const next = paths.filter((path) => {
-        const comparePath = normalizeComparePath(path)
-        return comparePath !== '' && comparePath !== workspaceComparePath && !existing.has(comparePath)
-      })
-      if (next.length === 0) {
-        return current
-      }
-      return {
-        ...current,
-        sourcePaths: [...current.sourcePaths, ...next],
-      }
-    })
-  }
-
-  const addLinkedDirectory = (path: string) => {
-    addLinkedDirectories([path])
-  }
-
   const pickWorkspaceFolder = (path: string) => {
     setModalState((current) => {
       if (!current) {
@@ -752,35 +667,6 @@ export function WorkspaceHomePage() {
   const setDraftNameTouched = (value: string) => {
     setDraftName(value)
     setWorkspaceNameTouched(true)
-  }
-
-  const removeLinkedDirectory = (path: string) => {
-    if (!modalState) {
-      return
-    }
-    if (modalState.mode === 'create') {
-      setModalState({
-        ...modalState,
-        sourcePaths: modalState.sourcePaths.filter((value) => !isSamePath(value, path)),
-      })
-      return
-    }
-    void (async () => {
-      try {
-        await unlinkWorkspaceDirectory(modalState.workspacePath, path)
-        setModalState((current) => {
-          if (!current || current.workspacePath !== modalState.workspacePath) {
-            return current
-          }
-          return {
-            ...current,
-            sourcePaths: current.sourcePaths.filter((value) => !isSamePath(value, path)),
-          }
-        })
-      } catch (err) {
-        setModalError(err instanceof Error ? err.message : 'Failed to remove linked folder')
-      }
-    })()
   }
 
   const setThemeId = (nextThemeId: string) => {
@@ -866,35 +752,12 @@ export function WorkspaceHomePage() {
       return
     }
 
-    const seenLinkedDirectories = new Set<string>()
-    const alreadyLinkedDirectories = new Set(
-      (modalState.mode === 'edit' ? editingWorkspace?.directories ?? [] : [])
-        .map(normalizeComparePath)
-        .filter((value) => value !== ''),
-    )
-    const linkedDirectories = modalState.sourcePaths
-      .map((value) => value.trim())
-      .filter((value) => {
-        const comparePath = normalizeComparePath(value)
-        if (
-          comparePath === ''
-          || comparePath === normalizeComparePath(workspacePath)
-          || seenLinkedDirectories.has(comparePath)
-          || alreadyLinkedDirectories.has(comparePath)
-        ) {
-          return false
-        }
-        seenLinkedDirectories.add(comparePath)
-        return true
-      })
-
     try {
       await saveWorkspace({
         path: workspacePath,
         name: draftName,
         themeId: modalState.themeId,
         makeCurrent: modalState.mode === 'edit' ? Boolean(editingWorkspace?.active || currentWorkspacePath === workspacePath) : false,
-        linkedDirectories,
       })
       closeModal()
     } catch (err) {
@@ -1022,7 +885,7 @@ export function WorkspaceHomePage() {
                     <p className="hidden text-sm text-[var(--app-text-muted)] sm:block">Ordered list — drag a handle onto another workspace to swap them.</p>
                   </div>
                   {workspaces.length === 0 ? (
-                    <WorkspaceStatus kind="empty" title="No saved workspaces" message="Browse a folder in Explorer and add it as your first workspace." />
+                    <WorkspaceStatus kind="empty" title="No saved workspaces" message="Browse a folder in Explorer and add it as a new workspace." />
                   ) : (
                     <div className="grid gap-3">
                       {workspaces.map((workspace) => (
@@ -1102,13 +965,13 @@ export function WorkspaceHomePage() {
                   {temporaryFolderActive ? (
                     <Card className="grid gap-3 px-5 py-5 sm:px-6">
                       <div className="flex flex-wrap items-center gap-2">
-                        <h2 className="text-lg font-semibold text-[var(--app-text)]">Temporary folder</h2>
-                        <Badge tone="warning">Temporary</Badge>
+                        <h2 className="text-lg font-semibold text-[var(--app-text)]">Folder used for this chat only</h2>
+                        <Badge tone="warning">This chat only</Badge>
                       </div>
                       <div className="break-all text-sm text-[var(--app-text)]">{currentWorkspacePath}</div>
                       <div>
                         <Button type="button" onClick={handlePromoteTemporaryFolder}>
-                          Make workspace
+                          Add folder as a new workspace
                         </Button>
                       </div>
                     </Card>
@@ -1140,13 +1003,11 @@ export function WorkspaceHomePage() {
         workspacePathEditable={modalState?.workspacePathEditable ?? true}
         name={draftName}
         themeId={modalState?.themeId ?? 'inherit'}
-        linkedDirectories={modalState?.sourcePaths.filter((path) => !isSamePath(path, modalState.workspacePath)) ?? []}
         availableDirectories={modalAvailableDirectories}
         workspaces={workspaces}
         browser={browser}
         browserLoading={browserLoading}
         browserError={browserError}
-        canRemoveLinkedDirectories={Boolean(modalState)}
         error={modalError || (personalizationMessage ? actionError : null)}
         saving={Boolean(savingPath && modalState?.workspacePath && savingPath === modalState.workspacePath)}
         workspace={editingWorkspace}
@@ -1177,9 +1038,6 @@ export function WorkspaceHomePage() {
         deletingWorkspacePath={savingPath}
         onCancelDeleteWorkspace={() => setDeleteTargetPath(null)}
         onConfirmDeleteWorkspace={handleConfirmDelete}
-        onAddLinkedDirectory={addLinkedDirectory}
-        onAddLinkedDirectories={addLinkedDirectories}
-        onRemoveLinkedDirectory={removeLinkedDirectory}
         onClose={closeModal}
         onSubmit={() => {
           void submitModal()
@@ -1193,8 +1051,6 @@ export function WorkspaceHomePage() {
         browserLoading={browserLoading}
         browserError={browserError}
         workspaces={workspaces}
-        workspacePath={modalState?.workspacePath ?? ''}
-        linkedDirectories={modalState?.sourcePaths.filter((path) => !isSamePath(path, modalState.workspacePath)) ?? []}
         selectingPath={selectingPath}
         savingPath={savingPath}
         onClose={closeMobileExplorer}
@@ -1203,7 +1059,6 @@ export function WorkspaceHomePage() {
         onCreateWorkspace={(entry) => openCreateModal(entry.path, [entry.path], entry.name)}
         onUseFolderTemporarily={handleUseFolderTemporarily}
         onPickWorkspaceFolder={pickWorkspaceFolder}
-        onAddLinkedDirectories={addLinkedDirectories}
         onCreateFolder={createFolder}
       />
 

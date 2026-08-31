@@ -18,6 +18,7 @@ import (
 	"swarm/packages/swarmd/internal/artifact"
 	"swarm/packages/swarmd/internal/htmlcapture"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
+	"swarm/packages/swarmd/internal/storyboard"
 )
 
 const (
@@ -44,60 +45,79 @@ type captureManifestState struct {
 	Label string `json:"label,omitempty"`
 }
 
-func (r *Runtime) exportHTMLStills(ctx context.Context, principal artifact.Principal, callID string, args map[string]any) ([]map[string]any, pebblestore.SessionArtifactSelectionReference, *pebblestore.SessionArtifactOutputRequirements, error) {
+func (r *Runtime) exportHTMLStills(ctx context.Context, principal artifact.Principal, callID string, args map[string]any) ([]map[string]any, pebblestore.SessionArtifactSelectionReference, *pebblestore.SessionArtifactOutputRequirements, *storyboard.Manifest, error) {
 	for key := range args {
 		switch key {
 		case "action", "session_id", "collection_id", "variant_id", "event_seq", "state_ids":
 		default:
-			return nil, pebblestore.SessionArtifactSelectionReference{}, nil, captureError("capture_source_reference_invalid", fmt.Sprintf("export_html_stills contains unsupported field %q", key))
+			return nil, pebblestore.SessionArtifactSelectionReference{}, nil, nil, captureError("capture_source_reference_invalid", fmt.Sprintf("export_html_stills contains unsupported field %q", key))
 		}
 	}
 	if r.htmlCapture == nil {
-		return nil, pebblestore.SessionArtifactSelectionReference{}, nil, captureError("capture_renderer_unavailable", "trusted HTML capture renderer is not configured")
+		return nil, pebblestore.SessionArtifactSelectionReference{}, nil, nil, captureError("capture_renderer_unavailable", "trusted HTML capture renderer is not configured")
 	}
 	if err := validateArtifactRetrievalIdentity(args, "export_html_stills", true); err != nil {
-		return nil, pebblestore.SessionArtifactSelectionReference{}, nil, captureError("capture_source_reference_invalid", "complete exact ready HTML reference is required")
+		return nil, pebblestore.SessionArtifactSelectionReference{}, nil, nil, captureError("capture_source_reference_invalid", "complete exact ready HTML reference is required")
 	}
 	ref, explicit, err := parseArtifactReadReference(args, strings.TrimSpace(asString(args["variant_id"])))
 	if err != nil || !explicit {
-		return nil, pebblestore.SessionArtifactSelectionReference{}, nil, captureError("capture_source_reference_invalid", "complete exact ready HTML reference is required")
+		return nil, pebblestore.SessionArtifactSelectionReference{}, nil, nil, captureError("capture_source_reference_invalid", "complete exact ready HTML reference is required")
 	}
 	variant, err := r.artifactAuthority.GetReference(principal, ref)
 	if err != nil {
-		return nil, ref, nil, captureError("capture_source_reference_invalid", "exact ready HTML reference could not be authenticated")
+		return nil, ref, nil, nil, captureError("capture_source_reference_invalid", "exact ready HTML reference could not be authenticated")
 	}
 	files, entry, err := r.readCaptureSource(ctx, principal, ref, variant)
 	if err != nil {
-		return nil, ref, nil, err
+		return nil, ref, nil, nil, err
 	}
 	manifest, err := parseCaptureManifest(files[entry])
 	if err != nil {
-		return nil, ref, nil, err
+		return nil, ref, nil, nil, err
+	}
+	var storyboardManifest *storyboard.Manifest
+	if storyboard.HasManifest(files[entry]) {
+		parsed, parseErr := storyboard.ParseHTML(files[entry], captureManifestStateIDs(manifest.States))
+		if parseErr != nil {
+			return nil, ref, nil, nil, captureError(storyboard.ErrorCode(parseErr), storyboard.SafeMessage(parseErr))
+		}
+		storyboardManifest = &parsed
 	}
 	stateIDs, err := selectCaptureStates(args, manifest.States)
 	if err != nil {
-		return nil, ref, nil, err
+		return nil, ref, nil, nil, err
+	}
+	if storyboardManifest != nil {
+		requested := make(map[string]struct{}, len(stateIDs))
+		for _, stateID := range stateIDs {
+			requested[stateID] = struct{}{}
+		}
+		for _, stateID := range storyboard.CaptureStateIDs(*storyboardManifest) {
+			if _, ok := requested[stateID]; !ok {
+				return nil, ref, nil, nil, captureError("storyboard_export_incomplete", "storyboard exports must include every referenced capture state")
+			}
+		}
 	}
 	requirements, err := artifact.ResolveOutputRequirements(&artifact.OutputRequirementsInput{Preset: "landscape_video"})
 	if err != nil {
-		return nil, ref, nil, captureError("capture_renderer_failed", "canonical landscape video requirements are unavailable")
+		return nil, ref, nil, nil, captureError("capture_renderer_failed", "canonical landscape video requirements are unavailable")
 	}
 
 	captures, err := r.htmlCapture.Capture(ctx, htmlcapture.Request{Entry: entry, Files: files, StateIDs: stateIDs})
 	if err != nil {
-		return nil, ref, requirements, normalizeCaptureRendererError(err)
+		return nil, ref, requirements, storyboardManifest, normalizeCaptureRendererError(err)
 	}
 	if len(captures) != len(stateIDs) {
-		return nil, ref, requirements, captureError("capture_renderer_failed", "renderer returned an inconsistent state count")
+		return nil, ref, requirements, storyboardManifest, captureError("capture_renderer_failed", "renderer returned an inconsistent state count")
 	}
 	collectionID := captureOpaqueID("collection", principal.SessionID, callID, ref, strings.Join(stateIDs, "\x00"))
 	exports := make([]map[string]any, 0, len(captures))
 	for index, capture := range captures {
 		if capture.StateID != stateIDs[index] {
-			return nil, ref, requirements, captureError("capture_renderer_failed", "renderer returned states out of canonical order")
+			return nil, ref, requirements, storyboardManifest, captureError("capture_renderer_failed", "renderer returned states out of canonical order")
 		}
 		if err := validateCapturePNG(capture.PNG); err != nil {
-			return nil, ref, requirements, err
+			return nil, ref, requirements, storyboardManifest, err
 		}
 		stateCallID := callID + ":" + capture.StateID
 		variantID := captureOpaqueID("variant", principal.SessionID, callID, ref, capture.StateID)
@@ -114,20 +134,28 @@ func (r *Runtime) exportHTMLStills(ctx context.Context, principal artifact.Princ
 		}
 		published, createErr := r.artifactAuthority.Create(ctx, principal, input)
 		if createErr != nil {
-			return nil, ref, requirements, captureError("capture_publish_failed", "captured PNG could not be durably published")
+			return nil, ref, requirements, storyboardManifest, captureError("capture_publish_failed", "captured PNG could not be durably published")
 		}
 		expectedDigest := sha256.Sum256(capture.PNG)
 		if published.Status != pebblestore.SessionArtifactStatusReady || published.MediaType != "image/png" || published.EventSeq == 0 || published.DigestSHA256 != hex.EncodeToString(expectedDigest[:]) {
-			return nil, ref, requirements, captureError("capture_idempotency_conflict", "published still metadata conflicts with the trusted capture bytes")
+			return nil, ref, requirements, storyboardManifest, captureError("capture_idempotency_conflict", "published still metadata conflicts with the trusted capture bytes")
 		}
 		readyRef := pebblestore.SessionArtifactSelectionReference{SessionID: published.SessionID, CollectionID: published.CollectionID, VariantID: published.ID, EventSeq: published.EventSeq}
 		readyBytes, ready, getErr := r.artifactAuthority.ReadReference(ctx, principal, readyRef, htmlcapture.MaxPNGBytes)
 		if getErr != nil || ready.Status != pebblestore.SessionArtifactStatusReady || !bytes.Equal(readyBytes, capture.PNG) {
-			return nil, ref, requirements, captureError("capture_publish_failed", "published still could not be reread as the exact ready PNG")
+			return nil, ref, requirements, storyboardManifest, captureError("capture_publish_failed", "published still could not be reread as the exact ready PNG")
 		}
 		exports = append(exports, map[string]any{"state_id": capture.StateID, "artifact": managedArtifactVariant(ready), "reference": managedArtifactReferenceWithSession(ready.SessionID, ready.CollectionID, ready.ID, ready.EventSeq)})
 	}
-	return exports, ref, requirements, nil
+	return exports, ref, requirements, storyboardManifest, nil
+}
+
+func captureManifestStateIDs(states []captureManifestState) []string {
+	ids := make([]string, len(states))
+	for i := range states {
+		ids[i] = states[i].ID
+	}
+	return ids
 }
 
 func (r *Runtime) readCaptureSource(ctx context.Context, principal artifact.Principal, ref pebblestore.SessionArtifactSelectionReference, variant pebblestore.SessionArtifactVariant) (map[string][]byte, string, error) {

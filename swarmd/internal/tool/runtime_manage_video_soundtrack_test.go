@@ -33,9 +33,40 @@ func TestManageVideoDefinitionExposesTypedSoundtrackProposalContract(t *testing.
 			t.Fatalf("manage_video soundtrack schema exposes forbidden path field %q", forbidden)
 		}
 	}
-	for _, guidance := range []string{"complete exact audio", "cannot accept a proposal or start a final render"} {
+	for _, guidance := range []string{"complete exact audio", "registered soundtrack audio must share the initial part playhead", "create_project initial_timeline", "cannot accept a proposal or start a final render"} {
 		if !strings.Contains(definition.Description, guidance) {
 			t.Fatalf("manage_video soundtrack guidance lacks %q", guidance)
+		}
+	}
+}
+
+func TestManageVideoDefinitionExplainsLiveHTMLSoundtrackPreviewBoundary(t *testing.T) {
+	definition := manageVideoDefinition()
+	raw, err := json.Marshal(definition.Parameters)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(raw)
+	for _, expected := range []string{
+		"immediate live Video Studio preview",
+		"selected HTML plays in a sandboxed swarm-player/v1 iframe while soundtrack audio follows the same playhead",
+		"no HTML-to-MP4 export is needed for preview",
+		"durable acceptance/promotion or final rendering requires an MP4 derivative",
+		"never replace a durable timeline artifact_ref with text/html",
+	} {
+		if !strings.Contains(text, expected) {
+			t.Fatalf("manage_video live HTML schema guidance lacks %q: %s", expected, text)
+		}
+	}
+}
+
+func TestManageVideoDefinitionDocumentsInitialSoundtrackBaseRevision(t *testing.T) {
+	definition := manageVideoDefinition()
+	initial := definition.Parameters["properties"].(map[string]any)["initial_timeline"].(map[string]any)
+	description, _ := initial["description"].(string)
+	for _, expected := range []string{"source_audio", "base revision owns that audio", "subsequent propose_plan preserves it"} {
+		if !strings.Contains(description, expected) {
+			t.Fatalf("initial_timeline guidance lacks %q: %s", expected, description)
 		}
 	}
 }
@@ -154,7 +185,7 @@ func TestParseVideoEditOperationsRejectsArbitrarySoundtrackPaths(t *testing.T) {
 			"id": "soundtrack", "track": 1, "sequence": 0, "source_kind": "source_audio", "duration_ms": 1000,
 			"timeline_start_ms": 0, "timeline_end_ms": 1000, "visible": false, "file_path": "/outside/song.mp3",
 		},
-	}})
+	}}, pebblestore.VideoProjectTimeline{})
 	if err == nil || !strings.Contains(err.Error(), "unknown field") {
 		t.Fatalf("arbitrary soundtrack path error=%v", err)
 	}

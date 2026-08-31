@@ -4,6 +4,7 @@ import type { DesktopV3ArtifactMessageSelection } from './artifact-api'
 import type { DesktopVideoSourceAttachment } from '../chat/services/video-source-attachments'
 import type { ModelProfileChoice } from '../chat/types/chat'
 import type { DesktopSessionMode } from '../settings/swarm/types/swarm-settings'
+import { desktopRoutedSessionMetadata } from '../chat/services/desktop-routed-worktree-intent'
 import { normalizeSessionMode } from '../settings/swarm/types/swarm-settings'
 import { getDesktopSessionCreateTarget } from '../chat/services/chat-routing'
 import { retainDesktopV3RealtimeController, requireDesktopV3RealtimeControllerReady } from '../realtime/v3-realtime-controller'
@@ -26,6 +27,7 @@ import {
   postDesktopV3CreateSession,
   type DesktopV3AppendMessageRequest,
   type DesktopV3CreateSessionRequest,
+  type DesktopV3RoutedSessionStartResponse,
 } from './write-api'
 
 export interface DesktopV3CreateOnlySessionOperation {
@@ -483,19 +485,12 @@ export interface DesktopV3RoutedComposerSnapshot {
   videoAttachments: DesktopVideoSourceAttachment[]
   selectedAction: unknown | null
   selectedSkill: unknown | null
-  worktreePrimed: boolean
   planModeRequested: boolean
   modelProfileChoice?: ModelProfileChoice | null
 }
 
 export interface DesktopV3RoutedDraftState {
   phase: 'draft'
-  prompt: string
-  snapshot: DesktopV3RoutedComposerSnapshot
-}
-
-export interface DesktopV3RoutedWorktreePrimedState {
-  phase: 'worktree-primed'
   prompt: string
   snapshot: DesktopV3RoutedComposerSnapshot
 }
@@ -516,7 +511,6 @@ export interface DesktopV3RoutedStartRequest extends DesktopV3RoutedWorkspaceAut
   idempotency_key: string
   agent_name: string
   metadata?: Record<string, unknown>
-  managed_worktree_requested: boolean
   plan_mode_requested: boolean
   media?: DesktopV3RoutedMediaInput[]
   video_attachments?: DesktopVideoSourceAttachment[]
@@ -525,7 +519,7 @@ export interface DesktopV3RoutedStartRequest extends DesktopV3RoutedWorkspaceAut
 }
 
 export interface DesktopV3RoutedStartOperation {
-  version: 2
+  version: 3
   operationId: string
   createdAt: number
   snapshot: DesktopV3RoutedComposerSnapshot
@@ -543,6 +537,24 @@ export interface DesktopV3RoutedStartResult {
   first_message: { id?: string; session_id?: string; media?: DesktopV3MediaReference[] }
   projection: { session_id?: string }
   mutation: { session_id?: string }
+}
+
+export function applyDesktopV3RoutedStartResponse(response: DesktopV3RoutedSessionStartResponse): void {
+  const firstMessageResult: SessionMessageMutationResponse = {
+    ok: true,
+    session_id: response.session_id,
+    session: response.session,
+    projection: response.projection,
+    message: response.first_message,
+    run_intent: response.mutation.run_intent ?? null,
+    mutation: response.mutation,
+    realtime_outbox: response.mutation.realtime_outbox ?? null,
+  }
+  flowDeps.dispatch(messageMutationResponseToAction(
+    firstMessageResult,
+    response.first_message.id,
+    response.first_message.id,
+  ))
 }
 
 export interface DesktopV3RoutedRoutingState {
@@ -570,7 +582,6 @@ export interface DesktopV3RoutedFailedState {
 
 export type DesktopV3RoutedNewSessionState =
   | DesktopV3RoutedDraftState
-  | DesktopV3RoutedWorktreePrimedState
   | DesktopV3RoutedRoutingState
   | DesktopV3RoutedResolvedState
   | DesktopV3RoutedFailedState
@@ -608,7 +619,6 @@ export interface CreateDesktopV3RoutedStartOperationInput {
   media?: DesktopV3RoutedMediaInput[]
   selectedAction?: unknown | null
   selectedSkill?: unknown | null
-  worktreePrimed?: boolean
   planModeRequested?: boolean
   modelProfileChoice?: ModelProfileChoice
   /** Reserved before media staging so uploads and the routed start share one identity. */
@@ -619,8 +629,11 @@ export type PostDesktopV3RoutedStart = (
   request: DesktopV3RoutedStartRequest,
 ) => Promise<DesktopV3RoutedStartResult>
 
-const ROUTED_NEW_SESSION_OPERATION_KEY = 'swarm.desktop.v3.routed-new-session.v2'
-const LEGACY_ROUTED_NEW_SESSION_OPERATION_KEY = 'swarm.desktop.v3.routed-new-session.v1'
+const ROUTED_NEW_SESSION_OPERATION_KEY = 'swarm.desktop.v3.routed-new-session.v3'
+const LEGACY_ROUTED_NEW_SESSION_OPERATION_KEYS = [
+  'swarm.desktop.v3.routed-new-session.v2',
+  'swarm.desktop.v3.routed-new-session.v1',
+] as const
 
 function normalizedRoutedMedia(media: DesktopV3RoutedMediaInput[] | undefined): DesktopV3RoutedMediaInput[] | undefined {
   if (!media?.length) return undefined
@@ -656,7 +669,6 @@ export function createDesktopV3RoutedComposerSnapshot(
     selectedSkill: input.selectedSkill === undefined || input.selectedSkill === null
       ? null
       : cloneRoutedComposerSelection(input.selectedSkill),
-    worktreePrimed: input.worktreePrimed === true,
     planModeRequested: input.planModeRequested === true,
     ...(input.modelProfileChoice ? { modelProfileChoice: cloneRoutedComposerSelection(input.modelProfileChoice) as ModelProfileChoice } : {}),
   }
@@ -676,15 +688,6 @@ export function createDesktopV3RoutedDraftState(
 ): DesktopV3RoutedDraftState {
   if (prompt !== snapshot.prompt) throw new Error('Routed Desktop draft prompt must match its composer snapshot')
   return { phase: 'draft', prompt: snapshot.prompt, snapshot }
-}
-
-export function createDesktopV3RoutedWorktreePrimedState(
-  prompt = '',
-  snapshot = createDesktopV3RoutedComposerSnapshot({ prompt, worktreePrimed: true }),
-): DesktopV3RoutedWorktreePrimedState {
-  if (prompt !== snapshot.prompt) throw new Error('Routed Desktop worktree prompt must match its composer snapshot')
-  if (!snapshot.worktreePrimed) throw new Error('Routed Desktop worktree state requires a primed composer snapshot')
-  return { phase: 'worktree-primed', prompt: snapshot.prompt, snapshot }
 }
 
 export function createDesktopV3RoutedOperationIdentity(): DesktopV3RoutedOperationIdentity {
@@ -718,7 +721,6 @@ export function createDesktopV3RoutedStartOperation(
     videoAttachments: [],
     selectedAction: input.selectedAction,
     selectedSkill: input.selectedSkill,
-    worktreePrimed: input.worktreePrimed,
     planModeRequested: input.planModeRequested,
     modelProfileChoice: input.modelProfileChoice,
   })
@@ -738,7 +740,7 @@ export function createDesktopV3RoutedStartOperation(
   const agentName = input.agentName.trim()
   if (!agentName) throw new Error('Routed Desktop start requires agent_name')
   return {
-    version: 2,
+    version: 3,
     operationId,
     createdAt: Date.now(),
     snapshot,
@@ -748,8 +750,7 @@ export function createDesktopV3RoutedStartOperation(
       client_request_id: clientRequestID,
       idempotency_key: clientRequestID,
       agent_name: agentName,
-      metadata: input.metadata ? { ...input.metadata } : undefined,
-      managed_worktree_requested: snapshot.worktreePrimed,
+      metadata: input.metadata ? desktopRoutedSessionMetadata(input.metadata) : undefined,
       plan_mode_requested: snapshot.planModeRequested,
       model_profile: (input.modelProfileChoice ?? snapshot.modelProfileChoice) ? desktopV3ModelProfileChoiceWire((input.modelProfileChoice ?? snapshot.modelProfileChoice)!) : undefined,
       media: normalizedRoutedMedia(snapshot.attachments),
@@ -787,7 +788,7 @@ function normalizeDesktopV3RoutedWorkspaceAuthority(value: DesktopV3RoutedWorksp
 function isStoredDesktopV3RoutedStartOperation(value: unknown): value is DesktopV3RoutedStartOperation {
   if (!value || typeof value !== 'object') return false
   const operation = value as Partial<DesktopV3RoutedStartOperation>
-  if (operation.version !== 2 || !operation.operationId?.trim() || typeof operation.createdAt !== 'number' || !Number.isFinite(operation.createdAt)) return false
+  if (operation.version !== 3 || !operation.operationId?.trim() || typeof operation.createdAt !== 'number' || !Number.isFinite(operation.createdAt)) return false
   const snapshot = operation.snapshot
   if (!isStoredDesktopV3RoutedComposerSnapshot(snapshot)) return false
   const request = operation.request
@@ -798,7 +799,6 @@ function isStoredDesktopV3RoutedStartOperation(value: unknown): value is Desktop
     return false
   }
   if (request.idempotency_key !== request.client_request_id) return false
-  if (typeof request.managed_worktree_requested !== 'boolean' || request.managed_worktree_requested !== snapshot.worktreePrimed) return false
   if (typeof request.plan_mode_requested !== 'boolean' || request.plan_mode_requested !== snapshot.planModeRequested) return false
   if (request.client_request_id !== `desktop-v3-routed:${operation.operationId}`) return false
   if (request.media && (!Array.isArray(request.media) || request.media.some((item) => !item?.staging_id?.trim()))) return false
@@ -820,7 +820,7 @@ function isStoredDesktopV3RoutedStartOperation(value: unknown): value is Desktop
 function isStoredDesktopV3RoutedComposerSnapshot(value: unknown): value is DesktopV3RoutedComposerSnapshot {
   if (!value || typeof value !== 'object') return false
   const snapshot = value as Partial<DesktopV3RoutedComposerSnapshot>
-  if (typeof snapshot.prompt !== 'string' || typeof snapshot.worktreePrimed !== 'boolean' || typeof snapshot.planModeRequested !== 'boolean') return false
+  if (typeof snapshot.prompt !== 'string' || typeof snapshot.planModeRequested !== 'boolean') return false
   if (!Array.isArray(snapshot.attachments) || snapshot.attachments.some((item) => !item?.staging_id?.trim())) return false
   if (!Array.isArray(snapshot.videoAttachments) || snapshot.videoAttachments.some((item) => !item?.ref?.trim() || !item?.name?.trim() || !item?.mime_type?.startsWith('video/') || !item?.source_fingerprint?.trim() || !item?.size_bytes)) return false
   if (!Array.isArray(snapshot.artifactSelections) || snapshot.artifactSelections.some((item) => !item?.session_id?.trim() || !item?.collection_id?.trim() || !item?.variant_id?.trim() || !item?.event_seq || !item?.label?.trim() || (item.action !== 'select' && item.action !== 'use'))) return false
@@ -836,7 +836,7 @@ export function persistDesktopV3RoutedStartOperation(operation: DesktopV3RoutedS
 export function loadDesktopV3RoutedStartOperation(): DesktopV3RoutedStartOperation | null {
   if (typeof window === 'undefined') return null
   try {
-    window.sessionStorage.removeItem(LEGACY_ROUTED_NEW_SESSION_OPERATION_KEY)
+    for (const key of LEGACY_ROUTED_NEW_SESSION_OPERATION_KEYS) window.sessionStorage.removeItem(key)
     const raw = window.sessionStorage.getItem(ROUTED_NEW_SESSION_OPERATION_KEY)
     if (!raw) return null
     const operation: unknown = JSON.parse(raw)
@@ -856,7 +856,7 @@ export function clearDesktopV3RoutedStartOperation(operationId?: string): void {
     if (current && current.operationId !== operationId) return
   }
   window.sessionStorage.removeItem(ROUTED_NEW_SESSION_OPERATION_KEY)
-  window.sessionStorage.removeItem(LEGACY_ROUTED_NEW_SESSION_OPERATION_KEY)
+  for (const key of LEGACY_ROUTED_NEW_SESSION_OPERATION_KEYS) window.sessionStorage.removeItem(key)
 }
 
 export function restoreDesktopV3RoutedNewSessionState(): DesktopV3RoutedNewSessionState {
@@ -948,23 +948,13 @@ export class DesktopV3RoutedNewSessionController {
     return state
   }
 
-  primeWorktree(
-    prompt = '',
-    snapshot = createDesktopV3RoutedComposerSnapshot({ prompt, worktreePrimed: true }),
-  ): DesktopV3RoutedWorktreePrimedState {
-    this.invalidateCurrentOperation()
-    const state = createDesktopV3RoutedWorktreePrimedState(prompt, snapshot)
-    this.publish(state)
-    return state
-  }
-
   submit(input?: CreateDesktopV3RoutedStartOperationInput): Promise<DesktopV3RoutedNewSessionState> {
     if (this.state.phase === 'routing' && this.activeRun) return this.activeRun
 
     let operation: DesktopV3RoutedStartOperation
     if (this.state.phase === 'failed') {
       operation = this.state.operation
-    } else if (this.state.phase === 'draft' || this.state.phase === 'worktree-primed') {
+    } else if (this.state.phase === 'draft') {
       if (!input) {
         return Promise.reject(new Error('Routed Desktop start requires captured workspace authority'))
       }

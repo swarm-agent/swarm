@@ -11,12 +11,12 @@ func TestParseNewCommandForms(t *testing.T) {
 		{" /NEW  ", NewCommand{}},
 		{"/new\u00a0fix the bug", NewCommand{Prompt: "fix the bug"}},
 		{"/new fix the bug", NewCommand{Prompt: "fix the bug"}},
-		{"/new worktree", NewCommand{ManagedWorktreeRequested: true}},
-		{"/new worktree fix it", NewCommand{Prompt: "fix it", ManagedWorktreeRequested: true}},
+		{"/new worktree", NewCommand{}},
+		{"/new worktree fix it", NewCommand{Prompt: "fix it"}},
 		{"/new plan", NewCommand{PlanModeRequested: true}},
 		{"/new plan map it", NewCommand{Prompt: "map it", PlanModeRequested: true}},
-		{"/new wp", NewCommand{ManagedWorktreeRequested: true, PlanModeRequested: true}},
-		{"/new wp build it", NewCommand{Prompt: "build it", ManagedWorktreeRequested: true, PlanModeRequested: true}},
+		{"/new wp", NewCommand{PlanModeRequested: true}},
+		{"/new wp build it", NewCommand{Prompt: "build it", PlanModeRequested: true}},
 	}
 	for _, test := range tests {
 		got, ok := ParseNewCommand(test.input)
@@ -56,26 +56,5 @@ func TestParseCommitCommand(t *testing.T) {
 		if _, matched, err := ParseCommitCommand(input); matched || err != nil {
 			t.Errorf("ParseCommitCommand(%q) unexpectedly matched: err=%v", input, err)
 		}
-	}
-}
-
-func TestParseWorktreeCommandIsLocalAndDoesNotCaptureWorktrees(t *testing.T) {
-	for _, input := range []string{"/worktree on", "/wt on"} {
-		got, matched, err := ParseWorktreeCommand(input)
-		if err != nil || !matched || !got.Enabled {
-			t.Errorf("ParseWorktreeCommand(%q) = %#v, %v, %v", input, got, matched, err)
-		}
-	}
-	for _, input := range []string{"/worktree off", "/wt off"} {
-		got, matched, err := ParseWorktreeCommand(input)
-		if err != nil || !matched || got.Enabled {
-			t.Errorf("ParseWorktreeCommand(%q) = %#v, %v, %v", input, got, matched, err)
-		}
-	}
-	if _, matched, err := ParseWorktreeCommand("/worktrees"); matched || err != nil {
-		t.Fatalf("/worktrees was captured: matched=%v err=%v", matched, err)
-	}
-	if _, matched, err := ParseWorktreeCommand("/wt"); !matched || err == nil {
-		t.Fatalf("bare /wt = matched=%v err=%v", matched, err)
 	}
 }

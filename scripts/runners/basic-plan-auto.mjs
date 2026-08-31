@@ -11,16 +11,22 @@ const apiURL = String(option('--api-url', process.env.SWARM_RUNNER_API_URL || ''
 const provider = String(option('--provider', process.env.SWARM_RUNNER_PROVIDER || '')).trim().toLowerCase()
 const timeoutMs = Number(option('--timeout-ms', process.env.SWARM_RUNNER_TIMEOUT_MS || '900000'))
 const workspacePathOverride = String(option('--workspace-path', process.env.SWARM_RUNNER_WORKSPACE_PATH || '')).trim()
+const actionModel = String(option('--action-model', process.env.SWARM_RUNNER_ACTION_MODEL || '')).trim()
+const actionThinking = String(option('--action-thinking', process.env.SWARM_RUNNER_ACTION_THINKING || 'medium')).trim().toLowerCase()
+const planModel = String(option('--plan-model', process.env.SWARM_RUNNER_PLAN_MODEL || '')).trim()
+const planThinking = String(option('--plan-thinking', process.env.SWARM_RUNNER_PLAN_THINKING || 'high')).trim().toLowerCase()
 const suppliedToken = String(process.env.SWARM_RUNNER_TOKEN || '').trim()
 
 if (!apiURL || !/^https?:\/\//.test(apiURL)) throw new Error('--api-url must be an http or https URL')
 if (!provider || !/^[a-z0-9._-]+$/.test(provider)) throw new Error('--provider is required and must contain only letters, numbers, dots, underscores, or dashes')
 if (!Number.isFinite(timeoutMs) || timeoutMs < 30000) throw new Error('--timeout-ms must be at least 30000')
+if (!actionModel || !planModel) throw new Error('--action-model and --plan-model are required; use scripts/run-testbench-runner.sh so the ignored .env supplies the explicit Fireworks role models')
+if (![actionThinking, planThinking].every((value) => ['low', 'medium', 'high', 'xhigh'].includes(value))) throw new Error('role thinking must be low, medium, high, or xhigh')
 
 const startedAt = new Date().toISOString()
 const testID = `runner-basic-plan-auto-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`
 const requiredGates = [
-  'provider_runnable', 'recommended_models', 'models_configured', 'plan_mode_created',
+  'provider_runnable', 'explicit_models', 'models_configured', 'workspace_binding_ready', 'plan_mode_created',
   'model_profile_snapshot', 'two_checkpoint_proposal', 'plan_approved_automatically',
   'mode_switched_to_auto', 'checkpoints_completed', 'subtasks_completed',
   'plan_model_verified', 'auto_model_verified', 'no_failures', 'models_restored',
@@ -88,27 +94,9 @@ async function api(method, route, body, label = route, allowError = false) {
   }
 }
 
-function recommendationFor(record, roles) {
-  const recommendations = Array.isArray(record?.recommendations) ? record.recommendations : []
-  return recommendations.find((item) => roles.includes(String(item?.role || '').trim().toLowerCase())) || null
-}
-
-function recommendedAssignment(records, roles, label) {
-  for (const record of records) {
-    const recommendation = recommendationFor(record, roles)
-    if (!recommendation) continue
-    const model = String(record?.model || '').trim()
-    const thinking = String(recommendation?.thinking || record?.default_thinking || '').trim().toLowerCase()
-    if (!model || !thinking) continue
-    const serving = String(recommendation?.serving || '').trim().toLowerCase()
-    return {
-      provider,
-      model,
-      thinking,
-      ...(serving === 'fast' || serving === 'priority' ? { service_tier: 'priority' } : {}),
-    }
-  }
-  fail(`model catalog has no complete ${label} recommendation for provider ${provider}`)
+function exactAssignment(records, model, thinking, label) {
+  assert(records.some((record) => String(record?.model || '').trim() === model), `model catalog does not contain ${provider}/${model} for ${label}`)
+  return { provider, model, thinking }
 }
 
 function parseToolArguments(permission) {
@@ -172,25 +160,6 @@ async function fetchAllEvents(sessionID) {
   fail('session event replay exceeded 20 pages')
 }
 
-async function waitForSettledReplay(sessionID, initialRunID) {
-  const deadline = Date.now() + timeoutMs
-  let latest = null
-  while (Date.now() < deadline) {
-    latest = await fetchAllEvents(sessionID)
-    const runIntents = latest.replay?.run_intents || []
-    const initialIntent = runIntents.find((intent) => String(intent?.run_id || '') === initialRunID)
-    const checkpointIntents = runIntents.filter((intent) => String(intent?.checkpoint_id || ''))
-    const failed = runIntents.filter((intent) => /failed|cancelled|expired|interrupted/.test(String(intent?.status || '')))
-    if (failed.length > 0) fail(`session has failed run intents: ${failed.map((intent) => `${intent.run_id}:${intent.status}`).join(', ')}`)
-    if (initialIntent?.status === 'completed' && checkpointIntents.length === 2 && checkpointIntents.every((intent) => intent?.status === 'completed')) {
-      return { ...latest, initialIntent, checkpointIntents }
-    }
-    await sleep(1000)
-  }
-  const intents = latest?.replay?.run_intents || []
-  fail(`timed out waiting for plan and checkpoint runs to settle: ${intents.map((intent) => `${intent.run_id}:${intent.status}`).join(', ')}`)
-}
-
 function objectPayload(value) {
   if (value && typeof value === 'object') return value
   try {
@@ -198,6 +167,14 @@ function objectPayload(value) {
   } catch {
     return {}
   }
+}
+
+function sameRuntimeModel(actual, expected) {
+  const left = String(actual || '').trim()
+  const right = String(expected || '').trim()
+  if (left === right) return true
+  if (provider !== 'fireworks') return false
+  return left.split('/').filter(Boolean).at(-1) === right.split('/').filter(Boolean).at(-1)
 }
 
 function usageRecordsFromEvents(events) {
@@ -225,10 +202,10 @@ async function main() {
 
   const catalogResponse = await api('GET', `/v1/model/catalog?provider=${encodeURIComponent(provider)}&limit=500`, undefined, 'read model recommendations')
   const records = catalogResponse.body?.records || []
-  const planAssignment = recommendedAssignment(records, ['plan'], 'plan')
-  const actionAssignment = recommendedAssignment(records, ['auto', 'main'], 'auto')
+  const planAssignment = exactAssignment(records, planModel, planThinking, 'plan')
+  const actionAssignment = exactAssignment(records, actionModel, actionThinking, 'auto')
   result.models = { plan: planAssignment, auto: actionAssignment }
-  result.gates.recommended_models = true
+  result.gates.explicit_models = true
   log(`using ${provider} plan=${planAssignment.model} auto=${actionAssignment.model}`)
 
   const settingsResponse = await api('GET', '/v1/agent-model-settings', undefined, 'read agent model settings')
@@ -238,6 +215,9 @@ async function main() {
   settingsChanged = true
   result.gates.models_configured = true
 
+  if (workspacePathOverride) {
+    await api('POST', '/v1/workspace/add', { path: workspacePathOverride, name: 'basic-plan-auto-primary', make_current: true }, 'ensure basic plan workspace binding')
+  }
   const topology = (await api('GET', '/v1/swarm/topology', undefined, 'read topology')).body
   const runtime = (topology?.runtimes || []).find((item) => item?.relationship === 'self') || (topology?.runtimes || [])[0]
   const binding = workspacePathOverride
@@ -247,6 +227,7 @@ async function main() {
   assert(binding?.workspace_binding_id, workspacePathOverride ? `no topology binding found for ${workspacePathOverride}` : 'topology has no workspace binding')
   const workspacePath = String(binding?.source_workspace_path || binding?.destination_workspace_path || '').trim()
   assert(workspacePath, 'selected workspace binding has no source or destination path')
+  result.gates.workspace_binding_ready = true
 
   const createResponse = await api('POST', '/v3/sessions', {
     client_request_id: `${testID}:create`,
@@ -326,7 +307,13 @@ async function main() {
   result.gates.checkpoints_completed = true
   result.gates.subtasks_completed = true
 
-  const { events, replay, checkpointIntents } = await waitForSettledReplay(sessionID, initialRunID)
+  const { events, replay } = await fetchAllEvents(sessionID)
+  const runIntents = replay?.run_intents || []
+  const failedReplayIntents = runIntents.filter((intent) => /failed|cancelled|expired|interrupted/.test(String(intent?.status || '')))
+  assert(failedReplayIntents.length === 0, `session has failed run intents: ${failedReplayIntents.map((intent) => `${intent.run_id}:${intent.status}`).join(', ')}`)
+  const expectedCheckpointRunIDs = new Set(result.ids.checkpoint_run_ids)
+  const checkpointIntents = runIntents.filter((intent) => expectedCheckpointRunIDs.has(String(intent?.run_id || '')))
+  assert(checkpointIntents.length === expectedCheckpointRunIDs.size && checkpointIntents.every((intent) => intent?.status === 'completed'), 'completed checkpoint run intents are missing from event replay')
   result.ids.checkpoint_run_ids = checkpointIntents.map((intent) => String(intent.run_id || '')).filter(Boolean)
   const usageFromEvents = usageRecordsFromEvents(events)
   const usageResponse = await api('GET', `/v1/sessions/${encodeURIComponent(sessionID)}/usage?limit=100`, undefined, 'read usage evidence')
@@ -335,10 +322,10 @@ async function main() {
     const usageRunID = String(usage?.run_id || '')
     return usageRunID === runID || usageRunID.startsWith(`${runID}/`)
   }
-  const planUsage = usageRecords.find((usage) => usageBelongsToRun(usage, initialRunID) && String(usage?.provider || '') === provider && String(usage?.model || '') === planAssignment.model)
+  const planUsage = usageRecords.find((usage) => usageBelongsToRun(usage, initialRunID) && String(usage?.provider || '') === provider && sameRuntimeModel(usage?.model, planAssignment.model))
   assert(planUsage, `no runtime usage evidence found for plan model ${provider}/${planAssignment.model} on run ${initialRunID}`)
   const checkpointRunIDs = new Set(result.ids.checkpoint_run_ids)
-  const autoUsage = usageRecords.filter((usage) => [...checkpointRunIDs].some((runID) => usageBelongsToRun(usage, runID)) && String(usage?.provider || '') === provider && String(usage?.model || '') === actionAssignment.model)
+  const autoUsage = usageRecords.filter((usage) => [...checkpointRunIDs].some((runID) => usageBelongsToRun(usage, runID)) && String(usage?.provider || '') === provider && sameRuntimeModel(usage?.model, actionAssignment.model))
   assert(autoUsage.length >= 2, `found ${autoUsage.length} checkpoint usage records for auto model ${provider}/${actionAssignment.model}, want at least 2`)
   result.diagnostics.runtime_usage = {
     plan: { run_id: initialRunID, provider: planUsage.provider, model: planUsage.model },

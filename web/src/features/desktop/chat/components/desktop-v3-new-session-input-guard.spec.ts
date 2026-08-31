@@ -19,7 +19,7 @@ test('Desktop V3 new session composer submits /new prompts through the routed fl
 
   assert.match(source, /routedNewSession \? parseDesktopNewSessionCommand\(rawDraft\) : null/)
   assert.match(source, /const commandDraft = newSessionCommand\?\.prompt \?\? rawDraft/)
-  assert.match(source, /worktreePrimed: newSessionCommand\?\.worktreeRequested \?\? routedWorktreeRequested/)
+  assert.doesNotMatch(source, /worktreePrimed|managed_worktree_requested/)
   assert.match(source, /planModeRequested: newSessionCommand\?\.planModeRequested \?\? mode === 'plan'/)
   assert.match(source, /routedSubmit = onRoutedSubmit\(routedSnapshot\)/)
   assert.doesNotMatch(source, /newSessionCommandBlocked|You’re already starting a new session/)

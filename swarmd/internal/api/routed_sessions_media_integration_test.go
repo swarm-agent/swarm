@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -27,6 +28,7 @@ import (
 	"swarm/packages/swarmd/internal/tool"
 	topologyruntime "swarm/packages/swarmd/internal/topology"
 	"swarm/packages/swarmd/internal/workspace"
+	worktreeruntime "swarm/packages/swarmd/internal/worktree"
 )
 
 type routedMediaTestRunner struct {
@@ -151,6 +153,14 @@ func newRoutedMediaTestFixture(t *testing.T) *routedMediaTestFixture {
 	}
 	server.SetTopologyService(topologyruntime.NewService(topologyStore, swarmStore))
 	server.SetSwarmStore(swarmStore)
+	managedWorktreePath := filepath.Join(t.TempDir(), "managed-worktree")
+	if err := os.MkdirAll(managedWorktreePath, 0o755); err != nil {
+		t.Fatalf("create managed worktree fixture: %v", err)
+	}
+	server.SetWorktreeService(&routedWorktreeServiceStub{fakeWorktreeService: fakeWorktreeService{
+		config:     worktreeruntime.Config{UseCurrentBranch: true, BranchName: "agent/<id>"},
+		allocation: worktreeruntime.Allocation{WorkspacePath: managedWorktreePath, RepoRoot: workspacePath, BranchName: "agent/session", WorkspaceID: "session-worktree"},
+	}})
 
 	staging := mediastaging.NewService(pebblestore.NewMediaStagingStore(store))
 	server.SetMediaStagingService(staging)
@@ -177,13 +187,13 @@ func (f *routedMediaTestFixture) post(t *testing.T, account, requestID, stagingI
 	return f.postWithWorktreeIntent(t, account, requestID, stagingID, media, false)
 }
 
-func (f *routedMediaTestFixture) postWithWorktreeIntent(t *testing.T, account, requestID, stagingID string, media map[string]string, managedWorktreeRequested bool) *httptest.ResponseRecorder {
+func (f *routedMediaTestFixture) postWithWorktreeIntent(t *testing.T, account, requestID, stagingID string, media map[string]string, _ bool) *httptest.ResponseRecorder {
 	t.Helper()
 	item := map[string]string{"staging_id": stagingID}
 	for key, value := range media {
 		item[key] = value
 	}
-	payload := map[string]any{"input": "inspect this image", "client_request_id": requestID, "managed_worktree_requested": managedWorktreeRequested, "plan_mode_requested": false, "media": []any{item}, "workspace_binding_id": "binding-routed", "swarm_id": "local-swarm", "target_kind": "host", "target_relationship": "self"}
+	payload := map[string]any{"input": "inspect this image", "client_request_id": requestID, "plan_mode_requested": false, "media": []any{item}, "workspace_binding_id": "binding-routed", "swarm_id": "local-swarm", "target_kind": "host", "target_relationship": "self"}
 	body, err := json.Marshal(payload)
 	if err != nil {
 		t.Fatalf("marshal routed request: %v", err)
@@ -255,7 +265,7 @@ func TestRoutedSessionStagedMediaBindsDurablyAndReplayIsStable(t *testing.T) {
 	asset, _, assetErr := fixture.sessions.ReadSessionMediaAsset(fixture.principal.AccountScopeID, body.SessionID, reference.AssetID)
 	assetCount := 0
 	countErr := fixture.store.IteratePrefix(pebblestore.SessionMediaAssetPrefix(fixture.principal.AccountScopeID, body.SessionID), 10, func(string, []byte) error { assetCount++; return nil })
-	if err != nil || assetErr != nil || countErr != nil || len(messages) != 1 || assetCount != 1 || asset.ReferenceCount != 1 || fixture.runner.createCalls != 0 {
+	if err != nil || assetErr != nil || countErr != nil || len(messages) != 1 || assetCount != 1 || asset.ReferenceCount != 1 || fixture.runner.createCalls != 1 {
 		t.Fatalf("replay duplicated authority messages=%d assets=%d asset=%+v router_calls=%d errors=%v/%v/%v", len(messages), assetCount, asset, fixture.runner.createCalls, err, assetErr, countErr)
 	}
 }

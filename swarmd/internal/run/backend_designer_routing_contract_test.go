@@ -39,6 +39,18 @@ func TestBackendDesignerRegularAndIterationRoutingContract(t *testing.T) {
 		t.Fatalf("workspace regular routing = %#v err=%v", workspace.Launches, err)
 	}
 
+	source := map[string]any{"session_id": "source-session", "collection_id": "source-collection", "variant_id": "source-variant", "event_seq": 41}
+	workspaceSource, err := parseTaskCallArguments(mustJSON(t, map[string]any{
+		"mode": "regular", "description": "workspace source alternatives", "prompt": "create repository variants", "source_artifact": source,
+		"launches": []any{
+			map[string]any{"subagent_type": "designer", "title": "Compact", "meta_prompt": "Create compact.", "deliverable": "Source compact", "output_mode": "workspace", "owned_scope": []any{"web/src/variants/source-compact"}, "dependency_evidence": "Target finalized."},
+			map[string]any{"subagent_type": "designer", "title": "Spacious", "meta_prompt": "Create spacious.", "deliverable": "Source spacious", "output_mode": "workspace", "owned_scope": []any{"web/src/variants/source-spacious"}, "dependency_evidence": "Target finalized."},
+		},
+	}))
+	if err != nil || !equalTaskImageSourceArtifact(workspaceSource.Launches[0].SourceArtifact, workspaceSource.SourceArtifact) || !equalTaskImageSourceArtifact(workspaceSource.Launches[1].SourceArtifact, workspaceSource.SourceArtifact) {
+		t.Fatalf("workspace source-artifact routing = %#v err=%v", workspaceSource.Launches, err)
+	}
+
 	iteration, err := parseTaskCallArguments(mustJSON(t, map[string]any{
 		"mode": "swarm", "description": "managed iteration", "prompt": "create alternatives", "agent_type": "designer", "count": 3,
 	}))
@@ -100,6 +112,19 @@ func TestBackendDesignerWorkspaceModeRejectsImplicitOrOverlappingRepositoryTarge
 				t.Fatalf("error = %v, want %q", err, tc.want)
 			}
 		})
+	}
+}
+
+func TestCollectTaskReadyArtifactReferencesExcludesFailedAnimationInspectionSlot(t *testing.T) {
+	ready := &taskArtifactReference{SessionID: "parent", CollectionID: "collection", VariantID: "ready", Status: pebblestore.SessionArtifactStatusReady}
+	failedInspection := &taskArtifactReference{SessionID: "parent", CollectionID: "collection", VariantID: "failed-inspection", Status: pebblestore.SessionArtifactStatusFailed, FailureCode: "animation_inspection_failed"}
+	outcomes := []taskLaunchOutcome{
+		{ArtifactReference: ready},
+		{ArtifactReference: failedInspection, Phase: "failed", Reason: "representative-frame inspection failed"},
+	}
+	references := collectTaskReadyArtifactReferences(outcomes, []error{nil, errContractRenderFailed{}})
+	if len(references) != 1 || references[0] != ready {
+		t.Fatalf("successful variant references = %#v, want only ready slot", references)
 	}
 }
 

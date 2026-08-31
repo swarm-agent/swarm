@@ -89,9 +89,25 @@ func TestBuildInputProjectsSelectedVideoProjectAndRevisionContext(t *testing.T) 
 		t.Fatalf("input = %#v", input)
 	}
 	content := input[0]["content"].([]map[string]any)[0]["text"].(string)
-	for _, want := range []string{"selected_project_id=vproj_selected", "selected_revision_id=vrev_selected", "typed source_video operations", "Verify the durable project with manage_video", "visual review objects", "never prose-only storyboards or detached HTML/Markdown deliverables", "actual ready 16:9 image slide for every planned part", "plan.kind=initial", "complete exact ready visual reference", "plan.kind=revision", "select which proposed replacement parts to accept"} {
+	for _, want := range []string{"selected_project_id=vproj_selected", "selected_revision_id=vrev_selected", "typed source_video operations", "manage_video action=inspect_context first", "Verify the durable project with manage_video", "visual review objects", "never prose-only storyboards or detached HTML/Markdown deliverables", "actual ready 16:9 image slide for every planned part", "plan.kind=initial", "complete exact ready visual reference", "plan.kind=revision", "select which proposed replacement parts to accept"} {
 		if !strings.Contains(content, want) {
 			t.Fatalf("provider content missing %q: %s", want, content)
+		}
+	}
+}
+
+func TestBuildInputProjectsDurableVideoLibraryAttachmentSystemContext(t *testing.T) {
+	input := buildInput([]pebblestore.MessageSnapshot{{
+		Role: "system", Content: "Attached the selected exact video revision.",
+		Metadata: map[string]any{"source": "video_library_attachment", "creative_mode": "video", "video_project_id": "destination-project", "video_revision_id": "destination-revision"},
+	}})
+	if len(input) != 1 {
+		t.Fatalf("input = %#v", input)
+	}
+	content := input[0]["content"].([]map[string]any)[0]["text"].(string)
+	for _, want := range []string{"[system] Attached the selected exact video revision.", "Durable Video Studio attachment", "persisted with the session", "selected_project_id=destination-project", "selected_revision_id=destination-revision"} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("durable video attachment context missing %q: %s", want, content)
 		}
 	}
 }
@@ -105,6 +121,22 @@ func TestBuildInputProjectsSelectedVideoStepAndPlayheadContext(t *testing.T) {
 	}})
 	content := input[0]["content"].([]map[string]any)[0]["text"].(string)
 	for _, want := range []string{"selected_step_anchor=step-bass-design", "selected_playhead_ms=12500", "Preserve supplied stable step anchors", "create only the requested replacement visual"} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("provider content missing %q: %s", want, content)
+		}
+	}
+}
+
+func TestBuildInputProjectsSelectedStoryboardPartContext(t *testing.T) {
+	input := buildInput([]pebblestore.MessageSnapshot{{
+		Role: "user", Content: "Replace this storyboard section with the filmed take.", Metadata: map[string]any{
+			"creative_mode": "video", "video_project_id": "vproj_selected", "video_revision_id": "vrev_selected", "video_selection_kind": "iteration",
+			"video_storyboard_part_id": "intro", "video_storyboard_capture_state_id": "opening", "video_storyboard_production_state": "pending",
+			"video_storyboard_filming_requirements": []any{"Locked camera", "Hold final pose"},
+		},
+	}})
+	content := input[0]["content"].([]map[string]any)[0]["text"].(string)
+	for _, want := range []string{"selected_storyboard_part_id=intro", "selected_storyboard_capture_state_id=opening", "selected_storyboard_production_state=pending", `selected_storyboard_filming_requirements=["Locked camera","Hold final pose"]`, "Preserve this stable storyboard part", "exact source/still lineage"} {
 		if !strings.Contains(content, want) {
 			t.Fatalf("provider content missing %q: %s", want, content)
 		}
@@ -150,17 +182,42 @@ func TestMasterHarnessPromptGuidesPriorArtifactWorkspaceWorkflow(t *testing.T) {
 	}
 }
 
+func TestMasterHarnessPromptRequiresExactRenderedPixelVerification(t *testing.T) {
+	prompt := masterHarnessPrompt("/workspace")
+	for _, want := range []string{
+		"use media_inspect with the complete exact ready artifact reference",
+		"inspect every exact ready image state",
+		"clipping and overflow",
+		"aspect ratio and object sizing",
+		"requested-element fidelity",
+		"text legibility",
+		"unintended overlaps",
+		"scrollbars or capture chrome/overlays",
+		"each state against its brief",
+		"renderer does not judge aesthetics",
+		"none of those checks substitutes for pixel inspection",
+		"new exact-lineage derived revision",
+		"never mutate or silently replace the published variant",
+		"single-publication Designer repaired its already-published output",
+		"report the specific visual defect and bounded limitation honestly",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("master prompt missing rendered visual verification guidance %q", want)
+		}
+	}
+}
+
 func TestMasterHarnessPromptGuidesManagedArtifactParts(t *testing.T) {
 	prompt := masterHarnessPrompt("/workspace")
 	for _, want := range []string{
-		"Managed artifact `parts` are the durable review/edit targets shown by Artifact Studio",
-		"include accurate `parts` in the same manage_artifact create/create_package call",
-		"temporal requires start_ms/end_ms in milliseconds",
-		"spatial requires normalized x/y/width/height within 0..1",
-		"semantic is for a named conceptual region with no stronger locator",
-		"Do not omit parts for an explicitly sectioned/editable deliverable",
-		"Every derived complete revision must submit its own accurate parts",
-		"mirror every canonical manifest section as a temporal part with the exact same id, label, start_ms, and end_ms",
+		"Managed artifact `parts` are durable source-bound review/edit targets shown by Artifact Studio",
+		"complete monolithic artifact remains one file",
+		"For text/html, the caller may omit `parts`",
+		"server derives useful targets",
+		"without splitting or rewriting the source",
+		"Use `initial_parts` only",
+		"Never create a ZIP merely to represent HTML review/edit targets",
+		"derived temporal targets mirror each canonical manifest section's exact id, label, start_ms, and end_ms",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("master prompt missing managed artifact parts guidance %q", want)
@@ -179,8 +236,19 @@ func TestMasterHarnessPromptGuidesNormalizedHTMLStillExportAndPendingVideoPlan(t
 		"action=export_html_stills",
 		"complete exact session_id, collection_id, variant_id, and event_seq",
 		"managed image/png variants",
-		"manage_video propose_plan part.visual values",
-		"never accept it or start final rendering for the user",
+		"#swarm-storyboard-manifest",
+		"swarm.storyboard/v1",
+		"non-empty filming_requirements",
+		"storyboard_handoff",
+		"manage_video import_storyboard",
+		"Do not stop after HTML authoring or still export",
+		"never accept or start final rendering for the user while pending storyboard placeholders remain",
+		"manage_video inspect_composition",
+		"list_source_roots and browse_source",
+		"exact expected_revision_id",
+		"update_composition",
+		"use inspect_frames on the exact working revision",
+		"AI must never accept the proposal or start final rendering",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("master prompt missing HTML still workflow guidance %q", want)

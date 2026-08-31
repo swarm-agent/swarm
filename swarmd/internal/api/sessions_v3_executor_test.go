@@ -12,6 +12,7 @@ import (
 	"time"
 
 	agentruntime "swarm/packages/swarmd/internal/agent"
+	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/permission"
 	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
 	runruntime "swarm/packages/swarmd/internal/run"
@@ -74,6 +75,30 @@ func (r *sessionsV3ProviderToolsRunner) BuildPlanCheckpointRunInput(_ string, _ 
 		return r.checkpointInputReturn, r.checkpointInputReturnOK, nil
 	}
 	return []map[string]any{{"role": "user", "content": "checkpoint"}}, true, nil
+}
+
+func TestSessionV3ProviderToolPrincipalBindsOwnedRunSession(t *testing.T) {
+	session := pebblestore.SessionSnapshot{ID: "session-1", UserID: "user-1", AccountScopeID: "account-1"}
+	job := sessionV3ExecutorJob{
+		SessionID: session.ID,
+		Principal: identity.Principal{Type: identity.PrincipalTypeUser, UserID: session.UserID, AccountScopeID: session.AccountScopeID, SessionID: "authenticated-desktop-session"},
+	}
+	principal, err := sessionV3ProviderToolPrincipal(job, session)
+	if err != nil {
+		t.Fatalf("bind provider tool principal: %v", err)
+	}
+	if principal.SessionID != job.SessionID || principal.UserID != job.Principal.UserID || principal.AccountScopeID != job.Principal.AccountScopeID {
+		t.Fatalf("bound principal = %+v, want session %q with unchanged account identity", principal, job.SessionID)
+	}
+
+	foreign := job
+	foreign.Principal.AccountScopeID = "account-2"
+	if _, err := sessionV3ProviderToolPrincipal(foreign, session); err == nil || !strings.Contains(err.Error(), "does not own") {
+		t.Fatalf("foreign-account provider tool principal error = %v", err)
+	}
+	if _, err := sessionV3ProviderToolPrincipal(job, pebblestore.SessionSnapshot{ID: "session-2", UserID: session.UserID, AccountScopeID: session.AccountScopeID}); err == nil || !strings.Contains(err.Error(), "resolved run session") {
+		t.Fatalf("mismatched run session error = %v", err)
+	}
 }
 
 func TestSessionV3SystemSidechatResolutionUsesRegistryAndRejectsSpoofing(t *testing.T) {
@@ -261,15 +286,15 @@ func TestSessionV3OrdinaryAgentResolutionKeepsCurrentAccountToolContract(t *test
 	}
 }
 
-func TestSessionV3ProviderCheckpointOwnershipKeepsProviderContext(t *testing.T) {
+func TestSessionV3ProviderCheckpointOwnershipKeepsProviderContextUnlessLifecycleRequiresFreshContext(t *testing.T) {
 	for _, job := range []sessionV3ExecutorJob{{CheckpointID: "cp-1"}, {CheckpointID: "cp-1", ResumeContext: true}} {
 		scope := sessionV3ProviderJobCheckpointScope(job)
 		if scope.FreshContext || sessionV3ProviderCheckpointFreshContext(job, scope) {
 			t.Fatalf("checkpoint ownership unexpectedly requested fresh provider context: job=%#v scope=%#v", job, scope)
 		}
 	}
-	if sessionV3ProviderCheckpointFreshContext(sessionV3ExecutorJob{CheckpointID: "cp-1"}, sessionV3ProviderCheckpointScope{FreshContext: true}) {
-		t.Fatal("checkpoint routing metadata must not override execution-epoch lineage")
+	if !sessionV3ProviderCheckpointFreshContext(sessionV3ExecutorJob{CheckpointID: "cp-1"}, sessionV3ProviderCheckpointScope{FreshContext: true}) {
+		t.Fatal("explicit fresh-context checkpoint lifecycle transition did not reset provider lineage")
 	}
 }
 

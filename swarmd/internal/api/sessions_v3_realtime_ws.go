@@ -807,6 +807,8 @@ func v3RealtimeSessionSnapshotFromMembership(membership pebblestore.V3RealtimeOu
 		WorktreeBaseBranch:      strings.TrimSpace(membership.WorktreeBaseBranch),
 		WorktreeBranch:          strings.TrimSpace(membership.WorktreeBranch),
 		TemporaryWorkspaceRoots: append([]string(nil), membership.TemporaryWorkspaceRoots...),
+		WorkspaceGrants:         append([]pebblestore.WorkspaceGrant(nil), membership.WorkspaceGrants...),
+		WorkspaceUsage:          append([]pebblestore.WorkspaceUsageProjection(nil), membership.WorkspaceUsage...),
 		Metadata:                metadata,
 	}
 }
@@ -930,13 +932,17 @@ func v3RealtimeSessionMatchesWorksetSelector(principal identity.Principal, sessi
 	if len(paths) == 0 && selector.Recent.Limit > 0 {
 		return true
 	}
-	candidates := []string{
-		strings.TrimSpace(session.WorkspacePath),
-		strings.TrimSpace(session.WorktreeRootPath),
-		sessionsV3MetadataString(session.Metadata, "swarm_v3_source_workspace_path"),
-		sessionsV3MetadataString(session.Metadata, "swarm_v3_tui_cwd_path"),
-		sessionsV3MetadataString(session.Metadata, "swarm_v3_tui_original_cwd_path"),
-		sessionsV3MetadataString(session.Metadata, "swarm_v3_tui_worktree_path"),
+	// Workspace selectors group by the live canonical source identity only.
+	// Runtime worktree paths remain execution details and must not keep a moved
+	// session subscribed under its former sidebar workspace.
+	canonicalSource := sessionsV3MetadataString(session.Metadata, "swarm_v3_source_workspace_path")
+	candidates := []string{canonicalSource}
+	if canonicalSource == "" {
+		candidates = append(candidates,
+			strings.TrimSpace(session.WorkspacePath),
+			sessionsV3MetadataString(session.Metadata, "swarm_v3_tui_cwd_path"),
+			sessionsV3MetadataString(session.Metadata, "swarm_v3_tui_original_cwd_path"),
+		)
 	}
 	for _, candidate := range candidates {
 		normalizedCandidate, ok := normalizeV3RealtimeWorkspaceCandidate(candidate)
@@ -1042,7 +1048,12 @@ func v3RealtimeRecordRemovesFromWorkset(record sessionruntime.RealtimeOutboxReco
 }
 
 func v3RealtimeRecordChangesVisibility(record sessionruntime.RealtimeOutboxRecord) bool {
-	return strings.TrimSpace(record.Event.EventType) == "session.visibility.changed"
+	switch strings.TrimSpace(record.Event.EventType) {
+	case "session.visibility.changed", "session.workspace.updated", "session.tui.rebound":
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *Server) sendV3RealtimeWorksetSessionFrame(conn *transportws.Conn, kind string, workset v3RealtimeWorksetSubscription, subscription v3RealtimeSubscription, record sessionruntime.RealtimeOutboxRecord, scope v3SyncCursorScope) bool {

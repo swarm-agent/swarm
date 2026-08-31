@@ -1,7 +1,6 @@
 package api
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -10,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"swarm/packages/swarmd/internal/agentmodelsettings"
 	"swarm/packages/swarmd/internal/identity"
 	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -19,7 +17,7 @@ import (
 
 // TestRoutedSessionContractRegression protects the routed-start boundary as one
 // server-owned transaction: the client supplies intent and canonical workspace
-// authority, while Router supplies names only for managed-worktree starts.
+// authority, while every Git-backed routed session is admitted into an owned lane.
 func TestRoutedSessionContractRegression(t *testing.T) {
 	t.Run("client cannot supply pre-session route authority", func(t *testing.T) {
 		runner := &sessionRouterRecordingRunner{id: "recording", response: provideriface.Response{Text: `{"title":"Router title"}`}}
@@ -31,7 +29,7 @@ func TestRoutedSessionContractRegression(t *testing.T) {
 			`"preference":{"provider":"client","model":"client-model","thinking":"high"}`,
 			`"model_profile":{"action":{"provider":"client","model":"client-model"}}`,
 		} {
-			body := `{"input":"route this","client_request_id":"forbidden-authority","managed_worktree_requested":false,"plan_mode_requested":false,` + forbidden + `}`
+			body := `{"input":"route this","client_request_id":"forbidden-authority","plan_mode_requested":false,` + forbidden + `}`
 			response := postRoutedSessionRawContractRequest(t, server, principal, body)
 			if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "unknown field") {
 				t.Fatalf("forbidden authority %s status=%d body=%s", forbidden, response.Code, response.Body.String())
@@ -40,15 +38,15 @@ func TestRoutedSessionContractRegression(t *testing.T) {
 		if runner.createCalls != 0 || runner.streamingCalls != 0 {
 			t.Fatalf("client route authority reached Router: create=%d streaming=%d", runner.createCalls, runner.streamingCalls)
 		}
-		missingPlan := postRoutedSessionRawContractRequest(t, server, principal, `{"input":"route this","client_request_id":"missing-plan","managed_worktree_requested":false}`)
+		missingPlan := postRoutedSessionRawContractRequest(t, server, principal, `{"input":"route this","client_request_id":"missing-plan"}`)
 		if missingPlan.Code != http.StatusBadRequest || !strings.Contains(missingPlan.Body.String(), "plan_mode_requested is required") {
 			t.Fatalf("missing Plan intent status=%d body=%s", missingPlan.Code, missingPlan.Body.String())
 		}
-		foreignBinding := postRoutedSessionRawContractRequest(t, server, principal, `{"input":"route this","client_request_id":"foreign-binding","managed_worktree_requested":false,"plan_mode_requested":false,"workspace_binding_id":"foreign-binding"}`)
+		foreignBinding := postRoutedSessionRawContractRequest(t, server, principal, `{"input":"route this","client_request_id":"foreign-binding","plan_mode_requested":false,"workspace_binding_id":"foreign-binding"}`)
 		if foreignBinding.Code != http.StatusBadRequest || !strings.Contains(foreignBinding.Body.String(), "was not found") {
 			t.Fatalf("foreign binding status=%d body=%s", foreignBinding.Code, foreignBinding.Body.String())
 		}
-		mismatchedPath := postRoutedSessionRawContractRequest(t, server, principal, `{"input":"route this","client_request_id":"mismatched-path","managed_worktree_requested":false,"plan_mode_requested":false,"workspace_path":"/other/workspace"}`)
+		mismatchedPath := postRoutedSessionRawContractRequest(t, server, principal, `{"input":"route this","client_request_id":"mismatched-path","plan_mode_requested":false,"workspace_path":"/other/workspace"}`)
 		if mismatchedPath.Code != http.StatusBadRequest || !strings.Contains(mismatchedPath.Body.String(), "does not match workspace binding source") {
 			t.Fatalf("mismatched path status=%d body=%s", mismatchedPath.Code, mismatchedPath.Body.String())
 		}
@@ -57,14 +55,9 @@ func TestRoutedSessionContractRegression(t *testing.T) {
 		}
 	})
 
-	t.Run("plain start asynchronously commits Compact title and realtime", func(t *testing.T) {
-		routerRunner := &sessionRouterRecordingRunner{id: "router", err: errors.New("Router unavailable")}
+	t.Run("plain start uses Router title and worktree name before durable execution", func(t *testing.T) {
+		routerRunner := &sessionRouterRecordingRunner{id: "router", response: provideriface.Response{Text: `{"title":"Router Session Title","worktree_name":"router-session"}`}}
 		server, sessions, principal := newRoutedSessionAtomicityServer(t, routerRunner, false, true)
-		compactRunner := &sessionRouterRecordingRunner{id: "compact", response: provideriface.Response{Text: "Durable Compact Title"}, allowStreaming: true}
-		server.providers.RegisterRunner(compactRunner)
-		if _, err := server.agentModelSettings.UpdateSystemAgent(identity.ContextWithPrincipal(context.Background(), principal), "compact", agentmodelsettings.Assignment{Provider: "compact", Model: "compact-model", Thinking: "low"}); err != nil {
-			t.Fatalf("configure Compact title settings: %v", err)
-		}
 		server.v3SessionExecutor = newSessionV3Executor(server)
 		t.Cleanup(func() {
 			server.CancelInFlightRuns()
@@ -96,66 +89,42 @@ func TestRoutedSessionContractRegression(t *testing.T) {
 		if result.Session.WorkspaceName != "Routed Workspace" || result.Session.Metadata["swarm_v3_workspace_binding_id"] != "routed-binding" || result.Session.Metadata["swarm_v3_runtime_swarm_id"] != "local-swarm" {
 			t.Fatalf("plain start did not retain selected binding authority: %+v", result.Session)
 		}
+		if !result.Session.WorktreeEnabled || result.Session.WorktreeRootPath == "" || result.Session.WorktreeBranch == "" || len(result.Session.WorkspaceGrants) < 4 || len(result.Session.WorkspaceUsage) < 3 {
+			t.Fatalf("plain start did not allocate a session-owned worktree with all account workspaces: %+v", result.Session)
+		}
+		if result.Session.Metadata["swarm_v3_mandatory_worktree"] != true || result.Session.Metadata["swarm_v3_worktree_owner_session_id"] != result.Session.ID || result.Session.Metadata["swarm_v3_runtime_workspace_path"] != result.Session.WorktreeRootPath {
+			t.Fatalf("plain start did not persist mandatory worktree lineage: %+v", result.Session.Metadata)
+		}
 		if result.Mutation.RunIntent == nil || result.Mutation.RunIntent.Status != "pending_executor" {
 			t.Fatalf("plain start did not enqueue its run independently of Router: %+v", result.Mutation.RunIntent)
 		}
-		deadline := time.Now().Add(2 * time.Second)
-		for {
-			stored, ok, err := sessions.GetSession(result.SessionID)
-			if err != nil || !ok {
-				t.Fatalf("plain routed session exists=%t err=%v", ok, err)
-			}
-			if stored.Title == "Durable Compact Title" {
-				if stored.Metadata["title_source"] != "compact" || stored.Metadata["title_locked"] != true || stored.Metadata["title_pending"] != false {
-					t.Fatalf("Compact title metadata=%+v", stored.Metadata)
-				}
-				events, eventErr := sessions.ListSessionEvents(result.SessionID, 0, 10)
-				outbox, outboxErr := sessions.Store().ListV3RealtimeOutboxForSessionAfterSeq(result.SessionID, 0, 10)
-				if eventErr != nil || outboxErr != nil {
-					t.Fatalf("read Compact title events/outbox: %v/%v", eventErr, outboxErr)
-				}
-				foundTitleEvent := false
-				for _, event := range events {
-					if event.EventType == "session.title.updated" {
-						foundTitleEvent = true
-					}
-				}
-				if len(events) < 2 || len(outbox) < 2 || !foundTitleEvent {
-					t.Fatalf("Compact durable title events=%+v outbox=%+v errors=%v/%v", events, outbox, eventErr, outboxErr)
-				}
-				foundTitleOutbox := false
-				for _, record := range outbox {
-					if record.Event.EventType == "session.title.updated" {
-						foundTitleOutbox = true
-					}
-				}
-				if !foundTitleOutbox {
-					t.Fatalf("Compact title realtime outbox missing: %+v", outbox)
-				}
-				break
-			}
-			if time.Now().After(deadline) {
-				t.Fatalf("Compact title did not commit; session=%+v streaming_calls=%d", stored, compactRunner.streamingCalls)
-			}
-			time.Sleep(10 * time.Millisecond)
+		stored, ok, err := sessions.GetSession(result.SessionID)
+		if err != nil || !ok {
+			t.Fatalf("plain routed session exists=%t err=%v", ok, err)
 		}
-		if routerRunner.createCalls != 0 || routerRunner.streamingCalls != 0 || compactRunner.streamingCalls != 1 {
-			t.Fatalf("provider calls Router=%d/%d Compact streaming=%d", routerRunner.createCalls, routerRunner.streamingCalls, compactRunner.streamingCalls)
+		if stored.Title != "Router Session Title" || stored.Metadata["title_source"] != "router" || stored.Metadata["title_locked"] != true || stored.Metadata["title_pending"] != false {
+			t.Fatalf("Router title authority=%+v metadata=%+v", stored.Title, stored.Metadata)
 		}
-		if len(compactRunner.requests) != 1 {
-			t.Fatalf("Compact title requests=%d, want one", len(compactRunner.requests))
+		if stored.Metadata["routed_worktree_original_name"] != "router-session" || stored.Metadata["routed_worktree_name"] != "router-session" || stored.WorktreeBranch != "agent/router-session" {
+			t.Fatalf("Router worktree authority=%+v metadata=%+v", stored, stored.Metadata)
 		}
-		compactInstructions := compactRunner.requests[0].Instructions
+		if routerRunner.createCalls != 1 || routerRunner.streamingCalls != 0 {
+			t.Fatalf("provider calls Router=%d/%d", routerRunner.createCalls, routerRunner.streamingCalls)
+		}
+		if len(routerRunner.requests) != 1 {
+			t.Fatalf("Router requests=%d, want one", len(routerRunner.requests))
+		}
+		routerInstructions := routerRunner.requests[0].Instructions
 		for _, forbidden := range []string{"Routed Workspace", "routed-binding", "confidential alpha routing definition", "confidential beta routing definition", "Distractor Alpha", "Distractor Beta"} {
-			if strings.Contains(compactInstructions, forbidden) {
-				t.Fatalf("Compact title instructions leaked workspace authority %q: %s", forbidden, compactInstructions)
+			if strings.Contains(routerInstructions, forbidden) {
+				t.Fatalf("Router instructions leaked workspace authority %q: %s", forbidden, routerInstructions)
 			}
 		}
 		server.CancelInFlightRuns()
 		waitForRoutedSessionExecutorIdle(t, server.v3SessionExecutor, 2*time.Second)
 	})
 
-	t.Run("explicit Plan intent owns mode while Router names the managed worktree", func(t *testing.T) {
+	t.Run("explicit Plan intent owns mode when worktree isolation is explicitly requested", func(t *testing.T) {
 		tests := []struct {
 			name          string
 			planRequested bool
@@ -166,7 +135,7 @@ func TestRoutedSessionContractRegression(t *testing.T) {
 		}
 		for _, test := range tests {
 			t.Run(test.name, func(t *testing.T) {
-				runner := &sessionRouterRecordingRunner{id: "recording", response: provideriface.Response{Text: `{"title":"Router Canonical Title","worktree_name":"router-canonical"}`}}
+				runner := &sessionRouterRecordingRunner{id: "recording", response: provideriface.Response{Text: `{"title":"Router Canonical","worktree_name":"router-canonical"}`}}
 				server, sessions, principal := newRoutedSessionAtomicityServer(t, runner, true, true)
 				managedPath := t.TempDir()
 				worktrees := &routedWorktreeServiceStub{fakeWorktreeService: fakeWorktreeService{
@@ -175,7 +144,7 @@ func TestRoutedSessionContractRegression(t *testing.T) {
 				}}
 				server.SetWorktreeService(worktrees)
 				created := postRoutedSessionAtomicityRequest(t, server, principal, map[string]any{
-					"input": "implement this work", "client_request_id": "router-canonical-" + strings.ToLower(test.name), "plan_mode_requested": test.planRequested, "managed_worktree_requested": true,
+					"input": "implement this work", "client_request_id": "router-canonical-" + strings.ToLower(test.name), "plan_mode_requested": test.planRequested,
 				})
 				if created.Code != http.StatusOK {
 					t.Fatalf("canonical routed start status=%d body=%s", created.Code, created.Body.String())
@@ -188,22 +157,14 @@ func TestRoutedSessionContractRegression(t *testing.T) {
 				if err != nil || !ok {
 					t.Fatalf("canonical routed session exists=%t err=%v", ok, err)
 				}
-				if stored.Title != "Router Canonical Title" || stored.Mode != test.wantMode || stored.WorkspaceName != "Routed Workspace" || stored.WorkspacePath == "" {
+				if stored.Title != "Router Canonical" || stored.Mode != test.wantMode || stored.WorkspaceName != "Routed Workspace" || stored.WorkspacePath == "" {
 					t.Fatalf("routed authority was not canonical: %+v", stored)
 				}
-				if stored.Metadata["title_source"] != "router" || stored.Metadata["title_locked"] != true || stored.Metadata["title_pending"] != false || stored.Metadata["swarm_v3_workspace_binding_id"] != "routed-binding" || stored.Metadata["swarm_v3_runtime_swarm_id"] != "local-swarm" {
+				if stored.Metadata["title_locked"] != true || stored.Metadata["title_pending"] != false || stored.Metadata["title_source"] != "router" || stored.Metadata["swarm_v3_workspace_binding_id"] != "routed-binding" || stored.Metadata["swarm_v3_runtime_swarm_id"] != "local-swarm" {
 					t.Fatalf("managed worktree title/runtime metadata=%+v", stored.Metadata)
 				}
 				if runner.createCalls != 1 || runner.streamingCalls != 0 || worktrees.allocationCalls != 1 || worktrees.lastWorkspace == "" || worktrees.lastNameSeed == "" || worktrees.lastBranchName != "agent/router-canonical" {
 					t.Fatalf("Router calls create=%d streaming=%d allocation=%d source=%q seed=%q branch=%q", runner.createCalls, runner.streamingCalls, worktrees.allocationCalls, worktrees.lastWorkspace, worktrees.lastNameSeed, worktrees.lastBranchName)
-				}
-				if len(runner.requests) != 1 {
-					t.Fatalf("Router requests=%d, want one", len(runner.requests))
-				}
-				for _, forbidden := range []string{"Routed Workspace", "routed-binding", worktrees.lastWorkspace} {
-					if forbidden != "" && strings.Contains(runner.requests[0].Instructions, forbidden) {
-						t.Fatalf("Router instructions leaked selected workspace authority %q: %s", forbidden, runner.requests[0].Instructions)
-					}
 				}
 			})
 		}
@@ -211,8 +172,7 @@ func TestRoutedSessionContractRegression(t *testing.T) {
 
 	t.Run("media commit failure rolls back the allocated worktree and cannot replay", func(t *testing.T) {
 		fixture := newRoutedMediaTestFixture(t)
-		name := "Contract Worktree"
-		fixture.runner.response.Text = `{"title":"Worktree contract","worktree_name":"` + name + `"}`
+		fixture.runner.response.Text = `{"title":"Worktree contract","worktree_name":"contract-worktree"}`
 		managedPath := t.TempDir()
 		worktrees := &routedContractRollbackWorktree{routedWorktreeServiceStub: routedWorktreeServiceStub{fakeWorktreeService: fakeWorktreeService{
 			config:     worktreeruntime.Config{Enabled: true, UseCurrentBranch: false, BaseBranch: "dev", BranchName: "agent/<id>"},

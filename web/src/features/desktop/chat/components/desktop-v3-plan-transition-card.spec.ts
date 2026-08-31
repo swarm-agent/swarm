@@ -11,6 +11,7 @@ test('live and durable plan transitions use full-width minimal cards', () => {
   assert.match(markdownSource, /function ExitPlanModeToolView/)
   assert.match(markdownSource, /data-exit-plan-mode-transition/)
   assert.match(markdownSource, /Plan approved/)
+  assert.match(markdownSource, /case "transition_checkpoint_boundary":[^]*return "Checkpoint added"/)
   assert.match(markdownSource, /Execution continues/)
   assert.match(markdownSource, /if \(isExitPlanMode\) return <ExitPlanModeToolView/)
   const exitTransitionStart = markdownSource.indexOf('function ExitPlanModeToolView')

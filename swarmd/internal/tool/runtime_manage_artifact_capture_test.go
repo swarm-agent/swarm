@@ -82,6 +82,34 @@ func TestExportHTMLStillsUsesExactReferenceManifestOrderAndLineage(t *testing.T)
 	}
 }
 
+func TestExportHTMLStillsReturnsExactStoryboardHandoffAndRequiresCompleteCaptures(t *testing.T) {
+	html := `<!doctype html><script id="swarm-capture-manifest" type="application/json">{"version":"swarm.capture/v1","states":[{"id":"opening"},{"id":"proof"}]}</script><script id="swarm-storyboard-manifest" type="application/json">{"version":"swarm.storyboard/v1","sections":[{"id":"intro","capture_state_id":"opening","title":"Intro","duration_ms":2500,"narration":"Meet Swarm.","on_screen_text":"Local-first","creative_direction":"Slow push.","filming_requirements":["Locked camera"],"production_state":"pending"},{"id":"proof","capture_state_id":"proof","title":"Proof","duration_ms":3000,"creative_direction":"Over shoulder.","filming_requirements":["Readable screen"],"production_state":"ready"}]}</script><body></body>`
+	authority := &fakeArtifactAuthority{readBody: []byte(html), variant: pebblestore.SessionArtifactVariant{ID: "source", CollectionID: "source-collection", SessionID: "source-session", EventSeq: 7, Status: pebblestore.SessionArtifactStatusReady, MediaType: "text/html"}}
+	renderer := &fakeHTMLCaptureRenderer{}
+	runtime := NewRuntime(1)
+	runtime.SetArtifactAuthority(authority)
+	runtime.SetHTMLCaptureRenderer(renderer)
+	ctx, scope := artifactToolContext()
+	output, err := runtime.executeManageArtifact(ctx, scope, "storyboard", map[string]any{"action": "export_html_stills", "session_id": "source-session", "collection_id": "source-collection", "variant_id": "source", "event_seq": 7})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`"storyboard_handoff"`, `"compositions":null`, `"composition":null`, `"id":"intro"`, `"capture_state_id":"opening"`, `"duration_ms":2500`, `"creative_direction":"Slow push."`, `"production_state":"pending"`, `"variant_id":"variant-`} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("storyboard output lacks %s: %s", want, output)
+		}
+	}
+	authority.readBody = []byte(html)
+	authority.variant = pebblestore.SessionArtifactVariant{ID: "source", CollectionID: "source-collection", SessionID: "source-session", EventSeq: 7, Status: pebblestore.SessionArtifactStatusReady, MediaType: "text/html"}
+	_, err = runtime.executeManageArtifact(ctx, scope, "storyboard-incomplete", map[string]any{"action": "export_html_stills", "session_id": "source-session", "collection_id": "source-collection", "variant_id": "source", "event_seq": 7, "state_ids": []any{"opening"}})
+	if err == nil || !strings.Contains(err.Error(), "storyboard_export_incomplete") {
+		t.Fatalf("incomplete storyboard export error = %v", err)
+	}
+	if strings.Join(renderer.req.StateIDs, ",") != "opening,proof" {
+		t.Fatalf("renderer should not run for incomplete storyboard request: %+v", renderer.req.StateIDs)
+	}
+}
+
 func TestCaptureManifestAcceptsCanonicalAttributesInEitherOrder(t *testing.T) {
 	html := []byte(`<script type="application/json" id="swarm-capture-manifest">{"version":"swarm.capture/v1","states":[{"id":"opening"}]}</script>`)
 	manifest, err := parseCaptureManifest(html)

@@ -95,21 +95,20 @@ const (
 )
 
 type RoutedDraft struct {
-	Prompt                   string
-	PlanModeRequested        bool
-	ManagedWorktreeRequested bool
-	ClientRequestID          string
-	AgentName                string
-	WorkspacePath            string
-	HostWorkspacePath        string
-	RuntimeWorkspacePath     string
-	WorkspaceBindingID       string
-	SwarmID                  string
-	TargetKind               string
-	TargetRelationship       string
-	Metadata                 map[string]any
-	Status                   RoutedDraftStatus
-	Error                    string
+	Prompt               string
+	PlanModeRequested    bool
+	ClientRequestID      string
+	AgentName            string
+	WorkspacePath        string
+	HostWorkspacePath    string
+	RuntimeWorkspacePath string
+	WorkspaceBindingID   string
+	SwarmID              string
+	TargetKind           string
+	TargetRelationship   string
+	Metadata             map[string]any
+	Status               RoutedDraftStatus
+	Error                string
 }
 
 type PermissionTimelineItem struct {
@@ -677,6 +676,18 @@ func applyEvent(state State, event client.SessionV3Event) State {
 		var title string
 		if json.Unmarshal(raw, &title) == nil && strings.TrimSpace(title) != "" {
 			state.Session.Title = strings.TrimSpace(title)
+		}
+	}
+	if raw := payload["workspace_path"]; len(raw) > 0 {
+		var workspacePath string
+		if json.Unmarshal(raw, &workspacePath) == nil && strings.TrimSpace(workspacePath) != "" {
+			state.Session.WorkspacePath = strings.TrimSpace(workspacePath)
+		}
+	}
+	if raw := payload["workspace_name"]; len(raw) > 0 {
+		var workspaceName string
+		if json.Unmarshal(raw, &workspaceName) == nil && strings.TrimSpace(workspaceName) != "" {
+			state.Session.WorkspaceName = strings.TrimSpace(workspaceName)
 		}
 	}
 	if raw := payload["preference"]; len(raw) > 0 {

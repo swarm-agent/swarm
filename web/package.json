@@ -7,7 +7,9 @@
     "dev": "node ./scripts/use-local-node.mjs ./scripts/vite-launcher.mjs",
     "build": "node ./scripts/use-local-node.mjs ./node_modules/typescript/bin/tsc -b && node ./scripts/use-local-node.mjs ./scripts/vite-launcher.mjs build",
     "preview": "node ./scripts/use-local-node.mjs ./scripts/vite-launcher.mjs preview",
-    "test": "node --import tsx --test --test-timeout=30000 --test-force-exit ./src/**/*.spec.ts"
+    "test": "node --import tsx --test --test-timeout=30000 --test-force-exit ./src/**/*.spec.ts",
+    "test:critical": "node --import tsx --test --test-timeout=15000 ./src/features/desktop/state/desktop-v3-sync-api.spec.ts ./src/features/desktop/state/session-snapshot-hydration.spec.ts ./src/features/desktop/state/desktop-v3-cache-normalization.spec.ts ./src/features/desktop/realtime/local-session-auth.spec.ts ./src/features/desktop/session-v3/new-session-flow.spec.ts ./src/features/desktop/session-v3/existing-session-flow.spec.ts ./src/features/desktop/session-v3/write-api.spec.ts ./src/features/desktop/chat/services/task-workspace-selection.spec.ts ./src/features/desktop/chat/services/task-command-routing.spec.ts ./src/features/desktop/chat/components/desktop-v3-task-command.spec.ts",
+    "test:agents": "node --import tsx --test --test-timeout=30000 ./src/features/desktop/state/desktop-v3-task-child-view.spec.ts ./src/features/desktop/layout/sidebar-session-lineage.spec.ts ./src/features/desktop/chat/queries/agent-state-api.spec.ts"
   },
   "dependencies": {
     "@lottiefiles/dotlottie-web": "0.79.0",

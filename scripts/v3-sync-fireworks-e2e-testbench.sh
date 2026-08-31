@@ -1,24 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SSH_HOST="${1:-${SWARM_PRIMARY_SSH:-}}"
-if [[ -z "${SSH_HOST}" ]]; then
-  echo "pass an SSH target as the first argument or set SWARM_PRIMARY_SSH" >&2
-  exit 2
-fi
-API_URL="${SWARM_PRIMARY_API_URL:-http://127.0.0.1:7781}"
-SERVICE_UNIT="${SWARM_SERVICE_UNIT:-swarm.service}"
-EXPECTED_COMMIT="${SWARM_EXPECTED_COMMIT:-}"
-REMOTE_REPO="${SWARM_REMOTE_REPO:-}"
-if [[ -z "${REMOTE_REPO}" ]]; then
-  echo "SWARM_REMOTE_REPO must point to the candidate repository on ${SSH_HOST}" >&2
-  exit 2
-fi
-if [[ -z "${EXPECTED_COMMIT}" ]]; then
-  echo "SWARM_EXPECTED_COMMIT must name the backend fix commit expected in the deployed candidate" >&2
-  exit 2
-fi
-MODEL="${SWARM_LIVE_STREAM_MODEL:-accounts/fireworks/models/kimi-k2p6}"
+ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=scripts/lib-ssh-fast-testbench.sh
+source "${ROOT_DIR}/scripts/lib-ssh-fast-testbench.sh"
+swarm_fast_testbench_configure "${ROOT_DIR}" "${1:-}" || exit 1
+# Candidate-gated live tests share one prerequisite: use the maintained fast
+# deployment path whenever the configured checkout is stale or dirty.
+swarm_fast_testbench_prepare_candidate "${ROOT_DIR}" || exit 1
+MODEL="${SWARM_LIVE_STREAM_MODEL:-accounts/fireworks/models/deepseek-v4-flash-0731}"
 PROVIDER="${SWARM_LIVE_STREAM_PROVIDER:-fireworks}"
 E2E_ID="${E2E_ID:-v3sync-fireworks-$(date +%Y%m%d-%H%M%S)-$RANDOM}"
 if [[ ! "${E2E_ID}" =~ ^[A-Za-z0-9._-]+$ ]]; then

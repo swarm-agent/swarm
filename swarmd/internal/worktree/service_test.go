@@ -80,6 +80,39 @@ func TestResolveTaskBaseRejectsDirtyParentBeforeAllocation(t *testing.T) {
 	}
 }
 
+func TestPrepareTaskIntegrationRejectsCapturedBranchMovement(t *testing.T) {
+	repo := t.TempDir()
+	if _, err := runGit(repo, "init", "-b", "captured"); err != nil {
+		t.Fatal(err)
+	}
+	_, _ = runGit(repo, "config", "user.email", "test@example.invalid")
+	_, _ = runGit(repo, "config", "user.name", "Test User")
+	if err := os.WriteFile(filepath.Join(repo, "base.txt"), []byte("base\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, _ = runGit(repo, "add", "base.txt")
+	_, _ = runGit(repo, "commit", "-m", "base")
+	base, _ := runGit(repo, "rev-parse", "HEAD")
+	child := filepath.Join(t.TempDir(), "child")
+	if _, err := runGit(repo, "worktree", "add", "-b", "agent/child", child, base); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(child, "child.txt"), []byte("child\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, _ = runGit(child, "add", "child.txt")
+	_, _ = runGit(child, "commit", "-m", "child")
+	head, _ := runGit(child, "rev-parse", "HEAD")
+	if _, err := runGit(repo, "switch", "-c", "moved"); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := (&Service{}).PrepareTaskIntegration(repo, "captured", base, []TaskIntegrationChild{{SessionID: "child", BaseCommit: base, HeadCommit: head}})
+	if err == nil || !strings.Contains(err.Error(), "stale parent branch: expected captured, found moved") {
+		t.Fatalf("captured branch movement error = %v", err)
+	}
+}
+
 func TestTaskCommitDescendsFromRecordedBase(t *testing.T) {
 	repo := t.TempDir()
 	if _, err := runGit(repo, "init", "-b", "dev"); err != nil {
@@ -223,7 +256,7 @@ func TestPrepareAndApplyTaskIntegrationIsDeterministic(t *testing.T) {
 	head, _ := runGit(childPath, "rev-parse", "HEAD")
 
 	svc := &Service{}
-	plan, err := svc.PrepareTaskIntegration(repo, base, []TaskIntegrationChild{{SessionID: "child-session", BaseCommit: base, HeadCommit: head}})
+	plan, err := svc.PrepareTaskIntegration(repo, "dev", base, []TaskIntegrationChild{{SessionID: "child-session", BaseCommit: base, HeadCommit: head}})
 	if err != nil {
 		t.Fatalf("PrepareTaskIntegration: %v", err)
 	}
@@ -237,8 +270,8 @@ func TestPrepareAndApplyTaskIntegrationIsDeterministic(t *testing.T) {
 	if result.ResultingParentHead == "" || result.ResultingParentHead == base {
 		t.Fatalf("result = %#v", result)
 	}
-	if descends, err := svc.TaskCommitDescendsFrom(repo, head, result.ResultingParentHead); err != nil || descends {
-		t.Fatalf("cherry-picked child unexpectedly reachable by ancestry: descends=%t err=%v", descends, err)
+	if descends, err := svc.TaskCommitDescendsFrom(repo, head, result.ResultingParentHead); err != nil || !descends {
+		t.Fatalf("integrated child is not reachable by ancestry: descends=%t err=%v", descends, err)
 	}
 	if integrated, err := svc.TaskCommitRangeIntegratedInto(repo, base, head, result.ResultingParentHead); err != nil || !integrated {
 		t.Fatalf("cherry-picked child not classified integrated: integrated=%t err=%v", integrated, err)
@@ -265,7 +298,7 @@ func TestRemoveIntegratedTaskWorkspaceRemovesOnlyCleanIntegratedManagedChild(t *
 
 	const sessionID = "cleanup-child"
 	svc := &Service{}
-	allocation, err := svc.AllocateTaskWorkspace(repo, TaskBase{RepoRoot: repo, ParentBranch: "dev", BaseCommit: base}, sessionID)
+	allocation, err := svc.AllocateTaskWorkspace(repo, TaskBase{RepoRoot: repo, ParentBranch: "dev", BaseCommit: base}, sessionID, []string{"."})
 	if err != nil {
 		t.Fatalf("allocate task worktree: %v", err)
 	}
@@ -275,7 +308,7 @@ func TestRemoveIntegratedTaskWorkspaceRemovesOnlyCleanIntegratedManagedChild(t *
 	_, _ = runGit(allocation.WorkspacePath, "add", "child.txt")
 	_, _ = runGit(allocation.WorkspacePath, "commit", "-m", "child")
 	head, _ := runGit(allocation.WorkspacePath, "rev-parse", "HEAD")
-	plan, err := svc.PrepareTaskIntegration(repo, base, []TaskIntegrationChild{{SessionID: sessionID, BaseCommit: base, HeadCommit: head}})
+	plan, err := svc.PrepareTaskIntegration(repo, "dev", base, []TaskIntegrationChild{{SessionID: sessionID, BaseCommit: base, HeadCommit: head}})
 	if err != nil {
 		t.Fatalf("prepare task integration: %v", err)
 	}
@@ -294,7 +327,7 @@ func TestRemoveIntegratedTaskWorkspaceRemovesOnlyCleanIntegratedManagedChild(t *
 	}
 
 	dirtyID := "cleanup-dirty"
-	dirtyAllocation, err := svc.AllocateTaskWorkspace(repo, TaskBase{RepoRoot: repo, ParentBranch: "dev", BaseCommit: strings.TrimSpace(plan.ParentHead)}, dirtyID)
+	dirtyAllocation, err := svc.AllocateTaskWorkspace(repo, TaskBase{RepoRoot: repo, ParentBranch: "dev", BaseCommit: strings.TrimSpace(plan.ParentHead)}, dirtyID, []string{"."})
 	if err != nil {
 		t.Fatalf("allocate dirty task worktree: %v", err)
 	}
@@ -332,7 +365,7 @@ func TestRemoveIntegratedTaskWorkspaceUsesLinkedParentHEAD(t *testing.T) {
 
 	const sessionID = "linked-parent-cleanup"
 	svc := &Service{}
-	allocation, err := svc.AllocateTaskWorkspace(linkedParent, TaskBase{RepoRoot: repo, ParentBranch: "agent/linked-parent", BaseCommit: base}, sessionID)
+	allocation, err := svc.AllocateTaskWorkspace(linkedParent, TaskBase{RepoRoot: repo, ParentBranch: "agent/linked-parent", BaseCommit: base}, sessionID, []string{"."})
 	if err != nil {
 		t.Fatalf("allocate task worktree: %v", err)
 	}
@@ -415,7 +448,7 @@ func TestTaskIntegrationSkipsAlreadyIntegratedCommitAndAppliesRemainingCommit(t 
 	}
 
 	svc := &Service{}
-	plan, err := svc.PrepareTaskIntegration(repo, parentHead, []TaskIntegrationChild{{SessionID: "partial-batch", BaseCommit: base, HeadCommit: second}})
+	plan, err := svc.PrepareTaskIntegration(repo, "dev", parentHead, []TaskIntegrationChild{{SessionID: "partial-batch", BaseCommit: base, HeadCommit: second}})
 	if err != nil {
 		t.Fatalf("PrepareTaskIntegration: %v", err)
 	}
@@ -490,7 +523,7 @@ func TestApplyTaskIntegrationPreservesAuthorAndUsesConfiguredCommitter(t *testin
 	t.Setenv("GIT_COMMITTER_DATE", "2002-03-04T05:06:07Z")
 
 	svc := &Service{}
-	plan, err := svc.PrepareTaskIntegration(repo, base, []TaskIntegrationChild{{SessionID: "identity-child", BaseCommit: base, HeadCommit: childHead}})
+	plan, err := svc.PrepareTaskIntegration(repo, "dev", base, []TaskIntegrationChild{{SessionID: "identity-child", BaseCommit: base, HeadCommit: childHead}})
 	if err != nil {
 		t.Fatalf("PrepareTaskIntegration: %v", err)
 	}
@@ -544,7 +577,7 @@ func TestPrepareTaskIntegrationPreflightsCompleteStackAndLeavesParentUnchangedOn
 	first := makeChild("first", "first\n")
 	second := makeChild("second", "second\n")
 
-	_, err := (&Service{}).PrepareTaskIntegration(repo, base, []TaskIntegrationChild{
+	_, err := (&Service{}).PrepareTaskIntegration(repo, "dev", base, []TaskIntegrationChild{
 		{SessionID: "first", BaseCommit: base, HeadCommit: first},
 		{SessionID: "second", BaseCommit: base, HeadCommit: second},
 	})
@@ -571,7 +604,7 @@ func TestPrepareTaskIntegrationRejectsStaleParentHead(t *testing.T) {
 	}
 	_, _ = runGit(repo, "add", "base.txt")
 	_, _ = runGit(repo, "commit", "-m", "base")
-	_, err := (&Service{}).PrepareTaskIntegration(repo, strings.Repeat("a", 40), []TaskIntegrationChild{{SessionID: "child", BaseCommit: strings.Repeat("b", 40), HeadCommit: strings.Repeat("c", 40)}})
+	_, err := (&Service{}).PrepareTaskIntegration(repo, "dev", strings.Repeat("a", 40), []TaskIntegrationChild{{SessionID: "child", BaseCommit: strings.Repeat("b", 40), HeadCommit: strings.Repeat("c", 40)}})
 	if err == nil || !strings.Contains(err.Error(), "stale parent HEAD") {
 		t.Fatalf("error = %v", err)
 	}

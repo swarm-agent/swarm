@@ -2,8 +2,6 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { applyWorkspaceTheme, setWorkspaceThemeCatalog, workspaceThemeDefaultId } from '../services/workspace-theme'
 import { normalizeGlobalThemeSettings, type UISettingsWire } from '../../../desktop/settings/swarm/types/swarm-settings'
-import { linkWorkspaceDirectory } from '../mutations/link-workspace-directory'
-import { unlinkWorkspaceDirectory } from '../mutations/unlink-workspace-directory'
 import { moveWorkspace } from '../mutations/move-workspace'
 import { saveWorkspace as saveWorkspaceAPI } from '../mutations/save-workspace'
 import { createWorkspaceFolder as createWorkspaceFolderAPI } from '../mutations/create-workspace-folder'
@@ -31,8 +29,6 @@ interface SaveWorkspaceInput {
   name: string
   themeId: string
   makeCurrent: boolean
-  linkedDirectory?: string
-  linkedDirectories?: string[]
 }
 
 interface UseWorkspaceLauncherOptions {
@@ -60,7 +56,6 @@ interface UseWorkspaceLauncherState {
   openWorkspace: (path: string) => Promise<WorkspaceResolution>
   useFolderTemporarily: (path: string) => Promise<WorkspaceResolution>
   deleteWorkspace: (path: string) => Promise<void>
-  unlinkWorkspaceDirectory: (workspacePath: string, directoryPath: string) => Promise<void>
   setWorktreeEnabled: (path: string, enabled: boolean) => Promise<void>
   saveWorkspace: (input: SaveWorkspaceInput) => Promise<WorkspaceResolution>
   createFolder: (parentPath: string, name: string) => Promise<string>
@@ -498,14 +493,6 @@ export function useWorkspaceLauncher(options: UseWorkspaceLauncherOptions = {}):
           : workspace)
         return next
       })
-      const linkedDirectories = [
-        ...(input.linkedDirectory && input.linkedDirectory.trim() !== '' ? [input.linkedDirectory.trim()] : []),
-        ...((input.linkedDirectories ?? []).map((value) => value.trim()).filter((value) => value !== '')),
-      ]
-
-      for (const directory of linkedDirectories) {
-        await linkWorkspaceDirectory(resolution.resolvedPath, directory)
-      }
       await refresh()
       await browsePath(resolution.resolvedPath)
       return resolution
@@ -562,25 +549,6 @@ export function useWorkspaceLauncher(options: UseWorkspaceLauncherOptions = {}):
       setSavingPath(null)
     }
   }, [applyDocumentTheme, globalThemeId, browsePath, currentWorkspacePath, refresh])
-
-  const removeWorkspaceDirectory = useCallback(async (workspacePath: string, directoryPath: string) => {
-    const trimmedWorkspacePath = workspacePath.trim()
-    const trimmedDirectoryPath = directoryPath.trim()
-    if (trimmedWorkspacePath === '' || trimmedDirectoryPath === '') {
-      return
-    }
-    setSavingPath(trimmedWorkspacePath)
-    setActionError(null)
-    try {
-      await unlinkWorkspaceDirectory(trimmedWorkspacePath, trimmedDirectoryPath)
-      await refresh()
-    } catch (err) {
-      setActionError(err instanceof Error ? err.message : 'Failed to remove linked folder')
-      throw err
-    } finally {
-      setSavingPath(null)
-    }
-  }, [refresh])
 
   const updateWorkspaceWorktreeEnabled = useCallback(async (path: string, enabled: boolean) => {
     const trimmedPath = path.trim()
@@ -787,7 +755,6 @@ export function useWorkspaceLauncher(options: UseWorkspaceLauncherOptions = {}):
     openWorkspace,
     useFolderTemporarily,
     deleteWorkspace,
-    unlinkWorkspaceDirectory: removeWorkspaceDirectory,
     setWorktreeEnabled: updateWorkspaceWorktreeEnabled,
     saveWorkspace: persistWorkspace,
     createFolder,

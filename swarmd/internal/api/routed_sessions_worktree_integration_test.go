@@ -132,69 +132,43 @@ func TestAllocateRoutedSessionWorktreeRetriesOnlyOneTypedConflict(t *testing.T) 
 	}
 }
 
-func TestApplyRoutedSessionWorktreeDecisionOnAllocatesAndAppliesCandidate(t *testing.T) {
+func TestApplyRoutedSessionWorktreeDecisionAlwaysAllocatesAndUsesRequestedName(t *testing.T) {
 	stub := &routedWorktreeServiceStub{fakeWorktreeService: fakeWorktreeService{
-		config:     worktreeruntime.Config{Enabled: true, UseCurrentBranch: false, BaseBranch: "dev", BranchName: "router"},
-		allocation: worktreeruntime.Allocation{WorkspacePath: "/managed/router-fix-api", RepoRoot: "/source/repo", BaseBranch: "dev", WorkspaceID: "router-fix-api"},
+		config:     worktreeruntime.Config{Enabled: false, UseCurrentBranch: false, BaseBranch: "dev", BranchName: "agent"},
+		allocation: worktreeruntime.Allocation{WorkspacePath: "/managed/fix-api", RepoRoot: "/source/repo", BaseBranch: "dev", WorkspaceID: "fix-api"},
 	}}
 	server := &Server{worktrees: stub}
-	candidate := pebblestore.SessionSnapshot{WorkspacePath: "/source/repo", WorkspaceName: "repo"}
-	routerName := "Fix API"
-	allocation, err := server.applyRoutedSessionWorktreeDecision(&candidate, identity.Principal{UserID: "user", AccountScopeID: "account"}, "session-1", true, true, &routerName)
+	candidate := pebblestore.SessionSnapshot{ID: "session-1", WorkspacePath: "/source/repo", WorkspaceName: "repo"}
+	allocation, err := server.applyRoutedSessionWorktreeDecision(&candidate, identity.Principal{UserID: "user", AccountScopeID: "account"}, "session-1", "Fix API")
 	if err != nil {
-		t.Fatalf("on decision: %v", err)
+		t.Fatalf("mandatory lane decision: %v", err)
 	}
-	if stub.allocationCalls != 1 || candidate.WorkspacePath != allocation.WorkspacePath || !candidate.WorktreeEnabled || candidate.WorktreeBranch != "router/fix-api" {
-		t.Fatalf("on decision allocation=%+v candidate=%+v calls=%d", allocation, candidate, stub.allocationCalls)
-	}
-}
-
-func TestApplyRoutedSessionWorktreeDecisionRequiresRouterName(t *testing.T) {
-	stub := &routedWorktreeServiceStub{}
-	server := &Server{worktrees: stub}
-	candidate := pebblestore.SessionSnapshot{WorkspacePath: "/source/repo"}
-	if _, err := server.applyRoutedSessionWorktreeDecision(&candidate, identity.Principal{UserID: "user", AccountScopeID: "account"}, "session-1", true, true, nil); err == nil {
-		t.Fatal("expected missing Router name to fail")
-	}
-	if stub.configReadCount != 0 || stub.allocationCalls != 0 {
-		t.Fatalf("missing name read config=%d allocated=%d", stub.configReadCount, stub.allocationCalls)
+	if stub.allocationCalls != 1 || candidate.WorkspacePath != "/source/repo" || candidate.WorktreeRootPath != allocation.WorkspacePath || !candidate.WorktreeEnabled || candidate.WorktreeBranch != "agent/fix-api" {
+		t.Fatalf("mandatory allocation=%+v candidate=%+v calls=%d", allocation, candidate, stub.allocationCalls)
 	}
 }
 
-func TestApplyRoutedSessionWorktreeDecisionRejectsUnauthorizedRouterRequest(t *testing.T) {
-	stub := &routedWorktreeServiceStub{}
+func TestApplyRoutedSessionWorktreeDecisionUsesDeterministicFallbackWithoutRouter(t *testing.T) {
+	stub := &routedWorktreeServiceStub{fakeWorktreeService: fakeWorktreeService{
+		config:     worktreeruntime.Config{UseCurrentBranch: true, BranchName: "agent"},
+		allocation: worktreeruntime.Allocation{WorkspacePath: "/managed/fallback", RepoRoot: "/source/repo", WorkspaceID: "fallback"},
+	}}
 	server := &Server{worktrees: stub}
-	candidate := pebblestore.SessionSnapshot{WorkspacePath: "/source/repo", WorkspaceName: "repo"}
-	routerName := "Unauthorized"
-	if _, err := server.applyRoutedSessionWorktreeDecision(&candidate, identity.Principal{UserID: "user", AccountScopeID: "account"}, "session-1", false, true, &routerName); err == nil {
-		t.Fatal("expected unauthorized Router worktree request to fail")
+	candidate := pebblestore.SessionSnapshot{ID: "abcdef1234567890", WorkspacePath: "/source/repo", WorkspaceName: "repo"}
+	if _, err := server.applyRoutedSessionWorktreeDecision(&candidate, identity.Principal{UserID: "user", AccountScopeID: "account"}, "abcdef1234567890", ""); err != nil {
+		t.Fatalf("fallback decision: %v", err)
 	}
-	if stub.configReadCount != 0 || stub.allocationCalls != 0 || candidate.WorktreeEnabled {
-		t.Fatalf("unauthorized decision config=%d allocation=%d candidate=%+v", stub.configReadCount, stub.allocationCalls, candidate)
-	}
-}
-
-func TestApplyRoutedSessionWorktreeDecisionOffDoesNotAllocate(t *testing.T) {
-	stub := &routedWorktreeServiceStub{}
-	server := &Server{worktrees: stub}
-	candidate := pebblestore.SessionSnapshot{WorkspacePath: "/source/repo", WorkspaceName: "repo"}
-	if _, err := server.applyRoutedSessionWorktreeDecision(&candidate, identity.Principal{UserID: "user", AccountScopeID: "account"}, "session-1", false, false, nil); err != nil {
-		t.Fatalf("off decision: %v", err)
-	}
-	if stub.configReadCount != 0 || stub.allocationCalls != 0 || candidate.WorktreeEnabled {
-		t.Fatalf("off decision config=%d allocation=%d candidate=%+v", stub.configReadCount, stub.allocationCalls, candidate)
-	}
-	if candidate.Metadata["swarm_v3_source_workspace_path"] != "/source/repo" || candidate.Metadata["swarm_v3_runtime_workspace_path"] != "/source/repo" {
-		t.Fatalf("off decision metadata = %+v", candidate.Metadata)
+	if stub.lastBranchName != "agent/session-abcdef123456" || candidate.Metadata["routed_worktree_original_name"] != "session-abcdef123456" {
+		t.Fatalf("fallback branch=%q metadata=%+v", stub.lastBranchName, candidate.Metadata)
 	}
 }
 
 func TestApplyRoutedSessionWorktreeAllocationPreservesSourceAndRecordsFacts(t *testing.T) {
-	candidate := pebblestore.SessionSnapshot{WorkspacePath: "/source/repo", WorkspaceName: "repo", Metadata: map[string]any{"existing": true}}
+	candidate := pebblestore.SessionSnapshot{ID: "session-1", WorkspacePath: "/source/repo", WorkspaceName: "repo", Metadata: map[string]any{"existing": true}}
 	allocation := worktreeruntime.Allocation{WorkspacePath: "/managed/router-fix-api-12345", RepoRoot: "/source/repo", BaseBranch: "dev", BaseCommit: "abc123", BranchName: "router/fix-api-12345", WorkspaceID: "router-fix-api-12345"}
 	applyRoutedSessionWorktreeAllocation(&candidate, "/source/repo", " Fix API ", "Fix API 12345", allocation)
 
-	if candidate.WorkspacePath != allocation.WorkspacePath || !candidate.WorktreeEnabled || candidate.WorktreeRootPath != allocation.WorkspacePath || candidate.WorktreeBaseBranch != "dev" || candidate.WorktreeBranch != "router/fix-api-12345" {
+	if candidate.WorkspacePath != "/source/repo" || !candidate.WorktreeEnabled || candidate.WorktreeRootPath != allocation.WorkspacePath || candidate.WorktreeBaseBranch != "dev" || candidate.WorktreeBranch != "router/fix-api-12345" {
 		t.Fatalf("candidate worktree facts = %+v", candidate)
 	}
 	for _, legacyKey := range []string{"routed_worktree_final_requested_name", "routed_worktree_final_branch"} {
@@ -203,15 +177,17 @@ func TestApplyRoutedSessionWorktreeAllocationPreservesSourceAndRecordsFacts(t *t
 		}
 	}
 	want := map[string]any{
-		"swarm_v3_source_workspace_path":  "/source/repo",
-		"swarm_v3_runtime_workspace_path": allocation.WorkspacePath,
-		"routed_worktree_name":            "Fix API 12345",
-		"routed_worktree_original_name":   "Fix API",
-		"routed_worktree_requested_name":  "Fix API 12345",
-		"routed_worktree_branch":          "router/fix-api-12345",
-		"workspace_id":                    "router-fix-api-12345",
-		"base_commit":                     "abc123",
-		"existing":                        true,
+		"swarm_v3_source_workspace_path":     "/source/repo",
+		"swarm_v3_runtime_workspace_path":    allocation.WorkspacePath,
+		"swarm_v3_mandatory_worktree":        true,
+		"swarm_v3_worktree_owner_session_id": "session-1",
+		"swarm_v3_worktree_base_commit":      "abc123",
+		"routed_worktree_name":               "Fix API 12345",
+		"routed_worktree_original_name":      "Fix API",
+		"routed_worktree_requested_name":     "Fix API 12345",
+		"routed_worktree_branch":             "router/fix-api-12345",
+		"base_commit":                        "abc123",
+		"existing":                           true,
 	}
 	for key, value := range want {
 		if candidate.Metadata[key] != value {

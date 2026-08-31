@@ -50,6 +50,9 @@ const (
 // storage paths or mutates artifact metadata directly.
 type ArtifactAuthority interface {
 	Create(context.Context, artifact.Principal, artifact.CreateInput) (pebblestore.SessionArtifactVariant, error)
+	Reserve(artifact.Principal, artifact.CreateInput) (pebblestore.SessionArtifactVariant, error)
+	MarkFailed(artifact.Principal, string, string, string, string) (pebblestore.SessionArtifactVariant, error)
+	UpdateProgress(artifact.Principal, string, string, string, pebblestore.SessionArtifactProgress) (pebblestore.SessionArtifactVariant, error)
 	CreateInitialComposition(context.Context, artifact.Principal, artifact.CreateInitialCompositionInput) (pebblestore.SessionArtifactVariant, error)
 	CreatePackage(context.Context, artifact.Principal, artifact.CreatePackageInput) (pebblestore.SessionArtifactVariant, error)
 	List(artifact.Principal, string, int) ([]pebblestore.SessionArtifactCollection, error)
@@ -99,6 +102,7 @@ type ArtifactRunContext struct {
 	PartLabel               string
 	PartKind                string
 	Part                    *pebblestore.SessionArtifactPart
+	SelectedReviewTargets   []pebblestore.SessionArtifactPart
 	SourceArtifact          *pebblestore.SessionArtifactSelectionReference
 	SourceComposition       *pebblestore.SessionArtifactComposition
 	SourcePartDefinition    *pebblestore.SessionArtifactPartDefinition
@@ -235,11 +239,11 @@ func manageArtifactDefinition() Definition {
 	return Definition{
 		Type:        "function",
 		Name:        "manage_artifact",
-		Description: "Before generating or remixing an image, call action=image_capabilities to read the configured model's current snapshot-backed options and capability_token, then pass only listed options plus that token to action=generate_image. A selected ready image is a reusable exact source for repeated edits: on every remix, copy its source_session_id, source_collection_id, source_variant_id, and source_event_seq together with the new edit request; the authenticated artifact authority supplies bounded source bytes directly to a supported provider, so never replace the source with a preview/download or re-prompt from scratch. export_html_stills accepts one complete exact ready text/html or canonical HTML-package reference containing the swarm.capture/v1 manifest/runtime contract, optionally selects declared state_ids, and returns managed 1920x1080 image/png references in manifest order for direct use as manage_video propose_plan visuals; the trusted renderer removes data-swarm-capture-ui and rejects blockers or unstable states. export_html_animation accepts one complete exact ready HTML/package reference with a reviewed animation profile and the separate swarm.animation/v1 manifest/runtime, samples only renderer-controlled timestamps, and publishes one silent managed video/mp4 with exact source lineage for direct use as a managed video timeline clip. Generate one provider-billed image and publish it directly as a ready V3 managed artifact; create and manage other durable artifacts; inspect exact ready references as bounded text/package data or bounded image base64; and explicitly materialize exact references into the trusted workspace. Use search (or list with cross-session filters) to discover the authenticated user's prior-session artifact library without scanning transcripts or storage folders. Discovery results are flattened explicit candidates, ready items include complete exact references, and next_cursor is an opaque continuation that must be passed back unchanged as cursor. Never infer a selection when human names are ambiguous. Collection-list results are not complete ready references and cannot be passed directly to get/read; when a list result contains only collection metadata, call list again with collection_id (and session_id for an attached cross-session artifact) to list its artifacts and obtain variant_id and event_seq. To retrieve, read, materialize, promote, or export an attached ready artifact, copy session_id, collection_id, variant_id, and event_seq together from the same artifact reference into the call. For repository or other workspace end products, prefer materialize or atomic materialize_batch over bulk read responses, manipulate the imported files with normal workspace tools, then use publish_workspace to publish the finished file or package; copy the original exact reference into source_session_id, source_collection_id, source_variant_id, and source_event_seq when the result derives from one source. Provider/model identifiers, browser/runtime overrides, arbitrary capture dimensions, and private storage paths are never accepted or exposed.",
+		Description: "Before generating or remixing an image, call action=image_capabilities to read the configured model's current snapshot-backed options and capability_token, then pass only listed options plus that token to action=generate_image. A selected ready image is a reusable exact source for repeated edits: on every remix, copy its source_session_id, source_collection_id, source_variant_id, and source_event_seq together with the new edit request; the authenticated artifact authority supplies bounded source bytes directly to a supported provider, so never replace the source with a preview/download or re-prompt from scratch. export_html_stills accepts one complete exact ready text/html or canonical HTML-package reference containing the swarm.capture/v1 manifest/runtime contract, optionally selects declared state_ids, and returns managed 1920x1080 image/png references in manifest order; when the same HTML also declares swarm.storyboard/v1, the response includes a storyboard_handoff that binds every stable section to its capture state, filming requirements, production state, exact source, and exported PNG. For pre-production, pass that complete handoff to manage_video import_storyboard so Video Studio receives the pending storyboard in the same workflow; do not stop after export or manually rebuild plan parts. The trusted renderer removes data-swarm-capture-ui and rejects blockers or unstable states. export_html_animation accepts one complete exact ready HTML/package reference with a reviewed animation profile and the separate swarm.animation/v1 manifest/runtime; long exports return a durable staging reference promptly for list/status inspection or cancel_html_animation_export, then publish one silent managed video/mp4 with exact source lineage after background renderer-controlled sampling. Generate one provider-billed image and publish it directly as a ready V3 managed artifact; create and manage other durable artifacts; inspect exact ready references as bounded text/package data or bounded image base64; and explicitly materialize exact references into the trusted workspace. Use search (or list with cross-session filters) to discover the authenticated user's prior-session artifact library without scanning transcripts or storage folders. Discovery results are flattened explicit candidates, ready items include complete exact references, and next_cursor is an opaque continuation that must be passed back unchanged as cursor. Never infer a selection when human names are ambiguous. Collection-list results are not complete ready references and cannot be passed directly to get/read; when a list result contains only collection metadata, call list again with collection_id (and session_id for an attached cross-session artifact) to list its artifacts and obtain variant_id and event_seq. To retrieve, read, materialize, promote, or export an attached ready artifact, copy session_id, collection_id, variant_id, and event_seq together from the same artifact reference into the call. For repository or other workspace end products, prefer materialize or atomic materialize_batch over bulk read responses, manipulate the imported files with normal workspace tools, then use publish_workspace to publish the finished file or package; copy the original exact reference into source_session_id, source_collection_id, source_variant_id, and source_event_seq when the result derives from one source. Provider/model identifiers, browser/runtime overrides, arbitrary capture dimensions, and private storage paths are never accepted or exposed.",
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"action":           map[string]any{"type": "string", "enum": []string{"image_capabilities", "generate_image", "export_html_stills", "export_html_animation", "read_part", "publish_part", "read_parts", "publish_parts", "select_parts", "create", "create_package", "list_presets", "list", "search", "get", "read", "materialize", "materialize_batch", "promote", "publish_workspace", "select", "delete"}, "description": "Artifact operation. Focused managed Designers use read_part then publish_part for one selected part, or read_parts then publish_parts for a bounded multi-part selection; those actions are bound entirely to trusted exact composition context and publish one atomic candidate. Supports search, materialize/materialize_batch, and publish_workspace. export_html_stills captures declared swarm.capture/v1 states into managed PNGs. export_html_animation captures a bounded deterministic swarm.animation/v1 timeline into one silent managed MP4 valid as a managed video timeline clip."},
+				"action":           map[string]any{"type": "string", "enum": []string{"image_capabilities", "generate_image", "export_html_stills", "export_html_animation", "export_html_animation_fallback", "cancel_html_animation_export", "derive_text", "read_part", "publish_part", "read_parts", "publish_parts", "select_parts", "create", "create_package", "list_presets", "list", "search", "get", "read", "materialize", "materialize_batch", "promote", "publish_workspace", "select", "delete"}, "description": "Artifact operation. derive_text applies bounded exact replacements to one exact ready UTF-8 text source and publishes a complete ready derived artifact while preserving every unedited source byte and exact lineage. Focused managed Designers use read_part then publish_part for one selected part, or read_parts then publish_parts for a bounded multi-part selection; those actions are bound entirely to trusted exact composition context and publish one atomic candidate. Supports search, materialize/materialize_batch, and publish_workspace. export_html_stills captures declared swarm.capture/v1 states into managed PNGs. export_html_animation_fallback preflights one swarm.animation/v1 source and publishes its sampled first frame as an exact-lineage render-ready PNG fallback. export_html_animation captures a bounded deterministic swarm.animation/v1 timeline into one silent managed MP4 valid as a managed video timeline clip."},
 				"prompt":           map[string]any{"type": "string", "maxLength": manageArtifactMaxPromptRunes, "description": "Image prompt required only for generate_image. For a remix, describe only the requested changes while preserving the attached exact source through all source_* fields."},
 				"capability_token": map[string]any{"type": "string", "description": "Fresh token returned by image_capabilities; required for each Google generate_image call, including every repeated remix"},
 				"image_settings": map[string]any{"type": "object", "properties": map[string]any{
@@ -256,11 +260,12 @@ func manageArtifactDefinition() Definition {
 				"media_type":             map[string]any{"type": "string", "maxLength": 255, "description": "Artifact media type for create; optional exact canonical media type filter for list/search discovery"},
 				"content":                map[string]any{"type": "string", "description": "Bounded UTF-8 artifact content for monolithic create or focused publish_part replacement bytes"},
 				"content_base64":         map[string]any{"type": "string", "description": "Bounded base64 replacement bytes for focused publish_part; mutually exclusive with content"},
+				"text_edits":             map[string]any{"type": "array", "minItems": 1, "maxItems": 32, "items": map[string]any{"type": "object", "properties": map[string]any{"old_string": map[string]any{"type": "string", "minLength": 1}, "new_string": map[string]any{"type": "string"}, "replace_all": map[string]any{"type": "boolean"}}, "required": []string{"old_string", "new_string"}, "additionalProperties": false}, "description": "Ordered exact UTF-8 replacements for derive_text. By default each old_string must occur exactly once; replace_all requires at least one occurrence. Bytes outside matched spans are preserved exactly."},
 				"part_choices":           map[string]any{"type": "array", "minItems": 1, "maxItems": pebblestore.SessionArtifactMaxParts, "items": partChoice, "description": "Exact immutable part revisions and desired lock states to combine atomically into one accepted complete composition."},
 				"replacements":           map[string]any{"type": "array", "minItems": 1, "maxItems": pebblestore.SessionArtifactMaxParts, "items": replacementPart, "description": "Canonical publish_parts payload. Include exactly one replacement for every authenticated selected part; publication is one atomic candidate composition."},
 				"entries":                map[string]any{"type": "array", "maxItems": manageArtifactMaxPackageFiles, "items": entry},
 				"initial_parts":          map[string]any{"type": "array", "minItems": 2, "maxItems": pebblestore.SessionArtifactMaxParts, "items": initialPart, "description": "Two or more real independently byte-bearing initial parts for create. Every item has its own stable id, media type, and non-empty content/content_base64. The server owns all chain, composition, and part-revision identities. Mutually exclusive with top-level content, entries, and locator-only parts."},
-				"parts":                  map[string]any{"type": "array", "maxItems": pebblestore.SessionArtifactMaxParts, "items": part, "description": "Optional legacy/unproven locator-only clickable review metadata on a monolithic complete artifact. These locators never create or prove real part identities. Include one target for each meaningful authored region or section the user may ask to change. For a swarm.iteration/v1 animation, mirror each canonical manifest section as a temporal target with the same id, label, start_ms, and end_ms. Do not invent generic parts that do not map to actual content. Use initial_parts instead when independently stored replaceable bytes are required."},
+				"parts":                  map[string]any{"type": "array", "maxItems": pebblestore.SessionArtifactMaxParts, "items": part, "description": "Optional source-bound review/edit targets on one complete monolithic artifact. These locators never create or prove independently replaceable bytes. For text/html, omit parts to let the server derive useful targets from swarm.iteration/v1 sections, swarm.capture/v1 states, and stable IDs on semantic HTML regions without splitting or rewriting the file; explicitly supplied parts remain authoritative for the complete revision. Use initial_parts only when independently stored byte payloads are intentionally required."},
 				"references":             map[string]any{"type": "array", "minItems": 1, "maxItems": manageArtifactMaxBatchItems, "items": reference, "description": "Complete exact ready references from discovery results, imported atomically by materialize_batch into one destination directory. The whole batch is preflighted; filenames come from trusted artifact metadata."},
 				"state_ids":              map[string]any{"type": "array", "minItems": 1, "maxItems": 16, "uniqueItems": true, "items": map[string]any{"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$"}, "description": "Optional bounded declared swarm.capture/v1 state IDs for export_html_stills; omitted exports every manifest state. Caller order never overrides canonical manifest order."},
 				"source":                 map[string]any{"type": "string", "maxLength": 4096, "description": "Trusted canonical workspace-relative regular file or bounded package directory for publish_workspace. Build or revise it with normal workspace tools before publication."},
@@ -331,9 +336,9 @@ func (r *Runtime) executeManageArtifact(ctx context.Context, scope WorkspaceScop
 			return "", errors.New("manage_artifact output_requirements is valid only for generate_image, create, create_package, or publish_workspace")
 		}
 	}
-	if actionName != "create" && actionName != "create_package" {
+	if actionName != "create" && actionName != "create_package" && actionName != "publish_workspace" && actionName != "derive_text" {
 		if _, supplied := args["animation_profile"]; supplied {
-			return "", errors.New("manage_artifact animation_profile is valid only for create or create_package")
+			return "", errors.New("manage_artifact animation_profile is valid only for create, create_package, or publish_workspace")
 		}
 	}
 	if actionName != "list_presets" && actionName != "image_capabilities" && r.artifactAuthority == nil {
@@ -381,13 +386,34 @@ func (r *Runtime) executeManageArtifact(ctx context.Context, scope WorkspaceScop
 		response["artifact"] = managedArtifactVariant(variant)
 		response["reference"] = managedArtifactReferenceWithSession(variant.SessionID, variant.CollectionID, variant.ID, variant.EventSeq)
 	case "export_html_stills":
-		exports, sourceRef, requirements, err := r.exportHTMLStills(ctx, principal, callID, args)
+		exports, sourceRef, requirements, storyboardManifest, err := r.exportHTMLStills(ctx, principal, callID, args)
 		if err != nil {
 			return "", err
 		}
 		response["source_reference"] = managedArtifactReferenceWithSession(sourceRef.SessionID, sourceRef.CollectionID, sourceRef.VariantID, sourceRef.EventSeq)
 		response["output_requirements"] = requirements
 		response["exports"], response["count"] = exports, len(exports)
+		if storyboardManifest != nil {
+			sections := make([]map[string]any, 0, len(storyboardManifest.Sections))
+			exportByState := make(map[string]map[string]any, len(exports))
+			for _, exported := range exports {
+				exportByState[asString(exported["state_id"])] = exported
+			}
+			for _, section := range storyboardManifest.Sections {
+				exported := exportByState[section.CaptureStateID]
+				sections = append(sections, map[string]any{"id": section.ID, "capture_state_id": section.CaptureStateID, "title": section.Title, "duration_ms": section.DurationMs, "narration": section.Narration, "on_screen_text": section.OnScreenText, "creative_direction": section.CreativeDirection, "filming_requirements": section.FilmingRequirements, "production_state": section.ProductionState, "composition": section.Composition, "visual": exported["reference"]})
+			}
+			response["storyboard_handoff"] = map[string]any{"version": storyboardManifest.Version, "source_reference": response["source_reference"], "compositions": storyboardManifest.Compositions, "sections": sections}
+		}
+	case "export_html_animation_fallback":
+		variant, sourceRef, requirements, err := r.exportHTMLAnimationFallback(ctx, principal, callID, args)
+		if err != nil {
+			return "", err
+		}
+		response["source_reference"] = managedArtifactReferenceWithSession(sourceRef.SessionID, sourceRef.CollectionID, sourceRef.VariantID, sourceRef.EventSeq)
+		response["output_requirements"] = requirements
+		response["artifact"] = managedArtifactVariant(variant)
+		response["reference"] = managedArtifactReferenceWithSession(variant.SessionID, variant.CollectionID, variant.ID, variant.EventSeq)
 	case "export_html_animation":
 		variant, sourceRef, requirements, err := r.exportHTMLAnimation(ctx, principal, callID, args)
 		if err != nil {
@@ -395,6 +421,20 @@ func (r *Runtime) executeManageArtifact(ctx context.Context, scope WorkspaceScop
 		}
 		response["source_reference"] = managedArtifactReferenceWithSession(sourceRef.SessionID, sourceRef.CollectionID, sourceRef.VariantID, sourceRef.EventSeq)
 		response["output_requirements"] = requirements
+		response["artifact"] = managedArtifactVariant(variant)
+		response["reference"] = managedArtifactReferenceWithSession(variant.SessionID, variant.CollectionID, variant.ID, variant.EventSeq)
+	case "cancel_html_animation_export":
+		variant, err := r.cancelHTMLAnimationExport(principal, callID, args)
+		if err != nil {
+			return "", err
+		}
+		response["artifact"] = managedArtifactVariant(variant)
+		response["reference"] = managedArtifactReferenceWithSession(variant.SessionID, variant.CollectionID, variant.ID, variant.EventSeq)
+	case "derive_text":
+		variant, err := r.deriveManagedTextArtifact(ctx, principal, callID, requestID, args)
+		if err != nil {
+			return "", err
+		}
 		response["artifact"] = managedArtifactVariant(variant)
 		response["reference"] = managedArtifactReferenceWithSession(variant.SessionID, variant.CollectionID, variant.ID, variant.EventSeq)
 	case "generate_image":
@@ -434,6 +474,9 @@ func (r *Runtime) executeManageArtifact(ctx context.Context, scope WorkspaceScop
 					return "", errors.New("manage_artifact managed create must omit variant_id; the destination is injected by trusted orchestration")
 				}
 				input.CollectionID, input.VariantID = trustedCollectionID, trustedVariantID
+				if strings.TrimSpace(input.MediaType) == "" && run.SourceArtifact != nil {
+					input.MediaType = canonicalArtifactMediaType(mime.TypeByExtension(filepath.Ext(input.Filename)))
+				}
 				input.OutputRequirements = cloneArtifactOutputRequirements(run.OutputRequirements)
 				if run.SourceArtifact != nil {
 					if input.SourceSessionID != "" && (input.SourceSessionID != run.SourceArtifact.SessionID || input.SourceCollectionID != run.SourceArtifact.CollectionID || input.SourceVariantID != run.SourceArtifact.VariantID || input.SourceEventSeq != run.SourceArtifact.EventSeq) {
@@ -458,11 +501,33 @@ func (r *Runtime) executeManageArtifact(ctx context.Context, scope WorkspaceScop
 			return "", err
 		}
 		input.RequestID = requestID
+		if actionName == "create" && len(input.Parts) == 0 {
+			input.Parts = deriveArtifactHTMLParts(input.Body, input.MediaType)
+		}
+		if actionName == "create_package" && len(input.Parts) == 0 {
+			for _, entry := range entries {
+				if pathClean(entry.Name) == "index.html" {
+					input.Parts = deriveArtifactHTMLParts(entry.Data, "text/html")
+					break
+				}
+			}
+		}
 		initialParts, err := parseArtifactInitialParts(args["initial_parts"], principal.SessionID, input.CollectionID, input.VariantID, callID)
 		if err != nil {
 			return "", err
 		}
+		if len(initialParts) != 0 && managedHTMLAnimationProfile(input.AnimationProfile) && canonicalArtifactMediaType(input.MediaType) == "text/html" {
+			return "", animationError("animation_source_invalid", "profiled HTML animation must publish one complete preflightable HTML document or package")
+		}
 		var variant pebblestore.SessionArtifactVariant
+		var animationPreflight *managedAnimationPreflight
+		if len(initialParts) == 0 {
+			animationPreflight, err = r.reserveAndPreflightManagedAnimation(ctx, principal, input, entries, actionName == "create_package")
+			if err != nil {
+				return "", err
+			}
+		}
+		gatedAnimation := animationPreflight != nil
 		switch {
 		case len(initialParts) != 0:
 			if actionName != "create" {
@@ -480,6 +545,17 @@ func (r *Runtime) executeManageArtifact(ctx context.Context, scope WorkspaceScop
 		}
 		if err != nil {
 			return "", err
+		}
+		if gatedAnimation && variant.Status != pebblestore.SessionArtifactStatusReady {
+			return "", animationError("animation_publish_failed", "profiled HTML animation did not finalize as a ready artifact after trusted preflight")
+		}
+		if gatedAnimation {
+			inspectionRefs, inspectionErr := r.publishManagedAnimationInspectionFrames(ctx, principal, variant, animationPreflight)
+			if inspectionErr != nil {
+				return "", inspectionErr
+			}
+			response["trusted_animation_preflight"] = true
+			response["animation_inspection_references"] = inspectionRefs
 		}
 		response["artifact"] = managedArtifactVariant(variant)
 		response["reference"] = managedArtifactReferenceWithSession(variant.SessionID, variant.CollectionID, variant.ID, variant.EventSeq)
@@ -517,6 +593,9 @@ func (r *Runtime) executeManageArtifact(ctx context.Context, scope WorkspaceScop
 			}
 			items := make([]map[string]any, 0, len(variants))
 			for _, variant := range variants {
+				if status != "" && variant.Status != status {
+					continue
+				}
 				items = append(items, managedArtifactVariant(variant))
 			}
 			response["collection_id"], response["artifacts"], response["count"] = collectionID, items, len(items)
@@ -750,6 +829,9 @@ func (r *Runtime) executeManageArtifact(ctx context.Context, scope WorkspaceScop
 		response["artifact"] = managedArtifactVariant(variant)
 		response["reference"] = managedArtifactReferenceWithSession(variant.SessionID, variant.CollectionID, variant.ID, variant.EventSeq)
 		response["published"] = sourceInfo
+		if preflight, _ := sourceInfo["trusted_animation_preflight"].(bool); preflight {
+			response["trusted_animation_preflight"] = true
+		}
 	case "select":
 		collectionID, err := requireArtifactArgument(args, "collection_id")
 		if err != nil {
@@ -841,7 +923,7 @@ func parseArtifactBatchReferences(raw any) ([]artifact.MaterializeBatchItem, []p
 func (r *Runtime) publishWorkspaceArtifact(ctx context.Context, principal artifact.Principal, scope WorkspaceScope, callID, requestID string, args map[string]any) (pebblestore.SessionArtifactVariant, map[string]any, error) {
 	for key := range args {
 		switch key {
-		case "action", "source", "collection_id", "collection_name", "collection_description", "filename", "media_type", "presentation", "output_requirements", "source_session_id", "source_collection_id", "source_variant_id", "source_event_seq":
+		case "action", "source", "collection_id", "collection_name", "collection_description", "filename", "media_type", "presentation", "output_requirements", "animation_profile", "source_session_id", "source_collection_id", "source_variant_id", "source_event_seq":
 		default:
 			return pebblestore.SessionArtifactVariant{}, nil, fmt.Errorf("manage_artifact publish_workspace contains unsupported field %q", key)
 		}
@@ -923,10 +1005,65 @@ func (r *Runtime) publishWorkspaceArtifact(ctx context.Context, principal artifa
 	if err := enforceArtifactPresentationRequirements(&presentation, requirements); err != nil {
 		return pebblestore.SessionArtifactVariant{}, nil, err
 	}
+	sourceSessionID, sourceCollectionID := strings.TrimSpace(asString(args["source_session_id"])), strings.TrimSpace(asString(args["source_collection_id"]))
+	sourceVariantID, sourceEventSeq := strings.TrimSpace(asString(args["source_variant_id"])), asUint64(args["source_event_seq"])
+	var inheritedAnimationProfile *pebblestore.SessionArtifactAnimationProfile
+	if raw, exists := args["animation_profile"]; exists {
+		inheritedAnimationProfile, err = artifact.ParseAnimationProfile(raw)
+		if err != nil {
+			return pebblestore.SessionArtifactVariant{}, nil, err
+		}
+	}
+	if sourceSessionID != "" || sourceCollectionID != "" || sourceVariantID != "" || sourceEventSeq != 0 {
+		if sourceSessionID == "" || sourceCollectionID == "" || sourceVariantID == "" || sourceEventSeq == 0 {
+			return pebblestore.SessionArtifactVariant{}, nil, errors.New("manage_artifact publish_workspace source lineage requires all four fields of a complete exact source reference")
+		}
+		sourceVariant, sourceErr := r.artifactAuthority.GetReference(principal, pebblestore.SessionArtifactSelectionReference{SessionID: sourceSessionID, CollectionID: sourceCollectionID, VariantID: sourceVariantID, EventSeq: sourceEventSeq})
+		if sourceErr != nil || sourceVariant.Status != pebblestore.SessionArtifactStatusReady {
+			return pebblestore.SessionArtifactVariant{}, nil, errors.New("manage_artifact publish_workspace exact source reference could not be authenticated")
+		}
+		if sourceVariant.AnimationProfile != nil && sourceVariant.AnimationProfile.ProfileID != "final_render" {
+			canonicalProfile, profileErr := artifact.ResolveAnimationProfile(&artifact.AnimationProfileInput{Profile: sourceVariant.AnimationProfile.ProfileID})
+			if profileErr != nil || canonicalProfile == nil || *canonicalProfile != *sourceVariant.AnimationProfile {
+				return pebblestore.SessionArtifactVariant{}, nil, errors.New("manage_artifact publish_workspace exact source carries an incompatible animation profile snapshot")
+			}
+			if inheritedAnimationProfile != nil && *inheritedAnimationProfile != *canonicalProfile {
+				return pebblestore.SessionArtifactVariant{}, nil, errors.New("manage_artifact publish_workspace animation_profile conflicts with the exact source snapshot")
+			}
+			inheritedAnimationProfile = cloneArtifactAnimationProfile(canonicalProfile)
+		}
+	}
+	if err := validateArtifactAnimationMedia(inheritedAnimationProfile, packageSource, filename, mediaType); err != nil {
+		return pebblestore.SessionArtifactVariant{}, nil, err
+	}
+	var parts []pebblestore.SessionArtifactPart
+	var animationBody []byte
+	var animationEntries []artifact.PackageEntry
+	if packageSource && managedHTMLAnimationProfile(inheritedAnimationProfile) {
+		animationEntries, err = readWorkspaceAnimationPackage(ctx, absoluteSource)
+		if err != nil {
+			return pebblestore.SessionArtifactVariant{}, nil, err
+		}
+	}
+	if !packageSource && mediaType == "text/html" {
+		animationBody, err = os.ReadFile(absoluteSource)
+		if err != nil {
+			return pebblestore.SessionArtifactVariant{}, nil, err
+		}
+		parts = deriveArtifactHTMLParts(animationBody, mediaType)
+	}
+	if packageSource && len(animationEntries) != 0 {
+		for _, entry := range animationEntries {
+			if entry.Name == "index.html" {
+				parts = deriveArtifactHTMLParts(entry.Data, "text/html")
+				break
+			}
+		}
+	}
 	create := artifact.CreateInput{
 		RequestID: requestID, CollectionID: collectionID, CollectionName: strings.TrimSpace(asString(args["collection_name"])), CollectionDescription: strings.TrimSpace(asString(args["collection_description"])),
-		VariantID: variantID, Filename: filename, MediaType: mediaType, Presentation: presentation, OutputRequirements: requirements, AutoAccept: true,
-		SourceSessionID: strings.TrimSpace(asString(args["source_session_id"])), SourceCollectionID: strings.TrimSpace(asString(args["source_collection_id"])), SourceVariantID: strings.TrimSpace(asString(args["source_variant_id"])), SourceEventSeq: asUint64(args["source_event_seq"]),
+		VariantID: variantID, Filename: filename, MediaType: mediaType, Presentation: presentation, OutputRequirements: requirements, AnimationProfile: inheritedAnimationProfile, Parts: parts, AutoAccept: true,
+		SourceSessionID: sourceSessionID, SourceCollectionID: sourceCollectionID, SourceVariantID: sourceVariantID, SourceEventSeq: sourceEventSeq,
 	}
 	if generatedCollection && create.CollectionName == "" {
 		create.CollectionName = "Workspace publication"
@@ -934,17 +1071,83 @@ func (r *Runtime) publishWorkspaceArtifact(ctx context.Context, principal artifa
 	if !generatedCollection {
 		create.CollectionName, create.CollectionDescription = "", ""
 	}
-	variant, err := r.artifactAuthority.PublishWorkspace(ctx, principal, artifact.CreateFileInput{CreateInput: create, SourcePath: absoluteSource, Package: packageSource})
+	create.Body = animationBody
+	animationPreflight, err := r.reserveAndPreflightManagedAnimation(ctx, principal, create, animationEntries, packageSource)
 	if err != nil {
 		return pebblestore.SessionArtifactVariant{}, nil, err
 	}
+	gatedAnimation := animationPreflight != nil
+	var variant pebblestore.SessionArtifactVariant
+	if gatedAnimation && packageSource {
+		variant, err = r.artifactAuthority.CreatePackage(ctx, principal, artifact.CreatePackageInput{CreateInput: create, Entries: animationEntries})
+	} else if gatedAnimation {
+		variant, err = r.artifactAuthority.Create(ctx, principal, create)
+	} else {
+		variant, err = r.artifactAuthority.PublishWorkspace(ctx, principal, artifact.CreateFileInput{CreateInput: create, SourcePath: absoluteSource, Package: packageSource})
+	}
+	if err != nil {
+		return pebblestore.SessionArtifactVariant{}, nil, err
+	}
+	if gatedAnimation && variant.Status != pebblestore.SessionArtifactStatusReady {
+		return pebblestore.SessionArtifactVariant{}, nil, animationError("animation_publish_failed", "profiled workspace HTML animation did not finalize as a ready artifact after trusted preflight")
+	}
 	published := map[string]any{"source": filepath.ToSlash(source), "package": packageSource, "files": sourceInfo.files, "bytes": sourceInfo.bytes, "digest_sha256": variant.DigestSHA256, "media_type": variant.MediaType}
+	if gatedAnimation {
+		inspectionRefs, inspectionErr := r.publishManagedAnimationInspectionFrames(ctx, principal, variant, animationPreflight)
+		if inspectionErr != nil {
+			return pebblestore.SessionArtifactVariant{}, nil, inspectionErr
+		}
+		published["trusted_animation_preflight"] = true
+		published["animation_inspection_references"] = inspectionRefs
+	}
 	return variant, published, nil
 }
 
 type workspacePublishSourceInfo struct {
 	files int
 	bytes int64
+}
+
+func readWorkspaceAnimationPackage(ctx context.Context, root string) ([]artifact.PackageEntry, error) {
+	entries := make([]artifact.PackageEntry, 0, manageArtifactMaxPackageFiles)
+	var total int
+	err := filepath.WalkDir(root, func(candidate string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if candidate == root || entry.IsDir() {
+			return nil
+		}
+		info, err := entry.Info()
+		if err != nil || !info.Mode().IsRegular() || entry.Type()&os.ModeSymlink != 0 {
+			return errors.New("manage_artifact publish_workspace animation package contains an unsafe entry")
+		}
+		relative, err := filepath.Rel(root, candidate)
+		if err != nil {
+			return err
+		}
+		name := filepath.ToSlash(relative)
+		if pathClean(name) != name || len(entries) >= manageArtifactMaxPackageFiles || info.Size() > manageArtifactMaxPackageBytes-int64(total) {
+			return artifact.ErrQuotaExceeded
+		}
+		body, err := os.ReadFile(candidate)
+		if err != nil {
+			return err
+		}
+		total += len(body)
+		entries = append(entries, artifact.PackageEntry{Name: name, Data: body})
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	if len(entries) == 0 {
+		return nil, errors.New("manage_artifact publish_workspace animation package is empty")
+	}
+	return entries, nil
 }
 
 func validateWorkspacePublishSource(ctx context.Context, workspaceRoot, source string) (string, workspacePublishSourceInfo, bool, error) {
@@ -1428,7 +1631,28 @@ func artifactPrincipal(ctx context.Context, scope WorkspaceScope) (artifact.Prin
 		IterationID: strings.TrimSpace(run.IterationID), IterationIndex: run.IterationIndex, IterationLabel: strings.TrimSpace(run.IterationLabel), IterationTheme: strings.TrimSpace(run.IterationTheme),
 		IterationSectionID: strings.TrimSpace(run.IterationSectionID), IterationSectionLabel: strings.TrimSpace(run.IterationSectionLabel), IterationSectionStartMs: run.IterationSectionStartMs, IterationSectionEndMs: run.IterationSectionEndMs,
 		PartID: strings.TrimSpace(run.PartID), PartLabel: strings.TrimSpace(run.PartLabel), PartKind: strings.TrimSpace(run.PartKind),
+		SelectedReviewTargetIDs: artifactReviewTargetIDs(run.SelectedReviewTargets),
 	}, nil
+}
+
+func artifactReviewTargetIDs(targets []pebblestore.SessionArtifactPart) string {
+	if len(targets) == 0 {
+		return ""
+	}
+	ids := make([]string, 0, len(targets))
+	seen := make(map[string]struct{}, len(targets))
+	for _, target := range targets {
+		id := strings.TrimSpace(target.ID)
+		if id == "" {
+			continue
+		}
+		if _, duplicate := seen[id]; duplicate {
+			continue
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, id)
+	}
+	return strings.Join(ids, ",")
 }
 
 func parseArtifactCreate(args map[string]any, sessionID, callID string, packageArtifact bool) (artifact.CreateInput, []artifact.PackageEntry, error) {
@@ -1860,7 +2084,7 @@ func managedArtifactPresentation(p pebblestore.SessionArtifactPresentation) map[
 }
 
 func managedArtifactVariant(v pebblestore.SessionArtifactVariant) map[string]any {
-	result := map[string]any{"id": v.ID, "collection_id": v.CollectionID, "session_id": v.SessionID, "status": v.Status, "filename": v.Filename, "media_type": v.MediaType, "digest_sha256": v.DigestSHA256, "size": v.Size, "failure_code": v.FailureCode, "presentation": managedArtifactPresentation(v.Presentation), "output_requirements": v.OutputRequirements, "animation_profile": v.AnimationProfile, "part_graph_state": v.PartGraphState, "created_at": v.CreatedAt, "updated_at": v.UpdatedAt, "event_seq": v.EventSeq}
+	result := map[string]any{"id": v.ID, "collection_id": v.CollectionID, "session_id": v.SessionID, "status": v.Status, "filename": v.Filename, "media_type": v.MediaType, "digest_sha256": v.DigestSHA256, "size": v.Size, "failure_code": v.FailureCode, "progress": v.Progress, "presentation": managedArtifactPresentation(v.Presentation), "output_requirements": v.OutputRequirements, "animation_profile": v.AnimationProfile, "part_graph_state": v.PartGraphState, "created_at": v.CreatedAt, "updated_at": v.UpdatedAt, "event_seq": v.EventSeq}
 	if v.PartGraphState == pebblestore.SessionArtifactGraphAuthoritative && v.Composition != nil {
 		result["artifact_chain_id"] = v.ArtifactChainID
 		result["part_definitions"] = v.PartDefinitions

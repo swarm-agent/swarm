@@ -418,6 +418,60 @@ func TestCodexWebsocketRequestPayloadUsesIncrementalDeltaWithoutFullPayloadBuild
 	}
 }
 
+func TestCodexWebsocketContinuationMaterializesMediaInspectDelta(t *testing.T) {
+	client := NewClient(nil)
+	ctx := contextWithCodexTransportContext(context.Background(), codexTransportContext{
+		PromptCacheKey:            "cache-lineage-key",
+		SessionAffinityKey:        "affinity-media-key",
+		NativeContinuationAllowed: true,
+	})
+	session := client.cachedWebsocketSession("affinity-media-key")
+	session.lastRequestProperties = map[string]any{
+		"model":            "gpt-5.3-codex",
+		"stream":           true,
+		"store":            false,
+		"prompt_cache_key": "cache-lineage-key",
+		"text":             map[string]any{"verbosity": defaultCodexTextVerbosity},
+	}
+	session.lastInputLen = 1
+	session.lastResponseID = "resp-media"
+	body := []byte("image-bytes")
+	payload := testMediaPayload("image", "image/png", "", body)
+	contract := allowedMediaContract("codex", "chatgpt_codex", "codex_oauth", "codex-chatgpt-v1", provideriface.MediaContractCapability{
+		Modality: "image", State: provideriface.MediaCapabilityStateAllowed, Semantics: pebblestore.ModelCatalogMediaSemanticsNative,
+		MIMETypes: []string{"image/png"}, ContentTypes: []string{"input_image"}, MaxBytes: 1024, MaxCount: 20,
+	})
+
+	got, _, _, err := client.codexWebsocketRequestPayload(ctx, Request{
+		ProviderCacheKey:          "cache-lineage-key",
+		SessionAffinityKey:        "affinity-media-key",
+		ProviderConfigurationHash: "configuration-hash",
+		Model:                     "gpt-5.3-codex",
+		NativeContinuationAllowed: true,
+		MediaContract:             contract,
+		Input: []map[string]any{
+			{"role": "user", "content": "inspect"},
+			{"role": "user", "content": []map[string]any{{"type": "session_media", "media": payload}}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("continuation media payload: %v", err)
+	}
+	if asString(got["previous_response_id"]) != "resp-media" {
+		t.Fatalf("previous_response_id = %q, want resp-media", asString(got["previous_response_id"]))
+	}
+	input := asSlice(got["input"])
+	if len(input) != 1 {
+		t.Fatalf("media delta input length = %d, want 1: %#v", len(input), input)
+	}
+	item, _ := input[0].(map[string]any)
+	content := asSlice(item["content"])
+	media, _ := content[0].(map[string]any)
+	if media["type"] != "input_image" || !strings.HasPrefix(asString(media["image_url"]), "data:image/png;base64,") {
+		t.Fatalf("media delta was not materialized: %#v", input)
+	}
+}
+
 func TestCodexFreshWebsocketPayloadDoesNotReusePreviousResponseEvenWithSameProviderCacheKey(t *testing.T) {
 	current := map[string]any{
 		"model":            "gpt-5.3-codex",
@@ -731,6 +785,150 @@ func TestResponsesTransportCompatibilityKeySeparatesCredentialsProviderModelAndE
 	apiB.APIKey = "key-b"
 	if client.responsesTransportCompatibilityKey(apiA, apiReq) == client.responsesTransportCompatibilityKey(apiB, apiReq) {
 		t.Fatal("rotated API key reused transport compatibility identity")
+	}
+}
+
+func TestCodexWebsocketAllowsLargeCompletedSnapshot(t *testing.T) {
+	largeText := strings.Repeat("x", maxCodexStreamEventBytes)
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		if _, _, err := conn.ReadMessage(); err != nil {
+			return
+		}
+		completed := map[string]any{"type": "response.completed", "response": map[string]any{"id": "resp-large", "model": "gpt-5.4", "output": []any{map[string]any{"type": "message", "role": "assistant", "content": []any{map[string]any{"type": "output_text", "text": largeText}}}}}}
+		_ = conn.WriteJSON(completed)
+	}))
+	defer server.Close()
+
+	client := NewClient(nil)
+	client.responsesWSURL = "ws" + strings.TrimPrefix(server.URL, "http") + "/v1/responses"
+	record := pebblestore.CodexAuthRecord{Provider: "codex", Type: pebblestore.CodexAuthTypeOAuth, AccountScopeID: "account-a", ID: "credential-a", AccountID: "chatgpt-a", AccessToken: "token"}
+	response, err := client.CreateResponseWithAuth(context.Background(), record, Request{
+		Model: "gpt-5.4",
+		Input: []map[string]any{{"role": "user", "content": "large completion"}},
+	})
+	if err != nil {
+		t.Fatalf("large completed snapshot request: %v", err)
+	}
+	if response.ID != "resp-large" || len(response.Text) != len(largeText) {
+		t.Fatalf("large completed response = id %q text bytes %d, want resp-large and %d", response.ID, len(response.Text), len(largeText))
+	}
+}
+
+func TestCodexWebsocketCompactsCompletedSnapshotBeyondTransportEnvelope(t *testing.T) {
+	largePadding := strings.Repeat("x", int(maxCodexWebsocketMessageBytes/2)+1)
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		if _, _, err := conn.ReadMessage(); err != nil {
+			return
+		}
+		done := map[string]any{
+			"type":         "response.output_item.done",
+			"output_index": 0,
+			"item": map[string]any{
+				"id":     "msg-compacted",
+				"type":   "message",
+				"role":   "assistant",
+				"status": "completed",
+				"content": []any{map[string]any{
+					"type": "output_text",
+					"text": "preserved final answer",
+				}},
+			},
+		}
+		if err := conn.WriteJSON(done); err != nil {
+			return
+		}
+		completed := map[string]any{
+			"type":            "response.completed",
+			"sequence_number": 42,
+			"response": map[string]any{
+				"id":           "resp-compacted",
+				"model":        "gpt-5.4",
+				"status":       "completed",
+				"service_tier": "priority",
+				"usage":        map[string]any{"input_tokens": 11, "output_tokens": 7, "total_tokens": 18},
+				"output":       []any{map[string]any{"type": "reasoning", "encrypted_content": largePadding}, map[string]any{"type": "reasoning", "encrypted_content": largePadding}, done["item"]},
+			},
+		}
+		_ = conn.WriteJSON(completed)
+	}))
+	defer server.Close()
+
+	client := NewClient(nil)
+	client.responsesWSURL = "ws" + strings.TrimPrefix(server.URL, "http") + "/v1/responses"
+	record := pebblestore.CodexAuthRecord{Provider: "codex", Type: pebblestore.CodexAuthTypeOAuth, AccountScopeID: "account-a", ID: "credential-a", AccountID: "chatgpt-a", AccessToken: "token"}
+	response, err := client.CreateResponseStreamingWithAuth(context.Background(), record, Request{
+		Model: "gpt-5.4",
+		Input: []map[string]any{{"role": "user", "content": "oversized completion"}},
+	}, nil)
+	if err != nil {
+		t.Fatalf("oversized completed snapshot request: %v", err)
+	}
+	if response.ID != "resp-compacted" || response.Model != "gpt-5.4" || response.StopReason != "" {
+		t.Fatalf("compacted response metadata = %#v", response)
+	}
+	if response.Usage.InputTokens != 11 || response.Usage.OutputTokens != 7 || response.Usage.TotalTokens != 18 || response.Usage.ServiceTier != "priority" {
+		t.Fatalf("compacted response usage = %#v", response.Usage)
+	}
+	if response.Text != "preserved final answer" || len(response.Raw) == 0 {
+		t.Fatalf("compacted response payload = text %q raw keys %d", response.Text, len(response.Raw))
+	}
+	responseObj := response.Raw
+	if nested, ok := response.Raw["response"].(map[string]any); ok {
+		responseObj = nested
+	}
+	output := asSlice(responseObj["output"])
+	if len(output) != 1 {
+		t.Fatalf("compacted raw response output items = %d, want one streamed item", len(output))
+	}
+	if got := extractOutputTextFromOutputItem(output[0].(map[string]any)); got != "preserved final answer" {
+		t.Fatalf("compacted raw response output text = %q", got)
+	}
+}
+
+func TestCodexWebsocketRejectsLargeNonCompletedEvent(t *testing.T) {
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		if _, _, err := conn.ReadMessage(); err != nil {
+			return
+		}
+		_ = conn.WriteJSON(map[string]any{"type": "response.in_progress", "padding": strings.Repeat("x", maxCodexStreamEventBytes)})
+	}))
+	defer server.Close()
+
+	client := NewClient(nil)
+	client.responsesWSURL = "ws" + strings.TrimPrefix(server.URL, "http") + "/v1/responses"
+	record := pebblestore.CodexAuthRecord{Provider: "codex", Type: pebblestore.CodexAuthTypeOAuth, AccountScopeID: "account-a", ID: "credential-a", AccountID: "chatgpt-a", AccessToken: "token"}
+	_, err := client.CreateResponseWithAuth(context.Background(), record, Request{
+		Model: "gpt-5.4",
+		Input: []map[string]any{{"role": "user", "content": "oversized event"}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "websocket event byte limit exceeded") {
+		t.Fatalf("large non-completed event error = %v, want explicit event byte limit", err)
+	}
+}
+
+func TestCompactCodexCompletedSnapshotRejectsOversizedNonCompletedEvent(t *testing.T) {
+	payload := `{"type":"response.in_progress","padding":"not-completed"}`
+	_, err := compactCodexCompletedSnapshot(strings.NewReader(payload))
+	if err == nil || !strings.Contains(err.Error(), "websocket event byte limit exceeded") {
+		t.Fatalf("oversized non-completed compaction error = %v, want event byte limit", err)
 	}
 }
 

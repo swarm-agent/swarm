@@ -2,6 +2,7 @@ package pebblestore
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -111,12 +112,15 @@ func TestWorkspaceStoreStableWorkspaceIDAndGeneration(t *testing.T) {
 		t.Fatalf("theme changed identity: %+v want id=%q generation=%d", themed, first.WorkspaceID, first.WorkspaceGeneration)
 	}
 
-	withDirectory, err := workspaces.AddDirectoryForAccount("account-a", "/tmp/ws-a", "/tmp/ws-a-extra")
-	if err != nil {
-		t.Fatalf("add directory: %v", err)
+	if _, err := workspaces.AddDirectoryForAccount("account-a", "/tmp/ws-a", "/tmp/ws-a-extra"); err == nil {
+		t.Fatalf("retired linked-directory mutation unexpectedly succeeded")
 	}
-	if withDirectory.WorkspaceID != first.WorkspaceID || withDirectory.WorkspaceGeneration != first.WorkspaceGeneration {
-		t.Fatalf("add directory changed identity: %+v want id=%q generation=%d", withDirectory, first.WorkspaceID, first.WorkspaceGeneration)
+	afterRejectedLink, ok, err := workspaces.GetForAccount("account-a", "/tmp/ws-a")
+	if err != nil || !ok {
+		t.Fatalf("read after rejected directory link ok=%v err=%v", ok, err)
+	}
+	if afterRejectedLink.WorkspaceID != first.WorkspaceID || afterRejectedLink.WorkspaceGeneration != first.WorkspaceGeneration {
+		t.Fatalf("rejected directory link changed identity: %+v want id=%q generation=%d", afterRejectedLink, first.WorkspaceID, first.WorkspaceGeneration)
 	}
 
 	moved, err := workspaces.MoveForAccount("account-a", "/tmp/ws-a", 0)
@@ -136,46 +140,48 @@ func TestWorkspaceStoreStableWorkspaceIDAndGeneration(t *testing.T) {
 	}
 }
 
-func TestWorkspaceStoreAllowsDirectoryLinkedToMultipleWorkspaces(t *testing.T) {
+func TestWorkspaceStoreMigratesLinkedDirectoriesIntoFlatCatalog(t *testing.T) {
 	workspaces := newTestWorkspaceStore(t)
-	const (
-		leftPath   = "/tmp/ws-left"
-		rightPath  = "/tmp/ws-right"
-		sharedPath = "/tmp/shared"
-	)
-
-	if _, err := workspaces.AddForAccount("account-a", leftPath, "Left"); err != nil {
-		t.Fatalf("add left workspace: %v", err)
+	parent := WorkspaceEntry{
+		AccountScopeID: "account-a", WorkspaceID: "ws-parent", WorkspaceGeneration: 4,
+		Path: "/tmp/ws-parent", Name: "Parent", ThemeID: "dark",
+		Directories: []string{"/tmp/ws-parent", "/tmp/linked-child"}, AddedAt: 10, UpdatedAt: 20,
 	}
-	if _, err := workspaces.AddForAccount("account-a", rightPath, "Right"); err != nil {
-		t.Fatalf("add right workspace: %v", err)
-	}
-	left, err := workspaces.AddDirectoryForAccount("account-a", leftPath, sharedPath)
-	if err != nil {
-		t.Fatalf("link shared directory to left workspace: %v", err)
-	}
-	right, err := workspaces.AddDirectoryForAccount("account-a", rightPath, sharedPath)
-	if err != nil {
-		t.Fatalf("link shared directory to right workspace: %v", err)
-	}
-	for _, entry := range []WorkspaceEntry{left, right} {
-		linked := false
-		for _, directory := range entry.Directories {
-			if directory == sharedPath {
-				linked = true
-				break
-			}
-		}
-		if !linked {
-			t.Fatalf("workspace %q directories = %v, want shared directory %q", entry.Path, entry.Directories, sharedPath)
-		}
+	if err := workspaces.store.PutJSON(KeyWorkspaceEntryForAccount("account-a", parent.Path), parent); err != nil {
+		t.Fatalf("write linked-authority fixture: %v", err)
 	}
 
-	if _, err := workspaces.AddDirectoryForAccount("account-a", leftPath, sharedPath); err == nil {
-		t.Fatalf("duplicate link to the same workspace unexpectedly succeeded")
+	entries, err := workspaces.ListForAccount("account-a", 10)
+	if err != nil {
+		t.Fatalf("list flat catalog: %v", err)
 	}
-	if _, err := workspaces.AddDirectoryForAccount("account-b", leftPath, sharedPath); err == nil {
-		t.Fatalf("cross-account link without an account-b workspace unexpectedly succeeded")
+	if len(entries) != 2 {
+		t.Fatalf("flat catalog entries = %+v, want parent and migrated child", entries)
+	}
+	byPath := map[string]WorkspaceEntry{}
+	for _, entry := range entries {
+		byPath[entry.Path] = entry
+		if len(entry.Directories) != 1 || entry.Directories[0] != entry.Path {
+			t.Fatalf("workspace %q retained linked authority: %v", entry.Path, entry.Directories)
+		}
+	}
+	child := byPath["/tmp/linked-child"]
+	if child.WorkspaceID == "" || child.WorkspaceGeneration != 1 || child.Name != "linked-child" || child.ThemeID != "dark" {
+		t.Fatalf("migrated child = %+v", child)
+	}
+	if byPath[parent.Path].WorkspaceID != parent.WorkspaceID || byPath[parent.Path].WorkspaceGeneration != parent.WorkspaceGeneration {
+		t.Fatalf("parent identity changed during flattening: %+v", byPath[parent.Path])
+	}
+
+	again, err := workspaces.ListForAccount("account-a", 10)
+	if err != nil || len(again) != 2 {
+		t.Fatalf("idempotent flat catalog list = %+v err=%v", again, err)
+	}
+	if _, err := workspaces.AddDirectoryForAccount("account-a", parent.Path, "/tmp/other"); err == nil {
+		t.Fatalf("retired linked-directory add unexpectedly succeeded")
+	}
+	if _, err := workspaces.RemoveDirectoryForAccount("account-a", parent.Path, "/tmp/linked-child"); err == nil {
+		t.Fatalf("retired linked-directory remove unexpectedly succeeded")
 	}
 }
 
@@ -291,6 +297,51 @@ func TestWorkspaceStoreGetByWorkspaceIDBackfillsMissingIndex(t *testing.T) {
 	}
 	if indexed.Path != entry.Path {
 		t.Fatalf("indexed path = %q, want %q", indexed.Path, entry.Path)
+	}
+}
+
+func TestWorkspaceStoreGuardedCatalogMutations(t *testing.T) {
+	workspaces := newTestWorkspaceStore(t)
+	root := t.TempDir()
+	createdPath := filepath.Join(root, "guarded")
+	movedPath := filepath.Join(root, "guarded-moved")
+	created, didCreate, err := workspaces.CreateForAccountIfAbsent("account-a", createdPath, "Guarded", "")
+	if err != nil || !didCreate {
+		t.Fatalf("guarded create: created=%t err=%v", didCreate, err)
+	}
+	if duplicate, didCreate, err := workspaces.CreateForAccountIfAbsent("account-a", createdPath, "Duplicate", ""); err != nil || didCreate || duplicate.WorkspaceID != created.WorkspaceID {
+		t.Fatalf("duplicate guarded create = %+v created=%t err=%v", duplicate, didCreate, err)
+	}
+	name := "Renamed"
+	if _, err := workspaces.UpdateForWorkspaceIDForAccountGuarded("account-a", "user-a", created.WorkspaceID, WorkspaceCatalogUpdate{ExpectedGeneration: created.WorkspaceGeneration + 1, Name: &name}); err == nil || !strings.Contains(err.Error(), "generation is stale") {
+		t.Fatalf("stale update error = %v", err)
+	}
+	updated, err := workspaces.UpdateForWorkspaceIDForAccountGuarded("account-a", "user-a", created.WorkspaceID, WorkspaceCatalogUpdate{ExpectedGeneration: created.WorkspaceGeneration, NewPath: movedPath, Name: &name})
+	if err != nil {
+		t.Fatalf("guarded update: %v", err)
+	}
+	if updated.WorkspaceID != created.WorkspaceID || updated.WorkspaceGeneration != created.WorkspaceGeneration+1 || updated.Name != name {
+		t.Fatalf("guarded update = %+v", updated)
+	}
+	if _, ok, err := workspaces.GetForAccount("account-a", createdPath); err != nil || ok {
+		t.Fatalf("old catalog path remains after update: ok=%t err=%v", ok, err)
+	}
+	byID, ok, err := workspaces.GetByWorkspaceIDForAccount("account-a", created.WorkspaceID)
+	if err != nil || !ok || byID.Path != movedPath || byID.WorkspaceGeneration != updated.WorkspaceGeneration {
+		t.Fatalf("updated id index = %+v ok=%t err=%v", byID, ok, err)
+	}
+	if _, err := workspaces.DeleteForWorkspaceIDForAccountGuarded("account-a", "user-a", created.WorkspaceID, created.WorkspaceGeneration); err == nil || !strings.Contains(err.Error(), "generation is stale") {
+		t.Fatalf("stale delete error = %v", err)
+	}
+	deleted, err := workspaces.DeleteForWorkspaceIDForAccountGuarded("account-a", "user-a", created.WorkspaceID, updated.WorkspaceGeneration)
+	if err != nil || deleted.WorkspaceID != created.WorkspaceID {
+		t.Fatalf("guarded delete = %+v err=%v", deleted, err)
+	}
+	if _, ok, err := workspaces.GetByWorkspaceIDForAccount("account-a", created.WorkspaceID); err != nil || ok {
+		t.Fatalf("deleted catalog id remains: ok=%t err=%v", ok, err)
+	}
+	if _, ok, err := workspaces.GetForAccount("account-a", movedPath); err != nil || ok {
+		t.Fatalf("deleted catalog path remains: ok=%t err=%v", ok, err)
 	}
 }
 

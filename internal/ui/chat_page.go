@@ -569,23 +569,19 @@ type ChatPage struct {
 	askUserInputMode  bool
 	askUserInput      string
 
-	workspaceScopeVisible        bool
-	workspaceScopePermission     string
-	workspaceScopeTitle          string
-	workspaceScopeSummary        string
-	workspaceScopeToolName       string
-	workspaceScopeAccessLabel    string
-	workspaceScopeRequestedPath  string
-	workspaceScopeResolvedPath   string
-	workspaceScopeDirectory      string
-	workspaceScopeWorkspacePath  string
-	workspaceScopeWorkspaceName  string
-	workspaceScopeWorkspaceSaved bool
-	workspaceScopeSelection      int
-	workspaceScopeScroll         int
-	workspaceScopeAllowRect      Rect
-	workspaceScopeAddDirRect     Rect
-	workspaceScopeDenyRect       Rect
+	workspaceScopeVisible       bool
+	workspaceScopePermission    string
+	workspaceScopeTitle         string
+	workspaceScopeSummary       string
+	workspaceScopeToolName      string
+	workspaceScopeAccessLabel   string
+	workspaceScopeRequestedPath string
+	workspaceScopeResolvedPath  string
+	workspaceScopeDirectory     string
+	workspaceScopeSelection     int
+	workspaceScopeScroll        int
+	workspaceScopeAllowRect     Rect
+	workspaceScopeDenyRect      Rect
 
 	themeChangePermission  string
 	themeChangeScroll      int

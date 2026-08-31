@@ -9,7 +9,7 @@ import type { ActiveModelProfileState, AgentProfileRecord, ModelOptionRecord, Mo
 import type { DesktopSessionMode } from '../../settings/swarm/types/swarm-settings'
 import type { DesktopV3MediaCapability, DesktopV3MediaReference } from '../../state/desktop-v3-cache-types'
 import type { DesktopV3RoutedComposerSnapshot, DesktopV3RoutedNewSessionState } from '../../session-v3/new-session-flow'
-import { buildDesktopSlashPaletteState, isDesktopWorktreeOnCommand, parseDesktopNewSessionCommand, type DesktopSlashCommand, type DesktopSlashPaletteState } from '../services/slash-commands'
+import { buildDesktopFlagTaskPrompt, buildDesktopSlashPaletteState, parseDesktopNewSessionCommand, type DesktopSlashCommand, type DesktopSlashPaletteState } from '../services/slash-commands'
 import { desktopComposerBackgroundRouterCommand, submitDesktopComposer } from '../services/composer-submit'
 import {
   DESKTOP_COMPOSER_TEXT_FILE_MAX_COUNT,
@@ -38,7 +38,6 @@ import type { WorkspaceAction } from '../../../workspaces/actions/types'
 import type { WorkspaceSkill } from '../services/workspace-skills'
 import { addSourceMediaDirectory, getSourceMediaDirectories } from '../../settings/media/queries/get-media-settings'
 import { browseDesktopVideoSource, DESKTOP_VIDEO_ATTACHMENT_MAX_COUNT, type DesktopVideoSourceAttachment, type DesktopVideoSourceBrowseResult } from '../services/video-source-attachments'
-import { DesktopRoutedWorktreePrime } from './desktop-routed-worktree-prime'
 import { DesktopComposerPlanToggle } from './desktop-composer-plan-toggle'
 import { DesktopV3ArtifactCatalogGallery } from './desktop-v3-artifact-gallery'
 import {
@@ -157,13 +156,11 @@ export interface DesktopV3AgenticComposerProps {
   onContextChipRemove?: () => void
   onArtifactSelectionRequestHandled?: () => void
   onSubmit: (draft: string, attachments: DesktopV3MediaReference[], artifactSelections: DesktopV3ArtifactMessageSelection[], videoAttachments: DesktopVideoSourceAttachment[]) => void | Promise<void>
-  onRoutedSubmit?: (snapshot: DesktopV3RoutedComposerSnapshot) => Promise<DesktopV3RoutedNewSessionState>
+  onRoutedSubmit?: (snapshot: DesktopV3RoutedComposerSnapshot) => Promise<DesktopV3RoutedNewSessionState | void>
   routedStagedAttachments?: readonly DesktopComposerStagedAttachment[]
   onRoutedStageAttachments?: (files: File[], signal: AbortSignal) => Promise<void>
   onRoutedRemoveStagedAttachment?: (stagingId: string) => void
   routedComposerSnapshot?: DesktopV3RoutedComposerSnapshot | null
-  routedWorktreeRequested?: boolean
-  onRoutedWorktreeRequestedChange?: (requested: boolean) => void
   modelStatusLabel?: string
   mediaCapability?: DesktopV3MediaCapability | null
   onUploadAttachment?: (file: File, signal: AbortSignal) => Promise<DesktopV3MediaReference>
@@ -211,6 +208,7 @@ export interface DesktopV3AgenticComposerProps {
   focusSignal?: number
   workspacePath?: string
   sessionId?: string
+  developerMode?: boolean
   onOpenActionSettings?: () => void
   /** Pre-route composer state; agent/model controls remain visible before the first send. */
   routedNewSession?: boolean
@@ -267,8 +265,6 @@ export function DesktopV3AgenticComposer({
   onRoutedStageAttachments,
   onRoutedRemoveStagedAttachment,
   routedComposerSnapshot = null,
-  routedWorktreeRequested = false,
-  onRoutedWorktreeRequestedChange,
   modelStatusLabel = '',
   mediaCapability = null,
   onUploadAttachment,
@@ -316,6 +312,7 @@ export function DesktopV3AgenticComposer({
   focusSignal = 0,
   workspacePath = '',
   sessionId = '',
+  developerMode = false,
   onOpenActionSettings,
   routedNewSession = false,
   slashCommandContext = 'existing-session',
@@ -363,7 +360,6 @@ export function DesktopV3AgenticComposer({
   const [textAttachments, setTextAttachments] = useState<DesktopComposerTextAttachment[]>([])
   const [uploadingAttachment, setUploadingAttachment] = useState(false)
   const [attachmentError, setAttachmentError] = useState<string | null>(null)
-  const [worktreeCommandWarning, setWorktreeCommandWarning] = useState<string | null>(null)
   const [fileDropZone, setFileDropZone] = useState<HTMLElement | null>(null)
   const [filesDraggingOverChat, setFilesDraggingOverChat] = useState(false)
   const [selectedWorkspaceAction, setSelectedWorkspaceAction] = useState<WorkspaceAction | null>(null)
@@ -384,7 +380,7 @@ export function DesktopV3AgenticComposer({
     () => normalizeMentionSubagents(subagents.length > 0 ? subagents : selectableAgents.filter((agent) => (agent.mode || '').toLowerCase() === 'subagent').map((agent) => agent.name)),
     [selectableAgents, subagents],
   )
-  const slashPalette = useMemo(() => buildDesktopSlashPaletteState(draft), [draft])
+  const slashPalette = useMemo(() => buildDesktopSlashPaletteState(draft, { developerMode: developerMode && Boolean(sessionId.trim()) }), [developerMode, draft, sessionId])
   const slashCommands = useMemo(
     () => slashPalette.matches.filter((command) => command.state === 'ready'
       && (slashCommandContext !== 'new-session' || command.action.kind !== 'new-session')),
@@ -734,10 +730,7 @@ export function DesktopV3AgenticComposer({
   const handlePrimeTask = useCallback((taskMode: DesktopComposerTaskMode) => {
     if (dictationEnabledRef.current) stopDictation(false)
     if (routedNewSession) {
-      onRoutedWorktreeRequestedChange?.(true)
-      if (typeof window !== 'undefined') {
-        window.requestAnimationFrame(() => textareaRef.current?.focus())
-      }
+      if (typeof window !== 'undefined') window.requestAnimationFrame(() => textareaRef.current?.focus())
       return
     }
     setPrimedTaskMode(taskMode)
@@ -750,7 +743,7 @@ export function DesktopV3AgenticComposer({
       textarea.setSelectionRange(cursorPosition, cursorPosition)
       resizeTextareaElement(textarea)
     })
-  }, [onRoutedWorktreeRequestedChange, resizeTextareaElement, routedNewSession, stopDictation])
+  }, [resizeTextareaElement, routedNewSession, stopDictation])
 
   const handleWorkspaceActionSelect = useCallback((action: WorkspaceAction, confirmedLaunch: boolean) => {
     setSelectedWorkspaceAction(action)
@@ -762,21 +755,6 @@ export function DesktopV3AgenticComposer({
     setSelectedWorkspaceAction(null)
     setWorkspaceActionAutoLaunch(false)
   }, [])
-
-  const handleWorktreeOnCommand = useCallback(() => {
-    if (routedNewSession) {
-      onRoutedWorktreeRequestedChange?.(true)
-      setWorktreeCommandWarning(null)
-    } else {
-      setWorktreeCommandWarning('Use /wt on only in a new-session composer. Worktree intent was not changed.')
-    }
-    onDraftChange('')
-    const textarea = textareaRef.current
-    if (textarea) {
-      textarea.value = ''
-      resizeTextareaElement(textarea)
-    }
-  }, [onDraftChange, onRoutedWorktreeRequestedChange, resizeTextareaElement, routedNewSession])
 
   const handleSubmitClick = useCallback(async () => {
     if (uploadingAttachment) {
@@ -790,13 +768,14 @@ export function DesktopV3AgenticComposer({
       onDraftChange('')
       return
     }
-    if (isDesktopWorktreeOnCommand(rawDraft)) {
-      handleWorktreeOnCommand()
+    const flagCommandSelected = slashPalette.exactMatch?.id === 'flag'
+    const flagTaskPrompt = flagCommandSelected ? buildDesktopFlagTaskPrompt(rawDraft, sessionId) : null
+    if (flagCommandSelected && !flagTaskPrompt) {
+      setAttachmentError(sessionId.trim() ? 'Enter a problem after /flag.' : '/flag requires an existing session to investigate.')
       return
     }
     const newSessionCommand = routedNewSession ? parseDesktopNewSessionCommand(rawDraft) : null
     if (newSessionCommand && !newSessionCommand.prompt) {
-      onRoutedWorktreeRequestedChange?.(newSessionCommand.worktreeRequested)
       onModeSelect?.(newSessionCommand.planModeRequested ? 'plan' : 'auto')
       onDraftChange('')
       const textarea = textareaRef.current
@@ -806,7 +785,7 @@ export function DesktopV3AgenticComposer({
       }
       return
     }
-    const commandDraft = newSessionCommand?.prompt ?? rawDraft
+    const commandDraft = flagTaskPrompt ? `/task ${flagTaskPrompt}` : newSessionCommand?.prompt ?? rawDraft
     const textAttachmentDraft = textAttachments.reduce(
       (nextDraft, attachment) => appendComposerTextFile(nextDraft, attachment.name, attachment.fileType, attachment.content),
       commandDraft,
@@ -850,10 +829,9 @@ export function DesktopV3AgenticComposer({
         videoAttachments,
         selectedAction: selectedWorkspaceAction,
         selectedSkill: selectedWorkspaceSkill,
-        worktreePrimed: newSessionCommand?.worktreeRequested ?? routedWorktreeRequested,
         planModeRequested: newSessionCommand?.planModeRequested ?? mode === 'plan',
       }
-      let routedSubmit: Promise<DesktopV3RoutedNewSessionState>
+      let routedSubmit: Promise<DesktopV3RoutedNewSessionState | void>
       try {
         routedSubmit = onRoutedSubmit(routedSnapshot)
       } catch (cause) {
@@ -862,7 +840,7 @@ export function DesktopV3AgenticComposer({
         return
       }
       void routedSubmit.then((state) => {
-        if (state.phase === 'failed') {
+        if (state?.phase === 'failed') {
           routedSubmissionRef.current = false
           return
         }
@@ -885,7 +863,7 @@ export function DesktopV3AgenticComposer({
       onStop,
       onSlashCommand,
     })
-  }, [artifactSelections, attachments, canStop, clearComposerForSubmit, dictationComposer, handleWorktreeOnCommand, mode, onDraftChange, onModeSelect, onRoutedSubmit, onRoutedWorktreeRequestedChange, onSlashCommand, onStop, onSubmit, primedTaskMode, resizeTextareaElement, routedNewSession, routedStagedAttachments, routedWorktreeRequested, selectedWorkspaceAction, selectedWorkspaceSkill, slashPalette.exactMatch?.action.kind, slashPalette.hasArguments, textAttachments, uploadingAttachment, videoAttachments])
+  }, [artifactSelections, attachments, canStop, clearComposerForSubmit, dictationComposer, mode, onDraftChange, onModeSelect, onRoutedSubmit, onSlashCommand, onStop, onSubmit, primedTaskMode, resizeTextareaElement, routedNewSession, routedStagedAttachments, selectedWorkspaceAction, selectedWorkspaceSkill, sessionId, slashPalette.exactMatch?.action.kind, slashPalette.exactMatch?.id, slashPalette.hasArguments, textAttachments, uploadingAttachment, videoAttachments])
 
   const handleMentionInsert = useCallback((agent: string) => {
     const trimmedStartLength = draft.length - draft.replace(/^[\s\t\r\n]+/, '').length
@@ -920,10 +898,6 @@ export function DesktopV3AgenticComposer({
       void handleSubmitClick()
       return
     }
-    if (command.action.kind === 'enable-new-session-worktree') {
-      handleWorktreeOnCommand()
-      return
-    }
     if (command.action.kind === 'toggle-thinking') {
       if (thinkingTagsEnabled !== undefined && onThinkingTagsToggle && !thinkingTagsBusy) {
         onThinkingTagsToggle(!thinkingTagsEnabled)
@@ -952,7 +926,7 @@ export function DesktopV3AgenticComposer({
       return
     }
     if (!slashPalette.hasArguments) onDraftChange('')
-  }, [currentAgent, draft, handleSubmitClick, handleWorktreeOnCommand, onCompact, onDraftChange, onSlashCommand, onThinkingTagsToggle, openAgentSetup, openModelFavorites, openWorkspaceActionChooser, routedNewSession, slashPalette.hasArguments, thinkingTagsBusy, thinkingTagsEnabled])
+  }, [currentAgent, draft, handleSubmitClick, onCompact, onDraftChange, onSlashCommand, onThinkingTagsToggle, openAgentSetup, openModelFavorites, openWorkspaceActionChooser, routedNewSession, slashPalette.hasArguments, thinkingTagsBusy, thinkingTagsEnabled])
 
   const handleKeyDown = useCallback((event: KeyboardEvent<HTMLTextAreaElement>) => {
     if (routedNewSession && event.key === 'Tab' && event.shiftKey && !event.altKey && !event.ctrlKey && !event.metaKey) {
@@ -994,7 +968,7 @@ export function DesktopV3AgenticComposer({
         if (command) onDraftChange(command.command + ' ')
         return
       }
-      if (event.key === 'Enter' && !event.shiftKey && (!slashPalette.hasArguments || slashPalette.exactMatch?.action.kind === 'start-background-router-session' || slashPalette.exactMatch?.action.kind === 'new-session' || slashPalette.exactMatch?.action.kind === 'enable-new-session-worktree' || slashPalette.exactMatch?.action.kind === 'toggle-tips' || slashPalette.exactMatch?.action.kind === 'open-action-chooser')) {
+      if (event.key === 'Enter' && !event.shiftKey && (!slashPalette.hasArguments || slashPalette.exactMatch?.action.kind === 'start-background-router-session' || slashPalette.exactMatch?.action.kind === 'new-session' || slashPalette.exactMatch?.action.kind === 'toggle-tips' || slashPalette.exactMatch?.action.kind === 'open-action-chooser')) {
         event.preventDefault()
         if (slashPalette.exactMatch?.action.kind === 'start-background-router-session') {
           void handleSubmitClick()
@@ -1304,20 +1278,6 @@ export function DesktopV3AgenticComposer({
             </button>
           </div>
         ) : null}
-        {worktreeCommandWarning ? (
-          <div className="flex min-w-0 items-center gap-2 rounded-xl border border-[var(--app-warning-border)] bg-[var(--app-warning-bg)] py-1 pl-3 pr-1 text-sm text-[var(--app-warning)]" role="alert">
-            <span className="min-w-0 flex-1">{worktreeCommandWarning}</span>
-            <button
-              type="button"
-              onClick={() => setWorktreeCommandWarning(null)}
-              aria-label="Dismiss worktree command warning"
-              title="Dismiss warning"
-              className="grid min-h-11 min-w-11 shrink-0 touch-manipulation place-items-center rounded-lg transition-colors hover:bg-[var(--app-surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-warning)]"
-            >
-              <X size={16} aria-hidden="true" />
-            </button>
-          </div>
-        ) : null}
         {dictationError ? (
           <div className="flex min-w-0 items-center gap-2 rounded-xl border border-[var(--app-warning-border)] bg-[var(--app-warning-bg)] py-1 pl-3 pr-1 text-sm text-[var(--app-warning)]" role="alert">
             <span className="min-w-0 flex-1">{dictationError}</span>
@@ -1480,9 +1440,6 @@ export function DesktopV3AgenticComposer({
               onSkillSelect={setSelectedWorkspaceSkill}
             />
             {uploadingAttachment ? <button type="button" className="text-xs text-[var(--app-warning)]" onClick={() => uploadAbortRef.current?.abort()}>Cancel upload</button> : null}
-            {routedNewSession && onRoutedWorktreeRequestedChange ? (
-              <DesktopRoutedWorktreePrime requested={routedWorktreeRequested} onRequestedChange={onRoutedWorktreeRequestedChange} disabled={composerDisabled || uploadingAttachment} />
-            ) : null}
             {routedNewSession && showModePicker ? (
               <DesktopComposerPlanToggle
                 active={mode === 'plan'}

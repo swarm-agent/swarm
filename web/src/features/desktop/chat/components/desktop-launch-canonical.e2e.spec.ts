@@ -13,6 +13,10 @@ const PROVIDER = (process.env.SWARM_PROVIDER || '').trim().toLowerCase()
 const WORKSPACE_SELECTOR = (process.env.SWARM_E2E_WORKSPACE || '').trim()
 const REMOTE_DESKTOP_PORT = Number(process.env.SWARM_REMOTE_DESKTOP_PORT || 5555)
 const TIMEOUT_MS = Number(process.env.SWARM_DESKTOP_LAUNCH_TIMEOUT_MS || 900_000)
+const ACTION_MODEL = String(process.env.SWARM_E2E_ACTION_MODEL || '').trim()
+const ACTION_THINKING = String(process.env.SWARM_E2E_ACTION_THINKING || 'medium').trim().toLowerCase()
+const PLAN_MODEL = String(process.env.SWARM_E2E_PLAN_MODEL || '').trim()
+const PLAN_THINKING = String(process.env.SWARM_E2E_PLAN_THINKING || 'high').trim().toLowerCase()
 
 const TERMINAL_INTENT_STATUSES = new Set(['completed', 'failed', 'cancelled', 'expired', 'interrupted'])
 const FAILURE_PATTERN = /failed|cancelled|expired|interrupted/i
@@ -197,6 +201,12 @@ async function browserJSON<T>(page: Page, route: string, init: { method?: string
     if (!response.ok) throw new Error(`${innerInit.method || 'GET'} ${innerRoute} HTTP ${response.status}: ${text.slice(0, 1200)}`)
     return decoded
   }, { route, init }) as T
+}
+
+function exactAssignment(records: JsonRecord[], model: string, thinking: string, label: string): Assignment | null {
+  if (!model) return null
+  assert(records.some((record) => String(record.model || '').trim() === model), `model catalog does not contain ${PROVIDER}/${model} for ${label}`)
+  return { provider: PROVIDER, model, thinking, service_tier: 'fast' }
 }
 
 function recommendationFor(records: JsonRecord[], roles: string[], label: string): Assignment {
@@ -522,8 +532,8 @@ async function setup(): Promise<TestContext> {
   const catalog = await browserJSON<{ records?: JsonRecord[] }>(page, `/v1/model/catalog?provider=${encodeURIComponent(PROVIDER)}&limit=500`)
   const records = catalog.records || []
   const assignments = {
-    plan: recommendationFor(records, ['plan'], 'Plan model'),
-    action: recommendationFor(records, ['auto', 'main'], 'Auto model'),
+    plan: exactAssignment(records, PLAN_MODEL, PLAN_THINKING, 'Plan model') ?? recommendationFor(records, ['plan'], 'Plan model'),
+    action: exactAssignment(records, ACTION_MODEL, ACTION_THINKING, 'Auto model') ?? recommendationFor(records, ['auto', 'main'], 'Auto model'),
   }
   const settings = await browserJSON<{ agent_model_settings?: Record<string, JsonRecord> }>(page, '/v1/agent-model-settings')
   const originalSettings = settings.agent_model_settings?.swarm

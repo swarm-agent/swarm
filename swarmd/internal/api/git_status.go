@@ -34,7 +34,7 @@ func gitStatusResponseForPath(path string) gitStatusResponseFields {
 
 func gitStatusResponseForSession(session pebblestore.SessionSnapshot) gitStatusResponseFields {
 	if session.WorktreeEnabled {
-		return gitStatusResponseForWorktree(session.WorkspacePath, session.WorktreeBaseBranch)
+		return gitStatusResponseForWorktree(firstNonEmpty(strings.TrimSpace(session.WorktreeRootPath), strings.TrimSpace(session.WorkspacePath)), session.WorktreeBaseBranch)
 	}
 	if fields, ok := metadataGitStatusResponseFields(session.Metadata); ok {
 		return fields

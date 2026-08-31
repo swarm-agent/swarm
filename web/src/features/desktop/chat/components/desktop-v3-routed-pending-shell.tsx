@@ -6,8 +6,8 @@ import type { WorkspaceEntry } from '../../../workspaces/launcher/types/workspac
 import { DESKTOP_HOME_TIPS, selectDesktopHomeTipIndex } from '../services/home-tips'
 import { WorkspaceHomeIdentity } from './workspace-home-identity'
 
-export type DesktopV3RoutedPendingShellState = 'draft' | 'worktree-primed' | 'routing' | 'failed'
-export type DesktopV3PendingStartPath = 'session' | 'router'
+export type DesktopV3RoutedPendingShellState = 'draft' | 'routing' | 'failed'
+export type DesktopV3PendingStartPath = 'session' | 'direct' | 'router'
 
 export interface DesktopV3RoutedPendingShellProps {
   state: DesktopV3RoutedPendingShellState

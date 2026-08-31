@@ -447,11 +447,11 @@ func TestSessionsV3PrimaryWorktreeOnCreatesRequestedBranchSession(t *testing.T) 
 	if fake.lastWorkspace != "/host/swarm-go" || fake.lastNameSeed != "v3-wt-create" || fake.lastBaseBranch != "dev" || fake.lastBranchName != "agent/v3-requested" {
 		t.Fatalf("allocation request workspace=%q seed=%q base=%q branch=%q", fake.lastWorkspace, fake.lastNameSeed, fake.lastBaseBranch, fake.lastBranchName)
 	}
-	if !payload.Session.WorktreeEnabled || payload.Session.WorkspacePath != "/host/swarm-go/.swarm/worktrees/agent-v3-requested" || payload.Session.WorktreeRootPath != payload.Session.WorkspacePath || payload.Session.WorktreeBaseBranch != "dev" || payload.Session.WorktreeBranch != "agent/v3-requested" {
+	if !payload.Session.WorktreeEnabled || payload.Session.WorkspacePath != "/host/swarm-go" || payload.Session.WorktreeRootPath != "/host/swarm-go/.swarm/worktrees/agent-v3-requested" || payload.Session.WorktreeBaseBranch != "dev" || payload.Session.WorktreeBranch != "agent/v3-requested" {
 		t.Fatalf("session worktree facts = %+v", payload.Session)
 	}
-	if payload.Session.Metadata["workspace_id"] != "agent-v3-requested" {
-		t.Fatalf("workspace_id metadata = %v, want agent-v3-requested", payload.Session.Metadata["workspace_id"])
+	if payload.Session.Metadata["workspace_id"] == "agent-v3-requested" || payload.Session.Metadata["swarm_v3_source_workspace_id"] == "" {
+		t.Fatalf("source workspace metadata was replaced by worktree identity: %+v", payload.Session.Metadata)
 	}
 }
 
@@ -3647,6 +3647,17 @@ func assertNoSessionsForAccount(t *testing.T, sessionSvc *sessionruntime.Service
 	}
 }
 
+func TestMergeSessionsV3MetadataUpdatePreservesCapturedBaseCommit(t *testing.T) {
+	current := map[string]any{"agent_name": "swarm", "base_commit": "abc123", "client_note": "old"}
+	merged := mergeSessionsV3MetadataUpdate(current, map[string]any{"client_note": "new", "base_commit": "forged"})
+	if got := sessionsV3MetadataString(merged, "base_commit"); got != "abc123" {
+		t.Fatalf("base_commit = %q, want captured value", got)
+	}
+	if got := sessionsV3MetadataString(merged, "client_note"); got != "new" {
+		t.Fatalf("client_note = %q, want requested value", got)
+	}
+}
+
 func assertNoRetiredSessionRouteMetadata(t *testing.T, sessionSvc *sessionruntime.Service, sessionID string) {
 	t.Helper()
 	session, ok, err := sessionSvc.GetSession(sessionID)
@@ -6705,7 +6716,8 @@ func TestSessionsV3ExecutorUserContinuationResumesBlockedCheckpointBeforeAdvanci
 		t.Fatalf("save blocked continuation plan: %v", err)
 	}
 
-	postSessionsV3PrimaryTestMessage(t, server, created.ID, "provider-blocked-continue-message", "The dependency is resolved; continue")
+	const unblockUserMessage = "The dependency is resolved; continue"
+	postSessionsV3PrimaryTestMessage(t, server, created.ID, "provider-blocked-continue-message", unblockUserMessage)
 	waitForSessionsV3RunIntentStatus(t, sessionSvc, created.ID, sessionruntime.RunIntentCompleted)
 
 	deadline := time.Now().Add(2 * time.Second)
@@ -6732,11 +6744,24 @@ func TestSessionsV3ExecutorUserContinuationResumesBlockedCheckpointBeforeAdvanci
 	if err != nil {
 		t.Fatalf("list blocked continuation run intents: %v", err)
 	}
-	if len(intents) != 3 || intents[0].CheckpointID != "" || intents[1].CheckpointID != "cp-1" || intents[2].CheckpointID != "cp-2" {
+	if len(intents) != 3 {
 		t.Fatalf("blocked continuation run intents = %+v", intents)
 	}
-	if len(runner.requests) != 3 || !strings.Contains(fmt.Sprint(runner.requests[1].Input), "integration still pending") || !strings.Contains(fmt.Sprint(runner.requests[1].Input), "user confirmed continuation") {
-		t.Fatalf("resumed checkpoint did not receive preserved progress and resolution context: %+v", runner.requests)
+	intentCheckpointIDs := map[string]bool{}
+	for _, intent := range intents {
+		intentCheckpointIDs[intent.CheckpointID] = true
+	}
+	if !intentCheckpointIDs[""] || !intentCheckpointIDs["cp-1"] || !intentCheckpointIDs["cp-2"] {
+		t.Fatalf("blocked continuation run intents = %+v", intents)
+	}
+	if len(runner.requests) != 3 || !strings.Contains(fmt.Sprint(runner.requests[0].Input), unblockUserMessage) || !strings.Contains(fmt.Sprint(runner.requests[1].Input), "integration still pending") || !strings.Contains(fmt.Sprint(runner.requests[1].Input), "user confirmed continuation") {
+		t.Fatalf("resumed checkpoint did not receive the resolver turn, preserved progress, and resolution context: %+v", runner.requests)
+	}
+	if strings.Contains(fmt.Sprint(runner.requests[1].Input), unblockUserMessage) {
+		t.Fatalf("resumed checkpoint replayed the unblock user message to the AI: %+v", runner.requests[1].Input)
+	}
+	if !runner.requests[1].ForceFreshProviderContext || runner.requests[1].NativeContinuationAllowed || runner.requests[1].AllowContinuation {
+		t.Fatalf("resumed checkpoint retained resolver provider lineage: %+v", runner.requests[1])
 	}
 }
 

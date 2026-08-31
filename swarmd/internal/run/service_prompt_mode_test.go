@@ -316,9 +316,9 @@ func TestMasterHarnessRoutesAgentProgressToPlanManageAndKeepsTodosUserOwned(t *t
 		"Failed checkpoints remain stopped",
 		"Never use add_subtask to clear a blocked or failed checkpoint",
 		"use manage-sessions deploy; do not use the task tool",
-		"suggest a short worktree_name",
-		"leave managed worktree isolation enabled by default",
-		"approval UI lets them disable worktree isolation",
+		"supply a short Swarm-authored worktree_name",
+		"session-owned managed worktree isolation is mandatory",
+		"cannot disable or opt out of isolation",
 		"explicitly asks to use subagents",
 		"names the agent or agents to run",
 	} {

@@ -1,10 +1,20 @@
-import { getDesktopSlashCommands, buildDesktopSlashPaletteState, isDesktopWorktreeOnCommand, parseDesktopNewSessionCommand, parseDesktopTaskCommand } from './slash-commands'
+import { buildDesktopFlagTaskPrompt, getDesktopSlashCommands, buildDesktopSlashPaletteState, parseDesktopNewSessionCommand, parseDesktopTaskCommand } from './slash-commands'
 import type { DesktopSlashCommandAction } from './slash-commands'
 
 function assert(condition: boolean, message: string): void {
   if (!condition) {
     throw new Error(message)
   }
+}
+
+function testFeedbackCommandOpensModal(): void {
+  const feedback = getDesktopSlashCommands().find((command) => command.id === 'feedback')
+  assert(Boolean(feedback), 'expected /feedback command to exist')
+  assert(feedback?.state === 'ready', 'expected /feedback command to be ready')
+  assert(feedback?.action.kind === 'open-feedback', 'expected /feedback to open the feedback modal')
+  const palette = buildDesktopSlashPaletteState('/feedback')
+  assert(palette.exactMatch?.id === 'feedback', 'expected /feedback to resolve exactly')
+  assert(palette.matches[0]?.id === 'feedback', 'expected /feedback to lead palette matches')
 }
 
 function testPlanCommandIsReady(): void {
@@ -75,18 +85,10 @@ function testMCPCommandIsDeferredAndExaRequiresAPIKey(): void {
   assert(mcp?.tips.every((tip) => !tip.includes('Free Exa MCP search')), 'expected /mcp tips not to advertise free Exa MCP search')
 }
 
-function testWorktreeOnCommandIsReady(): void {
-  const command = getDesktopSlashCommands().find((candidate) => candidate.command === '/wt on')
-  assert(Boolean(command), 'expected /wt on command to exist')
-  assert(command?.state === 'ready', 'expected /wt on command to be ready')
-  assert(command?.action.kind === 'enable-new-session-worktree', 'expected /wt on to enable new-session worktree intent')
-
-  const palette = buildDesktopSlashPaletteState('/wt on')
-  assert(palette.exactMatch?.id === 'worktree-on', 'expected /wt on to resolve exactly')
-  assert(palette.matches[0]?.id === 'worktree-on', 'expected /wt on to lead palette matches')
-  assert(isDesktopWorktreeOnCommand(' /WT   on '), 'expected /wt on parser to ignore case and repeated whitespace')
-  assert(!isDesktopWorktreeOnCommand('/wt on extra'), 'expected /wt on parser to reject extra arguments')
-  assert(!isDesktopWorktreeOnCommand('/wt'), 'expected bare /wt to keep its worktree settings behavior')
+function testWorktreeOnCommandIsRetired(): void {
+  const commands = getDesktopSlashCommands()
+  assert(commands.every((candidate) => candidate.command !== '/wt on'), 'expected /wt on command to be absent')
+  assert(buildDesktopSlashPaletteState('/wt on').exactMatch?.id !== 'worktree-on', 'expected /wt on not to resolve a worktree toggle')
 }
 
 function testWorktreeCommandIsRetiredAndWorktreesRemains(): void {
@@ -100,55 +102,27 @@ function testWorktreeCommandIsRetiredAndWorktreesRemains(): void {
   assert(palette.matches.length === 0, 'expected /worktree not to be suggested')
 }
 
-function testNewSessionCommandVariantsPrimeRouterChips(): void {
+function testNewSessionCommandVariantsPrimePlanOnly(): void {
   const commands = getDesktopSlashCommands()
   const expected = [
-    ['/new', false, false],
-    ['/new worktree', true, false],
-    ['/new plan', false, true],
-    ['/new wp', true, true],
+    ['/new', false],
+    ['/new plan', true],
   ] as const
 
-  for (const [commandText, worktreeRequested, planModeRequested] of expected) {
+  for (const [commandText, planModeRequested] of expected) {
     const command = commands.find((candidate) => candidate.command === commandText)
     assert(Boolean(command), `expected ${commandText} to be listed`)
     assert(command?.action.kind === 'new-session', `expected ${commandText} to open a new session`)
     if (command?.action.kind === 'new-session') {
-      assert(command.action.worktreeRequested === worktreeRequested, `expected ${commandText} worktree priming to match`)
       assert(command.action.planModeRequested === planModeRequested, `expected ${commandText} plan priming to match`)
     }
     assert(buildDesktopSlashPaletteState(commandText).exactMatch?.command === commandText, `expected ${commandText} to resolve exactly`)
-    const parsed = parseDesktopNewSessionCommand(commandText)
-    assert(parsed?.prompt === '', `expected bare ${commandText} to have no prompt`)
-    assert(parsed?.worktreeRequested === worktreeRequested, `expected ${commandText} parser worktree priming to match`)
-    assert(parsed?.planModeRequested === planModeRequested, `expected ${commandText} parser plan priming to match`)
   }
 
-  const promptCases = [
-    ['/new fix the sidebar', 'fix the sidebar', false, false, 'new'],
-    ['/new worktree fix the sidebar', 'fix the sidebar', true, false, 'new-worktree'],
-    ['/new plan fix the sidebar', 'fix the sidebar', false, true, 'new-plan'],
-    ['/new wp fix the sidebar', 'fix the sidebar', true, true, 'new-wp'],
-  ] as const
-  for (const [input, prompt, worktreeRequested, planModeRequested, commandID] of promptCases) {
-    const parsed = parseDesktopNewSessionCommand(input)
-    assert(parsed?.prompt === prompt, `expected ${input} prompt to be preserved`)
-    assert(parsed?.worktreeRequested === worktreeRequested, `expected ${input} worktree intent to match`)
-    assert(parsed?.planModeRequested === planModeRequested, `expected ${input} plan intent to match`)
-    const palette = buildDesktopSlashPaletteState(input)
-    assert(palette.exactMatch?.id === commandID, `expected ${input} to resolve its longest command prefix`)
-    assert(palette.matches[0]?.id === commandID, `expected ${input} to select its compound palette entry`)
-  }
-}
-
-function testNewWpForwardsOnlyItsPromptToRouter(): void {
-  const input = '  /NEW   wp   Keep WP in the prompt\nwith exact body text  '
-  const parsed = parseDesktopNewSessionCommand(input)
-
-  assert(parsed?.prompt === 'Keep WP in the prompt\nwith exact body text', 'expected /new wp to remove only its command prefix')
-  assert(parsed?.worktreeRequested === true, 'expected /new wp to preserve managed-worktree intent')
-  assert(parsed?.planModeRequested === true, 'expected /new wp to preserve plan-mode intent')
-  assert(buildDesktopSlashPaletteState(input).exactMatch?.id === 'new-wp', 'expected /new wp prompt input to dispatch the compound command')
+  const parsed = parseDesktopNewSessionCommand('/new plan fix the sidebar')
+  assert(parsed?.prompt === 'fix the sidebar', 'expected /new plan prompt to be preserved')
+  assert(parsed?.planModeRequested === true, 'expected /new plan to prime plan mode')
+  assert(commands.every((command) => command.command !== '/new worktree' && command.command !== '/new wp'), 'expected worktree-specific new-session commands to be absent')
 }
 
 function testTaskCommandAcceptsFullArguments(): void {
@@ -160,8 +134,8 @@ function testTaskCommandAcceptsFullArguments(): void {
   assert(task?.state === 'ready', 'expected /task command to be ready')
   assert((task?.action as DesktopSlashCommandAction | undefined)?.kind === 'start-background-router-session', 'expected /task to start a background Router session')
   assert((taskPlan?.action as DesktopSlashCommandAction | undefined)?.kind === 'start-background-router-session', 'expected /task plan to start a background Router session')
-  assert(task?.tips.some((tip) => tip.includes('/task <prompt>')) === true, 'expected /task guidance to show required prompt syntax')
-  assert(taskPlan?.tips.some((tip) => tip.includes('/task plan <prompt>')) === true, 'expected /task plan guidance to show required prompt syntax')
+  assert(task?.tips.some((tip) => tip.includes('/task [--workspace <saved-workspace>] <prompt>')) === true, 'expected /task guidance to show optional saved-workspace syntax')
+  assert(taskPlan?.tips.some((tip) => tip.includes('/task plan [--workspace <saved-workspace>] <prompt>')) === true, 'expected /task plan guidance to show optional saved-workspace syntax')
 
   const palette = buildDesktopSlashPaletteState('/task fix the sidebar now')
   assert(palette.exactMatch?.id === 'task', 'expected /task arguments to preserve the exact command match')
@@ -170,6 +144,32 @@ function testTaskCommandAcceptsFullArguments(): void {
   const planPalette = buildDesktopSlashPaletteState('/task plan fix the sidebar now')
   assert(planPalette.exactMatch?.id === 'task-plan', 'expected /task plan arguments to select the compound command')
   assert(planPalette.matches[0]?.id === 'task-plan', 'expected /task plan to lead the palette matches')
+}
+
+function testFlagCommandIsDevOnlyAndBuildsDiagnosticTask(): void {
+  const productionCommands = getDesktopSlashCommands()
+  assert(productionCommands.every((command) => command.id !== 'flag'), 'expected /flag to be hidden outside dev mode')
+  assert(buildDesktopSlashPaletteState('/flag problem').exactMatch === null, 'expected /flag not to resolve outside dev mode')
+
+  const devCommands = getDesktopSlashCommands({ developerMode: true })
+  const flag = devCommands.find((command) => command.id === 'flag')
+  assert(Boolean(flag), 'expected /flag to be listed in dev mode')
+  assert(flag?.action.kind === 'start-background-router-session', 'expected /flag to use the existing /task launch action')
+
+  const devPalette = buildDesktopSlashPaletteState('/flag composer freezes', { developerMode: true })
+  assert(devPalette.exactMatch?.id === 'flag', 'expected /flag arguments to resolve in dev mode')
+  assert(devPalette.matches[0]?.id === 'flag', 'expected /flag to lead dev-mode palette matches')
+
+  const prompt = buildDesktopFlagTaskPrompt('/FLAG   composer freezes\nwhen sending', ' prior-session-123 ')
+  assert(Boolean(prompt), 'expected a complete /flag command to build a task prompt')
+  assert(prompt?.includes('Prior session ID: prior-session-123') === true, 'expected the task prompt to include the prior session ID')
+  assert(prompt?.includes('composer freezes\nwhen sending') === true, 'expected the task prompt to preserve the reported problem')
+  assert(prompt?.includes('./scripts/session-dump-via-api.sh') === true, 'expected the task prompt to direct Swarm to the canonical dump helper')
+  assert(prompt?.includes('never inspect Pebble directly') === true, 'expected the task prompt to prohibit direct database inspection')
+  assert(prompt?.includes('search the current workspace') === true, 'expected the task prompt to request code search after dump inspection')
+  assert(buildDesktopFlagTaskPrompt('/flag', 'prior-session-123') === null, 'expected bare /flag to require a problem')
+  assert(buildDesktopFlagTaskPrompt('/flag problem', '') === null, 'expected /flag to require a prior session ID')
+  assert(buildDesktopFlagTaskPrompt('/task problem', 'prior-session-123') === null, 'expected non-flag commands not to build flag prompts')
 }
 
 function testTaskCommandParsesModeDirective(): void {
@@ -184,6 +184,25 @@ function testTaskCommandParsesModeDirective(): void {
   const planWordLater = parseDesktopTaskCommand('/task fix plan handling')
   assert(planWordLater.mode === 'auto', 'expected plan outside the first token to remain request text')
   assert(planWordLater.request === 'fix plan handling', 'expected later plan text to remain intact')
+
+  const selected = parseDesktopTaskCommand('/task --workspace workspace-alpha fix the sidebar')
+  assert(selected.mode === 'auto', 'expected workspace selection not to change automatic mode')
+  assert(selected.workspaceSelector === 'workspace-alpha', 'expected workspace selector to be parsed explicitly')
+  assert(selected.request === 'fix the sidebar', 'expected workspace selector to be removed from the request')
+
+  const selectedPlan = parseDesktopTaskCommand('/task plan --workspace "Alpha App" fix the sidebar')
+  assert(selectedPlan.mode === 'plan', 'expected plan mode before workspace selection')
+  assert(selectedPlan.workspaceSelector === 'Alpha App', 'expected quoted plan workspace selector to preserve its value')
+  assert(selectedPlan.request === 'fix the sidebar', 'expected plan workspace selector to be removed from the request')
+
+  const laterOption = parseDesktopTaskCommand('/task fix --workspace handling')
+  assert(laterOption.workspaceSelector === undefined, 'expected only the leading option to select a workspace')
+  assert(laterOption.request === 'fix --workspace handling', 'expected later workspace text to remain request content')
+
+  const missingSelector = parseDesktopTaskCommand('/task --workspace')
+  assert(missingSelector.request === '', 'expected a missing workspace selector to fail the task request guard')
+  assert(missingSelector.workspaceSelector === undefined, 'expected a missing selector not to become request text')
+  assert(missingSelector.workspaceSelectionInvalid === true, 'expected a missing selector to carry explicit invalid-option state')
 }
 
 function testRetiredCommandsAreNotSuggested(): void {
@@ -226,6 +245,7 @@ function testKeybindingsWarnsAboutDesktopShortcuts(): void {
 }
 
 function main(): void {
+  testFeedbackCommandOpensModal()
   testPlanCommandIsReady()
   testSlashPaletteMatchesPlan()
   testCodexOpensUsageWithoutChangingModels()
@@ -233,11 +253,11 @@ function main(): void {
   testAICommitCommandTriggersCanonicalWorkflow()
   testFastCommandIsRetired()
   testMCPCommandIsDeferredAndExaRequiresAPIKey()
-  testWorktreeOnCommandIsReady()
+  testWorktreeOnCommandIsRetired()
   testWorktreeCommandIsRetiredAndWorktreesRemains()
-  testNewSessionCommandVariantsPrimeRouterChips()
-  testNewWpForwardsOnlyItsPromptToRouter()
+  testNewSessionCommandVariantsPrimePlanOnly()
   testTaskCommandAcceptsFullArguments()
+  testFlagCommandIsDevOnlyAndBuildsDiagnosticTask()
   testTaskCommandParsesModeDirective()
   testRetiredCommandsAreNotSuggested()
   testTipsCommandIsReadyAndAcceptsArguments()

@@ -3,13 +3,66 @@ package api
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
+	"swarm/packages/swarmd/internal/identity"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/uisettings"
 )
+
+func TestSessionsV3ReviewRejectsLegacyIntegrationAuthority(t *testing.T) {
+	server := &Server{}
+	_, err := server.classifySessionsV3ReviewWorktrees(context.Background(), identity.Principal{UserID: "user", AccountScopeID: "account"}, sessionsV3ReviewWorktreesRequest{LegacyIntegrateIDs: []string{"session-lane"}})
+	if err == nil || !strings.Contains(err.Error(), "is retired") {
+		t.Fatalf("legacy integration error = %v", err)
+	}
+}
+
+func TestSessionsV3ReviewPromotionContractRequiresExplicitExactLineage(t *testing.T) {
+	req := sessionsV3ReviewWorktreesRequest{
+		PromoteIDs:   []string{"session-lane"},
+		SourceHeads:  map[string]string{"session-lane": "source-head"},
+		TargetBranch: "dev",
+		TargetHead:   "target-head",
+	}
+	if len(req.PromoteIDs) != 1 || req.SourceHeads[req.PromoteIDs[0]] == "" || req.TargetBranch == "" || req.TargetHead == "" {
+		t.Fatalf("incomplete promotion contract: %+v", req)
+	}
+	server := &Server{}
+	req.Automatic = true
+	_, err := server.classifySessionsV3ReviewWorktrees(context.Background(), identity.Principal{UserID: "user", AccountScopeID: "account"}, req)
+	if err == nil || !strings.Contains(err.Error(), "explicit user action") {
+		t.Fatalf("automatic promotion error = %v", err)
+	}
+}
+
+// Requirement: an exact promotion targets the source session's captured checkout
+// path and base branch, while target_head authenticates the checkout's current
+// clean HEAD. Comparing target_head to the historical base commit permanently
+// rejects any lane after the captured checkout advances. This helper-level test
+// is the narrowest layer that proves current-HEAD movement does not weaken path
+// or branch matching before Git preflight performs the remaining lineage checks.
+func TestSessionsV3ReviewPromotionMatchesCapturedCheckoutAfterTargetAdvances(t *testing.T) {
+	session := pebblestore.SessionSnapshot{
+		WorktreeBaseBranch: "dev",
+		Metadata: map[string]any{
+			"swarm_v3_source_workspace_path": "/repo",
+			"base_commit":                    "historical-base-head",
+		},
+	}
+	if !sessionsV3ReviewPromotionMatchesCapturedCheckout(session, "/repo", "dev") {
+		t.Fatal("captured checkout should remain promotion-eligible after its current HEAD advances beyond the historical base")
+	}
+	if sessionsV3ReviewPromotionMatchesCapturedCheckout(session, "/other-repo", "dev") {
+		t.Fatal("foreign checkout path unexpectedly matched captured promotion lineage")
+	}
+	if sessionsV3ReviewPromotionMatchesCapturedCheckout(session, "/repo", "main") {
+		t.Fatal("foreign target branch unexpectedly matched captured promotion lineage")
+	}
+}
 
 func TestSessionsV3ReviewArchiveDeadlineUsesPerSessionMessageActivity(t *testing.T) {
 	const doneAt int64 = 1_000_000

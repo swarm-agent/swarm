@@ -7,13 +7,12 @@ import (
 	"testing"
 )
 
+// TestScanScopeReadsSharedUserSkillsButNotHomeRules proves Service.ScanScope
+// reads the explicit shared-skill root without treating HOME/AGENTS.md as a
+// workspace rule; the package layer is the narrowest authority boundary.
 func TestScanScopeReadsSharedUserSkillsButNotHomeRules(t *testing.T) {
-	home := filepath.Join(t.TempDir(), "home")
-	dataRoot := filepath.Join(t.TempDir(), "swarmd-data")
+	home := configureDiscoveryTestStorage(t)
 	workspace := filepath.Join(t.TempDir(), "repo")
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
-	t.Setenv("XDG_DATA_HOME", filepath.Join(home, ".local", "share"))
-	t.Setenv("STATE_DIRECTORY", dataRoot)
 	if err := os.MkdirAll(workspace, 0o755); err != nil {
 		t.Fatalf("mkdir workspace: %v", err)
 	}

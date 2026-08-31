@@ -221,10 +221,19 @@ type policyEvalContext struct {
 	ToolName       string
 	ToolArguments  string
 	NormalizedArgs string
+	InvalidReason  string
 	BashCommand    string
 	BashPrefix     string
 	BashEffect     BashEffectAssessment
 }
+
+const (
+	policyToolWorkspaceCreate    = "workspace_create"
+	policyToolWorkspaceUpdate    = "workspace_update"
+	policyToolWorkspaceDelete    = "workspace_delete"
+	policyToolWorkspaceMapUpdate = "workspace_map_update"
+	policyToolWorkspaceInvalid   = "workspace_invalid"
+)
 
 type BashEffectAssessment struct {
 	DeclaredCategory BashEffectCategory `json:"declared_category,omitempty"`
@@ -316,6 +325,9 @@ func explainPolicyDecision(mode, toolName, toolArguments string, policy Policy) 
 	ctx := buildPolicyEvalContext(toolName, toolArguments)
 	policy = NormalizePolicy(policy)
 	mode, bypass := splitPolicyMode(mode)
+	if ctx.ToolName == policyToolWorkspaceInvalid {
+		return explainInvalidWorkspaceAction(ctx)
+	}
 	if explain, ok := explainDangerousBashDeny(ctx); ok {
 		return explain
 	}
@@ -375,6 +387,9 @@ func explainPolicyDecision(mode, toolName, toolArguments string, policy Policy) 
 
 func policyRuleFromToolCall(toolName, toolArguments string, decision PolicyDecision) (PolicyRule, bool) {
 	ctx := buildPolicyEvalContext(toolName, toolArguments)
+	if ctx.ToolName == policyToolWorkspaceInvalid {
+		return PolicyRule{}, false
+	}
 	rule := policyRuleFromContext(ctx, decision)
 	if strings.TrimSpace(rule.ID) == "" && strings.TrimSpace(rule.Tool) == "" && strings.TrimSpace(rule.Pattern) == "" {
 		return PolicyRule{}, false
@@ -396,9 +411,95 @@ func previewPolicyRule(rule PolicyRule) string {
 		}
 		return fmt.Sprintf("%s phrase: %s", decision, strings.TrimSpace(rule.Pattern))
 	case PolicyRuleKindTool:
+		switch strings.TrimSpace(rule.Tool) {
+		case policyToolWorkspaceCreate:
+			return fmt.Sprintf("%s workspace creation", decision)
+		case policyToolWorkspaceUpdate:
+			return fmt.Sprintf("%s workspace edits", decision)
+		case policyToolWorkspaceDelete:
+			return fmt.Sprintf("%s workspace deletion", decision)
+		case policyToolWorkspaceMapUpdate:
+			return fmt.Sprintf("%s account Workspace Map updates", decision)
+		}
 		fallthrough
 	default:
 		return fmt.Sprintf("%s tool: %s", decision, strings.TrimSpace(rule.Tool))
+	}
+}
+
+func canonicalManageWorkspaceAction(raw any) (string, bool) {
+	action, ok := raw.(string)
+	if !ok {
+		return "", false
+	}
+	action = strings.ToLower(strings.TrimSpace(action))
+	switch action {
+	case "edit":
+		action = "update"
+	case "remove":
+		action = "delete"
+	}
+	switch action {
+	case "inspect", "list", "inspect_map", "get_map", "set_session", "set_default", "adopt_worktree", "create", "update", "delete", "update_map":
+		return action, true
+	default:
+		return "", false
+	}
+}
+
+func manageWorkspacePolicyIdentity(arguments string) (string, string) {
+	arguments = strings.TrimSpace(arguments)
+	if arguments == "" {
+		return policyToolWorkspaceInvalid, "manage_workspace arguments must declare an action"
+	}
+	var args map[string]any
+	if err := json.Unmarshal([]byte(arguments), &args); err != nil || args == nil {
+		return policyToolWorkspaceInvalid, "manage_workspace arguments must be a JSON object"
+	}
+	rawAction, actionExists := args["action"]
+	rawOp, opExists := args["op"]
+	if actionExists && opExists {
+		actionText, actionIsString := rawAction.(string)
+		opText, opIsString := rawOp.(string)
+		if !actionIsString || !opIsString {
+			return policyToolWorkspaceInvalid, "manage_workspace action and op must be strings"
+		}
+		if strings.TrimSpace(actionText) == "" || strings.TrimSpace(opText) == "" {
+			return policyToolWorkspaceInvalid, "manage_workspace action and op must not be empty"
+		}
+		action, actionOK := canonicalManageWorkspaceAction(rawAction)
+		op, opOK := canonicalManageWorkspaceAction(rawOp)
+		if !actionOK || !opOK || action != op {
+			return policyToolWorkspaceInvalid, "manage_workspace action and op must identify the same supported action"
+		}
+	}
+	exists := actionExists
+	if !exists {
+		rawAction, exists = rawOp, opExists
+	}
+	if !exists || rawAction == nil {
+		return policyToolWorkspaceInvalid, "manage_workspace arguments must declare an action"
+	}
+	action, ok := canonicalManageWorkspaceAction(rawAction)
+	if !ok {
+		if actionText, isString := rawAction.(string); isString && strings.TrimSpace(actionText) != "" {
+			return policyToolWorkspaceInvalid, fmt.Sprintf("unsupported manage_workspace action %q", strings.ToLower(strings.TrimSpace(actionText)))
+		}
+		return policyToolWorkspaceInvalid, "manage_workspace action must be a supported non-empty string"
+	}
+	switch action {
+	case "inspect", "list", "inspect_map", "get_map", "set_session", "set_default", "adopt_worktree":
+		return "manage_workspace", ""
+	case "create":
+		return policyToolWorkspaceCreate, ""
+	case "update":
+		return policyToolWorkspaceUpdate, ""
+	case "delete":
+		return policyToolWorkspaceDelete, ""
+	case "update_map":
+		return policyToolWorkspaceMapUpdate, ""
+	default:
+		return policyToolWorkspaceInvalid, fmt.Sprintf("unsupported manage_workspace action %q", action)
 	}
 }
 
@@ -433,6 +534,13 @@ func buildPolicyEvalContext(toolName, toolArguments string) policyEvalContext {
 	if toolName == "manage_skill" && ShouldApproveManageSkillMutation(toolArguments) {
 		toolName = "skill_change"
 	}
+	invalidReason := ""
+	if toolName == "manage_workspace" {
+		toolName, invalidReason = manageWorkspacePolicyIdentity(toolArguments)
+	}
+	if toolName == "manage_worktree" && ShouldApproveManageWorktreePromotion(toolArguments) {
+		toolName = "worktree_promotion"
+	}
 	if toolName == "manage_sessions" {
 		switch {
 		case ShouldApproveManageSessionsDeploy(toolArguments):
@@ -449,6 +557,7 @@ func buildPolicyEvalContext(toolName, toolArguments string) policyEvalContext {
 		ToolName:       toolName,
 		ToolArguments:  toolArguments,
 		NormalizedArgs: strings.ToLower(toolArguments),
+		InvalidReason:  invalidReason,
 	}
 	if toolName == "bash" {
 		ctx.BashCommand = extractNormalizedBashCommand(toolArguments)
@@ -664,6 +773,19 @@ func explainExplicitRule(ctx policyEvalContext, policy Policy) (PolicyExplain, b
 		}, true
 	}
 	return PolicyExplain{}, false
+}
+
+func explainInvalidWorkspaceAction(ctx policyEvalContext) PolicyExplain {
+	reason := strings.TrimSpace(ctx.InvalidReason)
+	if reason == "" {
+		reason = "manage_workspace action is malformed or unsupported"
+	}
+	return PolicyExplain{
+		Decision: PolicyDecisionDeny,
+		Source:   "builtin",
+		Reason:   reason,
+		ToolName: ctx.ToolName,
+	}
 }
 
 func explainBuiltinDeny(mode string, ctx policyEvalContext) (PolicyExplain, bool) {
@@ -1197,11 +1319,31 @@ func defaultPolicyDecision(mode, toolName, toolArguments string) PolicyDecision 
 	mode, bypass := splitPolicyMode(mode)
 	switch toolName {
 	case "manage_worktree":
-		// Integration is constrained to clean, committed children recorded in the
-		// current parent's durable lineage. The worktree service preflights the
-		// complete batch and applies it atomically, so this canonical operation is
-		// safe to flow without a separate permission round trip.
+		// Internal integration is constrained to clean, committed children recorded
+		// in the current parent's durable lineage and may advance only that parent's
+		// authenticated session-owned lane.
 		return PolicyDecisionAllow
+	case "manage_workspace":
+		// Workspace inspection and selection stay inside the authenticated account
+		// catalog. The control-plane handler independently enforces primary-agent,
+		// principal, ownership, generation, path, and dirty-worktree boundaries.
+		return PolicyDecisionAllow
+	case policyToolWorkspaceCreate, policyToolWorkspaceUpdate, policyToolWorkspaceDelete, policyToolWorkspaceMapUpdate:
+		// Catalog and account-map mutations are independent approval identities.
+		// A persistent rule for one action cannot authorize another action or
+		// broaden into the safe inspection/selection surface.
+		if bypass {
+			return PolicyDecisionAllow
+		}
+		return PolicyDecisionAsk
+	case policyToolWorkspaceInvalid:
+		// buildPolicyEvalContext normally converts this into a built-in hard deny.
+		// Keep the default fail-closed if a caller evaluates the identity directly.
+		return PolicyDecisionDeny
+	case "worktree_promotion":
+		// Promotion advances a captured checkout such as dev. Keep it a distinct,
+		// explicit approval boundary even when ordinary tool permissions are bypassed.
+		return PolicyDecisionAsk
 	case "manage_artifact":
 		// Image generation is a billed external provider operation. Ordinary
 		// callers must explicitly approve it; trusted delegated Image workers flow

@@ -2,6 +2,7 @@ package pebblestore
 
 import (
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -65,6 +66,136 @@ func TestAudioOnlyTimelineClipValidatesAndRoundTrips(t *testing.T) {
 	}
 	if decoded.Clips[1].AudioSource == nil || decoded.Clips[1].AudioSource.Ref != timeline.Clips[1].AudioSource.Ref || decoded.Clips[1].Muted {
 		t.Fatalf("exact audio source or mute state did not round-trip: %+v", decoded.Clips[1])
+	}
+}
+
+func TestVisualVideoPlanTimelinePreservesSamePlayheadAudio(t *testing.T) {
+	const durationMs = int64(224680)
+	soundtrack := validAudioTimelineClip("soundtrack")
+	soundtrack.Sequence = 1
+	soundtrack.SourceStartMs = 0
+	soundtrack.SourceEndMs = durationMs
+	soundtrack.TimelineStartMs = 0
+	soundtrack.TimelineEndMs = durationMs
+	soundtrack.DurationMs = durationMs
+
+	plan := VideoPlanProposal{Kind: VideoPlanKindInitial, Parts: []VideoPlanPart{{
+		ID: "visual", Title: "Nocturnal Pulse", DurationMs: durationMs,
+		Visual:          &SessionArtifactSelectionReference{SessionID: "sess", CollectionID: "fallback", VariantID: "visual", EventSeq: 1},
+		VisualMediaType: "image/png",
+	}}}
+	timeline := visualVideoPlanTimeline(VideoProjectTimeline{
+		OutputPreset:    VideoPresetLandscape1080p,
+		TotalDurationMs: durationMs,
+		Clips:           []VideoTimelineClip{soundtrack},
+	}, plan)
+
+	if len(timeline.Clips) != 2 {
+		t.Fatalf("compiled timeline clips = %+v, want visual plus soundtrack", timeline.Clips)
+	}
+	preserved := timeline.Clips[1]
+	if preserved.SourceKind != VideoClipSourceKindSourceAudio || preserved.Track != soundtrack.Track || preserved.Sequence != soundtrack.Sequence || preserved.TimelineStartMs != 0 || preserved.TimelineEndMs != durationMs {
+		t.Fatalf("soundtrack timing or placement changed: got %+v want %+v", preserved, soundtrack)
+	}
+	if timeline.TotalDurationMs != durationMs {
+		t.Fatalf("compiled timeline duration = %d, want max overlapping end %d", timeline.TotalDurationMs, durationMs)
+	}
+}
+
+func TestVisualVideoPlanTimelineStillShiftsPreservedNonAudioClips(t *testing.T) {
+	preservedVisual := VideoTimelineClip{
+		ID: "outro", Track: 0, Sequence: 1, SourceKind: VideoClipSourceKindColor,
+		TimelineStartMs: 1000, TimelineEndMs: 2000, DurationMs: 1000, Visible: true,
+		Captions: []VideoTextOverlay{{ID: "outro-caption", Text: "Outro", StartMs: 1100, EndMs: 1900}},
+	}
+	plan := VideoPlanProposal{Kind: VideoPlanKindInitial, Parts: []VideoPlanPart{{
+		ID: "visual", Title: "Opening", DurationMs: 3000,
+		Visual:          &SessionArtifactSelectionReference{SessionID: "sess", CollectionID: "slides", VariantID: "opening", EventSeq: 1},
+		VisualMediaType: "image/png",
+	}}}
+	timeline := visualVideoPlanTimeline(VideoProjectTimeline{OutputPreset: VideoPresetLandscape1080p, Clips: []VideoTimelineClip{preservedVisual}}, plan)
+
+	if len(timeline.Clips) != 2 {
+		t.Fatalf("compiled timeline clips = %+v, want plan clip plus preserved visual", timeline.Clips)
+	}
+	preserved := timeline.Clips[1]
+	if preserved.TimelineStartMs != 3000 || preserved.TimelineEndMs != 4000 || len(preserved.Captions) != 1 || preserved.Captions[0].StartMs != 3100 || preserved.Captions[0].EndMs != 3900 {
+		t.Fatalf("preserved non-audio clip did not retain append/shift behavior: %+v", preserved)
+	}
+	if timeline.TotalDurationMs != 4000 {
+		t.Fatalf("compiled timeline duration = %d, want 4000", timeline.TotalDurationMs)
+	}
+}
+
+func TestVisualPlanProposalPreservesExactAudioThroughWorkingAndAcceptedRevisions(t *testing.T) {
+	store, cleanup := newTestSessionStoreForVideoProject(t)
+	defer cleanup()
+	createTestSession(t, store, "acc", "usr", "sess")
+
+	soundtrack := validAudioTimelineClip("soundtrack")
+	soundtrack.Sequence = 7
+	soundtrack.Layer = 4
+	soundtrack.Muted = true
+	baseTimeline := &VideoProjectTimeline{
+		OutputPreset:    VideoPresetLandscape1080p,
+		TotalDurationMs: soundtrack.TimelineEndMs,
+		Clips:           []VideoTimelineClip{soundtrack},
+	}
+	project, base, err := store.CreateVideoProject(CreateVideoProjectInput{
+		AccountScopeID: "acc", UserID: "usr", SessionID: "sess", ProjectID: "project", Title: "Soundtrack plan",
+		InitialTimeline: baseTimeline, NowUnixMs: 100,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	part := videoPlanTestPart("visual", "Visual", "fallback")
+	part.DurationMs = soundtrack.TimelineEndMs
+	proposal, err := store.CreateVideoEditProposal(CreateVideoEditProposalInput{
+		AccountScopeID: "acc", UserID: "usr", SessionID: "sess", ProjectID: project.ID, ProposalID: "visual-plan",
+		BaseRevisionID: base.ID, Plan: &VideoPlanProposal{Kind: VideoPlanKindInitial, Parts: []VideoPlanPart{part}}, NowUnixMs: 200,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	working, ok, err := store.GetVideoProjectRevision("acc", "sess", project.ID, proposal.WorkingRevisionID)
+	if err != nil || !ok || len(working.Timeline.Clips) != 2 || !reflect.DeepEqual(working.Timeline.Clips[1], soundtrack) {
+		t.Fatalf("working revision changed exact soundtrack: revision=%+v ok=%v err=%v", working, ok, err)
+	}
+	_, accepted, _, err := store.ResolveVideoEditProposal(ResolveVideoEditProposalInput{
+		AccountScopeID: "acc", UserID: "usr", SessionID: "sess", ProjectID: project.ID, ProposalID: proposal.ID, RevisionID: "accepted", NowUnixMs: 300,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(accepted.Timeline.Clips) != 2 || !reflect.DeepEqual(accepted.Timeline.Clips[1], soundtrack) {
+		t.Fatalf("accepted revision changed exact soundtrack: %+v", accepted.Timeline.Clips)
+	}
+}
+
+func TestVisualPlanProposalRejectsAudioClipIDCollisionBeforeCreatingWorkingRevision(t *testing.T) {
+	store, cleanup := newTestSessionStoreForVideoProject(t)
+	defer cleanup()
+	createTestSession(t, store, "acc", "usr", "sess")
+
+	soundtrack := validAudioTimelineClip("shared-id")
+	project, base, err := store.CreateVideoProject(CreateVideoProjectInput{
+		AccountScopeID: "acc", UserID: "usr", SessionID: "sess", ProjectID: "project", Title: "Collision",
+		InitialTimeline: &VideoProjectTimeline{OutputPreset: VideoPresetLandscape1080p, Clips: []VideoTimelineClip{soundtrack}}, NowUnixMs: 100,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	part := videoPlanTestPart("shared-id", "Visual", "fallback")
+	_, err = store.CreateVideoEditProposal(CreateVideoEditProposalInput{
+		AccountScopeID: "acc", UserID: "usr", SessionID: "sess", ProjectID: project.ID, ProposalID: "collision",
+		BaseRevisionID: base.ID, Plan: &VideoPlanProposal{Kind: VideoPlanKindInitial, Parts: []VideoPlanPart{part}}, NowUnixMs: 200,
+	})
+	if err == nil || !strings.Contains(err.Error(), "soundtrack topology invalid") || !strings.Contains(err.Error(), "collides with a source_audio") {
+		t.Fatalf("audio topology collision error = %v", err)
+	}
+	current, _, readErr := store.GetVideoProject("acc", "sess", project.ID)
+	if readErr != nil || current.CurrentRevisionID != base.ID || current.RevisionCount != 1 {
+		t.Fatalf("rejected topology created working state: project=%+v err=%v", current, readErr)
 	}
 }
 

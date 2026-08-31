@@ -21,14 +21,13 @@ func TestWorkspaceSkillRootsEnumeratesBoundaryThroughActiveScope(t *testing.T) {
 	assertSkillRootPaths(t, got, want)
 }
 
+// TestScanScopeUsesNestedProjectSkillPrecedenceAndDeduplicatesRoots proves the
+// active nested workspace wins over physical lower-precedence copies without
+// duplicate roots; the package layer directly observes ScanScope resolution.
 func TestScanScopeUsesNestedProjectSkillPrecedenceAndDeduplicatesRoots(t *testing.T) {
-	home := filepath.Join(t.TempDir(), "home")
+	home := configureDiscoveryTestStorage(t)
 	project := filepath.Join(t.TempDir(), "project")
 	active := filepath.Join(project, "packages", "api")
-	dataRoot := filepath.Join(t.TempDir(), "swarmd-data")
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
-	t.Setenv("XDG_DATA_HOME", filepath.Join(home, ".local", "share"))
-	t.Setenv("STATE_DIRECTORY", dataRoot)
 
 	for _, root := range []string{home, project, filepath.Join(project, "packages"), active} {
 		writeSkillFixture(t, root, "shared", root)
@@ -50,13 +49,12 @@ func TestScanScopeUsesNestedProjectSkillPrecedenceAndDeduplicatesRoots(t *testin
 	}
 }
 
+// TestScanScopeRejectsSharedUserSkillSymlinkEscape proves shared user skills
+// remain a read-only rooted source and cannot escape through a symlink; this
+// package test is the narrowest layer covering the discovery boundary.
 func TestScanScopeRejectsSharedUserSkillSymlinkEscape(t *testing.T) {
-	home := filepath.Join(t.TempDir(), "home")
+	home := configureDiscoveryTestStorage(t)
 	workspace := filepath.Join(t.TempDir(), "workspace")
-	dataRoot := filepath.Join(t.TempDir(), "swarmd-data")
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
-	t.Setenv("XDG_DATA_HOME", filepath.Join(home, ".local", "share"))
-	t.Setenv("STATE_DIRECTORY", dataRoot)
 
 	skillRoot := filepath.Join(home, ".agents", "skills")
 	outside := filepath.Join(t.TempDir(), "escaped")

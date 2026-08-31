@@ -56,14 +56,15 @@ import {
 import { refreshOpenDesktopV3ArtifactCatalogs } from '../../session-v3/artifact-catalog-refresh'
 import { useDesktopV3OpenArtifactCatalogRefresh } from '../../session-v3/use-artifact-catalog-refresh'
 import {
-  desktopV3ArtifactStudioChainKey,
   desktopV3ArtifactStudioEntries,
   desktopV3ArtifactStudioHead,
   desktopV3ArtifactStudioSamePartRevision,
   desktopV3ArtifactStudioRounds,
   desktopV3ArtifactStudioParent,
+  desktopV3ArtifactStudioPresentationGroupKey,
   desktopV3ArtifactStudioSectionAlternatives,
   desktopV3ArtifactStudioSectionLineage,
+  desktopV3ArtifactStudioStoryboard,
   desktopV3ArtifactStudioTurns,
 } from '../../session-v3/artifact-studio-model'
 import { useDesktopV3ArtifactPreviewVisibility } from './desktop-v3-artifact-preview-thumbnail'
@@ -107,6 +108,7 @@ export interface DesktopV3ArtifactGalleryProps {
   title?: string
   initialArtifactKey?: string
   initialCollectionId?: string
+  initialGroupKey?: string
   initialPartId?: string
   artifactHref?: (artifact: DesktopV3ArtifactGalleryEntry) => string
   collectionHref?: (artifact: DesktopV3ArtifactGalleryEntry) => string
@@ -130,13 +132,8 @@ function artifactSelectionKey(artifact: DesktopV3ArtifactGalleryEntry): string {
   return desktopV3ArtifactCatalogEntryKey(artifact)
 }
 
-function artifactCollectionKey(artifact: DesktopV3ArtifactGalleryEntry): string {
-  const chainKey = desktopV3ArtifactStudioChainKey(artifact)
-  if (chainKey) return `chain:${chainKey}`
-  const owningSessionId = artifact.lineage?.parentSessionId || artifact.sessionId
-  return artifact.collectionId
-    ? `${owningSessionId}:${artifact.collectionId}`
-    : `standalone:${artifact.sessionId}:${artifact.artifactId}`
+function artifactCollectionKey(entries: readonly DesktopV3ArtifactGalleryEntry[], artifact: DesktopV3ArtifactGalleryEntry): string {
+  return desktopV3ArtifactStudioPresentationGroupKey(entries, artifact)
 }
 
 function artifactTypeLabel(artifact: DesktopV3ArtifactGalleryEntry): string {
@@ -213,12 +210,15 @@ function artifactCanReveal(artifact: DesktopV3ArtifactGalleryEntry | undefined):
 function collectionGroups(entries: DesktopV3ArtifactGalleryEntry[]): ArtifactCollectionGroup[] {
   const grouped = new Map<string, DesktopV3ArtifactGalleryEntry[]>()
   for (const entry of entries) {
-    const key = artifactCollectionKey(entry)
+    const key = artifactCollectionKey(entries, entry)
     grouped.set(key, [...(grouped.get(key) ?? []), entry])
   }
   return [...grouped.entries()].map(([key, collectionEntries]) => ({
     key,
-    entries: collectionEntries,
+    entries: [...collectionEntries].sort((left, right) =>
+      (left.step?.revisionNumber ?? left.revisionNumber ?? 0) - (right.step?.revisionNumber ?? right.revisionNumber ?? 0)
+        || (left.candidateIndex || left.lineage?.iterationIndex || 0) - (right.candidateIndex || right.lineage?.iterationIndex || 0)
+        || left.updatedAt - right.updatedAt),
     progress: collectionProgress(collectionEntries),
     sessionLabel: collectionEntries[0]?.sessionTitle || 'Session artifacts',
     workspaceLabel: collectionEntries[0] ? artifactWorkspaceLabel(collectionEntries[0]) : 'Workspace',
@@ -241,6 +241,7 @@ export function DesktopV3ArtifactGallery({
   title = 'Artifact Studio',
   initialArtifactKey = '',
   initialCollectionId = '',
+  initialGroupKey = '',
   initialPartId = '',
   artifactHref,
   collectionHref,
@@ -333,22 +334,26 @@ export function DesktopV3ArtifactGallery({
     : visibleArtifacts.find((artifact) => artifactSelectionKey(artifact) === selectedId) ?? visibleArtifacts[0]
   selectedArtifactKeyRef.current = selected ? artifactSelectionKey(selected) : ''
   iterationDescriptorRef.current = iterationDescriptor
-  const selectedGroupKey = overviewGroup?.key ?? (selected ? artifactCollectionKey(selected) : '')
+  const selectedGroupKey = overviewGroup?.key ?? (selected ? artifactCollectionKey(visibleArtifacts, selected) : '')
   const selectedGroup = overviewGroup ?? groups.find((group) => group.key === selectedGroupKey)
+  const selectedIsWaveGroup = selectedGroupKey.startsWith('turn:') || selectedGroupKey.startsWith('collection:')
   const selectedChainEntries = selected ? desktopV3ArtifactStudioEntries(artifacts, selected) : []
   const selectedHead = selected ? desktopV3ArtifactStudioHead(artifacts, selected) : undefined
   const selectedRounds = selected ? desktopV3ArtifactStudioRounds(artifacts, selected) : []
-  const selectedTurns = selected ? desktopV3ArtifactStudioTurns(artifacts, selected) : []
+  const selectedStoryboard = selected ? desktopV3ArtifactStudioStoryboard(artifacts, selected) : undefined
+  const selectedTurns = selectedStoryboard ? desktopV3ArtifactStudioTurns(artifacts, selectedStoryboard.source) : selected ? desktopV3ArtifactStudioTurns(artifacts, selected) : []
   const latestSelectedTurnId = selectedTurns[selectedTurns.length - 1]?.id ?? ''
   const selectedRound = selected
     ? selectedRounds.find((round) => round.candidates.some((candidate) => artifactSelectionKey(candidate) === artifactSelectionKey(selected)))
     : undefined
-  const selectedVariants = selectedRound?.candidates ?? selectedGroup?.entries ?? selectedChainEntries
+  const selectedVariants = selectedIsWaveGroup
+    ? selectedGroup?.entries ?? []
+    : selectedRound?.candidates ?? selectedGroup?.entries ?? selectedChainEntries
   const selectedVariantIndex = selected
     ? selectedVariants.findIndex((artifact) => artifactSelectionKey(artifact) === artifactSelectionKey(selected))
     : -1
   const durableSelectedArtifact = artifacts.find((artifact) => artifactSelectionKey(artifact) === durableSelectedId)
-  const durableSelectionMatchesGroup = durableSelectedArtifact && artifactCollectionKey(durableSelectedArtifact) === selectedGroupKey
+  const durableSelectionMatchesGroup = durableSelectedArtifact && artifactCollectionKey(visibleArtifacts, durableSelectedArtifact) === selectedGroupKey
   const canonicalSelectedId = durableSelectionMatchesGroup ? durableSelectedId : selectedHead ? artifactSelectionKey(selectedHead) : ''
   const selectedIsCanonical = Boolean(selected && artifactSelectionKey(selected) === canonicalSelectedId)
   const selectedCanAttach = selected?.status === 'ready' && Boolean(selected.collectionId) && (selected.eventSeq ?? 0) > 0
@@ -369,7 +374,7 @@ export function DesktopV3ArtifactGallery({
   const selectedAcceptedPartCount = selected?.composition?.parts.filter((part) => selectedAcceptedPartHeads.some((accepted) => desktopV3ArtifactStudioSamePartRevision(part, accepted))).length ?? 0
   const studioSectionLineage = selected ? desktopV3ArtifactStudioSectionLineage(artifacts, selected) : undefined
   const studioSectionId = iterationSection?.id ?? studioSectionLineage?.iterationSectionId ?? ''
-  const studioModeActive = Boolean(iterationDescriptor || studioSectionId || selectedTurns.length)
+  const studioModeActive = Boolean(selectedStoryboard || iterationDescriptor || studioSectionId || selectedTurns.length)
   const iterationAlternativesForSection = (sectionId: string) => selected
     ? desktopV3ArtifactStudioSectionAlternatives(artifacts, selected, sectionId)
     : []
@@ -529,13 +534,15 @@ export function DesktopV3ArtifactGallery({
   }, [artifacts, initialArtifactKey, initialPartId, iterationPlayerReadyVersion, open])
 
   useEffect(() => {
-    if (!open || !initialCollectionId || initialArtifactKey) return
-    const requested = groups.find((group) => group.entries.some((artifact) => artifact.collectionId === initialCollectionId))
+    if (!open || (!initialGroupKey && !initialCollectionId) || initialArtifactKey) return
+    const requested = initialGroupKey
+      ? groups.find((group) => group.key === initialGroupKey)
+      : groups.find((group) => group.entries.some((artifact) => artifact.collectionId === initialCollectionId))
     if (requested) {
       setSelectedId('')
       setOverviewCollectionKey(requested.key)
     }
-  }, [groups, initialArtifactKey, initialCollectionId, open])
+  }, [groups, initialArtifactKey, initialCollectionId, initialGroupKey, open])
 
   useEffect(() => {
     if (!open) return undefined
@@ -1325,8 +1332,33 @@ export function DesktopV3ArtifactGallery({
                   data-artifact-animation-active={selectedAnimationActive || undefined}
                 >
                   {studioModeActive && !previewFullscreen ? <aside className="absolute inset-y-0 left-0 z-10 hidden w-72 overflow-x-hidden overflow-y-auto border-r border-[var(--app-border)] bg-[var(--app-surface)] p-3 xl:w-80 md:block" aria-label="Artifact Studio steps" data-artifact-studio-step-sidebar data-artifact-studio-unified-iterations>
-                    {selectedTurns.length ? <section className="mb-3 rounded-xl border border-[var(--app-border)] bg-[var(--app-bg)] p-2" aria-label="Artifact turn progression" data-artifact-studio-turns>
-                      <div className="px-1 pb-1.5"><p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-[var(--app-text-subtle)]">Artifact progression</p><p className="mt-0.5 text-[10px] text-[var(--app-text-muted)]">Every AI creation round is one turn. Each turn contains only its changed parts and exact options.</p></div>
+                    {selectedIsWaveGroup && selectedGroup && selectedVariants.length > 1 ? <section className="sticky top-0 z-20 mb-3 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] p-2 shadow-sm" aria-label="Generation group" data-artifact-generation-group>
+                      <div className="flex min-w-0 items-start justify-between gap-2 px-1 pb-1.5"><span className="min-w-0"><span className="block truncate text-[10px] font-semibold uppercase tracking-[0.16em] text-[var(--app-text-subtle)]">Generation group</span><span className="mt-0.5 block truncate text-[10px] text-[var(--app-text-muted)]">{collectionDisplayLabel(selectedGroup)}</span></span><span className="shrink-0 rounded-full bg-[var(--app-primary-soft)] px-1.5 py-0.5 text-[9px] font-semibold text-[var(--app-primary)]">{selectedVariants.length} iterations</span></div>
+                      <div className="grid max-h-44 gap-1 overflow-y-auto pr-1" aria-label="Generation group iterations">
+                        {selectedVariants.map((artifact, index) => {
+                          const active = selected && artifactSelectionKey(artifact) === artifactSelectionKey(selected)
+                          return <button key={artifactSelectionKey(artifact)} type="button" className={cn('flex min-w-0 items-center gap-2 rounded-lg border px-2 py-1.5 text-left text-[10px] transition', active ? 'border-[var(--app-primary)] bg-[var(--app-primary-soft)] text-[var(--app-primary)]' : 'border-transparent text-[var(--app-text-muted)] hover:border-[var(--app-border)] hover:bg-[var(--app-surface-hover)]')} aria-current={active ? 'true' : undefined} onClick={() => selectFullIterationArtifact(artifact)}>
+                            <span className="grid size-5 shrink-0 place-items-center rounded border border-current/20 font-mono text-[9px]">{artifact.lineage?.iterationIndex || index + 1}</span>
+                            <span className="min-w-0 flex-1 truncate font-semibold">{variantDisplayLabel(artifact, index)}</span>
+                            <span className="shrink-0 text-[9px] opacity-75">{artifact.status === 'staging' ? 'Generating' : artifact.status === 'failed' || artifact.status === 'unavailable' ? 'Failed' : active ? 'Viewing' : 'Ready'}</span>
+                          </button>
+                        })}
+                      </div>
+                    </section> : null}
+                    {selectedStoryboard ? <section className="mb-3 rounded-xl border border-[var(--app-primary)] bg-[var(--app-bg)] p-2" aria-label="Storyboard initial proposal" data-artifact-studio-storyboard>
+                      <div className="px-1 pb-1.5"><p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-[var(--app-text-subtle)]">Initial proposal</p><p className="mt-0.5 text-[10px] text-[var(--app-text-muted)]">One storyboard · {selectedStoryboard.parts.length} ordered parts. Choose a part to view its exact still in context.</p></div>
+                      <div className="grid gap-1.5">{selectedStoryboard.parts.map((part, index) => {
+                        const target = part.still ?? part.source
+                        const viewing = Boolean(selected && artifactSelectionKey(selected) === artifactSelectionKey(target))
+                        const status = part.still?.status === 'staging' ? 'Generating' : part.still?.status === 'failed' || part.still?.status === 'unavailable' ? 'Failed' : part.still ? 'Ready' : 'Source'
+                        return <button key={part.id} type="button" className={cn('flex min-w-0 items-center gap-2 rounded-lg border px-2 py-2 text-left transition', viewing ? 'border-[var(--app-primary)] bg-[var(--app-primary-soft)] text-[var(--app-primary)]' : 'border-[var(--app-border)] bg-[var(--app-surface)] text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)]')} aria-current={viewing ? 'step' : undefined} onClick={() => selectPartIterationArtifact(target, part.id)} data-artifact-studio-storyboard-part={part.id}>
+                          <span className="grid size-5 shrink-0 place-items-center rounded-full border border-current/20 font-mono text-[9px]">{index + 1}</span>
+                          <span className="min-w-0 flex-1 truncate text-[10px] font-semibold">{part.label}</span>
+                          <span className="shrink-0 text-[9px] opacity-75">{viewing ? 'Viewing' : status}</span>
+                        </button>
+                      })}</div>
+                    </section> : selectedTurns.length ? <section className="mb-3 rounded-xl border border-[var(--app-border)] bg-[var(--app-bg)] p-2" aria-label="Artifact turn progression" data-artifact-studio-turns>
+                      <div className="px-1 pb-1.5"><p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-[var(--app-text-subtle)]">Artifact progression</p><p className="mt-0.5 text-[10px] text-[var(--app-text-muted)]">Every AI creation round is one turn. Compare complete iterations here; changed parts stay summarized inside the turn.</p></div>
                       <div className="grid gap-2">{selectedTurns.map((turn) => {
                         const currentTurn = turn.id === latestSelectedTurnId
                         const turnTarget = turn.accepted?.entry ?? turn.candidates.find((candidate) => candidate.entry)?.entry
@@ -1336,7 +1368,7 @@ export function DesktopV3ArtifactGallery({
                           && artifactSelectionKey(candidate.entry) === artifactSelectionKey(selectedHead)))
                         return <section key={turn.id} className={cn('overflow-hidden rounded-lg border', selectedRound?.id === turn.id ? 'border-[var(--app-primary)]' : 'border-[var(--app-border)]')} data-artifact-studio-turn={turn.id}>
                           <button type="button" className="flex w-full items-start justify-between gap-2 bg-[var(--app-surface)] px-2 py-1.5 text-left hover:bg-[var(--app-surface-hover)] disabled:opacity-50" disabled={!turnTarget} onClick={() => { if (!turnTarget) return; if (turnRelatedPart) selectPartIterationArtifact(turnTarget, turnRelatedPart.partId); else selectFullIterationArtifact(turnTarget) }}><span className="min-w-0"><span className="block text-[10px] font-semibold">Turn {turn.revisionNumber}</span>{turnRelatedLabel ? <span className="mt-0.5 block truncate text-[9px] font-semibold text-[var(--app-primary)]" data-artifact-studio-turn-related-parts>Related to {turnRelatedLabel}</span> : null}</span><span className="shrink-0 text-right text-[9px] text-[var(--app-text-subtle)]">{currentTurn ? 'Latest turn' : 'Turn history'} · {headTurn ? 'Composition head' : turn.accepted ? 'Decision recorded' : 'No decision'} · {turn.candidates.length} option{turn.candidates.length === 1 ? '' : 's'}</span></button>
-                          {turn.parts.length ? <div className="grid gap-1 border-t border-[var(--app-border)] p-1.5"><p className="px-0.5 text-[9px] text-[var(--app-text-subtle)]">{turn.parts.length} changed part{turn.parts.length === 1 ? '' : 's'}</p>{turn.parts.map((turnPart) => {
+                          {turn.parts.length === 1 ? <div className="grid gap-1 border-t border-[var(--app-border)] p-1.5"><p className="px-0.5 text-[9px] text-[var(--app-text-subtle)]">1 changed part</p>{turn.parts.map((turnPart) => {
                             const definition = selectedPartDefinitions.find((part) => part.id === turnPart.partId)
                             return <section key={turnPart.partId} className="overflow-hidden rounded-md border border-[var(--app-border)]" data-artifact-studio-turn-part={turnPart.partId}>
                               <div className="flex items-center gap-1 px-1 py-0.5"><button type="button" className="flex min-w-0 flex-1 items-center justify-between gap-2 px-1 py-0.5 text-left hover:bg-[var(--app-surface-hover)]" onClick={() => { const target = turnPart.accepted?.entry ?? turnPart.candidates.find((candidate) => candidate.entry)?.entry; if (target) selectPartIterationArtifact(target, turnPart.partId) }}><span className="truncate text-[9px] font-semibold">{definition?.label || turnPart.partId}</span><span className="shrink-0 text-[9px] text-[var(--app-text-subtle)]">{definition?.locator?.kind === 'temporal' ? `${formatDesktopV3ArtifactIterationTime(definition.locator.startMs)} · play here` : definition?.locator?.kind || 'part'}</span></button>{onAddToChat ? <button type="button" className="shrink-0 rounded border border-[var(--app-border)] px-1.5 py-0.5 text-[9px] font-semibold text-[var(--app-primary)] hover:bg-[var(--app-primary-soft)] disabled:opacity-50" disabled={Boolean(actionPending)} onClick={() => void requestAnotherPartIteration(turnPart.partId)} data-artifact-iterate-part>{actionPending === 'iterate-part' ? <Loader2 className="mr-1 inline size-2.5 animate-spin" /> : <Sparkles className="mr-1 inline size-2.5" />}Iterate again</button> : null}</div>
@@ -1353,11 +1385,11 @@ export function DesktopV3ArtifactGallery({
                               })}</div>
                             </section>
                           })}</div> : turn.candidates.length ? <div className="grid gap-1 border-t border-[var(--app-border)] p-1.5" data-artifact-studio-whole-turn-options={turn.id}>
-                            <p className="px-0.5 text-[9px] text-[var(--app-text-subtle)]">{turn.revisionNumber === 1 ? 'Original composition' : turnRelatedLabel ? `Related to ${turnRelatedLabel}` : `Round options · preview at ${iterationSection?.label || 'the selected Studio step'}`}</p>
+                            <p className="px-0.5 text-[9px] text-[var(--app-text-subtle)]">{turn.revisionNumber === 1 ? 'Original composition' : turn.parts.length > 1 ? `${turn.parts.length} parts changed together · choose one complete iteration` : turnRelatedLabel ? `Related to ${turnRelatedLabel}` : 'Choose one complete iteration'}</p>
                             {turn.candidates.map((candidate, index) => {
                               const artifact = candidate.entry
                               const viewed = Boolean(artifact && selected && artifactSelectionKey(artifact) === artifactSelectionKey(selected))
-                              return <button key={`${candidate.reference.sessionId}:${candidate.reference.variantId}`} type="button" className={cn('flex w-full min-w-0 items-center gap-2 rounded border border-[var(--app-border)] px-2 py-1.5 text-left text-[9px] hover:bg-[var(--app-surface-hover)]', viewed ? 'bg-[var(--app-primary-soft)] text-[var(--app-primary)]' : 'text-[var(--app-text-muted)]')} disabled={!artifact} onClick={() => { if (!artifact) return; if (turnRelatedPart) selectPartIterationArtifact(artifact, turnRelatedPart.partId); else if (iterationSection) selectPartIterationArtifact(artifact, iterationSection.id); else selectFullIterationArtifact(artifact) }}>
+                              return <button key={`${candidate.reference.sessionId}:${candidate.reference.variantId}`} type="button" className={cn('flex w-full min-w-0 items-center gap-2 rounded border border-[var(--app-border)] px-2 py-1.5 text-left text-[9px] hover:bg-[var(--app-surface-hover)]', viewed ? 'bg-[var(--app-primary-soft)] text-[var(--app-primary)]' : 'text-[var(--app-text-muted)]')} disabled={!artifact} onClick={() => { if (!artifact) return; if (turn.parts.length > 1) selectFullIterationArtifact(artifact); else if (turnRelatedPart) selectPartIterationArtifact(artifact, turnRelatedPart.partId); else selectFullIterationArtifact(artifact) }}>
                                 <span className="grid size-4 shrink-0 place-items-center rounded-full border border-[var(--app-border)] font-mono">{artifact?.candidateIndex || index + 1}</span>
                                 <span className="min-w-0 flex-1 truncate">Option {artifact?.candidateIndex || index + 1} · {artifact ? variantDisplayLabel(artifact, index) : 'Loading'}</span>
                                 <span className="shrink-0">{artifact?.status === 'staging' ? 'Generating' : viewed ? 'Viewing' : artifact ? 'Available' : 'Pending'}</span>

@@ -9,6 +9,7 @@ import type { DesktopV3CacheState } from '../../state/desktop-v3-cache-types'
 import { selectAndHydrateDesktopV3Session } from '../../state/desktop-v3-session-hydrator'
 import type { DesktopChatRoute } from '../../chat/services/chat-routing'
 import type { DesktopV3ArtifactCatalogEntry, DesktopV3ArtifactMessageSelection } from '../../session-v3/artifact-api'
+import type { VideoCompositionCatalogWire, VideoCompositionLinkWire } from './video-composition'
 
 export const VIDEO_TRANSITION_KINDS = ['cut', 'fade_through_black', 'crossfade', 'fade_to_black', 'fade_from_black'] as const
 export type VideoTransitionKind = typeof VIDEO_TRANSITION_KINDS[number]
@@ -35,8 +36,32 @@ export type VideoPlanVisualWire = {
   collection_id: string
   variant_id: string
   event_seq: number
+  media_type?: string
   label?: string
   description?: string
+}
+
+export type VideoCaptionWire = {
+  id: string
+  text: string
+  position?: string
+  start_ms: number
+  end_ms: number
+}
+
+export type VideoAnimationCandidateWire = {
+  id: string
+  label?: string
+  source: VideoPlanVisualWire
+}
+
+export type VideoAnimationCandidateSetWire = {
+  candidates: VideoAnimationCandidateWire[]
+  selected_candidate_id?: string
+  selected_source?: VideoPlanVisualWire
+  derivative?: VideoPlanVisualWire
+  status: 'awaiting_selection' | 'awaiting_export' | 'ready' | 'failed'
+  failure_reason?: string
 }
 
 export type VideoPlanPartWire = {
@@ -46,15 +71,44 @@ export type VideoPlanPartWire = {
   narration?: string
   on_screen_text?: string
   visual_direction?: string
+  capture_state_id?: string
+  filming_requirements?: string[]
+  production_state?: 'pending' | 'ready'
+  storyboard_source?: VideoPlanVisualWire
+  storyboard_still?: VideoPlanVisualWire
+  authored_media_kind?: 'still' | 'motion' | 'clip'
   transition_in?: string
+  caption?: VideoCaptionWire
+  transition?: VideoTransitionWire
   visual?: VideoPlanVisualWire
   visual_media_type?: string
+  source_start_ms?: number
+  source_end_ms?: number
+  animation_candidates?: VideoAnimationCandidateSetWire
+  composition?: VideoCompositionLinkWire
 }
 
 export type VideoPlanProposalWire = {
   kind: 'initial' | 'revision'
   summary?: string
+  composition_catalog?: VideoCompositionCatalogWire
   parts: VideoPlanPartWire[]
+}
+
+// Candidate artifacts are already server-validated before they enter an
+// animation-candidate set; confirmation only needs the selected exact lineage.
+export function videoAnimationReadyForConfirmation(part: VideoPlanPartWire): boolean {
+  const animation = part.animation_candidates
+  if (!animation) return true
+  if (animation.status === 'failed') return false
+  if (animation.status === 'ready') return true
+  if (!animation.selected_candidate_id || !animation.selected_source) return false
+  const selected = animation.candidates.find((candidate) => candidate.id === animation.selected_candidate_id)
+  return Boolean(selected
+    && selected.source.session_id === animation.selected_source.session_id
+    && selected.source.collection_id === animation.selected_source.collection_id
+    && selected.source.variant_id === animation.selected_source.variant_id
+    && selected.source.event_seq === animation.selected_source.event_seq)
 }
 
 export type VideoEditProposalWire = {
@@ -86,21 +140,45 @@ export function videoPlanPartArtifact(part: VideoPlanPartWire): DesktopV3Artifac
     sessionTitle: '', workspacePath: '', workspaceName: '', planId: '', planTitle: '', checkpointId: '', checkpointTitle: '',
     label: part.visual.label || part.title,
     description: part.visual.description || part.visual_direction || '',
-    collectionName: '', collectionDescription: '', filename: part.title, mediaType: part.visual_media_type || 'image/png', kind: 'visual',
+    collectionName: '', collectionDescription: '', filename: part.title, mediaType: part.visual_media_type || part.visual.media_type || 'image/png', kind: 'visual',
     status: 'ready', previewable: true, category: 'visual', updatedAt: 0, eventSeq: part.visual.event_seq,
   }
 }
 
 export function videoPlanPartMessageSelection(part: VideoPlanPartWire): DesktopV3ArtifactMessageSelection {
   if (!part.visual?.session_id || !part.visual.collection_id || !part.visual.variant_id || !part.visual.event_seq) throw new Error('Visual plan feedback requires the exact accepted visual')
+  const storyboard = videoPlanPartStoryboardContext(part)
   return {
     session_id: part.visual.session_id,
     collection_id: part.visual.collection_id,
     variant_id: part.visual.variant_id,
     event_seq: part.visual.event_seq,
     label: part.visual.label || part.title,
-    description: part.visual.description || part.visual_direction || undefined,
+    description: storyboard
+      ? `Stable storyboard part ${part.id} · capture state ${storyboard.captureStateId} · ${storyboard.productionState}. ${storyboard.filmingRequirements.join(' · ')}`
+      : part.visual.description || part.visual_direction || undefined,
     action: 'select',
+  }
+}
+
+export type VideoStoryboardContext = {
+  partId: string
+  captureStateId: string
+  productionState: 'pending' | 'ready'
+  filmingRequirements: string[]
+  source: VideoPlanVisualWire
+  still: VideoPlanVisualWire
+}
+
+export function videoPlanPartStoryboardContext(part: VideoPlanPartWire | undefined): VideoStoryboardContext | null {
+  if (!part?.storyboard_source || !part.storyboard_still || !part.capture_state_id || !part.production_state) return null
+  return {
+    partId: part.id,
+    captureStateId: part.capture_state_id,
+    productionState: part.production_state,
+    filmingRequirements: Array.isArray(part.filming_requirements) ? part.filming_requirements.filter(Boolean) : [],
+    source: part.storyboard_source,
+    still: part.storyboard_still,
   }
 }
 
@@ -157,6 +235,14 @@ export async function listVideoEditProposals(sessionId: string, projectId: strin
     : []
 }
 
+export function videoProposalsForConversationTurn(
+  proposals: VideoEditProposalWire[],
+  activeTurnStartedAt?: number,
+): VideoEditProposalWire[] {
+  if (!activeTurnStartedAt) return proposals
+  return proposals.filter((proposal) => proposal.created_at >= activeTurnStartedAt)
+}
+
 export async function loadLatestVideoEditProposals(input: {
   sessionId: string
   projectId: string
@@ -185,6 +271,7 @@ export async function createVideoEditProposal(input: {
   rationale?: string
   operations: VideoEditOperationWire[]
   affectedRanges: Array<{ start_ms: number; end_ms: number }>
+  plan?: VideoPlanProposalWire
 }): Promise<VideoEditProposalWire> {
   const response = await requestJson<{ proposal?: VideoEditProposalWire }>(`/v3/sessions/${encodeURIComponent(input.sessionId)}/video/projects/${encodeURIComponent(input.projectId)}/edit-proposals`, {
     method: 'POST',
@@ -195,9 +282,40 @@ export async function createVideoEditProposal(input: {
       rationale: input.rationale,
       operations: input.operations,
       affected_ranges: input.affectedRanges,
+      plan: input.plan,
     }),
   })
   if (!response.proposal) throw new Error('Video edit proposal response returned no proposal')
+  return response.proposal
+}
+
+export async function updateVideoCompositionProposal(input: {
+  sessionId: string
+  projectId: string
+  proposalId: string
+  expectedRevisionId: string
+  plan: VideoPlanProposalWire
+}): Promise<VideoEditProposalWire> {
+  const response = await requestJson<{ proposal?: VideoEditProposalWire }>(`/v3/sessions/${encodeURIComponent(input.sessionId)}/video/projects/${encodeURIComponent(input.projectId)}/edit-proposals/${encodeURIComponent(input.proposalId)}/composition-update`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ expected_revision_id: input.expectedRevisionId, plan: input.plan }),
+  })
+  if (!response.proposal) throw new Error('Composition update returned no proposal')
+  return response.proposal
+}
+
+export async function selectVideoAnimationCandidate(input: {
+  sessionId: string
+  projectId: string
+  proposalId: string
+  partId: string
+  candidate: VideoAnimationCandidateWire
+}): Promise<VideoEditProposalWire> {
+  const response = await requestJson<{ proposal?: VideoEditProposalWire }>(`/v3/sessions/${encodeURIComponent(input.sessionId)}/video/projects/${encodeURIComponent(input.projectId)}/edit-proposals/${encodeURIComponent(input.proposalId)}/animation-candidate-select`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ part_id: input.partId, selected_candidate_id: input.candidate.id, selected_source: input.candidate.source }),
+  })
+  if (!response.proposal) throw new Error('Animation candidate selection returned no proposal')
   return response.proposal
 }
 
@@ -299,6 +417,7 @@ export type VideoIterationChange = {
   startMs: number
   endMs: number
   artifact: VideoPlanVisualWire | null
+  storyboard: VideoStoryboardContext | null
   planPart?: VideoPlanPartWire
   operation?: VideoEditOperationWire
 }
@@ -325,17 +444,24 @@ export type VideoIterationComposerContext = {
   endMs: number
   label: string
   artifact: VideoPlanVisualWire | null
+  storyboard?: VideoStoryboardContext | null
 }
 
-function proposalChanges(proposal: VideoEditProposalWire): VideoIterationChange[] {
+export function videoPlanProposalChanges(proposal: VideoEditProposalWire, basePartOrder: Array<{ id: string; duration_ms: number }> = []): VideoIterationChange[] {
   const plan = proposal.plan
   const changes = plan
     ? (() => {
-      let cursor = 0
+      const starts = new Map<string, number>()
+      let baseCursor = 0
+      for (const part of basePartOrder) {
+        starts.set(part.id, baseCursor)
+        baseCursor += Math.max(0, part.duration_ms)
+      }
+      let appendedCursor = baseCursor
       return plan.parts.map((part) => {
-        const startMs = cursor
-        cursor += Math.max(0, part.duration_ms)
-        return { id: part.id, key: `${proposal.id}:part:${part.id}`, label: `Changed clip · ${part.title}`, clipId: part.id, startMs, endMs: cursor, artifact: part.visual ?? null, planPart: part }
+        const startMs = starts.get(part.id) ?? appendedCursor
+        if (!starts.has(part.id)) appendedCursor += Math.max(0, part.duration_ms)
+        return { id: part.id, key: `${proposal.id}:part:${part.id}`, label: `Changed clip · ${part.title}`, clipId: part.id, startMs, endMs: startMs + Math.max(0, part.duration_ms), artifact: part.visual ?? null, storyboard: videoPlanPartStoryboardContext(part), planPart: part }
       })
     })()
     : proposal.operations.map((operation, index) => {
@@ -344,14 +470,14 @@ function proposalChanges(proposal: VideoEditProposalWire): VideoIterationChange[
       const startMs = typeof clip.timeline_start_ms === 'number' ? clip.timeline_start_ms : fallback?.start_ms ?? 0
       const endMs = typeof clip.timeline_end_ms === 'number' ? clip.timeline_end_ms : fallback?.end_ms ?? startMs
       const clipId = String(clip.id ?? operation.clip_id ?? operation.transition?.to_clip_id ?? operation.transition_id ?? '').trim()
-      return { id: operation.id, key: `${proposal.id}:${operation.id}`, label: `Changed clip · ${operationLabel(operation)}`, clipId, startMs, endMs, artifact: null, operation }
+      return { id: operation.id, key: `${proposal.id}:${operation.id}`, label: `Changed clip · ${operationLabel(operation)}`, clipId, startMs, endMs, artifact: null, storyboard: null, operation }
     })
   if (proposal.status !== 'accepted' || !proposal.accepted_operation_ids?.length) return changes
   const acceptedIds = new Set(proposal.accepted_operation_ids)
   return changes.filter((change) => acceptedIds.has(change.id))
 }
 
-export function buildVideoIterationTimeline(proposals: VideoEditProposalWire[], revisions: VideoIterationRevisionWire[]): VideoIterationEntry[] {
+export function buildVideoIterationTimeline(proposals: VideoEditProposalWire[], revisions: VideoIterationRevisionWire[], basePartOrder: Array<{ id: string; duration_ms: number }> = []): VideoIterationEntry[] {
   const revisionByProposal = new Map<string, VideoIterationRevisionWire>()
   for (const revision of revisions) if (revision.origin_proposal_id) revisionByProposal.set(revision.origin_proposal_id, revision)
   const proposalIds = new Set(proposals.map((proposal) => proposal.id))
@@ -366,7 +492,7 @@ export function buildVideoIterationTimeline(proposals: VideoEditProposalWire[], 
       status: proposal.status,
       title: proposal.title || proposal.plan?.summary || proposal.rationale || 'AI video iteration',
       createdAt: proposal.created_at,
-      changes: proposalChanges(proposal),
+      changes: videoPlanProposalChanges(proposal, basePartOrder),
     }
   })
   const revisionEntries = revisions.filter((revision) => !revision.origin_proposal_id || !proposalIds.has(revision.origin_proposal_id)).map((revision): VideoIterationEntry => ({
@@ -393,6 +519,8 @@ export const VideoIterationSidebar = memo(function VideoIterationSidebar(props: 
   projectId: string
   currentRevisionId: string
   revisions: VideoIterationRevisionWire[]
+  basePartOrder?: Array<{ id: string; duration_ms: number }>
+  onProposalsLoaded?: (proposals: VideoEditProposalWire[]) => void
   onAccepted: () => Promise<void> | void
   onFeedback: (message: string) => Promise<void> | void
   onPreviewProposal: (proposal: VideoEditProposalWire | null, selectedChangeIds: string[]) => void
@@ -408,15 +536,23 @@ export const VideoIterationSidebar = memo(function VideoIterationSidebar(props: 
   const [error, setError] = useState<string | null>(null)
   const loadRequestSequence = useRef(0)
   const projectionSequence = useDesktopV3CacheSelector(useCallback((state) => videoProposalProjectionSequence(state, props.sessionId), [props.sessionId]))
-  const load = useCallback(async () => loadLatestVideoEditProposals({ sessionId: props.sessionId, projectId: props.projectId, requestSequence: loadRequestSequence, onLoaded: setProposals, onError: setError }), [props.projectId, props.sessionId])
+  const load = useCallback(async () => loadLatestVideoEditProposals({
+    sessionId: props.sessionId,
+    projectId: props.projectId,
+    requestSequence: loadRequestSequence,
+    onLoaded: (loaded) => { setProposals(loaded); props.onProposalsLoaded?.(loaded) },
+    onError: setError,
+  }), [props.onProposalsLoaded, props.projectId, props.sessionId])
   useEffect(() => { void load() }, [load, projectionSequence])
-  const iterations = useMemo(() => buildVideoIterationTimeline(proposals, props.revisions), [proposals, props.revisions])
-  const newestPendingIterationId = useMemo(() => iterations.find((iteration) => iteration.proposal?.status === 'pending')?.id ?? null, [iterations])
+  const iterations = useMemo(() => buildVideoIterationTimeline(proposals, props.revisions, props.basePartOrder), [proposals, props.basePartOrder, props.revisions])
+  const newestPendingIterationId = useMemo(() => iterations.find((iteration) => iteration.proposal?.status === 'pending' && iteration.proposal.working_revision_id === props.currentRevisionId)?.id
+    ?? iterations.find((iteration) => iteration.proposal?.status === 'pending')?.id
+    ?? null, [iterations, props.currentRevisionId])
 
   useEffect(() => {
     const selectedIteration = previewId ? iterations.find((iteration) => iteration.id === previewId) : null
-    if (selectedIteration?.proposal?.status === 'pending') return
-    if (!previewId || !selectedIteration) setPreviewId(newestPendingIterationId)
+    if (selectedIteration?.proposal?.status === 'pending' && selectedIteration.id === newestPendingIterationId) return
+    if (previewId !== newestPendingIterationId) setPreviewId(newestPendingIterationId)
   }, [iterations, newestPendingIterationId, previewId])
 
   const previewProposal = useMemo(() => {
@@ -452,13 +588,14 @@ export const VideoIterationSidebar = memo(function VideoIterationSidebar(props: 
               return <div key={change.key} className={`mt-2 border-l-2 pl-2 ${enabled ? 'border-[var(--app-primary)]' : 'border-[var(--app-border)] opacity-55'}`}>
                 <div className="flex items-start gap-2">
                   {proposal?.status === 'pending' && proposal.plan?.kind !== 'initial' ? <input className="mt-0.5" type="checkbox" checked={enabled} aria-label={`Enable ${change.label}`} onChange={(event) => { setSelected((current) => ({ ...current, [change.key]: event.target.checked })); setPreviewId(iteration.id) }} /> : null}
-                  <button type="button" className="min-w-0 flex-1 text-left" onClick={() => props.onFocusChange(change.clipId, change.startMs)}><span className="block truncate text-[10px] text-[var(--app-text)]">{change.label}</span><span className="mt-0.5 block font-mono text-[9px] text-[var(--app-text-subtle)]">{change.id} · {rangeLabel(change.startMs, change.endMs)}</span></button>
-                  {proposal ? <button type="button" className="shrink-0 p-1 text-[var(--app-primary)] hover:bg-[var(--app-surface-hover)]" aria-label={`Attach ${change.label} to AI composer`} onClick={() => { props.onFocusChange(change.clipId, change.startMs); props.onAttachChange({ proposalId: proposal.id, parentRevisionId: iteration.parentRevisionId, candidateRevisionId: iteration.candidateRevisionId, changeId: change.id, anchorClipId: change.clipId, startMs: change.startMs, endMs: change.endMs, label: change.label, artifact: change.artifact }) }}><Paperclip size={12} /></button> : null}
+                  <button type="button" className="min-w-0 flex-1 text-left" onClick={() => props.onFocusChange(change.clipId, change.startMs)}><span className="block truncate text-[10px] text-[var(--app-text)]">{change.label}</span><span className="mt-0.5 block font-mono text-[9px] text-[var(--app-text-subtle)]">{change.id} · {rangeLabel(change.startMs, change.endMs)}</span>{change.storyboard ? <span className={`mt-1 block text-[9px] ${change.storyboard.productionState === 'pending' ? 'text-amber-300' : 'text-green-400'}`}>{change.storyboard.productionState === 'pending' ? 'Storyboard placeholder · filming needed' : 'Production ready'} · {change.storyboard.filmingRequirements.join(' · ')}</span> : null}</button>
+                  {proposal ? <button type="button" className="shrink-0 p-1 text-[var(--app-primary)] hover:bg-[var(--app-surface-hover)]" aria-label={`Attach ${change.label} to AI composer`} onClick={() => { props.onFocusChange(change.clipId, change.startMs); props.onAttachChange({ proposalId: proposal.id, parentRevisionId: iteration.parentRevisionId, candidateRevisionId: iteration.candidateRevisionId, changeId: change.id, anchorClipId: change.clipId, startMs: change.startMs, endMs: change.endMs, label: change.label, artifact: change.artifact, storyboard: change.storyboard }) }}><Paperclip size={12} /></button> : null}
                 </div>
               </div>
             })}
             {proposal?.status === 'pending' ? <div className="mt-3 grid gap-1">
-              <Button className="h-7 px-2 text-[10px]" disabled={Boolean(busyId) || stale || (proposal.plan?.kind !== 'initial' && enabledIds.length === 0)} onClick={() => void (async () => { setBusyId(proposal.id); try { await acceptVideoEditProposal({ sessionId: props.sessionId, projectId: props.projectId, proposalId: proposal.id, selectedOperationIds: enabledIds, changeSummary: proposal.title || proposal.plan?.summary || proposal.rationale }); setPreviewId(null); await props.onAccepted(); await load() } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)) } finally { setBusyId(null) } })()}><Check size={12} />Confirm enabled changes</Button>
+              {proposal.plan?.parts.flatMap((part) => part.animation_candidates?.candidates ?? []).length ? <p className="text-[9px] text-amber-200">Choose one live HTML candidate in the player. The selected canonical source can be confirmed directly.</p> : null}
+              <Button className="h-7 px-2 text-[10px]" disabled={Boolean(busyId) || stale || proposal.plan?.parts.some((part) => (proposal.plan?.kind === 'initial' || enabledIds.includes(part.id)) && !videoAnimationReadyForConfirmation(part)) || (proposal.plan?.kind !== 'initial' && enabledIds.length === 0)} onClick={() => void (async () => { setBusyId(proposal.id); try { await acceptVideoEditProposal({ sessionId: props.sessionId, projectId: props.projectId, proposalId: proposal.id, selectedOperationIds: enabledIds, changeSummary: proposal.title || proposal.plan?.summary || proposal.rationale }); setPreviewId(null); await props.onAccepted(); await load() } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)) } finally { setBusyId(null) } })()}><Check size={12} />Confirm enabled changes</Button>
               <Button variant="ghost" className="h-7 px-2 text-[10px]" disabled={Boolean(busyId)} onClick={() => void (async () => { const feedback = `Restore the accepted parent of iteration ${proposal.id} and revise only the changes I describe: `; setBusyId(proposal.id); try { await rejectVideoEditProposal(props.sessionId, props.projectId, proposal.id, feedback); setPreviewId(null); await props.onFeedback(feedback); await load() } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)) } finally { setBusyId(null) } })()}><RotateCcw size={12} />Restore parent and revise</Button>
             </div> : null}
           </div> : null}
@@ -486,6 +623,7 @@ export const VideoSessionAISidecar = memo(function VideoSessionAISidecar(props: 
   selectionKind?: 'visual' | 'transition' | 'iteration'
   transition?: VideoTransitionWire | null
   iterationContext?: VideoIterationComposerContext | null
+  storyboardContext?: VideoStoryboardContext | null
   routeOptions?: DesktopChatRoute[]
   draftRequest?: { id: number; draft: string }
   artifactSelectionRequest?: DesktopV3ArtifactMessageSelection | null
@@ -493,10 +631,9 @@ export const VideoSessionAISidecar = memo(function VideoSessionAISidecar(props: 
   onContextChipRemove?: () => void
   onArtifactSelectionRequestHandled?: () => void
   artifactReviewPortalTarget?: HTMLElement | null
-  onActivity?: () => void
+  onMessageSent?: () => void
 }) {
   const [hydrateError, setHydrateError] = useState(false)
-  const activityKeyRef = useRef('')
   const renderedMessages = useDesktopV3CacheSelector(
     useCallback((state) => selectRenderedSessionMessages(state, props.sessionId), [props.sessionId]),
     videoSessionRenderedMessagesEqual,
@@ -513,17 +650,8 @@ export const VideoSessionAISidecar = memo(function VideoSessionAISidecar(props: 
 
   useEffect(() => {
     setHydrateError(false)
-    activityKeyRef.current = ''
     void selectAndHydrateDesktopV3Session(props.sessionId).catch(() => setHydrateError(true))
   }, [props.sessionId])
-
-  useEffect(() => {
-    const latestCommitted = renderedMessages.committed[renderedMessages.committed.length - 1]
-    const activityKey = `${latestCommitted?.id ?? ''}:${renderedMessages.liveRuns.map((run) => run.runId).join(',')}`
-    if (!activityKey || activityKey === ':') return
-    if (activityKeyRef.current && activityKeyRef.current !== activityKey) props.onActivity?.()
-    activityKeyRef.current = activityKey
-  }, [props.onActivity, renderedMessages.committed, renderedMessages.liveRuns])
 
   return (
     <aside className="flex min-h-[70dvh] w-full min-w-0 shrink-0 border-t border-[var(--app-border)] bg-[var(--app-bg)] lg:min-h-0 lg:w-[440px] lg:min-w-[360px] lg:max-w-[42vw] lg:border-l lg:border-t-0" aria-label="Video session AI">
@@ -554,6 +682,14 @@ export const VideoSessionAISidecar = memo(function VideoSessionAISidecar(props: 
             video_iteration_range_start_ms: props.iterationContext.startMs,
             video_iteration_range_end_ms: props.iterationContext.endMs,
           } : {}),
+          ...(props.storyboardContext ? {
+            video_storyboard_part_id: props.storyboardContext.partId,
+            video_storyboard_capture_state_id: props.storyboardContext.captureStateId,
+            video_storyboard_production_state: props.storyboardContext.productionState,
+            video_storyboard_filming_requirements: props.storyboardContext.filmingRequirements,
+            video_storyboard_source: props.storyboardContext.source,
+            video_storyboard_still: props.storyboardContext.still,
+          } : {}),
         }}
         presentation="sidebar"
         artifactReviewPresentation="embedded"
@@ -563,7 +699,7 @@ export const VideoSessionAISidecar = memo(function VideoSessionAISidecar(props: 
         contextChip={props.contextChip}
         onContextChipRemove={props.onContextChipRemove}
         onArtifactSelectionRequestHandled={props.onArtifactSelectionRequestHandled}
-        onMessageSent={props.onActivity}
+        onMessageSent={props.onMessageSent}
       />
     </aside>
   )

@@ -9,7 +9,10 @@ import (
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
-func TestSourceMediaDirectoriesRemainOutsideWorkspaceScope(t *testing.T) {
+// TestLaneA_E2E010SourceMediaDirectoriesRemainOutsideWorkspaceScope covers
+// E2E-010/REQ-LNK-001/REQ-PATH-001: source-media metadata never becomes
+// generic workspace authorization.
+func TestLaneA_E2E010SourceMediaDirectoriesRemainOutsideWorkspaceScope(t *testing.T) {
 	store, cleanup := newTestWorkspaceStore(t)
 	defer cleanup()
 	service := NewService(store)
@@ -65,6 +68,54 @@ func TestSourceMediaDirectoriesRemainOutsideWorkspaceScope(t *testing.T) {
 	}
 	if len(removed.SourceMediaDirectories) != 0 {
 		t.Fatalf("source media directories after remove = %v", removed.SourceMediaDirectories)
+	}
+}
+
+// TestLaneA_E2E008_E2E009CompatibilityAddRemoveCreatesDeletesFlatWorkspace
+// covers compatibility add/remove behavior without linked membership authority.
+func TestLaneA_E2E008_E2E009CompatibilityAddRemoveCreatesDeletesFlatWorkspace(t *testing.T) {
+	store, cleanup := newTestWorkspaceStore(t)
+	defer cleanup()
+	service := NewService(store)
+	principal := testPrincipal()
+	parent := t.TempDir()
+	target := t.TempDir()
+
+	parentResolution, err := service.AddForPrincipal(principal, parent, "Parent", "", true)
+	if err != nil {
+		t.Fatalf("add parent workspace: %v", err)
+	}
+	added, err := service.AddDirectoryForPrincipal(principal, parent, target)
+	if err != nil {
+		t.Fatalf("compatibility add directory: %v", err)
+	}
+	if added.WorkspacePath != target || added.WorkspaceID == "" || added.WorkspaceGeneration <= 0 {
+		t.Fatalf("compatibility add did not create a flat workspace: %+v", added)
+	}
+	entries, err := service.ListKnownForPrincipal(principal, 10)
+	if err != nil {
+		t.Fatalf("list after compatibility add: %v", err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("workspace count after compatibility add=%d, want 2: %+v", len(entries), entries)
+	}
+	parentEntry, ok, err := service.GetByWorkspaceIDForPrincipal(principal, parentResolution.WorkspaceID)
+	if err != nil || !ok {
+		t.Fatalf("get parent after compatibility add: ok=%t err=%v", ok, err)
+	}
+	if !reflect.DeepEqual(parentEntry.Directories, []string{parent}) {
+		t.Fatalf("compatibility add restored parent linked membership: %+v", parentEntry.Directories)
+	}
+
+	if _, err := service.RemoveDirectoryForPrincipal(principal, parent, target); err != nil {
+		t.Fatalf("compatibility remove directory: %v", err)
+	}
+	if _, ok, err := service.GetByWorkspaceIDForPrincipal(principal, added.WorkspaceID); err != nil || ok {
+		t.Fatalf("compatibility remove left target workspace: ok=%t err=%v", ok, err)
+	}
+	parentAfter, ok, err := service.GetByWorkspaceIDForPrincipal(principal, parentResolution.WorkspaceID)
+	if err != nil || !ok || parentAfter.WorkspaceID != parentResolution.WorkspaceID || !reflect.DeepEqual(parentAfter.Directories, []string{parent}) {
+		t.Fatalf("compatibility remove mutated parent: ok=%t err=%v entry=%+v", ok, err, parentAfter)
 	}
 }
 

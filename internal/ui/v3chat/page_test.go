@@ -1093,10 +1093,10 @@ func TestAskUserPermissionCustomResponseSubmitsTypedAnswer(t *testing.T) {
 	}
 }
 
-func TestWorkspaceScopePermissionRendersChoicesAndForwardsAddDirDecision(t *testing.T) {
+func TestWorkspaceScopePermissionRendersSessionOnlyChoice(t *testing.T) {
 	permission := client.PermissionRecord{
 		ID: "permission-scope", SessionID: "session-scope", ToolName: "read", Requirement: "workspace_scope", Status: "pending",
-		ToolArguments: `{"title":"Allow read access outside the current workspace?","summary":"Choose temporary or saved access.","tool":{"name":"read"},"request":{"requested_path":"/external/project/file.go","resolved_target_path":"/external/project/file.go","directory_path":"/external/project","access_label":"read access"},"workspace":{"exists":true,"path":"/workspace","name":"Saved workspace"},"actions":{"session_allow":{"decision":"session_allow","label":"Allow This Session","available":true},"workspace_add_dir":{"decision":"workspace_add_dir","label":"Add To Workspace","available":true}}}`,
+		ToolArguments: `{"title":"Allow read access outside the current workspace?","summary":"Choose temporary access.","tool":{"name":"read"},"request":{"requested_path":"/external/project/file.go","resolved_target_path":"/external/project/file.go","directory_path":"/external/project","access_label":"read access"},"actions":{"session_allow":{"decision":"session_allow","label":"Allow This Session","available":true}}}`,
 	}
 	resolved := permission
 	resolved.Status = "approved"
@@ -1106,12 +1106,16 @@ func TestWorkspaceScopePermissionRendersChoicesAndForwardsAddDirDecision(t *test
 	store.Dispatch(HydrateAction{Snapshot: client.SessionV3Hydrated{Session: client.SessionSummary{ID: "session-scope"}, PendingPermissions: []client.PermissionRecord{permission}}})
 	page := NewPage(NewRuntime(transport, store, nil), testPageStyles())
 
-	page.HandleKey(tcell.NewEventKey(tcell.KeyTab, 0, tcell.ModNone))
 	rows := page.renderRows(store.Snapshot(), 100, testPageStyles())
 	drawn := renderRowsText(rows)
-	for _, want := range []string{"Allow read access outside the current workspace?", "REQUESTED PATH", "/external/project/file.go", "SESSION SCOPE ROOT", "Allow This Session", "Add To Workspace", "Deny"} {
+	for _, want := range []string{"Allow read access outside the current workspace?", "REQUESTED PATH", "/external/project/file.go", "SESSION SCOPE ROOT", "Allow for This Chat Session", "add this folder as its own new workspace", "Deny"} {
 		if !strings.Contains(drawn, want) {
 			t.Fatalf("workspace-scope card missing %q:\n%s", want, drawn)
+		}
+	}
+	for _, retired := range []string{"Add " + "To Workspace", "workspace_" + "add_dir", "link to your workspace"} {
+		if strings.Contains(drawn, retired) {
+			t.Fatalf("workspace-scope card retained %q:\n%s", retired, drawn)
 		}
 	}
 	if strings.Contains(drawn, `{"title"`) {
@@ -1130,7 +1134,7 @@ func TestWorkspaceScopePermissionRendersChoicesAndForwardsAddDirDecision(t *test
 	if err := json.Unmarshal([]byte(request.reason), &reason); err != nil {
 		t.Fatalf("decode workspace decision: %v (%q)", err, request.reason)
 	}
-	if request.permissionID != permission.ID || request.action != "allow_once" || reason["path_id"] != workspaceScopeDecisionPathID || reason["decision"] != "workspace_add_dir" {
+	if request.permissionID != permission.ID || request.action != "allow_once" || reason["path_id"] != workspaceScopeDecisionPathID || reason["decision"] != "session_allow" {
 		t.Fatalf("workspace-scope resolution request = %#v reason=%#v", request, reason)
 	}
 }
@@ -1965,14 +1969,14 @@ func TestExitPlanModeCanonicalEventUpdatesRenderedFooterPolicy(t *testing.T) {
 func TestShiftTabCyclesRoutedPrimerPlanFlagLocally(t *testing.T) {
 	transport := &fakeTransport{}
 	runtime := NewRuntime(transport, nil, nil)
-	if err := runtime.PrimeRoutedDraft(RoutedDraft{ManagedWorktreeRequested: true}); err != nil {
+	if err := runtime.PrimeRoutedDraft(RoutedDraft{}); err != nil {
 		t.Fatal(err)
 	}
 	page := NewPage(runtime, testPageStyles())
 	page.HandleKey(tcell.NewEventKey(tcell.KeyBacktab, 0, tcell.ModShift))
 	state := runtime.Store().Snapshot()
 	draft, ok := SelectRoutedDraft(state)
-	if !ok || state.Session.ID != "" || !draft.PlanModeRequested || !draft.ManagedWorktreeRequested {
+	if !ok || state.Session.ID != "" || !draft.PlanModeRequested {
 		t.Fatalf("Shift+Tab routed draft state = %#v", state)
 	}
 	if got := page.Status(); got != "Plan: on" {
@@ -1980,7 +1984,7 @@ func TestShiftTabCyclesRoutedPrimerPlanFlagLocally(t *testing.T) {
 	}
 	page.HandleKey(tcell.NewEventKey(tcell.KeyBacktab, 0, tcell.ModShift))
 	draft, _ = SelectRoutedDraft(runtime.Store().Snapshot())
-	if draft.PlanModeRequested || !draft.ManagedWorktreeRequested {
+	if draft.PlanModeRequested {
 		t.Fatalf("Shift+Tab routed draft round trip = %#v", draft)
 	}
 	transport.mu.Lock()
@@ -2011,26 +2015,6 @@ func TestShiftTabDoesNotMutateDurableSessionMode(t *testing.T) {
 	}
 }
 
-func TestWorktreeCommandUpdatesOnlyReadyRoutedPrimer(t *testing.T) {
-	runtime := NewRuntime(&fakeTransport{}, nil, nil)
-	if err := runtime.PrimeRoutedDraft(RoutedDraft{}); err != nil {
-		t.Fatal(err)
-	}
-	page := NewPage(runtime, testPageStyles())
-	matched, err := page.ApplyWorktreeCommand("/wt on")
-	if err != nil || !matched {
-		t.Fatalf("apply /wt on = matched=%v err=%v", matched, err)
-	}
-	draft, _ := SelectRoutedDraft(runtime.Store().Snapshot())
-	if !draft.ManagedWorktreeRequested || draft.PlanModeRequested || draft.ClientRequestID != "" {
-		t.Fatalf("worktree primer = %#v", draft)
-	}
-	matched, err = page.ApplyWorktreeCommand("/worktrees")
-	if err != nil || matched {
-		t.Fatalf("/worktrees captured = matched=%v err=%v", matched, err)
-	}
-}
-
 func TestFailedRoutedDraftRetriesOnEmptySubmit(t *testing.T) {
 	transport := &fakeTransport{routedResponses: []client.RoutedSessionV3StartResponse{routedRuntimeResponse("session-retried")}}
 	store := NewStore()
@@ -2057,14 +2041,14 @@ func TestFailedRoutedDraftRetriesOnEmptySubmit(t *testing.T) {
 
 func TestRoutedDraftRowsKeepPromptStatusFlagsAndRetryGuidanceLocal(t *testing.T) {
 	store := NewStore()
-	store.Dispatch(PrimeRoutedDraftAction{Draft: RoutedDraft{Prompt: "route this", PlanModeRequested: true, ManagedWorktreeRequested: true}})
+	store.Dispatch(PrimeRoutedDraftAction{Draft: RoutedDraft{Prompt: "route this", PlanModeRequested: true}})
 	page := NewPage(NewRuntime(&fakeTransport{}, store, nil), testPageStyles())
 	rows := page.renderRows(store.Snapshot(), 80, testPageStyles())
 	joined := ""
 	for _, row := range rows {
 		joined += row.text + "\n"
 	}
-	for _, want := range []string{"route this", "Waiting...", "Plan: on", "Worktree: on"} {
+	for _, want := range []string{"route this", "Waiting...", "Plan: on"} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("ready routed rows missing %q:\n%s", want, joined)
 		}

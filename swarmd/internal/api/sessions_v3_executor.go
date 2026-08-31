@@ -1562,7 +1562,7 @@ func (e *sessionV3Executor) generateSessionV3CompactTitle(session pebblestore.Se
 		ContextMode:               strings.TrimSpace(preference.ContextMode),
 		ContextWindow:             contextWindow,
 		ModelCatalog:              catalogRecord,
-		WorkspacePath:             strings.TrimSpace(session.WorkspacePath),
+		WorkspacePath:             strings.TrimSpace(firstNonEmpty(session.WorktreeRootPath, session.WorkspacePath)),
 	}
 	bgCtx := context.Background()
 	if principal.Valid() {
@@ -1895,7 +1895,7 @@ func (e *sessionV3Executor) sessionV3ProviderRunner(resolved sessionV3ResolvedRu
 }
 
 func (e *sessionV3Executor) sessionV3ProviderBaseRequest(job sessionV3ExecutorJob, resolved sessionV3ResolvedRuntime, input []map[string]any) (provideriface.Request, error) {
-	return e.sessionV3ProviderBaseRequestWithCheckpointScope(job, resolved, input, sessionV3ProviderJobCheckpointScope(job))
+	return e.sessionV3ProviderBaseRequestWithCheckpointScope(job, resolved, input, e.sessionV3ProviderCheckpointScope(job))
 }
 
 func (e *sessionV3Executor) sessionV3ProviderBaseRequestWithCheckpointScope(job sessionV3ExecutorJob, resolved sessionV3ResolvedRuntime, input []map[string]any, checkpointScope sessionV3ProviderCheckpointScope) (provideriface.Request, error) {
@@ -1974,7 +1974,9 @@ func (e *sessionV3Executor) sessionV3ProviderBaseRequestWithCheckpointScope(job 
 	providerCacheKey := sessionV3ProviderScopedKey("cache", epochID+"-"+lineageID)
 	sessionAffinityKey := sessionV3ProviderScopedKey("affinity", epochID+"-"+lineageID)
 	boundaryReason := "session_turn"
-	if !previousOK {
+	if sessionV3ProviderCheckpointFreshContext(job, checkpointScope) {
+		boundaryReason = "checkpoint_fresh_context"
+	} else if !previousOK {
 		boundaryReason = "epoch_fresh_context"
 	} else if !nativeContinuationAllowed {
 		boundaryReason = "provider_model_runtime_handoff"
@@ -1991,7 +1993,7 @@ func (e *sessionV3Executor) sessionV3ProviderBaseRequestWithCheckpointScope(job 
 		HandoffSummaryMessageID: previousState.HandoffSummaryMessageID,
 		HandoffSummaryGlobalSeq: previousState.HandoffSummaryGlobalSeq,
 	}
-	providerContinuationAllowed := lifecycle.ContextMode == provideriface.ExecutionEpochContextResponsesChain && nativeContinuationAllowed
+	providerContinuationAllowed := lifecycle.ContextMode == provideriface.ExecutionEpochContextResponsesChain && nativeContinuationAllowed && !sessionV3ProviderCheckpointFreshContext(job, checkpointScope)
 	baseReq := provideriface.Request{
 		SessionID:                     job.SessionID,
 		ProviderLineageID:             lineageID,
@@ -2331,7 +2333,7 @@ func sessionV3ProviderCheckpointScopeFromPayload(scope sessionV3ProviderCheckpoi
 	if payload == nil {
 		return scope
 	}
-	freshContext := sessionV3ProviderCheckpointRunNextAction(sessionsV3MapString(payload, "next_action"))
+	freshContext := strings.EqualFold(strings.TrimSpace(sessionsV3MapString(payload, "next_action")), "run_checkpoint_with_fresh_context")
 	if freshContext {
 		scope.FreshContext = true
 	}
@@ -2479,10 +2481,12 @@ func sessionV3ProviderForceFreshContext(job sessionV3ExecutorJob, previousLineag
 	return !sessionV3ProviderNativeContinuationAllowed(previousLineageID, lineageID)
 }
 
-func sessionV3ProviderCheckpointFreshContext(_ sessionV3ExecutorJob, _ sessionV3ProviderCheckpointScope) bool {
-	// Checkpoint ownership is routing metadata inside an execution epoch. Only an
-	// epoch change (or an explicit provider/runtime handoff) resets lineage.
-	return false
+func sessionV3ProviderCheckpointFreshContext(_ sessionV3ExecutorJob, scope sessionV3ProviderCheckpointScope) bool {
+	// Ordinary checkpoint ownership is routing metadata inside an execution
+	// epoch. An explicit fresh-context lifecycle transition (notably blocked
+	// checkpoint recovery) must still reset provider lineage so the resolver
+	// turn is not retained implicitly by a native response chain.
+	return scope.FreshContext
 }
 
 func sessionV3ProviderBoundaryReasonWithOverride(current, override string) string {
@@ -3137,6 +3141,22 @@ func sessionV3ProviderCanonicalToolCallKey(call provideriface.FunctionCall) stri
 	return name + ":" + canonicalArgs
 }
 
+func sessionV3ProviderToolPrincipal(job sessionV3ExecutorJob, session pebblestore.SessionSnapshot) (identity.Principal, error) {
+	principal := job.Principal
+	sessionID := strings.TrimSpace(job.SessionID)
+	if sessionID == "" || strings.TrimSpace(session.ID) != sessionID {
+		return identity.Principal{}, errors.New("v3 provider tool execution requires the resolved run session")
+	}
+	if !principal.Valid() || strings.TrimSpace(principal.UserID) != strings.TrimSpace(session.UserID) || strings.TrimSpace(principal.AccountScopeID) != strings.TrimSpace(session.AccountScopeID) {
+		return identity.Principal{}, errors.New("v3 provider tool principal does not own the resolved run session")
+	}
+	// Request principals may carry the authenticated Desktop/API session id. Tool
+	// execution is scoped to the durable V3 session instead, after the ownership
+	// check above, so bind that canonical identity explicitly.
+	principal.SessionID = sessionID
+	return principal, nil
+}
+
 func (e *sessionV3Executor) newSessionV3ProviderToolInvoker(resolved sessionV3ResolvedRuntime, job sessionV3ExecutorJob, step int, toolProgression *runruntime.ToolProgressionState, planContextGuard *runruntime.PlanContextGuard) (provideriface.ToolInvoker, error) {
 	if e == nil || e.server == nil || e.server.sessions == nil {
 		return nil, errors.New("v3 executor is not configured")
@@ -3158,6 +3178,10 @@ func (e *sessionV3Executor) newSessionV3ProviderToolInvoker(resolved sessionV3Re
 	if step <= 0 {
 		step = 1
 	}
+	principal, err := sessionV3ProviderToolPrincipal(job, resolved.Session)
+	if err != nil {
+		return nil, err
+	}
 	invoker := builder.NewProviderManagedToolInvoker(runruntime.ProviderManagedToolInvokerConfig{
 		SessionID:            job.SessionID,
 		PermissionSessionID:  job.SessionID,
@@ -3170,7 +3194,7 @@ func (e *sessionV3Executor) newSessionV3ProviderToolInvoker(resolved sessionV3Re
 		WorkspaceOriginPath:  workspacePath,
 		WorkspaceOriginRoots: roots,
 		WorkspaceName:        resolved.Session.WorkspaceName,
-		Principal:            job.Principal,
+		Principal:            principal,
 		Emit:                 e.emitSessionV3ProviderToolEvent(job),
 		ApplySessionMutation: e.applySessionV3ProviderToolMutation(job),
 		ProviderManagedV3:    true,

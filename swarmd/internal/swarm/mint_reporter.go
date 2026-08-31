@@ -97,12 +97,13 @@ func (r *MintReporter) ReportPending(ctx context.Context) error {
 		}
 	}
 	var accepted struct {
-		Accepted bool `json:"accepted"`
+		Accepted   bool   `json:"accepted"`
+		Credential string `json:"credential"`
 	}
 	if err := json.Unmarshal(body, &accepted); err != nil || !accepted.Accepted {
 		return errors.New("mint report response was not accepted")
 	}
-	if err := r.service.CompleteMintReport(swarmID); err != nil {
+	if err := r.service.CompleteMintReportWithCredential(swarmID, accepted.Credential); err != nil {
 		return fmt.Errorf("complete mint report: %w", err)
 	}
 	return nil

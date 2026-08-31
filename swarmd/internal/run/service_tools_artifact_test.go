@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
+	"swarm/packages/swarmd/internal/tool"
 )
 
 func TestTaskDelegationTranscriptProjectsAttachedArtifactSelections(t *testing.T) {
@@ -89,6 +90,76 @@ func TestManageArtifactToolOutputIsStructured(t *testing.T) {
 	previewAlias, ok := toolHistoryStructuredPayload("manage-artifact", output, `{"action":"create"}`)
 	if !ok || previewAlias != output {
 		t.Fatalf("toolHistoryStructuredPayload with alias = %q ok=%v", previewAlias, ok)
+	}
+}
+
+func TestManagedAnimatedDesignerPromptRequiresTrustedPreflightAndThreeFrameInspection(t *testing.T) {
+	prompt := buildTaskDelegationPrompt(taskDelegationPromptConfig{
+		RequestedSubagent:  "designer",
+		OutputMode:         taskOutputModeManaged,
+		AnimationProfile:   &pebblestore.SessionArtifactAnimationProfile{ProfileID: "motion_ui"},
+		ArtifactRunContext: &tool.ArtifactRunContext{SessionID: "parent", CollectionID: "collection", VariantID: "variant", ArtifactStepID: "step", CandidateIndex: 1},
+	})
+	for _, want := range []string{
+		"ready status is necessary but not sufficient",
+		"server-owned runtime binding, exact-seek, stable-pixel, and viewport-containment preflight passed",
+		"start, resolved-phrase/middle, and exit frames",
+		"animation_inspection_references",
+		"never pass the text/html source reference to media_inspect",
+		"ANIMATION_INSPECTION frame=start|middle|exit status=pass",
+		"clipping/overflow",
+		"scrollbars/capture chrome",
+		"explicit failed slot",
+		"do not count it as a successful variant",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("managed animated Designer prompt missing %q: %s", want, prompt)
+		}
+	}
+}
+
+func TestValidateManagedAnimatedDesignerInspectionEvidenceRequiresThreeToolsAndFrameRecords(t *testing.T) {
+	checks := "checks=clipping/overflow; sizing/aspect ratio; requested elements; text legibility; unintended overlaps; scrollbars/capture chrome; brief fidelity evidence=clean"
+	report := strings.Join([]string{
+		"ANIMATION_INSPECTION frame=start status=pass " + checks,
+		"ANIMATION_INSPECTION frame=middle status=pass " + checks,
+		"ANIMATION_INSPECTION frame=exit status=pass " + checks,
+	}, "\n")
+	outcome := taskLaunchOutcome{
+		MediaInspectCompleted: 3,
+		ArtifactReference:     &taskArtifactReference{Status: pebblestore.SessionArtifactStatusReady},
+	}
+	if err := validateManagedAnimatedDesignerInspectionEvidence(outcome, report); err != nil {
+		t.Fatalf("valid three-frame inspection evidence rejected: %v", err)
+	}
+	outcome.MediaInspectCompleted = 2
+	if err := validateManagedAnimatedDesignerInspectionEvidence(outcome, report); err == nil || !strings.Contains(err.Error(), "three successful media_inspect calls") {
+		t.Fatalf("missing tool evidence error = %v", err)
+	}
+	outcome.MediaInspectCompleted = 3
+	if err := validateManagedAnimatedDesignerInspectionEvidence(outcome, strings.Replace(report, "frame=middle status=pass", "frame=middle status=fail", 1)); err == nil || !strings.Contains(err.Error(), "middle") {
+		t.Fatalf("failed middle frame error = %v", err)
+	}
+	for _, malformed := range []string{
+		strings.Replace(report, "evidence=clean", "evidence=", 1),
+		strings.Replace(report, "frame=start status=pass", "frame=startup status=pass", 1),
+		strings.Replace(report, "status=pass checks=", "status=pass status=pass checks=", 1),
+		strings.Replace(report, "checks=clipping/overflow", "checks=brief fidelity; clipping/overflow", 1),
+	} {
+		if err := validateManagedAnimatedDesignerInspectionEvidence(outcome, malformed); err == nil {
+			t.Fatalf("malformed inspection record accepted: %q", malformed)
+		}
+	}
+}
+
+func TestManagedStaticDesignerPromptDoesNotRequireAnimationInspection(t *testing.T) {
+	prompt := buildTaskDelegationPrompt(taskDelegationPromptConfig{
+		RequestedSubagent:  "designer",
+		OutputMode:         taskOutputModeManaged,
+		ArtifactRunContext: &tool.ArtifactRunContext{SessionID: "parent", CollectionID: "collection", VariantID: "variant", ArtifactStepID: "step", CandidateIndex: 1},
+	})
+	if strings.Contains(prompt, "representative-frame inspection") || strings.Contains(prompt, "resolved-phrase/middle") {
+		t.Fatalf("static Designer prompt received animated inspection contract: %s", prompt)
 	}
 }
 

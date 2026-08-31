@@ -1,0 +1,93 @@
+name: critical-tests
+
+on:
+  pull_request:
+    branches:
+      - dev
+      - main
+  push:
+    branches:
+      - dev
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: critical-tests-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  atlas-driven-critical-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+
+      - name: Fetch exact comparison commits
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before || github.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          for sha in "${BASE_SHA}" "${HEAD_SHA}"; do
+            git cat-file -e "${sha}^{commit}" 2>/dev/null || git fetch --no-tags --depth=1 origin "${sha}"
+            git cat-file -e "${sha}^{commit}"
+          done
+
+      - name: Install repository policy dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends --yes ripgrep
+
+      - name: Run pre-PR repository policy and atlas checks
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before || github.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          TMPDIR: ${{ runner.temp }}
+        run: |
+          ./scripts/check-hardcoded-paths.sh
+          ./scripts/check-daemon-storage-paths.sh --self-test
+          ./scripts/check-secrets.sh
+          ./scripts/check-hidden-text.sh
+          bash ./scripts/check-policy-guardrails.sh
+          bash ./scripts/check-atlas-sync.sh
+          bash ./scripts/check-changelog.sh --self-test
+
+      - name: Set up Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: |
+            go.sum
+            swarmd/go.sum
+
+      - name: Set up Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24'
+
+      - name: Set up pnpm and Desktop dependencies
+        working-directory: web
+        run: |
+          corepack enable
+          corepack pnpm install --frozen-lockfile
+
+      - name: Run critical fast suite
+        env:
+          TMPDIR: ${{ runner.temp }}
+        run: bash scripts/run-critical-tests.sh fast
+
+      - name: Run deep security and durability suite
+        env:
+          TMPDIR: ${{ runner.temp }}
+        run: bash scripts/run-critical-tests.sh deep
+
+      - name: Run agent and delegation suite
+        env:
+          TMPDIR: ${{ runner.temp }}
+        run: bash scripts/run-critical-tests.sh agents

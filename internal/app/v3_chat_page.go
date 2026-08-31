@@ -285,92 +285,14 @@ func (a *App) canonicalSelfChatRoute(workspacePath string) (model.ChatRoute, err
 	return model.ChatRoute{}, errors.New("workspace has no canonical self route")
 }
 
-func (a *App) newV3ChatCreateOptions(intent ui.HomeSessionIntent, route model.ChatRoute) (client.SessionCreateOptions, error) {
-	if a == nil || a.api == nil {
-		return client.SessionCreateOptions{}, errors.New("api client is not configured")
-	}
-	workspacePath := strings.TrimSpace(intent.Workspace.Path)
-	if workspacePath == "" {
-		workspacePath = strings.TrimSpace(a.activeContextPath())
-	}
-	if workspacePath == "" {
-		workspacePath = strings.TrimSpace(a.startupCWD)
-	}
-	if workspacePath == "" {
-		return client.SessionCreateOptions{}, errors.New("workspace path is required")
-	}
-	knownWorkspace := strings.TrimSpace(a.activeWorkspacePath()) != ""
-	if knownWorkspace {
-		var err error
-		route, err = a.canonicalSelfChatRoute(workspacePath)
-		if err != nil {
-			return client.SessionCreateOptions{}, err
-		}
-		if strings.TrimSpace(route.WorkspaceBindingID) == "" {
-			return client.SessionCreateOptions{}, errors.New("workspace binding id is required")
-		}
-	}
-	mode := normalizeAppSessionMode(intent.Mode)
-	if mode != "auto" {
-		mode = "plan"
-	}
-	cwdPath := ""
-	if !knownWorkspace {
-		cwdPath = workspacePath
-	}
-	return client.SessionCreateOptions{
-		Title:                    emptyFallback(strings.TrimSpace(intent.Title), "New Session"),
-		WorkspacePath:            workspacePath,
-		CWDPath:                  cwdPath,
-		HostWorkspacePath:        strings.TrimSpace(route.HostWorkspacePath),
-		RuntimeWorkspacePath:     strings.TrimSpace(route.RuntimeWorkspacePath),
-		WorkspaceName:            intent.Workspace.Name,
-		WorkspaceBindingID:       strings.TrimSpace(route.WorkspaceBindingID),
-		TUIPrimaryCWD:            !knownWorkspace,
-		Mode:                     mode,
-		AgentName:                emptyFallback(strings.TrimSpace(intent.Agent), "swarm"),
-		SwarmID:                  createSessionSwarmIDForRoute(route, a.homeModel.CurrentSwarmTarget),
-		TargetKind:               strings.TrimSpace(route.TargetKind),
-		TargetRelationship:       strings.TrimSpace(route.TargetRelationship),
-		Preference:               intent.Preference,
-		ModelProfile:             v3ChatCreateModelProfile(intent.Profile, intent.Agent),
-		WorktreeMode:             "off",
-		WorktreeUseCurrentBranch: nil,
-	}, nil
+func (a *App) openNewV3Chat(intent ui.HomeSessionIntent, _ model.ChatRoute, _ string) error {
+	return a.openRoutedV3Primer(v3chat.NewCommand{
+		Prompt:            strings.TrimSpace(intent.InitialPrompt),
+		PlanModeRequested: strings.EqualFold(strings.TrimSpace(intent.Mode), "plan"),
+	})
 }
 
-func (a *App) openNewV3Chat(intent ui.HomeSessionIntent, route model.ChatRoute, worktreeSuffix string) error {
-	worktreeRequested := intent.WorktreeRequested || strings.TrimSpace(worktreeSuffix) != ""
-	command := v3chat.NewCommand{
-		Prompt:                   strings.TrimSpace(intent.InitialPrompt),
-		PlanModeRequested:        strings.EqualFold(strings.TrimSpace(intent.Mode), "plan"),
-		ManagedWorktreeRequested: worktreeRequested,
-	}
-	if worktreeRequested {
-		return a.openRoutedV3Primer(command)
-	}
-	directRoute := route
-	if strings.TrimSpace(a.activeWorkspacePath()) != "" {
-		var err error
-		directRoute, err = a.canonicalSelfChatRoute(intent.Workspace.Path)
-		if err != nil {
-			return err
-		}
-	}
-	create, err := a.newV3ChatCreateOptions(intent, directRoute)
-	if err != nil {
-		return err
-	}
-	runtime := a.newV3Runtime()
-	a.closeV3Chat()
-	a.v3Chat = a.newV3ChatPage(runtime, a.v3ChatFooterRouteLabel(directRoute), v3ChatHomeProfileLabel(intent.Profile))
-	a.route = "v3chat"
-	a.home.ClearPrompt()
-	a.v3Chat.OpenNew(v3chat.NewSessionRequest{Create: create, DraftModeSelections: a.v3ChatDraftModeSelections(), InitialPrompt: command.Prompt})
-	return nil
-}
-
-// openRoutedV3Primer opens one local-only Router primer for an explicit
+// openRoutedV3Primer opens one local-only Router primer for the mandatory
 // managed-worktree start. Prompt-bearing forms submit immediately; bare forms
 // remain editable and have no durable identity.
 func (a *App) openRoutedV3Primer(command v3chat.NewCommand) error {
@@ -379,9 +301,6 @@ func (a *App) openRoutedV3Primer(command v3chat.NewCommand) error {
 	}
 	if a.home == nil {
 		return errors.New("home page is not configured")
-	}
-	if !command.ManagedWorktreeRequested {
-		return errors.New("routed new session requires explicit worktree intent")
 	}
 	workspacePath := strings.TrimSpace(a.activeWorkspacePath())
 	if workspacePath == "" {
@@ -510,25 +429,13 @@ func (a *App) syncPrimedV3ChatFromHomeDraft() {
 	runtime := a.v3Chat.Runtime()
 	state := runtime.Store().Snapshot()
 	intent := a.home.SessionIntent()
-	if draft, routed := v3chat.SelectRoutedDraft(state); routed {
-		if draft.Status != v3chat.RoutedDraftReady {
-			return
-		}
-		if err := runtime.UpdateRoutedDraftIntent(draft.Prompt, strings.EqualFold(strings.TrimSpace(intent.Mode), "plan"), draft.ManagedWorktreeRequested); err != nil {
-			a.v3Chat.SetStatus("refresh routed worktree draft failed: " + err.Error())
-		}
+	draft, routed := v3chat.SelectRoutedDraft(state)
+	if !routed || draft.Status != v3chat.RoutedDraftReady {
 		return
 	}
-	create, err := a.newV3ChatCreateOptions(intent, a.selectedChatRouteForWorkspace(a.activeContextPath()))
-	if err != nil {
-		a.v3Chat.SetStatus("refresh new session draft failed: " + err.Error())
-		return
+	if err := runtime.UpdateRoutedDraftIntent(draft.Prompt, strings.EqualFold(strings.TrimSpace(intent.Mode), "plan")); err != nil {
+		a.v3Chat.SetStatus("refresh routed worktree draft failed: " + err.Error())
 	}
-	if err := runtime.PrimeNewSession(v3chat.NewSessionRequest{Create: create, DraftModeSelections: a.v3ChatDraftModeSelections()}); err != nil {
-		a.v3Chat.SetStatus("refresh new session draft failed: " + err.Error())
-		return
-	}
-	a.v3Chat.SetProfileLabel(v3ChatHomeProfileLabel(intent.Profile))
 }
 
 func (a *App) openV3ChatDraftAfterWorkspaceChange(previousWorkspacePath string) error {

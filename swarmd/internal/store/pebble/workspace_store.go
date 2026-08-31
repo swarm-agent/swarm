@@ -5,11 +5,13 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/cockroachdb/pebble"
 	"github.com/google/uuid"
 )
 
@@ -32,6 +34,13 @@ const (
 	WorkspaceDefinitionStatusCompleted = "completed"
 	WorkspaceDefinitionStatusFailed    = "failed"
 )
+
+type WorkspaceCatalogUpdate struct {
+	ExpectedGeneration int64
+	NewPath            string
+	Name               *string
+	ThemeID            *string
+}
 
 type WorkspaceEntry struct {
 	AccountScopeID            string   `json:"account_scope_id,omitempty"`
@@ -63,6 +72,7 @@ type WorkspaceEntry struct {
 type WorkspaceStore struct {
 	store        *Store
 	definitionMu sync.Mutex
+	catalogMu    sync.Mutex
 }
 
 func NewWorkspaceStore(store *Store) *WorkspaceStore {
@@ -87,6 +97,168 @@ func (s *WorkspaceStore) SetCurrentForAccount(accountScopeID, userID, path, name
 
 func (s *WorkspaceStore) AddForAccount(accountScopeID, path, name string) (WorkspaceEntry, error) {
 	return s.upsertForAccount(accountScopeID, path, name, "", false)
+}
+
+// CreateForAccountIfAbsent creates only a new catalog identity. Unlike the
+// compatibility Save methods, it never turns a create request into an update.
+func (s *WorkspaceStore) CreateForAccountIfAbsent(accountScopeID, path, name, themeID string) (WorkspaceEntry, bool, error) {
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	path = strings.TrimSpace(path)
+	name = strings.TrimSpace(name)
+	if accountScopeID == "" {
+		return WorkspaceEntry{}, false, fmt.Errorf("account scope is required")
+	}
+	if path == "" {
+		return WorkspaceEntry{}, false, fmt.Errorf("workspace path is required")
+	}
+	if name == "" {
+		return WorkspaceEntry{}, false, fmt.Errorf("workspace name is required")
+	}
+
+	s.catalogMu.Lock()
+	defer s.catalogMu.Unlock()
+	if existing, ok, err := s.GetForAccount(accountScopeID, path); err != nil {
+		return WorkspaceEntry{}, false, err
+	} else if ok {
+		return existing, false, nil
+	}
+	now := time.Now().UnixMilli()
+	entry := normalizeWorkspaceEntryForAccount(accountScopeID, WorkspaceEntry{
+		WorkspaceID: newWorkspaceID(), WorkspaceGeneration: 1, State: "active",
+		Path: path, Name: name, ThemeID: themeID, Directories: []string{path},
+		AddedAt: now, UpdatedAt: now,
+	})
+	if err := s.putWorkspaceEntryAtomicForAccount(accountScopeID, entry, ""); err != nil {
+		return WorkspaceEntry{}, false, err
+	}
+	return entry, true, nil
+}
+
+// UpdateForWorkspaceIDForAccountGuarded applies one identity- and
+// generation-guarded catalog edit atomically. A path edit preserves the stable
+// workspace id and advances the generation; name/theme-only edits do not.
+func (s *WorkspaceStore) UpdateForWorkspaceIDForAccountGuarded(accountScopeID, userID, workspaceID string, update WorkspaceCatalogUpdate) (WorkspaceEntry, error) {
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	userID = strings.TrimSpace(userID)
+	workspaceID = strings.TrimSpace(workspaceID)
+	if accountScopeID == "" {
+		return WorkspaceEntry{}, fmt.Errorf("account scope is required")
+	}
+	if workspaceID == "" {
+		return WorkspaceEntry{}, fmt.Errorf("workspace id is required")
+	}
+	if update.ExpectedGeneration <= 0 {
+		return WorkspaceEntry{}, fmt.Errorf("expected workspace generation is required")
+	}
+
+	s.catalogMu.Lock()
+	defer s.catalogMu.Unlock()
+	entry, ok, err := s.GetByWorkspaceIDForAccount(accountScopeID, workspaceID)
+	if err != nil {
+		return WorkspaceEntry{}, err
+	}
+	if !ok {
+		return WorkspaceEntry{}, fmt.Errorf("workspace id %q not found", workspaceID)
+	}
+	if !strings.EqualFold(strings.TrimSpace(entry.State), "active") {
+		return WorkspaceEntry{}, fmt.Errorf("workspace id %q is not active", workspaceID)
+	}
+	if entry.WorkspaceGeneration != update.ExpectedGeneration {
+		return WorkspaceEntry{}, fmt.Errorf("workspace generation is stale: expected %d, current %d", update.ExpectedGeneration, entry.WorkspaceGeneration)
+	}
+	oldPath := entry.Path
+	newPath := strings.TrimSpace(update.NewPath)
+	if newPath == "" {
+		newPath = oldPath
+	}
+	if existing, exists, lookupErr := s.GetForAccount(accountScopeID, newPath); lookupErr != nil {
+		return WorkspaceEntry{}, lookupErr
+	} else if exists && existing.WorkspaceID != workspaceID {
+		return WorkspaceEntry{}, fmt.Errorf("workspace path %q already belongs to workspace id %q", newPath, existing.WorkspaceID)
+	}
+	if update.Name != nil {
+		name := strings.TrimSpace(*update.Name)
+		if name == "" {
+			return WorkspaceEntry{}, fmt.Errorf("workspace name is required")
+		}
+		entry.Name = name
+	}
+	if update.ThemeID != nil {
+		entry.ThemeID = normalizeWorkspaceThemeID(*update.ThemeID)
+	}
+	if newPath != oldPath {
+		entry.Path = newPath
+		entry.Directories = normalizeWorkspaceDirectories(newPath, nil)
+		entry.WorkspaceGeneration++
+	}
+	entry.UpdatedAt = time.Now().UnixMilli()
+
+	var binding *WorkspaceBinding
+	if userID != "" {
+		if current, hasCurrent, bindingErr := s.GetCurrentForAccount(accountScopeID, userID); bindingErr != nil {
+			return WorkspaceEntry{}, bindingErr
+		} else if hasCurrent && (current.WorkspaceID == workspaceID || current.Path == oldPath) {
+			current.WorkspaceID = workspaceID
+			current.WorkspaceGeneration = entry.WorkspaceGeneration
+			current.Path = entry.Path
+			current.Name = entry.Name
+			current.ResolvedAt = entry.UpdatedAt
+			binding = &current
+		}
+	}
+	if err := s.putWorkspaceCatalogMutationAtomic(accountScopeID, userID, entry, oldPath, binding, false); err != nil {
+		return WorkspaceEntry{}, err
+	}
+	return entry, nil
+}
+
+// DeleteForWorkspaceIDForAccountGuarded unlinks only the saved catalog entry.
+// It never removes the workspace directory or any files beneath it.
+func (s *WorkspaceStore) DeleteForWorkspaceIDForAccountGuarded(accountScopeID, userID, workspaceID string, expectedGeneration int64) (WorkspaceEntry, error) {
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	userID = strings.TrimSpace(userID)
+	workspaceID = strings.TrimSpace(workspaceID)
+	if accountScopeID == "" {
+		return WorkspaceEntry{}, fmt.Errorf("account scope is required")
+	}
+	if workspaceID == "" {
+		return WorkspaceEntry{}, fmt.Errorf("workspace id is required")
+	}
+	if expectedGeneration <= 0 {
+		return WorkspaceEntry{}, fmt.Errorf("expected workspace generation is required")
+	}
+
+	s.catalogMu.Lock()
+	defer s.catalogMu.Unlock()
+	entry, ok, err := s.GetByWorkspaceIDForAccount(accountScopeID, workspaceID)
+	if err != nil {
+		return WorkspaceEntry{}, err
+	}
+	if !ok {
+		return WorkspaceEntry{}, fmt.Errorf("workspace id %q not found", workspaceID)
+	}
+	if !strings.EqualFold(strings.TrimSpace(entry.State), "active") {
+		return WorkspaceEntry{}, fmt.Errorf("workspace id %q is not active", workspaceID)
+	}
+	if entry.WorkspaceGeneration != expectedGeneration {
+		return WorkspaceEntry{}, fmt.Errorf("workspace generation is stale: expected %d, current %d", expectedGeneration, entry.WorkspaceGeneration)
+	}
+	deleteCurrent := false
+	if userID != "" {
+		if current, hasCurrent, bindingErr := s.GetCurrentForAccount(accountScopeID, userID); bindingErr != nil {
+			return WorkspaceEntry{}, bindingErr
+		} else if hasCurrent && (current.WorkspaceID == workspaceID || current.Path == entry.Path) {
+			deleteCurrent = true
+		}
+	}
+	var binding *WorkspaceBinding
+	if deleteCurrent {
+		binding = &WorkspaceBinding{}
+	}
+	if err := s.putWorkspaceCatalogMutationAtomic(accountScopeID, userID, entry, entry.Path, binding, true); err != nil {
+		return WorkspaceEntry{}, err
+	}
+	return entry, nil
 }
 
 // MarkDefinitionPendingForAccount starts a new workspace-definition generation.
@@ -443,39 +615,11 @@ func (s *WorkspaceStore) MoveForAccount(accountScopeID, path string, delta int) 
 	return entries[target], nil
 }
 
+// AddDirectoryForAccount is retained as a fail-closed compatibility boundary.
+// Linked directories are no longer workspace membership authority: every saved
+// path is an independent entry in the account-global workspace catalog.
 func (s *WorkspaceStore) AddDirectoryForAccount(accountScopeID, path, directory string) (WorkspaceEntry, error) {
-	accountScopeID = strings.TrimSpace(accountScopeID)
-	if accountScopeID == "" {
-		return WorkspaceEntry{}, fmt.Errorf("account scope is required")
-	}
-	path = strings.TrimSpace(path)
-	directory = strings.TrimSpace(directory)
-	if path == "" {
-		return WorkspaceEntry{}, fmt.Errorf("workspace path is required")
-	}
-	if directory == "" {
-		return WorkspaceEntry{}, fmt.Errorf("directory path is required")
-	}
-	entry, ok, err := s.GetForAccount(accountScopeID, path)
-	if err != nil {
-		return WorkspaceEntry{}, err
-	}
-	if !ok {
-		return WorkspaceEntry{}, fmt.Errorf("workspace %q not found", path)
-	}
-	for _, existing := range entry.Directories {
-		if existing == directory {
-			return WorkspaceEntry{}, fmt.Errorf("directory %q is already linked to workspace %q", directory, path)
-		}
-	}
-	entry = normalizeWorkspaceEntryForAccount(accountScopeID, entry)
-	entry.Directories = append(entry.Directories, directory)
-	entry.Directories = normalizeWorkspaceDirectories(entry.Path, entry.Directories)
-	entry.UpdatedAt = time.Now().UnixMilli()
-	if err := s.putWorkspaceEntryForAccount(accountScopeID, entry); err != nil {
-		return WorkspaceEntry{}, err
-	}
-	return entry, nil
+	return WorkspaceEntry{}, fmt.Errorf("linked workspace directories are retired; save %q as a workspace instead", strings.TrimSpace(directory))
 }
 
 // AddSourceMediaDirectoryForAccount records source-media metadata separately
@@ -554,48 +698,10 @@ func (s *WorkspaceStore) RemoveSourceMediaDirectoryForAccount(accountScopeID, pa
 	return entry, nil
 }
 
+// RemoveDirectoryForAccount is retained as a fail-closed compatibility
+// boundary. Removing a flat workspace is an explicit workspace delete.
 func (s *WorkspaceStore) RemoveDirectoryForAccount(accountScopeID, path, directory string) (WorkspaceEntry, error) {
-	accountScopeID = strings.TrimSpace(accountScopeID)
-	if accountScopeID == "" {
-		return WorkspaceEntry{}, fmt.Errorf("account scope is required")
-	}
-	path = strings.TrimSpace(path)
-	directory = strings.TrimSpace(directory)
-	if path == "" {
-		return WorkspaceEntry{}, fmt.Errorf("workspace path is required")
-	}
-	if directory == "" {
-		return WorkspaceEntry{}, fmt.Errorf("directory path is required")
-	}
-	entry, ok, err := s.GetForAccount(accountScopeID, path)
-	if err != nil {
-		return WorkspaceEntry{}, err
-	}
-	if !ok {
-		return WorkspaceEntry{}, fmt.Errorf("workspace %q not found", path)
-	}
-	if entry.Path == directory {
-		return WorkspaceEntry{}, fmt.Errorf("primary workspace directory cannot be removed")
-	}
-	updated := make([]string, 0, len(entry.Directories))
-	removed := false
-	for _, existing := range entry.Directories {
-		if existing == directory {
-			removed = true
-			continue
-		}
-		updated = append(updated, existing)
-	}
-	if !removed {
-		return WorkspaceEntry{}, fmt.Errorf("directory %q is not linked to workspace %q", directory, path)
-	}
-	entry = normalizeWorkspaceEntryForAccount(accountScopeID, entry)
-	entry.Directories = normalizeWorkspaceDirectories(entry.Path, updated)
-	entry.UpdatedAt = time.Now().UnixMilli()
-	if err := s.putWorkspaceEntryForAccount(accountScopeID, entry); err != nil {
-		return WorkspaceEntry{}, err
-	}
-	return entry, nil
+	return WorkspaceEntry{}, fmt.Errorf("linked workspace directories are retired; delete workspace %q explicitly", strings.TrimSpace(directory))
 }
 
 func (s *WorkspaceStore) GetCurrentForAccount(accountScopeID, userID string) (WorkspaceBinding, bool, error) {
@@ -854,22 +960,69 @@ func (s *WorkspaceStore) listAllForAccount(accountScopeID string) ([]WorkspaceEn
 	if accountScopeID == "" {
 		return nil, fmt.Errorf("account scope is required")
 	}
-	out := make([]WorkspaceEntry, 0, 200)
+	raw := make([]WorkspaceEntry, 0, 200)
 	err := s.store.IteratePrefix(WorkspaceEntryPrefixForAccount(accountScopeID), 100000, func(_ string, value []byte) error {
 		var entry WorkspaceEntry
 		if err := json.Unmarshal(value, &entry); err != nil {
 			return err
 		}
-		if strings.TrimSpace(entry.Path) == "" {
-			return nil
+		if strings.TrimSpace(entry.Path) != "" {
+			raw = append(raw, entry)
 		}
-		entry = normalizeWorkspaceEntryForAccount(accountScopeID, entry)
-		out = append(out, entry)
 		return nil
 	})
 	if err != nil {
 		return nil, err
 	}
+
+	// Older records embedded secondary directories in a parent workspace. Flatten
+	// them once into independent, account-scoped catalog entries before linked
+	// membership is discarded by normalization. Deterministic IDs make a partial
+	// migration safe to retry, while an already-saved path always wins.
+	knownPaths := make(map[string]struct{}, len(raw))
+	for _, entry := range raw {
+		knownPaths[strings.TrimSpace(entry.Path)] = struct{}{}
+	}
+	migrated := make([]WorkspaceEntry, 0)
+	for _, parent := range raw {
+		for _, candidate := range parent.Directories {
+			candidate = strings.TrimSpace(candidate)
+			if candidate == "" || candidate == strings.TrimSpace(parent.Path) {
+				continue
+			}
+			if _, exists := knownPaths[candidate]; exists {
+				continue
+			}
+			now := time.Now().UnixMilli()
+			name := filepath.Base(candidate)
+			if name == "." || name == string(filepath.Separator) || strings.TrimSpace(name) == "" {
+				name = candidate
+			}
+			entry := normalizeWorkspaceEntryForAccount(accountScopeID, WorkspaceEntry{
+				AccountScopeID: accountScopeID, WorkspaceID: legacyWorkspaceID(accountScopeID, candidate),
+				WorkspaceGeneration: 1, State: "active", Path: candidate, Name: name,
+				ThemeID: parent.ThemeID, Directories: []string{candidate}, SortIndex: len(raw) + len(migrated),
+				AddedAt: now, UpdatedAt: now,
+			})
+			if err := s.putWorkspaceEntryForAccount(accountScopeID, entry); err != nil {
+				return nil, fmt.Errorf("migrate linked directory %q to flat workspace: %w", candidate, err)
+			}
+			knownPaths[candidate] = struct{}{}
+			migrated = append(migrated, entry)
+		}
+	}
+
+	out := make([]WorkspaceEntry, 0, len(raw)+len(migrated))
+	for _, entry := range raw {
+		normalized := normalizeWorkspaceEntryForAccount(accountScopeID, entry)
+		if len(entry.Directories) != 1 || strings.TrimSpace(entry.Directories[0]) != normalized.Path {
+			if err := s.putWorkspaceEntryForAccount(accountScopeID, normalized); err != nil {
+				return nil, fmt.Errorf("retire linked workspace authority for %q: %w", normalized.Path, err)
+			}
+		}
+		out = append(out, normalized)
+	}
+	out = append(out, migrated...)
 	sortWorkspaceEntries(out)
 	return out, nil
 }
@@ -952,6 +1105,21 @@ func normalizeWorkspaceDirectories(primary string, directories []string) []strin
 }
 
 func (s *WorkspaceStore) putWorkspaceEntryForAccount(accountScopeID string, entry WorkspaceEntry) error {
+	oldPath := ""
+	oldByID := WorkspaceEntry{}
+	if ok, err := s.store.GetJSON(KeyWorkspaceEntryByIDForAccount(accountScopeID, strings.TrimSpace(entry.WorkspaceID)), &oldByID); err != nil {
+		return err
+	} else if ok {
+		oldPath = strings.TrimSpace(oldByID.Path)
+	}
+	return s.putWorkspaceEntryAtomicForAccount(accountScopeID, entry, oldPath)
+}
+
+func (s *WorkspaceStore) putWorkspaceEntryAtomicForAccount(accountScopeID string, entry WorkspaceEntry, oldPath string) error {
+	return s.putWorkspaceCatalogMutationAtomic(accountScopeID, "", entry, oldPath, nil, false)
+}
+
+func (s *WorkspaceStore) putWorkspaceCatalogMutationAtomic(accountScopeID, userID string, entry WorkspaceEntry, oldPath string, binding *WorkspaceBinding, deleting bool) error {
 	entry = normalizeWorkspaceEntryForAccount(accountScopeID, entry)
 	if strings.TrimSpace(entry.Path) == "" {
 		return fmt.Errorf("workspace path is required")
@@ -959,18 +1127,59 @@ func (s *WorkspaceStore) putWorkspaceEntryForAccount(accountScopeID string, entr
 	if strings.TrimSpace(entry.WorkspaceID) == "" {
 		return fmt.Errorf("workspace id is required")
 	}
-	oldByID := WorkspaceEntry{}
-	if ok, err := s.store.GetJSON(KeyWorkspaceEntryByIDForAccount(accountScopeID, entry.WorkspaceID), &oldByID); err != nil {
+	entryPayload, err := json.Marshal(entry)
+	if err != nil {
 		return err
-	} else if ok && strings.TrimSpace(oldByID.Path) != "" && strings.TrimSpace(oldByID.Path) != entry.Path {
-		if err := s.store.Delete(KeyWorkspaceEntryForAccount(accountScopeID, oldByID.Path)); err != nil {
+	}
+	batch := s.store.NewBatch()
+	defer batch.Close()
+	entryKey := []byte(KeyWorkspaceEntryForAccount(accountScopeID, entry.Path))
+	idKey := []byte(KeyWorkspaceEntryByIDForAccount(accountScopeID, entry.WorkspaceID))
+	if deleting {
+		if err := batch.Delete(entryKey, nil); err != nil {
+			return err
+		}
+		if err := batch.Delete(idKey, nil); err != nil {
+			return err
+		}
+	} else {
+		if err := batch.Set(entryKey, entryPayload, nil); err != nil {
+			return err
+		}
+		if err := batch.Set(idKey, entryPayload, nil); err != nil {
 			return err
 		}
 	}
-	if err := s.store.PutJSON(KeyWorkspaceEntryForAccount(accountScopeID, entry.Path), entry); err != nil {
-		return err
+	oldPath = strings.TrimSpace(oldPath)
+	if oldPath != "" && oldPath != entry.Path {
+		if err := batch.Delete([]byte(KeyWorkspaceEntryForAccount(accountScopeID, oldPath)), nil); err != nil {
+			return err
+		}
 	}
-	return s.store.PutJSON(KeyWorkspaceEntryByIDForAccount(accountScopeID, entry.WorkspaceID), entry)
+	if binding != nil {
+		userID = strings.TrimSpace(userID)
+		if userID == "" {
+			return fmt.Errorf("user id is required for current workspace mutation")
+		}
+		currentKey := []byte(KeyWorkspaceCurrentForAccount(accountScopeID, userID))
+		if deleting && strings.TrimSpace(binding.Path) == "" {
+			if err := batch.Delete(currentKey, nil); err != nil {
+				return err
+			}
+		} else {
+			bindingPayload, marshalErr := json.Marshal(binding)
+			if marshalErr != nil {
+				return marshalErr
+			}
+			if err := batch.Set(currentKey, bindingPayload, nil); err != nil {
+				return err
+			}
+		}
+	}
+	if err := batch.Commit(pebble.Sync); err != nil {
+		return fmt.Errorf("commit workspace catalog mutation: %w", err)
+	}
+	return nil
 }
 
 func NormalizeWorkspaceEntryForAccount(accountScopeID string, entry WorkspaceEntry) WorkspaceEntry {
@@ -982,7 +1191,9 @@ func normalizeWorkspaceEntryForAccount(accountScopeID string, entry WorkspaceEnt
 	entry.Path = strings.TrimSpace(entry.Path)
 	entry.Name = strings.TrimSpace(entry.Name)
 	entry.ThemeID = normalizeWorkspaceThemeID(entry.ThemeID)
-	entry.Directories = normalizeWorkspaceDirectories(entry.Path, entry.Directories)
+	// The account-global catalog is flat. A workspace owns exactly its canonical
+	// primary path; historical linked roots are migrated by listAllForAccount.
+	entry.Directories = normalizeWorkspaceDirectories(entry.Path, nil)
 	entry.SourceMediaDirectories = normalizeSourceMediaDirectories(entry.SourceMediaDirectories)
 	entry.State = normalizeWorkspaceState(entry.State)
 	if entry.WorkspaceGeneration <= 0 {

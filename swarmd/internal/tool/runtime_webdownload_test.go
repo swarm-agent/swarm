@@ -136,6 +136,22 @@ func TestWebDownloadExplicitOutputDirRemainsWorkspaceRelative(t *testing.T) {
 	}
 }
 
+func TestResolveWebDownloadOutputDirRejectsCoderReadOnlyRootBeforeCreation(t *testing.T) {
+	workspaceDir := t.TempDir()
+	readOnlyDir := t.TempDir()
+	scope := normalizeWorkspaceScope(workspaceDir, nil)
+	scope.ReadOnlyRoots = []string{readOnlyDir}
+	scope.MutationScopes = []string{"."}
+
+	requested := filepath.Join(readOnlyDir, "downloads")
+	if _, _, err := resolveWebDownloadOutputDir(scope, requested); err == nil || !strings.Contains(err.Error(), "outside the Coder owned scope") {
+		t.Fatalf("read-only output directory error = %v, want owned-scope rejection", err)
+	}
+	if _, err := os.Stat(requested); !os.IsNotExist(err) {
+		t.Fatalf("read-only output directory was created: %v", err)
+	}
+}
+
 func TestWriteWorkspaceFileRejectsLinksAndSymlinkedDirectories(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("symlink creation requires privileges on some Windows hosts")

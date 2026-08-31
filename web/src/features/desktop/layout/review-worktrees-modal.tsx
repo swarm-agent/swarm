@@ -198,6 +198,22 @@ export function ReviewWorktreesModal({ workspacePath, onClose, onAskSwarmFix, re
   }
   const reviewIDs = useMemo(() => selectableReviewIDs(result), [result])
   const archiveCandidates = useMemo(() => selectedArchiveCandidates(result, selected), [result, selected])
+  const promoteReviewWorktree = useCallback(async (candidate: ReviewWorktreeCandidate) => {
+    const sourceHead = candidate.source_head?.trim()
+    const targetBranch = result?.current_target_branch?.trim()
+    const targetHead = result?.current_target_head?.trim()
+    if (!sourceHead || !targetBranch || !targetHead) {
+      throw new Error('Promotion lineage is incomplete. Recheck worktrees before promoting.')
+    }
+    await reviewDesktopV3Worktrees({
+      workspacePath,
+      promoteSessionIds: [candidate.session_id],
+      sourceHeadBySessionId: { [candidate.session_id]: sourceHead },
+      targetBranch,
+      targetHead,
+      graceHours: 1,
+    })
+  }, [result, workspacePath])
   const checkoutCommitCandidate = useMemo(() => currentCheckoutCommitCandidate(result), [result])
   const reviewCommitWorktrees = useMemo(() => reviewCommitCandidates(result), [result])
   const showReviewCommitAction = useMemo(() => shouldShowReviewCommitAction(result), [result])
@@ -254,7 +270,21 @@ export function ReviewWorktreesModal({ workspacePath, onClose, onAskSwarmFix, re
       await commitWorkspaceChanges({ workspacePath: worktreePath, sessionId: candidate.session_id, message: commitMessage, all: true })
       commitSucceeded = true
       if (commitAndIntegrate) {
-        await reviewDesktopV3Worktrees({ workspacePath, integrateSessionIds: [candidate.session_id], graceHours: 1 })
+        const refreshed = await reviewDesktopV3Worktrees({ workspacePath, graceHours: 1 })
+        const committedCandidate = refreshed.retained.find((item) => item.session_id === candidate.session_id)
+        if (!committedCandidate) throw new Error('Committed worktree is no longer promotion-ready. Recheck worktrees before promoting.')
+        const sourceHead = committedCandidate.source_head?.trim()
+        const targetBranch = refreshed.current_target_branch?.trim()
+        const targetHead = refreshed.current_target_head?.trim()
+        if (!sourceHead || !targetBranch || !targetHead) throw new Error('Promotion lineage is incomplete. Recheck worktrees before promoting.')
+        await reviewDesktopV3Worktrees({
+          workspacePath,
+          promoteSessionIds: [committedCandidate.session_id],
+          sourceHeadBySessionId: { [committedCandidate.session_id]: sourceHead },
+          targetBranch,
+          targetHead,
+          graceHours: 1,
+        })
         integrateSucceeded = true
         if (archiveAfterIntegration) {
           await reviewDesktopV3Worktrees({ workspacePath, archiveSessionIds: [candidate.session_id], graceHours: 1 })
@@ -349,7 +379,7 @@ export function ReviewWorktreesModal({ workspacePath, onClose, onAskSwarmFix, re
     let integrated = integrationSucceeded
     try {
       if (!integrated) {
-        await reviewDesktopV3Worktrees({ workspacePath, integrateSessionIds: [integrateCandidate.session_id], graceHours: 1 })
+        await promoteReviewWorktree(integrateCandidate)
         integrated = true
         setIntegrationSucceeded(true)
       }

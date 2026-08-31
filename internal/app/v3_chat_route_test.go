@@ -441,9 +441,14 @@ func TestNewHomepageChatRouteUsesV3PageBoundary(t *testing.T) {
 	if !strings.Contains(productionRoute, "openNewV3Chat") {
 		t.Fatal("new homepage route does not open V3 page")
 	}
-	for _, required := range []string{"newV3ChatCreateOptions", "a.v3Chat.OpenNew(", "openRoutedV3Primer", "ManagedWorktreeRequested", "PlanModeRequested", "canonicalSelfChatRoute"} {
+	for _, required := range []string{"openRoutedV3Primer", "PlanModeRequested", "canonicalSelfChatRoute"} {
 		if !strings.Contains(string(routeRaw), required) {
-			t.Fatalf("new homepage route is missing direct/routed V3 boundary %q", required)
+			t.Fatalf("new homepage route is missing mandatory routed V3 boundary %q", required)
+		}
+	}
+	for _, retired := range []string{"Managed" + "Worktree" + "Requested", "Worktree" + "Mode:", "a.v3Chat." + "OpenNew("} {
+		if strings.Contains(string(routeRaw), retired) {
+			t.Fatalf("new homepage route retains retired direct/worktree-toggle authority %q", retired)
 		}
 	}
 	if strings.Contains(appSource, "openLegacyChatSessionWithWorktree") {

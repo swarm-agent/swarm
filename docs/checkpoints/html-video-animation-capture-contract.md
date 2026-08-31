@@ -39,7 +39,8 @@ The page may author any motion permitted by its reviewed `motion_ui`, `spatial_3
 
 ## Fixed limits and security
 
-- Output is 1920×1080, 1–30 FPS, 100–10,000 ms, and at most 300 frames.
+- Output is 1920×1080, 1–60 FPS, 100–600,000 ms, and at most 36,000 frames.
+- Capture uses bounded 300-frame windows. Each window seeks the authored runtime with global timeline timestamps, encodes one silent segment, removes its private PNGs, then deterministically concatenates all segments.
 - Browser and encoder paths are daemon-owned system paths. Tool calls cannot override them.
 - A fresh sandboxed Chrome profile and private job directory are used for each operation.
 - External network, downloads, popups, navigation, forms, workers, and HTML media are blocked by CSP and request interception.
@@ -70,6 +71,7 @@ No duration, FPS, browser, encoder, dimensions, runtime, output path, or network
 
 - `landscape_video` output requirements;
 - `final_render` playback profile;
+- temporal review targets copied from a compatible `swarm.iteration/v1` manifest whose duration matches the animation timeline;
 - source session, collection, variant, and event-sequence lineage;
 - video presentation metadata suitable for preview.
 
@@ -81,4 +83,4 @@ Use that exact reference as `artifact_ref` on a visible `managed_artifact` video
 
 ## Known limits
 
-The v1 contract records deterministic visual state, not browser wall-clock behavior. Authored code that cannot implement stable random-access `seek(timeMs)` is unsupported. HTML-originated audio, live microphone/camera input, remote assets, dynamic network data, and durations above ten seconds require a separately reviewed future contract.
+The v1 contract records deterministic visual state, not browser wall-clock behavior. Authored code that cannot implement stable random-access `seek(timeMs)` is unsupported. HTML-originated audio, live microphone/camera input, remote assets, dynamic network data, and durations above ten minutes require a separately reviewed future contract.

@@ -142,7 +142,6 @@ type Page struct {
 	permissionAskSelectTarget    footerbar.Rect
 	permissionAskSubmitTarget    footerbar.Rect
 	permissionWorkspaceTarget    footerbar.Rect
-	permissionWorkspaceAddTarget footerbar.Rect
 	handoffFocus                 bool
 	handoffMessageID             string
 	handoffControl               int
@@ -576,7 +575,6 @@ func (p *Page) PrimeRoutedDraft(draft RoutedDraft) error {
 func (p *Page) OpenRoutedNew(command NewCommand, authority RoutedDraft) error {
 	authority.Prompt = command.Prompt
 	authority.PlanModeRequested = command.PlanModeRequested
-	authority.ManagedWorktreeRequested = command.ManagedWorktreeRequested
 	if err := p.PrimeRoutedDraft(authority); err != nil {
 		return err
 	}
@@ -613,27 +611,6 @@ func (p *Page) RetryRoutedDraft() {
 		_, err := p.runtime.RetryRoutedDraft(ctx)
 		p.finishAsync("", err)
 	}()
-}
-
-// ApplyWorktreeCommand changes only the ready local primer flag.
-func (p *Page) ApplyWorktreeCommand(input string) (bool, error) {
-	command, matched, err := ParseWorktreeCommand(input)
-	if !matched || err != nil {
-		return matched, err
-	}
-	if p == nil || p.runtime == nil || p.runtime.Store() == nil {
-		return true, fmt.Errorf("v3 chat runtime is not configured")
-	}
-	state := p.runtime.Store().Snapshot()
-	draft, routed := SelectRoutedDraft(state)
-	if !routed || strings.TrimSpace(state.Session.ID) != "" || draft.Status != RoutedDraftReady {
-		return true, fmt.Errorf("worktree priming is available only for a new session draft")
-	}
-	if err := p.runtime.UpdateRoutedDraftIntent(draft.Prompt, draft.PlanModeRequested, command.Enabled); err != nil {
-		return true, err
-	}
-	p.SetStatus("Worktree: " + map[bool]string{true: "on", false: "off"}[command.Enabled])
-	return true, nil
 }
 
 func (p *Page) OpenNew(request NewSessionRequest) {
@@ -842,7 +819,7 @@ func (p *Page) HandleKey(ev *tcell.EventKey) PageAction {
 			if p.runtime != nil && p.runtime.Store() != nil {
 				state := p.runtime.Store().Snapshot()
 				if draft, ok := SelectRoutedDraft(state); ok && strings.TrimSpace(state.Session.ID) == "" && draft.Status == RoutedDraftReady {
-					if err := p.runtime.UpdateRoutedDraftIntent(text, draft.PlanModeRequested, draft.ManagedWorktreeRequested); err != nil {
+					if err := p.runtime.UpdateRoutedDraftIntent(text, draft.PlanModeRequested); err != nil {
 						p.errText = err.Error()
 						break
 					}
@@ -1136,7 +1113,7 @@ func (p *Page) cycleModeLocked() {
 		return
 	}
 	next := !draft.PlanModeRequested
-	if err := p.runtime.UpdateRoutedDraftIntent(draft.Prompt, next, draft.ManagedWorktreeRequested); err != nil {
+	if err := p.runtime.UpdateRoutedDraftIntent(draft.Prompt, next); err != nil {
 		p.errText = err.Error()
 		p.status = ""
 		return
@@ -1512,11 +1489,6 @@ func (p *Page) HandleMouse(ev *tcell.EventMouse) {
 			case containsFooterPoint(p.permissionWorkspaceTarget, x, y) && isWorkspaceScopePermission(permission):
 				intent, _ := parseWorkspaceScopeIntent(permission)
 				p.resolvePermissionWithReasonLocked(permission, "allow_once", workspaceScopeResolutionReason(intent.SessionAllow.Decision))
-			case containsFooterPoint(p.permissionWorkspaceAddTarget, x, y) && isWorkspaceScopePermission(permission):
-				intent, _ := parseWorkspaceScopeIntent(permission)
-				if intent.AddToWorkspace.Available {
-					p.resolvePermissionWithReasonLocked(permission, "allow_once", workspaceScopeResolutionReason(intent.AddToWorkspace.Decision))
-				}
 			case containsFooterPoint(p.permissionApproveTarget, x, y):
 				p.resolvePermissionLocked(permissions[p.permissionIndex], "allow_once")
 			case containsFooterPoint(p.permissionDenyTarget, x, y):
@@ -1756,7 +1728,6 @@ func (p *Page) DrawAt(screen tcell.Screen, now time.Time) {
 	p.permissionAskSelectTarget = actionTargets["ask_select"]
 	p.permissionAskSubmitTarget = actionTargets["ask_submit"]
 	p.permissionWorkspaceTarget = actionTargets["workspace_session"]
-	p.permissionWorkspaceAddTarget = actionTargets["workspace_add"]
 	p.handoffTargets = make(map[string]footerbar.Rect)
 	for action, target := range actionTargets {
 		if strings.HasPrefix(action, "handoff:") {
@@ -2221,12 +2192,10 @@ func (p *Page) drawCanonicalFooter(screen tcell.Screen, rect footerbar.Rect, sta
 	usage := SelectUsage(state)
 	displayedMode := "off"
 	planToggle := true
-	worktreeRequested := false
 	if strings.EqualFold(strings.TrimSpace(state.Session.Mode), "plan") {
 		displayedMode = "on"
 	}
 	if draft, ok := SelectRoutedDraft(state); ok && strings.TrimSpace(state.Session.ID) == "" && draft.Status != RoutedDraftResolved {
-		worktreeRequested = draft.ManagedWorktreeRequested
 		if draft.PlanModeRequested {
 			displayedMode = "on"
 		} else {
@@ -2238,16 +2207,15 @@ func (p *Page) drawCanonicalFooter(screen tcell.Screen, rect footerbar.Rect, sta
 		localRoutedDraft = true
 	}
 	footerState := footerbar.State{
-		RouteLabel:        strings.TrimSpace(routeLabel),
-		DisplayedMode:     displayedMode,
-		Agent:             "swarm",
-		ModelLabel:        displayModelLabel(modelState.Preference),
-		Thinking:          strings.TrimSpace(modelState.Preference.Thinking),
-		ServiceTier:       strings.TrimSpace(modelState.Preference.ServiceTier),
-		PlanToggle:        planToggle,
-		WorktreeRequested: worktreeRequested,
-		HideAgentModel:    localRoutedDraft,
-		RightFacts:        conversationContextFacts(usage, modelState.ContextWindow),
+		RouteLabel:     strings.TrimSpace(routeLabel),
+		DisplayedMode:  displayedMode,
+		Agent:          "swarm",
+		ModelLabel:     displayModelLabel(modelState.Preference),
+		Thinking:       strings.TrimSpace(modelState.Preference.Thinking),
+		ServiceTier:    strings.TrimSpace(modelState.Preference.ServiceTier),
+		PlanToggle:     planToggle,
+		HideAgentModel: localRoutedDraft,
+		RightFacts:     conversationContextFacts(usage, modelState.ContextWindow),
 	}
 	footerbar.Draw(screen, footerbar.Styles{Border: p.styles.Border, Accent: p.styles.Accent, Secondary: p.styles.Secondary, Text: p.styles.Text}, rect, footerState, func(target footerbar.Rect, token footerbar.Token) {
 		if token.Action == "open-agents-modal" {
@@ -2593,7 +2561,7 @@ func (p *Page) renderRowsForHeight(state State, width, availableHeight int, styl
 		if strings.TrimSpace(draft.Prompt) != "" {
 			rows = append(rows, p.renderUserRows("routed-draft:"+draft.ClientRequestID, draft.Prompt, width, styles)...)
 		}
-		flags := []string{"Plan: " + map[bool]string{true: "on", false: "off"}[draft.PlanModeRequested], "Worktree: " + map[bool]string{true: "on", false: "off"}[draft.ManagedWorktreeRequested]}
+		flags := []string{"Plan: " + map[bool]string{true: "on", false: "off"}[draft.PlanModeRequested]}
 		statusStyle := styles.Muted
 		if draft.Status == RoutedDraftFailed {
 			statusStyle = styles.Error

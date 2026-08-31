@@ -3,6 +3,7 @@ import type { ModelProfileChoice, ModelProfileSelectionRecord } from '../chat/ty
 import type { DesktopSessionMode } from '../settings/swarm/types/swarm-settings'
 import type { DesktopV3ArtifactMessageSelection } from './artifact-api'
 import type { DesktopVideoSourceAttachment } from '../chat/services/video-source-attachments'
+import { desktopRoutedSessionMetadata } from '../chat/services/desktop-routed-worktree-intent'
 
 import type {
   DesktopV3MediaCapability,
@@ -15,6 +16,7 @@ import type {
   SessionMutationResult,
   SessionSnapshot,
   V3SessionProjection,
+  V3SessionRunIntent,
 } from '../state/desktop-v3-cache-types'
 
 export interface DesktopV3CreateSessionRequest {
@@ -132,7 +134,6 @@ export interface DesktopV3RoutedSessionStartRequest extends DesktopV3RoutedWorks
   idempotency_key?: string
   agent_name: string
   metadata?: Record<string, unknown>
-  managed_worktree_requested: boolean
   plan_mode_requested: boolean
   media?: DesktopV3RoutedSessionMediaRequest[]
   staging_ids?: string[]
@@ -186,6 +187,7 @@ export interface DesktopV3RoutedSessionMutation extends SessionMutationResult {
   session_id: string
   projection: V3SessionProjection
   message: MessageSnapshot
+  run_intent?: V3SessionRunIntent | null
   replayed?: boolean
 }
 
@@ -302,9 +304,6 @@ export async function postDesktopV3RoutedSessionStart(
   if (idempotencyKey !== clientRequestId) {
     throw new Error('Desktop V3 routed start requires one stable client_request_id/idempotency identity')
   }
-  if (typeof input.managed_worktree_requested !== 'boolean') {
-    throw new Error('Desktop V3 routed start requires explicit managed_worktree_requested intent')
-  }
   if (typeof input.plan_mode_requested !== 'boolean') {
     throw new Error('Desktop V3 routed start requires explicit plan_mode_requested intent')
   }
@@ -323,8 +322,7 @@ export async function postDesktopV3RoutedSessionStart(
     client_request_id: clientRequestId,
     idempotency_key: clientRequestId,
     agent_name: agentName,
-    ...(input.metadata ? { metadata: input.metadata } : {}),
-    managed_worktree_requested: input.managed_worktree_requested,
+    ...(input.metadata ? { metadata: desktopRoutedSessionMetadata(input.metadata) } : {}),
     plan_mode_requested: input.plan_mode_requested,
     ...(input.model_profile ? { model_profile: input.model_profile } : {}),
     ...(input.media?.length ? { media: input.media } : {}),
@@ -367,7 +365,7 @@ export async function postDesktopV3BackgroundRouterSessionStart(
     client_request_id: clientRequestId,
     idempotency_key: clientRequestId,
     ...(input.agent_name?.trim() ? { agent_name: input.agent_name.trim() } : {}),
-    ...(input.metadata ? { metadata: input.metadata } : {}),
+    ...(input.metadata ? { metadata: desktopRoutedSessionMetadata(input.metadata) } : {}),
     plan_mode_requested: input.plan_mode_requested,
     ...(input.media?.length ? { media: input.media } : {}),
     ...(input.staging_ids?.length ? { staging_ids: input.staging_ids } : {}),
@@ -401,6 +399,25 @@ export function normalizeDesktopV3RoutedSessionStartResponse(payload: unknown): 
   if (!isRecord(payload.session_view) || !isRecord(payload.session_view.identity)
     || requiredString(payload.session_view.identity.session_id, 'session_view.identity.session_id') !== sessionId) {
     throw new Error('Desktop V3 routed start session_view does not match session_id')
+  }
+  const sourceWorkspacePath = typeof payload.session_view.identity.source_workspace_path === 'string'
+    ? payload.session_view.identity.source_workspace_path.trim()
+    : ''
+  const runtimeWorkspacePath = typeof payload.session_view.identity.runtime_workspace_path === 'string'
+    ? payload.session_view.identity.runtime_workspace_path.trim()
+    : ''
+  const worktreeRootPath = typeof payload.session_view.identity.worktree_root_path === 'string'
+    ? payload.session_view.identity.worktree_root_path.trim()
+    : ''
+  if (payload.session_view.identity.worktree_enabled !== true
+    || !sourceWorkspacePath
+    || !runtimeWorkspacePath
+    || !worktreeRootPath
+    || runtimeWorkspacePath !== worktreeRootPath
+    || sourceWorkspacePath === runtimeWorkspacePath
+    || typeof payload.session_view.identity.worktree_branch !== 'string'
+    || payload.session_view.identity.worktree_branch.trim() === '') {
+    throw new Error('Desktop V3 routed start returned no owned worktree authority')
   }
   if (!isRecord(payload.first_message)
     || requiredString(payload.first_message.session_id, 'first_message.session_id') !== sessionId

@@ -29,7 +29,7 @@ func TestManageWorktreeDefinitionKeepsIntegrateInputMinimal(t *testing.T) {
 			t.Fatalf("manage-worktree exposes model-authored %s", forbidden)
 		}
 	}
-	for _, required := range []string{"action", "session_ids", "task_call_id"} {
+	for _, required := range []string{"action", "session_ids", "task_call_id", "source_session_id", "source_branch", "source_head", "target_workspace_path", "target_branch", "target_head"} {
 		if _, ok := properties[required]; !ok {
 			t.Fatalf("manage-worktree missing %s", required)
 		}
@@ -84,7 +84,7 @@ func (s *coderLineageWorktreeService) VerifyTaskIntegrationWorkspace(_, childPat
 	return state, nil
 }
 
-func (s *coderLineageWorktreeService) PrepareTaskIntegration(_ string, expectedParentHead string, children []worktreeruntime.TaskIntegrationChild) (worktreeruntime.TaskIntegrationPlan, error) {
+func (s *coderLineageWorktreeService) PrepareTaskIntegration(_ string, expectedParentBranch, expectedParentHead string, children []worktreeruntime.TaskIntegrationChild) (worktreeruntime.TaskIntegrationPlan, error) {
 	s.preparedChildren = append([]worktreeruntime.TaskIntegrationChild(nil), children...)
 	if s.prepareErr != nil {
 		return worktreeruntime.TaskIntegrationPlan{}, s.prepareErr
@@ -95,7 +95,7 @@ func (s *coderLineageWorktreeService) PrepareTaskIntegration(_ string, expectedP
 		entries = append(entries, worktreeruntime.TaskIntegrationEntry{SessionID: child.SessionID, BaseCommit: child.BaseCommit, HeadCommit: child.HeadCommit, Commits: []string{child.HeadCommit}})
 		commits = append(commits, child.HeadCommit)
 	}
-	return worktreeruntime.TaskIntegrationPlan{ParentHead: expectedParentHead, Entries: entries, Commits: commits}, nil
+	return worktreeruntime.TaskIntegrationPlan{ParentBranch: expectedParentBranch, ParentHead: expectedParentHead, Entries: entries, Commits: commits}, nil
 }
 
 func (s *coderLineageWorktreeService) ApplyTaskIntegration(_ string, plan worktreeruntime.TaskIntegrationPlan) (worktreeruntime.TaskIntegrationResult, error) {
@@ -113,6 +113,138 @@ func (s *coderLineageWorktreeService) ApplyTaskIntegration(_ string, plan worktr
 	parent.HeadCommit = s.applyResult.ResultingParentHead
 	s.states["/repo"] = parent
 	return s.applyResult, nil
+}
+
+func TestManageWorktreeIntegrateRejectsCapturedCheckoutParent(t *testing.T) {
+	runtime, scope, worktrees, childIDs := newCoderLineageRuntime(t)
+	sessions := runtime.sessions.(*coderLineageSessionService)
+	sessions.parent.WorktreeEnabled = false
+	sessions.parent.WorktreeRootPath = ""
+	sessions.parent.WorktreeBranch = ""
+	_, err := runtime.manageWorktreeIntegrate(scope, map[string]any{"session_ids": []any{childIDs[0]}})
+	if err == nil || !strings.Contains(err.Error(), "session-owned parent lane") {
+		t.Fatalf("captured parent integration error = %v", err)
+	}
+	if worktrees.applyCalls != 0 {
+		t.Fatalf("captured parent was advanced %d times", worktrees.applyCalls)
+	}
+}
+
+func TestManageWorktreePromoteRequiresExactLineage(t *testing.T) {
+	runtime, scope, worktrees, _ := newCoderLineageRuntime(t)
+	scope.Roots = append(scope.Roots, "/captured")
+	sessions := runtime.sessions.(*coderLineageSessionService)
+	source := sessions.parent
+	source.Metadata["swarm_v3_source_workspace_path"] = "/captured"
+	source.Metadata["base_commit"] = "captured-head"
+	sessions.parent = source
+	worktrees.states["/captured"] = worktreeruntime.TaskWorkspaceState{WorkspacePath: "/captured", BranchName: "dev", HeadCommit: "captured-head", Clean: true}
+	_, err := runtime.manageWorktreePromote(scope, map[string]any{
+		"source_session_id": source.ID, "source_branch": source.WorktreeBranch, "source_head": "stale-source-head",
+		"target_workspace_path": "/captured", "target_branch": "dev", "target_head": "captured-head",
+	})
+	if err == nil || !strings.Contains(err.Error(), `expected branch "agent/parent-session" at full HEAD "stale-source-head", found branch "agent/parent-session" at full HEAD "parent-head"`) || !strings.Contains(err.Error(), "manage-sessions git_status head_oid") {
+		t.Fatalf("stale promotion error = %v", err)
+	}
+	if worktrees.applyCalls != 0 {
+		t.Fatalf("stale promotion applied %d times", worktrees.applyCalls)
+	}
+}
+
+// TestManageWorktreePromoteReportsDirtyTargetBeforeApply proves promotion keeps the exact target clean-state guard while telling the model what state blocked delivery. The regression threat is an opaque branch/HEAD error that sends the model into repeated stale-lineage retries or unsafe app restarts; the tool runtime is the narrowest layer that owns this no-apply preflight.
+func TestManageWorktreePromoteReportsDirtyTargetBeforeApply(t *testing.T) {
+	runtime, scope, worktrees, _ := newCoderLineageRuntime(t)
+	scope.Roots = append(scope.Roots, "/captured")
+	sessions := runtime.sessions.(*coderLineageSessionService)
+	source := sessions.parent
+	source.Metadata["swarm_v3_source_workspace_path"] = "/captured"
+	source.Metadata["base_commit"] = "captured-head"
+	sessions.parent = source
+	worktrees.states["/captured"] = worktreeruntime.TaskWorkspaceState{WorkspacePath: "/captured", BranchName: "dev", HeadCommit: "captured-head", Status: " M docs/swarm-atlas.md", Clean: false}
+
+	_, err := runtime.manageWorktreePromote(scope, map[string]any{
+		"source_session_id": source.ID, "source_branch": source.WorktreeBranch, "source_head": "parent-head",
+		"target_workspace_path": "/captured", "target_branch": "dev", "target_head": "captured-head",
+	})
+	if err == nil || !strings.Contains(err.Error(), `target checkout is dirty at branch "dev" full HEAD "captured-head"`) || !strings.Contains(err.Error(), "preserve or finish those changes before promotion") {
+		t.Fatalf("dirty target promotion error = %v", err)
+	}
+	if worktrees.applyCalls != 0 {
+		t.Fatalf("dirty target promotion applied %d times", worktrees.applyCalls)
+	}
+}
+
+func TestManageWorktreePromoteReportsCurrentTargetLineageBeforeApply(t *testing.T) {
+	runtime, scope, worktrees, _ := newCoderLineageRuntime(t)
+	scope.Roots = append(scope.Roots, "/captured")
+	sessions := runtime.sessions.(*coderLineageSessionService)
+	source := sessions.parent
+	source.Metadata["swarm_v3_source_workspace_path"] = "/captured"
+	source.Metadata["base_commit"] = "captured-base"
+	sessions.parent = source
+	worktrees.states["/captured"] = worktreeruntime.TaskWorkspaceState{WorkspacePath: "/captured", BranchName: "dev", HeadCommit: "current-dev-head", Clean: true}
+
+	_, err := runtime.manageWorktreePromote(scope, map[string]any{
+		"source_session_id": source.ID, "source_branch": source.WorktreeBranch, "source_head": "parent-head",
+		"target_workspace_path": "/captured", "target_branch": "dev", "target_head": "stale-dev-head",
+	})
+	if err == nil || !strings.Contains(err.Error(), `expected branch "dev" at full HEAD "stale-dev-head", found branch "dev" at full HEAD "current-dev-head"`) || !strings.Contains(err.Error(), "refresh both values") {
+		t.Fatalf("stale target promotion error = %v", err)
+	}
+	if worktrees.applyCalls != 0 {
+		t.Fatalf("stale target promotion applied %d times", worktrees.applyCalls)
+	}
+}
+
+// TestManageWorktreePromoteAllowsExactCapturedAccountWorkspaceOutsideActiveLane proves the promotion authority can reach only the source session's exact captured account-owned checkout, even when the active mutation lane is the owned worktree. This prevents the active-lane containment rule from making guarded delivery impossible while retaining principal-backed target authentication; the tool runtime is the narrowest layer that owns this resolver and no-apply boundary.
+func TestManageWorktreePromoteAllowsExactCapturedAccountWorkspaceOutsideActiveLane(t *testing.T) {
+	runtime, scope, worktrees, _ := newCoderLineageRuntime(t)
+	sessions := runtime.sessions.(*coderLineageSessionService)
+	source := sessions.parent
+	source.Metadata["swarm_v3_source_workspace_path"] = "/captured"
+	source.Metadata["base_commit"] = "captured-base"
+	sessions.parent = source
+	worktrees.states["/captured"] = worktreeruntime.TaskWorkspaceState{WorkspacePath: "/captured", BranchName: "dev", HeadCommit: "current-dev-head", Clean: true}
+	runtime.workspace = &gitManageWorkspaceService{owned: map[string]bool{"/captured": true}}
+
+	output, err := runtime.manageWorktreePromote(scope, map[string]any{
+		"source_session_id": source.ID, "source_branch": source.WorktreeBranch, "source_head": "parent-head",
+		"target_workspace_path": "/captured", "target_branch": "dev", "target_head": "current-dev-head",
+	})
+	if err != nil {
+		t.Fatalf("promote exact captured account workspace: %v", err)
+	}
+	if worktrees.applyCalls != 1 {
+		t.Fatalf("promotion applied %d times, want 1", worktrees.applyCalls)
+	}
+	if len(worktrees.preparedChildren) != 1 || worktrees.preparedChildren[0].BaseCommit != "captured-base" {
+		t.Fatalf("prepared children = %#v, want captured base lineage", worktrees.preparedChildren)
+	}
+	if !strings.Contains(output, `"target_workspace_path":"/captured"`) {
+		t.Fatalf("promotion response = %s", output)
+	}
+}
+
+// TestManageWorktreePromoteRejectsForeignTargetOutsideActiveLane proves a model-supplied path cannot use captured-lineage metadata to promote into a checkout the authenticated account does not own. The regression threat is cross-workspace mutation outside the active lane; the tool runtime is the narrowest layer that can assert rejection before integration apply.
+func TestManageWorktreePromoteRejectsForeignTargetOutsideActiveLane(t *testing.T) {
+	runtime, scope, worktrees, _ := newCoderLineageRuntime(t)
+	sessions := runtime.sessions.(*coderLineageSessionService)
+	source := sessions.parent
+	source.Metadata["swarm_v3_source_workspace_path"] = "/captured"
+	source.Metadata["base_commit"] = "captured-base"
+	sessions.parent = source
+	runtime.workspace = &gitManageWorkspaceService{owned: map[string]bool{"/captured": false}}
+
+	_, err := runtime.manageWorktreePromote(scope, map[string]any{
+		"source_session_id": source.ID, "source_branch": source.WorktreeBranch, "source_head": "parent-head",
+		"target_workspace_path": "/captured", "target_branch": "dev", "target_head": "current-dev-head",
+	})
+	if err == nil || !strings.Contains(err.Error(), "not an account-owned workspace") {
+		t.Fatalf("foreign promotion error = %v", err)
+	}
+	if worktrees.applyCalls != 0 {
+		t.Fatalf("foreign promotion applied %d times", worktrees.applyCalls)
+	}
 }
 
 func TestManageWorktreeRecallFindsParallelCoderLineage(t *testing.T) {
@@ -407,7 +539,7 @@ func newCoderLineageRuntime(t *testing.T) (*Runtime, WorkspaceScope, *coderLinea
 	launches := map[string]any{}
 	children := map[string]pebblestore.SessionSnapshot{}
 	states := map[string]worktreeruntime.TaskWorkspaceState{
-		parentPath: {WorkspacePath: parentPath, BranchName: "dev", HeadCommit: "parent-head", Clean: true},
+		parentPath: {WorkspacePath: parentPath, BranchName: "agent/parent-session", HeadCommit: "parent-head", Clean: true},
 	}
 	for index, id := range childIDs {
 		callID := "call-b"
@@ -427,7 +559,7 @@ func newCoderWaveRuntime(t *testing.T, count int) (*Runtime, WorkspaceScope, *co
 	childIDs := make([]string, 0, count)
 	children := map[string]pebblestore.SessionSnapshot{}
 	states := map[string]worktreeruntime.TaskWorkspaceState{
-		parentPath: {WorkspacePath: parentPath, BranchName: "dev", HeadCommit: "parent-head", Clean: true},
+		parentPath: {WorkspacePath: parentPath, BranchName: "agent/parent-session", HeadCommit: "parent-head", Clean: true},
 	}
 	rows := make([]any, 0, count)
 	for index := 0; index < count; index++ {
@@ -461,7 +593,7 @@ func coderLineageRow(parentID, id string, launchIndex int, states map[string]wor
 }
 
 func coderLineageRuntime(parentID, parentPath string, launches map[string]any, states map[string]worktreeruntime.TaskWorkspaceState, children map[string]pebblestore.SessionSnapshot, childIDs []string) (*Runtime, WorkspaceScope, *coderLineageWorktreeService, []string) {
-	parent := pebblestore.SessionSnapshot{ID: parentID, AccountScopeID: "account", UserID: "user", WorkspacePath: parentPath, Metadata: map[string]any{"task_launches": launches}}
+	parent := pebblestore.SessionSnapshot{ID: parentID, AccountScopeID: "account", UserID: "user", WorkspacePath: parentPath, WorktreeEnabled: true, WorktreeRootPath: parentPath, WorktreeBranch: "agent/parent-session", WorktreeBaseBranch: "dev", Metadata: map[string]any{"task_launches": launches}}
 	worktrees := &coderLineageWorktreeService{states: states}
 	runtime := &Runtime{sessions: &coderLineageSessionService{parent: parent, children: children}, worktrees: worktrees}
 	scope := WorkspaceScope{PrimaryPath: parentPath, Roots: []string{parentPath}, SessionID: parentID, Principal: identity.Principal{Type: identity.PrincipalTypeUser, UserID: "user", AccountScopeID: "account", SessionID: parentID}}

@@ -82,11 +82,22 @@ type ChromedpRenderer struct {
 	CacheRoot     string
 	browserOutput io.Writer
 	sem           chan struct{}
+	preflightSem  chan struct{}
 }
 
 func NewChromedpRenderer(binaryPath, cacheRoot string) *ChromedpRenderer {
+	return NewChromedpRendererWithConcurrency(binaryPath, cacheRoot, 1)
+}
+
+func NewChromedpRendererWithConcurrency(binaryPath, cacheRoot string, concurrency int) *ChromedpRenderer {
 	encoderPath, _ := exec.LookPath("ffmpeg")
-	return &ChromedpRenderer{BinaryPath: filepath.Clean(strings.TrimSpace(binaryPath)), EncoderPath: filepath.Clean(strings.TrimSpace(encoderPath)), CacheRoot: filepath.Clean(strings.TrimSpace(cacheRoot)), sem: make(chan struct{}, 1)}
+	if concurrency < 1 {
+		concurrency = 1
+	}
+	if concurrency > 4 {
+		concurrency = 4
+	}
+	return &ChromedpRenderer{BinaryPath: filepath.Clean(strings.TrimSpace(binaryPath)), EncoderPath: filepath.Clean(strings.TrimSpace(encoderPath)), CacheRoot: filepath.Clean(strings.TrimSpace(cacheRoot)), sem: make(chan struct{}, concurrency), preflightSem: make(chan struct{}, 1)}
 }
 
 func (r *ChromedpRenderer) Capture(parent context.Context, req Request) ([]Result, error) {

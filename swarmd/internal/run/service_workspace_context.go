@@ -4,9 +4,11 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 
+	agentruntime "swarm/packages/swarmd/internal/agent"
 	"swarm/packages/swarmd/internal/identity"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/tool"
@@ -20,6 +22,7 @@ func resolveRunWorkspaceContext(execCtx resolvedRunExecutionContext) runWorkspac
 		WorkspaceRoots:       append([]string(nil), scope.Roots...),
 		OriginWorkspacePath:  execCtx.WorkspacePath,
 		OriginWorkspaceRoots: append([]string(nil), originRoots...),
+		Scope:                scope,
 	}
 }
 
@@ -38,6 +41,22 @@ func (s *Service) resolveRunWorkspaceScope(session pebblestore.SessionSnapshot, 
 		if err != nil {
 			return tool.WorkspaceScope{}, err
 		}
+		if s != nil && s.workspace != nil {
+			sourceWorkspacePath := strings.TrimSpace(mapString(session.Metadata, "swarm_v3_source_workspace_path"))
+			if sourceWorkspacePath == "" {
+				return tool.WorkspaceScope{}, errors.New("worktree-backed session is missing canonical source workspace path")
+			}
+			resolvedSource, sourceErr := s.workspace.ScopeForPathForPrincipal(principal, sourceWorkspacePath)
+			if sourceErr != nil {
+				return tool.WorkspaceScope{}, sourceErr
+			}
+			if !resolvedSource.Matched {
+				return tool.WorkspaceScope{}, errors.New("worktree-backed session source workspace is no longer authorized")
+			}
+			if identityErr := validateSessionWorkspaceIdentity(session, resolvedSource.WorkspaceID, resolvedSource.WorkspaceGeneration); identityErr != nil {
+				return tool.WorkspaceScope{}, identityErr
+			}
+		}
 		roots := make([]string, 0, 2+len(session.TemporaryWorkspaceRoots))
 		roots = append(roots, resolvedPath)
 		if rootPath := strings.TrimSpace(session.WorktreeRootPath); rootPath != "" {
@@ -51,17 +70,63 @@ func (s *Service) resolveRunWorkspaceScope(session pebblestore.SessionSnapshot, 
 		if err != nil {
 			return tool.WorkspaceScope{}, err
 		}
+		roots, err = s.mergeAuthorizedSessionWorkspaceGrantRoots(principal, roots, session.WorkspaceGrants)
+		if err != nil {
+			return tool.WorkspaceScope{}, err
+		}
+		mutationScopes := []string(nil)
+		readOnlyRoots := []string(nil)
+		sourceWorkspacePath := strings.TrimSpace(mapString(session.Metadata, "swarm_v3_source_workspace_path"))
+		if agentruntime.IsCoderAgentName(mapString(session.Metadata, "requested_subagent")) {
+			mutationScopes = mapStringSlice(session.Metadata, "owned_scope")
+			if gitAdminRoot, gitErr := linkedWorktreeGitAdminRoot(resolvedPath); gitErr != nil {
+				return tool.WorkspaceScope{}, gitErr
+			} else if gitAdminRoot != "" {
+				readOnlyRoots = append(readOnlyRoots, gitAdminRoot)
+			}
+			if sourceWorkspacePath != "" && sourceWorkspacePath != resolvedPath {
+				normalizedSource, sourceErr := normalizeRunScopePath(sourceWorkspacePath)
+				if sourceErr != nil {
+					return tool.WorkspaceScope{}, fmt.Errorf("resolve Coder source workspace: %w", sourceErr)
+				}
+				sourceWorkspacePath = normalizedSource
+				readOnlyRoots = append(readOnlyRoots, normalizedSource)
+				if s != nil && s.workspace != nil {
+					// A delegated Coder writes only in its isolated worktree, but it may
+					// need to inspect another directory already linked to the source
+					// workspace (for example, a sibling product repository used as
+					// source authority). Re-authenticate the account-scoped saved
+					// workspace at run time and expose its linked directories as
+					// read-only roots. Do not inherit session-only temporary roots.
+					linkedScope, linkedErr := s.workspace.ScopeForPathForPrincipal(principal, normalizedSource)
+					if linkedErr != nil {
+						return tool.WorkspaceScope{}, fmt.Errorf("resolve Coder linked read-only roots: %w", linkedErr)
+					}
+					if linkedScope.Matched {
+						readOnlyRoots = mergeSessionWorkspaceRoots(readOnlyRoots, linkedScope.Directories)
+					}
+				}
+			}
+			pooledReadOnlyRoots, pooledErr := s.mergeAccountSavedWorkspaceRoots(principal, nil)
+			if pooledErr != nil {
+				return tool.WorkspaceScope{}, fmt.Errorf("resolve Coder account workspace pool: %w", pooledErr)
+			}
+			readOnlyRoots = mergeSessionWorkspaceRoots(readOnlyRoots, pooledReadOnlyRoots)
+		}
 		return tool.WorkspaceScope{
-			PrimaryPath:         resolvedPath,
-			Roots:               roots,
-			Principal:           principal,
-			SessionID:           strings.TrimSpace(session.ID),
-			WorktreeEnabled:     true,
-			WorktreeRootPath:    resolvedPath,
-			WorktreeBranch:      strings.TrimSpace(session.WorktreeBranch),
-			WorktreeBaseBranch:  strings.TrimSpace(session.WorktreeBaseBranch),
-			WorktreeBaseCommit:  strings.TrimSpace(mapString(session.Metadata, "base_commit")),
-			SourceWorkspacePath: strings.TrimSpace(mapString(session.Metadata, "swarm_v3_source_workspace_path")),
+			PrimaryPath:          resolvedPath,
+			Roots:                roots,
+			ReadOnlyRoots:        readOnlyRoots,
+			MutationScopes:       mutationScopes,
+			RejectScopeExpansion: agentruntime.IsCoderAgentName(mapString(session.Metadata, "requested_subagent")),
+			Principal:            principal,
+			SessionID:            strings.TrimSpace(session.ID),
+			WorktreeEnabled:      true,
+			WorktreeRootPath:     resolvedPath,
+			WorktreeBranch:       strings.TrimSpace(session.WorktreeBranch),
+			WorktreeBaseBranch:   strings.TrimSpace(session.WorktreeBaseBranch),
+			WorktreeBaseCommit:   strings.TrimSpace(mapString(session.Metadata, "base_commit")),
+			SourceWorkspacePath:  sourceWorkspacePath,
 		}, nil
 	}
 	if s != nil && s.workspace != nil {
@@ -69,8 +134,19 @@ func (s *Service) resolveRunWorkspaceScope(session pebblestore.SessionSnapshot, 
 		if err != nil {
 			return tool.WorkspaceScope{}, fmt.Errorf("resolve account-scoped workspace scope: %w", err)
 		}
-		if strings.TrimSpace(resolved.WorkspacePath) != "" {
-			roots, err := mergeValidatedTemporaryWorkspaceRoots(resolved.Directories, session.TemporaryWorkspaceRoots)
+		if resolved.Matched && strings.TrimSpace(resolved.WorkspacePath) != "" {
+			if err := validateSessionWorkspaceIdentity(session, resolved.WorkspaceID, resolved.WorkspaceGeneration); err != nil {
+				return tool.WorkspaceScope{}, err
+			}
+			roots, err := s.mergeAccountSavedWorkspaceRoots(principal, resolved.Directories)
+			if err != nil {
+				return tool.WorkspaceScope{}, err
+			}
+			roots, err = mergeValidatedTemporaryWorkspaceRoots(roots, session.TemporaryWorkspaceRoots)
+			if err != nil {
+				return tool.WorkspaceScope{}, err
+			}
+			roots, err = s.mergeAuthorizedSessionWorkspaceGrantRoots(principal, roots, session.WorkspaceGrants)
 			if err != nil {
 				return tool.WorkspaceScope{}, err
 			}
@@ -81,12 +157,23 @@ func (s *Service) resolveRunWorkspaceScope(session pebblestore.SessionSnapshot, 
 				SessionID:   strings.TrimSpace(session.ID),
 			}, nil
 		}
+		if strings.TrimSpace(mapString(session.Metadata, "swarm_v3_source_workspace_id")) != "" {
+			return tool.WorkspaceScope{}, errors.New("session canonical workspace is no longer authorized for this account")
+		}
 	}
 	resolvedPath, err := normalizeRunScopePath(workspacePath)
 	if err != nil {
 		return tool.WorkspaceScope{}, err
 	}
-	roots, err := mergeValidatedTemporaryWorkspaceRoots([]string{resolvedPath}, session.TemporaryWorkspaceRoots)
+	roots, err := s.mergeAccountSavedWorkspaceRoots(principal, []string{resolvedPath})
+	if err != nil {
+		return tool.WorkspaceScope{}, err
+	}
+	roots, err = mergeValidatedTemporaryWorkspaceRoots(roots, session.TemporaryWorkspaceRoots)
+	if err != nil {
+		return tool.WorkspaceScope{}, err
+	}
+	roots, err = s.mergeAuthorizedSessionWorkspaceGrantRoots(principal, roots, session.WorkspaceGrants)
 	if err != nil {
 		return tool.WorkspaceScope{}, err
 	}
@@ -96,6 +183,107 @@ func (s *Service) resolveRunWorkspaceScope(session pebblestore.SessionSnapshot, 
 		Principal:   principal,
 		SessionID:   strings.TrimSpace(session.ID),
 	}, nil
+}
+
+func (s *Service) mergeAccountSavedWorkspaceRoots(principal identity.Principal, baseRoots []string) ([]string, error) {
+	if s == nil || s.workspace == nil {
+		return mergeSessionWorkspaceRoots(baseRoots, nil), nil
+	}
+	pooledRoots, err := s.workspace.AvailableSavedRootsForPrincipal(principal)
+	if err != nil {
+		return nil, fmt.Errorf("list account-scoped workspace roots: %w", err)
+	}
+	roots := append([]string(nil), baseRoots...)
+	roots = append(roots, pooledRoots...)
+	return mergeSessionWorkspaceRoots(roots, nil), nil
+}
+
+func linkedWorktreeGitAdminRoot(worktreePath string) (string, error) {
+	worktreePath = strings.TrimSpace(worktreePath)
+	if worktreePath == "" {
+		return "", nil
+	}
+	cmd := exec.Command("git", "-C", worktreePath, "rev-parse", "--path-format=absolute", "--git-dir")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("resolve linked worktree Git admin path: %s", strings.TrimSpace(string(output)))
+	}
+	gitDir := filepath.Clean(strings.TrimSpace(string(output)))
+	if gitDir == "" || !filepath.IsAbs(gitDir) {
+		return "", fmt.Errorf("resolve linked worktree Git admin path: Git returned %q", strings.TrimSpace(string(output)))
+	}
+	worktreeRoot := filepath.Clean(worktreePath)
+	if rel, relErr := filepath.Rel(worktreeRoot, gitDir); relErr == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", nil
+	}
+	info, err := os.Stat(filepath.Join(gitDir, "gitdir"))
+	if err != nil || !info.Mode().IsRegular() {
+		return "", errors.New("resolve linked worktree Git admin path: canonical gitdir marker is missing")
+	}
+	marker, err := os.ReadFile(filepath.Join(gitDir, "gitdir"))
+	if err != nil {
+		return "", fmt.Errorf("resolve linked worktree Git admin path marker: %w", err)
+	}
+	markerPath := strings.TrimSpace(string(marker))
+	if !filepath.IsAbs(markerPath) {
+		markerPath = filepath.Join(gitDir, markerPath)
+	}
+	markerPath = filepath.Clean(markerPath)
+	wantMarker := filepath.Join(worktreeRoot, ".git")
+	if markerPath != wantMarker {
+		return "", fmt.Errorf("resolve linked worktree Git admin path: marker %q does not identify %q", markerPath, wantMarker)
+	}
+	return gitDir, nil
+}
+
+func (s *Service) mergeAuthorizedSessionWorkspaceGrantRoots(principal identity.Principal, base []string, grants []pebblestore.WorkspaceGrant) ([]string, error) {
+	roots := append([]string(nil), base...)
+	if s == nil || s.workspace == nil {
+		return roots, nil
+	}
+	for _, grant := range grants {
+		workspaceID := strings.TrimSpace(grant.WorkspaceID)
+		if workspaceID == "" || grant.Kind == pebblestore.WorkspaceGrantWorktree {
+			continue
+		}
+		entry, ok, err := s.workspace.GetByWorkspaceIDForPrincipal(principal, workspaceID)
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			return nil, fmt.Errorf("session workspace grant %q is no longer authorized for this account", workspaceID)
+		}
+		if !strings.EqualFold(strings.TrimSpace(entry.State), "active") {
+			return nil, fmt.Errorf("session workspace grant %q is not active", workspaceID)
+		}
+		if grant.WorkspaceGeneration > 0 && grant.WorkspaceGeneration != entry.WorkspaceGeneration {
+			return nil, fmt.Errorf("session workspace grant %q generation is stale: captured %d, current %d", workspaceID, grant.WorkspaceGeneration, entry.WorkspaceGeneration)
+		}
+		if grantPath := strings.TrimSpace(grant.Path); grantPath != "" && grantPath != strings.TrimSpace(entry.Path) {
+			return nil, fmt.Errorf("session workspace grant %q path is stale", workspaceID)
+		}
+		path, err := normalizeRunScopePath(entry.Path)
+		if err != nil {
+			return nil, err
+		}
+		roots = append(roots, path)
+	}
+	return mergeSessionWorkspaceRoots(nil, roots), nil
+}
+
+func validateSessionWorkspaceIdentity(session pebblestore.SessionSnapshot, workspaceID string, workspaceGeneration int64) error {
+	if session.Metadata == nil {
+		return nil
+	}
+	capturedID := strings.TrimSpace(mapString(session.Metadata, "swarm_v3_source_workspace_id"))
+	if capturedID != "" && capturedID != strings.TrimSpace(workspaceID) {
+		return fmt.Errorf("session workspace identity is stale: captured id %q, current id %q", capturedID, strings.TrimSpace(workspaceID))
+	}
+	capturedGeneration := strings.TrimSpace(mapString(session.Metadata, "swarm_v3_source_workspace_generation"))
+	if capturedGeneration != "" && capturedGeneration != fmt.Sprintf("%d", workspaceGeneration) {
+		return fmt.Errorf("session workspace generation is stale: captured generation %q, current generation %d", capturedGeneration, workspaceGeneration)
+	}
+	return nil
 }
 
 func principalForRunWorkspaceScope(session pebblestore.SessionSnapshot, principal identity.Principal) (identity.Principal, error) {

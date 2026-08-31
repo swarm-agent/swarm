@@ -1,6 +1,7 @@
 package tool
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -73,6 +74,73 @@ func TestGenericFilesystemWriteSupportsMissingInRootParents(t *testing.T) {
 	}
 	if string(content) != "ok" {
 		t.Fatalf("content = %q, want ok", content)
+	}
+}
+
+func TestGenericFilesystemMutationRejectsPathOutsideCoderOwnedScopeBeforeCreation(t *testing.T) {
+	workspace := t.TempDir()
+	scope := normalizeWorkspaceScope(workspace, nil)
+	scope.MutationScopes = []string{"src/**"}
+
+	if _, err := executeWrite(scope, map[string]any{"path": "tests/outside.txt", "content": "blocked"}); err == nil || !strings.Contains(err.Error(), "outside the Coder owned scope") {
+		t.Fatalf("out-of-scope write error = %v, want owned-scope rejection", err)
+	}
+	if _, err := os.Stat(filepath.Join(workspace, "tests", "outside.txt")); !os.IsNotExist(err) {
+		t.Fatalf("out-of-scope write created a file: %v", err)
+	}
+	if _, err := executeWrite(scope, map[string]any{"path": "src/inside.txt", "content": "allowed"}); err != nil {
+		t.Fatalf("in-scope write failed: %v", err)
+	}
+	if content, err := os.ReadFile(filepath.Join(workspace, "src", "inside.txt")); err != nil || string(content) != "allowed" {
+		t.Fatalf("in-scope content = %q err=%v", content, err)
+	}
+}
+
+func TestGenericFilesystemReadOnlyRootAllowsReadsAndRejectsMutations(t *testing.T) {
+	workspace := t.TempDir()
+	readOnly := t.TempDir()
+	path := filepath.Join(readOnly, "reference.txt")
+	if err := os.WriteFile(path, []byte("reference"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	scope := normalizeWorkspaceScope(workspace, nil)
+	scope.ReadOnlyRoots = []string{readOnly}
+	scope.MutationScopes = []string{"."}
+
+	if _, err := executeRead(scope, map[string]any{"path": path}); err != nil {
+		t.Fatalf("read read-only root: %v", err)
+	}
+	if _, err := executeList(scope, map[string]any{"path": readOnly}); err != nil {
+		t.Fatalf("list read-only root: %v", err)
+	}
+	if _, err := executeWrite(scope, map[string]any{"path": path, "content": "changed"}); err == nil || !strings.Contains(err.Error(), "outside the Coder owned scope") {
+		t.Fatalf("write read-only root error = %v, want mutation rejection", err)
+	}
+	if _, err := executeEdit(scope, map[string]any{"path": path, "old_string": "reference", "new_string": "changed"}); err == nil || !strings.Contains(err.Error(), "outside the Coder owned scope") {
+		t.Fatalf("edit read-only root error = %v, want mutation rejection", err)
+	}
+	if content, err := os.ReadFile(path); err != nil || string(content) != "reference" {
+		t.Fatalf("read-only content = %q err=%v", content, err)
+	}
+}
+
+func TestGenericFilesystemReadOnlyRootSupportsAllDiscoveryTools(t *testing.T) {
+	workspace := t.TempDir()
+	readOnly := t.TempDir()
+	path := filepath.Join(readOnly, "reference.txt")
+	if err := os.WriteFile(path, []byte("unique-source-content"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	scope := normalizeWorkspaceScope(workspace, nil)
+	scope.ReadOnlyRoots = []string{readOnly}
+
+	for _, call := range []Call{
+		{Name: "search", Arguments: `{"query":"unique-source-content","path":"` + filepath.ToSlash(readOnly) + `"}`},
+		{Name: "find", Arguments: `{"query":"reference.txt","path":"` + filepath.ToSlash(readOnly) + `"}`},
+	} {
+		if _, err := ExecuteForWorkspaceScope(context.Background(), scope, call); err != nil {
+			t.Fatalf("%s read-only root failed: %v", call.Name, err)
+		}
 	}
 }
 

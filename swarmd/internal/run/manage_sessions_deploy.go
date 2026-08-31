@@ -71,7 +71,6 @@ type manageSessionsDeployInput struct {
 	Mode          string
 	Agent         string
 	WorkspacePath string
-	Worktree      bool
 	WorktreeName  string
 }
 
@@ -144,7 +143,7 @@ func parseManageSessionsDeployArguments(arguments string) ([]manageSessionsDeplo
 	for i, item := range raw {
 		for key := range item {
 			switch key {
-			case "title", "prompt", "mode", "agent", "workspace_path", "worktree", "worktree_name":
+			case "title", "prompt", "mode", "agent", "workspace_path", "worktree_name":
 			default:
 				return nil, fmt.Errorf("manage-sessions deploy proposals[%d] rejects untrusted field %q", i, key)
 			}
@@ -155,7 +154,6 @@ func parseManageSessionsDeployArguments(arguments string) ([]manageSessionsDeplo
 			Mode          string `json:"mode"`
 			Agent         string `json:"agent"`
 			WorkspacePath string `json:"workspace_path"`
-			Worktree      *bool  `json:"worktree"`
 			WorktreeName  string `json:"worktree_name"`
 		}
 		encoded, _ := json.Marshal(item)
@@ -172,11 +170,7 @@ func parseManageSessionsDeployArguments(arguments string) ([]manageSessionsDeplo
 		if mode != sessionruntime.ModePlan && mode != sessionruntime.ModeAuto {
 			return nil, fmt.Errorf("manage-sessions deploy proposals[%d] mode must be plan or auto", i)
 		}
-		worktree := true
-		if input.Worktree != nil {
-			worktree = *input.Worktree
-		}
-		out = append(out, manageSessionsDeployInput{Title: strings.TrimSpace(input.Title), Prompt: input.Prompt, Mode: mode, Agent: strings.TrimSpace(input.Agent), WorkspacePath: strings.TrimSpace(input.WorkspacePath), Worktree: worktree, WorktreeName: strings.TrimSpace(input.WorktreeName)})
+		out = append(out, manageSessionsDeployInput{Title: strings.TrimSpace(input.Title), Prompt: input.Prompt, Mode: mode, Agent: strings.TrimSpace(input.Agent), WorkspacePath: strings.TrimSpace(input.WorkspacePath), WorktreeName: strings.TrimSpace(input.WorktreeName)})
 	}
 	return out, nil
 }
@@ -323,19 +317,17 @@ func (s *Service) buildManageSessionsDeployManifestBound(sessionID string, call 
 			}
 			return manageSessionsDeployManifest{}, fmt.Errorf("deploy proposals[%d] workspace: %w", i, err)
 		}
-		proposal := manageSessionsDeployProposal{ID: fmt.Sprintf("proposal-%d", i+1), Title: input.Title, Prompt: input.Prompt, Mode: input.Mode, AgentName: profile.Name, AgentMode: profile.Mode, RuntimeMode: executionMode, Provider: preference.Provider, Model: preference.Model, Thinking: preference.Thinking, ServiceTier: preference.ServiceTier, ContextMode: preference.ContextMode, ModelProfile: cloneManageSessionsDeployModelProfile(modelProfile), WorkspaceID: workspace.WorkspaceID, WorkspaceGeneration: workspace.WorkspaceGeneration, WorkspacePath: workspace.WorkspacePath, WorkspaceName: workspace.WorkspaceName, ManagedWorktree: input.Worktree, Selected: i == 0}
-		if input.Worktree {
-			if s.worktrees == nil {
-				return manageSessionsDeployManifest{}, fmt.Errorf("deploy proposals[%d] requires the managed worktree service", i)
-			}
-			config, configErr := s.worktrees.GetConfigForPrincipal(principal, workspace.WorkspacePath)
-			if configErr != nil {
-				return manageSessionsDeployManifest{}, fmt.Errorf("deploy proposals[%d] worktree settings: %w", i, configErr)
-			}
-			branchSuffix := canonicalDeployWorktreeBranchSuffix(firstNonEmptyString(input.WorktreeName, input.Title), fmt.Sprintf("session-%d", i+1))
-			proposal.WorktreeBaseBranch = strings.TrimSpace(config.BaseBranch)
-			proposal.WorktreeBranch = canonicalDeployWorktreeBranch(config.BranchName, branchSuffix)
+		proposal := manageSessionsDeployProposal{ID: fmt.Sprintf("proposal-%d", i+1), Title: input.Title, Prompt: input.Prompt, Mode: input.Mode, AgentName: profile.Name, AgentMode: profile.Mode, RuntimeMode: executionMode, Provider: preference.Provider, Model: preference.Model, Thinking: preference.Thinking, ServiceTier: preference.ServiceTier, ContextMode: preference.ContextMode, ModelProfile: cloneManageSessionsDeployModelProfile(modelProfile), WorkspaceID: workspace.WorkspaceID, WorkspaceGeneration: workspace.WorkspaceGeneration, WorkspacePath: workspace.WorkspacePath, WorkspaceName: workspace.WorkspaceName, ManagedWorktree: true, Selected: i == 0}
+		if s.worktrees == nil {
+			return manageSessionsDeployManifest{}, fmt.Errorf("deploy proposals[%d] requires the managed worktree service", i)
 		}
+		config, configErr := s.worktrees.GetConfigForPrincipal(principal, workspace.WorkspacePath)
+		if configErr != nil {
+			return manageSessionsDeployManifest{}, fmt.Errorf("deploy proposals[%d] worktree settings: %w", i, configErr)
+		}
+		branchSuffix := canonicalDeployWorktreeBranchSuffix(firstNonEmptyString(input.WorktreeName, input.Title), fmt.Sprintf("session-%d", i+1))
+		proposal.WorktreeBaseBranch = strings.TrimSpace(config.BaseBranch)
+		proposal.WorktreeBranch = canonicalDeployWorktreeBranch(config.BranchName, branchSuffix)
 		manifest.Proposals = append(manifest.Proposals, proposal)
 	}
 	digest, err := manageSessionsDeployDigest(manifest)

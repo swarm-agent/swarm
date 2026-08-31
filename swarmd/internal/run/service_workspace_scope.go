@@ -21,7 +21,6 @@ const (
 	workspaceScopeDecisionPathID        = "permission.workspace_scope.decision.v1"
 
 	workspaceScopeDecisionSessionAllow workspaceScopeApprovalDecision = "session_allow"
-	workspaceScopeDecisionAddDir       workspaceScopeApprovalDecision = "workspace_add_dir"
 )
 
 type workspaceScopeApprovalDecision string
@@ -52,12 +51,7 @@ func (s *Service) gateWorkspaceScopeCalls(
 	scopeChanged := false
 	permissionWaitMS := int64(0)
 
-	hostScope := tool.WorkspaceScope{
-		PrimaryPath: strings.TrimSpace(workspaceCtx.OriginWorkspacePath),
-		Roots:       append([]string(nil), workspaceCtx.OriginWorkspaceRoots...),
-		Principal:   principal,
-		SessionID:   strings.TrimSpace(sessionID),
-	}
+	hostScope := workspaceScopeForGate(workspaceCtx, principal, sessionID)
 	for i := range calls {
 		results[i] = tool.Result{
 			CallID: strings.TrimSpace(calls[i].CallID),
@@ -107,17 +101,31 @@ func (s *Service) gateWorkspaceScopeCalls(
 		if changed {
 			scopeChanged = true
 		}
-		hostScope = tool.WorkspaceScope{
-			PrimaryPath: strings.TrimSpace(workspaceCtx.OriginWorkspacePath),
-			Roots:       append([]string(nil), workspaceCtx.OriginWorkspaceRoots...),
-			Principal:   principal,
-			SessionID:   strings.TrimSpace(sessionID),
-		}
+		hostScope = workspaceScopeForGate(workspaceCtx, principal, sessionID)
 		approvedCalls = append(approvedCalls, call)
 		approvedIndexes = append(approvedIndexes, i)
 	}
 
 	return results, approvedCalls, approvedIndexes, scopeChanged, permissionWaitMS, nil
+}
+
+func workspaceScopeForGate(workspaceCtx *runWorkspaceContext, principal identity.Principal, sessionID string) tool.WorkspaceScope {
+	if workspaceCtx == nil {
+		return tool.WorkspaceScope{Principal: principal, SessionID: strings.TrimSpace(sessionID)}
+	}
+	// Preserve the resolved runtime scope's authenticated read-only roots and
+	// mutation limits. Rebuilding this value from only PrimaryPath and Roots
+	// drops a Coder worktree's canonical linked-Git administrative root, causing
+	// ordinary Git-backed read/list discovery to request workspace expansion.
+	scope := workspaceCtx.Scope
+	scope.PrimaryPath = strings.TrimSpace(workspaceCtx.OriginWorkspacePath)
+	scope.Roots = append([]string(nil), workspaceCtx.OriginWorkspaceRoots...)
+	scope.ReadOnlyRoots = append([]string(nil), workspaceCtx.Scope.ReadOnlyRoots...)
+	scope.MutationScopes = append([]string(nil), workspaceCtx.Scope.MutationScopes...)
+	scope.RejectScopeExpansion = workspaceCtx.Scope.RejectScopeExpansion
+	scope.Principal = principal
+	scope.SessionID = strings.TrimSpace(sessionID)
+	return scope
 }
 
 func (s *Service) requestWorkspaceScopePermission(
@@ -194,9 +202,6 @@ func (s *Service) requestWorkspaceScopePermission(
 	switch strings.ToLower(strings.TrimSpace(resolved.Status)) {
 	case pebblestore.PermissionStatusApproved:
 		decision := workspaceScopeDecisionFromReason(resolved.Reason)
-		if decision == workspaceScopeDecisionAddDir && !target.Exists {
-			decision = workspaceScopeDecisionSessionAllow
-		}
 		result.Output = workspaceScopePermissionOutputPayload(true, "approved", resolved.Reason, string(decision), target, call, request)
 		return result, decision, true, nil
 	case pebblestore.PermissionStatusDenied:
@@ -222,8 +227,6 @@ func (s *Service) applyWorkspaceScopeApproval(
 	switch decision {
 	case "", workspaceScopeDecisionSessionAllow:
 		return s.applyTemporaryWorkspaceScopeAccess(sessionID, principal, request, workspaceCtx)
-	case workspaceScopeDecisionAddDir:
-		return s.applyPersistentWorkspaceScopeAccess(sessionID, workspaceOwnerPath, workspaceName, principal, request, workspaceCtx)
 	default:
 		return false, fmt.Errorf("unsupported workspace scope decision %q", strings.TrimSpace(string(decision)))
 	}
@@ -246,50 +249,35 @@ func (s *Service) applyTemporaryWorkspaceScopeAccess(
 		return false, errors.New("session id is required")
 	}
 
-	sessionSnapshot, _, err := s.sessions.AddTemporaryWorkspaceRoot(sessionID, request.DirectoryPath)
-	if err != nil {
-		return false, err
-	}
-	return s.syncWorkspaceScopeFromSession(sessionSnapshot, principal, workspaceCtx)
-}
-
-func (s *Service) applyPersistentWorkspaceScopeAccess(
-	sessionID,
-	workspaceOwnerPath,
-	workspaceName string,
-	principal identity.Principal,
-	request tool.ScopeExpansionRequest,
-	workspaceCtx *runWorkspaceContext,
-) (bool, error) {
-	if s == nil || s.workspace == nil || s.sessions == nil {
-		return false, errors.New("workspace services are not configured")
-	}
-	if workspaceCtx == nil {
-		return false, errors.New("workspace context is required")
-	}
-
-	principal, err := principalForRunWorkspaceScope(pebblestore.SessionSnapshot{ID: strings.TrimSpace(sessionID)}, principal)
-	if err != nil {
-		return false, err
-	}
-	target := s.resolveWorkspaceScopePermissionTarget(workspaceOwnerPath, workspaceName, principal)
-	if !target.Exists || strings.TrimSpace(target.Path) == "" {
-		return false, errors.New("no saved workspace is active; temporary session access is the only available action")
-	}
-
-	if _, err := s.workspace.AddDirectoryForPrincipal(principal, target.Path, request.DirectoryPath); err != nil {
-		scope, scopeErr := s.workspace.ScopeForPathForPrincipal(principal, request.DirectoryPath)
-		if scopeErr != nil || !scope.Matched || strings.TrimSpace(scope.WorkspacePath) != strings.TrimSpace(target.Path) {
-			return false, err
-		}
-	}
-
 	sessionSnapshot, ok, err := s.sessions.GetSession(sessionID)
 	if err != nil {
 		return false, err
 	}
 	if !ok {
-		return false, fmt.Errorf("session %q not found", strings.TrimSpace(sessionID))
+		return false, fmt.Errorf("session %q not found", sessionID)
+	}
+	roots := append([]string(nil), sessionSnapshot.TemporaryWorkspaceRoots...)
+	roots = append(roots, request.DirectoryPath)
+	sessionSnapshot.TemporaryWorkspaceRoots = pebblestore.NormalizeSessionTemporaryWorkspaceRoots(sessionSnapshot.WorkspacePath, roots)
+	available := true
+	sessionSnapshot.WorkspaceGrants = append(sessionSnapshot.WorkspaceGrants, pebblestore.WorkspaceGrant{Kind: pebblestore.WorkspaceGrantTemporary, Path: request.DirectoryPath, Available: &available})
+	now := time.Now().UnixMilli()
+	payload, err := json.Marshal(map[string]any{"session_id": sessionID, "workspace_grants": pebblestore.NormalizeSessionWorkspaceGrants(sessionSnapshot), "updated_at": now})
+	if err != nil {
+		return false, err
+	}
+	key := fmt.Sprintf("workspace-scope:%s:%x", sessionID, payload)
+	result, err := s.sessions.ApplySessionMutation(pebblestore.V3SessionMutationInput{
+		SessionID: sessionID, UserID: principal.UserID, AccountScopeID: principal.AccountScopeID,
+		ClientRequestID: key, IdempotencyKey: key, PayloadHash: key, RequestHash: key,
+		Kind: pebblestore.V3SessionMutationUpdateSettings, EventType: "session.workspace_grants.updated",
+		EventPayload: payload, Session: &sessionSnapshot, NowUnixMs: now,
+	})
+	if err != nil {
+		return false, err
+	}
+	if result.Session != nil {
+		sessionSnapshot = *result.Session
 	}
 	return s.syncWorkspaceScopeFromSession(sessionSnapshot, principal, workspaceCtx)
 }
@@ -323,6 +311,7 @@ func (s *Service) syncWorkspaceScopeFromSession(
 	workspaceCtx.OriginWorkspaceRoots = hostRoots
 	workspaceCtx.WorkspacePath = hostPrimary
 	workspaceCtx.WorkspaceRoots = append([]string(nil), hostRoots...)
+	workspaceCtx.Scope = scope
 
 	return beforePrimary != workspaceCtx.OriginWorkspacePath || !sameTrimmedStrings(beforeRoots, workspaceCtx.OriginWorkspaceRoots), nil
 }
@@ -352,11 +341,6 @@ func (s *Service) resolveWorkspaceScopePermissionTarget(workspaceOwnerPath, work
 func workspaceScopePermissionArguments(target workspaceScopePermissionTarget, call tool.Call, request tool.ScopeExpansionRequest) string {
 	accessLabel := workspaceScopeAccessLabel(call.Name)
 	temporaryBehavior := fmt.Sprintf("Approving this allows %s to %s for this chat session only. It does not save or change the workspace.", accessLabel, strings.TrimSpace(request.DirectoryPath))
-	workspaceBehavior := "No saved workspace is active for this session, so permanent add-dir access is not available here."
-	if target.Exists {
-		workspaceLabel := emptyWorkspaceScopeName(target.Name, target.Path)
-		workspaceBehavior = fmt.Sprintf("You can instead add %s to workspace %q. That updates the saved workspace so future access inside that workspace stops asking for permission.", strings.TrimSpace(request.DirectoryPath), workspaceLabel)
-	}
 	payload := map[string]any{
 		"path_id": workspaceScopePermissionPathID,
 		"title":   fmt.Sprintf("Allow %s outside the current workspace?", accessLabel),
@@ -374,22 +358,15 @@ func workspaceScopePermissionArguments(target workspaceScopePermissionTarget, ca
 			"temporary_behavior":   temporaryBehavior,
 		},
 		"workspace": map[string]any{
-			"exists":              target.Exists,
-			"path":                strings.TrimSpace(target.Path),
-			"name":                strings.TrimSpace(target.Name),
-			"persistent_behavior": workspaceBehavior,
+			"exists": target.Exists,
+			"path":   strings.TrimSpace(target.Path),
+			"name":   strings.TrimSpace(target.Name),
 		},
 		"actions": map[string]any{
 			"session_allow": map[string]any{
 				"decision":    string(workspaceScopeDecisionSessionAllow),
 				"label":       "Allow This Session",
 				"description": temporaryBehavior,
-			},
-			"workspace_add_dir": map[string]any{
-				"decision":    string(workspaceScopeDecisionAddDir),
-				"available":   target.Exists,
-				"label":       "Add To Workspace",
-				"description": workspaceBehavior,
 			},
 		},
 		"details_truncated": false,
@@ -438,9 +415,6 @@ func workspaceScopeDecisionFromReason(reason string) workspaceScopeApprovalDecis
 	if trimmed == "" {
 		return workspaceScopeDecisionSessionAllow
 	}
-	if strings.EqualFold(trimmed, string(workspaceScopeDecisionAddDir)) {
-		return workspaceScopeDecisionAddDir
-	}
 	if strings.EqualFold(trimmed, string(workspaceScopeDecisionSessionAllow)) {
 		return workspaceScopeDecisionSessionAllow
 	}
@@ -450,8 +424,6 @@ func workspaceScopeDecisionFromReason(reason string) workspaceScopeApprovalDecis
 	}
 	decision := strings.ToLower(strings.TrimSpace(workspaceScopeStringValue(payload["decision"])))
 	switch decision {
-	case string(workspaceScopeDecisionAddDir):
-		return workspaceScopeDecisionAddDir
 	case string(workspaceScopeDecisionSessionAllow):
 		return workspaceScopeDecisionSessionAllow
 	default:
@@ -471,11 +443,8 @@ func workspaceScopeDecisionReason(decision workspaceScopeApprovalDecision) strin
 	return string(encoded)
 }
 
-func workspaceScopePermissionSummary(accessLabel string, hasWorkspace bool) string {
-	if hasWorkspace {
-		return fmt.Sprintf("This path is outside the current workspace. You can allow %s for this chat session only, or add the directory to the saved workspace permanently.", accessLabel)
-	}
-	return fmt.Sprintf("This path is outside the current workspace. You can allow %s for this chat session only.", accessLabel)
+func workspaceScopePermissionSummary(accessLabel string, _ bool) string {
+	return fmt.Sprintf("This path is outside the current workspace. You can allow %s for this chat session only. For durable access, add this folder as a new workspace from the workspace picker.", accessLabel)
 }
 
 func workspaceScopeAccessLabel(toolName string) string {

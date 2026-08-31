@@ -25,6 +25,9 @@ func TestTaskCommandReturnsBeforeRoutedDispatchCompletes(t *testing.T) {
 			requestSeen := make(chan map[string]any, 1)
 			release := make(chan struct{})
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/v3/sessions:background-router" {
+					t.Errorf("request path = %q", r.URL.Path)
+				}
 				var body map[string]any
 				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 					t.Errorf("decode request: %v", err)
@@ -71,6 +74,9 @@ func TestTaskCommandReturnsBeforeRoutedDispatchCompletes(t *testing.T) {
 			case <-time.After(time.Second):
 				t.Fatal("task command did not dispatch the routed request")
 			}
+			if _, ok := body["managed_worktree_requested"]; ok {
+				t.Fatalf("retired managed_worktree_requested was sent: %#v", body)
+			}
 			if got := body["plan_mode_requested"]; got != (test.wantMode == "plan") {
 				t.Fatalf("plan_mode_requested = %#v", got)
 			}
@@ -83,6 +89,77 @@ func TestTaskCommandReturnsBeforeRoutedDispatchCompletes(t *testing.T) {
 				t.Fatalf("status = %q", got)
 			}
 		})
+	}
+}
+
+func TestTaskCommandSelectsSavedWorkspaceByName(t *testing.T) {
+	requestSeen := make(chan map[string]any, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		requestSeen <- body
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"ok": true, "session_id": "session-task", "title": "Fix routing", "starting_mode": "auto",
+			"session": map[string]any{"id": "session-task", "title": "Fix routing", "mode": "auto", "worktree_enabled": true, "worktree_root_path": "/worktree"},
+		})
+	}))
+	defer server.Close()
+
+	app := newTaskCommandTestApp(server.URL)
+	app.homeModel.Workspaces = append(app.homeModel.Workspaces, model.Workspace{
+		Name: "Other", Path: "/saved/other", LocalWorkspaceBindingID: "binding-other",
+	})
+	app.handleTaskCommand([]string{"--workspace", "Other", "fix", "routing"})
+	select {
+	case body := <-requestSeen:
+		if body["workspace_path"] != "/saved/other" || body["workspace_binding_id"] != "binding-other" || body["swarm_id"] != "swarm-self" {
+			t.Fatalf("selected workspace authority = %#v", body)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("task command did not dispatch selected workspace")
+	}
+	awaitTaskCommandResult(t, app)
+}
+
+func TestTaskCommandRejectsUnknownAmbiguousAndPathSelectors(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		selector   string
+		additional []model.Workspace
+		want       string
+	}{
+		{name: "unknown", selector: "Missing", want: `saved workspace "Missing" was not found`},
+		{name: "path", selector: "/saved/other", want: "must be a saved workspace name, not a path"},
+		{name: "ambiguous", selector: "Duplicate", additional: []model.Workspace{
+			{Name: "Duplicate", Path: "/saved/one", LocalWorkspaceBindingID: "binding-one"},
+			{Name: "duplicate", Path: "/saved/two", LocalWorkspaceBindingID: "binding-two"},
+		}, want: `saved workspace "Duplicate" is ambiguous`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			app := newTaskCommandTestApp("http://127.0.0.1:1")
+			app.homeModel.Workspaces = append(app.homeModel.Workspaces, test.additional...)
+			app.handleTaskCommand([]string{"--workspace", test.selector, "fix", "routing"})
+			if got := app.home.Status(); !strings.Contains(got, test.want) {
+				t.Fatalf("status = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
+func TestParseTaskCommandPlanAndWorkspace(t *testing.T) {
+	for _, args := range [][]string{
+		{"plan", "--workspace", "Other", "fix", "routing"},
+		{"plan", "fix", "routing", "--workspace", "Other"},
+	} {
+		options, err := parseTaskCommand(args)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if options.mode != "plan" || options.workspaceSelector != "Other" || options.request != "fix routing" {
+			t.Fatalf("options = %#v", options)
+		}
 	}
 }
 

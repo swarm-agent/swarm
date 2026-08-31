@@ -30,9 +30,16 @@ const (
 )
 
 type Service struct {
-	store   *pebblestore.SwarmStore
-	events  *pebblestore.EventLog
-	publish func(pebblestore.EventEnvelope)
+	store       *pebblestore.SwarmStore
+	secretStore *pebblestore.Store
+	events      *pebblestore.EventLog
+	publish     func(pebblestore.EventEnvelope)
+}
+
+const activationCredentialSecretKey = "swarm/public_api/activation_credential"
+
+type activationCredentialRecord struct {
+	Credential string `json:"credential"`
 }
 
 // Retired pairing service data types remain as source-compatible placeholders
@@ -176,6 +183,13 @@ type RenameLocalSwarmInput struct {
 
 func NewService(store *pebblestore.SwarmStore, events *pebblestore.EventLog, publish func(pebblestore.EventEnvelope)) *Service {
 	return &Service{store: store, events: events, publish: publish}
+}
+
+func (s *Service) SetSecretStore(secretStore *pebblestore.Store) {
+	if s == nil {
+		return
+	}
+	s.secretStore = secretStore
 }
 
 func (s *Service) OutgoingPeerAuthToken(string) (string, bool, error) {
@@ -324,7 +338,44 @@ func (s *Service) PendingMintReport() (string, bool, error) {
 	return strings.TrimSpace(record.SwarmID), true, nil
 }
 
+func (s *Service) EnsureActivationCredentialPending() error {
+	if s == nil || s.store == nil || s.secretStore == nil {
+		return errors.New("activation credential recovery is not configured")
+	}
+	var credential activationCredentialRecord
+	found, err := s.secretStore.GetJSON(activationCredentialSecretKey, &credential)
+	if err != nil {
+		return err
+	}
+	if found && strings.TrimSpace(credential.Credential) != "" {
+		return nil
+	}
+	record, ok, err := s.store.GetLocalNode()
+	if err != nil || !ok || strings.TrimSpace(record.SwarmID) == "" {
+		return err
+	}
+	if record.MintReportState != mintReportStateCompleted {
+		return nil
+	}
+	record.MintReportState = mintReportStatePending
+	record.MintReportCompletedAt = 0
+	_, err = s.store.PutLocalNode(record)
+	return err
+}
+
 func (s *Service) CompleteMintReport(swarmID string) error {
+	return s.completeMintReport(swarmID, "")
+}
+
+func (s *Service) CompleteMintReportWithCredential(swarmID, credential string) error {
+	credential = strings.TrimSpace(credential)
+	if credential == "" {
+		return errors.New("mint report response is missing activation credential")
+	}
+	return s.completeMintReport(swarmID, credential)
+}
+
+func (s *Service) completeMintReport(swarmID, credential string) error {
 	if s == nil || s.store == nil {
 		return errors.New("swarm service is not configured")
 	}
@@ -338,16 +389,40 @@ func (s *Service) CompleteMintReport(swarmID string) error {
 	if strings.TrimSpace(swarmID) == "" || strings.TrimSpace(record.SwarmID) != strings.TrimSpace(swarmID) {
 		return errors.New("mint report swarm id does not match local identity")
 	}
-	if record.MintReportState == mintReportStateCompleted {
+	if record.MintReportState == mintReportStateCompleted && credential == "" {
 		return nil
 	}
-	if record.MintReportState != mintReportStatePending {
+	if record.MintReportState != mintReportStatePending && record.MintReportState != mintReportStateCompleted {
 		return errors.New("local swarm has no pending mint report")
+	}
+	if credential != "" {
+		if s.secretStore == nil {
+			return errors.New("activation credential store is not configured")
+		}
+		if err := s.secretStore.PutJSON(activationCredentialSecretKey, activationCredentialRecord{Credential: credential}); err != nil {
+			return fmt.Errorf("store activation credential: %w", err)
+		}
 	}
 	record.MintReportState = mintReportStateCompleted
 	record.MintReportCompletedAt = time.Now().UnixMilli()
 	_, err = s.store.PutLocalNode(record)
 	return err
+}
+
+func (s *Service) ActivationCredential() (string, error) {
+	if s == nil || s.secretStore == nil {
+		return "", errors.New("activation credential store is not configured")
+	}
+	var record activationCredentialRecord
+	ok, err := s.secretStore.GetJSON(activationCredentialSecretKey, &record)
+	if err != nil {
+		return "", err
+	}
+	credential := strings.TrimSpace(record.Credential)
+	if !ok || credential == "" {
+		return "", errors.New("activation credential is unavailable until mint succeeds")
+	}
+	return credential, nil
 }
 
 func (s *Service) RenameLocalSwarm(input RenameLocalSwarmInput) (LocalState, error) {

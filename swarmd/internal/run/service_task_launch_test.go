@@ -261,15 +261,27 @@ func TestParseTaskCallArgumentsRegularSectionTargetRequiresSourceArtifact(t *tes
 	}
 }
 
-func TestParseTaskCallArgumentsRegularSourceArtifactRejectsUnsupportedLaunches(t *testing.T) {
-	tests := []map[string]any{
-		{"prompt": "inspect", "source_artifact": map[string]any{"session_id": "s", "collection_id": "c", "variant_id": "v", "event_seq": 1}, "subagent_type": "finder", "meta_prompt": "inspect"},
-		{"prompt": "edit", "source_artifact": map[string]any{"session_id": "s", "collection_id": "c", "variant_id": "v", "event_seq": 1}, "subagent_type": "designer", "meta_prompt": "edit", "output_mode": "workspace", "owned_scope": []any{"design.html"}},
+func TestParseTaskCallArgumentsRegularSourceArtifactAcceptsWorkspaceDesigner(t *testing.T) {
+	source := map[string]any{"session_id": "s", "collection_id": "c", "variant_id": "v", "event_seq": 1}
+	parsed, err := parseTaskCallArguments(mustJSON(t, map[string]any{
+		"prompt": "edit", "source_artifact": source, "subagent_type": "designer", "meta_prompt": "edit",
+		"output_mode": "workspace", "owned_scope": []any{"design/source"}, "animation_profile": map[string]any{"profile": "motion_ui"},
+	}))
+	if err != nil {
+		t.Fatalf("parse workspace Designer source artifact: %v", err)
 	}
-	for _, args := range tests {
-		if _, err := parseTaskCallArguments(mustJSON(t, args)); err == nil || !strings.Contains(err.Error(), "requires every launch to be a managed Designer") {
-			t.Fatalf("unsupported regular source-artifact launch error = %v", err)
-		}
+	if len(parsed.Launches) != 1 || parsed.Launches[0].OutputMode != taskOutputModeWorkspace || !equalTaskImageSourceArtifact(parsed.Launches[0].SourceArtifact, parsed.SourceArtifact) {
+		t.Fatalf("workspace Designer source artifact = %#v", parsed.Launches)
+	}
+	if parsed.Launches[0].AnimationProfile == nil || parsed.Launches[0].AnimationProfile.ProfileID != "motion_ui" {
+		t.Fatalf("workspace Designer animation profile = %#v", parsed.Launches[0].AnimationProfile)
+	}
+}
+
+func TestParseTaskCallArgumentsRegularSourceArtifactRejectsNonDesigner(t *testing.T) {
+	args := map[string]any{"prompt": "inspect", "source_artifact": map[string]any{"session_id": "s", "collection_id": "c", "variant_id": "v", "event_seq": 1}, "subagent_type": "finder", "meta_prompt": "inspect"}
+	if _, err := parseTaskCallArguments(mustJSON(t, args)); err == nil || !strings.Contains(err.Error(), "requires every launch to be a Designer") {
+		t.Fatalf("unsupported regular source-artifact launch error = %v", err)
 	}
 }
 
@@ -321,6 +333,24 @@ func TestManagedDesignerRoutingAllocatesParentOwnedUniqueVariants(t *testing.T) 
 	}
 	if got := managedDesignerArtifactContext(parent, "call-1", taskLaunchSpec{RequestedSubagentType: "designer", OutputMode: taskOutputModeWorkspace}, 1); got != nil {
 		t.Fatalf("workspace Designer received managed context: %#v", got)
+	}
+}
+
+func TestManagedDesignerRoutingPreservesOrderedMultiTargetIdentity(t *testing.T) {
+	parent := pebblestore.SessionSnapshot{ID: "parent-session", UserID: "user-1", AccountScopeID: "account-1"}
+	targets := []*taskSwarmSectionTarget{
+		{ID: "part-2", Label: "Part 2", Kind: "temporal", StartMs: 4000, EndMs: 8000},
+		{ID: "part-3", Label: "Part 3", Kind: "temporal", StartMs: 8000, EndMs: 12000},
+	}
+	first := taskLaunchSpec{RequestedSubagentType: "designer", OutputMode: taskOutputModeManaged, SwarmMode: true, SourceArguments: map[string]any{"swarm_index": 1, "swarm_count": 3, "section_targets": targets}}
+	second := taskLaunchSpec{RequestedSubagentType: "designer", OutputMode: taskOutputModeManaged, SwarmMode: true, SourceArguments: map[string]any{"swarm_index": 2, "swarm_count": 3, "section_targets": targets}}
+	left := managedDesignerArtifactContext(parent, "call-multi", first, 1)
+	right := managedDesignerArtifactContext(parent, "call-multi", second, 2)
+	if left == nil || right == nil || left.IterationGroupID == "" || left.IterationGroupID != right.IterationGroupID || left.CandidateIndex != 1 || right.CandidateIndex != 2 {
+		t.Fatalf("multi-target group/candidate identity = left=%#v right=%#v", left, right)
+	}
+	if got := taskReviewTargetIDs(left.SelectedReviewTargets); got != "part-2,part-3" || got != taskReviewTargetIDs(right.SelectedReviewTargets) {
+		t.Fatalf("ordered selected target identity = %q / %q", got, taskReviewTargetIDs(right.SelectedReviewTargets))
 	}
 }
 
@@ -943,6 +973,7 @@ type taskLaunchWorktreeStub struct {
 	requestedBase     string
 	resolvedPaths     []string
 	allocatedPaths    []string
+	allocatedScopes   [][]string
 	requestedBranch   string
 	requestedNameSeed string
 	cleanupCalls      []string
@@ -959,9 +990,10 @@ func (s *taskLaunchWorktreeStub) ResolveTaskBase(path string) (worktreeruntime.T
 	return s.taskBase, nil
 }
 
-func (s *taskLaunchWorktreeStub) AllocateTaskWorkspace(path string, _ worktreeruntime.TaskBase, _ string) (worktreeruntime.Allocation, error) {
+func (s *taskLaunchWorktreeStub) AllocateTaskWorkspace(path string, _ worktreeruntime.TaskBase, _ string, ownedScopes []string) (worktreeruntime.Allocation, error) {
 	s.allocations++
 	s.allocatedPaths = append(s.allocatedPaths, strings.TrimSpace(path))
+	s.allocatedScopes = append(s.allocatedScopes, append([]string(nil), ownedScopes...))
 	return s.allocation, nil
 }
 
@@ -994,6 +1026,8 @@ func (s *taskLaunchWorktreeStub) AllocateDetachedWorkspaceRequestedForPrincipal(
 	s.requestedNameSeed, s.requestedBase, s.requestedBranch = nameSeed, baseBranch, branchName
 	return s.allocation, nil
 }
+
+func (s *taskLaunchWorktreeStub) RollbackAllocation(_ worktreeruntime.Allocation) error { return nil }
 
 func TestDelegatedSubagentRunStartMetaKeepsPreparedProfileSnapshot(t *testing.T) {
 	prepared := pebblestore.AgentProfile{Name: "reviewer", Prompt: "prepared prompt", RuntimeMode: pebblestore.AgentRuntimeModeRead}
@@ -1383,6 +1417,15 @@ func TestApprovedCoderAllocatesFromSelectedSharedWorkspace(t *testing.T) {
 	}
 }
 
+func TestCoderPromptMakesAllocatedWorktreeAuthoritativeAndBaseCheckoutReadOnly(t *testing.T) {
+	prompt := agentruntime.CoderAgentPrompt()
+	for _, required := range []string{"isolated worktree", "authoritative project root", "Never edit the captured source checkout or its base branch"} {
+		if !strings.Contains(prompt, required) {
+			t.Fatalf("Coder prompt missing %q: %s", required, prompt)
+		}
+	}
+}
+
 func TestApprovedCoderAllocatesIsolatedWorktreeScope(t *testing.T) {
 	svc, parentSessionID, cleanup := newTaskLaunchPermissionTestService(t)
 	defer cleanup()
@@ -1406,7 +1449,7 @@ func TestApprovedCoderAllocatesIsolatedWorktreeScope(t *testing.T) {
 		t.Fatalf("resolve task base: %v", err)
 	}
 	launch, err := svc.prepareDelegatedSubagentLaunchWithProfile(parent, sessionruntime.ModeAuto, taskLaunchPrepared{
-		LaunchIndex: 1, RequestedSubagent: "coder", MetaPrompt: "implement", VirtualTarget: virtual, TaskBase: &taskBase,
+		LaunchIndex: 1, RequestedSubagent: "coder", MetaPrompt: "implement", VirtualTarget: virtual, TaskBase: &taskBase, OwnedScope: []string{"swarmd/internal/run/**"}, LogicalTaskID: "isolated-coder-task",
 	}, "implement", "", &profile, source, nil)
 	if err != nil {
 		t.Fatalf("prepare approved Coder: %v", err)
@@ -1415,8 +1458,14 @@ func TestApprovedCoderAllocatesIsolatedWorktreeScope(t *testing.T) {
 	if stub.allocations != 1 || child.WorkspacePath != clonePath || child.WorktreeRootPath != clonePath || !child.WorktreeEnabled || metadataStringForTest(child.Metadata, "base_commit") != taskBase.BaseCommit {
 		t.Fatalf("Coder isolation facts: allocations=%d child=%#v", stub.allocations, child)
 	}
-	if len(child.TemporaryWorkspaceRoots) != 0 {
-		t.Fatalf("Coder inherited temporary roots: %v", child.TemporaryWorkspaceRoots)
+	if len(stub.allocatedScopes) != 1 || !slices.Equal(stub.allocatedScopes[0], []string{"swarmd/internal/run/**"}) {
+		t.Fatalf("Coder allocation scopes = %#v", stub.allocatedScopes)
+	}
+	if len(child.TemporaryWorkspaceRoots) != 0 || len(child.WorkspaceGrants) != 0 {
+		t.Fatalf("Coder inherited parent roots or grants: temporary=%v grants=%v", child.TemporaryWorkspaceRoots, child.WorkspaceGrants)
+	}
+	if child.WorkspacePath == parent.WorkspacePath || child.WorktreeRootPath == parent.WorktreeRootPath || child.WorktreeBranch == parent.WorktreeBranch || child.WorktreeBranch == child.WorktreeBaseBranch {
+		t.Fatalf("Coder did not receive a distinct managed worktree lane: child=%#v parent=%#v", child, parent)
 	}
 	principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: "test-user", AccountScopeID: parent.AccountScopeID, SessionID: parent.ID, AccountScopeSource: identity.AccountScopeSourceSession}
 	scope, err := svc.resolveRunWorkspaceScope(child, principal)

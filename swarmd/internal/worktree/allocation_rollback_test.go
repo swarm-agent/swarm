@@ -13,6 +13,13 @@ func TestRollbackAllocationRemovesOnlyRecordedAllocation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("allocate worktree: %v", err)
 	}
+	wantBase, err := runGit(repo, "rev-parse", "--verify", "HEAD^{commit}")
+	if err != nil {
+		t.Fatalf("resolve fixture base: %v", err)
+	}
+	if allocation.BaseCommit != wantBase {
+		t.Fatalf("allocation base commit = %q, want %q", allocation.BaseCommit, wantBase)
+	}
 	unrelated := filepath.Join(t.TempDir(), "unrelated")
 	if _, err := runGit(repo, "worktree", "add", "-b", "agent/unrelated", unrelated, "HEAD"); err != nil {
 		t.Fatalf("add unrelated worktree: %v", err)
@@ -32,6 +39,27 @@ func TestRollbackAllocationRemovesOnlyRecordedAllocation(t *testing.T) {
 	}
 	if exists, err := localBranchExists(repo, "agent/unrelated"); err != nil || !exists {
 		t.Fatalf("unrelated branch exists=%t err=%v", exists, err)
+	}
+}
+
+func TestRollbackAllocationUnlocksAndRemovesRecordedAllocation(t *testing.T) {
+	repo := initRollbackTestRepository(t)
+	svc := &Service{}
+	allocation, err := svc.allocateSessionWorkspaceWithBranchMode(repo, true, "", "agent/routed-locked", "session-locked", true)
+	if err != nil {
+		t.Fatalf("allocate worktree: %v", err)
+	}
+	if _, err := runGit(repo, "worktree", "lock", "--reason", "session reservation", allocation.WorkspacePath); err != nil {
+		t.Fatalf("lock worktree: %v", err)
+	}
+	if err := svc.RollbackAllocation(allocation); err != nil {
+		t.Fatalf("RollbackAllocation locked worktree: %v", err)
+	}
+	if _, err := os.Stat(allocation.WorkspacePath); !os.IsNotExist(err) {
+		t.Fatalf("locked allocation path still exists or stat failed: %v", err)
+	}
+	if exists, err := localBranchExists(repo, allocation.BranchName); err != nil || exists {
+		t.Fatalf("locked allocation branch exists=%t err=%v", exists, err)
 	}
 }
 

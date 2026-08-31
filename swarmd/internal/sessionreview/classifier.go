@@ -31,6 +31,7 @@ type Classification struct {
 	UpdatedAt         int64      `json:"updated_at"`
 	WorktreeBranch    string     `json:"worktree_branch,omitempty"`
 	WorktreePath      string     `json:"worktree_path,omitempty"`
+	SourceHead        string     `json:"source_head,omitempty"`
 	TargetBranch      string     `json:"target_branch,omitempty"`
 	Classification    string     `json:"classification"`
 	Reason            string     `json:"reason"`
@@ -117,6 +118,7 @@ func ClassifyCurrentCheckout(session pebblestore.SessionSnapshot, snapshot gitst
 		UpdatedAt:       session.UpdatedAt,
 		WorktreeBranch:  strings.TrimSpace(snapshot.Branch),
 		WorktreePath:    strings.TrimSpace(snapshot.WorkspacePath),
+		SourceHead:      strings.TrimSpace(snapshot.HeadOID),
 		TargetBranch:    strings.TrimSpace(snapshot.Branch),
 		CurrentCheckout: true,
 	}
@@ -149,6 +151,7 @@ func classifySnapshotAgainstTarget(ctx context.Context, runner GitRunner, sessio
 		UpdatedAt:      session.UpdatedAt,
 		WorktreeBranch: strings.TrimSpace(session.WorktreeBranch),
 		WorktreePath:   strings.TrimSpace(session.WorktreeRootPath),
+		SourceHead:     strings.TrimSpace(snapshot.HeadOID),
 		TargetBranch:   strings.TrimSpace(targetBranch),
 	}
 	if grace <= 0 {

@@ -462,10 +462,16 @@ func (s *Service) resolveRunExecutionContext(session pebblestore.SessionSnapshot
 	if requested.WorktreeMode == "" {
 		return resolvedRunExecutionContext{}, fmt.Errorf("unsupported worktree_mode %q", strings.TrimSpace(requested.WorktreeMode))
 	}
+	if err := s.validateMandatorySessionWorktree(session, requested); err != nil {
+		return resolvedRunExecutionContext{}, err
+	}
 
 	workspacePath := strings.TrimSpace(session.WorkspacePath)
 	worktreeEnabled := session.WorktreeEnabled
 	worktreeRootPath := strings.TrimSpace(session.WorktreeRootPath)
+	if worktreeEnabled && worktreeRootPath != "" {
+		workspacePath = worktreeRootPath
+	}
 	worktreeBranch := strings.TrimSpace(session.WorktreeBranch)
 	worktreeBaseBranch := strings.TrimSpace(session.WorktreeBaseBranch)
 
@@ -474,10 +480,11 @@ func (s *Service) resolveRunExecutionContext(session pebblestore.SessionSnapshot
 		if path := strings.TrimSpace(requested.WorkspacePath); path != "" {
 			workspacePath = path
 		} else if worktreeEnabled {
-			if worktreeRootPath == "" {
-				return resolvedRunExecutionContext{}, errors.New("worktree-backed session is missing worktree_root_path")
+			if source := strings.TrimSpace(mapString(session.Metadata, "swarm_v3_source_workspace_path")); source != "" {
+				workspacePath = source
+			} else {
+				workspacePath = strings.TrimSpace(session.WorkspacePath)
 			}
-			workspacePath = worktreeRootPath
 		}
 		worktreeEnabled = false
 		worktreeRootPath = ""
@@ -493,7 +500,7 @@ func (s *Service) resolveRunExecutionContext(session pebblestore.SessionSnapshot
 		} else if !worktreeEnabled {
 			return resolvedRunExecutionContext{}, errors.New("worktree_mode=on requires a worktree-backed source session or explicit worktree_root_path")
 		} else if path := strings.TrimSpace(requested.WorkspacePath); path != "" {
-			current, currentErr := normalizeRunScopePath(session.WorkspacePath)
+			current, currentErr := normalizeRunScopePath(firstNonEmptyString(session.WorktreeRootPath, session.WorkspacePath))
 			requestedPath, requestedErr := normalizeRunScopePath(path)
 			if currentErr != nil || requestedErr != nil || !strings.EqualFold(current, requestedPath) {
 				return resolvedRunExecutionContext{}, errors.New("worktree_mode=on with an overridden workspace_path requires explicit worktree_root_path")
@@ -508,7 +515,7 @@ func (s *Service) resolveRunExecutionContext(session pebblestore.SessionSnapshot
 	case RunWorktreeModeInherit:
 		if path := strings.TrimSpace(requested.WorkspacePath); path != "" {
 			if worktreeEnabled && strings.TrimSpace(requested.WorktreeRootPath) == "" {
-				current, currentErr := normalizeRunScopePath(session.WorkspacePath)
+				current, currentErr := normalizeRunScopePath(firstNonEmptyString(session.WorktreeRootPath, session.WorkspacePath))
 				requestedPath, requestedErr := normalizeRunScopePath(path)
 				if currentErr != nil || requestedErr != nil || !strings.EqualFold(current, requestedPath) {
 					return resolvedRunExecutionContext{}, errors.New("overriding workspace_path for a worktree-backed inherited run requires explicit worktree_root_path or worktree_mode=off")
@@ -551,14 +558,45 @@ func (s *Service) resolveRunExecutionContext(session pebblestore.SessionSnapshot
 
 	roots := normalizeExecutionRoots(resolvedCWD, baseRoots)
 	effectiveWorktreeMode := RunWorktreeModeOff
+	resolvedScope := tool.WorkspaceScope{
+		PrimaryPath: resolvedCWD,
+		Roots:       roots,
+	}
 	if worktreeEnabled {
 		effectiveWorktreeMode = RunWorktreeModeOn
+		// The live provider path constructs its execution scope here rather than
+		// through ResolveRuntimeWorkspaceScope. Preserve the authenticated Coder
+		// source-checkout and linked-Git read-only roots (plus owned mutation
+		// limits) when this run still targets the session's managed worktree.
+		sessionScope, scopeErr := s.resolveRunWorkspaceScope(session, principal)
+		if scopeErr != nil {
+			return resolvedRunExecutionContext{}, scopeErr
+		}
+		selectedWorktreeRoot, rootErr := normalizeRunScopePath(firstNonEmptyString(worktreeRootPath, resolvedWorkspacePath))
+		if rootErr != nil {
+			return resolvedRunExecutionContext{}, rootErr
+		}
+		if sessionScope.WorktreeEnabled && sessionScope.WorktreeRootPath == selectedWorktreeRoot {
+			resolvedScope.ReadOnlyRoots = append([]string(nil), sessionScope.ReadOnlyRoots...)
+			resolvedScope.MutationScopes = append([]string(nil), sessionScope.MutationScopes...)
+			resolvedScope.RejectScopeExpansion = sessionScope.RejectScopeExpansion
+			resolvedScope.WorktreeEnabled = true
+			resolvedScope.WorktreeRootPath = sessionScope.WorktreeRootPath
+			resolvedScope.WorktreeBranch = strings.TrimSpace(worktreeBranch)
+			resolvedScope.WorktreeBaseBranch = strings.TrimSpace(worktreeBaseBranch)
+			resolvedScope.WorktreeBaseCommit = sessionScope.WorktreeBaseCommit
+			resolvedScope.SourceWorkspacePath = sessionScope.SourceWorkspacePath
+		}
+	}
+	if mapBool(session.Metadata, "swarm_v3_mandatory_worktree") {
+		selectedRoot, rootErr := normalizeRunScopePath(worktreeRootPath)
+		if rootErr != nil || !worktreeEnabled || resolvedWorkspacePath != selectedRoot || resolvedCWD != selectedRoot || !resolvedScope.WorktreeEnabled || resolvedScope.WorktreeRootPath != selectedRoot {
+			return resolvedRunExecutionContext{}, errors.New("mandatory session worktree revalidation failed: effective execution escaped the session-owned worktree")
+		}
+		resolvedScope.MutationScopes = []string{"."}
 	}
 	return resolvedRunExecutionContext{
-		Scope: tool.WorkspaceScope{
-			PrimaryPath: resolvedCWD,
-			Roots:       roots,
-		},
+		Scope:              resolvedScope,
 		WorkspacePath:      resolvedWorkspacePath,
 		CWD:                resolvedCWD,
 		WorktreeMode:       effectiveWorktreeMode,
@@ -566,6 +604,62 @@ func (s *Service) resolveRunExecutionContext(session pebblestore.SessionSnapshot
 		WorktreeBranch:     worktreeBranch,
 		WorktreeBaseBranch: worktreeBaseBranch,
 	}, nil
+}
+
+func (s *Service) validateMandatorySessionWorktree(session pebblestore.SessionSnapshot, requested RunExecutionContext) error {
+	if !mapBool(session.Metadata, "swarm_v3_mandatory_worktree") {
+		return nil
+	}
+	root := strings.TrimSpace(session.WorktreeRootPath)
+	branch := strings.TrimSpace(session.WorktreeBranch)
+	source := strings.TrimSpace(mapString(session.Metadata, "swarm_v3_source_workspace_path"))
+	runtimePath := strings.TrimSpace(mapString(session.Metadata, "swarm_v3_runtime_workspace_path"))
+	ownerSessionID := strings.TrimSpace(mapString(session.Metadata, "swarm_v3_worktree_owner_session_id"))
+	if !session.WorktreeEnabled || root == "" || branch == "" || source == "" || runtimePath == "" || ownerSessionID != strings.TrimSpace(session.ID) {
+		return errors.New("mandatory session worktree revalidation failed: durable ownership or lineage is incomplete")
+	}
+	normalizedRoot, rootErr := normalizeRunScopePath(root)
+	normalizedRuntime, runtimeErr := normalizeRunScopePath(runtimePath)
+	normalizedSource, sourceErr := normalizeRunScopePath(source)
+	if rootErr != nil || runtimeErr != nil || sourceErr != nil || normalizedRoot != normalizedRuntime || normalizedRoot == normalizedSource {
+		return errors.New("mandatory session worktree revalidation failed: runtime path is stale or aliases the source checkout")
+	}
+	if requested.WorktreeMode == RunWorktreeModeOff {
+		return errors.New("mandatory session worktree revalidation failed: worktree_mode=off is prohibited")
+	}
+	for label, raw := range map[string]string{
+		"workspace_path":     requested.WorkspacePath,
+		"cwd":                requested.CWD,
+		"worktree_root_path": requested.WorktreeRootPath,
+	} {
+		if strings.TrimSpace(raw) == "" {
+			continue
+		}
+		path, err := normalizeRunScopePath(raw)
+		if err != nil || path != normalizedRoot {
+			return fmt.Errorf("mandatory session worktree revalidation failed: %s must identify the session-owned worktree", label)
+		}
+	}
+	if requestedBranch := strings.TrimSpace(requested.WorktreeBranch); requestedBranch != "" && requestedBranch != branch {
+		return errors.New("mandatory session worktree revalidation failed: worktree branch override is stale")
+	}
+	if s == nil || s.worktreeInspect == nil {
+		return errors.New("mandatory session worktree revalidation failed: worktree service is unavailable")
+	}
+	state, err := s.worktreeInspect(normalizedRoot)
+	if err != nil {
+		return fmt.Errorf("mandatory session worktree revalidation failed: inspect owned worktree: %w", err)
+	}
+	if strings.TrimSpace(state.WorkspacePath) != "" {
+		statePath, stateErr := normalizeRunScopePath(state.WorkspacePath)
+		if stateErr != nil || statePath != normalizedRoot {
+			return errors.New("mandatory session worktree revalidation failed: inspected worktree path is stale")
+		}
+	}
+	if strings.TrimSpace(state.BranchName) != branch {
+		return fmt.Errorf("mandatory session worktree revalidation failed: branch changed from %q to %q", branch, strings.TrimSpace(state.BranchName))
+	}
+	return nil
 }
 
 func (s *Service) resolveExecutionRoots(session pebblestore.SessionSnapshot, workspacePath string, worktreeEnabled bool, temporaryRoots []string, principal identity.Principal) ([]string, error) {
@@ -578,7 +672,16 @@ func (s *Service) resolveExecutionRoots(session pebblestore.SessionSnapshot, wor
 		return nil, err
 	}
 	if worktreeEnabled {
-		return normalizeExecutionRoots(workspacePath, mergeSessionWorkspaceRoots([]string{workspacePath}, validatedRoots)), nil
+		principal, err = principalForRunWorkspaceScope(session, principal)
+		if err != nil {
+			return nil, err
+		}
+		roots := mergeSessionWorkspaceRoots([]string{workspacePath}, validatedRoots)
+		roots, err = s.mergeAuthorizedSessionWorkspaceGrantRoots(principal, roots, session.WorkspaceGrants)
+		if err != nil {
+			return nil, err
+		}
+		return normalizeExecutionRoots(workspacePath, roots), nil
 	}
 	principal, err = principalForRunWorkspaceScope(session, principal)
 	if err != nil {
@@ -589,7 +692,9 @@ func (s *Service) resolveExecutionRoots(session pebblestore.SessionSnapshot, wor
 		if err != nil {
 			return nil, fmt.Errorf("resolve account-scoped execution roots: %w", err)
 		}
-		return normalizeExecutionRoots(workspacePath, mergeSessionWorkspaceRoots(resolved.Directories, validatedRoots)), nil
+		if resolved.Matched {
+			return normalizeExecutionRoots(workspacePath, mergeSessionWorkspaceRoots(resolved.Directories, validatedRoots)), nil
+		}
 	}
 	return normalizeExecutionRoots(workspacePath, mergeSessionWorkspaceRoots([]string{workspacePath}, validatedRoots)), nil
 }

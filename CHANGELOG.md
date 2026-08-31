@@ -15,12 +15,15 @@ Release entries are the source checkpoint for public docs verification. Each ent
 - Added deterministic `swarm.animation/v1` HTML animation capture that publishes silent managed MP4 artifacts with exact source lineage.
 - Added trusted registered audio sources, durable speech transcription, and bounded deterministic waveform, onset, tempo, beat, and energy-section analysis.
 - Added reviewed Video Studio soundtrack editing with exact `source_audio` clips, typed pending proposals, accepted-cut preview, and deterministic audio/video rendering.
+- Added the canonical Swarm Atlas, two-pass test audit ledger, and atlas-driven `fast`, `deep`, and `agents` critical gates for pull requests and release builds.
 
 ### Changed
 
 - Updated the daemon compression dependency to `github.com/klauspost/compress` v1.18.7 for the new build.
 - Reworked durable V3 plan and checkpoint execution so boundary transitions, resumptions, source-message provenance, and conversation context remain in the canonical session epoch.
 - Expanded Desktop and TUI workspace onboarding, session routing, themes, responsive navigation, git status, and launch tips while removing legacy display and workspace-definition authorities.
+- Flattened account-scoped workspaces into one global catalog: every saved path has independent identity and generation, historical linked directories migrate to standalone entries, and linked membership is no longer scope authority.
+- Required every Git-backed routed or deployed session to start in a session-owned managed worktree, with durable ownership and lineage revalidated before provider execution.
 - Hardened release update and systemd relaunch behavior, including non-privileged update handoff, replacement readiness, authorization, and rollback-sensitive restart paths.
 - Split trusted pre-merge qualification from final protected-branch release builds so publication can require an independently authenticated candidate check while keeping infrastructure details and credentials outside the public repository.
 - Separated core system agents from utility agents in Desktop and TUI model controls.
@@ -46,6 +49,7 @@ Release entries are the source checkpoint for public docs verification. Each ent
 - Fixed TUI launches from unsaved Git repositories so they retain the configured default workspace while showing actionable `/workspace save` guidance; nested repositories are no longer hidden by broad saved workspace roots.
 - Allowed first-run OpenAI onboarding to accept credentials without depending on a live provider availability check; credentials remain explicitly unverified until a real provider request succeeds.
 - Allowed authenticated same-origin Tailscale Desktop requests admitted by daemon origin policy to trigger host update actions while spoofed requests remain fail-closed.
+- Updated the daemon cryptography dependency to the fixed release for CVE-2026-56854 and made PR critical checks install their required repository-policy tool before fetching and testing the exact declared head/base commits.
 
 ### Docs impact
 
@@ -60,7 +64,7 @@ Release entries are the source checkpoint for public docs verification. Each ent
 - Public command docs should describe `/voice` as experimental terminal voice input only, not as a fully supported voice product.
 - Public TUI workspace guidance should explain that `/workspace save` saves and switches to an unsaved Git launch directory.
 - Public video documentation should cover deterministic HTML animation export, trusted registered audio sources, transcription and deterministic audio analysis, reviewed soundtrack proposals, and the current no-fades/no-looping/no-ducking limits.
-- Docs impact: none for the Tailscale host-update authorization correction, plan execution badge cleanup, or Desktop sidebar responsiveness refinements.
+- Docs impact: none for the Tailscale host-update authorization correction, cryptography dependency correction, plan execution badge cleanup, Desktop sidebar responsiveness refinements, or internal test-governance and release-gate wiring.
 
 ## v0.1.19 - 2026-05-01
 

@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"swarm/packages/swarmd/internal/videocomposition"
 )
 
 func newTestSessionStoreForVideoProject(t *testing.T) (*SessionStore, func()) {
@@ -42,6 +44,62 @@ func createTestSession(t *testing.T, store *SessionStore, accountScopeID, userID
 	})
 	if err != nil {
 		t.Fatalf("create test session: %v", err)
+	}
+}
+
+func TestListVideoProjectsForAccountCrossSession(t *testing.T) {
+	store, cleanup := newTestSessionStoreForVideoProject(t)
+	defer cleanup()
+	createTestSession(t, store, "account", "user", "session-a")
+	createTestSession(t, store, "account", "user", "session-b")
+	createTestSession(t, store, "foreign", "user", "session-c")
+	for _, input := range []CreateVideoProjectInput{
+		{AccountScopeID: "account", UserID: "user", SessionID: "session-a", ProjectID: "project-a", Title: "A"},
+		{AccountScopeID: "account", UserID: "user", SessionID: "session-b", ProjectID: "project-b", Title: "B"},
+		{AccountScopeID: "foreign", UserID: "user", SessionID: "session-c", ProjectID: "project-c", Title: "C"},
+	} {
+		if _, _, err := store.CreateVideoProject(input); err != nil {
+			t.Fatal(err)
+		}
+	}
+	projects, err := store.ListVideoProjectsForAccount("account", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(projects) != 2 {
+		t.Fatalf("projects=%+v, want two account projects", projects)
+	}
+}
+
+func TestVideoProjectCreationCanAttachDurableSessionContext(t *testing.T) {
+	store, cleanup := newTestSessionStoreForVideoProject(t)
+	defer cleanup()
+	createTestSession(t, store, "account", "user", "session")
+
+	metadata := map[string]any{"experience": "video_studio", "launch_source": "video_library", "lineage_kind": "video_project", "video_project_id": "project", "video_revision_id": "revision"}
+	project, revision, err := store.CreateVideoProject(CreateVideoProjectInput{
+		AccountScopeID: "account", UserID: "user", SessionID: "session", ProjectID: "project", InitialRevisionID: "revision", Title: "Attached video",
+		InitialTimeline:   &VideoProjectTimeline{OutputPreset: VideoPresetLandscape1080p, Clips: []VideoTimelineClip{}, Transitions: []VideoTimelineTransition{}},
+		SessionMetadata:   metadata,
+		AttachmentMessage: &MessageSnapshot{ID: "attachment-message", Role: "system", Content: "Attached exact video revision.", Metadata: map[string]any{"source": "video_library_attachment", "creative_mode": "video", "video_project_id": "project", "video_revision_id": "revision"}},
+		NowUnixMs:         200,
+	})
+	if err != nil {
+		t.Fatalf("create attached video project: %v", err)
+	}
+	if revision == nil || project.ID != "project" || revision.ID != "revision" {
+		t.Fatalf("unexpected attached project state: project=%+v revision=%+v", project, revision)
+	}
+	session, ok, err := store.GetSession("session")
+	if err != nil || !ok {
+		t.Fatalf("read attached session: found=%v err=%v", ok, err)
+	}
+	if session.Metadata["video_project_id"] != "project" || session.Metadata["video_revision_id"] != "revision" || session.MessageCount != 1 || session.LastMessageAt != 200 || session.UpdatedAt != 200 {
+		t.Fatalf("session attachment context was not persisted and sorted: %+v", session)
+	}
+	messages, err := store.ListMessages("session", 0, 10)
+	if err != nil || len(messages) != 1 || messages[0].ID != "attachment-message" || messages[0].Metadata["source"] != "video_library_attachment" {
+		t.Fatalf("durable attachment message=%+v err=%v", messages, err)
 	}
 }
 
@@ -286,13 +344,22 @@ func TestVideoRenderJobLifecycle(t *testing.T) {
 		Status:         VideoRenderJobStatusRendering,
 		ExpectedStatus: VideoRenderJobStatusQueued,
 		Progress:       0.45,
+		ProgressStage:  "Capturing HTML animation frames",
 		NowUnixMs:      1200,
 	})
 	if err != nil {
 		t.Fatalf("update to rendering failed: %v", err)
 	}
-	if renderingJob.Status != VideoRenderJobStatusRendering || renderingJob.Progress != 0.45 || renderingJob.StartedAt != 1200 {
+	if renderingJob.Status != VideoRenderJobStatusRendering || renderingJob.Progress != 0.45 || renderingJob.ProgressStage != "Capturing HTML animation frames" || renderingJob.StartedAt != 1200 {
 		t.Fatalf("unexpected rendering job state: %+v", renderingJob)
+	}
+	staleProgress, err := store.UpdateVideoRenderJob(UpdateVideoRenderJobInput{
+		AccountScopeID: account, UserID: user, SessionID: sessionID, JobID: job.ID,
+		Status: VideoRenderJobStatusRendering, ExpectedStatus: VideoRenderJobStatusRendering,
+		Progress: 0.40, ProgressStage: "stale stage", NowUnixMs: 1250,
+	})
+	if err != nil || staleProgress.Progress != 0.45 || staleProgress.ProgressStage != "Capturing HTML animation frames" {
+		t.Fatalf("render progress regressed: job=%+v err=%v", staleProgress, err)
 	}
 	recoverable, err := store.ListRecoverableVideoRenderJobs(10)
 	if err != nil || len(recoverable) != 1 || recoverable[0].ID != job.ID {
@@ -499,5 +566,159 @@ func TestTimelineValidationRules(t *testing.T) {
 				t.Fatalf("validateVideoTimeline() error = %v, want substring %q", err, tc.wantErr)
 			}
 		})
+	}
+}
+
+func durableCompositionFixture() (*videocomposition.Catalog, *videocomposition.Link) {
+	catalog := &videocomposition.Catalog{SchemaVersion: 1, Layouts: []videocomposition.Layout{{
+		ID: "phones", Slots: []videocomposition.Slot{{
+			ID: "phone", Requirement: "Portrait capture",
+			Geometry: videocomposition.NormalizedRect{X: .1, Y: .1, Width: .3, Height: .8},
+			ZIndex:   1, Fit: videocomposition.FitCover, AlignmentX: .5, AlignmentY: .5,
+			Mask: videocomposition.Mask{Kind: videocomposition.MaskRoundedRect, Radius: .05},
+		}},
+	}}}
+	return catalog, &videocomposition.Link{LayoutID: "phones"}
+}
+
+func TestVideoPlanCompositionDurabilityRevisionAndAcceptanceGate(t *testing.T) {
+	catalog, link := durableCompositionFixture()
+	visual := &SessionArtifactSelectionReference{SessionID: "session", CollectionID: "collection", VariantID: "variant", EventSeq: 1}
+	plan := VideoPlanProposal{Kind: VideoPlanKindInitial, CompositionCatalog: catalog, Parts: []VideoPlanPart{{ID: "part", Title: "Part", DurationMs: 1000, Visual: visual, VisualMediaType: "image/png", StoryboardSource: visual, Composition: link}}}
+	if err := validateVideoPlanProposal(plan); err != nil {
+		t.Fatal(err)
+	}
+	timeline := visualVideoPlanTimeline(VideoProjectTimeline{}, plan)
+	if timeline.CompositionCatalog == nil || timeline.CompositionCatalog.Layouts[0].ID != "phones" {
+		t.Fatalf("timeline=%#v", timeline)
+	}
+	if got := unresolvedSelectedVideoCompositionPart(&plan, nil); got != "part" {
+		t.Fatalf("unresolved=%q", got)
+	}
+	catalog.Layouts[0].Slots[0].Source = &videocomposition.SourceBinding{SourceRef: "videosrc_exact", MediaType: "video/mp4", SourceStartMs: 0, SourceEndMs: 1000, TimelineStartMs: 0, TimelineEndMs: 1000, AudioPolicy: videocomposition.AudioMute}
+	if got := unresolvedSelectedVideoCompositionPart(&plan, nil); got != "" {
+		t.Fatalf("unresolved=%q", got)
+	}
+	replacement := VideoPlanPart{ID: "part", Title: "Replacement", DurationMs: 1000, Visual: visual, VisualMediaType: "image/png"}
+	merged := mergeStoryboardReplacement(plan.Parts[0], replacement)
+	if merged.Composition == nil || merged.Composition.LayoutID != "phones" {
+		t.Fatalf("merged=%#v", merged)
+	}
+}
+
+func TestHydrateRevisionVideoPlanCatalogUsesAcceptedBase(t *testing.T) {
+	catalog, link := durableCompositionFixture()
+	visual := &SessionArtifactSelectionReference{SessionID: "session", CollectionID: "collection", VariantID: "variant", EventSeq: 1}
+	accepted := &VideoPlanProposal{Kind: VideoPlanKindInitial, CompositionCatalog: catalog, Parts: []VideoPlanPart{{ID: "part", Title: "Part", DurationMs: 1000, Visual: visual, VisualMediaType: "image/png", Composition: link}}}
+	proposed := &VideoPlanProposal{Kind: VideoPlanKindRevision, Parts: []VideoPlanPart{{ID: "part", Title: "Replacement", DurationMs: 1000, Visual: visual, VisualMediaType: "image/png", Composition: link}}}
+	if err := hydrateRevisionVideoPlanCatalog(accepted, proposed); err != nil {
+		t.Fatal(err)
+	}
+	if proposed.CompositionCatalog != catalog {
+		t.Fatalf("revision catalog = %#v, want accepted catalog", proposed.CompositionCatalog)
+	}
+	if err := validateVideoPlanProposal(*proposed); err != nil {
+		t.Fatalf("hydrated revision must validate: %v", err)
+	}
+}
+
+func TestHydrateRevisionVideoPlanCatalogStillRejectsUnresolvedAuthority(t *testing.T) {
+	_, link := durableCompositionFixture()
+	visual := &SessionArtifactSelectionReference{SessionID: "session", CollectionID: "collection", VariantID: "variant", EventSeq: 1}
+	proposed := &VideoPlanProposal{Kind: VideoPlanKindRevision, Parts: []VideoPlanPart{{ID: "part", Title: "Replacement", DurationMs: 1000, Visual: visual, VisualMediaType: "image/png", Composition: link}}}
+	if err := hydrateRevisionVideoPlanCatalog(nil, proposed); err == nil || !strings.Contains(err.Error(), "accepted base plan") {
+		t.Fatalf("missing accepted catalog must fail closed, got %v", err)
+	}
+}
+
+func TestPendingSelectedVideoProductionPartBlocksAcceptance(t *testing.T) {
+	plan := &VideoPlanProposal{Kind: VideoPlanKindInitial, Parts: []VideoPlanPart{{ID: "shot", ProductionState: VideoProductionStatePending}}}
+	if got := pendingSelectedVideoProductionPart(plan, nil); got != "shot" {
+		t.Fatalf("pending=%q", got)
+	}
+	plan.Parts[0].ProductionState = VideoProductionStateReady
+	if got := pendingSelectedVideoProductionPart(plan, nil); got != "" {
+		t.Fatalf("pending=%q", got)
+	}
+}
+
+func TestMergeVideoCompositionUpdateHydratesBoundedStoryboardParts(t *testing.T) {
+	catalog, link := durableCompositionFixture()
+	visual := &SessionArtifactSelectionReference{SessionID: "session", CollectionID: "collection", VariantID: "visual", EventSeq: 1}
+	pending := VideoPlanProposal{Kind: VideoPlanKindInitial, Summary: "Imported storyboard", CompositionCatalog: catalog}
+	for index, id := range []string{"one", "two", "three", "four"} {
+		pending.Parts = append(pending.Parts, VideoPlanPart{
+			ID: id, Title: strings.ToUpper(id), DurationMs: int64(index+1) * 1000,
+			Visual: visual, VisualMediaType: "image/png", CaptureStateID: "state-" + id,
+			FilmingRequirements: []string{"Record " + id}, ProductionState: VideoProductionStatePending,
+			StoryboardSource: visual, StoryboardStill: visual, Composition: link,
+		})
+	}
+	assigned := &videocomposition.Link{LayoutID: "phones", Overrides: []videocomposition.SlotOverride{{
+		SlotID: "phone", Source: &videocomposition.SourceBinding{SourceRef: "videosrc_exact", MediaType: "video/mp4", SourceStartMs: 0, SourceEndMs: 1000, TimelineStartMs: 0, TimelineEndMs: 1000, AudioPolicy: videocomposition.AudioMute},
+	}}}
+	patch := VideoPlanProposal{Kind: VideoPlanKindRevision, Parts: []VideoPlanPart{
+		{ID: "one", Composition: assigned, ProductionState: VideoProductionStateReady},
+		{ID: "three", Composition: assigned, ProductionState: VideoProductionStateReady},
+	}}
+	merged, err := MergeVideoCompositionUpdate(pending, patch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if merged.Kind != VideoPlanKindInitial || merged.Summary != pending.Summary || len(merged.Parts) != 4 || merged.Parts[1].ID != "two" || merged.Parts[1].ProductionState != VideoProductionStatePending {
+		t.Fatalf("bounded merge did not preserve pending plan: %#v", merged)
+	}
+	for _, index := range []int{0, 2} {
+		part := merged.Parts[index]
+		if part.Composition != assigned || part.ProductionState != VideoProductionStateReady || part.Title == "" || part.StoryboardSource == nil || part.StoryboardStill == nil || len(part.FilmingRequirements) == 0 {
+			t.Fatalf("targeted part %d was not canonically hydrated: %#v", index, part)
+		}
+	}
+	if err := validateVideoPlanIntent(VideoEditProposalIntentStoryboardImport, merged); err != nil {
+		t.Fatalf("merged storyboard plan lost canonical import fields: %v", err)
+	}
+	unknown := VideoPlanProposal{Parts: []VideoPlanPart{{ID: "missing", Composition: assigned}}}
+	if _, err := MergeVideoCompositionUpdate(pending, unknown); err == nil || !strings.Contains(err.Error(), "unknown stable part") {
+		t.Fatalf("unknown stable part must fail atomically, got %v", err)
+	}
+	mutated := VideoPlanProposal{Parts: []VideoPlanPart{{ID: "one", Title: "Changed", Composition: assigned}}}
+	if _, err := MergeVideoCompositionUpdate(pending, mutated); err == nil || !strings.Contains(err.Error(), "only change composition") {
+		t.Fatalf("non-composition mutation must fail atomically, got %v", err)
+	}
+}
+
+func TestCompositionUpdateRevisionPlanKeepsUntargetedWorkingParts(t *testing.T) {
+	catalog, link := durableCompositionFixture()
+	visual := &SessionArtifactSelectionReference{SessionID: "session", CollectionID: "collection", VariantID: "visual", EventSeq: 1}
+	working := VideoPlanProposal{Kind: VideoPlanKindInitial, CompositionCatalog: catalog, Parts: []VideoPlanPart{
+		{ID: "one", Title: "One", DurationMs: 1000, Visual: visual, VisualMediaType: "image/png", Composition: link},
+		{ID: "two", Title: "Two", DurationMs: 1000, Visual: visual, VisualMediaType: "image/png"},
+	}}
+	timeline := visualVideoPlanTimeline(VideoProjectTimeline{}, working)
+	timeline.Metadata = map[string]any{"accepted_video_plan": working}
+	changed := working.Parts[0]
+	changed.Composition = &videocomposition.Link{Disabled: true}
+	updated, err := mergeWorkingVideoPlanMutation(timeline, VideoPlanProposal{Kind: VideoPlanKindRevision, CompositionCatalog: catalog, Parts: []VideoPlanPart{changed}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(updated.Parts) != 2 || updated.Parts[0].Composition == nil || !updated.Parts[0].Composition.Disabled || updated.Parts[1].ID != "two" {
+		t.Fatalf("updated working plan = %#v", updated)
+	}
+}
+
+func TestVideoPlanCompositionRejectsMissingLayoutAndUnsafeTiming(t *testing.T) {
+	catalog, link := durableCompositionFixture()
+	visual := &SessionArtifactSelectionReference{SessionID: "session", CollectionID: "collection", VariantID: "variant", EventSeq: 1}
+	part := VideoPlanPart{ID: "part", Title: "Part", DurationMs: 1000, Visual: visual, VisualMediaType: "image/png", Composition: link}
+	part.Composition.LayoutID = "missing"
+	plan := VideoPlanProposal{Kind: VideoPlanKindInitial, CompositionCatalog: catalog, Parts: []VideoPlanPart{part}}
+	if err := validateVideoPlanProposal(plan); err == nil || !strings.Contains(err.Error(), "missing") {
+		t.Fatalf("err=%v", err)
+	}
+	part.Composition.LayoutID = "phones"
+	catalog.Layouts[0].Slots[0].Source = &videocomposition.SourceBinding{SourceRef: "videosrc_exact", MediaType: "video/mp4", SourceStartMs: 0, SourceEndMs: 1000, TimelineStartMs: 0, TimelineEndMs: 2000, AudioPolicy: videocomposition.AudioMute}
+	if err := validateVideoPlanProposal(plan); err == nil || !strings.Contains(err.Error(), "duration") {
+		t.Fatalf("err=%v", err)
 	}
 }

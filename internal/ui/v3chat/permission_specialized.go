@@ -49,13 +49,9 @@ type workspaceScopeIntent struct {
 	RequestedPath      string
 	ResolvedPath       string
 	DirectoryPath      string
-	WorkspacePath      string
-	WorkspaceName      string
-	WorkspaceExists    bool
 	TemporaryBehavior  string
 	PersistentBehavior string
 	SessionAllow       workspaceScopeAction
-	AddToWorkspace     workspaceScopeAction
 }
 
 type permissionInteractionView struct {
@@ -206,23 +202,13 @@ func parseWorkspaceScopeIntent(record client.PermissionRecord) (workspaceScopeIn
 	}
 	tool := toolObject(payload, "tool")
 	request := toolObject(payload, "request")
-	workspace := toolObject(payload, "workspace")
 	actions := toolObject(payload, "actions")
 	toolName := firstNonEmptyToolRaw(toolString(tool, "name"), record.ToolName)
 	accessLabel := firstNonEmptyToolRaw(toolString(request, "access_label"), workspaceScopeAccessLabel(toolName))
 	requestedPath := toolString(request, "requested_path")
 	resolvedPath := toolString(request, "resolved_target_path")
 	directoryPath := firstNonEmptyToolRaw(toolString(request, "directory_path"), resolvedPath, requestedPath)
-	workspaceExists := toolBool(workspace, "exists")
-	temporaryBehavior := firstNonEmptyToolRaw(toolString(request, "temporary_behavior"), fmt.Sprintf("Approving this allows %s to %s for this chat session only. It does not save or change the workspace.", accessLabel, firstNonEmptyToolRaw(directoryPath, "the requested directory")))
-	persistentBehavior := toolString(workspace, "persistent_behavior")
-	if persistentBehavior == "" {
-		if workspaceExists {
-			persistentBehavior = fmt.Sprintf("Add %s to the saved workspace so future access inside that workspace stops asking for permission.", firstNonEmptyToolRaw(directoryPath, "the requested directory"))
-		} else {
-			persistentBehavior = "No saved workspace is active for this session, so permanent add-dir access is not available here."
-		}
-	}
+	temporaryBehavior := fmt.Sprintf("Approving this temporarily allows %s to %s for this chat session only. It does not save or change any workspace. A different chat session will ask again.", accessLabel, firstNonEmptyToolRaw(directoryPath, "the requested directory"))
 	intent := workspaceScopeIntent{
 		Title:              firstNonEmptyToolRaw(toolString(payload, "title"), fmt.Sprintf("Allow %s outside the current workspace?", accessLabel)),
 		Summary:            toolString(payload, "summary"),
@@ -231,29 +217,22 @@ func parseWorkspaceScopeIntent(record client.PermissionRecord) (workspaceScopeIn
 		RequestedPath:      requestedPath,
 		ResolvedPath:       resolvedPath,
 		DirectoryPath:      directoryPath,
-		WorkspacePath:      toolString(workspace, "path"),
-		WorkspaceName:      toolString(workspace, "name"),
-		WorkspaceExists:    workspaceExists,
 		TemporaryBehavior:  temporaryBehavior,
-		PersistentBehavior: persistentBehavior,
+		PersistentBehavior: "For durable use, add this folder as its own new workspace from the workspace picker.",
 	}
 	if intent.Summary == "" {
 		intent.Summary = fmt.Sprintf("Allow %s for this chat session only.", accessLabel)
-		if workspaceExists {
-			intent.Summary = fmt.Sprintf("Allow %s for this chat session only, or add the directory to the saved workspace permanently.", accessLabel)
-		}
 	}
-	intent.SessionAllow = parseWorkspaceScopeAction(toolObject(actions, "session_allow"), workspaceScopeAction{Decision: "session_allow", Label: "Allow This Session", Description: temporaryBehavior, Available: true})
-	intent.AddToWorkspace = parseWorkspaceScopeAction(toolObject(actions, "workspace_add_dir"), workspaceScopeAction{Decision: "workspace_add_dir", Label: "Add To Workspace", Description: persistentBehavior, Available: workspaceExists})
+	intent.SessionAllow = parseWorkspaceScopeAction(toolObject(actions, "session_allow"), workspaceScopeAction{Decision: "session_allow", Label: "Allow for This Chat Session", Description: temporaryBehavior, Available: true})
+	intent.SessionAllow.Decision = "session_allow"
+	intent.SessionAllow.Label = "Allow for This Chat Session"
+	intent.SessionAllow.Description = temporaryBehavior
+	intent.SessionAllow.Available = true
 	return intent, true
 }
 
 func workspaceScopeResolutionReason(decision string) string {
-	if !strings.EqualFold(strings.TrimSpace(decision), "workspace_add_dir") {
-		decision = "session_allow"
-	} else {
-		decision = "workspace_add_dir"
-	}
+	decision = "session_allow"
 	encoded, _ := json.Marshal(map[string]string{"path_id": workspaceScopeDecisionPathID, "decision": decision})
 	return string(encoded)
 }
@@ -477,12 +456,9 @@ func specializedPermissionCardRows(record client.PermissionRecord, pendingCount,
 		model.Content = append(model.Content, permissionCardLine{Text: "", Style: styles.Muted})
 		appendWrappedPermissionLine(intent.TemporaryBehavior, styles.Text)
 		appendWrappedPermissionLine(intent.PersistentBehavior, styles.Muted)
-		actions := []permissionCardAction{{Label: "1 " + intent.SessionAllow.Label, Action: "workspace_session", Tone: styles.Success}}
-		if intent.AddToWorkspace.Available {
-			actions = append(actions, permissionCardAction{Label: "2 " + intent.AddToWorkspace.Label, Action: "workspace_add", Tone: styles.Accent})
-			actions = append(actions, permissionCardAction{Label: "3 Deny", Action: "deny_once", Tone: styles.Error})
-		} else {
-			actions = append(actions, permissionCardAction{Label: "2 Deny", Action: "deny_once", Tone: styles.Error})
+		actions := []permissionCardAction{
+			{Label: "1 " + intent.SessionAllow.Label, Action: "workspace_session", Tone: styles.Success},
+			{Label: "2 Deny", Action: "deny_once", Tone: styles.Error},
 		}
 		if !permissionPending(record) {
 			model.Content = append(model.Content,
@@ -568,11 +544,7 @@ func (p *Page) handleWorkspaceScopePermissionKeyLocked(record client.PermissionR
 	if !ok {
 		return PageActionNone
 	}
-	available := []int{0}
-	if intent.AddToWorkspace.Available {
-		available = append(available, 1)
-	}
-	available = append(available, 2)
+	available := []int{0, 2}
 	shift := func(delta int) {
 		position := 0
 		for index, value := range available {
@@ -586,10 +558,6 @@ func (p *Page) handleWorkspaceScopePermissionKeyLocked(record client.PermissionR
 	}
 	resolveSelection := func() {
 		switch p.permissionWorkspaceSelection {
-		case 1:
-			if intent.AddToWorkspace.Available {
-				p.resolvePermissionWithReasonLocked(record, "allow_once", workspaceScopeResolutionReason(intent.AddToWorkspace.Decision))
-			}
 		case 2:
 			p.resolvePermissionWithReasonLocked(record, "deny_once", "")
 		default:
@@ -611,17 +579,8 @@ func (p *Page) handleWorkspaceScopePermissionKeyLocked(record client.PermissionR
 			p.permissionWorkspaceSelection = 0
 			resolveSelection()
 		case '2':
-			if intent.AddToWorkspace.Available {
-				p.permissionWorkspaceSelection = 1
-			} else {
-				p.permissionWorkspaceSelection = 2
-			}
+			p.permissionWorkspaceSelection = 2
 			resolveSelection()
-		case '3':
-			if intent.AddToWorkspace.Available {
-				p.permissionWorkspaceSelection = 2
-				resolveSelection()
-			}
 		}
 	}
 	return PageActionNone

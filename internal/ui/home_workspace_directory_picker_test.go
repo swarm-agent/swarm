@@ -166,7 +166,7 @@ func TestWorkspaceSetupEndsWithSaveActionsAndSupportsDownNavigation(t *testing.T
 		t.Fatal("expected workspace setup editor")
 	}
 	fields := p.workspaceModal.Editor.Fields
-	if len(fields) < 3 || fields[len(fields)-3].Key != "linked_directory" || fields[len(fields)-2].Key != "save" || fields[len(fields)-2].Label != "Save" || fields[len(fields)-1].Key != "save_and_switch" || fields[len(fields)-1].Label != "Save and Switch" {
+	if len(fields) < 2 || fields[len(fields)-2].Key != "save" || fields[len(fields)-2].Label != "Save" || fields[len(fields)-1].Key != "save_and_switch" || fields[len(fields)-1].Label != "Save and Switch" {
 		t.Fatalf("workspace setup final fields = %#v", fields)
 	}
 	for _, field := range fields {
@@ -183,8 +183,7 @@ func TestWorkspaceSetupEndsWithSaveActionsAndSupportsDownNavigation(t *testing.T
 			p.workspaceModal.Editor.Fields[i].Value = "new-workspace"
 		}
 	}
-	p.workspaceModal.Editor.Selected = len(p.workspaceModal.Editor.Fields) - 3
-	p.HandleKey(tcell.NewEventKey(tcell.KeyDown, 0, tcell.ModNone))
+	p.workspaceModal.Editor.Selected = len(p.workspaceModal.Editor.Fields) - 2
 	if got := p.workspaceModal.Editor.Fields[p.workspaceModal.Editor.Selected].Key; got != "save" {
 		t.Fatalf("first Down selected %q, want save", got)
 	}
@@ -206,8 +205,7 @@ func TestWorkspaceSetupEndsWithSaveActionsAndSupportsDownNavigation(t *testing.T
 			p.workspaceModal.Editor.Fields[i].Value = "new-workspace"
 		}
 	}
-	p.workspaceModal.Editor.Selected = len(p.workspaceModal.Editor.Fields) - 3
-	p.HandleKey(tcell.NewEventKey(tcell.KeyDown, 0, tcell.ModNone))
+	p.workspaceModal.Editor.Selected = len(p.workspaceModal.Editor.Fields) - 2
 	p.HandleKey(tcell.NewEventKey(tcell.KeyDown, 0, tcell.ModNone))
 	if got := p.workspaceModal.Editor.Fields[p.workspaceModal.Editor.Selected].Key; got != "save_and_switch" {
 		t.Fatalf("second Down selected %q, want save_and_switch", got)
@@ -223,62 +221,5 @@ func TestWorkspaceSetupEndsWithSaveActionsAndSupportsDownNavigation(t *testing.T
 	action, ok = p.PopWorkspaceModalAction()
 	if !ok || action.Kind != WorkspaceModalActionSave || !action.MakeCurrent {
 		t.Fatalf("save and switch action = %#v, ok=%v", action, ok)
-	}
-}
-
-func TestWorkspaceLinkedDirectoryPickerUsesCanonicalSaveAction(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	linked := filepath.Join(home, "Linked")
-	if err := os.Mkdir(linked, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	p := NewHomePage(model.EmptyHome())
-	p.SetWorkspaceModalData(workspaceDirectoryPickerTestEntries())
-	p.ShowWorkspaceModal()
-	p.openWorkspaceModalEditEditor(p.workspaceModal.Workspaces[0])
-	p.workspaceModal.Editor.Selected = len(p.workspaceModal.Editor.Fields) - 3
-	if picker := p.workspaceModalDirectoryPicker(p.workspaceModal.Editor); picker != nil {
-		t.Fatalf("linked directory picker opened on focus: %#v", picker)
-	}
-	if got := workspaceModalEditorFieldLine(p.workspaceModal.Editor.Fields[p.workspaceModal.Editor.Selected], true); !strings.Contains(got, "Link?") || !strings.Contains(got, "Enter opens directory picker") {
-		t.Fatalf("focused link prompt = %q", got)
-	}
-	p.HandleKey(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
-	picker := p.workspaceModalDirectoryPicker(p.workspaceModal.Editor)
-	if picker == nil || len(picker.Entries) != 1 || picker.Entries[0] != linked {
-		t.Fatalf("linked picker = %#v", picker)
-	}
-	p.HandleKey(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
-	if got := p.workspaceModal.Editor.Fields[p.workspaceModal.Editor.Selected].Key; got != "save" {
-		t.Fatalf("linked directory selection advanced to %q, want save", got)
-	}
-	p.HandleKey(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
-	action, ok := p.PopWorkspaceModalAction()
-	if !ok || action.Kind != WorkspaceModalActionSave || action.MakeCurrent || action.Path != "/tmp/ws-one" || action.LinkedDirectory != "~/Linked" {
-		t.Fatalf("save action = %#v, ok=%v", action, ok)
-	}
-}
-
-func TestWorkspaceModalEditShowsAndAddsLinkedDirectories(t *testing.T) {
-	p := NewHomePage(model.EmptyHome())
-	p.SetWorkspaceModalData(workspaceDirectoryPickerTestEntries())
-	p.ShowWorkspaceModal()
-	p.workspaceModal.Focus = workspaceModalFocusList
-
-	p.HandleKey(tcell.NewEventKey(tcell.KeyRune, 'e', tcell.ModNone))
-
-	if p.workspaceModal.Editor == nil {
-		t.Fatal("expected workspace editor")
-	}
-	fields := map[string]workspaceModalEditorField{}
-	for _, field := range p.workspaceModal.Editor.Fields {
-		fields[field.Key] = field
-	}
-	if !strings.Contains(fields["linked_directories"].Value, "/tmp/ws-one-linked-a") {
-		t.Fatalf("linked directory summary = %q", fields["linked_directories"].Value)
-	}
-	if field, ok := fields["linked_directory"]; !ok || field.Editable || field.Placeholder != "~/" {
-		t.Fatalf("add linked directory field = %#v, ok=%v", field, ok)
 	}
 }

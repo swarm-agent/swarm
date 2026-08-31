@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	goruntime "runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -117,6 +118,10 @@ func (b *artifactMetadataBoundary) ApplySessionMutation(input pebblestore.V3Sess
 	return result, nil
 }
 
+func newWorkspaceMapService(store *pebblestore.Store) *pebblestore.WorkspaceMapService {
+	return pebblestore.NewWorkspaceMapService(pebblestore.NewWorkspaceMapStore(store))
+}
+
 type Daemon struct {
 	cfg                       config.Config
 	lock                      *lock.FileLock
@@ -147,6 +152,7 @@ type Daemon struct {
 	bgCancel                  context.CancelFunc
 	copilot                   *copilot.Manager
 	toolRuntime               *tool.Runtime
+	videoRenderService        *videorender.Service
 	aiTaskDispatcher          *run.AITaskV2Dispatcher
 	localTransportRuntimeName string
 	localTransportBaseURL     string
@@ -194,6 +200,13 @@ func ensurePrivateDirectory(path string) error {
 		return fmt.Errorf("path %q is not a directory", path)
 	}
 	return os.Chmod(path, 0o700)
+}
+
+func htmlCaptureConcurrency() int {
+	if goruntime.NumCPU() >= 8 {
+		return 2
+	}
+	return 1
 }
 
 func New(cfg config.Config) (*Daemon, error) {
@@ -253,7 +266,7 @@ func New(cfg config.Config) (*Daemon, error) {
 	toolRuntime := tool.NewRuntime(8)
 	cacheRoot, cacheRootErr := storagecontract.ResolveRoot(storagecontract.RootCache, storagecontract.Options{})
 	if cacheRootErr == nil {
-		toolRuntime.SetHTMLCaptureRenderer(htmlcapture.NewChromedpRenderer(htmlcapture.SystemChromePath, filepath.Join(cacheRoot, "html-capture")))
+		toolRuntime.SetHTMLCaptureRenderer(htmlcapture.NewChromedpRendererWithConcurrency(htmlcapture.SystemChromePath, filepath.Join(cacheRoot, "html-capture"), htmlCaptureConcurrency()))
 	}
 	agentSvc := agentruntime.NewService(pebblestore.NewAgentStore(store), events)
 	if err := agentSvc.EnsureSystemAgentRegistry(); err != nil {
@@ -330,6 +343,13 @@ func New(cfg config.Config) (*Daemon, error) {
 	permissionSvc.SetNotificationService(notificationSvc)
 	discoverySvc := discovery.NewService()
 	swarmSvc := swarmruntime.NewService(swarmStore, events, hub.Publish)
+	swarmSvc.SetSecretStore(secretStore)
+	if err := swarmSvc.EnsureActivationCredentialPending(); err != nil {
+		_ = secretStore.Close()
+		_ = store.Close()
+		_ = lk.Release()
+		return nil, fmt.Errorf("prepare activation credential recovery: %w", err)
+	}
 	// The local swarm ID is daemon identity, not onboarding state. Mint and
 	// durably store it before topology or any V3 session path can resolve self.
 	if _, err := swarmSvc.EnsureLocalState(swarmruntime.EnsureLocalStateInput{}); err != nil {
@@ -407,11 +427,15 @@ func New(cfg config.Config) (*Daemon, error) {
 	toolRuntime.SetManageThemeServices(uiSettingsSvc, workspaceSvc)
 	videoTranscriptionSvc := videotranscription.NewService(sessionSvc.Store(), modelSvc, uiSettingsSvc, google.NewVideoTranscriptionAdapter(authStore))
 	videoProjectSvc := videoproject.NewService(sessionSvc.Store())
+	var videoAnimationRenderer htmlcapture.AnimationRenderer
+	if cacheRootErr == nil {
+		videoAnimationRenderer = htmlcapture.NewChromedpRenderer(htmlcapture.SystemChromePath, filepath.Join(cacheRoot, "html-capture"))
+	}
 	videoRenderSvc := videorender.NewService(
 		videorender.Config{},
 		sessionSvc.Store(),
 		artifactAuthority,
-		nil,
+		videoAnimationRenderer,
 		workspaceSvc,
 		nil,
 	)
@@ -470,6 +494,7 @@ func New(cfg config.Config) (*Daemon, error) {
 	runSvc := run.NewService(sessionSvc, modelSvc, providers, toolRuntime, permissionSvc, agentSvc, discoverySvc, events)
 	runSvc.SetModelProfileService(modelProfileSvc)
 	runSvc.SetWorkspaceService(workspaceSvc)
+	runSvc.SetWorkspaceMapService(newWorkspaceMapService(store))
 	runSvc.SetUISettingsService(uiSettingsSvc)
 	runSvc.SetAgentModelSettingsService(agentModelSettingsSvc)
 	runSvc.SetWorktreeService(worktreeSvc)
@@ -570,6 +595,7 @@ func New(cfg config.Config) (*Daemon, error) {
 	apiServer.SetActionService(actionSvc)
 	apiServer.SetIntegrationService(integrationSvc)
 	apiServer.SetSwarmService(swarmSvc)
+	apiServer.SetPublicAPIClient(swarmruntime.NewPublicAPIClient(swarmSvc))
 	apiServer.SetSwarmStore(swarmStore)
 	apiServer.SetUpdateService(updateSvc)
 	apiServer.SetTopologyService(topologySvc)
@@ -611,6 +637,7 @@ func New(cfg config.Config) (*Daemon, error) {
 		stopCh:                    make(chan string, 1),
 		copilot:                   copilotManager,
 		toolRuntime:               toolRuntime,
+		videoRenderService:        videoRenderSvc,
 		aiTaskDispatcher:          aiTaskDispatcher,
 		localTransportRuntimeName: localTransportRuntimeName,
 	}
@@ -748,6 +775,12 @@ func (d *Daemon) cleanup() error {
 				errs = append(errs, fmt.Errorf("close long-session diagnostics: %w", err))
 			}
 			d.longSessionDiagnostics = nil
+		}
+		if d.videoRenderService != nil {
+			waitCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+			_ = d.videoRenderService.WaitForIdle(waitCtx)
+			cancel()
+			d.videoRenderService = nil
 		}
 		if d.aiTaskDispatcher != nil {
 			d.aiTaskDispatcher.Close()

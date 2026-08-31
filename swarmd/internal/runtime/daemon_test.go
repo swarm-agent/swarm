@@ -1,8 +1,32 @@
 package runtime
 
 import (
+	"path/filepath"
 	"testing"
+
+	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
+
+func TestNewWorkspaceMapServiceUsesDaemonStore(t *testing.T) {
+	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "daemon.pebble"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	svc := newWorkspaceMapService(store)
+	created, err := svc.GetOrCreateDefault("account-a")
+	if err != nil {
+		t.Fatalf("create default Workspace Map: %v", err)
+	}
+	persisted, ok, err := pebblestore.NewWorkspaceMapStore(store).GetForAccount("account-a")
+	if err != nil || !ok {
+		t.Fatalf("load Workspace Map from daemon store: ok=%t err=%v", ok, err)
+	}
+	if persisted != created {
+		t.Fatalf("daemon Workspace Map service used a different store: got %+v want %+v", persisted, created)
+	}
+}
 
 func TestLocalTransportSocketPerm(t *testing.T) {
 	if got := localTransportSocketPerm(); got != 0o600 {

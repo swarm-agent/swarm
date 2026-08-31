@@ -7,6 +7,21 @@ import (
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
+// TestBuildFFmpegCommandLineRenderQuality verifies durable allowlisted quality
+// settings select server-owned encoder parameters instead of caller-supplied args.
+func TestBuildFFmpegCommandLineRenderQuality(t *testing.T) {
+	timeline := pebblestore.VideoProjectTimeline{FPS: 30, TotalDurationMs: 1000, Metadata: map[string]any{"render_quality": pebblestore.VideoRenderQualityMaster}, Clips: []pebblestore.VideoTimelineClip{{ID: "video", SourceKind: pebblestore.VideoClipSourceKindSourceVideo, SourceStartMs: 0, SourceEndMs: 1000, DurationMs: 1000, Visible: true}, {ID: "audio", SourceKind: pebblestore.VideoClipSourceKindSourceAudio, SourceStartMs: 0, SourceEndMs: 1000, DurationMs: 1000}}}
+	inputs := []MaterializedInput{{Index: 0, ClipID: "video", FilePath: "video.mp4", IsVideo: true, DurationMs: 1000, EndMs: 1000}, {Index: 1, ClipID: "audio", FilePath: "audio.wav", IsAudio: true, HasAudio: true, DurationMs: 1000, EndMs: 1000}}
+	plan, err := BuildFFmpegCommandLine(timeline, inputs, "out.mp4")
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(plan.FFmpegArgs, " ")
+	if !strings.Contains(joined, "-preset fast -crf 15") {
+		t.Fatalf("master quality args missing: %s", joined)
+	}
+}
+
 func TestResolveDimensions(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -248,6 +263,37 @@ func TestBuildFFmpegCommandLineTransitions(t *testing.T) {
 	}
 }
 
+func TestBuildFFmpegCommandLinePreservesDeclaredDurationAcrossTransitionOverlap(t *testing.T) {
+	timeline := pebblestore.VideoProjectTimeline{
+		TotalDurationMs: 8000,
+		FPS:             30,
+		Transitions: []pebblestore.VideoTimelineTransition{{
+			ID: "dissolve", Kind: pebblestore.VideoTransitionKindCrossfade,
+			FromClipID: "one", ToClipID: "two", DurationMs: 300,
+		}},
+	}
+	inputs := []MaterializedInput{
+		{Index: 0, ClipID: "one", FilePath: "one.png", IsImage: true, DurationMs: 4000, TimelineEndMs: 4000},
+		{Index: 1, ClipID: "two", FilePath: "two.png", IsImage: true, DurationMs: 4000, TimelineStartMs: 4000, TimelineEndMs: 8000},
+	}
+
+	plan, err := BuildFFmpegCommandLine(timeline, inputs, "output.mp4")
+	if err != nil {
+		t.Fatalf("BuildFFmpegCommandLine() error = %v", err)
+	}
+	if plan.TotalDurationMs != 8000 {
+		t.Fatalf("TotalDurationMs = %d, want 8000", plan.TotalDurationMs)
+	}
+	for _, want := range []string{
+		"tpad=stop_mode=clone:stop_duration=0.300,trim=duration=8.000",
+		"apad=pad_dur=0.300,atrim=duration=8.000",
+	} {
+		if !strings.Contains(plan.FilterComplex, want) {
+			t.Fatalf("filter complex missing %q: %s", want, plan.FilterComplex)
+		}
+	}
+}
+
 func TestBuildFFmpegCommandLineNormalizesTransitionInputs(t *testing.T) {
 	inputs := []MaterializedInput{
 		{Index: 0, ClipID: "one", FilePath: "one.mp4", DurationMs: 1200},
@@ -322,9 +368,12 @@ func TestBuildFFmpegCommandLinePlacesLayeredClipAtRequestedTimelineRange(t *test
 	if plan.TotalDurationMs != 20000 {
 		t.Fatalf("TotalDurationMs = %d, want 20000", plan.TotalDurationMs)
 	}
+	if strings.Contains(plan.FilterComplex, "[asilence3]") {
+		t.Fatalf("muted overlay created an unconnected silence stream: %s", plan.FilterComplex)
+	}
 	for _, want := range []string{
 		"[v2][v3]", // guard against accidentally appending the overlay after step 3
-		"[v3]setpts=PTS-STARTPTS+0.000/TB[v_layer_shift_3]",
+		"[v3]setpts=PTS+0.000/TB[v_layer_shift_3]",
 		"overlay=eof_action=pass:enable='between(t,0.000,1.000)'[v_layer_3]",
 	} {
 		if want == "[v2][v3]" {
@@ -370,6 +419,31 @@ func TestBuildFFmpegCommandLineMixesAudioOnlyInputWithoutVideoFilter(t *testing.
 	}
 	if plan.TotalDurationMs != 4000 {
 		t.Fatalf("TotalDurationMs = %d, want 4000", plan.TotalDurationMs)
+	}
+}
+
+func TestBuildFFmpegCommandLineComposesHTMLCaptureAndSamePlayheadSoundtrack(t *testing.T) {
+	timeline := pebblestore.VideoProjectTimeline{Width: 1920, Height: 1080, FPS: 30, TotalDurationMs: 224680}
+	inputs := []MaterializedInput{
+		{Index: 0, ClipID: "accepted-html", FilePath: "job-private-html-capture.mp4", IsVideo: true, DurationMs: 224680, TimelineStartMs: 0, TimelineEndMs: 224680},
+		{Index: 1, ClipID: "registered-soundtrack", FilePath: "registered-soundtrack.wav", IsAudio: true, HasAudio: true, DurationMs: 224680, EndMs: 224680, Track: 1, TimelineStartMs: 0, TimelineEndMs: 224680, Volume: 1},
+	}
+	plan, err := BuildFFmpegCommandLine(timeline, inputs, "final-project.mp4")
+	if err != nil {
+		t.Fatalf("BuildFFmpegCommandLine() error = %v", err)
+	}
+	if plan.TotalDurationMs != 224680 {
+		t.Fatalf("TotalDurationMs = %d, want 224680", plan.TotalDurationMs)
+	}
+	for _, want := range []string{
+		"-i job-private-html-capture.mp4 -i registered-soundtrack.wav",
+		"[1:a]atrim=start=0.000:duration=224.680",
+		"amix=inputs=2:duration=first:dropout_transition=0:normalize=0",
+		"atrim=duration=224.680[a_master]",
+	} {
+		if !strings.Contains(strings.Join(plan.FFmpegArgs, " "), want) {
+			t.Fatalf("final one-shot HTML plus audio command missing %q: %s", want, strings.Join(plan.FFmpegArgs, " "))
+		}
 	}
 }
 

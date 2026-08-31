@@ -33,25 +33,25 @@ type routedSessionMediaRequest struct {
 }
 
 type routedSessionStartRequest struct {
-	Input                    string                                          `json:"input"`
-	ClientRequestID          string                                          `json:"client_request_id,omitempty"`
-	IdempotencyKey           string                                          `json:"idempotency_key,omitempty"`
-	AgentName                string                                          `json:"agent_name"`
-	Metadata                 map[string]any                                  `json:"metadata,omitempty"`
-	ManagedWorktreeRequested *bool                                           `json:"managed_worktree_requested"`
-	PlanModeRequested        *bool                                           `json:"plan_mode_requested"`
-	WorkspacePath            string                                          `json:"workspace_path"`
-	HostWorkspacePath        string                                          `json:"host_workspace_path,omitempty"`
-	RuntimeWorkspacePath     string                                          `json:"runtime_workspace_path,omitempty"`
-	WorkspaceBindingID       string                                          `json:"workspace_binding_id"`
-	SwarmID                  string                                          `json:"swarm_id"`
-	TargetKind               string                                          `json:"target_kind"`
-	TargetRelationship       string                                          `json:"target_relationship"`
-	Media                    []routedSessionMediaRequest                     `json:"media,omitempty"`
-	StagingIDs               []string                                        `json:"staging_ids,omitempty"`
-	VideoAttachments         []pebblestore.SessionVideoAttachmentReference   `json:"video_attachments,omitempty"`
-	ArtifactSelections       []pebblestore.SessionArtifactSelectionReference `json:"artifact_selections,omitempty"`
-	ModelProfile             *sessionsV3ModelProfileChoice                   `json:"model_profile,omitempty"`
+	Input                          string                                          `json:"input"`
+	ClientRequestID                string                                          `json:"client_request_id,omitempty"`
+	IdempotencyKey                 string                                          `json:"idempotency_key,omitempty"`
+	AgentName                      string                                          `json:"agent_name"`
+	Metadata                       map[string]any                                  `json:"metadata,omitempty"`
+	PlanModeRequested              *bool                                           `json:"plan_mode_requested"`
+	LegacyManagedWorktreeRequested json.RawMessage                                 `json:"managed_worktree_requested,omitempty"` // rolling decode only
+	WorkspacePath                  string                                          `json:"workspace_path"`
+	HostWorkspacePath              string                                          `json:"host_workspace_path,omitempty"`
+	RuntimeWorkspacePath           string                                          `json:"runtime_workspace_path,omitempty"`
+	WorkspaceBindingID             string                                          `json:"workspace_binding_id"`
+	SwarmID                        string                                          `json:"swarm_id"`
+	TargetKind                     string                                          `json:"target_kind"`
+	TargetRelationship             string                                          `json:"target_relationship"`
+	Media                          []routedSessionMediaRequest                     `json:"media,omitempty"`
+	StagingIDs                     []string                                        `json:"staging_ids,omitempty"`
+	VideoAttachments               []pebblestore.SessionVideoAttachmentReference   `json:"video_attachments,omitempty"`
+	ArtifactSelections             []pebblestore.SessionArtifactSelectionReference `json:"artifact_selections,omitempty"`
+	ModelProfile                   *sessionsV3ModelProfileChoice                   `json:"model_profile,omitempty"`
 }
 
 type routedSessionStartResult struct {
@@ -361,9 +361,11 @@ func canonicalWorktreeSessionStateError(session pebblestore.SessionSnapshot, mis
 	return fmt.Errorf("worktree_mode on did not create canonical worktree session state: missing=%s session_id=%q session_workspace_path=%q session_worktree_enabled=%t session_worktree_root_path=%q session_worktree_branch=%q create_workspace_path=%q create_worktree_present=%t create_worktree_root_path=%q create_worktree_branch=%q", strings.Join(missing, ","), session.ID, strings.TrimSpace(session.WorkspacePath), session.WorktreeEnabled, strings.TrimSpace(session.WorktreeRootPath), strings.TrimSpace(session.WorktreeBranch), strings.TrimSpace(createOptions.WorkspacePath), worktreePresent, createRoot, createBranch)
 }
 
-// handleRoutedSessionStart is the canonical Desktop new-session transaction.
-// It validates the submitted self-runtime workspace authority before any model
-// call and resolves any managed worktree before entering the V3 mutation boundary.
+// handleRoutedSessionStart is the compatibility routed-start transaction.
+// It validates submitted self-runtime workspace authority and allocates the
+// session-owned managed worktree before publishing any durable run authority.
+// Every ordinary routed start asks the hidden Router to derive title/worktree
+// naming exactly once after replay detection; clients never own either name.
 func (s *Server) handleRoutedSessionStart(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		methodNotAllowed(w)
@@ -390,8 +392,7 @@ func (s *Server) handleRoutedSessionStart(w http.ResponseWriter, r *http.Request
 	req.TargetKind = strings.TrimSpace(req.TargetKind)
 	req.TargetRelationship = strings.TrimSpace(req.TargetRelationship)
 	if req.AgentName == "" {
-		writeError(w, http.StatusBadRequest, errors.New("agent_name is required"))
-		return
+		req.AgentName = "swarm"
 	}
 	media, stagingIDs, err := normalizeRoutedSessionMedia(req)
 	if err != nil {
@@ -406,10 +407,6 @@ func (s *Server) handleRoutedSessionStart(w http.ResponseWriter, r *http.Request
 			}
 		}
 	}()
-	if req.ManagedWorktreeRequested == nil {
-		writeError(w, http.StatusBadRequest, errors.New("managed_worktree_requested is required"))
-		return
-	}
 	if req.PlanModeRequested == nil {
 		writeError(w, http.StatusBadRequest, errors.New("plan_mode_requested is required"))
 		return
@@ -469,16 +466,13 @@ func (s *Server) handleRoutedSessionStart(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	managedWorktreeAllowed := *req.ManagedWorktreeRequested
-	planModeRequested := *req.PlanModeRequested
-	var decision sessionRouterDecision
-	if managedWorktreeAllowed {
-		decision, err = s.routeSessionOnce(r.Context(), principal, req.Input)
-		if err != nil {
-			writeRoutedSessionError(w, err)
-			return
-		}
+	routerDecision, err := s.routeSessionOnce(r.Context(), principal, req.Input)
+	if err != nil {
+		writeRoutedSessionError(w, err)
+		return
 	}
+
+	planModeRequested := *req.PlanModeRequested
 	now := time.Now().UnixMilli()
 	resolvedAgent, err := s.resolveSessionsV3PrimaryCreateAgent(principal, req.AgentName)
 	if err != nil {
@@ -519,7 +513,12 @@ func (s *Server) handleRoutedSessionStart(w http.ResponseWriter, r *http.Request
 	if workspaceName == "" || workspaceName == "." || workspaceName == string(filepath.Separator) {
 		workspaceName = "workspace"
 	}
-	candidate := pebblestore.SessionSnapshot{ID: sessionID, UserID: principal.UserID, AccountScopeID: principal.AccountScopeID, WorkspacePath: binding.SourceWorkspacePath, WorkspaceName: workspaceName, Title: sessionV3TitleDefault, Mode: mode, ModelProfile: modelProfile, CreatedAt: now, UpdatedAt: now}
+	workspaceGrants, err := s.sessionsV3InitialWorkspaceGrants(principal, binding)
+	if err != nil {
+		writeRoutedSessionError(w, err)
+		return
+	}
+	candidate := pebblestore.SessionSnapshot{ID: sessionID, UserID: principal.UserID, AccountScopeID: principal.AccountScopeID, WorkspacePath: binding.SourceWorkspacePath, WorkspaceName: workspaceName, WorkspaceGrants: workspaceGrants, WorkspaceUsage: pebblestore.WorkspaceUsageFromGrants(workspaceGrants), Title: sessionV3TitleDefault, Mode: mode, ModelProfile: modelProfile, CreatedAt: now, UpdatedAt: now}
 	if preference, preferenceOK := sessionsV3ProfilePreference(candidate); preferenceOK {
 		candidate.Preference = normalizeSessionsV3ModelPreference(preference)
 	} else {
@@ -527,24 +526,29 @@ func (s *Server) handleRoutedSessionStart(w http.ResponseWriter, r *http.Request
 		return
 	}
 	candidate.Metadata = sessionsV3ModelProfileMetadata(sessionsV3CreateServerMetadata(req.Metadata, resolvedAgent, binding), modelProfile)
-	if managedWorktreeAllowed {
-		createRequest := sessionCreateRequest{Metadata: cloneSessionsV3Metadata(candidate.Metadata)}
-		if err := applyRoutedSessionRouterTitle(&createRequest, decision.Result.Title); err != nil {
-			writeRoutedSessionError(w, err)
-			return
-		}
-		candidate.Title = createRequest.Title
-		candidate.Metadata = createRequest.Metadata
-	} else {
-		candidate.Metadata["title_pending"] = true
-		candidate.Metadata["title_locked"] = false
-		delete(candidate.Metadata, "title_source")
+	candidate.Metadata["title_pending"] = true
+	candidate.Metadata["title_locked"] = false
+	delete(candidate.Metadata, "title_source")
+	titleRequest := sessionCreateRequest{Metadata: candidate.Metadata}
+	if err := applyRoutedSessionRouterTitle(&titleRequest, routerDecision.Result.Title); err != nil {
+		writeRoutedSessionError(w, err)
+		return
 	}
+	candidate.Title = titleRequest.Title
+	candidate.Metadata = titleRequest.Metadata
 	candidate.Metadata["routed_start"] = true
 	candidate.Metadata["routed_start_request_hash"] = requestHash
-	candidate.Metadata["managed_worktree_requested"] = managedWorktreeAllowed
 	candidate.Metadata["plan_mode_requested"] = planModeRequested
-	candidate.Metadata["routed_worktree_requested"] = managedWorktreeAllowed
+	worktreeName := ""
+	if routerDecision.Result.WorktreeName != nil {
+		worktreeName = strings.TrimSpace(*routerDecision.Result.WorktreeName)
+	}
+	if worktreeName != "" {
+		candidate.Metadata["routed_worktree_requested"] = true
+	} else {
+		delete(candidate.Metadata, "routed_worktree_requested")
+	}
+	delete(candidate.Metadata, "managed_worktree_requested")
 	if backgroundRouterRequest {
 		candidate.Metadata["background"] = true
 		candidate.Metadata["launch_mode"] = "background"
@@ -562,7 +566,7 @@ func (s *Server) handleRoutedSessionStart(w http.ResponseWriter, r *http.Request
 			log.Printf("routed session worktree rollback failed session_id=%q path=%q branch=%q err=%v", sessionID, worktreeAllocation.WorkspacePath, worktreeAllocation.BranchName, rollbackErr)
 		}
 	}()
-	worktreeAllocation, err = s.applyRoutedSessionWorktreeDecision(&candidate, principal, sessionID, managedWorktreeAllowed, managedWorktreeAllowed, decision.Result.WorktreeName)
+	worktreeAllocation, err = s.applyRoutedSessionWorktreeDecision(&candidate, principal, sessionID, worktreeName)
 	if err != nil {
 		writeRoutedSessionError(w, err)
 		return
@@ -649,34 +653,34 @@ func (s *Server) handleRoutedSessionStart(w http.ResponseWriter, r *http.Request
 	}
 }
 
-func (s *Server) applyRoutedSessionWorktreeDecision(candidate *pebblestore.SessionSnapshot, principal identity.Principal, sessionID string, managedWorktreeAllowed, requested bool, routerName *string) (worktreeruntime.Allocation, error) {
+func (s *Server) applyRoutedSessionWorktreeDecision(candidate *pebblestore.SessionSnapshot, principal identity.Principal, sessionID, requestedName string) (worktreeruntime.Allocation, error) {
 	if candidate == nil {
 		return worktreeruntime.Allocation{}, errors.New("routed session candidate is required")
 	}
-	if candidate.Metadata == nil {
-		candidate.Metadata = make(map[string]any)
+	requestedName = strings.TrimSpace(requestedName)
+	if requestedName == "" {
+		requestedName = routedSessionFallbackWorktreeName(sessionID)
 	}
-	if requested && !managedWorktreeAllowed {
-		return worktreeruntime.Allocation{}, errors.New("Router requested a managed worktree without user authorization")
-	}
-	if !managedWorktreeAllowed || !requested {
-		candidate.Metadata["swarm_v3_source_workspace_path"] = strings.TrimSpace(candidate.WorkspacePath)
-		candidate.Metadata["swarm_v3_source_workspace_name"] = strings.TrimSpace(candidate.WorkspaceName)
-		candidate.Metadata["swarm_v3_runtime_workspace_path"] = strings.TrimSpace(candidate.WorkspacePath)
-		return worktreeruntime.Allocation{}, nil
-	}
-	if routerName == nil || strings.TrimSpace(*routerName) == "" {
-		return worktreeruntime.Allocation{}, errors.New("Router selected a worktree without a worktree_name")
-	}
-	allocation, finalRequestedName, err := s.allocateRoutedSessionWorktree(principal, *candidate, sessionID, *routerName)
+	allocation, finalRequestedName, err := s.allocateRoutedSessionWorktree(principal, *candidate, sessionID, requestedName)
 	if err != nil {
 		return worktreeruntime.Allocation{}, err
 	}
-	applyRoutedSessionWorktreeAllocation(candidate, candidate.WorkspacePath, *routerName, finalRequestedName, allocation)
+	applyRoutedSessionWorktreeAllocation(candidate, candidate.WorkspacePath, requestedName, finalRequestedName, allocation)
 	return allocation, nil
 }
 
-func (s *Server) allocateRoutedSessionWorktree(principal identity.Principal, candidate pebblestore.SessionSnapshot, sessionID, routerName string) (worktreeruntime.Allocation, string, error) {
+func routedSessionFallbackWorktreeName(sessionID string) string {
+	sessionID = strings.TrimSpace(sessionID)
+	if len(sessionID) > 12 {
+		sessionID = sessionID[:12]
+	}
+	if sessionID == "" {
+		sessionID = "pending"
+	}
+	return "session-" + sessionID
+}
+
+func (s *Server) allocateRoutedSessionWorktree(principal identity.Principal, candidate pebblestore.SessionSnapshot, sessionID, requestedName string) (worktreeruntime.Allocation, string, error) {
 	if s == nil || s.worktrees == nil {
 		return worktreeruntime.Allocation{}, "", errors.New("worktree service is not configured")
 	}
@@ -685,7 +689,7 @@ func (s *Server) allocateRoutedSessionWorktree(principal identity.Principal, can
 	if err != nil {
 		return worktreeruntime.Allocation{}, "", fmt.Errorf("read routed worktree config: %w", err)
 	}
-	branchName, err := worktreeruntime.CanonicalizeRequestedWorktreeName(routerName, config.BranchName)
+	branchName, err := worktreeruntime.CanonicalizeRequestedWorktreeName(requestedName, config.BranchName)
 	if err != nil {
 		return worktreeruntime.Allocation{}, "", err
 	}
@@ -695,12 +699,12 @@ func (s *Server) allocateRoutedSessionWorktree(principal identity.Principal, can
 	}
 	allocation, err := s.worktrees.AllocateDetachedWorkspaceRequestedForPrincipal(principal, sourceWorkspacePath, sessionID, baseBranch, branchName)
 	if err == nil {
-		return allocation, strings.TrimSpace(routerName), nil
+		return allocation, strings.TrimSpace(requestedName), nil
 	}
 	if !worktreeruntime.IsRequestedWorktreeNameConflict(err) {
 		return worktreeruntime.Allocation{}, "", err
 	}
-	retryBranchName, retryRequestedName, retryErr := worktreeruntime.CanonicalizeRequestedWorktreeNameRetry(routerName, config.BranchName)
+	retryBranchName, retryRequestedName, retryErr := worktreeruntime.CanonicalizeRequestedWorktreeNameRetry(requestedName, config.BranchName)
 	if retryErr != nil {
 		return worktreeruntime.Allocation{}, "", retryErr
 	}
@@ -711,6 +715,10 @@ func (s *Server) allocateRoutedSessionWorktree(principal identity.Principal, can
 	return allocation, retryRequestedName, nil
 }
 
+// applyRoutedSessionWorktreeAllocation keeps the canonical source workspace on
+// the session snapshot while recording the immutable execution checkout
+// separately. Sidebar grouping and runtime execution therefore have one field
+// each instead of overloading WorkspacePath.
 func applyRoutedSessionWorktreeAllocation(candidate *pebblestore.SessionSnapshot, sourceWorkspacePath, routerName, finalRequestedName string, allocation worktreeruntime.Allocation) {
 	if candidate == nil {
 		return
@@ -723,21 +731,26 @@ func applyRoutedSessionWorktreeAllocation(candidate *pebblestore.SessionSnapshot
 	if finalRequestedName == "" {
 		finalRequestedName = routerName
 	}
-	candidate.WorkspacePath = strings.TrimSpace(allocation.WorkspacePath)
+	candidate.WorkspacePath = strings.TrimSpace(sourceWorkspacePath)
 	candidate.WorktreeEnabled = true
 	candidate.WorktreeRootPath = strings.TrimSpace(allocation.WorkspacePath)
 	candidate.WorktreeBaseBranch = strings.TrimSpace(allocation.BaseBranch)
 	candidate.WorktreeBranch = strings.TrimSpace(allocation.BranchName)
-	candidate.Metadata["workspace_id"] = strings.TrimSpace(allocation.WorkspaceID)
 	candidate.Metadata["swarm_v3_source_workspace_path"] = strings.TrimSpace(sourceWorkspacePath)
 	candidate.Metadata["swarm_v3_source_workspace_name"] = strings.TrimSpace(candidate.WorkspaceName)
 	candidate.Metadata["swarm_v3_runtime_workspace_path"] = strings.TrimSpace(allocation.WorkspacePath)
+	candidate.Metadata["swarm_v3_mandatory_worktree"] = true
+	candidate.Metadata["swarm_v3_worktree_owner_session_id"] = strings.TrimSpace(candidate.ID)
+	available := true
+	candidate.WorkspaceGrants = append(candidate.WorkspaceGrants, pebblestore.WorkspaceGrant{Kind: pebblestore.WorkspaceGrantWorktree, Path: allocation.WorkspacePath, Available: &available})
+	candidate.WorkspaceUsage = pebblestore.WorkspaceUsageFromGrants(candidate.WorkspaceGrants)
 	candidate.Metadata["routed_worktree_name"] = finalRequestedName
 	candidate.Metadata["routed_worktree_original_name"] = routerName
 	candidate.Metadata["routed_worktree_requested_name"] = finalRequestedName
 	candidate.Metadata["routed_worktree_branch"] = strings.TrimSpace(allocation.BranchName)
 	if baseCommit := strings.TrimSpace(allocation.BaseCommit); baseCommit != "" {
 		candidate.Metadata["base_commit"] = baseCommit
+		candidate.Metadata["swarm_v3_worktree_base_commit"] = baseCommit
 	}
 }
 
@@ -779,14 +792,13 @@ func routedSessionRequestHash(req routedSessionStartRequest, binding sessionsV3P
 		SourceWorkspaceID, SourceWorkspaceName, SourceWorkspacePath       string
 		SourceWorkspaceGeneration                                         int64
 		PlacementGeneration, BindingGeneration                            int
-		ManagedWorktreeRequested                                          *bool
 		PlanModeRequested                                                 *bool
 		Metadata                                                          map[string]any
 		Media                                                             []routedSessionMediaRequest
 		VideoAttachments                                                  []pebblestore.SessionVideoAttachmentReference
 		ArtifactSelections                                                []pebblestore.SessionArtifactSelectionReference
 		ModelProfile                                                      *sessionsV3ModelProfileChoice
-	}{req.Input, clientRequestID, req.AgentName, req.WorkspacePath, req.HostWorkspacePath, req.RuntimeWorkspacePath, req.WorkspaceBindingID, req.SwarmID, req.TargetKind, req.TargetRelationship, binding.WorkspaceBindingID, binding.RuntimeSwarmID, binding.RuntimeWorkspacePath, binding.SourceWorkspaceID, binding.SourceWorkspaceName, binding.SourceWorkspacePath, binding.SourceWorkspaceGeneration, binding.PlacementGeneration, binding.BindingGeneration, req.ManagedWorktreeRequested, req.PlanModeRequested, cloneSessionsV3Metadata(req.Metadata), media, req.VideoAttachments, req.ArtifactSelections, req.ModelProfile})
+	}{req.Input, clientRequestID, req.AgentName, req.WorkspacePath, req.HostWorkspacePath, req.RuntimeWorkspacePath, req.WorkspaceBindingID, req.SwarmID, req.TargetKind, req.TargetRelationship, binding.WorkspaceBindingID, binding.RuntimeSwarmID, binding.RuntimeWorkspacePath, binding.SourceWorkspaceID, binding.SourceWorkspaceName, binding.SourceWorkspacePath, binding.SourceWorkspaceGeneration, binding.PlacementGeneration, binding.BindingGeneration, req.PlanModeRequested, cloneSessionsV3Metadata(req.Metadata), media, req.VideoAttachments, req.ArtifactSelections, req.ModelProfile})
 	if err != nil {
 		return "", err
 	}
@@ -932,7 +944,7 @@ func (s *Server) prepareRoutedSessionMedia(principal identity.Principal, session
 		staged = append(staged, runruntime.PreSessionMediaStagedMetadata{StagingID: record.ID, AccountScopeID: record.AccountScopeID, Modality: modality, DeclaredMIMEType: record.DeclaredMIMEType, DetectedMIMEType: record.DetectedMIMEType, FileType: fileType, Size: record.Size, DigestSHA256: record.DigestSHA256})
 		payloads[record.ID] = payload
 	}
-	plan, err := runruntime.PreparePreSessionMediaBindings(runruntime.PreSessionMediaBindingInput{AccountScopeID: principal.AccountScopeID, SessionID: session.ID, WorkspaceScope: session.WorkspacePath, Contract: contract, Staged: staged})
+	plan, err := runruntime.PreparePreSessionMediaBindings(runruntime.PreSessionMediaBindingInput{AccountScopeID: principal.AccountScopeID, SessionID: session.ID, WorkspaceScope: firstNonEmpty(session.WorktreeRootPath, session.WorkspacePath), Contract: contract, Staged: staged})
 	return plan, payloads, err
 }
 

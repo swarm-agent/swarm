@@ -501,6 +501,37 @@ func TestBuildGoogleRequestEncodesImmutableImageInlineData(t *testing.T) {
 	}
 }
 
+func TestBuildGoogleRequestEnforcesMediaCountPerExplicitMessage(t *testing.T) {
+	body := []byte("image-bytes")
+	digest := sha256.Sum256(body)
+	payload := provideriface.SessionMediaPayload{AssetID: "asset-1", Modality: "image", MIMEType: "image/png", FileType: "png", DigestSHA256: hex.EncodeToString(digest[:]), Size: int64(len(body)), Bytes: body}
+	contract := provideriface.SessionMediaContract{
+		ProviderID: "google", ProviderSurface: provideriface.MediaProviderSurfaceGoogleGenerateContent,
+		CredentialSurface: provideriface.MediaCredentialSurfaceGoogleAPIKey, CredentialFingerprint: "credential", AdapterID: provideriface.MediaAdapterIDGoogleGenerateContentV1, Hash: "contract",
+		Capabilities: []provideriface.MediaContractCapability{{Modality: "image", State: provideriface.MediaCapabilityStateAllowed, Semantics: pebblestore.ModelCatalogMediaSemanticsNative, MIMETypes: []string{"image/png"}, ContentTypes: []string{"inline_data"}, MaxBytes: 1024, MaxCount: 1}},
+	}
+	mediaPart := map[string]any{"type": "session_media", "media": payload}
+
+	request, err := buildGoogleRequest(provideriface.Request{ProviderConfigurationHash: "configuration", MediaContract: contract, Input: []map[string]any{
+		{"role": "user", "content": []map[string]any{mediaPart}},
+		{"role": "assistant", "content": "earlier response"},
+		{"role": "user", "content": []map[string]any{mediaPart}},
+	}})
+	if err != nil {
+		t.Fatalf("build Google request with one image per explicit message: %v", err)
+	}
+	if len(request.Contents) != 3 || len(request.Contents[0].Parts) != 1 || request.Contents[0].Parts[0].InlineData == nil || len(request.Contents[2].Parts) != 1 || request.Contents[2].Parts[0].InlineData == nil {
+		t.Fatalf("Google request did not retain both historical message images: %+v", request.Contents)
+	}
+
+	_, err = buildGoogleRequest(provideriface.Request{ProviderConfigurationHash: "configuration", MediaContract: contract, Input: []map[string]any{{
+		"role": "user", "content": []map[string]any{mediaPart, mediaPart},
+	}}})
+	if err == nil || !strings.Contains(err.Error(), "count limit") {
+		t.Fatalf("same-message Google media count error = %v", err)
+	}
+}
+
 func TestBuildGoogleRequestEnforcesTotalInlineRequestLimit(t *testing.T) {
 	_, err := buildGoogleRequest(provideriface.Request{Input: []map[string]any{{"role": "user", "content": strings.Repeat("x", maxInlineRequestBytes)}}})
 	if err == nil || !strings.Contains(err.Error(), "20 MB") {

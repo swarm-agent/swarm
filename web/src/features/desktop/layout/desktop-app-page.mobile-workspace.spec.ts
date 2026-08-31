@@ -49,6 +49,20 @@ test('mobile workspace exposes the global flat session list and keeps prior sess
   assert.match(source, /mobilePreviousSessionsOpen \? <div className="mt-2 grid gap-2">/)
 })
 
+test('mobile workspace exposes Video Studio sessions through the canonical viewer route', async () => {
+  const source = await readFile(appPage, 'utf8')
+  const mobileStart = source.indexOf('data-testid="mobile-workspace-session-scroll"')
+  const mobileEnd = source.indexOf('      </section>', mobileStart)
+  const mobile = source.slice(mobileStart, mobileEnd)
+
+  assert.ok(mobileStart >= 0 && mobileEnd > mobileStart)
+  assert.match(mobile, /id="mobile-video-sessions-heading">Video sessions<\/span>/)
+  assert.match(mobile, /videoStudioSessionNodes\.map\(\(node\) => \(/)
+  assert.match(mobile, /onSelect=\{handleSelectVideoSidebarSession\}/)
+  assert.match(source, /handleSelectVideoSidebarSession[\s\S]*?preferredVideoSessionView\(normalizedSessionId\)[\s\S]*?to: '\/\$workspaceSlug\/video\/\$videoSessionId'/)
+  assert.match(mobile, /videoStudioSessionNodes\.length === 0 \? \(/)
+})
+
 test('mobile Sessions header and rows preserve the lower Manage worktree control', async () => {
   const source = await readFile(appPage, 'utf8')
   const rendererStart = source.indexOf('function renderSidebarSessionGroups')

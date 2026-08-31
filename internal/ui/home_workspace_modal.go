@@ -358,10 +358,6 @@ func (p *HomePage) handleWorkspaceModalRune(ev *tcell.EventKey) {
 		p.workspaceModalActivateSelected()
 	case p.keybinds.Match(ev, KeybindWorkspaceEdit):
 		p.workspaceModalEditSelected()
-	case p.keybinds.Match(ev, KeybindWorkspaceLinkDirectory):
-		p.workspaceModalAddDirectorySelected()
-	case p.keybinds.Match(ev, KeybindWorkspaceUnlinkDirectory):
-		p.workspaceModalRemoveDirectorySelected()
 	case p.keybinds.Match(ev, KeybindWorkspaceDelete):
 		p.workspaceModalDeleteSelected()
 	case p.keybinds.Match(ev, KeybindWorkspaceMoveUp):
@@ -429,7 +425,7 @@ func (p *HomePage) workspaceModalRefresh() {
 func (p *HomePage) workspaceModalSaveCurrent() {
 	p.workspaceModal.ActionMenuVisible = false
 	if p.WorkspaceModalIntent() == "add_dir" {
-		p.openWorkspaceModalSaveEditorForPath(p.currentWorkspaceModalDirectoryPath(), false, p.currentWorkspaceModalAddDirectoryPath())
+		p.openWorkspaceModalSaveEditorForPath(p.currentWorkspaceModalAddDirectoryPath(), false, "")
 		return
 	}
 	p.openWorkspaceModalSaveEditorForPath(p.currentWorkspaceModalDirectoryPath(), false, "")
@@ -438,7 +434,7 @@ func (p *HomePage) workspaceModalSaveCurrent() {
 func (p *HomePage) workspaceModalNew() {
 	p.workspaceModal.ActionMenuVisible = false
 	if p.WorkspaceModalIntent() == "add_dir" {
-		p.openWorkspaceModalSaveEditorForPath("~/", true, p.currentWorkspaceModalAddDirectoryPath())
+		p.openWorkspaceModalSaveEditorForPath(p.currentWorkspaceModalAddDirectoryPath(), true, "")
 		return
 	}
 	p.openWorkspaceModalSaveEditorForPath("~/", true, "")
@@ -481,40 +477,6 @@ func (p *HomePage) workspaceModalEditSelected() {
 		return
 	}
 	p.openWorkspaceModalEditEditor(workspace)
-}
-
-func (p *HomePage) workspaceModalAddDirectorySelected() {
-	p.workspaceModal.ActionMenuVisible = false
-	workspace, ok := p.selectedWorkspaceModal()
-	if !ok {
-		p.workspaceModal.Status = "Select or create a workspace first"
-		return
-	}
-	p.openWorkspaceModalAddDirectoryEditorForWorkspace(workspace, p.currentWorkspaceModalAddDirectoryPath())
-}
-
-func (p *HomePage) workspaceModalUnlinkDirectory(directoryPath string) {
-	p.workspaceModal.ActionMenuVisible = false
-	workspace, ok := p.selectedWorkspaceModal()
-	if !ok {
-		p.workspaceModal.Status = "No workspace selected"
-		return
-	}
-	directoryPath = strings.TrimSpace(directoryPath)
-	if directoryPath == "" {
-		p.openWorkspaceModalRemoveDirectoryEditorForWorkspace(workspace)
-		return
-	}
-	p.enqueueWorkspaceModalAction(WorkspaceModalAction{
-		Kind:          WorkspaceModalActionRemoveDirectory,
-		Path:          workspace.Path,
-		DirectoryPath: directoryPath,
-		StatusHint:    fmt.Sprintf("Removing linked directory %s ...", workspaceModalDisplayPath(directoryPath)),
-	})
-}
-
-func (p *HomePage) workspaceModalRemoveDirectorySelected() {
-	p.workspaceModalUnlinkDirectory("")
 }
 
 func (p *HomePage) workspaceModalDeleteSelected() {
@@ -597,16 +559,9 @@ func (p *HomePage) openWorkspaceModalSaveEditorForPath(path string, allowPathEdi
 			Help:     "Workspace-specific theme override. Global theme remains the fallback.",
 		},
 	}
-	fields = append(fields, workspaceModalLinkDirectoryField(linkedDirectory, submitLabel))
 	fields = appendWorkspaceModalSaveActions(fields)
 	if linkedDirectory != "" {
-		if hasExisting {
-			title = "Edit Workspace + Link Directory"
-			status = fmt.Sprintf("Editing %s. Press %s on the last field to save changes and link the directory.", existing.Path, submitLabel)
-		} else {
-			title = "Create Workspace + Link Directory"
-			status = fmt.Sprintf("Create the workspace. Press %s on the last field to save it and link the directory.", submitLabel)
-		}
+		status = fmt.Sprintf("Add %s as its own workspace. Press %s on the last field to save it.", workspaceModalDisplayPath(linkedDirectory), submitLabel)
 	}
 	p.workspaceModal.Editor = &workspaceModalEditor{
 		Mode:     strings.ToLower(strings.TrimSpace(title)),
@@ -616,17 +571,6 @@ func (p *HomePage) openWorkspaceModalSaveEditorForPath(path string, allowPathEdi
 	p.workspaceModal.Status = status
 	p.workspaceModal.Error = ""
 	p.workspaceModal.ConfirmDelete = false
-}
-
-func workspaceModalLinkDirectoryField(value, submitLabel string) workspaceModalEditorField {
-	return workspaceModalEditorField{
-		Key:         "linked_directory",
-		Label:       "Link Directory",
-		Value:       strings.TrimSpace(value),
-		Placeholder: "~/",
-		Editable:    false,
-		Help:        fmt.Sprintf("Optional. Press %s to browse from ~/; Right opens the highlighted folder and %s selects it.", submitLabel, submitLabel),
-	}
 }
 
 func workspaceModalSaveActionFields() []workspaceModalEditorField {
@@ -649,106 +593,13 @@ func (p *HomePage) openWorkspaceModalEditEditor(workspace WorkspaceModalWorkspac
 	editor.WorkspacePath = workspace.Path
 	for len(editor.Fields) > 0 {
 		key := editor.Fields[len(editor.Fields)-1].Key
-		if key != "linked_directory" && key != "save" && key != "save_and_switch" {
+		if key != "save" && key != "save_and_switch" {
 			break
 		}
 		editor.Fields = editor.Fields[:len(editor.Fields)-1]
 	}
-	choices := removableWorkspaceModalDirectories(workspace)
-	linkedSummary := "None"
-	if len(choices) > 0 {
-		display := make([]string, 0, len(choices))
-		for _, directory := range choices {
-			display = append(display, workspaceModalDisplayPath(directory))
-		}
-		linkedSummary = strings.Join(display, ", ")
-	}
-	editor.Fields = append(editor.Fields, workspaceModalEditorField{
-		Key:      "linked_directories",
-		Label:    "Linked Directories",
-		Value:    linkedSummary,
-		Editable: false,
-		Help:     "Additional roots currently linked to this workspace.",
-	})
-	if len(choices) > 0 {
-		editor.Fields = append(editor.Fields, workspaceModalEditorField{
-			Key:      "remove_directory",
-			Label:    "Unlink Directory",
-			Value:    choices[0],
-			Options:  choices,
-			Editable: false,
-			Help:     "Choose a linked directory with Left/Right, then press u to unlink it.",
-		})
-	}
-	editor.Fields = append(editor.Fields, workspaceModalLinkDirectoryField("", p.workspaceModalEditorKeyLabel(KeybindEditorSubmit, "Enter")))
 	editor.Fields = appendWorkspaceModalSaveActions(editor.Fields)
-	p.workspaceModal.Status = fmt.Sprintf("Editing %s. Existing linked directories are shown below; use Add Linked Directory to attach another root.", workspace.Path)
-}
-
-func (p *HomePage) openWorkspaceModalAddDirectoryEditorForWorkspace(workspace WorkspaceModalWorkspace, directoryPath string) {
-	directoryPath = strings.TrimSpace(directoryPath)
-	if directoryPath == "" {
-		directoryPath = "~/"
-	}
-	submitLabel := p.workspaceModalEditorKeyLabel(KeybindEditorSubmit, "Enter")
-	closeLabel := p.workspaceModalEditorKeyLabel(KeybindEditorClose, "Esc")
-	fields := []workspaceModalEditorField{
-		{
-			Key:      "directory_path",
-			Label:    "Directory Path",
-			Value:    directoryPath,
-			Editable: true,
-			Help:     fmt.Sprintf("Browse from ~/. Type to filter, Right opens the highlighted folder, Left goes to the parent, and %s selects the highlighted folder and links it.", submitLabel),
-		},
-	}
-	p.workspaceModal.Editor = &workspaceModalEditor{
-		Mode:          "add directory",
-		WorkspacePath: workspace.Path,
-		Fields:        fields,
-		Selected:      workspaceModalInitialEditorIndex(fields),
-	}
-	p.workspaceModal.Status = fmt.Sprintf("Link another directory to %s. Type a path, then press %s to link it. %s goes back.", workspace.Name, submitLabel, closeLabel)
-	p.workspaceModal.Error = ""
-	p.workspaceModal.ConfirmDelete = false
-}
-
-func removableWorkspaceModalDirectories(workspace WorkspaceModalWorkspace) []string {
-	choices := make([]string, 0, len(workspace.Directories))
-	for _, directory := range workspace.Directories {
-		directory = strings.TrimSpace(directory)
-		if directory == "" || directory == strings.TrimSpace(workspace.Path) {
-			continue
-		}
-		choices = append(choices, directory)
-	}
-	return choices
-}
-
-func (p *HomePage) openWorkspaceModalRemoveDirectoryEditorForWorkspace(workspace WorkspaceModalWorkspace) {
-	choices := removableWorkspaceModalDirectories(workspace)
-	if len(choices) == 0 {
-		p.workspaceModal.Status = "This workspace has no linked directories to remove"
-		return
-	}
-	fields := []workspaceModalEditorField{
-		{
-			Key:      "directory_path",
-			Label:    "Linked Directory",
-			Value:    choices[0],
-			Options:  choices,
-			Editable: false,
-			Help:     "Primary workspace root cannot be removed",
-		},
-	}
-	p.workspaceModal.Editor = &workspaceModalEditor{
-		Mode:          "remove directory",
-		WorkspacePath: workspace.Path,
-		Fields:        fields,
-		Selected:      0,
-	}
-	p.workspaceModal.Status = fmt.Sprintf("Remove a linked directory from %s.", workspace.Name)
-	p.workspaceModal.Error = ""
-	p.workspaceModal.ConfirmDelete = false
+	p.workspaceModal.Status = fmt.Sprintf("Editing %s. Each saved workspace has one primary folder.", workspace.Path)
 }
 
 func (p *HomePage) handleWorkspaceModalEditorKey(ev *tcell.EventKey) {
@@ -827,10 +678,6 @@ func (p *HomePage) handleWorkspaceModalEditorKey(ev *tcell.EventKey) {
 			p.openWorkspaceModalThemePicker(editor)
 			return
 		}
-		if p.workspaceModalEditorLinkDirectoryFieldSelected(editor) {
-			p.openWorkspaceModalDirectoryPicker(editor)
-			return
-		}
 		if editor.Selected < len(editor.Fields)-1 {
 			editor.Selected++
 			return
@@ -844,10 +691,6 @@ func (p *HomePage) handleWorkspaceModalEditorKey(ev *tcell.EventKey) {
 	}
 	field := &editor.Fields[editor.Selected]
 	r := ev.Rune()
-	if p.keybinds.Match(ev, KeybindWorkspaceUnlinkDirectory) && p.workspaceModalEditorRemoveDirectoryFieldSelected(editor) {
-		p.submitWorkspaceModalEditor()
-		return
-	}
 	if !unicode.IsPrint(r) {
 		return
 	}
@@ -873,48 +716,7 @@ func (p *HomePage) submitWorkspaceModalEditor() {
 		return ""
 	}
 
-	if removeDirectoryPath := strings.TrimSpace(get("remove_directory")); removeDirectoryPath != "" && p.workspaceModalEditorRemoveDirectoryFieldSelected(editor) {
-		p.workspaceModal.Editor = nil
-		p.enqueueWorkspaceModalAction(WorkspaceModalAction{
-			Kind:          WorkspaceModalActionRemoveDirectory,
-			Path:          strings.TrimSpace(editor.WorkspacePath),
-			DirectoryPath: removeDirectoryPath,
-			StatusHint:    fmt.Sprintf("Removing linked directory %s ...", workspaceModalDisplayPath(removeDirectoryPath)),
-		})
-		return
-	}
-
 	path := strings.TrimSpace(get("path"))
-	if editor.Mode == "add directory" {
-		directoryPath := strings.TrimSpace(get("directory_path"))
-		if directoryPath == "" {
-			p.workspaceModal.Error = "Directory path is required"
-			return
-		}
-		p.workspaceModal.Editor = nil
-		p.enqueueWorkspaceModalAction(WorkspaceModalAction{
-			Kind:          WorkspaceModalActionAddDirectory,
-			Path:          strings.TrimSpace(editor.WorkspacePath),
-			DirectoryPath: directoryPath,
-			StatusHint:    fmt.Sprintf("Linking directory %s ...", directoryPath),
-		})
-		return
-	}
-	if editor.Mode == "remove directory" {
-		directoryPath := strings.TrimSpace(get("directory_path"))
-		if directoryPath == "" {
-			p.workspaceModal.Error = "Linked directory is required"
-			return
-		}
-		p.workspaceModal.Editor = nil
-		p.enqueueWorkspaceModalAction(WorkspaceModalAction{
-			Kind:          WorkspaceModalActionRemoveDirectory,
-			Path:          strings.TrimSpace(editor.WorkspacePath),
-			DirectoryPath: directoryPath,
-			StatusHint:    fmt.Sprintf("Removing linked directory %s ...", workspaceModalDisplayPath(directoryPath)),
-		})
-		return
-	}
 
 	if path == "" {
 		p.workspaceModal.Error = "Workspace path is required"
@@ -925,18 +727,16 @@ func (p *HomePage) submitWorkspaceModalEditor() {
 		name = workspaceModalDefaultName(path)
 	}
 	themeID := workspaceModalNormalizeThemeID(get("theme_id"))
-	linkedDirectory := strings.TrimSpace(get("linked_directory"))
 
 	makeCurrent := editor.Selected >= 0 && editor.Selected < len(editor.Fields) && editor.Fields[editor.Selected].Key == "save_and_switch"
 	p.workspaceModal.Editor = nil
 	p.enqueueWorkspaceModalAction(WorkspaceModalAction{
-		Kind:            WorkspaceModalActionSave,
-		Path:            path,
-		Name:            name,
-		ThemeID:         themeID,
-		MakeCurrent:     makeCurrent,
-		LinkedDirectory: linkedDirectory,
-		StatusHint:      fmt.Sprintf("Saving workspace %s ...", name),
+		Kind:        WorkspaceModalActionSave,
+		Path:        path,
+		Name:        name,
+		ThemeID:     themeID,
+		MakeCurrent: makeCurrent,
+		StatusHint:  fmt.Sprintf("Saving workspace %s ...", name),
 	})
 }
 
@@ -1082,16 +882,10 @@ func (p *HomePage) executeWorkspaceModalSelectedAction() {
 		return
 	}
 	switch action.ID {
-	case workspaceModalDetailActionAddDirectory:
-		p.workspaceModalAddDirectorySelected()
-	case workspaceModalDetailActionUnlinkDirectory:
-		p.workspaceModalUnlinkDirectory(action.DirectoryPath)
 	case workspaceModalDetailActionActivate:
 		p.workspaceModalActivateSelected()
 	case workspaceModalDetailActionEdit:
 		p.workspaceModalEditSelected()
-	case workspaceModalDetailActionRemoveDirectory:
-		p.workspaceModalRemoveDirectorySelected()
 	case workspaceModalDetailActionMoveUp:
 		p.moveSelectedWorkspace(-1)
 	case workspaceModalDetailActionMoveDown:
@@ -1664,57 +1458,12 @@ func (p *HomePage) workspaceModalDirectoryPickerParent(editor *workspaceModalEdi
 	p.refreshWorkspaceModalDirectoryPicker(editor)
 }
 
-func (p *HomePage) workspaceModalAddDirectoryNote(selected WorkspaceModalWorkspace, ok bool, currentDir string) string {
-	submitLabel := p.workspaceModalEditorKeyLabel(KeybindEditorSubmit, "Enter")
-	if !ok {
-		if len(p.workspaceModal.Workspaces) > 0 {
-			return "Select a workspace first, then open the link-directory editor to add another root."
-		}
-		return "Create or select a workspace first. Then open the link-directory editor to add another root."
-	}
-	if workspaceModalWorkspaceContainsPath(selected, currentDir) {
-		return fmt.Sprintf("This workspace already covers the current directory. You can still link another root; type it in the editor and press %s.", submitLabel)
-	}
-	return fmt.Sprintf("Open the link-directory editor, type a path from ~/ or an absolute directory, then press %s to link it.", submitLabel)
-}
-
 func (p *HomePage) workspaceModalDetailActions() []workspaceModalDetailAction {
-	selected, ok := p.selectedWorkspaceModal()
-	currentDir := p.currentWorkspaceModalDirectoryPath()
-	addDirectoryLabel := "Link Directory"
-	saveCurrentLabel := "Create Workspace from Current Dir"
-	newLabel := "New Workspace from Path"
-	if p.WorkspaceModalIntent() == "add_dir" {
-		saveCurrentLabel = "Create Current Dir Workspace + Link Directory"
-		newLabel = "New Workspace + Link Directory"
-	}
+	_, ok := p.selectedWorkspaceModal()
+	saveCurrentLabel := "Create Workspace from Current Folder"
+	newLabel := "Add Folder as New Workspace"
 
 	actions := []workspaceModalDetailAction{
-		{
-			ID:       workspaceModalDetailActionAddDirectory,
-			Label:    addDirectoryLabel,
-			Hint:     p.workspaceModalAddDirectoryNote(selected, ok, currentDir),
-			Shortcut: p.workspaceModalKeyLabel(KeybindWorkspaceLinkDirectory),
-			Enabled:  ok,
-		},
-	}
-	if ok {
-		for _, directory := range workspaceModalDirectories(selected) {
-			directory = strings.TrimSpace(directory)
-			if directory == "" || directory == strings.TrimSpace(selected.Path) {
-				continue
-			}
-			actions = append(actions, workspaceModalDetailAction{
-				ID:            workspaceModalDetailActionUnlinkDirectory,
-				Label:         fmt.Sprintf("Unlink %s", workspaceModalDisplayPath(directory)),
-				Hint:          fmt.Sprintf("Remove linked root %s from this workspace.", workspaceModalDisplayPath(directory)),
-				Shortcut:      "",
-				Enabled:       true,
-				DirectoryPath: directory,
-			})
-		}
-	}
-	actions = append(actions,
 		workspaceModalDetailAction{
 			ID:       workspaceModalDetailActionActivate,
 			Label:    "Activate Workspace",
@@ -1725,7 +1474,7 @@ func (p *HomePage) workspaceModalDetailActions() []workspaceModalDetailAction {
 		workspaceModalDetailAction{
 			ID:       workspaceModalDetailActionEdit,
 			Label:    "Edit Workspace",
-			Hint:     "Rename the workspace, choose its theme, or update its active state.",
+			Hint:     "Rename the workspace or choose its theme.",
 			Shortcut: p.workspaceModalKeyLabel(KeybindWorkspaceEdit),
 			Enabled:  ok,
 		},
@@ -1778,7 +1527,7 @@ func (p *HomePage) workspaceModalDetailActions() []workspaceModalDetailAction {
 			Shortcut: p.workspaceModalKeyLabel(KeybindWorkspaceRefresh),
 			Enabled:  true,
 		},
-	)
+	}
 	return actions
 }
 
@@ -1816,23 +1565,12 @@ func (p *HomePage) workspaceModalEditorFooterLines(editor *workspaceModalEditor)
 		}
 	}
 
-	if p.workspaceModalEditorLinkDirectoryFieldSelected(editor) && editor.DirectoryPicker == nil {
-		return []string{
-			fmt.Sprintf("%s open directory picker • %s/%s move to save actions", submitLabel, upLabel, downLabel),
-			fmt.Sprintf("%s cancel", closeLabel),
-		}
-	}
-
 	if p.workspaceModalEditorPathFieldSelected(editor) {
 		lines := []string{
 			fmt.Sprintf("Type to filter • %s/%s move • PgUp/PgDn scroll", upLabel, downLabel),
 			fmt.Sprintf("Right open highlighted • Left parent • %s choose highlighted", submitLabel),
 		}
-		if editor.Fields[editor.Selected].Key == "linked_directory" {
-			lines = append(lines, fmt.Sprintf("%s skip linking and save • %s cancel", p.workspaceModalEditorKeyLabel(KeybindEditorFocusNext, "Tab"), closeLabel))
-		} else {
-			lines = append(lines, fmt.Sprintf("%s cancel", closeLabel))
-		}
+		lines = append(lines, fmt.Sprintf("%s cancel", closeLabel))
 		return lines
 	}
 
@@ -1840,17 +1578,6 @@ func (p *HomePage) workspaceModalEditorFooterLines(editor *workspaceModalEditor)
 		return []string{
 			fmt.Sprintf("%s open theme picker", submitLabel),
 			fmt.Sprintf("Left/Right also opens picker • type to jump • %s cancel", closeLabel),
-		}
-	}
-
-	if p.workspaceModalEditorRemoveDirectoryFieldSelected(editor) {
-		unlinkLabel := p.workspaceModalKeyLabel(KeybindWorkspaceUnlinkDirectory)
-		if unlinkLabel == "" {
-			unlinkLabel = "u"
-		}
-		return []string{
-			fmt.Sprintf("%s unlink selected folder", unlinkLabel),
-			fmt.Sprintf("Left/Right choose linked folder • %s cancel", closeLabel),
 		}
 	}
 
@@ -1863,10 +1590,6 @@ func (p *HomePage) workspaceModalEditorFooterLines(editor *workspaceModalEditor)
 
 	action := "save this workspace"
 	switch {
-	case editor.Mode == "remove directory":
-		action = "remove this directory"
-	case strings.Contains(editor.Mode, "link directory") || strings.Contains(editor.Mode, "add directory"):
-		action = "save the workspace and link the directory"
 	case strings.HasPrefix(editor.Mode, "edit"):
 		action = "save workspace changes"
 	}
@@ -2054,7 +1777,7 @@ func (p *HomePage) drawWorkspaceModal(s tcell.Screen) {
 	if p.WorkspaceModalIntent() == "select" {
 		title = "Quick Switch Workspace"
 	} else if p.WorkspaceModalIntent() == "add_dir" {
-		title = "Workspace Manager · Link Directory"
+		title = "Add Folder as New Workspace"
 	}
 	if p.workspaceModal.Loading {
 		title += " [loading]"
@@ -2073,9 +1796,9 @@ func (p *HomePage) drawWorkspaceModal(s tcell.Screen) {
 		} else if p.WorkspaceModalIntent() == "select" {
 			status = "Press 1-9 to switch immediately. Type to filter, or use arrows and Enter. Esc cancels."
 		} else if p.WorkspaceModalIntent() == "add_dir" {
-			status = "Type to filter. Use arrows to move across cards, Enter to edit, or l to link a directory."
+			status = "Add the requested folder as its own new workspace. Press s to use that folder or n to choose another."
 		} else {
-			status = "Use arrows to select a workspace or the New Workspace card. Enter edits or creates; e edits; l links a directory."
+			status = "Use arrows to select a workspace or the New Workspace card. Enter edits or creates; e edits."
 		}
 	}
 	statusLines := workspaceModalWrap(status, rect.W-4)
@@ -2092,14 +1815,14 @@ func (p *HomePage) drawWorkspaceModal(s tcell.Screen) {
 	if actionsLabel == "" {
 		actionsLabel = "m"
 	}
-	help := fmt.Sprintf("arrows move • Enter edit/create • %s Workspace Actions • l link dir • n new • Esc close", actionsLabel)
+	help := fmt.Sprintf("arrows move • Enter edit/create • %s Workspace Actions • n add workspace • Esc close", actionsLabel)
 	if p.workspaceModal.ActionMenuVisible {
 		help = "↑/↓ choose workspace action • Enter run action • Esc back to cards"
 	}
 	if p.WorkspaceModalIntent() == "select" && !p.workspaceModal.ActionMenuVisible {
 		help = "1-9 switch immediately • type to filter • arrows/Enter also select • Esc cancels"
 	} else if p.WorkspaceModalIntent() == "add_dir" && !p.workspaceModal.ActionMenuVisible {
-		help = "Type to filter • arrows move • Enter edits • l link dir • s save current • n new • Esc close"
+		help = "Type to filter • arrows move • s add requested folder • n choose another folder • Esc close"
 	}
 	helpLines := workspaceModalWrap(help, rect.W-4)
 	footerText := "Workspace switcher keys are configured in /keybinds."
@@ -2181,7 +1904,7 @@ func (p *HomePage) drawWorkspaceModalCards(s tcell.Screen, rect Rect) {
 			emptyHint = "Backspace edits the filter; Ctrl+U clears it"
 		}
 		if p.WorkspaceModalIntent() == "add_dir" {
-			emptyHint = "Press s to create the first workspace, then link another directory"
+			emptyHint = "Press s to add the requested folder as the first workspace"
 		}
 		DrawText(s, rect.X+2, rect.Y+3, rect.W-4, p.theme.TextMuted, emptyHint)
 		return
@@ -2412,14 +2135,6 @@ func (p *HomePage) drawWorkspaceModalEditor(s tcell.Screen, parent Rect) {
 
 	title := "Workspace Setup"
 	switch {
-	case editor.Mode == "add directory":
-		title = "Link Directory"
-	case editor.Mode == "remove directory":
-		title = "Remove Linked Directory"
-	case strings.HasPrefix(editor.Mode, "edit") && (strings.Contains(editor.Mode, "link directory") || strings.Contains(editor.Mode, "add directory")):
-		title = "Edit Workspace + Link Directory"
-	case strings.Contains(editor.Mode, "link directory") || strings.Contains(editor.Mode, "add directory"):
-		title = "Create Workspace + Link Directory"
 	case strings.HasPrefix(editor.Mode, "edit"):
 		title = "Edit Workspace"
 	}

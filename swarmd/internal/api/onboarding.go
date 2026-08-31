@@ -212,6 +212,9 @@ func (s *Server) handleOnboarding(w http.ResponseWriter, r *http.Request) {
 			http.SetCookie(w, buildDesktopLocalSessionCookie(issued.Token, issued.ExpiresAt, requestScheme(r) == "https"))
 		}
 		writeJSON(w, http.StatusOK, response)
+		if req.DesktopOnboardingComplete != nil && *req.DesktopOnboardingComplete {
+			s.reportActivationBestEffort("onboarding_completed")
+		}
 	default:
 		methodNotAllowed(w)
 	}

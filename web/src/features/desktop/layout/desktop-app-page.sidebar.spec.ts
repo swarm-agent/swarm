@@ -99,6 +99,19 @@ test('sidebar header renders workspace context instead of the swarm role label',
   assert.doesNotMatch(headerSource, /currentSwarmRoleLabel/)
 })
 
+test('selecting a session only classifies that needs-review worktree for Git integration', async () => {
+  const source = await readFile(new URL('./desktop-app-page.tsx', import.meta.url), 'utf8')
+  const queryStart = source.indexOf('const activeSessionNeedsReview =')
+  const queryEnd = source.indexOf('const activeSessionReviewCandidate =', queryStart)
+  const querySource = source.slice(queryStart, queryEnd)
+
+  assert.ok(queryStart >= 0 && queryEnd > queryStart)
+  assert.match(querySource, /swarm_v3_sidebar_group[^\n]*=== 'needs_review'/)
+  assert.match(querySource, /sessionIds: \[selectedGitSessionId\]/)
+  assert.match(querySource, /enabled: activeSessionWorktree && activeSessionNeedsReview[^\n]*gitSnapshot !== null/)
+  assert.match(querySource, /refetchOnWindowFocus: false/)
+})
+
 test('plan Git panel keeps changed files compact and expandable so integration remains visible', async () => {
   const source = await readFile(new URL('./desktop-app-page.tsx', import.meta.url), 'utf8')
   const panelStart = source.indexOf('const planSidebarGitPanel =')
