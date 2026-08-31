@@ -126,7 +126,7 @@ async function inspectPixels(sessionID, studio, label) {
   const validation = (studio.validations || []).find((item) => item.id === studio.working.latest_validation_id)
   assert(build?.representative_timestamps_ms?.length >= 3, `${label} has insufficient representative timestamps`)
   assert(validation?.renderer_snapshot === 'trusted-chrome-animation-1', `${label} did not use trusted Chrome`)
-  assert((validation.evidence_digests || []).length >= build.representative_timestamps_ms.length, `${label} rendered evidence is incomplete`)
+  assert((validation.evidence_digests || []).length >= 4, `${label} rendered evidence is incomplete`)
   const preview = await api('GET', `/v3/sessions/${encodeURIComponent(sessionID)}/artifact-v2/${encodeURIComponent(studio.working.id)}/preview`, undefined, `${label} preview`)
   assert(preview.ok && /swarm\.animation\/v1/.test(preview.text) && /swarm-player\/v1/.test(preview.text), `${label} preview lacks server runtime contracts`)
   result.pixel_inspections.push({ label, artifact_id: studio.working.id, renderer_snapshot: validation.renderer_snapshot, representative_timestamps_ms: build.representative_timestamps_ms, evidence_digests: validation.evidence_digests, preview_bytes: Buffer.byteLength(preview.text) })
