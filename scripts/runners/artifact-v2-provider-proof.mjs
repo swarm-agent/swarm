@@ -12,9 +12,11 @@ const designerThinking = String(option('--designer-thinking', process.env.SWARM_
 const workspacePathOverride = String(option('--workspace-path', process.env.SWARM_RUNNER_WORKSPACE_PATH || '')).trim()
 const timeoutMs = Number(option('--timeout-ms', process.env.SWARM_RUNNER_TIMEOUT_MS || '600000'))
 const stage = String(option('--stage', process.env.SWARM_RUNNER_STAGE || 'single1')).trim().toLowerCase()
+const sessionOverride = String(option('--session-id', process.env.SWARM_RUNNER_SESSION_ID || '')).trim()
 const suppliedToken = String(process.env.SWARM_RUNNER_TOKEN || '').trim()
 if (!apiURL || !/^https?:\/\//.test(apiURL)) throw new Error('--api-url must be an http or https URL')
 if (!['single1', 'single2', 'iteration3'].includes(stage)) throw new Error('--stage must be single1, single2, or iteration3')
+if (stage === 'iteration3' && !sessionOverride) throw new Error('--session-id is required for iteration3')
 if (!actionModel || !designerModel) throw new Error('--action-model and --designer-model are required')
 if (!Number.isFinite(timeoutMs) || timeoutMs < 300000 || timeoutMs > 600000) throw new Error('--timeout-ms must be between 300000 and 600000')
 
@@ -154,7 +156,7 @@ async function runSingle(index, topology, assignment) {
   result.journeys.push(journey); return journey
 }
 
-async function runIteration(baseJourney, topology, assignment) {
+async function runIteration(baseJourney) {
   const sessionID = baseJourney.session_id; const source = baseJourney.source
   const studioBefore = await artifactStudio(sessionID, source.artifact_id); const scene = studioBefore.parts.find((part) => part.key === 'scene'); assert(scene, 'iteration source scene part missing')
   source.target_part_ids = [scene.id]
@@ -181,14 +183,18 @@ try {
   await api('PATCH', '/v1/agent-model-settings', { swarm: { action, plan: originalSwarm.plan || action } }, 'configure action model')
   await api('PATCH', '/v1/agent-model-settings', { system_agents: { designer } }, 'configure Designer model')
   const topology = await canonicalWorkspace()
-  const first = await runSingle(1, topology, action)
-  if (stage === 'single1') result.result = 'PASS'
-  else {
-    const second = await runSingle(2, topology, action)
-    if (stage === 'single2') result.result = 'PASS'
-    else { await runIteration(second, topology, action); result.result = 'PASS' }
+  if (stage === 'iteration3') {
+    const catalog = await artifactCatalog(sessionOverride); const baseItem = catalog.find((item) => item?.working?.kind === 'managed_creative' && item?.working?.state === 'published_view')
+    assert(baseItem, 'iteration3 resumed session has no published managed creative base')
+    const studio = await artifactStudio(sessionOverride, baseItem.working.id); const source = validateJourney(studio, 'iteration base')
+    await runIteration({ session_id: sessionOverride, source })
+    result.result = 'PASS'; result.gates.provider_journeys = true; result.gates.pixel_inspection = true; result.gates.pending_conversion = true
+  } else {
+    const first = await runSingle(1, topology, action)
+    if (stage === 'single1') result.result = 'PASS'
+    else { await runSingle(2, topology, action); result.result = 'PASS' }
+    result.gates.provider_journeys = true; result.gates.pixel_inspection = result.pixel_inspections.length >= (stage === 'single1' ? 1 : 2); result.gates.pending_conversion = result.journeys.every((item) => item.conversion.status === 'pending')
   }
-  result.gates.provider_journeys = true; result.gates.pixel_inspection = result.pixel_inspections.length >= (stage === 'single1' ? 1 : 2); result.gates.pending_conversion = result.journeys.every((item) => item.conversion.status === 'pending')
 } catch (error) {
   result.error = error?.stack || String(error); log(result.error)
 } finally {
