@@ -1584,6 +1584,9 @@ func parseTaskOwnedScope(raw map[string]any, label string) ([]string, error) {
 			out = append(out, value)
 		}
 	}
+	if len(out) == 0 {
+		return nil, nil
+	}
 	return out, nil
 }
 

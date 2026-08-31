@@ -602,6 +602,14 @@ func isRunMessageRoleAllowed(role string) bool {
 	}
 }
 
+func nextAssistantFragmentLogicalKey(flushes map[int]int, step int) string {
+	flushes[step]++
+	if flushes[step] == 1 {
+		return fmt.Sprintf("assistant:%d", step)
+	}
+	return fmt.Sprintf("assistant:%d:fragment:%d", step, flushes[step])
+}
+
 func runMessageV3ClientRequestID(sessionID, runID, logicalKey string) string {
 	runID = strings.TrimSpace(runID)
 	if runID == "" {
@@ -1721,6 +1729,7 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 		}, nil
 	}
 
+	assistantFragmentFlushes := make(map[int]int)
 	flushAssistantFragments := func(step int) (pebblestore.MessageSnapshot, bool, error) {
 		if suppressAssistantFragments || terminalPlanState.IsTerminal() {
 			suppressAssistantFragments = true
@@ -1731,7 +1740,8 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 		if assistantText == "" {
 			return pebblestore.MessageSnapshot{}, false, nil
 		}
-		assistantMessage, _, assistantEvent, appendErr := s.appendRunMessage(runAppendMessageInput{SessionID: sessionID, Role: "assistant", Content: assistantText, Metadata: runMessageMetadata, RunID: runID, Step: step, LogicalKey: fmt.Sprintf("assistant:%d", step), Principal: options.Principal, ApplySessionMutation: options.ApplySessionMutation})
+		logicalKey := nextAssistantFragmentLogicalKey(assistantFragmentFlushes, step)
+		assistantMessage, _, assistantEvent, appendErr := s.appendRunMessage(runAppendMessageInput{SessionID: sessionID, Role: "assistant", Content: assistantText, Metadata: runMessageMetadata, RunID: runID, Step: step, LogicalKey: logicalKey, Principal: options.Principal, ApplySessionMutation: options.ApplySessionMutation})
 		if appendErr != nil {
 			return pebblestore.MessageSnapshot{}, false, appendErr
 		}
@@ -2769,6 +2779,7 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 			nextInputFunctionOutputs = append(nextInputFunctionOutputs, map[string]any{
 				"type":    "function_call_output",
 				"call_id": call.CallID,
+				"name":    call.Name,
 				"output":  prepareToolOutputForModel(call, result),
 			})
 

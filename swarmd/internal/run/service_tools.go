@@ -5478,6 +5478,7 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 	}
 	integrationRequired, integrationStatus, readyForDependentWork := taskAssemblyIntegrationState(swarmStrategy, successCount, failedCount, cancelledCount, len(outcomes))
 	artifactReferences := collectTaskReadyArtifactReferences(outcomes, runErrs)
+	recoverableDesignerFailures := countRecoverableManagedDesignerInspectionFailures(outcomes, runErrs)
 	lineageUpdate(overallStatus, outcomes, map[string]any{
 		"success_count":            successCount,
 		"failed_count":             failedCount,
@@ -5538,6 +5539,10 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 	if len(artifactReferences) > 0 {
 		payload["artifact_references"] = artifactReferences
 		payload["artifact_count"] = len(artifactReferences)
+	}
+	if parsed.Program == nil && recoverableDesignerFailures > 0 {
+		payload["recoverable_failed_count"] = recoverableDesignerFailures
+		payload["next_action"] = "launch_one_replacement_wave_for_failed_managed_designer_slots"
 	}
 	if parsed.Program != nil {
 		payload["program_id"] = programRecord.ProgramID
@@ -5652,6 +5657,39 @@ func collectTaskReadyArtifactReferences(outcomes []taskLaunchOutcome, runErrs []
 		ready = append(ready, outcomes[index].ArtifactReference)
 	}
 	return ready
+}
+
+// countRecoverableManagedDesignerInspectionFailures recognizes only the
+// post-publication visual inspection failure that retains a complete failed-slot
+// report. Other child, trust, publication, infrastructure, and cancellation
+// failures remain on the existing fail-closed path.
+func countRecoverableManagedDesignerInspectionFailures(outcomes []taskLaunchOutcome, runErrs []error) int {
+	count := 0
+	hasSuccessfulReadyArtifact := false
+	for index := range outcomes {
+		if index >= len(runErrs) {
+			return 0
+		}
+		outcome := outcomes[index]
+		if !agentruntime.IsDesignerAgentName(outcome.RequestedSubagent) || outcome.ArtifactReference == nil {
+			return 0
+		}
+		if runErrs[index] == nil {
+			if outcome.ArtifactReference.Status != pebblestore.SessionArtifactStatusReady {
+				return 0
+			}
+			hasSuccessfulReadyArtifact = true
+			continue
+		}
+		if outcome.ArtifactReference.Status != pebblestore.SessionArtifactStatusFailed || outcome.ArtifactReference.FailureCode != "animation_inspection_failed" || strings.TrimSpace(outcome.ReportExcerpt) == "" {
+			return 0
+		}
+		count++
+	}
+	if !hasSuccessfulReadyArtifact {
+		return 0
+	}
+	return count
 }
 
 func taskAssemblyIntegrationState(strategy string, successCount, failedCount, cancelledCount, outcomeCount int) (required bool, status string, readyForDependentWork bool) {

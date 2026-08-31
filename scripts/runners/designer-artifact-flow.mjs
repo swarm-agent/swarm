@@ -13,10 +13,15 @@ const apiURL = String(option('--api-url', process.env.SWARM_RUNNER_API_URL || ''
 const provider = String(option('--provider', process.env.SWARM_RUNNER_PROVIDER || 'codex')).trim().toLowerCase()
 const modelOverride = String(option('--model', process.env.SWARM_RUNNER_MODEL || '')).trim()
 const thinkingOverride = String(option('--thinking', process.env.SWARM_RUNNER_THINKING || 'high')).trim().toLowerCase()
+const actionModel = String(option('--action-model', process.env.SWARM_RUNNER_ACTION_MODEL || '')).trim()
+const actionThinking = String(option('--action-thinking', process.env.SWARM_RUNNER_ACTION_THINKING || thinkingOverride)).trim().toLowerCase()
+const designerModel = String(option('--designer-model', process.env.SWARM_RUNNER_DESIGNER_MODEL || '')).trim()
+const designerThinking = String(option('--designer-thinking', process.env.SWARM_RUNNER_DESIGNER_THINKING || thinkingOverride)).trim().toLowerCase()
 const timeoutMs = Number(option('--timeout-ms', process.env.SWARM_RUNNER_TIMEOUT_MS || '600000'))
 const heartbeatMs = 15000
 const workspacePathOverride = String(option('--workspace-path', process.env.SWARM_RUNNER_WORKSPACE_PATH || '')).trim()
 const suppliedToken = String(process.env.SWARM_RUNNER_TOKEN || '').trim()
+const selfTest = argv.includes('--self-test')
 const stage = String(option('--stage', process.env.SWARM_RUNNER_STAGE || 'all')).trim().toLowerCase()
 const sessionOverride = String(option('--session-id', process.env.SWARM_RUNNER_SESSION_ID || '')).trim()
 const sourceSessionOverride = String(option('--source-session-id', process.env.SWARM_RUNNER_SOURCE_SESSION_ID || '')).trim()
@@ -24,11 +29,13 @@ const sourceCollectionOverride = String(option('--source-collection-id', process
 const sourceVariantOverride = String(option('--source-variant-id', process.env.SWARM_RUNNER_SOURCE_VARIANT_ID || '')).trim()
 const sourceEventSeqOverride = Number(option('--source-event-seq', process.env.SWARM_RUNNER_SOURCE_EVENT_SEQ || '0'))
 
-if (!apiURL || !/^https?:\/\//.test(apiURL)) throw new Error('--api-url must be an http or https URL')
+if (!selfTest && (!apiURL || !/^https?:\/\//.test(apiURL))) throw new Error('--api-url must be an http or https URL')
 if (!provider || !/^[a-z0-9._-]+$/.test(provider)) throw new Error('--provider is invalid')
 if (!Number.isFinite(timeoutMs) || timeoutMs < 300000 || timeoutMs > 600000) throw new Error('--timeout-ms must be between 300000 and 600000; split longer proofs into resumable stages')
-if (!['root', 'focused', 'grouping', 'pinning', 'multi2', 'multi3', 'multi23', 'whole', 'managed', 'workspace', 'all'].includes(stage)) throw new Error('--stage must be root, focused, grouping, pinning, multi2, multi3, multi23, whole, managed, workspace, or all')
-if (!['root', 'all', 'multi2', 'multi3', 'multi23'].includes(stage) && !sessionOverride) throw new Error('--session-id is required for this resumed stage')
+if (!['root', 'regular3', 'focused', 'grouping', 'pinning', 'multi2', 'multi3', 'multi23', 'whole', 'managed', 'workspace', 'all'].includes(stage)) throw new Error('--stage must be root, regular3, focused, grouping, pinning, multi2, multi3, multi23, whole, managed, workspace, or all')
+if (!['root', 'regular3', 'all', 'multi2', 'multi3', 'multi23'].includes(stage) && !sessionOverride) throw new Error('--session-id is required for this resumed stage')
+if (stage === 'regular3' && (!actionModel || !designerModel)) throw new Error('regular3 requires --action-model and --designer-model from the canonical testbench wrapper')
+if (![thinkingOverride, actionThinking, designerThinking].every((value) => ['low', 'medium', 'high', 'xhigh'].includes(value))) throw new Error('thinking levels must be low, medium, high, or xhigh')
 if (['multi2', 'multi3', 'multi23'].includes(stage) && (!sourceSessionOverride || !sourceCollectionOverride || !sourceVariantOverride || !Number.isInteger(sourceEventSeqOverride) || sourceEventSeqOverride <= 0)) throw new Error('multi-target stages require --source-session-id, --source-collection-id, --source-variant-id, and --source-event-seq')
 
 const testID = `designer-artifact-flow-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`
@@ -42,6 +49,7 @@ const partContract = [
 const commonGates = ['provider_runnable', 'model_selected', 'workspace_bound', 'session_created']
 const stageGates = {
   root: [...commonGates, 'root_single_html', 'root_three_parts'],
+  regular3: [...commonGates, 'models_configured', 'regular_three_ready', 'regular_one_wave', 'regular_three_parts', 'regular_distinct_outputs', 'regular_no_failures', 'models_restored'],
   focused: [...commonGates, 'root_single_html', 'root_three_parts', 'focused_five_ready', 'focused_lineage', 'focused_grouping'],
   grouping: [...commonGates, 'iteration_groups_durable'],
   pinning: [...commonGates, 'in_progress_pin_durable'],
@@ -74,9 +82,21 @@ const result = {
 }
 let token = suppliedToken
 let assignment = null
+let originalSwarmSettings = null
+let originalDesignerSettings = null
+let modelSettingsChanged = false
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 const log = (message) => process.stderr.write(`[designer-artifact-flow] ${message}\n`)
+const regular3Prompt = () => [
+  `Create exactly three different managed animated HTML concepts for live E2E ${testID}.`,
+  'Use one regular task wave with exactly three managed Designer launches, not an Iteration Swarm, Task Program, sequential launches, or replacement launches.',
+  'Give the launches distinct assignments: orbital signal system, kinetic typographic relay, and modular architecture assembly.',
+  'Every Designer must independently publish exactly one self-contained single-file text/html animation using animation_profile motion_ui.',
+  'Every animation must use swarm.animation/v1 with duration_ms 12000 and fps 30 plus swarm.iteration/v1 with exactly three ordered temporal sections: part-1 "Part 1 · Opening" 0-4000ms; part-2 "Part 2 · Transformation" 4000-8000ms; part-3 "Part 3 · Resolution" 8000-12000ms.',
+  'Each assignment must explicitly require a parser-time runtime, shared deterministic renderAt/ready/seek/stop timeline, self-starting scheduler, swarm-player/v1 bridge, and strict 1920x1080 viewport containment.',
+  'Wait for that one task call to return all three ready exact artifact references, then finish successfully. Do not export, create a video project, relaunch a successful or failed slot, or make any additional managed artifact.',
+].join(' ')
 const fail = (message) => {
   result.failures.push(message)
   throw new Error(message)
@@ -149,6 +169,25 @@ function hasPartContract(item) {
 
 function terminalStatus(status) {
   return ['completed', 'failed', 'cancelled', 'expired', 'interrupted'].includes(String(status || '').trim().toLowerCase())
+}
+
+function canonicalWorkspaceBinding(bindings, workspaces, workspaceOverride = '') {
+  const byID = new Map((workspaces || []).filter((entry) =>
+    String(entry?.workspace_id || '').trim()
+      && Number(entry?.workspace_generation || 0) > 0
+      && String(entry?.state || '').trim().toLowerCase() === 'active'
+      && String(entry?.path || '').trim())
+    .map((entry) => [String(entry.workspace_id).trim(), entry]))
+  const requestedPath = String(workspaceOverride || '').trim()
+  return (bindings || []).find((binding) => {
+    if (String(binding?.state || '').trim().toLowerCase() !== 'bound' || !String(binding?.workspace_binding_id || '').trim()) return false
+    const workspace = byID.get(String(binding?.source_workspace_id || '').trim())
+    if (!workspace) return false
+    const sourcePath = String(binding?.source_workspace_path || '').trim()
+    if (!sourcePath || path.resolve(sourcePath) !== path.resolve(String(workspace.path || ''))) return false
+    if (Number(binding?.source_workspace_generation || 0) !== Number(workspace.workspace_generation || 0)) return false
+    return !requestedPath || path.resolve(requestedPath) === path.resolve(sourcePath) || path.resolve(requestedPath) === path.resolve(String(binding?.destination_workspace_path || ''))
+  }) || null
 }
 
 async function hydrate(sessionID) {
@@ -238,6 +277,29 @@ async function catalog(sessionID) {
   return response.body?.artifacts || []
 }
 
+async function bootstrapSessions() {
+  const response = await api('POST', '/v3/sync/bootstrap', {
+    surface: 'desktop',
+    selector: { kind: 'global', global: true, recent: { limit: 200 } },
+    history: { mode: 'none' },
+    resources: { messages: false, events: false, run_intents: false, current_run_state: true, active_plan: true, plan_revisions: false, permission_summaries: true },
+    include_active: true,
+  }, 'bootstrap delegated Designer sessions')
+  return response.body || {}
+}
+
+function delegatedDesigners(bootstrap, parentID) {
+  return Object.values(bootstrap.sessions_by_id || {}).filter((session) =>
+    String(session?.metadata?.parent_session_id || '') === parentID &&
+    String(session?.metadata?.lineage_kind || '') === 'delegated_subagent' &&
+    String(session?.metadata?.requested_subagent || '').trim().toLowerCase() === 'designer')
+}
+
+async function artifactDigest(sessionID, artifactID) {
+  const response = await api('GET', `/v3/sessions/${encodeURIComponent(sessionID)}/artifacts/${encodeURIComponent(artifactID)}`, undefined, `read artifact ${artifactID}`)
+  return crypto.createHash('sha256').update(response.text).digest('hex')
+}
+
 async function waitForArtifacts(sessionID, predicate, count, label) {
   const startedAt = Date.now()
   const deadline = stageDeadline
@@ -271,15 +333,24 @@ async function selectModel() {
 
   const response = await api('GET', `/v1/model/catalog?provider=${encodeURIComponent(provider)}&limit=500`, undefined, 'read model catalog')
   const records = response.body?.records || []
-  let record = modelOverride ? records.find((candidate) => String(candidate?.model || '') === modelOverride) : null
-  if (!record) {
+  const selectedModel = stage === 'regular3' ? actionModel : modelOverride
+  const selectedThinking = stage === 'regular3' ? actionThinking : thinkingOverride
+  let record = selectedModel ? records.find((candidate) => String(candidate?.model || '') === selectedModel) : null
+  if (!record && stage !== 'regular3') {
     record = records.find((candidate) => (candidate?.recommendations || []).some((rec) => ['auto', 'main'].includes(String(rec?.role || '').toLowerCase()))) || records[0]
   }
-  assert(record?.model, `no model available for ${provider}`)
+  assert(record?.model, selectedModel ? `model catalog does not contain ${provider}/${selectedModel}` : `no model available for ${provider}`)
   const thinkingOptions = Array.isArray(record.thinking_options) ? record.thinking_options.map((value) => String(value).toLowerCase()) : []
-  const thinking = thinkingOptions.includes(thinkingOverride) ? thinkingOverride : String(record.default_thinking || thinkingOptions[0] || 'low').toLowerCase()
+  const thinking = thinkingOptions.includes(selectedThinking) ? selectedThinking : String(record.default_thinking || thinkingOptions[0] || 'low').toLowerCase()
   assignment = { provider, model: String(record.model), thinking }
   result.model = assignment
+  if (stage === 'regular3') {
+    const designerRecord = records.find((candidate) => String(candidate?.model || '') === designerModel)
+    assert(designerRecord?.model, `model catalog does not contain ${provider}/${designerModel} for Designer`)
+    const designerOptions = Array.isArray(designerRecord.thinking_options) ? designerRecord.thinking_options.map((value) => String(value).toLowerCase()) : []
+    const resolvedDesignerThinking = designerOptions.includes(designerThinking) ? designerThinking : String(designerRecord.default_thinking || designerOptions[0] || 'low').toLowerCase()
+    result.model = { action: assignment, designer: { provider, model: String(designerRecord.model), thinking: resolvedDesignerThinking } }
+  }
   result.gates.model_selected = true
 }
 
@@ -290,15 +361,28 @@ async function main() {
     assert(token, 'desktop authentication returned no token')
   }
   await selectModel()
+  if (stage === 'regular3') {
+    const settings = (await api('GET', '/v1/agent-model-settings', undefined, 'read Designer flow model settings')).body?.agent_model_settings || {}
+    originalSwarmSettings = settings.swarm || null
+    originalDesignerSettings = settings.system_agents?.designer || null
+    assert(originalSwarmSettings && originalDesignerSettings, 'canonical Swarm or Designer model setting is missing')
+    modelSettingsChanged = true
+    await api('PATCH', '/v1/agent-model-settings', { swarm: { action: assignment, plan: originalSwarmSettings.plan || assignment } }, 'configure regular3 Swarm model')
+    await api('PATCH', '/v1/agent-model-settings', { system_agents: { designer: result.model.designer } }, 'configure regular3 Designer model')
+    const configured = (await api('GET', '/v1/agent-model-settings', undefined, 'verify regular3 model settings')).body?.agent_model_settings || {}
+    assert(configured?.swarm?.action?.model === assignment.model && configured?.system_agents?.designer?.model === result.model.designer.model, 'regular3 model settings did not persist')
+    result.gates.models_configured = true
+  }
 
   const topology = (await api('GET', '/v1/swarm/topology', undefined, 'read topology')).body || {}
+  const workspaceCatalog = (await api('GET', '/v1/workspace/list?limit=200', undefined, 'read workspace catalog')).body?.workspaces || []
   const runtime = (topology.runtimes || []).find((item) => item?.relationship === 'self') || (topology.runtimes || [])[0]
   const bindings = topology.workspace_bindings || []
-  const binding = workspacePathOverride
-    ? bindings.find((item) => item?.source_workspace_path === workspacePathOverride || item?.destination_workspace_path === workspacePathOverride)
-    : bindings.find((item) => item?.state === 'bound' && item?.workspace_binding_id) || bindings[0]
+  const binding = canonicalWorkspaceBinding(bindings, workspaceCatalog, workspacePathOverride)
   assert(runtime?.swarm_id, 'topology has no self runtime')
-  assert(binding?.workspace_binding_id, 'topology has no bound workspace')
+  assert(binding?.workspace_binding_id, workspacePathOverride
+    ? `topology has no current canonical bound workspace for ${workspacePathOverride}`
+    : 'topology has no current canonical bound workspace; stale source workspace generations are not eligible')
   const workspacePath = String(binding.source_workspace_path || binding.destination_workspace_path || '')
   assert(workspacePath, 'workspace binding has no path')
   result.ids.workspace_binding_id = binding.workspace_binding_id
@@ -306,7 +390,7 @@ async function main() {
   result.gates.workspace_bound = true
 
   let sessionID = sessionOverride
-  const createStageSession = !sessionID && (stage === 'root' || stage === 'all' || stage === 'multi2' || stage === 'multi3' || stage === 'multi23')
+  const createStageSession = !sessionID && (stage === 'root' || stage === 'regular3' || stage === 'all' || stage === 'multi2' || stage === 'multi3' || stage === 'multi23')
   if (createStageSession) {
     const created = await api('POST', '/v3/sessions', {
       client_request_id: `${testID}:create`,
@@ -332,6 +416,38 @@ async function main() {
   result.ids.session_id = sessionID
   result.ids.desktop_path = `/${slug(binding.source_workspace_name || 'workspace')}/${sessionID}`
   result.gates.session_created = true
+
+  if (stage === 'regular3') {
+    const before = delegatedDesigners(await bootstrapSessions(), sessionID)
+    assert(before.length === 0, `fresh regular3 session already has ${before.length} delegated Designer child session(s)`)
+    await postTurn(sessionID, 'regular3', regular3Prompt())
+    const artifacts = await catalog(sessionID)
+    const candidates = artifacts.filter((item) => item?.session_id === sessionID && item?.media_type === 'text/html' && String(item?.lineage?.task_call_id || '').trim())
+    const ready = candidates.filter((item) => item?.status === 'ready')
+    const failed = candidates.filter((item) => item?.status === 'failed' || item?.status === 'unavailable')
+    assert(ready.length === 3, `regular3 produced ${ready.length}/3 ready animations; candidates=${candidates.map((item) => `${item?.artifact_id || 'unknown'}:${item?.status || 'unknown'}:${item?.failure_code || 'none'}`).join(',') || 'none'}`)
+    assert(failed.length === 0, `regular3 recorded failed/unavailable managed candidates: ${failed.map((item) => `${item?.artifact_id}:${item?.failure_code || item?.status}`).join(',')}`)
+    assert(ready.every(hasPartContract), 'regular3 did not preserve the exact three-part temporal contract in every animation')
+    const taskCalls = new Set(ready.map((item) => String(item?.lineage?.task_call_id || '').trim()).filter(Boolean))
+    const childIDs = new Set(ready.map((item) => String(item?.lineage?.child_session_id || '').trim()).filter(Boolean))
+    assert(taskCalls.size === 1, `regular3 artifacts came from ${taskCalls.size} task calls instead of one`)
+    assert(childIDs.size === 3, `regular3 artifacts came from ${childIDs.size} child sessions instead of three`)
+    const taskCallID = [...taskCalls][0]
+    const children = delegatedDesigners(await bootstrapSessions(), sessionID)
+    const waveChildren = children.filter((child) => String(child?.metadata?.parent_task_call_id || '') === taskCallID)
+    const artifactChildIDs = new Set([...childIDs])
+    assert(children.length === 3 && waveChildren.length === 3, `regular3 created ${children.length} Designer children total and ${waveChildren.length} in the artifact task call; want exactly three once`)
+    assert(waveChildren.every((child) => artifactChildIDs.has(String(child?.id || ''))), 'regular3 task-call children do not exactly match artifact child lineage')
+    const digests = await Promise.all(ready.map((item) => artifactDigest(sessionID, item.artifact_id)))
+    assert(new Set(digests).size === 3, `regular3 animations are not byte-distinct: ${digests.join(',')}`)
+    result.rounds.regular3 = ready.map((item, index) => ({ reference: exactRef(item), digest_sha256: digests[index], child_session_id: item?.lineage?.child_session_id, task_call_id: item?.lineage?.task_call_id, parts: item.parts }))
+    result.gates.regular_three_ready = true
+    result.gates.regular_one_wave = true
+    result.gates.regular_three_parts = true
+    result.gates.regular_distinct_outputs = true
+    result.gates.regular_no_failures = true
+    return
+  }
 
   if (stage === 'grouping' || stage === 'pinning') {
     const artifacts = (await catalog(sessionID)).filter((item) => item?.session_id === sessionID || item?.lineage?.parent_session_id === sessionID)
@@ -564,11 +680,38 @@ async function main() {
 }
 
 try {
-  await main()
+  if (selfTest) {
+    assert(stage === 'regular3', '--self-test requires --stage regular3')
+    const prompt = regular3Prompt()
+    assert(prompt.includes('one regular task wave with exactly three managed Designer launches'), 'regular3 prompt lost one-wave topology')
+    assert(prompt.includes('orbital signal system') && prompt.includes('kinetic typographic relay') && prompt.includes('modular architecture assembly'), 'regular3 prompt lost distinct assignments')
+    assert(partContract.length === 3 && prompt.includes('part-1') && prompt.includes('part-2') && prompt.includes('part-3'), 'regular3 prompt lost three-part contract')
+    const workspace = { workspace_id: 'workspace-live', workspace_generation: 2, state: 'active', path: '/workspace/live' }
+    const stale = { workspace_binding_id: 'binding-stale', source_workspace_id: workspace.workspace_id, source_workspace_generation: 1, source_workspace_path: workspace.path, destination_workspace_path: workspace.path, state: 'bound' }
+    const current = { ...stale, workspace_binding_id: 'binding-live', source_workspace_generation: 2 }
+    assert(canonicalWorkspaceBinding([stale, current], [workspace])?.workspace_binding_id === 'binding-live', 'regular3 workspace selection did not exclude a stale source generation')
+    result.gates = Object.fromEntries(requiredGates.map((gate) => [gate, true]))
+    result.result = 'PASS'
+  } else {
+    await main()
+  }
 } catch (error) {
   result.error = error?.stack || String(error)
   log(result.error)
 } finally {
+  let restoreFailed = false
+  if (modelSettingsChanged) {
+    try {
+      if (originalDesignerSettings) await api('PATCH', '/v1/agent-model-settings', { system_agents: { designer: originalDesignerSettings } }, 'restore Designer model setting')
+      if (originalSwarmSettings) await api('PATCH', '/v1/agent-model-settings', { swarm: originalSwarmSettings }, 'restore Swarm model setting')
+    } catch (error) {
+      result.failures.push(`failed to restore model settings: ${error?.message || error}`)
+      restoreFailed = true
+    }
+    if (!restoreFailed) result.gates.models_restored = true
+  }
+  if (stage === 'regular3' && !restoreFailed && requiredGates.every((gate) => result.gates[gate] === true)) result.result = 'PASS'
+  if (restoreFailed) result.result = 'NOT_DONE'
   result.completed_at = new Date().toISOString()
   result.failed_gates = requiredGates.filter((gate) => result.gates[gate] !== true)
   process.stdout.write(`${JSON.stringify(result, null, 2)}\n`)
