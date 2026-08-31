@@ -31,7 +31,7 @@ func artifactV2PolicyFromLaunch(spec taskLaunchSpec) artifactv2.PolicySnapshot {
 	}
 	if profile := spec.AnimationProfile; profile != nil {
 		policy.AnimationProfile = strings.TrimSpace(profile.ProfileID)
-		policy.Revision = strings.TrimSpace(strings.Join([]string{policy.Revision, profile.RegistryVersion}, "+"))
+		policy.Revision = strings.TrimSpace(strings.Join([]string{policy.Revision, policy.AnimationProfile, profile.RegistryVersion}, "+"))
 	}
 	return policy
 }

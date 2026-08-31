@@ -3,6 +3,7 @@ package run
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	agentruntime "swarm/packages/swarmd/internal/agent"
@@ -34,7 +35,7 @@ func TestManagedDesignerAllocationUsesArtifactV2WithoutLegacyPlaceholder(t *test
 	runtime.SetArtifactV2AuthorService(artifactv2.NewAuthorService(core, nil, nil))
 	svc := &Service{sessions: sessions, tools: runtime}
 	parent, _, _ := sessions.GetSession("parent")
-	specs := []taskLaunchSpec{{RequestedSubagentType: "designer", OutputMode: taskOutputModeManaged, MetaPrompt: "regular"}, {RequestedSubagentType: "designer", OutputMode: taskOutputModeManaged, MetaPrompt: "swarm", SwarmMode: true}}
+	specs := []taskLaunchSpec{{RequestedSubagentType: "designer", OutputMode: taskOutputModeManaged, MetaPrompt: "regular", AnimationProfile: &pebblestore.SessionArtifactAnimationProfile{ProfileID: "motion_ui", RegistryVersion: "animation-v1"}}, {RequestedSubagentType: "designer", OutputMode: taskOutputModeManaged, MetaPrompt: "swarm", SwarmMode: true}}
 	contexts, iteration, err := svc.allocateManagedDesignerArtifactV2(context.Background(), parent, "task-call", specs)
 	if err != nil {
 		t.Fatal(err)
@@ -45,6 +46,9 @@ func TestManagedDesignerAllocationUsesArtifactV2WithoutLegacyPlaceholder(t *test
 	for index, author := range contexts {
 		if author == nil || author.Grant.ArtifactID == "" || author.Grant.OwnerSessionID != parent.ID || !author.Grant.AllowPartDeclaration {
 			t.Fatalf("context[%d]=%+v", index, author)
+		}
+		if index == 0 && (author.Grant.Policy.AnimationProfile != "motion_ui" || !strings.Contains(author.Grant.Policy.Revision, "motion_ui")) {
+			t.Fatalf("animation policy identity was not captured: %+v", author.Grant.Policy)
 		}
 		working, ok, err := sessions.GetArtifactV2Working(parent.AccountScopeID, author.Grant.ArtifactID)
 		if err != nil || !ok || working.State != pebblestore.ArtifactV2StateAllocated {
