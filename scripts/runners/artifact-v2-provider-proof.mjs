@@ -4,11 +4,13 @@ import crypto from 'node:crypto'
 const argv = process.argv.slice(2)
 const option = (name, fallback = '') => { const index = argv.indexOf(name); return index >= 0 && index + 1 < argv.length ? argv[index + 1] : fallback }
 const apiURL = String(option('--api-url', process.env.SWARM_RUNNER_API_URL || '')).replace(/\/$/, '')
-const provider = String(option('--provider', process.env.SWARM_RUNNER_PROVIDER || 'codex')).trim().toLowerCase()
-const actionModel = String(option('--action-model', process.env.SWARM_RUNNER_ACTION_MODEL || '')).trim()
+const proofProvider = 'fireworks'
+const proofModel = 'deepseek-v4-flash-0731'
+const provider = String(option('--provider', process.env.SWARM_RUNNER_PROVIDER || proofProvider)).trim().toLowerCase()
+const actionModel = String(option('--action-model', process.env.SWARM_RUNNER_ACTION_MODEL || proofModel)).trim()
 const actionThinking = String(option('--action-thinking', process.env.SWARM_RUNNER_ACTION_THINKING || 'high')).trim().toLowerCase()
-const designerModel = String(option('--designer-model', process.env.SWARM_RUNNER_DESIGNER_MODEL || '')).trim()
-const designerThinking = String(option('--designer-thinking', process.env.SWARM_RUNNER_DESIGNER_THINKING || 'high')).trim().toLowerCase()
+const designerModel = String(option('--designer-model', process.env.SWARM_RUNNER_DESIGNER_MODEL || proofModel)).trim()
+const designerThinking = String(option('--designer-thinking', process.env.SWARM_RUNNER_DESIGNER_THINKING || 'off')).trim().toLowerCase()
 const workspacePathOverride = String(option('--workspace-path', process.env.SWARM_RUNNER_WORKSPACE_PATH || '')).trim()
 const timeoutMs = Number(option('--timeout-ms', process.env.SWARM_RUNNER_TIMEOUT_MS || '600000'))
 const stage = String(option('--stage', process.env.SWARM_RUNNER_STAGE || 'single1')).trim().toLowerCase()
@@ -17,13 +19,13 @@ const suppliedToken = String(process.env.SWARM_RUNNER_TOKEN || '').trim()
 if (!apiURL || !/^https?:\/\//.test(apiURL)) throw new Error('--api-url must be an http or https URL')
 if (!['single1', 'single2', 'iteration3'].includes(stage)) throw new Error('--stage must be single1, single2, or iteration3')
 if (stage === 'iteration3' && !sessionOverride) throw new Error('--session-id is required for iteration3')
-if (!actionModel || !designerModel) throw new Error('--action-model and --designer-model are required')
+if (provider !== proofProvider || actionModel !== proofModel || designerModel !== proofModel) throw new Error(`artifact-v2-provider-proof is pinned to ${proofProvider}/${proofModel} for both Swarm and Designer`)
 if (!Number.isFinite(timeoutMs) || timeoutMs < 300000 || timeoutMs > 600000) throw new Error('--timeout-ms must be between 300000 and 600000')
 
 const testID = `artifact-v2-provider-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`
 const deadline = Date.now() + timeoutMs
 const heartbeatMs = 15000
-const result = { result: 'NOT_DONE', test: 'artifact-v2-provider-proof', test_id: testID, stage, started_at: new Date().toISOString(), ids: {}, model: {}, journeys: [], pixel_inspections: [], conversion: {}, gates: {}, failures: [] }
+const result = { result: 'NOT_DONE', test: 'artifact-v2-provider-proof', test_id: testID, stage, started_at: new Date().toISOString(), provider_policy: { provider: proofProvider, swarm_model: proofModel, designer_model: proofModel }, ids: {}, model: {}, journeys: [], pixel_inspections: [], conversion: {}, gates: {}, failures: [] }
 let token = suppliedToken
 let originalSwarm = null
 let originalDesigner = null
