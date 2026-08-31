@@ -40,7 +40,7 @@ export function sidebarTaskCallPresentationGroups<T extends SidebarTaskCallNode>
   const groups: T[][] = []
   for (const node of nodes) {
     const taskCallId = node.kind === 'subagent' ? node.taskCallId?.trim() ?? '' : ''
-    const previous = groups.at(-1)
+    const previous = groups[groups.length - 1]
     if (taskCallId && previous?.[0]?.taskCallId?.trim() === taskCallId) {
       previous.push(node)
     } else {
