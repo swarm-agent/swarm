@@ -93,6 +93,31 @@ func TestManageArtifactToolOutputIsStructured(t *testing.T) {
 	}
 }
 
+// Requirement: a managed Designer handoff must distinguish a concrete render
+// failure from a trusted-lineage rejection so the parent can correct the actual
+// defect without weakening artifact authority. This unit layer is the narrowest
+// proof because the classification is owned by service_tools.go after the
+// artifact authority returns the immutable variant.
+func TestManagedDesignerArtifactHandoffErrorDistinguishesFailureFromLineage(t *testing.T) {
+	run := &tool.ArtifactRunContext{CollectionID: "collection", VariantID: "variant"}
+	failed := pebblestore.SessionArtifactVariant{
+		ID: "variant", CollectionID: "collection", Status: pebblestore.SessionArtifactStatusFailed, FailureCode: "animation_viewport_overflow",
+	}
+	if err := managedDesignerArtifactHandoffError(failed, run, true, true); err == nil || !strings.Contains(err.Error(), `failure_code "animation_viewport_overflow"`) || strings.Contains(err.Error(), "lineage") {
+		t.Fatalf("concrete artifact failure classification = %v", err)
+	}
+
+	ready := failed
+	ready.Status = pebblestore.SessionArtifactStatusReady
+	ready.FailureCode = ""
+	if err := managedDesignerArtifactHandoffError(ready, run, false, true); err == nil || !strings.Contains(err.Error(), "invalid trusted lineage") {
+		t.Fatalf("lineage mismatch classification = %v", err)
+	}
+	if err := managedDesignerArtifactHandoffError(ready, run, true, false); err == nil || !strings.Contains(err.Error(), "invalid trusted composition") {
+		t.Fatalf("composition mismatch classification = %v", err)
+	}
+}
+
 func TestManagedAnimatedDesignerPromptRequiresTrustedPreflightAndThreeFrameInspection(t *testing.T) {
 	prompt := buildTaskDelegationPrompt(taskDelegationPromptConfig{
 		RequestedSubagent:  "designer",

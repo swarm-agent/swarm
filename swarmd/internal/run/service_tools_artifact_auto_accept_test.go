@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	"swarm/packages/swarmd/internal/artifact"
@@ -23,6 +24,61 @@ func TestManagedDesignerArtifactContextAutoAcceptsRegularButNotSwarmOutputs(t *t
 	swarm := managedDesignerArtifactContext(parent, "swarm-call", taskLaunchSpec{RequestedSubagentType: "designer", OutputMode: taskOutputModeManaged, SwarmMode: true}, 1)
 	if swarm == nil || swarm.AutoAccept {
 		t.Fatalf("swarm managed context = %+v, want explicit multi-variant selection", swarm)
+	}
+}
+
+// Requirement: an author-correctable managed Designer failure may allocate one
+// fresh immutable destination without mutating the failed candidate, changing
+// collection ownership, or weakening the trusted child/task lineage.
+func TestAllocateManagedDesignerRefinementContextPreservesFailedCandidate(t *testing.T) {
+	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "refinement.pebble"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	events, err := pebblestore.NewEventLog(store)
+	if err != nil {
+		t.Fatalf("open event log: %v", err)
+	}
+	sessions := sessionruntime.NewService(pebblestore.NewSessionStore(store), events)
+	parent, _, err := sessions.CreateSessionWithOptions(sessionruntime.CreateSessionOptions{
+		SessionID: "refinement-parent", UserID: "user-1", AccountScopeID: "account-1",
+		Title: "Refinement parent", WorkspacePath: t.TempDir(), WorkspaceName: "workspace", Mode: sessionruntime.ModeAuto,
+		Preference: &pebblestore.ModelPreference{Provider: "codex", Model: "test-model", Thinking: "high"},
+	})
+	if err != nil {
+		t.Fatalf("create parent: %v", err)
+	}
+	spec := taskLaunchSpec{RequestedSubagentType: "designer", OutputMode: taskOutputModeManaged}
+	failedRun := managedDesignerArtifactContext(parent, "refinement-call", spec, 1)
+	failedRun.ChildSessionID = "designer-child"
+	service := &Service{sessions: sessions}
+	if _, err := service.ensureManagedDesignerArtifactCollection(parent, "refinement-call", []taskLaunchSpec{spec}, nil); err != nil {
+		t.Fatalf("allocate collection: %v", err)
+	}
+	if err := service.ensureManagedDesignerArtifactPlaceholders(parent, []taskLaunchPrepared{{LaunchIndex: 1, RequestedSubagent: "designer", OutputMode: taskOutputModeManaged, ChildSession: pebblestore.SessionSnapshot{ID: failedRun.ChildSessionID}, ArtifactRunContext: failedRun}}, nil); err != nil {
+		t.Fatalf("allocate initial placeholder: %v", err)
+	}
+	service.markManagedDesignerArtifactFailed(parent, failedRun, failedRun.ChildSessionID, "animation_viewport_overflow")
+
+	refined, err := service.allocateManagedDesignerRefinementContext(pebblestore.SessionSnapshot{ID: failedRun.ChildSessionID}, failedRun, nil)
+	if err != nil {
+		t.Fatalf("allocate refinement: %v", err)
+	}
+	if refined.CollectionID != failedRun.CollectionID || refined.VariantID == failedRun.VariantID || refined.ArtifactStepID == failedRun.ArtifactStepID || refined.ChildSessionID != failedRun.ChildSessionID || refined.TaskCallID != failedRun.TaskCallID || !reflect.DeepEqual(refined.AnimationProfile, failedRun.AnimationProfile) {
+		t.Fatalf("refined context changed trusted contract: failed=%+v refined=%+v", failedRun, refined)
+	}
+	failed, ok, err := sessions.GetSessionArtifactVariant(parent.AccountScopeID, parent.ID, failedRun.CollectionID, failedRun.VariantID)
+	if err != nil || !ok || failed.Status != pebblestore.SessionArtifactStatusFailed || failed.FailureCode != "animation_viewport_overflow" {
+		t.Fatalf("failed candidate was rewritten: ok=%t err=%v variant=%+v", ok, err, failed)
+	}
+	placeholder, ok, err := sessions.GetSessionArtifactVariant(parent.AccountScopeID, parent.ID, refined.CollectionID, refined.VariantID)
+	if err != nil || !ok || placeholder.Status != pebblestore.SessionArtifactStatusStaging || placeholder.Lineage.ChildSessionID != failedRun.ChildSessionID || placeholder.Lineage.TaskCallID != failedRun.TaskCallID {
+		t.Fatalf("refinement placeholder = %+v ok=%t err=%v", placeholder, ok, err)
+	}
+	second, err := service.allocateManagedDesignerRefinementContext(parent, failedRun, nil)
+	if err != nil || second.VariantID != refined.VariantID {
+		t.Fatalf("refinement allocation is not idempotent: second=%+v err=%v", second, err)
 	}
 }
 
