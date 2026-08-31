@@ -1104,6 +1104,7 @@ func sessionsV3SyncShellMetadataKeyAllowed(key string) bool {
 		"lineage_kind",
 		"lineage_label",
 		"assignment_label",
+		"parent_task_call_id",
 		"subagent",
 		"requested_subagent",
 		"background",
