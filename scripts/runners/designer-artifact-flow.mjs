@@ -35,7 +35,7 @@ if (!Number.isFinite(timeoutMs) || timeoutMs < 300000 || timeoutMs > 600000) thr
 if (!['root', 'regular3', 'focused', 'grouping', 'pinning', 'multi2', 'multi3', 'multi23', 'whole', 'managed', 'workspace', 'all'].includes(stage)) throw new Error('--stage must be root, regular3, focused, grouping, pinning, multi2, multi3, multi23, whole, managed, workspace, or all')
 if (!['root', 'regular3', 'all', 'multi2', 'multi3', 'multi23'].includes(stage) && !sessionOverride) throw new Error('--session-id is required for this resumed stage')
 if (stage === 'regular3' && (!actionModel || !designerModel)) throw new Error('regular3 requires --action-model and --designer-model from the canonical testbench wrapper')
-if (![thinkingOverride, actionThinking, designerThinking].every((value) => ['low', 'medium', 'high', 'xhigh'].includes(value))) throw new Error('thinking levels must be low, medium, high, or xhigh')
+if (![thinkingOverride, actionThinking, designerThinking].every((value) => ['off', 'low', 'medium', 'high', 'xhigh'].includes(value))) throw new Error('thinking levels must be off, low, medium, high, or xhigh')
 if (['multi2', 'multi3', 'multi23'].includes(stage) && (!sourceSessionOverride || !sourceCollectionOverride || !sourceVariantOverride || !Number.isInteger(sourceEventSeqOverride) || sourceEventSeqOverride <= 0)) throw new Error('multi-target stages require --source-session-id, --source-collection-id, --source-variant-id, and --source-event-seq')
 
 const testID = `designer-artifact-flow-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`
@@ -693,6 +693,7 @@ try {
     const stale = { workspace_binding_id: 'binding-stale', source_workspace_id: workspace.workspace_id, source_workspace_generation: 1, source_workspace_path: workspace.path, destination_workspace_path: workspace.path, state: 'bound' }
     const current = { ...stale, workspace_binding_id: 'binding-live', source_workspace_generation: 2 }
     assert(canonicalWorkspaceBinding([stale, current], [workspace])?.workspace_binding_id === 'binding-live', 'regular3 workspace selection did not exclude a stale source generation')
+    assert(['off', 'low', 'medium', 'high', 'xhigh'].includes(designerThinking), 'regular3 rejected a canonical Designer thinking setting')
     result.gates = Object.fromEntries(requiredGates.map((gate) => [gate, true]))
     result.result = 'PASS'
   } else {

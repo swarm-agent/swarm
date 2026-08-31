@@ -21,7 +21,7 @@ if (!apiURL || !/^https?:\/\//.test(apiURL)) throw new Error('--api-url must be 
 if (!provider || !/^[a-z0-9._-]+$/.test(provider)) throw new Error('--provider is required and must contain only letters, numbers, dots, underscores, or dashes')
 if (!Number.isFinite(timeoutMs) || timeoutMs < 30000) throw new Error('--timeout-ms must be at least 30000')
 if (!actionModel || !planModel) throw new Error('--action-model and --plan-model are required; use scripts/run-testbench-runner.sh so the ignored .env supplies the explicit Fireworks role models')
-if (![actionThinking, planThinking].every((value) => ['low', 'medium', 'high', 'xhigh'].includes(value))) throw new Error('role thinking must be low, medium, high, or xhigh')
+if (![actionThinking, planThinking].every((value) => ['off', 'low', 'medium', 'high', 'xhigh'].includes(value))) throw new Error('role thinking must be off, low, medium, high, or xhigh')
 
 const startedAt = new Date().toISOString()
 const testID = `runner-basic-plan-auto-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`

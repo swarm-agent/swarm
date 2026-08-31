@@ -20,7 +20,7 @@ if (!apiURL || !/^https?:\/\//.test(apiURL)) throw new Error('--api-url must be 
 if (!provider || !/^[a-z0-9._-]+$/.test(provider)) throw new Error('--provider is invalid')
 if (!Number.isFinite(timeoutMs) || timeoutMs < 30000 || timeoutMs > 600000) throw new Error('--timeout-ms must be between 30000 and 600000')
 if (!suppliedModel) throw new Error('--coder-model is required; use scripts/run-testbench-runner.sh so the ignored .env supplies the explicit Fireworks Coder model')
-if (!['low', 'medium', 'high', 'xhigh'].includes(suppliedThinking)) throw new Error('--thinking must be low, medium, high, or xhigh')
+if (!['off', 'low', 'medium', 'high', 'xhigh'].includes(suppliedThinking)) throw new Error('--thinking must be off, low, medium, high, or xhigh')
 
 const testID = `runner-task-program-worktrees-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`
 const requiredGates = [
@@ -256,7 +256,7 @@ async function main() {
   const designerModel = String(option('--designer-model', process.env.SWARM_RUNNER_DESIGNER_MODEL || '')).trim()
   const designerThinking = String(option('--designer-thinking', process.env.SWARM_RUNNER_DESIGNER_THINKING || '')).trim().toLowerCase()
   assert(actionModel && planModel && designerModel, 'explicit --action-model, --plan-model, and --designer-model values are required from the ignored .env')
-  assert([actionThinking, planThinking, designerThinking].every((value) => ['low', 'medium', 'high', 'xhigh'].includes(value)), 'explicit role thinking values must be low, medium, high, or xhigh')
+  assert([actionThinking, planThinking, designerThinking].every((value) => ['off', 'low', 'medium', 'high', 'xhigh'].includes(value)), 'explicit role thinking values must be off, low, medium, high, or xhigh')
   const exact = (model, thinking, label) => {
     assert(records.some((record) => String(record?.model || '').trim() === model), `model catalog does not contain ${provider}/${model} for ${label}`)
     return { provider, model, thinking }
