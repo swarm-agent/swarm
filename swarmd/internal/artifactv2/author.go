@@ -277,8 +277,8 @@ func (s *AuthorService) FinalizeIterationCandidate(ctx context.Context, principa
 		}
 		candidateParts[part.Key] = selected
 	}
-	if len(baseParts) != len(candidateParts) {
-		return errors.New("artifact v2 iteration candidate did not preserve the complete part set")
+	if len(candidateParts) == 0 || len(candidateParts) > len(baseParts) {
+		return errors.New("artifact v2 iteration candidate part set is invalid")
 	}
 	targets := map[string]bool{}
 	for _, target := range iteration.Targets {
@@ -293,15 +293,16 @@ func (s *AuthorService) FinalizeIterationCandidate(ctx context.Context, principa
 			return errors.New("artifact v2 iteration base part definition is unavailable")
 		}
 		candidatePart, exists := candidateParts[baseDefinition.Key]
-		if !exists {
-			return errors.New("artifact v2 iteration candidate omitted a required part")
-		}
 		if !targets[basePart.PartID] {
-			if candidatePart.DigestSHA256 != basePart.DigestSHA256 || candidatePart.Locked != basePart.Locked {
+			if exists && (candidatePart.DigestSHA256 != basePart.DigestSHA256 || candidatePart.Locked != basePart.Locked) {
 				return errors.New("artifact v2 iteration candidate changed a preserved part")
 			}
 			continue
 		}
+		if !exists {
+			return errors.New("artifact v2 iteration candidate omitted a target part")
+		}
+		delete(candidateParts, baseDefinition.Key)
 		if basePart.Locked {
 			return errors.New("artifact v2 iteration target is locked")
 		}
@@ -312,6 +313,9 @@ func (s *AuthorService) FinalizeIterationCandidate(ctx context.Context, principa
 		importID := deterministicID("prev2", iteration.ArtifactID, iteration.IterationID, candidate.SlotID, basePart.PartID)
 		imported = append(imported, pebblestore.ArtifactV2PartRevision{ID: importID, ArtifactID: iteration.ArtifactID, PartID: basePart.PartID, ParentRevisionID: basePart.PartRevisionID, ProducerRunID: sourceRevision.ProducerRunID, CapabilityGrant: sourceRevision.CapabilityGrant, Blob: sourceRevision.Blob})
 		mergedParts[index] = pebblestore.ArtifactV2CompositionPart{PartID: basePart.PartID, PartRevisionID: importID, DigestSHA256: sourceRevision.Blob.DigestSHA256}
+	}
+	if len(candidateParts) != 0 {
+		return errors.New("artifact v2 iteration candidate declared parts outside the canonical target set")
 	}
 	owner, found, err := s.core.store.GetArtifactV2Working(principal.AccountScopeID, iteration.ArtifactID)
 	if err != nil || !found || owner.SessionID != iteration.OwnerSessionID || owner.UserID != principal.UserID || owner.ActiveIterationID != iteration.IterationID {

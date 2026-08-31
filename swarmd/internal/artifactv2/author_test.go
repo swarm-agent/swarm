@@ -144,14 +144,12 @@ func TestFinalizeIterationCandidateImportsOnlyTargetRevision(t *testing.T) {
 	}
 	candidateGrant := baseGrant
 	candidateGrant.ID, candidateGrant.ArtifactID, candidateGrant.EditablePartIDs = "candidate-grant", candidate.ID, nil
-	candidateCtx, err := author.DeclareParts(context.Background(), principal, candidateGrant, "candidate-declare", []AuthorPartDeclaration{{Key: "hero", Label: "Hero", MediaClass: "text", Order: 1}, {Key: "footer", Label: "Footer", MediaClass: "text", Order: 2}})
+	candidateCtx, err := author.DeclareParts(context.Background(), principal, candidateGrant, "candidate-declare", []AuthorPartDeclaration{{Key: "hero", Label: "Hero", MediaClass: "text", Order: 1}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	for i, value := range []string{"hero-candidate", "footer-base"} {
-		if _, err := author.WritePart(context.Background(), principal, candidateGrant, "candidate-write-"+value, AuthorPartWrite{PartID: candidateCtx.Parts[i].ID, MediaType: "text/plain", Body: []byte(value)}); err != nil {
-			t.Fatal(err)
-		}
+	if _, err := author.WritePart(context.Background(), principal, candidateGrant, "candidate-write-hero", AuthorPartWrite{PartID: candidateCtx.Parts[0].ID, MediaType: "text/plain", Body: []byte("hero-candidate")}); err != nil {
+		t.Fatal(err)
 	}
 	if _, err := author.RequestBuild(context.Background(), principal, candidateGrant, "candidate-build"); err != nil {
 		t.Fatal(err)
