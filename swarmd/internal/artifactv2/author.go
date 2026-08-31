@@ -496,7 +496,11 @@ func (s *AuthorService) RequestBuild(ctx context.Context, principal Principal, g
 		return AuthorCandidateReference{}, err
 	}
 	if storedBuild.Status != pebblestore.ArtifactV2BuildSucceeded {
-		return s.candidateReference(principal, working.ID)
+		ref, refErr := s.candidateReference(principal, working.ID)
+		if refErr == nil && len(storedBuild.Diagnostics) != 0 {
+			ref.Diagnostic = cloneDiagnostic(&storedBuild.Diagnostics[0])
+		}
+		return ref, refErr
 	}
 	working, err = s.core.mustWorking(principal, working.ID)
 	if err != nil {
