@@ -3043,7 +3043,12 @@ func designerManagedPublicationRefinementEligible(code string) bool {
 }
 
 func managedDesignerRefinementFeedback(code string) string {
-	return fmt.Sprintf("Bounded managed Designer refinement 1 of 1: the previous immutable candidate failed trusted validation with failure_code %q. A fresh trusted destination has been allocated in the same collection. Correct that concrete authored defect and publish one complete replacement candidate. Do not reuse or claim the failed reference, do not change the requested design beyond the necessary correction, and do not attempt another publication if this refinement fails.", strings.TrimSpace(code))
+	code = strings.TrimSpace(code)
+	correction := "Preserve every already-valid manifest, runtime, timeline, bridge, design, and output requirement; copy the prior complete source unchanged except for the smallest edits that fix this exact failure. Do not reconstruct, minify, or broadly re-author the document during correction."
+	if code == "animation_viewport_overflow" {
+		correction = "The prior candidate reached the viewport audit, so its parser-time runtime binding and earlier animation checks already succeeded. Preserve the complete classic head bootstrap/runtime, manifests, timeline, bridge, and design unchanged. Correct only the reported containment defect with the smallest CSS, bounds, clipping, or transform edits; do not reconstruct, minify, or broadly re-author the document."
+	}
+	return fmt.Sprintf("Bounded managed Designer refinement 1 of 1: the previous immutable candidate failed trusted validation with failure_code %q. A fresh trusted destination has been allocated in the same collection. Correct that concrete authored defect and publish one complete replacement candidate. %s Do not reuse or claim the failed reference, and do not attempt another publication if this refinement fails.", code, correction)
 }
 
 func designerManagedPublicationCall(call tool.Call) bool {

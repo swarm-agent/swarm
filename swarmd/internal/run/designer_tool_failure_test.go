@@ -101,6 +101,36 @@ func TestManagedDesignerRefinementCandidateIsBoundedAndDesignerOnly(t *testing.T
 	}
 }
 
+func TestManagedDesignerRefinementFeedbackPreservesValidatedRuntimeForViewportCorrection(t *testing.T) {
+	feedback := managedDesignerRefinementFeedback(" animation_viewport_overflow ")
+	for _, want := range []string{
+		`failure_code "animation_viewport_overflow"`,
+		"reached the viewport audit",
+		"parser-time runtime binding",
+		"Preserve the complete classic head bootstrap/runtime",
+		"Correct only the reported containment defect",
+		"do not reconstruct, minify, or broadly re-author",
+	} {
+		if !strings.Contains(feedback, want) {
+			t.Fatalf("feedback missing %q: %s", want, feedback)
+		}
+	}
+}
+
+func TestManagedDesignerRefinementFeedbackPreservesValidSourceForOtherCorrections(t *testing.T) {
+	feedback := managedDesignerRefinementFeedback("animation_manifest_mismatch")
+	for _, want := range []string{
+		`failure_code "animation_manifest_mismatch"`,
+		"Preserve every already-valid manifest, runtime, timeline, bridge, design, and output requirement",
+		"smallest edits that fix this exact failure",
+		"Do not reconstruct, minify, or broadly re-author",
+	} {
+		if !strings.Contains(feedback, want) {
+			t.Fatalf("feedback missing %q: %s", want, feedback)
+		}
+	}
+}
+
 func TestDesignerToolFailureStateSkipsOnlyChosenRefinementFailure(t *testing.T) {
 	state := designerToolFailureState{}
 	calls := []tool.Call{
