@@ -156,6 +156,11 @@ type ArtifactAuthority interface {
 	CreateFromFile(ctx context.Context, principal artifact.Principal, input artifact.CreateFileInput) (pebblestore.SessionArtifactVariant, error)
 }
 
+type ArtifactV2Authority interface {
+	ValidateVideoReference(accountScopeID, userID string, ref pebblestore.ArtifactV2VideoReference) error
+	ReadVideoReference(context.Context, string, string, pebblestore.ArtifactV2VideoReference) ([]byte, error)
+}
+
 type SessionStore interface {
 	GetSession(sessionID string) (pebblestore.SessionSnapshot, bool, error)
 	GetVideoProject(accountScopeID, sessionID, projectID string) (pebblestore.VideoProjectSnapshot, bool, error)
@@ -179,6 +184,7 @@ type Service struct {
 	cfg           Config
 	store         SessionStore
 	artifacts     ArtifactAuthority
+	artifactV2    ArtifactV2Authority
 	workspace     WorkspaceAuthority
 	runner        CommandRunner
 	animation     htmlcapture.AnimationRenderer
@@ -221,6 +227,12 @@ func NewService(cfg Config, store SessionStore, artifacts ArtifactAuthority, ani
 		cancels:       make(map[string]context.CancelFunc),
 		pendingStarts: make(map[string]context.CancelFunc),
 		admission:     make(chan struct{}, cfg.MaxConcurrentJobs),
+	}
+}
+
+func (s *Service) SetArtifactV2Authority(authority ArtifactV2Authority) {
+	if s != nil {
+		s.artifactV2 = authority
 	}
 }
 
@@ -1063,6 +1075,37 @@ func (s *Service) materializeTimelineInputs(ctx context.Context, principal ident
 			input.HasAudio = true
 
 		case pebblestore.VideoClipSourceKindManagedArtifact:
+			if clip.ArtifactV2Ref != nil {
+				if s.artifactV2 == nil {
+					return nil, fmt.Errorf("clip %d Artifact V2 authority is unavailable", i)
+				}
+				ref := *clip.ArtifactV2Ref
+				if err := s.artifactV2.ValidateVideoReference(principal.AccountScopeID, principal.UserID, ref); err != nil {
+					return nil, fmt.Errorf("resolve clip %d Artifact V2 source: %w", i, err)
+				}
+				body, err := s.artifactV2.ReadVideoReference(ctx, principal.AccountScopeID, principal.UserID, ref)
+				if err != nil {
+					return nil, fmt.Errorf("read clip %d Artifact V2 source: %w", i, err)
+				}
+				destPath := filepath.Join(jobDir, fmt.Sprintf("input_%d_v2", input.Index))
+				if err := os.WriteFile(destPath, body, 0o600); err != nil {
+					return nil, err
+				}
+				input.FilePath = destPath
+				mediaType := strings.ToLower(strings.TrimSpace(ref.MediaType))
+				if strings.HasPrefix(mediaType, "image/") {
+					input.IsImage, input.IsVideo, input.HasAudio = true, false, false
+				} else if mediaType == "text/html" {
+					return nil, fmt.Errorf("clip %d live Artifact V2 HTML must be exported only after selection", i)
+				} else {
+					input.IsVideo = true
+					input.HasAudio, err = probeInputHasAudio(ctx, s.runner, destPath)
+					if err != nil {
+						return nil, err
+					}
+				}
+				break
+			}
 			var targetRef *pebblestore.SessionArtifactSelectionReference
 			if clip.ArtifactRef != nil {
 				targetRef = clip.ArtifactRef

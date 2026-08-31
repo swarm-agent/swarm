@@ -72,14 +72,15 @@ type RunStartMeta struct {
 	TaskCompaction       *TaskContextCompaction
 	// TrustedAgentProfile is an internal-only immutable run profile snapshot. It is
 	// deliberately absent from RunRequest so clients and models cannot supply it.
-	TrustedAgentProfile  *pebblestore.AgentProfile
-	PermissionSessionID  string
-	RunID                string
-	OwnerTransport       string
-	CompiledPolicy       *permission.Policy
-	Principal            identity.Principal
-	ApplySessionMutation func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error)
-	ArtifactRunContext   *tool.ArtifactRunContext
+	TrustedAgentProfile     *pebblestore.AgentProfile
+	PermissionSessionID     string
+	RunID                   string
+	OwnerTransport          string
+	CompiledPolicy          *permission.Policy
+	Principal               identity.Principal
+	ApplySessionMutation    func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error)
+	ArtifactRunContext      *tool.ArtifactRunContext
+	ArtifactV2AuthorContext *tool.ArtifactV2AuthorRunContext
 }
 
 func (r RunRequest) Normalized() RunRequest {
@@ -114,29 +115,30 @@ func (r RunRequest) Normalized() RunRequest {
 func NewRunOptions(request RunRequest, meta RunStartMeta) RunOptions {
 	request = request.Normalized()
 	return RunOptions{
-		Prompt:                request.Prompt,
-		AgentName:             request.AgentName,
-		Instructions:          request.Instructions,
-		Compact:               request.Compact,
-		CompactOrigin:         request.CompactOrigin,
-		AllowSubagent:         meta.AllowSubagent,
-		DisabledTools:         cloneDisabledTools(meta.DisabledTools),
-		ContinuationBoundary:  meta.ContinuationBoundary,
-		TaskCompaction:        meta.TaskCompaction,
-		TrustedAgentProfile:   meta.TrustedAgentProfile,
-		PermissionSessionID:   strings.TrimSpace(meta.PermissionSessionID),
-		RunID:                 strings.TrimSpace(meta.RunID),
-		TargetKind:            request.TargetKind,
-		TargetName:            request.TargetName,
-		Background:            request.Background,
-		OwnerTransport:        strings.TrimSpace(meta.OwnerTransport),
-		ToolScope:             request.ToolScope,
-		CompiledPolicy:        meta.CompiledPolicy,
-		ExecutionContext:      request.ExecutionContext,
-		PlanCheckpointContext: request.PlanCheckpointContext,
-		Principal:             meta.Principal,
-		ApplySessionMutation:  meta.ApplySessionMutation,
-		ArtifactRunContext:    cloneArtifactRunContext(meta.ArtifactRunContext),
+		Prompt:                  request.Prompt,
+		AgentName:               request.AgentName,
+		Instructions:            request.Instructions,
+		Compact:                 request.Compact,
+		CompactOrigin:           request.CompactOrigin,
+		AllowSubagent:           meta.AllowSubagent,
+		DisabledTools:           cloneDisabledTools(meta.DisabledTools),
+		ContinuationBoundary:    meta.ContinuationBoundary,
+		TaskCompaction:          meta.TaskCompaction,
+		TrustedAgentProfile:     meta.TrustedAgentProfile,
+		PermissionSessionID:     strings.TrimSpace(meta.PermissionSessionID),
+		RunID:                   strings.TrimSpace(meta.RunID),
+		TargetKind:              request.TargetKind,
+		TargetName:              request.TargetName,
+		Background:              request.Background,
+		OwnerTransport:          strings.TrimSpace(meta.OwnerTransport),
+		ToolScope:               request.ToolScope,
+		CompiledPolicy:          meta.CompiledPolicy,
+		ExecutionContext:        request.ExecutionContext,
+		PlanCheckpointContext:   request.PlanCheckpointContext,
+		Principal:               meta.Principal,
+		ApplySessionMutation:    meta.ApplySessionMutation,
+		ArtifactRunContext:      cloneArtifactRunContext(meta.ArtifactRunContext),
+		ArtifactV2AuthorContext: cloneArtifactV2AuthorRunContext(meta.ArtifactV2AuthorContext),
 	}
 }
 

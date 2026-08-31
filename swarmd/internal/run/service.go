@@ -291,20 +291,21 @@ type RunOptions struct {
 	ContinuationBoundary RunContinuationBoundaryCallback
 	TaskCompaction       *TaskContextCompaction
 	// TrustedAgentProfile is populated only by trusted internal orchestration.
-	TrustedAgentProfile   *pebblestore.AgentProfile
-	PermissionSessionID   string
-	RunID                 string
-	TargetKind            string
-	TargetName            string
-	Background            bool
-	OwnerTransport        string
-	ToolScope             *RunToolScope
-	CompiledPolicy        *permission.Policy
-	ExecutionContext      *RunExecutionContext
-	PlanCheckpointContext *RunPlanCheckpointContext
-	Principal             identity.Principal
-	ApplySessionMutation  func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error)
-	ArtifactRunContext    *tool.ArtifactRunContext
+	TrustedAgentProfile     *pebblestore.AgentProfile
+	PermissionSessionID     string
+	RunID                   string
+	TargetKind              string
+	TargetName              string
+	Background              bool
+	OwnerTransport          string
+	ToolScope               *RunToolScope
+	CompiledPolicy          *permission.Policy
+	ExecutionContext        *RunExecutionContext
+	PlanCheckpointContext   *RunPlanCheckpointContext
+	Principal               identity.Principal
+	ApplySessionMutation    func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error)
+	ArtifactRunContext      *tool.ArtifactRunContext
+	ArtifactV2AuthorContext *tool.ArtifactV2AuthorRunContext
 	// SkipInitialUserMessage is trusted control-plane state for a run whose user
 	// message and run intent were committed atomically before dispatch.
 	SkipInitialUserMessage bool
@@ -2678,6 +2679,13 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 			runID:              runID,
 			artifactRunContext: cloneArtifactRunContext(options.ArtifactRunContext),
 		}))
+		if options.ArtifactV2AuthorContext != nil {
+			authorContext := cloneArtifactV2AuthorRunContext(options.ArtifactV2AuthorContext)
+			if authorContext != nil {
+				authorContext.Grant.ProducerRunID = runID
+				runtimeCtx = tool.WithArtifactV2AuthorRunContext(runtimeCtx, *authorContext)
+			}
+		}
 		executedResults := s.tools.ExecuteBatchStreamingWithProgress(runtimeCtx, workspaceCtx.WorkspacePath, scopeApprovedCalls, func(_ int, call tool.Call, progress tool.Progress) {
 			stage := strings.ToLower(strings.TrimSpace(progress.Stage))
 			if stage != "output" && stage != "image" {
@@ -2820,6 +2828,9 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 		designerRefinementFeedback := ""
 		if isDesignerRun {
 			refinementIndex, refinementCode, refinementEligible := managedDesignerRefinementCandidate(activeAgent, options.ArtifactRunContext, designerManagedRefinementAttempts, toolCalls, gatedResults)
+			if options.ArtifactV2AuthorContext != nil {
+				refinementEligible = false
+			}
 			if terminalFailure, stop := designerFailures.ObserveSkipping(toolCalls, gatedResults, refinementIndex); stop {
 				assistantFragments = append(assistantFragments, terminalFailure)
 				break

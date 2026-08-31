@@ -1,0 +1,218 @@
+package artifactv2
+
+import (
+	"context"
+	"errors"
+	"path/filepath"
+	"testing"
+	"time"
+
+	"swarm/packages/swarmd/internal/artifactgit"
+	pebblestore "swarm/packages/swarmd/internal/store/pebble"
+)
+
+// Requirement: managed Designer bytes are durable before validation, invalid
+// results remain repairable, and correction preserves untouched exact parts.
+// Threat: a validator failure could lose authored bytes, advance a published
+// head, or force whole-output re-authoring. This service/store integration test
+// is the narrowest proof of exact revision lineage and no publication mutation.
+func TestAuthorInvalidRepairPreservesUntouchedPartBytes(t *testing.T) {
+	store, sessions, service := newAuthorTestService(t)
+	defer store.Close()
+	principal := Principal{AccountScopeID: "account-1", UserID: "user-1", SessionID: "owner", RunID: "designer-run", ActorClass: "designer"}
+	working, err := service.AllocateWorking(context.Background(), principal, "allocate", "document", "brief", PolicySnapshot{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	validator := &sequenceValidator{statuses: []string{pebblestore.ArtifactV2ValidationInvalid, pebblestore.ArtifactV2ValidationValid}}
+	author := NewAuthorService(service.core, nil, validator)
+	grant := AuthorGrant{ID: "grant-1", ArtifactID: working.ID, OwnerSessionID: "owner", ProducerSessionID: "child", ProducerRunID: principal.RunID, AllowedActions: []string{"inspect_context", "declare_parts", "write_part", "request_build", "submit_candidate"}, AllowPartDeclaration: true, ExpiresAt: time.Now().Add(time.Hour).UnixMilli(), Policy: normalizedPolicy(PolicySnapshot{})}
+	ctx, err := author.DeclareParts(context.Background(), principal, grant, "declare", []AuthorPartDeclaration{{Key: "hero", Label: "Hero", MediaClass: "text", Order: 1}, {Key: "footer", Label: "Footer", MediaClass: "text", Order: 2}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	hero, footer := ctx.Parts[0], ctx.Parts[1]
+	if _, err := author.WritePart(context.Background(), principal, grant, "hero-1", AuthorPartWrite{PartID: hero.ID, MediaType: "text/plain", Body: []byte("hero-v1")}); err != nil {
+		t.Fatal(err)
+	}
+	ctx, err = author.Inspect(principal, grant)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := author.WritePart(context.Background(), principal, grant, "footer-1", AuthorPartWrite{PartID: footer.ID, MediaType: "text/plain", ExpectedCompositionHeadRevision: 0, Body: []byte("footer-v1")}); err != nil {
+		t.Fatal(err)
+	}
+	ctx, err = author.Inspect(principal, grant)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldHero, oldFooter, head := ctx.Parts[0].CurrentRevisionID, ctx.Parts[1].CurrentRevisionID, ctx.CompositionHead.HeadRevision
+	candidate, err := author.RequestBuild(context.Background(), principal, grant, "build-invalid")
+	if err != nil || candidate.State != pebblestore.ArtifactV2StateInvalid || candidate.Diagnostic == nil {
+		t.Fatalf("invalid candidate=%+v err=%v", candidate, err)
+	}
+	if _, err := author.SubmitCandidate(context.Background(), principal, grant, "submit"); err == nil {
+		t.Fatal("invalid candidate submitted")
+	}
+	ctx, _ = author.Inspect(principal, grant)
+	if _, err := author.WritePart(context.Background(), principal, grant, "hero-2", AuthorPartWrite{PartID: hero.ID, ExpectedBaseRevisionID: oldHero, ExpectedCompositionHeadRevision: head, MediaType: "text/plain", Body: []byte("hero-v2")}); err != nil {
+		t.Fatal(err)
+	}
+	ctx, _ = author.Inspect(principal, grant)
+	if ctx.Parts[1].CurrentRevisionID != oldFooter {
+		t.Fatalf("untouched footer changed: before=%s after=%s", oldFooter, ctx.Parts[1].CurrentRevisionID)
+	}
+	if ctx.Parts[0].CurrentRevisionID == oldHero {
+		t.Fatal("hero repair did not create a derived revision")
+	}
+	candidate, err = author.RequestBuild(context.Background(), principal, grant, "build-valid")
+	if err != nil || candidate.State != pebblestore.ArtifactV2StateReady {
+		t.Fatalf("valid candidate=%+v err=%v", candidate, err)
+	}
+	submitted, err := author.SubmitCandidate(context.Background(), principal, grant, "submit")
+	if err != nil {
+		t.Fatal(err)
+	}
+	persisted, ok, err := sessions.GetArtifactV2Working("account-1", working.ID)
+	if err != nil || !ok || persisted.PublishedHead == nil || submitted.PublishedHeadID != persisted.PublishedHead.PublishedHeadID || persisted.State != pebblestore.ArtifactV2StatePublishedView {
+		t.Fatalf("submission did not publish the exact validated head: submitted=%+v persisted=%+v ok=%v err=%v", submitted, persisted, ok, err)
+	}
+}
+
+// Requirement: destination and policy are capability-owned. Threat: forged or
+// stale caller fields could redirect writes or mutate state before rejection.
+func TestAuthorRejectsForeignGrantAndStaleHeadWithoutStateChange(t *testing.T) {
+	store, sessions, author := newAuthorTestService(t)
+	defer store.Close()
+	principal := Principal{AccountScopeID: "account-1", UserID: "user-1", SessionID: "owner", RunID: "run-1", ActorClass: "designer"}
+	working, err := author.AllocateWorking(context.Background(), principal, "allocate-negative", "document", "brief", PolicySnapshot{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	grant := AuthorGrant{ID: "grant", ArtifactID: working.ID, OwnerSessionID: "owner", ProducerSessionID: "child", ProducerRunID: principal.RunID, AllowedActions: []string{"inspect_context", "declare_parts", "write_part"}, AllowPartDeclaration: true, ExpiresAt: time.Now().Add(time.Hour).UnixMilli(), Policy: normalizedPolicy(PolicySnapshot{})}
+	ctx, err := author.DeclareParts(context.Background(), principal, grant, "declare-negative", []AuthorPartDeclaration{{Key: "hero", Label: "Hero", MediaClass: "text", Order: 1}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, _, _ := sessions.GetArtifactV2Working("account-1", working.ID)
+	foreign := grant
+	foreign.OwnerSessionID = "other"
+	if _, err := author.WritePart(context.Background(), principal, foreign, "foreign", AuthorPartWrite{PartID: ctx.Parts[0].ID, MediaType: "text/plain", Body: []byte("bad")}); err == nil {
+		t.Fatal("foreign grant write succeeded")
+	}
+	if _, err := author.WritePart(context.Background(), principal, grant, "stale", AuthorPartWrite{PartID: ctx.Parts[0].ID, ExpectedCompositionHeadRevision: 1, MediaType: "text/plain", Body: []byte("bad")}); err == nil {
+		t.Fatal("stale head write succeeded")
+	}
+	after, _, _ := sessions.GetArtifactV2Working("account-1", working.ID)
+	if before.Revision != after.Revision || before.CompositionHead != nil || after.CompositionHead != nil {
+		t.Fatalf("rejections changed state before=%+v after=%+v", before, after)
+	}
+}
+
+func TestFinalizeIterationCandidateImportsOnlyTargetRevision(t *testing.T) {
+	store, sessions, author := newAuthorTestService(t)
+	defer store.Close()
+	principal := Principal{AccountScopeID: "account-1", UserID: "user-1", SessionID: "owner", RunID: "designer-run", ActorClass: "designer"}
+	base, err := author.AllocateWorking(context.Background(), principal, "base", "document", "base", PolicySnapshot{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	baseGrant := AuthorGrant{ID: "base-grant", ArtifactID: base.ID, OwnerSessionID: "owner", ProducerSessionID: "child", ProducerRunID: principal.RunID, AllowedActions: []string{"inspect_context", "declare_parts", "write_part", "request_build", "submit_candidate"}, AllowPartDeclaration: true, ExpiresAt: time.Now().Add(time.Hour).UnixMilli(), Policy: normalizedPolicy(PolicySnapshot{})}
+	ctx, err := author.DeclareParts(context.Background(), principal, baseGrant, "base-declare", []AuthorPartDeclaration{{Key: "hero", Label: "Hero", MediaClass: "text", Order: 1}, {Key: "footer", Label: "Footer", MediaClass: "text", Order: 2}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, value := range []string{"hero-base", "footer-base"} {
+		if _, err := author.WritePart(context.Background(), principal, baseGrant, "base-write-"+value, AuthorPartWrite{PartID: ctx.Parts[i].ID, MediaType: "text/plain", Body: []byte(value)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := author.RequestBuild(context.Background(), principal, baseGrant, "base-build"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := author.SubmitCandidate(context.Background(), principal, baseGrant, "base-submit"); err != nil {
+		t.Fatal(err)
+	}
+	working, _, _ := sessions.GetArtifactV2Working("account-1", base.ID)
+	iteration, err := author.PrepareIteration(context.Background(), principal, "round", base.ID, working.Revision, working.CompositionHead.HeadRevision, []AuthorIterationTarget{{PartID: ctx.Parts[0].ID, Label: "Hero"}}, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate, err := author.AllocateIterationCandidate(context.Background(), principal, "candidate", "candidate", iteration, 1, PolicySnapshot{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidateGrant := baseGrant
+	candidateGrant.ID, candidateGrant.ArtifactID, candidateGrant.EditablePartIDs = "candidate-grant", candidate.ID, nil
+	candidateCtx, err := author.DeclareParts(context.Background(), principal, candidateGrant, "candidate-declare", []AuthorPartDeclaration{{Key: "hero", Label: "Hero", MediaClass: "text", Order: 1}, {Key: "footer", Label: "Footer", MediaClass: "text", Order: 2}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, value := range []string{"hero-candidate", "footer-base"} {
+		if _, err := author.WritePart(context.Background(), principal, candidateGrant, "candidate-write-"+value, AuthorPartWrite{PartID: candidateCtx.Parts[i].ID, MediaType: "text/plain", Body: []byte(value)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := author.RequestBuild(context.Background(), principal, candidateGrant, "candidate-build"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := author.SubmitCandidate(context.Background(), principal, candidateGrant, "candidate-submit"); err != nil {
+		t.Fatal(err)
+	}
+	if err := author.FinalizeIterationCandidate(context.Background(), Principal{AccountScopeID: "account-1", UserID: "user-1", SessionID: "owner", ActorClass: "orchestrator"}, iteration, AuthorIterationCandidate{ArtifactID: candidate.ID, SlotID: "candidate-1"}, "finalize"); err != nil {
+		t.Fatal(err)
+	}
+	studioRound, ok, err := sessions.GetArtifactV2Iteration("account-1", base.ID, iteration.IterationID)
+	if err != nil || !ok || studioRound.Status != pebblestore.ArtifactV2IterationAwaitingSelection || len(studioRound.Candidates) != 1 {
+		t.Fatalf("iteration=%+v ok=%v err=%v", studioRound, ok, err)
+	}
+	composition, ok, err := sessions.GetArtifactV2Composition("account-1", base.ID, studioRound.Candidates[0].CompositionID)
+	if err != nil || !ok || len(composition.Parts) != 2 || composition.Parts[0].PartRevisionID == iteration.BaseComposition.Parts[0].PartRevisionID || composition.Parts[1] != iteration.BaseComposition.Parts[1] {
+		t.Fatalf("candidate composition did not change only the target: %+v ok=%v err=%v", composition, ok, err)
+	}
+}
+
+type sequenceValidator struct{ statuses []string }
+
+func (v *sequenceValidator) Validate(_ context.Context, input ValidationInput) (ValidationProduct, error) {
+	if len(v.statuses) == 0 {
+		return ValidationProduct{}, errors.New("unexpected validation")
+	}
+	status := v.statuses[0]
+	v.statuses = v.statuses[1:]
+	product := ValidationProduct{Status: status, ValidatorVersion: DefaultValidator}
+	if status == pebblestore.ArtifactV2ValidationInvalid {
+		product.Diagnostics = []pebblestore.ArtifactV2Diagnostic{safeDiagnostic("text_overflow", "layout", "error", "repairable", "The hero text exceeds its declared bounds.")}
+	}
+	if input.Build.Output != nil {
+		product.EvidenceDigests = []string{input.Build.Output.DigestSHA256}
+	}
+	return product, nil
+}
+
+type authorTestCommitter struct{ sessions *pebblestore.SessionStore }
+
+func (c authorTestCommitter) ApplySessionMutation(input pebblestore.V3SessionMutationInput) (pebblestore.V3SessionMutationResult, error) {
+	return c.sessions.ApplyV3SessionMutation(input)
+}
+
+type authorTestOpener struct{ root string }
+
+func (o authorTestOpener) Repository(ctx context.Context, id string) (*artifactgit.Repository, error) {
+	return artifactgit.Open(ctx, o.root, id, artifactgit.Limits{})
+}
+
+func newAuthorTestService(t *testing.T) (*pebblestore.Store, *pebblestore.SessionStore, *AuthorService) {
+	t.Helper()
+	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "store"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessions := pebblestore.NewSessionStore(store)
+	err = sessions.CreateSession(pebblestore.SessionSnapshot{ID: "owner", UserID: "user-1", AccountScopeID: "account-1", WorkspacePath: t.TempDir(), Mode: "auto", CreatedAt: time.Now().UnixMilli(), UpdatedAt: time.Now().UnixMilli()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	core := NewService(sessions, sessions, authorTestCommitter{sessions: sessions}, NewGitBlobStore(authorTestOpener{root: t.TempDir()}))
+	return store, sessions, NewAuthorService(core, nil, nil)
+}

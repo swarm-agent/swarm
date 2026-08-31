@@ -41,12 +41,20 @@ type SessionStore interface {
 	GetAudioSourceRecord(accountScopeID, workspaceID, ref string) (pebblestore.AudioSourceRecord, bool, error)
 }
 
-type Service struct {
-	sessions SessionStore
+type ArtifactV2Authority interface {
+	ValidateVideoReference(accountScopeID, userID string, ref pebblestore.ArtifactV2VideoReference) error
 }
 
-func NewService(sessions SessionStore) *Service {
-	return &Service{sessions: sessions}
+type Service struct {
+	sessions   SessionStore
+	artifactV2 ArtifactV2Authority
+}
+
+func NewService(sessions SessionStore) *Service { return &Service{sessions: sessions} }
+func (s *Service) SetArtifactV2Authority(authority ArtifactV2Authority) {
+	if s != nil {
+		s.artifactV2 = authority
+	}
 }
 
 type CreateProjectInput struct {
@@ -107,6 +115,7 @@ type CreateEditProposalInput struct {
 type SelectAnimationCandidateInput struct {
 	SessionID, ProjectID, ProposalID, PartID, CandidateID string
 	SelectedSource                                        *pebblestore.SessionArtifactSelectionReference
+	V2SelectedSource                                      *pebblestore.ArtifactV2VideoReference
 	NowUnixMs                                             int64
 }
 
@@ -140,7 +149,11 @@ func (s *Service) CreateEditProposal(ctx context.Context, principal identity.Pri
 		return pebblestore.VideoEditProposalSnapshot{}, errors.New("video project not found")
 	}
 	if input.Plan != nil {
-		if err := s.normalizeVisualPlanArtifacts(principal, input.SessionID, input.Plan); err != nil {
+		if input.Intent == pebblestore.VideoEditProposalIntentArtifactV2Convert {
+			if err := s.validateArtifactV2Plan(principal, input.Plan); err != nil {
+				return pebblestore.VideoEditProposalSnapshot{}, err
+			}
+		} else if err := s.normalizeVisualPlanArtifacts(principal, input.SessionID, input.Plan); err != nil {
 			return pebblestore.VideoEditProposalSnapshot{}, err
 		}
 		if err := s.validateCompositionSources(principal, input.SessionID, input.Plan); err != nil {
@@ -158,7 +171,15 @@ func (s *Service) CreateEditProposal(ctx context.Context, principal identity.Pri
 	return s.sessions.CreateVideoEditProposal(pebblestore.CreateVideoEditProposalInput{AccountScopeID: principal.AccountScopeID, UserID: principal.UserID, SessionID: input.SessionID, ProjectID: input.ProjectID, ProposalID: input.ProposalID, BaseRevisionID: input.BaseRevisionID, Title: input.Title, Rationale: input.Rationale, Intent: input.Intent, Plan: input.Plan, Operations: input.Operations, AffectedRanges: input.AffectedRanges, NowUnixMs: input.NowUnixMs})
 }
 func (s *Service) SelectAnimationCandidate(ctx context.Context, principal identity.Principal, input SelectAnimationCandidateInput) (pebblestore.VideoEditProposalSnapshot, error) {
-	return s.mutateAnimationCandidate(principal, input.SessionID, input.ProjectID, input.ProposalID, pebblestore.V3SessionMutationSelectVideoAnimationCandidate, pebblestore.VideoAnimationSelectionMutation{PartID: input.PartID, SelectedCandidateID: input.CandidateID, SelectedSource: input.SelectedSource}, input.NowUnixMs)
+	if input.V2SelectedSource != nil {
+		if s.artifactV2 == nil {
+			return pebblestore.VideoEditProposalSnapshot{}, errors.New("artifact v2 video authority is not configured")
+		}
+		if err := s.artifactV2.ValidateVideoReference(principal.AccountScopeID, principal.UserID, *input.V2SelectedSource); err != nil {
+			return pebblestore.VideoEditProposalSnapshot{}, err
+		}
+	}
+	return s.mutateAnimationCandidate(principal, input.SessionID, input.ProjectID, input.ProposalID, pebblestore.V3SessionMutationSelectVideoAnimationCandidate, pebblestore.VideoAnimationSelectionMutation{PartID: input.PartID, SelectedCandidateID: input.CandidateID, SelectedSource: input.SelectedSource, V2SelectedSource: input.V2SelectedSource}, input.NowUnixMs)
 }
 
 func (s *Service) UpdateComposition(ctx context.Context, principal identity.Principal, input UpdateCompositionInput) (pebblestore.VideoEditProposalSnapshot, error) {
@@ -306,8 +327,10 @@ func (s *Service) mutateAnimationCandidate(principal identity.Principal, session
 	if err != nil || !ok {
 		return pebblestore.VideoEditProposalSnapshot{}, errors.New("video edit proposal not found")
 	}
-	if err := s.validateAnimationArtifact(principal, selection.SelectedSource, "text/html"); err != nil {
-		return pebblestore.VideoEditProposalSnapshot{}, err
+	if selection.V2SelectedSource == nil {
+		if err := s.validateAnimationArtifact(principal, selection.SelectedSource, "text/html"); err != nil {
+			return pebblestore.VideoEditProposalSnapshot{}, err
+		}
 	}
 	clientID := fmt.Sprintf("%s:%s:%s:%s:%d", kind, proposalID, selection.PartID, selection.SelectedCandidateID, now)
 	payload, _ := json.Marshal(selection)
@@ -1108,6 +1131,52 @@ func (s *Service) ListRenderJobs(principal identity.Principal, sessionID, projec
 		return nil, errors.New("video project not found")
 	}
 	return s.sessions.ListVideoRenderJobs(principal.AccountScopeID, sessionID, projectID, limit)
+}
+
+func (s *Service) validateArtifactV2Plan(principal identity.Principal, plan *pebblestore.VideoPlanProposal) error {
+	if s.artifactV2 == nil {
+		return errors.New("artifact v2 video authority is not configured")
+	}
+	for _, part := range plan.Parts {
+		if part.ArtifactV2Visual == nil || part.Visual != nil {
+			return fmt.Errorf("video plan part %q requires exactly one Artifact V2 visual", part.ID)
+		}
+		if err := s.artifactV2.ValidateVideoReference(principal.AccountScopeID, principal.UserID, *part.ArtifactV2Visual); err != nil {
+			return fmt.Errorf("video plan part %q visual: %w", part.ID, err)
+		}
+		part.VisualMediaType = part.ArtifactV2Visual.MediaType
+		if part.ArtifactV2Source != nil {
+			if err := s.artifactV2.ValidateVideoReference(principal.AccountScopeID, principal.UserID, *part.ArtifactV2Source); err != nil {
+				return err
+			}
+		}
+		if part.ArtifactV2Still != nil {
+			if err := s.artifactV2.ValidateVideoReference(principal.AccountScopeID, principal.UserID, *part.ArtifactV2Still); err != nil {
+				return err
+			}
+		}
+		if candidates := part.AnimationCandidates; candidates != nil {
+			var duration int64
+			var profile, policy string
+			for _, candidate := range candidates.Candidates {
+				if candidate.V2Source == nil || candidate.Source != nil {
+					return fmt.Errorf("video plan part %q mixes animation candidate authorities", part.ID)
+				}
+				if err := s.artifactV2.ValidateVideoReference(principal.AccountScopeID, principal.UserID, *candidate.V2Source); err != nil {
+					return err
+				}
+				if candidate.V2Source.MediaType != "text/html" || candidate.V2Source.DurationMs != part.DurationMs || candidate.V2Source.AnimationProfile == "" {
+					return fmt.Errorf("video plan part %q has incompatible Artifact V2 animation", part.ID)
+				}
+				if duration == 0 {
+					duration, profile, policy = candidate.V2Source.DurationMs, candidate.V2Source.AnimationProfile, candidate.V2Source.PolicyRevision
+				} else if duration != candidate.V2Source.DurationMs || profile != candidate.V2Source.AnimationProfile || policy != candidate.V2Source.PolicyRevision {
+					return fmt.Errorf("video plan part %q animation candidates are incompatible", part.ID)
+				}
+			}
+		}
+	}
+	return nil
 }
 
 func (s *Service) normalizeVisualPlanArtifacts(principal identity.Principal, sessionID string, plan *pebblestore.VideoPlanProposal) error {

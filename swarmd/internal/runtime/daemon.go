@@ -24,6 +24,7 @@ import (
 	"swarm/packages/swarmd/internal/agentmodelsettings"
 	"swarm/packages/swarmd/internal/api"
 	"swarm/packages/swarmd/internal/artifact"
+	"swarm/packages/swarmd/internal/artifactv2"
 	"swarm/packages/swarmd/internal/auth"
 	"swarm/packages/swarmd/internal/config"
 	"swarm/packages/swarmd/internal/discovery"
@@ -293,6 +294,20 @@ func New(cfg config.Config) (*Daemon, error) {
 	}
 	artifactMetadata := &artifactMetadataBoundary{Service: sessionSvc}
 	artifactAuthority := artifact.NewAuthority(artifactRegistry, artifactMetadata)
+	// Artifact V2 is an independent write authority. It reuses only the audited
+	// private Git repository opener and canonical V3 mutation boundary; it never
+	// receives the legacy artifact authority.
+	artifactV2Service := artifactv2.NewService(sessionSvc, sessionSvc, sessionSvc, artifactv2.NewGitBlobStore(artifactRegistry))
+	var artifactV2Compiler artifactv2.Compiler = artifactv2.DeterministicCompiler{}
+	var artifactV2Validator artifactv2.Validator = artifactv2.DeterministicValidator{}
+	if cacheRootErr == nil {
+		trustedMotionRenderer := artifactv2.TrustedMotionRenderer{Renderer: htmlcapture.NewChromedpRendererWithConcurrency(htmlcapture.SystemChromePath, filepath.Join(cacheRoot, "html-capture"), htmlCaptureConcurrency())}
+		captureRenderer := htmlcapture.NewChromedpRendererWithConcurrency(htmlcapture.SystemChromePath, filepath.Join(cacheRoot, "html-capture"), htmlCaptureConcurrency())
+		motionValidator := artifactv2.MotionValidator{Renderer: trustedMotionRenderer}
+		artifactV2Compiler = artifactv2.CreativeCompiler{Motion: artifactv2.MotionCompiler{}}
+		artifactV2Validator = artifactv2.StoryboardValidator{Renderer: captureRenderer, Motion: motionValidator}
+	}
+	toolRuntime.SetArtifactV2AuthorService(artifactv2.NewAuthorService(artifactV2Service, artifactV2Compiler, artifactV2Validator))
 	toolRuntime.SetArtifactRegistry(artifactRegistry)
 	toolRuntime.SetArtifactAuthority(artifactAuthority)
 	mediaStagingSvc := mediastaging.NewService(pebblestore.NewMediaStagingStore(store))
@@ -427,10 +442,12 @@ func New(cfg config.Config) (*Daemon, error) {
 	toolRuntime.SetManageThemeServices(uiSettingsSvc, workspaceSvc)
 	videoTranscriptionSvc := videotranscription.NewService(sessionSvc.Store(), modelSvc, uiSettingsSvc, google.NewVideoTranscriptionAdapter(authStore))
 	videoProjectSvc := videoproject.NewService(sessionSvc.Store())
+	videoProjectSvc.SetArtifactV2Authority(artifactV2Service)
 	var videoAnimationRenderer htmlcapture.AnimationRenderer
 	if cacheRootErr == nil {
 		videoAnimationRenderer = htmlcapture.NewChromedpRenderer(htmlcapture.SystemChromePath, filepath.Join(cacheRoot, "html-capture"))
 	}
+	toolRuntime.SetArtifactV2VideoConversionService(artifactv2.NewVideoConversionService(artifactV2Service, videoProjectSvc, artifactv2.TrustedMotionRenderer{Renderer: videoAnimationRenderer}))
 	videoRenderSvc := videorender.NewService(
 		videorender.Config{},
 		sessionSvc.Store(),
@@ -439,6 +456,7 @@ func New(cfg config.Config) (*Daemon, error) {
 		workspaceSvc,
 		nil,
 	)
+	videoRenderSvc.SetArtifactV2Authority(artifactV2Service)
 	toolRuntime.SetManageVideoPipelineServices(
 		videoTranscriptionSvc,
 		videosource.NewService(workspaceSvc, sessionSvc.Store()),
@@ -556,6 +574,7 @@ func New(cfg config.Config) (*Daemon, error) {
 	apiServer.SetVideoProjectService(videoProjectSvc)
 	apiServer.SetVideoRenderService(videoRenderSvc)
 	apiServer.SetArtifactRegistry(artifactRegistry)
+	apiServer.SetArtifactV2Service(artifactV2Service)
 	runSvc.SetSessionDeployCanonicalizer(apiServer.CanonicalizeSessionDeploy)
 	runSvc.SetSessionDeployEnqueuer(apiServer.EnqueueSessionDeployRun)
 	runSvc.SetAITaskBinder(todoSvc)

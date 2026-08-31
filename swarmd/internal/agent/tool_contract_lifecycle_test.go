@@ -111,10 +111,11 @@ func TestCoderWorkspaceDiscoveryToolsIncludeFind(t *testing.T) {
 	}
 }
 
-func TestManagedArtifactToolIsRestrictedToSwarmAndDesigner(t *testing.T) {
+func TestManagedArtifactToolIsRestrictedToSwarmAndImageWhileDesignerUsesV2(t *testing.T) {
 	contracts := map[string]*pebblestore.AgentToolContract{
 		"swarm":    SwarmAgentToolContract(),
 		"designer": DesignerAgentToolContract(),
+		"image":    ImageAgentToolContract(),
 		"finder":   FinderAgentToolContract(),
 		"coder":    CoderAgentToolContract(),
 		"plan":     PlanSidechatAgentToolContract(),
@@ -123,7 +124,7 @@ func TestManagedArtifactToolIsRestrictedToSwarmAndDesigner(t *testing.T) {
 	for name, contract := range contracts {
 		cfg, present := contract.Tools["manage_artifact"]
 		enabled := present && cfg.Enabled != nil && *cfg.Enabled
-		want := name == "swarm" || name == "designer"
+		want := name == "swarm" || name == "image"
 		if enabled != want {
 			t.Fatalf("%s manage_artifact enabled = %t, want %t", name, enabled, want)
 		}

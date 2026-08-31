@@ -124,6 +124,27 @@ type VideoAudioPolicy struct {
 	Muted        bool    `json:"muted,omitempty"`
 }
 
+// ArtifactV2VideoReference is Video Studio's exact native reference to a V2
+// build or derivative. It cannot be decoded as a legacy collection/variant.
+type ArtifactV2VideoReference struct {
+	SessionID         string `json:"session_id"`
+	ArtifactID        string `json:"artifact_id"`
+	CompositionID     string `json:"composition_id"`
+	BuildID           string `json:"build_id"`
+	ValidationID      string `json:"validation_id"`
+	DerivativeID      string `json:"derivative_id,omitempty"`
+	PartID            string `json:"part_id,omitempty"`
+	PartRevisionID    string `json:"part_revision_id,omitempty"`
+	CaptureStateID    string `json:"capture_state_id,omitempty"`
+	EventSeq          uint64 `json:"event_seq"`
+	CompositionDigest string `json:"composition_digest"`
+	DigestSHA256      string `json:"digest_sha256"`
+	PolicyRevision    string `json:"policy_revision"`
+	MediaType         string `json:"media_type"`
+	DurationMs        int64  `json:"duration_ms,omitempty"`
+	AnimationProfile  string `json:"animation_profile,omitempty"`
+}
+
 // VideoTimelineClip represents one ordered clip in the video timeline.
 type VideoTimelineClip struct {
 	ID              string                             `json:"id"`
@@ -134,6 +155,7 @@ type VideoTimelineClip struct {
 	SourceRef       string                             `json:"source_ref,omitempty"`
 	AudioSource     *AudioSourceReference              `json:"audio_source,omitempty"`
 	ArtifactRef     *SessionArtifactSelectionReference `json:"artifact_ref,omitempty"`
+	ArtifactV2Ref   *ArtifactV2VideoReference          `json:"artifact_v2_ref,omitempty"`
 	MediaType       string                             `json:"media_type,omitempty"`
 	SourceStartMs   int64                              `json:"source_start_ms"`
 	SourceEndMs     int64                              `json:"source_end_ms"`
@@ -223,9 +245,10 @@ type VideoProjectRevisionSnapshot struct {
 // VideoAnimationCandidate is one exact ready HTML animation that can be reviewed
 // live through swarm-player/v1 without becoming render-ready timeline media.
 type VideoAnimationCandidate struct {
-	ID     string                             `json:"id"`
-	Source *SessionArtifactSelectionReference `json:"source"`
-	Label  string                             `json:"label,omitempty"`
+	ID       string                             `json:"id"`
+	Source   *SessionArtifactSelectionReference `json:"source,omitempty"`
+	V2Source *ArtifactV2VideoReference          `json:"artifact_v2_source,omitempty"`
+	Label    string                             `json:"label,omitempty"`
 }
 
 // VideoAnimationCandidateSet keeps one-of-many HTML review authority separate
@@ -237,6 +260,8 @@ type VideoAnimationCandidateSet struct {
 	SelectedCandidateID string                             `json:"selected_candidate_id,omitempty"`
 	SelectedSource      *SessionArtifactSelectionReference `json:"selected_source,omitempty"`
 	Derivative          *SessionArtifactSelectionReference `json:"derivative,omitempty"`
+	V2SelectedSource    *ArtifactV2VideoReference          `json:"artifact_v2_selected_source,omitempty"`
+	V2Derivative        *ArtifactV2VideoReference          `json:"artifact_v2_derivative,omitempty"`
 	Status              string                             `json:"status"` // awaiting_selection, awaiting_export, ready, failed
 	FailureReason       string                             `json:"failure_reason,omitempty"`
 }
@@ -258,9 +283,12 @@ type VideoPlanPart struct {
 	ProductionState     string                             `json:"production_state,omitempty"`
 	StoryboardSource    *SessionArtifactSelectionReference `json:"storyboard_source,omitempty"`
 	StoryboardStill     *SessionArtifactSelectionReference `json:"storyboard_still,omitempty"`
+	ArtifactV2Source    *ArtifactV2VideoReference          `json:"artifact_v2_source,omitempty"`
+	ArtifactV2Still     *ArtifactV2VideoReference          `json:"artifact_v2_still,omitempty"`
 	Caption             *VideoTextOverlay                  `json:"caption,omitempty"`
 	Transition          *VideoTimelineTransition           `json:"transition,omitempty"`
-	Visual              *SessionArtifactSelectionReference `json:"visual"`
+	Visual              *SessionArtifactSelectionReference `json:"visual,omitempty"`
+	ArtifactV2Visual    *ArtifactV2VideoReference          `json:"artifact_v2_visual,omitempty"`
 	VisualMediaType     string                             `json:"visual_media_type,omitempty"`
 	SourceStartMs       int64                              `json:"source_start_ms,omitempty"`
 	SourceEndMs         int64                              `json:"source_end_ms,omitempty"`
@@ -272,9 +300,10 @@ const (
 	VideoPlanKindInitial  = "initial"
 	VideoPlanKindRevision = "revision"
 
-	VideoEditProposalIntentGeneral          = "general"
-	VideoEditProposalIntentHTMLIteration    = "html_iteration"
-	VideoEditProposalIntentStoryboardImport = "storyboard_import"
+	VideoEditProposalIntentGeneral           = "general"
+	VideoEditProposalIntentHTMLIteration     = "html_iteration"
+	VideoEditProposalIntentStoryboardImport  = "storyboard_import"
+	VideoEditProposalIntentArtifactV2Convert = "artifact_v2_conversion"
 
 	VideoProductionStatePending = "pending"
 	VideoProductionStateReady   = "ready"
@@ -388,6 +417,8 @@ type VideoAnimationSelectionMutation struct {
 	SelectedCandidateID string                             `json:"selected_candidate_id"`
 	SelectedSource      *SessionArtifactSelectionReference `json:"selected_source,omitempty"`
 	Derivative          *SessionArtifactSelectionReference `json:"derivative,omitempty"`
+	V2SelectedSource    *ArtifactV2VideoReference          `json:"artifact_v2_selected_source,omitempty"`
+	V2Derivative        *ArtifactV2VideoReference          `json:"artifact_v2_derivative,omitempty"`
 }
 
 // V3VideoProjectProjection summarizes the projection update resulting from a mutation.
@@ -866,7 +897,7 @@ func validateV3VideoProjectMutationInput(input V3SessionMutationInput) error {
 			if proposal.Intent == "" {
 				proposal.Intent = VideoEditProposalIntentGeneral
 			}
-			if proposal.Intent != VideoEditProposalIntentGeneral && proposal.Intent != VideoEditProposalIntentHTMLIteration && proposal.Intent != VideoEditProposalIntentStoryboardImport {
+			if proposal.Intent != VideoEditProposalIntentGeneral && proposal.Intent != VideoEditProposalIntentHTMLIteration && proposal.Intent != VideoEditProposalIntentStoryboardImport && proposal.Intent != VideoEditProposalIntentArtifactV2Convert {
 				return fmt.Errorf("video edit proposal has unsupported intent %q", proposal.Intent)
 			}
 			if proposal.Plan != nil {
@@ -1112,6 +1143,32 @@ func validateVideoPlanIntent(intent string, plan VideoPlanProposal) error {
 	if intent == "" {
 		intent = VideoEditProposalIntentGeneral
 	}
+	if intent == VideoEditProposalIntentArtifactV2Convert {
+		for _, part := range plan.Parts {
+			if part.ArtifactV2Visual == nil || part.Visual != nil {
+				return fmt.Errorf("artifact_v2_conversion part %q requires one native V2 visual and no legacy visual", part.ID)
+			}
+			if part.ArtifactV2Source != nil {
+				if part.ArtifactV2Still == nil || part.CaptureStateID == "" || len(part.FilmingRequirements) == 0 || (part.ProductionState != VideoProductionStatePending && part.ProductionState != VideoProductionStateReady) {
+					return fmt.Errorf("artifact_v2_conversion storyboard part %q is missing canonical V2 fields", part.ID)
+				}
+				if *part.ArtifactV2Visual != *part.ArtifactV2Still {
+					return fmt.Errorf("artifact_v2_conversion storyboard part %q must use its exact V2 still", part.ID)
+				}
+			}
+			if candidates := part.AnimationCandidates; candidates != nil {
+				if candidates.Status != VideoAnimationCandidateStatusAwaitingSelection || len(candidates.Candidates) < 1 || len(candidates.Candidates) > 16 {
+					return fmt.Errorf("artifact_v2_conversion animation part %q has invalid candidates", part.ID)
+				}
+				for _, candidate := range candidates.Candidates {
+					if candidate.V2Source == nil || candidate.Source != nil {
+						return fmt.Errorf("artifact_v2_conversion animation part %q requires native V2 candidates", part.ID)
+					}
+				}
+			}
+		}
+		return nil
+	}
 	if intent == VideoEditProposalIntentStoryboardImport {
 		if plan.Kind != VideoPlanKindInitial {
 			return errors.New("storyboard_import intent requires an initial video plan")
@@ -1181,17 +1238,29 @@ func validateVideoPlanProposal(plan VideoPlanProposal) error {
 		if part.DurationMs <= 0 || part.DurationMs > MaxVideoTimelineDurationMs {
 			return fmt.Errorf("video plan part %q requires a positive bounded duration_ms", part.ID)
 		}
-		if part.Visual == nil || part.Visual.SessionID == "" || part.Visual.CollectionID == "" || part.Visual.VariantID == "" || part.Visual.EventSeq == 0 {
+		if part.Visual == nil && part.ArtifactV2Visual == nil {
 			return fmt.Errorf("video plan part %q requires one complete exact render-ready visual reference", part.ID)
 		}
+		if part.Visual != nil && (part.Visual.SessionID == "" || part.Visual.CollectionID == "" || part.Visual.VariantID == "" || part.Visual.EventSeq == 0) {
+			return fmt.Errorf("video plan part %q legacy visual reference is incomplete", part.ID)
+		}
+		if part.Visual != nil && part.ArtifactV2Visual != nil {
+			return fmt.Errorf("video plan part %q cannot mix legacy and Artifact V2 visual authority", part.ID)
+		}
 		if candidates := part.AnimationCandidates; candidates != nil {
-			if len(candidates.Candidates) < 2 || len(candidates.Candidates) > 16 {
+			minimumCandidates := 2
+			if part.ArtifactV2Visual != nil {
+				minimumCandidates = 1
+			}
+			if len(candidates.Candidates) < minimumCandidates || len(candidates.Candidates) > 16 {
 				return fmt.Errorf("video plan part %q animation candidates must contain 2 to 16 choices", part.ID)
 			}
 			seenCandidates := make(map[string]struct{}, len(candidates.Candidates))
 			for _, candidate := range candidates.Candidates {
-				if candidate.ID == "" || candidate.Source == nil || candidate.Source.SessionID == "" || candidate.Source.CollectionID == "" || candidate.Source.VariantID == "" || candidate.Source.EventSeq == 0 {
-					return fmt.Errorf("video plan part %q requires complete exact HTML animation candidates", part.ID)
+				legacyComplete := candidate.Source != nil && candidate.Source.SessionID != "" && candidate.Source.CollectionID != "" && candidate.Source.VariantID != "" && candidate.Source.EventSeq != 0
+				v2Complete := candidate.V2Source != nil && candidate.V2Source.ArtifactID != "" && candidate.V2Source.EventSeq != 0
+				if candidate.ID == "" || legacyComplete == v2Complete {
+					return fmt.Errorf("video plan part %q requires exactly one complete legacy or Artifact V2 animation candidate authority", part.ID)
 				}
 				if _, duplicate := seenCandidates[candidate.ID]; duplicate {
 					return fmt.Errorf("video plan part %q has duplicate animation candidate %q", part.ID, candidate.ID)
@@ -1688,7 +1757,7 @@ func visualVideoPlanTimeline(base VideoProjectTimeline, plan VideoPlanProposal) 
 		endMs := startMs + part.DurationMs
 		clip := VideoTimelineClip{
 			ID: part.ID, Name: part.Title + " | Narration: " + part.Narration + " | Planned still: " + part.VisualDirection,
-			Track: 0, Sequence: index, SourceKind: VideoClipSourceKindManagedArtifact, ArtifactRef: part.Visual,
+			Track: 0, Sequence: index, SourceKind: VideoClipSourceKindManagedArtifact, ArtifactRef: part.Visual, ArtifactV2Ref: part.ArtifactV2Visual,
 			MediaType: part.VisualMediaType, TimelineStartMs: startMs, TimelineEndMs: endMs, DurationMs: part.DurationMs,
 			SourceStartMs: part.SourceStartMs, SourceEndMs: part.SourceEndMs, Visible: true,
 		}
@@ -2413,15 +2482,21 @@ func (s *SessionStore) prepareV3VideoProjectMutation(input V3SessionMutationInpu
 		part := &proposal.Plan.Parts[partIndex]
 		candidates := part.AnimationCandidates
 		candidate := candidates.Candidates[candidateIndex]
-		if selection.SelectedSource == nil || *selection.SelectedSource != *candidate.Source {
+		if candidate.V2Source != nil {
+			if selection.V2SelectedSource == nil || *selection.V2SelectedSource != *candidate.V2Source || selection.SelectedSource != nil {
+				return preparedV3VideoProjectMutation{}, errors.New("selected Artifact V2 HTML source must exactly match the chosen candidate")
+			}
+		} else if selection.SelectedSource == nil || candidate.Source == nil || *selection.SelectedSource != *candidate.Source || selection.V2SelectedSource != nil {
 			return preparedV3VideoProjectMutation{}, errors.New("selected HTML source must exactly match the chosen candidate")
 		}
 		candidates.SelectedCandidateID = selection.SelectedCandidateID
 		candidates.SelectedSource = selection.SelectedSource
+		candidates.V2SelectedSource = selection.V2SelectedSource
 		candidates.FailureReason = ""
 		if input.Kind == V3SessionMutationSelectVideoAnimationCandidate {
 			candidates.Status = VideoAnimationCandidateStatusAwaitingExport
 			candidates.Derivative = nil
+			candidates.V2Derivative = nil
 		} else {
 			candidates.Status = VideoAnimationCandidateStatusReady
 			candidates.Derivative = selection.Derivative

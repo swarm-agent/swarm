@@ -306,6 +306,16 @@ func providerManagedOriginWorkspaceRoots(config providerToolInvokerConfig) []str
 	return originRoots
 }
 
+func cloneArtifactV2AuthorRunContext(input *tool.ArtifactV2AuthorRunContext) *tool.ArtifactV2AuthorRunContext {
+	if input == nil {
+		return nil
+	}
+	cloned := *input
+	cloned.Grant.AllowedActions = append([]string(nil), input.Grant.AllowedActions...)
+	cloned.Grant.EditablePartIDs = append([]string(nil), input.Grant.EditablePartIDs...)
+	return &cloned
+}
+
 func cloneArtifactRunContext(input *tool.ArtifactRunContext) *tool.ArtifactRunContext {
 	if input == nil {
 		return nil

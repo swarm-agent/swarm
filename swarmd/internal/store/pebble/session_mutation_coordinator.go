@@ -55,9 +55,11 @@ type sessionMutationCoordinator struct {
 	// authority have passed preflight but before their one atomic batch commits.
 	beforeMediaStagingBindCommit func(sessionID string) error
 
-	// beforeDurableCommit is a test seam at the store commit boundary. Tests set
-	// it before starting workers and never mutate it concurrently.
+	// beforeDurableCommit is a test observation seam at the store commit boundary.
 	beforeDurableCommit func(sessionID string)
+	// beforeArtifactV2Commit injects a failure after V2 preflight and before the
+	// one batch containing records, event, projection, idempotency, and outbox.
+	beforeArtifactV2Commit func(sessionID string) error
 	// beforeExecutionEpochCommit injects a pre-commit failure for the canonical
 	// compound epoch transition. Returning an error must leave no durable rows.
 	beforeExecutionEpochCommit func(sessionID string) error

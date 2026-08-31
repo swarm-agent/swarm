@@ -275,7 +275,7 @@ func TestSystemAgentSnapshotReconciliationPreservesDynamicContextAndModels(t *te
 	if designer.Name != DesignerAgentID || designer.Mode != ModeSubagent || designer.Prompt != DesignerAgentPrompt() || designer.RuntimeMode != pebblestore.AgentRuntimeModeReadWrite || designer.DefaultSessionMode != pebblestore.AgentDefaultSessionModeAuto || !designer.Enabled || !designer.Protected || designer.ExitPlanModeEnabled == nil || *designer.ExitPlanModeEnabled {
 		t.Fatalf("Designer immutable contract was not restored: %+v", designer)
 	}
-	for _, allowed := range []string{"read", "search", "find", "list", "manage_artifact"} {
+	for _, allowed := range []string{"read", "search", "find", "list", "artifact_v2_author"} {
 		if cfg := designer.ToolContract.Tools[allowed]; cfg.Enabled == nil || !*cfg.Enabled {
 			t.Fatalf("managed Designer locked tool %q unavailable: %+v", allowed, designer.ToolContract)
 		}
@@ -313,7 +313,7 @@ func TestSystemAgentSnapshotReconciliationPreservesDynamicContextAndModels(t *te
 			t.Fatalf("workspace Designer must not authorize %q: %+v", denied, workspaceDesigner.ToolContract)
 		}
 	}
-	for _, want := range []string{"backend-supplied immutable output contract", "Exact output requirements", "canonical preset", "never reinterpret or rewrite", "Do not claim visual success or imply that Swarm inspected binary pixels", "Managed output", "manage_artifact", "Omit output_requirements", "exactly one durable ready variant", "Before that single publication", "clipping and overflow", "aspect ratio and object sizing", "requested-element fidelity", "text legibility", "unintended overlaps", "scrollbars or capture chrome/overlays", "every rendered state against its brief", "renderer does not judge aesthetics", "none of them substitutes for pixel inspection", "variant is immutable", "no same-run correction publication", "new exact-lineage derived revision", "never mutate or silently replace the published variant", "Never use write or edit", "Workspace output", "Never use manage_artifact", "Animated output", "automatic quality and frame-pacing guidance", "Never equate a 60 FPS label", "profiling evidence", "exact returned error reason", "stop after three failed tool attempts", "failure after publication begins is terminal", "rejected before publication", "orchestrate other agents"} {
+	for _, want := range []string{"backend-supplied output contract", "Managed output uses only artifact_v2_author", "inspect_context", "real independently revisioned parts", "server-owned build and validation", "repair invalid exact revisions", "submit_candidate", "destination identity", "output policy", "animation profile", "compiler/runtime shell", "renderer controls", "validation status", "Part bytes persist before validation", "exact prior part revision", "composition-head revision", "preserve every untouched part byte-for-byte", "Do not call manage_artifact for managed output", "Workspace output", "Never call artifact_v2_author or manage_artifact", "safe diagnostic", "Never classify raw errors", "fall back to legacy publication"} {
 		if !strings.Contains(DesignerAgentPrompt(), want) {
 			t.Fatalf("Designer prompt missing immutable output contract %q", want)
 		}

@@ -25,6 +25,7 @@ import (
 	agentruntime "swarm/packages/swarmd/internal/agent"
 	"swarm/packages/swarmd/internal/agentmodelsettings"
 	"swarm/packages/swarmd/internal/artifact"
+	"swarm/packages/swarmd/internal/artifactv2"
 	"swarm/packages/swarmd/internal/auth"
 	"swarm/packages/swarmd/internal/discovery"
 	"swarm/packages/swarmd/internal/identity"
@@ -141,6 +142,7 @@ type Server struct {
 	longSessionDiagnostics      *longsessiondiag.Recorder
 	mediaStaging                *mediastaging.Service
 	artifacts                   *artifact.Registry
+	artifactV2                  *artifactv2.Service
 
 	longSessionDesktopSampleLogOnce sync.Once
 
