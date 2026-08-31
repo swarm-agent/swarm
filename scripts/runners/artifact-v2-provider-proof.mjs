@@ -150,8 +150,9 @@ async function convertPending(sessionID, source, label) {
 async function runSingle(index, topology, assignment) {
   const sessionID = await createSession(`${testID} single ${index}`, assignment, topology)
   await postTurn(sessionID, `single-${index}`, singlePrompt(index))
-  const catalog = await artifactCatalog(sessionID); assert(catalog.length === 1, `single ${index} produced ${catalog.length}/1 V2 artifacts`)
-  const studio = await artifactStudio(sessionID, catalog[0].working.id); const source = validateJourney(studio, `single ${index}`)
+  const catalog = await artifactCatalog(sessionID); const published = catalog.filter((item) => item?.working?.kind === 'managed_creative' && item?.working?.state === 'published_view')
+  assert(published.length === 1, `single ${index} produced ${published.length}/1 published V2 artifacts; total=${catalog.length}`)
+  const studio = await artifactStudio(sessionID, published[0].working.id); const source = validateJourney(studio, `single ${index}`)
   await inspectPixels(sessionID, studio, `single ${index}`)
   const conversion = await convertPending(sessionID, source, `single-${index}`)
   const journey = { index, session_id: sessionID, source, part_count: studio.parts.length, build_id: studio.working.latest_build_id, validation_id: studio.working.latest_validation_id, conversion }
@@ -195,7 +196,7 @@ try {
     const first = await runSingle(1, topology, action)
     if (stage === 'single1') result.result = 'PASS'
     else { await runSingle(2, topology, action); result.result = 'PASS' }
-    result.gates.provider_journeys = true; result.gates.pixel_inspection = result.pixel_inspections.length >= (stage === 'single1' ? 1 : 2); result.gates.pending_conversion = result.journeys.every((item) => item.conversion.status === 'pending')
+    result.gates.provider_journeys = true; result.gates.pixel_inspection = result.pixel_inspections.length >= (stage === 'single1' ? 1 : 2); result.gates.pending_conversion = result.journeys.every((item) => item.conversion.status === 'pending'); result.gates.provider_policy = result.model.action.provider === proofProvider && result.model.action.model === proofModel && result.model.designer.provider === proofProvider && result.model.designer.model === proofModel
   }
 } catch (error) {
   result.error = error?.stack || String(error); log(result.error)
