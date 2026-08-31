@@ -74,7 +74,7 @@ async function createSession(title, assignment, topology) {
 }
 
 async function hydrate(sessionID) {
-  return (await api('POST', '/v3/sync/hydrate', { surface: 'desktop', session_ids: [sessionID], history: { mode: 'tail', max_messages_per_session: 200, max_events_per_session: 300, manifest_policy: 'manifest' }, resources: { messages: true, events: true, run_intents: true, current_run_state: true, session_view: true, active_plan: true, permission_summaries: true }, include_active: true }, `hydrate ${sessionID}`)).body || {}
+  return (await api('POST', '/v3/sync/hydrate', { surface: 'desktop', session_ids: [sessionID], history: { mode: 'tail', max_messages_per_session: 200, max_events_per_session: 200, manifest_policy: 'manifest' }, resources: { messages: true, events: true, run_intents: true, current_run_state: true, session_view: true, active_plan: true, permission_summaries: true }, include_active: true }, `hydrate ${sessionID}`)).body || {}
 }
 
 async function approvePending(sessionID) {
