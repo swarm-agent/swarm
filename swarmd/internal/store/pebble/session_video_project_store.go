@@ -1031,8 +1031,8 @@ func validateVideoTimeline(timeline VideoProjectTimeline) error {
 				return err
 			}
 		case VideoClipSourceKindManagedArtifact:
-			if clip.ArtifactRef == nil && clip.DesignInput == nil {
-				return fmt.Errorf("managed_artifact clip %q requires artifact_ref or design_input", clip.ID)
+			if clip.ArtifactRef == nil && clip.DesignInput == nil && clip.ArtifactV2Ref == nil {
+				return fmt.Errorf("managed_artifact clip %q requires artifact_ref, artifact_v2_ref, or design_input", clip.ID)
 			}
 		case VideoClipSourceKindColor, VideoClipSourceKindText:
 			// valid synthetic sources
