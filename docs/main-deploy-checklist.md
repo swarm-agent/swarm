@@ -7,7 +7,7 @@ This file is the canonical operator checklist for promoting `dev` to `main`, tes
 - `dev` is the day-to-day integration branch.
 - `main` is the protected release/build branch.
 - Pull requests to `main` must update `CHANGELOG.md`; `.github/workflows/require-changelog.yml` enforces the release-note gate.
-- Pull requests and pushes to `main` run `.github/workflows/build-main.yml`, which builds, signs, attests, and verifies a release candidate.
+- Pull requests to `dev`/`main` and pushes to `dev` run `.github/workflows/install-distro-smoke.yml`, which builds one exact candidate and verifies fresh Ubuntu/Arch systemd installation. Pushes to `main` and manual dispatch run `.github/workflows/build-main.yml`, which builds, tests, signs, attests, and verifies the release candidate.
 - On a protected `main` push produced by the user's approved PR merge, the same workflow re-verifies that run's exact evidence set without rebuilding it, then automatically creates the stable tag and GitHub Release.
 - Record the exact `origin/main`, `origin/dev`, promotion range, and selected release tag in the promotion PR or release record instead of maintaining a stale fixed snapshot here.
 
@@ -62,7 +62,8 @@ This file is the canonical operator checklist for promoting `dev` to `main`, tes
 - [ ] Run `./scripts/check-precommit.sh`
 - [ ] Run `bash scripts/check-launch-readiness.sh --require-clean`; this includes `scripts/check-launch-defaults.sh` assertions for loopback-only binding, permission/diagnostic/output-retention defaults, config privacy, explicit service choice, default permission redaction, preservation-oriented uninstall, and update rollback. It also rejects untracked artifacts and unexpected non-text blobs while reporting the explicitly reviewed FFF libraries and public web/PWA icons.
 - [ ] Retain full precommit and launch-readiness output with the exact candidate SHA
-- [ ] Build the candidate and run `TMPDIR="${TMPDIR:?}" ./scripts/smoke-release-archive.sh <archive.tar.gz> <archive.tar.gz.sha256> --evidence <smoke-evidence.txt>` when reproducing the CI smoke locally
+- [ ] Build the candidate and run `TMPDIR="${TMPDIR:?}" ./scripts/smoke-release-archive.sh <archive.tar.gz> <archive.tar.gz.sha256> --evidence <smoke-evidence.txt>` when reproducing the hermetic CI smoke locally
+- [ ] Confirm the exact candidate passes the PR/build `install-distro-smoke` Ubuntu and Arch jobs. Each starts from the official minimal image, installs curl and systemd prerequisites, runs `install.sh --service --yes` as a non-root owner with `TMPDIR` unset, verifies the active service, invokes the installed CLI, and checks the canonical runtime owner.
 - [ ] Record the candidate archive/checksum/build metadata/smoke evidence location, or mark it pending until the exact-SHA workflow runs; do not fabricate or reuse evidence from another SHA
 - [ ] Re-read clone audit findings for secrets, plaintext storage, logging, and networking gotchas relevant to the downloadable release bundle
 
@@ -84,7 +85,7 @@ This file is the canonical operator checklist for promoting `dev` to `main`, tes
 
 - [ ] Open the single `dev` -> `main` promotion PR for the frozen candidate SHA
 - [ ] Confirm the required changelog workflow passes for the exact PR range
-- [ ] Confirm the PR workflow builds an installable candidate artifact without creating a tag or GitHub release
+- [ ] Confirm the PR `install-distro-smoke` workflow builds an exact installable candidate and passes Ubuntu/Arch from-zero checks without creating a tag or GitHub release
 - [ ] Complete code review and required checks before merging the approved commit set to `main`
 - [ ] Verify the non-publishing `main` push workflow succeeds for the reviewed merge commit
 - [ ] Record the reviewed `main` SHA; all remaining evidence must refer to this SHA
@@ -100,8 +101,10 @@ This file is the canonical operator checklist for promoting `dev` to `main`, tes
 
 ### 7. Run post-PR supported-Linux lifecycle and onboarding tests
 
-“Collect supported-Linux VM evidence” means retaining a transcript of the complete privileged lifecycle on a fresh supported Linux VM, starting with no Swarm installation. It is deliberately after PR review and before publication; the hermetic CI smoke does not cover real service-account metadata, systemd, or user onboarding.
+“Collect supported-Linux VM evidence” means retaining a transcript of the complete privileged lifecycle on fresh supported Linux environments, starting with no Swarm installation. Ubuntu and Arch install/start/CLI coverage is automated in the PR/build workflows; a full VM remains authoritative for onboarding and update/rollback. Omarchy publishes a full ISO rather than an OCI image, so its supported proof uses the official ISO's unattended `cidata` path, a reusable clean base on testbench, and a throwaway overlay. Run the opt-in `omarchy-install` lane with the exact candidate archive and explicit SSH target; do not substitute a plain Arch container and call it Omarchy.
 
+- [ ] Confirm Ubuntu and Arch exact-SHA distro install jobs pass and retain their public CI result.
+- [ ] Boot a clean official-ISO Omarchy overlay on testbench and run `scripts/run-testbench-launch-prerun.sh --suite omarchy-install --candidate-archive <archive.tar.gz> --omarchy-guest <user@host>` with any required explicit port/identity options; retain the bounded result privately without recording connection details in public source.
 - [ ] Start from a clean supported-Linux VM or restored clean snapshot with no prior Swarm install; record the OS image and candidate SHA/version
 - [ ] Install the exact versioned candidate through the documented systemd path and verify service-account ownership, group, and `0600` mode for the canonical config
 - [ ] Test real systemd start, `swarm status`, `swarm open`/health reachability, stop, and restart
@@ -137,6 +140,10 @@ For the first stable release, there is no older public stable version from which
 - `scripts/check-precommit.sh`
 - `scripts/check-launch-readiness.sh`
 - `scripts/smoke-release-archive.sh`
+- `scripts/test-install-distro.sh`
+- `scripts/test-install-omarchy-vm.sh`
+- `scripts/run-testbench-launch-prerun.sh`
+- `.github/workflows/install-distro-smoke.yml`
 - `scripts/verify-release-candidate.sh`
 - `cmd/swarmsetup/main.go`
 - `internal/launcher/launcher.go`

@@ -243,7 +243,7 @@ provision_tmpfiles_config() {
   require_safe_target file "/etc/tmpfiles.d/swarmd.conf" || return 1
   uid="$(current_owner_uid)"
   gid="$(current_owner_gid)"
-  tmp_path="$(mktemp "${TMPDIR:?TMPDIR must be set}/swarmd-tmpfiles.XXXXXX")"
+  tmp_path="$(mktemp -t swarmd-tmpfiles.XXXXXX)"
   cat >"$tmp_path" <<EOF
 d /run/swarmd 0700 ${uid} ${gid} -
 d /run/swarmd/dev 0700 ${uid} ${gid} -
@@ -389,9 +389,13 @@ provision_system_paths() {
     provision_system_dir 0755 "/etc"/systemd/system
   fi
 
+  # Provision every owned parent before its children. A privileged `install -d`
+  # otherwise creates a missing intermediate parent as root before applying the
+  # requested owner to only the leaf, and the next safety check correctly
+  # refuses that root-owned parent.
+  provision_owned_dir 0755 /usr/local/share/swarm
   provision_owned_dir 0755 /usr/local/share/swarm/bin
   provision_owned_dir 0755 /usr/local/share/swarm/libexec
-  provision_owned_dir 0755 /usr/local/share/swarm
   provision_owned_dir 0755 /usr/local/share/swarm/share
   provision_owned_dir 0755 /usr/local/share/swarm/lib
 

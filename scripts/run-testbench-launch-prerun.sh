@@ -21,6 +21,8 @@ Default suites:
   provider-sync signed sync/realtime repair plus one real provider response
                 (uses the configured testbench provider/model; despite the
                 legacy underlying script name, Fireworks is not hard-required)
+  omarchy-install exact candidate install/start/CLI proof on a clean Omarchy VM overlay
+                (explicit opt-in; requires --omarchy-guest)
 
 Options:
   --jobs <n>                 Parallel suite limit (default: 4; maximum: 8)
@@ -37,6 +39,10 @@ Options:
   --runner-timeout-ms <ms>   API runner wait budget (default: 600000)
   --expected-commit <sha>    Candidate commit override for provider-sync (default: local HEAD)
   --remote-repo <path>       Candidate checkout override (default: discovered testbench checkout)
+  --candidate-archive <path> Exact release archive for omarchy-install
+  --omarchy-guest <user@host> Clean official-ISO Omarchy VM SSH target
+  --omarchy-port <n>         Optional Omarchy VM SSH port
+  --omarchy-identity <path>  Optional Omarchy VM SSH identity
   --evidence-dir <path>      Preserve aggregate logs at this ignored path
   --headful                  Show the Desktop Playwright browser
   -h, --help                 Show this help
@@ -61,7 +67,7 @@ source "${ROOT_DIR}/scripts/lib-testbench-e2e.sh"
 source "${ROOT_DIR}/scripts/lib-launch-prerun.sh"
 
 DEFAULT_SUITES=(critical onboarding desktop tui plan-auto task-routing task-program provider-sync)
-ALL_SUITES=("${DEFAULT_SUITES[@]}")
+ALL_SUITES=("${DEFAULT_SUITES[@]}" omarchy-install)
 JOBS=4
 DRY_RUN="false"
 LIST_SUITES="false"
@@ -74,6 +80,10 @@ TUI_TIMEOUT_SECONDS="180"
 RUNNER_TIMEOUT_MS="600000"
 EXPECTED_COMMIT="${SWARM_EXPECTED_COMMIT:-}"
 REMOTE_REPO="${SWARM_REMOTE_REPO:-}"
+CANDIDATE_ARCHIVE="${SWARM_INSTALL_CANDIDATE_ARCHIVE:-}"
+OMARCHY_GUEST=""
+OMARCHY_PORT=""
+OMARCHY_IDENTITY=""
 EVIDENCE_DIR=""
 SELECTED=()
 SKIPPED=()
@@ -93,6 +103,10 @@ while [[ $# -gt 0 ]]; do
     --runner-timeout-ms) [[ $# -ge 2 ]] || fail "--runner-timeout-ms requires a value"; RUNNER_TIMEOUT_MS="$2"; shift 2 ;;
     --expected-commit) [[ $# -ge 2 ]] || fail "--expected-commit requires a value"; EXPECTED_COMMIT="$2"; shift 2 ;;
     --remote-repo) [[ $# -ge 2 ]] || fail "--remote-repo requires a value"; REMOTE_REPO="$2"; shift 2 ;;
+    --candidate-archive) [[ $# -ge 2 ]] || fail "--candidate-archive requires a value"; CANDIDATE_ARCHIVE="$2"; shift 2 ;;
+    --omarchy-guest) [[ $# -ge 2 ]] || fail "--omarchy-guest requires a value"; OMARCHY_GUEST="$2"; shift 2 ;;
+    --omarchy-port) [[ $# -ge 2 ]] || fail "--omarchy-port requires a value"; OMARCHY_PORT="$2"; shift 2 ;;
+    --omarchy-identity) [[ $# -ge 2 ]] || fail "--omarchy-identity requires a value"; OMARCHY_IDENTITY="$2"; shift 2 ;;
     --evidence-dir) [[ $# -ge 2 ]] || fail "--evidence-dir requires a value"; EVIDENCE_DIR="$2"; shift 2 ;;
     --headful) HEADFUL="true"; shift ;;
     -h|--help) usage; exit 0 ;;
@@ -195,6 +209,13 @@ suite_command() {
       ;;
     provider-sync)
       built=(env SWARM_EXPECTED_COMMIT="${EXPECTED_COMMIT}" SWARM_REMOTE_REPO="${REMOTE_REPO}" SWARM_LIVE_STREAM_PROVIDER="${SWARM_TESTBENCH_PROVIDER}" SWARM_LIVE_STREAM_MODEL="${SWARM_TESTBENCH_ACTION_MODEL}" "${ROOT_DIR}/scripts/v3-sync-fireworks-e2e-testbench.sh" "${SWARM_PRIMARY_SSH}")
+      ;;
+    omarchy-install)
+      [[ -n "${CANDIDATE_ARCHIVE}" ]] || fail "omarchy-install requires --candidate-archive"
+      [[ -n "${OMARCHY_GUEST}" ]] || fail "omarchy-install requires --omarchy-guest"
+      built=("${ROOT_DIR}/scripts/test-install-omarchy-vm.sh" --archive "${CANDIDATE_ARCHIVE}" --guest "${OMARCHY_GUEST}")
+      if [[ -n "${OMARCHY_PORT}" ]]; then built+=(--port "${OMARCHY_PORT}"); fi
+      if [[ -n "${OMARCHY_IDENTITY}" ]]; then built+=(--identity "${OMARCHY_IDENTITY}"); fi
       ;;
     *) fail "unsupported suite ${suite}" ;;
   esac
