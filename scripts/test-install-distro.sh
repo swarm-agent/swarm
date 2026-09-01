@@ -13,8 +13,8 @@ and verifies the installed CLI and active service.
 
 Environment:
   SWARM_INSTALL_DISTRO_RUNTIME  Container runtime command (default: podman, then docker)
-  SWARM_INSTALL_UBUNTU_IMAGE    Ubuntu image (default: ubuntu:24.04)
-  SWARM_INSTALL_ARCH_IMAGE      Arch image (default: archlinux:base)
+  SWARM_INSTALL_UBUNTU_IMAGE    Ubuntu image (default: docker.io/library/ubuntu:24.04)
+  SWARM_INSTALL_ARCH_IMAGE      Arch image (default: docker.io/library/archlinux:base)
 
 Omarchy publishes a full installation ISO rather than an OCI image; use
 scripts/test-install-omarchy-vm.sh against a clean official-ISO VM overlay.
@@ -57,11 +57,11 @@ command -v "${RUNTIME}" >/dev/null 2>&1 || fail "container runtime not found: ${
 
 case "${DISTRO}" in
   ubuntu)
-    IMAGE="${SWARM_INSTALL_UBUNTU_IMAGE:-ubuntu:24.04}"
+    IMAGE="${SWARM_INSTALL_UBUNTU_IMAGE:-docker.io/library/ubuntu:24.04}"
     BOOTSTRAP='apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ca-certificates curl sudo systemd'
     ;;
   arch)
-    IMAGE="${SWARM_INSTALL_ARCH_IMAGE:-archlinux:base}"
+    IMAGE="${SWARM_INSTALL_ARCH_IMAGE:-docker.io/library/archlinux:base}"
     BOOTSTRAP='pacman -Syu --noconfirm --needed ca-certificates curl sudo systemd'
     ;;
 esac
@@ -77,7 +77,7 @@ cleanup() {
   rm -rf -- "${build_root}"
 }
 trap cleanup EXIT INT TERM
-printf 'FROM %s\nRUN %s\nSTOPSIGNAL SIGRTMIN+3\nCMD ["/sbin/init"]\n' "${IMAGE}" "${BOOTSTRAP}" >"${build_root}/Containerfile"
+printf 'FROM %s\nRUN %s\nSTOPSIGNAL SIGRTMIN+3\nCMD ["/usr/lib/systemd/systemd"]\n' "${IMAGE}" "${BOOTSTRAP}" >"${build_root}/Containerfile"
 "${RUNTIME}" build --pull -t "${test_image}" -f "${build_root}/Containerfile" "${build_root}"
 
 run_args=(run --rm --name "${container_name}" --privileged)
