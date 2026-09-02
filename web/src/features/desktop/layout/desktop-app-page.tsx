@@ -58,9 +58,11 @@ import { startWorkspaceAction, type WorkspaceAction, type WorkspaceActionRun } f
 import { WorkspaceActionsSidebarSection } from '../settings/actions/components/workspace-actions-sidebar-section'
 import { fetchDesktopUpdateJob, fetchDesktopUpdateStatus, startDesktopUpdate, type DesktopUpdateJob } from '../update/api'
 import {
+  groupSidebarTaskCallSiblings,
   sessionBackgroundInfo,
   sessionChildDescriptor,
   sessionParentSessionID,
+  sidebarTaskCallPresentationGroups,
   type SidebarSessionNodeKind,
 } from './sidebar-session-lineage'
 import { dispatchDesktopV3Cache, useDesktopV3CacheSelector } from '../state/desktop-v3-cache-store'
@@ -1637,6 +1639,7 @@ interface SidebarSessionNode {
   kind: SidebarSessionNodeKind
   label: string | null
   assignmentLabel: string | null
+  taskCallId: string | null
 }
 
 export function buildSidebarSessionTree(sessions: DesktopSessionRecord[], now: number, preserveInputOrder = false): SidebarSessionNode[] {
@@ -1655,6 +1658,7 @@ export function buildSidebarSessionTree(sessions: DesktopSessionRecord[], now: n
       kind: descriptor.kind,
       label: descriptor.label,
       assignmentLabel: descriptor.assignmentLabel,
+      taskCallId: descriptor.taskCallId,
     })
   }
 
@@ -1695,6 +1699,8 @@ export function buildSidebarSessionTree(sessions: DesktopSessionRecord[], now: n
 
   const sortNodes = (nodes: SidebarSessionNode[]) => {
     nodes.sort((left, right) => compareSidebarSessions(left.session, right.session, now))
+    const grouped = groupSidebarTaskCallSiblings(nodes)
+    nodes.splice(0, nodes.length, ...grouped)
     for (const node of nodes) {
       if (node.children.length > 0) {
         sortNodes(node.children)
@@ -2427,34 +2433,45 @@ function renderSidebarSessionGroups(input: RenderSidebarSessionGroupsInput): JSX
           </div>
         )}
         <div className="grid gap-1">
-          {nodes.map((node) => (
-          <SessionRow
-            key={node.session.id}
-            active={input.routeSessionId === node.session.id}
-            now={input.now}
-            session={node.session}
-            workspaceSlug={input.workspaceSlug}
-            depth={node.depth}
-            childLabel={node.label}
-            childAssignmentLabel={node.assignmentLabel}
-            childKind={node.kind}
-            agentSummary={input.agentSummaries.get(node.session.id) ?? EMPTY_SESSION_AGENT_SUMMARY}
-            agentsExpanded={Boolean(input.expandedAgentSessions[node.session.id]) || nodeContainsDescendantSession(node, input.routeSessionId || undefined)}
-            compactingStartedAt={input.compactingSession?.sessionId === node.session.id ? input.compactingSession.startedAt : null}
-            pendingAction={input.pendingActions[node.session.id] ?? null}
-            selectionMode={input.selectionMode && input.masterSelectionGroup === group.id}
-            selectionGroup={group.id}
-            selected={input.selectedRootIDs.has(node.session.id)}
-            onSelect={input.onSelect}
-            onEnterSelectionMode={input.onEnterSelectionMode}
-            onToggleSelected={input.onToggleSelected}
-            onPrefetch={input.onPrefetch}
-            onToggleAgents={input.onToggleAgents}
-            onTogglePinned={input.onTogglePinned}
-            onArchive={input.onArchive}
-            onRename={input.onRename}
-          />
-          ))}
+          {sidebarTaskCallPresentationGroups(nodes).map((taskGroup) => {
+            const taskCallId = taskGroup[0]?.taskCallId?.trim() ?? ''
+            return (
+              <div
+                key={taskCallId ? `task:${taskCallId}` : taskGroup[0]?.session.id}
+                data-sidebar-task-group={taskCallId || undefined}
+                className={cn('grid gap-1', taskCallId && taskGroup.length > 1 ? 'rounded-md border border-[var(--app-border)]/45 bg-[var(--app-bg-alt)]/15 p-1' : null)}
+              >
+                {taskGroup.map((node) => (
+                  <SessionRow
+                    key={node.session.id}
+                    active={input.routeSessionId === node.session.id}
+                    now={input.now}
+                    session={node.session}
+                    workspaceSlug={input.workspaceSlug}
+                    depth={node.depth}
+                    childLabel={node.label}
+                    childAssignmentLabel={node.assignmentLabel}
+                    childKind={node.kind}
+                    agentSummary={input.agentSummaries.get(node.session.id) ?? EMPTY_SESSION_AGENT_SUMMARY}
+                    agentsExpanded={Boolean(input.expandedAgentSessions[node.session.id]) || nodeContainsDescendantSession(node, input.routeSessionId || undefined)}
+                    compactingStartedAt={input.compactingSession?.sessionId === node.session.id ? input.compactingSession.startedAt : null}
+                    pendingAction={input.pendingActions[node.session.id] ?? null}
+                    selectionMode={input.selectionMode && input.masterSelectionGroup === group.id}
+                    selectionGroup={group.id}
+                    selected={input.selectedRootIDs.has(node.session.id)}
+                    onSelect={input.onSelect}
+                    onEnterSelectionMode={input.onEnterSelectionMode}
+                    onToggleSelected={input.onToggleSelected}
+                    onPrefetch={input.onPrefetch}
+                    onToggleAgents={input.onToggleAgents}
+                    onTogglePinned={input.onTogglePinned}
+                    onArchive={input.onArchive}
+                    onRename={input.onRename}
+                  />
+                ))}
+              </div>
+            )
+          })}
         </div>
       </section>
     )]
@@ -2985,6 +3002,7 @@ export function DesktopAppPage() {
         kind: 'background',
         label: null,
         assignmentLabel: null,
+        taskCallId: null,
       })),
     [sidebarNow, videoStudioSessions],
   )

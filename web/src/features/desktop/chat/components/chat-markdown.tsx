@@ -1027,7 +1027,7 @@ function TaskRowsHeader({ counts, rows = [], swarm = false, strategy = "explore"
   );
 }
 
-function TaskSwarmCompactRow({ row, index, actions, density }: { row: TaskToolRow; index: number; actions?: TaskChildCardActions; density: TaskSwarmDensity }) {
+function TaskSwarmCompactRow({ row, index, actions, density, forceLiveDemand = false }: { row: TaskToolRow; index: number; actions?: TaskChildCardActions; density: TaskSwarmDensity; forceLiveDemand?: boolean }) {
   return (
     <TaskChildInteractiveRow
       row={row}
@@ -1035,6 +1035,7 @@ function TaskSwarmCompactRow({ row, index, actions, density }: { row: TaskToolRo
       className={cn("group h-full min-w-0 overflow-hidden border border-[var(--app-border)] bg-[color-mix(in_srgb,var(--app-bg-alt)_34%,transparent)]", density === "signal" ? "rounded-sm" : "rounded-md")}
       showContext={false}
       viewportDemand={false}
+      forceLiveDemand={forceLiveDemand}
     >
       {(effectiveRow) => <TaskSwarmCompactRowContent row={effectiveRow} index={index} density={density} />}
     </TaskChildInteractiveRow>
@@ -1084,6 +1085,7 @@ const MemoizedTaskSwarmCompactRow = memo(TaskSwarmCompactRow, (previous, next) =
   previous.index === next.index
   && previous.actions === next.actions
   && previous.density === next.density
+  && previous.forceLiveDemand === next.forceLiveDemand
   && taskRowsEqual(previous.row, next.row, { comparePreview: false })
 ));
 
@@ -1180,6 +1182,50 @@ function taskProgramStageLabel(state: TaskProgram["stages"][number]["state"]): s
   }
 }
 
+const TASK_PROGRAM_GRID_THRESHOLD = 5;
+
+export function taskProgramStageLayout(rowCount: number): { compact: boolean; density: TaskSwarmDensity; minColumnWidth: string } {
+  const count = Math.max(0, rowCount);
+  const density = taskSwarmLayout(Math.max(1, count), 420, 720).density;
+  const minColumnWidth = density === "detailed"
+    ? "13rem"
+    : density === "compact"
+      ? "10rem"
+      : density === "micro"
+        ? "8rem"
+        : density === "dense"
+          ? "6rem"
+          : "5rem";
+  return { compact: count > TASK_PROGRAM_GRID_THRESHOLD, density, minColumnWidth };
+}
+
+function TaskProgramStageRows({ stage, actions, programIsActive }: { stage: TaskProgram["stages"][number]; actions?: TaskChildCardActions; programIsActive: boolean }) {
+  const layout = taskProgramStageLayout(stage.rows.length);
+  if (!layout.compact) {
+    return (
+      <div className="min-w-0 overflow-hidden">
+        {stage.rows.map((row, rowIndex) => {
+          const rowIsActive = stage.state === "active" && taskStatusKind(row) === "running" && !row.terminal;
+          return <MemoizedTaskAgentListRow key={taskRowKey(row, rowIndex)} row={row} index={rowIndex} dense={false} actions={actions} forceLiveDemand={programIsActive && rowIsActive} />;
+        })}
+      </div>
+    );
+  }
+  return (
+    <div
+      className="grid min-w-0 gap-1.5 overflow-hidden p-2"
+      style={{ gridTemplateColumns: `repeat(auto-fit, minmax(min(100%, ${layout.minColumnWidth}), 1fr))`, gridAutoRows: layout.density === "detailed" ? 42 : layout.density === "compact" ? 34 : layout.density === "micro" ? 28 : layout.density === "dense" ? 24 : 20 }}
+      data-task-program-stage-grid
+      data-task-program-stage-density={layout.density}
+    >
+      {stage.rows.map((row, rowIndex) => {
+        const rowIsActive = stage.state === "active" && taskStatusKind(row) === "running" && !row.terminal;
+        return <MemoizedTaskSwarmCompactRow key={taskRowKey(row, rowIndex)} row={row} index={rowIndex} actions={actions} density={layout.density} forceLiveDemand={programIsActive && rowIsActive} />;
+      })}
+    </div>
+  );
+}
+
 function TaskProgramRowsView({ program, actions }: { program: TaskProgram; actions?: TaskChildCardActions }) {
   const programIsActive = ["declared", "pending", "running", "active", "waiting"].includes(program.state.trim().toLowerCase());
   const [expanded, setExpanded] = useState(programIsActive);
@@ -1223,12 +1269,7 @@ function TaskProgramRowsView({ program, actions }: { program: TaskProgram; actio
                 <div className="border-t border-[var(--app-border)] px-3 py-1.5 text-[10px] text-[var(--app-text-muted)]">
                   Dependencies: {dependencyLabel}{stage.dependencyEvidence ? ` · ${stage.dependencyEvidence}` : ""}
                 </div>
-                <div className="min-w-0 overflow-hidden">
-                  {stage.rows.map((row, rowIndex) => {
-                    const rowIsActive = stage.state === "active" && taskStatusKind(row) === "running" && !row.terminal;
-                    return <MemoizedTaskAgentListRow key={taskRowKey(row, rowIndex)} row={row} index={rowIndex} dense={false} actions={actions} forceLiveDemand={programIsActive && rowIsActive} />;
-                  })}
-                </div>
+                <TaskProgramStageRows stage={stage} actions={actions} programIsActive={programIsActive} />
               </section>
             );
           })}

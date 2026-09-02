@@ -6,6 +6,8 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ## Unreleased
 
+- Fix fresh Linux system installs by provisioning the Swarm-owned runtime root before its children, remove the caller `TMPDIR` requirement from systemd installation, and add Ubuntu/Arch PR-build plus official-ISO Omarchy testbench install coverage.
+
 ### Added
 
 - Added workspace Actions with structured inputs, quick-access pins, AI-assisted commit orchestration, and Desktop/TUI management surfaces.
@@ -35,6 +37,8 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ### Fixed
 
+- Gave managed Designers one bounded refinement round for allowlisted author-correctable animation failures, using a fresh immutable candidate in the same collection while preserving failed artifacts and all strict trust checks.
+- Made managed Designer task failures report the artifact's concrete failure code separately from trusted-lineage and composition rejection.
 - Removed the retired hosted remote-deploy product surface while preserving Swarm targets, topology runtime placement, and workspace bindings.
 - Retired dedicated local-container execution and its APIs, including dev image synchronization, image release artifacts, container-only harness commands, and container-specific configuration.
 - Preserved V3 sessions/sync/realtime and generic Swarm-target routing as current critical contracts; containers and other non-local execution remain possible future runner targets rather than current local-container behavior.
@@ -64,7 +68,7 @@ Release entries are the source checkpoint for public docs verification. Each ent
 - Public command docs should describe `/voice` as experimental terminal voice input only, not as a fully supported voice product.
 - Public TUI workspace guidance should explain that `/workspace save` saves and switches to an unsaved Git launch directory.
 - Public video documentation should cover deterministic HTML animation export, trusted registered audio sources, transcription and deterministic audio analysis, reviewed soundtrack proposals, and the current no-fades/no-looping/no-ducking limits.
-- Docs impact: none for the Tailscale host-update authorization correction, cryptography dependency correction, plan execution badge cleanup, Desktop sidebar responsiveness refinements, or internal test-governance and release-gate wiring.
+- Docs impact: none for managed Designer bounded refinement/failure diagnostics, the Tailscale host-update authorization correction, cryptography dependency correction, plan execution badge cleanup, Desktop sidebar responsiveness refinements, or internal test-governance and release-gate wiring.
 
 ## v0.1.19 - 2026-05-01
 

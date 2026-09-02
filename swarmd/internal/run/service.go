@@ -36,20 +36,21 @@ import (
 )
 
 const (
-	defaultHistoryLimit          = 500
-	maxToolPreviewChars          = 280
-	maxToolDeltaChars            = 4000
-	maxToolInputBytes            = 96 * 1024
-	maxToolInputPreview          = 1200
-	maxRulePromptFiles           = 3
-	maxRulePromptSourceBytes     = 32 * 1024
-	maxRulePromptAggregateBytes  = 64 * 1024
-	runFailurePathID             = "run.turn.error.v3"
-	messageMetadataSourceRunTurn = "run_turn"
-	emptyStepRetryBase           = 250 * time.Millisecond
-	emptyStepRetryMax            = 2 * time.Second
-	emptyStepRetryLimit          = 2
-	designerToolFailureLimit     = 3
+	defaultHistoryLimit                   = 500
+	maxToolPreviewChars                   = 280
+	maxToolDeltaChars                     = 4000
+	maxToolInputBytes                     = 96 * 1024
+	maxToolInputPreview                   = 1200
+	maxRulePromptFiles                    = 3
+	maxRulePromptSourceBytes              = 32 * 1024
+	maxRulePromptAggregateBytes           = 64 * 1024
+	runFailurePathID                      = "run.turn.error.v3"
+	messageMetadataSourceRunTurn          = "run_turn"
+	emptyStepRetryBase                    = 250 * time.Millisecond
+	emptyStepRetryMax                     = 2 * time.Second
+	emptyStepRetryLimit                   = 2
+	designerToolFailureLimit              = 3
+	designerManagedRefinementAttemptLimit = 1
 
 	contextCompactionRetryLimit             = 2
 	memoryCompactionHeartbeatInterval       = 2 * time.Second
@@ -327,6 +328,10 @@ type RunResult struct {
 	Background       bool                                  `json:"background,omitempty"`
 	TargetKind       string                                `json:"target_kind,omitempty"`
 	TargetName       string                                `json:"target_name,omitempty"`
+	// ArtifactRunContext returns the final trusted managed destination after any
+	// bounded Designer-only refinement round. It is internal orchestration state,
+	// never provider-authored output.
+	ArtifactRunContext *tool.ArtifactRunContext `json:"-"`
 }
 
 func (s *Service) resolveExecutionMode(requestMode string, agentProfile pebblestore.AgentProfile) (string, string, error) {
@@ -1286,6 +1291,7 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 	}
 	isDesignerRun := agentruntime.IsDesignerAgentName(activeAgent)
 	designerFailures := designerToolFailureState{}
+	designerManagedRefinementAttempts := 0
 
 	resolvedPreference, err := s.resolveMainSessionPreference(sessionID)
 	if err != nil {
@@ -2800,10 +2806,21 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 				return RunResult{}, err
 			}
 		}
+		designerRefinementFeedback := ""
 		if isDesignerRun {
-			if terminalFailure, stop := designerFailures.Observe(toolCalls, gatedResults); stop {
+			refinementIndex, refinementCode, refinementEligible := managedDesignerRefinementCandidate(activeAgent, options.ArtifactRunContext, designerManagedRefinementAttempts, toolCalls, gatedResults)
+			if terminalFailure, stop := designerFailures.ObserveSkipping(toolCalls, gatedResults, refinementIndex); stop {
 				assistantFragments = append(assistantFragments, terminalFailure)
 				break
+			}
+			if refinementEligible {
+				refined, refinementErr := s.allocateManagedDesignerRefinementContext(sessionSnapshot, options.ArtifactRunContext, options.ApplySessionMutation)
+				if refinementErr != nil {
+					return RunResult{}, fmt.Errorf("allocate bounded managed Designer refinement: %w", refinementErr)
+				}
+				options.ArtifactRunContext = refined
+				designerManagedRefinementAttempts++
+				designerRefinementFeedback = managedDesignerRefinementFeedback(refinementCode)
 			}
 		}
 		if guardCompactHandoff != "" {
@@ -2859,6 +2876,14 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 		nextInput = append(nextInput, nextInputFunctionCalls...)
 		nextInput = append(nextInput, nextInputFunctionOutputs...)
 		nextInput = append(nextInput, providerToolMediaInputItems(gatedResults)...)
+		if designerRefinementFeedback != "" {
+			nextInput = append(nextInput, map[string]any{
+				"role": "user",
+				"content": []map[string]any{
+					{"type": "input_text", "text": designerRefinementFeedback},
+				},
+			})
+		}
 		if feedbackInput := buildPermissionFeedbackInput(permissionFeedback); feedbackInput != "" {
 			runPermissionDebugf("run_turn.feedback_append session=%s run=%s step=%d payload_chars=%d", sessionID, runID, step, len(feedbackInput))
 			nextInput = append(nextInput, map[string]any{
@@ -2899,23 +2924,24 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 	runFailed = false
 
 	return RunResult{
-		SessionID:        sessionID,
-		Agent:            activeAgent,
-		Model:            resolvedPreference.Preference.Model,
-		Thinking:         resolvedPreference.Preference.Thinking,
-		ReasoningSummary: reasoningSummary,
-		Steps:            stepsCompleted,
-		ToolCallCount:    totalToolCalls,
-		TurnUsage:        turnUsageRecord,
-		UsageSummary:     usageSummaryState,
-		UserMessage:      userMessage,
-		ToolMessages:     toolMessages,
-		Commentary:       commentaryMessages,
-		AssistantMessage: assistantMessage,
-		Events:           events,
-		Background:       options.Background,
-		TargetKind:       targetKind,
-		TargetName:       targetName,
+		SessionID:          sessionID,
+		Agent:              activeAgent,
+		Model:              resolvedPreference.Preference.Model,
+		Thinking:           resolvedPreference.Preference.Thinking,
+		ReasoningSummary:   reasoningSummary,
+		Steps:              stepsCompleted,
+		ToolCallCount:      totalToolCalls,
+		TurnUsage:          turnUsageRecord,
+		UsageSummary:       usageSummaryState,
+		UserMessage:        userMessage,
+		ToolMessages:       toolMessages,
+		Commentary:         commentaryMessages,
+		AssistantMessage:   assistantMessage,
+		Events:             events,
+		Background:         options.Background,
+		TargetKind:         targetKind,
+		TargetName:         targetName,
+		ArtifactRunContext: cloneArtifactRunContext(options.ArtifactRunContext),
 	}, nil
 }
 
@@ -2924,12 +2950,19 @@ type designerToolFailureState struct {
 }
 
 func (s *designerToolFailureState) Observe(calls []tool.Call, results []tool.Result) (string, bool) {
+	return s.ObserveSkipping(calls, results, -1)
+}
+
+func (s *designerToolFailureState) ObserveSkipping(calls []tool.Call, results []tool.Result, skippedIndex int) (string, bool) {
 	if s == nil {
 		return "", false
 	}
 	for i := range calls {
 		if i >= len(results) {
 			break
+		}
+		if i == skippedIndex {
+			continue
 		}
 		detail := strings.TrimSpace(results[i].Error)
 		if detail == "" {
@@ -2944,6 +2977,78 @@ func (s *designerToolFailureState) Observe(calls []tool.Call, results []tool.Res
 		}
 	}
 	return "", false
+}
+
+func managedDesignerRefinementCandidate(activeAgent string, run *tool.ArtifactRunContext, attempts int, calls []tool.Call, results []tool.Result) (int, string, bool) {
+	if !agentruntime.IsDesignerAgentName(activeAgent) || run == nil || strings.TrimSpace(run.CollectionID) == "" || strings.TrimSpace(run.VariantID) == "" || attempts >= designerManagedRefinementAttemptLimit {
+		return -1, "", false
+	}
+	for i := range calls {
+		if i >= len(results) || !designerManagedPublicationCall(calls[i]) {
+			continue
+		}
+		code := designerManagedPublicationFailureCode(results[i].Error)
+		if designerManagedPublicationRefinementEligible(code) {
+			return i, code, true
+		}
+	}
+	return -1, "", false
+}
+
+func designerManagedPublicationFailureCode(detail string) string {
+	detail = strings.TrimSpace(detail)
+	const marker = "(code="
+	start := strings.Index(detail, marker)
+	if start < 0 {
+		return ""
+	}
+	start += len(marker)
+	end := strings.Index(detail[start:], ")")
+	if end <= 0 {
+		return ""
+	}
+	code := detail[start : start+end]
+	for _, r := range code {
+		if (r < 'a' || r > 'z') && (r < '0' || r > '9') && r != '_' {
+			return ""
+		}
+	}
+	return code
+}
+
+func designerManagedPublicationRefinementEligible(code string) bool {
+	switch strings.TrimSpace(code) {
+	case "animation_bind_timeout",
+		"animation_blocked",
+		"animation_bootstrap_missing",
+		"animation_frame_unstable",
+		"animation_manifest_invalid",
+		"animation_manifest_mismatch",
+		"animation_manifest_missing",
+		"animation_network_blocked",
+		"animation_not_ready",
+		"animation_playback_missing",
+		"animation_runtime_missing_before_dom_content_loaded",
+		"animation_seek_ack_mismatch",
+		"animation_seek_failed",
+		"animation_seek_rejected",
+		"animation_seek_timeout",
+		"animation_source_invalid",
+		"animation_timeout",
+		"animation_viewport_overflow":
+		return true
+	default:
+		return false
+	}
+}
+
+func managedDesignerRefinementFeedback(code string) string {
+	code = strings.TrimSpace(code)
+	correction := "Preserve every already-valid manifest, runtime, timeline, bridge, design, and output requirement; copy the prior complete source unchanged except for the smallest edits that fix this exact failure. Do not reconstruct, minify, or broadly re-author the document during correction."
+	if code == "animation_viewport_overflow" {
+		correction = "The prior candidate reached the viewport audit, so its parser-time runtime binding and earlier animation checks already succeeded. Preserve the complete classic head bootstrap/runtime, manifests, timeline, bridge, and design unchanged. Correct only the reported containment defect with the smallest CSS, bounds, clipping, or transform edits; do not reconstruct, minify, or broadly re-author the document."
+	}
+	return fmt.Sprintf("Bounded managed Designer refinement 1 of 1: the previous immutable candidate failed trusted validation with failure_code %q. A fresh trusted destination has been allocated in the same collection. Correct that concrete authored defect and publish one complete replacement candidate. %s Do not reuse or claim the failed reference, and do not attempt another publication if this refinement fails.", code, correction)
 }
 
 func designerManagedPublicationCall(call tool.Call) bool {

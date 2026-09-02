@@ -328,6 +328,51 @@ func managedDesignerArtifactContext(parent pebblestore.SessionSnapshot, taskCall
 	return run
 }
 
+// allocateManagedDesignerRefinementContext creates one fresh immutable destination
+// for the same logical Designer candidate after an author-correctable trusted
+// publication failure. The failed variant remains terminal and visible; only the
+// newly allocated destination can become the successful handoff.
+func (s *Service) allocateManagedDesignerRefinementContext(parent pebblestore.SessionSnapshot, failed *tool.ArtifactRunContext, applySessionMutation func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error)) (*tool.ArtifactRunContext, error) {
+	if failed == nil {
+		return nil, errors.New("managed Designer refinement requires the failed trusted destination")
+	}
+	parent.ID, parent.AccountScopeID, parent.UserID = strings.TrimSpace(parent.ID), strings.TrimSpace(parent.AccountScopeID), strings.TrimSpace(parent.UserID)
+	if trustedParentID := strings.TrimSpace(failed.SessionID); parent.ID != trustedParentID {
+		if s == nil || s.sessions == nil || trustedParentID == "" {
+			return nil, errors.New("managed Designer refinement cannot resolve its trusted parent session")
+		}
+		resolved, ok, err := s.sessions.GetSession(trustedParentID)
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			return nil, errors.New("managed Designer refinement trusted parent session was not found")
+		}
+		parent = resolved
+		parent.ID, parent.AccountScopeID, parent.UserID = strings.TrimSpace(parent.ID), strings.TrimSpace(parent.AccountScopeID), strings.TrimSpace(parent.UserID)
+	}
+	if parent.ID == "" || parent.AccountScopeID == "" || parent.UserID == "" || strings.TrimSpace(failed.SessionID) != parent.ID || strings.TrimSpace(failed.TaskCallID) == "" || strings.TrimSpace(failed.ChildSessionID) == "" || strings.TrimSpace(failed.CollectionID) == "" || strings.TrimSpace(failed.VariantID) == "" {
+		return nil, errors.New("managed Designer refinement has incomplete trusted ownership or lineage")
+	}
+	refined := cloneArtifactRunContext(failed)
+	refinementKey := strings.Join([]string{strings.TrimSpace(failed.TaskCallID), strings.TrimSpace(failed.VariantID), "refinement:1"}, "\x00")
+	refined.VariantID = taskManagedArtifactID("variant", parent.ID, refinementKey, 1)
+	refined.ArtifactStepID = taskManagedArtifactID("step", parent.ID, refinementKey, 1)
+	refined.RunID, refined.PlanID, refined.CheckpointID, refined.AttemptID = "", "", "", ""
+	launch := taskLaunchPrepared{
+		LaunchIndex:        maxInt(1, refined.CandidateIndex),
+		RequestedSubagent:  "designer",
+		OutputMode:         taskOutputModeManaged,
+		ArtifactRunContext: refined,
+		SourceArtifact:     cloneTaskImageSourceArtifact(refined.SourceArtifact),
+		ChildSession:       pebblestore.SessionSnapshot{ID: refined.ChildSessionID},
+	}
+	if err := s.ensureManagedDesignerArtifactPlaceholders(parent, []taskLaunchPrepared{launch}, applySessionMutation); err != nil {
+		return nil, err
+	}
+	return refined, nil
+}
+
 // ensureManagedDesignerArtifactCollection reserves the parent-owned destination
 // before any child session is created. Cohorts within one Task Program resolve
 // the same collection from ProgramID.
@@ -699,6 +744,34 @@ func taskArtifactReferenceFromVariant(sessionID string, variant pebblestore.Sess
 		reference.SectionTarget = &taskSwarmSectionTarget{ID: lineage.IterationSectionID, Label: lineage.IterationSectionLabel, StartMs: lineage.IterationSectionStartMs, EndMs: lineage.IterationSectionEndMs}
 	}
 	return reference
+}
+
+func managedDesignerArtifactHandoffError(variant pebblestore.SessionArtifactVariant, run *tool.ArtifactRunContext, lineageMatches, compositionMatches bool) error {
+	if run == nil {
+		return errors.New("managed Designer artifact validation is missing its trusted run context")
+	}
+	if variant.CollectionID != run.CollectionID || variant.ID != run.VariantID {
+		return fmt.Errorf("managed Designer artifact %q does not match trusted destination variant %q in collection %q", variant.ID, run.VariantID, run.CollectionID)
+	}
+	if variant.Status != pebblestore.SessionArtifactStatusReady {
+		if failureCode := strings.TrimSpace(variant.FailureCode); failureCode != "" {
+			return fmt.Errorf("managed Designer artifact %q is %q with failure_code %q; want ready at collection %q", variant.ID, variant.Status, failureCode, run.CollectionID)
+		}
+		return fmt.Errorf("managed Designer artifact %q is %q; want ready at collection %q", variant.ID, variant.Status, run.CollectionID)
+	}
+	if !lineageMatches {
+		return fmt.Errorf("managed Designer artifact %q has invalid trusted lineage for collection %q", variant.ID, run.CollectionID)
+	}
+	if !compositionMatches {
+		return fmt.Errorf("managed Designer artifact %q has an invalid trusted composition for collection %q", variant.ID, run.CollectionID)
+	}
+	if !reflect.DeepEqual(variant.OutputRequirements, run.OutputRequirements) {
+		return fmt.Errorf("managed Designer artifact %q does not match trusted output requirements for collection %q", variant.ID, run.CollectionID)
+	}
+	if !reflect.DeepEqual(variant.AnimationProfile, run.AnimationProfile) {
+		return fmt.Errorf("managed Designer artifact %q does not match the trusted animation profile for collection %q", variant.ID, run.CollectionID)
+	}
+	return nil
 }
 
 type taskReportRef struct {
@@ -5149,7 +5222,7 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 					compositionMatches = false
 				}
 			}
-			if variant.CollectionID != launch.ArtifactRunContext.CollectionID || variant.ID != launch.ArtifactRunContext.VariantID || variant.Status != pebblestore.SessionArtifactStatusReady || !lineageMatches || !compositionMatches || !reflect.DeepEqual(variant.OutputRequirements, launch.ArtifactRunContext.OutputRequirements) || !reflect.DeepEqual(variant.AnimationProfile, launch.ArtifactRunContext.AnimationProfile) {
+			if handoffErr := managedDesignerArtifactHandoffError(variant, launch.ArtifactRunContext, lineageMatches, compositionMatches); handoffErr != nil {
 				if variant.Status == pebblestore.SessionArtifactStatusStaging {
 					markMissing("managed_output_invalid")
 				} else {
@@ -5160,7 +5233,7 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 						outcome.ArtifactReference.FailureCode = "managed_output_invalid"
 					}
 				}
-				return outcome, fmt.Errorf("managed Designer artifact %q is %q or has invalid trusted lineage; want ready at collection %q", variant.ID, variant.Status, launch.ArtifactRunContext.CollectionID)
+				return outcome, handoffErr
 			}
 			if agentruntime.IsDesignerAgentName(launch.RequestedSubagent) && launch.AnimationProfile != nil && strings.EqualFold(strings.TrimSpace(variant.MediaType), "text/html") {
 				if inspectionErr := validateManagedAnimatedDesignerInspectionEvidence(outcome, report); inspectionErr != nil {

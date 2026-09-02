@@ -3,7 +3,7 @@ import test from 'node:test'
 
 import type { DesktopSessionRecord } from '../types/realtime'
 
-import { sessionBackgroundInfo, sessionChildDescriptor, sessionParentSessionID } from './sidebar-session-lineage'
+import { groupSidebarTaskCallSiblings, sessionBackgroundInfo, sessionChildDescriptor, sessionParentSessionID, sidebarTaskCallPresentationGroups } from './sidebar-session-lineage'
 
 function makeSession(overrides: Partial<DesktopSessionRecord> = {}): DesktopSessionRecord {
   return {
@@ -82,7 +82,7 @@ test('session lineage ignores self-parent task launch metadata for routed TUI se
   })
 
   assert.equal(sessionParentSessionID(session), '')
-  assert.deepEqual(sessionChildDescriptor(session), { kind: 'root', label: null, assignmentLabel: null })
+  assert.deepEqual(sessionChildDescriptor(session), { kind: 'root', label: null, assignmentLabel: null, taskCallId: null })
 })
 
 test('session lineage keeps real background children background-targeted from direct metadata', () => {
@@ -110,7 +110,7 @@ test('session lineage keeps real background children background-targeted from di
   })
 
   assert.equal(sessionParentSessionID(session), 'parent-session')
-  assert.deepEqual(sessionChildDescriptor(session), { kind: 'background', label: 'background', assignmentLabel: null })
+  assert.deepEqual(sessionChildDescriptor(session), { kind: 'background', label: 'background', assignmentLabel: null, taskCallId: null })
 })
 
 test('background session info exposes lineage activity without target-label presentation data', () => {
@@ -177,7 +177,7 @@ test('session lineage keeps real subagent children labeled as subagents', () => 
   })
 
   assert.equal(sessionParentSessionID(session), 'parent-session')
-  assert.deepEqual(sessionChildDescriptor(session), { kind: 'subagent', label: '@parallel', assignmentLabel: null })
+  assert.deepEqual(sessionChildDescriptor(session), { kind: 'subagent', label: '@parallel', assignmentLabel: null, taskCallId: null })
 })
 
 test('canonical delegated subagent V3 metadata classifies child as subagent lineage', () => {
@@ -190,12 +190,13 @@ test('canonical delegated subagent V3 metadata classifies child as subagent line
       requested_subagent: 'purpose-review',
       subagent: 'reviewer',
       assignment_label: 'Map backend files',
+      parent_task_call_id: 'call-wave',
       launch_source: 'task',
     },
   })
 
   assert.equal(sessionParentSessionID(session), 'parent-session')
-  assert.deepEqual(sessionChildDescriptor(session), { kind: 'subagent', label: '@reviewer', assignmentLabel: 'Map backend files' })
+  assert.deepEqual(sessionChildDescriptor(session), { kind: 'subagent', label: '@reviewer', assignmentLabel: 'Map backend files', taskCallId: 'call-wave' })
 })
 
 test('generic delegated lineage label yields to the canonical designated agent', () => {
@@ -211,7 +212,22 @@ test('generic delegated lineage label yields to the canonical designated agent',
     },
   })
 
-  assert.deepEqual(sessionChildDescriptor(session), { kind: 'subagent', label: '@coder', assignmentLabel: null })
+  assert.deepEqual(sessionChildDescriptor(session), { kind: 'subagent', label: '@coder', assignmentLabel: null, taskCallId: null })
+})
+
+// Requirement: sibling delegated sessions from one durable task call stay adjacent
+// and form one presentation group even when another task wave is interleaved.
+test('sidebar groups subagent siblings by durable parent task call', () => {
+  const nodes = [
+    { id: 'wave-a-1', kind: 'subagent' as const, taskCallId: 'call-a' },
+    { id: 'wave-b', kind: 'subagent' as const, taskCallId: 'call-b' },
+    { id: 'wave-a-2', kind: 'subagent' as const, taskCallId: 'call-a' },
+    { id: 'ordinary', kind: 'root' as const, taskCallId: null },
+  ]
+
+  const grouped = groupSidebarTaskCallSiblings(nodes)
+  assert.deepEqual(grouped.map((node) => node.id), ['wave-a-1', 'wave-a-2', 'wave-b', 'ordinary'])
+  assert.deepEqual(sidebarTaskCallPresentationGroups(grouped).map((group) => group.map((node) => node.id)), [['wave-a-1', 'wave-a-2'], ['wave-b'], ['ordinary']])
 })
 
 test('managed deploy keeps parent provenance but is a standalone sidebar session', () => {
@@ -225,7 +241,7 @@ test('managed deploy keeps parent provenance but is a standalone sidebar session
   })
 
   assert.equal(sessionParentSessionID(session), 'launching-session')
-  assert.deepEqual(sessionChildDescriptor(session), { kind: 'root', label: null, assignmentLabel: null })
+  assert.deepEqual(sessionChildDescriptor(session), { kind: 'root', label: null, assignmentLabel: null, taskCallId: null })
 })
 
 test('sessionBackgroundInfo derives active badge only from canonical active run intent', () => {
