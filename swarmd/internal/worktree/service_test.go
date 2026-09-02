@@ -13,6 +13,64 @@ import (
 	workspaceruntime "swarm/packages/swarmd/internal/workspace"
 )
 
+// Requirement: managed worktrees must fail with actionable installation guidance when Git is unavailable.
+// Threat: leaking an opaque os/exec error leaves users unable to repair a mandatory prerequisite.
+// Boundary: Service.ResolveTaskBase is the narrow pre-allocation repository authority, and a controlled PATH is the smallest hermetic proof.
+func TestResolveTaskBaseExplainsMissingGitPrerequisite(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+
+	_, err := (&Service{}).ResolveTaskBase(t.TempDir())
+	if err == nil {
+		t.Fatal("ResolveTaskBase succeeded without Git")
+	}
+	message := err.Error()
+	for _, want := range []string{"Git is required for Swarm managed worktrees", "package manager", "sudo apt install git"} {
+		if !strings.Contains(message, want) {
+			t.Fatalf("missing-Git error %q does not contain %q", message, want)
+		}
+	}
+	if strings.Contains(message, "executable file not found") || strings.Contains(message, "rev-parse") {
+		t.Fatalf("missing-Git error leaked opaque execution detail: %q", message)
+	}
+	if warning := DetachedWorkspaceFallbackWarning(err); warning != detachedWorkspaceFallbackWarning {
+		t.Fatalf("detached workspace warning = %q", warning)
+	}
+
+	_, allocationErr := (&Service{}).allocateSessionWorkspace(t.TempDir(), true, "", "agent", "missing-git")
+	if allocationErr == nil || !strings.Contains(allocationErr.Error(), "Git is required for Swarm managed worktrees") {
+		t.Fatalf("allocation missing-Git error = %v", allocationErr)
+	}
+}
+
+// Requirement: a valid initialized repository must have a commit before Swarm allocates managed worktrees.
+// Threat: treating an unborn branch as detached or forwarding Git's ambiguous HEAD stderr gives the wrong remediation.
+// Boundary: Service.ResolveTaskBase owns task-base resolution, and a temporary unborn repository is the narrowest observable fixture.
+func TestResolveTaskBaseExplainsInitialCommitRequirement(t *testing.T) {
+	repo := t.TempDir()
+	if _, err := runGit(repo, "init", "-b", "dev"); err != nil {
+		t.Fatalf("init unborn repo: %v", err)
+	}
+
+	_, err := (&Service{}).ResolveTaskBase(repo)
+	if err == nil {
+		t.Fatal("ResolveTaskBase succeeded without an initial commit")
+	}
+	message := err.Error()
+	for _, want := range []string{"Swarm managed worktrees require an initial commit", "git commit --allow-empty", "Initial commit"} {
+		if !strings.Contains(message, want) {
+			t.Fatalf("unborn-repository error %q does not contain %q", message, want)
+		}
+	}
+	if strings.Contains(message, "ambiguous argument") || strings.Contains(message, "detached HEAD") || strings.Contains(message, "rev-parse") {
+		t.Fatalf("unborn-repository error leaked or misclassified Git detail: %q", message)
+	}
+
+	_, allocationErr := (&Service{}).allocateSessionWorkspace(repo, true, "", "agent", "unborn")
+	if allocationErr == nil || !strings.Contains(allocationErr.Error(), "Swarm managed worktrees require an initial commit") {
+		t.Fatalf("allocation unborn-repository error = %v", allocationErr)
+	}
+}
+
 func TestResolveTaskBaseUsesExactHEADFromLinkedWorktree(t *testing.T) {
 	repo := t.TempDir()
 	if _, err := runGit(repo, "init", "-b", "dev"); err != nil {
