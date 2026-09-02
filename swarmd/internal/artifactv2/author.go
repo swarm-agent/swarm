@@ -202,7 +202,7 @@ func NewAuthorService(core *Service, compiler Compiler, validator Validator) *Au
 	return &AuthorService{core: core, compiler: compiler, validator: validator, now: time.Now}
 }
 
-func (s *AuthorService) PrepareIteration(ctx context.Context, principal Principal, requestID, artifactID string, expectedWorkingRevision, expectedHeadRevision uint64, targets []AuthorIterationTarget, candidateCount int) (AuthorIterationContext, error) {
+func (s *AuthorService) PrepareIteration(ctx context.Context, principal Principal, requestID, artifactID, expectedPublishedHeadID string, expectedWorkingRevision, expectedHeadRevision uint64, targets []AuthorIterationTarget, candidateCount int) (AuthorIterationContext, error) {
 	if s == nil || s.core == nil {
 		return AuthorIterationContext{}, errors.New("artifact v2 author service is not configured")
 	}
@@ -210,7 +210,8 @@ func (s *AuthorService) PrepareIteration(ctx context.Context, principal Principa
 	if err != nil {
 		return AuthorIterationContext{}, err
 	}
-	if working.Revision != expectedWorkingRevision || working.CompositionHead == nil || working.CompositionHead.HeadRevision != expectedHeadRevision || working.State != pebblestore.ArtifactV2StatePublishedView || working.PublishedHead == nil {
+	expectedPublishedHeadID = strings.TrimSpace(expectedPublishedHeadID)
+	if expectedWorkingRevision == 0 || working.Revision < expectedWorkingRevision || working.CompositionHead == nil || working.CompositionHead.HeadRevision != expectedHeadRevision || working.State != pebblestore.ArtifactV2StatePublishedView || working.PublishedHead == nil || working.PublishedHead.PublishedHeadID != expectedPublishedHeadID || working.PublishedHead.CompositionID != working.CompositionHead.CompositionID || working.PublishedHead.DigestSHA256 != working.CompositionHead.DigestSHA256 {
 		return AuthorIterationContext{}, errors.New("artifact v2 iteration source is stale or unpublished")
 	}
 	base, ok, err := s.core.store.GetArtifactV2Composition(principal.AccountScopeID, working.ID, working.CompositionHead.CompositionID)

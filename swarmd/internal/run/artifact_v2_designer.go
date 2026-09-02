@@ -76,7 +76,7 @@ func (s *Service) allocateManagedDesignerArtifactV2(ctx context.Context, parent 
 		for _, partID := range spec.ArtifactV2Source.TargetPartIDs {
 			targets = append(targets, artifactv2.AuthorIterationTarget{PartID: partID, Label: labels[partID]})
 		}
-		prepared, err := s.tools.ArtifactV2AuthorService().PrepareIteration(ctx, artifactv2.Principal{AccountScopeID: parent.AccountScopeID, UserID: parent.UserID, SessionID: parent.ID, ActorClass: "orchestrator"}, "task-artifact-v2-iteration:"+strings.TrimSpace(taskCallID), spec.ArtifactV2Source.ArtifactID, spec.ArtifactV2Source.WorkingRevision, spec.ArtifactV2Source.CompositionHeadRev, targets, len(specs))
+		prepared, err := s.tools.ArtifactV2AuthorService().PrepareIteration(ctx, artifactv2.Principal{AccountScopeID: parent.AccountScopeID, UserID: parent.UserID, SessionID: parent.ID, ActorClass: "orchestrator"}, "task-artifact-v2-iteration:"+strings.TrimSpace(taskCallID), spec.ArtifactV2Source.ArtifactID, spec.ArtifactV2Source.PublishedHeadID, spec.ArtifactV2Source.WorkingRevision, spec.ArtifactV2Source.CompositionHeadRev, targets, len(specs))
 		if err != nil {
 			return nil, nil, fmt.Errorf("prepare managed Designer Artifact V2 iteration: %w", err)
 		}

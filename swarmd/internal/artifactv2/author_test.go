@@ -169,6 +169,57 @@ func TestDeclarePartsRejectsKeysOutsideIterationGrant(t *testing.T) {
 	}
 }
 
+// Requirement: an exact published head remains a valid iteration base after
+// server-owned derivative bookkeeping increments the mutable Working revision.
+// Threat: conversion fallback generation could make an unchanged published head
+// unusable merely because the caller's advisory Working revision is older.
+func TestPrepareIterationAcceptsExactPublishedHeadAfterDerivativeBookkeeping(t *testing.T) {
+	store, sessions, author := newAuthorTestService(t)
+	defer store.Close()
+	principal := Principal{AccountScopeID: "account-1", UserID: "user-1", SessionID: "owner", RunID: "designer-run", ActorClass: "designer"}
+	base, err := author.AllocateWorking(context.Background(), principal, "stable-base", "document", "base", PolicySnapshot{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	grant := AuthorGrant{ID: "stable-grant", ArtifactID: base.ID, OwnerSessionID: "owner", ProducerSessionID: "child", ProducerRunID: principal.RunID, AllowedActions: []string{"inspect_context", "declare_parts", "write_part", "request_build", "submit_candidate"}, AllowPartDeclaration: true, ExpiresAt: time.Now().Add(time.Hour).UnixMilli(), Policy: normalizedPolicy(PolicySnapshot{})}
+	ctx, err := author.DeclareParts(context.Background(), principal, grant, "stable-declare", []AuthorPartDeclaration{{Key: "hero", Label: "Hero", MediaClass: "text", Order: 1}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := author.WritePart(context.Background(), principal, grant, "stable-write", AuthorPartWrite{PartID: ctx.Parts[0].ID, MediaType: "text/plain", Body: []byte("hero")}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := author.RequestBuild(context.Background(), principal, grant, "stable-build"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := author.SubmitCandidate(context.Background(), principal, grant, "stable-submit"); err != nil {
+		t.Fatal(err)
+	}
+	published, _, _ := sessions.GetArtifactV2Working("account-1", base.ID)
+	staleRevision := published.Revision
+	if _, err := author.core.CreateDerivative(context.Background(), principal, CreateDerivativeInput{RequestID: "stable-fallback", ArtifactID: base.ID, ExpectedWorkingRevision: published.Revision, Kind: "fallback", Renderer: &fakeMotionRenderer{result: MotionRenderResult{PreviewPNG: []byte("png")}}}); err != nil {
+		t.Fatal(err)
+	}
+	current, _, _ := sessions.GetArtifactV2Working("account-1", base.ID)
+	if current.Revision <= staleRevision || current.PublishedHead == nil || current.PublishedHead.PublishedHeadID != published.PublishedHead.PublishedHeadID {
+		t.Fatalf("derivative bookkeeping did not preserve the exact published head: before=%+v after=%+v", published, current)
+	}
+	if _, err := author.PrepareIteration(context.Background(), principal, "wrong-head-round", base.ID, "wrong-published-head", staleRevision, published.CompositionHead.HeadRevision, []AuthorIterationTarget{{PartID: ctx.Parts[0].ID, Label: "Hero"}}, 1); err == nil || !strings.Contains(err.Error(), "stale or unpublished") {
+		t.Fatalf("wrong published head was not rejected: %v", err)
+	}
+	unchanged, _, _ := sessions.GetArtifactV2Working("account-1", base.ID)
+	if unchanged.Revision != current.Revision || unchanged.ActiveIterationID != "" {
+		t.Fatalf("wrong published head mutated the artifact: before=%+v after=%+v", current, unchanged)
+	}
+	iteration, err := author.PrepareIteration(context.Background(), principal, "stable-round", base.ID, published.PublishedHead.PublishedHeadID, staleRevision, published.CompositionHead.HeadRevision, []AuthorIterationTarget{{PartID: ctx.Parts[0].ID, Label: "Hero"}}, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if iteration.BaseComposition.ID != published.CompositionHead.CompositionID || iteration.IterationID == "" {
+		t.Fatalf("iteration did not use the exact unchanged published base: %+v", iteration)
+	}
+}
+
 func TestFinalizeIterationCandidateImportsOnlyTargetRevision(t *testing.T) {
 	store, sessions, author := newAuthorTestService(t)
 	defer store.Close()
@@ -194,7 +245,7 @@ func TestFinalizeIterationCandidateImportsOnlyTargetRevision(t *testing.T) {
 		t.Fatal(err)
 	}
 	working, _, _ := sessions.GetArtifactV2Working("account-1", base.ID)
-	iteration, err := author.PrepareIteration(context.Background(), principal, "round", base.ID, working.Revision, working.CompositionHead.HeadRevision, []AuthorIterationTarget{{PartID: ctx.Parts[0].ID, Label: "Hero"}}, 1)
+	iteration, err := author.PrepareIteration(context.Background(), principal, "round", base.ID, working.PublishedHead.PublishedHeadID, working.Revision, working.CompositionHead.HeadRevision, []AuthorIterationTarget{{PartID: ctx.Parts[0].ID, Label: "Hero"}}, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -258,7 +309,7 @@ func TestFinalizeIterationCandidateIgnoresIdenticalPreservedPart(t *testing.T) {
 		t.Fatal(err)
 	}
 	working, _, _ := sessions.GetArtifactV2Working("account-1", base.ID)
-	iteration, err := author.PrepareIteration(context.Background(), principal, "preserved-round", base.ID, working.Revision, working.CompositionHead.HeadRevision, []AuthorIterationTarget{{PartID: baseContext.Parts[0].ID, Label: "Hero"}}, 1)
+	iteration, err := author.PrepareIteration(context.Background(), principal, "preserved-round", base.ID, working.PublishedHead.PublishedHeadID, working.Revision, working.CompositionHead.HeadRevision, []AuthorIterationTarget{{PartID: baseContext.Parts[0].ID, Label: "Hero"}}, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -333,7 +384,7 @@ func TestFinalizeIterationCandidatesRetriesConcurrentRevisionConflicts(t *testin
 		t.Fatal(err)
 	}
 	working, _, _ := sessions.GetArtifactV2Working("account-1", base.ID)
-	iteration, err := author.PrepareIteration(context.Background(), principal, "concurrent-round", base.ID, working.Revision, working.CompositionHead.HeadRevision, []AuthorIterationTarget{{PartID: baseContext.Parts[0].ID, Label: "Hero"}}, 2)
+	iteration, err := author.PrepareIteration(context.Background(), principal, "concurrent-round", base.ID, working.PublishedHead.PublishedHeadID, working.Revision, working.CompositionHead.HeadRevision, []AuthorIterationTarget{{PartID: baseContext.Parts[0].ID, Label: "Hero"}}, 2)
 	if err != nil {
 		t.Fatal(err)
 	}
