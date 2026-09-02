@@ -95,12 +95,13 @@ type AuthorIterationCandidate struct {
 }
 
 type AuthorIterationContext struct {
-	ArtifactID      string
-	IterationID     string
-	OwnerSessionID  string
-	BaseComposition pebblestore.ArtifactV2Composition
-	Targets         []AuthorIterationTarget
-	CandidateCount  int
+	ArtifactID       string
+	IterationID      string
+	OwnerSessionID   string
+	BaseComposition  pebblestore.ArtifactV2Composition
+	Targets          []AuthorIterationTarget
+	CandidateCount   int
+	CandidateSlotIDs []string
 }
 
 type AuthorContext struct {
@@ -211,7 +212,7 @@ func (s *AuthorService) PrepareIteration(ctx context.Context, principal Principa
 		return AuthorIterationContext{}, err
 	}
 	expectedPublishedHeadID = strings.TrimSpace(expectedPublishedHeadID)
-	if expectedWorkingRevision == 0 || working.Revision < expectedWorkingRevision || working.CompositionHead == nil || working.CompositionHead.HeadRevision != expectedHeadRevision || working.State != pebblestore.ArtifactV2StatePublishedView || working.PublishedHead == nil || working.PublishedHead.PublishedHeadID != expectedPublishedHeadID || working.PublishedHead.CompositionID != working.CompositionHead.CompositionID || working.PublishedHead.DigestSHA256 != working.CompositionHead.DigestSHA256 {
+	if expectedWorkingRevision == 0 || working.Revision < expectedWorkingRevision || working.CompositionHead == nil || working.CompositionHead.HeadRevision != expectedHeadRevision || working.PublishedHead == nil || working.PublishedHead.PublishedHeadID != expectedPublishedHeadID || working.PublishedHead.CompositionID != working.CompositionHead.CompositionID || working.PublishedHead.DigestSHA256 != working.CompositionHead.DigestSHA256 {
 		return AuthorIterationContext{}, errors.New("artifact v2 iteration source is stale or unpublished")
 	}
 	base, ok, err := s.core.store.GetArtifactV2Composition(principal.AccountScopeID, working.ID, working.CompositionHead.CompositionID)
@@ -240,11 +241,51 @@ func (s *AuthorService) PrepareIteration(ctx context.Context, principal Principa
 		}
 		partIDs = append(partIDs, targets[i].PartID)
 	}
+	if working.State == pebblestore.ArtifactV2StateIterating && working.ActiveIterationID != "" {
+		round, found, readErr := s.core.store.GetArtifactV2Iteration(principal.AccountScopeID, working.ID, working.ActiveIterationID)
+		if readErr != nil || !found || round.BaseCompositionID != base.ID || round.BaseCompositionDigest != base.DigestSHA256 || (round.Status != pebblestore.ArtifactV2IterationOpen && round.Status != pebblestore.ArtifactV2IterationGenerating) || !sameStrings(round.TargetPartIDs, partIDs) {
+			return AuthorIterationContext{}, errors.New("artifact v2 active iteration is unavailable or mismatched")
+		}
+		used := make(map[string]bool, len(round.Candidates))
+		for _, candidate := range round.Candidates {
+			used[strings.TrimSpace(candidate.SlotID)] = true
+		}
+		slots := make([]string, 0, round.RequestedCandidates-len(round.Candidates))
+		for index := 1; index <= round.RequestedCandidates; index++ {
+			slotID := fmt.Sprintf("candidate-%d", index)
+			if !used[slotID] {
+				slots = append(slots, slotID)
+			}
+		}
+		if len(slots) != candidateCount {
+			return AuthorIterationContext{}, errors.New("artifact v2 active iteration replacement count is incomplete or stale")
+		}
+		return AuthorIterationContext{ArtifactID: working.ID, IterationID: round.ID, OwnerSessionID: working.SessionID, BaseComposition: base, Targets: append([]AuthorIterationTarget(nil), targets...), CandidateCount: candidateCount, CandidateSlotIDs: slots}, nil
+	}
+	if working.State != pebblestore.ArtifactV2StatePublishedView || working.ActiveIterationID != "" {
+		return AuthorIterationContext{}, errors.New("artifact v2 iteration source is stale or unpublished")
+	}
 	round, err := s.core.OpenIteration(ctx, principal, OpenIterationInput{RequestID: strings.TrimSpace(requestID), ArtifactID: working.ID, ExpectedWorkingRevision: working.Revision, RequestedCandidates: uint64(candidateCount), TargetPartIDs: partIDs})
 	if err != nil {
 		return AuthorIterationContext{}, err
 	}
-	return AuthorIterationContext{ArtifactID: working.ID, IterationID: round.ID, OwnerSessionID: working.SessionID, BaseComposition: base, Targets: append([]AuthorIterationTarget(nil), targets...), CandidateCount: candidateCount}, nil
+	slots := make([]string, candidateCount)
+	for index := range slots {
+		slots[index] = fmt.Sprintf("candidate-%d", index+1)
+	}
+	return AuthorIterationContext{ArtifactID: working.ID, IterationID: round.ID, OwnerSessionID: working.SessionID, BaseComposition: base, Targets: append([]AuthorIterationTarget(nil), targets...), CandidateCount: candidateCount, CandidateSlotIDs: slots}, nil
+}
+
+func sameStrings(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if strings.TrimSpace(left[index]) != strings.TrimSpace(right[index]) {
+			return false
+		}
+	}
+	return true
 }
 
 func (s *AuthorService) AllocateIterationCandidate(ctx context.Context, principal Principal, requestID, intentReference string, iteration AuthorIterationContext, slotIndex int, policy PolicySnapshot) (pebblestore.ArtifactV2WorkingArtifact, error) {

@@ -245,7 +245,7 @@ func TestFinalizeIterationCandidateImportsOnlyTargetRevision(t *testing.T) {
 		t.Fatal(err)
 	}
 	working, _, _ := sessions.GetArtifactV2Working("account-1", base.ID)
-	iteration, err := author.PrepareIteration(context.Background(), principal, "round", base.ID, working.PublishedHead.PublishedHeadID, working.Revision, working.CompositionHead.HeadRevision, []AuthorIterationTarget{{PartID: ctx.Parts[0].ID, Label: "Hero"}}, 1)
+	iteration, err := author.PrepareIteration(context.Background(), principal, "round", base.ID, working.PublishedHead.PublishedHeadID, working.Revision, working.CompositionHead.HeadRevision, []AuthorIterationTarget{{PartID: ctx.Parts[0].ID, Label: "Hero"}}, 3)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -272,8 +272,16 @@ func TestFinalizeIterationCandidateImportsOnlyTargetRevision(t *testing.T) {
 		t.Fatal(err)
 	}
 	studioRound, ok, err := sessions.GetArtifactV2Iteration("account-1", base.ID, iteration.IterationID)
-	if err != nil || !ok || studioRound.Status != pebblestore.ArtifactV2IterationAwaitingSelection || len(studioRound.Candidates) != 1 {
+	if err != nil || !ok || studioRound.Status != pebblestore.ArtifactV2IterationGenerating || len(studioRound.Candidates) != 1 {
 		t.Fatalf("iteration=%+v ok=%v err=%v", studioRound, ok, err)
+	}
+	owner, _, _ := sessions.GetArtifactV2Working("account-1", base.ID)
+	resumed, err := author.PrepareIteration(context.Background(), principal, "round-replacement", base.ID, working.PublishedHead.PublishedHeadID, working.Revision, working.CompositionHead.HeadRevision, []AuthorIterationTarget{{PartID: ctx.Parts[0].ID, Label: "Hero"}}, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resumed.IterationID != iteration.IterationID || resumed.CandidateCount != 2 || len(resumed.CandidateSlotIDs) != 2 || resumed.CandidateSlotIDs[0] != "candidate-2" || resumed.CandidateSlotIDs[1] != "candidate-3" || owner.ActiveIterationID != iteration.IterationID {
+		t.Fatalf("replacement did not resume missing slots: resumed=%+v owner=%+v", resumed, owner)
 	}
 	composition, ok, err := sessions.GetArtifactV2Composition("account-1", base.ID, studioRound.Candidates[0].CompositionID)
 	if err != nil || !ok || len(composition.Parts) != 2 || composition.Parts[0].PartRevisionID == iteration.BaseComposition.Parts[0].PartRevisionID || composition.Parts[1] != iteration.BaseComposition.Parts[1] {

@@ -103,9 +103,13 @@ func (s *Service) allocateManagedDesignerArtifactV2(ctx context.Context, parent 
 		if err != nil {
 			return nil, nil, fmt.Errorf("allocate managed Designer Artifact V2 working artifact: %w", err)
 		}
+		candidateSlotID := fmt.Sprintf("candidate-%d", index+1)
+		if iteration != nil && len(iteration.CandidateSlotIDs) == len(specs) {
+			candidateSlotID = iteration.CandidateSlotIDs[index]
+		}
 		grant := artifactv2.AuthorGrant{
 			ID: artifactV2GrantID(parent.ID, taskCallID, index+1), ArtifactID: working.ID, OwnerSessionID: parent.ID,
-			TaskCallID: strings.TrimSpace(taskCallID), CandidateSlotID: fmt.Sprintf("candidate-%d", index+1),
+			TaskCallID: strings.TrimSpace(taskCallID), CandidateSlotID: candidateSlotID,
 			AllowedActions: []string{"inspect_context", "declare_parts", "write_part", "request_build", "submit_candidate"}, AllowPartDeclaration: true,
 			ExpiresAt: time.Now().Add(2 * time.Hour).UnixMilli(), Policy: policy,
 		}
