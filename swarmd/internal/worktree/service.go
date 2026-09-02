@@ -32,10 +32,10 @@ const (
 )
 
 const (
-	detachedWorkspaceFallbackWarning = "Opened without git worktree support; use a git repository and make sure git is installed for the app to work properly."
-	gitRequiredForWorktreesError     = "Git is required for Swarm managed worktrees; install it with your Linux distribution's package manager (for example, `sudo apt install git` on Ubuntu or Debian), then retry. Swarm does not install system packages automatically"
-	gitRepositoryRequiredError       = "Swarm managed worktrees require a Git repository; initialize the workspace with `git init`, add a file, and create the first commit, then retry"
-	initialCommitRequiredError       = "Swarm managed worktrees require an initial commit; create one with `git commit --allow-empty -m \"Initial commit\"`, then retry"
+	detachedWorkspaceFallbackWarning = "This workspace is ready to use, but managed worktrees are unavailable until Git is installed and the workspace has an initial commit. Ask Swarm to set up Git when you want to use that feature."
+	gitRequiredForWorktreesError     = "Git is required for this managed-worktree operation but is not installed; ask Swarm to install Git safely with the detected Linux distribution's package manager, approve the system change when prompted, and then retry"
+	gitRepositoryRequiredError       = "This managed-worktree operation needs a Git repository; the workspace remains usable. Ask Swarm to explain and request permission before running `git init`, then create the first commit and retry"
+	initialCommitRequiredError       = "This managed-worktree operation needs an initial commit; the workspace remains usable. Ask Swarm to prepare and request permission for the first commit, then retry"
 )
 
 var validWorktreeWorkspace = regexp.MustCompile(`^(ws_)?[a-z0-9][a-z0-9-]*$`)

@@ -323,6 +323,11 @@ func appendHostRuntimeContext(base string, workspacePath string, workspaceRoots 
 	block.WriteString("- Tools run directly on the host workspace path: ")
 	block.WriteString(workspacePath)
 	block.WriteString("\n")
+	for _, line := range workspaceGitContext(workspacePath) {
+		block.WriteString("- ")
+		block.WriteString(line)
+		block.WriteString("\n")
+	}
 	if len(workspaceRoots) == 1 {
 		block.WriteString("- Allowed workspace root: ")
 		block.WriteString(strings.TrimSpace(workspaceRoots[0]))
@@ -344,6 +349,33 @@ func appendHostRuntimeContext(base string, workspacePath string, workspaceRoots 
 		return block.String()
 	}
 	return base + "\n\n" + block.String()
+}
+
+func workspaceGitContext(workspacePath string) []string {
+	if _, err := exec.LookPath("git"); err != nil {
+		return []string{
+			"workspace_git_state: unavailable",
+			"Git is not installed or not on PATH. Ordinary workspace reads and edits remain available.",
+			"Before a requested Git-managed operation, explain that installation changes the machine, request the required permission, install Git with the detected Linux distribution's package manager, verify `git --version`, and then retry the original operation. Never claim the Git operation completed if installation is denied or fails.",
+		}
+	}
+	workspacePath = strings.TrimSpace(workspacePath)
+	if workspacePath == "" {
+		workspacePath = "."
+	}
+	if err := exec.Command("git", "-C", workspacePath, "rev-parse", "--is-inside-work-tree").Run(); err != nil {
+		return []string{
+			"workspace_git_state: not_repository",
+			"This is a normal usable workspace, but it is not a Git repository. Do not run Git-managed operations unless the user requests one; then explain and obtain permission before initializing a repository.",
+		}
+	}
+	if err := exec.Command("git", "-C", workspacePath, "rev-parse", "--verify", "HEAD").Run(); err != nil {
+		return []string{
+			"workspace_git_state: needs_initial_commit",
+			"This Git repository has no commits. Ordinary workspace work remains available, but managed worktrees and commit-relative operations require an initial commit. Do not create one without the user's explicit request and the normal Git permission path.",
+		}
+	}
+	return []string{"workspace_git_state: ready"}
 }
 
 func appendWorktreeRuntimeContext(base string, scope tool.WorkspaceScope) string {

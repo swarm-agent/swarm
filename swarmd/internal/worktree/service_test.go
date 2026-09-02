@@ -24,7 +24,7 @@ func TestResolveTaskBaseExplainsMissingGitPrerequisite(t *testing.T) {
 		t.Fatal("ResolveTaskBase succeeded without Git")
 	}
 	message := err.Error()
-	for _, want := range []string{"Git is required for Swarm managed worktrees", "package manager", "sudo apt install git", "does not install system packages automatically"} {
+	for _, want := range []string{"Git is required for this managed-worktree operation", "ask Swarm to install Git safely", "package manager", "approve the system change", "retry"} {
 		if !strings.Contains(message, want) {
 			t.Fatalf("missing-Git error %q does not contain %q", message, want)
 		}
@@ -38,7 +38,7 @@ func TestResolveTaskBaseExplainsMissingGitPrerequisite(t *testing.T) {
 
 	allocationRoot := t.TempDir()
 	_, allocationErr := (&Service{}).allocateSessionWorkspace(allocationRoot, true, "", "agent", "missing-git")
-	if allocationErr == nil || !strings.Contains(allocationErr.Error(), "Git is required for Swarm managed worktrees") {
+	if allocationErr == nil || !strings.Contains(allocationErr.Error(), "Git is required for this managed-worktree operation") {
 		t.Fatalf("allocation missing-Git error = %v", allocationErr)
 	}
 	entries, readErr := os.ReadDir(allocationRoot)
@@ -65,7 +65,7 @@ func TestResolveTaskBaseExplainsRepositoryRequirementWithoutMutation(t *testing.
 		t.Fatal("ResolveTaskBase succeeded outside a Git repository")
 	}
 	message := err.Error()
-	for _, want := range []string{"Swarm managed worktrees require a Git repository", "git init", "first commit"} {
+	for _, want := range []string{"managed-worktree operation needs a Git repository", "workspace remains usable", "request permission", "git init", "first commit"} {
 		if !strings.Contains(message, want) {
 			t.Fatalf("non-repository error %q does not contain %q", message, want)
 		}
@@ -84,7 +84,7 @@ func TestResolveTaskBaseExplainsRepositoryRequirementWithoutMutation(t *testing.
 	}
 
 	_, allocationErr := (&Service{}).allocateSessionWorkspace(dir, true, "", "agent", "plain-directory")
-	if allocationErr == nil || !strings.Contains(allocationErr.Error(), "Swarm managed worktrees require a Git repository") {
+	if allocationErr == nil || !strings.Contains(allocationErr.Error(), "managed-worktree operation needs a Git repository") {
 		t.Fatalf("plain-directory allocation error = %v", allocationErr)
 	}
 	if _, statErr := os.Stat(filepath.Join(dir, ".git")); !errors.Is(statErr, os.ErrNotExist) {
@@ -106,7 +106,7 @@ func TestResolveTaskBaseExplainsInitialCommitRequirement(t *testing.T) {
 		t.Fatal("ResolveTaskBase succeeded without an initial commit")
 	}
 	message := err.Error()
-	for _, want := range []string{"Swarm managed worktrees require an initial commit", "git commit --allow-empty", "Initial commit"} {
+	for _, want := range []string{"managed-worktree operation needs an initial commit", "workspace remains usable", "request permission", "first commit", "retry"} {
 		if !strings.Contains(message, want) {
 			t.Fatalf("unborn-repository error %q does not contain %q", message, want)
 		}
@@ -119,7 +119,7 @@ func TestResolveTaskBaseExplainsInitialCommitRequirement(t *testing.T) {
 	}
 
 	_, allocationErr := (&Service{}).allocateSessionWorkspace(repo, true, "", "agent", "unborn")
-	if allocationErr == nil || !strings.Contains(allocationErr.Error(), "Swarm managed worktrees require an initial commit") {
+	if allocationErr == nil || !strings.Contains(allocationErr.Error(), "managed-worktree operation needs an initial commit") {
 		t.Fatalf("allocation unborn-repository error = %v", allocationErr)
 	}
 }

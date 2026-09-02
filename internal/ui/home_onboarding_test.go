@@ -121,7 +121,7 @@ func TestOnboardingRendersCohesiveThreePhaseSurface(t *testing.T) {
 	page.ShowOnboardingWorkspace("Confirm workspace")
 	page.Draw(screen)
 	text := dumpHomeTestScreen(screen, 100, 30)
-	for _, want := range []string{"STEP 3 OF 3", "Create your first workspace.", "Git is required", "Creating Git-backed workspace in", "/repo/project", "first commit is required"} {
+	for _, want := range []string{"STEP 3 OF 3", "Create your first workspace.", "Start working now", "Creating workspace in", "/repo/project", "Git is optional now"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("workspace onboarding missing %q:\n%s", want, text)
 		}

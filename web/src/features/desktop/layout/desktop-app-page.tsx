@@ -247,9 +247,10 @@ export function isMissingGitSidebarError(error: unknown): boolean {
 
 export function buildInstallGitPrompt(gitError: string): string {
   return [
-    'Please install Git on this machine so Swarm can use Git features.',
+    'Install Git on this machine, then retry the Git feature that detected it was missing.',
+    'Treat me as a first-time user: detect the Linux distribution and use its standard package manager. Explain the system change, request any required Bash or privilege permission, perform the installation only after approval, and verify `git --version` before reporting success. If installation is denied or fails, report that clearly and do not claim the Git feature completed. Do not initialize a repository or create a commit unless that is separately required and approved.',
     '',
-    'The sidebar Git check failed with:',
+    'The workspace itself is still usable. The Git check failed with:',
     gitError,
   ].join('\n')
 }
