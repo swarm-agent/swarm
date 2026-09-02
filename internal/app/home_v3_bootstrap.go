@@ -240,6 +240,7 @@ func applyHomeWorkspaceBootstrap(next model.HomeModel, data homeBootstrapData, s
 	if setupPath := normalizePath(next.WorkspaceSetupPath); setupPath != "" {
 		setupGitStatus, _ := gitStatusForPath(setupPath)
 		next.WorkspaceSetupHasGit = setupGitStatus.HasGit
+		next.WorkspaceSetupGitReadiness = setupGitStatus.Readiness
 	}
 	return next, selectedPath, warnings
 }

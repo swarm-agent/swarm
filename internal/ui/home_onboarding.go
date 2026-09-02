@@ -392,7 +392,7 @@ func (p *HomePage) drawOnboardingHeader(s tcell.Screen, rect Rect) {
 	subtitles := []string{
 		"Start with your name and the name of this Swarm.",
 		"Connect now, or skip ahead. Your workspace is still required.",
-		"Swarm will register the directory where you launched the TUI.",
+		"Git is required; the workspace must be a repository with a first commit.",
 	}
 	DrawText(s, rect.X+3, rect.Y+4, rect.W-6, p.theme.Text, titles[step-1])
 	DrawText(s, rect.X+3, rect.Y+5, rect.W-6, p.theme.TextMuted, clampEllipsis(subtitles[step-1], rect.W-6))
@@ -493,11 +493,11 @@ func (p *HomePage) drawOnboardingWorkspace(s tcell.Screen, content Rect) {
 	}
 	card := Rect{X: content.X, Y: content.Y + 2, W: content.W, H: 5}
 	DrawBox(s, card, p.theme.BorderActive)
-	DrawText(s, card.X+2, card.Y+1, card.W-4, p.theme.TextMuted, "Creating workspace in")
+	DrawText(s, card.X+2, card.Y+1, card.W-4, p.theme.TextMuted, "Creating Git-backed workspace in")
 	DrawText(s, card.X+2, card.Y+2, card.W-4, p.theme.Primary, clampTail(path, card.W-4))
 	if p.onboarding.Pending {
 		DrawText(s, card.X+2, card.Y+3, card.W-4, p.theme.Warning, "Please wait — confirming API completion and loading workspace state...")
 	} else {
-		DrawText(s, card.X+2, card.Y+3, card.W-4, p.theme.Text, "Press Enter to accept")
+		DrawText(s, card.X+2, card.Y+3, card.W-4, p.theme.Text, "Git must be installed; a first commit is required for managed worktrees")
 	}
 }

@@ -14,6 +14,42 @@ import (
 	"swarm-refactor/swarmtui/internal/ui/v3chat"
 )
 
+// Requirement: startup must distinguish a missing Git executable, a plain directory,
+// and an unborn repository so the TUI never presents them as managed-worktree-ready.
+// Threat: collapsing all command failures into "not a repository" hides the required
+// system prerequisite and lets a git init without HEAD appear usable. This app-level
+// test is the narrowest layer that exercises the production exec/PATH boundary.
+func TestGitStatusForPathClassifiesWorkspaceReadiness(t *testing.T) {
+	plain := t.TempDir()
+	status, ok := gitStatusForPath(plain)
+	if ok || status.Readiness != model.GitReadinessNotRepository || status.HasGit {
+		t.Fatalf("plain directory status = %#v, ok=%v", status, ok)
+	}
+
+	unborn := initGitRepo(t)
+	status, ok = gitStatusForPath(unborn)
+	if !ok || !status.HasGit || status.Readiness != model.GitReadinessNeedsCommit {
+		t.Fatalf("unborn repository status = %#v, ok=%v", status, ok)
+	}
+
+	writeFile(t, filepath.Join(unborn, "tracked.txt"), "hello\n")
+	runGit(t, unborn, "add", "tracked.txt")
+	runGit(t, unborn, "commit", "-m", "init")
+	status, ok = gitStatusForPath(unborn)
+	if !ok || status.Readiness != model.GitReadinessReady {
+		t.Fatalf("committed repository status = %#v, ok=%v", status, ok)
+	}
+}
+
+func TestGitStatusForPathClassifiesMissingGitWithoutRawCommandError(t *testing.T) {
+	emptyPath := t.TempDir()
+	t.Setenv("PATH", emptyPath)
+	status, ok := gitStatusForPath(t.TempDir())
+	if ok || status.Readiness != model.GitReadinessUnavailable || status.HasGit {
+		t.Fatalf("missing git status = %#v, ok=%v", status, ok)
+	}
+}
+
 func TestGitStatusForPathUsesNoOptionalLocks(t *testing.T) {
 	repo := initGitRepo(t)
 	writeFile(t, filepath.Join(repo, "tracked.txt"), "hello\n")
@@ -45,9 +81,14 @@ func TestGitStatusForPathUsesNoOptionalLocks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read git args log: %v", err)
 	}
-	want := "--no-optional-locks -C " + repo + " status --porcelain=v2 --branch"
-	if !containsLine(string(logged), want) {
-		t.Fatalf("git invocation missing no-optional-locks:\n%s", string(logged))
+	for _, want := range []string{
+		"--no-optional-locks -C " + repo + " rev-parse --show-toplevel",
+		"--no-optional-locks -C " + repo + " status --porcelain=v2 --branch",
+		"--no-optional-locks -C " + repo + " rev-parse --verify HEAD",
+	} {
+		if !containsLine(string(logged), want) {
+			t.Fatalf("git invocation missing no-optional-locks for %q:\n%s", want, string(logged))
+		}
 	}
 }
 

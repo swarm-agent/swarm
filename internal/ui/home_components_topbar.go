@@ -393,7 +393,12 @@ func headerWorkspaceIndexes(workspaces []model.Workspace, limit int) ([]int, boo
 func (p *HomePage) workspaceSetupWarning() string {
 	setupPath := strings.TrimSpace(p.model.WorkspaceSetupPath)
 	if setupPath != "" {
-		if p.model.WorkspaceSetupHasGit {
+		switch p.model.WorkspaceSetupGitReadiness {
+		case model.GitReadinessUnavailable:
+			return "Git is required for Swarm workspaces but is not installed or not on PATH. On Ubuntu/Debian, install it with `sudo apt install git`, or ask Swarm to help install Git. Swarm will not install system packages automatically."
+		case model.GitReadinessNeedsCommit:
+			return fmt.Sprintf("Opened from %s, which is a Git repository with no commits. Create a first commit (add a file, stage it, then commit) before saving it as a managed workspace.", setupPath)
+		case model.GitReadinessReady:
 			name := strings.TrimSpace(p.activeWorkspaceName())
 			if name == "" {
 				name = "the default workspace"
@@ -401,12 +406,25 @@ func (p *HomePage) workspaceSetupWarning() string {
 				name = "workspace " + name
 			}
 			return fmt.Sprintf("Opened from unsaved Git repository %s. Using %s. Run /workspace save to save the launch directory and switch to it.", setupPath, name)
+		case model.GitReadinessCheckFailed:
+			return fmt.Sprintf("Swarm could not verify Git readiness for %s. Check that Git can run there before saving it as a managed workspace.", setupPath)
+		default:
+			if p.model.WorkspaceSetupHasGit {
+				name := strings.TrimSpace(p.activeWorkspaceName())
+				if name == "" {
+					name = "the default workspace"
+				} else {
+					name = "workspace " + name
+				}
+				return fmt.Sprintf("Opened from unsaved Git repository %s. Using %s. Run /workspace save to save the launch directory and switch to it.", setupPath, name)
+			}
+			return fmt.Sprintf("Opened from %s, which is not a Git repository. Ask Swarm to create a Git repository there, then make a first commit before saving and switching to it.", setupPath)
 		}
-		return fmt.Sprintf("Opened from %s, which is not a Git repository. Ask Swarm to create a Git repository there, then run /workspace save to save and switch to it.", setupPath)
 	}
 
 	directory := p.primaryDirectory()
-	if directory.IsWorkspace && !directory.HasGit {
+	gitNotReady := !directory.HasGit || (directory.GitReadiness != model.GitReadinessUnknown && directory.GitReadiness != model.GitReadinessReady)
+	if directory.IsWorkspace && gitNotReady {
 		name := strings.TrimSpace(p.activeWorkspaceName())
 		if name == "" {
 			name = "selected"
@@ -418,7 +436,18 @@ func (p *HomePage) workspaceSetupWarning() string {
 		if path == "" {
 			path = "."
 		}
-		return fmt.Sprintf("Saved workspace %s at %s has no Git repository. Ask Swarm to create a Git repository in this workspace.", name, path)
+		switch directory.GitReadiness {
+		case model.GitReadinessUnavailable:
+			return "Git is required for Swarm workspaces but is not installed or not on PATH. On Ubuntu/Debian, install it with `sudo apt install git`, or ask Swarm to help install Git. Swarm will not install system packages automatically."
+		case model.GitReadinessNeedsCommit:
+			return fmt.Sprintf("Saved workspace %s at %s has no commits. Create a first commit (add a file, stage it, then commit) before using managed worktrees.", name, path)
+		case model.GitReadinessCheckFailed:
+			return fmt.Sprintf("Swarm could not verify Git readiness for saved workspace %s at %s. Check that Git can run there before using managed worktrees.", name, path)
+		default:
+			if !directory.HasGit {
+				return fmt.Sprintf("Saved workspace %s at %s has no Git repository. Ask Swarm to create a Git repository there, then make a first commit.", name, path)
+			}
+		}
 	}
 	return ""
 }

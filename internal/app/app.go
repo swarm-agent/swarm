@@ -6429,6 +6429,10 @@ func (a *App) createOnboardingWorkspace(path string) {
 		a.home.SetOnboardingError("The launch directory is unavailable; restart Swarm from the workspace you want to use.")
 		return
 	}
+	if _, err := exec.LookPath("git"); err != nil {
+		a.home.SetOnboardingError("Git is required for Swarm workspaces but is not installed or not on PATH. On Ubuntu/Debian, install it with `sudo apt install git`, or ask Swarm to help install Git. Swarm will not install system packages automatically.")
+		return
+	}
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
@@ -6442,7 +6446,16 @@ func (a *App) createOnboardingWorkspace(path string) {
 		}
 		readyPath := firstNonEmpty(normalizePath(resolution.WorkspacePath), normalizePath(resolution.ResolvedPath), path)
 		if err == nil && !homeModelHasReadyWorkspace(next, readyPath) {
-			err = fmt.Errorf("workspace API completed but refreshed state does not include %s", displayPath(readyPath))
+			switch homeModelWorkspaceGitReadiness(next, readyPath) {
+			case model.GitReadinessUnavailable:
+				err = errors.New("Git is required but is not installed or not on PATH; on Ubuntu/Debian install it with `sudo apt install git`, or ask Swarm to help install Git")
+			case model.GitReadinessNotRepository:
+				err = fmt.Errorf("%s is not a Git repository; ask Swarm to initialize it, then create a first commit", displayPath(readyPath))
+			case model.GitReadinessNeedsCommit:
+				err = fmt.Errorf("%s has no commits; add a file, stage it, and create the first commit before using managed worktrees", displayPath(readyPath))
+			default:
+				err = fmt.Errorf("workspace API completed but refreshed state does not include a Git-ready workspace at %s", displayPath(readyPath))
+			}
 		}
 		result := onboardingWorkspaceResult{model: next, path: readyPath, err: err}
 		select {
@@ -6462,10 +6475,23 @@ func homeModelHasReadyWorkspace(home model.HomeModel, path string) bool {
 	}
 	for _, workspace := range home.Workspaces {
 		if workspace.Active && pathsEqual(normalizePath(workspace.Path), path) {
-			return true
+			return homeModelWorkspaceGitReadiness(home, path) == model.GitReadinessReady
 		}
 	}
 	return false
+}
+
+func homeModelWorkspaceGitReadiness(home model.HomeModel, path string) model.GitReadiness {
+	path = normalizePath(path)
+	if path == "" {
+		return model.GitReadinessCheckFailed
+	}
+	for _, directory := range home.Directories {
+		if pathsEqual(normalizePath(directory.ResolvedPath), path) {
+			return directory.GitReadiness
+		}
+	}
+	return model.GitReadinessUnknown
 }
 
 func (a *App) consumeOnboardingWorkspaceResult() {
@@ -8623,6 +8649,7 @@ type gitRepoStatus struct {
 	Upstream       string
 	RepoRoot       string
 	HasGit         bool
+	Readiness      model.GitReadiness
 }
 
 func applyGitStatusToDirectory(item *model.DirectoryItem, status gitRepoStatus) {
@@ -8639,6 +8666,7 @@ func applyGitStatusToDirectory(item *model.DirectoryItem, status gitRepoStatus) 
 	item.BehindCount = status.BehindCount
 	item.Upstream = status.Upstream
 	item.HasGit = status.HasGit
+	item.GitReadiness = status.Readiness
 }
 
 func newDirectoryItemWithGitStatus(path string, isWorkspace bool, status gitRepoStatus) model.DirectoryItem {
@@ -8668,26 +8696,49 @@ func branchForPath(path string) string {
 func gitStatusForPath(path string) (gitRepoStatus, bool) {
 	target := strings.TrimSpace(path)
 	if target == "" {
-		return gitRepoStatus{Branch: "-"}, false
+		return gitRepoStatus{Branch: "-", Readiness: model.GitReadinessCheckFailed}, false
+	}
+	gitPath, err := exec.LookPath("git")
+	if err != nil {
+		return gitRepoStatus{Branch: "-", Readiness: model.GitReadinessUnavailable}, false
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "git", "--no-optional-locks", "-C", target, "status", "--porcelain=v2", "--branch")
+	rootCmd := exec.CommandContext(ctx, gitPath, "--no-optional-locks", "-C", target, "rev-parse", "--show-toplevel")
+	rootRaw, err := rootCmd.Output()
+	if err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && exitErr.ExitCode() == 128 {
+			return gitRepoStatus{Branch: "-", Readiness: model.GitReadinessNotRepository}, false
+		}
+		return gitRepoStatus{Branch: "-", Readiness: model.GitReadinessCheckFailed}, false
+	}
+	cmd := exec.CommandContext(ctx, gitPath, "--no-optional-locks", "-C", target, "status", "--porcelain=v2", "--branch")
 	raw, err := cmd.Output()
 	if err != nil {
-		return gitRepoStatus{Branch: "-"}, false
+		return gitRepoStatus{Branch: "-", Readiness: model.GitReadinessCheckFailed}, false
 	}
 	status := parseGitStatusPorcelainV2(string(raw))
-	rootCmd := exec.CommandContext(ctx, "git", "--no-optional-locks", "-C", target, "rev-parse", "--show-toplevel")
-	if rootRaw, rootErr := rootCmd.Output(); rootErr == nil {
-		status.RepoRoot = normalizePath(strings.TrimSpace(string(rootRaw)))
+	status.RepoRoot = normalizePath(strings.TrimSpace(string(rootRaw)))
+	if status.HasGit {
+		headCmd := exec.CommandContext(ctx, gitPath, "--no-optional-locks", "-C", target, "rev-parse", "--verify", "HEAD")
+		if err := headCmd.Run(); err == nil {
+			status.Readiness = model.GitReadinessReady
+		} else {
+			var exitErr *exec.ExitError
+			if errors.As(err, &exitErr) && exitErr.ExitCode() == 128 {
+				status.Readiness = model.GitReadinessNeedsCommit
+			} else {
+				status.Readiness = model.GitReadinessCheckFailed
+			}
+		}
 	}
 	return status, true
 }
 
 func parseGitStatusPorcelainV2(raw string) gitRepoStatus {
-	status := gitRepoStatus{Branch: "-", HasGit: true}
+	status := gitRepoStatus{Branch: "-", HasGit: true, Readiness: model.GitReadinessUnknown}
 	scanner := bufio.NewScanner(strings.NewReader(raw))
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())

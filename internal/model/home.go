@@ -34,6 +34,17 @@ type Workspace struct {
 	Active                  bool
 }
 
+type GitReadiness string
+
+const (
+	GitReadinessUnknown       GitReadiness = "unknown"
+	GitReadinessUnavailable   GitReadiness = "unavailable"
+	GitReadinessNotRepository GitReadiness = "not_repository"
+	GitReadinessNeedsCommit   GitReadiness = "needs_commit"
+	GitReadinessReady         GitReadiness = "ready"
+	GitReadinessCheckFailed   GitReadiness = "check_failed"
+)
+
 type DirectoryItem struct {
 	Name           string
 	Path           string
@@ -48,6 +59,7 @@ type DirectoryItem struct {
 	BehindCount    int
 	Upstream       string
 	HasGit         bool
+	GitReadiness   GitReadiness
 	AgentsToken    string
 	IsWorkspace    bool
 }
@@ -179,6 +191,7 @@ type HomeModel struct {
 	Directories                 []DirectoryItem
 	WorkspaceSetupPath          string
 	WorkspaceSetupHasGit        bool
+	WorkspaceSetupGitReadiness  GitReadiness
 	PromptHint                  string
 	QuickActions                []string
 	HintLine                    string

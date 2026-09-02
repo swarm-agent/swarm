@@ -157,19 +157,42 @@ func TestEmptyWorkspaceIndicatorKeepsSelectorWithShortcutLabel(t *testing.T) {
 	}
 }
 
-func TestWorkspaceHeaderWarningDistinguishesUnsavedGitAndNoGitLaunchPaths(t *testing.T) {
+// Requirement: first-launch and saved-workspace guidance must name the exact
+// Git readiness failure without exposing raw stderr. The threat is a user being
+// sent to managed worktrees with no executable, repository, or HEAD. A pure UI
+// assertion is the narrowest proof of the actionable text contract.
+func TestWorkspaceHeaderWarningDistinguishesGitReadinessStates(t *testing.T) {
 	page := NewHomePage(model.HomeModel{
-		WorkspaceSetupPath:   "/outside/repo",
-		WorkspaceSetupHasGit: true,
-		Workspaces:           []model.Workspace{{Name: "Default", Path: "/default", Active: true}},
+		WorkspaceSetupPath:         "/outside/repo",
+		WorkspaceSetupHasGit:       true,
+		WorkspaceSetupGitReadiness: model.GitReadinessReady,
+		Workspaces:                 []model.Workspace{{Name: "Default", Path: "/default", Active: true}},
 	})
 	if got := page.workspaceSetupWarning(); got != "Opened from unsaved Git repository /outside/repo. Using workspace Default. Run /workspace save to save the launch directory and switch to it." {
 		t.Fatalf("unsaved git warning = %q", got)
 	}
 
-	page = NewHomePage(model.HomeModel{WorkspaceSetupPath: "/outside/plain"})
-	if got := page.workspaceSetupWarning(); got != "Opened from /outside/plain, which is not a Git repository. Ask Swarm to create a Git repository there, then run /workspace save to save and switch to it." {
+	page = NewHomePage(model.HomeModel{WorkspaceSetupPath: "/outside/plain", WorkspaceSetupGitReadiness: model.GitReadinessNotRepository})
+	if got := page.workspaceSetupWarning(); got != "Opened from /outside/plain, which is not a Git repository. Ask Swarm to create a Git repository there, then make a first commit before saving and switching to it." {
 		t.Fatalf("no-git warning = %q", got)
+	}
+
+	page = NewHomePage(model.HomeModel{WorkspaceSetupPath: "/outside/unborn", WorkspaceSetupHasGit: true, WorkspaceSetupGitReadiness: model.GitReadinessNeedsCommit})
+	if got := page.workspaceSetupWarning(); got != "Opened from /outside/unborn, which is a Git repository with no commits. Create a first commit (add a file, stage it, then commit) before saving it as a managed workspace." {
+		t.Fatalf("unborn warning = %q", got)
+	}
+
+	page = NewHomePage(model.HomeModel{WorkspaceSetupPath: "/outside/plain", WorkspaceSetupGitReadiness: model.GitReadinessUnavailable})
+	if got := page.workspaceSetupWarning(); !strings.Contains(got, "sudo apt install git") || !strings.Contains(got, "will not install system packages automatically") {
+		t.Fatalf("missing-git warning = %q", got)
+	}
+
+	page = NewHomePage(model.HomeModel{
+		Workspaces:  []model.Workspace{{Name: "Saved", Path: "/saved", Active: true}},
+		Directories: []model.DirectoryItem{{Path: "/saved", ResolvedPath: "/saved", HasGit: true, GitReadiness: model.GitReadinessNeedsCommit, IsWorkspace: true}},
+	})
+	if got := page.workspaceSetupWarning(); got != "Saved workspace Saved at /saved has no commits. Create a first commit (add a file, stage it, then commit) before using managed worktrees." {
+		t.Fatalf("saved unborn warning = %q", got)
 	}
 	if err := page.keybinds.Set(KeybindGlobalWorkspaceSelect, "ctrl+w"); err != nil {
 		t.Fatal(err)
