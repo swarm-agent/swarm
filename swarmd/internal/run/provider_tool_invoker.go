@@ -313,6 +313,7 @@ func cloneArtifactV2AuthorRunContext(input *tool.ArtifactV2AuthorRunContext) *to
 	cloned := *input
 	cloned.Grant.AllowedActions = append([]string(nil), input.Grant.AllowedActions...)
 	cloned.Grant.EditablePartIDs = append([]string(nil), input.Grant.EditablePartIDs...)
+	cloned.Grant.DeclaredPartKeys = append([]string(nil), input.Grant.DeclaredPartKeys...)
 	return &cloned
 }
 

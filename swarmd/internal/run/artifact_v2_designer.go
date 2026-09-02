@@ -111,6 +111,9 @@ func (s *Service) allocateManagedDesignerArtifactV2(ctx context.Context, parent 
 		}
 		if iteration != nil {
 			grant.IterationID = iteration.IterationID
+			for _, target := range iteration.Targets {
+				grant.DeclaredPartKeys = append(grant.DeclaredPartKeys, target.Key)
+			}
 		} else if spec.SwarmMode {
 			grant.IterationID = taskManagedArtifactID("roundv2", parent.ID, taskCallID, 0)
 		}

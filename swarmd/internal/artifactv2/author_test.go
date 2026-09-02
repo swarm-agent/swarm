@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -147,6 +148,24 @@ func TestSubmitCandidateBuildsCompleteAuthoringCompositionWhenNeeded(t *testing.
 	persisted, ok, err := sessions.GetArtifactV2Working("account-1", working.ID)
 	if err != nil || !ok || submitted.State != pebblestore.ArtifactV2StatePublishedView || submitted.BuildID == "" || submitted.ValidationID == "" || submitted.PublishedHeadID == "" || persisted.PublishedHead == nil {
 		t.Fatalf("submitted=%+v persisted=%+v ok=%v err=%v", submitted, persisted, ok, err)
+	}
+}
+
+func TestDeclarePartsRejectsKeysOutsideIterationGrant(t *testing.T) {
+	store, _, author := newAuthorTestService(t)
+	defer store.Close()
+	principal := Principal{AccountScopeID: "account-1", UserID: "user-1", SessionID: "owner", RunID: "designer-run", ActorClass: "designer"}
+	working, err := author.AllocateWorking(context.Background(), principal, "target-only", "document", "brief", PolicySnapshot{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	grant := AuthorGrant{ID: "target-only-grant", ArtifactID: working.ID, OwnerSessionID: "owner", ProducerSessionID: "child", ProducerRunID: principal.RunID, AllowedActions: []string{"inspect_context", "declare_parts"}, DeclaredPartKeys: []string{"hero"}, AllowPartDeclaration: true, ExpiresAt: time.Now().Add(time.Hour).UnixMilli(), Policy: normalizedPolicy(PolicySnapshot{})}
+	if _, err := author.DeclareParts(context.Background(), principal, grant, "target-only-bad", []AuthorPartDeclaration{{Key: "hero", Label: "Hero", MediaClass: "text", Order: 1}, {Key: "footer", Label: "Footer", MediaClass: "text", Order: 2}}); err == nil || !strings.Contains(err.Error(), "granted part keys") {
+		t.Fatalf("extra iteration key was not rejected: %v", err)
+	}
+	ctx, err := author.DeclareParts(context.Background(), principal, grant, "target-only-good", []AuthorPartDeclaration{{Key: "hero", Label: "Hero", MediaClass: "text", Order: 1}})
+	if err != nil || len(ctx.Parts) != 1 || ctx.Parts[0].Key != "hero" {
+		t.Fatalf("target-only declaration=%+v err=%v", ctx, err)
 	}
 }
 

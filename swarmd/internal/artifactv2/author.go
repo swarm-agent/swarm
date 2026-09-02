@@ -48,6 +48,7 @@ type AuthorGrant struct {
 	CandidateSlotID      string
 	AllowedActions       []string
 	EditablePartIDs      []string
+	DeclaredPartKeys     []string
 	AllowPartDeclaration bool
 	ExpiresAt            int64
 	Policy               PolicySnapshot
@@ -86,7 +87,7 @@ type AuthorPartWrite struct {
 }
 
 type AuthorIterationTarget struct {
-	PartID, Label string
+	PartID, Key, Label string
 }
 
 type AuthorIterationCandidate struct {
@@ -230,8 +231,11 @@ func (s *AuthorService) PrepareIteration(ctx context.Context, principal Principa
 		seen[targets[i].PartID] = true
 		if part, found, readErr := s.core.store.GetArtifactV2Part(principal.AccountScopeID, working.ID, targets[i].PartID); readErr != nil || !found {
 			return AuthorIterationContext{}, errors.New("artifact v2 iteration target was not found")
-		} else if targets[i].Label == "" {
-			targets[i].Label = part.Label
+		} else {
+			targets[i].Key = part.Key
+			if targets[i].Label == "" {
+				targets[i].Label = part.Label
+			}
 		}
 		partIDs = append(partIDs, targets[i].PartID)
 	}
@@ -415,6 +419,20 @@ func (s *AuthorService) DeclareParts(ctx context.Context, principal Principal, g
 	existing, err := s.core.store.ListArtifactV2Parts(principal.AccountScopeID, working.ID, maxAuthorParts)
 	if err != nil {
 		return AuthorContext{}, err
+	}
+	if len(grant.DeclaredPartKeys) != 0 {
+		allowed := make(map[string]bool, len(grant.DeclaredPartKeys))
+		for _, key := range grant.DeclaredPartKeys {
+			allowed[strings.TrimSpace(key)] = true
+		}
+		if len(declarations) != len(allowed) {
+			return AuthorContext{}, errors.New("artifact v2 author declaration must match the granted part keys exactly")
+		}
+		for _, declaration := range declarations {
+			if !allowed[strings.TrimSpace(declaration.Key)] {
+				return AuthorContext{}, errors.New("artifact v2 author declaration contains a key outside the granted target set")
+			}
+		}
 	}
 	if len(existing) != 0 {
 		return AuthorContext{}, errors.New("artifact v2 author part declaration is already complete")
