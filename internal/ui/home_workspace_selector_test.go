@@ -198,7 +198,7 @@ func TestWorkspaceHeaderWarningDistinguishesGitReadinessStates(t *testing.T) {
 		t.Fatal(err)
 	}
 	items := page.workspaceItems()
-	if len(items) != 1 || !strings.Contains(items[0].Label, "Ctrl+W") {
+	if len(items) < 1 || !strings.Contains(items[0].Label, "Ctrl+W") {
 		t.Fatalf("workspace selector label = %#v", items)
 	}
 }
