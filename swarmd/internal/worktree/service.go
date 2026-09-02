@@ -33,7 +33,8 @@ const (
 
 const (
 	detachedWorkspaceFallbackWarning = "Opened without git worktree support; use a git repository and make sure git is installed for the app to work properly."
-	gitRequiredForWorktreesError     = "Git is required for Swarm managed worktrees; install it with your Linux distribution's package manager (for example, `sudo apt install git` on Ubuntu or Debian), then retry"
+	gitRequiredForWorktreesError     = "Git is required for Swarm managed worktrees; install it with your Linux distribution's package manager (for example, `sudo apt install git` on Ubuntu or Debian), then retry. Swarm does not install system packages automatically"
+	gitRepositoryRequiredError       = "Swarm managed worktrees require a Git repository; initialize the workspace with `git init`, add a file, and create the first commit, then retry"
 	initialCommitRequiredError       = "Swarm managed worktrees require an initial commit; create one with `git commit --allow-empty -m \"Initial commit\"`, then retry"
 )
 
@@ -44,13 +45,13 @@ func DetachedWorkspaceFallbackWarning(err error) string {
 		return ""
 	}
 	text := strings.ToLower(strings.TrimSpace(err.Error()))
-	if strings.Contains(text, "not a git repository") {
+	if strings.Contains(text, "not a git repository") ||
+		strings.Contains(text, strings.ToLower(gitRequiredForWorktreesError)) ||
+		strings.Contains(text, strings.ToLower(gitRepositoryRequiredError)) ||
+		strings.Contains(text, strings.ToLower(initialCommitRequiredError)) {
 		return detachedWorkspaceFallbackWarning
 	}
 	if strings.Contains(text, "executable file not found") && strings.Contains(text, "git") {
-		return detachedWorkspaceFallbackWarning
-	}
-	if strings.Contains(text, strings.ToLower(gitRequiredForWorktreesError)) {
 		return detachedWorkspaceFallbackWarning
 	}
 	return ""
@@ -1091,6 +1092,9 @@ func resolveRepositoryRoot(workspacePath string) (string, error) {
 	// Anchor deterministic worktree paths under the shared repository root instead.
 	commonDir, err := runGit(workspacePath, "rev-parse", "--git-common-dir")
 	if err != nil {
+		if isNotGitRepositoryError(err) {
+			return "", errors.New(gitRepositoryRequiredError)
+		}
 		return "", fmt.Errorf("resolve git common dir: %w", err)
 	}
 	commonDir, err = resolveGitPath(workspacePath, commonDir)
@@ -1430,6 +1434,13 @@ func currentBranch(workspacePath string) (string, error) {
 		return "", nil
 	}
 	return branch, nil
+}
+
+func isNotGitRepositoryError(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(strings.ToLower(err.Error()), "not a git repository")
 }
 
 func runGit(path string, args ...string) (string, error) {

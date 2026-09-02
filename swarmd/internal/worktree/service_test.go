@@ -24,7 +24,7 @@ func TestResolveTaskBaseExplainsMissingGitPrerequisite(t *testing.T) {
 		t.Fatal("ResolveTaskBase succeeded without Git")
 	}
 	message := err.Error()
-	for _, want := range []string{"Git is required for Swarm managed worktrees", "package manager", "sudo apt install git"} {
+	for _, want := range []string{"Git is required for Swarm managed worktrees", "package manager", "sudo apt install git", "does not install system packages automatically"} {
 		if !strings.Contains(message, want) {
 			t.Fatalf("missing-Git error %q does not contain %q", message, want)
 		}
@@ -36,9 +36,59 @@ func TestResolveTaskBaseExplainsMissingGitPrerequisite(t *testing.T) {
 		t.Fatalf("detached workspace warning = %q", warning)
 	}
 
-	_, allocationErr := (&Service{}).allocateSessionWorkspace(t.TempDir(), true, "", "agent", "missing-git")
+	allocationRoot := t.TempDir()
+	_, allocationErr := (&Service{}).allocateSessionWorkspace(allocationRoot, true, "", "agent", "missing-git")
 	if allocationErr == nil || !strings.Contains(allocationErr.Error(), "Git is required for Swarm managed worktrees") {
 		t.Fatalf("allocation missing-Git error = %v", allocationErr)
+	}
+	entries, readErr := os.ReadDir(allocationRoot)
+	if readErr != nil || len(entries) != 0 {
+		t.Fatalf("missing-Git allocation check mutated workspace: entries=%v err=%v", entries, readErr)
+	}
+}
+
+// Requirement: a plain directory must fail before managed-worktree allocation with
+// explicit, permission-preserving repository setup guidance.
+// Threat: forwarding Git's raw fatal stderr neither explains the required repository
+// nor assures the user that Swarm left the selected directory unchanged.
+// Boundary: ResolveTaskBase performs read-only repository discovery before any
+// allocation, so a marker file is the narrowest postcondition proof.
+func TestResolveTaskBaseExplainsRepositoryRequirementWithoutMutation(t *testing.T) {
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "preserve.txt")
+	if err := os.WriteFile(marker, []byte("preserve\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := (&Service{}).ResolveTaskBase(dir)
+	if err == nil {
+		t.Fatal("ResolveTaskBase succeeded outside a Git repository")
+	}
+	message := err.Error()
+	for _, want := range []string{"Swarm managed worktrees require a Git repository", "git init", "first commit"} {
+		if !strings.Contains(message, want) {
+			t.Fatalf("non-repository error %q does not contain %q", message, want)
+		}
+	}
+	if strings.Contains(strings.ToLower(message), "fatal:") || strings.Contains(message, "rev-parse") {
+		t.Fatalf("non-repository error leaked opaque Git detail: %q", message)
+	}
+	if got, readErr := os.ReadFile(marker); readErr != nil || string(got) != "preserve\n" {
+		t.Fatalf("repository prerequisite check mutated workspace: %q, %v", got, readErr)
+	}
+	if _, statErr := os.Stat(filepath.Join(dir, ".git")); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("repository prerequisite check created .git: %v", statErr)
+	}
+	if warning := DetachedWorkspaceFallbackWarning(err); warning != detachedWorkspaceFallbackWarning {
+		t.Fatalf("plain-directory fallback warning = %q", warning)
+	}
+
+	_, allocationErr := (&Service{}).allocateSessionWorkspace(dir, true, "", "agent", "plain-directory")
+	if allocationErr == nil || !strings.Contains(allocationErr.Error(), "Swarm managed worktrees require a Git repository") {
+		t.Fatalf("plain-directory allocation error = %v", allocationErr)
+	}
+	if _, statErr := os.Stat(filepath.Join(dir, ".git")); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("plain-directory allocation created .git: %v", statErr)
 	}
 }
 
@@ -63,6 +113,9 @@ func TestResolveTaskBaseExplainsInitialCommitRequirement(t *testing.T) {
 	}
 	if strings.Contains(message, "ambiguous argument") || strings.Contains(message, "detached HEAD") || strings.Contains(message, "rev-parse") {
 		t.Fatalf("unborn-repository error leaked or misclassified Git detail: %q", message)
+	}
+	if warning := DetachedWorkspaceFallbackWarning(err); warning != detachedWorkspaceFallbackWarning {
+		t.Fatalf("unborn-repository fallback warning = %q", warning)
 	}
 
 	_, allocationErr := (&Service{}).allocateSessionWorkspace(repo, true, "", "agent", "unborn")
