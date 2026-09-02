@@ -61,6 +61,11 @@ func run(argv0 string, args []string) error {
 			return runUninstallCommand(args[1:])
 		}
 	}
+	if interactiveLaunchRequiresGit(args) {
+		if err := requireGit(); err != nil {
+			return err
+		}
+	}
 	profile, err := launcher.LoadRuntimeProfile(lane, bypassOverride)
 	if err != nil {
 		return err
@@ -226,6 +231,53 @@ func run(argv0 string, args []string) error {
 		return err
 	}
 	return nil
+}
+
+var gitLookPath = exec.LookPath
+
+func requireGit() error {
+	if _, err := gitLookPath("git"); err == nil {
+		return nil
+	}
+	return errors.New(`Swarm requires Git for workspaces and managed worktrees, but git was not found on PATH.
+Install Git, then retry:
+  Ubuntu/Debian: sudo apt update && sudo apt install -y git
+  Fedora/RHEL:   sudo dnf install -y git
+  Arch Linux:    sudo pacman -S git
+Swarm does not install system packages automatically.`)
+}
+
+func interactiveLaunchRequiresGit(args []string) bool {
+	if len(args) == 0 {
+		return true
+	}
+	switch args[0] {
+	case "--desktop":
+		return !containsHelpArg(args[1:])
+	case "open":
+		return !containsHelpArg(args[1:])
+	case "session":
+		if len(args) == 1 {
+			return true
+		}
+		return args[1] == "tui" || args[1] == "open"
+	case "run":
+		return true
+	case "help", "-h", "--help", "install", "uninstall", "start", "stop", "restart", "status", "ctl", "auth", "server", "backend-up", "backend-down", "backend-restart", "backend-rebuild", "backend-build", "update", "info":
+		return false
+	default:
+		// Unknown arguments are forwarded to the TUI.
+		return true
+	}
+}
+
+func containsHelpArg(args []string) bool {
+	for _, arg := range args {
+		if arg == "help" || arg == "-h" || arg == "--help" {
+			return true
+		}
+	}
+	return false
 }
 
 func runInstallCommand(args []string) error {

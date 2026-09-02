@@ -79,6 +79,21 @@ need_cmd() {
   }
 }
 
+require_git() {
+  if command -v git >/dev/null 2>&1; then
+    return 0
+  fi
+  cat >&2 <<'EOF'
+Swarm requires Git for workspaces and managed worktrees, but git was not found on PATH.
+Install Git, then rerun install.sh:
+  Ubuntu/Debian: sudo apt update && sudo apt install -y git
+  Fedora/RHEL:   sudo dnf install -y git
+  Arch Linux:    sudo pacman -S git
+Swarm does not install system packages automatically.
+EOF
+  exit 1
+}
+
 resolve_script_dir() {
   if [ -z "${0:-}" ] || [ ! -f "$0" ]; then
     return 1
@@ -600,6 +615,9 @@ validate_artifact_root() {
   done
 }
 
+# Git is a runtime prerequisite, not merely an installer implementation detail.
+# Check it before platform detection, downloads, prompts, or filesystem/service mutation.
+require_git
 need_cmd uname
 need_cmd curl
 need_cmd tar
