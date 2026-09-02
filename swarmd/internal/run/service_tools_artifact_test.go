@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"swarm/packages/swarmd/internal/artifactv2"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/tool"
 )
@@ -115,6 +116,29 @@ func TestManagedDesignerArtifactHandoffErrorDistinguishesFailureFromLineage(t *t
 	}
 	if err := managedDesignerArtifactHandoffError(ready, run, true, false); err == nil || !strings.Contains(err.Error(), "invalid trusted composition") {
 		t.Fatalf("composition mismatch classification = %v", err)
+	}
+}
+
+func TestManagedArtifactV2DesignerPromptRequiresSequentialExactWriteRevisions(t *testing.T) {
+	prompt := buildTaskDelegationPrompt(taskDelegationPromptConfig{
+		RequestedSubagent: "designer",
+		OutputMode:        taskOutputModeManaged,
+		ArtifactV2AuthorContext: &tool.ArtifactV2AuthorRunContext{Grant: artifactv2.AuthorGrant{
+			ID: "grant", ArtifactID: "artifact", OwnerSessionID: "parent", ProducerSessionID: "child",
+		}},
+	})
+	for _, want := range []string{
+		"Write parts strictly one at a time",
+		"returned composition_head_revision",
+		"not the Working Artifact revision",
+		"part's first write omit expected_base_revision_id",
+		"never pass another part's revision",
+		"inspect_context once and retry",
+		"submit_candidate immediately when ready",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("managed Artifact V2 Designer prompt missing %q: %s", want, prompt)
+		}
 	}
 }
 

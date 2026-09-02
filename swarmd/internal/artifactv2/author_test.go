@@ -41,14 +41,17 @@ func TestAuthorInvalidRepairPreservesUntouchedPartBytes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := author.WritePart(context.Background(), principal, grant, "footer-1", AuthorPartWrite{PartID: footer.ID, MediaType: "text/plain", ExpectedCompositionHeadRevision: 0, Body: []byte("footer-v1")}); err != nil {
+	if ctx.CompositionHeadRevision != 0 || ctx.CompositionHead != nil {
+		t.Fatalf("partial first part exposed an unexpected composition head: %+v", ctx)
+	}
+	if _, err := author.WritePart(context.Background(), principal, grant, "footer-1", AuthorPartWrite{PartID: footer.ID, MediaType: "text/plain", ExpectedCompositionHeadRevision: ctx.CompositionHeadRevision, Body: []byte("footer-v1")}); err != nil {
 		t.Fatal(err)
 	}
 	ctx, err = author.Inspect(principal, grant)
-	if err != nil {
-		t.Fatal(err)
+	if err != nil || ctx.CompositionHead == nil || ctx.CompositionHeadRevision != ctx.CompositionHead.HeadRevision || ctx.CompositionHeadRevision == 0 {
+		t.Fatalf("complete composition did not expose its exact head revision: context=%+v err=%v", ctx, err)
 	}
-	oldHero, oldFooter, head := ctx.Parts[0].CurrentRevisionID, ctx.Parts[1].CurrentRevisionID, ctx.CompositionHead.HeadRevision
+	oldHero, oldFooter, head := ctx.Parts[0].CurrentRevisionID, ctx.Parts[1].CurrentRevisionID, ctx.CompositionHeadRevision
 	candidate, err := author.RequestBuild(context.Background(), principal, grant, "build-invalid")
 	if err != nil || candidate.State != pebblestore.ArtifactV2StateInvalid || candidate.Diagnostic == nil {
 		t.Fatalf("invalid candidate=%+v err=%v", candidate, err)

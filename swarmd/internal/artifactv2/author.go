@@ -103,14 +103,15 @@ type AuthorIterationContext struct {
 }
 
 type AuthorContext struct {
-	State            string                                 `json:"state"`
-	Revision         uint64                                 `json:"revision"`
-	CompositionHead  *pebblestore.ArtifactV2CompositionHead `json:"composition_head,omitempty"`
-	Parts            []AuthorContextPart                    `json:"parts"`
-	LatestDiagnostic *pebblestore.ArtifactV2Diagnostic      `json:"latest_diagnostic,omitempty"`
-	EditablePartIDs  []string                               `json:"editable_part_ids,omitempty"`
-	CanDeclareParts  bool                                   `json:"can_declare_parts"`
-	Output           PolicySnapshot                         `json:"output"`
+	State                   string                                 `json:"state"`
+	Revision                uint64                                 `json:"revision"`
+	CompositionHeadRevision uint64                                 `json:"composition_head_revision"`
+	CompositionHead         *pebblestore.ArtifactV2CompositionHead `json:"composition_head,omitempty"`
+	Parts                   []AuthorContextPart                    `json:"parts"`
+	LatestDiagnostic        *pebblestore.ArtifactV2Diagnostic      `json:"latest_diagnostic,omitempty"`
+	EditablePartIDs         []string                               `json:"editable_part_ids,omitempty"`
+	CanDeclareParts         bool                                   `json:"can_declare_parts"`
+	Output                  PolicySnapshot                         `json:"output"`
 }
 
 type AuthorContextPart struct {
@@ -380,7 +381,11 @@ func (s *AuthorService) Inspect(principal Principal, grant AuthorGrant) (AuthorC
 			current[selected.PartID] = selected
 		}
 	}
-	out := AuthorContext{State: working.State, Revision: working.Revision, CompositionHead: cloneCompositionHead(working.CompositionHead), LatestDiagnostic: cloneDiagnostic(working.LatestDiagnostic), EditablePartIDs: append([]string(nil), grant.EditablePartIDs...), CanDeclareParts: grant.AllowPartDeclaration, Output: normalizedPolicy(grant.Policy)}
+	headRevision := uint64(0)
+	if working.CompositionHead != nil {
+		headRevision = working.CompositionHead.HeadRevision
+	}
+	out := AuthorContext{State: working.State, Revision: working.Revision, CompositionHeadRevision: headRevision, CompositionHead: cloneCompositionHead(working.CompositionHead), LatestDiagnostic: cloneDiagnostic(working.LatestDiagnostic), EditablePartIDs: append([]string(nil), grant.EditablePartIDs...), CanDeclareParts: grant.AllowPartDeclaration, Output: normalizedPolicy(grant.Policy)}
 	for _, part := range parts {
 		entry := AuthorContextPart{ID: part.ID, Key: part.Key, Label: part.Label, Role: part.Role, MediaClass: part.MediaClass}
 		if selected, ok := current[part.ID]; ok {
