@@ -74,7 +74,7 @@ async function canonicalWorkspace() {
 async function createSession(title, assignment, topology) {
   const binding = topology.binding
   const created = await api('POST', '/v3/sessions', { client_request_id: `${testID}:${title}`, title, workspace_path: String(binding.source_workspace_path || binding.destination_workspace_path || ''), workspace_name: String(binding.source_workspace_name || 'artifact-v2-e2e'), workspace_binding_id: binding.workspace_binding_id, swarm_id: topology.runtime.swarm_id, target_kind: 'host', target_relationship: 'self', mode: 'auto', agent_name: 'swarm', preference: assignment, model_profile: { temporary: { ...assignment, name: `${testID} model` } }, metadata: { runner_test: 'artifact-v2-provider-proof', runner_test_id: testID, stage } }, `create ${title}`)
-  const id = String(created.body?.session?.id || ''); assert(id, `${title} returned no session id`); return id
+  const id = String(created.body?.session?.id || ''); assert(id, `${title} returned no session id`); result.ids.session_id = id; return id
 }
 
 async function hydrate(sessionID) {
