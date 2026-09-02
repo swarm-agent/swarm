@@ -578,6 +578,19 @@ func (s *AuthorService) SubmitCandidate(ctx context.Context, principal Principal
 	if ref.State == pebblestore.ArtifactV2StatePublishedView && ref.PublishedHeadID != "" {
 		return ref, nil
 	}
+	// Build and validation are server-owned bookkeeping, not creative authority.
+	// A managed Designer may finish immediately after authoring complete immutable
+	// parts, so submission closes that narrow gap instead of discarding valid work.
+	if ref.State == pebblestore.ArtifactV2StateAuthoring && ref.CompositionHead != nil && ref.BuildID == "" && ref.ValidationID == "" {
+		ref, err = s.RequestBuild(ctx, principal, grant, strings.TrimSpace(requestID)+":build-if-needed")
+		if err != nil {
+			return ref, err
+		}
+		working, err = s.core.mustWorking(principal, working.ID)
+		if err != nil {
+			return ref, err
+		}
+	}
 	if ref.State != pebblestore.ArtifactV2StateReady || ref.CompositionHead == nil || ref.BuildID == "" || ref.ValidationID == "" {
 		return ref, errors.New("artifact v2 candidate is not backed by exact valid build evidence")
 	}

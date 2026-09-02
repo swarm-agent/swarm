@@ -114,6 +114,42 @@ func TestAuthorRejectsForeignGrantAndStaleHeadWithoutStateChange(t *testing.T) {
 	}
 }
 
+// Requirement: server-owned submission bookkeeping completes a fully authored
+// composition even when a Designer ends before explicitly requesting its build.
+// Threat: valid immutable part bytes could remain stranded in authoring state
+// because model compliance, rather than the server, controlled build initiation.
+func TestSubmitCandidateBuildsCompleteAuthoringCompositionWhenNeeded(t *testing.T) {
+	store, sessions, author := newAuthorTestService(t)
+	defer store.Close()
+	principal := Principal{AccountScopeID: "account-1", UserID: "user-1", SessionID: "owner", RunID: "designer-run", ActorClass: "designer"}
+	working, err := author.AllocateWorking(context.Background(), principal, "auto-build-base", "document", "brief", PolicySnapshot{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	grant := AuthorGrant{ID: "auto-build-grant", ArtifactID: working.ID, OwnerSessionID: "owner", ProducerSessionID: "child", ProducerRunID: principal.RunID, AllowedActions: []string{"inspect_context", "declare_parts", "write_part", "request_build", "submit_candidate"}, AllowPartDeclaration: true, ExpiresAt: time.Now().Add(time.Hour).UnixMilli(), Policy: normalizedPolicy(PolicySnapshot{})}
+	ctx, err := author.DeclareParts(context.Background(), principal, grant, "auto-build-declare", []AuthorPartDeclaration{{Key: "hero", Label: "Hero", MediaClass: "text", Order: 1}, {Key: "footer", Label: "Footer", MediaClass: "text", Order: 2}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for index, value := range []string{"hero", "footer"} {
+		ctx, err = author.WritePart(context.Background(), principal, grant, "auto-build-write-"+value, AuthorPartWrite{PartID: ctx.Parts[index].ID, ExpectedCompositionHeadRevision: ctx.CompositionHeadRevision, MediaType: "text/plain", Body: []byte(value)})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if ctx.State != pebblestore.ArtifactV2StateAuthoring || ctx.CompositionHead == nil {
+		t.Fatalf("complete authored context=%+v", ctx)
+	}
+	submitted, err := author.SubmitCandidate(context.Background(), principal, grant, "auto-build-submit")
+	if err != nil {
+		t.Fatal(err)
+	}
+	persisted, ok, err := sessions.GetArtifactV2Working("account-1", working.ID)
+	if err != nil || !ok || submitted.State != pebblestore.ArtifactV2StatePublishedView || submitted.BuildID == "" || submitted.ValidationID == "" || submitted.PublishedHeadID == "" || persisted.PublishedHead == nil {
+		t.Fatalf("submitted=%+v persisted=%+v ok=%v err=%v", submitted, persisted, ok, err)
+	}
+}
+
 func TestFinalizeIterationCandidateImportsOnlyTargetRevision(t *testing.T) {
 	store, sessions, author := newAuthorTestService(t)
 	defer store.Close()
