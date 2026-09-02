@@ -34,7 +34,7 @@ swarm_testbench_load_env "$root" || exit 1
 swarm_testbench_validate_env || exit 1
 
 readonly broker='/usr/local/sbin/swarm-testbench-admin'
-readonly inbox='.local/share/swarm/test-container-inbox'
+readonly inbox='/var/cache/swarm-test-container/inbox'
 readonly remote_desktop_port=5655
 readonly remote_api_port=7881
 readonly local_desktop_port=15655
@@ -63,7 +63,7 @@ trap 'rm -f -- "$bundle"' EXIT
 git -C "$root" bundle create "$bundle" HEAD >/dev/null
 git bundle verify "$bundle" >/dev/null
 
-ssh "$SWARM_PRIMARY_SSH" "install -d -m 0700 $inbox && cat > $inbox/candidate.bundle && printf '%s\\n' '$head' > $inbox/candidate-head" <"$bundle"
+ssh "$SWARM_PRIMARY_SSH" "test -d $inbox && cat > $inbox/candidate.bundle && printf '%s\\n' '$head' > $inbox/candidate-head" <"$bundle"
 broker_action test-container-prepare
 broker_action test-container-start
 if [[ "$sync_key" == true ]]; then broker_action test-container-sync-fireworks; fi
