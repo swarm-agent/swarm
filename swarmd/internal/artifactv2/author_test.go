@@ -3,7 +3,9 @@ package artifactv2
 import (
 	"context"
 	"errors"
+	"fmt"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -168,6 +170,113 @@ func TestFinalizeIterationCandidateImportsOnlyTargetRevision(t *testing.T) {
 	if err != nil || !ok || len(composition.Parts) != 2 || composition.Parts[0].PartRevisionID == iteration.BaseComposition.Parts[0].PartRevisionID || composition.Parts[1] != iteration.BaseComposition.Parts[1] {
 		t.Fatalf("candidate composition did not change only the target: %+v ok=%v err=%v", composition, ok, err)
 	}
+}
+
+// Requirement: sibling Designer completions must all attach to one durable
+// iteration round even when they finish concurrently.
+// Threat: optimistic working/round revisions can make all but the first valid
+// candidate fail stale, leaving the source permanently generating.
+func TestFinalizeIterationCandidatesRetriesConcurrentRevisionConflicts(t *testing.T) {
+	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "store"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	sessions := pebblestore.NewSessionStore(store)
+	if err := sessions.CreateSession(pebblestore.SessionSnapshot{ID: "owner", UserID: "user-1", AccountScopeID: "account-1", WorkspacePath: t.TempDir(), Mode: "auto", CreatedAt: time.Now().UnixMilli(), UpdatedAt: time.Now().UnixMilli()}); err != nil {
+		t.Fatal(err)
+	}
+	committer := &iterationBarrierCommitter{sessions: sessions, ready: make(chan struct{}), release: make(chan struct{})}
+	core := NewService(sessions, sessions, committer, NewGitBlobStore(authorTestOpener{root: t.TempDir()}))
+	author := NewAuthorService(core, nil, nil)
+	principal := Principal{AccountScopeID: "account-1", UserID: "user-1", SessionID: "owner", RunID: "designer-run", ActorClass: "designer"}
+	base, err := author.AllocateWorking(context.Background(), principal, "concurrent-base", "document", "base", PolicySnapshot{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	baseGrant := AuthorGrant{ID: "base-grant", ArtifactID: base.ID, OwnerSessionID: "owner", ProducerSessionID: "child", ProducerRunID: principal.RunID, AllowedActions: []string{"inspect_context", "declare_parts", "write_part", "request_build", "submit_candidate"}, AllowPartDeclaration: true, ExpiresAt: time.Now().Add(time.Hour).UnixMilli(), Policy: normalizedPolicy(PolicySnapshot{})}
+	baseContext, err := author.DeclareParts(context.Background(), principal, baseGrant, "concurrent-base-declare", []AuthorPartDeclaration{{Key: "hero", Label: "Hero", MediaClass: "text", Order: 1}, {Key: "footer", Label: "Footer", MediaClass: "text", Order: 2}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for index, value := range []string{"hero-base", "footer-base"} {
+		if _, err := author.WritePart(context.Background(), principal, baseGrant, "concurrent-base-write-"+value, AuthorPartWrite{PartID: baseContext.Parts[index].ID, MediaType: "text/plain", Body: []byte(value)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := author.RequestBuild(context.Background(), principal, baseGrant, "concurrent-base-build"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := author.SubmitCandidate(context.Background(), principal, baseGrant, "concurrent-base-submit"); err != nil {
+		t.Fatal(err)
+	}
+	working, _, _ := sessions.GetArtifactV2Working("account-1", base.ID)
+	iteration, err := author.PrepareIteration(context.Background(), principal, "concurrent-round", base.ID, working.Revision, working.CompositionHead.HeadRevision, []AuthorIterationTarget{{PartID: baseContext.Parts[0].ID, Label: "Hero"}}, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidates := make([]pebblestore.ArtifactV2WorkingArtifact, 2)
+	for index := range candidates {
+		candidate, err := author.AllocateIterationCandidate(context.Background(), principal, fmt.Sprintf("candidate-%d", index+1), "candidate", iteration, index+1, PolicySnapshot{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		grant := baseGrant
+		grant.ID, grant.ArtifactID = fmt.Sprintf("candidate-grant-%d", index+1), candidate.ID
+		candidateContext, err := author.DeclareParts(context.Background(), principal, grant, fmt.Sprintf("candidate-declare-%d", index+1), []AuthorPartDeclaration{{Key: "hero", Label: "Hero", MediaClass: "text", Order: 1}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := author.WritePart(context.Background(), principal, grant, fmt.Sprintf("candidate-write-%d", index+1), AuthorPartWrite{PartID: candidateContext.Parts[0].ID, MediaType: "text/plain", Body: []byte(fmt.Sprintf("hero-candidate-%d", index+1))}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := author.RequestBuild(context.Background(), principal, grant, fmt.Sprintf("candidate-build-%d", index+1)); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := author.SubmitCandidate(context.Background(), principal, grant, fmt.Sprintf("candidate-submit-%d", index+1)); err != nil {
+			t.Fatal(err)
+		}
+		candidates[index] = candidate
+	}
+
+	errorsBySlot := make(chan error, len(candidates))
+	for index, candidate := range candidates {
+		go func(index int, candidate pebblestore.ArtifactV2WorkingArtifact) {
+			errorsBySlot <- author.FinalizeIterationCandidate(context.Background(), Principal{AccountScopeID: "account-1", UserID: "user-1", SessionID: "owner", ActorClass: "orchestrator"}, iteration, AuthorIterationCandidate{ArtifactID: candidate.ID, SlotID: fmt.Sprintf("candidate-%d", index+1)}, fmt.Sprintf("concurrent-finalize-%d", index+1))
+		}(index, candidate)
+	}
+	<-committer.ready
+	close(committer.release)
+	for range candidates {
+		if err := <-errorsBySlot; err != nil {
+			t.Fatal(err)
+		}
+	}
+	round, ok, err := sessions.GetArtifactV2Iteration("account-1", base.ID, iteration.IterationID)
+	if err != nil || !ok || round.Status != pebblestore.ArtifactV2IterationAwaitingSelection || len(round.Candidates) != 2 {
+		t.Fatalf("iteration=%+v ok=%v err=%v", round, ok, err)
+	}
+}
+
+type iterationBarrierCommitter struct {
+	sessions *pebblestore.SessionStore
+	mu       sync.Mutex
+	waiting  int
+	ready    chan struct{}
+	release  chan struct{}
+}
+
+func (c *iterationBarrierCommitter) ApplySessionMutation(input pebblestore.V3SessionMutationInput) (pebblestore.V3SessionMutationResult, error) {
+	if input.Kind == pebblestore.V3SessionMutationArtifactV2IterationCandidateAppended {
+		c.mu.Lock()
+		c.waiting++
+		if c.waiting == 2 {
+			close(c.ready)
+		}
+		c.mu.Unlock()
+		<-c.release
+	}
+	return c.sessions.ApplyV3SessionMutation(input)
 }
 
 type sequenceValidator struct{ statuses []string }

@@ -249,6 +249,25 @@ func (s *AuthorService) AllocateIterationCandidate(ctx context.Context, principa
 }
 
 func (s *AuthorService) FinalizeIterationCandidate(ctx context.Context, principal Principal, iteration AuthorIterationContext, candidate AuthorIterationCandidate, requestID string) error {
+	const maxCandidateAttachAttempts = 32
+	for attempt := 0; attempt < maxCandidateAttachAttempts; attempt++ {
+		err := s.finalizeIterationCandidateOnce(ctx, principal, iteration, candidate, requestID)
+		if err == nil || !isArtifactV2IterationAttachConflict(err) {
+			return err
+		}
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
+	}
+	return errors.New("artifact v2 iteration candidate attachment remained stale")
+}
+
+func isArtifactV2IterationAttachConflict(err error) bool {
+	message := strings.TrimSpace(err.Error())
+	return message == "artifact v2 working revision is stale" || message == "artifact v2 iteration revision is stale"
+}
+
+func (s *AuthorService) finalizeIterationCandidateOnce(ctx context.Context, principal Principal, iteration AuthorIterationContext, candidate AuthorIterationCandidate, requestID string) error {
 	principal, err := s.core.owned(principal)
 	if err != nil {
 		return err
