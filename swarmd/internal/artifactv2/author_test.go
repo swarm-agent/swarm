@@ -211,6 +211,70 @@ func TestFinalizeIterationCandidateImportsOnlyTargetRevision(t *testing.T) {
 	}
 }
 
+// Requirement: a focused candidate may redundantly carry an unchanged preserved
+// Part, but the canonical parent composition must still reuse the exact base
+// revision rather than importing or rejecting that identical content.
+// Threat: model overproduction could otherwise strand a valid candidate or
+// silently duplicate preserved bytes into the candidate Composition.
+func TestFinalizeIterationCandidateIgnoresIdenticalPreservedPart(t *testing.T) {
+	store, sessions, author := newAuthorTestService(t)
+	defer store.Close()
+	principal := Principal{AccountScopeID: "account-1", UserID: "user-1", SessionID: "owner", RunID: "designer-run", ActorClass: "designer"}
+	base, err := author.AllocateWorking(context.Background(), principal, "preserved-base", "document", "base", PolicySnapshot{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	baseGrant := AuthorGrant{ID: "preserved-base-grant", ArtifactID: base.ID, OwnerSessionID: "owner", ProducerSessionID: "child", ProducerRunID: principal.RunID, AllowedActions: []string{"inspect_context", "declare_parts", "write_part", "request_build", "submit_candidate"}, AllowPartDeclaration: true, ExpiresAt: time.Now().Add(time.Hour).UnixMilli(), Policy: normalizedPolicy(PolicySnapshot{})}
+	baseContext, err := author.DeclareParts(context.Background(), principal, baseGrant, "preserved-base-declare", []AuthorPartDeclaration{{Key: "hero", Label: "Hero", MediaClass: "text", Order: 1}, {Key: "footer", Label: "Footer", MediaClass: "text", Order: 2}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for index, value := range []string{"hero-base", "footer-base"} {
+		baseContext, err = author.WritePart(context.Background(), principal, baseGrant, "preserved-base-write-"+value, AuthorPartWrite{PartID: baseContext.Parts[index].ID, ExpectedCompositionHeadRevision: baseContext.CompositionHeadRevision, MediaType: "text/plain", Body: []byte(value)})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := author.SubmitCandidate(context.Background(), principal, baseGrant, "preserved-base-submit"); err != nil {
+		t.Fatal(err)
+	}
+	working, _, _ := sessions.GetArtifactV2Working("account-1", base.ID)
+	iteration, err := author.PrepareIteration(context.Background(), principal, "preserved-round", base.ID, working.Revision, working.CompositionHead.HeadRevision, []AuthorIterationTarget{{PartID: baseContext.Parts[0].ID, Label: "Hero"}}, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate, err := author.AllocateIterationCandidate(context.Background(), principal, "preserved-candidate", "candidate", iteration, 1, PolicySnapshot{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	grant := baseGrant
+	grant.ID, grant.ArtifactID = "preserved-candidate-grant", candidate.ID
+	candidateContext, err := author.DeclareParts(context.Background(), principal, grant, "preserved-candidate-declare", []AuthorPartDeclaration{{Key: "hero", Label: "Hero", MediaClass: "text", Order: 1}, {Key: "footer", Label: "Footer", MediaClass: "text", Order: 2}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for index, value := range []string{"hero-candidate", "footer-base"} {
+		candidateContext, err = author.WritePart(context.Background(), principal, grant, "preserved-candidate-write-"+value, AuthorPartWrite{PartID: candidateContext.Parts[index].ID, ExpectedCompositionHeadRevision: candidateContext.CompositionHeadRevision, MediaType: "text/plain", Body: []byte(value)})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := author.SubmitCandidate(context.Background(), principal, grant, "preserved-candidate-submit"); err != nil {
+		t.Fatal(err)
+	}
+	if err := author.FinalizeIterationCandidate(context.Background(), Principal{AccountScopeID: "account-1", UserID: "user-1", SessionID: "owner", ActorClass: "orchestrator"}, iteration, AuthorIterationCandidate{ArtifactID: candidate.ID, SlotID: "candidate-1"}, "preserved-finalize"); err != nil {
+		t.Fatal(err)
+	}
+	round, ok, err := sessions.GetArtifactV2Iteration("account-1", base.ID, iteration.IterationID)
+	if err != nil || !ok || len(round.Candidates) != 1 {
+		t.Fatalf("round=%+v ok=%v err=%v", round, ok, err)
+	}
+	composition, ok, err := sessions.GetArtifactV2Composition("account-1", base.ID, round.Candidates[0].CompositionID)
+	if err != nil || !ok || len(composition.Parts) != 2 || composition.Parts[1] != iteration.BaseComposition.Parts[1] {
+		t.Fatalf("identical preserved part was not reused exactly: composition=%+v ok=%v err=%v", composition, ok, err)
+	}
+}
+
 // Requirement: sibling Designer completions must all attach to one durable
 // iteration round even when they finish concurrently.
 // Threat: optimistic working/round revisions can make all but the first valid

@@ -314,8 +314,11 @@ func (s *AuthorService) finalizeIterationCandidateOnce(ctx context.Context, prin
 		}
 		candidatePart, exists := candidateParts[baseDefinition.Key]
 		if !targets[basePart.PartID] {
-			if exists && (candidatePart.DigestSHA256 != basePart.DigestSHA256 || candidatePart.Locked != basePart.Locked) {
-				return errors.New("artifact v2 iteration candidate changed a preserved part")
+			if exists {
+				delete(candidateParts, baseDefinition.Key)
+				if candidatePart.DigestSHA256 != basePart.DigestSHA256 || candidatePart.Locked != basePart.Locked {
+					return errors.New("artifact v2 iteration candidate changed a preserved part")
+				}
 			}
 			continue
 		}
