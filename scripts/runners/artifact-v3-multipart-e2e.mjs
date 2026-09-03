@@ -461,10 +461,13 @@ async function runLive() {
   if (sessionOverride) {
     assert(initialRunOverride && desktopPathOverride.startsWith('/'), 'resuming requires --initial-run-id and an absolute --desktop-path')
     const existing = await api('GET', `/v3/sessions/${encodeURIComponent(sessionOverride)}`, undefined, 'read resumed Artifact V3 session')
-    assert(text(existing.body?.session?.id || existing.body?.id) === sessionOverride, 'resumed Artifact V3 session was not found')
-    session = { sessionID: sessionOverride, workspacePath: '', workspaceName: '' }
+    const resumedSession = existing.body?.session || existing.body
+    assert(text(resumedSession?.id) === sessionOverride, 'resumed Artifact V3 session was not found')
+    const workspaceName = text(resumedSession?.workspace_name || resumedSession?.workspaceName)
+    assert(workspaceName, 'resumed Artifact V3 session has no workspace name')
+    session = { sessionID: sessionOverride, workspacePath: text(resumedSession?.workspace_path || resumedSession?.workspacePath), workspaceName }
     result.ids.session_id = sessionOverride
-    result.ids.desktop_path = desktopPathOverride
+    result.ids.desktop_path = `/${slug(workspaceName)}/${sessionOverride}`
     result.ids.initial_run_id = initialRunOverride
   } else {
     session = await createSession(selected, assignment)
