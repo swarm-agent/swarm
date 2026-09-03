@@ -291,6 +291,15 @@ func (r *ArtifactV3Repository) commitProject(ctx context.Context, project Artifa
 	return strings.TrimSpace(string(commit)), nil
 }
 
+// ValidateArtifactV3Project applies the exact canonical tree and manifest checks
+// used before Git commit. Build/preview gates call this same authority so a
+// project cannot preview successfully and then fail only at finish_turn.
+func ValidateArtifactV3Project(project ArtifactV3Project, limits ArtifactV3Limits) (ArtifactV3Manifest, error) {
+	repository := &ArtifactV3Repository{limits: limits.normalized()}
+	_, manifest, err := repository.validateProject(project)
+	return manifest, err
+}
+
 func (r *ArtifactV3Repository) validateProject(project ArtifactV3Project) ([]ArtifactV3File, ArtifactV3Manifest, error) {
 	if len(project.Files) == 0 || len(project.Files) > r.limits.MaxFiles {
 		return nil, ArtifactV3Manifest{}, ErrArtifactV3Quota

@@ -132,6 +132,27 @@ func TestArtifactV3RuntimeAdapterProductionPathAndRecovery(t *testing.T) {
 	}
 }
 
+// Requirement: build and Git finish must share one strict manifest authority.
+// The regression threat is a permissive preview accepting shorthand selectors
+// or presentation metadata that strict commit validation rejects later.
+func TestArtifactV3RuntimeBuildRejectsManifestThatFinishWouldReject(t *testing.T) {
+	adapter := newArtifactV3RuntimeAdapter(nil, nil, t.TempDir(), t.TempDir(), pebblestore.ArtifactV3Limits{}, artifactV3RuntimeRenderer{})
+	project := map[string][]byte{
+		"swarm-artifact.json": []byte(`{"schema_version":"swarm.artifact/v3","entrypoint":"index.html","title":"Legacy shorthand","parts":[{"id":"hero","selector":"#hero"}]}`),
+		"index.html":          []byte(`<!doctype html><html><body><main id="hero">Hero</main></body></html>`),
+	}
+	build, err := adapter.Build(context.Background(), tool.ArtifactV3BuildRequest{ArtifactID: "artifact", TurnID: "turn", Attempt: 1, Project: project})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if build.Status != "failed" || len(build.Diagnostics) != 1 || build.Diagnostics[0].Code != "manifest_invalid" {
+		t.Fatalf("build=%+v", build)
+	}
+	if !strings.Contains(build.Diagnostics[0].Message, "label") || !strings.Contains(build.Diagnostics[0].Message, "locator") {
+		t.Fatalf("diagnostic is not actionable: %+v", build.Diagnostics[0])
+	}
+}
+
 // Requirement: source bytes alone are never readiness evidence; a browser
 // preview adapter is mandatory before a candidate can be finished.
 func TestArtifactV3RuntimeAdapterFailsClosedWithoutBrowser(t *testing.T) {

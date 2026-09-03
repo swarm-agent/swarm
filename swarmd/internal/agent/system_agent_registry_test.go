@@ -313,7 +313,7 @@ func TestSystemAgentSnapshotReconciliationPreservesDynamicContextAndModels(t *te
 			t.Fatalf("workspace Designer must not authorize %q: %+v", denied, workspaceDesigner.ToolContract)
 		}
 	}
-	for _, want := range []string{"backend-supplied output contract", "Managed output uses only artifact_v3_author", "inspect_context", "complete conventional project tree", "artifact-scoped list/read/write/edit/delete", "Parts are stable navigation and user-intent targets", "shared files", "build_preview repeatedly", "finish_turn exactly once", "base commit", "output policy", "Do not call manage_artifact or artifact_v2_author", "Workspace output", "Never call artifact_v3_author, artifact_v2_author, or manage_artifact", "safe diagnostic", "Never classify raw errors", "fall back to legacy publication"} {
+	for _, want := range []string{"backend-supplied output contract", "Managed output uses only artifact_v3_author", "inspect_context", "complete conventional project tree", "artifact-scoped list/read/write/edit/delete", "Parts are stable navigation and user-intent targets", "shared files", "build_preview repeatedly", "finish_turn exactly once", "base commit", "output policy", "exactly three top-level keys", "non-empty label", "and locator", "Never use shorthand selector", "Do not call manage_artifact or artifact_v2_author", "Workspace output", "Never call artifact_v3_author, artifact_v2_author, or manage_artifact", "safe diagnostic", "Never classify raw errors", "fall back to legacy publication"} {
 		if !strings.Contains(DesignerAgentPrompt(), want) {
 			t.Fatalf("Designer prompt missing immutable output contract %q", want)
 		}

@@ -291,16 +291,12 @@ func bytesContainsFold(body []byte, text string) bool {
 }
 
 func parseArtifactV3Manifest(project map[string][]byte) (pebblestore.ArtifactV3Manifest, []tool.ArtifactV3Diagnostic) {
-	body, ok := project[pebblestore.ArtifactV3ManifestFilename]
-	if !ok {
+	if _, ok := project[pebblestore.ArtifactV3ManifestFilename]; !ok {
 		return pebblestore.ArtifactV3Manifest{}, []tool.ArtifactV3Diagnostic{{Stage: "build", Code: "manifest_missing", Message: "swarm-artifact.json is required", Path: pebblestore.ArtifactV3ManifestFilename}}
 	}
-	var manifest pebblestore.ArtifactV3Manifest
-	if err := json.Unmarshal(body, &manifest); err != nil || manifest.SchemaVersion != pebblestore.ArtifactV3ManifestVersion || strings.TrimSpace(manifest.Entrypoint) == "" {
-		return manifest, []tool.ArtifactV3Diagnostic{{Stage: "build", Code: "manifest_invalid", Message: "swarm-artifact.json is not a valid Artifact V3 manifest", Path: pebblestore.ArtifactV3ManifestFilename}}
-	}
-	if _, ok := project[manifest.Entrypoint]; !ok {
-		return manifest, []tool.ArtifactV3Diagnostic{{Stage: "build", Code: "entrypoint_missing", Message: "the manifest entrypoint does not exist", Path: manifest.Entrypoint}}
+	manifest, err := pebblestore.ValidateArtifactV3Project(pebblestore.ArtifactV3Project{Files: project}, pebblestore.ArtifactV3Limits{})
+	if err != nil {
+		return manifest, []tool.ArtifactV3Diagnostic{{Stage: "build", Code: "manifest_invalid", Message: "swarm-artifact.json must contain only schema_version, entrypoint, and parts; every part requires id, label, and locator {kind, path/value/paths} that resolves to a project file", Path: pebblestore.ArtifactV3ManifestFilename}}
 	}
 	return manifest, nil
 }
