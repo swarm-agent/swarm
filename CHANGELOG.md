@@ -6,7 +6,7 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ## Unreleased
 
-- Fix fresh Linux system installs by provisioning the Swarm-owned runtime root before its children, remove the caller `TMPDIR` requirement from systemd installation, and add Ubuntu/Arch PR-build plus official-ISO Omarchy testbench install coverage.
+- Fix fresh Linux system installs by provisioning the Swarm-owned runtime root before its children, remove the caller `TMPDIR` requirement from systemd installation, install missing Git/Bash runtime prerequisites before Swarm mutation, and bind Ubuntu/Arch/Omarchy plus Fireworks reconciliation validation to one checksum-verified candidate that starts Git-absent.
 
 ### Added
 
@@ -53,7 +53,7 @@ Release entries are the source checkpoint for public docs verification. Each ent
 - Fixed TUI launches from unsaved Git repositories so they retain the configured default workspace while showing actionable `/workspace save` guidance; nested repositories are no longer hidden by broad saved workspace roots.
 - Allowed first-run OpenAI onboarding to accept credentials without depending on a live provider availability check; credentials remain explicitly unverified until a real provider request succeeds.
 - Allowed authenticated same-origin Tailscale Desktop requests admitted by daemon origin policy to trigger host update actions while spoofed requests remain fail-closed.
-- Updated the daemon cryptography dependency to the fixed release for CVE-2026-56854 and made PR critical checks install their required repository-policy tool before fetching and testing the exact declared head/base commits.
+- Updated the daemon cryptography dependency to fixed releases for CVE-2026-56854, CVE-2026-56855, and CVE-2026-78662, and made PR critical checks install their required repository-policy tool before fetching and testing the exact declared head/base commits.
 
 ### Docs impact
 
@@ -63,7 +63,7 @@ Release entries are the source checkpoint for public docs verification. Each ent
 - Public onboarding docs should describe initial provider credential acceptance; agent grouping, model switching, session quarantine, diagnostic tooling, and worktree retry identifiers need no separate user documentation.
 - Public docs should describe the system storage contract, Linux root locations, no-silent-migration behavior, and future macOS system-root expectations.
 - Public product docs must describe dedicated local containers as retired while retaining V3 and Swarm targets as current critical contracts and future non-local runners as a separate direction.
-- Public install docs should point users to the release installer fast lane before source checkout workflows.
+- Public install docs should point users to the release installer fast lane before source checkout workflows and explain automatic provisioning of missing Git/Bash prerequisites.
 - Public provider docs must not list Copilot as currently supported or runnable.
 - Public command docs should describe `/voice` as experimental terminal voice input only, not as a fully supported voice product.
 - Public TUI workspace guidance should explain that `/workspace save` saves and switches to an unsaved Git launch directory.
