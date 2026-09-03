@@ -238,7 +238,7 @@ func (a *artifactV3RuntimeAdapter) FailArtifactV3Turn(_ context.Context, failure
 }
 
 func (a *artifactV3RuntimeAdapter) Build(_ context.Context, request tool.ArtifactV3BuildRequest) (tool.ArtifactV3BuildResult, error) {
-	_, diagnostics := parseArtifactV3Manifest(request.Project)
+	manifest, diagnostics := parseArtifactV3Manifest(request.Project)
 	if len(diagnostics) != 0 {
 		return tool.ArtifactV3BuildResult{Status: "failed", Diagnostics: diagnostics}, nil
 	}
