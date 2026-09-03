@@ -133,6 +133,13 @@ test('default agent effect force-fetches canonical active-agent state and invali
   }
 })
 
+test('native Artifact V3 mutation events refresh the one open catalog authority', async () => {
+  for (const eventType of ['artifact.v3.created', 'artifact.v3.candidate.ready', 'artifact.v3.head.selected']) {
+    const effects = durableClientEffectsFromRealtimeFrame(toolCompletedFrame({ id: `event-${eventType}`, eventType }))
+    assert.deepEqual(effects?.effects, [{ type: 'refresh_artifacts' }])
+  }
+})
+
 test('client effect runner coalesces replayed artifact mutation events', async () => {
   let refreshArtifacts = 0
   const runner = new DesktopV3ClientEffectRunner({
