@@ -16,9 +16,9 @@ const apiURL = String(option('--api-url', process.env.SWARM_RUNNER_API_URL || ''
 const desktopURL = String(option('--desktop-url', process.env.SWARM_DESKTOP_URL || apiURL)).replace(/\/$/, '')
 const provider = String(option('--provider', process.env.SWARM_RUNNER_PROVIDER || 'fireworks')).trim().toLowerCase()
 const actionModel = String(option('--action-model', process.env.SWARM_RUNNER_ACTION_MODEL || '')).trim()
-const actionThinking = String(option('--action-thinking', process.env.SWARM_RUNNER_ACTION_THINKING || 'high')).trim().toLowerCase()
+const actionThinking = String(option('--action-thinking', process.env.SWARM_RUNNER_ACTION_THINKING || 'off')).trim().toLowerCase()
 const designerModel = String(option('--designer-model', process.env.SWARM_RUNNER_DESIGNER_MODEL || '')).trim()
-const designerThinking = String(option('--designer-thinking', process.env.SWARM_RUNNER_DESIGNER_THINKING || 'high')).trim().toLowerCase()
+const designerThinking = String(option('--designer-thinking', process.env.SWARM_RUNNER_DESIGNER_THINKING || 'off')).trim().toLowerCase()
 const workspaceOverride = String(option('--workspace-path', process.env.SWARM_RUNNER_WORKSPACE_PATH || '')).trim()
 const sessionOverride = String(option('--session-id', process.env.SWARM_RUNNER_SESSION_ID || '')).trim()
 const initialRunOverride = String(option('--initial-run-id', process.env.SWARM_RUNNER_INITIAL_RUN_ID || '')).trim()
@@ -326,6 +326,7 @@ async function screenshotPreview(sessionID, artifactID, revision, expectedLabel 
 function initialPrompt() {
   return [
     `Create one provider-backed managed Artifact V3 browser project for checked-in E2E ${testID}.`,
+    'Do not inspect or search the repository. This prompt is the complete authoritative brief.',
     'Call task exactly once in regular mode with exactly one managed Designer launch and animation_profile motion_ui, then wait for that one Designer. Do not launch an Iteration Swarm, multiple Designers, Coder, or Finder.',
     'The Designer must use only its context-bound artifact_v3_author whole-project workspace and create conventional files including swarm-artifact.json, index.html, and CSS/JavaScript as needed.',
     'The manifest must use schema_version swarm.artifact/v3, entrypoint index.html, and exactly three selector parts: hero=#hero, pricing=#pricing, footer=#footer.',
