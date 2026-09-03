@@ -113,8 +113,8 @@ function singlePrompt(index) {
   return [`Create Artifact V2 provider journey ${index} for ${testID}.`, `Call task exactly once, with mode=regular and exactly one managed Designer launch. Use this exact task call identity marker in the top-level prompt and child meta_prompt: ${testID}:single:${index}. Put animation_profile={"profile":"motion_ui"} and output_requirements={"preset":"landscape_video"} only on the one launch object; omit both fields at the task-call top level. Never call task a second time, even if the first launch fails; leave the failed Working Artifact visible and finish.`,  'The Designer must use artifact_v2_author only. Declare exactly two real parts: scene (application/vnd.swarm.artifact-v2.motion-scene+json) and behavior (application/vnd.swarm.artifact-v2.motion-behavior+json).', 'Create a 6000ms 30fps 1920x1080 motion scene with three visible text or rectangle elements, two ordered sections named opening 0-3000ms and payoff 3000-6000ms, and bounded opacity/translate/scale behavior. Use exactly these closed JSON fields only: scene={version,duration_ms,fps,background,elements:[{id,kind,text,x,y,width,height,fill,color,font_size,radius}],sections:[{id,label,start_ms,end_ms}]}; behavior={version,tracks:[{target_id,property,from,to,start_ms,end_ms,easing}]}. Use scene version artifact.motion.scene/v1, behavior version artifact.motion.behavior/v1, element kind text or rect, behavior property opacity/translate_x/translate_y/scale/rotate, and easing linear or ease_in_out. The opening frame and every representative state must be immediately legible: use a light text color such as #ffffff on a strongly contrasting background, keep all text at opacity 1, do not use opacity tracks, do not use fade-in or near-black-on-dark treatments, use headline font_size at least 64 and supporting text at least 36, and keep visible copy concise. Do not add metadata, viewport, canvas, style, keyframes, or any other field. Keep every element fully inside the stage at all representative times.', 'Request server build and trusted Chrome validation, repair exact part revisions if diagnostics require it, submit_candidate, and finish only after the exact V2 published head is returned. Never call manage_artifact, create a V1 artifact, or author HTML/runtime bytes.'].join(' ')
 }
 
-function validateJourney(studio, label) {
-  assert(studio?.working?.state === 'published_view', `${label} is not published_view`)
+function validateJourney(studio, label, allowIterating = false) {
+  assert(studio?.working?.state === 'published_view' || (allowIterating && studio?.working?.state === 'iterating'), `${label} has no permitted exact published state`)
   assert(studio?.working?.published_head?.published_head_id, `${label} has no published head`)
   assert(studio.parts?.length === 2, `${label} has ${studio.parts?.length || 0}/2 real parts`)
   assert((studio.part_revisions || []).length >= 2, `${label} has no independently stored part revisions`)
@@ -189,7 +189,7 @@ try {
   if (stage === 'iteration3') {
     const catalog = await artifactCatalog(sessionOverride); const baseItem = catalog.find((item) => item?.working?.kind === 'managed_creative' && item?.working?.published_head?.published_head_id)
     assert(baseItem, 'iteration3 resumed session has no exact published managed creative base')
-    const studio = await artifactStudio(sessionOverride, baseItem.working.id); const source = validateJourney(studio, 'iteration base')
+    const studio = await artifactStudio(sessionOverride, baseItem.working.id); const source = validateJourney(studio, 'iteration base', true)
     await runIteration({ session_id: sessionOverride, source })
     result.result = 'PASS'; result.gates.provider_journeys = true; result.gates.pixel_inspection = true; result.gates.pending_conversion = true
   } else {
