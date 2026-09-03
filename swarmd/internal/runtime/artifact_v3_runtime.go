@@ -284,7 +284,9 @@ func (a *artifactV3RuntimeAdapter) Preview(ctx context.Context, request tool.Art
 	if a.renderer == nil {
 		return tool.ArtifactV3PreviewResult{Status: "failed", Diagnostics: []tool.ArtifactV3Diagnostic{{Stage: "preview", Code: "previewer_unavailable", Message: "trusted browser preview gate is unavailable"}}}, nil
 	}
-	results, err := a.renderer.Capture(ctx, htmlcapture.Request{Entry: manifest.Entrypoint, Files: request.Build.OutputFiles, StateIDs: []string{"default"}})
+	previewFiles := cloneArtifactProject(request.Build.OutputFiles)
+	previewFiles[manifest.Entrypoint] = injectArtifactV3CaptureRuntime(previewFiles[manifest.Entrypoint])
+	results, err := a.renderer.Capture(ctx, htmlcapture.Request{Entry: manifest.Entrypoint, Files: previewFiles, StateIDs: []string{"default"}})
 	if err != nil {
 		return tool.ArtifactV3PreviewResult{Status: "failed", Diagnostics: []tool.ArtifactV3Diagnostic{{Stage: "preview", Code: "browser_capture_failed", Message: "the complete Artifact V3 project failed its browser preview gate"}}}, nil
 	}
@@ -309,6 +311,19 @@ func (a *artifactV3RuntimeAdapter) Preview(ctx context.Context, request tool.Art
 	a.previews[id] = result
 	a.mu.Unlock()
 	return result, nil
+}
+
+func injectArtifactV3CaptureRuntime(body []byte) []byte {
+	const runtime = `<script data-swarm-capture-ui>globalThis.__SWARM_CAPTURE_V1__={version:"swarm.capture/v1",select:async id=>{document.documentElement.dataset.swarmCaptureState=id},ready:async id=>({state_id:id})};</script>`
+	lower := strings.ToLower(string(body))
+	if index := strings.LastIndex(lower, "</body>"); index >= 0 {
+		out := make([]byte, 0, len(body)+len(runtime))
+		out = append(out, body[:index]...)
+		out = append(out, runtime...)
+		out = append(out, body[index:]...)
+		return out
+	}
+	return append(append([]byte(nil), body...), runtime...)
 }
 
 func unresolvedArtifactV3Targets(manifest pebblestore.ArtifactV3Manifest, targets []string, files map[string][]byte) []tool.ArtifactV3Diagnostic {
@@ -454,11 +469,29 @@ func (a *artifactV3RuntimeAdapter) SelectCandidate(ctx context.Context, principa
 	return api.ArtifactV3SelectionResult{Head: *updated.Head, Turn: selectedTurn}, nil
 }
 
-func (a *artifactV3RuntimeAdapter) turns(_ context.Context, _ api.ArtifactV3Principal, _ pebblestore.ArtifactV3RepositoryProjection) ([]api.ArtifactV3Turn, error) {
-	// Turn and candidate records remain available through exact select inputs and
-	// durable realtime projections. A bounded catalog scan will be added when the
-	// Pebble store exposes a public typed turn iterator.
-	return []api.ArtifactV3Turn{}, nil
+func (a *artifactV3RuntimeAdapter) turns(ctx context.Context, principal api.ArtifactV3Principal, repository pebblestore.ArtifactV3RepositoryProjection) ([]api.ArtifactV3Turn, error) {
+	repo, err := pebblestore.OpenArtifactV3Repository(ctx, a.repositoryRoot, repository.ArtifactID, pebblestore.ArtifactV3Owner{AccountScopeID:principal.AccountScopeID,UserID:principal.UserID,SessionID:repository.OwnerSessionID}, a.limits)
+	if err != nil { return nil, err }
+	cursor := ""
+	byTurn := map[string]*api.ArtifactV3Turn{}
+	for {
+		page, err := repo.ListRefs(ctx, "refs/swarm/turns/", cursor, 500)
+		if err != nil { return nil, err }
+		for _, ref := range page.Refs {
+			parts := strings.Split(strings.TrimPrefix(ref.Name,"refs/swarm/turns/"),"/")
+			if len(parts)!=3 || parts[1]!="candidate" { return nil, pebblestore.ErrArtifactV3Integrity }
+			turnProjection, ok, err := a.sessions.GetArtifactV3Turn(principal.AccountScopeID,principal.UserID,repository.ArtifactID,parts[0]); if err!=nil||!ok{return nil,pebblestore.ErrArtifactV3Integrity}
+			candidateProjection, ok, err := a.sessions.GetArtifactV3Candidate(principal.AccountScopeID,principal.UserID,repository.ArtifactID,parts[0],parts[2]); if err!=nil||!ok||candidateProjection.CommitOID!=ref.CommitOID{return nil,pebblestore.ErrArtifactV3Integrity}
+			turn := byTurn[parts[0]]
+			if turn==nil { turn=&api.ArtifactV3Turn{TurnID:parts[0],Revision:turnProjection.EventSeq,Status:turnProjection.Status,TargetPartIDs:canonicalStrings([]string{turnProjection.TargetPartID}),BaseCommitOID:turnProjection.BaseCommitOID,SelectedCandidateID:turnProjection.SelectedCandidateID,CreatedAt:turnProjection.CreatedAt,UpdatedAt:turnProjection.UpdatedAt};byTurn[parts[0]]=turn }
+			revision,err:=a.revision(ctx,principal,repository,ref.CommitOID);if err!=nil{return nil,err}
+			turn.Candidates=append(turn.Candidates,api.ArtifactV3Candidate{CandidateID:parts[2],Status:candidateProjection.Status,Revision:&revision})
+		}
+		if page.NextCursor=="" { break }; cursor=page.NextCursor
+	}
+	out:=make([]api.ArtifactV3Turn,0,len(byTurn));for _,turn:=range byTurn{sort.Slice(turn.Candidates,func(i,j int)bool{return turn.Candidates[i].CandidateID<turn.Candidates[j].CandidateID});out=append(out,*turn)}
+	sort.Slice(out,func(i,j int)bool{return out[i].UpdatedAt>out[j].UpdatedAt})
+	return out,nil
 }
 
 func (a *artifactV3RuntimeAdapter) publishProjection(owner artifactV3GrantOwner, artifactID, eventType, requestID string) error {
