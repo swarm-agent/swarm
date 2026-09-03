@@ -23,13 +23,14 @@ test('native Artifact V3 summary and revision preserve exact Git and cross-part 
   assert.equal(summary.head?.commitOid, 'commit-2')
   assert.equal(normalizeDesktopV3NativeArtifactSummary({ ...summaryWire, artifact_ref: undefined })?.artifactRef, 'artifact-1')
   const nativeSummary = normalizeDesktopV3NativeArtifactSummary({
-    id: 'artifact-2', owner_session_id: 'session-1', parts: [{ id: 'hero' }], turns: [{ turn_id: 'turn-1' }],
+    id: 'artifact-2', owner_session_id: 'session-1', revision: 41, parts: [{ id: 'hero' }], turns: [{ turn_id: 'turn-1' }],
     current_revision: { revision_ref: 'revision-2', commit_oid: 'commit-2', tree_oid: 'tree-2', build: { status: 'succeeded' }, validation: { status: 'valid' } },
   })
   assert.equal(nativeSummary?.status, 'ready')
   assert.equal(nativeSummary?.head?.revisionRef, 'revision-2')
   assert.equal(nativeSummary?.partCount, 1)
   assert.equal(nativeSummary?.turnCount, 1)
+  assert.equal(nativeSummary?.head?.selectedEventSeq, 41)
 
   const revision = normalizeDesktopV3NativeArtifactRevision({
     revision_ref: 'revision-ref-2', commit_oid: 'commit-2', tree_oid: 'tree-2', manifest_blob_oid: 'manifest-2', parent_commit_oids: ['commit-1'], status: 'ready',

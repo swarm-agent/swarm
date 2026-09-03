@@ -5209,8 +5209,16 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 			outcome.ArtifactReference = &taskArtifactReference{
 				SessionID: grant.OwnerSessionID, CollectionID: grant.ArtifactID,
 				VariantID: finished.Revision.CommitOID, Status: pebblestore.SessionArtifactStatusReady,
-				SourceArtifact: cloneTaskImageSourceArtifact(launch.SourceArtifact),
+				SourceArtifact:     cloneTaskImageSourceArtifact(launch.SourceArtifact),
 				OutputRequirements: cloneTaskOutputRequirements(launch.OutputRequirements), AnimationProfile: cloneTaskAnimationProfile(launch.AnimationProfile),
+			}
+			if s.sessions != nil && s.sessions.Store() != nil {
+				if repository, ok, readErr := s.sessions.Store().GetArtifactV3Repository(parentSession.AccountScopeID, parentSession.UserID, grant.ArtifactID); readErr == nil && ok {
+					outcome.ArtifactReference.EventSeq = repository.EventSeq
+				}
+			}
+			if outcome.ArtifactReference.EventSeq == 0 {
+				return outcome, errors.New("managed Designer Artifact V3 handoff is missing its exact projection sequence")
 			}
 		}
 		// V2 remains readable for historical handoffs, but new managed Designer

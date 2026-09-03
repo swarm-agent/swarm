@@ -162,8 +162,8 @@ function normalizeHead(value: unknown): DesktopV3NativeArtifactHead | null {
     revisionRef,
     commitOid,
     treeOid: stringValue(field(item, 'tree_oid', 'treeOid')),
-    generation: numberValue(item.generation),
-    selectedEventSeq: numberValue(field(item, 'selected_event_seq', 'selectedEventSeq')),
+    generation: numberValue(item.generation) || numberValue(item.revision),
+    selectedEventSeq: numberValue(field(item, 'selected_event_seq', 'selectedEventSeq')) || numberValue(item.revision),
   }
 }
 
@@ -183,7 +183,12 @@ export function normalizeDesktopV3NativeArtifactSummary(value: unknown, fallback
     label: stringValue(item.label) || 'Artifact',
     description: stringValue(item.description),
     status: inferredArtifactStatus(item),
-    head: normalizeHead(item.head) || normalizeHead(field(item, 'current_revision', 'currentRevision')),
+    head: (() => {
+      const head = normalizeHead(item.head) || normalizeHead(field(item, 'current_revision', 'currentRevision'))
+      if (!head) return null
+      const revision = numberValue(item.revision)
+      return { ...head, generation: head.generation || revision, selectedEventSeq: head.selectedEventSeq || revision }
+    })(),
     partCount: numberValue(field(item, 'part_count', 'partCount')) || (Array.isArray(item.parts) ? item.parts.length : 0),
     turnCount: numberValue(field(item, 'turn_count', 'turnCount')) || (Array.isArray(item.turns) ? item.turns.length : 0),
     updatedAt: numberValue(field(item, 'updated_at', 'updatedAt')),

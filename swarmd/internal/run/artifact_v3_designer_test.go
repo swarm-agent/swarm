@@ -17,7 +17,9 @@ type artifactV3CoordinatorFake struct {
 	failures []tool.ArtifactV3TurnFailure
 }
 
-func (f *artifactV3CoordinatorFake) MaterializeBase(context.Context, string, string, string) error { return nil }
+func (f *artifactV3CoordinatorFake) MaterializeBase(context.Context, string, string, string) error {
+	return nil
+}
 func (f *artifactV3CoordinatorFake) SubmitProject(context.Context, tool.ArtifactV3SubmitRequest) (tool.ArtifactV3Revision, error) {
 	return tool.ArtifactV3Revision{}, errors.New("not used")
 }
@@ -26,7 +28,7 @@ func (f *artifactV3CoordinatorFake) PrepareArtifactV3Turn(_ context.Context, req
 	index := len(f.prepared)
 	return tool.ArtifactV3AuthorGrant{
 		ID: "grant-" + fmt.Sprint(index), ArtifactID: firstNonEmptyString(request.ArtifactID, "artifact-new-"+fmt.Sprint(index)), OwnerSessionID: request.OwnerSessionID,
-		TurnID: "turn-" + fmt.Sprint(index), CandidateID: "candidate-" + fmt.Sprint(index), BaseCommitOID: request.BaseCommitOID, Initial: request.Initial,
+		ProducerSessionID: "child-" + fmt.Sprint(index), TurnID: "turn-" + fmt.Sprint(index), CandidateID: "candidate-" + fmt.Sprint(index), BaseCommitOID: request.BaseCommitOID, Initial: request.Initial,
 		TargetPartIDs: append([]string(nil), request.TargetPartIDs...), AllowedActions: []string{"inspect_context", "list_files", "read_file", "create_file", "edit_file", "rename_file", "delete_file", "diff", "build_preview", "finish_turn"}, PolicyRevision: request.PolicyRevision, ExpiresAt: request.ExpiresAt,
 	}, nil
 }
@@ -62,7 +64,9 @@ func TestAllocateManagedDesignerArtifactV3InitialAndFollowup(t *testing.T) {
 	if followup.Initial || followup.OwnerSessionID != "parent" || followup.ArtifactID != "artifact-old" || followup.BaseCommitOID != "commit-old" || followup.ProjectionSeq != 41 {
 		t.Fatalf("followup=%#v", followup)
 	}
-	if len(followup.TargetPartIDs) != 2 || followup.TargetPartIDs[0] != "hero" || followup.TargetPartIDs[1] != "pricing" { t.Fatalf("targets=%v", followup.TargetPartIDs) }
+	if len(followup.TargetPartIDs) != 2 || followup.TargetPartIDs[0] != "hero" || followup.TargetPartIDs[1] != "pricing" {
+		t.Fatalf("targets=%v", followup.TargetPartIDs)
+	}
 	if runtime.ArtifactV2AuthorService() != nil {
 		t.Fatal("V2 author service unexpectedly configured")
 	}
@@ -70,18 +74,28 @@ func TestAllocateManagedDesignerArtifactV3InitialAndFollowup(t *testing.T) {
 	if err := runtime.ArtifactV3AuthorService().MarkFailed(context.Background(), boundFailure.Grant, "child_run_failed", "safe diagnostic"); err != nil {
 		t.Fatal(err)
 	}
-	if len(coordinator.failures) != 1 || coordinator.failures[0].ProducerRunID != "run-failed" { t.Fatalf("failures=%#v", coordinator.failures) }
+	if len(coordinator.failures) != 1 || coordinator.failures[0].ProducerRunID != "run-failed" {
+		t.Fatalf("failures=%#v", coordinator.failures)
+	}
 
 	parsed, err := parseTaskCallArguments(`{"mode":"regular","prompt":"edit pricing","artifact_v3_source":{"session_id":"parent","artifact_id":"artifact-old","commit_oid":"commit-old","projection_seq":41,"target_part_ids":["pricing"]},"section_target":{"id":"pricing","label":"Pricing","kind":"semantic"},"subagent_type":"designer","meta_prompt":"edit","output_mode":"managed"}`)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if parsed.ArtifactV3Source == nil || parsed.ArtifactV3Source.SessionID != "parent" || parsed.ArtifactV3Source.CommitOID != "commit-old" || parsed.Launches[0].ArtifactV3Source == nil { t.Fatalf("parsed=%#v", parsed) }
+	if parsed.ArtifactV3Source == nil || parsed.ArtifactV3Source.SessionID != "parent" || parsed.ArtifactV3Source.CommitOID != "commit-old" || parsed.Launches[0].ArtifactV3Source == nil {
+		t.Fatalf("parsed=%#v", parsed)
+	}
 	manifestRow := taskLaunchManifestRow{ArtifactV3Source: cloneTaskArtifactV3Source(parsed.Launches[0].ArtifactV3Source)}
-	if manifestRow.ArtifactV3Source == nil || manifestRow.ArtifactV3Source.ProjectionSeq != 41 { t.Fatalf("manifest row=%#v", manifestRow) }
-	if _, err := parseTaskCallArguments(`{"mode":"regular","prompt":"edit","artifact_v3_source":{"session_id":"parent","artifact_id":"a","commit_oid":"c","projection_seq":1},"source_artifact":{"session_id":"s","collection_id":"c","variant_id":"v","event_seq":1},"subagent_type":"designer","meta_prompt":"edit","output_mode":"managed"}`); err == nil || !strings.Contains(err.Error(), "not both") { t.Fatalf("mixed source err=%v", err) }
+	if manifestRow.ArtifactV3Source == nil || manifestRow.ArtifactV3Source.ProjectionSeq != 41 {
+		t.Fatalf("manifest row=%#v", manifestRow)
+	}
+	if _, err := parseTaskCallArguments(`{"mode":"regular","prompt":"edit","artifact_v3_source":{"session_id":"parent","artifact_id":"a","commit_oid":"c","projection_seq":1},"source_artifact":{"session_id":"s","collection_id":"c","variant_id":"v","event_seq":1},"subagent_type":"designer","meta_prompt":"edit","output_mode":"managed"}`); err == nil || !strings.Contains(err.Error(), "not both") {
+		t.Fatalf("mixed source err=%v", err)
+	}
 	legacy := taskLaunchSpec{RequestedSubagentType: "designer", OutputMode: taskOutputModeManaged, MetaPrompt: "legacy", SourceArtifact: &pebblestore.SessionArtifactSelectionReference{SessionID: "s", CollectionID: "c", VariantID: "v", EventSeq: 1}}
-	if _, err := svc.allocateManagedDesignerArtifactV3(context.Background(), parent, "legacy", []taskLaunchSpec{legacy}); err == nil || !strings.Contains(err.Error(), "requires artifact_v3_source") { t.Fatalf("legacy route err=%v", err) }
+	if _, err := svc.allocateManagedDesignerArtifactV3(context.Background(), parent, "legacy", []taskLaunchSpec{legacy}); err == nil || !strings.Contains(err.Error(), "requires artifact_v3_source") {
+		t.Fatalf("legacy route err=%v", err)
+	}
 }
 
 func TestArtifactV3LaunchBindingAndPrompt(t *testing.T) {
@@ -98,21 +112,32 @@ func TestArtifactV3LaunchBindingAndPrompt(t *testing.T) {
 		t.Fatal(err)
 	}
 	parent, _, _ := sessions.GetSession("parent")
-	prepared, err := (&Service{sessions: sessions}).prepareDelegatedSubagentLaunchWithProfile(parent, "auto", taskLaunchPrepared{RequestedSubagent: "designer", MetaPrompt: "edit", OutputMode: taskOutputModeManaged, ArtifactV3AuthorContext: &tool.ArtifactV3AuthorRunContext{Grant: grant}}, "edit", "", &profile, "designer", nil)
+	prepared, err := (&Service{sessions: sessions}).prepareDelegatedSubagentLaunchWithProfile(parent, "auto", taskLaunchPrepared{RequestedSubagent: "designer", MetaPrompt: "edit", OutputMode: taskOutputModeManaged, ArtifactV3AuthorContext: &tool.ArtifactV3AuthorRunContext{Grant: grant}, LogicalTaskID: "artifact-v3-test", TaskCallID: "task-call", PermissionSessionID: "parent", ReservationSessionID: "parent"}, "edit", "", &profile, "designer", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if prepared.ArtifactV3AuthorContext.Grant.ProducerSessionID != prepared.ChildSession.ID { t.Fatalf("producer=%q child=%q", prepared.ArtifactV3AuthorContext.Grant.ProducerSessionID, prepared.ChildSession.ID) }
+	if prepared.ArtifactV3AuthorContext.Grant.ProducerSessionID != prepared.ChildSession.ID {
+		t.Fatalf("producer=%q child=%q", prepared.ArtifactV3AuthorContext.Grant.ProducerSessionID, prepared.ChildSession.ID)
+	}
 	bound := tool.BindArtifactV3AuthorRunContext(prepared.ArtifactV3AuthorContext, "run-1")
-	if bound == nil || bound.Grant.ProducerRunID != "run-1" || prepared.ArtifactV3AuthorContext.Grant.ProducerRunID != "" { t.Fatalf("run binding mutated source: bound=%#v source=%#v", bound, prepared.ArtifactV3AuthorContext) }
-	if prepared.ChildSession.Metadata["artifact_v3_artifact_id"] != "artifact" || prepared.ChildSession.Metadata["artifact_v3_base_commit_oid"] != "base" { t.Fatalf("metadata=%#v", prepared.ChildSession.Metadata) }
-	if _, legacy := prepared.ChildSession.Metadata["artifact_v2_managed_output"]; legacy { t.Fatalf("V2 metadata leaked: %#v", prepared.ChildSession.Metadata) }
+	if bound == nil || bound.Grant.ProducerRunID != "run-1" || prepared.ArtifactV3AuthorContext.Grant.ProducerRunID != "" {
+		t.Fatalf("run binding mutated source: bound=%#v source=%#v", bound, prepared.ArtifactV3AuthorContext)
+	}
+	if prepared.ChildSession.Metadata["artifact_v3_artifact_id"] != "artifact" || prepared.ChildSession.Metadata["artifact_v3_base_commit_oid"] != "base" {
+		t.Fatalf("metadata=%#v", prepared.ChildSession.Metadata)
+	}
+	if _, legacy := prepared.ChildSession.Metadata["artifact_v2_managed_output"]; legacy {
+		t.Fatalf("V2 metadata leaked: %#v", prepared.ChildSession.Metadata)
+	}
 	prompt := buildTaskDelegationPrompt(taskDelegationPromptConfig{RequestedSubagent: "designer", OutputMode: taskOutputModeManaged, ArtifactV3AuthorContext: prepared.ArtifactV3AuthorContext})
 	for _, required := range []string{"managed Artifact V3", "complete conventional project tree", "finish_turn exactly once", "pricing", "brand/logo.svg"} {
-		if !strings.Contains(strings.ToLower(prompt), strings.ToLower(required)) { t.Fatalf("prompt missing %q:\n%s", required, prompt) }
+		if !strings.Contains(strings.ToLower(prompt), strings.ToLower(required)) {
+			t.Fatalf("prompt missing %q:\n%s", required, prompt)
+		}
 	}
 	for _, forbidden := range []string{"write parts strictly one at a time", "managed Artifact V2"} {
-		if strings.Contains(strings.ToLower(prompt), strings.ToLower(forbidden)) { t.Fatalf("prompt retained %q:\n%s", forbidden, prompt) }
+		if strings.Contains(strings.ToLower(prompt), strings.ToLower(forbidden)) {
+			t.Fatalf("prompt retained %q:\n%s", forbidden, prompt)
+		}
 	}
 }
-

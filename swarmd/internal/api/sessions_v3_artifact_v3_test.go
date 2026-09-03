@@ -44,6 +44,11 @@ func TestArtifactV3HTTPDetailRevisionPreviewAndSelection(t *testing.T) {
 	if preview.Code != http.StatusOK || !strings.Contains(preview.Body.String(), "Artifact V3") || preview.Header().Get("Content-Security-Policy") == "" {
 		t.Fatalf("preview status=%d headers=%v body=%s", preview.Code, preview.Header(), preview.Body.String())
 	}
+	asset := httptest.NewRecorder()
+	server.Handler().ServeHTTP(asset, withTestPrincipal(httptest.NewRequest(http.MethodGet, "/v3/sessions/artifact-v3-api/artifacts-v3/artifact-1/preview/files/styles/theme.css?revision=rev-root", nil)))
+	if asset.Code != http.StatusOK || !strings.HasPrefix(asset.Header().Get("Content-Type"), "text/css") || !strings.Contains(asset.Body.String(), "navy") {
+		t.Fatalf("asset status=%d headers=%v body=%s", asset.Code, asset.Header(), asset.Body.String())
+	}
 
 	body := `{"client_request_id":"select-1","candidate_id":"candidate-1","expected_head_ref":"rev-root","expected_turn_revision":2}`
 	selected := httptest.NewRecorder()
@@ -185,10 +190,13 @@ func (f *artifactV3APIServiceFake) GetRevision(_ context.Context, _ ArtifactV3Pr
 	}
 	return *f.artifact.Head, nil
 }
-func (f *artifactV3APIServiceFake) OpenPreview(_ context.Context, _ ArtifactV3Principal, sessionID, artifactID, revision string) (ArtifactV3Preview, error) {
+func (f *artifactV3APIServiceFake) OpenPreview(_ context.Context, _ ArtifactV3Principal, sessionID, artifactID, revision, assetPath string) (ArtifactV3Preview, error) {
 	f.calls++
 	if sessionID != f.artifact.OwnerSessionID || artifactID != f.artifact.ID || revision != "rev-root" {
 		return ArtifactV3Preview{}, pebblestore.ErrArtifactV3NotFound
+	}
+	if assetPath != "" {
+		return ArtifactV3Preview{RevisionRef: revision, CommitOID: f.artifact.Head.CommitOID, MediaType: "text/css", Body: []byte("body{color:navy}"), ETag: `"artifact-v3-root"`}, nil
 	}
 	return ArtifactV3Preview{RevisionRef: revision, CommitOID: f.artifact.Head.CommitOID, MediaType: "text/html; charset=utf-8", Body: []byte("<!doctype html><title>Artifact V3</title>"), ETag: `"artifact-v3-root"`}, nil
 }

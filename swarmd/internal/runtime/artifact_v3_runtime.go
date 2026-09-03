@@ -7,8 +7,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"mime"
+	"net/url"
 	"os"
+	"path"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -31,22 +35,22 @@ const (
 // authoring and authenticated HTTP to the Git/Pebble Artifact V3 authority.
 // It deliberately has no dependency on Artifact V1 or V2.
 type artifactV3RuntimeAdapter struct {
-	service      *pebblestore.ArtifactV3Service
-	sessions     *pebblestore.SessionStore
+	service        *pebblestore.ArtifactV3Service
+	sessions       *pebblestore.SessionStore
 	repositoryRoot string
-	evidenceRoot string
-	limits       pebblestore.ArtifactV3Limits
-	renderer     htmlcapture.Renderer
-	publish      func(identity.Principal, api.ArtifactV3Artifact, string, string) error
+	evidenceRoot   string
+	limits         pebblestore.ArtifactV3Limits
+	renderer       htmlcapture.Renderer
+	publish        func(identity.Principal, api.ArtifactV3Artifact, string, string) error
 
-	mu      sync.RWMutex
-	grants  map[string]artifactV3GrantOwner
-	builds  map[string]tool.ArtifactV3BuildResult
+	mu       sync.RWMutex
+	grants   map[string]artifactV3GrantOwner
+	builds   map[string]tool.ArtifactV3BuildResult
 	previews map[string]tool.ArtifactV3PreviewResult
 }
 
 type artifactV3GrantOwner struct {
-	Owner pebblestore.ArtifactV3Owner
+	Owner  pebblestore.ArtifactV3Owner
 	Prompt string
 }
 
@@ -71,6 +75,10 @@ func artifactV3StorageRoots(dataDir, cacheDir string) (repository, workspace, ev
 
 func artifactV3Principal(owner artifactV3GrantOwner) identity.Principal {
 	return identity.Principal{Type: identity.PrincipalTypeUser, AccountScopeID: owner.Owner.AccountScopeID, UserID: owner.Owner.UserID}
+}
+
+func artifactV3Reference(repository pebblestore.ArtifactV3RepositoryProjection) string {
+	return fmt.Sprintf("artifact-v3:%s:%s:%s:%d", repository.OwnerSessionID, repository.ArtifactID, repository.HeadCommitOID, repository.EventSeq)
 }
 
 func artifactV3StableID(prefix string, parts ...string) string {
@@ -147,9 +155,9 @@ func canonicalStrings(values []string) []string {
 func (a *artifactV3RuntimeAdapter) ownerFor(artifactID, turnID, candidateID string) (artifactV3GrantOwner, error) {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
+	wanted := artifactV3StableID("grant", artifactID, turnID, candidateID)
 	for grantID, owner := range a.grants {
-		_ = grantID
-		if artifactV3StableID("grant", artifactID, turnID, candidateID) == grantID {
+		if wanted == grantID {
 			return owner, nil
 		}
 	}
@@ -188,7 +196,17 @@ func (a *artifactV3RuntimeAdapter) SubmitProject(ctx context.Context, request to
 	project := pebblestore.ArtifactV3Project{Files: request.Project}
 	transactionID := artifactV3StableID("tx", request.ArtifactID, request.TurnID, request.CandidateID, request.ProjectDigest)
 	if request.Initial {
-		created, err := a.service.Create(ctx, pebblestore.ArtifactV3CreateInput{Owner: owner.Owner, ArtifactID: request.ArtifactID, TransactionID: transactionID, Project: project, Message: owner.Prompt})
+		buildDigest := request.ProjectDigest
+		if len(request.Build.OutputFiles) != 0 {
+			buildDigest = digestArtifactProject(request.Build.OutputFiles)
+		}
+		build := artifactV3Evidence(request.Build.ID, request.Build.Status, "", buildDigest)
+		previewDigest := ""
+		if len(request.Preview.EvidenceDigests) != 0 {
+			previewDigest = request.Preview.EvidenceDigests[0]
+		}
+		preview := artifactV3Evidence(request.Preview.ID, "succeeded", "", previewDigest)
+		created, err := a.service.Create(ctx, pebblestore.ArtifactV3CreateInput{Owner: owner.Owner, ArtifactID: request.ArtifactID, TransactionID: transactionID, Project: project, Message: owner.Prompt, Build: build, Preview: preview})
 		if err != nil {
 			return tool.ArtifactV3Revision{}, err
 		}
@@ -205,7 +223,11 @@ func (a *artifactV3RuntimeAdapter) SubmitProject(ctx context.Context, request to
 	if err != nil {
 		return tool.ArtifactV3Revision{}, err
 	}
-	build := artifactV3Evidence(request.Build.ID, request.Build.Status, candidate.CommitOID, request.ProjectDigest)
+	buildDigest := request.ProjectDigest
+	if len(request.Build.OutputFiles) != 0 {
+		buildDigest = digestArtifactProject(request.Build.OutputFiles)
+	}
+	build := artifactV3Evidence(request.Build.ID, request.Build.Status, candidate.CommitOID, buildDigest)
 	previewDigest := ""
 	if len(request.Preview.EvidenceDigests) != 0 {
 		previewDigest = request.Preview.EvidenceDigests[0]
@@ -215,7 +237,7 @@ func (a *artifactV3RuntimeAdapter) SubmitProject(ctx context.Context, request to
 	if err != nil {
 		return tool.ArtifactV3Revision{}, err
 	}
-	if err := a.publishProjection(owner, request.ArtifactID, pebblestore.V3SessionMutationArtifactV3CandidateCommitted, transactionID); err != nil {
+	if err := a.publishProjection(owner, request.ArtifactID, "artifact.v3.candidate.ready", transactionID); err != nil {
 		return tool.ArtifactV3Revision{}, err
 	}
 	return tool.ArtifactV3Revision{CommitOID: committed.Revision.CommitOID, TreeOID: committed.Revision.TreeOID, ManifestBlobOID: committed.Revision.ManifestBlobOID}, nil
@@ -232,6 +254,11 @@ func (a *artifactV3RuntimeAdapter) FailArtifactV3Turn(_ context.Context, failure
 	owner, err := a.ownerFor(failure.ArtifactID, failure.TurnID, failure.CandidateID)
 	if err != nil {
 		return err
+	}
+	if _, ok, readErr := a.sessions.GetArtifactV3Repository(owner.Owner.AccountScopeID, owner.Owner.UserID, failure.ArtifactID); readErr != nil || !ok {
+		// Initial authoring has no durable repository/turn until a validated genesis
+		// commit exists, so a failed child leaves no partial Artifact V3 identity.
+		return nil
 	}
 	_, err = a.service.RecordCandidateTerminal(owner.Owner, failure.ArtifactID, failure.TurnID, failure.CandidateID, artifactV3StableID("fail", failure.ArtifactID, failure.TurnID, failure.CandidateID), "failed", strings.TrimSpace(failure.Code), 0)
 	return err
@@ -259,7 +286,9 @@ func (a *artifactV3RuntimeAdapter) Build(_ context.Context, request tool.Artifac
 	return result, nil
 }
 
-func bytesContainsFold(body []byte, text string) bool { return strings.Contains(strings.ToLower(string(body)), strings.ToLower(text)) }
+func bytesContainsFold(body []byte, text string) bool {
+	return strings.Contains(strings.ToLower(string(body)), strings.ToLower(text))
+}
 
 func parseArtifactV3Manifest(project map[string][]byte) (pebblestore.ArtifactV3Manifest, []tool.ArtifactV3Diagnostic) {
 	body, ok := project[pebblestore.ArtifactV3ManifestFilename]
@@ -359,159 +388,363 @@ func cloneArtifactProject(input map[string][]byte) map[string][]byte {
 
 func digestArtifactProject(input map[string][]byte) string {
 	paths := make([]string, 0, len(input))
-	for path := range input { paths = append(paths, path) }
+	for path := range input {
+		paths = append(paths, path)
+	}
 	sort.Strings(paths)
 	h := sha256.New()
-	for _, path := range paths { h.Write([]byte(path)); h.Write([]byte{0}); sum := sha256.Sum256(input[path]); h.Write(sum[:]) }
+	for _, path := range paths {
+		h.Write([]byte(path))
+		h.Write([]byte{0})
+		sum := sha256.Sum256(input[path])
+		h.Write(sum[:])
+	}
 	return hex.EncodeToString(h.Sum(nil))
 }
 
 func (a *artifactV3RuntimeAdapter) ListArtifacts(ctx context.Context, principal api.ArtifactV3Principal, sessionID string, limit int) ([]api.ArtifactV3Artifact, error) {
-	if limit <= 0 || limit > 500 { limit = 500 }
+	if a == nil || a.sessions == nil || strings.TrimSpace(principal.AccountScopeID) == "" || strings.TrimSpace(principal.UserID) == "" || strings.TrimSpace(sessionID) == "" {
+		return nil, pebblestore.ErrArtifactV3Unauthorized
+	}
+	if limit <= 0 || limit > 500 {
+		limit = 500
+	}
 	entries, err := os.ReadDir(a.repositoryRoot)
-	if err != nil { return nil, err }
+	if err != nil {
+		return nil, err
+	}
 	out := make([]api.ArtifactV3Artifact, 0, min(limit, len(entries)))
 	for _, entry := range entries {
-		if len(out) >= limit { break }
-		if !entry.IsDir() || !strings.HasSuffix(entry.Name(), ".git") { continue }
+		if len(out) >= limit {
+			break
+		}
+		if !entry.IsDir() || !strings.HasSuffix(entry.Name(), ".git") {
+			continue
+		}
 		artifactID := strings.TrimSuffix(entry.Name(), ".git")
+		if artifactID == "" {
+			continue
+		}
 		repository, ok, readErr := a.sessions.GetArtifactV3Repository(principal.AccountScopeID, principal.UserID, artifactID)
-		if readErr != nil || !ok || repository.OwnerSessionID != sessionID { continue }
+		if readErr != nil || !ok || repository.OwnerSessionID != sessionID {
+			continue
+		}
 		artifact, readErr := a.artifact(ctx, principal, repository)
-		if readErr != nil { return nil, readErr }
+		if readErr != nil {
+			return nil, readErr
+		}
 		out = append(out, artifact)
 	}
-	sort.Slice(out, func(i,j int) bool { return out[i].UpdatedAt > out[j].UpdatedAt })
+	sort.Slice(out, func(i, j int) bool { return out[i].UpdatedAt > out[j].UpdatedAt })
 	return out, nil
 }
 
 func (a *artifactV3RuntimeAdapter) GetArtifact(ctx context.Context, principal api.ArtifactV3Principal, sessionID, artifactID string) (api.ArtifactV3Artifact, error) {
 	repository, ok, err := a.sessions.GetArtifactV3Repository(principal.AccountScopeID, principal.UserID, artifactID)
-	if err != nil || !ok || repository.OwnerSessionID != sessionID { return api.ArtifactV3Artifact{}, pebblestore.ErrArtifactV3NotFound }
+	if err != nil || !ok || repository.OwnerSessionID != sessionID {
+		return api.ArtifactV3Artifact{}, pebblestore.ErrArtifactV3NotFound
+	}
 	return a.artifact(ctx, principal, repository)
 }
 
 func (a *artifactV3RuntimeAdapter) artifact(ctx context.Context, principal api.ArtifactV3Principal, repository pebblestore.ArtifactV3RepositoryProjection) (api.ArtifactV3Artifact, error) {
 	revision, err := a.revision(ctx, principal, repository, repository.HeadCommitOID)
-	if err != nil { return api.ArtifactV3Artifact{}, err }
+	if err != nil {
+		return api.ArtifactV3Artifact{}, err
+	}
 	turns, err := a.turns(ctx, principal, repository)
-	if err != nil { return api.ArtifactV3Artifact{}, err }
-	return api.ArtifactV3Artifact{ID: repository.ArtifactID, OwnerSessionID: repository.OwnerSessionID, Status: "ready", Revision: repository.EventSeq, PartCount: len(revision.Manifest.Parts), Parts: revision.Manifest.Parts, Head: &revision, CurrentRevision: &revision, Turns: turns, UpdatedAt: repository.UpdatedAt}, nil
+	if err != nil {
+		return api.ArtifactV3Artifact{}, err
+	}
+	return api.ArtifactV3Artifact{ID: repository.ArtifactID, OwnerSessionID: repository.OwnerSessionID, IntentReference: repository.IntentReference, ArtifactRef: artifactV3Reference(repository), Status: "ready", Revision: repository.EventSeq, PartCount: len(revision.Manifest.Parts), Parts: revision.Manifest.Parts, Head: &revision, CurrentRevision: &revision, Revisions: []api.ArtifactV3Revision{revision}, Turns: turns, UpdatedAt: repository.UpdatedAt}, nil
 }
 
 func (a *artifactV3RuntimeAdapter) ListRevisions(ctx context.Context, principal api.ArtifactV3Principal, sessionID, artifactID, cursor string, limit int) (api.ArtifactV3RevisionPage, error) {
 	repository, ok, err := a.sessions.GetArtifactV3Repository(principal.AccountScopeID, principal.UserID, artifactID)
-	if err != nil || !ok || repository.OwnerSessionID != sessionID { return api.ArtifactV3RevisionPage{}, pebblestore.ErrArtifactV3NotFound }
+	if err != nil || !ok || repository.OwnerSessionID != sessionID {
+		return api.ArtifactV3RevisionPage{}, pebblestore.ErrArtifactV3NotFound
+	}
 	repo, err := pebblestore.OpenArtifactV3Repository(ctx, a.repositoryRoot, artifactID, pebblestore.ArtifactV3Owner{AccountScopeID: principal.AccountScopeID, UserID: principal.UserID, SessionID: sessionID}, a.limits)
-	if err != nil { return api.ArtifactV3RevisionPage{}, err }
+	if err != nil {
+		return api.ArtifactV3RevisionPage{}, err
+	}
 	page, err := repo.ListRevisions(ctx, cursor, limit)
-	if err != nil { return api.ArtifactV3RevisionPage{}, err }
+	if err != nil {
+		return api.ArtifactV3RevisionPage{}, err
+	}
 	out := api.ArtifactV3RevisionPage{NextCursor: page.NextCursor}
-	for _, value := range page.Revisions { revision, err := a.revision(ctx, principal, repository, value.CommitOID); if err != nil { return api.ArtifactV3RevisionPage{}, err }; out.Revisions = append(out.Revisions, revision) }
+	for _, value := range page.Revisions {
+		revision, err := a.revision(ctx, principal, repository, value.CommitOID)
+		if errors.Is(err, pebblestore.ErrArtifactV3NotFound) {
+			continue
+		}
+		if err != nil {
+			return api.ArtifactV3RevisionPage{}, err
+		}
+		out.Revisions = append(out.Revisions, revision)
+	}
 	return out, nil
 }
 
 func (a *artifactV3RuntimeAdapter) GetRevision(ctx context.Context, principal api.ArtifactV3Principal, sessionID, artifactID, revisionRef string) (api.ArtifactV3Revision, error) {
 	repository, ok, err := a.sessions.GetArtifactV3Repository(principal.AccountScopeID, principal.UserID, artifactID)
-	if err != nil || !ok || repository.OwnerSessionID != sessionID { return api.ArtifactV3Revision{}, pebblestore.ErrArtifactV3NotFound }
+	if err != nil || !ok || repository.OwnerSessionID != sessionID {
+		return api.ArtifactV3Revision{}, pebblestore.ErrArtifactV3NotFound
+	}
 	commit := strings.TrimPrefix(revisionRef, "revision-")
 	return a.revision(ctx, principal, repository, commit)
 }
 
 func (a *artifactV3RuntimeAdapter) revision(ctx context.Context, principal api.ArtifactV3Principal, repository pebblestore.ArtifactV3RepositoryProjection, commit string) (api.ArtifactV3Revision, error) {
 	projection, ok, err := a.sessions.GetArtifactV3Revision(principal.AccountScopeID, principal.UserID, repository.ArtifactID, commit)
-	if err != nil || !ok { return api.ArtifactV3Revision{}, pebblestore.ErrArtifactV3NotFound }
+	if err != nil || !ok {
+		return api.ArtifactV3Revision{}, pebblestore.ErrArtifactV3NotFound
+	}
 	repo, err := pebblestore.OpenArtifactV3Repository(ctx, a.repositoryRoot, repository.ArtifactID, pebblestore.ArtifactV3Owner{AccountScopeID: principal.AccountScopeID, UserID: principal.UserID, SessionID: repository.OwnerSessionID}, a.limits)
-	if err != nil { return api.ArtifactV3Revision{}, err }
+	if err != nil {
+		return api.ArtifactV3Revision{}, err
+	}
 	gitRevision, err := repo.ReadRevision(ctx, commit)
-	if err != nil || gitRevision.TreeOID != projection.TreeOID || gitRevision.ManifestBlobOID != projection.ManifestBlobOID { return api.ArtifactV3Revision{}, pebblestore.ErrArtifactV3Integrity }
-	return api.ArtifactV3Revision{RevisionRef: "revision-"+commit, CommitOID: commit, TreeOID: projection.TreeOID, ManifestBlobOID: projection.ManifestBlobOID, Parents: projection.ParentCommitOIDs, Manifest: gitRevision.Manifest, FileCount: projection.FileCount, TreeBytes: projection.TreeBytes, ChangedFiles: projection.ChangedFiles, CreatedAt: projection.CreatedAt}, nil
+	if err != nil || gitRevision.TreeOID != projection.TreeOID || gitRevision.ManifestBlobOID != projection.ManifestBlobOID {
+		return api.ArtifactV3Revision{}, pebblestore.ErrArtifactV3Integrity
+	}
+	build := artifactV3APIBuildEvidence(projection.Build, projection.TreeOID)
+	validation := artifactV3APIValidationEvidence(projection.Preview, projection.TreeOID)
+	if build == nil || validation == nil {
+		return api.ArtifactV3Revision{}, pebblestore.ErrArtifactV3Integrity
+	}
+	return api.ArtifactV3Revision{RevisionRef: "revision-" + commit, CommitOID: commit, TreeOID: projection.TreeOID, ManifestBlobOID: projection.ManifestBlobOID, Parents: projection.ParentCommitOIDs, Manifest: gitRevision.Manifest, FileCount: projection.FileCount, TreeBytes: projection.TreeBytes, ChangedFiles: projection.ChangedFiles, Build: build, Validation: validation, CreatedAt: projection.CreatedAt}, nil
 }
 
-func (a *artifactV3RuntimeAdapter) OpenPreview(ctx context.Context, principal api.ArtifactV3Principal, sessionID, artifactID, revisionRef string) (api.ArtifactV3Preview, error) {
+func (a *artifactV3RuntimeAdapter) OpenPreview(ctx context.Context, principal api.ArtifactV3Principal, sessionID, artifactID, revisionRef, assetPath string) (api.ArtifactV3Preview, error) {
 	revision, err := a.GetRevision(ctx, principal, sessionID, artifactID, revisionRef)
-	if err != nil { return api.ArtifactV3Preview{}, err }
+	if err != nil {
+		return api.ArtifactV3Preview{}, err
+	}
 	repository, err := pebblestore.OpenArtifactV3Repository(ctx, a.repositoryRoot, artifactID, pebblestore.ArtifactV3Owner{AccountScopeID: principal.AccountScopeID, UserID: principal.UserID, SessionID: sessionID}, a.limits)
-	if err != nil { return api.ArtifactV3Preview{}, err }
-	body, err := repository.ReadFile(ctx, revision.CommitOID, revision.Manifest.Entrypoint)
-	if err != nil { return api.ArtifactV3Preview{}, err }
-	return api.ArtifactV3Preview{RevisionRef: revision.RevisionRef, CommitOID: revision.CommitOID, MediaType: "text/html; charset=utf-8", Body: body, ETag: `"`+revision.TreeOID+`"`}, nil
+	if err != nil {
+		return api.ArtifactV3Preview{}, err
+	}
+	filePath := revision.Manifest.Entrypoint
+	mediaType := "text/html; charset=utf-8"
+	if strings.TrimSpace(assetPath) != "" {
+		decoded := assetPath
+		if decoded == "" || decoded != path.Clean(decoded) || strings.HasPrefix(decoded, "../") || strings.HasPrefix(decoded, "/") || strings.ContainsRune(decoded, '\x00') {
+			return api.ArtifactV3Preview{}, pebblestore.ErrArtifactV3Invalid
+		}
+		filePath = decoded
+		mediaType = mime.TypeByExtension(strings.ToLower(path.Ext(filePath)))
+		if mediaType == "" {
+			mediaType = "application/octet-stream"
+		}
+	}
+	body, err := repository.ReadFile(ctx, revision.CommitOID, filePath)
+	if err != nil {
+		return api.ArtifactV3Preview{}, err
+	}
+	if filePath == revision.Manifest.Entrypoint {
+		body = rewriteArtifactV3PreviewReferences(body, revision.Manifest.Entrypoint, sessionID, artifactID, revision.RevisionRef)
+	}
+	return api.ArtifactV3Preview{RevisionRef: revision.RevisionRef, CommitOID: revision.CommitOID, MediaType: mediaType, Body: body, ETag: `"` + revision.TreeOID + `"`}, nil
+}
+
+var artifactV3PreviewURLAttribute = regexp.MustCompile(`(?i)(\b(?:src|href)\s*=\s*["'])([^"']+)(["'])`)
+
+func rewriteArtifactV3PreviewReferences(body []byte, entrypoint, sessionID, artifactID, revisionRef string) []byte {
+	baseDir := path.Dir(entrypoint)
+	if baseDir == "." {
+		baseDir = ""
+	}
+	prefix := "/v3/sessions/" + url.PathEscape(sessionID) + "/artifacts-v3/" + url.PathEscape(artifactID) + "/preview/files/"
+	query := "?revision=" + url.QueryEscape(revisionRef)
+	return artifactV3PreviewURLAttribute.ReplaceAllFunc(body, func(match []byte) []byte {
+		parts := artifactV3PreviewURLAttribute.FindSubmatch(match)
+		if len(parts) != 4 {
+			return match
+		}
+		reference := string(parts[2])
+		parsed, err := url.Parse(reference)
+		if err != nil || parsed.Scheme != "" || parsed.Host != "" || strings.HasPrefix(reference, "//") || strings.HasPrefix(reference, "#") || strings.HasPrefix(reference, "data:") || strings.HasPrefix(reference, "blob:") || strings.HasPrefix(reference, "javascript:") {
+			return match
+		}
+		clean := path.Clean(path.Join(baseDir, parsed.Path))
+		if clean == "." || clean == ".." || strings.HasPrefix(clean, "../") || strings.HasPrefix(clean, "/") {
+			return match
+		}
+		rewritten := prefix + artifactV3EscapePreviewPath(clean) + query
+		if parsed.RawQuery != "" {
+			rewritten += "&asset_query=" + url.QueryEscape(parsed.RawQuery)
+		}
+		if parsed.Fragment != "" {
+			rewritten += "#" + url.PathEscape(parsed.Fragment)
+		}
+		return append(append(append([]byte{}, parts[1]...), []byte(rewritten)...), parts[3]...)
+	})
+}
+
+func artifactV3EscapePreviewPath(value string) string {
+	parts := strings.Split(value, "/")
+	for index := range parts {
+		parts[index] = url.PathEscape(parts[index])
+	}
+	return strings.Join(parts, "/")
+}
+
+func artifactV3APIBuildEvidence(e pebblestore.ArtifactV3EvidenceProjection, treeOID string) *api.ArtifactV3BuildEvidence {
+	if e.Reference == "" || e.Status != "succeeded" || e.CommitOID == "" || e.DigestSHA256 == "" {
+		return nil
+	}
+	return &api.ArtifactV3BuildEvidence{ID: e.Reference, Status: e.Status, CommitOID: e.CommitOID, TreeOID: treeOID}
+}
+
+func artifactV3APIValidationEvidence(e pebblestore.ArtifactV3EvidenceProjection, treeOID string) *api.ArtifactV3ValidationEvidence {
+	if e.Reference == "" || e.Status != "succeeded" || e.CommitOID == "" || e.DigestSHA256 == "" {
+		return nil
+	}
+	return &api.ArtifactV3ValidationEvidence{ID: e.Reference, Status: "valid", CommitOID: e.CommitOID, TreeOID: treeOID, EvidenceDigests: []string{e.DigestSHA256}}
 }
 
 func (a *artifactV3RuntimeAdapter) OpenTurn(ctx context.Context, principal api.ArtifactV3Principal, request api.ArtifactV3OpenTurnRequest) (api.ArtifactV3Turn, error) {
 	repository, ok, err := a.sessions.GetArtifactV3Repository(principal.AccountScopeID, principal.UserID, request.ArtifactID)
-	if err != nil || !ok || repository.OwnerSessionID != request.SessionID { return api.ArtifactV3Turn{}, pebblestore.ErrArtifactV3NotFound }
+	if err != nil || !ok || repository.OwnerSessionID != request.SessionID {
+		return api.ArtifactV3Turn{}, pebblestore.ErrArtifactV3NotFound
+	}
 	baseCommit := strings.TrimPrefix(strings.TrimSpace(request.BaseRevisionRef), "revision-")
-	if baseCommit != repository.HeadCommitOID { return api.ArtifactV3Turn{}, pebblestore.ErrArtifactV3Conflict }
+	if baseCommit != repository.HeadCommitOID {
+		return api.ArtifactV3Turn{}, pebblestore.ErrArtifactV3Conflict
+	}
 	turnID := artifactV3StableID("turn", request.ArtifactID, request.ClientRequestID)
-	target := ""; if len(request.TargetPartIDs) != 0 { target = request.TargetPartIDs[0] }
-	projection, err := a.service.OpenTurn(ctx, pebblestore.ArtifactV3OpenTurnInput{Owner:pebblestore.ArtifactV3Owner{AccountScopeID:principal.AccountScopeID,UserID:principal.UserID,SessionID:request.SessionID},ArtifactID:request.ArtifactID,TurnID:turnID,ExpectedHead:baseCommit,TargetPartID:target})
-	if err != nil { return api.ArtifactV3Turn{}, err }
-	if projection.Turn == nil { return api.ArtifactV3Turn{}, pebblestore.ErrArtifactV3Integrity }
-	return api.ArtifactV3Turn{TurnID:projection.Turn.TurnID,Revision:projection.Turn.EventSeq,Status:projection.Turn.Status,Intent:request.Intent,TargetPartIDs:canonicalStrings(request.TargetPartIDs),BaseCommitOID:projection.Turn.BaseCommitOID,CreatedAt:projection.Turn.CreatedAt,UpdatedAt:projection.Turn.UpdatedAt},nil
+	target := ""
+	if len(request.TargetPartIDs) != 0 {
+		target = request.TargetPartIDs[0]
+	}
+	projection, err := a.service.OpenTurn(ctx, pebblestore.ArtifactV3OpenTurnInput{Owner: pebblestore.ArtifactV3Owner{AccountScopeID: principal.AccountScopeID, UserID: principal.UserID, SessionID: request.SessionID}, ArtifactID: request.ArtifactID, TurnID: turnID, ExpectedHead: baseCommit, TargetPartID: target})
+	if err != nil {
+		return api.ArtifactV3Turn{}, err
+	}
+	if projection.Turn == nil {
+		return api.ArtifactV3Turn{}, pebblestore.ErrArtifactV3Integrity
+	}
+	return api.ArtifactV3Turn{TurnID: projection.Turn.TurnID, Revision: projection.Turn.EventSeq, Status: projection.Turn.Status, Intent: request.Intent, TargetPartIDs: canonicalStrings(request.TargetPartIDs), BaseCommitOID: projection.Turn.BaseCommitOID, CreatedAt: projection.Turn.CreatedAt, UpdatedAt: projection.Turn.UpdatedAt}, nil
 }
 
 func (a *artifactV3RuntimeAdapter) SelectCandidate(ctx context.Context, principal api.ArtifactV3Principal, request api.ArtifactV3SelectCandidateRequest) (api.ArtifactV3SelectionResult, error) {
 	repository, ok, err := a.sessions.GetArtifactV3Repository(principal.AccountScopeID, principal.UserID, request.ArtifactID)
-	if err != nil || !ok || repository.OwnerSessionID != request.SessionID { return api.ArtifactV3SelectionResult{}, pebblestore.ErrArtifactV3NotFound }
-	if "revision-"+repository.HeadCommitOID != request.ExpectedHeadRef { return api.ArtifactV3SelectionResult{}, pebblestore.ErrArtifactV3Conflict }
+	if err != nil || !ok || repository.OwnerSessionID != request.SessionID {
+		return api.ArtifactV3SelectionResult{}, pebblestore.ErrArtifactV3NotFound
+	}
+	if "revision-"+repository.HeadCommitOID != request.ExpectedHeadRef {
+		return api.ArtifactV3SelectionResult{}, pebblestore.ErrArtifactV3Conflict
+	}
 	turn, ok, err := a.sessions.GetArtifactV3Turn(principal.AccountScopeID, principal.UserID, request.ArtifactID, request.TurnID)
-	if err != nil || !ok || turn.EventSeq != request.ExpectedTurnRevision { return api.ArtifactV3SelectionResult{}, pebblestore.ErrArtifactV3Conflict }
+	if err != nil || !ok || turn.EventSeq != request.ExpectedTurnRevision {
+		return api.ArtifactV3SelectionResult{}, pebblestore.ErrArtifactV3Conflict
+	}
 	owner := pebblestore.ArtifactV3Owner{AccountScopeID: principal.AccountScopeID, UserID: principal.UserID, SessionID: request.SessionID}
 	selected, err := a.service.Select(ctx, pebblestore.ArtifactV3SelectInput{Owner: owner, ArtifactID: request.ArtifactID, TurnID: request.TurnID, CandidateID: request.CandidateID, TransactionID: strings.TrimSpace(request.ClientRequestID), ExpectedHead: repository.HeadCommitOID})
-	if err != nil { return api.ArtifactV3SelectionResult{}, err }
-	if err := a.publishProjection(artifactV3GrantOwner{Owner: owner}, request.ArtifactID, pebblestore.V3SessionMutationArtifactV3HeadSelected, request.ClientRequestID); err != nil { return api.ArtifactV3SelectionResult{}, err }
+	if err != nil {
+		return api.ArtifactV3SelectionResult{}, err
+	}
+	if err := a.publishProjection(artifactV3GrantOwner{Owner: owner}, request.ArtifactID, pebblestore.V3SessionMutationArtifactV3HeadSelected, request.ClientRequestID); err != nil {
+		return api.ArtifactV3SelectionResult{}, err
+	}
 	updated, err := a.GetArtifact(ctx, principal, request.SessionID, request.ArtifactID)
-	if err != nil { return api.ArtifactV3SelectionResult{}, err }
+	if err != nil {
+		return api.ArtifactV3SelectionResult{}, err
+	}
 	var selectedTurn api.ArtifactV3Turn
-	for _, value := range updated.Turns { if value.TurnID == request.TurnID { selectedTurn = value; break } }
+	for _, value := range updated.Turns {
+		if value.TurnID == request.TurnID {
+			selectedTurn = value
+			break
+		}
+	}
 	_ = selected
 	return api.ArtifactV3SelectionResult{Head: *updated.Head, Turn: selectedTurn}, nil
 }
 
 func (a *artifactV3RuntimeAdapter) turns(ctx context.Context, principal api.ArtifactV3Principal, repository pebblestore.ArtifactV3RepositoryProjection) ([]api.ArtifactV3Turn, error) {
-	repo, err := pebblestore.OpenArtifactV3Repository(ctx, a.repositoryRoot, repository.ArtifactID, pebblestore.ArtifactV3Owner{AccountScopeID:principal.AccountScopeID,UserID:principal.UserID,SessionID:repository.OwnerSessionID}, a.limits)
-	if err != nil { return nil, err }
+	repo, err := pebblestore.OpenArtifactV3Repository(ctx, a.repositoryRoot, repository.ArtifactID, pebblestore.ArtifactV3Owner{AccountScopeID: principal.AccountScopeID, UserID: principal.UserID, SessionID: repository.OwnerSessionID}, a.limits)
+	if err != nil {
+		return nil, err
+	}
 	cursor := ""
 	byTurn := map[string]*api.ArtifactV3Turn{}
 	for {
 		page, err := repo.ListRefs(ctx, "refs/swarm/turns/", cursor, 500)
-		if err != nil { return nil, err }
-		for _, ref := range page.Refs {
-			parts := strings.Split(strings.TrimPrefix(ref.Name,"refs/swarm/turns/"),"/")
-			if len(parts)!=3 || parts[1]!="candidate" { return nil, pebblestore.ErrArtifactV3Integrity }
-			turnProjection, ok, err := a.sessions.GetArtifactV3Turn(principal.AccountScopeID,principal.UserID,repository.ArtifactID,parts[0]); if err!=nil||!ok{return nil,pebblestore.ErrArtifactV3Integrity}
-			candidateProjection, ok, err := a.sessions.GetArtifactV3Candidate(principal.AccountScopeID,principal.UserID,repository.ArtifactID,parts[0],parts[2]); if err!=nil||!ok||candidateProjection.CommitOID!=ref.CommitOID{return nil,pebblestore.ErrArtifactV3Integrity}
-			turn := byTurn[parts[0]]
-			if turn==nil { turn=&api.ArtifactV3Turn{TurnID:parts[0],Revision:turnProjection.EventSeq,Status:turnProjection.Status,TargetPartIDs:canonicalStrings([]string{turnProjection.TargetPartID}),BaseCommitOID:turnProjection.BaseCommitOID,SelectedCandidateID:turnProjection.SelectedCandidateID,CreatedAt:turnProjection.CreatedAt,UpdatedAt:turnProjection.UpdatedAt};byTurn[parts[0]]=turn }
-			revision,err:=a.revision(ctx,principal,repository,ref.CommitOID);if err!=nil{return nil,err}
-			turn.Candidates=append(turn.Candidates,api.ArtifactV3Candidate{CandidateID:parts[2],Status:candidateProjection.Status,Revision:&revision})
+		if err != nil {
+			return nil, err
 		}
-		if page.NextCursor=="" { break }; cursor=page.NextCursor
+		for _, ref := range page.Refs {
+			parts := strings.Split(strings.TrimPrefix(ref.Name, "refs/swarm/turns/"), "/")
+			if len(parts) != 3 || parts[1] != "candidate" {
+				return nil, pebblestore.ErrArtifactV3Integrity
+			}
+			turnProjection, ok, err := a.sessions.GetArtifactV3Turn(principal.AccountScopeID, principal.UserID, repository.ArtifactID, parts[0])
+			if err != nil || !ok {
+				return nil, pebblestore.ErrArtifactV3Integrity
+			}
+			candidateProjection, ok, err := a.sessions.GetArtifactV3Candidate(principal.AccountScopeID, principal.UserID, repository.ArtifactID, parts[0], parts[2])
+			if err != nil || !ok || candidateProjection.CommitOID != ref.CommitOID {
+				return nil, pebblestore.ErrArtifactV3Integrity
+			}
+			turn := byTurn[parts[0]]
+			if turn == nil {
+				turn = &api.ArtifactV3Turn{TurnID: parts[0], Revision: turnProjection.EventSeq, Status: turnProjection.Status, TargetPartIDs: canonicalStrings([]string{turnProjection.TargetPartID}), BaseCommitOID: turnProjection.BaseCommitOID, SelectedCandidateID: turnProjection.SelectedCandidateID, CreatedAt: turnProjection.CreatedAt, UpdatedAt: turnProjection.UpdatedAt}
+				byTurn[parts[0]] = turn
+			}
+			revision, err := a.revision(ctx, principal, repository, ref.CommitOID)
+			if err != nil {
+				return nil, err
+			}
+			turn.Candidates = append(turn.Candidates, api.ArtifactV3Candidate{CandidateID: parts[2], Status: candidateProjection.Status, Revision: &revision, Build: revision.Build, Validation: revision.Validation})
+		}
+		if page.NextCursor == "" {
+			break
+		}
+		cursor = page.NextCursor
 	}
-	out:=make([]api.ArtifactV3Turn,0,len(byTurn));for _,turn:=range byTurn{sort.Slice(turn.Candidates,func(i,j int)bool{return turn.Candidates[i].CandidateID<turn.Candidates[j].CandidateID});out=append(out,*turn)}
-	sort.Slice(out,func(i,j int)bool{return out[i].UpdatedAt>out[j].UpdatedAt})
-	return out,nil
+	out := make([]api.ArtifactV3Turn, 0, len(byTurn))
+	for _, turn := range byTurn {
+		sort.Slice(turn.Candidates, func(i, j int) bool { return turn.Candidates[i].CandidateID < turn.Candidates[j].CandidateID })
+		out = append(out, *turn)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].UpdatedAt > out[j].UpdatedAt })
+	return out, nil
 }
 
 func (a *artifactV3RuntimeAdapter) publishProjection(owner artifactV3GrantOwner, artifactID, eventType, requestID string) error {
-	if a.publish == nil { return errors.New("artifact v3 realtime publisher is not configured") }
-	artifact, err := a.GetArtifact(context.Background(), api.ArtifactV3Principal{AccountScopeID:owner.Owner.AccountScopeID,UserID:owner.Owner.UserID}, owner.Owner.SessionID, artifactID)
-	if err != nil { return err }
+	if a.publish == nil {
+		return errors.New("artifact v3 realtime publisher is not configured")
+	}
+	artifact, err := a.GetArtifact(context.Background(), api.ArtifactV3Principal{AccountScopeID: owner.Owner.AccountScopeID, UserID: owner.Owner.UserID}, owner.Owner.SessionID, artifactID)
+	if err != nil {
+		return err
+	}
 	return a.publish(artifactV3Principal(owner), artifact, eventType, requestID+":projection")
 }
 
 func recoverArtifactV3Repositories(ctx context.Context, adapter *artifactV3RuntimeAdapter) error {
-	if adapter == nil || adapter.sessions == nil { return nil }
+	if adapter == nil || adapter.sessions == nil {
+		return nil
+	}
 	entries, err := os.ReadDir(adapter.repositoryRoot)
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 	for _, entry := range entries {
-		if !entry.IsDir() || !strings.HasSuffix(entry.Name(), ".git") { continue }
+		if !entry.IsDir() || !strings.HasSuffix(entry.Name(), ".git") {
+			continue
+		}
 		artifactID := strings.TrimSuffix(entry.Name(), ".git")
 		ownerBody, readErr := os.ReadFile(filepath.Join(adapter.repositoryRoot, entry.Name(), "swarm-owner.json"))
-		if readErr != nil { return readErr }
+		if readErr != nil {
+			return readErr
+		}
 		var owner pebblestore.ArtifactV3Owner
-		if json.Unmarshal(ownerBody, &owner) != nil { return pebblestore.ErrArtifactV3Integrity }
+		if json.Unmarshal(ownerBody, &owner) != nil {
+			return pebblestore.ErrArtifactV3Integrity
+		}
 		if _, recoverErr := adapter.service.Recover(ctx, owner, artifactID); recoverErr != nil {
 			return fmt.Errorf("recover artifact %s: %w", artifactID, recoverErr)
 		}
