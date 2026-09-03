@@ -579,11 +579,6 @@ func New(cfg config.Config) (*Daemon, error) {
 		return err
 	})
 	modelSvc.StartCatalogAutoRefresh(bgCtx)
-	startV3SessionRetention(bgCtx, sessionSvc)
-	startMediaStagingCleanup(bgCtx, mediaStagingSvc)
-	startArtifactMaintenance(bgCtx, artifactRegistry)
-	startVideoRenderRecovery(bgCtx, videoRenderSvc)
-
 	apiServer := api.NewServer(authSvc, agentSvc, modelSvc, runSvc, sessionSvc, workspaceSvc, discoverySvc, securitySvc, providers, permissionSvc, notificationSvc, events, hub)
 	apiServer.SetMediaStagingService(mediaStagingSvc)
 	apiServer.SetVideoTranscriptionService(videoTranscriptionSvc)
@@ -688,7 +683,6 @@ func New(cfg config.Config) (*Daemon, error) {
 	apiServer.SetShutdownHandler(func(reason string) {
 		d.requestStop("api:" + strings.TrimSpace(reason))
 	})
-
 	httpServer := &http.Server{
 		Addr:              cfg.ListenAddr,
 		Handler:           apiServer.Handler(),
@@ -760,8 +754,13 @@ func New(cfg config.Config) (*Daemon, error) {
 		diagnostics.RegisterSnapshotProvider("tools", toolRuntime.LongSessionSnapshot)
 		log.Printf("long-session diagnostics enabled directory=%q", diagnostics.Directory())
 	}
-	// Start the best-effort remote report only after local daemon construction
-	// has succeeded, so later initialization failures never race a closed store.
+	// Start store-backed background work only after every constructor step that
+	// can close the stores has succeeded. Otherwise a startup error can race an
+	// eager maintenance pass and panic on an already-closed Pebble database.
+	startV3SessionRetention(bgCtx, sessionSvc)
+	startMediaStagingCleanup(bgCtx, mediaStagingSvc)
+	startArtifactMaintenance(bgCtx, artifactRegistry)
+	startVideoRenderRecovery(bgCtx, videoRenderSvc)
 	startMintReport(bgCtx, swarmSvc)
 	return d, nil
 }
