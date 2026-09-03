@@ -4,7 +4,6 @@ import (
 	"strings"
 	"testing"
 
-	"swarm/packages/swarmd/internal/artifactv2"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/tool"
 )
@@ -119,25 +118,29 @@ func TestManagedDesignerArtifactHandoffErrorDistinguishesFailureFromLineage(t *t
 	}
 }
 
-func TestManagedArtifactV2DesignerPromptRequiresSequentialExactWriteRevisions(t *testing.T) {
+func TestManagedArtifactV3DesignerPromptRequiresWholeProjectTurn(t *testing.T) {
 	prompt := buildTaskDelegationPrompt(taskDelegationPromptConfig{
 		RequestedSubagent: "designer",
 		OutputMode:        taskOutputModeManaged,
-		ArtifactV2AuthorContext: &tool.ArtifactV2AuthorRunContext{Grant: artifactv2.AuthorGrant{
-			ID: "grant", ArtifactID: "artifact", OwnerSessionID: "parent", ProducerSessionID: "child",
+		ArtifactV3AuthorContext: &tool.ArtifactV3AuthorRunContext{Grant: tool.ArtifactV3AuthorGrant{
+			ID: "grant", ArtifactID: "artifact", OwnerSessionID: "parent", TurnID: "turn", CandidateID: "candidate", TargetPartIDs: []string{"pricing"},
 		}},
 	})
 	for _, want := range []string{
-		"Write parts strictly one at a time",
-		"returned composition_head_revision",
-		"not the Working Artifact revision",
-		"part's first write omit expected_base_revision_id",
-		"never pass another part's revision",
-		"inspect_context once and retry",
-		"submit_candidate immediately when ready",
+		"managed Artifact V3",
+		"complete conventional project tree",
+		"build_preview",
+		"finish_turn exactly once",
+		"Target Parts guide intent",
+		"cross-Part repair",
 	} {
 		if !strings.Contains(prompt, want) {
-			t.Fatalf("managed Artifact V2 Designer prompt missing %q: %s", want, prompt)
+			t.Fatalf("managed Artifact V3 Designer prompt missing %q: %s", want, prompt)
+		}
+	}
+	for _, forbidden := range []string{"Write parts strictly one at a time", "submit_candidate"} {
+		if strings.Contains(prompt, forbidden) {
+			t.Fatalf("managed Artifact V3 Designer prompt retained %q: %s", forbidden, prompt)
 		}
 	}
 }

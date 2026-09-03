@@ -685,23 +685,31 @@ func parseTaskCallArguments(arguments string) (taskCallArguments, error) {
 	}
 	if len(launches) != 0 && launches[0].ArtifactV3Source != nil && len(launches[0].ArtifactV3Source.TargetPartIDs) != 0 {
 		declared := map[string]bool{}
-		if sectionTarget != nil { declared[sectionTarget.ID] = true }
+		if sectionTarget != nil {
+			declared[sectionTarget.ID] = true
+		}
 		if rawTargets, ok := args["section_targets"]; ok {
 			values, _ := parseTaskSwarmSectionTargets(rawTargets)
-			for _, item := range values { if item != nil { declared[item.ID] = true } }
+			for _, item := range values {
+				if item != nil {
+					declared[item.ID] = true
+				}
+			}
 		}
 		for _, target := range launches[0].ArtifactV3Source.TargetPartIDs {
-			if !declared[target] { return taskCallArguments{}, fmt.Errorf("task artifact_v3_source target %q is not declared in section_target(s)", target) }
+			if !declared[target] {
+				return taskCallArguments{}, fmt.Errorf("task artifact_v3_source target %q is not declared in section_target(s)", target)
+			}
 		}
 	}
 
 	return taskCallArguments{
-		Action:          action,
-		Description:     description,
-		Prompt:          prompt,
-		Mode:            mode,
-		Launches:        launches,
-		SourceArtifact:  cloneTaskImageSourceArtifact(sourceArtifact),
+		Action:         action,
+		Description:    description,
+		Prompt:         prompt,
+		Mode:           mode,
+		Launches:       launches,
+		SourceArtifact: cloneTaskImageSourceArtifact(sourceArtifact),
 		ArtifactV3Source: func() *taskArtifactV3Source {
 			if len(launches) == 0 {
 				return nil
@@ -1197,12 +1205,20 @@ func parseTaskSwarmArguments(args map[string]any, prompt, description string) (*
 		args["artifact_v3_source"] = cloneTaskArtifactV3Source(artifactV3Source)
 		if len(artifactV3Source.TargetPartIDs) != 0 {
 			declared := map[string]bool{}
-			if single, _ := parseTaskSwarmSectionTarget(args["section_target"]); single != nil { declared[single.ID] = true }
+			if single, _ := parseTaskSwarmSectionTarget(args["section_target"]); single != nil {
+				declared[single.ID] = true
+			}
 			if many, _ := parseTaskSwarmSectionTargets(args["section_targets"]); many != nil {
-				for _, item := range many { if item != nil { declared[item.ID] = true } }
+				for _, item := range many {
+					if item != nil {
+						declared[item.ID] = true
+					}
+				}
 			}
 			for _, target := range artifactV3Source.TargetPartIDs {
-				if !declared[target] { return nil, nil, fmt.Errorf("task artifact_v3_source target %q is not declared in section_target(s)", target) }
+				if !declared[target] {
+					return nil, nil, fmt.Errorf("task artifact_v3_source target %q is not declared in section_target(s)", target)
+				}
 			}
 		}
 	}
@@ -3491,7 +3507,7 @@ func parseApprovedTaskLaunchManifest(approved string, launchSpecs []taskLaunchSp
 		if agentruntime.IsDesignerAgentName(launchSpecs[i].RequestedSubagentType) || agentruntime.IsImageAgentName(launchSpecs[i].RequestedSubagentType) {
 			switch strings.TrimSpace(launchSpecs[i].OutputMode) {
 			case taskOutputModeManaged:
-				requiredManagedTool := "artifact_v2_author"
+				requiredManagedTool := "artifact_v3_author"
 				if agentruntime.IsImageAgentName(launchSpecs[i].RequestedSubagentType) {
 					requiredManagedTool = "manage_artifact"
 				}

@@ -333,7 +333,6 @@ func New(cfg config.Config) (*Daemon, error) {
 		artifactV2Compiler = artifactv2.CreativeCompiler{Motion: artifactv2.MotionCompiler{}}
 		artifactV2Validator = artifactv2.StoryboardValidator{Renderer: captureRenderer, Motion: motionValidator}
 	}
-	toolRuntime.SetArtifactV2AuthorService(artifactv2.NewAuthorService(artifactV2Service, artifactV2Compiler, artifactV2Validator))
 	toolRuntime.SetArtifactRegistry(artifactRegistry)
 	toolRuntime.SetArtifactAuthority(artifactAuthority)
 	mediaStagingSvc := mediastaging.NewService(pebblestore.NewMediaStagingStore(store))

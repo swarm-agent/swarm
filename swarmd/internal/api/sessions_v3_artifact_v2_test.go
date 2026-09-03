@@ -65,7 +65,7 @@ func TestArtifactV2SessionCatalogShowsAllocatedWorkImmediately(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
 		t.Fatal(err)
 	}
-	if !payload.OK || len(payload.Artifacts) != 1 || payload.Artifacts[0].Working.ID != working.ID || payload.Artifacts[0].Projection.State != pebblestore.ArtifactV2StateAllocated {
+	if !payload.OK || len(payload.Artifacts) != 1 || !payload.Artifacts[0].ReadOnly || payload.Artifacts[0].Working.ID != working.ID || payload.Artifacts[0].Projection.State != pebblestore.ArtifactV2StateAllocated {
 		t.Fatalf("unexpected payload: %+v", payload)
 	}
 }
@@ -88,7 +88,7 @@ func TestArtifactV2PreviewRejectsInvalidWorkingStateWithoutExposingBytes(t *test
 	}
 }
 
-func TestArtifactV2StaleCandidateSelectionChangesNoHead(t *testing.T) {
+func TestArtifactV2WriteEndpointIsGoneAndChangesNoHead(t *testing.T) {
 	server, service, principal := newArtifactV2APITestServer(t)
 	working, err := service.CreateWorking(context.Background(), principal, artifactv2.CreateWorkingInput{RequestID: "create", ArtifactKind: "managed_creative", PolicyRevision: "policy", CapabilityClass: "managed"})
 	if err != nil {
@@ -118,7 +118,7 @@ func TestArtifactV2StaleCandidateSelectionChangesNoHead(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/v3/sessions/artifact-v2-api/artifact-v2/"+working.ID+"/select-candidate", strings.NewReader(body))
 	rec := httptest.NewRecorder()
 	server.handleSessionV3PrimaryByID(rec, withTestPrincipal(req))
-	if rec.Code != http.StatusConflict {
+	if rec.Code != http.StatusGone || !strings.Contains(rec.Body.String(), "read-only history") {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
 	after, _, _ := server.sessions.GetArtifactV2Working("account-1", working.ID)

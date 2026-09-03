@@ -1293,7 +1293,6 @@ func (r *Runtime) Definitions() []Definition {
 			},
 		},
 		manageActionsDefinition(),
-		artifactV2AuthorDefinition(),
 		artifactV3AuthorDefinition(),
 		manageArtifactDefinition(),
 		manageVideoDefinition(),
@@ -1883,7 +1882,7 @@ func (r *Runtime) executeOne(ctx context.Context, scope WorkspaceScope, call Cal
 	case "manage-actions", "manage_actions":
 		return r.executeManageActions(scope, args)
 	case "artifact-v2-author", "artifact_v2_author":
-		return r.executeArtifactV2Author(ctx, scope, call.CallID, args)
+		return "", errors.New("artifact_v2_author is retired; managed authoring uses the context-bound artifact_v3_author capability")
 	case "artifact-v3-author", "artifact_v3_author":
 		return r.executeArtifactV3Author(ctx, scope, call.CallID, args)
 	case "manage-artifact", "manage_artifact":

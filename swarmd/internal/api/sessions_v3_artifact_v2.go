@@ -15,12 +15,14 @@ const sessionsV3ArtifactV2ListLimit = 256
 
 type sessionsV3ArtifactV2CatalogItem struct {
 	SchemaVersion int                                   `json:"schema_version"`
+	ReadOnly      bool                                  `json:"read_only"`
 	Working       pebblestore.ArtifactV2WorkingArtifact `json:"working"`
 	Projection    pebblestore.ArtifactV2Projection      `json:"projection"`
 }
 
 type sessionsV3ArtifactV2Studio struct {
 	SchemaVersion int                                      `json:"schema_version"`
+	ReadOnly      bool                                     `json:"read_only"`
 	Working       pebblestore.ArtifactV2WorkingArtifact    `json:"working"`
 	Projection    pebblestore.ArtifactV2Projection         `json:"projection"`
 	Parts         []pebblestore.ArtifactV2Part             `json:"parts"`
@@ -76,7 +78,7 @@ func (s *Server) handleSessionV3ArtifactV2(w http.ResponseWriter, r *http.Reques
 				writeError(w, http.StatusInternalServerError, err)
 				return
 			}
-			items = append(items, sessionsV3ArtifactV2CatalogItem{SchemaVersion: pebblestore.ArtifactV2SchemaVersion, Working: artifact, Projection: artifactV2APIProjection(artifact, len(parts))})
+			items = append(items, sessionsV3ArtifactV2CatalogItem{SchemaVersion: pebblestore.ArtifactV2SchemaVersion, ReadOnly: true, Working: artifact, Projection: artifactV2APIProjection(artifact, len(parts))})
 		}
 		sort.Slice(items, func(i, j int) bool {
 			return items[i].Working.UpdatedAt > items[j].Working.UpdatedAt || items[i].Working.UpdatedAt == items[j].Working.UpdatedAt && items[i].Working.ID < items[j].Working.ID
@@ -136,63 +138,10 @@ func (s *Server) handleSessionV3ArtifactV2(w http.ResponseWriter, r *http.Reques
 		_, _ = w.Write(body)
 		return
 	}
-	if action == "select-candidate" {
-		if r.Method != http.MethodPost {
-			methodNotAllowed(w)
-			return
-		}
-		var req struct {
-			ClientRequestID           string `json:"client_request_id"`
-			IterationID               string `json:"iteration_id"`
-			SlotID                    string `json:"slot_id"`
-			ExpectedWorkingRevision   uint64 `json:"expected_working_revision"`
-			ExpectedIterationRevision uint64 `json:"expected_iteration_revision"`
-		}
-		if err := decodeJSON(r, &req); err != nil {
-			writeError(w, http.StatusBadRequest, err)
-			return
-		}
-		composition, err := s.artifactV2.SelectIterationCandidate(r.Context(), artifactV2APIPrincipal(principal, sessionID), artifactv2.SelectIterationCandidateInput{RequestID: strings.TrimSpace(req.ClientRequestID), ArtifactID: artifactID, IterationID: strings.TrimSpace(req.IterationID), SlotID: strings.TrimSpace(req.SlotID), ExpectedWorkingRevision: req.ExpectedWorkingRevision, ExpectedIterationRevision: req.ExpectedIterationRevision})
-		if err != nil {
-			writeError(w, http.StatusConflict, err)
-			return
-		}
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "composition": composition})
-		return
-	}
-	if action == "composition" {
-		if r.Method != http.MethodPost {
-			methodNotAllowed(w)
-			return
-		}
-		var req struct {
-			ClientRequestID                 string `json:"client_request_id"`
-			ExpectedWorkingRevision         uint64 `json:"expected_working_revision"`
-			ExpectedCompositionHeadRevision uint64 `json:"expected_composition_head_revision"`
-			ConstructionVersion             string `json:"construction_version"`
-			Selections                      []struct {
-				PartID         string `json:"part_id"`
-				PartRevisionID string `json:"part_revision_id"`
-				Locked         bool   `json:"locked"`
-			} `json:"selections"`
-		}
-		if err := decodeJSON(r, &req); err != nil {
-			writeError(w, http.StatusBadRequest, err)
-			return
-		}
-		selections := make([]artifactv2.CompositionSelection, 0, len(req.Selections))
-		for _, selection := range req.Selections {
-			selections = append(selections, artifactv2.CompositionSelection{PartID: strings.TrimSpace(selection.PartID), PartRevisionID: strings.TrimSpace(selection.PartRevisionID), Locked: selection.Locked})
-		}
-		composition, err := s.artifactV2.AdvanceComposition(r.Context(), artifactV2APIPrincipal(principal, sessionID), artifactv2.AdvanceCompositionInput{RequestID: strings.TrimSpace(req.ClientRequestID), ArtifactID: artifactID, ExpectedWorkingRevision: req.ExpectedWorkingRevision, ExpectedCompositionHeadRevision: req.ExpectedCompositionHeadRevision, ConstructionVersion: strings.TrimSpace(req.ConstructionVersion), Selections: selections, AllowLockedPartChanges: true})
-		if err != nil {
-			writeError(w, http.StatusConflict, err)
-			return
-		}
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "composition": composition})
-		return
-	}
-	writeError(w, http.StatusBadRequest, errors.New("invalid artifact v2 action"))
+	// Artifact V2 remains registered only as authenticated historical read
+	// compatibility. New managed writes, candidate selection, and composition
+	// mutation are owned exclusively by Artifact V3.
+	writeError(w, http.StatusGone, errors.New("artifact v2 is read-only history; create and iterate managed artifacts through Artifact V3"))
 }
 
 func (s *Server) artifactV2Studio(principal identity.Principal, working pebblestore.ArtifactV2WorkingArtifact) (sessionsV3ArtifactV2Studio, error) {
@@ -232,7 +181,7 @@ func (s *Server) artifactV2Studio(principal identity.Principal, working pebblest
 	if err != nil {
 		return sessionsV3ArtifactV2Studio{}, err
 	}
-	return sessionsV3ArtifactV2Studio{SchemaVersion: pebblestore.ArtifactV2SchemaVersion, Working: working, Projection: artifactV2APIProjection(working, len(parts)), Parts: parts, PartRevisions: revisions, Compositions: compositions, Builds: builds, Validations: validations, Derivatives: derivatives, Iterations: iterations, Published: published}, nil
+	return sessionsV3ArtifactV2Studio{SchemaVersion: pebblestore.ArtifactV2SchemaVersion, ReadOnly: true, Working: working, Projection: artifactV2APIProjection(working, len(parts)), Parts: parts, PartRevisions: revisions, Compositions: compositions, Builds: builds, Validations: validations, Derivatives: derivatives, Iterations: iterations, Published: published}, nil
 }
 
 func artifactV2APIProjection(working pebblestore.ArtifactV2WorkingArtifact, partCount int) pebblestore.ArtifactV2Projection {

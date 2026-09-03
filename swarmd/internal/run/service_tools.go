@@ -6035,7 +6035,7 @@ func buildTaskDelegationPrompt(config taskDelegationPromptConfig) string {
 			if agentruntime.IsImageAgentName(config.RequestedSubagent) {
 				b.WriteString("9. For managed Image work, call manage_artifact exactly once with action=generate_image and finish only after it returns the trusted exact ready reference. Do not call another tool or inspect or mutate the checkout.\n")
 			} else {
-				b.WriteString("9. For managed Designer work, use only artifact_v2_author. Inspect context, declare real parts for an empty artifact, and write immutable part bytes sequentially using each response's exact composition_head_revision; omit expected_base_revision_id on a part's first write and never substitute another part's revision. Request the server-owned build/validation, repair against exact prior revisions when safe diagnostics permit, and submit_candidate immediately when ready. Never call manage_artifact, write/edit, create placeholders, choose destination identity, or classify raw errors.\n")
+				b.WriteString("9. For managed Designer work, use only artifact_v3_author. Inspect the context-bound complete project, make ordinary coherent full-tree edits, repeat build_preview until the exact whole project is ready, and call finish_turn exactly once. Target Parts express user intent and never forbid necessary shared-code or cross-Part repairs. Never call manage_artifact, artifact_v2_author, write/edit the repository checkout, create legacy placeholders, or choose destination identity.\n")
 			}
 		} else {
 			b.WriteString("9. For workspace Designer work, do not use Git or manage_artifact. Inspect nearby code as needed and create or revise the assigned reusable variant only within the declared owned scope.\n")

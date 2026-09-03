@@ -3632,12 +3632,6 @@ export function DesktopV3ExistingConversationPane({
         artifact={selectedArtifactV2}
         open={artifactV2StudioOpen}
         onOpenChange={setArtifactV2StudioOpen}
-        onRefresh={refreshSessionArtifacts}
-        onIterate={(prompt) => {
-          composerControllerRef.current?.setDraft(prompt);
-          setArtifactV2StudioOpen(false);
-          setArtifactComposerFocusSignal((current) => current + 1);
-        }}
       />
 
       <DesktopPermissionModal

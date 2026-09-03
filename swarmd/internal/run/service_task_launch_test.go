@@ -2287,12 +2287,12 @@ func TestDesignerPermissionManifestUsesCompiledManagedProfileByDefault(t *testin
 	if row.OutputMode != taskOutputModeManaged || len(row.OwnedScope) != 0 || row.ProfileSnapshot == nil || !row.ProfileSnapshot.Protected {
 		t.Fatalf("managed Designer output contract = mode %q scope %#v profile %#v", row.OutputMode, row.OwnedScope, row.ProfileSnapshot)
 	}
-	for _, name := range []string{"read", "search", "find", "list", "manage_artifact"} {
+	for _, name := range []string{"read", "search", "find", "list", "artifact_v3_author"} {
 		if !stringSliceContains(row.ResolvedTools.AllowedTools, name) {
 			t.Fatalf("managed Designer allowed tools %v missing %q", row.ResolvedTools.AllowedTools, name)
 		}
 	}
-	for _, name := range []string{"write", "edit", "bash", "git_status", "git_commit", "task", "manage_worktree", "plan_manage"} {
+	for _, name := range []string{"write", "edit", "artifact_v2_author", "manage_artifact", "bash", "git_status", "git_commit", "task", "manage_worktree", "plan_manage"} {
 		if !stringSliceContains(row.ResolvedTools.DisabledTools, name) {
 			t.Fatalf("managed Designer disabled tools %v missing %q", row.ResolvedTools.DisabledTools, name)
 		}

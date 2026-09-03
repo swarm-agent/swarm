@@ -18,12 +18,12 @@ test('new-work Desktop path consumes the dedicated Artifact V2 catalog and Studi
   }
 })
 
-test('Artifact V2 exact selection and iteration never dispatch a V1 write endpoint', () => {
-  assert.match(api, /select-candidate/)
-  assert.match(api, /expected_working_revision/)
-  assert.match(api, /expected_iteration_revision/)
-  assert.match(api, /artifact_v2_source=/)
-  assert.match(api, /artifact_v2_target_part_ids=/)
-  assert.doesNotMatch(api, /\/artifacts\/.*part-selection/)
-  assert.doesNotMatch(api, /manage_artifact or delegate/)
+test('Artifact V2 Desktop surface is historical and exposes no write affordance', () => {
+  assert.match(studio, /Historical Artifact V2 · read-only/)
+  assert.doesNotMatch(studio, />Iterate</)
+  assert.doesNotMatch(studio, />Lock</)
+  assert.doesNotMatch(studio, />Unlock</)
+  assert.doesNotMatch(studio, />Select head</)
+  assert.doesNotMatch(studio, /selectDesktopV3ArtifactV2Candidate/)
+  assert.doesNotMatch(studio, /updateDesktopV3ArtifactV2Composition/)
 })

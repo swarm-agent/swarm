@@ -25,14 +25,10 @@ func TestArtifactV2AuthorSchemaIsNarrowAndDesignerContractDisablesV1(t *testing.
 			t.Errorf("schema exposes forbidden field %q", forbidden)
 		}
 	}
-	found := false
 	for _, candidate := range NewRuntime(1).Definitions() {
 		if candidate.Name == "artifact_v2_author" {
-			found = true
+			t.Fatal("retired artifact_v2_author remains registered")
 		}
-	}
-	if !found {
-		t.Fatal("artifact_v2_author is not registered")
 	}
 }
 

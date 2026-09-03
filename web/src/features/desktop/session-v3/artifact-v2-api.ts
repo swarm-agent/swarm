@@ -66,6 +66,7 @@ export interface DesktopV3ArtifactV2Projection {
 
 export interface DesktopV3ArtifactV2CatalogItem {
   schemaVersion: 1
+  readOnly: true
   working: DesktopV3ArtifactV2Working
   projection: DesktopV3ArtifactV2Projection
 }
@@ -185,6 +186,7 @@ export interface DesktopV3ArtifactV2Derivative { id: string; kind: string; statu
 
 export interface DesktopV3ArtifactV2Studio {
   schemaVersion: 1
+  readOnly: true
   working: DesktopV3ArtifactV2Working
   projection: DesktopV3ArtifactV2Projection
   parts: DesktopV3ArtifactV2Part[]
@@ -231,7 +233,7 @@ function projection(value: unknown): DesktopV3ArtifactV2Projection | undefined {
 }
 export function normalizeDesktopV3ArtifactV2CatalogItem(value: unknown): DesktopV3ArtifactV2CatalogItem | null {
   const row = record(value); const normalizedWorking = working(row?.working); const normalizedProjection = projection(row?.projection)
-  return row?.schema_version === 1 && normalizedWorking && normalizedProjection && normalizedWorking.id === normalizedProjection.artifactId ? { schemaVersion: 1, working: normalizedWorking, projection: normalizedProjection } : null
+  return row?.schema_version === 1 && row.read_only === true && normalizedWorking && normalizedProjection && normalizedWorking.id === normalizedProjection.artifactId ? { schemaVersion: 1, readOnly: true, working: normalizedWorking, projection: normalizedProjection } : null
 }
 function normalizePart(value: unknown): DesktopV3ArtifactV2Part | undefined {
   const row = record(value); if (!row) return undefined
@@ -276,8 +278,8 @@ function normalizePublished(value: unknown): DesktopV3ArtifactV2PublishedHead | 
 function list<T>(value: unknown, normalize: (value: unknown) => T | undefined): T[] { return Array.isArray(value) ? value.flatMap((item) => normalize(item) ?? []) : [] }
 export function normalizeDesktopV3ArtifactV2Studio(value: unknown): DesktopV3ArtifactV2Studio | null {
   const row = record(value); const normalizedWorking = working(row?.working); const normalizedProjection = projection(row?.projection)
-  if (row?.schema_version !== 1 || !normalizedWorking || !normalizedProjection) return null
-  return { schemaVersion: 1, working: normalizedWorking, projection: normalizedProjection, parts: list(row.parts, normalizePart), partRevisions: list(row.part_revisions, normalizePartRevision), compositions: list(row.compositions, normalizeComposition), builds: list(row.builds, (item) => normalizeEvidence<DesktopV3ArtifactV2Build>(item, false)), validations: list(row.validations, (item) => normalizeEvidence<DesktopV3ArtifactV2Validation>(item, true)), derivatives: list(row.derivatives, normalizeDerivative), iterations: list(row.iterations, normalizeIteration), publishedHeads: list(row.published_heads, normalizePublished) }
+  if (row?.schema_version !== 1 || row.read_only !== true || !normalizedWorking || !normalizedProjection) return null
+  return { schemaVersion: 1, readOnly: true, working: normalizedWorking, projection: normalizedProjection, parts: list(row.parts, normalizePart), partRevisions: list(row.part_revisions, normalizePartRevision), compositions: list(row.compositions, normalizeComposition), builds: list(row.builds, (item) => normalizeEvidence<DesktopV3ArtifactV2Build>(item, false)), validations: list(row.validations, (item) => normalizeEvidence<DesktopV3ArtifactV2Validation>(item, true)), derivatives: list(row.derivatives, normalizeDerivative), iterations: list(row.iterations, normalizeIteration), publishedHeads: list(row.published_heads, normalizePublished) }
 }
 
 export function desktopV3ArtifactV2PreviewEndpoint(sessionId: string, artifactId: string): string { return `${desktopV3ArtifactV2Endpoint(sessionId, artifactId)}/preview` }
@@ -296,25 +298,6 @@ export async function fetchDesktopV3ArtifactV2Studio(sessionId: string, artifact
   const payload = record(await response.json() as unknown); const studio = normalizeDesktopV3ArtifactV2Studio(payload?.artifact); if (payload?.ok !== true || !studio) throw new Error('Artifact V2 Studio returned an invalid response')
   return studio
 }
-export async function selectDesktopV3ArtifactV2Candidate(studio: DesktopV3ArtifactV2Studio, iterationId: string, slotId: string, signal?: AbortSignal): Promise<DesktopV3ArtifactV2Composition> {
-  const iteration = studio.iterations.find((round) => round.id === iterationId); if (!iteration || !iteration.candidates.some((candidate) => candidate.slotId === slotId)) throw new Error('Artifact V2 candidate is stale or unavailable')
-  const response = await apiFetch(`${desktopV3ArtifactV2Endpoint(studio.working.sessionId, studio.working.id)}/select-candidate`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ client_request_id: `desktop-artifact-v2-select:${crypto.randomUUID()}`, iteration_id: iteration.id, slot_id: slotId, expected_working_revision: studio.working.revision, expected_iteration_revision: iteration.revision }), signal })
-  if (!response.ok) throw new Error(await readErrorMessage(response)); const payload = record(await response.json() as unknown); const composition = normalizeComposition(payload?.composition); if (payload?.ok !== true || !composition) throw new Error('Artifact V2 selection returned an invalid composition'); return composition
-}
-export async function updateDesktopV3ArtifactV2Composition(studio: DesktopV3ArtifactV2Studio, selections: DesktopV3ArtifactV2CompositionPart[], signal?: AbortSignal): Promise<DesktopV3ArtifactV2Composition> {
-  const head = studio.compositions.find((composition) => composition.id === studio.working.compositionHead?.compositionId); if (!head) throw new Error('Artifact V2 composition head is unavailable')
-  const response = await apiFetch(`${desktopV3ArtifactV2Endpoint(studio.working.sessionId, studio.working.id)}/composition`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ client_request_id: `desktop-artifact-v2-composition:${crypto.randomUUID()}`, expected_working_revision: studio.working.revision, expected_composition_head_revision: studio.working.compositionHead?.headRevision ?? 0, construction_version: head.constructionVersion, selections: selections.map((selection) => ({ part_id: selection.partId, part_revision_id: selection.partRevisionId, locked: selection.locked })) }), signal })
-  if (!response.ok) throw new Error(await readErrorMessage(response)); const payload = record(await response.json() as unknown); const composition = normalizeComposition(payload?.composition); if (payload?.ok !== true || !composition) throw new Error('Artifact V2 composition update returned an invalid response'); return composition
-}
-
 export function desktopV3ArtifactV2StateLabel(state: DesktopV3ArtifactV2State): string {
   return ({ allocated: 'Working', authoring: 'Working', building: 'Building', validating: 'Validating', invalid: 'Needs repair', ready: 'Ready', iterating: 'Iterating', published_view: 'Published', cancelled: 'Cancelled' } satisfies Record<DesktopV3ArtifactV2State, string>)[state]
-}
-export function desktopV3ArtifactV2IterationPrompt(studio: DesktopV3ArtifactV2Studio, partIds: string[], count = 3): string {
-  const selected = [...new Set(partIds.map((id) => id.trim()).filter((id) => studio.parts.some((part) => part.id === id)))]
-  if (selected.length === 0) throw new Error('Artifact V2 iteration requires at least one exact part')
-  const boundedCount = Math.max(1, Math.min(16, Math.round(count)))
-  const source = { artifact_id: studio.working.id, published_head_id: studio.working.publishedHead?.publishedHeadId ?? '', composition_id: studio.working.compositionHead?.compositionId ?? '', working_revision: studio.working.revision, composition_head_revision: studio.working.compositionHead?.headRevision ?? 0, target_part_ids: selected }
-  if (!source.published_head_id || !source.composition_id || source.composition_head_revision < 1) throw new Error('Artifact V2 iteration requires an exact published composition head')
-  return [`Create ${boundedCount} alternatives for the attached Artifact V2 target set.`, `artifact_v2_source=${JSON.stringify(source)}`, `artifact_v2_target_part_ids=${selected.join(',')}`, 'Launch one Designer Iteration Swarm with count matching the requested alternatives, artifact_v2_source set to the exact object above, and section_target/section_targets naming the same real Part IDs. Preserve every non-target and locked part byte-for-byte. Never call or fall back to manage_artifact.'].join('\n')
 }
