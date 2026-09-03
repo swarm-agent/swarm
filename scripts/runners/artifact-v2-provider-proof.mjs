@@ -187,8 +187,8 @@ try {
   await api('PATCH', '/v1/agent-model-settings', { system_agents: { designer } }, 'configure Designer model')
   const topology = await canonicalWorkspace()
   if (stage === 'iteration3') {
-    const catalog = await artifactCatalog(sessionOverride); const baseItem = catalog.find((item) => item?.working?.kind === 'managed_creative' && item?.working?.state === 'published_view')
-    assert(baseItem, 'iteration3 resumed session has no published managed creative base')
+    const catalog = await artifactCatalog(sessionOverride); const baseItem = catalog.find((item) => item?.working?.kind === 'managed_creative' && item?.working?.published_head?.published_head_id)
+    assert(baseItem, 'iteration3 resumed session has no exact published managed creative base')
     const studio = await artifactStudio(sessionOverride, baseItem.working.id); const source = validateJourney(studio, 'iteration base')
     await runIteration({ session_id: sessionOverride, source })
     result.result = 'PASS'; result.gates.provider_journeys = true; result.gates.pixel_inspection = true; result.gates.pending_conversion = true
