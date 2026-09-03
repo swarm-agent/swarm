@@ -407,11 +407,21 @@ export function desktopV3NativeArtifactPreviewEndpoint(sessionId: string, artifa
 }
 
 export async function preflightDesktopV3NativeArtifactPreview(sessionId: string, artifactId: string, revisionRef: string, signal?: AbortSignal): Promise<string> {
-  const url = desktopV3NativeArtifactPreviewEndpoint(sessionId, artifactId, revisionRef)
-  const response = await apiFetch(url, { method: 'GET', headers: { Accept: 'text/html' }, signal })
+  const revision = revisionRef.trim()
+  if (!revision) throw new Error('Artifact V3 preview requires an exact revision reference')
+  const response = await apiFetch(`${desktopV3NativeArtifactEndpoint(sessionId, artifactId)}/preview/access`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+    body: JSON.stringify({ revision_ref: revision }),
+    signal,
+  })
   if (!response.ok) throw new Error(await readErrorMessage(response))
-  await response.body?.cancel()
-  return url
+  const payload = await response.json() as { preview_url?: unknown }
+  const previewURL = typeof payload.preview_url === 'string' ? payload.preview_url.trim() : ''
+  if (!previewURL.startsWith('/v3/sessions/') || !previewURL.includes('/artifacts-v3/') || !previewURL.includes('/preview/access/')) {
+    throw new Error('Artifact V3 preview access response is invalid')
+  }
+  return previewURL
 }
 
 export function desktopV3NativeArtifactCandidateSelectionEndpoint(sessionId: string, artifactId: string, turnId: string): string {

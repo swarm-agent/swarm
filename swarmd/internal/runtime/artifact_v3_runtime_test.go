@@ -89,11 +89,11 @@ func TestArtifactV3RuntimeAdapterProductionPathAndRecovery(t *testing.T) {
 	if artifact.Head == nil || artifact.Head.CommitOID != finished.Revision.CommitOID || artifact.Head.Build == nil || artifact.Head.Build.Status != "succeeded" || artifact.Head.Validation == nil || artifact.Head.Validation.Status != "valid" {
 		t.Fatalf("artifact=%+v finish=%+v", artifact, finished)
 	}
-	preview, err := adapter.OpenPreview(context.Background(), api.ArtifactV3Principal{AccountScopeID: "account", UserID: "user"}, "artifact-v3-runtime", grant.ArtifactID, artifact.Head.RevisionRef, "")
+	preview, err := adapter.OpenPreview(context.Background(), api.ArtifactV3Principal{AccountScopeID: "account", UserID: "user"}, "artifact-v3-runtime", grant.ArtifactID, artifact.Head.RevisionRef, "", "")
 	if err != nil || !strings.Contains(string(preview.Body), "Artifact V3") || !strings.Contains(string(preview.Body), "preview/files/styles/theme.css") {
 		t.Fatalf("preview=%+v err=%v", preview, err)
 	}
-	asset, err := adapter.OpenPreview(context.Background(), api.ArtifactV3Principal{AccountScopeID: "account", UserID: "user"}, "artifact-v3-runtime", grant.ArtifactID, artifact.Head.RevisionRef, "styles/theme.css")
+	asset, err := adapter.OpenPreview(context.Background(), api.ArtifactV3Principal{AccountScopeID: "account", UserID: "user"}, "artifact-v3-runtime", grant.ArtifactID, artifact.Head.RevisionRef, "styles/theme.css", "")
 	if err != nil || !strings.HasPrefix(asset.MediaType, "text/css") || !strings.Contains(string(asset.Body), "navy") {
 		t.Fatalf("asset=%+v err=%v", asset, err)
 	}

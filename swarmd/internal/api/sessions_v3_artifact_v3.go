@@ -32,7 +32,7 @@ type ArtifactV3Service interface {
 	GetArtifact(context.Context, ArtifactV3Principal, string, string) (ArtifactV3Artifact, error)
 	ListRevisions(context.Context, ArtifactV3Principal, string, string, string, int) (ArtifactV3RevisionPage, error)
 	GetRevision(context.Context, ArtifactV3Principal, string, string, string) (ArtifactV3Revision, error)
-	OpenPreview(context.Context, ArtifactV3Principal, string, string, string, string) (ArtifactV3Preview, error)
+	OpenPreview(context.Context, ArtifactV3Principal, string, string, string, string, string) (ArtifactV3Preview, error)
 	OpenTurn(context.Context, ArtifactV3Principal, ArtifactV3OpenTurnRequest) (ArtifactV3Turn, error)
 	SelectCandidate(context.Context, ArtifactV3Principal, ArtifactV3SelectCandidateRequest) (ArtifactV3SelectionResult, error)
 }
@@ -257,6 +257,41 @@ func (s *Server) handleSessionV3ArtifactsV3(w http.ResponseWriter, r *http.Reque
 	case "revisions":
 		s.handleArtifactV3Revisions(w, r, principal, sessionID, artifactID, segments[2:])
 	case "preview":
+		if len(segments) == 3 && segments[2] == "access" {
+			if r.Method != http.MethodPost {
+				methodNotAllowed(w)
+				return
+			}
+			var request struct {
+				RevisionRef string `json:"revision_ref"`
+			}
+			if err := decodeJSON(r, &request); err != nil {
+				writeError(w, http.StatusBadRequest, err)
+				return
+			}
+			request.RevisionRef = strings.TrimSpace(request.RevisionRef)
+			if request.RevisionRef == "" {
+				writeError(w, http.StatusBadRequest, errors.New("revision_ref is required"))
+				return
+			}
+			if _, err := s.artifactV3.GetRevision(r.Context(), artifactV3APIPrincipal(principal), sessionID, artifactID, request.RevisionRef); err != nil {
+				s.writeArtifactV3Error(w, err)
+				return
+			}
+			token, err := s.issueSessionV3ArtifactPreviewTokenForRevision(principal, sessionID, artifactID, request.RevisionRef, time.Now().Add(sessionsV3ArtifactPreviewTokenTTL))
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, err)
+				return
+			}
+			previewURL := fmt.Sprintf("/v3/sessions/%s/artifacts-v3/%s/preview/access/%s?revision=%s", url.PathEscape(sessionID), url.PathEscape(artifactID), token, url.QueryEscape(request.RevisionRef))
+			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "preview_url": previewURL, "expires_at": time.Now().Add(sessionsV3ArtifactPreviewTokenTTL).Unix()})
+			return
+		}
+		accessToken := ""
+		if len(segments) >= 4 && segments[2] == "access" {
+			accessToken = segments[3]
+			segments = append(segments[:2], segments[4:]...)
+		}
 		validPreviewPath := len(segments) == 2 || (len(segments) >= 4 && segments[2] == "files")
 		if !validPreviewPath || (r.Method != http.MethodGet && r.Method != http.MethodHead) {
 			if !validPreviewPath {
@@ -276,12 +311,13 @@ func (s *Server) handleSessionV3ArtifactsV3(w http.ResponseWriter, r *http.Reque
 				return
 			}
 		}
+		_ = accessToken
 		revisionRef := strings.TrimSpace(r.URL.Query().Get("revision"))
 		if revisionRef == "" {
 			writeError(w, http.StatusBadRequest, errors.New("revision is required"))
 			return
 		}
-		preview, err := s.artifactV3.OpenPreview(r.Context(), artifactV3APIPrincipal(principal), sessionID, artifactID, revisionRef, assetPath)
+		preview, err := s.artifactV3.OpenPreview(r.Context(), artifactV3APIPrincipal(principal), sessionID, artifactID, revisionRef, assetPath, accessToken)
 		if err != nil {
 			s.writeArtifactV3Error(w, err)
 			return

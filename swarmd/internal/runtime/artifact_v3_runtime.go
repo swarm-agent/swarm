@@ -512,7 +512,7 @@ func (a *artifactV3RuntimeAdapter) revision(ctx context.Context, principal api.A
 	return api.ArtifactV3Revision{RevisionRef: "revision-" + commit, CommitOID: commit, TreeOID: projection.TreeOID, ManifestBlobOID: projection.ManifestBlobOID, Parents: projection.ParentCommitOIDs, Manifest: gitRevision.Manifest, FileCount: projection.FileCount, TreeBytes: projection.TreeBytes, ChangedFiles: projection.ChangedFiles, Build: build, Validation: validation, CreatedAt: projection.CreatedAt}, nil
 }
 
-func (a *artifactV3RuntimeAdapter) OpenPreview(ctx context.Context, principal api.ArtifactV3Principal, sessionID, artifactID, revisionRef, assetPath string) (api.ArtifactV3Preview, error) {
+func (a *artifactV3RuntimeAdapter) OpenPreview(ctx context.Context, principal api.ArtifactV3Principal, sessionID, artifactID, revisionRef, assetPath, accessToken string) (api.ArtifactV3Preview, error) {
 	revision, err := a.GetRevision(ctx, principal, sessionID, artifactID, revisionRef)
 	if err != nil {
 		return api.ArtifactV3Preview{}, err
@@ -539,19 +539,23 @@ func (a *artifactV3RuntimeAdapter) OpenPreview(ctx context.Context, principal ap
 		return api.ArtifactV3Preview{}, err
 	}
 	if filePath == revision.Manifest.Entrypoint {
-		body = rewriteArtifactV3PreviewReferences(body, revision.Manifest.Entrypoint, sessionID, artifactID, revision.RevisionRef)
+		body = rewriteArtifactV3PreviewReferences(body, revision.Manifest.Entrypoint, sessionID, artifactID, revision.RevisionRef, accessToken)
 	}
 	return api.ArtifactV3Preview{RevisionRef: revision.RevisionRef, CommitOID: revision.CommitOID, MediaType: mediaType, Body: body, ETag: `"` + revision.TreeOID + `"`}, nil
 }
 
 var artifactV3PreviewURLAttribute = regexp.MustCompile(`(?i)(\b(?:src|href)\s*=\s*["'])([^"']+)(["'])`)
 
-func rewriteArtifactV3PreviewReferences(body []byte, entrypoint, sessionID, artifactID, revisionRef string) []byte {
+func rewriteArtifactV3PreviewReferences(body []byte, entrypoint, sessionID, artifactID, revisionRef, accessToken string) []byte {
 	baseDir := path.Dir(entrypoint)
 	if baseDir == "." {
 		baseDir = ""
 	}
-	prefix := "/v3/sessions/" + url.PathEscape(sessionID) + "/artifacts-v3/" + url.PathEscape(artifactID) + "/preview/files/"
+	prefix := "/v3/sessions/" + url.PathEscape(sessionID) + "/artifacts-v3/" + url.PathEscape(artifactID) + "/preview/"
+	if strings.TrimSpace(accessToken) != "" {
+		prefix += "access/" + url.PathEscape(accessToken) + "/"
+	}
+	prefix += "files/"
 	query := "?revision=" + url.QueryEscape(revisionRef)
 	return artifactV3PreviewURLAttribute.ReplaceAllFunc(body, func(match []byte) []byte {
 		parts := artifactV3PreviewURLAttribute.FindSubmatch(match)

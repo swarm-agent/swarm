@@ -6,6 +6,7 @@ import {
   desktopV3NativeArtifactIterationPrompt,
   desktopV3NativeArtifactPreviewEndpoint,
   normalizeDesktopV3NativeArtifactRevision,
+  preflightDesktopV3NativeArtifactPreview,
   normalizeDesktopV3NativeArtifactSummary,
   selectDesktopV3NativeArtifactCandidate,
   type DesktopV3NativeArtifactStudio,
@@ -69,9 +70,17 @@ test('native Artifact V3 preview and candidate selection use separate exact rout
   globalThis.fetch = (async (input, init) => {
     requestURL = String(input)
     requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>
+    if (requestURL.endsWith('/preview/access')) {
+      return new Response(JSON.stringify({ ok: true, preview_url: '/v3/sessions/session-1/artifacts-v3/artifact-1/preview/access/token?revision=revision-ref-2' }), { headers: { 'Content-Type': 'application/json' } })
+    }
     return new Response(JSON.stringify({ ok: true, head: { revision_ref: 'revision-ref-3', commit_oid: 'commit-3', tree_oid: 'tree-3', generation: 5, selected_event_seq: 13 } }), { headers: { 'Content-Type': 'application/json' } })
   }) as typeof fetch
   try {
+    const previewURL = await preflightDesktopV3NativeArtifactPreview('session-1', 'artifact-1', 'revision-ref-2')
+    assert.equal(requestURL, '/v3/sessions/session-1/artifacts-v3/artifact-1/preview/access')
+    assert.equal(requestBody.revision_ref, 'revision-ref-2')
+    assert.match(previewURL, /\/preview\/access\/token/)
+
     const head = await selectDesktopV3NativeArtifactCandidate({ sessionId: 'session-1', artifactId: 'artifact-1', turnId: 'turn-2', candidateId: 'candidate-3', expectedHead: { revisionRef: 'revision-ref-2', commitOid: 'commit-2', treeOid: 'tree-2', generation: 4, selectedEventSeq: 12 }, expectedTurnRevision: 7 })
     assert.equal(requestURL, '/v3/sessions/session-1/artifacts-v3/artifact-1/turns/turn-2/select')
     assert.equal(requestBody.candidate_id, 'candidate-3')

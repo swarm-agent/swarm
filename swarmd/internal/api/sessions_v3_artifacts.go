@@ -52,6 +52,7 @@ type sessionsV3ArtifactPreviewTokenClaims struct {
 	AccountScopeID string `json:"account_scope_id"`
 	SessionID      string `json:"session_id"`
 	ArtifactID     string `json:"artifact_id"`
+	RevisionRef    string `json:"revision_ref,omitempty"`
 	ExpiresAt      int64  `json:"expires_at"`
 }
 
@@ -712,6 +713,10 @@ func (s *Server) handleSessionV3ArtifactPreviewAccess(w http.ResponseWriter, r *
 }
 
 func (s *Server) issueSessionV3ArtifactPreviewToken(principal identity.Principal, sessionID, artifactID string, expiresAt time.Time) (string, error) {
+	return s.issueSessionV3ArtifactPreviewTokenForRevision(principal, sessionID, artifactID, "", expiresAt)
+}
+
+func (s *Server) issueSessionV3ArtifactPreviewTokenForRevision(principal identity.Principal, sessionID, artifactID, revisionRef string, expiresAt time.Time) (string, error) {
 	if s == nil || len(s.artifactPreviewKey) < 32 || !principal.Valid() {
 		return "", errors.New("artifact preview access is unavailable")
 	}
@@ -720,6 +725,7 @@ func (s *Server) issueSessionV3ArtifactPreviewToken(principal identity.Principal
 		AccountScopeID: strings.TrimSpace(principal.AccountScopeID),
 		SessionID:      strings.TrimSpace(sessionID),
 		ArtifactID:     strings.TrimSpace(artifactID),
+		RevisionRef:    strings.TrimSpace(revisionRef),
 		ExpiresAt:      expiresAt.Unix(),
 	}
 	if claims.SessionID == "" || claims.ArtifactID == "" || claims.ExpiresAt <= time.Now().Unix() {
@@ -750,17 +756,30 @@ func (s *Server) validateSessionV3ArtifactPreviewRequest(r *http.Request) (ident
 		return identity.Principal{}, false
 	}
 	sessionID, subpath, ok := parseSessionsV3PrimaryPath(r.URL.Path)
-	if !ok || !strings.HasPrefix(subpath, "artifacts/") || !strings.Contains(subpath, "/content/") {
+	if !ok {
 		return identity.Principal{}, false
 	}
-	artifactPath := strings.TrimPrefix(subpath, "artifacts/")
-	artifactID, contentPath, ok := strings.Cut(artifactPath, "/content/")
+	var artifactID, contentPath string
+	if strings.HasPrefix(subpath, "artifacts/") && strings.Contains(subpath, "/content/") {
+		artifactPath := strings.TrimPrefix(subpath, "artifacts/")
+		artifactID, contentPath, ok = strings.Cut(artifactPath, "/content/")
+		contentPath = strings.TrimPrefix(contentPath, sessionsV3ArtifactPreviewAccessPath)
+	} else if strings.HasPrefix(subpath, "artifacts-v3/") && strings.Contains(subpath, "/preview/access/") {
+		artifactPath := strings.TrimPrefix(subpath, "artifacts-v3/")
+		artifactID, contentPath, ok = strings.Cut(artifactPath, "/preview/access/")
+	} else {
+		return identity.Principal{}, false
+	}
 	artifactID = strings.TrimSpace(artifactID)
 	if !ok || artifactID == "" || strings.Contains(artifactID, "/") {
 		return identity.Principal{}, false
 	}
-	token, _, ok := strings.Cut(strings.TrimPrefix(contentPath, sessionsV3ArtifactPreviewAccessPath), "/")
-	if !ok || !strings.HasPrefix(contentPath, sessionsV3ArtifactPreviewAccessPath) {
+	token, _, ok := strings.Cut(contentPath, "/")
+	if !ok {
+		// Artifact V3 root previews end at the token and have no resource suffix.
+		token, ok = contentPath, strings.HasPrefix(subpath, "artifacts-v3/")
+	}
+	if !ok || strings.TrimSpace(token) == "" {
 		return identity.Principal{}, false
 	}
 	sealed, err := base64.RawURLEncoding.DecodeString(strings.TrimSpace(token))
@@ -786,6 +805,9 @@ func (s *Server) validateSessionV3ArtifactPreviewRequest(r *http.Request) (ident
 	}
 	now := time.Now().Unix()
 	if strings.TrimSpace(claims.SessionID) != sessionID || strings.TrimSpace(claims.ArtifactID) != artifactID || claims.ExpiresAt <= now || claims.ExpiresAt > now+int64(sessionsV3ArtifactPreviewTokenTTL/time.Second)+30 {
+		return identity.Principal{}, false
+	}
+	if claims.RevisionRef != "" && strings.TrimSpace(r.URL.Query().Get("revision")) != claims.RevisionRef {
 		return identity.Principal{}, false
 	}
 	principal := identity.Principal{

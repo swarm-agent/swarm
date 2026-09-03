@@ -39,6 +39,13 @@ func TestArtifactV3HTTPDetailRevisionPreviewAndSelection(t *testing.T) {
 		}
 	}
 
+	accessBody := strings.NewReader(`{"revision_ref":"rev-root"}`)
+	access := httptest.NewRecorder()
+	server.Handler().ServeHTTP(access, withTestPrincipal(httptest.NewRequest(http.MethodPost, "/v3/sessions/artifact-v3-api/artifacts-v3/artifact-1/preview/access", accessBody)))
+	if access.Code != http.StatusOK || !strings.Contains(access.Body.String(), "/preview/access/") {
+		t.Fatalf("access status=%d body=%s", access.Code, access.Body.String())
+	}
+
 	preview := httptest.NewRecorder()
 	server.Handler().ServeHTTP(preview, withTestPrincipal(httptest.NewRequest(http.MethodGet, "/v3/sessions/artifact-v3-api/artifacts-v3/artifact-1/preview?revision=rev-root", nil)))
 	if preview.Code != http.StatusOK || !strings.Contains(preview.Body.String(), "Artifact V3") || preview.Header().Get("Content-Security-Policy") == "" || preview.Header().Get("Cross-Origin-Resource-Policy") != "cross-origin" {
@@ -185,12 +192,12 @@ func (f *artifactV3APIServiceFake) ListRevisions(_ context.Context, _ ArtifactV3
 }
 func (f *artifactV3APIServiceFake) GetRevision(_ context.Context, _ ArtifactV3Principal, sessionID, artifactID, commit string) (ArtifactV3Revision, error) {
 	f.calls++
-	if sessionID != f.artifact.OwnerSessionID || artifactID != f.artifact.ID || commit != f.artifact.Head.CommitOID {
+	if sessionID != f.artifact.OwnerSessionID || artifactID != f.artifact.ID || (commit != f.artifact.Head.CommitOID && commit != f.artifact.Head.RevisionRef) {
 		return ArtifactV3Revision{}, pebblestore.ErrArtifactV3NotFound
 	}
 	return *f.artifact.Head, nil
 }
-func (f *artifactV3APIServiceFake) OpenPreview(_ context.Context, _ ArtifactV3Principal, sessionID, artifactID, revision, assetPath string) (ArtifactV3Preview, error) {
+func (f *artifactV3APIServiceFake) OpenPreview(_ context.Context, _ ArtifactV3Principal, sessionID, artifactID, revision, assetPath, _ string) (ArtifactV3Preview, error) {
 	f.calls++
 	if sessionID != f.artifact.OwnerSessionID || artifactID != f.artifact.ID || revision != "rev-root" {
 		return ArtifactV3Preview{}, pebblestore.ErrArtifactV3NotFound
