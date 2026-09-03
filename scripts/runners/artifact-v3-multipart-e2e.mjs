@@ -20,6 +20,9 @@ const actionThinking = String(option('--action-thinking', process.env.SWARM_RUNN
 const designerModel = String(option('--designer-model', process.env.SWARM_RUNNER_DESIGNER_MODEL || '')).trim()
 const designerThinking = String(option('--designer-thinking', process.env.SWARM_RUNNER_DESIGNER_THINKING || 'high')).trim().toLowerCase()
 const workspaceOverride = String(option('--workspace-path', process.env.SWARM_RUNNER_WORKSPACE_PATH || '')).trim()
+const sessionOverride = String(option('--session-id', process.env.SWARM_RUNNER_SESSION_ID || '')).trim()
+const initialRunOverride = String(option('--initial-run-id', process.env.SWARM_RUNNER_INITIAL_RUN_ID || '')).trim()
+const desktopPathOverride = String(option('--desktop-path', process.env.SWARM_RUNNER_DESKTOP_PATH || '')).trim()
 const browserExecutable = String(option('--browser-executable', process.env.PLAYWRIGHT_BROWSER_EXECUTABLE || '')).trim()
 const timeoutMs = Number(option('--timeout-ms', process.env.SWARM_RUNNER_TIMEOUT_MS || '600000'))
 const preflight = flag('--preflight')
@@ -165,7 +168,7 @@ async function approvePending(sessionID) {
 
 async function hydrate(sessionID) {
   return (await api('POST', '/v3/sync/hydrate', {
-    surface: 'desktop', session_ids: [sessionID], history: { mode: 'tail', max_messages_per_session: 200, max_events_per_session: 1000, manifest_policy: 'manifest' },
+    surface: 'desktop', session_ids: [sessionID], history: { mode: 'tail', max_messages_per_session: 200, max_events_per_session: 200, manifest_policy: 'manifest' },
     resources: { messages: true, events: true, run_intents: true, current_run_state: true, session_view: true, active_plan: true, permission_summaries: true }, include_active: true,
   }, 'hydrate artifact session')).body || {}
 }
@@ -429,7 +432,18 @@ async function runLive() {
   await auth()
   const assignment = await configureModels()
   const selected = await topology()
-  const session = await createSession(selected, assignment)
+  let session
+  if (sessionOverride) {
+    assert(initialRunOverride && desktopPathOverride.startsWith('/'), 'resuming requires --initial-run-id and an absolute --desktop-path')
+    const existing = await api('GET', `/v3/sessions/${encodeURIComponent(sessionOverride)}`, undefined, 'read resumed Artifact V3 session')
+    assert(text(existing.body?.session?.id || existing.body?.id) === sessionOverride, 'resumed Artifact V3 session was not found')
+    session = { sessionID: sessionOverride, workspacePath: '', workspaceName: '' }
+    result.ids.session_id = sessionOverride
+    result.ids.desktop_path = desktopPathOverride
+    result.ids.initial_run_id = initialRunOverride
+  } else {
+    session = await createSession(selected, assignment)
+  }
   const routeProbe = await api('GET', artifactRoute(session.sessionID), undefined, 'probe Artifact V3 route', true)
   assert(routeProbe.ok && routeProbe.body?.ok === true && Array.isArray(routeProbe.body?.artifacts), `native Artifact V3 catalog is unavailable (HTTP ${routeProbe.status})`)
   const playwright = loadPlaywright()
@@ -441,8 +455,12 @@ async function runLive() {
   await page.locator('body').waitFor({ state: 'visible' })
 
   const childrenBefore = delegatedDesigners(await bootstrapSessions(), session.sessionID)
-  assert(childrenBefore.length === 0, 'fresh journey session already has delegated Designer children')
-  await postTurn(session.sessionID, 'initial', initialPrompt())
+  if (sessionOverride) {
+    await waitForRun(session.sessionID, initialRunOverride, 'initial-resume')
+  } else {
+    assert(childrenBefore.length === 0, 'fresh journey session already has delegated Designer children')
+    await postTurn(session.sessionID, 'initial', initialPrompt())
+  }
   const items = await catalog(session.sessionID)
   assert(items.length === 1, `initial request produced ${items.length} Artifact V3 projects instead of one`)
   const artifact = items[0]
@@ -452,6 +470,7 @@ async function runLive() {
   assert(rootDetail.head?.build?.status === 'succeeded' && rootDetail.head?.validation?.status === 'valid', 'root head lacks whole-project build/render evidence')
   const childrenAfterRoot = delegatedDesigners(await bootstrapSessions(), session.sessionID)
   assert(childrenAfterRoot.length === 1, `initial turn launched ${childrenAfterRoot.length} Designers instead of exactly one`)
+  if (sessionOverride) assert(childrenBefore.length <= 1, `resumed initial turn already had ${childrenBefore.length} Designer children before completion`)
   result.ids.artifact_id = artifact.id
   result.ids.initial_designer_session_id = text(childrenAfterRoot[0]?.id)
   result.revisions.root = rootRevision
