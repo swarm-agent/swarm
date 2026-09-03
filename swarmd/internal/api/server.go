@@ -143,6 +143,7 @@ type Server struct {
 	mediaStaging                *mediastaging.Service
 	artifacts                   *artifact.Registry
 	artifactV2                  *artifactv2.Service
+	artifactV3                  ArtifactV3Service
 
 	longSessionDesktopSampleLogOnce sync.Once
 

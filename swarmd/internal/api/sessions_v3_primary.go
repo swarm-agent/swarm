@@ -342,6 +342,10 @@ func (s *Server) handleSessionV3PrimaryByID(w http.ResponseWriter, r *http.Reque
 			s.handleSessionV3VideoSubpath(w, r, principal, sessionID, strings.TrimPrefix(subpath, "video/"))
 			return
 		}
+		if subpath == "artifacts-v3" || strings.HasPrefix(subpath, "artifacts-v3/") {
+			s.handleSessionV3ArtifactsV3(w, r, principal, sessionID, strings.TrimPrefix(subpath, "artifacts-v3"))
+			return
+		}
 		if subpath == "artifact-v2" || strings.HasPrefix(subpath, "artifact-v2/") {
 			s.handleSessionV3ArtifactV2(w, r, principal, sessionID, strings.TrimPrefix(subpath, "artifact-v2"))
 			return
