@@ -26,6 +26,7 @@ test('Artifact V3 sidebar opens the native complete-project Studio entry', () =>
   assert.match(markup, /Artifact V3 projects/)
   assert.match(markup, /96 parts/)
   assert.match(markup, /data-artifact-v3-sidebar-id="artifact-1"/)
+  assert.match(markup, /data-artifact-v3-id="artifact-1"/)
   assert.equal(opened, '')
 })
 

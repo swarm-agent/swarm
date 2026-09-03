@@ -21,6 +21,15 @@ test('native Artifact V3 summary and revision preserve exact Git and cross-part 
   assert.ok(summary)
   assert.equal(summary.partCount, 96)
   assert.equal(summary.head?.commitOid, 'commit-2')
+  assert.equal(normalizeDesktopV3NativeArtifactSummary({ ...summaryWire, artifact_ref: undefined })?.artifactRef, 'artifact-1')
+  const nativeSummary = normalizeDesktopV3NativeArtifactSummary({
+    id: 'artifact-2', owner_session_id: 'session-1', parts: [{ id: 'hero' }], turns: [{ turn_id: 'turn-1' }],
+    current_revision: { revision_ref: 'revision-2', commit_oid: 'commit-2', tree_oid: 'tree-2', build: { status: 'succeeded' }, validation: { status: 'valid' } },
+  })
+  assert.equal(nativeSummary?.status, 'ready')
+  assert.equal(nativeSummary?.head?.revisionRef, 'revision-2')
+  assert.equal(nativeSummary?.partCount, 1)
+  assert.equal(nativeSummary?.turnCount, 1)
 
   const revision = normalizeDesktopV3NativeArtifactRevision({
     revision_ref: 'revision-ref-2', commit_oid: 'commit-2', tree_oid: 'tree-2', manifest_blob_oid: 'manifest-2', parent_commit_oids: ['commit-1'], status: 'ready',
@@ -32,6 +41,21 @@ test('native Artifact V3 summary and revision preserve exact Git and cross-part 
   assert.equal(revision.changedFiles[0]?.shared, true)
   assert.deepEqual(revision.changedFiles[0]?.affectedPartIds, ['hero', 'pricing'])
   assert.equal(revision.diagnostics[0]?.code, 'locator-resolved')
+})
+
+test('native Artifact V3 detail shape keeps nested parts, turns, candidates, and repository evidence', () => {
+  const revision = normalizeDesktopV3NativeArtifactRevision({
+    revision_ref: 'revision-root', commit_oid: 'commit-root', tree_oid: 'tree-root', parents: ['commit-parent'],
+    changed_files: ['index.html', 'styles/theme.css'], changed_parts: ['hero', 'pricing'],
+    build: { id: 'build-root', status: 'succeeded' }, validation: { id: 'validation-root', status: 'valid' },
+  })
+  assert.ok(revision)
+  assert.equal(revision.status, 'ready')
+  assert.deepEqual(revision.parentCommitOids, ['commit-parent'])
+  assert.deepEqual(revision.changedFiles.map((file) => file.path), ['index.html', 'styles/theme.css'])
+  assert.deepEqual(revision.affectedPartIds, ['hero', 'pricing'])
+  assert.equal(revision.buildId, 'build-root')
+  assert.equal(revision.validationId, 'validation-root')
 })
 
 test('native Artifact V3 preview and candidate selection use separate exact routes and head CAS', async () => {
@@ -47,11 +71,11 @@ test('native Artifact V3 preview and candidate selection use separate exact rout
     return new Response(JSON.stringify({ ok: true, head: { revision_ref: 'revision-ref-3', commit_oid: 'commit-3', tree_oid: 'tree-3', generation: 5, selected_event_seq: 13 } }), { headers: { 'Content-Type': 'application/json' } })
   }) as typeof fetch
   try {
-    const head = await selectDesktopV3NativeArtifactCandidate({ sessionId: 'session-1', artifactId: 'artifact-1', turnId: 'turn-2', candidateRef: 'candidate-ref-3', expectedHead: { revisionRef: 'revision-ref-2', commitOid: 'commit-2', treeOid: 'tree-2', generation: 4, selectedEventSeq: 12 } })
+    const head = await selectDesktopV3NativeArtifactCandidate({ sessionId: 'session-1', artifactId: 'artifact-1', turnId: 'turn-2', candidateId: 'candidate-3', expectedHead: { revisionRef: 'revision-ref-2', commitOid: 'commit-2', treeOid: 'tree-2', generation: 4, selectedEventSeq: 12 }, expectedTurnRevision: 7 })
     assert.equal(requestURL, '/v3/sessions/session-1/artifacts-v3/artifact-1/turns/turn-2/select')
-    assert.equal(requestBody.candidate_ref, 'candidate-ref-3')
-    assert.equal(requestBody.expected_head_generation, 4)
-    assert.equal(requestBody.expected_head_commit_oid, 'commit-2')
+    assert.equal(requestBody.candidate_id, 'candidate-3')
+    assert.equal(requestBody.expected_head_ref, 'revision-ref-2')
+    assert.equal(requestBody.expected_turn_revision, 7)
     assert.equal(head.commitOid, 'commit-3')
   } finally {
     globalThis.fetch = originalFetch

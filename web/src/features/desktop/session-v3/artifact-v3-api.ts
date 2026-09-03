@@ -1,7 +1,7 @@
 import { apiFetch, readErrorMessage } from '../../../app/api'
 
 export type DesktopV3NativeArtifactStatus = 'working' | 'ready' | 'failed' | 'unavailable'
-export type DesktopV3NativeTurnStatus = 'working' | 'building' | 'validating' | 'awaiting_selection' | 'selected' | 'failed' | 'cancelled'
+export type DesktopV3NativeTurnStatus = 'working' | 'building' | 'validating' | 'ready' | 'awaiting_selection' | 'selected' | 'failed' | 'cancelled'
 
 export interface DesktopV3NativeArtifactHead {
   revisionRef: string
@@ -78,7 +78,6 @@ export interface DesktopV3NativeArtifactRevision {
 
 export interface DesktopV3NativeArtifactCandidate {
   candidateId: string
-  candidateRef: string
   status: DesktopV3NativeTurnStatus
   revision: DesktopV3NativeArtifactRevision | null
   selected: boolean
@@ -88,6 +87,7 @@ export interface DesktopV3NativeArtifactCandidate {
 export interface DesktopV3NativeArtifactTurn {
   turnId: string
   turnRef: string
+  revision: number
   status: DesktopV3NativeTurnStatus
   baseRevisionRef: string
   baseCommitOid: string
@@ -137,9 +137,18 @@ function statusValue(value: unknown): DesktopV3NativeArtifactStatus {
   return 'working'
 }
 
+function inferredArtifactStatus(item: JsonRecord): DesktopV3NativeArtifactStatus {
+  const explicit = statusValue(item.status)
+  if (stringValue(item.status)) return explicit
+  const head = record(item.head ?? field(item, 'current_revision', 'currentRevision'))
+  const build = record(head?.build)
+  const validation = record(head?.validation)
+  return stringValue(build?.status) === 'succeeded' && stringValue(validation?.status) === 'valid' ? 'ready' : head ? 'working' : explicit
+}
+
 function turnStatusValue(value: unknown): DesktopV3NativeTurnStatus {
   const status = stringValue(value)
-  if (status === 'working' || status === 'building' || status === 'validating' || status === 'awaiting_selection' || status === 'selected' || status === 'failed' || status === 'cancelled') return status
+  if (status === 'working' || status === 'building' || status === 'validating' || status === 'ready' || status === 'awaiting_selection' || status === 'selected' || status === 'failed' || status === 'cancelled') return status
   return 'working'
 }
 
@@ -162,19 +171,21 @@ export function normalizeDesktopV3NativeArtifactSummary(value: unknown, fallback
   const item = record(value)
   if (!item) return null
   const artifactId = stringValue(field(item, 'artifact_id', 'artifactId')) || stringValue(item.id)
-  const artifactRef = stringValue(field(item, 'artifact_ref', 'artifactRef'))
   const ownerSessionId = stringValue(field(item, 'owner_session_id', 'ownerSessionId')) || stringValue(field(item, 'session_id', 'sessionId')) || fallbackSessionId.trim()
-  if (!artifactId || !artifactRef || !ownerSessionId) return null
+  if (!artifactId || !ownerSessionId) return null
   return {
     artifactId,
-    artifactRef,
+    // The native HTTP contract currently identifies the artifact by its stable ID.
+    // Preserve an explicit artifact_ref when the service supplies one, otherwise use
+    // that canonical ID instead of dropping the complete catalog entry.
+    artifactRef: stringValue(field(item, 'artifact_ref', 'artifactRef')) || artifactId,
     ownerSessionId,
     label: stringValue(item.label) || 'Artifact',
     description: stringValue(item.description),
-    status: statusValue(item.status),
-    head: normalizeHead(item.head),
-    partCount: numberValue(field(item, 'part_count', 'partCount')),
-    turnCount: numberValue(field(item, 'turn_count', 'turnCount')),
+    status: inferredArtifactStatus(item),
+    head: normalizeHead(item.head) || normalizeHead(field(item, 'current_revision', 'currentRevision')),
+    partCount: numberValue(field(item, 'part_count', 'partCount')) || (Array.isArray(item.parts) ? item.parts.length : 0),
+    turnCount: numberValue(field(item, 'turn_count', 'turnCount')) || (Array.isArray(item.turns) ? item.turns.length : 0),
     updatedAt: numberValue(field(item, 'updated_at', 'updatedAt')),
   }
 }
@@ -241,22 +252,43 @@ export function normalizeDesktopV3NativeArtifactRevision(value: unknown): Deskto
   const revisionRef = stringValue(field(item, 'revision_ref', 'revisionRef'))
   const commitOid = stringValue(field(item, 'commit_oid', 'commitOid'))
   if (!revisionRef || !commitOid) return null
+  const build = record(item.build)
+  const validation = record(item.validation)
+  const rawChangedFiles = field(item, 'changed_files', 'changedFiles')
+  const changedFiles = Array.isArray(rawChangedFiles)
+    ? rawChangedFiles.map((entry) => typeof entry === 'string'
+      ? normalizeChangedFile({ path: entry, status: 'modified' })
+      : normalizeChangedFile(entry)).filter((file): file is DesktopV3NativeArtifactChangedFile => file !== null)
+    : []
+  const buildDiagnostics = build?.diagnostics
+  const validationDiagnostics = validation?.diagnostics
+  const rawDiagnostics = [
+    ...(Array.isArray(item.diagnostics) ? item.diagnostics : []),
+    ...(Array.isArray(buildDiagnostics) ? buildDiagnostics : []),
+    ...(Array.isArray(validationDiagnostics) ? validationDiagnostics : []),
+  ]
+  const explicitStatus = stringValue(item.status)
+  const inferredStatus = explicitStatus || (stringValue(validation?.status) === 'valid' && stringValue(build?.status) === 'succeeded' ? 'ready' : 'working')
   return {
     revisionRef,
     commitOid,
     treeOid: stringValue(field(item, 'tree_oid', 'treeOid')),
     manifestBlobOid: stringValue(field(item, 'manifest_blob_oid', 'manifestBlobOid')),
-    parentCommitOids: strings(field(item, 'parent_commit_oids', 'parentCommitOids')),
-    status: statusValue(item.status),
+    parentCommitOids: strings(field(item, 'parent_commit_oids', 'parentCommitOids')).length
+      ? strings(field(item, 'parent_commit_oids', 'parentCommitOids'))
+      : strings(item.parents),
+    status: statusValue(inferredStatus),
     createdAt: numberValue(field(item, 'created_at', 'createdAt')),
     turnId: stringValue(field(item, 'turn_id', 'turnId')),
     candidateId: stringValue(field(item, 'candidate_id', 'candidateId')),
-    previewRef: stringValue(field(item, 'preview_ref', 'previewRef')),
-    buildId: stringValue(field(item, 'build_id', 'buildId')),
-    validationId: stringValue(field(item, 'validation_id', 'validationId')),
-    changedFiles: Array.isArray(field(item, 'changed_files', 'changedFiles')) ? (field(item, 'changed_files', 'changedFiles') as unknown[]).map(normalizeChangedFile).filter((file): file is DesktopV3NativeArtifactChangedFile => file !== null) : [],
-    affectedPartIds: strings(field(item, 'affected_part_ids', 'affectedPartIds')),
-    diagnostics: Array.isArray(item.diagnostics) ? item.diagnostics.map(normalizeDiagnostic).filter((diagnostic): diagnostic is DesktopV3NativeArtifactDiagnostic => diagnostic !== null) : [],
+    previewRef: stringValue(field(item, 'preview_ref', 'previewRef')) || revisionRef,
+    buildId: stringValue(field(item, 'build_id', 'buildId')) || stringValue(build?.id),
+    validationId: stringValue(field(item, 'validation_id', 'validationId')) || stringValue(validation?.id),
+    changedFiles,
+    affectedPartIds: strings(field(item, 'affected_part_ids', 'affectedPartIds')).length
+      ? strings(field(item, 'affected_part_ids', 'affectedPartIds'))
+      : strings(field(item, 'changed_parts', 'changedParts')),
+    diagnostics: rawDiagnostics.map(normalizeDiagnostic).filter((diagnostic): diagnostic is DesktopV3NativeArtifactDiagnostic => diagnostic !== null),
   }
 }
 
@@ -264,15 +296,21 @@ function normalizeCandidate(value: unknown): DesktopV3NativeArtifactCandidate | 
   const item = record(value)
   if (!item) return null
   const candidateId = stringValue(field(item, 'candidate_id', 'candidateId')) || stringValue(item?.id)
-  const candidateRef = stringValue(field(item, 'candidate_ref', 'candidateRef'))
-  if (!candidateId || !candidateRef) return null
+  if (!candidateId) return null
+  const build = record(item.build)
+  const validation = record(item.validation)
+  const buildDiagnostics = build?.diagnostics
+  const validationDiagnostics = validation?.diagnostics
   return {
     candidateId,
-    candidateRef,
-    status: turnStatusValue(item?.status),
-    revision: normalizeDesktopV3NativeArtifactRevision(item?.revision ?? item),
-    selected: item?.selected === true,
-    diagnostics: Array.isArray(item?.diagnostics) ? item.diagnostics.map(normalizeDiagnostic).filter((diagnostic): diagnostic is DesktopV3NativeArtifactDiagnostic => diagnostic !== null) : [],
+    status: turnStatusValue(item.status),
+    revision: normalizeDesktopV3NativeArtifactRevision(item.revision ?? item),
+    selected: item.selected === true,
+    diagnostics: [
+      ...(Array.isArray(item.diagnostics) ? item.diagnostics : []),
+      ...(Array.isArray(buildDiagnostics) ? buildDiagnostics : []),
+      ...(Array.isArray(validationDiagnostics) ? validationDiagnostics : []),
+    ].map(normalizeDiagnostic).filter((diagnostic): diagnostic is DesktopV3NativeArtifactDiagnostic => diagnostic !== null),
   }
 }
 
@@ -280,16 +318,22 @@ function normalizeTurn(value: unknown): DesktopV3NativeArtifactTurn | null {
   const item = record(value)
   if (!item) return null
   const turnId = stringValue(field(item, 'turn_id', 'turnId')) || stringValue(item?.id)
-  const turnRef = stringValue(field(item, 'turn_ref', 'turnRef'))
-  if (!turnId || !turnRef) return null
+  if (!turnId) return null
+  const baseRevision = record(field(item, 'base_revision', 'baseRevision'))
+  const selectedCandidateId = stringValue(field(item, 'selected_candidate_id', 'selectedCandidateId'))
+  const candidates = Array.isArray(item.candidates)
+    ? item.candidates.map(normalizeCandidate).filter((candidate): candidate is DesktopV3NativeArtifactCandidate => candidate !== null)
+      .map((candidate) => selectedCandidateId && candidate.candidateId === selectedCandidateId ? { ...candidate, selected: true } : candidate)
+    : []
   return {
     turnId,
-    turnRef,
-    status: turnStatusValue(item?.status),
-    baseRevisionRef: stringValue(field(item, 'base_revision_ref', 'baseRevisionRef')),
+    turnRef: stringValue(field(item, 'turn_ref', 'turnRef')) || turnId,
+    revision: numberValue(item.revision),
+    status: turnStatusValue(item.status),
+    baseRevisionRef: stringValue(field(item, 'base_revision_ref', 'baseRevisionRef')) || stringValue(field(baseRevision, 'revision_ref', 'revisionRef')),
     baseCommitOid: stringValue(field(item, 'base_commit_oid', 'baseCommitOid')),
     targetPartIds: strings(field(item, 'target_part_ids', 'targetPartIds')),
-    candidates: Array.isArray(item?.candidates) ? item.candidates.map(normalizeCandidate).filter((candidate): candidate is DesktopV3NativeArtifactCandidate => candidate !== null) : [],
+    candidates,
     createdAt: numberValue(field(item, 'created_at', 'createdAt')),
   }
 }
@@ -335,13 +379,18 @@ export async function fetchDesktopV3NativeArtifactStudio(sessionId: string, arti
   ])
   if (!detailResponse.ok) throw new Error(await readErrorMessage(detailResponse))
   const payload = record(await detailResponse.json() as unknown)
-  const artifact = normalizeDesktopV3NativeArtifactSummary(payload?.artifact ?? payload, sessionId)
-  if (payload?.ok !== true || !artifact) throw new Error('Artifact V3 Studio returned an invalid response')
+  const detail = record(payload?.artifact ?? payload)
+  const artifact = normalizeDesktopV3NativeArtifactSummary(detail, sessionId)
+  if (payload?.ok !== true || !artifact || !detail) throw new Error('Artifact V3 Studio returned an invalid response')
+  const detailRevisions = Array.isArray(detail.revisions)
+    ? detail.revisions.map(normalizeDesktopV3NativeArtifactRevision).filter((revision): revision is DesktopV3NativeArtifactRevision => revision !== null)
+    : []
+  const revisions = revisionPage.revisions.length ? revisionPage.revisions : detailRevisions
   return {
     artifact,
-    parts: Array.isArray(payload.parts) ? payload.parts.map(normalizePart).filter((part): part is DesktopV3NativeArtifactPart => part !== null) : [],
-    turns: Array.isArray(payload.turns) ? payload.turns.map(normalizeTurn).filter((turn): turn is DesktopV3NativeArtifactTurn => turn !== null) : [],
-    revisions: revisionPage.revisions,
+    parts: Array.isArray(detail.parts) ? detail.parts.map(normalizePart).filter((part): part is DesktopV3NativeArtifactPart => part !== null) : [],
+    turns: Array.isArray(detail.turns) ? detail.turns.map(normalizeTurn).filter((turn): turn is DesktopV3NativeArtifactTurn => turn !== null) : [],
+    revisions,
   }
 }
 
@@ -370,18 +419,20 @@ export async function selectDesktopV3NativeArtifactCandidate(input: {
   sessionId: string
   artifactId: string
   turnId: string
-  candidateRef: string
+  candidateId: string
   expectedHead: DesktopV3NativeArtifactHead | null
+  expectedTurnRevision: number
 }, signal?: AbortSignal): Promise<DesktopV3NativeArtifactHead> {
-  if (!input.candidateRef.trim()) throw new Error('Artifact V3 selection requires an exact candidate reference')
+  if (!input.candidateId.trim()) throw new Error('Artifact V3 selection requires a candidate ID')
+  if (!input.expectedHead?.revisionRef.trim() || input.expectedTurnRevision <= 0) throw new Error('Artifact V3 selection requires exact head and turn revisions')
   const response = await apiFetch(desktopV3NativeArtifactCandidateSelectionEndpoint(input.sessionId, input.artifactId, input.turnId), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       client_request_id: `desktop-artifact-v3-select:${crypto.randomUUID()}`,
-      candidate_ref: input.candidateRef,
-      expected_head_generation: input.expectedHead?.generation ?? 0,
-      expected_head_commit_oid: input.expectedHead?.commitOid ?? '',
+      candidate_id: input.candidateId,
+      expected_head_ref: input.expectedHead.revisionRef,
+      expected_turn_revision: input.expectedTurnRevision,
     }),
     signal,
   })
