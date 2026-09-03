@@ -202,6 +202,17 @@ require_command git
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${ROOT_DIR}"
 
+# The broker-owned systemd-nspawn testbench has its own exact-candidate deploy
+# authority. Fail closed before bundle transport or service mutation when this
+# host helper is accidentally pointed at the configured container testbench.
+if [[ -f "${ROOT_DIR}/.env" ]]; then
+  configured_testbench_alias="$(awk -F= '$1 == "SWARM_PRIMARY_SSH" { value=$2; gsub(/^[[:space:]"'\'' ]+|[[:space:]"'\'' ]+$/, "", value); print value; exit }' "${ROOT_DIR}/.env")"
+  configured_testbench_target="$(awk -F= '$1 == "SWARM_TESTBENCH_TARGET" { value=$2; gsub(/^[[:space:]"'\'' ]+|[[:space:]"'\'' ]+$/, "", value); print value; exit }' "${ROOT_DIR}/.env")"
+  if [[ "${configured_testbench_target}" == container && -n "${configured_testbench_alias}" && "${SSH_ALIAS}" == "${configured_testbench_alias}" ]]; then
+    fail "${SSH_ALIAS} is the configured isolated container testbench; use scripts/testbench-container-deploy.sh deploy instead of host swarm.service"
+  fi
+fi
+
 if [[ "${ALLOW_DIRTY_COMMITTED_REF}" != "true" ]]; then
   require_clean_git_tree
 fi
