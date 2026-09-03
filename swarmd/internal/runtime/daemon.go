@@ -324,15 +324,6 @@ func New(cfg config.Config) (*Daemon, error) {
 	}
 	artifactV3Runtime := newArtifactV3RuntimeAdapter(artifactV3Service, sessionSvc.Store(), artifactV3RepositoryRoot, artifactV3EvidenceRoot, pebblestore.ArtifactV3Limits{}, artifactV3Renderer)
 	toolRuntime.SetArtifactV3AuthorService(tool.NewArtifactV3AuthorService(artifactV3WorkspaceRoot, artifactV3Runtime, artifactV3Runtime, artifactV3Runtime))
-	var artifactV2Compiler artifactv2.Compiler = artifactv2.DeterministicCompiler{}
-	var artifactV2Validator artifactv2.Validator = artifactv2.DeterministicValidator{}
-	if cacheRootErr == nil {
-		trustedMotionRenderer := artifactv2.TrustedMotionRenderer{Renderer: htmlcapture.NewChromedpRendererWithConcurrency(htmlcapture.SystemChromePath, filepath.Join(cacheRoot, "html-capture"), htmlCaptureConcurrency())}
-		captureRenderer := htmlcapture.NewChromedpRendererWithConcurrency(htmlcapture.SystemChromePath, filepath.Join(cacheRoot, "html-capture"), htmlCaptureConcurrency())
-		motionValidator := artifactv2.MotionValidator{Renderer: trustedMotionRenderer}
-		artifactV2Compiler = artifactv2.CreativeCompiler{Motion: artifactv2.MotionCompiler{}}
-		artifactV2Validator = artifactv2.StoryboardValidator{Renderer: captureRenderer, Motion: motionValidator}
-	}
 	toolRuntime.SetArtifactRegistry(artifactRegistry)
 	toolRuntime.SetArtifactAuthority(artifactAuthority)
 	mediaStagingSvc := mediastaging.NewService(pebblestore.NewMediaStagingStore(store))
