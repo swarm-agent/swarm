@@ -257,11 +257,18 @@ func (s *ArtifactV3Service) Recover(ctx context.Context, owner ArtifactV3Owner, 
 	if err != nil {
 		return ArtifactV3Projection{}, err
 	}
-	if err := repository.IntegrityCheck(ctx); err != nil {
+	head, err := repository.Head(ctx)
+	if errors.Is(err, ErrArtifactV3NotFound) {
+		// An interrupted first authoring turn may leave an owner-bound empty bare
+		// repository before Genesis creates any commit. It carries no user-visible
+		// revision or transaction to recover, so preserve it for the original turn
+		// and do not fail daemon startup.
+		return ArtifactV3Projection{}, nil
+	}
+	if err != nil {
 		return ArtifactV3Projection{}, err
 	}
-	head, err := repository.Head(ctx)
-	if err != nil {
+	if err := repository.IntegrityCheck(ctx); err != nil {
 		return ArtifactV3Projection{}, err
 	}
 	stored, ok, err := s.sessions.GetArtifactV3Repository(owner.AccountScopeID, owner.UserID, artifactID)

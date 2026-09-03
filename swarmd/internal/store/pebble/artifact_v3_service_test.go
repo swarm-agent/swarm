@@ -99,6 +99,34 @@ func TestArtifactV3ServiceLifecycleCASAndRecovery(t *testing.T) {
 	}
 }
 
+// Requirement: a failed initial authoring turn may leave an owner-bound bare
+// repository without a head, and daemon recovery must preserve that retryable
+// state without projecting success or failing startup.
+func TestArtifactV3ServiceRecoveryAllowsEmptyOwnedRepository(t *testing.T) {
+	store := openV3SessionEventTestStore(t)
+	sessions := NewSessionStore(store)
+	createV3SessionForTest(t, sessions, "artifact-v3-empty-recovery")
+	root := t.TempDir()
+	service, err := NewArtifactV3Service(sessions, root, ArtifactV3Limits{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner := ArtifactV3Owner{AccountScopeID: "account-1", UserID: "user-1", SessionID: "artifact-v3-empty-recovery"}
+	if _, err := OpenArtifactV3Repository(context.Background(), root, "artifact-empty", owner, ArtifactV3Limits{}); err != nil {
+		t.Fatal(err)
+	}
+	recovered, err := service.Recover(context.Background(), owner, "artifact-empty")
+	if err != nil {
+		t.Fatalf("recover empty owned repository: %v", err)
+	}
+	if recovered.Repository != nil || recovered.Revision != nil || recovered.Turn != nil || recovered.Candidate != nil {
+		t.Fatalf("empty recovery projected success: %+v", recovered)
+	}
+	if _, ok, err := sessions.GetArtifactV3Repository(owner.AccountScopeID, owner.UserID, "artifact-empty"); err != nil || ok {
+		t.Fatalf("empty recovery persisted projection: ok=%v err=%v", ok, err)
+	}
+}
+
 // Requirement: Parts are unbounded by the retired 64-Part V2 schema and remain
 // locator projections of one complete commit rather than independently writable
 // byte revisions.
