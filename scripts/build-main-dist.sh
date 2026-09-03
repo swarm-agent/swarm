@@ -145,7 +145,14 @@ if [[ "${BUILD_WEB}" == "true" ]]; then
   (
     cd "${ROOT_DIR}/web"
     swarm_pnpm install --frozen-lockfile
-    swarm_pnpm run build
+    web_build_log="$(mktemp "${TMPDIR:?TMPDIR must be set}/swarm-web-build.XXXXXX.log")"
+    if ! swarm_pnpm run build >"${web_build_log}" 2>&1; then
+      printf 'desktop build failed; bounded compiler tail follows\n' >&2
+      tail -n 160 "${web_build_log}" >&2 || true
+      rm -f "${web_build_log}"
+      exit 1
+    fi
+    rm -f "${web_build_log}"
   )
   mkdir -p "${WEB_ARTIFACT_DIR}"
   cp -R "${ROOT_DIR}/web/dist/." "${WEB_ARTIFACT_DIR}/"
