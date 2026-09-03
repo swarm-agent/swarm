@@ -28,9 +28,10 @@ bundle and records its exact commit as `candidate_head`.
 ```
 
 This prepares and starts only the isolated container, installs the candidate into
-container-local system paths, synchronizes the configured Fireworks credential
-through the fixed broker, and prints the exact deployed commit. It does not
-replace or restart a host Swarm installation.
+container-local system paths, enables `dev_mode` inside that disposable container
+so the authenticated session-dump workflow is available, synchronizes the
+configured Fireworks credential through the fixed broker, and prints the exact
+deployed commit. It does not replace or restart a host Swarm installation.
 
 ## Check before testing
 
@@ -74,7 +75,9 @@ After exact-head readiness, the wrapper opens temporary SSH forwards, exports:
 and closes the tunnel when the command exits. Runners use the Desktop endpoint
 for local-session bootstrap because it preserves the browser/local-transport
 authentication contract; the API forward remains available for probes that
-explicitly require it.
+explicitly require it. Failed Artifact V3 journeys invoke
+`scripts/session-dump-via-api.sh` before the tunnel closes and download the exact
+private dump into the runner's ignored evidence directory.
 
 For ordinary registered runners, use the shorter wrapper:
 

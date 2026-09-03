@@ -165,6 +165,7 @@ func (s *Server) registerRuntimeRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/v1/update/run", s.handleUpdateRun)
 	mux.HandleFunc(SessionStorageMaintenancePath, s.handleSessionStorageMaintenance)
 	mux.HandleFunc(SessionDumpPath, s.handleSessionDump)
+	mux.HandleFunc(sessionDumpFilePath, s.handleSessionDumpFile)
 	mux.HandleFunc(LongSessionDiagnosticsConfigPath, s.handleLongSessionDiagnosticsConfig)
 	mux.HandleFunc(LongSessionDiagnosticsSamplePath, s.handleLongSessionDiagnosticsSample)
 	mux.HandleFunc(LongSessionDiagnosticsCapturePath, s.handleLongSessionDiagnosticsCapture)

@@ -1,10 +1,12 @@
 #!/usr/bin/env node
 import crypto from 'node:crypto'
+import { execFile } from 'node:child_process'
 import fs from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { promisify } from 'node:util'
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const rootDir = path.resolve(scriptDir, '..', '..')
@@ -44,6 +46,7 @@ let page
 let originalSwarmSettings = null
 let originalDesignerSettings = null
 let modelSettingsChanged = false
+const execFileAsync = promisify(execFile)
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 const log = (message) => process.stderr.write(`[artifact-v3-multipart-e2e] ${message}\n`)
 const fail = (message) => { result.failures.push(message); throw new Error(message) }
@@ -260,6 +263,25 @@ async function installRealtimeRecorder(targetPage) {
     window.WebSocket.prototype = NativeWebSocket.prototype
     Object.setPrototypeOf(window.WebSocket, NativeWebSocket)
   })
+}
+
+async function captureFailureSessionDump() {
+  if (result.result !== 'RED' || !result.ids.session_id) return
+  const outputFile = path.join(evidenceDir, 'session-dump.json')
+  const sessionPath = result.ids.desktop_path || `/${result.ids.session_id}`
+  const sessionURL = `${desktopURL}${sessionPath}`
+  try {
+    const completed = await execFileAsync(path.join(rootDir, 'scripts', 'session-dump-via-api.sh'), [sessionURL, outputFile], {
+      env: { ...process.env, TMPDIR: tmpRoot },
+      timeout: 150000,
+      maxBuffer: 64 * 1024,
+    })
+    const stat = await fs.stat(outputFile)
+    result.session_dump = { status: 'captured', output_file: outputFile, bytes: stat.size, helper_output: text(completed.stdout) }
+  } catch (error) {
+    result.session_dump = { status: 'failed', output_file: outputFile, error: text(error?.stderr || error?.message || error).slice(0, 1200) }
+    result.failures.push(`automatic session dump failed: ${result.session_dump.error}`)
+  }
 }
 
 async function screenshot(targetPage, label) {
@@ -546,6 +568,7 @@ try {
   }
   result.completed_at = new Date().toISOString()
   result.evidence_dir = evidenceDir
+  await captureFailureSessionDump()
   await fs.writeFile(path.join(evidenceDir, 'summary.json'), `${JSON.stringify(result, null, 2)}\n`)
   process.stdout.write(`${JSON.stringify(result, null, 2)}\n`)
   if (!['PASS', 'PREFLIGHT_READY'].includes(result.result)) process.exitCode = 2
