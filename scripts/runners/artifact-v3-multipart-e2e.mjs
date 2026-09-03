@@ -337,9 +337,11 @@ async function animationSample(previewPage, expectedLabel = '') {
 }
 
 async function screenshotPreview(sessionID, artifactID, revision, expectedLabel = '') {
-  const url = `${desktopURL}${artifactRoute(sessionID, `/${encodeURIComponent(artifactID)}/preview`)}?revision=${encodeURIComponent(revision.revision_ref)}`
+  const access = await api('POST', artifactRoute(sessionID, `/${encodeURIComponent(artifactID)}/preview/access`), { revision_ref: revision.revision_ref }, 'authorize exact Artifact V3 preview')
+  const previewPath = text(access.body?.preview_url)
+  assert(previewPath.startsWith('/v3/sessions/') && previewPath.includes('/artifacts-v3/') && previewPath.includes('/preview/access/'), 'Artifact V3 preview access response is invalid')
   const previewPage = await context.newPage()
-  await previewPage.goto(url, { waitUntil: 'networkidle', timeout: 60000 })
+  await previewPage.goto(`${desktopURL}${previewPath}`, { waitUntil: 'networkidle', timeout: 60000 })
   const sample = await animationSample(previewPage, expectedLabel)
   await previewPage.close()
   return sample
