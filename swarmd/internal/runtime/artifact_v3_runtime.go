@@ -424,7 +424,16 @@ func (a *artifactV3RuntimeAdapter) OpenPreview(ctx context.Context, principal ap
 }
 
 func (a *artifactV3RuntimeAdapter) OpenTurn(ctx context.Context, principal api.ArtifactV3Principal, request api.ArtifactV3OpenTurnRequest) (api.ArtifactV3Turn, error) {
-	return api.ArtifactV3Turn{}, errors.New("Artifact V3 turns are allocated by managed Designer orchestration")
+	repository, ok, err := a.sessions.GetArtifactV3Repository(principal.AccountScopeID, principal.UserID, request.ArtifactID)
+	if err != nil || !ok || repository.OwnerSessionID != request.SessionID { return api.ArtifactV3Turn{}, pebblestore.ErrArtifactV3NotFound }
+	baseCommit := strings.TrimPrefix(strings.TrimSpace(request.BaseRevisionRef), "revision-")
+	if baseCommit != repository.HeadCommitOID { return api.ArtifactV3Turn{}, pebblestore.ErrArtifactV3Conflict }
+	turnID := artifactV3StableID("turn", request.ArtifactID, request.ClientRequestID)
+	target := ""; if len(request.TargetPartIDs) != 0 { target = request.TargetPartIDs[0] }
+	projection, err := a.service.OpenTurn(ctx, pebblestore.ArtifactV3OpenTurnInput{Owner:pebblestore.ArtifactV3Owner{AccountScopeID:principal.AccountScopeID,UserID:principal.UserID,SessionID:request.SessionID},ArtifactID:request.ArtifactID,TurnID:turnID,ExpectedHead:baseCommit,TargetPartID:target})
+	if err != nil { return api.ArtifactV3Turn{}, err }
+	if projection.Turn == nil { return api.ArtifactV3Turn{}, pebblestore.ErrArtifactV3Integrity }
+	return api.ArtifactV3Turn{TurnID:projection.Turn.TurnID,Revision:projection.Turn.EventSeq,Status:projection.Turn.Status,Intent:request.Intent,TargetPartIDs:canonicalStrings(request.TargetPartIDs),BaseCommitOID:projection.Turn.BaseCommitOID,CreatedAt:projection.Turn.CreatedAt,UpdatedAt:projection.Turn.UpdatedAt},nil
 }
 
 func (a *artifactV3RuntimeAdapter) SelectCandidate(ctx context.Context, principal api.ArtifactV3Principal, request api.ArtifactV3SelectCandidateRequest) (api.ArtifactV3SelectionResult, error) {
