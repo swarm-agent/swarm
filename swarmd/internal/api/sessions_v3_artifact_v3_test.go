@@ -41,12 +41,12 @@ func TestArtifactV3HTTPDetailRevisionPreviewAndSelection(t *testing.T) {
 
 	preview := httptest.NewRecorder()
 	server.Handler().ServeHTTP(preview, withTestPrincipal(httptest.NewRequest(http.MethodGet, "/v3/sessions/artifact-v3-api/artifacts-v3/artifact-1/preview?revision=rev-root", nil)))
-	if preview.Code != http.StatusOK || !strings.Contains(preview.Body.String(), "Artifact V3") || preview.Header().Get("Content-Security-Policy") == "" {
+	if preview.Code != http.StatusOK || !strings.Contains(preview.Body.String(), "Artifact V3") || preview.Header().Get("Content-Security-Policy") == "" || preview.Header().Get("Cross-Origin-Resource-Policy") != "cross-origin" {
 		t.Fatalf("preview status=%d headers=%v body=%s", preview.Code, preview.Header(), preview.Body.String())
 	}
 	asset := httptest.NewRecorder()
 	server.Handler().ServeHTTP(asset, withTestPrincipal(httptest.NewRequest(http.MethodGet, "/v3/sessions/artifact-v3-api/artifacts-v3/artifact-1/preview/files/styles/theme.css?revision=rev-root", nil)))
-	if asset.Code != http.StatusOK || !strings.HasPrefix(asset.Header().Get("Content-Type"), "text/css") || !strings.Contains(asset.Body.String(), "navy") {
+	if asset.Code != http.StatusOK || !strings.HasPrefix(asset.Header().Get("Content-Type"), "text/css") || asset.Header().Get("Cross-Origin-Resource-Policy") != "cross-origin" || !strings.Contains(asset.Body.String(), "navy") {
 		t.Fatalf("asset status=%d headers=%v body=%s", asset.Code, asset.Header(), asset.Body.String())
 	}
 

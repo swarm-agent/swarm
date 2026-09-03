@@ -289,6 +289,10 @@ func (s *Server) handleSessionV3ArtifactsV3(w http.ResponseWriter, r *http.Reque
 		w.Header().Set("Content-Type", firstNonEmpty(strings.TrimSpace(preview.MediaType), "application/octet-stream"))
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("Referrer-Policy", "no-referrer")
+		// Sandboxed Artifact Studio iframes have an opaque origin. Without an
+		// explicit CORP policy Chromium blocks same-endpoint CSS/JS as
+		// ERR_BLOCKED_BY_ORB even though the authenticated request succeeds.
+		w.Header().Set("Cross-Origin-Resource-Policy", "cross-origin")
 		w.Header().Set("Cache-Control", "private, no-store")
 		if strings.TrimSpace(preview.ETag) != "" {
 			w.Header().Set("ETag", preview.ETag)
