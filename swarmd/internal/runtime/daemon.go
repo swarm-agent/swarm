@@ -283,8 +283,15 @@ func New(cfg config.Config) (*Daemon, error) {
 	swarmStore := pebblestore.NewSwarmStore(store, topologyStore)
 	sessionSvc := sessionruntime.NewService(pebblestore.NewSessionStore(store), events)
 	artifactRegistry := artifact.NewRegistry(sessionSvc, artifact.Limits{})
-	// Git-backed artifact publication checks its prerequisite when that feature
-	// is used. Ordinary sessions and plain workspaces remain available without Git.
+	// Managed artifacts are part of the normal agent runtime and use native Git
+	// as their byte authority. The installer provisions Git on supported hosts;
+	// keep startup fail-closed if an installed runtime is incomplete or damaged.
+	if err := artifactRegistry.VerifyGitPrerequisite(context.Background()); err != nil {
+		_ = secretStore.Close()
+		_ = store.Close()
+		_ = lk.Release()
+		return nil, fmt.Errorf("initialize private artifact Git storage: %w", err)
+	}
 	artifactMetadata := &artifactMetadataBoundary{Service: sessionSvc}
 	artifactAuthority := artifact.NewAuthority(artifactRegistry, artifactMetadata)
 	toolRuntime.SetArtifactRegistry(artifactRegistry)

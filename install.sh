@@ -79,15 +79,6 @@ need_cmd() {
   }
 }
 
-warn_optional_git() {
-  if command -v git >/dev/null 2>&1; then
-    return 0
-  fi
-  cat >&2 <<'EOF'
-Warning: Git is not installed. Swarm will still install and ordinary workspaces remain usable.
-When a Git feature needs it, ask Swarm to install Git safely and approve the system change when prompted.
-EOF
-}
 
 resolve_script_dir() {
   if [ -z "${0:-}" ] || [ ! -f "$0" ]; then
@@ -216,6 +207,51 @@ run_privileged() {
   sudo "$@"
 }
 
+ensure_runtime_prerequisites() {
+  missing_packages=""
+  missing_commands=""
+  for command_name in git bash; do
+    if command -v "$command_name" >/dev/null 2>&1; then
+      continue
+    fi
+    missing_commands="${missing_commands}${missing_commands:+, }${command_name}"
+    missing_packages="${missing_packages}${missing_packages:+ }${command_name}"
+  done
+  if [ -z "$missing_packages" ]; then
+    return 0
+  fi
+
+  echo "Installing missing Swarm runtime prerequisites: ${missing_commands}"
+  if command -v apt-get >/dev/null 2>&1; then
+    run_privileged apt-get update
+    # shellcheck disable=SC2086
+    run_privileged env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends $missing_packages
+  elif command -v dnf >/dev/null 2>&1; then
+    # shellcheck disable=SC2086
+    run_privileged dnf install -y $missing_packages
+  elif command -v yum >/dev/null 2>&1; then
+    # shellcheck disable=SC2086
+    run_privileged yum install -y $missing_packages
+  elif command -v pacman >/dev/null 2>&1; then
+    # shellcheck disable=SC2086
+    run_privileged pacman -S --noconfirm --needed $missing_packages
+  elif command -v zypper >/dev/null 2>&1; then
+    # shellcheck disable=SC2086
+    run_privileged zypper --non-interactive install $missing_packages
+  else
+    echo "Swarm requires ${missing_commands} at runtime, but no supported package manager was found." >&2
+    echo "Install the missing commands, then rerun install.sh." >&2
+    return 1
+  fi
+
+  for command_name in git bash; do
+    if ! command -v "$command_name" >/dev/null 2>&1; then
+      echo "runtime prerequisite installation completed without providing required command: $command_name" >&2
+      return 1
+    fi
+  done
+}
+
 dir_writable() {
   path="$1"
   probe="$(mktemp "$path/.swarm-write-check.XXXXXX" 2>/dev/null)" || return 1
@@ -294,6 +330,7 @@ Swarm install plan
   Daemon runtime: /run/swarmd
   Daemon cache/logs: /var/cache/swarmd, /var/log/swarmd
   Service: $(service_plan_label)
+  Runtime prerequisites: Git and Bash; missing packages are installed with the detected system package manager, and existing installations are left unchanged.
 
 Reinstall preserves /etc/swarmd and /var/lib/swarmd by default.
 EOF
@@ -473,6 +510,21 @@ verify_installed_runtime() {
     echo "installed systemd service unit is missing: /etc/systemd/system/swarm.service" >&2
     return 1
   fi
+  if [ "$SERVICE_MODE" = "systemd" ]; then
+    attempts=0
+    while [ "$attempts" -lt 30 ]; do
+      status_output="$($bin_dir/swarm status 2>/dev/null || true)"
+      if printf '%s\n' "$status_output" | grep -Fxq 'active=active' && printf '%s\n' "$status_output" | grep -Fxq 'daemon_health=healthy'; then
+        return 0
+      fi
+      attempts=$((attempts + 1))
+      sleep 1
+    done
+    echo "Swarm was installed, but swarm.service did not reach daemon readiness." >&2
+    printf '%s\n' "$status_output" >&2
+    echo "Inspect the startup failure with: sudo systemctl status swarm.service" >&2
+    return 1
+  fi
 }
 
 bin_home_on_path() {
@@ -610,7 +662,6 @@ validate_artifact_root() {
   done
 }
 
-warn_optional_git
 need_cmd uname
 need_cmd curl
 need_cmd tar
@@ -653,6 +704,7 @@ if [ -n "$script_dir" ] && [ -x "$bundle_installer" ] && [ -f "$bundle_index" ];
   if [ "$SERVICE_MODE" = "systemd" ]; then
     require_systemd
   fi
+  ensure_runtime_prerequisites
   print_installing "$version"
   tmp_dir="$(mktemp -d)"
   trap 'rm -rf "$tmp_dir"' EXIT INT TERM
@@ -720,6 +772,7 @@ confirm_install_plan
 if [ "$SERVICE_MODE" = "systemd" ]; then
   require_systemd
 fi
+ensure_runtime_prerequisites
 print_installing "$release_version"
 checksum_name="${asset_name}.sha256"
 checksum_url="${asset_url}.sha256"

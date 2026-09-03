@@ -42,7 +42,9 @@ jobs:
         uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
         with:
           name: install-candidate-${{ github.event.pull_request.head.sha || github.sha }}
-          path: dist/swarm-candidate-*-linux-amd64.tar.gz
+          path: |
+            dist/swarm-candidate-*-linux-amd64.tar.gz
+            dist/swarm-candidate-*-linux-amd64.tar.gz.sha256
           if-no-files-found: error
           retention-days: 2
 
@@ -74,4 +76,6 @@ jobs:
           shopt -s nullglob
           archives=(candidate/swarm-candidate-*-linux-amd64.tar.gz)
           [[ ${#archives[@]} -eq 1 ]]
-          ./scripts/test-install-distro.sh --archive "${archives[0]}" --distro "${{ matrix.distro }}"
+          checksum="${archives[0]}.sha256"
+          [[ -f "${checksum}" ]]
+          ./scripts/test-install-distro.sh --archive "${archives[0]}" --checksum "${checksum}" --distro "${{ matrix.distro }}"

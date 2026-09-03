@@ -60,11 +60,17 @@ nine_status=$?
 set -e
 [[ "${zero_status}" != "0" && "${nine_status}" != "0" ]] || fail "invalid job limits were accepted"
 
-EXPECTED_SUITES=$'critical\nonboarding\ndesktop\ntui\nplan-auto\ntask-routing\ntask-program\nprovider-sync'
+EXPECTED_SUITES=$'critical\nonboarding\ndesktop\ntui\nplan-auto\ntask-routing\ntask-program\nprovider-sync\nomarchy-install'
 ACTUAL_SUITES="$("${ROOT_DIR}/scripts/run-testbench-launch-prerun.sh" --list-suites)"
-[[ "${ACTUAL_SUITES}" == "${EXPECTED_SUITES}" ]] || fail "canonical eight-suite manifest changed unexpectedly"
+[[ "${ACTUAL_SUITES}" == "${EXPECTED_SUITES}" ]] || fail "canonical suite manifest changed unexpectedly"
 critical_dry_run="$("${ROOT_DIR}/scripts/run-testbench-launch-prerun.sh" --dry-run --suite critical)" || fail "critical lane dry run failed"
 grep -Fq 'scripts/run-critical-tests.sh all' <<<"${critical_dry_run}" || fail "critical lane does not run the complete deterministic gate"
+set +e
+omarchy_without_checksum="$("${ROOT_DIR}/scripts/run-testbench-launch-prerun.sh" --dry-run --suite omarchy-install --candidate-archive candidate.tar.gz --omarchy-guest user@example.invalid 2>&1)"
+omarchy_without_checksum_status=$?
+set -e
+[[ "${omarchy_without_checksum_status}" != 0 ]] || fail "omarchy lane accepted an archive without its exact checksum"
+grep -Fq 'omarchy-install requires --candidate-checksum' <<<"${omarchy_without_checksum}" || fail "omarchy lane missing exact-checksum guidance"
 if ! "${ROOT_DIR}/scripts/run-testbench-launch-prerun.sh" --dry-run --suite task-program >/dev/null 2>&1; then
   fail "task-program lane still requires a manually configured linked workspace despite runtime binding discovery"
 fi

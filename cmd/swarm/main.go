@@ -61,9 +61,6 @@ func run(argv0 string, args []string) error {
 			return runUninstallCommand(args[1:])
 		}
 	}
-	if warning := interactiveGitWarning(args); warning != "" {
-		fmt.Fprintln(os.Stderr, warning)
-	}
 	profile, err := launcher.LoadRuntimeProfile(lane, bypassOverride)
 	if err != nil {
 		return err
@@ -229,29 +226,6 @@ func run(argv0 string, args []string) error {
 		return err
 	}
 	return nil
-}
-
-var gitLookPath = exec.LookPath
-
-func interactiveGitWarning(args []string) string {
-	interactive := len(args) == 0
-	if len(args) > 0 {
-		switch args[0] {
-		case "--desktop", "open", "run":
-			interactive = true
-		case "session":
-			interactive = len(args) == 1 || args[1] == "tui" || args[1] == "open"
-		default:
-			interactive = strings.HasPrefix(args[0], "-")
-		}
-	}
-	if !interactive {
-		return ""
-	}
-	if _, err := gitLookPath("git"); err == nil {
-		return ""
-	}
-	return "Warning: Git isn't installed, but Swarm will continue and ordinary workspaces remain usable. When you use a Git feature, ask Swarm to install Git safely; approve the system change when prompted."
 }
 
 func runInstallCommand(args []string) error {

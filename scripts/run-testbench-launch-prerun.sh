@@ -40,6 +40,7 @@ Options:
   --expected-commit <sha>    Candidate commit override for provider-sync (default: local HEAD)
   --remote-repo <path>       Candidate checkout override (default: discovered testbench checkout)
   --candidate-archive <path> Exact release archive for omarchy-install
+  --candidate-checksum <path> Matching archive SHA-256 file for omarchy-install
   --omarchy-guest <user@host> Clean official-ISO Omarchy VM SSH target
   --omarchy-port <n>         Optional Omarchy VM SSH port
   --omarchy-identity <path>  Optional Omarchy VM SSH identity
@@ -81,6 +82,7 @@ RUNNER_TIMEOUT_MS="600000"
 EXPECTED_COMMIT="${SWARM_EXPECTED_COMMIT:-}"
 REMOTE_REPO="${SWARM_REMOTE_REPO:-}"
 CANDIDATE_ARCHIVE="${SWARM_INSTALL_CANDIDATE_ARCHIVE:-}"
+CANDIDATE_CHECKSUM="${SWARM_INSTALL_CANDIDATE_CHECKSUM:-}"
 OMARCHY_GUEST=""
 OMARCHY_PORT=""
 OMARCHY_IDENTITY=""
@@ -104,6 +106,7 @@ while [[ $# -gt 0 ]]; do
     --expected-commit) [[ $# -ge 2 ]] || fail "--expected-commit requires a value"; EXPECTED_COMMIT="$2"; shift 2 ;;
     --remote-repo) [[ $# -ge 2 ]] || fail "--remote-repo requires a value"; REMOTE_REPO="$2"; shift 2 ;;
     --candidate-archive) [[ $# -ge 2 ]] || fail "--candidate-archive requires a value"; CANDIDATE_ARCHIVE="$2"; shift 2 ;;
+    --candidate-checksum) [[ $# -ge 2 ]] || fail "--candidate-checksum requires a value"; CANDIDATE_CHECKSUM="$2"; shift 2 ;;
     --omarchy-guest) [[ $# -ge 2 ]] || fail "--omarchy-guest requires a value"; OMARCHY_GUEST="$2"; shift 2 ;;
     --omarchy-port) [[ $# -ge 2 ]] || fail "--omarchy-port requires a value"; OMARCHY_PORT="$2"; shift 2 ;;
     --omarchy-identity) [[ $# -ge 2 ]] || fail "--omarchy-identity requires a value"; OMARCHY_IDENTITY="$2"; shift 2 ;;
@@ -212,8 +215,9 @@ suite_command() {
       ;;
     omarchy-install)
       [[ -n "${CANDIDATE_ARCHIVE}" ]] || fail "omarchy-install requires --candidate-archive"
+      [[ -n "${CANDIDATE_CHECKSUM}" ]] || fail "omarchy-install requires --candidate-checksum"
       [[ -n "${OMARCHY_GUEST}" ]] || fail "omarchy-install requires --omarchy-guest"
-      built=("${ROOT_DIR}/scripts/test-install-omarchy-vm.sh" --archive "${CANDIDATE_ARCHIVE}" --guest "${OMARCHY_GUEST}")
+      built=("${ROOT_DIR}/scripts/test-install-omarchy-vm.sh" --archive "${CANDIDATE_ARCHIVE}" --checksum "${CANDIDATE_CHECKSUM}" --guest "${OMARCHY_GUEST}")
       if [[ -n "${OMARCHY_PORT}" ]]; then built+=(--port "${OMARCHY_PORT}"); fi
       if [[ -n "${OMARCHY_IDENTITY}" ]]; then built+=(--identity "${OMARCHY_IDENTITY}"); fi
       ;;
