@@ -298,6 +298,32 @@ func New(cfg config.Config) (*Daemon, error) {
 	// private Git repository opener and canonical V3 mutation boundary; it never
 	// receives the legacy artifact authority.
 	artifactV2Service := artifactv2.NewService(sessionSvc, sessionSvc, sessionSvc, artifactv2.NewGitBlobStore(artifactRegistry))
+	if cacheRootErr != nil {
+		_ = secretStore.Close()
+		_ = store.Close()
+		_ = lk.Release()
+		return nil, fmt.Errorf("resolve cache root for Artifact V3: %w", cacheRootErr)
+	}
+	artifactV3RepositoryRoot, artifactV3WorkspaceRoot, artifactV3EvidenceRoot, err := artifactV3StorageRoots(cfg.DataDir, cacheRoot)
+	if err != nil {
+		_ = secretStore.Close()
+		_ = store.Close()
+		_ = lk.Release()
+		return nil, fmt.Errorf("configure Artifact V3 storage roots: %w", err)
+	}
+	artifactV3Service, err := pebblestore.NewArtifactV3Service(sessionSvc.Store(), artifactV3RepositoryRoot, pebblestore.ArtifactV3Limits{})
+	if err != nil {
+		_ = secretStore.Close()
+		_ = store.Close()
+		_ = lk.Release()
+		return nil, fmt.Errorf("configure Artifact V3 Git service: %w", err)
+	}
+	var artifactV3Renderer htmlcapture.Renderer
+	if cacheRootErr == nil {
+		artifactV3Renderer = htmlcapture.NewChromedpRendererWithConcurrency(htmlcapture.SystemChromePath, filepath.Join(cacheRoot, "html-capture"), htmlCaptureConcurrency())
+	}
+	artifactV3Runtime := newArtifactV3RuntimeAdapter(artifactV3Service, sessionSvc.Store(), artifactV3RepositoryRoot, artifactV3EvidenceRoot, pebblestore.ArtifactV3Limits{}, artifactV3Renderer)
+	toolRuntime.SetArtifactV3AuthorService(tool.NewArtifactV3AuthorService(artifactV3WorkspaceRoot, artifactV3Runtime, artifactV3Runtime, artifactV3Runtime))
 	var artifactV2Compiler artifactv2.Compiler = artifactv2.DeterministicCompiler{}
 	var artifactV2Validator artifactv2.Validator = artifactv2.DeterministicValidator{}
 	if cacheRootErr == nil {
@@ -575,6 +601,15 @@ func New(cfg config.Config) (*Daemon, error) {
 	apiServer.SetVideoRenderService(videoRenderSvc)
 	apiServer.SetArtifactRegistry(artifactRegistry)
 	apiServer.SetArtifactV2Service(artifactV2Service)
+	apiServer.SetArtifactV3Service(artifactV3Runtime)
+	artifactV3Runtime.publish = apiServer.PublishArtifactV3Projection
+	if err := recoverArtifactV3Repositories(context.Background(), artifactV3Runtime); err != nil {
+		bgCancel()
+		_ = secretStore.Close()
+		_ = store.Close()
+		_ = lk.Release()
+		return nil, fmt.Errorf("recover Artifact V3 repositories: %w", err)
+	}
 	runSvc.SetSessionDeployCanonicalizer(apiServer.CanonicalizeSessionDeploy)
 	runSvc.SetSessionDeployEnqueuer(apiServer.EnqueueSessionDeployRun)
 	runSvc.SetAITaskBinder(todoSvc)
