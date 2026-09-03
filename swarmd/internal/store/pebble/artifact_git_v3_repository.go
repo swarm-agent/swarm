@@ -511,6 +511,42 @@ func (r *ArtifactV3Repository) ref(ctx context.Context, name string) (string, er
 func (r *ArtifactV3Repository) Head(ctx context.Context) (string, error) {
 	return r.ref(ctx, "refs/heads/artifact")
 }
+
+func (r *ArtifactV3Repository) CandidateRef(turnID, candidateID string) (string, error) {
+	if !artifactV3IDPattern.MatchString(turnID) || !artifactV3IDPattern.MatchString(candidateID) {
+		return "", ErrArtifactV3Invalid
+	}
+	return artifactV3CandidateRef(turnID, candidateID), nil
+}
+
+func (r *ArtifactV3Repository) ChangedFiles(ctx context.Context, baseCommit, commit string) ([]string, error) {
+	if !artifactV3OIDPattern.MatchString(commit) || (baseCommit != "" && !artifactV3OIDPattern.MatchString(baseCommit)) {
+		return nil, ErrArtifactV3Invalid
+	}
+	var args []string
+	if baseCommit == "" {
+		args = []string{"diff-tree", "--root", "--no-commit-id", "--name-only", "-r", "-z", commit}
+	} else {
+		args = []string{"diff", "--name-only", "-z", baseCommit, commit}
+	}
+	out, err := r.gitCommand(ctx, nil, args...)
+	if err != nil {
+		return nil, err
+	}
+	paths := make([]string, 0)
+	for _, raw := range bytes.Split(out, []byte{0}) {
+		if len(raw) == 0 {
+			continue
+		}
+		path := string(raw)
+		if _, err := validateArtifactV3Path(path, r.limits); err != nil {
+			return nil, ErrArtifactV3Integrity
+		}
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+	return paths, nil
+}
 func (r *ArtifactV3Repository) Transaction(ctx context.Context, id string) (ArtifactV3Transaction, error) {
 	if !artifactV3IDPattern.MatchString(id) {
 		return ArtifactV3Transaction{}, ErrArtifactV3Invalid

@@ -60,6 +60,9 @@ type sessionMutationCoordinator struct {
 	// beforeArtifactV2Commit injects a failure after V2 preflight and before the
 	// one batch containing records, event, projection, idempotency, and outbox.
 	beforeArtifactV2Commit func(sessionID string) error
+	// beforeArtifactV3Commit injects a failure after a native Git transaction but
+	// before its canonical event/projection/idempotency/outbox batch is durable.
+	beforeArtifactV3Commit func(sessionID string) error
 	// beforeExecutionEpochCommit injects a pre-commit failure for the canonical
 	// compound epoch transition. Returning an error must leave no durable rows.
 	beforeExecutionEpochCommit func(sessionID string) error
