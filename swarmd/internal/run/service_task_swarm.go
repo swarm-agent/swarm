@@ -53,6 +53,7 @@ type taskSwarmHydrationRequest struct {
 	IterationControls   *taskSwarmIterationControls                    `json:"iteration_controls,omitempty"`
 	IntegrationContract string                                         `json:"integration_contract,omitempty"`
 	SourceArtifact      *pebblestore.SessionArtifactSelectionReference `json:"source_artifact,omitempty"`
+	ArtifactV3Source    *taskArtifactV3Source                          `json:"artifact_v3_source,omitempty"`
 	ArtifactV2Source    *taskArtifactV2Source                          `json:"artifact_v2_source,omitempty"`
 	SectionTarget       *taskSwarmSectionTarget                        `json:"section_target,omitempty"`
 	SectionTargets      []*taskSwarmSectionTarget                      `json:"section_targets,omitempty"`
@@ -361,7 +362,7 @@ func buildTaskSwarmHydrationRequest(parsed taskCallArguments, launchSpecs []task
 	}
 	request := taskSwarmHydrationRequest{
 		Description: strings.TrimSpace(parsed.Description), Prompt: strings.TrimSpace(parsed.Prompt), AgentType: parsed.Swarm.AgentType, SwarmStrategy: parsed.Swarm.Strategy,
-		OutputContract: strings.TrimSpace(parsed.Swarm.OutputContract), OutputMode: strings.TrimSpace(parsed.Swarm.OutputMode), OutputRequirements: cloneTaskOutputRequirements(parsed.Swarm.OutputRequirements), AnimationProfile: cloneTaskAnimationProfile(parsed.Swarm.AnimationProfile), IterationControls: cloneTaskSwarmIterationControls(parsed.Swarm.IterationControls), IntegrationContract: strings.TrimSpace(parsed.Swarm.IntegrationContract), SourceArtifact: cloneTaskImageSourceArtifact(parsed.Swarm.SourceArtifact), ArtifactV2Source: cloneTaskArtifactV2Source(parsed.Swarm.ArtifactV2Source), SectionTarget: cloneTaskSwarmSectionTarget(parsed.Swarm.SectionTarget), SectionTargets: cloneTaskSwarmSectionTargets(parsed.Swarm.SectionTargets),
+		OutputContract: strings.TrimSpace(parsed.Swarm.OutputContract), OutputMode: strings.TrimSpace(parsed.Swarm.OutputMode), OutputRequirements: cloneTaskOutputRequirements(parsed.Swarm.OutputRequirements), AnimationProfile: cloneTaskAnimationProfile(parsed.Swarm.AnimationProfile), IterationControls: cloneTaskSwarmIterationControls(parsed.Swarm.IterationControls), IntegrationContract: strings.TrimSpace(parsed.Swarm.IntegrationContract), SourceArtifact: cloneTaskImageSourceArtifact(parsed.Swarm.SourceArtifact), ArtifactV3Source: cloneTaskArtifactV3Source(parsed.Swarm.ArtifactV3Source), ArtifactV2Source: cloneTaskArtifactV2Source(parsed.Swarm.ArtifactV2Source), SectionTarget: cloneTaskSwarmSectionTarget(parsed.Swarm.SectionTarget), SectionTargets: cloneTaskSwarmSectionTargets(parsed.Swarm.SectionTargets),
 		Items: make([]taskSwarmHydrationItem, len(launchSpecs)),
 	}
 	for _, launch := range launchSpecs {

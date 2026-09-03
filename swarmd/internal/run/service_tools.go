@@ -62,7 +62,9 @@ type taskLaunchPrepared struct {
 	IntegrationRequired     bool
 	ArtifactRunContext      *tool.ArtifactRunContext
 	ArtifactV2AuthorContext *tool.ArtifactV2AuthorRunContext
+	ArtifactV3AuthorContext *tool.ArtifactV3AuthorRunContext
 	SourceArtifact          *pebblestore.SessionArtifactSelectionReference
+	ArtifactV3Source        *taskArtifactV3Source
 	ArtifactV2Source        *taskArtifactV2Source
 	ContextWatcher          *taskContextWatcher
 	ContinuationBoundary    RunContinuationBoundaryCallback
@@ -75,6 +77,13 @@ type taskLaunchPrepared struct {
 	ProgramJobID            string
 }
 
+func cloneArtifactV3AuthorRunContext(input *tool.ArtifactV3AuthorRunContext) *tool.ArtifactV3AuthorRunContext {
+	if input == nil {
+		return nil
+	}
+	return tool.BindArtifactV3AuthorRunContext(input, input.Grant.ProducerRunID)
+}
+
 func delegatedSubagentRunStartMeta(launch taskLaunchPrepared, permissionSessionID string, principal identity.Principal, applySessionMutation func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error)) RunStartMeta {
 	profile := launch.SubagentProfile
 	meta := RunStartMeta{
@@ -85,6 +94,7 @@ func delegatedSubagentRunStartMeta(launch taskLaunchPrepared, permissionSessionI
 		ApplySessionMutation:    applySessionMutation,
 		ArtifactRunContext:      cloneArtifactRunContext(launch.ArtifactRunContext),
 		ArtifactV2AuthorContext: cloneArtifactV2AuthorRunContext(launch.ArtifactV2AuthorContext),
+		ArtifactV3AuthorContext: cloneArtifactV3AuthorRunContext(launch.ArtifactV3AuthorContext),
 	}
 	if meta.ArtifactRunContext != nil {
 		if launch.OutputRequirements == nil && meta.ArtifactRunContext.OutputRequirements != nil {
@@ -821,7 +831,10 @@ func buildTaskLaunchOutcome(launch taskLaunchPrepared) taskLaunchOutcome {
 		OutputRequirements:  cloneTaskOutputRequirements(launch.OutputRequirements),
 		AnimationProfile:    cloneTaskAnimationProfile(launch.AnimationProfile),
 	}
-	if launch.ArtifactV2AuthorContext != nil {
+	if launch.ArtifactV3AuthorContext != nil {
+		grant := launch.ArtifactV3AuthorContext.Grant
+		outcome.ArtifactReference = &taskArtifactReference{SessionID: strings.TrimSpace(grant.OwnerSessionID), CollectionID: strings.TrimSpace(grant.ArtifactID), VariantID: strings.TrimSpace(grant.BaseCommitOID), Status: "pending", OutputRequirements: cloneTaskOutputRequirements(launch.OutputRequirements), AnimationProfile: cloneTaskAnimationProfile(launch.AnimationProfile)}
+	} else if launch.ArtifactV2AuthorContext != nil {
 		grant := launch.ArtifactV2AuthorContext.Grant
 		outcome.ArtifactReference = &taskArtifactReference{SessionID: strings.TrimSpace(grant.OwnerSessionID), VariantID: strings.TrimSpace(grant.ArtifactID), Status: "pending", OutputRequirements: cloneTaskOutputRequirements(launch.OutputRequirements), AnimationProfile: cloneTaskAnimationProfile(launch.AnimationProfile)}
 	}
@@ -1287,16 +1300,16 @@ func (s *Service) prepareDelegatedSubagentLaunchWithProfile(parentSession pebble
 			childMetadata["integration_contract"] = contract
 		}
 	}
-	if isDesignerTarget && strings.TrimSpace(launch.OutputMode) == taskOutputModeManaged && launch.ArtifactV2AuthorContext == nil {
-		return taskLaunchPrepared{}, errors.New("managed Designer launch is missing its trusted Artifact V2 author capability")
+	if isDesignerTarget && strings.TrimSpace(launch.OutputMode) == taskOutputModeManaged && launch.ArtifactV3AuthorContext == nil {
+		return taskLaunchPrepared{}, errors.New("managed Designer launch is missing its trusted Artifact V3 author capability")
 	}
-	if isDesignerTarget && strings.TrimSpace(launch.OutputMode) != taskOutputModeManaged && launch.ArtifactV2AuthorContext != nil {
-		return taskLaunchPrepared{}, errors.New("workspace Designer launch cannot carry an Artifact V2 author capability")
+	if isDesignerTarget && strings.TrimSpace(launch.OutputMode) != taskOutputModeManaged && launch.ArtifactV3AuthorContext != nil {
+		return taskLaunchPrepared{}, errors.New("workspace Designer launch cannot carry an Artifact V3 author capability")
 	}
-	if isDesignerTarget && launch.ArtifactV2AuthorContext != nil {
-		grant := launch.ArtifactV2AuthorContext.Grant
-		if grant.OwnerSessionID != strings.TrimSpace(parentSession.ID) || grant.TaskCallID == "" || grant.ArtifactID == "" || grant.ID == "" {
-			return taskLaunchPrepared{}, errors.New("managed Designer Artifact V2 capability is not owned by the parent session")
+	if isDesignerTarget && launch.ArtifactV3AuthorContext != nil {
+		grant := launch.ArtifactV3AuthorContext.Grant
+		if grant.OwnerSessionID != strings.TrimSpace(parentSession.ID) || grant.ArtifactID == "" || grant.ID == "" || grant.TurnID == "" || grant.CandidateID == "" {
+			return taskLaunchPrepared{}, errors.New("managed Designer Artifact V3 capability is not owned by the parent session")
 		}
 	}
 	if !isDesignerTarget && isManagedArtifactTarget && strings.TrimSpace(launch.OutputMode) == taskOutputModeManaged && launch.ArtifactRunContext == nil {
@@ -1322,15 +1335,21 @@ func (s *Service) prepareDelegatedSubagentLaunchWithProfile(parentSession pebble
 		}
 		if outputMode == taskOutputModeManaged {
 			if isDesignerTarget {
-				launch.ArtifactV2AuthorContext = cloneArtifactV2AuthorRunContext(launch.ArtifactV2AuthorContext)
-				launch.ArtifactV2AuthorContext.Grant.ProducerSessionID = childSessionID
-				childMetadata["artifact_v2_managed_output"] = true
-				childMetadata["artifact_v2_owner_session_id"] = launch.ArtifactV2AuthorContext.Grant.OwnerSessionID
-				childMetadata["artifact_v2_working_id"] = launch.ArtifactV2AuthorContext.Grant.ArtifactID
-				childMetadata["artifact_v2_capability_grant_id"] = launch.ArtifactV2AuthorContext.Grant.ID
-				childMetadata["artifact_v2_task_call_id"] = launch.ArtifactV2AuthorContext.Grant.TaskCallID
-				childMetadata["artifact_v2_iteration_id"] = launch.ArtifactV2AuthorContext.Grant.IterationID
-				childMetadata["artifact_v2_candidate_slot_id"] = launch.ArtifactV2AuthorContext.Grant.CandidateSlotID
+				launch.ArtifactV3AuthorContext = cloneArtifactV3AuthorRunContext(launch.ArtifactV3AuthorContext)
+				launch.ArtifactV3AuthorContext.Grant.ProducerSessionID = childSessionID
+				launch.ArtifactV3AuthorContext.Grant.ProducerRunID = ""
+				grant := launch.ArtifactV3AuthorContext.Grant
+				childMetadata["artifact_v3_managed_output"] = true
+				childMetadata["artifact_v3_owner_session_id"] = grant.OwnerSessionID
+				childMetadata["artifact_v3_artifact_id"] = grant.ArtifactID
+				childMetadata["artifact_v3_capability_grant_id"] = grant.ID
+				childMetadata["artifact_v3_turn_id"] = grant.TurnID
+				childMetadata["artifact_v3_candidate_id"] = grant.CandidateID
+				childMetadata["artifact_v3_base_commit_oid"] = grant.BaseCommitOID
+				childMetadata["artifact_v3_policy_revision"] = grant.PolicyRevision
+				childMetadata["artifact_v3_initial"] = grant.Initial
+				childMetadata["artifact_v3_target_part_ids"] = append([]string(nil), grant.TargetPartIDs...)
+				childMetadata["artifact_v3_locked_paths"] = append([]string(nil), grant.LockedPaths...)
 			} else {
 				launch.ArtifactRunContext = cloneArtifactRunContext(launch.ArtifactRunContext)
 				launch.ArtifactRunContext.ChildSessionID = childSessionID
@@ -1410,7 +1429,7 @@ func (s *Service) prepareDelegatedSubagentLaunchWithProfile(parentSession pebble
 		childTemporaryWorkspaceRoots = nil
 	}
 
-	if isManagedArtifactTarget && (launch.ArtifactRunContext != nil || launch.ArtifactV2AuthorContext != nil) {
+	if isManagedArtifactTarget && (launch.ArtifactRunContext != nil || launch.ArtifactV2AuthorContext != nil || launch.ArtifactV3AuthorContext != nil) {
 		// Managed creative output is not checkout output. Keep read-only discovery
 		// rooted at the parent workspace, but do not inherit worktree write identity.
 		childWorktreeEnabled = false
@@ -4700,7 +4719,7 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 			coderTaskBases[targetPath] = &base
 		}
 	}
-	managedV2Contexts, managedV2Iteration, err := s.allocateManagedDesignerArtifactV2(ctx, parentSession, taskCallID, launchSpecs)
+	managedV3Contexts, err := s.allocateManagedDesignerArtifactV3(ctx, parentSession, taskCallID, launchSpecs)
 	if err != nil {
 		return "", err
 	}
@@ -4746,16 +4765,16 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 			launchTaskBase = coderTaskBases[targetPath]
 		}
 		var managedArtifactContext *tool.ArtifactRunContext
-		var managedV2Context *tool.ArtifactV2AuthorRunContext
+		var managedV3Context *tool.ArtifactV3AuthorRunContext
 		if agentruntime.IsImageAgentName(requestedSubagent) {
 			managedArtifactContext = managedDesignerArtifactContext(parentSession, taskCallID, spec, i+1)
 			if strings.TrimSpace(spec.OutputMode) == taskOutputModeManaged && (managedArtifactContext == nil || managedCollectionID == "" || managedArtifactContext.CollectionID != managedCollectionID) {
 				return "", fmt.Errorf("task launches[%d] cannot allocate a trusted managed image destination", i)
 			}
 		} else if agentruntime.IsDesignerAgentName(requestedSubagent) && strings.TrimSpace(spec.OutputMode) == taskOutputModeManaged {
-			managedV2Context = managedV2Contexts[i]
-			if managedV2Context == nil || strings.TrimSpace(managedV2Context.Grant.ArtifactID) == "" {
-				return "", fmt.Errorf("task launches[%d] cannot allocate a trusted Artifact V2 Designer capability", i)
+			managedV3Context = managedV3Contexts[i]
+			if managedV3Context == nil || strings.TrimSpace(managedV3Context.Grant.ArtifactID) == "" {
+				return "", fmt.Errorf("task launches[%d] cannot allocate a trusted Artifact V3 Designer capability", i)
 			}
 		}
 		launchInput := taskLaunchPrepared{
@@ -4777,8 +4796,9 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 			IntegrationContract:     strings.TrimSpace(spec.IntegrationContract),
 			IntegrationRequired:     strings.EqualFold(strings.TrimSpace(spec.SwarmStrategy), taskSwarmStrategyAssembly),
 			ArtifactRunContext:      managedArtifactContext,
-			ArtifactV2AuthorContext: managedV2Context,
+			ArtifactV3AuthorContext: managedV3Context,
 			SourceArtifact:          cloneTaskImageSourceArtifact(spec.SourceArtifact),
+			ArtifactV3Source:        cloneTaskArtifactV3Source(spec.ArtifactV3Source),
 			ArtifactV2Source:        cloneTaskArtifactV2Source(spec.ArtifactV2Source),
 			LogicalTaskID:           taskCallID + ":" + fmt.Sprint(i+1),
 			TaskCallID:              taskCallID,
@@ -5000,7 +5020,9 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 				AnimationProfile:        cloneTaskAnimationProfile(launch.AnimationProfile),
 				ArtifactRunContext:      launch.ArtifactRunContext,
 				ArtifactV2AuthorContext: launch.ArtifactV2AuthorContext,
+				ArtifactV3AuthorContext: launch.ArtifactV3AuthorContext,
 				SourceArtifact:          cloneTaskImageSourceArtifact(launch.SourceArtifact),
+				ArtifactV3Source:        cloneTaskArtifactV3Source(launch.ArtifactV3Source),
 			})
 		}
 		var subResult RunResult
@@ -5090,7 +5112,14 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 			if outcome.ArtifactReference != nil && outcome.ArtifactReference.Status == "pending" {
 				outcome.ArtifactReference.Status = pebblestore.SessionArtifactStatusFailed
 				outcome.ArtifactReference.FailureCode = "child_run_failed"
-				if launch.ArtifactV2AuthorContext != nil && s.tools != nil && s.tools.ArtifactV2AuthorService() != nil {
+				if launch.ArtifactV3AuthorContext != nil && s.tools != nil && s.tools.ArtifactV3AuthorService() != nil {
+					grant := launch.ArtifactV3AuthorContext.Grant
+					grant.ProducerRunID = strings.TrimSpace(outcome.ChildRunID)
+					if grant.ProducerRunID != "" {
+						_ = s.tools.ArtifactV3AuthorService().MarkFailed(runCtx, grant, "child_run_failed", "The Designer run ended before a complete candidate was submitted.")
+					}
+					_ = s.tools.ArtifactV3AuthorService().Discard(grant)
+				} else if launch.ArtifactV2AuthorContext != nil && s.tools != nil && s.tools.ArtifactV2AuthorService() != nil {
 					grant := launch.ArtifactV2AuthorContext.Grant
 					grant.ProducerRunID = strings.TrimSpace(outcome.ChildRunID)
 					_ = s.tools.ArtifactV2AuthorService().MarkFailed(runCtx, artifactv2.Principal{AccountScopeID: parentSession.AccountScopeID, UserID: parentSession.UserID, SessionID: parentSession.ID, RunID: grant.ProducerRunID, ActorClass: "designer"}, grant, "task-artifact-v2-failed:"+grant.ID, "child_run_failed", "The Designer run ended before a valid candidate was submitted.")
@@ -5154,7 +5183,39 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 		outcome.ReportChars = len([]rune(report))
 		outcome.ReportExcerpt = report
 		outcome.ReportRef = reportRef
-		if launch.ArtifactV2AuthorContext != nil {
+		if launch.ArtifactV3AuthorContext != nil {
+			grant := launch.ArtifactV3AuthorContext.Grant
+			grant.ProducerRunID = strings.TrimSpace(outcome.ChildRunID)
+			if grant.ProducerRunID == "" {
+				return outcome, errors.New("managed Designer Artifact V3 handoff is missing its producer run binding")
+			}
+			if s.tools == nil || s.tools.ArtifactV3AuthorService() == nil {
+				return outcome, errors.New("managed Designer Artifact V3 author service is unavailable during handoff")
+			}
+			if blockedErr != nil {
+				code := firstNonEmptyString(strings.TrimSpace(outcome.BlockerCode), "child_reported_blocked")
+				_ = s.tools.ArtifactV3AuthorService().MarkFailed(ctx, grant, code, boundedTaskLaunchReason(blockedErr.Error()))
+				_ = s.tools.ArtifactV3AuthorService().Discard(grant)
+				return outcome, blockedErr
+			}
+			// The provider execution path binds this exact child run ID into every
+			// artifact_v3_author call; Finished uses the stable capability identity.
+			finished, ok := s.tools.ArtifactV3AuthorService().Finished(grant)
+			if !ok || strings.TrimSpace(finished.Revision.CommitOID) == "" || strings.TrimSpace(finished.Revision.TreeOID) == "" {
+				_ = s.tools.ArtifactV3AuthorService().MarkFailed(ctx, grant, "managed_output_missing", "The Designer completed without finish_turn on a ready complete project.")
+				_ = s.tools.ArtifactV3AuthorService().Discard(grant)
+				return outcome, errors.New("managed Designer completed without a finished Artifact V3 candidate")
+			}
+			outcome.ArtifactReference = &taskArtifactReference{
+				SessionID: grant.OwnerSessionID, CollectionID: grant.ArtifactID,
+				VariantID: finished.Revision.CommitOID, Status: pebblestore.SessionArtifactStatusReady,
+				SourceArtifact: cloneTaskImageSourceArtifact(launch.SourceArtifact),
+				OutputRequirements: cloneTaskOutputRequirements(launch.OutputRequirements), AnimationProfile: cloneTaskAnimationProfile(launch.AnimationProfile),
+			}
+		}
+		// V2 remains readable for historical handoffs, but new managed Designer
+		// launches never receive this capability after the V3 cutover above.
+		if launch.ArtifactV2AuthorContext != nil && launch.ArtifactV3AuthorContext == nil {
 			grant := launch.ArtifactV2AuthorContext.Grant
 			principal := artifactv2.Principal{AccountScopeID: parentSession.AccountScopeID, UserID: parentSession.UserID, SessionID: parentSession.ID, RunID: strings.TrimSpace(outcome.ChildRunID), ActorClass: "designer"}
 			grant.ProducerRunID = principal.RunID
@@ -5170,13 +5231,6 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 					outcome.ArtifactReference.FailureCode = candidate.Diagnostic.Code
 				}
 				return outcome, fmt.Errorf("managed Designer Artifact V2 candidate is not ready: %w", candidateErr)
-			}
-			if managedV2Iteration != nil {
-				finalizeErr := s.tools.ArtifactV2AuthorService().FinalizeIterationCandidate(ctx, artifactv2.Principal{AccountScopeID: parentSession.AccountScopeID, UserID: parentSession.UserID, SessionID: parentSession.ID, ActorClass: "orchestrator"}, *managedV2Iteration, artifactv2.AuthorIterationCandidate{ArtifactID: candidate.ArtifactID, SlotID: grant.CandidateSlotID}, "task-artifact-v2-iteration-candidate:"+grant.ID)
-				if finalizeErr != nil {
-					outcome.ArtifactReference.FailureCode = "artifact_v2_iteration_finalize_failed"
-					return outcome, fmt.Errorf("managed Designer Artifact V2 iteration candidate could not be attached: %w", finalizeErr)
-				}
 			}
 		}
 		if launch.ArtifactRunContext != nil {
@@ -5829,7 +5883,9 @@ type taskDelegationPromptConfig struct {
 	AnimationProfile        *pebblestore.SessionArtifactAnimationProfile
 	ArtifactRunContext      *tool.ArtifactRunContext
 	ArtifactV2AuthorContext *tool.ArtifactV2AuthorRunContext
+	ArtifactV3AuthorContext *tool.ArtifactV3AuthorRunContext
 	SourceArtifact          *pebblestore.SessionArtifactSelectionReference
+	ArtifactV3Source        *taskArtifactV3Source
 	ArtifactV2Source        *taskArtifactV2Source
 }
 
@@ -5870,7 +5926,13 @@ func buildTaskDelegationPrompt(config taskDelegationPromptConfig) string {
 			if agentruntime.IsImageAgentName(config.RequestedSubagent) {
 				b.WriteString("- output mode: managed image; publish exactly one durable ready image with one manage_artifact generate_image call; omit provider, model, collection_id, variant_id, and output_requirements; do not inspect, write, or edit the workspace checkout\n")
 			} else {
-				b.WriteString("- output mode: managed Artifact V2; use only artifact_v2_author, persist real part revisions, request server build/validation, repair exact revisions when diagnostics allow, and submit the ready candidate; never call manage_artifact or write/edit the checkout\n")
+				b.WriteString("- output mode: managed Artifact V3; use only artifact_v3_author to inspect and edit the complete conventional project tree, run repeatable build_preview gates, repair against diagnostics, and call finish_turn exactly once; never call manage_artifact, artifact_v2_author, declare_parts/write_part, or write/edit the repository checkout\n")
+			}
+			if config.ArtifactV3Source != nil {
+				encoded, _ := json.Marshal(config.ArtifactV3Source)
+				b.WriteString("- exact Artifact V3 source (backend supplied; immutable): ")
+				b.Write(encoded)
+				b.WriteString("\n- V3 source contract: the server authenticated this artifact, projection sequence, and exact base commit before launch; never substitute another commit or artifact.\n")
 			}
 			if config.SourceArtifact != nil {
 				b.WriteString("- exact source artifact (backend supplied; immutable): ")
@@ -5879,12 +5941,22 @@ func buildTaskDelegationPrompt(config taskDelegationPromptConfig) string {
 				b.WriteString("\n- source artifact contract: inspect or derive from this exact authenticated ready reference; never substitute a preview, download, or guessed workspace path. When publishing the derived managed output, copy it as source_session_id/source_collection_id/source_variant_id/source_event_seq so lineage remains exact.\n")
 			}
 			if agentruntime.IsDesignerAgentName(config.RequestedSubagent) {
-				if config.ArtifactV2AuthorContext == nil {
-					b.WriteString("- output contract: trusted Artifact V2 author capability is missing; fail without mutating the checkout or any artifact\n")
+				if config.ArtifactV3AuthorContext == nil {
+					b.WriteString("- output contract: trusted Artifact V3 author capability is missing; fail without mutating the checkout or any artifact\n")
 					break
 				}
-				b.WriteString("- Artifact V2 authoring contract: call inspect_context first; destination, capability, policy, output requirements, animation profile, renderer controls, validation status, and candidate slot are server-bound and intentionally absent from model arguments. Write parts strictly one at a time. After each successful write_part, use its returned composition_head_revision for the next write; this is not the Working Artifact revision. For a part's first write omit expected_base_revision_id; never pass another part's revision. On a stale-revision error, inspect_context once and retry with its exact composition_head_revision and that target part's current_revision_id. Use exact expected base and composition-head revisions for repairs and preserve untouched parts byte-for-byte.\n")
-				b.WriteString("- Animated Artifact V2 input: author one strict application/vnd.swarm.artifact-v2.motion-scene+json part (version artifact.motion.scene/v1, duration_ms, fps 24/30/60, fixed-stage elements, ordered sections) and optionally one application/vnd.swarm.artifact-v2.motion-behavior+json part (version artifact.motion.behavior/v1 with bounded opacity/translate_x/translate_y/scale/rotate tracks). Do not author HTML, scripts, manifests, binder, scheduler, player bridge, ready/seek/stop, viewport shell, browser settings, fallback, or MP4 bytes; the versioned server compiler and renderer own them.\n")
+				grant := config.ArtifactV3AuthorContext.Grant
+				b.WriteString("- Artifact V3 authoring contract: call inspect_context first. Artifact, repository, turn, candidate branch, exact base commit, policy, build commands, preview destination, and locks are server-bound and absent from model arguments. Target Parts guide intent but do not limit coherent cross-project edits. Use ordinary full-tree create/edit/rename/delete operations, repeat build_preview until ready, then call finish_turn exactly once.\n")
+				if len(grant.TargetPartIDs) != 0 {
+					b.WriteString("- target Part IDs (intent only): ")
+					b.WriteString(strings.Join(grant.TargetPartIDs, ", "))
+					b.WriteString("\n")
+				}
+				if len(grant.LockedPaths) != 0 {
+					b.WriteString("- explicitly locked paths (immutable): ")
+					b.WriteString(strings.Join(grant.LockedPaths, ", "))
+					b.WriteString("\n")
+				}
 				break
 			}
 			if config.ArtifactRunContext == nil {

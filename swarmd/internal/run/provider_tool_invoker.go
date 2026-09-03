@@ -92,7 +92,8 @@ type ProviderManagedToolInvokerConfig struct {
 	Model                string
 	MediaContract        provideriface.SessionMediaContract
 	PlanContextGuard     *PlanContextGuard
-	ArtifactRunContext   *tool.ArtifactRunContext
+	ArtifactRunContext      *tool.ArtifactRunContext
+	ArtifactV3AuthorContext *tool.ArtifactV3AuthorRunContext
 }
 
 type terminalPlanToolState struct {
@@ -153,7 +154,8 @@ type providerToolInvokerConfig struct {
 	model                string
 	mediaContract        provideriface.SessionMediaContract
 	planContextGuard     *PlanContextGuard
-	artifactRunContext   *tool.ArtifactRunContext
+	artifactRunContext      *tool.ArtifactRunContext
+	artifactV3AuthorContext *tool.ArtifactV3AuthorRunContext
 }
 
 func (config ProviderManagedToolInvokerConfig) internal() providerToolInvokerConfig {
@@ -181,7 +183,8 @@ func (config ProviderManagedToolInvokerConfig) internal() providerToolInvokerCon
 		model:                strings.TrimSpace(config.Model),
 		mediaContract:        config.MediaContract,
 		planContextGuard:     config.PlanContextGuard,
-		artifactRunContext:   cloneArtifactRunContext(config.ArtifactRunContext),
+		artifactRunContext:      cloneArtifactRunContext(config.ArtifactRunContext),
+		artifactV3AuthorContext: tool.BindArtifactV3AuthorRunContext(config.ArtifactV3AuthorContext, strings.TrimSpace(config.RunID)),
 	}
 }
 
@@ -805,6 +808,9 @@ func (s *Service) executeProviderManagedToolCall(ctx context.Context, config pro
 					runtimeScope.SessionID = strings.TrimSpace(config.sessionID)
 					runtimeCtx := tool.WithWorkspaceScope(ctx, runtimeScope)
 					runtimeCtx = tool.WithArtifactRunContext(runtimeCtx, s.providerManagedArtifactRunContext(config))
+					if authorContext := tool.BindArtifactV3AuthorRunContext(config.artifactV3AuthorContext, config.runID); authorContext != nil {
+						runtimeCtx = tool.WithArtifactV3AuthorRunContext(runtimeCtx, *authorContext)
+					}
 					runtimeCtx = tool.WithVideoRunContext(runtimeCtx, tool.VideoRunContext{SessionID: config.sessionID, RunID: config.runID, MessageID: config.sourceMessageID})
 					executed := s.tools.ExecuteBatchStreamingWithProgress(runtimeCtx, workspaceCtx.WorkspacePath, runtimeCalls, func(_ int, current tool.Call, progress tool.Progress) {
 						if config.emit == nil {

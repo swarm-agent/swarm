@@ -81,6 +81,7 @@ type RunStartMeta struct {
 	ApplySessionMutation    func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error)
 	ArtifactRunContext      *tool.ArtifactRunContext
 	ArtifactV2AuthorContext *tool.ArtifactV2AuthorRunContext
+	ArtifactV3AuthorContext *tool.ArtifactV3AuthorRunContext
 }
 
 func (r RunRequest) Normalized() RunRequest {
@@ -139,6 +140,7 @@ func NewRunOptions(request RunRequest, meta RunStartMeta) RunOptions {
 		ApplySessionMutation:    meta.ApplySessionMutation,
 		ArtifactRunContext:      cloneArtifactRunContext(meta.ArtifactRunContext),
 		ArtifactV2AuthorContext: cloneArtifactV2AuthorRunContext(meta.ArtifactV2AuthorContext),
+		ArtifactV3AuthorContext: cloneArtifactV3AuthorRunContext(meta.ArtifactV3AuthorContext),
 	}
 }
 

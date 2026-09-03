@@ -74,6 +74,18 @@ func (g ArtifactV3AuthorGrant) Allows(action string) bool {
 }
 
 type ArtifactV3AuthorRunContext struct { Grant ArtifactV3AuthorGrant }
+
+func BindArtifactV3AuthorRunContext(input *ArtifactV3AuthorRunContext, producerRunID string) *ArtifactV3AuthorRunContext {
+	if input == nil {
+		return nil
+	}
+	cloned := *input
+	cloned.Grant.AllowedActions = append([]string(nil), input.Grant.AllowedActions...)
+	cloned.Grant.TargetPartIDs = append([]string(nil), input.Grant.TargetPartIDs...)
+	cloned.Grant.LockedPaths = append([]string(nil), input.Grant.LockedPaths...)
+	cloned.Grant.ProducerRunID = strings.TrimSpace(producerRunID)
+	return &cloned
+}
 type artifactV3AuthorContextKey struct{}
 
 func WithArtifactV3AuthorRunContext(parent context.Context, run ArtifactV3AuthorRunContext) context.Context {
@@ -88,6 +100,29 @@ type ArtifactV3PreviewRequest struct { ArtifactID, TurnID, PolicyRevision string
 type ArtifactV3PreviewResult struct { ID, Status string; EvidenceDigests []string; Diagnostics []ArtifactV3Diagnostic }
 type ArtifactV3SubmitRequest struct { ArtifactID, TurnID, CandidateID, BaseCommitOID, PolicyRevision, ProjectDigest string; Initial bool; Project map[string][]byte; Build ArtifactV3BuildResult; Preview ArtifactV3PreviewResult }
 type ArtifactV3Revision struct { CommitOID, TreeOID, ManifestBlobOID string }
+
+type ArtifactV3PrepareTurnRequest struct {
+	AccountScopeID, UserID, OwnerSessionID, TaskCallID, Prompt string
+	ArtifactID, BaseCommitOID, PolicyRevision string
+	ProjectionSeq uint64
+	CandidateIndex int
+	Initial bool
+	TargetPartIDs, LockedPaths []string
+	ExpiresAt int64
+}
+
+type ArtifactV3TurnFailure struct {
+	ArtifactID, TurnID, CandidateID, ProducerSessionID, ProducerRunID string
+	Code, Message string
+}
+
+// ArtifactV3TurnCoordinator is implemented by the durable Git/Pebble V3
+// repository. Preparation authenticates or allocates the exact artifact/head
+// before a child exists; failure records diagnostics without moving its head.
+type ArtifactV3TurnCoordinator interface {
+	PrepareArtifactV3Turn(context.Context, ArtifactV3PrepareTurnRequest) (ArtifactV3AuthorGrant, error)
+	FailArtifactV3Turn(context.Context, ArtifactV3TurnFailure) error
+}
 
 // ArtifactV3AuthorRepository is a V3-only adapter. Implementations materialize
 // an exact Git base and submit one complete project tree; they never stitch Parts.
@@ -128,6 +163,75 @@ func artifactV3AuthorDefinition() Definition {
 func (r *Runtime) SetArtifactV3AuthorService(service *ArtifactV3AuthorService) { if r != nil { r.artifactV3Author = service } }
 func (r *Runtime) ArtifactV3AuthorService() *ArtifactV3AuthorService { if r == nil { return nil }; return r.artifactV3Author }
 
+func (s *ArtifactV3AuthorService) PrepareTurn(ctx context.Context, request ArtifactV3PrepareTurnRequest) (ArtifactV3AuthorGrant, error) {
+	if s == nil || s.repository == nil {
+		return ArtifactV3AuthorGrant{}, errors.New("artifact v3 author: repository is not configured")
+	}
+	coordinator, ok := s.repository.(ArtifactV3TurnCoordinator)
+	if !ok {
+		return ArtifactV3AuthorGrant{}, errors.New("artifact v3 author: durable turn coordinator is not configured")
+	}
+	grant, err := coordinator.PrepareArtifactV3Turn(ctx, request)
+	if err != nil {
+		return ArtifactV3AuthorGrant{}, err
+	}
+	if strings.TrimSpace(grant.ID) == "" || strings.TrimSpace(grant.ArtifactID) == "" || strings.TrimSpace(grant.TurnID) == "" || strings.TrimSpace(grant.CandidateID) == "" || strings.TrimSpace(grant.OwnerSessionID) == "" || strings.TrimSpace(grant.PolicyRevision) == "" || grant.ExpiresAt <= s.now().UnixMilli() {
+		return ArtifactV3AuthorGrant{}, errors.New("artifact v3 author: coordinator returned an incomplete grant")
+	}
+	grant.TargetPartIDs = append([]string(nil), grant.TargetPartIDs...)
+	grant.LockedPaths = append([]string(nil), grant.LockedPaths...)
+	grant.AllowedActions = append([]string(nil), grant.AllowedActions...)
+	return grant, nil
+}
+
+func (s *ArtifactV3AuthorService) MarkFailed(ctx context.Context, grant ArtifactV3AuthorGrant, code, message string) error {
+	if s == nil || s.repository == nil {
+		return errors.New("artifact v3 author: repository is not configured")
+	}
+	coordinator, ok := s.repository.(ArtifactV3TurnCoordinator)
+	if !ok {
+		return errors.New("artifact v3 author: durable turn coordinator is not configured")
+	}
+	if strings.TrimSpace(grant.ArtifactID) == "" || strings.TrimSpace(grant.TurnID) == "" || strings.TrimSpace(grant.CandidateID) == "" || strings.TrimSpace(grant.ProducerSessionID) == "" || strings.TrimSpace(grant.ProducerRunID) == "" || strings.TrimSpace(code) == "" {
+		return ErrArtifactV3AuthorUnauthorized
+	}
+	return coordinator.FailArtifactV3Turn(ctx, ArtifactV3TurnFailure{
+		ArtifactID: grant.ArtifactID, TurnID: grant.TurnID, CandidateID: grant.CandidateID,
+		ProducerSessionID: grant.ProducerSessionID, ProducerRunID: grant.ProducerRunID,
+		Code: strings.TrimSpace(code), Message: strings.TrimSpace(message),
+	})
+}
+
+func (s *ArtifactV3AuthorService) Finished(grant ArtifactV3AuthorGrant) (ArtifactV3AuthorFinish, bool) {
+	if s == nil {
+		return ArtifactV3AuthorFinish{}, false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	state := s.turns[artifactV3WorkspaceKey(grant)]
+	if state == nil || state.finished == nil {
+		return ArtifactV3AuthorFinish{}, false
+	}
+	return *state.finished, true
+}
+
+// Discard removes only the ephemeral authoring workspace. Durable turn failure
+// and candidate diagnostics remain owned by the coordinator/repository.
+func (s *ArtifactV3AuthorService) Discard(grant ArtifactV3AuthorGrant) error {
+	if s == nil {
+		return nil
+	}
+	key := artifactV3WorkspaceKey(grant)
+	s.mu.Lock()
+	state := s.turns[key]
+	delete(s.turns, key)
+	s.mu.Unlock()
+	if state == nil || strings.TrimSpace(state.root) == "" {
+		return nil
+	}
+	return os.RemoveAll(state.root)
+}
+
 func (r *Runtime) executeArtifactV3Author(ctx context.Context, scope WorkspaceScope, callID string, args map[string]any) (string,error) {
 	if r == nil || r.artifactV3Author == nil { return "", errors.New("artifact_v3_author service is not configured") }
 	run,ok:=ctx.Value(artifactV3AuthorContextKey{}).(ArtifactV3AuthorRunContext); if !ok || strings.TrimSpace(run.Grant.ID)=="" { return "",errors.New("artifact_v3_author requires trusted context-bound capability") }
@@ -163,7 +267,7 @@ func (s *ArtifactV3AuthorService) Delete(ctx context.Context,p ArtifactV3AuthorP
 func (s *ArtifactV3AuthorService) Diff(ctx context.Context,p ArtifactV3AuthorPrincipal,g ArtifactV3AuthorGrant)(ArtifactV3AuthorDiff,error){state,err:=s.state(ctx,p,g,artifactV3ActionDiff);if err!=nil{return ArtifactV3AuthorDiff{},err};current,err:=artifactV3Snapshot(state.root,g.Limits.normalized());if err!=nil{return ArtifactV3AuthorDiff{},err};set:=map[string]bool{};for path:=range state.base{set[path]=true};for path:=range current{set[path]=true};paths:=make([]string,0,len(set));for path:=range set{paths=append(paths,path)};sort.Strings(paths);result:=ArtifactV3AuthorDiff{};for _,path:=range paths{before,bok:=state.base[path];after,aok:=current[path];if bok&&aok&&bytes.Equal(before,after){continue};if len(result.Changes)>=g.Limits.normalized().MaxDiffEntries{result.Truncated=true;break};status:="modified";if !bok{status="added"}else if !aok{status="deleted"};result.Changes=append(result.Changes,ArtifactV3AuthorChange{Path:path,Status:status,BeforeBytes:int64(len(before)),AfterBytes:int64(len(after))})};return result,nil}
 func (s *ArtifactV3AuthorService) BuildPreview(ctx context.Context,p ArtifactV3AuthorPrincipal,g ArtifactV3AuthorGrant)(ArtifactV3AuthorGate,error){state,err:=s.state(ctx,p,g,artifactV3ActionBuild);if err!=nil{return ArtifactV3AuthorGate{},err};project,err:=artifactV3Snapshot(state.root,g.Limits.normalized());if err!=nil{return ArtifactV3AuthorGate{},err};if len(project)==0{return ArtifactV3AuthorGate{},ErrArtifactV3AuthorInvalid};state.attempt++;gate:=ArtifactV3AuthorGate{Attempt:state.attempt,ProjectDigest:artifactV3Digest(project)};if s.builder==nil{gate.Diagnostics=append(gate.Diagnostics,ArtifactV3Diagnostic{Stage:"build",Code:"builder_unavailable",Message:"trusted whole-project builder is not configured"});state.gate=&gate;return gate,nil};gate.Build,err=s.builder.Build(ctx,ArtifactV3BuildRequest{ArtifactID:g.ArtifactID,TurnID:g.TurnID,PolicyRevision:g.PolicyRevision,Attempt:state.attempt,Project:artifactV3Clone(project)});if err!=nil{gate.Diagnostics=append(gate.Diagnostics,artifactV3SafeDiagnostic("build",err));state.gate=&gate;return gate,nil};gate.Diagnostics=append(gate.Diagnostics,gate.Build.Diagnostics...);if gate.Build.Status!="succeeded"{state.gate=&gate;return gate,nil};if s.previewer==nil{gate.Diagnostics=append(gate.Diagnostics,ArtifactV3Diagnostic{Stage:"preview",Code:"previewer_unavailable",Message:"trusted browser preview gate is not configured"});state.gate=&gate;return gate,nil};gate.Preview,err=s.previewer.Preview(ctx,ArtifactV3PreviewRequest{ArtifactID:g.ArtifactID,TurnID:g.TurnID,PolicyRevision:g.PolicyRevision,Attempt:state.attempt,Project:artifactV3Clone(project),Build:gate.Build,TargetPartIDs:append([]string(nil),g.TargetPartIDs...)});if err!=nil{gate.Diagnostics=append(gate.Diagnostics,artifactV3SafeDiagnostic("preview",err));state.gate=&gate;return gate,nil};gate.Diagnostics=append(gate.Diagnostics,gate.Preview.Diagnostics...);gate.Ready=gate.Preview.Status=="valid"&&len(gate.Preview.EvidenceDigests)>0;state.gate=&gate;return gate,nil}
 func (s *ArtifactV3AuthorService) Finish(ctx context.Context,p ArtifactV3AuthorPrincipal,g ArtifactV3AuthorGrant)(ArtifactV3AuthorFinish,error){state,err:=s.state(ctx,p,g,artifactV3ActionFinish);if err!=nil{return ArtifactV3AuthorFinish{},err};if state.finished!=nil{return *state.finished,nil};project,err:=artifactV3Snapshot(state.root,g.Limits.normalized());if err!=nil{return ArtifactV3AuthorFinish{},err};if len(project)==0||state.gate==nil||!state.gate.Ready||state.gate.ProjectDigest!=artifactV3Digest(project){return ArtifactV3AuthorFinish{},ErrArtifactV3AuthorNotReady};if s.repository==nil{return ArtifactV3AuthorFinish{},errors.New("artifact v3 author: repository is not configured")};revision,err:=s.repository.SubmitProject(ctx,ArtifactV3SubmitRequest{ArtifactID:g.ArtifactID,TurnID:g.TurnID,CandidateID:g.CandidateID,BaseCommitOID:g.BaseCommitOID,PolicyRevision:g.PolicyRevision,ProjectDigest:state.gate.ProjectDigest,Initial:g.Initial,Project:artifactV3Clone(project),Build:state.gate.Build,Preview:state.gate.Preview});if err!=nil{return ArtifactV3AuthorFinish{},err};if strings.TrimSpace(revision.CommitOID)==""||strings.TrimSpace(revision.TreeOID)==""{return ArtifactV3AuthorFinish{},errors.New("artifact v3 author: repository returned an inexact revision")};result:=ArtifactV3AuthorFinish{Revision:revision,Gate:*state.gate};state.finished=&result;return result,nil}
-func (s *ArtifactV3AuthorService) state(ctx context.Context,p ArtifactV3AuthorPrincipal,g ArtifactV3AuthorGrant,action string)(*artifactV3TurnState,error){if s==nil||s.root==""||g.ID==""||g.ArtifactID==""||g.TurnID==""||!g.Allows(action){return nil,ErrArtifactV3AuthorUnauthorized};if p.AccountScopeID==""||p.UserID==""||g.OwnerSessionID==""||p.ProducerSessionID!=g.ProducerSessionID||p.ProducerRunID!=g.ProducerRunID{return nil,ErrArtifactV3AuthorUnauthorized};if g.ExpiresAt<=s.now().UnixMilli(){return nil,ErrArtifactV3AuthorExpired};key:=artifactV3WorkspaceKey(g);s.mu.Lock();defer s.mu.Unlock();if state:=s.turns[key];state!=nil{return state,nil};if err:=os.MkdirAll(s.root,0o700);err!=nil{return nil,err};info,err:=os.Lstat(s.root);if err!=nil||!info.IsDir()||info.Mode()&os.ModeSymlink!=0{return nil,ErrArtifactV3AuthorInvalid};if err=os.Chmod(s.root,0o700);err!=nil{return nil,err};root:=filepath.Join(s.root,key);if err=os.Mkdir(root,0o700);err!=nil{return nil,err};state:=&artifactV3TurnState{root:root,base:map[string][]byte{}};if !g.Initial{if s.repository==nil||g.BaseCommitOID==""{os.RemoveAll(root);return nil,ErrArtifactV3AuthorInvalid};if err=s.repository.MaterializeBase(ctx,g.ArtifactID,g.BaseCommitOID,root);err!=nil{os.RemoveAll(root);return nil,err};base,loadErr:=artifactV3Snapshot(root,g.Limits.normalized());if loadErr!=nil{os.RemoveAll(root);return nil,loadErr};state.base=base};s.turns[key]=state;return state,nil}
+func (s *ArtifactV3AuthorService) state(ctx context.Context,p ArtifactV3AuthorPrincipal,g ArtifactV3AuthorGrant,action string)(*artifactV3TurnState,error){if s==nil||s.root==""||g.ID==""||g.ArtifactID==""||g.TurnID==""||!g.Allows(action){return nil,ErrArtifactV3AuthorUnauthorized};if p.AccountScopeID==""||p.UserID==""||g.OwnerSessionID==""||p.ProducerSessionID!=g.ProducerSessionID||p.ProducerRunID==""||g.ProducerRunID==""||p.ProducerRunID!=g.ProducerRunID{return nil,ErrArtifactV3AuthorUnauthorized};if g.ExpiresAt<=s.now().UnixMilli(){return nil,ErrArtifactV3AuthorExpired};key:=artifactV3WorkspaceKey(g);s.mu.Lock();defer s.mu.Unlock();if state:=s.turns[key];state!=nil{return state,nil};if err:=os.MkdirAll(s.root,0o700);err!=nil{return nil,err};info,err:=os.Lstat(s.root);if err!=nil||!info.IsDir()||info.Mode()&os.ModeSymlink!=0{return nil,ErrArtifactV3AuthorInvalid};if err=os.Chmod(s.root,0o700);err!=nil{return nil,err};root:=filepath.Join(s.root,key);if err=os.Mkdir(root,0o700);err!=nil{return nil,err};state:=&artifactV3TurnState{root:root,base:map[string][]byte{}};if !g.Initial{if s.repository==nil||g.BaseCommitOID==""{os.RemoveAll(root);return nil,ErrArtifactV3AuthorInvalid};if err=s.repository.MaterializeBase(ctx,g.ArtifactID,g.BaseCommitOID,root);err!=nil{os.RemoveAll(root);return nil,err};base,loadErr:=artifactV3Snapshot(root,g.Limits.normalized());if loadErr!=nil{os.RemoveAll(root);return nil,loadErr};state.base=base};s.turns[key]=state;return state,nil}
 func (s *ArtifactV3AuthorService) invalidate(state *artifactV3TurnState){state.gate=nil;state.finished=nil}
 func artifactV3WorkspaceKey(g ArtifactV3AuthorGrant)string{sum:=sha256.Sum256([]byte(g.ID+"\x00"+g.ArtifactID+"\x00"+g.TurnID));return "turn-"+hex.EncodeToString(sum[:16])}
 func artifactV3Context(g ArtifactV3AuthorGrant,files map[string][]byte,gate *ArtifactV3AuthorGate)ArtifactV3AuthorContext{out:=ArtifactV3AuthorContext{ArtifactID:g.ArtifactID,TurnID:g.TurnID,CandidateID:g.CandidateID,BaseCommitOID:g.BaseCommitOID,PolicyRevision:g.PolicyRevision,Initial:g.Initial,TargetPartIDs:append([]string(nil),g.TargetPartIDs...),LockedPaths:append([]string(nil),g.LockedPaths...),LatestGate:gate};for _,path:=range artifactV3Paths(files){out.Files=append(out.Files,ArtifactV3AuthorFile{Path:path,Size:int64(len(files[path]))})};return out}

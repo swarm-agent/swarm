@@ -306,6 +306,7 @@ type RunOptions struct {
 	ApplySessionMutation    func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error)
 	ArtifactRunContext      *tool.ArtifactRunContext
 	ArtifactV2AuthorContext *tool.ArtifactV2AuthorRunContext
+	ArtifactV3AuthorContext *tool.ArtifactV3AuthorRunContext
 	// SkipInitialUserMessage is trusted control-plane state for a run whose user
 	// message and run intent were committed atomically before dispatch.
 	SkipInitialUserMessage bool
@@ -2176,7 +2177,8 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 				providerID:           providerID,
 				model:                resolvedPreference.Preference.Model,
 				mediaContract:        mediaContract,
-				artifactRunContext:   cloneArtifactRunContext(options.ArtifactRunContext),
+				artifactRunContext:      cloneArtifactRunContext(options.ArtifactRunContext),
+				artifactV3AuthorContext: tool.BindArtifactV3AuthorRunContext(options.ArtifactV3AuthorContext, runID),
 			}),
 		}
 		runRequestDebugEvent("provider_request", map[string]any{
@@ -2679,6 +2681,10 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 			runID:              runID,
 			artifactRunContext: cloneArtifactRunContext(options.ArtifactRunContext),
 		}))
+		if authorContext := tool.BindArtifactV3AuthorRunContext(options.ArtifactV3AuthorContext, runID); authorContext != nil {
+			options.ArtifactV3AuthorContext = authorContext
+			runtimeCtx = tool.WithArtifactV3AuthorRunContext(runtimeCtx, *authorContext)
+		}
 		if options.ArtifactV2AuthorContext != nil {
 			authorContext := cloneArtifactV2AuthorRunContext(options.ArtifactV2AuthorContext)
 			if authorContext != nil {
@@ -2828,7 +2834,7 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 		designerRefinementFeedback := ""
 		if isDesignerRun {
 			refinementIndex, refinementCode, refinementEligible := managedDesignerRefinementCandidate(activeAgent, options.ArtifactRunContext, designerManagedRefinementAttempts, toolCalls, gatedResults)
-			if options.ArtifactV2AuthorContext != nil {
+			if options.ArtifactV2AuthorContext != nil || options.ArtifactV3AuthorContext != nil {
 				refinementEligible = false
 			}
 			if terminalFailure, stop := designerFailures.ObserveSkipping(toolCalls, gatedResults, refinementIndex); stop {
