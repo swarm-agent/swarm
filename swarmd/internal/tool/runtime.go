@@ -167,6 +167,7 @@ type Runtime struct {
 	artifacts            *artifact.Registry
 	artifactAuthority    ArtifactAuthority
 	artifactV2Author     *artifactv2.AuthorService
+	artifactV3Author     *ArtifactV3AuthorService
 	artifactV2Video      *artifactv2.VideoConversionService
 	htmlCapture          htmlcapture.Renderer
 	htmlAnimationCapture htmlcapture.AnimationRenderer
@@ -1293,6 +1294,7 @@ func (r *Runtime) Definitions() []Definition {
 		},
 		manageActionsDefinition(),
 		artifactV2AuthorDefinition(),
+		artifactV3AuthorDefinition(),
 		manageArtifactDefinition(),
 		manageVideoDefinition(),
 		{
@@ -1878,6 +1880,8 @@ func (r *Runtime) executeOne(ctx context.Context, scope WorkspaceScope, call Cal
 		return r.executeManageActions(scope, args)
 	case "artifact-v2-author", "artifact_v2_author":
 		return r.executeArtifactV2Author(ctx, scope, call.CallID, args)
+	case "artifact-v3-author", "artifact_v3_author":
+		return r.executeArtifactV3Author(ctx, scope, call.CallID, args)
 	case "manage-artifact", "manage_artifact":
 		return r.executeManageArtifact(ctx, scope, call.CallID, args)
 	case "manage-video", "manage_video":
