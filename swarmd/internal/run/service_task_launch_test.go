@@ -2608,6 +2608,41 @@ func TestApprovedFinderWaveManifestDigestSurvivesPermissionRoundTrip(t *testing.
 	}
 }
 
+func TestManagedDesignerEmptyOwnedScopeNormalizesForApprovedManifest(t *testing.T) {
+	svc, parentSessionID, cleanup := newTaskLaunchPermissionTestService(t)
+	defer cleanup()
+	bindTaskInheritanceModelProfile(t, svc, parentSessionID)
+
+	call := tool.Call{Name: "task", Arguments: mustJSON(t, map[string]any{
+		"prompt": "Create managed variants.",
+		"launches": []any{
+			map[string]any{"subagent_type": "designer", "meta_prompt": "Create first.", "owned_scope": []any{}},
+			map[string]any{"subagent_type": "designer", "meta_prompt": "Create second."},
+		},
+	})}
+	parsed, err := parseTaskCallArguments(call.Arguments)
+	if err != nil {
+		t.Fatalf("parse task call: %v", err)
+	}
+	if parsed.Launches[0].OwnedScope != nil || parsed.Launches[1].OwnedScope != nil {
+		t.Fatalf("managed Designer empty owned scopes = %#v, %#v, want nil", parsed.Launches[0].OwnedScope, parsed.Launches[1].OwnedScope)
+	}
+	manifest, err := svc.buildTaskLaunchPermissionPayload(parentSessionID, sessionruntime.ModeAuto, call)
+	if err != nil {
+		t.Fatalf("build task manifest: %v", err)
+	}
+	approved, err := json.Marshal(manifest.ApprovedArguments)
+	if err != nil {
+		t.Fatalf("marshal approved manifest: %v", err)
+	}
+	for i := range parsed.Launches {
+		parsed.Launches[i].TargetWorkspacePath = manifest.Launches[i].TargetWorkspacePath
+	}
+	if _, err := parseApprovedTaskLaunchManifest(string(approved), parsed.Launches); err != nil {
+		t.Fatalf("validate approved task manifest: %v", err)
+	}
+}
+
 func TestApprovedTaskManifestContractAcceptsAllSupportedSubagents(t *testing.T) {
 	svc, parentSessionID, cleanup := newTaskLaunchPermissionTestService(t)
 	defer cleanup()

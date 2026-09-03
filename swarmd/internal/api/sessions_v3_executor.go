@@ -4400,6 +4400,7 @@ func sessionsV3ProviderNativeRequestInputItem(item map[string]any) (map[string]a
 		copySessionsV3ProviderNativeStringField(out, item, "id")
 		copySessionsV3ProviderNativeStringField(out, item, "status")
 		copySessionsV3ProviderNativeStringField(out, item, "call_id")
+		copySessionsV3ProviderNativeStringField(out, item, "name")
 		copySessionsV3ProviderNativeStringField(out, item, "output")
 		return out, true
 	case "reasoning":

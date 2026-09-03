@@ -26,6 +26,14 @@ if [[ $# -gt 0 && "${1}" != --* ]]; then
   shift
 fi
 
+if [[ "${RUNNER}" == "artifact-v2-provider-proof" ]]; then
+  SWARM_TESTBENCH_PROVIDER="fireworks"
+  SWARM_TESTBENCH_ACTION_MODEL="deepseek-v4-flash-0731"
+  SWARM_TESTBENCH_ACTION_THINKING="high"
+  SWARM_TESTBENCH_DESIGNER_MODEL="deepseek-v4-flash-0731"
+  SWARM_TESTBENCH_DESIGNER_THINKING="off"
+fi
+
 model_args=()
 model_args+=(--action-model "${SWARM_TESTBENCH_ACTION_MODEL}" --action-thinking "${SWARM_TESTBENCH_ACTION_THINKING}")
 model_args+=(--plan-model "${SWARM_TESTBENCH_PLAN_MODEL}" --plan-thinking "${SWARM_TESTBENCH_PLAN_THINKING}")

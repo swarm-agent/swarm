@@ -29,6 +29,7 @@ import (
 	agentruntime "swarm/packages/swarmd/internal/agent"
 	"swarm/packages/swarmd/internal/appstorage"
 	"swarm/packages/swarmd/internal/artifact"
+	"swarm/packages/swarmd/internal/artifactv2"
 	"swarm/packages/swarmd/internal/discovery"
 	"swarm/packages/swarmd/internal/fff"
 	"swarm/packages/swarmd/internal/gitenv"
@@ -165,6 +166,8 @@ type Runtime struct {
 	themeWorkspace       manageThemeWorkspaceService
 	artifacts            *artifact.Registry
 	artifactAuthority    ArtifactAuthority
+	artifactV2Author     *artifactv2.AuthorService
+	artifactV2Video      *artifactv2.VideoConversionService
 	htmlCapture          htmlcapture.Renderer
 	htmlAnimationCapture htmlcapture.AnimationRenderer
 	animationJobsMu      sync.Mutex
@@ -560,6 +563,12 @@ func (r *Runtime) GenerateManagedImageArtifact(ctx context.Context, scope Worksp
 		args["capability_token"] = capabilities.CapabilityToken
 	}
 	return r.executeManageArtifact(ctx, scope, callID, args)
+}
+
+func (r *Runtime) SetArtifactV2VideoConversionService(service *artifactv2.VideoConversionService) {
+	if r != nil {
+		r.artifactV2Video = service
+	}
 }
 
 func (r *Runtime) SetManagedImageGenerationService(service ManagedImageGenerationService) {
@@ -1283,6 +1292,7 @@ func (r *Runtime) Definitions() []Definition {
 			},
 		},
 		manageActionsDefinition(),
+		artifactV2AuthorDefinition(),
 		manageArtifactDefinition(),
 		manageVideoDefinition(),
 		{
@@ -1474,6 +1484,10 @@ func (r *Runtime) Definitions() []Definition {
 						"session_id": map[string]any{"type": "string"}, "collection_id": map[string]any{"type": "string"},
 						"variant_id": map[string]any{"type": "string"}, "event_seq": map[string]any{"type": "integer", "minimum": 1},
 					}, "required": []string{"session_id", "collection_id", "variant_id", "event_seq"}, "additionalProperties": false, "description": "Optional exact ready managed artifact reference for Designer work (regular launches or managed Iteration Swarms) or direct image Iteration Swarms. Regular workspace Designers require exactly one concrete owned_scope output target; trusted orchestration authenticates and materializes the artifact there before the child runs. Managed Designers receive the opaque reference and preserve source lineage. Direct image swarms resolve bounded image bytes only at the trusted generation boundary."},
+					"artifact_v2_source": map[string]any{"type": "object", "properties": map[string]any{
+						"artifact_id": map[string]any{"type": "string", "minLength": 1}, "published_head_id": map[string]any{"type": "string", "minLength": 1}, "composition_id": map[string]any{"type": "string", "minLength": 1},
+						"working_revision": map[string]any{"type": "integer", "minimum": 1}, "composition_head_revision": map[string]any{"type": "integer", "minimum": 1}, "target_part_ids": map[string]any{"type": "array", "minItems": 1, "maxItems": 64, "items": map[string]any{"type": "string", "minLength": 1}},
+					}, "required": []string{"artifact_id", "published_head_id", "composition_id", "working_revision", "composition_head_revision", "target_part_ids"}, "additionalProperties": false, "description": "Exact published Artifact V2 source for a focused Designer Iteration Swarm. The server authenticates it, opens one durable Iteration Round, imports only target revisions, and keeps candidates out of the accepted head until explicit selection."},
 					"section_target": map[string]any{"type": "object", "properties": map[string]any{
 						"id": map[string]any{"type": "string", "minLength": 1}, "label": map[string]any{"type": "string", "minLength": 1},
 						"kind":     map[string]any{"type": "string", "enum": []string{"temporal", "spatial", "page", "state", "selector", "semantic"}, "description": "Media-agnostic part kind; defaults to temporal for backward compatibility."},
@@ -1862,6 +1876,8 @@ func (r *Runtime) executeOne(ctx context.Context, scope WorkspaceScope, call Cal
 		return r.executeManageWorktree(scope, args)
 	case "manage-actions", "manage_actions":
 		return r.executeManageActions(scope, args)
+	case "artifact-v2-author", "artifact_v2_author":
+		return r.executeArtifactV2Author(ctx, scope, call.CallID, args)
 	case "manage-artifact", "manage_artifact":
 		return r.executeManageArtifact(ctx, scope, call.CallID, args)
 	case "manage-video", "manage_video":

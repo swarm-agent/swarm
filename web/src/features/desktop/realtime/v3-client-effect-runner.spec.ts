@@ -48,7 +48,7 @@ test('durableClientEffectsFromRealtimeFrame parses only typed successful tool co
 })
 
 test('artifact catalog mutation realtime events produce only a canonical catalog refresh effect', () => {
-  for (const eventType of ['session.artifact.finalized', 'session.plan.saved']) {
+  for (const eventType of ['session.artifact.finalized', 'session.plan.saved', 'artifact.v2.working.created', 'artifact.v2.part_revision.appended', 'artifact.v2.validation.invalid', 'artifact.v2.iteration.selected']) {
     const frame = toolCompletedFrame({ eventType, effects: undefined })
     assert.deepEqual(durableClientEffectsFromRealtimeFrame(frame), {
       eventIdentity: 'event-1',

@@ -243,7 +243,7 @@ func manageArtifactDefinition() Definition {
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"action":           map[string]any{"type": "string", "enum": []string{"image_capabilities", "generate_image", "export_html_stills", "export_html_animation", "export_html_animation_fallback", "cancel_html_animation_export", "derive_text", "read_part", "publish_part", "read_parts", "publish_parts", "select_parts", "create", "create_package", "list_presets", "list", "search", "get", "read", "materialize", "materialize_batch", "promote", "publish_workspace", "select", "delete"}, "description": "Artifact operation. derive_text applies bounded exact replacements to one exact ready UTF-8 text source and publishes a complete ready derived artifact while preserving every unedited source byte and exact lineage. Focused managed Designers use read_part then publish_part for one selected part, or read_parts then publish_parts for a bounded multi-part selection; those actions are bound entirely to trusted exact composition context and publish one atomic candidate. Supports search, materialize/materialize_batch, and publish_workspace. export_html_stills captures declared swarm.capture/v1 states into managed PNGs. export_html_animation_fallback preflights one swarm.animation/v1 source and publishes its sampled first frame as an exact-lineage render-ready PNG fallback. export_html_animation captures a bounded deterministic swarm.animation/v1 timeline into one silent managed MP4 valid as a managed video timeline clip."},
+				"action":           map[string]any{"type": "string", "enum": []string{"image_capabilities", "generate_image", "export_html_stills", "export_html_animation", "export_html_animation_fallback", "cancel_html_animation_export", "derive_text", "read_part", "publish_part", "read_parts", "publish_parts", "select_parts", "list_presets", "list", "search", "get", "read", "materialize", "materialize_batch", "promote", "publish_workspace", "select", "delete"}, "description": "Artifact operation. derive_text applies bounded exact replacements to one exact ready UTF-8 text source and publishes a complete ready derived artifact while preserving every unedited source byte and exact lineage. Focused managed Designers use read_part then publish_part for one selected part, or read_parts then publish_parts for a bounded multi-part selection; those actions are bound entirely to trusted exact composition context and publish one atomic candidate. Supports search, materialize/materialize_batch, and publish_workspace. export_html_stills captures declared swarm.capture/v1 states into managed PNGs. export_html_animation_fallback preflights one swarm.animation/v1 source and publishes its sampled first frame as an exact-lineage render-ready PNG fallback. export_html_animation captures a bounded deterministic swarm.animation/v1 timeline into one silent managed MP4 valid as a managed video timeline clip."},
 				"prompt":           map[string]any{"type": "string", "maxLength": manageArtifactMaxPromptRunes, "description": "Image prompt required only for generate_image. For a remix, describe only the requested changes while preserving the attached exact source through all source_* fields."},
 				"capability_token": map[string]any{"type": "string", "description": "Fresh token returned by image_capabilities; required for each Google generate_image call, including every repeated remix"},
 				"image_settings": map[string]any{"type": "object", "properties": map[string]any{
@@ -271,7 +271,7 @@ func manageArtifactDefinition() Definition {
 				"source":                 map[string]any{"type": "string", "maxLength": 4096, "description": "Trusted canonical workspace-relative regular file or bounded package directory for publish_workspace. Build or revise it with normal workspace tools before publication."},
 				"presentation":           presentation,
 				"output_requirements":    artifact.OutputRequirementsToolSchema(),
-				"animation_profile":      artifact.AnimationProfileToolSchema(),
+				"animation_profile":      manageArtifactAnimationProfileToolSchema(),
 				"source_session_id":      map[string]any{"type": "string", "description": "For every image remix or lineage operation, copy the authenticated source session from the reusable exact ready attached-artifact reference together with all other source_* fields"},
 				"source_collection_id":   map[string]any{"type": "string", "description": "For every image remix or lineage operation, copy the opaque source collection from the same reusable exact ready reference"},
 				"source_variant_id":      map[string]any{"type": "string", "description": "For every image remix or lineage operation, copy the opaque source variant from the same reusable exact ready reference"},
@@ -292,6 +292,12 @@ func manageArtifactDefinition() Definition {
 			"additionalProperties": false,
 		},
 	}
+}
+
+func manageArtifactAnimationProfileToolSchema() map[string]any {
+	schema := artifact.AnimationProfileToolSchema()
+	schema["description"] = "Optional only for create, create_package, publish_workspace, or derive_text. Export actions, including export_html_animation and export_html_animation_fallback, authenticate and inherit the exact source artifact's reviewed animation profile; omit this field for exports. " + strings.TrimSpace(asString(schema["description"]))
+	return schema
 }
 
 func (r *Runtime) executeManageArtifact(ctx context.Context, scope WorkspaceScope, callID string, args map[string]any) (string, error) {
@@ -338,7 +344,7 @@ func (r *Runtime) executeManageArtifact(ctx context.Context, scope WorkspaceScop
 	}
 	if actionName != "create" && actionName != "create_package" && actionName != "publish_workspace" && actionName != "derive_text" {
 		if _, supplied := args["animation_profile"]; supplied {
-			return "", errors.New("manage_artifact animation_profile is valid only for create, create_package, or publish_workspace")
+			return "", errors.New("manage_artifact animation_profile is valid only for create, create_package, publish_workspace, or derive_text; export actions inherit the exact source animation profile and must omit animation_profile")
 		}
 	}
 	if actionName != "list_presets" && actionName != "image_capabilities" && r.artifactAuthority == nil {
@@ -445,6 +451,10 @@ func (r *Runtime) executeManageArtifact(ctx context.Context, scope WorkspaceScop
 		response["artifact"] = managedArtifactVariant(variant)
 		response["reference"] = managedArtifactReferenceWithSession(variant.SessionID, variant.CollectionID, variant.ID, variant.EventSeq)
 	case "create", "create_package":
+		return "", errors.New("manage_artifact create/create_package is retired; managed creative output must use Artifact V2")
+		/* Retained below temporarily as unreachable deletion evidence until the V1
+		write implementation is removed after legacy-ready read compatibility is
+		fully separated. No provider schema or registered action can enter it. */
 		if run, ok := ctx.Value(artifactRunContextKey{}).(ArtifactRunContext); ok && (strings.TrimSpace(run.CollectionID) != "" || strings.TrimSpace(run.VariantID) != "") {
 			if _, supplied := args["output_requirements"]; supplied {
 				return "", errors.New("manage_artifact managed create must omit output_requirements; trusted orchestration injects the immutable target")
