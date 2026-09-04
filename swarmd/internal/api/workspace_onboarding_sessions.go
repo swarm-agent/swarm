@@ -36,7 +36,7 @@ type workspaceOnboardingSessionStartResponse struct {
 	FirstMessage pebblestore.MessageSnapshot           `json:"first_message"`
 	Projection   pebblestore.V3SessionProjection       `json:"projection"`
 	Mutation     sessionruntime.SessionMutationResult `json:"mutation"`
-	Replayed     bool                                 `json:"replayed"`
+	Replayed     bool                                  `json:"replayed"`
 }
 
 // handleWorkspaceOnboardingSessionStart is the only pre-admission conversational
