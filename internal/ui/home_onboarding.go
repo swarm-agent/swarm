@@ -7,6 +7,8 @@ import (
 	"unicode/utf8"
 
 	"github.com/gdamore/tcell/v2"
+
+	"swarm-refactor/swarmtui/internal/model"
 )
 
 type onboardingPhase int

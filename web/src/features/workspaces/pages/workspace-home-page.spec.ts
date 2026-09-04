@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 
 const source = await readFile(new URL('./workspace-home-page.tsx', import.meta.url), 'utf8')
+const editorSource = await readFile(new URL('../launcher/components/workspace-editor-modal.tsx', import.meta.url), 'utf8')
 
 test('workspace home exposes a flat global catalog without linked-folder controls', () => {
   assert.match(source, /Pinned workspaces/)
@@ -13,8 +14,8 @@ test('workspace home exposes a flat global catalog without linked-folder control
   assert.match(source, /Navigate folders and add a committed Git repository as a workspace/)
   assert.match(source, /WorkspaceRepositoryPrerequisiteError/)
   assert.match(source, /openCreateModal\(error\.repository\.path \|\| path/)
-  assert.match(source, /Initialize Git repository/)
-  assert.match(source, /Ask Swarm to help set up this repository/)
+  assert.match(editorSource, /Initialize Git repository/)
+  assert.match(editorSource, /Ask Swarm to help set up this repository/)
   assert.match(source, /postDesktopV3BackgroundRouterSessionStart/)
   assert.match(source, /launched\.session_id/)
 })

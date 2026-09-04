@@ -23,7 +23,7 @@ test('explorer workspace additions fade directly into the stable setup view', ()
 
   const addFolderHandler = source.slice(
     source.indexOf('const handleSaveAndOpenFolder'),
-    source.indexOf('const handleUseBrowsedFolder'),
+    source.indexOf('const initializeOnboardingRepository'),
   )
   assert.doesNotMatch(addFolderHandler, /setWorkspaceExplorerOpen\(false\)/)
   assert.match(addFolderHandler, /setPendingAction\('workspace'\)[\s\S]*?transitionToSetup\(\)[\s\S]*?await saveWorkspace/)

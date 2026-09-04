@@ -9,16 +9,16 @@ import (
 )
 
 // Requirement: every agent run receives explicit machine-readable Git readiness
-// while ordinary non-Git work remains authorized. Threat: without this context an
-// agent may attempt Git blindly or tell the user the entire workspace is broken.
+// and treats non-repository paths as invalid Swarm workspaces. Threat: without
+// this context an agent may silently proceed without mandatory worktree isolation.
 // The runtime prompt helper is the narrowest authority that reaches every run.
-func TestWorkspaceGitContextClassifiesOptionalGitStates(t *testing.T) {
+func TestWorkspaceGitContextClassifiesRequiredGitStates(t *testing.T) {
 	plain := t.TempDir()
-	assertGitContextContains(t, plain, "workspace_git_state: not_repository", "normal usable workspace")
+	assertGitContextContains(t, plain, "workspace_git_state: not_repository", "not a valid Swarm workspace", "requires the selected repository root and an initial commit")
 
 	unborn := t.TempDir()
 	runWorkspaceGit(t, unborn, "init")
-	assertGitContextContains(t, unborn, "workspace_git_state: needs_initial_commit", "Ordinary workspace work remains available")
+	assertGitContextContains(t, unborn, "workspace_git_state: needs_initial_commit", "not a valid Swarm workspace until HEAD resolves")
 
 	if err := os.WriteFile(filepath.Join(unborn, "README.md"), []byte("ready\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -28,18 +28,19 @@ func TestWorkspaceGitContextClassifiesOptionalGitStates(t *testing.T) {
 	assertGitContextContains(t, unborn, "workspace_git_state: ready")
 }
 
-// Requirement: a missing Git executable must produce safe recovery instructions
-// in system context rather than a startup failure. Threat: an agent could claim
-// success, mutate packages without permission, or strand the user's requested
-// Git operation. PATH isolation provides a hermetic missing-executable proof.
-func TestWorkspaceGitContextExplainsSafeMissingGitRecovery(t *testing.T) {
+// Requirement: a missing Git executable marks the installation unusable and
+// directs repair through the supported installer. Threat: an agent could claim
+// success or install packages ad hoc from a workspace session. PATH isolation
+// provides a hermetic missing-executable proof.
+func TestWorkspaceGitContextExplainsMandatoryGitRepair(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
 	assertGitContextContains(t, t.TempDir(),
 		"workspace_git_state: unavailable",
-		"Ordinary workspace reads and edits remain available",
-		"request the required permission",
+		"mandatory Swarm runtime prerequisite",
+		"damaged or incomplete",
+		"repair or reinstall Swarm",
 		"verify `git --version`",
-		"Never claim the Git operation completed",
+		"Never install Git ad hoc",
 	)
 }
 
