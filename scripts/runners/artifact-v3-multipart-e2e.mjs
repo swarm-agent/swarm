@@ -18,6 +18,7 @@ const apiURL = String(option('--api-url', process.env.SWARM_RUNNER_API_URL || ''
 const desktopURL = String(option('--desktop-url', process.env.SWARM_DESKTOP_URL || apiURL)).replace(/\/$/, '')
 const provider = String(option('--provider', process.env.SWARM_RUNNER_PROVIDER || 'fireworks')).trim().toLowerCase()
 const actionModel = String(option('--action-model', process.env.SWARM_RUNNER_ACTION_MODEL || '')).trim()
+const basicHTMLActionModel = String(option('--basic-html-action-model', process.env.SWARM_RUNNER_BASIC_HTML_ACTION_MODEL || 'kimi-k3')).trim()
 const actionThinking = String(option('--action-thinking', process.env.SWARM_RUNNER_ACTION_THINKING || 'off')).trim().toLowerCase()
 const designerModel = String(option('--designer-model', process.env.SWARM_RUNNER_DESIGNER_MODEL || '')).trim()
 const designerThinking = String(option('--designer-thinking', process.env.SWARM_RUNNER_DESIGNER_THINKING || 'off')).trim().toLowerCase()
@@ -108,7 +109,8 @@ async function configureModels() {
   const providerStatus = providers.find((item) => text(item?.id).toLowerCase() === provider)
   assert(providerStatus && providerStatus.runnable !== false, `provider ${provider} is not runnable through the synced testbench credential`)
   const records = (await api('GET', `/v1/model/catalog?provider=${encodeURIComponent(provider)}&limit=500`, undefined, 'read model catalog')).body?.records || []
-  const action = modelAssignment(records, actionModel, actionThinking, 'Swarm action')
+  const resolvedActionModel = stage === 'basic-html' ? basicHTMLActionModel : actionModel
+  const action = modelAssignment(records, resolvedActionModel, actionThinking, 'Swarm action')
   const designer = stage === 'basic-html' ? null : modelAssignment(records, designerModel, designerThinking, 'Designer')
   const settings = (await api('GET', '/v1/agent-model-settings', undefined, 'read model settings')).body?.agent_model_settings || {}
   originalSwarmSettings = settings.swarm || null

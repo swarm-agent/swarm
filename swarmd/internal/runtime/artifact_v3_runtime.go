@@ -413,6 +413,30 @@ func digestArtifactProject(input map[string][]byte) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
+func (a *artifactV3RuntimeAdapter) ReadArtifactV3PreviewEvidence(_ context.Context, accountScopeID, userID, sessionID, artifactID, revisionRef string) ([]byte, error) {
+	if a == nil || a.sessions == nil || strings.TrimSpace(accountScopeID) == "" || strings.TrimSpace(userID) == "" || strings.TrimSpace(sessionID) == "" || strings.TrimSpace(artifactID) == "" || strings.TrimSpace(revisionRef) == "" {
+		return nil, pebblestore.ErrArtifactV3Unauthorized
+	}
+	repository, ok, err := a.sessions.GetArtifactV3Repository(accountScopeID, userID, artifactID)
+	if err != nil || !ok || repository.OwnerSessionID != sessionID {
+		return nil, pebblestore.ErrArtifactV3NotFound
+	}
+	commit := strings.TrimPrefix(strings.TrimSpace(revisionRef), "revision-")
+	revision, ok, err := a.sessions.GetArtifactV3Revision(accountScopeID, userID, artifactID, commit)
+	if err != nil || !ok || revision.Preview.CommitOID != commit || revision.Preview.Reference == "" || revision.Preview.DigestSHA256 == "" {
+		return nil, pebblestore.ErrArtifactV3Integrity
+	}
+	body, err := os.ReadFile(filepath.Join(a.evidenceRoot, revision.Preview.Reference+".png"))
+	if err != nil || len(body) == 0 {
+		return nil, pebblestore.ErrArtifactV3Integrity
+	}
+	digest := sha256.Sum256(body)
+	if !strings.EqualFold(hex.EncodeToString(digest[:]), revision.Preview.DigestSHA256) {
+		return nil, pebblestore.ErrArtifactV3Integrity
+	}
+	return body, nil
+}
+
 func (a *artifactV3RuntimeAdapter) ListArtifacts(ctx context.Context, principal api.ArtifactV3Principal, sessionID string, limit int) ([]api.ArtifactV3Artifact, error) {
 	if a == nil || a.sessions == nil || strings.TrimSpace(principal.AccountScopeID) == "" || strings.TrimSpace(principal.UserID) == "" || strings.TrimSpace(sessionID) == "" {
 		return nil, pebblestore.ErrArtifactV3Unauthorized

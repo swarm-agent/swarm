@@ -126,16 +126,21 @@ func (r *Runtime) createDirectArtifactV3HTML(ctx context.Context, scope Workspac
 		"commit_oid":   finished.Revision.CommitOID,
 		"revision_ref": "revision-" + finished.Revision.CommitOID,
 	}
+	inspectionReference := map[string]any{
+		"session_id": principal.SessionID, "artifact_id": grant.ArtifactID,
+		"revision_ref": "revision-" + finished.Revision.CommitOID,
+	}
 	result := map[string]any{
-		"status":       "ready",
-		"artifact_id":  grant.ArtifactID,
-		"turn_id":      grant.TurnID,
-		"candidate_id": grant.CandidateID,
-		"commit_oid":   finished.Revision.CommitOID,
-		"tree_oid":     finished.Revision.TreeOID,
-		"part_count":   len(manifestParts),
-		"parts":        manifestParts,
-		"reference":    reference,
+		"status":                  "ready",
+		"artifact_id":             grant.ArtifactID,
+		"turn_id":                 grant.TurnID,
+		"candidate_id":            grant.CandidateID,
+		"commit_oid":              finished.Revision.CommitOID,
+		"tree_oid":                finished.Revision.TreeOID,
+		"part_count":              len(manifestParts),
+		"parts":                   manifestParts,
+		"reference":               reference,
+		"media_inspect_reference": inspectionReference,
 	}
 	r.directArtifactV3Mu.Lock()
 	if r.directArtifactV3ByRun == nil {

@@ -126,6 +126,13 @@ func TestArtifactV3RuntimeAdapterProductionPathAndRecovery(t *testing.T) {
 	if err != nil || recovered.Head.CommitOID != finished.Revision.CommitOID {
 		t.Fatalf("recovered=%+v err=%v", recovered, err)
 	}
+	evidence, err := restarted.ReadArtifactV3PreviewEvidence(context.Background(), "account", "user", "artifact-v3-runtime", grant.ArtifactID, artifact.Head.RevisionRef)
+	if err != nil || string(evidence) != "real-renderer-evidence" {
+		t.Fatalf("preview evidence=%q err=%v", evidence, err)
+	}
+	if _, err := restarted.ReadArtifactV3PreviewEvidence(context.Background(), "account", "foreign", "artifact-v3-runtime", grant.ArtifactID, artifact.Head.RevisionRef); err == nil {
+		t.Fatal("foreign owner read Artifact V3 preview evidence")
+	}
 	if entries, err := os.ReadDir(repositoryRoot); err != nil {
 		t.Fatalf("repos=%v err=%v", entries, err)
 	} else {

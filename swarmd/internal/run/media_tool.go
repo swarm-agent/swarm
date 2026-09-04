@@ -21,7 +21,7 @@ func staticMediaInspectToolDefinition() tool.Definition {
 	return tool.Definition{
 		Type:        "function",
 		Name:        mediaInspectToolName,
-		Description: "Inspect a supported image from this session, workspace, or an exact ready managed artifact reference",
+		Description: "Inspect a supported image from this session, workspace, an exact ready legacy managed artifact reference, or an exact native Artifact V3 preview reference",
 		Parameters:  mediaInspectToolParameters(false),
 	}
 }
@@ -55,11 +55,22 @@ func mediaInspectToolParameters(describe bool) map[string]any {
 			"required":             []string{"session_id", "collection_id", "variant_id", "event_seq"},
 			"additionalProperties": false,
 		},
+		"artifact_v3_reference": map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"session_id":   map[string]any{"type": "string"},
+				"artifact_id":  map[string]any{"type": "string"},
+				"revision_ref": map[string]any{"type": "string"},
+			},
+			"required":             []string{"session_id", "artifact_id", "revision_ref"},
+			"additionalProperties": false,
+		},
 	}
 	if describe {
 		properties["asset_id"].(map[string]any)["description"] = "Immutable asset ID already attached to this session"
 		properties["path"].(map[string]any)["description"] = "Workspace-relative or workspace-contained absolute image path"
-		properties["artifact_reference"].(map[string]any)["description"] = "Complete exact ready managed artifact reference; all four fields must come from one authenticated reference"
+		properties["artifact_reference"].(map[string]any)["description"] = "Complete exact ready legacy managed artifact reference; all four fields must come from one authenticated reference"
+		properties["artifact_v3_reference"].(map[string]any)["description"] = "Complete exact ready native Artifact V3 preview reference"
 	}
 	return map[string]any{
 		"type":       "object",
@@ -68,6 +79,7 @@ func mediaInspectToolParameters(describe bool) map[string]any {
 			{"required": []string{"asset_id"}},
 			{"required": []string{"path"}},
 			{"required": []string{"artifact_reference"}},
+			{"required": []string{"artifact_v3_reference"}},
 		},
 		"additionalProperties": false,
 	}
@@ -81,7 +93,7 @@ func sessionMediaToolDefinition(contract provideriface.SessionMediaContract) (pr
 	return provideriface.ToolDefinition{
 		Type:        "function",
 		Name:        mediaInspectToolName,
-		Description: "Inspect a supported image by workspace path, immutable session asset ID, or complete exact ready managed artifact reference; the backend resolves and verifies all media metadata",
+		Description: "Inspect a supported image by workspace path, immutable session asset ID, complete exact ready legacy managed artifact reference, or complete exact native Artifact V3 preview reference; the backend resolves and verifies all media metadata",
 		Parameters:  mediaInspectToolParameters(true),
 	}, true
 }
@@ -93,7 +105,7 @@ func sessionMediaContractInstructions(contract provideriface.SessionMediaContrac
 	}
 	lines := []string{
 		"Current run media contract (backend-authoritative):",
-		"- Use media_inspect with exactly one of: a workspace-contained image path, an immutable asset ID already attached to this session, or a complete exact ready managed artifact reference carrying session_id, collection_id, variant_id, and event_seq together.",
+		"- Use media_inspect with exactly one of: a workspace-contained image path, an immutable asset ID already attached to this session, a complete exact ready legacy managed artifact reference carrying session_id, collection_id, variant_id, and event_seq together, or a native Artifact V3 preview reference carrying session_id, artifact_id, and revision_ref.",
 		"- Do not ask the user to provide hashes, MIME types, or internal asset metadata; the backend derives and revalidates ownership, contract, type, size, count, and digest.",
 		"- Attached images are also delivered to the model natively; use media_inspect when an explicit workspace path or asset re-read is needed.",
 	}
@@ -148,10 +160,17 @@ type mediaInspectArtifactReference struct {
 	EventSeq     uint64 `json:"event_seq"`
 }
 
+type mediaInspectArtifactV3Reference struct {
+	SessionID   string `json:"session_id"`
+	ArtifactID  string `json:"artifact_id"`
+	RevisionRef string `json:"revision_ref"`
+}
+
 type mediaInspectArguments struct {
-	AssetID           string                         `json:"asset_id,omitempty"`
-	Path              string                         `json:"path,omitempty"`
-	ArtifactReference *mediaInspectArtifactReference `json:"artifact_reference,omitempty"`
+	AssetID             string                           `json:"asset_id,omitempty"`
+	Path                string                           `json:"path,omitempty"`
+	ArtifactReference   *mediaInspectArtifactReference   `json:"artifact_reference,omitempty"`
+	ArtifactV3Reference *mediaInspectArtifactV3Reference `json:"artifact_v3_reference,omitempty"`
 }
 
 func decodeMediaInspectArguments(raw string) (mediaInspectArguments, error) {
@@ -177,6 +196,15 @@ func decodeMediaInspectArguments(raw string) (mediaInspectArguments, error) {
 		args.ArtifactReference.VariantID = strings.TrimSpace(args.ArtifactReference.VariantID)
 		if args.ArtifactReference.SessionID == "" || args.ArtifactReference.CollectionID == "" || args.ArtifactReference.VariantID == "" || args.ArtifactReference.EventSeq == 0 {
 			return mediaInspectArguments{}, errors.New("media_inspect artifact_reference requires session_id, collection_id, variant_id, and event_seq")
+		}
+	}
+	if args.ArtifactV3Reference != nil {
+		selectorCount++
+		args.ArtifactV3Reference.SessionID = strings.TrimSpace(args.ArtifactV3Reference.SessionID)
+		args.ArtifactV3Reference.ArtifactID = strings.TrimSpace(args.ArtifactV3Reference.ArtifactID)
+		args.ArtifactV3Reference.RevisionRef = strings.TrimSpace(args.ArtifactV3Reference.RevisionRef)
+		if args.ArtifactV3Reference.SessionID == "" || args.ArtifactV3Reference.ArtifactID == "" || args.ArtifactV3Reference.RevisionRef == "" {
+			return mediaInspectArguments{}, errors.New("media_inspect artifact_v3_reference requires session_id, artifact_id, and revision_ref")
 		}
 	}
 	if selectorCount != 1 {
