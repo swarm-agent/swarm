@@ -32,6 +32,7 @@ require_literal "$compat" 'deployment completed without an active exact-HEAD slo
 require_literal "$compat" 'export SWARM_RUNNER_API_URL="$SWARM_DESKTOP_URL"'
 require_literal "$compat" 'SWARM_RUNNER_WEB_PACKAGE'
 require_literal "$runner" 'scripts/testbench-e2e-tunnel.sh" run'
+require_literal "$runner" '--browser-executable /opt/google/chrome/chrome'
 require_literal "$host" 'use scripts/testbench-container-deploy.sh deploy instead of host swarm.service'
 require_literal "$doc" 'The host Swarm service and host candidate ports are not a fallback.'
 

@@ -40,11 +40,18 @@ model_args+=(--coder-model "${SWARM_TESTBENCH_CODER_MODEL}" --coder-thinking "${
 model_args+=(--designer-model "${SWARM_TESTBENCH_DESIGNER_MODEL}" --designer-thinking "${SWARM_TESTBENCH_DESIGNER_THINKING}")
 [[ -n "${SWARM_TESTBENCH_LINKED_WORKSPACE_PATH:-}" ]] && model_args+=(--linked-workspace-path "${SWARM_TESTBENCH_LINKED_WORKSPACE_PATH}")
 
+browser_args=()
+if [[ "${RUNNER}" == "artifact-v3-multipart-e2e" ]]; then
+  [[ -x /opt/google/chrome/chrome ]] || { printf 'run-testbench-runner: trusted system Chrome is unavailable at /opt/google/chrome/chrome\n' >&2; exit 1; }
+  browser_args+=(--browser-executable /opt/google/chrome/chrome)
+fi
+
 runner=("${ROOT_DIR}/scripts/run-runner-test.sh"
   "__SWARM_DESKTOP_URL__"
   "${SWARM_TESTBENCH_PROVIDER}"
   "${RUNNER}"
   "${model_args[@]}"
+  "${browser_args[@]}"
   "$@")
 
 exec "${ROOT_DIR}/scripts/testbench-e2e-tunnel.sh" run "${runner[@]}"

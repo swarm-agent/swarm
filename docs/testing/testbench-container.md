@@ -75,6 +75,8 @@ exports:
 - `SWARM_RUNNER_API_URL`
 - `SWARM_RUNNER_WEB_PACKAGE` when the repository's primary checkout has pinned Playwright dependencies
 
+Browser-backed registered runners also receive the existing system-managed Chrome executable explicitly. The wrapper never downloads a browser or writes dependencies into a managed candidate worktree.
+
 The temporary tunnel and heartbeat are stopped when the command exits.
 
 ## Run checked-in E2E scenarios
