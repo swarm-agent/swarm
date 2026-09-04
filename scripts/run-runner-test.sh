@@ -3,7 +3,7 @@ set -euo pipefail
 
 usage() {
   cat >&2 <<'USAGE'
-Usage: scripts/run-runner-test.sh <target> <provider> [test-name] [--api-url <url>] [--workspace-path <path>] [--linked-workspace-path <path>] [--model <id>] [--thinking <level>] [--action-model <id>] [--action-thinking <level>] [--plan-model <id>] [--plan-thinking <level>] [--coder-model <id>] [--coder-thinking <level>] [--designer-model <id>] [--designer-thinking <level>] [--browser-executable <path>] [--stage <name>] [--session-id <id>] [--source-session-id <id>] [--source-collection-id <id>] [--source-variant-id <id>] [--source-event-seq <seq>] [--timeout-ms <ms>]
+Usage: scripts/run-runner-test.sh <target> <provider> [test-name] [--api-url <url>] [--workspace-path <path>] [--linked-workspace-path <path>] [--model <id>] [--thinking <level>] [--action-model <id>] [--action-thinking <level>] [--plan-model <id>] [--plan-thinking <level>] [--coder-model <id>] [--coder-thinking <level>] [--designer-model <id>] [--designer-thinking <level>] [--browser-executable <path>] [--stage <name>] [--session-id <id>] [--initial-run-id <id>] [--artifact-id <id>] [--desktop-path <path>] [--source-session-id <id>] [--source-collection-id <id>] [--source-variant-id <id>] [--source-event-seq <seq>] [--timeout-ms <ms>]
 
 Runs a checked-in runner test against an already-running Swarm target.
 
@@ -29,6 +29,9 @@ Options:
   --browser-executable Existing trusted local browser path for browser-backed runners
   --stage            Optional resumable stage passed to runners that support it
   --session-id       Existing destination session used by a resumed runner stage
+  --initial-run-id   Existing initial run used by a same-session resumed runner stage
+  --artifact-id      Exact Artifact V3 ID used by a resumed runner stage
+  --desktop-path     Absolute Desktop conversation path used by a resumed runner stage
   --source-session-id     Exact source artifact session for supported resumed stages
   --source-collection-id  Exact source artifact collection for supported resumed stages
   --source-variant-id     Exact source artifact variant for supported resumed stages
@@ -82,6 +85,9 @@ DESIGNER_THINKING=""
 BROWSER_EXECUTABLE=""
 STAGE=""
 SESSION_ID=""
+INITIAL_RUN_ID=""
+ARTIFACT_ID=""
+DESKTOP_PATH=""
 SOURCE_SESSION_ID=""
 SOURCE_COLLECTION_ID=""
 SOURCE_VARIANT_ID=""
@@ -131,6 +137,21 @@ while [[ $# -gt 0 ]]; do
     --session-id)
       [[ $# -ge 2 ]] || fail "--session-id requires a value"
       SESSION_ID="$2"
+      shift 2
+      ;;
+    --initial-run-id)
+      [[ $# -ge 2 ]] || fail "--initial-run-id requires a value"
+      INITIAL_RUN_ID="$2"
+      shift 2
+      ;;
+    --artifact-id)
+      [[ $# -ge 2 ]] || fail "--artifact-id requires a value"
+      ARTIFACT_ID="$2"
+      shift 2
+      ;;
+    --desktop-path)
+      [[ $# -ge 2 ]] || fail "--desktop-path requires a value"
+      DESKTOP_PATH="$2"
       shift 2
       ;;
     --source-session-id)
@@ -209,6 +230,15 @@ if [[ -n "${STAGE}" ]]; then
 fi
 if [[ -n "${SESSION_ID}" ]]; then
   runner_args+=(--session-id "${SESSION_ID}")
+fi
+if [[ -n "${INITIAL_RUN_ID}" ]]; then
+  runner_args+=(--initial-run-id "${INITIAL_RUN_ID}")
+fi
+if [[ -n "${ARTIFACT_ID}" ]]; then
+  runner_args+=(--artifact-id "${ARTIFACT_ID}")
+fi
+if [[ -n "${DESKTOP_PATH}" ]]; then
+  runner_args+=(--desktop-path "${DESKTOP_PATH}")
 fi
 if [[ -n "${SOURCE_SESSION_ID}" ]]; then
   runner_args+=(--source-session-id "${SOURCE_SESSION_ID}")
