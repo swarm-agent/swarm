@@ -1690,6 +1690,8 @@ func sessionPlanArtifactToolSchema() map[string]any {
 			"path":          map[string]any{"type": "string", "description": "Clean workspace-relative path; absolute and workspace-escaping paths are rejected."},
 			"source_ref":    map[string]any{"type": "string", "description": "Exact opaque videosrc_ reference returned by manage_video browse_source for a final video deliverable."},
 			"session_id":    map[string]any{"type": "string"},
+			"artifact_id":   map[string]any{"type": "string", "description": "Native Artifact V3 identity."},
+			"revision_ref":  map[string]any{"type": "string", "description": "Exact native Artifact V3 revision reference."},
 			"collection_id": map[string]any{"type": "string"},
 			"variant_id":    map[string]any{"type": "string"},
 			"event_seq":     map[string]any{"type": "integer", "minimum": 1},
@@ -1702,6 +1704,7 @@ func sessionPlanArtifactToolSchema() map[string]any {
 			map[string]any{"required": []string{"path"}},
 			map[string]any{"required": []string{"source_ref"}},
 			map[string]any{"required": []string{"session_id", "collection_id", "variant_id", "event_seq"}},
+			map[string]any{"required": []string{"session_id", "artifact_id", "revision_ref"}},
 		},
 		"additionalProperties": false,
 	}
