@@ -367,27 +367,30 @@ async function screenshotPreview(sessionID, artifactID, revision, expectedLabel 
   const previewPage = await context.newPage()
   await previewPage.goto(`${desktopURL}${previewPath}`, { waitUntil: 'networkidle', timeout: 60000 })
   const sample = stage === 'basic-html'
-    ? await staticVisualSample(previewPage)
+    ? await staticVisualSample(previewPage, revision.manifest?.parts || [])
     : await animationSample(previewPage, expectedLabel)
   await previewPage.close()
   return sample
 }
 
-async function staticVisualSample(previewPage) {
-  for (const id of ['hero', 'pricing', 'footer']) await previewPage.locator(`#${id}`).waitFor({ state: 'visible', timeout: 30000 })
-  const sample = await previewPage.evaluate(() => {
-    const rows = ['hero', 'pricing', 'footer'].map((id) => {
-      const part = document.getElementById(id)
+async function staticVisualSample(previewPage, parts) {
+  const targets = parts.map((part) => ({ id: text(part?.id), label: text(part?.label), selector: text(part?.locator?.value) }))
+  assert(targets.length === 3 && targets.every((part) => part.id && part.selector), 'static preview requires exactly three stable selector Parts')
+  for (const part of targets) await previewPage.locator(part.selector).first().waitFor({ state: 'visible', timeout: 30000 })
+  const sample = await previewPage.evaluate((expectedParts) => {
+    const rows = expectedParts.map(({ id, label, selector }) => {
+      const part = document.querySelector(selector)
       const rect = part?.getBoundingClientRect()
       const style = part ? getComputedStyle(part) : null
-      return { id, text: part?.textContent?.trim() || '', rect: rect ? { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom } : null, color: style?.color || '', fontSize: style ? parseFloat(style.fontSize) : 0 }
+      return { id, label, selector, text: part?.textContent?.trim() || '', rect: rect ? { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom } : null, color: style?.color || '', fontSize: style ? parseFloat(style.fontSize) : 0 }
     })
     return { rows, innerWidth, innerHeight, scrollWidth: document.documentElement.scrollWidth, scrollHeight: document.documentElement.scrollHeight, bodyText: document.body.innerText }
-  })
+  }, targets)
   log(`OBSERVE preview viewport=${sample.innerWidth}x${sample.innerHeight} document=${sample.scrollWidth}x${sample.scrollHeight}`)
   await screenshot(previewPage, 'basic-html-root-preview')
   assert(sample.scrollWidth <= sample.innerWidth + 2 && sample.scrollHeight <= sample.innerHeight + 2, `static complete preview overflows viewport ${sample.innerWidth}x${sample.innerHeight} with document ${sample.scrollWidth}x${sample.scrollHeight}`)
   assert(sample.bodyText.includes('Team') && sample.bodyText.includes('$29'), 'static preview is missing the required Team $29 pricing choice')
+  assert(sample.rows.some((row) => row.text.includes('Team') && row.text.includes('$29')), 'no declared Part contains the required Team $29 pricing choice')
   for (const row of sample.rows) {
     assert(row.text.length >= 8 && row.fontSize >= 12 && row.color && row.color !== 'rgba(0, 0, 0, 0)', `${row.id} static content is unreadable`)
     assert(row.rect && row.rect.left >= -1 && row.rect.top >= -1 && row.rect.right <= sample.innerWidth + 1 && row.rect.bottom <= sample.innerHeight + 1, `${row.id} is clipped outside the static preview viewport`)
@@ -560,9 +563,9 @@ async function runLive() {
   const artifact = items[0]
   const rootDetail = await detail(session.sessionID, artifact.id)
   const rootRevision = currentRevision(rootDetail)
-  const partIDs = rootDetail.parts?.map((part) => part.id) || []
+  const partIDs = rootDetail.parts?.map((part) => text(part.id)) || []
   log(`OBSERVE parts=${partIDs.join(',') || 'none'} head=${rootRevision.revision_ref}`)
-  assert(partIDs.length === 3 && partIDs.join(',') === 'hero,pricing,footer', `root Artifact Parts are [${partIDs.join(',')}] instead of [hero,pricing,footer]`)
+  assert(partIDs.length === 3 && new Set(partIDs).size === 3 && partIDs.every(Boolean), `root Artifact must expose exactly three distinct stable Part IDs; got [${partIDs.join(',')}]`)
   gate('three-parts', 'PASS', partIDs.join(','))
   assert(rootDetail.head?.build?.status === 'succeeded' && rootDetail.head?.validation?.status === 'valid', 'root head lacks whole-project build/render evidence')
   gate('build-preview', 'PASS', `revision=${rootRevision.revision_ref}`)
