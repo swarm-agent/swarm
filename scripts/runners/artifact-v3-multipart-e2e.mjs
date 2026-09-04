@@ -542,8 +542,8 @@ async function runLive() {
   await installRealtimeRecorder(page)
   await page.goto(`${desktopURL}${result.ids.desktop_path}`, { waitUntil: 'domcontentloaded', timeout: 60000 })
   await page.locator('body').waitFor({ state: 'visible' })
-  await page.waitForFunction(() => (window.__artifactV3Records || []).some((record) => record.kind === 'open'), undefined, { timeout: 30000 })
-  gate('realtime-subscribed-before-create', 'PASS', 'exact session route socket open')
+  await page.waitForFunction((sessionID) => (window.__artifactV3Records || []).some((record) => record.kind === 'message' && record.frame_kind === 'replay.complete' && record.session_id === sessionID && record.endpoint_cursor_present), session.sessionID, { timeout: 30000 })
+  gate('realtime-subscribed-before-create', 'PASS', 'exact session subscription replay completed at a durable cursor')
 
   const childrenBefore = delegatedDesigners(await bootstrapSessions(), session.sessionID)
   let initialSnapshot
