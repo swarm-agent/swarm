@@ -409,7 +409,8 @@ async function staticVisualSample(previewPage, parts, expectedLabel = '') {
     return { rows, innerWidth, innerHeight, scrollWidth: document.documentElement.scrollWidth, scrollHeight: document.documentElement.scrollHeight, bodyText: document.body.innerText }
   }, targets)
   log(`OBSERVE preview viewport=${sample.innerWidth}x${sample.innerHeight} document=${sample.scrollWidth}x${sample.scrollHeight}`)
-  await screenshot(previewPage, expectedLabel ? 'targeted-part-candidate-preview' : 'basic-html-root-preview')
+  const screenshotLabel = expectedLabel === 'CONTINUED SELECTED TURN' ? 'selected-continuation-candidate-preview' : expectedLabel ? 'targeted-part-candidate-preview' : 'basic-html-root-preview'
+  await screenshot(previewPage, screenshotLabel)
   assert(sample.scrollWidth <= sample.innerWidth + 2 && sample.scrollHeight <= sample.innerHeight + 2, `static complete preview overflows viewport ${sample.innerWidth}x${sample.innerHeight} with document ${sample.scrollWidth}x${sample.scrollHeight}`)
   assert(sample.bodyText.includes('Team') && sample.bodyText.includes('$29'), 'static preview is missing the required Team $29 pricing choice')
   assert(!expectedLabel || sample.bodyText.includes(expectedLabel), `static preview is missing requested visible label ${expectedLabel}`)
