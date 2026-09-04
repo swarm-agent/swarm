@@ -414,9 +414,11 @@ async function staticVisualSample(previewPage, parts, expectedLabel = '', allowV
   const screenshotLabel = expectedLabel === 'CONTINUED SELECTED TURN' ? 'selected-continuation-candidate-preview' : expectedLabel === 'ALTERNATE OPTION ONE' ? 'alternate-option-one-preview' : expectedLabel === 'ALTERNATE OPTION TWO' ? 'alternate-option-two-preview' : expectedLabel ? 'targeted-part-candidate-preview' : 'basic-html-root-preview'
   await screenshot(previewPage, screenshotLabel)
   if (!allowViewportFailure) assert(sample.scrollWidth <= sample.innerWidth + 2 && sample.scrollHeight <= sample.innerHeight + 2, `static complete preview overflows viewport ${sample.innerWidth}x${sample.innerHeight} with document ${sample.scrollWidth}x${sample.scrollHeight}`)
-  assert(sample.bodyText.includes('Team') && sample.bodyText.includes('$29'), 'static preview is missing the required Team $29 pricing choice')
+  const normalizedBodyText = sample.bodyText.replace(/\s+/g, ' ')
+  const pricingVisible = /Team\s*\$\s*29\b/i.test(normalizedBodyText) || (/\bTeam\b/i.test(normalizedBodyText) && /\$\s*29\b/.test(normalizedBodyText))
+  assert(pricingVisible, 'static preview is missing the required visible Team $29 pricing choice')
   assert(!expectedLabel || sample.bodyText.includes(expectedLabel), `static preview is missing requested visible label ${expectedLabel}`)
-  assert(sample.rows.some((row) => row.text.includes('Team') && row.text.includes('$29')), 'no declared Part contains the required Team $29 pricing choice')
+  assert(sample.rows.some((row) => { const value = row.text.replace(/\s+/g, ' '); return /Team\s*\$\s*29\b/i.test(value) || (/\bTeam\b/i.test(value) && /\$\s*29\b/.test(value)) }), 'no declared Part visibly contains the required Team $29 pricing choice')
   for (const row of sample.rows) {
     assert(row.text.length >= 8 && row.fontSize >= 12 && row.color && row.color !== 'rgba(0, 0, 0, 0)', `${row.id} static content is unreadable`)
     if (!allowViewportFailure) assert(row.rect && row.rect.left >= -1 && row.rect.top >= -1 && row.rect.right <= sample.innerWidth + 1 && row.rect.bottom <= sample.innerHeight + 1, `${row.id} is clipped outside the static preview viewport`)
