@@ -143,6 +143,36 @@ func TestResolveAgentToolContractForcesTaskOffForEverySubagent(t *testing.T) {
 	}
 }
 
+// Requirement: onboarding repository mutations always ask even if the account
+// policy would otherwise allow them, while discovery remains allowed and broad
+// product authority remains denied. Threat: an allow rule or mutable snapshot
+// could silently initialize/commit user files. The compiled policy is the
+// narrowest layer proving the effective decisions before tool execution.
+func TestWorkspaceOnboardingToolContractForcesMutationApproval(t *testing.T) {
+	svc := NewService(nil, nil, nil, tool.NewRuntime(1), nil, nil, nil, nil)
+	profile := agentruntime.WorkspaceOnboardingAgentProfileForParent(pebblestore.AgentProfile{Provider: "test", Model: "model", Thinking: "high"})
+	resolved, compiled, disabled, err := svc.ResolveAgentToolContract(profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"write", "edit", "git_add", "git_commit"} {
+		if !resolved.Tools[name].Enabled || disabled[name] {
+			t.Fatalf("mutation tool %q not available for approval: resolved=%+v disabled=%v", name, resolved.Tools[name], disabled[name])
+		}
+		if explain := permission.ExplainPolicy("auto", name, `{}`, *compiled); explain.Decision != permission.PolicyDecisionAsk {
+			t.Fatalf("mutation tool %q decision=%q want ask", name, explain.Decision)
+		}
+	}
+	if explain := permission.ExplainPolicy("auto", "bash", `{"command":"git init","explanation":["Initialize the selected folder"],"category":"write","critical":true}`, *compiled); explain.Decision != permission.PolicyDecisionAsk {
+		t.Fatalf("git init decision=%q want ask", explain.Decision)
+	}
+	for _, deniedName := range []string{"task", "manage_sessions", "manage_worktree", "plan_manage"} {
+		if resolved.Tools[deniedName].Enabled || !disabled[deniedName] {
+			t.Fatalf("escalation tool %q resolved=%+v disabled=%v", deniedName, resolved.Tools[deniedName], disabled[deniedName])
+		}
+	}
+}
+
 func TestResolveAgentToolContractFailsClosedWhenSavedContractMissing(t *testing.T) {
 	svc := NewService(nil, nil, nil, tool.NewRuntime(1), nil, nil, nil, nil)
 	_, _, _, err := svc.ResolveAgentToolContract(pebblestore.AgentProfile{

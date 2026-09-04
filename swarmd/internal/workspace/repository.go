@@ -83,6 +83,75 @@ func (s *Service) InspectRepositoryForPrincipal(principal identity.Principal, pa
 	return inspectRepository(resolved), nil
 }
 
+// InspectOnboardingRepositoryForPrincipal revalidates the exact unsaved path
+// bound to an onboarding conversation. It permits the expected setup lifecycle
+// (existing files -> unborn repository -> committed repository) without creating
+// catalog, topology, selection, or session authority.
+func (s *Service) InspectOnboardingRepositoryForPrincipal(principal identity.Principal, path, expectedResolvedPath string) (RepositoryState, error) {
+	if s == nil || s.store == nil {
+		return RepositoryState{}, errors.New("workspace service is not configured")
+	}
+	if err := requirePrincipal(principal); err != nil {
+		return RepositoryState{}, err
+	}
+	requested, err := absoluteWorkspacePath(path)
+	if err != nil {
+		return RepositoryState{}, err
+	}
+	resolved, err := resolvePath(path)
+	if err != nil {
+		return RepositoryState{}, err
+	}
+	if requested != resolved {
+		return RepositoryState{}, fmt.Errorf("workspace onboarding rejects symlinked paths; select the canonical directory %q", resolved)
+	}
+	expected := strings.TrimSpace(expectedResolvedPath)
+	if expected == "" {
+		return RepositoryState{}, errors.New("expected_resolved_path is required to guard workspace onboarding against a stale selection")
+	}
+	expected, err = filepath.Abs(expected)
+	if err != nil {
+		return RepositoryState{}, fmt.Errorf("resolve expected directory: %w", err)
+	}
+	if filepath.Clean(expected) != resolved {
+		return RepositoryState{}, fmt.Errorf("selected directory is stale: expected %q, current canonical path is %q", filepath.Clean(expected), resolved)
+	}
+	if existing, ok, err := s.store.GetForAccount(principal.AccountScopeID, resolved); err != nil {
+		return RepositoryState{}, err
+	} else if ok {
+		return RepositoryState{}, fmt.Errorf("workspace %q is already saved with id %q", resolved, existing.WorkspaceID)
+	}
+	if err := ensureWorkspaceDirectory(resolved); err != nil {
+		return RepositoryState{}, err
+	}
+	state := inspectRepository(resolved)
+	switch state.State {
+	case RepositoryStateGitUnavailable:
+		return state, &RepositoryPrerequisiteError{Repository: state}
+	case RepositoryStateNeedsAssistedSetup, RepositoryStateNeedsInitialCommit, RepositoryStateReady:
+		return state, nil
+	case RepositoryStateNotRepository:
+		return state, errors.New("empty folders use the explicit repository setup action, not workspace onboarding assistance")
+	default:
+		return state, errors.New("workspace onboarding assistance found an unsupported repository state")
+	}
+}
+
+// InspectAssistedRepositoryForPrincipal admits only the initial review-first
+// onboarding state. Runtime scope revalidation uses
+// InspectOnboardingRepositoryForPrincipal so a permissioned init/commit can
+// complete without invalidating its own durable session.
+func (s *Service) InspectAssistedRepositoryForPrincipal(principal identity.Principal, path, expectedResolvedPath string) (RepositoryState, error) {
+	state, err := s.InspectOnboardingRepositoryForPrincipal(principal, path, expectedResolvedPath)
+	if err != nil {
+		return state, err
+	}
+	if state.State != RepositoryStateNeedsAssistedSetup {
+		return state, errors.New("workspace onboarding assistance requires an unsaved non-repository directory containing existing files")
+	}
+	return state, nil
+}
+
 func (s *Service) requireRepositoryForPrincipal(principal identity.Principal, path string) (RepositoryState, error) {
 	state, err := s.InspectRepositoryForPrincipal(principal, path)
 	if err != nil {

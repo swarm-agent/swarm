@@ -1,6 +1,7 @@
 package run
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -35,6 +36,12 @@ func (s *Service) resolveRunWorkspaceScope(session pebblestore.SessionSnapshot, 
 	principal, err := principalForRunWorkspaceScope(session, principal)
 	if err != nil {
 		return tool.WorkspaceScope{}, err
+	}
+	if sessionMetadataBool(session.Metadata, "workspace_onboarding") {
+		return s.resolveWorkspaceOnboardingRunScope(session, principal)
+	}
+	if agentruntime.IsWorkspaceOnboardingAgentName(mapString(session.Metadata, "agent_name")) || agentruntime.IsWorkspaceOnboardingAgentName(mapString(session.Metadata, "resolved_agent_name")) {
+		return tool.WorkspaceScope{}, errors.New("workspace onboarding agent cannot run outside the dedicated pre-admission flow")
 	}
 	if session.WorktreeEnabled {
 		resolvedPath, err := normalizeRunScopePath(firstNonEmptyString(session.WorktreeRootPath, workspacePath))
@@ -183,6 +190,80 @@ func (s *Service) resolveRunWorkspaceScope(session pebblestore.SessionSnapshot, 
 		Principal:   principal,
 		SessionID:   strings.TrimSpace(session.ID),
 	}, nil
+}
+
+func (s *Service) resolveWorkspaceOnboardingRunScope(session pebblestore.SessionSnapshot, principal identity.Principal) (tool.WorkspaceScope, error) {
+	if s == nil || s.workspace == nil {
+		return tool.WorkspaceScope{}, errors.New("workspace onboarding scope requires the workspace service")
+	}
+	if !agentruntime.IsWorkspaceOnboardingAgentName(mapString(session.Metadata, "agent_name")) || !agentruntime.IsWorkspaceOnboardingAgentName(mapString(session.Metadata, "resolved_agent_name")) {
+		return tool.WorkspaceScope{}, errors.New("workspace onboarding scope requires the compiled onboarding agent")
+	}
+	profile, profileErr := storedWorkspaceOnboardingAgentProfile(session.Metadata)
+	if profileErr != nil || !agentruntime.IsWorkspaceOnboardingAgentName(profile.Name) || profile.Mode != agentruntime.ModeSubagent || profile.RuntimeMode != pebblestore.AgentRuntimeModeReadWrite || profile.ToolContract == nil {
+		return tool.WorkspaceScope{}, errors.New("workspace onboarding scope is missing its compiled agent snapshot")
+	}
+	if !sessionMetadataBool(session.Metadata, "pre_admission") || !strings.EqualFold(mapString(session.Metadata, "owner_transport"), "workspace_onboarding_api") {
+		return tool.WorkspaceScope{}, errors.New("workspace onboarding scope is not marked with dedicated pre-admission authority")
+	}
+	path := strings.TrimSpace(mapString(session.Metadata, "workspace_onboarding_path"))
+	expected := strings.TrimSpace(mapString(session.Metadata, "workspace_onboarding_expected_path"))
+	if path == "" || expected == "" || path != strings.TrimSpace(session.WorkspacePath) {
+		return tool.WorkspaceScope{}, errors.New("workspace onboarding path authority is incomplete or stale")
+	}
+	state, err := s.workspace.InspectOnboardingRepositoryForPrincipal(principal, path, expected)
+	if err != nil {
+		return tool.WorkspaceScope{}, err
+	}
+	if strings.TrimSpace(state.Path) != path {
+		return tool.WorkspaceScope{}, errors.New("workspace onboarding directory path is stale")
+	}
+	switch state.State {
+	case "needs_assisted_setup", "needs_initial_commit", "ready":
+	default:
+		return tool.WorkspaceScope{}, errors.New("workspace onboarding directory is outside the setup lifecycle")
+	}
+	if _, err := exec.LookPath("git"); err != nil {
+		return tool.WorkspaceScope{}, errors.New("workspace onboarding requires Git to remain available")
+	}
+	return tool.WorkspaceScope{
+		PrimaryPath: path, Roots: []string{path}, MutationScopes: []string{"**"}, RejectScopeExpansion: true,
+		Principal: principal, SessionID: strings.TrimSpace(session.ID), SourceWorkspacePath: path,
+	}, nil
+}
+
+func storedWorkspaceOnboardingAgentProfile(metadata map[string]any) (pebblestore.AgentProfile, error) {
+	value, ok := metadata["agent_profile"]
+	if !ok || value == nil {
+		return pebblestore.AgentProfile{}, errors.New("agent profile is missing")
+	}
+	if profile, ok := value.(pebblestore.AgentProfile); ok {
+		return profile, nil
+	}
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return pebblestore.AgentProfile{}, err
+	}
+	var profile pebblestore.AgentProfile
+	if err := json.Unmarshal(raw, &profile); err != nil {
+		return pebblestore.AgentProfile{}, err
+	}
+	return profile, nil
+}
+
+func sessionMetadataBool(metadata map[string]any, key string) bool {
+	value, ok := metadata[key]
+	if !ok {
+		return false
+	}
+	switch typed := value.(type) {
+	case bool:
+		return typed
+	case string:
+		return strings.EqualFold(strings.TrimSpace(typed), "true")
+	default:
+		return false
+	}
 }
 
 func (s *Service) mergeAccountSavedWorkspaceRoots(principal identity.Principal, baseRoots []string) ([]string, error) {

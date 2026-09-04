@@ -214,6 +214,19 @@ func (s *Service) compileResolvedAgentToolContract(accountScopeID string, profil
 		return ResolvedAgentToolContract{}, nil, nil, err
 	}
 	applyExplicitAgentTools(resolved.Tools, contract.Tools, "tool_contract")
+	workspaceOnboarding := strings.EqualFold(strings.TrimSpace(profile.Name), "system-workspace-onboarding")
+	if workspaceOnboarding {
+		// This compiled agent must never inherit account allow rules: its
+		// mutation approvals and denials below are the complete authority.
+		inheritPolicy = false
+		resolved.InheritPolicy = false
+		for _, name := range []string{"write", "edit", "bash", "git_add", "git_commit"} {
+			if state, ok := resolved.Tools[name]; ok && state.Enabled {
+				state.Source = "runtime.workspace_onboarding_permission"
+				resolved.Tools[name] = state
+			}
+		}
+	}
 	if strings.EqualFold(strings.TrimSpace(profile.Name), "swarm") && strings.EqualFold(strings.TrimSpace(profile.Mode), "primary") {
 		// Swarm is a compiled system agent. Its code-owned session and workspace
 		// routing capabilities cannot be narrowed by stale account profile state.
@@ -236,10 +249,14 @@ func (s *Service) compileResolvedAgentToolContract(accountScopeID string, profil
 			continue
 		}
 		if state.Enabled && name == "bash" && len(state.BashPrefixes) > 0 {
+			decision := permission.PolicyDecisionAllow
+			if workspaceOnboarding {
+				decision = permission.PolicyDecisionAsk
+			}
 			for _, prefix := range state.BashPrefixes {
 				policyRules = append(policyRules, permission.PolicyRule{
 					Kind:     permission.PolicyRuleKindBashPrefix,
-					Decision: permission.PolicyDecisionAllow,
+					Decision: decision,
 					Tool:     "bash",
 					Pattern:  prefix,
 				})
@@ -255,9 +272,16 @@ func (s *Service) compileResolvedAgentToolContract(accountScopeID string, profil
 			})
 			continue
 		}
+		decision := permission.PolicyDecisionAllow
+		if workspaceOnboarding {
+			switch name {
+			case "write", "edit", "git_add", "git_commit":
+				decision = permission.PolicyDecisionAsk
+			}
+		}
 		policyRules = append(policyRules, permission.PolicyRule{
 			Kind:     permission.PolicyRuleKindTool,
-			Decision: permission.PolicyDecisionAllow,
+			Decision: decision,
 			Tool:     name,
 		})
 	}

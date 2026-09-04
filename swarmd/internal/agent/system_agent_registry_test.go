@@ -16,7 +16,7 @@ func TestBuiltinSystemAgentRegistryIsCompleteAndUnique(t *testing.T) {
 	if err := registry.Validate(); err != nil {
 		t.Fatalf("validate builtin registry: %v", err)
 	}
-	want := []string{SwarmAgentID, AISidechatAgentID, AITaskPreparerAgentID, CoderAgentID, CompactAgentID, DesignerAgentID, FinderAgentID, IdeaAgentID, ImageAgentID, PlanSidechatAgentID, ReviewCommitAgentID, RouterAgentID, WorkspaceDefinitionAgentID}
+	want := []string{SwarmAgentID, AISidechatAgentID, AITaskPreparerAgentID, CoderAgentID, CompactAgentID, DesignerAgentID, FinderAgentID, IdeaAgentID, ImageAgentID, PlanSidechatAgentID, ReviewCommitAgentID, RouterAgentID, WorkspaceDefinitionAgentID, WorkspaceOnboardingAgentID}
 	if got := registry.IDs(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("registry IDs = %v, want %v", got, want)
 	}
@@ -32,7 +32,7 @@ func TestBuiltinSystemAgentRegistryIsCompleteAndUnique(t *testing.T) {
 			t.Fatalf("sidechat-only system agent %q is not protected: %+v", id, definition)
 		}
 	}
-	for _, id := range []string{SwarmAgentID, AITaskPreparerAgentID, CompactAgentID, FinderAgentID, CoderAgentID, DesignerAgentID, ImageAgentID, IdeaAgentID, ReviewCommitAgentID, RouterAgentID, WorkspaceDefinitionAgentID} {
+	for _, id := range []string{SwarmAgentID, AITaskPreparerAgentID, CompactAgentID, FinderAgentID, CoderAgentID, DesignerAgentID, ImageAgentID, IdeaAgentID, ReviewCommitAgentID, RouterAgentID, WorkspaceDefinitionAgentID, WorkspaceOnboardingAgentID} {
 		definition, _ := registry.DefinitionByID(id)
 		if definition.RequiresSidechatMetadata || IsReservedSidechatAgentName(id) {
 			t.Fatalf("ordinary/task system agent %q was classified as sidechat-only: %+v", id, definition)
@@ -220,6 +220,32 @@ func TestSystemAgentSnapshotReconciliationPreservesDynamicContextAndModels(t *te
 	}
 	if router.Name != RouterAgentID || router.Provider != "codex" || router.Model != "router-model" || router.Thinking != "high" || router.AutoServiceTier != "priority" || router.Prompt != RouterAgentPrompt() || router.RuntimeMode != pebblestore.AgentRuntimeModeRead || router.ToolContract == nil || router.ToolContract.Preset != "custom" || len(router.ToolContract.Tools) != 0 {
 		t.Fatalf("Router immutable tool-free contract was not restored: %+v", router)
+	}
+
+	workspaceOnboarding, err := registry.ReconcileSnapshot(WorkspaceOnboardingAgentID, pebblestore.AgentProfile{Name: WorkspaceOnboardingAgentID, Provider: "codex", Model: "action-model", Thinking: "high", AutoServiceTier: "priority", Prompt: "mutable", RuntimeMode: pebblestore.AgentRuntimeModeRead, ToolContract: &pebblestore.AgentToolContract{Preset: "read_write"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if workspaceOnboarding.Name != WorkspaceOnboardingAgentID || workspaceOnboarding.Provider != "codex" || workspaceOnboarding.Model != "action-model" || workspaceOnboarding.Prompt != WorkspaceOnboardingAgentPrompt() || workspaceOnboarding.RuntimeMode != pebblestore.AgentRuntimeModeReadWrite || !workspaceOnboarding.Protected {
+		t.Fatalf("Workspace Onboarding immutable identity mismatch: %+v", workspaceOnboarding)
+	}
+	for _, allowed := range []string{"read", "find", "list", "write", "edit", "bash", "git_status", "git_diff", "git_add", "git_commit"} {
+		if cfg := workspaceOnboarding.ToolContract.Tools[allowed]; cfg.Enabled == nil || !*cfg.Enabled {
+			t.Fatalf("Workspace Onboarding tool %q unavailable: %+v", allowed, workspaceOnboarding.ToolContract)
+		}
+	}
+	if _, ok := workspaceOnboarding.ToolContract.Tools["search"]; ok {
+		t.Fatalf("Workspace Onboarding must not expose repository-wide search: %+v", workspaceOnboarding.ToolContract)
+	}
+	for _, denied := range []string{"task", "manage_sessions", "manage_worktree", "manage_agent", "manage_actions", "manage_skill", "manage_theme", "manage_artifact", "manage_video", "manage_todos", "plan_manage", "ask_user", "exit_plan_mode"} {
+		if cfg := workspaceOnboarding.ToolContract.Tools[denied]; cfg.Enabled == nil || *cfg.Enabled {
+			t.Fatalf("Workspace Onboarding escalation tool %q was not denied: %+v", denied, workspaceOnboarding.ToolContract)
+		}
+	}
+	for _, required := range []string{"one backend-bound pre-admission directory", "ignore rules", "explicit permission", "Never claim the folder is ready until Git HEAD resolves"} {
+		if !strings.Contains(workspaceOnboarding.Prompt, required) {
+			t.Fatalf("Workspace Onboarding prompt missing %q", required)
+		}
 	}
 
 	workspaceDefinition, err := registry.ReconcileSnapshot(WorkspaceDefinitionAgentID, pebblestore.AgentProfile{Name: WorkspaceDefinitionAgentID, Provider: "codex", Model: "router-model", Thinking: "high", AutoServiceTier: "priority", Prompt: "mutable", RuntimeMode: pebblestore.AgentRuntimeModeReadWrite, ToolContract: &pebblestore.AgentToolContract{Preset: "read_write"}})

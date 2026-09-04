@@ -176,6 +176,7 @@ func (s *Server) registerRuntimeRoutes(mux *http.ServeMux) {
 	mux.HandleFunc(MediaStagingCollectionPath+"/", s.handleMediaStagingItem)
 	mux.HandleFunc(RoutedSessionsPath, s.handleRoutedSessionStart)
 	mux.HandleFunc(BackgroundRouterSessionsPath, s.handleBackgroundRouterSessionStart)
+	mux.HandleFunc(WorkspaceOnboardingSessionsPath, s.handleWorkspaceOnboardingSessionStart)
 	mux.HandleFunc(V3RealtimeStreamPath, s.handleV3RealtimeStream)
 	mux.HandleFunc(V3SyncBootstrapPath, s.handleSessionsV3SyncBootstrap)
 	mux.HandleFunc(V3SyncHydratePath, s.handleSessionsV3SyncHydrate)

@@ -7,6 +7,56 @@ import (
 	"testing"
 )
 
+// Requirement: the assisted onboarding validator admits only one canonical,
+// unsaved, non-empty non-repository path. Threat: stale/symlink/saved/empty/ready
+// paths could grant pre-admission mutation scope outside the selected folder.
+// The workspace service is the narrowest layer proving no catalog mutation.
+func TestInspectAssistedRepositoryForPrincipalRequiresExactPreAdmissionState(t *testing.T) {
+	store, cleanup := newTestWorkspaceStore(t)
+	defer cleanup()
+	svc := NewService(store)
+	principal := testPrincipal()
+	path := t.TempDir()
+	if err := os.WriteFile(filepath.Join(path, "existing.txt"), []byte("data"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	state, err := svc.InspectAssistedRepositoryForPrincipal(principal, path, path)
+	if err != nil || state.State != RepositoryStateNeedsAssistedSetup || !state.NeedsReview {
+		t.Fatalf("assisted state=%+v err=%v", state, err)
+	}
+	if entries, listErr := svc.ListKnownForPrincipal(principal, 10); listErr != nil || len(entries) != 0 {
+		t.Fatalf("inspection mutated catalog: entries=%+v err=%v", entries, listErr)
+	}
+	if _, err := svc.InspectAssistedRepositoryForPrincipal(principal, path, filepath.Join(filepath.Dir(path), "stale")); err == nil || !strings.Contains(err.Error(), "stale") {
+		t.Fatalf("stale path error=%v", err)
+	}
+	link := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(path, link); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.InspectAssistedRepositoryForPrincipal(principal, link, path); err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("symlink error=%v", err)
+	}
+	empty := t.TempDir()
+	if _, err := svc.InspectAssistedRepositoryForPrincipal(principal, empty, empty); err == nil || !strings.Contains(err.Error(), "empty folders") {
+		t.Fatalf("empty error=%v", err)
+	}
+	ready := newReadyRepository(t)
+	readyState, err := svc.InspectOnboardingRepositoryForPrincipal(principal, ready, ready)
+	if err != nil || readyState.State != RepositoryStateReady {
+		t.Fatalf("ready onboarding state=%+v err=%v", readyState, err)
+	}
+	if _, err := svc.InspectAssistedRepositoryForPrincipal(principal, ready, ready); err == nil || !strings.Contains(err.Error(), "existing files") {
+		t.Fatalf("ready initial admission error=%v", err)
+	}
+	if _, err := store.AddForAccount(principal.AccountScopeID, path, "Saved"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.InspectAssistedRepositoryForPrincipal(principal, path, path); err == nil || !strings.Contains(err.Error(), "already saved") {
+		t.Fatalf("saved error=%v", err)
+	}
+}
+
 // Requirement: every saved workspace can immediately support mandatory managed
 // worktrees. The threat is persisting a catalog identity before discovering that
 // Git, a repository, or HEAD is missing. This service test is the narrowest
