@@ -6,11 +6,12 @@ usage() {
 Usage:
   ./scripts/test-install-omarchy-vm.sh --archive <archive.tar.gz> --checksum <archive.tar.gz.sha256> --guest <user@host> [--port <n>] [--identity <path>]
 
-Run the same fresh-install assertion on an already-provisioned Omarchy VM. The
-VM must come from the official Omarchy ISO unattended-install path and expose
-SSH to a non-root user with passwordless sudo. This runner removes Git after
-fetching the installer input, copies the exact checksum-bound candidate over
-SSH, unsets TMPDIR for install.sh, and verifies Git provisioning plus full readiness.
+Run the same mandatory-prerequisite provisioning assertion on an already-
+provisioned Omarchy VM. The VM must come from the official Omarchy ISO
+unattended-install path and expose SSH to a non-root user with passwordless
+sudo. This runner removes Git after fetching the installer input, copies the
+exact checksum-bound candidate over SSH, unsets TMPDIR for install.sh, and
+verifies Git provisioning plus full readiness.
 
 The repository does not download or embed the multi-gigabyte Omarchy ISO in
 GitHub Actions. On testbench, create a reusable clean base once with Omarchy's
@@ -65,7 +66,7 @@ checksum="$2"
 sudo pacman -Syu --noconfirm --needed ca-certificates curl
 sudo pacman -Rdd --noconfirm git >/dev/null 2>&1 || true
 if command -v git >/dev/null 2>&1; then
-  echo "Omarchy guest still has Git before Swarm installation" >&2
+  echo "Omarchy guest still satisfies the Git provisioning precondition" >&2
   exit 1
 fi
 work="$(mktemp -d)"
@@ -90,4 +91,4 @@ test "$(stat -c %u /usr/local/share/swarm)" = "$(id -u)"
 test "$(stat -c %g /usr/local/share/swarm)" = "$(id -g)"
 EOF
 
-printf 'distro=omarchy\ncandidate_download=passed\ngit_preinstall=absent\ngit_installer_provisioned=passed\ninstall=passed\nservice=active\ndaemon_readiness=healthy\ncli=invoked\ntmpdir=unset\n'
+printf 'distro=omarchy\ncandidate_download=passed\nmandatory_git_precondition=missing\nmandatory_git_provisioning=passed\ninstall=passed\nservice=active\ndaemon_readiness=healthy\ncli=invoked\ntmpdir=unset\n'

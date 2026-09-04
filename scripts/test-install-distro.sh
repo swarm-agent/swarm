@@ -9,10 +9,10 @@ Usage:
 Download one checksum-bound release archive inside a fresh privileged distro
 environment. The runner installs only the downloader, certificate, sudo, and
 systemd bootstrap needed to invoke the public installer, creates a non-root
-service owner with passwordless sudo, explicitly verifies Git is absent, curls
-the exact candidate into that user's fresh home, unsets TMPDIR, runs the
-archive's install.sh in systemd service mode, and verifies prerequisite
-provisioning plus full readiness.
+service owner with passwordless sudo, proves the mandatory Git prerequisite is
+initially missing, curls the exact candidate into that user's fresh home,
+unsets TMPDIR, runs the archive's install.sh in systemd service mode, and
+verifies prerequisite provisioning plus full readiness.
 
 Environment:
   SWARM_INSTALL_DISTRO_RUNTIME  Container runtime command (default: podman, then docker)
@@ -149,7 +149,7 @@ candidate_port="$(cat "${port_file}")"
 "${RUNTIME}" exec "${container_name}" bash -se <<'EOF'
 set -euo pipefail
 if command -v git >/dev/null 2>&1; then
-  echo "test image unexpectedly includes Git before Swarm installation" >&2
+  echo "test image unexpectedly satisfies the Git provisioning precondition" >&2
   exit 1
 fi
 EOF
@@ -189,4 +189,4 @@ test "\$(stat -c %u /usr/local/share/swarm)" = "\$(id -u swarmtest)"
 test "\$(stat -c %g /usr/local/share/swarm)" = "\$(id -g swarmtest)"
 EOF
 
-printf 'distro=%s\nimage=%s\ncandidate_archive=%s\ncandidate_sha256=%s\ncandidate_download=passed\ngit_preinstall=absent\ngit_installer_provisioned=passed\ninstall=passed\nservice=active\ndaemon_readiness=healthy\ncli=invoked\ntmpdir=unset\n' "${DISTRO}" "${IMAGE}" "${archive_name}" "${expected_digest}"
+printf 'distro=%s\nimage=%s\ncandidate_archive=%s\ncandidate_sha256=%s\ncandidate_download=passed\nmandatory_git_precondition=missing\nmandatory_git_provisioning=passed\ninstall=passed\nservice=active\ndaemon_readiness=healthy\ncli=invoked\ntmpdir=unset\n' "${DISTRO}" "${IMAGE}" "${archive_name}" "${expected_digest}"

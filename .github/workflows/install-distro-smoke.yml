@@ -68,7 +68,7 @@ jobs:
         with:
           name: install-candidate-${{ github.event.pull_request.head.sha || github.sha }}
           path: candidate
-      - name: Install from zero on ${{ matrix.distro }}
+      - name: Provision mandatory prerequisites and install on ${{ matrix.distro }}
         env:
           TMPDIR: ${{ runner.temp }}
           SWARM_INSTALL_DISTRO_RUNTIME: docker

@@ -96,13 +96,13 @@ jobs:
           TMPDIR: ${{ runner.temp }}
         run: ./scripts/smoke-release-archive.sh "dist/swarm-${{ steps.version.outputs.version }}-linux-amd64.tar.gz" "dist/swarm-${{ steps.version.outputs.version }}-linux-amd64.tar.gz.sha256" --evidence "dist/smoke-evidence.txt"
 
-      - name: Install release from zero on Ubuntu
+      - name: Provision mandatory prerequisites and install on Ubuntu
         env:
           TMPDIR: ${{ runner.temp }}
           SWARM_INSTALL_DISTRO_RUNTIME: docker
         run: ./scripts/test-install-distro.sh --archive "dist/swarm-${{ steps.version.outputs.version }}-linux-amd64.tar.gz" --checksum "dist/swarm-${{ steps.version.outputs.version }}-linux-amd64.tar.gz.sha256" --distro ubuntu
 
-      - name: Install release from zero on Arch
+      - name: Provision mandatory prerequisites and install on Arch
         env:
           TMPDIR: ${{ runner.temp }}
           SWARM_INSTALL_DISTRO_RUNTIME: docker
