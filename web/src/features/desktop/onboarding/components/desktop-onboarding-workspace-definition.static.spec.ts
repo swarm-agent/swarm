@@ -57,6 +57,13 @@ test('onboarding does not gate saved workspaces on definition state or show pers
   assert.doesNotMatch(source, /Git is optional|ready to use without Git|Use folder for this chat only/)
 })
 
+test('provider setup applies refreshed credential state before entering workspace selection', () => {
+  const providerSaveHandler = source.slice(source.indexOf('const handleProviderSave'), source.indexOf('const handleCredentialKeyDown'))
+  assert.match(providerSaveHandler, /const next = await reloadStatus\(\)/)
+  assert.match(providerSaveHandler, /const next = await reloadStatus\(\)[\s\S]*?setStatus\(next\)[\s\S]*?transitionToStep\('workspace'\)/)
+  assert.equal((providerSaveHandler.match(/setStatus\(next\)/g) ?? []).length, 1)
+})
+
 test('existing-file onboarding stays in its dedicated assistant and admits the workspace only after a committed repository recheck', () => {
   assert.match(source, /const assistant = \{ sessionId: launched\.sessionId, path: launched\.repository\.path \}/)
   assert.match(source, /saveWorkspaceOnboardingAssistantResume\(assistant\)[\s\S]*?setOnboardingAssistant\(assistant\)/)

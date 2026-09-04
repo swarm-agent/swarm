@@ -856,9 +856,10 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
       }
 
       setCredentialValue('')
-      await reloadStatus()
+      const next = await reloadStatus()
       await refreshAuthDependentQueries()
       setNotice('Provider connected. Choose your workspace when you’re ready.')
+      setStatus(next)
       transitionToStep('workspace')
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to save provider credential')
