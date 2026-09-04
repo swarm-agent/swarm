@@ -221,7 +221,7 @@ async function replayEvents(sessionID) {
     const nextSeq = Number(response.body?.next_seq || afterSeq)
     if (page.length === 0 || nextSeq <= afterSeq) break
     afterSeq = nextSeq
-    if (afterSeq >= Number(response.body?.high_watermark_seq || 0)) break
+    if (page.length < 500) break
   }
   return events
 }
