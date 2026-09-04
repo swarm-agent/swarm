@@ -564,8 +564,10 @@ async function runLive() {
     const studio = await openDesktopStudio(session.sessionID, artifact.id)
     assert(await studio.locator('[data-artifact-v3-part-navigator] [data-artifact-v3-part]').count() === 3, 'Desktop basic HTML Part navigator does not show exactly three parts')
     await screenshot(page, 'desktop-basic-html-artifact-studio')
-    const events = initialSnapshot.events_by_session?.[session.sessionID] || []
+    const replaySnapshot = await hydrate(session.sessionID)
+    const events = replaySnapshot.events_by_session?.[session.sessionID] || []
     const artifactEvents = events.filter((event) => text(event?.event_type).startsWith('artifact.v3.'))
+    log(`OBSERVE hydrated_events=${events.length} artifact_v3_events=${artifactEvents.length}`)
     assert(artifactEvents.length >= 2 && !forbiddenLegacyWrite(artifactEvents), 'basic HTML durable replay lacks native Artifact V3 genesis events or contains legacy identity')
     const records = await page.evaluate(() => window.__artifactV3Records || [])
     const liveEvents = records.filter((record) => record.kind === 'message' && record.session_id === session.sessionID && record.event_type.startsWith('artifact.v3.'))
