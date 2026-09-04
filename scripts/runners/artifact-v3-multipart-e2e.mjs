@@ -439,7 +439,7 @@ function visibleChangeRequest() {
     return [
       'Visible change request from the user: change only the Pricing part intent to a vivid magenta treatment and add the exact readable label TARGETED PRICING TURN inside the existing Pricing section.',
       'Use the exact native Artifact V3 reference and current revision already supplied by the Artifact Studio draft.',
-      'Use manage_artifact read_v3 to read that exact complete HTML, preserve all three stable Part IDs, then use revise_v3 with target_part_ids=["pricing"] and the complete corrected HTML.',
+      'Use manage_artifact read_v3 to read that exact complete HTML and its Parts, preserve all three stable Part IDs, then use revise_v3 with target_part_ids set to the exact Pricing Part ID from that read result and the complete corrected HTML.',
       'Create exactly one exact-base complete candidate. Inspect its pixels, but do not select it or move the selected head. Do not delegate to Designer and do not use V1/V2 artifact identity.',
     ].join(' ')
   }
@@ -468,11 +468,14 @@ async function submitSidebarIteration(sessionID, artifactID, rootRevision) {
   const studio = await openDesktopStudio(sessionID, artifactID)
   const navigator = studio.locator('[data-artifact-v3-part-navigator]')
   assert(await navigator.locator('[data-artifact-v3-part]').count() === 3, 'Desktop part navigator does not show exactly three parts')
-  const pricing = navigator.locator('[data-artifact-v3-part="pricing"]')
+  const pricingID = rootRevision.manifest.parts.find((part) => text(part?.label).toLowerCase().includes('pricing'))?.id
+  assert(pricingID, 'root manifest has no semantic Pricing Part')
+  const pricing = navigator.locator(`[data-artifact-v3-part="${pricingID}"]`)
   await pricing.click()
   assert(await pricing.getAttribute('aria-pressed') === 'true', 'Pricing was not selected in the Artifact V3 sidebar')
-  assert(await navigator.locator('[data-artifact-v3-part="hero"]').getAttribute('aria-pressed') === 'false', 'Hero was selected unexpectedly')
-  assert(await navigator.locator('[data-artifact-v3-part="footer"]').getAttribute('aria-pressed') === 'false', 'Footer was selected unexpectedly')
+  for (const part of rootRevision.manifest.parts.filter((part) => part.id !== pricingID)) {
+    assert(await navigator.locator(`[data-artifact-v3-part="${part.id}"]`).getAttribute('aria-pressed') === 'false', `${part.label || part.id} was selected unexpectedly`)
+  }
   await screenshot(page, 'desktop-pricing-only-selected')
   const iterate = studio.locator('[data-artifact-v3-iterate]')
   assert(text(await iterate.textContent()).includes('Iterate 1 selected'), 'Desktop did not describe exactly one selected target')
@@ -480,7 +483,7 @@ async function submitSidebarIteration(sessionID, artifactID, rootRevision) {
   const composer = page.getByLabel('Continue Desktop V3 conversation')
   await composer.waitFor({ state: 'visible', timeout: 30000 })
   const generated = await composer.inputValue()
-  assert(generated.includes('Target part IDs (intent only): pricing'), 'sidebar iteration draft lost the exact Pricing target')
+  assert(generated.includes(`Target part IDs (intent only): ${pricingID}`), 'sidebar iteration draft lost the exact Pricing target')
   assert(generated.includes(rootRevision.revision_ref), 'sidebar iteration draft lost the exact current revision reference')
   await composer.fill(`${generated}\n\n${visibleChangeRequest()}`)
   await screenshot(page, 'desktop-normal-composer-targeted-request')
@@ -495,15 +498,16 @@ async function submitSidebarIteration(sessionID, artifactID, rootRevision) {
   const runID = text(decoded?.run_intent?.run_id || decoded?.run_id)
   assert(runID, 'normal Desktop composer response returned no run ID')
   result.ids.followup_run_id = runID
-  result.ui = { selected_part_ids: ['pricing'], draft_sha256: sha256(body.content), message_client_request_id: text(body.client_request_id), normal_message_path: true }
+  result.ui = { selected_part_ids: [pricingID], draft_sha256: sha256(body.content), message_client_request_id: text(body.client_request_id), normal_message_path: true }
   return waitForRun(sessionID, runID, 'sidebar-targeted-followup')
 }
 
 function targetedTurn(artifact, rootRevision) {
   const turns = artifact.turns || []
+  const pricingID = rootRevision.manifest.parts.find((part) => text(part?.label).toLowerCase().includes('pricing'))?.id
   const turn = [...turns].reverse().find((item) => item?.base_commit_oid === rootRevision.commit_oid)
   assert(turn?.turn_id && turn?.status === 'awaiting_selection', 'targeted whole-project turn is not awaiting selection')
-  assert(Array.isArray(turn.target_part_ids) && turn.target_part_ids.length === 1 && turn.target_part_ids[0] === 'pricing', 'follow-up turn did not target exactly Pricing')
+  assert(Array.isArray(turn.target_part_ids) && turn.target_part_ids.length === 1 && turn.target_part_ids[0] === pricingID, 'follow-up turn did not target exactly the Pricing Part')
   assert(Array.isArray(turn.candidates) && turn.candidates.length === 1, 'follow-up turn did not produce exactly one complete candidate')
   const candidate = turn.candidates[0]
   assert(candidate.status === 'ready' && candidate.revision?.commit_oid && candidate.revision?.tree_oid && candidate.revision?.revision_ref, 'follow-up candidate is not a ready exact revision')
@@ -518,7 +522,7 @@ async function verifyStudioTurns(sessionID, artifactID, turn, candidate, rootRev
   assert(await turns.count() === 2, 'Artifact Studio does not show the initial and follow-up turns coherently')
   const targetTurn = studio.locator(`[data-artifact-v3-turn="${turn.turn_id}"]`)
   await targetTurn.waitFor({ state: 'visible', timeout: 30000 })
-  assert(text(await targetTurn.textContent()).includes('target pricing'), 'Artifact Studio follow-up turn lost the targeted Pricing identity')
+  assert(text(await targetTurn.textContent()).toLowerCase().includes('target ' + turn.target_part_ids[0].toLowerCase()), 'Artifact Studio follow-up turn lost the targeted Pricing identity')
   const candidateRow = targetTurn.locator(`[data-artifact-v3-candidate="${candidate.candidate_id}"]`)
   await candidateRow.waitFor({ state: 'visible', timeout: 30000 })
   await candidateRow.getByRole('button').first().click()
@@ -654,7 +658,7 @@ async function runLive() {
 
   const messages = followSnapshot.messages_by_session?.[session.sessionID] || []
   const userFollowup = [...messages].reverse().find((message) => text(message?.role).toLowerCase() === 'user' && text(message?.content).includes('TARGETED PRICING TURN'))
-  assert(userFollowup && text(userFollowup.content).includes('Target part IDs (intent only): pricing'), 'durable session message history lost the sidebar-targeted user interaction')
+  assert(userFollowup && turn.target_part_ids.every((id) => text(userFollowup.content).includes(`Target part IDs (intent only): ${id}`)), 'durable session message history lost the sidebar-targeted user interaction')
   const events = followSnapshot.events_by_session?.[session.sessionID] || []
   const artifactEvents = events.filter((event) => text(event?.event_type).startsWith('artifact.v3.'))
   assert(artifactEvents.length >= 4 && !forbiddenLegacyWrite(artifactEvents), 'durable replay lacks native Artifact V3 turn events or contains legacy write identity')
