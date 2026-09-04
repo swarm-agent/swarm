@@ -530,20 +530,16 @@ function targetedTurn(artifact, rootRevision) {
 }
 
 async function createSiblingAlternatives(sessionID, artifactID, baseRevision) {
-  const read = await api('POST', `/v3/sessions/${encodeURIComponent(sessionID)}/messages`, {
-    client_request_id: `${testID}:alternate-siblings`, role: 'user',
-    content: [
-      'Create exactly two sibling Artifact V3 alternatives from this exact selected revision without Designers.',
+  const turnKey = `${testID}-footer-alternatives`
+  for (const [index, label] of [[1, 'ALTERNATE OPTION ONE'], [2, 'ALTERNATE OPTION TWO']]) {
+    await postTurn(sessionID, `alternate-sibling-${index}`, [
+      `Create sibling candidate ${index} of 2 from this exact selected Artifact V3 revision without Designers.`,
       `Use manage_artifact read_v3 on session_id=${sessionID}, artifact_id=${artifactID}, revision_ref=${baseRevision.revision_ref}.`,
-      `Then call revise_v3 twice with the same turn_key=${testID}-footer-alternatives, target_part_ids set to the exact Footer Part ID, and candidate_index 1 then 2.`,
-      'The first complete HTML must include exact label ALTERNATE OPTION ONE in the Footer. The second must start again from the same exact base and include exact label ALTERNATE OPTION TWO instead. Preserve the selected Pricing change and all stable Part IDs. Keep the complete page exactly within 1440x900 with no scrolling or clipped Part: use an explicit 100vw by 100vh overflow-hidden root and bounded grid/flex tracks if needed. Inspect both candidates. Do not select either and do not use Designer or V1/V2 identity.',
-    ].join(' '),
-    metadata: { runner_test: 'artifact-v3-multipart-e2e', runner_test_id: testID, stage: 'alternate-siblings' },
-  }, 'post alternate siblings')
-  const runID = text(read.body?.run_intent?.run_id || read.body?.run_id)
-  assert(runID, 'alternate sibling request returned no run ID')
-  result.ids.alternate_run_id = runID
-  await waitForRun(sessionID, runID, 'alternate-siblings')
+      `Call revise_v3 exactly once with turn_key=${turnKey}, candidate_index=${index}, and target_part_ids set to the exact Footer Part ID.`,
+      `The complete HTML must include exact label ${label} in the Footer, preserve CONTINUED SELECTED TURN, TARGETED PRICING TURN, Team $29, and all stable Part IDs, and fit exactly within 1440x900 with no scrolling or clipped Part.`,
+      'Inspect this candidate, do not select it, do not create the other candidate in this run, and do not use Designer or V1/V2 identity.',
+    ].join(' '))
+  }
   const timeoutAt = Math.min(deadline, Date.now() + 30000)
   while (Date.now() < timeoutAt) {
     const artifact = await detail(sessionID, artifactID)
@@ -653,16 +649,21 @@ async function runAlternateChoiceResume(sessionID) {
   const artifact = artifactOverride ? items.find((item) => text(item?.id) === artifactOverride) : items.length === 1 ? items[0] : null
   assert(artifact?.id, `alternate-choice resume requires --artifact-id when the session has ${items.length} artifacts`)
   let existing = await detail(sessionID, artifact.id)
-  const continuationTurn = [...(existing.turns || [])].reverse().find((item) => item.target_part_ids?.length === 1 && text(item.target_part_ids[0]).toLowerCase() === 'hero' && item.candidates?.length === 1)
-  assert(continuationTurn?.candidates?.[0]?.revision?.commit_oid, 'resumed artifact has no exact Hero continuation candidate')
-  let continuationCandidate = continuationTurn.candidates[0]
-  let continuationRevision = continuationCandidate.revision
+  const selectedSample = await screenshotPreview(sessionID, artifact.id, currentRevision(existing), 'CONTINUED SELECTED TURN', true)
+  const selectedUsable = selectedSample.bodyText.includes('TARGETED PRICING TURN') && selectedSample.scrollWidth <= selectedSample.innerWidth + 2 && selectedSample.scrollHeight <= selectedSample.innerHeight + 2 && selectedSample.rows.every((row) => row.rect && row.rect.left >= -1 && row.rect.top >= -1 && row.rect.right <= selectedSample.innerWidth + 1 && row.rect.bottom <= selectedSample.innerHeight + 1)
+  if (selectedUsable) {
+    gate('continued-selected-base', 'PASS', currentRevision(existing).revision_ref)
+  }
+  const continuationTurn = selectedUsable ? null : [...(existing.turns || [])].reverse().find((item) => item.target_part_ids?.length === 1 && text(item.target_part_ids[0]).toLowerCase() === 'hero' && item.candidates?.length === 1)
+  if (!selectedUsable) assert(continuationTurn?.candidates?.[0]?.revision?.commit_oid, 'resumed artifact has no exact Hero continuation candidate')
+  let continuationCandidate = continuationTurn?.candidates?.[0] || null
+  let continuationRevision = selectedUsable ? currentRevision(existing) : continuationCandidate.revision
   let selectedContinuationTurn = continuationTurn
   assert(JSON.stringify(continuationRevision).includes(continuationRevision.commit_oid), 'continued revision identity is incomplete')
   result.ids.artifact_id = artifact.id
-  result.ids.continuation_turn_id = continuationTurn.turn_id
-  result.ids.continuation_candidate_id = continuationCandidate.candidate_id
-  const firstContinuationSample = await screenshotPreview(sessionID, artifact.id, continuationRevision, 'CONTINUED SELECTED TURN', true)
+  if (continuationTurn) result.ids.continuation_turn_id = continuationTurn.turn_id
+  if (continuationCandidate) result.ids.continuation_candidate_id = continuationCandidate.candidate_id
+  const firstContinuationSample = selectedUsable ? selectedSample : await screenshotPreview(sessionID, artifact.id, continuationRevision, 'CONTINUED SELECTED TURN', true)
   const overflowing = firstContinuationSample.scrollWidth > firstContinuationSample.innerWidth + 2 || firstContinuationSample.scrollHeight > firstContinuationSample.innerHeight + 2 || firstContinuationSample.rows.some((row) => !row.rect || row.rect.left < -1 || row.rect.top < -1 || row.rect.right > firstContinuationSample.innerWidth + 1 || row.rect.bottom > firstContinuationSample.innerHeight + 1)
   if (overflowing) {
     log(`OBSERVE continued candidate ${continuationRevision.revision_ref} needs visual repair before selection`)
