@@ -695,7 +695,7 @@ async function runLive() {
   const selected = await topology()
   let session
   if (sessionOverride) {
-    assert(desktopPathOverride.startsWith('/') && (alternateResumeStage || initialRunOverride), 'resuming requires an absolute --desktop-path and --initial-run-id unless using alternate-choice-resume')
+    assert(alternateResumeStage || (initialRunOverride && desktopPathOverride.startsWith('/')), 'resuming requires --initial-run-id and an absolute --desktop-path unless using alternate-choice-resume')
     const existing = await api('GET', `/v3/sessions/${encodeURIComponent(sessionOverride)}`, undefined, 'read resumed Artifact V3 session')
     const resumedSession = existing.body?.session || existing.body
     assert(text(resumedSession?.id) === sessionOverride, 'resumed Artifact V3 session was not found')
