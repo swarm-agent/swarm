@@ -1,91 +1,98 @@
-# Container-backed live testbench
+# Pooled container-backed live testbench
 
-All live candidate tests use the dedicated broker-owned `systemd-nspawn` machine.
+All live candidate tests use the broker-owned two-slot `systemd-nspawn` pool.
 The host Swarm service and host candidate ports are not a fallback.
 
-## Authority and ports
+## Authority and isolation
 
-- Lifecycle entrypoint: `scripts/testbench-container-deploy.sh`
-- Fixed broker actions: `test-container-prepare`, `test-container-start`,
-  `test-container-stop`, `test-container-status`, and
-  `test-container-sync-fireworks`
-- Remote loopback: Desktop `127.0.0.1:5655`, API `127.0.0.1:7881`
-- Default local forwards: Desktop `127.0.0.1:15655`, API
-  `127.0.0.1:17881`
-- Retired candidate target: host `swarm.service` and host ports `5555/7781`
+- Client: `scripts/testbench-container-deploy.sh`
+- Compatibility command runner: `scripts/testbench-e2e-tunnel.sh`
+- Registered runner wrapper: `scripts/run-testbench-runner.sh`
+- Server contract: the fixed broker actions and helper maintained in the critical operations workspace
+- Slots: `1` and `2`, each with independent installation, data, cache, runtime, logs, network, proxy, and loopback listeners
+- Remote slot ports: Desktop `5655`/`5656`; API `7881`/`7882`
+- Local slot forwards: Desktop `15655`/`15656`; API `17881`/`17882`
 
-The ignored repository-root `.env` is the single local routing source. Start from
-`.env.example`; it declares `SWARM_TESTBENCH_TARGET=container` and the fixed
-remote container ports. Checked-in wrappers reject a host target or host ports.
+The client derives a stable lane ID from the repository common Git directory and
+the exact clean worktree path. It reuses that lane's assigned slot or atomically
+claims one inactive slot. This permits two distinct clean worktrees to test in
+parallel without sharing writable state or silently replacing each other's
+candidate.
 
-## Deploy the exact committed candidate
+The ignored repository-root `.env` contains only the SSH alias, fixed default
+slot-1 port contract, Fireworks model IDs, and optional loopback reverse-forward
+configuration. It contains no credential. The broker supplies Fireworks through
+the protected server boundary.
 
-Deployment requires a clean checkout because the broker accepts one verified Git
-bundle and records its exact commit as `candidate_head`.
+## Deploy an exact worktree
+
+Deployment requires no tracked, staged, or untracked source changes. The client
+creates a verified Git bundle for the exact `HEAD`, places it in a lane-scoped
+claim, and asks the broker to allocate and deploy atomically:
 
 ```bash
 ./scripts/testbench-container-deploy.sh deploy
 ```
 
-This prepares and starts only the isolated container, installs the candidate into
-container-local system paths, enables `dev_mode` inside that disposable container
-so the authenticated session-dump workflow is available, synchronizes the
-configured Fireworks credential through the fixed broker, and prints the exact
-deployed commit. It does not replace or restart a host Swarm installation.
-
-## Check before testing
+A different clean worktree can be selected explicitly only when it belongs to the
+same Git repository:
 
 ```bash
-./scripts/testbench-container-deploy.sh check
+./scripts/testbench-container-deploy.sh deploy --source-worktree /path/to/managed/worktree
 ```
 
-`check` is read-only and requires all of the following:
+`deploy` prints the assigned slot. It builds and starts only that disposable
+container slot, synchronizes Fireworks through the fixed broker, and never
+installs or restarts host `swarm.service`.
 
-1. the current checkout has no tracked, staged, or untracked source changes;
-2. the broker reports the isolated container active;
-3. both container loopback endpoints are healthy;
-4. `candidate_head` exactly equals the current checkout `HEAD`.
-
-A stopped or stale container fails with an instruction to deploy. For automatic
-setup without running a test, use `./scripts/testbench-container-deploy.sh ensure`;
-it deploys only when needed. Neither action falls back to `scripts/ssh-fast-test.sh`,
-host `swarm.service`, or ports `5555/7781`.
-
-## Run checked-in tests
-
-Use `run` when invoking a command directly. It checks the exact current `HEAD`; when the container is stopped or stale it automatically invokes the same canonical `deploy` action first. That deployment still fails closed unless all source changes are committed:
+## Inspect and tunnel
 
 ```bash
-./scripts/testbench-container-deploy.sh run \
-  ./scripts/run-runner-test.sh \
-  http://127.0.0.1:15655 fireworks artifact-v3-multipart-e2e \
-  --workspace-path /path/already/bound/in/the/container \
-  --action-model deepseek-v4-flash-0731 --action-thinking high \
-  --plan-model deepseek-v4-pro-0813 --plan-thinking xhigh \
-  --coder-model deepseek-v4-flash-0731 --coder-thinking high \
-  --designer-model kimi-k3 --designer-thinking high
+./scripts/testbench-container-deploy.sh pool-status
+./scripts/testbench-container-deploy.sh status
+./scripts/testbench-container-deploy.sh tunnel
 ```
 
-After exact-head readiness, the wrapper opens temporary SSH forwards, exports:
+`pool-status` reports both bounded slots. `status` requires this worktree to have
+an assigned active slot. `tunnel` opens only the local forwards for that slot and
+renews its private activity lease once per minute; the server's reaper stops a
+slot after 30 idle minutes.
 
-- `SWARM_DESKTOP_URL=http://127.0.0.1:15655`
-- `SWARM_PRIMARY_API_URL=http://127.0.0.1:17881`
-- `SWARM_RUNNER_API_URL=http://127.0.0.1:15655`
+For exact-head checking and command execution, use the compatibility wrapper:
 
-and closes the tunnel when the command exits. Runners use the Desktop endpoint
-for local-session bootstrap because it preserves the browser/local-transport
-authentication contract; the API forward remains available for probes that
-explicitly require it. Failed Artifact V3 journeys invoke
-`scripts/session-dump-via-api.sh` before the tunnel closes and download the exact
-private dump into the runner's ignored evidence directory.
+```bash
+./scripts/testbench-e2e-tunnel.sh check
+./scripts/testbench-e2e-tunnel.sh run COMMAND ARG...
+```
 
-For ordinary registered runners, use the shorter wrapper:
+`check` fails unless this checkout is clean and its assigned active slot runs the
+exact current `HEAD`. `run` deploys the exact clean `HEAD` only when the slot is
+absent, inactive, or stale, then opens temporary slot-specific forwards and
+exports:
+
+- `SWARM_DESKTOP_URL`
+- `SWARM_PRIMARY_API_URL`
+- `SWARM_RUNNER_API_URL`
+- `SWARM_RUNNER_WEB_PACKAGE` when the repository's primary checkout has pinned Playwright dependencies
+
+The temporary tunnel and heartbeat are stopped when the command exits.
+
+## Run checked-in E2E scenarios
+
+Use the registered runner wrapper for normal tests:
 
 ```bash
 ./scripts/run-testbench-runner.sh artifact-v3-multipart-e2e \
-  --workspace-path /path/already/bound/in/the/container
+  --stage basic-html \
+  --timeout-ms 600000
 ```
 
-The compatibility entrypoint `scripts/testbench-e2e-tunnel.sh` now delegates
-only to the same container `check` and `run` actions. It contains no host-service
-probe, deployment, restart, or alternate port path.
+The wrapper maps the current worktree to its stable slot, deploys the exact clean
+commit when necessary, opens its loopback forwards, and runs the checked-in
+scenario. The Artifact V3 `basic-html` stage isolates one ordinary primary-Swarm
+static HTML creation before targeted turns, animation, Designer, storyboard, or
+video gates.
+
+Failed Artifact V3 journeys capture their bounded dev-mode session dump before
+tunnel teardown. Dumps, screenshots, summaries, lane IDs, and session identifiers
+are private ignored evidence and must not be committed or copied into public docs.

@@ -23,16 +23,19 @@ require_literal "$example" 'SWARM_REMOTE_DESKTOP_PORT=5655'
 require_literal "$example" 'SWARM_TESTBENCH_REMOTE_API_PORT=7881'
 require_literal "$lib" 'SWARM_TESTBENCH_TARGET must be container'
 require_literal "$lib" 'host ports 5555/7781 are retired for live candidate testing'
-require_literal "$container" 'broker_action test-container-prepare'
-require_literal "$container" 'broker_action test-container-start'
-require_literal "$container" 'container is stopped or stale; deploying current committed HEAD'
-require_literal "$container" 'export SWARM_RUNNER_API_URL="$SWARM_DESKTOP_URL"'
-require_literal "$compat" 'exec "$root/scripts/testbench-container-deploy.sh" "$action" "$@"'
-require_literal "$runner" 'exec "${ROOT_DIR}/scripts/testbench-container-deploy.sh" run "${runner[@]}"'
+require_literal "$container" 'test-container-deploy-auto'
+require_literal "$container" 'test-container-pool-status'
+require_literal "$container" '--source-worktree'
+require_literal "$container" 'lane_id='
+require_literal "$container" 'heartbeat'
+require_literal "$compat" 'deployment completed without an active exact-HEAD slot'
+require_literal "$compat" 'export SWARM_RUNNER_API_URL="$SWARM_DESKTOP_URL"'
+require_literal "$compat" 'SWARM_RUNNER_WEB_PACKAGE'
+require_literal "$runner" 'scripts/testbench-e2e-tunnel.sh" run'
 require_literal "$host" 'use scripts/testbench-container-deploy.sh deploy instead of host swarm.service'
 require_literal "$doc" 'The host Swarm service and host candidate ports are not a fallback.'
 
-if grep -Eq 'ssh-fast-test\.sh|swarm-service-(reload|restart)|127\.0\.0\.1:(5555|7781)' "$compat"; then
+if grep -Eq 'ssh-fast-test\.sh|swarm-service-(reload|restart)' "$compat"; then
   printf 'compatibility tunnel retains a host-service fallback\n' >&2
   exit 1
 fi

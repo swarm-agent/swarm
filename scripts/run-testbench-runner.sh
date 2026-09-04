@@ -5,9 +5,10 @@ usage() {
   cat <<'USAGE'
 Usage: scripts/run-testbench-runner.sh [runner-name] [runner options...]
 
-Loads the ignored repository-root .env, automatically deploys the exact clean
-committed HEAD when needed, and runs a checked-in scripts/runners scenario through
-the isolated container's Desktop endpoint. Default runner: basic-plan-auto.
+Loads the ignored repository-root .env, maps this clean worktree to its stable
+slot in the bounded isolated container pool, deploys the exact HEAD when needed,
+and runs a checked-in scripts/runners scenario through temporary loopback tunnels.
+Default runner: basic-plan-auto.
 USAGE
 }
 
@@ -33,9 +34,6 @@ if [[ "${RUNNER}" == "artifact-v2-provider-proof" ]]; then
 fi
 
 model_args=()
-if [[ "${RUNNER}" == "artifact-v3-multipart-e2e" ]]; then
-  model_args+=(--desktop-url "http://127.0.0.1:${SWARM_TESTBENCH_LOCAL_DESKTOP_PORT}")
-fi
 model_args+=(--action-model "${SWARM_TESTBENCH_ACTION_MODEL}" --action-thinking "${SWARM_TESTBENCH_ACTION_THINKING}")
 model_args+=(--plan-model "${SWARM_TESTBENCH_PLAN_MODEL}" --plan-thinking "${SWARM_TESTBENCH_PLAN_THINKING}")
 model_args+=(--coder-model "${SWARM_TESTBENCH_CODER_MODEL}" --coder-thinking "${SWARM_TESTBENCH_CODER_THINKING}")
@@ -43,10 +41,10 @@ model_args+=(--designer-model "${SWARM_TESTBENCH_DESIGNER_MODEL}" --designer-thi
 [[ -n "${SWARM_TESTBENCH_LINKED_WORKSPACE_PATH:-}" ]] && model_args+=(--linked-workspace-path "${SWARM_TESTBENCH_LINKED_WORKSPACE_PATH}")
 
 runner=("${ROOT_DIR}/scripts/run-runner-test.sh"
-  "http://127.0.0.1:${SWARM_TESTBENCH_LOCAL_DESKTOP_PORT}"
+  "__SWARM_DESKTOP_URL__"
   "${SWARM_TESTBENCH_PROVIDER}"
   "${RUNNER}"
   "${model_args[@]}"
   "$@")
 
-exec "${ROOT_DIR}/scripts/testbench-container-deploy.sh" run "${runner[@]}"
+exec "${ROOT_DIR}/scripts/testbench-e2e-tunnel.sh" run "${runner[@]}"

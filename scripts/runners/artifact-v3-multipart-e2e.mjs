@@ -10,7 +10,7 @@ import { promisify } from 'node:util'
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const rootDir = path.resolve(scriptDir, '..', '..')
-const webPackage = path.join(rootDir, 'web', 'package.json')
+const webPackage = path.resolve(String(process.env.SWARM_RUNNER_WEB_PACKAGE || path.join(rootDir, 'web', 'package.json')))
 const argv = process.argv.slice(2)
 const option = (name, fallback = '') => { const index = argv.indexOf(name); return index >= 0 && index + 1 < argv.length ? argv[index + 1] : fallback }
 const flag = (name) => argv.includes(name)
@@ -80,7 +80,7 @@ async function api(method, route, body, label = route, allowError = false) {
 }
 
 function loadPlaywright() {
-  try { return createRequire(webPackage)('playwright') } catch (error) { fail(`Playwright is unavailable from web/package.json: ${error instanceof Error ? error.message : error}`) }
+  try { return createRequire(webPackage)('playwright') } catch (error) { fail(`Playwright is unavailable from the trusted web package boundary ${webPackage}: ${error instanceof Error ? error.message : error}`) }
 }
 
 async function auth() {
