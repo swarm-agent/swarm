@@ -541,7 +541,8 @@ async function verifyStudioTurns(sessionID, artifactID, turn, candidate, rootRev
   await screenshot(page, 'desktop-turn-by-turn-artifact-studio')
   const rootButton = studio.locator(`[data-artifact-v3-revision="${rootRevision.commit_oid}"]`).first()
   await rootButton.click()
-  await studio.getByText(/Viewing prior revision/).waitFor({ state: 'visible', timeout: 30000 })
+  await studio.locator(`[data-artifact-v3-preview-revision="${rootRevision.commit_oid}"]`).waitFor({ state: 'visible', timeout: 30000 })
+  assert(await rootButton.getAttribute('class').then((value) => text(value).includes('border-[var(--app-primary)]')), 'Artifact Studio did not select the exact prior revision')
   await screenshot(page, 'desktop-exact-prior-revision')
   result.gates.desktop_turn_timeline = true
   result.gates.desktop_prior_revision = true
