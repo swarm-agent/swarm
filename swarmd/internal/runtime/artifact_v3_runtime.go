@@ -1017,7 +1017,11 @@ func (r artifactV3AnimationRenderer) request(input artifactv3video.RenderRequest
 	}
 	files := cloneArtifactProject(input.Project.Files)
 	files[manifest.Entrypoint] = injectArtifactV3AnimationAdapter(files[manifest.Entrypoint], input.DurationMs, int(input.FPS))
-	return htmlcapture.AnimationRequest{Entry: manifest.Entrypoint, Files: files, DurationMS: int(input.DurationMs), FPS: int(input.FPS), OutputFPS: int(input.FPS), Quality: htmlcapture.AnimationQualityStandard, RequireLivePlayback: true}, nil
+	// Native V3 accepts CSS/WAAPI motion. The server-owned adapter below makes
+	// those timelines deterministically seekable even when author code does not
+	// own a requestAnimationFrame loop, so requiring artifact-owned rAF here would
+	// reject valid CSS-only animations after the adapter is successfully bound.
+	return htmlcapture.AnimationRequest{Entry: manifest.Entrypoint, Files: files, DurationMS: int(input.DurationMs), FPS: int(input.FPS), OutputFPS: int(input.FPS), Quality: htmlcapture.AnimationQualityStandard, RequireLivePlayback: false}, nil
 }
 
 func (r artifactV3AnimationRenderer) Preflight(ctx context.Context, input artifactv3video.RenderRequest) error {

@@ -349,9 +349,30 @@ func TestArtifactV3AnimationRendererLeavesGitProjectBytesUnchanged(t *testing.T)
 		t.Fatal("source project bytes were mutated")
 	}
 	for _, got := range []htmlcapture.AnimationRequest{fake.preflight, fake.render} {
-		if got.DurationMS != 2000 || got.FPS != 30 || got.OutputFPS != 30 || !got.RequireLivePlayback || !strings.Contains(string(got.Files["index.html"]), "__SWARM_ANIMATION_BIND__") {
+		if got.DurationMS != 2000 || got.FPS != 30 || got.OutputFPS != 30 || got.RequireLivePlayback || !strings.Contains(string(got.Files["index.html"]), "__SWARM_ANIMATION_BIND__") {
 			t.Fatalf("trusted request=%+v body=%s", got, got.Files["index.html"])
 		}
+	}
+}
+
+// Requirement: CSS-only native V3 animations rely on the server-owned seek
+// adapter and must not be rejected for lacking an author-owned rAF loop.
+// Threat: importing the legacy motion_ui live-playback requirement would make
+// valid CSS/WAAPI artifacts impossible to convert despite deterministic seek.
+func TestArtifactV3AnimationRendererDoesNotRequireAuthorRAF(t *testing.T) {
+	entry := []byte(`<!doctype html><html><head><style>@keyframes fade{to{opacity:.2}}#hero{animation:fade 2s infinite}</style></head><body><div id="hero">Motion</div></body></html>`)
+	manifest := []byte(`{"schema_version":"swarm.artifact/v3","entrypoint":"index.html","parts":[{"id":"hero","label":"Hero","locator":{"kind":"selector","path":"index.html","value":"#hero"}}]}`)
+	fake := &artifactV3AnimationTestRenderer{}
+	renderer := artifactV3AnimationRenderer{renderer: fake}
+	request := artifactv3video.RenderRequest{Project: artifactv3video.Project{Files: map[string][]byte{"swarm-artifact.json": manifest, "index.html": entry}}, DurationMs: 2000, FPS: 30, AnimationAdapter: htmlcapture.AnimationVersion}
+	if err := renderer.Preflight(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	if fake.preflight.RequireLivePlayback {
+		t.Fatal("server-owned CSS seek adapter must not require author rAF playback")
+	}
+	if !strings.Contains(string(fake.preflight.Files["index.html"]), "document.getAnimations") || !strings.Contains(string(fake.preflight.Files["index.html"]), "animation.currentTime=timeMs") {
+		t.Fatal("trusted CSS/WAAPI seek adapter was not injected")
 	}
 }
 
