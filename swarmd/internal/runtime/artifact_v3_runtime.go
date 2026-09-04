@@ -680,6 +680,36 @@ func (a *artifactV3RuntimeAdapter) OpenTurn(ctx context.Context, principal api.A
 	return api.ArtifactV3Turn{TurnID: projection.Turn.TurnID, Revision: projection.Turn.EventSeq, Status: projection.Turn.Status, Intent: request.Intent, TargetPartIDs: canonicalStrings(request.TargetPartIDs), BaseCommitOID: projection.Turn.BaseCommitOID, CreatedAt: projection.Turn.CreatedAt, UpdatedAt: projection.Turn.UpdatedAt}, nil
 }
 
+func (a *artifactV3RuntimeAdapter) SelectArtifactV3DirectHead(ctx context.Context, accountScopeID, userID, sessionID, artifactID, turnID, candidateID string) (tool.ArtifactV3Revision, error) {
+	repository, ok, err := a.sessions.GetArtifactV3Repository(accountScopeID, userID, artifactID)
+	if err != nil {
+		return tool.ArtifactV3Revision{}, err
+	}
+	if !ok || repository.OwnerSessionID != sessionID {
+		return tool.ArtifactV3Revision{}, pebblestore.ErrArtifactV3NotFound
+	}
+	turn, ok, err := a.sessions.GetArtifactV3Turn(accountScopeID, userID, artifactID, turnID)
+	if err != nil {
+		return tool.ArtifactV3Revision{}, err
+	}
+	if !ok {
+		return tool.ArtifactV3Revision{}, pebblestore.ErrArtifactV3Conflict
+	}
+	selected, err := a.SelectCandidate(ctx, api.ArtifactV3Principal{AccountScopeID: accountScopeID, UserID: userID}, api.ArtifactV3SelectCandidateRequest{
+		SessionID:            sessionID,
+		ArtifactID:           artifactID,
+		TurnID:               turnID,
+		ClientRequestID:      artifactV3StableID("direct-select", artifactID, turnID, candidateID),
+		CandidateID:          candidateID,
+		ExpectedHeadRef:      "revision-" + repository.HeadCommitOID,
+		ExpectedTurnRevision: turn.EventSeq,
+	})
+	if err != nil {
+		return tool.ArtifactV3Revision{}, err
+	}
+	return tool.ArtifactV3Revision{CommitOID: selected.Head.CommitOID, TreeOID: selected.Head.TreeOID, ManifestBlobOID: selected.Head.ManifestBlobOID}, nil
+}
+
 func (a *artifactV3RuntimeAdapter) SelectCandidate(ctx context.Context, principal api.ArtifactV3Principal, request api.ArtifactV3SelectCandidateRequest) (api.ArtifactV3SelectionResult, error) {
 	repository, ok, err := a.sessions.GetArtifactV3Repository(principal.AccountScopeID, principal.UserID, request.ArtifactID)
 	if err != nil || !ok || repository.OwnerSessionID != request.SessionID {

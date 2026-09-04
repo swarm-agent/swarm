@@ -3,6 +3,10 @@ package tool
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -12,19 +16,44 @@ import (
 
 type directArtifactV3RepoFake struct {
 	artifactV3AuthorRepoFake
+	turns    []ArtifactV3PrepareTurnRequest
+	selected []string
 }
 
 func (f *directArtifactV3RepoFake) PrepareArtifactV3Turn(_ context.Context, request ArtifactV3PrepareTurnRequest) (ArtifactV3AuthorGrant, error) {
+	f.turns = append(f.turns, request)
+	index := len(f.turns)
 	return ArtifactV3AuthorGrant{
-		ID: "direct-grant", ArtifactID: "artifact-direct", OwnerSessionID: request.OwnerSessionID,
-		TurnID: "turn-direct", CandidateID: "candidate-direct", PolicyRevision: request.PolicyRevision,
-		Initial: request.Initial, ExpiresAt: time.Now().Add(time.Hour).UnixMilli(),
+		ID: fmt.Sprintf("direct-grant-%d", index), ArtifactID: "artifact-direct", OwnerSessionID: request.OwnerSessionID,
+		TurnID: fmt.Sprintf("turn-direct-%d", index), CandidateID: fmt.Sprintf("candidate-direct-%d", index), PolicyRevision: request.PolicyRevision,
+		BaseCommitOID: request.BaseCommitOID, Initial: request.Initial, ExpiresAt: time.Now().Add(time.Hour).UnixMilli(),
 		AllowedActions: []string{artifactV3ActionInspect, artifactV3ActionList, artifactV3ActionRead, artifactV3ActionCreate, artifactV3ActionEdit, artifactV3ActionRename, artifactV3ActionDelete, artifactV3ActionDiff, artifactV3ActionBuild, artifactV3ActionFinish},
 	}, nil
 }
 
 func (f *directArtifactV3RepoFake) FailArtifactV3Turn(context.Context, ArtifactV3TurnFailure) error {
 	return nil
+}
+
+func (f *directArtifactV3RepoFake) MaterializeBase(_ context.Context, _, _, destination string) error {
+	if len(f.submits) == 0 {
+		return errors.New("missing direct Artifact V3 base")
+	}
+	for path, body := range f.submits[0].Project {
+		target := filepath.Join(destination, filepath.FromSlash(path))
+		if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
+			return err
+		}
+		if err := os.WriteFile(target, body, 0o600); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (f *directArtifactV3RepoFake) SelectArtifactV3DirectHead(_ context.Context, _, _, _, _, turnID, candidateID string) (ArtifactV3Revision, error) {
+	f.selected = append(f.selected, turnID+":"+candidateID)
+	return ArtifactV3Revision{CommitOID: "selected-repair-commit", TreeOID: "selected-repair-tree", ManifestBlobOID: "selected-repair-manifest"}, nil
 }
 
 // Requirement: ordinary primary Swarm can publish one complete HTML Artifact V3
@@ -60,7 +89,7 @@ func TestManageArtifactCreateUsesDirectArtifactV3HTMLPath(t *testing.T) {
 			t.Fatalf("manifest missing %s: %s", expected, manifest)
 		}
 	}
-	if !strings.Contains(output, `"artifact_v3"`) || !strings.Contains(output, `"part_count":3`) || strings.Contains(output, "collection_id") || strings.Contains(output, "variant_id") {
+	if !strings.Contains(output, `"artifact_v3"`) || !strings.Contains(output, `"part_count":3`) || !strings.Contains(output, `"revision_kind":"initial"`) || strings.Contains(output, "collection_id") || strings.Contains(output, "variant_id") {
 		t.Fatalf("output=%s", output)
 	}
 	secondArguments, err := json.Marshal(map[string]any{"action": "create", "filename": "index.html", "media_type": "text/html", "content": strings.ReplaceAll(html, "Product hero", "Revised hero"), "collection_name": "Static product page", "parts": requestedParts})
@@ -71,8 +100,22 @@ func TestManageArtifactCreateUsesDirectArtifactV3HTMLPath(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(repository.submits) != 1 || second != output {
-		t.Fatalf("same run created a second Artifact V3: submits=%d first=%s second=%s", len(repository.submits), output, second)
+	if len(repository.submits) != 2 || repository.submits[1].Initial || repository.submits[1].BaseCommitOID == "" || len(repository.selected) != 1 || !strings.Contains(second, `"commit_oid":"selected-repair-commit"`) || !strings.Contains(second, `"revision_kind":"visual_repair"`) || !strings.Contains(second, `"media_inspect_reference":{"artifact_id":"artifact-direct","revision_ref":"revision-selected-repair-commit"`) {
+		t.Fatalf("changed same-run HTML did not create and select one native repair: submits=%#v selected=%#v output=%s", repository.submits, repository.selected, second)
+	}
+	third, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, Call{CallID: "third-direct-html", Name: "manage_artifact", Arguments: string(secondArguments)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(repository.submits) != 2 || len(repository.selected) != 1 || !strings.Contains(third, `"idempotent_replay":true`) || !strings.Contains(third, `do not recreate it`) {
+		t.Fatalf("exact same-run replay was not explicit and idempotent: submits=%d selected=%d output=%s", len(repository.submits), len(repository.selected), third)
+	}
+	changedPartArguments, err := json.Marshal(map[string]any{"action": "create", "filename": "index.html", "media_type": "text/html", "content": strings.ReplaceAll(strings.ReplaceAll(html, "Product hero", "Another hero"), `id="hero"`, `id="hero-renamed"`), "collection_name": "Static product page", "parts": []map[string]any{{"id": "hero-renamed", "label": "Hero", "kind": "semantic"}, {"id": "pricing", "label": "Pricing", "kind": "semantic"}, {"id": "footer", "label": "Footer", "kind": "semantic"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, Call{CallID: "renamed-part", Name: "manage_artifact", Arguments: string(changedPartArguments)}); err == nil || !strings.Contains(err.Error(), "preserve the prior Artifact V3 stable Part IDs") {
+		t.Fatalf("same-run repair changed stable Part identity: %v", err)
 	}
 
 	definition := manageArtifactDefinition()

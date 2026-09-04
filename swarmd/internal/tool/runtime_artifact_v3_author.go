@@ -187,6 +187,9 @@ type ArtifactV3Previewer interface {
 type ArtifactV3PreviewEvidenceReader interface {
 	ReadArtifactV3PreviewEvidence(context.Context, string, string, string, string, string) ([]byte, error)
 }
+type ArtifactV3DirectHeadSelector interface {
+	SelectArtifactV3DirectHead(context.Context, string, string, string, string, string, string) (ArtifactV3Revision, error)
+}
 
 type ArtifactV3AuthorFile struct {
 	Path string `json:"path"`

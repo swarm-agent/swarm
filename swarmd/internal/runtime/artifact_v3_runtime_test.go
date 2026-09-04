@@ -91,10 +91,38 @@ func TestArtifactV3RuntimeAdapterProductionPathAndRecovery(t *testing.T) {
 		t.Fatalf("artifact=%+v finish=%+v", artifact, finished)
 	}
 	followup := tool.ArtifactV3PrepareTurnRequest{AccountScopeID: "account", UserID: "user", OwnerSessionID: "artifact-v3-runtime", TaskCallID: "followup", ArtifactID: grant.ArtifactID, BaseCommitOID: artifact.Head.CommitOID, ProjectionSeq: artifact.Revision, PolicyRevision: "policy", CandidateIndex: 1, Initial: false, TargetPartIDs: []string{"hero"}, ExpiresAt: time.Now().Add(time.Hour).UnixMilli()}
-	if _, err := adapter.PrepareArtifactV3Turn(context.Background(), followup); err != nil {
+	preparedFollowup, err := adapter.PrepareArtifactV3Turn(context.Background(), followup)
+	if err != nil {
 		t.Fatalf("valid manifest target was rejected: %v", err)
 	}
-	followup.TaskCallID, followup.TargetPartIDs = "unknown-target", []string{"missing"}
+	followPrincipal := tool.ArtifactV3AuthorPrincipal{AccountScopeID: "account", UserID: "user", ProducerSessionID: "child", ProducerRunID: "repair-run"}
+	preparedFollowup.ProducerSessionID, preparedFollowup.ProducerRunID = "child", "repair-run"
+	if _, err := author.Inspect(context.Background(), followPrincipal, preparedFollowup); err != nil {
+		t.Fatalf("materialize direct repair base: %v", err)
+	}
+	if err := author.Edit(context.Background(), followPrincipal, preparedFollowup, "index.html", []byte("Artifact V3"), []byte("Artifact V3 repaired"), false); err != nil {
+		t.Fatal(err)
+	}
+	if gate, err := author.BuildPreview(context.Background(), followPrincipal, preparedFollowup); err != nil || !gate.Ready {
+		t.Fatalf("repair gate=%+v err=%v", gate, err)
+	}
+	repair, err := author.Finish(context.Background(), followPrincipal, preparedFollowup)
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeSelect, err := adapter.GetArtifact(context.Background(), api.ArtifactV3Principal{AccountScopeID: "account", UserID: "user"}, "artifact-v3-runtime", grant.ArtifactID)
+	if err != nil || beforeSelect.Head.CommitOID != finished.Revision.CommitOID {
+		t.Fatalf("repair candidate moved head before selection: artifact=%+v err=%v", beforeSelect, err)
+	}
+	selected, err := adapter.SelectArtifactV3DirectHead(context.Background(), "account", "user", "artifact-v3-runtime", grant.ArtifactID, preparedFollowup.TurnID, preparedFollowup.CandidateID)
+	if err != nil || selected.CommitOID != repair.Revision.CommitOID {
+		t.Fatalf("direct repair selection=%+v repair=%+v err=%v", selected, repair, err)
+	}
+	artifact, err = adapter.GetArtifact(context.Background(), api.ArtifactV3Principal{AccountScopeID: "account", UserID: "user"}, "artifact-v3-runtime", grant.ArtifactID)
+	if err != nil || artifact.Head.CommitOID != repair.Revision.CommitOID || len(artifact.Head.Parents) != 1 || artifact.Head.Parents[0] != finished.Revision.CommitOID {
+		t.Fatalf("selected direct repair lineage artifact=%+v err=%v", artifact, err)
+	}
+	followup.TaskCallID, followup.TargetPartIDs, followup.BaseCommitOID, followup.ProjectionSeq = "unknown-target", []string{"missing"}, artifact.Head.CommitOID, artifact.Revision
 	if _, err := adapter.PrepareArtifactV3Turn(context.Background(), followup); !errors.Is(err, pebblestore.ErrArtifactV3Invalid) {
 		t.Fatalf("unknown manifest target error=%v", err)
 	}
@@ -123,7 +151,7 @@ func TestArtifactV3RuntimeAdapterProductionPathAndRecovery(t *testing.T) {
 		t.Fatal(err)
 	}
 	recovered, err := restarted.GetArtifact(context.Background(), api.ArtifactV3Principal{AccountScopeID: "account", UserID: "user"}, "artifact-v3-runtime", grant.ArtifactID)
-	if err != nil || recovered.Head.CommitOID != finished.Revision.CommitOID {
+	if err != nil || recovered.Head.CommitOID != repair.Revision.CommitOID {
 		t.Fatalf("recovered=%+v err=%v", recovered, err)
 	}
 	evidence, err := restarted.ReadArtifactV3PreviewEvidence(context.Background(), "account", "user", "artifact-v3-runtime", grant.ArtifactID, artifact.Head.RevisionRef)
