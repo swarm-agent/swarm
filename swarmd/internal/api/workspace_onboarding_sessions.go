@@ -92,11 +92,11 @@ func (s *Server) handleWorkspaceOnboardingSessionStart(w http.ResponseWriter, r 
 	}
 	if repository.State != workspace.RepositoryStateNeedsAssistedSetup {
 		replay, found, replayErr := s.workspaceOnboardingReplay(principal, sessionID, req.ClientRequestID, requestHash)
-		if replayErr != nil {
+		if replayErr != nil && !errors.Is(replayErr, sessionruntime.ErrSessionIdempotencyConflict) {
 			writeRoutedSessionError(w, replayErr)
 			return
 		}
-		if !found {
+		if replayErr != nil || !found {
 			writeWorkspaceOnboardingError(w, repository, errors.New("workspace onboarding assistance can start only for a non-repository folder containing existing files"))
 			return
 		}
