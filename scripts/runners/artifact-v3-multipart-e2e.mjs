@@ -211,6 +211,21 @@ async function postTurn(sessionID, label, content) {
   return waitForRun(sessionID, runID, label)
 }
 
+async function replayEvents(sessionID) {
+  const events = []
+  let afterSeq = 0
+  for (let pageIndex = 0; pageIndex < 20; pageIndex++) {
+    const response = await api('GET', `/v3/sessions/${encodeURIComponent(sessionID)}/events?after_seq=${afterSeq}&limit=500`, undefined, 'replay durable session events')
+    const page = Array.isArray(response.body?.events) ? response.body.events : []
+    events.push(...page)
+    const nextSeq = Number(response.body?.next_seq || afterSeq)
+    if (page.length === 0 || nextSeq <= afterSeq) break
+    afterSeq = nextSeq
+    if (afterSeq >= Number(response.body?.high_watermark_seq || 0)) break
+  }
+  return events
+}
+
 async function bootstrapSessions() {
   return (await api('POST', '/v3/sync/bootstrap', {
     surface: 'desktop', selector: { kind: 'global', global: true, recent: { limit: 200 } }, history: { mode: 'none' },
@@ -566,10 +581,9 @@ async function runLive() {
     const studio = await openDesktopStudio(session.sessionID, artifact.id)
     assert(await studio.locator('[data-artifact-v3-part-navigator] [data-artifact-v3-part]').count() === 3, 'Desktop basic HTML Part navigator does not show exactly three parts')
     await screenshot(page, 'desktop-basic-html-artifact-studio')
-    const replaySnapshot = await hydrate(session.sessionID)
-    const events = replaySnapshot.events_by_session?.[session.sessionID] || []
+    const events = await replayEvents(session.sessionID)
     const artifactEvents = events.filter((event) => text(event?.event_type).startsWith('artifact.v3.'))
-    log(`OBSERVE hydrated_events=${events.length} artifact_v3_events=${artifactEvents.length}`)
+    log(`OBSERVE replay_events=${events.length} artifact_v3_events=${artifactEvents.length}`)
     assert(artifactEvents.length >= 2 && !forbiddenLegacyWrite(artifactEvents), 'basic HTML durable replay lacks native Artifact V3 genesis events or contains legacy identity')
     const records = await page.evaluate(() => window.__artifactV3Records || [])
     const liveEvents = records.filter((record) => record.kind === 'message' && record.session_id === session.sessionID && record.event_type.startsWith('artifact.v3.'))
