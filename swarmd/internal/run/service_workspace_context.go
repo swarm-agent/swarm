@@ -200,7 +200,7 @@ func (s *Service) resolveWorkspaceOnboardingRunScope(session pebblestore.Session
 		return tool.WorkspaceScope{}, errors.New("workspace onboarding scope requires the compiled onboarding agent")
 	}
 	profile, profileErr := storedWorkspaceOnboardingAgentProfile(session.Metadata)
-	if profileErr != nil || !agentruntime.IsWorkspaceOnboardingAgentName(profile.Name) || profile.Mode != agentruntime.ModeSubagent || profile.RuntimeMode != pebblestore.AgentRuntimeModeReadWrite || profile.ToolContract == nil {
+	if profileErr != nil || !agentruntime.IsWorkspaceOnboardingAgentName(profile.Name) || profile.Mode != agentruntime.ModeSubagent || profile.RuntimeMode != pebblestore.AgentRuntimeModeReadWrite || profile.ToolContract == nil || !sameWorkspaceOnboardingToolContract(profile.ToolContract, agentruntime.WorkspaceOnboardingAgentToolContract()) {
 		return tool.WorkspaceScope{}, errors.New("workspace onboarding scope is missing its compiled agent snapshot")
 	}
 	if !sessionMetadataBool(session.Metadata, "pre_admission") || !strings.EqualFold(mapString(session.Metadata, "owner_transport"), "workspace_onboarding_api") {
@@ -230,6 +230,15 @@ func (s *Service) resolveWorkspaceOnboardingRunScope(session pebblestore.Session
 		PrimaryPath: path, Roots: []string{path}, MutationScopes: []string{"**"}, RejectScopeExpansion: true,
 		Principal: principal, SessionID: strings.TrimSpace(session.ID), SourceWorkspacePath: path,
 	}, nil
+}
+
+func sameWorkspaceOnboardingToolContract(left, right *pebblestore.AgentToolContract) bool {
+	if left == nil || right == nil {
+		return false
+	}
+	leftJSON, leftErr := json.Marshal(left)
+	rightJSON, rightErr := json.Marshal(right)
+	return leftErr == nil && rightErr == nil && string(leftJSON) == string(rightJSON)
 }
 
 func storedWorkspaceOnboardingAgentProfile(metadata map[string]any) (pebblestore.AgentProfile, error) {

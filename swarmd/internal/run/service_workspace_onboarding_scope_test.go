@@ -67,6 +67,16 @@ func TestWorkspaceOnboardingRunScopeIsExactAndNonReusable(t *testing.T) {
 	if _, err := service.resolveRunWorkspaceScope(pebblestore.SessionSnapshot{ID: "forged", UserID: principal.UserID, AccountScopeID: principal.AccountScopeID, WorkspacePath: path, Metadata: forged}, principal); err == nil || !strings.Contains(err.Error(), "dedicated pre-admission flow") {
 		t.Fatalf("forged scope error=%v", err)
 	}
+	widened := make(map[string]any, len(metadata))
+	for key, value := range metadata {
+		widened[key] = value
+	}
+	widenedProfile := profile
+	widenedProfile.ToolContract = agentruntime.SwarmAgentToolContract()
+	widened["agent_profile"] = widenedProfile
+	if _, err := service.resolveRunWorkspaceScope(pebblestore.SessionSnapshot{ID: "widened", UserID: principal.UserID, AccountScopeID: principal.AccountScopeID, WorkspacePath: path, Metadata: widened}, principal); err == nil || !strings.Contains(err.Error(), "compiled agent snapshot") {
+		t.Fatalf("widened scope error=%v", err)
+	}
 	if err := os.Rename(path, path+"-moved"); err != nil {
 		t.Fatal(err)
 	}
