@@ -384,20 +384,20 @@ async function animationSample(previewPage, expectedLabel = '') {
   return { before, after }
 }
 
-async function screenshotPreview(sessionID, artifactID, revision, expectedLabel = '') {
+async function screenshotPreview(sessionID, artifactID, revision, expectedLabel = '', allowViewportFailure = false) {
   const access = await api('POST', artifactRoute(sessionID, `/${encodeURIComponent(artifactID)}/preview/access`), { revision_ref: revision.revision_ref }, 'authorize exact Artifact V3 preview')
   const previewPath = text(access.body?.preview_url)
   assert(previewPath.startsWith('/v3/sessions/') && previewPath.includes('/artifacts-v3/') && previewPath.includes('/preview/access/'), 'Artifact V3 preview access response is invalid')
   const previewPage = await context.newPage()
   await previewPage.goto(`${desktopURL}${previewPath}`, { waitUntil: 'networkidle', timeout: 60000 })
   const sample = noDesignerStage
-    ? await staticVisualSample(previewPage, revision.manifest?.parts || [], expectedLabel)
+    ? await staticVisualSample(previewPage, revision.manifest?.parts || [], expectedLabel, allowViewportFailure)
     : await animationSample(previewPage, expectedLabel)
   await previewPage.close()
   return sample
 }
 
-async function staticVisualSample(previewPage, parts, expectedLabel = '') {
+async function staticVisualSample(previewPage, parts, expectedLabel = '', allowViewportFailure = false) {
   const targets = parts.map((part) => ({ id: text(part?.id), label: text(part?.label), selector: text(part?.locator?.value) }))
   assert(targets.length === 3 && targets.every((part) => part.id && part.selector), 'static preview requires exactly three stable selector Parts')
   for (const part of targets) await previewPage.locator(part.selector).first().waitFor({ state: 'visible', timeout: 30000 })
@@ -413,13 +413,13 @@ async function staticVisualSample(previewPage, parts, expectedLabel = '') {
   log(`OBSERVE preview viewport=${sample.innerWidth}x${sample.innerHeight} document=${sample.scrollWidth}x${sample.scrollHeight}`)
   const screenshotLabel = expectedLabel === 'CONTINUED SELECTED TURN' ? 'selected-continuation-candidate-preview' : expectedLabel === 'ALTERNATE OPTION ONE' ? 'alternate-option-one-preview' : expectedLabel === 'ALTERNATE OPTION TWO' ? 'alternate-option-two-preview' : expectedLabel ? 'targeted-part-candidate-preview' : 'basic-html-root-preview'
   await screenshot(previewPage, screenshotLabel)
-  assert(sample.scrollWidth <= sample.innerWidth + 2 && sample.scrollHeight <= sample.innerHeight + 2, `static complete preview overflows viewport ${sample.innerWidth}x${sample.innerHeight} with document ${sample.scrollWidth}x${sample.scrollHeight}`)
+  if (!allowViewportFailure) assert(sample.scrollWidth <= sample.innerWidth + 2 && sample.scrollHeight <= sample.innerHeight + 2, `static complete preview overflows viewport ${sample.innerWidth}x${sample.innerHeight} with document ${sample.scrollWidth}x${sample.scrollHeight}`)
   assert(sample.bodyText.includes('Team') && sample.bodyText.includes('$29'), 'static preview is missing the required Team $29 pricing choice')
   assert(!expectedLabel || sample.bodyText.includes(expectedLabel), `static preview is missing requested visible label ${expectedLabel}`)
   assert(sample.rows.some((row) => row.text.includes('Team') && row.text.includes('$29')), 'no declared Part contains the required Team $29 pricing choice')
   for (const row of sample.rows) {
     assert(row.text.length >= 8 && row.fontSize >= 12 && row.color && row.color !== 'rgba(0, 0, 0, 0)', `${row.id} static content is unreadable`)
-    assert(row.rect && row.rect.left >= -1 && row.rect.top >= -1 && row.rect.right <= sample.innerWidth + 1 && row.rect.bottom <= sample.innerHeight + 1, `${row.id} is clipped outside the static preview viewport`)
+    if (!allowViewportFailure) assert(row.rect && row.rect.left >= -1 && row.rect.top >= -1 && row.rect.right <= sample.innerWidth + 1 && row.rect.bottom <= sample.innerHeight + 1, `${row.id} is clipped outside the static preview viewport`)
   }
   return sample
 }
@@ -631,6 +631,23 @@ async function verifyStudioTurns(sessionID, artifactID, turn, candidate, rootRev
   result.gates.desktop_prior_revision = true
 }
 
+async function repairContinuedCandidate(sessionID, artifactID, baseRevision, heroID, rejectedCommit) {
+  await postTurn(sessionID, 'continued-visual-repair', [
+    'Repair the continued Hero candidate from the exact still-selected Artifact V3 base without Designers.',
+    `Use manage_artifact read_v3 on session_id=${sessionID}, artifact_id=${artifactID}, revision_ref=${baseRevision.revision_ref}.`,
+    `Create one new revise_v3 candidate targeting only Part ${heroID}. Include both exact labels CONTINUED SELECTED TURN and TARGETED PRICING TURN, preserve all stable Part IDs and Team $29, and keep the complete 1440x900 page fully within the viewport with no scrollbar or clipped Footer.`,
+    `Do not reuse rejected overflowing commit ${rejectedCommit}, do not select the candidate, and do not use Designer or V1/V2 identity.`,
+  ].join(' '))
+  const timeoutAt = Math.min(deadline, Date.now() + 30000)
+  while (Date.now() < timeoutAt) {
+    const artifact = await detail(sessionID, artifactID)
+    const turn = [...(artifact.turns || [])].reverse().find((item) => item.base_commit_oid === baseRevision.commit_oid && item.target_part_ids?.length === 1 && item.target_part_ids[0] === heroID && item.candidates?.some((candidate) => candidate.revision?.commit_oid && candidate.revision.commit_oid !== rejectedCommit))
+    if (turn) return { artifact, turn, candidate: turn.candidates.find((candidate) => candidate.revision?.commit_oid && candidate.revision.commit_oid !== rejectedCommit) }
+    await sleep(500)
+  }
+  fail('continued visual repair did not produce a distinct exact-base Hero candidate')
+}
+
 async function runAlternateChoiceResume(sessionID) {
   const items = await catalog(sessionID)
   const artifact = artifactOverride ? items.find((item) => text(item?.id) === artifactOverride) : items.length === 1 ? items[0] : null
@@ -638,17 +655,31 @@ async function runAlternateChoiceResume(sessionID) {
   let existing = await detail(sessionID, artifact.id)
   const continuationTurn = [...(existing.turns || [])].reverse().find((item) => item.target_part_ids?.length === 1 && text(item.target_part_ids[0]).toLowerCase() === 'hero' && item.candidates?.length === 1)
   assert(continuationTurn?.candidates?.[0]?.revision?.commit_oid, 'resumed artifact has no exact Hero continuation candidate')
-  const continuationCandidate = continuationTurn.candidates[0]
-  const continuationRevision = continuationCandidate.revision
+  let continuationCandidate = continuationTurn.candidates[0]
+  let continuationRevision = continuationCandidate.revision
+  let selectedContinuationTurn = continuationTurn
   assert(JSON.stringify(continuationRevision).includes(continuationRevision.commit_oid), 'continued revision identity is incomplete')
   result.ids.artifact_id = artifact.id
   result.ids.continuation_turn_id = continuationTurn.turn_id
   result.ids.continuation_candidate_id = continuationCandidate.candidate_id
+  const firstContinuationSample = await screenshotPreview(sessionID, artifact.id, continuationRevision, 'CONTINUED SELECTED TURN', true)
+  const overflowing = firstContinuationSample.scrollWidth > firstContinuationSample.innerWidth + 2 || firstContinuationSample.scrollHeight > firstContinuationSample.innerHeight + 2 || firstContinuationSample.rows.some((row) => !row.rect || row.rect.left < -1 || row.rect.top < -1 || row.rect.right > firstContinuationSample.innerWidth + 1 || row.rect.bottom > firstContinuationSample.innerHeight + 1)
+  if (overflowing) {
+    log(`OBSERVE continued candidate ${continuationRevision.revision_ref} needs visual repair before selection`)
+    const heroID = continuationRevision.manifest.parts.find((part) => text(part?.id).toLowerCase() === 'hero')?.id
+    assert(heroID, 'overflowing continued revision has no stable Hero Part ID')
+    const repaired = await repairContinuedCandidate(sessionID, artifact.id, currentRevision(existing), heroID, continuationRevision.commit_oid)
+    selectedContinuationTurn = repaired.turn
+    continuationCandidate = repaired.candidate
+    continuationRevision = repaired.candidate.revision
+    result.ids.continuation_repair_turn_id = repaired.turn.turn_id
+    result.ids.continuation_repair_candidate_id = repaired.candidate.candidate_id
+  }
   result.revisions.continued = continuationRevision
   result.animations.continued = await screenshotPreview(sessionID, artifact.id, continuationRevision, 'CONTINUED SELECTED TURN')
   assert(JSON.stringify(result.animations.continued).includes('TARGETED PRICING TURN'), 'resumed continuation lost the selected Pricing change')
   if (currentRevision(existing).commit_oid !== continuationRevision.commit_oid) {
-    existing = await selectCandidateInStudio(sessionID, artifact.id, continuationTurn, continuationCandidate)
+    existing = await selectCandidateInStudio(sessionID, artifact.id, selectedContinuationTurn, continuationCandidate)
   }
   const alternateBase = currentRevision(existing)
   assert(alternateBase.commit_oid === continuationRevision.commit_oid, 'resume did not establish the exact continued candidate as selected base')
