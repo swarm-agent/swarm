@@ -171,6 +171,7 @@ type Runtime struct {
 	directArtifactV3Mu    sync.Mutex
 	directArtifactV3ByRun map[string]directArtifactV3Publication
 	artifactV2Video       *artifactv2.VideoConversionService
+	artifactV3Video       ArtifactV3VideoConversionService
 	htmlCapture           htmlcapture.Renderer
 	htmlAnimationCapture  htmlcapture.AnimationRenderer
 	animationJobsMu       sync.Mutex
@@ -571,6 +572,26 @@ func (r *Runtime) GenerateManagedImageArtifact(ctx context.Context, scope Worksp
 func (r *Runtime) SetArtifactV2VideoConversionService(service *artifactv2.VideoConversionService) {
 	if r != nil {
 		r.artifactV2Video = service
+	}
+}
+
+// ArtifactV3VideoConversionInput intentionally contains only exact native V3
+// identity plus the target project base. The model cannot author plan arrays.
+type ArtifactV3VideoConversionInput struct {
+	RequestID, VideoSessionID, ProjectID, BaseRevisionID string
+	ArtifactSessionID, ArtifactID, RevisionRef           string
+	Title, Rationale                                     string
+}
+
+type ArtifactV3VideoConversionService interface {
+	ConvertToPendingProposal(context.Context, identity.Principal, ArtifactV3VideoConversionInput) (pebblestore.VideoEditProposalSnapshot, error)
+	ValidateVideoReference(string, string, pebblestore.ArtifactV3VideoReference) error
+	ReadVideoReference(context.Context, string, string, pebblestore.ArtifactV3VideoReference) ([]byte, error)
+}
+
+func (r *Runtime) SetArtifactV3VideoConversionService(service ArtifactV3VideoConversionService) {
+	if r != nil {
+		r.artifactV3Video = service
 	}
 }
 

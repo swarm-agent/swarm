@@ -19,10 +19,12 @@ import (
 	"time"
 
 	"swarm/packages/swarmd/internal/api"
+	"swarm/packages/swarmd/internal/artifactv3video"
 	"swarm/packages/swarmd/internal/htmlcapture"
 	"swarm/packages/swarmd/internal/identity"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/tool"
+	"swarm/packages/swarmd/internal/videoproject"
 )
 
 const (
@@ -866,4 +868,306 @@ func recoverArtifactV3Repositories(ctx context.Context, adapter *artifactV3Runti
 		}
 	}
 	return nil
+}
+
+const artifactV3VideoDerivativeDir = "artifacts-v3/video-derivatives"
+
+// artifactV3VideoBridge is the sole model-facing V3-to-Video-Studio boundary.
+// It accepts only exact native V3 identity and lets the server assemble the plan.
+type artifactV3VideoBridge struct {
+	artifacts *artifactV3RuntimeAdapter
+	service   *artifactv3video.Service
+	projects  *videoproject.Service
+}
+
+func (b *artifactV3VideoBridge) ValidateVideoReference(accountScopeID, userID string, ref pebblestore.ArtifactV3VideoReference) error {
+	if b == nil || b.service == nil {
+		return errors.New("artifact v3 video conversion authority is unavailable")
+	}
+	return b.service.ValidateVideoReference(accountScopeID, userID, ref)
+}
+
+func (b *artifactV3VideoBridge) ReadVideoReference(ctx context.Context, accountScopeID, userID string, ref pebblestore.ArtifactV3VideoReference) ([]byte, error) {
+	if b == nil || b.service == nil {
+		return nil, errors.New("artifact v3 video conversion authority is unavailable")
+	}
+	return b.service.ReadVideoReference(ctx, accountScopeID, userID, ref)
+}
+
+func (b *artifactV3VideoBridge) ConvertToPendingProposal(ctx context.Context, principal identity.Principal, input tool.ArtifactV3VideoConversionInput) (pebblestore.VideoEditProposalSnapshot, error) {
+	if b == nil || b.artifacts == nil || b.service == nil || b.projects == nil || !principal.Valid() {
+		return pebblestore.VideoEditProposalSnapshot{}, errors.New("artifact v3 video conversion authority is unavailable")
+	}
+	input.VideoSessionID, input.ProjectID, input.BaseRevisionID = strings.TrimSpace(input.VideoSessionID), strings.TrimSpace(input.ProjectID), strings.TrimSpace(input.BaseRevisionID)
+	input.ArtifactSessionID, input.ArtifactID, input.RevisionRef = strings.TrimSpace(input.ArtifactSessionID), strings.TrimSpace(input.ArtifactID), strings.TrimSpace(input.RevisionRef)
+	input.RequestID = strings.TrimSpace(input.RequestID)
+	if input.RequestID == "" || input.VideoSessionID == "" || input.ProjectID == "" || input.BaseRevisionID == "" || input.ArtifactSessionID == "" || input.ArtifactID == "" || input.RevisionRef == "" {
+		return pebblestore.VideoEditProposalSnapshot{}, errors.New("artifact v3 video conversion requires project base and exact source revision")
+	}
+	project, ok, err := b.projects.GetProject(principal, input.VideoSessionID, input.ProjectID)
+	if err != nil || !ok || project.CurrentRevisionID != input.BaseRevisionID {
+		return pebblestore.VideoEditProposalSnapshot{}, errors.New("artifact v3 video conversion project base is stale or unavailable")
+	}
+	selection, err := b.artifacts.videoSelection(principal, input.ArtifactSessionID, input.ArtifactID, input.RevisionRef)
+	if err != nil {
+		return pebblestore.VideoEditProposalSnapshot{}, err
+	}
+	conversion, err := b.service.Convert(ctx, principal.AccountScopeID, selection)
+	if err != nil {
+		return pebblestore.VideoEditProposalSnapshot{}, err
+	}
+	proposalID := artifactV3StableID("videopropv3", input.VideoSessionID, input.ProjectID, input.BaseRevisionID, input.ArtifactSessionID, input.ArtifactID, input.RevisionRef, input.RequestID)
+	title := strings.TrimSpace(input.Title)
+	if title == "" {
+		title = "Artifact V3 video proposal"
+	}
+	return b.projects.CreateEditProposal(ctx, principal, videoproject.CreateEditProposalInput{
+		SessionID: input.VideoSessionID, ProjectID: input.ProjectID, ProposalID: proposalID,
+		BaseRevisionID: input.BaseRevisionID, Title: title, Rationale: strings.TrimSpace(input.Rationale),
+		Intent: pebblestore.VideoEditProposalIntentArtifactV3Convert, Plan: &conversion.Plan,
+	})
+}
+
+func (a *artifactV3RuntimeAdapter) videoSelection(principal identity.Principal, sessionID, artifactID, revisionRef string) (artifactv3video.Selection, error) {
+	if a == nil || a.sessions == nil || !principal.Valid() {
+		return artifactv3video.Selection{}, pebblestore.ErrArtifactV3Unauthorized
+	}
+	sessionID, artifactID, revisionRef = strings.TrimSpace(sessionID), strings.TrimSpace(artifactID), strings.TrimSpace(revisionRef)
+	if sessionID == "" || artifactID == "" || !strings.HasPrefix(revisionRef, "revision-") {
+		return artifactv3video.Selection{}, errors.New("artifact v3 video conversion requires an exact revision_ref")
+	}
+	commit := strings.TrimPrefix(revisionRef, "revision-")
+	repository, ok, err := a.sessions.GetArtifactV3Repository(principal.AccountScopeID, principal.UserID, artifactID)
+	if err != nil {
+		return artifactv3video.Selection{}, err
+	}
+	if !ok || repository.OwnerSessionID != sessionID {
+		return artifactv3video.Selection{}, pebblestore.ErrArtifactV3NotFound
+	}
+	if repository.HeadCommitOID != commit {
+		return artifactv3video.Selection{}, errors.New("artifact v3 video source revision is not the selected head")
+	}
+	revision, ok, err := a.sessions.GetArtifactV3Revision(principal.AccountScopeID, principal.UserID, artifactID, commit)
+	if err != nil {
+		return artifactv3video.Selection{}, err
+	}
+	if !ok || revision.CommitOID != commit || revision.TreeOID == "" {
+		return artifactv3video.Selection{}, pebblestore.ErrArtifactV3Integrity
+	}
+	return artifactv3video.Selection{AccountScopeID: principal.AccountScopeID, UserID: principal.UserID, SessionID: sessionID, ArtifactID: artifactID, RevisionID: revisionRef, CommitOID: commit, TreeOID: revision.TreeOID}, nil
+}
+
+// ReadSelectedHead authenticates ownership, selected-head status, Git identity,
+// and successful build/validation before exposing immutable project bytes.
+func (a *artifactV3RuntimeAdapter) ReadSelectedHead(ctx context.Context, accountScopeID string, selection artifactv3video.Selection) (artifactv3video.Project, error) {
+	if a == nil || a.sessions == nil || a.service == nil || strings.TrimSpace(accountScopeID) == "" || accountScopeID != selection.AccountScopeID || strings.TrimSpace(selection.UserID) == "" {
+		return artifactv3video.Project{}, pebblestore.ErrArtifactV3Unauthorized
+	}
+	repository, ok, err := a.sessions.GetArtifactV3Repository(accountScopeID, selection.UserID, selection.ArtifactID)
+	if err != nil {
+		return artifactv3video.Project{}, err
+	}
+	if !ok || repository.OwnerSessionID != selection.SessionID || repository.HeadCommitOID != selection.CommitOID || selection.RevisionID != "revision-"+selection.CommitOID {
+		return artifactv3video.Project{}, errors.New("selected Artifact V3 head is stale or not owned")
+	}
+	principal := api.ArtifactV3Principal{AccountScopeID: accountScopeID, UserID: selection.UserID}
+	revision, err := a.revision(ctx, principal, repository, selection.CommitOID)
+	if err != nil {
+		return artifactv3video.Project{}, err
+	}
+	if revision.TreeOID != selection.TreeOID || revision.Build == nil || revision.Validation == nil || revision.Build.Status != "succeeded" || revision.Validation.Status != "valid" {
+		return artifactv3video.Project{}, pebblestore.ErrArtifactV3Integrity
+	}
+	files, _, err := a.ReadArtifactV3DirectRevision(ctx, accountScopeID, selection.UserID, selection.SessionID, selection.ArtifactID, selection.RevisionID)
+	if err != nil {
+		return artifactv3video.Project{}, err
+	}
+	manifestBody := files[pebblestore.ArtifactV3ManifestFilename]
+	if len(manifestBody) == 0 {
+		return artifactv3video.Project{}, pebblestore.ErrArtifactV3Integrity
+	}
+	manifestDigest := sha256.Sum256(manifestBody)
+	return artifactv3video.Project{SessionID: selection.SessionID, ArtifactID: selection.ArtifactID, RevisionID: selection.RevisionID, CommitOID: revision.CommitOID, TreeOID: revision.TreeOID, ManifestDigestSHA256: hex.EncodeToString(manifestDigest[:]), BuildID: revision.Build.ID, ValidationID: revision.Validation.ID, EventSeq: repository.EventSeq, MediaType: "text/html", AnimationProfile: artifactv3video.DefaultAnimationProfile, Files: files}, nil
+}
+
+// artifactV3AnimationRenderer injects only ephemeral render bytes. Source Git is
+// never rewritten, and htmlcapture still installs its immutable browser bootstrap.
+type artifactV3AnimationRenderer struct{ renderer htmlcapture.AnimationRenderer }
+
+func (r artifactV3AnimationRenderer) request(input artifactv3video.RenderRequest) (htmlcapture.AnimationRequest, error) {
+	if r.renderer == nil || input.AnimationAdapter != htmlcapture.AnimationVersion || input.DurationMs <= 0 || input.FPS <= 0 || input.FPS != float64(int(input.FPS)) {
+		return htmlcapture.AnimationRequest{}, errors.New("trusted Artifact V3 animation renderer is unavailable or timing is invalid")
+	}
+	var manifest pebblestore.ArtifactV3Manifest
+	if json.Unmarshal(input.Project.Files[pebblestore.ArtifactV3ManifestFilename], &manifest) != nil || strings.TrimSpace(manifest.Entrypoint) == "" || len(input.Project.Files[manifest.Entrypoint]) == 0 {
+		return htmlcapture.AnimationRequest{}, errors.New("Artifact V3 animation manifest is invalid")
+	}
+	files := cloneArtifactProject(input.Project.Files)
+	files[manifest.Entrypoint] = injectArtifactV3AnimationAdapter(files[manifest.Entrypoint], input.DurationMs, int(input.FPS))
+	return htmlcapture.AnimationRequest{Entry: manifest.Entrypoint, Files: files, DurationMS: int(input.DurationMs), FPS: int(input.FPS), OutputFPS: int(input.FPS), Quality: htmlcapture.AnimationQualityStandard, RequireLivePlayback: true}, nil
+}
+
+func (r artifactV3AnimationRenderer) Preflight(ctx context.Context, input artifactv3video.RenderRequest) error {
+	request, err := r.request(input)
+	if err != nil {
+		return err
+	}
+	_, err = r.renderer.PreflightAnimation(ctx, request)
+	return err
+}
+
+func (r artifactV3AnimationRenderer) Render(ctx context.Context, input artifactv3video.RenderRequest) ([]byte, []byte, error) {
+	request, err := r.request(input)
+	if err != nil {
+		return nil, nil, err
+	}
+	result, err := r.renderer.RenderAnimation(ctx, request)
+	if err != nil {
+		return nil, nil, err
+	}
+	return result.PreviewPNG, result.MP4, nil
+}
+
+func injectArtifactV3AnimationAdapter(body []byte, durationMs int64, fps int) []byte {
+	script := fmt.Sprintf(`<script data-swarm-artifact-v3-animation>(function(){"use strict";const duration=%d,fps=%d;const domReady=new Promise(resolve=>{if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",resolve,{once:true});else resolve()});const animations=()=>Array.from(document.getAnimations({subtree:true}));globalThis.__SWARM_ANIMATION_BIND__({version:"swarm.animation/v1",ready:async()=>{await domReady;for(const animation of animations())animation.pause();return {duration_ms:duration,fps}},seek:async timeMs=>{await domReady;for(const animation of animations()){animation.pause();animation.currentTime=timeMs}document.documentElement.dataset.swarmAnimationTimeMs=String(timeMs);return {time_ms:timeMs}}})})();</script>`, durationMs, fps)
+	lower := strings.ToLower(string(body))
+	if index := strings.Index(lower, "</head>"); index >= 0 {
+		out := make([]byte, 0, len(body)+len(script))
+		out = append(out, body[:index]...)
+		out = append(out, script...)
+		out = append(out, body[index:]...)
+		return out
+	}
+	return append([]byte(script), body...)
+}
+
+type artifactV3DerivativeStore struct {
+	root string
+	mu   sync.Mutex
+}
+
+func newArtifactV3DerivativeStore(root string) (*artifactV3DerivativeStore, error) {
+	root = filepath.Clean(strings.TrimSpace(root))
+	if root == "." || root == "" {
+		return nil, errors.New("Artifact V3 derivative root is not configured")
+	}
+	if err := ensurePrivateDirectory(root); err != nil {
+		return nil, err
+	}
+	return &artifactV3DerivativeStore{root: root}, nil
+}
+
+// PutAtomic publishes one immutable two-file directory by rename. Any failure
+// removes staging and leaves no visible partial derivative set.
+func (s *artifactV3DerivativeStore) PutAtomic(_ context.Context, sessionID, artifactID string, derivatives []artifactv3video.Derivative) error {
+	if s == nil || strings.TrimSpace(sessionID) == "" || strings.TrimSpace(artifactID) == "" || len(derivatives) != 2 {
+		return errors.New("Artifact V3 derivative publication requires source identity and exactly two outputs")
+	}
+	ids, seen := make([]string, 0, 2), map[string]bool{}
+	for _, derivative := range derivatives {
+		if !validArtifactV3Derivative(derivative) || seen[derivative.ID] {
+			return errors.New("Artifact V3 derivative is invalid or duplicated")
+		}
+		seen[derivative.ID], ids = true, append(ids, derivative.ID)
+	}
+	sort.Strings(ids)
+	parent := filepath.Join(s.root, artifactV3StorageKey(sessionID, artifactID))
+	final := filepath.Join(parent, artifactV3StorageKey(ids...))
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := ensurePrivateDirectory(parent); err != nil {
+		return err
+	}
+	if info, err := os.Lstat(final); err == nil {
+		if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+			return errors.New("Artifact V3 derivative set is not a private directory")
+		}
+		marker, markerErr := os.ReadFile(filepath.Join(final, "complete"))
+		if markerErr != nil || string(marker) != strings.Join(ids, "\n")+"\n" {
+			return errors.New("existing Artifact V3 derivative set is incomplete")
+		}
+		for _, derivative := range derivatives {
+			body, readErr := os.ReadFile(filepath.Join(final, derivative.ID))
+			if readErr != nil || sha256Hex(body) != derivative.DigestSHA256 {
+				return errors.New("existing Artifact V3 derivative set failed integrity validation")
+			}
+		}
+		return nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	stage, err := os.MkdirTemp(parent, ".staging-")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(stage)
+	if err := os.Chmod(stage, 0o700); err != nil {
+		return err
+	}
+	for _, derivative := range derivatives {
+		if err := os.WriteFile(filepath.Join(stage, derivative.ID), derivative.Bytes, 0o600); err != nil {
+			return err
+		}
+	}
+	if err := os.WriteFile(filepath.Join(stage, "complete"), []byte(strings.Join(ids, "\n")+"\n"), 0o600); err != nil {
+		return err
+	}
+	return os.Rename(stage, final)
+}
+
+func (s *artifactV3DerivativeStore) Read(_ context.Context, sessionID, artifactID, derivativeID string) ([]byte, error) {
+	if s == nil || !validArtifactV3DerivativeID(derivativeID) {
+		return nil, errors.New("Artifact V3 derivative identity is invalid")
+	}
+	parent := filepath.Join(s.root, artifactV3StorageKey(sessionID, artifactID))
+	entries, err := os.ReadDir(parent)
+	if err != nil {
+		return nil, err
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() || strings.HasPrefix(entry.Name(), ".") {
+			continue
+		}
+		setRoot := filepath.Join(parent, entry.Name())
+		marker, markerErr := os.ReadFile(filepath.Join(setRoot, "complete"))
+		if markerErr != nil || !strings.Contains(string(marker), derivativeID+"\n") {
+			continue
+		}
+		path := filepath.Join(setRoot, derivativeID)
+		info, statErr := os.Lstat(path)
+		if statErr == nil && info.Mode().IsRegular() && info.Mode()&os.ModeSymlink == 0 {
+			return os.ReadFile(path)
+		}
+		if statErr != nil && !errors.Is(statErr, os.ErrNotExist) {
+			return nil, statErr
+		}
+	}
+	return nil, os.ErrNotExist
+}
+
+func validArtifactV3Derivative(derivative artifactv3video.Derivative) bool {
+	return validArtifactV3DerivativeID(derivative.ID) && (derivative.MediaType == "image/png" || derivative.MediaType == "video/mp4") && len(derivative.Bytes) != 0 && derivative.DigestSHA256 == strings.TrimPrefix(derivative.ID, "av3der_") && derivative.DigestSHA256 == sha256Hex(derivative.Bytes)
+}
+
+func validArtifactV3DerivativeID(value string) bool {
+	value = strings.TrimSpace(value)
+	if !strings.HasPrefix(value, "av3der_") || len(value) != len("av3der_")+sha256.Size*2 {
+		return false
+	}
+	decoded, err := hex.DecodeString(strings.TrimPrefix(value, "av3der_"))
+	return err == nil && len(decoded) == sha256.Size
+}
+
+func artifactV3StorageKey(parts ...string) string {
+	h := sha256.New()
+	for _, part := range parts {
+		h.Write([]byte(strings.TrimSpace(part)))
+		h.Write([]byte{0})
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+func sha256Hex(body []byte) string {
+	digest := sha256.Sum256(body)
+	return hex.EncodeToString(digest[:])
 }

@@ -50,6 +50,21 @@ func TestMasterHarnessRoutesArtifactV2VideoConversionWithoutManualArrays(t *test
 	}
 }
 
+func TestMasterHarnessRoutesNativeArtifactV3VideoConversion(t *testing.T) {
+	prompt := masterHarnessPrompt(t.TempDir())
+	for _, expected := range []string{
+		"manage_video convert_artifact_v3",
+		"artifact_v3_session_id, artifact_v3_artifact_id, artifact_v3_revision_ref, project_id, and base_revision_id",
+		"injects deterministic animation timing only into ephemeral render bytes",
+		"exactly one pending artifact_v3_conversion proposal",
+		"must not author plan arrays or translate through V1/V2 identity",
+	} {
+		if !strings.Contains(prompt, expected) {
+			t.Fatalf("master harness missing Artifact V3 video guidance %q", expected)
+		}
+	}
+}
+
 func TestVideoStudioMessageContextBoundsBlockedHTMLClipWork(t *testing.T) {
 	prompt := videoStudioMessageContextForProvider(map[string]any{
 		"creative_mode":     "video",

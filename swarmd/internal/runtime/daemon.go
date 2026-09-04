@@ -25,6 +25,7 @@ import (
 	"swarm/packages/swarmd/internal/api"
 	"swarm/packages/swarmd/internal/artifact"
 	"swarm/packages/swarmd/internal/artifactv2"
+	"swarm/packages/swarmd/internal/artifactv3video"
 	"swarm/packages/swarmd/internal/auth"
 	"swarm/packages/swarmd/internal/config"
 	"swarm/packages/swarmd/internal/discovery"
@@ -464,6 +465,17 @@ func New(cfg config.Config) (*Daemon, error) {
 		videoAnimationRenderer = htmlcapture.NewChromedpRenderer(htmlcapture.SystemChromePath, filepath.Join(cacheRoot, "html-capture"))
 	}
 	toolRuntime.SetArtifactV2VideoConversionService(artifactv2.NewVideoConversionService(artifactV2Service, videoProjectSvc, artifactv2.TrustedMotionRenderer{Renderer: videoAnimationRenderer}))
+	artifactV3Derivatives, err := newArtifactV3DerivativeStore(filepath.Join(cfg.DataDir, filepath.FromSlash(artifactV3VideoDerivativeDir)))
+	if err != nil {
+		_ = secretStore.Close()
+		_ = store.Close()
+		_ = lk.Release()
+		return nil, fmt.Errorf("configure Artifact V3 video derivative storage: %w", err)
+	}
+	artifactV3VideoSvc := artifactv3video.New(artifactV3Runtime, artifactV3AnimationRenderer{renderer: videoAnimationRenderer}, artifactV3Derivatives)
+	artifactV3VideoBridge := &artifactV3VideoBridge{artifacts: artifactV3Runtime, service: artifactV3VideoSvc, projects: videoProjectSvc}
+	videoProjectSvc.SetArtifactV3Authority(artifactV3VideoSvc)
+	toolRuntime.SetArtifactV3VideoConversionService(artifactV3VideoBridge)
 	videoRenderSvc := videorender.NewService(
 		videorender.Config{},
 		sessionSvc.Store(),
@@ -473,6 +485,7 @@ func New(cfg config.Config) (*Daemon, error) {
 		nil,
 	)
 	videoRenderSvc.SetArtifactV2Authority(artifactV2Service)
+	videoRenderSvc.SetArtifactV3Authority(artifactV3VideoSvc)
 	toolRuntime.SetManageVideoPipelineServices(
 		videoTranscriptionSvc,
 		videosource.NewService(workspaceSvc, sessionSvc.Store()),

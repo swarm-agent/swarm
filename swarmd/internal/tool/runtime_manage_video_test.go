@@ -413,6 +413,44 @@ func (*fakeManageVideoService) SourceName(identity.Principal, string, string) (s
 	return "", nil
 }
 
+type fakeArtifactV3VideoConversionService struct {
+	input ArtifactV3VideoConversionInput
+}
+
+func (f *fakeArtifactV3VideoConversionService) ConvertToPendingProposal(_ context.Context, _ identity.Principal, input ArtifactV3VideoConversionInput) (pebblestore.VideoEditProposalSnapshot, error) {
+	f.input = input
+	return pebblestore.VideoEditProposalSnapshot{ID: "proposal-v3", Status: pebblestore.VideoEditProposalStatusPending, Intent: pebblestore.VideoEditProposalIntentArtifactV3Convert}, nil
+}
+func (*fakeArtifactV3VideoConversionService) ValidateVideoReference(string, string, pebblestore.ArtifactV3VideoReference) error { return nil }
+func (*fakeArtifactV3VideoConversionService) ReadVideoReference(context.Context, string, string, pebblestore.ArtifactV3VideoReference) ([]byte, error) { return nil, nil }
+
+// Requirement: the model-facing V3 action accepts only exact V3 source identity
+// and a project base, then delegates server-owned plan construction once.
+func TestManageVideoConvertArtifactV3UsesExactNativeIdentity(t *testing.T) {
+	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "manage-video-v3.pebble"))
+	if err != nil { t.Fatal(err) }
+	defer store.Close()
+	principal := identity.Principal{Type: identity.PrincipalTypeUser, SessionID: "studio", UserID: "user", AccountScopeID: "account"}
+	sessionStore := pebblestore.NewSessionStore(store)
+	if err := sessionStore.CreateSession(pebblestore.SessionSnapshot{ID: "studio", UserID: "user", AccountScopeID: "account", Mode: "auto", Metadata: map[string]any{"lineage_kind": "video_project"}}); err != nil { t.Fatal(err) }
+	events, err := pebblestore.NewEventLog(store)
+	if err != nil { t.Fatal(err) }
+	runtime := NewRuntime(1)
+	runtime.sessions = sessionruntime.NewService(sessionStore, events)
+	fake := &fakeArtifactV3VideoConversionService{}
+	runtime.SetArtifactV3VideoConversionService(fake)
+	ctx := WithVideoRunContext(context.Background(), VideoRunContext{SessionID: "studio", RunID: "run"})
+	args := `{"action":"convert_artifact_v3","project_id":"project","base_revision_id":"base","artifact_v3_session_id":"source","artifact_v3_artifact_id":"artifact","artifact_v3_revision_ref":"revision-abc"}`
+	payload, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, WorkspaceScope{SessionID: "studio", Principal: principal}, Call{CallID: "convert", Name: "manage_video", Arguments: args})
+	if err != nil { t.Fatal(err) }
+	if fake.input.VideoSessionID != "studio" || fake.input.ProjectID != "project" || fake.input.BaseRevisionID != "base" || fake.input.ArtifactSessionID != "source" || fake.input.ArtifactID != "artifact" || fake.input.RevisionRef != "revision-abc" {
+		t.Fatalf("conversion input=%+v", fake.input)
+	}
+	if !strings.Contains(payload, `"proposal_status":"pending"`) || !strings.Contains(payload, `"action":"convert_artifact_v3"`) {
+		t.Fatalf("payload=%s", payload)
+	}
+}
+
 func TestManageVideoDefinitionExposesProjectAndRenderWorkflow(t *testing.T) {
 	definition := manageVideoDefinition()
 	for _, required := range []string{"One-shot initial-plan workflow", "create_project without initial_timeline", "propose_plan creates only a pending whole-plan review object"} {
@@ -430,7 +468,7 @@ func TestManageVideoDefinitionExposesProjectAndRenderWorkflow(t *testing.T) {
 			t.Fatalf("schema lacks video project/render action %q", action)
 		}
 	}
-	for _, param := range []string{"project_id", "revision_id", "source_revision_id", "render_job_id", "queue_grace_ms", "title", "description", "output_preset", "change_summary", "timeline", "initial_timeline", "metadata"} {
+	for _, param := range []string{"project_id", "revision_id", "source_revision_id", "render_job_id", "queue_grace_ms", "title", "description", "output_preset", "change_summary", "timeline", "initial_timeline", "metadata", "artifact_v3_session_id", "artifact_v3_artifact_id", "artifact_v3_revision_ref"} {
 		if !strings.Contains(text, `"`+param+`"`) {
 			t.Fatalf("schema lacks video project/render parameter %q", param)
 		}

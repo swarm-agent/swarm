@@ -2,6 +2,8 @@ package runtime
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"os"
@@ -11,6 +13,7 @@ import (
 	"time"
 
 	"swarm/packages/swarmd/internal/api"
+	"swarm/packages/swarmd/internal/artifactv3video"
 	"swarm/packages/swarmd/internal/htmlcapture"
 	"swarm/packages/swarmd/internal/identity"
 	sessionruntime "swarm/packages/swarmd/internal/session"
@@ -223,6 +226,78 @@ func TestArtifactV3RuntimePreviewPreservesSafeRendererDiagnostic(t *testing.T) {
 
 // Requirement: source bytes alone are never readiness evidence; a browser
 // preview adapter is mandatory before a candidate can be finished.
+type artifactV3AnimationTestRenderer struct {
+	preflight htmlcapture.AnimationRequest
+	render    htmlcapture.AnimationRequest
+}
+
+func (r *artifactV3AnimationTestRenderer) PreflightAnimation(_ context.Context, request htmlcapture.AnimationRequest) (htmlcapture.AnimationResult, error) {
+	r.preflight = request
+	return htmlcapture.AnimationResult{}, nil
+}
+func (r *artifactV3AnimationTestRenderer) RenderAnimation(_ context.Context, request htmlcapture.AnimationRequest) (htmlcapture.AnimationResult, error) {
+	r.render = request
+	return htmlcapture.AnimationResult{PreviewPNG: []byte("png"), MP4: []byte("mp4")}, nil
+}
+
+// Requirement: native V3 render wiring injects a deterministic seek adapter only
+// into cloned render bytes and delegates both preflight and MP4 rendering.
+func TestArtifactV3AnimationRendererLeavesGitProjectBytesUnchanged(t *testing.T) {
+	entry := []byte(`<!doctype html><html><head></head><body><div style="animation:fade 1s"></div></body></html>`)
+	manifest := []byte(`{"schema_version":"swarm.artifact/v3","entrypoint":"index.html","parts":[]}`)
+	project := artifactv3video.Project{Files: map[string][]byte{"swarm-artifact.json": manifest, "index.html": entry}}
+	fake := &artifactV3AnimationTestRenderer{}
+	renderer := artifactV3AnimationRenderer{renderer: fake}
+	request := artifactv3video.RenderRequest{Project: project, DurationMs: 2000, FPS: 30, AnimationAdapter: htmlcapture.AnimationVersion}
+	if err := renderer.Preflight(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	png, mp4, err := renderer.Render(context.Background(), request)
+	if err != nil || string(png) != "png" || string(mp4) != "mp4" {
+		t.Fatalf("render png=%q mp4=%q err=%v", png, mp4, err)
+	}
+	if strings.Contains(string(project.Files["index.html"]), "data-swarm-artifact-v3-animation") {
+		t.Fatal("source project bytes were mutated")
+	}
+	for _, got := range []htmlcapture.AnimationRequest{fake.preflight, fake.render} {
+		if got.DurationMS != 2000 || got.FPS != 30 || got.OutputFPS != 30 || !got.RequireLivePlayback || !strings.Contains(string(got.Files["index.html"]), "__SWARM_ANIMATION_BIND__") {
+			t.Fatalf("trusted request=%+v body=%s", got, got.Files["index.html"])
+		}
+	}
+}
+
+// Requirement: two V3 derivatives become visible together or not at all, remain
+// private, and are digest-verified when an idempotent publication is replayed.
+func TestArtifactV3DerivativeStorePublishesAtomicPrivateSet(t *testing.T) {
+	store, err := newArtifactV3DerivativeStore(filepath.Join(t.TempDir(), "derivatives"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	makeDerivative := func(media string, body []byte) artifactv3video.Derivative {
+		digest := sha256.Sum256(body)
+		hexDigest := hex.EncodeToString(digest[:])
+		return artifactv3video.Derivative{ID: "av3der_" + hexDigest, MediaType: media, DigestSHA256: hexDigest, Bytes: body}
+	}
+	png, mp4 := makeDerivative("image/png", []byte("png")), makeDerivative("video/mp4", []byte("mp4"))
+	if err := store.PutAtomic(context.Background(), "session", "artifact", []artifactv3video.Derivative{png, mp4}); err != nil {
+		t.Fatal(err)
+	}
+	if body, err := store.Read(context.Background(), "session", "artifact", mp4.ID); err != nil || string(body) != "mp4" {
+		t.Fatalf("read=%q err=%v", body, err)
+	}
+	if err := store.PutAtomic(context.Background(), "session", "artifact", []artifactv3video.Derivative{png, mp4}); err != nil {
+		t.Fatalf("idempotent replay failed: %v", err)
+	}
+	entries, err := os.ReadDir(filepath.Join(store.root, artifactV3StorageKey("session", "artifact")))
+	if err != nil || len(entries) != 1 || !entries[0].IsDir() {
+		t.Fatalf("sets=%v err=%v", entries, err)
+	}
+	info, err := os.Stat(filepath.Join(store.root, artifactV3StorageKey("session", "artifact"), entries[0].Name(), png.ID))
+	if err != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("derivative mode=%v err=%v", info, err)
+	}
+}
+
 func TestArtifactV3RuntimeAdapterFailsClosedWithoutBrowser(t *testing.T) {
 	root := t.TempDir()
 	adapter := newArtifactV3RuntimeAdapter(nil, nil, root, root, pebblestore.ArtifactV3Limits{}, nil)
