@@ -503,7 +503,7 @@ async function submitSidebarIteration(sessionID, artifactID, rootRevision) {
   const [request, response] = await Promise.all([requestPromise, responsePromise])
   assert(response.ok(), `normal Desktop composer submission failed with HTTP ${response.status()}`)
   const body = request.postDataJSON()
-  assert(text(body?.content).includes('Target part IDs (intent only): pricing') && text(body?.content).includes('TARGETED PRICING TURN'), 'normal Desktop message body lost the targeted user request')
+  assert(text(body?.content).includes(`Target part IDs (intent only): ${pricingID}`) && text(body?.content).includes('TARGETED PRICING TURN'), 'normal Desktop message body lost the targeted user request')
   const decoded = await response.json()
   const runID = text(decoded?.run_intent?.run_id || decoded?.run_id)
   assert(runID, 'normal Desktop composer response returned no run ID')
@@ -515,7 +515,7 @@ async function submitSidebarIteration(sessionID, artifactID, rootRevision) {
 function targetedTurn(artifact, rootRevision) {
   const turns = artifact.turns || []
   const pricingID = rootRevision.manifest.parts.find((part) => text(part?.label).toLowerCase().includes('pricing'))?.id
-  const turn = [...turns].reverse().find((item) => item?.base_commit_oid === rootRevision.commit_oid)
+  const turn = [...turns].reverse().find((item) => item?.base_commit_oid === rootRevision.commit_oid && item?.status === 'awaiting_selection' && Array.isArray(item.target_part_ids) && item.target_part_ids.length === 1 && item.target_part_ids[0] === pricingID)
   assert(turn?.turn_id && turn?.status === 'awaiting_selection', 'targeted whole-project turn is not awaiting selection')
   assert(Array.isArray(turn.target_part_ids) && turn.target_part_ids.length === 1 && turn.target_part_ids[0] === pricingID, 'follow-up turn did not target exactly the Pricing Part')
   assert(Array.isArray(turn.candidates) && turn.candidates.length === 1, 'follow-up turn did not produce exactly one complete candidate')
@@ -526,10 +526,10 @@ function targetedTurn(artifact, rootRevision) {
   return { turn, candidate }
 }
 
-async function verifyStudioTurns(sessionID, artifactID, turn, candidate, rootRevision) {
+async function verifyStudioTurns(sessionID, artifactID, turn, candidate, rootRevision, expectedTurnCount) {
   const studio = await openDesktopStudio(sessionID, artifactID)
   const turns = studio.locator('[data-artifact-v3-turns] [data-artifact-v3-turn]')
-  assert(await turns.count() === 2, 'Artifact Studio does not show the initial and follow-up turns coherently')
+  assert(await turns.count() === expectedTurnCount, `Artifact Studio shows ${await turns.count()} turns; expected ${expectedTurnCount} including prior visual repair history and the targeted follow-up`)
   const targetTurn = studio.locator(`[data-artifact-v3-turn="${turn.turn_id}"]`)
   await targetTurn.waitFor({ state: 'visible', timeout: 30000 })
   assert(text(await targetTurn.textContent()).toLowerCase().includes('target ' + turn.target_part_ids[0].toLowerCase()), 'Artifact Studio follow-up turn lost the targeted Pricing identity')
@@ -598,6 +598,7 @@ async function runLive() {
   const artifact = items[0]
   const rootDetail = await detail(session.sessionID, artifact.id)
   const rootRevision = currentRevision(rootDetail)
+  const rootTurnCount = (rootDetail.turns || []).length
   const partIDs = rootDetail.parts?.map((part) => text(part.id)) || []
   log(`OBSERVE parts=${partIDs.join(',') || 'none'} head=${rootRevision.revision_ref}`)
   assert(partIDs.length === 3 && new Set(partIDs).size === 3 && partIDs.every(Boolean), `root Artifact must expose exactly three distinct stable Part IDs; got [${partIDs.join(',')}]`)
@@ -643,7 +644,7 @@ async function runLive() {
   const followSnapshot = await submitSidebarIteration(session.sessionID, artifact.id, rootRevision)
   const withCandidate = await waitForTargetedTurn(session.sessionID, artifact.id, rootRevision.commit_oid)
   assert(currentRevision(withCandidate).commit_oid === rootRevision.commit_oid, 'candidate generation moved the head before user selection')
-  assert((withCandidate.turns || []).length === 2, `Artifact has ${(withCandidate.turns || []).length} turns instead of initial plus follow-up`)
+  assert((withCandidate.turns || []).length === rootTurnCount + 1, `Artifact has ${(withCandidate.turns || []).length} turns; expected prior history ${rootTurnCount} plus one targeted follow-up`)
   const { turn, candidate } = targetedTurn(withCandidate, rootRevision)
   const childrenAfterFollowup = delegatedDesigners(await bootstrapSessions(), session.sessionID)
   const expectedFollowupDesigners = noDesignerStage ? 0 : 2
@@ -658,7 +659,7 @@ async function runLive() {
   result.revisions.candidate = candidate.revision
   result.animations.candidate = await screenshotPreview(session.sessionID, artifact.id, candidate.revision, 'TARGETED PRICING TURN')
   assert(!JSON.stringify(result.animations.root).includes('TARGETED PRICING TURN'), 'root revision was mutated by the targeted follow-up')
-  await verifyStudioTurns(session.sessionID, artifact.id, turn, candidate, rootRevision)
+  await verifyStudioTurns(session.sessionID, artifact.id, turn, candidate, rootRevision, rootTurnCount + 1)
   if (stage === 'targeted-part') {
     result.gates.targeted_part_candidate = true
     result.gates.exact_base_ancestry = true
