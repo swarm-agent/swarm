@@ -2,6 +2,7 @@ package videosource
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -11,6 +12,20 @@ import (
 	"swarm/packages/swarmd/internal/workspace"
 )
 
+func makeVideoSourceReadyRepository(t *testing.T, path string) {
+	t.Helper()
+	commands := [][]string{
+		{"init", "--initial-branch=main"},
+		{"-c", "user.name=Swarm Test", "-c", "user.email=swarm-test@localhost", "commit", "--allow-empty", "--no-gpg-sign", "-m", "Initial commit"},
+	}
+	for _, args := range commands {
+		command := exec.Command("git", append([]string{"-C", path}, args...)...)
+		if output, err := command.CombinedOutput(); err != nil {
+			t.Fatalf("prepare Git workspace: %v: %s", err, output)
+		}
+	}
+}
+
 func TestServiceListsAndBrowsesRegisteredRootsWithoutPaths(t *testing.T) {
 	db, err := pebblestore.Open(filepath.Join(t.TempDir(), "video-source.pebble"))
 	if err != nil {
@@ -19,6 +34,7 @@ func TestServiceListsAndBrowsesRegisteredRootsWithoutPaths(t *testing.T) {
 	defer db.Close()
 	principal := identity.Principal{Type: identity.PrincipalTypeUser, AccountScopeID: "account-1", UserID: "user-1", SessionID: "session-1"}
 	workspacePath, mediaPath := t.TempDir(), t.TempDir()
+	makeVideoSourceReadyRepository(t, workspacePath)
 	workspaceService := workspace.NewService(pebblestore.NewWorkspaceStore(db))
 	if _, err := workspaceService.AddForPrincipal(principal, workspacePath, "workspace", "", false); err != nil {
 		t.Fatal(err)
@@ -54,6 +70,7 @@ func TestServiceDiscoversTypedAudioWithStableOpaqueIdentity(t *testing.T) {
 	defer db.Close()
 	principal := identity.Principal{Type: identity.PrincipalTypeUser, AccountScopeID: "account-1", UserID: "user-1", SessionID: "session-1"}
 	workspacePath, mediaPath := t.TempDir(), t.TempDir()
+	makeVideoSourceReadyRepository(t, workspacePath)
 	workspaceService := workspace.NewService(pebblestore.NewWorkspaceStore(db))
 	if _, err := workspaceService.AddForPrincipal(principal, workspacePath, "workspace", "", false); err != nil {
 		t.Fatal(err)
@@ -119,6 +136,7 @@ func TestAudioReferencesRejectUnregisteredRootsAndStaleFiles(t *testing.T) {
 	defer db.Close()
 	principal := identity.Principal{Type: identity.PrincipalTypeUser, AccountScopeID: "account-1", UserID: "user-1", SessionID: "session-1"}
 	workspacePath, mediaPath, outsidePath := t.TempDir(), t.TempDir(), t.TempDir()
+	makeVideoSourceReadyRepository(t, workspacePath)
 	workspaceService := workspace.NewService(pebblestore.NewWorkspaceStore(db))
 	if _, err := workspaceService.AddForPrincipal(principal, workspacePath, "workspace", "", false); err != nil {
 		t.Fatal(err)
@@ -187,6 +205,7 @@ func TestServiceRejectsTraversalUnknownRootAndSymlink(t *testing.T) {
 	defer db.Close()
 	principal := identity.Principal{Type: identity.PrincipalTypeUser, AccountScopeID: "account-1", UserID: "user-1", SessionID: "session-1"}
 	workspacePath, mediaPath := t.TempDir(), t.TempDir()
+	makeVideoSourceReadyRepository(t, workspacePath)
 	workspaceService := workspace.NewService(pebblestore.NewWorkspaceStore(db))
 	if _, err := workspaceService.AddForPrincipal(principal, workspacePath, "workspace", "", false); err != nil {
 		t.Fatal(err)
