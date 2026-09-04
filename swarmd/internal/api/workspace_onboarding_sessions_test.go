@@ -36,7 +36,6 @@ func TestWorkspaceOnboardingSessionCreatesPreAdmissionV3Authority(t *testing.T) 
 
 	response := postWorkspaceOnboardingRequest(t, server, principal, map[string]any{
 		"path": folder, "expected_resolved_path": folder, "client_request_id": "onboarding-create",
-		"agent_name": "swarm", "workspace_binding_id": "spoofed", "metadata": map[string]any{"task": true},
 	})
 	if response.Code != http.StatusOK {
 		t.Fatalf("start status=%d body=%s", response.Code, response.Body.String())
@@ -52,7 +51,7 @@ func TestWorkspaceOnboardingSessionCreatesPreAdmissionV3Authority(t *testing.T) 
 	if err != nil || !ok {
 		t.Fatalf("stored=%+v ok=%t err=%v", stored, ok, err)
 	}
-	if stored.WorktreeEnabled || len(stored.WorkspaceGrants) != 0 || len(stored.TemporaryWorkspaceRoots) != 0 || stored.WorkspacePath != folder || stored.Metadata["workspace_onboarding"] != true || stored.Metadata["pre_admission"] != true || stored.Metadata["agent_name"] != agentruntime.WorkspaceOnboardingAgentID || stored.Metadata["task"] != nil || stored.Metadata["workspace_binding_id"] != nil {
+	if stored.WorktreeEnabled || len(stored.WorkspaceGrants) != 0 || len(stored.TemporaryWorkspaceRoots) != 0 || stored.WorkspacePath != folder || stored.Metadata["workspace_onboarding"] != true || stored.Metadata["pre_admission"] != true || stored.Metadata["agent_name"] != agentruntime.WorkspaceOnboardingAgentID || stored.Metadata["workspace_binding_id"] != nil {
 		t.Fatalf("pre-admission session=%+v metadata=%+v", stored, stored.Metadata)
 	}
 	if stored.ModelProfile == nil || stored.ModelProfile.Source != pebblestore.SessionModelProfileSourceSwarmSettings || !stored.ModelProfile.UseAccountDefault || stored.ModelProfile.Action.Model != "action-model" || stored.Preference.Model != "action-model" {
@@ -110,6 +109,20 @@ func TestWorkspaceOnboardingSessionRejectsInvalidAuthorityWithoutPartialState(t 
 		response := postWorkspaceOnboardingRequest(t, server, identity.Principal{}, map[string]any{"path": path, "expected_resolved_path": path, "client_request_id": "unauth"})
 		if response.Code != http.StatusUnauthorized {
 			t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+		}
+	})
+	t.Run("capability escalation fields", func(t *testing.T) {
+		server, principal := newServer(t)
+		path := makeExisting(t)
+		response := postWorkspaceOnboardingRequest(t, server, principal, map[string]any{
+			"path": path, "expected_resolved_path": path, "client_request_id": "escalation",
+			"agent_name": "swarm", "workspace_binding_id": "spoofed", "metadata": map[string]any{"task": true},
+		})
+		if response.Code == http.StatusOK || !strings.Contains(response.Body.String(), "unknown field") {
+			t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+		}
+		if sessions, err := server.sessions.ListSessionsForAccount(principal.AccountScopeID, 10); err != nil || len(sessions) != 0 {
+			t.Fatalf("escalation published sessions=%+v err=%v", sessions, err)
 		}
 	})
 	t.Run("stale expected path", func(t *testing.T) {
