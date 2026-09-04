@@ -25,12 +25,14 @@ const designerThinking = String(option('--designer-thinking', process.env.SWARM_
 const workspaceOverride = String(option('--workspace-path', process.env.SWARM_RUNNER_WORKSPACE_PATH || '')).trim()
 const sessionOverride = String(option('--session-id', process.env.SWARM_RUNNER_SESSION_ID || '')).trim()
 const initialRunOverride = String(option('--initial-run-id', process.env.SWARM_RUNNER_INITIAL_RUN_ID || '')).trim()
+const artifactOverride = String(option('--artifact-id', process.env.SWARM_RUNNER_ARTIFACT_ID || '')).trim()
 const desktopPathOverride = String(option('--desktop-path', process.env.SWARM_RUNNER_DESKTOP_PATH || '')).trim()
 const browserExecutable = String(option('--browser-executable', process.env.PLAYWRIGHT_BROWSER_EXECUTABLE || '')).trim()
 const timeoutMs = Number(option('--timeout-ms', process.env.SWARM_RUNNER_TIMEOUT_MS || '600000'))
 const preflight = flag('--preflight')
 const stage = String(option('--stage', 'full')).trim().toLowerCase()
-const noDesignerStage = stage === 'basic-html' || stage === 'targeted-part' || stage === 'selected-continuation' || stage === 'alternate-choice'
+const alternateResumeStage = stage === 'alternate-choice-resume'
+const noDesignerStage = stage === 'basic-html' || stage === 'targeted-part' || stage === 'selected-continuation' || stage === 'alternate-choice' || alternateResumeStage
 const headless = !flag('--headful')
 const suppliedToken = String(process.env.SWARM_RUNNER_TOKEN || '').trim()
 const testID = `artifact-v3-three-animated-parts-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`
@@ -629,17 +631,71 @@ async function verifyStudioTurns(sessionID, artifactID, turn, candidate, rootRev
   result.gates.desktop_prior_revision = true
 }
 
+async function runAlternateChoiceResume(sessionID) {
+  const items = await catalog(sessionID)
+  const artifact = artifactOverride ? items.find((item) => text(item?.id) === artifactOverride) : items.length === 1 ? items[0] : null
+  assert(artifact?.id, `alternate-choice resume requires --artifact-id when the session has ${items.length} artifacts`)
+  let existing = await detail(sessionID, artifact.id)
+  const continuationTurn = [...(existing.turns || [])].reverse().find((item) => item.target_part_ids?.length === 1 && text(item.target_part_ids[0]).toLowerCase() === 'hero' && item.candidates?.length === 1)
+  assert(continuationTurn?.candidates?.[0]?.revision?.commit_oid, 'resumed artifact has no exact Hero continuation candidate')
+  const continuationCandidate = continuationTurn.candidates[0]
+  const continuationRevision = continuationCandidate.revision
+  assert(JSON.stringify(continuationRevision).includes(continuationRevision.commit_oid), 'continued revision identity is incomplete')
+  result.ids.artifact_id = artifact.id
+  result.ids.continuation_turn_id = continuationTurn.turn_id
+  result.ids.continuation_candidate_id = continuationCandidate.candidate_id
+  result.revisions.continued = continuationRevision
+  result.animations.continued = await screenshotPreview(sessionID, artifact.id, continuationRevision, 'CONTINUED SELECTED TURN')
+  assert(JSON.stringify(result.animations.continued).includes('TARGETED PRICING TURN'), 'resumed continuation lost the selected Pricing change')
+  if (currentRevision(existing).commit_oid !== continuationRevision.commit_oid) {
+    existing = await selectCandidateInStudio(sessionID, artifact.id, continuationTurn, continuationCandidate)
+  }
+  const alternateBase = currentRevision(existing)
+  assert(alternateBase.commit_oid === continuationRevision.commit_oid, 'resume did not establish the exact continued candidate as selected base')
+  gate('continued-selected-base', 'PASS', alternateBase.revision_ref)
+  const { artifact: withAlternatives, turn: alternateTurn } = await createSiblingAlternatives(sessionID, artifact.id, alternateBase)
+  assert(alternateTurn?.candidates?.length === 2, 'alternate request did not produce exactly two sibling candidates')
+  assert(alternateTurn.candidates.every((item) => item.revision?.parents?.length === 1 && item.revision.parents[0] === alternateBase.commit_oid), 'alternate candidates do not share the exact selected base')
+  assert(currentRevision(withAlternatives).commit_oid === alternateBase.commit_oid, 'alternate siblings moved head before explicit choice')
+  const first = alternateTurn.candidates[0]
+  const second = alternateTurn.candidates[1]
+  result.animations.alternate_one = await screenshotPreview(sessionID, artifact.id, first.revision, 'ALTERNATE OPTION ONE')
+  result.animations.alternate_two = await screenshotPreview(sessionID, artifact.id, second.revision, 'ALTERNATE OPTION TWO')
+  assert(first.revision.commit_oid !== second.revision.commit_oid, 'alternate sibling candidates collapsed to one revision')
+  const chosen = await selectCandidateInStudio(sessionID, artifact.id, alternateTurn, second)
+  assert(currentRevision(chosen).commit_oid === second.revision.commit_oid, 'explicit alternate choice did not advance to the chosen sibling')
+  result.revisions.alternate_one = first.revision
+  result.revisions.alternate_two = second.revision
+  result.revisions.alternate_selected = currentRevision(chosen)
+  const children = delegatedDesigners(await bootstrapSessions(), sessionID)
+  assert(children.length === 0, `alternate-choice resume found ${children.length} Designer children instead of zero`)
+  const events = await replayEvents(sessionID)
+  const artifactEvents = events.filter((event) => text(event?.event_type).startsWith('artifact.v3.'))
+  assert(artifactEvents.length >= 12 && !forbiddenLegacyWrite(artifactEvents), 'alternate-choice replay lacks complete native V3 history or contains legacy identity')
+  const records = await page.evaluate(() => window.__artifactV3Records || [])
+  const liveEvents = records.filter((record) => record.kind === 'message' && record.session_id === sessionID && record.event_type.startsWith('artifact.v3.'))
+  assert(liveEvents.some((record) => record.endpoint_cursor_present), 'alternate-choice resume observed no cursor-bearing Artifact V3 realtime event')
+  result.realtime = { recorded: records.length, artifact_events: liveEvents.length, replay_events: artifactEvents.length }
+  result.gates.alternate_sibling_choice = true
+  result.gates.no_designer_delegation = true
+  result.gates.http_native_v3 = true
+  result.gates.realtime_native_v3 = true
+  result.gates.no_legacy_writes = true
+  result.result = 'PASS'
+  log('JOURNEY alternate-choice-resume PASS')
+}
+
 async function runLive() {
   assert(apiURL && /^https?:\/\//.test(apiURL), '--api-url is required for the live journey')
   assert(desktopURL && /^https?:\/\//.test(desktopURL), '--desktop-url is invalid')
-  assert(['basic-html', 'targeted-part', 'selected-continuation', 'alternate-choice', 'full'].includes(stage), '--stage must be basic-html, targeted-part, selected-continuation, alternate-choice, or full')
+  assert(['basic-html', 'targeted-part', 'selected-continuation', 'alternate-choice', 'alternate-choice-resume', 'full'].includes(stage), '--stage must be basic-html, targeted-part, selected-continuation, alternate-choice, alternate-choice-resume, or full')
   assert(Number.isFinite(timeoutMs) && timeoutMs >= 300000 && timeoutMs <= 600000, '--timeout-ms must be between 300000 and 600000')
   await auth()
   const assignment = await configureModels()
   const selected = await topology()
   let session
   if (sessionOverride) {
-    assert(initialRunOverride && desktopPathOverride.startsWith('/'), 'resuming requires --initial-run-id and an absolute --desktop-path')
+    assert(desktopPathOverride.startsWith('/') && (alternateResumeStage || initialRunOverride), 'resuming requires an absolute --desktop-path and --initial-run-id unless using alternate-choice-resume')
     const existing = await api('GET', `/v3/sessions/${encodeURIComponent(sessionOverride)}`, undefined, 'read resumed Artifact V3 session')
     const resumedSession = existing.body?.session || existing.body
     assert(text(resumedSession?.id) === sessionOverride, 'resumed Artifact V3 session was not found')
@@ -664,6 +720,10 @@ async function runLive() {
   await page.locator('body').waitFor({ state: 'visible' })
   await page.waitForFunction((sessionID) => (window.__artifactV3Records || []).some((record) => record.kind === 'message' && record.frame_kind === 'replay.complete' && record.session_id === sessionID && record.endpoint_cursor_present), session.sessionID, { timeout: 30000 })
   gate('realtime-subscribed-before-create', 'PASS', 'exact session subscription replay completed at a durable cursor')
+  if (alternateResumeStage) {
+    await runAlternateChoiceResume(session.sessionID)
+    return
+  }
 
   const childrenBefore = delegatedDesigners(await bootstrapSessions(), session.sessionID)
   let initialSnapshot
