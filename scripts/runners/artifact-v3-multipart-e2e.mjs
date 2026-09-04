@@ -412,12 +412,14 @@ function visibleChangeRequest() {
 
 async function openDesktopStudio(sessionID, artifactID) {
   await page.goto(`${desktopURL}${result.ids.desktop_path}`, { waitUntil: 'domcontentloaded', timeout: 60000 })
-  const row = page.locator(`[data-artifact-v3-id="${artifactID}"]`).first()
+  const rows = page.locator(`[data-artifact-v3-id="${artifactID}"]`)
+  const row = page.locator(`[data-artifact-v3-id="${artifactID}"]:visible`).first()
   await row.waitFor({ state: 'visible', timeout: 60000 })
+  log(`OBSERVE desktop_artifact_cards total=${await rows.count()} visible=${await page.locator(`[data-artifact-v3-id="${artifactID}"]:visible`).count()}`)
   await row.click()
-  const studio = page.locator('[data-testid="desktop-artifact-v3-studio"]')
+  const studio = page.locator('[data-testid="desktop-artifact-v3-studio"]:visible').first()
   await studio.waitFor({ state: 'visible', timeout: 30000 })
-  await studio.locator('[data-artifact-v3-preview]').waitFor({ state: 'visible', timeout: 30000 })
+  await studio.locator('[data-artifact-v3-preview]:visible').first().waitFor({ state: 'visible', timeout: 30000 })
   return studio
 }
 
