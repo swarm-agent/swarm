@@ -322,13 +322,19 @@ func TestApplyTaskIntegrationRejectsConcurrentRepositoryOwner(t *testing.T) {
 	}
 }
 
+// Requirement: delegated integration must recognize a child commit after
+// cherry-pick even though the parent commit has a different identity.
+// Threat: identical author/committer metadata within Git's one-second timestamp
+// resolution can reproduce the child OID, hiding an ancestry-only test contract
+// that flakes when the timestamp crosses a second. This service-level test is the
+// narrowest layer that proves the production preflight/apply/classifier boundary.
 func TestPrepareAndApplyTaskIntegrationIsDeterministic(t *testing.T) {
 	repo := t.TempDir()
 	if _, err := runGit(repo, "init", "-b", "dev"); err != nil {
 		t.Fatal(err)
 	}
-	_, _ = runGit(repo, "config", "user.email", "test@example.invalid")
-	_, _ = runGit(repo, "config", "user.name", "Test User")
+	_, _ = runGit(repo, "config", "user.email", "integrator@example.invalid")
+	_, _ = runGit(repo, "config", "user.name", "Integration User")
 	if err := os.WriteFile(filepath.Join(repo, "base.txt"), []byte("base\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -349,7 +355,13 @@ func TestPrepareAndApplyTaskIntegrationIsDeterministic(t *testing.T) {
 	if _, err := runGit(childPath, "add", "child.txt"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := runGit(childPath, "commit", "-m", "child"); err != nil {
+	childCommitEnv := append(os.Environ(),
+		"GIT_AUTHOR_NAME=Child Author",
+		"GIT_AUTHOR_EMAIL=child@example.invalid",
+		"GIT_COMMITTER_NAME=Child Author",
+		"GIT_COMMITTER_EMAIL=child@example.invalid",
+	)
+	if _, err := runGitWithEnv(childPath, childCommitEnv, "commit", "-m", "child"); err != nil {
 		t.Fatal(err)
 	}
 	head, _ := runGit(childPath, "rev-parse", "HEAD")
@@ -369,8 +381,11 @@ func TestPrepareAndApplyTaskIntegrationIsDeterministic(t *testing.T) {
 	if result.ResultingParentHead == "" || result.ResultingParentHead == base {
 		t.Fatalf("result = %#v", result)
 	}
-	if descends, err := svc.TaskCommitDescendsFrom(repo, head, result.ResultingParentHead); err != nil || !descends {
-		t.Fatalf("integrated child is not reachable by ancestry: descends=%t err=%v", descends, err)
+	if result.ResultingParentHead == head {
+		t.Fatalf("integration unexpectedly reused child commit identity: child=%s parent=%s", head, result.ResultingParentHead)
+	}
+	if descends, err := svc.TaskCommitDescendsFrom(repo, head, result.ResultingParentHead); err != nil || descends {
+		t.Fatalf("cherry-picked child should not be reachable by ancestry: descends=%t err=%v", descends, err)
 	}
 	if integrated, err := svc.TaskCommitRangeIntegratedInto(repo, base, head, result.ResultingParentHead); err != nil || !integrated {
 		t.Fatalf("cherry-picked child not classified integrated: integrated=%t err=%v", integrated, err)
