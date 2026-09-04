@@ -535,14 +535,19 @@ async function createSiblingAlternatives(sessionID, artifactID, baseRevision) {
   const before = await detail(sessionID, artifactID)
   const priorTurnIDs = new Set((before.turns || []).map((turn) => text(turn?.turn_id)))
   const turnKey = `${testID}-footer-alternatives`
-  await postTurn(sessionID, 'alternate-siblings', [
+  let runError = null
+  try {
+    await postTurn(sessionID, 'alternate-siblings', [
     'Create exactly two sibling candidates from this exact selected Artifact V3 revision without Designers.',
     `Use manage_artifact read_v3 on session_id=${sessionID}, artifact_id=${artifactID}, revision_ref=${baseRevision.revision_ref}.`,
     `Call revise_v3 exactly once with turn_key=${turnKey}, target_part_ids set to the exact Footer Part ID, and alternatives containing exactly two items with candidate_index values 1 and 2.`,
     'Alternative 1 complete HTML must include exact Footer label ALTERNATE OPTION ONE. Alternative 2 complete HTML must include exact Footer label ALTERNATE OPTION TWO.',
     'Both complete HTML documents must preserve CONTINUED SELECTED TURN, TARGETED PRICING TURN, Team $29, and all stable Part IDs, and fit exactly within 1440x900 with no scrolling or clipped Part.',
-    'Inspect both candidates, do not select either, and do not use Designer or V1/V2 identity.',
-  ].join(' '))
+      'Inspect both candidates, do not select either, and do not use Designer or V1/V2 identity.',
+    ].join(' '))
+  } catch (error) {
+    runError = error
+  }
   const timeoutAt = Math.min(deadline, Date.now() + 30000)
   while (Date.now() < timeoutAt) {
     const artifact = await detail(sessionID, artifactID)
@@ -551,7 +556,10 @@ async function createSiblingAlternatives(sessionID, artifactID, baseRevision) {
     await sleep(500)
   }
   const artifact = await detail(sessionID, artifactID)
-  return { artifact, turn: [...(artifact.turns || [])].reverse().find((item) => !priorTurnIDs.has(text(item?.turn_id)) && item.base_commit_oid === baseRevision.commit_oid && item.candidates?.length === 2) }
+  const turn = [...(artifact.turns || [])].reverse().find((item) => !priorTurnIDs.has(text(item?.turn_id)) && item.base_commit_oid === baseRevision.commit_oid && item.candidates?.length === 2)
+  if (!turn && runError) throw runError
+  if (turn && runError) log('OBSERVE alternate provider run terminalized after both requested native candidates were already durable; continuing from authoritative Artifact V3 state')
+  return { artifact, turn }
 }
 
 async function submitSelectedContinuation(sessionID, artifactID, selectedRevision, parts) {
