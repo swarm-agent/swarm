@@ -66,6 +66,32 @@ func TestManageArtifactReviseV3CreatesExactBaseCandidateWithoutSelecting(t *test
 		t.Fatalf("sibling turn=%#v selected=%#v", repository.turns, repository.selected)
 	}
 
+	// Requirement: one provider tool call can durably produce every requested
+	// exact-base sibling before it reports success. Threat: provider completion
+	// after only one of multiple calls leaves a turn below requested cardinality.
+	firstAlternative := strings.Replace(html, "Team $29", "ATOMIC OPTION ONE — Team $29", 1)
+	secondAlternative := strings.Replace(html, "Team $29", "ATOMIC OPTION TWO — Team $29", 1)
+	alternativesArgs, _ := json.Marshal(map[string]any{
+		"action": "revise_v3", "artifact_v3_reference": map[string]any{"session_id": "session-1", "artifact_id": "artifact-direct", "revision_ref": "revision-" + strings.Repeat("a", 40)},
+		"target_part_ids": []string{"pricing"}, "turn_key": "atomic-pricing-alternatives", "alternatives": []map[string]any{{"candidate_index": 1, "content": firstAlternative}, {"candidate_index": 2, "content": secondAlternative}},
+	})
+	atomicOutput, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, Call{CallID: "atomic-siblings", Name: "manage_artifact", Arguments: string(alternativesArgs)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(repository.turns) < 5 || repository.turns[len(repository.turns)-2].TaskCallID != "direct-revise:atomic-pricing-alternatives" || repository.turns[len(repository.turns)-2].CandidateIndex != 1 || repository.turns[len(repository.turns)-1].TaskCallID != "direct-revise:atomic-pricing-alternatives" || repository.turns[len(repository.turns)-1].CandidateIndex != 2 || len(repository.selected) != 0 {
+		t.Fatalf("atomic turns=%#v selected=%#v", repository.turns, repository.selected)
+	}
+	for _, want := range []string{`"candidate_count":2`, `"candidate_index":1`, `"candidate_index":2`, `"turn_key":"atomic-pricing-alternatives"`, `"status":"awaiting_selection"`} {
+		if !strings.Contains(atomicOutput, want) {
+			t.Fatalf("atomic output lacks %s: %s", want, atomicOutput)
+		}
+	}
+	invalidAlternatives := strings.Replace(string(alternativesArgs), `"candidate_index":2`, `"candidate_index":1`, 1)
+	if _, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, Call{CallID: "duplicate-siblings", Name: "manage_artifact", Arguments: invalidAlternatives}); err == nil || !strings.Contains(err.Error(), "candidate_index") {
+		t.Fatalf("duplicate alternatives error=%v", err)
+	}
+
 	missingPartHTML := strings.Replace(revisedHTML, `id="footer"`, `id="removed"`, 1)
 	missingPartPayload := map[string]any{
 		"action": "revise_v3", "artifact_v3_reference": map[string]any{"session_id": "session-1", "artifact_id": "artifact-direct", "revision_ref": "revision-" + strings.Repeat("a", 40)},

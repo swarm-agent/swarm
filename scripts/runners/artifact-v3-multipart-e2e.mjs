@@ -533,15 +533,14 @@ async function createSiblingAlternatives(sessionID, artifactID, baseRevision) {
   const before = await detail(sessionID, artifactID)
   const priorTurnIDs = new Set((before.turns || []).map((turn) => text(turn?.turn_id)))
   const turnKey = `${testID}-footer-alternatives`
-  for (const [index, label] of [[1, 'ALTERNATE OPTION ONE'], [2, 'ALTERNATE OPTION TWO']]) {
-    await postTurn(sessionID, `alternate-sibling-${index}`, [
-      `Create sibling candidate ${index} of 2 from this exact selected Artifact V3 revision without Designers.`,
-      `Use manage_artifact read_v3 on session_id=${sessionID}, artifact_id=${artifactID}, revision_ref=${baseRevision.revision_ref}.`,
-      `Call revise_v3 exactly once with turn_key=${turnKey}, candidate_index=${index}, and target_part_ids set to the exact Footer Part ID.`,
-      `The complete HTML must include exact label ${label} in the Footer, preserve CONTINUED SELECTED TURN, TARGETED PRICING TURN, Team $29, and all stable Part IDs, and fit exactly within 1440x900 with no scrolling or clipped Part.`,
-      'Inspect this candidate, do not select it, do not create the other candidate in this run, and do not use Designer or V1/V2 identity.',
-    ].join(' '))
-  }
+  await postTurn(sessionID, 'alternate-siblings', [
+    'Create exactly two sibling candidates from this exact selected Artifact V3 revision without Designers.',
+    `Use manage_artifact read_v3 on session_id=${sessionID}, artifact_id=${artifactID}, revision_ref=${baseRevision.revision_ref}.`,
+    `Call revise_v3 exactly once with turn_key=${turnKey}, target_part_ids set to the exact Footer Part ID, and alternatives containing exactly two items with candidate_index values 1 and 2.`,
+    'Alternative 1 complete HTML must include exact Footer label ALTERNATE OPTION ONE. Alternative 2 complete HTML must include exact Footer label ALTERNATE OPTION TWO.',
+    'Both complete HTML documents must preserve CONTINUED SELECTED TURN, TARGETED PRICING TURN, Team $29, and all stable Part IDs, and fit exactly within 1440x900 with no scrolling or clipped Part.',
+    'Inspect both candidates, do not select either, and do not use Designer or V1/V2 identity.',
+  ].join(' '))
   const timeoutAt = Math.min(deadline, Date.now() + 30000)
   while (Date.now() < timeoutAt) {
     const artifact = await detail(sessionID, artifactID)

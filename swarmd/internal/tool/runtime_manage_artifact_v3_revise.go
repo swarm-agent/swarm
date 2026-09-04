@@ -42,16 +42,58 @@ func (r *Runtime) readDirectArtifactV3HTML(ctx context.Context, scope WorkspaceS
 	return map[string]any{"status": "ok", "reference": map[string]any{"session_id": reference.SessionID, "artifact_id": reference.ArtifactID, "revision_ref": reference.RevisionRef}, "media_type": "text/html", "content": string(html), "parts": parts}, nil
 }
 
+type directArtifactV3Alternative struct {
+	CandidateIndex int
+	Content        string
+}
+
 func (r *Runtime) reviseDirectArtifactV3HTML(ctx context.Context, scope WorkspaceScope, principal artifact.Principal, callID string, args map[string]any) (map[string]any, error) {
 	if r == nil || r.artifactV3Author == nil {
 		return nil, errors.New("manage_artifact revise_v3 requires the Artifact V3 author service")
 	}
 	for key := range args {
 		switch key {
-		case "action", "artifact_v3_reference", "content", "target_part_ids", "turn_key", "candidate_index":
+		case "action", "artifact_v3_reference", "content", "target_part_ids", "turn_key", "candidate_index", "alternatives":
 		default:
 			return nil, fmt.Errorf("manage_artifact revise_v3 contains unsupported field %q", key)
 		}
+	}
+	if raw, supplied := args["alternatives"]; supplied {
+		if _, supplied := args["content"]; supplied {
+			return nil, errors.New("manage_artifact revise_v3 alternatives cannot be combined with top-level content")
+		}
+		if _, supplied := args["candidate_index"]; supplied {
+			return nil, errors.New("manage_artifact revise_v3 alternatives own their candidate_index values")
+		}
+		turnKey := strings.TrimSpace(asString(args["turn_key"]))
+		if !validManagedArtifactStableID(turnKey) {
+			return nil, errors.New("manage_artifact revise_v3 alternatives require a stable turn_key")
+		}
+		alternatives, err := parseDirectArtifactV3Alternatives(raw)
+		if err != nil {
+			return nil, err
+		}
+		results := make([]map[string]any, 0, len(alternatives))
+		for _, alternative := range alternatives {
+			candidateArgs := make(map[string]any, len(args)+1)
+			for key, value := range args {
+				if key != "alternatives" {
+					candidateArgs[key] = value
+				}
+			}
+			candidateArgs["content"] = alternative.Content
+			candidateArgs["candidate_index"] = alternative.CandidateIndex
+			candidate, err := r.reviseDirectArtifactV3HTML(ctx, scope, principal, callID, candidateArgs)
+			if err != nil {
+				return nil, fmt.Errorf("manage_artifact revise_v3 alternative %d of %d failed: %w", alternative.CandidateIndex, len(alternatives), err)
+			}
+			results = append(results, candidate)
+		}
+		return map[string]any{
+			"status": "awaiting_selection", "turn_id": results[0]["turn_id"], "turn_key": turnKey,
+			"candidate_count": len(results), "candidates": results,
+			"message": "Every requested exact-base native Artifact V3 alternative is ready beside the unchanged selected head. Inspect the candidates; selection remains a separate explicit user action.",
+		}, nil
 	}
 	reference, err := parseDirectArtifactV3RevisionInput(args["artifact_v3_reference"])
 	if err != nil {
@@ -185,6 +227,34 @@ func parseDirectArtifactV3RevisionInput(raw any) (directArtifactV3RevisionInput,
 	out := directArtifactV3RevisionInput{SessionID: strings.TrimSpace(asString(value["session_id"])), ArtifactID: strings.TrimSpace(asString(value["artifact_id"])), RevisionRef: strings.TrimSpace(asString(value["revision_ref"]))}
 	if out.SessionID == "" || out.ArtifactID == "" || !strings.HasPrefix(out.RevisionRef, "revision-") || len(strings.TrimPrefix(out.RevisionRef, "revision-")) != 40 {
 		return directArtifactV3RevisionInput{}, errors.New("manage_artifact revise_v3 requires complete session_id, artifact_id, and exact revision_ref")
+	}
+	return out, nil
+}
+
+func parseDirectArtifactV3Alternatives(raw any) ([]directArtifactV3Alternative, error) {
+	items, ok := raw.([]any)
+	if !ok || len(items) < 2 || len(items) > 16 {
+		return nil, errors.New("manage_artifact revise_v3 alternatives must contain 2 to 16 complete candidates")
+	}
+	out := make([]directArtifactV3Alternative, len(items))
+	seen := make(map[int]bool, len(items))
+	for position, item := range items {
+		value, ok := item.(map[string]any)
+		if !ok {
+			return nil, errors.New("manage_artifact revise_v3 alternatives must contain objects")
+		}
+		for key := range value {
+			if key != "candidate_index" && key != "content" {
+				return nil, fmt.Errorf("manage_artifact revise_v3 alternative contains unsupported field %q", key)
+			}
+		}
+		candidateIndex := asInt(value["candidate_index"], 0)
+		content, contentOK := value["content"].(string)
+		if candidateIndex < 1 || candidateIndex > len(items) || seen[candidateIndex] || !contentOK || strings.TrimSpace(content) == "" {
+			return nil, errors.New("manage_artifact revise_v3 alternatives require each candidate_index from 1 through the candidate count exactly once and non-empty complete HTML content")
+		}
+		seen[candidateIndex] = true
+		out[position] = directArtifactV3Alternative{CandidateIndex: candidateIndex, Content: content}
 	}
 	return out, nil
 }
