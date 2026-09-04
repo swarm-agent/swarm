@@ -535,8 +535,8 @@ async function createSiblingAlternatives(sessionID, artifactID, baseRevision) {
     content: [
       'Create exactly two sibling Artifact V3 alternatives from this exact selected revision without Designers.',
       `Use manage_artifact read_v3 on session_id=${sessionID}, artifact_id=${artifactID}, revision_ref=${baseRevision.revision_ref}.`,
-      'Then call revise_v3 twice with the same turn_key=footer-alternatives, target_part_ids set to the exact Footer Part ID, and candidate_index 1 then 2.',
-      'The first complete HTML must include exact label ALTERNATE OPTION ONE in the Footer. The second must start again from the same exact base and include exact label ALTERNATE OPTION TWO instead. Preserve the selected Pricing change and all stable Part IDs. Inspect both candidates. Do not select either and do not use Designer or V1/V2 identity.',
+      `Then call revise_v3 twice with the same turn_key=${testID}-footer-alternatives, target_part_ids set to the exact Footer Part ID, and candidate_index 1 then 2.`,
+      'The first complete HTML must include exact label ALTERNATE OPTION ONE in the Footer. The second must start again from the same exact base and include exact label ALTERNATE OPTION TWO instead. Preserve the selected Pricing change and all stable Part IDs. Keep the complete page exactly within 1440x900 with no scrolling or clipped Part: use an explicit 100vw by 100vh overflow-hidden root and bounded grid/flex tracks if needed. Inspect both candidates. Do not select either and do not use Designer or V1/V2 identity.',
     ].join(' '),
     metadata: { runner_test: 'artifact-v3-multipart-e2e', runner_test_id: testID, stage: 'alternate-siblings' },
   }, 'post alternate siblings')
