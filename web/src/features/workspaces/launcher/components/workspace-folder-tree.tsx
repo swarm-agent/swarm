@@ -14,13 +14,10 @@ interface WorkspaceFolderTreeProps {
   workspaces: WorkspaceEntry[]
   selectingPath: string | null
   savingPath: string | null
-  useFolderLabel?: string
-  showTemporaryAction?: boolean
   openCreatedFolder?: boolean
   showPathInWorkspaceAction?: boolean
   onBrowsePath: (path: string) => void
   onOpenWorkspace: (path: string) => void
-  onUseFolderTemporarily: (path: string) => void
   onCreateWorkspace: (entry: WorkspaceDiscoverEntry) => void
   onCreateFolder: (parentPath: string, name: string) => Promise<string>
 }
@@ -51,13 +48,10 @@ export function WorkspaceFolderTree({
   workspaces,
   selectingPath,
   savingPath,
-  useFolderLabel = 'Use folder for this chat only',
-  showTemporaryAction = true,
   openCreatedFolder = false,
   showPathInWorkspaceAction = false,
   onBrowsePath,
   onOpenWorkspace,
-  onUseFolderTemporarily,
   onCreateWorkspace,
   onCreateFolder,
 }: WorkspaceFolderTreeProps) {
@@ -137,7 +131,7 @@ export function WorkspaceFolderTree({
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
             <h2 className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[var(--app-text)]">Explorer</h2>
-            <p className="mt-1 truncate text-xs text-[var(--app-text-muted)]">Use a folder for this chat only or add it as a new workspace.</p>
+            <p className="mt-1 truncate text-xs text-[var(--app-text-muted)]">Choose a committed Git repository or prepare this folder before adding it.</p>
           </div>
           <span className="flex size-7 shrink-0 items-center justify-center rounded-lg border border-[color-mix(in_oklab,var(--app-border)_52%,transparent)] bg-[var(--app-surface-subtle)] text-[11px] font-medium tabular-nums text-[var(--app-text-subtle)]">{browser?.entries.length ?? 0}</span>
         </div>
@@ -316,16 +310,6 @@ export function WorkspaceFolderTree({
           {currentBusy ? <RefreshCw size={14} className="animate-spin" /> : currentSaved ? <Folder size={15} /> : <Plus size={15} />}
           <span className="min-w-0 truncate">{workspaceActionLabel}</span>
         </Button>
-        {showTemporaryAction ? (
-          <button
-            type="button"
-            className="mt-2 flex h-7 w-full items-center justify-center rounded-md px-3 text-xs text-[var(--app-text-muted)] transition-colors hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] disabled:cursor-not-allowed disabled:opacity-50"
-            disabled={!currentPath || selectingPath === currentPath}
-            onClick={() => onUseFolderTemporarily(currentPath)}
-          >
-            {useFolderLabel}
-          </button>
-        ) : null}
       </div>
     </div>
   )

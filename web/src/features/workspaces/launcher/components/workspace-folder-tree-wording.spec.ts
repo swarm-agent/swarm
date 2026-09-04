@@ -6,16 +6,17 @@ const source = await readFile(new URL('./workspace-folder-tree.tsx', import.meta
 const sharedIterationSource = await readFile(new URL('../pages/iterations/shared.tsx', import.meta.url), 'utf8')
 const iterationSource = await readFile(new URL('../pages/iterations/workspace-launcher-iteration-1.tsx', import.meta.url), 'utf8')
 
-test('workspace explorer distinguishes chat-only folder use from creating a new workspace', () => {
-  assert.match(source, /Use folder for this chat only/)
+test('workspace explorer requires repository setup instead of temporary non-Git use', () => {
   assert.match(source, /Add folder as a new workspace/)
   assert.match(source, /Add folder \$\{entry\.name\} as a new workspace/)
-  assert.doesNotMatch(source, /Use as temp|Add as workspace/)
+  assert.match(source, /Choose a committed Git repository/)
+  assert.doesNotMatch(source, /Use folder for this chat only|Use as temp|Add as workspace/)
   assert.match(source, /Git required/)
   assert.match(source, /managed worktrees/)
   assert.match(source, /existing files are never staged or committed silently/)
   assert.doesNotMatch(source, /Git is optional|ready to use without Git/)
-  assert.match(sharedIterationSource, /Use for this chat only/)
+  assert.doesNotMatch(sharedIterationSource, /Use for this chat only/)
+  assert.match(sharedIterationSource, /committed Git repository/)
   assert.match(sharedIterationSource, /Add folder as a new workspace/)
-  assert.match(iterationSource, /use one for this chat only, or add it as a new workspace/)
+  assert.match(iterationSource, /Swarm accepts only a repository root with an initial commit/)
 })

@@ -34,7 +34,7 @@ This file is the canonical operator checklist for promoting `dev` to `main`, tes
 ```
 
 - `--service` is explicit because direct `swarmsetup` and blank interactive install choices default to files-only and never enable/start systemd implicitly.
-- That install path provides the real installed runtime and the user-facing `swarm` launcher.
+- That install path provides the real installed runtime and the user-facing `swarm` launcher. Git is not bundled as a private binary in the archive: the installer must provision the supported distribution's Git package when absent, verify it before Swarm mutation, and fail closed if no supported package manager can satisfy the prerequisite.
 - Fresh shells that do not yet include `${XDG_BIN_HOME:-$HOME/.local/bin}` on `PATH` must use `${XDG_BIN_HOME:-$HOME/.local/bin}/swarm` until the shell startup files are updated and a new shell is opened.
 
 ## Canonical version reference
@@ -109,9 +109,9 @@ This file is the canonical operator checklist for promoting `dev` to `main`, tes
 - [ ] Start from a clean supported-Linux VM or restored clean snapshot with no prior Swarm install; record the OS image and candidate SHA/version
 - [ ] Install the exact versioned candidate through the documented systemd path and verify service-account ownership, group, and `0600` mode for the canonical config
 - [ ] Test real systemd start, `swarm status`, `swarm open`/health reachability, stop, and restart
-- [ ] Complete Desktop onboarding from first launch, including identity, provider, workspace selection, and successful first use
+- [ ] Complete Desktop onboarding from first launch, including identity, provider, and workspace selection. Prove a non-repository folder cannot be used temporarily or saved and explicit session worktree opt-out is rejected, an empty folder can be initialized only through the explicit repository-setup action, a non-empty folder directs the user to review files/ignore rules before permissioned Git mutations, and the resulting committed repository reaches successful first use.
 - [ ] Complete the terminal/CLI first-run onboarding path and successful first use
-- [ ] Complete TUI onboarding from first launch, including identity, provider, workspace selection, and successful first use
+- [ ] Complete TUI onboarding from first launch, including identity, provider, workspace selection, and successful first use; plain and unborn repositories must remain blocked with actionable guidance.
 - [ ] Exercise the Desktop update action and the terminal/TUI `/update apply` path; verify progress, process handoff/relaunch, the post-update version, and the success notification where that surface provides one
 - [ ] Test reinstall/update over an existing installation and verify config, data, onboarding state, service-account owner/group, and config mode are preserved
 - [ ] Verify update apply fails closed for missing or mismatched checksum metadata, then succeeds with the exact candidate checksum

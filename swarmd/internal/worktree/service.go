@@ -32,30 +32,12 @@ const (
 )
 
 const (
-	detachedWorkspaceFallbackWarning = "This workspace is ready to use, but managed worktrees are unavailable until Git is installed and the workspace has an initial commit. Ask Swarm to set up Git when you want to use that feature."
-	gitRequiredForWorktreesError     = "Git is required for this managed-worktree operation but is not installed; ask Swarm to install Git safely with the detected Linux distribution's package manager, approve the system change when prompted, and then retry"
-	gitRepositoryRequiredError       = "This managed-worktree operation needs a Git repository; the workspace remains usable. Ask Swarm to explain and request permission before running `git init`, then create the first commit and retry"
-	initialCommitRequiredError       = "This managed-worktree operation needs an initial commit; the workspace remains usable. Ask Swarm to prepare and request permission for the first commit, then retry"
+	gitRequiredForWorktreesError = "Git is required for Swarm and is not installed; repair or reinstall Swarm so the installer can provision Git, then retry"
+	gitRepositoryRequiredError   = "Swarm workspaces require a Git repository with an initial commit; review the selected directory and request permission before running `git init`, staging files, or creating the first commit"
+	initialCommitRequiredError   = "Swarm workspaces require an initial commit; review files and ignore rules, request permission before staging or committing, then retry"
 )
 
 var validWorktreeWorkspace = regexp.MustCompile(`^(ws_)?[a-z0-9][a-z0-9-]*$`)
-
-func DetachedWorkspaceFallbackWarning(err error) string {
-	if err == nil {
-		return ""
-	}
-	text := strings.ToLower(strings.TrimSpace(err.Error()))
-	if strings.Contains(text, "not a git repository") ||
-		strings.Contains(text, strings.ToLower(gitRequiredForWorktreesError)) ||
-		strings.Contains(text, strings.ToLower(gitRepositoryRequiredError)) ||
-		strings.Contains(text, strings.ToLower(initialCommitRequiredError)) {
-		return detachedWorkspaceFallbackWarning
-	}
-	if strings.Contains(text, "executable file not found") && strings.Contains(text, "git") {
-		return detachedWorkspaceFallbackWarning
-	}
-	return ""
-}
 
 type Config struct {
 	WorkspacePath    string `json:"workspace_path,omitempty"`

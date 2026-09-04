@@ -24,7 +24,7 @@ func TestResolveTaskBaseExplainsMissingGitPrerequisite(t *testing.T) {
 		t.Fatal("ResolveTaskBase succeeded without Git")
 	}
 	message := err.Error()
-	for _, want := range []string{"Git is required for this managed-worktree operation", "ask Swarm to install Git safely", "package manager", "approve the system change", "retry"} {
+	for _, want := range []string{"Git is required for Swarm", "repair or reinstall Swarm", "installer can provision Git", "retry"} {
 		if !strings.Contains(message, want) {
 			t.Fatalf("missing-Git error %q does not contain %q", message, want)
 		}
@@ -32,13 +32,9 @@ func TestResolveTaskBaseExplainsMissingGitPrerequisite(t *testing.T) {
 	if strings.Contains(message, "executable file not found") || strings.Contains(message, "rev-parse") {
 		t.Fatalf("missing-Git error leaked opaque execution detail: %q", message)
 	}
-	if warning := DetachedWorkspaceFallbackWarning(err); warning != detachedWorkspaceFallbackWarning {
-		t.Fatalf("detached workspace warning = %q", warning)
-	}
-
 	allocationRoot := t.TempDir()
 	_, allocationErr := (&Service{}).allocateSessionWorkspace(allocationRoot, true, "", "agent", "missing-git")
-	if allocationErr == nil || !strings.Contains(allocationErr.Error(), "Git is required for this managed-worktree operation") {
+	if allocationErr == nil || !strings.Contains(allocationErr.Error(), "Git is required for Swarm") {
 		t.Fatalf("allocation missing-Git error = %v", allocationErr)
 	}
 	entries, readErr := os.ReadDir(allocationRoot)
@@ -65,7 +61,7 @@ func TestResolveTaskBaseExplainsRepositoryRequirementWithoutMutation(t *testing.
 		t.Fatal("ResolveTaskBase succeeded outside a Git repository")
 	}
 	message := err.Error()
-	for _, want := range []string{"managed-worktree operation needs a Git repository", "workspace remains usable", "request permission", "git init", "first commit"} {
+	for _, want := range []string{"Swarm workspaces require a Git repository", "initial commit", "request permission", "git init", "staging files"} {
 		if !strings.Contains(message, want) {
 			t.Fatalf("non-repository error %q does not contain %q", message, want)
 		}
@@ -79,12 +75,8 @@ func TestResolveTaskBaseExplainsRepositoryRequirementWithoutMutation(t *testing.
 	if _, statErr := os.Stat(filepath.Join(dir, ".git")); !errors.Is(statErr, os.ErrNotExist) {
 		t.Fatalf("repository prerequisite check created .git: %v", statErr)
 	}
-	if warning := DetachedWorkspaceFallbackWarning(err); warning != detachedWorkspaceFallbackWarning {
-		t.Fatalf("plain-directory fallback warning = %q", warning)
-	}
-
 	_, allocationErr := (&Service{}).allocateSessionWorkspace(dir, true, "", "agent", "plain-directory")
-	if allocationErr == nil || !strings.Contains(allocationErr.Error(), "managed-worktree operation needs a Git repository") {
+	if allocationErr == nil || !strings.Contains(allocationErr.Error(), "Swarm workspaces require a Git repository") {
 		t.Fatalf("plain-directory allocation error = %v", allocationErr)
 	}
 	if _, statErr := os.Stat(filepath.Join(dir, ".git")); !errors.Is(statErr, os.ErrNotExist) {
@@ -106,7 +98,7 @@ func TestResolveTaskBaseExplainsInitialCommitRequirement(t *testing.T) {
 		t.Fatal("ResolveTaskBase succeeded without an initial commit")
 	}
 	message := err.Error()
-	for _, want := range []string{"managed-worktree operation needs an initial commit", "workspace remains usable", "request permission", "first commit", "retry"} {
+	for _, want := range []string{"Swarm workspaces require an initial commit", "review files", "request permission", "staging or committing", "retry"} {
 		if !strings.Contains(message, want) {
 			t.Fatalf("unborn-repository error %q does not contain %q", message, want)
 		}
@@ -114,12 +106,8 @@ func TestResolveTaskBaseExplainsInitialCommitRequirement(t *testing.T) {
 	if strings.Contains(message, "ambiguous argument") || strings.Contains(message, "detached HEAD") || strings.Contains(message, "rev-parse") {
 		t.Fatalf("unborn-repository error leaked or misclassified Git detail: %q", message)
 	}
-	if warning := DetachedWorkspaceFallbackWarning(err); warning != detachedWorkspaceFallbackWarning {
-		t.Fatalf("unborn-repository fallback warning = %q", warning)
-	}
-
 	_, allocationErr := (&Service{}).allocateSessionWorkspace(repo, true, "", "agent", "unborn")
-	if allocationErr == nil || !strings.Contains(allocationErr.Error(), "managed-worktree operation needs an initial commit") {
+	if allocationErr == nil || !strings.Contains(allocationErr.Error(), "Swarm workspaces require an initial commit") {
 		t.Fatalf("allocation unborn-repository error = %v", allocationErr)
 	}
 }

@@ -37,6 +37,61 @@ func TestAddForPrincipalRejectsRepositoryWithoutHEADBeforeMutation(t *testing.T)
 	}
 }
 
+// Requirement: a saved workspace that becomes non-repository cannot be selected.
+// Threat: stale catalog entries could otherwise reopen an unsupported direct-session path.
+// Boundary: SelectForPrincipal must revalidate repository readiness before mutating current selection.
+func TestSelectForPrincipalRejectsRepositoryDriftBeforeSelectionMutation(t *testing.T) {
+	store, cleanup := newTestWorkspaceStore(t)
+	defer cleanup()
+	svc := NewService(store)
+	readyPath := t.TempDir()
+	if _, err := runRepositoryGit(readyPath, "init", "--initial-branch=main"); err != nil {
+		t.Fatalf("initialize repository: %v", err)
+	}
+	if _, err := runRepositoryGit(readyPath, "-c", "user.name=Swarm Test", "-c", "user.email=swarm-test@localhost", "commit", "--allow-empty", "--no-gpg-sign", "-m", "Initial commit"); err != nil {
+		t.Fatalf("create initial commit: %v", err)
+	}
+	if _, err := svc.AddForPrincipal(testPrincipal(), readyPath, "ready", "", false); err != nil {
+		t.Fatalf("save ready workspace: %v", err)
+	}
+	gitPath := filepath.Join(readyPath, ".git")
+	removedGitPath := filepath.Join(t.TempDir(), "removed-git")
+	if err := os.Rename(gitPath, removedGitPath); err != nil {
+		t.Fatalf("remove repository metadata: %v", err)
+	}
+
+	_, err := svc.SelectForPrincipal(testPrincipal(), readyPath)
+	state, ok := RepositoryStateFromError(err)
+	if !ok || (state.State != RepositoryStateNeedsAssistedSetup && state.State != RepositoryStateNotRepository) {
+		t.Fatalf("select error=%v state=%+v, want non-repository prerequisite", err, state)
+	}
+	if _, selected, currentErr := svc.CurrentBindingForPrincipal(testPrincipal()); currentErr != nil || selected {
+		t.Fatalf("failed selection changed current workspace: selected=%v err=%v", selected, currentErr)
+	}
+}
+
+// Requirement: bare repositories cannot back workspace files or managed worktrees.
+// Threat: --show-toplevel output alone can be misleading for non-worktree repositories.
+// Boundary: repository inspection must reject the repository before catalog mutation.
+func TestAddForPrincipalRejectsBareRepositoryBeforeMutation(t *testing.T) {
+	store, cleanup := newTestWorkspaceStore(t)
+	defer cleanup()
+	svc := NewService(store)
+	path := t.TempDir()
+	if _, err := runRepositoryGit(path, "init", "--bare"); err != nil {
+		t.Fatalf("initialize bare repository: %v", err)
+	}
+	_, _, _, err := svc.AddForPrincipalWithEntry(testPrincipal(), path, "bare", "", true)
+	state, ok := RepositoryStateFromError(err)
+	if !ok || state.State != RepositoryStateNotRepository || state.Message != repositoryMessageNonWorkTree {
+		t.Fatalf("bare repository add error=%v state=%+v", err, state)
+	}
+	entries, listErr := svc.ListKnownForPrincipal(testPrincipal(), 10)
+	if listErr != nil || len(entries) != 0 {
+		t.Fatalf("bare repository persisted workspace: entries=%+v err=%v", entries, listErr)
+	}
+}
+
 func TestSetupRepositoryForPrincipalInitializesOnlyEmptyUnsavedDirectory(t *testing.T) {
 	store, cleanup := newTestWorkspaceStore(t)
 	defer cleanup()

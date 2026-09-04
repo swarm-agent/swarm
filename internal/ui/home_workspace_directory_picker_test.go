@@ -195,7 +195,7 @@ func TestWorkspaceSetupRejectsNonRepositoryBeforeSave(t *testing.T) {
 	if _, ok := p.PopWorkspaceModalAction(); ok {
 		t.Fatal("plain directory queued workspace save")
 	}
-	if !strings.Contains(p.workspaceModal.Error, "not a committed Git repository") || !strings.Contains(p.workspaceModal.Error, "managed worktrees") {
+	if !strings.Contains(p.workspaceModal.Error, "not a committed Git repository") || !strings.Contains(p.workspaceModal.Error, "Empty folders can be initialized from Desktop") || !strings.Contains(p.workspaceModal.Error, "review ignore rules") || !strings.Contains(p.workspaceModal.Error, "request permission") {
 		t.Fatalf("plain directory guidance = %q", p.workspaceModal.Error)
 	}
 }

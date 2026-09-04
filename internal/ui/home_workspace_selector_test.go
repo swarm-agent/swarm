@@ -173,7 +173,7 @@ func TestWorkspaceHeaderWarningDistinguishesGitReadinessStates(t *testing.T) {
 	}
 
 	page = NewHomePage(model.HomeModel{WorkspaceSetupPath: "/outside/plain", WorkspaceSetupGitReadiness: model.GitReadinessNotRepository})
-	if got := page.workspaceSetupWarning(); got != "/outside/plain cannot be added yet: Swarm requires a Git repository with an initial commit for managed worktrees." {
+	if got := page.workspaceSetupWarning(); got != "/outside/plain cannot be added yet: Swarm requires a Git repository with an initial commit. Empty folders can be initialized from Desktop; existing files require ignore-rule review and permission before Git mutations." {
 		t.Fatalf("no-git warning = %q", got)
 	}
 

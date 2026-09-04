@@ -355,8 +355,8 @@ func workspaceGitContext(workspacePath string) []string {
 	if _, err := exec.LookPath("git"); err != nil {
 		return []string{
 			"workspace_git_state: unavailable",
-			"Git is not installed or not on PATH. Ordinary workspace reads and edits remain available.",
-			"Before a requested Git-managed operation, explain that installation changes the machine, request the required permission, install Git with the detected Linux distribution's package manager, verify `git --version`, and then retry the original operation. Never claim the Git operation completed if installation is denied or fails.",
+			"Git is a mandatory Swarm runtime prerequisite. This installation is damaged or incomplete; do not claim the workspace or session is usable.",
+			"Direct the user to repair or reinstall Swarm so the supported installer can provision Git, verify `git --version`, and then retry. Never install Git ad hoc from a workspace session or claim success if repair is denied or fails.",
 		}
 	}
 	workspacePath = strings.TrimSpace(workspacePath)
@@ -366,13 +366,15 @@ func workspaceGitContext(workspacePath string) []string {
 	if err := exec.Command("git", "-C", workspacePath, "rev-parse", "--is-inside-work-tree").Run(); err != nil {
 		return []string{
 			"workspace_git_state: not_repository",
-			"This is a normal usable workspace, but it is not a Git repository. Do not run Git-managed operations unless the user requests one; then explain and obtain permission before initializing a repository.",
+			"This directory is not a valid Swarm workspace. Swarm requires the selected repository root and an initial commit before a session can run.",
+			"Explain repository setup, inspect existing files and ignore rules, and obtain explicit permission before running `git init`, staging files, or creating the first commit.",
 		}
 	}
 	if err := exec.Command("git", "-C", workspacePath, "rev-parse", "--verify", "HEAD").Run(); err != nil {
 		return []string{
 			"workspace_git_state: needs_initial_commit",
-			"This Git repository has no commits. Ordinary workspace work remains available, but managed worktrees and commit-relative operations require an initial commit. Do not create one without the user's explicit request and the normal Git permission path.",
+			"This repository is not a valid Swarm workspace until HEAD resolves to an initial commit.",
+			"Inspect files and ignore rules, explain the proposed first commit, and obtain explicit permission before staging or committing anything.",
 		}
 	}
 	return []string{"workspace_git_state: ready"}

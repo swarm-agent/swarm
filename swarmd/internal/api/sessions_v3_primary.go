@@ -3422,7 +3422,9 @@ func validateSessionsV3CreateWorktreeRequest(rawMode string, useCurrentBranch *b
 		return "", fmt.Errorf("unsupported worktree_mode %q", strings.TrimSpace(rawMode))
 	}
 	switch mode {
-	case "", runruntime.RunWorktreeModeInherit, runruntime.RunWorktreeModeOff:
+	case runruntime.RunWorktreeModeOff:
+		return "", errors.New("worktree_mode off is not supported; Swarm sessions require managed worktree isolation")
+	case "", runruntime.RunWorktreeModeInherit:
 		if useCurrentBranch != nil || strings.TrimSpace(baseBranch) != "" || strings.TrimSpace(branchName) != "" || strings.TrimSpace(existingPath) != "" {
 			return "", errors.New("worktree fields are only allowed when worktree_mode is on")
 		}

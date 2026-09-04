@@ -606,7 +606,12 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
         await finishWithWorkspace(resolution, path)
       } catch (err) {
         transitionToStep('workspace')
-        setWorkspaceError(err instanceof Error ? err.message : 'Failed to open workspace')
+        if (err instanceof WorkspaceRepositoryPrerequisiteError) {
+          setWorkspaceRepositoryState(err.repository)
+          setWorkspaceError(null)
+        } else {
+          setWorkspaceError(err instanceof Error ? err.message : 'Failed to open workspace')
+        }
       } finally {
         setPendingAction(null)
       }
@@ -644,10 +649,6 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
         setPendingAction(null)
       }
     })()
-  }
-
-  const handleUseBrowsedFolder = (path: string) => {
-    handleSaveAndOpenFolder({ path, name: fallbackWorkspaceNameFromPath(path) })
   }
 
   const initializeOnboardingRepository = async () => {
@@ -1402,12 +1403,10 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
                 workspaces={workspaces}
                 selectingPath={selectingPath}
                 savingPath={savingPath}
-                showTemporaryAction={false}
                 openCreatedFolder
                 showPathInWorkspaceAction
                 onBrowsePath={(path) => void browsePath(path)}
                 onOpenWorkspace={handleOpenWorkspace}
-                onUseFolderTemporarily={handleUseBrowsedFolder}
                 onCreateWorkspace={handleSaveAndOpenFolder}
                 onCreateFolder={createFolder}
               />

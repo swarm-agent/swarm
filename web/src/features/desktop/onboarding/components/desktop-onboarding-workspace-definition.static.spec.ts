@@ -32,6 +32,7 @@ test('explorer workspace additions fade directly into the stable setup view', ()
 
 test('onboarding does not gate saved workspaces on definition state or show personalization copy', () => {
   assert.match(source, /const resolution = await openWorkspace\(path\)/)
+  assert.match(source, /WorkspaceRepositoryPrerequisiteError[\s\S]*?setWorkspaceRepositoryState\(err\.repository\)/)
   assert.doesNotMatch(source, /definitionStatus === 'pending'/)
   assert.doesNotMatch(source, /definitionStatus === 'failed'/)
   assert.doesNotMatch(source, /workspaceDefinitionFailureMessage/)
@@ -45,5 +46,5 @@ test('onboarding does not gate saved workspaces on definition state or show pers
   assert.match(source, /postDesktopV3BackgroundRouterSessionStart/)
   assert.match(source, /launched\.session_id/)
   assert.match(repositorySource, /review repository setup[\s\S]*?ignore rules[\s\S]*?explicit permission/i)
-  assert.doesNotMatch(source, /Git is optional|ready to use without Git/)
+  assert.doesNotMatch(source, /Git is optional|ready to use without Git|Use folder for this chat only/)
 })

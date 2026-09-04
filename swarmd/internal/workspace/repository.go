@@ -102,13 +102,15 @@ func inspectRepository(path string) RepositoryState {
 		return state
 	}
 
+	insideWorkTree, insideWorkTreeErr := runRepositoryGit(path, "rev-parse", "--is-inside-work-tree")
+	if insideWorkTreeErr == nil && !strings.EqualFold(strings.TrimSpace(insideWorkTree), "true") {
+		state.State = RepositoryStateNotRepository
+		state.Message = repositoryMessageNonWorkTree
+		return state
+	}
+
 	root, err := runRepositoryGit(path, "rev-parse", "--show-toplevel")
 	if err != nil || strings.TrimSpace(root) == "" {
-		if _, insideWorkTreeErr := runRepositoryGit(path, "rev-parse", "--is-inside-work-tree"); insideWorkTreeErr == nil {
-			state.State = RepositoryStateNotRepository
-			state.Message = repositoryMessageNonWorkTree
-			return state
-		}
 		state.State = RepositoryStateNotRepository
 		state.CanSetup = directoryIsEmpty(path)
 		state.NeedsReview = !state.CanSetup

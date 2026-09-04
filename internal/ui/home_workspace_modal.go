@@ -772,7 +772,7 @@ func workspaceModalGitPrerequisiteMessage(readiness, path string) string {
 	case "needs_initial_commit":
 		return fmt.Sprintf("%s needs an initial commit. Ask Swarm to review files and ignore rules; staging and commits require explicit permission.", path)
 	case "not_repository":
-		return fmt.Sprintf("%s is not a committed Git repository. Swarm requires repository-root workspaces for managed worktrees.", path)
+		return fmt.Sprintf("%s is not a committed Git repository. Swarm requires repository-root workspaces for managed worktrees. Empty folders can be initialized from Desktop; for existing files, review ignore rules and request permission before git init, staging, or the first commit.", path)
 	default:
 		return fmt.Sprintf("Swarm could not verify Git readiness for %s.", path)
 	}

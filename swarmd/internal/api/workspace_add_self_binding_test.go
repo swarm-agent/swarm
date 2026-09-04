@@ -51,6 +51,43 @@ func TestWorkspaceAddRejectsNonRepositoryBeforeMutation(t *testing.T) {
 	}
 }
 
+// Requirement: selecting a saved workspace must revalidate its committed repository.
+// Threat: repository drift could otherwise reopen an unsupported direct-session path.
+// Boundary: the authenticated select handler must return typed repository state without changing selection.
+func TestWorkspaceSelectRejectsRepositoryDriftBeforeSelectionMutation(t *testing.T) {
+	server, _ := newWorkspaceAddSelfBindingTestServer(t, true)
+	workspacePath := filepath.Join(t.TempDir(), "workspace")
+	if err := ensureTestWorkspaceDir(workspacePath); err != nil {
+		t.Fatalf("create workspace dir: %v", err)
+	}
+	principal := workspaceAddSelfBindingPrincipal()
+	if _, err := server.workspace.AddForPrincipal(principal, workspacePath, "workspace", "", false); err != nil {
+		t.Fatalf("save workspace: %v", err)
+	}
+	gitPath := filepath.Join(workspacePath, ".git")
+	removedGitPath := filepath.Join(t.TempDir(), "removed-git")
+	if err := os.Rename(gitPath, removedGitPath); err != nil {
+		t.Fatalf("remove repository metadata: %v", err)
+	}
+	body, _ := json.Marshal(map[string]any{"path": workspacePath})
+	req := requestWithTestPrincipalForAccount(httptest.NewRequest(http.MethodPost, "/v1/workspace/select", bytes.NewReader(body)), "workspace-user", "workspace-account")
+	rec := httptest.NewRecorder()
+	server.handleWorkspaceSelect(rec, req)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("select status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode select response: %v", err)
+	}
+	if payload["code"] != "workspace_repository_not_ready" {
+		t.Fatalf("select payload=%#v", payload)
+	}
+	if _, selected, err := server.workspace.CurrentBindingForPrincipal(principal); err != nil || selected {
+		t.Fatalf("failed select changed current workspace: selected=%v err=%v", selected, err)
+	}
+}
+
 func TestWorkspaceRepositorySetupRejectsNonEmptyDirectoryWithoutMutation(t *testing.T) {
 	server, topologyStore := newWorkspaceAddSelfBindingTestServer(t, true)
 	workspacePath := filepath.Join(t.TempDir(), "workspace")

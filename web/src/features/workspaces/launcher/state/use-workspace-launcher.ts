@@ -56,7 +56,6 @@ interface UseWorkspaceLauncherState {
   loadError: string | null
   actionError: string | null
   openWorkspace: (path: string) => Promise<WorkspaceResolution>
-  useFolderTemporarily: (path: string) => Promise<WorkspaceResolution>
   deleteWorkspace: (path: string) => Promise<void>
   setWorktreeEnabled: (path: string, enabled: boolean) => Promise<void>
   saveWorkspace: (input: SaveWorkspaceInput) => Promise<WorkspaceResolution>
@@ -449,30 +448,6 @@ export function useWorkspaceLauncher(options: UseWorkspaceLauncherOptions = {}):
     }
   }, [applyCurrentResolution])
 
-  const useFolderTemporarily = useCallback(async (path: string) => {
-    const trimmedPath = path.trim()
-    setSelectingPath(trimmedPath)
-    setActionError(null)
-    try {
-      const browserResult = await browseWorkspacePath(trimmedPath)
-      const resolution = {
-        requestedPath: trimmedPath,
-        resolvedPath: browserResult.resolvedPath,
-        workspaceName: browserResult.resolvedPath.split(/[\\/]/).filter(Boolean).pop() || browserResult.resolvedPath,
-        localWorkspaceBindingId: '',
-        themeId: '',
-      }
-      applyCurrentResolution(resolution)
-      setCurrentWorkspacePath(browserResult.resolvedPath)
-      return resolution
-    } catch (err) {
-      setActionError(err instanceof Error ? err.message : 'Failed to open folder')
-      throw err
-    } finally {
-      setSelectingPath(null)
-    }
-  }, [applyCurrentResolution])
-
   const persistWorkspace = useCallback(async (input: SaveWorkspaceInput) => {
     const targetPath = input.path.trim()
     setSavingPath(targetPath)
@@ -773,7 +748,6 @@ export function useWorkspaceLauncher(options: UseWorkspaceLauncherOptions = {}):
     loadError,
     actionError,
     openWorkspace,
-    useFolderTemporarily,
     deleteWorkspace,
     setWorktreeEnabled: updateWorkspaceWorktreeEnabled,
     saveWorkspace: persistWorkspace,

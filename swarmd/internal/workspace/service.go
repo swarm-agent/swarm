@@ -202,6 +202,9 @@ func (s *Service) SelectForPrincipal(principal identity.Principal, path string) 
 	if err := requirePrincipal(principal); err != nil {
 		return Resolution{}, err
 	}
+	if _, err := s.requireRepositoryForPrincipal(principal, path); err != nil {
+		return Resolution{}, err
+	}
 	resolved, err := resolvePath(path)
 	if err != nil {
 		return Resolution{}, err

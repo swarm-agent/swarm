@@ -260,7 +260,7 @@ func onboardingGitPrerequisiteMessage(readiness model.GitReadiness, path string)
 	case model.GitReadinessUnavailable:
 		return "Git is required for Swarm managed worktrees. Install Git, then restart workspace setup."
 	case model.GitReadinessNotRepository:
-		return fmt.Sprintf("%s is not a Git repository. Initialize an empty folder with an initial commit, or ask Swarm from a ready workspace to review existing files and ignore rules before any Git mutation.", path)
+		return fmt.Sprintf("%s is not a Git repository. Desktop can initialize an empty folder with an initial commit; existing files require review of ignore rules and explicit permission before git init, staging, or the first commit.", path)
 	case model.GitReadinessNeedsCommit:
 		return fmt.Sprintf("%s has no initial commit. Ask Swarm to review existing files and ignore rules; Git staging and commits require explicit permission.", path)
 	default:

@@ -3,7 +3,6 @@ import { Link, useNavigate } from '@tanstack/react-router'
 import { ArrowUp, ChevronRight, Eye, EyeOff, FileText, Folder, FolderPlus, GitBranch, GripVertical, Home, MessageSquare, Plus, RefreshCw, Search, Settings, X } from 'lucide-react'
 import { Card } from '../../../components/ui/card'
 import { Button } from '../../../components/ui/button'
-import { Badge } from '../../../components/ui/badge'
 import { WorkspaceStatus } from '../launcher/components/workspace-status'
 import { WorkspaceFolderTree } from '../launcher/components/workspace-folder-tree'
 import { WorkspaceEditorModal, type WorkspaceEditorAvailableDirectory } from '../launcher/components/workspace-editor-modal'
@@ -305,7 +304,6 @@ interface MobileExplorerDrawerProps {
   onBrowsePath: (path: string) => void
   onOpenWorkspace: (path: string) => void
   onCreateWorkspace: (entry: WorkspaceDiscoverEntry) => void
-  onUseFolderTemporarily: (path: string) => void
   onPickWorkspaceFolder: (path: string) => void
   onCreateFolder: (parentPath: string, name: string) => Promise<string>
 }
@@ -323,7 +321,6 @@ function MobileExplorerDrawer({
   onBrowsePath,
   onOpenWorkspace,
   onCreateWorkspace,
-  onUseFolderTemporarily,
   onPickWorkspaceFolder,
   onCreateFolder,
 }: MobileExplorerDrawerProps) {
@@ -354,7 +351,7 @@ function MobileExplorerDrawer({
   const title = mode === 'workspace-folder' ? 'Choose workspace folder' : 'Explorer'
   const description = mode === 'workspace-folder'
     ? 'Choose the main folder for this workspace.'
-    : 'Navigate folders, use one for this chat only, or add one as a new workspace.'
+    : 'Navigate folders and add a committed Git repository as a workspace.'
   const currentSaved = currentPath ? savedPaths.has(normalizeComparePath(currentPath)) : false
   const currentBusy = Boolean(currentPath && (savingPath === currentPath || selectingPath === currentPath))
 
@@ -488,7 +485,6 @@ function MobileExplorerDrawer({
                 {currentBusy ? <RefreshCw size={14} className="animate-spin" /> : currentSaved ? <Folder size={15} /> : <Plus size={15} />}
                 {currentBusy ? 'Working…' : currentSaved ? 'Open workspace' : 'Add folder as a new workspace'}
               </Button>
-              <button type="button" className="h-8 rounded-md text-xs text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] disabled:opacity-50" disabled={!currentPath || selectingPath === currentPath} onClick={() => onUseFolderTemporarily(currentPath)}>Use folder for this chat only</button>
             </div>
           )}
         </div>
@@ -525,7 +521,6 @@ export function WorkspaceHomePage() {
     setDraggingWorkspacePath,
     swapWorkspacePositions,
     openWorkspace,
-    useFolderTemporarily,
     deleteWorkspace,
     saveWorkspace,
     setupWorkspaceRepository,
@@ -561,8 +556,6 @@ export function WorkspaceHomePage() {
     [currentWorkspacePath, workspaces],
   )
 
-  const temporaryFolderActive = Boolean(currentWorkspacePath && !currentWorkspace)
-  const temporaryFolderName = temporaryFolderActive && currentWorkspacePath ? fallbackWorkspaceNameFromPath(currentWorkspacePath) : ''
   const sidebarDefaultWorkspace = currentWorkspace ?? workspaces[0] ?? null
 
   const savedWorkspaceByPath = useMemo(() => new Map(workspaces.map((workspace) => [workspace.path, workspace])), [workspaces])
@@ -759,28 +752,23 @@ export function WorkspaceHomePage() {
 
   const handleOpenWorkspace = (path: string) => {
     void (async () => {
-      const resolution = await openWorkspace(path)
-      const resolvedPath = resolution.resolvedPath.trim() || path
-      const workspaceSlug = workspaceSlugByPath.get(resolvedPath) ?? workspaceRouteSlugBase({ path: resolvedPath, workspaceName: resolution.workspaceName })
-      await navigate({
-        to: '/$workspaceSlug',
-        params: { workspaceSlug },
-      })
-    })()
-  }
-
-  const handleUseFolderTemporarily = (path: string) => {
-    closeMobileExplorer()
-    void (async () => {
-      const resolution = await useFolderTemporarily(path)
-      const workspaceSlug = workspaceRouteSlugBase({
-        path: resolution.resolvedPath,
-        workspaceName: resolution.workspaceName,
-      })
-      await navigate({
-        to: '/$workspaceSlug',
-        params: { workspaceSlug },
-      })
+      try {
+        const resolution = await openWorkspace(path)
+        const resolvedPath = resolution.resolvedPath.trim() || path
+        const workspaceSlug = workspaceSlugByPath.get(resolvedPath) ?? workspaceRouteSlugBase({ path: resolvedPath, workspaceName: resolution.workspaceName })
+        await navigate({
+          to: '/$workspaceSlug',
+          params: { workspaceSlug },
+        })
+      } catch (error) {
+        if (error instanceof WorkspaceRepositoryPrerequisiteError) {
+          openCreateModal(error.repository.path || path, [error.repository.path || path], fallbackWorkspaceNameFromPath(error.repository.path || path))
+          setModalRepositoryState(error.repository)
+          setModalError(null)
+          return
+        }
+        setModalError(error instanceof Error ? error.message : 'Failed to open workspace')
+      }
     })()
   }
 
@@ -804,13 +792,6 @@ export function WorkspaceHomePage() {
         }
       }
     })()
-  }
-
-  const handlePromoteTemporaryFolder = () => {
-    if (!currentWorkspacePath) {
-      return
-    }
-    openCreateModal(currentWorkspacePath, [currentWorkspacePath], temporaryFolderName)
   }
 
   const submitModal = async () => {
@@ -898,7 +879,6 @@ export function WorkspaceHomePage() {
                   void browsePath(path)
                 }}
                 onOpenWorkspace={handleOpenWorkspace}
-                onUseFolderTemporarily={handleUseFolderTemporarily}
                 onCreateWorkspace={(entry) => openCreateModal(entry.path, [entry.path], entry.name)}
                 onCreateFolder={createFolder}
               />
@@ -1039,20 +1019,6 @@ export function WorkspaceHomePage() {
                     )
                   ) : null}
 
-                  {temporaryFolderActive ? (
-                    <Card className="grid gap-3 px-5 py-5 sm:px-6">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <h2 className="text-lg font-semibold text-[var(--app-text)]">Folder used for this chat only</h2>
-                        <Badge tone="warning">This chat only</Badge>
-                      </div>
-                      <div className="break-all text-sm text-[var(--app-text)]">{currentWorkspacePath}</div>
-                      <div>
-                        <Button type="button" onClick={handlePromoteTemporaryFolder}>
-                          Add folder as a new workspace
-                        </Button>
-                      </div>
-                    </Card>
-                  ) : null}
                 </section>
               </div>
             ) : null}
@@ -1142,7 +1108,6 @@ export function WorkspaceHomePage() {
         onBrowsePath={(path) => void browsePath(path)}
         onOpenWorkspace={handleOpenWorkspace}
         onCreateWorkspace={(entry) => openCreateModal(entry.path, [entry.path], entry.name)}
-        onUseFolderTemporarily={handleUseFolderTemporarily}
         onPickWorkspaceFolder={pickWorkspaceFolder}
         onCreateFolder={createFolder}
       />

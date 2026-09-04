@@ -397,7 +397,7 @@ func (p *HomePage) workspaceSetupWarning() string {
 		case model.GitReadinessUnavailable:
 			return "Git is required for Swarm managed worktrees. Install Git before adding or opening a workspace."
 		case model.GitReadinessNotRepository:
-			return fmt.Sprintf("%s cannot be added yet: Swarm requires a Git repository with an initial commit for managed worktrees.", setupPath)
+			return fmt.Sprintf("%s cannot be added yet: Swarm requires a Git repository with an initial commit. Empty folders can be initialized from Desktop; existing files require ignore-rule review and permission before Git mutations.", setupPath)
 		case model.GitReadinessNeedsCommit:
 			return fmt.Sprintf("%s cannot be added yet: create an initial commit after reviewing files and ignore rules; staging and commits require explicit permission.", setupPath)
 		case model.GitReadinessReady:
