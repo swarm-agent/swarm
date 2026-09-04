@@ -1950,13 +1950,22 @@ func (s *Server) handleWorkspaceAdd(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, errors.New("topology service not configured"))
 		return
 	}
+	// Repository readiness is a filesystem prerequisite. Check it before any
+	// catalog, topology, current-selection, or session state can be changed.
+	if repository, err := s.workspace.InspectRepositoryForPrincipal(principal, req.Path); err != nil {
+		writeWorkspaceRepositoryError(w, err)
+		return
+	} else if repository.State != workspace.RepositoryStateReady {
+		writeWorkspaceRepositoryError(w, &workspace.RepositoryPrerequisiteError{Repository: repository})
+		return
+	}
 	if _, err := s.topology.EnsureLocalSelfPlacementForPrincipal(principal.AccountScopeID, principal.UserID); err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
 	resolution, entry, created, err := s.workspace.AddForPrincipalWithEntryWithoutSelection(principal, req.Path, req.Name, req.ThemeID)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err)
+		writeWorkspaceRepositoryError(w, err)
 		return
 	}
 	binding, err := s.topology.EnsureLocalWorkspaceSelfBindingForPrincipal(principal.AccountScopeID, principal.UserID, entry)
@@ -1991,6 +2000,48 @@ func (s *Server) handleWorkspaceAdd(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (s *Server) handleWorkspaceRepositorySetup(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	principal, ok := PrincipalFromRequest(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, identity.ErrPrincipalRequired)
+		return
+	}
+	if s.workspace == nil {
+		writeError(w, http.StatusInternalServerError, errors.New("workspace service not configured"))
+		return
+	}
+	var req struct {
+		Path                 string `json:"path"`
+		ExpectedResolvedPath string `json:"expected_resolved_path"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	repository, err := s.workspace.SetupRepositoryForPrincipal(principal, req.Path, req.ExpectedResolvedPath)
+	if err != nil {
+		if _, ok := workspace.RepositoryStateFromError(err); ok {
+			writeJSON(w, http.StatusConflict, map[string]any{"ok": false, "error": err.Error(), "code": "workspace_repository_not_ready", "repository": repository})
+			return
+		}
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "repository": repository})
+}
+
+func writeWorkspaceRepositoryError(w http.ResponseWriter, err error) {
+	if repository, ok := workspace.RepositoryStateFromError(err); ok {
+		writeJSON(w, http.StatusConflict, map[string]any{"ok": false, "error": err.Error(), "code": "workspace_repository_not_ready", "repository": repository})
+		return
+	}
+	writeError(w, http.StatusBadRequest, err)
+}
+
 func (s *Server) handleWorkspaceDirectoryAdd(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		methodNotAllowed(w)
@@ -2009,9 +2060,16 @@ func (s *Server) handleWorkspaceDirectoryAdd(w http.ResponseWriter, r *http.Requ
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	if repository, err := s.workspace.InspectRepositoryForPrincipal(principal, req.DirectoryPath); err != nil {
+		writeWorkspaceRepositoryError(w, err)
+		return
+	} else if repository.State != workspace.RepositoryStateReady {
+		writeWorkspaceRepositoryError(w, &workspace.RepositoryPrerequisiteError{Repository: repository})
+		return
+	}
 	resolution, err := s.workspace.AddDirectoryForPrincipal(principal, req.WorkspacePath, req.DirectoryPath)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err)
+		writeWorkspaceRepositoryError(w, err)
 		return
 	}
 	// The compatibility route now creates a normal flat-catalog workspace, so it

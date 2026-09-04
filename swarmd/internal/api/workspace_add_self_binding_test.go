@@ -3,9 +3,11 @@ package api
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -16,6 +18,101 @@ import (
 	topologyruntime "swarm/packages/swarmd/internal/topology"
 	"swarm/packages/swarmd/internal/workspace"
 )
+
+// Requirement: adding a workspace must fail with actionable repository state
+// before catalog, topology, or selection mutation. The API layer is the
+// narrowest place to prove the structured response and zero side effects.
+func TestWorkspaceAddRejectsNonRepositoryBeforeMutation(t *testing.T) {
+	server, topologyStore := newWorkspaceAddSelfBindingTestServer(t, true)
+	workspacePath := filepath.Join(t.TempDir(), "workspace")
+	if err := os.MkdirAll(workspacePath, 0o755); err != nil {
+		t.Fatalf("create workspace dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(workspacePath, "existing.txt"), []byte("untracked user content"), 0o600); err != nil {
+		t.Fatalf("write existing file: %v", err)
+	}
+
+	var payload map[string]any
+	rec := postWorkspaceAdd(t, server, workspacePath, "workspace", &payload)
+	if rec.Code != http.StatusConflict || payload["code"] != "workspace_repository_not_ready" {
+		t.Fatalf("status=%d payload=%#v", rec.Code, payload)
+	}
+	repository, _ := payload["repository"].(map[string]any)
+	if repository["state"] != workspace.RepositoryStateNeedsAssistedSetup || repository["needs_review"] != true || repository["can_setup"] != false {
+		t.Fatalf("repository state=%#v", repository)
+	}
+	assertNoWorkspaceAddSideEffects(t, server, topologyStore)
+	placements, err := topologyStore.ListRuntimePlacementsForAccount(workspaceAddSelfBindingPrincipal().AccountScopeID, 10)
+	if err != nil || len(placements) != 1 || placements[0].RuntimeSwarmID != "local-swarm" || placements[0].PlacementGeneration != 1 {
+		t.Fatalf("repository failure changed topology placements: placements=%+v err=%v", placements, err)
+	}
+	if _, err := os.Lstat(filepath.Join(workspacePath, ".git")); !os.IsNotExist(err) {
+		t.Fatalf("failed add changed filesystem: %v", err)
+	}
+}
+
+func TestWorkspaceRepositorySetupRejectsNonEmptyDirectoryWithoutMutation(t *testing.T) {
+	server, topologyStore := newWorkspaceAddSelfBindingTestServer(t, true)
+	workspacePath := filepath.Join(t.TempDir(), "workspace")
+	if err := os.MkdirAll(workspacePath, 0o755); err != nil {
+		t.Fatalf("create workspace dir: %v", err)
+	}
+	userFile := filepath.Join(workspacePath, "private.txt")
+	if err := os.WriteFile(userFile, []byte("do not stage"), 0o600); err != nil {
+		t.Fatalf("write user file: %v", err)
+	}
+	body, _ := json.Marshal(map[string]any{"path": workspacePath, "expected_resolved_path": workspacePath})
+	req := requestWithTestPrincipalForAccount(httptest.NewRequest(http.MethodPost, "/v1/workspace/repository/setup", bytes.NewReader(body)), "workspace-user", "workspace-account")
+	rec := httptest.NewRecorder()
+	server.handleWorkspaceRepositorySetup(rec, req)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("setup status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode setup response: %v", err)
+	}
+	repository := payload["repository"].(map[string]any)
+	if repository["state"] != workspace.RepositoryStateNeedsAssistedSetup || repository["needs_review"] != true {
+		t.Fatalf("repository=%#v", repository)
+	}
+	assertNoWorkspaceAddSideEffects(t, server, topologyStore)
+	if _, err := os.Lstat(filepath.Join(workspacePath, ".git")); !os.IsNotExist(err) {
+		t.Fatalf("rejected setup created .git: %v", err)
+	}
+	contents, err := os.ReadFile(userFile)
+	if err != nil || string(contents) != "do not stage" {
+		t.Fatalf("rejected setup changed user file: %q err=%v", contents, err)
+	}
+}
+
+func TestWorkspaceRepositorySetupCreatesEmptyCommitWithoutSavingWorkspace(t *testing.T) {
+	server, topologyStore := newWorkspaceAddSelfBindingTestServer(t, true)
+	workspacePath := filepath.Join(t.TempDir(), "workspace")
+	if err := os.MkdirAll(workspacePath, 0o755); err != nil {
+		t.Fatalf("create workspace dir: %v", err)
+	}
+	body, _ := json.Marshal(map[string]any{"path": workspacePath, "expected_resolved_path": workspacePath})
+	req := requestWithTestPrincipalForAccount(httptest.NewRequest(http.MethodPost, "/v1/workspace/repository/setup", bytes.NewReader(body)), "workspace-user", "workspace-account")
+	rec := httptest.NewRecorder()
+	server.handleWorkspaceRepositorySetup(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("setup status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode setup response: %v", err)
+	}
+	repository := payload["repository"].(map[string]any)
+	if repository["state"] != workspace.RepositoryStateReady || repository["head_commit"] == "" {
+		t.Fatalf("repository=%#v", repository)
+	}
+	assertNoWorkspaceAddSideEffects(t, server, topologyStore)
+	var addPayload map[string]any
+	if addRec := postWorkspaceAdd(t, server, workspacePath, "workspace", &addPayload); addRec.Code != http.StatusOK {
+		t.Fatalf("add after setup status=%d body=%s", addRec.Code, addRec.Body.String())
+	}
+}
 
 func TestWorkspaceAddCreatesLocalSelfBinding(t *testing.T) {
 	server, topologyStore := newWorkspaceAddSelfBindingTestServer(t, true)
@@ -212,7 +309,16 @@ func assertNoWorkspaceAddSideEffects(t *testing.T, server *Server, topologyStore
 }
 
 func ensureTestWorkspaceDir(path string) error {
-	return os.MkdirAll(path, 0o755)
+	if err := os.MkdirAll(path, 0o755); err != nil {
+		return err
+	}
+	if output, err := exec.Command("git", "init", "--initial-branch=main", path).CombinedOutput(); err != nil {
+		return fmt.Errorf("git init: %w: %s", err, output)
+	}
+	if output, err := exec.Command("git", "-C", path, "-c", "user.name=Swarm Test", "-c", "user.email=swarm-test@localhost", "commit", "--allow-empty", "--no-gpg-sign", "-m", "Initial commit").CombinedOutput(); err != nil {
+		return fmt.Errorf("git commit: %w: %s", err, output)
+	}
+	return nil
 }
 
 func postWorkspaceAdd(t *testing.T, server *Server, workspacePath, name string, out *map[string]any) *httptest.ResponseRecorder {

@@ -235,10 +235,16 @@ func (s *Service) AddForPrincipal(principal identity.Principal, path, name, them
 }
 
 func (s *Service) AddForPrincipalWithEntry(principal identity.Principal, path, name, themeID string, makeCurrent bool) (Resolution, pebblestore.WorkspaceEntry, bool, error) {
+	if _, err := s.requireRepositoryForPrincipal(principal, path); err != nil {
+		return Resolution{}, pebblestore.WorkspaceEntry{}, false, err
+	}
 	return s.addForPrincipalWithEntrySelection(principal, path, name, themeID, makeCurrent)
 }
 
 func (s *Service) AddForPrincipalWithEntryWithoutSelection(principal identity.Principal, path, name, themeID string) (Resolution, pebblestore.WorkspaceEntry, bool, error) {
+	if _, err := s.requireRepositoryForPrincipal(principal, path); err != nil {
+		return Resolution{}, pebblestore.WorkspaceEntry{}, false, err
+	}
 	return s.addForPrincipalWithEntrySelection(principal, path, name, themeID, false)
 }
 
@@ -257,6 +263,9 @@ func (s *Service) CreateCatalogEntryForPrincipal(principal identity.Principal, p
 		return Resolution{}, err
 	}
 	if err := ensureWorkspaceDirectory(resolved); err != nil {
+		return Resolution{}, err
+	}
+	if _, err := s.requireRepositoryForPrincipal(principal, resolved); err != nil {
 		return Resolution{}, err
 	}
 	name = strings.TrimSpace(name)
@@ -299,6 +308,11 @@ func (s *Service) UpdateCatalogEntryForPrincipal(principal identity.Principal, w
 		if err := ensureWorkspaceDirectory(resolvedPath); err != nil {
 			return Resolution{}, err
 		}
+		if resolvedPath != entry.Path {
+			if _, err := s.requireRepositoryForPrincipal(principal, resolvedPath); err != nil {
+				return Resolution{}, err
+			}
+		}
 	}
 	updated, err := s.store.UpdateForWorkspaceIDForAccountGuarded(principal.AccountScopeID, principal.UserID, entry.WorkspaceID, pebblestore.WorkspaceCatalogUpdate{
 		ExpectedGeneration: expectedGeneration, NewPath: resolvedPath, Name: name, ThemeID: themeID,
@@ -325,6 +339,8 @@ func (s *Service) DeleteCatalogEntryForPrincipal(principal identity.Principal, w
 	return resolutionForEntry(entry.Path, entry.Path, entry, entry.Name), nil
 }
 
+// addForPrincipalWithEntrySelection is the persistence primitive. All callers
+// must establish the committed-repository prerequisite before invoking it.
 func (s *Service) addForPrincipalWithEntrySelection(principal identity.Principal, path, name, themeID string, selectCurrent bool) (Resolution, pebblestore.WorkspaceEntry, bool, error) {
 	if s == nil || s.store == nil {
 		return Resolution{}, pebblestore.WorkspaceEntry{}, false, fmt.Errorf("workspace service is not configured")
