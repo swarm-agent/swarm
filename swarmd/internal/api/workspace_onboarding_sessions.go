@@ -122,6 +122,10 @@ func (s *Server) handleWorkspaceOnboardingSessionStart(w http.ResponseWriter, r 
 		return
 	}
 	providerID := modelruntime.NormalizeProviderID(modelProfile.Action.Provider)
+	if err := s.requireActiveWorkspaceOnboardingCredential(principal.AccountScopeID, providerID); err != nil {
+		writeError(w, http.StatusServiceUnavailable, err)
+		return
+	}
 	if s.model == nil {
 		writeError(w, http.StatusServiceUnavailable, errors.New("workspace onboarding model service is not configured"))
 		return
@@ -216,6 +220,27 @@ func (s *Server) handleWorkspaceOnboardingSessionStart(w http.ResponseWriter, r 
 	}
 }
 
+func (s *Server) requireActiveWorkspaceOnboardingCredential(accountScopeID, providerID string) error {
+	if s == nil || s.auth == nil {
+		return errors.New("workspace onboarding auth service is not configured")
+	}
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	providerID = modelruntime.NormalizeProviderID(providerID)
+	if accountScopeID == "" || providerID == "" {
+		return errors.New("workspace onboarding requires an account-scoped active provider credential")
+	}
+	credentials, err := s.auth.ListCredentialsForAccount(accountScopeID, providerID, "", 200)
+	if err != nil {
+		return fmt.Errorf("read workspace onboarding provider credentials: %w", err)
+	}
+	for _, credential := range credentials.Records {
+		if credential.Active {
+			return nil
+		}
+	}
+	return fmt.Errorf("workspace onboarding requires an active credential for configured Swarm Action provider %q", providerID)
+}
+
 func writeWorkspaceOnboardingError(w http.ResponseWriter, repository workspace.RepositoryState, err error) {
 	status := http.StatusConflict
 	if errors.Is(err, identity.ErrPrincipalRequired) || errors.Is(err, identity.ErrProductIdentityRequired) {
@@ -256,6 +281,13 @@ func (s *Server) workspaceOnboardingReplay(principal identity.Principal, session
 	}
 	if !sessionV3MetadataBool(result.Session.Metadata, "workspace_onboarding") || sessionV3MetadataString(result.Session.Metadata, "workspace_onboarding_path") != result.Session.WorkspacePath {
 		return routedSessionStartResult{}, false, errors.New("workspace onboarding replay authority is stale")
+	}
+	providerID := modelruntime.NormalizeProviderID(result.Session.Preference.Provider)
+	if result.Session.ModelProfile != nil {
+		providerID = modelruntime.NormalizeProviderID(result.Session.ModelProfile.Action.Provider)
+	}
+	if err := s.requireActiveWorkspaceOnboardingCredential(principal.AccountScopeID, providerID); err != nil {
+		return routedSessionStartResult{}, false, err
 	}
 	return result, true, nil
 }

@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	agentruntime "swarm/packages/swarmd/internal/agent"
+	"swarm/packages/swarmd/internal/auth"
 	"swarm/packages/swarmd/internal/identity"
 	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -26,6 +27,7 @@ import (
 func TestWorkspaceOnboardingSessionCreatesPreAdmissionV3Authority(t *testing.T) {
 	server, sessions, principal := newRoutedSessionAtomicityServer(t, &sessionRouterRecordingRunner{id: "recording", response: provideriface.Response{Text: `{"title":"unused"}`}}, false, false)
 	server.v3SessionExecutor = nil
+	configureWorkspaceOnboardingCredential(t, server, principal, "recording")
 	folder := filepath.Join(t.TempDir(), "existing-folder")
 	if err := os.Mkdir(folder, 0o755); err != nil {
 		t.Fatal(err)
@@ -54,6 +56,9 @@ func TestWorkspaceOnboardingSessionCreatesPreAdmissionV3Authority(t *testing.T) 
 	if stored.WorktreeEnabled || len(stored.WorkspaceGrants) != 0 || len(stored.TemporaryWorkspaceRoots) != 0 || stored.WorkspacePath != folder || stored.Metadata["workspace_onboarding"] != true || stored.Metadata["pre_admission"] != true || stored.Metadata["agent_name"] != agentruntime.WorkspaceOnboardingAgentID || stored.Metadata["workspace_binding_id"] != nil {
 		t.Fatalf("pre-admission session=%+v metadata=%+v", stored, stored.Metadata)
 	}
+	if stored.Metadata["bypass_permissions"] == true {
+		t.Fatalf("pre-admission session enabled permission bypass: metadata=%+v", stored.Metadata)
+	}
 	if stored.ModelProfile == nil || stored.ModelProfile.Source != pebblestore.SessionModelProfileSourceSwarmSettings || !stored.ModelProfile.UseAccountDefault || stored.ModelProfile.Action.Model != "action-model" || stored.Preference.Model != "action-model" {
 		t.Fatalf("Action model snapshot=%+v preference=%+v", stored.ModelProfile, stored.Preference)
 	}
@@ -69,6 +74,18 @@ func TestWorkspaceOnboardingSessionCreatesPreAdmissionV3Authority(t *testing.T) 
 	if err := json.Unmarshal(replay.Body.Bytes(), &replayed); err != nil || !replayed.Replayed || replayed.SessionID != decoded.SessionID {
 		t.Fatalf("replay=%+v err=%v", replayed, err)
 	}
+	credentials, err := server.auth.ListCredentialsForAccount(principal.AccountScopeID, "recording", "", 200)
+	if err != nil || len(credentials.Records) != 1 {
+		t.Fatalf("active credential lookup=%+v err=%v", credentials, err)
+	}
+	if _, _, err := server.auth.DeleteCredentialForAccount(principal.AccountScopeID, "recording", credentials.Records[0].ID); err != nil {
+		t.Fatalf("remove replay credential: %v", err)
+	}
+	credentiallessReplay := postWorkspaceOnboardingRequest(t, server, principal, map[string]any{"path": folder, "expected_resolved_path": folder, "client_request_id": "onboarding-create"})
+	if credentiallessReplay.Code == http.StatusOK || !strings.Contains(credentiallessReplay.Body.String(), "active credential") {
+		t.Fatalf("credentialless replay status=%d body=%s", credentiallessReplay.Code, credentiallessReplay.Body.String())
+	}
+	seedWorkspaceOnboardingCredential(t, server.auth, principal, "recording")
 	if err := os.Rename(folder, folder+"-moved"); err != nil {
 		t.Fatal(err)
 	}
@@ -83,12 +100,14 @@ func TestWorkspaceOnboardingSessionCreatesPreAdmissionV3Authority(t *testing.T) 
 
 // Requirement: every rejected onboarding start leaves no V3 or workspace
 // authority. Threat: stale, symlinked, cross-account, empty, ready, saved, or
-// provider-unavailable inputs could widen pre-admission filesystem access.
+// missing or mismatched credentials and provider-unavailable inputs could widen
+// pre-admission filesystem access or publish a session that cannot execute.
 func TestWorkspaceOnboardingSessionRejectsInvalidAuthorityWithoutPartialState(t *testing.T) {
 	newServer := func(t *testing.T) (*Server, identity.Principal) {
 		t.Helper()
 		server, _, principal := newRoutedSessionAtomicityServer(t, &sessionRouterRecordingRunner{id: "recording", response: provideriface.Response{Text: `{"title":"unused"}`}}, false, false)
 		server.v3SessionExecutor = nil
+		configureWorkspaceOnboardingCredential(t, server, principal, "recording")
 		return server, principal
 	}
 	makeExisting := func(t *testing.T) string {
@@ -194,12 +213,86 @@ func TestWorkspaceOnboardingSessionRejectsInvalidAuthorityWithoutPartialState(t 
 			t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 		}
 	})
+	t.Run("configured provider has no active credential", func(t *testing.T) {
+		server, principal := newServer(t)
+		path := makeExisting(t)
+		credentials, err := server.auth.ListCredentialsForAccount(principal.AccountScopeID, "recording", "", 200)
+		if err != nil || len(credentials.Records) != 1 {
+			t.Fatalf("seeded credentials=%+v err=%v", credentials, err)
+		}
+		if _, _, err := server.auth.DeleteCredentialForAccount(principal.AccountScopeID, "recording", credentials.Records[0].ID); err != nil {
+			t.Fatalf("remove active credential: %v", err)
+		}
+		assertWorkspaceOnboardingRejectedClean(t, server, principal, path, path, "credential")
+	})
+
+	t.Run("action model provider differs from active credential", func(t *testing.T) {
+		server, principal := newServer(t)
+		path := makeExisting(t)
+		credentials, err := server.auth.ListCredentialsForAccount(principal.AccountScopeID, "recording", "", 200)
+		if err != nil || len(credentials.Records) != 1 {
+			t.Fatalf("seeded action-provider credentials=%+v err=%v", credentials, err)
+		}
+		if _, _, err := server.auth.DeleteCredentialForAccount(principal.AccountScopeID, "recording", credentials.Records[0].ID); err != nil {
+			t.Fatalf("remove action-provider credential: %v", err)
+		}
+		status, _, err := server.auth.UpsertCredential(auth.CredentialUpsertInput{Provider: "other", AccountScopeID: principal.AccountScopeID, Type: "api", APIKey: "other-test-key", Active: true})
+		if err != nil {
+			t.Fatalf("seed mismatched credential: %v", err)
+		}
+		if _, _, err := server.auth.SetActiveCredentialForAccount(principal.AccountScopeID, "other", status.ID); err != nil {
+			t.Fatalf("activate mismatched credential: %v", err)
+		}
+		before, _ := server.sessions.ListSessionsForAccount(principal.AccountScopeID, 100)
+		response := postWorkspaceOnboardingRequest(t, server, principal, map[string]any{"path": path, "expected_resolved_path": path, "client_request_id": "mismatched-credential"})
+		if response.Code == http.StatusOK || !strings.Contains(response.Body.String(), `provider "recording"`) {
+			t.Fatalf("mismatched credential status=%d body=%s", response.Code, response.Body.String())
+		}
+		after, err := server.sessions.ListSessionsForAccount(principal.AccountScopeID, 100)
+		if err != nil || len(after) != len(before) {
+			t.Fatalf("mismatched credential published session authority: before=%d after=%d err=%v", len(before), len(after), err)
+		}
+		entries, err := server.workspace.ListKnownForPrincipal(principal, 100)
+		if err != nil || len(entries) != 0 {
+			t.Fatalf("mismatched credential published workspace authority: entries=%+v err=%v", entries, err)
+		}
+	})
+
 	t.Run("provider unavailable", func(t *testing.T) {
 		server, principal := newServer(t)
 		path := makeExisting(t)
 		server.providers = nil
 		assertWorkspaceOnboardingRejectedClean(t, server, principal, path, path, "provider")
 	})
+}
+
+func configureWorkspaceOnboardingCredential(t *testing.T, server *Server, principal identity.Principal, providerID string) {
+	t.Helper()
+	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "workspace-onboarding-auth.pebble"))
+	if err != nil {
+		t.Fatalf("open workspace onboarding auth store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	events, err := pebblestore.NewEventLog(store)
+	if err != nil {
+		t.Fatalf("open workspace onboarding auth event log: %v", err)
+	}
+	authService := auth.NewService(pebblestore.NewAuthStore(store), events)
+	server.auth = authService
+	seedWorkspaceOnboardingCredential(t, authService, principal, providerID)
+}
+
+func seedWorkspaceOnboardingCredential(t *testing.T, authService *auth.Service, principal identity.Principal, providerID string) {
+	t.Helper()
+	status, _, err := authService.UpsertCredential(auth.CredentialUpsertInput{
+		Provider: providerID, AccountScopeID: principal.AccountScopeID, Type: "api", APIKey: "workspace-onboarding-test-key", Active: true,
+	})
+	if err != nil {
+		t.Fatalf("seed workspace onboarding credential: %v", err)
+	}
+	if _, _, err := authService.SetActiveCredentialForAccount(principal.AccountScopeID, providerID, status.ID); err != nil {
+		t.Fatalf("activate workspace onboarding credential: %v", err)
+	}
 }
 
 func assertWorkspaceOnboardingRejectedClean(t *testing.T, server *Server, principal identity.Principal, path, expected, requestID string) {
