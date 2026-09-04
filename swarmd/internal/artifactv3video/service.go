@@ -35,13 +35,14 @@ type Project struct {
 	EventSeq             uint64
 	MediaType            string
 	AnimationProfile     string
-	Files                 map[string][]byte
+	Files                map[string][]byte
 }
 
 // Selection authenticates one exact selected V3 head. Optional Part and capture
 // state identity scope rendering without changing the selected Git revision.
 type Selection struct {
 	AccountScopeID string
+	UserID         string
 	SessionID      string
 	ArtifactID     string
 	RevisionID     string
@@ -87,7 +88,7 @@ type Derivative struct {
 	ID           string
 	MediaType    string
 	DigestSHA256 string
-	Bytes       []byte
+	Bytes        []byte
 }
 
 // Conversion is the native pending Video Studio plan and exact references.
@@ -147,7 +148,7 @@ func (s *Service) Convert(ctx context.Context, accountScopeID string, selection 
 	fallbackDerivative := derivative("image/png", fallback)
 	mp4Derivative := derivative("video/mp4", mp4)
 	conversion := assemble(project, selection, duration, fps, fallbackDerivative, mp4Derivative)
-	if err := pebblestore.ValidateArtifactV3ConversionPlan(conversion.Plan); err != nil {
+	if err := pebblestore.ValidateVideoPlanForIntent(pebblestore.VideoEditProposalIntentArtifactV3Convert, conversion.Plan); err != nil {
 		return Conversion{}, fmt.Errorf("assemble native Artifact V3 video plan: %w", err)
 	}
 	if err := s.storage.PutAtomic(ctx, project.SessionID, project.ArtifactID, []Derivative{fallbackDerivative, mp4Derivative}); err != nil {
@@ -156,12 +157,52 @@ func (s *Service) Convert(ctx context.Context, accountScopeID string, selection 
 	return conversion, nil
 }
 
-// Read validates the exact reference and verifies the private bytes against it.
+// ValidateVideoReference authenticates one exact native V3 source or derivative
+// without exposing bytes. userID is enforced by the Artifact authority's selected
+// head lookup and retained here to satisfy the shared Video Studio boundary.
+func (s *Service) ValidateVideoReference(accountScopeID, userID string, ref pebblestore.ArtifactV3VideoReference) error {
+	if strings.TrimSpace(accountScopeID) == "" || strings.TrimSpace(userID) == "" {
+		return errors.New("Artifact V3 video reference requires authenticated account and user")
+	}
+	if ref.DerivativeID == "" {
+		selection := Selection{AccountScopeID: accountScopeID, UserID: userID, SessionID: ref.SessionID, ArtifactID: ref.ArtifactID, RevisionID: ref.RevisionID, CommitOID: ref.CommitOID, TreeOID: ref.TreeOID, PartID: ref.PartID, CaptureStateID: ref.CaptureStateID, DurationMs: ref.DurationMs, FPS: ref.FPS}
+		project, err := s.artifacts.ReadSelectedHead(context.Background(), accountScopeID, selection)
+		if err != nil {
+			return err
+		}
+		if project.AnimationProfile == "" {
+			project.AnimationProfile = DefaultAnimationProfile
+		}
+		if err := validateProject(selection, project); err != nil {
+			return err
+		}
+		if ref.ManifestDigestSHA256 != project.ManifestDigestSHA256 || ref.BuildID != project.BuildID || ref.ValidationID != project.ValidationID || ref.EventSeq != project.EventSeq || ref.DigestSHA256 != project.ManifestDigestSHA256 || ref.MediaType != "text/html" || ref.AnimationProfile != project.AnimationProfile {
+			return errors.New("Artifact V3 source reference does not match authenticated selected head")
+		}
+		return nil
+	}
+	_, err := s.read(context.Background(), accountScopeID, userID, ref)
+	return err
+}
+
+func (s *Service) ReadVideoReference(ctx context.Context, accountScopeID, userID string, ref pebblestore.ArtifactV3VideoReference) ([]byte, error) {
+	if strings.TrimSpace(userID) == "" {
+		return nil, errors.New("Artifact V3 video read requires authenticated user")
+	}
+	return s.read(ctx, accountScopeID, userID, ref)
+}
+
+// Read is retained for same-package callers and test fixtures. Production video
+// consumers must use ReadVideoReference so user identity is explicit.
 func (s *Service) Read(ctx context.Context, accountScopeID string, ref pebblestore.ArtifactV3VideoReference) ([]byte, error) {
+	return s.read(ctx, accountScopeID, "", ref)
+}
+
+func (s *Service) read(ctx context.Context, accountScopeID, userID string, ref pebblestore.ArtifactV3VideoReference) ([]byte, error) {
 	if ref.DerivativeID == "" {
 		return nil, errors.New("Artifact V3 video read requires derivative identity")
 	}
-	selection := Selection{AccountScopeID: accountScopeID, SessionID: ref.SessionID, ArtifactID: ref.ArtifactID, RevisionID: ref.RevisionID, CommitOID: ref.CommitOID, TreeOID: ref.TreeOID, PartID: ref.PartID, CaptureStateID: ref.CaptureStateID, DurationMs: ref.DurationMs, FPS: ref.FPS}
+	selection := Selection{AccountScopeID: accountScopeID, UserID: userID, SessionID: ref.SessionID, ArtifactID: ref.ArtifactID, RevisionID: ref.RevisionID, CommitOID: ref.CommitOID, TreeOID: ref.TreeOID, PartID: ref.PartID, CaptureStateID: ref.CaptureStateID, DurationMs: ref.DurationMs, FPS: ref.FPS}
 	project, err := s.artifacts.ReadSelectedHead(ctx, accountScopeID, selection)
 	if err != nil {
 		return nil, fmt.Errorf("authenticate Artifact V3 derivative reference: %w", err)
@@ -183,13 +224,13 @@ func (s *Service) Read(ctx context.Context, accountScopeID string, ref pebblesto
 }
 
 func validateSelection(selection Selection) error {
-	for field, value := range map[string]string{"account scope": selection.AccountScopeID, "session": selection.SessionID, "artifact": selection.ArtifactID, "revision": selection.RevisionID, "commit": selection.CommitOID, "tree": selection.TreeOID} {
+	for field, value := range map[string]string{"account scope": selection.AccountScopeID, "user": selection.UserID, "session": selection.SessionID, "artifact": selection.ArtifactID, "revision": selection.RevisionID, "commit": selection.CommitOID, "tree": selection.TreeOID} {
 		if strings.TrimSpace(value) == "" {
 			return fmt.Errorf("Artifact V3 %s identity is required", field)
 		}
 	}
-	if !validDigest(selection.CommitOID) || !validDigest(selection.TreeOID) {
-		return errors.New("Artifact V3 commit and tree identities must be sha256 digests")
+	if !validGitOID(selection.CommitOID) || !validGitOID(selection.TreeOID) {
+		return errors.New("Artifact V3 commit and tree identities must be Git SHA-1 object IDs")
 	}
 	_, _, err := normalizedTiming(selection.DurationMs, selection.FPS)
 	return err
@@ -215,7 +256,7 @@ func validateProject(selection Selection, project Project) error {
 	if project.BuildID == "" || project.ValidationID == "" {
 		return errors.New("selected Artifact V3 head requires successful build and validation identity")
 	}
-	if project.EventSeq == 0 || !validDigest(project.CommitOID) || !validDigest(project.TreeOID) || !validDigest(project.ManifestDigestSHA256) {
+	if project.EventSeq == 0 || !validGitOID(project.CommitOID) || !validGitOID(project.TreeOID) || !validDigest(project.ManifestDigestSHA256) {
 		return errors.New("selected Artifact V3 head has incomplete exact Git/manifest identity")
 	}
 	if project.MediaType != "text/html" || len(project.Files) == 0 {
@@ -258,7 +299,23 @@ func derivative(mediaType string, payload []byte) Derivative {
 	return Derivative{ID: "av3der_" + digest, MediaType: mediaType, DigestSHA256: digest, Bytes: append([]byte(nil), payload...)}
 }
 
-func digestBytes(payload []byte) string { sum := sha256.Sum256(payload); return hex.EncodeToString(sum[:]) }
-func validDigest(value string) bool { decoded, err := hex.DecodeString(value); return err == nil && len(decoded) == sha256.Size }
+func digestBytes(payload []byte) string {
+	sum := sha256.Sum256(payload)
+	return hex.EncodeToString(sum[:])
+}
+func validDigest(value string) bool {
+	decoded, err := hex.DecodeString(value)
+	return err == nil && len(decoded) == sha256.Size
+}
+func validGitOID(value string) bool {
+	decoded, err := hex.DecodeString(value)
+	return err == nil && len(decoded) == 20
+}
 func cloneProject(project Project) Project { project.Files = cloneFiles(project.Files); return project }
-func cloneFiles(files map[string][]byte) map[string][]byte { out := make(map[string][]byte, len(files)); for name, content := range files { out[name] = append([]byte(nil), content...) }; return out }
+func cloneFiles(files map[string][]byte) map[string][]byte {
+	out := make(map[string][]byte, len(files))
+	for name, content := range files {
+		out[name] = append([]byte(nil), content...)
+	}
+	return out
+}

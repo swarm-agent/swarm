@@ -38,7 +38,7 @@ func TestConvertNativeArtifactV3Video(t *testing.T) {
 	if conversion.Plan.Parts[0].ArtifactV3Source == nil || conversion.Plan.Parts[0].ArtifactV3Visual == nil || conversion.Plan.Parts[0].ArtifactV2Visual != nil || conversion.Plan.Parts[0].Visual != nil {
 		t.Fatalf("plan did not stay V3-native: %#v", conversion.Plan)
 	}
-	payload, err := service.Read(context.Background(), "account", conversion.MP4)
+	payload, err := service.ReadVideoReference(context.Background(), "account", "user", conversion.MP4)
 	if err != nil || string(payload) != "mp4" {
 		t.Fatalf("read=%q err=%v", payload, err)
 	}
@@ -103,7 +103,7 @@ func TestReadRejectsDigestSubstitution(t *testing.T) {
 		t.Fatal(err)
 	}
 	storage.data[conversion.MP4.DerivativeID] = []byte("substituted")
-	if _, err := service.Read(context.Background(), "account", conversion.MP4); err == nil || !strings.Contains(err.Error(), "digest mismatch") {
+	if _, err := service.ReadVideoReference(context.Background(), "account", "user", conversion.MP4); err == nil || !strings.Contains(err.Error(), "digest mismatch") {
 		t.Fatalf("digest substitution err=%v", err)
 	}
 }
@@ -114,19 +114,19 @@ func TestVideoPlanValidationAcceptsOnlyCompleteNativeV3Conversion(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := pebblestore.ValidateArtifactV3ConversionPlan(conversion.Plan); err != nil {
+	if err := pebblestore.ValidateVideoPlanForIntent(pebblestore.VideoEditProposalIntentArtifactV3Convert, conversion.Plan); err != nil {
 		t.Fatalf("native V3 plan invalid: %v", err)
 	}
 	bad := conversion.Plan
 	bad.Parts = append([]pebblestore.VideoPlanPart(nil), conversion.Plan.Parts...)
 	bad.Parts[0].ArtifactV3Visual = nil
-	if err := pebblestore.ValidateArtifactV3ConversionPlan(bad); err == nil {
+	if err := pebblestore.ValidateVideoPlanForIntent(pebblestore.VideoEditProposalIntentArtifactV3Convert, bad); err == nil {
 		t.Fatal("missing native V3 derivative must fail")
 	}
 }
 
 func testSelection() Selection {
-	return Selection{SessionID: "session", ArtifactID: "artifact", RevisionID: "revision", CommitOID: strings.Repeat("a", 64), TreeOID: strings.Repeat("b", 64), PartID: "hero", CaptureStateID: "state"}
+	return Selection{UserID: "user", SessionID: "session", ArtifactID: "artifact", RevisionID: "revision", CommitOID: strings.Repeat("a", 40), TreeOID: strings.Repeat("b", 40), PartID: "hero", CaptureStateID: "state"}
 }
 
 func testProject() Project {
@@ -134,25 +134,58 @@ func testProject() Project {
 	return Project{SessionID: sel.SessionID, ArtifactID: sel.ArtifactID, RevisionID: sel.RevisionID, CommitOID: sel.CommitOID, TreeOID: sel.TreeOID, ManifestDigestSHA256: strings.Repeat("c", 64), BuildID: "build", ValidationID: "validation", EventSeq: 7, MediaType: "text/html", AnimationProfile: DefaultAnimationProfile, Files: map[string][]byte{"index.html": []byte("<html></html>")}}
 }
 
-type fakeAuthority struct { project Project; err error }
+type fakeAuthority struct {
+	project Project
+	err     error
+}
+
 func (f *fakeAuthority) ReadSelectedHead(_ context.Context, account string, selection Selection) (Project, error) {
-	if f.err != nil { return Project{}, f.err }
-	if account != "account" || selection.AccountScopeID != account { return Project{}, errors.New("owner mismatch") }
+	if f.err != nil {
+		return Project{}, f.err
+	}
+	if account != "account" || selection.AccountScopeID != account || selection.UserID != "user" {
+		return Project{}, errors.New("owner mismatch")
+	}
 	return cloneProject(f.project), nil
 }
 
-type fakeRenderer struct { request RenderRequest; preflightErr, renderErr error; png, mp4 []byte }
-func (f *fakeRenderer) Preflight(_ context.Context, request RenderRequest) error { f.request = request; return f.preflightErr }
-func (f *fakeRenderer) Render(_ context.Context, request RenderRequest) ([]byte, []byte, error) { f.request = request; return f.png, f.mp4, f.renderErr }
+type fakeRenderer struct {
+	request                 RenderRequest
+	preflightErr, renderErr error
+	png, mp4                []byte
+}
 
-type fakeStore struct { data map[string][]byte; putErr error }
+func (f *fakeRenderer) Preflight(_ context.Context, request RenderRequest) error {
+	f.request = request
+	return f.preflightErr
+}
+func (f *fakeRenderer) Render(_ context.Context, request RenderRequest) ([]byte, []byte, error) {
+	f.request = request
+	return f.png, f.mp4, f.renderErr
+}
+
+type fakeStore struct {
+	data   map[string][]byte
+	putErr error
+}
+
 func (f *fakeStore) PutAtomic(_ context.Context, _, _ string, derivatives []Derivative) error {
-	if f.putErr != nil { return f.putErr }
+	if f.putErr != nil {
+		return f.putErr
+	}
 	staged := map[string][]byte{}
-	for _, derivative := range derivatives { staged[derivative.ID] = append([]byte(nil), derivative.Bytes...) }
-	for id, payload := range staged { f.data[id] = payload }
+	for _, derivative := range derivatives {
+		staged[derivative.ID] = append([]byte(nil), derivative.Bytes...)
+	}
+	for id, payload := range staged {
+		f.data[id] = payload
+	}
 	return nil
 }
 func (f *fakeStore) Read(_ context.Context, _, _, derivativeID string) ([]byte, error) {
-	payload, ok := f.data[derivativeID]; if !ok { return nil, errors.New("not found") }; return append([]byte(nil), payload...), nil
+	payload, ok := f.data[derivativeID]
+	if !ok {
+		return nil, errors.New("not found")
+	}
+	return append([]byte(nil), payload...), nil
 }

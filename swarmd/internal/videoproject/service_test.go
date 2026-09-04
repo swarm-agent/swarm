@@ -22,11 +22,11 @@ func TestTemporalAnimationDurationUsesOrderedSectionEnd(t *testing.T) {
 }
 
 type fakeSessionStore struct {
-	sessions  map[string]pebblestore.SessionSnapshot
-	projects  map[string]pebblestore.VideoProjectSnapshot
-	revisions map[string]map[string]pebblestore.VideoProjectRevisionSnapshot
-	jobs      map[string]pebblestore.VideoRenderJobSnapshot
-	proposals map[string]pebblestore.VideoEditProposalSnapshot
+	sessions            map[string]pebblestore.SessionSnapshot
+	projects            map[string]pebblestore.VideoProjectSnapshot
+	revisions           map[string]map[string]pebblestore.VideoProjectRevisionSnapshot
+	jobs                map[string]pebblestore.VideoRenderJobSnapshot
+	proposals           map[string]pebblestore.VideoEditProposalSnapshot
 	artifacts           map[string]pebblestore.SessionArtifactVariant
 	createProposalCalls int
 }
@@ -315,8 +315,9 @@ func (f *fakeArtifactV3Authority) ValidateVideoReference(accountScopeID, userID 
 
 func testArtifactV3VideoPlan() (pebblestore.VideoPlanProposal, []pebblestore.ArtifactV3VideoReference) {
 	digest := func(char byte) string { return strings.Repeat(string(char), 64) }
+	oid := func(char byte) string { return strings.Repeat(string(char), 40) }
 	source := pebblestore.ArtifactV3VideoReference{
-		SessionID: "artifact-session", ArtifactID: "artifact", RevisionID: "revision", CommitOID: digest('a'), TreeOID: digest('b'),
+		SessionID: "artifact-session", ArtifactID: "artifact", RevisionID: "revision", CommitOID: oid('a'), TreeOID: oid('b'),
 		ManifestDigestSHA256: digest('c'), BuildID: "build", ValidationID: "validation", PartID: "motion", CaptureStateID: "capture",
 		EventSeq: 7, DigestSHA256: digest('d'), MediaType: "text/html", DurationMs: 2000, FPS: 30, AnimationProfile: "motion_ui",
 	}
@@ -426,11 +427,21 @@ func TestCreateArtifactV3ConversionProposalRejectsInvalidAuthorityWithoutMutatio
 			plan.Parts[0].ArtifactV3Visual = &stale
 			plan.Parts[0].AnimationCandidates.V3Derivative = &stale
 		}, want: "stale"},
-		{name: "foreign exact reference", mutate: func(plan *pebblestore.VideoPlanProposal, refs []pebblestore.ArtifactV3VideoReference) { plan.Parts[0].ArtifactV3Source.SessionID = "foreign" }, want: "foreign"},
-		{name: "mixed authority", mutate: func(plan *pebblestore.VideoPlanProposal, refs []pebblestore.ArtifactV3VideoReference) { plan.Parts[0].Visual = &pebblestore.SessionArtifactSelectionReference{SessionID: "legacy", CollectionID: "legacy", VariantID: "legacy", EventSeq: 1} }, want: "exactly one complete render-ready visual authority"},
-		{name: "mixed candidate authority", mutate: func(plan *pebblestore.VideoPlanProposal, refs []pebblestore.ArtifactV3VideoReference) { plan.Parts[0].AnimationCandidates.Candidates[0].Source = &pebblestore.SessionArtifactSelectionReference{SessionID: "legacy", CollectionID: "legacy", VariantID: "legacy", EventSeq: 1} }, want: "exactly one complete"},
-		{name: "missing fallback", mutate: func(plan *pebblestore.VideoPlanProposal, refs []pebblestore.ArtifactV3VideoReference) { plan.Parts[0].ArtifactV3Still = nil }, want: "still requires native Artifact V3 authority"},
-		{name: "missing render derivative", mutate: func(plan *pebblestore.VideoPlanProposal, refs []pebblestore.ArtifactV3VideoReference) { plan.Parts[0].ArtifactV3Visual = nil }, want: "visual requires native Artifact V3 authority"},
+		{name: "foreign exact reference", mutate: func(plan *pebblestore.VideoPlanProposal, refs []pebblestore.ArtifactV3VideoReference) {
+			plan.Parts[0].ArtifactV3Source.SessionID = "foreign"
+		}, want: "foreign"},
+		{name: "mixed authority", mutate: func(plan *pebblestore.VideoPlanProposal, refs []pebblestore.ArtifactV3VideoReference) {
+			plan.Parts[0].Visual = &pebblestore.SessionArtifactSelectionReference{SessionID: "legacy", CollectionID: "legacy", VariantID: "legacy", EventSeq: 1}
+		}, want: "exactly one complete render-ready visual authority"},
+		{name: "mixed candidate authority", mutate: func(plan *pebblestore.VideoPlanProposal, refs []pebblestore.ArtifactV3VideoReference) {
+			plan.Parts[0].AnimationCandidates.Candidates[0].Source = &pebblestore.SessionArtifactSelectionReference{SessionID: "legacy", CollectionID: "legacy", VariantID: "legacy", EventSeq: 1}
+		}, want: "exactly one complete"},
+		{name: "missing fallback", mutate: func(plan *pebblestore.VideoPlanProposal, refs []pebblestore.ArtifactV3VideoReference) {
+			plan.Parts[0].ArtifactV3Still = nil
+		}, want: "still requires native Artifact V3 authority"},
+		{name: "missing render derivative", mutate: func(plan *pebblestore.VideoPlanProposal, refs []pebblestore.ArtifactV3VideoReference) {
+			plan.Parts[0].ArtifactV3Visual = nil
+		}, want: "visual requires native Artifact V3 authority"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

@@ -161,6 +161,11 @@ type ArtifactV2Authority interface {
 	ReadVideoReference(context.Context, string, string, pebblestore.ArtifactV2VideoReference) ([]byte, error)
 }
 
+type ArtifactV3Authority interface {
+	ValidateVideoReference(accountScopeID, userID string, ref pebblestore.ArtifactV3VideoReference) error
+	ReadVideoReference(context.Context, string, string, pebblestore.ArtifactV3VideoReference) ([]byte, error)
+}
+
 type SessionStore interface {
 	GetSession(sessionID string) (pebblestore.SessionSnapshot, bool, error)
 	GetVideoProject(accountScopeID, sessionID, projectID string) (pebblestore.VideoProjectSnapshot, bool, error)
@@ -185,6 +190,7 @@ type Service struct {
 	store         SessionStore
 	artifacts     ArtifactAuthority
 	artifactV2    ArtifactV2Authority
+	artifactV3    ArtifactV3Authority
 	workspace     WorkspaceAuthority
 	runner        CommandRunner
 	animation     htmlcapture.AnimationRenderer
@@ -233,6 +239,12 @@ func NewService(cfg Config, store SessionStore, artifacts ArtifactAuthority, ani
 func (s *Service) SetArtifactV2Authority(authority ArtifactV2Authority) {
 	if s != nil {
 		s.artifactV2 = authority
+	}
+}
+
+func (s *Service) SetArtifactV3Authority(authority ArtifactV3Authority) {
+	if s != nil {
+		s.artifactV3 = authority
 	}
 }
 
@@ -1075,6 +1087,51 @@ func (s *Service) materializeTimelineInputs(ctx context.Context, principal ident
 			input.HasAudio = true
 
 		case pebblestore.VideoClipSourceKindManagedArtifact:
+			authorityCount := 0
+			if clip.ArtifactRef != nil {
+				authorityCount++
+			}
+			if clip.ArtifactV2Ref != nil {
+				authorityCount++
+			}
+			if clip.ArtifactV3Ref != nil {
+				authorityCount++
+			}
+			if authorityCount != 1 {
+				return nil, fmt.Errorf("clip %d managed artifact must use exactly one V1, V2, or V3 authority", i)
+			}
+			if clip.ArtifactV3Ref != nil {
+				if s.artifactV3 == nil {
+					return nil, fmt.Errorf("clip %d Artifact V3 authority is unavailable", i)
+				}
+				ref := *clip.ArtifactV3Ref
+				if err := s.artifactV3.ValidateVideoReference(principal.AccountScopeID, principal.UserID, ref); err != nil {
+					return nil, fmt.Errorf("resolve clip %d Artifact V3 source: %w", i, err)
+				}
+				if strings.ToLower(strings.TrimSpace(ref.MediaType)) != "video/mp4" || strings.TrimSpace(ref.DerivativeID) == "" {
+					return nil, fmt.Errorf("clip %d Artifact V3 source must be an exact MP4 derivative", i)
+				}
+				if clip.MediaType != "" && !strings.EqualFold(strings.TrimSpace(clip.MediaType), ref.MediaType) {
+					return nil, fmt.Errorf("clip %d Artifact V3 media type does not match its exact reference", i)
+				}
+				if clip.DurationMs != ref.DurationMs || clip.SourceStartMs != 0 || clip.SourceEndMs != ref.DurationMs {
+					return nil, fmt.Errorf("clip %d Artifact V3 source timing does not match its exact derivative", i)
+				}
+				body, err := s.artifactV3.ReadVideoReference(ctx, principal.AccountScopeID, principal.UserID, ref)
+				if err != nil {
+					return nil, fmt.Errorf("read clip %d Artifact V3 source: %w", i, err)
+				}
+				destPath := filepath.Join(jobDir, fmt.Sprintf("input_%d_v3.mp4", input.Index))
+				if int64(len(body)) > s.cfg.MaxRenderBytes {
+					return nil, fmt.Errorf("clip %d Artifact V3 derivative exceeds render byte limit", i)
+				}
+				if err := os.WriteFile(destPath, body, 0o600); err != nil {
+					return nil, err
+				}
+				input.FilePath = destPath
+				input.IsVideo, input.IsImage, input.HasAudio = true, false, false
+				break
+			}
 			if clip.ArtifactV2Ref != nil {
 				if s.artifactV2 == nil {
 					return nil, fmt.Errorf("clip %d Artifact V2 authority is unavailable", i)

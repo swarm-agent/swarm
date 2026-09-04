@@ -501,7 +501,7 @@ func TestVideoEditProposalsChainFromUnconfirmedWorkingRevision(t *testing.T) {
 
 func testNativeV3VideoReference(mediaType, derivativeID, digestChar string) *ArtifactV3VideoReference {
 	return &ArtifactV3VideoReference{
-		SessionID: "studio", ArtifactID: "artifact", RevisionID: "revision", CommitOID: strings.Repeat("a", 64), TreeOID: strings.Repeat("b", 64),
+		SessionID: "studio", ArtifactID: "artifact", RevisionID: "revision", CommitOID: strings.Repeat("a", 40), TreeOID: strings.Repeat("b", 40),
 		ManifestDigestSHA256: strings.Repeat("c", 64), BuildID: "build", ValidationID: "validation", DerivativeID: derivativeID, PartID: "motion", CaptureStateID: "capture",
 		EventSeq: 7, DigestSHA256: strings.Repeat(digestChar, 64), MediaType: mediaType, DurationMs: 2000, FPS: 30, AnimationProfile: "motion_ui",
 	}

@@ -149,23 +149,23 @@ type ArtifactV2VideoReference struct {
 // native Artifact V3 Git revision or a digest-bound derivative of that revision.
 // It never carries legacy collection/variant or Artifact V2 composition identity.
 type ArtifactV3VideoReference struct {
-	SessionID           string  `json:"session_id"`
+	SessionID            string  `json:"session_id"`
 	ArtifactID           string  `json:"artifact_id"`
 	RevisionID           string  `json:"revision_id"`
-	CommitOID           string  `json:"commit_oid"`
-	TreeOID             string  `json:"tree_oid"`
+	CommitOID            string  `json:"commit_oid"`
+	TreeOID              string  `json:"tree_oid"`
 	ManifestDigestSHA256 string  `json:"manifest_digest_sha256"`
-	BuildID             string  `json:"build_id"`
-	ValidationID        string  `json:"validation_id"`
-	DerivativeID        string  `json:"derivative_id,omitempty"`
-	PartID              string  `json:"part_id,omitempty"`
-	CaptureStateID      string  `json:"capture_state_id,omitempty"`
-	EventSeq            uint64  `json:"event_seq"`
-	DigestSHA256        string  `json:"digest_sha256"`
-	MediaType           string  `json:"media_type"`
-	DurationMs          int64   `json:"duration_ms"`
-	FPS                 float64 `json:"fps"`
-	AnimationProfile    string  `json:"animation_profile"`
+	BuildID              string  `json:"build_id"`
+	ValidationID         string  `json:"validation_id"`
+	DerivativeID         string  `json:"derivative_id,omitempty"`
+	PartID               string  `json:"part_id,omitempty"`
+	CaptureStateID       string  `json:"capture_state_id,omitempty"`
+	EventSeq             uint64  `json:"event_seq"`
+	DigestSHA256         string  `json:"digest_sha256"`
+	MediaType            string  `json:"media_type"`
+	DurationMs           int64   `json:"duration_ms"`
+	FPS                  float64 `json:"fps"`
+	AnimationProfile     string  `json:"animation_profile"`
 }
 
 // VideoTimelineClip represents one ordered clip in the video timeline.
@@ -1363,7 +1363,13 @@ func validateArtifactV3VideoReference(ref ArtifactV3VideoReference, wantMediaTyp
 			return fmt.Errorf("%s is required", field)
 		}
 	}
-	for field, digest := range map[string]string{"commit_oid": ref.CommitOID, "tree_oid": ref.TreeOID, "manifest_digest_sha256": ref.ManifestDigestSHA256, "digest_sha256": ref.DigestSHA256} {
+	for field, oid := range map[string]string{"commit_oid": ref.CommitOID, "tree_oid": ref.TreeOID} {
+		decoded, err := hex.DecodeString(oid)
+		if err != nil || len(decoded) != 20 {
+			return fmt.Errorf("%s must be a Git SHA-1 object ID", field)
+		}
+	}
+	for field, digest := range map[string]string{"manifest_digest_sha256": ref.ManifestDigestSHA256, "digest_sha256": ref.DigestSHA256} {
 		decoded, err := hex.DecodeString(digest)
 		if err != nil || len(decoded) != sha256.Size {
 			return fmt.Errorf("%s must be a sha256 digest", field)
