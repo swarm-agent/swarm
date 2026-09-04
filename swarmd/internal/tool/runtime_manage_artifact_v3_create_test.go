@@ -62,6 +62,17 @@ func TestManageArtifactCreateUsesDirectArtifactV3HTMLPath(t *testing.T) {
 	if !strings.Contains(output, `"artifact_v3"`) || !strings.Contains(output, `"part_count":3`) || strings.Contains(output, "collection_id") || strings.Contains(output, "variant_id") {
 		t.Fatalf("output=%s", output)
 	}
+	secondArguments, err := json.Marshal(map[string]any{"action": "create", "filename": "index.html", "media_type": "text/html", "content": strings.ReplaceAll(html, "Product hero", "Revised hero"), "collection_name": "Static product page"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, Call{CallID: "second-direct-html", Name: "manage_artifact", Arguments: string(secondArguments)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(repository.submits) != 1 || second != output {
+		t.Fatalf("same run created a second Artifact V3: submits=%d first=%s second=%s", len(repository.submits), output, second)
+	}
 
 	definition := manageArtifactDefinition()
 	properties := definition.Parameters["properties"].(map[string]any)

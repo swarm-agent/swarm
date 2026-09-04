@@ -12,6 +12,10 @@ import (
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
+type directArtifactV3Publication struct {
+	Result map[string]any
+}
+
 // createDirectArtifactV3HTML is the ordinary primary-Swarm creation boundary.
 // It converts one complete authored HTML document into a conventional V3 project,
 // then uses the same context-bound build, browser-preview, Git, and projection
@@ -64,6 +68,13 @@ func (r *Runtime) createDirectArtifactV3HTML(ctx context.Context, scope Workspac
 	if producerRunID == "" {
 		return nil, errors.New("manage_artifact create requires trusted provider run identity")
 	}
+	r.directArtifactV3Mu.Lock()
+	if existing, ok := r.directArtifactV3ByRun[producerRunID]; ok {
+		result := cloneDirectArtifactV3Result(existing.Result)
+		r.directArtifactV3Mu.Unlock()
+		return result, nil
+	}
+	r.directArtifactV3Mu.Unlock()
 	prompt := strings.TrimSpace(firstNonEmptyString(asString(args["collection_description"]), asString(args["collection_name"]), filename))
 	grant, err := r.artifactV3Author.PrepareTurn(ctx, ArtifactV3PrepareTurnRequest{
 		AccountScopeID: principal.AccountScopeID,
@@ -115,7 +126,7 @@ func (r *Runtime) createDirectArtifactV3HTML(ctx context.Context, scope Workspac
 		"commit_oid":   finished.Revision.CommitOID,
 		"revision_ref": "revision-" + finished.Revision.CommitOID,
 	}
-	return map[string]any{
+	result := map[string]any{
 		"status":       "ready",
 		"artifact_id":  grant.ArtifactID,
 		"turn_id":      grant.TurnID,
@@ -125,5 +136,26 @@ func (r *Runtime) createDirectArtifactV3HTML(ctx context.Context, scope Workspac
 		"part_count":   len(manifestParts),
 		"parts":        manifestParts,
 		"reference":    reference,
-	}, nil
+	}
+	r.directArtifactV3Mu.Lock()
+	if r.directArtifactV3ByRun == nil {
+		r.directArtifactV3ByRun = make(map[string]directArtifactV3Publication)
+	}
+	if existing, ok := r.directArtifactV3ByRun[producerRunID]; ok {
+		result = cloneDirectArtifactV3Result(existing.Result)
+	} else {
+		r.directArtifactV3ByRun[producerRunID] = directArtifactV3Publication{Result: cloneDirectArtifactV3Result(result)}
+	}
+	r.directArtifactV3Mu.Unlock()
+	return result, nil
+}
+
+func cloneDirectArtifactV3Result(input map[string]any) map[string]any {
+	if input == nil {
+		return nil
+	}
+	encoded, _ := json.Marshal(input)
+	var output map[string]any
+	_ = json.Unmarshal(encoded, &output)
+	return output
 }

@@ -151,36 +151,38 @@ var (
 )
 
 type Runtime struct {
-	maxParallel          int
-	httpClient           *http.Client
-	exaConfigResolver    func(context.Context) (ExaRuntimeConfig, error)
-	sessions             manageSessionService
-	publishSessionOutbox func(pebblestore.V3RealtimeOutboxRecord) error
-	workspace            manageWorktreeWorkspaceService
-	worktrees            manageWorktreeConfigService
-	agents               manageAgentService
-	orchestration        manageOrchestrationPolicyService
-	todos                manageTodoService
-	actions              manageActionService
-	uiSettings           manageThemeUISettingsService
-	themeWorkspace       manageThemeWorkspaceService
-	artifacts            *artifact.Registry
-	artifactAuthority    ArtifactAuthority
-	artifactV2Author     *artifactv2.AuthorService
-	artifactV3Author     *ArtifactV3AuthorService
-	artifactV2Video      *artifactv2.VideoConversionService
-	htmlCapture          htmlcapture.Renderer
-	htmlAnimationCapture htmlcapture.AnimationRenderer
-	animationJobsMu      sync.Mutex
-	animationJobs        map[string]context.CancelFunc
-	imageGeneration      ManagedImageGenerationService
-	video                manageVideoService
-	videoSources         *videosource.Service
-	videoProjects        manageVideoProjectService
-	videoRender          manageVideoRenderService
-	searchCoordinator    *SearchCoordinator
-	focusedPartMu        sync.Mutex
-	focusedPartProtocols map[string]focusedPartProtocolState
+	maxParallel           int
+	httpClient            *http.Client
+	exaConfigResolver     func(context.Context) (ExaRuntimeConfig, error)
+	sessions              manageSessionService
+	publishSessionOutbox  func(pebblestore.V3RealtimeOutboxRecord) error
+	workspace             manageWorktreeWorkspaceService
+	worktrees             manageWorktreeConfigService
+	agents                manageAgentService
+	orchestration         manageOrchestrationPolicyService
+	todos                 manageTodoService
+	actions               manageActionService
+	uiSettings            manageThemeUISettingsService
+	themeWorkspace        manageThemeWorkspaceService
+	artifacts             *artifact.Registry
+	artifactAuthority     ArtifactAuthority
+	artifactV2Author      *artifactv2.AuthorService
+	artifactV3Author      *ArtifactV3AuthorService
+	directArtifactV3Mu    sync.Mutex
+	directArtifactV3ByRun map[string]directArtifactV3Publication
+	artifactV2Video       *artifactv2.VideoConversionService
+	htmlCapture           htmlcapture.Renderer
+	htmlAnimationCapture  htmlcapture.AnimationRenderer
+	animationJobsMu       sync.Mutex
+	animationJobs         map[string]context.CancelFunc
+	imageGeneration       ManagedImageGenerationService
+	video                 manageVideoService
+	videoSources          *videosource.Service
+	videoProjects         manageVideoProjectService
+	videoRender           manageVideoRenderService
+	searchCoordinator     *SearchCoordinator
+	focusedPartMu         sync.Mutex
+	focusedPartProtocols  map[string]focusedPartProtocolState
 }
 
 type ExaRuntimeConfig struct {
