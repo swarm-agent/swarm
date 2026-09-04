@@ -27,6 +27,7 @@ const sessionOverride = String(option('--session-id', process.env.SWARM_RUNNER_S
 const initialRunOverride = String(option('--initial-run-id', process.env.SWARM_RUNNER_INITIAL_RUN_ID || '')).trim()
 const artifactOverride = String(option('--artifact-id', process.env.SWARM_RUNNER_ARTIFACT_ID || '')).trim()
 const desktopPathOverride = String(option('--desktop-path', process.env.SWARM_RUNNER_DESKTOP_PATH || '')).trim()
+const videoSessionOverride = String(option('--video-session-id', process.env.SWARM_RUNNER_VIDEO_SESSION_ID || '')).trim()
 const videoProjectOverride = String(option('--video-project-id', process.env.SWARM_RUNNER_VIDEO_PROJECT_ID || '')).trim()
 const videoBaseRevisionOverride = String(option('--video-base-revision-id', process.env.SWARM_RUNNER_VIDEO_BASE_REVISION_ID || '')).trim()
 const browserExecutable = String(option('--browser-executable', process.env.PLAYWRIGHT_BROWSER_EXECUTABLE || '')).trim()
@@ -807,7 +808,7 @@ function assertValidMP4(bytes, label) {
   assert(bytes.length >= 12 && bytes.subarray(4, 8).toString('ascii') === 'ftyp', `${label} is not an MP4/ISO BMFF container`)
 }
 
-async function runVideoConversion(sessionID) {
+async function runVideoConversion(sessionID, selected, assignment) {
   const items = await catalog(sessionID)
   const artifact = artifactOverride ? items.find((item) => text(item?.id) === artifactOverride) : items.length === 1 ? items[0] : null
   assert(artifact?.id, `video-conversion requires --artifact-id when the session has ${items.length} artifacts`)
@@ -819,7 +820,30 @@ async function runVideoConversion(sessionID) {
   result.revisions.video_source = head
   result.animations.video_source = await screenshotPreview(sessionID, artifact.id, head)
   gate('video-source-pixels', 'PASS', 'three animated Parts inspected before conversion')
-  let snapshot = await hydrate(sessionID)
+  let videoSession
+  if (videoSessionOverride) {
+    const existing = await api('GET', `/v3/sessions/${encodeURIComponent(videoSessionOverride)}`, undefined, 'read resumed Video Studio destination session')
+    const value = existing.body?.session || existing.body
+    assert(text(value?.id) === videoSessionOverride, 'resumed Video Studio destination session was not found')
+    videoSession = { sessionID: videoSessionOverride }
+  } else {
+    const binding = selected.binding
+    const workspacePath = text(binding.source_workspace_path || binding.destination_workspace_path)
+    const workspaceName = text(binding.source_workspace_name || binding.destination_workspace_name || 'artifact-v3-video-e2e')
+    const response = await api('POST', '/v3/sessions', {
+      client_request_id: `${testID}:video-session`, title: `${testID} native V3 video conversion`,
+      workspace_path: workspacePath, workspace_name: workspaceName, workspace_binding_id: binding.workspace_binding_id,
+      swarm_id: selected.runtime.swarm_id, target_kind: 'host', target_relationship: 'self', mode: 'auto', agent_name: 'swarm',
+      preference: assignment, model_profile: { temporary: { ...assignment, name: `${testID} Codex video conversion model` } },
+      metadata: { runner_test: 'artifact-v3-multipart-e2e', runner_test_id: testID, source_artifact_session_id: sessionID },
+    }, 'create Video Studio destination session')
+    const destinationID = text(response.body?.session?.id || response.body?.session_id)
+    assert(destinationID, 'Video Studio destination session create returned no ID')
+    videoSession = { sessionID: destinationID }
+    gate('video-destination-session', 'PASS', 'fresh ordinary Swarm destination created')
+  }
+  result.ids.video_session_id = videoSession.sessionID
+  let snapshot = await hydrate(videoSession.sessionID)
   let proposalEvidence = nativeV3ProposalEvidence(snapshot).filter((item) => {
     const parts = item.proposal?.plan?.parts
     const source = Array.isArray(parts) && parts.length === 1 ? parts[0]?.artifact_v3_source : null
@@ -831,13 +855,13 @@ async function runVideoConversion(sessionID) {
     const projectDirection = videoProjectOverride
       ? `Reuse exact existing project_id=${videoProjectOverride} and base_revision_id=${videoBaseRevisionOverride}; call only manage_video convert_artifact_v3 and do not create another project.`
       : 'Call manage_video create_project once without initial_timeline, then call only manage_video convert_artifact_v3 with the returned exact project_id and base revision_id plus that exact source identity.'
-    await postTurn(sessionID, 'video-conversion', [
+    await postTurn(videoSession.sessionID, 'video-conversion', [
       'Convert the exact already-selected animated Artifact V3 head to one pending Video Studio proposal without delegating to any agent.',
       `The exact native source is artifact_v3_session_id=${sessionID}, artifact_v3_artifact_id=${artifact.id}, artifact_v3_revision_ref=${head.revision_ref}.`,
       projectDirection,
       'Do not call convert_artifact_v2, propose_plan, create_edit_proposal, select_animation_candidate, promote_animation_derivative, start_render, task, or any Artifact V1/V2 action. Report the pending proposal and exact native V3 source, fallback PNG, and MP4 references.',
     ].join(' '))
-    snapshot = await hydrate(sessionID)
+    snapshot = await hydrate(videoSession.sessionID)
     proposalEvidence = nativeV3ProposalEvidence(snapshot).filter((item) => {
       const parts = item.proposal?.plan?.parts
       const source = Array.isArray(parts) && parts.length === 1 ? parts[0]?.artifact_v3_source : null
@@ -886,8 +910,8 @@ async function runVideoConversion(sessionID) {
   const afterArtifactReplay = artifactProjectionEvents.map((event) => `${event.seq}:${event.event_type}`)
   assert(JSON.stringify(afterArtifactReplay) === JSON.stringify(beforeArtifactReplay) && !forbiddenLegacyWrite(afterReplay), 'video conversion changed native Artifact replay or emitted legacy identity')
   const allSessions = await bootstrapSessions()
-  const children = delegatedDesigners(allSessions, sessionID)
-  const delegated = Object.values(allSessions.sessions_by_id || {}).filter((session) => text(session?.metadata?.parent_session_id) === sessionID && text(session?.metadata?.lineage_kind) === 'delegated_subagent')
+  const children = [...delegatedDesigners(allSessions, sessionID), ...delegatedDesigners(allSessions, videoSession.sessionID)]
+  const delegated = Object.values(allSessions.sessions_by_id || {}).filter((session) => [sessionID, videoSession.sessionID].includes(text(session?.metadata?.parent_session_id)) && text(session?.metadata?.lineage_kind) === 'delegated_subagent')
   assert(children.length === 0 && delegated.length === 0, `video conversion found ${delegated.length} delegated children (${children.length} Designers) instead of zero`)
   gate('video-pending-proposal', 'PASS', `proposal=${proposal.id}`)
   gate('video-native-v3-identity', 'PASS', `${head.revision_ref} -> ${text(mp4.derivative_id)}`)
@@ -943,7 +967,7 @@ async function runLive() {
     return
   }
   if (videoConversionStage && sessionOverride) {
-    await runVideoConversion(session.sessionID)
+    await runVideoConversion(session.sessionID, selected, assignment)
     return
   }
 
@@ -1001,7 +1025,7 @@ async function runLive() {
     gate('realtime', 'PASS', `cursor-bearing-events=${liveEvents.length}`)
     gate('no-legacy-writes', 'PASS')
     if (videoConversionStage) {
-      await runVideoConversion(session.sessionID)
+      await runVideoConversion(session.sessionID, selected, assignment)
       return
     }
     result.result = 'PASS'
