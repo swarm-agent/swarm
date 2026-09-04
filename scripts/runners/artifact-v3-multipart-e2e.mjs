@@ -30,7 +30,7 @@ const browserExecutable = String(option('--browser-executable', process.env.PLAY
 const timeoutMs = Number(option('--timeout-ms', process.env.SWARM_RUNNER_TIMEOUT_MS || '600000'))
 const preflight = flag('--preflight')
 const stage = String(option('--stage', 'full')).trim().toLowerCase()
-const noDesignerStage = stage === 'basic-html' || stage === 'targeted-part' || stage === 'selected-continuation'
+const noDesignerStage = stage === 'basic-html' || stage === 'targeted-part' || stage === 'selected-continuation' || stage === 'alternate-choice'
 const headless = !flag('--headful')
 const suppliedToken = String(process.env.SWARM_RUNNER_TOKEN || '').trim()
 const testID = `artifact-v3-three-animated-parts-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`
@@ -409,7 +409,7 @@ async function staticVisualSample(previewPage, parts, expectedLabel = '') {
     return { rows, innerWidth, innerHeight, scrollWidth: document.documentElement.scrollWidth, scrollHeight: document.documentElement.scrollHeight, bodyText: document.body.innerText }
   }, targets)
   log(`OBSERVE preview viewport=${sample.innerWidth}x${sample.innerHeight} document=${sample.scrollWidth}x${sample.scrollHeight}`)
-  const screenshotLabel = expectedLabel === 'CONTINUED SELECTED TURN' ? 'selected-continuation-candidate-preview' : expectedLabel ? 'targeted-part-candidate-preview' : 'basic-html-root-preview'
+  const screenshotLabel = expectedLabel === 'CONTINUED SELECTED TURN' ? 'selected-continuation-candidate-preview' : expectedLabel === 'ALTERNATE OPTION ONE' ? 'alternate-option-one-preview' : expectedLabel === 'ALTERNATE OPTION TWO' ? 'alternate-option-two-preview' : expectedLabel ? 'targeted-part-candidate-preview' : 'basic-html-root-preview'
   await screenshot(previewPage, screenshotLabel)
   assert(sample.scrollWidth <= sample.innerWidth + 2 && sample.scrollHeight <= sample.innerHeight + 2, `static complete preview overflows viewport ${sample.innerWidth}x${sample.innerHeight} with document ${sample.scrollWidth}x${sample.scrollHeight}`)
   assert(sample.bodyText.includes('Team') && sample.bodyText.includes('$29'), 'static preview is missing the required Team $29 pricing choice')
@@ -527,6 +527,32 @@ function targetedTurn(artifact, rootRevision) {
   return { turn, candidate }
 }
 
+async function createSiblingAlternatives(sessionID, artifactID, baseRevision) {
+  const read = await api('POST', `/v3/sessions/${encodeURIComponent(sessionID)}/messages`, {
+    client_request_id: `${testID}:alternate-siblings`, role: 'user',
+    content: [
+      'Create exactly two sibling Artifact V3 alternatives from this exact selected revision without Designers.',
+      `Use manage_artifact read_v3 on session_id=${sessionID}, artifact_id=${artifactID}, revision_ref=${baseRevision.revision_ref}.`,
+      'Then call revise_v3 twice with the same turn_key=footer-alternatives, target_part_ids set to the exact Footer Part ID, and candidate_index 1 then 2.',
+      'The first complete HTML must include exact label ALTERNATE OPTION ONE in the Footer. The second must start again from the same exact base and include exact label ALTERNATE OPTION TWO instead. Preserve the selected Pricing change and all stable Part IDs. Inspect both candidates. Do not select either and do not use Designer or V1/V2 identity.',
+    ].join(' '),
+    metadata: { runner_test: 'artifact-v3-multipart-e2e', runner_test_id: testID, stage: 'alternate-siblings' },
+  }, 'post alternate siblings')
+  const runID = text(read.body?.run_intent?.run_id || read.body?.run_id)
+  assert(runID, 'alternate sibling request returned no run ID')
+  result.ids.alternate_run_id = runID
+  await waitForRun(sessionID, runID, 'alternate-siblings')
+  const timeoutAt = Math.min(deadline, Date.now() + 30000)
+  while (Date.now() < timeoutAt) {
+    const artifact = await detail(sessionID, artifactID)
+    const turn = [...(artifact.turns || [])].reverse().find((item) => item.base_commit_oid === baseRevision.commit_oid && item.status === 'awaiting_selection' && item.candidates?.length === 2)
+    if (turn) return { artifact, turn }
+    await sleep(500)
+  }
+  const artifact = await detail(sessionID, artifactID)
+  return { artifact, turn: [...(artifact.turns || [])].reverse().find((item) => item.base_commit_oid === baseRevision.commit_oid && item.candidates?.length === 2) }
+}
+
 async function submitSelectedContinuation(sessionID, artifactID, selectedRevision, parts) {
   const studio = page.locator('[data-testid="desktop-artifact-v3-studio"]:visible').first()
   await studio.getByRole('button', { name: 'Close Artifact V3 Studio' }).click()
@@ -601,7 +627,7 @@ async function verifyStudioTurns(sessionID, artifactID, turn, candidate, rootRev
 async function runLive() {
   assert(apiURL && /^https?:\/\//.test(apiURL), '--api-url is required for the live journey')
   assert(desktopURL && /^https?:\/\//.test(desktopURL), '--desktop-url is invalid')
-  assert(['basic-html', 'targeted-part', 'selected-continuation', 'full'].includes(stage), '--stage must be basic-html, targeted-part, selected-continuation, or full')
+  assert(['basic-html', 'targeted-part', 'selected-continuation', 'alternate-choice', 'full'].includes(stage), '--stage must be basic-html, targeted-part, selected-continuation, alternate-choice, or full')
   assert(Number.isFinite(timeoutMs) && timeoutMs >= 300000 && timeoutMs <= 600000, '--timeout-ms must be between 300000 and 600000')
   await auth()
   const assignment = await configureModels()
@@ -711,7 +737,7 @@ async function runLive() {
   result.animations.candidate = await screenshotPreview(session.sessionID, artifact.id, candidate.revision, 'TARGETED PRICING TURN')
   assert(!JSON.stringify(result.animations.root).includes('TARGETED PRICING TURN'), 'root revision was mutated by the targeted follow-up')
   await verifyStudioTurns(session.sessionID, artifact.id, turn, candidate, rootRevision, rootTurnCount + 1)
-  if (stage === 'selected-continuation') {
+  if (stage === 'selected-continuation' || stage === 'alternate-choice') {
     const selectedArtifact = await selectCandidateInStudio(session.sessionID, artifact.id, turn, candidate)
     const selectedRevision = currentRevision(selectedArtifact)
     assert(selectedRevision.commit_oid === candidate.revision.commit_oid, 'selected candidate did not become the exact Artifact head')
@@ -731,6 +757,26 @@ async function runLive() {
     result.animations.continued = await screenshotPreview(session.sessionID, artifact.id, continuedCandidate.revision, 'CONTINUED SELECTED TURN')
     assert(JSON.stringify(result.animations.continued).includes('TARGETED PRICING TURN'), 'continued candidate lost the selected Pricing change')
     result.gates.continued_from_selected_revision = true
+    if (stage === 'alternate-choice') {
+      const selectedContinued = await selectCandidateInStudio(session.sessionID, artifact.id, continuedTurn, continuedCandidate)
+      const alternateBase = currentRevision(selectedContinued)
+      assert(alternateBase.commit_oid === continuedCandidate.revision.commit_oid, 'continued candidate did not become the selected alternate base')
+      const { artifact: withAlternatives, turn: alternateTurn } = await createSiblingAlternatives(session.sessionID, artifact.id, alternateBase)
+      assert(alternateTurn?.candidates?.length === 2, 'alternate request did not produce exactly two sibling candidates')
+      assert(alternateTurn.candidates.every((item) => item.revision?.parents?.length === 1 && item.revision.parents[0] === alternateBase.commit_oid), 'alternate candidates do not share the exact selected base')
+      assert(currentRevision(withAlternatives).commit_oid === alternateBase.commit_oid, 'alternate siblings moved head before explicit choice')
+      const first = alternateTurn.candidates[0]
+      const second = alternateTurn.candidates[1]
+      result.animations.alternate_one = await screenshotPreview(session.sessionID, artifact.id, first.revision, 'ALTERNATE OPTION ONE')
+      result.animations.alternate_two = await screenshotPreview(session.sessionID, artifact.id, second.revision, 'ALTERNATE OPTION TWO')
+      assert(first.revision.commit_oid !== second.revision.commit_oid, 'alternate sibling candidates collapsed to one revision')
+      const chosen = await selectCandidateInStudio(session.sessionID, artifact.id, alternateTurn, second)
+      assert(currentRevision(chosen).commit_oid === second.revision.commit_oid, 'explicit alternate choice did not advance to the chosen sibling')
+      result.revisions.alternate_one = first.revision
+      result.revisions.alternate_two = second.revision
+      result.revisions.alternate_selected = currentRevision(chosen)
+      result.gates.alternate_sibling_choice = true
+    }
   }
   if (stage === 'targeted-part') {
     result.gates.targeted_part_candidate = true

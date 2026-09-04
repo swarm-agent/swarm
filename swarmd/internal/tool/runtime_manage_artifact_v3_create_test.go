@@ -24,9 +24,13 @@ type directArtifactV3RepoFake struct {
 func (f *directArtifactV3RepoFake) PrepareArtifactV3Turn(_ context.Context, request ArtifactV3PrepareTurnRequest) (ArtifactV3AuthorGrant, error) {
 	f.turns = append(f.turns, request)
 	index := len(f.turns)
+	candidateIndex := request.CandidateIndex
+	if candidateIndex < 1 {
+		candidateIndex = 1
+	}
 	return ArtifactV3AuthorGrant{
 		ID: fmt.Sprintf("direct-grant-%d", index), ArtifactID: "artifact-direct", OwnerSessionID: request.OwnerSessionID,
-		TurnID: fmt.Sprintf("turn-direct-%d", index), CandidateID: fmt.Sprintf("candidate-direct-%d", index), PolicyRevision: request.PolicyRevision,
+		TurnID: "turn-" + request.TaskCallID, CandidateID: "candidate-" + request.TaskCallID + "-" + fmt.Sprint(candidateIndex), PolicyRevision: request.PolicyRevision,
 		BaseCommitOID: request.BaseCommitOID, Initial: request.Initial, ExpiresAt: time.Now().Add(time.Hour).UnixMilli(),
 		AllowedActions: []string{artifactV3ActionInspect, artifactV3ActionList, artifactV3ActionRead, artifactV3ActionCreate, artifactV3ActionEdit, artifactV3ActionRename, artifactV3ActionDelete, artifactV3ActionDiff, artifactV3ActionBuild, artifactV3ActionFinish},
 	}, nil

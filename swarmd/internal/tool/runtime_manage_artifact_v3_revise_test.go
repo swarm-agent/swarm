@@ -54,6 +54,18 @@ func TestManageArtifactReviseV3CreatesExactBaseCandidateWithoutSelecting(t *test
 	if _, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, Call{CallID: "foreign", Name: "manage_artifact", Arguments: wrongSession}); err == nil || !strings.Contains(err.Error(), "current authenticated session") {
 		t.Fatalf("foreign session error=%v", err)
 	}
+	siblingHTML := strings.Replace(html, "Team $29", "ALTERNATE SIBLING — Team $29", 1)
+	siblingArgs, _ := json.Marshal(map[string]any{
+		"action": "revise_v3", "artifact_v3_reference": map[string]any{"session_id": "session-1", "artifact_id": "artifact-direct", "revision_ref": "revision-" + strings.Repeat("a", 40)},
+		"target_part_ids": []string{"pricing"}, "turn_key": "pricing-alternatives", "candidate_index": 2, "content": siblingHTML,
+	})
+	if _, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, Call{CallID: "sibling", Name: "manage_artifact", Arguments: string(siblingArgs)}); err != nil {
+		t.Fatal(err)
+	}
+	if len(repository.turns) < 3 || repository.turns[len(repository.turns)-1].TaskCallID != "direct-revise:pricing-alternatives" || repository.turns[len(repository.turns)-1].CandidateIndex != 2 || repository.turns[len(repository.turns)-1].BaseCommitOID != strings.Repeat("a", 40) || len(repository.selected) != 0 {
+		t.Fatalf("sibling turn=%#v selected=%#v", repository.turns, repository.selected)
+	}
+
 	missingPartHTML := strings.Replace(revisedHTML, `id="footer"`, `id="removed"`, 1)
 	missingPartPayload := map[string]any{
 		"action": "revise_v3", "artifact_v3_reference": map[string]any{"session_id": "session-1", "artifact_id": "artifact-direct", "revision_ref": "revision-" + strings.Repeat("a", 40)},

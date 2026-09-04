@@ -48,7 +48,7 @@ func (r *Runtime) reviseDirectArtifactV3HTML(ctx context.Context, scope Workspac
 	}
 	for key := range args {
 		switch key {
-		case "action", "artifact_v3_reference", "content", "target_part_ids":
+		case "action", "artifact_v3_reference", "content", "target_part_ids", "turn_key", "candidate_index":
 		default:
 			return nil, fmt.Errorf("manage_artifact revise_v3 contains unsupported field %q", key)
 		}
@@ -113,12 +113,20 @@ func (r *Runtime) reviseDirectArtifactV3HTML(ctx context.Context, scope Workspac
 	if producerRunID == "" {
 		return nil, errors.New("manage_artifact revise_v3 requires trusted provider run identity")
 	}
+	turnKey := strings.TrimSpace(asString(args["turn_key"]))
+	candidateIndex := asInt(args["candidate_index"], 1)
+	if turnKey == "" {
+		turnKey = strings.TrimSpace(callID)
+	}
+	if !validManagedArtifactStableID(turnKey) || candidateIndex < 1 || candidateIndex > 50 {
+		return nil, errors.New("manage_artifact revise_v3 requires a stable turn_key and candidate_index between 1 and 50")
+	}
 	baseCommit := strings.TrimPrefix(reference.RevisionRef, "revision-")
 	grant, err := r.artifactV3Author.PrepareTurn(ctx, ArtifactV3PrepareTurnRequest{
 		AccountScopeID: principal.AccountScopeID, UserID: principal.UserID, OwnerSessionID: principal.SessionID,
-		TaskCallID: "direct-revise:" + strings.TrimSpace(callID), Prompt: "Primary Swarm targeted Artifact V3 revision",
+		TaskCallID: "direct-revise:" + turnKey, Prompt: "Primary Swarm targeted Artifact V3 revision",
 		ArtifactID: reference.ArtifactID, BaseCommitOID: baseCommit, PolicyRevision: "direct-primary-html-v1",
-		CandidateIndex: 1, Initial: false, TargetPartIDs: requestedTargets, ExpiresAt: time.Now().Add(15 * time.Minute).UnixMilli(),
+		CandidateIndex: candidateIndex, Initial: false, TargetPartIDs: requestedTargets, ExpiresAt: time.Now().Add(15 * time.Minute).UnixMilli(),
 	})
 	if err != nil {
 		return nil, err
@@ -157,7 +165,7 @@ func (r *Runtime) reviseDirectArtifactV3HTML(ctx context.Context, scope Workspac
 	return map[string]any{
 		"status": "awaiting_selection", "artifact_id": grant.ArtifactID, "turn_id": grant.TurnID,
 		"candidate_id": grant.CandidateID, "base_revision_ref": reference.RevisionRef,
-		"target_part_ids": requestedTargets, "part_count": len(manifestParts), "parts": manifestParts,
+		"target_part_ids": requestedTargets, "turn_key": turnKey, "candidate_index": candidateIndex, "part_count": len(manifestParts), "parts": manifestParts,
 		"candidate":               map[string]any{"commit_oid": finished.Revision.CommitOID, "tree_oid": finished.Revision.TreeOID, "revision_ref": "revision-" + finished.Revision.CommitOID},
 		"media_inspect_reference": map[string]any{"session_id": principal.SessionID, "artifact_id": grant.ArtifactID, "revision_ref": "revision-" + finished.Revision.CommitOID},
 		"message":                 "The exact-base native Artifact V3 candidate is ready beside the unchanged selected head. Inspect this candidate; selection remains a separate explicit user action.",
