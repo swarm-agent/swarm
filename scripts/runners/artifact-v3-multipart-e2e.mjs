@@ -561,8 +561,9 @@ async function selectCandidateInStudio(sessionID, artifactID, turn, candidate) {
   const responsePromise = page.waitForResponse((response) => response.request().method() === 'POST' && new URL(response.url()).pathname === `${artifactRoute(sessionID, `/${encodeURIComponent(artifactID)}`)}/turns/${encodeURIComponent(turn.turn_id)}/select`, { timeout: 30000 })
   await select.click()
   const response = await responsePromise
-  assert(response.ok(), `Artifact Studio selection failed with HTTP ${response.status()}`)
-  const selected = await response.json()
+  const responseText = await response.text()
+  assert(response.ok(), `Artifact Studio selection failed with HTTP ${response.status()}: ${responseText.slice(0, 600)}`)
+  const selected = responseText ? JSON.parse(responseText) : {}
   const head = selected?.head
   assert(text(head?.commit_oid) === candidate.revision.commit_oid, 'Artifact Studio selected the wrong exact candidate commit')
   const timeoutAt = Math.min(deadline, Date.now() + 30000)
