@@ -28,6 +28,7 @@ const desktopPathOverride = String(option('--desktop-path', process.env.SWARM_RU
 const browserExecutable = String(option('--browser-executable', process.env.PLAYWRIGHT_BROWSER_EXECUTABLE || '')).trim()
 const timeoutMs = Number(option('--timeout-ms', process.env.SWARM_RUNNER_TIMEOUT_MS || '600000'))
 const preflight = flag('--preflight')
+const stage = String(option('--stage', 'full')).trim().toLowerCase()
 const headless = !flag('--headful')
 const suppliedToken = String(process.env.SWARM_RUNNER_TOKEN || '').trim()
 const testID = `artifact-v3-three-animated-parts-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`
@@ -36,7 +37,7 @@ const evidenceDir = path.resolve(option('--evidence-dir', path.join(tmpRoot, tes
 const deadline = Date.now() + timeoutMs
 const result = {
   result: 'NOT_DONE', test: 'artifact-v3-multipart-e2e', test_id: testID,
-  started_at: new Date().toISOString(), provider, model: {}, ids: {}, revisions: {},
+  started_at: new Date().toISOString(), provider, stage, model: {}, ids: {}, revisions: {},
   ui: {}, animations: {}, screenshots: [], realtime: {}, gates: {}, failures: [],
 }
 let token = suppliedToken
@@ -104,17 +105,17 @@ async function configureModels() {
   assert(providerStatus && providerStatus.runnable !== false, `provider ${provider} is not runnable through the synced testbench credential`)
   const records = (await api('GET', `/v1/model/catalog?provider=${encodeURIComponent(provider)}&limit=500`, undefined, 'read model catalog')).body?.records || []
   const action = modelAssignment(records, actionModel, actionThinking, 'Swarm action')
-  const designer = modelAssignment(records, designerModel, designerThinking, 'Designer')
+  const designer = stage === 'basic-html' ? null : modelAssignment(records, designerModel, designerThinking, 'Designer')
   const settings = (await api('GET', '/v1/agent-model-settings', undefined, 'read model settings')).body?.agent_model_settings || {}
   originalSwarmSettings = settings.swarm || null
   originalDesignerSettings = settings.system_agents?.designer || null
-  assert(originalSwarmSettings && originalDesignerSettings, 'canonical Swarm or Designer model setting is missing')
+  assert(originalSwarmSettings && (stage === 'basic-html' || originalDesignerSettings), 'canonical Swarm or Designer model setting is missing')
   modelSettingsChanged = true
   await api('PATCH', '/v1/agent-model-settings', { swarm: { action, plan: originalSwarmSettings.plan || action } }, 'configure Fireworks Swarm model')
-  await api('PATCH', '/v1/agent-model-settings', { system_agents: { designer } }, 'configure Fireworks Designer model')
+  if (designer) await api('PATCH', '/v1/agent-model-settings', { system_agents: { designer } }, 'configure Fireworks Designer model')
   const configured = (await api('GET', '/v1/agent-model-settings', undefined, 'verify model settings')).body?.agent_model_settings || {}
-  assert(configured?.swarm?.action?.model === action.model && configured?.system_agents?.designer?.model === designer.model, 'Fireworks model settings did not persist')
-  result.model = { action, designer }
+  assert(configured?.swarm?.action?.model === action.model && (!designer || configured?.system_agents?.designer?.model === designer.model), 'Fireworks model settings did not persist')
+  result.model = designer ? { action, designer } : { action }
   result.gates.provider_runnable = true
   result.gates.models_configured = true
   return action
@@ -123,7 +124,7 @@ async function configureModels() {
 async function restoreModels() {
   if (!modelSettingsChanged) return
   await api('PATCH', '/v1/agent-model-settings', { swarm: originalSwarmSettings }, 'restore Swarm model')
-  await api('PATCH', '/v1/agent-model-settings', { system_agents: { designer: originalDesignerSettings } }, 'restore Designer model')
+  if (stage !== 'basic-html') await api('PATCH', '/v1/agent-model-settings', { system_agents: { designer: originalDesignerSettings } }, 'restore Designer model')
   result.gates.models_restored = true
   modelSettingsChanged = false
 }
@@ -342,12 +343,44 @@ async function screenshotPreview(sessionID, artifactID, revision, expectedLabel 
   assert(previewPath.startsWith('/v3/sessions/') && previewPath.includes('/artifacts-v3/') && previewPath.includes('/preview/access/'), 'Artifact V3 preview access response is invalid')
   const previewPage = await context.newPage()
   await previewPage.goto(`${desktopURL}${previewPath}`, { waitUntil: 'networkidle', timeout: 60000 })
-  const sample = await animationSample(previewPage, expectedLabel)
+  const sample = stage === 'basic-html'
+    ? await staticVisualSample(previewPage)
+    : await animationSample(previewPage, expectedLabel)
   await previewPage.close()
   return sample
 }
 
+async function staticVisualSample(previewPage) {
+  for (const id of ['hero', 'pricing', 'footer']) await previewPage.locator(`#${id}`).waitFor({ state: 'visible', timeout: 30000 })
+  const sample = await previewPage.evaluate(() => {
+    const rows = ['hero', 'pricing', 'footer'].map((id) => {
+      const part = document.getElementById(id)
+      const rect = part?.getBoundingClientRect()
+      const style = part ? getComputedStyle(part) : null
+      return { id, text: part?.textContent?.trim() || '', rect: rect ? { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom } : null, color: style?.color || '', fontSize: style ? parseFloat(style.fontSize) : 0 }
+    })
+    return { rows, innerWidth, innerHeight, scrollWidth: document.documentElement.scrollWidth, scrollHeight: document.documentElement.scrollHeight, bodyText: document.body.innerText }
+  })
+  assert(sample.scrollWidth <= sample.innerWidth + 2 && sample.scrollHeight <= sample.innerHeight + 2, 'static complete preview has clipping/overflow beyond its viewport')
+  assert(sample.bodyText.includes('Team') && sample.bodyText.includes('$29'), 'static preview is missing the required Team $29 pricing choice')
+  for (const row of sample.rows) {
+    assert(row.text.length >= 8 && row.fontSize >= 12 && row.color && row.color !== 'rgba(0, 0, 0, 0)', `${row.id} static content is unreadable`)
+    assert(row.rect && row.rect.left >= -1 && row.rect.top >= -1 && row.rect.right <= sample.innerWidth + 1 && row.rect.bottom <= sample.innerHeight + 1, `${row.id} is clipped outside the static preview viewport`)
+  }
+  await screenshot(previewPage, 'basic-html-root-preview')
+  return sample
+}
+
 function initialPrompt() {
+  if (stage === 'basic-html') {
+    return [
+      'Create one polished static HTML artifact for a small software product page.',
+      'It must have three useful visible sections: a hero introducing the product, pricing with three readable choices including Team $29, and a footer with a short call to action.',
+      'Make the complete page responsive, readable at 1440x900, fully inside the viewport, and free of clipping, overlap, and scrollbars.',
+      'Use shared styling so this is one coherent artifact, and expose the three sections as useful stable parts that I can request changes to later.',
+      'Do not add animation, video, a storyboard, or multiple design alternatives yet.',
+    ].join(' ')
+  }
   return [
     `Create one provider-backed managed Artifact V3 browser project for checked-in E2E ${testID}.`,
     'Do not inspect or search the repository. This prompt is the complete authoritative brief.',
@@ -453,6 +486,7 @@ async function verifyStudioTurns(sessionID, artifactID, turn, candidate, rootRev
 async function runLive() {
   assert(apiURL && /^https?:\/\//.test(apiURL), '--api-url is required for the live journey')
   assert(desktopURL && /^https?:\/\//.test(desktopURL), '--desktop-url is invalid')
+  assert(['basic-html', 'full'].includes(stage), '--stage must be basic-html or full')
   assert(Number.isFinite(timeoutMs) && timeoutMs >= 300000 && timeoutMs <= 600000, '--timeout-ms must be between 300000 and 600000')
   await auth()
   const assignment = await configureModels()
@@ -483,11 +517,12 @@ async function runLive() {
   await page.locator('body').waitFor({ state: 'visible' })
 
   const childrenBefore = delegatedDesigners(await bootstrapSessions(), session.sessionID)
+  let initialSnapshot
   if (sessionOverride) {
-    await waitForRun(session.sessionID, initialRunOverride, 'initial-resume')
+    initialSnapshot = await waitForRun(session.sessionID, initialRunOverride, 'initial-resume')
   } else {
     assert(childrenBefore.length === 0, 'fresh journey session already has delegated Designer children')
-    await postTurn(session.sessionID, 'initial', initialPrompt())
+    initialSnapshot = await postTurn(session.sessionID, 'initial', initialPrompt())
   }
   const items = await catalog(session.sessionID)
   assert(items.length === 1, `initial request produced ${items.length} Artifact V3 projects instead of one`)
@@ -497,15 +532,37 @@ async function runLive() {
   assert(rootDetail.parts?.length === 3 && rootDetail.parts.map((part) => part.id).join(',') === 'hero,pricing,footer', 'root Artifact does not contain exactly hero, pricing, and footer')
   assert(rootDetail.head?.build?.status === 'succeeded' && rootDetail.head?.validation?.status === 'valid', 'root head lacks whole-project build/render evidence')
   const childrenAfterRoot = delegatedDesigners(await bootstrapSessions(), session.sessionID)
-  assert(childrenAfterRoot.length === 1, `initial turn launched ${childrenAfterRoot.length} Designers instead of exactly one`)
-  if (sessionOverride) assert(childrenBefore.length <= 1, `resumed initial turn already had ${childrenBefore.length} Designer children before completion`)
+  const expectedInitialDesigners = stage === 'basic-html' ? 0 : 1
+  assert(childrenAfterRoot.length === expectedInitialDesigners, `initial ${stage} turn launched ${childrenAfterRoot.length} Designers instead of exactly ${expectedInitialDesigners}`)
+  if (sessionOverride) assert(childrenBefore.length <= expectedInitialDesigners, `resumed initial turn already had ${childrenBefore.length} Designer children before completion`)
   result.ids.artifact_id = artifact.id
-  result.ids.initial_designer_session_id = text(childrenAfterRoot[0]?.id)
+  if (childrenAfterRoot[0]?.id) result.ids.initial_designer_session_id = text(childrenAfterRoot[0].id)
   result.revisions.root = rootRevision
   result.animations.root = await screenshotPreview(session.sessionID, artifact.id, rootRevision)
-  result.gates.one_initial_designer = true
-  result.gates.three_animated_parts = true
+  if (stage === 'basic-html') result.gates.no_designer_delegation = true
+  else result.gates.one_initial_designer = true
   result.gates.root_complete_preview = true
+  if (stage === 'basic-html') {
+    const studio = await openDesktopStudio(session.sessionID, artifact.id)
+    assert(await studio.locator('[data-artifact-v3-part-navigator] [data-artifact-v3-part]').count() === 3, 'Desktop basic HTML Part navigator does not show exactly three parts')
+    await screenshot(page, 'desktop-basic-html-artifact-studio')
+    const events = initialSnapshot.events_by_session?.[session.sessionID] || []
+    const artifactEvents = events.filter((event) => text(event?.event_type).startsWith('artifact.v3.'))
+    assert(artifactEvents.length >= 2 && !forbiddenLegacyWrite(artifactEvents), 'basic HTML durable replay lacks native Artifact V3 genesis events or contains legacy identity')
+    const records = await page.evaluate(() => window.__artifactV3Records || [])
+    const liveEvents = records.filter((record) => record.kind === 'message' && record.session_id === session.sessionID && record.event_type.startsWith('artifact.v3.'))
+    assert(liveEvents.some((record) => record.endpoint_cursor_present), 'Desktop observed no cursor-bearing Artifact V3 event for basic HTML')
+    result.realtime = { recorded: records.length, artifact_events: liveEvents.length, replay_events: artifactEvents.length }
+    result.gates.basic_html_root = true
+    result.gates.three_stable_parts = true
+    result.gates.desktop_discovery = true
+    result.gates.http_native_v3 = true
+    result.gates.realtime_native_v3 = true
+    result.gates.no_legacy_writes = true
+    result.result = 'PASS'
+    return
+  }
+  result.gates.three_animated_parts = true
 
   const followSnapshot = await submitSidebarIteration(session.sessionID, artifact.id, rootRevision)
   const withCandidate = await detail(session.sessionID, artifact.id)

@@ -78,12 +78,19 @@ func TestAllocateManagedDesignerArtifactV3InitialAndFollowup(t *testing.T) {
 		t.Fatalf("failures=%#v", coordinator.failures)
 	}
 
-	parsed, err := parseTaskCallArguments(`{"mode":"regular","prompt":"edit pricing","artifact_v3_source":{"session_id":"parent","artifact_id":"artifact-old","commit_oid":"commit-old","projection_seq":41,"target_part_ids":["pricing"]},"section_target":{"id":"pricing","label":"Pricing","kind":"semantic"},"subagent_type":"designer","meta_prompt":"edit","output_mode":"managed"}`)
+	parsed, err := parseTaskCallArguments(`{"mode":"regular","prompt":"edit pricing","artifact_v3_source":{"session_id":"parent","artifact_id":"artifact-old","commit_oid":"commit-old","projection_seq":41,"target_part_ids":["pricing"]},"section_target":{"id":"pricing","label":"Pricing","kind":"selector"},"subagent_type":"designer","meta_prompt":"edit","output_mode":"managed"}`)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if parsed.ArtifactV3Source == nil || parsed.ArtifactV3Source.SessionID != "parent" || parsed.ArtifactV3Source.CommitOID != "commit-old" || parsed.Launches[0].ArtifactV3Source == nil {
 		t.Fatalf("parsed=%#v", parsed)
+	}
+	if target, targetErr := parseTaskArtifactV3TargetHint(parsed.SourceArguments["section_target"]); targetErr != nil || target == nil || target.ID != "pricing" || target.Selector != "" {
+		t.Fatalf("Artifact V3 target hint was not accepted without duplicated selector: target=%#v err=%v", target, targetErr)
+	}
+	withoutHint, err := parseTaskCallArguments(`{"mode":"regular","prompt":"edit pricing","artifact_v3_source":{"session_id":"parent","artifact_id":"artifact-old","commit_oid":"commit-old","projection_seq":41,"target_part_ids":["pricing"]},"subagent_type":"designer","meta_prompt":"edit","output_mode":"managed"}`)
+	if err != nil || withoutHint.Launches[0].ArtifactV3Source == nil {
+		t.Fatalf("Artifact V3 source required redundant section_target: parsed=%#v err=%v", withoutHint, err)
 	}
 	manifestRow := taskLaunchManifestRow{ArtifactV3Source: cloneTaskArtifactV3Source(parsed.Launches[0].ArtifactV3Source)}
 	if manifestRow.ArtifactV3Source == nil || manifestRow.ArtifactV3Source.ProjectionSeq != 41 {

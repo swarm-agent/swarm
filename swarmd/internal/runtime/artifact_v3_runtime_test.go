@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -88,6 +89,14 @@ func TestArtifactV3RuntimeAdapterProductionPathAndRecovery(t *testing.T) {
 	}
 	if artifact.Head == nil || artifact.Head.CommitOID != finished.Revision.CommitOID || artifact.Head.Build == nil || artifact.Head.Build.Status != "succeeded" || artifact.Head.Validation == nil || artifact.Head.Validation.Status != "valid" {
 		t.Fatalf("artifact=%+v finish=%+v", artifact, finished)
+	}
+	followup := tool.ArtifactV3PrepareTurnRequest{AccountScopeID: "account", UserID: "user", OwnerSessionID: "artifact-v3-runtime", TaskCallID: "followup", ArtifactID: grant.ArtifactID, BaseCommitOID: artifact.Head.CommitOID, ProjectionSeq: artifact.Revision, PolicyRevision: "policy", CandidateIndex: 1, Initial: false, TargetPartIDs: []string{"hero"}, ExpiresAt: time.Now().Add(time.Hour).UnixMilli()}
+	if _, err := adapter.PrepareArtifactV3Turn(context.Background(), followup); err != nil {
+		t.Fatalf("valid manifest target was rejected: %v", err)
+	}
+	followup.TaskCallID, followup.TargetPartIDs = "unknown-target", []string{"missing"}
+	if _, err := adapter.PrepareArtifactV3Turn(context.Background(), followup); !errors.Is(err, pebblestore.ErrArtifactV3Invalid) {
+		t.Fatalf("unknown manifest target error=%v", err)
 	}
 	preview, err := adapter.OpenPreview(context.Background(), api.ArtifactV3Principal{AccountScopeID: "account", UserID: "user"}, "artifact-v3-runtime", grant.ArtifactID, artifact.Head.RevisionRef, "", "")
 	if err != nil || !strings.Contains(string(preview.Body), "Artifact V3") || !strings.Contains(string(preview.Body), "preview/files/styles/theme.css") {

@@ -651,7 +651,13 @@ func parseTaskCallArguments(arguments string) (taskCallArguments, error) {
 		if sourceArtifact == nil && (len(launches) == 0 || launches[0].ArtifactV3Source == nil) {
 			return taskCallArguments{}, errors.New("task regular section_targets requires an exact source_artifact or artifact_v3_source")
 		}
-		parsedTargets, err := parseTaskSwarmSectionTargets(rawSectionTargets)
+		var parsedTargets []*taskSwarmSectionTarget
+		var err error
+		if len(launches) != 0 && launches[0].ArtifactV3Source != nil {
+			parsedTargets, err = parseTaskArtifactV3TargetHints(rawSectionTargets)
+		} else {
+			parsedTargets, err = parseTaskSwarmSectionTargets(rawSectionTargets)
+		}
 		if err != nil {
 			return taskCallArguments{}, err
 		}
@@ -667,7 +673,13 @@ func parseTaskCallArguments(arguments string) (taskCallArguments, error) {
 		if sourceArtifact == nil && (len(launches) == 0 || launches[0].ArtifactV3Source == nil) {
 			return taskCallArguments{}, errors.New("task regular section_target requires an exact source_artifact or artifact_v3_source")
 		}
-		parsedSectionTarget, err := parseTaskSwarmSectionTarget(rawSectionTarget)
+		var parsedSectionTarget *taskSwarmSectionTarget
+		var err error
+		if len(launches) != 0 && launches[0].ArtifactV3Source != nil {
+			parsedSectionTarget, err = parseTaskArtifactV3TargetHint(rawSectionTarget)
+		} else {
+			parsedSectionTarget, err = parseTaskSwarmSectionTarget(rawSectionTarget)
+		}
 		if err != nil {
 			return taskCallArguments{}, err
 		}
@@ -696,9 +708,17 @@ func parseTaskCallArguments(arguments string) (taskCallArguments, error) {
 				}
 			}
 		}
-		for _, target := range launches[0].ArtifactV3Source.TargetPartIDs {
-			if !declared[target] {
-				return taskCallArguments{}, fmt.Errorf("task artifact_v3_source target %q is not declared in section_target(s)", target)
+		// artifact_v3_source.target_part_ids is the authoritative target set.
+		// Optional section_target(s) carry display intent only; when present they
+		// must agree, but callers do not need to reproduce manifest locators.
+		if len(declared) != 0 {
+			for _, target := range launches[0].ArtifactV3Source.TargetPartIDs {
+				if !declared[target] {
+					return taskCallArguments{}, fmt.Errorf("task artifact_v3_source target %q does not match section_target(s)", target)
+				}
+			}
+			if len(declared) != len(uniqueNonEmptyStrings(launches[0].ArtifactV3Source.TargetPartIDs)) {
+				return taskCallArguments{}, errors.New("task Artifact V3 section_target(s) do not match target_part_ids")
 			}
 		}
 	}
@@ -1442,6 +1462,79 @@ func cloneTaskSwarmSectionTarget(input *taskSwarmSectionTarget) *taskSwarmSectio
 	}
 	cloned := *input
 	return &cloned
+}
+
+// Artifact V3 source identity already carries the server-authenticated target
+// Part IDs. A model-authored section_target is only a display/intent hint; it
+// must not redundantly reproduce selector/state/page/spatial locator details.
+// The coordinator validates every ID against the exact Git manifest before a
+// Designer is allocated.
+func parseTaskArtifactV3TargetHint(value any) (*taskSwarmSectionTarget, error) {
+	if value == nil {
+		return nil, nil
+	}
+	if normalized, ok := value.(*taskSwarmSectionTarget); ok {
+		return cloneTaskSwarmSectionTarget(normalized), nil
+	}
+	if normalized, ok := value.(taskSwarmSectionTarget); ok {
+		return cloneTaskSwarmSectionTarget(&normalized), nil
+	}
+	raw, ok := value.(map[string]any)
+	if !ok {
+		return nil, errors.New("task Artifact V3 section_target must be an object")
+	}
+	for key := range raw {
+		switch key {
+		case "id", "label", "kind", "description", "start_ms", "end_ms", "x", "y", "width", "height", "page", "state_id", "selector":
+		default:
+			return nil, fmt.Errorf("task Artifact V3 section_target contains unsupported field %q", key)
+		}
+	}
+	encoded, err := json.Marshal(raw)
+	if err != nil {
+		return nil, errors.New("task Artifact V3 section_target must be an object")
+	}
+	var target taskSwarmSectionTarget
+	if err := json.Unmarshal(encoded, &target); err != nil {
+		return nil, fmt.Errorf("task Artifact V3 section_target is invalid: %w", err)
+	}
+	target.ID = strings.TrimSpace(target.ID)
+	target.Label = strings.TrimSpace(target.Label)
+	target.Kind = strings.ToLower(strings.TrimSpace(target.Kind))
+	target.Description = strings.TrimSpace(target.Description)
+	if target.ID == "" || target.Label == "" {
+		return nil, errors.New("task Artifact V3 section_target requires id and label")
+	}
+	if target.Kind == "" {
+		target.Kind = "semantic"
+	}
+	switch target.Kind {
+	case "temporal", "spatial", "page", "state", "selector", "semantic", "file":
+	default:
+		return nil, errors.New("task Artifact V3 section_target kind is invalid")
+	}
+	return &target, nil
+}
+
+func parseTaskArtifactV3TargetHints(value any) ([]*taskSwarmSectionTarget, error) {
+	raw, ok := value.([]any)
+	if !ok || len(raw) == 0 || len(raw) > pebblestore.SessionArtifactMaxParts {
+		return nil, errors.New("task Artifact V3 section_targets must be a non-empty bounded array")
+	}
+	out := make([]*taskSwarmSectionTarget, 0, len(raw))
+	seen := map[string]struct{}{}
+	for _, item := range raw {
+		target, err := parseTaskArtifactV3TargetHint(item)
+		if err != nil {
+			return nil, err
+		}
+		if _, duplicate := seen[target.ID]; duplicate {
+			return nil, fmt.Errorf("task Artifact V3 section_targets contains duplicate id %q", target.ID)
+		}
+		seen[target.ID] = struct{}{}
+		out = append(out, target)
+	}
+	return out, nil
 }
 
 func parseTaskSwarmSectionTarget(value any) (*taskSwarmSectionTarget, error) {

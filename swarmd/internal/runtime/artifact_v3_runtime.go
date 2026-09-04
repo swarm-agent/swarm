@@ -108,6 +108,21 @@ func (a *artifactV3RuntimeAdapter) PrepareArtifactV3Turn(ctx context.Context, re
 		if err != nil || !ok || repository.OwnerSessionID != owner.SessionID || repository.HeadCommitOID != strings.TrimSpace(request.BaseCommitOID) || (request.ProjectionSeq != 0 && repository.EventSeq != request.ProjectionSeq) {
 			return tool.ArtifactV3AuthorGrant{}, pebblestore.ErrArtifactV3Conflict
 		}
+		if len(request.TargetPartIDs) != 0 {
+			revision, revisionOK, revisionErr := a.sessions.GetArtifactV3Revision(owner.AccountScopeID, owner.UserID, artifactID, repository.HeadCommitOID)
+			if revisionErr != nil || !revisionOK {
+				return tool.ArtifactV3AuthorGrant{}, pebblestore.ErrArtifactV3Integrity
+			}
+			declared := make(map[string]bool, len(revision.Parts))
+			for _, part := range revision.Parts {
+				declared[strings.TrimSpace(part.ID)] = true
+			}
+			for _, targetID := range canonicalStrings(request.TargetPartIDs) {
+				if !declared[targetID] {
+					return tool.ArtifactV3AuthorGrant{}, pebblestore.ErrArtifactV3Invalid
+				}
+			}
+		}
 	}
 	turnID := artifactV3StableID("turn", artifactID, request.TaskCallID)
 	candidateID := artifactV3StableID("candidate", turnID, fmt.Sprint(request.CandidateIndex))
