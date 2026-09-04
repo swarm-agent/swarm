@@ -75,10 +75,17 @@ func TestOnboardingWorkspaceSubmitRevalidatesStaleReadiness(t *testing.T) {
 
 	event := tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone)
 	app.refreshOnboardingWorkspaceGitReadinessBeforeSubmit(event)
+	// Reproduce a final stale reload after the synchronous local recheck. An
+	// inconclusive client status must still reach the daemon's canonical
+	// repository-admission boundary.
+	staleModel := app.homeModel
+	staleModel.WorkspaceSetupGitReadiness = model.GitReadinessUnknown
+	staleModel.WorkspaceSetupHasGit = false
+	app.home.SetModel(staleModel)
 	app.home.HandleKey(event)
 
 	if app.homeModel.WorkspaceSetupGitReadiness != model.GitReadinessReady || !app.homeModel.WorkspaceSetupHasGit {
-		t.Fatalf("submit-time readiness = %q, hasGit=%v", app.homeModel.WorkspaceSetupGitReadiness, app.homeModel.WorkspaceSetupHasGit)
+		t.Fatalf("submit-time app readiness = %q, hasGit=%v", app.homeModel.WorkspaceSetupGitReadiness, app.homeModel.WorkspaceSetupHasGit)
 	}
 	action, ok := home.PopHomeAction()
 	if !ok || action.Kind != ui.HomeActionCreateOnboardingWorkspace || action.WorkspacePath != repo {

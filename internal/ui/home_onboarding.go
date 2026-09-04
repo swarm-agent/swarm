@@ -257,7 +257,13 @@ func (p *HomePage) handleOnboardingWorkspaceKey(ev *tcell.EventKey) {
 		p.onboarding.Error = "The launch directory is unavailable; restart Swarm from the workspace you want to use."
 		return
 	}
-	if p.model.WorkspaceSetupGitReadiness != model.GitReadinessReady {
+	switch p.model.WorkspaceSetupGitReadiness {
+	case model.GitReadinessReady, model.GitReadinessUnknown, model.GitReadinessCheckFailed:
+		// Local readiness is advisory at this boundary. The authenticated
+		// workspace-add API revalidates the exact repository before any catalog,
+		// topology, selection, or session state can be mutated. Let an
+		// indeterminate client-side check reach that canonical admission gate.
+	default:
 		p.onboarding.Error = onboardingGitPrerequisiteMessage(p.model.WorkspaceSetupGitReadiness, path)
 		return
 	}

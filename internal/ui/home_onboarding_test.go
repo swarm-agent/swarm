@@ -71,6 +71,24 @@ func TestOnboardingWorkspaceRejectsRepositoryWithoutInitialCommit(t *testing.T) 
 	}
 }
 
+// Requirement: an inconclusive TUI-local Git check must reach the authenticated
+// workspace-add admission gate, which revalidates the exact path before mutation.
+// Threat: namespace or ownership constraints can make client-side Git return an
+// indeterminate status for a repository the daemon can validate, permanently
+// blocking first-run onboarding before the canonical authority is consulted.
+func TestOnboardingWorkspaceIndeterminateReadinessQueuesCanonicalAdmission(t *testing.T) {
+	for _, readiness := range []model.GitReadiness{model.GitReadinessUnknown, model.GitReadinessCheckFailed} {
+		page := readyOnboardingPage()
+		page.model.WorkspaceSetupGitReadiness = readiness
+		page.ShowOnboardingWorkspace("Confirm workspace")
+		page.HandleKey(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
+		action, ok := page.PopHomeAction()
+		if !ok || action.Kind != HomeActionCreateOnboardingWorkspace || action.WorkspacePath != "/repo/project" {
+			t.Fatalf("readiness %q action = %+v, ok=%v", readiness, action, ok)
+		}
+	}
+}
+
 func TestOnboardingWorkspaceEnterQueuesLaunchCWDAndLocksPending(t *testing.T) {
 	page := readyOnboardingPage()
 	page.ShowOnboardingWorkspace("Confirm workspace")
