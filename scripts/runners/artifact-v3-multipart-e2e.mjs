@@ -256,6 +256,16 @@ async function detail(sessionID, artifactID) {
   return artifact
 }
 
+async function waitForTargetedTurn(sessionID, artifactID, baseCommit) {
+  const timeoutAt = Math.min(deadline, Date.now() + 30000)
+  while (Date.now() < timeoutAt) {
+    const artifact = await detail(sessionID, artifactID)
+    if ((artifact.turns || []).some((turn) => turn?.base_commit_oid === baseCommit && turn?.status === 'awaiting_selection')) return artifact
+    await sleep(500)
+  }
+  return detail(sessionID, artifactID)
+}
+
 function currentRevision(artifact) {
   const revision = artifact?.head || artifact?.current_revision
   assert(revision?.commit_oid && revision?.tree_oid && revision?.revision_ref, 'artifact has no exact whole-project head')
@@ -631,7 +641,7 @@ async function runLive() {
   if (!noDesignerStage) result.gates.three_animated_parts = true
 
   const followSnapshot = await submitSidebarIteration(session.sessionID, artifact.id, rootRevision)
-  const withCandidate = await detail(session.sessionID, artifact.id)
+  const withCandidate = await waitForTargetedTurn(session.sessionID, artifact.id, rootRevision.commit_oid)
   assert(currentRevision(withCandidate).commit_oid === rootRevision.commit_oid, 'candidate generation moved the head before user selection')
   assert((withCandidate.turns || []).length === 2, `Artifact has ${(withCandidate.turns || []).length} turns instead of initial plus follow-up`)
   const { turn, candidate } = targetedTurn(withCandidate, rootRevision)
