@@ -544,10 +544,7 @@ async function createSiblingAlternatives(sessionID, artifactID, baseRevision) {
   while (Date.now() < timeoutAt) {
     const artifact = await detail(sessionID, artifactID)
     const turn = [...(artifact.turns || [])].reverse().find((item) => item.base_commit_oid === baseRevision.commit_oid && item.status === 'awaiting_selection' && item.candidates?.length === 2)
-    if (turn) {
-      turn.candidates.sort((a, b) => Number(a?.candidate_index || 0) - Number(b?.candidate_index || 0) || Number(a?.created_at || 0) - Number(b?.created_at || 0))
-      return { artifact, turn }
-    }
+    if (turn) return { artifact, turn }
     await sleep(500)
   }
   const artifact = await detail(sessionID, artifactID)
