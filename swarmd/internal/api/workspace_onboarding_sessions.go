@@ -226,8 +226,8 @@ func writeWorkspaceOnboardingError(w http.ResponseWriter, repository workspace.R
 
 func workspaceOnboardingRequestHash(principal identity.Principal, req workspaceOnboardingSessionStartRequest, canonicalPath string) (string, error) {
 	raw, err := json.Marshal(struct {
-		AccountScopeID, UserID, ClientRequestID, Input, Path, ExpectedResolvedPath string
-	}{principal.AccountScopeID, principal.UserID, req.ClientRequestID, req.Input, canonicalPath, canonicalPath})
+		AccountScopeID, UserID, ClientRequestID, Input, Path string
+	}{principal.AccountScopeID, principal.UserID, req.ClientRequestID, req.Input, canonicalPath})
 	if err != nil {
 		return "", err
 	}
