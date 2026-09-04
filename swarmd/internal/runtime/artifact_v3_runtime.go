@@ -895,8 +895,14 @@ func (b *artifactV3VideoBridge) ReadVideoReference(ctx context.Context, accountS
 }
 
 func (b *artifactV3VideoBridge) ConvertToPendingProposal(ctx context.Context, principal identity.Principal, input tool.ArtifactV3VideoConversionInput) (pebblestore.VideoEditProposalSnapshot, error) {
+	if ctx == nil {
+		return pebblestore.VideoEditProposalSnapshot{}, errors.New("artifact v3 video conversion requires context")
+	}
 	if b == nil || b.artifacts == nil || b.service == nil || b.projects == nil || !principal.Valid() {
 		return pebblestore.VideoEditProposalSnapshot{}, errors.New("artifact v3 video conversion authority is unavailable")
+	}
+	if err := ctx.Err(); err != nil {
+		return pebblestore.VideoEditProposalSnapshot{}, err
 	}
 	input.VideoSessionID, input.ProjectID, input.BaseRevisionID = strings.TrimSpace(input.VideoSessionID), strings.TrimSpace(input.ProjectID), strings.TrimSpace(input.BaseRevisionID)
 	input.ArtifactSessionID, input.ArtifactID, input.RevisionRef = strings.TrimSpace(input.ArtifactSessionID), strings.TrimSpace(input.ArtifactID), strings.TrimSpace(input.RevisionRef)
@@ -905,8 +911,12 @@ func (b *artifactV3VideoBridge) ConvertToPendingProposal(ctx context.Context, pr
 		return pebblestore.VideoEditProposalSnapshot{}, errors.New("artifact v3 video conversion requires project base and exact source revision")
 	}
 	project, ok, err := b.projects.GetProject(principal, input.VideoSessionID, input.ProjectID)
-	if err != nil || !ok || project.CurrentRevisionID != input.BaseRevisionID {
+	if err != nil || !ok || project.SessionID != input.VideoSessionID || project.CurrentRevisionID != input.BaseRevisionID {
 		return pebblestore.VideoEditProposalSnapshot{}, errors.New("artifact v3 video conversion project base is stale or unavailable")
+	}
+	baseRevision, ok, err := b.projects.GetRevision(principal, input.VideoSessionID, input.ProjectID, input.BaseRevisionID)
+	if err != nil || !ok || baseRevision.ProjectID != project.ID || baseRevision.SessionID != input.VideoSessionID {
+		return pebblestore.VideoEditProposalSnapshot{}, errors.New("artifact v3 video conversion project base revision is unavailable")
 	}
 	selection, err := b.artifacts.videoSelection(principal, input.ArtifactSessionID, input.ArtifactID, input.RevisionRef)
 	if err != nil {
@@ -914,6 +924,9 @@ func (b *artifactV3VideoBridge) ConvertToPendingProposal(ctx context.Context, pr
 	}
 	conversion, err := b.service.Convert(ctx, principal.AccountScopeID, selection)
 	if err != nil {
+		return pebblestore.VideoEditProposalSnapshot{}, err
+	}
+	if err := ctx.Err(); err != nil {
 		return pebblestore.VideoEditProposalSnapshot{}, err
 	}
 	proposalID := artifactV3StableID("videopropv3", input.VideoSessionID, input.ProjectID, input.BaseRevisionID, input.ArtifactSessionID, input.ArtifactID, input.RevisionRef, input.RequestID)
@@ -1016,16 +1029,23 @@ func (r artifactV3AnimationRenderer) Preflight(ctx context.Context, input artifa
 	return err
 }
 
-func (r artifactV3AnimationRenderer) Render(ctx context.Context, input artifactv3video.RenderRequest) ([]byte, []byte, error) {
+func (r artifactV3AnimationRenderer) Render(ctx context.Context, input artifactv3video.RenderRequest) (artifactv3video.RenderResult, error) {
 	request, err := r.request(input)
 	if err != nil {
-		return nil, nil, err
+		return artifactv3video.RenderResult{}, err
 	}
 	result, err := r.renderer.RenderAnimation(ctx, request)
 	if err != nil {
-		return nil, nil, err
+		return artifactv3video.RenderResult{}, err
 	}
-	return result.PreviewPNG, result.MP4, nil
+	if result.DurationMS <= 0 || result.FPS <= 0 || result.FrameCount <= 0 {
+		return artifactv3video.RenderResult{}, errors.New("Artifact V3 animation renderer returned incomplete timing evidence")
+	}
+	expectedFrames := int((int64(result.DurationMS)*int64(result.FPS) + 999) / 1000)
+	if result.FrameCount != expectedFrames {
+		return artifactv3video.RenderResult{}, errors.New("Artifact V3 animation renderer frame count does not match duration/fps")
+	}
+	return artifactv3video.RenderResult{FallbackPNG: result.PreviewPNG, SilentMP4: result.MP4, DurationMs: int64(result.DurationMS), FPS: float64(result.FPS)}, nil
 }
 
 func injectArtifactV3AnimationAdapter(body []byte, durationMs int64, fps int) []byte {
@@ -1059,7 +1079,13 @@ func newArtifactV3DerivativeStore(root string) (*artifactV3DerivativeStore, erro
 
 // PutAtomic publishes one immutable two-file directory by rename. Any failure
 // removes staging and leaves no visible partial derivative set.
-func (s *artifactV3DerivativeStore) PutAtomic(_ context.Context, sessionID, artifactID string, derivatives []artifactv3video.Derivative) error {
+func (s *artifactV3DerivativeStore) PutAtomic(ctx context.Context, sessionID, artifactID string, derivatives []artifactv3video.Derivative) error {
+	if ctx == nil {
+		return errors.New("Artifact V3 derivative publication requires context")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if s == nil || strings.TrimSpace(sessionID) == "" || strings.TrimSpace(artifactID) == "" || len(derivatives) != 2 {
 		return errors.New("Artifact V3 derivative publication requires source identity and exactly two outputs")
 	}
@@ -1079,6 +1105,9 @@ func (s *artifactV3DerivativeStore) PutAtomic(_ context.Context, sessionID, arti
 		return err
 	}
 	if info, err := os.Lstat(final); err == nil {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
 			return errors.New("Artifact V3 derivative set is not a private directory")
 		}
@@ -1087,6 +1116,9 @@ func (s *artifactV3DerivativeStore) PutAtomic(_ context.Context, sessionID, arti
 			return errors.New("existing Artifact V3 derivative set is incomplete")
 		}
 		for _, derivative := range derivatives {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			body, readErr := os.ReadFile(filepath.Join(final, derivative.ID))
 			if readErr != nil || sha256Hex(body) != derivative.DigestSHA256 {
 				return errors.New("existing Artifact V3 derivative set failed integrity validation")
@@ -1112,10 +1144,19 @@ func (s *artifactV3DerivativeStore) PutAtomic(_ context.Context, sessionID, arti
 	if err := os.WriteFile(filepath.Join(stage, "complete"), []byte(strings.Join(ids, "\n")+"\n"), 0o600); err != nil {
 		return err
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	return os.Rename(stage, final)
 }
 
-func (s *artifactV3DerivativeStore) Read(_ context.Context, sessionID, artifactID, derivativeID string) ([]byte, error) {
+func (s *artifactV3DerivativeStore) Read(ctx context.Context, sessionID, artifactID, derivativeID string) ([]byte, error) {
+	if ctx == nil {
+		return nil, errors.New("Artifact V3 derivative read requires context")
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if s == nil || !validArtifactV3DerivativeID(derivativeID) {
 		return nil, errors.New("Artifact V3 derivative identity is invalid")
 	}
@@ -1125,6 +1166,9 @@ func (s *artifactV3DerivativeStore) Read(_ context.Context, sessionID, artifactI
 		return nil, err
 	}
 	for _, entry := range entries {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		if !entry.IsDir() || strings.HasPrefix(entry.Name(), ".") {
 			continue
 		}
@@ -1136,7 +1180,14 @@ func (s *artifactV3DerivativeStore) Read(_ context.Context, sessionID, artifactI
 		path := filepath.Join(setRoot, derivativeID)
 		info, statErr := os.Lstat(path)
 		if statErr == nil && info.Mode().IsRegular() && info.Mode()&os.ModeSymlink == 0 {
-			return os.ReadFile(path)
+			body, readErr := os.ReadFile(path)
+			if readErr != nil {
+				return nil, readErr
+			}
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+			return body, nil
 		}
 		if statErr != nil && !errors.Is(statErr, os.ErrNotExist) {
 			return nil, statErr

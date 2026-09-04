@@ -33,7 +33,8 @@ const preflight = flag('--preflight')
 const stage = String(option('--stage', 'full')).trim().toLowerCase()
 const alternateResumeStage = stage === 'alternate-choice-resume'
 const animationStage = stage === 'animated-parts'
-const noDesignerStage = stage === 'basic-html' || stage === 'targeted-part' || stage === 'selected-continuation' || stage === 'alternate-choice' || alternateResumeStage || animationStage
+const videoConversionStage = stage === 'video-conversion'
+const noDesignerStage = stage === 'basic-html' || stage === 'targeted-part' || stage === 'selected-continuation' || stage === 'alternate-choice' || alternateResumeStage || animationStage || videoConversionStage
 const headless = !flag('--headful')
 const suppliedToken = String(process.env.SWARM_RUNNER_TOKEN || '').trim()
 const testID = `artifact-v3-three-animated-parts-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`
@@ -43,7 +44,7 @@ const deadline = Date.now() + timeoutMs
 const result = {
   result: 'NOT_DONE', test: 'artifact-v3-multipart-e2e', test_id: testID,
   started_at: new Date().toISOString(), provider, stage, model: {}, ids: {}, revisions: {},
-  ui: {}, animations: {}, screenshots: [], realtime: {}, gates: {}, failures: [],
+  ui: {}, animations: {}, video: {}, screenshots: [], realtime: {}, gates: {}, failures: [],
 }
 let token = suppliedToken
 let browser
@@ -393,7 +394,7 @@ async function screenshotPreview(sessionID, artifactID, revision, expectedLabel 
   assert(previewPath.startsWith('/v3/sessions/') && previewPath.includes('/artifacts-v3/') && previewPath.includes('/preview/access/'), 'Artifact V3 preview access response is invalid')
   const previewPage = await context.newPage()
   await previewPage.goto(`${desktopURL}${previewPath}`, { waitUntil: 'networkidle', timeout: 60000 })
-  const sample = animationStage || !noDesignerStage
+  const sample = animationStage || videoConversionStage || !noDesignerStage
     ? await animationSample(previewPage, revision.manifest?.parts || [], expectedLabel)
     : await staticVisualSample(previewPage, revision.manifest?.parts || [], expectedLabel, allowViewportFailure)
   await previewPage.close()
@@ -430,7 +431,7 @@ async function staticVisualSample(previewPage, parts, expectedLabel = '', allowV
 }
 
 function initialPrompt() {
-  if (animationStage) {
+  if (animationStage || videoConversionStage) {
     return [
       'Create one polished animated HTML artifact for a small software product page without delegating to any Designer, Coder, Finder, or task agent.',
       'It must have exactly three useful visible selector Parts with stable IDs hero, pricing, and footer. Pricing must show three readable choices including Team $29.',
@@ -751,17 +752,158 @@ async function runAlternateChoiceResume(sessionID) {
   log('JOURNEY alternate-choice-resume PASS')
 }
 
+function collectStructuredValues(value, output = []) {
+  if (value == null) return output
+  if (typeof value === 'string') {
+    const candidate = value.trim()
+    if ((candidate.startsWith('{') || candidate.startsWith('[')) && candidate.length <= 2_000_000) {
+      try { collectStructuredValues(JSON.parse(candidate), output) } catch { /* ordinary prose or partial streamed JSON */ }
+    }
+    return output
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) collectStructuredValues(item, output)
+    return output
+  }
+  if (typeof value === 'object') {
+    output.push(value)
+    for (const item of Object.values(value)) collectStructuredValues(item, output)
+  }
+  return output
+}
+
+function nativeV3ProposalEvidence(snapshot) {
+  const objects = collectStructuredValues(snapshot)
+  const wrappers = objects.filter((item) => text(item?.action) === 'convert_artifact_v3' && text(item?.proposal?.intent) === 'artifact_v3_conversion' && text(item?.proposal?.status) === 'pending')
+  const direct = objects.filter((item) => text(item?.intent) === 'artifact_v3_conversion' && text(item?.status) === 'pending' && item?.plan).map((proposal) => ({ proposal }))
+  const byID = new Map()
+  for (const evidence of direct) {
+    if (evidence.proposal?.id) byID.set(evidence.proposal.id, evidence)
+  }
+  for (const evidence of wrappers) {
+    if (evidence.proposal?.id) byID.set(evidence.proposal.id, evidence)
+  }
+  return [...byID.values()]
+}
+
+function assertNativeV3VideoReference(ref, source, mediaType, derivative) {
+  assert(ref && text(ref.media_type) === mediaType, `native V3 ${mediaType} reference is missing`)
+  for (const key of ['session_id', 'artifact_id', 'revision_id', 'commit_oid', 'tree_oid', 'manifest_digest_sha256', 'build_id', 'validation_id', 'event_seq', 'duration_ms', 'fps', 'animation_profile']) {
+    assert(String(ref[key] ?? '') === String(source[key] ?? ''), `native V3 ${mediaType} reference drifted at ${key}`)
+  }
+  assert(Boolean(text(ref.derivative_id)) === derivative, `native V3 ${mediaType} derivative identity is invalid`)
+  assert(/^[a-f0-9]{40}$/i.test(text(ref.commit_oid)) && /^[a-f0-9]{40}$/i.test(text(ref.tree_oid)), `native V3 ${mediaType} Git OIDs are invalid`)
+  assert(/^[a-f0-9]{64}$/i.test(text(ref.manifest_digest_sha256)) && /^[a-f0-9]{64}$/i.test(text(ref.digest_sha256)), `native V3 ${mediaType} digest is invalid`)
+}
+
+function assertValidPNG(bytes, label) {
+  const signature = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])
+  assert(bytes.length > signature.length && bytes.subarray(0, signature.length).equals(signature), `${label} is not a PNG container`)
+}
+
+function assertValidMP4(bytes, label) {
+  assert(bytes.length >= 12 && bytes.subarray(4, 8).toString('ascii') === 'ftyp', `${label} is not an MP4/ISO BMFF container`)
+}
+
+async function runVideoConversion(sessionID) {
+  const items = await catalog(sessionID)
+  const artifact = artifactOverride ? items.find((item) => text(item?.id) === artifactOverride) : items.length === 1 ? items[0] : null
+  assert(artifact?.id, `video-conversion requires --artifact-id when the session has ${items.length} artifacts`)
+  const before = await detail(sessionID, artifact.id)
+  const head = currentRevision(before)
+  assert(head.build?.status === 'succeeded' && head.validation?.status === 'valid', 'video-conversion source head lacks successful build/validation evidence')
+  const beforeArtifactReplay = (await replayEvents(sessionID)).filter((event) => text(event?.event_type).startsWith('artifact.v3.')).map((event) => `${event.seq}:${event.event_type}`)
+  result.ids.artifact_id = artifact.id
+  result.revisions.video_source = head
+  result.animations.video_source = await screenshotPreview(sessionID, artifact.id, head)
+  gate('video-source-pixels', 'PASS', 'three animated Parts inspected before conversion')
+  let snapshot = await hydrate(sessionID)
+  let proposalEvidence = nativeV3ProposalEvidence(snapshot).filter((item) => {
+    const parts = item.proposal?.plan?.parts
+    const source = Array.isArray(parts) && parts.length === 1 ? parts[0]?.artifact_v3_source : null
+    return text(source?.session_id) === sessionID && text(source?.artifact_id) === artifact.id && text(source?.revision_id) === head.revision_ref
+  })
+  assert(proposalEvidence.length <= 1, `video-conversion resume found ${proposalEvidence.length} pending native V3 proposals instead of at most one`)
+  if (proposalEvidence.length === 0) {
+    await postTurn(sessionID, 'video-conversion', [
+      'Convert the exact already-selected animated Artifact V3 head to one pending Video Studio proposal without delegating to any agent.',
+      `The exact native source is artifact_v3_session_id=${sessionID}, artifact_v3_artifact_id=${artifact.id}, artifact_v3_revision_ref=${head.revision_ref}.`,
+      'Call manage_video create_project once without initial_timeline, then call only manage_video convert_artifact_v3 with the returned exact project_id and base revision_id plus that exact source identity.',
+      'Do not call convert_artifact_v2, propose_plan, create_edit_proposal, select_animation_candidate, promote_animation_derivative, start_render, task, or any Artifact V1/V2 action. Report the pending proposal and exact native V3 source, fallback PNG, and MP4 references.',
+    ].join(' '))
+    snapshot = await hydrate(sessionID)
+    proposalEvidence = nativeV3ProposalEvidence(snapshot).filter((item) => {
+      const parts = item.proposal?.plan?.parts
+      const source = Array.isArray(parts) && parts.length === 1 ? parts[0]?.artifact_v3_source : null
+      return text(source?.session_id) === sessionID && text(source?.artifact_id) === artifact.id && text(source?.revision_id) === head.revision_ref
+    })
+  } else {
+    log('OBSERVE reusing the one existing pending native V3 conversion after a prior harness interruption')
+  }
+  assert(proposalEvidence.length === 1, `durable hydrate exposed ${proposalEvidence.length} pending native V3 proposals instead of one`)
+  const evidence = proposalEvidence[0]
+  const proposal = evidence.proposal
+  assert(proposal?.id && proposal?.project_id && proposal?.working_revision_id && proposal?.base_revision_id && !proposal?.accepted_revision_id, 'durable hydrate did not expose one unaccepted pending native V3 proposal')
+  assert(Array.isArray(proposal.plan?.parts) && proposal.plan.parts.length === 1, 'native V3 conversion did not create exactly one server-owned video Part')
+  const part = proposal.plan.parts[0]
+  const source = part.artifact_v3_source
+  const fallback = part.artifact_v3_still
+  const mp4 = part.artifact_v3_visual
+  result.video = { proposal_id: proposal.id, project_id: proposal.project_id, base_revision_id: proposal.base_revision_id, working_revision_id: proposal.working_revision_id, source, fallback, mp4, duration_ms: part.duration_ms }
+  assertNativeV3VideoReference(source, source, 'text/html', false)
+  assert(text(source.session_id) === sessionID && text(source.artifact_id) === artifact.id && text(source.revision_id) === head.revision_ref && text(source.commit_oid) === head.commit_oid && text(source.tree_oid) === head.tree_oid && text(source.build_id) === text(head.build?.id) && text(source.validation_id) === text(head.validation?.id), 'pending proposal source is not the exact selected V3 head and evidence')
+  assertNativeV3VideoReference(fallback, source, 'image/png', true)
+  assertNativeV3VideoReference(mp4, source, 'video/mp4', true)
+  assert(text(fallback.derivative_id) !== text(mp4.derivative_id), 'fallback PNG and MP4 collapsed to one derivative')
+  assert(text(evidence.derivative_evidence) === 'digest_verified_container_prefix', 'conversion evidence did not declare its bounded digest verification contract')
+  const structured = collectStructuredValues(evidence)
+  const byteRecordFor = (ref) => structured.find((item) => text(item?.derivative_id) === text(ref.derivative_id) && text(item?.digest_sha256) === text(ref.digest_sha256) && typeof item?.container_prefix_base64 === 'string')
+  const fallbackRecord = byteRecordFor(fallback)
+  const mp4Record = byteRecordFor(mp4)
+  assert(fallbackRecord && mp4Record && structured.filter((item) => typeof item?.container_prefix_base64 === 'string').length === 2, 'conversion evidence did not expose exactly one fallback PNG and one MP4 container record')
+  const fallbackPrefix = Buffer.from(fallbackRecord.container_prefix_base64, 'base64')
+  const mp4Prefix = Buffer.from(mp4Record.container_prefix_base64, 'base64')
+  assertValidPNG(fallbackPrefix, 'native V3 fallback')
+  assertValidMP4(mp4Prefix, 'native V3 derivative')
+  assert(Number(fallbackRecord.size_bytes) >= fallbackPrefix.length && Number(mp4Record.size_bytes) >= mp4Prefix.length, 'derivative size evidence is inconsistent')
+  result.video.derivative_evidence = { fallback_size_bytes: fallbackRecord.size_bytes, mp4_size_bytes: mp4Record.size_bytes, digests: [fallback.digest_sha256, mp4.digest_sha256], containers_verified: true }
+  assert(Number(part.duration_ms) === Number(source.duration_ms) && Number(part.source_start_ms) === 0 && Number(part.source_end_ms) === Number(source.duration_ms) && Number(source.duration_ms) > 0 && Number(source.duration_ms) <= 60000 && Number(source.fps) > 0 && Number(source.fps) <= 60, 'pending native V3 video timing is inconsistent')
+  assert(part.visual == null && part.storyboard_source == null && part.storyboard_still == null && part.artifact_v2_source == null && part.artifact_v2_still == null && part.artifact_v2_visual == null, 'pending native V3 proposal contains V1/V2 visual identity')
+  assert(part.animation_candidates?.status === 'ready' && Array.isArray(part.animation_candidates?.candidates) && part.animation_candidates.candidates.length === 1 && part.animation_candidates?.artifact_v3_selected_source && part.animation_candidates?.artifact_v3_derivative, 'pending native V3 proposal lost its sole selected HTML/MP4 animation authority')
+  assertNativeV3VideoReference(part.animation_candidates.artifact_v3_selected_source, source, 'text/html', false)
+  assertNativeV3VideoReference(part.animation_candidates.artifact_v3_derivative, source, 'video/mp4', true)
+  const after = await detail(sessionID, artifact.id)
+  assert(currentRevision(after).commit_oid === head.commit_oid && currentRevision(after).tree_oid === head.tree_oid && text(currentRevision(after).revision_ref) === text(head.revision_ref), 'video conversion mutated the selected Artifact V3 head')
+  assert((after.turns || []).length === (before.turns || []).length && (after.parts || []).length === (before.parts || []).length, 'video conversion mutated native Artifact turn/Part projection')
+  const afterReplay = await replayEvents(sessionID)
+  const artifactProjectionEvents = afterReplay.filter((event) => text(event?.event_type).startsWith('artifact.v3.'))
+  const afterArtifactReplay = artifactProjectionEvents.map((event) => `${event.seq}:${event.event_type}`)
+  assert(JSON.stringify(afterArtifactReplay) === JSON.stringify(beforeArtifactReplay) && !forbiddenLegacyWrite(afterReplay), 'video conversion changed native Artifact replay or emitted legacy identity')
+  const allSessions = await bootstrapSessions()
+  const children = delegatedDesigners(allSessions, sessionID)
+  const delegated = Object.values(allSessions.sessions_by_id || {}).filter((session) => text(session?.metadata?.parent_session_id) === sessionID && text(session?.metadata?.lineage_kind) === 'delegated_subagent')
+  assert(children.length === 0 && delegated.length === 0, `video conversion found ${delegated.length} delegated children (${children.length} Designers) instead of zero`)
+  gate('video-pending-proposal', 'PASS', `proposal=${proposal.id}`)
+  gate('video-native-v3-identity', 'PASS', `${head.revision_ref} -> ${text(mp4.derivative_id)}`)
+  gate('video-fallback-mp4', 'PASS', `duration_ms=${part.duration_ms} png_bytes=${fallbackRecord.size_bytes} mp4_bytes=${mp4Record.size_bytes}`)
+  gate('video-source-replay-unchanged', 'PASS', head.revision_ref)
+  gate('no-delegation', 'PASS', 'children=0')
+  gate('no-legacy-writes', 'PASS')
+  result.result = 'PASS'
+  log('JOURNEY video-conversion PASS')
+}
+
 async function runLive() {
   assert(apiURL && /^https?:\/\//.test(apiURL), '--api-url is required for the live journey')
   assert(desktopURL && /^https?:\/\//.test(desktopURL), '--desktop-url is invalid')
-  assert(['basic-html', 'targeted-part', 'selected-continuation', 'alternate-choice', 'alternate-choice-resume', 'animated-parts', 'full'].includes(stage), '--stage must be basic-html, targeted-part, selected-continuation, alternate-choice, alternate-choice-resume, animated-parts, or full')
+  assert(['basic-html', 'targeted-part', 'selected-continuation', 'alternate-choice', 'alternate-choice-resume', 'animated-parts', 'video-conversion', 'full'].includes(stage), '--stage must be basic-html, targeted-part, selected-continuation, alternate-choice, alternate-choice-resume, animated-parts, video-conversion, or full')
   assert(Number.isFinite(timeoutMs) && timeoutMs >= 300000 && timeoutMs <= 600000, '--timeout-ms must be between 300000 and 600000')
   await auth()
   const assignment = await configureModels()
   const selected = await topology()
   let session
   if (sessionOverride) {
-    assert(alternateResumeStage || (initialRunOverride && desktopPathOverride.startsWith('/')), 'resuming requires --initial-run-id and an absolute --desktop-path unless using alternate-choice-resume')
+    assert(alternateResumeStage || videoConversionStage || (initialRunOverride && desktopPathOverride.startsWith('/')), 'resuming requires --initial-run-id and an absolute --desktop-path unless using alternate-choice-resume or video-conversion')
     const existing = await api('GET', `/v3/sessions/${encodeURIComponent(sessionOverride)}`, undefined, 'read resumed Artifact V3 session')
     const resumedSession = existing.body?.session || existing.body
     assert(text(resumedSession?.id) === sessionOverride, 'resumed Artifact V3 session was not found')
@@ -788,6 +930,10 @@ async function runLive() {
   gate('realtime-subscribed-before-create', 'PASS', 'exact session subscription replay completed at a durable cursor')
   if (alternateResumeStage) {
     await runAlternateChoiceResume(session.sessionID)
+    return
+  }
+  if (videoConversionStage && sessionOverride) {
+    await runVideoConversion(session.sessionID)
     return
   }
 
@@ -826,7 +972,7 @@ async function runLive() {
   if (noDesignerStage) result.gates.no_designer_delegation = true
   else result.gates.one_initial_designer = true
   result.gates.root_complete_preview = true
-  if (stage === 'basic-html' || animationStage) {
+  if (stage === 'basic-html' || animationStage || videoConversionStage) {
     const studio = await openDesktopStudio(session.sessionID, artifact.id)
     assert(await studio.locator('[data-artifact-v3-part-navigator] [data-artifact-v3-part]').count() === 3, 'Desktop basic HTML Part navigator does not show exactly three parts')
     await screenshot(page, 'desktop-basic-html-artifact-studio')
@@ -844,6 +990,10 @@ async function runLive() {
     gate('durable-replay', 'PASS', `events=${artifactEvents.length}`)
     gate('realtime', 'PASS', `cursor-bearing-events=${liveEvents.length}`)
     gate('no-legacy-writes', 'PASS')
+    if (videoConversionStage) {
+      await runVideoConversion(session.sessionID)
+      return
+    }
     result.result = 'PASS'
     log(`JOURNEY ${stage} PASS`)
     return

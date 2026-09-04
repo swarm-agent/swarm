@@ -1,6 +1,6 @@
 # Artifact V3 restoration gap audit
 
-Status: **IN PROGRESS — no-Designer HTML, targeted-turn, selection/continuation, alternate-candidate implementation, and animated-Part gates are verified; native V3 video conversion remains RED**
+Status: **IN PROGRESS — no-Designer HTML, targeted-turn, selection/continuation, alternate-candidate implementation, animated-Part gates, and deterministic native V3 video wiring are implemented; the isolated `video-conversion` live gate remains to be executed**
 
 Audit date: 2026-09-04
 
@@ -8,7 +8,7 @@ Scope: ordinary Swarm creation, regular managed Designer creation and iteration,
 
 ## Executive verdict
 
-Artifact V3 now has passing isolated no-Designer evidence through static HTML creation, stable Parts, targeted exact-base candidates, explicit selection and continued turns, atomic alternate-candidate creation, and animated Parts. These passes use ordinary primary Swarm with account-backed Codex GPT-5.6 Luna at medium reasoning, native Git/Pebble/API/realtime/Desktop identity, and inspected rendered pixels. This is not yet an end-to-end storyboard/video acceptance result: no native Artifact V3 adapter to the storyboard/Video Studio/MP4 pipeline has been confirmed.
+Artifact V3 now has passing isolated no-Designer evidence through static HTML creation, stable Parts, targeted exact-base candidates, explicit selection and continued turns, atomic alternate-candidate creation, and animated Parts. These passes use ordinary primary Swarm with account-backed Codex GPT-5.6 Luna at medium reasoning, native Git/Pebble/API/realtime/Desktop identity, and inspected rendered pixels. The deterministic server path now accepts one exact selected V3 Git head, creates digest-bound PNG/MP4 derivatives, builds one pending Video Studio proposal, survives restart, and materializes the exact MP4 through the native renderer authority. The checked-in `video-conversion` stage is the remaining isolated live acceptance gate; Designer testing remains blocked until it passes.
 
 The restoration order is mandatory and now starts below the Designer boundary:
 
@@ -17,7 +17,7 @@ The restoration order is mandatory and now starts below the Designer boundary:
 3. Expand the ordinary-Swarm journey through targeted turns, continued edits, alternate iteration selection, animation, and media conversion on the already-proven native contracts.
 4. Only after those no-Designer and ordinary-Swarm gates are green, prove regular managed Designer creation/iteration and then Designer Iteration Swarm sibling candidates.
 
-**The static-HTML, targeted-Part, selected-continuation, alternate-candidate implementation, and animated-Part foundations are now verified without Designers.** The next mandatory RED boundary is native Artifact V3 storyboard/HTML-animation-to-Video-Studio/MP4 conversion. Designer-backed paths remain gated until that server-owned V3 media boundary passes.
+**The static-HTML, targeted-Part, selected-continuation, alternate-candidate implementation, animated-Part foundation, and deterministic native V3-to-Video-Studio/MP4 wiring are now implemented without Designers.** The next mandatory gate is the resumable isolated `video-conversion` journey, including real renderer output/container evidence and source-head/replay immutability. Designer-backed paths remain gated until that server-owned V3 media boundary passes live.
 
 This document began as an audit-only checkpoint. The subsequent approved restoration checkpoint adopted it as the executable gate contract. Existing implementation changes and ignored evidence remain preserved and unaccepted until the focused deterministic tests and exact-commit live gates below establish them.
 
@@ -142,25 +142,16 @@ The API publishes `artifact.v3.*` payloads through the session mutation and real
 - a prior exact revision remains previewable after selection;
 - historical V1/V2 catalog entries cannot shadow the V3 entity.
 
-### Storyboard, HTML animation, Video Studio, and MP4 — no confirmed native V3 adapter
+### Storyboard, HTML animation, Video Studio, and MP4 — native V3 adapter implemented; isolated live gate pending
 
-The downstream implementation remains centered on Artifact V2:
+The current implementation now has a separate native V3 conversion path:
 
-- `swarmd/internal/artifactv2/storyboard.go` and `storyboard_service.go` define V2 storyboard parts, heads, stills, and capture-state lineage;
-- `swarmd/internal/artifactv2/video_conversion.go` explicitly accepts an exact **Artifact V2** published head, resolves V2 derivatives, builds `ArtifactV2VideoReference` values, and creates an Artifact-V2 conversion proposal;
-- `swarmd/internal/tool/runtime_manage_video.go` exposes `convert_artifact_v2`;
-- `runtime_manage_artifact_animation.go` and legacy `runtime_manage_video_storyboard.go` operate on V1 collection/variant references and hand-authored capture/storyboard inputs;
-- Video Studio plan records and render promotion understand V1 managed references and V2 references, not native Artifact V3 revision/preview/build identities.
+- `swarmd/internal/artifactv3video/service.go` authenticates one exact selected Git head plus build/validation identity, performs trusted preflight/render, validates observed timing and derivative containers, and atomically publishes digest-bound fallback PNG and silent MP4 bytes;
+- `swarmd/internal/runtime/artifact_v3_runtime.go` supplies the selected-head authority, ephemeral deterministic animation adapter, private derivative store, and restricted bridge into `videoproject.Service.CreateEditProposal`;
+- `swarmd/internal/tool/runtime_manage_video.go` exposes `convert_artifact_v3` using only exact native source and project-base arguments, and returns a canonical pending-only response;
+- Video Studio records retain `ArtifactV3VideoReference` values for source, still, selected candidate, derivative, and render-ready timeline media; `videorender.Service` validates and materializes only the exact MP4 derivative.
 
-No audited production boundary currently converts one exact Artifact V3 commit into:
-
-1. stable storyboard sections with filming requirements and production state;
-2. exact capture-state stills bound to that commit/tree/manifest and validation evidence;
-3. compatible live HTML animation candidates plus a render-ready fallback;
-4. one pending Video Studio proposal preserving V3 source identity;
-5. a selected exact-lineage MP4 derivative suitable for final rendering.
-
-A V3 adapter must not translate a V3 commit into a fake V1 collection/variant or V2 published head. It needs native typed identity all the way through proposal, selection, derivative, and render materialization.
+The deterministic boundary now proves one exact Artifact V3 commit becomes one ready section with filming requirements and production state, exact fallback and selected animation lineage, one pending proposal, and a render-materializable MP4 without V1/V2 translation. The remaining acceptance work is the isolated live `video-conversion` stage against a real animated head and renderer, including bounded digest-verified container/size evidence and unchanged source replay.
 
 ## Dependency-ordered restoration program
 
@@ -214,7 +205,7 @@ Gate 0 evidence requirements:
 - a checked-in bounded runner that can resume at the first failing sub-gate;
 - zero V1/V2 write events, records, references, or identity translation in the V3 journey.
 
-Current state: **Gate 0A–0D GREEN for the bounded no-Designer product journeys; Gate 0E RED / MISSING NATIVE ADAPTER.** Exact isolated commit `c95aed32` passed fresh account-backed Codex GPT-5.6 Luna/medium static HTML and targeted-Part journeys. On the same live slot, the bounded `animated-parts` stage created one three-Part native V3 artifact with zero Designers, exact 1440×900 layout, one running animation per Part, advancing timelines and changing computed visual signatures, two nonidentical inspected frame PNGs, a substantively rendered Desktop Studio iframe, durable replay, cursor-bearing realtime, and zero legacy writes. The Studio checker now waits for substantive iframe body content so a blank timing-race screenshot cannot satisfy the gate.
+Current state: **Gate 0A–0D GREEN for the bounded no-Designer product journeys; Gate 0E deterministic implementation GREEN / isolated live execution pending.** Exact isolated commit `c95aed32` passed fresh account-backed Codex GPT-5.6 Luna/medium static HTML and targeted-Part journeys. On the same live slot, the bounded `animated-parts` stage created one three-Part native V3 artifact with zero Designers, exact 1440×900 layout, one running animation per Part, advancing timelines and changing computed visual signatures, two nonidentical inspected frame PNGs, a substantively rendered Desktop Studio iframe, durable replay, cursor-bearing realtime, and zero legacy writes. The native adapter now validates exact Git SHA-1/content SHA-256/evidence identity and current project base, renderer-observed duration/FPS, PNG/MP4 container signatures, cancellation-safe atomic derivative publication, pending-only unaccepted proposal creation, restart recovery, and final-render materialization. `scripts/runners/artifact-v3-multipart-e2e.mjs --stage video-conversion` can resume an exact animated head and stops if the durable tool evidence does not expose digest-verified derivative sizes and container prefixes.
 
 ### Gate 1 — one ordinary Swarm-created Artifact V3
 

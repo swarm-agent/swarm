@@ -4,6 +4,7 @@
 package artifactv3video
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -70,10 +71,20 @@ type RenderRequest struct {
 	AnimationAdapter string
 }
 
+// RenderResult binds derivative bytes to the renderer-observed timing. The
+// conversion service rejects a renderer that returns a valid container for a
+// different duration or frame cadence.
+type RenderResult struct {
+	FallbackPNG []byte
+	SilentMP4   []byte
+	DurationMs  int64
+	FPS         float64
+}
+
 // Renderer performs trusted preflight and deterministic fallback/MP4 rendering.
 type Renderer interface {
 	Preflight(context.Context, RenderRequest) error
-	Render(context.Context, RenderRequest) (fallbackPNG, silentMP4 []byte, err error)
+	Render(context.Context, RenderRequest) (RenderResult, error)
 }
 
 // DerivativeStore atomically publishes both derivatives. Implementations must
@@ -112,6 +123,12 @@ func New(artifacts ArtifactAuthority, renderer Renderer, storage DerivativeStore
 // Convert authenticates the exact current head, renders before publishing, and
 // atomically stores both outputs. Source Git identity remains read-only on every path.
 func (s *Service) Convert(ctx context.Context, accountScopeID string, selection Selection) (Conversion, error) {
+	if ctx == nil {
+		return Conversion{}, errors.New("artifact V3 video conversion requires context")
+	}
+	if err := ctx.Err(); err != nil {
+		return Conversion{}, err
+	}
 	if s == nil || s.artifacts == nil || s.renderer == nil || s.storage == nil {
 		return Conversion{}, errors.New("artifact V3 video service is not fully configured")
 	}
@@ -138,18 +155,24 @@ func (s *Service) Convert(ctx context.Context, accountScopeID string, selection 
 	if err := s.renderer.Preflight(ctx, request); err != nil {
 		return Conversion{}, fmt.Errorf("trusted Artifact V3 preflight failed: %w", err)
 	}
-	fallback, mp4, err := s.renderer.Render(ctx, request)
+	rendered, err := s.renderer.Render(ctx, request)
 	if err != nil {
 		return Conversion{}, fmt.Errorf("trusted Artifact V3 render failed: %w", err)
 	}
-	if len(fallback) == 0 || len(mp4) == 0 {
-		return Conversion{}, errors.New("trusted Artifact V3 render returned empty derivative bytes")
+	if rendered.DurationMs != duration || rendered.FPS != fps {
+		return Conversion{}, errors.New("trusted Artifact V3 render timing does not match the requested duration/fps")
 	}
-	fallbackDerivative := derivative("image/png", fallback)
-	mp4Derivative := derivative("video/mp4", mp4)
+	if err := validateRenderedDerivatives(rendered.FallbackPNG, rendered.SilentMP4); err != nil {
+		return Conversion{}, err
+	}
+	fallbackDerivative := derivative("image/png", rendered.FallbackPNG)
+	mp4Derivative := derivative("video/mp4", rendered.SilentMP4)
 	conversion := assemble(project, selection, duration, fps, fallbackDerivative, mp4Derivative)
 	if err := pebblestore.ValidateVideoPlanForIntent(pebblestore.VideoEditProposalIntentArtifactV3Convert, conversion.Plan); err != nil {
 		return Conversion{}, fmt.Errorf("assemble native Artifact V3 video plan: %w", err)
+	}
+	if err := ctx.Err(); err != nil {
+		return Conversion{}, err
 	}
 	if err := s.storage.PutAtomic(ctx, project.SessionID, project.ArtifactID, []Derivative{fallbackDerivative, mp4Derivative}); err != nil {
 		return Conversion{}, fmt.Errorf("persist Artifact V3 video derivatives atomically: %w", err)
@@ -161,12 +184,28 @@ func (s *Service) Convert(ctx context.Context, accountScopeID string, selection 
 // without exposing bytes. userID is enforced by the Artifact authority's selected
 // head lookup and retained here to satisfy the shared Video Studio boundary.
 func (s *Service) ValidateVideoReference(accountScopeID, userID string, ref pebblestore.ArtifactV3VideoReference) error {
+	if s == nil {
+		return errors.New("Artifact V3 video reference authority is unavailable")
+	}
+	return s.validateVideoReference(context.Background(), accountScopeID, userID, ref)
+}
+
+func (s *Service) validateVideoReference(ctx context.Context, accountScopeID, userID string, ref pebblestore.ArtifactV3VideoReference) error {
+	if ctx == nil {
+		return errors.New("Artifact V3 video validation requires context")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if s == nil || s.artifacts == nil || s.storage == nil {
+		return errors.New("Artifact V3 video reference authority is unavailable")
+	}
 	if strings.TrimSpace(accountScopeID) == "" || strings.TrimSpace(userID) == "" {
 		return errors.New("Artifact V3 video reference requires authenticated account and user")
 	}
 	if ref.DerivativeID == "" {
 		selection := Selection{AccountScopeID: accountScopeID, UserID: userID, SessionID: ref.SessionID, ArtifactID: ref.ArtifactID, RevisionID: ref.RevisionID, CommitOID: ref.CommitOID, TreeOID: ref.TreeOID, PartID: ref.PartID, CaptureStateID: ref.CaptureStateID, DurationMs: ref.DurationMs, FPS: ref.FPS}
-		project, err := s.artifacts.ReadSelectedHead(context.Background(), accountScopeID, selection)
+		project, err := s.artifacts.ReadSelectedHead(ctx, accountScopeID, selection)
 		if err != nil {
 			return err
 		}
@@ -181,11 +220,14 @@ func (s *Service) ValidateVideoReference(accountScopeID, userID string, ref pebb
 		}
 		return nil
 	}
-	_, err := s.read(context.Background(), accountScopeID, userID, ref)
+	_, err := s.read(ctx, accountScopeID, userID, ref)
 	return err
 }
 
 func (s *Service) ReadVideoReference(ctx context.Context, accountScopeID, userID string, ref pebblestore.ArtifactV3VideoReference) ([]byte, error) {
+	if s == nil || s.artifacts == nil || s.storage == nil {
+		return nil, errors.New("Artifact V3 video reference authority is unavailable")
+	}
 	if strings.TrimSpace(userID) == "" {
 		return nil, errors.New("Artifact V3 video read requires authenticated user")
 	}
@@ -195,10 +237,22 @@ func (s *Service) ReadVideoReference(ctx context.Context, accountScopeID, userID
 // Read is retained for same-package callers and test fixtures. Production video
 // consumers must use ReadVideoReference so user identity is explicit.
 func (s *Service) Read(ctx context.Context, accountScopeID string, ref pebblestore.ArtifactV3VideoReference) ([]byte, error) {
+	if s == nil {
+		return nil, errors.New("Artifact V3 video reference authority is unavailable")
+	}
 	return s.read(ctx, accountScopeID, "", ref)
 }
 
 func (s *Service) read(ctx context.Context, accountScopeID, userID string, ref pebblestore.ArtifactV3VideoReference) ([]byte, error) {
+	if ctx == nil {
+		return nil, errors.New("Artifact V3 video read requires context")
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if s == nil || s.artifacts == nil || s.storage == nil {
+		return nil, errors.New("Artifact V3 video reference authority is unavailable")
+	}
 	if ref.DerivativeID == "" {
 		return nil, errors.New("Artifact V3 video read requires derivative identity")
 	}
@@ -215,6 +269,9 @@ func (s *Service) read(ctx context.Context, accountScopeID, userID string, ref p
 	}
 	payload, err := s.storage.Read(ctx, ref.SessionID, ref.ArtifactID, ref.DerivativeID)
 	if err != nil {
+		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 	if digestBytes(payload) != ref.DigestSHA256 {
@@ -292,6 +349,20 @@ func assemble(project Project, selection Selection, duration int64, fps float64,
 	}
 	part := pebblestore.VideoPlanPart{ID: partID, Title: "Artifact V3 animation", DurationMs: duration, CaptureStateID: selection.CaptureStateID, FilmingRequirements: []string{"Preserve the authenticated Artifact V3 project and deterministic animation timing."}, ProductionState: pebblestore.VideoProductionStateReady, ArtifactV3Source: &base, ArtifactV3Still: &fallbackRef, ArtifactV3Visual: &mp4Ref, VisualMediaType: "video/mp4", SourceStartMs: 0, SourceEndMs: duration, AnimationCandidates: &pebblestore.VideoAnimationCandidateSet{Candidates: []pebblestore.VideoAnimationCandidate{{ID: candidateID, V3Source: &base, Label: "Selected Artifact V3 head"}}, SelectedCandidateID: candidateID, V3SelectedSource: &base, V3Derivative: &mp4Ref, Status: pebblestore.VideoAnimationCandidateStatusReady}}
 	return Conversion{Source: base, Fallback: fallbackRef, MP4: mp4Ref, Plan: pebblestore.VideoPlanProposal{Kind: pebblestore.VideoPlanKindInitial, Summary: "Native Artifact V3 animation conversion", Parts: []pebblestore.VideoPlanPart{part}}}
+}
+
+func validateRenderedDerivatives(fallback, mp4 []byte) error {
+	pngSignature := []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'}
+	if len(fallback) <= len(pngSignature) || !bytes.Equal(fallback[:len(pngSignature)], pngSignature) {
+		return errors.New("trusted Artifact V3 render returned an invalid PNG fallback")
+	}
+	// ISO BMFF requires a complete leading box header. Trusted animation output
+	// starts with the ftyp box; reject arbitrary non-empty bytes before they can
+	// become durable render authority.
+	if len(mp4) < 12 || !bytes.Equal(mp4[4:8], []byte("ftyp")) {
+		return errors.New("trusted Artifact V3 render returned an invalid MP4 container")
+	}
+	return nil
 }
 
 func derivative(mediaType string, payload []byte) Derivative {

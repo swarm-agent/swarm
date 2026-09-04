@@ -8,6 +8,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -19,6 +20,7 @@ import (
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/tool"
+	"swarm/packages/swarmd/internal/videoproject"
 )
 
 type artifactV3RuntimeRenderer struct{}
@@ -28,6 +30,18 @@ func (artifactV3RuntimeRenderer) Capture(_ context.Context, request htmlcapture.
 		return nil, htmlcapture.NewError("capture_invalid", "invalid capture")
 	}
 	return []htmlcapture.Result{{StateID: "default", PNG: []byte("real-renderer-evidence")}}, nil
+}
+
+type artifactV3ConversionRenderer struct{}
+
+func (artifactV3ConversionRenderer) PreflightAnimation(_ context.Context, request htmlcapture.AnimationRequest) (htmlcapture.AnimationResult, error) {
+	return htmlcapture.AnimationResult{DurationMS: request.DurationMS, FPS: request.FPS, FrameCount: (request.DurationMS*request.FPS + 999) / 1000}, nil
+}
+
+func (artifactV3ConversionRenderer) RenderAnimation(_ context.Context, request htmlcapture.AnimationRequest) (htmlcapture.AnimationResult, error) {
+	png := append([]byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'}, []byte("runtime-evidence")...)
+	mp4 := append([]byte{0, 0, 0, 12}, []byte("ftypisom")...)
+	return htmlcapture.AnimationResult{PreviewPNG: png, MP4: mp4, DurationMS: request.DurationMS, FPS: request.FPS, FrameCount: (request.DurationMS*request.FPS + 999) / 1000}, nil
 }
 
 // Requirement: the production bridge must connect managed whole-tree authoring,
@@ -125,6 +139,68 @@ func TestArtifactV3RuntimeAdapterProductionPathAndRecovery(t *testing.T) {
 	if err != nil || artifact.Head.CommitOID != repair.Revision.CommitOID || len(artifact.Head.Parents) != 1 || artifact.Head.Parents[0] != finished.Revision.CommitOID {
 		t.Fatalf("selected direct repair lineage artifact=%+v err=%v", artifact, err)
 	}
+	artifactBeforeVideo := artifact
+
+	// Requirement: the native runtime bridge converts this exact selected Git
+	// head into one pending V3-only proposal and does not mutate the source head.
+	projectService := videoproject.NewService(sessions.Store())
+	derivatives, err := newArtifactV3DerivativeStore(filepath.Join(root, "video-derivatives"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	videoService := artifactv3video.New(adapter, artifactV3AnimationRenderer{renderer: artifactV3ConversionRenderer{}}, derivatives)
+	projectService.SetArtifactV3Authority(videoService)
+	bridge := &artifactV3VideoBridge{artifacts: adapter, service: videoService, projects: projectService}
+	principalIdentity := identity.Principal{Type: identity.PrincipalTypeUser, AccountScopeID: "account", UserID: "user", SessionID: "artifact-v3-runtime"}
+	videoProject, videoBase, err := projectService.CreateProject(context.Background(), principalIdentity, videoproject.CreateProjectInput{SessionID: "artifact-v3-runtime", Title: "Native V3", OutputPreset: pebblestore.VideoPresetLandscape1080p, ProjectID: "native-v3-project"})
+	if err != nil || videoBase == nil {
+		t.Fatalf("create native V3 video project: project=%+v base=%+v err=%v", videoProject, videoBase, err)
+	}
+	conversionInput := tool.ArtifactV3VideoConversionInput{RequestID: "convert-native-v3", VideoSessionID: "artifact-v3-runtime", ProjectID: videoProject.ID, BaseRevisionID: videoBase.ID, ArtifactSessionID: "artifact-v3-runtime", ArtifactID: grant.ArtifactID, RevisionRef: artifact.Head.RevisionRef}
+	staleInput := conversionInput
+	staleInput.BaseRevisionID = "stale-base"
+	if _, staleErr := bridge.ConvertToPendingProposal(context.Background(), principalIdentity, staleInput); staleErr == nil || !strings.Contains(staleErr.Error(), "stale") {
+		t.Fatalf("stale project base error=%v", staleErr)
+	}
+	foreignInput := conversionInput
+	foreignInput.ArtifactSessionID = "foreign"
+	if _, foreignErr := bridge.ConvertToPendingProposal(context.Background(), principalIdentity, foreignInput); foreignErr == nil {
+		t.Fatal("foreign source session was accepted")
+	}
+	if proposals, listErr := projectService.ListEditProposals(principalIdentity, "artifact-v3-runtime", videoProject.ID, 10); listErr != nil || len(proposals) != 0 {
+		t.Fatalf("rejected conversion mutated proposals: proposals=%+v err=%v", proposals, listErr)
+	}
+	if entries, readErr := os.ReadDir(derivatives.root); readErr != nil || len(entries) != 0 {
+		t.Fatalf("rejected conversion wrote derivatives: entries=%v err=%v", entries, readErr)
+	}
+	if afterRejected, readErr := adapter.GetArtifact(context.Background(), api.ArtifactV3Principal{AccountScopeID: "account", UserID: "user"}, "artifact-v3-runtime", grant.ArtifactID); readErr != nil || !reflect.DeepEqual(afterRejected, artifactBeforeVideo) {
+		t.Fatalf("rejected conversion mutated source projection: artifact=%+v before=%+v err=%v", afterRejected, artifactBeforeVideo, readErr)
+	}
+	proposal, err := bridge.ConvertToPendingProposal(context.Background(), principalIdentity, conversionInput)
+	if err != nil {
+		t.Fatalf("convert native V3 video: %v", err)
+	}
+	if proposal.Status != pebblestore.VideoEditProposalStatusPending || proposal.Intent != pebblestore.VideoEditProposalIntentArtifactV3Convert || proposal.AcceptedRevisionID != "" || proposal.WorkingRevisionID == "" || proposal.Plan == nil || len(proposal.Plan.Parts) != 1 {
+		t.Fatalf("native V3 proposal=%+v", proposal)
+	}
+	proposals, listErr := projectService.ListEditProposals(principalIdentity, "artifact-v3-runtime", videoProject.ID, 10)
+	if listErr != nil || len(proposals) != 1 || proposals[0].ID != proposal.ID {
+		t.Fatalf("native V3 conversion did not create exactly one proposal: proposals=%+v err=%v", proposals, listErr)
+	}
+	videoPart := proposal.Plan.Parts[0]
+	if videoPart.ArtifactV3Source == nil || videoPart.ArtifactV3Still == nil || videoPart.ArtifactV3Visual == nil || videoPart.Visual != nil || videoPart.ArtifactV2Source != nil || videoPart.ArtifactV2Still != nil || videoPart.ArtifactV2Visual != nil || videoPart.ArtifactV3Source.CommitOID != artifact.Head.CommitOID || videoPart.ArtifactV3Source.TreeOID != artifact.Head.TreeOID || videoPart.ArtifactV3Source.BuildID != artifact.Head.Build.ID || videoPart.ArtifactV3Source.ValidationID != artifact.Head.Validation.ID || videoPart.ArtifactV3Visual.DurationMs != videoPart.DurationMs || videoPart.SourceEndMs != videoPart.DurationMs {
+		t.Fatalf("native V3 proposal identity drifted: %+v", videoPart)
+	}
+	if fallback, readErr := videoService.ReadVideoReference(context.Background(), "account", "user", *videoPart.ArtifactV3Still); readErr != nil || len(fallback) < 8 || string(fallback[1:4]) != "PNG" {
+		t.Fatalf("fallback bytes=%q err=%v", fallback, readErr)
+	}
+	if mp4, readErr := videoService.ReadVideoReference(context.Background(), "account", "user", *videoPart.ArtifactV3Visual); readErr != nil || len(mp4) < 12 || string(mp4[4:8]) != "ftyp" {
+		t.Fatalf("mp4 bytes=%q err=%v", mp4, readErr)
+	}
+	if afterConversion, readErr := adapter.GetArtifact(context.Background(), api.ArtifactV3Principal{AccountScopeID: "account", UserID: "user"}, "artifact-v3-runtime", grant.ArtifactID); readErr != nil || !reflect.DeepEqual(afterConversion, artifactBeforeVideo) {
+		t.Fatalf("conversion mutated source projection: artifact=%+v before=%+v err=%v", afterConversion, artifactBeforeVideo, readErr)
+	}
+
 	followup.TaskCallID, followup.TargetPartIDs, followup.BaseCommitOID, followup.ProjectionSeq = "unknown-target", []string{"missing"}, artifact.Head.CommitOID, artifact.Revision
 	if _, err := adapter.PrepareArtifactV3Turn(context.Background(), followup); !errors.Is(err, pebblestore.ErrArtifactV3Invalid) {
 		t.Fatalf("unknown manifest target error=%v", err)
@@ -156,6 +232,19 @@ func TestArtifactV3RuntimeAdapterProductionPathAndRecovery(t *testing.T) {
 	recovered, err := restarted.GetArtifact(context.Background(), api.ArtifactV3Principal{AccountScopeID: "account", UserID: "user"}, "artifact-v3-runtime", grant.ArtifactID)
 	if err != nil || recovered.Head.CommitOID != repair.Revision.CommitOID {
 		t.Fatalf("recovered=%+v err=%v", recovered, err)
+	}
+	restartedProposal, proposalOK, proposalErr := pebblestore.NewSessionStore(reopened).GetVideoEditProposal("account", "artifact-v3-runtime", videoProject.ID, proposal.ID)
+	if proposalErr != nil || !proposalOK || restartedProposal.Status != pebblestore.VideoEditProposalStatusPending || restartedProposal.Intent != pebblestore.VideoEditProposalIntentArtifactV3Convert || restartedProposal.Plan == nil || restartedProposal.Plan.Parts[0].ArtifactV3Visual == nil || restartedProposal.Plan.Parts[0].ArtifactV3Visual.CommitOID != artifact.Head.CommitOID {
+		t.Fatalf("restart lost native V3 proposal: proposal=%+v ok=%v err=%v", restartedProposal, proposalOK, proposalErr)
+	}
+	if restartedDerivatives, derivativeErr := newArtifactV3DerivativeStore(filepath.Join(root, "video-derivatives")); derivativeErr != nil {
+		t.Fatal(derivativeErr)
+	} else {
+		restartedVideoService := artifactv3video.New(restarted, artifactV3AnimationRenderer{renderer: artifactV3ConversionRenderer{}}, restartedDerivatives)
+		mp4, readErr := restartedVideoService.ReadVideoReference(context.Background(), "account", "user", *restartedProposal.Plan.Parts[0].ArtifactV3Visual)
+		if readErr != nil || len(mp4) < 12 || string(mp4[4:8]) != "ftyp" {
+			t.Fatalf("restart lost authenticated MP4 derivative: bytes=%q err=%v", mp4, readErr)
+		}
 	}
 	evidence, err := restarted.ReadArtifactV3PreviewEvidence(context.Background(), "account", "user", "artifact-v3-runtime", grant.ArtifactID, artifact.Head.RevisionRef)
 	if err != nil || string(evidence) != "real-renderer-evidence" {
@@ -237,7 +326,7 @@ func (r *artifactV3AnimationTestRenderer) PreflightAnimation(_ context.Context, 
 }
 func (r *artifactV3AnimationTestRenderer) RenderAnimation(_ context.Context, request htmlcapture.AnimationRequest) (htmlcapture.AnimationResult, error) {
 	r.render = request
-	return htmlcapture.AnimationResult{PreviewPNG: []byte("png"), MP4: []byte("mp4")}, nil
+	return htmlcapture.AnimationResult{PreviewPNG: []byte("png"), MP4: []byte("mp4"), DurationMS: request.DurationMS, FPS: request.FPS, FrameCount: (request.DurationMS*request.FPS + 999) / 1000}, nil
 }
 
 // Requirement: native V3 render wiring injects a deterministic seek adapter only
@@ -252,9 +341,9 @@ func TestArtifactV3AnimationRendererLeavesGitProjectBytesUnchanged(t *testing.T)
 	if err := renderer.Preflight(context.Background(), request); err != nil {
 		t.Fatal(err)
 	}
-	png, mp4, err := renderer.Render(context.Background(), request)
-	if err != nil || string(png) != "png" || string(mp4) != "mp4" {
-		t.Fatalf("render png=%q mp4=%q err=%v", png, mp4, err)
+	rendered, err := renderer.Render(context.Background(), request)
+	if err != nil || string(rendered.FallbackPNG) != "png" || string(rendered.SilentMP4) != "mp4" || rendered.DurationMs != 2000 || rendered.FPS != 30 {
+		t.Fatalf("render=%+v err=%v", rendered, err)
 	}
 	if strings.Contains(string(project.Files["index.html"]), "data-swarm-artifact-v3-animation") {
 		t.Fatal("source project bytes were mutated")
@@ -266,8 +355,33 @@ func TestArtifactV3AnimationRendererLeavesGitProjectBytesUnchanged(t *testing.T)
 	}
 }
 
-// Requirement: two V3 derivatives become visible together or not at all, remain
-// private, and are digest-verified when an idempotent publication is replayed.
+// Requirement: cancellation cannot publish even one native V3 derivative.
+// Threat: staging or final directories could survive a stopped conversion.
+func TestArtifactV3DerivativeStoreCancelledPublicationWritesNothing(t *testing.T) {
+	store, err := newArtifactV3DerivativeStore(filepath.Join(t.TempDir(), "derivatives"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	body := []byte("png")
+	digest := sha256.Sum256(body)
+	hexDigest := hex.EncodeToString(digest[:])
+	mp4Body := []byte("mp4")
+	mp4Digest := sha256.Sum256(mp4Body)
+	mp4HexDigest := hex.EncodeToString(mp4Digest[:])
+	err = store.PutAtomic(ctx, "session", "artifact", []artifactv3video.Derivative{{ID: "av3der_" + hexDigest, MediaType: "image/png", DigestSHA256: hexDigest, Bytes: body}, {ID: "av3der_" + mp4HexDigest, MediaType: "video/mp4", DigestSHA256: mp4HexDigest, Bytes: mp4Body}})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled derivative publication err=%v", err)
+	}
+	entries, readErr := os.ReadDir(store.root)
+	if readErr != nil || len(entries) != 0 {
+		t.Fatalf("cancelled publication left entries=%v err=%v", entries, readErr)
+	}
+}
+
+// Requirement: two V3 derivatives become visible together or not at all,
+// remain private, and digest-verify idempotent publication replays.
 func TestArtifactV3DerivativeStorePublishesAtomicPrivateSet(t *testing.T) {
 	store, err := newArtifactV3DerivativeStore(filepath.Join(t.TempDir(), "derivatives"))
 	if err != nil {

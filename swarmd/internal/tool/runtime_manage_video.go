@@ -2,6 +2,9 @@ package tool
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -26,6 +29,10 @@ const (
 	manageVideoMaxWords           = 2_000
 	manageVideoMaxAnalysisPoints  = 5_000
 )
+
+// Conversion responses expose only a digest-verified bounded prefix for
+// container inspection; complete derivatives remain private render inputs.
+const manageVideoDerivativeEvidencePrefix = 64
 
 type manageVideoService interface {
 	StartWithFocus(ctx context.Context, principal identity.Principal, sessionID, messageID, focusNotes string) (videotranscription.StartResult, error)
@@ -417,7 +424,46 @@ func (r *Runtime) executeManageVideo(ctx context.Context, scope WorkspaceScope, 
 		if convertErr != nil {
 			return "", convertErr
 		}
-		payload, _ := json.Marshal(map[string]any{"tool": "manage_video", "action": "convert_artifact_v3", "status": "ok", "proposal": proposal, "proposal_status": "pending"})
+		response := map[string]any{
+			"tool": "manage_video", "action": "convert_artifact_v3", "status": "ok",
+			"proposal": safeVideoEditProposal(proposal), "proposal_id": proposal.ID, "project_id": proposal.ProjectID,
+			"base_revision_id": proposal.BaseRevisionID, "working_revision_id": proposal.WorkingRevisionID,
+			"proposal_status": proposal.Status, "requires_user_acceptance": true,
+		}
+		if proposal.Status != pebblestore.VideoEditProposalStatusPending || proposal.Intent != pebblestore.VideoEditProposalIntentArtifactV3Convert || proposal.AcceptedRevisionID != "" || proposal.ProjectID != strings.TrimSpace(asString(args["project_id"])) || proposal.BaseRevisionID != strings.TrimSpace(asString(args["base_revision_id"])) || proposal.WorkingRevisionID == "" || proposal.Plan == nil || len(proposal.Plan.Parts) != 1 || proposal.Plan.Parts[0].ArtifactV3Still == nil || proposal.Plan.Parts[0].ArtifactV3Visual == nil {
+			return "", errors.New("artifact v3 video conversion returned an invalid pending native proposal")
+		}
+		derivatives := make([]map[string]any, 0, 2)
+		for _, ref := range []*pebblestore.ArtifactV3VideoReference{proposal.Plan.Parts[0].ArtifactV3Still, proposal.Plan.Parts[0].ArtifactV3Visual} {
+			if err := ctx.Err(); err != nil {
+				return "", err
+			}
+			body, readErr := r.artifactV3Video.ReadVideoReference(ctx, scope.Principal.AccountScopeID, scope.Principal.UserID, *ref)
+			if readErr != nil {
+				return "", fmt.Errorf("read native Artifact V3 conversion derivative: %w", readErr)
+			}
+			digest := sha256.Sum256(body)
+			if hex.EncodeToString(digest[:]) != ref.DigestSHA256 {
+				return "", errors.New("native Artifact V3 conversion derivative digest changed before response")
+			}
+			prefix := body
+			if len(prefix) > manageVideoDerivativeEvidencePrefix {
+				prefix = prefix[:manageVideoDerivativeEvidencePrefix]
+			}
+			if (ref.MediaType != "image/png" && ref.MediaType != "video/mp4") || (ref.MediaType == "image/png" && (len(prefix) < 8 || string(prefix[1:4]) != "PNG")) || (ref.MediaType == "video/mp4" && (len(prefix) < 12 || string(prefix[4:8]) != "ftyp")) {
+				return "", errors.New("native Artifact V3 conversion derivative container evidence is invalid")
+			}
+			derivatives = append(derivatives, map[string]any{"derivative_id": ref.DerivativeID, "media_type": ref.MediaType, "digest_sha256": ref.DigestSHA256, "duration_ms": ref.DurationMs, "size_bytes": len(body), "container_prefix_base64": base64.StdEncoding.EncodeToString(prefix)})
+		}
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+		response["derivatives"] = derivatives
+		response["derivative_evidence"] = "digest_verified_container_prefix"
+		payload, marshalErr := json.Marshal(response)
+		if marshalErr != nil {
+			return "", fmt.Errorf("encode native Artifact V3 conversion result: %w", marshalErr)
+		}
 		return string(payload), nil
 	}
 	response := map[string]any{"tool": "manage_video", "action": action, "status": "ok", "session_id": scope.SessionID, "path_id": toolPathID("manage_video"), "details_truncated": false}

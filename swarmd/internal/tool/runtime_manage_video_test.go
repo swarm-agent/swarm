@@ -2,6 +2,9 @@ package tool
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -419,13 +422,41 @@ type fakeArtifactV3VideoConversionService struct {
 
 func (f *fakeArtifactV3VideoConversionService) ConvertToPendingProposal(_ context.Context, _ identity.Principal, input ArtifactV3VideoConversionInput) (pebblestore.VideoEditProposalSnapshot, error) {
 	f.input = input
-	return pebblestore.VideoEditProposalSnapshot{ID: "proposal-v3", Status: pebblestore.VideoEditProposalStatusPending, Intent: pebblestore.VideoEditProposalIntentArtifactV3Convert}, nil
+	base := pebblestore.ArtifactV3VideoReference{SessionID: input.ArtifactSessionID, ArtifactID: input.ArtifactID, RevisionID: input.RevisionRef, CommitOID: strings.Repeat("a", 40), TreeOID: strings.Repeat("b", 40), ManifestDigestSHA256: strings.Repeat("c", 64), BuildID: "build", ValidationID: "validation", EventSeq: 1, DigestSHA256: strings.Repeat("c", 64), MediaType: "text/html", DurationMs: 1000, FPS: 30, AnimationProfile: "motion_ui"}
+	still, mp4 := base, base
+	still.DerivativeID, still.DigestSHA256, still.MediaType = "still", artifactV3FakeDigest(artifactV3FakePNG()), "image/png"
+	mp4.DerivativeID, mp4.DigestSHA256, mp4.MediaType = "mp4", artifactV3FakeDigest(artifactV3FakeMP4()), "video/mp4"
+	plan := pebblestore.VideoPlanProposal{Kind: pebblestore.VideoPlanKindInitial, Parts: []pebblestore.VideoPlanPart{{ID: "motion", Title: "Motion", DurationMs: 1000, ArtifactV3Source: &base, ArtifactV3Still: &still, ArtifactV3Visual: &mp4}}}
+	return pebblestore.VideoEditProposalSnapshot{ID: "proposal-v3", ProjectID: input.ProjectID, BaseRevisionID: input.BaseRevisionID, WorkingRevisionID: "working-v3", Status: pebblestore.VideoEditProposalStatusPending, Intent: pebblestore.VideoEditProposalIntentArtifactV3Convert, Plan: &plan}, nil
 }
-func (*fakeArtifactV3VideoConversionService) ValidateVideoReference(string, string, pebblestore.ArtifactV3VideoReference) error { return nil }
-func (*fakeArtifactV3VideoConversionService) ReadVideoReference(context.Context, string, string, pebblestore.ArtifactV3VideoReference) ([]byte, error) { return nil, nil }
+func (*fakeArtifactV3VideoConversionService) ValidateVideoReference(string, string, pebblestore.ArtifactV3VideoReference) error {
+	return nil
+}
+
+func artifactV3FakePNG() []byte {
+	return append([]byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'}, []byte("payload")...)
+}
+
+func artifactV3FakeMP4() []byte {
+	return append([]byte{0, 0, 0, 12}, []byte("ftypisom")...)
+}
+
+func artifactV3FakeDigest(body []byte) string {
+	digest := sha256.Sum256(body)
+	return hex.EncodeToString(digest[:])
+}
+
+func (*fakeArtifactV3VideoConversionService) ReadVideoReference(_ context.Context, _, _ string, ref pebblestore.ArtifactV3VideoReference) ([]byte, error) {
+	if ref.MediaType == "image/png" {
+		return artifactV3FakePNG(), nil
+	}
+	return artifactV3FakeMP4(), nil
+}
 
 // Requirement: the model-facing V3 action accepts only exact V3 source identity
-// and a project base, then delegates server-owned plan construction once.
+// and a project base, then returns one pending server-owned plan plus bounded,
+// digest-verified container evidence. Threat: opaque success without media evidence
+// could hide a corrupt derivative or an accepted/mixed-identity proposal.
 func TestManageVideoConvertArtifactV3UsesExactNativeIdentity(t *testing.T) {
 	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "manage-video-v3.pebble"))
 	if err != nil { t.Fatal(err) }
@@ -446,8 +477,37 @@ func TestManageVideoConvertArtifactV3UsesExactNativeIdentity(t *testing.T) {
 	if fake.input.VideoSessionID != "studio" || fake.input.ProjectID != "project" || fake.input.BaseRevisionID != "base" || fake.input.ArtifactSessionID != "source" || fake.input.ArtifactID != "artifact" || fake.input.RevisionRef != "revision-abc" {
 		t.Fatalf("conversion input=%+v", fake.input)
 	}
-	if !strings.Contains(payload, `"proposal_status":"pending"`) || !strings.Contains(payload, `"action":"convert_artifact_v3"`) {
+	if !strings.Contains(payload, `"proposal_status":"pending"`) || !strings.Contains(payload, `"action":"convert_artifact_v3"`) || !strings.Contains(payload, `"requires_user_acceptance":true`) || !strings.Contains(payload, `"working_revision_id":"working-v3"`) || !strings.Contains(payload, `"proposal_id":"proposal-v3"`) || !strings.Contains(payload, `"derivatives":[`) || !strings.Contains(payload, `"derivative_evidence":"digest_verified_container_prefix"`) || !strings.Contains(payload, `"container_prefix_base64":`) || !strings.Contains(payload, `"size_bytes":`) {
 		t.Fatalf("payload=%s", payload)
+	}
+	var response struct {
+		Derivatives []struct {
+			MediaType             string `json:"media_type"`
+			DigestSHA256          string `json:"digest_sha256"`
+			SizeBytes             int    `json:"size_bytes"`
+			ContainerPrefixBase64 string `json:"container_prefix_base64"`
+		} `json:"derivatives"`
+	}
+	if err := json.Unmarshal([]byte(payload), &response); err != nil || len(response.Derivatives) != 2 {
+		t.Fatalf("decode derivative evidence: response=%+v err=%v", response, err)
+	}
+	seenMedia := map[string]bool{}
+	for _, derivative := range response.Derivatives {
+		if seenMedia[derivative.MediaType] {
+			t.Fatalf("duplicate derivative media type: %+v", response.Derivatives)
+		}
+		seenMedia[derivative.MediaType] = true
+		prefix, err := base64.StdEncoding.DecodeString(derivative.ContainerPrefixBase64)
+		expectedDigest := artifactV3FakeDigest(artifactV3FakeMP4())
+		if derivative.MediaType == "image/png" {
+			expectedDigest = artifactV3FakeDigest(artifactV3FakePNG())
+		}
+		if err != nil || derivative.DigestSHA256 != expectedDigest || derivative.SizeBytes < len(prefix) || (derivative.MediaType == "image/png" && (len(prefix) < 8 || string(prefix[1:4]) != "PNG")) || (derivative.MediaType == "video/mp4" && (len(prefix) < 12 || string(prefix[4:8]) != "ftyp")) || (derivative.MediaType != "image/png" && derivative.MediaType != "video/mp4") {
+			t.Fatalf("invalid derivative evidence=%+v prefix=%q err=%v", derivative, prefix, err)
+		}
+	}
+	if !seenMedia["image/png"] || !seenMedia["video/mp4"] {
+		t.Fatalf("derivative evidence lacks PNG or MP4: %+v", response.Derivatives)
 	}
 }
 
