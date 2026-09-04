@@ -46,6 +46,46 @@ func TestRefreshOnboardingWorkspaceGitReadinessUsesCurrentLaunchRepository(t *te
 	}
 }
 
+// Requirement: the final workspace confirmation must revalidate the launch
+// repository at the moment Enter is handled, because a queued home reload can
+// replace the provider-transition refresh with a stale pre-auth model.
+// Threat: a valid committed repository remains blocked despite a correct earlier
+// refresh. The app key-dispatch boundary is the narrowest layer that proves stale
+// UI state cannot win the race while non-ready repositories remain rejected.
+func TestOnboardingWorkspaceSubmitRevalidatesStaleReadiness(t *testing.T) {
+	repo := initGitRepo(t)
+	writeFile(t, filepath.Join(repo, "tracked.txt"), "ready\n")
+	runGit(t, repo, "add", "tracked.txt")
+	runGit(t, repo, "commit", "-m", "init")
+
+	homeModel := model.HomeModel{
+		OnboardingRequired:         true,
+		CWD:                        repo,
+		WorkspaceSetupPath:         repo,
+		WorkspaceSetupGitReadiness: model.GitReadinessUnknown,
+	}
+	home := ui.NewHomePage(homeModel)
+	home.ShowOnboardingWorkspace("Confirm workspace")
+	app := &App{
+		startupCWD: repo,
+		home:       home,
+		homeModel:  homeModel,
+		keybinds:   ui.NewDefaultKeyBindings(),
+	}
+
+	event := tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone)
+	app.refreshOnboardingWorkspaceGitReadinessBeforeSubmit(event)
+	app.home.HandleKey(event)
+
+	if app.homeModel.WorkspaceSetupGitReadiness != model.GitReadinessReady || !app.homeModel.WorkspaceSetupHasGit {
+		t.Fatalf("submit-time readiness = %q, hasGit=%v", app.homeModel.WorkspaceSetupGitReadiness, app.homeModel.WorkspaceSetupHasGit)
+	}
+	action, ok := home.PopHomeAction()
+	if !ok || action.Kind != ui.HomeActionCreateOnboardingWorkspace || action.WorkspacePath != repo {
+		t.Fatalf("workspace action = %+v, ok=%v", action, ok)
+	}
+}
+
 // Requirement: onboarding releases only for an active workspace backed by a
 // committed Git repository, because every normal agent session uses managed
 // worktree isolation. The threat is admitting a plain or unborn directory that

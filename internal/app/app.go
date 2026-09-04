@@ -700,6 +700,7 @@ func (a *App) Run() error {
 				dirty = true
 				continue
 			}
+			a.refreshOnboardingWorkspaceGitReadinessBeforeSubmit(e)
 			a.home.HandleKey(e)
 			a.consumeHomeActions()
 			dirty = true
@@ -6423,6 +6424,13 @@ func (a *App) saveOnboarding(username, swarmName string) {
 	a.home.SetOnboardingWorkspacePath(a.startupCWD)
 	a.home.ShowOnboardingProvider("Identity saved. Connect a provider, or press s to continue to workspace setup.")
 	a.refreshAuthModalData("Loading providers...")
+}
+
+func (a *App) refreshOnboardingWorkspaceGitReadinessBeforeSubmit(event *tcell.EventKey) {
+	if a == nil || a.home == nil || event == nil || !a.home.OnboardingWorkspaceActive() || !a.keybinds.Match(event, ui.KeybindEditorSubmit) {
+		return
+	}
+	a.refreshOnboardingWorkspaceGitReadiness()
 }
 
 func (a *App) refreshOnboardingWorkspaceGitReadiness() {
