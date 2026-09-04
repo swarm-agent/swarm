@@ -200,7 +200,7 @@ func validateFireworksMediaContractForCredential(contract provideriface.SessionM
 	if strings.TrimSpace(contract.Hash) == "" {
 		return nil
 	}
-	activeFingerprint := fireworksCredentialFingerprint(record.AccountScopeID, record.Provider, record.ID, record.Type)
+	activeFingerprint := fireworksCredentialFingerprint(record.AccountScopeID, record.Provider, record.Type, record.APIKey)
 	if contract.CredentialFingerprint != activeFingerprint {
 		return errors.New("media contract does not match the active Fireworks credential")
 	}

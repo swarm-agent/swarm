@@ -62,7 +62,7 @@ func TestSessionMediaToolSchemaAndInstructionsShareContract(t *testing.T) {
 		}
 	}
 	instructions := AppendSessionMediaInstructions("base", contract)
-	for _, expected := range []string{"media_inspect", "complete exact ready managed artifact reference", "session_id", "collection_id", "variant_id", "event_seq", "image/png", "semantics=native", "max_bytes=1024", "All unlisted media kinds"} {
+	for _, expected := range []string{"media_inspect", "complete exact ready legacy managed artifact reference", "native Artifact V3 preview reference", "session_id", "collection_id", "variant_id", "event_seq", "artifact_id", "revision_ref", "image/png", "semantics=native", "max_bytes=1024", "All unlisted media kinds"} {
 		if !strings.Contains(instructions, expected) {
 			t.Fatalf("media instructions missing %q: %s", expected, instructions)
 		}

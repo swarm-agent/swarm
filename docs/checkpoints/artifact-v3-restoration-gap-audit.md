@@ -239,7 +239,7 @@ Acceptance evidence:
 - one inspected screenshot before restart and the exact same revision after restart;
 - negative run proving author failure creates no partial ready artifact.
 
-Current state: **RED / UNVERIFIED**. Do not advance.
+Current state: **RED / UNVERIFIED**. The latest isolated journey proved one ready three-Part native V3 artifact, exact 1440×900 pixels, Desktop discovery, durable genesis replay, cursor-bearing realtime, zero Designer children, and native terminal handoff parsing, but its Fireworks continuation then rejected an equivalent duplicate credential record because the media contract fingerprint included record ID. The source repair now binds equivalent records by normalized account/provider/type/API-key material while still rejecting a changed key; focused tests pass. The exact clean-commit pooled rerun remains required, so do not advance.
 
 ### Gate 2 — ordinary Swarm turn-based iteration and alternate choice
 
