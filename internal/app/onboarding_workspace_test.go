@@ -6,12 +6,12 @@ import (
 	"swarm-refactor/swarmtui/internal/model"
 )
 
-// Requirement: onboarding completes when the requested workspace is registered
-// and active; Git readiness affects optional Git features, not workspace use.
-// Threat: coupling registration to a repository HEAD locks new users out of plain
-// directories and unborn repositories. This helper is the narrowest post-refresh
+// Requirement: onboarding releases only for an active workspace backed by a
+// committed Git repository, because every normal agent session uses managed
+// worktree isolation. The threat is admitting a plain or unborn directory that
+// cannot satisfy the runtime contract. This helper is the narrowest post-refresh
 // gate used by onboarding.
-func TestHomeModelHasActiveWorkspaceDoesNotRequireGit(t *testing.T) {
+func TestHomeModelHasActiveWorkspaceRequiresCommittedRepository(t *testing.T) {
 	for _, readiness := range []model.GitReadiness{
 		model.GitReadinessUnavailable,
 		model.GitReadinessNotRepository,
@@ -25,8 +25,9 @@ func TestHomeModelHasActiveWorkspaceDoesNotRequireGit(t *testing.T) {
 			},
 			Directories: []model.DirectoryItem{{ResolvedPath: "/repo/project", HasGit: readiness == model.GitReadinessReady || readiness == model.GitReadinessNeedsCommit, GitReadiness: readiness, IsWorkspace: true}},
 		}
-		if !homeModelHasActiveWorkspace(home, "/repo/project") {
-			t.Errorf("active workspace rejected for Git readiness %q", readiness)
+		gotReady := homeModelHasActiveWorkspace(home, "/repo/project")
+		if wantReady := readiness == model.GitReadinessReady; gotReady != wantReady {
+			t.Errorf("active workspace readiness %q = %v, want %v", readiness, gotReady, wantReady)
 		}
 		if homeModelHasActiveWorkspace(home, "/other") {
 			t.Fatal("inactive workspace must not release onboarding")

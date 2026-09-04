@@ -3,6 +3,7 @@ package ui
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -11,6 +12,20 @@ import (
 
 	"swarm-refactor/swarmtui/internal/model"
 )
+
+func initWorkspaceModalGitRepository(t *testing.T) string {
+	t.Helper()
+	path := t.TempDir()
+	for _, args := range [][]string{
+		{"-C", path, "init", "--initial-branch=main"},
+		{"-C", path, "-c", "user.name=Swarm Test", "-c", "user.email=swarm-test@localhost", "commit", "--allow-empty", "--no-gpg-sign", "-m", "Initial commit"},
+	} {
+		if output, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, output)
+		}
+	}
+	return path
+}
 
 func workspaceDirectoryPickerTestEntries() []WorkspaceModalWorkspace {
 	return []WorkspaceModalWorkspace{{
@@ -158,7 +173,35 @@ func TestWorkspaceDirectoryPickerEnterSelectsHighlightedFolderAndCtrlSDoesNothin
 	}
 }
 
+// Requirement: the TUI workspace editor must reject a plain directory before it
+// queues a catalog mutation. The threat is saving a workspace that cannot back a
+// managed worktree; this editor submission test is the narrowest UI boundary.
+func TestWorkspaceSetupRejectsNonRepositoryBeforeSave(t *testing.T) {
+	path := t.TempDir()
+	p := NewHomePage(model.EmptyHome())
+	p.ShowWorkspaceModal()
+	p.OpenWorkspaceModalSaveEditor(path, true)
+	for i := range p.workspaceModal.Editor.Fields {
+		switch p.workspaceModal.Editor.Fields[i].Key {
+		case "path":
+			p.workspaceModal.Editor.Fields[i].Value = path
+		case "name":
+			p.workspaceModal.Editor.Fields[i].Value = "plain"
+		case "save":
+			p.workspaceModal.Editor.Selected = i
+		}
+	}
+	p.HandleKey(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
+	if _, ok := p.PopWorkspaceModalAction(); ok {
+		t.Fatal("plain directory queued workspace save")
+	}
+	if !strings.Contains(p.workspaceModal.Error, "not a committed Git repository") || !strings.Contains(p.workspaceModal.Error, "managed worktrees") {
+		t.Fatalf("plain directory guidance = %q", p.workspaceModal.Error)
+	}
+}
+
 func TestWorkspaceSetupEndsWithSaveActionsAndSupportsDownNavigation(t *testing.T) {
+	path := initWorkspaceModalGitRepository(t)
 	p := NewHomePage(model.EmptyHome())
 	p.ShowWorkspaceModal()
 	p.workspaceModalNew()
@@ -178,7 +221,7 @@ func TestWorkspaceSetupEndsWithSaveActionsAndSupportsDownNavigation(t *testing.T
 	for i := range p.workspaceModal.Editor.Fields {
 		switch p.workspaceModal.Editor.Fields[i].Key {
 		case "path":
-			p.workspaceModal.Editor.Fields[i].Value = "/tmp/new-workspace"
+			p.workspaceModal.Editor.Fields[i].Value = path
 		case "name":
 			p.workspaceModal.Editor.Fields[i].Value = "new-workspace"
 		}
@@ -200,7 +243,7 @@ func TestWorkspaceSetupEndsWithSaveActionsAndSupportsDownNavigation(t *testing.T
 	for i := range p.workspaceModal.Editor.Fields {
 		switch p.workspaceModal.Editor.Fields[i].Key {
 		case "path":
-			p.workspaceModal.Editor.Fields[i].Value = "/tmp/new-workspace"
+			p.workspaceModal.Editor.Fields[i].Value = path
 		case "name":
 			p.workspaceModal.Editor.Fields[i].Value = "new-workspace"
 		}

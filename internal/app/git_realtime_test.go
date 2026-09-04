@@ -39,6 +39,15 @@ func TestGitStatusForPathClassifiesWorkspaceReadiness(t *testing.T) {
 	if !ok || status.Readiness != model.GitReadinessReady {
 		t.Fatalf("committed repository status = %#v, ok=%v", status, ok)
 	}
+
+	nested := filepath.Join(unborn, "nested")
+	if err := os.Mkdir(nested, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	status, ok = gitStatusForPath(nested)
+	if ok || status.Readiness != model.GitReadinessNotRepository || status.HasGit {
+		t.Fatalf("nested repository directory status = %#v, ok=%v", status, ok)
+	}
 }
 
 func TestGitStatusForPathClassifiesMissingGitWithoutRawCommandError(t *testing.T) {

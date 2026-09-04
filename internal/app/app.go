@@ -6457,7 +6457,7 @@ func (a *App) createOnboardingWorkspace(path string) {
 
 func homeModelHasActiveWorkspace(home model.HomeModel, path string) bool {
 	path = normalizePath(path)
-	if path == "" {
+	if path == "" || homeModelWorkspaceGitReadiness(home, path) != model.GitReadinessReady {
 		return false
 	}
 	for _, workspace := range home.Workspaces {
@@ -8701,13 +8701,17 @@ func gitStatusForPath(path string) (gitRepoStatus, bool) {
 		}
 		return gitRepoStatus{Branch: "-", Readiness: model.GitReadinessCheckFailed}, false
 	}
+	repoRoot := normalizePath(strings.TrimSpace(string(rootRaw)))
+	if repoRoot == "" || !pathsEqual(repoRoot, normalizePath(target)) {
+		return gitRepoStatus{Branch: "-", Readiness: model.GitReadinessNotRepository}, false
+	}
 	cmd := exec.CommandContext(ctx, gitPath, "--no-optional-locks", "-C", target, "status", "--porcelain=v2", "--branch")
 	raw, err := cmd.Output()
 	if err != nil {
 		return gitRepoStatus{Branch: "-", Readiness: model.GitReadinessCheckFailed}, false
 	}
 	status := parseGitStatusPorcelainV2(string(raw))
-	status.RepoRoot = normalizePath(strings.TrimSpace(string(rootRaw)))
+	status.RepoRoot = repoRoot
 	if status.HasGit {
 		headCmd := exec.CommandContext(ctx, gitPath, "--no-optional-locks", "-C", target, "rev-parse", "--verify", "HEAD")
 		if err := headCmd.Run(); err == nil {

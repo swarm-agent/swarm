@@ -395,9 +395,11 @@ func (p *HomePage) workspaceSetupWarning() string {
 	if setupPath != "" {
 		switch p.model.WorkspaceSetupGitReadiness {
 		case model.GitReadinessUnavailable:
-			return "Git isn't installed, but this workspace is ready to use. Git features will ask Swarm to install it safely when needed."
+			return "Git is required for Swarm managed worktrees. Install Git before adding or opening a workspace."
+		case model.GitReadinessNotRepository:
+			return fmt.Sprintf("%s cannot be added yet: Swarm requires a Git repository with an initial commit for managed worktrees.", setupPath)
 		case model.GitReadinessNeedsCommit:
-			return fmt.Sprintf("Opened %s. This Git repository has no commits yet, so normal workspace work is available but managed worktrees will need a first commit.", setupPath)
+			return fmt.Sprintf("%s cannot be added yet: create an initial commit after reviewing files and ignore rules; staging and commits require explicit permission.", setupPath)
 		case model.GitReadinessReady:
 			name := strings.TrimSpace(p.activeWorkspaceName())
 			if name == "" {
@@ -418,7 +420,7 @@ func (p *HomePage) workspaceSetupWarning() string {
 				}
 				return fmt.Sprintf("Opened from unsaved Git repository %s. Using %s. Run /workspace save to save the launch directory and switch to it.", setupPath, name)
 			}
-			return fmt.Sprintf("Opened %s as a normal workspace. It is not a Git repository; Git features will offer setup if you use them.", setupPath)
+			return fmt.Sprintf("%s cannot be used as a Swarm workspace until it is a Git repository with an initial commit.", setupPath)
 		}
 	}
 
@@ -438,14 +440,14 @@ func (p *HomePage) workspaceSetupWarning() string {
 		}
 		switch directory.GitReadiness {
 		case model.GitReadinessUnavailable:
-			return "Git isn't installed, but this workspace is ready to use. Git features will ask Swarm to install it safely when needed."
+			return "Git is required for Swarm managed worktrees. Reinstall or repair Swarm so the mandatory Git prerequisite is available."
 		case model.GitReadinessNeedsCommit:
-			return fmt.Sprintf("Workspace %s at %s is ready to use. Its Git repository has no commits yet, so managed worktrees will need a first commit.", name, path)
+			return fmt.Sprintf("Workspace %s at %s needs an initial commit before Swarm can isolate agent work in managed worktrees.", name, path)
 		case model.GitReadinessCheckFailed:
 			return fmt.Sprintf("Swarm could not verify Git readiness for saved workspace %s at %s. Check that Git can run there before using managed worktrees.", name, path)
 		default:
 			if !directory.HasGit {
-				return fmt.Sprintf("Workspace %s at %s is ready to use without Git. Git features will offer repository setup if you use them.", name, path)
+				return fmt.Sprintf("Workspace %s at %s is not ready: Swarm requires a committed Git repository for managed worktrees.", name, path)
 			}
 		}
 	}

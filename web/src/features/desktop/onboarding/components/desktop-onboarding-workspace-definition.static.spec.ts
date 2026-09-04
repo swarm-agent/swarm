@@ -3,6 +3,7 @@ import test from 'node:test'
 import { readFile } from 'node:fs/promises'
 
 const source = await readFile(new URL('./desktop-onboarding-gate.tsx', import.meta.url), 'utf8')
+const repositorySource = await readFile(new URL('../../../workspaces/launcher/services/workspace-repository.ts', import.meta.url), 'utf8')
 
 test('onboarding saves, refreshes, selects, finalizes, and navigates without definition polling', () => {
   assert.match(source, /await saveWorkspace\(\{/)
@@ -26,6 +27,7 @@ test('explorer workspace additions fade directly into the stable setup view', ()
   )
   assert.doesNotMatch(addFolderHandler, /setWorkspaceExplorerOpen\(false\)/)
   assert.match(addFolderHandler, /setPendingAction\('workspace'\)[\s\S]*?transitionToSetup\(\)[\s\S]*?await saveWorkspace/)
+  assert.match(addFolderHandler, /WorkspaceRepositoryPrerequisiteError[\s\S]*?setWorkspaceRepositoryState\(err\.repository\)/)
 })
 
 test('onboarding does not gate saved workspaces on definition state or show personalization copy', () => {
@@ -37,4 +39,11 @@ test('onboarding does not gate saved workspaces on definition state or show pers
   assert.doesNotMatch(source, /Router is reading the bounded workspace context/)
   assert.match(source, /Setting up your workspace…/)
   assert.match(source, /Holding the onboarding surface steady while the workspace is confirmed\./)
+  assert.match(source, /A committed Git repository is required/)
+  assert.match(source, /Initialize Git repository/)
+  assert.match(source, /Ask Swarm to help set up this repository/)
+  assert.match(source, /postDesktopV3BackgroundRouterSessionStart/)
+  assert.match(source, /launched\.session_id/)
+  assert.match(repositorySource, /review repository setup[\s\S]*?ignore rules[\s\S]*?explicit permission/i)
+  assert.doesNotMatch(source, /Git is optional|ready to use without Git/)
 })

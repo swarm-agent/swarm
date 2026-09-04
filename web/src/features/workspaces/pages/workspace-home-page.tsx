@@ -11,6 +11,14 @@ import { buildWorkspaceRouteSlugMap, workspaceRouteSlugBase } from '../launcher/
 import { formatWorkspaceDirectories, formatWorkspacePath } from '../launcher/services/workspace-format'
 import type { WorkspaceBrowseResult, WorkspaceDiscoverEntry, WorkspaceEntry } from '../launcher/types/workspace'
 import { useWorkspaceLauncher } from '../launcher/state/use-workspace-launcher'
+import {
+  WorkspaceRepositoryPrerequisiteError,
+  workspaceRepositorySetupPrompt,
+  type WorkspaceRepositoryState,
+} from '../launcher/services/workspace-repository'
+import { postDesktopV3BackgroundRouterSessionStart } from '../../desktop/session-v3/write-api'
+import { buildDesktopChatRouteOptions, getDesktopSessionCreateTarget } from '../../desktop/chat/services/chat-routing'
+import { desktopV3RoutedWorkspaceAuthority } from '../../desktop/session-v3/new-session-flow'
 import { cn } from '../../../lib/cn'
 
 interface WorkspaceModalState {
@@ -520,6 +528,7 @@ export function WorkspaceHomePage() {
     useFolderTemporarily,
     deleteWorkspace,
     saveWorkspace,
+    setupWorkspaceRepository,
     createFolder,
     moveWorkspaceToIndex,
     refresh,
@@ -532,6 +541,8 @@ export function WorkspaceHomePage() {
   const [draftName, setDraftName] = useState('')
   const [workspaceNameTouched, setWorkspaceNameTouched] = useState(false)
   const [modalError, setModalError] = useState<string | null>(null)
+  const [modalRepositoryState, setModalRepositoryState] = useState<WorkspaceRepositoryState | null>(null)
+  const [repositoryHelpBusy, setRepositoryHelpBusy] = useState(false)
   const [deleteTargetPath, setDeleteTargetPath] = useState<string | null>(null)
   const [workspaceSearch, setWorkspaceSearch] = useState('')
   const [allWorkspacesVisible, setAllWorkspacesVisible] = useState(true)
@@ -619,6 +630,7 @@ export function WorkspaceHomePage() {
     setDraftName(initialName)
     setWorkspaceNameTouched(false)
     setModalError(null)
+    setModalRepositoryState(null)
   }
 
   const startEdit = (path: string) => {
@@ -637,6 +649,7 @@ export function WorkspaceHomePage() {
     setDraftName(workspace.workspaceName)
     setWorkspaceNameTouched(false)
     setModalError(null)
+    setModalRepositoryState(null)
     setDeleteTargetPath(null)
   }
 
@@ -645,10 +658,13 @@ export function WorkspaceHomePage() {
     setDraftName('')
     setWorkspaceNameTouched(false)
     setModalError(null)
+    setModalRepositoryState(null)
+    setRepositoryHelpBusy(false)
     setDeleteTargetPath(null)
   }
 
   const pickWorkspaceFolder = (path: string) => {
+    setModalRepositoryState(null)
     setModalState((current) => {
       if (!current) {
         return current
@@ -661,6 +677,62 @@ export function WorkspaceHomePage() {
     })
     if (!workspaceNameTouched) {
       setDraftName(fallbackWorkspaceNameFromPath(path))
+    }
+  }
+
+  const initializeRepositoryForDraft = async () => {
+    const path = modalState?.workspacePath.trim() || ''
+    const expected = modalRepositoryState?.path || path
+    if (!path || !expected) return
+    try {
+      const ready = await setupWorkspaceRepository(path, expected)
+      setModalRepositoryState(ready)
+      setModalError(null)
+    } catch (error) {
+      if (error instanceof WorkspaceRepositoryPrerequisiteError) setModalRepositoryState(error.repository)
+      setModalError(error instanceof Error ? error.message : 'Failed to initialize Git repository')
+    }
+  }
+
+  const askSwarmForRepositoryHelp = async () => {
+    const repository = modalRepositoryState
+    const workspace = workspaces.find((candidate) => candidate.localWorkspaceBindingId && candidate.topologyRoutes.length > 0)
+    if (!repository || !workspace) {
+      setModalError('A ready saved workspace is required before Swarm can open a repository setup session for another folder.')
+      return
+    }
+    const route = buildDesktopChatRouteOptions({
+      hostSwarmName: 'Swarm',
+      workspacePath: workspace.path,
+      workspaceName: workspace.workspaceName,
+      topologyRoutes: workspace.topologyRoutes,
+      localWorkspaceBindingId: workspace.localWorkspaceBindingId,
+      hostSwarmId: workspace.topologyRoutes.find((candidate) => candidate.runtimeRelationship === 'self')?.runtimeSwarmId ?? workspace.topologyRoutes[0]?.runtimeSwarmId ?? null,
+    }).find((candidate) => getDesktopSessionCreateTarget(candidate).endpoint === '/v3/sessions')
+    if (!route) {
+      setModalError('The primary Swarm workspace authority is unavailable for repository setup help.')
+      return
+    }
+    setRepositoryHelpBusy(true)
+    try {
+      const clientRequestId = `desktop-workspace-repository-help:${crypto.randomUUID()}`
+      const launched = await postDesktopV3BackgroundRouterSessionStart({
+        ...desktopV3RoutedWorkspaceAuthority(workspace.path, route),
+        input: workspaceRepositorySetupPrompt(repository),
+        client_request_id: clientRequestId,
+        idempotency_key: clientRequestId,
+        agent_name: 'swarm',
+        metadata: { source: 'desktop-workspace-repository-help', requested_workspace_path: repository.path },
+        plan_mode_requested: false,
+      })
+      const workspaceSlug = workspaceSlugByPath.get(workspace.path)
+        ?? workspaceRouteSlugBase({ path: workspace.path, workspaceName: workspace.workspaceName })
+      closeModal()
+      await navigate({ to: '/$workspaceSlug/$sessionId', params: { workspaceSlug, sessionId: launched.session_id } })
+    } catch (error) {
+      setModalError(error instanceof Error ? error.message : 'Could not start repository setup session')
+    } finally {
+      setRepositoryHelpBusy(false)
     }
   }
 
@@ -761,6 +833,11 @@ export function WorkspaceHomePage() {
       })
       closeModal()
     } catch (err) {
+      if (err instanceof WorkspaceRepositoryPrerequisiteError) {
+        setModalRepositoryState(err.repository)
+        setModalError(null)
+        return
+      }
       setModalError(err instanceof Error ? err.message : 'Failed to save workspace')
     }
   }
@@ -1011,6 +1088,11 @@ export function WorkspaceHomePage() {
         error={modalError || (personalizationMessage ? actionError : null)}
         saving={Boolean(savingPath && modalState?.workspacePath && savingPath === modalState.workspacePath)}
         workspace={editingWorkspace}
+        repositoryState={modalRepositoryState}
+        repositoryBusy={Boolean(savingPath && modalState?.workspacePath && savingPath === modalState.workspacePath)}
+        repositoryHelpBusy={repositoryHelpBusy}
+        onInitializeRepository={() => { void initializeRepositoryForDraft() }}
+        onAskSwarmForRepositoryHelp={() => { void askSwarmForRepositoryHelp() }}
         personalizing={personalizing}
         personalizationMessage={personalizationMessage}
         onPersonalize={() => {
@@ -1019,7 +1101,10 @@ export function WorkspaceHomePage() {
             setModalError(err instanceof Error ? err.message : 'Failed to personalize workspaces')
           })
         }}
-        onWorkspacePathChange={(value) => setModalState((current) => (current ? { ...current, workspacePath: value } : current))}
+        onWorkspacePathChange={(value) => {
+          setModalRepositoryState(null)
+          setModalState((current) => (current ? { ...current, workspacePath: value } : current))
+        }}
         onPickWorkspaceFolder={pickWorkspaceFolder}
         onNameChange={setDraftNameTouched}
         onThemeIdChange={setThemeId}

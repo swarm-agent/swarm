@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from 'react'
 import { useNavigate } from '@tanstack/react-router'
-import { ChevronRight, Plus } from 'lucide-react'
+import { AlertTriangle, Bot, ChevronRight, GitBranch, Plus } from 'lucide-react'
 import { queryClient } from '../../../../app/query-client'
 import { Button } from '../../../../components/ui/button'
 import { Input } from '../../../../components/ui/input'
@@ -24,6 +24,14 @@ import { buildWorkspaceRouteSlugMap, workspaceRouteSlugBase } from '../../../wor
 import { formatWorkspacePath } from '../../../workspaces/launcher/services/workspace-format'
 import { agentStateQueryOptions, draftModelQueryOptions, modelOptionsQueryOptions, modelProfilesQueryOptions } from '../../../queries/query-options'
 import type { WorkspaceDiscoverEntry, WorkspaceResolution } from '../../../workspaces/launcher/types/workspace'
+import {
+  WorkspaceRepositoryPrerequisiteError,
+  workspaceRepositorySetupPrompt,
+  type WorkspaceRepositoryState,
+} from '../../../workspaces/launcher/services/workspace-repository'
+import { postDesktopV3BackgroundRouterSessionStart } from '../../session-v3/write-api'
+import { buildDesktopChatRouteOptions, getDesktopSessionCreateTarget } from '../../chat/services/chat-routing'
+import { desktopV3RoutedWorkspaceAuthority } from '../../session-v3/new-session-flow'
 
 type OnboardingStep = 'identity' | 'provider' | 'workspace'
 type CodexOAuthMode = StartCodexOAuthInput['method']
@@ -270,6 +278,8 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
   const [workspaceSearch, setWorkspaceSearch] = useState('')
   const [workspaceError, setWorkspaceError] = useState<string | null>(null)
   const [workspaceExplorerOpen, setWorkspaceExplorerOpen] = useState(false)
+  const [workspaceRepositoryState, setWorkspaceRepositoryState] = useState<WorkspaceRepositoryState | null>(null)
+  const [repositoryHelpBusy, setRepositoryHelpBusy] = useState(false)
 
   const {
     workspaces,
@@ -285,6 +295,7 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
     actionError: workspaceActionError,
     openWorkspace,
     saveWorkspace,
+    setupWorkspaceRepository,
     createFolder,
     refresh: refreshWorkspaces,
     browsePath,
@@ -623,7 +634,12 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
         await finishWithWorkspace(selectedResolution, entry.path)
       } catch (err) {
         transitionToStep('workspace')
-        setWorkspaceError(err instanceof Error ? err.message : 'Failed to save and open workspace')
+        if (err instanceof WorkspaceRepositoryPrerequisiteError) {
+          setWorkspaceRepositoryState(err.repository)
+          setWorkspaceError(null)
+        } else {
+          setWorkspaceError(err instanceof Error ? err.message : 'Failed to save and open workspace')
+        }
       } finally {
         setPendingAction(null)
       }
@@ -632,6 +648,74 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
 
   const handleUseBrowsedFolder = (path: string) => {
     handleSaveAndOpenFolder({ path, name: fallbackWorkspaceNameFromPath(path) })
+  }
+
+  const initializeOnboardingRepository = async () => {
+    const repository = workspaceRepositoryState
+    if (!repository?.path || !repository.canSetup) return
+    setPendingAction('workspace')
+    setWorkspaceError(null)
+    try {
+      const ready = await setupWorkspaceRepository(repository.path, repository.path)
+      setWorkspaceRepositoryState(ready)
+      await saveWorkspace({
+        path: ready.path,
+        name: fallbackWorkspaceNameFromPath(ready.path),
+        themeId: 'inherit',
+        makeCurrent: true,
+      })
+      await refreshWorkspaces()
+      const selectedResolution = await openWorkspace(ready.path)
+      await finishWithWorkspace(selectedResolution, ready.path)
+    } catch (error) {
+      if (error instanceof WorkspaceRepositoryPrerequisiteError) setWorkspaceRepositoryState(error.repository)
+      setWorkspaceError(error instanceof Error ? error.message : 'Failed to initialize Git repository')
+    } finally {
+      setPendingAction(null)
+    }
+  }
+
+  const askSwarmForOnboardingRepositoryHelp = async () => {
+    const repository = workspaceRepositoryState
+    const workspace = workspaces.find((candidate) => candidate.localWorkspaceBindingId && candidate.topologyRoutes.length > 0)
+    if (!repository || !workspace) {
+      setWorkspaceError('Finish onboarding with a ready Git workspace, then ask Swarm from Explorer to review this existing folder before any first commit.')
+      return
+    }
+    const route = buildDesktopChatRouteOptions({
+      hostSwarmName: status.config.swarmName || 'Swarm',
+      workspacePath: workspace.path,
+      workspaceName: workspace.workspaceName,
+      topologyRoutes: workspace.topologyRoutes,
+      localWorkspaceBindingId: workspace.localWorkspaceBindingId,
+      hostSwarmId: workspace.topologyRoutes.find((candidate) => candidate.runtimeRelationship === 'self')?.runtimeSwarmId ?? workspace.topologyRoutes[0]?.runtimeSwarmId ?? null,
+    }).find((candidate) => getDesktopSessionCreateTarget(candidate).endpoint === '/v3/sessions')
+    if (!route) {
+      setWorkspaceError('The primary Swarm workspace authority is unavailable for repository setup help.')
+      return
+    }
+    setRepositoryHelpBusy(true)
+    try {
+      const clientRequestId = `desktop-onboarding-repository-help:${crypto.randomUUID()}`
+      const launched = await postDesktopV3BackgroundRouterSessionStart({
+        ...desktopV3RoutedWorkspaceAuthority(workspace.path, route),
+        input: workspaceRepositorySetupPrompt(repository),
+        client_request_id: clientRequestId,
+        idempotency_key: clientRequestId,
+        agent_name: 'swarm',
+        metadata: { source: 'desktop-onboarding-repository-help', requested_workspace_path: repository.path },
+        plan_mode_requested: false,
+      })
+      const workspaceSlug = workspaceSlugByPath.get(workspace.path)
+        ?? workspaceRouteSlugBase({ path: workspace.path, workspaceName: workspace.workspaceName })
+      await navigate({ to: '/$workspaceSlug/$sessionId', params: { workspaceSlug, sessionId: launched.session_id } })
+      setNotice('Swarm opened a normal session to review repository setup. Return here after a safe first commit exists.')
+      setWorkspaceRepositoryState(null)
+    } catch (error) {
+      setWorkspaceError(error instanceof Error ? error.message : 'Could not start repository setup session')
+    } finally {
+      setRepositoryHelpBusy(false)
+    }
   }
 
   const openWorkspaceExplorer = () => {
@@ -1174,6 +1258,31 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
                         actionLabel={workspaceLoadError ? 'Reload workspaces' : workspaceActionError ? 'Try browsing again' : 'Dismiss'}
                         onAction={workspaceLoadError ? retryWorkspaceLoad : workspaceActionError ? retryBrowsePath : () => setWorkspaceError(null)}
                       />
+                    ) : null}
+
+                    {workspaceRepositoryState && workspaceRepositoryState.state !== 'ready' ? (
+                      <section className="grid gap-3 rounded-2xl border border-[var(--app-warning-border)] bg-[var(--app-warning-bg)] px-4 py-4" role="alert" aria-live="polite">
+                        <div className="flex items-start gap-3">
+                          <AlertTriangle size={18} className="mt-0.5 shrink-0 text-[var(--app-warning)]" />
+                          <div className="grid gap-1">
+                            <h2 className="text-sm font-semibold text-[var(--app-text)]">A committed Git repository is required</h2>
+                            <p className="text-sm leading-6 text-[var(--app-text-muted)]">Swarm isolates agent work in managed worktrees. {workspaceRepositoryState.message}</p>
+                          </div>
+                        </div>
+                        {workspaceRepositoryState.canSetup ? (
+                          <Button type="button" onClick={() => void initializeOnboardingRepository()} disabled={submitting || repositoryHelpBusy}>
+                            <GitBranch size={15} />
+                            Initialize Git repository
+                          </Button>
+                        ) : workspaceRepositoryState.state === 'git_unavailable' ? (
+                          <p className="text-sm font-medium text-[var(--app-warning)]">Repair or reinstall Swarm so the mandatory Git prerequisite is available, then retry.</p>
+                        ) : (
+                          <Button type="button" variant="outline" onClick={() => void askSwarmForOnboardingRepositoryHelp()} disabled={submitting || repositoryHelpBusy}>
+                            <Bot size={15} />
+                            {repositoryHelpBusy ? 'Starting session…' : 'Ask Swarm to help set up this repository'}
+                          </Button>
+                        )}
+                      </section>
                     ) : null}
 
                     <section className="grid gap-3">

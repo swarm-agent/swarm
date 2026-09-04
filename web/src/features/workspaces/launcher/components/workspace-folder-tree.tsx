@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
-import { ArrowUp, ChevronRight, Folder, FolderPlus, Home, Plus, RefreshCw, Search } from 'lucide-react'
+import { AlertTriangle, ArrowUp, ChevronRight, Folder, FolderPlus, Home, Plus, RefreshCw, Search } from 'lucide-react'
 import { Button } from '../../../../components/ui/button'
 import { cn } from '../../../../lib/cn'
 import { formatWorkspacePath } from '../services/workspace-format'
@@ -122,6 +122,7 @@ export function WorkspaceFolderTree({
     })
   }
 
+  const currentRepositoryHint = 'Swarm verifies a repository root and initial commit before accepting it. Empty non-Git folders can be initialized safely; existing files are never staged or committed silently.'
   const workspaceActionLabel = currentBusy
     ? 'Working…'
     : currentSaved
@@ -299,6 +300,12 @@ export function WorkspaceFolderTree({
         <div className="mb-2 truncate text-[11px] text-[var(--app-text-subtle)]" title={currentPath || undefined}>
           {currentPath ? `Current: ${currentPathLabel}` : 'Choose a folder to enable workspace actions'}
         </div>
+        {currentPath && !currentSaved && !browserLoading ? (
+          <div className="mb-2 flex items-start gap-2 rounded-lg border border-[var(--app-warning-border)] bg-[var(--app-warning-bg)] px-2.5 py-2 text-xs leading-5 text-[var(--app-text-muted)]" role="alert">
+            <AlertTriangle size={14} className="mt-0.5 shrink-0 text-[var(--app-warning)]" />
+            <span><strong className="text-[var(--app-text)]">Git required.</strong> Swarm isolates agent work in managed worktrees. {currentRepositoryHint}</span>
+          </div>
+        ) : null}
         <Button
           type="button"
           className="h-9 min-h-0 w-full rounded-md text-sm"

@@ -245,10 +245,27 @@ func (p *HomePage) handleOnboardingWorkspaceKey(ev *tcell.EventKey) {
 		p.onboarding.Error = "The launch directory is unavailable; restart Swarm from the workspace you want to use."
 		return
 	}
+	if p.model.WorkspaceSetupGitReadiness != model.GitReadinessReady {
+		p.onboarding.Error = onboardingGitPrerequisiteMessage(p.model.WorkspaceSetupGitReadiness, path)
+		return
+	}
 	p.pendingHomeAction = &HomeAction{Kind: HomeActionCreateOnboardingWorkspace, WorkspacePath: path}
 	p.onboarding.Pending = true
 	p.onboarding.Status = "Creating workspace and loading Swarm..."
 	p.onboarding.Error = ""
+}
+
+func onboardingGitPrerequisiteMessage(readiness model.GitReadiness, path string) string {
+	switch readiness {
+	case model.GitReadinessUnavailable:
+		return "Git is required for Swarm managed worktrees. Install Git, then restart workspace setup."
+	case model.GitReadinessNotRepository:
+		return fmt.Sprintf("%s is not a Git repository. Initialize an empty folder with an initial commit, or ask Swarm from a ready workspace to review existing files and ignore rules before any Git mutation.", path)
+	case model.GitReadinessNeedsCommit:
+		return fmt.Sprintf("%s has no initial commit. Ask Swarm to review existing files and ignore rules; Git staging and commits require explicit permission.", path)
+	default:
+		return fmt.Sprintf("Swarm could not verify that %s is a committed Git repository. Fix Git readiness and retry.", path)
+	}
 }
 
 func (p *HomePage) advanceOnboardingFocus(delta int) {
@@ -368,7 +385,7 @@ func (p *HomePage) drawOnboarding(s tcell.Screen) {
 	if p.onboarding.Phase == onboardingPhaseProvider {
 		help = "←/→ select provider • Enter connect • s/Esc skip to workspace"
 	} else if p.onboarding.Phase == onboardingPhaseWorkspace {
-		help = "Enter create workspace • Git is optional"
+		help = "Enter verify workspace • Git repository + initial commit required"
 	}
 	DrawText(s, rect.X+3, rect.Y+rect.H-2, rect.W-6, p.theme.TextMuted, clampEllipsis(help, rect.W-6))
 }
@@ -392,7 +409,7 @@ func (p *HomePage) drawOnboardingHeader(s tcell.Screen, rect Rect) {
 	subtitles := []string{
 		"Start with your name and the name of this Swarm.",
 		"Connect now, or skip ahead. Your workspace is still required.",
-		"Start working now. Git features can be set up later when you need them.",
+		"Swarm uses managed worktrees, so choose a Git repository with an initial commit.",
 	}
 	DrawText(s, rect.X+3, rect.Y+4, rect.W-6, p.theme.Text, titles[step-1])
 	DrawText(s, rect.X+3, rect.Y+5, rect.W-6, p.theme.TextMuted, clampEllipsis(subtitles[step-1], rect.W-6))
@@ -498,6 +515,12 @@ func (p *HomePage) drawOnboardingWorkspace(s tcell.Screen, content Rect) {
 	if p.onboarding.Pending {
 		DrawText(s, card.X+2, card.Y+3, card.W-4, p.theme.Warning, "Please wait — confirming API completion and loading workspace state...")
 	} else {
-		DrawText(s, card.X+2, card.Y+3, card.W-4, p.theme.Text, "Git is optional now; Swarm will offer setup before Git features need it")
+		message := "Git repository + initial commit required for managed worktrees"
+		style := p.theme.Warning
+		if p.model.WorkspaceSetupGitReadiness == model.GitReadinessReady {
+			message = "Git repository ready for managed worktrees"
+			style = p.theme.Text
+		}
+		DrawText(s, card.X+2, card.Y+3, card.W-4, style, message)
 	}
 }

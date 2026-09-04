@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
-import { ArrowUp, ChevronDown, ChevronRight, Folder, FolderPlus, Home, RefreshCw, Search, Sparkles, Trash2 } from 'lucide-react'
+import { AlertTriangle, ArrowUp, Bot, ChevronDown, ChevronRight, Folder, FolderPlus, GitBranch, Home, RefreshCw, Search, Sparkles, Trash2 } from 'lucide-react'
 import { Card } from '../../../../components/ui/card'
 import { Button } from '../../../../components/ui/button'
 import { ModalCloseButton } from '../../../../components/ui/modal-close-button'
@@ -8,6 +8,7 @@ import { cn } from '../../../../lib/cn'
 import { formatWorkspacePath } from '../services/workspace-format'
 import { createWorkspaceThemeStyle, WORKSPACE_THEME_OPTIONS } from '../services/workspace-theme'
 import type { WorkspaceBrowseResult, WorkspaceEntry } from '../types/workspace'
+import type { WorkspaceRepositoryState } from '../services/workspace-repository'
 import { WorkspaceDefinitionStatus } from './workspace-definition-status'
 
 export interface WorkspaceEditorAvailableDirectory {
@@ -33,6 +34,11 @@ interface WorkspaceEditorModalProps {
   error: string | null
   saving: boolean
   workspace?: WorkspaceEntry | null
+  repositoryState?: WorkspaceRepositoryState | null
+  repositoryBusy?: boolean
+  repositoryHelpBusy?: boolean
+  onInitializeRepository?: () => void
+  onAskSwarmForRepositoryHelp?: () => void
   personalizing?: boolean
   personalizationMessage?: string | null
   onPersonalize?: () => void
@@ -103,6 +109,11 @@ export function WorkspaceEditorModal({
   error,
   saving,
   workspace = null,
+  repositoryState = null,
+  repositoryBusy = false,
+  repositoryHelpBusy = false,
+  onInitializeRepository,
+  onAskSwarmForRepositoryHelp,
   personalizing = false,
   personalizationMessage = null,
   onPersonalize,
@@ -143,6 +154,8 @@ export function WorkspaceEditorModal({
     ...WORKSPACE_THEME_OPTIONS,
   ]
   const selectedWorkspaceIndex = workspaces.findIndex((workspace) => workspace.path === workspacePath)
+  const repositoryReady = mode === 'edit' || repositoryState?.state === 'ready'
+  const repositoryKnownNotReady = mode === 'create' && Boolean(repositoryState && repositoryState.state !== 'ready')
   const currentPath = browser?.resolvedPath ?? ''
   const currentPathLabel = currentPath ? formatWorkspacePath(currentPath) : '—'
   const visiblePickerEntries = useMemo(() => {
@@ -439,6 +452,43 @@ export function WorkspaceEditorModal({
                 </label>
               </section>
 
+              {mode === 'create' && repositoryState ? (
+                <section
+                  className={`grid gap-3 rounded-2xl border px-4 py-4 ${repositoryReady ? 'border-[var(--app-success-border)] bg-[var(--app-success-bg)]' : 'border-[var(--app-warning-border)] bg-[var(--app-warning-bg)]'}`}
+                  role={repositoryReady ? 'status' : 'alert'}
+                  aria-live="polite"
+                >
+                  <div className="flex items-start gap-3">
+                    {repositoryReady ? <GitBranch size={18} className="mt-0.5 shrink-0 text-[var(--app-success)]" /> : <AlertTriangle size={18} className="mt-0.5 shrink-0 text-[var(--app-warning)]" />}
+                    <div className="grid gap-1">
+                      <h3 className="text-sm font-semibold text-[var(--app-text)]">
+                        {repositoryReady ? 'Git repository ready' : 'A committed Git repository is required'}
+                      </h3>
+                      <p className="text-sm leading-6 text-[var(--app-text-muted)]">
+                        {repositoryReady
+                          ? 'This folder has a Git HEAD and can use Swarm managed worktrees.'
+                          : <>Swarm isolates agent work in managed worktrees. {repositoryState.message}</>}
+                      </p>
+                    </div>
+                  </div>
+                  {!repositoryReady && repositoryState?.canSetup && onInitializeRepository ? (
+                    <Button type="button" onClick={onInitializeRepository} disabled={repositoryBusy || repositoryHelpBusy}>
+                      {repositoryBusy ? <RefreshCw size={14} className="animate-spin" /> : <GitBranch size={14} />}
+                      {repositoryBusy ? 'Initializing…' : 'Initialize Git repository'}
+                    </Button>
+                  ) : null}
+                  {!repositoryReady && repositoryState && repositoryState.state !== 'git_unavailable' && !repositoryState.canSetup && onAskSwarmForRepositoryHelp ? (
+                    <Button type="button" variant="outline" onClick={onAskSwarmForRepositoryHelp} disabled={repositoryBusy || repositoryHelpBusy}>
+                      {repositoryHelpBusy ? <RefreshCw size={14} className="animate-spin" /> : <Bot size={14} />}
+                      {repositoryHelpBusy ? 'Starting session…' : 'Ask Swarm to help set up this repository'}
+                    </Button>
+                  ) : null}
+                  {!repositoryReady && repositoryState?.state === 'git_unavailable' ? (
+                    <p className="text-sm font-medium text-[var(--app-warning)]">Repair or reinstall Swarm so the mandatory Git prerequisite is available, then retry.</p>
+                  ) : null}
+                </section>
+              ) : null}
+
               {mode === 'edit' && workspace ? (
                 <section className="grid gap-3">
                   <div className="grid gap-1 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-start">
@@ -562,7 +612,7 @@ export function WorkspaceEditorModal({
                 Use as workspace folder
               </Button>
             ) : (
-              <Button type="button" onClick={onSubmit} disabled={saving}>
+              <Button type="button" onClick={onSubmit} disabled={saving || repositoryKnownNotReady || repositoryBusy || repositoryHelpBusy}>
                 {saving ? 'Saving…' : mode === 'create' ? 'Create workspace' : 'Save workspace'}
               </Button>
             )}
