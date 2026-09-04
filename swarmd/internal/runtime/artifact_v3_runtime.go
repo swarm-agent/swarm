@@ -680,6 +680,34 @@ func (a *artifactV3RuntimeAdapter) OpenTurn(ctx context.Context, principal api.A
 	return api.ArtifactV3Turn{TurnID: projection.Turn.TurnID, Revision: projection.Turn.EventSeq, Status: projection.Turn.Status, Intent: request.Intent, TargetPartIDs: canonicalStrings(request.TargetPartIDs), BaseCommitOID: projection.Turn.BaseCommitOID, CreatedAt: projection.Turn.CreatedAt, UpdatedAt: projection.Turn.UpdatedAt}, nil
 }
 
+func (a *artifactV3RuntimeAdapter) ReadArtifactV3DirectRevision(ctx context.Context, accountScopeID, userID, sessionID, artifactID, revisionRef string) (map[string][]byte, []pebblestore.ArtifactV3Part, error) {
+	revision, err := a.GetRevision(ctx, api.ArtifactV3Principal{AccountScopeID: accountScopeID, UserID: userID}, sessionID, artifactID, revisionRef)
+	if err != nil {
+		return nil, nil, err
+	}
+	repository, err := pebblestore.OpenArtifactV3Repository(ctx, a.repositoryRoot, artifactID, pebblestore.ArtifactV3Owner{AccountScopeID: accountScopeID, UserID: userID, SessionID: sessionID}, a.limits)
+	if err != nil {
+		return nil, nil, err
+	}
+	page, err := repository.ListFiles(ctx, revision.CommitOID, "", 0)
+	if err != nil || page.NextCursor != "" {
+		if err == nil {
+			err = pebblestore.ErrArtifactV3Quota
+		}
+		return nil, nil, err
+	}
+	project := make(map[string][]byte, len(page.Files))
+	for _, file := range page.Files {
+		body, readErr := repository.ReadFile(ctx, revision.CommitOID, file.Path)
+		if readErr != nil {
+			return nil, nil, readErr
+		}
+		project[file.Path] = body
+	}
+	parts := append([]pebblestore.ArtifactV3Part(nil), revision.Manifest.Parts...)
+	return project, parts, nil
+}
+
 func (a *artifactV3RuntimeAdapter) SelectArtifactV3DirectHead(ctx context.Context, accountScopeID, userID, sessionID, artifactID, turnID, candidateID string) (tool.ArtifactV3Revision, error) {
 	repository, ok, err := a.sessions.GetArtifactV3Repository(accountScopeID, userID, artifactID)
 	if err != nil {

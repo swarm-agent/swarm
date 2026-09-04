@@ -15,6 +15,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
 var (
@@ -189,6 +191,9 @@ type ArtifactV3PreviewEvidenceReader interface {
 }
 type ArtifactV3DirectHeadSelector interface {
 	SelectArtifactV3DirectHead(context.Context, string, string, string, string, string, string) (ArtifactV3Revision, error)
+}
+type ArtifactV3DirectRevisionReader interface {
+	ReadArtifactV3DirectRevision(context.Context, string, string, string, string, string) (map[string][]byte, []pebblestore.ArtifactV3Part, error)
 }
 
 type ArtifactV3AuthorFile struct {

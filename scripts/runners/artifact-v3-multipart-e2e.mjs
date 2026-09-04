@@ -30,6 +30,7 @@ const browserExecutable = String(option('--browser-executable', process.env.PLAY
 const timeoutMs = Number(option('--timeout-ms', process.env.SWARM_RUNNER_TIMEOUT_MS || '600000'))
 const preflight = flag('--preflight')
 const stage = String(option('--stage', 'full')).trim().toLowerCase()
+const noDesignerStage = stage === 'basic-html' || stage === 'targeted-part'
 const headless = !flag('--headful')
 const suppliedToken = String(process.env.SWARM_RUNNER_TOKEN || '').trim()
 const testID = `artifact-v3-three-animated-parts-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`
@@ -109,13 +110,13 @@ async function configureModels() {
   const providerStatus = providers.find((item) => text(item?.id).toLowerCase() === provider)
   assert(providerStatus && providerStatus.runnable !== false, `provider ${provider} is not runnable through the synced testbench credential`)
   const records = (await api('GET', `/v1/model/catalog?provider=${encodeURIComponent(provider)}&limit=500`, undefined, 'read model catalog')).body?.records || []
-  const resolvedActionModel = stage === 'basic-html' ? basicHTMLActionModel : actionModel
+  const resolvedActionModel = noDesignerStage ? basicHTMLActionModel : actionModel
   const action = modelAssignment(records, resolvedActionModel, actionThinking, 'Swarm action')
-  const designer = stage === 'basic-html' ? null : modelAssignment(records, designerModel, designerThinking, 'Designer')
+  const designer = noDesignerStage ? null : modelAssignment(records, designerModel, designerThinking, 'Designer')
   const settings = (await api('GET', '/v1/agent-model-settings', undefined, 'read model settings')).body?.agent_model_settings || {}
   originalSwarmSettings = settings.swarm || null
   originalDesignerSettings = settings.system_agents?.designer || null
-  assert(originalSwarmSettings && (stage === 'basic-html' || originalDesignerSettings), 'canonical Swarm or Designer model setting is missing')
+  assert(originalSwarmSettings && (noDesignerStage || originalDesignerSettings), 'canonical Swarm or Designer model setting is missing')
   modelSettingsChanged = true
   await api('PATCH', '/v1/agent-model-settings', { swarm: { action, plan: originalSwarmSettings.plan || action } }, 'configure Fireworks Swarm model')
   if (designer) await api('PATCH', '/v1/agent-model-settings', { system_agents: { designer } }, 'configure Fireworks Designer model')
@@ -123,14 +124,14 @@ async function configureModels() {
   assert(configured?.swarm?.action?.model === action.model && (!designer || configured?.system_agents?.designer?.model === designer.model), 'Fireworks model settings did not persist')
   result.model = designer ? { action, designer } : { action }
   gate('provider', 'PASS', `${provider}/${action.model}`)
-  gate('model-settings', 'PASS', stage === 'basic-html' ? 'Swarm action model configured' : 'Swarm and Designer models configured')
+  gate('model-settings', 'PASS', noDesignerStage ? 'Swarm action model configured' : 'Swarm and Designer models configured')
   return action
 }
 
 async function restoreModels() {
   if (!modelSettingsChanged) return
   await api('PATCH', '/v1/agent-model-settings', { swarm: originalSwarmSettings }, 'restore Swarm model')
-  if (stage !== 'basic-html') await api('PATCH', '/v1/agent-model-settings', { system_agents: { designer: originalDesignerSettings } }, 'restore Designer model')
+  if (!noDesignerStage) await api('PATCH', '/v1/agent-model-settings', { system_agents: { designer: originalDesignerSettings } }, 'restore Designer model')
   gate('model-settings-restored', 'PASS')
   modelSettingsChanged = false
 }
@@ -377,14 +378,14 @@ async function screenshotPreview(sessionID, artifactID, revision, expectedLabel 
   assert(previewPath.startsWith('/v3/sessions/') && previewPath.includes('/artifacts-v3/') && previewPath.includes('/preview/access/'), 'Artifact V3 preview access response is invalid')
   const previewPage = await context.newPage()
   await previewPage.goto(`${desktopURL}${previewPath}`, { waitUntil: 'networkidle', timeout: 60000 })
-  const sample = stage === 'basic-html'
-    ? await staticVisualSample(previewPage, revision.manifest?.parts || [])
+  const sample = noDesignerStage
+    ? await staticVisualSample(previewPage, revision.manifest?.parts || [], expectedLabel)
     : await animationSample(previewPage, expectedLabel)
   await previewPage.close()
   return sample
 }
 
-async function staticVisualSample(previewPage, parts) {
+async function staticVisualSample(previewPage, parts, expectedLabel = '') {
   const targets = parts.map((part) => ({ id: text(part?.id), label: text(part?.label), selector: text(part?.locator?.value) }))
   assert(targets.length === 3 && targets.every((part) => part.id && part.selector), 'static preview requires exactly three stable selector Parts')
   for (const part of targets) await previewPage.locator(part.selector).first().waitFor({ state: 'visible', timeout: 30000 })
@@ -401,6 +402,7 @@ async function staticVisualSample(previewPage, parts) {
   await screenshot(previewPage, 'basic-html-root-preview')
   assert(sample.scrollWidth <= sample.innerWidth + 2 && sample.scrollHeight <= sample.innerHeight + 2, `static complete preview overflows viewport ${sample.innerWidth}x${sample.innerHeight} with document ${sample.scrollWidth}x${sample.scrollHeight}`)
   assert(sample.bodyText.includes('Team') && sample.bodyText.includes('$29'), 'static preview is missing the required Team $29 pricing choice')
+  assert(!expectedLabel || sample.bodyText.includes(expectedLabel), `static preview is missing requested visible label ${expectedLabel}`)
   assert(sample.rows.some((row) => row.text.includes('Team') && row.text.includes('$29')), 'no declared Part contains the required Team $29 pricing choice')
   for (const row of sample.rows) {
     assert(row.text.length >= 8 && row.fontSize >= 12 && row.color && row.color !== 'rgba(0, 0, 0, 0)', `${row.id} static content is unreadable`)
@@ -410,7 +412,7 @@ async function staticVisualSample(previewPage, parts) {
 }
 
 function initialPrompt() {
-  if (stage === 'basic-html') {
+  if (noDesignerStage) {
     return [
       'Create one polished static HTML artifact for a small software product page.',
       'It must have three useful visible sections: a hero introducing the product, pricing with three readable choices including Team $29, and a footer with a short call to action.',
@@ -433,6 +435,14 @@ function initialPrompt() {
 }
 
 function visibleChangeRequest() {
+  if (noDesignerStage) {
+    return [
+      'Visible change request from the user: change only the Pricing part intent to a vivid magenta treatment and add the exact readable label TARGETED PRICING TURN inside the existing Pricing section.',
+      'Use the exact native Artifact V3 reference and current revision already supplied by the Artifact Studio draft.',
+      'Use manage_artifact read_v3 to read that exact complete HTML, preserve all three stable Part IDs, then use revise_v3 with target_part_ids=["pricing"] and the complete corrected HTML.',
+      'Create exactly one exact-base complete candidate. Inspect its pixels, but do not select it or move the selected head. Do not delegate to Designer and do not use V1/V2 artifact identity.',
+    ].join(' ')
+  }
   return [
     'Visible change request from the user: change the Pricing part to a vivid magenta treatment and add the exact readable label TARGETED PRICING TURN inside #pricing.',
     'Keep Hero and Footer present, readable, and animated. Keep all three stable part IDs and their data-motion-marker animations working.',
@@ -526,7 +536,7 @@ async function verifyStudioTurns(sessionID, artifactID, turn, candidate, rootRev
 async function runLive() {
   assert(apiURL && /^https?:\/\//.test(apiURL), '--api-url is required for the live journey')
   assert(desktopURL && /^https?:\/\//.test(desktopURL), '--desktop-url is invalid')
-  assert(['basic-html', 'full'].includes(stage), '--stage must be basic-html or full')
+  assert(['basic-html', 'targeted-part', 'full'].includes(stage), '--stage must be basic-html, targeted-part, or full')
   assert(Number.isFinite(timeoutMs) && timeoutMs >= 300000 && timeoutMs <= 600000, '--timeout-ms must be between 300000 and 600000')
   await auth()
   const assignment = await configureModels()
@@ -581,7 +591,7 @@ async function runLive() {
   assert(rootDetail.head?.build?.status === 'succeeded' && rootDetail.head?.validation?.status === 'valid', 'root head lacks whole-project build/render evidence')
   gate('build-preview', 'PASS', `revision=${rootRevision.revision_ref}`)
   const childrenAfterRoot = delegatedDesigners(await bootstrapSessions(), session.sessionID)
-  const expectedInitialDesigners = stage === 'basic-html' ? 0 : 1
+  const expectedInitialDesigners = noDesignerStage ? 0 : 1
   log(`OBSERVE designer_children=${childrenAfterRoot.length}`)
   assert(childrenAfterRoot.length === expectedInitialDesigners, `initial ${stage} turn launched ${childrenAfterRoot.length} Designers instead of exactly ${expectedInitialDesigners}`)
   gate('no-designer', expectedInitialDesigners === 0 ? 'PASS' : 'SKIP', `children=${childrenAfterRoot.length}`)
@@ -590,7 +600,7 @@ async function runLive() {
   if (childrenAfterRoot[0]?.id) result.ids.initial_designer_session_id = text(childrenAfterRoot[0].id)
   result.revisions.root = rootRevision
   result.animations.root = await screenshotPreview(session.sessionID, artifact.id, rootRevision)
-  if (stage === 'basic-html') result.gates.no_designer_delegation = true
+  if (noDesignerStage) result.gates.no_designer_delegation = true
   else result.gates.one_initial_designer = true
   result.gates.root_complete_preview = true
   if (stage === 'basic-html') {
@@ -614,7 +624,7 @@ async function runLive() {
     log('JOURNEY basic-html PASS')
     return
   }
-  result.gates.three_animated_parts = true
+  if (!noDesignerStage) result.gates.three_animated_parts = true
 
   const followSnapshot = await submitSidebarIteration(session.sessionID, artifact.id, rootRevision)
   const withCandidate = await detail(session.sessionID, artifact.id)
@@ -622,16 +632,25 @@ async function runLive() {
   assert((withCandidate.turns || []).length === 2, `Artifact has ${(withCandidate.turns || []).length} turns instead of initial plus follow-up`)
   const { turn, candidate } = targetedTurn(withCandidate, rootRevision)
   const childrenAfterFollowup = delegatedDesigners(await bootstrapSessions(), session.sessionID)
-  assert(childrenAfterFollowup.length === 2, `targeted follow-up left ${childrenAfterFollowup.length} total Designers; expected one new Designer after the initial one`)
-  const newChild = childrenAfterFollowup.find((child) => !childrenAfterRoot.some((prior) => text(prior?.id) === text(child?.id)))
-  assert(newChild?.id, 'targeted follow-up did not produce one distinct Designer child')
-  result.ids.followup_designer_session_id = text(newChild.id)
+  const expectedFollowupDesigners = noDesignerStage ? 0 : 2
+  assert(childrenAfterFollowup.length === expectedFollowupDesigners, `targeted follow-up left ${childrenAfterFollowup.length} total Designers; expected ${expectedFollowupDesigners}`)
+  if (!noDesignerStage) {
+    const newChild = childrenAfterFollowup.find((child) => !childrenAfterRoot.some((prior) => text(prior?.id) === text(child?.id)))
+    assert(newChild?.id, 'targeted follow-up did not produce one distinct Designer child')
+    result.ids.followup_designer_session_id = text(newChild.id)
+  }
   result.ids.turn_id = turn.turn_id
   result.ids.candidate_id = candidate.candidate_id
   result.revisions.candidate = candidate.revision
   result.animations.candidate = await screenshotPreview(session.sessionID, artifact.id, candidate.revision, 'TARGETED PRICING TURN')
   assert(!JSON.stringify(result.animations.root).includes('TARGETED PRICING TURN'), 'root revision was mutated by the targeted follow-up')
   await verifyStudioTurns(session.sessionID, artifact.id, turn, candidate, rootRevision)
+  if (stage === 'targeted-part') {
+    result.gates.targeted_part_candidate = true
+    result.gates.exact_base_ancestry = true
+    result.gates.head_unchanged_before_selection = true
+    result.gates.no_designer_delegation = true
+  }
 
   const messages = followSnapshot.messages_by_session?.[session.sessionID] || []
   const userFollowup = [...messages].reverse().find((message) => text(message?.role).toLowerCase() === 'user' && text(message?.content).includes('TARGETED PRICING TURN'))
@@ -645,7 +664,8 @@ async function runLive() {
   result.realtime = { recorded: records.length, artifact_events: liveEvents.length, replay_events: artifactEvents.length }
   result.gates.sidebar_one_part_message = true
   result.gates.exact_child_revision = true
-  result.gates.unrelated_parts_preserved_and_animated = true
+  if (noDesignerStage) result.gates.unrelated_parts_preserved = true
+  else result.gates.unrelated_parts_preserved_and_animated = true
   result.gates.http_native_v3 = true
   result.gates.realtime_native_v3 = true
   result.gates.no_legacy_writes = true

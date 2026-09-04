@@ -236,6 +236,16 @@ func manageArtifactDefinition() Definition {
 		"required":             []string{"session_id", "collection_id", "variant_id", "event_seq"},
 		"additionalProperties": false,
 	}
+	artifactV3Reference := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"session_id":   map[string]any{"type": "string"},
+			"artifact_id":  map[string]any{"type": "string"},
+			"revision_ref": map[string]any{"type": "string"},
+		},
+		"required":             []string{"session_id", "artifact_id", "revision_ref"},
+		"additionalProperties": false,
+	}
 	return Definition{
 		Type:        "function",
 		Name:        "manage_artifact",
@@ -243,7 +253,7 @@ func manageArtifactDefinition() Definition {
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"action":           map[string]any{"type": "string", "enum": []string{"create", "image_capabilities", "generate_image", "export_html_stills", "export_html_animation", "export_html_animation_fallback", "cancel_html_animation_export", "derive_text", "read_part", "publish_part", "read_parts", "publish_parts", "select_parts", "list_presets", "list", "search", "get", "read", "materialize", "materialize_batch", "promote", "publish_workspace", "select", "delete"}, "description": "Artifact operation. create publishes one complete text/html document through native Artifact V3 and requires stable semantic region IDs; it is not an image action. derive_text applies bounded exact replacements to one exact ready UTF-8 text source and publishes a complete ready derived artifact while preserving every unedited source byte and exact lineage. Focused managed Designers use read_part then publish_part for one selected part, or read_parts then publish_parts for a bounded multi-part selection; those actions are bound entirely to trusted exact composition context and publish one atomic candidate. Supports search, materialize/materialize_batch, and publish_workspace. export_html_stills captures declared swarm.capture/v1 states into managed PNGs. export_html_animation_fallback preflights one swarm.animation/v1 source and publishes its sampled first frame as an exact-lineage render-ready PNG fallback. export_html_animation captures a bounded deterministic swarm.animation/v1 timeline into one silent managed MP4 valid as a managed video timeline clip."},
+				"action":           map[string]any{"type": "string", "enum": []string{"create", "read_v3", "revise_v3", "image_capabilities", "generate_image", "export_html_stills", "export_html_animation", "export_html_animation_fallback", "cancel_html_animation_export", "derive_text", "read_part", "publish_part", "read_parts", "publish_parts", "select_parts", "list_presets", "list", "search", "get", "read", "materialize", "materialize_batch", "promote", "publish_workspace", "select", "delete"}, "description": "Artifact operation. create publishes one complete text/html document through native Artifact V3 and requires stable semantic region IDs; it is not an image action. read_v3 returns the bounded complete HTML and Parts for one exact native V3 revision. revise_v3 takes that exact reference, complete corrected HTML, and target Part IDs, and publishes one exact-base candidate without moving the selected head. derive_text applies bounded exact replacements to one exact ready UTF-8 text source and publishes a complete ready derived artifact while preserving every unedited source byte and exact lineage. Focused managed Designers use read_part then publish_part for one selected part, or read_parts then publish_parts for a bounded multi-part selection; those actions are bound entirely to trusted exact composition context and publish one atomic candidate. Supports search, materialize/materialize_batch, and publish_workspace. export_html_stills captures declared swarm.capture/v1 states into managed PNGs. export_html_animation_fallback preflights one swarm.animation/v1 source and publishes its sampled first frame as an exact-lineage render-ready PNG fallback. export_html_animation captures a bounded deterministic swarm.animation/v1 timeline into one silent managed MP4 valid as a managed video timeline clip."},
 				"prompt":           map[string]any{"type": "string", "maxLength": manageArtifactMaxPromptRunes, "description": "Image prompt required only for generate_image. For a remix, describe only the requested changes while preserving the attached exact source through all source_* fields."},
 				"capability_token": map[string]any{"type": "string", "description": "Fresh token returned by image_capabilities; required for each Google generate_image call, including every repeated remix"},
 				"image_settings": map[string]any{"type": "object", "properties": map[string]any{
@@ -276,6 +286,8 @@ func manageArtifactDefinition() Definition {
 				"source_collection_id":   map[string]any{"type": "string", "description": "For every image remix or lineage operation, copy the opaque source collection from the same reusable exact ready reference"},
 				"source_variant_id":      map[string]any{"type": "string", "description": "For every image remix or lineage operation, copy the opaque source variant from the same reusable exact ready reference"},
 				"source_event_seq":       map[string]any{"type": "integer", "minimum": 1, "description": "For every image remix or lineage operation, copy the exact ready event sequence from the same reusable source reference"},
+				"artifact_v3_reference":  artifactV3Reference,
+				"target_part_ids":        map[string]any{"type": "array", "minItems": 1, "maxItems": 256, "items": map[string]any{"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$"}, "uniqueItems": true, "description": "Native Artifact V3 Part IDs expressing revision intent; required for revise_v3."},
 				"event_seq":              map[string]any{"type": "integer", "minimum": 1, "description": "Exact ready event sequence. For get/read/materialize/promote/export_html_stills/export_html_animation of an attached ready artifact, copy this together with session_id, collection_id, and variant_id from the same returned reference."},
 				"query":                  map[string]any{"type": "string", "maxLength": 1024, "description": "Optional authenticated cross-session metadata search across collection and variant display fields; search results are explicit candidates and ready items carry complete exact references."},
 				"status":                 map[string]any{"type": "string", "description": "Optional list/search filter: staging|ready|failed|unavailable"},
@@ -347,7 +359,7 @@ func (r *Runtime) executeManageArtifact(ctx context.Context, scope WorkspaceScop
 			return "", errors.New("manage_artifact animation_profile is valid only for create, create_package, publish_workspace, or derive_text; export actions inherit the exact source animation profile and must omit animation_profile")
 		}
 	}
-	if actionName != "list_presets" && actionName != "image_capabilities" && !(actionName == "create" && r.artifactV3Author != nil) && r.artifactAuthority == nil {
+	if actionName != "list_presets" && actionName != "image_capabilities" && !((actionName == "create" || actionName == "read_v3" || actionName == "revise_v3") && r.artifactV3Author != nil) && r.artifactAuthority == nil {
 		return "", errors.New("manage_artifact authority is not configured")
 	}
 
@@ -457,6 +469,20 @@ func (r *Runtime) executeManageArtifact(ctx context.Context, scope WorkspaceScop
 		}
 		response["artifact_v3"] = artifactV3Result
 		response["reference"] = artifactV3Result["reference"]
+	case "read_v3":
+		artifactV3Result, err := r.readDirectArtifactV3HTML(ctx, scope, principal, args)
+		if err != nil {
+			return "", err
+		}
+		response["artifact_v3"] = artifactV3Result
+		response["reference"] = args["artifact_v3_reference"]
+	case "revise_v3":
+		artifactV3Result, err := r.reviseDirectArtifactV3HTML(ctx, scope, principal, callID, args)
+		if err != nil {
+			return "", err
+		}
+		response["artifact_v3"] = artifactV3Result
+		response["reference"] = artifactV3Result["candidate"]
 	case "create_package":
 		return "", errors.New("manage_artifact create_package is retired; managed project authoring uses Artifact V3")
 		/* Retained below temporarily as unreachable deletion evidence until the V1

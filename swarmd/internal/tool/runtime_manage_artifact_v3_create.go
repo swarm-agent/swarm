@@ -17,6 +17,10 @@ type directArtifactV3Publication struct {
 	ProjectDigest string
 }
 
+type directArtifactV3RevisionInput struct {
+	SessionID, ArtifactID, RevisionRef string
+}
+
 // createDirectArtifactV3HTML is the ordinary primary-Swarm creation boundary.
 // It converts one complete authored HTML document into a conventional V3 project,
 // then uses the same context-bound build, browser-preview, Git, and projection

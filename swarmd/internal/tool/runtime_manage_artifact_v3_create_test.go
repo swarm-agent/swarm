@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"swarm/packages/swarmd/internal/identity"
+	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
 type directArtifactV3RepoFake struct {
@@ -49,6 +50,13 @@ func (f *directArtifactV3RepoFake) MaterializeBase(_ context.Context, _, _, dest
 		}
 	}
 	return nil
+}
+
+func (f *directArtifactV3RepoFake) ReadArtifactV3DirectRevision(_ context.Context, _, _, _, _, _ string) (map[string][]byte, []pebblestore.ArtifactV3Part, error) {
+	if len(f.submits) == 0 {
+		return nil, nil, errors.New("missing direct Artifact V3 revision")
+	}
+	return artifactV3Clone(f.submits[len(f.submits)-1].Project), []pebblestore.ArtifactV3Part{{ID: "hero", Label: "Hero", Locator: pebblestore.ArtifactV3Locator{Kind: "selector", Path: "index.html", Value: "#hero"}}, {ID: "pricing", Label: "Pricing", Locator: pebblestore.ArtifactV3Locator{Kind: "selector", Path: "index.html", Value: "#pricing"}}, {ID: "footer", Label: "Footer", Locator: pebblestore.ArtifactV3Locator{Kind: "selector", Path: "index.html", Value: "#footer"}}}, nil
 }
 
 func (f *directArtifactV3RepoFake) SelectArtifactV3DirectHead(_ context.Context, _, _, _, _, turnID, candidateID string) (ArtifactV3Revision, error) {
