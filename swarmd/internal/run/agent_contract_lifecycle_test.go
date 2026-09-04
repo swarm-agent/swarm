@@ -166,6 +166,9 @@ func TestWorkspaceOnboardingToolContractForcesMutationApproval(t *testing.T) {
 	if explain := permission.ExplainPolicy("auto", "bash", `{"command":"git init","explanation":["Initialize the selected folder"],"category":"write","critical":true}`, *compiled); explain.Decision != permission.PolicyDecisionAsk {
 		t.Fatalf("git init decision=%q want ask", explain.Decision)
 	}
+	if explain := permission.ExplainPolicy("auto", "bash", `{"command":"git status","explanation":["Inspect status"],"category":"read","critical":false}`, *compiled); explain.Decision != permission.PolicyDecisionDeny {
+		t.Fatalf("non-init bash decision=%q want deny", explain.Decision)
+	}
 	for _, deniedName := range []string{"task", "manage_sessions", "manage_worktree", "plan_manage"} {
 		if resolved.Tools[deniedName].Enabled || !disabled[deniedName] {
 			t.Fatalf("escalation tool %q resolved=%+v disabled=%v", deniedName, resolved.Tools[deniedName], disabled[deniedName])

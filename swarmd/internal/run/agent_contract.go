@@ -261,6 +261,9 @@ func (s *Service) compileResolvedAgentToolContract(accountScopeID string, profil
 					Pattern:  prefix,
 				})
 			}
+			if workspaceOnboarding {
+				policyRules = append(policyRules, permission.PolicyRule{Kind: permission.PolicyRuleKindTool, Decision: permission.PolicyDecisionDeny, Tool: "bash"})
+			}
 			continue
 		}
 		if !state.Enabled {
