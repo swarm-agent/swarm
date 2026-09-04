@@ -277,7 +277,7 @@ async function installRealtimeRecorder(targetPage) {
             const message = JSON.parse(event.data)
             const payload = message?.payload && typeof message.payload === 'object' ? message.payload : {}
             const inner = payload?.event && typeof payload.event === 'object' ? payload.event : {}
-            records.push({ kind: 'message', at: Date.now(), event_type: String(message?.event_type ?? inner?.event_type ?? payload?.event_type ?? ''), session_id: String(message?.session_id ?? inner?.session_id ?? payload?.session_id ?? ''), endpoint_cursor_present: Boolean(String(message?.endpoint_cursor ?? '').trim()) })
+            records.push({ kind: 'message', at: Date.now(), frame_kind: String(message?.kind ?? ''), event_type: String(message?.event_type ?? message?.event?.event_type ?? inner?.event_type ?? payload?.event_type ?? ''), session_id: String(message?.session_id ?? message?.event?.session_id ?? inner?.session_id ?? payload?.session_id ?? ''), endpoint_cursor_present: Boolean(String(message?.endpoint_cursor ?? '').trim()) })
           } catch { records.push({ kind: 'parse_error', at: Date.now() }) }
         })
       }
@@ -540,8 +540,10 @@ async function runLive() {
   context = await browser.newContext({ viewport: { width: 1440, height: 900 } })
   page = await context.newPage()
   await installRealtimeRecorder(page)
-  await page.goto(`${desktopURL}/${slug(session.workspaceName)}`, { waitUntil: 'domcontentloaded', timeout: 60000 })
+  await page.goto(`${desktopURL}${result.ids.desktop_path}`, { waitUntil: 'domcontentloaded', timeout: 60000 })
   await page.locator('body').waitFor({ state: 'visible' })
+  await page.waitForFunction(() => (window.__artifactV3Records || []).some((record) => record.kind === 'open'), undefined, { timeout: 30000 })
+  gate('realtime-subscribed-before-create', 'PASS', 'exact session route socket open')
 
   const childrenBefore = delegatedDesigners(await bootstrapSessions(), session.sessionID)
   let initialSnapshot
