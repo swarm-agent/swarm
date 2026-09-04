@@ -924,7 +924,7 @@ func (b *artifactV3VideoBridge) ConvertToPendingProposal(ctx context.Context, pr
 	return b.projects.CreateEditProposal(ctx, principal, videoproject.CreateEditProposalInput{
 		SessionID: input.VideoSessionID, ProjectID: input.ProjectID, ProposalID: proposalID,
 		BaseRevisionID: input.BaseRevisionID, Title: title, Rationale: strings.TrimSpace(input.Rationale),
-		Intent: pebblestore.VideoEditProposalIntentArtifactV3Convert, Plan: &conversion.Plan,
+		Intent: pebblestore.VideoEditProposalIntentArtifactV3Convert, Plan: &conversion.Plan, NowUnixMs: time.Now().UnixMilli(),
 	})
 }
 
