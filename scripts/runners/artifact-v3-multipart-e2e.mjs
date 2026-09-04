@@ -409,7 +409,7 @@ async function staticVisualSample(previewPage, parts, expectedLabel = '') {
     return { rows, innerWidth, innerHeight, scrollWidth: document.documentElement.scrollWidth, scrollHeight: document.documentElement.scrollHeight, bodyText: document.body.innerText }
   }, targets)
   log(`OBSERVE preview viewport=${sample.innerWidth}x${sample.innerHeight} document=${sample.scrollWidth}x${sample.scrollHeight}`)
-  await screenshot(previewPage, 'basic-html-root-preview')
+  await screenshot(previewPage, expectedLabel ? 'targeted-part-candidate-preview' : 'basic-html-root-preview')
   assert(sample.scrollWidth <= sample.innerWidth + 2 && sample.scrollHeight <= sample.innerHeight + 2, `static complete preview overflows viewport ${sample.innerWidth}x${sample.innerHeight} with document ${sample.scrollWidth}x${sample.scrollHeight}`)
   assert(sample.bodyText.includes('Team') && sample.bodyText.includes('$29'), 'static preview is missing the required Team $29 pricing choice')
   assert(!expectedLabel || sample.bodyText.includes(expectedLabel), `static preview is missing requested visible label ${expectedLabel}`)
@@ -671,8 +671,9 @@ async function runLive() {
   const messages = followSnapshot.messages_by_session?.[session.sessionID] || []
   const userFollowup = [...messages].reverse().find((message) => text(message?.role).toLowerCase() === 'user' && text(message?.content).includes('TARGETED PRICING TURN'))
   assert(userFollowup && turn.target_part_ids.every((id) => text(userFollowup.content).includes(`Target part IDs (intent only): ${id}`)), 'durable session message history lost the sidebar-targeted user interaction')
-  const events = followSnapshot.events_by_session?.[session.sessionID] || []
+  const events = await replayEvents(session.sessionID)
   const artifactEvents = events.filter((event) => text(event?.event_type).startsWith('artifact.v3.'))
+  log(`OBSERVE replay_events=${events.length} artifact_v3_events=${artifactEvents.length}`)
   assert(artifactEvents.length >= 4 && !forbiddenLegacyWrite(artifactEvents), 'durable replay lacks native Artifact V3 turn events or contains legacy write identity')
   const records = await page.evaluate(() => window.__artifactV3Records || [])
   const liveEvents = records.filter((record) => record.kind === 'message' && record.session_id === session.sessionID && record.event_type.startsWith('artifact.v3.'))
