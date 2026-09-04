@@ -530,6 +530,8 @@ function targetedTurn(artifact, rootRevision) {
 }
 
 async function createSiblingAlternatives(sessionID, artifactID, baseRevision) {
+  const before = await detail(sessionID, artifactID)
+  const priorTurnIDs = new Set((before.turns || []).map((turn) => text(turn?.turn_id)))
   const turnKey = `${testID}-footer-alternatives`
   for (const [index, label] of [[1, 'ALTERNATE OPTION ONE'], [2, 'ALTERNATE OPTION TWO']]) {
     await postTurn(sessionID, `alternate-sibling-${index}`, [
@@ -543,12 +545,12 @@ async function createSiblingAlternatives(sessionID, artifactID, baseRevision) {
   const timeoutAt = Math.min(deadline, Date.now() + 30000)
   while (Date.now() < timeoutAt) {
     const artifact = await detail(sessionID, artifactID)
-    const turn = [...(artifact.turns || [])].reverse().find((item) => item.base_commit_oid === baseRevision.commit_oid && item.status === 'awaiting_selection' && item.candidates?.length === 2)
+    const turn = [...(artifact.turns || [])].reverse().find((item) => !priorTurnIDs.has(text(item?.turn_id)) && item.base_commit_oid === baseRevision.commit_oid && item.status === 'awaiting_selection' && item.candidates?.length === 2)
     if (turn) return { artifact, turn }
     await sleep(500)
   }
   const artifact = await detail(sessionID, artifactID)
-  return { artifact, turn: [...(artifact.turns || [])].reverse().find((item) => item.base_commit_oid === baseRevision.commit_oid && item.candidates?.length === 2) }
+  return { artifact, turn: [...(artifact.turns || [])].reverse().find((item) => !priorTurnIDs.has(text(item?.turn_id)) && item.base_commit_oid === baseRevision.commit_oid && item.candidates?.length === 2) }
 }
 
 async function submitSelectedContinuation(sessionID, artifactID, selectedRevision, parts) {
