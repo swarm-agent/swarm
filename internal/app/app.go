@@ -5291,6 +5291,7 @@ func (a *App) handleAuthModalAction(action ui.AuthModalAction) {
 		}
 		a.refreshAuthModalData("")
 		if a.home.OnboardingProviderActive() {
+			a.refreshOnboardingWorkspaceGitReadiness()
 			a.home.ShowOnboardingWorkspace("Provider connected. Confirm your launch workspace to finish setup.")
 		}
 		if record.Connection != nil {
@@ -5915,6 +5916,7 @@ func (a *App) consumeAuthLoginResult() {
 		if result.hideAuthModal {
 			a.home.HideAuthModal()
 			if a.home.OnboardingProviderActive() {
+				a.refreshOnboardingWorkspaceGitReadiness()
 				a.home.ShowOnboardingWorkspace("Provider connected. Confirm your launch workspace to finish setup.")
 			}
 		} else {
@@ -6421,6 +6423,21 @@ func (a *App) saveOnboarding(username, swarmName string) {
 	a.home.SetOnboardingWorkspacePath(a.startupCWD)
 	a.home.ShowOnboardingProvider("Identity saved. Connect a provider, or press s to continue to workspace setup.")
 	a.refreshAuthModalData("Loading providers...")
+}
+
+func (a *App) refreshOnboardingWorkspaceGitReadiness() {
+	if a == nil || a.home == nil {
+		return
+	}
+	path := normalizePath(strings.TrimSpace(a.startupCWD))
+	if path == "" {
+		return
+	}
+	status, _ := gitStatusForPath(path)
+	a.home.SetOnboardingWorkspaceGitReadiness(path, status.HasGit, status.Readiness)
+	a.homeModel.WorkspaceSetupPath = path
+	a.homeModel.WorkspaceSetupHasGit = status.HasGit
+	a.homeModel.WorkspaceSetupGitReadiness = status.Readiness
 }
 
 func (a *App) createOnboardingWorkspace(path string) {

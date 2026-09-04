@@ -88,6 +88,16 @@ func (p *HomePage) SetOnboardingWorkspacePath(path string) {
 	p.onboarding.WorkspacePath = strings.TrimSpace(path)
 }
 
+func (p *HomePage) SetOnboardingWorkspaceGitReadiness(path string, hasGit bool, readiness model.GitReadiness) {
+	if p == nil || strings.TrimSpace(path) == "" {
+		return
+	}
+	p.onboarding.WorkspacePath = strings.TrimSpace(path)
+	p.model.WorkspaceSetupPath = strings.TrimSpace(path)
+	p.model.WorkspaceSetupHasGit = hasGit
+	p.model.WorkspaceSetupGitReadiness = readiness
+}
+
 func (p *HomePage) ShowOnboardingProvider(status string) {
 	if p == nil || !p.onboarding.Visible {
 		return

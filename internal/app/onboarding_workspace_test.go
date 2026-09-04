@@ -1,10 +1,50 @@
 package app
 
 import (
+	"path/filepath"
 	"testing"
 
+	"github.com/gdamore/tcell/v2"
+
 	"swarm-refactor/swarmtui/internal/model"
+	"swarm-refactor/swarmtui/internal/ui"
 )
+
+// Requirement: entering the workspace step after provider setup must re-read the
+// launch repository from disk before enforcing managed-worktree readiness.
+// Threat: identity bootstrap initially builds a model before local auth exists, so
+// stale unknown readiness can leave a committed launch repository permanently
+// blocked in the locked TUI onboarding flow. This app/UI boundary is the narrowest
+// layer that proves the current launch path can queue workspace admission without
+// weakening the committed-repository check.
+func TestRefreshOnboardingWorkspaceGitReadinessUsesCurrentLaunchRepository(t *testing.T) {
+	repo := initGitRepo(t)
+	writeFile(t, filepath.Join(repo, "tracked.txt"), "ready\n")
+	runGit(t, repo, "add", "tracked.txt")
+	runGit(t, repo, "commit", "-m", "init")
+
+	homeModel := model.HomeModel{
+		OnboardingRequired:         true,
+		CWD:                        repo,
+		WorkspaceSetupPath:         repo,
+		WorkspaceSetupGitReadiness: model.GitReadinessUnknown,
+	}
+	home := ui.NewHomePage(homeModel)
+	home.ShowOnboardingProvider("Provider ready")
+	app := &App{startupCWD: repo, home: home, homeModel: homeModel}
+
+	app.refreshOnboardingWorkspaceGitReadiness()
+	home.ShowOnboardingWorkspace("Confirm workspace")
+	home.HandleKey(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
+
+	if app.homeModel.WorkspaceSetupGitReadiness != model.GitReadinessReady || !app.homeModel.WorkspaceSetupHasGit {
+		t.Fatalf("refreshed app readiness = %q, hasGit=%v", app.homeModel.WorkspaceSetupGitReadiness, app.homeModel.WorkspaceSetupHasGit)
+	}
+	action, ok := home.PopHomeAction()
+	if !ok || action.Kind != ui.HomeActionCreateOnboardingWorkspace || action.WorkspacePath != repo {
+		t.Fatalf("workspace action = %+v, ok=%v", action, ok)
+	}
+}
 
 // Requirement: onboarding releases only for an active workspace backed by a
 // committed Git repository, because every normal agent session uses managed
