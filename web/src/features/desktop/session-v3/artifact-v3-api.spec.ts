@@ -86,6 +86,8 @@ test('native Artifact V3 preview and candidate selection use separate exact rout
     assert.equal(requestBody.candidate_id, 'candidate-3')
     assert.equal(requestBody.expected_head_ref, 'revision-ref-2')
     assert.equal(requestBody.expected_turn_revision, 7)
+    assert.match(String(requestBody.client_request_id), /^desktop-artifact-v3-select-[0-9a-f-]+$/)
+    assert.doesNotMatch(String(requestBody.client_request_id), /:/)
     assert.equal(head.commitOid, 'commit-3')
   } finally {
     globalThis.fetch = originalFetch

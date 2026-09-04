@@ -444,7 +444,7 @@ export async function selectDesktopV3NativeArtifactCandidate(input: {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      client_request_id: `desktop-artifact-v3-select:${crypto.randomUUID()}`,
+      client_request_id: `desktop-artifact-v3-select-${crypto.randomUUID()}`,
       candidate_id: input.candidateId,
       expected_head_ref: input.expectedHead.revisionRef,
       expected_turn_revision: input.expectedTurnRevision,
