@@ -581,7 +581,12 @@ async function submitSelectedContinuation(sessionID, artifactID, selectedRevisio
 
 async function selectCandidateInStudio(sessionID, artifactID, turn, candidate) {
   const studio = await openDesktopStudio(sessionID, artifactID)
-  const row = studio.locator(`[data-artifact-v3-turn="${turn.turn_id}"] [data-artifact-v3-candidate="${candidate.candidate_id}"]`)
+  const turnRow = studio.locator(`[data-artifact-v3-turn="${turn.turn_id}"]`)
+  await turnRow.waitFor({ state: 'attached', timeout: 30000 })
+  if (!(await turnRow.evaluate((element) => element instanceof HTMLDetailsElement && element.open))) {
+    await turnRow.locator('summary').click()
+  }
+  const row = turnRow.locator(`[data-artifact-v3-candidate="${candidate.candidate_id}"]`)
   await row.waitFor({ state: 'visible', timeout: 30000 })
   const select = row.getByRole('button', { name: 'Select head' })
   await select.waitFor({ state: 'visible', timeout: 30000 })
