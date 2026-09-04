@@ -11,12 +11,12 @@ import (
 
 func readyOnboardingPage() *HomePage {
 	page := NewHomePage(model.HomeModel{
-		OnboardingRequired:             true,
-		OnboardingUsername:             "alice",
-		OnboardingSwarmName:            "Local Swarm",
-		CWD:                            "/repo/project",
-		WorkspaceSetupHasGit:           true,
-		WorkspaceSetupGitReadiness:     model.GitReadinessReady,
+		OnboardingRequired:         true,
+		OnboardingUsername:         "alice",
+		OnboardingSwarmName:        "Local Swarm",
+		CWD:                        "/repo/project",
+		WorkspaceSetupHasGit:       true,
+		WorkspaceSetupGitReadiness: model.GitReadinessReady,
 	})
 	page.SetAuthModalData([]AuthModalProvider{{ID: "codex"}, {ID: "openai"}}, nil)
 	return page
