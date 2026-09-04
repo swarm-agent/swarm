@@ -77,7 +77,7 @@ exports:
 
 Browser-backed registered runners also receive the existing system-managed Chrome executable explicitly. The wrapper never downloads a browser or writes dependencies into a managed candidate worktree.
 
-The temporary tunnel and heartbeat are stopped when the command exits.
+The temporary tunnel and heartbeat are stopped when the command exits. Tunnel readiness allows 30 seconds because the fixed broker performs status and activity-touch checks before SSH binds the local forwards; failed startup retains and prints the bounded tunnel diagnostic before cleanup.
 
 ## Run checked-in E2E scenarios
 

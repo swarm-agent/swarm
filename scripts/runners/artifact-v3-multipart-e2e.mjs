@@ -50,7 +50,11 @@ let modelSettingsChanged = false
 const execFileAsync = promisify(execFile)
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 const log = (message) => process.stderr.write(`[artifact-v3-multipart-e2e] ${message}\n`)
-const fail = (message) => { result.failures.push(message); throw new Error(message) }
+const gate = (name, state, detail = '') => {
+  result.gates[name] = state === 'PASS'
+  log(`GATE ${name} ${state}${detail ? ` — ${detail}` : ''}`)
+}
+const fail = (message) => { result.failures.push(message); log(`BLOCKED — ${message}`); throw new Error(message) }
 const assert = (condition, message) => { if (!condition) fail(message) }
 const text = (value) => String(value ?? '').trim()
 const sha256 = (value) => crypto.createHash('sha256').update(value).digest('hex')
@@ -116,8 +120,8 @@ async function configureModels() {
   const configured = (await api('GET', '/v1/agent-model-settings', undefined, 'verify model settings')).body?.agent_model_settings || {}
   assert(configured?.swarm?.action?.model === action.model && (!designer || configured?.system_agents?.designer?.model === designer.model), 'Fireworks model settings did not persist')
   result.model = designer ? { action, designer } : { action }
-  result.gates.provider_runnable = true
-  result.gates.models_configured = true
+  gate('provider', 'PASS', `${provider}/${action.model}`)
+  gate('model-settings', 'PASS', stage === 'basic-html' ? 'Swarm action model configured' : 'Swarm and Designer models configured')
   return action
 }
 
@@ -125,7 +129,7 @@ async function restoreModels() {
   if (!modelSettingsChanged) return
   await api('PATCH', '/v1/agent-model-settings', { swarm: originalSwarmSettings }, 'restore Swarm model')
   if (stage !== 'basic-html') await api('PATCH', '/v1/agent-model-settings', { system_agents: { designer: originalDesignerSettings } }, 'restore Designer model')
-  result.gates.models_restored = true
+  gate('model-settings-restored', 'PASS')
   modelSettingsChanged = false
 }
 
@@ -159,6 +163,7 @@ async function createSession(selected, assignment) {
   assert(sessionID, 'session create returned no ID')
   result.ids.session_id = sessionID
   result.ids.desktop_path = `/${slug(workspaceName)}/${sessionID}`
+  gate('fresh-session', 'PASS', 'ordinary primary Swarm auto session created')
   return { sessionID, workspacePath, workspaceName }
 }
 
@@ -319,6 +324,7 @@ async function animationSample(previewPage, expectedLabel = '') {
     }
   }, expectedLabel)
   const before = await sample()
+  log(`OBSERVE preview viewport=${before.innerWidth}x${before.innerHeight} document=${before.scrollWidth}x${before.scrollHeight}`)
   const first = await screenshot(previewPage, `${expectedLabel ? 'candidate' : 'root'}-animation-frame-a`)
   await sleep(750)
   const after = await sample()
@@ -361,6 +367,7 @@ async function staticVisualSample(previewPage) {
     })
     return { rows, innerWidth, innerHeight, scrollWidth: document.documentElement.scrollWidth, scrollHeight: document.documentElement.scrollHeight, bodyText: document.body.innerText }
   })
+  log(`OBSERVE preview viewport=${sample.innerWidth}x${sample.innerHeight} document=${sample.scrollWidth}x${sample.scrollHeight}`)
   await screenshot(previewPage, 'basic-html-root-preview')
   assert(sample.scrollWidth <= sample.innerWidth + 2 && sample.scrollHeight <= sample.innerHeight + 2, `static complete preview overflows viewport ${sample.innerWidth}x${sample.innerHeight} with document ${sample.scrollWidth}x${sample.scrollHeight}`)
   assert(sample.bodyText.includes('Team') && sample.bodyText.includes('$29'), 'static preview is missing the required Team $29 pricing choice')
@@ -508,6 +515,7 @@ async function runLive() {
   }
   const routeProbe = await api('GET', artifactRoute(session.sessionID), undefined, 'probe Artifact V3 route', true)
   assert(routeProbe.ok && routeProbe.body?.ok === true && Array.isArray(routeProbe.body?.artifacts), `native Artifact V3 catalog is unavailable (HTTP ${routeProbe.status})`)
+  gate('native-v3-route', 'PASS', 'authenticated catalog available')
   const playwright = loadPlaywright()
   browser = await playwright.chromium.launch({ headless, executablePath: browserExecutable || undefined })
   context = await browser.newContext({ viewport: { width: 1440, height: 900 } })
@@ -525,15 +533,23 @@ async function runLive() {
     initialSnapshot = await postTurn(session.sessionID, 'initial', initialPrompt())
   }
   const items = await catalog(session.sessionID)
+  log(`OBSERVE artifacts=${items.length}`)
   assert(items.length === 1, `initial request produced ${items.length} Artifact V3 projects instead of one`)
+  gate('one-artifact', 'PASS')
   const artifact = items[0]
   const rootDetail = await detail(session.sessionID, artifact.id)
   const rootRevision = currentRevision(rootDetail)
-  assert(rootDetail.parts?.length === 3 && rootDetail.parts.map((part) => part.id).join(',') === 'hero,pricing,footer', 'root Artifact does not contain exactly hero, pricing, and footer')
+  const partIDs = rootDetail.parts?.map((part) => part.id) || []
+  log(`OBSERVE parts=${partIDs.join(',') || 'none'} head=${rootRevision.revision_ref}`)
+  assert(partIDs.length === 3 && partIDs.join(',') === 'hero,pricing,footer', `root Artifact Parts are [${partIDs.join(',')}] instead of [hero,pricing,footer]`)
+  gate('three-parts', 'PASS', partIDs.join(','))
   assert(rootDetail.head?.build?.status === 'succeeded' && rootDetail.head?.validation?.status === 'valid', 'root head lacks whole-project build/render evidence')
+  gate('build-preview', 'PASS', `revision=${rootRevision.revision_ref}`)
   const childrenAfterRoot = delegatedDesigners(await bootstrapSessions(), session.sessionID)
   const expectedInitialDesigners = stage === 'basic-html' ? 0 : 1
+  log(`OBSERVE designer_children=${childrenAfterRoot.length}`)
   assert(childrenAfterRoot.length === expectedInitialDesigners, `initial ${stage} turn launched ${childrenAfterRoot.length} Designers instead of exactly ${expectedInitialDesigners}`)
+  gate('no-designer', expectedInitialDesigners === 0 ? 'PASS' : 'SKIP', `children=${childrenAfterRoot.length}`)
   if (sessionOverride) assert(childrenBefore.length <= expectedInitialDesigners, `resumed initial turn already had ${childrenBefore.length} Designer children before completion`)
   result.ids.artifact_id = artifact.id
   if (childrenAfterRoot[0]?.id) result.ids.initial_designer_session_id = text(childrenAfterRoot[0].id)
@@ -553,13 +569,13 @@ async function runLive() {
     const liveEvents = records.filter((record) => record.kind === 'message' && record.session_id === session.sessionID && record.event_type.startsWith('artifact.v3.'))
     assert(liveEvents.some((record) => record.endpoint_cursor_present), 'Desktop observed no cursor-bearing Artifact V3 event for basic HTML')
     result.realtime = { recorded: records.length, artifact_events: liveEvents.length, replay_events: artifactEvents.length }
-    result.gates.basic_html_root = true
-    result.gates.three_stable_parts = true
-    result.gates.desktop_discovery = true
-    result.gates.http_native_v3 = true
-    result.gates.realtime_native_v3 = true
-    result.gates.no_legacy_writes = true
+    gate('visible-pixels', 'PASS', 'root preview captured and inspected')
+    gate('desktop-studio', 'PASS', 'three-Part navigator visible')
+    gate('durable-replay', 'PASS', `events=${artifactEvents.length}`)
+    gate('realtime', 'PASS', `cursor-bearing-events=${liveEvents.length}`)
+    gate('no-legacy-writes', 'PASS')
     result.result = 'PASS'
+    log('JOURNEY basic-html PASS')
     return
   }
   result.gates.three_animated_parts = true

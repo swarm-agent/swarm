@@ -90,14 +90,26 @@ tunnel_pid=$!
 cleanup() {
   kill "$tunnel_pid" 2>/dev/null || true
   wait "$tunnel_pid" 2>/dev/null || true
+}
+finish_cleanup() {
+  cleanup
   rm -f -- "$tunnel_log"
 }
-trap cleanup EXIT INT TERM
-swarm_testbench_wait_for_port "$SWARM_TESTBENCH_LOCAL_DESKTOP_PORT" "$tunnel_pid" || {
+trap finish_cleanup EXIT INT TERM
+wait_for_tunnel_port() {
+  local port="$1" deadline=$((SECONDS + 30))
+  while (( SECONDS < deadline )); do
+    swarm_testbench_port_open "$port" && return 0
+    kill -0 "$tunnel_pid" 2>/dev/null || return 1
+    sleep 0.2
+  done
+  return 1
+}
+wait_for_tunnel_port "$SWARM_TESTBENCH_LOCAL_DESKTOP_PORT" || {
   tail -n 40 "$tunnel_log" >&2 || true
   fail 'container Desktop forward did not become ready'
 }
-swarm_testbench_wait_for_port "$SWARM_TESTBENCH_LOCAL_API_PORT" "$tunnel_pid" || {
+wait_for_tunnel_port "$SWARM_TESTBENCH_LOCAL_API_PORT" || {
   tail -n 40 "$tunnel_log" >&2 || true
   fail 'container API forward did not become ready'
 }
