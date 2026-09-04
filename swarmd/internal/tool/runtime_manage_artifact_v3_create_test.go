@@ -152,6 +152,7 @@ func TestManageArtifactCreateV3RejectsNonHTMLAndMissingStableParts(t *testing.T)
 		"non-html":               `{"action":"create","filename":"note.txt","media_type":"text/plain","content":"text"}`,
 		"missing-part":           `{"action":"create","filename":"index.html","media_type":"text/html","content":"<!doctype html><html><body><div>no stable part</div></body></html>"}`,
 		"requested-part-missing": `{"action":"create","filename":"index.html","media_type":"text/html","content":"<!doctype html><html><body><main id=\"hero\">Hero</main></body></html>","parts":[{"id":"pricing","label":"Pricing","kind":"semantic"}]}`,
+		"ambiguous-extra-parts":  `{"action":"create","filename":"index.html","media_type":"text/html","content":"<!doctype html><html><body><main id=\"page\"><section id=\"hero\">Hero</section><section id=\"pricing\">Team $29</section><footer id=\"footer\">Footer</footer></main></body></html>"}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			if _, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, Call{CallID: name, Name: "manage_artifact", Arguments: arguments}); err == nil {
