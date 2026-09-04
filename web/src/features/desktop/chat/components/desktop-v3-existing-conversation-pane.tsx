@@ -2235,6 +2235,7 @@ export function DesktopV3ExistingConversationPane({
       artifactCount: sessionArtifactV3.length + sessionArtifactV2.length + sessionArtifacts.length,
       hasPlan: showPlanSidebar,
       prioritizePlan: Boolean(stablePlanDocument) || (showPlanSidebar && !previousHasPlan),
+      prioritizeArtifact: sessionArtifactV3.length > 0 && previousCount === 0,
       hasPendingVisualSwarm,
     }));
     priorSessionArtifactCountRef.current = sessionArtifactV3.length + sessionArtifactV2.length + sessionArtifacts.length;
