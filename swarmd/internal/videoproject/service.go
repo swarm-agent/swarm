@@ -45,15 +45,25 @@ type ArtifactV2Authority interface {
 	ValidateVideoReference(accountScopeID, userID string, ref pebblestore.ArtifactV2VideoReference) error
 }
 
+type ArtifactV3Authority interface {
+	ValidateVideoReference(accountScopeID, userID string, ref pebblestore.ArtifactV3VideoReference) error
+}
+
 type Service struct {
 	sessions   SessionStore
 	artifactV2 ArtifactV2Authority
+	artifactV3 ArtifactV3Authority
 }
 
 func NewService(sessions SessionStore) *Service { return &Service{sessions: sessions} }
 func (s *Service) SetArtifactV2Authority(authority ArtifactV2Authority) {
 	if s != nil {
 		s.artifactV2 = authority
+	}
+}
+func (s *Service) SetArtifactV3Authority(authority ArtifactV3Authority) {
+	if s != nil {
+		s.artifactV3 = authority
 	}
 }
 
@@ -114,15 +124,18 @@ type CreateEditProposalInput struct {
 }
 type SelectAnimationCandidateInput struct {
 	SessionID, ProjectID, ProposalID, PartID, CandidateID string
-	SelectedSource                                        *pebblestore.SessionArtifactSelectionReference
-	V2SelectedSource                                      *pebblestore.ArtifactV2VideoReference
-	NowUnixMs                                             int64
+	SelectedSource   *pebblestore.SessionArtifactSelectionReference
+	V2SelectedSource *pebblestore.ArtifactV2VideoReference
+	V3SelectedSource *pebblestore.ArtifactV3VideoReference
+	NowUnixMs        int64
 }
 
 type PromoteAnimationDerivativeInput struct {
 	SessionID, ProjectID, ProposalID, PartID, CandidateID string
-	SelectedSource, Derivative                            *pebblestore.SessionArtifactSelectionReference
-	NowUnixMs                                             int64
+	SelectedSource, Derivative     *pebblestore.SessionArtifactSelectionReference
+	V2SelectedSource, V2Derivative *pebblestore.ArtifactV2VideoReference
+	V3SelectedSource, V3Derivative *pebblestore.ArtifactV3VideoReference
+	NowUnixMs                      int64
 }
 
 type UpdateCompositionInput struct {
@@ -148,12 +161,25 @@ func (s *Service) CreateEditProposal(ctx context.Context, principal identity.Pri
 	if err != nil || !ok || (project.UserID != "" && project.UserID != principal.UserID) {
 		return pebblestore.VideoEditProposalSnapshot{}, errors.New("video project not found")
 	}
+	if input.Plan == nil && (input.Intent == pebblestore.VideoEditProposalIntentArtifactV2Convert || input.Intent == pebblestore.VideoEditProposalIntentArtifactV3Convert) {
+		return pebblestore.VideoEditProposalSnapshot{}, errors.New("native artifact conversion intent requires one typed plan")
+	}
 	if input.Plan != nil {
-		if input.Intent == pebblestore.VideoEditProposalIntentArtifactV2Convert {
+		switch input.Intent {
+		case pebblestore.VideoEditProposalIntentArtifactV2Convert:
 			if err := s.validateArtifactV2Plan(principal, input.Plan); err != nil {
 				return pebblestore.VideoEditProposalSnapshot{}, err
 			}
-		} else if err := s.normalizeVisualPlanArtifacts(principal, input.SessionID, input.Plan); err != nil {
+		case pebblestore.VideoEditProposalIntentArtifactV3Convert:
+			if err := s.validateArtifactV3Plan(principal, input.Plan); err != nil {
+				return pebblestore.VideoEditProposalSnapshot{}, err
+			}
+		default:
+			if err := s.normalizeVisualPlanArtifacts(principal, input.SessionID, input.Plan); err != nil {
+				return pebblestore.VideoEditProposalSnapshot{}, err
+			}
+		}
+		if err := pebblestore.ValidateVideoPlanForIntent(input.Intent, *input.Plan); err != nil {
 			return pebblestore.VideoEditProposalSnapshot{}, err
 		}
 		if err := s.validateCompositionSources(principal, input.SessionID, input.Plan); err != nil {
@@ -171,15 +197,23 @@ func (s *Service) CreateEditProposal(ctx context.Context, principal identity.Pri
 	return s.sessions.CreateVideoEditProposal(pebblestore.CreateVideoEditProposalInput{AccountScopeID: principal.AccountScopeID, UserID: principal.UserID, SessionID: input.SessionID, ProjectID: input.ProjectID, ProposalID: input.ProposalID, BaseRevisionID: input.BaseRevisionID, Title: input.Title, Rationale: input.Rationale, Intent: input.Intent, Plan: input.Plan, Operations: input.Operations, AffectedRanges: input.AffectedRanges, NowUnixMs: input.NowUnixMs})
 }
 func (s *Service) SelectAnimationCandidate(ctx context.Context, principal identity.Principal, input SelectAnimationCandidateInput) (pebblestore.VideoEditProposalSnapshot, error) {
+	if boolCount(input.SelectedSource != nil, input.V2SelectedSource != nil, input.V3SelectedSource != nil) != 1 {
+		return pebblestore.VideoEditProposalSnapshot{}, errors.New("selection requires exactly one legacy, Artifact V2, or Artifact V3 HTML source")
+	}
 	if input.V2SelectedSource != nil {
-		if s.artifactV2 == nil {
-			return pebblestore.VideoEditProposalSnapshot{}, errors.New("artifact v2 video authority is not configured")
-		}
-		if err := s.artifactV2.ValidateVideoReference(principal.AccountScopeID, principal.UserID, *input.V2SelectedSource); err != nil {
+		if err := s.validateArtifactV2Reference(principal, *input.V2SelectedSource); err != nil {
 			return pebblestore.VideoEditProposalSnapshot{}, err
 		}
 	}
-	return s.mutateAnimationCandidate(principal, input.SessionID, input.ProjectID, input.ProposalID, pebblestore.V3SessionMutationSelectVideoAnimationCandidate, pebblestore.VideoAnimationSelectionMutation{PartID: input.PartID, SelectedCandidateID: input.CandidateID, SelectedSource: input.SelectedSource, V2SelectedSource: input.V2SelectedSource}, input.NowUnixMs)
+	if input.V3SelectedSource != nil {
+		if input.V3SelectedSource.MediaType != "text/html" || input.V3SelectedSource.DerivativeID != "" {
+			return pebblestore.VideoEditProposalSnapshot{}, errors.New("Artifact V3 selection requires an exact HTML revision, not a derivative")
+		}
+		if err := s.validateArtifactV3Reference(principal, *input.V3SelectedSource); err != nil {
+			return pebblestore.VideoEditProposalSnapshot{}, err
+		}
+	}
+	return s.mutateAnimationCandidate(principal, input.SessionID, input.ProjectID, input.ProposalID, pebblestore.V3SessionMutationSelectVideoAnimationCandidate, pebblestore.VideoAnimationSelectionMutation{PartID: input.PartID, SelectedCandidateID: input.CandidateID, SelectedSource: input.SelectedSource, V2SelectedSource: input.V2SelectedSource, V3SelectedSource: input.V3SelectedSource}, input.NowUnixMs)
 }
 
 func (s *Service) UpdateComposition(ctx context.Context, principal identity.Principal, input UpdateCompositionInput) (pebblestore.VideoEditProposalSnapshot, error) {
@@ -199,6 +233,9 @@ func (s *Service) UpdateComposition(ctx context.Context, principal identity.Prin
 	}
 	if proposal.Status != pebblestore.VideoEditProposalStatusPending || proposal.Plan == nil || proposal.WorkingRevisionID != input.ExpectedRevisionID {
 		return pebblestore.VideoEditProposalSnapshot{}, errors.New("stale composition update: expected revision is not the pending working revision")
+	}
+	if proposal.Intent == pebblestore.VideoEditProposalIntentArtifactV2Convert || proposal.Intent == pebblestore.VideoEditProposalIntentArtifactV3Convert {
+		return pebblestore.VideoEditProposalSnapshot{}, errors.New("native artifact conversion plans cannot be rewritten through composition updates")
 	}
 	project, ok, err := s.sessions.GetVideoProject(principal.AccountScopeID, input.SessionID, input.ProjectID)
 	if err != nil || !ok || (project.UserID != "" && project.UserID != principal.UserID) || project.CurrentRevisionID != input.ExpectedRevisionID {
@@ -307,16 +344,51 @@ func (s *Service) validateCompositionSources(principal identity.Principal, sessi
 }
 
 func (s *Service) PromoteAnimationDerivative(ctx context.Context, principal identity.Principal, input PromoteAnimationDerivativeInput) (pebblestore.VideoEditProposalSnapshot, error) {
-	if input.SelectedSource == nil || input.Derivative == nil {
-		return pebblestore.VideoEditProposalSnapshot{}, errors.New("promotion requires exact selected HTML and MP4 derivative references")
+	legacy := input.SelectedSource != nil || input.Derivative != nil
+	v2 := input.V2SelectedSource != nil || input.V2Derivative != nil
+	v3 := input.V3SelectedSource != nil || input.V3Derivative != nil
+	if boolCount(legacy, v2, v3) != 1 {
+		return pebblestore.VideoEditProposalSnapshot{}, errors.New("promotion requires exactly one legacy, Artifact V2, or Artifact V3 source and derivative authority")
 	}
-	if err := s.validateAnimationArtifact(principal, input.SelectedSource, "text/html"); err != nil {
-		return pebblestore.VideoEditProposalSnapshot{}, err
+	switch {
+	case legacy:
+		if input.SelectedSource == nil || input.Derivative == nil {
+			return pebblestore.VideoEditProposalSnapshot{}, errors.New("promotion requires exact selected HTML and MP4 derivative references")
+		}
+		if err := s.validateAnimationArtifact(principal, input.SelectedSource, "text/html"); err != nil {
+			return pebblestore.VideoEditProposalSnapshot{}, err
+		}
+		if err := s.validateAnimationDerivative(principal, input.SelectedSource, input.Derivative); err != nil {
+			return pebblestore.VideoEditProposalSnapshot{}, err
+		}
+	case v2:
+		if input.V2SelectedSource == nil || input.V2Derivative == nil {
+			return pebblestore.VideoEditProposalSnapshot{}, errors.New("Artifact V2 promotion requires exact selected HTML and MP4 derivative references")
+		}
+		if err := s.validateArtifactV2Reference(principal, *input.V2SelectedSource); err != nil {
+			return pebblestore.VideoEditProposalSnapshot{}, err
+		}
+		if err := s.validateArtifactV2Reference(principal, *input.V2Derivative); err != nil {
+			return pebblestore.VideoEditProposalSnapshot{}, err
+		}
+	case v3:
+		if input.V3SelectedSource == nil || input.V3Derivative == nil {
+			return pebblestore.VideoEditProposalSnapshot{}, errors.New("Artifact V3 promotion requires exact selected HTML and MP4 derivative references")
+		}
+		if input.V3SelectedSource.MediaType != "text/html" || input.V3SelectedSource.DerivativeID != "" || input.V3Derivative.MediaType != "video/mp4" || input.V3Derivative.DerivativeID == "" {
+			return pebblestore.VideoEditProposalSnapshot{}, errors.New("Artifact V3 promotion requires native HTML source and MP4 derivative kinds")
+		}
+		if err := s.validateArtifactV3Reference(principal, *input.V3SelectedSource); err != nil {
+			return pebblestore.VideoEditProposalSnapshot{}, err
+		}
+		if err := s.validateArtifactV3Reference(principal, *input.V3Derivative); err != nil {
+			return pebblestore.VideoEditProposalSnapshot{}, err
+		}
+		if input.V3SelectedSource.SessionID != input.V3Derivative.SessionID || input.V3SelectedSource.ArtifactID != input.V3Derivative.ArtifactID || input.V3SelectedSource.RevisionID != input.V3Derivative.RevisionID || input.V3SelectedSource.CommitOID != input.V3Derivative.CommitOID || input.V3SelectedSource.TreeOID != input.V3Derivative.TreeOID || input.V3SelectedSource.ManifestDigestSHA256 != input.V3Derivative.ManifestDigestSHA256 || input.V3SelectedSource.BuildID != input.V3Derivative.BuildID || input.V3SelectedSource.ValidationID != input.V3Derivative.ValidationID || input.V3SelectedSource.EventSeq != input.V3Derivative.EventSeq || input.V3SelectedSource.PartID != input.V3Derivative.PartID || input.V3SelectedSource.CaptureStateID != input.V3Derivative.CaptureStateID {
+			return pebblestore.VideoEditProposalSnapshot{}, errors.New("Artifact V3 derivative does not descend from the exact selected HTML revision")
+		}
 	}
-	if err := s.validateAnimationDerivative(principal, input.SelectedSource, input.Derivative); err != nil {
-		return pebblestore.VideoEditProposalSnapshot{}, err
-	}
-	return s.mutateAnimationCandidate(principal, input.SessionID, input.ProjectID, input.ProposalID, pebblestore.V3SessionMutationPromoteVideoAnimationDerivative, pebblestore.VideoAnimationSelectionMutation{PartID: input.PartID, SelectedCandidateID: input.CandidateID, SelectedSource: input.SelectedSource, Derivative: input.Derivative}, input.NowUnixMs)
+	return s.mutateAnimationCandidate(principal, input.SessionID, input.ProjectID, input.ProposalID, pebblestore.V3SessionMutationPromoteVideoAnimationDerivative, pebblestore.VideoAnimationSelectionMutation{PartID: input.PartID, SelectedCandidateID: input.CandidateID, SelectedSource: input.SelectedSource, Derivative: input.Derivative, V2SelectedSource: input.V2SelectedSource, V2Derivative: input.V2Derivative, V3SelectedSource: input.V3SelectedSource, V3Derivative: input.V3Derivative}, input.NowUnixMs)
 }
 
 func (s *Service) mutateAnimationCandidate(principal identity.Principal, sessionID, projectID, proposalID, kind string, selection pebblestore.VideoAnimationSelectionMutation, now int64) (pebblestore.VideoEditProposalSnapshot, error) {
@@ -324,10 +396,13 @@ func (s *Service) mutateAnimationCandidate(principal identity.Principal, session
 		return pebblestore.VideoEditProposalSnapshot{}, errors.New("authenticated principal is required")
 	}
 	proposal, ok, err := s.sessions.GetVideoEditProposal(principal.AccountScopeID, sessionID, projectID, proposalID)
-	if err != nil || !ok {
+	if err != nil || !ok || (proposal.AccountScopeID != "" && proposal.AccountScopeID != principal.AccountScopeID) || (proposal.UserID != "" && proposal.UserID != principal.UserID) {
 		return pebblestore.VideoEditProposalSnapshot{}, errors.New("video edit proposal not found")
 	}
-	if selection.V2SelectedSource == nil {
+	if proposal.Intent == pebblestore.VideoEditProposalIntentArtifactV2Convert || proposal.Intent == pebblestore.VideoEditProposalIntentArtifactV3Convert {
+		return pebblestore.VideoEditProposalSnapshot{}, errors.New("native artifact conversion proposals already carry a selected live source and derivative")
+	}
+	if selection.V2SelectedSource == nil && selection.V3SelectedSource == nil {
 		if err := s.validateAnimationArtifact(principal, selection.SelectedSource, "text/html"); err != nil {
 			return pebblestore.VideoEditProposalSnapshot{}, err
 		}
@@ -423,6 +498,27 @@ func (s *Service) AcceptEditProposal(ctx context.Context, principal identity.Pri
 	proposalSnapshot, ok, err := s.sessions.GetVideoEditProposal(principal.AccountScopeID, input.SessionID, input.ProjectID, input.ProposalID)
 	if err != nil || !ok {
 		return pebblestore.VideoEditProposalSnapshot{}, pebblestore.VideoProjectRevisionSnapshot{}, pebblestore.VideoProjectSnapshot{}, errors.New("video edit proposal not found")
+	}
+	if (proposalSnapshot.AccountScopeID != "" && proposalSnapshot.AccountScopeID != principal.AccountScopeID) || (proposalSnapshot.UserID != "" && proposalSnapshot.UserID != principal.UserID) {
+		return pebblestore.VideoEditProposalSnapshot{}, pebblestore.VideoProjectRevisionSnapshot{}, pebblestore.VideoProjectSnapshot{}, errors.New("video edit proposal not found")
+	}
+	if proposalSnapshot.Plan != nil {
+		switch proposalSnapshot.Intent {
+		case pebblestore.VideoEditProposalIntentArtifactV2Convert:
+			if err := s.validateArtifactV2Plan(principal, proposalSnapshot.Plan); err != nil {
+				return pebblestore.VideoEditProposalSnapshot{}, pebblestore.VideoProjectRevisionSnapshot{}, pebblestore.VideoProjectSnapshot{}, err
+			}
+			if err := pebblestore.ValidateVideoPlanForIntent(proposalSnapshot.Intent, *proposalSnapshot.Plan); err != nil {
+				return pebblestore.VideoEditProposalSnapshot{}, pebblestore.VideoProjectRevisionSnapshot{}, pebblestore.VideoProjectSnapshot{}, err
+			}
+		case pebblestore.VideoEditProposalIntentArtifactV3Convert:
+			if err := s.validateArtifactV3Plan(principal, proposalSnapshot.Plan); err != nil {
+				return pebblestore.VideoEditProposalSnapshot{}, pebblestore.VideoProjectRevisionSnapshot{}, pebblestore.VideoProjectSnapshot{}, err
+			}
+			if err := pebblestore.ValidateVideoPlanForIntent(proposalSnapshot.Intent, *proposalSnapshot.Plan); err != nil {
+				return pebblestore.VideoEditProposalSnapshot{}, pebblestore.VideoProjectRevisionSnapshot{}, pebblestore.VideoProjectSnapshot{}, err
+			}
+		}
 	}
 	selected := make(map[string]struct{}, len(input.SelectedOperationIDs))
 	for _, id := range input.SelectedOperationIDs {
@@ -814,10 +910,11 @@ func (s *Service) StartRenderJob(ctx context.Context, principal identity.Princip
 				if candidates == nil {
 					continue
 				}
-				if len(candidates.Candidates) > 1 && (candidates.SelectedCandidateID == "" || candidates.SelectedSource == nil) {
+				selectedSources := boolCount(candidates.SelectedSource != nil, candidates.V2SelectedSource != nil, candidates.V3SelectedSource != nil)
+				if len(candidates.Candidates) > 1 && (candidates.SelectedCandidateID == "" || selectedSources != 1) {
 					return pebblestore.VideoRenderJobSnapshot{}, fmt.Errorf("HTML animation part %q must have one durably locked variant before rendering", part.ID)
 				}
-				if len(candidates.Candidates) == 1 && candidates.Candidates[0].Source == nil {
+				if len(candidates.Candidates) == 1 && boolCount(candidates.Candidates[0].Source != nil, candidates.Candidates[0].V2Source != nil, candidates.Candidates[0].V3Source != nil) != 1 {
 					return pebblestore.VideoRenderJobSnapshot{}, fmt.Errorf("HTML animation part %q has no exact source to render", part.ID)
 				}
 				if candidates.Status == pebblestore.VideoAnimationCandidateStatusFailed {
@@ -1133,12 +1230,84 @@ func (s *Service) ListRenderJobs(principal identity.Principal, sessionID, projec
 	return s.sessions.ListVideoRenderJobs(principal.AccountScopeID, sessionID, projectID, limit)
 }
 
+func boolCount(values ...bool) int {
+	count := 0
+	for _, value := range values {
+		if value {
+			count++
+		}
+	}
+	return count
+}
+
+func (s *Service) validateArtifactV2Reference(principal identity.Principal, ref pebblestore.ArtifactV2VideoReference) error {
+	if s.artifactV2 == nil {
+		return errors.New("artifact v2 video authority is not configured")
+	}
+	return s.artifactV2.ValidateVideoReference(principal.AccountScopeID, principal.UserID, ref)
+}
+
+func (s *Service) validateArtifactV3Reference(principal identity.Principal, ref pebblestore.ArtifactV3VideoReference) error {
+	if s.artifactV3 == nil {
+		return errors.New("artifact v3 video authority is not configured")
+	}
+	return s.artifactV3.ValidateVideoReference(principal.AccountScopeID, principal.UserID, ref)
+}
+
+// validateArtifactV3Plan authenticates every native source and derivative. The
+// structural conversion contract is validated separately before persistence.
+func (s *Service) validateArtifactV3Plan(principal identity.Principal, plan *pebblestore.VideoPlanProposal) error {
+	if s.artifactV3 == nil {
+		return errors.New("artifact v3 video authority is not configured")
+	}
+	if plan == nil {
+		return errors.New("artifact v3 conversion plan is required")
+	}
+	for _, part := range plan.Parts {
+		refs := []struct {
+			label string
+			ref   *pebblestore.ArtifactV3VideoReference
+		}{
+			{"source", part.ArtifactV3Source},
+			{"still", part.ArtifactV3Still},
+			{"visual", part.ArtifactV3Visual},
+		}
+		if candidates := part.AnimationCandidates; candidates != nil {
+			for index := range candidates.Candidates {
+				refs = append(refs, struct {
+					label string
+					ref   *pebblestore.ArtifactV3VideoReference
+				}{fmt.Sprintf("candidate %q", candidates.Candidates[index].ID), candidates.Candidates[index].V3Source})
+			}
+			refs = append(refs,
+				struct {
+					label string
+					ref   *pebblestore.ArtifactV3VideoReference
+				}{"selected source", candidates.V3SelectedSource},
+				struct {
+					label string
+					ref   *pebblestore.ArtifactV3VideoReference
+				}{"derivative", candidates.V3Derivative},
+			)
+		}
+		for _, item := range refs {
+			if item.ref == nil {
+				return fmt.Errorf("video plan part %q %s requires native Artifact V3 authority", part.ID, item.label)
+			}
+			if err := s.validateArtifactV3Reference(principal, *item.ref); err != nil {
+				return fmt.Errorf("video plan part %q %s: %w", part.ID, item.label, err)
+			}
+		}
+	}
+	return nil
+}
+
 func (s *Service) validateArtifactV2Plan(principal identity.Principal, plan *pebblestore.VideoPlanProposal) error {
 	if s.artifactV2 == nil {
 		return errors.New("artifact v2 video authority is not configured")
 	}
 	for _, part := range plan.Parts {
-		if part.ArtifactV2Visual == nil || part.Visual != nil {
+		if part.ArtifactV2Visual == nil || part.Visual != nil || part.ArtifactV3Visual != nil || part.ArtifactV3Source != nil || part.ArtifactV3Still != nil {
 			return fmt.Errorf("video plan part %q requires exactly one Artifact V2 visual", part.ID)
 		}
 		if err := s.artifactV2.ValidateVideoReference(principal.AccountScopeID, principal.UserID, *part.ArtifactV2Visual); err != nil {
@@ -1159,7 +1328,7 @@ func (s *Service) validateArtifactV2Plan(principal identity.Principal, plan *peb
 			var duration int64
 			var profile, policy string
 			for _, candidate := range candidates.Candidates {
-				if candidate.V2Source == nil || candidate.Source != nil {
+				if candidate.V2Source == nil || candidate.Source != nil || candidate.V3Source != nil {
 					return fmt.Errorf("video plan part %q mixes animation candidate authorities", part.ID)
 				}
 				if err := s.artifactV2.ValidateVideoReference(principal.AccountScopeID, principal.UserID, *candidate.V2Source); err != nil {
@@ -1326,6 +1495,29 @@ func (s *Service) validateTimelineSources(principal identity.Principal, sessionI
 
 func (s *Service) validateTimelineArtifacts(principal identity.Principal, sessionID string, timeline pebblestore.VideoProjectTimeline) error {
 	for _, clip := range timeline.Clips {
+		authorities := boolCount(clip.ArtifactRef != nil, clip.ArtifactV2Ref != nil, clip.ArtifactV3Ref != nil)
+		if authorities > 1 {
+			return fmt.Errorf("managed_artifact clip %q mixes legacy, Artifact V2, and Artifact V3 authorities", clip.ID)
+		}
+		if clip.ArtifactV2Ref != nil {
+			if err := s.validateArtifactV2Reference(principal, *clip.ArtifactV2Ref); err != nil {
+				return fmt.Errorf("managed_artifact clip %q Artifact V2 source: %w", clip.ID, err)
+			}
+			if declared := strings.ToLower(strings.TrimSpace(clip.MediaType)); declared != "" && declared != strings.ToLower(strings.TrimSpace(clip.ArtifactV2Ref.MediaType)) {
+				return fmt.Errorf("managed_artifact clip %q media_type does not match its exact Artifact V2 source", clip.ID)
+			}
+		}
+		if clip.ArtifactV3Ref != nil {
+			if err := s.validateArtifactV3Reference(principal, *clip.ArtifactV3Ref); err != nil {
+				return fmt.Errorf("managed_artifact clip %q Artifact V3 source: %w", clip.ID, err)
+			}
+			if declared := strings.ToLower(strings.TrimSpace(clip.MediaType)); declared != "" && declared != strings.ToLower(strings.TrimSpace(clip.ArtifactV3Ref.MediaType)) {
+				return fmt.Errorf("managed_artifact clip %q media_type does not match its exact Artifact V3 source", clip.ID)
+			}
+			if clip.ArtifactV3Ref.MediaType == "video/mp4" && (clip.SourceStartMs < 0 || clip.SourceEndMs <= clip.SourceStartMs || clip.DurationMs != clip.SourceEndMs-clip.SourceStartMs || clip.DurationMs != clip.ArtifactV3Ref.DurationMs) {
+				return fmt.Errorf("managed_artifact clip %q Artifact V3 MP4 source range is invalid", clip.ID)
+			}
+		}
 		if clip.ArtifactRef != nil {
 			ref := clip.ArtifactRef
 			targetSessionID := ref.SessionID
