@@ -26,7 +26,7 @@ func (r *Runtime) createDirectArtifactV3HTML(ctx context.Context, scope Workspac
 	}
 	for key := range args {
 		switch key {
-		case "action", "collection_name", "collection_description", "filename", "media_type", "content", "presentation":
+		case "action", "collection_name", "collection_description", "filename", "media_type", "content", "presentation", "parts":
 		default:
 			return nil, fmt.Errorf("manage_artifact create for Artifact V3 HTML contains unsupported field %q", key)
 		}
@@ -44,6 +44,29 @@ func (r *Runtime) createDirectArtifactV3HTML(ctx context.Context, scope Workspac
 		return nil, errors.New("manage_artifact create requires non-empty UTF-8 HTML content")
 	}
 	parts := deriveArtifactHTMLParts([]byte(body), mediaType)
+	requestedParts, err := parseArtifactParts(args["parts"])
+	if err != nil {
+		return nil, err
+	}
+	if len(requestedParts) != 0 {
+		derivedByID := make(map[string]pebblestore.SessionArtifactPart, len(parts))
+		for _, part := range parts {
+			derivedByID[strings.TrimSpace(part.ID)] = part
+		}
+		for _, requested := range requestedParts {
+			derived, ok := derivedByID[strings.TrimSpace(requested.ID)]
+			if !ok || derived.Kind != "selector" {
+				return nil, fmt.Errorf("manage_artifact create requested Part %q does not resolve to a stable HTML region id", requested.ID)
+			}
+			derived.Label = firstNonEmptyString(strings.TrimSpace(requested.Label), derived.Label)
+		}
+		parts = parts[:0]
+		for _, requested := range requestedParts {
+			derived := derivedByID[strings.TrimSpace(requested.ID)]
+			derived.Label = firstNonEmptyString(strings.TrimSpace(requested.Label), derived.Label)
+			parts = append(parts, derived)
+		}
+	}
 	manifestParts := make([]pebblestore.ArtifactV3Part, 0, len(parts))
 	for _, part := range parts {
 		if strings.TrimSpace(part.Kind) != "selector" || strings.TrimSpace(part.Selector) == "" {

@@ -823,15 +823,15 @@ func artifactV3SafeDiagnostic(stage string, err error) ArtifactV3Diagnostic {
 	code := stage + "_failed"
 	message := "trusted " + stage + " gate failed"
 	type safe interface {
-		SafeCode() string
-		SafeMessage() string
+		SafeDiagnosticCode() string
+		SafeDiagnosticMessage() string
 	}
 	if value, ok := err.(safe); ok {
-		if strings.TrimSpace(value.SafeCode()) != "" {
-			code = value.SafeCode()
+		if strings.TrimSpace(value.SafeDiagnosticCode()) != "" {
+			code = value.SafeDiagnosticCode()
 		}
-		if strings.TrimSpace(value.SafeMessage()) != "" {
-			message = value.SafeMessage()
+		if strings.TrimSpace(value.SafeDiagnosticMessage()) != "" {
+			message = value.SafeDiagnosticMessage()
 		}
 	}
 	return ArtifactV3Diagnostic{Stage: stage, Code: code, Message: message}

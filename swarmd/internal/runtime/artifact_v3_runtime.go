@@ -328,7 +328,20 @@ func (a *artifactV3RuntimeAdapter) Preview(ctx context.Context, request tool.Art
 	previewFiles[manifest.Entrypoint] = injectArtifactV3CaptureRuntime(previewFiles[manifest.Entrypoint])
 	results, err := a.renderer.Capture(ctx, htmlcapture.Request{Entry: manifest.Entrypoint, Files: previewFiles, StateIDs: []string{"default"}, ViewportWidth: 1440, ViewportHeight: 900})
 	if err != nil {
-		return tool.ArtifactV3PreviewResult{Status: "failed", Diagnostics: []tool.ArtifactV3Diagnostic{{Stage: "preview", Code: "browser_capture_failed", Message: "the complete Artifact V3 project failed its browser preview gate"}}}, nil
+		diagnostic := tool.ArtifactV3Diagnostic{Stage: "preview", Code: "browser_capture_failed", Message: "the complete Artifact V3 project failed its browser preview gate"}
+		type safe interface {
+			SafeDiagnosticCode() string
+			SafeDiagnosticMessage() string
+		}
+		if value, ok := err.(safe); ok {
+			if code := strings.TrimSpace(value.SafeDiagnosticCode()); code != "" {
+				diagnostic.Code = code
+			}
+			if message := strings.TrimSpace(value.SafeDiagnosticMessage()); message != "" {
+				diagnostic.Message = message
+			}
+		}
+		return tool.ArtifactV3PreviewResult{Status: "failed", Diagnostics: []tool.ArtifactV3Diagnostic{diagnostic}}, nil
 	}
 	if len(results) != 1 || len(results[0].PNG) == 0 {
 		return tool.ArtifactV3PreviewResult{Status: "failed", Diagnostics: []tool.ArtifactV3Diagnostic{{Stage: "preview", Code: "browser_evidence_missing", Message: "the browser preview gate returned no inspectable pixels"}}}, nil

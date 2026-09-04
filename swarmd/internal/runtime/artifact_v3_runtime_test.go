@@ -169,6 +169,30 @@ func TestArtifactV3RuntimeBuildRejectsManifestThatFinishWouldReject(t *testing.T
 	}
 }
 
+type artifactV3SafeRendererFailure struct{}
+
+func (artifactV3SafeRendererFailure) Capture(context.Context, htmlcapture.Request) ([]htmlcapture.Result, error) {
+	return nil, htmlcapture.NewError("capture_viewport_overflow", "capture document overflows the required viewport")
+}
+
+// Requirement: safe renderer diagnostics must reach the authoring turn so the
+// AI repairs the requested artifact instead of publishing a diagnostic probe.
+func TestArtifactV3RuntimePreviewPreservesSafeRendererDiagnostic(t *testing.T) {
+	adapter := newArtifactV3RuntimeAdapter(nil, nil, t.TempDir(), t.TempDir(), pebblestore.ArtifactV3Limits{}, artifactV3SafeRendererFailure{})
+	project := map[string][]byte{
+		"swarm-artifact.json": []byte(`{"schema_version":"swarm.artifact/v3","entrypoint":"index.html","parts":[{"id":"hero","label":"Hero","locator":{"kind":"selector","path":"index.html","value":"#hero"}}]}`),
+		"index.html":          []byte(`<!doctype html><html><body><main id="hero">Hero</main></body></html>`),
+	}
+	build, err := adapter.Build(context.Background(), tool.ArtifactV3BuildRequest{ArtifactID: "artifact", TurnID: "turn", Attempt: 1, Project: project})
+	if err != nil || build.Status != "succeeded" {
+		t.Fatalf("build=%+v err=%v", build, err)
+	}
+	preview, err := adapter.Preview(context.Background(), tool.ArtifactV3PreviewRequest{ArtifactID: "artifact", TurnID: "turn", Attempt: 1, Build: build})
+	if err != nil || preview.Status != "failed" || len(preview.Diagnostics) != 1 || preview.Diagnostics[0].Code != "capture_viewport_overflow" || !strings.Contains(preview.Diagnostics[0].Message, "overflows") {
+		t.Fatalf("preview=%+v err=%v", preview, err)
+	}
+}
+
 // Requirement: source bytes alone are never readiness evidence; a browser
 // preview adapter is mandatory before a candidate can be finished.
 func TestArtifactV3RuntimeAdapterFailsClosedWithoutBrowser(t *testing.T) {

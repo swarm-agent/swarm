@@ -68,8 +68,10 @@ type Error struct {
 	cause       error
 }
 
-func (e *Error) Error() string { return e.Code + ": " + e.SafeMessage }
-func (e *Error) Unwrap() error { return e.cause }
+func (e *Error) Error() string                 { return e.Code + ": " + e.SafeMessage }
+func (e *Error) Unwrap() error                 { return e.cause }
+func (e *Error) SafeDiagnosticCode() string    { return e.Code }
+func (e *Error) SafeDiagnosticMessage() string { return e.SafeMessage }
 
 func NewError(code, message string) error { return &Error{Code: code, SafeMessage: message} }
 func newErrorWithCause(code, message string, cause error) error {
