@@ -32,7 +32,8 @@ const timeoutMs = Number(option('--timeout-ms', process.env.SWARM_RUNNER_TIMEOUT
 const preflight = flag('--preflight')
 const stage = String(option('--stage', 'full')).trim().toLowerCase()
 const alternateResumeStage = stage === 'alternate-choice-resume'
-const noDesignerStage = stage === 'basic-html' || stage === 'targeted-part' || stage === 'selected-continuation' || stage === 'alternate-choice' || alternateResumeStage
+const animationStage = stage === 'animated-parts'
+const noDesignerStage = stage === 'basic-html' || stage === 'targeted-part' || stage === 'selected-continuation' || stage === 'alternate-choice' || alternateResumeStage || animationStage
 const headless = !flag('--headful')
 const suppliedToken = String(process.env.SWARM_RUNNER_TOKEN || '').trim()
 const testID = `artifact-v3-three-animated-parts-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`
@@ -340,11 +341,13 @@ async function screenshot(targetPage, label) {
   return record
 }
 
-async function animationSample(previewPage, expectedLabel = '') {
-  for (const id of ['hero', 'pricing', 'footer']) await previewPage.locator(`#${id}`).waitFor({ state: 'visible', timeout: 30000 })
-  const sample = async () => previewPage.evaluate((expected) => {
-    const rows = ['hero', 'pricing', 'footer'].map((id) => {
-      const part = document.getElementById(id)
+async function animationSample(previewPage, parts, expectedLabel = '') {
+  const targets = parts.map((part) => ({ id: text(part?.id), selector: text(part?.locator?.value) }))
+  assert(targets.length === 3 && targets.every((part) => part.id && part.selector), 'animated preview requires exactly three stable selector Parts')
+  for (const part of targets) await previewPage.locator(part.selector).first().waitFor({ state: 'visible', timeout: 30000 })
+  const sample = async () => previewPage.evaluate(({ expected, expectedParts }) => {
+    const rows = expectedParts.map(({ id, selector }) => {
+      const part = document.querySelector(selector)
       const marker = part?.querySelector('[data-motion-marker]') || part
       const rect = part?.getBoundingClientRect()
       const style = marker ? getComputedStyle(marker) : null
@@ -363,7 +366,7 @@ async function animationSample(previewPage, expectedLabel = '') {
       scrollWidth: document.documentElement.scrollWidth, scrollHeight: document.documentElement.scrollHeight,
       expectedPresent: !expected || document.body.innerText.includes(expected),
     }
-  }, expectedLabel)
+  }, { expected: expectedLabel, expectedParts: targets })
   const before = await sample()
   log(`OBSERVE preview viewport=${before.innerWidth}x${before.innerHeight} document=${before.scrollWidth}x${before.scrollHeight}`)
   const first = await screenshot(previewPage, `${expectedLabel ? 'candidate' : 'root'}-animation-frame-a`)
@@ -390,9 +393,9 @@ async function screenshotPreview(sessionID, artifactID, revision, expectedLabel 
   assert(previewPath.startsWith('/v3/sessions/') && previewPath.includes('/artifacts-v3/') && previewPath.includes('/preview/access/'), 'Artifact V3 preview access response is invalid')
   const previewPage = await context.newPage()
   await previewPage.goto(`${desktopURL}${previewPath}`, { waitUntil: 'networkidle', timeout: 60000 })
-  const sample = noDesignerStage
-    ? await staticVisualSample(previewPage, revision.manifest?.parts || [], expectedLabel, allowViewportFailure)
-    : await animationSample(previewPage, expectedLabel)
+  const sample = animationStage || !noDesignerStage
+    ? await animationSample(previewPage, revision.manifest?.parts || [], expectedLabel)
+    : await staticVisualSample(previewPage, revision.manifest?.parts || [], expectedLabel, allowViewportFailure)
   await previewPage.close()
   return sample
 }
@@ -427,6 +430,17 @@ async function staticVisualSample(previewPage, parts, expectedLabel = '', allowV
 }
 
 function initialPrompt() {
+  if (animationStage) {
+    return [
+      'Create one polished animated HTML artifact for a small software product page without delegating to any Designer, Coder, Finder, or task agent.',
+      'It must have exactly three useful visible selector Parts with stable IDs hero, pricing, and footer. Pricing must show three readable choices including Team $29.',
+      'Each declared Part must contain a data-motion-marker element with a distinct obvious continuously running CSS or WAAPI animation whose computed transform, opacity, background color, or shadow visibly changes over time.',
+      'Use animation durations longer than 1.5 seconds so representative frames 750 milliseconds apart differ. Preserve readable text while motion runs.',
+      'Make the complete page responsive, readable at 1440x900, fully inside the viewport, and free of clipping, overlap, and scrollbars.',
+      'Use shared styling and script behavior so this is one coherent artifact. Build and preview the complete project, repair any compile, locator, animation, contrast, clipping, overflow, or pixel problem in the same turn, and finish only after one validated root commit is visible.',
+      'Do not create a storyboard or video, do not create alternatives, and do not use any V1/V2 artifact identity.',
+    ].join(' ')
+  }
   if (noDesignerStage) {
     return [
       'Create one polished static HTML artifact for a small software product page.',
@@ -475,7 +489,16 @@ async function openDesktopStudio(sessionID, artifactID) {
   await row.click()
   const studio = page.locator('[data-testid="desktop-artifact-v3-studio"]:visible').first()
   await studio.waitFor({ state: 'visible', timeout: 30000 })
-  await studio.locator('[data-artifact-v3-preview]:visible').first().waitFor({ state: 'visible', timeout: 30000 })
+  const preview = studio.locator('[data-artifact-v3-preview]:visible').first()
+  await preview.waitFor({ state: 'visible', timeout: 30000 })
+  const previewFrame = preview.contentFrame()
+  let previewText = ''
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    previewText = await previewFrame.locator('body').innerText().catch(() => '')
+    if (previewText.trim().length >= 8) break
+    await sleep(100)
+  }
+  assert(previewText.trim().length >= 8, 'Desktop Artifact Studio preview iframe did not render substantive content')
   return studio
 }
 
@@ -731,7 +754,7 @@ async function runAlternateChoiceResume(sessionID) {
 async function runLive() {
   assert(apiURL && /^https?:\/\//.test(apiURL), '--api-url is required for the live journey')
   assert(desktopURL && /^https?:\/\//.test(desktopURL), '--desktop-url is invalid')
-  assert(['basic-html', 'targeted-part', 'selected-continuation', 'alternate-choice', 'alternate-choice-resume', 'full'].includes(stage), '--stage must be basic-html, targeted-part, selected-continuation, alternate-choice, alternate-choice-resume, or full')
+  assert(['basic-html', 'targeted-part', 'selected-continuation', 'alternate-choice', 'alternate-choice-resume', 'animated-parts', 'full'].includes(stage), '--stage must be basic-html, targeted-part, selected-continuation, alternate-choice, alternate-choice-resume, animated-parts, or full')
   assert(Number.isFinite(timeoutMs) && timeoutMs >= 300000 && timeoutMs <= 600000, '--timeout-ms must be between 300000 and 600000')
   await auth()
   const assignment = await configureModels()
@@ -803,7 +826,7 @@ async function runLive() {
   if (noDesignerStage) result.gates.no_designer_delegation = true
   else result.gates.one_initial_designer = true
   result.gates.root_complete_preview = true
-  if (stage === 'basic-html') {
+  if (stage === 'basic-html' || animationStage) {
     const studio = await openDesktopStudio(session.sessionID, artifact.id)
     assert(await studio.locator('[data-artifact-v3-part-navigator] [data-artifact-v3-part]').count() === 3, 'Desktop basic HTML Part navigator does not show exactly three parts')
     await screenshot(page, 'desktop-basic-html-artifact-studio')
@@ -815,13 +838,14 @@ async function runLive() {
     const liveEvents = records.filter((record) => record.kind === 'message' && record.session_id === session.sessionID && record.event_type.startsWith('artifact.v3.'))
     assert(liveEvents.some((record) => record.endpoint_cursor_present), 'Desktop observed no cursor-bearing Artifact V3 event for basic HTML')
     result.realtime = { recorded: records.length, artifact_events: liveEvents.length, replay_events: artifactEvents.length }
-    gate('visible-pixels', 'PASS', 'root preview captured and inspected')
+    gate('visible-pixels', 'PASS', animationStage ? 'two animated root frames captured and inspected' : 'root preview captured and inspected')
+    if (animationStage) gate('three-animated-parts', 'PASS', 'all Part timelines and visible motion markers advanced')
     gate('desktop-studio', 'PASS', 'three-Part navigator visible')
     gate('durable-replay', 'PASS', `events=${artifactEvents.length}`)
     gate('realtime', 'PASS', `cursor-bearing-events=${liveEvents.length}`)
     gate('no-legacy-writes', 'PASS')
     result.result = 'PASS'
-    log('JOURNEY basic-html PASS')
+    log(`JOURNEY ${stage} PASS`)
     return
   }
   if (!noDesignerStage) result.gates.three_animated_parts = true

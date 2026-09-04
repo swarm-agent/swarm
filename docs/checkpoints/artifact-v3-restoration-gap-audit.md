@@ -1,6 +1,6 @@
 # Artifact V3 restoration gap audit
 
-Status: **RED — restoration gates are unverified**
+Status: **IN PROGRESS — no-Designer HTML, targeted-turn, selection/continuation, alternate-candidate implementation, and animated-Part gates are verified; native V3 video conversion remains RED**
 
 Audit date: 2026-09-04
 
@@ -8,7 +8,7 @@ Scope: ordinary Swarm creation, regular managed Designer creation and iteration,
 
 ## Executive verdict
 
-Artifact V3 has substantial native implementation, and preserved live evidence reached isolated root Git revisions and browser previews. That is not an end-to-end acceptance result. Every preserved Artifact V3 journey summary is RED, the first required product gate was never isolated and proven, and no native Artifact V3 adapter to the storyboard/Video Studio/MP4 pipeline was confirmed.
+Artifact V3 now has passing isolated no-Designer evidence through static HTML creation, stable Parts, targeted exact-base candidates, explicit selection and continued turns, atomic alternate-candidate creation, and animated Parts. These passes use ordinary primary Swarm with account-backed Codex GPT-5.6 Luna at medium reasoning, native Git/Pebble/API/realtime/Desktop identity, and inspected rendered pixels. This is not yet an end-to-end storyboard/video acceptance result: no native Artifact V3 adapter to the storyboard/Video Studio/MP4 pipeline has been confirmed.
 
 The restoration order is mandatory and now starts below the Designer boundary:
 
@@ -17,7 +17,7 @@ The restoration order is mandatory and now starts below the Designer boundary:
 3. Expand the ordinary-Swarm journey through targeted turns, continued edits, alternate iteration selection, animation, and media conversion on the already-proven native contracts.
 4. Only after those no-Designer and ordinary-Swarm gates are green, prove regular managed Designer creation/iteration and then Designer Iteration Swarm sibling candidates.
 
-**The first deterministic static-HTML sub-gate and the ordinary-Swarm gate are currently unverified.** The earlier work began with a richer managed-Designer multipart journey and then attempted sidebar follow-up and multi-candidate behavior. That was the wrong foundational proof. A root revision produced during a later RED journey does not retroactively prove either smaller contract.
+**The static-HTML, targeted-Part, selected-continuation, alternate-candidate implementation, and animated-Part foundations are now verified without Designers.** The next mandatory RED boundary is native Artifact V3 storyboard/HTML-animation-to-Video-Studio/MP4 conversion. Designer-backed paths remain gated until that server-owned V3 media boundary passes.
 
 This document began as an audit-only checkpoint. The subsequent approved restoration checkpoint adopted it as the executable gate contract. Existing implementation changes and ignored evidence remain preserved and unaccepted until the focused deterministic tests and exact-commit live gates below establish them.
 
@@ -214,7 +214,7 @@ Gate 0 evidence requirements:
 - a checked-in bounded runner that can resume at the first failing sub-gate;
 - zero V1/V2 write events, records, references, or identity translation in the V3 journey.
 
-Current state: **Gate 0A RED / UNVERIFIED. Gate 0B–0E BLOCKED by dependency.**
+Current state: **Gate 0A–0D GREEN for the bounded no-Designer product journeys; Gate 0E RED / MISSING NATIVE ADAPTER.** Exact isolated commit `c95aed32` passed fresh account-backed Codex GPT-5.6 Luna/medium static HTML and targeted-Part journeys. On the same live slot, the bounded `animated-parts` stage created one three-Part native V3 artifact with zero Designers, exact 1440×900 layout, one running animation per Part, advancing timelines and changing computed visual signatures, two nonidentical inspected frame PNGs, a substantively rendered Desktop Studio iframe, durable replay, cursor-bearing realtime, and zero legacy writes. The Studio checker now waits for substantive iframe body content so a blank timing-race screenshot cannot satisfy the gate.
 
 ### Gate 1 — one ordinary Swarm-created Artifact V3
 
