@@ -263,22 +263,33 @@ function currentRevision(artifact) {
 
 async function installRealtimeRecorder(targetPage) {
   await targetPage.addInitScript(() => {
-    const records = []
+    const storageKey = 'swarm.artifact-v3-e2e.realtime-records'
+    let records = []
+    try {
+      const persisted = JSON.parse(sessionStorage.getItem(storageKey) || '[]')
+      if (Array.isArray(persisted)) records = persisted.slice(-10000)
+    } catch { records = [] }
+    const record = (value) => {
+      records.push(value)
+      if (records.length > 10000) records = records.slice(-10000)
+      window.__artifactV3Records = records
+      try { sessionStorage.setItem(storageKey, JSON.stringify(records)) } catch { /* bounded diagnostics are best-effort */ }
+    }
     const NativeWebSocket = window.WebSocket
     window.__artifactV3Records = records
     window.WebSocket = function RecordingWebSocket(url, protocols) {
       const socket = protocols === undefined ? new NativeWebSocket(url) : new NativeWebSocket(url, protocols)
       if (String(url).includes('/v3/realtime/stream')) {
-        records.push({ kind: 'constructed', at: Date.now() })
-        socket.addEventListener('open', () => records.push({ kind: 'open', at: Date.now() }))
+        record({ kind: 'constructed', at: Date.now() })
+        socket.addEventListener('open', () => record({ kind: 'open', at: Date.now() }))
         socket.addEventListener('message', (event) => {
           if (typeof event.data !== 'string') return
           try {
             const message = JSON.parse(event.data)
             const payload = message?.payload && typeof message.payload === 'object' ? message.payload : {}
             const inner = payload?.event && typeof payload.event === 'object' ? payload.event : {}
-            records.push({ kind: 'message', at: Date.now(), frame_kind: String(message?.kind ?? ''), event_type: String(message?.event_type ?? message?.event?.event_type ?? inner?.event_type ?? payload?.event_type ?? ''), session_id: String(message?.session_id ?? message?.event?.session_id ?? inner?.session_id ?? payload?.session_id ?? ''), endpoint_cursor_present: Boolean(String(message?.endpoint_cursor ?? '').trim()) })
-          } catch { records.push({ kind: 'parse_error', at: Date.now() }) }
+            record({ kind: 'message', at: Date.now(), frame_kind: String(message?.kind ?? ''), event_type: String(message?.event_type ?? message?.event?.event_type ?? inner?.event_type ?? payload?.event_type ?? ''), session_id: String(message?.session_id ?? message?.event?.session_id ?? inner?.session_id ?? payload?.session_id ?? ''), endpoint_cursor_present: Boolean(String(message?.endpoint_cursor ?? '').trim()) })
+          } catch { record({ kind: 'parse_error', at: Date.now() }) }
         })
       }
       return socket
