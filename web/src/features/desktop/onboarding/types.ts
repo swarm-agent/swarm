@@ -1,5 +1,34 @@
 import type { ProviderStatus } from '../settings/types/auth'
 import type { VaultStatus } from '../vault/types'
+import type {
+  MessageSnapshot,
+  SessionMutationResult,
+  SessionSnapshot,
+  V3SessionProjection,
+} from '../state/desktop-v3-cache-types'
+import type { WorkspaceRepositoryState, WorkspaceRepositoryStateWire } from '../../workspaces/launcher/services/workspace-repository'
+
+export interface WorkspaceOnboardingSessionStartResponseWire {
+  ok?: boolean
+  session_id?: string
+  repository?: WorkspaceRepositoryStateWire
+  session?: SessionSnapshot
+  first_message?: MessageSnapshot
+  projection?: V3SessionProjection
+  mutation?: SessionMutationResult
+  replayed?: boolean
+}
+
+export interface WorkspaceOnboardingSessionStartResponse {
+  ok: true
+  sessionId: string
+  repository: WorkspaceRepositoryState
+  session: SessionSnapshot
+  firstMessage: MessageSnapshot
+  projection: V3SessionProjection
+  mutation: SessionMutationResult
+  replayed: boolean
+}
 
 export interface DesktopOnboardingConfigWire {
   swarm_name?: string

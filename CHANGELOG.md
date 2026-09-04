@@ -13,7 +13,7 @@ Release entries are the source checkpoint for public docs verification. Each ent
 - Added workspace Actions with structured inputs, quick-access pins, AI-assisted commit orchestration, and Desktop/TUI management surfaces.
 - Added Git-aware workspace controls, worktree integration improvements, AI commit commands, and final handoff links to public pull requests.
 - Added account-scoped model favorites and richer model controls, including complete catalog pagination, provider service-tier metadata, and current Google Gemini thinking support.
-- Added first-run onboarding support for accepting initial provider credentials.
+- Added first-run onboarding support for accepting initial provider credentials and a dedicated pre-admission Onboarding Swarm for safely preparing an existing-file first workspace.
 - Added deterministic `swarm.animation/v1` HTML animation capture that publishes silent managed MP4 artifacts with exact source lineage.
 - Added trusted registered audio sources, durable speech transcription, and bounded deterministic waveform, onset, tempo, beat, and energy-section analysis.
 - Added reviewed Video Studio soundtrack editing with exact `source_audio` clips, typed pending proposals, accepted-cut preview, and deterministic audio/video rendering.
@@ -24,7 +24,7 @@ Release entries are the source checkpoint for public docs verification. Each ent
 - Updated the daemon compression dependency to `github.com/klauspost/compress` v1.18.7 for the new build.
 - Reworked durable V3 plan and checkpoint execution so boundary transitions, resumptions, source-message provenance, and conversation context remain in the canonical session epoch.
 - Expanded Desktop and TUI workspace onboarding, session routing, themes, responsive navigation, git status, and launch tips while removing legacy display and workspace-definition authorities.
-- Made Git a mandatory installed-runtime prerequisite and require every saved or selected workspace to be a repository root with an initial commit, rejecting direct-session worktree opt-out or missing worktree authority; the supported installer provisions missing Git, and Desktop provides explicit safe setup guidance instead of allowing temporary non-repository sessions.
+- Made Git a mandatory installed-runtime prerequisite and require every saved or selected workspace to be a repository root with an initial commit, rejecting direct-session worktree opt-out or missing worktree authority; the supported installer provisions missing Git, and Desktop provides explicit safe setup guidance instead of allowing temporary non-repository sessions. Provider-connected first-time users can ask the exact-folder Onboarding Swarm for permission-gated setup help or fix the repository manually, and workspace admission remains blocked until a recheck confirms the first commit.
 - Flattened account-scoped workspaces into one global catalog: every saved path has independent identity and generation, historical linked directories migrate to standalone entries, and linked membership is no longer scope authority.
 - Required every Git-backed routed or deployed session to start in a session-owned managed worktree, with durable ownership and lineage revalidated before provider execution.
 - Hardened release update and systemd relaunch behavior, including non-privileged update handoff, replacement readiness, authorization, and rollback-sensitive restart paths.
@@ -62,7 +62,7 @@ Release entries are the source checkpoint for public docs verification. Each ent
 - Public docs should describe the current durable V3 checkpoint/resume behavior and the updated Desktop/TUI workspace, routing, and onboarding surfaces.
 - Public update docs should reflect the hardened non-privileged update, systemd relaunch, readiness, and rollback behavior.
 - Public onboarding docs should describe initial provider credential acceptance; agent grouping, model switching, session quarantine, diagnostic tooling, and worktree retry identifiers need no separate user documentation.
-- Public install and workspace docs must state that the installer provisions mandatory Git when absent and that workspaces require a repository root with an initial commit; non-repository folders are setup candidates, not usable temporary sessions.
+- Public install and workspace docs must state that the installer provisions mandatory Git when absent and that workspaces require a repository root with an initial commit; non-repository folders are setup candidates, not usable temporary sessions. Existing-file first workspaces use the dedicated exact-folder Onboarding Swarm or a manual fix-and-retry path, with explicit permission for repository mutations and no admission before recheck.
 - Public docs should describe the system storage contract, Linux root locations, no-silent-migration behavior, and future macOS system-root expectations.
 - Public product docs must describe dedicated local containers as retired while retaining V3 and Swarm targets as current critical contracts and future non-local runners as a separate direction.
 - Public install docs should point users to the release installer fast lane before source checkout workflows and explain automatic provisioning of missing Git/Bash prerequisites.
