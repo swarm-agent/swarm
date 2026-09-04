@@ -27,6 +27,8 @@ const sessionOverride = String(option('--session-id', process.env.SWARM_RUNNER_S
 const initialRunOverride = String(option('--initial-run-id', process.env.SWARM_RUNNER_INITIAL_RUN_ID || '')).trim()
 const artifactOverride = String(option('--artifact-id', process.env.SWARM_RUNNER_ARTIFACT_ID || '')).trim()
 const desktopPathOverride = String(option('--desktop-path', process.env.SWARM_RUNNER_DESKTOP_PATH || '')).trim()
+const videoProjectOverride = String(option('--video-project-id', process.env.SWARM_RUNNER_VIDEO_PROJECT_ID || '')).trim()
+const videoBaseRevisionOverride = String(option('--video-base-revision-id', process.env.SWARM_RUNNER_VIDEO_BASE_REVISION_ID || '')).trim()
 const browserExecutable = String(option('--browser-executable', process.env.PLAYWRIGHT_BROWSER_EXECUTABLE || '')).trim()
 const timeoutMs = Number(option('--timeout-ms', process.env.SWARM_RUNNER_TIMEOUT_MS || '600000'))
 const preflight = flag('--preflight')
@@ -825,10 +827,14 @@ async function runVideoConversion(sessionID) {
   })
   assert(proposalEvidence.length <= 1, `video-conversion resume found ${proposalEvidence.length} pending native V3 proposals instead of at most one`)
   if (proposalEvidence.length === 0) {
+    assert(Boolean(videoProjectOverride) === Boolean(videoBaseRevisionOverride), 'video project and base revision resume inputs must be supplied together')
+    const projectDirection = videoProjectOverride
+      ? `Reuse exact existing project_id=${videoProjectOverride} and base_revision_id=${videoBaseRevisionOverride}; call only manage_video convert_artifact_v3 and do not create another project.`
+      : 'Call manage_video create_project once without initial_timeline, then call only manage_video convert_artifact_v3 with the returned exact project_id and base revision_id plus that exact source identity.'
     await postTurn(sessionID, 'video-conversion', [
       'Convert the exact already-selected animated Artifact V3 head to one pending Video Studio proposal without delegating to any agent.',
       `The exact native source is artifact_v3_session_id=${sessionID}, artifact_v3_artifact_id=${artifact.id}, artifact_v3_revision_ref=${head.revision_ref}.`,
-      'Call manage_video create_project once without initial_timeline, then call only manage_video convert_artifact_v3 with the returned exact project_id and base revision_id plus that exact source identity.',
+      projectDirection,
       'Do not call convert_artifact_v2, propose_plan, create_edit_proposal, select_animation_candidate, promote_animation_derivative, start_render, task, or any Artifact V1/V2 action. Report the pending proposal and exact native V3 source, fallback PNG, and MP4 references.',
     ].join(' '))
     snapshot = await hydrate(sessionID)
@@ -926,8 +932,12 @@ async function runLive() {
   await installRealtimeRecorder(page)
   await page.goto(`${desktopURL}${result.ids.desktop_path}`, { waitUntil: 'domcontentloaded', timeout: 60000 })
   await page.locator('body').waitFor({ state: 'visible' })
-  await page.waitForFunction((sessionID) => (window.__artifactV3Records || []).some((record) => record.kind === 'message' && record.frame_kind === 'replay.complete' && record.session_id === sessionID && record.endpoint_cursor_present), session.sessionID, { timeout: 30000 })
-  gate('realtime-subscribed-before-create', 'PASS', 'exact session subscription replay completed at a durable cursor')
+  if (!videoConversionStage) {
+    await page.waitForFunction((sessionID) => (window.__artifactV3Records || []).some((record) => record.kind === 'message' && record.frame_kind === 'replay.complete' && record.session_id === sessionID && record.endpoint_cursor_present), session.sessionID, { timeout: 30000 })
+    gate('realtime-subscribed-before-create', 'PASS', 'exact session subscription replay completed at a durable cursor')
+  } else {
+    gate('realtime-subscribed-before-create', 'SKIP', 'resumed server-owned conversion verifies durable source replay directly')
+  }
   if (alternateResumeStage) {
     await runAlternateChoiceResume(session.sessionID)
     return
