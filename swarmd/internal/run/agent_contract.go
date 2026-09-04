@@ -220,7 +220,7 @@ func (s *Service) compileResolvedAgentToolContract(accountScopeID string, profil
 		// mutation approvals and denials below are the complete authority.
 		inheritPolicy = false
 		resolved.InheritPolicy = false
-		for _, name := range []string{"write", "edit", "bash", "git_add", "git_commit"} {
+		for _, name := range []string{"write", "edit", "git_init", "git_add", "git_commit", "git_commit_initial"} {
 			if state, ok := resolved.Tools[name]; ok && state.Enabled {
 				state.Source = "runtime.workspace_onboarding_permission"
 				resolved.Tools[name] = state
@@ -278,7 +278,7 @@ func (s *Service) compileResolvedAgentToolContract(accountScopeID string, profil
 		decision := permission.PolicyDecisionAllow
 		if workspaceOnboarding {
 			switch name {
-			case "write", "edit", "git_add", "git_commit":
+			case "write", "edit", "git_init", "git_add", "git_commit", "git_commit_initial":
 				decision = permission.PolicyDecisionAsk
 			}
 		}

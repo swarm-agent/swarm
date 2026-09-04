@@ -25,15 +25,15 @@ test('desktop onboarding payload keeps username and swarm name separate without 
 
 test('workspace onboarding assistant payload binds one exact pre-admission folder without workspace authority fields', () => {
   const payload = buildWorkspaceOnboardingSessionPayload({
-    path: ' /home/alice/existing ',
-    expectedResolvedPath: ' /home/alice/existing ',
+    path: ' /workspace/existing ',
+    expectedResolvedPath: ' /workspace/existing ',
     clientRequestId: ' onboarding-1 ',
     prompt: ' Review the folder ',
   })
 
   assert.deepEqual(payload, {
-    path: '/home/alice/existing',
-    expected_resolved_path: '/home/alice/existing',
+    path: '/workspace/existing',
+    expected_resolved_path: '/workspace/existing',
     client_request_id: 'onboarding-1',
     input: 'Review the folder',
   })
@@ -44,7 +44,7 @@ test('workspace onboarding assistant payload binds one exact pre-admission folde
 
 test('workspace onboarding assistant payload rejects missing stale-selection authority', () => {
   assert.throws(() => buildWorkspaceOnboardingSessionPayload({
-    path: '/home/alice/existing',
+    path: '/workspace/existing',
     expectedResolvedPath: '',
     clientRequestId: 'onboarding-2',
   }), /selected folder and its current canonical path/)
@@ -54,15 +54,15 @@ test('workspace onboarding assistant rejects a successful response with crossed 
   await withMockFetch(async () => new Response(JSON.stringify({
     ok: true,
     session_id: 'session-1',
-    repository: { state: 'needs_assisted_setup', path: '/home/alice/existing' },
+    repository: { state: 'needs_assisted_setup', path: '/workspace/existing' },
     session: { id: 'session-2' },
     first_message: { session_id: 'session-1' },
     projection: { session_id: 'session-1' },
     mutation: { session_id: 'session-1' },
   }), { status: 200, headers: { 'Content-Type': 'application/json' } }), async () => {
     await assert.rejects(startWorkspaceOnboardingSession({
-      path: '/home/alice/existing',
-      expectedResolvedPath: '/home/alice/existing',
+      path: '/workspace/existing',
+      expectedResolvedPath: '/workspace/existing',
       clientRequestId: 'onboarding-crossed',
     }), /inconsistent session identity/)
   })
@@ -72,15 +72,15 @@ test('workspace onboarding assistant rejects a response that is no longer eligib
   await withMockFetch(async () => new Response(JSON.stringify({
     ok: true,
     session_id: 'session-1',
-    repository: { state: 'ready', path: '/home/alice/existing', head_commit: 'abc' },
+    repository: { state: 'ready', path: '/workspace/existing', head_commit: 'abc' },
     session: { id: 'session-1' },
     first_message: { session_id: 'session-1' },
     projection: { session_id: 'session-1' },
     mutation: { session_id: 'session-1' },
   }), { status: 200, headers: { 'Content-Type': 'application/json' } }), async () => {
     await assert.rejects(startWorkspaceOnboardingSession({
-      path: '/home/alice/existing',
-      expectedResolvedPath: '/home/alice/existing',
+      path: '/workspace/existing',
+      expectedResolvedPath: '/workspace/existing',
       clientRequestId: 'onboarding-ready',
     }), /eligible existing-file folder/)
   })
@@ -93,8 +93,8 @@ test('workspace onboarding assistant preserves provider and permission failures 
     error: 'workspace onboarding requires a configured Swarm Action provider and model',
   }), { status: 503, headers: { 'Content-Type': 'application/json' } }), async () => {
     await assert.rejects(startWorkspaceOnboardingSession({
-      path: '/home/alice/existing',
-      expectedResolvedPath: '/home/alice/existing',
+      path: '/workspace/existing',
+      expectedResolvedPath: '/workspace/existing',
       clientRequestId: 'onboarding-provider-failed',
     }), /configured Swarm Action provider and model/)
   })

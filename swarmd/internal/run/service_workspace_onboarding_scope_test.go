@@ -87,4 +87,3 @@ func TestWorkspaceOnboardingRunScopeIsExactAndNonReusable(t *testing.T) {
 		t.Fatalf("symlink drift error=%v", err)
 	}
 }
-

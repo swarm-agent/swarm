@@ -229,7 +229,7 @@ func TestSystemAgentSnapshotReconciliationPreservesDynamicContextAndModels(t *te
 	if workspaceOnboarding.Name != WorkspaceOnboardingAgentID || workspaceOnboarding.Provider != "codex" || workspaceOnboarding.Model != "action-model" || workspaceOnboarding.Prompt != WorkspaceOnboardingAgentPrompt() || workspaceOnboarding.RuntimeMode != pebblestore.AgentRuntimeModeReadWrite || !workspaceOnboarding.Protected {
 		t.Fatalf("Workspace Onboarding immutable identity mismatch: %+v", workspaceOnboarding)
 	}
-	for _, allowed := range []string{"read", "find", "list", "write", "edit", "bash", "git_status", "git_diff", "git_add", "git_commit"} {
+	for _, allowed := range []string{"read", "find", "list", "write", "edit", "git_init", "git_status", "git_diff", "git_add", "git_commit", "git_commit_initial"} {
 		if cfg := workspaceOnboarding.ToolContract.Tools[allowed]; cfg.Enabled == nil || !*cfg.Enabled {
 			t.Fatalf("Workspace Onboarding tool %q unavailable: %+v", allowed, workspaceOnboarding.ToolContract)
 		}
@@ -242,7 +242,7 @@ func TestSystemAgentSnapshotReconciliationPreservesDynamicContextAndModels(t *te
 			t.Fatalf("Workspace Onboarding escalation tool %q was not denied: %+v", denied, workspaceOnboarding.ToolContract)
 		}
 	}
-	for _, required := range []string{"one backend-bound pre-admission directory", "ignore rules", "explicit permission", "Never claim the folder is ready until Git HEAD resolves"} {
+	for _, required := range []string{"one backend-bound pre-admission directory", "ignore rules", "explicit permission", "Use git_init rather than Bash", "never invent or persist an identity", "Never claim the folder is ready until Git HEAD resolves"} {
 		if !strings.Contains(workspaceOnboarding.Prompt, required) {
 			t.Fatalf("Workspace Onboarding prompt missing %q", required)
 		}

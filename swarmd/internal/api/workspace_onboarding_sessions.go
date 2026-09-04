@@ -32,11 +32,11 @@ type workspaceOnboardingSessionStartResponse struct {
 	OK           bool                                 `json:"ok"`
 	SessionID    string                               `json:"session_id"`
 	Repository   workspace.RepositoryState            `json:"repository"`
-	Session      pebblestore.SessionSnapshot           `json:"session"`
-	FirstMessage pebblestore.MessageSnapshot           `json:"first_message"`
-	Projection   pebblestore.V3SessionProjection       `json:"projection"`
+	Session      pebblestore.SessionSnapshot          `json:"session"`
+	FirstMessage pebblestore.MessageSnapshot          `json:"first_message"`
+	Projection   pebblestore.V3SessionProjection      `json:"projection"`
 	Mutation     sessionruntime.SessionMutationResult `json:"mutation"`
-	Replayed     bool                                  `json:"replayed"`
+	Replayed     bool                                 `json:"replayed"`
 }
 
 // handleWorkspaceOnboardingSessionStart is the only pre-admission conversational
@@ -100,14 +100,14 @@ func (s *Server) handleWorkspaceOnboardingSessionStart(w http.ResponseWriter, r 
 			writeWorkspaceOnboardingError(w, repository, errors.New("workspace onboarding assistance can start only for a non-repository folder containing existing files"))
 			return
 		}
-		writeJSON(w, http.StatusOK, workspaceOnboardingSessionStartResponse{OK: true, SessionID: replay.SessionID, Repository: repository, Session: replay.Session, FirstMessage: *replay.Message, Projection: replay.Projection, Mutation: replay.Mutation, Replayed: true})
+		writeJSON(w, http.StatusOK, workspaceOnboardingSessionStartResponse{OK: true, SessionID: replay.Session.ID, Repository: repository, Session: replay.Session, FirstMessage: *replay.Message, Projection: replay.Projection, Mutation: replay.Mutation, Replayed: true})
 		return
 	}
 	if replay, found, replayErr := s.workspaceOnboardingReplay(principal, sessionID, req.ClientRequestID, requestHash); replayErr != nil {
 		writeRoutedSessionError(w, replayErr)
 		return
 	} else if found {
-		writeJSON(w, http.StatusOK, workspaceOnboardingSessionStartResponse{OK: true, SessionID: replay.SessionID, Repository: repository, Session: replay.Session, FirstMessage: *replay.Message, Projection: replay.Projection, Mutation: replay.Mutation, Replayed: true})
+		writeJSON(w, http.StatusOK, workspaceOnboardingSessionStartResponse{OK: true, SessionID: replay.Session.ID, Repository: repository, Session: replay.Session, FirstMessage: *replay.Message, Projection: replay.Projection, Mutation: replay.Mutation, Replayed: true})
 		return
 	}
 
@@ -186,7 +186,7 @@ func (s *Server) handleWorkspaceOnboardingSessionStart(w http.ResponseWriter, r 
 	candidate := pebblestore.SessionSnapshot{
 		ID: sessionID, UserID: principal.UserID, AccountScopeID: principal.AccountScopeID,
 		WorkspacePath: canonicalPath, WorkspaceName: filepath.Base(canonicalPath), Title: "Prepare first workspace", Mode: sessionruntime.ModeAuto,
-		Preference: pebblestore.ModelPreference{Provider: providerID, Model: modelProfile.Action.Model, Thinking: modelProfile.Action.Thinking, ServiceTier: modelProfile.Action.ServiceTier, ContextMode: modelProfile.Action.ContextMode, UpdatedAt: now},
+		Preference:   pebblestore.ModelPreference{Provider: providerID, Model: modelProfile.Action.Model, Thinking: modelProfile.Action.Thinking, ServiceTier: modelProfile.Action.ServiceTier, ContextMode: modelProfile.Action.ContextMode, UpdatedAt: now},
 		ModelProfile: modelProfile, Metadata: metadata, CreatedAt: now, UpdatedAt: now,
 	}
 	message := pebblestore.MessageSnapshot{Role: "user", Content: req.Input}
@@ -291,4 +291,3 @@ func (s *Server) workspaceOnboardingReplay(principal identity.Principal, session
 	}
 	return result, true, nil
 }
-

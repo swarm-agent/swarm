@@ -245,7 +245,7 @@ func TestWorkspaceOnboardingSessionRejectsInvalidAuthorityWithoutPartialState(t 
 		}
 		before, _ := server.sessions.ListSessionsForAccount(principal.AccountScopeID, 100)
 		response := postWorkspaceOnboardingRequest(t, server, principal, map[string]any{"path": path, "expected_resolved_path": path, "client_request_id": "mismatched-credential"})
-		if response.Code == http.StatusOK || !strings.Contains(response.Body.String(), `provider "recording"`) {
+		if response.Code == http.StatusOK || !strings.Contains(response.Body.String(), "configured Swarm Action provider") || !strings.Contains(response.Body.String(), "recording") {
 			t.Fatalf("mismatched credential status=%d body=%s", response.Code, response.Body.String())
 		}
 		after, err := server.sessions.ListSessionsForAccount(principal.AccountScopeID, 100)
@@ -327,4 +327,3 @@ func postWorkspaceOnboardingRequest(t *testing.T, server *Server, principal iden
 	server.Handler().ServeHTTP(response, request)
 	return response
 }
-

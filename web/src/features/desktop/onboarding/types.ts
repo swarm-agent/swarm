@@ -2,11 +2,11 @@ import type { ProviderStatus } from '../settings/types/auth'
 import type { VaultStatus } from '../vault/types'
 import type {
   MessageSnapshot,
-  SessionMutationResult,
   SessionSnapshot,
   V3SessionProjection,
 } from '../state/desktop-v3-cache-types'
 import type { WorkspaceRepositoryState, WorkspaceRepositoryStateWire } from '../../workspaces/launcher/services/workspace-repository'
+import type { DesktopV3RoutedSessionMutation } from '../session-v3/write-api'
 
 export interface WorkspaceOnboardingSessionStartResponseWire {
   ok?: boolean
@@ -15,7 +15,7 @@ export interface WorkspaceOnboardingSessionStartResponseWire {
   session?: SessionSnapshot
   first_message?: MessageSnapshot
   projection?: V3SessionProjection
-  mutation?: SessionMutationResult
+  mutation?: DesktopV3RoutedSessionMutation
   replayed?: boolean
 }
 
@@ -26,7 +26,7 @@ export interface WorkspaceOnboardingSessionStartResponse {
   session: SessionSnapshot
   firstMessage: MessageSnapshot
   projection: V3SessionProjection
-  mutation: SessionMutationResult
+  mutation: DesktopV3RoutedSessionMutation
   replayed: boolean
 }
 

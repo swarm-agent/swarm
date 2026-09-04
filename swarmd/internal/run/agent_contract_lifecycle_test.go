@@ -155,16 +155,13 @@ func TestWorkspaceOnboardingToolContractForcesMutationApproval(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"write", "edit", "git_add", "git_commit"} {
+	for _, name := range []string{"write", "edit", "git_init", "git_add", "git_commit", "git_commit_initial"} {
 		if !resolved.Tools[name].Enabled || disabled[name] {
 			t.Fatalf("mutation tool %q not available for approval: resolved=%+v disabled=%v", name, resolved.Tools[name], disabled[name])
 		}
 		if explain := permission.ExplainPolicy("auto", name, `{}`, *compiled); explain.Decision != permission.PolicyDecisionAsk {
 			t.Fatalf("mutation tool %q decision=%q want ask", name, explain.Decision)
 		}
-	}
-	if explain := permission.ExplainPolicy("auto", "bash", `{"command":"git init","explanation":["Initialize the selected folder"],"category":"write","critical":true}`, *compiled); explain.Decision != permission.PolicyDecisionAsk {
-		t.Fatalf("git init decision=%q want ask", explain.Decision)
 	}
 	if explain := permission.ExplainPolicy("auto", "bash", `{"command":"git status","explanation":["Inspect status"],"category":"read","critical":false}`, *compiled); explain.Decision != permission.PolicyDecisionDeny {
 		t.Fatalf("non-init bash decision=%q want deny", explain.Decision)
