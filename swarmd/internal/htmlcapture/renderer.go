@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"image"
@@ -47,6 +48,9 @@ type Request struct {
 	Entry    string
 	Files    map[string][]byte
 	StateIDs []string
+	// RequiredSelectors must resolve to visible elements fully contained inside
+	// the requested viewport before any ready evidence is returned.
+	RequiredSelectors []string
 	// ViewportWidth/ViewportHeight optionally tighten the capture below the fixed
 	// renderer maximum. Both must be set together; callers cannot exceed 1920x1080.
 	ViewportWidth  int
@@ -118,8 +122,13 @@ func (r *ChromedpRenderer) Capture(parent context.Context, req Request) ([]Resul
 	if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() || info.Mode().Perm()&0o111 == 0 || info.Mode().Perm()&0o022 != 0 || !statOK || stat.Uid != 0 {
 		return nil, NewError("capture_renderer_unavailable", "system-managed sandboxed browser is unavailable")
 	}
-	if len(req.StateIDs) < 1 || len(req.StateIDs) > MaxStates || req.Entry == "" || len(req.Files) == 0 {
+	if len(req.StateIDs) < 1 || len(req.StateIDs) > MaxStates || req.Entry == "" || len(req.Files) == 0 || len(req.RequiredSelectors) > 256 {
 		return nil, NewError("capture_source_limit_exceeded", "capture request exceeds fixed renderer bounds")
+	}
+	for _, selector := range req.RequiredSelectors {
+		if strings.TrimSpace(selector) == "" || len(selector) > 512 {
+			return nil, NewError("capture_source_limit_exceeded", "capture required selector exceeds fixed renderer bounds")
+		}
 	}
 	viewportWidth, viewportHeight := Width, Height
 	if req.ViewportWidth != 0 || req.ViewportHeight != 0 {
@@ -262,7 +271,7 @@ func (r *ChromedpRenderer) Capture(parent context.Context, req Request) ([]Resul
 
 	results := make([]Result, 0, len(req.StateIDs))
 	for _, stateID := range req.StateIDs {
-		result, err := captureState(browserCtx, stateID, viewportWidth, viewportHeight)
+		result, err := captureState(browserCtx, stateID, viewportWidth, viewportHeight, req.RequiredSelectors)
 		if err != nil {
 			return nil, err
 		}
@@ -286,10 +295,17 @@ type browserAudit struct {
 	Code string `json:"code"`
 }
 
-func captureState(browserCtx context.Context, stateID string, viewportWidth, viewportHeight int) ([]byte, error) {
+func captureState(browserCtx context.Context, stateID string, viewportWidth, viewportHeight int, requiredSelectors []string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(browserCtx, stateTimeout)
 	defer cancel()
 	var audit browserAudit
+	if requiredSelectors == nil {
+		requiredSelectors = []string{}
+	}
+	selectors, err := json.Marshal(requiredSelectors)
+	if err != nil {
+		return nil, NewError("capture_source_limit_exceeded", "capture required selectors are invalid")
+	}
 	expression := fmt.Sprintf(`(async () => {
 const id=%q, api=globalThis.__SWARM_CAPTURE_V1__;
 if (!api || api.version!=="swarm.capture/v1" || typeof api.select!=="function" || typeof api.ready!=="function") return {code:"capture_runtime_missing"};
@@ -308,11 +324,12 @@ const selection=getSelection(); if(selection) selection.removeAllRanges();
 for (const animation of document.getAnimations()) animation.cancel();
 const transparent=color=>color==='transparent'||/^rgba\([^)]*,\s*0(?:\.0+)?\s*\)$/.test(color);
 const needsOpaqueCanvas=transparent(getComputedStyle(document.documentElement).backgroundColor)&&transparent(getComputedStyle(document.body).backgroundColor);
-const width=%d,height=%d;
+const width=%d,height=%d,requiredSelectors=%s;
 if (document.documentElement.scrollWidth>width || document.documentElement.scrollHeight>height || document.body.scrollWidth>width || document.body.scrollHeight>height) return {code:"capture_viewport_overflow"};
+for (const selector of requiredSelectors) { let node; try { node=document.querySelector(selector); } catch (_) { return {code:"capture_required_element_invalid"}; } if (!node || !visible(node)) return {code:"capture_required_element_missing"}; const r=node.getBoundingClientRect(); if (r.left<0 || r.top<0 || r.right>width || r.bottom>height) return {code:"capture_required_element_clipped"}; }
 const style=document.createElement('style'); style.textContent='*,*::before,*::after{animation:none!important;transition:none!important;scroll-behavior:auto!important;caret-color:transparent!important;cursor:none!important;pointer-events:none!important}html,body{width:'+width+'px!important;height:'+height+'px!important;max-width:'+width+'px!important;max-height:'+height+'px!important;margin:0!important;overflow:hidden!important}'+(needsOpaqueCanvas?'html{background:#fff!important}':''); document.head.append(style);
 return {code:"ok"};
-})()`, stateID, viewportWidth, viewportHeight)
+})()`, stateID, viewportWidth, viewportHeight, selectors)
 	if err := chromedp.Run(ctx, chromedp.Evaluate(expression, &audit, func(p *cdpruntime.EvaluateParams) *cdpruntime.EvaluateParams {
 		return p.WithAwaitPromise(true).WithReturnByValue(true)
 	})); err != nil {
@@ -465,6 +482,12 @@ func safeMessage(code string) string {
 		return "capture state contains blocking UI"
 	case "capture_viewport_overflow":
 		return "capture document overflows the required viewport"
+	case "capture_required_element_invalid":
+		return "capture required Part selector is invalid"
+	case "capture_required_element_missing":
+		return "capture required Part is missing or not visible"
+	case "capture_required_element_clipped":
+		return "capture required Part is clipped outside the required viewport"
 	default:
 		return "trusted HTML capture failed"
 	}

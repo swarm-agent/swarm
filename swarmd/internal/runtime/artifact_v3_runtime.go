@@ -326,7 +326,13 @@ func (a *artifactV3RuntimeAdapter) Preview(ctx context.Context, request tool.Art
 	}
 	previewFiles := cloneArtifactProject(request.Build.OutputFiles)
 	previewFiles[manifest.Entrypoint] = injectArtifactV3CaptureRuntime(previewFiles[manifest.Entrypoint])
-	results, err := a.renderer.Capture(ctx, htmlcapture.Request{Entry: manifest.Entrypoint, Files: previewFiles, StateIDs: []string{"default"}, ViewportWidth: 1440, ViewportHeight: 900})
+	requiredSelectors := make([]string, 0, len(manifest.Parts))
+	for _, part := range manifest.Parts {
+		if part.Locator.Kind == "selector" && part.Locator.Path == manifest.Entrypoint && strings.TrimSpace(part.Locator.Value) != "" {
+			requiredSelectors = append(requiredSelectors, strings.TrimSpace(part.Locator.Value))
+		}
+	}
+	results, err := a.renderer.Capture(ctx, htmlcapture.Request{Entry: manifest.Entrypoint, Files: previewFiles, StateIDs: []string{"default"}, RequiredSelectors: requiredSelectors, ViewportWidth: 1440, ViewportHeight: 900})
 	if err != nil {
 		diagnostic := tool.ArtifactV3Diagnostic{Stage: "preview", Code: "browser_capture_failed", Message: "the complete Artifact V3 project failed its browser preview gate"}
 		type safe interface {

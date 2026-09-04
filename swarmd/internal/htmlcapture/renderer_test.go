@@ -50,6 +50,19 @@ func TestChromedpRendererRejectsResponsiveViewportOverflow(t *testing.T) {
 	}
 }
 
+func TestChromedpRendererRejectsClippedRequiredPart(t *testing.T) {
+	if _, err := os.Stat(SystemChromePath); err != nil {
+		t.Skipf("system-managed Chrome unavailable: %v", err)
+	}
+	html := []byte(`<!doctype html><html data-swarm-capture-state="default"><head><script>globalThis.__SWARM_CAPTURE_V1__={version:"swarm.capture/v1",select(id){document.documentElement.dataset.swarmCaptureState=id},ready(id){return {state_id:id}}}</script><style>html,body{margin:0;height:900px;overflow:hidden}#hero{height:850px}#footer{position:fixed;left:0;right:0;top:880px;height:40px}</style></head><body><main id="hero">Hero</main><footer id="footer">Clipped footer</footer></body></html>`)
+	renderer := NewChromedpRenderer(SystemChromePath, t.TempDir())
+	_, err := renderer.Capture(context.Background(), Request{Entry: "index.html", Files: map[string][]byte{"index.html": html}, StateIDs: []string{"default"}, RequiredSelectors: []string{"#hero", "#footer"}, ViewportWidth: 1440, ViewportHeight: 900})
+	var captureErr *Error
+	if !errors.As(err, &captureErr) || captureErr.Code != "capture_required_element_clipped" {
+		t.Fatalf("clipped required Part error = %v", err)
+	}
+}
+
 func TestChromedpRendererCapturesStableStateWithSystemChrome(t *testing.T) {
 	if _, err := os.Stat(SystemChromePath); err != nil {
 		t.Skipf("system-managed Chrome unavailable: %v", err)
