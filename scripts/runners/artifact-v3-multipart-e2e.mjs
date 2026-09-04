@@ -406,7 +406,7 @@ async function staticVisualSample(previewPage, parts, expectedLabel = '', allowV
       const part = document.querySelector(selector)
       const rect = part?.getBoundingClientRect()
       const style = part ? getComputedStyle(part) : null
-      return { id, label, selector, text: part?.textContent?.trim() || '', rect: rect ? { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom } : null, color: style?.color || '', fontSize: style ? parseFloat(style.fontSize) : 0 }
+      return { id, label, selector, text: part?.innerText?.trim() || part?.textContent?.trim() || '', rect: rect ? { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom } : null, color: style?.color || '', fontSize: style ? parseFloat(style.fontSize) : 0 }
     })
     return { rows, innerWidth, innerHeight, scrollWidth: document.documentElement.scrollWidth, scrollHeight: document.documentElement.scrollHeight, bodyText: document.body.innerText }
   }, targets)
