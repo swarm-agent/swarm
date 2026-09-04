@@ -30,7 +30,7 @@ const browserExecutable = String(option('--browser-executable', process.env.PLAY
 const timeoutMs = Number(option('--timeout-ms', process.env.SWARM_RUNNER_TIMEOUT_MS || '600000'))
 const preflight = flag('--preflight')
 const stage = String(option('--stage', 'full')).trim().toLowerCase()
-const noDesignerStage = stage === 'basic-html' || stage === 'targeted-part'
+const noDesignerStage = stage === 'basic-html' || stage === 'targeted-part' || stage === 'selected-continuation'
 const headless = !flag('--headful')
 const suppliedToken = String(process.env.SWARM_RUNNER_TOKEN || '').trim()
 const testID = `artifact-v3-three-animated-parts-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`
@@ -526,6 +526,54 @@ function targetedTurn(artifact, rootRevision) {
   return { turn, candidate }
 }
 
+async function submitSelectedContinuation(sessionID, artifactID, selectedRevision, parts) {
+  const studio = page.locator('[data-testid="desktop-artifact-v3-studio"]:visible').first()
+  await studio.getByRole('button', { name: 'Close Artifact V3 Studio' }).click()
+  const composer = page.getByLabel('Continue Desktop V3 conversation')
+  await composer.waitFor({ state: 'visible', timeout: 30000 })
+  const heroID = parts.find((part) => text(part?.label).toLowerCase().includes('hero'))?.id
+  assert(heroID, 'selected revision has no semantic Hero Part')
+  const content = [
+    'Continue the selected Artifact V3 revision with one new exact-base candidate.',
+    `Use exact artifact reference session_id=${sessionID}, artifact_id=${artifactID}, revision_ref=${selectedRevision.revision_ref}.`,
+    `Change the existing Hero Part ${heroID} to include the exact readable label CONTINUED SELECTED TURN while preserving every stable Part ID and the Pricing candidate changes.`,
+    `Use manage_artifact read_v3, then revise_v3 with target_part_ids=["${heroID}"] and the complete corrected HTML. Inspect the candidate pixels, do not select it, do not delegate to Designer, and do not use V1/V2 identity.`,
+  ].join(' ')
+  await composer.fill(content)
+  const responsePromise = page.waitForResponse((response) => response.request().method() === 'POST' && new URL(response.url()).pathname === `/v3/sessions/${sessionID}/messages`, { timeout: 30000 })
+  await page.getByRole('button', { name: 'Send message' }).click()
+  const response = await responsePromise
+  assert(response.ok(), `selected continuation message failed with HTTP ${response.status()}`)
+  const decoded = await response.json()
+  const runID = text(decoded?.run_intent?.run_id || decoded?.run_id)
+  assert(runID, 'selected continuation returned no run ID')
+  result.ids.continuation_run_id = runID
+  const snapshot = await waitForRun(sessionID, runID, 'selected-continuation')
+  return { snapshot, heroID }
+}
+
+async function selectCandidateInStudio(sessionID, artifactID, turn, candidate) {
+  const studio = await openDesktopStudio(sessionID, artifactID)
+  const row = studio.locator(`[data-artifact-v3-turn="${turn.turn_id}"] [data-artifact-v3-candidate="${candidate.candidate_id}"]`)
+  await row.waitFor({ state: 'visible', timeout: 30000 })
+  const select = row.getByRole('button', { name: 'Select head' })
+  await select.waitFor({ state: 'visible', timeout: 30000 })
+  const responsePromise = page.waitForResponse((response) => response.request().method() === 'POST' && new URL(response.url()).pathname === `${artifactRoute(sessionID, `/${encodeURIComponent(artifactID)}`)}/turns/${encodeURIComponent(turn.turn_id)}/select`, { timeout: 30000 })
+  await select.click()
+  const response = await responsePromise
+  assert(response.ok(), `Artifact Studio selection failed with HTTP ${response.status()}`)
+  const selected = await response.json()
+  const head = selected?.head
+  assert(text(head?.commit_oid) === candidate.revision.commit_oid, 'Artifact Studio selected the wrong exact candidate commit')
+  const timeoutAt = Math.min(deadline, Date.now() + 30000)
+  while (Date.now() < timeoutAt) {
+    const artifact = await detail(sessionID, artifactID)
+    if (currentRevision(artifact).commit_oid === candidate.revision.commit_oid) return artifact
+    await sleep(500)
+  }
+  return detail(sessionID, artifactID)
+}
+
 async function verifyStudioTurns(sessionID, artifactID, turn, candidate, rootRevision, expectedTurnCount) {
   const studio = await openDesktopStudio(sessionID, artifactID)
   const turns = studio.locator('[data-artifact-v3-turns] [data-artifact-v3-turn]')
@@ -551,7 +599,7 @@ async function verifyStudioTurns(sessionID, artifactID, turn, candidate, rootRev
 async function runLive() {
   assert(apiURL && /^https?:\/\//.test(apiURL), '--api-url is required for the live journey')
   assert(desktopURL && /^https?:\/\//.test(desktopURL), '--desktop-url is invalid')
-  assert(['basic-html', 'targeted-part', 'full'].includes(stage), '--stage must be basic-html, targeted-part, or full')
+  assert(['basic-html', 'targeted-part', 'selected-continuation', 'full'].includes(stage), '--stage must be basic-html, targeted-part, selected-continuation, or full')
   assert(Number.isFinite(timeoutMs) && timeoutMs >= 300000 && timeoutMs <= 600000, '--timeout-ms must be between 300000 and 600000')
   await auth()
   const assignment = await configureModels()
@@ -661,6 +709,27 @@ async function runLive() {
   result.animations.candidate = await screenshotPreview(session.sessionID, artifact.id, candidate.revision, 'TARGETED PRICING TURN')
   assert(!JSON.stringify(result.animations.root).includes('TARGETED PRICING TURN'), 'root revision was mutated by the targeted follow-up')
   await verifyStudioTurns(session.sessionID, artifact.id, turn, candidate, rootRevision, rootTurnCount + 1)
+  if (stage === 'selected-continuation') {
+    const selectedArtifact = await selectCandidateInStudio(session.sessionID, artifact.id, turn, candidate)
+    const selectedRevision = currentRevision(selectedArtifact)
+    assert(selectedRevision.commit_oid === candidate.revision.commit_oid, 'selected candidate did not become the exact Artifact head')
+    assert((selectedArtifact.turns || []).some((item) => item.turn_id === turn.turn_id && item.status === 'selected'), 'selected turn did not persist selected status')
+    result.revisions.selected = selectedRevision
+    result.gates.explicit_candidate_selection = true
+    const beforeContinuationTurns = (selectedArtifact.turns || []).length
+    const { heroID } = await submitSelectedContinuation(session.sessionID, artifact.id, selectedRevision, selectedRevision.manifest.parts)
+    const continuedArtifact = await waitForTargetedTurn(session.sessionID, artifact.id, selectedRevision.commit_oid)
+    assert(currentRevision(continuedArtifact).commit_oid === selectedRevision.commit_oid, 'continuation candidate moved the selected head')
+    assert((continuedArtifact.turns || []).length === beforeContinuationTurns + 1, 'continuation did not add exactly one turn')
+    const continuedTurn = [...(continuedArtifact.turns || [])].reverse().find((item) => item.base_commit_oid === selectedRevision.commit_oid && item.status === 'awaiting_selection' && item.target_part_ids?.[0] === heroID)
+    assert(continuedTurn?.candidates?.length === 1, 'continued selected revision did not produce exactly one Hero candidate')
+    const continuedCandidate = continuedTurn.candidates[0]
+    assert(continuedCandidate.revision?.parents?.[0] === selectedRevision.commit_oid, 'continued candidate did not parent the exact selected revision')
+    result.revisions.continued = continuedCandidate.revision
+    result.animations.continued = await screenshotPreview(session.sessionID, artifact.id, continuedCandidate.revision, 'CONTINUED SELECTED TURN')
+    assert(JSON.stringify(result.animations.continued).includes('TARGETED PRICING TURN'), 'continued candidate lost the selected Pricing change')
+    result.gates.continued_from_selected_revision = true
+  }
   if (stage === 'targeted-part') {
     result.gates.targeted_part_candidate = true
     result.gates.exact_base_ancestry = true
