@@ -558,7 +558,7 @@ async function submitSelectedContinuation(sessionID, artifactID, selectedRevisio
   await studio.getByRole('button', { name: 'Close Artifact V3 Studio' }).click()
   const composer = page.getByLabel('Continue Desktop V3 conversation')
   await composer.waitFor({ state: 'visible', timeout: 30000 })
-  const heroID = parts.find((part) => text(part?.label).toLowerCase().includes('hero'))?.id
+  const heroID = parts.find((part) => text(part?.id).toLowerCase() === 'hero' || text(part?.label).toLowerCase().includes('hero') || text(part?.label).toLowerCase().includes('product introduction'))?.id
   assert(heroID, 'selected revision has no semantic Hero Part')
   const content = [
     'Continue the selected Artifact V3 revision with one new exact-base candidate.',
