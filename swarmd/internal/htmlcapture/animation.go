@@ -749,7 +749,7 @@ return {code:"ok",outcome:"seek_acknowledged"};
 	if err != nil {
 		return nil, diagnostics, err
 	}
-	stable, err := equalPixels(first, second)
+	stable, err := equalPixels(first, second, Width, Height)
 	if err != nil {
 		return nil, diagnostics, NewError("animation_png_invalid", "renderer returned an invalid PNG frame")
 	}

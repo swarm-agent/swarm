@@ -34,6 +34,22 @@ func TestChromedpRendererConcurrencyBoundsCaptureAndPreflightTogether(t *testing
 	}
 }
 
+// Requirement: Artifact V3's reviewed 1440x900 presentation must be validated at
+// that exact viewport before a ready Git head can advance. Threat: validating
+// only the renderer's 1920x1080 maximum can hide clipping and scroll overflow.
+func TestChromedpRendererRejectsResponsiveViewportOverflow(t *testing.T) {
+	if _, err := os.Stat(SystemChromePath); err != nil {
+		t.Skipf("system-managed Chrome unavailable: %v", err)
+	}
+	html := []byte(`<!doctype html><html data-swarm-capture-state="default"><head><script>globalThis.__SWARM_CAPTURE_V1__={version:"swarm.capture/v1",select(id){document.documentElement.dataset.swarmCaptureState=id},ready(id){return {state_id:id}}}</script><style>html,body{margin:0}main{height:926px}</style></head><body><main>overflow</main></body></html>`)
+	renderer := NewChromedpRenderer(SystemChromePath, t.TempDir())
+	_, err := renderer.Capture(context.Background(), Request{Entry: "index.html", Files: map[string][]byte{"index.html": html}, StateIDs: []string{"default"}, ViewportWidth: 1440, ViewportHeight: 900})
+	var captureErr *Error
+	if !errors.As(err, &captureErr) || captureErr.Code != "capture_viewport_overflow" {
+		t.Fatalf("overflow error = %v", err)
+	}
+}
+
 func TestChromedpRendererCapturesStableStateWithSystemChrome(t *testing.T) {
 	if _, err := os.Stat(SystemChromePath); err != nil {
 		t.Skipf("system-managed Chrome unavailable: %v", err)

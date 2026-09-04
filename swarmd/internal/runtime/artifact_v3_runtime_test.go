@@ -21,7 +21,7 @@ import (
 type artifactV3RuntimeRenderer struct{}
 
 func (artifactV3RuntimeRenderer) Capture(_ context.Context, request htmlcapture.Request) ([]htmlcapture.Result, error) {
-	if request.Entry == "" || len(request.Files) == 0 {
+	if request.Entry == "" || len(request.Files) == 0 || request.ViewportWidth != 1440 || request.ViewportHeight != 900 {
 		return nil, htmlcapture.NewError("capture_invalid", "invalid capture")
 	}
 	return []htmlcapture.Result{{StateID: "default", PNG: []byte("real-renderer-evidence")}}, nil
