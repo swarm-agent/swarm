@@ -1567,7 +1567,8 @@ export interface DesktopV3ExistingConversationPaneProps {
   agentSettingsOpenSignal?: number;
   agentSettingsInitialAgent?: string;
   composerFocusSignal?: number;
-  composerDraftRequest?: { id: number; draft: string };
+  composerDraftRequest?: { id: number; draft: string; append?: boolean };
+  onComposerDraftRequestHandled?: (id: number) => void;
   onCompactingChange?: (sessionId: string, startedAt: number | null) => void;
   onArchivePlanSession?: (sessionId: string) => void;
   onOpenPlan?: () => void;
@@ -1613,7 +1614,8 @@ type DesktopV3ExistingConversationComposerProps = Omit<
   hasStoredOperation: boolean;
   canSubmitWithoutDraft: boolean;
   controllerRef: MutableRefObject<DesktopV3ExistingComposerController | null>;
-  draftRequest?: { id: number; draft: string };
+  draftRequest?: { id: number; draft: string; append?: boolean };
+  onDraftRequestHandled?: (id: number) => void;
   onSubmit: ComponentProps<typeof DesktopV3AgenticComposer>['onSubmit'];
 };
 
@@ -1623,6 +1625,7 @@ export function DesktopV3ExistingConversationComposer({
   canSubmitWithoutDraft,
   controllerRef,
   draftRequest,
+  onDraftRequestHandled,
   onSubmit,
   ...composerProps
 }: DesktopV3ExistingConversationComposerProps) {
@@ -1632,8 +1635,11 @@ export function DesktopV3ExistingConversationComposer({
   useEffect(() => {
     if (!draftRequest || draftRequest.id === handledDraftRequestRef.current) return;
     handledDraftRequestRef.current = draftRequest.id;
-    setDraft(draftRequest.draft);
-  }, [draftRequest]);
+    setDraft((current) => draftRequest.append && current.trim()
+      ? `${current}\n\n${draftRequest.draft}`
+      : draftRequest.draft);
+    onDraftRequestHandled?.(draftRequest.id);
+  }, [draftRequest, onDraftRequestHandled]);
 
   useLayoutEffect(() => {
     const controller: DesktopV3ExistingComposerController = { setDraft };
@@ -1679,6 +1685,7 @@ export function DesktopV3ExistingConversationPane({
   agentSettingsInitialAgent = "",
   composerFocusSignal = 0,
   composerDraftRequest,
+  onComposerDraftRequestHandled,
   onCompactingChange,
   onArchivePlanSession,
   onOpenPlan,
@@ -3468,6 +3475,7 @@ export function DesktopV3ExistingConversationPane({
             canSubmitWithoutDraft={canSubmitWithoutDraft}
             controllerRef={composerControllerRef}
             draftRequest={composerDraftRequest}
+            onDraftRequestHandled={onComposerDraftRequestHandled}
             placeholder="Message Swarm…"
             inputLabel="Continue Desktop V3 conversation"
             disabled={sending || compacting}

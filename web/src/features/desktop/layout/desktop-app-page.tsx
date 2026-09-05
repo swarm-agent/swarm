@@ -2548,6 +2548,11 @@ export function DesktopAppPage() {
   const [quickActionsOpen, setQuickActionsOpen] = useState(false)
   const [workspacePickerOpen, setWorkspacePickerOpen] = useState(false)
   const [composerFocusSignal, setComposerFocusSignal] = useState(0)
+  const integrationHelpRequestIdRef = useRef(0)
+  const [integrationHelpDraft, setIntegrationHelpDraft] = useState<{ id: number; sessionId: string; draft: string; append: true }>()
+  const handleIntegrationHelpDraftHandled = useCallback((id: number) => {
+    setIntegrationHelpDraft((current) => current?.id === id ? undefined : current)
+  }, [])
   const [newSessionEpoch, setNewSessionEpoch] = useState(0)
   const [newSessionIntent, setNewSessionIntent] = useState<(DesktopNewSessionCommandRequest & { workspacePath: string }) | null>(null)
   const [workspaceDropdownOpen, setWorkspaceDropdownOpen] = useState(false)
@@ -3296,28 +3301,28 @@ export function DesktopAppPage() {
     })
   }, [agentStateQuery.data?.profiles, draftPreferenceQuery.data?.preference, modelProfilesQuery.data, navigate, resolveDesktopRepairSessionAuthority])
 
+  const openIntegrationHelpDraft = useCallback(async (sourceSessionId: string, owningWorkspacePath: string, prompt: string) => {
+    const sessionId = sourceSessionId.trim()
+    if (!sessionId) throw new Error('The existing session is unavailable')
+    const sourceSession = sessionById.get(sessionId)
+    const workspaceSlug = sourceSession ? globalSessionWorkspaceSlug(sourceSession)
+      : workspaceSlugByPath.get(owningWorkspacePath)
+        ?? workspaceRouteSlugBase({ path: owningWorkspacePath, workspaceName: fallbackWorkspaceNameFromPath(owningWorkspacePath) })
+    await navigate({ to: '/$workspaceSlug/$sessionId', params: { workspaceSlug, sessionId } })
+    setMobileSidebarOpen(false)
+    setIntegrationHelpDraft({ id: ++integrationHelpRequestIdRef.current, sessionId, draft: prompt, append: true })
+    setComposerFocusSignal((current) => current + 1)
+  }, [globalSessionWorkspaceSlug, navigate, sessionById, workspaceSlugByPath])
+
   const reviewFixAvailable = Boolean(topWorkspacePath)
   const handleAskSwarmToFixReviewIntegration = useCallback(async (failure: ReviewWorktreeIntegrationFailure) => {
-    setNeedsReviewCleanupOpen(false)
     try {
-      await launchDesktopRepairSession({
-        owningWorkspacePath: topWorkspacePath,
-        sourceSessionId: failure.candidate.session_id,
-        prompt: buildReviewWorktreeFixPrompt(failure, topWorkspacePath),
-        title: `${failure.operation === 'commit_and_integrate' ? 'Fix commit and integration' : 'Fix integration'}: ${failure.candidate.title || failure.candidate.worktree_branch || failure.candidate.session_id}`,
-        source: 'desktop-v3-review-worktrees-recovery',
-        messageMetadata: {
-          failed_session_id: failure.candidate.session_id,
-          worktree_branch: failure.candidate.worktree_branch,
-          target_branch: failure.candidate.target_branch,
-          target_workspace_path: topWorkspacePath,
-          integration_error: failure.error,
-        },
-      })
+      await openIntegrationHelpDraft(failure.candidate.session_id, topWorkspacePath, buildReviewWorktreeFixPrompt(failure, topWorkspacePath))
+      setNeedsReviewCleanupOpen(false)
     } catch (cause) {
-      setDesktopToast({ message: cause instanceof Error ? cause.message : 'Could not start a Swarm repair session.', tone: 'error' })
+      setDesktopToast({ message: cause instanceof Error ? cause.message : 'Could not open integration help in the existing session.', tone: 'error' })
     }
-  }, [launchDesktopRepairSession, topWorkspacePath])
+  }, [openIntegrationHelpDraft, topWorkspacePath])
 
   useEffect(() => {
     if (!routeSessionId) return
@@ -4676,22 +4681,10 @@ export function DesktopAppPage() {
     if (!modal || modal.presentation !== 'sidebar-popout' || modal.integrationComplete || !integrationError || gitIntegrateBusy || gitIntegrateHelpBusy) return
     setGitIntegrateHelpBusy(true)
     try {
-      await launchDesktopRepairSession({
-        owningWorkspacePath: modal.workspacePath,
-        sourceSessionId: modal.sessionId,
-        prompt: buildGitSidebarIntegrationHelpPrompt(modal, integrationError),
-        title: `Review integration failure: ${modal.worktreeBranch || modal.sessionId}`,
-        source: 'desktop-v3-git-sidebar-integration-help',
-        messageMetadata: {
-          worktree_branch: modal.worktreeBranch,
-          target_branch: modal.targetBranch,
-          target_workspace_path: modal.workspacePath,
-          integration_error: integrationError,
-        },
-      })
+      await openIntegrationHelpDraft(modal.sessionId, modal.workspacePath, buildGitSidebarIntegrationHelpPrompt(modal, integrationError))
       setGitIntegrateModal(null)
       setGitIntegrateArchive(false)
-      setDesktopToast({ message: 'Started a new Swarm session for this integration error.', tone: 'success' })
+      setDesktopToast({ message: 'Integration error added to the existing session’s message box. Review and send when ready.', tone: 'success' })
     } catch (error) {
       setDesktopToast({ message: `Could not ask Swarm for integration help: ${error instanceof Error ? error.message : String(error)}`, tone: 'error' })
     } finally {
@@ -5347,6 +5340,8 @@ export function DesktopAppPage() {
             key={`existing:${routeSessionId}`}
             sessionId={routeSessionId}
             composerFocusSignal={composerFocusSignal}
+            composerDraftRequest={integrationHelpDraft?.sessionId === routeSessionId ? integrationHelpDraft : undefined}
+            onComposerDraftRequestHandled={handleIntegrationHelpDraftHandled}
             initialHydrateStatus={desktopInitialHydrate.status}
             renderedMessages={selectedDesktopV3Messages}
             messagesLoaded={selectedDesktopV3MessagesLoaded}

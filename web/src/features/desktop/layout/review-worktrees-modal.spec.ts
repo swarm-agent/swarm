@@ -78,21 +78,19 @@ describe('review worktrees modal helpers', () => {
     expect(shouldShowReviewCommitAction(dirtyResult)).toBe(true)
   })
 
-  it('routes Review Worktrees failures through the compiled Swarm workspace repair launcher', async () => {
+  // Purpose: guard the review-modal callback against starting a repair session or
+  // sending automatically. This is wiring evidence, not a browser interaction proof.
+  it('routes Review Worktrees failures into the existing session draft', async () => {
     const source = await import('node:fs/promises').then(({ readFile }) => readFile(new URL('./desktop-app-page.tsx', import.meta.url), 'utf8'))
     const handlerStart = source.indexOf('const handleAskSwarmToFixReviewIntegration')
     const handlerEnd = source.indexOf('useEffect(() => {', handlerStart)
     const handler = source.slice(handlerStart, handlerEnd)
 
-    expect(source).toContain("const DESKTOP_REPAIR_AGENT_NAME = 'swarm'")
-    expect(source).toMatch(/const launchDesktopRepairSession = useCallback[\s\S]*agentName: DESKTOP_REPAIR_AGENT_NAME[\s\S]*worktree: \{ mode: 'off' \}/)
-    expect(source).toMatch(/sourceBindingId = sessionWorkspaceBindingId\(sourceSession\?\.metadata\)[\s\S]*workspacePathByBindingId\.get\(sourceBindingId\)[\s\S]*swarm_v3_runtime_swarm_id/)
-    expect(handler).toContain('launchDesktopRepairSession({')
-    expect(handler).toContain('owningWorkspacePath: topWorkspacePath')
-    expect(handler).toContain('sourceSessionId: failure.candidate.session_id')
-    expect(handler).toContain("source: 'desktop-v3-review-worktrees-recovery'")
-    expect(handler).toContain('integration_error: failure.error')
-    expect(handler).not.toContain('resolveReviewWorktreeRepairAgent')
+    expect(handler).toContain('await openIntegrationHelpDraft(failure.candidate.session_id, topWorkspacePath, buildReviewWorktreeFixPrompt(failure, topWorkspacePath))')
+    expect(handler).toContain('setNeedsReviewCleanupOpen(false)')
+    expect(handler.indexOf('await openIntegrationHelpDraft')).toBeLessThan(handler.indexOf('setNeedsReviewCleanupOpen(false)'))
+    expect(handler).not.toMatch(/launchDesktopRepairSession|startNewDesktopV3Session|continueDesktopV3Conversation/)
+    expect(source).toContain('composerDraftRequest={integrationHelpDraft?.sessionId === routeSessionId ? integrationHelpDraft : undefined}')
   })
 
   it('opens a clear anchored confirmation with optional archive-after-integration', async () => {
