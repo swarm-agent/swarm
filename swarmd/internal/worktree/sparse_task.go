@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"swarm/packages/swarmd/internal/taskscope"
 )
 
 var taskSparseContextNames = []string{
@@ -73,26 +75,24 @@ func canonicalTaskSparseScopes(rawScopes []string) ([]string, bool, error) {
 	}
 	seen := make(map[string]struct{}, len(rawScopes))
 	scopes := make([]string, 0, len(rawScopes))
-	for i, raw := range rawScopes {
-		raw = strings.TrimSpace(filepath.ToSlash(raw))
-		if raw == "" {
-			return nil, false, fmt.Errorf("owned scope %d is empty", i)
+	wholeWorktree := false
+	for _, raw := range rawScopes {
+		clean, whole, err := taskscope.Canonical(raw)
+		if err != nil {
+			return nil, false, err
 		}
-		if raw == "." || raw == "*" || raw == "**" || raw == "./**" {
-			return nil, true, nil
-		}
-		original := raw
-		raw = strings.TrimPrefix(raw, "./")
-		raw = strings.TrimSuffix(strings.TrimSuffix(raw, "/**"), "/*")
-		clean := filepath.ToSlash(filepath.Clean(filepath.FromSlash(raw)))
-		if raw == "" || clean == "." || filepath.IsAbs(filepath.FromSlash(raw)) || clean == ".." || strings.HasPrefix(clean, "../") || clean != raw || strings.ContainsAny(raw, "*?[]!\\") {
-			return nil, false, fmt.Errorf("owned scope %q must be a clean workspace-relative path or a trailing /** scope", original)
+		if whole {
+			wholeWorktree = true
+			continue
 		}
 		if _, ok := seen[clean]; ok {
 			continue
 		}
 		seen[clean] = struct{}{}
 		scopes = append(scopes, clean)
+	}
+	if wholeWorktree {
+		return nil, true, nil
 	}
 	if len(scopes) == 0 {
 		return nil, false, errors.New("at least one owned scope is required")

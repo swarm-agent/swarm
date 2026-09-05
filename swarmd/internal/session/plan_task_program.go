@@ -2,11 +2,11 @@ package session
 
 import (
 	"fmt"
-	"path"
 	"regexp"
 	"strings"
 
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
+	"swarm/packages/swarmd/internal/taskscope"
 )
 
 var planTaskProgramIDPattern = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,63}$`)
@@ -106,6 +106,10 @@ func ValidatePlanTaskProgramDefinition(program *pebblestore.TaskProgramDefinitio
 			}
 		}
 		for scopeIndex, scope := range job.OwnedScope {
+			canonical, _, _ := taskscope.Canonical(scope)
+			if agentType == "designer" && mode == "workspace" && (strings.ContainsAny(scope, "*?[]") || canonical != strings.TrimSpace(scope)) {
+				return fmt.Errorf("jobs[%d].owned_scope[%d] must be a concrete clean workspace-relative path", i, scopeIndex)
+			}
 			if err := validatePlanTaskProgramScope(scope); err != nil {
 				return fmt.Errorf("jobs[%d].owned_scope[%d]: %w", i, scopeIndex, err)
 			}
@@ -163,22 +167,14 @@ func taskProgramJobsShareWorkspace(left, right pebblestore.TaskProgramJobSpec) b
 }
 
 func validatePlanTaskProgramScope(scope string) error {
-	scope = strings.TrimSpace(strings.ReplaceAll(scope, "\\", "/"))
-	if scope == "" || strings.HasPrefix(scope, "/") {
-		return fmt.Errorf("must be a clean workspace-relative path or glob")
-	}
-	clean := path.Clean(scope)
-	if clean == "." || clean == ".." || strings.HasPrefix(clean, "../") {
-		return fmt.Errorf("must not escape the workspace")
-	}
-	return nil
+	return taskscope.ValidateProgram(scope)
 }
 
 func planTaskProgramScopesOverlap(left, right []string) bool {
 	for _, leftScope := range left {
-		leftScope = strings.TrimSuffix(path.Clean(strings.TrimSpace(leftScope)), "/**")
+		leftScope, _, _ = taskscope.Canonical(leftScope)
 		for _, rightScope := range right {
-			rightScope = strings.TrimSuffix(path.Clean(strings.TrimSpace(rightScope)), "/**")
+			rightScope, _, _ = taskscope.Canonical(rightScope)
 			if leftScope == rightScope || strings.HasPrefix(leftScope, rightScope+"/") || strings.HasPrefix(rightScope, leftScope+"/") {
 				return true
 			}

@@ -812,6 +812,9 @@ func (s *Service) InspectTaskWorkspace(workspacePath string) (TaskWorkspaceState
 }
 
 func (s *Service) AllocateTaskWorkspace(workspacePath string, base TaskBase, nameSeed string, ownedScopes []string) (Allocation, error) {
+	if _, _, err := canonicalTaskSparseScopes(ownedScopes); err != nil {
+		return Allocation{}, err
+	}
 	workspacePath = strings.TrimSpace(workspacePath)
 	if workspacePath == "" {
 		return Allocation{}, errors.New("workspace path is required")

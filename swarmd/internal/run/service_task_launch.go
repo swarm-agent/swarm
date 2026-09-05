@@ -21,6 +21,7 @@ import (
 	"swarm/packages/swarmd/internal/permission"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
+	"swarm/packages/swarmd/internal/taskscope"
 	"swarm/packages/swarmd/internal/tool"
 )
 
@@ -889,6 +890,11 @@ func parseTaskProgram(args map[string]any, prompt string) (*taskProgramSpec, []t
 		ownedScope, err := parseTaskOwnedScope(row, fmt.Sprintf("task program jobs[%d]", i))
 		if err != nil {
 			return nil, nil, err
+		}
+		for scopeIndex, scope := range ownedScope {
+			if err := taskscope.ValidateProgram(scope); err != nil {
+				return nil, nil, fmt.Errorf("task program jobs[%d].owned_scope[%d]: %w", i, scopeIndex, err)
+			}
 		}
 		job.OwnedScope = ownedScope
 		launch := taskLaunchSpec{RequestedSubagentType: job.RequestedSubagentType, TargetWorkspacePath: job.TargetWorkspacePath, OwnedScope: append([]string(nil), ownedScope...)}
@@ -1878,10 +1884,11 @@ func parseTaskOwnedScope(raw map[string]any, label string) ([]string, error) {
 		return nil, fmt.Errorf("%s owned_scope must be an array of strings", label)
 	}
 	out := make([]string, 0, len(values))
-	for _, value := range values {
-		if value = strings.TrimSpace(value); value != "" {
-			out = append(out, value)
+	for i, value := range values {
+		if _, _, err := taskscope.Canonical(value); err != nil {
+			return nil, fmt.Errorf("%s owned_scope[%d]: %w", label, i, err)
 		}
+		out = append(out, strings.TrimSpace(value))
 	}
 	if len(out) == 0 {
 		return nil, nil
