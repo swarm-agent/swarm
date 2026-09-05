@@ -235,6 +235,10 @@ type ArtifactV3AuthorContext struct {
 	TargetPartIDs, LockedPaths                                     []string
 	Files                                                          []ArtifactV3AuthorFile
 	LatestGate                                                     *ArtifactV3AuthorGate
+
+	ManifestFilename string
+	ManifestVersion  string
+	ManifestExample  pebblestore.ArtifactV3Manifest
 }
 
 type artifactV3TurnState struct {
@@ -853,6 +857,18 @@ func artifactV3WorkspaceKey(g ArtifactV3AuthorGrant) string {
 }
 func artifactV3Context(g ArtifactV3AuthorGrant, files map[string][]byte, gate *ArtifactV3AuthorGate) ArtifactV3AuthorContext {
 	out := ArtifactV3AuthorContext{ArtifactID: g.ArtifactID, TurnID: g.TurnID, CandidateID: g.CandidateID, BaseCommitOID: g.BaseCommitOID, PolicyRevision: g.PolicyRevision, Initial: g.Initial, TargetPartIDs: append([]string(nil), g.TargetPartIDs...), LockedPaths: append([]string(nil), g.LockedPaths...), LatestGate: gate}
+	// Guidance is derived from the storage contract, not another schema authority.
+	// This example does not write files or grant build/preview readiness.
+	out.ManifestFilename = pebblestore.ArtifactV3ManifestFilename
+	out.ManifestVersion = pebblestore.ArtifactV3ManifestVersion
+	out.ManifestExample = pebblestore.ArtifactV3Manifest{
+		SchemaVersion: pebblestore.ArtifactV3ManifestVersion,
+		Entrypoint:    "index.html",
+		Parts: []pebblestore.ArtifactV3Part{{
+			ID: "main", Label: "Main",
+			Locator: pebblestore.ArtifactV3Locator{Kind: "selector", Path: "index.html", Value: "#main"},
+		}},
+	}
 	for _, path := range artifactV3Paths(files) {
 		out.Files = append(out.Files, ArtifactV3AuthorFile{Path: path, Size: int64(len(files[path]))})
 	}

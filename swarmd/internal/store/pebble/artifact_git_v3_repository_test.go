@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -98,4 +99,55 @@ func artifactV3TestProject(t *testing.T, plan, tier string) ArtifactV3Project {
 		"styles/theme.css": []byte("#hero{display:grid}#pricing{color:blue}"),
 		"src/app.js": []byte("document.body.dataset.ready='true'"),
 	}}
+}
+
+// Requirement: validateArtifactV3Manifest remains the single strict authority,
+// with safe repair guidance rather than source-echoing decoder errors. This pure
+// project-boundary test is the narrowest proof of rejection identity, bounded
+// diagnostics, and unchanged input; it needs neither Git nor persistence.
+func TestArtifactV3ManifestSafeDiagnostics(t *testing.T) {
+	const valid = `{"schema_version":"swarm.artifact/v3","entrypoint":"index.html","parts":[]}`
+	cases := []struct {
+		name, body, code string
+	}{
+		{"wrong", `{"schema_version":"private-marker","entrypoint":"index.html"}`, "manifest_schema_version_invalid"},
+		{"legacy", `{"schema_version":"3","entrypoint":"index.html"}`, "manifest_schema_version_invalid"},
+		{"missing", `{"entrypoint":"index.html"}`, "manifest_schema_version_invalid"},
+		{"number", `{"schema_version":3,"entrypoint":"index.html"}`, "manifest_schema_version_invalid"},
+		{"object", `{"schema_version":{},"entrypoint":"index.html"}`, "manifest_schema_version_invalid"},
+		{"null", `{"schema_version":null,"entrypoint":"index.html"}`, "manifest_schema_version_invalid"},
+		{"malformed", `{"private-marker":`, "manifest_json_invalid"},
+		{"unknown", `{"schema_version":"swarm.artifact/v3","entrypoint":"index.html","private-marker":true}`, "manifest_json_invalid"},
+		{"trailing", valid + `{}`, "manifest_json_invalid"},
+		{"entrypoint", `{"schema_version":"swarm.artifact/v3","entrypoint":"../private-marker"}`, "manifest_entrypoint_invalid"},
+		{"part", `{"schema_version":"swarm.artifact/v3","entrypoint":"index.html","parts":[{"id":"hero","locator":{"kind":"file","path":"index.html"}}]}`, "manifest_part_invalid"},
+		{"locator", `{"schema_version":"swarm.artifact/v3","entrypoint":"index.html","parts":[{"id":"hero","label":"Hero","locator":{"kind":"private-marker"}}]}`, "manifest_locator_invalid"},
+		{"locator-path", `{"schema_version":"swarm.artifact/v3","entrypoint":"index.html","parts":[{"id":"hero","label":"Hero","locator":{"kind":"file","path":"private-marker"}}]}`, "manifest_locator_invalid"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			project := ArtifactV3Project{Files: map[string][]byte{ArtifactV3ManifestFilename: []byte(tc.body), "index.html": []byte("html")}}
+			_, err := ValidateArtifactV3Project(project, ArtifactV3Limits{})
+			var diagnostic *ArtifactV3ManifestError
+			if !errors.Is(err, ErrArtifactV3Invalid) || !errors.As(err, &diagnostic) {
+				t.Fatalf("expected canonical invalid diagnostic, got %v", err)
+			}
+			if diagnostic.SafeDiagnosticCode() != tc.code || len(diagnostic.SafeDiagnosticMessage()) > 512 || strings.Contains(err.Error(), "private-marker") {
+				t.Fatalf("unsafe or incorrect diagnostic: %v", err)
+			}
+			if tc.code == "manifest_schema_version_invalid" && !strings.Contains(diagnostic.SafeDiagnosticMessage(), ArtifactV3ManifestVersion) {
+				t.Fatalf("missing canonical version: %v", err)
+			}
+			if string(project.Files[ArtifactV3ManifestFilename]) != tc.body || len(project.Files) != 2 {
+				t.Fatal("validation mutated the project")
+			}
+		})
+	}
+	project := ArtifactV3Project{Files: map[string][]byte{ArtifactV3ManifestFilename: []byte(valid), "index.html": []byte("html")}}
+	if _, err := ValidateArtifactV3Project(project, ArtifactV3Limits{}); err != nil {
+		t.Fatalf("canonical version rejected: %v", err)
+	}
+	if _, err := ValidateArtifactV3Project(project, ArtifactV3Limits{MaxFileBytes: 1}); !errors.Is(err, ErrArtifactV3Quota) {
+		t.Fatalf("quota identity lost: %v", err)
+	}
 }

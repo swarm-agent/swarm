@@ -413,3 +413,37 @@ func TestEnsureSystemAgentRegistryExposesImmutableProfilesWithoutPersistingThem(
 		}
 	}
 }
+
+// Requirement: materialized Designers receive the exact canonical manifest
+// version and discoverable example, including on reconciliation of stale prompts.
+// Threat: first-use authors guess versions or treat an example as preview evidence.
+// Registry materialization/reconciliation is the narrowest prompt-delivery layer;
+// schema validity and capability enforcement are tested by the author service.
+func TestDesignerManifestGuidanceUsesCanonicalVersion(t *testing.T) {
+	registry, err := BuiltinSystemAgentRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	materialized, err := registry.Materialize(DesignerAgentID, pebblestore.AgentProfile{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reconciled, err := registry.ReconcileSnapshot(DesignerAgentID, pebblestore.AgentProfile{
+		Name: DesignerAgentID, Prompt: "stale manifest guidance",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, profile := range []pebblestore.AgentProfile{materialized, reconciled} {
+		for _, required := range []string{
+			`schema_version must be the exact string "` + pebblestore.ArtifactV3ManifestVersion + `"`,
+			"inspect_context returns ManifestFilename, ManifestVersion",
+			"ManifestExample", "correct the named field", "not build or preview evidence",
+			"call finish_turn exactly once", "never attempt to redirect them",
+		} {
+			if !strings.Contains(profile.Prompt, required) {
+				t.Fatalf("Designer prompt missing %q", required)
+			}
+		}
+	}
+}

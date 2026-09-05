@@ -4,3 +4,12 @@
 # Updates are explicit review events: inspect the immutable tagged source and release
 # asset through an independent trusted channel, calculate both digests locally, add
 # one reviewed entry here, then run ./scripts/update-fff.sh <release-tag>.
+#
+# v0.10.6 reviewed 2026-09-05: annotated tag resolves to source commit
+# c6013ba6a5918221b6c482486aca01acc0830825; header fetched by that commit.
+# Library independently matched @ff-labs/fff-bin-linux-x64-gnu@0.10.6
+# from registry.npmjs.org after verifying its registry signature and SHA-512
+# tarball integrity. npm gitHead matches the source commit. GitHub's tag is
+# unsigned and release mutable; same-channel release checksums are not the trust basis.
+# C ABI diff is additive (watch callbacks/result getters); existing wrappers unchanged.
+v0.10.6 4c7422ac1fd21898684c622d37358db63798e7fd2d9f7ff69444c9d37ca55377 c2d5b0acd0c86a412fa4c71ef32e0931c84a1f6022858a9b1bde49fba62ec940

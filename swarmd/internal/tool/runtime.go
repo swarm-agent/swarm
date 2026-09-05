@@ -2653,12 +2653,19 @@ func selectResidentSearchScope(scope WorkspaceScope, target searchTarget) (strin
 	}
 	best := ""
 	for _, authorized := range append([]string{scope.PrimaryPath}, scope.Roots...) {
-		authorized = filepath.Clean(strings.TrimSpace(authorized))
-		rel, err := filepath.Rel(authorized, targetPath)
-		if authorized == "" || err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		authorized = strings.TrimSpace(authorized)
+		if authorized == "" {
 			continue
 		}
-		if best == "" || len(authorized) < len(best) {
+		authorized = filepath.Clean(authorized)
+		rel, err := filepath.Rel(authorized, targetPath)
+		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			continue
+		}
+		// Prefer the narrowest containing workspace. A saved ancestor (notably
+		// home or the filesystem root) must not widen a project index or trip
+		// FFF's broad-root scanning guard just because it is also authorized.
+		if best == "" || len(authorized) > len(best) {
 			best = authorized
 		}
 	}
