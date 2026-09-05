@@ -16,6 +16,7 @@ import (
 
 	"github.com/chromedp/cdproto/browser"
 	"github.com/chromedp/cdproto/cdp"
+	"github.com/chromedp/cdproto/emulation"
 	"github.com/chromedp/cdproto/fetch"
 	"github.com/chromedp/cdproto/network"
 	"github.com/chromedp/cdproto/page"
@@ -301,6 +302,7 @@ rendererCapacityAcquired:
 		fetch.Enable().WithPatterns([]*fetch.RequestPattern{{URLPattern: "*"}}),
 		browser.SetDownloadBehavior(browser.SetDownloadBehaviorBehaviorDeny).WithEventsEnabled(true),
 		chromedp.EmulateViewport(Width, Height),
+		emulation.SetFocusEmulationEnabled(true),
 		chromedp.Navigate(origin+"/"+req.Entry),
 		chromedp.WaitReady("body", chromedp.ByQuery),
 	)
@@ -614,6 +616,7 @@ func startAnimationWorkerPage(browserCtx context.Context, origin string, req Ani
 	if err := chromedp.Run(loadCtx,
 		fetch.Enable().WithPatterns([]*fetch.RequestPattern{{URLPattern: "*"}}),
 		chromedp.EmulateViewport(Width, Height),
+		emulation.SetFocusEmulationEnabled(true),
 		chromedp.Navigate(origin+"/"+req.Entry),
 		chromedp.WaitReady("body", chromedp.ByQuery),
 	); err != nil {
@@ -717,7 +720,13 @@ if (ack&&typeof ack.__swarm_outcome==="string") {
   return {code:"animation_seek_failed",outcome:ack.__swarm_outcome};
 }
 if (!ack || Object.keys(ack).length!==1 || ack.time_ms!==time || document.documentElement.dataset.swarmAnimationTimeMs!==String(time)) return {code:"animation_seek_ack_mismatch",outcome:"seek_ack_mismatch"};
-for (const animation of document.getAnimations()) animation.pause();
+const animations=document.getAnimations();
+for (const animation of animations) animation.pause();
+// A seek acknowledgement and style/layout flush do not imply a presented
+// frame. Settle pending pauses and cross a paint boundary before sampling;
+// the two independent screenshots below still reject changing author pixels.
+await Promise.all(animations.map(animation=>animation.ready));
+await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
 return {code:"ok",outcome:"seek_acknowledged"};
 })()`, timeMS, animationSeekTimeoutMS)
 	if err := chromedp.Run(ctx, chromedp.Evaluate(expression, &audit, awaitPromise)); err != nil {
