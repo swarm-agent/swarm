@@ -3096,7 +3096,7 @@ function applyLiveRunOverlayFromEvent(
       liveRun.assistantDraft = {
         content: `${liveRun.assistantDraft?.content ?? ''}${delta}`,
         updatedAt,
-        timelineSeq: Math.max(liveRun.assistantDraft?.timelineSeq ?? 0, eventSeq, liveRun.timelineFloor ?? 0),
+        timelineSeq: Math.max(liveRun.assistantDraft?.timelineSeq || eventSeq, liveRun.timelineFloor ?? 0),
       }
       return
     }
@@ -3507,6 +3507,12 @@ function applyStreamAwareDurableAssistantDelta(
   }
 
   const node = existing.node
+  // Live delivery has only a speculative slot. Adopt the first durable event
+  // once, then preserve it through chunks, tool boundaries and message commit.
+  const timelineSeq = Math.max(
+    (node.durableOffsetEnd ?? 0) > 0 ? node.timelineSeq || input.eventSeq : input.eventSeq,
+    liveRun.timelineFloor ?? 0,
+  )
   const visibleOffsetEnd = node.offsetEnd ?? utf8Encoder.encode(node.content).byteLength
   const overlapStart = Math.max(input.offsetStart, 0)
   const overlapEnd = Math.min(input.offsetEnd, visibleOffsetEnd)
@@ -3523,7 +3529,7 @@ function applyStreamAwareDurableAssistantDelta(
     updateAssistantStreamNode(liveRun, existing, {
       durableOffsetEnd: Math.max(node.durableOffsetEnd ?? 0, input.offsetEnd),
       updatedAt: input.updatedAt,
-      timelineSeq: Math.max(node.timelineSeq || input.eventSeq, liveRun.timelineFloor ?? 0),
+      timelineSeq,
       streamStep: input.step ?? node.streamStep,
       stepId: input.stepId || node.stepId,
     })
@@ -3548,7 +3554,7 @@ function applyStreamAwareDurableAssistantDelta(
   updateAssistantStreamNode(liveRun, existing, {
     content: `${node.content}${suffix}`,
     updatedAt: input.updatedAt,
-    timelineSeq: Math.max(node.timelineSeq || input.eventSeq, liveRun.timelineFloor ?? 0),
+    timelineSeq,
     streamStep: input.step ?? node.streamStep,
     stepId: input.stepId || node.stepId,
     offsetEnd: input.offsetEnd,

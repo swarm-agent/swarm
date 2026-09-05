@@ -969,7 +969,23 @@ function renderItemTimelineSeq(item: DesktopV3RenderItem): number {
   }
 }
 
+function committedAssistantRenderKey(message: MessageSnapshot): string {
+  if (message.role !== "assistant") return "";
+  const streamId = metadataString(message.metadata, "stream_id") || metadataString(message.metadata, "streamId");
+  const runId = metadataString(message.metadata, "run_id");
+  return streamId && runId ? `live-assistant:${runId}:${streamId}` : "";
+}
+
+function committedAssistantTimelineSeq(message: MessageSnapshot): number {
+  if (committedAssistantRenderKey(message)) {
+    const start = numericTimelineSeq(message.metadata?.stream_start_seq);
+    if (start > 0 && start <= message.global_seq) return start;
+  }
+  return message.global_seq;
+}
+
 function committedToolRenderKey(message: MessageSnapshot): string {
+  if (message.role !== "tool") return "";
   const identity = metadataString(message.metadata, "call_id")
     || message.toolMessage?.callId?.trim()
     || metadataString(message.metadata, "tool_instance_id")
@@ -1363,6 +1379,7 @@ export function buildDesktopV3LiveRunRenderItems(
   run: LiveRunOverlay,
   options: {
     assistantMessages?: Set<string>;
+    committedAssistantKeys?: Set<string>;
     reasoningMessages?: Set<string>;
     committedToolKeys?: Set<string>;
   } = {},
@@ -1371,11 +1388,13 @@ export function buildDesktopV3LiveRunRenderItems(
   for (const segment of run.assistantSegments ?? []) {
     const content = segment.content;
     if (!content.trim()) continue;
-    if (options.assistantMessages?.has(normalizeReplayContent(content)))
-      continue;
+    const id = segment.streamId ? `live-assistant:${run.runId}:${segment.streamId}` : segment.id;
+    if (segment.streamId
+      ? options.committedAssistantKeys?.has(id)
+      : options.assistantMessages?.has(normalizeReplayContent(content))) continue;
     items.push({
       type: "live-assistant",
-      id: segment.id,
+      id,
       content,
       timelineSeq: segment.timelineSeq,
     });
@@ -1415,11 +1434,18 @@ export function buildDesktopV3LiveRunRenderItems(
     });
   }
   if (run.assistantDraft?.content) {
-    items.push({
+    const draft = run.assistantDraft;
+    const id = draft.streamId
+      ? `live-assistant:${run.runId}:${draft.streamId}`
+      : `live-assistant:${run.runId}:draft`;
+    const committed = draft.streamId
+      ? options.committedAssistantKeys?.has(id)
+      : options.assistantMessages?.has(normalizeReplayContent(draft.content));
+    if (!committed) items.push({
       type: "live-assistant",
-      id: `live-assistant:${run.runId}:draft`,
-      content: run.assistantDraft.content,
-      timelineSeq: run.assistantDraft.timelineSeq,
+      id,
+      content: draft.content,
+      timelineSeq: draft.timelineSeq,
     });
   } else if (run.status === "running" || run.status === "pending_executor") {
     items.push({
@@ -1453,6 +1479,7 @@ export function buildDesktopV3ConversationRenderItems(
   );
   const assistantMessages = canonicalContentSet(visibleCommittedMessages, "assistant");
   const reasoningMessages = canonicalContentSet(visibleCommittedMessages, "reasoning");
+  const committedAssistantKeys = new Set(visibleCommittedMessages.map(committedAssistantRenderKey).filter(Boolean));
   const committedToolKeys = new Set<string>(
     visibleCommittedMessages.map(committedToolRenderKey).filter((key): key is string => Boolean(key)),
   );
@@ -1469,8 +1496,8 @@ export function buildDesktopV3ConversationRenderItems(
             : {
                 type: "message" as const,
                 message,
-                timelineSeq: message.global_seq,
-                renderKey: committedToolRenderKey(message) || undefined,
+                timelineSeq: committedAssistantTimelineSeq(message),
+                renderKey: committedAssistantRenderKey(message) || committedToolRenderKey(message) || undefined,
               },
     ),
     ...renderedMessages.pendingUser.map((message) => ({
@@ -1483,6 +1510,7 @@ export function buildDesktopV3ConversationRenderItems(
     items.push(
       ...buildDesktopV3LiveRunRenderItems(run, {
         assistantMessages,
+        committedAssistantKeys,
         reasoningMessages,
         committedToolKeys,
       }),
