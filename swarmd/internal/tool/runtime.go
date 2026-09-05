@@ -29,6 +29,7 @@ import (
 	agentruntime "swarm/packages/swarmd/internal/agent"
 	"swarm/packages/swarmd/internal/appstorage"
 	"swarm/packages/swarmd/internal/artifact"
+	"swarm/packages/swarmd/internal/artifactv2"
 	"swarm/packages/swarmd/internal/discovery"
 	"swarm/packages/swarmd/internal/fff"
 	"swarm/packages/swarmd/internal/gitenv"
@@ -150,33 +151,39 @@ var (
 )
 
 type Runtime struct {
-	maxParallel          int
-	httpClient           *http.Client
-	exaConfigResolver    func(context.Context) (ExaRuntimeConfig, error)
-	sessions             manageSessionService
-	publishSessionOutbox func(pebblestore.V3RealtimeOutboxRecord) error
-	workspace            manageWorktreeWorkspaceService
-	worktrees            manageWorktreeConfigService
-	agents               manageAgentService
-	orchestration        manageOrchestrationPolicyService
-	todos                manageTodoService
-	actions              manageActionService
-	uiSettings           manageThemeUISettingsService
-	themeWorkspace       manageThemeWorkspaceService
-	artifacts            *artifact.Registry
-	artifactAuthority    ArtifactAuthority
-	htmlCapture          htmlcapture.Renderer
-	htmlAnimationCapture htmlcapture.AnimationRenderer
-	animationJobsMu      sync.Mutex
-	animationJobs        map[string]context.CancelFunc
-	imageGeneration      ManagedImageGenerationService
-	video                manageVideoService
-	videoSources         *videosource.Service
-	videoProjects        manageVideoProjectService
-	videoRender          manageVideoRenderService
-	searchCoordinator    *SearchCoordinator
-	focusedPartMu        sync.Mutex
-	focusedPartProtocols map[string]focusedPartProtocolState
+	maxParallel           int
+	httpClient            *http.Client
+	exaConfigResolver     func(context.Context) (ExaRuntimeConfig, error)
+	sessions              manageSessionService
+	publishSessionOutbox  func(pebblestore.V3RealtimeOutboxRecord) error
+	workspace             manageWorktreeWorkspaceService
+	worktrees             manageWorktreeConfigService
+	agents                manageAgentService
+	orchestration         manageOrchestrationPolicyService
+	todos                 manageTodoService
+	actions               manageActionService
+	uiSettings            manageThemeUISettingsService
+	themeWorkspace        manageThemeWorkspaceService
+	artifacts             *artifact.Registry
+	artifactAuthority     ArtifactAuthority
+	artifactV2Author      *artifactv2.AuthorService
+	artifactV3Author      *ArtifactV3AuthorService
+	directArtifactV3Mu    sync.Mutex
+	directArtifactV3ByRun map[string]directArtifactV3Publication
+	artifactV2Video       *artifactv2.VideoConversionService
+	artifactV3Video       ArtifactV3VideoConversionService
+	htmlCapture           htmlcapture.Renderer
+	htmlAnimationCapture  htmlcapture.AnimationRenderer
+	animationJobsMu       sync.Mutex
+	animationJobs         map[string]context.CancelFunc
+	imageGeneration       ManagedImageGenerationService
+	video                 manageVideoService
+	videoSources          *videosource.Service
+	videoProjects         manageVideoProjectService
+	videoRender           manageVideoRenderService
+	searchCoordinator     *SearchCoordinator
+	focusedPartMu         sync.Mutex
+	focusedPartProtocols  map[string]focusedPartProtocolState
 }
 
 type ExaRuntimeConfig struct {
@@ -560,6 +567,33 @@ func (r *Runtime) GenerateManagedImageArtifact(ctx context.Context, scope Worksp
 		args["capability_token"] = capabilities.CapabilityToken
 	}
 	return r.executeManageArtifact(ctx, scope, callID, args)
+}
+
+func (r *Runtime) SetArtifactV2VideoConversionService(service *artifactv2.VideoConversionService) {
+	if r != nil {
+		r.artifactV2Video = service
+	}
+}
+
+// ArtifactV3VideoConversionInput intentionally contains only exact native V3
+// identity plus the target project base. The model cannot author plan arrays.
+type ArtifactV3VideoConversionInput struct {
+	RequestID, VideoSessionID, ProjectID, BaseRevisionID string
+	ArtifactSessionID, ArtifactID, RevisionRef           string
+	PartID, CaptureStateID                               string
+	Title, Rationale                                     string
+}
+
+type ArtifactV3VideoConversionService interface {
+	ConvertToPendingProposal(context.Context, identity.Principal, ArtifactV3VideoConversionInput) (pebblestore.VideoEditProposalSnapshot, error)
+	ValidateVideoReference(string, string, pebblestore.ArtifactV3VideoReference) error
+	ReadVideoReference(context.Context, string, string, pebblestore.ArtifactV3VideoReference) ([]byte, error)
+}
+
+func (r *Runtime) SetArtifactV3VideoConversionService(service ArtifactV3VideoConversionService) {
+	if r != nil {
+		r.artifactV3Video = service
+	}
 }
 
 func (r *Runtime) SetManagedImageGenerationService(service ManagedImageGenerationService) {
@@ -1308,6 +1342,7 @@ func (r *Runtime) Definitions() []Definition {
 			},
 		},
 		manageActionsDefinition(),
+		artifactV3AuthorDefinition(),
 		manageArtifactDefinition(),
 		manageVideoDefinition(),
 		{
@@ -1499,13 +1534,21 @@ func (r *Runtime) Definitions() []Definition {
 						"session_id": map[string]any{"type": "string"}, "collection_id": map[string]any{"type": "string"},
 						"variant_id": map[string]any{"type": "string"}, "event_seq": map[string]any{"type": "integer", "minimum": 1},
 					}, "required": []string{"session_id", "collection_id", "variant_id", "event_seq"}, "additionalProperties": false, "description": "Optional exact ready managed artifact reference for Designer work (regular launches or managed Iteration Swarms) or direct image Iteration Swarms. Regular workspace Designers require exactly one concrete owned_scope output target; trusted orchestration authenticates and materializes the artifact there before the child runs. Managed Designers receive the opaque reference and preserve source lineage. Direct image swarms resolve bounded image bytes only at the trusted generation boundary."},
+					"artifact_v3_source": map[string]any{"type": "object", "properties": map[string]any{
+						"session_id": map[string]any{"type": "string", "minLength": 1}, "artifact_id": map[string]any{"type": "string", "minLength": 1}, "commit_oid": map[string]any{"type": "string", "minLength": 1}, "projection_seq": map[string]any{"type": "integer", "minimum": 1},
+						"target_part_ids": map[string]any{"type": "array", "items": map[string]any{"type": "string", "minLength": 1}},
+					}, "required": []string{"session_id", "artifact_id", "commit_oid", "projection_seq"}, "additionalProperties": false, "description": "Exact native Artifact V3 source for managed Designer follow-up work. session_id must own the artifact. Trusted orchestration authenticates the artifact, exact immutable head commit, projection sequence, and target Part IDs before branching a complete candidate."},
+					"artifact_v2_source": map[string]any{"type": "object", "properties": map[string]any{
+						"artifact_id": map[string]any{"type": "string", "minLength": 1}, "published_head_id": map[string]any{"type": "string", "minLength": 1}, "composition_id": map[string]any{"type": "string", "minLength": 1},
+						"working_revision": map[string]any{"type": "integer", "minimum": 1}, "composition_head_revision": map[string]any{"type": "integer", "minimum": 1}, "target_part_ids": map[string]any{"type": "array", "minItems": 1, "maxItems": 64, "items": map[string]any{"type": "string", "minLength": 1}},
+					}, "required": []string{"artifact_id", "published_head_id", "composition_id", "working_revision", "composition_head_revision", "target_part_ids"}, "additionalProperties": false, "description": "Exact published Artifact V2 source for a focused Designer Iteration Swarm. The server authenticates it, opens one durable Iteration Round, imports only target revisions, and keeps candidates out of the accepted head until explicit selection."},
 					"section_target": map[string]any{"type": "object", "properties": map[string]any{
 						"id": map[string]any{"type": "string", "minLength": 1}, "label": map[string]any{"type": "string", "minLength": 1},
 						"kind":     map[string]any{"type": "string", "enum": []string{"temporal", "spatial", "page", "state", "selector", "semantic"}, "description": "Media-agnostic part kind; defaults to temporal for backward compatibility."},
-						"start_ms": map[string]any{"type": "integer", "minimum": 0}, "end_ms": map[string]any{"type": "integer", "minimum": 1},
+						"start_ms": map[string]any{"type": "integer", "minimum": 0}, "end_ms": map[string]any{"type": "integer", "minimum": 1}, "x": map[string]any{"type": "number", "minimum": 0, "maximum": 1}, "y": map[string]any{"type": "number", "minimum": 0, "maximum": 1}, "width": map[string]any{"type": "number", "exclusiveMinimum": 0, "maximum": 1}, "height": map[string]any{"type": "number", "exclusiveMinimum": 0, "maximum": 1}, "page": map[string]any{"type": "integer", "minimum": 1}, "state_id": map[string]any{"type": "string", "minLength": 1}, "selector": map[string]any{"type": "string", "minLength": 1},
 					}, "required": []string{"id", "label"}, "additionalProperties": false, "description": "Optional exact artifact part target for managed Designer work. Requires source_artifact. Mutually exclusive with section_targets."},
 					"section_targets": map[string]any{"type": "array", "minItems": 1, "maxItems": pebblestore.SessionArtifactMaxParts, "items": map[string]any{"type": "object", "properties": map[string]any{
-						"id": map[string]any{"type": "string", "minLength": 1}, "label": map[string]any{"type": "string", "minLength": 1}, "kind": map[string]any{"type": "string", "enum": []string{"temporal", "spatial", "page", "state", "selector", "semantic"}}, "start_ms": map[string]any{"type": "integer", "minimum": 0}, "end_ms": map[string]any{"type": "integer", "minimum": 1},
+						"id": map[string]any{"type": "string", "minLength": 1}, "label": map[string]any{"type": "string", "minLength": 1}, "kind": map[string]any{"type": "string", "enum": []string{"temporal", "spatial", "page", "state", "selector", "semantic"}}, "start_ms": map[string]any{"type": "integer", "minimum": 0}, "end_ms": map[string]any{"type": "integer", "minimum": 1}, "x": map[string]any{"type": "number", "minimum": 0, "maximum": 1}, "y": map[string]any{"type": "number", "minimum": 0, "maximum": 1}, "width": map[string]any{"type": "number", "exclusiveMinimum": 0, "maximum": 1}, "height": map[string]any{"type": "number", "exclusiveMinimum": 0, "maximum": 1}, "page": map[string]any{"type": "integer", "minimum": 1}, "state_id": map[string]any{"type": "string", "minLength": 1}, "selector": map[string]any{"type": "string", "minLength": 1},
 					}, "required": []string{"id", "label"}, "additionalProperties": true}, "description": "Canonical bounded multi-part selection from one exact source composition. Managed Designer candidates must replace every selected part together as one atomic composition turn. Mutually exclusive with section_target."},
 					"output_mode": map[string]any{"type": "string", "enum": []string{"managed", "workspace"}, "description": "Designer output contract. Designer and image Iteration Swarms are always managed; swarm calls may omit this field or set managed. Workspace is available only for regular Designer launches and requires concrete owned_scope targets."},
 					"description": map[string]any{
@@ -1694,6 +1737,8 @@ func sessionPlanArtifactToolSchema() map[string]any {
 			"path":          map[string]any{"type": "string", "description": "Clean workspace-relative path; absolute and workspace-escaping paths are rejected."},
 			"source_ref":    map[string]any{"type": "string", "description": "Exact opaque videosrc_ reference returned by manage_video browse_source for a final video deliverable."},
 			"session_id":    map[string]any{"type": "string"},
+			"artifact_id":   map[string]any{"type": "string", "description": "Native Artifact V3 identity."},
+			"revision_ref":  map[string]any{"type": "string", "description": "Exact native Artifact V3 revision reference."},
 			"collection_id": map[string]any{"type": "string"},
 			"variant_id":    map[string]any{"type": "string"},
 			"event_seq":     map[string]any{"type": "integer", "minimum": 1},
@@ -1706,6 +1751,7 @@ func sessionPlanArtifactToolSchema() map[string]any {
 			map[string]any{"required": []string{"path"}},
 			map[string]any{"required": []string{"source_ref"}},
 			map[string]any{"required": []string{"session_id", "collection_id", "variant_id", "event_seq"}},
+			map[string]any{"required": []string{"session_id", "artifact_id", "revision_ref"}},
 		},
 		"additionalProperties": false,
 	}
@@ -1891,6 +1937,10 @@ func (r *Runtime) executeOne(ctx context.Context, scope WorkspaceScope, call Cal
 		return r.executeManageWorktree(scope, args)
 	case "manage-actions", "manage_actions":
 		return r.executeManageActions(scope, args)
+	case "artifact-v2-author", "artifact_v2_author":
+		return "", errors.New("artifact_v2_author is retired; managed authoring uses the context-bound artifact_v3_author capability")
+	case "artifact-v3-author", "artifact_v3_author":
+		return r.executeArtifactV3Author(ctx, scope, call.CallID, args)
 	case "manage-artifact", "manage_artifact":
 		return r.executeManageArtifact(ctx, scope, call.CallID, args)
 	case "manage-video", "manage_video":

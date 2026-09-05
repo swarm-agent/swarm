@@ -913,9 +913,9 @@ export function desktopV3ArtifactPartIterationMessageSelection(
     ...selection,
     pending_request: [
       `Create ${count} new alternatives for the exact artifact part "${definition?.label || partId}" (${partId}).`,
-      'Use the attached exact Git-backed official composition head as the sole base revision.',
-      'Either revise this part directly with manage_artifact or delegate it to a managed Designer Iteration Swarm as appropriate.',
-      'Every candidate must be a complete derived artifact, preserve every non-target part and lock, and remain an unselected branch for review in Artifact Studio.',
+      'This is a legacy V1 ready artifact. Use the attached exact read-only source only if explicitly preserving historical compatibility.',
+      'Do not treat this attachment as an Artifact V2 working artifact or accepted-head authority, and do not invoke a new managed Designer write through V1.',
+      'For new managed creative work, start an Artifact V2 Designer iteration instead of deriving accepted state from this legacy selection.',
     ].join('\n'),
   }
 }

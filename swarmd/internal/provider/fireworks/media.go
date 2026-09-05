@@ -42,7 +42,7 @@ func (r *Runner) MediaCapabilityDeclaration(ctx context.Context) (provideriface.
 		ProviderID:            "fireworks",
 		ProviderSurface:       fireworksMediaProviderSurface,
 		CredentialSurface:     fireworksMediaCredentialSurface,
-		CredentialFingerprint: fireworksCredentialFingerprint(record.AccountScopeID, record.Provider, record.ID, record.Type),
+		CredentialFingerprint: fireworksCredentialFingerprint(record.AccountScopeID, record.Provider, record.Type, record.APIKey),
 		Inputs: []provideriface.MediaAdapterCapability{{
 			Modality:     "image",
 			Semantics:    pebblestore.ModelCatalogMediaSemanticsNative,
@@ -74,8 +74,8 @@ type fireworksMediaRequestState struct {
 	totalBytes int64
 }
 
-func fireworksCredentialFingerprint(accountScopeID, providerID, credentialID, credentialType string) string {
-	fingerprint := sha256.Sum256([]byte(strings.Join([]string{accountScopeID, providerID, credentialID, credentialType}, "\x00")))
+func fireworksCredentialFingerprint(accountScopeID, providerID, credentialType, apiKey string) string {
+	fingerprint := sha256.Sum256([]byte(strings.Join([]string{strings.TrimSpace(accountScopeID), strings.ToLower(strings.TrimSpace(providerID)), strings.ToLower(strings.TrimSpace(credentialType)), strings.TrimSpace(apiKey)}, "\x00")))
 	return hex.EncodeToString(fingerprint[:16])
 }
 

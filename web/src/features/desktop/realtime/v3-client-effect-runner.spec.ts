@@ -48,7 +48,7 @@ test('durableClientEffectsFromRealtimeFrame parses only typed successful tool co
 })
 
 test('artifact catalog mutation realtime events produce only a canonical catalog refresh effect', () => {
-  for (const eventType of ['session.artifact.finalized', 'session.plan.saved']) {
+  for (const eventType of ['session.artifact.finalized', 'session.plan.saved', 'artifact.v2.working.created', 'artifact.v2.part_revision.appended', 'artifact.v2.validation.invalid', 'artifact.v2.iteration.selected']) {
     const frame = toolCompletedFrame({ eventType, effects: undefined })
     assert.deepEqual(durableClientEffectsFromRealtimeFrame(frame), {
       eventIdentity: 'event-1',
@@ -130,6 +130,13 @@ test('default agent effect force-fetches canonical active-agent state and invali
     assert.equal(queryClient.getQueryState(['agent-tool-contract', 'deleted-agent'])?.isInvalidated, true)
   } finally {
     globalThis.fetch = originalFetch
+  }
+})
+
+test('native Artifact V3 mutation events refresh the one open catalog authority', async () => {
+  for (const eventType of ['artifact.v3.created', 'artifact.v3.candidate.ready', 'artifact.v3.head.selected']) {
+    const effects = durableClientEffectsFromRealtimeFrame(toolCompletedFrame({ id: `event-${eventType}`, eventType }))
+    assert.deepEqual(effects?.effects, [{ type: 'refresh_artifacts' }])
   }
 })
 

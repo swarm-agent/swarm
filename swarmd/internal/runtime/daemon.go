@@ -24,6 +24,8 @@ import (
 	"swarm/packages/swarmd/internal/agentmodelsettings"
 	"swarm/packages/swarmd/internal/api"
 	"swarm/packages/swarmd/internal/artifact"
+	"swarm/packages/swarmd/internal/artifactv2"
+	"swarm/packages/swarmd/internal/artifactv3video"
 	"swarm/packages/swarmd/internal/auth"
 	"swarm/packages/swarmd/internal/config"
 	"swarm/packages/swarmd/internal/discovery"
@@ -294,6 +296,36 @@ func New(cfg config.Config) (*Daemon, error) {
 	}
 	artifactMetadata := &artifactMetadataBoundary{Service: sessionSvc}
 	artifactAuthority := artifact.NewAuthority(artifactRegistry, artifactMetadata)
+	// Artifact V2 is an independent write authority. It reuses only the audited
+	// private Git repository opener and canonical V3 mutation boundary; it never
+	// receives the legacy artifact authority.
+	artifactV2Service := artifactv2.NewService(sessionSvc, sessionSvc, sessionSvc, artifactv2.NewGitBlobStore(artifactRegistry))
+	if cacheRootErr != nil {
+		_ = secretStore.Close()
+		_ = store.Close()
+		_ = lk.Release()
+		return nil, fmt.Errorf("resolve cache root for Artifact V3: %w", cacheRootErr)
+	}
+	artifactV3RepositoryRoot, artifactV3WorkspaceRoot, artifactV3EvidenceRoot, err := artifactV3StorageRoots(cfg.DataDir, cacheRoot)
+	if err != nil {
+		_ = secretStore.Close()
+		_ = store.Close()
+		_ = lk.Release()
+		return nil, fmt.Errorf("configure Artifact V3 storage roots: %w", err)
+	}
+	artifactV3Service, err := pebblestore.NewArtifactV3Service(sessionSvc.Store(), artifactV3RepositoryRoot, pebblestore.ArtifactV3Limits{})
+	if err != nil {
+		_ = secretStore.Close()
+		_ = store.Close()
+		_ = lk.Release()
+		return nil, fmt.Errorf("configure Artifact V3 Git service: %w", err)
+	}
+	var artifactV3Renderer htmlcapture.Renderer
+	if cacheRootErr == nil {
+		artifactV3Renderer = htmlcapture.NewChromedpRendererWithConcurrency(htmlcapture.SystemChromePath, filepath.Join(cacheRoot, "html-capture"), htmlCaptureConcurrency())
+	}
+	artifactV3Runtime := newArtifactV3RuntimeAdapter(artifactV3Service, sessionSvc.Store(), artifactV3RepositoryRoot, artifactV3EvidenceRoot, pebblestore.ArtifactV3Limits{}, artifactV3Renderer)
+	toolRuntime.SetArtifactV3AuthorService(tool.NewArtifactV3AuthorService(artifactV3WorkspaceRoot, artifactV3Runtime, artifactV3Runtime, artifactV3Runtime))
 	toolRuntime.SetArtifactRegistry(artifactRegistry)
 	toolRuntime.SetArtifactAuthority(artifactAuthority)
 	mediaStagingSvc := mediastaging.NewService(pebblestore.NewMediaStagingStore(store))
@@ -428,10 +460,23 @@ func New(cfg config.Config) (*Daemon, error) {
 	toolRuntime.SetManageThemeServices(uiSettingsSvc, workspaceSvc)
 	videoTranscriptionSvc := videotranscription.NewService(sessionSvc.Store(), modelSvc, uiSettingsSvc, google.NewVideoTranscriptionAdapter(authStore))
 	videoProjectSvc := videoproject.NewService(sessionSvc.Store())
+	videoProjectSvc.SetArtifactV2Authority(artifactV2Service)
 	var videoAnimationRenderer htmlcapture.AnimationRenderer
 	if cacheRootErr == nil {
 		videoAnimationRenderer = htmlcapture.NewChromedpRenderer(htmlcapture.SystemChromePath, filepath.Join(cacheRoot, "html-capture"))
 	}
+	toolRuntime.SetArtifactV2VideoConversionService(artifactv2.NewVideoConversionService(artifactV2Service, videoProjectSvc, artifactv2.TrustedMotionRenderer{Renderer: videoAnimationRenderer}))
+	artifactV3Derivatives, err := newArtifactV3DerivativeStore(filepath.Join(cfg.DataDir, filepath.FromSlash(artifactV3VideoDerivativeDir)))
+	if err != nil {
+		_ = secretStore.Close()
+		_ = store.Close()
+		_ = lk.Release()
+		return nil, fmt.Errorf("configure Artifact V3 video derivative storage: %w", err)
+	}
+	artifactV3VideoSvc := artifactv3video.New(artifactV3Runtime, artifactV3AnimationRenderer{renderer: videoAnimationRenderer}, artifactV3Derivatives)
+	artifactV3VideoBridge := &artifactV3VideoBridge{artifacts: artifactV3Runtime, service: artifactV3VideoSvc, projects: videoProjectSvc}
+	videoProjectSvc.SetArtifactV3Authority(artifactV3VideoSvc)
+	toolRuntime.SetArtifactV3VideoConversionService(artifactV3VideoBridge)
 	videoRenderSvc := videorender.NewService(
 		videorender.Config{},
 		sessionSvc.Store(),
@@ -440,6 +485,8 @@ func New(cfg config.Config) (*Daemon, error) {
 		workspaceSvc,
 		nil,
 	)
+	videoRenderSvc.SetArtifactV2Authority(artifactV2Service)
+	videoRenderSvc.SetArtifactV3Authority(artifactV3VideoSvc)
 	toolRuntime.SetManageVideoPipelineServices(
 		videoTranscriptionSvc,
 		videosource.NewService(workspaceSvc, sessionSvc.Store()),
@@ -546,17 +593,29 @@ func New(cfg config.Config) (*Daemon, error) {
 		return err
 	})
 	modelSvc.StartCatalogAutoRefresh(bgCtx)
-	startV3SessionRetention(bgCtx, sessionSvc)
-	startMediaStagingCleanup(bgCtx, mediaStagingSvc)
-	startArtifactMaintenance(bgCtx, artifactRegistry)
-	startVideoRenderRecovery(bgCtx, videoRenderSvc)
-
 	apiServer := api.NewServer(authSvc, agentSvc, modelSvc, runSvc, sessionSvc, workspaceSvc, discoverySvc, securitySvc, providers, permissionSvc, notificationSvc, events, hub)
 	apiServer.SetMediaStagingService(mediaStagingSvc)
 	apiServer.SetVideoTranscriptionService(videoTranscriptionSvc)
 	apiServer.SetVideoProjectService(videoProjectSvc)
 	apiServer.SetVideoRenderService(videoRenderSvc)
 	apiServer.SetArtifactRegistry(artifactRegistry)
+	apiServer.SetArtifactV2Service(artifactV2Service)
+	apiServer.SetArtifactV3Service(artifactV3Runtime)
+	artifactV3Runtime.publish = apiServer.PublishArtifactV3Projection
+	if err := recoverArtifactV3Repositories(context.Background(), artifactV3Runtime); err != nil {
+		bgCancel()
+		_ = secretStore.Close()
+		_ = store.Close()
+		_ = lk.Release()
+		return nil, fmt.Errorf("recover Artifact V3 repositories: %w", err)
+	}
+	if err := migrateArtifactV3VideoReceipts(context.Background(), artifactV3Runtime, artifactV3Derivatives); err != nil {
+		bgCancel()
+		_ = secretStore.Close()
+		_ = store.Close()
+		_ = lk.Release()
+		return nil, fmt.Errorf("migrate Artifact V3 video receipts: %w", err)
+	}
 	runSvc.SetSessionDeployCanonicalizer(apiServer.CanonicalizeSessionDeploy)
 	runSvc.SetSessionDeployEnqueuer(apiServer.EnqueueSessionDeployRun)
 	runSvc.SetAITaskBinder(todoSvc)
@@ -645,7 +704,6 @@ func New(cfg config.Config) (*Daemon, error) {
 	apiServer.SetShutdownHandler(func(reason string) {
 		d.requestStop("api:" + strings.TrimSpace(reason))
 	})
-
 	httpServer := &http.Server{
 		Addr:              cfg.ListenAddr,
 		Handler:           apiServer.Handler(),
@@ -717,8 +775,13 @@ func New(cfg config.Config) (*Daemon, error) {
 		diagnostics.RegisterSnapshotProvider("tools", toolRuntime.LongSessionSnapshot)
 		log.Printf("long-session diagnostics enabled directory=%q", diagnostics.Directory())
 	}
-	// Start the best-effort remote report only after local daemon construction
-	// has succeeded, so later initialization failures never race a closed store.
+	// Start store-backed background work only after every constructor step that
+	// can close the stores has succeeded. Otherwise a startup error can race an
+	// eager maintenance pass and panic on an already-closed Pebble database.
+	startV3SessionRetention(bgCtx, sessionSvc)
+	startMediaStagingCleanup(bgCtx, mediaStagingSvc)
+	startArtifactMaintenance(bgCtx, artifactRegistry)
+	startVideoRenderRecovery(bgCtx, videoRenderSvc)
 	startMintReport(bgCtx, swarmSvc)
 	return d, nil
 }

@@ -53,6 +53,8 @@ type taskSwarmHydrationRequest struct {
 	IterationControls   *taskSwarmIterationControls                    `json:"iteration_controls,omitempty"`
 	IntegrationContract string                                         `json:"integration_contract,omitempty"`
 	SourceArtifact      *pebblestore.SessionArtifactSelectionReference `json:"source_artifact,omitempty"`
+	ArtifactV3Source    *taskArtifactV3Source                          `json:"artifact_v3_source,omitempty"`
+	ArtifactV2Source    *taskArtifactV2Source                          `json:"artifact_v2_source,omitempty"`
 	SectionTarget       *taskSwarmSectionTarget                        `json:"section_target,omitempty"`
 	SectionTargets      []*taskSwarmSectionTarget                      `json:"section_targets,omitempty"`
 	FocusedParts        bool                                           `json:"focused_parts,omitempty"`
@@ -360,7 +362,7 @@ func buildTaskSwarmHydrationRequest(parsed taskCallArguments, launchSpecs []task
 	}
 	request := taskSwarmHydrationRequest{
 		Description: strings.TrimSpace(parsed.Description), Prompt: strings.TrimSpace(parsed.Prompt), AgentType: parsed.Swarm.AgentType, SwarmStrategy: parsed.Swarm.Strategy,
-		OutputContract: strings.TrimSpace(parsed.Swarm.OutputContract), OutputMode: strings.TrimSpace(parsed.Swarm.OutputMode), OutputRequirements: cloneTaskOutputRequirements(parsed.Swarm.OutputRequirements), AnimationProfile: cloneTaskAnimationProfile(parsed.Swarm.AnimationProfile), IterationControls: cloneTaskSwarmIterationControls(parsed.Swarm.IterationControls), IntegrationContract: strings.TrimSpace(parsed.Swarm.IntegrationContract), SourceArtifact: cloneTaskImageSourceArtifact(parsed.Swarm.SourceArtifact), SectionTarget: cloneTaskSwarmSectionTarget(parsed.Swarm.SectionTarget), SectionTargets: cloneTaskSwarmSectionTargets(parsed.Swarm.SectionTargets),
+		OutputContract: strings.TrimSpace(parsed.Swarm.OutputContract), OutputMode: strings.TrimSpace(parsed.Swarm.OutputMode), OutputRequirements: cloneTaskOutputRequirements(parsed.Swarm.OutputRequirements), AnimationProfile: cloneTaskAnimationProfile(parsed.Swarm.AnimationProfile), IterationControls: cloneTaskSwarmIterationControls(parsed.Swarm.IterationControls), IntegrationContract: strings.TrimSpace(parsed.Swarm.IntegrationContract), SourceArtifact: cloneTaskImageSourceArtifact(parsed.Swarm.SourceArtifact), ArtifactV3Source: cloneTaskArtifactV3Source(parsed.Swarm.ArtifactV3Source), ArtifactV2Source: cloneTaskArtifactV2Source(parsed.Swarm.ArtifactV2Source), SectionTarget: cloneTaskSwarmSectionTarget(parsed.Swarm.SectionTarget), SectionTargets: cloneTaskSwarmSectionTargets(parsed.Swarm.SectionTargets),
 		Items: make([]taskSwarmHydrationItem, len(launchSpecs)),
 	}
 	for _, launch := range launchSpecs {
@@ -498,7 +500,12 @@ func composeTaskSwarmChildPrompt(request taskSwarmHydrationRequest, item taskSwa
 		b.WriteString("- owned scope: entire isolated worktree\n")
 	}
 	if agentruntime.IsDesignerAgentName(request.AgentType) || request.AgentType == "image" {
-		if request.SourceArtifact != nil {
+		if request.ArtifactV2Source != nil {
+			b.WriteString("- exact Artifact V2 source (immutable server-authenticated working revision, published head, composition head, and target Part IDs): ")
+			encoded, _ := json.Marshal(request.ArtifactV2Source)
+			b.Write(encoded)
+			b.WriteString("\n- Artifact V2 focused iteration contract: inspect the context-bound candidate working artifact, declare the exact complete part set requested by the parent brief, author real revisions for every target while preserving all non-target semantics, request server build/validation, and submit only the ready candidate. The parent server imports only the exact target revisions into one durable Iteration Round; never call manage_artifact.\n")
+		} else if request.SourceArtifact != nil {
 			b.WriteString("- exact source artifact reference (immutable; use this existing ready artifact as the input for the requested iteration): ")
 			encoded, _ := json.Marshal(request.SourceArtifact)
 			b.Write(encoded)
@@ -509,22 +516,22 @@ func composeTaskSwarmChildPrompt(request taskSwarmHydrationRequest, item taskSwa
 			if request.FocusedParts {
 				b.WriteString("- selected authoritative artifact parts (immutable server-bound byte selection): ")
 				b.Write(encoded)
-				b.WriteString("\n- multipart contract: call manage_artifact action=read_parts once, edit every selected independently byte-bearing part and no others, then call manage_artifact action=publish_parts exactly once with one replacement per selected part. The server publishes all changed revisions as one atomic candidate composition and preserves every untouched exact part revision. Do not use create/create_package.\n")
+				b.WriteString("\n- focused multipart contract: use artifact_v2_author inspect_context, write only every granted target part against its exact current base and composition-head revision, preserve all non-target and locked parts byte-for-byte, then request the server build/validation and submit the candidate only when ready.\n")
 			} else {
 				b.WriteString("- selected source-bound review/edit targets on one complete artifact (immutable server-authenticated locators): ")
 				b.Write(encoded)
-				b.WriteString("\n- monolithic multi-target revision contract: these targets identify every region to change atomically, not separate bytes. Inspect the exact complete source artifact, change all selected regions together, preserve every non-target region, and publish exactly one complete revised artifact with one manage_artifact create or create_package call. Keep a single-file text/html source as text/html; do not call read_parts/publish_parts, convert it to a ZIP, or manufacture initial_parts. Include the source's complete review/edit target set in that same publication, retaining every selected locator.\n")
+				b.WriteString("\n- focused multi-target contract: these targets are the exact Artifact V2 editable set. Use artifact_v2_author to create derived revisions for all targets, preserve every non-target byte, then request server build/validation and submit only the verified composition candidate.\n")
 			}
 		} else if request.SectionTarget != nil {
 			encoded, _ := json.Marshal(request.SectionTarget)
 			if request.FocusedParts {
 				b.WriteString("- selected authoritative artifact part (immutable server-bound byte selection): ")
 				b.Write(encoded)
-				b.WriteString("\n- focused part contract: call manage_artifact action=read_part to retrieve only the selected exact part bytes, edit only those bytes, then call manage_artifact action=publish_part exactly once with only replacement content and content metadata. Do not read, materialize, recreate, or publish the complete artifact. Do not use create/create_package. The server preserves every untouched exact part revision and constructs the candidate composition.\n")
+				b.WriteString("\n- focused part contract: use artifact_v2_author inspect_context and write_part only for the selected exact Part ID, naming its exact base revision and composition-head revision. The server preserves every untouched exact revision, builds, validates, and records the candidate.\n")
 			} else {
 				b.WriteString("- selected source-bound review/edit target on one complete artifact (immutable server-authenticated locator): ")
 				b.Write(encoded)
-				b.WriteString("\n- monolithic revision contract: this target identifies what to change, not separate bytes. Inspect the exact source artifact, preserve every non-target region, and publish one complete revised artifact with exactly one manage_artifact create or create_package call. Keep a single-file text/html source as text/html; do not convert it to a ZIP or manufacture initial_parts. Include the source's complete review/edit targets in that same publication, with the targeted locator retained.\n")
+				b.WriteString("\n- focused revision contract: this target is the exact Artifact V2 editable Part. Create one derived part revision with artifact_v2_author, preserve every other exact part revision, and submit only after server build/validation succeeds.\n")
 			}
 		}
 		if request.OutputRequirements != nil {
@@ -544,7 +551,7 @@ func composeTaskSwarmChildPrompt(request taskSwarmHydrationRequest, item taskSwa
 			if request.AgentType == "image" {
 				b.WriteString("- output mode: managed image; call manage_artifact exactly once with action=generate_image and a specialized image prompt. Omit provider, model, collection_id, variant_id, and output_requirements. The server resolves the account image model, performs one billed generation call, injects the immutable destination, and finalizes the ready image. Do not call create/create_package, write/edit, or mutate the checkout.\n")
 			} else if !request.FocusedParts {
-				b.WriteString("- output mode: managed complete revision; use manage_artifact exactly once with create or create_package and omit output_requirements and animation_profile. Prefer one self-contained text/html file when the source is one HTML file; never wrap it in a ZIP merely to represent review/edit targets. Include accurate complete-revision parts when already known; otherwise, for text/html omit parts and let the server derive targets from authored manifests and stable semantic-region IDs without splitting or rewriting the file. The server injects the immutable requirement snapshot and atomically finalizes the preallocated opaque target. Never call unsupported update/finalize actions. Do not use write/edit, write the workspace checkout, or choose/override destination lineage.\n")
+				b.WriteString("- output mode: managed Artifact V2; call artifact_v2_author inspect_context, author real part revisions, request server build/validation, repair exact revisions if needed, and submit_candidate only when ready. Destination, output requirements, animation profile, renderer controls, validation status, and candidate slot are server-owned. Never call manage_artifact or use write/edit.\n")
 			}
 		} else {
 			b.WriteString("- output mode: workspace; work in the parent's shared checkout and write only within the distinct declared owned scope; do not use Bash or Git.\n")

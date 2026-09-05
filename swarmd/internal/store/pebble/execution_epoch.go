@@ -740,7 +740,7 @@ func (s *SessionStore) beginFreshExecutionEpoch(input BeginExecutionEpochInput, 
 		if finalHandoffMessage.CreatedAt == 0 {
 			finalHandoffMessage.CreatedAt = now
 		}
-		handoffPayload, marshalErr := (V3SessionMutationInput{Kind: V3SessionMutationAppendMessage, Message: &finalHandoffMessage}).v3EventPayload(finalHandoffSeq, SessionSnapshot{}, finalHandoffMessage, SessionLifecycleSnapshot{}, V3SessionRunIntent{}, SessionTurnUsageSnapshot{}, SessionUsageSummary{}, V3ArtifactProjection{}, V3TranscriptionProjection{}, V3VideoProjectProjection{})
+		handoffPayload, marshalErr := (V3SessionMutationInput{Kind: V3SessionMutationAppendMessage, Message: &finalHandoffMessage}).v3EventPayload(finalHandoffSeq, SessionSnapshot{}, finalHandoffMessage, SessionLifecycleSnapshot{}, V3SessionRunIntent{}, SessionTurnUsageSnapshot{}, SessionUsageSummary{}, V3ArtifactProjection{}, ArtifactV2Projection{}, ArtifactV3Projection{}, V3TranscriptionProjection{}, V3VideoProjectProjection{})
 		if marshalErr != nil {
 			return BeginExecutionEpochResult{}, marshalErr
 		}
@@ -767,7 +767,7 @@ func (s *SessionStore) beginFreshExecutionEpoch(input BeginExecutionEpochInput, 
 		if triggerMessage.CreatedAt == 0 {
 			triggerMessage.CreatedAt = now
 		}
-		triggerPayload, marshalErr := (V3SessionMutationInput{Kind: V3SessionMutationAppendMessage, Message: &triggerMessage}).v3EventPayload(triggerSeq, SessionSnapshot{}, triggerMessage, SessionLifecycleSnapshot{}, V3SessionRunIntent{}, SessionTurnUsageSnapshot{}, SessionUsageSummary{}, V3ArtifactProjection{}, V3TranscriptionProjection{}, V3VideoProjectProjection{})
+		triggerPayload, marshalErr := (V3SessionMutationInput{Kind: V3SessionMutationAppendMessage, Message: &triggerMessage}).v3EventPayload(triggerSeq, SessionSnapshot{}, triggerMessage, SessionLifecycleSnapshot{}, V3SessionRunIntent{}, SessionTurnUsageSnapshot{}, SessionUsageSummary{}, V3ArtifactProjection{}, ArtifactV2Projection{}, ArtifactV3Projection{}, V3TranscriptionProjection{}, V3VideoProjectProjection{})
 		if marshalErr != nil {
 			return BeginExecutionEpochResult{}, marshalErr
 		}

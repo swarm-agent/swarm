@@ -185,6 +185,27 @@ func TestExportHTMLAnimationRejectsManifestBoundsAndUnreviewedProfile(t *testing
 	}
 }
 
+// Requirement: animation export actions inherit the reviewed profile from the
+// authenticated source snapshot. A caller-supplied profile is ambiguous and must
+// fail before renderer or artifact authority work; this runtime unit is the
+// narrowest layer that owns the action-specific argument gate.
+func TestAnimationExportRejectsCallerSuppliedProfileWithInheritanceGuidance(t *testing.T) {
+	properties := manageArtifactDefinition().Parameters["properties"].(map[string]any)
+	profileDescription := properties["animation_profile"].(map[string]any)["description"].(string)
+	for _, want := range []string{"export_html_animation_fallback", "inherit the exact source artifact's reviewed animation profile", "omit this field for exports"} {
+		if !strings.Contains(profileDescription, want) {
+			t.Fatalf("animation_profile schema missing %q: %s", want, profileDescription)
+		}
+	}
+
+	runtime := NewRuntime(1)
+	ctx, scope := artifactToolContext()
+	args := map[string]any{"action": "export_html_animation_fallback", "session_id": "source-session", "collection_id": "collection", "variant_id": "source", "event_seq": 9, "animation_profile": map[string]any{"profile": "motion_ui"}}
+	if _, err := runtime.executeManageArtifact(ctx, scope, "fallback-invalid-profile", args); err == nil || !strings.Contains(err.Error(), "export actions inherit the exact source animation profile and must omit animation_profile") {
+		t.Fatalf("fallback animation_profile guidance = %v", err)
+	}
+}
+
 func TestExportHTMLAnimationFallbackPublishesPreflightFrameWithExactLineage(t *testing.T) {
 	html := `<!doctype html><script id="swarm-animation-manifest" type="application/json">{"version":"swarm.animation/v1","duration_ms":10000,"fps":30}</script>`
 	authority := &fakeArtifactAuthority{readBody: []byte(html), variant: pebblestore.SessionArtifactVariant{ID: "source", CollectionID: "collection", SessionID: "source-session", EventSeq: 9, Status: pebblestore.SessionArtifactStatusReady, MediaType: "text/html", AnimationProfile: reviewedMotionProfile(t)}}

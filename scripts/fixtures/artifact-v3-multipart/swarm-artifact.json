@@ -1,0 +1,21 @@
+{
+  "schema_version": "swarm.artifact/v3",
+  "entrypoint": "index.html",
+  "parts": [
+    {
+      "id": "hero",
+      "label": "Hero",
+      "locator": { "kind": "selector", "path": "index.html", "value": "#hero" }
+    },
+    {
+      "id": "pricing",
+      "label": "Pricing",
+      "locator": { "kind": "selector", "path": "index.html", "value": "#pricing" }
+    },
+    {
+      "id": "footer",
+      "label": "Footer",
+      "locator": { "kind": "selector", "path": "index.html", "value": "#footer" }
+    }
+  ]
+}

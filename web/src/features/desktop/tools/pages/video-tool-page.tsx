@@ -16,7 +16,7 @@ import { buildDesktopChatRouteOptions, getDesktopSessionCreateTarget, type Deskt
 import type { WorkspaceBrowseResult, WorkspaceEntry } from '../../../workspaces/launcher/types/workspace'
 import type { WorkspaceOverviewSwarmTarget } from '../../../workspaces/launcher/types/workspace-overview'
 import { SwarmToolSidebar } from '../components/swarm-tool-sidebar'
-import { VIDEO_TRANSITION_KINDS, VideoIterationSidebar, VideoSessionAISidecar, acceptVideoEditProposal, createVideoEditProposal, renderedVideoArtifactUrl, requestVideoRenderCancellation, selectVideoAnimationCandidate, transitionLabel, updateVideoCompositionProposal, videoAnimationReadyForConfirmation, videoPlanPartMessageSelection, videoPlanPartStoryboardContext, videoPlanTransitionMessageSelection, videoProposalProjectionSequence, type VideoAnimationCandidateWire, type VideoEditProposalWire, type VideoIterationComposerContext, type VideoPlanProposalWire, type VideoStepEditAction, type VideoTransitionKind, type VideoTransitionWire } from '../video-studio/video-studio-surface'
+import { artifactV3VideoMediaUrl, type ArtifactV3VideoReferenceWire, VIDEO_TRANSITION_KINDS, VideoIterationSidebar, VideoSessionAISidecar, acceptVideoEditProposal, createVideoEditProposal, renderedVideoArtifactUrl, requestVideoRenderCancellation, selectVideoAnimationCandidate, transitionLabel, updateVideoCompositionProposal, videoAnimationReadyForConfirmation, videoPlanPartMessageSelection, videoPlanPartStoryboardContext, videoPlanTransitionMessageSelection, videoProposalProjectionSequence, type VideoAnimationCandidateWire, type VideoEditProposalWire, type VideoIterationComposerContext, type VideoPlanProposalWire, type VideoStepEditAction, type VideoTransitionKind, type VideoTransitionWire } from '../video-studio/video-studio-surface'
 import { fetchDesktopV3ArtifactPreviewAccess } from '../../session-v3/artifact-api'
 import { desktopV3ArtifactIterationMessage } from '../../session-v3/artifact-iteration-protocol'
 import { saveVideoSessionViewPreference } from '../video-studio/video-session-view-preference'
@@ -64,6 +64,7 @@ export type VideoTimelineClipWire = {
   layer?: number
   volume?: number
   muted?: boolean
+  artifact_v3_ref?: ArtifactV3VideoReferenceWire
   artifact_ref?: { session_id?: string; collection_id: string; variant_id: string; event_seq?: number; media_type?: string }
   media_type?: string
   design_input?: { session_id?: string; collection_id: string; variant_id: string; event_seq?: number; media_type?: string }
@@ -191,7 +192,7 @@ export function workspaceVideoContextMetadata(item: WorkspaceVideoCatalogItemWir
   }
 }
 
-export type CachedVideoMedia = { src: string; element: HTMLVideoElement }
+export type CachedVideoMedia = { src: string; element: HTMLVideoElement; disposePresentation?: () => void }
 export type CachedImageMedia = { src: string; element: HTMLImageElement }
 
 export function replaceCachedVideoMedia(
@@ -203,6 +204,7 @@ export function replaceCachedVideoMedia(
   const current = cache.get(clipId)
   if (current?.src === src) return { entry: current, replaced: false }
   if (current) {
+    current.disposePresentation?.()
     current.element.pause()
     current.element.removeAttribute('src')
     current.element.load()
@@ -305,7 +307,7 @@ export function selectVideoAnimationCandidateLocally(
   const part = proposal.plan.parts[partIndex]
   const candidates = part.animation_candidates
   const ownedCandidate = candidates?.candidates.find((item) => item.id === candidate.id)
-  if (!candidates || !ownedCandidate || candidates.status === 'ready') return null
+  if (!candidates || !ownedCandidate?.source || !candidate.source || candidates.status === 'ready') return null
   if (ownedCandidate.source.session_id !== candidate.source.session_id
     || ownedCandidate.source.collection_id !== candidate.source.collection_id
     || ownedCandidate.source.variant_id !== candidate.source.variant_id
@@ -332,7 +334,9 @@ export function shouldScheduleVideoCanvasFrame(isPlaying: boolean, visibilitySta
 
 export function videoAnimationPartAtClip(plan: VideoPlanProposalWire | null, clipId: string | null | undefined): VideoPlanProposalWire['parts'][number] | null {
   if (!clipId) return null
-  return plan?.parts.find((part) => part.id === clipId && Boolean(part.animation_candidates)) ?? null
+  // Native ready motion plays its authenticated MP4, never the legacy HTML
+  // candidate iframe that requires collection/variant preview authority.
+  return plan?.parts.find((part) => part.id === clipId && !part.artifact_v3_visual && Boolean(part.animation_candidates)) ?? null
 }
 
 export type VideoActivePreviewIdentity = {
@@ -357,6 +361,7 @@ export function videoActivePreviewIdentity(input: {
   part: VideoPlanProposalWire['parts'][number]
   candidate: VideoAnimationCandidateWire
 }): VideoActivePreviewIdentity {
+  if (!input.candidate.source) throw new Error('Native V3 motion uses derivative playback, not legacy HTML preview')
   return {
     projectId: input.projectId,
     proposalId: input.proposal?.id ?? '',
@@ -392,7 +397,7 @@ export function videoActivePreviewCandidate(input: {
     || identity.timelineClipId !== input.timelineClipId
     || identity.planPartId !== part.id) return null
   const candidate = part.animation_candidates?.candidates.find((item) => item.id === identity.candidateId)
-  if (!candidate
+  if (!candidate?.source
     || candidate.source.session_id !== identity.sourceSessionId
     || candidate.source.collection_id !== identity.sourceCollectionId
     || candidate.source.variant_id !== identity.sourceVariantId
@@ -404,7 +409,7 @@ export function videoClipReviewState(part: VideoPlanProposalWire['parts'][number
   const storyboard = videoPlanPartStoryboardContext(part)
   if (storyboard) return storyboard.productionState === 'pending'
     ? { mediaKind: 'Storyboard still', state: 'Placeholder · filming needed' }
-    : { mediaKind: 'Storyboard still', state: 'Production ready' }
+    : { mediaKind: part?.artifact_v3_visual?.media_type === 'video/mp4' ? 'Motion' : 'Storyboard still', state: 'Production ready' }
   const animation = part?.animation_candidates
   if (animation) {
     if (animation.status === 'failed') return { mediaKind: 'Live HTML', state: 'Motion failed' }
@@ -512,6 +517,7 @@ export type TimelineSegment = {
   type: 'video' | 'audio' | 'image' | 'frame'
   clipId: string
   src: string
+  artifactV3Ref?: ArtifactV3VideoReferenceWire
   artifactRef?: VideoTimelineClipWire['artifact_ref']
   sourceKind?: string
   title?: string
@@ -1124,8 +1130,9 @@ export function timelineSegmentsToProjectTimeline(
       name: clip?.name ?? seg.clipId,
       track: 0,
       sequence: idx,
-      source_kind: 'source_video',
-      source_ref: clip?.sourceRef ?? seg.clipId,
+      source_kind: seg.artifactV3Ref ? 'managed_artifact' : 'source_video',
+      source_ref: seg.artifactV3Ref ? undefined : clip?.sourceRef ?? seg.clipId,
+      ...(seg.artifactV3Ref ? { artifact_v3_ref: seg.artifactV3Ref, media_type: seg.artifactV3Ref.media_type } : {}),
       source_start_ms: Math.round(seg.sourceStart * 1000),
       source_end_ms: Math.round((seg.sourceStart + dur) * 1000),
       timeline_start_ms: layoutSeg ? Math.round(layoutSeg.timelineStart * 1000) : 0,
@@ -1180,6 +1187,7 @@ function visualPlanTimeline(accepted: VideoProjectTimelineWire, plan: VideoPlanP
       sequence: index,
       source_kind: 'managed_artifact',
       artifact_ref: part.visual,
+      artifact_v3_ref: part.artifact_v3_visual,
       media_type: part.visual_media_type,
       timeline_start_ms: startMs,
       timeline_end_ms: endMs,
@@ -1300,14 +1308,16 @@ export function projectTimelineToTimelineSegments(
     const artifactRef = clipWire.artifact_ref ?? clipWire.design_input
     const artifactSessionId = String(artifactRef?.session_id || threadId).trim()
     const artifactId = String(artifactRef?.variant_id ?? '').trim()
-    const artifactSource = clipWire.source_kind === 'managed_artifact' && Boolean(artifactSessionId && artifactId)
-    const artifactMediaType = String(clipWire.media_type ?? artifactRef?.media_type ?? '').trim()
+    const nativeRef = clipWire.artifact_v3_ref
+    const artifactSource = clipWire.source_kind === 'managed_artifact' && Boolean(nativeRef || (artifactSessionId && artifactId))
+    const artifactMediaType = String(clipWire.media_type ?? nativeRef?.media_type ?? artifactRef?.media_type ?? '').trim()
     const artifactVideo = artifactSource && artifactMediaType.startsWith('video/')
     return {
       id: clipWire.id,
       type: audioSource ? 'audio' : videoSource || artifactVideo ? 'video' : artifactSource ? 'image' : 'frame',
       clipId,
-      src: audioSource && threadId ? `/v3/sessions/${encodeURIComponent(threadId)}/video/sources/media?source_ref=${encodeURIComponent(clipWire.audio_source!.ref)}` : videoSource ? (sourceClip && threadId ? clipMediaUrl(threadId, clipId) : threadId && sourceRef ? `/v3/sessions/${encodeURIComponent(threadId)}/video/sources/media?source_ref=${encodeURIComponent(sourceRef)}` : `/v1/workspace/video/threads/media?clip_id=${encodeURIComponent(clipId)}`) : artifactSource ? `/v3/sessions/${encodeURIComponent(artifactSessionId)}/artifacts/${encodeURIComponent(artifactId)}` : '',
+      src: audioSource && threadId ? `/v3/sessions/${encodeURIComponent(threadId)}/video/sources/media?source_ref=${encodeURIComponent(clipWire.audio_source!.ref)}` : videoSource ? (sourceClip && threadId ? clipMediaUrl(threadId, clipId) : threadId && sourceRef ? `/v3/sessions/${encodeURIComponent(threadId)}/video/sources/media?source_ref=${encodeURIComponent(sourceRef)}` : `/v1/workspace/video/threads/media?clip_id=${encodeURIComponent(clipId)}`) : nativeRef ? artifactV3VideoMediaUrl(nativeRef) : artifactSource ? `/v3/sessions/${encodeURIComponent(artifactSessionId)}/artifacts/${encodeURIComponent(artifactId)}` : '',
+      artifactV3Ref: nativeRef,
       artifactRef: artifactRef ? { ...artifactRef, session_id: artifactSessionId || undefined, media_type: artifactMediaType || undefined } : undefined,
       sourceKind: clipWire.source_kind,
       title: details.title,
@@ -1599,6 +1609,12 @@ export function VideoToolPage() {
   const [canvasRenderVersion, setCanvasRenderVersion] = useState(0)
   const requestCanvasRender = useCallback(() => setCanvasRenderVersion((version) => version + 1), [])
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
+  const attachCanvas = useCallback((canvas: HTMLCanvasElement | null) => {
+    canvasRef.current = canvas
+    // Media can finish loading while the project-loading branch hides the
+    // canvas. Mounting it must request its own draw; no new media event is owed.
+    if (canvas) requestCanvasRender()
+  }, [requestCanvasRender])
   const timelineScrollRef = useRef<HTMLDivElement | null>(null)
   const videoElementsRef = useRef<Map<string, CachedVideoMedia>>(new Map())
   const imageElementsRef = useRef<Map<string, CachedImageMedia>>(new Map())
@@ -2000,7 +2016,7 @@ export function VideoToolPage() {
   }, [beginTimelinePlayback, currentWorkingProposal, playerRevision, timelineLayoutByClipId, videoProject])
 
   const selectLiveAnimationCandidate = useCallback((part: NonNullable<VideoPlanProposalWire['parts'][number]>, candidate: VideoAnimationCandidateWire) => {
-    if (!currentWorkingProposal || !selectedThread || !videoProject || animationSelectionBusyPartId) return
+    if (!candidate.source || !currentWorkingProposal || !selectedThread || !videoProject || animationSelectionBusyPartId) return
     if (currentWorkingProposal.plan?.kind === 'revision' && !pendingSelectedChangeIds.includes(part.id)) {
       setCreateError(`Enable ${part.title} before choosing one of its variants.`)
       return
@@ -2075,7 +2091,7 @@ export function VideoToolPage() {
     let cancelled = false
     setLiveAnimationURL('')
     setLiveAnimationError(null)
-    if (!activeCandidate || !activePreviewRequestIdentity) return
+    if (!activeCandidate?.source || !activePreviewRequestIdentity) return
     void fetchDesktopV3ArtifactPreviewAccess(activeCandidate.source.session_id, activeCandidate.source.variant_id).then((access) => {
       if (!cancelled) setLiveAnimationURL(access.url)
     }).catch((error) => {
@@ -2094,9 +2110,23 @@ export function VideoToolPage() {
 
   useEffect(() => {
     const cache = videoElementsRef.current
+    return () => {
+      for (const entry of cache.values()) {
+        entry.disposePresentation?.()
+        entry.element.pause()
+        entry.element.removeAttribute('src')
+        entry.element.load()
+      }
+      cache.clear()
+    }
+  }, [])
+
+  useEffect(() => {
+    const cache = videoElementsRef.current
     const mediaByClipId = new Map(timelineSegments.filter((segment) => segment.type === 'video' && segment.src).map((segment) => [segment.clipId, segment.src]))
     for (const [clipId, cached] of cache.entries()) {
       if (!mediaByClipId.has(clipId)) {
+        cached.disposePresentation?.()
         cached.element.pause()
         cached.element.removeAttribute('src')
         cached.element.load()
@@ -2139,7 +2169,24 @@ export function VideoToolPage() {
       }
       video.addEventListener('loadedmetadata', updateDuration)
       video.addEventListener('durationchange', updateDuration)
-      video.addEventListener('loadeddata', requestCanvasRender)
+      let presentationFrame = 0
+      entry.disposePresentation = () => {
+        if (presentationFrame) video.cancelVideoFrameCallback(presentationFrame)
+        presentationFrame = 0
+      }
+      const requestPresentedFrame = () => {
+        entry.disposePresentation?.()
+        requestCanvasRender()
+        // HAVE_CURRENT_DATA may precede the compositor's first decoded frame.
+        // One presentation callback (not a polling loop) redraws paused media.
+        if (typeof video.requestVideoFrameCallback === 'function') {
+          presentationFrame = video.requestVideoFrameCallback(() => {
+            presentationFrame = 0
+            if (cache.get(clipId)?.element === video) requestCanvasRender()
+          })
+        }
+      }
+      video.addEventListener('loadeddata', requestPresentedFrame)
       video.addEventListener('seeked', requestCanvasRender)
       video.addEventListener('error', retryAfterAuth)
       video.load()
@@ -3038,7 +3085,7 @@ export function VideoToolPage() {
           transition: action === 'transition' ? acceptedTransition ?? null : null,
           storyboard,
         })
-        setStudioArtifactSelectionRequest(visualPart
+        setStudioArtifactSelectionRequest(visualPart?.visual
           ? action === 'transition'
             ? videoPlanTransitionMessageSelection(visualPart, acceptedTransition)
             : videoPlanPartMessageSelection(visualPart)
@@ -3275,7 +3322,7 @@ export function VideoToolPage() {
             </div>
             <div className="min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain px-3 py-3" data-video-focused-review-scroll>
               {focusedReviewParts.map((part, partIndex) => {
-                const candidates = part.animation_candidates?.candidates ?? []
+                const candidates = part.artifact_v3_visual ? [] : part.animation_candidates?.candidates ?? []
                 const selectedCandidateID = part.animation_candidates?.selected_candidate_id
                 const locked = focusedVideoReviewPartLocked(part)
                 const layout = currentWorkingVisualLayout.find((segment) => segment.clipId === part.id)
@@ -3324,18 +3371,18 @@ export function VideoToolPage() {
               ) : (
                 <>
               <div className="relative w-full shrink-0 overflow-hidden rounded-xl border border-[var(--app-border)] bg-black lg:rounded-none" data-video-studio-player-viewport style={{ aspectRatio: `${(shadowTimeline ?? playerRevision?.timeline)?.width ?? 1920} / ${(shadowTimeline ?? playerRevision?.timeline)?.height ?? 1080}` }}>
-                <canvas ref={canvasRef} width={(shadowTimeline ?? playerRevision?.timeline)?.width ?? 1920} height={(shadowTimeline ?? playerRevision?.timeline)?.height ?? 1080} className="absolute inset-0 h-full w-full bg-black object-contain" />
+                <canvas ref={attachCanvas} width={(shadowTimeline ?? playerRevision?.timeline)?.width ?? 1920} height={(shadowTimeline ?? playerRevision?.timeline)?.height ?? 1080} className="absolute inset-0 h-full w-full bg-black object-contain" />
                 {activeCompositionSlots.length > 0 && activeSegment ? <VideoCompositionOverlay slots={activeCompositionSlots} outputWidth={(shadowTimeline ?? playerRevision?.timeline)?.width ?? 1920} outputHeight={(shadowTimeline ?? playerRevision?.timeline)?.height ?? 1080} playheadMs={Math.round(playhead * 1000)} partStartMs={Math.round(activeSegment.timelineStart * 1000)} playing={isPlaying} sourceURL={(sourceRef) => selectedThread ? `/v3/sessions/${encodeURIComponent(selectedThread.id)}/video/sources/media?source_ref=${encodeURIComponent(sourceRef)}` : ''} editing={compositionEditing} /> : null}
                 {liveAnimationPart && liveAnimationURL && !liveAnimationError ? <div className="absolute inset-0 overflow-hidden bg-black"><iframe ref={liveAnimationFrameRef} title={activeCandidate?.label || liveAnimationPart.title} src={liveAnimationURL} sandbox="allow-scripts" referrerPolicy="no-referrer" className="absolute inset-0 h-full w-full border-0 bg-black" data-video-studio-live-animation onError={() => setLiveAnimationError(`Could not play ${activeCandidate?.label || activeCandidate?.id || liveAnimationPart.title}.`)} /></div> : null}
                 {liveAnimationPart && liveAnimationError ? <div className="absolute inset-0 z-10 grid place-items-center bg-black px-8 text-center"><div><p className="text-sm font-semibold text-red-300">Live HTML preview failed</p><p className="mt-2 max-w-xl text-xs leading-5 text-red-200/80">{liveAnimationError}</p><p className="mt-2 text-[10px] text-white/50">The still fallback is not substituted for the selected motion source.</p></div></div> : null}
-                {previewRevision ? <div className="pointer-events-none absolute right-4 top-4 border border-sky-300/50 bg-sky-950/80 px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-sky-200">History preview · r{previewRevision.revision_number} · kept r{confirmedRevision?.revision_number} unchanged</div> : currentWorkingProposal ? <div className="pointer-events-none absolute right-4 top-4 border border-amber-300/50 bg-amber-950/80 px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-amber-200">Pending turn changes · working r{currentWorkingProposal.working_revision_number ?? currentRevision?.revision_number} · confirm when ready</div> : null}
+                {previewRevision ? <div className="pointer-events-none absolute right-3 bottom-12 border border-sky-300/50 bg-sky-950/80 px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-sky-200">History preview · r{previewRevision.revision_number} · kept r{confirmedRevision?.revision_number} unchanged</div> : null}
                 {timelineSegments.length === 0 ? (
                   <div className="absolute inset-0 grid place-items-center text-center"><div><Film className="mx-auto text-white/45" size={42} strokeWidth={1.5} /><p className="mt-3 text-sm font-medium text-white/80">No clips in this timeline</p></div></div>
                 ) : null}
-                <div className="pointer-events-none absolute left-4 top-4 rounded bg-black/55 px-2 py-1 text-xs text-white/70">
+              </div>
+                <div className="shrink-0 break-words border-x border-b border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-2 text-xs text-[var(--app-text-muted)]" data-video-studio-clip-status>
                   {activeSegment ? `Clip ${Math.max(1, visualTimelineLayout.findIndex((segment) => segment.clipId === activeSegment.clipId) + 1)} · ${liveAnimationPart?.title || activeSegment.title || selectedClip?.name || activeSegment.clipId} · ${activeCompositionVideoCount > 0 ? `Still + ${activeCompositionVideoCount} composed video` : activeCandidate?.label || activeClipReviewState.mediaKind} · ${liveAnimationPart ? 'Live HTML' : activeCompositionVideoCount > 0 ? 'Composed playback' : activeClipReviewState.mediaKind} · ${formatTimelineTime(playhead)} / ${formatTimelineTime(movieDuration)}` : 'Timeline player'}
                 </div>
-              </div>
 
               {currentWorkingProposal ? <div className="sticky top-0 z-10 mt-2 flex flex-wrap items-center justify-between gap-3 border border-amber-300/45 bg-amber-950/95 px-3 py-2 shadow-lg backdrop-blur" role="status" aria-label="Pending video confirmation">
                 <div className="min-w-0"><p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-amber-200">Pending changes are not final</p><p className="mt-0.5 text-[10px] text-amber-100/75">Review the working cut with its soundtrack, then confirm it before final rendering.</p></div>

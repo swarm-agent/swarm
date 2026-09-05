@@ -170,6 +170,12 @@ import {
 import { normalizeDesktopPlanFinalHandoff } from "../services/session-plan-record";
 import { DesktopV3ArtifactGallery, type DesktopV3ArtifactGalleryEntry } from "./desktop-v3-artifact-gallery";
 import { DesktopV3ArtifactSidebar, desktopV3ArtifactsForSession, desktopV3HasPendingVisualSwarm, desktopV3MobileVisualSwarmArtifactToOpen, desktopV3NextSessionSidebarView } from "./desktop-v3-artifact-sidebar";
+import { DesktopV3ArtifactV2Sidebar } from "./desktop-v3-artifact-v2-sidebar";
+import { DesktopV3ArtifactV2Studio } from "./desktop-v3-artifact-v2-studio";
+import { DesktopV3ArtifactV3Sidebar } from "./desktop-v3-artifact-v3-sidebar";
+import { DesktopV3ArtifactV3Studio } from "./desktop-v3-artifact-v3-studio";
+import { fetchDesktopV3NativeArtifactCatalog, type DesktopV3NativeArtifactSummary } from "../../session-v3/artifact-v3-api";
+import { fetchDesktopV3ArtifactV2Catalog, type DesktopV3ArtifactV2CatalogItem } from "../../session-v3/artifact-v2-api";
 import { appendDesktopV3ArtifactMessageSelections, desktopV3ArtifactCatalogEntryForViewerLocation, desktopV3ArtifactCatalogEntryKey, desktopV3ArtifactCollectionViewerHref, desktopV3ArtifactCollectionViewerSearch, desktopV3ArtifactViewerHref, desktopV3ArtifactViewerLocation, desktopV3ArtifactViewerSearch, fetchDesktopV3ArtifactCatalog, type DesktopV3ArtifactCatalogEntry, type DesktopV3ArtifactMessageSelection } from "../../session-v3/artifact-api";
 import { DesktopV3ArtifactPreviewThumbnail } from "./desktop-v3-artifact-preview-thumbnail";
 import { useDesktopV3OpenArtifactCatalogRefresh } from "../../session-v3/use-artifact-catalog-refresh";
@@ -1968,8 +1974,15 @@ export function DesktopV3ExistingConversationPane({
   const [planSidebarDisplayMode, setPlanSidebarDisplayMode] = useState<DesktopSidebarDisplayMode>(() => loadDesktopSidebarDisplayMode());
   const planSidebarGridRef = useRef<HTMLDivElement | null>(null);
   const [sessionArtifacts, setSessionArtifacts] = useState<DesktopV3ArtifactCatalogEntry[]>([]);
+  const [sessionArtifactV3, setSessionArtifactV3] = useState<DesktopV3NativeArtifactSummary[]>([]);
+  const [selectedArtifactV3, setSelectedArtifactV3] = useState<DesktopV3NativeArtifactSummary | null>(null);
+  const [artifactV3StudioOpen, setArtifactV3StudioOpen] = useState(false);
+  const [sessionArtifactV2, setSessionArtifactV2] = useState<DesktopV3ArtifactV2CatalogItem[]>([]);
+  const [selectedArtifactV2, setSelectedArtifactV2] = useState<DesktopV3ArtifactV2CatalogItem | null>(null);
+  const [artifactV2StudioOpen, setArtifactV2StudioOpen] = useState(false);
   const [sessionArtifactsLoading, setSessionArtifactsLoading] = useState(false);
   const [sessionArtifactsError, setSessionArtifactsError] = useState("");
+  const [sessionArtifactV3Error, setSessionArtifactV3Error] = useState("");
   const [sidebarView, setSidebarView] = useState<DesktopV3SessionSidebarView>("plan");
   const [artifactGalleryOpen, setArtifactGalleryOpen] = useState(false);
   const [artifactGalleryInitialKey, setArtifactGalleryInitialKey] = useState("");
@@ -2011,10 +2024,23 @@ export function DesktopV3ExistingConversationPane({
     if (!normalizedSessionId) return;
     setSessionArtifactsLoading(true);
     setSessionArtifactsError("");
+    setSessionArtifactV3Error("");
     try {
-      const catalog = await fetchDesktopV3ArtifactCatalog(undefined, normalizedSessionId);
+      const [catalog, artifactV2Catalog, artifactV3Result] = await Promise.all([
+        fetchDesktopV3ArtifactCatalog(undefined, normalizedSessionId),
+        fetchDesktopV3ArtifactV2Catalog(normalizedSessionId),
+        fetchDesktopV3NativeArtifactCatalog(normalizedSessionId)
+          .then((artifacts) => ({ artifacts, error: '' }))
+          .catch((cause) => ({ artifacts: [] as DesktopV3NativeArtifactSummary[], error: cause instanceof Error ? cause.message : 'Artifact V3 catalog failed to load' })),
+      ]);
+      const artifactV3Catalog = artifactV3Result.artifacts;
       if (artifactSidebarSessionRef.current !== normalizedSessionId) return;
       setSessionArtifacts(desktopV3ArtifactsForSession(catalog, normalizedSessionId));
+      setSessionArtifactV3Error(artifactV3Result.error);
+      setSessionArtifactV3(artifactV3Catalog);
+      setSelectedArtifactV3((current) => current ? artifactV3Catalog.find((item) => item.artifactId === current.artifactId) ?? current : current);
+      setSessionArtifactV2(artifactV2Catalog);
+      setSelectedArtifactV2((current) => current ? artifactV2Catalog.find((item) => item.working.id === current.working.id) ?? current : current);
     } catch (error) {
       setSessionArtifactsError(error instanceof Error ? error.message : "Session artifacts failed to load");
     } finally {
@@ -2027,6 +2053,13 @@ export function DesktopV3ExistingConversationPane({
     priorSessionArtifactCountRef.current = 0;
     priorSessionHasPlanRef.current = false;
     setSessionArtifacts([]);
+    setSessionArtifactV3Error("");
+    setSessionArtifactV3([]);
+    setSelectedArtifactV3(null);
+    setArtifactV3StudioOpen(false);
+    setSessionArtifactV2([]);
+    setSelectedArtifactV2(null);
+    setArtifactV2StudioOpen(false);
     setSidebarView("plan");
     setArtifactGalleryOpen(false);
     setArtifactGalleryInitialKey("");
@@ -2188,7 +2221,7 @@ export function DesktopV3ExistingConversationPane({
     setResolvingPlanPermissionId("");
   }, [resolvingPlanPermissionId, showPlanExecutionSidebar]);
   const showPlanSidebar = showPlanExecutionSidebar || Boolean(stablePlanDocument);
-  const hasSessionArtifacts = sessionArtifacts.length > 0;
+  const hasSessionArtifacts = sessionArtifactV3.length > 0 || sessionArtifactV2.length > 0 || sessionArtifacts.length > 0;
   const hasPendingVisualSwarm = desktopV3HasPendingVisualSwarm(sessionArtifacts);
   const showConversationSidebar = showPlanSidebar || hasSessionArtifacts;
   const showConversationSidebarColumn = showConversationSidebar && presentation !== "sidebar";
@@ -2199,14 +2232,15 @@ export function DesktopV3ExistingConversationPane({
     setSidebarView((current) => desktopV3NextSessionSidebarView({
       current,
       previousArtifactCount: previousCount,
-      artifactCount: sessionArtifacts.length,
+      artifactCount: sessionArtifactV3.length + sessionArtifactV2.length + sessionArtifacts.length,
       hasPlan: showPlanSidebar,
       prioritizePlan: Boolean(stablePlanDocument) || (showPlanSidebar && !previousHasPlan),
+      prioritizeArtifact: sessionArtifactV3.length > 0 && previousCount === 0,
       hasPendingVisualSwarm,
     }));
-    priorSessionArtifactCountRef.current = sessionArtifacts.length;
+    priorSessionArtifactCountRef.current = sessionArtifactV3.length + sessionArtifactV2.length + sessionArtifacts.length;
     priorSessionHasPlanRef.current = showPlanSidebar;
-  }, [hasPendingVisualSwarm, normalizedSessionId, sessionArtifacts.length, showPlanSidebar, stablePlanDocument]);
+  }, [hasPendingVisualSwarm, normalizedSessionId, sessionArtifactV3.length, sessionArtifactV2.length, sessionArtifacts.length, showPlanSidebar, stablePlanDocument]);
   const activeSidebarView = desktopV3ActiveSessionSidebarView({
     selected: sidebarView,
     hasPlan: showPlanSidebar,
@@ -3373,11 +3407,11 @@ export function DesktopV3ExistingConversationPane({
                   {hasSessionArtifacts ? (
                     <div className="mx-4 mb-3 grid grid-cols-2 gap-1 rounded-lg bg-[var(--app-bg-alt)] p-1 sm:mx-6" role="tablist" aria-label="Mobile session sidebar view" data-mobile-session-sidebar-toggle>
                       <button type="button" role="tab" aria-selected={activeSidebarView === "plan"} aria-label="Show plan" onClick={() => setSidebarView("plan")} className={cn("inline-flex min-h-9 items-center justify-center gap-1.5 rounded-md px-2 text-xs font-semibold transition", activeSidebarView === "plan" ? "bg-[var(--app-surface)] text-[var(--app-text)] shadow-sm" : "text-[var(--app-text-muted)] hover:text-[var(--app-text)]")}><ListChecks size={14} aria-hidden="true" />Plan</button>
-                      <button type="button" role="tab" aria-selected={activeSidebarView === "artifacts"} aria-label={`Show ${sessionArtifacts.length} session artifacts`} onClick={() => setSidebarView("artifacts")} className={cn("inline-flex min-h-9 items-center justify-center gap-1.5 rounded-md px-2 text-xs font-semibold transition", activeSidebarView === "artifacts" ? "bg-[var(--app-surface)] text-[var(--app-text)] shadow-sm" : "text-[var(--app-text-muted)] hover:text-[var(--app-text)]")}><GalleryHorizontal size={14} aria-hidden="true" />Artifacts {sessionArtifacts.length}</button>
+                      <button type="button" role="tab" aria-selected={activeSidebarView === "artifacts"} aria-label={`Show ${sessionArtifactV3.length + sessionArtifactV2.length + sessionArtifacts.length} session artifacts`} onClick={() => setSidebarView("artifacts")} className={cn("inline-flex min-h-9 items-center justify-center gap-1.5 rounded-md px-2 text-xs font-semibold transition", activeSidebarView === "artifacts" ? "bg-[var(--app-surface)] text-[var(--app-text)] shadow-sm" : "text-[var(--app-text-muted)] hover:text-[var(--app-text)]")}><GalleryHorizontal size={14} aria-hidden="true" />Artifacts {sessionArtifactV3.length + sessionArtifactV2.length + sessionArtifacts.length}</button>
                     </div>
                   ) : null}
                   {activeSidebarView === "artifacts" ? (
-                    <DesktopV3ArtifactSidebar artifacts={sessionArtifacts} displayMode="full" loading={sessionArtifactsLoading} error={sessionArtifactsError} embedded artifactHref={artifactViewerHref} onOpenArtifact={openArtifactFullView} onAddToChat={queueGalleryArtifactSelections} />
+                    <>{sessionArtifactV3.length > 0 ? <DesktopV3ArtifactV3Sidebar artifacts={sessionArtifactV3} loading={sessionArtifactsLoading} error={sessionArtifactV3Error} embedded onOpenArtifact={(artifact) => { setSelectedArtifactV3(artifact); setArtifactV3StudioOpen(true); }} /> : null}{sessionArtifactV2.length > 0 ? <DesktopV3ArtifactV2Sidebar artifacts={sessionArtifactV2} loading={sessionArtifactsLoading} error={sessionArtifactsError} embedded onOpenArtifact={(artifact) => { setSelectedArtifactV2(artifact); setArtifactV2StudioOpen(true); }} /> : null}<DesktopV3ArtifactSidebar artifacts={sessionArtifacts} displayMode="full" loading={sessionArtifactsLoading && sessionArtifactV3.length === 0 && sessionArtifactV2.length === 0} error={sessionArtifactV3.length === 0 && sessionArtifactV2.length === 0 ? sessionArtifactsError : ""} embedded artifactHref={artifactViewerHref} onOpenArtifact={openArtifactFullView} onAddToChat={queueGalleryArtifactSelections} /></>
                   ) : (
                     <IsolatedPlanExecutionSidebar
                       sessionId={normalizedSessionId}
@@ -3503,14 +3537,14 @@ export function DesktopV3ExistingConversationPane({
             {showPlanSidebar && hasSessionArtifacts ? (
               <div className={cn("shrink-0 border-b border-l border-[var(--app-border)]/60 bg-[var(--app-surface)]", planSidebarDisplayMode === "thin" ? "grid gap-1 p-1.5" : "grid grid-cols-2 gap-1 p-2")} role="tablist" aria-label="Session sidebar view" data-session-sidebar-toggle>
                 <button type="button" role="tab" aria-selected={activeSidebarView === "plan"} aria-label="Show plan sidebar" title="Plan" onClick={() => setSidebarView("plan")} className={cn("inline-flex min-h-8 items-center justify-center gap-1.5 rounded-md px-2 text-xs font-semibold transition", activeSidebarView === "plan" ? "bg-[var(--app-surface-active)] text-[var(--app-text)]" : "text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)]", planSidebarDisplayMode === "thin" && "px-0")}><ListChecks size={14} aria-hidden="true" />{planSidebarDisplayMode !== "thin" ? "Plan" : null}</button>
-                <button type="button" role="tab" aria-selected={activeSidebarView === "artifacts"} aria-label={`Show ${sessionArtifacts.length} session artifacts`} title="Artifacts" onClick={() => setSidebarView("artifacts")} className={cn("inline-flex min-h-8 items-center justify-center gap-1.5 rounded-md px-2 text-xs font-semibold transition", activeSidebarView === "artifacts" ? "bg-[var(--app-surface-active)] text-[var(--app-text)]" : "text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)]", planSidebarDisplayMode === "thin" && "px-0")}><GalleryHorizontal size={14} aria-hidden="true" />{planSidebarDisplayMode !== "thin" ? `Artifacts ${sessionArtifacts.length}` : null}</button>
+                <button type="button" role="tab" aria-selected={activeSidebarView === "artifacts"} aria-label={`Show ${sessionArtifactV3.length + sessionArtifactV2.length + sessionArtifacts.length} session artifacts`} title="Artifacts" onClick={() => setSidebarView("artifacts")} className={cn("inline-flex min-h-8 items-center justify-center gap-1.5 rounded-md px-2 text-xs font-semibold transition", activeSidebarView === "artifacts" ? "bg-[var(--app-surface-active)] text-[var(--app-text)]" : "text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)]", planSidebarDisplayMode === "thin" && "px-0")}><GalleryHorizontal size={14} aria-hidden="true" />{planSidebarDisplayMode !== "thin" ? `Artifacts ${sessionArtifactV3.length + sessionArtifactV2.length + sessionArtifacts.length}` : null}</button>
               </div>
             ) : null}
             <div className={stablePlanDocument
               ? "contents min-[1300px]:flex min-[1300px]:min-h-0 min-[1300px]:min-w-0 min-[1300px]:flex-1 min-[1300px]:flex-col min-[1300px]:overflow-hidden"
               : "flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden"}>
               {activeSidebarView === "artifacts" ? (
-                <DesktopV3ArtifactSidebar artifacts={sessionArtifacts} displayMode={planSidebarDisplayMode} loading={sessionArtifactsLoading} error={sessionArtifactsError} artifactHref={artifactViewerHref} onOpenArtifact={openArtifactFullView} onAddToChat={queueGalleryArtifactSelections} />
+                <>{sessionArtifactV3.length > 0 ? <DesktopV3ArtifactV3Sidebar artifacts={sessionArtifactV3} loading={sessionArtifactsLoading} error={sessionArtifactV3Error} onOpenArtifact={(artifact) => { setSelectedArtifactV3(artifact); setArtifactV3StudioOpen(true); }} /> : null}{sessionArtifactV2.length > 0 ? <DesktopV3ArtifactV2Sidebar artifacts={sessionArtifactV2} loading={sessionArtifactsLoading} error={sessionArtifactsError} onOpenArtifact={(artifact) => { setSelectedArtifactV2(artifact); setArtifactV2StudioOpen(true); }} /> : null}<DesktopV3ArtifactSidebar artifacts={sessionArtifacts} displayMode={planSidebarDisplayMode} loading={sessionArtifactsLoading && sessionArtifactV3.length === 0 && sessionArtifactV2.length === 0} error={sessionArtifactV3.length === 0 && sessionArtifactV2.length === 0 ? sessionArtifactsError : ""} artifactHref={artifactViewerHref} onOpenArtifact={openArtifactFullView} onAddToChat={queueGalleryArtifactSelections} /></>
               ) : stablePlanDocument && stablePlanPermission && planSidebarViewport ? (
                 <DesktopPlanAgentSidecar
                   parentSessionId={normalizedSessionId}
@@ -3582,6 +3616,24 @@ export function DesktopV3ExistingConversationPane({
         }}
         onSelectionPersisted={refreshSessionArtifacts}
       /> : null}
+
+      <DesktopV3ArtifactV3Studio
+        artifact={selectedArtifactV3}
+        open={artifactV3StudioOpen}
+        onOpenChange={setArtifactV3StudioOpen}
+        onRefresh={refreshSessionArtifacts}
+        onIterate={(prompt) => {
+          composerControllerRef.current?.setDraft(prompt);
+          setArtifactV3StudioOpen(false);
+          setArtifactComposerFocusSignal((current) => current + 1);
+        }}
+      />
+
+      <DesktopV3ArtifactV2Studio
+        artifact={selectedArtifactV2}
+        open={artifactV2StudioOpen}
+        onOpenChange={setArtifactV2StudioOpen}
+      />
 
       <DesktopPermissionModal
         key={`permission:${normalizedSessionId}`}

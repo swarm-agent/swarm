@@ -82,6 +82,49 @@ grep -Fq 'SWARM_TESTBENCH_ACTION_MODEL' "${RUNNER_WRAPPER}" || fail "runner wrap
 grep -Fq 'SWARM_TESTBENCH_PLAN_MODEL' "${RUNNER_WRAPPER}" || fail "runner wrapper does not pass the configured Plan model"
 grep -Fq 'SWARM_TESTBENCH_CODER_MODEL' "${RUNNER_WRAPPER}" || fail "runner wrapper does not pass the configured Coder model"
 grep -Fq 'SWARM_TESTBENCH_DESIGNER_MODEL' "${RUNNER_WRAPPER}" || fail "runner wrapper does not pass the configured Designer model"
+if ! grep -Fq 'off|low|medium|high|xhigh' "${ROOT_DIR}/scripts/lib-testbench-e2e.sh"; then
+  fail "testbench environment validation rejects the canonical off thinking setting"
+fi
+set +e
+(
+  source "${ROOT_DIR}/scripts/lib-testbench-e2e.sh"
+  SWARM_PRIMARY_SSH=test-alias
+  SWARM_TESTBENCH_LOCAL_DESKTOP_PORT=31001
+  SWARM_REMOTE_DESKTOP_PORT=31002
+  SWARM_TESTBENCH_LOCAL_API_PORT=31003
+  SWARM_TESTBENCH_REMOTE_API_PORT=31004
+  SWARM_TESTBENCH_REVERSE_LOCAL_PORT=
+  SWARM_TESTBENCH_REVERSE_REMOTE_PORT=
+  SWARM_TESTBENCH_PROVIDER=fireworks
+  SWARM_TESTBENCH_LINKED_WORKSPACE_PATH=
+  for role in '' _ACTION _PLAN _CODER _DESIGNER; do
+    printf -v "SWARM_TESTBENCH${role}_MODEL" '%s' deepseek-v4-flash-0731
+    printf -v "SWARM_TESTBENCH${role}_THINKING" '%s' off
+  done
+  swarm_testbench_validate_env
+) >/dev/null 2>&1
+off_status=$?
+(
+  source "${ROOT_DIR}/scripts/lib-testbench-e2e.sh"
+  SWARM_PRIMARY_SSH=test-alias
+  SWARM_TESTBENCH_LOCAL_DESKTOP_PORT=31001
+  SWARM_REMOTE_DESKTOP_PORT=31002
+  SWARM_TESTBENCH_LOCAL_API_PORT=31003
+  SWARM_TESTBENCH_REMOTE_API_PORT=31004
+  SWARM_TESTBENCH_REVERSE_LOCAL_PORT=
+  SWARM_TESTBENCH_REVERSE_REMOTE_PORT=
+  SWARM_TESTBENCH_PROVIDER=fireworks
+  SWARM_TESTBENCH_LINKED_WORKSPACE_PATH=
+  for role in '' _ACTION _PLAN _CODER _DESIGNER; do
+    printf -v "SWARM_TESTBENCH${role}_MODEL" '%s' deepseek-v4-flash-0731
+    printf -v "SWARM_TESTBENCH${role}_THINKING" '%s' off
+  done
+  SWARM_TESTBENCH_DESIGNER_THINKING=invalid
+  swarm_testbench_validate_env
+) >/dev/null 2>&1
+invalid_status=$?
+set -e
+[[ "${off_status}" == 0 && "${invalid_status}" != 0 ]] || fail "testbench thinking validation did not accept off and reject invalid"
 BASIC_RUNNER="${ROOT_DIR}/scripts/runners/basic-plan-auto.mjs"
 TASK_ROUTING_RUNNER="${ROOT_DIR}/scripts/runners/task-routing.mjs"
 TASK_PROGRAM_RUNNER="${ROOT_DIR}/scripts/runners/task-program-worktrees.mjs"
