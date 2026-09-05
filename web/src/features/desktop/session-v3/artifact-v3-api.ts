@@ -63,6 +63,7 @@ export interface DesktopV3NativeArtifactRevision {
   commitOid: string
   treeOid: string
   manifestBlobOid: string
+  parts?: DesktopV3NativeArtifactPart[]
   parentCommitOids: string[]
   status: DesktopV3NativeArtifactStatus
   createdAt: number
@@ -279,6 +280,10 @@ export function normalizeDesktopV3NativeArtifactRevision(value: unknown): Deskto
     commitOid,
     treeOid: stringValue(field(item, 'tree_oid', 'treeOid')),
     manifestBlobOid: stringValue(field(item, 'manifest_blob_oid', 'manifestBlobOid')),
+    parts: (() => {
+      const parts = item.parts ?? record(item.manifest)?.parts
+      return Array.isArray(parts) ? parts.map(normalizePart).filter((part): part is DesktopV3NativeArtifactPart => part !== null) : undefined
+    })(),
     parentCommitOids: strings(field(item, 'parent_commit_oids', 'parentCommitOids')).length
       ? strings(field(item, 'parent_commit_oids', 'parentCommitOids'))
       : strings(item.parents),
@@ -390,12 +395,18 @@ export async function fetchDesktopV3NativeArtifactStudio(sessionId: string, arti
   const detailRevisions = Array.isArray(detail.revisions)
     ? detail.revisions.map(normalizeDesktopV3NativeArtifactRevision).filter((revision): revision is DesktopV3NativeArtifactRevision => revision !== null)
     : []
-  const revisions = revisionPage.revisions.length ? revisionPage.revisions : detailRevisions
+  const turns = Array.isArray(detail.turns) ? detail.turns.map(normalizeTurn).filter((turn): turn is DesktopV3NativeArtifactTurn => turn !== null).sort((a, b) => a.createdAt - b.createdAt || a.turnId.localeCompare(b.turnId)) : []
+  // Candidate previews must not depend on whether their commit happens to be
+  // present in the first bounded history page. Keep each exact revision intact.
+  const revisions = new Map<string, DesktopV3NativeArtifactRevision>()
+  for (const revision of [...detailRevisions, ...revisionPage.revisions, ...turns.flatMap((turn) => turn.candidates.flatMap((candidate) => candidate.revision ? [candidate.revision] : []))]) {
+    revisions.set(revision.revisionRef, revision)
+  }
   return {
     artifact,
     parts: Array.isArray(detail.parts) ? detail.parts.map(normalizePart).filter((part): part is DesktopV3NativeArtifactPart => part !== null) : [],
-    turns: Array.isArray(detail.turns) ? detail.turns.map(normalizeTurn).filter((turn): turn is DesktopV3NativeArtifactTurn => turn !== null) : [],
-    revisions,
+    turns,
+    revisions: [...revisions.values()],
   }
 }
 

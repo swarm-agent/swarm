@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 
 	"github.com/cockroachdb/pebble"
@@ -62,17 +63,18 @@ type ArtifactV3RevisionProjection struct {
 }
 
 type ArtifactV3TurnProjection struct {
-	Version             int    `json:"version"`
-	ArtifactID          string `json:"artifact_id"`
-	TurnID              string `json:"turn_id"`
-	OwnerSessionID      string `json:"owner_session_id"`
-	BaseCommitOID       string `json:"base_commit_oid"`
-	TargetPartID        string `json:"target_part_id,omitempty"`
-	Status              string `json:"status"`
-	SelectedCandidateID string `json:"selected_candidate_id,omitempty"`
-	CreatedAt           int64  `json:"created_at"`
-	UpdatedAt           int64  `json:"updated_at"`
-	EventSeq            uint64 `json:"event_seq"`
+	Version             int      `json:"version"`
+	ArtifactID          string   `json:"artifact_id"`
+	TurnID              string   `json:"turn_id"`
+	OwnerSessionID      string   `json:"owner_session_id"`
+	BaseCommitOID       string   `json:"base_commit_oid"`
+	TargetPartID        string   `json:"target_part_id,omitempty"`
+	TargetPartIDs       []string `json:"target_part_ids,omitempty"`
+	Status              string   `json:"status"`
+	SelectedCandidateID string   `json:"selected_candidate_id,omitempty"`
+	CreatedAt           int64    `json:"created_at"`
+	UpdatedAt           int64    `json:"updated_at"`
+	EventSeq            uint64   `json:"event_seq"`
 }
 
 type ArtifactV3EvidenceProjection struct {
@@ -350,7 +352,7 @@ func (s *SessionStore) prepareArtifactV3Mutation(input V3SessionMutationInput, s
 		} else if found {
 			candidateTransition := input.Kind == V3SessionMutationArtifactV3CandidateCommitted && (existing.Status == "open" || existing.Status == "awaiting_selection") && copy.Status == "awaiting_selection" && existing.BaseCommitOID == copy.BaseCommitOID
 			selectTransition := input.Kind == V3SessionMutationArtifactV3HeadSelected && existing.Status == "awaiting_selection" && copy.Status == "selected" && existing.BaseCommitOID == copy.BaseCommitOID
-			if !candidateTransition && !selectTransition && (existing.BaseCommitOID != copy.BaseCommitOID || existing.Status != copy.Status || existing.TargetPartID != copy.TargetPartID) {
+			if existing.BaseCommitOID != copy.BaseCommitOID || !reflect.DeepEqual(existing.TargetPartIDs, copy.TargetPartIDs) || existing.TargetPartID != copy.TargetPartID || (!candidateTransition && !selectTransition && existing.Status != copy.Status) {
 				return preparedArtifactV3Mutation{}, errors.New("artifact v3 turn identity is immutable")
 			}
 		}

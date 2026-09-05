@@ -13,6 +13,7 @@ import {
   type DesktopV3NativeArtifactStudio,
   type DesktopV3NativeArtifactSummary,
 } from '../../session-v3/artifact-v3-api'
+import { useDesktopV3OpenArtifactCatalogRefresh } from '../../session-v3/use-artifact-catalog-refresh'
 import { refreshOpenDesktopV3ArtifactCatalogs } from '../../session-v3/artifact-catalog-refresh'
 
 export interface DesktopV3ArtifactV3StudioProps {
@@ -86,13 +87,17 @@ export function DesktopV3ArtifactV3Studio({ artifact, open, onOpenChange, onIter
     }
   }, [open, artifact, load])
 
+  useDesktopV3OpenArtifactCatalogRefresh(open, load)
+
   const selectedRevision = useMemo(() => studio?.revisions.find((revision) => revision.revisionRef === selectedRevisionRef) ?? null, [selectedRevisionRef, studio])
   const historical = Boolean(studio?.artifact.head && selectedRevision && selectedRevision.revisionRef !== studio.artifact.head.revisionRef)
+  const visibleParts = selectedRevision?.parts ?? (historical ? [] : studio?.parts ?? [])
   const filteredParts = useMemo(() => {
     const query = partQuery.trim().toLowerCase()
-    if (!studio || !query) return studio?.parts ?? []
-    return studio.parts.filter((part) => [part.id, part.label, part.description, part.locator.path, ...part.locator.paths].some((value) => value.toLowerCase().includes(query)))
-  }, [partQuery, studio])
+    if (!query) return visibleParts
+    return visibleParts.filter((part) => [part.id, part.label, part.description, part.locator.path, ...part.locator.paths].some((value) => value.toLowerCase().includes(query)))
+  }, [partQuery, visibleParts])
+  useEffect(() => { setSelectedPartIds([]) }, [selectedRevisionRef])
   const diagnostics = useMemo(() => studio ? allDiagnostics(studio) : [], [studio])
 
   useEffect(() => {
@@ -113,7 +118,7 @@ export function DesktopV3ArtifactV3Studio({ artifact, open, onOpenChange, onIter
   }
 
   const iterate = async (partIds: readonly string[]) => {
-    if (!studio || !onIterate) return
+    if (!studio || !onIterate || historical) return
     try {
       setBusy('iterate')
       setError('')
@@ -140,6 +145,7 @@ export function DesktopV3ArtifactV3Studio({ artifact, open, onOpenChange, onIter
         expectedHead: studio.artifact.head,
         expectedTurnRevision: turnRevision,
       })
+      setSelectedRevisionRef(candidate.revision.revisionRef)
       await Promise.all([load(), onRefresh?.(), refreshOpenDesktopV3ArtifactCatalogs()])
     } catch (cause) {
       await load()
@@ -158,11 +164,11 @@ export function DesktopV3ArtifactV3Studio({ artifact, open, onOpenChange, onIter
     </header>
     {loading && !studio ? <div className="grid flex-1 place-items-center"><Loader2 className="size-6 animate-spin text-[var(--app-primary)]" /></div> : studio ? <div className="grid min-h-0 flex-1 grid-cols-1 grid-rows-[minmax(0,1fr)_auto] lg:grid-cols-[280px_minmax(0,1fr)_320px] lg:grid-rows-1" data-artifact-v3-studio>
       <aside className="hidden min-h-0 overflow-y-auto border-r border-[var(--app-border)] bg-[var(--app-surface)] p-3 lg:block" aria-label="Artifact V3 parts and history">
-        <section><div className="flex items-center justify-between"><h2 className="text-xs font-semibold">Parts</h2><span className="text-[9px] text-[var(--app-text-subtle)]">{studio.parts.length}</span></div><label className="relative mt-2 block"><Search className="absolute left-2 top-1/2 size-3 -translate-y-1/2 text-[var(--app-text-subtle)]" /><input value={partQuery} onChange={(event) => setPartQuery(event.target.value)} className="h-8 w-full rounded-md border border-[var(--app-border)] bg-[var(--app-bg)] pl-7 pr-2 text-[10px]" placeholder="Search parts" aria-label="Search Artifact V3 parts" /></label><div className="mt-2 max-h-[42vh] space-y-1 overflow-y-auto" data-artifact-v3-part-navigator>{filteredParts.map((part) => { const selected = selectedPartIds.includes(part.id); return <button key={part.id} type="button" onClick={() => focusPart(part.id)} aria-pressed={selected} className={cn('w-full rounded-lg border px-2.5 py-2 text-left', selected ? 'border-[var(--app-primary)] bg-[var(--app-primary-soft)]' : 'border-[var(--app-border)] hover:bg-[var(--app-surface-hover)]')} data-artifact-v3-part={part.id}><span className="block truncate text-[10px] font-semibold">{part.label}</span><span className="block truncate text-[9px] text-[var(--app-text-subtle)]">{part.locator.kind} · {part.locator.path || part.locator.value || `${part.locator.paths.length} source files`}</span></button>})}</div>{onIterate ? <button type="button" className="mt-2 inline-flex h-8 w-full items-center justify-center gap-1 rounded-md bg-[var(--app-primary)] px-2 text-[10px] font-semibold text-white disabled:opacity-50" disabled={Boolean(busy)} onClick={() => void iterate(selectedPartIds)} data-artifact-v3-iterate><MessageSquarePlus className="size-3" />{selectedPartIds.length ? `Iterate ${selectedPartIds.length} selected` : 'Iterate complete artifact'}</button> : null}</section>
+        <section><div className="flex items-center justify-between"><h2 className="text-xs font-semibold">Parts</h2><span className="text-[9px] text-[var(--app-text-subtle)]">{visibleParts.length}</span></div><label className="relative mt-2 block"><Search className="absolute left-2 top-1/2 size-3 -translate-y-1/2 text-[var(--app-text-subtle)]" /><input value={partQuery} onChange={(event) => setPartQuery(event.target.value)} className="h-8 w-full rounded-md border border-[var(--app-border)] bg-[var(--app-bg)] pl-7 pr-2 text-[10px]" placeholder="Search parts" aria-label="Search Artifact V3 parts" /></label><div className="mt-2 max-h-[42vh] space-y-1 overflow-y-auto" data-artifact-v3-part-navigator>{filteredParts.map((part) => { const selected = selectedPartIds.includes(part.id); return <button key={part.id} type="button" onClick={() => focusPart(part.id)} aria-pressed={selected} className={cn('w-full rounded-lg border px-2.5 py-2 text-left', selected ? 'border-[var(--app-primary)] bg-[var(--app-primary-soft)]' : 'border-[var(--app-border)] hover:bg-[var(--app-surface-hover)]')} data-artifact-v3-part={part.id}><span className="block truncate text-[10px] font-semibold">{part.label}</span><span className="block truncate text-[9px] text-[var(--app-text-subtle)]">{part.locator.kind} · {part.locator.path || part.locator.value || `${part.locator.paths.length} source files`}</span></button>})}</div>{onIterate ? <button type="button" className="mt-2 inline-flex h-8 w-full items-center justify-center gap-1 rounded-md bg-[var(--app-primary)] px-2 text-[10px] font-semibold text-white disabled:opacity-50" disabled={Boolean(busy) || historical} title={historical ? 'Select this candidate as head before iterating its Parts' : undefined} onClick={() => void iterate(selectedPartIds)} data-artifact-v3-iterate><MessageSquarePlus className="size-3" />{selectedPartIds.length ? `Iterate ${selectedPartIds.length} selected` : 'Iterate complete artifact'}</button> : null}</section>
         <section className="mt-5"><h2 className="text-xs font-semibold">Revision history</h2><p className="mt-0.5 text-[9px] text-[var(--app-text-subtle)]">Open an exact prior commit without moving head.</p><ol className="mt-2 space-y-1" data-artifact-v3-revision-history>{studio.revisions.map((revision, index) => { const selected = revision.revisionRef === selectedRevisionRef; const head = revision.revisionRef === studio.artifact.head?.revisionRef; return <li key={revision.revisionRef}><button type="button" data-artifact-v3-revision={revision.commitOid} className={cn('w-full rounded-lg border px-2 py-1.5 text-left', selected ? 'border-[var(--app-primary)] bg-[var(--app-primary-soft)]' : 'border-[var(--app-border)] hover:bg-[var(--app-surface-hover)]')} onClick={() => setSelectedRevisionRef(revision.revisionRef)}><span className="flex justify-between gap-2 text-[9px] font-semibold"><span>{revisionLabel(revision, index)}</span>{head ? <span className="text-[var(--app-success)]">HEAD</span> : null}</span><span className="mt-0.5 block truncate font-mono text-[8px] text-[var(--app-text-subtle)]">{revision.parentCommitOids.length ? `parent ${shortOid(revision.parentCommitOids[0]!)}` : 'root commit'}</span></button></li>})}</ol></section>
       </aside>
       <main className="relative min-h-0 min-w-0 overflow-hidden bg-[var(--app-bg-alt)]" data-artifact-v3-primary-preview>
-        {historical ? <div className="absolute left-1/2 top-3 z-20 -translate-x-1/2 rounded-full border border-[var(--app-warning)] bg-[var(--app-warning-bg)] px-3 py-1 text-[10px] font-semibold text-[var(--app-warning)]">Viewing prior revision · current head unchanged</div> : null}
+        {historical ? <div className="absolute left-1/2 top-3 z-20 -translate-x-1/2 rounded-full border border-[var(--app-warning)] bg-[var(--app-warning-bg)] px-3 py-1 text-[10px] font-semibold text-[var(--app-warning)]">Viewing prior revision · current head unchanged · select head to iterate these Parts</div> : null}
         {previewLoading ? <div className="grid size-full place-items-center"><Loader2 className="size-6 animate-spin text-[var(--app-primary)]" /></div> : previewURL ? <iframe ref={previewRef} title={`${studio.artifact.label} complete revision preview`} src={previewURL} sandbox="allow-scripts" referrerPolicy="no-referrer" className="size-full border-0 bg-white" data-artifact-v3-complete-preview data-artifact-v3-preview data-artifact-v3-preview-revision={selectedRevision?.commitOid} /> : <div className="grid size-full place-items-center p-6 text-center text-sm text-[var(--app-text-muted)]">This exact revision has no ready preview.</div>}
       </main>
       <aside className="min-h-0 overflow-y-auto border-t border-[var(--app-border)] bg-[var(--app-surface)] p-3 lg:border-l lg:border-t-0" aria-label="Artifact V3 turns, diffs, and diagnostics">

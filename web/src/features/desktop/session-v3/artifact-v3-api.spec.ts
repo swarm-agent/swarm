@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import {
+  fetchDesktopV3NativeArtifactStudio,
   desktopV3NativeArtifactCandidateSelectionEndpoint,
   desktopV3NativeArtifactIterationPrompt,
   desktopV3NativeArtifactPreviewEndpoint,
@@ -106,4 +107,33 @@ test('native Artifact V3 iteration prompt treats parts as intent and permits req
   assert.match(prompt, /exact revision reference: revision-ref-2/)
   assert.match(prompt, /shared-file or cross-part changes/)
   assert.doesNotMatch(prompt, /preserve.*byte-for-byte/i)
+})
+
+// Requirement: new turns and candidate-specific Parts remain reviewable without
+// selecting head. Threat: history pagination and head-only Parts hide candidate
+// content. Exercise the production API adapter with bounded wire responses.
+test('Studio retains candidate manifests outside the history page and orders turns oldest first', async () => {
+  const originalFetch = globalThis.fetch
+  const part = (id: string) => ({ id, label: id, locator: { kind: 'selector', path: 'index.html', value: `#${id}` } })
+  const revision = (id: string, partId: string) => ({ revision_ref: `revision-${id}`, commit_oid: id, manifest: { parts: [part(partId)] }, build: { status: 'succeeded' }, validation: { status: 'valid' } })
+  const head = revision('head', 'original')
+  globalThis.fetch = (async (input, init) => {
+    assert.equal(init?.method, 'GET', 'loading candidates must never select head')
+    const payload = String(input).includes('/revisions?')
+      ? { ok: true, revisions: [head], next_cursor: 'opaque-more' }
+      : { ok: true, artifact: { ...summaryWire, head, parts: [part('original')], turns: [
+        { turn_id: 'new', created_at: 20, target_part_ids: ['orbit', 'legend'], candidates: [{ candidate_id: 'new-option', status: 'ready', revision: revision('candidate', 'new-part') }] },
+        { turn_id: 'old', created_at: 10, candidates: [{ candidate_id: 'failed', status: 'failed', diagnostics: [{ code: 'failed', message: 'No revision' }] }] },
+      ] } }
+    return new Response(JSON.stringify(payload), { headers: { 'Content-Type': 'application/json' } })
+  }) as typeof fetch
+  try {
+    const studio = await fetchDesktopV3NativeArtifactStudio('session-1', 'artifact-1')
+    assert.equal(studio.artifact.head?.commitOid, 'head')
+    assert.deepEqual(studio.turns.map((turn) => turn.turnId), ['old', 'new'])
+    assert.deepEqual(studio.turns[1]?.targetPartIds, ['orbit', 'legend'])
+    assert.equal(studio.turns[0]?.candidates[0]?.revision, null)
+    assert.deepEqual(studio.revisions.find((item) => item.commitOid === 'candidate')?.parts?.map((item) => item.id), ['new-part'])
+    assert.deepEqual(studio.parts.map((item) => item.id), ['original'])
+  } finally { globalThis.fetch = originalFetch }
 })

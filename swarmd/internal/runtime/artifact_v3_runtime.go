@@ -145,7 +145,7 @@ func (a *artifactV3RuntimeAdapter) PrepareArtifactV3Turn(ctx context.Context, re
 		if len(grant.TargetPartIDs) != 0 {
 			target = grant.TargetPartIDs[0]
 		}
-		if _, err := a.service.OpenTurn(ctx, pebblestore.ArtifactV3OpenTurnInput{Owner: owner, ArtifactID: artifactID, TurnID: turnID, ExpectedHead: grant.BaseCommitOID, TargetPartID: target}); err != nil {
+		if _, err := a.service.OpenTurn(ctx, pebblestore.ArtifactV3OpenTurnInput{Owner: owner, ArtifactID: artifactID, TurnID: turnID, ExpectedHead: grant.BaseCommitOID, TargetPartID: target, TargetPartIDs: grant.TargetPartIDs}); err != nil {
 			return tool.ArtifactV3AuthorGrant{}, err
 		}
 	}
@@ -685,7 +685,7 @@ func (a *artifactV3RuntimeAdapter) OpenTurn(ctx context.Context, principal api.A
 	if len(request.TargetPartIDs) != 0 {
 		target = request.TargetPartIDs[0]
 	}
-	projection, err := a.service.OpenTurn(ctx, pebblestore.ArtifactV3OpenTurnInput{Owner: pebblestore.ArtifactV3Owner{AccountScopeID: principal.AccountScopeID, UserID: principal.UserID, SessionID: request.SessionID}, ArtifactID: request.ArtifactID, TurnID: turnID, ExpectedHead: baseCommit, TargetPartID: target})
+	projection, err := a.service.OpenTurn(ctx, pebblestore.ArtifactV3OpenTurnInput{Owner: pebblestore.ArtifactV3Owner{AccountScopeID: principal.AccountScopeID, UserID: principal.UserID, SessionID: request.SessionID}, ArtifactID: request.ArtifactID, TurnID: turnID, ExpectedHead: baseCommit, TargetPartID: target, TargetPartIDs: canonicalStrings(request.TargetPartIDs)})
 	if err != nil {
 		return api.ArtifactV3Turn{}, err
 	}
@@ -815,7 +815,7 @@ func (a *artifactV3RuntimeAdapter) turns(ctx context.Context, principal api.Arti
 			}
 			turn := byTurn[parts[0]]
 			if turn == nil {
-				turn = &api.ArtifactV3Turn{TurnID: parts[0], Revision: turnProjection.EventSeq, Status: turnProjection.Status, TargetPartIDs: canonicalStrings([]string{turnProjection.TargetPartID}), BaseCommitOID: turnProjection.BaseCommitOID, SelectedCandidateID: turnProjection.SelectedCandidateID, CreatedAt: turnProjection.CreatedAt, UpdatedAt: turnProjection.UpdatedAt}
+				turn = &api.ArtifactV3Turn{TurnID: parts[0], Revision: turnProjection.EventSeq, Status: turnProjection.Status, TargetPartIDs: canonicalStrings(append(append([]string(nil), turnProjection.TargetPartIDs...), turnProjection.TargetPartID)), BaseCommitOID: turnProjection.BaseCommitOID, SelectedCandidateID: turnProjection.SelectedCandidateID, CreatedAt: turnProjection.CreatedAt, UpdatedAt: turnProjection.UpdatedAt}
 				byTurn[parts[0]] = turn
 			}
 			revision, err := a.revision(ctx, principal, repository, ref.CommitOID)
@@ -865,7 +865,7 @@ func (a *artifactV3RuntimeAdapter) turns(ctx context.Context, principal api.Arti
 			if readErr != nil || !ok {
 				return nil, pebblestore.ErrArtifactV3Integrity
 			}
-			turn = &api.ArtifactV3Turn{TurnID: slot.TurnID, Revision: projection.EventSeq, Status: projection.Status, TargetPartIDs: canonicalStrings([]string{projection.TargetPartID}), BaseCommitOID: projection.BaseCommitOID, SelectedCandidateID: projection.SelectedCandidateID, CreatedAt: projection.CreatedAt, UpdatedAt: projection.UpdatedAt}
+			turn = &api.ArtifactV3Turn{TurnID: slot.TurnID, Revision: projection.EventSeq, Status: projection.Status, TargetPartIDs: canonicalStrings(append(append([]string(nil), projection.TargetPartIDs...), projection.TargetPartID)), BaseCommitOID: projection.BaseCommitOID, SelectedCandidateID: projection.SelectedCandidateID, CreatedAt: projection.CreatedAt, UpdatedAt: projection.UpdatedAt}
 			byTurn[slot.TurnID] = turn
 		}
 		turn.Candidates = append(turn.Candidates, api.ArtifactV3Candidate{CandidateID: slot.CandidateID, Status: slot.Status, Diagnostics: []api.ArtifactV3Diagnostic{{Code: slot.FailureCode, Message: "Designer candidate did not finish; no revision was published"}}})

@@ -30,12 +30,13 @@ type ArtifactV3CreateInput struct {
 }
 
 type ArtifactV3OpenTurnInput struct {
-	Owner        ArtifactV3Owner
-	ArtifactID   string
-	TurnID       string
-	ExpectedHead string
-	TargetPartID string
-	NowUnixMs    int64
+	Owner         ArtifactV3Owner
+	ArtifactID    string
+	TurnID        string
+	ExpectedHead  string
+	TargetPartID  string
+	TargetPartIDs []string
+	NowUnixMs     int64
 }
 
 type ArtifactV3SubmitCandidateInput struct {
@@ -153,7 +154,7 @@ func (s *ArtifactV3Service) OpenTurn(ctx context.Context, input ArtifactV3OpenTu
 	if head != input.ExpectedHead {
 		return ArtifactV3Projection{}, ErrArtifactV3Conflict
 	}
-	turn := ArtifactV3TurnProjection{ArtifactID: input.ArtifactID, TurnID: input.TurnID, OwnerSessionID: input.Owner.SessionID, BaseCommitOID: head, TargetPartID: input.TargetPartID, Status: "open"}
+	turn := ArtifactV3TurnProjection{ArtifactID: input.ArtifactID, TurnID: input.TurnID, OwnerSessionID: input.Owner.SessionID, BaseCommitOID: head, TargetPartID: input.TargetPartID, TargetPartIDs: append([]string(nil), input.TargetPartIDs...), Status: "open"}
 	return s.apply(input.Owner, input.TurnID, V3SessionMutationArtifactV3TurnOpened, ArtifactV3Mutation{Turn: &turn, ExpectedHeadCommitOID: head}, input.NowUnixMs)
 }
 

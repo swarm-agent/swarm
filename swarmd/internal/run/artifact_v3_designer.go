@@ -26,16 +26,25 @@ func taskArtifactV3Reference(grant tool.ArtifactV3AuthorGrant, commit string, se
 
 func artifactV3TargetPartIDs(spec taskLaunchSpec) ([]string, error) {
 	var ids []string
-	target, err := parseTaskSwarmSectionTarget(spec.SourceArguments["section_target"])
+	parseTarget := parseTaskSwarmSectionTarget
+	parseTargets := parseTaskSwarmSectionTargets
+	if spec.ArtifactV3Source != nil {
+		parseTarget = parseTaskArtifactV3TargetHint
+		parseTargets = parseTaskArtifactV3TargetHints
+	}
+	target, err := parseTarget(spec.SourceArguments["section_target"])
 	if err != nil {
 		return nil, err
 	}
 	if target != nil {
 		ids = append(ids, strings.TrimSpace(target.ID))
 	}
-	targets, err := parseTaskSwarmSectionTargets(spec.SourceArguments["section_targets"])
-	if err != nil {
-		return nil, err
+	var targets []*taskSwarmSectionTarget
+	if raw := spec.SourceArguments["section_targets"]; raw != nil {
+		targets, err = parseTargets(raw)
+		if err != nil {
+			return nil, err
+		}
 	}
 	for _, target := range targets {
 		if target != nil {

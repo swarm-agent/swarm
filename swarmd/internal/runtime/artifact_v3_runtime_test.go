@@ -80,7 +80,7 @@ func TestArtifactV3RuntimeAdapterProductionPathAndRecovery(t *testing.T) {
 	principal := tool.ArtifactV3AuthorPrincipal{AccountScopeID: "account", UserID: "user", ProducerSessionID: "child", ProducerRunID: "run"}
 	grant.ProducerSessionID = "child"
 	grant.ProducerRunID = "run"
-	manifest, _ := json.Marshal(pebblestore.ArtifactV3Manifest{SchemaVersion: pebblestore.ArtifactV3ManifestVersion, Entrypoint: "index.html", Parts: []pebblestore.ArtifactV3Part{{ID: "hero", Label: "Hero", Locator: pebblestore.ArtifactV3Locator{Kind: "selector", Path: "index.html", Value: "#hero"}}}})
+	manifest, _ := json.Marshal(pebblestore.ArtifactV3Manifest{SchemaVersion: pebblestore.ArtifactV3ManifestVersion, Entrypoint: "index.html", Parts: []pebblestore.ArtifactV3Part{{ID: "hero", Label: "Hero", Locator: pebblestore.ArtifactV3Locator{Kind: "selector", Path: "index.html", Value: "#hero"}}, {ID: "theme", Label: "Theme", Locator: pebblestore.ArtifactV3Locator{Kind: "file", Path: "styles/theme.css"}}}})
 	if err := author.Create(context.Background(), principal, grant, "swarm-artifact.json", manifest); err != nil {
 		t.Fatal(err)
 	}
@@ -108,7 +108,7 @@ func TestArtifactV3RuntimeAdapterProductionPathAndRecovery(t *testing.T) {
 	if artifact.Head == nil || artifact.Head.CommitOID != finished.Revision.CommitOID || artifact.Head.Build == nil || artifact.Head.Build.Status != "succeeded" || artifact.Head.Validation == nil || artifact.Head.Validation.Status != "valid" {
 		t.Fatalf("artifact=%+v finish=%+v", artifact, finished)
 	}
-	followup := tool.ArtifactV3PrepareTurnRequest{AccountScopeID: "account", UserID: "user", OwnerSessionID: "artifact-v3-runtime", TaskCallID: "followup", ArtifactID: grant.ArtifactID, BaseCommitOID: artifact.Head.CommitOID, ProjectionSeq: artifact.Revision, PolicyRevision: "policy", CandidateIndex: 1, Initial: false, TargetPartIDs: []string{"hero"}, ExpiresAt: time.Now().Add(time.Hour).UnixMilli()}
+	followup := tool.ArtifactV3PrepareTurnRequest{AccountScopeID: "account", UserID: "user", OwnerSessionID: "artifact-v3-runtime", TaskCallID: "followup", ArtifactID: grant.ArtifactID, BaseCommitOID: artifact.Head.CommitOID, ProjectionSeq: artifact.Revision, PolicyRevision: "policy", CandidateIndex: 1, Initial: false, TargetPartIDs: []string{"hero", "theme"}, ExpiresAt: time.Now().Add(time.Hour).UnixMilli()}
 	preparedFollowup, err := adapter.PrepareArtifactV3Turn(context.Background(), followup)
 	if err != nil {
 		t.Fatalf("valid manifest target was rejected: %v", err)
@@ -154,6 +154,9 @@ func TestArtifactV3RuntimeAdapterProductionPathAndRecovery(t *testing.T) {
 	// Threat: Git-only enumeration silently erases failed siblings from review.
 	var visibleGood, visibleBad bool
 	for _, turn := range beforeSelect.Turns {
+		if turn.TurnID == preparedFollowup.TurnID && !reflect.DeepEqual(turn.TargetPartIDs, []string{"hero", "theme"}) {
+			t.Fatalf("multi-Part intent lost in durable viewer turn: %+v", turn)
+		}
 		for _, candidate := range turn.Candidates {
 			if candidate.CandidateID == good.CandidateID {
 				visibleGood = candidate.Status == "ready" && candidate.Revision != nil && candidate.Revision.CommitOID == good.CommitOID

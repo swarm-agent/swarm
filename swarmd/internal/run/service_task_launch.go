@@ -3589,6 +3589,9 @@ func parseApprovedTaskLaunchManifest(approved string, launchSpecs []taskLaunchSp
 		if !reflect.DeepEqual(row.AnimationProfile, launchSpecs[i].AnimationProfile) {
 			return taskLaunchManifest{}, fmt.Errorf("approved task manifest launch %d animation profile mismatch", i)
 		}
+		if !reflect.DeepEqual(row.ArtifactV3Source, launchSpecs[i].ArtifactV3Source) {
+			return taskLaunchManifest{}, fmt.Errorf("approved task manifest launch %d native source artifact mismatch", i)
+		}
 		if !equalTaskImageSourceArtifact(row.SourceArtifact, launchSpecs[i].SourceArtifact) {
 			return taskLaunchManifest{}, fmt.Errorf("approved task manifest launch %d source artifact mismatch", i)
 		}
@@ -3724,6 +3727,18 @@ func (s *Service) buildTaskLaunchPermissionPayload(sessionID, sessionMode string
 	}
 	if err := validatePlanSidechatTaskTargets(parentSession, parsed.Launches); err != nil {
 		return taskLaunchManifest{}, err
+	}
+	for _, launch := range parsed.Launches {
+		if agentruntime.IsDesignerAgentName(launch.RequestedSubagentType) && launch.OutputMode == taskOutputModeManaged {
+			messages, err := s.loadDelegationTranscriptMessages(sessionID)
+			if err != nil {
+				return taskLaunchManifest{}, err
+			}
+			if err := bindTaskNativeArtifactSelection(&parsed, parsed.Launches, latestTaskArtifactUseSelection(messages)); err != nil {
+				return taskLaunchManifest{}, err
+			}
+			break
+		}
 	}
 	if parsed.SourceArtifact != nil {
 		if s == nil || s.tools == nil || s.tools.ArtifactAuthority() == nil {

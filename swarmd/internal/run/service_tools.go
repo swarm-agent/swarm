@@ -4457,7 +4457,10 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 
 	var sourceArtifact *pebblestore.SessionArtifactSelectionReference
 	boundSelection := latestTaskArtifactUseSelection(parentMessages)
-	if boundSelection != nil {
+	if err := bindTaskNativeArtifactSelection(&parsed, launchSpecs, boundSelection); err != nil {
+		return "", err
+	}
+	if boundSelection != nil && boundSelection.ArtifactID == "" && parsed.ArtifactV3Source == nil {
 		boundSource := &pebblestore.SessionArtifactSelectionReference{SessionID: boundSelection.SessionID, CollectionID: boundSelection.CollectionID, VariantID: boundSelection.VariantID, EventSeq: boundSelection.EventSeq}
 		if parsed.SourceArtifact != nil && !equalTaskImageSourceArtifact(parsed.SourceArtifact, boundSource) {
 			return "", errors.New("task source_artifact does not match the authenticated Artifact Studio selection")
@@ -6173,9 +6176,15 @@ func latestTaskArtifactUseSelection(messages []pebblestore.MessageSnapshot) *peb
 					partCopy := *selection.Part
 					copy.Part = &partCopy
 				}
+				if selection.TargetPartIDs != nil {
+					ids := append([]string(nil), (*selection.TargetPartIDs)...)
+					copy.TargetPartIDs = &ids
+				}
 				return &copy
 			}
 		}
+		// An older attachment is context, not authority for a new request.
+		return nil
 	}
 	return nil
 }
