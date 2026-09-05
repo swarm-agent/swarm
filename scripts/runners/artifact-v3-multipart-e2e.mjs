@@ -261,6 +261,14 @@ function delegatedDesigners(bootstrap, parentID) {
     text(session?.metadata?.requested_subagent).toLowerCase() === 'designer')
 }
 
+function decodedToolOutput(message) {
+  const envelope = JSON.parse(message.content)
+  // Child run.tool-history.v2 completed_output is a display excerpt (280 chars),
+  // whereas output retains the actual JSON. Never parse the excerpt as evidence.
+  const output = envelope.output ?? envelope.completed_output
+  return typeof output === 'string' ? JSON.parse(output) : (output ?? envelope)
+}
+
 // Requirement: inspect actual child tool output and parent task handoffs, not
 // just the final catalog. V3 Git IDs must never be disguised as V1 variants.
 async function verifyNativeDesignerHandoffs(sessionID, children, artifactID) {
@@ -270,7 +278,7 @@ async function verifyNativeDesignerHandoffs(sessionID, children, artifactID) {
   for (const message of messages) {
     if (text(message.role) !== 'tool') continue
     let body
-    try { body = JSON.parse(message.content) } catch { continue }
+    try { body = decodedToolOutput(message) } catch { continue }
     if (body?.tool !== 'task') continue
     for (const reference of body.artifact_references || []) {
       assert(!forbiddenLegacyWrite(reference), 'Designer task handoff exposes legacy identity')
@@ -284,7 +292,7 @@ async function verifyNativeDesignerHandoffs(sessionID, children, artifactID) {
     const snapshot = await hydrate(child.id)
     const childMessages = snapshot.messages_by_session?.[child.id] || []
     const outputs = childMessages.filter((message) => text(message.role) === 'tool').flatMap((message) => {
-      try { return [JSON.parse(message.content)] } catch { return [] }
+      try { return [decodedToolOutput(message)] } catch { return [] }
     })
     assert(outputs.some((body) => body.tool === 'artifact_v3_author' && body.action === 'inspect_context'), 'Designer did not inspect its native author grant')
     assert(outputs.some((body) => body.tool === 'artifact_v3_author' && body.action === 'finish_turn'), 'Designer did not finish its native whole-project turn')
@@ -522,7 +530,7 @@ function visibleChangeRequest() {
   }
   return [
     'Visible change request from the user: change the Pricing part to a vivid magenta treatment and add the exact readable label TARGETED PRICING TURN inside #pricing.',
-    'Keep Hero and Footer present, readable, and animated. Keep all three stable part IDs and their data-motion-marker animations working.',
+    'Keep Hero and Footer present, readable, and animated. Keep all three stable part IDs and their data-motion-marker animations working. Pixel review found Pricing and Footer motion markers crossing text; place those markers in dedicated reserved space that never intersects glyphs at any animation phase. Preserve the complete responsive fit at 1440x900 and 840x844.',
     'Call task exactly once in regular mode with exactly one managed Designer launch, using artifact_v3_source parsed from the exact Artifact V3 reference and current head above, target_part_ids=["pricing"], section_target id=pricing kind=selector label=Pricing, output_mode=managed, and animation_profile motion_ui.',
     'Create exactly one complete candidate from that exact prior head. Build, preview, repair, and finish the whole project. Do not select the candidate or move head, and do not use any V1/V2 writer.',
   ].join(' ')
@@ -547,6 +555,18 @@ async function openDesktopStudio(sessionID, artifactID) {
     await sleep(100)
   }
   assert(previewText.trim().length >= 8, 'Desktop Artifact Studio preview iframe did not render substantive content')
+  // DOM text alone may exist before styles and a presented frame. Wait for the
+  // exact iframe load and two paints, bounded independently of remote fonts.
+  await previewFrame.locator('body').evaluate(async () => {
+    if (document.readyState !== 'complete') await Promise.race([
+      new Promise((resolve) => window.addEventListener('load', resolve, { once: true })),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('preview load timeout')), 10000)),
+    ])
+    await Promise.race([
+      new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('preview paint timeout')), 3000)),
+    ])
+  }, undefined, { timeout: 15000 })
   return studio
 }
 
@@ -1182,6 +1202,12 @@ async function runLive() {
   assert(animatedFollowupStage || ['basic-html', 'targeted-part', 'selected-continuation', 'alternate-choice', 'alternate-choice-resume', 'animated-parts', 'video-conversion', 'designer-root', 'designer-targeted', 'full'].includes(stage), '--stage must be basic-html, targeted-part, selected-continuation, alternate-choice, alternate-choice-resume, animated-parts, video-conversion, designer-root, designer-targeted, or full')
   assert(Number.isFinite(timeoutMs) && timeoutMs >= 300000 && timeoutMs <= 600000, '--timeout-ms must be between 300000 and 600000')
   await auth()
+  // A bounded/direct remote policy can auto-launch without ever creating a
+  // pending permission. Check before any new provider turn, not just while polling.
+  if (!noDesignerStage && !(designerRootStage && sessionOverride && initialRunOverride)) {
+    const policy = (await api('GET', '/v1/permissions/subagents', undefined, 'inspect Designer approval policy')).body?.subagents
+    assert(policy?.mode === 'ask', 'operator_permission_required: remote Designer trials require subagent mode=ask; change it through the testbench permission settings before new authoring. The runner does not mutate access policy.')
+  }
   const assignment = await configureModels()
   const selected = await topology()
   let session
@@ -1276,7 +1302,7 @@ async function runLive() {
     assert(artifactEvents.length >= 2 && !forbiddenLegacyWrite(artifactEvents), 'basic HTML durable replay lacks native Artifact V3 genesis events or contains legacy identity')
     const records = await page.evaluate(() => window.__artifactV3Records || [])
     const liveEvents = records.filter((record) => record.kind === 'message' && record.session_id === session.sessionID && record.event_type.startsWith('artifact.v3.'))
-    assert(liveEvents.some((record) => record.endpoint_cursor_present), 'Desktop observed no cursor-bearing Artifact V3 event for basic HTML')
+    assert(liveEvents.some((record) => record.endpoint_cursor_present) || (sessionOverride && records.some((record) => record.frame_kind === 'replay.complete' && record.session_id === session.sessionID && record.endpoint_cursor_present)), 'Desktop observed no cursor-bearing Artifact V3 event or resumed replay completion')
     result.realtime = { recorded: records.length, artifact_events: liveEvents.length, replay_events: artifactEvents.length }
     gate('visible-pixels', 'PASS', animationStage ? 'two animated root frames captured; independent pixel review required' : 'root preview captured; independent pixel review required')
     if (animationStage) gate('three-animated-parts', 'PASS', 'all Part timelines and visible motion markers advanced')
