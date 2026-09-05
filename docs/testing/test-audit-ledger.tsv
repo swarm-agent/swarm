@@ -1,5 +1,6 @@
 # Swarm repository test audit ledger v1
 #
+# Reinventory note 2026-09-05: canonical Artifact V3 repair changes affect swarmd/internal/store/pebble/artifact_git_v3_repository_test.go, swarmd/internal/runtime/artifact_v3_runtime_test.go, swarmd/internal/tool/runtime_artifact_v3_author_test.go, and swarmd/internal/agent/system_agent_registry_test.go. The integration audit adds TestArtifactV3RuntimeThreePartManifestRepair: real author/runtime/Git/Pebble adapters prove safe version diagnostics, exact manifest edit, canonical three-part validation, selector forwarding, initial no-publication and follow-up schema/renderer-failure no-head-change. Capture is faked and is not visual evidence. Existing source digests/verdicts for these files are stale; maintained source inventory and independent P1/P2 review remain required, with no curated-runner addition. No tests or reinventory commands were executed by the shell-less audit worker.
 # PURPOSE
 # This is the single committed authority for deciding which tracked tests and
 # test-like programs Swarm should keep, change, delete, repair, quarantine, or
