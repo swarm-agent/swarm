@@ -2536,12 +2536,8 @@ func (r *Runtime) executeSearch(parent context.Context, scope WorkspaceScope, ar
 		}
 
 		contentResults, contentErrors := searchHelperContentResults(helperResp, root, queries, targetInclude, rootResultLimit)
-		fileResults, fileErrors := searchHelperFileResults(helperResp.FileResults, root, queries, targetInclude, rootResultLimit)
-		combinedResults = append(combinedResults, mergeSearchHelperResults(contentResults, fileResults)...)
-		if len(fileResults) == 0 || !searchErrorsAreFallbackMisses(contentErrors, fileResults) {
-			rootErrors = append(rootErrors, contentErrors...)
-		}
-		rootErrors = append(rootErrors, fileErrors...)
+		combinedResults = append(combinedResults, contentResults...)
+		rootErrors = append(rootErrors, contentErrors...)
 	}
 	combinedResults = rewriteSearchResultsForDisplay(scope.PrimaryPath, searchRoots, searchTargetsContainFile(searchTargets), combinedResults)
 	if len(combinedResults) == 0 {
@@ -2835,45 +2831,6 @@ func formatSearchContentHelperError(queries []string, message string) error {
 		return fmt.Errorf("query %q: %s", firstSearchQuery(queries), message)
 	}
 	return fmt.Errorf("multi-grep %q: %s", strings.Join(queries, " | "), message)
-}
-
-func searchHelperFileResults(helperResults []searchipc.SearchQueryResult, searchRoot string, queries []string, include string, maxResults int) ([]searchQueryExecution, []error) {
-	if len(helperResults) == 0 {
-		return nil, nil
-	}
-	allowedQueries := make(map[string]string, len(queries))
-	for _, query := range queries {
-		query = strings.TrimSpace(query)
-		if query != "" {
-			allowedQueries[strings.ToLower(query)] = query
-		}
-	}
-	results := make([]searchQueryExecution, 0, len(helperResults))
-	errs := make([]error, 0)
-	for _, helperResult := range helperResults {
-		query := strings.TrimSpace(helperResult.Query)
-		if canonical, ok := allowedQueries[strings.ToLower(query)]; ok {
-			query = canonical
-		}
-		if query == "" {
-			continue
-		}
-		result := searchQueryExecution{Query: query, Mode: "files"}
-		if strings.TrimSpace(helperResult.Error) != "" {
-			err := fmt.Errorf("query %q: %s", query, strings.TrimSpace(helperResult.Error))
-			result.Error = strings.TrimSpace(helperResult.Error)
-			results = append(results, result)
-			errs = append(errs, err)
-			continue
-		}
-		rows, totals, truncated := collectSearchFileRows(query, searchRoot, include, helperResult.Items, helperResult.Metrics, maxResults)
-		result.FileRows = rows
-		result.Totals = totals
-		result.ReturnedCount = len(rows)
-		result.Truncated = truncated
-		results = append(results, result)
-	}
-	return results, errs
 }
 
 func findHelperResults(resp searchipc.Response, searchRoot string, queries []string, include string, maxResults int, mode string) ([]findQueryExecution, []error) {
@@ -3451,83 +3408,6 @@ func collectSearchContentRows(query, searchRoot, include string, matches []fff.G
 		NextFileOffset:     int(metrics.NextFileOffset),
 		RegexFallbackError: strings.TrimSpace(metrics.RegexFallbackError),
 	}, truncated, false, safetySource.String()
-}
-
-func searchErrorsAreFallbackMisses(contentErrors []error, fileResults []searchQueryExecution) bool {
-	if len(contentErrors) == 0 || len(fileResults) == 0 {
-		return false
-	}
-	for _, result := range fileResults {
-		if len(result.FileRows) > 0 {
-			return true
-		}
-	}
-	return false
-}
-
-func mergeSearchHelperResults(contentResults, fileResults []searchQueryExecution) []searchQueryExecution {
-	if len(fileResults) == 0 {
-		return contentResults
-	}
-	if len(contentResults) == 0 {
-		return fileResults
-	}
-	byQuery := make(map[string]int, len(contentResults))
-	merged := make([]searchQueryExecution, 0, len(contentResults)+len(fileResults))
-	for _, result := range contentResults {
-		key := strings.ToLower(strings.TrimSpace(result.Query))
-		if key != "" {
-			byQuery[key] = len(merged)
-		}
-		merged = append(merged, result)
-	}
-	for _, fileResult := range fileResults {
-		key := strings.ToLower(strings.TrimSpace(fileResult.Query))
-		idx, ok := byQuery[key]
-		if !ok {
-			merged = append(merged, fileResult)
-			continue
-		}
-		contentResult := merged[idx]
-		if len(contentResult.ContentRows) == 0 {
-			fileResult.Error = joinSearchText(contentResult.Error, fileResult.Error)
-			fileResult.Truncated = fileResult.Truncated || contentResult.Truncated
-			fileResult.TimedOut = fileResult.TimedOut || contentResult.TimedOut
-			merged[idx] = fileResult
-		}
-	}
-	return merged
-}
-
-func collectSearchFileRows(query, searchRoot, include string, items []fff.SearchItem, metrics fff.SearchMetrics, maxResults int) ([]searchFileRow, searchAggregateTotals, bool) {
-	files := make([]searchFileRow, 0, minInt(len(items), maxResults))
-	truncated := false
-	for _, item := range items {
-		pathValue := filepath.Clean(item.Path)
-		relPath := normalizeSearchRelativePath(searchRoot, pathValue, item.RelativePath)
-		if !matchesIncludeGlob(include, relPath) {
-			continue
-		}
-		files = append(files, searchFileRow{
-			Query:        query,
-			Path:         pathValue,
-			RelativePath: relPath,
-			FileName:     strings.TrimSpace(item.FileName),
-			GitStatus:    strings.TrimSpace(item.GitStatus),
-			Score:        item.Score,
-		})
-		if len(files) >= maxResults {
-			truncated = true
-			break
-		}
-	}
-	if metrics.TotalMatched > uint32(len(files)) {
-		truncated = true
-	}
-	return files, searchAggregateTotals{
-		TotalMatched: int(metrics.TotalMatched),
-		TotalFiles:   int(metrics.TotalFiles),
-	}, truncated
 }
 
 func collectFindFileRows(query, searchRoot, include string, items []fff.SearchItem, metrics fff.SearchMetrics, maxResults int, kind string) ([]findRow, searchAggregateTotals, bool) {
