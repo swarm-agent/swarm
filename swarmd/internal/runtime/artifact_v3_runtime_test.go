@@ -428,7 +428,7 @@ func TestArtifactV3RuntimeBuildRejectsManifestThatFinishWouldReject(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if build.Status != "failed" || len(build.Diagnostics) != 1 || build.Diagnostics[0].Code != "manifest_invalid" {
+	if build.Status != "failed" || len(build.Diagnostics) != 1 || build.Diagnostics[0].Code != "manifest_json_invalid" {
 		t.Fatalf("build=%+v", build)
 	}
 	if !strings.Contains(build.Diagnostics[0].Message, "label") || !strings.Contains(build.Diagnostics[0].Message, "locator") {
@@ -635,5 +635,31 @@ func TestArtifactV3TemporalRendererUsesExactDeclaredEntry(t *testing.T) {
 	}
 	if !reflect.DeepEqual(files, before) {
 		t.Fatal("render request mutated source")
+	}
+}
+
+// Requirement: Build must relay canonical schema repair diagnostics without
+// caching successful output or rewriting rejected source. The adapter boundary
+// is the narrowest layer proving author-visible propagation, including missing
+// and type-invalid versions, without browser or provider dependencies.
+func TestArtifactV3RuntimeBuildPropagatesManifestVersionDiagnostic(t *testing.T) {
+	for _, field := range []string{`"schema_version":"private-marker",`, ``, `"schema_version":3,`, `"schema_version":null,`} {
+		adapter := newArtifactV3RuntimeAdapter(nil, nil, t.TempDir(), t.TempDir(), pebblestore.ArtifactV3Limits{}, artifactV3RuntimeRenderer{})
+		body := `{` + field + `"entrypoint":"index.html","parts":[]}`
+		project := map[string][]byte{
+			pebblestore.ArtifactV3ManifestFilename: []byte(body),
+			"index.html":                         []byte(`<!doctype html><html><body>Hero</body></html>`),
+		}
+		build, err := adapter.Build(context.Background(), tool.ArtifactV3BuildRequest{ArtifactID: "artifact", TurnID: "turn", Attempt: 1, Project: project})
+		if err != nil || build.Status != "failed" || len(build.Diagnostics) != 1 {
+			t.Fatalf("build=%+v err=%v", build, err)
+		}
+		diagnostic := build.Diagnostics[0]
+		if diagnostic.Code != "manifest_schema_version_invalid" || diagnostic.Stage != "build" || diagnostic.Path != pebblestore.ArtifactV3ManifestFilename || !strings.Contains(diagnostic.Message, pebblestore.ArtifactV3ManifestVersion) || strings.Contains(diagnostic.Message, "private-marker") || len(diagnostic.Message) > 512 {
+			t.Fatalf("incorrect or unsafe diagnostic: %+v", diagnostic)
+		}
+		if build.ID != "" || len(build.OutputFiles) != 0 || len(adapter.builds) != 0 || string(project[pebblestore.ArtifactV3ManifestFilename]) != body {
+			t.Fatal("failed build cached output or modified source")
+		}
 	}
 }
