@@ -1268,8 +1268,8 @@ func validateVideoPlanIntent(intent string, plan VideoPlanProposal) error {
 		return nil
 	}
 	if intent == VideoEditProposalIntentArtifactV3Convert {
-		if plan.Kind != VideoPlanKindInitial {
-			return errors.New("artifact_v3_conversion intent requires an initial video plan")
+		if plan.Kind != VideoPlanKindInitial && plan.Kind != VideoPlanKindRevision {
+			return errors.New("artifact_v3_conversion intent requires an initial or stable-part revision plan")
 		}
 		for _, part := range plan.Parts {
 			if part.ArtifactV3Source == nil || part.ArtifactV3Still == nil || part.ArtifactV3Visual == nil || part.Visual != nil || part.ArtifactV2Source != nil || part.ArtifactV2Still != nil || part.ArtifactV2Visual != nil {
@@ -1280,6 +1280,12 @@ func validateVideoPlanIntent(intent string, plan VideoPlanProposal) error {
 			}
 			if err := validateArtifactV3VideoReference(*part.ArtifactV3Still, "image/png", true); err != nil {
 				return fmt.Errorf("artifact_v3_conversion part %q still invalid: %w", part.ID, err)
+			}
+			if part.ProductionState == VideoProductionStatePending {
+				if part.CaptureStateID == "" || part.CaptureStateID != part.ArtifactV3Source.CaptureStateID || len(part.FilmingRequirements) == 0 || *part.ArtifactV3Visual != *part.ArtifactV3Still || part.VisualMediaType != "image/png" || part.AnimationCandidates != nil || !sameArtifactV3Source(*part.ArtifactV3Source, *part.ArtifactV3Still) || part.DurationMs != part.ArtifactV3Source.DurationMs || part.DurationMs != part.ArtifactV3Still.DurationMs {
+					return fmt.Errorf("artifact_v3_conversion part %q has invalid pending state still lineage", part.ID)
+				}
+				continue
 			}
 			if err := validateArtifactV3VideoReference(*part.ArtifactV3Visual, "video/mp4", true); err != nil {
 				return fmt.Errorf("artifact_v3_conversion part %q derivative invalid: %w", part.ID, err)
@@ -1778,8 +1784,12 @@ func mergeStoryboardReplacement(existing, replacement VideoPlanPart) VideoPlanPa
 	replacement.StoryboardStill = existing.StoryboardStill
 	replacement.ArtifactV2Source = existing.ArtifactV2Source
 	replacement.ArtifactV2Still = existing.ArtifactV2Still
-	replacement.ArtifactV3Source = existing.ArtifactV3Source
-	replacement.ArtifactV3Still = existing.ArtifactV3Still
+	// A native motion revision carries its own exact source. Filming replacements
+	// without a native source retain the original storyboard provenance.
+	if replacement.ArtifactV3Source == nil {
+		replacement.ArtifactV3Source = existing.ArtifactV3Source
+		replacement.ArtifactV3Still = existing.ArtifactV3Still
+	}
 	replacement.CaptureStateID = existing.CaptureStateID
 	replacement.FilmingRequirements = append([]string(nil), existing.FilmingRequirements...)
 	if replacement.Composition == nil {

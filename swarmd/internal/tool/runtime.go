@@ -580,6 +580,7 @@ func (r *Runtime) SetArtifactV2VideoConversionService(service *artifactv2.VideoC
 type ArtifactV3VideoConversionInput struct {
 	RequestID, VideoSessionID, ProjectID, BaseRevisionID string
 	ArtifactSessionID, ArtifactID, RevisionRef           string
+	PartID, CaptureStateID                               string
 	Title, Rationale                                     string
 }
 

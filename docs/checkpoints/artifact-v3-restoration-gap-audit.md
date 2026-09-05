@@ -1,6 +1,6 @@
 # Artifact V3 restoration gap audit
 
-Status: **HISTORICAL AUDIT — current evidence and remaining gates are maintained in `artifact-v3-launch-closure.md`. Native conversion/decoded inspection has run; animated iteration has fresh evidence, but final responsive visual review and later launch gates remain incomplete.**
+Status: **HISTORICAL AUDIT — current evidence and remaining gates are maintained in `artifact-v3-launch-closure.md`. Native conversion/decoded inspection has run; the fresh L2 animated revision journey and responsive pixel review are complete. Later launch gates remain incomplete.**
 
 Audit date: 2026-09-04
 
@@ -8,7 +8,7 @@ Scope: ordinary Swarm creation, regular managed Designer creation and iteration,
 
 ## Executive verdict
 
-Artifact V3 now has passing isolated no-Designer evidence through static HTML creation, stable Parts, targeted exact-base candidates, explicit selection and continued turns, atomic alternate-candidate creation, and animated Parts. These passes use ordinary primary Swarm with account-backed Codex GPT-5.6 Luna at medium reasoning, native Git/Pebble/API/realtime/Desktop identity, and inspected rendered pixels. The deterministic server path now accepts one exact selected V3 Git head, creates digest-bound PNG/MP4 derivatives, builds one pending Video Studio proposal, survives restart, and materializes the exact MP4 through the native renderer authority. This paragraph describes the inherited restoration assessment, not current release acceptance. The subsequent L1 proof decoded native media but found layout defects; the fresh L2 journey preserves exact animated revision ancestry and alternatives, with final responsive visual review still pending after a provider media-count interruption. Designer and later launch gates are not proved by these results.
+Artifact V3 now has passing isolated no-Designer evidence through static HTML creation, stable Parts, targeted exact-base candidates, explicit selection and continued turns, atomic alternate-candidate creation, and animated Parts. These passes use ordinary primary Swarm with account-backed Codex GPT-5.6 Luna at medium reasoning, native Git/Pebble/API/realtime/Desktop identity, and inspected rendered pixels. The deterministic server path now accepts one exact selected V3 Git head, creates digest-bound PNG/MP4 derivatives, builds one pending Video Studio proposal, survives restart, and materializes the exact MP4 through the native renderer authority. This paragraph describes the inherited restoration assessment, not current release acceptance. The subsequent L1 proof decoded native media but found layout defects; the fresh L2 journey preserves exact animated revision ancestry and alternatives. Fresh-context inspection of the retained repair frames and Desktop pixels resolved the media-count interruption and passed the sampled responsive visual review without regeneration or head movement. Designer and later launch gates are not proved by these results.
 
 The restoration order is mandatory and now starts below the Designer boundary:
 

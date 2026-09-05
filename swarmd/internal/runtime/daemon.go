@@ -608,6 +608,13 @@ func New(cfg config.Config) (*Daemon, error) {
 		_ = lk.Release()
 		return nil, fmt.Errorf("recover Artifact V3 repositories: %w", err)
 	}
+	if err := migrateArtifactV3VideoReceipts(context.Background(), artifactV3Runtime, artifactV3Derivatives); err != nil {
+		bgCancel()
+		_ = secretStore.Close()
+		_ = store.Close()
+		_ = lk.Release()
+		return nil, fmt.Errorf("migrate Artifact V3 video receipts: %w", err)
+	}
 	runSvc.SetSessionDeployCanonicalizer(apiServer.CanonicalizeSessionDeploy)
 	runSvc.SetSessionDeployEnqueuer(apiServer.EnqueueSessionDeployRun)
 	runSvc.SetAITaskBinder(todoSvc)

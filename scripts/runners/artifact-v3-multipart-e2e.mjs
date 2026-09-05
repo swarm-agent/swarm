@@ -935,6 +935,88 @@ function assertValidMP4(bytes, label) {
   assert(bytes.length >= 12 && bytes.subarray(4, 8).toString('ascii') === 'ftyp', `${label} is not an MP4/ISO BMFF container`)
 }
 
+// Requirement: native derivatives must decode in the browser and reach the real
+// Video Studio canvas. Headers and proposal metadata alone cannot prove playback.
+// This read/preview proof never accepts a proposal or starts a final render.
+async function inspectNativeVideoPlayback(videoSessionID, proposal, fallback, mp4) {
+  const mediaPath = (ref) => `/v3/sessions/${encodeURIComponent(ref.session_id)}/video/artifact-v3/media?reference=${encodeURIComponent(JSON.stringify(ref))}`
+  for (const [label, ref, limit] of [['fallback', fallback, 16 * 1024 * 1024], ['mp4', mp4, 64 * 1024 * 1024]]) {
+    const response = await context.request.get(`${desktopURL}${mediaPath(ref)}`, { timeout: 30000 })
+    assert(response.ok(), `native ${label} media read failed: HTTP ${response.status()}`)
+    assert(Number(response.headers()['content-length']) > 0 && Number(response.headers()['content-length']) <= limit, `native ${label} media exceeded bounded size`)
+    const body = await response.body()
+    assert(body.length <= limit && sha256(body) === ref.digest_sha256, `native ${label} media bytes do not match exact reference`)
+    await fs.writeFile(path.join(evidenceDir, `native-${label}.${label === 'mp4' ? 'mp4' : 'png'}`), body)
+    await response.dispose()
+  }
+  const decoder = await context.newPage()
+  const decoded = []
+  try {
+    await decoder.goto(`${desktopURL}/app`, { waitUntil: 'domcontentloaded', timeout: 30000 })
+    await decoder.setContent('<video muted playsinline preload="auto"></video><canvas></canvas>')
+    const metadata = await decoder.evaluate(async (src) => {
+      const video = document.querySelector('video')
+      await new Promise((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error('native MP4 decode timed out')), 15000)
+        video.onloadeddata = () => { clearTimeout(timer); resolve() }
+        video.onerror = () => { clearTimeout(timer); reject(new Error('native MP4 decode failed')) }
+        video.src = src
+      })
+      const canvas = document.querySelector('canvas')
+      canvas.width = video.videoWidth; canvas.height = video.videoHeight
+      return { width: video.videoWidth, height: video.videoHeight, duration: video.duration }
+    }, `${desktopURL}${mediaPath(mp4)}`)
+    assert(metadata.width === 1920 && metadata.height === 1080 && Math.abs(metadata.duration * 1000 - mp4.duration_ms) <= 1000 / mp4.fps + 1, 'decoded native MP4 dimensions/duration mismatch')
+    for (const timeMs of [0, Math.floor(mp4.duration_ms / 2), Math.max(0, mp4.duration_ms - Math.ceil(1000 / mp4.fps))]) {
+      await decoder.evaluate(async (time) => {
+        const video = document.querySelector('video')
+        if (Math.abs(video.currentTime - time / 1000) > 0.0001) await new Promise((resolve, reject) => {
+          const timer = setTimeout(() => reject(new Error('native MP4 seek timed out')), 10000)
+          video.onseeked = () => { clearTimeout(timer); resolve() }
+          video.currentTime = time / 1000
+        })
+        document.querySelector('canvas').getContext('2d').drawImage(video, 0, 0)
+      }, timeMs)
+      const filename = `native-decoded-${timeMs}.png`
+      const bytes = await decoder.locator('canvas').screenshot({ path: path.join(evidenceDir, filename), timeout: 10000 })
+      decoded.push({ time_ms: timeMs, sha256: sha256(bytes), filename })
+      result.screenshots.push(filename)
+    }
+    assert(new Set(decoded.map((frame) => frame.sha256)).size > 1, 'decoded native motion frames are identical')
+    result.video.decoded = { ...metadata, frames: decoded }
+  } finally { await decoder.close() }
+
+  const workspaceSlug = result.ids.desktop_path.split('/').filter(Boolean)[0]
+  assert(workspaceSlug, 'native Video Studio route lacks workspace identity')
+  await page.goto(`${desktopURL}/${workspaceSlug}/studio/${encodeURIComponent(videoSessionID)}`, { waitUntil: 'domcontentloaded', timeout: 60000 })
+  const projects = page.getByLabel('Selected video project', { exact: true })
+  if (await projects.isVisible().catch(() => false)) await projects.selectOption(proposal.project_id)
+  const canvas = page.locator('[data-video-studio-player-viewport] canvas').first()
+  await canvas.waitFor({ state: 'visible', timeout: 30000 })
+  await page.getByRole('status', { name: 'Pending video confirmation', exact: true }).waitFor({ state: 'visible', timeout: 30000 })
+  assert(await page.locator('[data-video-studio-live-animation]').count() === 0, 'native MP4 incorrectly routed through legacy HTML iframe')
+  await page.waitForFunction(() => {
+    const canvas = document.querySelector('[data-video-studio-player-viewport] canvas')
+    if (!canvas) return false
+    const data = canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height).data
+    let lit = 0
+    for (let i = 0; i < data.length; i += 400) if (data[i] + data[i + 1] + data[i + 2] > 60) lit++
+    return lit > 100
+  }, null, { timeout: 30000 })
+  const first = await canvas.screenshot({ path: path.join(evidenceDir, 'native-studio-before.png') })
+  await page.getByRole('button', { name: 'Play', exact: true }).click()
+  await sleep(Math.min(1100, mp4.duration_ms / 2))
+  const second = await canvas.screenshot({ path: path.join(evidenceDir, 'native-studio-playing.png') })
+  await page.getByRole('button', { name: 'Pause', exact: true }).click()
+  assert(sha256(first) !== sha256(second), 'real Video Studio canvas did not advance decoded native frames')
+  await page.screenshot({ path: path.join(evidenceDir, 'native-video-studio.png') })
+  result.screenshots.push('native-studio-before.png', 'native-studio-playing.png', 'native-video-studio.png')
+  const current = await api('GET', `/v3/sessions/${encodeURIComponent(videoSessionID)}/video/projects/${encodeURIComponent(proposal.project_id)}`, undefined, 'verify preview preserved accepted base')
+  assert(current.body?.project?.confirmed_revision_id === proposal.base_revision_id && current.body?.project?.current_revision_id === proposal.working_revision_id, 'preview changed the confirmed base or pending working revision')
+  gate('video-browser-decode', 'PASS', 'exact PNG/MP4 digests and three decoded motion samples; human pixel review still required')
+  gate('video-studio-playback', 'PASS', 'real pending canvas visibly advances; accepted base unchanged')
+}
+
 async function runVideoConversion(sessionID, selected, assignment) {
   const items = await catalog(sessionID)
   const artifact = artifactOverride ? items.find((item) => text(item?.id) === artifactOverride) : items.length === 1 ? items[0] : null
@@ -946,7 +1028,7 @@ async function runVideoConversion(sessionID, selected, assignment) {
   result.ids.artifact_id = artifact.id
   result.revisions.video_source = head
   result.animations.video_source = await screenshotPreview(sessionID, artifact.id, head)
-  gate('video-source-pixels', 'PASS', 'three animated Parts inspected before conversion')
+  gate('video-source-capture', 'PASS', 'three animated Parts captured before conversion; pixel judgment is a separate review')
   let videoSession
   if (videoSessionOverride) {
     const existing = await api('GET', `/v3/sessions/${encodeURIComponent(videoSessionOverride)}`, undefined, 'read resumed Video Studio destination session')
@@ -1029,6 +1111,7 @@ async function runVideoConversion(sessionID, selected, assignment) {
   assert(part.animation_candidates?.status === 'ready' && Array.isArray(part.animation_candidates?.candidates) && part.animation_candidates.candidates.length === 1 && part.animation_candidates?.artifact_v3_selected_source && part.animation_candidates?.artifact_v3_derivative, 'pending native V3 proposal lost its sole selected HTML/MP4 animation authority')
   assertNativeV3VideoReference(part.animation_candidates.artifact_v3_selected_source, source, 'text/html', false)
   assertNativeV3VideoReference(part.animation_candidates.artifact_v3_derivative, source, 'video/mp4', true)
+  await inspectNativeVideoPlayback(videoSession.sessionID, proposal, fallback, mp4)
   const after = await detail(sessionID, artifact.id)
   assert(currentRevision(after).commit_oid === head.commit_oid && currentRevision(after).tree_oid === head.tree_oid && text(currentRevision(after).revision_ref) === text(head.revision_ref), 'video conversion mutated the selected Artifact V3 head')
   assert((after.turns || []).length === (before.turns || []).length && (after.parts || []).length === (before.parts || []).length, 'video conversion mutated native Artifact turn/Part projection')

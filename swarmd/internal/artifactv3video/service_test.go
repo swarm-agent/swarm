@@ -256,7 +256,7 @@ func validFakeRenderer() *fakeRenderer {
 }
 
 func testSelection() Selection {
-	return Selection{UserID: "user", SessionID: "session", ArtifactID: "artifact", RevisionID: "revision", CommitOID: strings.Repeat("a", 40), TreeOID: strings.Repeat("b", 40), PartID: "hero", CaptureStateID: "state"}
+	return Selection{UserID: "user", SessionID: "session", ArtifactID: "artifact", RevisionID: "revision", CommitOID: strings.Repeat("a", 40), TreeOID: strings.Repeat("b", 40)}
 }
 
 func testProject() Project {
@@ -267,6 +267,10 @@ func testProject() Project {
 type fakeAuthority struct {
 	project Project
 	err     error
+}
+
+func (f *fakeAuthority) ReadImmutableRevision(ctx context.Context, account string, selection Selection) (Project, error) {
+	return f.ReadSelectedHead(ctx, account, selection)
 }
 
 func (f *fakeAuthority) ReadSelectedHead(_ context.Context, account string, selection Selection) (Project, error) {
@@ -301,8 +305,9 @@ func (f *fakeRenderer) Render(_ context.Context, request RenderRequest) (RenderR
 }
 
 type fakeStore struct {
-	data   map[string][]byte
-	putErr error
+	data     map[string][]byte
+	receipts map[pebblestore.ArtifactV3VideoReference]bool
+	putErr   error
 }
 
 func (f *fakeStore) PutAtomic(_ context.Context, _, _ string, derivatives []Derivative) error {
@@ -310,7 +315,11 @@ func (f *fakeStore) PutAtomic(_ context.Context, _, _ string, derivatives []Deri
 		return f.putErr
 	}
 	staged := map[string][]byte{}
+	if f.receipts == nil {
+		f.receipts = map[pebblestore.ArtifactV3VideoReference]bool{}
+	}
 	for _, derivative := range derivatives {
+		f.receipts[derivative.Reference] = true
 		staged[derivative.ID] = append([]byte(nil), derivative.Bytes...)
 	}
 	for id, payload := range staged {
@@ -318,7 +327,11 @@ func (f *fakeStore) PutAtomic(_ context.Context, _, _ string, derivatives []Deri
 	}
 	return nil
 }
-func (f *fakeStore) Read(_ context.Context, _, _, derivativeID string) ([]byte, error) {
+func (f *fakeStore) Read(_ context.Context, _, _ string, ref pebblestore.ArtifactV3VideoReference) ([]byte, error) {
+	if !f.receipts[ref] {
+		return nil, errors.New("exact receipt missing")
+	}
+	derivativeID := ref.DerivativeID
 	payload, ok := f.data[derivativeID]
 	if !ok {
 		return nil, errors.New("not found")

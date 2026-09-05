@@ -58,6 +58,7 @@ type Selection struct {
 // ArtifactAuthority is the only source of Artifact V3 ownership and current-head truth.
 type ArtifactAuthority interface {
 	ReadSelectedHead(context.Context, string, Selection) (Project, error)
+	ReadImmutableRevision(context.Context, string, Selection) (Project, error)
 }
 
 // RenderRequest is an ephemeral trusted-render input. AnimationAdapter is
@@ -69,6 +70,7 @@ type RenderRequest struct {
 	DurationMs       int64
 	FPS              float64
 	AnimationAdapter string
+	Entrypoint       string
 }
 
 // RenderResult binds derivative bytes to the renderer-observed timing. The
@@ -87,11 +89,11 @@ type Renderer interface {
 	Render(context.Context, RenderRequest) (RenderResult, error)
 }
 
-// DerivativeStore atomically publishes both derivatives. Implementations must
+// DerivativeStore atomically publishes derivatives with exact source receipts. Implementations must
 // leave no visible bytes when PutAtomic returns an error.
 type DerivativeStore interface {
 	PutAtomic(context.Context, string, string, []Derivative) error
-	Read(context.Context, string, string, string) ([]byte, error)
+	Read(context.Context, string, string, pebblestore.ArtifactV3VideoReference) ([]byte, error)
 }
 
 // Derivative is one immutable private V3-owned output.
@@ -100,6 +102,7 @@ type Derivative struct {
 	MediaType    string
 	DigestSHA256 string
 	Bytes        []byte
+	Reference    pebblestore.ArtifactV3VideoReference
 }
 
 // Conversion is the native pending Video Studio plan and exact references.
@@ -147,34 +150,64 @@ func (s *Service) Convert(ctx context.Context, accountScopeID string, selection 
 	if project.AnimationProfile == "" {
 		project.AnimationProfile = DefaultAnimationProfile
 	}
-	duration, fps, err := normalizedTiming(selection.DurationMs, selection.FPS)
+	sections, err := projectSections(project, selection)
 	if err != nil {
 		return Conversion{}, err
 	}
-	request := RenderRequest{Project: cloneProject(project), PartID: selection.PartID, CaptureStateID: selection.CaptureStateID, DurationMs: duration, FPS: fps, AnimationAdapter: animationAdapterVersion}
-	if err := s.renderer.Preflight(ctx, request); err != nil {
-		return Conversion{}, fmt.Errorf("trusted Artifact V3 preflight failed: %w", err)
-	}
-	rendered, err := s.renderer.Render(ctx, request)
+	_, fps, err := normalizedTiming(selection.DurationMs, selection.FPS)
 	if err != nil {
-		return Conversion{}, fmt.Errorf("trusted Artifact V3 render failed: %w", err)
-	}
-	if rendered.DurationMs != duration || rendered.FPS != fps {
-		return Conversion{}, errors.New("trusted Artifact V3 render timing does not match the requested duration/fps")
-	}
-	if err := validateRenderedDerivatives(rendered.FallbackPNG, rendered.SilentMP4); err != nil {
 		return Conversion{}, err
 	}
-	fallbackDerivative := derivative("image/png", rendered.FallbackPNG)
-	mp4Derivative := derivative("video/mp4", rendered.SilentMP4)
-	conversion := assemble(project, selection, duration, fps, fallbackDerivative, mp4Derivative)
+	conversion := Conversion{Plan: pebblestore.VideoPlanProposal{Kind: pebblestore.VideoPlanKindInitial, Summary: "Native Artifact V3 temporal conversion"}}
+	var derivatives []Derivative
+	for _, section := range sections {
+		request := RenderRequest{Project: cloneProject(project), CaptureStateID: section.CaptureStateID, Entrypoint: section.Entrypoint, DurationMs: section.DurationMs, FPS: fps, AnimationAdapter: animationAdapterVersion}
+		if err := s.renderer.Preflight(ctx, request); err != nil {
+			return Conversion{}, fmt.Errorf("trusted Artifact V3 preflight failed: %w", err)
+		}
+		rendered, err := s.renderer.Render(ctx, request)
+		if err != nil {
+			return Conversion{}, fmt.Errorf("trusted Artifact V3 render failed: %w", err)
+		}
+		if rendered.DurationMs != section.DurationMs || rendered.FPS != fps {
+			return Conversion{}, errors.New("trusted Artifact V3 render timing does not match the requested duration/fps")
+		}
+		if err := validateRenderedDerivatives(rendered.FallbackPNG, rendered.SilentMP4); err != nil {
+			return Conversion{}, err
+		}
+		fallback, mp4 := derivative("image/png", rendered.FallbackPNG), derivative("video/mp4", rendered.SilentMP4)
+		sectionSelection := selection
+		sectionSelection.CaptureStateID = section.CaptureStateID
+		one := assemble(project, sectionSelection, section.DurationMs, fps, fallback, mp4)
+		part := one.Plan.Parts[0]
+		part.ID, part.Title, part.ProductionState, part.FilmingRequirements = section.ID, section.Title, section.ProductionState, section.FilmingRequirements
+		if section.ProductionState == pebblestore.VideoProductionStatePending {
+			part.ArtifactV3Visual, part.VisualMediaType, part.AnimationCandidates = part.ArtifactV3Still, "image/png", nil
+			part.SourceEndMs = 0
+		}
+		fallback.Reference, mp4.Reference = one.Fallback, one.MP4
+		derivatives = append(derivatives, fallback, mp4)
+		conversion.Plan.Parts = append(conversion.Plan.Parts, part)
+		if len(conversion.Plan.Parts) == 1 {
+			conversion.Source, conversion.Fallback, conversion.MP4 = one.Source, one.Fallback, one.MP4
+		}
+	}
 	if err := pebblestore.ValidateVideoPlanForIntent(pebblestore.VideoEditProposalIntentArtifactV3Convert, conversion.Plan); err != nil {
 		return Conversion{}, fmt.Errorf("assemble native Artifact V3 video plan: %w", err)
 	}
 	if err := ctx.Err(); err != nil {
 		return Conversion{}, err
 	}
-	if err := s.storage.PutAtomic(ctx, project.SessionID, project.ArtifactID, []Derivative{fallbackDerivative, mp4Derivative}); err != nil {
+	// Rendering is long-running: reject a head that changed during capture before
+	// publishing any derivative bytes. Proposal creation performs its own CAS.
+	current, err := s.artifacts.ReadSelectedHead(ctx, accountScopeID, selection)
+	if err != nil {
+		return Conversion{}, fmt.Errorf("revalidate selected Artifact V3 head: %w", err)
+	}
+	if err := validateProject(selection, current); err != nil {
+		return Conversion{}, err
+	}
+	if err := s.storage.PutAtomic(ctx, project.SessionID, project.ArtifactID, derivatives); err != nil {
 		return Conversion{}, fmt.Errorf("persist Artifact V3 video derivatives atomically: %w", err)
 	}
 	return conversion, nil
@@ -257,7 +290,7 @@ func (s *Service) read(ctx context.Context, accountScopeID, userID string, ref p
 		return nil, errors.New("Artifact V3 video read requires derivative identity")
 	}
 	selection := Selection{AccountScopeID: accountScopeID, UserID: userID, SessionID: ref.SessionID, ArtifactID: ref.ArtifactID, RevisionID: ref.RevisionID, CommitOID: ref.CommitOID, TreeOID: ref.TreeOID, PartID: ref.PartID, CaptureStateID: ref.CaptureStateID, DurationMs: ref.DurationMs, FPS: ref.FPS}
-	project, err := s.artifacts.ReadSelectedHead(ctx, accountScopeID, selection)
+	project, err := s.artifacts.ReadImmutableRevision(ctx, accountScopeID, selection)
 	if err != nil {
 		return nil, fmt.Errorf("authenticate Artifact V3 derivative reference: %w", err)
 	}
@@ -267,7 +300,7 @@ func (s *Service) read(ctx context.Context, accountScopeID, userID string, ref p
 	if err := validateReferenceAgainstProject(ref, project); err != nil {
 		return nil, err
 	}
-	payload, err := s.storage.Read(ctx, ref.SessionID, ref.ArtifactID, ref.DerivativeID)
+	payload, err := s.storage.Read(ctx, ref.SessionID, ref.ArtifactID, ref)
 	if err != nil {
 		return nil, err
 	}
@@ -323,10 +356,10 @@ func validateProject(selection Selection, project Project) error {
 }
 
 func validateReferenceAgainstProject(ref pebblestore.ArtifactV3VideoReference, project Project) error {
-	if ref.SessionID != project.SessionID || ref.ArtifactID != project.ArtifactID || ref.RevisionID != project.RevisionID || ref.CommitOID != project.CommitOID || ref.TreeOID != project.TreeOID || ref.ManifestDigestSHA256 != project.ManifestDigestSHA256 || ref.BuildID != project.BuildID || ref.ValidationID != project.ValidationID || ref.EventSeq != project.EventSeq {
+	if ref.SessionID != project.SessionID || ref.ArtifactID != project.ArtifactID || ref.RevisionID != project.RevisionID || ref.CommitOID != project.CommitOID || ref.TreeOID != project.TreeOID || ref.ManifestDigestSHA256 != project.ManifestDigestSHA256 || ref.BuildID != project.BuildID || ref.ValidationID != project.ValidationID || ref.EventSeq == 0 {
 		return errors.New("Artifact V3 video reference does not match authenticated source")
 	}
-	if ref.DerivativeID == "" || !validDigest(ref.DigestSHA256) || (ref.MediaType != "image/png" && ref.MediaType != "video/mp4") {
+	if ref.DerivativeID != "av3der_"+ref.DigestSHA256 || !validDigest(ref.DigestSHA256) || ref.AnimationProfile != project.AnimationProfile || (ref.MediaType != "image/png" && ref.MediaType != "video/mp4") {
 		return errors.New("Artifact V3 video reference is incomplete")
 	}
 	return nil

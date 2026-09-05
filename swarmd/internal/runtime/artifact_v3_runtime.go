@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -922,6 +923,7 @@ func (b *artifactV3VideoBridge) ConvertToPendingProposal(ctx context.Context, pr
 	if err != nil {
 		return pebblestore.VideoEditProposalSnapshot{}, err
 	}
+	selection.PartID, selection.CaptureStateID = strings.TrimSpace(input.PartID), strings.TrimSpace(input.CaptureStateID)
 	conversion, err := b.service.Convert(ctx, principal.AccountScopeID, selection)
 	if err != nil {
 		return pebblestore.VideoEditProposalSnapshot{}, err
@@ -929,7 +931,10 @@ func (b *artifactV3VideoBridge) ConvertToPendingProposal(ctx context.Context, pr
 	if err := ctx.Err(); err != nil {
 		return pebblestore.VideoEditProposalSnapshot{}, err
 	}
-	proposalID := artifactV3StableID("videopropv3", input.VideoSessionID, input.ProjectID, input.BaseRevisionID, input.ArtifactSessionID, input.ArtifactID, input.RevisionRef, input.RequestID)
+	if baseRevision.Timeline.Metadata["accepted_video_plan"] != nil {
+		conversion.Plan.Kind = pebblestore.VideoPlanKindRevision
+	}
+	proposalID := artifactV3StableID("videopropv3", input.VideoSessionID, input.ProjectID, input.BaseRevisionID, input.ArtifactSessionID, input.ArtifactID, input.RevisionRef, input.RequestID, input.CaptureStateID)
 	title := strings.TrimSpace(input.Title)
 	if title == "" {
 		title = "Artifact V3 video proposal"
@@ -973,6 +978,16 @@ func (a *artifactV3RuntimeAdapter) videoSelection(principal identity.Principal, 
 // ReadSelectedHead authenticates ownership, selected-head status, Git identity,
 // and successful build/validation before exposing immutable project bytes.
 func (a *artifactV3RuntimeAdapter) ReadSelectedHead(ctx context.Context, accountScopeID string, selection artifactv3video.Selection) (artifactv3video.Project, error) {
+	return a.readVideoRevision(ctx, accountScopeID, selection, true)
+}
+
+// ReadImmutableRevision authenticates the owned immutable Git revision, not the
+// mutable selected-head pointer. Previously converted media outlives selection.
+func (a *artifactV3RuntimeAdapter) ReadImmutableRevision(ctx context.Context, accountScopeID string, selection artifactv3video.Selection) (artifactv3video.Project, error) {
+	return a.readVideoRevision(ctx, accountScopeID, selection, false)
+}
+
+func (a *artifactV3RuntimeAdapter) readVideoRevision(ctx context.Context, accountScopeID string, selection artifactv3video.Selection, requireHead bool) (artifactv3video.Project, error) {
 	if a == nil || a.sessions == nil || a.service == nil || strings.TrimSpace(accountScopeID) == "" || accountScopeID != selection.AccountScopeID || strings.TrimSpace(selection.UserID) == "" {
 		return artifactv3video.Project{}, pebblestore.ErrArtifactV3Unauthorized
 	}
@@ -980,7 +995,7 @@ func (a *artifactV3RuntimeAdapter) ReadSelectedHead(ctx context.Context, account
 	if err != nil {
 		return artifactv3video.Project{}, err
 	}
-	if !ok || repository.OwnerSessionID != selection.SessionID || repository.HeadCommitOID != selection.CommitOID || selection.RevisionID != "revision-"+selection.CommitOID {
+	if !ok || repository.OwnerSessionID != selection.SessionID || (requireHead && repository.HeadCommitOID != selection.CommitOID) || selection.RevisionID != "revision-"+selection.CommitOID {
 		return artifactv3video.Project{}, errors.New("selected Artifact V3 head is stale or not owned")
 	}
 	principal := api.ArtifactV3Principal{AccountScopeID: accountScopeID, UserID: selection.UserID}
@@ -1000,7 +1015,11 @@ func (a *artifactV3RuntimeAdapter) ReadSelectedHead(ctx context.Context, account
 		return artifactv3video.Project{}, pebblestore.ErrArtifactV3Integrity
 	}
 	manifestDigest := sha256.Sum256(manifestBody)
-	return artifactv3video.Project{SessionID: selection.SessionID, ArtifactID: selection.ArtifactID, RevisionID: selection.RevisionID, CommitOID: revision.CommitOID, TreeOID: revision.TreeOID, ManifestDigestSHA256: hex.EncodeToString(manifestDigest[:]), BuildID: revision.Build.ID, ValidationID: revision.Validation.ID, EventSeq: repository.EventSeq, MediaType: "text/html", AnimationProfile: artifactv3video.DefaultAnimationProfile, Files: files}, nil
+	projection, ok, err := a.sessions.GetArtifactV3Revision(accountScopeID, selection.UserID, selection.ArtifactID, selection.CommitOID)
+	if err != nil || !ok || projection.EventSeq == 0 {
+		return artifactv3video.Project{}, pebblestore.ErrArtifactV3Integrity
+	}
+	return artifactv3video.Project{SessionID: selection.SessionID, ArtifactID: selection.ArtifactID, RevisionID: selection.RevisionID, CommitOID: revision.CommitOID, TreeOID: revision.TreeOID, ManifestDigestSHA256: hex.EncodeToString(manifestDigest[:]), BuildID: revision.Build.ID, ValidationID: revision.Validation.ID, EventSeq: projection.EventSeq, MediaType: "text/html", AnimationProfile: artifactv3video.DefaultAnimationProfile, Files: files}, nil
 }
 
 // artifactV3AnimationRenderer injects only ephemeral render bytes. Source Git is
@@ -1008,12 +1027,22 @@ func (a *artifactV3RuntimeAdapter) ReadSelectedHead(ctx context.Context, account
 type artifactV3AnimationRenderer struct{ renderer htmlcapture.AnimationRenderer }
 
 func (r artifactV3AnimationRenderer) request(input artifactv3video.RenderRequest) (htmlcapture.AnimationRequest, error) {
+	if input.PartID != "" || (input.CaptureStateID != "" && input.Entrypoint == "") {
+		return htmlcapture.AnimationRequest{}, errors.New("spatial Part or capture-state targeting requires an explicit temporal section; whole-project animation cannot silently ignore a target")
+	}
 	if r.renderer == nil || input.AnimationAdapter != htmlcapture.AnimationVersion || input.DurationMs <= 0 || input.FPS <= 0 || input.FPS != float64(int(input.FPS)) {
 		return htmlcapture.AnimationRequest{}, errors.New("trusted Artifact V3 animation renderer is unavailable or timing is invalid")
 	}
 	var manifest pebblestore.ArtifactV3Manifest
 	if json.Unmarshal(input.Project.Files[pebblestore.ArtifactV3ManifestFilename], &manifest) != nil || strings.TrimSpace(manifest.Entrypoint) == "" || len(input.Project.Files[manifest.Entrypoint]) == 0 {
 		return htmlcapture.AnimationRequest{}, errors.New("Artifact V3 animation manifest is invalid")
+	}
+	if input.Entrypoint != "" {
+		sections, err := artifactv3video.Sections(input.Project, input.CaptureStateID)
+		if err != nil || len(sections) != 1 || sections[0].Entrypoint != input.Entrypoint || sections[0].DurationMs != input.DurationMs {
+			return htmlcapture.AnimationRequest{}, errors.New("render target does not match exact storyboard state")
+		}
+		manifest.Entrypoint = input.Entrypoint
 	}
 	files := cloneArtifactProject(input.Project.Files)
 	files[manifest.Entrypoint] = injectArtifactV3AnimationAdapter(files[manifest.Entrypoint], input.DurationMs, int(input.FPS))
@@ -1090,19 +1119,31 @@ func (s *artifactV3DerivativeStore) PutAtomic(ctx context.Context, sessionID, ar
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if s == nil || strings.TrimSpace(sessionID) == "" || strings.TrimSpace(artifactID) == "" || len(derivatives) != 2 {
-		return errors.New("Artifact V3 derivative publication requires source identity and exactly two outputs")
+	if s == nil || strings.TrimSpace(sessionID) == "" || strings.TrimSpace(artifactID) == "" || len(derivatives) < 1 || len(derivatives) > 32 {
+		return errors.New("Artifact V3 derivative publication requires source identity and one to 32 outputs")
 	}
 	ids, seen := make([]string, 0, 2), map[string]bool{}
+	receipts := make(map[string]pebblestore.ArtifactV3VideoReference, len(derivatives))
 	for _, derivative := range derivatives {
-		if !validArtifactV3Derivative(derivative) || seen[derivative.ID] {
+		if !validArtifactV3Derivative(derivative) {
 			return errors.New("Artifact V3 derivative is invalid or duplicated")
 		}
-		seen[derivative.ID], ids = true, append(ids, derivative.ID)
+		if !seen[derivative.ID] {
+			seen[derivative.ID], ids = true, append(ids, derivative.ID)
+		}
+		refBytes, err := json.Marshal(derivative.Reference)
+		if err != nil {
+			return err
+		}
+		receipts[sha256Hex(refBytes)] = derivative.Reference
 	}
 	sort.Strings(ids)
 	parent := filepath.Join(s.root, artifactV3StorageKey(sessionID, artifactID))
-	final := filepath.Join(parent, artifactV3StorageKey(ids...))
+	receiptBytes, err := json.Marshal(receipts)
+	if err != nil {
+		return err
+	}
+	final := filepath.Join(parent, artifactV3StorageKey(append(ids, sha256Hex(receiptBytes))...))
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := ensurePrivateDirectory(parent); err != nil {
@@ -1118,6 +1159,10 @@ func (s *artifactV3DerivativeStore) PutAtomic(ctx context.Context, sessionID, ar
 		marker, markerErr := os.ReadFile(filepath.Join(final, "complete"))
 		if markerErr != nil || string(marker) != strings.Join(ids, "\n")+"\n" {
 			return errors.New("existing Artifact V3 derivative set is incomplete")
+		}
+		storedReceipts, err := os.ReadFile(filepath.Join(final, "references.json"))
+		if err != nil || !bytes.Equal(storedReceipts, receiptBytes) {
+			return errors.New("existing Artifact V3 derivative receipts failed integrity validation")
 		}
 		for _, derivative := range derivatives {
 			if err := ctx.Err(); err != nil {
@@ -1145,6 +1190,9 @@ func (s *artifactV3DerivativeStore) PutAtomic(ctx context.Context, sessionID, ar
 			return err
 		}
 	}
+	if err := os.WriteFile(filepath.Join(stage, "references.json"), receiptBytes, 0o600); err != nil {
+		return err
+	}
 	if err := os.WriteFile(filepath.Join(stage, "complete"), []byte(strings.Join(ids, "\n")+"\n"), 0o600); err != nil {
 		return err
 	}
@@ -1154,7 +1202,8 @@ func (s *artifactV3DerivativeStore) PutAtomic(ctx context.Context, sessionID, ar
 	return os.Rename(stage, final)
 }
 
-func (s *artifactV3DerivativeStore) Read(ctx context.Context, sessionID, artifactID, derivativeID string) ([]byte, error) {
+func (s *artifactV3DerivativeStore) Read(ctx context.Context, sessionID, artifactID string, ref pebblestore.ArtifactV3VideoReference) ([]byte, error) {
+	derivativeID := ref.DerivativeID
 	if ctx == nil {
 		return nil, errors.New("Artifact V3 derivative read requires context")
 	}
@@ -1179,6 +1228,11 @@ func (s *artifactV3DerivativeStore) Read(ctx context.Context, sessionID, artifac
 		setRoot := filepath.Join(parent, entry.Name())
 		marker, markerErr := os.ReadFile(filepath.Join(setRoot, "complete"))
 		if markerErr != nil || !strings.Contains(string(marker), derivativeID+"\n") {
+			continue
+		}
+		receiptBytes, receiptErr := os.ReadFile(filepath.Join(setRoot, "references.json"))
+		var receipts map[string]pebblestore.ArtifactV3VideoReference
+		if receiptErr != nil || json.Unmarshal(receiptBytes, &receipts) != nil || receipts[artifactV3ReferenceKey(ref)] != ref {
 			continue
 		}
 		path := filepath.Join(setRoot, derivativeID)
@@ -1225,4 +1279,9 @@ func artifactV3StorageKey(parts ...string) string {
 func sha256Hex(body []byte) string {
 	digest := sha256.Sum256(body)
 	return hex.EncodeToString(digest[:])
+}
+
+func artifactV3ReferenceKey(ref pebblestore.ArtifactV3VideoReference) string {
+	body, _ := json.Marshal(ref)
+	return sha256Hex(body)
 }

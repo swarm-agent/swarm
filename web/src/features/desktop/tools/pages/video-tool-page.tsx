@@ -16,7 +16,7 @@ import { buildDesktopChatRouteOptions, getDesktopSessionCreateTarget, type Deskt
 import type { WorkspaceBrowseResult, WorkspaceEntry } from '../../../workspaces/launcher/types/workspace'
 import type { WorkspaceOverviewSwarmTarget } from '../../../workspaces/launcher/types/workspace-overview'
 import { SwarmToolSidebar } from '../components/swarm-tool-sidebar'
-import { VIDEO_TRANSITION_KINDS, VideoIterationSidebar, VideoSessionAISidecar, acceptVideoEditProposal, createVideoEditProposal, renderedVideoArtifactUrl, requestVideoRenderCancellation, selectVideoAnimationCandidate, transitionLabel, updateVideoCompositionProposal, videoAnimationReadyForConfirmation, videoPlanPartMessageSelection, videoPlanPartStoryboardContext, videoPlanTransitionMessageSelection, videoProposalProjectionSequence, type VideoAnimationCandidateWire, type VideoEditProposalWire, type VideoIterationComposerContext, type VideoPlanProposalWire, type VideoStepEditAction, type VideoTransitionKind, type VideoTransitionWire } from '../video-studio/video-studio-surface'
+import { artifactV3VideoMediaUrl, type ArtifactV3VideoReferenceWire, VIDEO_TRANSITION_KINDS, VideoIterationSidebar, VideoSessionAISidecar, acceptVideoEditProposal, createVideoEditProposal, renderedVideoArtifactUrl, requestVideoRenderCancellation, selectVideoAnimationCandidate, transitionLabel, updateVideoCompositionProposal, videoAnimationReadyForConfirmation, videoPlanPartMessageSelection, videoPlanPartStoryboardContext, videoPlanTransitionMessageSelection, videoProposalProjectionSequence, type VideoAnimationCandidateWire, type VideoEditProposalWire, type VideoIterationComposerContext, type VideoPlanProposalWire, type VideoStepEditAction, type VideoTransitionKind, type VideoTransitionWire } from '../video-studio/video-studio-surface'
 import { fetchDesktopV3ArtifactPreviewAccess } from '../../session-v3/artifact-api'
 import { desktopV3ArtifactIterationMessage } from '../../session-v3/artifact-iteration-protocol'
 import { saveVideoSessionViewPreference } from '../video-studio/video-session-view-preference'
@@ -64,6 +64,7 @@ export type VideoTimelineClipWire = {
   layer?: number
   volume?: number
   muted?: boolean
+  artifact_v3_ref?: ArtifactV3VideoReferenceWire
   artifact_ref?: { session_id?: string; collection_id: string; variant_id: string; event_seq?: number; media_type?: string }
   media_type?: string
   design_input?: { session_id?: string; collection_id: string; variant_id: string; event_seq?: number; media_type?: string }
@@ -305,7 +306,7 @@ export function selectVideoAnimationCandidateLocally(
   const part = proposal.plan.parts[partIndex]
   const candidates = part.animation_candidates
   const ownedCandidate = candidates?.candidates.find((item) => item.id === candidate.id)
-  if (!candidates || !ownedCandidate || candidates.status === 'ready') return null
+  if (!candidates || !ownedCandidate?.source || !candidate.source || candidates.status === 'ready') return null
   if (ownedCandidate.source.session_id !== candidate.source.session_id
     || ownedCandidate.source.collection_id !== candidate.source.collection_id
     || ownedCandidate.source.variant_id !== candidate.source.variant_id
@@ -332,7 +333,9 @@ export function shouldScheduleVideoCanvasFrame(isPlaying: boolean, visibilitySta
 
 export function videoAnimationPartAtClip(plan: VideoPlanProposalWire | null, clipId: string | null | undefined): VideoPlanProposalWire['parts'][number] | null {
   if (!clipId) return null
-  return plan?.parts.find((part) => part.id === clipId && Boolean(part.animation_candidates)) ?? null
+  // Native ready motion plays its authenticated MP4, never the legacy HTML
+  // candidate iframe that requires collection/variant preview authority.
+  return plan?.parts.find((part) => part.id === clipId && !part.artifact_v3_visual && Boolean(part.animation_candidates)) ?? null
 }
 
 export type VideoActivePreviewIdentity = {
@@ -357,6 +360,7 @@ export function videoActivePreviewIdentity(input: {
   part: VideoPlanProposalWire['parts'][number]
   candidate: VideoAnimationCandidateWire
 }): VideoActivePreviewIdentity {
+  if (!input.candidate.source) throw new Error('Native V3 motion uses derivative playback, not legacy HTML preview')
   return {
     projectId: input.projectId,
     proposalId: input.proposal?.id ?? '',
@@ -392,7 +396,7 @@ export function videoActivePreviewCandidate(input: {
     || identity.timelineClipId !== input.timelineClipId
     || identity.planPartId !== part.id) return null
   const candidate = part.animation_candidates?.candidates.find((item) => item.id === identity.candidateId)
-  if (!candidate
+  if (!candidate?.source
     || candidate.source.session_id !== identity.sourceSessionId
     || candidate.source.collection_id !== identity.sourceCollectionId
     || candidate.source.variant_id !== identity.sourceVariantId
@@ -404,7 +408,7 @@ export function videoClipReviewState(part: VideoPlanProposalWire['parts'][number
   const storyboard = videoPlanPartStoryboardContext(part)
   if (storyboard) return storyboard.productionState === 'pending'
     ? { mediaKind: 'Storyboard still', state: 'Placeholder · filming needed' }
-    : { mediaKind: 'Storyboard still', state: 'Production ready' }
+    : { mediaKind: part?.artifact_v3_visual?.media_type === 'video/mp4' ? 'Motion' : 'Storyboard still', state: 'Production ready' }
   const animation = part?.animation_candidates
   if (animation) {
     if (animation.status === 'failed') return { mediaKind: 'Live HTML', state: 'Motion failed' }
@@ -512,6 +516,7 @@ export type TimelineSegment = {
   type: 'video' | 'audio' | 'image' | 'frame'
   clipId: string
   src: string
+  artifactV3Ref?: ArtifactV3VideoReferenceWire
   artifactRef?: VideoTimelineClipWire['artifact_ref']
   sourceKind?: string
   title?: string
@@ -1124,8 +1129,9 @@ export function timelineSegmentsToProjectTimeline(
       name: clip?.name ?? seg.clipId,
       track: 0,
       sequence: idx,
-      source_kind: 'source_video',
-      source_ref: clip?.sourceRef ?? seg.clipId,
+      source_kind: seg.artifactV3Ref ? 'managed_artifact' : 'source_video',
+      source_ref: seg.artifactV3Ref ? undefined : clip?.sourceRef ?? seg.clipId,
+      ...(seg.artifactV3Ref ? { artifact_v3_ref: seg.artifactV3Ref, media_type: seg.artifactV3Ref.media_type } : {}),
       source_start_ms: Math.round(seg.sourceStart * 1000),
       source_end_ms: Math.round((seg.sourceStart + dur) * 1000),
       timeline_start_ms: layoutSeg ? Math.round(layoutSeg.timelineStart * 1000) : 0,
@@ -1180,6 +1186,7 @@ function visualPlanTimeline(accepted: VideoProjectTimelineWire, plan: VideoPlanP
       sequence: index,
       source_kind: 'managed_artifact',
       artifact_ref: part.visual,
+      artifact_v3_ref: part.artifact_v3_visual,
       media_type: part.visual_media_type,
       timeline_start_ms: startMs,
       timeline_end_ms: endMs,
@@ -1300,14 +1307,16 @@ export function projectTimelineToTimelineSegments(
     const artifactRef = clipWire.artifact_ref ?? clipWire.design_input
     const artifactSessionId = String(artifactRef?.session_id || threadId).trim()
     const artifactId = String(artifactRef?.variant_id ?? '').trim()
-    const artifactSource = clipWire.source_kind === 'managed_artifact' && Boolean(artifactSessionId && artifactId)
-    const artifactMediaType = String(clipWire.media_type ?? artifactRef?.media_type ?? '').trim()
+    const nativeRef = clipWire.artifact_v3_ref
+    const artifactSource = clipWire.source_kind === 'managed_artifact' && Boolean(nativeRef || (artifactSessionId && artifactId))
+    const artifactMediaType = String(clipWire.media_type ?? nativeRef?.media_type ?? artifactRef?.media_type ?? '').trim()
     const artifactVideo = artifactSource && artifactMediaType.startsWith('video/')
     return {
       id: clipWire.id,
       type: audioSource ? 'audio' : videoSource || artifactVideo ? 'video' : artifactSource ? 'image' : 'frame',
       clipId,
-      src: audioSource && threadId ? `/v3/sessions/${encodeURIComponent(threadId)}/video/sources/media?source_ref=${encodeURIComponent(clipWire.audio_source!.ref)}` : videoSource ? (sourceClip && threadId ? clipMediaUrl(threadId, clipId) : threadId && sourceRef ? `/v3/sessions/${encodeURIComponent(threadId)}/video/sources/media?source_ref=${encodeURIComponent(sourceRef)}` : `/v1/workspace/video/threads/media?clip_id=${encodeURIComponent(clipId)}`) : artifactSource ? `/v3/sessions/${encodeURIComponent(artifactSessionId)}/artifacts/${encodeURIComponent(artifactId)}` : '',
+      src: audioSource && threadId ? `/v3/sessions/${encodeURIComponent(threadId)}/video/sources/media?source_ref=${encodeURIComponent(clipWire.audio_source!.ref)}` : videoSource ? (sourceClip && threadId ? clipMediaUrl(threadId, clipId) : threadId && sourceRef ? `/v3/sessions/${encodeURIComponent(threadId)}/video/sources/media?source_ref=${encodeURIComponent(sourceRef)}` : `/v1/workspace/video/threads/media?clip_id=${encodeURIComponent(clipId)}`) : nativeRef ? artifactV3VideoMediaUrl(nativeRef) : artifactSource ? `/v3/sessions/${encodeURIComponent(artifactSessionId)}/artifacts/${encodeURIComponent(artifactId)}` : '',
+      artifactV3Ref: nativeRef,
       artifactRef: artifactRef ? { ...artifactRef, session_id: artifactSessionId || undefined, media_type: artifactMediaType || undefined } : undefined,
       sourceKind: clipWire.source_kind,
       title: details.title,
@@ -2000,7 +2009,7 @@ export function VideoToolPage() {
   }, [beginTimelinePlayback, currentWorkingProposal, playerRevision, timelineLayoutByClipId, videoProject])
 
   const selectLiveAnimationCandidate = useCallback((part: NonNullable<VideoPlanProposalWire['parts'][number]>, candidate: VideoAnimationCandidateWire) => {
-    if (!currentWorkingProposal || !selectedThread || !videoProject || animationSelectionBusyPartId) return
+    if (!candidate.source || !currentWorkingProposal || !selectedThread || !videoProject || animationSelectionBusyPartId) return
     if (currentWorkingProposal.plan?.kind === 'revision' && !pendingSelectedChangeIds.includes(part.id)) {
       setCreateError(`Enable ${part.title} before choosing one of its variants.`)
       return
@@ -2075,7 +2084,7 @@ export function VideoToolPage() {
     let cancelled = false
     setLiveAnimationURL('')
     setLiveAnimationError(null)
-    if (!activeCandidate || !activePreviewRequestIdentity) return
+    if (!activeCandidate?.source || !activePreviewRequestIdentity) return
     void fetchDesktopV3ArtifactPreviewAccess(activeCandidate.source.session_id, activeCandidate.source.variant_id).then((access) => {
       if (!cancelled) setLiveAnimationURL(access.url)
     }).catch((error) => {
@@ -3038,7 +3047,7 @@ export function VideoToolPage() {
           transition: action === 'transition' ? acceptedTransition ?? null : null,
           storyboard,
         })
-        setStudioArtifactSelectionRequest(visualPart
+        setStudioArtifactSelectionRequest(visualPart?.visual
           ? action === 'transition'
             ? videoPlanTransitionMessageSelection(visualPart, acceptedTransition)
             : videoPlanPartMessageSelection(visualPart)
@@ -3275,7 +3284,7 @@ export function VideoToolPage() {
             </div>
             <div className="min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain px-3 py-3" data-video-focused-review-scroll>
               {focusedReviewParts.map((part, partIndex) => {
-                const candidates = part.animation_candidates?.candidates ?? []
+                const candidates = part.artifact_v3_visual ? [] : part.animation_candidates?.candidates ?? []
                 const selectedCandidateID = part.animation_candidates?.selected_candidate_id
                 const locked = focusedVideoReviewPartLocked(part)
                 const layout = currentWorkingVisualLayout.find((segment) => segment.clipId === part.id)
