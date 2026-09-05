@@ -63,6 +63,14 @@ The earlier HTTP 429 capacity failure is superseded by successful Luna inference
 - Verify other Parts retain requested behavior; inspect every claimed preview/frame; reload and replay exact identity.
 - Report provider/handoff errors separately from artifact state: a valid candidate does not excuse a broken user journey.
 
+**2026-09-05 L2 evidence:** A fresh primary-Swarm/Luna journey on runtime `3b05ea65` created one animated artifact, revised Pricing, explicitly selected it in Desktop, continued Hero from that exact commit, created two direct sibling alternatives, selected the reviewed Option Two and continued from it. Stable `hero`/`pricing`/`footer` IDs, native ancestry and replay were retained. Twenty-five native events cover the final history; creation and mutation stages observed cursor-bearing realtime, while read-only inspection used reconnect replay completion. Both siblings and the original preview remain usable. No Designers were launched.
+
+The last continuation clipped Footer in the narrower Desktop pane and was left unselected. A separate exact-base responsive repair retained all three animations and passes 840×844 geometry checks (Footer ends at 830px) as well as the existing 1440×900 runner. Its image captures exist, but final independent visual review was interrupted by the provider's media-count limit. Geometry is not aesthetic evidence; the repair must not be labelled visually accepted until that review completes. The selected head remains Option Two; both continuation candidates are preserved.
+
+The maintained runner now supports bounded animated creation/targeting/selection/sibling/continuation/inspection stages with revision-keyed screenshots. Evidence fixes open collapsed historical turns, wait for preview replacement, distinguish reconnect from mutation events, and resolve sibling labels independently of response order. New-turn selection uses a before/after turn-ID set; explicit inspection and head selection require an exact reviewed reference. Provider execution succeeded; intermediate runner failures and the final media-input interruption remain separate from durable artifact results.
+
+A separate operational continuity gap surfaced: persistent rebuild retains encrypted account state but drops the device label. Restoring only the existing self-runtime label through the canonical API restored Desktop without OAuth, identity, workspace or completion-state reset. Future rebuilds require the owning helper repair; current readiness is not proof of permanent configuration continuity.
+
 ### L3 — Complete native video integration
 - Fix revision lifetime and native frontend media handling with focused negative tests.
 - Prove ordered storyboard/state stills and animation are bound to exact V3 revisions, with no silently ignored target/state inputs.

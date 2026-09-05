@@ -1,6 +1,6 @@
 # Artifact V3 restoration gap audit
 
-Status: **IN PROGRESS — no-Designer HTML, targeted-turn, selection/continuation, alternate-candidate implementation, animated-Part gates, and deterministic native V3 video wiring are implemented; the isolated `video-conversion` live gate remains to be executed**
+Status: **HISTORICAL AUDIT — current evidence and remaining gates are maintained in `artifact-v3-launch-closure.md`. Native conversion/decoded inspection has run; animated iteration has fresh evidence, but final responsive visual review and later launch gates remain incomplete.**
 
 Audit date: 2026-09-04
 
@@ -8,7 +8,7 @@ Scope: ordinary Swarm creation, regular managed Designer creation and iteration,
 
 ## Executive verdict
 
-Artifact V3 now has passing isolated no-Designer evidence through static HTML creation, stable Parts, targeted exact-base candidates, explicit selection and continued turns, atomic alternate-candidate creation, and animated Parts. These passes use ordinary primary Swarm with account-backed Codex GPT-5.6 Luna at medium reasoning, native Git/Pebble/API/realtime/Desktop identity, and inspected rendered pixels. The deterministic server path now accepts one exact selected V3 Git head, creates digest-bound PNG/MP4 derivatives, builds one pending Video Studio proposal, survives restart, and materializes the exact MP4 through the native renderer authority. The checked-in `video-conversion` stage is the remaining isolated live acceptance gate; Designer testing remains blocked until it passes.
+Artifact V3 now has passing isolated no-Designer evidence through static HTML creation, stable Parts, targeted exact-base candidates, explicit selection and continued turns, atomic alternate-candidate creation, and animated Parts. These passes use ordinary primary Swarm with account-backed Codex GPT-5.6 Luna at medium reasoning, native Git/Pebble/API/realtime/Desktop identity, and inspected rendered pixels. The deterministic server path now accepts one exact selected V3 Git head, creates digest-bound PNG/MP4 derivatives, builds one pending Video Studio proposal, survives restart, and materializes the exact MP4 through the native renderer authority. This paragraph describes the inherited restoration assessment, not current release acceptance. The subsequent L1 proof decoded native media but found layout defects; the fresh L2 journey preserves exact animated revision ancestry and alternatives, with final responsive visual review still pending after a provider media-count interruption. Designer and later launch gates are not proved by these results.
 
 The restoration order is mandatory and now starts below the Designer boundary:
 
@@ -17,7 +17,7 @@ The restoration order is mandatory and now starts below the Designer boundary:
 3. Expand the ordinary-Swarm journey through targeted turns, continued edits, alternate iteration selection, animation, and media conversion on the already-proven native contracts.
 4. Only after those no-Designer and ordinary-Swarm gates are green, prove regular managed Designer creation/iteration and then Designer Iteration Swarm sibling candidates.
 
-**The static-HTML, targeted-Part, selected-continuation, alternate-candidate implementation, animated-Part foundation, and deterministic native V3-to-Video-Studio/MP4 wiring are now implemented without Designers.** The next mandatory gate is the resumable isolated `video-conversion` journey, including real renderer output/container evidence and source-head/replay immutability. Designer-backed paths remain gated until that server-owned V3 media boundary passes live.
+**The static-HTML, targeted-Part, selected-continuation, alternate-candidate implementation, animated-Part foundation, and deterministic native V3-to-Video-Studio/MP4 wiring are now implemented without Designers.** The original next gate was the isolated `video-conversion` journey. Its later results and the current ordered gates are recorded in the closure checklist; do not repeat this historical ordering as current state. Designer-backed paths remain gated until that server-owned V3 media boundary passes live.
 
 This document began as an audit-only checkpoint. The subsequent approved restoration checkpoint adopted it as the executable gate contract. Existing implementation changes and ignored evidence remain preserved and unaccepted until the focused deterministic tests and exact-commit live gates below establish them.
 

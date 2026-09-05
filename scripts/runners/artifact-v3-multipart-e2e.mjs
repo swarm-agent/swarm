@@ -36,8 +36,9 @@ const preflight = flag('--preflight')
 const stage = String(option('--stage', 'full')).trim().toLowerCase()
 const alternateResumeStage = stage === 'alternate-choice-resume'
 const animationStage = stage === 'animated-parts'
+const animatedFollowupStage = ['animated-targeted', 'animated-continue', 'animated-alternatives', 'animated-finish', 'animated-inspect', 'animated-alternatives-inspect', 'animated-repair'].includes(stage)
 const videoConversionStage = stage === 'video-conversion'
-const noDesignerStage = stage === 'basic-html' || stage === 'targeted-part' || stage === 'selected-continuation' || stage === 'alternate-choice' || alternateResumeStage || animationStage || videoConversionStage
+const noDesignerStage = stage === 'basic-html' || stage === 'targeted-part' || stage === 'selected-continuation' || stage === 'alternate-choice' || alternateResumeStage || animationStage || animatedFollowupStage || videoConversionStage
 const headless = !flag('--headful')
 const suppliedToken = String(process.env.SWARM_RUNNER_TOKEN || '').trim()
 const testID = `artifact-v3-three-animated-parts-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`
@@ -345,7 +346,7 @@ async function screenshot(targetPage, label) {
   return record
 }
 
-async function animationSample(previewPage, parts, expectedLabel = '') {
+async function animationSample(previewPage, parts, expectedLabel = '', captureLabel = 'preview') {
   const targets = parts.map((part) => ({ id: text(part?.id), selector: text(part?.locator?.value) }))
   assert(targets.length === 3 && targets.every((part) => part.id && part.selector), 'animated preview requires exactly three stable selector Parts')
   for (const part of targets) await previewPage.locator(part.selector).first().waitFor({ state: 'visible', timeout: 30000 })
@@ -373,10 +374,10 @@ async function animationSample(previewPage, parts, expectedLabel = '') {
   }, { expected: expectedLabel, expectedParts: targets })
   const before = await sample()
   log(`OBSERVE preview viewport=${before.innerWidth}x${before.innerHeight} document=${before.scrollWidth}x${before.scrollHeight}`)
-  const first = await screenshot(previewPage, `${expectedLabel ? 'candidate' : 'root'}-animation-frame-a`)
+  const first = await screenshot(previewPage, `${captureLabel}-animation-frame-a`)
   await sleep(750)
   const after = await sample()
-  const second = await screenshot(previewPage, `${expectedLabel ? 'candidate' : 'root'}-animation-frame-b`)
+  const second = await screenshot(previewPage, `${captureLabel}-animation-frame-b`)
   assert(after.expectedPresent, `preview is missing requested visible label ${expectedLabel}`)
   assert(before.scrollWidth <= before.innerWidth + 2 && before.scrollHeight <= before.innerHeight + 2, 'complete preview has clipping/overflow beyond its viewport')
   for (const row of before.rows) {
@@ -397,8 +398,8 @@ async function screenshotPreview(sessionID, artifactID, revision, expectedLabel 
   assert(previewPath.startsWith('/v3/sessions/') && previewPath.includes('/artifacts-v3/') && previewPath.includes('/preview/access/'), 'Artifact V3 preview access response is invalid')
   const previewPage = await context.newPage()
   await previewPage.goto(`${desktopURL}${previewPath}`, { waitUntil: 'networkidle', timeout: 60000 })
-  const sample = animationStage || videoConversionStage || !noDesignerStage
-    ? await animationSample(previewPage, revision.manifest?.parts || [], expectedLabel)
+  const sample = animationStage || animatedFollowupStage || videoConversionStage || !noDesignerStage
+    ? await animationSample(previewPage, revision.manifest?.parts || [], expectedLabel, revision.commit_oid)
     : await staticVisualSample(previewPage, revision.manifest?.parts || [], expectedLabel, allowViewportFailure)
   await previewPage.close()
   return sample
@@ -473,7 +474,7 @@ function visibleChangeRequest() {
       'Visible change request from the user: change only the Pricing part intent to a vivid magenta treatment and add the exact readable label TARGETED PRICING TURN inside the existing Pricing section.',
       'Use the exact native Artifact V3 reference and current revision already supplied by the Artifact Studio draft.',
       'Use manage_artifact read_v3 to read that exact complete HTML and its Parts, preserve all three stable Part IDs, then use revise_v3 with target_part_ids set to the exact Pricing Part ID from that read result and the complete corrected HTML.',
-      'Create exactly one exact-base complete candidate. Inspect its pixels, but do not select it or move the selected head. Do not delegate to Designer and do not use V1/V2 artifact identity.',
+      'Create exactly one exact-base complete candidate. Preserve every existing animation, motion marker, and unrelated Part. Inspect its pixels, but do not select it or move the selected head. Do not delegate to Designer and do not use V1/V2 artifact identity.',
     ].join(' ')
   }
   return [
@@ -570,7 +571,7 @@ async function createSiblingAlternatives(sessionID, artifactID, baseRevision) {
     `Call revise_v3 exactly once with turn_key=${turnKey}, target_part_ids set to the exact Footer Part ID, and alternatives containing exactly two items with candidate_index values 1 and 2.`,
     'Alternative 1 complete HTML must include exact Footer label ALTERNATE OPTION ONE. Alternative 2 complete HTML must include exact Footer label ALTERNATE OPTION TWO.',
     'Both complete HTML documents must preserve CONTINUED SELECTED TURN, TARGETED PRICING TURN, Team $29, and all stable Part IDs, and fit exactly within 1440x900 with no scrolling or clipped Part.',
-      'Inspect both candidates, do not select either, and do not use Designer or V1/V2 identity.',
+      'Preserve every animation and motion marker. Keep decorative markers clear of text. Inspect both candidates, do not select either, and do not use Designer or V1/V2 identity.',
     ].join(' '))
   } catch (error) {
     runError = error
@@ -599,7 +600,7 @@ async function submitSelectedContinuation(sessionID, artifactID, selectedRevisio
   const content = [
     'Continue the selected Artifact V3 revision with one new exact-base candidate.',
     `Use exact artifact reference session_id=${sessionID}, artifact_id=${artifactID}, revision_ref=${selectedRevision.revision_ref}.`,
-    `Change the existing Hero Part ${heroID} to include the exact readable label CONTINUED SELECTED TURN while preserving every stable Part ID and the Pricing candidate changes.`,
+    `Change the existing Hero Part ${heroID} to include the exact readable label CONTINUED SELECTED TURN while preserving every stable Part ID, existing animation, motion marker, and the Pricing candidate changes. Keep the layout readable without overlap or scrolling.`,
     `Use manage_artifact read_v3, then revise_v3 with target_part_ids=["${heroID}"] and the complete corrected HTML. Inspect the candidate pixels, do not select it, do not delegate to Designer, and do not use V1/V2 identity.`,
   ].join(' ')
   await composer.fill(content)
@@ -650,16 +651,21 @@ async function verifyStudioTurns(sessionID, artifactID, turn, candidate, rootRev
   const targetTurn = studio.locator(`[data-artifact-v3-turn="${turn.turn_id}"]`)
   await targetTurn.waitFor({ state: 'visible', timeout: 30000 })
   assert(text(await targetTurn.textContent()).toLowerCase().includes('target ' + turn.target_part_ids[0].toLowerCase()), 'Artifact Studio follow-up turn lost the targeted Pricing identity')
+  if (!(await targetTurn.evaluate((element) => element instanceof HTMLDetailsElement && element.open))) await targetTurn.locator('summary').click()
   const candidateRow = targetTurn.locator(`[data-artifact-v3-candidate="${candidate.candidate_id}"]`)
   await candidateRow.waitFor({ state: 'visible', timeout: 30000 })
   await candidateRow.getByRole('button').first().click()
   await studio.locator(`[data-artifact-v3-preview-revision="${candidate.revision.commit_oid}"]`).waitFor({ state: 'visible', timeout: 30000 })
   assert(await studio.locator('[data-artifact-v3-revision-history] button').count() >= 2, 'Artifact Studio revision history omitted the candidate or prior head')
+  await sleep(500) // Let the revision effect replace the prior iframe before inspecting it.
+  await studio.locator('[data-artifact-v3-preview]:visible').contentFrame().locator(candidate.revision.manifest.parts.find((part) => part.id === turn.target_part_ids[0]).locator.value).waitFor({ state: 'visible', timeout: 30000 })
   await screenshot(page, 'desktop-turn-by-turn-artifact-studio')
   const rootButton = studio.locator(`[data-artifact-v3-revision="${rootRevision.commit_oid}"]`).first()
   await rootButton.click()
   await studio.locator(`[data-artifact-v3-preview-revision="${rootRevision.commit_oid}"]`).waitFor({ state: 'visible', timeout: 30000 })
   assert(await rootButton.getAttribute('class').then((value) => text(value).includes('border-[var(--app-primary)]')), 'Artifact Studio did not select the exact prior revision')
+  await sleep(500)
+  await studio.locator('[data-artifact-v3-preview]:visible').contentFrame().locator(rootRevision.manifest.parts[0].locator.value).waitFor({ state: 'visible', timeout: 30000 })
   await screenshot(page, 'desktop-exact-prior-revision')
   result.gates.desktop_turn_timeline = true
   result.gates.desktop_prior_revision = true
@@ -680,6 +686,127 @@ async function repairContinuedCandidate(sessionID, artifactID, baseRevision, her
     await sleep(500)
   }
   fail('continued visual repair did not produce a distinct exact-base Hero candidate')
+}
+
+// Purpose: prove the ordinary primary-Swarm animated revision contract through
+// canonical V3 messages, exact-base turns, Desktop selection and durable replay.
+// Each stage stops before selecting newly generated bytes so independent pixel
+// review can reject defects; no automatic provider retry or Designer fallback.
+async function runAnimatedFollowup(sessionID) {
+  const artifactID = artifactOverride
+  let artifact = await detail(sessionID, artifactID)
+  const base = currentRevision(artifact)
+  result.ids.artifact_id = artifactID
+  result.revisions.base = base
+  result.animations.base = await screenshotPreview(sessionID, artifactID, base)
+  const partIDs = base.manifest.parts.map((part) => part.id)
+  assert(JSON.stringify(partIDs) === JSON.stringify(['hero', 'pricing', 'footer']), 'stable animated Part identity drifted')
+  const pending = (count, target) => {
+    const turns = (artifact.turns || []).filter((turn) => turn.status === 'awaiting_selection' && turn.base_commit_oid === base.commit_oid && turn.candidates?.length === count && turn.target_part_ids?.includes(target))
+    assert(turns.length === 1, `expected one reviewed ${target} turn, found ${turns.length}`)
+    return turns[0]
+  }
+  const initialTurnIDs = new Set((artifact.turns || []).map((turn) => turn.turn_id))
+  const inspectNew = async (prior, target, label) => {
+    artifact = await waitForTargetedTurn(sessionID, artifactID, prior.commit_oid)
+    assert(currentRevision(artifact).commit_oid === prior.commit_oid, 'generation moved head before selection')
+    const requestedRef = stage === 'animated-inspect' ? text(option('--reviewed-revision')) : ''
+    const turn = (artifact.turns || []).find((item) => (requestedRef ? item.candidates?.some((candidate) => candidate.revision?.revision_ref === requestedRef) : !initialTurnIDs.has(item.turn_id)) && item.base_commit_oid === prior.commit_oid && item.status === 'awaiting_selection' && item.target_part_ids?.length === 1 && item.target_part_ids[0] === target)
+    assert(turn?.candidates?.length === 1, 'targeted turn cardinality mismatch')
+    const candidate = turn.candidates[0]
+    assert(candidate.status === 'ready' && candidate.revision?.parents?.length === 1 && candidate.revision.parents[0] === prior.commit_oid, 'candidate is not ready with exact direct ancestry')
+    assert(JSON.stringify(candidate.revision.manifest.parts.map((part) => part.id)) === JSON.stringify(partIDs), 'candidate changed stable Part IDs')
+    result.revisions.candidate = candidate.revision
+    result.animations.candidate = await screenshotPreview(sessionID, artifactID, candidate.revision, label)
+    await verifyStudioTurns(sessionID, artifactID, turn, candidate, prior, artifact.turns.length)
+  }
+  if (stage === 'animated-repair') {
+    await postTurn(sessionID, 'responsive-continuation-repair', `Revise the still-selected exact native source session_id=${sessionID}, artifact_id=${artifactID}, revision_ref=${base.revision_ref}. The prior unselected Hero continuation clips Footer in Desktop's 840x844 iframe although its 1440x900 preview fits. Create one new complete candidate with read_v3/revise_v3 targeting hero, preserving all three Parts, Pricing and Footer text, animations, motion markers, Team $29 and ALTERNATE OPTION TWO. Keep CONTINUED SELECTED TURN and AFTER ALTERNATE CHOICE readable but compact the Hero at 840x844 so all three Parts including Footer are fully visible without scrolling, clipping or overlaps there AND at 1440x900. Keep the footer marker separated from text throughout motion. Do not delegate, select any candidate, move head, or reuse the rejected candidate. Inspect the actual responsive pixels before finishing.`)
+    await inspectNew(base, 'hero', 'AFTER ALTERNATE CHOICE')
+  } else if (stage === 'animated-alternatives-inspect') {
+    const turn = pending(2, 'footer')
+    const labels = new Set()
+    for (const candidate of turn.candidates) {
+      assert(candidate.revision.parents?.length === 1 && candidate.revision.parents[0] === base.commit_oid, 'sibling exact ancestry mismatch')
+      const sample = await screenshotPreview(sessionID, artifactID, candidate.revision)
+      const body = JSON.stringify(sample)
+      const label = body.includes('ALTERNATE OPTION ONE') ? 'one' : body.includes('ALTERNATE OPTION TWO') ? 'two' : ''
+      assert(label && !labels.has(label), 'sibling label absent or duplicated')
+      labels.add(label)
+      result.revisions[`alternate_${label}`] = candidate.revision
+      result.animations[`alternate_${label}`] = sample
+      await verifyStudioTurns(sessionID, artifactID, turn, candidate, base, artifact.turns.length)
+      await screenshot(page, `desktop-alternate-${label}-prior`)
+    }
+    assert(currentRevision(await detail(sessionID, artifactID)).commit_oid === base.commit_oid, 'comparison moved selected head')
+  } else if (stage === 'animated-inspect') {
+    await inspectNew(base, 'hero', text(option('--expected-label', 'CONTINUED SELECTED TURN')))
+  } else if (stage === 'animated-targeted') {
+    assert(!(artifact.turns || []).some((turn) => turn.base_commit_oid === base.commit_oid && turn.status === 'awaiting_selection'), 'existing pending turn must be inspected rather than regenerated')
+    await submitSidebarIteration(sessionID, artifactID, base)
+    await inspectNew(base, 'pricing', 'TARGETED PRICING TURN')
+  } else if (stage === 'animated-continue') {
+    const turn = pending(1, 'pricing')
+    const selected = await selectCandidateInStudio(sessionID, artifactID, turn, turn.candidates[0])
+    const revision = currentRevision(selected)
+    result.revisions.selected = revision
+    await submitSelectedContinuation(sessionID, artifactID, revision, revision.manifest.parts)
+    await inspectNew(revision, 'hero', 'CONTINUED SELECTED TURN')
+    assert(JSON.stringify(result.animations.candidate).includes('TARGETED PRICING TURN'), 'continuation lost Pricing change')
+  } else if (stage === 'animated-alternatives') {
+    const turn = pending(1, 'hero')
+    const selected = await selectCandidateInStudio(sessionID, artifactID, turn, turn.candidates[0])
+    const revision = currentRevision(selected)
+    result.revisions.selected = revision
+    const alternatives = await createSiblingAlternatives(sessionID, artifactID, revision)
+    assert(currentRevision(alternatives.artifact).commit_oid === revision.commit_oid, 'siblings prematurely moved head')
+    assert(alternatives.turn?.candidates?.length === 2, 'expected exactly two sibling alternatives')
+    const labels = new Set()
+    for (const candidate of alternatives.turn.candidates) {
+      assert(candidate.status === 'ready' && candidate.revision.parents?.length === 1 && candidate.revision.parents[0] === revision.commit_oid, 'sibling exact ancestry mismatch')
+      assert(JSON.stringify(candidate.revision.manifest.parts.map((part) => part.id)) === JSON.stringify(partIDs), 'sibling changed Part IDs')
+      const sample = await screenshotPreview(sessionID, artifactID, candidate.revision)
+      const body = JSON.stringify(sample)
+      const label = body.includes('ALTERNATE OPTION ONE') ? 'one' : body.includes('ALTERNATE OPTION TWO') ? 'two' : ''
+      assert(label && !labels.has(label), 'sibling label absent or duplicated')
+      labels.add(label)
+      result.revisions[`alternate_${label}`] = candidate.revision
+      result.animations[`alternate_${label}`] = sample
+    }
+    assert(alternatives.turn.candidates[0].revision.commit_oid !== alternatives.turn.candidates[1].revision.commit_oid, 'siblings collapsed')
+    await openDesktopStudio(sessionID, artifactID)
+    await screenshot(page, 'desktop-sibling-alternatives')
+  } else {
+    const turn = pending(2, 'footer')
+    const reviewedRef = text(option('--reviewed-revision'))
+    const reviewed = turn.candidates.find((candidate) => candidate.revision?.revision_ref === reviewedRef)
+    assert(reviewed, 'finish requires the exact independently reviewed --reviewed-revision')
+    const selected = await selectCandidateInStudio(sessionID, artifactID, turn, reviewed)
+    const revision = currentRevision(selected)
+    result.revisions.selected = revision
+    await postTurn(sessionID, 'after-alternate-choice', `Continue exactly session_id=${sessionID}, artifact_id=${artifactID}, revision_ref=${revision.revision_ref}. Without delegation, read_v3 and revise_v3 one complete candidate targeting hero only. Add the readable label AFTER ALTERNATE CHOICE. Preserve all three stable Parts, motion, existing labels CONTINUED SELECTED TURN, TARGETED PRICING TURN, ALTERNATE OPTION TWO, and Team $29. Keep the complete page readable and free of overlap at 1440x900 and inside Desktop. Do not select the candidate.`)
+    await inspectNew(revision, 'hero', 'AFTER ALTERNATE CHOICE')
+    assert(JSON.stringify(result.animations.candidate).includes('ALTERNATE OPTION TWO'), 'post-choice continuation lost chosen sibling')
+    for (const candidate of turn.candidates) {
+      result.animations[`retained_${candidate.candidate_id}`] = await screenshotPreview(sessionID, artifactID, candidate.revision)
+    }
+    await page.reload({ waitUntil: 'domcontentloaded' })
+    const reopened = await openDesktopStudio(sessionID, artifactID)
+    assert(await reopened.locator('[data-artifact-v3-part-navigator] [data-artifact-v3-part]').count() === 3, 'reload lost Part navigation')
+    assert(currentRevision(await detail(sessionID, artifactID)).commit_oid === revision.commit_oid, 'reload changed selected head')
+    await screenshot(page, 'desktop-after-reload')
+  }
+  assert(delegatedDesigners(await bootstrapSessions(), sessionID).length === 0, 'animated journey launched Designers')
+  const events = await replayEvents(sessionID)
+  const native = events.filter((event) => text(event.event_type).startsWith('artifact.v3.'))
+  assert(native.length >= 4 && !forbiddenLegacyWrite(native), 'native replay missing or contains legacy mutation identity')
+  const records = await page.evaluate(() => window.__artifactV3Records || [])
+  const live = records.filter((record) => record.session_id === sessionID && record.event_type?.startsWith('artifact.v3.'))
+  if (!['animated-inspect', 'animated-alternatives-inspect'].includes(stage)) assert(live.some((record) => record.endpoint_cursor_present), 'no cursor-bearing live Artifact event')
+  else assert(records.some((record) => record.session_id === sessionID && record.frame_kind === 'replay.complete' && record.endpoint_cursor_present), 'inspection reconnect lacks durable replay completion')
+  result.realtime = { replay_events: native.length, artifact_events: live.length }
+  result.gates = { ...result.gates, animated_exact_base: true, no_designer: true, native_replay: true, pixel_review_required: true }
+  result.result = 'PASS'
 }
 
 async function runAlternateChoiceResume(sessionID) {
@@ -926,14 +1053,14 @@ async function runVideoConversion(sessionID, selected, assignment) {
 async function runLive() {
   assert(apiURL && /^https?:\/\//.test(apiURL), '--api-url is required for the live journey')
   assert(desktopURL && /^https?:\/\//.test(desktopURL), '--desktop-url is invalid')
-  assert(['basic-html', 'targeted-part', 'selected-continuation', 'alternate-choice', 'alternate-choice-resume', 'animated-parts', 'video-conversion', 'full'].includes(stage), '--stage must be basic-html, targeted-part, selected-continuation, alternate-choice, alternate-choice-resume, animated-parts, video-conversion, or full')
+  assert(animatedFollowupStage || ['basic-html', 'targeted-part', 'selected-continuation', 'alternate-choice', 'alternate-choice-resume', 'animated-parts', 'video-conversion', 'full'].includes(stage), '--stage must be basic-html, targeted-part, selected-continuation, alternate-choice, alternate-choice-resume, animated-parts, video-conversion, or full')
   assert(Number.isFinite(timeoutMs) && timeoutMs >= 300000 && timeoutMs <= 600000, '--timeout-ms must be between 300000 and 600000')
   await auth()
   const assignment = await configureModels()
   const selected = await topology()
   let session
   if (sessionOverride) {
-    assert(alternateResumeStage || videoConversionStage || (initialRunOverride && desktopPathOverride.startsWith('/')), 'resuming requires --initial-run-id and an absolute --desktop-path unless using alternate-choice-resume or video-conversion')
+    assert(animatedFollowupStage || alternateResumeStage || videoConversionStage || (initialRunOverride && desktopPathOverride.startsWith('/')), 'resuming requires --initial-run-id and an absolute --desktop-path unless using alternate-choice-resume or video-conversion')
     const existing = await api('GET', `/v3/sessions/${encodeURIComponent(sessionOverride)}`, undefined, 'read resumed Artifact V3 session')
     const resumedSession = existing.body?.session || existing.body
     assert(text(resumedSession?.id) === sessionOverride, 'resumed Artifact V3 session was not found')
@@ -961,6 +1088,11 @@ async function runLive() {
     gate('realtime-subscribed-before-create', 'PASS', 'exact session subscription replay completed at a durable cursor')
   } else {
     gate('realtime-subscribed-before-create', 'SKIP', 'resumed server-owned conversion verifies durable source replay directly')
+  }
+  if (animatedFollowupStage) {
+    assert(sessionOverride && artifactOverride, 'animated follow-up requires exact session and artifact IDs')
+    await runAnimatedFollowup(session.sessionID)
+    return
   }
   if (alternateResumeStage) {
     await runAlternateChoiceResume(session.sessionID)
@@ -1018,7 +1150,7 @@ async function runLive() {
     const liveEvents = records.filter((record) => record.kind === 'message' && record.session_id === session.sessionID && record.event_type.startsWith('artifact.v3.'))
     assert(liveEvents.some((record) => record.endpoint_cursor_present), 'Desktop observed no cursor-bearing Artifact V3 event for basic HTML')
     result.realtime = { recorded: records.length, artifact_events: liveEvents.length, replay_events: artifactEvents.length }
-    gate('visible-pixels', 'PASS', animationStage ? 'two animated root frames captured and inspected' : 'root preview captured and inspected')
+    gate('visible-pixels', 'PASS', animationStage ? 'two animated root frames captured; independent pixel review required' : 'root preview captured; independent pixel review required')
     if (animationStage) gate('three-animated-parts', 'PASS', 'all Part timelines and visible motion markers advanced')
     gate('desktop-studio', 'PASS', 'three-Part navigator visible')
     gate('durable-replay', 'PASS', `events=${artifactEvents.length}`)
