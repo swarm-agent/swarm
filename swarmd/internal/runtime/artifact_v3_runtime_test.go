@@ -648,7 +648,7 @@ func TestArtifactV3RuntimeBuildPropagatesManifestVersionDiagnostic(t *testing.T)
 		body := `{` + field + `"entrypoint":"index.html","parts":[]}`
 		project := map[string][]byte{
 			pebblestore.ArtifactV3ManifestFilename: []byte(body),
-			"index.html":                         []byte(`<!doctype html><html><body>Hero</body></html>`),
+			"index.html":                           []byte(`<!doctype html><html><body>Hero</body></html>`),
 		}
 		build, err := adapter.Build(context.Background(), tool.ArtifactV3BuildRequest{ArtifactID: "artifact", TurnID: "turn", Attempt: 1, Project: project})
 		if err != nil || build.Status != "failed" || len(build.Diagnostics) != 1 {
@@ -794,8 +794,21 @@ func TestArtifactV3RuntimeThreePartManifestRepair(t *testing.T) {
 		t.Fatalf("failure advanced head: %+v err=%v publications=%d", after, err, publications)
 	}
 	candidate, ok, err := sessions.Store().GetArtifactV3Candidate("account", "user", grant.ArtifactID, follow.TurnID, follow.CandidateID)
-	if err != nil || !ok || candidate.Status == "ready" || candidate.CommitOID != "" {
-		t.Fatalf("failure published candidate=%+v exists=%v err=%v", candidate, ok, err)
+	if err != nil || ok {
+		t.Fatalf("failed gate created candidate=%+v exists=%v err=%v", candidate, ok, err)
+	}
+	// Build/finish rejection leaves the turn repairable. Only the explicit
+	// terminal callback records a failed slot; it must never acquire a revision.
+	if err := adapter.FailArtifactV3Turn(ctx, tool.ArtifactV3TurnFailure{ArtifactID: follow.ArtifactID, TurnID: follow.TurnID, CandidateID: follow.CandidateID, Code: "capture_viewport_overflow"}); err != nil {
+		t.Fatal(err)
+	}
+	candidate, ok, err = sessions.Store().GetArtifactV3Candidate("account", "user", grant.ArtifactID, follow.TurnID, follow.CandidateID)
+	if err != nil || !ok || candidate.Status != "failed" || candidate.CommitOID != "" || candidate.FailureCode != "capture_viewport_overflow" {
+		t.Fatalf("terminal failure candidate=%+v exists=%v err=%v", candidate, ok, err)
+	}
+	after, err = adapter.GetArtifact(ctx, apiPrincipal, sessionID, grant.ArtifactID)
+	if err != nil || after.Head == nil || after.Head.CommitOID != before.Head.CommitOID || publications != 1 {
+		t.Fatalf("terminal failure advanced head: %+v err=%v publications=%d", after, err, publications)
 	}
 }
 
