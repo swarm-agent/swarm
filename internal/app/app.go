@@ -8721,7 +8721,7 @@ func gitStatusForPath(path string) (gitRepoStatus, bool) {
 	rootRaw, err := rootCmd.Output()
 	if err != nil {
 		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) && exitErr.ExitCode() == 128 {
+		if errors.As(err, &exitErr) && exitErr.ExitCode() == 128 && strings.Contains(strings.ToLower(string(exitErr.Stderr)), "not a git repository") {
 			return gitRepoStatus{Branch: "-", Readiness: model.GitReadinessNotRepository}, false
 		}
 		return gitRepoStatus{Branch: "-", Readiness: model.GitReadinessCheckFailed}, false

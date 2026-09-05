@@ -59,6 +59,27 @@ func TestGitStatusForPathClassifiesMissingGitWithoutRawCommandError(t *testing.T
 	}
 }
 
+// Requirement: only Git's explicit not-a-repository diagnostic may produce the
+// authoritative local NotRepository state; other exit-128 failures are
+// indeterminate and must reach daemon-side repository admission.
+// Threat: safety policy such as dubious-ownership rejection also exits 128. If
+// misclassified as NotRepository, TUI onboarding blocks locally even though the
+// authenticated daemon can validate the same path under its execution identity.
+func TestGitStatusForPathDoesNotMisclassifyGitSafetyFailure(t *testing.T) {
+	binDir := t.TempDir()
+	wrapperPath := filepath.Join(binDir, "git")
+	wrapper := "#!/bin/sh\nprintf '%s\\n' 'fatal: detected dubious ownership in repository' >&2\nexit 128\n"
+	if err := os.WriteFile(wrapperPath, []byte(wrapper), 0o755); err != nil {
+		t.Fatalf("write git wrapper: %v", err)
+	}
+	t.Setenv("PATH", binDir)
+
+	status, ok := gitStatusForPath(t.TempDir())
+	if ok || status.Readiness != model.GitReadinessCheckFailed || status.HasGit {
+		t.Fatalf("Git safety failure status = %#v, ok=%v", status, ok)
+	}
+}
+
 func TestGitStatusForPathUsesNoOptionalLocks(t *testing.T) {
 	repo := initGitRepo(t)
 	writeFile(t, filepath.Join(repo, "tracked.txt"), "hello\n")
