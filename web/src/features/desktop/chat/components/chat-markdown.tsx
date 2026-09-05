@@ -2039,6 +2039,8 @@ function shouldRenderPreviewAsPlain(toolName: string): boolean {
     case "exit-plan-mode":
     case "exit_plan_mode":
     case "permission":
+    case "ask-user":
+    case "ask_user":
       return true;
     default:
       return false;
