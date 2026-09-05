@@ -32,6 +32,9 @@ class UbuntuBootstrapTests(unittest.TestCase):
             "TEST_ROOT": str(self.root),
             "REAL_TIMEOUT": shutil.which("timeout"),
         }
+        self.command("apt-config", '''[ "$*" = 'shell apt_config_parts Dir::Etc::parts/d' ]
+if [ "${CONFIG_MISSING:-}" != yes ]; then printf "apt_config_parts='%s';\\n" "$TEST_ROOT"; fi
+''')
         self.command("install", '''cat > "$TEST_ROOT/apt.conf"
 printf '%s\\n' "$*" > "$TEST_ROOT/install.args"
 ''')
@@ -77,11 +80,18 @@ exec "$REAL_TIMEOUT" --verbose --kill-after=0.1s "$budget" "$@"
                          'Acquire::Retries "0";\nAcquire::http::Timeout "30";\n'
                          'Acquire::https::Timeout "30";\nAPT::Update::Error-Mode "any";\n')
         self.assertEqual(self.text("install.args").strip(),
-                         "-m 0644 /dev/stdin /etc/apt/apt.conf.d/99swarm-install-test")
+                         f"-m 0644 /dev/stdin {self.root}/99swarm-install-test")
         calls = self.text("timeout.calls").splitlines()
         self.assertEqual(calls[0], "--verbose --kill-after=5s 180s apt-get update")
         self.assertEqual(calls[1], "--verbose --kill-after=5s 240s env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ca-certificates curl sudo systemd")
         self.assertIn("stage=apt-install passed", result.stdout)
+
+    def test_missing_configuration_stops_before_writes(self):
+        result = self.run_helper(CONFIG_MISSING="yes")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("APT configuration directory unavailable", result.stderr)
+        self.assertFalse((self.root / "apt.conf").exists())
+        self.assertFalse((self.root / "apt.calls").exists())
 
     def test_update_failure_never_installs(self):
         result = self.run_helper(UPDATE_ACTION="fail")

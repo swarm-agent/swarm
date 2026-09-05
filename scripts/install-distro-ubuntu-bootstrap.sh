@@ -5,7 +5,13 @@ set -euo pipefail
 # Keep the official image's repositories and authentication policy. Do not guess
 # an address-family or mirror failure from a slow acquisition. Bound each
 # connection and disable retries, including the installer's later Git download.
-install -m 0644 /dev/stdin /etc/apt/apt.conf.d/99swarm-install-test <<'APT'
+# Ask APT for its canonical configuration directory instead of hardcoding it.
+eval "$(apt-config shell apt_config_parts Dir::Etc::parts/d)"
+[[ -n "${apt_config_parts:-}" && -d "${apt_config_parts}" ]] || {
+  echo 'ubuntu-bootstrap: APT configuration directory unavailable' >&2
+  exit 1
+}
+install -m 0644 /dev/stdin "${apt_config_parts%/}/99swarm-install-test" <<'APT'
 Acquire::Retries "0";
 Acquire::http::Timeout "30";
 Acquire::https::Timeout "30";
