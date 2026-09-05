@@ -192,7 +192,7 @@ export function workspaceVideoContextMetadata(item: WorkspaceVideoCatalogItemWir
   }
 }
 
-export type CachedVideoMedia = { src: string; element: HTMLVideoElement }
+export type CachedVideoMedia = { src: string; element: HTMLVideoElement; disposePresentation?: () => void }
 export type CachedImageMedia = { src: string; element: HTMLImageElement }
 
 export function replaceCachedVideoMedia(
@@ -204,6 +204,7 @@ export function replaceCachedVideoMedia(
   const current = cache.get(clipId)
   if (current?.src === src) return { entry: current, replaced: false }
   if (current) {
+    current.disposePresentation?.()
     current.element.pause()
     current.element.removeAttribute('src')
     current.element.load()
@@ -2109,9 +2110,23 @@ export function VideoToolPage() {
 
   useEffect(() => {
     const cache = videoElementsRef.current
+    return () => {
+      for (const entry of cache.values()) {
+        entry.disposePresentation?.()
+        entry.element.pause()
+        entry.element.removeAttribute('src')
+        entry.element.load()
+      }
+      cache.clear()
+    }
+  }, [])
+
+  useEffect(() => {
+    const cache = videoElementsRef.current
     const mediaByClipId = new Map(timelineSegments.filter((segment) => segment.type === 'video' && segment.src).map((segment) => [segment.clipId, segment.src]))
     for (const [clipId, cached] of cache.entries()) {
       if (!mediaByClipId.has(clipId)) {
+        cached.disposePresentation?.()
         cached.element.pause()
         cached.element.removeAttribute('src')
         cached.element.load()
@@ -2154,7 +2169,24 @@ export function VideoToolPage() {
       }
       video.addEventListener('loadedmetadata', updateDuration)
       video.addEventListener('durationchange', updateDuration)
-      video.addEventListener('loadeddata', requestCanvasRender)
+      let presentationFrame = 0
+      entry.disposePresentation = () => {
+        if (presentationFrame) video.cancelVideoFrameCallback(presentationFrame)
+        presentationFrame = 0
+      }
+      const requestPresentedFrame = () => {
+        entry.disposePresentation?.()
+        requestCanvasRender()
+        // HAVE_CURRENT_DATA may precede the compositor's first decoded frame.
+        // One presentation callback (not a polling loop) redraws paused media.
+        if (typeof video.requestVideoFrameCallback === 'function') {
+          presentationFrame = video.requestVideoFrameCallback(() => {
+            presentationFrame = 0
+            if (cache.get(clipId)?.element === video) requestCanvasRender()
+          })
+        }
+      }
+      video.addEventListener('loadeddata', requestPresentedFrame)
       video.addEventListener('seeked', requestCanvasRender)
       video.addEventListener('error', retryAfterAuth)
       video.load()
