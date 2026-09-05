@@ -1535,6 +1535,19 @@ func applySelectedHTMLAnimationSources(timeline *pebblestore.VideoProjectTimelin
 		if len(candidates.Candidates) == 0 {
 			return fmt.Errorf("HTML animation part %q has no exact candidate source set", part.ID)
 		}
+		if part.ArtifactV3Source != nil || candidates.V3SelectedSource != nil || candidates.V3Derivative != nil || clip.ArtifactV3Ref != nil {
+			// Native V3 conversion already owns an immutable MP4. Validate its
+			// canonical selected set instead of interpreting it as legacy HTML.
+			if err := pebblestore.ValidateVideoPlanForIntent(pebblestore.VideoEditProposalIntentArtifactV3Convert, pebblestore.VideoPlanProposal{Kind: pebblestore.VideoPlanKindInitial, Parts: []pebblestore.VideoPlanPart{part}}); err != nil {
+				return fmt.Errorf("native V3 animation part %q: %w", part.ID, err)
+			}
+			if clip.ArtifactV3Ref == nil || *clip.ArtifactV3Ref != *candidates.V3Derivative || clip.ArtifactRef != nil || clip.ArtifactV2Ref != nil || clip.MediaType != "video/mp4" || clip.SourceKind != pebblestore.VideoClipSourceKindManagedArtifact || clip.SourceStartMs != 0 || clip.SourceEndMs != part.DurationMs {
+				return fmt.Errorf("native V3 animation part %q does not match its exact timeline derivative", part.ID)
+			}
+			// materializeTimelineInputs still authenticates ownership, immutable
+			// source identity and digest before supplying bytes to the decoder.
+			continue
+		}
 		selectedSource := candidates.SelectedSource
 		if candidates.SelectedCandidateID == "" {
 			if len(candidates.Candidates) == 1 {

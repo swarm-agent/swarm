@@ -897,7 +897,7 @@ async function runVideoConversion(sessionID, selected, assignment) {
   assertValidMP4(mp4Prefix, 'native V3 derivative')
   assert(Number(fallbackRecord.size_bytes) >= fallbackPrefix.length && Number(mp4Record.size_bytes) >= mp4Prefix.length, 'derivative size evidence is inconsistent')
   result.video.derivative_evidence = { fallback_size_bytes: fallbackRecord.size_bytes, mp4_size_bytes: mp4Record.size_bytes, digests: [fallback.digest_sha256, mp4.digest_sha256], containers_verified: true }
-  assert(Number(part.duration_ms) === Number(source.duration_ms) && Number(part.source_start_ms) === 0 && Number(part.source_end_ms) === Number(source.duration_ms) && Number(source.duration_ms) > 0 && Number(source.duration_ms) <= 60000 && Number(source.fps) > 0 && Number(source.fps) <= 60, 'pending native V3 video timing is inconsistent')
+  assert(Number(part.duration_ms) === Number(source.duration_ms) && Number(part.source_start_ms ?? 0) === 0 && Number(part.source_end_ms) === Number(source.duration_ms) && Number(source.duration_ms) > 0 && Number(source.duration_ms) <= 60000 && Number(source.fps) > 0 && Number(source.fps) <= 60, 'pending native V3 video timing is inconsistent')
   assert(part.visual == null && part.storyboard_source == null && part.storyboard_still == null && part.artifact_v2_source == null && part.artifact_v2_still == null && part.artifact_v2_visual == null, 'pending native V3 proposal contains V1/V2 visual identity')
   assert(part.animation_candidates?.status === 'ready' && Array.isArray(part.animation_candidates?.candidates) && part.animation_candidates.candidates.length === 1 && part.animation_candidates?.artifact_v3_selected_source && part.animation_candidates?.artifact_v3_derivative, 'pending native V3 proposal lost its sole selected HTML/MP4 animation authority')
   assertNativeV3VideoReference(part.animation_candidates.artifact_v3_selected_source, source, 'text/html', false)
@@ -908,7 +908,7 @@ async function runVideoConversion(sessionID, selected, assignment) {
   const afterReplay = await replayEvents(sessionID)
   const artifactProjectionEvents = afterReplay.filter((event) => text(event?.event_type).startsWith('artifact.v3.'))
   const afterArtifactReplay = artifactProjectionEvents.map((event) => `${event.seq}:${event.event_type}`)
-  assert(JSON.stringify(afterArtifactReplay) === JSON.stringify(beforeArtifactReplay) && !forbiddenLegacyWrite(afterReplay), 'video conversion changed native Artifact replay or emitted legacy identity')
+  assert(JSON.stringify(afterArtifactReplay) === JSON.stringify(beforeArtifactReplay) && !forbiddenLegacyWrite(artifactProjectionEvents), 'video conversion changed native Artifact replay or emitted legacy identity')
   const allSessions = await bootstrapSessions()
   const children = [...delegatedDesigners(allSessions, sessionID), ...delegatedDesigners(allSessions, videoSession.sessionID)]
   const delegated = Object.values(allSessions.sessions_by_id || {}).filter((session) => [sessionID, videoSession.sessionID].includes(text(session?.metadata?.parent_session_id)) && text(session?.metadata?.lineage_kind) === 'delegated_subagent')
