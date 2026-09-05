@@ -72,7 +72,7 @@ command -v python3 >/dev/null 2>&1 || fail "python3 is required to serve the exa
 case "${DISTRO}" in
   ubuntu)
     IMAGE="${SWARM_INSTALL_UBUNTU_IMAGE:-docker.io/library/ubuntu:24.04}"
-    BOOTSTRAP='apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ca-certificates curl sudo systemd'
+    BOOTSTRAP='bash /bootstrap-ubuntu.sh'
     ;;
   arch)
     IMAGE="${SWARM_INSTALL_ARCH_IMAGE:-docker.io/library/archlinux:base}"
@@ -92,7 +92,12 @@ cleanup() {
   rm -rf -- "${build_root}"
 }
 trap cleanup EXIT INT TERM
-printf 'FROM %s\nRUN %s\nSTOPSIGNAL SIGRTMIN+3\nCMD ["/usr/lib/systemd/systemd"]\n' "${IMAGE}" "${BOOTSTRAP}" >"${build_root}/Containerfile"
+printf 'FROM %s\n' "${IMAGE}" >"${build_root}/Containerfile"
+if [[ "${DISTRO}" == ubuntu ]]; then
+  cp -- "$(dirname -- "${BASH_SOURCE[0]}")/install-distro-ubuntu-bootstrap.sh" "${build_root}/bootstrap-ubuntu.sh"
+  printf 'COPY bootstrap-ubuntu.sh /bootstrap-ubuntu.sh\n' >>"${build_root}/Containerfile"
+fi
+printf 'RUN %s\nSTOPSIGNAL SIGRTMIN+3\nCMD ["/usr/lib/systemd/systemd"]\n' "${BOOTSTRAP}" >>"${build_root}/Containerfile"
 "${RUNTIME}" build --pull -t "${test_image}" -f "${build_root}/Containerfile" "${build_root}"
 
 run_args=(run --rm --name "${container_name}" --privileged)
