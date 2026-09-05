@@ -15,6 +15,11 @@
 #define FFF_CREATE_OPTIONS_VERSION 2
 
 /**
+ * Current version of [`FffWatchOptions`].
+ */
+#define FFF_WATCH_OPTIONS_VERSION 1
+
+/**
  * Result envelope returned by all `fff_*` functions.
  *
  * Heap-allocated. The caller must free it with `fff_free_result`. Calling `fff_free_result`
@@ -62,13 +67,13 @@ typedef struct FffResult {
 /**
  * Options for `fff_create_instance_with`.
  *
- * Versioned struct: you populate the struct at your call level, we guarantee that
- * the version is stable across the version changes, new fields only appended!
+ * Versioned struct: the layout is stable across releases, new fields are
+ * only appended.
  */
 typedef struct FffCreateOptions {
   /**
-   * Set to [`FFF_CREATE_OPTIONS_VERSION`] when allocating. Used by the
-   * library to determine which trailing fields are populated.
+   * Set to [`FFF_CREATE_OPTIONS_VERSION`] when allocating; tells the
+   * library which trailing fields are populated.
    */
   uint32_t version;
   /**
@@ -121,28 +126,24 @@ typedef struct FffCreateOptions {
    */
   uint64_t cache_budget_max_file_size;
   /**
-   * Allow indexing the filesystem root (`/`). Off by default — root is
-   * rarely the intended target and floods the watcher with churn.
+   * Allow indexing the filesystem root (`/`). Off by default: root is rarely
+   * intended and floods the watcher with churn.
    */
   bool enable_fs_root_scanning;
   /**
-   * Allow indexing the user's home directory. Same trade-off as
-   * `enable_fs_root_scanning`.
+   * Allow indexing the user's home directory. Same trade-off as `enable_fs_root_scanning`.
    */
   bool enable_home_dir_scanning;
   /**
-   * Follow symlinks during scan and watcher walks. Off by default —
-   * enabling this without external loop protection can wedge the watcher
-   * on cyclic symlink graphs. Caller is responsible for the trade-off.
+   * Follow symlinks during scan and watcher walks. Off by default: without
+   * external loop protection cyclic symlinks can wedge the watcher.
    */
   bool follow_symlinks;
 } FffCreateOptions;
 
 /**
- * A file item returned by `fff_search`.
- *
- * All string fields are heap-allocated and owned by the parent `FffSearchResult`.
- * Free the entire result with `fff_free_search_result`.
+ * A file item returned by `fff_search`. Strings are owned by the parent
+ * `FffSearchResult`; free everything with `fff_free_search_result`.
  */
 typedef struct FffFileItem {
   char *relative_path;
@@ -174,13 +175,9 @@ typedef struct FffScore {
 } FffScore;
 
 /**
- * Location parsed from a query string (e.g. `"file.ts:42:10"`).
- *
- * `tag` encodes the variant:
- *   0 = no location,
- *   1 = line only (`line` is set),
- *   2 = position (`line` + `col`),
- *   3 = range (`line`/`col` = start, `end_line`/`end_col` = end).
+ * Location parsed from a query string (e.g. `"file.ts:42:10"`). `tag`:
+ * 0 = none, 1 = line, 2 = position (`line` + `col`),
+ * 3 = range (`line`/`col` = start, `end_line`/`end_col` = end).
  */
 typedef struct FffLocation {
   uint8_t tag;
@@ -191,17 +188,15 @@ typedef struct FffLocation {
 } FffLocation;
 
 /**
- * Search result returned by `fff_search`.
- *
- * The caller must free this with `fff_free_search_result`.
+ * Search result returned by `fff_search`; free with `fff_free_search_result`.
  */
 typedef struct FffSearchResult {
   /**
-   * Pointer to a heap-allocated array of `FffFileItem` (length = `count`).
+   * Heap array of `FffFileItem` (length = `count`).
    */
   struct FffFileItem *items;
   /**
-   * Pointer to a heap-allocated array of `FffScore` (length = `count`).
+   * Heap array of `FffScore` (length = `count`).
    */
   struct FffScore *scores;
   /**
@@ -231,10 +226,8 @@ typedef struct FffMatchRange {
 } FffMatchRange;
 
 /**
- * A single grep match with file and line information.
- *
- * All string fields and arrays are heap-allocated. Free the parent
- * `FffGrepResult` with `fff_free_grep_result` to release everything.
+ * A single grep match with file and line information. Strings and arrays are
+ * owned by the parent `FffGrepResult`; free everything with `fff_free_grep_result`.
  */
 typedef struct FffGrepMatch {
   char *relative_path;
@@ -262,13 +255,12 @@ typedef struct FffGrepMatch {
 } FffGrepMatch;
 
 /**
- * Grep result returned by `fff_live_grep` and `fff_multi_grep`.
- *
- * The caller must free this with `fff_free_grep_result`.
+ * Grep result returned by `fff_live_grep` and `fff_multi_grep`;
+ * free with `fff_free_grep_result`.
  */
 typedef struct FffGrepResult {
   /**
-   * Pointer to a heap-allocated array of `FffGrepMatch` (length = `count`).
+   * Heap array of `FffGrepMatch` (length = `count`).
    */
   struct FffGrepMatch *items;
   /**
@@ -313,10 +305,8 @@ typedef struct FffScanProgress {
 } FffScanProgress;
 
 /**
- * A directory item returned by `fff_search_directories`.
- *
- * All string fields are heap-allocated and owned by the parent `FffDirSearchResult`.
- * Free the entire result with `fff_free_dir_search_result`.
+ * A directory item returned by `fff_search_directories`. Strings are owned by
+ * the parent `FffDirSearchResult`; free everything with `fff_free_dir_search_result`.
  */
 typedef struct FffDirItem {
   char *relative_path;
@@ -325,17 +315,16 @@ typedef struct FffDirItem {
 } FffDirItem;
 
 /**
- * Directory search result returned by `fff_search_directories`.
- *
- * The caller must free this with `fff_free_dir_search_result`.
+ * Directory search result returned by `fff_search_directories`;
+ * free with `fff_free_dir_search_result`.
  */
 typedef struct FffDirSearchResult {
   /**
-   * Pointer to a heap-allocated array of `FffDirItem` (length = `count`).
+   * Heap array of `FffDirItem` (length = `count`).
    */
   struct FffDirItem *items;
   /**
-   * Pointer to a heap-allocated array of `FffScore` (length = `count`).
+   * Heap array of `FffScore` (length = `count`).
    */
   struct FffScore *scores;
   /**
@@ -354,9 +343,8 @@ typedef struct FffDirSearchResult {
 
 /**
  * A single item in a mixed (files + directories) search result.
- *
- * `item_type`: 0 = file, 1 = directory.
- * All string fields are heap-allocated and owned by the parent `FffMixedSearchResult`.
+ * `item_type`: 0 = file, 1 = directory. Strings are owned by the parent
+ * `FffMixedSearchResult`.
  */
 typedef struct FffMixedItem {
   /**
@@ -372,8 +360,7 @@ typedef struct FffMixedItem {
   uint64_t size;
   uint64_t modified;
   /**
-   * The access frecency score for files, or max access frecency among all the immediate
-   * children for directories.
+   * Access frecency for files; max among immediate children for directories.
    */
   int64_t access_frecency_score;
   /**
@@ -391,17 +378,16 @@ typedef struct FffMixedItem {
 } FffMixedItem;
 
 /**
- * Mixed search result returned by `fff_search_mixed`.
- *
- * The caller must free this with `fff_free_mixed_search_result`.
+ * Mixed search result returned by `fff_search_mixed`
+ * free with `fff_free_mixed_search_result`.
  */
 typedef struct FffMixedSearchResult {
   /**
-   * Pointer to a heap-allocated array of `FffMixedItem` (length = `count`).
+   * Heap array of `FffMixedItem` (length = `count`).
    */
   struct FffMixedItem *items;
   /**
-   * Pointer to a heap-allocated array of `FffScore` (length = `count`).
+   * Heap array of `FffScore` (length = `count`).
    */
   struct FffScore *scores;
   /**
@@ -427,13 +413,55 @@ typedef struct FffMixedSearchResult {
 } FffMixedSearchResult;
 
 /**
+ * A single watch event. `kind`: 0 = created, 1 = modified, 2 = removed,
+ * 3 = rescan (events were lost; re-stat what you care about).
+ */
+typedef struct FffWatchEvent {
+  /**
+   * Absolute path (heap C string owned by the parent batch).
+   */
+  char *path;
+  uint8_t kind;
+} FffWatchEvent;
+
+/**
+ * A batch of watch events. Free with `fff_free_watch_events`.
+ */
+typedef struct FffWatchEventBatch {
+  struct FffWatchEvent *events;
+  uint32_t count;
+} FffWatchEventBatch;
+
+/**
+ * Instance-wide callback invoked with `(watch_id, batch)` for every `fff_watch`
+ * subscription. The callee owns and frees `batch` via `fff_free_watch_events`.
+ */
+typedef void (*FffWatchCallback)(uint64_t watch_id,
+                                 struct FffWatchEventBatch *batch,
+                                 void *user_data);
+
+/**
+ * Options for `fff_watch`. Versioned: new fields are only appended.
+ */
+typedef struct FffWatchOptions {
+  /**
+   * Set to [`FFF_WATCH_OPTIONS_VERSION`] when allocating.
+   */
+  uint32_t version;
+  /**
+   * Per-subscription excludes (parcel-watcher style): entries with wildcards
+   * are base-relative globs, entries without are path prefixes. NULL when
+   * `ignore_count` is 0.
+   */
+  const char *const *ignore;
+  uint32_t ignore_count;
+} FffWatchOptions;
+
+/**
  * Create a new file finder instance (legacy 8-arg positional signature).
  *
- * @deprecated Use [`fff_create_instance_with`] (or
- * [`fff_create_instance_with_value`] for FFI bindings) — both take the
- * versioned [`FffCreateOptions`] struct that evolves without ABI breaks.
- * This function delegates to `fff_create_instance_with` internally; the
- * `use_unsafe_no_lock` parameter is deprecated and ignored.
+ * @deprecated Use [`fff_create_instance_with`] (or [`fff_create_instance_with_value`]
+ * for FFI bindings). The `use_unsafe_no_lock` parameter is ignored.
  *
  * ## Safety
  * See `fff_create_instance_with`.
@@ -451,10 +479,8 @@ struct FffResult *fff_create_instance(const char *base_path,
 /**
  * Create a new file finder instance (legacy 13-arg positional signature).
  *
- * @deprecated Use [`fff_create_instance_with`] (or
- * [`fff_create_instance_with_value`] for FFI bindings) — both take the
- * versioned [`FffCreateOptions`] struct that evolves without ABI breaks.
- * The `use_unsafe_no_lock` parameter is deprecated and ignored.
+ * @deprecated Use [`fff_create_instance_with`] (or [`fff_create_instance_with_value`]
+ * for FFI bindings). The `use_unsafe_no_lock` parameter is ignored.
  *
  * ## Safety
  * See `fff_create_instance_with`.
@@ -475,22 +501,14 @@ struct FffResult *fff_create_instance2(const char *base_path,
                                        uint64_t cache_budget_max_file_size);
 
 /**
- * Create a new file finder instance from an [`FffCreateOptions`] struct.
+ * Create a new file finder instance from a versioned [`FffCreateOptions`] struct.
  *
- * **Direct C consumers** populate the struct (designated initializers
- * recommended), set `version` to [`FFF_CREATE_OPTIONS_VERSION`], and pass
- * it by pointer. New fields are appended in future versions; old callers
- * passing `version = 1` keep working forever.
+ * Populate the struct, set `version` to [`FFF_CREATE_OPTIONS_VERSION`], pass by
+ * pointer. New fields are only appended; older `version` values keep working.
+ * FFI bindings needing struct-by-value should use [`fff_create_instance_with_value`].
  *
- * **FFI consumers** that prefer struct-by-value semantics (e.g. ffi-rs's
- * `paramsType: [structDef]`) should use [`fff_create_instance_with_value`]
- * instead — it's a thin calling-convention adapter that delegates here.
- *
- * Required: `opts.base_path` must be non-NULL and non-empty.
- *
- * When all three `cache_budget_*` values are 0 the budget is auto-computed
- * from repo size after the initial scan. Otherwise an explicit budget is
- * used: any field left at 0 falls back to its `unlimited()` default.
+ * `opts.base_path` is required (non-NULL, non-empty). Zero `cache_budget_*`
+ * values are auto-computed from repo size after the initial scan.
  *
  * ## Safety
  * * `opts` must be a valid pointer to an `FffCreateOptions` whose `version`
@@ -501,16 +519,8 @@ struct FffResult *fff_create_instance2(const char *base_path,
 struct FffResult *fff_create_instance_with(const struct FffCreateOptions *opts);
 
 /**
- * Calling-convention adapter for [`fff_create_instance_with`].
- *
- * Same logic, but takes the [`FffCreateOptions`] struct **by value**. This
- * makes the function callable from FFI libraries whose native struct
- * support passes structs by value on the wire (e.g. Node's `ffi-rs` with
- * `paramsType: [structDef]`).
- *
- * This is **not** a versioned wrapper — when new fields are appended to
- * `FffCreateOptions`, both this function and `fff_create_instance_with`
- * pick them up automatically with no signature change.
+ * [`fff_create_instance_with`] adapter taking [`FffCreateOptions`] **by value**,
+ * for FFI libraries that pass native structs by value (e.g. Node's `ffi-rs`).
  *
  * ## Safety
  * All `*const c_char` fields inside `opts` must be valid null-terminated
@@ -529,16 +539,9 @@ void fff_destroy(void *fff_handle);
 /**
  * Perform fuzzy search on indexed files.
  *
- * # Parameters
- *
- * * `fff_handle`              – instance from `fff_create_instance`
- * * `query`                   – search query string
- * * `current_file`            – path of the currently open file for deprioritization (NULL/empty to skip)
- * * `max_threads`             – maximum worker threads (0 = auto-detect)
- * * `page_index`              – pagination offset (0 = first page)
- * * `page_size`               – results per page (0 = default 100)
- * * `combo_boost_multiplier`  – score multiplier for combo matches (0 = default 100)
- * * `min_combo_count`         – minimum combo count before boost applies (0 = default 3)
+ * `current_file` deprioritizes the currently open file (NULL/empty to skip).
+ * Zero picks the default: `max_threads` auto, `page_size` 100,
+ * `combo_boost_multiplier` 100, `min_combo_count` 3.
  *
  * ## Safety
  * * `fff_handle` must be a valid instance pointer from `fff_create_instance`.
@@ -554,22 +557,11 @@ struct FffResult *fff_search(void *fff_handle,
                              uint32_t min_combo_count);
 
 /**
- * Glob-only search: filter indexed files by a single glob pattern, rank by
- * frecency, and paginate. Bypasses the regular query parser entirely.
+ * Glob-only search: filter indexed files by a single glob pattern (passed
+ * through verbatim, no query parsing), rank by frecency, and paginate.
  *
- * Use this when you already have a literal glob pattern (e.g. `*.rs`, a
- * recursive `**` match, or `src/components` prefix) and want neither fuzzy
- * matching nor multi-token constraint parsing. Ranking falls back to
- * frecency because there is no fuzzy score to combine with.
- *
- * # Parameters
- *
- * * `fff_handle`   - instance from `fff_create_instance`
- * * `pattern`      - glob pattern (required, no parsing - passed through verbatim)
- * * `current_file` - path of the currently open file for deprioritization (NULL/empty to skip)
- * * `max_threads`  - maximum worker threads (0 = auto-detect)
- * * `page_index`   - pagination offset (0 = first page)
- * * `page_size`    - results per page (0 = default 100)
+ * `current_file` deprioritizes the currently open file (NULL/empty to skip).
+ * Zero picks the default: `max_threads` auto, `page_size` 100.
  *
  * ## Safety
  * * `fff_handle` must be a valid instance pointer from `fff_create_instance`.
@@ -585,14 +577,8 @@ struct FffResult *fff_glob(void *fff_handle,
 /**
  * Perform fuzzy search on indexed directories.
  *
- * # Parameters
- *
- * * `fff_handle`   – instance from `fff_create_instance`
- * * `query`        – search query string
- * * `current_file` – path of the currently open file for distance scoring (NULL/empty to skip)
- * * `max_threads`  – maximum worker threads (0 = auto-detect)
- * * `page_index`   – pagination offset (0 = first page)
- * * `page_size`    – results per page (0 = default 100)
+ * `current_file` is used for distance scoring (NULL/empty to skip).
+ * Zero picks the default: `max_threads` auto, `page_size` 100.
  *
  * ## Safety
  * * `fff_handle` must be a valid instance pointer from `fff_create_instance`.
@@ -608,20 +594,8 @@ struct FffResult *fff_search_directories(void *fff_handle,
 /**
  * Perform a mixed fuzzy search across both files and directories.
  *
- * Returns a single flat list where files and directories are interleaved
- * by total score in descending order. Each item has an `item_type` field
- * (0 = file, 1 = directory).
- *
- * # Parameters
- *
- * * `fff_handle`              – instance from `fff_create_instance`
- * * `query`                   – search query string
- * * `current_file`            – path of the currently open file (NULL/empty to skip)
- * * `max_threads`             – maximum worker threads (0 = auto-detect)
- * * `page_index`              – pagination offset (0 = first page)
- * * `page_size`               – results per page (0 = default 100)
- * * `combo_boost_multiplier`  – score multiplier for combo matches (0 = default 100)
- * * `min_combo_count`         – minimum combo count before boost applies (0 = default 3)
+ * Returns one flat list interleaved by descending total score; each item's
+ * `item_type` is 0 = file, 1 = directory. Parameters as in [`fff_search`].
  *
  * ## Safety
  * * `fff_handle` must be a valid instance pointer from `fff_create_instance`.
@@ -639,20 +613,11 @@ struct FffResult *fff_search_mixed(void *fff_handle,
 /**
  * Perform content search (grep) across indexed files.
  *
- * # Parameters
- *
- * * `fff_handle`            – instance from `fff_create_instance`
- * * `query`                 – search query (supports constraint syntax like `*.rs pattern`)
- * * `mode`                  – 0 = plain text (SIMD), 1 = regex, 2 = fuzzy
- * * `max_file_size`         – skip files larger than this in bytes (0 = default 10 MB)
- * * `max_matches_per_file`  – max matches per file (0 = unlimited)
- * * `smart_case`            – case-insensitive when query is all lowercase
- * * `file_offset`           – file-based pagination offset (0 = start)
- * * `page_limit`            – max matches to return (0 = default 50)
- * * `time_budget_ms`        – wall-clock budget in ms (0 = unlimited)
- * * `before_context`        – context lines before each match
- * * `after_context`         – context lines after each match
- * * `classify_definitions`  – tag matches that are code definitions
+ * `query` supports constraint syntax like `*.rs pattern`; `mode` is
+ * 0 = plain text (SIMD), 1 = regex, 2 = fuzzy. Zero picks the default:
+ * `max_file_size` 10 MB, `page_limit` 50, `max_matches_per_file` and
+ * `time_budget_ms` unlimited. `smart_case` is case-insensitive for
+ * all-lowercase queries; `classify_definitions` tags code definitions.
  *
  * ## Safety
  * * `fff_handle` must be a valid instance pointer from `fff_create_instance`.
@@ -672,25 +637,11 @@ struct FffResult *fff_live_grep(void *fff_handle,
                                 bool classify_definitions);
 
 /**
- * Perform multi-pattern OR search (Aho-Corasick) across indexed files.
+ * Multi-pattern OR search (SIMD Aho-Corasick): lines matching ANY pattern.
  *
- * Searches for lines matching ANY of the provided patterns using
- * SIMD-accelerated multi-needle matching.
- *
- * # Parameters
- *
- * * `fff_handle`              – instance from `fff_create_instance`
- * * `patterns_joined`         – patterns separated by `\n` (e.g. `"foo\nbar\nbaz"`)
- * * `constraints`             – file filter like `"*.rs"` or `"/src/"` (NULL/empty to skip)
- * * `max_file_size`           – skip files larger than this in bytes (0 = default 10 MB)
- * * `max_matches_per_file`    – max matches per file (0 = unlimited)
- * * `smart_case`              – case-insensitive when all patterns are lowercase
- * * `file_offset`             – file-based pagination offset (0 = start)
- * * `page_limit`              – max matches to return (0 = default 50)
- * * `time_budget_ms`          – wall-clock budget in ms (0 = unlimited)
- * * `before_context`          – context lines before each match
- * * `after_context`           – context lines after each match
- * * `classify_definitions`    – tag matches that are code definitions
+ * `patterns_joined` is `\n`-separated (e.g. `"foo\nbar"`); `constraints` is an
+ * optional file filter like `"*.rs"` or `"/src/"` (NULL/empty to skip).
+ * Remaining parameters as in [`fff_live_grep`].
  *
  * ## Safety
  * * `fff_handle` must be a valid instance pointer from `fff_create_instance`.
@@ -726,10 +677,8 @@ struct FffResult *fff_scan_files(void *fff_handle);
 bool fff_is_scanning(void *fff_handle);
 
 /**
- * Get the base path of the file picker.
- *
- * Returns an `FffResult` with a heap-allocated C string in the `handle`
- * field. Free the string with `fff_free_string` after reading it.
+ * Get the picker's base path as a heap C string in `handle`;
+ * free it with `fff_free_string`.
  *
  * ## Safety
  * `fff_handle` must be a valid instance pointer from `fff_create_instance`.
@@ -805,10 +754,8 @@ struct FffResult *fff_get_historical_query(void *fff_handle, uint64_t offset);
 struct FffResult *fff_health_check(void *fff_handle, const char *test_path);
 
 /**
- * Free a search result returned by `fff_search`.
- *
- * This frees the `FffSearchResult` struct, its `items` and `scores` arrays,
- * and all heap-allocated strings within each item and score.
+ * Free a search result returned by `fff_search`: the struct, its `items`
+ * and `scores` arrays, and every string within.
  *
  * ## Safety
  * `result` must be a valid pointer previously returned via `FffResult.handle`
@@ -817,10 +764,8 @@ struct FffResult *fff_health_check(void *fff_handle, const char *test_path);
 void fff_free_search_result(struct FffSearchResult *result);
 
 /**
- * Get a pointer to the `index`-th `FffFileItem` in a search result.
- *
- * Returns null if `result` is null or `index >= result->count`.
- * The returned pointer is valid until the search result is freed.
+ * Pointer to the `index`-th `FffFileItem`; null if `result` is null or
+ * `index >= count`. Valid until the search result is freed.
  *
  * ## Safety
  * `result` must be a valid `FffSearchResult` pointer from `fff_search`.
@@ -829,10 +774,8 @@ const struct FffFileItem *fff_search_result_get_item(const struct FffSearchResul
                                                      uint32_t index);
 
 /**
- * Get a pointer to the `index`-th `FffScore` in a search result.
- *
- * Returns null if `result` is null or `index >= result->count`.
- * The returned pointer is valid until the search result is freed.
+ * Pointer to the `index`-th `FffScore`; null if `result` is null or
+ * `index >= count`. Valid until the search result is freed.
  *
  * ## Safety
  * `result` must be a valid `FffSearchResult` pointer from `fff_search`.
@@ -841,10 +784,8 @@ const struct FffScore *fff_search_result_get_score(const struct FffSearchResult 
                                                    uint32_t index);
 
 /**
- * Free a grep result returned by `fff_live_grep` or `fff_multi_grep`.
- *
- * This frees the `FffGrepResult` struct, its `items` array, and all
- * heap-allocated strings, match ranges, and context arrays within each match.
+ * Free a grep result returned by `fff_live_grep` or `fff_multi_grep`:
+ * the struct, its `items` array, and all strings/ranges/context within.
  *
  * ## Safety
  * `result` must be a valid pointer previously returned via `FffResult.handle`
@@ -853,10 +794,8 @@ const struct FffScore *fff_search_result_get_score(const struct FffSearchResult 
 void fff_free_grep_result(struct FffGrepResult *result);
 
 /**
- * Get a pointer to the `index`-th `FffGrepMatch` in a grep result.
- *
- * Returns null if `result` is null or `index >= result->count`.
- * The returned pointer is valid until the grep result is freed.
+ * Pointer to the `index`-th `FffGrepMatch`; null if `result` is null or
+ * `index >= count`. Valid until the grep result is freed.
  *
  * ## Safety
  * `result` must be a valid `FffGrepResult` pointer from `fff_live_grep` or `fff_multi_grep`.
@@ -874,10 +813,8 @@ const struct FffGrepMatch *fff_grep_result_get_match(const struct FffGrepResult 
 void fff_free_scan_progress(struct FffScanProgress *result);
 
 /**
- * Offset a pointer by `byte_offset` bytes.
- *
- * General-purpose utility for FFI consumers that need pointer arithmetic
- * (e.g. iterating over arrays). Returns null if `base` is null.
+ * Offset a pointer by `byte_offset` bytes (FFI array iteration helper).
+ * Returns null if `base` is null.
  *
  * ## Safety
  * The resulting pointer must be within the bounds of the original allocation.
@@ -885,13 +822,9 @@ void fff_free_scan_progress(struct FffScanProgress *result);
 const void *fff_ptr_offset(const void *base, uintptr_t byte_offset);
 
 /**
- * Free a result returned by any `fff_*` function.
- * **IMPORTANT:** this doesn't clean the the internal handle, so it is safe to call right after
- * you handle the error case.
- *
- * Note: Many non-libffi implementations are not supporting struct-by-value returns, so it's more
- * convenient to have pointer returned at most of the time, though allocating result for every call
- * is annoying, so we just rely on the fact that our allocator is good enough.
+ * Free a result envelope returned by any `fff_*` function.
+ * **IMPORTANT:** the `handle` payload is NOT freed release it separately
+ * using handle specific cleaning methods (`fff_destroy`, `fff_free_search_result`, etc.).
  *
  * ## Safety
  * `result_ptr` must be a valid pointer returned by a `fff_*` function.
@@ -961,10 +894,41 @@ const struct FffScore *fff_mixed_search_result_get_score(const struct FffMixedSe
                                                          uint32_t index);
 
 /**
- * Returns the relative path of a file item (e.g. `"src/main.rs"`).
+ * Returns whether the operation completed successfully. Returns `false` if `result` is null.
  *
- * Returns null if `item` is null. The returned pointer is valid for the
- * lifetime of the owning `FffSearchResult`; do not free it directly.
+ * ## Safety
+ * `result` must be a valid `FffResult` pointer or null.
+ */
+bool fff_result_get_success(const struct FffResult *result);
+
+/**
+ * Returns the operation error message, or null when there is no error or `result` is null.
+ *
+ * Do not free the returned pointer. It remains valid until `fff_free_result` is called.
+ *
+ * ## Safety
+ * `result` must be a valid `FffResult` pointer or null.
+ */
+const char *fff_result_get_error(const struct FffResult *result);
+
+/**
+ * Returns the result payload handle, or null if `result` is null.
+ *
+ * ## Safety
+ * `result` must be a valid `FffResult` pointer or null.
+ */
+void *fff_result_get_handle(const struct FffResult *result);
+
+/**
+ * Returns the result integer payload. Returns `0` if `result` is null.
+ *
+ * ## Safety
+ * `result` must be a valid `FffResult` pointer or null.
+ */
+int64_t fff_result_get_int_value(const struct FffResult *result);
+
+/**
+ * Relative path of a file item (e.g. `"src/main.rs"`); null if `item` is null. Do not free.
  *
  * ## Safety
  * `item` must be a valid `FffFileItem` pointer or null.
@@ -972,9 +936,7 @@ const struct FffScore *fff_mixed_search_result_get_score(const struct FffMixedSe
 const char *fff_file_item_get_relative_path(const struct FffFileItem *item);
 
 /**
- * Returns the file-name component of a file item (e.g. `"main.rs"`).
- *
- * Returns null if `item` is null. Do not free the returned pointer.
+ * File-name component of a file item (e.g. `"main.rs"`); null if `item` is null. Do not free.
  *
  * ## Safety
  * `item` must be a valid `FffFileItem` pointer or null.
@@ -982,10 +944,8 @@ const char *fff_file_item_get_relative_path(const struct FffFileItem *item);
 const char *fff_file_item_get_file_name(const struct FffFileItem *item);
 
 /**
- * Returns the git status string for a file item (e.g. `"M "`, `"??"`)
- * or null if git is unavailable, the file is untracked, or `item` is null.
- *
- * Do not free the returned pointer.
+ * Git status string of a file item (e.g. `"M "`, `"??"`); null if git is unavailable,
+ * the file is untracked, or `item` is null. Do not free.
  *
  * ## Safety
  * `item` must be a valid `FffFileItem` pointer or null.
@@ -993,7 +953,7 @@ const char *fff_file_item_get_file_name(const struct FffFileItem *item);
 const char *fff_file_item_get_git_status(const struct FffFileItem *item);
 
 /**
- * Returns the file size in bytes. Returns `0` if `item` is null.
+ * File size in bytes; `0` if `item` is null.
  *
  * ## Safety
  * `item` must be a valid `FffFileItem` pointer or null.
@@ -1001,8 +961,7 @@ const char *fff_file_item_get_git_status(const struct FffFileItem *item);
 uint64_t fff_file_item_get_size(const struct FffFileItem *item);
 
 /**
- * Returns the last-modified time as seconds since the UNIX epoch.
- * Returns `0` if `item` is null.
+ * Last-modified time as seconds since the UNIX epoch; `0` if `item` is null.
  *
  * ## Safety
  * `item` must be a valid `FffFileItem` pointer or null.
@@ -1010,7 +969,7 @@ uint64_t fff_file_item_get_size(const struct FffFileItem *item);
 uint64_t fff_file_item_get_modified(const struct FffFileItem *item);
 
 /**
- * Returns the combined frecency score. Returns `0` if `item` is null.
+ * Combined frecency score; `0` if `item` is null.
  *
  * ## Safety
  * `item` must be a valid `FffFileItem` pointer or null.
@@ -1018,7 +977,7 @@ uint64_t fff_file_item_get_modified(const struct FffFileItem *item);
 int64_t fff_file_item_get_total_frecency_score(const struct FffFileItem *item);
 
 /**
- * Returns the access-based frecency score. Returns `0` if `item` is null.
+ * Access-based frecency score; `0` if `item` is null.
  *
  * ## Safety
  * `item` must be a valid `FffFileItem` pointer or null.
@@ -1026,7 +985,7 @@ int64_t fff_file_item_get_total_frecency_score(const struct FffFileItem *item);
 int64_t fff_file_item_get_access_frecency_score(const struct FffFileItem *item);
 
 /**
- * Returns the modification-based frecency score. Returns `0` if `item` is null.
+ * Modification-based frecency score; `0` if `item` is null.
  *
  * ## Safety
  * `item` must be a valid `FffFileItem` pointer or null.
@@ -1034,7 +993,7 @@ int64_t fff_file_item_get_access_frecency_score(const struct FffFileItem *item);
 int64_t fff_file_item_get_modification_frecency_score(const struct FffFileItem *item);
 
 /**
- * Returns `true` if the file was detected as binary. Returns `false` if `item` is null.
+ * `true` if the file was detected as binary; `false` if `item` is null.
  *
  * ## Safety
  * `item` must be a valid `FffFileItem` pointer or null.
@@ -1042,9 +1001,7 @@ int64_t fff_file_item_get_modification_frecency_score(const struct FffFileItem *
 bool fff_file_item_get_is_binary(const struct FffFileItem *item);
 
 /**
- * Returns the relative path of the file containing this grep match.
- *
- * Returns null if `m` is null. Do not free the returned pointer.
+ * Relative path of the file containing this grep match; null if `m` is null. Do not free.
  *
  * ## Safety
  * `m` must be a valid `FffGrepMatch` pointer or null.
@@ -1052,9 +1009,7 @@ bool fff_file_item_get_is_binary(const struct FffFileItem *item);
 const char *fff_grep_match_get_relative_path(const struct FffGrepMatch *m);
 
 /**
- * Returns the file-name component of the file containing this grep match.
- *
- * Returns null if `m` is null. Do not free the returned pointer.
+ * File-name component of the file containing this grep match; null if `m` is null. Do not free.
  *
  * ## Safety
  * `m` must be a valid `FffGrepMatch` pointer or null.
@@ -1062,10 +1017,8 @@ const char *fff_grep_match_get_relative_path(const struct FffGrepMatch *m);
 const char *fff_grep_match_get_file_name(const struct FffGrepMatch *m);
 
 /**
- * Returns the git status string for the matched file (e.g. `"M "`, `"??"`)
- * or null if git is unavailable, the file is untracked, or `m` is null.
- *
- * Do not free the returned pointer.
+ * Git status string of the matched file (e.g. `"M "`, `"??"`); null if git is unavailable,
+ * the file is untracked, or `m` is null. Do not free.
  *
  * ## Safety
  * `m` must be a valid `FffGrepMatch` pointer or null.
@@ -1073,9 +1026,7 @@ const char *fff_grep_match_get_file_name(const struct FffGrepMatch *m);
 const char *fff_grep_match_get_git_status(const struct FffGrepMatch *m);
 
 /**
- * Returns the full text content of the matched line.
- *
- * Returns null if `m` is null. Do not free the returned pointer.
+ * Full text content of the matched line; null if `m` is null. Do not free.
  *
  * ## Safety
  * `m` must be a valid `FffGrepMatch` pointer or null.
@@ -1083,8 +1034,7 @@ const char *fff_grep_match_get_git_status(const struct FffGrepMatch *m);
 const char *fff_grep_match_get_line_content(const struct FffGrepMatch *m);
 
 /**
- * Returns the 1-based line number of the match within its file.
- * Returns `0` if `m` is null.
+ * 1-based line number of the match within its file; `0` if `m` is null.
  *
  * ## Safety
  * `m` must be a valid `FffGrepMatch` pointer or null.
@@ -1092,8 +1042,7 @@ const char *fff_grep_match_get_line_content(const struct FffGrepMatch *m);
 uint64_t fff_grep_match_get_line_number(const struct FffGrepMatch *m);
 
 /**
- * Returns the 0-based column of the match start within its line.
- * Returns `0` if `m` is null.
+ * 0-based column of the match start within its line; `0` if `m` is null.
  *
  * ## Safety
  * `m` must be a valid `FffGrepMatch` pointer or null.
@@ -1101,8 +1050,7 @@ uint64_t fff_grep_match_get_line_number(const struct FffGrepMatch *m);
 uint32_t fff_grep_match_get_col(const struct FffGrepMatch *m);
 
 /**
- * Returns the byte offset of the match start from the beginning of the file.
- * Returns `0` if `m` is null.
+ * Byte offset of the match start from the beginning of the file; `0` if `m` is null.
  *
  * ## Safety
  * `m` must be a valid `FffGrepMatch` pointer or null.
@@ -1110,7 +1058,7 @@ uint32_t fff_grep_match_get_col(const struct FffGrepMatch *m);
 uint64_t fff_grep_match_get_byte_offset(const struct FffGrepMatch *m);
 
 /**
- * Returns the file size in bytes for the matched file. Returns `0` if `m` is null.
+ * File size in bytes of the matched file; `0` if `m` is null.
  *
  * ## Safety
  * `m` must be a valid `FffGrepMatch` pointer or null.
@@ -1118,8 +1066,7 @@ uint64_t fff_grep_match_get_byte_offset(const struct FffGrepMatch *m);
 uint64_t fff_grep_match_get_size(const struct FffGrepMatch *m);
 
 /**
- * Returns the combined frecency score for the matched file.
- * Returns `0` if `m` is null.
+ * Combined frecency score of the matched file; `0` if `m` is null.
  *
  * ## Safety
  * `m` must be a valid `FffGrepMatch` pointer or null.
@@ -1127,8 +1074,7 @@ uint64_t fff_grep_match_get_size(const struct FffGrepMatch *m);
 int64_t fff_grep_match_get_total_frecency_score(const struct FffGrepMatch *m);
 
 /**
- * Returns the access-based frecency score for the matched file.
- * Returns `0` if `m` is null.
+ * Access-based frecency score of the matched file; `0` if `m` is null.
  *
  * ## Safety
  * `m` must be a valid `FffGrepMatch` pointer or null.
@@ -1136,8 +1082,7 @@ int64_t fff_grep_match_get_total_frecency_score(const struct FffGrepMatch *m);
 int64_t fff_grep_match_get_access_frecency_score(const struct FffGrepMatch *m);
 
 /**
- * Returns the modification-based frecency score for the matched file.
- * Returns `0` if `m` is null.
+ * Modification-based frecency score of the matched file; `0` if `m` is null.
  *
  * ## Safety
  * `m` must be a valid `FffGrepMatch` pointer or null.
@@ -1145,8 +1090,7 @@ int64_t fff_grep_match_get_access_frecency_score(const struct FffGrepMatch *m);
 int64_t fff_grep_match_get_modification_frecency_score(const struct FffGrepMatch *m);
 
 /**
- * Returns the last-modified time as seconds since the UNIX epoch for the matched file.
- * Returns `0` if `m` is null.
+ * Last-modified time of the matched file as seconds since the UNIX epoch; `0` if `m` is null.
  *
  * ## Safety
  * `m` must be a valid `FffGrepMatch` pointer or null.
@@ -1154,8 +1098,7 @@ int64_t fff_grep_match_get_modification_frecency_score(const struct FffGrepMatch
 uint64_t fff_grep_match_get_modified(const struct FffGrepMatch *m);
 
 /**
- * Returns the number of highlight ranges in this match. Returns `0` if `m` is null.
- *
+ * Number of highlight ranges in this match; `0` if `m` is null.
  * Use with [`fff_grep_match_get_match_range`] to iterate the highlight spans.
  *
  * ## Safety
@@ -1164,11 +1107,8 @@ uint64_t fff_grep_match_get_modified(const struct FffGrepMatch *m);
 uint32_t fff_grep_match_get_match_ranges_count(const struct FffGrepMatch *m);
 
 /**
- * Returns a pointer to the `index`-th [`FffMatchRange`] highlight span.
- *
- * Returns null if `m` is null, `index >= match_ranges_count`, or the
- * ranges array is null. The returned pointer is valid until the owning
- * `FffGrepResult` is freed; do not free it directly.
+ * Pointer to the `index`-th [`FffMatchRange`] highlight span; null if `m` is null,
+ * `index >= match_ranges_count`, or the ranges array is null. Valid until the owning `FffGrepResult` is freed; do not free.
  *
  * ## Safety
  * `m` must be a valid `FffGrepMatch` pointer or null.
@@ -1177,9 +1117,7 @@ const struct FffMatchRange *fff_grep_match_get_match_range(const struct FffGrepM
                                                            uint32_t index);
 
 /**
- * Returns the number of context lines captured before the match.
- * Returns `0` if `m` is null.
- *
+ * Number of context lines captured before the match; `0` if `m` is null.
  * Use with [`fff_grep_match_get_context_before`] to read each line.
  *
  * ## Safety
@@ -1188,10 +1126,8 @@ const struct FffMatchRange *fff_grep_match_get_match_range(const struct FffGrepM
 uint32_t fff_grep_match_get_context_before_count(const struct FffGrepMatch *m);
 
 /**
- * Returns the `index`-th context line before the match.
- *
- * Returns null if `m` is null, `index >= context_before_count`, or the
- * context array is null. Do not free the returned pointer.
+ * The `index`-th context line before the match; null if `m` is null,
+ * `index >= context_before_count`, or the context array is null. Do not free.
  *
  * ## Safety
  * `m` must be a valid `FffGrepMatch` pointer or null.
@@ -1199,9 +1135,7 @@ uint32_t fff_grep_match_get_context_before_count(const struct FffGrepMatch *m);
 const char *fff_grep_match_get_context_before(const struct FffGrepMatch *m, uint32_t index);
 
 /**
- * Returns the number of context lines captured after the match.
- * Returns `0` if `m` is null.
- *
+ * Number of context lines captured after the match; `0` if `m` is null.
  * Use with [`fff_grep_match_get_context_after`] to read each line.
  *
  * ## Safety
@@ -1210,10 +1144,8 @@ const char *fff_grep_match_get_context_before(const struct FffGrepMatch *m, uint
 uint32_t fff_grep_match_get_context_after_count(const struct FffGrepMatch *m);
 
 /**
- * Returns the `index`-th context line after the match.
- *
- * Returns null if `m` is null, `index >= context_after_count`, or the
- * context array is null. Do not free the returned pointer.
+ * The `index`-th context line after the match; null if `m` is null,
+ * `index >= context_after_count`, or the context array is null. Do not free.
  *
  * ## Safety
  * `m` must be a valid `FffGrepMatch` pointer or null.
@@ -1221,11 +1153,8 @@ uint32_t fff_grep_match_get_context_after_count(const struct FffGrepMatch *m);
 const char *fff_grep_match_get_context_after(const struct FffGrepMatch *m, uint32_t index);
 
 /**
- * Returns the fuzzy match score. Returns `0` if `m` is null or no fuzzy
- * score is present.
- *
- * Always check [`fff_grep_match_get_has_fuzzy_score`] first; `0` is
- * ambiguous without that flag.
+ * Fuzzy match score; `0` if `m` is null or no fuzzy score is present.
+ * Always check [`fff_grep_match_get_has_fuzzy_score`] first; `0` is ambiguous without that flag.
  *
  * ## Safety
  * `m` must be a valid `FffGrepMatch` pointer or null.
@@ -1233,8 +1162,7 @@ const char *fff_grep_match_get_context_after(const struct FffGrepMatch *m, uint3
 uint16_t fff_grep_match_get_fuzzy_score(const struct FffGrepMatch *m);
 
 /**
- * Returns `true` if this match carries a valid fuzzy score.
- * Returns `false` if `m` is null.
+ * `true` if this match carries a valid fuzzy score; `false` if `m` is null.
  *
  * ## Safety
  * `m` must be a valid `FffGrepMatch` pointer or null.
@@ -1242,8 +1170,7 @@ uint16_t fff_grep_match_get_fuzzy_score(const struct FffGrepMatch *m);
 bool fff_grep_match_get_has_fuzzy_score(const struct FffGrepMatch *m);
 
 /**
- * Returns `true` if the match was identified as a symbol definition.
- * Returns `false` if `m` is null.
+ * `true` if the match was identified as a symbol definition; `false` if `m` is null.
  *
  * ## Safety
  * `m` must be a valid `FffGrepMatch` pointer or null.
@@ -1251,8 +1178,7 @@ bool fff_grep_match_get_has_fuzzy_score(const struct FffGrepMatch *m);
 bool fff_grep_match_get_is_definition(const struct FffGrepMatch *m);
 
 /**
- * Returns `true` if the matched file was detected as binary.
- * Returns `false` if `m` is null.
+ * `true` if the matched file was detected as binary; `false` if `m` is null.
  *
  * ## Safety
  * `m` must be a valid `FffGrepMatch` pointer or null.
@@ -1260,7 +1186,7 @@ bool fff_grep_match_get_is_definition(const struct FffGrepMatch *m);
 bool fff_grep_match_get_is_binary(const struct FffGrepMatch *m);
 
 /**
- * Returns the number of items in the result. Returns `0` if `r` is null.
+ * Number of items in the result; `0` if `r` is null.
  *
  * ## Safety
  * `r` must be a valid `FffSearchResult` pointer or null.
@@ -1268,8 +1194,7 @@ bool fff_grep_match_get_is_binary(const struct FffGrepMatch *m);
 uint32_t fff_search_result_get_count(const struct FffSearchResult *r);
 
 /**
- * Returns the total number of files that matched before the result was
- * truncated to the page size. Returns `0` if `r` is null.
+ * Total number of files that matched before truncation to the page size; `0` if `r` is null.
  *
  * ## Safety
  * `r` must be a valid `FffSearchResult` pointer or null.
@@ -1277,8 +1202,7 @@ uint32_t fff_search_result_get_count(const struct FffSearchResult *r);
 uint32_t fff_search_result_get_total_matched(const struct FffSearchResult *r);
 
 /**
- * Returns the total number of indexed files considered during search.
- * Returns `0` if `r` is null.
+ * Total number of indexed files considered during search; `0` if `r` is null.
  *
  * ## Safety
  * `r` must be a valid `FffSearchResult` pointer or null.
@@ -1286,7 +1210,7 @@ uint32_t fff_search_result_get_total_matched(const struct FffSearchResult *r);
 uint32_t fff_search_result_get_total_files(const struct FffSearchResult *r);
 
 /**
- * Returns the number of matches in the result. Returns `0` if `r` is null.
+ * Number of matches in the result; `0` if `r` is null.
  *
  * ## Safety
  * `r` must be a valid `FffGrepResult` pointer or null.
@@ -1294,8 +1218,7 @@ uint32_t fff_search_result_get_total_files(const struct FffSearchResult *r);
 uint32_t fff_grep_result_get_count(const struct FffGrepResult *r);
 
 /**
- * Returns the total number of matches found across all pages.
- * Returns `0` if `r` is null.
+ * Total number of matches found across all pages; `0` if `r` is null.
  *
  * ## Safety
  * `r` must be a valid `FffGrepResult` pointer or null.
@@ -1303,8 +1226,7 @@ uint32_t fff_grep_result_get_count(const struct FffGrepResult *r);
 uint32_t fff_grep_result_get_total_matched(const struct FffGrepResult *r);
 
 /**
- * Returns the number of files actually opened and searched in this call.
- * Returns `0` if `r` is null.
+ * Number of files actually opened and searched in this call; `0` if `r` is null.
  *
  * ## Safety
  * `r` must be a valid `FffGrepResult` pointer or null.
@@ -1312,8 +1234,7 @@ uint32_t fff_grep_result_get_total_matched(const struct FffGrepResult *r);
 uint32_t fff_grep_result_get_total_files_searched(const struct FffGrepResult *r);
 
 /**
- * Returns the total number of indexed files before any filtering.
- * Returns `0` if `r` is null.
+ * Total number of indexed files before any filtering; `0` if `r` is null.
  *
  * ## Safety
  * `r` must be a valid `FffGrepResult` pointer or null.
@@ -1321,8 +1242,7 @@ uint32_t fff_grep_result_get_total_files_searched(const struct FffGrepResult *r)
 uint32_t fff_grep_result_get_total_files(const struct FffGrepResult *r);
 
 /**
- * Returns the number of files eligible for search after path/type filtering.
- * Returns `0` if `r` is null.
+ * Number of files eligible for search after path/type filtering; `0` if `r` is null.
  *
  * ## Safety
  * `r` must be a valid `FffGrepResult` pointer or null.
@@ -1330,9 +1250,8 @@ uint32_t fff_grep_result_get_total_files(const struct FffGrepResult *r);
 uint32_t fff_grep_result_get_filtered_file_count(const struct FffGrepResult *r);
 
 /**
- * Returns the file offset for the next page, or `0` if all files have been
- * searched or `r` is null. Pass this value as `file_offset` to a subsequent
- * `fff_live_grep` or `fff_multi_grep` call to continue pagination.
+ * File offset for the next page; `0` if all files have been searched or `r` is null.
+ * Pass as `file_offset` to a subsequent `fff_live_grep`/`fff_multi_grep` call to continue pagination.
  *
  * ## Safety
  * `r` must be a valid `FffGrepResult` pointer or null.
@@ -1340,14 +1259,100 @@ uint32_t fff_grep_result_get_filtered_file_count(const struct FffGrepResult *r);
 uint32_t fff_grep_result_get_next_file_offset(const struct FffGrepResult *r);
 
 /**
- * Returns the regex compilation error string if the engine fell back to
- * literal matching, or null if there was no error or `r` is null.
- *
- * Do not free the returned pointer.
+ * Regex compilation error string if the engine fell back to literal matching;
+ * null if there was no error or `r` is null. Do not free.
  *
  * ## Safety
  * `r` must be a valid `FffGrepResult` pointer or null.
  */
 const char *fff_grep_result_get_regex_fallback_error(const struct FffGrepResult *r);
+
+/**
+ * Register the instance-wide watch callback used by all `fff_watch`
+ * subscriptions; call before the first `fff_watch`, calling again replaces it.
+ *
+ * ## Safety
+ * * `fff_handle` must be a valid instance pointer from `fff_create_instance`.
+ * * `callback` must remain callable until fff_unwatch called
+ *   `fff_destroy(fff_handle)` returns.
+ */
+struct FffResult *fff_set_watch_callback(void *fff_handle,
+                                         FffWatchCallback callback,
+                                         void *user_data);
+
+/**
+ * Subscribe to filesystem changes, delivered through the instance callback
+ * registered by `fff_set_watch_callback`.
+ *
+ * Returns the watch id, pass it to `fff_unwatch` to stop.
+ *
+ * `pattern` if non `NULL` can be wildcard pattern, absolute, or relative path
+ * that will be used to filter the events triggering exact subscription.
+ *
+ * ## Safety
+ * * `fff_handle` must be a valid instance pointer from `fff_create_instance`.
+ * * `pattern` must be NULL or valid null-terminated UTF-8.
+ * * `opts` must be NULL or a valid `FffWatchOptions` pointer.
+ */
+struct FffResult *fff_watch(void *fff_handle,
+                            const char *pattern,
+                            const struct FffWatchOptions *opts);
+
+/**
+ * [`fff_watch`] adapter with flattened options, for FFI libraries that cannot
+ * marshal pointer arrays inside structs (e.g. Node's `ffi-rs`).
+ *
+ * ## Safety
+ * * `fff_handle` must be a valid instance pointer from `fff_create_instance`.
+ * * `pattern` must be NULL (watch everything) or valid null-terminated UTF-8.
+ * * `ignore` must be NULL or point to `ignore_count` valid C strings.
+ */
+struct FffResult *fff_watch_args(void *fff_handle,
+                                 const char *pattern,
+                                 const char *const *ignore,
+                                 uint32_t ignore_count);
+
+/**
+ * Remove a watch subscription. `int_value` = 1 if the id existed, 0 otherwise.
+ *
+ * ## Safety
+ * `fff_handle` must be a valid instance pointer from `fff_create_instance`.
+ */
+struct FffResult *fff_unwatch(void *fff_handle, uint64_t watch_id);
+
+/**
+ * Number of events in a batch; 0 if `batch` is null.
+ *
+ * ## Safety
+ * `batch` must be a valid `FffWatchEventBatch` pointer or null.
+ */
+uint32_t fff_watch_events_count(const struct FffWatchEventBatch *batch);
+
+/**
+ * Absolute path of event `index`, will be null when out of bounds
+ *
+ * ## Safety
+ * `batch` must be a valid `FffWatchEventBatch` pointer or null.
+ */
+const char *fff_watch_events_get_path(const struct FffWatchEventBatch *batch, uint32_t index);
+
+/**
+ * Kind of event `index` (0 = created, 1 = modified, 2 = removed, 3 = rescan)
+ * 3 (rescan aka "re-stat something" kind) returned when OS based buffer
+ * has been overflown and some events might be loss. Paths will contain a list of
+ * directories that needs to be rescanned to ensure consistency.
+ *
+ * ## Safety
+ * `batch` must be a valid `FffWatchEventBatch` pointer or null.
+ */
+uint8_t fff_watch_events_get_kind(const struct FffWatchEventBatch *batch, uint32_t index);
+
+/**
+ * Free a watch event batch delivered to the instance callback.
+ *
+ * ## Safety
+ * `batch` must be a pointer produced by this library, or null (no-op).
+ */
+void fff_free_watch_events(struct FffWatchEventBatch *batch);
 
 #endif  /* FFF_C_H */
