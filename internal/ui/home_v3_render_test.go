@@ -56,9 +56,10 @@ func TestHomepageOutsideWorkspaceWarningRendersBelowTipsAndKeepsWorkspaceRow(t *
 	defer screen.Fini()
 	screen.SetSize(120, 32)
 	page := NewHomePage(model.HomeModel{
-		WorkspaceSetupPath:   "/outside/project",
-		WorkspaceSetupHasGit: true,
-		Workspaces:           []model.Workspace{{Name: "Default", Path: "/workspace", Active: true}},
+		WorkspaceSetupPath:         "/outside/project",
+		WorkspaceSetupHasGit:       true,
+		WorkspaceSetupGitReadiness: model.GitReadinessReady,
+		Workspaces:                 []model.Workspace{{Name: "Default", Path: "/workspace", Active: true}},
 	})
 	page.Draw(screen)
 	text := dumpHomeTestScreen(screen, 120, 32)

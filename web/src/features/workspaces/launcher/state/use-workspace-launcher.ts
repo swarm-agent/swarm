@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { applyWorkspaceTheme, setWorkspaceThemeCatalog, workspaceThemeDefaultId } from '../services/workspace-theme'
 import { normalizeGlobalThemeSettings, type UISettingsWire } from '../../../desktop/settings/swarm/types/swarm-settings'
 import { moveWorkspace } from '../mutations/move-workspace'
 import { saveWorkspace as saveWorkspaceAPI } from '../mutations/save-workspace'
+import { setupWorkspaceRepository as setupWorkspaceRepositoryAPI } from '../mutations/setup-workspace-repository'
 import { createWorkspaceFolder as createWorkspaceFolderAPI } from '../mutations/create-workspace-folder'
 import { deleteWorkspace as deleteWorkspaceAPI } from '../mutations/delete-workspace'
 import { selectWorkspace } from '../mutations/select-workspace'
@@ -12,9 +13,11 @@ import { setWorkspaceIcon as setWorkspaceIconAPI } from '../mutations/set-worksp
 import { setWorkspaceWorktrees } from '../mutations/set-workspace-worktrees'
 import { refreshWorkspaceDefinitions as refreshWorkspaceDefinitionsAPI } from '../mutations/refresh-workspace-definitions'
 import { sortDiscoveredWorkspaces, dedupeDiscoveredAgainstWorkspaces } from '../services/discovery-ordering'
+import { loadLauncherCatalogFirst } from '../services/load-launcher-catalog-first'
 import { syncWorkspaceOverviewWorktreeState } from '../services/workspace-overview-cache'
 import { browseWorkspacePath } from '../queries/browse-workspace-path'
 import { listWorkspaces } from '../queries/list-workspaces'
+import { discoverWorkspaces } from '../queries/discover-workspaces'
 import { uiSettingsQueryKey, uiSettingsQueryOptions, workspaceOverviewQueryKey, workspaceOverviewQueryOptions } from '../../../queries/query-options'
 import type {
   WorkspaceBrowseResult,
@@ -23,6 +26,7 @@ import type {
   WorkspaceResolution,
 } from '../types/workspace'
 import type { WorkspaceOverviewResponse, WorkspaceOverviewTopologyRoute } from '../types/workspace-overview'
+import type { WorkspaceRepositoryState } from '../services/workspace-repository'
 
 interface SaveWorkspaceInput {
   path: string
@@ -54,10 +58,10 @@ interface UseWorkspaceLauncherState {
   loadError: string | null
   actionError: string | null
   openWorkspace: (path: string) => Promise<WorkspaceResolution>
-  useFolderTemporarily: (path: string) => Promise<WorkspaceResolution>
   deleteWorkspace: (path: string) => Promise<void>
   setWorktreeEnabled: (path: string, enabled: boolean) => Promise<void>
   saveWorkspace: (input: SaveWorkspaceInput) => Promise<WorkspaceResolution>
+  setupWorkspaceRepository: (path: string, expectedResolvedPath: string) => Promise<WorkspaceRepositoryState>
   createFolder: (parentPath: string, name: string) => Promise<string>
   setWorkspaceTheme: (path: string, themeId: string) => Promise<void>
   setWorkspaceIcon: (path: string, iconPNGDataURL: string) => Promise<void>
@@ -222,7 +226,7 @@ function isDefaultWorkspaceOverviewKey(queryKey: readonly unknown[]): boolean {
   }
   const roots = Reflect.get(params, 'roots')
   const sessionLimit = Reflect.get(params, 'sessionLimit')
-  return Array.isArray(roots) && roots.length === 0 && sessionLimit === 25
+  return Array.isArray(roots) && roots.length === 0 && sessionLimit === 25 && Reflect.get(params, 'includeDetails') !== false
 }
 
 export function useWorkspaceLauncher(options: UseWorkspaceLauncherOptions = {}): UseWorkspaceLauncherState {
@@ -230,10 +234,17 @@ export function useWorkspaceLauncher(options: UseWorkspaceLauncherOptions = {}):
   const applyDocumentTheme = options.applyDocumentTheme ?? true
   const autoRefresh = options.autoRefresh ?? true
   const browseDuringRefresh = options.browseDuringRefresh ?? true
-  const [workspaces, setWorkspaces] = useState<WorkspaceEntry[]>([])
+  const cachedDetails = queryClient.getQueryState<WorkspaceOverviewResponse>(workspaceOverviewQueryKey([], 25))
+  const cachedCatalog = queryClient.getQueryState<WorkspaceOverviewResponse>(workspaceOverviewQueryKey([], 25, false))
+  const cachedOverview = cachedCatalog?.data && cachedCatalog.dataUpdatedAt > (cachedDetails?.dataUpdatedAt ?? 0)
+    ? cachedCatalog.data
+    : cachedDetails?.data ?? cachedCatalog?.data
+  const [workspaces, setWorkspaces] = useState<WorkspaceEntry[]>(() => sortWorkspaces(cachedOverview?.workspaces ?? []))
   const [discovered, setDiscovered] = useState<WorkspaceDiscoverEntry[]>([])
-  const [currentWorkspacePath, setCurrentWorkspacePath] = useState<string | null>(null)
-  const [loading, setLoading] = useState(autoRefresh)
+  const [currentWorkspacePath, setCurrentWorkspacePath] = useState<string | null>(() => cachedOverview?.currentWorkspace?.resolvedPath?.trim() || null)
+  const [loading, setLoading] = useState(autoRefresh && !cachedOverview)
+  const refreshGeneration = useRef(0)
+  const browserRef = useRef<WorkspaceBrowseResult | null>(null)
   const [refreshing, setRefreshing] = useState(false)
   const [personalizing, setPersonalizing] = useState(false)
   const [personalizationMessage, setPersonalizationMessage] = useState<string | null>(null)
@@ -261,6 +272,7 @@ export function useWorkspaceLauncher(options: UseWorkspaceLauncherOptions = {}):
     setBrowserError(null)
     try {
       const nextBrowser = await browseWorkspacePath(path)
+      browserRef.current = nextBrowser
       setBrowser(nextBrowser)
     } catch (err) {
       setBrowserError(err instanceof Error ? err.message : 'Failed to browse folder')
@@ -292,37 +304,59 @@ export function useWorkspaceLauncher(options: UseWorkspaceLauncherOptions = {}):
   }, [queryClient])
 
   const refresh = useCallback(async (roots: string[] = []) => {
+    const generation = ++refreshGeneration.current
+    const isCurrent = () => generation === refreshGeneration.current
     setRefreshing(true)
     setLoadError(null)
 
     try {
-      const overview = await queryClient.fetchQuery({
-        ...workspaceOverviewQueryOptions(roots, 25),
-        staleTime: 0,
+      // Retire an older enrichment before publishing a newer catalog, otherwise
+      // its shared-cache completion could resurrect deleted or reordered rows.
+      await Promise.all([
+        queryClient.cancelQueries({ queryKey: workspaceOverviewQueryKey(roots, 25), exact: true }),
+        queryClient.cancelQueries({ queryKey: workspaceOverviewQueryKey(roots, 25, false), exact: true }),
+      ])
+      if (!isCurrent()) return
+      await loadLauncherCatalogFirst({
+        loadCatalog: () => queryClient.fetchQuery({
+          ...workspaceOverviewQueryOptions(roots, 25, false),
+          staleTime: 0,
+        }),
+        publishCatalog: (overview) => {
+          const sorted = sortWorkspaces(overview.workspaces)
+          const nextPath = overview.currentWorkspace?.resolvedPath?.trim() || null
+          setWorkspaces((current) => (workspacesEqual(current, sorted) ? current : sorted))
+          setCurrentWorkspacePath((current) => current === nextPath ? current : nextPath)
+          setLoading(false)
+        },
+        loadDetails: () => queryClient.fetchQuery({ ...workspaceOverviewQueryOptions(roots, 25), staleTime: 0 }),
+        publishDetails: (overview) => {
+          const sorted = sortWorkspaces(overview.workspaces)
+          setWorkspaces((current) => (workspacesEqual(current, sorted) ? current : sorted))
+        },
+        discover: () => discoverWorkspaces(1000, roots),
+        publishDiscovery: (entries, overview) => {
+          setDiscovered(sortDiscoveredWorkspaces(dedupeDiscoveredAgainstWorkspaces(entries, overview.workspaces.map((workspace) => workspace.path))))
+        },
+        reportBackgroundError: (error) => setActionError(error instanceof Error ? error.message : 'Failed to refresh workspace details'),
+        isCurrent,
       })
-      const sorted = sortWorkspaces(overview.workspaces)
-      const knownPaths = new Set(sorted.map((workspace) => workspace.path))
-      const nextCurrentWorkspacePath = overview.currentWorkspace?.resolvedPath?.trim() || null
-      setWorkspaces((current) => (workspacesEqual(current, sorted) ? current : sorted))
-      setDiscovered(sortDiscoveredWorkspaces(dedupeDiscoveredAgainstWorkspaces(overview.discovered, Array.from(knownPaths))))
-      setCurrentWorkspacePath((current) => (current === nextCurrentWorkspacePath ? current : nextCurrentWorkspacePath))
-      if (applyDocumentTheme) {
-        applyWorkspaceTheme(resolveEffectiveThemeId(nextCurrentWorkspacePath, sorted, globalThemeId))
-      }
-      if (browseDuringRefresh) {
+      if (isCurrent() && browseDuringRefresh) {
         if (roots.length > 0) {
-          await browsePath(roots[0])
-        } else if (!browser) {
-          await browsePath('')
+          void browsePath(roots[0])
+        } else if (!browserRef.current) {
+          void browsePath('')
         }
       }
     } catch (err) {
-      setLoadError(err instanceof Error ? err.message : 'Failed to load workspaces')
+      if (isCurrent()) setLoadError(err instanceof Error ? err.message : 'Failed to load workspaces')
     } finally {
-      setLoading(false)
-      setRefreshing(false)
+      if (isCurrent()) {
+        setLoading(false)
+        setRefreshing(false)
+      }
     }
-  }, [applyDocumentTheme, browser, browseDuringRefresh, browsePath, globalThemeId, queryClient])
+  }, [browseDuringRefresh, browsePath, queryClient])
 
   useEffect(() => {
     if (!autoRefresh) {
@@ -330,6 +364,7 @@ export function useWorkspaceLauncher(options: UseWorkspaceLauncherOptions = {}):
       return
     }
     void refresh()
+    return () => { refreshGeneration.current += 1 }
   }, [autoRefresh, refresh])
 
   useEffect(() => {
@@ -395,18 +430,19 @@ export function useWorkspaceLauncher(options: UseWorkspaceLauncherOptions = {}):
       setGlobalThemeId(normalizeGlobalThemeSettings(settings).activeId)
     }
 
+    let disposed = false
     const scheduleCacheSync = (sync: () => void) => {
       const setTimeoutFn = typeof window !== 'undefined' ? window.setTimeout.bind(window) : setTimeout
-      setTimeoutFn(sync, 0)
+      setTimeoutFn(() => { if (!disposed) sync() }, 0)
     }
 
-    syncFromOverviewCache()
+    // Initial state already uses the freshest catalog/details cache above.
     syncFromUISettingsCache()
-    return queryClient.getQueryCache().subscribe((event) => {
+    const unsubscribe = queryClient.getQueryCache().subscribe((event) => {
       // React Query also emits observer option/result notifications while hooks are
       // rendering. Updating launcher state from those notifications can recurse
       // through React's setOptions path and trigger error #185 in production.
-      if (event.type !== 'updated') {
+      if (event.type !== 'updated' || event.action.type !== 'success') {
         return
       }
       const queryKey = event.query.queryKey
@@ -421,6 +457,7 @@ export function useWorkspaceLauncher(options: UseWorkspaceLauncherOptions = {}):
         scheduleCacheSync(syncFromUISettingsCache)
       }
     })
+    return () => { disposed = true; unsubscribe() }
   }, [queryClient])
 
   const openWorkspace = useCallback(async (path: string) => {
@@ -440,30 +477,6 @@ export function useWorkspaceLauncher(options: UseWorkspaceLauncherOptions = {}):
       return resolution
     } catch (err) {
       setActionError(err instanceof Error ? err.message : 'Failed to open workspace')
-      throw err
-    } finally {
-      setSelectingPath(null)
-    }
-  }, [applyCurrentResolution])
-
-  const useFolderTemporarily = useCallback(async (path: string) => {
-    const trimmedPath = path.trim()
-    setSelectingPath(trimmedPath)
-    setActionError(null)
-    try {
-      const browserResult = await browseWorkspacePath(trimmedPath)
-      const resolution = {
-        requestedPath: trimmedPath,
-        resolvedPath: browserResult.resolvedPath,
-        workspaceName: browserResult.resolvedPath.split(/[\\/]/).filter(Boolean).pop() || browserResult.resolvedPath,
-        localWorkspaceBindingId: '',
-        themeId: '',
-      }
-      applyCurrentResolution(resolution)
-      setCurrentWorkspacePath(browserResult.resolvedPath)
-      return resolution
-    } catch (err) {
-      setActionError(err instanceof Error ? err.message : 'Failed to open folder')
       throw err
     } finally {
       setSelectingPath(null)
@@ -498,6 +511,23 @@ export function useWorkspaceLauncher(options: UseWorkspaceLauncherOptions = {}):
       return resolution
     } catch (err) {
       setActionError(err instanceof Error ? err.message : 'Failed to save workspace')
+      throw err
+    } finally {
+      setSavingPath(null)
+    }
+  }, [browsePath, refresh])
+
+  const setupWorkspaceRepository = useCallback(async (path: string, expectedResolvedPath: string): Promise<WorkspaceRepositoryState> => {
+    const targetPath = path.trim()
+    setSavingPath(targetPath)
+    setActionError(null)
+    try {
+      const repository = await setupWorkspaceRepositoryAPI(targetPath, expectedResolvedPath.trim())
+      await refresh()
+      await browsePath(repository.path || targetPath)
+      return repository
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : 'Failed to initialize Git repository')
       throw err
     } finally {
       setSavingPath(null)
@@ -753,10 +783,10 @@ export function useWorkspaceLauncher(options: UseWorkspaceLauncherOptions = {}):
     loadError,
     actionError,
     openWorkspace,
-    useFolderTemporarily,
     deleteWorkspace,
     setWorktreeEnabled: updateWorkspaceWorktreeEnabled,
     saveWorkspace: persistWorkspace,
+    setupWorkspaceRepository,
     createFolder,
     setWorkspaceTheme: updateWorkspaceTheme,
     setWorkspaceIcon: updateWorkspaceIcon,

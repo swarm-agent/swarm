@@ -3,6 +3,7 @@ package ui
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -722,6 +723,11 @@ func (p *HomePage) submitWorkspaceModalEditor() {
 		p.workspaceModal.Error = "Workspace path is required"
 		return
 	}
+	readiness := workspaceModalGitReadiness(path)
+	if readiness != "ready" {
+		p.workspaceModal.Error = workspaceModalGitPrerequisiteMessage(readiness, path)
+		return
+	}
 	name := strings.TrimSpace(get("name"))
 	if name == "" {
 		name = workspaceModalDefaultName(path)
@@ -731,13 +737,45 @@ func (p *HomePage) submitWorkspaceModalEditor() {
 	makeCurrent := editor.Selected >= 0 && editor.Selected < len(editor.Fields) && editor.Fields[editor.Selected].Key == "save_and_switch"
 	p.workspaceModal.Editor = nil
 	p.enqueueWorkspaceModalAction(WorkspaceModalAction{
-		Kind:            WorkspaceModalActionSave,
-		Path:            path,
-		Name:            name,
-		ThemeID:         themeID,
-		MakeCurrent:     makeCurrent,
-		StatusHint:      fmt.Sprintf("Saving workspace %s ...", name),
+		Kind:        WorkspaceModalActionSave,
+		Path:        path,
+		Name:        name,
+		ThemeID:     themeID,
+		MakeCurrent: makeCurrent,
+		StatusHint:  fmt.Sprintf("Saving workspace %s ...", name),
 	})
+}
+
+func workspaceModalGitReadiness(path string) string {
+	path = workspaceModalNormalizeDirectoryPath(path)
+	if path == "" {
+		return "check_failed"
+	}
+	if _, err := exec.LookPath("git"); err != nil {
+		return "git_unavailable"
+	}
+	root, err := exec.Command("git", "--no-optional-locks", "-C", path, "rev-parse", "--show-toplevel").Output()
+	rootPath := workspaceModalNormalizeDirectoryPath(strings.TrimSpace(string(root)))
+	if err != nil || rootPath == "" || filepath.Clean(rootPath) != filepath.Clean(path) {
+		return "not_repository"
+	}
+	if err := exec.Command("git", "--no-optional-locks", "-C", path, "rev-parse", "--verify", "HEAD^{commit}").Run(); err != nil {
+		return "needs_initial_commit"
+	}
+	return "ready"
+}
+
+func workspaceModalGitPrerequisiteMessage(readiness, path string) string {
+	switch readiness {
+	case "git_unavailable":
+		return "Git is required for Swarm managed worktrees. Repair or reinstall Swarm so Git is available."
+	case "needs_initial_commit":
+		return fmt.Sprintf("%s needs an initial commit. Ask Swarm to review files and ignore rules; staging and commits require explicit permission.", path)
+	case "not_repository":
+		return fmt.Sprintf("%s is not a committed Git repository. Swarm requires repository-root workspaces for managed worktrees. Empty folders can be initialized from Desktop; for existing files, review ignore rules and request permission before git init, staging, or the first commit.", path)
+	default:
+		return fmt.Sprintf("Swarm could not verify Git readiness for %s.", path)
+	}
 }
 
 func (p *HomePage) enqueueWorkspaceModalAction(action WorkspaceModalAction) {

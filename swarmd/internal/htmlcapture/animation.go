@@ -16,6 +16,7 @@ import (
 
 	"github.com/chromedp/cdproto/browser"
 	"github.com/chromedp/cdproto/cdp"
+	"github.com/chromedp/cdproto/emulation"
 	"github.com/chromedp/cdproto/fetch"
 	"github.com/chromedp/cdproto/network"
 	"github.com/chromedp/cdproto/page"
@@ -61,9 +62,9 @@ type AnimationProgress struct {
 }
 
 type AnimationRequest struct {
-	Entry               string
-	Files               map[string][]byte
-	DurationMS          int
+	Entry      string
+	Files      map[string][]byte
+	DurationMS int
 	// FPS is the authored animation manifest rate. OutputFPS may select a
 	// server-allowlisted 30 or 60 FPS derivative without changing that manifest.
 	FPS                 int
@@ -217,6 +218,10 @@ rendererCapacityAcquired:
 		chromedp.ExecPath(r.BinaryPath),
 		chromedp.UserDataDir(filepath.Join(jobDir, "profile")),
 		chromedp.Flag("headless", true),
+		// Seek acknowledgements run on the main thread. Keep CSS animation
+		// sampling there too so a compositor timeline cannot deliver a stale
+		// frame after currentTime is set. The pixel stability audit still runs.
+		chromedp.Flag("disable-threaded-animation", true),
 		chromedp.Flag("no-sandbox", false),
 		chromedp.Flag("disable-background-networking", true),
 		chromedp.Flag("disable-component-update", true),
@@ -297,6 +302,7 @@ rendererCapacityAcquired:
 		fetch.Enable().WithPatterns([]*fetch.RequestPattern{{URLPattern: "*"}}),
 		browser.SetDownloadBehavior(browser.SetDownloadBehaviorBehaviorDeny).WithEventsEnabled(true),
 		chromedp.EmulateViewport(Width, Height),
+		emulation.SetFocusEmulationEnabled(true),
 		chromedp.Navigate(origin+"/"+req.Entry),
 		chromedp.WaitReady("body", chromedp.ByQuery),
 	)
@@ -353,15 +359,19 @@ rendererCapacityAcquired:
 	representative := []int{0, (frameCount / 2) * 1000 / renderFPS, (frameCount - 1) * 1000 / renderFPS}
 	seenRepresentative := make(map[int]struct{}, len(representative))
 	audited := 0
+	var preview []byte
 	for _, timeMS := range representative {
 		if _, seen := seenRepresentative[timeMS]; seen {
 			continue
 		}
 		seenRepresentative[timeMS] = struct{}{}
-		_, frameDiagnostics, err := captureAnimationFrame(browserCtx, timeMS, true)
+		frame, frameDiagnostics, err := captureAnimationFrame(browserCtx, timeMS, true)
 		diagnostics = append(diagnostics, frameDiagnostics...)
 		if err != nil {
 			return AnimationResult{DurationMS: req.DurationMS, FPS: req.FPS, FrameCount: frameCount, Timings: timings, Diagnostics: boundedAnimationDiagnostics(diagnostics)}, err
+		}
+		if timeMS == 0 {
+			preview = append([]byte(nil), frame...)
 		}
 		audited++
 		emit("deterministic_preflight", audited, len(representative))
@@ -439,7 +449,7 @@ rendererCapacityAcquired:
 	if err != nil || len(mp4) == 0 || len(mp4) > MaxMP4Bytes {
 		return AnimationResult{DurationMS: req.DurationMS, FPS: encoding.FPS, Quality: encoding.Quality, FrameCount: frameCount, Timings: timings, Diagnostics: boundedAnimationDiagnostics(diagnostics)}, NewError("animation_mp4_invalid", "encoded MP4 is missing or exceeds fixed bounds")
 	}
-	return AnimationResult{MP4: mp4, DurationMS: req.DurationMS, FPS: encoding.FPS, Quality: encoding.Quality, FrameCount: frameCount, Timings: timings, Diagnostics: boundedAnimationDiagnostics(diagnostics)}, nil
+	return AnimationResult{MP4: mp4, PreviewPNG: preview, DurationMS: req.DurationMS, FPS: encoding.FPS, Quality: encoding.Quality, FrameCount: frameCount, Timings: timings, Diagnostics: boundedAnimationDiagnostics(diagnostics)}, nil
 }
 
 func animationRenderTimeout(frameCount int) time.Duration {
@@ -606,6 +616,7 @@ func startAnimationWorkerPage(browserCtx context.Context, origin string, req Ani
 	if err := chromedp.Run(loadCtx,
 		fetch.Enable().WithPatterns([]*fetch.RequestPattern{{URLPattern: "*"}}),
 		chromedp.EmulateViewport(Width, Height),
+		emulation.SetFocusEmulationEnabled(true),
 		chromedp.Navigate(origin+"/"+req.Entry),
 		chromedp.WaitReady("body", chromedp.ByQuery),
 	); err != nil {
@@ -709,7 +720,13 @@ if (ack&&typeof ack.__swarm_outcome==="string") {
   return {code:"animation_seek_failed",outcome:ack.__swarm_outcome};
 }
 if (!ack || Object.keys(ack).length!==1 || ack.time_ms!==time || document.documentElement.dataset.swarmAnimationTimeMs!==String(time)) return {code:"animation_seek_ack_mismatch",outcome:"seek_ack_mismatch"};
-for (const animation of document.getAnimations()) animation.pause();
+const animations=document.getAnimations();
+for (const animation of animations) animation.pause();
+// A seek acknowledgement and style/layout flush do not imply a presented
+// frame. Settle pending pauses and cross a paint boundary before sampling;
+// the two independent screenshots below still reject changing author pixels.
+await Promise.all(animations.map(animation=>animation.ready));
+await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
 return {code:"ok",outcome:"seek_acknowledged"};
 })()`, timeMS, animationSeekTimeoutMS)
 	if err := chromedp.Run(ctx, chromedp.Evaluate(expression, &audit, awaitPromise)); err != nil {
@@ -749,7 +766,7 @@ return {code:"ok",outcome:"seek_acknowledged"};
 	if err != nil {
 		return nil, diagnostics, err
 	}
-	stable, err := equalPixels(first, second)
+	stable, err := equalPixels(first, second, Width, Height)
 	if err != nil {
 		return nil, diagnostics, NewError("animation_png_invalid", "renderer returned an invalid PNG frame")
 	}

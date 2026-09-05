@@ -1106,6 +1106,8 @@ func trimPlanArtifacts(in []pebblestore.SessionPlanArtifactReference) []pebblest
 	out := make([]pebblestore.SessionPlanArtifactReference, 0, len(in))
 	for _, artifact := range in {
 		artifact.SessionID = strings.TrimSpace(artifact.SessionID)
+		artifact.ArtifactID = strings.TrimSpace(artifact.ArtifactID)
+		artifact.RevisionRef = strings.TrimSpace(artifact.RevisionRef)
 		artifact.CollectionID = strings.TrimSpace(artifact.CollectionID)
 		artifact.VariantID = strings.TrimSpace(artifact.VariantID)
 		artifact.Label = strings.TrimSpace(artifact.Label)
@@ -1118,8 +1120,12 @@ func trimPlanArtifacts(in []pebblestore.SessionPlanArtifactReference) []pebblest
 	return out
 }
 
+func isArtifactV3PlanArtifact(artifact pebblestore.SessionPlanArtifactReference) bool {
+	return strings.TrimSpace(artifact.ArtifactID) != "" || strings.TrimSpace(artifact.RevisionRef) != ""
+}
+
 func isManagedPlanArtifact(artifact pebblestore.SessionPlanArtifactReference) bool {
-	return strings.TrimSpace(artifact.VariantID) != "" || strings.TrimSpace(artifact.CollectionID) != "" || strings.TrimSpace(artifact.SessionID) != "" || artifact.EventSeq != 0
+	return strings.TrimSpace(artifact.VariantID) != "" || strings.TrimSpace(artifact.CollectionID) != "" || artifact.EventSeq != 0 || (strings.TrimSpace(artifact.SessionID) != "" && !isArtifactV3PlanArtifact(artifact))
 }
 
 func isVideoSourcePlanArtifact(artifact pebblestore.SessionPlanArtifactReference) bool {
@@ -1155,7 +1161,9 @@ func validatePlanArtifacts(field string, artifacts []pebblestore.SessionPlanArti
 			return fmt.Errorf("plan document %s[%d].path %w", field, i, err)
 		}
 		var key string
-		if isManagedPlanArtifact(artifact) {
+		if isArtifactV3PlanArtifact(artifact) {
+			key = strings.Join([]string{"artifact_v3", strings.TrimSpace(artifact.SessionID), strings.TrimSpace(artifact.ArtifactID), strings.TrimSpace(artifact.RevisionRef)}, "\x00")
+		} else if isManagedPlanArtifact(artifact) {
 			key = strings.Join([]string{"managed", strings.TrimSpace(artifact.SessionID), strings.TrimSpace(artifact.CollectionID), strings.TrimSpace(artifact.VariantID)}, "\x00")
 		} else if isVideoSourcePlanArtifact(artifact) {
 			key = strings.Join([]string{"video_source", strings.TrimSpace(artifact.SourceRef)}, "\x00")
@@ -1171,6 +1179,31 @@ func validatePlanArtifacts(field string, artifacts []pebblestore.SessionPlanArti
 }
 
 func validatePlanArtifact(artifact pebblestore.SessionPlanArtifactReference) error {
+	if isArtifactV3PlanArtifact(artifact) {
+		if isManagedPlanArtifact(artifact) || isVideoSourcePlanArtifact(artifact) || strings.TrimSpace(artifact.Path) != "" {
+			return errors.New("Artifact V3 references must not declare workspace, video-source, or legacy managed identity")
+		}
+		if err := validateArtifactIDString("artifact", strings.TrimSpace(artifact.ArtifactID)); err != nil {
+			return err
+		}
+		sessionID, revisionRef := strings.TrimSpace(artifact.SessionID), strings.TrimSpace(artifact.RevisionRef)
+		if sessionID == "" || len(sessionID) > 256 || strings.ContainsAny(sessionID, `/\\`) || !utf8.ValidString(sessionID) {
+			return errors.New("Artifact V3 session_id is invalid")
+		}
+		if !strings.HasPrefix(revisionRef, "revision-") || len(strings.TrimPrefix(revisionRef, "revision-")) != 40 {
+			return errors.New("Artifact V3 revision_ref is invalid")
+		}
+		for _, r := range strings.TrimPrefix(revisionRef, "revision-") {
+			if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'f')) {
+				return errors.New("Artifact V3 revision_ref is invalid")
+			}
+		}
+		role := strings.ToLower(strings.TrimSpace(artifact.Role))
+		if role != "" && role != "input" && role != "deliverable" {
+			return errors.New("has unsupported role; use input or deliverable")
+		}
+		return nil
+	}
 	if isVideoSourcePlanArtifact(artifact) {
 		if isManagedPlanArtifact(artifact) || strings.TrimSpace(artifact.Path) != "" {
 			return errors.New("video source artifact references must not declare a workspace path or managed artifact identity")

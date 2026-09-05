@@ -240,18 +240,21 @@ func CommitMatchesResolvedIntegration(ctx context.Context, runner GitRunner, dir
 	if subject == "" {
 		return false, nil
 	}
-	identity, err := reviewCommitIdentity(ctx, runner, dir, sourceCommit)
-	if err != nil {
-		return false, err
-	}
-	paths, err := reviewCommitPaths(ctx, runner, dir, sourceCommit)
-	if err != nil {
-		return false, err
-	}
 	candidates, err := runner.Run(ctx, dir, "log", target, "--format=%H", "--fixed-strings", "--grep="+subject)
 	if err != nil {
 		return false, fmt.Errorf("search target commit history: %w", err)
 	}
+	// Most new commits have no matching target subject. Do not spawn identity
+	// and changed-path reads unless the history search actually found candidates.
+	if strings.TrimSpace(candidates) == "" {
+		return false, nil
+	}
+	identity, err := reviewCommitIdentity(ctx, runner, dir, sourceCommit)
+	if err != nil {
+		return false, err
+	}
+	var paths []string
+	pathsLoaded := false
 	for _, candidate := range strings.Fields(candidates) {
 		candidate = strings.TrimSpace(candidate)
 		if candidate == "" || candidate == sourceCommit {
@@ -263,6 +266,13 @@ func CommitMatchesResolvedIntegration(ctx context.Context, runner GitRunner, dir
 		}
 		if candidateIdentity != identity {
 			continue
+		}
+		if !pathsLoaded {
+			paths, err = reviewCommitPaths(ctx, runner, dir, sourceCommit)
+			if err != nil {
+				return false, err
+			}
+			pathsLoaded = true
 		}
 		candidatePaths, pathsErr := reviewCommitPaths(ctx, runner, dir, candidate)
 		if pathsErr != nil {

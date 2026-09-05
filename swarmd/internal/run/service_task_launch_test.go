@@ -2287,12 +2287,12 @@ func TestDesignerPermissionManifestUsesCompiledManagedProfileByDefault(t *testin
 	if row.OutputMode != taskOutputModeManaged || len(row.OwnedScope) != 0 || row.ProfileSnapshot == nil || !row.ProfileSnapshot.Protected {
 		t.Fatalf("managed Designer output contract = mode %q scope %#v profile %#v", row.OutputMode, row.OwnedScope, row.ProfileSnapshot)
 	}
-	for _, name := range []string{"read", "search", "find", "list", "manage_artifact"} {
+	for _, name := range []string{"read", "search", "find", "list", "artifact_v3_author"} {
 		if !stringSliceContains(row.ResolvedTools.AllowedTools, name) {
 			t.Fatalf("managed Designer allowed tools %v missing %q", row.ResolvedTools.AllowedTools, name)
 		}
 	}
-	for _, name := range []string{"write", "edit", "bash", "git_status", "git_commit", "task", "manage_worktree", "plan_manage"} {
+	for _, name := range []string{"write", "edit", "artifact_v2_author", "manage_artifact", "bash", "git_status", "git_commit", "task", "manage_worktree", "plan_manage"} {
 		if !stringSliceContains(row.ResolvedTools.DisabledTools, name) {
 			t.Fatalf("managed Designer disabled tools %v missing %q", row.ResolvedTools.DisabledTools, name)
 		}
@@ -2605,6 +2605,41 @@ func TestApprovedFinderWaveManifestDigestSurvivesPermissionRoundTrip(t *testing.
 	}
 	if digest != envelope.ManifestHash || digest != envelope.Manifest.ManifestHash {
 		t.Fatalf("approved manifest hash mismatch: digest=%q envelope=%q manifest=%q", digest, envelope.ManifestHash, envelope.Manifest.ManifestHash)
+	}
+}
+
+func TestManagedDesignerEmptyOwnedScopeNormalizesForApprovedManifest(t *testing.T) {
+	svc, parentSessionID, cleanup := newTaskLaunchPermissionTestService(t)
+	defer cleanup()
+	bindTaskInheritanceModelProfile(t, svc, parentSessionID)
+
+	call := tool.Call{Name: "task", Arguments: mustJSON(t, map[string]any{
+		"prompt": "Create managed variants.",
+		"launches": []any{
+			map[string]any{"subagent_type": "designer", "meta_prompt": "Create first.", "owned_scope": []any{}},
+			map[string]any{"subagent_type": "designer", "meta_prompt": "Create second."},
+		},
+	})}
+	parsed, err := parseTaskCallArguments(call.Arguments)
+	if err != nil {
+		t.Fatalf("parse task call: %v", err)
+	}
+	if parsed.Launches[0].OwnedScope != nil || parsed.Launches[1].OwnedScope != nil {
+		t.Fatalf("managed Designer empty owned scopes = %#v, %#v, want nil", parsed.Launches[0].OwnedScope, parsed.Launches[1].OwnedScope)
+	}
+	manifest, err := svc.buildTaskLaunchPermissionPayload(parentSessionID, sessionruntime.ModeAuto, call)
+	if err != nil {
+		t.Fatalf("build task manifest: %v", err)
+	}
+	approved, err := json.Marshal(manifest.ApprovedArguments)
+	if err != nil {
+		t.Fatalf("marshal approved manifest: %v", err)
+	}
+	for i := range parsed.Launches {
+		parsed.Launches[i].TargetWorkspacePath = manifest.Launches[i].TargetWorkspacePath
+	}
+	if _, err := parseApprovedTaskLaunchManifest(string(approved), parsed.Launches); err != nil {
+		t.Fatalf("validate approved task manifest: %v", err)
 	}
 }
 

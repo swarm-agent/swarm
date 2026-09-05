@@ -11,8 +11,8 @@ import (
 
 func TestCreateRoutedTaskSessionRejectsMissingRouterTitleOrOwnedWorktree(t *testing.T) {
 	for _, test := range []struct {
-		name       string
-		title      string
+		name      string
+		title     string
 		worktree  bool
 		rootPath  string
 		wantError string

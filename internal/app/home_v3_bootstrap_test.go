@@ -197,7 +197,10 @@ func TestApplyHomeWorkspaceBootstrapRejectsResolverPseudoWorkspace(t *testing.T)
 	}
 }
 
-func TestApplyHomeWorkspaceBootstrapMarksUnsavedGitLaunchDirectory(t *testing.T) {
+// Requirement: an actual git init directory without commits remains visibly
+// unready for managed worktrees. The regression is status succeeding and being
+// mistaken for a repository with HEAD; bootstrap is the narrowest routing layer.
+func TestApplyHomeWorkspaceBootstrapMarksUnbornGitLaunchDirectoryAsNeedingCommit(t *testing.T) {
 	launchPath := t.TempDir()
 	if output, err := exec.Command("git", "init", launchPath).CombinedOutput(); err != nil {
 		t.Fatalf("init git launch directory: %v: %s", err, output)
@@ -215,8 +218,8 @@ func TestApplyHomeWorkspaceBootstrapMarksUnsavedGitLaunchDirectory(t *testing.T)
 	if selected != "/default" || len(next.Workspaces) != 1 || !next.Workspaces[0].Active {
 		t.Fatalf("default workspace selection = %q %#v", selected, next.Workspaces)
 	}
-	if len(warnings) != 0 || next.WorkspaceSetupPath != launchPath || !next.WorkspaceSetupHasGit {
-		t.Fatalf("warnings = %#v, setup path = %q, has git = %v", warnings, next.WorkspaceSetupPath, next.WorkspaceSetupHasGit)
+	if len(warnings) != 0 || next.WorkspaceSetupPath != launchPath || !next.WorkspaceSetupHasGit || next.WorkspaceSetupGitReadiness != model.GitReadinessNeedsCommit {
+		t.Fatalf("warnings = %#v, setup path = %q, git readiness = %q", warnings, next.WorkspaceSetupPath, next.WorkspaceSetupGitReadiness)
 	}
 }
 
@@ -225,6 +228,9 @@ func TestApplyHomeWorkspaceBootstrapTreatsUnrelatedGitRepoUnderBroadWorkspaceAsU
 	launchPath := t.TempDir()
 	if output, err := exec.Command("git", "init", launchPath).CombinedOutput(); err != nil {
 		t.Fatalf("init unrelated git launch directory: %v: %s", err, output)
+	}
+	if output, err := exec.Command("git", "-C", launchPath, "-c", "user.name=Test User", "-c", "user.email=test@example.com", "commit", "--allow-empty", "-m", "init").CombinedOutput(); err != nil {
+		t.Fatalf("commit unrelated git launch directory: %v: %s", err, output)
 	}
 
 	next, selected, warnings := applyHomeWorkspaceBootstrap(model.EmptyHome(), homeBootstrapData{
@@ -239,8 +245,8 @@ func TestApplyHomeWorkspaceBootstrapTreatsUnrelatedGitRepoUnderBroadWorkspaceAsU
 	if selected != workspacePath || len(next.Workspaces) != 1 || !next.Workspaces[0].Active {
 		t.Fatalf("default workspace selection = %q %#v", selected, next.Workspaces)
 	}
-	if len(warnings) != 0 || next.WorkspaceSetupPath != launchPath || !next.WorkspaceSetupHasGit {
-		t.Fatalf("warnings = %#v, setup path = %q, has git = %v", warnings, next.WorkspaceSetupPath, next.WorkspaceSetupHasGit)
+	if len(warnings) != 0 || next.WorkspaceSetupPath != launchPath || !next.WorkspaceSetupHasGit || next.WorkspaceSetupGitReadiness != model.GitReadinessReady {
+		t.Fatalf("warnings = %#v, setup path = %q, git readiness = %q", warnings, next.WorkspaceSetupPath, next.WorkspaceSetupGitReadiness)
 	}
 }
 

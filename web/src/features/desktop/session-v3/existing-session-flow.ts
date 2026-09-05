@@ -6,8 +6,11 @@ import type {
 import { messageMutationResponseToAction } from '../state/desktop-v3-cache-wire'
 import {
   postDesktopV3AppendMessage,
+  portableDesktopV3ArtifactMessageSelection,
   type DesktopV3AppendMessageRequest,
 } from './write-api'
+
+import { normalizeDesktopV3ArtifactMessageSelection } from './artifact-api'
 
 export interface DesktopV3ExistingMessageOperation {
   version: 1
@@ -32,7 +35,7 @@ export function createDesktopV3ExistingMessageOperation(input: {
     throw new Error('Existing Desktop V3 message requires prompt, media, video attachment, or artifact selection')
   }
 
-  if (input.artifactSelections?.some((selection) => !selection.session_id.trim() || !selection.collection_id.trim() || !selection.variant_id.trim() || selection.event_seq <= 0 || !selection.label.trim() || (selection.action !== 'select' && selection.action !== 'use') || (selection.pending_request?.trim() && selection.action !== 'use'))) {
+  if (input.artifactSelections?.some((selection) => !normalizeDesktopV3ArtifactMessageSelection(selection))) {
     throw new Error('Existing Desktop V3 message contains an invalid artifact selection')
   }
 
@@ -51,16 +54,7 @@ export function createDesktopV3ExistingMessageOperation(input: {
       metadata: input.metadata,
       media: input.media,
       video_attachments: input.videoAttachments,
-      artifact_selections: input.artifactSelections?.map((selection) => ({
-        ...selection,
-        session_id: selection.session_id.trim(),
-        collection_id: selection.collection_id.trim(),
-        variant_id: selection.variant_id.trim(),
-        label: selection.label.trim(),
-        ...(selection.description?.trim() ? { description: selection.description.trim() } : {}),
-        ...(selection.pending_request?.trim() ? { pending_request: selection.pending_request.trim() } : {}),
-        ...(selection.part_id?.trim() ? { part_id: selection.part_id.trim() } : {}),
-      })),
+      artifact_selections: input.artifactSelections?.map(portableDesktopV3ArtifactMessageSelection),
     },
   }
 }
@@ -99,7 +93,7 @@ export function loadDesktopV3ExistingMessageOperation(
     if (!value.request?.run_id?.trim()) return null
     if (value.request.role !== 'user') return null
     if (!value.request.content?.trim() && !(value.request.media?.length) && !(value.request.video_attachments?.length) && !(value.request.artifact_selections?.length)) return null
-    if (value.request.artifact_selections?.some((selection) => !selection?.session_id?.trim() || !selection?.collection_id?.trim() || !selection?.variant_id?.trim() || selection.event_seq <= 0 || !selection?.label?.trim() || (selection.action !== 'select' && selection.action !== 'use') || (selection.pending_request?.trim() && selection.action !== 'use'))) return null
+    if (value.request.artifact_selections?.some((selection) => !normalizeDesktopV3ArtifactMessageSelection(selection))) return null
     return value
   } catch {
     return null
@@ -162,7 +156,7 @@ export async function continueDesktopV3Conversation(
   if (!operation.request.content.trim() && !(operation.request.media?.length) && !(operation.request.artifact_selections?.length)) {
     throw new Error('Existing Desktop V3 conversation requires prompt, media, or artifact selection')
   }
-  if (operation.request.artifact_selections?.some((selection) => !selection?.session_id?.trim() || !selection?.collection_id?.trim() || !selection?.variant_id?.trim() || selection.event_seq <= 0 || !selection?.label?.trim() || (selection.action !== 'select' && selection.action !== 'use') || (selection.pending_request?.trim() && selection.action !== 'use'))) {
+  if (operation.request.artifact_selections?.some((selection) => !normalizeDesktopV3ArtifactMessageSelection(selection))) {
     throw new Error('Existing Desktop V3 conversation contains an invalid artifact selection')
   }
 

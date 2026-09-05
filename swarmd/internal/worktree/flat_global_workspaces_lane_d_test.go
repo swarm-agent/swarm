@@ -147,7 +147,7 @@ func TestFlatGlobalWorkspacesLaneDCapturedBranchesAndIsolation(t *testing.T) {
 				t.Fatalf("captured base = %#v, want branch=%q HEAD=%s", captured, branch, base)
 			}
 
-			allocation, err := svc.AllocateTaskWorkspace(repo, captured, "lane-d-"+strings.NewReplacer("/", "-", "_", "-").Replace(branch))
+			allocation, err := svc.AllocateTaskWorkspace(repo, captured, "lane-d-"+strings.NewReplacer("/", "-", "_", "-").Replace(branch), []string{"."})
 			if err != nil {
 				t.Fatalf("allocate managed child: %v", err)
 			}
@@ -239,7 +239,7 @@ func TestFlatGlobalWorkspacesLaneDRejectsCapturedSourceMovement(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			allocation, err := svc.AllocateTaskWorkspace(repo, captured, "movement-"+movement)
+			allocation, err := svc.AllocateTaskWorkspace(repo, captured, "movement-"+movement, []string{"."})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -280,7 +280,7 @@ func TestFlatGlobalWorkspacesLaneDRejectsCleanUnintegratedCleanup(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	allocation, err := svc.AllocateTaskWorkspace(repo, captured, "unintegrated-clean")
+	allocation, err := svc.AllocateTaskWorkspace(repo, captured, "unintegrated-clean", []string{"."})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -323,7 +323,7 @@ func TestFlatGlobalWorkspacesLaneDE2E059ForbidsLegacyDefaultBranchInference(t *t
 	if captured.ParentBranch != "feature/actually-selected" || captured.BaseCommit != base {
 		t.Fatalf("legacy branch metadata overrode capture: %+v", captured)
 	}
-	allocation, err := svc.AllocateTaskWorkspace(repo, captured, "legacy-default-forbidden")
+	allocation, err := svc.AllocateTaskWorkspace(repo, captured, "legacy-default-forbidden", []string{"."})
 	if err != nil {
 		t.Fatalf("allocate selected branch child: %v", err)
 	}
@@ -351,7 +351,7 @@ func TestFlatGlobalWorkspacesLaneDIntegrationAndCleanupSafety(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	allocation, err := svc.AllocateTaskWorkspace(repo, captured, "atomic-integration")
+	allocation, err := svc.AllocateTaskWorkspace(repo, captured, "atomic-integration", []string{"."})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -381,7 +381,7 @@ func TestFlatGlobalWorkspacesLaneDIntegrationAndCleanupSafety(t *testing.T) {
 	}
 
 	parentHead := inspectLaneDWorkspace(t, repo).HeadCommit
-	dirty, err := svc.AllocateTaskWorkspace(repo, TaskBase{RepoRoot: captured.RepoRoot, ParentBranch: "captured-feature", BaseCommit: parentHead}, "dirty-recovery")
+	dirty, err := svc.AllocateTaskWorkspace(repo, TaskBase{RepoRoot: captured.RepoRoot, ParentBranch: "captured-feature", BaseCommit: parentHead}, "dirty-recovery", []string{"."})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -129,7 +129,7 @@ func agentToolGroup(name string) string {
 	switch name {
 	case "read", "search", "list", "websearch", "webfetch", "agentic_search":
 		return "read"
-	case "write", "edit", "bash", "git_status", "git_diff", "git_add", "git_commit":
+	case "write", "edit", "bash", "git_init", "git_status", "git_diff", "git_add", "git_commit", "git_commit_initial":
 		return "write"
 	case "task", "ask_user", "exit_plan_mode", "plan_manage", "skill_use":
 		return "control"

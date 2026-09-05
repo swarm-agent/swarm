@@ -472,6 +472,12 @@ func (i *Instance) GrepWithConfig(query string, opts GrepOptions) ([]GrepMatch, 
 }
 
 func (i *Instance) MultiGrepWithOptions(patterns []string, constraints string, pageLimit uint32, timeBudget time.Duration, fileOffset uint32, beforeContext uint32, afterContext uint32, classifyDefinitions bool) ([]GrepMatch, GrepMetrics, error) {
+	return i.MultiGrepWithConfig(patterns, constraints, GrepOptions{PageLimit: pageLimit, TimeBudget: timeBudget, FileOffset: fileOffset, BeforeContext: beforeContext, AfterContext: afterContext, ClassifyDefinitions: classifyDefinitions})
+}
+
+// MultiGrepWithConfig keeps literal patterns separate from native query syntax.
+// Mode is not used: the native multi-grep API is literal-only.
+func (i *Instance) MultiGrepWithConfig(patterns []string, constraints string, opts GrepOptions) ([]GrepMatch, GrepMetrics, error) {
 	if i == nil || i.handle == nil {
 		return nil, GrepMetrics{}, fmt.Errorf("nil FFF instance")
 	}
@@ -493,10 +499,10 @@ func (i *Instance) MultiGrepWithOptions(patterns []string, constraints string, p
 	cConstraints := cString(constraints)
 	defer C.free(unsafe.Pointer(cConstraints))
 	budgetMS := uint64(0)
-	if timeBudget > 0 {
-		budgetMS = uint64(timeBudget / time.Millisecond)
+	if opts.TimeBudget > 0 {
+		budgetMS = uint64(opts.TimeBudget / time.Millisecond)
 	}
-	res, err := wrapResult(C.fff_multi_grep(i.handle, cPatterns, cConstraints, 0, 0, true, C.uint32_t(fileOffset), C.uint32_t(pageLimit), C.uint64_t(budgetMS), C.uint32_t(beforeContext), C.uint32_t(afterContext), C.bool(classifyDefinitions)))
+	res, err := wrapResult(C.fff_multi_grep(i.handle, cPatterns, cConstraints, C.uint64_t(opts.MaxFileSize), C.uint32_t(opts.MaxMatchesPerFile), C.bool(!opts.DisableSmartCase), C.uint32_t(opts.FileOffset), C.uint32_t(opts.PageLimit), C.uint64_t(budgetMS), C.uint32_t(opts.BeforeContext), C.uint32_t(opts.AfterContext), C.bool(opts.ClassifyDefinitions)))
 	if err != nil {
 		return nil, GrepMetrics{Duration: time.Since(start)}, err
 	}

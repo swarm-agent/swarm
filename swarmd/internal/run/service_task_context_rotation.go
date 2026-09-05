@@ -105,6 +105,9 @@ func (s *Service) runDelegatedLogicalLaunch(ctx context.Context, launch taskLaun
 		}
 		return meta
 	}(), onEvent)
+	if result.ArtifactRunContext != nil {
+		launch.ArtifactRunContext = cloneArtifactRunContext(result.ArtifactRunContext)
+	}
 	return launch, result, err
 }
 

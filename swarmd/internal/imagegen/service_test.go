@@ -426,6 +426,9 @@ func TestGenerateRejectsProviderReturningMultipleFinalsForOneSlotWithoutSaving(t
 	}
 }
 
+// TestGenerateRejectsNonPNGPayloadBeforeSaving proves Generate validates the
+// provider payload before any managed file is written. The imagegen package
+// test is the narrowest layer that observes both rejection and no-write state.
 func TestGenerateRejectsNonPNGPayloadBeforeSaving(t *testing.T) {
 	svc, _, threadID, storagePath := newImageServiceTestHarness(t, codex.ImageGenerationResult{CallID: "ig", DecodedPNG: []byte("not-a-png")})
 
@@ -449,6 +452,9 @@ func TestGenerateRejectsNonPNGPayloadBeforeSaving(t *testing.T) {
 	}
 }
 
+// TestResolveAssetPathRejectsPathOutsideManagedStorage proves stored asset
+// metadata cannot make resolution escape app-managed workspace storage. The
+// package test directly observes the service containment rejection.
 func TestResolveAssetPathRejectsPathOutsideManagedStorage(t *testing.T) {
 	svc, threads, threadID, _ := newImageServiceTestHarness(t, codex.ImageGenerationResult{CallID: "ig", DecodedPNG: testPNGBytes()})
 	thread, ok, err := threads.GetForAccount("account-1", threadID)
@@ -521,6 +527,13 @@ func newImageServiceTestHarnessWithClient(t *testing.T, client *fakeCodexImageCl
 
 func newImageServiceTestHarnessWithDataHome(t *testing.T, dataHome string, client *fakeCodexImageClient) (*Service, *pebblestore.ImageThreadStore, string, string) {
 	t.Helper()
+	home := filepath.Join(filepath.Dir(dataHome), "home")
+	if err := os.MkdirAll(home, 0o755); err != nil {
+		t.Fatalf("create test home: %v", err)
+	}
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, ".local", "share"))
 	t.Setenv("STATE_DIRECTORY", dataHome)
 	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "store.pebble"))
 	if err != nil {

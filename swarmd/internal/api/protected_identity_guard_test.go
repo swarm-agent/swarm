@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -34,6 +33,7 @@ func TestProtectedCreateAPIsRequireBootstrappedProductIdentity(t *testing.T) {
 		body   map[string]any
 	}{
 		{name: "workspace", method: http.MethodPost, path: "/v1/workspace/add", body: map[string]any{"path": filepath.Join(t.TempDir(), "workspace")}},
+		{name: "workspace repository setup", method: http.MethodPost, path: "/v1/workspace/repository/setup", body: map[string]any{"path": filepath.Join(t.TempDir(), "workspace")}},
 		{name: "agent", method: http.MethodPut, path: "/v2/agents/slice15", body: map[string]any{"mode": "subagent", "description": "Slice 1.5 guard test"}},
 		{name: "credential", method: http.MethodPost, path: "/v1/auth/credentials", body: map[string]any{"provider": "codex", "type": "api", "api_key": "test-key"}},
 	}
@@ -146,8 +146,8 @@ func TestProtectedCreateAPIsSucceedAfterBootstrapWithValidProductJWT(t *testing.
 	cookie := sessionCookieFromRecorder(t, bootstrapRec)
 
 	workspacePath := filepath.Join(t.TempDir(), "created-workspace")
-	if err := os.MkdirAll(workspacePath, 0o755); err != nil {
-		t.Fatalf("create workspace dir: %v", err)
+	if err := ensureTestWorkspaceDir(workspacePath); err != nil {
+		t.Fatalf("create workspace repository: %v", err)
 	}
 	workspaceRec := httptest.NewRecorder()
 	server.DesktopHandler().ServeHTTP(workspaceRec, newProtectedJSONRequest(t, http.MethodPost, "/v1/workspace/add", map[string]any{"path": workspacePath}, cookie))

@@ -61,11 +61,11 @@ var (
 )
 
 type Config struct {
-	MaxClips       int
-	MaxDurationMs  int64
-	MaxRenderBytes int64
-	WorkDir        string
-	RecoveryLimit      int
+	MaxClips          int
+	MaxDurationMs     int64
+	MaxRenderBytes    int64
+	WorkDir           string
+	RecoveryLimit     int
 	MaxConcurrentJobs int
 }
 
@@ -156,6 +156,16 @@ type ArtifactAuthority interface {
 	CreateFromFile(ctx context.Context, principal artifact.Principal, input artifact.CreateFileInput) (pebblestore.SessionArtifactVariant, error)
 }
 
+type ArtifactV2Authority interface {
+	ValidateVideoReference(accountScopeID, userID string, ref pebblestore.ArtifactV2VideoReference) error
+	ReadVideoReference(context.Context, string, string, pebblestore.ArtifactV2VideoReference) ([]byte, error)
+}
+
+type ArtifactV3Authority interface {
+	ValidateVideoReference(accountScopeID, userID string, ref pebblestore.ArtifactV3VideoReference) error
+	ReadVideoReference(context.Context, string, string, pebblestore.ArtifactV3VideoReference) ([]byte, error)
+}
+
 type SessionStore interface {
 	GetSession(sessionID string) (pebblestore.SessionSnapshot, bool, error)
 	GetVideoProject(accountScopeID, sessionID, projectID string) (pebblestore.VideoProjectSnapshot, bool, error)
@@ -179,6 +189,8 @@ type Service struct {
 	cfg           Config
 	store         SessionStore
 	artifacts     ArtifactAuthority
+	artifactV2    ArtifactV2Authority
+	artifactV3    ArtifactV3Authority
 	workspace     WorkspaceAuthority
 	runner        CommandRunner
 	animation     htmlcapture.AnimationRenderer
@@ -221,6 +233,18 @@ func NewService(cfg Config, store SessionStore, artifacts ArtifactAuthority, ani
 		cancels:       make(map[string]context.CancelFunc),
 		pendingStarts: make(map[string]context.CancelFunc),
 		admission:     make(chan struct{}, cfg.MaxConcurrentJobs),
+	}
+}
+
+func (s *Service) SetArtifactV2Authority(authority ArtifactV2Authority) {
+	if s != nil {
+		s.artifactV2 = authority
+	}
+}
+
+func (s *Service) SetArtifactV3Authority(authority ArtifactV3Authority) {
+	if s != nil {
+		s.artifactV3 = authority
 	}
 }
 
@@ -1063,6 +1087,82 @@ func (s *Service) materializeTimelineInputs(ctx context.Context, principal ident
 			input.HasAudio = true
 
 		case pebblestore.VideoClipSourceKindManagedArtifact:
+			authorityCount := 0
+			if clip.ArtifactRef != nil {
+				authorityCount++
+			}
+			if clip.ArtifactV2Ref != nil {
+				authorityCount++
+			}
+			if clip.ArtifactV3Ref != nil {
+				authorityCount++
+			}
+			if authorityCount != 1 {
+				return nil, fmt.Errorf("clip %d managed artifact must use exactly one V1, V2, or V3 authority", i)
+			}
+			if clip.ArtifactV3Ref != nil {
+				if s.artifactV3 == nil {
+					return nil, fmt.Errorf("clip %d Artifact V3 authority is unavailable", i)
+				}
+				ref := *clip.ArtifactV3Ref
+				if err := s.artifactV3.ValidateVideoReference(principal.AccountScopeID, principal.UserID, ref); err != nil {
+					return nil, fmt.Errorf("resolve clip %d Artifact V3 source: %w", i, err)
+				}
+				if strings.ToLower(strings.TrimSpace(ref.MediaType)) != "video/mp4" || strings.TrimSpace(ref.DerivativeID) == "" {
+					return nil, fmt.Errorf("clip %d Artifact V3 source must be an exact MP4 derivative", i)
+				}
+				if clip.MediaType != "" && !strings.EqualFold(strings.TrimSpace(clip.MediaType), ref.MediaType) {
+					return nil, fmt.Errorf("clip %d Artifact V3 media type does not match its exact reference", i)
+				}
+				if clip.DurationMs != ref.DurationMs || clip.SourceStartMs != 0 || clip.SourceEndMs != ref.DurationMs {
+					return nil, fmt.Errorf("clip %d Artifact V3 source timing does not match its exact derivative", i)
+				}
+				body, err := s.artifactV3.ReadVideoReference(ctx, principal.AccountScopeID, principal.UserID, ref)
+				if err != nil {
+					return nil, fmt.Errorf("read clip %d Artifact V3 source: %w", i, err)
+				}
+				destPath := filepath.Join(jobDir, fmt.Sprintf("input_%d_v3.mp4", input.Index))
+				if int64(len(body)) > s.cfg.MaxRenderBytes {
+					return nil, fmt.Errorf("clip %d Artifact V3 derivative exceeds render byte limit", i)
+				}
+				if err := os.WriteFile(destPath, body, 0o600); err != nil {
+					return nil, err
+				}
+				input.FilePath = destPath
+				input.IsVideo, input.IsImage, input.HasAudio = true, false, false
+				break
+			}
+			if clip.ArtifactV2Ref != nil {
+				if s.artifactV2 == nil {
+					return nil, fmt.Errorf("clip %d Artifact V2 authority is unavailable", i)
+				}
+				ref := *clip.ArtifactV2Ref
+				if err := s.artifactV2.ValidateVideoReference(principal.AccountScopeID, principal.UserID, ref); err != nil {
+					return nil, fmt.Errorf("resolve clip %d Artifact V2 source: %w", i, err)
+				}
+				body, err := s.artifactV2.ReadVideoReference(ctx, principal.AccountScopeID, principal.UserID, ref)
+				if err != nil {
+					return nil, fmt.Errorf("read clip %d Artifact V2 source: %w", i, err)
+				}
+				destPath := filepath.Join(jobDir, fmt.Sprintf("input_%d_v2", input.Index))
+				if err := os.WriteFile(destPath, body, 0o600); err != nil {
+					return nil, err
+				}
+				input.FilePath = destPath
+				mediaType := strings.ToLower(strings.TrimSpace(ref.MediaType))
+				if strings.HasPrefix(mediaType, "image/") {
+					input.IsImage, input.IsVideo, input.HasAudio = true, false, false
+				} else if mediaType == "text/html" {
+					return nil, fmt.Errorf("clip %d live Artifact V2 HTML must be exported only after selection", i)
+				} else {
+					input.IsVideo = true
+					input.HasAudio, err = probeInputHasAudio(ctx, s.runner, destPath)
+					if err != nil {
+						return nil, err
+					}
+				}
+				break
+			}
 			var targetRef *pebblestore.SessionArtifactSelectionReference
 			if clip.ArtifactRef != nil {
 				targetRef = clip.ArtifactRef
@@ -1434,6 +1534,19 @@ func applySelectedHTMLAnimationSources(timeline *pebblestore.VideoProjectTimelin
 		}
 		if len(candidates.Candidates) == 0 {
 			return fmt.Errorf("HTML animation part %q has no exact candidate source set", part.ID)
+		}
+		if part.ArtifactV3Source != nil || candidates.V3SelectedSource != nil || candidates.V3Derivative != nil || clip.ArtifactV3Ref != nil {
+			// Native V3 conversion already owns an immutable MP4. Validate its
+			// canonical selected set instead of interpreting it as legacy HTML.
+			if err := pebblestore.ValidateVideoPlanForIntent(pebblestore.VideoEditProposalIntentArtifactV3Convert, pebblestore.VideoPlanProposal{Kind: pebblestore.VideoPlanKindInitial, Parts: []pebblestore.VideoPlanPart{part}}); err != nil {
+				return fmt.Errorf("native V3 animation part %q: %w", part.ID, err)
+			}
+			if clip.ArtifactV3Ref == nil || *clip.ArtifactV3Ref != *candidates.V3Derivative || clip.ArtifactRef != nil || clip.ArtifactV2Ref != nil || clip.MediaType != "video/mp4" || clip.SourceKind != pebblestore.VideoClipSourceKindManagedArtifact || clip.SourceStartMs != 0 || clip.SourceEndMs != part.DurationMs {
+				return fmt.Errorf("native V3 animation part %q does not match its exact timeline derivative", part.ID)
+			}
+			// materializeTimelineInputs still authenticates ownership, immutable
+			// source identity and digest before supplying bytes to the decoder.
+			continue
 		}
 		selectedSource := candidates.SelectedSource
 		if candidates.SelectedCandidateID == "" {

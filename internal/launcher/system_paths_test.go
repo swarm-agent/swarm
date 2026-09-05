@@ -9,6 +9,51 @@ import (
 	"swarm-refactor/swarmtui/pkg/storagecontract"
 )
 
+// Requirement: a fresh privileged install must create the user-owned Swarm
+// root before any owned child. Otherwise GNU install creates the intermediate
+// root as root, and the next fail-closed writability check rejects our own
+// partial result. This slice-level test is the narrowest deterministic proof of
+// the ordering contract; distro/systemd smoke tests cover the real command.
+func TestSystemInstallDirSpecsProvisionOwnedParentsFirst(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "swarm")
+	t.Setenv("SWARM_SYSTEM_INSTALL_ROOT", root)
+	t.Setenv("SWARM_SYSTEM_BIN_DIR", filepath.Join(t.TempDir(), "bin"))
+	t.Setenv("SWARM_SYSTEM_BINARY_DIR", filepath.Join(root, "bin"))
+	t.Setenv("SWARM_SYSTEM_LIBEXEC_DIR", filepath.Join(root, "libexec"))
+	t.Setenv("SWARM_SYSTEM_LIB_DIR", filepath.Join(root, "lib"))
+	t.Setenv("SWARM_SYSTEM_SHARE_DIR", filepath.Join(root, "share"))
+
+	specs := systemInstallDirSpecs(storagecontract.Roots{
+		ConfigDir:  filepath.Join(t.TempDir(), "config"),
+		DataDir:    filepath.Join(t.TempDir(), "data"),
+		CacheDir:   filepath.Join(t.TempDir(), "cache"),
+		RuntimeDir: filepath.Join(t.TempDir(), "runtime"),
+		LogsDir:    filepath.Join(t.TempDir(), "logs"),
+	})
+	index := make(map[string]int, len(specs))
+	for i, spec := range specs {
+		index[filepath.Clean(spec.Path)] = i
+	}
+	rootIndex, ok := index[filepath.Clean(root)]
+	if !ok {
+		t.Fatalf("system install root %q is missing", root)
+	}
+	for _, child := range []string{
+		filepath.Join(root, "bin"),
+		filepath.Join(root, "libexec"),
+		filepath.Join(root, "lib"),
+		filepath.Join(root, "share"),
+	} {
+		childIndex, ok := index[filepath.Clean(child)]
+		if !ok {
+			t.Fatalf("owned child %q is missing", child)
+		}
+		if rootIndex >= childIndex {
+			t.Fatalf("root index = %d, child %q index = %d; want root first", rootIndex, child, childIndex)
+		}
+	}
+}
+
 func TestEnsureDirsLocalPreservesExistingMode(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "existing")
 	if err := os.Mkdir(path, 0o750); err != nil {
@@ -26,6 +71,26 @@ func TestEnsureDirsLocalPreservesExistingMode(t *testing.T) {
 	}
 	if got := info.Mode().Perm(); got != 0o750 {
 		t.Fatalf("mode = %#o, want preserved 0o750", got)
+	}
+}
+
+func TestEnsureDirsPrivilegedRejectsExistingNonWritableOwnedDirBeforeMutation(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "existing")
+	if err := os.Mkdir(path, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	if err := ensureDirsPrivileged([]systemDirSpec{{Path: path, Mode: 0o700, Owner: true}}); err == nil || !strings.Contains(err.Error(), "refusing to change its ownership or mode") {
+		t.Fatalf("ensureDirsPrivileged() error = %v, want fail-closed existing-owner rejection", err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o500 {
+		t.Fatalf("mode = %#o, want unchanged 0o500", got)
 	}
 }
 

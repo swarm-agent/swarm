@@ -85,15 +85,15 @@ func TestManageWorkspaceMapUpdateRequiresDedicatedPermission(t *testing.T) {
 
 func TestManageWorkspaceMalformedAndUnknownActionsFailClosed(t *testing.T) {
 	for name, args := range map[string]string{
-		"empty arguments": ``,
-		"malformed JSON": `{`,
-		"missing action": `{"workspace_id":"ws-1"}`,
-		"empty action": `{"action":""}`,
-		"non-string action": `{"action":7}`,
+		"empty arguments":            ``,
+		"malformed JSON":             `{`,
+		"missing action":             `{"workspace_id":"ws-1"}`,
+		"empty action":               `{"action":""}`,
+		"non-string action":          `{"action":7}`,
 		"conflicting action aliases": `{"action":"create","op":"delete"}`,
-		"matching unknown aliases": `{"action":"destroy_everything","op":"destroy_everything"}`,
-		"unknown action": `{"action":"destroy_everything"}`,
-		"legacy unknown action": `{"action":"get"}`,
+		"matching unknown aliases":   `{"action":"destroy_everything","op":"destroy_everything"}`,
+		"unknown action":             `{"action":"destroy_everything"}`,
+		"legacy unknown action":      `{"action":"get"}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			for _, mode := range []string{"auto", "auto+bypass_permissions"} {

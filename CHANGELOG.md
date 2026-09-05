@@ -6,12 +6,14 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ## Unreleased
 
+- Fix fresh Linux system installs by provisioning the Swarm-owned runtime root before its children, remove the caller `TMPDIR` requirement from systemd installation, install missing Git/Bash runtime prerequisites before Swarm mutation, and bind Ubuntu/Arch/Omarchy plus Fireworks reconciliation validation to one checksum-verified candidate that starts Git-absent.
+
 ### Added
 
 - Added workspace Actions with structured inputs, quick-access pins, AI-assisted commit orchestration, and Desktop/TUI management surfaces.
 - Added Git-aware workspace controls, worktree integration improvements, AI commit commands, and final handoff links to public pull requests.
 - Added account-scoped model favorites and richer model controls, including complete catalog pagination, provider service-tier metadata, and current Google Gemini thinking support.
-- Added first-run onboarding support for accepting initial provider credentials.
+- Added first-run onboarding support for accepting initial provider credentials and a dedicated pre-admission Onboarding Swarm for safely preparing an existing-file first workspace.
 - Added deterministic `swarm.animation/v1` HTML animation capture that publishes silent managed MP4 artifacts with exact source lineage.
 - Added trusted registered audio sources, durable speech transcription, and bounded deterministic waveform, onset, tempo, beat, and energy-section analysis.
 - Added reviewed Video Studio soundtrack editing with exact `source_audio` clips, typed pending proposals, accepted-cut preview, and deterministic audio/video rendering.
@@ -19,10 +21,13 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ### Changed
 
+- Show pending review worktrees before expensive Git checks, bound review enrichment concurrency, and scope integration reads to the selected session instead of repeatedly scanning all review lanes. Background refreshes no longer keep completed integrations pending.
 - Updated the daemon compression dependency to `github.com/klauspost/compress` v1.18.7 for the new build.
 - Reworked durable V3 plan and checkpoint execution so boundary transitions, resumptions, source-message provenance, and conversation context remain in the canonical session epoch.
 - Expanded Desktop and TUI workspace onboarding, session routing, themes, responsive navigation, git status, and launch tips while removing legacy display and workspace-definition authorities.
+- Made Git a mandatory installed-runtime prerequisite and require every saved or selected workspace to be a repository root with an initial commit, rejecting direct-session worktree opt-out or missing worktree authority; the supported installer provisions missing Git, and Desktop provides explicit safe setup guidance instead of allowing temporary non-repository sessions. Provider-connected first-time users can ask the exact-folder Onboarding Swarm for permission-gated setup help or fix the repository manually, and workspace admission remains blocked until a recheck confirms the first commit.
 - Flattened account-scoped workspaces into one global catalog: every saved path has independent identity and generation, historical linked directories migrate to standalone entries, and linked membership is no longer scope authority.
+- Required every Git-backed routed or deployed session to start in a session-owned managed worktree, with durable ownership and lineage revalidated before provider execution.
 - Hardened release update and systemd relaunch behavior, including non-privileged update handoff, replacement readiness, authorization, and rollback-sensitive restart paths.
 - Split trusted pre-merge qualification from final protected-branch release builds so publication can require an independently authenticated candidate check while keeping infrastructure details and credentials outside the public repository.
 - Separated core system agents from utility agents in Desktop and TUI model controls.
@@ -34,6 +39,9 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ### Fixed
 
+- Reduced workspace-launcher startup work with catalog-first loading: saved workspaces no longer wait for session/permission payloads, todo summaries, Git probes, or folder discovery. Return visits reuse the existing in-memory query cache; background details remain independent, and theme/browser updates no longer trigger redundant refreshes. Catalog worktree settings use exact account-owned lookups instead of repeated full-catalog scans.
+- Gave managed Designers one bounded refinement round for allowlisted author-correctable animation failures, using a fresh immutable candidate in the same collection while preserving failed artifacts and all strict trust checks.
+- Made managed Designer task failures report the artifact's concrete failure code separately from trusted-lineage and composition rejection.
 - Removed the retired hosted remote-deploy product surface while preserving Swarm targets, topology runtime placement, and workspace bindings.
 - Retired dedicated local-container execution and its APIs, including dev image synchronization, image release artifacts, container-only harness commands, and container-specific configuration.
 - Preserved V3 sessions/sync/realtime and generic Swarm-target routing as current critical contracts; containers and other non-local execution remain possible future runner targets rather than current local-container behavior.
@@ -48,7 +56,7 @@ Release entries are the source checkpoint for public docs verification. Each ent
 - Fixed TUI launches from unsaved Git repositories so they retain the configured default workspace while showing actionable `/workspace save` guidance; nested repositories are no longer hidden by broad saved workspace roots.
 - Allowed first-run OpenAI onboarding to accept credentials without depending on a live provider availability check; credentials remain explicitly unverified until a real provider request succeeds.
 - Allowed authenticated same-origin Tailscale Desktop requests admitted by daemon origin policy to trigger host update actions while spoofed requests remain fail-closed.
-- Updated the daemon cryptography dependency to the fixed release for CVE-2026-56854 and made PR critical checks install their required repository-policy tool before fetching and testing the exact declared head/base commits.
+- Updated the daemon cryptography dependency to fixed releases for CVE-2026-56854, CVE-2026-56855, and CVE-2026-78662, and made PR critical checks install their required repository-policy tool before fetching and testing the exact declared head/base commits.
 
 ### Docs impact
 
@@ -56,14 +64,15 @@ Release entries are the source checkpoint for public docs verification. Each ent
 - Public docs should describe the current durable V3 checkpoint/resume behavior and the updated Desktop/TUI workspace, routing, and onboarding surfaces.
 - Public update docs should reflect the hardened non-privileged update, systemd relaunch, readiness, and rollback behavior.
 - Public onboarding docs should describe initial provider credential acceptance; agent grouping, model switching, session quarantine, diagnostic tooling, and worktree retry identifiers need no separate user documentation.
+- Public install and workspace docs must state that the installer provisions mandatory Git when absent and that workspaces require a repository root with an initial commit; non-repository folders are setup candidates, not usable temporary sessions. Existing-file first workspaces use the dedicated exact-folder Onboarding Swarm or a manual fix-and-retry path, with explicit permission for repository mutations and no admission before recheck.
 - Public docs should describe the system storage contract, Linux root locations, no-silent-migration behavior, and future macOS system-root expectations.
 - Public product docs must describe dedicated local containers as retired while retaining V3 and Swarm targets as current critical contracts and future non-local runners as a separate direction.
-- Public install docs should point users to the release installer fast lane before source checkout workflows.
+- Public install docs should point users to the release installer fast lane before source checkout workflows and explain automatic provisioning of missing Git/Bash prerequisites.
 - Public provider docs must not list Copilot as currently supported or runnable.
 - Public command docs should describe `/voice` as experimental terminal voice input only, not as a fully supported voice product.
 - Public TUI workspace guidance should explain that `/workspace save` saves and switches to an unsaved Git launch directory.
 - Public video documentation should cover deterministic HTML animation export, trusted registered audio sources, transcription and deterministic audio analysis, reviewed soundtrack proposals, and the current no-fades/no-looping/no-ducking limits.
-- Docs impact: none for the Tailscale host-update authorization correction, cryptography dependency correction, plan execution badge cleanup, Desktop sidebar responsiveness refinements, or internal test-governance and release-gate wiring.
+- Docs impact: none for managed Designer bounded refinement/failure diagnostics, the Tailscale host-update authorization correction, cryptography dependency correction, plan execution badge cleanup, Desktop sidebar and workspace-launcher responsiveness refinements, or internal test-governance and release-gate wiring.
 
 ## v0.1.19 - 2026-05-01
 

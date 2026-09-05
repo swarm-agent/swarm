@@ -1,8 +1,8 @@
 package session
 
 import (
+	"encoding/json"
 	"errors"
-	"reflect"
 	"strings"
 	"testing"
 
@@ -78,6 +78,9 @@ func TestValidatePlanTaskProgramDefinitionAcceptsTargetedCoderAndRejectsDesigner
 	}
 }
 
+// Purpose: ValidateExecutablePlanDocument must be a pure approval preflight.
+// Compare an exact snapshot, not clonePlanDocument's normalized nil/empty slices,
+// so the narrow unit assertion detects real mutation rather than clone behavior.
 func TestValidateExecutablePlanDocumentAcceptsCompleteDocumentWithoutMutation(t *testing.T) {
 	doc := &pebblestore.SessionPlanDocument{
 		Title: "Executable plan",
@@ -92,12 +95,19 @@ func TestValidateExecutablePlanDocumentAcceptsCompleteDocumentWithoutMutation(t 
 		}},
 		ActiveCheckpointID: "cp-1",
 	}
-	before := clonePlanDocument(doc)
+	before, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := ValidateExecutablePlanDocument(doc); err != nil {
 		t.Fatalf("validate complete document: %v", err)
 	}
-	if !reflect.DeepEqual(doc, before) {
-		t.Fatalf("validator mutated document:\n got %#v\nwant %#v", doc, before)
+	after, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(before) {
+		t.Fatalf("validator mutated document:\n got %s\nwant %s", after, before)
 	}
 }
 

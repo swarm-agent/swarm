@@ -228,8 +228,8 @@ type policyEvalContext struct {
 }
 
 const (
-	policyToolWorkspaceCreate  = "workspace_create"
-	policyToolWorkspaceUpdate  = "workspace_update"
+	policyToolWorkspaceCreate    = "workspace_create"
+	policyToolWorkspaceUpdate    = "workspace_update"
 	policyToolWorkspaceDelete    = "workspace_delete"
 	policyToolWorkspaceMapUpdate = "workspace_map_update"
 	policyToolWorkspaceInvalid   = "workspace_invalid"

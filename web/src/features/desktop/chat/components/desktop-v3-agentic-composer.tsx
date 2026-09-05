@@ -1228,7 +1228,6 @@ export function DesktopV3AgenticComposer({
         }}
         onUseThisDesign={({ label, description, selection }) => {
           setArtifactSelections((current) => appendDesktopV3ArtifactMessageSelections(current, [{ ...selection, label, description, action: 'use' }]))
-          if (!draft.trim()) onDraftChange('Use this design.')
           setArtifactViewerOpen(false)
         }}
         onExportVideoStills={({ label, description, selection }, prompt) => {
@@ -1359,10 +1358,10 @@ export function DesktopV3AgenticComposer({
                 </span>
               ) : null}
               {artifactSelections.map((selection) => (
-                <span key={`${selection.session_id}:${selection.collection_id}:${selection.variant_id}:${selection.part_id ?? ''}`} className="inline-flex max-w-full items-center gap-2 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-2 py-1 text-xs text-[var(--app-text)]" data-testid="desktop-composer-artifact-chip">
+                <span key={JSON.stringify([selection.session_id, selection.artifact_id, selection.revision_ref, selection.target_part_ids, selection.collection_id, selection.variant_id, selection.part_id])} className="inline-flex max-w-full items-center gap-2 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-2 py-1 text-xs text-[var(--app-text)]" data-testid="desktop-composer-artifact-chip">
                   <GalleryHorizontal size={13} className="shrink-0 text-[var(--app-primary)]" aria-hidden="true" />
                   <span className="max-w-48 truncate font-medium" title={selection.description || selection.label}>{selection.label}</span>
-                  <span className="rounded bg-[var(--app-bg-alt)] px-1.5 py-0.5 font-mono text-[10px] uppercase text-[var(--app-text-muted)]">{selection.pending_request?.trim() ? 'Pending update' : selection.part_id ? 'Part target' : selection.action === 'use' ? 'Use design' : 'Artifact'}</span>
+                  <span className="rounded bg-[var(--app-bg-alt)] px-1.5 py-0.5 font-mono text-[10px] uppercase text-[var(--app-text-muted)]">{selection.artifact_id || selection.pending_request?.trim() ? 'Pending update' : selection.part_id ? 'Part target' : selection.action === 'use' ? 'Use design' : 'Artifact'}</span>
                   <button type="button" aria-label={`Remove ${selection.label} artifact`} onClick={() => setArtifactSelections((current) => removeDesktopV3ArtifactMessageSelection(current, selection))}><X size={13} /></button>
                 </span>
               ))}

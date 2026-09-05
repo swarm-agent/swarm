@@ -51,6 +51,7 @@ func TestScopeForPathRevalidatesStoredDirectoryIdentity(t *testing.T) {
 	if err := os.Mkdir(workspaceRoot, 0o755); err != nil {
 		t.Fatalf("create workspace root: %v", err)
 	}
+	makeReadyRepository(t, workspaceRoot)
 	if err := os.Mkdir(otherRoot, 0o755); err != nil {
 		t.Fatalf("create other root: %v", err)
 	}
@@ -93,11 +94,12 @@ func TestAvailableSavedRootsForPrincipalOmitsUnavailableAndIdentityDrift(t *test
 		t.Fatalf("create replacement target: %v", err)
 	}
 	for _, path := range []string{valid, missing, drifted} {
+		makeReadyRepository(t, path)
 		if _, err := svc.AddForPrincipal(principal, path, filepath.Base(path), "", false); err != nil {
 			t.Fatalf("save workspace %q: %v", path, err)
 		}
 	}
-	if err := os.Remove(missing); err != nil {
+	if err := os.RemoveAll(missing); err != nil {
 		t.Fatalf("remove saved workspace: %v", err)
 	}
 	moved := drifted + "-old"

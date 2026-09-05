@@ -10,6 +10,23 @@ import (
 	"testing"
 )
 
+// Requirement: first-workspace onboarding initializes Git through a fixed,
+// shell-free operation scoped to the selected directory. Threat: arbitrary
+// shell access or caller-controlled init arguments could escape that authority.
+// The tool runtime is the narrowest layer that proves the exact command effect.
+func TestExecuteGitInitCreatesMainRepositoryInExactScope(t *testing.T) {
+	repo := t.TempDir()
+	if _, err := executeGitInit(context.Background(), WorkspaceScope{PrimaryPath: repo}, nil); err != nil {
+		t.Fatalf("executeGitInit() error = %v", err)
+	}
+	if got := strings.TrimSpace(runGitTestCommandOutput(t, repo, "branch", "--show-current")); got != "main" {
+		t.Fatalf("initial branch = %q, want main", got)
+	}
+	if got := strings.TrimSpace(runGitTestCommandOutput(t, repo, "rev-parse", "--show-toplevel")); got != repo {
+		t.Fatalf("repository root = %q, want %q", got, repo)
+	}
+}
+
 func TestGitAddRejectsPathOutsideCoderOwnedScope(t *testing.T) {
 	repo := t.TempDir()
 	runGitTestCommand(t, repo, "init")
@@ -23,6 +40,43 @@ func TestGitAddRejectsPathOutsideCoderOwnedScope(t *testing.T) {
 	scope := WorkspaceScope{PrimaryPath: repo, MutationScopes: []string{"src/**"}}
 	if _, err := executeGitAdd(context.Background(), scope, map[string]any{"pathspec": []any{"tests/outside.txt"}}); err == nil || !strings.Contains(err.Error(), "outside the Coder owned scope") {
 		t.Fatalf("git_add error = %v, want owned-scope rejection", err)
+	}
+}
+
+// Requirement: a fresh first-workspace user may have no Git identity yet. The
+// onboarding assistant may apply only the user's explicitly supplied identity to
+// that commit without persisting repository configuration. Threat: inventing or
+// retaining an identity would silently change later Git behavior.
+func TestExecuteGitCommitInitialUsesExplicitOneTimeIdentityWithoutPersistingIt(t *testing.T) {
+	repo := t.TempDir()
+	runGitTestCommand(t, repo, "init")
+	if err := os.WriteFile(filepath.Join(repo, "note.txt"), []byte("first\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGitTestCommand(t, repo, "add", "note.txt")
+
+	output, err := executeGitCommitInitial(context.Background(), WorkspaceScope{PrimaryPath: repo}, map[string]any{
+		"message": "first commit", "author_name": "First User", "author_email": "first@example.invalid",
+	})
+	if err != nil {
+		t.Fatalf("executeGitCommit() error = %v output=%s", err, output)
+	}
+	got := strings.TrimSpace(runGitTestCommandOutput(t, repo, "log", "-1", "--format=%an|%ae|%cn|%ce"))
+	if got != "First User|first@example.invalid|First User|first@example.invalid" {
+		t.Fatalf("commit identity = %q", got)
+	}
+	cmd := exec.Command("git", "config", "--local", "--get", "user.name")
+	cmd.Dir = repo
+	if configOutput, configErr := cmd.CombinedOutput(); configErr == nil || len(configOutput) != 0 {
+		t.Fatalf("one-time identity persisted in repository config: output=%q err=%v", configOutput, configErr)
+	}
+}
+
+func TestExecuteGitCommitInitialRejectsMissingExplicitIdentity(t *testing.T) {
+	repo := t.TempDir()
+	runGitTestCommand(t, repo, "init")
+	if _, err := executeGitCommitInitial(context.Background(), WorkspaceScope{PrimaryPath: repo}, map[string]any{"message": "first", "author_name": "First User"}); err == nil || !strings.Contains(err.Error(), "requires message, author_name, and author_email") {
+		t.Fatalf("missing identity error = %v", err)
 	}
 }
 

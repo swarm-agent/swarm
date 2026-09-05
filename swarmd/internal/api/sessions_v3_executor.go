@@ -1174,6 +1174,7 @@ type sessionV3AssistantResponse struct {
 	StreamID                      string
 	StreamStep                    int
 	StreamOffsetEnd               uint64
+	StreamStartSeq                uint64
 }
 
 func (r sessionV3AssistantResponse) metadata(runID string) map[string]any {
@@ -1275,6 +1276,9 @@ func (r sessionV3AssistantResponse) metadata(runID string) map[string]any {
 		metadata["stream_id"] = streamID
 		metadata["stream_step"] = r.StreamStep
 		metadata["stream_offset_end"] = r.StreamOffsetEnd
+		if r.StreamStartSeq > 0 {
+			metadata["stream_start_seq"] = r.StreamStartSeq
+		}
 	}
 	return metadata
 }
@@ -1867,6 +1871,7 @@ func (e *sessionV3Executor) providerAssistantResponse(ctx context.Context, job s
 		StreamID:                      loopResult.FinalStreamID,
 		StreamStep:                    loopResult.FinalStep,
 		StreamOffsetEnd:               loopResult.FinalOffsetEnd,
+		StreamStartSeq:                loopResult.FinalStartSeq,
 	}
 	if err := validateSessionV3AssistantStreamCompletion(content, assistant.StreamOffsetEnd); err != nil {
 		return sessionV3AssistantResponse{}, err
@@ -2578,6 +2583,7 @@ type sessionV3ProviderLoopResult struct {
 	FinalStreamID       string
 	FinalStep           int
 	FinalOffsetEnd      uint64
+	FinalStartSeq       uint64
 	TerminalPlanHandled bool
 	StartNextCheckpoint bool
 }
@@ -2722,7 +2728,7 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 			if strings.TrimSpace(response.StopReason) == "" && strings.TrimSpace(stepText) != "" {
 				response.StopReason = "stop"
 			}
-			return sessionV3ProviderLoopResult{Response: response, FinalContent: stepText, FinalRequest: baseReq, DurableFlushCount: sink.AssistantFlushCount(), FinalStreamID: streamState.StreamID(), FinalStep: streamState.Step(), FinalOffsetEnd: streamState.OffsetEnd()}, nil
+			return sessionV3ProviderLoopResult{Response: response, FinalContent: stepText, FinalRequest: baseReq, DurableFlushCount: sink.AssistantFlushCount(), FinalStreamID: streamState.StreamID(), FinalStep: streamState.Step(), FinalOffsetEnd: streamState.OffsetEnd(), FinalStartSeq: sink.AssistantStartSeq(streamState.StreamID())}, nil
 		}
 		if finalizingPlanTerminal && len(response.FunctionCalls) > 0 {
 			return sessionV3ProviderLoopResult{}, errors.New("v3 provider returned tool calls after terminal plan finalization started")
@@ -2753,10 +2759,10 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 				}
 				runner = refreshedRunner
 				if _, ok := e.sessionV3LatestTerminalPlanToolPayload(job); ok {
-					return sessionV3ProviderLoopResult{Response: provideriface.Response{StopReason: "stop"}, FinalRequest: baseReq, DurableFlushCount: sink.AssistantFlushCount(), FinalStreamID: streamState.StreamID(), FinalStep: streamState.Step(), FinalOffsetEnd: streamState.OffsetEnd(), TerminalPlanHandled: true}, nil
+					return sessionV3ProviderLoopResult{Response: provideriface.Response{StopReason: "stop"}, FinalRequest: baseReq, DurableFlushCount: sink.AssistantFlushCount(), FinalStreamID: streamState.StreamID(), FinalStep: streamState.Step(), FinalOffsetEnd: streamState.OffsetEnd(), FinalStartSeq: sink.AssistantStartSeq(streamState.StreamID()), TerminalPlanHandled: true}, nil
 				}
 				if e.sessionV3LatestCheckpointRunToolPayload(job) != nil {
-					return sessionV3ProviderLoopResult{Response: provideriface.Response{StopReason: "stop"}, FinalRequest: baseReq, DurableFlushCount: sink.AssistantFlushCount(), FinalStreamID: streamState.StreamID(), FinalStep: streamState.Step(), FinalOffsetEnd: streamState.OffsetEnd(), TerminalPlanHandled: true, StartNextCheckpoint: true}, nil
+					return sessionV3ProviderLoopResult{Response: provideriface.Response{StopReason: "stop"}, FinalRequest: baseReq, DurableFlushCount: sink.AssistantFlushCount(), FinalStreamID: streamState.StreamID(), FinalStep: streamState.Step(), FinalOffsetEnd: streamState.OffsetEnd(), FinalStartSeq: sink.AssistantStartSeq(streamState.StreamID()), TerminalPlanHandled: true, StartNextCheckpoint: true}, nil
 				}
 				input, err = e.sessionV3ProviderRestartInput(ctx, job, resolved, "")
 				if err != nil {
@@ -2824,6 +2830,7 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 				StreamID:                      streamState.StreamID(),
 				StreamStep:                    streamState.Step(),
 				StreamOffsetEnd:               streamState.OffsetEnd(),
+				StreamStartSeq:                sink.AssistantStartSeq(streamState.StreamID()),
 			}
 			if segment.ProviderID == "" {
 				segment.ProviderID = strings.TrimSpace(resolved.Preference.Provider)
@@ -2958,10 +2965,10 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 			return sessionV3ProviderLoopResult{}, errors.New("v3 provider continuation input is empty after tool execution")
 		}
 		if _, ok := sessionsV3ProviderTerminalPlanToolResult(toolResults); ok {
-			return sessionV3ProviderLoopResult{Response: provideriface.Response{StopReason: "stop"}, FinalRequest: baseReq, DurableFlushCount: sink.AssistantFlushCount(), FinalStreamID: streamState.StreamID(), FinalStep: streamState.Step(), FinalOffsetEnd: streamState.OffsetEnd(), TerminalPlanHandled: true}, nil
+			return sessionV3ProviderLoopResult{Response: provideriface.Response{StopReason: "stop"}, FinalRequest: baseReq, DurableFlushCount: sink.AssistantFlushCount(), FinalStreamID: streamState.StreamID(), FinalStep: streamState.Step(), FinalOffsetEnd: streamState.OffsetEnd(), FinalStartSeq: sink.AssistantStartSeq(streamState.StreamID()), TerminalPlanHandled: true}, nil
 		}
 		if sessionsV3ProviderCheckpointRunToolResult(toolResults) {
-			return sessionV3ProviderLoopResult{Response: provideriface.Response{StopReason: "stop"}, FinalRequest: baseReq, DurableFlushCount: sink.AssistantFlushCount(), FinalStreamID: streamState.StreamID(), FinalStep: streamState.Step(), FinalOffsetEnd: streamState.OffsetEnd(), TerminalPlanHandled: true, StartNextCheckpoint: true}, nil
+			return sessionV3ProviderLoopResult{Response: provideriface.Response{StopReason: "stop"}, FinalRequest: baseReq, DurableFlushCount: sink.AssistantFlushCount(), FinalStreamID: streamState.StreamID(), FinalStep: streamState.Step(), FinalOffsetEnd: streamState.OffsetEnd(), FinalStartSeq: sink.AssistantStartSeq(streamState.StreamID()), TerminalPlanHandled: true, StartNextCheckpoint: true}, nil
 		}
 		if restartAfterTools {
 			restartCheckpointScope := sessionV3ProviderCheckpointScopeFromPayload(sessionV3ProviderJobCheckpointScope(job), sessionsV3DecodeToolPayload(strings.TrimSpace(firstNonEmpty(toolResults[len(toolResults)-1].Output, sessionsV3LatestFunctionCallOutput(input), toolResults[len(toolResults)-1].TextForModel))))
@@ -4400,6 +4407,7 @@ func sessionsV3ProviderNativeRequestInputItem(item map[string]any) (map[string]a
 		copySessionsV3ProviderNativeStringField(out, item, "id")
 		copySessionsV3ProviderNativeStringField(out, item, "status")
 		copySessionsV3ProviderNativeStringField(out, item, "call_id")
+		copySessionsV3ProviderNativeStringField(out, item, "name")
 		copySessionsV3ProviderNativeStringField(out, item, "output")
 		return out, true
 	case "reasoning":

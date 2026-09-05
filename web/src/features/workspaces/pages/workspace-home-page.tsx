@@ -3,7 +3,6 @@ import { Link, useNavigate } from '@tanstack/react-router'
 import { ArrowUp, ChevronRight, Eye, EyeOff, FileText, Folder, FolderPlus, GitBranch, GripVertical, Home, MessageSquare, Plus, RefreshCw, Search, Settings, X } from 'lucide-react'
 import { Card } from '../../../components/ui/card'
 import { Button } from '../../../components/ui/button'
-import { Badge } from '../../../components/ui/badge'
 import { WorkspaceStatus } from '../launcher/components/workspace-status'
 import { WorkspaceFolderTree } from '../launcher/components/workspace-folder-tree'
 import { WorkspaceEditorModal, type WorkspaceEditorAvailableDirectory } from '../launcher/components/workspace-editor-modal'
@@ -11,6 +10,14 @@ import { buildWorkspaceRouteSlugMap, workspaceRouteSlugBase } from '../launcher/
 import { formatWorkspaceDirectories, formatWorkspacePath } from '../launcher/services/workspace-format'
 import type { WorkspaceBrowseResult, WorkspaceDiscoverEntry, WorkspaceEntry } from '../launcher/types/workspace'
 import { useWorkspaceLauncher } from '../launcher/state/use-workspace-launcher'
+import {
+  WorkspaceRepositoryPrerequisiteError,
+  workspaceRepositorySetupPrompt,
+  type WorkspaceRepositoryState,
+} from '../launcher/services/workspace-repository'
+import { postDesktopV3BackgroundRouterSessionStart } from '../../desktop/session-v3/write-api'
+import { buildDesktopChatRouteOptions, getDesktopSessionCreateTarget } from '../../desktop/chat/services/chat-routing'
+import { desktopV3RoutedWorkspaceAuthority } from '../../desktop/session-v3/new-session-flow'
 import { cn } from '../../../lib/cn'
 
 interface WorkspaceModalState {
@@ -297,7 +304,6 @@ interface MobileExplorerDrawerProps {
   onBrowsePath: (path: string) => void
   onOpenWorkspace: (path: string) => void
   onCreateWorkspace: (entry: WorkspaceDiscoverEntry) => void
-  onUseFolderTemporarily: (path: string) => void
   onPickWorkspaceFolder: (path: string) => void
   onCreateFolder: (parentPath: string, name: string) => Promise<string>
 }
@@ -315,7 +321,6 @@ function MobileExplorerDrawer({
   onBrowsePath,
   onOpenWorkspace,
   onCreateWorkspace,
-  onUseFolderTemporarily,
   onPickWorkspaceFolder,
   onCreateFolder,
 }: MobileExplorerDrawerProps) {
@@ -346,7 +351,7 @@ function MobileExplorerDrawer({
   const title = mode === 'workspace-folder' ? 'Choose workspace folder' : 'Explorer'
   const description = mode === 'workspace-folder'
     ? 'Choose the main folder for this workspace.'
-    : 'Navigate folders, use one for this chat only, or add one as a new workspace.'
+    : 'Navigate folders and add a committed Git repository as a workspace.'
   const currentSaved = currentPath ? savedPaths.has(normalizeComparePath(currentPath)) : false
   const currentBusy = Boolean(currentPath && (savingPath === currentPath || selectingPath === currentPath))
 
@@ -480,7 +485,6 @@ function MobileExplorerDrawer({
                 {currentBusy ? <RefreshCw size={14} className="animate-spin" /> : currentSaved ? <Folder size={15} /> : <Plus size={15} />}
                 {currentBusy ? 'Working…' : currentSaved ? 'Open workspace' : 'Add folder as a new workspace'}
               </Button>
-              <button type="button" className="h-8 rounded-md text-xs text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] disabled:opacity-50" disabled={!currentPath || selectingPath === currentPath} onClick={() => onUseFolderTemporarily(currentPath)}>Use folder for this chat only</button>
             </div>
           )}
         </div>
@@ -517,9 +521,9 @@ export function WorkspaceHomePage() {
     setDraggingWorkspacePath,
     swapWorkspacePositions,
     openWorkspace,
-    useFolderTemporarily,
     deleteWorkspace,
     saveWorkspace,
+    setupWorkspaceRepository,
     createFolder,
     moveWorkspaceToIndex,
     refresh,
@@ -532,6 +536,8 @@ export function WorkspaceHomePage() {
   const [draftName, setDraftName] = useState('')
   const [workspaceNameTouched, setWorkspaceNameTouched] = useState(false)
   const [modalError, setModalError] = useState<string | null>(null)
+  const [modalRepositoryState, setModalRepositoryState] = useState<WorkspaceRepositoryState | null>(null)
+  const [repositoryHelpBusy, setRepositoryHelpBusy] = useState(false)
   const [deleteTargetPath, setDeleteTargetPath] = useState<string | null>(null)
   const [workspaceSearch, setWorkspaceSearch] = useState('')
   const [allWorkspacesVisible, setAllWorkspacesVisible] = useState(true)
@@ -550,8 +556,6 @@ export function WorkspaceHomePage() {
     [currentWorkspacePath, workspaces],
   )
 
-  const temporaryFolderActive = Boolean(currentWorkspacePath && !currentWorkspace)
-  const temporaryFolderName = temporaryFolderActive && currentWorkspacePath ? fallbackWorkspaceNameFromPath(currentWorkspacePath) : ''
   const sidebarDefaultWorkspace = currentWorkspace ?? workspaces[0] ?? null
 
   const savedWorkspaceByPath = useMemo(() => new Map(workspaces.map((workspace) => [workspace.path, workspace])), [workspaces])
@@ -619,6 +623,7 @@ export function WorkspaceHomePage() {
     setDraftName(initialName)
     setWorkspaceNameTouched(false)
     setModalError(null)
+    setModalRepositoryState(null)
   }
 
   const startEdit = (path: string) => {
@@ -637,6 +642,7 @@ export function WorkspaceHomePage() {
     setDraftName(workspace.workspaceName)
     setWorkspaceNameTouched(false)
     setModalError(null)
+    setModalRepositoryState(null)
     setDeleteTargetPath(null)
   }
 
@@ -645,10 +651,13 @@ export function WorkspaceHomePage() {
     setDraftName('')
     setWorkspaceNameTouched(false)
     setModalError(null)
+    setModalRepositoryState(null)
+    setRepositoryHelpBusy(false)
     setDeleteTargetPath(null)
   }
 
   const pickWorkspaceFolder = (path: string) => {
+    setModalRepositoryState(null)
     setModalState((current) => {
       if (!current) {
         return current
@@ -661,6 +670,62 @@ export function WorkspaceHomePage() {
     })
     if (!workspaceNameTouched) {
       setDraftName(fallbackWorkspaceNameFromPath(path))
+    }
+  }
+
+  const initializeRepositoryForDraft = async () => {
+    const path = modalState?.workspacePath.trim() || ''
+    const expected = modalRepositoryState?.path || path
+    if (!path || !expected) return
+    try {
+      const ready = await setupWorkspaceRepository(path, expected)
+      setModalRepositoryState(ready)
+      setModalError(null)
+    } catch (error) {
+      if (error instanceof WorkspaceRepositoryPrerequisiteError) setModalRepositoryState(error.repository)
+      setModalError(error instanceof Error ? error.message : 'Failed to initialize Git repository')
+    }
+  }
+
+  const askSwarmForRepositoryHelp = async () => {
+    const repository = modalRepositoryState
+    const workspace = workspaces.find((candidate) => candidate.localWorkspaceBindingId && candidate.topologyRoutes.length > 0)
+    if (!repository || !workspace) {
+      setModalError('A ready saved workspace is required before Swarm can open a repository setup session for another folder.')
+      return
+    }
+    const route = buildDesktopChatRouteOptions({
+      hostSwarmName: 'Swarm',
+      workspacePath: workspace.path,
+      workspaceName: workspace.workspaceName,
+      topologyRoutes: workspace.topologyRoutes,
+      localWorkspaceBindingId: workspace.localWorkspaceBindingId,
+      hostSwarmId: workspace.topologyRoutes.find((candidate) => candidate.runtimeRelationship === 'self')?.runtimeSwarmId ?? workspace.topologyRoutes[0]?.runtimeSwarmId ?? null,
+    }).find((candidate) => getDesktopSessionCreateTarget(candidate).endpoint === '/v3/sessions')
+    if (!route) {
+      setModalError('The primary Swarm workspace authority is unavailable for repository setup help.')
+      return
+    }
+    setRepositoryHelpBusy(true)
+    try {
+      const clientRequestId = `desktop-workspace-repository-help:${crypto.randomUUID()}`
+      const launched = await postDesktopV3BackgroundRouterSessionStart({
+        ...desktopV3RoutedWorkspaceAuthority(workspace.path, route),
+        input: workspaceRepositorySetupPrompt(repository),
+        client_request_id: clientRequestId,
+        idempotency_key: clientRequestId,
+        agent_name: 'swarm',
+        metadata: { source: 'desktop-workspace-repository-help', requested_workspace_path: repository.path },
+        plan_mode_requested: false,
+      })
+      const workspaceSlug = workspaceSlugByPath.get(workspace.path)
+        ?? workspaceRouteSlugBase({ path: workspace.path, workspaceName: workspace.workspaceName })
+      closeModal()
+      await navigate({ to: '/$workspaceSlug/$sessionId', params: { workspaceSlug, sessionId: launched.session_id } })
+    } catch (error) {
+      setModalError(error instanceof Error ? error.message : 'Could not start repository setup session')
+    } finally {
+      setRepositoryHelpBusy(false)
     }
   }
 
@@ -687,28 +752,23 @@ export function WorkspaceHomePage() {
 
   const handleOpenWorkspace = (path: string) => {
     void (async () => {
-      const resolution = await openWorkspace(path)
-      const resolvedPath = resolution.resolvedPath.trim() || path
-      const workspaceSlug = workspaceSlugByPath.get(resolvedPath) ?? workspaceRouteSlugBase({ path: resolvedPath, workspaceName: resolution.workspaceName })
-      await navigate({
-        to: '/$workspaceSlug',
-        params: { workspaceSlug },
-      })
-    })()
-  }
-
-  const handleUseFolderTemporarily = (path: string) => {
-    closeMobileExplorer()
-    void (async () => {
-      const resolution = await useFolderTemporarily(path)
-      const workspaceSlug = workspaceRouteSlugBase({
-        path: resolution.resolvedPath,
-        workspaceName: resolution.workspaceName,
-      })
-      await navigate({
-        to: '/$workspaceSlug',
-        params: { workspaceSlug },
-      })
+      try {
+        const resolution = await openWorkspace(path)
+        const resolvedPath = resolution.resolvedPath.trim() || path
+        const workspaceSlug = workspaceSlugByPath.get(resolvedPath) ?? workspaceRouteSlugBase({ path: resolvedPath, workspaceName: resolution.workspaceName })
+        await navigate({
+          to: '/$workspaceSlug',
+          params: { workspaceSlug },
+        })
+      } catch (error) {
+        if (error instanceof WorkspaceRepositoryPrerequisiteError) {
+          openCreateModal(error.repository.path || path, [error.repository.path || path], fallbackWorkspaceNameFromPath(error.repository.path || path))
+          setModalRepositoryState(error.repository)
+          setModalError(null)
+          return
+        }
+        setModalError(error instanceof Error ? error.message : 'Failed to open workspace')
+      }
     })()
   }
 
@@ -734,13 +794,6 @@ export function WorkspaceHomePage() {
     })()
   }
 
-  const handlePromoteTemporaryFolder = () => {
-    if (!currentWorkspacePath) {
-      return
-    }
-    openCreateModal(currentWorkspacePath, [currentWorkspacePath], temporaryFolderName)
-  }
-
   const submitModal = async () => {
     if (!modalState) {
       return
@@ -761,6 +814,11 @@ export function WorkspaceHomePage() {
       })
       closeModal()
     } catch (err) {
+      if (err instanceof WorkspaceRepositoryPrerequisiteError) {
+        setModalRepositoryState(err.repository)
+        setModalError(null)
+        return
+      }
       setModalError(err instanceof Error ? err.message : 'Failed to save workspace')
     }
   }
@@ -821,7 +879,6 @@ export function WorkspaceHomePage() {
                   void browsePath(path)
                 }}
                 onOpenWorkspace={handleOpenWorkspace}
-                onUseFolderTemporarily={handleUseFolderTemporarily}
                 onCreateWorkspace={(entry) => openCreateModal(entry.path, [entry.path], entry.name)}
                 onCreateFolder={createFolder}
               />
@@ -962,20 +1019,6 @@ export function WorkspaceHomePage() {
                     )
                   ) : null}
 
-                  {temporaryFolderActive ? (
-                    <Card className="grid gap-3 px-5 py-5 sm:px-6">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <h2 className="text-lg font-semibold text-[var(--app-text)]">Folder used for this chat only</h2>
-                        <Badge tone="warning">This chat only</Badge>
-                      </div>
-                      <div className="break-all text-sm text-[var(--app-text)]">{currentWorkspacePath}</div>
-                      <div>
-                        <Button type="button" onClick={handlePromoteTemporaryFolder}>
-                          Add folder as a new workspace
-                        </Button>
-                      </div>
-                    </Card>
-                  ) : null}
                 </section>
               </div>
             ) : null}
@@ -1011,6 +1054,11 @@ export function WorkspaceHomePage() {
         error={modalError || (personalizationMessage ? actionError : null)}
         saving={Boolean(savingPath && modalState?.workspacePath && savingPath === modalState.workspacePath)}
         workspace={editingWorkspace}
+        repositoryState={modalRepositoryState}
+        repositoryBusy={Boolean(savingPath && modalState?.workspacePath && savingPath === modalState.workspacePath)}
+        repositoryHelpBusy={repositoryHelpBusy}
+        onInitializeRepository={() => { void initializeRepositoryForDraft() }}
+        onAskSwarmForRepositoryHelp={() => { void askSwarmForRepositoryHelp() }}
         personalizing={personalizing}
         personalizationMessage={personalizationMessage}
         onPersonalize={() => {
@@ -1019,7 +1067,10 @@ export function WorkspaceHomePage() {
             setModalError(err instanceof Error ? err.message : 'Failed to personalize workspaces')
           })
         }}
-        onWorkspacePathChange={(value) => setModalState((current) => (current ? { ...current, workspacePath: value } : current))}
+        onWorkspacePathChange={(value) => {
+          setModalRepositoryState(null)
+          setModalState((current) => (current ? { ...current, workspacePath: value } : current))
+        }}
         onPickWorkspaceFolder={pickWorkspaceFolder}
         onNameChange={setDraftNameTouched}
         onThemeIdChange={setThemeId}
@@ -1057,7 +1108,6 @@ export function WorkspaceHomePage() {
         onBrowsePath={(path) => void browsePath(path)}
         onOpenWorkspace={handleOpenWorkspace}
         onCreateWorkspace={(entry) => openCreateModal(entry.path, [entry.path], entry.name)}
-        onUseFolderTemporarily={handleUseFolderTemporarily}
         onPickWorkspaceFolder={pickWorkspaceFolder}
         onCreateFolder={createFolder}
       />

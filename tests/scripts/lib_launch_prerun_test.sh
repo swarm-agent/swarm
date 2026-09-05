@@ -60,19 +60,93 @@ nine_status=$?
 set -e
 [[ "${zero_status}" != "0" && "${nine_status}" != "0" ]] || fail "invalid job limits were accepted"
 
-EXPECTED_SUITES=$'critical\nonboarding\ndesktop\ntui\nplan-auto\ntask-routing\ntask-program\nprovider-sync'
+EXPECTED_SUITES=$'critical\nonboarding\ndesktop\ntui\nplan-auto\ntask-routing\ntask-program\nprovider-sync\nomarchy-install'
 ACTUAL_SUITES="$("${ROOT_DIR}/scripts/run-testbench-launch-prerun.sh" --list-suites)"
-[[ "${ACTUAL_SUITES}" == "${EXPECTED_SUITES}" ]] || fail "canonical eight-suite manifest changed unexpectedly"
+[[ "${ACTUAL_SUITES}" == "${EXPECTED_SUITES}" ]] || fail "canonical suite manifest changed unexpectedly"
 critical_dry_run="$("${ROOT_DIR}/scripts/run-testbench-launch-prerun.sh" --dry-run --suite critical)" || fail "critical lane dry run failed"
 grep -Fq 'scripts/run-critical-tests.sh all' <<<"${critical_dry_run}" || fail "critical lane does not run the complete deterministic gate"
+set +e
+omarchy_without_checksum="$("${ROOT_DIR}/scripts/run-testbench-launch-prerun.sh" --dry-run --suite omarchy-install --candidate-archive candidate.tar.gz --omarchy-guest user@example.invalid 2>&1)"
+omarchy_without_checksum_status=$?
+set -e
+[[ "${omarchy_without_checksum_status}" != 0 ]] || fail "omarchy lane accepted an archive without its exact checksum"
+grep -Fq 'omarchy-install requires --candidate-checksum' <<<"${omarchy_without_checksum}" || fail "omarchy lane missing exact-checksum guidance"
 if ! "${ROOT_DIR}/scripts/run-testbench-launch-prerun.sh" --dry-run --suite task-program >/dev/null 2>&1; then
   fail "task-program lane still requires a manually configured linked workspace despite runtime binding discovery"
 fi
 provider_sync_dry_run="$("${ROOT_DIR}/scripts/run-testbench-launch-prerun.sh" --dry-run --suite provider-sync)" || fail "provider-sync dry run still requires manually supplied candidate authority"
-grep -Fq 'SWARM_LIVE_STREAM_MODEL=gpt-5.6-luna' <<<"${provider_sync_dry_run}" || fail "provider-sync does not use the configured credit-saving action model"
+grep -Fq 'SWARM_LIVE_STREAM_PROVIDER=fireworks' <<<"${provider_sync_dry_run}" || fail "provider-sync is not Fireworks-only"
+grep -Fq 'SWARM_LIVE_STREAM_MODEL=deepseek-v4-flash-0731' <<<"${provider_sync_dry_run}" || fail "provider-sync does not use the configured Fireworks action model"
 RUNNER_WRAPPER="${ROOT_DIR}/scripts/run-testbench-runner.sh"
+grep -Fq 'SWARM_TESTBENCH_ACTION_MODEL' "${RUNNER_WRAPPER}" || fail "runner wrapper does not pass the configured Action model"
+grep -Fq 'SWARM_TESTBENCH_PLAN_MODEL' "${RUNNER_WRAPPER}" || fail "runner wrapper does not pass the configured Plan model"
 grep -Fq 'SWARM_TESTBENCH_CODER_MODEL' "${RUNNER_WRAPPER}" || fail "runner wrapper does not pass the configured Coder model"
 grep -Fq 'SWARM_TESTBENCH_DESIGNER_MODEL' "${RUNNER_WRAPPER}" || fail "runner wrapper does not pass the configured Designer model"
+if ! grep -Fq 'off|low|medium|high|xhigh' "${ROOT_DIR}/scripts/lib-testbench-e2e.sh"; then
+  fail "testbench environment validation rejects the canonical off thinking setting"
+fi
+set +e
+(
+  source "${ROOT_DIR}/scripts/lib-testbench-e2e.sh"
+  SWARM_PRIMARY_SSH=test-alias
+  SWARM_TESTBENCH_LOCAL_DESKTOP_PORT=31001
+  SWARM_REMOTE_DESKTOP_PORT=31002
+  SWARM_TESTBENCH_LOCAL_API_PORT=31003
+  SWARM_TESTBENCH_REMOTE_API_PORT=31004
+  SWARM_TESTBENCH_REVERSE_LOCAL_PORT=
+  SWARM_TESTBENCH_REVERSE_REMOTE_PORT=
+  SWARM_TESTBENCH_PROVIDER=fireworks
+  SWARM_TESTBENCH_LINKED_WORKSPACE_PATH=
+  for role in '' _ACTION _PLAN _CODER _DESIGNER; do
+    printf -v "SWARM_TESTBENCH${role}_MODEL" '%s' deepseek-v4-flash-0731
+    printf -v "SWARM_TESTBENCH${role}_THINKING" '%s' off
+  done
+  swarm_testbench_validate_env
+) >/dev/null 2>&1
+off_status=$?
+(
+  source "${ROOT_DIR}/scripts/lib-testbench-e2e.sh"
+  SWARM_PRIMARY_SSH=test-alias
+  SWARM_TESTBENCH_LOCAL_DESKTOP_PORT=31001
+  SWARM_REMOTE_DESKTOP_PORT=31002
+  SWARM_TESTBENCH_LOCAL_API_PORT=31003
+  SWARM_TESTBENCH_REMOTE_API_PORT=31004
+  SWARM_TESTBENCH_REVERSE_LOCAL_PORT=
+  SWARM_TESTBENCH_REVERSE_REMOTE_PORT=
+  SWARM_TESTBENCH_PROVIDER=fireworks
+  SWARM_TESTBENCH_LINKED_WORKSPACE_PATH=
+  for role in '' _ACTION _PLAN _CODER _DESIGNER; do
+    printf -v "SWARM_TESTBENCH${role}_MODEL" '%s' deepseek-v4-flash-0731
+    printf -v "SWARM_TESTBENCH${role}_THINKING" '%s' off
+  done
+  SWARM_TESTBENCH_DESIGNER_THINKING=invalid
+  swarm_testbench_validate_env
+) >/dev/null 2>&1
+invalid_status=$?
+set -e
+[[ "${off_status}" == 0 && "${invalid_status}" != 0 ]] || fail "testbench thinking validation did not accept off and reject invalid"
+BASIC_RUNNER="${ROOT_DIR}/scripts/runners/basic-plan-auto.mjs"
+TASK_ROUTING_RUNNER="${ROOT_DIR}/scripts/runners/task-routing.mjs"
+TASK_PROGRAM_RUNNER="${ROOT_DIR}/scripts/runners/task-program-worktrees.mjs"
+for runner in "${BASIC_RUNNER}" "${TASK_ROUTING_RUNNER}"; do
+  grep -Fq -- '--action-model and --plan-model are required' "${runner}" || fail "$(basename "${runner}") does not fail closed without explicit Action/Plan models"
+  if grep -Fq 'recommendedAssignment' "${runner}"; then fail "$(basename "${runner}") still discovers model recommendations"; fi
+  if grep -Fq "service_tier: 'fast'" "${runner}"; then fail "$(basename "${runner}") still hardcodes a Codex-era fast tier for Fireworks"; fi
+  grep -Fq "function sameRuntimeModel" "${runner}" || fail "$(basename "${runner}") does not normalize Fireworks runtime request paths to catalog IDs"
+done
+grep -Fq "ensure basic plan workspace binding" "${BASIC_RUNNER}" || fail "basic Plan/Auto runner does not idempotently ensure its requested workspace binding"
+grep -Fq "workspace_binding_ready" "${BASIC_RUNNER}" || fail "basic Plan/Auto runner does not report its workspace-binding gate"
+grep -Fq -- '--coder-model is required' "${TASK_PROGRAM_RUNNER}" || fail "task-program runner does not fail closed without the configured Coder model"
+if grep -Fq "includes('5.6-luna')" "${TASK_PROGRAM_RUNNER}"; then fail "task-program runner still discovers a model fallback"; fi
+if grep -Fq "service_tier: 'fast'" "${TASK_PROGRAM_RUNNER}"; then fail "task-program runner still hardcodes a Codex-era fast tier for Fireworks"; fi
+grep -Fq "function sameRuntimeModel" "${TASK_PROGRAM_RUNNER}" || fail "task-program runner does not normalize Fireworks runtime request paths to catalog IDs"
+MODEL_RENDERER="${ROOT_DIR}/scripts/render-testbench-model-config.sh"
+MODEL_SYNC="${ROOT_DIR}/scripts/sync-testbench-model-config.sh"
+grep -Fq 'SWARM_RELEASE_GATE_PROVIDER=${SWARM_TESTBENCH_PROVIDER}' "${MODEL_RENDERER}" || fail "model renderer does not use the .env provider"
+grep -Fq 'SWARM_RELEASE_GATE_ACTION_MODEL=${SWARM_TESTBENCH_ACTION_MODEL}' "${MODEL_RENDERER}" || fail "model renderer does not use the .env Action model"
+grep -Fq 'SWARM_RELEASE_GATE_PLAN_MODEL=${SWARM_TESTBENCH_PLAN_MODEL}' "${MODEL_RENDERER}" || fail "model renderer does not use the .env Plan model"
+grep -Fq 'gate-sync-models' "${MODEL_SYNC}" || fail "model sync does not invoke the fixed testbench action"
+grep -Fq '/var/cache/swarm-testbench-model-config/pending.conf' "${MODEL_SYNC}" || fail "model sync does not use the fixed testbench pending path"
 local_head="$(git -C "${ROOT_DIR}" rev-parse HEAD)"
 grep -Fq "SWARM_EXPECTED_COMMIT=${local_head}" <<<"${provider_sync_dry_run}" || fail "provider-sync did not derive candidate authority from local HEAD"
 

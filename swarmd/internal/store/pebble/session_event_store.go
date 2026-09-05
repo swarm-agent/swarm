@@ -98,6 +98,8 @@ type V3SessionMutationInput struct {
 	PlanSave             *V3PlanSaveMutation           `json:"plan_save,omitempty"`
 	CheckpointBoundary   *V3CheckpointBoundaryMutation `json:"checkpoint_boundary,omitempty"`
 	Artifact             *V3ArtifactMutation           `json:"artifact,omitempty"`
+	ArtifactV2           *ArtifactV2Mutation           `json:"artifact_v2,omitempty"`
+	ArtifactV3           *ArtifactV3Mutation           `json:"artifact_v3,omitempty"`
 	Transcription        *V3TranscriptionMutation      `json:"transcription,omitempty"`
 	VideoProject         *V3VideoProjectMutation       `json:"video_project,omitempty"`
 	MediaStagingBindings []MediaStagingBinding         `json:"media_staging_bindings,omitempty"`
@@ -133,6 +135,8 @@ type V3SessionMutationResult struct {
 	RealtimeOutboxes []V3RealtimeOutboxRecord   `json:"realtime_outboxes,omitempty"`
 	Plan             *SessionPlanSnapshot       `json:"plan,omitempty"`
 	Artifact         *V3ArtifactProjection      `json:"artifact,omitempty"`
+	ArtifactV2       *ArtifactV2Projection      `json:"artifact_v2,omitempty"`
+	ArtifactV3       *ArtifactV3Projection      `json:"artifact_v3,omitempty"`
 	Transcription    *V3TranscriptionProjection `json:"transcription,omitempty"`
 	VideoProject     *V3VideoProjectProjection  `json:"video_project,omitempty"`
 	Replayed         bool                       `json:"replayed,omitempty"`
@@ -211,9 +215,9 @@ type V3SessionEvent struct {
 }
 
 type V3SessionProjection struct {
-	SessionID                  string `json:"session_id"`
-	LastEventSeq               uint64 `json:"last_event_seq"`
-	ProjectionHighWatermarkSeq uint64 `json:"projection_high_watermark_seq"`
+	SessionID                  string                     `json:"session_id"`
+	LastEventSeq               uint64                     `json:"last_event_seq"`
+	ProjectionHighWatermarkSeq uint64                     `json:"projection_high_watermark_seq"`
 	UpdatedAt                  int64                      `json:"updated_at"`
 	WorkspaceUsage             []WorkspaceUsageProjection `json:"workspace_usage,omitempty"`
 }
@@ -256,23 +260,23 @@ type V3RealtimeOutboxRecord struct {
 }
 
 type V3RealtimeOutboxMembership struct {
-	SessionID               string         `json:"session_id"`
-	UserID                  string         `json:"user_id,omitempty"`
-	AccountScopeID          string         `json:"account_scope_id,omitempty"`
-	WorkspacePath           string         `json:"workspace_path,omitempty"`
-	WorkspaceName           string         `json:"workspace_name,omitempty"`
-	WorktreeEnabled         bool           `json:"worktree_enabled,omitempty"`
-	RequestedWorktreeName   string         `json:"requested_worktree_name,omitempty"`
-	WorktreeRootPath        string         `json:"worktree_root_path,omitempty"`
-	WorktreeBaseBranch      string         `json:"worktree_base_branch,omitempty"`
-	WorktreeBranch          string         `json:"worktree_branch,omitempty"`
-	TemporaryWorkspaceRoots []string                     `json:"temporary_workspace_roots,omitempty"`
-	WorkspaceGrants         []WorkspaceGrant             `json:"workspace_grants,omitempty"`
-	WorkspaceUsage          []WorkspaceUsageProjection   `json:"workspace_usage,omitempty"`
-	Metadata                map[string]any               `json:"metadata,omitempty"`
-	Deleted                 bool                         `json:"deleted,omitempty"`
-	TombstoneKind           string                       `json:"tombstone_kind,omitempty"`
-	CapturedAt              int64                        `json:"captured_at"`
+	SessionID               string                     `json:"session_id"`
+	UserID                  string                     `json:"user_id,omitempty"`
+	AccountScopeID          string                     `json:"account_scope_id,omitempty"`
+	WorkspacePath           string                     `json:"workspace_path,omitempty"`
+	WorkspaceName           string                     `json:"workspace_name,omitempty"`
+	WorktreeEnabled         bool                       `json:"worktree_enabled,omitempty"`
+	RequestedWorktreeName   string                     `json:"requested_worktree_name,omitempty"`
+	WorktreeRootPath        string                     `json:"worktree_root_path,omitempty"`
+	WorktreeBaseBranch      string                     `json:"worktree_base_branch,omitempty"`
+	WorktreeBranch          string                     `json:"worktree_branch,omitempty"`
+	TemporaryWorkspaceRoots []string                   `json:"temporary_workspace_roots,omitempty"`
+	WorkspaceGrants         []WorkspaceGrant           `json:"workspace_grants,omitempty"`
+	WorkspaceUsage          []WorkspaceUsageProjection `json:"workspace_usage,omitempty"`
+	Metadata                map[string]any             `json:"metadata,omitempty"`
+	Deleted                 bool                       `json:"deleted,omitempty"`
+	TombstoneKind           string                     `json:"tombstone_kind,omitempty"`
+	CapturedAt              int64                      `json:"captured_at"`
 }
 
 func marshalV3RealtimeOutboxReference(record V3RealtimeOutboxRecord) ([]byte, error) {
@@ -474,6 +478,8 @@ type v3SessionEventReplayPayload struct {
 	HasActivePlan      bool                          `json:"has_active_plan,omitempty"`
 	ActivePlan         *SessionPlanSnapshot          `json:"active_plan,omitempty"`
 	Artifact           *V3ArtifactProjection         `json:"artifact,omitempty"`
+	ArtifactV2         *ArtifactV2Projection         `json:"artifact_v2,omitempty"`
+	ArtifactV3         *ArtifactV3Projection         `json:"artifact_v3,omitempty"`
 	Transcription      *V3TranscriptionProjection    `json:"transcription,omitempty"`
 	VideoProject       *V3VideoProjectProjection     `json:"video_project,omitempty"`
 }
@@ -603,6 +609,24 @@ func (s *SessionStore) SetCheckpointBoundaryCommitHookForTest(hook func(sessionI
 	previous := s.store.sessionMutations.beforeExecutionEpochCommit
 	s.store.sessionMutations.beforeExecutionEpochCommit = hook
 	return func() { s.store.sessionMutations.beforeExecutionEpochCommit = previous }
+}
+
+func (s *SessionStore) SetArtifactV2CommitHookForTest(hook func(sessionID string) error) func() {
+	if s == nil || s.store == nil {
+		return func() {}
+	}
+	previous := s.store.sessionMutations.beforeArtifactV2Commit
+	s.store.sessionMutations.beforeArtifactV2Commit = hook
+	return func() { s.store.sessionMutations.beforeArtifactV2Commit = previous }
+}
+
+func (s *SessionStore) SetArtifactV3CommitHookForTest(hook func(sessionID string) error) func() {
+	if s == nil || s.store == nil {
+		return func() {}
+	}
+	previous := s.store.sessionMutations.beforeArtifactV3Commit
+	s.store.sessionMutations.beforeArtifactV3Commit = hook
+	return func() { s.store.sessionMutations.beforeArtifactV3Commit = previous }
 }
 
 func (s *SessionStore) SetMediaStagingBindCommitHookForTest(hook func(sessionID string) error) func() {
@@ -855,6 +879,14 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 	if err != nil {
 		return V3SessionMutationResult{}, err
 	}
+	artifactV2, err := s.prepareArtifactV2Mutation(input, seq, now)
+	if err != nil {
+		return V3SessionMutationResult{}, err
+	}
+	artifactV3, err := s.prepareArtifactV3Mutation(input, seq, now)
+	if err != nil {
+		return V3SessionMutationResult{}, err
+	}
 	transcription, err := s.prepareV3TranscriptionMutation(input, now)
 	if err != nil {
 		return V3SessionMutationResult{}, err
@@ -863,7 +895,7 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 	if err != nil {
 		return V3SessionMutationResult{}, err
 	}
-	payload, err := input.v3EventPayload(seq, session, message, lifecycle, runIntent, turnUsage, usageSummary, artifact.Projection, transcription.Projection, videoProject.Projection)
+	payload, err := input.v3EventPayload(seq, session, message, lifecycle, runIntent, turnUsage, usageSummary, artifact.Projection, artifactV2.Projection, artifactV3.Projection, transcription.Projection, videoProject.Projection)
 	if err != nil {
 		return V3SessionMutationResult{}, err
 	}
@@ -980,6 +1012,12 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 		}
 	}
 	if err := setV3ArtifactMutationInBatch(batch, artifact); err != nil {
+		return V3SessionMutationResult{}, err
+	}
+	if err := setArtifactV2MutationInBatch(batch, artifactV2); err != nil {
+		return V3SessionMutationResult{}, err
+	}
+	if err := setArtifactV3MutationInBatch(batch, input.AccountScopeID, artifactV3); err != nil {
 		return V3SessionMutationResult{}, err
 	}
 	if err := setV3TranscriptionMutationInBatch(batch, transcription); err != nil {
@@ -1155,6 +1193,20 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 			}
 		}
 	}
+	if input.ArtifactV2 != nil {
+		if hook := s.store.sessionMutations.beforeArtifactV2Commit; hook != nil {
+			if err := hook(input.SessionID); err != nil {
+				return V3SessionMutationResult{}, err
+			}
+		}
+	}
+	if input.ArtifactV3 != nil {
+		if hook := s.store.sessionMutations.beforeArtifactV3Commit; hook != nil {
+			if err := hook(input.SessionID); err != nil {
+				return V3SessionMutationResult{}, err
+			}
+		}
+	}
 	if hook := s.store.sessionMutations.beforeDurableCommit; hook != nil {
 		hook(input.SessionID)
 	}
@@ -1203,6 +1255,14 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 	if artifact.Projection.Collection.ID != "" {
 		projection := artifact.Projection
 		result.Artifact = &projection
+	}
+	if artifactV2.Projection.ArtifactID != "" {
+		projection := artifactV2.Projection
+		result.ArtifactV2 = &projection
+	}
+	if artifactV3.Projection.Repository != nil || artifactV3.Projection.Revision != nil || artifactV3.Projection.Turn != nil || artifactV3.Projection.Candidate != nil {
+		projection := artifactV3.Projection
+		result.ArtifactV3 = &projection
 	}
 	if transcription.Projection.AttachmentRef != "" || transcription.Projection.JobRef != "" {
 		projection := transcription.Projection
@@ -2198,6 +2258,14 @@ func (s *SessionStore) resultFromV3IdempotencyRecord(record V3SessionIdempotency
 			artifact := *payload.Artifact
 			result.Artifact = &artifact
 		}
+		if payload.ArtifactV2 != nil {
+			artifactV2 := *payload.ArtifactV2
+			result.ArtifactV2 = &artifactV2
+		}
+		if payload.ArtifactV3 != nil {
+			artifactV3 := *payload.ArtifactV3
+			result.ArtifactV3 = &artifactV3
+		}
 	}
 	result.Projection = V3SessionProjection{
 		SessionID:                  record.Result.SessionID,
@@ -2802,6 +2870,8 @@ func normalizeV3SessionMutationInput(input V3SessionMutationInput) V3SessionMuta
 	input.CausationID = strings.TrimSpace(input.CausationID)
 	input.CorrelationID = strings.TrimSpace(input.CorrelationID)
 	normalizeV3ArtifactMutation(&input)
+	normalizeArtifactV2Mutation(&input)
+	normalizeArtifactV3Mutation(&input)
 	normalizeV3TranscriptionMutation(&input)
 	normalizeV3VideoProjectMutation(&input)
 	if input.ClientRequestID == "" {
@@ -2892,6 +2962,12 @@ func validateV3SessionMutationInput(input V3SessionMutationInput) error {
 		return errors.New("checkpoint boundary payload requires checkpoint boundary mutation kind")
 	}
 	if err := validateV3ArtifactMutation(input); err != nil {
+		return err
+	}
+	if err := validateArtifactV2MutationInput(input); err != nil {
+		return err
+	}
+	if err := validateArtifactV3MutationInput(input); err != nil {
 		return err
 	}
 	if err := validateV3TranscriptionMutationInput(input); err != nil {
@@ -3049,6 +3125,20 @@ func normalizeV3SessionEventType(input V3SessionMutationInput) string {
 		return "session.artifact.variant.deleted"
 	case V3SessionMutationDeleteArtifactCollection:
 		return "session.artifact.collection.deleted"
+	case V3SessionMutationArtifactV3GenesisCommitted:
+		return "artifact.v3.genesis.committed"
+	case V3SessionMutationArtifactV3TurnOpened:
+		return "artifact.v3.turn.opened"
+	case V3SessionMutationArtifactV3CandidateCommitted:
+		return "artifact.v3.candidate.committed"
+	case V3SessionMutationArtifactV3CandidateFailed:
+		return "artifact.v3.candidate.failed"
+	case V3SessionMutationArtifactV3CandidateCancelled:
+		return "artifact.v3.candidate.cancelled"
+	case V3SessionMutationArtifactV3HeadSelected:
+		return "artifact.v3.head.selected"
+	case V3SessionMutationArtifactV3Recovered:
+		return "artifact.v3.recovered"
 	case V3SessionMutationBindTranscriptionAttachment:
 		return "session.transcription.attachment.bound"
 	case V3SessionMutationCreateTranscriptionJob:
@@ -3080,7 +3170,7 @@ func normalizeV3SessionEventType(input V3SessionMutationInput) string {
 	}
 }
 
-func (input V3SessionMutationInput) v3EventPayload(seq uint64, session SessionSnapshot, message MessageSnapshot, lifecycle SessionLifecycleSnapshot, runIntent V3SessionRunIntent, turnUsage SessionTurnUsageSnapshot, usageSummary SessionUsageSummary, artifact V3ArtifactProjection, transcription V3TranscriptionProjection, videoProject V3VideoProjectProjection) (json.RawMessage, error) {
+func (input V3SessionMutationInput) v3EventPayload(seq uint64, session SessionSnapshot, message MessageSnapshot, lifecycle SessionLifecycleSnapshot, runIntent V3SessionRunIntent, turnUsage SessionTurnUsageSnapshot, usageSummary SessionUsageSummary, artifact V3ArtifactProjection, artifactV2 ArtifactV2Projection, artifactV3 ArtifactV3Projection, transcription V3TranscriptionProjection, videoProject V3VideoProjectProjection) (json.RawMessage, error) {
 	if len(input.EventPayload) > 0 {
 		return append(json.RawMessage(nil), input.EventPayload...), nil
 	}
@@ -3137,6 +3227,14 @@ func (input V3SessionMutationInput) v3EventPayload(seq uint64, session SessionSn
 	if artifact.Collection.ID != "" {
 		projection := artifact
 		payload.Artifact = &projection
+	}
+	if artifactV2.ArtifactID != "" {
+		projection := artifactV2
+		payload.ArtifactV2 = &projection
+	}
+	if artifactV3.Repository != nil || artifactV3.Revision != nil || artifactV3.Turn != nil || artifactV3.Candidate != nil {
+		projection := artifactV3
+		payload.ArtifactV3 = &projection
 	}
 	if transcription.AttachmentRef != "" || transcription.JobRef != "" {
 		projection := transcription

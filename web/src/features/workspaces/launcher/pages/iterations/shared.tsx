@@ -126,7 +126,6 @@ interface DiscoveredDirectorySectionProps
     | 'savingPath'
     | 'onSaveDiscovered'
     | 'onBrowsePath'
-    | 'onUseFolderTemporarily'
   > {
   title?: string
   description?: string
@@ -140,9 +139,8 @@ export function DiscoveredDirectorySection({
   savingPath,
   onSaveDiscovered,
   onBrowsePath,
-  onUseFolderTemporarily,
   title = 'Folders on this computer',
-  description = 'Browse likely project folders, use one for this chat only, or add one as a new workspace.',
+  description = 'Browse likely project folders and add a committed Git repository as a workspace.',
   compact = false,
   className,
   headerAside,
@@ -197,9 +195,6 @@ export function DiscoveredDirectorySection({
                   </div>
                 </button>
                 <div className="flex flex-wrap justify-end gap-2">
-                  <Button type="button" variant="ghost" disabled={savingPath === entry.path} onClick={() => onUseFolderTemporarily(entry.path)}>
-                    Use for this chat only
-                  </Button>
                   <Button type="button" disabled={savingPath === entry.path} onClick={() => onSaveDiscovered(entry)}>
                     {savingPath === entry.path ? 'Saving…' : 'Add folder as a new workspace'}
                   </Button>

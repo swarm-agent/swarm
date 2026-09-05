@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -17,6 +19,29 @@ func openTest(t *testing.T) *Repository {
 	return r
 }
 func boolp(v bool) *bool { return &v }
+
+// Requirement: daemon startup owns a real Git-backed artifact authority, so an
+// incomplete installation without Git must fail before readiness with a stable,
+// diagnosable prerequisite error instead of crashing on first publication.
+func TestOpenRejectsMissingNativeGitBeforeStorageMutation(t *testing.T) {
+	oldLookPath := lookPath
+	lookPath = func(name string) (string, error) {
+		if name != "git" {
+			t.Fatalf("looked up %q, want git", name)
+		}
+		return "", exec.ErrNotFound
+	}
+	t.Cleanup(func() { lookPath = oldLookPath })
+
+	root := filepath.Join(t.TempDir(), "repos")
+	_, err := Open(context.Background(), root, "artifact_1", Limits{})
+	if err == nil || !strings.Contains(err.Error(), "artifactgit: native git required") {
+		t.Fatalf("Open error = %v, want native Git prerequisite", err)
+	}
+	if _, statErr := os.Stat(root); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("missing-Git preflight mutated repository root: %v", statErr)
+	}
+}
 
 func TestHistoricalForkMergeLocksCASRestartAndBundle(t *testing.T) {
 	ctx := context.Background()

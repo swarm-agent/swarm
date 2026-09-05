@@ -380,6 +380,24 @@ func TestQuarantineSessionsV3SyncSnapshotSessionRemovesRelatedResources(t *testi
 	}
 }
 
+// Requirement: Desktop shell rows must retain the durable task-call identity
+// already written on delegated children so siblings from one task wave can be
+// grouped without hydrating transcripts or consulting parent-local state.
+func TestSessionsV3SyncShellMetadataPreservesDelegatedTaskCallIdentity(t *testing.T) {
+	metadata := sessionsV3SyncShellMetadata(map[string]any{
+		"parent_session_id":   "parent-session",
+		"lineage_kind":        "delegated_subagent",
+		"parent_task_call_id": "call-wave",
+		"logical_task_id":     "private-logical-task",
+	})
+	if got := metadata["parent_task_call_id"]; got != "call-wave" {
+		t.Fatalf("sync shell parent_task_call_id = %#v, want call-wave", got)
+	}
+	if _, present := metadata["logical_task_id"]; present {
+		t.Fatalf("sync shell leaked non-allowlisted logical_task_id: %#v", metadata)
+	}
+}
+
 func TestSessionsV3SyncShellMetadataPreservesModelProfileIdentity(t *testing.T) {
 	metadata := sessionsV3SyncShellMetadata(map[string]any{
 		"agent_name": "swarm",

@@ -256,38 +256,27 @@ func (s *Server) applySessionCreateWorktree(createOptions *sessionruntime.Create
 	if createOptions == nil {
 		return "", nil
 	}
+	if !principalOK || !principal.Valid() {
+		return "", identity.ErrPrincipalRequired
+	}
 	requestedMode := runruntime.NormalizeRunWorktreeMode(rawRequestedMode)
 	if strings.TrimSpace(rawRequestedMode) != "" && requestedMode == "" {
 		return "", errors.New("unsupported worktree_mode " + strconv.Quote(strings.TrimSpace(rawRequestedMode)))
 	}
+	if requestedMode == runruntime.RunWorktreeModeOff {
+		return "", errors.New("worktree_mode off is not supported; Swarm sessions require managed worktree isolation")
+	}
 	if s == nil || s.worktrees == nil {
-		if requestedMode == runruntime.RunWorktreeModeOn {
-			return "", errors.New("worktree service not configured")
-		}
-		return "", nil
+		return "", errors.New("worktree service not configured; Swarm sessions require managed worktree isolation")
 	}
-	if !principalOK || !principal.Valid() {
-		switch requestedMode {
-		case "", runruntime.RunWorktreeModeInherit, runruntime.RunWorktreeModeOff:
-			return "", nil
-		default:
-			return "", identity.ErrPrincipalRequired
-		}
-	}
-	config, cfgErr := s.worktrees.GetConfigForPrincipal(principal, createOptions.WorkspacePath)
-	if cfgErr != nil {
-		return "", cfgErr
+	if _, err := s.worktrees.GetConfigForPrincipal(principal, createOptions.WorkspacePath); err != nil {
+		return "", err
 	}
 	switch requestedMode {
 	case "", runruntime.RunWorktreeModeInherit:
-		if !config.Enabled {
-			return "", nil
-		}
 		return s.allocateSessionCreateDetachedWorkspace(createOptions, sessionID, func() (worktreeruntime.Allocation, error) {
 			return s.worktrees.AllocateDetachedWorkspaceForPrincipal(principal, createOptions.WorkspacePath, sessionID)
 		})
-	case runruntime.RunWorktreeModeOff:
-		return "", nil
 	case runruntime.RunWorktreeModeOn:
 		baseBranch := strings.TrimSpace(requestedBaseBranch)
 		if requestedUseCurrentBranch != nil && *requestedUseCurrentBranch {

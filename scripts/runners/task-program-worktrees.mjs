@@ -19,7 +19,8 @@ const suppliedToken = String(process.env.SWARM_RUNNER_TOKEN || '').trim()
 if (!apiURL || !/^https?:\/\//.test(apiURL)) throw new Error('--api-url must be an http or https URL')
 if (!provider || !/^[a-z0-9._-]+$/.test(provider)) throw new Error('--provider is invalid')
 if (!Number.isFinite(timeoutMs) || timeoutMs < 30000 || timeoutMs > 600000) throw new Error('--timeout-ms must be between 30000 and 600000')
-if (!['low', 'medium', 'high', 'xhigh'].includes(suppliedThinking)) throw new Error('--thinking must be low, medium, high, or xhigh')
+if (!suppliedModel) throw new Error('--coder-model is required; use scripts/run-testbench-runner.sh so the ignored .env supplies the explicit Fireworks Coder model')
+if (!['off', 'low', 'medium', 'high', 'xhigh'].includes(suppliedThinking)) throw new Error('--thinking must be off, low, medium, high, or xhigh')
 
 const testID = `runner-task-program-worktrees-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`
 const requiredGates = [
@@ -67,14 +68,17 @@ async function api(method, route, body, label = route, allowError = false) {
 }
 
 function assignmentFor(records) {
-  if (suppliedModel) {
-    const record = records.find((item) => String(item?.model || '') === suppliedModel)
-    assert(record, `model catalog does not contain ${provider}/${suppliedModel}`)
-    return { provider, model: suppliedModel, thinking: suppliedThinking, service_tier: 'fast' }
-  }
-  const record = records.find((item) => String(item?.model || '').includes('5.6-luna')) || records.find((item) => String(item?.model || '').includes('5.6'))
-  assert(record?.model, `model catalog has no Luna 5.6-compatible model for ${provider}`)
-  return { provider, model: String(record.model), thinking: suppliedThinking, service_tier: 'fast' }
+  const record = records.find((item) => String(item?.model || '') === suppliedModel)
+  assert(record, `model catalog does not contain ${provider}/${suppliedModel}`)
+  return { provider, model: suppliedModel, thinking: suppliedThinking }
+}
+
+function sameRuntimeModel(actual, expected) {
+  const left = String(actual || '').trim()
+  const right = String(expected || '').trim()
+  if (left === right) return true
+  if (provider !== 'fireworks') return false
+  return left.split('/').filter(Boolean).at(-1) === right.split('/').filter(Boolean).at(-1)
 }
 
 function bindingPath(binding) {
@@ -245,15 +249,17 @@ async function main() {
   modelAssignment = assignmentFor(records)
   result.model = modelAssignment
   result.gates.model_available = true
-  const actionModel = String(option('--action-model', process.env.SWARM_RUNNER_ACTION_MODEL || suppliedModel)).trim()
-  const actionThinking = String(option('--action-thinking', process.env.SWARM_RUNNER_ACTION_THINKING || suppliedThinking)).trim().toLowerCase()
-  const planModel = String(option('--plan-model', process.env.SWARM_RUNNER_PLAN_MODEL || actionModel)).trim()
-  const planThinking = String(option('--plan-thinking', process.env.SWARM_RUNNER_PLAN_THINKING || actionThinking)).trim().toLowerCase()
-  const designerModel = String(option('--designer-model', process.env.SWARM_RUNNER_DESIGNER_MODEL || suppliedModel)).trim()
-  const designerThinking = String(option('--designer-thinking', process.env.SWARM_RUNNER_DESIGNER_THINKING || suppliedThinking)).trim().toLowerCase()
+  const actionModel = String(option('--action-model', process.env.SWARM_RUNNER_ACTION_MODEL || '')).trim()
+  const actionThinking = String(option('--action-thinking', process.env.SWARM_RUNNER_ACTION_THINKING || '')).trim().toLowerCase()
+  const planModel = String(option('--plan-model', process.env.SWARM_RUNNER_PLAN_MODEL || '')).trim()
+  const planThinking = String(option('--plan-thinking', process.env.SWARM_RUNNER_PLAN_THINKING || '')).trim().toLowerCase()
+  const designerModel = String(option('--designer-model', process.env.SWARM_RUNNER_DESIGNER_MODEL || '')).trim()
+  const designerThinking = String(option('--designer-thinking', process.env.SWARM_RUNNER_DESIGNER_THINKING || '')).trim().toLowerCase()
+  assert(actionModel && planModel && designerModel, 'explicit --action-model, --plan-model, and --designer-model values are required from the ignored .env')
+  assert([actionThinking, planThinking, designerThinking].every((value) => ['off', 'low', 'medium', 'high', 'xhigh'].includes(value)), 'explicit role thinking values must be off, low, medium, high, or xhigh')
   const exact = (model, thinking, label) => {
     assert(records.some((record) => String(record?.model || '').trim() === model), `model catalog does not contain ${provider}/${model} for ${label}`)
-    return { provider, model, thinking, service_tier: 'fast' }
+    return { provider, model, thinking }
   }
   const actionAssignment = exact(actionModel, actionThinking, 'Swarm auto')
   const planAssignment = exact(planModel, planThinking, 'Swarm plan')
@@ -311,7 +317,7 @@ async function main() {
     const response = await api('GET', `/v1/sessions/${encodeURIComponent(program.parent_session_id)}/usage?limit=100`, undefined, `read usage for ${program.label}`)
     usage.push(...(response.body?.turn_usage_records || []))
   }
-  const matchingUsage = usage.filter((item) => String(item?.model || '') === modelAssignment.model)
+  const matchingUsage = usage.filter((item) => String(item?.provider || '') === provider && sameRuntimeModel(item?.model, modelAssignment.model))
   assert(matchingUsage.length >= 2, `runtime usage has ${matchingUsage.length} records for ${modelAssignment.model}, want at least 2`)
   const configured = (await api('GET', '/v1/agent-model-settings', undefined, 'verify final model settings')).body?.agent_model_settings || {}
   assert(configured?.swarm?.action?.model === modelAssignment.model && configured?.swarm?.action?.thinking === modelAssignment.thinking, 'final Swarm action assignment does not match the requested model posture')

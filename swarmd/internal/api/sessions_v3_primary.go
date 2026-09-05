@@ -342,6 +342,14 @@ func (s *Server) handleSessionV3PrimaryByID(w http.ResponseWriter, r *http.Reque
 			s.handleSessionV3VideoSubpath(w, r, principal, sessionID, strings.TrimPrefix(subpath, "video/"))
 			return
 		}
+		if subpath == "artifacts-v3" || strings.HasPrefix(subpath, "artifacts-v3/") {
+			s.handleSessionV3ArtifactsV3(w, r, principal, sessionID, strings.TrimPrefix(subpath, "artifacts-v3"))
+			return
+		}
+		if subpath == "artifact-v2" || strings.HasPrefix(subpath, "artifact-v2/") {
+			s.handleSessionV3ArtifactV2(w, r, principal, sessionID, strings.TrimPrefix(subpath, "artifact-v2"))
+			return
+		}
 		if strings.HasPrefix(subpath, "artifacts/") {
 			artifactPath := strings.TrimSpace(strings.TrimPrefix(subpath, "artifacts/"))
 			if collectionPath, hasCollection := strings.CutPrefix(artifactPath, "collections/"); hasCollection {
@@ -3422,7 +3430,9 @@ func validateSessionsV3CreateWorktreeRequest(rawMode string, useCurrentBranch *b
 		return "", fmt.Errorf("unsupported worktree_mode %q", strings.TrimSpace(rawMode))
 	}
 	switch mode {
-	case "", runruntime.RunWorktreeModeInherit, runruntime.RunWorktreeModeOff:
+	case runruntime.RunWorktreeModeOff:
+		return "", errors.New("worktree_mode off is not supported; Swarm sessions require managed worktree isolation")
+	case "", runruntime.RunWorktreeModeInherit:
 		if useCurrentBranch != nil || strings.TrimSpace(baseBranch) != "" || strings.TrimSpace(branchName) != "" || strings.TrimSpace(existingPath) != "" {
 			return "", errors.New("worktree fields are only allowed when worktree_mode is on")
 		}

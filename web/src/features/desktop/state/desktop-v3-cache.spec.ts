@@ -2627,6 +2627,9 @@ test('late reasoning does not move speculative assistant output from an earlier 
   assert.deepEqual(rendered, ['live-assistant', 'live-reasoning'])
 })
 
+// Requirement: the first durable assistant event replaces speculative placement;
+// later reasoning must not move that established anchor. Reducer assertions are
+// the narrowest proof of applyStreamAwareDurableAssistantDelta reconciliation.
 test('late same-step reasoning does not move assistant text with a durable checkpoint', () => {
   let state = bootstrappedState()
   state = applyDesktopV3LivePatchBatch(state, [livePatch({
@@ -2665,7 +2668,7 @@ test('late same-step reasoning does not move assistant text with a durable check
 
   const run = state.liveRunsBySession[sessionA.id]['run-live']
   assert.equal(run.assistantSegments?.[0]?.durableOffsetEnd, byteLength('durable assistant'))
-  assert.equal(run.assistantSegments?.[0]?.timelineSeq, assistantSeq)
+  assert.equal(run.assistantSegments?.[0]?.timelineSeq, assistantSeq + 5)
 })
 
 test('realtime provider tool construction events create live tool overlay while arguments stream', () => {

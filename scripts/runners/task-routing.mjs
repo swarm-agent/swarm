@@ -22,6 +22,8 @@ const suppliedToken = String(process.env.SWARM_RUNNER_TOKEN || '').trim()
 if (!apiURL || !/^https?:\/\//.test(apiURL)) throw new Error('--api-url must be an http or https URL')
 if (!provider || !/^[a-z0-9._-]+$/.test(provider)) throw new Error('--provider is required and must contain only letters, numbers, dots, underscores, or dashes')
 if (!Number.isFinite(timeoutMs) || timeoutMs < 30000) throw new Error('--timeout-ms must be at least 30000')
+if (!actionModel || !planModel) throw new Error('--action-model and --plan-model are required; use scripts/run-testbench-runner.sh so the ignored .env supplies the explicit Fireworks role models')
+if (![actionThinking, planThinking].every((value) => ['off', 'low', 'medium', 'high', 'xhigh'].includes(value))) throw new Error('role thinking must be off, low, medium, high, or xhigh')
 if (!['all', 'new-router', 'existing-session'].includes(scenarioOption)) throw new Error('--scenario must be all, new-router, or existing-session')
 
 const testID = `runner-task-routing-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`
@@ -33,7 +35,7 @@ const scenarioGates = scenarioOption === 'all'
     ? ['new_router_page_auto', 'new_router_page_plan', ...(linkedWorkspacePathOverride ? ['explicit_workspace_auto', 'explicit_workspace_plan'] : [])]
     : ['initial_sessions_loaded', 'first_session_selected', 'existing_session_auto', 'existing_session_plan']
 const requiredGates = [
-  'provider_runnable', 'recommended_models', 'models_configured', 'workspace_binding_ready', ...scenarioGates,
+  'provider_runnable', 'explicit_models', 'models_configured', 'workspace_binding_ready', ...scenarioGates,
   'expected_task_calls', 'all_admitted', 'all_worktrees', 'mode_contracts',
   'plan_contracts', 'profiles_verified', 'no_failures', 'models_restored',
 ]
@@ -103,33 +105,17 @@ async function api(method, route, body, label = route, allowError = false) {
   }
 }
 
-function recommendationFor(record, roles) {
-  const recommendations = Array.isArray(record?.recommendations) ? record.recommendations : []
-  return recommendations.find((item) => roles.includes(String(item?.role || '').trim().toLowerCase())) || null
-}
-
 function exactAssignment(records, model, thinking, label) {
-  if (!model) return null
   assert(records.some((record) => String(record?.model || '').trim() === model), `model catalog does not contain ${provider}/${model} for ${label}`)
-  return { provider, model, thinking, service_tier: 'fast' }
+  return { provider, model, thinking }
 }
 
-function recommendedAssignment(records, roles, label) {
-  for (const record of records) {
-    const recommendation = recommendationFor(record, roles)
-    if (!recommendation) continue
-    const model = String(record?.model || '').trim()
-    const thinking = String(recommendation?.thinking || record?.default_thinking || '').trim().toLowerCase()
-    if (!model || !thinking) continue
-    const serving = String(recommendation?.serving || '').trim().toLowerCase()
-    return {
-      provider,
-      model,
-      thinking,
-      ...(serving === 'fast' || serving === 'priority' ? { service_tier: 'priority' } : {}),
-    }
-  }
-  fail(`model catalog has no complete ${label} recommendation for provider ${provider}`)
+function sameRuntimeModel(actual, expected) {
+  const left = String(actual || '').trim()
+  const right = String(expected || '').trim()
+  if (left === right) return true
+  if (provider !== 'fireworks') return false
+  return left.split('/').filter(Boolean).at(-1) === right.split('/').filter(Boolean).at(-1)
 }
 
 function metadataString(metadata, key) {
@@ -362,7 +348,7 @@ async function runTaskCall({ scenario, mode, authority, selectedSessionID, expec
   assert(String(roleProfile?.thinking || '').toLowerCase() === expectedAssignment.thinking, `${scenario} /task ${mode} profile thinking is ${roleProfile?.thinking}, want ${expectedAssignment.thinking}`)
   const usageRecords = await usageForSession(sessionID, events)
   const providerUsage = usageRecords.filter((usage) => String(usage?.provider || '') === provider)
-  const matchingUsage = providerUsage.find((usage) => String(usage?.model || '') === expectedAssignment.model) || providerUsage[0] || null
+  const matchingUsage = providerUsage.find((usage) => sameRuntimeModel(usage?.model, expectedAssignment.model)) || providerUsage[0] || null
   result.provider_runtime.push({
     scenario, mode, session_id: sessionID,
     status: matchingUsage ? 'observed' : 'pending',
@@ -415,11 +401,11 @@ async function main() {
 
   const catalogResponse = await api('GET', `/v1/model/catalog?provider=${encodeURIComponent(provider)}&limit=500`, undefined, 'read model recommendations')
   const records = catalogResponse.body?.records || []
-  const planAssignment = exactAssignment(records, planModel, planThinking, 'Swarm plan') || recommendedAssignment(records, ['plan'], 'Swarm plan')
-  const actionAssignment = exactAssignment(records, actionModel, actionThinking, 'Swarm auto') || recommendedAssignment(records, ['auto', 'main'], 'Swarm auto')
-  const routerAssignment = exactAssignment(records, actionModel, actionThinking, 'Router routing') || recommendedAssignment(records, ['routing', 'router'], 'Router routing')
+  const planAssignment = exactAssignment(records, planModel, planThinking, 'Swarm plan')
+  const actionAssignment = exactAssignment(records, actionModel, actionThinking, 'Swarm auto')
+  const routerAssignment = exactAssignment(records, actionModel, actionThinking, 'Router routing')
   result.models = { plan: planAssignment, auto: actionAssignment, router: routerAssignment }
-  result.gates.recommended_models = true
+  result.gates.explicit_models = true
 
   const settingsResponse = await api('GET', '/v1/agent-model-settings', undefined, 'read agent model settings')
   originalSwarmSettings = settingsResponse.body?.agent_model_settings?.swarm || null

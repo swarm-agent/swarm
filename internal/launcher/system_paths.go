@@ -27,12 +27,27 @@ func EnsureSystemInstallReady() error {
 	if err != nil {
 		return err
 	}
+	dirs := systemInstallDirSpecs(roots)
+	if err := ensureDirsLocal(dirs); err == nil {
+		return ensureTmpfilesConfig(roots)
+	}
+	if err := ensureDirsPrivileged(dirs); err != nil {
+		return err
+	}
+	return ensureTmpfilesConfig(roots)
+}
+
+func systemInstallDirSpecs(roots storagecontract.Roots) []systemDirSpec {
 	dirs := []systemDirSpec{
 		{Path: systemBinDir(), Mode: 0o755},
 		{Path: filepath.Dir(systemInstallRoot()), Mode: 0o755},
+		// Keep every owned parent before its children. A privileged `install -d`
+		// creates missing intermediate parents as root but applies -o/-g only to
+		// the requested leaf, which would make the following safety check reject
+		// a clean installation's own partially provisioned root.
+		{Path: systemInstallRoot(), Mode: 0o755, Owner: true},
 		{Path: systemBinaryDir(), Mode: 0o755, Owner: true},
 		{Path: systemToolBinDir(), Mode: 0o755, Owner: true},
-		{Path: systemInstallRoot(), Mode: 0o755, Owner: true},
 		{Path: systemLibDir(), Mode: 0o755, Owner: true},
 		{Path: systemDesktopDistDir(), Mode: 0o755, Owner: true},
 		{Path: roots.ConfigDir, Mode: 0o700, Owner: true},
@@ -48,13 +63,7 @@ func EnsureSystemInstallReady() error {
 	if filepath.Clean(roots.RuntimeDir) == "/run/swarmd" {
 		dirs = append(dirs, systemDirSpec{Path: filepath.Join(string(filepath.Separator), "etc", "tmpfiles.d"), Mode: 0o755})
 	}
-	if err := ensureDirsLocal(dirs); err == nil {
-		return ensureTmpfilesConfig(roots)
-	}
-	if err := ensureDirsPrivileged(dirs); err != nil {
-		return err
-	}
-	return ensureTmpfilesConfig(roots)
+	return dirs
 }
 
 func ensureDirsLocal(dirs []systemDirSpec) error {
@@ -186,6 +195,9 @@ func ensureDirsPrivileged(dirs []systemDirSpec) error {
 		if info, err := os.Lstat(dir.Path); err == nil {
 			if err := validateExistingDirectoryTarget(dir.Path, info); err != nil {
 				return err
+			}
+			if dir.Owner && !dirWritable(dir.Path) {
+				return fmt.Errorf("existing directory is not writable; refusing to change its ownership or mode: %s", dir.Path)
 			}
 			continue
 		} else if !errors.Is(err, os.ErrNotExist) {

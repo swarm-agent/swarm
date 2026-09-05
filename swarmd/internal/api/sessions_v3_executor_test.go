@@ -77,6 +77,18 @@ func (r *sessionsV3ProviderToolsRunner) BuildPlanCheckpointRunInput(_ string, _ 
 	return []map[string]any{{"role": "user", "content": "checkpoint"}}, true, nil
 }
 
+func TestSessionsV3ProviderNativeFunctionOutputPreservesToolName(t *testing.T) {
+	got, ok := sessionsV3ProviderNativeRequestInputItem(map[string]any{
+		"type": "function_call_output", "call_id": "call_task", "name": "task", "output": "completed",
+	})
+	if !ok {
+		t.Fatal("function_call_output was rejected")
+	}
+	if got["call_id"] != "call_task" || got["name"] != "task" || got["output"] != "completed" {
+		t.Fatalf("normalized function output = %#v, want call id, tool name, and output", got)
+	}
+}
+
 func TestSessionV3ProviderToolPrincipalBindsOwnedRunSession(t *testing.T) {
 	session := pebblestore.SessionSnapshot{ID: "session-1", UserID: "user-1", AccountScopeID: "account-1"}
 	job := sessionV3ExecutorJob{

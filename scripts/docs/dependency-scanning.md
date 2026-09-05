@@ -18,8 +18,12 @@ covers Swarm's stack:
   team's recommended source analysis while excluding intentionally relocated
   test fixtures and ignored `tmp` programs that do not compile as product code.
 - `pnpm audit --audit-level=low` audits all production and development packages
-  represented by `web/pnpm-lock.yaml`. Registry/network errors are fatal; the
-  gate never uses pnpm's `--ignore-registry-errors` option.
+  represented by `web/pnpm-lock.yaml`. Each registry request has a 30-second
+  timeout and the gate retries an unavailable registry up to three times with
+  short bounded backoff. A complete vulnerability report is never retried or
+  reclassified: findings fail immediately, and registry/network errors remain
+  fatal after the bounded attempts. The gate never uses pnpm's
+  `--ignore-registry-errors` option.
 - `trivy fs` performs separate inventory-level checks on the two tracked
   `go.mod` files and `web/pnpm-lock.yaml`, including pnpm development
   dependencies. It scans vulnerabilities only, refreshes its advisory database

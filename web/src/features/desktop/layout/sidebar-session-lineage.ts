@@ -6,10 +6,48 @@ export interface SidebarSessionChildDescriptor {
   kind: SidebarSessionNodeKind
   label: string | null
   assignmentLabel: string | null
+  taskCallId: string | null
 }
 
 export interface SidebarSessionBackgroundInfo {
   active: boolean
+}
+
+export interface SidebarTaskCallNode {
+  kind: SidebarSessionNodeKind
+  taskCallId: string | null
+}
+
+export function groupSidebarTaskCallSiblings<T extends SidebarTaskCallNode>(nodes: T[]): T[] {
+  const output: T[] = []
+  const emittedTaskCalls = new Set<string>()
+  for (const node of nodes) {
+    const taskCallId = node.kind === 'subagent' ? node.taskCallId?.trim() ?? '' : ''
+    if (!taskCallId) {
+      output.push(node)
+      continue
+    }
+    if (emittedTaskCalls.has(taskCallId)) {
+      continue
+    }
+    emittedTaskCalls.add(taskCallId)
+    output.push(...nodes.filter((candidate) => candidate.kind === 'subagent' && candidate.taskCallId?.trim() === taskCallId))
+  }
+  return output
+}
+
+export function sidebarTaskCallPresentationGroups<T extends SidebarTaskCallNode>(nodes: T[]): T[][] {
+  const groups: T[][] = []
+  for (const node of nodes) {
+    const taskCallId = node.kind === 'subagent' ? node.taskCallId?.trim() ?? '' : ''
+    const previous = groups[groups.length - 1]
+    if (taskCallId && previous?.[0]?.taskCallId?.trim() === taskCallId) {
+      previous.push(node)
+    } else {
+      groups.push([node])
+    }
+  }
+  return groups
 }
 
 function normalizeMetadataRecord(value: unknown): Record<string, unknown> | null {
@@ -102,20 +140,21 @@ export function sessionChildDescriptor(session: DesktopSessionRecord): SidebarSe
   // parent_session_id as durable provenance, but do not present the deployed
   // session as an agent child of the conversation that launched it.
   if (!parentSessionID || lineageKind === 'session_deploy') {
-    return { kind: 'root', label: null, assignmentLabel: assignmentLabel || null }
+    return { kind: 'root', label: null, assignmentLabel: assignmentLabel || null, taskCallId: null }
   }
   const requestedSubagent = metadataString(metadata, 'requested_subagent')
   const resolvedSubagent = metadataString(metadata, 'subagent')
+  const taskCallId = metadataString(metadata, 'parent_task_call_id') || null
   const lineageLabel = sessionLineageLabel(metadata)
   const subagent = resolvedSubagent || requestedSubagent
   if (subagent || lineageKind === 'delegated_subagent') {
-    return { kind: 'subagent', label: lineageLabel || '@subagent', assignmentLabel: assignmentLabel || null }
+    return { kind: 'subagent', label: lineageLabel || '@subagent', assignmentLabel: assignmentLabel || null, taskCallId }
   }
   if (sessionHasBackgroundLineage(metadata)) {
-    return { kind: 'background', label: 'background', assignmentLabel: assignmentLabel || null }
+    return { kind: 'background', label: 'background', assignmentLabel: assignmentLabel || null, taskCallId }
   }
   if (lineageLabel) {
-    return { kind: lineageLabel.startsWith('@') ? 'subagent' : 'background', label: lineageLabel, assignmentLabel: assignmentLabel || null }
+    return { kind: lineageLabel.startsWith('@') ? 'subagent' : 'background', label: lineageLabel, assignmentLabel: assignmentLabel || null, taskCallId }
   }
-  return { kind: 'background', label: 'child', assignmentLabel: assignmentLabel || null }
+  return { kind: 'background', label: 'child', assignmentLabel: assignmentLabel || null, taskCallId }
 }

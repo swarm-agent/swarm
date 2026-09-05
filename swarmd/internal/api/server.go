@@ -25,6 +25,7 @@ import (
 	agentruntime "swarm/packages/swarmd/internal/agent"
 	"swarm/packages/swarmd/internal/agentmodelsettings"
 	"swarm/packages/swarmd/internal/artifact"
+	"swarm/packages/swarmd/internal/artifactv2"
 	"swarm/packages/swarmd/internal/auth"
 	"swarm/packages/swarmd/internal/discovery"
 	"swarm/packages/swarmd/internal/identity"
@@ -141,6 +142,8 @@ type Server struct {
 	longSessionDiagnostics      *longsessiondiag.Recorder
 	mediaStaging                *mediastaging.Service
 	artifacts                   *artifact.Registry
+	artifactV2                  *artifactv2.Service
+	artifactV3                  ArtifactV3Service
 
 	longSessionDesktopSampleLogOnce sync.Once
 
@@ -243,6 +246,7 @@ type notificationService interface {
 type worktreeService interface {
 	GetConfig(workspacePath string) (worktreeruntime.Config, error)
 	GetConfigForPrincipal(principal identity.Principal, workspacePath string) (worktreeruntime.Config, error)
+	GetConfigForSavedWorkspaceForPrincipal(principal identity.Principal, workspacePath string) (worktreeruntime.Config, error)
 	SetConfig(workspacePath string, enabled, useCurrentBranch bool, baseBranch, branchName string) (worktreeruntime.Config, *pebblestore.EventEnvelope, error)
 	SetConfigForPrincipal(principal identity.Principal, workspacePath string, enabled, useCurrentBranch bool, baseBranch, branchName string) (worktreeruntime.Config, *pebblestore.EventEnvelope, error)
 	AllocateDetachedWorkspace(workspacePath, nameSeed string) (worktreeruntime.Allocation, error)
@@ -862,25 +866,14 @@ func (s *Server) handleWorktrees(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		managed, err := s.worktrees.ListManagedForPrincipal(principal, workspacePath)
-		warning := ""
 		if err != nil {
-			warning = worktreeruntime.DetachedWorkspaceFallbackWarning(err)
-			if warning == "" {
-				writeError(w, http.StatusInternalServerError, err)
-				return
-			}
-			// A workspace does not need to be a Git repository to host a session.
-			// Report worktrees as effectively disabled so ordinary TUI session
-			// creation stays in the selected directory without requesting an
-			// allocation that cannot exist.
-			config.Enabled = false
-			managed = []worktreeruntime.ManagedWorktree{}
+			writeWorkspaceRepositoryError(w, err)
+			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"ok":        true,
 			"worktrees": config,
 			"managed":   managed,
-			"warning":   warning,
 		})
 	case http.MethodPost:
 		var req struct {
@@ -1754,7 +1747,7 @@ func (s *Server) handleWorkspaceSelect(w http.ResponseWriter, r *http.Request) {
 	}
 	resolution, err := s.workspace.SelectForPrincipal(principal, req.Path)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err)
+		writeWorkspaceRepositoryError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -1950,13 +1943,22 @@ func (s *Server) handleWorkspaceAdd(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, errors.New("topology service not configured"))
 		return
 	}
+	// Repository readiness is a filesystem prerequisite. Check it before any
+	// catalog, topology, current-selection, or session state can be changed.
+	if repository, err := s.workspace.InspectRepositoryForPrincipal(principal, req.Path); err != nil {
+		writeWorkspaceRepositoryError(w, err)
+		return
+	} else if repository.State != workspace.RepositoryStateReady {
+		writeWorkspaceRepositoryError(w, &workspace.RepositoryPrerequisiteError{Repository: repository})
+		return
+	}
 	if _, err := s.topology.EnsureLocalSelfPlacementForPrincipal(principal.AccountScopeID, principal.UserID); err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
 	resolution, entry, created, err := s.workspace.AddForPrincipalWithEntryWithoutSelection(principal, req.Path, req.Name, req.ThemeID)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err)
+		writeWorkspaceRepositoryError(w, err)
 		return
 	}
 	binding, err := s.topology.EnsureLocalWorkspaceSelfBindingForPrincipal(principal.AccountScopeID, principal.UserID, entry)
@@ -1991,6 +1993,48 @@ func (s *Server) handleWorkspaceAdd(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (s *Server) handleWorkspaceRepositorySetup(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	principal, ok := PrincipalFromRequest(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, identity.ErrPrincipalRequired)
+		return
+	}
+	if s.workspace == nil {
+		writeError(w, http.StatusInternalServerError, errors.New("workspace service not configured"))
+		return
+	}
+	var req struct {
+		Path                 string `json:"path"`
+		ExpectedResolvedPath string `json:"expected_resolved_path"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	repository, err := s.workspace.SetupRepositoryForPrincipal(principal, req.Path, req.ExpectedResolvedPath)
+	if err != nil {
+		if _, ok := workspace.RepositoryStateFromError(err); ok {
+			writeJSON(w, http.StatusConflict, map[string]any{"ok": false, "error": err.Error(), "code": "workspace_repository_not_ready", "repository": repository})
+			return
+		}
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "repository": repository})
+}
+
+func writeWorkspaceRepositoryError(w http.ResponseWriter, err error) {
+	if repository, ok := workspace.RepositoryStateFromError(err); ok {
+		writeJSON(w, http.StatusConflict, map[string]any{"ok": false, "error": err.Error(), "code": "workspace_repository_not_ready", "repository": repository})
+		return
+	}
+	writeError(w, http.StatusBadRequest, err)
+}
+
 func (s *Server) handleWorkspaceDirectoryAdd(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		methodNotAllowed(w)
@@ -2009,9 +2053,16 @@ func (s *Server) handleWorkspaceDirectoryAdd(w http.ResponseWriter, r *http.Requ
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	if repository, err := s.workspace.InspectRepositoryForPrincipal(principal, req.DirectoryPath); err != nil {
+		writeWorkspaceRepositoryError(w, err)
+		return
+	} else if repository.State != workspace.RepositoryStateReady {
+		writeWorkspaceRepositoryError(w, &workspace.RepositoryPrerequisiteError{Repository: repository})
+		return
+	}
 	resolution, err := s.workspace.AddDirectoryForPrincipal(principal, req.WorkspacePath, req.DirectoryPath)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err)
+		writeWorkspaceRepositoryError(w, err)
 		return
 	}
 	// The compatibility route now creates a normal flat-catalog workspace, so it

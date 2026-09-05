@@ -23,7 +23,6 @@ export interface WorkspaceLauncherIterationProps {
   refreshing?: boolean
   onRefresh?: () => void
   onOpenWorkspace: (path: string) => void
-  onUseFolderTemporarily: (path: string) => void
   onEditWorkspace: (path: string) => void
   onDeleteWorkspace: (path: string) => void
   onSetDefaultWorkspace: (path: string | null) => void

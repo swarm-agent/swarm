@@ -58,9 +58,11 @@ import { startWorkspaceAction, type WorkspaceAction, type WorkspaceActionRun } f
 import { WorkspaceActionsSidebarSection } from '../settings/actions/components/workspace-actions-sidebar-section'
 import { fetchDesktopUpdateJob, fetchDesktopUpdateStatus, startDesktopUpdate, type DesktopUpdateJob } from '../update/api'
 import {
+  groupSidebarTaskCallSiblings,
   sessionBackgroundInfo,
   sessionChildDescriptor,
   sessionParentSessionID,
+  sidebarTaskCallPresentationGroups,
   type SidebarSessionNodeKind,
 } from './sidebar-session-lineage'
 import { dispatchDesktopV3Cache, useDesktopV3CacheSelector } from '../state/desktop-v3-cache-store'
@@ -246,9 +248,10 @@ export function isMissingGitSidebarError(error: unknown): boolean {
 
 export function buildInstallGitPrompt(gitError: string): string {
   return [
-    'Please install Git on this machine so Swarm can use Git features.',
+    'Install Git on this machine, then retry the Git feature that detected it was missing.',
+    'Treat me as a first-time user: detect the Linux distribution and use its standard package manager. Explain the system change, request any required Bash or privilege permission, perform the installation only after approval, and verify `git --version` before reporting success. If installation is denied or fails, report that clearly and do not claim the Git feature completed. Do not initialize a repository or create a commit unless that is separately required and approved.',
     '',
-    'The sidebar Git check failed with:',
+    'The workspace itself is still usable. The Git check failed with:',
     gitError,
   ].join('\n')
 }
@@ -1638,6 +1641,7 @@ interface SidebarSessionNode {
   kind: SidebarSessionNodeKind
   label: string | null
   assignmentLabel: string | null
+  taskCallId: string | null
 }
 
 export function buildSidebarSessionTree(sessions: DesktopSessionRecord[], now: number, preserveInputOrder = false): SidebarSessionNode[] {
@@ -1656,6 +1660,7 @@ export function buildSidebarSessionTree(sessions: DesktopSessionRecord[], now: n
       kind: descriptor.kind,
       label: descriptor.label,
       assignmentLabel: descriptor.assignmentLabel,
+      taskCallId: descriptor.taskCallId,
     })
   }
 
@@ -1696,6 +1701,8 @@ export function buildSidebarSessionTree(sessions: DesktopSessionRecord[], now: n
 
   const sortNodes = (nodes: SidebarSessionNode[]) => {
     nodes.sort((left, right) => compareSidebarSessions(left.session, right.session, now))
+    const grouped = groupSidebarTaskCallSiblings(nodes)
+    nodes.splice(0, nodes.length, ...grouped)
     for (const node of nodes) {
       if (node.children.length > 0) {
         sortNodes(node.children)
@@ -2466,34 +2473,45 @@ function renderSidebarSessionGroups(input: RenderSidebarSessionGroupsInput): JSX
           </div>
         )}
         {!collapsed ? <div className="grid gap-1">
-          {visibleNodes.map((node) => (
-          <SessionRow
-            key={node.session.id}
-            active={input.routeSessionId === node.session.id}
-            now={input.now}
-            session={node.session}
-            workspaceSlug={input.workspaceSlug}
-            depth={node.depth}
-            childLabel={node.label}
-            childAssignmentLabel={node.assignmentLabel}
-            childKind={node.kind}
-            agentSummary={input.agentSummaries.get(node.session.id) ?? EMPTY_SESSION_AGENT_SUMMARY}
-            agentsExpanded={Boolean(input.expandedAgentSessions[node.session.id]) || nodeContainsDescendantSession(node, input.routeSessionId || undefined)}
-            compactingStartedAt={input.compactingSession?.sessionId === node.session.id ? input.compactingSession.startedAt : null}
-            pendingAction={input.pendingActions[node.session.id] ?? null}
-            selectionMode={input.selectionMode && input.masterSelectionGroup === group.id}
-            selectionGroup={group.id}
-            selected={input.selectedRootIDs.has(node.session.id)}
-            onSelect={input.onSelect}
-            onEnterSelectionMode={input.onEnterSelectionMode}
-            onToggleSelected={input.onToggleSelected}
-            onPrefetch={input.onPrefetch}
-            onToggleAgents={input.onToggleAgents}
-            onTogglePinned={input.onTogglePinned}
-            onArchive={input.onArchive}
-            onRename={input.onRename}
-          />
-          ))}
+          {sidebarTaskCallPresentationGroups(visibleNodes).map((taskGroup) => {
+            const taskCallId = taskGroup[0]?.taskCallId?.trim() ?? ''
+            return (
+              <div
+                key={taskCallId ? `task:${taskCallId}` : taskGroup[0]?.session.id}
+                data-sidebar-task-group={taskCallId || undefined}
+                className={cn('grid gap-1', taskCallId && taskGroup.length > 1 ? 'rounded-md border border-[var(--app-border)]/45 bg-[var(--app-bg-alt)]/15 p-1' : null)}
+              >
+                {taskGroup.map((node) => (
+                  <SessionRow
+                    key={node.session.id}
+                    active={input.routeSessionId === node.session.id}
+                    now={input.now}
+                    session={node.session}
+                    workspaceSlug={input.workspaceSlug}
+                    depth={node.depth}
+                    childLabel={node.label}
+                    childAssignmentLabel={node.assignmentLabel}
+                    childKind={node.kind}
+                    agentSummary={input.agentSummaries.get(node.session.id) ?? EMPTY_SESSION_AGENT_SUMMARY}
+                    agentsExpanded={Boolean(input.expandedAgentSessions[node.session.id]) || nodeContainsDescendantSession(node, input.routeSessionId || undefined)}
+                    compactingStartedAt={input.compactingSession?.sessionId === node.session.id ? input.compactingSession.startedAt : null}
+                    pendingAction={input.pendingActions[node.session.id] ?? null}
+                    selectionMode={input.selectionMode && input.masterSelectionGroup === group.id}
+                    selectionGroup={group.id}
+                    selected={input.selectedRootIDs.has(node.session.id)}
+                    onSelect={input.onSelect}
+                    onEnterSelectionMode={input.onEnterSelectionMode}
+                    onToggleSelected={input.onToggleSelected}
+                    onPrefetch={input.onPrefetch}
+                    onToggleAgents={input.onToggleAgents}
+                    onTogglePinned={input.onTogglePinned}
+                    onArchive={input.onArchive}
+                    onRename={input.onRename}
+                  />
+                ))}
+              </div>
+            )
+          })}
           {hasOverflow ? (
             <button
               type="button"
@@ -2581,6 +2599,11 @@ export function DesktopAppPage() {
   const [quickActionsOpen, setQuickActionsOpen] = useState(false)
   const [workspacePickerOpen, setWorkspacePickerOpen] = useState(false)
   const [composerFocusSignal, setComposerFocusSignal] = useState(0)
+  const integrationHelpRequestIdRef = useRef(0)
+  const [integrationHelpDraft, setIntegrationHelpDraft] = useState<{ id: number; sessionId: string; draft: string; append: true }>()
+  const handleIntegrationHelpDraftHandled = useCallback((id: number) => {
+    setIntegrationHelpDraft((current) => current?.id === id ? undefined : current)
+  }, [])
   const [newSessionEpoch, setNewSessionEpoch] = useState(0)
   const [newSessionIntent, setNewSessionIntent] = useState<(DesktopNewSessionCommandRequest & { workspacePath: string }) | null>(null)
   const [workspaceDropdownOpen, setWorkspaceDropdownOpen] = useState(false)
@@ -3054,6 +3077,7 @@ export function DesktopAppPage() {
         kind: 'background',
         label: null,
         assignmentLabel: null,
+        taskCallId: null,
       })),
     [sidebarNow, videoStudioSessions],
   )
@@ -3346,28 +3370,28 @@ export function DesktopAppPage() {
     })
   }, [agentStateQuery.data?.profiles, draftPreferenceQuery.data?.preference, modelProfilesQuery.data, navigate, resolveDesktopRepairSessionAuthority])
 
+  const openIntegrationHelpDraft = useCallback(async (sourceSessionId: string, owningWorkspacePath: string, prompt: string) => {
+    const sessionId = sourceSessionId.trim()
+    if (!sessionId) throw new Error('The existing session is unavailable')
+    const sourceSession = sessionById.get(sessionId)
+    const workspaceSlug = sourceSession ? globalSessionWorkspaceSlug(sourceSession)
+      : workspaceSlugByPath.get(owningWorkspacePath)
+        ?? workspaceRouteSlugBase({ path: owningWorkspacePath, workspaceName: fallbackWorkspaceNameFromPath(owningWorkspacePath) })
+    await navigate({ to: '/$workspaceSlug/$sessionId', params: { workspaceSlug, sessionId } })
+    setMobileSidebarOpen(false)
+    setIntegrationHelpDraft({ id: ++integrationHelpRequestIdRef.current, sessionId, draft: prompt, append: true })
+    setComposerFocusSignal((current) => current + 1)
+  }, [globalSessionWorkspaceSlug, navigate, sessionById, workspaceSlugByPath])
+
   const reviewFixAvailable = Boolean(topWorkspacePath)
   const handleAskSwarmToFixReviewIntegration = useCallback(async (failure: ReviewWorktreeIntegrationFailure) => {
-    setNeedsReviewCleanupOpen(false)
     try {
-      await launchDesktopRepairSession({
-        owningWorkspacePath: topWorkspacePath,
-        sourceSessionId: failure.candidate.session_id,
-        prompt: buildReviewWorktreeFixPrompt(failure, topWorkspacePath),
-        title: `${failure.operation === 'commit_and_integrate' ? 'Fix commit and integration' : 'Fix integration'}: ${failure.candidate.title || failure.candidate.worktree_branch || failure.candidate.session_id}`,
-        source: 'desktop-v3-review-worktrees-recovery',
-        messageMetadata: {
-          failed_session_id: failure.candidate.session_id,
-          worktree_branch: failure.candidate.worktree_branch,
-          target_branch: failure.candidate.target_branch,
-          target_workspace_path: topWorkspacePath,
-          integration_error: failure.error,
-        },
-      })
+      await openIntegrationHelpDraft(failure.candidate.session_id, topWorkspacePath, buildReviewWorktreeFixPrompt(failure, topWorkspacePath))
+      setNeedsReviewCleanupOpen(false)
     } catch (cause) {
-      setDesktopToast({ message: cause instanceof Error ? cause.message : 'Could not start a Swarm repair session.', tone: 'error' })
+      setDesktopToast({ message: cause instanceof Error ? cause.message : 'Could not open integration help in the existing session.', tone: 'error' })
     }
-  }, [launchDesktopRepairSession, topWorkspacePath])
+  }, [openIntegrationHelpDraft, topWorkspacePath])
 
   useEffect(() => {
     if (!routeSessionId) return
@@ -4557,7 +4581,7 @@ export function DesktopAppPage() {
   }, [])
 
   const integrateSessionWorktree = async (input: GitIntegrateModalState) => {
-    const review = await reviewDesktopV3Worktrees({ workspacePath: input.workspacePath, graceHours: 1 })
+    const review = await reviewDesktopV3Worktrees({ workspacePath: input.workspacePath, sessionIds: [input.sessionId], graceHours: 1 })
     const candidate = [...(review.retained ?? []), ...(review.done ?? [])].find((item) => item.session_id === input.sessionId)
     const sourceHead = candidate?.source_head?.trim()
     const targetBranch = review.current_target_branch?.trim()
@@ -4651,9 +4675,10 @@ export function DesktopAppPage() {
       commitSucceeded = true
       setGitCommitModal(null)
       setGitCommitMessage('')
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ['workspace-git-status'] }),
-        queryClient.invalidateQueries({ queryKey: ['session-worktree-review'] }),
+      // Invalidate now, but do not put unrelated refetches ahead of integration.
+      void Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['workspace-git-status'], refetchType: 'none' }),
+        queryClient.invalidateQueries({ queryKey: ['session-worktree-review'], refetchType: 'none' }),
       ])
 
       let completionMessage = 'Changes committed successfully.'
@@ -4675,13 +4700,6 @@ export function DesktopAppPage() {
         completionMessage = 'Changes committed and session archived.'
       }
 
-      if (integration || archiveAfterCommit) {
-        await Promise.all([
-          queryClient.invalidateQueries({ queryKey: ['workspace-git-status'] }),
-          queryClient.invalidateQueries({ queryKey: ['session-worktree-review'] }),
-        ])
-      }
-
       setDesktopToast({ message: completionMessage, tone: 'success' })
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
@@ -4693,6 +4711,12 @@ export function DesktopAppPage() {
         setGitCommitError(message)
       }
     } finally {
+      if (commitSucceeded) {
+        void Promise.all([
+          queryClient.invalidateQueries({ queryKey: ['workspace-git-status'] }),
+          queryClient.invalidateQueries({ queryKey: ['session-worktree-review'] }),
+        ])
+      }
       setGitCommitBusy(false)
       setGitIntegrateBusy(false)
     }
@@ -4713,7 +4737,7 @@ export function DesktopAppPage() {
       if (archiveAfterIntegration) await archiveIntegratedSession(integrated)
       setGitIntegrateModal(null)
       setDesktopToast({ message: archiveAfterIntegration ? 'Worktree integrated and session archived.' : 'Worktree integrated successfully.', tone: 'success' })
-      await Promise.all([
+      void Promise.all([
         queryClient.invalidateQueries({ queryKey: ['workspace-git-status'] }),
         queryClient.invalidateQueries({ queryKey: ['session-worktree-review'] }),
       ])
@@ -4730,22 +4754,10 @@ export function DesktopAppPage() {
     if (!modal || modal.presentation !== 'sidebar-popout' || modal.integrationComplete || !integrationError || gitIntegrateBusy || gitIntegrateHelpBusy) return
     setGitIntegrateHelpBusy(true)
     try {
-      await launchDesktopRepairSession({
-        owningWorkspacePath: modal.workspacePath,
-        sourceSessionId: modal.sessionId,
-        prompt: buildGitSidebarIntegrationHelpPrompt(modal, integrationError),
-        title: `Review integration failure: ${modal.worktreeBranch || modal.sessionId}`,
-        source: 'desktop-v3-git-sidebar-integration-help',
-        messageMetadata: {
-          worktree_branch: modal.worktreeBranch,
-          target_branch: modal.targetBranch,
-          target_workspace_path: modal.workspacePath,
-          integration_error: integrationError,
-        },
-      })
+      await openIntegrationHelpDraft(modal.sessionId, modal.workspacePath, buildGitSidebarIntegrationHelpPrompt(modal, integrationError))
       setGitIntegrateModal(null)
       setGitIntegrateArchive(false)
-      setDesktopToast({ message: 'Started a new Swarm session for this integration error.', tone: 'success' })
+      setDesktopToast({ message: 'Integration error added to the existing session’s message box. Review and send when ready.', tone: 'success' })
     } catch (error) {
       setDesktopToast({ message: `Could not ask Swarm for integration help: ${error instanceof Error ? error.message : String(error)}`, tone: 'error' })
     } finally {
@@ -5163,7 +5175,7 @@ export function DesktopAppPage() {
           <div className="flex min-h-0 flex-1 flex-col">
             <div ref={sidebarBodyRef} className="scrollbar-hidden flex min-h-0 flex-1 flex-col overflow-y-auto px-3 py-3">
               <div className="scrollbar-hidden grid min-h-0 flex-1 content-start gap-2 overflow-y-auto font-mono">
-                  <div className="grid min-h-[34px] grid-cols-[minmax(0,1fr)_24px_24px] items-center gap-1 rounded-md border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-2 py-1">
+                  <div className="grid min-h-[34px] grid-cols-[minmax(0,1fr)_24px] items-center gap-1 rounded-md border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-2 py-1">
                     <div ref={workspaceDropdownRef} className="relative min-w-0">
                       <button
                         type="button"
@@ -5405,6 +5417,8 @@ export function DesktopAppPage() {
             key={`existing:${routeSessionId}`}
             sessionId={routeSessionId}
             composerFocusSignal={composerFocusSignal}
+            composerDraftRequest={integrationHelpDraft?.sessionId === routeSessionId ? integrationHelpDraft : undefined}
+            onComposerDraftRequestHandled={handleIntegrationHelpDraftHandled}
             initialHydrateStatus={desktopInitialHydrate.status}
             renderedMessages={selectedDesktopV3Messages}
             messagesLoaded={selectedDesktopV3MessagesLoaded}

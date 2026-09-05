@@ -115,6 +115,9 @@ func TestRunTurnStoresAssistantTextBeforeToolAsSeparateTimelineMessage(t *testin
 	if got := inputText(secondInput[1]); got != "preface before tool" {
 		t.Fatalf("second provider assistant input text = %q, want preface before tool; input = %#v", got, secondInput[1])
 	}
+	if got := secondInput[3]["name"]; got != "bash" {
+		t.Fatalf("second provider function output name = %#v, want bash; input = %#v", got, secondInput[3])
+	}
 }
 
 type timelineProviderRunner struct {
@@ -179,6 +182,19 @@ func assertRunTurnMessageMetadata(t *testing.T, message pebblestore.MessageSnaps
 		if got, _ := metadata[key].(string); got != want {
 			t.Fatalf("message %s metadata[%s] = %q, want %q; metadata = %#v", message.ID, key, got, want, metadata)
 		}
+	}
+}
+
+func TestNextAssistantFragmentLogicalKeyIsUniqueWithinStep(t *testing.T) {
+	flushes := make(map[int]int)
+	if got := nextAssistantFragmentLogicalKey(flushes, 1); got != "assistant:1" {
+		t.Fatalf("first key = %q, want assistant:1", got)
+	}
+	if got := nextAssistantFragmentLogicalKey(flushes, 1); got != "assistant:1:fragment:2" {
+		t.Fatalf("second key = %q, want assistant:1:fragment:2", got)
+	}
+	if got := nextAssistantFragmentLogicalKey(flushes, 2); got != "assistant:2" {
+		t.Fatalf("new-step key = %q, want assistant:2", got)
 	}
 }
 

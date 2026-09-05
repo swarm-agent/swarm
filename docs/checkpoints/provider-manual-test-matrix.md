@@ -34,7 +34,7 @@ The list reflects the launch AI providers registered in `swarmd/internal/runtime
 | A4 | `/task` | Launch a standard `/task`; confirm the child run starts, returns a durable result, and the parent receives the handoff. | `NOT STARTED` | — | — |
 | A5 | `/task plan` | Launch `/task plan`; confirm the child follows the plan-oriented path and returns its durable result/handoff. | `NOT STARTED` | — | — |
 | A6 | `/new` | Create a new session with `/new`; confirm a distinct durable session opens with the expected provider/model selection. | `NOT STARTED` | — | — |
-| A7 | Priority | Select Anthropic priority service tier, run a request, and confirm the preference is preserved and applied without falling back or being rejected. | `FAILED` | 2026-08-04 / Swarm | Session `05abb863c83fb6237bd463d31af6715c`: profile and provider diagnostic preserved `priority`; Anthropic mapping sent `service_tier=auto`; API returned HTTP 200, but authoritative Anthropic usage returned `service_tier=standard`. Accepted, but served on standard rather than priority capacity. |
+| A7 | Priority | Select Anthropic priority service tier, run a request, and confirm the preference is preserved and applied without falling back or being rejected. | `FAILED` | 2026-08-04 / Swarm | The profile and provider diagnostic preserved `priority`; Anthropic mapping sent `service_tier=auto`; API returned HTTP 200, but authoritative Anthropic usage returned `service_tier=standard`. Accepted, but served on standard rather than priority capacity. |
 
 ## 2. Codex (`codex`)
 

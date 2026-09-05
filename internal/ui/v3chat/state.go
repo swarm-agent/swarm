@@ -95,20 +95,20 @@ const (
 )
 
 type RoutedDraft struct {
-	Prompt            string
-	PlanModeRequested bool
-	ClientRequestID   string
-	AgentName                string
-	WorkspacePath            string
-	HostWorkspacePath        string
-	RuntimeWorkspacePath     string
-	WorkspaceBindingID       string
-	SwarmID                  string
-	TargetKind               string
-	TargetRelationship       string
-	Metadata                 map[string]any
-	Status                   RoutedDraftStatus
-	Error                    string
+	Prompt               string
+	PlanModeRequested    bool
+	ClientRequestID      string
+	AgentName            string
+	WorkspacePath        string
+	HostWorkspacePath    string
+	RuntimeWorkspacePath string
+	WorkspaceBindingID   string
+	SwarmID              string
+	TargetKind           string
+	TargetRelationship   string
+	Metadata             map[string]any
+	Status               RoutedDraftStatus
+	Error                string
 }
 
 type PermissionTimelineItem struct {

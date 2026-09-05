@@ -160,20 +160,57 @@ run_govuln_module() {
   )
 }
 
+pnpm_audit_returned_report() {
+  node -e '
+    let input = "";
+    process.stdin.setEncoding("utf8");
+    process.stdin.on("data", chunk => { input += chunk; });
+    process.stdin.on("end", () => {
+      try {
+        const report = JSON.parse(input);
+        const complete = report && typeof report.advisories === "object" &&
+          report.metadata && typeof report.metadata.vulnerabilities === "object";
+        process.exit(complete ? 0 : 1);
+      } catch (_) {
+        process.exit(1);
+      }
+    });
+  '
+}
+
 run_pnpm_audit() {
   echo "[vuln-check] running pnpm audit (web lockfile, production and development dependencies)"
   (
     cd "${ROOT_DIR}/web"
     [[ -f "package.json" ]] || { echo "[vuln-check] FAIL: missing web/package.json" >&2; exit 1; }
     [[ -f "pnpm-lock.yaml" ]] || { echo "[vuln-check] FAIL: missing web/pnpm-lock.yaml" >&2; exit 1; }
-    local expected_pnpm actual_pnpm
+    local expected_pnpm actual_pnpm audit_output audit_status attempt
     expected_pnpm="$(grep -o 'pnpm@[^"]*' package.json | cut -d@ -f2)"
     actual_pnpm="$(swarm_pnpm --version)"
     if [[ "${actual_pnpm}" != "${expected_pnpm}" ]]; then
       echo "[vuln-check] FAIL: expected pnpm ${expected_pnpm}, got ${actual_pnpm:-missing}" >&2
       exit 1
     fi
-    swarm_pnpm audit --audit-level=low
+
+    for attempt in 1 2 3; do
+      audit_status=0
+      audit_output="$(swarm_pnpm --fetch-retries=0 --fetch-timeout=30000 audit --audit-level=low --json)" || audit_status=$?
+      if [[ "${audit_status}" == "0" ]]; then
+        printf '%s\n' "${audit_output}"
+        return 0
+      fi
+      if pnpm_audit_returned_report <<<"${audit_output}"; then
+        printf '%s\n' "${audit_output}"
+        return "${audit_status}"
+      fi
+      if [[ "${attempt}" == "3" ]]; then
+        printf '%s\n' "${audit_output}" >&2
+        echo "[vuln-check] FAIL: pnpm audit registry request failed after 3 bounded attempts" >&2
+        return "${audit_status}"
+      fi
+      echo "[vuln-check] WARN: pnpm audit registry request failed (attempt ${attempt}/3); retrying" >&2
+      sleep "$((attempt * 5))"
+    done
   )
 }
 
@@ -199,24 +236,35 @@ run_trivy_inventory() {
   done
 }
 
-if ! command -v curl >/dev/null 2>&1; then
-  echo "[vuln-check] FAIL: missing required command: curl" >&2
-  exit 1
-fi
-if ! command -v pnpm >/dev/null 2>&1 && ! command -v corepack >/dev/null 2>&1; then
-  echo "[vuln-check] FAIL: missing required command: pnpm or corepack" >&2
-  exit 1
-fi
+main() {
+  if ! command -v curl >/dev/null 2>&1; then
+    echo "[vuln-check] FAIL: missing required command: curl" >&2
+    exit 1
+  fi
+  if ! command -v pnpm >/dev/null 2>&1 && ! command -v corepack >/dev/null 2>&1; then
+    echo "[vuln-check] FAIL: missing required command: pnpm or corepack" >&2
+    exit 1
+  fi
+  if ! command -v node >/dev/null 2>&1; then
+    echo "[vuln-check] FAIL: missing required command: node" >&2
+    exit 1
+  fi
 
-GOVULN_BIN="$(ensure_govulncheck)"
-TRIVY_BIN="$(ensure_trivy)"
-echo "[vuln-check] govulncheck ${GOVULNCHECK_VERSION}; Trivy ${TRIVY_VERSION}; web $(grep -o 'pnpm@[^"]*' "${ROOT_DIR}/web/package.json")"
-# The repository intentionally contains relocated test fixtures and ignored tmp
-# programs inside both modules. Scan the canonical production source roots so
-# those non-product trees cannot make vulnerability coverage machine-dependent.
-run_govuln_module "${ROOT_DIR}" "root module" "${GOVULN_BIN}" ./cmd/... ./internal/... ./pkg/... ./theme/...
-run_govuln_module "${ROOT_DIR}/swarmd" "swarmd module" "${GOVULN_BIN}" ./cmd/... ./internal/...
-run_pnpm_audit
-run_trivy_inventory "${TRIVY_BIN}"
+  local govuln_bin trivy_bin
+  govuln_bin="$(ensure_govulncheck)"
+  trivy_bin="$(ensure_trivy)"
+  echo "[vuln-check] govulncheck ${GOVULNCHECK_VERSION}; Trivy ${TRIVY_VERSION}; web $(grep -o 'pnpm@[^"]*' "${ROOT_DIR}/web/package.json")"
+  # The repository intentionally contains relocated test fixtures and ignored tmp
+  # programs inside both modules. Scan the canonical production source roots so
+  # those non-product trees cannot make vulnerability coverage machine-dependent.
+  run_govuln_module "${ROOT_DIR}" "root module" "${govuln_bin}" ./cmd/... ./internal/... ./pkg/... ./theme/...
+  run_govuln_module "${ROOT_DIR}/swarmd" "swarmd module" "${govuln_bin}" ./cmd/... ./internal/...
+  run_pnpm_audit
+  run_trivy_inventory "${trivy_bin}"
 
-echo "[vuln-check] PASS"
+  echo "[vuln-check] PASS"
+}
+
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@"
+fi

@@ -16,7 +16,7 @@ func TestBuiltinSystemAgentRegistryIsCompleteAndUnique(t *testing.T) {
 	if err := registry.Validate(); err != nil {
 		t.Fatalf("validate builtin registry: %v", err)
 	}
-	want := []string{SwarmAgentID, AISidechatAgentID, AITaskPreparerAgentID, CoderAgentID, CompactAgentID, DesignerAgentID, FinderAgentID, IdeaAgentID, ImageAgentID, PlanSidechatAgentID, ReviewCommitAgentID, RouterAgentID, WorkspaceDefinitionAgentID}
+	want := []string{SwarmAgentID, AISidechatAgentID, AITaskPreparerAgentID, CoderAgentID, CompactAgentID, DesignerAgentID, FinderAgentID, IdeaAgentID, ImageAgentID, PlanSidechatAgentID, ReviewCommitAgentID, RouterAgentID, WorkspaceDefinitionAgentID, WorkspaceOnboardingAgentID}
 	if got := registry.IDs(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("registry IDs = %v, want %v", got, want)
 	}
@@ -32,7 +32,7 @@ func TestBuiltinSystemAgentRegistryIsCompleteAndUnique(t *testing.T) {
 			t.Fatalf("sidechat-only system agent %q is not protected: %+v", id, definition)
 		}
 	}
-	for _, id := range []string{SwarmAgentID, AITaskPreparerAgentID, CompactAgentID, FinderAgentID, CoderAgentID, DesignerAgentID, ImageAgentID, IdeaAgentID, ReviewCommitAgentID, RouterAgentID, WorkspaceDefinitionAgentID} {
+	for _, id := range []string{SwarmAgentID, AITaskPreparerAgentID, CompactAgentID, FinderAgentID, CoderAgentID, DesignerAgentID, ImageAgentID, IdeaAgentID, ReviewCommitAgentID, RouterAgentID, WorkspaceDefinitionAgentID, WorkspaceOnboardingAgentID} {
 		definition, _ := registry.DefinitionByID(id)
 		if definition.RequiresSidechatMetadata || IsReservedSidechatAgentName(id) {
 			t.Fatalf("ordinary/task system agent %q was classified as sidechat-only: %+v", id, definition)
@@ -222,6 +222,32 @@ func TestSystemAgentSnapshotReconciliationPreservesDynamicContextAndModels(t *te
 		t.Fatalf("Router immutable tool-free contract was not restored: %+v", router)
 	}
 
+	workspaceOnboarding, err := registry.ReconcileSnapshot(WorkspaceOnboardingAgentID, pebblestore.AgentProfile{Name: WorkspaceOnboardingAgentID, Provider: "codex", Model: "action-model", Thinking: "high", AutoServiceTier: "priority", Prompt: "mutable", RuntimeMode: pebblestore.AgentRuntimeModeRead, ToolContract: &pebblestore.AgentToolContract{Preset: "read_write"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if workspaceOnboarding.Name != WorkspaceOnboardingAgentID || workspaceOnboarding.Provider != "codex" || workspaceOnboarding.Model != "action-model" || workspaceOnboarding.Prompt != WorkspaceOnboardingAgentPrompt() || workspaceOnboarding.RuntimeMode != pebblestore.AgentRuntimeModeReadWrite || !workspaceOnboarding.Protected {
+		t.Fatalf("Workspace Onboarding immutable identity mismatch: %+v", workspaceOnboarding)
+	}
+	for _, allowed := range []string{"read", "find", "list", "write", "edit", "git_init", "git_status", "git_diff", "git_add", "git_commit", "git_commit_initial"} {
+		if cfg := workspaceOnboarding.ToolContract.Tools[allowed]; cfg.Enabled == nil || !*cfg.Enabled {
+			t.Fatalf("Workspace Onboarding tool %q unavailable: %+v", allowed, workspaceOnboarding.ToolContract)
+		}
+	}
+	if _, ok := workspaceOnboarding.ToolContract.Tools["search"]; ok {
+		t.Fatalf("Workspace Onboarding must not expose repository-wide search: %+v", workspaceOnboarding.ToolContract)
+	}
+	for _, denied := range []string{"task", "manage_sessions", "manage_worktree", "manage_agent", "manage_actions", "manage_skill", "manage_theme", "manage_artifact", "manage_video", "manage_todos", "plan_manage", "ask_user", "exit_plan_mode"} {
+		if cfg := workspaceOnboarding.ToolContract.Tools[denied]; cfg.Enabled == nil || *cfg.Enabled {
+			t.Fatalf("Workspace Onboarding escalation tool %q was not denied: %+v", denied, workspaceOnboarding.ToolContract)
+		}
+	}
+	for _, required := range []string{"one backend-bound pre-admission directory", "ignore rules", "explicit permission", "Use git_init rather than Bash", "never invent or persist an identity", "Never claim the folder is ready until Git HEAD resolves"} {
+		if !strings.Contains(workspaceOnboarding.Prompt, required) {
+			t.Fatalf("Workspace Onboarding prompt missing %q", required)
+		}
+	}
+
 	workspaceDefinition, err := registry.ReconcileSnapshot(WorkspaceDefinitionAgentID, pebblestore.AgentProfile{Name: WorkspaceDefinitionAgentID, Provider: "codex", Model: "router-model", Thinking: "high", AutoServiceTier: "priority", Prompt: "mutable", RuntimeMode: pebblestore.AgentRuntimeModeReadWrite, ToolContract: &pebblestore.AgentToolContract{Preset: "read_write"}})
 	if err != nil {
 		t.Fatal(err)
@@ -275,12 +301,12 @@ func TestSystemAgentSnapshotReconciliationPreservesDynamicContextAndModels(t *te
 	if designer.Name != DesignerAgentID || designer.Mode != ModeSubagent || designer.Prompt != DesignerAgentPrompt() || designer.RuntimeMode != pebblestore.AgentRuntimeModeReadWrite || designer.DefaultSessionMode != pebblestore.AgentDefaultSessionModeAuto || !designer.Enabled || !designer.Protected || designer.ExitPlanModeEnabled == nil || *designer.ExitPlanModeEnabled {
 		t.Fatalf("Designer immutable contract was not restored: %+v", designer)
 	}
-	for _, allowed := range []string{"read", "search", "find", "list", "manage_artifact"} {
+	for _, allowed := range []string{"read", "search", "find", "list", "artifact_v3_author"} {
 		if cfg := designer.ToolContract.Tools[allowed]; cfg.Enabled == nil || !*cfg.Enabled {
 			t.Fatalf("managed Designer locked tool %q unavailable: %+v", allowed, designer.ToolContract)
 		}
 	}
-	for _, denied := range []string{"write", "edit", "bash", "git_status", "git_diff", "git_add", "git_commit", "task", "skill_use", "manage_skill", "manage_agent", "manage_theme", "manage_sessions", "manage_worktree", "manage_todos", "plan_manage", "ask_user", "exit_plan_mode"} {
+	for _, denied := range []string{"write", "edit", "artifact_v2_author", "bash", "git_status", "git_diff", "git_add", "git_commit", "task", "skill_use", "manage_skill", "manage_agent", "manage_theme", "manage_sessions", "manage_worktree", "manage_todos", "plan_manage", "ask_user", "exit_plan_mode"} {
 		if cfg := designer.ToolContract.Tools[denied]; cfg.Enabled == nil || *cfg.Enabled {
 			t.Fatalf("Designer mandatory denial %q was not restored: %+v", denied, designer.ToolContract)
 		}
@@ -313,7 +339,7 @@ func TestSystemAgentSnapshotReconciliationPreservesDynamicContextAndModels(t *te
 			t.Fatalf("workspace Designer must not authorize %q: %+v", denied, workspaceDesigner.ToolContract)
 		}
 	}
-	for _, want := range []string{"backend-supplied immutable output contract", "Exact output requirements", "canonical preset", "never reinterpret or rewrite", "Do not claim visual success or imply that Swarm inspected binary pixels", "Managed output", "manage_artifact", "Omit output_requirements", "exactly one durable ready variant", "Before that single publication", "clipping and overflow", "aspect ratio and object sizing", "requested-element fidelity", "text legibility", "unintended overlaps", "scrollbars or capture chrome/overlays", "every rendered state against its brief", "renderer does not judge aesthetics", "none of them substitutes for pixel inspection", "variant is immutable", "no same-run correction publication", "new exact-lineage derived revision", "never mutate or silently replace the published variant", "Never use write or edit", "Workspace output", "Never use manage_artifact", "Animated output", "automatic quality and frame-pacing guidance", "Never equate a 60 FPS label", "profiling evidence", "exact returned error reason", "stop after three failed tool attempts", "failure after publication begins is terminal", "rejected before publication", "orchestrate other agents"} {
+	for _, want := range []string{"backend-supplied output contract", "Managed output uses only artifact_v3_author", "inspect_context", "complete conventional project tree", "artifact-scoped list/read/write/edit/delete", "Parts are stable navigation and user-intent targets", "shared files", "build_preview repeatedly", "finish_turn exactly once", "base commit", "output policy", "exactly three top-level keys", "non-empty label", "and locator", "Never use shorthand selector", "Do not call manage_artifact or artifact_v2_author", "Workspace output", "Never call artifact_v3_author, artifact_v2_author, or manage_artifact", "safe diagnostic", "Never classify raw errors", "fall back to legacy publication"} {
 		if !strings.Contains(DesignerAgentPrompt(), want) {
 			t.Fatalf("Designer prompt missing immutable output contract %q", want)
 		}
@@ -384,6 +410,40 @@ func TestEnsureSystemAgentRegistryExposesImmutableProfilesWithoutPersistingThem(
 		}
 		if _, _, _, err := svc.Delete(id); err == nil || !strings.Contains(err.Error(), "reserved") {
 			t.Fatalf("system profile %q delete error = %v, want immutable-system rejection", id, err)
+		}
+	}
+}
+
+// Requirement: materialized Designers receive the exact canonical manifest
+// version and discoverable example, including on reconciliation of stale prompts.
+// Threat: first-use authors guess versions or treat an example as preview evidence.
+// Registry materialization/reconciliation is the narrowest prompt-delivery layer;
+// schema validity and capability enforcement are tested by the author service.
+func TestDesignerManifestGuidanceUsesCanonicalVersion(t *testing.T) {
+	registry, err := BuiltinSystemAgentRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	materialized, err := registry.Materialize(DesignerAgentID, pebblestore.AgentProfile{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reconciled, err := registry.ReconcileSnapshot(DesignerAgentID, pebblestore.AgentProfile{
+		Name: DesignerAgentID, Prompt: "stale manifest guidance",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, profile := range []pebblestore.AgentProfile{materialized, reconciled} {
+		for _, required := range []string{
+			`schema_version must be the exact string "` + pebblestore.ArtifactV3ManifestVersion + `"`,
+			"inspect_context returns ManifestFilename, ManifestVersion",
+			"ManifestExample", "correct the named field", "not build or preview evidence",
+			"call finish_turn exactly once", "never attempt to redirect them",
+		} {
+			if !strings.Contains(profile.Prompt, required) {
+				t.Fatalf("Designer prompt missing %q", required)
+			}
 		}
 	}
 }

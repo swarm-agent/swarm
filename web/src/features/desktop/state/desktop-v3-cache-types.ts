@@ -142,9 +142,12 @@ export interface DesktopV3VideoAttachmentReference {
 
 export interface DesktopV3ArtifactSelectionReference {
   session_id: string
-  collection_id: string
-  variant_id: string
-  event_seq: number
+  collection_id?: string
+  variant_id?: string
+  event_seq?: number
+  artifact_id?: string
+  revision_ref?: string
+  target_part_ids?: string[]
   label?: string
   description?: string
   pending_request?: string

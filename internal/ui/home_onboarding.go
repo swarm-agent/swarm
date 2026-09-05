@@ -7,6 +7,8 @@ import (
 	"unicode/utf8"
 
 	"github.com/gdamore/tcell/v2"
+
+	"swarm-refactor/swarmtui/internal/model"
 )
 
 type onboardingPhase int
@@ -84,6 +86,16 @@ func (p *HomePage) SetOnboardingWorkspacePath(path string) {
 		return
 	}
 	p.onboarding.WorkspacePath = strings.TrimSpace(path)
+}
+
+func (p *HomePage) SetOnboardingWorkspaceGitReadiness(path string, hasGit bool, readiness model.GitReadiness) {
+	if p == nil || strings.TrimSpace(path) == "" {
+		return
+	}
+	p.onboarding.WorkspacePath = strings.TrimSpace(path)
+	p.model.WorkspaceSetupPath = strings.TrimSpace(path)
+	p.model.WorkspaceSetupHasGit = hasGit
+	p.model.WorkspaceSetupGitReadiness = readiness
 }
 
 func (p *HomePage) ShowOnboardingProvider(status string) {
@@ -245,10 +257,33 @@ func (p *HomePage) handleOnboardingWorkspaceKey(ev *tcell.EventKey) {
 		p.onboarding.Error = "The launch directory is unavailable; restart Swarm from the workspace you want to use."
 		return
 	}
+	switch p.model.WorkspaceSetupGitReadiness {
+	case model.GitReadinessReady, model.GitReadinessUnknown, model.GitReadinessCheckFailed:
+		// Local readiness is advisory at this boundary. The authenticated
+		// workspace-add API revalidates the exact repository before any catalog,
+		// topology, selection, or session state can be mutated. Let an
+		// indeterminate client-side check reach that canonical admission gate.
+	default:
+		p.onboarding.Error = onboardingGitPrerequisiteMessage(p.model.WorkspaceSetupGitReadiness, path)
+		return
+	}
 	p.pendingHomeAction = &HomeAction{Kind: HomeActionCreateOnboardingWorkspace, WorkspacePath: path}
 	p.onboarding.Pending = true
 	p.onboarding.Status = "Creating workspace and loading Swarm..."
 	p.onboarding.Error = ""
+}
+
+func onboardingGitPrerequisiteMessage(readiness model.GitReadiness, path string) string {
+	switch readiness {
+	case model.GitReadinessUnavailable:
+		return "Git is required for Swarm managed worktrees. Install Git, then restart workspace setup."
+	case model.GitReadinessNotRepository:
+		return fmt.Sprintf("%s is not a Git repository. Desktop can initialize an empty folder with an initial commit; existing files require review of ignore rules and explicit permission before git init, staging, or the first commit.", path)
+	case model.GitReadinessNeedsCommit:
+		return fmt.Sprintf("%s has no initial commit. Ask Swarm to review existing files and ignore rules; Git staging and commits require explicit permission.", path)
+	default:
+		return fmt.Sprintf("Swarm could not verify that %s is a committed Git repository. Fix Git readiness and retry.", path)
+	}
 }
 
 func (p *HomePage) advanceOnboardingFocus(delta int) {
@@ -368,7 +403,7 @@ func (p *HomePage) drawOnboarding(s tcell.Screen) {
 	if p.onboarding.Phase == onboardingPhaseProvider {
 		help = "←/→ select provider • Enter connect • s/Esc skip to workspace"
 	} else if p.onboarding.Phase == onboardingPhaseWorkspace {
-		help = "Enter create workspace • setup cannot be skipped"
+		help = "Enter verify workspace • Git repository + initial commit required"
 	}
 	DrawText(s, rect.X+3, rect.Y+rect.H-2, rect.W-6, p.theme.TextMuted, clampEllipsis(help, rect.W-6))
 }
@@ -392,7 +427,7 @@ func (p *HomePage) drawOnboardingHeader(s tcell.Screen, rect Rect) {
 	subtitles := []string{
 		"Start with your name and the name of this Swarm.",
 		"Connect now, or skip ahead. Your workspace is still required.",
-		"Swarm will register the directory where you launched the TUI.",
+		"Swarm uses managed worktrees, so choose a Git repository with an initial commit.",
 	}
 	DrawText(s, rect.X+3, rect.Y+4, rect.W-6, p.theme.Text, titles[step-1])
 	DrawText(s, rect.X+3, rect.Y+5, rect.W-6, p.theme.TextMuted, clampEllipsis(subtitles[step-1], rect.W-6))
@@ -498,6 +533,12 @@ func (p *HomePage) drawOnboardingWorkspace(s tcell.Screen, content Rect) {
 	if p.onboarding.Pending {
 		DrawText(s, card.X+2, card.Y+3, card.W-4, p.theme.Warning, "Please wait — confirming API completion and loading workspace state...")
 	} else {
-		DrawText(s, card.X+2, card.Y+3, card.W-4, p.theme.Text, "Press Enter to accept")
+		message := "Git repository + initial commit required for managed worktrees"
+		style := p.theme.Warning
+		if p.model.WorkspaceSetupGitReadiness == model.GitReadinessReady {
+			message = "Git repository ready for managed worktrees"
+			style = p.theme.Text
+		}
+		DrawText(s, card.X+2, card.Y+3, card.W-4, style, message)
 	}
 }

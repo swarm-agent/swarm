@@ -18,21 +18,21 @@ type RoutedSessionV3MediaRequest struct {
 }
 
 type RoutedSessionV3StartRequest struct {
-	Input                    string                        `json:"input"`
-	ClientRequestID          string                        `json:"client_request_id"`
-	IdempotencyKey           string                        `json:"idempotency_key"`
-	AgentName                string                        `json:"agent_name,omitempty"`
-	Metadata                 map[string]any                `json:"metadata,omitempty"`
-	PlanModeRequested        bool                          `json:"plan_mode_requested"`
-	WorkspacePath            string                        `json:"workspace_path"`
-	HostWorkspacePath        string                        `json:"host_workspace_path,omitempty"`
-	RuntimeWorkspacePath     string                        `json:"runtime_workspace_path,omitempty"`
-	WorkspaceBindingID       string                        `json:"workspace_binding_id"`
-	SwarmID                  string                        `json:"swarm_id"`
-	TargetKind               string                        `json:"target_kind"`
-	TargetRelationship       string                        `json:"target_relationship"`
-	Media                    []RoutedSessionV3MediaRequest `json:"media,omitempty"`
-	StagingIDs               []string                      `json:"staging_ids,omitempty"`
+	Input                string                        `json:"input"`
+	ClientRequestID      string                        `json:"client_request_id"`
+	IdempotencyKey       string                        `json:"idempotency_key"`
+	AgentName            string                        `json:"agent_name,omitempty"`
+	Metadata             map[string]any                `json:"metadata,omitempty"`
+	PlanModeRequested    bool                          `json:"plan_mode_requested"`
+	WorkspacePath        string                        `json:"workspace_path"`
+	HostWorkspacePath    string                        `json:"host_workspace_path,omitempty"`
+	RuntimeWorkspacePath string                        `json:"runtime_workspace_path,omitempty"`
+	WorkspaceBindingID   string                        `json:"workspace_binding_id"`
+	SwarmID              string                        `json:"swarm_id"`
+	TargetKind           string                        `json:"target_kind"`
+	TargetRelationship   string                        `json:"target_relationship"`
+	Media                []RoutedSessionV3MediaRequest `json:"media,omitempty"`
+	StagingIDs           []string                      `json:"staging_ids,omitempty"`
 }
 
 type RoutedSessionV3Identity struct {
