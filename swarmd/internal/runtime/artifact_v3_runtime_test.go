@@ -371,8 +371,9 @@ func TestArtifactV3AnimationRendererDoesNotRequireAuthorRAF(t *testing.T) {
 	if fake.preflight.RequireLivePlayback {
 		t.Fatal("server-owned CSS seek adapter must not require author rAF playback")
 	}
-	if !strings.Contains(string(fake.preflight.Files["index.html"]), "document.getAnimations") || !strings.Contains(string(fake.preflight.Files["index.html"]), "animation.currentTime=timeMs") {
-		t.Fatal("trusted CSS/WAAPI seek adapter was not injected")
+	injected := string(fake.preflight.Files["index.html"])
+	if !strings.Contains(injected, "document.getAnimations") || !strings.Contains(injected, "animation.currentTime=timeMs") || !strings.Contains(injected, "requestAnimationFrame(()=>requestAnimationFrame(resolve))") || strings.Count(injected, "animation.currentTime=timeMs") != 2 {
+		t.Fatal("trusted CSS/WAAPI seek and compositor-settlement adapter was not injected")
 	}
 }
 
