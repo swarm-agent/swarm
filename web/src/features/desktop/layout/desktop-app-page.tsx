@@ -5109,7 +5109,7 @@ export function DesktopAppPage() {
           <div className="flex min-h-0 flex-1 flex-col">
             <div ref={sidebarBodyRef} className="scrollbar-hidden flex min-h-0 flex-1 flex-col overflow-y-auto px-3 py-3">
               <div className="scrollbar-hidden grid min-h-0 flex-1 content-start gap-2 overflow-y-auto font-mono">
-                  <div className="grid min-h-[34px] grid-cols-[minmax(0,1fr)_24px_24px] items-center gap-1 rounded-md border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-2 py-1">
+                  <div className="grid min-h-[34px] grid-cols-[minmax(0,1fr)_24px] items-center gap-1 rounded-md border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-2 py-1">
                     <div ref={workspaceDropdownRef} className="relative min-w-0">
                       <button
                         type="button"
