@@ -37,6 +37,7 @@ import (
 	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/imagegen"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
+	"swarm/packages/swarmd/internal/taskscope"
 	todoruntime "swarm/packages/swarmd/internal/todo"
 	"swarm/packages/swarmd/internal/tool/searchipc"
 	uisettings "swarm/packages/swarmd/internal/uisettings"
@@ -1589,7 +1590,7 @@ func (r *Runtime) Definitions() []Definition {
 					"deliverable":         map[string]any{"type": "string", "description": "Specific child output the parent will verify."},
 					"concurrency_reason":  map[string]any{"type": "string", "description": "Regular-mode single-launch shorthand only: why this scope is useful and safe to delegate now. Omit in mode=swarm; swarm concurrency is defined by count."},
 					"workspace_path":      map[string]any{"type": "string", "description": "Regular Coder/Finder single-launch target or default target for every Coder/Finder job in a Task Program start. May select an authorized linked/shared workspace root; omitted uses the parent workspace. Coder worktrees are based on the selected target repository HEAD."},
-					"owned_scope":         map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Declared files, directories, or output target owned by the child. Required as a concrete clean workspace-relative path for workspace-mode Designer and forbidden for managed Designer; an omitted Coder scope safely defaults to its entire isolated worktree."},
+					"owned_scope":         map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Declared files, directories, or output target owned by the child. Required as a concrete clean workspace-relative path for workspace-mode Designer and forbidden for managed Designer; an omitted Coder scope safely defaults to its entire isolated worktree. " + taskscope.Guidance},
 					"dependency_evidence": map[string]any{"type": "string", "description": "Evidence that the launch does not depend on unfinished child work."},
 					"launches": map[string]any{
 						"type":        "array",
@@ -1609,7 +1610,7 @@ func (r *Runtime) Definitions() []Definition {
 								"animation_profile":   artifact.AnimationProfileToolSchema(),
 								"output_mode":         map[string]any{"type": "string", "enum": []string{"managed", "workspace"}, "description": "Designer output contract only; defaults to managed. managed forbids owned_scope and workspace requires it. Trusted destination identity is server-owned and cannot be supplied here."},
 								"workspace_path":      map[string]any{"type": "string", "description": "Optional authorized linked/shared workspace target for this Coder or Finder. Each Coder gets a worktree based on that target repository HEAD; omitted uses the parent workspace."},
-								"owned_scope":         map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Declared files, directories, or output target. Required for workspace-mode Designer as a concrete clean workspace-relative path and must not overlap another concurrent workspace Designer launch; forbidden for managed Designer. An omitted Coder scope defaults to its isolated worktree."},
+								"owned_scope":         map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Declared files, directories, or output target. Required for workspace-mode Designer as a concrete clean workspace-relative path and must not overlap another concurrent workspace Designer launch; forbidden for managed Designer. An omitted Coder scope defaults to its isolated worktree. " + taskscope.Guidance},
 								"dependency_evidence": map[string]any{"type": "string", "description": "Evidence that this launch does not depend on another child's unfinished work."},
 							},
 							"additionalProperties": false,
@@ -1648,7 +1649,7 @@ func taskProgramDefinitionToolSchema(description string) map[string]any {
 					"id":                  id,
 					"stage_id":            id,
 					"depends_on":          map[string]any{"type": "array", "items": id, "description": "Earlier-stage job IDs whose accepted/integrated handoffs are required."},
-					"agent_type":          map[string]any{"type": "string", "enum": []string{"coder", "finder", "designer"}},
+					"agent_type":          map[string]any{"type": "string", "enum": []string{"coder", "finder", "designer"}, "description": "Canonical job identity; prefer agent_type in both inline and checkpoint Task Programs. subagent_type is an input alias; conflicting values are rejected."},
 					"subagent_type":       map[string]any{"type": "string", "enum": []string{"coder", "finder", "designer"}, "description": "Alias for agent_type."},
 					"workspace_path":      map[string]any{"type": "string", "description": "Optional authorized linked/shared workspace target for this Coder or Finder job. Overrides the Task Program start workspace_path. Coder jobs in one program must resolve to one target workspace so staged integration has one parent Git history."},
 					"meta_prompt":         map[string]any{"type": "string", "minLength": 1, "description": "Complete distinguished assignment; broad copies of the parent objective are invalid program design."},
@@ -1657,7 +1658,7 @@ func taskProgramDefinitionToolSchema(description string) map[string]any {
 					"output_requirements": artifact.OutputRequirementsToolSchema(),
 					"animation_profile":   artifact.AnimationProfileToolSchema(),
 					"output_mode":         map[string]any{"type": "string", "enum": []string{"managed", "workspace"}, "description": "Designer jobs only; defaults to managed. Managed forbids owned_scope. Workspace requires concrete non-overlapping workspace-relative owned_scope targets."},
-					"owned_scope":         map[string]any{"type": "array", "minItems": 1, "items": map[string]any{"type": "string", "minLength": 1}, "description": "Required for Coder/Finder and workspace Designer jobs; omitted for managed Designer jobs."},
+					"owned_scope":         map[string]any{"type": "array", "minItems": 1, "items": map[string]any{"type": "string", "minLength": 1}, "description": "Required for Coder/Finder and workspace Designer jobs; omitted for managed Designer jobs. " + taskscope.Guidance + " Workspace Designers require concrete paths without wildcard suffixes; program jobs cannot use whole-workspace sentinels."},
 					"acceptance_criteria": map[string]any{"type": "array", "minItems": 1, "items": map[string]any{"type": "string", "minLength": 1}},
 					"dependency_evidence": map[string]any{"type": "string", "minLength": 1},
 				}, "required": []string{"id", "stage_id", "meta_prompt", "title", "deliverable", "acceptance_criteria", "dependency_evidence"}, "additionalProperties": false},
@@ -2535,12 +2536,8 @@ func (r *Runtime) executeSearch(parent context.Context, scope WorkspaceScope, ar
 		}
 
 		contentResults, contentErrors := searchHelperContentResults(helperResp, root, queries, targetInclude, rootResultLimit)
-		fileResults, fileErrors := searchHelperFileResults(helperResp.FileResults, root, queries, targetInclude, rootResultLimit)
-		combinedResults = append(combinedResults, mergeSearchHelperResults(contentResults, fileResults)...)
-		if len(fileResults) == 0 || !searchErrorsAreFallbackMisses(contentErrors, fileResults) {
-			rootErrors = append(rootErrors, contentErrors...)
-		}
-		rootErrors = append(rootErrors, fileErrors...)
+		combinedResults = append(combinedResults, contentResults...)
+		rootErrors = append(rootErrors, contentErrors...)
 	}
 	combinedResults = rewriteSearchResultsForDisplay(scope.PrimaryPath, searchRoots, searchTargetsContainFile(searchTargets), combinedResults)
 	if len(combinedResults) == 0 {
@@ -2652,12 +2649,19 @@ func selectResidentSearchScope(scope WorkspaceScope, target searchTarget) (strin
 	}
 	best := ""
 	for _, authorized := range append([]string{scope.PrimaryPath}, scope.Roots...) {
-		authorized = filepath.Clean(strings.TrimSpace(authorized))
-		rel, err := filepath.Rel(authorized, targetPath)
-		if authorized == "" || err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		authorized = strings.TrimSpace(authorized)
+		if authorized == "" {
 			continue
 		}
-		if best == "" || len(authorized) < len(best) {
+		authorized = filepath.Clean(authorized)
+		rel, err := filepath.Rel(authorized, targetPath)
+		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			continue
+		}
+		// Prefer the narrowest containing workspace. A saved ancestor (notably
+		// home or the filesystem root) must not widen a project index or trip
+		// FFF's broad-root scanning guard just because it is also authorized.
+		if best == "" || len(authorized) > len(best) {
 			best = authorized
 		}
 	}
@@ -2827,45 +2831,6 @@ func formatSearchContentHelperError(queries []string, message string) error {
 		return fmt.Errorf("query %q: %s", firstSearchQuery(queries), message)
 	}
 	return fmt.Errorf("multi-grep %q: %s", strings.Join(queries, " | "), message)
-}
-
-func searchHelperFileResults(helperResults []searchipc.SearchQueryResult, searchRoot string, queries []string, include string, maxResults int) ([]searchQueryExecution, []error) {
-	if len(helperResults) == 0 {
-		return nil, nil
-	}
-	allowedQueries := make(map[string]string, len(queries))
-	for _, query := range queries {
-		query = strings.TrimSpace(query)
-		if query != "" {
-			allowedQueries[strings.ToLower(query)] = query
-		}
-	}
-	results := make([]searchQueryExecution, 0, len(helperResults))
-	errs := make([]error, 0)
-	for _, helperResult := range helperResults {
-		query := strings.TrimSpace(helperResult.Query)
-		if canonical, ok := allowedQueries[strings.ToLower(query)]; ok {
-			query = canonical
-		}
-		if query == "" {
-			continue
-		}
-		result := searchQueryExecution{Query: query, Mode: "files"}
-		if strings.TrimSpace(helperResult.Error) != "" {
-			err := fmt.Errorf("query %q: %s", query, strings.TrimSpace(helperResult.Error))
-			result.Error = strings.TrimSpace(helperResult.Error)
-			results = append(results, result)
-			errs = append(errs, err)
-			continue
-		}
-		rows, totals, truncated := collectSearchFileRows(query, searchRoot, include, helperResult.Items, helperResult.Metrics, maxResults)
-		result.FileRows = rows
-		result.Totals = totals
-		result.ReturnedCount = len(rows)
-		result.Truncated = truncated
-		results = append(results, result)
-	}
-	return results, errs
 }
 
 func findHelperResults(resp searchipc.Response, searchRoot string, queries []string, include string, maxResults int, mode string) ([]findQueryExecution, []error) {
@@ -3443,83 +3408,6 @@ func collectSearchContentRows(query, searchRoot, include string, matches []fff.G
 		NextFileOffset:     int(metrics.NextFileOffset),
 		RegexFallbackError: strings.TrimSpace(metrics.RegexFallbackError),
 	}, truncated, false, safetySource.String()
-}
-
-func searchErrorsAreFallbackMisses(contentErrors []error, fileResults []searchQueryExecution) bool {
-	if len(contentErrors) == 0 || len(fileResults) == 0 {
-		return false
-	}
-	for _, result := range fileResults {
-		if len(result.FileRows) > 0 {
-			return true
-		}
-	}
-	return false
-}
-
-func mergeSearchHelperResults(contentResults, fileResults []searchQueryExecution) []searchQueryExecution {
-	if len(fileResults) == 0 {
-		return contentResults
-	}
-	if len(contentResults) == 0 {
-		return fileResults
-	}
-	byQuery := make(map[string]int, len(contentResults))
-	merged := make([]searchQueryExecution, 0, len(contentResults)+len(fileResults))
-	for _, result := range contentResults {
-		key := strings.ToLower(strings.TrimSpace(result.Query))
-		if key != "" {
-			byQuery[key] = len(merged)
-		}
-		merged = append(merged, result)
-	}
-	for _, fileResult := range fileResults {
-		key := strings.ToLower(strings.TrimSpace(fileResult.Query))
-		idx, ok := byQuery[key]
-		if !ok {
-			merged = append(merged, fileResult)
-			continue
-		}
-		contentResult := merged[idx]
-		if len(contentResult.ContentRows) == 0 {
-			fileResult.Error = joinSearchText(contentResult.Error, fileResult.Error)
-			fileResult.Truncated = fileResult.Truncated || contentResult.Truncated
-			fileResult.TimedOut = fileResult.TimedOut || contentResult.TimedOut
-			merged[idx] = fileResult
-		}
-	}
-	return merged
-}
-
-func collectSearchFileRows(query, searchRoot, include string, items []fff.SearchItem, metrics fff.SearchMetrics, maxResults int) ([]searchFileRow, searchAggregateTotals, bool) {
-	files := make([]searchFileRow, 0, minInt(len(items), maxResults))
-	truncated := false
-	for _, item := range items {
-		pathValue := filepath.Clean(item.Path)
-		relPath := normalizeSearchRelativePath(searchRoot, pathValue, item.RelativePath)
-		if !matchesIncludeGlob(include, relPath) {
-			continue
-		}
-		files = append(files, searchFileRow{
-			Query:        query,
-			Path:         pathValue,
-			RelativePath: relPath,
-			FileName:     strings.TrimSpace(item.FileName),
-			GitStatus:    strings.TrimSpace(item.GitStatus),
-			Score:        item.Score,
-		})
-		if len(files) >= maxResults {
-			truncated = true
-			break
-		}
-	}
-	if metrics.TotalMatched > uint32(len(files)) {
-		truncated = true
-	}
-	return files, searchAggregateTotals{
-		TotalMatched: int(metrics.TotalMatched),
-		TotalFiles:   int(metrics.TotalFiles),
-	}, truncated
 }
 
 func collectFindFileRows(query, searchRoot, include string, items []fff.SearchItem, metrics fff.SearchMetrics, maxResults int, kind string) ([]findRow, searchAggregateTotals, bool) {

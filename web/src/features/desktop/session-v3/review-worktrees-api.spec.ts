@@ -21,6 +21,9 @@ function sessionSnapshot(id: string) {
   }
 }
 
+// Requirement: reviewDesktopV3Worktrees scopes promotion enrichment to the exact
+// selected lane without dropping CAS lineage. A mocked wire boundary is the
+// narrowest layer proving unrelated review lanes are not requested.
 test('promotion sends explicit exact source and target lineage', async () => {
   const calls: Array<{ url: string; body: Record<string, unknown> }> = []
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -42,6 +45,7 @@ test('promotion sends explicit exact source and target lineage', async () => {
   assert.equal(calls[0]?.url, '/v3/sessions:review-worktrees')
   assert.equal(calls[0]?.body.workspace_path, '/workspace')
   assert.deepEqual(calls[0]?.body.promote_session_ids, ['session-lane'])
+  assert.deepEqual(calls[0]?.body.session_ids, ['session-lane'])
   assert.deepEqual(calls[0]?.body.source_head_by_session_id, { 'session-lane': 'source-head' })
   assert.equal(calls[0]?.body.target_branch, 'dev')
   assert.equal(calls[0]?.body.target_head, 'target-head')

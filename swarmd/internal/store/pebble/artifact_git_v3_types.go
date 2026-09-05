@@ -35,14 +35,30 @@ type ArtifactV3Limits struct {
 }
 
 func (l ArtifactV3Limits) normalized() ArtifactV3Limits {
-	if l.MaxFileBytes <= 0 { l.MaxFileBytes = 64 << 20 }
-	if l.MaxTreeBytes <= 0 { l.MaxTreeBytes = 256 << 20 }
-	if l.MaxFiles <= 0 { l.MaxFiles = 4096 }
-	if l.MaxPathBytes <= 0 { l.MaxPathBytes = 512 }
-	if l.MaxPathDepth <= 0 { l.MaxPathDepth = 32 }
-	if l.MaxRefs <= 0 { l.MaxRefs = 16384 }
-	if l.MaxParts <= 0 { l.MaxParts = l.MaxFiles * 4 }
-	if l.MaxPageSize <= 0 { l.MaxPageSize = 500 }
+	if l.MaxFileBytes <= 0 {
+		l.MaxFileBytes = 64 << 20
+	}
+	if l.MaxTreeBytes <= 0 {
+		l.MaxTreeBytes = 256 << 20
+	}
+	if l.MaxFiles <= 0 {
+		l.MaxFiles = 4096
+	}
+	if l.MaxPathBytes <= 0 {
+		l.MaxPathBytes = 512
+	}
+	if l.MaxPathDepth <= 0 {
+		l.MaxPathDepth = 32
+	}
+	if l.MaxRefs <= 0 {
+		l.MaxRefs = 16384
+	}
+	if l.MaxParts <= 0 {
+		l.MaxParts = l.MaxFiles * 4
+	}
+	if l.MaxPageSize <= 0 {
+		l.MaxPageSize = 500
+	}
 	return l
 }
 
@@ -66,34 +82,59 @@ type ArtifactV3Manifest struct {
 }
 
 // ArtifactV3Project is always a complete conventional project tree.
-type ArtifactV3Project struct { Files map[string][]byte }
+type ArtifactV3Project struct{ Files map[string][]byte }
 
-type ArtifactV3GenesisRequest struct { TransactionID string; Project ArtifactV3Project; Message string }
-type ArtifactV3CandidateRequest struct { TurnID, CandidateID, TransactionID, BaseCommit string; Project ArtifactV3Project; Message string }
-type ArtifactV3SelectionRequest struct { TurnID, CandidateID, TransactionID, ExpectedHead, Candidate string }
+type ArtifactV3GenesisRequest struct {
+	TransactionID string
+	Project       ArtifactV3Project
+	Message       string
+}
+type ArtifactV3CandidateRequest struct {
+	TurnID, CandidateID, TransactionID, BaseCommit string
+	Project                                        ArtifactV3Project
+	Message                                        string
+}
+type ArtifactV3SelectionRequest struct{ TurnID, CandidateID, TransactionID, ExpectedHead, Candidate string }
 
-type ArtifactV3File struct { Path, OID, Mode string; Size int64 }
+type ArtifactV3File struct {
+	Path, OID, Mode string
+	Size            int64
+}
 type ArtifactV3Revision struct {
 	CommitOID, TreeOID, ManifestBlobOID string
-	Parents []string
-	Manifest ArtifactV3Manifest
-	FileCount int
-	TreeBytes int64
+	Parents                             []string
+	Manifest                            ArtifactV3Manifest
+	FileCount                           int
+	TreeBytes                           int64
 }
-type ArtifactV3FilePage struct { Files []ArtifactV3File; NextCursor string }
-type ArtifactV3RevisionPage struct { Revisions []ArtifactV3Revision; NextCursor string }
-type ArtifactV3Ref struct { Name, CommitOID string }
-type ArtifactV3RefPage struct { Refs []ArtifactV3Ref; NextCursor string }
+type ArtifactV3FilePage struct {
+	Files      []ArtifactV3File
+	NextCursor string
+}
+type ArtifactV3RevisionPage struct {
+	Revisions  []ArtifactV3Revision
+	NextCursor string
+}
+type ArtifactV3Ref struct{ Name, CommitOID string }
+type ArtifactV3RefPage struct {
+	Refs       []ArtifactV3Ref
+	NextCursor string
+}
 
 type ArtifactV3TransactionState string
+
 const (
 	ArtifactV3TransactionRecorded ArtifactV3TransactionState = "recorded"
-	ArtifactV3TransactionApplied ArtifactV3TransactionState = "applied"
+	ArtifactV3TransactionApplied  ArtifactV3TransactionState = "applied"
 )
-type ArtifactV3Transaction struct { ID, CommitOID, HeadOID string; State ArtifactV3TransactionState }
+
+type ArtifactV3Transaction struct {
+	ID, CommitOID, HeadOID string
+	State                  ArtifactV3TransactionState
+}
 
 type ArtifactV3Repository struct {
 	root, path, git, hooks, id string
-	owner ArtifactV3Owner
-	limits ArtifactV3Limits
+	owner                      ArtifactV3Owner
+	limits                     ArtifactV3Limits
 }

@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -180,6 +179,13 @@ func (f *fakeWorktreeService) GetConfigForPrincipal(principal identity.Principal
 	return f.GetConfig(workspacePath)
 }
 
+// Keep the overview fixture aligned with the API's exact saved-root read contract.
+// Account and path rejection are exercised against the real service in
+// worktree.TestSavedWorkspaceConfigExactAccountRead, not this response-only fake.
+func (f *fakeWorktreeService) GetConfigForSavedWorkspaceForPrincipal(principal identity.Principal, workspacePath string) (worktreeruntime.Config, error) {
+	return f.GetConfig(workspacePath)
+}
+
 func (f *fakeWorktreeService) SetConfig(workspacePath string, enabled, useCurrentBranch bool, baseBranch, branchName string) (worktreeruntime.Config, *pebblestore.EventEnvelope, error) {
 	f.config = worktreeruntime.Config{WorkspacePath: workspacePath, Enabled: enabled, UseCurrentBranch: useCurrentBranch, BaseBranch: baseBranch, BranchName: branchName}
 	return f.config, nil, nil
@@ -309,8 +315,8 @@ func withTestPrincipal(req *http.Request) *http.Request {
 
 func newTestWorkspaceService(t *testing.T, path string) (*workspaceruntime.Service, string) {
 	t.Helper()
-	if err := os.MkdirAll(path, 0o755); err != nil {
-		t.Fatalf("mkdir workspace: %v", err)
+	if err := ensureTestWorkspaceDir(path); err != nil {
+		t.Fatalf("create committed workspace: %v", err)
 	}
 	store, err := pebblestore.Open(t.TempDir())
 	if err != nil {
@@ -324,7 +330,10 @@ func newTestWorkspaceService(t *testing.T, path string) (*workspaceruntime.Servi
 	return workspaceSvc, path
 }
 
-func TestHandleWorktreesAllowsNonGitWorkspace(t *testing.T) {
+// Requirement: handleWorktrees must propagate inventory failure, never advertise
+// failed Git prerequisites as a usable workspace. The handler fixture isolates
+// that failure after valid admission and asserts config/selection remain intact.
+func TestHandleWorktreesRejectsInventoryFailure(t *testing.T) {
 	workspaceSvc, workspacePath := newTestWorkspaceService(t, t.TempDir())
 	s := &Server{workspace: workspaceSvc, worktrees: &fakeWorktreeService{
 		config:     worktreeruntime.Config{Enabled: true},
@@ -334,20 +343,22 @@ func TestHandleWorktreesAllowsNonGitWorkspace(t *testing.T) {
 	rr := httptest.NewRecorder()
 
 	s.handleWorktrees(rr, req)
-	if rr.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d, body = %s", rr.Code, http.StatusOK, rr.Body.String())
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d, body = %s", rr.Code, http.StatusBadRequest, rr.Body.String())
 	}
-	var got struct {
-		OK        bool                              `json:"ok"`
-		Worktrees worktreeruntime.Config            `json:"worktrees"`
-		Managed   []worktreeruntime.ManagedWorktree `json:"managed"`
-		Warning   string                            `json:"warning"`
-	}
+	var got map[string]any
 	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if !got.OK || got.Worktrees.Enabled || len(got.Managed) != 0 || got.Warning == "" {
-		t.Fatalf("unexpected non-git response: %+v", got)
+	if got["ok"] == true || got["worktrees"] != nil || !strings.Contains(rr.Body.String(), "not a git repository") {
+		t.Fatalf("inventory failure appeared usable: %+v", got)
+	}
+	if !s.worktrees.(*fakeWorktreeService).config.Enabled {
+		t.Fatal("failed inventory changed config")
+	}
+	current, ok, err := workspaceSvc.CurrentBindingForPrincipal(testPrincipal())
+	if err != nil || !ok || current.ResolvedPath != workspacePath {
+		t.Fatalf("failed inventory changed selection: %+v %v", current, err)
 	}
 }
 

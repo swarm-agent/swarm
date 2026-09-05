@@ -225,6 +225,30 @@ func (s *Service) GetConfigForPrincipal(principal identity.Principal, workspaceP
 	return configFromRecord(canonical, record), nil
 }
 
+// GetConfigForSavedWorkspaceForPrincipal reads config for an exact saved root.
+// Catalog callers must not repeat a full containing-workspace scan for every row.
+// Exact principal-scoped lookup still resolves the path and rejects unsaved roots.
+func (s *Service) GetConfigForSavedWorkspaceForPrincipal(principal identity.Principal, workspacePath string) (Config, error) {
+	if err := requirePrincipal(principal); err != nil {
+		return Config{}, err
+	}
+	if s.workspace == nil {
+		return Config{}, errors.New("workspace service is required")
+	}
+	scope, err := s.workspace.ScopeForWorkspaceForPrincipal(principal, workspacePath)
+	if err != nil {
+		return Config{}, fmt.Errorf("resolve saved workspace: %w", err)
+	}
+	if scope.WorkspacePath != filepath.Clean(workspacePath) {
+		return Config{}, errors.New("saved workspace path changed")
+	}
+	record, _, err := s.store.GetConfigForAccount(principal.AccountScopeID, scope.WorkspacePath)
+	if err != nil {
+		return Config{}, fmt.Errorf("read worktree config: %w", err)
+	}
+	return configFromRecord(scope.WorkspacePath, record), nil
+}
+
 func (s *Service) SetConfig(workspacePath string, enabled, useCurrentBranch bool, baseBranch, branchName string) (Config, *pebblestore.EventEnvelope, error) {
 	return Config{}, nil, identity.ErrPrincipalRequired
 }
@@ -812,6 +836,9 @@ func (s *Service) InspectTaskWorkspace(workspacePath string) (TaskWorkspaceState
 }
 
 func (s *Service) AllocateTaskWorkspace(workspacePath string, base TaskBase, nameSeed string, ownedScopes []string) (Allocation, error) {
+	if _, _, err := canonicalTaskSparseScopes(ownedScopes); err != nil {
+		return Allocation{}, err
+	}
 	workspacePath = strings.TrimSpace(workspacePath)
 	if workspacePath == "" {
 		return Allocation{}, errors.New("workspace path is required")

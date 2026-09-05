@@ -1,6 +1,7 @@
 package pebblestore
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -88,6 +89,32 @@ type TaskProgramJobSpec struct {
 	AnimationProfile   *SessionArtifactAnimationProfile   `json:"animation_profile,omitempty"`
 	AcceptanceCriteria []string                           `json:"acceptance_criteria"`
 	DependencyEvidence string                             `json:"dependency_evidence"`
+}
+
+// UnmarshalJSON accepts the tool-advertised alias at the durable plan boundary
+// and stores only agent_type. Conflicting identities fail without mutating j.
+func (j *TaskProgramJobSpec) UnmarshalJSON(data []byte) error {
+	type canonical TaskProgramJobSpec
+	var decoded struct {
+		canonical
+		SubagentType string `json:"subagent_type"`
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&decoded); err != nil {
+		return err
+	}
+	agentType := strings.TrimSpace(decoded.AgentType)
+	alias := strings.TrimSpace(decoded.SubagentType)
+	if agentType != "" && alias != "" && !strings.EqualFold(agentType, alias) {
+		return errors.New("task program agent_type conflicts with subagent_type")
+	}
+	if agentType == "" {
+		agentType = alias
+	}
+	decoded.AgentType = strings.ToLower(agentType)
+	*j = TaskProgramJobSpec(decoded.canonical)
+	return nil
 }
 
 type TaskProgramJobRecord struct {

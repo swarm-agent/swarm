@@ -10,6 +10,7 @@ import (
 
 	agentruntime "swarm/packages/swarmd/internal/agent"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
+	"swarm/packages/swarmd/internal/taskscope"
 	"swarm/packages/swarmd/internal/tool"
 	worktreeruntime "swarm/packages/swarmd/internal/worktree"
 )
@@ -975,6 +976,10 @@ func (p *taskProgramScheduler) finishBlocked(blockErr error) (string, error) {
 }
 
 func taskProgramErrorCode(err error) string {
+	var invalidScope *taskscope.InvalidError
+	if errors.As(err, &invalidScope) {
+		return "planning_required"
+	}
 	var blocked taskChildBlockedError
 	if errors.As(err, &blocked) {
 		return firstNonEmptyString(blocked.code, "external_dependency")

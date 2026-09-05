@@ -124,18 +124,18 @@ type CreateEditProposalInput struct {
 }
 type SelectAnimationCandidateInput struct {
 	SessionID, ProjectID, ProposalID, PartID, CandidateID string
-	SelectedSource   *pebblestore.SessionArtifactSelectionReference
-	V2SelectedSource *pebblestore.ArtifactV2VideoReference
-	V3SelectedSource *pebblestore.ArtifactV3VideoReference
-	NowUnixMs        int64
+	SelectedSource                                        *pebblestore.SessionArtifactSelectionReference
+	V2SelectedSource                                      *pebblestore.ArtifactV2VideoReference
+	V3SelectedSource                                      *pebblestore.ArtifactV3VideoReference
+	NowUnixMs                                             int64
 }
 
 type PromoteAnimationDerivativeInput struct {
 	SessionID, ProjectID, ProposalID, PartID, CandidateID string
-	SelectedSource, Derivative     *pebblestore.SessionArtifactSelectionReference
-	V2SelectedSource, V2Derivative *pebblestore.ArtifactV2VideoReference
-	V3SelectedSource, V3Derivative *pebblestore.ArtifactV3VideoReference
-	NowUnixMs                      int64
+	SelectedSource, Derivative                            *pebblestore.SessionArtifactSelectionReference
+	V2SelectedSource, V2Derivative                        *pebblestore.ArtifactV2VideoReference
+	V3SelectedSource, V3Derivative                        *pebblestore.ArtifactV3VideoReference
+	NowUnixMs                                             int64
 }
 
 type UpdateCompositionInput struct {

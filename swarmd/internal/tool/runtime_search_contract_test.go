@@ -92,36 +92,43 @@ func TestSearchRuntimeHandlesWhitespaceSeparatedMultiPath(t *testing.T) {
 	}
 }
 
-func TestSearchRuntimeFallsBackToFileSearchPerQuery(t *testing.T) {
+// Purpose: Runtime.executeSearch must remain content-only on a miss, even
+// when a matching filename exists. The native runtime fixture proves no hidden
+// filename fallback, while executeFind still discovers that same file.
+func TestSearchRuntimeMissDoesNotBecomeFileSearch(t *testing.T) {
 	t.Setenv("SWARM_FFF_SEARCH_HELPER", searchEvalHelperPath(t))
-	repoRoot := searchEvalRepoRoot(t)
-	scope := WorkspaceScope{PrimaryPath: repoRoot, Roots: []string{repoRoot}}
-	args, err := json.Marshal(map[string]any{
-		"queries":     []string{"DefinitelyMissingContentNeedle", "workspace_store.go"},
-		"path":        "swarmd/internal/store/pebble",
-		"include":     "*.go",
-		"max_results": 8,
-		"timeout_ms":  4000,
-	})
-	if err != nil {
-		t.Fatalf("marshal args: %v", err)
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "filename_only.go"), []byte("package fixture\n"), 0600); err != nil {
+		t.Fatal(err)
 	}
-	output, err := ExecuteForWorkspaceScope(context.Background(), scope, Call{Name: "search", Arguments: string(args)})
-	if err != nil {
-		t.Fatalf("execute search tool: %v\noutput:\n%s", err, output)
-	}
-
-	var decoded map[string]any
-	if err := json.Unmarshal([]byte(output), &decoded); err != nil {
-		t.Fatalf("decode output: %v\noutput:\n%s", err, output)
-	}
-	results, ok := decoded["results"].([]any)
-	if !ok || len(results) == 0 {
-		t.Fatalf("expected fallback results, got %T %#v\noutput=%s", decoded["results"], decoded["results"], output)
-	}
-	paths := searchDecodedResultPaths(results)
-	if !searchPathContains(paths, "workspace_store.go") {
-		t.Fatalf("expected file-name fallback result for workspace_store, paths=%v output=%s", paths, output)
+	runtime := NewRuntime(1)
+	defer runtime.Close()
+	scope := WorkspaceScope{PrimaryPath: root, Roots: []string{root}}
+	for _, toolName := range []string{"search", "find"} {
+		args, _ := json.Marshal(map[string]any{"query": "filename_only.go", "path": root, "max_results": 8, "timeout_ms": 4000})
+		output, err := runtime.ExecuteForWorkspaceScopeWithRuntime(context.Background(), scope, Call{Name: toolName, Arguments: string(args)})
+		if err != nil {
+			t.Fatalf("%s: %v", toolName, err)
+		}
+		var decoded map[string]any
+		if err := json.Unmarshal([]byte(output), &decoded); err != nil {
+			t.Fatal(err)
+		}
+		if decoded[toolName+"_errors"] != nil || decoded["timed_out"] == true {
+			t.Fatalf("incomplete: %s", output)
+		}
+		if toolName == "search" {
+			if asInt(decoded["count"], -1) != 0 {
+				t.Fatalf("filename fallback: %s", output)
+			}
+			for _, raw := range decoded["query_results"].([]any) {
+				if mapString(raw.(map[string]any), "mode") != "content" {
+					t.Fatalf("wrong mode: %s", output)
+				}
+			}
+		} else if asInt(decoded["count"], 0) != 1 {
+			t.Fatalf("find lost filename: %s", output)
+		}
 	}
 }
 

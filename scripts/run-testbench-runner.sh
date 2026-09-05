@@ -40,10 +40,12 @@ model_args+=(--coder-model "${SWARM_TESTBENCH_CODER_MODEL}" --coder-thinking "${
 model_args+=(--designer-model "${SWARM_TESTBENCH_DESIGNER_MODEL}" --designer-thinking "${SWARM_TESTBENCH_DESIGNER_THINKING}")
 [[ -n "${SWARM_TESTBENCH_LINKED_WORKSPACE_PATH:-}" ]] && model_args+=(--linked-workspace-path "${SWARM_TESTBENCH_LINKED_WORKSPACE_PATH}")
 
+# Fixed package path matching htmlcapture.SystemChromePath and the host AppArmor policy.
+readonly SYSTEM_CHROME_PATH='/opt/google/chrome/chrome'
 browser_args=()
 if [[ "${RUNNER}" == "artifact-v3-multipart-e2e" ]]; then
-  [[ -x /opt/google/chrome/chrome ]] || { printf 'run-testbench-runner: trusted system Chrome is unavailable at /opt/google/chrome/chrome\n' >&2; exit 1; }
-  browser_args+=(--browser-executable /opt/google/chrome/chrome)
+  [[ -x "${SYSTEM_CHROME_PATH}" ]] || { printf 'run-testbench-runner: trusted system Chrome is unavailable at %s\n' "${SYSTEM_CHROME_PATH}" >&2; exit 1; }
+  browser_args+=(--browser-executable "${SYSTEM_CHROME_PATH}")
 fi
 
 runner=("${ROOT_DIR}/scripts/run-runner-test.sh"
