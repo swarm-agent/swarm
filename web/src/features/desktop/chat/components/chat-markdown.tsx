@@ -1372,7 +1372,7 @@ function SearchSummaryLine({
   const status = data.timedOut ? " · Timed out" : data.truncated ? " · Partial results" : "";
 
   return (
-    <div className="min-w-0 text-[12px] leading-5 text-[var(--app-text-muted)]">
+    <div className="min-w-0 pl-3 text-[12px] leading-5 text-[var(--app-text-muted)]">
       <span>Searched {searched}</span>
       <span> · Found {foundCount} {foundUnit}</span>
       {status ? <span className="text-[var(--app-text-subtle)]">{status}</span> : null}
