@@ -2,6 +2,8 @@ package tool
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -155,13 +157,9 @@ func (r *Runtime) reviseDirectArtifactV3HTML(ctx context.Context, scope Workspac
 	if producerRunID == "" {
 		return nil, errors.New("manage_artifact revise_v3 requires trusted provider run identity")
 	}
-	turnKey := strings.TrimSpace(asString(args["turn_key"]))
-	candidateIndex := asInt(args["candidate_index"], 1)
-	if turnKey == "" {
-		turnKey = strings.TrimSpace(callID)
-	}
-	if !validManagedArtifactStableID(turnKey) || candidateIndex < 1 || candidateIndex > 50 {
-		return nil, errors.New("manage_artifact revise_v3 requires a stable turn_key and candidate_index between 1 and 50")
+	turnKey, candidateIndex, err := directArtifactV3RevisionIdentity(args, callID, producerRunID)
+	if err != nil {
+		return nil, err
 	}
 	baseCommit := strings.TrimPrefix(reference.RevisionRef, "revision-")
 	grant, err := r.artifactV3Author.PrepareTurn(ctx, ArtifactV3PrepareTurnRequest{
@@ -214,6 +212,52 @@ func (r *Runtime) reviseDirectArtifactV3HTML(ctx context.Context, scope Workspac
 	}, nil
 }
 
+// Omitted single-candidate keys are derived from trusted execution identity, not
+// constrained provider-specific call-ID spelling. Explicit sibling keys keep
+// their existing grouping semantics; never normalize invalid caller input.
+func directArtifactV3RevisionIdentity(args map[string]any, callID, runID string) (string, int, error) {
+	turnKey := ""
+	if raw, supplied := args["turn_key"]; supplied {
+		value, ok := raw.(string)
+		turnKey = strings.TrimSpace(value)
+		if !ok || !validManagedArtifactStableID(turnKey) {
+			return "", 0, errors.New("manage_artifact revise_v3 turn_key must be a stable ID when supplied")
+		}
+	} else {
+		if strings.TrimSpace(callID) == "" || strings.TrimSpace(runID) == "" {
+			return "", 0, errors.New("manage_artifact revise_v3 default turn_key requires trusted call and run identity")
+		}
+		digest := sha256.Sum256([]byte(runID + "\x00" + callID))
+		turnKey = fmt.Sprintf("call-%x", digest)
+	}
+	candidateIndex := 1
+	if raw, supplied := args["candidate_index"]; supplied {
+		candidateIndex = directArtifactV3CandidateIndex(raw)
+	}
+	if candidateIndex < 1 || candidateIndex > 50 {
+		return "", 0, errors.New("manage_artifact revise_v3 candidate_index must be an integer between 1 and 50")
+	}
+	return turnKey, candidateIndex, nil
+}
+
+func directArtifactV3CandidateIndex(raw any) int {
+	switch value := raw.(type) {
+	case float64:
+		if value >= 1 && value <= 50 && value == float64(int(value)) {
+			return int(value)
+		}
+	case int:
+		if value >= 1 && value <= 50 {
+			return value
+		}
+	case json.Number:
+		if value, err := value.Int64(); err == nil && value >= 1 && value <= 50 {
+			return int(value)
+		}
+	}
+	return 0
+}
+
 func parseDirectArtifactV3RevisionInput(raw any) (directArtifactV3RevisionInput, error) {
 	value, ok := raw.(map[string]any)
 	if !ok {
@@ -248,7 +292,7 @@ func parseDirectArtifactV3Alternatives(raw any) ([]directArtifactV3Alternative, 
 				return nil, fmt.Errorf("manage_artifact revise_v3 alternative contains unsupported field %q", key)
 			}
 		}
-		candidateIndex := asInt(value["candidate_index"], 0)
+		candidateIndex := directArtifactV3CandidateIndex(value["candidate_index"])
 		content, contentOK := value["content"].(string)
 		if candidateIndex < 1 || candidateIndex > len(items) || seen[candidateIndex] || !contentOK || strings.TrimSpace(content) == "" {
 			return nil, errors.New("manage_artifact revise_v3 alternatives require each candidate_index from 1 through the candidate count exactly once and non-empty complete HTML content")

@@ -33,7 +33,7 @@ test('native Studio Part iteration and candidate decision controls', { timeout: 
       const request = route.request()
       const path = new URL(request.url()).pathname
       let payload: unknown
-      if (path === '/') return route.fulfill({ contentType: 'text/html', body: '<html><body><div id="root"></div></body></html>' })
+      if (path === '/') return route.fulfill({ contentType: 'text/html', body: '<html><head><style>[data-artifact-v3-primary-preview]{height:200px;overflow:hidden} svg{width:16px;height:16px}</style></head><body><div id="root"></div></body></html>' })
       if (path.includes('/preview/access/token')) return route.fulfill({ contentType: 'text/html', body: '<html><body>Fixture preview</body></html>' })
       if (path.endsWith('/preview/access')) payload = { ok: true, preview_url: `/v3/sessions/parent/artifacts-v3/artifact/preview/access/token?revision=${request.postDataJSON().revision_ref}` }
       else if (path.endsWith('/turns/new/select')) {
@@ -59,7 +59,11 @@ test('native Studio Part iteration and candidate decision controls', { timeout: 
     assert.equal(selections.length, 0)
     ready = true
     await page.evaluate(() => (window as unknown as { refreshArtifacts(): Promise<void> }).refreshArtifacts())
-    await page.locator('[data-artifact-v3-candidate="option"] > button').click()
+    // Wait for preview readiness and exercise native keyboard activation.
+    // This fixture does not load production layout CSS; pixel layout is not tested.
+    await page.frameLocator('[data-artifact-v3-complete-preview]').getByText('Fixture preview').waitFor()
+    await page.locator('[data-artifact-v3-candidate="option"] > button').focus()
+    await page.keyboard.press('Enter')
     await page.locator('[data-artifact-v3-part="new-part"]').waitFor()
     assert.equal(await page.locator('[data-artifact-v3-part="orbit"]').count(), 0)
     assert.equal(await page.locator('[data-artifact-v3-iterate]').isDisabled(), true)

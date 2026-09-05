@@ -21,6 +21,7 @@ export interface DesktopV3NativeArtifactSummary {
   head: DesktopV3NativeArtifactHead | null
   partCount: number
   turnCount: number
+  pendingTurns?: DesktopV3NativeArtifactTurn[]
   updatedAt: number
 }
 
@@ -181,7 +182,7 @@ export function normalizeDesktopV3NativeArtifactSummary(value: unknown, fallback
     // that canonical ID instead of dropping the complete catalog entry.
     artifactRef: stringValue(field(item, 'artifact_ref', 'artifactRef')) || artifactId,
     ownerSessionId,
-    label: stringValue(item.label) || 'Artifact',
+    label: stringValue(item.label) || stringValue(item.title) || 'Untitled artifact',
     description: stringValue(item.description),
     status: inferredArtifactStatus(item),
     head: (() => {
@@ -192,6 +193,7 @@ export function normalizeDesktopV3NativeArtifactSummary(value: unknown, fallback
     })(),
     partCount: numberValue(field(item, 'part_count', 'partCount')) || (Array.isArray(item.parts) ? item.parts.length : 0),
     turnCount: numberValue(field(item, 'turn_count', 'turnCount')) || (Array.isArray(item.turns) ? item.turns.length : 0),
+    pendingTurns: pendingDesktopV3NativeArtifactTurns(Array.isArray(item.turns) ? item.turns.map(normalizeTurn).filter((turn): turn is DesktopV3NativeArtifactTurn => turn !== null) : []),
     updatedAt: numberValue(field(item, 'updated_at', 'updatedAt')),
   }
 }
@@ -346,6 +348,21 @@ function normalizeTurn(value: unknown): DesktopV3NativeArtifactTurn | null {
     candidates,
     createdAt: numberValue(field(item, 'created_at', 'createdAt')),
   }
+}
+
+// Canonical pending-turn projection shared by catalog display and Studio entry.
+// A ready unchosen sibling from an already selected turn is history, not pending.
+export function pendingDesktopV3NativeArtifactTurns(turns: readonly DesktopV3NativeArtifactTurn[]): DesktopV3NativeArtifactTurn[] {
+  return turns.filter((turn) => ['working', 'building', 'validating', 'ready', 'awaiting_selection'].includes(turn.status) && !turn.candidates.some((candidate) => candidate.selected))
+    .sort((a, b) => b.createdAt - a.createdAt || a.turnId.localeCompare(b.turnId))
+}
+
+export function firstDesktopV3NativeArtifactPendingCandidate(turns: readonly DesktopV3NativeArtifactTurn[]) {
+  for (const turn of pendingDesktopV3NativeArtifactTurns(turns)) {
+    const candidate = turn.candidates.find((candidate) => candidate.status === 'ready' && candidate.revision?.status === 'ready' && !candidate.selected)
+    if (candidate) return { turn, candidate }
+  }
+  return null
 }
 
 export function desktopV3NativeArtifactCatalogEndpoint(sessionId: string): string {

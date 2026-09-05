@@ -35,7 +35,7 @@ func TestManageArtifactReviseV3CreatesExactBaseCandidateWithoutSelecting(t *test
 		"action": "revise_v3", "artifact_v3_reference": map[string]any{"session_id": "session-1", "artifact_id": "artifact-direct", "revision_ref": "revision-" + strings.Repeat("a", 40)},
 		"target_part_ids": []string{"pricing"}, "content": revisedHTML,
 	})
-	output, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, Call{CallID: "revise", Name: "manage_artifact", Arguments: string(reviseArgs)})
+	output, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, Call{CallID: "Call:Provider/ABC.123", Name: "manage_artifact", Arguments: string(reviseArgs)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -44,6 +44,27 @@ func TestManageArtifactReviseV3CreatesExactBaseCandidateWithoutSelecting(t *test
 	}
 	if !strings.Contains(output, `"status":"awaiting_selection"`) || !strings.Contains(output, `"target_part_ids":["pricing"]`) || !strings.Contains(output, `"base_revision_ref":"revision-`+strings.Repeat("a", 40)+`"`) || strings.Contains(output, "collection_id") || strings.Contains(output, "variant_id") {
 		t.Fatalf("output=%s", output)
+	}
+
+	// Optional identity defaults must survive provider punctuation/case. Invalid
+	// explicit values must fail before any turn allocation or head mutation.
+	if repository.turns[1].CandidateIndex != 1 || !strings.HasPrefix(repository.turns[1].TaskCallID, "direct-revise:call-") {
+		t.Fatalf("default identity=%+v", repository.turns[1])
+	}
+	for _, invalid := range []map[string]any{{"turn_key": ""}, {"turn_key": "Bad:Key"}, {"turn_key": 2}, {"candidate_index": nil}, {"candidate_index": "1"}, {"candidate_index": 1.5}, {"candidate_index": 0}, {"candidate_index": 51}} {
+		var payload map[string]any
+		_ = json.Unmarshal(reviseArgs, &payload)
+		for key, value := range invalid {
+			payload[key] = value
+		}
+		body, _ := json.Marshal(payload)
+		before := len(repository.turns)
+		if _, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, Call{CallID: "invalid", Name: "manage_artifact", Arguments: string(body)}); err == nil {
+			t.Fatalf("accepted invalid identity: %v", invalid)
+		}
+		if len(repository.turns) != before || len(repository.submits) != 2 || len(repository.selected) != 0 {
+			t.Fatal("invalid identity mutated state")
+		}
 	}
 
 	wrongTarget := strings.Replace(string(reviseArgs), `"pricing"`, `"missing"`, 1)
@@ -100,5 +121,28 @@ func TestManageArtifactReviseV3CreatesExactBaseCandidateWithoutSelecting(t *test
 	missingPartArgs, _ := json.Marshal(missingPartPayload)
 	if _, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, Call{CallID: "part-drift", Name: "manage_artifact", Arguments: string(missingPartArgs)}); err == nil || !strings.Contains(err.Error(), `preserve stable Part "footer"`) {
 		t.Fatalf("part drift error=%v", err)
+	}
+}
+
+// Requirement: default turn identity is deterministic for replay and distinct
+// across provider calls/runs. Boundary: directArtifactV3RevisionIdentity; the
+// registered test above proves that these defaults reach native authoring.
+func TestManageArtifactReviseV3DefaultIdentity(t *testing.T) {
+	args := map[string]any{}
+	key, index, err := directArtifactV3RevisionIdentity(args, "Call:ABC/1", "run-1")
+	if err != nil || !validManagedArtifactStableID(key) || index != 1 {
+		t.Fatalf("%s %d %v", key, index, err)
+	}
+	replay, _, _ := directArtifactV3RevisionIdentity(args, "Call:ABC/1", "run-1")
+	otherCall, _, _ := directArtifactV3RevisionIdentity(args, "Call:ABC/2", "run-1")
+	otherRun, _, _ := directArtifactV3RevisionIdentity(args, "Call:ABC/1", "run-2")
+	if key != replay || key == otherCall || key == otherRun {
+		t.Fatal("identity collision or unstable replay")
+	}
+	if _, _, err := directArtifactV3RevisionIdentity(args, "", "run-1"); err == nil {
+		t.Fatal("missing trusted call accepted")
+	}
+	if _, _, err := directArtifactV3RevisionIdentity(args, "call", ""); err == nil {
+		t.Fatal("missing trusted run accepted")
 	}
 }

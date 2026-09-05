@@ -31,24 +31,43 @@ func (r *Runtime) createDirectArtifactV3HTML(ctx context.Context, scope Workspac
 	}
 	for key := range args {
 		switch key {
-		case "action", "collection_name", "collection_description", "filename", "media_type", "content", "presentation", "parts":
+		case "action", "collection_name", "collection_description", "filename", "media_type", "content", "presentation", "parts", "narration_plan":
 		default:
 			return nil, fmt.Errorf("manage_artifact create for Artifact V3 HTML contains unsupported field %q", key)
 		}
 	}
+	_, narrationPlan := args["narration_plan"]
+	if narrationPlan {
+		for _, key := range []string{"content", "parts"} {
+			if _, supplied := args[key]; supplied {
+				return nil, fmt.Errorf("manage_artifact narration_plan cannot be combined with %s", key)
+			}
+		}
+	}
 	mediaType := canonicalArtifactMediaType(asString(args["media_type"]))
 	filename := strings.TrimSpace(asString(args["filename"]))
-	if mediaType == "" && strings.HasSuffix(strings.ToLower(filename), ".html") {
+	if mediaType == "" && (narrationPlan || strings.HasSuffix(strings.ToLower(filename), ".html")) {
 		mediaType = "text/html"
 	}
 	if mediaType != "text/html" {
 		return nil, errors.New("manage_artifact create currently accepts only one complete text/html Artifact V3 document")
 	}
-	body, ok := args["content"].(string)
-	if !ok || strings.TrimSpace(body) == "" {
-		return nil, errors.New("manage_artifact create requires non-empty UTF-8 HTML content")
+	var body string
+	var parts []pebblestore.SessionArtifactPart
+	if narrationPlan {
+		var err error
+		body, parts, err = renderArtifactNarrationPlan(args["narration_plan"])
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		var ok bool
+		body, ok = args["content"].(string)
+		if !ok || strings.TrimSpace(body) == "" {
+			return nil, errors.New("manage_artifact create requires non-empty UTF-8 HTML content or narration_plan")
+		}
+		parts = deriveArtifactHTMLParts([]byte(body), mediaType)
 	}
-	parts := deriveArtifactHTMLParts([]byte(body), mediaType)
 	requestedParts, err := parseArtifactParts(args["parts"])
 	if err != nil {
 		return nil, err

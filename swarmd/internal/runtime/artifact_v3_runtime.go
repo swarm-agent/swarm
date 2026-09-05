@@ -519,7 +519,15 @@ func (a *artifactV3RuntimeAdapter) artifact(ctx context.Context, principal api.A
 	if err != nil {
 		return api.ArtifactV3Artifact{}, err
 	}
-	return api.ArtifactV3Artifact{ID: repository.ArtifactID, OwnerSessionID: repository.OwnerSessionID, IntentReference: repository.IntentReference, ArtifactRef: artifactV3Reference(repository), Status: "ready", Revision: repository.EventSeq, PartCount: len(revision.Manifest.Parts), Parts: revision.Manifest.Parts, Head: &revision, CurrentRevision: &revision, Revisions: []api.ArtifactV3Revision{revision}, Turns: turns, UpdatedAt: repository.UpdatedAt}, nil
+	repo, err := pebblestore.OpenArtifactV3Repository(ctx, a.repositoryRoot, repository.ArtifactID, pebblestore.ArtifactV3Owner{AccountScopeID: principal.AccountScopeID, UserID: principal.UserID, SessionID: repository.OwnerSessionID}, a.limits)
+	if err != nil {
+		return api.ArtifactV3Artifact{}, err
+	}
+	entrypoint, err := repo.ReadFile(ctx, revision.CommitOID, revision.Manifest.Entrypoint)
+	if err != nil {
+		return api.ArtifactV3Artifact{}, err
+	}
+	return api.ArtifactV3Artifact{Label: artifactV3DocumentTitle(entrypoint), ID: repository.ArtifactID, OwnerSessionID: repository.OwnerSessionID, IntentReference: repository.IntentReference, ArtifactRef: artifactV3Reference(repository), Status: "ready", Revision: repository.EventSeq, PartCount: len(revision.Manifest.Parts), Parts: revision.Manifest.Parts, Head: &revision, CurrentRevision: &revision, Revisions: []api.ArtifactV3Revision{revision}, Turns: turns, UpdatedAt: repository.UpdatedAt}, nil
 }
 
 func (a *artifactV3RuntimeAdapter) ListRevisions(ctx context.Context, principal api.ArtifactV3Principal, sessionID, artifactID, cursor string, limit int) (api.ArtifactV3RevisionPage, error) {
@@ -607,6 +615,7 @@ func (a *artifactV3RuntimeAdapter) OpenPreview(ctx context.Context, principal ap
 	}
 	if filePath == revision.Manifest.Entrypoint {
 		body = rewriteArtifactV3PreviewReferences(body, revision.Manifest.Entrypoint, sessionID, artifactID, revision.RevisionRef, accessToken)
+		body = injectArtifactV3PreviewSelection(body, revision)
 	}
 	return api.ArtifactV3Preview{RevisionRef: revision.RevisionRef, CommitOID: revision.CommitOID, MediaType: mediaType, Body: body, ETag: `"` + revision.TreeOID + `"`}, nil
 }

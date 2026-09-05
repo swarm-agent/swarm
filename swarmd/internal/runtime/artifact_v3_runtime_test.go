@@ -84,7 +84,7 @@ func TestArtifactV3RuntimeAdapterProductionPathAndRecovery(t *testing.T) {
 	if err := author.Create(context.Background(), principal, grant, "swarm-artifact.json", manifest); err != nil {
 		t.Fatal(err)
 	}
-	if err := author.Create(context.Background(), principal, grant, "index.html", []byte(`<!doctype html><html><head><link rel="stylesheet" href="styles/theme.css"></head><body><main id="hero">Artifact V3</main><script type="module" src="src/app.js"></script></body></html>`)); err != nil {
+	if err := author.Create(context.Background(), principal, grant, "index.html", []byte(`<!doctype html><html><head><title>Launch &amp; narration</title><link rel="stylesheet" href="styles/theme.css"></head><body><main id="hero">Artifact V3</main><script type="module" src="src/app.js"></script></body></html>`)); err != nil {
 		t.Fatal(err)
 	}
 	if err := author.Create(context.Background(), principal, grant, "styles/theme.css", []byte(`body{color:navy}`)); err != nil {
@@ -107,6 +107,12 @@ func TestArtifactV3RuntimeAdapterProductionPathAndRecovery(t *testing.T) {
 	}
 	if artifact.Head == nil || artifact.Head.CommitOID != finished.Revision.CommitOID || artifact.Head.Build == nil || artifact.Head.Build.Status != "succeeded" || artifact.Head.Validation == nil || artifact.Head.Validation.Status != "valid" {
 		t.Fatalf("artifact=%+v finish=%+v", artifact, finished)
+	}
+	// Catalog title comes from the selected immutable entrypoint, not intent or
+	// user session labels. The real adapter read is the narrow projection proof.
+	catalog, err := adapter.ListArtifacts(context.Background(), api.ArtifactV3Principal{AccountScopeID: "account", UserID: "user"}, "artifact-v3-runtime", 10)
+	if err != nil || len(catalog) != 1 || catalog[0].Label != "Launch & narration" || artifact.Label != "Launch & narration" {
+		t.Fatalf("catalog title=%+v err=%v", catalog, err)
 	}
 	followup := tool.ArtifactV3PrepareTurnRequest{AccountScopeID: "account", UserID: "user", OwnerSessionID: "artifact-v3-runtime", TaskCallID: "followup", ArtifactID: grant.ArtifactID, BaseCommitOID: artifact.Head.CommitOID, ProjectionSeq: artifact.Revision, PolicyRevision: "policy", CandidateIndex: 1, Initial: false, TargetPartIDs: []string{"hero", "theme"}, ExpiresAt: time.Now().Add(time.Hour).UnixMilli()}
 	preparedFollowup, err := adapter.PrepareArtifactV3Turn(context.Background(), followup)
@@ -147,7 +153,7 @@ func TestArtifactV3RuntimeAdapterProductionPathAndRecovery(t *testing.T) {
 		t.Fatalf("partial wave good=%+v bad=%+v errors=%v/%v", good, bad, goodErr, badErr)
 	}
 	beforeSelect, err := adapter.GetArtifact(context.Background(), api.ArtifactV3Principal{AccountScopeID: "account", UserID: "user"}, "artifact-v3-runtime", grant.ArtifactID)
-	if err != nil || beforeSelect.Head.CommitOID != finished.Revision.CommitOID {
+	if err != nil || beforeSelect.Label != "Launch & narration" || beforeSelect.Head.CommitOID != finished.Revision.CommitOID {
 		t.Fatalf("repair candidate moved head before selection: artifact=%+v err=%v", beforeSelect, err)
 	}
 	// Requirement: Desktop must see both durable slots, not only Git refs.

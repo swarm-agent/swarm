@@ -43,6 +43,7 @@ type ArtifactV3Principal struct {
 }
 
 type ArtifactV3Artifact struct {
+	Label           string                       `json:"label"`
 	ID              string                       `json:"id"`
 	OwnerSessionID  string                       `json:"owner_session_id"`
 	IntentReference string                       `json:"intent_reference,omitempty"`
