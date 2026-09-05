@@ -49,6 +49,8 @@ filter_allowed() {
   # - runtime_bash_execution.go and runtime.go use os.MkdirTemp("", ...) for disposable per-command scratch; Go honors TMPDIR when present and selects the platform temp root otherwise, independent of the service manager.
   # - local deploy workspace strings are mount targets or API route names, not Swarm-owned daemon storage roots.
   # - Go imports of the canonical workspace package are package identities, not filesystem storage defaults.
+  # - ArtifactV3AuthorService.Rename renames a validated project file within one private turn;
+  #   allow only its exact call, not other renames or storage defaults in the author service.
   # Workspace path tokens require a lexical boundary so schema identifiers such as workspace_path are not mistaken for filesystem paths.
   grep -Ev \
     -e '^pkg/storagecontract/storagecontract\.go:.*(HOME|XDG_|\.local|\.config|Library|Desktop|Documents|Downloads|forbidden|reject|~|home-relative|WorkspaceRoots)' \
@@ -65,6 +67,7 @@ filter_allowed() {
     -e '^swarmd/internal/store/pebble/(keys|auth_store|auth_vault|worktree_store)\.go:.*(legacy|migrat|Migrate)' \
     -e '^pkg/startupconfig/config\.go:.*migrate startup config' \
     -e '^(internal/launcher/(launcher|update)\.go|swarmd/internal/imagegen/service\.go):.*(os\.Rename|copyDir|copyDir\(|CopyDir)' \
+    -e '^swarmd/internal/tool/runtime_artifact_v3_author\.go:[0-9]+:[[:blank:]]*if err = os\.Rename\(filepath\.Join\(state\.root, filepath\.FromSlash\(source\)\), filepath\.Join\(state\.root, filepath\.FromSlash\(destination\)\)\); err == nil \{$' \
     || true
 }
 
@@ -101,7 +104,7 @@ fi
 migration_hits="$(run_scan '(os\.Rename\(|moveDirContents|CopyDir|copyDir|migration|migrate|Migration|Migrate)')"
 if [[ -n "${migration_hits}" ]]; then
   has_failures=1
-  echo "[storage-path-check] FAIL: storage migration code is present outside explicit read-only legacy diagnostics:"
+  echo "[storage-path-check] FAIL: potential storage migration code is present outside explicit diagnostics or reviewed non-migration operations:"
   echo "${migration_hits}"
 fi
 
@@ -112,7 +115,7 @@ fi
 echo "[storage-path-check] PASS"
 
 if [[ "${self_test}" == "1" ]]; then
-  tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/swarm-storage-gate.XXXXXX")"
+  tmp_dir="$(mktemp -d -t swarm-storage-gate.XXXXXX)"
   trap 'rm -rf "${tmp_dir}"' EXIT
   fixture="${tmp_dir}/bad-storage.sh"
   cat >"${fixture}" <<'EOF'
@@ -120,8 +123,8 @@ if [[ "${self_test}" == "1" ]]; then
 SWARMD_DATA_DIR="${HOME}/.local/share/swarmd"
 SWARMD_LOCK_PATH="${SWARMD_DATA_DIR}/swarmd.lock"
 EOF
-  if "${BASH_SOURCE[0]}" "${fixture}" >/tmp/swarm-storage-gate-self-test.out 2>&1; then
-    cat /tmp/swarm-storage-gate-self-test.out >&2 || true
+  if "${BASH_SOURCE[0]}" "${fixture}" >"${tmp_dir}/self-test.out" 2>&1; then
+    cat "${tmp_dir}/self-test.out" >&2 || true
     echo "[storage-path-check] FAIL: home-path negative fixture unexpectedly passed" >&2
     exit 1
   fi
@@ -131,8 +134,8 @@ package fixture
 
 const workspace_path = "schema field"
 EOF
-  if ! "${BASH_SOURCE[0]}" "${workspace_identifier_fixture}" >/tmp/swarm-storage-gate-self-test.out 2>&1; then
-    cat /tmp/swarm-storage-gate-self-test.out >&2 || true
+  if ! "${BASH_SOURCE[0]}" "${workspace_identifier_fixture}" >"${tmp_dir}/self-test.out" 2>&1; then
+    cat "${tmp_dir}/self-test.out" >&2 || true
     echo "[storage-path-check] FAIL: workspace identifier fixture was mistaken for a filesystem path" >&2
     exit 1
   fi
@@ -141,11 +144,11 @@ EOF
 #!/usr/bin/env bash
 SWARMD_DATA_DIR="/workspace/swarmd"
 EOF
-  if "${BASH_SOURCE[0]}" "${workspace_fixture}" >/tmp/swarm-storage-gate-self-test.out 2>&1; then
-    cat /tmp/swarm-storage-gate-self-test.out >&2 || true
+  if "${BASH_SOURCE[0]}" "${workspace_fixture}" >"${tmp_dir}/self-test.out" 2>&1; then
+    cat "${tmp_dir}/self-test.out" >&2 || true
     echo "[storage-path-check] FAIL: workspace-path negative fixture unexpectedly passed" >&2
     exit 1
   fi
-  rm -f /tmp/swarm-storage-gate-self-test.out
+  rm -f "${tmp_dir}/self-test.out"
   echo "[storage-path-check] self-test PASS"
 fi
