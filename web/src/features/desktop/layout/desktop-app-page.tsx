@@ -98,6 +98,7 @@ import {
 const DESKTOP_SIDEBAR_LAYOUT_STORAGE_KEY = 'swarm.web.desktop.sidebar.layout'
 const DESKTOP_PENDING_UPDATE_TOAST_STORAGE_KEY = 'swarm.web.desktop.pending_update_toast'
 const SIDEBAR_ACTIVITY_GRACE_MS = 15_000
+const SIDEBAR_NEEDS_REVIEW_VISIBLE_ROOT_LIMIT = 5
 const MOBILE_SIDEBAR_SWIPE_EDGE_PX = 28
 const MOBILE_SIDEBAR_SWIPE_MIN_X_PX = 72
 const MOBILE_SIDEBAR_SWIPE_MAX_Y_PX = 48
@@ -2282,12 +2283,16 @@ interface RenderSidebarSessionGroupsInput {
   bulkArchivePending: boolean
   masterSelectionGroup: SidebarSessionGroupID | null
   reviewCleanupOpen: boolean
+  collapsedGroups: Readonly<Partial<Record<SidebarSessionGroupID, boolean>>>
+  expandedOverflowGroups: Readonly<Partial<Record<SidebarSessionGroupID, boolean>>>
   gitHasGit: boolean
   gitAheadCount: number
   gitBehindCount: number
   gitDirtyCount: number
   onOpenGit: () => void
   onToggleReviewCleanup: () => void
+  onToggleGroupCollapsed: (group: SidebarSessionGroupID) => void
+  onToggleGroupOverflow: (group: SidebarSessionGroupID) => void
   onEnterSelectionMode: (group: SidebarSessionGroupID) => void
   onClearSelection: () => void
   onBulkArchive: () => void
@@ -2339,6 +2344,19 @@ export const SIDEBAR_SESSION_GROUPS = [
   { id: 'active_chats', label: 'Active Chats', showInactiveThreshold: true },
 ] as const satisfies ReadonlyArray<{ id: SidebarSessionGroupID; label: string; showInactiveThreshold: boolean }>
 
+export function sidebarVisibleGroupNodes(
+  nodes: SidebarSessionNode[],
+  group: SidebarSessionGroupID,
+  overflowExpanded: boolean,
+): SidebarSessionNode[] {
+  if (group !== 'needs_review' || overflowExpanded) return nodes
+  let visibleRoots = 0
+  return nodes.filter((node) => {
+    if (node.depth === 0) visibleRoots += 1
+    return visibleRoots <= SIDEBAR_NEEDS_REVIEW_VISIBLE_ROOT_LIMIT
+  })
+}
+
 function renderSidebarSessionGroups(input: RenderSidebarSessionGroupsInput): JSX.Element[] | null {
   if (input.nodes.length === 0) return null
   const grouped = new Map<SidebarSessionGroupID, SidebarSessionNode[]>()
@@ -2355,6 +2373,23 @@ function renderSidebarSessionGroups(input: RenderSidebarSessionGroupsInput): JSX
   return SIDEBAR_SESSION_GROUPS.flatMap((group) => {
     const nodes = grouped.get(group.id) ?? []
     if (nodes.length === 0) return []
+    const collapsed = input.collapsedGroups[group.id]
+    const overflowExpanded = input.expandedOverflowGroups[group.id]
+    const rootCount = nodes.filter((node) => node.depth === 0).length
+    const hasOverflow = group.id === 'needs_review' && rootCount > SIDEBAR_NEEDS_REVIEW_VISIBLE_ROOT_LIMIT
+    const visibleNodes = sidebarVisibleGroupNodes(nodes, group.id, overflowExpanded)
+    const hiddenRootCount = Math.max(0, rootCount - SIDEBAR_NEEDS_REVIEW_VISIBLE_ROOT_LIMIT)
+    const collapseControl = (
+      <button
+        type="button"
+        className="grid h-5 w-5 shrink-0 place-items-center rounded text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
+        aria-label={`${collapsed ? 'Expand' : 'Collapse'} ${group.label} section`}
+        aria-expanded={!collapsed}
+        onClick={() => input.onToggleGroupCollapsed(group.id)}
+      >
+        {collapsed ? <ChevronRight size={13} /> : <ChevronDown size={13} />}
+      </button>
+    )
     const groupControls = (
       <div className={`ml-auto flex items-center gap-1 normal-case tracking-normal transition-opacity ${group.id === 'needs_review' || input.selectionMode ? 'opacity-100' : 'opacity-0 group-hover/section:opacity-100 group-focus-within/section:opacity-100'}`}>
             {sidebarShouldShowReviewAction(group.id, input.selectionMode) ? (
@@ -2416,18 +2451,22 @@ function renderSidebarSessionGroups(input: RenderSidebarSessionGroupsInput): JSX
               ) : null}
               {groupControls}
             </div>
-            <div data-sidebar-needs-review-heading className="flex min-h-6 items-center px-1 pt-1 text-[9px] font-semibold uppercase tracking-[0.16em] text-[var(--app-text-subtle)]">
+            <div data-sidebar-needs-review-heading className="flex min-h-6 items-center gap-1 px-1 pt-1 text-[9px] font-semibold uppercase tracking-[0.16em] text-[var(--app-text-subtle)]">
+              {collapseControl}
               <span>{group.label}</span>
+              <span className="ml-1 tabular-nums tracking-normal">{rootCount}</span>
             </div>
           </>
         ) : (
           <div className="flex min-h-6 items-center gap-1 px-1 pt-1 text-[9px] font-semibold uppercase tracking-[0.16em] text-[var(--app-text-subtle)]">
+            {collapseControl}
             <span>{group.label}</span>
+            <span className="tabular-nums tracking-normal">{rootCount}</span>
             {groupControls}
           </div>
         )}
-        <div className="grid gap-1">
-          {nodes.map((node) => (
+        {!collapsed ? <div className="grid gap-1">
+          {visibleNodes.map((node) => (
           <SessionRow
             key={node.session.id}
             active={input.routeSessionId === node.session.id}
@@ -2455,7 +2494,19 @@ function renderSidebarSessionGroups(input: RenderSidebarSessionGroupsInput): JSX
             onRename={input.onRename}
           />
           ))}
-        </div>
+          {hasOverflow ? (
+            <button
+              type="button"
+              className="flex min-h-7 items-center justify-center gap-1 rounded px-2 text-[10px] font-medium text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
+              aria-label={overflowExpanded ? 'Show fewer Needs Review sessions' : `Show ${hiddenRootCount} more Needs Review sessions`}
+              aria-expanded={overflowExpanded}
+              onClick={() => input.onToggleGroupOverflow(group.id)}
+            >
+              <ChevronDown size={14} className={cn('transition-transform', overflowExpanded && 'rotate-180')} />
+              <span>{overflowExpanded ? 'Show fewer' : `${hiddenRootCount} more`}</span>
+            </button>
+          ) : null}
+        </div> : null}
       </section>
     )]
   })
@@ -2555,6 +2606,24 @@ export function DesktopAppPage() {
   const lastSelectedSidebarRootIDRef = useRef<string | null>(null)
   const [bulkArchivePending, setBulkArchivePending] = useState(false)
   const [needsReviewCleanupOpen, setNeedsReviewCleanupOpen] = useState(false)
+  const [collapsedSidebarGroups, setCollapsedSidebarGroups] = useState<Partial<Record<SidebarSessionGroupID, boolean>>>({
+    needs_review: false,
+    in_progress: false,
+    pinned: false,
+    active_chats: false,
+  })
+  const [expandedSidebarOverflowGroups, setExpandedSidebarOverflowGroups] = useState<Partial<Record<SidebarSessionGroupID, boolean>>>({
+    needs_review: false,
+    in_progress: false,
+    pinned: false,
+    active_chats: false,
+  })
+  const handleToggleSidebarGroupCollapsed = useCallback((group: SidebarSessionGroupID) => {
+    setCollapsedSidebarGroups((current) => ({ ...current, [group]: !current[group] }))
+  }, [])
+  const handleToggleSidebarGroupOverflow = useCallback((group: SidebarSessionGroupID) => {
+    setExpandedSidebarOverflowGroups((current) => ({ ...current, [group]: !current[group] }))
+  }, [])
   const [sidebarThresholdSaving, setSidebarThresholdSaving] = useState(false)
   const [sidebarNow, setSidebarNow] = useState(() => Date.now())
   const [previousChatSessionId, setPreviousChatSessionId] = useState<string | null>(null)
@@ -4363,12 +4432,16 @@ export function DesktopAppPage() {
     bulkArchivePending,
     masterSelectionGroup: sidebarMasterSelectionGroup,
     reviewCleanupOpen: needsReviewCleanupOpen,
+    collapsedGroups: collapsedSidebarGroups,
+    expandedOverflowGroups: expandedSidebarOverflowGroups,
     gitHasGit: topWorkspaceHasGit,
     gitAheadCount: topWorkspaceGitAheadCount,
     gitBehindCount: topWorkspaceGitBehindCount,
     gitDirtyCount: topWorkspaceGitDirtyCount,
     onOpenGit: () => openMainWorktreeGitPanel(topWorkspacePath, topWorkspaceLabel),
     onToggleReviewCleanup: () => setNeedsReviewCleanupOpen((open) => !open),
+    onToggleGroupCollapsed: handleToggleSidebarGroupCollapsed,
+    onToggleGroupOverflow: handleToggleSidebarGroupOverflow,
     onEnterSelectionMode: handleEnterSidebarSelectionMode,
     onClearSelection: handleClearSidebarSelection,
     onBulkArchive: () => { void handleBulkArchiveSidebar() },
@@ -5220,12 +5293,16 @@ export function DesktopAppPage() {
                     bulkArchivePending,
                     masterSelectionGroup: sidebarMasterSelectionGroup,
                     reviewCleanupOpen: needsReviewCleanupOpen,
+                    collapsedGroups: collapsedSidebarGroups,
+                    expandedOverflowGroups: expandedSidebarOverflowGroups,
                     gitHasGit: topWorkspaceHasGit,
                     gitAheadCount: topWorkspaceGitAheadCount,
                     gitBehindCount: topWorkspaceGitBehindCount,
                     gitDirtyCount: topWorkspaceGitDirtyCount,
                     onOpenGit: () => openMainWorktreeGitPanel(topWorkspacePath, topWorkspaceLabel),
                     onToggleReviewCleanup: () => setNeedsReviewCleanupOpen((open) => !open),
+                    onToggleGroupCollapsed: handleToggleSidebarGroupCollapsed,
+                    onToggleGroupOverflow: handleToggleSidebarGroupOverflow,
                     onEnterSelectionMode: handleEnterSidebarSelectionMode,
                     onClearSelection: handleClearSidebarSelection,
                     onBulkArchive: () => { void handleBulkArchiveSidebar() },
