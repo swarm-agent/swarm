@@ -21,13 +21,19 @@ func bindTaskNativeArtifactSelection(parsed *taskCallArguments, launches []taskL
 	if !managed {
 		return nil
 	}
-	if selection.SessionID == "" || selection.CommitOID == "" || selection.ProjectionSeq == 0 || selection.TargetPartIDs == nil || selection.RevisionRef != "revision-"+selection.CommitOID {
+	if selection.SessionID == "" || selection.CommitOID == "" || selection.ProjectionSeq == 0 || selection.RevisionRef != "revision-"+selection.CommitOID {
 		return errors.New("task native Artifact Studio selection is missing authenticated source context")
 	}
 	if parsed.SourceArtifact != nil || parsed.ArtifactV2Source != nil {
 		return errors.New("task native Artifact Studio selection cannot use a legacy source")
 	}
-	source := &taskArtifactV3Source{SessionID: selection.SessionID, ArtifactID: selection.ArtifactID, CommitOID: selection.CommitOID, ProjectionSeq: selection.ProjectionSeq, TargetPartIDs: append([]string(nil), (*selection.TargetPartIDs)...)}
+	// Admission leaves TargetPartIDs nil for an authenticated whole-artifact
+	// selection. It is an optional intent boundary, not authentication evidence.
+	var targetPartIDs []string
+	if selection.TargetPartIDs != nil {
+		targetPartIDs = append([]string(nil), (*selection.TargetPartIDs)...)
+	}
+	source := &taskArtifactV3Source{SessionID: selection.SessionID, ArtifactID: selection.ArtifactID, CommitOID: selection.CommitOID, ProjectionSeq: selection.ProjectionSeq, TargetPartIDs: targetPartIDs}
 	matches := func(requested *taskArtifactV3Source) bool {
 		return requested == nil || (requested.SessionID == source.SessionID && requested.ArtifactID == source.ArtifactID && requested.CommitOID == source.CommitOID && requested.ProjectionSeq == source.ProjectionSeq && (len(requested.TargetPartIDs) == 0 || equalStringSet(requested.TargetPartIDs, source.TargetPartIDs)))
 	}
