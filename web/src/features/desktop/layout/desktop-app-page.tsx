@@ -2381,7 +2381,7 @@ function renderSidebarSessionGroups(input: RenderSidebarSessionGroupsInput): JSX
     const nodes = grouped.get(group.id) ?? []
     if (nodes.length === 0) return []
     const collapsed = input.collapsedGroups[group.id]
-    const overflowExpanded = input.expandedOverflowGroups[group.id]
+    const overflowExpanded = input.expandedOverflowGroups[group.id] ?? false
     const rootCount = nodes.filter((node) => node.depth === 0).length
     const hasOverflow = group.id === 'needs_review' && rootCount > SIDEBAR_NEEDS_REVIEW_VISIBLE_ROOT_LIMIT
     const visibleNodes = sidebarVisibleGroupNodes(nodes, group.id, overflowExpanded)
