@@ -217,6 +217,10 @@ rendererCapacityAcquired:
 		chromedp.ExecPath(r.BinaryPath),
 		chromedp.UserDataDir(filepath.Join(jobDir, "profile")),
 		chromedp.Flag("headless", true),
+		// Seek acknowledgements run on the main thread. Keep CSS animation
+		// sampling there too so a compositor timeline cannot deliver a stale
+		// frame after currentTime is set. The pixel stability audit still runs.
+		chromedp.Flag("disable-threaded-animation", true),
 		chromedp.Flag("no-sandbox", false),
 		chromedp.Flag("disable-background-networking", true),
 		chromedp.Flag("disable-component-update", true),
