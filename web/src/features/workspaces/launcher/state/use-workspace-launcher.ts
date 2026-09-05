@@ -16,6 +16,7 @@ import { sortDiscoveredWorkspaces, dedupeDiscoveredAgainstWorkspaces } from '../
 import { syncWorkspaceOverviewWorktreeState } from '../services/workspace-overview-cache'
 import { browseWorkspacePath } from '../queries/browse-workspace-path'
 import { listWorkspaces } from '../queries/list-workspaces'
+import { discoverWorkspaces } from '../queries/discover-workspaces'
 import { uiSettingsQueryKey, uiSettingsQueryOptions, workspaceOverviewQueryKey, workspaceOverviewQueryOptions } from '../../../queries/query-options'
 import type {
   WorkspaceBrowseResult,
@@ -298,18 +299,28 @@ export function useWorkspaceLauncher(options: UseWorkspaceLauncherOptions = {}):
     setLoadError(null)
 
     try {
-      const overview = await queryClient.fetchQuery({
+      const overviewPromise = queryClient.fetchQuery({
         ...workspaceOverviewQueryOptions(roots, 25),
         staleTime: 0,
       })
+      const discoveryPromise = discoverWorkspaces(1000, roots)
+        .then((entries) => ({ entries, error: null as unknown }))
+        .catch((error: unknown) => ({ entries: null, error }))
+      const overview = await overviewPromise
       const sorted = sortWorkspaces(overview.workspaces)
       const knownPaths = new Set(sorted.map((workspace) => workspace.path))
       const nextCurrentWorkspacePath = overview.currentWorkspace?.resolvedPath?.trim() || null
       setWorkspaces((current) => (workspacesEqual(current, sorted) ? current : sorted))
-      setDiscovered(sortDiscoveredWorkspaces(dedupeDiscoveredAgainstWorkspaces(overview.discovered, Array.from(knownPaths))))
       setCurrentWorkspacePath((current) => (current === nextCurrentWorkspacePath ? current : nextCurrentWorkspacePath))
+      setLoading(false)
       if (applyDocumentTheme) {
         applyWorkspaceTheme(resolveEffectiveThemeId(nextCurrentWorkspacePath, sorted, globalThemeId))
+      }
+      const discoveryResult = await discoveryPromise
+      if (discoveryResult.entries) {
+        setDiscovered(sortDiscoveredWorkspaces(dedupeDiscoveredAgainstWorkspaces(discoveryResult.entries, Array.from(knownPaths))))
+      } else {
+        setActionError(discoveryResult.error instanceof Error ? discoveryResult.error.message : 'Failed to discover workspaces')
       }
       if (browseDuringRefresh) {
         if (roots.length > 0) {

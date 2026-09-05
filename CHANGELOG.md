@@ -38,6 +38,7 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ### Fixed
 
+- Removed workspace-launcher startup lag by paginating overview enrichment before Git/session work, scanning page Git state with bounded concurrency, and loading home-directory discovery off the saved-workspace critical path.
 - Gave managed Designers one bounded refinement round for allowlisted author-correctable animation failures, using a fresh immutable candidate in the same collection while preserving failed artifacts and all strict trust checks.
 - Made managed Designer task failures report the artifact's concrete failure code separately from trusted-lineage and composition rejection.
 - Removed the retired hosted remote-deploy product surface while preserving Swarm targets, topology runtime placement, and workspace bindings.
@@ -70,7 +71,7 @@ Release entries are the source checkpoint for public docs verification. Each ent
 - Public command docs should describe `/voice` as experimental terminal voice input only, not as a fully supported voice product.
 - Public TUI workspace guidance should explain that `/workspace save` saves and switches to an unsaved Git launch directory.
 - Public video documentation should cover deterministic HTML animation export, trusted registered audio sources, transcription and deterministic audio analysis, reviewed soundtrack proposals, and the current no-fades/no-looping/no-ducking limits.
-- Docs impact: none for managed Designer bounded refinement/failure diagnostics, the Tailscale host-update authorization correction, cryptography dependency correction, plan execution badge cleanup, Desktop sidebar responsiveness refinements, or internal test-governance and release-gate wiring.
+- Docs impact: none for managed Designer bounded refinement/failure diagnostics, the Tailscale host-update authorization correction, cryptography dependency correction, plan execution badge cleanup, Desktop sidebar and workspace-launcher responsiveness refinements, or internal test-governance and release-gate wiring.
 
 ## v0.1.19 - 2026-05-01
 

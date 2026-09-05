@@ -132,6 +132,51 @@ func TestWorkspaceOverviewIncludesTopologyRoutesFromWorkspaceBindings(t *testing
 	}
 }
 
+// Requirement: handleWorkspaceOverview must paginate before workspaceOverviewGitStatuses/session enrichment,
+// and saved-workspace callers may skip discovery. Otherwise one slow repository or home scan can stall the launcher.
+// This handler-level test is the narrowest layer proving page identity, metadata, and discovery suppression together.
+func TestWorkspaceOverviewPaginatesBeforeEnrichmentAndCanSkipDiscovery(t *testing.T) {
+	server, _, _ := newWorkspaceOverviewTopologyTestServer(t)
+	setReplicateFakeSwarmState(server, swarmruntime.LocalState{
+		Node: swarmruntime.LocalNodeState{SwarmID: "host-swarm-id", Name: "host-swarm", Role: "master"},
+	})
+	secondWorkspacePath := filepath.Join(t.TempDir(), "workspace-two")
+	if err := os.MkdirAll(filepath.Join(secondWorkspacePath, ".git"), 0o755); err != nil {
+		t.Fatalf("mkdir second workspace: %v", err)
+	}
+	if _, err := server.workspace.AddForPrincipal(testPrincipal(), secondWorkspacePath, "workspace-two", "", false); err != nil {
+		t.Fatalf("add second workspace: %v", err)
+	}
+
+	allWorkspaces, err := server.workspace.ListKnownForPrincipal(testPrincipal(), 1000)
+	if err != nil {
+		t.Fatalf("list expected workspaces: %v", err)
+	}
+	if len(allWorkspaces) != 2 {
+		t.Fatalf("workspace count=%d want=2", len(allWorkspaces))
+	}
+
+	recorder := httptest.NewRecorder()
+	request := withTestPrincipal(httptest.NewRequest(http.MethodGet, "/v1/workspace/overview?cursor=1&limit=1&workspace_limit=1000&include_discovered=false", nil))
+	server.Handler().ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var response workspaceOverviewResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode overview: %v", err)
+	}
+	if len(response.Workspaces) != 1 || response.Workspaces[0].Path != allWorkspaces[1].Path {
+		t.Fatalf("paged workspaces=%+v want path=%q", response.Workspaces, allWorkspaces[1].Path)
+	}
+	if response.Cursor != 1 || response.Limit != 1 || response.TotalWorkspaces != 2 || response.HasMore || response.NextCursor != 0 {
+		t.Fatalf("pagination metadata=%+v", response)
+	}
+	if len(response.Directories) != 0 {
+		t.Fatalf("directories=%+v want discovery skipped", response.Directories)
+	}
+}
+
 func TestWorkspaceOverviewSessionStatusUsesCanonicalRunStateOnly(t *testing.T) {
 	server, workspacePath, _ := newWorkspaceOverviewTopologyTestServer(t)
 	setReplicateFakeSwarmState(server, swarmruntime.LocalState{

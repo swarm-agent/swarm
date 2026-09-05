@@ -6,6 +6,7 @@ const source = await readFile(new URL('./fetch-workspace-overview.ts', import.me
 
 test('workspace overview fetches every catalog page instead of truncating the global list', () => {
   assert.match(source, /limit: '100'/)
+  assert.match(source, /include_discovered: 'false'/)
   assert.match(source, /workspaces\.push\(\.\.\.\(response\.workspaces \?\? \[\]\)\)/)
   assert.match(source, /response\.has_more/)
   assert.match(source, /response\.next_cursor/)

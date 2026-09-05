@@ -6,6 +6,7 @@ export async function fetchWorkspaceOverview(roots: string[] = [], sessionLimit 
     workspace_limit: '1000',
     discover_limit: '1000',
     limit: '100',
+    include_discovered: 'false',
   })
   if (sessionLimit > 0) {
     search.set('session_limit', String(sessionLimit))

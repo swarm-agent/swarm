@@ -16,6 +16,8 @@ test('launcher initial refresh can avoid duplicate overview and browse waterfall
   assert.match(source, /browseDuringRefresh = options\.browseDuringRefresh \?\? true/)
   assert.match(source, /if \(!autoRefresh\) \{\s*setLoading\(false\)\s*return\s*\}/s)
   assert.match(source, /if \(browseDuringRefresh\) \{\s*if \(roots\.length > 0\)/s)
+  assert.match(source, /const discoveryPromise = discoverWorkspaces\(1000, roots\)/)
+  assert.ok(source.indexOf('setLoading(false)') < source.indexOf('const discoveryResult = await discoveryPromise'))
 })
 
 test('launcher polls backend state only while a workspace definition is pending', () => {
