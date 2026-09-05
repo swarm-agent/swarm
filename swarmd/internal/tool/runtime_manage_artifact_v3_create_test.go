@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -147,21 +148,106 @@ func TestManageArtifactCreateUsesDirectArtifactV3HTMLPath(t *testing.T) {
 	}
 }
 
+// Requirement: createDirectArtifactV3HTML must reject invalid media and unresolved
+// region references before allocating an author turn or publishing any revision.
+// This tool-layer test keeps those negative boundaries independent of Part count.
 func TestManageArtifactCreateV3RejectsNonHTMLAndMissingStableParts(t *testing.T) {
+	repository := &directArtifactV3RepoFake{}
 	runtime := NewRuntime(1)
-	runtime.SetArtifactV3AuthorService(NewArtifactV3AuthorService(t.TempDir(), &directArtifactV3RepoFake{}, &artifactV3BuilderFake{}, &artifactV3PreviewerFake{}))
+	runtime.SetArtifactV3AuthorService(NewArtifactV3AuthorService(t.TempDir(), repository, &artifactV3BuilderFake{}, &artifactV3PreviewerFake{}))
 	scope := WorkspaceScope{SessionID: "session-1", Principal: identity.Principal{Type: identity.PrincipalTypeUser, AccountScopeID: "account-1", UserID: "user-1"}}
 	ctx := WithArtifactRunContext(context.Background(), ArtifactRunContext{SessionID: "session-1", RunID: "run-1"})
 	for name, arguments := range map[string]string{
 		"non-html":               `{"action":"create","filename":"note.txt","media_type":"text/plain","content":"text"}`,
 		"missing-part":           `{"action":"create","filename":"index.html","media_type":"text/html","content":"<!doctype html><html><body><div>no stable part</div></body></html>"}`,
 		"requested-part-missing": `{"action":"create","filename":"index.html","media_type":"text/html","content":"<!doctype html><html><body><main id=\"hero\">Hero</main></body></html>","parts":[{"id":"pricing","label":"Pricing","kind":"semantic"}]}`,
-		"ambiguous-extra-parts":  `{"action":"create","filename":"index.html","media_type":"text/html","content":"<!doctype html><html><body><main id=\"page\"><section id=\"hero\">Hero</section><section id=\"pricing\">Team $29</section><footer id=\"footer\">Footer</footer></main></body></html>"}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			if _, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, Call{CallID: name, Name: "manage_artifact", Arguments: arguments}); err == nil {
 				t.Fatal("expected rejection")
 			}
+			if len(repository.turns) != 0 || len(repository.submits) != 0 || len(repository.selected) != 0 {
+				t.Fatal("invalid input allocated or published an Artifact V3 turn")
+			}
 		})
+	}
+}
+
+// Requirement: createDirectArtifactV3HTML derives a variable number of stable
+// regions without requiring an explicit Parts array or a three-Part layout.
+// Threat: a page wrapper or fourth section must not reject a valid whole project;
+// explicit selection must still control IDs, labels, and order. This tool-layer
+// test exercises the real author service with hermetic build/preview fakes and
+// verifies the submitted manifest and unchanged HTML, not only a ready status.
+func TestManageArtifactCreateV3FlexiblePartCounts(t *testing.T) {
+	for _, count := range []int{1, 2, 3, 4, 8, 16} {
+		for _, explicit := range []bool{false, true} {
+			t.Run(fmt.Sprintf("count-%d/explicit-%t", count, explicit), func(t *testing.T) {
+				repository := &directArtifactV3RepoFake{}
+				author := NewArtifactV3AuthorService(t.TempDir(), repository, &artifactV3BuilderFake{}, &artifactV3PreviewerFake{})
+				runtime := NewRuntime(1)
+				runtime.SetArtifactV3AuthorService(author)
+				scope := WorkspaceScope{SessionID: "session-1", Principal: identity.Principal{Type: identity.PrincipalTypeUser, AccountScopeID: "account-1", UserID: "user-1"}}
+				ctx, cancel := context.WithTimeout(WithArtifactRunContext(context.Background(), ArtifactRunContext{SessionID: "session-1", RunID: "run-1"}), 10*time.Second)
+				defer cancel()
+
+				// Include a wrapper and navigation to reproduce the original failure.
+				var html strings.Builder
+				html.WriteString(`<!doctype html><html><body><main id="page"><nav id="navigation">Navigation</nav>`)
+				for index := 0; index < count; index++ {
+					fmt.Fprintf(&html, `<section id="part-%d">Section %d</section>`, index, index)
+				}
+				html.WriteString(`</main></body></html>`)
+				args := map[string]any{"action": "create", "filename": "index.html", "media_type": "text/html", "content": html.String()}
+				wantIDs := []string{"page", "navigation"}
+				wantLabels := []string{"Page", "Navigation"}
+				if explicit {
+					wantIDs, wantLabels = nil, nil
+					requested := make([]map[string]any, 0, count)
+					for index := count - 1; index >= 0; index-- {
+						id, label := fmt.Sprintf("part-%d", index), fmt.Sprintf("Selected %d", index)
+						requested = append(requested, map[string]any{"id": id, "label": label, "kind": "semantic"})
+						wantIDs, wantLabels = append(wantIDs, id), append(wantLabels, label)
+					}
+					args["parts"] = requested
+				} else {
+					for index := 0; index < count; index++ {
+						wantIDs = append(wantIDs, fmt.Sprintf("part-%d", index))
+						wantLabels = append(wantLabels, fmt.Sprintf("Part %d", index))
+					}
+				}
+				arguments, err := json.Marshal(args)
+				if err != nil {
+					t.Fatal(err)
+				}
+				output, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, Call{CallID: "flexible-parts", Name: "manage_artifact", Arguments: string(arguments)})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(repository.turns) != 1 || len(repository.submits) != 1 || !repository.submits[0].Initial {
+					t.Fatalf("expected one initial publication: turns=%d submits=%#v", len(repository.turns), repository.submits)
+				}
+				project := repository.submits[0].Project
+				if string(project["index.html"]) != html.String() {
+					t.Fatal("Part discovery rewrote the authored HTML")
+				}
+				var manifest pebblestore.ArtifactV3Manifest
+				if err := json.Unmarshal(project[pebblestore.ArtifactV3ManifestFilename], &manifest); err != nil {
+					t.Fatal(err)
+				}
+				if len(manifest.Parts) != len(wantIDs) {
+					t.Fatalf("parts=%#v want IDs=%v", manifest.Parts, wantIDs)
+				}
+				for index, part := range manifest.Parts {
+					wantLocator := pebblestore.ArtifactV3Locator{Kind: "selector", Path: "index.html", Value: "#" + wantIDs[index]}
+					if part.ID != wantIDs[index] || part.Label != wantLabels[index] || !reflect.DeepEqual(part.Locator, wantLocator) {
+						t.Fatalf("part[%d]=%#v want ID=%s label=%s locator=%#v", index, part, wantIDs[index], wantLabels[index], wantLocator)
+					}
+				}
+				if !strings.Contains(output, fmt.Sprintf(`"part_count":%d`, len(wantIDs))) {
+					t.Fatalf("output did not report derived count: %s", output)
+				}
+			})
+		}
 	}
 }

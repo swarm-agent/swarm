@@ -53,9 +53,6 @@ func (r *Runtime) createDirectArtifactV3HTML(ctx context.Context, scope Workspac
 	if err != nil {
 		return nil, err
 	}
-	if len(requestedParts) == 0 && len(parts) > 3 {
-		return nil, errors.New("manage_artifact create found more than three stable HTML regions; for a three-Part artifact, pass exactly the three requested Parts so wrapper or navigation IDs do not become extra Parts")
-	}
 	if len(requestedParts) != 0 {
 		derivedByID := make(map[string]pebblestore.SessionArtifactPart, len(parts))
 		for _, part := range parts {
