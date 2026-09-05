@@ -357,15 +357,19 @@ rendererCapacityAcquired:
 	representative := []int{0, (frameCount / 2) * 1000 / renderFPS, (frameCount - 1) * 1000 / renderFPS}
 	seenRepresentative := make(map[int]struct{}, len(representative))
 	audited := 0
+	var preview []byte
 	for _, timeMS := range representative {
 		if _, seen := seenRepresentative[timeMS]; seen {
 			continue
 		}
 		seenRepresentative[timeMS] = struct{}{}
-		_, frameDiagnostics, err := captureAnimationFrame(browserCtx, timeMS, true)
+		frame, frameDiagnostics, err := captureAnimationFrame(browserCtx, timeMS, true)
 		diagnostics = append(diagnostics, frameDiagnostics...)
 		if err != nil {
 			return AnimationResult{DurationMS: req.DurationMS, FPS: req.FPS, FrameCount: frameCount, Timings: timings, Diagnostics: boundedAnimationDiagnostics(diagnostics)}, err
+		}
+		if timeMS == 0 {
+			preview = append([]byte(nil), frame...)
 		}
 		audited++
 		emit("deterministic_preflight", audited, len(representative))
@@ -443,7 +447,7 @@ rendererCapacityAcquired:
 	if err != nil || len(mp4) == 0 || len(mp4) > MaxMP4Bytes {
 		return AnimationResult{DurationMS: req.DurationMS, FPS: encoding.FPS, Quality: encoding.Quality, FrameCount: frameCount, Timings: timings, Diagnostics: boundedAnimationDiagnostics(diagnostics)}, NewError("animation_mp4_invalid", "encoded MP4 is missing or exceeds fixed bounds")
 	}
-	return AnimationResult{MP4: mp4, DurationMS: req.DurationMS, FPS: encoding.FPS, Quality: encoding.Quality, FrameCount: frameCount, Timings: timings, Diagnostics: boundedAnimationDiagnostics(diagnostics)}, nil
+	return AnimationResult{MP4: mp4, PreviewPNG: preview, DurationMS: req.DurationMS, FPS: encoding.FPS, Quality: encoding.Quality, FrameCount: frameCount, Timings: timings, Diagnostics: boundedAnimationDiagnostics(diagnostics)}, nil
 }
 
 func animationRenderTimeout(frameCount int) time.Duration {
