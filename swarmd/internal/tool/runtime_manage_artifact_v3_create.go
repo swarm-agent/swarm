@@ -31,10 +31,17 @@ func (r *Runtime) createDirectArtifactV3HTML(ctx context.Context, scope Workspac
 	}
 	for key := range args {
 		switch key {
-		case "action", "collection_name", "collection_description", "filename", "media_type", "content", "presentation", "parts", "narration_plan":
+		case "action", "collection_name", "collection_description", "filename", "media_type", "content", "presentation", "parts", "narration_plan", "animation_profile":
 		default:
 			return nil, fmt.Errorf("manage_artifact create for Artifact V3 HTML contains unsupported field %q", key)
 		}
+	}
+	profile, err := artifact.ParseAnimationProfile(args["animation_profile"])
+	if err != nil {
+		return nil, err
+	}
+	if profile != nil && profile.ProfileID != "motion_ui" {
+		return nil, errors.New("direct Artifact V3 HTML currently supports animation_profile motion_ui only")
 	}
 	_, narrationPlan := args["narration_plan"]
 	if narrationPlan {
@@ -88,6 +95,12 @@ func (r *Runtime) createDirectArtifactV3HTML(ctx context.Context, scope Workspac
 		for _, requested := range requestedParts {
 			derived := derivedByID[strings.TrimSpace(requested.ID)]
 			derived.Label = firstNonEmptyString(strings.TrimSpace(requested.Label), derived.Label)
+			if requested.Kind == "temporal" {
+				if profile == nil || requested.StartMs < 0 || requested.EndMs <= requested.StartMs || requested.EndMs > 120000 {
+					return nil, errors.New("native temporal Parts require motion_ui and 0 <= start_ms < end_ms <= 120000")
+				}
+				derived.StartMs, derived.EndMs = requested.StartMs, requested.EndMs
+			}
 			parts = append(parts, derived)
 		}
 	}
@@ -96,9 +109,15 @@ func (r *Runtime) createDirectArtifactV3HTML(ctx context.Context, scope Workspac
 		if strings.TrimSpace(part.Kind) != "selector" || strings.TrimSpace(part.Selector) == "" {
 			continue
 		}
+		var captureTime *int64
+		if part.EndMs > part.StartMs {
+			value := part.StartMs + (part.EndMs-part.StartMs)/2
+			captureTime = &value
+		}
 		manifestParts = append(manifestParts, pebblestore.ArtifactV3Part{
-			ID:    strings.TrimSpace(part.ID),
-			Label: strings.TrimSpace(part.Label),
+			CaptureTimeMS: captureTime,
+			ID:            strings.TrimSpace(part.ID),
+			Label:         strings.TrimSpace(part.Label),
 			Locator: pebblestore.ArtifactV3Locator{
 				Kind: "selector", Path: "index.html", Value: strings.TrimSpace(part.Selector),
 			},
@@ -107,7 +126,7 @@ func (r *Runtime) createDirectArtifactV3HTML(ctx context.Context, scope Workspac
 	if len(manifestParts) == 0 {
 		return nil, errors.New("manage_artifact create requires at least one stable HTML region id on header, main, section, article, nav, aside, or footer")
 	}
-	manifest, err := json.Marshal(pebblestore.ArtifactV3Manifest{SchemaVersion: pebblestore.ArtifactV3ManifestVersion, Entrypoint: "index.html", Parts: manifestParts})
+	manifest, err := json.Marshal(pebblestore.ArtifactV3Manifest{SchemaVersion: pebblestore.ArtifactV3ManifestVersion, Entrypoint: "index.html", Parts: manifestParts, AnimationProfile: profile})
 	if err != nil {
 		return nil, err
 	}
@@ -193,6 +212,9 @@ func (r *Runtime) createDirectArtifactV3HTML(ctx context.Context, scope Workspac
 		diagnostic := "the complete Artifact V3 HTML failed its build or browser preview gate"
 		if len(gate.Diagnostics) != 0 && strings.TrimSpace(gate.Diagnostics[0].Message) != "" {
 			diagnostic = strings.TrimSpace(gate.Diagnostics[0].Message)
+		}
+		if profile != nil && strings.Contains(diagnostic, "Part is missing or not visible") {
+			diagnostic += "; sequential scenes need explicit parts kind=temporal with start_ms/end_ms and the same stable HTML id, plus __SWARM_ANIMATION_V1__ {version:'swarm.animation/v1', ready:async()=>{}, seek:async ms=>({time_ms:ms})}; seek must pause and render the requested playhead deterministically"
 		}
 		return fail("build_preview_not_ready", errors.New(diagnostic))
 	}

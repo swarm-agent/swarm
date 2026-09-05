@@ -148,7 +148,7 @@ func (r *Runtime) reviseDirectArtifactV3HTML(ctx context.Context, scope Workspac
 			return nil, fmt.Errorf("manage_artifact revise_v3 must preserve stable Part %q in the complete corrected HTML", id)
 		}
 		basePart := baseByID[id]
-		manifestParts = append(manifestParts, pebblestore.ArtifactV3Part{ID: id, Label: strings.TrimSpace(basePart.Label), Locator: pebblestore.ArtifactV3Locator{Kind: "selector", Path: "index.html", Value: strings.TrimSpace(part.Selector)}})
+		manifestParts = append(manifestParts, pebblestore.ArtifactV3Part{ID: id, Label: strings.TrimSpace(basePart.Label), CaptureTimeMS: basePart.CaptureTimeMS, Locator: pebblestore.ArtifactV3Locator{Kind: "selector", Path: "index.html", Value: strings.TrimSpace(part.Selector)}})
 	}
 	if manifestBody, ok := baseProject[pebblestore.ArtifactV3ManifestFilename]; !ok || len(manifestBody) == 0 {
 		return nil, errors.New("manage_artifact revise_v3 exact base has no manifest")

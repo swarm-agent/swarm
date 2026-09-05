@@ -394,7 +394,15 @@ The first fact-check used four independent adversarial scopes (API, security, ru
 - **Workspace Action:** account-owned, workspace-scoped structured executable definition; definition management is not execution.
 - **Worktree:** isolated Git checkout/branch used for a session or delegated Coder scope.
 
+### Native temporal HTML preview correction (2026-09-05)
+
+Direct `manage_artifact create` accepts the closed `motion_ui` animation profile and stores its resolved snapshot in `swarm-artifact.json`. Explicit temporal Parts retain stable HTML selectors and a bounded midpoint `capture_time_ms`; static selectors remain required in every capture. `runtime/artifact_v3_runtime.go:artifactV3PreviewCaptureRequest` checks the exact reviewed profile, samples each temporal selector through the authored `swarm.animation/v1` ready/seek runtime, and never forcibly reveals hidden scenes. `htmlcapture.Request.StateRequiredSelectors` adds per-state requirements; temporal capture pauses rather than cancels animations and retains network, blocking, viewport, containment and exact-pixel stability gates. Other direct HTML profiles remain explicitly unsupported. No API route or auth boundary changes.
+
+Critical invariant / attack points: profile-budget override, missing or out-of-range time, hidden/clipped required scene, unstable playhead, absent seek acknowledgement, incomplete state evidence. Focused tool/runtime contract tests and a real Chrome negative/stability test pass twice. This proves bounded contracts and browser fixtures, not provider repeatability or general visual reliability. Existing static/flexible-Part tests also pass twice. New tests are unreviewed for critical-tier promotion; the live six-scene trials remain a separate gate.
+
 ## 14. Revision ledger and update template
+
+- 2026-09-05 — Native temporal preview: inspected ordinary create dispatch/schema, Part derivation, immutable manifest, exact-base revise metadata, runtime preview bridge, and renderer assertions. Corrected rejected profile input and simultaneous-visibility assumptions without weakening static/capture safety. Focused tests above passed twice; provider-backed exact-build validation pending.
 
 | Revision | Source | Date | Change | Evidence |
 | --- | --- | --- | --- | --- |

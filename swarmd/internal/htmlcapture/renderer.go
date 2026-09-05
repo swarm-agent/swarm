@@ -51,6 +51,10 @@ type Request struct {
 	// RequiredSelectors must resolve to visible elements fully contained inside
 	// the requested viewport before any ready evidence is returned.
 	RequiredSelectors []string
+	// Per-state selectors add to (never replace) globally required regions.
+	StateRequiredSelectors map[string][]string
+	// TemporalStates preserves paused animation samples rather than cancelling them.
+	TemporalStates bool
 	// ViewportWidth/ViewportHeight optionally tighten the capture below the fixed
 	// renderer maximum. Both must be set together; callers cannot exceed 1920x1080.
 	ViewportWidth  int
@@ -125,7 +129,23 @@ func (r *ChromedpRenderer) Capture(parent context.Context, req Request) ([]Resul
 	if len(req.StateIDs) < 1 || len(req.StateIDs) > MaxStates || req.Entry == "" || len(req.Files) == 0 || len(req.RequiredSelectors) > 256 {
 		return nil, NewError("capture_source_limit_exceeded", "capture request exceeds fixed renderer bounds")
 	}
-	for _, selector := range req.RequiredSelectors {
+	if len(req.StateRequiredSelectors) > MaxStates {
+		return nil, NewError("capture_source_limit_exceeded", "too many state selector groups")
+	}
+	allSelectors := append([]string(nil), req.RequiredSelectors...)
+	for state, selectors := range req.StateRequiredSelectors {
+		found := false
+		for _, id := range req.StateIDs {
+			if id == state {
+				found = true
+			}
+		}
+		if !found || len(selectors) > 256 {
+			return nil, NewError("capture_source_limit_exceeded", "invalid state selector group")
+		}
+		allSelectors = append(allSelectors, selectors...)
+	}
+	for _, selector := range allSelectors {
 		if strings.TrimSpace(selector) == "" || len(selector) > 512 {
 			return nil, NewError("capture_source_limit_exceeded", "capture required selector exceeds fixed renderer bounds")
 		}
@@ -271,7 +291,8 @@ func (r *ChromedpRenderer) Capture(parent context.Context, req Request) ([]Resul
 
 	results := make([]Result, 0, len(req.StateIDs))
 	for _, stateID := range req.StateIDs {
-		result, err := captureState(browserCtx, stateID, viewportWidth, viewportHeight, req.RequiredSelectors)
+		selectors := append(append([]string(nil), req.RequiredSelectors...), req.StateRequiredSelectors[stateID]...)
+		result, err := captureState(browserCtx, stateID, viewportWidth, viewportHeight, selectors, req.TemporalStates)
 		if err != nil {
 			return nil, err
 		}
@@ -295,7 +316,7 @@ type browserAudit struct {
 	Code string `json:"code"`
 }
 
-func captureState(browserCtx context.Context, stateID string, viewportWidth, viewportHeight int, requiredSelectors []string) ([]byte, error) {
+func captureState(browserCtx context.Context, stateID string, viewportWidth, viewportHeight int, requiredSelectors []string, temporal bool) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(browserCtx, stateTimeout)
 	defer cancel()
 	var audit browserAudit
@@ -321,15 +342,16 @@ if (blockers.some(visible)) return {code:"capture_state_blocked"};
 document.querySelectorAll('[data-swarm-capture-ui]').forEach(node=>node.remove());
 if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
 const selection=getSelection(); if(selection) selection.removeAllRanges();
-for (const animation of document.getAnimations()) animation.cancel();
+const temporal=%t;
+for (const animation of document.getAnimations()) { if (temporal) animation.pause(); else animation.cancel(); }
 const transparent=color=>color==='transparent'||/^rgba\([^)]*,\s*0(?:\.0+)?\s*\)$/.test(color);
 const needsOpaqueCanvas=transparent(getComputedStyle(document.documentElement).backgroundColor)&&transparent(getComputedStyle(document.body).backgroundColor);
 const width=%d,height=%d,requiredSelectors=%s;
 if (document.documentElement.scrollWidth>width || document.documentElement.scrollHeight>height || document.body.scrollWidth>width || document.body.scrollHeight>height) return {code:"capture_viewport_overflow"};
 for (const selector of requiredSelectors) { let node; try { node=document.querySelector(selector); } catch (_) { return {code:"capture_required_element_invalid"}; } if (!node || !visible(node)) return {code:"capture_required_element_missing"}; const r=node.getBoundingClientRect(); if (r.left<0 || r.top<0 || r.right>width || r.bottom>height) return {code:"capture_required_element_clipped"}; }
-const style=document.createElement('style'); style.textContent='*,*::before,*::after{animation:none!important;transition:none!important;scroll-behavior:auto!important;caret-color:transparent!important;cursor:none!important;pointer-events:none!important}html,body{width:'+width+'px!important;height:'+height+'px!important;max-width:'+width+'px!important;max-height:'+height+'px!important;margin:0!important;overflow:hidden!important}'+(needsOpaqueCanvas?'html{background:#fff!important}':''); document.head.append(style);
+const style=document.createElement('style'); style.textContent='*,*::before,*::after{'+(temporal?'animation-play-state:paused!important;':'animation:none!important;')+'transition:none!important;scroll-behavior:auto!important;caret-color:transparent!important;cursor:none!important;pointer-events:none!important}html,body{width:'+width+'px!important;height:'+height+'px!important;max-width:'+width+'px!important;max-height:'+height+'px!important;margin:0!important;overflow:hidden!important}'+(needsOpaqueCanvas?'html{background:#fff!important}':''); document.head.append(style);
 return {code:"ok"};
-})()`, stateID, viewportWidth, viewportHeight, selectors)
+})()`, stateID, temporal, viewportWidth, viewportHeight, selectors)
 	if err := chromedp.Run(ctx, chromedp.Evaluate(expression, &audit, func(p *cdpruntime.EvaluateParams) *cdpruntime.EvaluateParams {
 		return p.WithAwaitPromise(true).WithReturnByValue(true)
 	})); err != nil {

@@ -73,12 +73,15 @@ type ArtifactV3Part struct {
 	ID      string            `json:"id"`
 	Label   string            `json:"label"`
 	Locator ArtifactV3Locator `json:"locator"`
+	// CaptureTimeMS selects a deterministic temporal preview; nil retains static visibility checks.
+	CaptureTimeMS *int64 `json:"capture_time_ms,omitempty"`
 }
 
 type ArtifactV3Manifest struct {
-	SchemaVersion string           `json:"schema_version"`
-	Entrypoint    string           `json:"entrypoint"`
-	Parts         []ArtifactV3Part `json:"parts"`
+	SchemaVersion    string                           `json:"schema_version"`
+	Entrypoint       string                           `json:"entrypoint"`
+	Parts            []ArtifactV3Part                 `json:"parts"`
+	AnimationProfile *SessionArtifactAnimationProfile `json:"animation_profile,omitempty"`
 }
 
 // ArtifactV3Project is always a complete conventional project tree.

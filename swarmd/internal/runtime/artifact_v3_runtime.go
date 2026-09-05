@@ -13,6 +13,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"sort"
 	"strings"
@@ -20,6 +21,7 @@ import (
 	"time"
 
 	"swarm/packages/swarmd/internal/api"
+	"swarm/packages/swarmd/internal/artifact"
 	"swarm/packages/swarmd/internal/artifactv3video"
 	"swarm/packages/swarmd/internal/htmlcapture"
 	"swarm/packages/swarmd/internal/identity"
@@ -333,15 +335,11 @@ func (a *artifactV3RuntimeAdapter) Preview(ctx context.Context, request tool.Art
 	if a.renderer == nil {
 		return tool.ArtifactV3PreviewResult{Status: "failed", Diagnostics: []tool.ArtifactV3Diagnostic{{Stage: "preview", Code: "previewer_unavailable", Message: "trusted browser preview gate is unavailable"}}}, nil
 	}
-	previewFiles := cloneArtifactProject(request.Build.OutputFiles)
-	previewFiles[manifest.Entrypoint] = injectArtifactV3CaptureRuntime(previewFiles[manifest.Entrypoint])
-	requiredSelectors := make([]string, 0, len(manifest.Parts))
-	for _, part := range manifest.Parts {
-		if part.Locator.Kind == "selector" && part.Locator.Path == manifest.Entrypoint && strings.TrimSpace(part.Locator.Value) != "" {
-			requiredSelectors = append(requiredSelectors, strings.TrimSpace(part.Locator.Value))
-		}
+	capture, err := artifactV3PreviewCaptureRequest(manifest, request.Build.OutputFiles)
+	if err != nil {
+		return tool.ArtifactV3PreviewResult{Status: "failed", Diagnostics: []tool.ArtifactV3Diagnostic{{Stage: "preview", Code: "animation_contract_invalid", Message: err.Error()}}}, nil
 	}
-	results, err := a.renderer.Capture(ctx, htmlcapture.Request{Entry: manifest.Entrypoint, Files: previewFiles, StateIDs: []string{"default"}, RequiredSelectors: requiredSelectors, ViewportWidth: 1440, ViewportHeight: 900})
+	results, err := a.renderer.Capture(ctx, capture)
 	if err != nil {
 		diagnostic := tool.ArtifactV3Diagnostic{Stage: "preview", Code: "browser_capture_failed", Message: "the complete Artifact V3 project failed its browser preview gate"}
 		type safe interface {
@@ -358,12 +356,20 @@ func (a *artifactV3RuntimeAdapter) Preview(ctx context.Context, request tool.Art
 		}
 		return tool.ArtifactV3PreviewResult{Status: "failed", Diagnostics: []tool.ArtifactV3Diagnostic{diagnostic}}, nil
 	}
-	if len(results) != 1 || len(results[0].PNG) == 0 {
+	if len(results) != len(capture.StateIDs) || len(results) == 0 || len(results[0].PNG) == 0 {
 		return tool.ArtifactV3PreviewResult{Status: "failed", Diagnostics: []tool.ArtifactV3Diagnostic{{Stage: "preview", Code: "browser_evidence_missing", Message: "the browser preview gate returned no inspectable pixels"}}}, nil
 	}
 	missing := unresolvedArtifactV3Targets(manifest, request.TargetPartIDs, request.Build.OutputFiles)
 	if len(missing) != 0 {
 		return tool.ArtifactV3PreviewResult{Status: "failed", Diagnostics: missing}, nil
+	}
+	evidenceDigests := make([]string, 0, len(results))
+	for index, result := range results {
+		if result.StateID != capture.StateIDs[index] || len(result.PNG) == 0 {
+			return tool.ArtifactV3PreviewResult{}, errors.New("temporal preview evidence is incomplete")
+		}
+		sum := sha256.Sum256(result.PNG)
+		evidenceDigests = append(evidenceDigests, hex.EncodeToString(sum[:]))
 	}
 	digest := sha256.Sum256(results[0].PNG)
 	digestHex := hex.EncodeToString(digest[:])
@@ -374,11 +380,62 @@ func (a *artifactV3RuntimeAdapter) Preview(ctx context.Context, request tool.Art
 	if err := os.WriteFile(filepath.Join(a.evidenceRoot, id+".png"), results[0].PNG, 0o600); err != nil {
 		return tool.ArtifactV3PreviewResult{}, err
 	}
-	result := tool.ArtifactV3PreviewResult{ID: id, Status: "valid", EvidenceDigests: []string{digestHex}}
+	result := tool.ArtifactV3PreviewResult{ID: id, Status: "valid", EvidenceDigests: evidenceDigests}
 	a.mu.Lock()
 	a.previews[id] = result
 	a.mu.Unlock()
 	return result, nil
+}
+
+// Temporal Parts are verified at their declared playhead samples, never made
+// artificially visible. Static Parts retain the all-states visibility invariant.
+func artifactV3PreviewCaptureRequest(manifest pebblestore.ArtifactV3Manifest, files map[string][]byte) (htmlcapture.Request, error) {
+	request := htmlcapture.Request{Entry: manifest.Entrypoint, Files: cloneArtifactProject(files), StateIDs: []string{"default"}, ViewportWidth: 1440, ViewportHeight: 900}
+	if manifest.AnimationProfile != nil {
+		canonical, err := artifact.ResolveAnimationProfile(&artifact.AnimationProfileInput{Profile: manifest.AnimationProfile.ProfileID})
+		if err != nil || canonical.ProfileID != "motion_ui" || !reflect.DeepEqual(canonical, manifest.AnimationProfile) {
+			return request, errors.New("native HTML requires an unchanged reviewed motion_ui profile")
+		}
+	}
+	times := map[string]int64{}
+	request.StateRequiredSelectors = map[string][]string{}
+	for _, part := range manifest.Parts {
+		if part.CaptureTimeMS != nil {
+			if manifest.AnimationProfile == nil || part.Locator.Kind != "selector" || part.Locator.Path != manifest.Entrypoint || strings.TrimSpace(part.Locator.Value) == "" || *part.CaptureTimeMS < 0 || *part.CaptureTimeMS > 120000 {
+				return request, errors.New("invalid native temporal Part capture contract")
+			}
+			if len(times) >= htmlcapture.MaxStates {
+				return request, errors.New("native temporal preview exceeds bounded state count")
+			}
+			times[part.ID] = *part.CaptureTimeMS
+			request.StateRequiredSelectors[part.ID] = []string{part.Locator.Value}
+		} else if part.Locator.Kind == "selector" && part.Locator.Path == manifest.Entrypoint && strings.TrimSpace(part.Locator.Value) != "" {
+			request.RequiredSelectors = append(request.RequiredSelectors, part.Locator.Value)
+		}
+	}
+	if len(times) == 0 {
+		request.Files[manifest.Entrypoint] = injectArtifactV3CaptureRuntime(request.Files[manifest.Entrypoint])
+		return request, nil
+	}
+	request.StateIDs = nil
+	for _, part := range manifest.Parts {
+		if part.CaptureTimeMS != nil {
+			request.StateIDs = append(request.StateIDs, part.ID)
+		}
+	}
+	request.TemporalStates = true
+	encoded, err := json.Marshal(times)
+	if err != nil {
+		return request, err
+	}
+	bridge := `<script data-swarm-capture-ui>(()=>{const times=` + string(encoded) + `;globalThis.__SWARM_CAPTURE_V1__={version:"swarm.capture/v1",select:async id=>{if(!Object.hasOwn(times,id))throw Error("unknown temporal Part");const api=globalThis.__SWARM_ANIMATION_V1__;if(!api||api.version!=="swarm.animation/v1"||typeof api.ready!=="function"||typeof api.seek!=="function")throw Error("temporal Part requires swarm.animation/v1 ready/seek");await api.ready();if(typeof api.pause==="function")await api.pause();const ack=await api.seek(times[id]);if(!ack||ack.time_ms!==times[id])throw Error("temporal seek acknowledgement mismatch");document.documentElement.dataset.swarmCaptureState=id},ready:async id=>({state_id:id})}})();</script>`
+	body := request.Files[manifest.Entrypoint]
+	if index := strings.LastIndex(strings.ToLower(string(body)), "</body>"); index >= 0 {
+		request.Files[manifest.Entrypoint] = []byte(string(body[:index]) + bridge + string(body[index:]))
+	} else {
+		request.Files[manifest.Entrypoint] = append(body, []byte(bridge)...)
+	}
+	return request, nil
 }
 
 func injectArtifactV3CaptureRuntime(body []byte) []byte {

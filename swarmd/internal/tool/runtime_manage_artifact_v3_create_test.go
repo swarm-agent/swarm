@@ -251,3 +251,45 @@ func TestManageArtifactCreateV3FlexiblePartCounts(t *testing.T) {
 		}
 	}
 }
+
+// Requirement: the advertised motion_ui profile reaches the immutable native
+// project and sequential Parts retain bounded midpoint samples. Reject override,
+// missing-profile and invalid-time inputs before allocating any turn.
+func TestManageArtifactCreateV3TemporalContract(t *testing.T) {
+	for _, invalid := range []string{"", "override", "missing-profile", "invalid-time"} {
+		t.Run("case-"+invalid, func(t *testing.T) {
+			repository := &directArtifactV3RepoFake{}
+			runtime := NewRuntime(1)
+			runtime.SetArtifactV3AuthorService(NewArtifactV3AuthorService(t.TempDir(), repository, &artifactV3BuilderFake{}, &artifactV3PreviewerFake{}))
+			scope := WorkspaceScope{SessionID: "session-1", Principal: identity.Principal{Type: identity.PrincipalTypeUser, AccountScopeID: "account-1", UserID: "user-1"}}
+			ctx := WithArtifactRunContext(context.Background(), ArtifactRunContext{SessionID: "session-1", RunID: "run-1"})
+			args := map[string]any{"action": "create", "media_type": "text/html", "content": `<html><body><section id="scene">A scene</section></body></html>`, "animation_profile": map[string]any{"profile": "motion_ui"}, "parts": []map[string]any{{"id": "scene", "label": "Scene", "kind": "temporal", "start_ms": 0, "end_ms": 4000}}}
+			switch invalid {
+			case "override":
+				args["animation_profile"] = map[string]any{"profile": "motion_ui", "network_allowed": true}
+			case "missing-profile":
+				delete(args, "animation_profile")
+			case "invalid-time":
+				args["parts"] = []map[string]any{{"id": "scene", "kind": "temporal", "start_ms": 4000, "end_ms": 4000}}
+			}
+			encoded, _ := json.Marshal(args)
+			_, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, Call{CallID: "temporal", Name: "manage_artifact", Arguments: string(encoded)})
+			if invalid != "" {
+				if err == nil || len(repository.turns) != 0 || len(repository.submits) != 0 {
+					t.Fatalf("invalid input mutated publication: err=%v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			var manifest pebblestore.ArtifactV3Manifest
+			if err := json.Unmarshal(repository.submits[0].Project[pebblestore.ArtifactV3ManifestFilename], &manifest); err != nil {
+				t.Fatal(err)
+			}
+			if manifest.AnimationProfile == nil || manifest.AnimationProfile.ProfileID != "motion_ui" || manifest.AnimationProfile.Budgets.NetworkAllowed || len(manifest.Parts) != 1 || manifest.Parts[0].CaptureTimeMS == nil || *manifest.Parts[0].CaptureTimeMS != 2000 || manifest.Parts[0].Locator.Value != "#scene" {
+				t.Fatalf("temporal contract lost: %#v", manifest)
+			}
+		})
+	}
+}
