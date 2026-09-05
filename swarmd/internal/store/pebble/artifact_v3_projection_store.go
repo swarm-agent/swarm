@@ -504,3 +504,37 @@ func (s *SessionStore) GetArtifactV3Candidate(accountScopeID, userID, artifactID
 	}
 	return value, true, nil
 }
+
+// ListArtifactV3CandidateProjections enumerates durable slots, including failed
+// slots with no Git ref. It authenticates the repository before scanning and
+// fails closed rather than silently truncating the bounded Studio history.
+func (s *SessionStore) ListArtifactV3CandidateProjections(accountScopeID, userID, artifactID string) ([]ArtifactV3CandidateProjection, error) {
+	repository, ok, err := s.GetArtifactV3Repository(accountScopeID, userID, artifactID)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, ErrArtifactV3NotFound
+	}
+	prefix := fmt.Sprintf("v3/artifact/candidate/%s/%s/", keyPart(accountScopeID), keyPart(artifactID))
+	iter, err := s.store.db.NewIter(&pebble.IterOptions{LowerBound: []byte(prefix), UpperBound: []byte(prefix + "\xff")})
+	if err != nil {
+		return nil, err
+	}
+	defer iter.Close()
+	out := make([]ArtifactV3CandidateProjection, 0)
+	for iter.First(); iter.Valid(); iter.Next() {
+		if len(out) >= 4096 {
+			return nil, errors.New("artifact v3 candidate history exceeds bounded limit")
+		}
+		var value ArtifactV3CandidateProjection
+		if err := json.Unmarshal(iter.Value(), &value); err != nil {
+			return nil, err
+		}
+		if value.OwnerSessionID != repository.OwnerSessionID || value.ArtifactID != artifactID || string(iter.Key()) != KeyArtifactV3Candidate(accountScopeID, artifactID, value.TurnID, value.CandidateID) {
+			return nil, ErrArtifactV3Integrity
+		}
+		out = append(out, value)
+	}
+	return out, iter.Error()
+}

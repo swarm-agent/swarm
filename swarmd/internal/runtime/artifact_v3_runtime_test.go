@@ -150,6 +150,27 @@ func TestArtifactV3RuntimeAdapterProductionPathAndRecovery(t *testing.T) {
 	if err != nil || beforeSelect.Head.CommitOID != finished.Revision.CommitOID {
 		t.Fatalf("repair candidate moved head before selection: artifact=%+v err=%v", beforeSelect, err)
 	}
+	// Requirement: Desktop must see both durable slots, not only Git refs.
+	// Threat: Git-only enumeration silently erases failed siblings from review.
+	var visibleGood, visibleBad bool
+	for _, turn := range beforeSelect.Turns {
+		for _, candidate := range turn.Candidates {
+			if candidate.CandidateID == good.CandidateID {
+				visibleGood = candidate.Status == "ready" && candidate.Revision != nil && candidate.Revision.CommitOID == good.CommitOID
+			}
+			if candidate.CandidateID == bad.CandidateID {
+				visibleBad = candidate.Status == "failed" && candidate.Revision == nil && len(candidate.Diagnostics) == 1 && candidate.Diagnostics[0].Code == "child_run_failed"
+			}
+		}
+	}
+	if !visibleGood || !visibleBad {
+		t.Fatalf("partial wave hidden from API: %+v", beforeSelect.Turns)
+	}
+	for _, owner := range [][2]string{{"foreign-account", "user"}, {"account", "foreign-user"}} {
+		if rows, err := sessions.Store().ListArtifactV3CandidateProjections(owner[0], owner[1], grant.ArtifactID); err == nil || len(rows) != 0 {
+			t.Fatalf("foreign candidate enumeration: %+v %v", rows, err)
+		}
+	}
 	// Requirement: read/render authority for A survives selecting B and restart;
 	// conversion authority still rejects A. Use the real Git/Pebble adapter and
 	// private receipt store, with only rendering faked at this narrow boundary.

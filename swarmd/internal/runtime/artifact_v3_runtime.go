@@ -823,6 +823,47 @@ func (a *artifactV3RuntimeAdapter) turns(ctx context.Context, principal api.Arti
 		}
 		cursor = page.NextCursor
 	}
+	// Git refs prove ready bytes, but cannot enumerate failed slots. Merge the
+	// authenticated durable candidate projection without manufacturing revisions.
+	slots, err := a.sessions.ListArtifactV3CandidateProjections(principal.AccountScopeID, principal.UserID, repository.ArtifactID)
+	if err != nil {
+		return nil, err
+	}
+	for _, slot := range slots {
+		// Genesis is represented by revision history, not an iteration turn.
+		if slot.CandidateRef == "refs/heads/artifact" && slot.Status == "selected" {
+			revision, readErr := a.revision(ctx, principal, repository, slot.CommitOID)
+			if readErr != nil || len(revision.Parents) != 0 {
+				return nil, pebblestore.ErrArtifactV3Integrity
+			}
+			continue
+		}
+		turn := byTurn[slot.TurnID]
+		found := false
+		if turn != nil {
+			for _, candidate := range turn.Candidates {
+				if candidate.CandidateID == slot.CandidateID {
+					found = true
+					break
+				}
+			}
+		}
+		if found {
+			continue
+		}
+		if slot.CommitOID != "" || (slot.Status != "failed" && slot.Status != "cancelled") {
+			return nil, pebblestore.ErrArtifactV3Integrity
+		}
+		if turn == nil {
+			projection, ok, readErr := a.sessions.GetArtifactV3Turn(principal.AccountScopeID, principal.UserID, repository.ArtifactID, slot.TurnID)
+			if readErr != nil || !ok {
+				return nil, pebblestore.ErrArtifactV3Integrity
+			}
+			turn = &api.ArtifactV3Turn{TurnID: slot.TurnID, Revision: projection.EventSeq, Status: projection.Status, TargetPartIDs: canonicalStrings([]string{projection.TargetPartID}), BaseCommitOID: projection.BaseCommitOID, SelectedCandidateID: projection.SelectedCandidateID, CreatedAt: projection.CreatedAt, UpdatedAt: projection.UpdatedAt}
+			byTurn[slot.TurnID] = turn
+		}
+		turn.Candidates = append(turn.Candidates, api.ArtifactV3Candidate{CandidateID: slot.CandidateID, Status: slot.Status, Diagnostics: []api.ArtifactV3Diagnostic{{Code: slot.FailureCode, Message: "Designer candidate did not finish; no revision was published"}}})
+	}
 	out := make([]api.ArtifactV3Turn, 0, len(byTurn))
 	for _, turn := range byTurn {
 		sort.Slice(turn.Candidates, func(i, j int) bool { return turn.Candidates[i].CandidateID < turn.Candidates[j].CandidateID })

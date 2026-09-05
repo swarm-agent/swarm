@@ -266,7 +266,7 @@ func artifactV3AuthorDefinition() Definition {
 	return Definition{Type: "function", Name: "artifact_v3_author", Description: "Context-bound whole-project Artifact V3 authoring. Operates on the complete exact base tree with ordinary file operations, repeated server-owned build/browser preview gates, and one final complete candidate. Targets express user intent and do not restrict coherent cross-project edits; only server-locked paths are immutable. Destination, repository, refs, policy, build commands, and output paths are injected and cannot be caller supplied.", Parameters: map[string]any{
 		"type": "object", "properties": map[string]any{
 			"action": map[string]any{"type": "string", "enum": []string{artifactV3ActionInspect, artifactV3ActionList, artifactV3ActionRead, artifactV3ActionCreate, artifactV3ActionEdit, artifactV3ActionRename, artifactV3ActionDelete, artifactV3ActionDiff, artifactV3ActionBuild, artifactV3ActionFinish}},
-			"path":   map[string]any{"type": "string", "maxLength": 512}, "to_path": map[string]any{"type": "string", "maxLength": 512}, "content": map[string]any{"type": "string"}, "old_string": map[string]any{"type": "string"}, "new_string": map[string]any{"type": "string"}, "replace_all": map[string]any{"type": "boolean"}, "cursor": map[string]any{"type": "string", "maxLength": 1024}, "limit": map[string]any{"type": "integer", "minimum": 1}, "offset": map[string]any{"type": "integer", "minimum": 0},
+			"path":   map[string]any{"type": "string", "maxLength": 512}, "to_path": map[string]any{"type": "string", "maxLength": 512}, "content": map[string]any{"type": "string"}, "old_string": map[string]any{"type": "string", "description": "Exact literal substring from decoded read_file Content, not JSON escape notation. Must match once unless replace_all is true. On mismatch, read again before retrying; no mutation occurs."}, "new_string": map[string]any{"type": "string"}, "replace_all": map[string]any{"type": "boolean"}, "cursor": map[string]any{"type": "string", "maxLength": 1024}, "limit": map[string]any{"type": "integer", "minimum": 1}, "offset": map[string]any{"type": "integer", "minimum": 0},
 		}, "required": []string{"action"}, "additionalProperties": false,
 	}}
 }
@@ -558,7 +558,7 @@ func (s *ArtifactV3AuthorService) Edit(ctx context.Context, p ArtifactV3AuthorPr
 	}
 	count := bytes.Count(body, old)
 	if count == 0 || (!all && count != 1) {
-		return ErrArtifactV3AuthorConflict
+		return fmt.Errorf("%w: edit_file old_string matched %d times; require exactly one literal match (or replace_all for multiple). Read the current file, decode its JSON Content string, and retry with an exact substring; no file was changed", ErrArtifactV3AuthorConflict, count)
 	}
 	n := 1
 	if all {

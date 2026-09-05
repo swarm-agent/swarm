@@ -1223,24 +1223,6 @@ func parseTaskSwarmArguments(args map[string]any, prompt, description string) (*
 	}
 	if artifactV3Source != nil {
 		args["artifact_v3_source"] = cloneTaskArtifactV3Source(artifactV3Source)
-		if len(artifactV3Source.TargetPartIDs) != 0 {
-			declared := map[string]bool{}
-			if single, _ := parseTaskSwarmSectionTarget(args["section_target"]); single != nil {
-				declared[single.ID] = true
-			}
-			if many, _ := parseTaskSwarmSectionTargets(args["section_targets"]); many != nil {
-				for _, item := range many {
-					if item != nil {
-						declared[item.ID] = true
-					}
-				}
-			}
-			for _, target := range artifactV3Source.TargetPartIDs {
-				if !declared[target] {
-					return nil, nil, fmt.Errorf("task artifact_v3_source target %q is not declared in section_target(s)", target)
-				}
-			}
-		}
 	}
 	artifactV2Source, err := parseTaskArtifactV2Source(args["artifact_v2_source"])
 	if err != nil {
@@ -1296,13 +1278,40 @@ func parseTaskSwarmArguments(args map[string]any, prompt, description string) (*
 			return nil, nil, errors.New("task accepts section_target or section_targets, not both")
 		}
 	}
-	sectionTargets, err := parseTaskSwarmSectionTargets(args["section_targets"])
+	var sectionTargets []*taskSwarmSectionTarget
+	var sectionTarget *taskSwarmSectionTarget
+	if artifactV3Source != nil {
+		if raw, supplied := args["section_targets"]; supplied {
+			sectionTargets, err = parseTaskArtifactV3TargetHints(raw)
+		}
+		if raw, supplied := args["section_target"]; supplied && err == nil {
+			sectionTarget, err = parseTaskArtifactV3TargetHint(raw)
+		}
+	} else {
+		sectionTargets, err = parseTaskSwarmSectionTargets(args["section_targets"])
+		if err == nil {
+			sectionTarget, err = parseTaskSwarmSectionTarget(args["section_target"])
+		}
+	}
 	if err != nil {
 		return nil, nil, err
 	}
-	sectionTarget, err := parseTaskSwarmSectionTarget(args["section_target"])
-	if err != nil {
-		return nil, nil, err
+	if artifactV3Source != nil && len(artifactV3Source.TargetPartIDs) != 0 && (sectionTarget != nil || len(sectionTargets) != 0) {
+		declared := map[string]bool{}
+		if sectionTarget != nil {
+			declared[sectionTarget.ID] = true
+		}
+		for _, item := range sectionTargets {
+			declared[item.ID] = true
+		}
+		for _, target := range artifactV3Source.TargetPartIDs {
+			if !declared[target] {
+				return nil, nil, fmt.Errorf("task artifact_v3_source target %q does not match section_target(s)", target)
+			}
+		}
+		if len(declared) != len(uniqueNonEmptyStrings(artifactV3Source.TargetPartIDs)) {
+			return nil, nil, errors.New("task Artifact V3 section_target(s) do not match target_part_ids")
+		}
 	}
 	if len(sectionTargets) != 0 {
 		if agentType != "designer" || (sourceArtifact == nil && artifactV3Source == nil && artifactV2Source == nil) {

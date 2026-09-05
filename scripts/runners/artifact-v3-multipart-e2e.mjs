@@ -25,6 +25,7 @@ const designerThinking = String(option('--designer-thinking', process.env.SWARM_
 const workspaceOverride = String(option('--workspace-path', process.env.SWARM_RUNNER_WORKSPACE_PATH || '')).trim()
 const sessionOverride = String(option('--session-id', process.env.SWARM_RUNNER_SESSION_ID || '')).trim()
 const initialRunOverride = String(option('--initial-run-id', process.env.SWARM_RUNNER_INITIAL_RUN_ID || '')).trim()
+const followupRunOverride = String(option('--followup-run-id', '')).trim()
 const artifactOverride = String(option('--artifact-id', process.env.SWARM_RUNNER_ARTIFACT_ID || '')).trim()
 const desktopPathOverride = String(option('--desktop-path', process.env.SWARM_RUNNER_DESKTOP_PATH || '')).trim()
 const videoSessionOverride = String(option('--video-session-id', process.env.SWARM_RUNNER_VIDEO_SESSION_ID || '')).trim()
@@ -39,6 +40,7 @@ const animationStage = stage === 'animated-parts'
 const animatedFollowupStage = ['animated-targeted', 'animated-continue', 'animated-alternatives', 'animated-finish', 'animated-inspect', 'animated-alternatives-inspect', 'animated-repair'].includes(stage)
 const videoConversionStage = stage === 'video-conversion'
 const designerRootStage = stage === 'designer-root'
+const designerWaveStage = ['designer-swarm', 'designer-swarm-inspect', 'designer-select-continue', 'designer-continue-inspect'].includes(stage)
 const noDesignerStage = stage === 'basic-html' || stage === 'targeted-part' || stage === 'selected-continuation' || stage === 'alternate-choice' || alternateResumeStage || animationStage || animatedFollowupStage || videoConversionStage
 const headless = !flag('--headful')
 const suppliedToken = String(process.env.SWARM_RUNNER_TOKEN || '').trim()
@@ -214,6 +216,22 @@ async function waitForRun(sessionID, runID, label) {
     if (Date.now() >= nextHeartbeat) { log(`${label} status=${intent?.status || 'pending'} approvals=${approvals}`); nextHeartbeat = Date.now() + 15000 }
     if (intent && terminalStatus(intent.status)) {
       assert(text(intent.status) === 'completed', `${label} terminated as ${intent.status}`)
+      // A restart tool ends the submitting run before its checkpoint run ends.
+      // Follow only the exact checkpoint named by that run's durable tool result.
+      const messages = snapshot.messages_by_session?.[sessionID] || []
+      const restart = messages.flatMap((message) => {
+        try {
+          const envelope = JSON.parse(message.content)
+          const body = decodedToolOutput(message)
+          return envelope.run_id === runID && body.action === 'restart_checkpoint' && body.status === 'ok' ? [body] : []
+        } catch { return [] }
+      }).at(-1)
+      if (restart) {
+        const next = (snapshot.run_intents_by_session?.[sessionID] || []).find((item) => item.run_id !== runID && item.plan_id === restart.plan?.id && item.checkpoint_id === restart.checkpoint_id && item.created_at >= intent.created_at)
+        if (next) { result.ids.checkpoint_run_id = next.run_id; runID = next.run_id; continue }
+        await sleep(1500)
+        continue
+      }
       return snapshot
     }
     await sleep(1500)
@@ -531,9 +549,22 @@ function visibleChangeRequest() {
   return [
     'Visible change request from the user: change the Pricing part to a vivid magenta treatment and add the exact readable label TARGETED PRICING TURN inside #pricing.',
     'Keep Hero and Footer present, readable, and animated. Keep all three stable part IDs and their data-motion-marker animations working. Pixel review found Pricing and Footer motion markers crossing text; place those markers in dedicated reserved space that never intersects glyphs at any animation phase. Preserve the complete responsive fit at 1440x900 and 840x844.',
-    'Call task exactly once in regular mode with exactly one managed Designer launch, using artifact_v3_source parsed from the exact Artifact V3 reference and current head above, target_part_ids=["pricing"], section_target id=pricing kind=selector label=Pricing, output_mode=managed, and animation_profile motion_ui.',
+    'Call task once successfully in regular mode with exactly one managed Designer launch, using artifact_v3_source parsed from the exact Artifact V3 reference and current head above, target_part_ids=["pricing"], and section_target id=pricing kind=selector label=Pricing. Put output_mode=managed and animation_profile motion_ui only on that launch, not at task top level. Preserve any earlier failed child; do not count it as a success.',
+    'The prior child failed exact-text edits, not head CAS: read_file Content is JSON-escaped text. Decode it normally, then use short unique literal matches copied from the actual file; never send a NUL sentinel or literal backslash-u escape as old_string. Read after any mismatch before retrying. Do not repeat a known bad match. Include this guidance in the Designer assignment.',
     'Create exactly one complete candidate from that exact prior head. Build, preview, repair, and finish the whole project. Do not select the candidate or move head, and do not use any V1/V2 writer.',
   ].join(' ')
+}
+
+async function settleStudioPreview(studio) {
+  const frame = studio.locator('[data-artifact-v3-preview]:visible').contentFrame()
+  await frame.locator('body').evaluate(async () => {
+    if (document.readyState !== 'complete') await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('Studio revision load timeout')), 15000)
+      window.addEventListener('load', () => { clearTimeout(timer); resolve() }, { once: true })
+    })
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))
+  }, undefined, { timeout: 20000 })
+  await sleep(300)
 }
 
 async function openDesktopStudio(sessionID, artifactID) {
@@ -722,6 +753,7 @@ async function verifyStudioTurns(sessionID, artifactID, turn, candidate, rootRev
   assert(await studio.locator('[data-artifact-v3-revision-history] button').count() >= 2, 'Artifact Studio revision history omitted the candidate or prior head')
   await sleep(500) // Let the revision effect replace the prior iframe before inspecting it.
   await studio.locator('[data-artifact-v3-preview]:visible').contentFrame().locator(candidate.revision.manifest.parts.find((part) => part.id === turn.target_part_ids[0]).locator.value).waitFor({ state: 'visible', timeout: 30000 })
+  await settleStudioPreview(studio)
   await screenshot(page, 'desktop-turn-by-turn-artifact-studio')
   const rootButton = studio.locator(`[data-artifact-v3-revision="${rootRevision.commit_oid}"]`).first()
   await rootButton.click()
@@ -729,6 +761,7 @@ async function verifyStudioTurns(sessionID, artifactID, turn, candidate, rootRev
   assert(await rootButton.getAttribute('class').then((value) => text(value).includes('border-[var(--app-primary)]')), 'Artifact Studio did not select the exact prior revision')
   await sleep(500)
   await studio.locator('[data-artifact-v3-preview]:visible').contentFrame().locator(rootRevision.manifest.parts[0].locator.value).waitFor({ state: 'visible', timeout: 30000 })
+  await settleStudioPreview(studio)
   await screenshot(page, 'desktop-exact-prior-revision')
   result.gates.desktop_turn_timeline = true
   result.gates.desktop_prior_revision = true
@@ -1196,18 +1229,69 @@ async function runVideoConversion(sessionID, selected, assignment) {
   log('JOURNEY video-conversion PASS')
 }
 
+// Requirement: real Designer siblings share one exact base, remain independently
+// previewable, and cannot advance head until the separate explicit selection stage.
+async function runDesignerWave(sessionID, artifactID) {
+  let artifact = await detail(sessionID, artifactID)
+  let base = currentRevision(artifact)
+  const beforeChildren = delegatedDesigners(await bootstrapSessions(), sessionID)
+  const turnID = option('--turn-id')
+  if (stage === 'designer-swarm') {
+    // Keep the reviewed but unselected regular candidate intact; siblings start
+    // from the current selected root and implement the complete requested repair.
+    await postTurn(sessionID, 'designer-swarm', `Create exactly two managed Designer alternatives for the existing native Artifact V3 source ${artifact.artifact_ref}. Call task mode=swarm, agent_type=designer, count=2, animation_profile={profile:motion_ui}, artifact_v3_source={session_id:${sessionID},artifact_id:${artifactID},commit_oid:${base.commit_oid},projection_seq:${artifact.revision},target_part_ids:[footer]}. Use two themes: cyan Footer with exact readable label DESIGNER OPTION ONE, violet Footer with exact readable label DESIGNER OPTION TWO. Preserve all three stable Parts and Team $29. Apply the requested vivid magenta Pricing treatment and exact TARGETED PRICING TURN label; preserve all animations and place Pricing/Footer markers in dedicated lanes that never intersect text. Fully show every pricing feature line and motion lane inside each card at BOTH 1440x900 and 840x844; the earlier unselected regular candidate clipped card bottoms at full width. Repair shared sizing as necessary without hiding overflow to conceal missing content. All three Parts must fit without scrolling. Each Designer authors one complete candidate using artifact_v3_author only; read decoded file Content and use short unique literal edits. Build, preview, repair, then finish. Do not select either, move head, use source_artifact or V1/V2 identity, create another artifact, or fabricate a failed slot. Omit regular launches and unused null fields. Preserve both real outputs and report exact failures.`)
+    artifact = await detail(sessionID, artifactID)
+    assert(delegatedDesigners(await bootstrapSessions(), sessionID).length === beforeChildren.length + 2, 'swarm did not launch exactly two Designer children')
+  }
+  if (stage === 'designer-select-continue') {
+    assert(turnID, 'explicit selection requires --turn-id of the inspected wave')
+    const turn = artifact.turns.find((item) => item.turn_id === turnID)
+    assert(turn?.candidates?.length === 2, 'selected wave does not preserve two slots')
+    const chosenID = option('--candidate-id')
+    const candidate = turn.candidates.find((item) => item.candidate_id === chosenID)
+    assert(candidate?.status === 'ready', 'selection requires exact inspected ready --candidate-id')
+    artifact = await selectCandidateInStudio(sessionID, artifactID, turn, candidate)
+    base = currentRevision(artifact)
+    result.revisions.selected = base
+    await postTurn(sessionID, 'designer-continuation', `Continue exactly the selected native Artifact V3 ${artifact.artifact_ref}. Launch exactly one managed Designer in regular mode with artifact_v3_source={session_id:${sessionID},artifact_id:${artifactID},commit_oid:${base.commit_oid},projection_seq:${artifact.revision},target_part_ids:[hero]}. Put animation_profile motion_ui and output_mode managed only on the launch. Add AFTER DESIGNER CHOICE inside Hero, preserving all three stable Parts, the selected Footer alternative label, TARGETED PRICING TURN, Team $29, all animations and marker lanes. Keep 1440x900 and 840x844 free from clipping, overlap and scrolling. Use artifact_v3_author only, short literal edits copied from decoded Content, whole-project build/preview/repair, and finish one exact-base candidate. Do not select it, move head, use legacy source_artifact, create another artifact, or launch more than one child.`)
+    artifact = await detail(sessionID, artifactID)
+    assert(delegatedDesigners(await bootstrapSessions(), sessionID).length === beforeChildren.length + 1, 'continuation did not launch one Designer')
+  }
+  const isContinuation = stage === 'designer-select-continue' || stage === 'designer-continue-inspect'
+  const turn = turnID && !isContinuation ? artifact.turns.find((item) => item.turn_id === turnID) : [...artifact.turns].reverse().find((item) => item.base_commit_oid === base.commit_oid && item.status === 'awaiting_selection' && item.candidates.length === (isContinuation ? 1 : 2))
+  assert(turn && turn.candidates.length === (isContinuation ? 1 : 2), 'expected exact Designer candidate cardinality is absent')
+  assert(currentRevision(artifact).commit_oid === turn.base_commit_oid, 'Designer candidates moved selected head')
+  result.ids.turn_id = turn.turn_id
+  result.revisions.base = base
+  result.designer_candidates = turn.candidates
+  for (const [index, candidate] of turn.candidates.entries()) {
+    if (candidate.status === 'failed' && flag('--allow-partial')) {
+      assert(!candidate.revision && candidate.diagnostics?.length, 'failed slot lacks diagnostic or fabricates a revision')
+      continue
+    }
+    assert(candidate.status === 'ready' && candidate.revision.parents.length === 1 && candidate.revision.parents[0] === turn.base_commit_oid, 'Designer candidate lacks exact common-base ancestry')
+    result.animations[`candidate_${index + 1}`] = await screenshotPreview(sessionID, artifactID, candidate.revision, isContinuation ? 'AFTER DESIGNER CHOICE' : 'DESIGNER OPTION')
+    const studio = await openDesktopStudio(sessionID, artifactID)
+    await studio.locator(`[data-artifact-v3-revision="${candidate.revision.commit_oid}"]`).first().click()
+    await studio.locator(`[data-artifact-v3-preview-revision="${candidate.revision.commit_oid}"]`).waitFor({ state: 'visible' })
+    await settleStudioPreview(studio)
+    const frame = studio.locator('[data-artifact-v3-preview]:visible').contentFrame()
+    result.animations[`narrow_${index + 1}`] = await staticVisualSample(frame, candidate.revision.manifest.parts, isContinuation ? 'AFTER DESIGNER CHOICE' : 'DESIGNER OPTION')
+    await screenshot(page, `designer-candidate-${index + 1}-studio`)
+  }
+  assert(currentRevision(await detail(sessionID, artifactID)).commit_oid === turn.base_commit_oid, 'inspection moved head')
+  result.result = 'PASS'
+  gate('designer-native-common-base', 'PASS', `${turn.candidates.filter((candidate) => candidate.status === 'ready').length} ready of ${turn.candidates.length} durable slots; selected head unchanged`)
+}
+
 async function runLive() {
   assert(apiURL && /^https?:\/\//.test(apiURL), '--api-url is required for the live journey')
   assert(desktopURL && /^https?:\/\//.test(desktopURL), '--desktop-url is invalid')
-  assert(animatedFollowupStage || ['basic-html', 'targeted-part', 'selected-continuation', 'alternate-choice', 'alternate-choice-resume', 'animated-parts', 'video-conversion', 'designer-root', 'designer-targeted', 'full'].includes(stage), '--stage must be basic-html, targeted-part, selected-continuation, alternate-choice, alternate-choice-resume, animated-parts, video-conversion, designer-root, designer-targeted, or full')
+  assert(designerWaveStage || animatedFollowupStage || ['basic-html', 'targeted-part', 'selected-continuation', 'alternate-choice', 'alternate-choice-resume', 'animated-parts', 'video-conversion', 'designer-root', 'designer-targeted', 'full'].includes(stage), '--stage must be basic-html, targeted-part, selected-continuation, alternate-choice, alternate-choice-resume, animated-parts, video-conversion, designer-root, designer-targeted, or full')
   assert(Number.isFinite(timeoutMs) && timeoutMs >= 300000 && timeoutMs <= 600000, '--timeout-ms must be between 300000 and 600000')
   await auth()
-  // A bounded/direct remote policy can auto-launch without ever creating a
-  // pending permission. Check before any new provider turn, not just while polling.
-  if (!noDesignerStage && !(designerRootStage && sessionOverride && initialRunOverride)) {
-    const policy = (await api('GET', '/v1/permissions/subagents', undefined, 'inspect Designer approval policy')).body?.subagents
-    assert(policy?.mode === 'ask', 'operator_permission_required: remote Designer trials require subagent mode=ask; change it through the testbench permission settings before new authoring. The runner does not mutate access policy.')
-  }
+  // Exercise the configured product policy without imposing a test-only mode.
+  // Actual pending Designer permissions remain operator-owned in approvePending.
   const assignment = await configureModels()
   const selected = await topology()
   let session
@@ -1241,6 +1325,11 @@ async function runLive() {
   } else {
     gate('realtime-subscribed-before-create', 'SKIP', 'resumed server-owned conversion verifies durable source replay directly')
   }
+  if (designerWaveStage) {
+    assert(sessionOverride && artifactOverride, 'Designer wave requires exact retained session and artifact')
+    await runDesignerWave(session.sessionID, artifactOverride)
+    return
+  }
   if (animatedFollowupStage) {
     assert(sessionOverride && artifactOverride, 'animated follow-up requires exact session and artifact IDs')
     await runAnimatedFollowup(session.sessionID)
@@ -1271,7 +1360,7 @@ async function runLive() {
   const artifact = items[0]
   const rootDetail = await detail(session.sessionID, artifact.id)
   const rootRevision = currentRevision(rootDetail)
-  const rootTurnCount = (rootDetail.turns || []).length
+  const rootTurnCount = (rootDetail.turns || []).length - (followupRunOverride ? 1 : 0)
   const partIDs = rootDetail.parts?.map((part) => text(part.id)) || []
   log(`OBSERVE parts=${partIDs.join(',') || 'none'} head=${rootRevision.revision_ref}`)
   assert(partIDs.length === 3 && new Set(partIDs).size === 3 && partIDs.every(Boolean), `root Artifact must expose exactly three distinct stable Part IDs; got [${partIDs.join(',')}]`)
@@ -1279,7 +1368,7 @@ async function runLive() {
   assert(rootDetail.head?.build?.status === 'succeeded' && rootDetail.head?.validation?.status === 'valid', 'root head lacks whole-project build/render evidence')
   gate('build-preview', 'PASS', `revision=${rootRevision.revision_ref}`)
   const childrenAfterRoot = delegatedDesigners(await bootstrapSessions(), session.sessionID)
-  const expectedInitialDesigners = noDesignerStage ? 0 : 1
+  const expectedInitialDesigners = noDesignerStage ? 0 : (stage === 'designer-targeted' ? childrenBefore.length : 1)
   log(`OBSERVE designer_children=${childrenAfterRoot.length}`)
   assert(childrenAfterRoot.length === expectedInitialDesigners, `initial ${stage} turn launched ${childrenAfterRoot.length} Designers instead of exactly ${expectedInitialDesigners}`)
   gate('no-designer', expectedInitialDesigners === 0 ? 'PASS' : 'SKIP', `children=${childrenAfterRoot.length}`)
@@ -1287,7 +1376,8 @@ async function runLive() {
   result.ids.artifact_id = artifact.id
   if (childrenAfterRoot[0]?.id) result.ids.initial_designer_session_id = text(childrenAfterRoot[0].id)
   result.revisions.root = rootRevision
-  if (!noDesignerStage) await verifyNativeDesignerHandoffs(session.sessionID, childrenAfterRoot, artifact.id)
+  const rootDesigners = stage === 'designer-targeted' ? [...childrenAfterRoot].sort((a, b) => a.created_at - b.created_at).slice(0, 1) : childrenAfterRoot
+  if (!noDesignerStage) await verifyNativeDesignerHandoffs(session.sessionID, rootDesigners, artifact.id)
   result.animations.root = await screenshotPreview(session.sessionID, artifact.id, rootRevision)
   if (noDesignerStage) result.gates.no_designer_delegation = true
   else result.gates.one_initial_designer = true
@@ -1320,20 +1410,25 @@ async function runLive() {
   }
   if (!noDesignerStage) result.gates.three_animated_parts = true
 
-  const followSnapshot = await submitSidebarIteration(session.sessionID, artifact.id, rootRevision)
+  const followSnapshot = followupRunOverride
+    ? await waitForRun(session.sessionID, followupRunOverride, 'targeted-resume')
+    : await submitSidebarIteration(session.sessionID, artifact.id, rootRevision)
   const withCandidate = await waitForTargetedTurn(session.sessionID, artifact.id, rootRevision.commit_oid)
   assert(currentRevision(withCandidate).commit_oid === rootRevision.commit_oid, 'candidate generation moved the head before user selection')
   assert((withCandidate.turns || []).length === rootTurnCount + 1, `Artifact has ${(withCandidate.turns || []).length} turns; expected prior history ${rootTurnCount} plus one targeted follow-up`)
   const { turn, candidate } = targetedTurn(withCandidate, rootRevision)
   const childrenAfterFollowup = delegatedDesigners(await bootstrapSessions(), session.sessionID)
-  const expectedFollowupDesigners = noDesignerStage ? 0 : 2
+  const expectedFollowupDesigners = noDesignerStage ? 0 : childrenAfterRoot.length + (followupRunOverride ? 0 : 1)
   assert(childrenAfterFollowup.length === expectedFollowupDesigners, `targeted follow-up left ${childrenAfterFollowup.length} total Designers; expected ${expectedFollowupDesigners}`)
   if (!noDesignerStage) {
-    const newChild = childrenAfterFollowup.find((child) => !childrenAfterRoot.some((prior) => text(prior?.id) === text(child?.id)))
+    const resumedChildIDs = new Set((followSnapshot.messages_by_session?.[session.sessionID] || []).flatMap((message) => {
+      try { const envelope = JSON.parse(message.content); const body = decodedToolOutput(message); return envelope.run_id === followupRunOverride && body.tool === 'task' && body.success_count === 1 ? (body.launches || []).map((launch) => launch.session_id) : [] } catch { return [] }
+    }))
+    const newChild = childrenAfterFollowup.find((child) => followupRunOverride ? resumedChildIDs.has(child.id) : !childrenAfterRoot.some((prior) => text(prior?.id) === text(child?.id)))
     assert(newChild?.id, 'targeted follow-up did not produce one distinct Designer child')
     result.ids.followup_designer_session_id = text(newChild.id)
   }
-  if (!noDesignerStage) await verifyNativeDesignerHandoffs(session.sessionID, childrenAfterFollowup, artifact.id)
+  if (!noDesignerStage) await verifyNativeDesignerHandoffs(session.sessionID, [...rootDesigners, ...childrenAfterFollowup.filter((child) => child.id === result.ids.followup_designer_session_id)], artifact.id)
   result.ids.turn_id = turn.turn_id
   result.ids.candidate_id = candidate.candidate_id
   result.revisions.candidate = candidate.revision
@@ -1397,7 +1492,7 @@ async function runLive() {
   assert(artifactEvents.length >= 4 && !forbiddenLegacyWrite(artifactEvents), 'durable replay lacks native Artifact V3 turn events or contains legacy write identity')
   const records = await page.evaluate(() => window.__artifactV3Records || [])
   const liveEvents = records.filter((record) => record.kind === 'message' && record.session_id === session.sessionID && record.event_type.startsWith('artifact.v3.'))
-  assert(liveEvents.length >= 1 && liveEvents.some((record) => record.endpoint_cursor_present), 'Desktop observed no cursor-bearing Artifact V3 realtime event')
+  assert(liveEvents.some((record) => record.endpoint_cursor_present) || (followupRunOverride && records.some((record) => record.frame_kind === 'replay.complete' && record.session_id === session.sessionID && record.endpoint_cursor_present)), 'Desktop observed no cursor-bearing Artifact V3 event or exact resumed replay')
   result.realtime = { recorded: records.length, artifact_events: liveEvents.length, replay_events: artifactEvents.length }
   result.gates.sidebar_one_part_message = true
   result.gates.exact_child_revision = true
