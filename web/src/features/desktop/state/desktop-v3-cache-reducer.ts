@@ -1613,8 +1613,8 @@ function commitCompletedReasoningEvent(state: DesktopV3CacheState, event: CacheE
 
   const sessionId = event.sessionId
   const key = reasoningOverlayKey(payload)
-  const liveReasoning = state.liveRunsBySession[sessionId]?.[runId]?.reasoningByKey?.[key]
-    ?? state.liveRunsBySession[sessionId]?.[runId]?.reasoning
+  const liveRun = state.liveRunsBySession[sessionId]?.[runId]
+  const liveReasoning = liveRun ? findCompatibleLiveReasoningOverlay(liveRun, payload, key) : undefined
   const text = stringValue(payload.text)
     || stringValue(payload.summary)
     || liveReasoning?.text
@@ -1643,7 +1643,10 @@ function commitCompletedReasoningEvent(state: DesktopV3CacheState, event: CacheE
     created_at: createdAt,
     metadata: {
       run_id: runId,
-      reasoning_overlay_key: key,
+      reasoning_overlay_key: liveReasoning?.key || key,
+      reasoning_start_seq: liveReasoning?.timelineSeq,
+      reasoning_started_at: liveReasoning?.startedAt,
+      reasoning_completed_at: createdAt,
       reasoning_id: stringValue(payload.reasoning_id) || undefined,
       reasoning_key: stringValue(payload.reasoning_key) || undefined,
       step_id: stringValue(payload.step_id) || undefined,
@@ -1749,6 +1752,10 @@ export function upsertRunIntent(
   const liveRun = liveRuns[enrichedRunIntent.run_id] ?? createLiveRunOverlay(sessionId, enrichedRunIntent.run_id)
   applyPendingUserRunTimelineFloorToRun(state, sessionId, liveRun)
   liveRun.status = normalizeLiveRunStatus(enrichedRunIntent.status)
+  if (TERMINAL_RUN_INTENT_STATUSES.has(enrichedRunIntent.status)) {
+    completeLiveReasoningOverlay(liveRun, enrichedRunIntent.completed_at ?? enrichedRunIntent.updated_at, enrichedRunIntent.event_seq,
+      enrichedRunIntent.status === 'completed' ? 'completed' : 'error')
+  }
   liveRuns[enrichedRunIntent.run_id] = liveRun
   state.liveRunsBySession[sessionId] = liveRuns
   cleanupTerminalLiveRunIfCanonicalized(state, sessionId, enrichedRunIntent.run_id, enrichedRunIntent.status)
@@ -2776,21 +2783,7 @@ function finalizeLiveRunForCommittedMessage(
   explicitRunStatus?: string,
 ): void {
   if (message.role !== 'assistant') return
-
-  const runId = resolveCommittedMessageRunId(message, explicitRunId)
-  if (!runId) return
-
-  const runs = state.liveRunsBySession[sessionId]
-  const run = runs?.[runId]
-  if (!run) return
-
-  clearCommittedAssistantStream(run, message)
-
-  const status = explicitRunStatus?.trim()
-    || state.runIntentsBySession[sessionId]?.[runId]?.status
-    || run.status
-
-  cleanupTerminalLiveRunIfCanonicalized(state, sessionId, runId, status)
+  reconcileLiveRunWithCommittedMessage(state, sessionId, message, explicitRunId, explicitRunStatus)
 }
 
 function reconcileLiveRunWithCommittedMessage(
@@ -2824,6 +2817,10 @@ function reconcileLiveRunWithCommittedMessage(
   const status = explicitRunStatus?.trim()
     || state.runIntentsBySession[sessionId]?.[runId]?.status
     || run.status
+  if (TERMINAL_RUN_INTENT_STATUSES.has(status)) {
+    run.status = normalizeLiveRunStatus(status)
+    completeLiveReasoningOverlay(run, message.created_at, message.global_seq, status === 'completed' ? 'completed' : 'error')
+  }
   cleanupTerminalLiveRunIfCanonicalized(state, sessionId, runId, status)
 }
 
@@ -3063,9 +3060,6 @@ function applyLiveRunOverlayFromEvent(
   switch (event.eventType) {
     case 'session.assistant.delta':
     case 'session.message.delta': {
-      if (liveRun.reasoning?.state === 'running') {
-        completeLiveReasoningOverlay(liveRun, updatedAt, eventSeq)
-      }
       const delta =
         stringValue(payload.delta) ||
         stringValue(payload.text_delta) ||
@@ -3076,6 +3070,7 @@ function applyLiveRunOverlayFromEvent(
         return
       }
 
+      completeLiveReasoningOverlay(liveRun, updatedAt, eventSeq, 'completed', (reasoning) => (reasoning.updatedSeq ?? 0) <= eventSeq)
       liveRun.status = liveRun.status === 'pending_executor' ? 'running' : liveRun.status
       const streamId = stringValue(payload.stream_id)
       const offsetStart = finiteNumberValue(payload.offset_start)
@@ -3126,6 +3121,9 @@ function applyLiveRunOverlayFromEvent(
       if (liveRun.assistantDraft?.content) {
         flushLiveAssistantDraftToSegment(liveRun)
       }
+      const toolStep = finiteNumberValue(payload.step)
+      completeLiveReasoningOverlay(liveRun, updatedAt, eventSeq, 'completed', (reasoning) => (reasoning.updatedSeq ?? 0) <= eventSeq
+        && (toolStep === undefined || reasoning.step === undefined || reasoning.step <= toolStep))
       applyToolLifecycleToRun(liveRun, payload, event.eventType, eventSeq, updatedAt)
       return
     }
@@ -3685,6 +3683,12 @@ export function applyDesktopV3LivePatchBatch(
     const run = ensureMutableRun(patch.session_id, patch.run_id)
     applyPendingUserRunTimelineFloorToRun(nextState, patch.session_id, run)
     applyLivePatchToRun(nextState, run, patch)
+    if (patch.text) {
+      completeLiveReasoningOverlay(run, patch.recorded_at, run.lastEventSeqSeen ?? 0, 'completed', (reasoning) => {
+        if (reasoning.step !== undefined) return reasoning.step <= patch.step
+        return reasoning.stepId === patch.step_id
+      })
+    }
   }
 
   return nextState
@@ -3819,7 +3823,7 @@ function ensureLiveRunOverlay(
   state.liveRunsBySession[sessionId][runId] ??= {
     sessionId,
     runId,
-    status: 'running',
+    status: normalizeLiveRunStatus(state.runIntentsBySession[sessionId]?.[runId]?.status ?? 'running'),
     toolActivitiesById: {},
     toolCallsByCallId: {},
   }
@@ -3897,7 +3901,8 @@ function applyLiveReasoningOverlay(
   const textDelta = stringValue(payload.text_delta)
   const summarySnapshot = stringValue(payload.summary)
   const summaryDelta = stringValue(payload.summary_delta)
-  const nextState: LiveRunReasoningOverlay['state'] = isError ? 'error' : isCompleted ? 'completed' : 'running'
+  // Late durable deltas may refine text, but cannot restart an already settled tag.
+  const nextState: LiveRunReasoningOverlay['state'] = isError ? 'error' : isCompleted ? 'completed' : current.state
   const nextSummary = summarySnapshot || (summaryDelta ? `${current.summary}${summaryDelta}` : current.summary)
   const nextText = explicitTextSnapshot
     || (canonicalDelta ? deltaMode === 'append' ? `${current.text}${canonicalDelta}` : canonicalDelta : '')
@@ -3935,6 +3940,16 @@ function applyLiveReasoningOverlay(
   liveRun.reasoningByKey = byKey
   liveRun.reasoning = next
   liveRun.status = liveRun.status === 'pending_executor' ? 'running' : liveRun.status
+  if (TERMINAL_RUN_INTENT_STATUSES.has(liveRun.status)) {
+    completeLiveReasoningOverlay(liveRun, updatedAt, eventSeq, liveRun.status === 'completed' ? 'completed' : 'error')
+  } else {
+    // Live text can arrive ahead of its durable reasoning events. Only a matching
+    // provider step with later observed output proves this delayed tag has ended.
+    const answer = [liveRun.assistantDraft, ...(liveRun.assistantSegments ?? [])].find((node) => node?.content
+      && (next.stepId ? node.stepId === next.stepId : next.step !== undefined && node.streamStep === next.step)
+      && node.updatedAt >= (next.startedAt ?? updatedAt))
+    if (answer) completeLiveReasoningOverlay(liveRun, answer.updatedAt, eventSeq, 'completed', (record) => record.key === key)
+  }
 }
 
 function liveReasoningOverlayEqual(left: LiveRunReasoningOverlay, right: LiveRunReasoningOverlay): boolean {
@@ -3953,19 +3968,28 @@ function liveReasoningOverlayEqual(left: LiveRunReasoningOverlay, right: LiveRun
     && left.updatedSeq === right.updatedSeq
 }
 
-function completeLiveReasoningOverlay(liveRun: LiveRunOverlay, updatedAt: number, eventSeq: number): void {
-  const current = liveRun.reasoning
-  if (!current || current.state !== 'running') return
-  const completed: LiveRunReasoningOverlay = {
-    ...current,
-    state: 'completed',
-    completedAt: current.completedAt ?? updatedAt,
-    updatedAt,
-    updatedSeq: Math.max(current.updatedSeq ?? 0, eventSeq),
+function completeLiveReasoningOverlay(
+  liveRun: LiveRunOverlay,
+  updatedAt: number,
+  eventSeq: number,
+  state: 'completed' | 'error' = 'completed',
+  eligible: (reasoning: LiveRunReasoningOverlay) => boolean = () => true,
+): void {
+  const settle = (current: LiveRunReasoningOverlay): LiveRunReasoningOverlay => {
+    if (current.state !== 'running' || !eligible(current)) return current
+    return {
+      ...current,
+      state,
+      completedAt: current.completedAt ?? updatedAt,
+      updatedAt: Math.max(current.updatedAt, updatedAt),
+      updatedSeq: Math.max(current.updatedSeq ?? 0, eventSeq),
+    }
   }
-  liveRun.reasoning = completed
-  if (current.key) {
-    liveRun.reasoningByKey = { ...(liveRun.reasoningByKey ?? {}), [current.key]: completed }
+  if (liveRun.reasoningByKey) {
+    liveRun.reasoningByKey = Object.fromEntries(Object.entries(liveRun.reasoningByKey).map(([key, record]) => [key, settle(record)]))
+  }
+  if (liveRun.reasoning) {
+    liveRun.reasoning = (liveRun.reasoning.key && liveRun.reasoningByKey?.[liveRun.reasoning.key]) || settle(liveRun.reasoning)
   }
 }
 

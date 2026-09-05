@@ -2405,6 +2405,9 @@ test('progressive live answer prefixes reconcile to one assistant row and one re
   ])
 })
 
+// Requirement: reasoning keeps its start-event anchor across completion and tool
+// construction. The cache reducer and conversation renderer own this causal
+// order; checking both phases prevents completion-time movement hidden by sorting.
 test('durable provider tool construction follows reasoning without later row movement', () => {
   const state = bootstrappedState()
 
@@ -2449,7 +2452,7 @@ test('durable provider tool construction follows reasoning without later row mov
       : `tool:${item.tool.callId}:${item.timelineSeq}`)
 
   assert.deepEqual(signature(), [
-    'reasoning:inspect the relevant files:5',
+    'reasoning:inspect the relevant files:3',
     'tool:call-causal:6',
   ])
 
@@ -2464,7 +2467,7 @@ test('durable provider tool construction follows reasoning without later row mov
   })
 
   assert.deepEqual(signature(), [
-    'reasoning:inspect the relevant files:5',
+    'reasoning:inspect the relevant files:3',
     'tool:call-causal:6',
   ])
   const run = state.liveRunsBySession[sessionA.id]['run-live']
@@ -3567,6 +3570,10 @@ test('reasoning completion commits one reasoning message and renders once', () =
   assert.equal(rendered.filter((item) => item.type === 'message' && item.message.role === 'reasoning').length, 1)
 })
 
+// Requirement: hydrate keeps reasoning at its start event before subsequent tool
+// output, without changing canonical message sequences. applyHydrateSnapshot and
+// buildDesktopV3ConversationRenderItems own this replay/order boundary; this
+// reducer-to-render test prevents completion-time repositioning after refresh.
 test('hydrate replays durable reasoning events and commits thinking message after refresh', () => {
   const state = bootstrappedState()
   const toolMessage: MessageSnapshot = {
@@ -3672,7 +3679,7 @@ test('hydrate replays durable reasoning events and commits thinking message afte
   const rendered = buildDesktopV3ConversationRenderItems(selectRenderedSessionMessages(state, sessionA.id))
   assert.deepEqual(
     rendered.filter((item) => item.type === 'message').map((item) => item.type === 'message' ? `${item.message.role}:${item.message.global_seq}` : ''),
-    ['user:1', 'assistant:2', 'tool:6', 'reasoning:7', 'assistant:8'],
+    ['user:1', 'assistant:2', 'reasoning:7', 'tool:6', 'assistant:8'],
   )
   assert.equal(rendered.filter((item) => item.type === 'live-reasoning').length, 0)
 })

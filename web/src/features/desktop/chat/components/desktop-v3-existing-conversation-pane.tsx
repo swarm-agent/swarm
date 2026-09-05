@@ -982,7 +982,18 @@ function committedAssistantRenderKey(message: MessageSnapshot): string {
   return streamId && runId ? `live-assistant:${runId}:${streamId}` : "";
 }
 
+function committedReasoningRenderKey(message: MessageSnapshot): string {
+  if (message.role !== "reasoning") return "";
+  const key = metadataString(message.metadata, "reasoning_overlay_key");
+  const runId = metadataString(message.metadata, "run_id");
+  return key && runId ? `live-reasoning:${runId}:${key}` : "";
+}
+
 function committedAssistantTimelineSeq(message: MessageSnapshot): number {
+  if (committedReasoningRenderKey(message)) {
+    const start = numericTimelineSeq(message.metadata?.reasoning_start_seq);
+    if (start > 0 && start <= message.global_seq) return start;
+  }
   if (committedAssistantRenderKey(message)) {
     const start = numericTimelineSeq(message.metadata?.stream_start_seq);
     if (start > 0 && start <= message.global_seq) return start;
@@ -1420,7 +1431,7 @@ export function buildDesktopV3LiveRunRenderItems(
     if (!text && !summary && reasoning.state !== "running") continue;
     items.push({
       type: "live-reasoning",
-      id: `live-reasoning:${reasoning.key || reasoning.reasoningId || reasoning.reasoningKey || run.runId}`,
+      id: `live-reasoning:${run.runId}:${reasoning.key || reasoning.reasoningId || reasoning.reasoningKey || run.runId}`,
       text,
       summary,
       state: reasoning.state,
@@ -1503,7 +1514,7 @@ export function buildDesktopV3ConversationRenderItems(
                 type: "message" as const,
                 message,
                 timelineSeq: committedAssistantTimelineSeq(message),
-                renderKey: committedAssistantRenderKey(message) || committedToolRenderKey(message) || undefined,
+                renderKey: committedAssistantRenderKey(message) || committedReasoningRenderKey(message) || committedToolRenderKey(message) || undefined,
               },
     ),
     ...renderedMessages.pendingUser.map((message) => ({
@@ -4621,8 +4632,8 @@ function DesktopV3CommittedMessage({
           text: message.content,
           summary: message.content,
           state: "completed",
-          startedAt: null,
-          completedAt: null,
+          startedAt: numericTimelineSeq(message.metadata?.reasoning_started_at) || null,
+          completedAt: numericTimelineSeq(message.metadata?.reasoning_completed_at) || null,
           timelineSeq: message.global_seq,
         }}
         thinkingTagsEnabled={thinkingTagsEnabled}
@@ -4785,7 +4796,7 @@ function DesktopV3ReasoningMessage({
     return () => window.clearInterval(timer);
   }, [item.state]);
   const body = reasoningBody(item.text, item.summary, thinkingTagsEnabled);
-  const label = item.state === "error" ? "Thinking failed" : "Thinking";
+  const label = item.state === "error" ? "Thinking failed" : item.state === "completed" ? "Thought" : "Thinking";
   const elapsed = reasoningElapsedLabel(
     item.startedAt,
     item.state === "running" ? null : item.completedAt,
