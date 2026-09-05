@@ -245,13 +245,51 @@ type artifactV3TurnState struct {
 	finished *ArtifactV3AuthorFinish
 }
 type ArtifactV3AuthorService struct {
-	root       string
-	repository ArtifactV3AuthorRepository
-	builder    ArtifactV3Builder
-	previewer  ArtifactV3Previewer
-	now        func() time.Time
-	mu         sync.Mutex
-	turns      map[string]*artifactV3TurnState
+	root           string
+	repository     ArtifactV3AuthorRepository
+	builder        ArtifactV3Builder
+	previewer      ArtifactV3Previewer
+	now            func() time.Time
+	mu             sync.Mutex
+	operationLocks map[string]*artifactV3OperationLock
+	turns          map[string]*artifactV3TurnState
+}
+
+// Serialize all operations within one candidate, including read/modify/write,
+// gate creation, finish and discard. Independent sibling candidates retain
+// parallelism. Count holders and waiters before locking so discard cannot split
+// lock identity; release idle locks instead of leaking one per historical turn.
+type artifactV3OperationLock struct {
+	mu    sync.Mutex
+	users int
+}
+
+func (s *ArtifactV3AuthorService) lockTurn(grant ArtifactV3AuthorGrant) func() {
+	if s == nil {
+		return func() {}
+	}
+	key := artifactV3WorkspaceKey(grant)
+	s.mu.Lock()
+	if s.operationLocks == nil {
+		s.operationLocks = make(map[string]*artifactV3OperationLock)
+	}
+	lock := s.operationLocks[key]
+	if lock == nil {
+		lock = &artifactV3OperationLock{}
+		s.operationLocks[key] = lock
+	}
+	lock.users++
+	s.mu.Unlock()
+	lock.mu.Lock()
+	return func() {
+		lock.mu.Unlock()
+		s.mu.Lock()
+		lock.users--
+		if lock.users == 0 {
+			delete(s.operationLocks, key)
+		}
+		s.mu.Unlock()
+	}
 }
 
 func NewArtifactV3AuthorService(root string, repository ArtifactV3AuthorRepository, builder ArtifactV3Builder, previewer ArtifactV3Previewer) *ArtifactV3AuthorService {
@@ -269,6 +307,12 @@ func artifactV3AuthorDefinition() Definition {
 			"path":   map[string]any{"type": "string", "maxLength": 512}, "to_path": map[string]any{"type": "string", "maxLength": 512}, "content": map[string]any{"type": "string"}, "old_string": map[string]any{"type": "string", "description": "Exact literal substring from decoded read_file Content, not JSON escape notation. Must match once unless replace_all is true. On mismatch, read again before retrying; no mutation occurs."}, "new_string": map[string]any{"type": "string"}, "replace_all": map[string]any{"type": "boolean"}, "cursor": map[string]any{"type": "string", "maxLength": 1024}, "limit": map[string]any{"type": "integer", "minimum": 1}, "offset": map[string]any{"type": "integer", "minimum": 0},
 		}, "required": []string{"action"}, "additionalProperties": false,
 	}}
+}
+
+// File payloads are bytes, not identifiers: never trim meaningful whitespace.
+func artifactV3LiteralString(args map[string]any, key string) string {
+	value, _ := args[key].(string)
+	return value
 }
 
 func (r *Runtime) SetArtifactV3AuthorService(service *ArtifactV3AuthorService) {
@@ -333,6 +377,7 @@ func (s *ArtifactV3AuthorService) MarkFailed(ctx context.Context, grant Artifact
 }
 
 func (s *ArtifactV3AuthorService) Finished(grant ArtifactV3AuthorGrant) (ArtifactV3AuthorFinish, bool) {
+	defer s.lockTurn(grant)()
 	if s == nil {
 		return ArtifactV3AuthorFinish{}, false
 	}
@@ -348,6 +393,7 @@ func (s *ArtifactV3AuthorService) Finished(grant ArtifactV3AuthorGrant) (Artifac
 // Discard removes only the ephemeral authoring workspace. Durable turn failure
 // and candidate diagnostics remain owned by the coordinator/repository.
 func (s *ArtifactV3AuthorService) Discard(grant ArtifactV3AuthorGrant) error {
+	defer s.lockTurn(grant)()
 	if s == nil {
 		return nil
 	}
@@ -392,13 +438,13 @@ func (r *Runtime) executeArtifactV3Author(ctx context.Context, scope WorkspaceSc
 		}
 	case artifactV3ActionCreate:
 		if err = requireOnlyArtifactV3Fields(args, "action", "path", "content"); err == nil {
-			err = r.artifactV3Author.Create(ctx, principal, run.Grant, mapString(args, "path"), []byte(mapString(args, "content")))
+			err = r.artifactV3Author.Create(ctx, principal, run.Grant, mapString(args, "path"), []byte(artifactV3LiteralString(args, "content")))
 			result = map[string]any{"path": mapString(args, "path")}
 		}
 	case artifactV3ActionEdit:
 		if err = requireOnlyArtifactV3Fields(args, "action", "path", "old_string", "new_string", "replace_all"); err == nil {
 			replaceAll, _ := args["replace_all"].(bool)
-			err = r.artifactV3Author.Edit(ctx, principal, run.Grant, mapString(args, "path"), []byte(mapString(args, "old_string")), []byte(mapString(args, "new_string")), replaceAll)
+			err = r.artifactV3Author.Edit(ctx, principal, run.Grant, mapString(args, "path"), []byte(artifactV3LiteralString(args, "old_string")), []byte(artifactV3LiteralString(args, "new_string")), replaceAll)
 			result = map[string]any{"path": mapString(args, "path")}
 		}
 	case artifactV3ActionRename:
@@ -453,6 +499,7 @@ func requireOnlyArtifactV3Fields(args map[string]any, allowed ...string) error {
 }
 
 func (s *ArtifactV3AuthorService) Inspect(ctx context.Context, p ArtifactV3AuthorPrincipal, g ArtifactV3AuthorGrant) (ArtifactV3AuthorContext, error) {
+	defer s.lockTurn(g)()
 	state, err := s.state(ctx, p, g, artifactV3ActionInspect)
 	if err != nil {
 		return ArtifactV3AuthorContext{}, err
@@ -464,6 +511,7 @@ func (s *ArtifactV3AuthorService) Inspect(ctx context.Context, p ArtifactV3Autho
 	return artifactV3Context(g, files, state.gate), nil
 }
 func (s *ArtifactV3AuthorService) List(ctx context.Context, p ArtifactV3AuthorPrincipal, g ArtifactV3AuthorGrant, cursor string, limit int) (ArtifactV3AuthorFilePage, error) {
+	defer s.lockTurn(g)()
 	state, err := s.state(ctx, p, g, artifactV3ActionList)
 	if err != nil {
 		return ArtifactV3AuthorFilePage{}, err
@@ -495,6 +543,7 @@ func (s *ArtifactV3AuthorService) List(ctx context.Context, p ArtifactV3AuthorPr
 	return page, nil
 }
 func (s *ArtifactV3AuthorService) Read(ctx context.Context, p ArtifactV3AuthorPrincipal, g ArtifactV3AuthorGrant, path string, offset, limit int) (ArtifactV3AuthorRead, error) {
+	defer s.lockTurn(g)()
 	state, err := s.state(ctx, p, g, artifactV3ActionRead)
 	if err != nil {
 		return ArtifactV3AuthorRead{}, err
@@ -518,6 +567,7 @@ func (s *ArtifactV3AuthorService) Read(ctx context.Context, p ArtifactV3AuthorPr
 	return ArtifactV3AuthorRead{Path: clean, Content: string(body[offset:end]), Offset: offset, NextOffset: end, TotalBytes: len(body), EOF: end == len(body)}, nil
 }
 func (s *ArtifactV3AuthorService) Create(ctx context.Context, p ArtifactV3AuthorPrincipal, g ArtifactV3AuthorGrant, path string, body []byte) error {
+	defer s.lockTurn(g)()
 	state, err := s.state(ctx, p, g, artifactV3ActionCreate)
 	if err != nil {
 		return err
@@ -538,6 +588,7 @@ func (s *ArtifactV3AuthorService) Create(ctx context.Context, p ArtifactV3Author
 	return err
 }
 func (s *ArtifactV3AuthorService) Edit(ctx context.Context, p ArtifactV3AuthorPrincipal, g ArtifactV3AuthorGrant, path string, old, replacement []byte, all bool) error {
+	defer s.lockTurn(g)()
 	state, err := s.state(ctx, p, g, artifactV3ActionEdit)
 	if err != nil {
 		return err
@@ -570,6 +621,7 @@ func (s *ArtifactV3AuthorService) Edit(ctx context.Context, p ArtifactV3AuthorPr
 	return err
 }
 func (s *ArtifactV3AuthorService) Rename(ctx context.Context, p ArtifactV3AuthorPrincipal, g ArtifactV3AuthorGrant, from, to string) error {
+	defer s.lockTurn(g)()
 	state, err := s.state(ctx, p, g, artifactV3ActionRename)
 	if err != nil {
 		return err
@@ -601,6 +653,7 @@ func (s *ArtifactV3AuthorService) Rename(ctx context.Context, p ArtifactV3Author
 	return err
 }
 func (s *ArtifactV3AuthorService) Delete(ctx context.Context, p ArtifactV3AuthorPrincipal, g ArtifactV3AuthorGrant, path string) error {
+	defer s.lockTurn(g)()
 	state, err := s.state(ctx, p, g, artifactV3ActionDelete)
 	if err != nil {
 		return err
@@ -621,6 +674,7 @@ func (s *ArtifactV3AuthorService) Delete(ctx context.Context, p ArtifactV3Author
 	return err
 }
 func (s *ArtifactV3AuthorService) Diff(ctx context.Context, p ArtifactV3AuthorPrincipal, g ArtifactV3AuthorGrant) (ArtifactV3AuthorDiff, error) {
+	defer s.lockTurn(g)()
 	state, err := s.state(ctx, p, g, artifactV3ActionDiff)
 	if err != nil {
 		return ArtifactV3AuthorDiff{}, err
@@ -663,6 +717,7 @@ func (s *ArtifactV3AuthorService) Diff(ctx context.Context, p ArtifactV3AuthorPr
 	return result, nil
 }
 func (s *ArtifactV3AuthorService) BuildPreview(ctx context.Context, p ArtifactV3AuthorPrincipal, g ArtifactV3AuthorGrant) (ArtifactV3AuthorGate, error) {
+	defer s.lockTurn(g)()
 	state, err := s.state(ctx, p, g, artifactV3ActionBuild)
 	if err != nil {
 		return ArtifactV3AuthorGate{}, err
@@ -709,6 +764,7 @@ func (s *ArtifactV3AuthorService) BuildPreview(ctx context.Context, p ArtifactV3
 	return gate, nil
 }
 func (s *ArtifactV3AuthorService) Finish(ctx context.Context, p ArtifactV3AuthorPrincipal, g ArtifactV3AuthorGrant) (ArtifactV3AuthorFinish, error) {
+	defer s.lockTurn(g)()
 	state, err := s.state(ctx, p, g, artifactV3ActionFinish)
 	if err != nil {
 		return ArtifactV3AuthorFinish{}, err

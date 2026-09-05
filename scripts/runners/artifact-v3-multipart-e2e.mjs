@@ -40,7 +40,7 @@ const animationStage = stage === 'animated-parts'
 const animatedFollowupStage = ['animated-targeted', 'animated-continue', 'animated-alternatives', 'animated-finish', 'animated-inspect', 'animated-alternatives-inspect', 'animated-repair'].includes(stage)
 const videoConversionStage = stage === 'video-conversion'
 const designerRootStage = stage === 'designer-root'
-const designerWaveStage = ['designer-swarm', 'designer-swarm-inspect', 'designer-select-continue', 'designer-continue-inspect'].includes(stage)
+const designerWaveStage = ['designer-swarm', 'designer-swarm-inspect', 'designer-select-continue', 'designer-repair', 'designer-continue-inspect'].includes(stage)
 const noDesignerStage = stage === 'basic-html' || stage === 'targeted-part' || stage === 'selected-continuation' || stage === 'alternate-choice' || alternateResumeStage || animationStage || animatedFollowupStage || videoConversionStage
 const headless = !flag('--headful')
 const suppliedToken = String(process.env.SWARM_RUNNER_TOKEN || '').trim()
@@ -489,7 +489,7 @@ async function staticVisualSample(previewPage, parts, expectedLabel = '', allowV
   }, targets)
   log(`OBSERVE preview viewport=${sample.innerWidth}x${sample.innerHeight} document=${sample.scrollWidth}x${sample.scrollHeight}`)
   const screenshotLabel = expectedLabel === 'CONTINUED SELECTED TURN' ? 'selected-continuation-candidate-preview' : expectedLabel === 'ALTERNATE OPTION ONE' ? 'alternate-option-one-preview' : expectedLabel === 'ALTERNATE OPTION TWO' ? 'alternate-option-two-preview' : expectedLabel ? 'targeted-part-candidate-preview' : 'basic-html-root-preview'
-  await screenshot(previewPage, screenshotLabel)
+  await screenshot(typeof previewPage.screenshot === 'function' ? previewPage : previewPage.page(), screenshotLabel)
   if (!allowViewportFailure) assert(sample.scrollWidth <= sample.innerWidth + 2 && sample.scrollHeight <= sample.innerHeight + 2, `static complete preview overflows viewport ${sample.innerWidth}x${sample.innerHeight} with document ${sample.scrollWidth}x${sample.scrollHeight}`)
   const normalizedBodyText = sample.bodyText.replace(/\s+/g, ' ')
   const pricingVisible = /Team\s*\$\s*29\b/i.test(normalizedBodyText) || (/\bTeam\b/i.test(normalizedBodyText) && /\$\s*29\b/.test(normalizedBodyText))
@@ -1235,30 +1235,31 @@ async function runDesignerWave(sessionID, artifactID) {
   let artifact = await detail(sessionID, artifactID)
   let base = currentRevision(artifact)
   const beforeChildren = delegatedDesigners(await bootstrapSessions(), sessionID)
+  const priorTurnIDs = new Set(artifact.turns.map((turn) => turn.turn_id))
   const turnID = option('--turn-id')
   if (stage === 'designer-swarm') {
     // Keep the reviewed but unselected regular candidate intact; siblings start
     // from the current selected root and implement the complete requested repair.
-    await postTurn(sessionID, 'designer-swarm', `Create exactly two managed Designer alternatives for the existing native Artifact V3 source ${artifact.artifact_ref}. Call task mode=swarm, agent_type=designer, count=2, animation_profile={profile:motion_ui}, artifact_v3_source={session_id:${sessionID},artifact_id:${artifactID},commit_oid:${base.commit_oid},projection_seq:${artifact.revision},target_part_ids:[footer]}. Use two themes: cyan Footer with exact readable label DESIGNER OPTION ONE, violet Footer with exact readable label DESIGNER OPTION TWO. Preserve all three stable Parts and Team $29. Apply the requested vivid magenta Pricing treatment and exact TARGETED PRICING TURN label; preserve all animations and place Pricing/Footer markers in dedicated lanes that never intersect text. Fully show every pricing feature line and motion lane inside each card at BOTH 1440x900 and 840x844; the earlier unselected regular candidate clipped card bottoms at full width. Repair shared sizing as necessary without hiding overflow to conceal missing content. All three Parts must fit without scrolling. Each Designer authors one complete candidate using artifact_v3_author only; read decoded file Content and use short unique literal edits. Build, preview, repair, then finish. Do not select either, move head, use source_artifact or V1/V2 identity, create another artifact, or fabricate a failed slot. Omit regular launches and unused null fields. Preserve both real outputs and report exact failures.`)
+    await postTurn(sessionID, 'designer-swarm', `Create exactly two managed Designer alternatives for the existing native Artifact V3 source ${artifact.artifact_ref}. Call task mode=swarm, agent_type=designer, count=2, animation_profile={profile:motion_ui}, artifact_v3_source={session_id:${sessionID},artifact_id:${artifactID},commit_oid:${base.commit_oid},projection_seq:${artifact.revision},target_part_ids:[footer]}. Use two themes: cyan Footer with exact readable label DESIGNER OPTION ONE, violet Footer with exact readable label DESIGNER OPTION TWO. Preserve all three stable Parts and Team $29. Apply the requested vivid magenta Pricing treatment and exact TARGETED PRICING TURN label; preserve all animations and place Pricing/Footer markers in dedicated lanes that never intersect text. Fully show every pricing feature line and motion lane inside each card at BOTH 1440x900 and 840x844; the earlier unselected regular candidate clipped card bottoms at full width. Repair shared sizing as necessary without hiding overflow to conceal missing content. All three Parts must fit without scrolling. Each Designer authors one new complete corrected candidate using artifact_v3_author only; retain the prior good and failed slots without altering them. Use a materially different safe editing strategy: create a NEW compact override CSS file, then edit_file index.html with old_string exactly </head> and new_string containing a stylesheet link followed by </head>. Use similarly short existing unique phrases for labels; do not replace whole formatted blocks. Never use NUL, DEL or any sentinel probe, and never send an absent substring to edit_file. Existing files cannot be overwritten by create_file. Put these exact constraints into each Designer brief. This is a new visual correction round, not replay of the earlier wave: substantially reduce Hero height and pricing card padding so BOTH feature lines and marker lanes fit at full width, use auto-sized pricing cards instead of a fixed-height overflow-hidden grid, and put the Footer marker at the far right in a reserved lane separate from its label. Do not preserve the broken sizing. Use a compact readable design with ample vertical slack. Build, preview, inspect actual rendered pixels at both sizes, repair, then finish. Do not select either, move head, use source_artifact or V1/V2 identity, create another artifact, or fabricate a failed slot. Omit regular launches and unused null fields. Preserve both real outputs and report exact failures.`)
     artifact = await detail(sessionID, artifactID)
     assert(delegatedDesigners(await bootstrapSessions(), sessionID).length === beforeChildren.length + 2, 'swarm did not launch exactly two Designer children')
   }
-  if (stage === 'designer-select-continue') {
+  if (stage === 'designer-select-continue' || stage === 'designer-repair') {
     assert(turnID, 'explicit selection requires --turn-id of the inspected wave')
     const turn = artifact.turns.find((item) => item.turn_id === turnID)
-    assert(turn?.candidates?.length === 2, 'selected wave does not preserve two slots')
+    assert(turn?.candidates?.length === (stage === 'designer-repair' ? 1 : 2), 'selected turn does not preserve expected slots')
     const chosenID = option('--candidate-id')
     const candidate = turn.candidates.find((item) => item.candidate_id === chosenID)
     assert(candidate?.status === 'ready', 'selection requires exact inspected ready --candidate-id')
     artifact = await selectCandidateInStudio(sessionID, artifactID, turn, candidate)
     base = currentRevision(artifact)
     result.revisions.selected = base
-    await postTurn(sessionID, 'designer-continuation', `Continue exactly the selected native Artifact V3 ${artifact.artifact_ref}. Launch exactly one managed Designer in regular mode with artifact_v3_source={session_id:${sessionID},artifact_id:${artifactID},commit_oid:${base.commit_oid},projection_seq:${artifact.revision},target_part_ids:[hero]}. Put animation_profile motion_ui and output_mode managed only on the launch. Add AFTER DESIGNER CHOICE inside Hero, preserving all three stable Parts, the selected Footer alternative label, TARGETED PRICING TURN, Team $29, all animations and marker lanes. Keep 1440x900 and 840x844 free from clipping, overlap and scrolling. Use artifact_v3_author only, short literal edits copied from decoded Content, whole-project build/preview/repair, and finish one exact-base candidate. Do not select it, move head, use legacy source_artifact, create another artifact, or launch more than one child.`)
+    await postTurn(sessionID, 'designer-continuation', `Continue exactly the selected native Artifact V3 ${artifact.artifact_ref}. Launch exactly one managed Designer in regular mode with artifact_v3_source={session_id:${sessionID},artifact_id:${artifactID},commit_oid:${base.commit_oid},projection_seq:${artifact.revision},target_part_ids:[hero]}. Put animation_profile motion_ui and output_mode managed only on the launch. Ensure AFTER DESIGNER CHOICE appears exactly once inside Hero, preserving all three stable Parts, the selected Footer alternative label, TARGETED PRICING TURN, Team $29, all animations and marker lanes. Keep 1440x900 and 840x844 free from clipping, overlap and scrolling. Correct the missing magenta treatment by adding a small NEW CSS override file: target #pricing .team with vivid magenta background/border while retaining white legible text. Read the actual selector first; use #pricing article.featured, not an absent .team class. The runtime now serializes same-candidate edits; nevertheless make dependent edits sequentially, then read index.html back and confirm the CSS link and all expected classes/labels persisted before build. Check computed background color in preview rather than assuming a stylesheet applies. Preserve the cyan Footer and all feature lines. Use artifact_v3_author only; create the new CSS then link it with an exact </head> replacement, and add the Hero label using a short unique existing phrase, never a sentinel or large reformatted old_string. Run whole-project build/preview/repair and finish one exact-base candidate. Do not select it, move head, use legacy source_artifact, create another artifact, or launch more than one child.`)
     artifact = await detail(sessionID, artifactID)
     assert(delegatedDesigners(await bootstrapSessions(), sessionID).length === beforeChildren.length + 1, 'continuation did not launch one Designer')
   }
-  const isContinuation = stage === 'designer-select-continue' || stage === 'designer-continue-inspect'
-  const turn = turnID && !isContinuation ? artifact.turns.find((item) => item.turn_id === turnID) : [...artifact.turns].reverse().find((item) => item.base_commit_oid === base.commit_oid && item.status === 'awaiting_selection' && item.candidates.length === (isContinuation ? 1 : 2))
+  const isContinuation = stage === 'designer-select-continue' || stage === 'designer-repair' || stage === 'designer-continue-inspect'
+  const turn = turnID && !isContinuation ? artifact.turns.find((item) => item.turn_id === turnID) : artifact.turns.find((item) => (stage.endsWith('inspect') || !priorTurnIDs.has(item.turn_id)) && item.base_commit_oid === base.commit_oid && item.status === 'awaiting_selection' && item.candidates.length === (isContinuation ? 1 : 2))
   assert(turn && turn.candidates.length === (isContinuation ? 1 : 2), 'expected exact Designer candidate cardinality is absent')
   assert(currentRevision(artifact).commit_oid === turn.base_commit_oid, 'Designer candidates moved selected head')
   result.ids.turn_id = turn.turn_id
@@ -1274,8 +1275,10 @@ async function runDesignerWave(sessionID, artifactID) {
     const studio = await openDesktopStudio(sessionID, artifactID)
     await studio.locator(`[data-artifact-v3-revision="${candidate.revision.commit_oid}"]`).first().click()
     await studio.locator(`[data-artifact-v3-preview-revision="${candidate.revision.commit_oid}"]`).waitFor({ state: 'visible' })
+    await sleep(500) // Revision effect replaces the prior iframe asynchronously.
     await settleStudioPreview(studio)
-    const frame = studio.locator('[data-artifact-v3-preview]:visible').contentFrame()
+    const frameElement = await studio.locator('[data-artifact-v3-preview]:visible').elementHandle()
+    const frame = await frameElement.contentFrame()
     result.animations[`narrow_${index + 1}`] = await staticVisualSample(frame, candidate.revision.manifest.parts, isContinuation ? 'AFTER DESIGNER CHOICE' : 'DESIGNER OPTION')
     await screenshot(page, `designer-candidate-${index + 1}-studio`)
   }
