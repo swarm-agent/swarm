@@ -3,9 +3,11 @@ package api
 import (
 	"errors"
 	"regexp"
+	"strings"
 	"testing"
 
 	"swarm/packages/swarmd/internal/identity"
+	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	worktreeruntime "swarm/packages/swarmd/internal/worktree"
 )
@@ -47,6 +49,25 @@ func (s *routedWorktreeServiceStub) AllocateDetachedWorkspaceRequested(workspace
 
 func (s *routedWorktreeServiceStub) AllocateDetachedWorkspaceRequestedForPrincipal(_ identity.Principal, workspacePath, nameSeed, baseBranch, branchName string) (worktreeruntime.Allocation, error) {
 	return s.AllocateDetachedWorkspaceRequested(workspacePath, nameSeed, baseBranch, branchName)
+}
+
+// Requirement: direct-session opt-out cannot bypass mandatory managed-worktree isolation.
+// Threat: a caller could otherwise revive Git-free/plain-directory session execution.
+// Boundary: both generic and V3 create validation reject the mode before configuration or allocation.
+func TestSessionCreateRejectsDirectExecutionModes(t *testing.T) {
+	principal := identity.Principal{UserID: "user", AccountScopeID: "account"}
+	_, err := (&Server{}).applySessionCreateWorktree(&sessionruntime.CreateSessionOptions{}, "session-1", "off", nil, "", "", principal, true)
+	if err == nil || !strings.Contains(err.Error(), "worktree_mode off is not supported") || !strings.Contains(err.Error(), "managed worktree isolation") {
+		t.Fatalf("generic off-mode error = %v", err)
+	}
+	_, err = validateSessionsV3CreateWorktreeRequest("off", nil, "", "", "")
+	if err == nil || !strings.Contains(err.Error(), "worktree_mode off is not supported") || !strings.Contains(err.Error(), "managed worktree isolation") {
+		t.Fatalf("v3 off-mode error = %v", err)
+	}
+	_, err = (&Server{}).applySessionCreateWorktree(&sessionruntime.CreateSessionOptions{}, "session-1", "inherit", nil, "", "", principal, true)
+	if err == nil || !strings.Contains(err.Error(), "worktree service not configured") || !strings.Contains(err.Error(), "managed worktree isolation") {
+		t.Fatalf("missing-service error = %v", err)
+	}
 }
 
 func TestAllocateRoutedSessionWorktreeUsesConfiguredPrefixAndBase(t *testing.T) {

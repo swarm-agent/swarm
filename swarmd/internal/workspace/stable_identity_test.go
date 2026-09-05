@@ -8,7 +8,7 @@ func TestAddForPrincipalReturnsStableWorkspaceIdentity(t *testing.T) {
 	store, cleanup := newTestWorkspaceStore(t)
 	defer cleanup()
 	svc := NewService(store)
-	workspacePath := t.TempDir()
+	workspacePath := newReadyRepository(t)
 
 	first, err := svc.AddForPrincipal(testPrincipal(), workspacePath, "Workspace", "", true)
 	if err != nil {

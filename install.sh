@@ -20,7 +20,7 @@ Options:
   --no-service           Install files only; do not install/start a service.
   --version <tag>        Install a specific release tag.
   --artifact-root <path> Install from an extracted release artifact.
-  --verify-only          Validate an artifact root without changing the host.
+  --verify-only          Validate an artifact root without changing the host or provisioning prerequisites.
 
 EOF
 }
@@ -78,6 +78,7 @@ need_cmd() {
     exit 1
   }
 }
+
 
 resolve_script_dir() {
   if [ -z "${0:-}" ] || [ ! -f "$0" ]; then
@@ -206,6 +207,75 @@ run_privileged() {
   sudo "$@"
 }
 
+install_runtime_prerequisite_packages() {
+  packages="$1"
+  PREREQUISITE_INSTALLER_FOUND=1
+  if command -v apt-get >/dev/null 2>&1; then
+    run_privileged apt-get update || return 1
+    # shellcheck disable=SC2086
+    run_privileged env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends $packages || return 1
+  elif command -v dnf >/dev/null 2>&1; then
+    # shellcheck disable=SC2086
+    run_privileged dnf install -y $packages || return 1
+  elif command -v yum >/dev/null 2>&1; then
+    # shellcheck disable=SC2086
+    run_privileged yum install -y $packages || return 1
+  elif command -v pacman >/dev/null 2>&1; then
+    # shellcheck disable=SC2086
+    run_privileged pacman -S --noconfirm --needed $packages || return 1
+  elif command -v zypper >/dev/null 2>&1; then
+    # shellcheck disable=SC2086
+    run_privileged zypper --non-interactive install $packages || return 1
+  elif command -v apk >/dev/null 2>&1; then
+    # shellcheck disable=SC2086
+    run_privileged apk add --no-cache $packages || return 1
+  else
+    PREREQUISITE_INSTALLER_FOUND=0
+    return 1
+  fi
+}
+
+ensure_runtime_prerequisites() {
+  missing_packages=""
+  missing_commands=""
+  for command_name in git bash; do
+    if command -v "$command_name" >/dev/null 2>&1; then
+      continue
+    fi
+    missing_commands="${missing_commands}${missing_commands:+, }${command_name}"
+    missing_packages="${missing_packages}${missing_packages:+ }${command_name}"
+  done
+  if [ -z "$missing_packages" ]; then
+    return 0
+  fi
+
+  echo "Installing missing mandatory Swarm runtime prerequisites: ${missing_commands}"
+  package_status=0
+  PREREQUISITE_INSTALLER_FOUND=0
+  install_runtime_prerequisite_packages "$missing_packages" || package_status=$?
+  if [ "$package_status" -ne 0 ]; then
+    if [ "$PREREQUISITE_INSTALLER_FOUND" -eq 0 ]; then
+      echo "Swarm requires ${missing_commands} at runtime, but no supported package manager was found." >&2
+      echo "Install the missing commands, then rerun install.sh." >&2
+    else
+      echo "Failed to install mandatory Swarm runtime prerequisites: ${missing_commands}." >&2
+      echo "Fix the package-manager error or install the missing commands, then rerun install.sh." >&2
+    fi
+    echo "No Swarm files, service definitions, or state paths were changed." >&2
+    echo "Swarm installation has not started." >&2
+    return 1
+  fi
+
+  for command_name in git bash; do
+    if ! command -v "$command_name" >/dev/null 2>&1; then
+      echo "Runtime prerequisite provisioning did not provide required command: $command_name" >&2
+      echo "No Swarm files, service definitions, or state paths were changed." >&2
+      echo "Swarm installation has not started." >&2
+      return 1
+    fi
+  done
+}
+
 dir_writable() {
   path="$1"
   probe="$(mktemp "$path/.swarm-write-check.XXXXXX" 2>/dev/null)" || return 1
@@ -284,6 +354,7 @@ Swarm install plan
   Daemon runtime: /run/swarmd
   Daemon cache/logs: /var/cache/swarmd, /var/log/swarmd
   Service: $(service_plan_label)
+  Mandatory runtime prerequisites: Git and Bash; missing packages are installed with a detected supported package manager before Swarm paths are changed, and existing installations are left unchanged.
 
 Reinstall preserves /etc/swarmd and /var/lib/swarmd by default.
 EOF
@@ -463,6 +534,21 @@ verify_installed_runtime() {
     echo "installed systemd service unit is missing: /etc/systemd/system/swarm.service" >&2
     return 1
   fi
+  if [ "$SERVICE_MODE" = "systemd" ]; then
+    attempts=0
+    while [ "$attempts" -lt 30 ]; do
+      status_output="$($bin_dir/swarm status 2>/dev/null || true)"
+      if printf '%s\n' "$status_output" | grep -Fxq 'active=active' && printf '%s\n' "$status_output" | grep -Fxq 'daemon_health=healthy'; then
+        return 0
+      fi
+      attempts=$((attempts + 1))
+      sleep 1
+    done
+    echo "Swarm was installed, but swarm.service did not reach daemon readiness." >&2
+    printf '%s\n' "$status_output" >&2
+    echo "Inspect the startup failure with: sudo systemctl status swarm.service" >&2
+    return 1
+  fi
 }
 
 bin_home_on_path() {
@@ -601,14 +687,21 @@ validate_artifact_root() {
 }
 
 need_cmd uname
-need_cmd curl
 need_cmd tar
 need_cmd sed
 need_cmd grep
 need_cmd awk
+need_cmd head
+need_cmd dirname
+need_cmd pwd
+need_cmd readlink
+need_cmd mkdir
+need_cmd chmod
+need_cmd sleep
 need_cmd mktemp
 need_cmd id
 need_cmd install
+need_cmd env
 
 script_dir=""
 if script_dir_candidate="$(resolve_script_dir 2>/dev/null)"; then
@@ -621,6 +714,10 @@ fi
 if [ "$VERIFY_ONLY" -eq 1 ] && [ -z "$ARTIFACT_ROOT" ]; then
   echo "--verify-only requires --artifact-root" >&2
   exit 2
+fi
+
+if [ "$VERIFY_ONLY" -ne 1 ]; then
+  ensure_runtime_prerequisites
 fi
 
 platform_dir="$(printf '%s/%s\n' "$script_dir" "linux-amd64")"
@@ -678,6 +775,7 @@ if [ -n "$ARTIFACT_ROOT" ]; then
   exit 1
 fi
 
+need_cmd curl
 os_name="$(uname -s)"
 arch_name="$(uname -m)"
 if [ "$os_name" != "Linux" ] || { [ "$arch_name" != "x86_64" ] && [ "$arch_name" != "amd64" ]; }; then

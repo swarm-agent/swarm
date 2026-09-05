@@ -15,6 +15,7 @@ import (
 	"swarm/packages/swarmd/internal/identity"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
+	workspaceruntime "swarm/packages/swarmd/internal/workspace"
 	worktreeruntime "swarm/packages/swarmd/internal/worktree"
 )
 
@@ -407,6 +408,7 @@ func (s *Service) mutateWorkspaceCatalog(sessionID string, principal identity.Pr
 		}
 		updated, updateErr := s.workspace.UpdateCatalogEntryForPrincipal(principal, args.WorkspaceID, args.WorkspaceGeneration, args.WorkspacePath, name, themeID)
 		if updateErr != nil {
+			updateErr = manageWorkspaceRepositoryError(updateErr)
 			if activeTarget {
 				if restoreErr := s.restoreWorkspaceByID(sessionID, principal, target.WorkspaceID, target.WorkspaceGeneration, applySessionMutation); restoreErr != nil {
 					return "", errors.Join(updateErr, fmt.Errorf("update failed and session restoration failed: %w", restoreErr))
@@ -492,6 +494,7 @@ func (s *Service) createWorkspaceCatalogEntry(sessionID string, principal identi
 	}
 	created, err := s.workspace.CreateCatalogEntryForPrincipal(principal, args.WorkspacePath, args.WorkspaceName, args.ThemeID)
 	if err != nil {
+		err = manageWorkspaceRepositoryError(err)
 		if activeTarget {
 			if restoreErr := s.restoreExactWorkspaceSession(prior, principal, applySessionMutation, "create_failed"); restoreErr != nil {
 				return "", errors.Join(err, fmt.Errorf("create failed and restoration failed; session remains in safe workspace %q: %w", safe.WorkspaceID, restoreErr))
@@ -517,6 +520,16 @@ func (s *Service) createWorkspaceCatalogEntry(sessionID string, principal identi
 		}
 	}
 	return marshalManageWorkspace(map[string]any{"action": "create", "status": status, "intent": args.Intent, "permission_scope": args.PermissionScope, "target": manageWorkspaceResolutionTarget(created), "requested_changes": manageWorkspaceRequestedChanges(args), "safety": safety, "restart_turn": activeTarget})
+}
+
+func manageWorkspaceRepositoryError(err error) error {
+	if repository, ok := workspaceruntime.RepositoryStateFromError(err); ok {
+		payload, marshalErr := json.Marshal(map[string]any{"code": "workspace_repository_not_ready", "repository": repository})
+		if marshalErr == nil {
+			return fmt.Errorf("%s: %s", err.Error(), payload)
+		}
+	}
+	return err
 }
 
 func sessionTargetsWorkspace(session pebblestore.SessionSnapshot, workspaceID, path string) bool {

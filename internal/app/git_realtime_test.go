@@ -14,6 +14,72 @@ import (
 	"swarm-refactor/swarmtui/internal/ui/v3chat"
 )
 
+// Requirement: startup must distinguish a missing Git executable, a plain directory,
+// and an unborn repository so the TUI never presents them as managed-worktree-ready.
+// Threat: collapsing all command failures into "not a repository" hides the required
+// system prerequisite and lets a git init without HEAD appear usable. This app-level
+// test is the narrowest layer that exercises the production exec/PATH boundary.
+func TestGitStatusForPathClassifiesWorkspaceReadiness(t *testing.T) {
+	plain := t.TempDir()
+	status, ok := gitStatusForPath(plain)
+	if ok || status.Readiness != model.GitReadinessNotRepository || status.HasGit {
+		t.Fatalf("plain directory status = %#v, ok=%v", status, ok)
+	}
+
+	unborn := initGitRepo(t)
+	status, ok = gitStatusForPath(unborn)
+	if !ok || !status.HasGit || status.Readiness != model.GitReadinessNeedsCommit {
+		t.Fatalf("unborn repository status = %#v, ok=%v", status, ok)
+	}
+
+	writeFile(t, filepath.Join(unborn, "tracked.txt"), "hello\n")
+	runGit(t, unborn, "add", "tracked.txt")
+	runGit(t, unborn, "commit", "-m", "init")
+	status, ok = gitStatusForPath(unborn)
+	if !ok || status.Readiness != model.GitReadinessReady {
+		t.Fatalf("committed repository status = %#v, ok=%v", status, ok)
+	}
+
+	nested := filepath.Join(unborn, "nested")
+	if err := os.Mkdir(nested, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	status, ok = gitStatusForPath(nested)
+	if ok || status.Readiness != model.GitReadinessNotRepository || status.HasGit {
+		t.Fatalf("nested repository directory status = %#v, ok=%v", status, ok)
+	}
+}
+
+func TestGitStatusForPathClassifiesMissingGitWithoutRawCommandError(t *testing.T) {
+	emptyPath := t.TempDir()
+	t.Setenv("PATH", emptyPath)
+	status, ok := gitStatusForPath(t.TempDir())
+	if ok || status.Readiness != model.GitReadinessUnavailable || status.HasGit {
+		t.Fatalf("missing git status = %#v, ok=%v", status, ok)
+	}
+}
+
+// Requirement: only Git's explicit not-a-repository diagnostic may produce the
+// authoritative local NotRepository state; other exit-128 failures are
+// indeterminate and must reach daemon-side repository admission.
+// Threat: safety policy such as dubious-ownership rejection also exits 128. If
+// misclassified as NotRepository, TUI onboarding blocks locally even though the
+// authenticated daemon can validate the same path under its execution identity.
+func TestGitStatusForPathDoesNotMisclassifyGitSafetyFailure(t *testing.T) {
+	binDir := t.TempDir()
+	wrapperPath := filepath.Join(binDir, "git")
+	wrapper := "#!/bin/sh\nprintf '%s\\n' 'fatal: detected dubious ownership in repository' >&2\nexit 128\n"
+	if err := os.WriteFile(wrapperPath, []byte(wrapper), 0o755); err != nil {
+		t.Fatalf("write git wrapper: %v", err)
+	}
+	t.Setenv("PATH", binDir)
+
+	status, ok := gitStatusForPath(t.TempDir())
+	if ok || status.Readiness != model.GitReadinessCheckFailed || status.HasGit {
+		t.Fatalf("Git safety failure status = %#v, ok=%v", status, ok)
+	}
+}
+
 func TestGitStatusForPathUsesNoOptionalLocks(t *testing.T) {
 	repo := initGitRepo(t)
 	writeFile(t, filepath.Join(repo, "tracked.txt"), "hello\n")
@@ -45,9 +111,14 @@ func TestGitStatusForPathUsesNoOptionalLocks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read git args log: %v", err)
 	}
-	want := "--no-optional-locks -C " + repo + " status --porcelain=v2 --branch"
-	if !containsLine(string(logged), want) {
-		t.Fatalf("git invocation missing no-optional-locks:\n%s", string(logged))
+	for _, want := range []string{
+		"--no-optional-locks -C " + repo + " rev-parse --show-toplevel",
+		"--no-optional-locks -C " + repo + " status --porcelain=v2 --branch",
+		"--no-optional-locks -C " + repo + " rev-parse --verify HEAD",
+	} {
+		if !containsLine(string(logged), want) {
+			t.Fatalf("git invocation missing no-optional-locks for %q:\n%s", want, string(logged))
+		}
 	}
 }
 

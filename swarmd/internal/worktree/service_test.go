@@ -13,6 +13,105 @@ import (
 	workspaceruntime "swarm/packages/swarmd/internal/workspace"
 )
 
+// Requirement: managed worktrees must fail with actionable installation guidance when Git is unavailable.
+// Threat: leaking an opaque os/exec error leaves users unable to repair a mandatory prerequisite.
+// Boundary: Service.ResolveTaskBase is the narrow pre-allocation repository authority, and a controlled PATH is the smallest hermetic proof.
+func TestResolveTaskBaseExplainsMissingGitPrerequisite(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+
+	_, err := (&Service{}).ResolveTaskBase(t.TempDir())
+	if err == nil {
+		t.Fatal("ResolveTaskBase succeeded without Git")
+	}
+	message := err.Error()
+	for _, want := range []string{"Git is required for Swarm", "repair or reinstall Swarm", "installer can provision Git", "retry"} {
+		if !strings.Contains(message, want) {
+			t.Fatalf("missing-Git error %q does not contain %q", message, want)
+		}
+	}
+	if strings.Contains(message, "executable file not found") || strings.Contains(message, "rev-parse") {
+		t.Fatalf("missing-Git error leaked opaque execution detail: %q", message)
+	}
+	allocationRoot := t.TempDir()
+	_, allocationErr := (&Service{}).allocateSessionWorkspace(allocationRoot, true, "", "agent", "missing-git")
+	if allocationErr == nil || !strings.Contains(allocationErr.Error(), "Git is required for Swarm") {
+		t.Fatalf("allocation missing-Git error = %v", allocationErr)
+	}
+	entries, readErr := os.ReadDir(allocationRoot)
+	if readErr != nil || len(entries) != 0 {
+		t.Fatalf("missing-Git allocation check mutated workspace: entries=%v err=%v", entries, readErr)
+	}
+}
+
+// Requirement: a plain directory must fail before managed-worktree allocation with
+// explicit, permission-preserving repository setup guidance.
+// Threat: forwarding Git's raw fatal stderr neither explains the required repository
+// nor assures the user that Swarm left the selected directory unchanged.
+// Boundary: ResolveTaskBase performs read-only repository discovery before any
+// allocation, so a marker file is the narrowest postcondition proof.
+func TestResolveTaskBaseExplainsRepositoryRequirementWithoutMutation(t *testing.T) {
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "preserve.txt")
+	if err := os.WriteFile(marker, []byte("preserve\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := (&Service{}).ResolveTaskBase(dir)
+	if err == nil {
+		t.Fatal("ResolveTaskBase succeeded outside a Git repository")
+	}
+	message := err.Error()
+	for _, want := range []string{"Swarm workspaces require a Git repository", "initial commit", "request permission", "git init", "staging files"} {
+		if !strings.Contains(message, want) {
+			t.Fatalf("non-repository error %q does not contain %q", message, want)
+		}
+	}
+	if strings.Contains(strings.ToLower(message), "fatal:") || strings.Contains(message, "rev-parse") {
+		t.Fatalf("non-repository error leaked opaque Git detail: %q", message)
+	}
+	if got, readErr := os.ReadFile(marker); readErr != nil || string(got) != "preserve\n" {
+		t.Fatalf("repository prerequisite check mutated workspace: %q, %v", got, readErr)
+	}
+	if _, statErr := os.Stat(filepath.Join(dir, ".git")); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("repository prerequisite check created .git: %v", statErr)
+	}
+	_, allocationErr := (&Service{}).allocateSessionWorkspace(dir, true, "", "agent", "plain-directory")
+	if allocationErr == nil || !strings.Contains(allocationErr.Error(), "Swarm workspaces require a Git repository") {
+		t.Fatalf("plain-directory allocation error = %v", allocationErr)
+	}
+	if _, statErr := os.Stat(filepath.Join(dir, ".git")); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("plain-directory allocation created .git: %v", statErr)
+	}
+}
+
+// Requirement: a valid initialized repository must have a commit before Swarm allocates managed worktrees.
+// Threat: treating an unborn branch as detached or forwarding Git's ambiguous HEAD stderr gives the wrong remediation.
+// Boundary: Service.ResolveTaskBase owns task-base resolution, and a temporary unborn repository is the narrowest observable fixture.
+func TestResolveTaskBaseExplainsInitialCommitRequirement(t *testing.T) {
+	repo := t.TempDir()
+	if _, err := runGit(repo, "init", "-b", "dev"); err != nil {
+		t.Fatalf("init unborn repo: %v", err)
+	}
+
+	_, err := (&Service{}).ResolveTaskBase(repo)
+	if err == nil {
+		t.Fatal("ResolveTaskBase succeeded without an initial commit")
+	}
+	message := err.Error()
+	for _, want := range []string{"Swarm workspaces require an initial commit", "review files", "request permission", "staging or committing", "retry"} {
+		if !strings.Contains(message, want) {
+			t.Fatalf("unborn-repository error %q does not contain %q", message, want)
+		}
+	}
+	if strings.Contains(message, "ambiguous argument") || strings.Contains(message, "detached HEAD") || strings.Contains(message, "rev-parse") {
+		t.Fatalf("unborn-repository error leaked or misclassified Git detail: %q", message)
+	}
+	_, allocationErr := (&Service{}).allocateSessionWorkspace(repo, true, "", "agent", "unborn")
+	if allocationErr == nil || !strings.Contains(allocationErr.Error(), "Swarm workspaces require an initial commit") {
+		t.Fatalf("allocation unborn-repository error = %v", allocationErr)
+	}
+}
+
 func TestResolveTaskBaseUsesExactHEADFromLinkedWorktree(t *testing.T) {
 	repo := t.TempDir()
 	if _, err := runGit(repo, "init", "-b", "dev"); err != nil {
@@ -223,13 +322,19 @@ func TestApplyTaskIntegrationRejectsConcurrentRepositoryOwner(t *testing.T) {
 	}
 }
 
+// Requirement: delegated integration must recognize a child commit after
+// cherry-pick even though the parent commit has a different identity.
+// Threat: identical author/committer metadata within Git's one-second timestamp
+// resolution can reproduce the child OID, hiding an ancestry-only test contract
+// that flakes when the timestamp crosses a second. This service-level test is the
+// narrowest layer that proves the production preflight/apply/classifier boundary.
 func TestPrepareAndApplyTaskIntegrationIsDeterministic(t *testing.T) {
 	repo := t.TempDir()
 	if _, err := runGit(repo, "init", "-b", "dev"); err != nil {
 		t.Fatal(err)
 	}
-	_, _ = runGit(repo, "config", "user.email", "test@example.invalid")
-	_, _ = runGit(repo, "config", "user.name", "Test User")
+	_, _ = runGit(repo, "config", "user.email", "integrator@example.invalid")
+	_, _ = runGit(repo, "config", "user.name", "Integration User")
 	if err := os.WriteFile(filepath.Join(repo, "base.txt"), []byte("base\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -250,7 +355,13 @@ func TestPrepareAndApplyTaskIntegrationIsDeterministic(t *testing.T) {
 	if _, err := runGit(childPath, "add", "child.txt"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := runGit(childPath, "commit", "-m", "child"); err != nil {
+	childCommitEnv := append(os.Environ(),
+		"GIT_AUTHOR_NAME=Child Author",
+		"GIT_AUTHOR_EMAIL=child@example.invalid",
+		"GIT_COMMITTER_NAME=Child Author",
+		"GIT_COMMITTER_EMAIL=child@example.invalid",
+	)
+	if _, err := runGitWithEnv(childPath, childCommitEnv, "commit", "-m", "child"); err != nil {
 		t.Fatal(err)
 	}
 	head, _ := runGit(childPath, "rev-parse", "HEAD")
@@ -270,8 +381,11 @@ func TestPrepareAndApplyTaskIntegrationIsDeterministic(t *testing.T) {
 	if result.ResultingParentHead == "" || result.ResultingParentHead == base {
 		t.Fatalf("result = %#v", result)
 	}
-	if descends, err := svc.TaskCommitDescendsFrom(repo, head, result.ResultingParentHead); err != nil || !descends {
-		t.Fatalf("integrated child is not reachable by ancestry: descends=%t err=%v", descends, err)
+	if result.ResultingParentHead == head {
+		t.Fatalf("integration unexpectedly reused child commit identity: child=%s parent=%s", head, result.ResultingParentHead)
+	}
+	if descends, err := svc.TaskCommitDescendsFrom(repo, head, result.ResultingParentHead); err != nil || descends {
+		t.Fatalf("cherry-picked child should not be reachable by ancestry: descends=%t err=%v", descends, err)
 	}
 	if integrated, err := svc.TaskCommitRangeIntegratedInto(repo, base, head, result.ResultingParentHead); err != nil || !integrated {
 		t.Fatalf("cherry-picked child not classified integrated: integrated=%t err=%v", integrated, err)

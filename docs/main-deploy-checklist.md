@@ -34,7 +34,7 @@ This file is the canonical operator checklist for promoting `dev` to `main`, tes
 ```
 
 - `--service` is explicit because direct `swarmsetup` and blank interactive install choices default to files-only and never enable/start systemd implicitly.
-- That install path provides the real installed runtime and the user-facing `swarm` launcher.
+- That install path provides the real installed runtime and the user-facing `swarm` launcher. Git is not bundled as a private binary in the archive: the installer must provision the supported distribution's Git package when absent, verify it before Swarm mutation, and fail closed if no supported package manager can satisfy the prerequisite.
 - Fresh shells that do not yet include `${XDG_BIN_HOME:-$HOME/.local/bin}` on `PATH` must use `${XDG_BIN_HOME:-$HOME/.local/bin}/swarm` until the shell startup files are updated and a new shell is opened.
 
 ## Canonical version reference
@@ -63,7 +63,8 @@ This file is the canonical operator checklist for promoting `dev` to `main`, tes
 - [ ] Run `bash scripts/check-launch-readiness.sh --require-clean`; this includes `scripts/check-launch-defaults.sh` assertions for loopback-only binding, permission/diagnostic/output-retention defaults, config privacy, explicit service choice, default permission redaction, preservation-oriented uninstall, and update rollback. It also rejects untracked artifacts and unexpected non-text blobs while reporting the explicitly reviewed FFF libraries and public web/PWA icons.
 - [ ] Retain full precommit and launch-readiness output with the exact candidate SHA
 - [ ] Build the candidate and run `TMPDIR="${TMPDIR:?}" ./scripts/smoke-release-archive.sh <archive.tar.gz> <archive.tar.gz.sha256> --evidence <smoke-evidence.txt>` when reproducing the hermetic CI smoke locally
-- [ ] Confirm the exact candidate passes the PR/build `install-distro-smoke` Ubuntu and Arch jobs. Each starts from the official minimal image, installs curl and systemd prerequisites, runs `install.sh --service --yes` as a non-root owner with `TMPDIR` unset, verifies the active service, invokes the installed CLI, and checks the canonical runtime owner.
+- [ ] Confirm the exact candidate passes the PR/build `install-distro-smoke` Ubuntu and Arch jobs. The workflow builds one archive/checksum pair and reuses it across the matrix. Each job starts from the official minimal image, installs only the downloader/certificate/sudo/systemd bootstrap, proves Git is absent, downloads that exact checksum-bound candidate over HTTP into a new user's home, runs the candidate's `install.sh --service --yes` with `TMPDIR` unset, verifies the installer provisioned Git, and requires active service plus healthy daemon readiness before invoking the installed CLI and checking the canonical runtime owner.
+- [ ] Confirm the testbench `release-candidate` watcher uses that same one-build/many-cycles archive identity and that the Fireworks Desktop cycle starts Git-absent, installs through the candidate's public `install.sh`, verifies Git was provisioned, completes onboarding, and passes the managed-worktree Plan/Auto reconciliation flow before reporting success.
 - [ ] Record the candidate archive/checksum/build metadata/smoke evidence location, or mark it pending until the exact-SHA workflow runs; do not fabricate or reuse evidence from another SHA
 - [ ] Re-read clone audit findings for secrets, plaintext storage, logging, and networking gotchas relevant to the downloadable release bundle
 
@@ -108,9 +109,9 @@ This file is the canonical operator checklist for promoting `dev` to `main`, tes
 - [ ] Start from a clean supported-Linux VM or restored clean snapshot with no prior Swarm install; record the OS image and candidate SHA/version
 - [ ] Install the exact versioned candidate through the documented systemd path and verify service-account ownership, group, and `0600` mode for the canonical config
 - [ ] Test real systemd start, `swarm status`, `swarm open`/health reachability, stop, and restart
-- [ ] Complete Desktop onboarding from first launch, including identity, provider, workspace selection, and successful first use
+- [ ] Complete Desktop onboarding from first launch, including identity, provider, and workspace selection. Prove a non-repository folder cannot be used temporarily or saved and explicit session worktree opt-out is rejected; an empty folder can be initialized only through the explicit repository-setup action; and an existing-file folder offers both `Talk to Onboarding Swarm` and `Fix manually and retry`. Verify the assistant uses the configured provider without any previously admitted workspace, stays bound to the exact selected folder, presents each Git/filesystem mutation for explicit permission, survives denial/failure and return to onboarding, and cannot save/select/finalize until the recheck sees the repository root's initial commit. Then prove the resulting committed repository reaches successful first use.
 - [ ] Complete the terminal/CLI first-run onboarding path and successful first use
-- [ ] Complete TUI onboarding from first launch, including identity, provider, workspace selection, and successful first use
+- [ ] Complete TUI onboarding from first launch, including identity, provider, workspace selection, and successful first use; plain and unborn repositories must remain blocked with actionable guidance.
 - [ ] Exercise the Desktop update action and the terminal/TUI `/update apply` path; verify progress, process handoff/relaunch, the post-update version, and the success notification where that surface provides one
 - [ ] Test reinstall/update over an existing installation and verify config, data, onboarding state, service-account owner/group, and config mode are preserved
 - [ ] Verify update apply fails closed for missing or mismatched checksum metadata, then succeeds with the exact candidate checksum

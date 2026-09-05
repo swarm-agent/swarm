@@ -733,6 +733,16 @@ func (r *Runtime) Definitions() []Definition {
 		},
 		{
 			Type:        "function",
+			Name:        "git_init",
+			Description: "Initialize the current workspace as a Git repository using Git without shell indirection",
+			Parameters: map[string]any{
+				"type":                 "object",
+				"properties":           map[string]any{},
+				"additionalProperties": false,
+			},
+		},
+		{
+			Type:        "function",
 			Name:        "git_status",
 			Description: "Inspect repository status using Git without shell indirection",
 			Parameters: map[string]any{
@@ -781,6 +791,21 @@ func (r *Runtime) Definitions() []Definition {
 					"all":     map[string]any{"type": "boolean", "description": "Stage tracked modifications before committing"},
 				},
 				"required":             []string{"message"},
+				"additionalProperties": false,
+			},
+		},
+		{
+			Type:        "function",
+			Name:        "git_commit_initial",
+			Description: "Create an onboarding first commit with an explicit user-supplied one-time identity without persisting Git configuration",
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"message":      map[string]any{"type": "string", "description": "Commit message"},
+					"author_name":  map[string]any{"type": "string", "description": "User-supplied one-time author and committer name"},
+					"author_email": map[string]any{"type": "string", "description": "User-supplied one-time author and committer email"},
+				},
+				"required":             []string{"message", "author_name", "author_email"},
 				"additionalProperties": false,
 			},
 		},
@@ -1820,6 +1845,8 @@ func (r *Runtime) executeOne(ctx context.Context, scope WorkspaceScope, call Cal
 				Output: chunk,
 			})
 		})
+	case "git_init":
+		return executeGitInit(ctx, scope, args)
 	case "git_status":
 		return executeGitStatus(ctx, scope, args)
 	case "git_diff":
@@ -1828,6 +1855,8 @@ func (r *Runtime) executeOne(ctx context.Context, scope WorkspaceScope, call Cal
 		return executeGitAdd(ctx, scope, args)
 	case "git_commit":
 		return executeGitCommit(ctx, scope, args)
+	case "git_commit_initial":
+		return executeGitCommitInitial(ctx, scope, args)
 	case "glob":
 		return "", errors.New("glob is disabled; use list for path discovery and search for canonical FFF-backed retrieval")
 	case "search":
@@ -2149,6 +2178,10 @@ func validateBashArguments(args map[string]any) (string, error) {
 	return command, nil
 }
 
+func executeGitInit(parent context.Context, scope WorkspaceScope, _ map[string]any) (string, error) {
+	return executeGitCommand(parent, scope, "git_init", []string{"init", "--initial-branch=main", "--template="})
+}
+
 func executeGitStatus(parent context.Context, scope WorkspaceScope, args map[string]any) (string, error) {
 	argv := []string{"status"}
 	if asBool(args["short"]) {
@@ -2211,6 +2244,20 @@ func executeGitCommit(parent context.Context, scope WorkspaceScope, args map[str
 		argv = append(argv, "--all")
 	}
 	return executeGitCommandWithTimeout(parent, scope, "git_commit", argv, defaultGitCommitTimeout)
+}
+
+func executeGitCommitInitial(parent context.Context, scope WorkspaceScope, args map[string]any) (string, error) {
+	message := strings.TrimSpace(asString(args["message"]))
+	authorName := strings.TrimSpace(asString(args["author_name"]))
+	authorEmail := strings.TrimSpace(asString(args["author_email"]))
+	if message == "" || authorName == "" || authorEmail == "" {
+		return "", errors.New("git_commit_initial requires message, author_name, and author_email")
+	}
+	if strings.ContainsAny(authorName, "\x00\r\n") || strings.ContainsAny(authorEmail, "\x00\r\n") {
+		return "", errors.New("git_commit_initial identity must be single-line text")
+	}
+	argv := []string{"-c", "user.name=" + authorName, "-c", "user.email=" + authorEmail, "commit", "-m", message}
+	return executeGitCommandWithTimeout(parent, scope, "git_commit_initial", argv, defaultGitCommitTimeout)
 }
 
 func executeGitCommand(parent context.Context, scope WorkspaceScope, toolName string, argv []string) (string, error) {
@@ -8920,7 +8967,7 @@ func manageAgentToolGroup(name string) string {
 		return "delegation"
 	case "ask-user", "ask_user", "exit_plan_mode", "plan_manage":
 		return "conversation_control"
-	case "git_status", "git_diff", "git_add", "git_commit":
+	case "git_init", "git_status", "git_diff", "git_add", "git_commit", "git_commit_initial":
 		return "git_commit"
 	case "skill-use", "skill_use", "manage-skill", "manage_skill", "manage-agent", "manage_agent", "manage-theme", "manage_theme", "manage-worktree", "manage_worktree", "manage_todos":
 		return "management"

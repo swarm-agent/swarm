@@ -7,7 +7,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -177,8 +176,8 @@ func TestOnboardingRepairsPrimaryWorkspaceSelfBinding(t *testing.T) {
 	}
 	principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: "user_onboarding_test", AccountScopeID: "acct_onboarding_test", AccountScopeSource: identity.AccountScopeSourceServerState}
 	workspacePath := filepath.Join(t.TempDir(), "primary")
-	if err := os.MkdirAll(workspacePath, 0o755); err != nil {
-		t.Fatalf("mkdir workspace: %v", err)
+	if err := ensureTestWorkspaceDir(workspacePath); err != nil {
+		t.Fatalf("create workspace repository: %v", err)
 	}
 	_, entry, _, err := workspaceSvc.AddForPrincipalWithEntryWithoutSelection(principal, workspacePath, "primary", "")
 	if err != nil {

@@ -539,14 +539,19 @@ export interface DesktopV3RoutedStartResult {
   mutation: { session_id?: string }
 }
 
-export function applyDesktopV3RoutedStartResponse(response: DesktopV3RoutedSessionStartResponse): void {
+export type DesktopV3SessionStartCacheResponse = Pick<
+  DesktopV3RoutedSessionStartResponse,
+  'session_id' | 'session' | 'first_message' | 'projection' | 'mutation'
+>
+
+export function applyDesktopV3RoutedStartResponse(response: DesktopV3SessionStartCacheResponse): void {
   const firstMessageResult: SessionMessageMutationResponse = {
     ok: true,
     session_id: response.session_id,
     session: response.session,
     projection: response.projection,
     message: response.first_message,
-    run_intent: response.mutation.run_intent ?? null,
+    run_intent: (response.mutation.run_intent as SessionMessageMutationResponse['run_intent']) ?? null,
     mutation: response.mutation,
     realtime_outbox: response.mutation.realtime_outbox ?? null,
   }

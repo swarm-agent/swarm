@@ -31,23 +31,13 @@ const (
 	worktreeBranchIDPlaceholder = "<id>"
 )
 
-const detachedWorkspaceFallbackWarning = "Opened without git worktree support; use a git repository and make sure git is installed for the app to work properly."
+const (
+	gitRequiredForWorktreesError = "Git is required for Swarm and is not installed; repair or reinstall Swarm so the installer can provision Git, then retry"
+	gitRepositoryRequiredError   = "Swarm workspaces require a Git repository with an initial commit; review the selected directory and request permission before running `git init`, staging files, or creating the first commit"
+	initialCommitRequiredError   = "Swarm workspaces require an initial commit; review files and ignore rules, request permission before staging or committing, then retry"
+)
 
 var validWorktreeWorkspace = regexp.MustCompile(`^(ws_)?[a-z0-9][a-z0-9-]*$`)
-
-func DetachedWorkspaceFallbackWarning(err error) string {
-	if err == nil {
-		return ""
-	}
-	text := strings.ToLower(strings.TrimSpace(err.Error()))
-	if strings.Contains(text, "not a git repository") {
-		return detachedWorkspaceFallbackWarning
-	}
-	if strings.Contains(text, "executable file not found") && strings.Contains(text, "git") {
-		return detachedWorkspaceFallbackWarning
-	}
-	return ""
-}
 
 type Config struct {
 	WorkspacePath    string `json:"workspace_path,omitempty"`
@@ -326,6 +316,9 @@ func (s *Service) allocateSessionWorkspaceWithOptions(workspacePath string, useC
 	if err != nil {
 		return Allocation{}, err
 	}
+	if _, err := resolveRepositoryHeadCommit(workspacePath); err != nil {
+		return Allocation{}, err
+	}
 	effectiveBranch, err := resolveEffectiveBaseBranch(workspacePath, useCurrentBranch, baseBranch)
 	if err != nil {
 		return Allocation{}, err
@@ -395,11 +388,8 @@ func (s *Service) allocateSessionWorkspaceWithOptions(workspacePath string, useC
 		cleanupErr := cleanupAllocatedWorktree(repoRoot, worktreePath, branchName)
 		return Allocation{}, fmt.Errorf("set worktree directory permissions: %w", allocationFailureWithCleanup(err, cleanupErr))
 	}
-	baseCommit, err := runGit(workspacePath, "rev-parse", "--verify", "HEAD^{commit}")
-	if err != nil || strings.TrimSpace(baseCommit) == "" {
-		if err == nil {
-			err = errors.New("empty commit")
-		}
+	baseCommit, err := resolveRepositoryHeadCommit(workspacePath)
+	if err != nil {
 		cleanupErr := cleanupAllocatedWorktree(repoRoot, worktreePath, branchName)
 		return Allocation{}, fmt.Errorf("capture worktree base commit: %w", allocationFailureWithCleanup(err, cleanupErr))
 	}
@@ -422,6 +412,10 @@ func (s *Service) ResolveTaskBase(workspacePath string) (TaskBase, error) {
 	if err != nil {
 		return TaskBase{}, err
 	}
+	commit, err := resolveRepositoryHeadCommit(workspacePath)
+	if err != nil {
+		return TaskBase{}, err
+	}
 	branch, err := currentBranch(workspacePath)
 	if err != nil {
 		return TaskBase{}, fmt.Errorf("detect current branch: %w", err)
@@ -435,13 +429,6 @@ func (s *Service) ResolveTaskBase(workspacePath string) (TaskBase, error) {
 	}
 	if status = strings.TrimSpace(status); status != "" {
 		return TaskBase{}, fmt.Errorf("parent worktree has uncommitted changes; commit or checkpoint required work before launching Clone:\n%s", status)
-	}
-	commit, err := runGit(workspacePath, "rev-parse", "--verify", "HEAD^{commit}")
-	if err != nil {
-		return TaskBase{}, fmt.Errorf("resolve parent HEAD: %w", err)
-	}
-	if strings.TrimSpace(commit) == "" {
-		return TaskBase{}, errors.New("resolve parent HEAD: empty commit")
 	}
 	return TaskBase{RepoRoot: repoRoot, ParentBranch: branch, BaseCommit: commit}, nil
 }
@@ -1087,6 +1074,9 @@ func resolveRepositoryRoot(workspacePath string) (string, error) {
 	// Anchor deterministic worktree paths under the shared repository root instead.
 	commonDir, err := runGit(workspacePath, "rev-parse", "--git-common-dir")
 	if err != nil {
+		if isNotGitRepositoryError(err) {
+			return "", errors.New(gitRepositoryRequiredError)
+		}
 		return "", fmt.Errorf("resolve git common dir: %w", err)
 	}
 	commonDir, err = resolveGitPath(workspacePath, commonDir)
@@ -1402,6 +1392,20 @@ func deterministicWorktreePath(repoRoot, sessionID, title string) (string, error
 	return deterministicSessionWorktreePath(repoRoot, sessionWorkspaceID(sessionID))
 }
 
+func resolveRepositoryHeadCommit(workspacePath string) (string, error) {
+	commit, err := runGit(workspacePath, "rev-parse", "--verify", "HEAD^{commit}")
+	if err == nil && strings.TrimSpace(commit) != "" {
+		return commit, nil
+	}
+	if _, symbolicErr := runGit(workspacePath, "symbolic-ref", "--quiet", "HEAD"); symbolicErr == nil {
+		return "", errors.New(initialCommitRequiredError)
+	}
+	if err != nil {
+		return "", fmt.Errorf("resolve repository HEAD: %w", err)
+	}
+	return "", errors.New("resolve repository HEAD: empty commit")
+}
+
 func currentBranch(workspacePath string) (string, error) {
 	branch, err := runGit(workspacePath, "rev-parse", "--abbrev-ref", "HEAD")
 	if err != nil {
@@ -1412,6 +1416,13 @@ func currentBranch(workspacePath string) (string, error) {
 		return "", nil
 	}
 	return branch, nil
+}
+
+func isNotGitRepositoryError(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(strings.ToLower(err.Error()), "not a git repository")
 }
 
 func runGit(path string, args ...string) (string, error) {
@@ -1428,6 +1439,9 @@ func runGitWithEnv(path string, env []string, args ...string) (string, error) {
 	}
 	out, err := cmd.CombinedOutput()
 	output := strings.TrimSpace(string(out))
+	if errors.Is(err, exec.ErrNotFound) {
+		return "", errors.New(gitRequiredForWorktreesError)
+	}
 	if err != nil {
 		if output == "" {
 			output = strings.TrimSpace(err.Error())

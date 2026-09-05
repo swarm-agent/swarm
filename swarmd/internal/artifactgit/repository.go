@@ -16,6 +16,7 @@ import (
 
 var idPattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$`)
 var objectPattern = regexp.MustCompile(`^[0-9a-f]{40,64}$`)
+var lookPath = exec.LookPath
 
 const manifestPath = "swarm-artifact.json"
 
@@ -26,7 +27,7 @@ func Open(ctx context.Context, root, repositoryID string, limits Limits) (*Repos
 	if !idPattern.MatchString(repositoryID) || repositoryID == "." || repositoryID == ".." {
 		return nil, invalid("repository id")
 	}
-	git, err := exec.LookPath("git")
+	git, err := lookPath("git")
 	if err != nil {
 		return nil, fmt.Errorf("artifactgit: native git required: %w", err)
 	}

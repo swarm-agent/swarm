@@ -4,6 +4,7 @@ import { applyWorkspaceTheme, setWorkspaceThemeCatalog, workspaceThemeDefaultId 
 import { normalizeGlobalThemeSettings, type UISettingsWire } from '../../../desktop/settings/swarm/types/swarm-settings'
 import { moveWorkspace } from '../mutations/move-workspace'
 import { saveWorkspace as saveWorkspaceAPI } from '../mutations/save-workspace'
+import { setupWorkspaceRepository as setupWorkspaceRepositoryAPI } from '../mutations/setup-workspace-repository'
 import { createWorkspaceFolder as createWorkspaceFolderAPI } from '../mutations/create-workspace-folder'
 import { deleteWorkspace as deleteWorkspaceAPI } from '../mutations/delete-workspace'
 import { selectWorkspace } from '../mutations/select-workspace'
@@ -23,6 +24,7 @@ import type {
   WorkspaceResolution,
 } from '../types/workspace'
 import type { WorkspaceOverviewResponse, WorkspaceOverviewTopologyRoute } from '../types/workspace-overview'
+import type { WorkspaceRepositoryState } from '../services/workspace-repository'
 
 interface SaveWorkspaceInput {
   path: string
@@ -54,10 +56,10 @@ interface UseWorkspaceLauncherState {
   loadError: string | null
   actionError: string | null
   openWorkspace: (path: string) => Promise<WorkspaceResolution>
-  useFolderTemporarily: (path: string) => Promise<WorkspaceResolution>
   deleteWorkspace: (path: string) => Promise<void>
   setWorktreeEnabled: (path: string, enabled: boolean) => Promise<void>
   saveWorkspace: (input: SaveWorkspaceInput) => Promise<WorkspaceResolution>
+  setupWorkspaceRepository: (path: string, expectedResolvedPath: string) => Promise<WorkspaceRepositoryState>
   createFolder: (parentPath: string, name: string) => Promise<string>
   setWorkspaceTheme: (path: string, themeId: string) => Promise<void>
   setWorkspaceIcon: (path: string, iconPNGDataURL: string) => Promise<void>
@@ -446,30 +448,6 @@ export function useWorkspaceLauncher(options: UseWorkspaceLauncherOptions = {}):
     }
   }, [applyCurrentResolution])
 
-  const useFolderTemporarily = useCallback(async (path: string) => {
-    const trimmedPath = path.trim()
-    setSelectingPath(trimmedPath)
-    setActionError(null)
-    try {
-      const browserResult = await browseWorkspacePath(trimmedPath)
-      const resolution = {
-        requestedPath: trimmedPath,
-        resolvedPath: browserResult.resolvedPath,
-        workspaceName: browserResult.resolvedPath.split(/[\\/]/).filter(Boolean).pop() || browserResult.resolvedPath,
-        localWorkspaceBindingId: '',
-        themeId: '',
-      }
-      applyCurrentResolution(resolution)
-      setCurrentWorkspacePath(browserResult.resolvedPath)
-      return resolution
-    } catch (err) {
-      setActionError(err instanceof Error ? err.message : 'Failed to open folder')
-      throw err
-    } finally {
-      setSelectingPath(null)
-    }
-  }, [applyCurrentResolution])
-
   const persistWorkspace = useCallback(async (input: SaveWorkspaceInput) => {
     const targetPath = input.path.trim()
     setSavingPath(targetPath)
@@ -498,6 +476,23 @@ export function useWorkspaceLauncher(options: UseWorkspaceLauncherOptions = {}):
       return resolution
     } catch (err) {
       setActionError(err instanceof Error ? err.message : 'Failed to save workspace')
+      throw err
+    } finally {
+      setSavingPath(null)
+    }
+  }, [browsePath, refresh])
+
+  const setupWorkspaceRepository = useCallback(async (path: string, expectedResolvedPath: string): Promise<WorkspaceRepositoryState> => {
+    const targetPath = path.trim()
+    setSavingPath(targetPath)
+    setActionError(null)
+    try {
+      const repository = await setupWorkspaceRepositoryAPI(targetPath, expectedResolvedPath.trim())
+      await refresh()
+      await browsePath(repository.path || targetPath)
+      return repository
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : 'Failed to initialize Git repository')
       throw err
     } finally {
       setSavingPath(null)
@@ -753,10 +748,10 @@ export function useWorkspaceLauncher(options: UseWorkspaceLauncherOptions = {}):
     loadError,
     actionError,
     openWorkspace,
-    useFolderTemporarily,
     deleteWorkspace,
     setWorktreeEnabled: updateWorkspaceWorktreeEnabled,
     saveWorkspace: persistWorkspace,
+    setupWorkspaceRepository,
     createFolder,
     setWorkspaceTheme: updateWorkspaceTheme,
     setWorkspaceIcon: updateWorkspaceIcon,

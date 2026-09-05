@@ -10,7 +10,7 @@ export function WorkspaceLauncherIteration1(props: WorkspaceLauncherIterationPro
       <Card className="flex flex-col gap-4 px-5 py-5 sm:px-6 lg:flex-row lg:items-start lg:justify-between">
         <div className="grid gap-2">
           <h2 className="text-xl font-semibold text-[var(--app-text)]">Workspace Launcher</h2>
-          <p className="text-sm leading-6 text-[var(--app-text-muted)]">Browse folders on this computer, use one for this chat only, or add it as a new workspace.</p>
+          <p className="text-sm leading-6 text-[var(--app-text-muted)]">Browse folders on this computer and add a committed Git repository as a workspace.</p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <Button type="button" onClick={props.onRefresh} disabled={props.refreshing}>
@@ -35,7 +35,7 @@ export function WorkspaceLauncherIteration1(props: WorkspaceLauncherIterationPro
       <DiscoveredDirectorySection
         {...props}
         title="Folders on this computer"
-        description="Signals like AGENTS.md, CLAUDE.md, and git help discovery; use a folder for this chat only or add it as a new workspace."
+        description="Signals like AGENTS.md, CLAUDE.md, and Git help discovery; Swarm accepts only a repository root with an initial commit."
       />
     </div>
   )

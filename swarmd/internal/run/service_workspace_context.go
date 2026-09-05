@@ -1,6 +1,7 @@
 package run
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -35,6 +36,12 @@ func (s *Service) resolveRunWorkspaceScope(session pebblestore.SessionSnapshot, 
 	principal, err := principalForRunWorkspaceScope(session, principal)
 	if err != nil {
 		return tool.WorkspaceScope{}, err
+	}
+	if sessionMetadataBool(session.Metadata, "workspace_onboarding") {
+		return s.resolveWorkspaceOnboardingRunScope(session, principal)
+	}
+	if agentruntime.IsWorkspaceOnboardingAgentName(mapString(session.Metadata, "agent_name")) || agentruntime.IsWorkspaceOnboardingAgentName(mapString(session.Metadata, "resolved_agent_name")) {
+		return tool.WorkspaceScope{}, errors.New("workspace onboarding agent cannot run outside the dedicated pre-admission flow")
 	}
 	if session.WorktreeEnabled {
 		resolvedPath, err := normalizeRunScopePath(firstNonEmptyString(session.WorktreeRootPath, workspacePath))
@@ -185,6 +192,89 @@ func (s *Service) resolveRunWorkspaceScope(session pebblestore.SessionSnapshot, 
 	}, nil
 }
 
+func (s *Service) resolveWorkspaceOnboardingRunScope(session pebblestore.SessionSnapshot, principal identity.Principal) (tool.WorkspaceScope, error) {
+	if s == nil || s.workspace == nil {
+		return tool.WorkspaceScope{}, errors.New("workspace onboarding scope requires the workspace service")
+	}
+	if !agentruntime.IsWorkspaceOnboardingAgentName(mapString(session.Metadata, "agent_name")) || !agentruntime.IsWorkspaceOnboardingAgentName(mapString(session.Metadata, "resolved_agent_name")) {
+		return tool.WorkspaceScope{}, errors.New("workspace onboarding scope requires the compiled onboarding agent")
+	}
+	profile, profileErr := storedWorkspaceOnboardingAgentProfile(session.Metadata)
+	if profileErr != nil || !agentruntime.IsWorkspaceOnboardingAgentName(profile.Name) || profile.Mode != agentruntime.ModeSubagent || profile.RuntimeMode != pebblestore.AgentRuntimeModeReadWrite || profile.ToolContract == nil || !sameWorkspaceOnboardingToolContract(profile.ToolContract, agentruntime.WorkspaceOnboardingAgentToolContract()) {
+		return tool.WorkspaceScope{}, errors.New("workspace onboarding scope is missing its compiled agent snapshot")
+	}
+	if !sessionMetadataBool(session.Metadata, "pre_admission") || !strings.EqualFold(mapString(session.Metadata, "owner_transport"), "workspace_onboarding_api") {
+		return tool.WorkspaceScope{}, errors.New("workspace onboarding scope is not marked with dedicated pre-admission authority")
+	}
+	path := strings.TrimSpace(mapString(session.Metadata, "workspace_onboarding_path"))
+	expected := strings.TrimSpace(mapString(session.Metadata, "workspace_onboarding_expected_path"))
+	if path == "" || expected == "" || path != strings.TrimSpace(session.WorkspacePath) {
+		return tool.WorkspaceScope{}, errors.New("workspace onboarding path authority is incomplete or stale")
+	}
+	state, err := s.workspace.InspectOnboardingRepositoryForPrincipal(principal, path, expected)
+	if err != nil {
+		return tool.WorkspaceScope{}, err
+	}
+	if strings.TrimSpace(state.Path) != path {
+		return tool.WorkspaceScope{}, errors.New("workspace onboarding directory path is stale")
+	}
+	switch state.State {
+	case "needs_assisted_setup", "needs_initial_commit", "ready":
+	default:
+		return tool.WorkspaceScope{}, errors.New("workspace onboarding directory is outside the setup lifecycle")
+	}
+	if _, err := exec.LookPath("git"); err != nil {
+		return tool.WorkspaceScope{}, errors.New("workspace onboarding requires Git to remain available")
+	}
+	return tool.WorkspaceScope{
+		PrimaryPath: path, Roots: []string{path}, MutationScopes: []string{"**"}, RejectScopeExpansion: true,
+		Principal: principal, SessionID: strings.TrimSpace(session.ID), SourceWorkspacePath: path,
+	}, nil
+}
+
+func sameWorkspaceOnboardingToolContract(left, right *pebblestore.AgentToolContract) bool {
+	if left == nil || right == nil {
+		return false
+	}
+	leftJSON, leftErr := json.Marshal(left)
+	rightJSON, rightErr := json.Marshal(right)
+	return leftErr == nil && rightErr == nil && string(leftJSON) == string(rightJSON)
+}
+
+func storedWorkspaceOnboardingAgentProfile(metadata map[string]any) (pebblestore.AgentProfile, error) {
+	value, ok := metadata["agent_profile"]
+	if !ok || value == nil {
+		return pebblestore.AgentProfile{}, errors.New("agent profile is missing")
+	}
+	if profile, ok := value.(pebblestore.AgentProfile); ok {
+		return profile, nil
+	}
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return pebblestore.AgentProfile{}, err
+	}
+	var profile pebblestore.AgentProfile
+	if err := json.Unmarshal(raw, &profile); err != nil {
+		return pebblestore.AgentProfile{}, err
+	}
+	return profile, nil
+}
+
+func sessionMetadataBool(metadata map[string]any, key string) bool {
+	value, ok := metadata[key]
+	if !ok {
+		return false
+	}
+	switch typed := value.(type) {
+	case bool:
+		return typed
+	case string:
+		return strings.EqualFold(strings.TrimSpace(typed), "true")
+	default:
+		return false
+	}
+}
+
 func (s *Service) mergeAccountSavedWorkspaceRoots(principal identity.Principal, baseRoots []string) ([]string, error) {
 	if s == nil || s.workspace == nil {
 		return mergeSessionWorkspaceRoots(baseRoots, nil), nil
@@ -323,6 +413,11 @@ func appendHostRuntimeContext(base string, workspacePath string, workspaceRoots 
 	block.WriteString("- Tools run directly on the host workspace path: ")
 	block.WriteString(workspacePath)
 	block.WriteString("\n")
+	for _, line := range workspaceGitContext(workspacePath) {
+		block.WriteString("- ")
+		block.WriteString(line)
+		block.WriteString("\n")
+	}
 	if len(workspaceRoots) == 1 {
 		block.WriteString("- Allowed workspace root: ")
 		block.WriteString(strings.TrimSpace(workspaceRoots[0]))
@@ -344,6 +439,35 @@ func appendHostRuntimeContext(base string, workspacePath string, workspaceRoots 
 		return block.String()
 	}
 	return base + "\n\n" + block.String()
+}
+
+func workspaceGitContext(workspacePath string) []string {
+	if _, err := exec.LookPath("git"); err != nil {
+		return []string{
+			"workspace_git_state: unavailable",
+			"Git is a mandatory Swarm runtime prerequisite. This installation is damaged or incomplete; do not claim the workspace or session is usable.",
+			"Direct the user to repair or reinstall Swarm so the supported installer can provision Git, verify `git --version`, and then retry. Never install Git ad hoc from a workspace session or claim success if repair is denied or fails.",
+		}
+	}
+	workspacePath = strings.TrimSpace(workspacePath)
+	if workspacePath == "" {
+		workspacePath = "."
+	}
+	if err := exec.Command("git", "-C", workspacePath, "rev-parse", "--is-inside-work-tree").Run(); err != nil {
+		return []string{
+			"workspace_git_state: not_repository",
+			"This directory is not a valid Swarm workspace. Swarm requires the selected repository root and an initial commit before a session can run.",
+			"Explain repository setup, inspect existing files and ignore rules, and obtain explicit permission before running `git init`, staging files, or creating the first commit.",
+		}
+	}
+	if err := exec.Command("git", "-C", workspacePath, "rev-parse", "--verify", "HEAD").Run(); err != nil {
+		return []string{
+			"workspace_git_state: needs_initial_commit",
+			"This repository is not a valid Swarm workspace until HEAD resolves to an initial commit.",
+			"Inspect files and ignore rules, explain the proposed first commit, and obtain explicit permission before staging or committing anything.",
+		}
+	}
+	return []string{"workspace_git_state: ready"}
 }
 
 func appendWorktreeRuntimeContext(base string, scope tool.WorkspaceScope) string {

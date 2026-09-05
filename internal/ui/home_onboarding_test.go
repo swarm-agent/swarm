@@ -11,10 +11,12 @@ import (
 
 func readyOnboardingPage() *HomePage {
 	page := NewHomePage(model.HomeModel{
-		OnboardingRequired:  true,
-		OnboardingUsername:  "alice",
-		OnboardingSwarmName: "Local Swarm",
-		CWD:                 "/repo/project",
+		OnboardingRequired:         true,
+		OnboardingUsername:         "alice",
+		OnboardingSwarmName:        "Local Swarm",
+		CWD:                        "/repo/project",
+		WorkspaceSetupHasGit:       true,
+		WorkspaceSetupGitReadiness: model.GitReadinessReady,
 	})
 	page.SetAuthModalData([]AuthModalProvider{{ID: "codex"}, {ID: "openai"}}, nil)
 	return page
@@ -50,6 +52,40 @@ func TestOnboardingProviderSkipRequiresWorkspaceConfirmation(t *testing.T) {
 	page.HideOnboarding()
 	if !page.OnboardingVisible() {
 		t.Fatal("required onboarding escaped before workspace completion")
+	}
+}
+
+// Requirement: TUI onboarding must not save an unborn repository because normal
+// sessions require managed worktrees. The threat is bypassing the backend
+// prerequisite from the beginner flow; this UI action gate is the narrowest proof.
+func TestOnboardingWorkspaceRejectsRepositoryWithoutInitialCommit(t *testing.T) {
+	page := readyOnboardingPage()
+	page.model.WorkspaceSetupGitReadiness = model.GitReadinessNeedsCommit
+	page.ShowOnboardingWorkspace("Confirm workspace")
+	page.HandleKey(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
+	if _, ok := page.PopHomeAction(); ok {
+		t.Fatal("unborn repository queued workspace creation")
+	}
+	if !strings.Contains(page.onboarding.Error, "no initial commit") || !strings.Contains(page.onboarding.Error, "explicit permission") {
+		t.Fatalf("unborn repository guidance = %q", page.onboarding.Error)
+	}
+}
+
+// Requirement: an inconclusive TUI-local Git check must reach the authenticated
+// workspace-add admission gate, which revalidates the exact path before mutation.
+// Threat: namespace or ownership constraints can make client-side Git return an
+// indeterminate status for a repository the daemon can validate, permanently
+// blocking first-run onboarding before the canonical authority is consulted.
+func TestOnboardingWorkspaceIndeterminateReadinessQueuesCanonicalAdmission(t *testing.T) {
+	for _, readiness := range []model.GitReadiness{model.GitReadinessUnknown, model.GitReadinessCheckFailed} {
+		page := readyOnboardingPage()
+		page.model.WorkspaceSetupGitReadiness = readiness
+		page.ShowOnboardingWorkspace("Confirm workspace")
+		page.HandleKey(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
+		action, ok := page.PopHomeAction()
+		if !ok || action.Kind != HomeActionCreateOnboardingWorkspace || action.WorkspacePath != "/repo/project" {
+			t.Fatalf("readiness %q action = %+v, ok=%v", readiness, action, ok)
+		}
 	}
 }
 
@@ -121,7 +157,7 @@ func TestOnboardingRendersCohesiveThreePhaseSurface(t *testing.T) {
 	page.ShowOnboardingWorkspace("Confirm workspace")
 	page.Draw(screen)
 	text := dumpHomeTestScreen(screen, 100, 30)
-	for _, want := range []string{"STEP 3 OF 3", "Create your first workspace.", "Creating workspace in", "/repo/project", "Press Enter to accept"} {
+	for _, want := range []string{"STEP 3 OF 3", "Create your first workspace.", "managed worktrees", "Creating workspace in", "/repo/project", "Git repository ready"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("workspace onboarding missing %q:\n%s", want, text)
 		}

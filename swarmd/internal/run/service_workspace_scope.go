@@ -256,6 +256,9 @@ func (s *Service) applyTemporaryWorkspaceScopeAccess(
 	if !ok {
 		return false, fmt.Errorf("session %q not found", sessionID)
 	}
+	if sessionMetadataBool(sessionSnapshot.Metadata, "workspace_onboarding") {
+		return false, errors.New("workspace onboarding sessions cannot expand filesystem scope")
+	}
 	roots := append([]string(nil), sessionSnapshot.TemporaryWorkspaceRoots...)
 	roots = append(roots, request.DirectoryPath)
 	sessionSnapshot.TemporaryWorkspaceRoots = pebblestore.NormalizeSessionTemporaryWorkspaceRoots(sessionSnapshot.WorkspacePath, roots)
