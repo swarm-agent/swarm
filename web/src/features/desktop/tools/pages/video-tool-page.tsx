@@ -1608,6 +1608,12 @@ export function VideoToolPage() {
   const [canvasRenderVersion, setCanvasRenderVersion] = useState(0)
   const requestCanvasRender = useCallback(() => setCanvasRenderVersion((version) => version + 1), [])
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
+  const attachCanvas = useCallback((canvas: HTMLCanvasElement | null) => {
+    canvasRef.current = canvas
+    // Media can finish loading while the project-loading branch hides the
+    // canvas. Mounting it must request its own draw; no new media event is owed.
+    if (canvas) requestCanvasRender()
+  }, [requestCanvasRender])
   const timelineScrollRef = useRef<HTMLDivElement | null>(null)
   const videoElementsRef = useRef<Map<string, CachedVideoMedia>>(new Map())
   const imageElementsRef = useRef<Map<string, CachedImageMedia>>(new Map())
@@ -3333,7 +3339,7 @@ export function VideoToolPage() {
               ) : (
                 <>
               <div className="relative w-full shrink-0 overflow-hidden rounded-xl border border-[var(--app-border)] bg-black lg:rounded-none" data-video-studio-player-viewport style={{ aspectRatio: `${(shadowTimeline ?? playerRevision?.timeline)?.width ?? 1920} / ${(shadowTimeline ?? playerRevision?.timeline)?.height ?? 1080}` }}>
-                <canvas ref={canvasRef} width={(shadowTimeline ?? playerRevision?.timeline)?.width ?? 1920} height={(shadowTimeline ?? playerRevision?.timeline)?.height ?? 1080} className="absolute inset-0 h-full w-full bg-black object-contain" />
+                <canvas ref={attachCanvas} width={(shadowTimeline ?? playerRevision?.timeline)?.width ?? 1920} height={(shadowTimeline ?? playerRevision?.timeline)?.height ?? 1080} className="absolute inset-0 h-full w-full bg-black object-contain" />
                 {activeCompositionSlots.length > 0 && activeSegment ? <VideoCompositionOverlay slots={activeCompositionSlots} outputWidth={(shadowTimeline ?? playerRevision?.timeline)?.width ?? 1920} outputHeight={(shadowTimeline ?? playerRevision?.timeline)?.height ?? 1080} playheadMs={Math.round(playhead * 1000)} partStartMs={Math.round(activeSegment.timelineStart * 1000)} playing={isPlaying} sourceURL={(sourceRef) => selectedThread ? `/v3/sessions/${encodeURIComponent(selectedThread.id)}/video/sources/media?source_ref=${encodeURIComponent(sourceRef)}` : ''} editing={compositionEditing} /> : null}
                 {liveAnimationPart && liveAnimationURL && !liveAnimationError ? <div className="absolute inset-0 overflow-hidden bg-black"><iframe ref={liveAnimationFrameRef} title={activeCandidate?.label || liveAnimationPart.title} src={liveAnimationURL} sandbox="allow-scripts" referrerPolicy="no-referrer" className="absolute inset-0 h-full w-full border-0 bg-black" data-video-studio-live-animation onError={() => setLiveAnimationError(`Could not play ${activeCandidate?.label || activeCandidate?.id || liveAnimationPart.title}.`)} /></div> : null}
                 {liveAnimationPart && liveAnimationError ? <div className="absolute inset-0 z-10 grid place-items-center bg-black px-8 text-center"><div><p className="text-sm font-semibold text-red-300">Live HTML preview failed</p><p className="mt-2 max-w-xl text-xs leading-5 text-red-200/80">{liveAnimationError}</p><p className="mt-2 text-[10px] text-white/50">The still fallback is not substituted for the selected motion source.</p></div></div> : null}
@@ -3341,7 +3347,7 @@ export function VideoToolPage() {
                 {timelineSegments.length === 0 ? (
                   <div className="absolute inset-0 grid place-items-center text-center"><div><Film className="mx-auto text-white/45" size={42} strokeWidth={1.5} /><p className="mt-3 text-sm font-medium text-white/80">No clips in this timeline</p></div></div>
                 ) : null}
-                <div className="pointer-events-none absolute left-4 top-4 rounded bg-black/55 px-2 py-1 text-xs text-white/70">
+                <div className="pointer-events-none absolute bottom-3 left-3 right-3 w-fit max-w-[calc(100%-1.5rem)] rounded bg-black/55 px-2 py-1 text-xs text-white/70">
                   {activeSegment ? `Clip ${Math.max(1, visualTimelineLayout.findIndex((segment) => segment.clipId === activeSegment.clipId) + 1)} · ${liveAnimationPart?.title || activeSegment.title || selectedClip?.name || activeSegment.clipId} · ${activeCompositionVideoCount > 0 ? `Still + ${activeCompositionVideoCount} composed video` : activeCandidate?.label || activeClipReviewState.mediaKind} · ${liveAnimationPart ? 'Live HTML' : activeCompositionVideoCount > 0 ? 'Composed playback' : activeClipReviewState.mediaKind} · ${formatTimelineTime(playhead)} / ${formatTimelineTime(movieDuration)}` : 'Timeline player'}
                 </div>
               </div>
