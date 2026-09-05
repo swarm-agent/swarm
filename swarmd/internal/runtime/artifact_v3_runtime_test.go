@@ -113,6 +113,15 @@ func TestArtifactV3RuntimeAdapterProductionPathAndRecovery(t *testing.T) {
 	if err != nil {
 		t.Fatalf("valid manifest target was rejected: %v", err)
 	}
+	// Requirement: one exact-base wave allocates distinct sibling slots; a
+	// failed sibling retains the good candidate and cannot advance head. This
+	// real Git/Pebble boundary tests durable postconditions, not renderer quality.
+	siblingRequest := followup
+	siblingRequest.CandidateIndex = 2
+	sibling, err := adapter.PrepareArtifactV3Turn(context.Background(), siblingRequest)
+	if err != nil || sibling.ArtifactID != preparedFollowup.ArtifactID || sibling.TurnID != preparedFollowup.TurnID || sibling.CandidateID == preparedFollowup.CandidateID || sibling.BaseCommitOID != preparedFollowup.BaseCommitOID {
+		t.Fatalf("sibling allocation=%+v err=%v", sibling, err)
+	}
 	followPrincipal := tool.ArtifactV3AuthorPrincipal{AccountScopeID: "account", UserID: "user", ProducerSessionID: "child", ProducerRunID: "repair-run"}
 	preparedFollowup.ProducerSessionID, preparedFollowup.ProducerRunID = "child", "repair-run"
 	if _, err := author.Inspect(context.Background(), followPrincipal, preparedFollowup); err != nil {
@@ -127,6 +136,15 @@ func TestArtifactV3RuntimeAdapterProductionPathAndRecovery(t *testing.T) {
 	repair, err := author.Finish(context.Background(), followPrincipal, preparedFollowup)
 	if err != nil {
 		t.Fatal(err)
+	}
+	sibling.ProducerSessionID, sibling.ProducerRunID = "sibling-child", "failed-run"
+	if err := author.MarkFailed(context.Background(), sibling, "child_run_failed", "injected sibling failure"); err != nil {
+		t.Fatal(err)
+	}
+	good, goodOK, goodErr := sessions.Store().GetArtifactV3Candidate("account", "user", grant.ArtifactID, preparedFollowup.TurnID, preparedFollowup.CandidateID)
+	bad, badOK, badErr := sessions.Store().GetArtifactV3Candidate("account", "user", grant.ArtifactID, sibling.TurnID, sibling.CandidateID)
+	if goodErr != nil || badErr != nil || !goodOK || !badOK || good.Status != "ready" || good.CommitOID != repair.Revision.CommitOID || bad.Status != "failed" || bad.CommitOID != "" {
+		t.Fatalf("partial wave good=%+v bad=%+v errors=%v/%v", good, bad, goodErr, badErr)
 	}
 	beforeSelect, err := adapter.GetArtifact(context.Background(), api.ArtifactV3Principal{AccountScopeID: "account", UserID: "user"}, "artifact-v3-runtime", grant.ArtifactID)
 	if err != nil || beforeSelect.Head.CommitOID != finished.Revision.CommitOID {

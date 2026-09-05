@@ -14,6 +14,16 @@ import (
 
 const artifactV3PolicyRevision = "artifact-v3-managed-designer-v1"
 
+// Native task handoffs must not disguise Git identities as legacy variants.
+// A pending/failed slot names its candidate, never the base as a ready revision.
+func taskArtifactV3Reference(grant tool.ArtifactV3AuthorGrant, commit string, seq uint64, status string) *taskArtifactReference {
+	return &taskArtifactReference{
+		SessionID: grant.OwnerSessionID, ArtifactID: grant.ArtifactID,
+		CommitOID: commit, ProjectionSeq: seq, TurnID: grant.TurnID,
+		CandidateID: grant.CandidateID, Status: status,
+	}
+}
+
 func artifactV3TargetPartIDs(spec taskLaunchSpec) ([]string, error) {
 	var ids []string
 	target, err := parseTaskSwarmSectionTarget(spec.SourceArguments["section_target"])
@@ -95,15 +105,15 @@ func (s *Service) allocateManagedDesignerArtifactV3(ctx context.Context, parent 
 		}
 		request := tool.ArtifactV3PrepareTurnRequest{
 			AccountScopeID: parent.AccountScopeID,
-			UserID: parent.UserID,
+			UserID:         parent.UserID,
 			OwnerSessionID: parent.ID,
-			TaskCallID: strings.TrimSpace(taskCallID),
-			Prompt: strings.TrimSpace(spec.MetaPrompt),
+			TaskCallID:     strings.TrimSpace(taskCallID),
+			Prompt:         strings.TrimSpace(spec.MetaPrompt),
 			PolicyRevision: artifactV3PolicyRevision,
 			CandidateIndex: index + 1,
-			Initial: spec.ArtifactV3Source == nil && spec.SourceArtifact == nil,
-			TargetPartIDs: targetPartIDs,
-			ExpiresAt: time.Now().Add(2 * time.Hour).UnixMilli(),
+			Initial:        spec.ArtifactV3Source == nil && spec.SourceArtifact == nil,
+			TargetPartIDs:  targetPartIDs,
+			ExpiresAt:      time.Now().Add(2 * time.Hour).UnixMilli(),
 		}
 		if spec.ArtifactV3Source != nil {
 			if spec.ArtifactV3Source.SessionID != parent.ID {

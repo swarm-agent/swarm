@@ -38,6 +38,7 @@ const alternateResumeStage = stage === 'alternate-choice-resume'
 const animationStage = stage === 'animated-parts'
 const animatedFollowupStage = ['animated-targeted', 'animated-continue', 'animated-alternatives', 'animated-finish', 'animated-inspect', 'animated-alternatives-inspect', 'animated-repair'].includes(stage)
 const videoConversionStage = stage === 'video-conversion'
+const designerRootStage = stage === 'designer-root'
 const noDesignerStage = stage === 'basic-html' || stage === 'targeted-part' || stage === 'selected-continuation' || stage === 'alternate-choice' || alternateResumeStage || animationStage || animatedFollowupStage || videoConversionStage
 const headless = !flag('--headful')
 const suppliedToken = String(process.env.SWARM_RUNNER_TOKEN || '').trim()
@@ -182,6 +183,17 @@ async function approvePending(sessionID) {
   const response = await api('GET', `/v3/sessions/${encodeURIComponent(sessionID)}/permissions?status=pending&limit=50`, undefined, 'list pending permissions')
   const pending = response.body?.permissions || []
   if (pending.length === 0) return 0
+  // Live Designer launches require a real operator permission gesture, even in
+  // an approved test plan. Never let resolve_all approve the runner's own task.
+  if (!noDesignerStage || pending.some((permission) => /task|subagent|swarm/i.test(text(permission.tool_name)))) {
+    const permissions = pending.map((permission) => ({ id: permission.id, tool_name: permission.tool_name, run_id: permission.run_id }))
+    result.pending_permissions = permissions
+    if (JSON.stringify(permissions) !== result.last_permission_notice) {
+      result.last_permission_notice = JSON.stringify(permissions)
+      log(`USER APPROVAL REQUIRED session=${sessionID} permissions=${JSON.stringify(permissions)}`)
+    }
+    fail('operator_permission_required: approve the exact pending request in the persistent Desktop, then resume this session/run; no permission was auto-resolved')
+  }
   const resolved = await api('POST', `/v3/sessions/${encodeURIComponent(sessionID)}/permissions/resolve_all`, { action: 'allow_once', reason: `${testID} checked-in Artifact V3 journey`, limit: 50 }, 'approve Artifact V3 journey permissions')
   return Number(resolved.body?.count || 0)
 }
@@ -247,6 +259,37 @@ function delegatedDesigners(bootstrap, parentID) {
     text(session?.metadata?.parent_session_id) === parentID &&
     text(session?.metadata?.lineage_kind) === 'delegated_subagent' &&
     text(session?.metadata?.requested_subagent).toLowerCase() === 'designer')
+}
+
+// Requirement: inspect actual child tool output and parent task handoffs, not
+// just the final catalog. V3 Git IDs must never be disguised as V1 variants.
+async function verifyNativeDesignerHandoffs(sessionID, children, artifactID) {
+  const parent = await hydrate(sessionID)
+  const messages = parent.messages_by_session?.[sessionID] || []
+  const handoffs = []
+  for (const message of messages) {
+    if (text(message.role) !== 'tool') continue
+    let body
+    try { body = JSON.parse(message.content) } catch { continue }
+    if (body?.tool !== 'task') continue
+    for (const reference of body.artifact_references || []) {
+      assert(!forbiddenLegacyWrite(reference), 'Designer task handoff exposes legacy identity')
+      assert(reference.session_id === sessionID && reference.artifact_id === artifactID && reference.commit_oid && reference.projection_seq > 0, 'Designer task handoff lacks native source identity')
+      handoffs.push(reference)
+    }
+  }
+  assert(handoffs.length >= children.length, 'native ready Designer handoff missing from parent tool results')
+  result.designer_handoffs = handoffs
+  for (const child of children) {
+    const snapshot = await hydrate(child.id)
+    const childMessages = snapshot.messages_by_session?.[child.id] || []
+    const outputs = childMessages.filter((message) => text(message.role) === 'tool').flatMap((message) => {
+      try { return [JSON.parse(message.content)] } catch { return [] }
+    })
+    assert(outputs.some((body) => body.tool === 'artifact_v3_author' && body.action === 'inspect_context'), 'Designer did not inspect its native author grant')
+    assert(outputs.some((body) => body.tool === 'artifact_v3_author' && body.action === 'finish_turn'), 'Designer did not finish its native whole-project turn')
+  }
+  gate('designer-native-handoffs', 'PASS', `children=${children.length} references=${handoffs.length}`)
 }
 
 async function catalog(sessionID) {
@@ -461,7 +504,7 @@ function initialPrompt() {
     'Call task exactly once in regular mode with exactly one managed Designer launch and animation_profile motion_ui, then wait for that one Designer. Do not launch an Iteration Swarm, multiple Designers, Coder, or Finder.',
     'The Designer must use only its context-bound artifact_v3_author whole-project workspace and create conventional files including swarm-artifact.json, index.html, and CSS/JavaScript as needed.',
     'The manifest must use schema_version swarm.artifact/v3, entrypoint index.html, and exactly three selector parts: hero=#hero, pricing=#pricing, footer=#footer.',
-    'Make one polished responsive 1440x900 composition with all three parts simultaneously visible, readable, and fully inside the viewport with no scrollbars. Give each part a distinct obvious continuously moving CSS or WAAPI animation. Each part must contain a data-motion-marker element whose computed transform, opacity, background, or shadow visibly changes throughout the animation.',
+    'Make one polished responsive composition that fits both 1440x900 and the narrower 840x844 Desktop pane, with all three parts simultaneously visible, readable, and fully inside the viewport with no scrollbars. Give each part a distinct obvious continuously moving CSS or WAAPI animation. Each part must contain a data-motion-marker element whose computed transform, opacity, background, or shadow visibly changes throughout the animation.',
     'Hero must visibly say Animated Hero, Pricing must show three readable price choices including Team $29, and Footer must visibly say Animated Footer. Use shared styles and shared script behavior while preserving the three stable part IDs.',
     'Build and preview the complete project, repair compile, locator, animation, contrast, clipping, overflow, or pixel problems in the same authoring turn, and finish only after one complete validated root commit is the visible Artifact head.',
     'Do not use V1/V2 artifact writers, storyboards, Video Studio, MP4, independent part bytes, source_artifact, or a monolithic upload.',
@@ -1136,7 +1179,7 @@ async function runVideoConversion(sessionID, selected, assignment) {
 async function runLive() {
   assert(apiURL && /^https?:\/\//.test(apiURL), '--api-url is required for the live journey')
   assert(desktopURL && /^https?:\/\//.test(desktopURL), '--desktop-url is invalid')
-  assert(animatedFollowupStage || ['basic-html', 'targeted-part', 'selected-continuation', 'alternate-choice', 'alternate-choice-resume', 'animated-parts', 'video-conversion', 'full'].includes(stage), '--stage must be basic-html, targeted-part, selected-continuation, alternate-choice, alternate-choice-resume, animated-parts, video-conversion, or full')
+  assert(animatedFollowupStage || ['basic-html', 'targeted-part', 'selected-continuation', 'alternate-choice', 'alternate-choice-resume', 'animated-parts', 'video-conversion', 'designer-root', 'designer-targeted', 'full'].includes(stage), '--stage must be basic-html, targeted-part, selected-continuation, alternate-choice, alternate-choice-resume, animated-parts, video-conversion, designer-root, designer-targeted, or full')
   assert(Number.isFinite(timeoutMs) && timeoutMs >= 300000 && timeoutMs <= 600000, '--timeout-ms must be between 300000 and 600000')
   await auth()
   const assignment = await configureModels()
@@ -1186,6 +1229,7 @@ async function runLive() {
     return
   }
 
+  if (stage === 'designer-targeted') assert(sessionOverride && initialRunOverride, 'designer-targeted requires the existing root session and initial run')
   const childrenBefore = delegatedDesigners(await bootstrapSessions(), session.sessionID)
   let initialSnapshot
   if (sessionOverride) {
@@ -1217,11 +1261,12 @@ async function runLive() {
   result.ids.artifact_id = artifact.id
   if (childrenAfterRoot[0]?.id) result.ids.initial_designer_session_id = text(childrenAfterRoot[0].id)
   result.revisions.root = rootRevision
+  if (!noDesignerStage) await verifyNativeDesignerHandoffs(session.sessionID, childrenAfterRoot, artifact.id)
   result.animations.root = await screenshotPreview(session.sessionID, artifact.id, rootRevision)
   if (noDesignerStage) result.gates.no_designer_delegation = true
   else result.gates.one_initial_designer = true
   result.gates.root_complete_preview = true
-  if (stage === 'basic-html' || animationStage || videoConversionStage) {
+  if (stage === 'basic-html' || animationStage || videoConversionStage || designerRootStage) {
     const studio = await openDesktopStudio(session.sessionID, artifact.id)
     assert(await studio.locator('[data-artifact-v3-part-navigator] [data-artifact-v3-part]').count() === 3, 'Desktop basic HTML Part navigator does not show exactly three parts')
     await screenshot(page, 'desktop-basic-html-artifact-studio')
@@ -1262,6 +1307,7 @@ async function runLive() {
     assert(newChild?.id, 'targeted follow-up did not produce one distinct Designer child')
     result.ids.followup_designer_session_id = text(newChild.id)
   }
+  if (!noDesignerStage) await verifyNativeDesignerHandoffs(session.sessionID, childrenAfterFollowup, artifact.id)
   result.ids.turn_id = turn.turn_id
   result.ids.candidate_id = candidate.candidate_id
   result.revisions.candidate = candidate.revision

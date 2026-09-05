@@ -717,8 +717,13 @@ func (s *Service) cancelledTaskLaunchReason(childSessionID string, runErr error)
 
 type taskArtifactReference struct {
 	SessionID          string                                         `json:"session_id"`
-	CollectionID       string                                         `json:"collection_id"`
-	VariantID          string                                         `json:"variant_id"`
+	CollectionID       string                                         `json:"collection_id,omitempty"`
+	VariantID          string                                         `json:"variant_id,omitempty"`
+	ArtifactID         string                                         `json:"artifact_id,omitempty"`
+	CommitOID          string                                         `json:"commit_oid,omitempty"`
+	ProjectionSeq      uint64                                         `json:"projection_seq,omitempty"`
+	TurnID             string                                         `json:"turn_id,omitempty"`
+	CandidateID        string                                         `json:"candidate_id,omitempty"`
 	EventSeq           uint64                                         `json:"event_seq,omitempty"`
 	Status             string                                         `json:"status"`
 	FailureCode        string                                         `json:"failure_code,omitempty"`
@@ -833,7 +838,7 @@ func buildTaskLaunchOutcome(launch taskLaunchPrepared) taskLaunchOutcome {
 	}
 	if launch.ArtifactV3AuthorContext != nil {
 		grant := launch.ArtifactV3AuthorContext.Grant
-		outcome.ArtifactReference = &taskArtifactReference{SessionID: strings.TrimSpace(grant.OwnerSessionID), CollectionID: strings.TrimSpace(grant.ArtifactID), VariantID: strings.TrimSpace(grant.BaseCommitOID), Status: "pending", OutputRequirements: cloneTaskOutputRequirements(launch.OutputRequirements), AnimationProfile: cloneTaskAnimationProfile(launch.AnimationProfile)}
+		outcome.ArtifactReference = taskArtifactV3Reference(grant, "", 0, "pending")
 	} else if launch.ArtifactV2AuthorContext != nil {
 		grant := launch.ArtifactV2AuthorContext.Grant
 		outcome.ArtifactReference = &taskArtifactReference{SessionID: strings.TrimSpace(grant.OwnerSessionID), VariantID: strings.TrimSpace(grant.ArtifactID), Status: "pending", OutputRequirements: cloneTaskOutputRequirements(launch.OutputRequirements), AnimationProfile: cloneTaskAnimationProfile(launch.AnimationProfile)}
@@ -5206,18 +5211,13 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 				_ = s.tools.ArtifactV3AuthorService().Discard(grant)
 				return outcome, errors.New("managed Designer completed without a finished Artifact V3 candidate")
 			}
-			outcome.ArtifactReference = &taskArtifactReference{
-				SessionID: grant.OwnerSessionID, CollectionID: grant.ArtifactID,
-				VariantID: finished.Revision.CommitOID, Status: pebblestore.SessionArtifactStatusReady,
-				SourceArtifact:     cloneTaskImageSourceArtifact(launch.SourceArtifact),
-				OutputRequirements: cloneTaskOutputRequirements(launch.OutputRequirements), AnimationProfile: cloneTaskAnimationProfile(launch.AnimationProfile),
-			}
+			outcome.ArtifactReference = taskArtifactV3Reference(grant, finished.Revision.CommitOID, 0, pebblestore.SessionArtifactStatusReady)
 			if s.sessions != nil && s.sessions.Store() != nil {
 				if repository, ok, readErr := s.sessions.Store().GetArtifactV3Repository(parentSession.AccountScopeID, parentSession.UserID, grant.ArtifactID); readErr == nil && ok {
-					outcome.ArtifactReference.EventSeq = repository.EventSeq
+					outcome.ArtifactReference.ProjectionSeq = repository.EventSeq
 				}
 			}
-			if outcome.ArtifactReference.EventSeq == 0 {
+			if outcome.ArtifactReference.ProjectionSeq == 0 {
 				return outcome, errors.New("managed Designer Artifact V3 handoff is missing its exact projection sequence")
 			}
 		}
