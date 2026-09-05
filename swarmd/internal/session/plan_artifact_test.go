@@ -1,11 +1,30 @@
 package session
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
+
+func newArtifactCleanupTestService(t *testing.T) *Service {
+	t.Helper()
+	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "plan-artifact.pebble"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	events, err := pebblestore.NewEventLog(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return NewService(pebblestore.NewSessionStore(store), events)
+}
+
+func artifactCleanupCreateOptions(sessionID, workspacePath, title string) CreateSessionOptions {
+	return CreateSessionOptions{SessionID: sessionID, UserID: "user-1", AccountScopeID: "account-1", WorkspacePath: workspacePath, Title: title, Preference: &pebblestore.ModelPreference{Provider: "codex", Model: "test-model", Thinking: "medium"}}
+}
 
 func TestNormalizePlanDocumentPreservesPortableArtifacts(t *testing.T) {
 	doc, err := NormalizePlanDocumentForSave("plan-artifacts", "Artifacts", &pebblestore.SessionPlanDocument{
@@ -104,6 +123,23 @@ func TestNormalizePlanDocumentPreservesAndNormalizesManagedArtifacts(t *testing.
 	clone.Checkpoints[0].Artifacts[0].VariantID = "var-changed-cp"
 	if doc.Artifacts[0].VariantID != "var-789" || doc.Checkpoints[0].Artifacts[0].VariantID != "var-abc" {
 		t.Fatalf("managed artifact slices were not cloned deeply: %#v", doc)
+	}
+}
+
+func TestNormalizePlanDocumentAcceptsNativeArtifactV3Reference(t *testing.T) {
+	ref := pebblestore.SessionPlanArtifactReference{SessionID: "session-1", ArtifactID: "artifact-1", RevisionRef: "revision-" + strings.Repeat("a", 40), Role: "deliverable"}
+	doc, err := NormalizePlanDocumentForSave("plan-v3", "Artifact V3", &pebblestore.SessionPlanDocument{Artifacts: []pebblestore.SessionPlanArtifactReference{ref}}, nil)
+	if err != nil || len(doc.Artifacts) != 1 || doc.Artifacts[0].ArtifactID != "artifact-1" {
+		t.Fatalf("doc=%+v err=%v", doc, err)
+	}
+	for _, invalid := range []pebblestore.SessionPlanArtifactReference{
+		{SessionID: "session-1", ArtifactID: "artifact-1"},
+		{SessionID: "session-1", ArtifactID: "artifact-1", RevisionRef: "revision-bad"},
+		{SessionID: "session-1", ArtifactID: "artifact-1", RevisionRef: "revision-" + strings.Repeat("a", 40), CollectionID: "legacy"},
+	} {
+		if _, err := NormalizePlanDocumentForSave("plan-v3", "Artifact V3", &pebblestore.SessionPlanDocument{Artifacts: []pebblestore.SessionPlanArtifactReference{invalid}}, nil); err == nil {
+			t.Fatalf("invalid native Artifact V3 reference accepted: %+v", invalid)
+		}
 	}
 }
 

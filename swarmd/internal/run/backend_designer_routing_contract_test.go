@@ -128,6 +128,48 @@ func TestCollectTaskReadyArtifactReferencesExcludesFailedAnimationInspectionSlot
 	}
 }
 
+// Requirement: a visually rejected managed animation is a failed immutable
+// candidate, but a regular partial wave must expose one bounded replacement path
+// instead of encouraging a terminal checkpoint failure or rerunning good slots.
+// This helper layer is the narrowest proof because service_tools.go uses it to
+// decide whether the task payload may advertise that recovery action.
+func TestCountRecoverableManagedDesignerInspectionFailuresIsFailClosed(t *testing.T) {
+	ready := &taskArtifactReference{Status: pebblestore.SessionArtifactStatusReady}
+	failedInspection := &taskArtifactReference{Status: pebblestore.SessionArtifactStatusFailed, FailureCode: "animation_inspection_failed"}
+	outcomes := []taskLaunchOutcome{
+		{RequestedSubagent: "designer", ArtifactReference: ready},
+		{RequestedSubagent: "designer", ArtifactReference: failedInspection, ReportExcerpt: "ANIMATION_INSPECTION frame=exit status=fail evidence=clipped label"},
+	}
+	runErrs := []error{nil, errContractRenderFailed{}}
+	if got := countRecoverableManagedDesignerInspectionFailures(outcomes, runErrs); got != 1 {
+		t.Fatalf("recoverable managed Designer inspection failures = %d, want 1", got)
+	}
+
+	for name, mutate := range map[string]func([]taskLaunchOutcome){
+		"missing report": func(values []taskLaunchOutcome) { values[1].ReportExcerpt = "" },
+		"publication failure": func(values []taskLaunchOutcome) {
+			values[1].ArtifactReference.FailureCode = "animation_viewport_overflow"
+		},
+		"non-designer":            func(values []taskLaunchOutcome) { values[1].RequestedSubagent = "coder" },
+		"successful non-designer": func(values []taskLaunchOutcome) { values[0].RequestedSubagent = "coder" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			copyOutcomes := append([]taskLaunchOutcome(nil), outcomes...)
+			copyRef := *outcomes[1].ArtifactReference
+			copyOutcomes[1].ArtifactReference = &copyRef
+			mutate(copyOutcomes)
+			if got := countRecoverableManagedDesignerInspectionFailures(copyOutcomes, runErrs); got != 0 {
+				t.Fatalf("non-recoverable outcomes advertised %d replacement slot(s)", got)
+			}
+		})
+	}
+
+	allFailed := []taskLaunchOutcome{{RequestedSubagent: "designer", ArtifactReference: failedInspection, ReportExcerpt: "ANIMATION_INSPECTION frame=exit status=fail evidence=clipped label"}}
+	if got := countRecoverableManagedDesignerInspectionFailures(allFailed, []error{errContractRenderFailed{}}); got != 0 {
+		t.Fatalf("all-failed wave advertised %d replacement slot(s)", got)
+	}
+}
+
 func TestBackendTaskProgramPartialFailurePreservesContextForNewProgram(t *testing.T) {
 	spec := &taskProgramSpec{ID: "artifact_program", Jobs: []taskProgramJob{
 		{ID: "ready", StageID: "variants", RequestedSubagentType: "designer", OutputMode: taskOutputModeManaged},

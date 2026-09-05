@@ -118,6 +118,33 @@ func TestManagedDesignerArtifactHandoffErrorDistinguishesFailureFromLineage(t *t
 	}
 }
 
+func TestManagedArtifactV3DesignerPromptRequiresWholeProjectTurn(t *testing.T) {
+	prompt := buildTaskDelegationPrompt(taskDelegationPromptConfig{
+		RequestedSubagent: "designer",
+		OutputMode:        taskOutputModeManaged,
+		ArtifactV3AuthorContext: &tool.ArtifactV3AuthorRunContext{Grant: tool.ArtifactV3AuthorGrant{
+			ID: "grant", ArtifactID: "artifact", OwnerSessionID: "parent", TurnID: "turn", CandidateID: "candidate", TargetPartIDs: []string{"pricing"},
+		}},
+	})
+	for _, want := range []string{
+		"managed Artifact V3",
+		"complete conventional project tree",
+		"build_preview",
+		"finish_turn exactly once",
+		"Target Parts guide intent",
+		"cross-Part repair",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("managed Artifact V3 Designer prompt missing %q: %s", want, prompt)
+		}
+	}
+	for _, forbidden := range []string{"Write parts strictly one at a time", "submit_candidate"} {
+		if strings.Contains(prompt, forbidden) {
+			t.Fatalf("managed Artifact V3 Designer prompt retained %q: %s", forbidden, prompt)
+		}
+	}
+}
+
 func TestManagedAnimatedDesignerPromptRequiresTrustedPreflightAndThreeFrameInspection(t *testing.T) {
 	prompt := buildTaskDelegationPrompt(taskDelegationPromptConfig{
 		RequestedSubagent:  "designer",

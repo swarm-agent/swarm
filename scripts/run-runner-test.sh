@@ -3,7 +3,7 @@ set -euo pipefail
 
 usage() {
   cat >&2 <<'USAGE'
-Usage: scripts/run-runner-test.sh <target> <provider> [test-name] [--api-url <url>] [--workspace-path <path>] [--linked-workspace-path <path>] [--model <id>] [--thinking <level>] [--action-model <id>] [--action-thinking <level>] [--plan-model <id>] [--plan-thinking <level>] [--coder-model <id>] [--coder-thinking <level>] [--designer-model <id>] [--designer-thinking <level>] [--stage <name>] [--session-id <id>] [--source-session-id <id>] [--source-collection-id <id>] [--source-variant-id <id>] [--source-event-seq <seq>] [--timeout-ms <ms>]
+Usage: scripts/run-runner-test.sh <target> <provider> [test-name] [--api-url <url>] [--workspace-path <path>] [--linked-workspace-path <path>] [--model <id>] [--thinking <level>] [--action-model <id>] [--action-thinking <level>] [--plan-model <id>] [--plan-thinking <level>] [--coder-model <id>] [--coder-thinking <level>] [--designer-model <id>] [--designer-thinking <level>] [--browser-executable <path>] [--stage <name>] [--session-id <id>] [--initial-run-id <id>] [--artifact-id <id>] [--desktop-path <path>] [--source-session-id <id>] [--source-collection-id <id>] [--source-variant-id <id>] [--source-event-seq <seq>] [--timeout-ms <ms>]
 
 Runs a checked-in runner test against an already-running Swarm target.
 
@@ -26,8 +26,12 @@ Options:
   --coder-thinking   Required Coder thinking for task-program runners
   --designer-model   Required exact Designer model for task-program runners
   --designer-thinking Required Designer thinking for task-program runners
+  --browser-executable Existing trusted local browser path for browser-backed runners
   --stage            Optional resumable stage passed to runners that support it
   --session-id       Existing destination session used by a resumed runner stage
+  --initial-run-id   Existing initial run used by a same-session resumed runner stage
+  --artifact-id      Exact Artifact V3 ID used by a resumed runner stage
+  --desktop-path     Absolute Desktop conversation path used by a resumed runner stage
   --source-session-id     Exact source artifact session for supported resumed stages
   --source-collection-id  Exact source artifact collection for supported resumed stages
   --source-variant-id     Exact source artifact variant for supported resumed stages
@@ -78,8 +82,12 @@ CODER_MODEL=""
 CODER_THINKING=""
 DESIGNER_MODEL=""
 DESIGNER_THINKING=""
+BROWSER_EXECUTABLE=""
 STAGE=""
 SESSION_ID=""
+INITIAL_RUN_ID=""
+ARTIFACT_ID=""
+DESKTOP_PATH=""
 SOURCE_SESSION_ID=""
 SOURCE_COLLECTION_ID=""
 SOURCE_VARIANT_ID=""
@@ -120,6 +128,7 @@ while [[ $# -gt 0 ]]; do
     --coder-thinking) [[ $# -ge 2 ]] || fail "--coder-thinking requires a value"; CODER_THINKING="$2"; shift 2 ;;
     --designer-model) [[ $# -ge 2 ]] || fail "--designer-model requires a value"; DESIGNER_MODEL="$2"; shift 2 ;;
     --designer-thinking) [[ $# -ge 2 ]] || fail "--designer-thinking requires a value"; DESIGNER_THINKING="$2"; shift 2 ;;
+    --browser-executable) [[ $# -ge 2 ]] || fail "--browser-executable requires a value"; BROWSER_EXECUTABLE="$2"; shift 2 ;;
     --stage)
       [[ $# -ge 2 ]] || fail "--stage requires a value"
       STAGE="$2"
@@ -128,6 +137,21 @@ while [[ $# -gt 0 ]]; do
     --session-id)
       [[ $# -ge 2 ]] || fail "--session-id requires a value"
       SESSION_ID="$2"
+      shift 2
+      ;;
+    --initial-run-id)
+      [[ $# -ge 2 ]] || fail "--initial-run-id requires a value"
+      INITIAL_RUN_ID="$2"
+      shift 2
+      ;;
+    --artifact-id)
+      [[ $# -ge 2 ]] || fail "--artifact-id requires a value"
+      ARTIFACT_ID="$2"
+      shift 2
+      ;;
+    --desktop-path)
+      [[ $# -ge 2 ]] || fail "--desktop-path requires a value"
+      DESKTOP_PATH="$2"
       shift 2
       ;;
     --source-session-id)
@@ -200,11 +224,21 @@ fi
 [[ -n "${CODER_THINKING}" ]] && runner_args+=(--coder-thinking "${CODER_THINKING}")
 [[ -n "${DESIGNER_MODEL}" ]] && runner_args+=(--designer-model "${DESIGNER_MODEL}")
 [[ -n "${DESIGNER_THINKING}" ]] && runner_args+=(--designer-thinking "${DESIGNER_THINKING}")
+[[ -n "${BROWSER_EXECUTABLE}" ]] && runner_args+=(--browser-executable "${BROWSER_EXECUTABLE}")
 if [[ -n "${STAGE}" ]]; then
   runner_args+=(--stage "${STAGE}")
 fi
 if [[ -n "${SESSION_ID}" ]]; then
   runner_args+=(--session-id "${SESSION_ID}")
+fi
+if [[ -n "${INITIAL_RUN_ID}" ]]; then
+  runner_args+=(--initial-run-id "${INITIAL_RUN_ID}")
+fi
+if [[ -n "${ARTIFACT_ID}" ]]; then
+  runner_args+=(--artifact-id "${ARTIFACT_ID}")
+fi
+if [[ -n "${DESKTOP_PATH}" ]]; then
+  runner_args+=(--desktop-path "${DESKTOP_PATH}")
 fi
 if [[ -n "${SOURCE_SESSION_ID}" ]]; then
   runner_args+=(--source-session-id "${SOURCE_SESSION_ID}")
@@ -259,12 +293,13 @@ remote_coder_model="$(quote_remote "${CODER_MODEL}")"
 remote_coder_thinking="$(quote_remote "${CODER_THINKING}")"
 remote_designer_model="$(quote_remote "${DESIGNER_MODEL}")"
 remote_designer_thinking="$(quote_remote "${DESIGNER_THINKING}")"
+remote_browser_executable="$(quote_remote "${BROWSER_EXECUTABLE}")"
 remote_stage="$(quote_remote "${STAGE}")"
 remote_session="$(quote_remote "${SESSION_ID}")"
 remote_source_session="$(quote_remote "${SOURCE_SESSION_ID}")"
 remote_source_collection="$(quote_remote "${SOURCE_COLLECTION_ID}")"
 remote_source_variant="$(quote_remote "${SOURCE_VARIANT_ID}")"
 remote_source_event_seq="$(quote_remote "${SOURCE_EVENT_SEQ}")"
-remote_script='IFS= read -r token || true; export SWARM_RUNNER_TOKEN="$token"; export TMPDIR="${TMPDIR:-$(dirname -- "$1")}"; printf "%s\\n" "$$" >"$1.pid"; args=(--api-url "$2" --provider "$3" --timeout-ms "$4"); if [ -n "$5" ]; then args+=(--workspace-path "$5"); fi; if [ -n "$6" ]; then args+=(--linked-workspace-path "$6"); fi; if [ -n "$7" ]; then args+=(--model "$7"); fi; if [ -n "$8" ]; then args+=(--thinking "$8"); fi; if [ -n "$9" ]; then args+=(--stage "$9"); fi; if [ -n "${10}" ]; then args+=(--session-id "${10}"); fi; if [ -n "${11}" ]; then args+=(--source-session-id "${11}"); fi; if [ -n "${12}" ]; then args+=(--source-collection-id "${12}"); fi; if [ -n "${13}" ]; then args+=(--source-variant-id "${13}"); fi; if [ -n "${14}" ]; then args+=(--source-event-seq "${14}"); fi; if [ -n "${15}" ]; then args+=(--action-model "${15}"); fi; if [ -n "${16}" ]; then args+=(--action-thinking "${16}"); fi; if [ -n "${17}" ]; then args+=(--plan-model "${17}"); fi; if [ -n "${18}" ]; then args+=(--plan-thinking "${18}"); fi; if [ -n "${19}" ]; then args+=(--coder-model "${19}"); fi; if [ -n "${20}" ]; then args+=(--coder-thinking "${20}"); fi; if [ -n "${21}" ]; then args+=(--designer-model "${21}"); fi; if [ -n "${22}" ]; then args+=(--designer-thinking "${22}"); fi; exec node "$1" "${args[@]}"'
+remote_script='IFS= read -r token || true; export SWARM_RUNNER_TOKEN="$token"; export TMPDIR="${TMPDIR:-$(dirname -- "$1")}"; printf "%s\\n" "$$" >"$1.pid"; args=(--api-url "$2" --provider "$3" --timeout-ms "$4"); if [ -n "$5" ]; then args+=(--workspace-path "$5"); fi; if [ -n "$6" ]; then args+=(--linked-workspace-path "$6"); fi; if [ -n "$7" ]; then args+=(--model "$7"); fi; if [ -n "$8" ]; then args+=(--thinking "$8"); fi; if [ -n "$9" ]; then args+=(--stage "$9"); fi; if [ -n "${10}" ]; then args+=(--session-id "${10}"); fi; if [ -n "${11}" ]; then args+=(--source-session-id "${11}"); fi; if [ -n "${12}" ]; then args+=(--source-collection-id "${12}"); fi; if [ -n "${13}" ]; then args+=(--source-variant-id "${13}"); fi; if [ -n "${14}" ]; then args+=(--source-event-seq "${14}"); fi; if [ -n "${15}" ]; then args+=(--action-model "${15}"); fi; if [ -n "${16}" ]; then args+=(--action-thinking "${16}"); fi; if [ -n "${17}" ]; then args+=(--plan-model "${17}"); fi; if [ -n "${18}" ]; then args+=(--plan-thinking "${18}"); fi; if [ -n "${19}" ]; then args+=(--coder-model "${19}"); fi; if [ -n "${20}" ]; then args+=(--coder-thinking "${20}"); fi; if [ -n "${21}" ]; then args+=(--designer-model "${21}"); fi; if [ -n "${22}" ]; then args+=(--designer-thinking "${22}"); fi; if [ -n "${23}" ]; then args+=(--browser-executable "${23}"); fi; exec node "$1" "${args[@]}"'
 printf '%s\n' "${SWARM_RUNNER_TOKEN:-}" | ssh "${TARGET}" \
-  "bash -c '${remote_script}' bash ${remote_runner} ${remote_api_url} ${remote_provider} ${remote_timeout} ${remote_workspace} ${remote_linked_workspace} ${remote_model} ${remote_thinking} ${remote_stage} ${remote_session} ${remote_source_session} ${remote_source_collection} ${remote_source_variant} ${remote_source_event_seq} ${remote_action_model} ${remote_action_thinking} ${remote_plan_model} ${remote_plan_thinking} ${remote_coder_model} ${remote_coder_thinking} ${remote_designer_model} ${remote_designer_thinking}"
+  "bash -c '${remote_script}' bash ${remote_runner} ${remote_api_url} ${remote_provider} ${remote_timeout} ${remote_workspace} ${remote_linked_workspace} ${remote_model} ${remote_thinking} ${remote_stage} ${remote_session} ${remote_source_session} ${remote_source_collection} ${remote_source_variant} ${remote_source_event_seq} ${remote_action_model} ${remote_action_thinking} ${remote_plan_model} ${remote_plan_thinking} ${remote_coder_model} ${remote_coder_thinking} ${remote_designer_model} ${remote_designer_thinking} ${remote_browser_executable}"

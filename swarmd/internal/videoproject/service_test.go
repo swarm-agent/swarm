@@ -22,12 +22,13 @@ func TestTemporalAnimationDurationUsesOrderedSectionEnd(t *testing.T) {
 }
 
 type fakeSessionStore struct {
-	sessions  map[string]pebblestore.SessionSnapshot
-	projects  map[string]pebblestore.VideoProjectSnapshot
-	revisions map[string]map[string]pebblestore.VideoProjectRevisionSnapshot
-	jobs      map[string]pebblestore.VideoRenderJobSnapshot
-	proposals map[string]pebblestore.VideoEditProposalSnapshot
-	artifacts map[string]pebblestore.SessionArtifactVariant
+	sessions            map[string]pebblestore.SessionSnapshot
+	projects            map[string]pebblestore.VideoProjectSnapshot
+	revisions           map[string]map[string]pebblestore.VideoProjectRevisionSnapshot
+	jobs                map[string]pebblestore.VideoRenderJobSnapshot
+	proposals           map[string]pebblestore.VideoEditProposalSnapshot
+	artifacts           map[string]pebblestore.SessionArtifactVariant
+	createProposalCalls int
 }
 
 func newFakeSessionStore() *fakeSessionStore {
@@ -203,6 +204,7 @@ func (f *fakeSessionStore) ListVideoProjectRevisions(accountScopeID, sessionID, 
 }
 
 func (f *fakeSessionStore) CreateVideoEditProposal(input pebblestore.CreateVideoEditProposalInput) (pebblestore.VideoEditProposalSnapshot, error) {
+	f.createProposalCalls++
 	return pebblestore.VideoEditProposalSnapshot{}, nil
 }
 func (f *fakeSessionStore) GetVideoEditProposal(accountScopeID, sessionID, projectID, proposalID string) (pebblestore.VideoEditProposalSnapshot, bool, error) {
@@ -291,6 +293,241 @@ func (f *fakeSessionStore) GetSessionArtifactVariant(accountScopeID, sessionID, 
 
 func (f *fakeSessionStore) GetAudioSourceRecord(accountScopeID, workspaceID, ref string) (pebblestore.AudioSourceRecord, bool, error) {
 	return pebblestore.AudioSourceRecord{}, false, nil
+}
+
+type fakeArtifactV3Authority struct {
+	accountScopeID string
+	userID         string
+	allowed        map[pebblestore.ArtifactV3VideoReference]bool
+	calls          []pebblestore.ArtifactV3VideoReference
+}
+
+func (f *fakeArtifactV3Authority) ValidateVideoReference(accountScopeID, userID string, ref pebblestore.ArtifactV3VideoReference) error {
+	f.calls = append(f.calls, ref)
+	if accountScopeID != f.accountScopeID || userID != f.userID {
+		return fmt.Errorf("Artifact V3 reference owner does not match authenticated principal")
+	}
+	if !f.allowed[ref] {
+		return fmt.Errorf("Artifact V3 reference is stale, foreign, or missing")
+	}
+	return nil
+}
+
+func testArtifactV3VideoPlan() (pebblestore.VideoPlanProposal, []pebblestore.ArtifactV3VideoReference) {
+	digest := func(char byte) string { return strings.Repeat(string(char), 64) }
+	oid := func(char byte) string { return strings.Repeat(string(char), 40) }
+	source := pebblestore.ArtifactV3VideoReference{
+		SessionID: "artifact-session", ArtifactID: "artifact", RevisionID: "revision", CommitOID: oid('a'), TreeOID: oid('b'),
+		ManifestDigestSHA256: digest('c'), BuildID: "build", ValidationID: "validation", PartID: "motion", CaptureStateID: "capture",
+		EventSeq: 7, DigestSHA256: digest('d'), MediaType: "text/html", DurationMs: 2000, FPS: 30, AnimationProfile: "motion_ui",
+	}
+	still := source
+	still.DerivativeID, still.DigestSHA256, still.MediaType = "still", digest('e'), "image/png"
+	visual := source
+	visual.DerivativeID, visual.DigestSHA256, visual.MediaType = "mp4", digest('f'), "video/mp4"
+	plan := pebblestore.VideoPlanProposal{Kind: pebblestore.VideoPlanKindInitial, Parts: []pebblestore.VideoPlanPart{{
+		ID: "motion", Title: "Motion", DurationMs: 2000, CaptureStateID: "capture", FilmingRequirements: []string{"Capture the complete motion state"}, ProductionState: pebblestore.VideoProductionStateReady,
+		ArtifactV3Source: &source, ArtifactV3Still: &still, ArtifactV3Visual: &visual, VisualMediaType: "video/mp4", SourceStartMs: 0, SourceEndMs: 2000,
+		AnimationCandidates: &pebblestore.VideoAnimationCandidateSet{Status: pebblestore.VideoAnimationCandidateStatusReady, SelectedCandidateID: "native", V3SelectedSource: &source, V3Derivative: &visual, Candidates: []pebblestore.VideoAnimationCandidate{{ID: "native", V3Source: &source}}},
+	}}}
+	return plan, []pebblestore.ArtifactV3VideoReference{source, still, visual, source, source, visual}
+}
+
+// Requirement: native Artifact V3 conversion must authenticate every exact Git
+// revision and derivative while remaining a pending Video Studio proposal.
+// Threat: stale, foreign, incomplete, or mixed identities could otherwise be
+// persisted and later rendered through a weaker legacy authority. This service
+// test is the narrowest layer covering authority injection and pre-persistence rejection.
+func TestCreateArtifactV3ConversionProposalRejectsForeignProjectOwner(t *testing.T) {
+	store := newFakeSessionStore()
+	principal := identity.Principal{Type: identity.PrincipalTypeUser, AccountScopeID: "account", UserID: "user"}
+	store.projects["project"] = pebblestore.VideoProjectSnapshot{ID: "project", AccountScopeID: principal.AccountScopeID, UserID: "other", SessionID: "studio"}
+	plan, _ := testArtifactV3VideoPlan()
+	authority := &fakeArtifactV3Authority{accountScopeID: principal.AccountScopeID, userID: principal.UserID, allowed: map[pebblestore.ArtifactV3VideoReference]bool{}}
+	svc := NewService(store)
+	svc.SetArtifactV3Authority(authority)
+	if _, err := svc.CreateEditProposal(context.Background(), principal, CreateEditProposalInput{SessionID: "studio", ProjectID: "project", Intent: pebblestore.VideoEditProposalIntentArtifactV3Convert, Plan: &plan}); err == nil || !strings.Contains(err.Error(), "project not found") {
+		t.Fatalf("foreign project error = %v", err)
+	}
+	if len(authority.calls) != 0 || store.createProposalCalls != 0 {
+		t.Fatalf("foreign project reached V3 validation or persistence: calls=%d creates=%d", len(authority.calls), store.createProposalCalls)
+	}
+}
+
+func TestCreateArtifactV3ConversionProposalRequiresInjectedAuthority(t *testing.T) {
+	store := newFakeSessionStore()
+	principal := identity.Principal{Type: identity.PrincipalTypeUser, AccountScopeID: "account", UserID: "user"}
+	store.projects["project"] = pebblestore.VideoProjectSnapshot{ID: "project", AccountScopeID: principal.AccountScopeID, UserID: principal.UserID, SessionID: "studio"}
+	plan, _ := testArtifactV3VideoPlan()
+	svc := NewService(store)
+	if _, err := svc.CreateEditProposal(context.Background(), principal, CreateEditProposalInput{SessionID: "studio", ProjectID: "project", Intent: pebblestore.VideoEditProposalIntentArtifactV3Convert, Plan: &plan}); err == nil || !strings.Contains(err.Error(), "authority is not configured") {
+		t.Fatalf("missing Artifact V3 authority error = %v", err)
+	}
+	if store.createProposalCalls != 0 {
+		t.Fatalf("missing authority reached proposal mutation: %d", store.createProposalCalls)
+	}
+}
+
+func TestCreateEditProposalRejectsArtifactV3IdentityWithoutConversionIntent(t *testing.T) {
+	store := newFakeSessionStore()
+	principal := identity.Principal{Type: identity.PrincipalTypeUser, AccountScopeID: "account", UserID: "user"}
+	store.projects["project"] = pebblestore.VideoProjectSnapshot{ID: "project", AccountScopeID: principal.AccountScopeID, UserID: principal.UserID, SessionID: "studio"}
+	plan, refs := testArtifactV3VideoPlan()
+	authority := &fakeArtifactV3Authority{accountScopeID: principal.AccountScopeID, userID: principal.UserID, allowed: map[pebblestore.ArtifactV3VideoReference]bool{}}
+	for _, ref := range refs {
+		authority.allowed[ref] = true
+	}
+	svc := NewService(store)
+	svc.SetArtifactV3Authority(authority)
+	if _, err := svc.CreateEditProposal(context.Background(), principal, CreateEditProposalInput{SessionID: "studio", ProjectID: "project", Intent: pebblestore.VideoEditProposalIntentGeneral, Plan: &plan}); err == nil || (!strings.Contains(err.Error(), "missing its actual visual") && !strings.Contains(err.Error(), "without artifact_v3_conversion intent")) {
+		t.Fatalf("wrong-intent V3 error = %v", err)
+	}
+	if store.createProposalCalls != 0 {
+		t.Fatalf("wrong-intent V3 proposal reached persistence: %d", store.createProposalCalls)
+	}
+}
+
+func TestCreateArtifactV3ConversionProposalValidatesEveryNativeReference(t *testing.T) {
+	store := newFakeSessionStore()
+	principal := identity.Principal{Type: identity.PrincipalTypeUser, AccountScopeID: "account", UserID: "user"}
+	store.projects["project"] = pebblestore.VideoProjectSnapshot{ID: "project", AccountScopeID: principal.AccountScopeID, UserID: principal.UserID, SessionID: "studio"}
+	plan, refs := testArtifactV3VideoPlan()
+	authority := &fakeArtifactV3Authority{accountScopeID: principal.AccountScopeID, userID: principal.UserID, allowed: map[pebblestore.ArtifactV3VideoReference]bool{}}
+	for _, ref := range refs {
+		authority.allowed[ref] = true
+	}
+	svc := NewService(store)
+	svc.SetArtifactV3Authority(authority)
+	if _, err := svc.CreateEditProposal(context.Background(), principal, CreateEditProposalInput{SessionID: "studio", ProjectID: "project", Intent: pebblestore.VideoEditProposalIntentArtifactV3Convert, Plan: &plan}); err != nil {
+		t.Fatalf("create native Artifact V3 conversion proposal: %v", err)
+	}
+	if len(authority.calls) != len(refs) {
+		t.Fatalf("validated %d Artifact V3 references, want %d", len(authority.calls), len(refs))
+	}
+	for index, want := range refs {
+		if authority.calls[index] != want {
+			t.Fatalf("validated reference %d = %+v, want %+v", index, authority.calls[index], want)
+		}
+	}
+	if store.createProposalCalls != 1 {
+		t.Fatalf("create proposal calls = %d, want 1", store.createProposalCalls)
+	}
+}
+
+func TestCreateArtifactV3ConversionProposalRejectsInvalidAuthorityWithoutMutation(t *testing.T) {
+	principal := identity.Principal{Type: identity.PrincipalTypeUser, AccountScopeID: "account", UserID: "user"}
+	cases := []struct {
+		name   string
+		mutate func(*pebblestore.VideoPlanProposal, []pebblestore.ArtifactV3VideoReference)
+		want   string
+	}{
+		{name: "stale exact reference", mutate: func(plan *pebblestore.VideoPlanProposal, refs []pebblestore.ArtifactV3VideoReference) {
+			stale := *plan.Parts[0].ArtifactV3Visual
+			stale.DigestSHA256 = strings.Repeat("1", 64)
+			plan.Parts[0].ArtifactV3Visual = &stale
+			plan.Parts[0].AnimationCandidates.V3Derivative = &stale
+		}, want: "stale"},
+		{name: "foreign exact reference", mutate: func(plan *pebblestore.VideoPlanProposal, refs []pebblestore.ArtifactV3VideoReference) {
+			plan.Parts[0].ArtifactV3Source.SessionID = "foreign"
+		}, want: "foreign"},
+		{name: "mixed authority", mutate: func(plan *pebblestore.VideoPlanProposal, refs []pebblestore.ArtifactV3VideoReference) {
+			plan.Parts[0].Visual = &pebblestore.SessionArtifactSelectionReference{SessionID: "legacy", CollectionID: "legacy", VariantID: "legacy", EventSeq: 1}
+		}, want: "exactly one complete render-ready visual authority"},
+		{name: "mixed candidate authority", mutate: func(plan *pebblestore.VideoPlanProposal, refs []pebblestore.ArtifactV3VideoReference) {
+			plan.Parts[0].AnimationCandidates.Candidates[0].Source = &pebblestore.SessionArtifactSelectionReference{SessionID: "legacy", CollectionID: "legacy", VariantID: "legacy", EventSeq: 1}
+		}, want: "exactly one complete"},
+		{name: "missing fallback", mutate: func(plan *pebblestore.VideoPlanProposal, refs []pebblestore.ArtifactV3VideoReference) {
+			plan.Parts[0].ArtifactV3Still = nil
+		}, want: "still requires native Artifact V3 authority"},
+		{name: "missing render derivative", mutate: func(plan *pebblestore.VideoPlanProposal, refs []pebblestore.ArtifactV3VideoReference) {
+			plan.Parts[0].ArtifactV3Visual = nil
+		}, want: "visual requires native Artifact V3 authority"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newFakeSessionStore()
+			store.projects["project"] = pebblestore.VideoProjectSnapshot{ID: "project", AccountScopeID: principal.AccountScopeID, UserID: principal.UserID, SessionID: "studio"}
+			plan, refs := testArtifactV3VideoPlan()
+			authority := &fakeArtifactV3Authority{accountScopeID: principal.AccountScopeID, userID: principal.UserID, allowed: map[pebblestore.ArtifactV3VideoReference]bool{}}
+			for _, ref := range refs {
+				authority.allowed[ref] = true
+			}
+			tc.mutate(&plan, refs)
+			svc := NewService(store)
+			svc.SetArtifactV3Authority(authority)
+			if _, err := svc.CreateEditProposal(context.Background(), principal, CreateEditProposalInput{SessionID: "studio", ProjectID: "project", Intent: pebblestore.VideoEditProposalIntentArtifactV3Convert, Plan: &plan}); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error = %v, want containing %q", err, tc.want)
+			}
+			if store.createProposalCalls != 0 || len(store.proposals) != 0 {
+				t.Fatalf("rejected conversion changed proposal state: calls=%d proposals=%+v", store.createProposalCalls, store.proposals)
+			}
+		})
+	}
+}
+
+func TestValidateTimelineArtifactsRejectsMixedOrStaleArtifactV3Authority(t *testing.T) {
+	principal := identity.Principal{Type: identity.PrincipalTypeUser, AccountScopeID: "account", UserID: "user"}
+	store := newFakeSessionStore()
+	store.sessions["studio"] = pebblestore.SessionSnapshot{ID: "studio", AccountScopeID: principal.AccountScopeID, UserID: principal.UserID}
+	plan, _ := testArtifactV3VideoPlan()
+	visual := *plan.Parts[0].ArtifactV3Visual
+	authority := &fakeArtifactV3Authority{accountScopeID: principal.AccountScopeID, userID: principal.UserID, allowed: map[pebblestore.ArtifactV3VideoReference]bool{visual: true}}
+	svc := NewService(store)
+	svc.SetArtifactV3Authority(authority)
+	clip := pebblestore.VideoTimelineClip{ID: "motion", SourceKind: pebblestore.VideoClipSourceKindManagedArtifact, ArtifactV3Ref: &visual, MediaType: "video/mp4", SourceStartMs: 0, SourceEndMs: 2000, DurationMs: 2000}
+	if err := svc.validateTimelineArtifacts(principal, "studio", pebblestore.VideoProjectTimeline{Clips: []pebblestore.VideoTimelineClip{clip}}); err != nil {
+		t.Fatalf("valid native Artifact V3 clip rejected: %v", err)
+	}
+	clip.ArtifactRef = &pebblestore.SessionArtifactSelectionReference{SessionID: "legacy", CollectionID: "legacy", VariantID: "legacy", EventSeq: 1}
+	if err := svc.validateTimelineArtifacts(principal, "studio", pebblestore.VideoProjectTimeline{Clips: []pebblestore.VideoTimelineClip{clip}}); err == nil || !strings.Contains(err.Error(), "mixes") {
+		t.Fatalf("mixed authority error = %v", err)
+	}
+	clip.ArtifactRef = nil
+	stale := visual
+	stale.DigestSHA256 = strings.Repeat("1", 64)
+	clip.ArtifactV3Ref = &stale
+	if err := svc.validateTimelineArtifacts(principal, "studio", pebblestore.VideoProjectTimeline{Clips: []pebblestore.VideoTimelineClip{clip}}); err == nil || !strings.Contains(err.Error(), "stale") {
+		t.Fatalf("stale authority error = %v", err)
+	}
+}
+
+// Requirement: candidate mutations revalidate native V3 source and derivative
+// references before entering the durable mutation boundary.
+func TestSelectAndPromoteArtifactV3AnimationValidateExactReferencesBeforeMutation(t *testing.T) {
+	principal := identity.Principal{Type: identity.PrincipalTypeUser, AccountScopeID: "account", UserID: "user"}
+	plan, _ := testArtifactV3VideoPlan()
+	source := *plan.Parts[0].ArtifactV3Source
+	visual := *plan.Parts[0].ArtifactV3Visual
+	store := newFakeSessionStore()
+	store.proposals["proposal"] = pebblestore.VideoEditProposalSnapshot{ID: "proposal", ProjectID: "project", SessionID: "studio", AccountScopeID: principal.AccountScopeID, UserID: principal.UserID, Intent: pebblestore.VideoEditProposalIntentHTMLIteration}
+	authority := &fakeArtifactV3Authority{accountScopeID: principal.AccountScopeID, userID: principal.UserID, allowed: map[pebblestore.ArtifactV3VideoReference]bool{source: true, visual: true}}
+	svc := NewService(store)
+	svc.SetArtifactV3Authority(authority)
+	_, err := svc.SelectAnimationCandidate(context.Background(), principal, SelectAnimationCandidateInput{SessionID: "studio", ProjectID: "project", ProposalID: "proposal", PartID: "motion", CandidateID: "native", V3SelectedSource: &source})
+	if err == nil || !strings.Contains(err.Error(), "mutation authority") {
+		t.Fatalf("selection did not reach mutation boundary after exact V3 validation: %v", err)
+	}
+	stale := visual
+	stale.DigestSHA256 = strings.Repeat("1", 64)
+	callsBefore := len(authority.calls)
+	if _, err := svc.PromoteAnimationDerivative(context.Background(), principal, PromoteAnimationDerivativeInput{SessionID: "studio", ProjectID: "project", ProposalID: "proposal", PartID: "motion", CandidateID: "native", V3SelectedSource: &source, V3Derivative: &stale}); err == nil || !strings.Contains(err.Error(), "stale") {
+		t.Fatalf("stale V3 derivative error = %v", err)
+	}
+	if len(authority.calls) != callsBefore+2 {
+		t.Fatalf("stale promotion did not validate source and derivative exactly: calls=%d before=%d", len(authority.calls), callsBefore)
+	}
+	if len(store.proposals) != 1 {
+		t.Fatalf("rejected stale promotion changed proposal state: %+v", store.proposals)
+	}
+	foreignDerivative := visual
+	foreignDerivative.RevisionID = "other-revision"
+	authority.allowed[foreignDerivative] = true
+	if _, err := svc.PromoteAnimationDerivative(context.Background(), principal, PromoteAnimationDerivativeInput{SessionID: "studio", ProjectID: "project", ProposalID: "proposal", PartID: "motion", CandidateID: "native", V3SelectedSource: &source, V3Derivative: &foreignDerivative}); err == nil || !strings.Contains(err.Error(), "descend") {
+		t.Fatalf("foreign derivative lineage error = %v", err)
+	}
+	if len(store.proposals) != 1 {
+		t.Fatalf("rejected foreign derivative changed proposal state: %+v", store.proposals)
+	}
 }
 
 func TestNormalizeVisualPlanArtifactsRejectsIncompatibleAnimationCandidates(t *testing.T) {

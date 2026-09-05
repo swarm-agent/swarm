@@ -48,11 +48,12 @@ Options:
   --headful                  Show the Desktop Playwright browser
   -h, --help                 Show this help
 
-The ignored .env remains the authority for the SSH alias, loopback ports,
-provider/per-role model posture, and optional linked workspace path. Provider-sync derives
-candidate authority from local HEAD plus the uniquely discovered testbench Swarm
-checkout unless explicit overrides are supplied. This entrypoint does not rebuild
-or deploy testbench, commit, push, or mutate production.
+The ignored .env remains the authority for the SSH alias, container loopback
+ports, provider/per-role model posture, and optional linked workspace path. Before
+non-dry execution this entrypoint ensures the broker-owned isolated container runs
+exact current HEAD. It never deploys or restarts host swarm.service, commits,
+pushes, or mutates production. Provider-sync still performs its own candidate
+checkout evidence after the shared container preflight.
 USAGE
 }
 
@@ -242,8 +243,8 @@ for suite in "${SUITES[@]}"; do
 done
 if [[ "${DRY_RUN}" == "true" ]]; then exit 0; fi
 
-printf '\n== Preflight: testbench connectivity and configuration ==\n'
-"${ROOT_DIR}/scripts/testbench-e2e-tunnel.sh" check
+printf '\n== Preflight: ensure exact isolated-container candidate ==\n'
+"${ROOT_DIR}/scripts/testbench-container-deploy.sh" ensure
 
 if [[ -n "${EVIDENCE_DIR}" ]]; then
   [[ "${EVIDENCE_DIR}" != /* && "${EVIDENCE_DIR}" != ".." && "${EVIDENCE_DIR}" != ../* && "${EVIDENCE_DIR}" != */../* && "${EVIDENCE_DIR}" != */.. ]] || fail "--evidence-dir must be a clean workspace-relative path"

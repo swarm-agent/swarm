@@ -576,6 +576,10 @@ func TestAnimationPreflightReportsPseudoElementOverflow(t *testing.T) {
 	}
 }
 
+// Requirement: RenderAnimation returns both encoded media and the audited frame-zero
+// PNG required by artifactV3AnimationRenderer.Render. A nonempty MP4 must not hide
+// a missing fallback. The real renderer is the narrowest byte-level proof; the
+// strict unstable-frame rejection is exercised separately by the CSS test.
 func TestChromedpRendererCapturesDeterministicAnimationWithSystemRuntimes(t *testing.T) {
 	if _, err := os.Stat(SystemChromePath); err != nil {
 		t.Skipf("system-managed Chrome unavailable: %v", err)
@@ -596,6 +600,13 @@ func TestChromedpRendererCapturesDeterministicAnimationWithSystemRuntimes(t *tes
 	}
 	if result.DurationMS != 400 || result.FPS != 10 || result.FrameCount != 4 || len(result.MP4) < 12 || !bytes.Equal(result.MP4[4:8], []byte("ftyp")) {
 		t.Fatalf("result = %+v, bytes=%d", result, len(result.MP4))
+	}
+	fallback, err := renderer.PreflightAnimation(context.Background(), AnimationRequest{Entry: "index.html", Files: map[string][]byte{"index.html": html}, DurationMS: 400, FPS: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if same, err := equalPixels(result.PreviewPNG, fallback.PreviewPNG, Width, Height); err != nil || !same {
+		t.Fatalf("render fallback is missing or not the audited frame zero: %v", err)
 	}
 	seenCaptureProgress := false
 	lastCapture := 0

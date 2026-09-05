@@ -54,6 +54,8 @@ type taskCallArguments struct {
 	PlannedProgram       bool
 	Launches             []taskLaunchSpec
 	SourceArtifact       *pebblestore.SessionArtifactSelectionReference
+	ArtifactV3Source     *taskArtifactV3Source
+	ArtifactV2Source     *taskArtifactV2Source
 	SourceArguments      map[string]any
 }
 
@@ -129,6 +131,23 @@ type taskSwarmSectionTarget struct {
 	Selector    string  `json:"selector,omitempty"`
 }
 
+type taskArtifactV3Source struct {
+	SessionID     string   `json:"session_id"`
+	ArtifactID    string   `json:"artifact_id"`
+	CommitOID     string   `json:"commit_oid"`
+	ProjectionSeq uint64   `json:"projection_seq"`
+	TargetPartIDs []string `json:"target_part_ids,omitempty"`
+}
+
+type taskArtifactV2Source struct {
+	ArtifactID         string
+	PublishedHeadID    string
+	CompositionID      string
+	WorkingRevision    uint64
+	CompositionHeadRev uint64
+	TargetPartIDs      []string
+}
+
 type taskSwarmSpec struct {
 	Strategy            string
 	AgentType           string
@@ -141,6 +160,8 @@ type taskSwarmSpec struct {
 	AnimationProfile    *pebblestore.SessionArtifactAnimationProfile
 	IterationControls   *taskSwarmIterationControls
 	SourceArtifact      *pebblestore.SessionArtifactSelectionReference
+	ArtifactV3Source    *taskArtifactV3Source
+	ArtifactV2Source    *taskArtifactV2Source
 	SectionTarget       *taskSwarmSectionTarget
 	SectionTargets      []*taskSwarmSectionTarget
 	AssemblyParts       []taskSwarmAssemblyPart
@@ -159,6 +180,8 @@ type taskLaunchSpec struct {
 	OutputRequirements    *pebblestore.SessionArtifactOutputRequirements
 	AnimationProfile      *pebblestore.SessionArtifactAnimationProfile
 	SourceArtifact        *pebblestore.SessionArtifactSelectionReference
+	ArtifactV3Source      *taskArtifactV3Source
+	ArtifactV2Source      *taskArtifactV2Source
 	DependencyEvidence    string
 	StreamKey             string
 	SwarmMode             bool
@@ -293,6 +316,7 @@ type taskLaunchManifestRow struct {
 	OutputRequirements    *pebblestore.SessionArtifactOutputRequirements `json:"output_requirements,omitempty"`
 	AnimationProfile      *pebblestore.SessionArtifactAnimationProfile   `json:"animation_profile,omitempty"`
 	SourceArtifact        *pebblestore.SessionArtifactSelectionReference `json:"source_artifact,omitempty"`
+	ArtifactV3Source      *taskArtifactV3Source                          `json:"artifact_v3_source,omitempty"`
 	DependencyEvidence    string                                         `json:"dependency_evidence,omitempty"`
 	SubagentProvider      string                                         `json:"subagent_provider,omitempty"`
 	SubagentModel         string                                         `json:"subagent_model,omitempty"`
@@ -518,7 +542,7 @@ func parseTaskCallArguments(arguments string) (taskCallArguments, error) {
 		}
 		return taskCallArguments{
 			Action: action, Description: description, Prompt: prompt, Mode: mode,
-			Swarm: swarm, Launches: launches, SourceArtifact: cloneTaskImageSourceArtifact(swarm.SourceArtifact), SourceArguments: args,
+			Swarm: swarm, Launches: launches, SourceArtifact: cloneTaskImageSourceArtifact(swarm.SourceArtifact), ArtifactV3Source: cloneTaskArtifactV3Source(swarm.ArtifactV3Source), ArtifactV2Source: cloneTaskArtifactV2Source(swarm.ArtifactV2Source), SourceArguments: args,
 		}, nil
 	}
 
@@ -576,6 +600,31 @@ func parseTaskCallArguments(arguments string) (taskCallArguments, error) {
 	}
 	var sourceArtifact *pebblestore.SessionArtifactSelectionReference
 	var sectionTarget *taskSwarmSectionTarget
+	if _, legacy := args["source_artifact"]; legacy {
+		if _, native := args["artifact_v3_source"]; native {
+			return taskCallArguments{}, errors.New("task accepts artifact_v3_source or source_artifact, not both")
+		}
+	}
+	if rawArtifactV3Source, supplied := args["artifact_v3_source"]; supplied {
+		parsedSource, err := parseTaskArtifactV3Source(rawArtifactV3Source)
+		if err != nil {
+			return taskCallArguments{}, err
+		}
+		if parsedSource == nil {
+			return taskCallArguments{}, errors.New("task artifact_v3_source must be an exact native reference object")
+		}
+		for i := range launches {
+			if !agentruntime.IsDesignerAgentName(launches[i].RequestedSubagentType) || strings.TrimSpace(launches[i].OutputMode) != taskOutputModeManaged {
+				return taskCallArguments{}, errors.New("task artifact_v3_source requires managed Designer launches")
+			}
+			launches[i].ArtifactV3Source = cloneTaskArtifactV3Source(parsedSource)
+			if launches[i].SourceArguments == nil {
+				launches[i].SourceArguments = map[string]any{}
+			}
+			launches[i].SourceArguments["artifact_v3_source"] = cloneTaskArtifactV3Source(parsedSource)
+		}
+		args["artifact_v3_source"] = cloneTaskArtifactV3Source(parsedSource)
+	}
 	if rawSourceArtifact, supplied := args["source_artifact"]; supplied {
 		if rawSourceArtifact == nil {
 			return taskCallArguments{}, errors.New("task source_artifact must be an exact ready artifact reference object")
@@ -599,23 +648,38 @@ func parseTaskCallArguments(arguments string) (taskCallArguments, error) {
 		}
 	}
 	if rawSectionTargets, supplied := args["section_targets"]; supplied {
-		if sourceArtifact == nil {
-			return taskCallArguments{}, errors.New("task regular section_targets requires an exact source_artifact")
+		if sourceArtifact == nil && (len(launches) == 0 || launches[0].ArtifactV3Source == nil) {
+			return taskCallArguments{}, errors.New("task regular section_targets requires an exact source_artifact or artifact_v3_source")
 		}
-		parsedTargets, err := parseTaskSwarmSectionTargets(rawSectionTargets)
+		var parsedTargets []*taskSwarmSectionTarget
+		var err error
+		if len(launches) != 0 && launches[0].ArtifactV3Source != nil {
+			parsedTargets, err = parseTaskArtifactV3TargetHints(rawSectionTargets)
+		} else {
+			parsedTargets, err = parseTaskSwarmSectionTargets(rawSectionTargets)
+		}
 		if err != nil {
 			return taskCallArguments{}, err
 		}
 		args["section_targets"] = cloneTaskSwarmSectionTargets(parsedTargets)
 		for i := range launches {
+			if launches[i].SourceArguments == nil {
+				launches[i].SourceArguments = map[string]any{}
+			}
 			launches[i].SourceArguments["section_targets"] = cloneTaskSwarmSectionTargets(parsedTargets)
 		}
 	}
 	if rawSectionTarget, supplied := args["section_target"]; supplied {
-		if sourceArtifact == nil {
-			return taskCallArguments{}, errors.New("task regular section_target requires an exact source_artifact")
+		if sourceArtifact == nil && (len(launches) == 0 || launches[0].ArtifactV3Source == nil) {
+			return taskCallArguments{}, errors.New("task regular section_target requires an exact source_artifact or artifact_v3_source")
 		}
-		parsedSectionTarget, err := parseTaskSwarmSectionTarget(rawSectionTarget)
+		var parsedSectionTarget *taskSwarmSectionTarget
+		var err error
+		if len(launches) != 0 && launches[0].ArtifactV3Source != nil {
+			parsedSectionTarget, err = parseTaskArtifactV3TargetHint(rawSectionTarget)
+		} else {
+			parsedSectionTarget, err = parseTaskSwarmSectionTarget(rawSectionTarget)
+		}
 		if err != nil {
 			return taskCallArguments{}, err
 		}
@@ -625,17 +689,53 @@ func parseTaskCallArguments(arguments string) (taskCallArguments, error) {
 		sectionTarget = parsedSectionTarget
 		args["section_target"] = cloneTaskSwarmSectionTarget(sectionTarget)
 		for i := range launches {
+			if launches[i].SourceArguments == nil {
+				launches[i].SourceArguments = map[string]any{}
+			}
 			launches[i].SourceArguments["section_target"] = cloneTaskSwarmSectionTarget(sectionTarget)
+		}
+	}
+	if len(launches) != 0 && launches[0].ArtifactV3Source != nil && len(launches[0].ArtifactV3Source.TargetPartIDs) != 0 {
+		declared := map[string]bool{}
+		if sectionTarget != nil {
+			declared[sectionTarget.ID] = true
+		}
+		if rawTargets, ok := args["section_targets"]; ok {
+			values, _ := parseTaskSwarmSectionTargets(rawTargets)
+			for _, item := range values {
+				if item != nil {
+					declared[item.ID] = true
+				}
+			}
+		}
+		// artifact_v3_source.target_part_ids is the authoritative target set.
+		// Optional section_target(s) carry display intent only; when present they
+		// must agree, but callers do not need to reproduce manifest locators.
+		if len(declared) != 0 {
+			for _, target := range launches[0].ArtifactV3Source.TargetPartIDs {
+				if !declared[target] {
+					return taskCallArguments{}, fmt.Errorf("task artifact_v3_source target %q does not match section_target(s)", target)
+				}
+			}
+			if len(declared) != len(uniqueNonEmptyStrings(launches[0].ArtifactV3Source.TargetPartIDs)) {
+				return taskCallArguments{}, errors.New("task Artifact V3 section_target(s) do not match target_part_ids")
+			}
 		}
 	}
 
 	return taskCallArguments{
-		Action:          action,
-		Description:     description,
-		Prompt:          prompt,
-		Mode:            mode,
-		Launches:        launches,
-		SourceArtifact:  cloneTaskImageSourceArtifact(sourceArtifact),
+		Action:         action,
+		Description:    description,
+		Prompt:         prompt,
+		Mode:           mode,
+		Launches:       launches,
+		SourceArtifact: cloneTaskImageSourceArtifact(sourceArtifact),
+		ArtifactV3Source: func() *taskArtifactV3Source {
+			if len(launches) == 0 {
+				return nil
+			}
+			return cloneTaskArtifactV3Source(launches[0].ArtifactV3Source)
+		}(),
 		SourceArguments: args,
 	}, nil
 }
@@ -970,7 +1070,7 @@ func parseTaskSwarmArguments(args map[string]any, prompt, description string) (*
 		"action": true, "description": true, "prompt": true, "message": true, "mode": true, "swarm_mode": true,
 		"swarm_strategy": true, "agent_type": true, "subagent_type": true, "agent": true, "purpose": true, "count": true,
 		"themes": true, "groups": true, "iteration_controls": true, "output_contract": true, "output_mode": true, "assembly_parts": true,
-		"integration_contract": true, "output_requirements": true, "animation_profile": true, "source_artifact": true, "section_target": true, "section_targets": true, "launches": true,
+		"integration_contract": true, "output_requirements": true, "animation_profile": true, "source_artifact": true, "artifact_v3_source": true, "artifact_v2_source": true, "section_target": true, "section_targets": true, "launches": true,
 		// concurrency_reason is a regular-launch field. Accept and discard it here as a
 		// compatibility no-op so one misplaced advisory hint cannot abort a swarm wave.
 		"concurrency_reason": true,
@@ -1109,6 +1209,53 @@ func parseTaskSwarmArguments(args map[string]any, prompt, description string) (*
 		}
 		args["output_requirements"] = cloneTaskOutputRequirements(outputRequirements)
 	}
+	if _, legacy := args["source_artifact"]; legacy {
+		if _, native := args["artifact_v3_source"]; native {
+			return nil, nil, errors.New("task accepts artifact_v3_source or source_artifact, not both")
+		}
+	}
+	artifactV3Source, err := parseTaskArtifactV3Source(args["artifact_v3_source"])
+	if err != nil {
+		return nil, nil, err
+	}
+	if artifactV3Source != nil && (agentType != "designer" || strategy != taskSwarmStrategyExplore || outputMode != taskOutputModeManaged) {
+		return nil, nil, errors.New("task artifact_v3_source requires a managed Designer Iteration Swarm")
+	}
+	if artifactV3Source != nil {
+		args["artifact_v3_source"] = cloneTaskArtifactV3Source(artifactV3Source)
+	}
+	artifactV2Source, err := parseTaskArtifactV2Source(args["artifact_v2_source"])
+	if err != nil {
+		return nil, nil, err
+	}
+	if artifactV3Source != nil && artifactV2Source != nil {
+		return nil, nil, errors.New("task accepts artifact_v3_source or artifact_v2_source, not both")
+	}
+	if artifactV2Source != nil && (agentType != "designer" || strategy != taskSwarmStrategyExplore) {
+		return nil, nil, errors.New("task artifact_v2_source requires a Designer Iteration Swarm")
+	}
+	if artifactV2Source != nil {
+		args["artifact_v2_source"] = cloneTaskArtifactV2Source(artifactV2Source)
+	}
+	if artifactV2Source != nil {
+		for _, target := range artifactV2Source.TargetPartIDs {
+			found := false
+			if single, _ := parseTaskSwarmSectionTarget(args["section_target"]); single != nil && single.ID == target {
+				found = true
+			}
+			if many, _ := parseTaskSwarmSectionTargets(args["section_targets"]); !found {
+				for _, item := range many {
+					if item != nil && item.ID == target {
+						found = true
+						break
+					}
+				}
+			}
+			if !found {
+				return nil, nil, fmt.Errorf("task artifact_v2_source target %q is not declared in section_target(s)", target)
+			}
+		}
+	}
 	rawSourceArtifact, sourceArtifactProvided := args["source_artifact"]
 	if sourceArtifactProvided && rawSourceArtifact == nil {
 		return nil, nil, errors.New("task source_artifact must be an exact ready artifact reference object")
@@ -1131,23 +1278,50 @@ func parseTaskSwarmArguments(args map[string]any, prompt, description string) (*
 			return nil, nil, errors.New("task accepts section_target or section_targets, not both")
 		}
 	}
-	sectionTargets, err := parseTaskSwarmSectionTargets(args["section_targets"])
+	var sectionTargets []*taskSwarmSectionTarget
+	var sectionTarget *taskSwarmSectionTarget
+	if artifactV3Source != nil {
+		if raw, supplied := args["section_targets"]; supplied {
+			sectionTargets, err = parseTaskArtifactV3TargetHints(raw)
+		}
+		if raw, supplied := args["section_target"]; supplied && err == nil {
+			sectionTarget, err = parseTaskArtifactV3TargetHint(raw)
+		}
+	} else {
+		sectionTargets, err = parseTaskSwarmSectionTargets(args["section_targets"])
+		if err == nil {
+			sectionTarget, err = parseTaskSwarmSectionTarget(args["section_target"])
+		}
+	}
 	if err != nil {
 		return nil, nil, err
 	}
-	sectionTarget, err := parseTaskSwarmSectionTarget(args["section_target"])
-	if err != nil {
-		return nil, nil, err
+	if artifactV3Source != nil && len(artifactV3Source.TargetPartIDs) != 0 && (sectionTarget != nil || len(sectionTargets) != 0) {
+		declared := map[string]bool{}
+		if sectionTarget != nil {
+			declared[sectionTarget.ID] = true
+		}
+		for _, item := range sectionTargets {
+			declared[item.ID] = true
+		}
+		for _, target := range artifactV3Source.TargetPartIDs {
+			if !declared[target] {
+				return nil, nil, fmt.Errorf("task artifact_v3_source target %q does not match section_target(s)", target)
+			}
+		}
+		if len(declared) != len(uniqueNonEmptyStrings(artifactV3Source.TargetPartIDs)) {
+			return nil, nil, errors.New("task Artifact V3 section_target(s) do not match target_part_ids")
+		}
 	}
 	if len(sectionTargets) != 0 {
-		if agentType != "designer" || sourceArtifact == nil {
-			return nil, nil, errors.New("task section_targets requires a Designer Iteration Swarm with an exact source_artifact")
+		if agentType != "designer" || (sourceArtifact == nil && artifactV3Source == nil && artifactV2Source == nil) {
+			return nil, nil, errors.New("task section_targets requires a Designer Iteration Swarm with an exact artifact_v3_source, source_artifact, or artifact_v2_source")
 		}
 		args["section_targets"] = cloneTaskSwarmSectionTargets(sectionTargets)
 	}
 	if sectionTarget != nil {
-		if agentType != "designer" || sourceArtifact == nil {
-			return nil, nil, errors.New("task section_target requires a Designer Iteration Swarm with an exact source_artifact")
+		if agentType != "designer" || (sourceArtifact == nil && artifactV3Source == nil && artifactV2Source == nil) {
+			return nil, nil, errors.New("task section_target requires a Designer Iteration Swarm with an exact artifact_v3_source, source_artifact, or artifact_v2_source")
 		}
 		args["section_target"] = cloneTaskSwarmSectionTarget(sectionTarget)
 	}
@@ -1155,7 +1329,7 @@ func parseTaskSwarmArguments(args map[string]any, prompt, description string) (*
 		return nil, nil, errors.New("task Idea swarm accepts only mode, swarm_strategy=explore, prompt, agent_type, count, and optional description")
 	}
 
-	swarm := &taskSwarmSpec{Strategy: strategy, AgentType: agentType, Count: count, Themes: themes, Groups: groups, OutputContract: outputContract, OutputMode: outputMode, OutputRequirements: cloneTaskOutputRequirements(outputRequirements), AnimationProfile: cloneTaskAnimationProfile(animationProfile), IterationControls: cloneTaskSwarmIterationControls(iterationControls), SourceArtifact: cloneTaskImageSourceArtifact(sourceArtifact), SectionTarget: cloneTaskSwarmSectionTarget(sectionTarget), SectionTargets: cloneTaskSwarmSectionTargets(sectionTargets)}
+	swarm := &taskSwarmSpec{Strategy: strategy, AgentType: agentType, Count: count, Themes: themes, Groups: groups, OutputContract: outputContract, OutputMode: outputMode, OutputRequirements: cloneTaskOutputRequirements(outputRequirements), AnimationProfile: cloneTaskAnimationProfile(animationProfile), IterationControls: cloneTaskSwarmIterationControls(iterationControls), SourceArtifact: cloneTaskImageSourceArtifact(sourceArtifact), ArtifactV3Source: cloneTaskArtifactV3Source(artifactV3Source), ArtifactV2Source: cloneTaskArtifactV2Source(artifactV2Source), SectionTarget: cloneTaskSwarmSectionTarget(sectionTarget), SectionTargets: cloneTaskSwarmSectionTargets(sectionTargets)}
 	launches := make([]taskLaunchSpec, count)
 	for i := range launches {
 		index := i + 1
@@ -1180,6 +1354,12 @@ func parseTaskSwarmArguments(args map[string]any, prompt, description string) (*
 		if sourceArtifact != nil {
 			sourceArguments["source_artifact"] = cloneTaskImageSourceArtifact(sourceArtifact)
 		}
+		if artifactV3Source != nil {
+			sourceArguments["artifact_v3_source"] = cloneTaskArtifactV3Source(artifactV3Source)
+		}
+		if artifactV2Source != nil {
+			sourceArguments["artifact_v2_source"] = cloneTaskArtifactV2Source(artifactV2Source)
+		}
 		if sectionTarget != nil {
 			sourceArguments["section_target"] = cloneTaskSwarmSectionTarget(sectionTarget)
 		}
@@ -1191,7 +1371,7 @@ func parseTaskSwarmArguments(args map[string]any, prompt, description string) (*
 			Deliverable: outputContract, ConcurrencyReason: "Independent Iteration Swarm alternative", OutputMode: outputMode, OutputRequirements: cloneTaskOutputRequirements(outputRequirements), AnimationProfile: cloneTaskAnimationProfile(animationProfile),
 			DependencyEvidence: "The shared parent brief is complete before this task swarm wave starts.",
 			StreamKey:          fmt.Sprintf("swarm:%d", index), SwarmMode: true, SwarmStrategy: strategy,
-			SourceArtifact: cloneTaskImageSourceArtifact(sourceArtifact), SourceArguments: sourceArguments,
+			SourceArtifact: cloneTaskImageSourceArtifact(sourceArtifact), ArtifactV3Source: cloneTaskArtifactV3Source(artifactV3Source), ArtifactV2Source: cloneTaskArtifactV2Source(artifactV2Source), SourceArguments: sourceArguments,
 		}
 		applyCanonicalCoderOwnedScope(&launches[i])
 	}
@@ -1199,6 +1379,52 @@ func parseTaskSwarmArguments(args map[string]any, prompt, description string) (*
 		return nil, nil, err
 	}
 	return swarm, launches, nil
+}
+
+func cloneTaskArtifactV2Source(input *taskArtifactV2Source) *taskArtifactV2Source {
+	if input == nil {
+		return nil
+	}
+	cloned := *input
+	cloned.TargetPartIDs = append([]string(nil), input.TargetPartIDs...)
+	return &cloned
+}
+
+func parseTaskArtifactV2Source(value any) (*taskArtifactV2Source, error) {
+	if value == nil {
+		return nil, nil
+	}
+	if normalized, ok := value.(*taskArtifactV2Source); ok {
+		return cloneTaskArtifactV2Source(normalized), nil
+	}
+	raw, ok := value.(map[string]any)
+	if !ok {
+		return nil, errors.New("task artifact_v2_source must be an exact Artifact V2 reference object")
+	}
+	for key := range raw {
+		switch key {
+		case "artifact_id", "published_head_id", "composition_id", "working_revision", "composition_head_revision", "target_part_ids":
+		default:
+			return nil, fmt.Errorf("task artifact_v2_source contains unsupported field %q", key)
+		}
+	}
+	workingRevision, err := taskRequiredPositiveIntValue(raw["working_revision"], "task artifact_v2_source working_revision")
+	if err != nil {
+		return nil, err
+	}
+	headRevision, err := taskRequiredPositiveIntValue(raw["composition_head_revision"], "task artifact_v2_source composition_head_revision")
+	if err != nil {
+		return nil, err
+	}
+	targets, err := taskStringArray(raw, "target_part_ids")
+	if err != nil || len(targets) == 0 {
+		return nil, errors.New("task artifact_v2_source target_part_ids must be a non-empty array")
+	}
+	out := &taskArtifactV2Source{ArtifactID: strings.TrimSpace(mapString(raw, "artifact_id")), PublishedHeadID: strings.TrimSpace(mapString(raw, "published_head_id")), CompositionID: strings.TrimSpace(mapString(raw, "composition_id")), WorkingRevision: uint64(workingRevision), CompositionHeadRev: uint64(headRevision), TargetPartIDs: targets}
+	if out.ArtifactID == "" || out.PublishedHeadID == "" || out.CompositionID == "" {
+		return nil, errors.New("task artifact_v2_source requires artifact_id, published_head_id, and composition_id")
+	}
+	return out, nil
 }
 
 func cloneTaskSwarmSectionTargets(input []*taskSwarmSectionTarget) []*taskSwarmSectionTarget {
@@ -1245,6 +1471,79 @@ func cloneTaskSwarmSectionTarget(input *taskSwarmSectionTarget) *taskSwarmSectio
 	}
 	cloned := *input
 	return &cloned
+}
+
+// Artifact V3 source identity already carries the server-authenticated target
+// Part IDs. A model-authored section_target is only a display/intent hint; it
+// must not redundantly reproduce selector/state/page/spatial locator details.
+// The coordinator validates every ID against the exact Git manifest before a
+// Designer is allocated.
+func parseTaskArtifactV3TargetHint(value any) (*taskSwarmSectionTarget, error) {
+	if value == nil {
+		return nil, nil
+	}
+	if normalized, ok := value.(*taskSwarmSectionTarget); ok {
+		return cloneTaskSwarmSectionTarget(normalized), nil
+	}
+	if normalized, ok := value.(taskSwarmSectionTarget); ok {
+		return cloneTaskSwarmSectionTarget(&normalized), nil
+	}
+	raw, ok := value.(map[string]any)
+	if !ok {
+		return nil, errors.New("task Artifact V3 section_target must be an object")
+	}
+	for key := range raw {
+		switch key {
+		case "id", "label", "kind", "description", "start_ms", "end_ms", "x", "y", "width", "height", "page", "state_id", "selector":
+		default:
+			return nil, fmt.Errorf("task Artifact V3 section_target contains unsupported field %q", key)
+		}
+	}
+	encoded, err := json.Marshal(raw)
+	if err != nil {
+		return nil, errors.New("task Artifact V3 section_target must be an object")
+	}
+	var target taskSwarmSectionTarget
+	if err := json.Unmarshal(encoded, &target); err != nil {
+		return nil, fmt.Errorf("task Artifact V3 section_target is invalid: %w", err)
+	}
+	target.ID = strings.TrimSpace(target.ID)
+	target.Label = strings.TrimSpace(target.Label)
+	target.Kind = strings.ToLower(strings.TrimSpace(target.Kind))
+	target.Description = strings.TrimSpace(target.Description)
+	if target.ID == "" || target.Label == "" {
+		return nil, errors.New("task Artifact V3 section_target requires id and label")
+	}
+	if target.Kind == "" {
+		target.Kind = "semantic"
+	}
+	switch target.Kind {
+	case "temporal", "spatial", "page", "state", "selector", "semantic", "file":
+	default:
+		return nil, errors.New("task Artifact V3 section_target kind is invalid")
+	}
+	return &target, nil
+}
+
+func parseTaskArtifactV3TargetHints(value any) ([]*taskSwarmSectionTarget, error) {
+	raw, ok := value.([]any)
+	if !ok || len(raw) == 0 || len(raw) > pebblestore.SessionArtifactMaxParts {
+		return nil, errors.New("task Artifact V3 section_targets must be a non-empty bounded array")
+	}
+	out := make([]*taskSwarmSectionTarget, 0, len(raw))
+	seen := map[string]struct{}{}
+	for _, item := range raw {
+		target, err := parseTaskArtifactV3TargetHint(item)
+		if err != nil {
+			return nil, err
+		}
+		if _, duplicate := seen[target.ID]; duplicate {
+			return nil, fmt.Errorf("task Artifact V3 section_targets contains duplicate id %q", target.ID)
+		}
+		seen[target.ID] = struct{}{}
+		out = append(out, target)
+	}
+	return out, nil
 }
 
 func parseTaskSwarmSectionTarget(value any) (*taskSwarmSectionTarget, error) {
@@ -1584,7 +1883,46 @@ func parseTaskOwnedScope(raw map[string]any, label string) ([]string, error) {
 			out = append(out, value)
 		}
 	}
+	if len(out) == 0 {
+		return nil, nil
+	}
 	return out, nil
+}
+
+func parseTaskArtifactV3Source(raw any) (*taskArtifactV3Source, error) {
+	if raw == nil {
+		return nil, nil
+	}
+	if normalized, ok := raw.(*taskArtifactV3Source); ok {
+		return cloneTaskArtifactV3Source(normalized), nil
+	}
+	encoded, err := json.Marshal(raw)
+	if err != nil {
+		return nil, errors.New("task artifact_v3_source must be an object")
+	}
+	var source taskArtifactV3Source
+	decoder := json.NewDecoder(strings.NewReader(string(encoded)))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&source); err != nil {
+		return nil, fmt.Errorf("task artifact_v3_source is invalid: %w", err)
+	}
+	source.SessionID = strings.TrimSpace(source.SessionID)
+	source.ArtifactID = strings.TrimSpace(source.ArtifactID)
+	source.CommitOID = strings.TrimSpace(source.CommitOID)
+	source.TargetPartIDs = uniqueNonEmptyStrings(source.TargetPartIDs)
+	if source.SessionID == "" || source.ArtifactID == "" || source.CommitOID == "" || source.ProjectionSeq == 0 {
+		return nil, errors.New("task artifact_v3_source requires session_id, artifact_id, commit_oid, and projection_seq")
+	}
+	return &source, nil
+}
+
+func cloneTaskArtifactV3Source(input *taskArtifactV3Source) *taskArtifactV3Source {
+	if input == nil {
+		return nil
+	}
+	cloned := *input
+	cloned.TargetPartIDs = append([]string(nil), input.TargetPartIDs...)
+	return &cloned
 }
 
 func parseTaskImageSourceArtifact(raw any) (*pebblestore.SessionArtifactSelectionReference, error) {
@@ -3271,8 +3609,15 @@ func parseApprovedTaskLaunchManifest(approved string, launchSpecs []taskLaunchSp
 		if agentruntime.IsDesignerAgentName(launchSpecs[i].RequestedSubagentType) || agentruntime.IsImageAgentName(launchSpecs[i].RequestedSubagentType) {
 			switch strings.TrimSpace(launchSpecs[i].OutputMode) {
 			case taskOutputModeManaged:
-				if row.ResolvedTools == nil || !taskToolNameInSlice(row.ResolvedTools.AllowedTools, "manage_artifact") {
-					return taskLaunchManifest{}, fmt.Errorf("approved managed Designer manifest launch %d is missing manage_artifact", i)
+				requiredManagedTool := "artifact_v3_author"
+				if agentruntime.IsImageAgentName(launchSpecs[i].RequestedSubagentType) {
+					requiredManagedTool = "manage_artifact"
+				}
+				if row.ResolvedTools == nil || !taskToolNameInSlice(row.ResolvedTools.AllowedTools, requiredManagedTool) {
+					return taskLaunchManifest{}, fmt.Errorf("approved managed creative manifest launch %d is missing %s", i, requiredManagedTool)
+				}
+				if agentruntime.IsDesignerAgentName(launchSpecs[i].RequestedSubagentType) && taskToolNameInSlice(row.ResolvedTools.AllowedTools, "manage_artifact") {
+					return taskLaunchManifest{}, fmt.Errorf("approved managed Designer manifest launch %d retains legacy manage_artifact write authority", i)
 				}
 				for _, name := range []string{"write", "edit"} {
 					if !taskToolNameInSlice(row.DisabledTools, name) || !taskToolNameInSlice(row.ResolvedTools.DisabledTools, name) || taskToolNameInSlice(row.ResolvedTools.AllowedTools, name) {
@@ -3478,6 +3823,7 @@ func (s *Service) buildTaskLaunchPermissionPayload(sessionID, sessionMode string
 			OutputRequirements:    cloneTaskOutputRequirements(launch.OutputRequirements),
 			AnimationProfile:      cloneTaskAnimationProfile(launch.AnimationProfile),
 			SourceArtifact:        cloneTaskImageSourceArtifact(launch.SourceArtifact),
+			ArtifactV3Source:      cloneTaskArtifactV3Source(launch.ArtifactV3Source),
 			DependencyEvidence:    strings.TrimSpace(launch.DependencyEvidence),
 			SubagentProvider:      strings.TrimSpace(preference.Provider),
 			SubagentModel:         strings.TrimSpace(preference.Model),

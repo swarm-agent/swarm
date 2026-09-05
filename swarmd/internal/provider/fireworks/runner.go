@@ -200,7 +200,7 @@ func validateFireworksMediaContractForCredential(contract provideriface.SessionM
 	if strings.TrimSpace(contract.Hash) == "" {
 		return nil
 	}
-	activeFingerprint := fireworksCredentialFingerprint(record.AccountScopeID, record.Provider, record.ID, record.Type)
+	activeFingerprint := fireworksCredentialFingerprint(record.AccountScopeID, record.Provider, record.Type, record.APIKey)
 	if contract.CredentialFingerprint != activeFingerprint {
 		return errors.New("media contract does not match the active Fireworks credential")
 	}
@@ -364,12 +364,17 @@ func mapFunctionCallMessage(item map[string]any) map[string]any {
 
 func mapFunctionOutputMessage(item map[string]any) map[string]any {
 	callID, _ := stringField(item, "call_id")
+	name, _ := stringField(item, "name")
 	output, _ := stringField(item, "output")
-	return map[string]any{
+	message := map[string]any{
 		"role":         "tool",
 		"tool_call_id": strings.TrimSpace(callID),
 		"content":      strings.TrimSpace(output),
 	}
+	if name = strings.TrimSpace(name); name != "" {
+		message["name"] = name
+	}
+	return message
 }
 
 func sanitizeFireworksToolParameters(parameters map[string]any) map[string]any {

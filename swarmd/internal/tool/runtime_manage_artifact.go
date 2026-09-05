@@ -236,14 +236,24 @@ func manageArtifactDefinition() Definition {
 		"required":             []string{"session_id", "collection_id", "variant_id", "event_seq"},
 		"additionalProperties": false,
 	}
+	artifactV3Reference := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"session_id":   map[string]any{"type": "string"},
+			"artifact_id":  map[string]any{"type": "string"},
+			"revision_ref": map[string]any{"type": "string"},
+		},
+		"required":             []string{"session_id", "artifact_id", "revision_ref"},
+		"additionalProperties": false,
+	}
 	return Definition{
 		Type:        "function",
 		Name:        "manage_artifact",
-		Description: "Before generating or remixing an image, call action=image_capabilities to read the configured model's current snapshot-backed options and capability_token, then pass only listed options plus that token to action=generate_image. A selected ready image is a reusable exact source for repeated edits: on every remix, copy its source_session_id, source_collection_id, source_variant_id, and source_event_seq together with the new edit request; the authenticated artifact authority supplies bounded source bytes directly to a supported provider, so never replace the source with a preview/download or re-prompt from scratch. export_html_stills accepts one complete exact ready text/html or canonical HTML-package reference containing the swarm.capture/v1 manifest/runtime contract, optionally selects declared state_ids, and returns managed 1920x1080 image/png references in manifest order; when the same HTML also declares swarm.storyboard/v1, the response includes a storyboard_handoff that binds every stable section to its capture state, filming requirements, production state, exact source, and exported PNG. For pre-production, pass that complete handoff to manage_video import_storyboard so Video Studio receives the pending storyboard in the same workflow; do not stop after export or manually rebuild plan parts. The trusted renderer removes data-swarm-capture-ui and rejects blockers or unstable states. export_html_animation accepts one complete exact ready HTML/package reference with a reviewed animation profile and the separate swarm.animation/v1 manifest/runtime; long exports return a durable staging reference promptly for list/status inspection or cancel_html_animation_export, then publish one silent managed video/mp4 with exact source lineage after background renderer-controlled sampling. Generate one provider-billed image and publish it directly as a ready V3 managed artifact; create and manage other durable artifacts; inspect exact ready references as bounded text/package data or bounded image base64; and explicitly materialize exact references into the trusted workspace. Use search (or list with cross-session filters) to discover the authenticated user's prior-session artifact library without scanning transcripts or storage folders. Discovery results are flattened explicit candidates, ready items include complete exact references, and next_cursor is an opaque continuation that must be passed back unchanged as cursor. Never infer a selection when human names are ambiguous. Collection-list results are not complete ready references and cannot be passed directly to get/read; when a list result contains only collection metadata, call list again with collection_id (and session_id for an attached cross-session artifact) to list its artifacts and obtain variant_id and event_seq. To retrieve, read, materialize, promote, or export an attached ready artifact, copy session_id, collection_id, variant_id, and event_seq together from the same artifact reference into the call. For repository or other workspace end products, prefer materialize or atomic materialize_batch over bulk read responses, manipulate the imported files with normal workspace tools, then use publish_workspace to publish the finished file or package; copy the original exact reference into source_session_id, source_collection_id, source_variant_id, and source_event_seq when the result derives from one source. Provider/model identifiers, browser/runtime overrides, arbitrary capture dimensions, and private storage paths are never accepted or exposed.",
+		Description: "For one complete ordinary text/html artifact, call action=create with filename, media_type=text/html, and the full HTML content. The HTML must expose useful stable regions with IDs on header, main, section, article, nav, aside, or footer; the server derives native Artifact V3 Parts, runs the whole-project build/browser preview gate, and returns an exact V3 revision. Do not substitute generate_image, V1/V2 publication, or Designer delegation for this direct HTML path. Before generating or remixing an image, call action=image_capabilities to read the configured model's current snapshot-backed options and capability_token, then pass only listed options plus that token to action=generate_image. A selected ready image is a reusable exact source for repeated edits: on every remix, copy its source_session_id, source_collection_id, source_variant_id, and source_event_seq together with the new edit request; the authenticated artifact authority supplies bounded source bytes directly to a supported provider, so never replace the source with a preview/download or re-prompt from scratch. export_html_stills accepts one complete exact ready text/html or canonical HTML-package reference containing the swarm.capture/v1 manifest/runtime contract, optionally selects declared state_ids, and returns managed 1920x1080 image/png references in manifest order; when the same HTML also declares swarm.storyboard/v1, the response includes a storyboard_handoff that binds every stable section to its capture state, filming requirements, production state, exact source, and exported PNG. For pre-production, pass that complete handoff to manage_video import_storyboard so Video Studio receives the pending storyboard in the same workflow; do not stop after export or manually rebuild plan parts. The trusted renderer removes data-swarm-capture-ui and rejects blockers or unstable states. export_html_animation accepts one complete exact ready HTML/package reference with a reviewed animation profile and the separate swarm.animation/v1 manifest/runtime; long exports return a durable staging reference promptly for list/status inspection or cancel_html_animation_export, then publish one silent managed video/mp4 with exact source lineage after background renderer-controlled sampling. Generate one provider-billed image and publish it directly as a ready V3 managed artifact; create and manage other durable artifacts; inspect exact ready references as bounded text/package data or bounded image base64; and explicitly materialize exact references into the trusted workspace. Use search (or list with cross-session filters) to discover the authenticated user's prior-session artifact library without scanning transcripts or storage folders. Discovery results are flattened explicit candidates, ready items include complete exact references, and next_cursor is an opaque continuation that must be passed back unchanged as cursor. Never infer a selection when human names are ambiguous. Collection-list results are not complete ready references and cannot be passed directly to get/read; when a list result contains only collection metadata, call list again with collection_id (and session_id for an attached cross-session artifact) to list its artifacts and obtain variant_id and event_seq. To retrieve, read, materialize, promote, or export an attached ready artifact, copy session_id, collection_id, variant_id, and event_seq together from the same artifact reference into the call. For repository or other workspace end products, prefer materialize or atomic materialize_batch over bulk read responses, manipulate the imported files with normal workspace tools, then use publish_workspace to publish the finished file or package; copy the original exact reference into source_session_id, source_collection_id, source_variant_id, and source_event_seq when the result derives from one source. Provider/model identifiers, browser/runtime overrides, arbitrary capture dimensions, and private storage paths are never accepted or exposed.",
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"action":           map[string]any{"type": "string", "enum": []string{"image_capabilities", "generate_image", "export_html_stills", "export_html_animation", "export_html_animation_fallback", "cancel_html_animation_export", "derive_text", "read_part", "publish_part", "read_parts", "publish_parts", "select_parts", "create", "create_package", "list_presets", "list", "search", "get", "read", "materialize", "materialize_batch", "promote", "publish_workspace", "select", "delete"}, "description": "Artifact operation. derive_text applies bounded exact replacements to one exact ready UTF-8 text source and publishes a complete ready derived artifact while preserving every unedited source byte and exact lineage. Focused managed Designers use read_part then publish_part for one selected part, or read_parts then publish_parts for a bounded multi-part selection; those actions are bound entirely to trusted exact composition context and publish one atomic candidate. Supports search, materialize/materialize_batch, and publish_workspace. export_html_stills captures declared swarm.capture/v1 states into managed PNGs. export_html_animation_fallback preflights one swarm.animation/v1 source and publishes its sampled first frame as an exact-lineage render-ready PNG fallback. export_html_animation captures a bounded deterministic swarm.animation/v1 timeline into one silent managed MP4 valid as a managed video timeline clip."},
+				"action":           map[string]any{"type": "string", "enum": []string{"create", "read_v3", "revise_v3", "image_capabilities", "generate_image", "export_html_stills", "export_html_animation", "export_html_animation_fallback", "cancel_html_animation_export", "derive_text", "read_part", "publish_part", "read_parts", "publish_parts", "select_parts", "list_presets", "list", "search", "get", "read", "materialize", "materialize_batch", "promote", "publish_workspace", "select", "delete"}, "description": "Artifact operation. create publishes one complete text/html document through native Artifact V3 and requires stable semantic region IDs; it is not an image action. read_v3 returns the bounded complete HTML and Parts for one exact native V3 revision. revise_v3 takes that exact reference, complete corrected HTML, and target Part IDs, and publishes one exact-base candidate without moving the selected head; optional shared turn_key plus distinct candidate_index values create sibling alternatives from that same base, while one alternatives array enforces that every requested sibling is attempted in one server-owned tool call before provider completion. derive_text applies bounded exact replacements to one exact ready UTF-8 text source and publishes a complete ready derived artifact while preserving every unedited source byte and exact lineage. Focused managed Designers use read_part then publish_part for one selected part, or read_parts then publish_parts for a bounded multi-part selection; those actions are bound entirely to trusted exact composition context and publish one atomic candidate. Supports search, materialize/materialize_batch, and publish_workspace. export_html_stills captures declared swarm.capture/v1 states into managed PNGs. export_html_animation_fallback preflights one swarm.animation/v1 source and publishes its sampled first frame as an exact-lineage render-ready PNG fallback. export_html_animation captures a bounded deterministic swarm.animation/v1 timeline into one silent managed MP4 valid as a managed video timeline clip."},
 				"prompt":           map[string]any{"type": "string", "maxLength": manageArtifactMaxPromptRunes, "description": "Image prompt required only for generate_image. For a remix, describe only the requested changes while preserving the attached exact source through all source_* fields."},
 				"capability_token": map[string]any{"type": "string", "description": "Fresh token returned by image_capabilities; required for each Google generate_image call, including every repeated remix"},
 				"image_settings": map[string]any{"type": "object", "properties": map[string]any{
@@ -271,11 +281,19 @@ func manageArtifactDefinition() Definition {
 				"source":                 map[string]any{"type": "string", "maxLength": 4096, "description": "Trusted canonical workspace-relative regular file or bounded package directory for publish_workspace. Build or revise it with normal workspace tools before publication."},
 				"presentation":           presentation,
 				"output_requirements":    artifact.OutputRequirementsToolSchema(),
-				"animation_profile":      artifact.AnimationProfileToolSchema(),
+				"animation_profile":      manageArtifactAnimationProfileToolSchema(),
 				"source_session_id":      map[string]any{"type": "string", "description": "For every image remix or lineage operation, copy the authenticated source session from the reusable exact ready attached-artifact reference together with all other source_* fields"},
 				"source_collection_id":   map[string]any{"type": "string", "description": "For every image remix or lineage operation, copy the opaque source collection from the same reusable exact ready reference"},
 				"source_variant_id":      map[string]any{"type": "string", "description": "For every image remix or lineage operation, copy the opaque source variant from the same reusable exact ready reference"},
 				"source_event_seq":       map[string]any{"type": "integer", "minimum": 1, "description": "For every image remix or lineage operation, copy the exact ready event sequence from the same reusable source reference"},
+				"artifact_v3_reference":  artifactV3Reference,
+				"target_part_ids":        map[string]any{"type": "array", "minItems": 1, "maxItems": 256, "items": map[string]any{"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$"}, "uniqueItems": true, "description": "Native Artifact V3 Part IDs expressing revision intent; required for revise_v3."},
+				"turn_key":               map[string]any{"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$", "description": "Optional stable key shared by sibling revise_v3 candidates from one exact base."},
+				"candidate_index":        map[string]any{"type": "integer", "minimum": 1, "maximum": 50, "description": "Optional one-based sibling candidate index for revise_v3; defaults to 1."},
+				"alternatives": map[string]any{"type": "array", "minItems": 2, "maxItems": 16, "description": "Optional server-owned multi-candidate revise_v3 request. Every item supplies one complete corrected HTML document and a distinct contiguous candidate_index; the tool returns success only after every requested sibling is ready in the shared turn. Requires turn_key and cannot be combined with top-level content or candidate_index.", "items": map[string]any{"type": "object", "properties": map[string]any{
+					"candidate_index": map[string]any{"type": "integer", "minimum": 1, "maximum": 16},
+					"content":         map[string]any{"type": "string"},
+				}, "required": []string{"candidate_index", "content"}, "additionalProperties": false}},
 				"event_seq":              map[string]any{"type": "integer", "minimum": 1, "description": "Exact ready event sequence. For get/read/materialize/promote/export_html_stills/export_html_animation of an attached ready artifact, copy this together with session_id, collection_id, and variant_id from the same returned reference."},
 				"query":                  map[string]any{"type": "string", "maxLength": 1024, "description": "Optional authenticated cross-session metadata search across collection and variant display fields; search results are explicit candidates and ready items carry complete exact references."},
 				"status":                 map[string]any{"type": "string", "description": "Optional list/search filter: staging|ready|failed|unavailable"},
@@ -292,6 +310,12 @@ func manageArtifactDefinition() Definition {
 			"additionalProperties": false,
 		},
 	}
+}
+
+func manageArtifactAnimationProfileToolSchema() map[string]any {
+	schema := artifact.AnimationProfileToolSchema()
+	schema["description"] = "Optional only for create, create_package, publish_workspace, or derive_text. Export actions, including export_html_animation and export_html_animation_fallback, authenticate and inherit the exact source artifact's reviewed animation profile; omit this field for exports. " + strings.TrimSpace(asString(schema["description"]))
+	return schema
 }
 
 func (r *Runtime) executeManageArtifact(ctx context.Context, scope WorkspaceScope, callID string, args map[string]any) (string, error) {
@@ -338,10 +362,10 @@ func (r *Runtime) executeManageArtifact(ctx context.Context, scope WorkspaceScop
 	}
 	if actionName != "create" && actionName != "create_package" && actionName != "publish_workspace" && actionName != "derive_text" {
 		if _, supplied := args["animation_profile"]; supplied {
-			return "", errors.New("manage_artifact animation_profile is valid only for create, create_package, or publish_workspace")
+			return "", errors.New("manage_artifact animation_profile is valid only for create, create_package, publish_workspace, or derive_text; export actions inherit the exact source animation profile and must omit animation_profile")
 		}
 	}
-	if actionName != "list_presets" && actionName != "image_capabilities" && r.artifactAuthority == nil {
+	if actionName != "list_presets" && actionName != "image_capabilities" && !((actionName == "create" || actionName == "read_v3" || actionName == "revise_v3") && r.artifactV3Author != nil) && r.artifactAuthority == nil {
 		return "", errors.New("manage_artifact authority is not configured")
 	}
 
@@ -444,7 +468,36 @@ func (r *Runtime) executeManageArtifact(ctx context.Context, scope WorkspaceScop
 		}
 		response["artifact"] = managedArtifactVariant(variant)
 		response["reference"] = managedArtifactReferenceWithSession(variant.SessionID, variant.CollectionID, variant.ID, variant.EventSeq)
-	case "create", "create_package":
+	case "create":
+		artifactV3Result, err := r.createDirectArtifactV3HTML(ctx, scope, principal, callID, args)
+		if err != nil {
+			return "", err
+		}
+		response["artifact_v3"] = artifactV3Result
+		response["reference"] = artifactV3Result["reference"]
+	case "read_v3":
+		artifactV3Result, err := r.readDirectArtifactV3HTML(ctx, scope, principal, args)
+		if err != nil {
+			return "", err
+		}
+		response["artifact_v3"] = artifactV3Result
+		response["reference"] = args["artifact_v3_reference"]
+	case "revise_v3":
+		artifactV3Result, err := r.reviseDirectArtifactV3HTML(ctx, scope, principal, callID, args)
+		if err != nil {
+			return "", err
+		}
+		response["artifact_v3"] = artifactV3Result
+		if candidate, ok := artifactV3Result["candidate"]; ok {
+			response["reference"] = candidate
+		} else {
+			response["references"] = artifactV3Result["candidates"]
+		}
+	case "create_package":
+		return "", errors.New("manage_artifact create_package is retired; managed project authoring uses Artifact V3")
+		/* Retained below temporarily as unreachable deletion evidence until the V1
+		write implementation is removed after legacy-ready read compatibility is
+		fully separated. No provider schema or registered action can enter it. */
 		if run, ok := ctx.Value(artifactRunContextKey{}).(ArtifactRunContext); ok && (strings.TrimSpace(run.CollectionID) != "" || strings.TrimSpace(run.VariantID) != "") {
 			if _, supplied := args["output_requirements"]; supplied {
 				return "", errors.New("manage_artifact managed create must omit output_requirements; trusted orchestration injects the immutable target")
