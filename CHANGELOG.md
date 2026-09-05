@@ -38,7 +38,7 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ### Fixed
 
-- Removed workspace-launcher startup lag by paginating overview enrichment before Git/session work, scanning page Git state with bounded concurrency, and loading home-directory discovery off the saved-workspace critical path.
+- Reduced workspace-launcher startup work with catalog-first loading: saved workspaces no longer wait for session/permission payloads, todo summaries, Git probes, or folder discovery. Return visits reuse the existing in-memory query cache; background details remain independent, and theme/browser updates no longer trigger redundant refreshes. Catalog worktree settings use exact account-owned lookups instead of repeated full-catalog scans.
 - Gave managed Designers one bounded refinement round for allowlisted author-correctable animation failures, using a fresh immutable candidate in the same collection while preserving failed artifacts and all strict trust checks.
 - Made managed Designer task failures report the artifact's concrete failure code separately from trusted-lineage and composition rejection.
 - Removed the retired hosted remote-deploy product surface while preserving Swarm targets, topology runtime placement, and workspace bindings.

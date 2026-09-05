@@ -141,7 +141,7 @@ func TestWorkspaceOverviewPaginatesBeforeEnrichmentAndCanSkipDiscovery(t *testin
 		Node: swarmruntime.LocalNodeState{SwarmID: "host-swarm-id", Name: "host-swarm", Role: "master"},
 	})
 	secondWorkspacePath := filepath.Join(t.TempDir(), "workspace-two")
-	if err := os.MkdirAll(filepath.Join(secondWorkspacePath, ".git"), 0o755); err != nil {
+	if err := ensureTestWorkspaceDir(secondWorkspacePath); err != nil {
 		t.Fatalf("mkdir second workspace: %v", err)
 	}
 	if _, err := server.workspace.AddForPrincipal(testPrincipal(), secondWorkspacePath, "workspace-two", "", false); err != nil {
@@ -568,8 +568,8 @@ func newWorkspaceOverviewTopologyTestServer(t *testing.T) (*Server, string, *peb
 	workspaceStore := pebblestore.NewWorkspaceStore(store)
 	workspaceSvc := workspaceruntime.NewService(workspaceStore)
 	workspacePath := filepath.Join(t.TempDir(), "workspace-one")
-	if err := os.MkdirAll(workspacePath, 0o755); err != nil {
-		t.Fatalf("mkdir workspace: %v", err)
+	if err := ensureTestWorkspaceDir(workspacePath); err != nil {
+		t.Fatalf("create committed workspace: %v", err)
 	}
 	if _, err := workspaceSvc.AddForPrincipal(testPrincipal(), workspacePath, "workspace-one", "", true); err != nil {
 		t.Fatalf("add workspace: %v", err)
@@ -700,4 +700,53 @@ func (workspaceOverviewNoopRunService) ResolveAgentToolContract(pebblestore.Agen
 
 func (workspaceOverviewNoopRunService) ResolveAgentToolContractForAccount(string, pebblestore.AgentProfile) (runruntime.ResolvedAgentToolContract, *permission.Policy, map[string]bool, error) {
 	return runruntime.ResolvedAgentToolContract{}, nil, nil, nil
+}
+
+// Requirement: handleWorkspaceOverview's explicit catalog mode must not depend
+// on session/permission/todo services or execute Git. The handler layer proves
+// response identity and compatibility defaults while unusable services and a
+// recording fake Git executable make accidental enrichment observable.
+func TestWorkspaceOverviewCatalogSkipsDetails(t *testing.T) {
+	server, workspacePath, _ := newWorkspaceOverviewTopologyTestServer(t)
+	setReplicateFakeSwarmState(server, swarmruntime.LocalState{
+		Node: swarmruntime.LocalNodeState{SwarmID: "host-swarm-id", Name: "host-swarm", Role: "host"},
+	})
+	server.sessions = nil
+	fakeBin := t.TempDir()
+	marker := filepath.Join(fakeBin, "git-called")
+	if err := os.WriteFile(filepath.Join(fakeBin, "git"), []byte("#!/bin/sh\n: > \"$GIT_CALLED_MARKER\"\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", fakeBin)
+	t.Setenv("GIT_CALLED_MARKER", marker)
+
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, withTestPrincipal(httptest.NewRequest(http.MethodGet, "/v1/workspace/overview?include_details=false&include_discovered=false&limit=1", nil)))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var response workspaceOverviewResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.DetailsIncluded || len(response.Workspaces) != 1 || response.Workspaces[0].Path != workspacePath || response.Workspaces[0].WorkspaceID == "" {
+		t.Fatalf("invalid catalog: %+v", response)
+	}
+	if response.CurrentWorkspace == nil || response.CurrentWorkspace.ResolvedPath != workspacePath || len(response.Workspaces[0].Sessions) != 0 || len(response.Directories) != 0 {
+		t.Fatalf("invalid catalog current/details: %+v", response)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("catalog executed Git: %v", err)
+	}
+
+	// Omitted option retains the full response contract and its service errors.
+	rec = httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, withTestPrincipal(httptest.NewRequest(http.MethodGet, "/v1/workspace/overview?include_discovered=false", nil)))
+	if rec.Code != http.StatusInternalServerError || !strings.Contains(rec.Body.String(), "session service") {
+		t.Fatalf("default swallowed missing details service: %d %s", rec.Code, rec.Body.String())
+	}
+	current, ok, err := server.workspace.CurrentBindingForPrincipal(testPrincipal())
+	if err != nil || !ok || current.ResolvedPath != workspacePath {
+		t.Fatalf("read changed selection: %+v %v", current, err)
+	}
 }

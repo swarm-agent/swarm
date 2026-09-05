@@ -9,15 +9,15 @@ function normalizeRoots(roots: string[]): string[] {
   return roots.map((value) => value.trim()).filter((value) => value !== '')
 }
 
-export function workspaceOverviewQueryKey(roots: string[] = [], sessionLimit = DEFAULT_SESSION_LIMIT) {
-  return ['workspace-overview', { roots: normalizeRoots(roots), sessionLimit }] as const
+export function workspaceOverviewQueryKey(roots: string[] = [], sessionLimit = DEFAULT_SESSION_LIMIT, includeDetails = true) {
+  return ['workspace-overview', { roots: normalizeRoots(roots), sessionLimit, ...(includeDetails ? {} : { includeDetails: false }) }] as const
 }
 
-export function workspaceOverviewQueryOptions(roots: string[] = [], sessionLimit = DEFAULT_SESSION_LIMIT) {
+export function workspaceOverviewQueryOptions(roots: string[] = [], sessionLimit = DEFAULT_SESSION_LIMIT, includeDetails = true) {
   const normalizedRoots = normalizeRoots(roots)
   return {
-    queryKey: workspaceOverviewQueryKey(normalizedRoots, sessionLimit),
-    queryFn: () => fetchWorkspaceOverview(normalizedRoots, sessionLimit),
+    queryKey: workspaceOverviewQueryKey(normalizedRoots, sessionLimit, includeDetails),
+    queryFn: ({ signal }: { signal?: AbortSignal }) => fetchWorkspaceOverview(normalizedRoots, sessionLimit, includeDetails, signal),
     staleTime: 30_000,
   }
 }
