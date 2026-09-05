@@ -3379,10 +3379,10 @@ export function VideoToolPage() {
                 {timelineSegments.length === 0 ? (
                   <div className="absolute inset-0 grid place-items-center text-center"><div><Film className="mx-auto text-white/45" size={42} strokeWidth={1.5} /><p className="mt-3 text-sm font-medium text-white/80">No clips in this timeline</p></div></div>
                 ) : null}
-                <div className="pointer-events-none absolute bottom-3 left-3 right-3 w-fit max-w-[calc(100%-1.5rem)] rounded bg-black/55 px-2 py-1 text-xs text-white/70">
+              </div>
+                <div className="shrink-0 break-words border-x border-b border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-2 text-xs text-[var(--app-text-muted)]" data-video-studio-clip-status>
                   {activeSegment ? `Clip ${Math.max(1, visualTimelineLayout.findIndex((segment) => segment.clipId === activeSegment.clipId) + 1)} · ${liveAnimationPart?.title || activeSegment.title || selectedClip?.name || activeSegment.clipId} · ${activeCompositionVideoCount > 0 ? `Still + ${activeCompositionVideoCount} composed video` : activeCandidate?.label || activeClipReviewState.mediaKind} · ${liveAnimationPart ? 'Live HTML' : activeCompositionVideoCount > 0 ? 'Composed playback' : activeClipReviewState.mediaKind} · ${formatTimelineTime(playhead)} / ${formatTimelineTime(movieDuration)}` : 'Timeline player'}
                 </div>
-              </div>
 
               {currentWorkingProposal ? <div className="sticky top-0 z-10 mt-2 flex flex-wrap items-center justify-between gap-3 border border-amber-300/45 bg-amber-950/95 px-3 py-2 shadow-lg backdrop-blur" role="status" aria-label="Pending video confirmation">
                 <div className="min-w-0"><p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-amber-200">Pending changes are not final</p><p className="mt-0.5 text-[10px] text-amber-100/75">Review the working cut with its soundtrack, then confirm it before final rendering.</p></div>

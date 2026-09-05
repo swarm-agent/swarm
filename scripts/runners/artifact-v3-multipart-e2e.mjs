@@ -1099,6 +1099,9 @@ async function inspectNativeVideoPlayback(videoSessionID, proposal, fallback, mp
     for (let i = 0; i < data.length; i += 400) if (data[i] + data[i + 1] + data[i + 2] > 60) lit++
     return lit > 100
   }, null, { timeout: 30000 })
+  const viewportBounds = await page.locator('[data-video-studio-player-viewport]').boundingBox()
+  const statusBounds = await page.locator('[data-video-studio-clip-status]').boundingBox()
+  assert(viewportBounds && statusBounds && statusBounds.y >= viewportBounds.y + viewportBounds.height - 1, 'clip status obscures the rendered preview')
   const first = await canvas.screenshot({ path: path.join(evidenceDir, 'native-studio-before.png') })
   await page.getByRole('button', { name: 'Play', exact: true }).click()
   await sleep(Math.min(1100, mp4.duration_ms / 2))
@@ -1117,7 +1120,13 @@ async function runVideoConversion(sessionID, selected, assignment) {
   const items = await catalog(sessionID)
   const artifact = artifactOverride ? items.find((item) => text(item?.id) === artifactOverride) : items.length === 1 ? items[0] : null
   assert(artifact?.id, `video-conversion requires --artifact-id when the session has ${items.length} artifacts`)
-  const before = await detail(sessionID, artifact.id)
+  let before = await detail(sessionID, artifact.id)
+  if (option('--candidate-id')) {
+    const turn = before.turns.find((item) => item.turn_id === option('--turn-id'))
+    const candidate = turn?.candidates.find((item) => item.candidate_id === option('--candidate-id'))
+    assert(candidate?.status === 'ready', 'video source selection requires one exact inspected ready candidate')
+    before = await selectCandidateInStudio(sessionID, artifact.id, turn, candidate)
+  }
   const head = currentRevision(before)
   assert(head.build?.status === 'succeeded' && head.validation?.status === 'valid', 'video-conversion source head lacks successful build/validation evidence')
   const beforeArtifactReplay = (await replayEvents(sessionID)).filter((event) => text(event?.event_type).startsWith('artifact.v3.')).map((event) => `${event.seq}:${event.event_type}`)
@@ -1216,14 +1225,14 @@ async function runVideoConversion(sessionID, selected, assignment) {
   const afterArtifactReplay = artifactProjectionEvents.map((event) => `${event.seq}:${event.event_type}`)
   assert(JSON.stringify(afterArtifactReplay) === JSON.stringify(beforeArtifactReplay) && !forbiddenLegacyWrite(artifactProjectionEvents), 'video conversion changed native Artifact replay or emitted legacy identity')
   const allSessions = await bootstrapSessions()
-  const children = [...delegatedDesigners(allSessions, sessionID), ...delegatedDesigners(allSessions, videoSession.sessionID)]
-  const delegated = Object.values(allSessions.sessions_by_id || {}).filter((session) => [sessionID, videoSession.sessionID].includes(text(session?.metadata?.parent_session_id)) && text(session?.metadata?.lineage_kind) === 'delegated_subagent')
+  const children = delegatedDesigners(allSessions, videoSession.sessionID)
+  const delegated = Object.values(allSessions.sessions_by_id || {}).filter((session) => videoSession.sessionID === text(session?.metadata?.parent_session_id) && text(session?.metadata?.lineage_kind) === 'delegated_subagent')
   assert(children.length === 0 && delegated.length === 0, `video conversion found ${delegated.length} delegated children (${children.length} Designers) instead of zero`)
   gate('video-pending-proposal', 'PASS', `proposal=${proposal.id}`)
   gate('video-native-v3-identity', 'PASS', `${head.revision_ref} -> ${text(mp4.derivative_id)}`)
   gate('video-fallback-mp4', 'PASS', `duration_ms=${part.duration_ms} png_bytes=${fallbackRecord.size_bytes} mp4_bytes=${mp4Record.size_bytes}`)
   gate('video-source-replay-unchanged', 'PASS', head.revision_ref)
-  gate('no-delegation', 'PASS', 'children=0')
+  gate('no-delegation', 'PASS', 'conversion destination children=0; source provenance may be Designer-authored')
   gate('no-legacy-writes', 'PASS')
   result.result = 'PASS'
   log('JOURNEY video-conversion PASS')
@@ -1250,11 +1259,11 @@ async function runDesignerWave(sessionID, artifactID) {
     assert(turn?.candidates?.length === (stage === 'designer-repair' ? 1 : 2), 'selected turn does not preserve expected slots')
     const chosenID = option('--candidate-id')
     const candidate = turn.candidates.find((item) => item.candidate_id === chosenID)
-    assert(candidate?.status === 'ready', 'selection requires exact inspected ready --candidate-id')
-    artifact = await selectCandidateInStudio(sessionID, artifactID, turn, candidate)
+    assert(candidate?.status === 'ready' || (candidate?.status === 'selected' && candidate.revision?.commit_oid === base.commit_oid), 'selection requires exact inspected ready or current selected --candidate-id')
+    if (base.commit_oid !== candidate.revision.commit_oid) artifact = await selectCandidateInStudio(sessionID, artifactID, turn, candidate)
     base = currentRevision(artifact)
     result.revisions.selected = base
-    await postTurn(sessionID, 'designer-continuation', `Continue exactly the selected native Artifact V3 ${artifact.artifact_ref}. Launch exactly one managed Designer in regular mode with artifact_v3_source={session_id:${sessionID},artifact_id:${artifactID},commit_oid:${base.commit_oid},projection_seq:${artifact.revision},target_part_ids:[hero]}. Put animation_profile motion_ui and output_mode managed only on the launch. Ensure AFTER DESIGNER CHOICE appears exactly once inside Hero, preserving all three stable Parts, the selected Footer alternative label, TARGETED PRICING TURN, Team $29, all animations and marker lanes. Keep 1440x900 and 840x844 free from clipping, overlap and scrolling. Correct the missing magenta treatment by adding a small NEW CSS override file: target #pricing .team with vivid magenta background/border while retaining white legible text. Read the actual selector first; use #pricing article.featured, not an absent .team class. The runtime now serializes same-candidate edits; nevertheless make dependent edits sequentially, then read index.html back and confirm the CSS link and all expected classes/labels persisted before build. Check computed background color in preview rather than assuming a stylesheet applies. Preserve the cyan Footer and all feature lines. Use artifact_v3_author only; create the new CSS then link it with an exact </head> replacement, and add the Hero label using a short unique existing phrase, never a sentinel or large reformatted old_string. Run whole-project build/preview/repair and finish one exact-base candidate. Do not select it, move head, use legacy source_artifact, create another artifact, or launch more than one child.`)
+    await postTurn(sessionID, 'designer-continuation', `Continue exactly the selected native Artifact V3 ${artifact.artifact_ref}. Launch exactly one managed Designer in regular mode with artifact_v3_source={session_id:${sessionID},artifact_id:${artifactID},commit_oid:${base.commit_oid},projection_seq:${artifact.revision},target_part_ids:[hero]}. Put animation_profile motion_ui and output_mode managed only on the launch. Ensure AFTER DESIGNER CHOICE appears exactly once inside Hero, preserving all three stable Parts, the selected Footer alternative label, TARGETED PRICING TURN, Team $29, all animations and marker lanes. Keep 1440x900 and 840x844 free from clipping, overlap and scrolling. Correct the missing magenta treatment by adding a small NEW CSS override file: target #pricing .team with vivid magenta background/border while retaining white legible text. Read the actual selector first; use #pricing article.featured, not an absent .team class. The runtime now serializes same-candidate edits; nevertheless make dependent edits sequentially, then read index.html back and confirm the CSS link and all expected classes/labels persisted before build. Check computed background color in preview rather than assuming a stylesheet applies. Preserve the cyan Footer and all feature lines. Use artifact_v3_author only; create the new CSS then link it with an exact </head> replacement, and add the Hero label using a short unique existing phrase, never a sentinel or large reformatted old_string. Also fix the exact native video preflight defect: .stage::before is a decorative 760px glow at top:-384px/right:-307px outside 1920x1080. Remove that pseudo-element with .stage::before { content:none; display:none; } in the new override (do NOT weaken validation or hide meaningful content). Preserve the existing background gradient and all three real Part animations. Validate complete content at 1920x1080 as well as 1440x900 and 840x844. Run whole-project build/preview/repair and finish one exact-base candidate. Do not select it, move head, use legacy source_artifact, create another artifact, or launch more than one child.`)
     artifact = await detail(sessionID, artifactID)
     assert(delegatedDesigners(await bootstrapSessions(), sessionID).length === beforeChildren.length + 1, 'continuation did not launch one Designer')
   }
