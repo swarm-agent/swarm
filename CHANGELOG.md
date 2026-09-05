@@ -21,6 +21,7 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ### Changed
 
+- Show pending review worktrees before expensive Git checks, bound review enrichment concurrency, and scope integration reads to the selected session instead of repeatedly scanning all review lanes. Background refreshes no longer keep completed integrations pending.
 - Updated the daemon compression dependency to `github.com/klauspost/compress` v1.18.7 for the new build.
 - Reworked durable V3 plan and checkpoint execution so boundary transitions, resumptions, source-message provenance, and conversation context remain in the canonical session epoch.
 - Expanded Desktop and TUI workspace onboarding, session routing, themes, responsive navigation, git status, and launch tips while removing legacy display and workspace-definition authorities.

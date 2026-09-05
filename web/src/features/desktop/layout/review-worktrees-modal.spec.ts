@@ -9,6 +9,22 @@ function candidate(overrides: Partial<ReviewWorktreeCandidate>): ReviewWorktreeC
 }
 
 describe('review worktrees modal helpers', () => {
+  // Requirement: catalog navigation never becomes archive selection before Git
+  // verification. These production selectors are the narrowest UI authority for
+  // proving stale selected IDs cannot turn pending rows into actionable work.
+  it('labels pending inspection and excludes it from archive actions', () => {
+    const pending = candidate({ session_id: 'pending', reason: 'inspection_pending' })
+    const result: ReviewWorktreesResponse = {
+      ok: true, inspection_pending: true, target_detection: 'inspection_pending', comparison: 'inspection_pending',
+      retained: [pending], done: [], archived_session_ids: [], recently_archived: [],
+      grace_period_ms: 3600000, checkout_dirty: null, checkout_dirty_count: null, blocked_by_checkout_count: null, complete: true,
+    }
+    expect(reviewWorktreeReasonLabel(pending)).toBe('Checking Git status and integration…')
+    expect(selectableReviewIDs(result)).toEqual([])
+    expect(selectedArchiveCandidates(result, new Set(['pending']))).toEqual([])
+    expect(reviewCommitCandidates(result)).toEqual([])
+    expect(currentCheckoutCommitCandidate(result)).toBeNull()
+  })
   it('keeps completed sections collapsed until their headers are expanded', () => {
     const collapsed = renderToStaticMarkup(createElement(CollapsibleReviewSection, {
       title: 'Done',

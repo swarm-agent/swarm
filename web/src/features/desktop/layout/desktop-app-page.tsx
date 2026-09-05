@@ -4503,7 +4503,7 @@ export function DesktopAppPage() {
   }, [])
 
   const integrateSessionWorktree = async (input: GitIntegrateModalState) => {
-    const review = await reviewDesktopV3Worktrees({ workspacePath: input.workspacePath, graceHours: 1 })
+    const review = await reviewDesktopV3Worktrees({ workspacePath: input.workspacePath, sessionIds: [input.sessionId], graceHours: 1 })
     const candidate = [...(review.retained ?? []), ...(review.done ?? [])].find((item) => item.session_id === input.sessionId)
     const sourceHead = candidate?.source_head?.trim()
     const targetBranch = review.current_target_branch?.trim()
@@ -4597,9 +4597,10 @@ export function DesktopAppPage() {
       commitSucceeded = true
       setGitCommitModal(null)
       setGitCommitMessage('')
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ['workspace-git-status'] }),
-        queryClient.invalidateQueries({ queryKey: ['session-worktree-review'] }),
+      // Invalidate now, but do not put unrelated refetches ahead of integration.
+      void Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['workspace-git-status'], refetchType: 'none' }),
+        queryClient.invalidateQueries({ queryKey: ['session-worktree-review'], refetchType: 'none' }),
       ])
 
       let completionMessage = 'Changes committed successfully.'
@@ -4621,13 +4622,6 @@ export function DesktopAppPage() {
         completionMessage = 'Changes committed and session archived.'
       }
 
-      if (integration || archiveAfterCommit) {
-        await Promise.all([
-          queryClient.invalidateQueries({ queryKey: ['workspace-git-status'] }),
-          queryClient.invalidateQueries({ queryKey: ['session-worktree-review'] }),
-        ])
-      }
-
       setDesktopToast({ message: completionMessage, tone: 'success' })
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
@@ -4639,6 +4633,12 @@ export function DesktopAppPage() {
         setGitCommitError(message)
       }
     } finally {
+      if (commitSucceeded) {
+        void Promise.all([
+          queryClient.invalidateQueries({ queryKey: ['workspace-git-status'] }),
+          queryClient.invalidateQueries({ queryKey: ['session-worktree-review'] }),
+        ])
+      }
       setGitCommitBusy(false)
       setGitIntegrateBusy(false)
     }
@@ -4659,7 +4659,7 @@ export function DesktopAppPage() {
       if (archiveAfterIntegration) await archiveIntegratedSession(integrated)
       setGitIntegrateModal(null)
       setDesktopToast({ message: archiveAfterIntegration ? 'Worktree integrated and session archived.' : 'Worktree integrated successfully.', tone: 'success' })
-      await Promise.all([
+      void Promise.all([
         queryClient.invalidateQueries({ queryKey: ['workspace-git-status'] }),
         queryClient.invalidateQueries({ queryKey: ['session-worktree-review'] }),
       ])
