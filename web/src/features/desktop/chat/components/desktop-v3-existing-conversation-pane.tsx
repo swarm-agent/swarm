@@ -3650,8 +3650,8 @@ export function DesktopV3ExistingConversationPane({
         open={artifactV3StudioOpen}
         onOpenChange={setArtifactV3StudioOpen}
         onRefresh={refreshSessionArtifacts}
-        onIterate={(prompt) => {
-          composerControllerRef.current?.setDraft(prompt);
+        onIterate={(selection) => {
+          queueGalleryArtifactSelections([selection]);
           setArtifactV3StudioOpen(false);
           setArtifactComposerFocusSignal((current) => current + 1);
         }}

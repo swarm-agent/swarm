@@ -23,6 +23,7 @@ import {
 } from '../state/desktop-v3-cache-wire'
 import {
   postDesktopV3AppendMessage,
+  portableDesktopV3ArtifactMessageSelection,
   desktopV3ModelProfileChoiceWire,
   postDesktopV3CreateSession,
   type DesktopV3AppendMessageRequest,
@@ -660,14 +661,7 @@ export function createDesktopV3RoutedComposerSnapshot(
     prompt: input.prompt,
     attachments: input.attachments?.map((attachment) => ({ ...attachment })) ?? [],
     videoAttachments: input.videoAttachments?.map((attachment) => ({ ...attachment })) ?? [],
-    artifactSelections: input.artifactSelections?.map((selection) => ({
-      ...selection,
-      session_id: selection.session_id.trim(),
-      collection_id: selection.collection_id.trim(),
-      variant_id: selection.variant_id.trim(),
-      label: selection.label.trim(),
-      description: selection.description?.trim() || undefined,
-    })) ?? [],
+    artifactSelections: input.artifactSelections?.map((selection) => ({ ...portableDesktopV3ArtifactMessageSelection(selection), description: selection.description?.trim() || undefined })) ?? [],
     selectedAction: input.selectedAction === undefined || input.selectedAction === null
       ? null
       : cloneRoutedComposerSelection(input.selectedAction),
@@ -729,11 +723,7 @@ export function createDesktopV3RoutedStartOperation(
     planModeRequested: input.planModeRequested,
     modelProfileChoice: input.modelProfileChoice,
   })
-  for (const selection of snapshot.artifactSelections) {
-    if (!selection.session_id || !selection.collection_id || !selection.variant_id || selection.event_seq <= 0 || !selection.label || (selection.action !== 'select' && selection.action !== 'use')) {
-      throw new Error('Routed Desktop start contains an invalid artifact selection')
-    }
-  }
+  snapshot.artifactSelections.forEach(portableDesktopV3ArtifactMessageSelection)
   const requestInput = desktopV3RoutedRequestInput(snapshot)
   const identity = input.identity ?? createDesktopV3RoutedOperationIdentity()
   const operationId = identity.operationId.trim()

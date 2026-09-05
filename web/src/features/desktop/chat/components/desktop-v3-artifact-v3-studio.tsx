@@ -3,7 +3,7 @@ import { AlertTriangle, Check, ChevronRight, FileDiff, GitCommitHorizontal, Load
 
 import { cn } from '../../../../lib/cn'
 import {
-  desktopV3NativeArtifactIterationPrompt,
+  desktopV3NativeArtifactIterationSelection,
   fetchDesktopV3NativeArtifactStudio,
   preflightDesktopV3NativeArtifactPreview,
   selectDesktopV3NativeArtifactCandidate,
@@ -19,7 +19,7 @@ export interface DesktopV3ArtifactV3StudioProps {
   artifact: DesktopV3NativeArtifactSummary | null
   open: boolean
   onOpenChange: (open: boolean) => void
-  onIterate?: (prompt: string) => void | Promise<void>
+  onIterate?: (selection: import('../../session-v3/artifact-api').DesktopV3ArtifactMessageSelection) => void | Promise<void>
   onRefresh?: () => void | Promise<void>
 }
 
@@ -117,7 +117,7 @@ export function DesktopV3ArtifactV3Studio({ artifact, open, onOpenChange, onIter
     try {
       setBusy('iterate')
       setError('')
-      await onIterate(desktopV3NativeArtifactIterationPrompt(studio, partIds))
+      await onIterate(desktopV3NativeArtifactIterationSelection(studio, partIds))
       onOpenChange(false)
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Could not start an Artifact V3 turn')

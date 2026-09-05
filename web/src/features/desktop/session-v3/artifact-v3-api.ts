@@ -473,3 +473,20 @@ export function desktopV3NativeArtifactIterationPrompt(studio: DesktopV3NativeAr
     'Keep the complete project tree available, make any necessary shared-file or cross-part changes, and build, preview, and repair the whole candidate before finishing.',
   ].join('\n')
 }
+
+/** Stage intent through the normal composer envelope; never replace or submit the draft. */
+export function desktopV3NativeArtifactIterationSelection(studio: DesktopV3NativeArtifactStudio, partIds: readonly string[]): import('./artifact-api').DesktopV3ArtifactMessageSelection {
+  const head = studio.artifact.head
+  if (!head || !/^revision-[a-f0-9]{40}$/.test(head.revisionRef) || head.revisionRef !== `revision-${head.commitOid}`) throw new Error('Artifact V3 iteration requires an exact current head')
+  const ids = partIds.map((id) => id.trim())
+  if (ids.length > 256 || new Set(ids).size !== ids.length || ids.some((id) => !studio.parts.some((part) => part.id === id))) throw new Error('Unknown or duplicate Artifact V3 Part')
+  const label = ids.length ? ids.map((id) => studio.parts.find((part) => part.id === id)!.label || id).join(', ') : studio.artifact.label || 'Artifact'
+  return {
+    session_id: studio.artifact.ownerSessionId,
+    artifact_id: studio.artifact.artifactId,
+    revision_ref: head.revisionRef,
+    target_part_ids: ids,
+    label: label.length <= 256 ? label : 'Selected artifact Parts',
+    action: 'use',
+  }
+}

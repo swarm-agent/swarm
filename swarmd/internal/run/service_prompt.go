@@ -957,6 +957,11 @@ func attachedArtifactSelectionsForProvider(metadata map[string]any) string {
 		return ""
 	}
 	var selections []struct {
+		ArtifactID              string                           `json:"artifact_id"`
+		RevisionRef             string                           `json:"revision_ref"`
+		TargetPartIDs           []string                         `json:"target_part_ids"`
+		CommitOID               string                           `json:"commit_oid"`
+		ProjectionSeq           uint64                           `json:"projection_seq"`
 		SessionID               string                           `json:"session_id"`
 		CollectionID            string                           `json:"collection_id"`
 		VariantID               string                           `json:"variant_id"`
@@ -988,6 +993,19 @@ func attachedArtifactSelectionsForProvider(metadata map[string]any) string {
 	lines := []string{"Attached managed artifacts (opaque references only; no bytes or paths are embedded):"}
 	visibleLines := make([]string, 0, len(selections))
 	for _, selection := range selections {
+		if selection.ArtifactID != "" || selection.RevisionRef != "" || selection.TargetPartIDs != nil {
+			if selection.SessionID == "" || selection.ArtifactID == "" || selection.CommitOID == "" || selection.RevisionRef != "revision-"+selection.CommitOID || selection.ProjectionSeq == 0 || selection.CollectionID != "" || selection.VariantID != "" || selection.EventSeq != 0 || selection.PartID != "" || selection.PendingRequest != "" || len(selection.TargetPartIDs) > 256 {
+				return ""
+			}
+			sourceFields := map[string]any{"session_id": selection.SessionID, "artifact_id": selection.ArtifactID, "commit_oid": selection.CommitOID, "projection_seq": selection.ProjectionSeq}
+			if len(selection.TargetPartIDs) > 0 {
+				sourceFields["target_part_ids"] = selection.TargetPartIDs
+			}
+			source, _ := json.Marshal(sourceFields)
+			reference, _ := json.Marshal(map[string]string{"session_id": selection.SessionID, "artifact_id": selection.ArtifactID, "revision_ref": selection.RevisionRef})
+			lines = append(lines, "Selected native Artifact V3 (authenticated exact source; hidden composer context): artifact_v3_reference="+string(reference), "For a requested Designer iteration, copy artifact_v3_source="+string(source)+". Never translate this reference into legacy collection/variant identity. Parts express intent, not byte ownership; preserve the complete project tree and repair shared files as needed. For direct edits use read_v3/revise_v3 with this exact reference and target Part IDs. Do not echo this context into visible chat text.")
+			continue
+		}
 		selection.SessionID = strings.TrimSpace(selection.SessionID)
 		selection.CollectionID = strings.TrimSpace(selection.CollectionID)
 		selection.VariantID = strings.TrimSpace(selection.VariantID)
@@ -1057,8 +1075,10 @@ func attachedArtifactSelectionsForProvider(metadata map[string]any) string {
 		}
 		visibleLines = append(visibleLines, line)
 	}
-	lines = append(lines, "Use manage_artifact get/read with the complete reference to inspect one. Reads are authenticated and exact-event. Text reads are bounded UTF-8; application/zip reads return a bounded regular-file manifest when entry is omitted or one bounded UTF-8 regular entry when entry is supplied. A selected ready image can be remixed repeatedly: call image_capabilities, then generate_image with the new edit request and copy this exact reference as source_session_id, source_collection_id, source_variant_id, and source_event_seq. The authenticated authority supplies the source image bytes directly to a supported provider; do not re-prompt from scratch or substitute a preview/download. For non-image derivation, pass the same source_* reference to create/create_package; the target remains trusted run context. To use selected artifacts in video projects or revisions, pass the selection reference in timeline clips as artifact_ref or design_input via manage_video.")
-	lines = append(lines, visibleLines...)
+	if len(visibleLines) > 0 {
+		lines = append(lines, "Use manage_artifact get/read with the complete reference to inspect one. Reads are authenticated and exact-event. Text reads are bounded UTF-8; application/zip reads return a bounded regular-file manifest when entry is omitted or one bounded UTF-8 regular entry when entry is supplied. A selected ready image can be remixed repeatedly: call image_capabilities, then generate_image with the new edit request and copy this exact reference as source_session_id, source_collection_id, source_variant_id, and source_event_seq. The authenticated authority supplies the source image bytes directly to a supported provider; do not re-prompt from scratch or substitute a preview/download. For non-image derivation, pass the same source_* reference to create/create_package; the target remains trusted run context. To use selected artifacts in video projects or revisions, pass the selection reference in timeline clips as artifact_ref or design_input via manage_video.")
+		lines = append(lines, visibleLines...)
+	}
 	return strings.Join(lines, "\n")
 }
 

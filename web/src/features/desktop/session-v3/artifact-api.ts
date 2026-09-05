@@ -212,7 +212,15 @@ export interface DesktopV3ArtifactSelection {
 }
 
 /** Opaque message reference plus bounded display metadata and review intent. */
-export interface DesktopV3ArtifactMessageSelection extends DesktopV3ArtifactSelection {
+export interface DesktopV3ArtifactMessageSelection {
+  session_id: string
+  collection_id?: string
+  variant_id?: string
+  event_seq?: number
+  part_id?: string
+  artifact_id?: string
+  revision_ref?: string
+  target_part_ids?: string[]
   label: string
   description?: string
   /** Hidden provider instruction queued by Artifact Studio; never rendered as composer or chat text. */
@@ -850,7 +858,7 @@ export function desktopV3ArtifactVariantDescription(entry: DesktopV3ArtifactCata
 export function desktopV3ArtifactMessageSelection(
   entry: DesktopV3ArtifactCatalogEntry,
   action: 'select' | 'use' = 'select',
-): DesktopV3ArtifactMessageSelection {
+): DesktopV3ArtifactMessageSelection & DesktopV3ArtifactSelection {
   return {
     ...desktopV3ArtifactSelection(entry),
     label: desktopV3ArtifactVariantLabel(entry),
@@ -877,7 +885,7 @@ export function desktopV3ArtifactPartMessageSelection(
   entry: DesktopV3ArtifactCatalogEntry,
   partId: string,
   action: 'select' | 'use' = 'use',
-): DesktopV3ArtifactMessageSelection {
+): DesktopV3ArtifactMessageSelection & DesktopV3ArtifactSelection {
   const normalizedPartId = partId.trim()
   const definition = entry.partDefinitions?.find((part) => part.id === normalizedPartId)
   const reviewPart = entry.parts?.find((part) => part.id === normalizedPartId)
@@ -905,7 +913,7 @@ export function desktopV3ArtifactPartIterationMessageSelection(
   entry: DesktopV3ArtifactCatalogEntry,
   partId: string,
   alternativeCount = 3,
-): DesktopV3ArtifactMessageSelection {
+): DesktopV3ArtifactMessageSelection & DesktopV3ArtifactSelection {
   const selection = desktopV3ArtifactPartMessageSelection(entry, partId, 'use')
   const definition = entry.partDefinitions?.find((part) => part.id === partId.trim())
   const count = Math.min(50, Math.max(1, Math.round(alternativeCount)))
@@ -921,9 +929,10 @@ export function desktopV3ArtifactPartIterationMessageSelection(
 }
 
 export function desktopV3ArtifactMessageSelectionKey(
-  selection: Pick<DesktopV3ArtifactSelection, 'session_id' | 'collection_id' | 'variant_id'> & Partial<Pick<DesktopV3ArtifactSelection, 'part_id'>>,
+  selection: Pick<DesktopV3ArtifactMessageSelection, 'session_id' | 'collection_id' | 'variant_id' | 'part_id' | 'artifact_id' | 'revision_ref' | 'target_part_ids'>,
 ): string {
-  return `${selection.session_id.trim()}\u0000${selection.collection_id.trim()}\u0000${selection.variant_id.trim()}\u0000${selection.part_id?.trim() ?? ''}`
+  if (selection.artifact_id) return JSON.stringify(['v3', selection.session_id.trim(), selection.artifact_id, selection.revision_ref, selection.target_part_ids ?? []])
+  return `${selection.session_id.trim()}\u0000${selection.collection_id?.trim() ?? ''}\u0000${selection.variant_id?.trim() ?? ''}\u0000${selection.part_id?.trim() ?? ''}`
 }
 
 export function desktopV3ArtifactCatalogEntryKey(entry: Pick<DesktopV3ArtifactCatalogEntry, 'sessionId' | 'collectionId' | 'artifactId'>): string {
@@ -1054,15 +1063,32 @@ export function desktopV3ArtifactCatalogEntryForViewerLocation(
 }
 
 export function normalizeDesktopV3ArtifactMessageSelection(value: unknown): DesktopV3ArtifactMessageSelection | null {
-  const selection = normalizeDesktopV3ArtifactSelection(value)
   const record = artifactCatalogRecord(value)
-  if (!selection || !record) return null
+  if (!record) return null
+  const native = record.artifact_id !== undefined || record.revision_ref !== undefined || record.target_part_ids !== undefined
+  let selection: Partial<DesktopV3ArtifactMessageSelection> | null
+  if (native) {
+    if (['collection_id', 'variant_id', 'event_seq', 'part_id', 'artifact_chain_id', 'artifact_step_id'].some((key) => record[key] !== undefined)) return null
+    const sessionId = artifactCatalogString(record.session_id)
+    const artifactId = artifactCatalogString(record.artifact_id)
+    const revisionRef = artifactCatalogString(record.revision_ref)
+    const ids = record.target_part_ids ?? []
+    if (!sessionId || sessionId.length > 256 || !artifactId || artifactId.length > 128 || !/^revision-[a-f0-9]{40}$/.test(revisionRef)
+      || !Array.isArray(ids) || ids.length > 256 || ids.some((id) => typeof id !== 'string' || !id.trim() || id.trim().length > 128)) return null
+    const targetPartIds = ids.map((id: string) => id.trim())
+    if (new Set(targetPartIds).size !== targetPartIds.length) return null
+    selection = { session_id: sessionId, artifact_id: artifactId, revision_ref: revisionRef, target_part_ids: targetPartIds }
+  } else {
+    selection = normalizeDesktopV3ArtifactSelection(value)
+  }
+  if (!selection?.session_id) return null
   const label = artifactCatalogString(record.label)
   const rawAction = artifactCatalogString(record.action).toLowerCase()
   const pendingRequest = artifactCatalogString(record.pending_request)
-  if (!label || (rawAction !== 'select' && rawAction !== 'use') || (pendingRequest && rawAction !== 'use')) return null
+  if (!label || label.length > 256 || artifactCatalogString(record.description).length > 2048 || pendingRequest.length > 16384 || (native && pendingRequest) || (rawAction !== 'select' && rawAction !== 'use') || (pendingRequest && rawAction !== 'use')) return null
   return {
     ...selection,
+    session_id: selection.session_id,
     label,
     description: artifactCatalogString(record.description) || undefined,
     ...(pendingRequest ? { pending_request: pendingRequest } : {}),
@@ -1113,7 +1139,7 @@ export function appendDesktopV3ArtifactMessageSelections(
 
 export function removeDesktopV3ArtifactMessageSelection(
   selections: readonly DesktopV3ArtifactMessageSelection[],
-  selection: Pick<DesktopV3ArtifactSelection, 'session_id' | 'collection_id' | 'variant_id'> & Partial<Pick<DesktopV3ArtifactSelection, 'part_id'>>,
+  selection: Pick<DesktopV3ArtifactMessageSelection, 'session_id' | 'collection_id' | 'variant_id' | 'part_id' | 'artifact_id' | 'revision_ref' | 'target_part_ids'>,
 ): DesktopV3ArtifactMessageSelection[] {
   const key = desktopV3ArtifactMessageSelectionKey(selection)
   return selections.filter((item) => desktopV3ArtifactMessageSelectionKey(item) !== key)
