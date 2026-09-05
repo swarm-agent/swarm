@@ -391,25 +391,52 @@ func validateArtifactV3Path(path string, limits ArtifactV3Limits) (string, error
 	return clean, nil
 }
 
+// ArtifactV3ManifestError carries only server-authored diagnostics, never source
+// values or raw decoder errors. Unwrap preserves the canonical rejection identity.
+type ArtifactV3ManifestError struct {
+	code    string
+	message string
+	cause   error
+}
+
+func (e *ArtifactV3ManifestError) Error() string {
+	return e.cause.Error() + ": " + e.message
+}
+func (e *ArtifactV3ManifestError) Unwrap() error                 { return e.cause }
+func (e *ArtifactV3ManifestError) SafeDiagnosticCode() string    { return e.code }
+func (e *ArtifactV3ManifestError) SafeDiagnosticMessage() string { return e.message }
+
+func artifactV3ManifestInvalid(code, message string) error {
+	return &ArtifactV3ManifestError{code: code, message: message, cause: ErrArtifactV3Invalid}
+}
+
+func artifactV3ManifestVersionError() error {
+	return artifactV3ManifestInvalid("manifest_schema_version_invalid", "schema_version must be the string \""+ArtifactV3ManifestVersion+"\"")
+}
+
 func validateArtifactV3Manifest(body []byte, files map[string][]byte, limits ArtifactV3Limits) (ArtifactV3Manifest, error) {
 	var manifest ArtifactV3Manifest
 	decoder := json.NewDecoder(bytes.NewReader(body))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&manifest); err != nil {
-		return manifest, ErrArtifactV3Invalid
+		var typeError *json.UnmarshalTypeError
+		if errors.As(err, &typeError) && typeError.Field == "schema_version" {
+			return manifest, artifactV3ManifestVersionError()
+		}
+		return manifest, artifactV3ManifestInvalid("manifest_json_invalid", "manifest must be a JSON object with only schema_version, entrypoint, and parts; parts require id, label, and locator {kind, path/value/paths} with the declared field types")
 	}
 	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
-		return manifest, ErrArtifactV3Invalid
+		return manifest, artifactV3ManifestInvalid("manifest_json_invalid", "manifest must contain exactly one JSON object without trailing content")
 	}
 	if manifest.SchemaVersion != ArtifactV3ManifestVersion {
-		return manifest, ErrArtifactV3Invalid
+		return manifest, artifactV3ManifestVersionError()
 	}
 	entrypoint, err := validateArtifactV3Path(manifest.Entrypoint, limits)
 	if err != nil || entrypoint != manifest.Entrypoint {
-		return manifest, ErrArtifactV3Invalid
+		return manifest, artifactV3ManifestInvalid("manifest_entrypoint_invalid", "entrypoint must be a canonical project-relative file path within path limits")
 	}
 	if _, ok := files[manifest.Entrypoint]; !ok {
-		return manifest, ErrArtifactV3Invalid
+		return manifest, artifactV3ManifestInvalid("manifest_entrypoint_invalid", "entrypoint must resolve to an existing project file")
 	}
 	if len(manifest.Parts) > limits.MaxParts {
 		return manifest, ErrArtifactV3Quota
@@ -417,7 +444,7 @@ func validateArtifactV3Manifest(body []byte, files map[string][]byte, limits Art
 	seen := map[string]bool{}
 	for _, part := range manifest.Parts {
 		if !artifactV3IDPattern.MatchString(part.ID) || strings.TrimSpace(part.Label) == "" || seen[part.ID] {
-			return manifest, ErrArtifactV3Invalid
+			return manifest, artifactV3ManifestInvalid("manifest_part_invalid", "every part requires a valid unique id and a non-empty label")
 		}
 		seen[part.ID] = true
 		paths := append([]string(nil), part.Locator.Paths...)
@@ -427,22 +454,22 @@ func validateArtifactV3Manifest(body []byte, files map[string][]byte, limits Art
 		switch part.Locator.Kind {
 		case "file":
 			if part.Locator.Path == "" || part.Locator.Value != "" || len(part.Locator.Paths) != 0 {
-				return manifest, ErrArtifactV3Invalid
+				return manifest, artifactV3ManifestInvalid("manifest_locator_invalid", "file locator requires path and forbids value and paths")
 			}
 		case "selector", "state":
 			if strings.TrimSpace(part.Locator.Value) == "" {
-				return manifest, ErrArtifactV3Invalid
+				return manifest, artifactV3ManifestInvalid("manifest_locator_invalid", "selector and state locators require a non-empty value")
 			}
 		case "semantic":
 			if strings.TrimSpace(part.Locator.Value) == "" || len(paths) == 0 {
-				return manifest, ErrArtifactV3Invalid
+				return manifest, artifactV3ManifestInvalid("manifest_locator_invalid", "semantic locator requires a non-empty value and project file paths")
 			}
 		default:
-			return manifest, ErrArtifactV3Invalid
+			return manifest, artifactV3ManifestInvalid("manifest_locator_invalid", "locator kind must be file, selector, state, or semantic")
 		}
 		for _, path := range paths {
 			if _, ok := files[path]; !ok {
-				return manifest, ErrArtifactV3Invalid
+				return manifest, artifactV3ManifestInvalid("manifest_locator_invalid", "locator paths must resolve to existing project files")
 			}
 		}
 	}

@@ -428,7 +428,7 @@ func TestArtifactV3RuntimeBuildRejectsManifestThatFinishWouldReject(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if build.Status != "failed" || len(build.Diagnostics) != 1 || build.Diagnostics[0].Code != "manifest_invalid" {
+	if build.Status != "failed" || len(build.Diagnostics) != 1 || build.Diagnostics[0].Code != "manifest_json_invalid" {
 		t.Fatalf("build=%+v", build)
 	}
 	if !strings.Contains(build.Diagnostics[0].Message, "label") || !strings.Contains(build.Diagnostics[0].Message, "locator") {
@@ -636,4 +636,194 @@ func TestArtifactV3TemporalRendererUsesExactDeclaredEntry(t *testing.T) {
 	if !reflect.DeepEqual(files, before) {
 		t.Fatal("render request mutated source")
 	}
+}
+
+// Requirement: Build must relay canonical schema repair diagnostics without
+// caching successful output or rewriting rejected source. The adapter boundary
+// is the narrowest layer proving author-visible propagation, including missing
+// and type-invalid versions, without browser or provider dependencies.
+func TestArtifactV3RuntimeBuildPropagatesManifestVersionDiagnostic(t *testing.T) {
+	for _, field := range []string{`"schema_version":"private-marker",`, ``, `"schema_version":3,`, `"schema_version":null,`} {
+		adapter := newArtifactV3RuntimeAdapter(nil, nil, t.TempDir(), t.TempDir(), pebblestore.ArtifactV3Limits{}, artifactV3RuntimeRenderer{})
+		body := `{` + field + `"entrypoint":"index.html","parts":[]}`
+		project := map[string][]byte{
+			pebblestore.ArtifactV3ManifestFilename: []byte(body),
+			"index.html":                           []byte(`<!doctype html><html><body>Hero</body></html>`),
+		}
+		build, err := adapter.Build(context.Background(), tool.ArtifactV3BuildRequest{ArtifactID: "artifact", TurnID: "turn", Attempt: 1, Project: project})
+		if err != nil || build.Status != "failed" || len(build.Diagnostics) != 1 {
+			t.Fatalf("build=%+v err=%v", build, err)
+		}
+		diagnostic := build.Diagnostics[0]
+		if diagnostic.Code != "manifest_schema_version_invalid" || diagnostic.Stage != "build" || diagnostic.Path != pebblestore.ArtifactV3ManifestFilename || !strings.Contains(diagnostic.Message, pebblestore.ArtifactV3ManifestVersion) || strings.Contains(diagnostic.Message, "private-marker") || len(diagnostic.Message) > 512 {
+			t.Fatalf("incorrect or unsafe diagnostic: %+v", diagnostic)
+		}
+		if build.ID != "" || len(build.OutputFiles) != 0 || len(adapter.builds) != 0 || string(project[pebblestore.ArtifactV3ManifestFilename]) != body {
+			t.Fatal("failed build cached output or modified source")
+		}
+	}
+}
+
+// Requirement: a first-use three-part project can repair an invalid schema using
+// Inspect guidance, then pass the same canonical validation at build and finish.
+// Threat: generic diagnostics strand authors, or failed/stale gates publish bytes
+// or advance a selected head. Real author/runtime/Git/Pebble adapters are the
+// narrowest integration layer proving these postconditions. Only browser capture
+// is faked; this test proves selector forwarding, NOT visibility or visual quality.
+func TestArtifactV3RuntimeThreePartManifestRepair(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	root := t.TempDir()
+	store, err := pebblestore.Open(filepath.Join(root, "session.pebble"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	events, err := pebblestore.NewEventLog(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessions := sessionruntime.NewService(pebblestore.NewSessionStore(store), events)
+	const sessionID = "three-part-repair"
+	_, _, err = sessions.CreateSessionWithOptions(sessionruntime.CreateSessionOptions{SessionID: sessionID, AccountScopeID: "account", UserID: "user", Title: "Three parts", WorkspacePath: root, WorkspaceName: "workspace", Mode: sessionruntime.ModeAuto, Preference: &pebblestore.ModelPreference{Provider: "codex", Model: "test", Thinking: "medium"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	repositoryRoot, workspaceRoot, evidenceRoot, err := artifactV3StorageRoots(filepath.Join(root, "data"), filepath.Join(root, "cache"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	service, err := pebblestore.NewArtifactV3Service(sessions.Store(), repositoryRoot, pebblestore.ArtifactV3Limits{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	renderer := &artifactV3RepairRenderer{}
+	adapter := newArtifactV3RuntimeAdapter(service, sessions.Store(), repositoryRoot, evidenceRoot, pebblestore.ArtifactV3Limits{}, renderer)
+	publications := 0
+	adapter.publish = func(identity.Principal, api.ArtifactV3Artifact, string, string) error { publications++; return nil }
+	author := tool.NewArtifactV3AuthorService(workspaceRoot, adapter, adapter, adapter)
+	grant, err := author.PrepareTurn(ctx, tool.ArtifactV3PrepareTurnRequest{AccountScopeID: "account", UserID: "user", OwnerSessionID: sessionID, TaskCallID: "create", Prompt: "Three-part swarm", PolicyRevision: "policy", CandidateIndex: 1, Initial: true, ExpiresAt: time.Now().Add(time.Hour).UnixMilli()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	grant.ProducerSessionID, grant.ProducerRunID = "child", "run"
+	principal := tool.ArtifactV3AuthorPrincipal{AccountScopeID: "account", UserID: "user", ProducerSessionID: "child", ProducerRunID: "run"}
+	inspected, err := author.Inspect(ctx, principal, grant)
+	if err != nil || inspected.ManifestVersion != pebblestore.ArtifactV3ManifestVersion || len(inspected.Files) != 0 {
+		t.Fatalf("inspect=%+v err=%v", inspected, err)
+	}
+	manifest := inspected.ManifestExample
+	manifest.SchemaVersion = "private-invalid-version"
+	manifest.Parts = nil
+	for _, id := range []string{"gather", "swarm", "disperse"} {
+		manifest.Parts = append(manifest.Parts, pebblestore.ArtifactV3Part{ID: id, Label: id, Locator: pebblestore.ArtifactV3Locator{Kind: "selector", Path: "index.html", Value: "#" + id}})
+	}
+	body, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const html = `<!doctype html><html><head><style>body{margin:0;display:flex}section{width:30vw;height:200px}.particle{display:block;animation:drift 3s infinite alternate}@keyframes drift{to{transform:translateX(20px)}}@media(prefers-reduced-motion:reduce){.particle{animation:none}}</style></head><body><section id="gather">Gather<span class="particle">*</span></section><section id="swarm">Swarm<span class="particle">*</span></section><section id="disperse">Disperse<span class="particle">*</span></section></body></html>`
+	for path, content := range map[string][]byte{inspected.ManifestFilename: body, "index.html": []byte(html)} {
+		if err := author.Create(ctx, principal, grant, path, content); err != nil {
+			t.Fatal(err)
+		}
+	}
+	gate, err := author.BuildPreview(ctx, principal, grant)
+	if err != nil || gate.Ready || len(gate.Diagnostics) != 1 || renderer.calls != 0 {
+		t.Fatalf("invalid gate=%+v err=%v captures=%d", gate, err, renderer.calls)
+	}
+	diagnostic := gate.Diagnostics[0]
+	if diagnostic.Code != "manifest_schema_version_invalid" || diagnostic.Path != inspected.ManifestFilename || !strings.Contains(diagnostic.Message, inspected.ManifestVersion) || strings.Contains(diagnostic.Message, "private-invalid-version") || strings.Contains(diagnostic.Message, root) || len(diagnostic.Message) > 512 {
+		t.Fatalf("unsafe or unactionable diagnostic: %+v", diagnostic)
+	}
+	if _, err := author.Finish(ctx, principal, grant); !errors.Is(err, tool.ErrArtifactV3AuthorNotReady) {
+		t.Fatalf("invalid finish=%v", err)
+	}
+	if _, ok, err := sessions.Store().GetArtifactV3Repository("account", "user", grant.ArtifactID); err != nil || ok || publications != 0 || len(adapter.builds) != 0 || len(adapter.previews) != 0 {
+		t.Fatalf("invalid project published state: exists=%v err=%v publications=%d", ok, err, publications)
+	}
+	if err := author.Edit(ctx, principal, grant, inspected.ManifestFilename, []byte(`"private-invalid-version"`), []byte(`"`+inspected.ManifestVersion+`"`), false); err != nil {
+		t.Fatal(err)
+	}
+	repaired, err := author.Read(ctx, principal, grant, inspected.ManifestFilename, 0, 4096)
+	if err != nil || repaired.Content != strings.Replace(string(body), `"private-invalid-version"`, `"`+inspected.ManifestVersion+`"`, 1) {
+		t.Fatalf("exact repair=%+v err=%v", repaired, err)
+	}
+	if parsed, err := pebblestore.ValidateArtifactV3Project(pebblestore.ArtifactV3Project{Files: map[string][]byte{inspected.ManifestFilename: []byte(repaired.Content), "index.html": []byte(html)}}, pebblestore.ArtifactV3Limits{}); err != nil || len(parsed.Parts) != 3 {
+		t.Fatalf("canonical validation=%+v err=%v", parsed, err)
+	}
+	gate, err = author.BuildPreview(ctx, principal, grant)
+	if err != nil || !gate.Ready || renderer.calls != 1 || !reflect.DeepEqual(renderer.selectors, []string{"#gather", "#swarm", "#disperse"}) {
+		t.Fatalf("repaired gate=%+v err=%v selectors=%v", gate, err, renderer.selectors)
+	}
+	finished, err := author.Finish(ctx, principal, grant)
+	if err != nil || finished.Revision.CommitOID == "" || publications != 1 {
+		t.Fatalf("finish=%+v err=%v publications=%d", finished, err, publications)
+	}
+	apiPrincipal := api.ArtifactV3Principal{AccountScopeID: "account", UserID: "user"}
+	before, err := adapter.GetArtifact(ctx, apiPrincipal, sessionID, grant.ArtifactID)
+	if err != nil || before.Head == nil || before.Head.CommitOID != finished.Revision.CommitOID || before.PartCount != 3 {
+		t.Fatalf("published=%+v err=%v", before, err)
+	}
+	follow, err := author.PrepareTurn(ctx, tool.ArtifactV3PrepareTurnRequest{AccountScopeID: "account", UserID: "user", OwnerSessionID: sessionID, TaskCallID: "repair", ArtifactID: grant.ArtifactID, BaseCommitOID: before.Head.CommitOID, ProjectionSeq: before.Revision, PolicyRevision: "policy", CandidateIndex: 1, TargetPartIDs: []string{"swarm"}, ExpiresAt: time.Now().Add(time.Hour).UnixMilli()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	follow.ProducerSessionID, follow.ProducerRunID = "child", "run"
+	if err := author.Edit(ctx, principal, follow, inspected.ManifestFilename, []byte(inspected.ManifestVersion), []byte("invalid"), false); err != nil {
+		t.Fatal(err)
+	}
+	if gate, err := author.BuildPreview(ctx, principal, follow); err != nil || gate.Ready || renderer.calls != 1 {
+		t.Fatalf("followup invalid gate=%+v err=%v", gate, err)
+	}
+	if _, err := author.Finish(ctx, principal, follow); !errors.Is(err, tool.ErrArtifactV3AuthorNotReady) {
+		t.Fatalf("followup invalid finish=%v", err)
+	}
+	if err := author.Edit(ctx, principal, follow, inspected.ManifestFilename, []byte(`"invalid"`), []byte(`"`+inspected.ManifestVersion+`"`), false); err != nil {
+		t.Fatal(err)
+	}
+	renderer.reject = true
+	if gate, err := author.BuildPreview(ctx, principal, follow); err != nil || gate.Ready || len(gate.Diagnostics) != 1 || gate.Diagnostics[0].Code != "capture_viewport_overflow" || len(gate.Preview.EvidenceDigests) != 0 {
+		t.Fatalf("renderer failure bypassed gate=%+v err=%v", gate, err)
+	}
+	if _, err := author.Finish(ctx, principal, follow); !errors.Is(err, tool.ErrArtifactV3AuthorNotReady) {
+		t.Fatalf("renderer failure finish=%v", err)
+	}
+	after, err := adapter.GetArtifact(ctx, apiPrincipal, sessionID, grant.ArtifactID)
+	if err != nil || after.Head == nil || after.Head.CommitOID != before.Head.CommitOID || publications != 1 {
+		t.Fatalf("failure advanced head: %+v err=%v publications=%d", after, err, publications)
+	}
+	candidate, ok, err := sessions.Store().GetArtifactV3Candidate("account", "user", grant.ArtifactID, follow.TurnID, follow.CandidateID)
+	if err != nil || ok {
+		t.Fatalf("failed gate created candidate=%+v exists=%v err=%v", candidate, ok, err)
+	}
+	// Build/finish rejection leaves the turn repairable. Only the explicit
+	// terminal callback records a failed slot; it must never acquire a revision.
+	if err := adapter.FailArtifactV3Turn(ctx, tool.ArtifactV3TurnFailure{ArtifactID: follow.ArtifactID, TurnID: follow.TurnID, CandidateID: follow.CandidateID, Code: "capture_viewport_overflow"}); err != nil {
+		t.Fatal(err)
+	}
+	candidate, ok, err = sessions.Store().GetArtifactV3Candidate("account", "user", grant.ArtifactID, follow.TurnID, follow.CandidateID)
+	if err != nil || !ok || candidate.Status != "failed" || candidate.CommitOID != "" || candidate.FailureCode != "capture_viewport_overflow" {
+		t.Fatalf("terminal failure candidate=%+v exists=%v err=%v", candidate, ok, err)
+	}
+	after, err = adapter.GetArtifact(ctx, apiPrincipal, sessionID, grant.ArtifactID)
+	if err != nil || after.Head == nil || after.Head.CommitOID != before.Head.CommitOID || publications != 1 {
+		t.Fatalf("terminal failure advanced head: %+v err=%v publications=%d", after, err, publications)
+	}
+}
+
+// A request spy, not a browser or visual-quality oracle.
+type artifactV3RepairRenderer struct {
+	reject    bool
+	calls     int
+	selectors []string
+}
+
+func (r *artifactV3RepairRenderer) Capture(ctx context.Context, request htmlcapture.Request) ([]htmlcapture.Result, error) {
+	r.calls++
+	r.selectors = append([]string(nil), request.RequiredSelectors...)
+	if r.reject {
+		return nil, htmlcapture.NewError("capture_viewport_overflow", "capture document overflows the required viewport")
+	}
+	return (artifactV3RuntimeRenderer{}).Capture(ctx, request)
 }

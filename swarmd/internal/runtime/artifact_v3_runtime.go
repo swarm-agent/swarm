@@ -314,7 +314,13 @@ func parseArtifactV3Manifest(project map[string][]byte) (pebblestore.ArtifactV3M
 	}
 	manifest, err := pebblestore.ValidateArtifactV3Project(pebblestore.ArtifactV3Project{Files: project}, pebblestore.ArtifactV3Limits{})
 	if err != nil {
-		return manifest, []tool.ArtifactV3Diagnostic{{Stage: "build", Code: "manifest_invalid", Message: "swarm-artifact.json must contain only schema_version, entrypoint, and parts; every part requires id, label, and locator {kind, path/value/paths} that resolves to a project file", Path: pebblestore.ArtifactV3ManifestFilename}}
+		diagnostic := tool.ArtifactV3Diagnostic{Stage: "build", Code: "manifest_invalid", Message: "project must satisfy Artifact V3 file, path, and quota limits", Path: pebblestore.ArtifactV3ManifestFilename}
+		var manifestError *pebblestore.ArtifactV3ManifestError
+		if errors.As(err, &manifestError) {
+			diagnostic.Code = manifestError.SafeDiagnosticCode()
+			diagnostic.Message = manifestError.SafeDiagnosticMessage()
+		}
+		return manifest, []tool.ArtifactV3Diagnostic{diagnostic}
 	}
 	return manifest, nil
 }
