@@ -459,13 +459,19 @@ func (*fakeArtifactV3VideoConversionService) ReadVideoReference(_ context.Contex
 // could hide a corrupt derivative or an accepted/mixed-identity proposal.
 func TestManageVideoConvertArtifactV3UsesExactNativeIdentity(t *testing.T) {
 	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "manage-video-v3.pebble"))
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer store.Close()
 	principal := identity.Principal{Type: identity.PrincipalTypeUser, SessionID: "studio", UserID: "user", AccountScopeID: "account"}
 	sessionStore := pebblestore.NewSessionStore(store)
-	if err := sessionStore.CreateSession(pebblestore.SessionSnapshot{ID: "studio", UserID: "user", AccountScopeID: "account", Mode: "auto", Metadata: map[string]any{"lineage_kind": "video_project"}}); err != nil { t.Fatal(err) }
+	if err := sessionStore.CreateSession(pebblestore.SessionSnapshot{ID: "studio", UserID: "user", AccountScopeID: "account", Mode: "auto", Metadata: map[string]any{"lineage_kind": "video_project"}}); err != nil {
+		t.Fatal(err)
+	}
 	events, err := pebblestore.NewEventLog(store)
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	runtime := NewRuntime(1)
 	runtime.sessions = sessionruntime.NewService(sessionStore, events)
 	fake := &fakeArtifactV3VideoConversionService{}
@@ -473,7 +479,9 @@ func TestManageVideoConvertArtifactV3UsesExactNativeIdentity(t *testing.T) {
 	ctx := WithVideoRunContext(context.Background(), VideoRunContext{SessionID: "studio", RunID: "run"})
 	args := `{"action":"convert_artifact_v3","project_id":"project","base_revision_id":"base","artifact_v3_session_id":"source","artifact_v3_artifact_id":"artifact","artifact_v3_revision_ref":"revision-abc"}`
 	payload, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, WorkspaceScope{SessionID: "studio", Principal: principal}, Call{CallID: "convert", Name: "manage_video", Arguments: args})
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	if fake.input.VideoSessionID != "studio" || fake.input.ProjectID != "project" || fake.input.BaseRevisionID != "base" || fake.input.ArtifactSessionID != "source" || fake.input.ArtifactID != "artifact" || fake.input.RevisionRef != "revision-abc" {
 		t.Fatalf("conversion input=%+v", fake.input)
 	}

@@ -211,10 +211,13 @@ func TestWorkspaceOverviewSessionStatusUsesCanonicalRunStateOnly(t *testing.T) {
 	}
 }
 
+// Requirement: overview route IDs follow binding identity, not materialization
+// paths. Valid committed repositories and destination attestation let the API
+// test reach that contract rather than failing admission first.
 func TestWorkspaceOverviewTopologyRouteIDRemainsStableWhenRuntimePathChanges(t *testing.T) {
 	server, workspacePath, store := newWorkspaceOverviewTopologyTestServer(t)
 	changedWorkspacePath := filepath.Join(t.TempDir(), "workspace-one")
-	if err := os.MkdirAll(changedWorkspacePath, 0o755); err != nil {
+	if err := ensureTestWorkspaceDir(changedWorkspacePath); err != nil {
 		t.Fatalf("mkdir changed workspace: %v", err)
 	}
 	if _, err := server.workspace.AddForPrincipal(testPrincipal(), changedWorkspacePath, "workspace-one", "", true); err != nil {
@@ -266,12 +269,15 @@ func TestWorkspaceOverviewTopologyRouteIDRemainsStableWhenRuntimePathChanges(t *
 		PlacementGeneration:             1,
 		BindingGeneration:               1,
 		State:                           pebblestore.TopologyWorkspaceBindingStateBound,
-		AttestedByHostSwarmID:           "host-swarm-id",
+		AttestedByHostSwarmID:           "managed-swarm-1",
 		ReplicationMode:                 "continuous",
 		Writable:                        true,
 	}
 	if _, err := topologyStore.PutWorkspaceBindingForAccount(testPrincipal().AccountScopeID, binding); err != nil {
 		t.Fatalf("put initial topology binding: %v", err)
+	}
+	if err := pebblestore.UpsertTopologyRuntimeRecordForAccount(topologyStore, testPrincipal().AccountScopeID, pebblestore.TopologyRuntimeRecord{SwarmID: "managed-swarm-1", UserID: testPrincipal().UserID, AccountScopeID: testPrincipal().AccountScopeID, Name: "Managed", Relationship: "managed", Status: "online"}); err != nil {
+		t.Fatal(err)
 	}
 	initialRoute := workspaceOverviewRouteForTest(t, server)
 	if initialRoute.RouteID != "swarm:managed-swarm-1:binding:binding-stable" {
@@ -324,6 +330,9 @@ func TestLocalWorkspaceBindingIDsByWorkspaceIDSelectsSelfAuthority(t *testing.T)
 	}
 }
 
+// Requirement: workspaceOverviewTopologyRoutesByWorkspace includes a live
+// durable target but hides its binding once that target becomes offline.
+// Exercise persisted status, not obsolete transport-presence inference.
 func TestWorkspaceOverviewSkipsStaleTopologyBindings(t *testing.T) {
 	server, workspacePath, store := newWorkspaceOverviewTopologyTestServer(t)
 	setReplicateFakeSwarmState(server, swarmruntime.LocalState{
@@ -344,7 +353,7 @@ func TestWorkspaceOverviewSkipsStaleTopologyBindings(t *testing.T) {
 			Group: swarmruntime.Group{ID: "group-1", Name: "Primary Group", HostSwarmID: "host-swarm-id"},
 			Members: []swarmruntime.GroupMember{
 				{GroupID: "group-1", SwarmID: "host-swarm-id", Name: "host-swarm", SwarmRole: "master", MembershipRole: swarmruntime.GroupMembershipRoleHost},
-				{GroupID: "group-1", SwarmID: "live-swarm", Name: "Live", SwarmRole: swarmruntime.RelationshipChild, MembershipRole: swarmruntime.GroupMembershipRoleMember},
+				{GroupID: "group-1", SwarmID: "live-swarm", Name: "Live", SwarmRole: swarmruntime.RelationshipManaged, MembershipRole: swarmruntime.GroupMembershipRoleMember},
 			},
 		}},
 	})
@@ -352,6 +361,9 @@ func TestWorkspaceOverviewSkipsStaleTopologyBindings(t *testing.T) {
 	workspaceEntry, ok, err := pebblestore.NewWorkspaceStore(store).GetForAccount(testPrincipal().AccountScopeID, workspacePath)
 	if err != nil || !ok {
 		t.Fatalf("get workspace entry ok=%t err=%v", ok, err)
+	}
+	if err := pebblestore.UpsertTopologyRuntimeRecordForAccount(topologyStore, testPrincipal().AccountScopeID, pebblestore.TopologyRuntimeRecord{SwarmID: "live-swarm", UserID: testPrincipal().UserID, AccountScopeID: testPrincipal().AccountScopeID, Name: "Live", Relationship: "managed", Status: "online"}); err != nil {
+		t.Fatal(err)
 	}
 	if _, err := topologyStore.PutRuntimePlacementForAccount(testPrincipal().AccountScopeID, pebblestore.TopologyRuntimePlacementRecord{RuntimeSwarmID: "live-swarm", AccountScopeID: testPrincipal().AccountScopeID, AuthorityHostSwarmID: "live-swarm", RuntimeKind: pebblestore.TopologyRuntimeKindHost, PlacementGeneration: 1, State: pebblestore.TopologyRuntimePlacementStateActive}); err != nil {
 		t.Fatalf("put live runtime placement: %v", err)
@@ -381,8 +393,18 @@ func TestWorkspaceOverviewSkipsStaleTopologyBindings(t *testing.T) {
 	if routes[0].WorkspaceBindingID != "binding-live" || routes[0].RuntimeSwarmID != "live-swarm" {
 		t.Fatalf("unexpected route after stale filter: %+v", routes[0])
 	}
+	if err := pebblestore.UpsertTopologyRuntimeRecordForAccount(topologyStore, testPrincipal().AccountScopeID, pebblestore.TopologyRuntimeRecord{SwarmID: "live-swarm", UserID: testPrincipal().UserID, AccountScopeID: testPrincipal().AccountScopeID, Name: "Live", Relationship: "managed", Status: "offline"}); err != nil {
+		t.Fatal(err)
+	}
+	stale := getWorkspaceOverviewForTest(t, server)
+	if len(stale.Workspaces) != 1 || len(stale.Workspaces[0].TopologyRoutes) != 0 {
+		t.Fatalf("stale target remained routable: %+v", stale.Workspaces)
+	}
 }
 
+// Requirement: the overview API must not infer child liveness from an online
+// owner. Persist explicit runtime status and valid placement so this negative
+// assertion reaches the canonical target filter.
 func TestWorkspaceOverviewSkipsOfflineChildEvenWhenOwnerHostIsSelectable(t *testing.T) {
 	server, workspacePath, store := newWorkspaceOverviewTopologyTestServer(t)
 	setReplicateFakeSwarmState(server, swarmruntime.LocalState{
@@ -406,8 +428,14 @@ func TestWorkspaceOverviewSkipsOfflineChildEvenWhenOwnerHostIsSelectable(t *test
 	if err != nil || !ok {
 		t.Fatalf("get workspace entry ok=%t err=%v", ok, err)
 	}
-	if err := pebblestore.UpsertTopologyRuntimeRecordForAccount(topologyStore, testPrincipal().AccountScopeID, pebblestore.TopologyRuntimeRecord{SwarmID: "offline-child", UserID: testPrincipal().UserID, AccountScopeID: testPrincipal().AccountScopeID, Name: "Offline Child", Relationship: "child", OwnerHostSwarmID: "owner-swarm"}); err != nil {
+	if err := pebblestore.UpsertTopologyRuntimeRecordForAccount(topologyStore, testPrincipal().AccountScopeID, pebblestore.TopologyRuntimeRecord{SwarmID: "owner-swarm", UserID: testPrincipal().UserID, AccountScopeID: testPrincipal().AccountScopeID, Name: "Owner", Relationship: "managed", Status: "online"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := pebblestore.UpsertTopologyRuntimeRecordForAccount(topologyStore, testPrincipal().AccountScopeID, pebblestore.TopologyRuntimeRecord{SwarmID: "offline-child", UserID: testPrincipal().UserID, AccountScopeID: testPrincipal().AccountScopeID, Name: "Offline Child", Relationship: "child", OwnerHostSwarmID: "owner-swarm", Status: "offline"}); err != nil {
 		t.Fatalf("upsert offline child runtime: %v", err)
+	}
+	if _, err := topologyStore.PutRuntimePlacementForAccount(testPrincipal().AccountScopeID, pebblestore.TopologyRuntimePlacementRecord{RuntimeSwarmID: "offline-child", AccountScopeID: testPrincipal().AccountScopeID, AuthorityHostSwarmID: "offline-child", RuntimeKind: pebblestore.TopologyRuntimeKindHost, PlacementGeneration: 1, State: pebblestore.TopologyRuntimePlacementStateActive}); err != nil {
+		t.Fatalf("put offline child placement: %v", err)
 	}
 	if _, err := topologyStore.PutWorkspaceBindingForAccount(testPrincipal().AccountScopeID, pebblestore.TopologyWorkspaceBindingRecord{
 		BindingID:                       "binding-offline-child",
@@ -416,11 +444,15 @@ func TestWorkspaceOverviewSkipsOfflineChildEvenWhenOwnerHostIsSelectable(t *test
 		SourceWorkspaceID:               workspaceEntry.WorkspaceID,
 		SourceWorkspaceGeneration:       workspaceEntry.WorkspaceGeneration,
 		SourceWorkspacePath:             workspacePath,
+		SourceWorkspaceName:             "workspace-one",
 		DestinationRuntimeSwarmID:       "offline-child",
 		DestinationAuthorityHostSwarmID: "offline-child",
 		DestinationRuntimeKind:          pebblestore.TopologyRuntimeKindHost,
 		DestinationHostSwarmID:          "offline-child",
 		DestinationWorkspacePath:        "/workspaces/offline-child",
+		PlacementGeneration:             1,
+		BindingGeneration:               1,
+		AttestedByHostSwarmID:           "offline-child",
 		State:                           pebblestore.TopologyWorkspaceBindingStateBound,
 		Writable:                        true,
 	}); err != nil {
@@ -443,6 +475,8 @@ func TestWorkspaceOverviewSkipsOfflineChildEvenWhenOwnerHostIsSelectable(t *test
 	}
 }
 
+// Requirement: overview excludes explicitly offline durable runtimes.
+// A valid placement isolates liveness rejection at the handler layer.
 func TestWorkspaceOverviewSkipsOfflineTopologyBindings(t *testing.T) {
 	server, workspacePath, store := newWorkspaceOverviewTopologyTestServer(t)
 	setReplicateFakeSwarmState(server, swarmruntime.LocalState{
@@ -467,8 +501,11 @@ func TestWorkspaceOverviewSkipsOfflineTopologyBindings(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("get workspace entry ok=%t err=%v", ok, err)
 	}
-	if err := pebblestore.UpsertTopologyRuntimeRecordForAccount(topologyStore, testPrincipal().AccountScopeID, pebblestore.TopologyRuntimeRecord{SwarmID: "offline-swarm", UserID: testPrincipal().UserID, AccountScopeID: testPrincipal().AccountScopeID, Name: "Offline", Relationship: "managed"}); err != nil {
+	if err := pebblestore.UpsertTopologyRuntimeRecordForAccount(topologyStore, testPrincipal().AccountScopeID, pebblestore.TopologyRuntimeRecord{SwarmID: "offline-swarm", UserID: testPrincipal().UserID, AccountScopeID: testPrincipal().AccountScopeID, Name: "Offline", Relationship: "managed", Status: "offline"}); err != nil {
 		t.Fatalf("upsert offline runtime: %v", err)
+	}
+	if _, err := topologyStore.PutRuntimePlacementForAccount(testPrincipal().AccountScopeID, pebblestore.TopologyRuntimePlacementRecord{RuntimeSwarmID: "offline-swarm", AccountScopeID: testPrincipal().AccountScopeID, AuthorityHostSwarmID: "offline-swarm", RuntimeKind: pebblestore.TopologyRuntimeKindHost, PlacementGeneration: 1, State: pebblestore.TopologyRuntimePlacementStateActive}); err != nil {
+		t.Fatalf("put offline runtime placement: %v", err)
 	}
 	if _, err := pebblestore.UpsertTopologyWorkspaceBindingForAccount(topologyStore, testPrincipal().AccountScopeID, pebblestore.TopologyWorkspaceBindingRecord{
 		UserID:                          testPrincipal().UserID,
