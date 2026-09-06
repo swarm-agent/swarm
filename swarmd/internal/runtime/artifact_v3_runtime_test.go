@@ -1020,6 +1020,12 @@ func TestArtifactV3DraftOwnershipRetentionAndCAS(t *testing.T) {
 	if err := author.Create(trusted, principal, grant, "index.html", []byte("private-source-marker")); err != nil {
 		t.Fatal(err)
 	}
+	// Creation must remain visible after source writes and before its first gate;
+	// later failed-gate repair is asserted separately below using real storage.
+	creating, err := adapter.GetArtifact(ctx, api.ArtifactV3Principal{AccountScopeID: "account", UserID: "user"}, "owner", grant.ArtifactID)
+	if err != nil || creating.Status != "creating" || creating.CurrentDraft == nil || creating.Head != nil {
+		t.Fatalf("initial source must remain creating: %+v %v", creating, err)
+	}
 	gate, err := author.BuildPreview(trusted, principal, grant)
 	if err != nil || gate.Ready || len(gate.Diagnostics) == 0 {
 		t.Fatalf("invalid gate: %+v %v", gate, err)

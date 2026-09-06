@@ -1605,7 +1605,9 @@ func (a *artifactV3RuntimeAdapter) saveAuthorDraft(g tool.ArtifactV3AuthorGrant,
 	}
 	d.Digest = digestArtifactProject(state.Project)
 	d.Status = "fixing"
-	if state.Project == nil {
+	// Source writes before the first gate are creation, not repair. Keep that
+	// durable status through the initial browser build so clients can observe it.
+	if state.Project == nil || (g.Initial && state.Gate == nil && len(state.History) == 0) {
 		d.Status = "creating"
 	}
 	if state.Gate != nil && !state.Gate.Ready {

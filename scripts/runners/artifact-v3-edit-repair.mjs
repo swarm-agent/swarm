@@ -113,7 +113,9 @@ export function verifyRepair(records, { sessionID, initial = true, artifactID, s
   for (const op of [manifest, remanifest]) check(op.args.operation.path === 'swarm-artifact.json', 'missing_manifest_read')
   const before = initial ? brokenHTML : repairedHTML; const after = initial ? repairedHTML : editedHTML
   check(read.body.result?.Content === before && reread.body.result?.Content === after, 'unrelated_source_bytes_changed')
-  assert.deepEqual(edit.args.operation, { action: 'edit_file', path: 'index.html', old_string: initial ? 'display:none' : 'Orchard launch', new_string: initial ? 'display:block' : 'Orchard spring launch' }, 'targeted_patch_required')
+  const { replace_all = false, ...patch } = edit.args.operation
+  check(replace_all === false, 'single_target_patch_required')
+  assert.deepEqual(patch, { action: 'edit_file', path: 'index.html', old_string: initial ? 'display:none' : 'Orchard launch', new_string: initial ? 'display:block' : 'Orchard spring launch' }, 'targeted_patch_required')
   check(manifest.body.result?.Content === remanifest.body.result?.Content, 'manifest_bytes_changed')
   const parts = JSON.parse(manifest.body.result.Content).parts
   check(Array.isArray(parts) && parts.length === 3 && new Set(parts.map((p) => p.id)).size === 3, 'unique_stable_parts_required')
@@ -217,9 +219,23 @@ export async function runLive(options) {
       new MutationObserver(observe).observe(document.body, { childList: true, subtree: true, characterData: true, attributes: true }); observe()
     })
     const hydrate = () => api('POST', '/v3/sync/hydrate', { surface: 'desktop', session_ids: [sessionID], history: { mode: 'tail', max_messages_per_session: 200, max_events_per_session: 0, manifest_policy: 'manifest' }, resources: { messages: true, run_intents: true, current_run_state: true }, include_active: true })
+    const capturedStates = new Set()
+    const sampleRun = async () => {
+      const snapshot = await hydrate()
+      const row = page.locator('[data-artifact-v3-sidebar-id]:visible').first()
+      if (await row.count()) {
+        const text = await row.innerText()
+        const label = ['Creating', 'Fixing', 'Ready', 'Error'].find(s => text.includes(s))
+        if (label && !capturedStates.has(label)) {
+          await row.screenshot({ path: path.join(outputDir, `sidebar-${label.toLowerCase()}.png`), timeout: 2000 })
+          capturedStates.add(label)
+        }
+      }
+      return snapshot
+    }
     const waitRun = async (runID) => {
       check(runID, 'missing_run_identity')
-      const snapshot = await waitStage({ sample: hydrate, stageMs: options.stageMs, stallMs: options.stallMs,
+      const snapshot = await waitStage({ sample: sampleRun, stageMs: options.stageMs, stallMs: options.stallMs,
         progress: (s) => hash([s.messages_by_session?.[sessionID], s.run_intents_by_session?.[sessionID]?.map((r) => [r.run_id, r.status])]),
         done: (s) => {
           const intent = s.run_intents_by_session?.[sessionID]?.find((r) => r.run_id === runID)
@@ -230,7 +246,9 @@ export async function runLive(options) {
     }
     const prompt = `${instructions}\nCreate exactly one text/html artifact with collection_name Fictional Orchard, filename index.html, using these EXACT bytes. This intentionally hidden Hero must encounter the real validation gate before repair. Repair ONLY display:none to display:block. Do not pre-fix.\n${brokenHTML}`
     const sent = await api('POST', `/v3/sessions/${sessionID}/messages`, { client_request_id: randomUUID(), role: 'user', content: prompt })
-    const first = verifyRepair(await waitRun(sent.run_intent?.run_id || sent.run_id), { sessionID })
+    const firstRecords = await waitRun(sent.run_intent?.run_id || sent.run_id)
+    ledger.sidebar_observations = await page.evaluate(() => window.__repairUI)
+    const first = verifyRepair(firstRecords, { sessionID })
     ledger.identities.push(first); ledger.stages.push('primary-incremental-repair')
     ledger.sidebar_observations = await page.evaluate(() => window.__repairUI)
     verifySidebar(ledger.sidebar_observations, first.artifact_id)

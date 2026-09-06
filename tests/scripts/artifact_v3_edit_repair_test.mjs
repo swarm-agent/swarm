@@ -142,3 +142,9 @@ test('typed Part attachment rejects stale reference, wrong target and duplicate 
   assert.throws(() => verifyPartAttachment([selection,selection], firstRef))
   assert.throws(() => verifyPartAttachment(undefined, firstRef))
 })
+
+// Tool schema default false and explicit false have identical single-edit semantics.
+test('single targeted edit accepts explicit default but rejects replace-all', () => {
+  const records=fixture(); records[3].args.operation.replace_all=false; verify(records)
+  records[3].args.operation.replace_all=true; assert.throws(()=>verify(records), /single_target_patch_required/)
+})
