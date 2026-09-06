@@ -14,6 +14,7 @@ export class DesktopV3ArtifactCatalogRefreshCoordinator {
   private readonly listeners = new Map<symbol, DesktopV3ArtifactCatalogRefreshListener>()
   private pendingDrain?: Promise<void>
   private disposed = false
+  private requested = false
 
   open(listener: DesktopV3ArtifactCatalogRefreshListener): DesktopV3ArtifactCatalogRefreshLease {
     if (this.disposed) throw new Error('Artifact catalog refresh coordinator is disposed')
@@ -34,15 +35,17 @@ export class DesktopV3ArtifactCatalogRefreshCoordinator {
 
   schedule(): Promise<void> {
     if (this.disposed || this.listeners.size === 0) return Promise.resolve()
+    this.requested = true
     if (this.pendingDrain) return this.pendingDrain
     let tracked!: Promise<void>
-    const listeners = [...this.listeners.entries()]
     tracked = Promise.resolve().then(async () => {
-      if (this.disposed || this.listeners.size === 0) return
-      const active = listeners.filter(([token]) => this.listeners.has(token)).map(([, listener]) => listener)
-      const results = await Promise.allSettled(active.map((listener) => listener()))
-      for (const result of results) {
-        if (result.status === 'rejected') console.error('[desktop-v3] artifact catalog refresh failed', result.reason)
+      while (this.requested && !this.disposed && this.listeners.size > 0) {
+        this.requested = false
+        const active = [...this.listeners.values()]
+        const results = await Promise.allSettled(active.map((listener) => Promise.resolve().then(listener)))
+        for (const result of results) {
+          if (result.status === 'rejected') console.error('[desktop-v3] artifact catalog refresh failed', result.reason)
+        }
       }
     }).finally(() => {
       if (this.pendingDrain === tracked) this.pendingDrain = undefined

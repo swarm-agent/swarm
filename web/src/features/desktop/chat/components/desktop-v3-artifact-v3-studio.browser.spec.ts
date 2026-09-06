@@ -23,7 +23,7 @@ test('native Studio Part iteration and candidate decision controls', { timeout: 
     page.setDefaultTimeout(5_000)
     const part = (id: string) => ({ id, label: id, locator: { kind: 'selector', path: 'index.html', value: `#${id}` } })
     const revision = (id: string, partId: string) => ({ revision_ref: `revision-${id}`, commit_oid: id, manifest: { parts: [part(partId)] }, build: { status: 'succeeded' }, validation: { status: 'valid' } })
-    const base = revision('a'.repeat(40), 'orbit')
+    const base = { ...revision('a'.repeat(40), 'orbit'), diagnostics: [{ code: 'prior-warning', message: 'Prior revision warning', severity: 'warning' }] }
     const candidate = revision('b'.repeat(40), 'new-part')
     let head = base
     let ready = false
@@ -50,6 +50,11 @@ test('native Studio Part iteration and candidate decision controls', { timeout: 
     })
     await page.goto('https://artifact.test/')
     await page.addScriptTag({ content: bundle.outputFiles[0]!.text })
+    await page.locator('[data-artifact-v3-part="orbit"]').waitFor()
+    await page.locator('[data-artifact-v3-iterate]').click()
+    const whole = await page.evaluate(() => (window as unknown as { stagedSelection: Record<string, unknown> }).stagedSelection)
+    assert.equal(whole.revision_ref, base.revision_ref)
+    assert.deepEqual(whole.target_part_ids, [])
     await page.locator('[data-artifact-v3-part="orbit"]').click()
     await page.locator('[data-artifact-v3-iterate]').click()
     const staged = await page.evaluate(() => (window as unknown as { stagedSelection: Record<string, unknown> }).stagedSelection)
@@ -73,6 +78,7 @@ test('native Studio Part iteration and candidate decision controls', { timeout: 
     // the same button label is already visible while the request is pending.
     await page.locator('[data-artifact-v3-iterate]:enabled').waitFor()
     assert.equal(await page.locator('[data-artifact-v3-iterate]').isEnabled(), true)
+    assert.equal(await page.locator('[data-artifact-v3-diagnostics]').count(), 0, 'old revision diagnostics clear after successful selection')
     assert.equal(selections.length, 1)
     assert.equal(selections[0]?.expected_head_ref, base.revision_ref)
     assert.equal(selections[0]?.expected_turn_revision, 12)

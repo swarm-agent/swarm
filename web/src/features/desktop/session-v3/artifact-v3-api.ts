@@ -1,7 +1,14 @@
 import { apiFetch, readErrorMessage } from '../../../app/api'
 
-export type DesktopV3NativeArtifactStatus = 'working' | 'ready' | 'failed' | 'unavailable'
+export type DesktopV3NativeArtifactStatus = 'creating' | 'fixing' | 'publishing' | 'error' | 'working' | 'ready' | 'failed' | 'unavailable'
 export type DesktopV3NativeTurnStatus = 'working' | 'building' | 'validating' | 'ready' | 'awaiting_selection' | 'selected' | 'failed' | 'cancelled'
+
+export function artifactStatusLabel(artifact: Pick<DesktopV3NativeArtifactSummary, 'status' | 'head'>): string {
+  if (['error', 'failed', 'unavailable'].includes(artifact.status)) return 'Error'
+  if (artifact.status === 'ready') return 'Ready'
+  if (artifact.status === 'fixing') return 'Fixing'
+  return artifact.head ? 'Updating' : 'Creating'
+}
 
 export interface DesktopV3NativeArtifactHead {
   revisionRef: string
@@ -135,7 +142,7 @@ function field(source: JsonRecord | null, snake: string, camel: string): unknown
 
 function statusValue(value: unknown): DesktopV3NativeArtifactStatus {
   const status = stringValue(value)
-  if (status === 'working' || status === 'ready' || status === 'failed' || status === 'unavailable') return status
+  if (status === 'creating' || status === 'fixing' || status === 'publishing' || status === 'error' || status === 'working' || status === 'ready' || status === 'failed' || status === 'unavailable') return status
   return 'working'
 }
 
@@ -244,7 +251,7 @@ function normalizeDiagnostic(value: unknown): DesktopV3NativeArtifactDiagnostic 
   return {
     id: stringValue(item?.id) || `${code}:${stringValue(item?.path)}:${numberValue(item?.line)}`,
     severity: rawSeverity === 'error' || rawSeverity === 'warning' ? rawSeverity : 'info',
-    phase: stringValue(item?.phase),
+    phase: stringValue(item?.phase) || stringValue(item?.stage),
     code,
     message,
     path: stringValue(item?.path),

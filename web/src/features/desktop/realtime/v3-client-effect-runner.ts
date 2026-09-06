@@ -43,6 +43,9 @@ const ARTIFACT_CATALOG_MUTATION_EVENT_TYPES = new Set([
   'session.artifact.variant.deleted',
   'session.artifact.collection.deleted',
   'artifact.v3.created',
+  'artifact.v3.draft.saved',
+  'artifact.v3.genesis.committed',
+  'artifact.v3.recovered',
   'artifact.v3.turn.created',
   'artifact.v3.turn.updated',
   'artifact.v3.candidate.created',
@@ -132,6 +135,11 @@ export class DesktopV3ClientEffectRunner {
 
     this.rememberEvent(durableEffects.eventIdentity)
     for (const effect of durableEffects.effects) this.pendingEffects.add(effect.type)
+    this.scheduleDrain()
+  }
+
+  refreshArtifactCatalogs(): void {
+    this.pendingEffects.add('refresh_artifacts')
     this.scheduleDrain()
   }
 

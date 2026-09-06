@@ -74,16 +74,77 @@ test('native sidebar opens pending option without selecting head', { timeout: 30
     assert.deepEqual(mutations, [])
     // Refresh never overrides a user's explicit history navigation.
     await page.locator(`[data-artifact-v3-revision="${base.commit_oid}"]`).click()
-    await page.getByRole('button', { name: 'Refresh Artifact V3 Studio' }).click()
+    await page.getByRole('button', { name: 'Refresh Artifact Studio' }).click()
     await page.locator(`[data-artifact-v3-preview-revision="${base.commit_oid}"]`).waitFor()
-    await page.getByRole('button', { name: 'Close Artifact V3 Studio' }).click()
+    await page.getByRole('button', { name: 'Close Artifact Studio' }).click()
     await sidebar.click()
     await page.locator(`[data-artifact-v3-preview-revision="${first.commit_oid}"]`).waitFor()
-    await page.getByRole('button', { name: 'Close Artifact V3 Studio' }).click()
+    await page.getByRole('button', { name: 'Close Artifact Studio' }).click()
     // Stale sidebar metadata cannot reopen a candidate from a now-selected turn.
     accepted = true
     await sidebar.click()
     await page.locator(`[data-artifact-v3-preview-revision="${base.commit_oid}"]`).waitFor()
     assert.deepEqual(mutations, [])
+  } finally { await browser.close() }
+})
+
+// Requirement: canonical draft updates expose first creation without reload;
+// zero-item errors are actionable and refresh errors retain a good item.
+// Authority: production catalog hook and Sidebar, with intercepted HTTP only.
+// This tests DOM behavior, not provider execution or visual quality.
+test('native sidebar first creation and catalog recovery', { timeout: 30_000 }, async () => {
+  const bundle = await build({
+    stdin: { contents: `import React from 'react'; import {createRoot} from 'react-dom/client';
+      import {useNativeArtifactCatalog} from './src/features/desktop/session-v3/use-native-artifact-catalog';
+      import {refreshOpenDesktopV3ArtifactCatalogs} from './src/features/desktop/session-v3/artifact-catalog-refresh';
+      import {DesktopV3ArtifactV3Sidebar} from './src/features/desktop/chat/components/desktop-v3-artifact-v3-sidebar';
+      window.refreshArtifacts=refreshOpenDesktopV3ArtifactCatalogs;
+      function App(){const [session,setSession]=React.useState('parent');window.changeSession=setSession;const catalog=useNativeArtifactCatalog(session);return <DesktopV3ArtifactV3Sidebar {...catalog} onRetry={catalog.refresh} onOpenArtifact={()=>{}}/>}
+      createRoot(document.getElementById('root')).render(<App/>);`, resolveDir: process.cwd(), loader: 'tsx' },
+    bundle: true, write: false, platform: 'browser', format: 'iife', jsx: 'automatic', logLevel: 'silent',
+  })
+  const browser = await chromium.launch({ headless: true, ...(process.env.SWARM_TEST_BROWSER_CHANNEL ? { channel: process.env.SWARM_TEST_BROWSER_CHANNEL } : {}) })
+  try {
+    const page = await browser.newPage()
+    page.setDefaultTimeout(5000)
+    let status = 'creating', exists = false, failing = true
+    await page.route('**/*', async route => {
+      const pathname = new URL(route.request().url()).pathname
+      if (pathname === '/') return route.fulfill({ contentType: 'text/html', body: '<html><style>svg{width:16px;height:16px}</style><div id="root"></div></html>' })
+      if (!pathname.endsWith('/artifacts-v3')) return route.abort()
+      if (pathname.includes('/sessions/other/')) return route.fulfill({ json: { ok: true, artifacts: [] } })
+      if (failing) return route.fulfill({ status: 503, json: { error: 'Catalog unavailable' } })
+      return route.fulfill({ json: { ok: true, artifacts: exists ? [{ id: 'artifact', owner_session_id: 'parent', label: 'Launch announcement', status }] : [] } })
+    })
+    await page.goto('https://artifact.test/')
+    await page.addScriptTag({ content: bundle.outputFiles[0]!.text })
+    await page.getByRole('alert').waitFor()
+    assert.equal(await page.locator('[data-artifact-v3-id]').count(), 0)
+    failing = false
+    await page.getByRole('button', { name: 'Retry loading artifacts' }).click()
+    await page.getByRole('alert').waitFor({ state: 'detached' })
+    const refresh = () => page.evaluate(() => (window as unknown as { refreshArtifacts(): Promise<void> }).refreshArtifacts())
+    exists = true
+    await refresh()
+    const item = page.locator('[data-artifact-v3-id="artifact"]')
+    assert.match(await item.textContent() ?? '', /Launch announcement.*Creating/s)
+    assert.doesNotMatch(await page.locator('body').textContent() ?? '', /Artifact V3 projects/)
+    for (const [raw, label] of [['fixing', 'Fixing'], ['error', 'Error'], ['ready', 'Ready']]) {
+      status = raw!
+      await refresh()
+      assert.match(await item.textContent() ?? '', new RegExp(label!))
+    }
+    failing = true
+    await refresh()
+    assert.equal(await item.count(), 1, 'refresh errors retain last good catalog')
+    await page.getByRole('alert').waitFor()
+    failing = false
+    await page.getByRole('button', { name: 'Retry loading artifacts' }).click()
+    await page.getByRole('alert').waitFor({ state: 'detached' })
+    await page.evaluate(() => (window as unknown as { changeSession(id: string): void }).changeSession('other'))
+    await item.waitFor({ state: 'detached' })
+    await page.evaluate(() => (window as unknown as { changeSession(id: string): void }).changeSession('parent'))
+    await item.waitFor()
+    assert.match(await item.textContent() ?? '', /Ready/)
   } finally { await browser.close() }
 })

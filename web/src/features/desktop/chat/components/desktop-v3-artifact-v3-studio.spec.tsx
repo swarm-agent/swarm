@@ -20,21 +20,23 @@ const artifact: DesktopV3NativeArtifactSummary = {
   updatedAt: 100,
 }
 
+// Requirement: public copy describes artifacts, not internal storage versions.
+// Rendering checks labels only; the browser suites prove interaction and identity.
 test('Artifact V3 sidebar opens the native complete-project Studio entry', () => {
   let opened = ''
   const markup = renderToStaticMarkup(<DesktopV3ArtifactV3Sidebar artifacts={[artifact]} onOpenArtifact={(entry) => { opened = entry.artifactId }} />)
-  assert.match(markup, /Artifact V3 projects/)
+  assert.match(markup, /Artifacts/)
   assert.match(markup, /96 parts/)
   assert.match(markup, /data-artifact-v3-sidebar-id="artifact-1"/)
   assert.match(markup, /data-artifact-v3-id="artifact-1"/)
   assert.equal(opened, '')
 })
 
-test('Artifact V3 Studio mounts as a real interactive dialog while native data loads', () => {
+test('Artifact Studio mounts as a real interactive dialog while native data loads', () => {
   const markup = renderToStaticMarkup(<DesktopV3ArtifactV3Studio artifact={artifact} open onOpenChange={() => undefined} onIterate={() => undefined} />)
-  assert.match(markup, /aria-label="Artifact V3 Studio"/)
-  assert.match(markup, /One complete Git project/)
-  assert.match(markup, /Artifact V3/)
-  assert.match(markup, /Refresh Artifact V3 Studio/)
+  assert.match(markup, /aria-label="Artifact Studio"/)
+  assert.match(markup, /Ready/)
+  assert.doesNotMatch(markup, /Artifact V3/)
+  assert.match(markup, /Refresh Artifact Studio/)
   assert.doesNotMatch(markup, /Storyboard|Video Studio|MP4/)
 })
