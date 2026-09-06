@@ -779,6 +779,19 @@ func (s *ArtifactV3AuthorService) BuildPreview(ctx context.Context, p ArtifactV3
 	if len(project) == 0 {
 		return ArtifactV3AuthorGate{}, ErrArtifactV3AuthorInvalid
 	}
+	if g.PolicyRevision == "direct-primary-html-v1" {
+		if state.attempt >= 8 {
+			return ArtifactV3AuthorGate{}, fmt.Errorf("%w: repair attempt limit reached; source and last diagnostics retained", ErrArtifactV3AuthorQuota)
+		}
+		previous := state.gate
+		if previous == nil && len(state.draft.History) != 0 {
+			previous = &state.draft.History[len(state.draft.History)-1]
+		}
+		if previous != nil && previous.ProjectDigest == artifactV3Digest(project) {
+			if state.gate != nil && previous.Ready { return *previous, nil }
+			if !previous.Ready { return *previous, fmt.Errorf("%w: unchanged project and diagnostics; edit source before rebuilding", ErrArtifactV3AuthorNotReady) }
+		}
+	}
 	state.attempt++
 	gate := ArtifactV3AuthorGate{Attempt: state.attempt, ProjectDigest: artifactV3Digest(project)}
 	if s.builder == nil {

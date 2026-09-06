@@ -29,6 +29,9 @@ func (r *Runtime) createDirectArtifactV3HTML(ctx context.Context, scope Workspac
 	if r == nil || r.artifactV3Author == nil {
 		return nil, errors.New("manage_artifact create requires the Artifact V3 author service")
 	}
+	if strings.TrimSpace(scope.SessionID) == "" || scope.SessionID != principal.SessionID || scope.Principal.AccountScopeID != principal.AccountScopeID || scope.Principal.UserID != principal.UserID {
+		return nil, ErrArtifactV3AuthorUnauthorized
+	}
 	for key := range args {
 		switch key {
 		case "action", "collection_name", "collection_description", "filename", "media_type", "content", "presentation", "parts", "narration_plan", "animation_profile":
@@ -150,7 +153,7 @@ func (r *Runtime) createDirectArtifactV3HTML(ctx context.Context, scope Workspac
 		AccountScopeID: principal.AccountScopeID,
 		UserID:         principal.UserID,
 		OwnerSessionID: principal.SessionID,
-		TaskCallID:     "direct-create:" + strings.TrimSpace(callID),
+		TaskCallID:     "direct-create:" + producerRunID,
 		Prompt:         prompt,
 		PolicyRevision: "direct-primary-html-v1",
 		CandidateIndex: 1,
@@ -182,11 +185,20 @@ func (r *Runtime) createDirectArtifactV3HTML(ctx context.Context, scope Workspac
 	}
 	grant.ProducerSessionID = strings.TrimSpace(scope.SessionID)
 	grant.ProducerRunID = producerRunID
+	ctx = WithArtifactV3AuthorRunContext(ctx, ArtifactV3AuthorRunContext{Grant: grant})
 	author := ArtifactV3AuthorPrincipal{AccountScopeID: principal.AccountScopeID, UserID: principal.UserID, ProducerSessionID: grant.ProducerSessionID, ProducerRunID: producerRunID}
 	fail := func(code string, cause error) (map[string]any, error) {
-		_ = r.artifactV3Author.MarkFailed(ctx, grant, code, cause.Error())
-		_ = r.artifactV3Author.Discard(grant)
+		// Terminal errors remain errors; retain durable source for diagnosis.
 		return nil, cause
+	}
+	// A replayed allocation may already have retained source. Never overwrite it
+	// with a new complete create payload, even after a process restart.
+	inspection, err := r.artifactV3Author.Inspect(ctx, author, grant)
+	if err != nil { return nil, err }
+	if grant.Initial && len(inspection.Files) != 0 {
+		gate := ArtifactV3AuthorGate{}
+		if inspection.LatestGate != nil { gate = *inspection.LatestGate }
+		return directArtifactV3Retained(grant, gate), nil
 	}
 	writeProject := func(path string, content []byte) error {
 		if grant.Initial {
@@ -216,7 +228,9 @@ func (r *Runtime) createDirectArtifactV3HTML(ctx context.Context, scope Workspac
 		if profile != nil && strings.Contains(diagnostic, "Part is missing or not visible") {
 			diagnostic += "; sequential scenes need explicit parts kind=temporal with start_ms/end_ms and the same stable HTML id, plus __SWARM_ANIMATION_V1__ {version:'swarm.animation/v1', ready:async()=>{}, seek:async ms=>({time_ms:ms})}; seek must pause and render the requested playhead deterministically"
 		}
-		return fail("build_preview_not_ready", errors.New(diagnostic))
+		result := directArtifactV3Retained(grant, gate)
+		result["message"] = diagnostic + "; source retained: use author_v3 with draft_handle to repair"
+		return result, nil
 	}
 	finished, err := r.artifactV3Author.Finish(ctx, author, grant)
 	if err != nil {

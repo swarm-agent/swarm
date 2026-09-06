@@ -60,6 +60,9 @@ func (r *Runtime) reviseDirectArtifactV3HTML(ctx context.Context, scope Workspac
 			return nil, fmt.Errorf("manage_artifact revise_v3 contains unsupported field %q", key)
 		}
 	}
+	if asString(args["action"]) == "begin_v3" {
+		if err := requireOnlyArtifactV3Fields(args, "action", "artifact_v3_reference", "target_part_ids", "turn_key", "candidate_index"); err != nil { return nil, err }
+	}
 	if raw, supplied := args["alternatives"]; supplied {
 		if _, supplied := args["content"]; supplied {
 			return nil, errors.New("manage_artifact revise_v3 alternatives cannot be combined with top-level content")
@@ -91,10 +94,14 @@ func (r *Runtime) reviseDirectArtifactV3HTML(ctx context.Context, scope Workspac
 			}
 			results = append(results, candidate)
 		}
+		status := "awaiting_selection"
+		for _, result := range results {
+			if result["status"] != "awaiting_selection" { status = "fixing" }
+		}
 		return map[string]any{
-			"status": "awaiting_selection", "turn_id": results[0]["turn_id"], "turn_key": turnKey,
+			"status": status, "turn_id": results[0]["turn_id"], "turn_key": turnKey,
 			"candidate_count": len(results), "candidates": results,
-			"message": "Every requested exact-base native Artifact V3 alternative is ready beside the unchanged selected head. Inspect the candidates; selection remains a separate explicit user action.",
+			"message": "Requested alternatives retain individual status and draft handles beside the unchanged selected head. Repair fixing candidates before claiming readiness; selection remains a separate explicit user action.",
 		}, nil
 	}
 	reference, err := parseDirectArtifactV3RevisionInput(args["artifact_v3_reference"])
@@ -104,8 +111,9 @@ func (r *Runtime) reviseDirectArtifactV3HTML(ctx context.Context, scope Workspac
 	if reference.SessionID != strings.TrimSpace(principal.SessionID) || reference.SessionID != strings.TrimSpace(scope.SessionID) {
 		return nil, errors.New("manage_artifact revise_v3 reference does not belong to the current authenticated session")
 	}
+	beginOnly := asString(args["action"]) == "begin_v3"
 	body, ok := args["content"].(string)
-	if !ok || strings.TrimSpace(body) == "" {
+	if !beginOnly && (!ok || strings.TrimSpace(body) == "") {
 		return nil, errors.New("manage_artifact revise_v3 requires the complete corrected UTF-8 HTML content")
 	}
 	requestedTargets, err := parseDirectArtifactV3TargetIDs(args["target_part_ids"])
@@ -119,6 +127,10 @@ func (r *Runtime) reviseDirectArtifactV3HTML(ctx context.Context, scope Workspac
 	baseProject, baseParts, err := reader.ReadArtifactV3DirectRevision(ctx, principal.AccountScopeID, principal.UserID, reference.SessionID, reference.ArtifactID, reference.RevisionRef)
 	if err != nil {
 		return nil, err
+	}
+	if beginOnly {
+		if _, supplied := args["content"]; supplied { return nil, ErrArtifactV3AuthorInvalid }
+		body = string(baseProject["index.html"])
 	}
 	declared := make(map[string]bool, len(baseParts))
 	basePartIDs := make([]string, 0, len(baseParts))
@@ -173,15 +185,18 @@ func (r *Runtime) reviseDirectArtifactV3HTML(ctx context.Context, scope Workspac
 	}
 	grant.ProducerSessionID = strings.TrimSpace(scope.SessionID)
 	grant.ProducerRunID = producerRunID
+	ctx = WithArtifactV3AuthorRunContext(ctx, ArtifactV3AuthorRunContext{Grant: grant})
 	author := ArtifactV3AuthorPrincipal{AccountScopeID: principal.AccountScopeID, UserID: principal.UserID, ProducerSessionID: grant.ProducerSessionID, ProducerRunID: producerRunID}
 	fail := func(code string, cause error) (map[string]any, error) {
-		_ = r.artifactV3Author.MarkFailed(ctx, grant, code, cause.Error())
-		_ = r.artifactV3Author.Discard(grant)
+		// Retain source without converting terminal failures into success.
 		return nil, cause
 	}
 	current, err := r.artifactV3Author.Read(ctx, author, grant, "index.html", 0, 0)
 	if err != nil {
 		return fail("html_read_failed", err)
+	}
+	if beginOnly {
+		return map[string]any{"status": "editing", "draft_handle": directArtifactV3Handle(grant), "parts": baseParts}, nil
 	}
 	if err := r.artifactV3Author.Edit(ctx, author, grant, "index.html", []byte(current.Content), []byte(body), false); err != nil {
 		return fail("html_write_failed", err)
@@ -195,7 +210,9 @@ func (r *Runtime) reviseDirectArtifactV3HTML(ctx context.Context, scope Workspac
 		if len(gate.Diagnostics) != 0 && strings.TrimSpace(gate.Diagnostics[0].Message) != "" {
 			diagnostic = strings.TrimSpace(gate.Diagnostics[0].Message)
 		}
-		return fail("build_preview_not_ready", errors.New(diagnostic))
+		result := directArtifactV3Retained(grant, gate)
+		result["message"] = diagnostic + "; source retained: use author_v3 with draft_handle to repair"
+		return result, nil
 	}
 	finished, err := r.artifactV3Author.Finish(ctx, author, grant)
 	if err != nil {
