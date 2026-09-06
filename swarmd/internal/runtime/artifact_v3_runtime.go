@@ -1681,3 +1681,35 @@ func (a *artifactV3RuntimeAdapter) finishAuthorDraft(g tool.ArtifactV3AuthorGran
 	}
 	return revision, nil
 }
+
+// ResolveArtifactV3DirectDraft treats the primary handle only as a locator.
+// Authority comes from the stored grant and its exact persisted producer binding.
+func (a *artifactV3RuntimeAdapter) ResolveArtifactV3DirectDraft(ctx context.Context, p tool.ArtifactV3AuthorPrincipal, h tool.ArtifactV3DraftHandle) (tool.ArtifactV3AuthorGrant, error) {
+	var grant tool.ArtifactV3AuthorGrant
+	if ctx == nil || a == nil || a.sessions == nil || p.AccountScopeID == "" || p.UserID == "" || p.ProducerRunID == "" || h.SessionID != p.ProducerSessionID {
+		return grant, tool.ErrArtifactV3AuthorUnauthorized
+	}
+	if err := ctx.Err(); err != nil {
+		return grant, err
+	}
+	repository, found, err := a.sessions.GetArtifactV3Repository(p.AccountScopeID, p.UserID, h.ArtifactID)
+	if err != nil || !found || repository.OwnerSessionID != h.SessionID {
+		return grant, tool.ErrArtifactV3AuthorUnauthorized
+	}
+	draft, found := repository.Drafts[h.GrantID]
+	if !found || json.Unmarshal(draft.Grant, &grant) != nil {
+		return tool.ArtifactV3AuthorGrant{}, tool.ErrArtifactV3AuthorUnauthorized
+	}
+	if grant.ID != h.GrantID || grant.ArtifactID != h.ArtifactID || grant.TurnID != h.TurnID || grant.CandidateID != h.CandidateID || grant.OwnerSessionID != h.SessionID || grant.AccountScopeID != p.AccountScopeID || grant.UserID != p.UserID {
+		return tool.ArtifactV3AuthorGrant{}, tool.ErrArtifactV3AuthorUnauthorized
+	}
+	var state tool.ArtifactV3AuthorDraft
+	if len(draft.State) == 0 || json.Unmarshal(draft.State, &state) != nil || state.ProducerSessionID != p.ProducerSessionID || state.ProducerRunID != p.ProducerRunID {
+		return tool.ArtifactV3AuthorGrant{}, tool.ErrArtifactV3AuthorUnauthorized
+	}
+	grant.ProducerSessionID, grant.ProducerRunID = state.ProducerSessionID, state.ProducerRunID
+	if _, err := a.LoadAuthorDraft(ctx, p, grant); err != nil {
+		return tool.ArtifactV3AuthorGrant{}, err
+	}
+	return grant, nil
+}

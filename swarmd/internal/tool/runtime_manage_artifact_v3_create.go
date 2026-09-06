@@ -194,10 +194,14 @@ func (r *Runtime) createDirectArtifactV3HTML(ctx context.Context, scope Workspac
 	// A replayed allocation may already have retained source. Never overwrite it
 	// with a new complete create payload, even after a process restart.
 	inspection, err := r.artifactV3Author.Inspect(ctx, author, grant)
-	if err != nil { return nil, err }
+	if err != nil {
+		return nil, err
+	}
 	if grant.Initial && len(inspection.Files) != 0 {
 		gate := ArtifactV3AuthorGate{}
-		if inspection.LatestGate != nil { gate = *inspection.LatestGate }
+		if inspection.LatestGate != nil {
+			gate = *inspection.LatestGate
+		}
 		return directArtifactV3Retained(grant, gate), nil
 	}
 	writeProject := func(path string, content []byte) error {

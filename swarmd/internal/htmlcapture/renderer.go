@@ -34,16 +34,16 @@ import (
 )
 
 const (
-	Width            = 1920
-	Height           = 1080
-	MaxStates        = 16
+	Width               = 1920
+	Height              = 1080
+	MaxStates           = 16
 	MaxDocumentSections = 64
-	MaxDocumentTiles = 64
-	MaxPNGBytes      = 16 << 20
-	SystemChromePath = "/opt/google/chrome/chrome"
-	totalTimeout     = 45 * time.Second
-	documentTimeout  = 5 * time.Second
-	stateTimeout     = 5 * time.Second
+	MaxDocumentTiles    = 64
+	MaxPNGBytes         = 16 << 20
+	SystemChromePath    = "/opt/google/chrome/chrome"
+	totalTimeout        = 45 * time.Second
+	documentTimeout     = 5 * time.Second
+	stateTimeout        = 5 * time.Second
 )
 
 type Request struct {
@@ -67,8 +67,8 @@ type Request struct {
 }
 
 type Result struct {
-	StateID string
-	PNG     []byte
+	StateID        string
+	PNG            []byte
 	SectionDigests []string
 }
 
@@ -344,7 +344,7 @@ func (r *ChromedpRenderer) Capture(parent context.Context, req Request) ([]Resul
 }
 
 type browserAudit struct {
-	Code string `json:"code"`
+	Code string  `json:"code"`
 	Next float64 `json:"next"`
 }
 

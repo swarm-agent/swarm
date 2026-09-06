@@ -269,8 +269,8 @@ func manageArtifactDefinition() Definition {
 				"filename":               map[string]any{"type": "string", "maxLength": 255},
 				"media_type":             map[string]any{"type": "string", "maxLength": 255, "description": "Artifact media type for create; optional exact canonical media type filter for list/search discovery"},
 				"content":                map[string]any{"type": "string", "description": "Bounded UTF-8 artifact content for monolithic create or focused publish_part replacement bytes"},
-				"draft_handle": map[string]any{"type": "object", "properties": map[string]any{"session_id": map[string]any{"type": "string"}, "artifact_id": map[string]any{"type": "string"}, "turn_id": map[string]any{"type": "string"}, "candidate_id": map[string]any{"type": "string"}, "grant_id": map[string]any{"type": "string"}}, "required": []string{"session_id", "artifact_id", "turn_id", "candidate_id", "grant_id"}, "additionalProperties": false},
-				"operation": artifactV3AuthorDefinition().Parameters,
+				"draft_handle":           map[string]any{"type": "object", "properties": map[string]any{"session_id": map[string]any{"type": "string"}, "artifact_id": map[string]any{"type": "string"}, "turn_id": map[string]any{"type": "string"}, "candidate_id": map[string]any{"type": "string"}, "grant_id": map[string]any{"type": "string"}}, "required": []string{"session_id", "artifact_id", "turn_id", "candidate_id", "grant_id"}, "additionalProperties": false},
+				"operation":              artifactV3AuthorDefinition().Parameters,
 				"narration_plan":         artifactNarrationPlanToolSchema(),
 				"content_base64":         map[string]any{"type": "string", "description": "Bounded base64 replacement bytes for focused publish_part; mutually exclusive with content"},
 				"text_edits":             map[string]any{"type": "array", "minItems": 1, "maxItems": 32, "items": map[string]any{"type": "object", "properties": map[string]any{"old_string": map[string]any{"type": "string", "minLength": 1}, "new_string": map[string]any{"type": "string"}, "replace_all": map[string]any{"type": "boolean"}}, "required": []string{"old_string", "new_string"}, "additionalProperties": false}, "description": "Ordered exact UTF-8 replacements for derive_text. By default each old_string must occur exactly once; replace_all requires at least one occurrence. Bytes outside matched spans are preserved exactly."},
@@ -371,7 +371,7 @@ func (r *Runtime) executeManageArtifact(ctx context.Context, scope WorkspaceScop
 			return "", errors.New("manage_artifact animation_profile is valid only for create, create_package, publish_workspace, or derive_text; export actions inherit the exact source animation profile and must omit animation_profile")
 		}
 	}
-	if actionName != "list_presets" && actionName != "image_capabilities" && !((actionName == "create" || actionName == "read_v3" || actionName == "revise_v3") && r.artifactV3Author != nil) && r.artifactAuthority == nil {
+	if actionName != "list_presets" && actionName != "image_capabilities" && !((actionName == "create" || actionName == "read_v3" || actionName == "revise_v3" || actionName == "begin_v3" || actionName == "author_v3") && r.artifactV3Author != nil) && r.artifactAuthority == nil {
 		return "", errors.New("manage_artifact authority is not configured")
 	}
 
@@ -490,7 +490,9 @@ func (r *Runtime) executeManageArtifact(ctx context.Context, scope WorkspaceScop
 		response["reference"] = args["artifact_v3_reference"]
 	case "author_v3":
 		result, err := r.authorDirectArtifactV3Draft(ctx, scope, principal, callID, args)
-		if err != nil { return "", err }
+		if err != nil {
+			return "", err
+		}
 		response["artifact_v3"] = result
 	case "revise_v3", "begin_v3":
 		artifactV3Result, err := r.reviseDirectArtifactV3HTML(ctx, scope, principal, callID, args)

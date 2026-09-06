@@ -788,8 +788,12 @@ func (s *ArtifactV3AuthorService) BuildPreview(ctx context.Context, p ArtifactV3
 			previous = &state.draft.History[len(state.draft.History)-1]
 		}
 		if previous != nil && previous.ProjectDigest == artifactV3Digest(project) {
-			if state.gate != nil && previous.Ready { return *previous, nil }
-			if !previous.Ready { return *previous, fmt.Errorf("%w: unchanged project and diagnostics; edit source before rebuilding", ErrArtifactV3AuthorNotReady) }
+			if state.gate != nil && previous.Ready {
+				return *previous, nil
+			}
+			if !previous.Ready {
+				return *previous, fmt.Errorf("%w: unchanged project and diagnostics; edit source before rebuilding", ErrArtifactV3AuthorNotReady)
+			}
 		}
 	}
 	state.attempt++

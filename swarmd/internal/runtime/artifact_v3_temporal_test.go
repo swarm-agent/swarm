@@ -3,9 +3,9 @@ package runtime
 import (
 	"fmt"
 	"reflect"
-	"swarm/packages/swarmd/internal/htmlcapture"
 	"strings"
 	"swarm/packages/swarmd/internal/artifact"
+	"swarm/packages/swarmd/internal/htmlcapture"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"testing"
 )

@@ -12,11 +12,11 @@ import (
 // ArtifactV3DraftHandle is a locator, never a capability. The repository must
 // authenticate every lookup against the durable grant and producer binding.
 type ArtifactV3DraftHandle struct {
-	SessionID string `json:"session_id"`
-	ArtifactID string `json:"artifact_id"`
-	TurnID string `json:"turn_id"`
+	SessionID   string `json:"session_id"`
+	ArtifactID  string `json:"artifact_id"`
+	TurnID      string `json:"turn_id"`
 	CandidateID string `json:"candidate_id"`
-	GrantID string `json:"grant_id"`
+	GrantID     string `json:"grant_id"`
 }
 
 // ResolveArtifactV3DirectDraft must load the canonical durable grant, check
@@ -39,42 +39,74 @@ func (r *Runtime) authorDirectArtifactV3Draft(ctx context.Context, scope Workspa
 	if r == nil || r.artifactV3Author == nil {
 		return nil, errors.New("native artifact author service unavailable")
 	}
-	if err := requireOnlyArtifactV3Fields(args, "action", "draft_handle", "operation"); err != nil { return nil, err }
+	if err := requireOnlyArtifactV3Fields(args, "action", "draft_handle", "operation"); err != nil {
+		return nil, err
+	}
 	raw, ok := args["draft_handle"].(map[string]any)
-	if !ok { return nil, ErrArtifactV3AuthorInvalid }
-	if err := requireOnlyArtifactV3Fields(raw, "session_id", "artifact_id", "turn_id", "candidate_id", "grant_id"); err != nil { return nil, err }
+	if !ok {
+		return nil, ErrArtifactV3AuthorInvalid
+	}
+	if err := requireOnlyArtifactV3Fields(raw, "session_id", "artifact_id", "turn_id", "candidate_id", "grant_id"); err != nil {
+		return nil, err
+	}
 	encoded, err := json.Marshal(raw)
-	if err != nil { return nil, err }
+	if err != nil {
+		return nil, err
+	}
 	var handle ArtifactV3DraftHandle
-	if err = json.Unmarshal(encoded, &handle); err != nil { return nil, ErrArtifactV3AuthorInvalid }
-	if handle.SessionID != principal.SessionID || handle.SessionID != scope.SessionID || handle.ArtifactID == "" || handle.TurnID == "" || handle.CandidateID == "" || handle.GrantID == "" || strings.TrimSpace(principal.RunID) == "" { return nil, ErrArtifactV3AuthorUnauthorized }
+	if err = json.Unmarshal(encoded, &handle); err != nil {
+		return nil, ErrArtifactV3AuthorInvalid
+	}
+	if handle.SessionID != principal.SessionID || handle.SessionID != scope.SessionID || handle.ArtifactID == "" || handle.TurnID == "" || handle.CandidateID == "" || handle.GrantID == "" || strings.TrimSpace(principal.RunID) == "" {
+		return nil, ErrArtifactV3AuthorUnauthorized
+	}
 	operation, ok := args["operation"].(map[string]any)
-	if !ok { return nil, ErrArtifactV3AuthorInvalid }
+	if !ok {
+		return nil, ErrArtifactV3AuthorInvalid
+	}
 	// Primary incremental repairs preserve the server-derived Part manifest.
 	// Layout/code edits may span the project, but cannot replace Part identity.
 	switch mapString(operation, "action") {
 	case artifactV3ActionCreate, artifactV3ActionEdit, artifactV3ActionRename, artifactV3ActionDelete:
-		if mapString(operation, "path") == "swarm-artifact.json" || mapString(operation, "to_path") == "swarm-artifact.json" { return nil, ErrArtifactV3AuthorLocked }
+		if mapString(operation, "path") == "swarm-artifact.json" || mapString(operation, "to_path") == "swarm-artifact.json" {
+			return nil, ErrArtifactV3AuthorLocked
+		}
 	}
 	resolver, ok := r.artifactV3Author.repository.(ArtifactV3DirectDraftResolver)
-	if !ok { return nil, errors.New("native artifact durable draft resolver unavailable") }
+	if !ok {
+		return nil, errors.New("native artifact durable draft resolver unavailable")
+	}
 	p := ArtifactV3AuthorPrincipal{AccountScopeID: principal.AccountScopeID, UserID: principal.UserID, ProducerSessionID: scope.SessionID, ProducerRunID: principal.RunID}
 	grant, err := resolver.ResolveArtifactV3DirectDraft(ctx, p, handle)
-	if err != nil { return nil, err }
-	if directArtifactV3Handle(grant) != handle || grant.AccountScopeID != p.AccountScopeID || grant.UserID != p.UserID || grant.ProducerSessionID != p.ProducerSessionID || grant.ProducerRunID != p.ProducerRunID { return nil, ErrArtifactV3AuthorUnauthorized }
+	if err != nil {
+		return nil, err
+	}
+	if directArtifactV3Handle(grant) != handle || grant.AccountScopeID != p.AccountScopeID || grant.UserID != p.UserID || grant.ProducerSessionID != p.ProducerSessionID || grant.ProducerRunID != p.ProducerRunID {
+		return nil, ErrArtifactV3AuthorUnauthorized
+	}
 	ctx = WithArtifactV3AuthorRunContext(ctx, ArtifactV3AuthorRunContext{Grant: grant})
 	output, err := r.executeArtifactV3Author(ctx, scope, callID, operation)
-	if err != nil { return nil, err }
+	if err != nil {
+		return nil, err
+	}
 	var result map[string]any
-	if err = json.Unmarshal([]byte(output), &result); err != nil { return nil, err }
+	if err = json.Unmarshal([]byte(output), &result); err != nil {
+		return nil, err
+	}
 	result["draft_handle"] = handle
 	if mapString(operation, "action") == artifactV3ActionFinish {
 		result["status"] = "awaiting_selection"
-		if grant.Initial { result["status"] = "ready" }
+		if grant.Initial {
+			result["status"] = "ready"
+		}
 		var finished ArtifactV3AuthorFinish
 		body, err := json.Marshal(result["result"])
-		if err != nil { return nil, err }
-		if err = json.Unmarshal(body, &finished); err != nil { return nil, err }
+		if err != nil {
+			return nil, err
+		}
+		if err = json.Unmarshal(body, &finished); err != nil {
+			return nil, err
+		}
 		result["media_inspect_reference"] = map[string]any{"session_id": handle.SessionID, "artifact_id": handle.ArtifactID, "revision_ref": "revision-" + finished.Revision.CommitOID}
 	}
 	return result, nil

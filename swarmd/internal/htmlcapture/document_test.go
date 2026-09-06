@@ -20,7 +20,7 @@ func TestDocumentSectionCapture(t *testing.T) {
 	}
 	for _, tc := range []struct {
 		name, css, body, selector, code string
-		minTiles int
+		minTiles                        int
 	}{
 		{"below_fold", "", `<div style="height:1200px"></div><section id="part">Below fold</section>`, "#part", "", 1},
 		{"long_section", "", `<section id="part" style="height:2200px;background:linear-gradient(red,blue)">Long</section>`, "#part", "", 3},

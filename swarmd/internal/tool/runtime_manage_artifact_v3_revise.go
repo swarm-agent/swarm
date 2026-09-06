@@ -61,7 +61,9 @@ func (r *Runtime) reviseDirectArtifactV3HTML(ctx context.Context, scope Workspac
 		}
 	}
 	if asString(args["action"]) == "begin_v3" {
-		if err := requireOnlyArtifactV3Fields(args, "action", "artifact_v3_reference", "target_part_ids", "turn_key", "candidate_index"); err != nil { return nil, err }
+		if err := requireOnlyArtifactV3Fields(args, "action", "artifact_v3_reference", "target_part_ids", "turn_key", "candidate_index"); err != nil {
+			return nil, err
+		}
 	}
 	if raw, supplied := args["alternatives"]; supplied {
 		if _, supplied := args["content"]; supplied {
@@ -96,7 +98,9 @@ func (r *Runtime) reviseDirectArtifactV3HTML(ctx context.Context, scope Workspac
 		}
 		status := "awaiting_selection"
 		for _, result := range results {
-			if result["status"] != "awaiting_selection" { status = "fixing" }
+			if result["status"] != "awaiting_selection" {
+				status = "fixing"
+			}
 		}
 		return map[string]any{
 			"status": status, "turn_id": results[0]["turn_id"], "turn_key": turnKey,
@@ -129,7 +133,9 @@ func (r *Runtime) reviseDirectArtifactV3HTML(ctx context.Context, scope Workspac
 		return nil, err
 	}
 	if beginOnly {
-		if _, supplied := args["content"]; supplied { return nil, ErrArtifactV3AuthorInvalid }
+		if _, supplied := args["content"]; supplied {
+			return nil, ErrArtifactV3AuthorInvalid
+		}
 		body = string(baseProject["index.html"])
 	}
 	declared := make(map[string]bool, len(baseParts))

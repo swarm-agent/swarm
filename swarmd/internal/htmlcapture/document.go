@@ -9,7 +9,7 @@ import (
 
 type documentTile struct {
 	Offset float64
-	Next float64
+	Next   float64
 }
 
 func boundedCaptureLabel(value string) string {
