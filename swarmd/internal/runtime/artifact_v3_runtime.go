@@ -1837,6 +1837,14 @@ func (a *artifactV3RuntimeAdapter) ResumeArtifactV3DirectDraft(ctx context.Conte
 	// and diagnostic history remain intact; ordinary retries never reset it.
 	if !state.Publishing {
 		state.Attempt = 0
+		// Resume invalidates the current gate, not its diagnostic evidence.
+		// Without this append a failed first gate disappears on later-run repair.
+		if state.Gate != nil {
+			state.History = append(state.History, *boundedArtifactV3Gate(state.Gate))
+			if len(state.History) > 8 {
+				state.History = state.History[len(state.History)-8:]
+			}
+		}
 		state.Gate = nil
 	}
 	draft.GrantID, draft.ExpiresAt, draft.Status = grant.ID, grant.ExpiresAt, "fixing"

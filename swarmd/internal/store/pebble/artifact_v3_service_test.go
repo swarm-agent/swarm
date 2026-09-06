@@ -265,7 +265,7 @@ func TestArtifactV3ResumeExpiredDraftPreservesEnvelope(t *testing.T) {
 	next := old
 	next.GrantID, next.Status, next.ExpiresAt = "new", "fixing", time.Now().Add(30*time.Minute).UnixMilli()
 	next.Grant = json.RawMessage(fmt.Sprintf(`{"ID":"new","ExpiresAt":%d,"BaseCommitOID":"","Initial":true}`, next.ExpiresAt))
-	next.State = json.RawMessage(`{"Sequence":0,"ProducerSessionID":"resume-owner","ProducerRunID":"second","Attempt":0,"Publishing":false,"Finished":null,"Gate":null,"Project":{"index.html":"cHJpdmF0ZQ=="},"History":[]}`)
+	next.State = json.RawMessage(`{"Sequence":0,"ProducerSessionID":"resume-owner","ProducerRunID":"second","Attempt":0,"Publishing":false,"Finished":null,"Gate":null,"Project":{"index.html":"cHJpdmF0ZQ=="},"History":[{"Ready":false}]}`)
 	resume := ArtifactV3DraftResume{GrantID: "old", ProjectionSeq: before.EventSeq, ProducerRunID: "second"}
 	forged := next
 	forged.State = json.RawMessage(strings.Replace(string(next.State), "cHJpdmF0ZQ==", "dGFtcGVyZWQ=", 1))
@@ -276,6 +276,14 @@ func TestArtifactV3ResumeExpiredDraftPreservesEnvelope(t *testing.T) {
 	forged.State = json.RawMessage(strings.Replace(string(next.State), `"Attempt":0`, `"Attempt":-1`, 1))
 	if err := service.ResumeDraft(owner, "artifact", "forged-budget", forged, old.Sequence, resume); err == nil {
 		t.Fatal("resume accepted unbounded repair budget")
+	}
+	// A handoff may append only the exact failed gate, not erase or rewrite it.
+	for i, replacement := range []string{`"History":[]`, `"History":[{"Ready":true}]`} {
+		forged = next
+		forged.State = json.RawMessage(strings.Replace(string(next.State), `"History":[{"Ready":false}]`, replacement, 1))
+		if err := service.ResumeDraft(owner, "artifact", fmt.Sprintf("forged-history-%d", i), forged, old.Sequence, resume); err == nil {
+			t.Fatal("resume changed diagnostic history")
+		}
 	}
 	unchanged, _, _ := sessions.GetArtifactV3Repository(owner.AccountScopeID, owner.UserID, "artifact")
 	if !reflect.DeepEqual(before, unchanged) {

@@ -744,6 +744,19 @@ func (s *SessionStore) validateArtifactV3DraftResume(input V3SessionMutationInpu
 		}
 	}
 	if !publishing {
+		// The only permitted history change is archiving the exact current gate
+		// under the same eight-entry bound before invalidating current validation.
+		if gate := before["Gate"]; len(gate) != 0 && string(gate) != "null" {
+			var history []json.RawMessage
+			if raw := before["History"]; len(raw) != 0 && json.Unmarshal(raw, &history) != nil {
+				return ErrArtifactV3Integrity
+			}
+			history = append(history, gate)
+			if len(history) > 8 {
+				history = history[len(history)-8:]
+			}
+			before["History"], _ = json.Marshal(history)
+		}
 		delete(before, "Attempt")
 		delete(after, "Attempt")
 		delete(before, "Gate")

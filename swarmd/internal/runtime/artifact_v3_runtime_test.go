@@ -809,7 +809,16 @@ func TestArtifactV3RuntimeThreePartManifestRepair(t *testing.T) {
 	renderer := &artifactV3RepairRenderer{}
 	adapter := newArtifactV3RuntimeAdapter(service, sessions.Store(), repositoryRoot, evidenceRoot, pebblestore.ArtifactV3Limits{}, renderer)
 	publications := 0
-	adapter.publish = func(identity.Principal, api.ArtifactV3Artifact, string, string) error { publications++; return nil }
+	adapter.publish = func(_ identity.Principal, artifact api.ArtifactV3Artifact, eventType, _ string) error {
+		if eventType == pebblestore.V3SessionMutationArtifactV3DraftSaved {
+			if artifact.CurrentDraft != nil && artifact.CurrentDraft.Status == "error" && artifact.Head != nil && publications == 0 {
+				t.Fatal("invalid initial draft published a ready head")
+			}
+			return nil
+		}
+		publications++
+		return nil
+	}
 	author := tool.NewArtifactV3AuthorService(workspaceRoot, adapter, adapter, adapter)
 	grant, err := author.PrepareTurn(ctx, tool.ArtifactV3PrepareTurnRequest{AccountScopeID: "account", UserID: "user", OwnerSessionID: sessionID, TaskCallID: "create", Prompt: "Three-part swarm", PolicyRevision: "policy", CandidateIndex: 1, Initial: true, ExpiresAt: time.Now().Add(time.Hour).UnixMilli()})
 	if err != nil {
@@ -1353,6 +1362,22 @@ func TestArtifactV3RuntimeDirectRepairResumeLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Later-run resume must archive the exact last failed gate before clearing
+	// current validation, even if no source edit preceded the handoff.
+	resumedRepository, _, _ := sessions.Store().GetArtifactV3Repository("account", "user", artifactID)
+	var beforeResumeState tool.ArtifactV3AuthorDraft
+	if err := json.Unmarshal(old.State, &beforeResumeState); err != nil {
+		t.Fatal(err)
+	}
+	for _, draft := range resumedRepository.Drafts {
+		var state tool.ArtifactV3AuthorDraft
+		if err := json.Unmarshal(draft.State, &state); err != nil {
+			t.Fatal(err)
+		}
+		if state.ProducerRunID == "second" && (state.Gate != nil || len(state.History) == 0 || !reflect.DeepEqual(state.History[len(state.History)-1], *beforeResumeState.Gate)) {
+			t.Fatal("resume lost the previous failed gate")
+		}
+	}
 	if _, err := invoke(resume); err == nil {
 		t.Fatal("replayed stale resume")
 	}
@@ -1367,7 +1392,11 @@ func TestArtifactV3RuntimeDirectRepairResumeLifecycle(t *testing.T) {
 	var oldState, nextState tool.ArtifactV3AuthorDraft
 	json.Unmarshal(old.State, &oldState)
 	json.Unmarshal(after.Drafts[handle["grant_id"].(string)].State, &nextState)
-	if !reflect.DeepEqual(oldState.Project, nextState.Project) || !reflect.DeepEqual(oldState.History, nextState.History) || nextState.Gate != nil || nextState.ProducerRunID != "second" || oldState.Attempt != 8 || nextState.Attempt != 0 {
+	expectedHistory := append(append([]tool.ArtifactV3AuthorGate(nil), oldState.History...), *oldState.Gate)
+	if len(expectedHistory) > 8 {
+		expectedHistory = expectedHistory[len(expectedHistory)-8:]
+	}
+	if !reflect.DeepEqual(oldState.Project, nextState.Project) || !reflect.DeepEqual(expectedHistory, nextState.History) || nextState.Gate != nil || nextState.ProducerRunID != "second" || oldState.Attempt != 8 || nextState.Attempt != 0 {
 		t.Fatal("handoff changed source/history or retained stale gate")
 	}
 	op := func(operation map[string]any) (map[string]any, error) {
