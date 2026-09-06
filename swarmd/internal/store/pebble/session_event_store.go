@@ -3125,6 +3125,8 @@ func normalizeV3SessionEventType(input V3SessionMutationInput) string {
 		return "session.artifact.variant.deleted"
 	case V3SessionMutationDeleteArtifactCollection:
 		return "session.artifact.collection.deleted"
+	case "artifact.v3.draft.saved":
+		return "artifact.v3.draft.saved"
 	case V3SessionMutationArtifactV3GenesisCommitted:
 		return "artifact.v3.genesis.committed"
 	case V3SessionMutationArtifactV3TurnOpened:
