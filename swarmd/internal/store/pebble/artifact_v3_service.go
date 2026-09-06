@@ -125,7 +125,7 @@ func (s *ArtifactV3Service) Create(ctx context.Context, input ArtifactV3CreateIn
 	build.CommitOID, preview.CommitOID = revision.CommitOID, revision.CommitOID
 	projection, err := s.revisionProjection(ctx, repository, input.Owner, input.ArtifactID, revision, "", build, preview, now)
 	if err != nil {
-		_ = repository.Delete()
+		// Genesis has already committed: retain its transaction ref for exact retry.
 		return ArtifactV3Projection{}, err
 	}
 	repositoryProjection := ArtifactV3RepositoryProjection{ArtifactID: input.ArtifactID, RepositoryID: input.ArtifactID, AccountScopeID: input.Owner.AccountScopeID, UserID: input.Owner.UserID, OwnerSessionID: input.Owner.SessionID, IntentReference: strings.TrimSpace(input.Message), HeadCommitOID: revision.CommitOID}
@@ -468,4 +468,14 @@ func (s *ArtifactV3Service) SaveDraft(owner ArtifactV3Owner, artifactID, request
 		return ArtifactV3DraftProjection{}, ErrArtifactV3Conflict
 	}
 	return saved, nil
+}
+
+// ResumeDraft atomically replaces one exact draft grant without changing the head.
+func (s *ArtifactV3Service) ResumeDraft(owner ArtifactV3Owner, artifactID, requestID string, draft ArtifactV3DraftProjection, expected uint64, resume ArtifactV3DraftResume) error {
+	repository, found, err := s.sessions.GetArtifactV3Repository(owner.AccountScopeID, owner.UserID, artifactID)
+	if err != nil { return err }
+	if !found || repository.OwnerSessionID != owner.SessionID { return ErrArtifactV3Unauthorized }
+	repository.Drafts = nil
+	_, err = s.apply(owner, requestID, V3SessionMutationArtifactV3DraftSaved, ArtifactV3Mutation{Repository: &repository, Draft: &draft, ExpectedDraftSequence: expected, Resume: &resume}, 0)
+	return err
 }

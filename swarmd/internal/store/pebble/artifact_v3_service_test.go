@@ -5,7 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
+	"strings"
 	"testing"
+	"time"
 )
 
 // Requirement: Git and the canonical V3 mutation/event batch form one
@@ -227,4 +230,43 @@ func TestArtifactV3ServiceRecoversInterruptedGitEventHandoff(t *testing.T) {
 	if recovered.Repository == nil || recovered.Repository.HeadCommitOID == "" || recovered.Revision == nil {
 		t.Fatalf("recovered = %+v", recovered)
 	}
+}
+
+// Requirement: expired headless drafts remain recoverable without weakening
+// ordinary SaveDraft expiry checks. The canonical mutation must renew only an
+// exact terminal producer's source and invalidate the old grant atomically.
+// This store-level test uses private envelopes to exercise expiry deterministically.
+func TestArtifactV3ResumeExpiredDraftPreservesEnvelope(t *testing.T) {
+	store := openV3SessionEventTestStore(t)
+	sessions := NewSessionStore(store)
+	createV3SessionForTest(t, sessions, "resume-owner")
+	service, err := NewArtifactV3Service(sessions, t.TempDir(), ArtifactV3Limits{})
+	if err != nil { t.Fatal(err) }
+	owner := ArtifactV3Owner{AccountScopeID: "account-1", UserID: "user-1", SessionID: "resume-owner"}
+	old := ArtifactV3DraftProjection{GrantID: "old", ExpiresAt: 2000, Status: "error", Digest: "source-digest", Grant: json.RawMessage(`{"ID":"old","ExpiresAt":2000,"BaseCommitOID":"","Initial":true}`), State: json.RawMessage(`{"Sequence":0,"ProducerSessionID":"resume-owner","ProducerRunID":"first","Publishing":false,"Finished":null,"Gate":{"Ready":false},"Project":{"index.html":"cHJpdmF0ZQ=="},"History":[]}`)}
+	repository := ArtifactV3RepositoryProjection{ArtifactID: "artifact", RepositoryID: "artifact", AccountScopeID: owner.AccountScopeID, UserID: owner.UserID, OwnerSessionID: owner.SessionID}
+	_, err = sessions.ApplyV3SessionMutation(V3SessionMutationInput{SessionID: owner.SessionID, AccountScopeID: owner.AccountScopeID, UserID: owner.UserID, Kind: V3SessionMutationArtifactV3DraftSaved, IdempotencyKey: "initial-draft", PayloadHash: "initial-draft", NowUnixMs: 1000, ArtifactV3: &ArtifactV3Mutation{Repository: &repository, Draft: &old}})
+	if err != nil { t.Fatal(err) }
+	for _, run := range []V3SessionRunIntent{{RunID: "first", Status: V3RunIntentCompleted}, {RunID: "second", Status: V3RunIntentRunning}} {
+		_, err := sessions.ApplyV3SessionMutation(V3SessionMutationInput{SessionID: owner.SessionID, AccountScopeID: owner.AccountScopeID, UserID: owner.UserID, Kind: V3SessionMutationRecordRunIntent, IdempotencyKey: run.RunID, PayloadHash: run.RunID, RunIntent: &run})
+		if err != nil { t.Fatal(err) }
+	}
+	before, _, _ := sessions.GetArtifactV3Repository(owner.AccountScopeID, owner.UserID, "artifact")
+	old = before.Drafts["old"]
+	if _, err := service.SaveDraft(owner, "artifact", "expired-save", "", old, old.Sequence); err == nil { t.Fatal("ordinary save renewed expired grant") }
+	next := old
+	next.GrantID, next.Status, next.ExpiresAt = "new", "fixing", time.Now().Add(30*time.Minute).UnixMilli()
+	next.Grant = json.RawMessage(fmt.Sprintf(`{"ID":"new","ExpiresAt":%d,"BaseCommitOID":"","Initial":true}`, next.ExpiresAt))
+	next.State = json.RawMessage(`{"Sequence":0,"ProducerSessionID":"resume-owner","ProducerRunID":"second","Publishing":false,"Finished":null,"Gate":null,"Project":{"index.html":"cHJpdmF0ZQ=="},"History":[]}`)
+	resume := ArtifactV3DraftResume{GrantID: "old", ProjectionSeq: before.EventSeq, ProducerRunID: "second"}
+	forged := next
+	forged.State = json.RawMessage(strings.Replace(string(next.State), "cHJpdmF0ZQ==", "dGFtcGVyZWQ=", 1))
+	if err := service.ResumeDraft(owner, "artifact", "forged", forged, old.Sequence, resume); err == nil { t.Fatal("resume replaced source") }
+	unchanged, _, _ := sessions.GetArtifactV3Repository(owner.AccountScopeID, owner.UserID, "artifact")
+	if !reflect.DeepEqual(before, unchanged) { t.Fatal("rejected resume mutated state") }
+	if err := service.ResumeDraft(owner, "artifact", "resume", next, old.Sequence, resume); err != nil { t.Fatal(err) }
+	after, _, _ := sessions.GetArtifactV3Repository(owner.AccountScopeID, owner.UserID, "artifact")
+	if _, ok := after.Drafts["old"]; ok { t.Fatal("old grant retained") }
+	if len(after.Drafts) != 1 || after.HeadCommitOID != "" || after.Drafts["new"].Sequence != old.Sequence+1 || string(after.Drafts["new"].State) != string(next.State) { t.Fatalf("invalid handoff: %+v", after) }
+	if err := service.ResumeDraft(owner, "artifact", "stale", next, old.Sequence, resume); err == nil { t.Fatal("stale handoff accepted") }
 }

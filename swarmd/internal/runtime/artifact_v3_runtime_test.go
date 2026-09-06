@@ -142,7 +142,30 @@ func TestArtifactV3RuntimeAdapterProductionPathAndRecovery(t *testing.T) {
 	if reservationErr == nil || err != nil || afterReservation.Sequence != beforeReservation.Sequence || afterReservation.Publishing || afterReservation.Finished != nil {
 		t.Fatalf("failed reservation mutated draft: %+v %v %v", afterReservation, reservationErr, err)
 	}
+	// Failure after Git genesis, before its durable projection, must retain the
+	// reservation and exact transaction for a new service instance to finish.
+	publicationWrites := 0
+	restoreGenesis := sessions.Store().SetArtifactV3CommitHookForTest(func(string) error {
+		publicationWrites++
+		if publicationWrites == 2 { return errors.New("injected post-Git projection failure") }
+		return nil
+	})
+	_, interruptedErr := author.Finish(context.Background(), principal, grant)
+	restoreGenesis()
+	reserved, loadErr := adapter.LoadAuthorDraft(context.Background(), principal, grant)
+	if interruptedErr == nil || loadErr != nil || !reserved.Publishing || reserved.Finished != nil { t.Fatalf("reservation lost: %+v %v %v", reserved, interruptedErr, loadErr) }
+	if err := author.Edit(context.Background(), principal, grant, "index.html", []byte("Artifact V3"), []byte("forbidden"), false); err == nil { t.Fatal("edited reserved source") }
+	storedAfterFailure, _, err := sessions.Store().GetArtifactV3Repository("account", "user", grant.ArtifactID)
+	if err != nil || storedAfterFailure.HeadCommitOID != "" { t.Fatalf("partial durable head: %+v %v", storedAfterFailure, err) }
+	author = tool.NewArtifactV3AuthorService(workspaceRoot, adapter, adapter, adapter)
+	adapter.publish = func(identity.Principal, api.ArtifactV3Artifact, string, string) error { return errors.New("injected before draft finish") }
+	if _, err := author.Finish(context.Background(), principal, grant); err == nil { t.Fatal("publication failure reported success") }
+	committedBeforeFinish, _, err := sessions.Store().GetArtifactV3Repository("account", "user", grant.ArtifactID)
+	if err != nil || committedBeforeFinish.HeadCommitOID == "" { t.Fatalf("committed head discarded: %+v %v", committedBeforeFinish, err) }
+	adapter.publish = func(identity.Principal, api.ArtifactV3Artifact, string, string) error { return nil }
+	author = tool.NewArtifactV3AuthorService(workspaceRoot, adapter, adapter, adapter)
 	finished, err := author.Finish(context.Background(), principal, grant)
+	if err == nil && finished.Revision.CommitOID != committedBeforeFinish.HeadCommitOID { t.Fatal("retry replaced committed revision") }
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1132,5 +1155,141 @@ func TestArtifactV3PublicDraftPrivacyAndOrdering(t *testing.T) {
 	got, _, err = artifactV3PublicDraft(repository)
 	if err != nil || len(got.Diagnostics) != 0 || len(got.History) != 8 {
 		t.Fatalf("successful gate did not clear current error/preserve history: %+v %v", got, err)
+	}
+}
+
+type artifactV3RepairRenderer struct { fail bool }
+func (r *artifactV3RepairRenderer) Capture(ctx context.Context, request htmlcapture.Request) ([]htmlcapture.Result, error) {
+	if r.fail { return nil, htmlcapture.NewError("capture_required_element_missing", "repair required") }
+	return (artifactV3RuntimeRenderer{}).Capture(ctx, request)
+}
+
+// Requirement: the real Runtime dispatch and Git/Pebble adapter must preserve a
+// headless failed artifact across producer runs, then publish only validated
+// source. Threats are active-run takeover, stale CAS, leaked grants/source,
+// manifest aliases and implicit selection. Only the renderer is substituted.
+func TestArtifactV3RuntimeDirectRepairResumeLifecycle(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	root := t.TempDir()
+	store, err := pebblestore.Open(filepath.Join(root, "sessions"))
+	if err != nil { t.Fatal(err) }
+	defer store.Close()
+	events, err := pebblestore.NewEventLog(store)
+	if err != nil { t.Fatal(err) }
+	sessions := sessionruntime.NewService(pebblestore.NewSessionStore(store), events)
+	_, _, err = sessions.CreateSessionWithOptions(sessionruntime.CreateSessionOptions{SessionID: "owner", AccountScopeID: "account", UserID: "user", Title: "Repair", WorkspacePath: root, WorkspaceName: "workspace", Mode: sessionruntime.ModeAuto, Preference: &pebblestore.ModelPreference{Provider: "codex", Model: "test"}})
+	if err != nil { t.Fatal(err) }
+	repositoryRoot, workspaceRoot, evidenceRoot, err := artifactV3StorageRoots(filepath.Join(root, "data"), filepath.Join(root, "cache"))
+	if err != nil { t.Fatal(err) }
+	service, err := pebblestore.NewArtifactV3Service(sessions.Store(), repositoryRoot, pebblestore.ArtifactV3Limits{})
+	if err != nil { t.Fatal(err) }
+	renderer := &artifactV3RepairRenderer{fail: true}
+	adapter := newArtifactV3RuntimeAdapter(service, sessions.Store(), repositoryRoot, evidenceRoot, pebblestore.ArtifactV3Limits{}, renderer)
+	adapter.publish = func(identity.Principal, api.ArtifactV3Artifact, string, string) error { return nil }
+	runtime := tool.NewRuntime(1)
+	runtime.SetArtifactV3AuthorService(tool.NewArtifactV3AuthorService(workspaceRoot, adapter, adapter, adapter))
+	scope := tool.WorkspaceScope{SessionID: "owner", Principal: identity.Principal{Type: identity.PrincipalTypeUser, AccountScopeID: "account", UserID: "user"}}
+	runID := "first"
+	setRun := func(id, status string) {
+		t.Helper()
+		_, err := sessions.Store().ApplyV3SessionMutation(pebblestore.V3SessionMutationInput{SessionID: "owner", AccountScopeID: "account", UserID: "user", Kind: pebblestore.V3SessionMutationRecordRunIntent, ClientRequestID: id+status, RunIntent: &pebblestore.V3SessionRunIntent{SessionID: "owner", AccountScopeID: "account", UserID: "user", RunID: id, Status: status}})
+		if err != nil { t.Fatal(err) }
+	}
+	invoke := func(args map[string]any) (map[string]any, error) {
+		t.Helper()
+		body, _ := json.Marshal(args)
+		out, err := runtime.ExecuteForWorkspaceScopeWithRuntime(tool.WithArtifactRunContext(ctx, tool.ArtifactRunContext{SessionID: "owner", RunID: runID}), scope, tool.Call{CallID: "call-"+runID, Name: "manage_artifact", Arguments: string(body)})
+		if err != nil { return nil, err }
+		var result map[string]any
+		if err := json.Unmarshal([]byte(out), &result); err != nil { t.Fatal(err) }
+		return result["artifact_v3"].(map[string]any), nil
+	}
+	setRun(runID, pebblestore.V3RunIntentRunning)
+	html := `<html><body><main id="hero">Original</main><section id="pricing">Unchanged</section><footer id="footer">Footer</footer></body></html>`
+	created, err := invoke(map[string]any{"action": "create", "filename": "index.html", "content": html})
+	if err != nil || created["status"] != "fixing" { t.Fatalf("create: %v %v", created, err) }
+	handle := created["draft_handle"].(map[string]any)
+	artifactID := handle["artifact_id"].(string)
+	before, found, err := sessions.Store().GetArtifactV3Repository("account", "user", artifactID)
+	if err != nil || !found || before.HeadCommitOID != "" { t.Fatalf("headless draft: %+v %v", before, err) }
+	old := before.Drafts[handle["grant_id"].(string)]
+	located, err := invoke(map[string]any{"action": "draft_status_v3", "artifact_id": artifactID})
+	if err != nil { t.Fatal(err) }
+	request := located["resume_draft"].(map[string]any)
+	if request["expected_head"] != "" || uint64(request["expected_sequence"].(float64)) != old.Sequence || uint64(request["expected_projection_seq"].(float64)) != before.EventSeq { t.Fatalf("unsafe locator: %v", located) }
+	resume := map[string]any{"action": "resume_v3", "resume_draft": request}
+	runID = "second"
+	if _, err := invoke(resume); err == nil { t.Fatal("active producer taken over") }
+	unchanged, _, _ := sessions.Store().GetArtifactV3Repository("account", "user", artifactID)
+	if !reflect.DeepEqual(before, unchanged) { t.Fatal("failed handoff changed draft") }
+	setRun("first", pebblestore.V3RunIntentCompleted)
+	setRun("second", pebblestore.V3RunIntentRunning)
+	for _, field := range []string{"AccountScopeID", "UserID"} {
+		original := scope.Principal
+		if field == "AccountScopeID" { scope.Principal.AccountScopeID = "foreign" } else { scope.Principal.UserID = "foreign" }
+		if _, err := invoke(resume); err == nil { t.Fatalf("accepted foreign %s", field) }
+		scope.Principal = original
+	}
+	request["session_id"] = "foreign"
+	if _, err := invoke(resume); err == nil { t.Fatal("accepted foreign session") }
+	request["session_id"] = "owner"
+	request["expected_sequence"] = old.Sequence+1
+	if _, err := invoke(resume); err == nil { t.Fatal("accepted stale sequence") }
+	request["expected_sequence"] = old.Sequence
+	request["expected_head"] = strings.Repeat("a", 40)
+	if _, err := invoke(resume); err == nil { t.Fatal("accepted stale head") }
+	request["expected_head"] = ""
+	request["producer_run_id"] = "first"
+	if _, err := invoke(resume); err == nil { t.Fatal("accepted caller producer identity") }
+	delete(request, "producer_run_id")
+	unchanged, _, _ = sessions.Store().GetArtifactV3Repository("account", "user", artifactID)
+	if !reflect.DeepEqual(before, unchanged) { t.Fatal("rejected resumes changed source or head") }
+	resumed, err := invoke(resume)
+	if err != nil { t.Fatal(err) }
+	if _, err := invoke(resume); err == nil { t.Fatal("replayed stale resume") }
+	if _, err := invoke(map[string]any{"action": "author_v3", "draft_handle": handle, "operation": map[string]any{"action": "read_file", "path": "index.html"}}); err == nil { t.Fatal("old handle survived handoff") }
+	handle = resumed["draft_handle"].(map[string]any)
+	after, _, err := sessions.Store().GetArtifactV3Repository("account", "user", artifactID)
+	if err != nil || after.HeadCommitOID != "" || len(after.Drafts) != 1 { t.Fatalf("resume forked artifact: %+v %v", after, err) }
+	var oldState, nextState tool.ArtifactV3AuthorDraft
+	json.Unmarshal(old.State, &oldState)
+	json.Unmarshal(after.Drafts[handle["grant_id"].(string)].State, &nextState)
+	if !reflect.DeepEqual(oldState.Project, nextState.Project) || !reflect.DeepEqual(oldState.History, nextState.History) || nextState.Gate != nil || nextState.ProducerRunID != "second" { t.Fatal("handoff changed source/history or retained stale gate") }
+	op := func(operation map[string]any) (map[string]any, error) { return invoke(map[string]any{"action": "author_v3", "draft_handle": handle, "operation": operation}) }
+	read, err := op(map[string]any{"action": "read_file", "path": "index.html"})
+	if err != nil || read["result"].(map[string]any)["Content"] != html { t.Fatalf("read: %v %v", read, err) }
+	for _, path := range []string{"swarm-artifact.json", "./swarm-artifact.json", "../outside"} {
+		if _, err := op(map[string]any{"action": "delete_file", "path": path}); err == nil { t.Fatalf("unprotected path %s", path) }
+	}
+	if _, err := op(map[string]any{"action": "rename_file", "path": "index.html", "to_path": "./swarm-artifact.json"}); err == nil { t.Fatal("manifest replaced through rename alias") }
+	stillRetained, _, _ := sessions.Store().GetArtifactV3Repository("account", "user", artifactID)
+	if !reflect.DeepEqual(after, stillRetained) { t.Fatal("rejected file operations changed draft") }
+	if _, err := op(map[string]any{"action": "edit_file", "path": "index.html", "old_string": "Original", "new_string": "Corrected"}); err != nil { t.Fatal(err) }
+	renderer.fail = false
+	if _, err := op(map[string]any{"action": "build_preview"}); err != nil { t.Fatal(err) }
+	finished, err := op(map[string]any{"action": "finish_turn"})
+	if err != nil || finished["status"] != "ready" { t.Fatalf("finish: %v %v", finished, err) }
+	selected, _, _ := sessions.Store().GetArtifactV3Repository("account", "user", artifactID)
+	setRun("second", pebblestore.V3RunIntentCompleted)
+	runID = "third"
+	setRun(runID, pebblestore.V3RunIntentRunning)
+	begun, err := invoke(map[string]any{"action": "begin_v3", "artifact_v3_reference": finished["media_inspect_reference"], "target_part_ids": []string{"hero"}})
+	if err != nil { t.Fatal(err) }
+	handle = begun["draft_handle"].(map[string]any)
+	if _, err := op(map[string]any{"action": "edit_file", "path": "index.html", "old_string": "Corrected", "new_string": "Second"}); err != nil { t.Fatal(err) }
+	if _, err := op(map[string]any{"action": "build_preview"}); err != nil { t.Fatal(err) }
+	finished, err = op(map[string]any{"action": "finish_turn"})
+	if err != nil || finished["status"] != "awaiting_selection" { t.Fatalf("candidate: %v %v", finished, err) }
+	final, _, _ := sessions.Store().GetArtifactV3Repository("account", "user", artifactID)
+	if final.HeadCommitOID != selected.HeadCommitOID { t.Fatal("candidate implicitly selected") }
+	var finalState tool.ArtifactV3AuthorDraft
+	json.Unmarshal(final.Drafts[handle["grant_id"].(string)].State, &finalState)
+	if string(finalState.Project["index.html"]) != strings.Replace(html, "Original", "Second", 1) || !reflect.DeepEqual(oldState.Project["swarm-artifact.json"], finalState.Project["swarm-artifact.json"]) { t.Fatal("unrelated bytes or Parts changed") }
+	replay, err := sessions.Store().ReplayV3SessionEvents("owner", 0, 1000)
+	if err != nil { t.Fatal(err) }
+	encoded, _ := json.Marshal(replay)
+	for _, secret := range []string{html, "<main", old.GrantID, string(old.Grant), "ProducerRunID"} {
+		if strings.Contains(string(encoded), secret) { t.Fatalf("private draft leaked through replay: %q", secret) }
 	}
 }
