@@ -83,6 +83,7 @@ try {
         program.stages.push({ id: 'audit', depends_on: ['write'], dependency_evidence: 'Coder result integrated.' })
         program.jobs.push(finder('audit', 'audit', source.path, ['result-1.txt'], 'Use the authenticated committed Coder dependency evidence to quote both lines of result-1.txt and its commit identity. Do not read a stale captured checkout.', ['write']))
       }
+      program.jobs.sort((a, b) => program.stages.findIndex(s => s.id === a.stage_id) - program.stages.findIndex(s => s.id === b.stage_id))
       const tasks = ['Call task action=start without prompt or program to load this exact approved task_program; do not reconstruct or alter it.', 'Verify the task result is completed, then complete this checkpoint through plan_manage. Do not launch undeclared workers or manually start another checkpoint.']
       if ([3, 7].includes(n)) {
         const inline = { id: `${e.id}_inline_${n}`, stages: [{ id: 'inspect', dependency_evidence: 'Catalog is committed.' }], jobs: [finder('inspect', 'inspect', research.path, ['catalog.md'], `Read catalog.md and quote both exact strings. This additional inline proof is interleaved at checkpoint ${n}.`)] }
