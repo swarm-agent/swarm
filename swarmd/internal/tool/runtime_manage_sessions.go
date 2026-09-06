@@ -43,7 +43,7 @@ func manageSessionsDefinition() Definition {
 			"query": map[string]any{"type": "string", "description": "Compact lexical search query."}, "queries": map[string]any{"type": "array", "description": "A small batch of alternate lexical queries for the same user request; do not relist results with another call.", "items": map[string]any{"type": "string"}},
 			"search_mode": map[string]any{"type": "string", "enum": []string{"visible", "durable_log"}, "description": "Search source. Omitted defaults to visible. durable_log is technical, requires session_id, and may be used only after an explicit user request for raw database, durable-log, event, diagnostic, or API-level inspection; never auto-upgrade."},
 			"state":       map[string]any{"type": "string", "description": "Lifecycle/attention state filter, for example in_progress, needs_approval (alias of needs_review), needs_review, blocked, failed, pending, or inactive. Hyphens and spaces are normalized. Required for list_by_state."}, "archived_mode": map[string]any{"type": "string", "description": "exclude|include|only"},
-			"workspace_path": map[string]any{"type": "string"}, "workspace_paths": map[string]any{"type": "array", "items": map[string]any{"type": "string"}}, "global": map[string]any{"type": "boolean", "description": "Account-wide session discovery. Defaults to true when no workspace filter is supplied; set false only for an explicitly requested current-workspace query."},
+			"workspace_path": map[string]any{"type": "string", "description": "For git_status, optional exact captured source or managed repository-lane path owned by the selected session; unknown selectors fail rather than falling back to its primary worktree. For discovery, workspace filter."}, "workspace_paths": map[string]any{"type": "array", "items": map[string]any{"type": "string"}}, "global": map[string]any{"type": "boolean", "description": "Account-wide session discovery. Defaults to true when no workspace filter is supplied; set false only for an explicitly requested current-workspace query."},
 			"cursor": map[string]any{"type": "string"}, "limit": map[string]any{"type": "integer", "description": "Bounded result/message count. list/search allow up to 50; list_by_state auto-pages up to 200. Request only what is needed."}, "mode": map[string]any{"type": "string", "description": "tail|before|after|around. Prefer around with a search snippet sequence anchor."},
 			"before_seq": map[string]any{"type": "integer"}, "after_seq": map[string]any{"type": "integer"}, "around_seq": map[string]any{"type": "integer"}, "max_chars": map[string]any{"type": "integer"},
 			"expected_updated_at": map[string]any{"type": "integer", "description": "Version for a single session_id archive or unarchive."}, "expected_updated_at_by_id": map[string]any{"type": "object", "description": "Required for bulk archive or unarchive: map every session ID to its updated_at returned by list/search/get.", "maxProperties": manageSessionsMaxMutationBatch, "additionalProperties": map[string]any{"type": "integer"}},
@@ -586,11 +586,27 @@ func (r *Runtime) manageSessionsGit(ctx context.Context, scope WorkspaceScope, a
 		if s.WorktreeEnabled && s.WorktreeRootPath != "" {
 			path = s.WorktreeRootPath
 		}
+		baseBranch := s.WorktreeBaseBranch
+		baseCommit := strings.TrimSpace(mapString(s.Metadata, "base_commit"))
+		selectedLane := false
+		requested := strings.TrimSpace(stringValue(args["workspace_path"]))
+		if requested != "" && filepath.Clean(requested) != filepath.Clean(path) && filepath.Clean(requested) != filepath.Clean(mapString(s.Metadata, "swarm_v3_source_workspace_path")) {
+			lane, laneErr := r.selectedRepositoryLane(scope, s, requested, "")
+			if laneErr != nil {
+				return "", fmt.Errorf("select session repository lane: %w", laneErr)
+			}
+			path, baseCommit, selectedLane = lane.WorkspacePath, lane.BaseCommit, true
+			sourceState, inspectErr := r.worktrees.InspectTaskWorkspace(lane.SourcePath)
+			if inspectErr != nil {
+				return "", inspectErr
+			}
+			baseBranch = sourceState.BranchName
+		}
 		path, canonicalErr := canonicalExistingPath(path)
 		if canonicalErr != nil {
 			return "", fmt.Errorf("canonicalize session %s repository: %w", id, canonicalErr)
 		}
-		if !canonicalPathWithinScope(path, scope.Roots, scope.PrimaryPath) {
+		if !selectedLane && !canonicalPathWithinScope(path, scope.Roots, scope.PrimaryPath) {
 			allowed, allowErr := r.accountOwnsSessionGitPath(ctx, scope, s, path)
 			if allowErr != nil {
 				return "", fmt.Errorf("validate session %s account-owned repository: %w", id, allowErr)
@@ -599,13 +615,12 @@ func (r *Runtime) manageSessionsGit(ctx context.Context, scope WorkspaceScope, a
 				return "", fmt.Errorf("session %s repository is not account-owned", id)
 			}
 		}
-		snap, e := gitstatus.SnapshotForPath(ctx, path, gitstatus.Options{BaseBranch: s.WorktreeBaseBranch, RecentLimit: 3, IncludeDetails: true})
+		snap, e := gitstatus.SnapshotForPath(ctx, path, gitstatus.Options{BaseBranch: baseBranch, RecentLimit: 3, IncludeDetails: true})
 		if e != nil {
 			results = append(results, map[string]any{"session_id": id, "status": "error", "error": e.Error()})
 			continue
 		}
-		baseCommit := strings.TrimSpace(mapString(s.Metadata, "base_commit"))
-		results = append(results, map[string]any{"session_id": id, "title": s.Title, "status": "available", "branch": snap.Branch, "base_branch": s.WorktreeBaseBranch, "base_commit": baseCommit, "clean": snap.Clean, "dirty_count": snap.DirtyCount, "staged_count": snap.StagedCount, "modified_count": snap.ModifiedCount, "untracked_count": snap.UntrackedCount, "conflict_count": snap.ConflictCount, "ahead": snap.AheadCount, "behind": snap.BehindCount, "head_oid": snap.HeadOID, "repo_root": snap.RepoRoot, "worktree_path": path, "worktree_enabled": s.WorktreeEnabled, "recoverable": s.WorktreeEnabled && !snap.Clean, "files": snap.Files, "recent_commits": snap.RecentCommits})
+		results = append(results, map[string]any{"session_id": id, "title": s.Title, "status": "available", "branch": snap.Branch, "base_branch": baseBranch, "base_commit": baseCommit, "clean": snap.Clean, "dirty_count": snap.DirtyCount, "staged_count": snap.StagedCount, "modified_count": snap.ModifiedCount, "untracked_count": snap.UntrackedCount, "conflict_count": snap.ConflictCount, "ahead": snap.AheadCount, "behind": snap.BehindCount, "head_oid": snap.HeadOID, "repo_root": snap.RepoRoot, "worktree_path": path, "worktree_enabled": s.WorktreeEnabled, "recoverable": s.WorktreeEnabled && !snap.Clean, "files": snap.Files, "recent_commits": snap.RecentCommits})
 	}
 	return marshalManageSessions(map[string]any{"action": "git_status", "items": results})
 }

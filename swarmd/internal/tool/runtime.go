@@ -6555,8 +6555,17 @@ func (r *Runtime) manageWorktreePromote(scope WorkspaceScope, args map[string]an
 	sourcePath := strings.TrimSpace(source.WorktreeRootPath)
 	capturedPath := strings.TrimSpace(asString(source.Metadata["swarm_v3_source_workspace_path"]))
 	capturedHead := strings.TrimSpace(asString(source.Metadata["base_commit"]))
-	if !source.WorktreeEnabled || sourcePath == "" || source.WorktreeBranch != sourceBranch || source.WorktreeBaseBranch != targetBranch || capturedPath == "" || capturedHead == "" {
+	if sourceBranch != source.WorktreeBranch {
+		lane, laneErr := r.selectedRepositoryLane(scope, source, targetWorkspacePath, sourceBranch)
+		if laneErr != nil {
+			return "", fmt.Errorf("select promotion repository lane: %w", laneErr)
+		}
+		sourcePath, capturedPath, capturedHead = lane.WorkspacePath, lane.SourcePath, lane.BaseCommit
+	} else if !source.WorktreeEnabled || sourcePath == "" || source.WorktreeBaseBranch != targetBranch || capturedPath == "" || capturedHead == "" {
 		return "", errors.New("promotion source is not a complete session-owned lane with captured lineage")
+	}
+	if sourceBranch == targetBranch {
+		return "", errors.New("promotion source must be distinct from the target branch")
 	}
 	resolvedTarget, err := r.manageWorktreeResolvePromotionTarget(scope, targetWorkspacePath, capturedPath)
 	if err != nil {
