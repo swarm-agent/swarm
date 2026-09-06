@@ -20,6 +20,7 @@ const (
 type gitStatusResponseFields = gitstatus.ResponseFields
 
 type toolHistoryRecord struct {
+	RunID           string         `json:"run_id,omitempty"`
 	PathID          string         `json:"path_id"`
 	Tool            string         `json:"tool"`
 	CallID          string         `json:"call_id"`
@@ -71,7 +72,13 @@ func liveStreamRawOutput(call tool.Call, result tool.Result) string {
 }
 
 func formatToolHistoryWithMetadata(call tool.Call, metadata map[string]any, result tool.Result) string {
+	return formatToolHistoryForRun(call, metadata, result, "")
+}
+
+func formatToolHistoryForRun(call tool.Call, metadata map[string]any, result tool.Result, runID string) string {
 	record := buildToolHistoryRecord(call, metadata, result)
+	// Execution identity is supplied by the run loop, never tool/provider metadata.
+	record.RunID = strings.TrimSpace(runID)
 	encoded, err := json.Marshal(record)
 	if err == nil {
 		return string(encoded)

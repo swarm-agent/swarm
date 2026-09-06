@@ -714,7 +714,7 @@ func (s *SessionStore) validateArtifactV3DraftResume(input V3SessionMutationInpu
 		return ErrArtifactV3Unauthorized
 	}
 	var publishing bool
-	if json.Unmarshal(before["Publishing"], &publishing) != nil || publishing || string(before["Finished"]) != "null" {
+	if json.Unmarshal(before["Publishing"], &publishing) != nil || string(before["Finished"]) != "null" {
 		return ErrArtifactV3Conflict
 	}
 	previous, found, err := s.GetV3SessionRunIntent(input.SessionID, producerRun)
@@ -732,23 +732,27 @@ func (s *SessionStore) validateArtifactV3DraftResume(input V3SessionMutationInpu
 		return ErrArtifactV3Unauthorized
 	}
 	var nextRun string
-	if json.Unmarshal(after["ProducerRunID"], &nextRun) != nil || nextRun != r.ProducerRunID || string(after["Gate"]) != "null" {
+	if json.Unmarshal(after["ProducerRunID"], &nextRun) != nil || nextRun != r.ProducerRunID || (!publishing && string(after["Gate"]) != "null") {
 		return ErrArtifactV3Unauthorized
 	}
 	// Only the authenticated terminal-producer handoff may renew the budget.
 	// Missing Attempt is allowed for older envelopes, but a supplied value must be zero.
-	if raw, exists := after["Attempt"]; exists {
+	if raw, exists := after["Attempt"]; exists && !publishing {
 		var attempt int
 		if json.Unmarshal(raw, &attempt) != nil || attempt != 0 {
 			return ErrArtifactV3Conflict
 		}
 	}
-	delete(before, "Attempt")
-	delete(after, "Attempt")
+	if !publishing {
+		delete(before, "Attempt")
+		delete(after, "Attempt")
+		delete(before, "Gate")
+		delete(after, "Gate")
+	}
+	// A frozen publication handoff preserves every validated byte and gate;
+	// only its terminal producer may change. It cannot become an editable draft.
 	delete(before, "ProducerRunID")
 	delete(after, "ProducerRunID")
-	delete(before, "Gate")
-	delete(after, "Gate")
 	left, _ := json.Marshal(before)
 	right, _ := json.Marshal(after)
 	if string(left) != string(right) {

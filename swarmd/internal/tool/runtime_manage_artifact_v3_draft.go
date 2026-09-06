@@ -167,7 +167,7 @@ func (r *Runtime) resumeDirectArtifactV3Draft(ctx context.Context, scope Workspa
 	if grant.AccountScopeID != p.AccountScopeID || grant.UserID != p.UserID || grant.OwnerSessionID != request.SessionID || grant.ArtifactID != request.ArtifactID || grant.ProducerSessionID != p.ProducerSessionID || grant.ProducerRunID != p.ProducerRunID {
 		return nil, ErrArtifactV3AuthorUnauthorized
 	}
-	return map[string]any{"status": "fixing", "draft_handle": directArtifactV3Handle(grant), "message": "Draft resumed in this run. Read and repair the retained source, rebuild the preview, then finish_turn. The old handle is invalid."}, nil
+	return map[string]any{"status": "fixing", "draft_handle": directArtifactV3Handle(grant), "message": "Draft resumed in this run. Inspect the retained state first. If publication is already reserved, retry finish_turn without edits; otherwise read and repair the source, rebuild, then finish_turn. The old handle is invalid."}, nil
 }
 
 // Draft status exposes CAS locators, never the private grant or source envelope.

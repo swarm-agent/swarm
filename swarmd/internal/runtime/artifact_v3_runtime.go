@@ -1816,7 +1816,7 @@ func (a *artifactV3RuntimeAdapter) ResumeArtifactV3DirectDraft(ctx context.Conte
 	if grant.AccountScopeID != p.AccountScopeID || grant.UserID != p.UserID || grant.OwnerSessionID != p.ProducerSessionID || grant.ArtifactID != request.ArtifactID || state.ProducerSessionID != p.ProducerSessionID {
 		return zero, tool.ErrArtifactV3AuthorUnauthorized
 	}
-	if state.Publishing || state.Finished != nil || grant.BaseCommitOID != repository.HeadCommitOID {
+	if state.Finished != nil || (!state.Publishing && grant.BaseCommitOID != repository.HeadCommitOID) {
 		return zero, tool.ErrArtifactV3AuthorConflict
 	}
 	oldID := draft.GrantID
@@ -1825,9 +1825,14 @@ func (a *artifactV3RuntimeAdapter) ResumeArtifactV3DirectDraft(ctx context.Conte
 	state.ProducerRunID = p.ProducerRunID
 	// A deliberate later-run handoff gets a new bounded repair budget. Source
 	// and diagnostic history remain intact; ordinary retries never reset it.
-	state.Attempt = 0
-	state.Gate = nil
+	if !state.Publishing {
+		state.Attempt = 0
+		state.Gate = nil
+	}
 	draft.GrantID, draft.ExpiresAt, draft.Status = grant.ID, grant.ExpiresAt, "fixing"
+	if state.Publishing {
+		draft.Status = "publishing"
+	}
 	draft.Grant, err = json.Marshal(grant)
 	if err != nil {
 		return zero, err

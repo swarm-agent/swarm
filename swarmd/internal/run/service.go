@@ -2797,7 +2797,7 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 				"output":  prepareToolOutputForModel(call, result),
 			})
 
-			toolHistoryText := formatToolHistoryWithMetadata(call, toolCallMetadata[i], result)
+			toolHistoryText := formatToolHistoryForRun(call, toolCallMetadata[i], result, runID)
 			storedToolMessage, _, event, appendErr := s.appendRunMessage(runAppendMessageInput{SessionID: sessionID, Role: "tool", Content: toolHistoryText, RunID: runID, Step: step, LogicalKey: fmt.Sprintf("tool:%d:%s", step, strings.TrimSpace(call.CallID)), Principal: options.Principal, ApplySessionMutation: options.ApplySessionMutation})
 			if appendErr != nil {
 				return RunResult{}, appendErr

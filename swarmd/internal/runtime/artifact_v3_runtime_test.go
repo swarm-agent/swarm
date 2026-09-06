@@ -1380,12 +1380,42 @@ func TestArtifactV3RuntimeDirectRepairResumeLifecycle(t *testing.T) {
 	if err != nil || public.CurrentDraft == nil || len(public.CurrentDraft.Diagnostics) != 0 || len(public.CurrentDraft.History) == 0 {
 		t.Fatalf("current error survived repair or history lost: %+v %v", public, err)
 	}
+	publicationWrites := 0
+	restorePublicationHook := sessions.Store().SetArtifactV3CommitHookForTest(func(string) error {
+		publicationWrites++
+		if publicationWrites == 2 {
+			return errors.New("injected publication interruption")
+		}
+		return nil
+	})
+	if _, err := op(map[string]any{"action": "finish_turn"}); err == nil {
+		t.Fatal("publication interruption hidden")
+	}
+	restorePublicationHook()
+	// A terminated producer can hand off the frozen validated publication, but
+	// the successor must finish it without editing its reserved source or gate.
+	setRun(runID, pebblestore.V3RunIntentCompleted)
+	runID = "publication-recovery"
+	setRun(runID, pebblestore.V3RunIntentPendingExecutor)
+	setRun(runID, pebblestore.V3RunIntentRunning)
+	publicationLocator, err := invoke(map[string]any{"action": "draft_status_v3", "artifact_id": artifactID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	publicationResume, err := invoke(map[string]any{"action": "resume_v3", "resume_draft": publicationLocator["resume_draft"]})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handle = publicationResume["draft_handle"].(map[string]any)
+	if _, err := op(map[string]any{"action": "edit_file", "path": "index.html", "old_string": "Corrected", "new_string": "forbidden"}); err == nil {
+		t.Fatal("frozen publication became editable")
+	}
 	finished, err := op(map[string]any{"action": "finish_turn"})
 	if err != nil || finished["status"] != "ready" {
 		t.Fatalf("finish: %v %v", finished, err)
 	}
 	selected, _, _ := sessions.Store().GetArtifactV3Repository("account", "user", artifactID)
-	setRun("second", pebblestore.V3RunIntentCompleted)
+	setRun(runID, pebblestore.V3RunIntentCompleted)
 	runID = "third"
 	setRun(runID, pebblestore.V3RunIntentPendingExecutor)
 	setRun(runID, pebblestore.V3RunIntentRunning)
