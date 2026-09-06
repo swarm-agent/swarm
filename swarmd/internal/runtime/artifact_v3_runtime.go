@@ -1624,6 +1624,14 @@ func (a *artifactV3RuntimeAdapter) saveAuthorDraft(g tool.ArtifactV3AuthorGrant,
 		return zero, err
 	}
 	state.Sequence = saved.Sequence
+	// SaveDraft commits through the durable store, but the active Desktop needs
+	// the same primary-mutation/outbox wakeup used by ready revisions while a
+	// long author tool is still running. Publish only the safe public projection.
+	if a.publish != nil {
+		if err := a.publishProjection(artifactV3GrantOwner{Owner: artifactV3Owner(g)}, g.ArtifactID, pebblestore.V3SessionMutationArtifactV3DraftSaved, artifactV3StableID("draft-progress", g.ID, fmt.Sprint(saved.Sequence))); err != nil {
+			return zero, err
+		}
+	}
 	return state, nil
 }
 

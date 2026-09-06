@@ -150,7 +150,7 @@ export async function noProgressFixture() {
   return { kind: 'hermetic_no_progress_fixture', elapsed_ms: clock, retained: true }
 }
 
-const instructions = `Use only primary manage_artifact, no delegation or workspace writes. Do not alter provider settings, permissions, or other artifacts. Do not recreate after a failed create. For each retained draft use author_v3 with its EXACT draft_handle, in this order: read_file index.html; read_file swarm-artifact.json; one edit_file; read_file index.html; read_file swarm-artifact.json; build_preview; finish_turn. Preserve every unrelated byte and all Part IDs. Do not select follow-up candidates. If anything fails, report honestly and retain work.`
+const instructions = `This is a managed artifact-only test. Use primary manage_artifact; plan_manage is allowed only if your harness requires checkpoint bookkeeping. Never call bash, even for printf, echo, a no-op, or a claimed placeholder. Do not use workspace file tools, delegation, or workspace writes. Do not alter provider settings, permissions, or other artifacts. Do not recreate after a failed create. For each retained draft use author_v3 with its EXACT draft_handle, in this order: read_file index.html; read_file swarm-artifact.json; one edit_file; read_file index.html; read_file swarm-artifact.json; build_preview; finish_turn. Preserve every unrelated byte and all Part IDs. Do not select follow-up candidates. If anything fails, report honestly and retain work.`
 
 // Isolated ephemeral context only; no persistent profile, cookies or storage-state import.
 export async function openProofBrowser(chromium, options) {
@@ -222,6 +222,7 @@ export async function runLive(options) {
     const capturedStates = new Set()
     const sampleRun = async () => {
       const snapshot = await hydrate()
+      if (await page.getByText('Approval required', { exact: false }).filter({ visible: true }).count()) throw new Error('unexpected_permission_work_retained')
       const row = page.locator('[data-artifact-v3-sidebar-id]:visible').first()
       if (await row.count()) {
         const text = await row.innerText()

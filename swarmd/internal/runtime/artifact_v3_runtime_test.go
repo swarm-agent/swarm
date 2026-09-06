@@ -1017,6 +1017,18 @@ func TestArtifactV3DraftOwnershipRetentionAndCAS(t *testing.T) {
 		t.Fatalf("untrusted first binding: %v", err)
 	}
 	trusted := tool.WithArtifactV3AuthorRunContext(ctx, tool.ArtifactV3AuthorRunContext{Grant: grant})
+	var progressStatuses []string
+	adapter.publish = func(_ identity.Principal, artifact api.ArtifactV3Artifact, eventType, requestID string) error {
+		if eventType != pebblestore.V3SessionMutationArtifactV3DraftSaved || requestID == "" {
+			t.Fatalf("invalid draft progress event %q", eventType)
+		}
+		raw, _ := json.Marshal(artifact)
+		if strings.Contains(string(raw), "private-source-marker") {
+			t.Fatal("draft progress exposed private source")
+		}
+		progressStatuses = append(progressStatuses, artifact.Status)
+		return nil
+	}
 	if err := author.Create(trusted, principal, grant, "index.html", []byte("private-source-marker")); err != nil {
 		t.Fatal(err)
 	}
@@ -1087,6 +1099,9 @@ func TestArtifactV3DraftOwnershipRetentionAndCAS(t *testing.T) {
 	repairing, err := adapter.GetArtifact(ctx, api.ArtifactV3Principal{AccountScopeID: "account", UserID: "user"}, "owner", grant.ArtifactID)
 	if err != nil || repairing.Status != "fixing" || repairing.CurrentDraft == nil || len(repairing.CurrentDraft.Diagnostics) != 0 || len(repairing.CurrentDraft.History) == 0 || repairing.CurrentDraft.ProjectionSeq <= failed.CurrentDraft.ProjectionSeq {
 		t.Fatalf("repair progress/history: %+v %v", repairing, err)
+	}
+	if len(progressStatuses) < 3 || progressStatuses[0] != "creating" || progressStatuses[len(progressStatuses)-1] != "fixing" {
+		t.Fatalf("missing live draft progress: %v", progressStatuses)
 	}
 	// Inject the canonical storage commit failure. Neither public progress nor
 	// source may advance when the underlying mutation fails.
