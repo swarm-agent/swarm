@@ -6608,12 +6608,9 @@ func (r *Runtime) manageWorktreeIntegrate(scope WorkspaceScope, args map[string]
 		return "", errors.New("manage-worktree integrate requires session and worktree services")
 	}
 	parentSessionID := strings.TrimSpace(firstNonEmptyString(scope.SessionID, scope.Principal.SessionID))
-	parent, ok, err := r.sessions.GetSession(parentSessionID)
+	parent, err := r.manageWorktreeRecoveryParent(scope)
 	if err != nil {
 		return "", err
-	}
-	if !ok {
-		return "", fmt.Errorf("parent session %q not found", parentSessionID)
 	}
 	if parent.AccountScopeID != scope.Principal.AccountScopeID || parent.UserID != scope.Principal.UserID {
 		return "", errors.New("manage-worktree integrate parent is not owned by the authenticated principal")
@@ -6685,24 +6682,14 @@ func (r *Runtime) manageWorktreeIntegrate(scope WorkspaceScope, args map[string]
 			if !selectedSet[id] || !agentruntime.IsCoderAgentName(asString(row["subagent"])) {
 				continue
 			}
-			childSession, found, sessionErr := r.sessions.GetSession(id)
+			childSession, sessionErr := r.manageWorktreeRecoveryChild(parent, row)
 			if sessionErr != nil {
 				return "", fmt.Errorf("verify selected child session %q: %w", id, sessionErr)
-			}
-			if !found {
-				return "", fmt.Errorf("verify selected child session %q: not found", id)
-			}
-			if childSession.AccountScopeID != parent.AccountScopeID || childSession.UserID != parent.UserID ||
-				strings.TrimSpace(asString(childSession.Metadata["parent_session_id"])) != parentSessionID ||
-				strings.TrimSpace(asString(childSession.Metadata["lineage_kind"])) != "delegated_subagent" ||
-				!agentruntime.IsCoderAgentName(asString(childSession.Metadata["subagent"])) {
-				return "", fmt.Errorf("selected child %q is not an owned Coder child of this parent", id)
 			}
 			path := strings.TrimSpace(firstNonEmptyString(childSession.WorktreeRootPath, childSession.WorkspacePath))
 			baseCommit := strings.TrimSpace(asString(row["base_commit"]))
 			headCommit := strings.TrimSpace(asString(row["head_commit"]))
-			childParentPath := strings.TrimSpace(firstNonEmptyString(asString(row["parent_workspace_path"]), asString(childSession.Metadata["target_workspace_path"]), parentPath))
-			resolvedParentPath, resolveErr := r.manageWorktreeResolveWorkspacePath(scope, childParentPath)
+			resolvedParentPath, resolveErr := r.manageWorktreeRecoveryDestination(scope, parent, childSession, row)
 			if resolveErr != nil {
 				return "", fmt.Errorf("resolve selected child %q parent workspace: %w", id, resolveErr)
 			}
@@ -6785,12 +6772,9 @@ func (r *Runtime) manageWorktreeRecall(scope WorkspaceScope, args map[string]any
 	if parentSessionID == "" {
 		return "", errors.New("manage-worktree recall requires current parent session_id")
 	}
-	parent, ok, err := r.sessions.GetSession(parentSessionID)
+	parent, err := r.manageWorktreeRecoveryParent(scope)
 	if err != nil {
 		return "", err
-	}
-	if !ok {
-		return "", fmt.Errorf("parent session %q not found", parentSessionID)
 	}
 	limit := asInt(args["limit"], 25)
 	if limit <= 0 {
@@ -6802,11 +6786,6 @@ func (r *Runtime) manageWorktreeRecall(scope WorkspaceScope, args map[string]any
 	cursor := asInt(args["cursor"], 0)
 	if cursor < 0 {
 		cursor = 0
-	}
-	parentPath, parentPathErr := r.manageWorktreeResolveWorkspacePath(scope, "")
-	parentState := worktreeruntime.TaskWorkspaceState{}
-	if parentPathErr == nil {
-		parentState, parentPathErr = r.worktrees.InspectTaskWorkspace(parentPath)
 	}
 	launchMap, _ := parent.Metadata["task_launches"].(map[string]any)
 	selectedTaskCallID := strings.TrimSpace(asString(args["task_call_id"]))
@@ -6835,10 +6814,35 @@ func (r *Runtime) manageWorktreeRecall(scope WorkspaceScope, args map[string]any
 			}
 			child["task_call_id"] = callID
 			child["parent_session_id"] = parentSessionID
-			path := strings.TrimSpace(firstNonEmptyString(asString(row["worktree_root_path"]), asString(row["workspace_path"])))
+			childSession, childErr := r.manageWorktreeRecoveryChild(parent, row)
+			if childErr != nil {
+				child["git_inspection_error"] = childErr.Error()
+				child["child_state"] = "blocked"
+				children = append(children, child)
+				continue
+			}
+			parentPath, parentPathErr := r.manageWorktreeRecoveryDestination(scope, parent, childSession, row)
+			parentState := worktreeruntime.TaskWorkspaceState{}
+			if parentPathErr == nil {
+				parentState, parentPathErr = r.worktrees.InspectTaskWorkspace(parentPath)
+			}
+			if parentPathErr != nil {
+				child["parent_git_inspection_error"] = parentPathErr.Error()
+				child["child_state"] = "blocked"
+				children = append(children, child)
+				continue
+			}
+			child["parent_workspace_path"] = parentPath
+			path := childSession.WorktreeRootPath
 			childState := "blocked"
 			if path != "" {
-				if state, inspectErr := r.worktrees.InspectTaskWorkspace(path); inspectErr != nil {
+				state, inspectErr := r.worktrees.InspectTaskWorkspace(path)
+				if inspectErr == nil {
+					// Failed children may have no terminal recorded HEAD. Authenticate
+					// their managed identity using live HEAD, without committing them.
+					state, inspectErr = r.worktrees.VerifyTaskIntegrationWorkspace(parentPath, path, childSession.ID, childSession.WorktreeBranch, asString(row["base_commit"]), state.HeadCommit)
+				}
+				if inspectErr != nil {
 					child["git_inspection_error"] = inspectErr.Error()
 				} else {
 					child["worktree_path"] = state.WorkspacePath
@@ -6856,11 +6860,6 @@ func (r *Runtime) manageWorktreeRecall(scope WorkspaceScope, args map[string]any
 						childState = "blocked"
 					case state.BranchName != recordedBranch || state.HeadCommit != recordedHead:
 						childState = "stale"
-					case parentPathErr != nil:
-						child["parent_git_inspection_error"] = parentPathErr.Error()
-						// Parent inspection affects integrated-vs-committed detection, not
-						// whether this clean child has a durable committed handoff.
-						childState = "committed"
 					default:
 						integrated, integrationErr := r.manageWorktreeCommitIntegrated(parentPath, recordedBase, recordedHead, parentState.HeadCommit)
 						if integrationErr != nil {

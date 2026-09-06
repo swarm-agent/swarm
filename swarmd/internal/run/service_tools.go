@@ -5924,6 +5924,19 @@ func buildTaskDelegationPrompt(config taskDelegationPromptConfig) string {
 		b.WriteString(targeted)
 		b.WriteString("\n")
 	}
+	if len(config.OwnedScope) > 0 && (agentruntime.IsCoderAgentName(config.RequestedSubagent) || agentruntime.IsFinderAgentName(config.RequestedSubagent)) {
+		// Print the validated launch data, not paths inferred from assignment or
+		// inherited context. JSON preserves exact entries and quotes path data.
+		encoded, _ := json.Marshal(config.OwnedScope)
+		b.WriteString("- exact owned_scope (backend supplied; workspace-relative JSON paths): ")
+		b.Write(encoded)
+		b.WriteString("\n")
+		if agentruntime.IsCoderAgentName(config.RequestedSubagent) {
+			b.WriteString("- scope boundary: mutate only these declared paths in the allocated child worktree. Readable source outside them does not expand write ownership. Do not infer replacement filenames or broaden scope to bypass a rejection. Runtime mutation enforcement remains authoritative.\n")
+		} else {
+			b.WriteString("- scope boundary: these paths define research scope, not write permission; Finder remains read-only.\n")
+		}
+	}
 	if agentruntime.IsDesignerAgentName(config.RequestedSubagent) || agentruntime.IsImageAgentName(config.RequestedSubagent) {
 		if config.OutputRequirements != nil {
 			encoded, _ := json.Marshal(config.OutputRequirements)
