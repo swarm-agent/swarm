@@ -257,19 +257,27 @@ function isTerminalIntentStatus(status) {
   return ['completed', 'failed', 'cancelled', 'expired', 'interrupted'].includes(String(status || '').trim().toLowerCase())
 }
 
-async function waitForAdmission(sessionID) {
-  const deadline = Date.now() + Math.min(timeoutMs, 120000)
+async function waitForCompletion(sessionID, expectedUserContent) {
+  const deadline = Date.now() + timeoutMs
   let latest = null
   while (Date.now() < deadline) {
     latest = await hydrateSession(sessionID)
     const messages = latest.messages_by_session?.[sessionID] || []
-    const user = messages.find((message) => String(message?.role || '').toLowerCase() === 'user' && String(message?.content || '').trim())
+    const firstUser = [...messages]
+      .filter((message) => String(message?.role || '').toLowerCase() === 'user')
+      .sort((left, right) => Number(left?.global_seq || 0) - Number(right?.global_seq || 0))[0]
+    const assistant = [...messages].reverse().find((message) => String(message?.role || '').toLowerCase() === 'assistant' && String(message?.content || '').trim())
     const intents = latest.run_intents_by_session?.[sessionID] || []
-    if (user && intents.length > 0) return { snapshot: latest, user, intents }
+    const failed = intents.filter((intent) => ['failed', 'expired', 'interrupted', 'cancelled'].includes(String(intent?.status || '').trim().toLowerCase()))
+    assert(failed.length === 0, `/task session ${sessionID} failed before preserving its first message: ${failed.map((intent) => `${intent.run_id}:${intent.status}`).join(', ')}`)
+    const completed = intents.length > 0 && intents.every((intent) => isTerminalIntentStatus(intent?.status))
+    if (firstUser && String(firstUser.content || '') === expectedUserContent && assistant && completed) {
+      return { snapshot: latest, user: firstUser, assistant, intents }
+    }
     await sleep(500)
   }
   const intents = latest?.run_intents_by_session?.[sessionID] || []
-  fail(`timed out waiting for durable /task admission in ${sessionID}; intents=${intents.map((intent) => `${intent.run_id}:${intent.status}`).join(', ')}`)
+  fail(`timed out waiting for completed /task persistence in ${sessionID}; intents=${intents.map((intent) => `${intent.run_id}:${intent.status}`).join(', ')}`)
 }
 
 async function usageForSession(sessionID, events) {
@@ -311,7 +319,7 @@ async function runTaskCall({ scenario, mode, authority, selectedSessionID, expec
   assert(String(immediateSession.worktree_root_path || identity.worktree_root_path || '').trim(), `${scenario} /task ${mode} has no worktree root`)
   assert(String(immediateSession.worktree_branch || identity.worktree_branch || '').trim(), `${scenario} /task ${mode} has no worktree branch`)
 
-  const settled = await waitForAdmission(sessionID)
+  const settled = await waitForCompletion(sessionID, prompt)
   const hydratedSession = settled.snapshot.sessions_by_id?.[sessionID] || {}
   const session = {
     ...immediateSession,
@@ -356,17 +364,10 @@ async function runTaskCall({ scenario, mode, authority, selectedSessionID, expec
     model: matchingUsage?.model || null,
     run_id: matchingUsage?.run_id || null,
   })
-  for (const intent of settled.intents.filter((item) => !isTerminalIntentStatus(item?.status))) {
-    const stopped = await api('POST', `/v3/sessions/${encodeURIComponent(sessionID)}/run/stop`, {
-      run_id: intent.run_id,
-      target_swarm_id: authority.swarm_id,
-      reason: `${testID} bounded task-routing admission verified`,
-    }, `stop admitted ${scenario} /task ${mode}`, true)
-    assert(stopped.ok, `${scenario} /task ${mode} could not stop bounded probe run ${intent.run_id}: HTTP ${stopped.status}`)
-  }
-
   const userMessages = messages.filter((message) => String(message?.role || '').toLowerCase() === 'user')
   assert(userMessages.length >= 1, `${scenario} /task ${mode} did not preserve its durable user message`)
+  assert(String(settled.user?.content || '') === prompt, `${scenario} /task ${mode} lost or replaced its first durable user message after AI completion`)
+  assert(String(settled.assistant?.content || '').trim(), `${scenario} /task ${mode} completed without a durable assistant response`)
   const call = {
     sequence,
     scenario,
@@ -379,6 +380,7 @@ async function runTaskCall({ scenario, mode, authority, selectedSessionID, expec
     has_active_plan: hasActivePlan,
     model_profile: { provider: roleProfile.provider, model: roleProfile.model, thinking: roleProfile.thinking },
     runtime_usage: matchingUsage ? { provider: matchingUsage.provider, model: matchingUsage.model, run_id: matchingUsage.run_id } : null,
+    first_user_message_persisted_after_completion: true,
     run_ids: settled.intents.map((intent) => intent.run_id),
   }
   result.calls.push(call)
@@ -491,6 +493,7 @@ async function main() {
 
   assert(result.calls.length === expectedCallCount, `runner completed ${result.calls.length} AI calls, want ${expectedCallCount}`)
   assert(result.calls.every((call) => call.run_ids.length > 0), 'not every task call published a durable run intent')
+  assert(result.calls.every((call) => call.first_user_message_persisted_after_completion === true), 'a completed task call lost its first durable user message')
   assert(result.calls.every((call) => call.worktree_root_path && call.worktree_branch), 'not every task call used a durable worktree')
   assert(result.calls.filter((call) => call.mode === 'auto').every((call) => call.has_active_plan === false), 'an Auto task created a plan')
   assert(result.calls.filter((call) => call.mode === 'plan').every((call) => call.has_active_plan === false), 'a Plan acknowledgement unexpectedly created a plan')

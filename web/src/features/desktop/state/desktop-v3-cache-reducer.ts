@@ -2028,11 +2028,17 @@ function replaceMessagesForSession(
   const existing = state.messagesBySession[sessionId]
   const incomingIDs = new Set(messages.map((message) => message.id))
   const incomingSeqs = new Set(messages.map(messageGlobalSeqKey))
-  const retainedCanonical = existing?.source === 'mutation'
+  const retainedMutationMessages = existing?.source === 'mutation'
     ? existing.items.filter((message) => !incomingIDs.has(message.id) && !incomingSeqs.has(messageGlobalSeqKey(message)))
     : []
-  const reconciledMessages = [...messages, ...retainedCanonical]
-  const fullyReconciledMutation = existing?.source === 'mutation' && retainedCanonical.length === 0
+  const routedFirstUserMessage = firstRoutedUserMessage(session, existing?.items ?? [])
+  const retainedRoutedFirstUserMessage = routedFirstUserMessage
+    && !incomingIDs.has(routedFirstUserMessage.id)
+    && !retainedMutationMessages.some((message) => message.id === routedFirstUserMessage.id)
+    ? [routedFirstUserMessage]
+    : []
+  const reconciledMessages = [...messages, ...retainedMutationMessages, ...retainedRoutedFirstUserMessage]
+  const fullyReconciledMutation = existing?.source === 'mutation' && retainedMutationMessages.length === 0
   delete state.evictedTranscriptsBySession?.[sessionId]
   state.messagesBySession[sessionId] = buildMessageListCache(reconciledMessages, {
     knownTail: { limit: messages.length, cursor: '' },
@@ -2049,6 +2055,16 @@ function replaceMessagesForSession(
     source: fullyReconciledMutation ? 'network' : existing?.source ?? 'network',
   })
   removeCommittedPendingForSession(state, sessionId, messages)
+}
+
+function firstRoutedUserMessage(
+  session: SessionSnapshot | undefined,
+  messages: MessageSnapshot[],
+): MessageSnapshot | undefined {
+  if (session?.metadata?.routed_start !== true) return undefined
+  return messages
+    .filter((message) => message.role === 'user')
+    .sort((left, right) => left.global_seq - right.global_seq || left.created_at - right.created_at || left.id.localeCompare(right.id))[0]
 }
 
 function mergeHistoricalMessagesForSession(

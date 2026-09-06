@@ -17,6 +17,7 @@ const ACTION_MODEL = String(process.env.SWARM_E2E_ACTION_MODEL || '').trim()
 const ACTION_THINKING = String(process.env.SWARM_E2E_ACTION_THINKING || 'medium').trim().toLowerCase()
 const PLAN_MODEL = String(process.env.SWARM_E2E_PLAN_MODEL || '').trim()
 const PLAN_THINKING = String(process.env.SWARM_E2E_PLAN_THINKING || 'high').trim().toLowerCase()
+const FIRST_MESSAGE_ONLY = process.env.SWARM_DESKTOP_FIRST_MESSAGE_E2E === '1'
 
 const TERMINAL_INTENT_STATUSES = new Set(['completed', 'failed', 'cancelled', 'expired', 'interrupted'])
 const FAILURE_PATTERN = /failed|cancelled|expired|interrupted/i
@@ -68,6 +69,7 @@ type ScenarioEvidence = {
   worktree: boolean
   providerVerified: boolean
   assistantModeVerified: boolean
+  firstUserMessageVerified: boolean
 }
 
 function sleep(ms: number): Promise<void> {
@@ -321,6 +323,24 @@ function modePrompt(mode: 'auto' | 'plan', marker: string): string {
   return `Read only your injected runtime session mode. If it is ${mode}, reply exactly ${marker}; otherwise reply exactly MODE_MISMATCH. Return text only. Do not call tools, create a plan, or inspect files.`
 }
 
+async function verifyFirstUserMessageAfterCompletion(
+  context: TestContext,
+  sessionID: string,
+  expectedContent: string,
+  settled: HydrateWire,
+  name: string,
+): Promise<void> {
+  const messages = settled.messages_by_session?.[sessionID] || []
+  const firstUserMessage = [...messages]
+    .filter((message) => message.role === 'user')
+    .sort((left, right) => Number(left.global_seq || 0) - Number(right.global_seq || 0))[0]
+  assert.equal(firstUserMessage?.content, expectedContent, `${name} lost or replaced its first durable user message after completion`)
+
+  await context.page.goto(`${context.appURL}${context.workspaceRoute}/${encodeURIComponent(sessionID)}`, { waitUntil: 'domcontentloaded' })
+  await context.page.getByTestId('desktop-chat-scroller').waitFor({ state: 'visible', timeout: 30_000 })
+  await context.page.getByText(expectedContent, { exact: true }).waitFor({ state: 'visible', timeout: 30_000 })
+}
+
 async function verifySimpleLaunch(
   context: TestContext,
   name: string,
@@ -352,7 +372,8 @@ async function verifySimpleLaunch(
   assert(usage.some((record) => record.provider === PROVIDER && record.model === expected.model), `${name} has no matching runtime usage evidence`)
   const view = settled.session_views_by_id?.[sessionID] || {}
   assert.equal(Boolean(view.has_active_plan || view.active_plan), false, `${name} unexpectedly created a plan`)
-  return { name, mode, worktree, providerVerified: true, assistantModeVerified: true }
+  await verifyFirstUserMessageAfterCompletion(context, sessionID, modePrompt(mode, marker), settled, name)
+  return { name, mode, worktree, providerVerified: true, assistantModeVerified: true, firstUserMessageVerified: true }
 }
 
 async function verifyTaskLaunch(context: TestContext, mode: 'auto' | 'plan'): Promise<ScenarioEvidence> {
@@ -383,7 +404,8 @@ async function verifyTaskLaunch(context: TestContext, mode: 'auto' | 'plan'): Pr
   const events = settled.events_by_session?.[sessionID] || []
   const usage = await allUsage(context.page, sessionID, events)
   assert(usage.some((record) => record.provider === PROVIDER && record.model === expected.model), `${name} has no matching runtime usage evidence`)
-  return { name, mode, worktree: true, providerVerified: true, assistantModeVerified: true }
+  await verifyFirstUserMessageAfterCompletion(context, sessionID, modePrompt(mode, marker), settled, name)
+  return { name, mode, worktree: true, providerVerified: true, assistantModeVerified: true, firstUserMessageVerified: true }
 }
 
 function parsePermissionArguments(permission: JsonRecord): JsonRecord {
@@ -510,7 +532,8 @@ async function verifyPlanLifecycle(context: TestContext): Promise<ScenarioEviden
   assert(autoUsage.length >= 2, `expected Auto-agent usage for both checkpoints, found ${autoUsage.length}`)
   const pending = await browserJSON<{ permissions?: JsonRecord[] }>(context.page, `/v3/sessions/${encodeURIComponent(sessionID)}/permissions?status=pending&limit=50`)
   assert.equal((pending.permissions || []).length, 0, 'automatic checkpoint execution left a pending permission')
-  return { name: 'two-checkpoint-plan-auto', mode: 'plan', worktree: false, providerVerified: true, assistantModeVerified: true }
+  await verifyFirstUserMessageAfterCompletion(context, sessionID, prompt, completed.snapshot, 'two-checkpoint-plan-auto')
+  return { name: 'two-checkpoint-plan-auto', mode: 'plan', worktree: false, providerVerified: true, assistantModeVerified: true, firstUserMessageVerified: true }
 }
 
 async function setup(): Promise<TestContext> {
@@ -596,9 +619,22 @@ test('canonical remote Desktop launch suite', { skip: !ENABLED, timeout: Math.ma
   try {
     context = await setup()
     const active = context
-    await t.test('/new prompt starts a plain Auto session', async () => {
-      evidence.push(await verifySimpleLaunch(active, 'new', '/new', 'auto', false))
+    await t.test('/new prompt starts an Auto routed session and retains its first message', async () => {
+      evidence.push(await verifySimpleLaunch(active, 'new', '/new', 'auto', true))
     })
+    if (FIRST_MESSAGE_ONLY) {
+      await t.test('/task completes and retains its first message', async () => {
+        evidence.push(await verifyTaskLaunch(active, 'auto'))
+      })
+      assert.equal(evidence.length, 2)
+      assert(evidence.every((item) => item.providerVerified && item.assistantModeVerified && item.firstUserMessageVerified))
+      console.log(`canonical Desktop first-message suite PASS\n${JSON.stringify({
+        result: 'PASS',
+        provider: PROVIDER,
+        scenarios: evidence,
+      }, null, 2)}`)
+      return
+    }
     await t.test('/new plan prompt starts a Plan session', async () => {
       evidence.push(await verifySimpleLaunch(active, 'new-plan', '/new plan', 'plan', false))
     })
@@ -618,7 +654,7 @@ test('canonical remote Desktop launch suite', { skip: !ENABLED, timeout: Math.ma
       evidence.push(await verifyPlanLifecycle(active))
     })
     assert.equal(evidence.length, 7)
-    assert(evidence.every((item) => item.providerVerified && item.assistantModeVerified))
+    assert(evidence.every((item) => item.providerVerified && item.assistantModeVerified && item.firstUserMessageVerified))
     console.log(`canonical Desktop launch suite PASS\n${JSON.stringify({
       result: 'PASS',
       provider: PROVIDER,
