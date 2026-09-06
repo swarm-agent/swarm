@@ -1,7 +1,9 @@
 package runtime
 
 import (
+	"fmt"
 	"reflect"
+	"swarm/packages/swarmd/internal/htmlcapture"
 	"strings"
 	"swarm/packages/swarmd/internal/artifact"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -24,7 +26,7 @@ func TestArtifactV3TemporalPreviewRequest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !request.TemporalStates || !reflect.DeepEqual(request.StateIDs, []string{"one", "two"}) || !reflect.DeepEqual(request.RequiredSelectors, []string{"#controls"}) || !reflect.DeepEqual(request.StateRequiredSelectors, map[string][]string{"one": {"#one"}, "two": {"#two"}}) {
+	if request.DocumentSections || !request.TemporalStates || !reflect.DeepEqual(request.StateIDs, []string{"one", "two"}) || !reflect.DeepEqual(request.RequiredSelectors, []string{"#controls"}) || !reflect.DeepEqual(request.StateRequiredSelectors, map[string][]string{"one": {"#one"}, "two": {"#two"}}) {
 		t.Fatalf("capture contract lost: %#v", request)
 	}
 	if string(files["index.html"]) != "<html><body>unchanged</body></html>" || !strings.Contains(string(request.Files["index.html"]), `"one":2000`) {
@@ -51,7 +53,39 @@ func TestArtifactV3TemporalPreviewRequest(t *testing.T) {
 	manifest.Parts = manifest.Parts[:1]
 	manifest.AnimationProfile = nil
 	request, err = artifactV3PreviewCaptureRequest(manifest, files)
-	if err != nil || request.TemporalStates || !reflect.DeepEqual(request.RequiredSelectors, []string{"#controls"}) || !reflect.DeepEqual(request.StateIDs, []string{"default"}) {
-		t.Fatal("static capture invariant changed")
+	if err != nil || request.TemporalStates || !request.DocumentSections || len(request.RequiredSelectors) != 0 || !reflect.DeepEqual(request.StateRequiredSelectors, map[string][]string{"controls": {"#controls"}}) || !reflect.DeepEqual(request.StateIDs, []string{"controls"}) {
+		t.Fatal("static section capture contract lost")
+	}
+}
+
+// Requirement: many semantic sections retain independent targets without source
+// mutation. The native request adapter owns static-versus-temporal routing and
+// is the narrowest layer proving exact selectors and bounded section counts.
+func TestArtifactV3DocumentPreviewRequest(t *testing.T) {
+	manifest := pebblestore.ArtifactV3Manifest{Entrypoint: "index.html"}
+	for i := 0; i < 24; i++ {
+		id := fmt.Sprintf("section-%d", i)
+		manifest.Parts = append(manifest.Parts, pebblestore.ArtifactV3Part{ID: id, Locator: pebblestore.ArtifactV3Locator{Kind: "selector", Path: "index.html", Value: "#" + id}})
+	}
+	files := map[string][]byte{"index.html": []byte("<html><body>unchanged</body></html>")}
+	before := cloneArtifactProject(files)
+	request, err := artifactV3PreviewCaptureRequest(manifest, files)
+	if err != nil || !request.DocumentSections || request.TemporalStates || len(request.StateIDs) != 24 || len(request.RequiredSelectors) != 0 {
+		t.Fatalf("document routing lost: %+v, %v", request, err)
+	}
+	for _, part := range manifest.Parts {
+		if !reflect.DeepEqual(request.StateRequiredSelectors[part.ID], []string{part.Locator.Value}) {
+			t.Fatalf("section target lost: %s", part.ID)
+		}
+	}
+	if !reflect.DeepEqual(before, files) || reflect.DeepEqual(request.Files, files) {
+		t.Fatal("capture injection must be ephemeral")
+	}
+	for len(manifest.Parts) <= htmlcapture.MaxDocumentSections {
+		id := fmt.Sprintf("section-%d", len(manifest.Parts))
+		manifest.Parts = append(manifest.Parts, pebblestore.ArtifactV3Part{ID: id, Locator: pebblestore.ArtifactV3Locator{Kind: "selector", Path: "index.html", Value: "#" + id}})
+	}
+	if _, err := artifactV3PreviewCaptureRequest(manifest, files); err == nil || !reflect.DeepEqual(before, files) {
+		t.Fatal("document quota accepted or changed source")
 	}
 }

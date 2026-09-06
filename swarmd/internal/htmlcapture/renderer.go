@@ -37,6 +37,8 @@ const (
 	Width            = 1920
 	Height           = 1080
 	MaxStates        = 16
+	MaxDocumentSections = 64
+	MaxDocumentTiles = 64
 	MaxPNGBytes      = 16 << 20
 	SystemChromePath = "/opt/google/chrome/chrome"
 	totalTimeout     = 45 * time.Second
@@ -55,6 +57,9 @@ type Request struct {
 	StateRequiredSelectors map[string][]string
 	// TemporalStates preserves paused animation samples rather than cancelling them.
 	TemporalStates bool
+	// DocumentSections is trusted native static-HTML capture, not a manifest flag.
+	// Each state has one selector, audited by bounded vertical scroll tiles.
+	DocumentSections bool
 	// ViewportWidth/ViewportHeight optionally tighten the capture below the fixed
 	// renderer maximum. Both must be set together; callers cannot exceed 1920x1080.
 	ViewportWidth  int
@@ -64,6 +69,7 @@ type Request struct {
 type Result struct {
 	StateID string
 	PNG     []byte
+	SectionDigests []string
 }
 
 type Renderer interface {
@@ -126,10 +132,22 @@ func (r *ChromedpRenderer) Capture(parent context.Context, req Request) ([]Resul
 	if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() || info.Mode().Perm()&0o111 == 0 || info.Mode().Perm()&0o022 != 0 || !statOK || stat.Uid != 0 {
 		return nil, NewError("capture_renderer_unavailable", "system-managed sandboxed browser is unavailable")
 	}
-	if len(req.StateIDs) < 1 || len(req.StateIDs) > MaxStates || req.Entry == "" || len(req.Files) == 0 || len(req.RequiredSelectors) > 256 {
+	stateLimit := MaxStates
+	if req.DocumentSections {
+		stateLimit = MaxDocumentSections
+		if req.TemporalStates || len(req.RequiredSelectors) != 0 {
+			return nil, NewError("capture_source_limit_exceeded", "document sections cannot relax temporal or global fixed-frame requirements")
+		}
+		for _, id := range req.StateIDs {
+			if len(req.StateRequiredSelectors[id]) != 1 {
+				return nil, NewError("capture_source_limit_exceeded", "document states require exactly one section selector")
+			}
+		}
+	}
+	if len(req.StateIDs) < 1 || len(req.StateIDs) > stateLimit || req.Entry == "" || len(req.Files) == 0 || len(req.RequiredSelectors) > 256 {
 		return nil, NewError("capture_source_limit_exceeded", "capture request exceeds fixed renderer bounds")
 	}
-	if len(req.StateRequiredSelectors) > MaxStates {
+	if len(req.StateRequiredSelectors) > stateLimit {
 		return nil, NewError("capture_source_limit_exceeded", "too many state selector groups")
 	}
 	allSelectors := append([]string(nil), req.RequiredSelectors...)
@@ -290,9 +308,18 @@ func (r *ChromedpRenderer) Capture(parent context.Context, req Request) ([]Resul
 	}
 
 	results := make([]Result, 0, len(req.StateIDs))
+	tileBudget := MaxDocumentTiles
+	retainedBytes := 0
 	for _, stateID := range req.StateIDs {
 		selectors := append(append([]string(nil), req.RequiredSelectors...), req.StateRequiredSelectors[stateID]...)
-		result, err := captureState(browserCtx, stateID, viewportWidth, viewportHeight, selectors, req.TemporalStates)
+		var result []byte
+		var digests []string
+		var err error
+		if req.DocumentSections {
+			result, digests, err = captureDocumentSection(browserCtx, stateID, viewportWidth, viewportHeight, selectors, &tileBudget)
+		} else {
+			result, err = captureState(browserCtx, stateID, viewportWidth, viewportHeight, selectors, req.TemporalStates)
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -307,16 +334,21 @@ func (r *ChromedpRenderer) Capture(parent context.Context, req Request) ([]Resul
 		if navErr := chromedp.Run(browserCtx, chromedp.Location(&location)); navErr != nil || location != origin+"/"+req.Entry {
 			return nil, NewError("capture_state_select_failed", "capture state attempted to navigate away from its canonical document")
 		}
-		results = append(results, Result{StateID: stateID, PNG: result})
+		retainedBytes += len(result)
+		if retainedBytes > 64<<20 {
+			return nil, NewError("capture_source_limit_exceeded", "capture evidence exceeds aggregate PNG byte bound")
+		}
+		results = append(results, Result{StateID: stateID, PNG: result, SectionDigests: digests})
 	}
 	return results, nil
 }
 
 type browserAudit struct {
 	Code string `json:"code"`
+	Next float64 `json:"next"`
 }
 
-func captureState(browserCtx context.Context, stateID string, viewportWidth, viewportHeight int, requiredSelectors []string, temporal bool) ([]byte, error) {
+func captureState(browserCtx context.Context, stateID string, viewportWidth, viewportHeight int, requiredSelectors []string, temporal bool, section ...*documentTile) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(browserCtx, stateTimeout)
 	defer cancel()
 	var audit browserAudit
@@ -326,6 +358,10 @@ func captureState(browserCtx context.Context, stateID string, viewportWidth, vie
 	selectors, err := json.Marshal(requiredSelectors)
 	if err != nil {
 		return nil, NewError("capture_source_limit_exceeded", "capture required selectors are invalid")
+	}
+	documentAudit := ""
+	if len(section) != 0 {
+		documentAudit = documentTileScript(section[0].Offset)
 	}
 	expression := fmt.Sprintf(`(async () => {
 const id=%q, api=globalThis.__SWARM_CAPTURE_V1__;
@@ -347,11 +383,12 @@ for (const animation of document.getAnimations()) { if (temporal) animation.paus
 const transparent=color=>color==='transparent'||/^rgba\([^)]*,\s*0(?:\.0+)?\s*\)$/.test(color);
 const needsOpaqueCanvas=transparent(getComputedStyle(document.documentElement).backgroundColor)&&transparent(getComputedStyle(document.body).backgroundColor);
 const width=%d,height=%d,requiredSelectors=%s;
+%s
 if (document.documentElement.scrollWidth>width || document.documentElement.scrollHeight>height || document.body.scrollWidth>width || document.body.scrollHeight>height) return {code:"capture_viewport_overflow"};
 for (const selector of requiredSelectors) { let node; try { node=document.querySelector(selector); } catch (_) { return {code:"capture_required_element_invalid"}; } if (!node || !visible(node)) return {code:"capture_required_element_missing"}; const r=node.getBoundingClientRect(); if (r.left<0 || r.top<0 || r.right>width || r.bottom>height) return {code:"capture_required_element_clipped"}; }
 const style=document.createElement('style'); style.textContent='*,*::before,*::after{'+(temporal?'animation-play-state:paused!important;':'animation:none!important;')+'transition:none!important;scroll-behavior:auto!important;caret-color:transparent!important;cursor:none!important;pointer-events:none!important}html,body{width:'+width+'px!important;height:'+height+'px!important;max-width:'+width+'px!important;max-height:'+height+'px!important;margin:0!important;overflow:hidden!important}'+(needsOpaqueCanvas?'html{background:#fff!important}':''); document.head.append(style);
 return {code:"ok"};
-})()`, stateID, temporal, viewportWidth, viewportHeight, selectors)
+})()`, stateID, temporal, viewportWidth, viewportHeight, selectors, documentAudit)
 	if err := chromedp.Run(ctx, chromedp.Evaluate(expression, &audit, func(p *cdpruntime.EvaluateParams) *cdpruntime.EvaluateParams {
 		return p.WithAwaitPromise(true).WithReturnByValue(true)
 	})); err != nil {
@@ -360,11 +397,14 @@ return {code:"ok"};
 		}
 		return nil, newErrorWithCause("capture_renderer_failed", "capture state evaluation failed", err)
 	}
+	if len(section) != 0 {
+		section[0].Next = audit.Next
+	}
 	if audit.Code != "ok" {
 		if audit.Code == "" {
 			audit.Code = "capture_renderer_failed"
 		}
-		return nil, NewError(audit.Code, safeMessage(audit.Code))
+		return nil, NewError(audit.Code, fmt.Sprintf("%s (state %q)", safeMessage(audit.Code), boundedCaptureLabel(stateID)))
 	}
 	first, err := screenshot(ctx, viewportWidth, viewportHeight)
 	if err != nil {
@@ -494,6 +534,8 @@ func infoSysStat(info os.FileInfo) (*syscall.Stat_t, bool) {
 
 func safeMessage(code string) string {
 	switch code {
+	case "capture_source_limit_exceeded":
+		return "capture document exceeds bounded section, tile or element limits"
 	case "capture_runtime_missing":
 		return "capture runtime is missing or incompatible"
 	case "capture_state_select_failed":

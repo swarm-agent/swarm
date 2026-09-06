@@ -460,6 +460,7 @@ func (a *artifactV3RuntimeAdapter) Preview(ctx context.Context, request tool.Art
 		}
 		sum := sha256.Sum256(result.PNG)
 		evidenceDigests = append(evidenceDigests, hex.EncodeToString(sum[:]))
+		evidenceDigests = append(evidenceDigests, result.SectionDigests...)
 	}
 	digest := sha256.Sum256(results[0].PNG)
 	digestHex := hex.EncodeToString(digest[:])
@@ -478,7 +479,7 @@ func (a *artifactV3RuntimeAdapter) Preview(ctx context.Context, request tool.Art
 }
 
 // Temporal Parts are verified at their declared playhead samples, never made
-// artificially visible. Static Parts retain the all-states visibility invariant.
+// artificially visible. Static documents capture independently reachable sections.
 func artifactV3PreviewCaptureRequest(manifest pebblestore.ArtifactV3Manifest, files map[string][]byte) (htmlcapture.Request, error) {
 	request := htmlcapture.Request{Entry: manifest.Entrypoint, Files: cloneArtifactProject(files), StateIDs: []string{"default"}, ViewportWidth: 1440, ViewportHeight: 900}
 	if manifest.AnimationProfile != nil {
@@ -504,6 +505,20 @@ func artifactV3PreviewCaptureRequest(manifest pebblestore.ArtifactV3Manifest, fi
 		}
 	}
 	if len(times) == 0 {
+		if manifest.AnimationProfile == nil && len(request.RequiredSelectors) > 0 {
+			request.DocumentSections = true
+			request.StateIDs = nil
+			request.RequiredSelectors = nil
+			for _, part := range manifest.Parts {
+				if part.Locator.Kind == "selector" && part.Locator.Path == manifest.Entrypoint && strings.TrimSpace(part.Locator.Value) != "" {
+					request.StateIDs = append(request.StateIDs, part.ID)
+					request.StateRequiredSelectors[part.ID] = []string{part.Locator.Value}
+				}
+			}
+			if len(request.StateIDs) > htmlcapture.MaxDocumentSections {
+				return request, errors.New("native document exceeds bounded section count")
+			}
+		}
 		request.Files[manifest.Entrypoint] = injectArtifactV3CaptureRuntime(request.Files[manifest.Entrypoint])
 		return request, nil
 	}
