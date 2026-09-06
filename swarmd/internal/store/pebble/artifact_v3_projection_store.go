@@ -11,6 +11,7 @@ import (
 )
 
 const (
+	V3SessionMutationArtifactV3DraftSaved = "artifact.v3.draft.saved"
 	V3SessionMutationArtifactV3GenesisCommitted   = "artifact.v3.genesis.committed"
 	V3SessionMutationArtifactV3TurnOpened         = "artifact.v3.turn.opened"
 	V3SessionMutationArtifactV3CandidateCommitted = "artifact.v3.candidate.committed"
@@ -20,7 +21,20 @@ const (
 	V3SessionMutationArtifactV3Recovered          = "artifact.v3.recovered"
 )
 
+// Draft source is private storage state, never part of session/realtime JSON.
+type ArtifactV3DraftProjection struct {
+	GrantID string
+	Grant json.RawMessage
+	State json.RawMessage
+	Digest string
+	Status string
+	ExpiresAt int64
+	Sequence uint64
+}
+
 type ArtifactV3RepositoryProjection struct {
+	Drafts map[string]ArtifactV3DraftProjection `json:"-"`
+	DraftStatus string `json:"draft_status,omitempty"`
 	Version         int    `json:"version"`
 	ArtifactID      string `json:"artifact_id"`
 	RepositoryID    string `json:"repository_id"`
@@ -103,6 +117,8 @@ type ArtifactV3CandidateProjection struct {
 }
 
 type ArtifactV3Mutation struct {
+	Draft *ArtifactV3DraftProjection `json:"draft,omitempty"`
+	ExpectedDraftSequence uint64 `json:"expected_draft_sequence,omitempty"`
 	Repository            *ArtifactV3RepositoryProjection `json:"repository,omitempty"`
 	Revision              *ArtifactV3RevisionProjection   `json:"revision,omitempty"`
 	Turn                  *ArtifactV3TurnProjection       `json:"turn,omitempty"`
@@ -134,7 +150,7 @@ func KeyArtifactV3Candidate(accountScopeID, artifactID, turnID, candidateID stri
 
 func isArtifactV3MutationKind(kind string) bool {
 	switch kind {
-	case V3SessionMutationArtifactV3GenesisCommitted, V3SessionMutationArtifactV3TurnOpened,
+	case V3SessionMutationArtifactV3DraftSaved, V3SessionMutationArtifactV3GenesisCommitted, V3SessionMutationArtifactV3TurnOpened,
 		V3SessionMutationArtifactV3CandidateCommitted, V3SessionMutationArtifactV3CandidateFailed,
 		V3SessionMutationArtifactV3CandidateCancelled, V3SessionMutationArtifactV3HeadSelected,
 		V3SessionMutationArtifactV3Recovered:
@@ -193,8 +209,20 @@ func validateArtifactV3MutationInput(input V3SessionMutationInput) error {
 	if artifactID == "" {
 		return errors.New("artifact v3 identity is required")
 	}
+	if input.Kind == V3SessionMutationArtifactV3DraftSaved {
+		if m.Repository == nil || m.Draft == nil || m.Revision != nil || m.Turn != nil || m.Candidate != nil {
+			return ErrArtifactV3Invalid
+		}
+		d := m.Draft
+		if d.GrantID == "" || len(d.GrantID) > 128 || !json.Valid(d.Grant) || len(d.Grant) > 16384 || len(d.State) > 384<<20 || (len(d.State) != 0 && !json.Valid(d.State)) || d.ExpiresAt <= input.NowUnixMs {
+			return ErrArtifactV3Invalid
+		}
+		if d.Status != "creating" && d.Status != "fixing" && d.Status != "error" && d.Status != "publishing" && d.Status != "ready" {
+			return ErrArtifactV3Invalid
+		}
+	}
 	if m.Repository != nil {
-		if m.Repository.OwnerSessionID != input.SessionID || m.Repository.AccountScopeID != input.AccountScopeID || m.Repository.UserID != input.UserID || m.Repository.RepositoryID == "" || !validGitOID(m.Repository.HeadCommitOID) {
+		if m.Repository.OwnerSessionID != input.SessionID || m.Repository.AccountScopeID != input.AccountScopeID || m.Repository.UserID != input.UserID || m.Repository.RepositoryID == "" || (!validGitOID(m.Repository.HeadCommitOID) && !(input.Kind == V3SessionMutationArtifactV3DraftSaved && m.Repository.HeadCommitOID == "")) {
 			return errors.New("artifact v3 repository ownership or Git identity is invalid")
 		}
 	}
@@ -306,11 +334,14 @@ func (s *SessionStore) prepareArtifactV3Mutation(input V3SessionMutationInput, s
 	if err != nil {
 		return preparedArtifactV3Mutation{}, err
 	}
-	if !currentOK && input.Kind != V3SessionMutationArtifactV3GenesisCommitted && input.Kind != V3SessionMutationArtifactV3Recovered {
+	if !currentOK && input.Kind != V3SessionMutationArtifactV3GenesisCommitted && input.Kind != V3SessionMutationArtifactV3Recovered && input.Kind != V3SessionMutationArtifactV3DraftSaved {
 		return preparedArtifactV3Mutation{}, errors.New("artifact v3 repository was not found")
 	}
-	if currentOK && input.Kind == V3SessionMutationArtifactV3GenesisCommitted && current.HeadCommitOID != m.Repository.HeadCommitOID {
+	if currentOK && input.Kind == V3SessionMutationArtifactV3GenesisCommitted && current.HeadCommitOID != "" && current.HeadCommitOID != m.Repository.HeadCommitOID {
 		return preparedArtifactV3Mutation{}, errors.New("artifact v3 genesis conflicts with existing head")
+	}
+	if currentOK && current.OwnerSessionID != input.SessionID {
+		return preparedArtifactV3Mutation{}, ErrArtifactV3Unauthorized
 	}
 	if m.ExpectedHeadCommitOID != "" && (!currentOK || current.HeadCommitOID != m.ExpectedHeadCommitOID) {
 		return preparedArtifactV3Mutation{}, errors.New("artifact v3 head compare-and-swap is stale")
@@ -320,6 +351,23 @@ func (s *SessionStore) prepareArtifactV3Mutation(input V3SessionMutationInput, s
 		copy.Version = 3
 		copy.EventSeq = seq
 		copy.UpdatedAt = now
+		copy.Drafts = current.Drafts
+		if input.Kind == V3SessionMutationArtifactV3DraftSaved {
+			d := *m.Draft
+			previous, found := current.Drafts[d.GrantID]
+			if copy.HeadCommitOID != current.HeadCommitOID || (found && (previous.Sequence != m.ExpectedDraftSequence || previous.ExpiresAt <= now || string(previous.Grant) != string(d.Grant) || previous.ExpiresAt != d.ExpiresAt)) || (!found && m.ExpectedDraftSequence != 0) {
+				return preparedArtifactV3Mutation{}, ErrArtifactV3Conflict
+			}
+			if !found && len(current.Drafts) >= 16 { return preparedArtifactV3Mutation{}, ErrArtifactV3Invalid }
+			copy.Drafts = make(map[string]ArtifactV3DraftProjection, len(current.Drafts)+1)
+			for key, value := range current.Drafts { copy.Drafts[key] = value }
+			d.Sequence = m.ExpectedDraftSequence + 1
+			copy.Drafts[d.GrantID] = d
+			var storedBytes int64
+			for _, value := range copy.Drafts { storedBytes += int64(len(value.State)+len(value.Grant)) }
+			if storedBytes > 384<<20 { return preparedArtifactV3Mutation{}, ErrArtifactV3Invalid }
+			copy.DraftStatus = d.Status
+		}
 		if currentOK {
 			copy.CreatedAt = current.CreatedAt
 			if copy.RepositoryID != current.RepositoryID {
@@ -413,7 +461,7 @@ func setArtifactV3MutationInBatch(batch *pebble.Batch, accountScopeID string, pr
 				return ""
 			}
 			return KeyArtifactV3Repository(accountScopeID, p.Repository.ArtifactID)
-		}(): p.Repository,
+		}(): artifactV3StoredRepository(p.Repository),
 		func() string {
 			if p.Revision == nil {
 				return ""
@@ -452,7 +500,12 @@ func (s *SessionStore) GetArtifactV3Repository(accountScopeID, userID, artifactI
 		return ArtifactV3RepositoryProjection{}, false, errors.New("session store is not configured")
 	}
 	var value ArtifactV3RepositoryProjection
-	ok, err := s.store.GetJSON(KeyArtifactV3Repository(accountScopeID, artifactID), &value)
+	stored := struct {
+		*ArtifactV3RepositoryProjection
+		PrivateDrafts map[string]ArtifactV3DraftProjection `json:"private_drafts,omitempty"`
+	}{ArtifactV3RepositoryProjection: &value}
+	ok, err := s.store.GetJSON(KeyArtifactV3Repository(accountScopeID, artifactID), &stored)
+	value.Drafts = stored.PrivateDrafts
 	if err != nil || !ok {
 		return value, ok, err
 	}
@@ -537,6 +590,40 @@ func (s *SessionStore) ListArtifactV3CandidateProjections(accountScopeID, userID
 			return nil, ErrArtifactV3Integrity
 		}
 		out = append(out, value)
+	}
+	return out, iter.Error()
+}
+
+// Only this storage envelope contains private draft bytes. Public projections,
+// including canonical session events and idempotent results, omit them.
+func artifactV3StoredRepository(repository *ArtifactV3RepositoryProjection) any {
+	if repository == nil { return nil }
+	return struct {
+		*ArtifactV3RepositoryProjection
+		PrivateDrafts map[string]ArtifactV3DraftProjection `json:"private_drafts,omitempty"`
+	}{repository, repository.Drafts}
+}
+
+// ListArtifactV3Repositories uses persisted identities, including unpublished
+// drafts. Ambient Git directories are never the catalog authority.
+func (s *SessionStore) ListArtifactV3Repositories(account, user, session string, limit int) ([]ArtifactV3RepositoryProjection, error) {
+	owner, found, err := s.GetSession(session)
+	if err != nil { return nil, err }
+	if !found || owner.AccountScopeID != account || owner.UserID != user { return nil, ErrArtifactV3Unauthorized }
+	if limit <= 0 || limit > 500 { limit = 500 }
+	prefix := fmt.Sprintf("v3/artifact/repository/%s/", keyPart(account))
+	iter, err := s.store.db.NewIter(&pebble.IterOptions{LowerBound: []byte(prefix), UpperBound: []byte(prefix+"\xff")})
+	if err != nil { return nil, err }
+	defer iter.Close()
+	out := make([]ArtifactV3RepositoryProjection, 0)
+	scanned := 0
+	for iter.First(); iter.Valid(); iter.Next() {
+		scanned++
+		if scanned > 10000 { return nil, ErrArtifactV3Invalid }
+		var value ArtifactV3RepositoryProjection
+		if err := json.Unmarshal(iter.Value(), &value); err != nil { return nil, err }
+		if value.AccountScopeID != account || string(iter.Key()) != KeyArtifactV3Repository(account, value.ArtifactID) { return nil, ErrArtifactV3Integrity }
+		if value.UserID == user && value.OwnerSessionID == session { out = append(out, value); if len(out) == limit { break } }
 	}
 	return out, iter.Error()
 }

@@ -80,6 +80,7 @@ func TestArtifactV3RuntimeAdapterProductionPathAndRecovery(t *testing.T) {
 	principal := tool.ArtifactV3AuthorPrincipal{AccountScopeID: "account", UserID: "user", ProducerSessionID: "child", ProducerRunID: "run"}
 	grant.ProducerSessionID = "child"
 	grant.ProducerRunID = "run"
+	if _, err := adapter.LoadAuthorDraft(tool.WithArtifactV3AuthorRunContext(context.Background(), tool.ArtifactV3AuthorRunContext{Grant: grant}), principal, grant); err != nil { t.Fatal(err) }
 	manifest, _ := json.Marshal(pebblestore.ArtifactV3Manifest{SchemaVersion: pebblestore.ArtifactV3ManifestVersion, Entrypoint: "index.html", Parts: []pebblestore.ArtifactV3Part{{ID: "hero", Label: "Hero", Locator: pebblestore.ArtifactV3Locator{Kind: "selector", Path: "index.html", Value: "#hero"}}, {ID: "theme", Label: "Theme", Locator: pebblestore.ArtifactV3Locator{Kind: "file", Path: "styles/theme.css"}}}})
 	if err := author.Create(context.Background(), principal, grant, "swarm-artifact.json", manifest); err != nil {
 		t.Fatal(err)
@@ -130,6 +131,7 @@ func TestArtifactV3RuntimeAdapterProductionPathAndRecovery(t *testing.T) {
 	}
 	followPrincipal := tool.ArtifactV3AuthorPrincipal{AccountScopeID: "account", UserID: "user", ProducerSessionID: "child", ProducerRunID: "repair-run"}
 	preparedFollowup.ProducerSessionID, preparedFollowup.ProducerRunID = "child", "repair-run"
+	if _, err := adapter.LoadAuthorDraft(tool.WithArtifactV3AuthorRunContext(context.Background(), tool.ArtifactV3AuthorRunContext{Grant: preparedFollowup}), followPrincipal, preparedFollowup); err != nil { t.Fatal(err) }
 	if _, err := author.Inspect(context.Background(), followPrincipal, preparedFollowup); err != nil {
 		t.Fatalf("materialize direct repair base: %v", err)
 	}
@@ -717,6 +719,7 @@ func TestArtifactV3RuntimeThreePartManifestRepair(t *testing.T) {
 	}
 	grant.ProducerSessionID, grant.ProducerRunID = "child", "run"
 	principal := tool.ArtifactV3AuthorPrincipal{AccountScopeID: "account", UserID: "user", ProducerSessionID: "child", ProducerRunID: "run"}
+	ctx = tool.WithArtifactV3AuthorRunContext(ctx, tool.ArtifactV3AuthorRunContext{Grant: grant})
 	inspected, err := author.Inspect(ctx, principal, grant)
 	if err != nil || inspected.ManifestVersion != pebblestore.ArtifactV3ManifestVersion || len(inspected.Files) != 0 {
 		t.Fatalf("inspect=%+v err=%v", inspected, err)
@@ -748,7 +751,7 @@ func TestArtifactV3RuntimeThreePartManifestRepair(t *testing.T) {
 	if _, err := author.Finish(ctx, principal, grant); !errors.Is(err, tool.ErrArtifactV3AuthorNotReady) {
 		t.Fatalf("invalid finish=%v", err)
 	}
-	if _, ok, err := sessions.Store().GetArtifactV3Repository("account", "user", grant.ArtifactID); err != nil || ok || publications != 0 || len(adapter.builds) != 0 || len(adapter.previews) != 0 {
+	if draftRepository, ok, err := sessions.Store().GetArtifactV3Repository("account", "user", grant.ArtifactID); err != nil || !ok || draftRepository.HeadCommitOID != "" || publications != 0 || len(adapter.builds) != 0 || len(adapter.previews) != 0 {
 		t.Fatalf("invalid project published state: exists=%v err=%v publications=%d", ok, err, publications)
 	}
 	if err := author.Edit(ctx, principal, grant, inspected.ManifestFilename, []byte(`"private-invalid-version"`), []byte(`"`+inspected.ManifestVersion+`"`), false); err != nil {
@@ -769,6 +772,12 @@ func TestArtifactV3RuntimeThreePartManifestRepair(t *testing.T) {
 	if err != nil || finished.Revision.CommitOID == "" || publications != 1 {
 		t.Fatalf("finish=%+v err=%v publications=%d", finished, err, publications)
 	}
+	// A completed initial grant remains readable and idempotent after head creation,
+	// including through a fresh author service with no local memory.
+	reopenedAuthor := tool.NewArtifactV3AuthorService(workspaceRoot, adapter, adapter, adapter)
+	duplicate, err := reopenedAuthor.Finish(ctx, principal, grant)
+	if err != nil || duplicate.Revision != finished.Revision || publications != 1 { t.Fatalf("duplicate finish: %+v %v", duplicate, err) }
+	if _, err := reopenedAuthor.Read(ctx, principal, grant, "index.html", 0, 1024); err != nil { t.Fatalf("completed read: %v", err) }
 	apiPrincipal := api.ArtifactV3Principal{AccountScopeID: "account", UserID: "user"}
 	before, err := adapter.GetArtifact(ctx, apiPrincipal, sessionID, grant.ArtifactID)
 	if err != nil || before.Head == nil || before.Head.CommitOID != finished.Revision.CommitOID || before.PartCount != 3 {
@@ -779,6 +788,7 @@ func TestArtifactV3RuntimeThreePartManifestRepair(t *testing.T) {
 		t.Fatal(err)
 	}
 	follow.ProducerSessionID, follow.ProducerRunID = "child", "run"
+	ctx = tool.WithArtifactV3AuthorRunContext(ctx, tool.ArtifactV3AuthorRunContext{Grant: follow})
 	if err := author.Edit(ctx, principal, follow, inspected.ManifestFilename, []byte(inspected.ManifestVersion), []byte("invalid"), false); err != nil {
 		t.Fatal(err)
 	}
@@ -835,4 +845,82 @@ func (r *artifactV3RepairRenderer) Capture(ctx context.Context, request htmlcapt
 		return nil, htmlcapture.NewError("capture_viewport_overflow", "capture document overflows the required viewport")
 	}
 	return (artifactV3RuntimeRenderer{}).Capture(ctx, request)
+}
+
+// Requirement: retained source is privately durable, producer-bound, CAS guarded
+// and recoverable without trusting ambient directories. Threats are a forged
+// restarted producer, stale saves, and source/capability leakage through events.
+// Real Pebble/runtime/author adapters are the narrowest production boundary;
+// capture is fake and these assertions do not establish visual quality.
+func TestArtifactV3DraftOwnershipRetentionAndCAS(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	root := t.TempDir()
+	store, err := pebblestore.Open(filepath.Join(root, "state"))
+	if err != nil { t.Fatal(err) }
+	defer store.Close()
+	events, err := pebblestore.NewEventLog(store)
+	if err != nil { t.Fatal(err) }
+	sessions := sessionruntime.NewService(pebblestore.NewSessionStore(store), events)
+	for _, id := range []string{"owner", "other"} {
+		_, _, err = sessions.CreateSessionWithOptions(sessionruntime.CreateSessionOptions{SessionID: id, AccountScopeID: "account", UserID: "user", WorkspacePath: root, Mode: sessionruntime.ModeAuto, Preference: &pebblestore.ModelPreference{Provider: "codex", Model: "test"}})
+		if err != nil { t.Fatal(err) }
+	}
+	repositoryRoot, workspaceRoot, evidenceRoot, err := artifactV3StorageRoots(filepath.Join(root, "data"), filepath.Join(root, "cache"))
+	if err != nil { t.Fatal(err) }
+	service, err := pebblestore.NewArtifactV3Service(sessions.Store(), repositoryRoot, pebblestore.ArtifactV3Limits{})
+	if err != nil { t.Fatal(err) }
+	adapter := newArtifactV3RuntimeAdapter(service, sessions.Store(), repositoryRoot, evidenceRoot, pebblestore.ArtifactV3Limits{}, artifactV3RuntimeRenderer{})
+	author := tool.NewArtifactV3AuthorService(workspaceRoot, adapter, adapter, adapter)
+	grant, err := author.PrepareTurn(ctx, tool.ArtifactV3PrepareTurnRequest{AccountScopeID: "account", UserID: "user", OwnerSessionID: "owner", TaskCallID: "draft", Initial: true, PolicyRevision: "policy", ExpiresAt: time.Now().Add(time.Hour).UnixMilli()})
+	if err != nil { t.Fatal(err) }
+	if _, err := author.PrepareTurn(ctx, tool.ArtifactV3PrepareTurnRequest{AccountScopeID: "account", UserID: "user", OwnerSessionID: "other", TaskCallID: "unrelated", Initial: true, PolicyRevision: "policy", ExpiresAt: time.Now().Add(time.Hour).UnixMilli()}); err != nil { t.Fatal(err) }
+	items, err := adapter.ListArtifacts(ctx, api.ArtifactV3Principal{AccountScopeID: "account", UserID: "user"}, "owner", 10)
+	if err != nil || len(items) != 1 || items[0].ID != grant.ArtifactID || items[0].Head != nil || items[0].Status != "creating" { t.Fatalf("initial catalog: %+v %v", items, err) }
+	grant.ProducerSessionID, grant.ProducerRunID = "producer", "run"
+	principal := artifactV3AuthorPrincipal(grant)
+	if _, err := adapter.LoadAuthorDraft(ctx, principal, grant); !errors.Is(err, tool.ErrArtifactV3AuthorUnauthorized) { t.Fatalf("untrusted first binding: %v", err) }
+	trusted := tool.WithArtifactV3AuthorRunContext(ctx, tool.ArtifactV3AuthorRunContext{Grant: grant})
+	if err := author.Create(trusted, principal, grant, "index.html", []byte("private-source-marker")); err != nil { t.Fatal(err) }
+	gate, err := author.BuildPreview(trusted, principal, grant)
+	if err != nil || gate.Ready || len(gate.Diagnostics) == 0 { t.Fatalf("invalid gate: %+v %v", gate, err) }
+	before, err := adapter.LoadAuthorDraft(ctx, principal, grant)
+	if err != nil { t.Fatal(err) }
+	expired := grant
+	expired.ExpiresAt = time.Now().Add(-time.Hour).UnixMilli()
+	if err := author.Edit(ctx, principal, expired, "index.html", []byte("marker"), []byte("unauthorized"), false); !errors.Is(err, tool.ErrArtifactV3AuthorExpired) { t.Fatalf("expired edit: %v", err) }
+	for _, field := range []string{"account", "owner", "producer", "run"} {
+		forged := grant
+		switch field { case "account": forged.AccountScopeID = "foreign"; case "owner": forged.OwnerSessionID = "other"; case "producer": forged.ProducerSessionID = "imposter"; case "run": forged.ProducerRunID = "imposter" }
+		if _, err := adapter.LoadAuthorDraft(tool.WithArtifactV3AuthorRunContext(ctx, tool.ArtifactV3AuthorRunContext{Grant: forged}), artifactV3AuthorPrincipal(forged), forged); !errors.Is(err, tool.ErrArtifactV3AuthorUnauthorized) { t.Fatalf("forgery %s: %v", field, err) }
+	}
+	reopened := tool.NewArtifactV3AuthorService(workspaceRoot, adapter, adapter, adapter)
+	read, err := reopened.Read(ctx, principal, grant, "index.html", 0, 1024)
+	if err != nil || read.Content != "private-source-marker" { t.Fatalf("reopen: %+v %v", read, err) }
+	if err := reopened.Edit(ctx, principal, grant, "index.html", []byte("marker"), []byte("repaired"), false); err != nil { t.Fatal(err) }
+	if _, err := adapter.SaveAuthorDraft(ctx, principal, grant, before); !errors.Is(err, tool.ErrArtifactV3AuthorConflict) { t.Fatalf("stale save: %v", err) }
+	after, err := adapter.LoadAuthorDraft(ctx, principal, grant)
+	if err != nil || after.Gate != nil || len(after.History) == 0 || string(after.Project["index.html"]) != "private-source-repaired" { t.Fatalf("current/history: %+v %v", after, err) }
+	staleSubmit := tool.ArtifactV3SubmitRequest{ArtifactID: grant.ArtifactID, TurnID: grant.TurnID, CandidateID: grant.CandidateID, Initial: true, PolicyRevision: grant.PolicyRevision, DraftSequence: before.Sequence, Project: before.Project, ProjectDigest: digestArtifactProject(before.Project)}
+	if _, err := adapter.SubmitProject(trusted, staleSubmit); !errors.Is(err, tool.ErrArtifactV3AuthorConflict) { t.Fatalf("stale finish: %v", err) }
+	if err := adapter.MaterializeBase(ctx, grant.ArtifactID, "unowned", filepath.Join(root, "unauthorized")); !errors.Is(err, tool.ErrArtifactV3AuthorUnauthorized) { t.Fatalf("unbound materialization: %v", err) }
+	if _, err := os.Stat(filepath.Join(root, "unauthorized")); !os.IsNotExist(err) { t.Fatal("unauthorized materialization changed bytes") }
+	projection, found, err := sessions.Store().GetArtifactV3Repository("account", "user", grant.ArtifactID)
+	if err != nil || !found || projection.HeadCommitOID != "" { t.Fatalf("head changed: %+v %v", projection, err) }
+	public, err := json.Marshal(pebblestore.ArtifactV3Projection{Repository: &projection})
+	if err != nil || strings.Contains(string(public), "private-source") || strings.Contains(string(public), "AllowedActions") || strings.Contains(string(public), "private_drafts") { t.Fatalf("private projection leaked: %s %v", public, err) }
+}
+
+// Requirement: diagnostic retention has independently bounded count, history and
+// field sizes; nested build/preview messages must not bypass top-level limits.
+func TestArtifactV3DraftDiagnosticBounds(t *testing.T) {
+	input := &tool.ArtifactV3AuthorGate{Diagnostics: make([]tool.ArtifactV3Diagnostic, 100)}
+	for i := range input.Diagnostics { input.Diagnostics[i] = tool.ArtifactV3Diagnostic{Message: strings.Repeat("x", 9000), Path: strings.Repeat("y", 9000)} }
+	input.Build.Diagnostics, input.Preview.Diagnostics = input.Diagnostics, input.Diagnostics
+	input.Build.OutputFiles = map[string][]byte{"private": []byte("source")}
+	got := boundedArtifactV3Gate(input)
+	for _, diagnostics := range [][]tool.ArtifactV3Diagnostic{got.Diagnostics, got.Build.Diagnostics, got.Preview.Diagnostics} {
+		if len(diagnostics) != 64 || len(diagnostics[0].Message) != 2048 || len(diagnostics[0].Path) != 512 { t.Fatal("diagnostic bounds not enforced") }
+	}
+	if len(got.Build.OutputFiles) != 0 || len(input.Build.OutputFiles) != 1 || len(input.Diagnostics[0].Message) != 9000 { t.Fatal("source retained or input mutated") }
 }

@@ -76,6 +76,7 @@ func (l ArtifactV3AuthorLimits) normalized() ArtifactV3AuthorLimits {
 }
 
 type ArtifactV3AuthorGrant struct {
+	AccountScopeID, UserID string
 	ID, ArtifactID, OwnerSessionID, ProducerSessionID, ProducerRunID string
 	TurnID, CandidateID, BaseCommitOID, PolicyRevision               string
 	Initial                                                          bool
@@ -94,6 +95,12 @@ func (g ArtifactV3AuthorGrant) Allows(action string) bool {
 }
 
 type ArtifactV3AuthorRunContext struct{ Grant ArtifactV3AuthorGrant }
+
+// Injected by trusted orchestration, never author arguments.
+func ArtifactV3GrantFromContext(ctx context.Context) (ArtifactV3AuthorGrant, bool) {
+	run, ok := ctx.Value(artifactV3AuthorContextKey{}).(ArtifactV3AuthorRunContext)
+	return run.Grant, ok
+}
 
 func BindArtifactV3AuthorRunContext(input *ArtifactV3AuthorRunContext, producerRunID string) *ArtifactV3AuthorRunContext {
 	if input == nil {
@@ -143,6 +150,7 @@ type ArtifactV3PreviewResult struct {
 	Diagnostics     []ArtifactV3Diagnostic
 }
 type ArtifactV3SubmitRequest struct {
+	DraftSequence uint64
 	ArtifactID, TurnID, CandidateID, BaseCommitOID, PolicyRevision, ProjectDigest string
 	Initial                                                                       bool
 	Project                                                                       map[string][]byte
@@ -255,7 +263,26 @@ type ArtifactV3AuthorContext struct {
 	ManifestExample  pebblestore.ArtifactV3Manifest
 }
 
+type ArtifactV3DraftRepository interface {
+	LoadAuthorDraft(context.Context, ArtifactV3AuthorPrincipal, ArtifactV3AuthorGrant) (ArtifactV3AuthorDraft, error)
+	SaveAuthorDraft(context.Context, ArtifactV3AuthorPrincipal, ArtifactV3AuthorGrant, ArtifactV3AuthorDraft) (ArtifactV3AuthorDraft, error)
+}
+
+type ArtifactV3AuthorDraft struct {
+	Sequence uint64
+	Project map[string][]byte
+	Gate *ArtifactV3AuthorGate
+	History []ArtifactV3AuthorGate
+	Attempt int
+	ProducerSessionID, ProducerRunID string
+	Publishing bool
+	Finished *ArtifactV3AuthorFinish
+}
+
 type artifactV3TurnState struct {
+	draft ArtifactV3AuthorDraft
+	principal ArtifactV3AuthorPrincipal
+	grant ArtifactV3AuthorGrant
 	root     string
 	base     map[string][]byte
 	attempt  int
@@ -602,6 +629,7 @@ func (s *ArtifactV3AuthorService) Create(ctx context.Context, p ArtifactV3Author
 	}
 	if err = artifactV3WriteRegular(state.root, clean, body, true, g.Limits.normalized()); err == nil {
 		s.invalidate(state)
+		err = s.persist(ctx, state, nil)
 	}
 	return err
 }
@@ -635,6 +663,7 @@ func (s *ArtifactV3AuthorService) Edit(ctx context.Context, p ArtifactV3AuthorPr
 	}
 	if err = artifactV3WriteRegular(state.root, clean, bytes.Replace(body, old, replacement, n), false, g.Limits.normalized()); err == nil {
 		s.invalidate(state)
+		err = s.persist(ctx, state, nil)
 	}
 	return err
 }
@@ -667,6 +696,7 @@ func (s *ArtifactV3AuthorService) Rename(ctx context.Context, p ArtifactV3Author
 	}
 	if err = os.Rename(filepath.Join(state.root, filepath.FromSlash(source)), filepath.Join(state.root, filepath.FromSlash(destination))); err == nil {
 		s.invalidate(state)
+		err = s.persist(ctx, state, nil)
 	}
 	return err
 }
@@ -688,6 +718,7 @@ func (s *ArtifactV3AuthorService) Delete(ctx context.Context, p ArtifactV3Author
 	}
 	if err = os.Remove(filepath.Join(state.root, filepath.FromSlash(clean))); err == nil {
 		s.invalidate(state)
+		err = s.persist(ctx, state, nil)
 	}
 	return err
 }
@@ -751,35 +782,29 @@ func (s *ArtifactV3AuthorService) BuildPreview(ctx context.Context, p ArtifactV3
 	gate := ArtifactV3AuthorGate{Attempt: state.attempt, ProjectDigest: artifactV3Digest(project)}
 	if s.builder == nil {
 		gate.Diagnostics = append(gate.Diagnostics, ArtifactV3Diagnostic{Stage: "build", Code: "builder_unavailable", Message: "trusted whole-project builder is not configured"})
-		state.gate = &gate
-		return gate, nil
+		return s.persistGate(ctx, state, gate)
 	}
 	gate.Build, err = s.builder.Build(ctx, ArtifactV3BuildRequest{ArtifactID: g.ArtifactID, TurnID: g.TurnID, PolicyRevision: g.PolicyRevision, Attempt: state.attempt, Project: artifactV3Clone(project)})
 	if err != nil {
 		gate.Diagnostics = append(gate.Diagnostics, artifactV3SafeDiagnostic("build", err))
-		state.gate = &gate
-		return gate, nil
+		return s.persistGate(ctx, state, gate)
 	}
 	gate.Diagnostics = append(gate.Diagnostics, gate.Build.Diagnostics...)
 	if gate.Build.Status != "succeeded" {
-		state.gate = &gate
-		return gate, nil
+		return s.persistGate(ctx, state, gate)
 	}
 	if s.previewer == nil {
 		gate.Diagnostics = append(gate.Diagnostics, ArtifactV3Diagnostic{Stage: "preview", Code: "previewer_unavailable", Message: "trusted browser preview gate is not configured"})
-		state.gate = &gate
-		return gate, nil
+		return s.persistGate(ctx, state, gate)
 	}
 	gate.Preview, err = s.previewer.Preview(ctx, ArtifactV3PreviewRequest{ArtifactID: g.ArtifactID, TurnID: g.TurnID, PolicyRevision: g.PolicyRevision, Attempt: state.attempt, Project: artifactV3Clone(project), Build: gate.Build, TargetPartIDs: append([]string(nil), g.TargetPartIDs...)})
 	if err != nil {
 		gate.Diagnostics = append(gate.Diagnostics, artifactV3SafeDiagnostic("preview", err))
-		state.gate = &gate
-		return gate, nil
+		return s.persistGate(ctx, state, gate)
 	}
 	gate.Diagnostics = append(gate.Diagnostics, gate.Preview.Diagnostics...)
 	gate.Ready = gate.Preview.Status == "valid" && len(gate.Preview.EvidenceDigests) > 0
-	state.gate = &gate
-	return gate, nil
+	return s.persistGate(ctx, state, gate)
 }
 func (s *ArtifactV3AuthorService) Finish(ctx context.Context, p ArtifactV3AuthorPrincipal, g ArtifactV3AuthorGrant) (ArtifactV3AuthorFinish, error) {
 	defer s.lockTurn(g)()
@@ -800,7 +825,7 @@ func (s *ArtifactV3AuthorService) Finish(ctx context.Context, p ArtifactV3Author
 	if s.repository == nil {
 		return ArtifactV3AuthorFinish{}, errors.New("artifact v3 author: repository is not configured")
 	}
-	revision, err := s.repository.SubmitProject(ctx, ArtifactV3SubmitRequest{ArtifactID: g.ArtifactID, TurnID: g.TurnID, CandidateID: g.CandidateID, BaseCommitOID: g.BaseCommitOID, PolicyRevision: g.PolicyRevision, ProjectDigest: state.gate.ProjectDigest, Initial: g.Initial, Project: artifactV3Clone(project), Build: state.gate.Build, Preview: state.gate.Preview})
+	revision, err := s.repository.SubmitProject(WithArtifactV3AuthorRunContext(ctx, ArtifactV3AuthorRunContext{Grant: g}), ArtifactV3SubmitRequest{DraftSequence: state.draft.Sequence, ArtifactID: g.ArtifactID, TurnID: g.TurnID, CandidateID: g.CandidateID, BaseCommitOID: g.BaseCommitOID, PolicyRevision: g.PolicyRevision, ProjectDigest: state.gate.ProjectDigest, Initial: g.Initial, Project: artifactV3Clone(project), Build: state.gate.Build, Preview: state.gate.Preview})
 	if err != nil {
 		return ArtifactV3AuthorFinish{}, err
 	}
@@ -821,12 +846,25 @@ func (s *ArtifactV3AuthorService) state(ctx context.Context, p ArtifactV3AuthorP
 	if g.ExpiresAt <= s.now().UnixMilli() {
 		return nil, ErrArtifactV3AuthorExpired
 	}
+	var draft ArtifactV3AuthorDraft
+	if repository, ok := s.repository.(ArtifactV3DraftRepository); ok {
+		var err error
+		draft, err = repository.LoadAuthorDraft(ctx, p, g)
+		if err != nil { return nil, err }
+	}
 	key := artifactV3WorkspaceKey(g)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if state := s.turns[key]; state != nil {
-		return state, nil
+		if state.draft.Sequence != draft.Sequence {
+			if err := os.RemoveAll(state.root); err != nil { return nil, err }
+			delete(s.turns, key)
+		} else {
+			if (state.finished != nil || draft.Publishing) && action != artifactV3ActionFinish && action != artifactV3ActionRead && action != artifactV3ActionInspect && action != artifactV3ActionList { return nil, ErrArtifactV3AuthorConflict }
+			return state, nil
+		}
 	}
+	if (draft.Finished != nil || draft.Publishing) && action != artifactV3ActionFinish && action != artifactV3ActionRead && action != artifactV3ActionInspect && action != artifactV3ActionList { return nil, ErrArtifactV3AuthorConflict }
 	if err := os.MkdirAll(s.root, 0o700); err != nil {
 		return nil, err
 	}
@@ -837,17 +875,18 @@ func (s *ArtifactV3AuthorService) state(ctx context.Context, p ArtifactV3AuthorP
 	if err = os.Chmod(s.root, 0o700); err != nil {
 		return nil, err
 	}
-	root := filepath.Join(s.root, key)
-	if err = os.Mkdir(root, 0o700); err != nil {
+	// Reconstruct authenticated persisted source, never adopt ambient bytes.
+	root, err := os.MkdirTemp(s.root, key+"-")
+	if err != nil {
 		return nil, err
 	}
-	state := &artifactV3TurnState{root: root, base: map[string][]byte{}}
+	state := &artifactV3TurnState{root: root, base: map[string][]byte{}, draft: draft, principal: p, grant: g, gate: draft.Gate, attempt: draft.Attempt, finished: draft.Finished}
 	if !g.Initial {
 		if s.repository == nil || g.BaseCommitOID == "" {
 			os.RemoveAll(root)
 			return nil, ErrArtifactV3AuthorInvalid
 		}
-		if err = s.repository.MaterializeBase(ctx, g.ArtifactID, g.BaseCommitOID, root); err != nil {
+		if err = s.repository.MaterializeBase(WithArtifactV3AuthorRunContext(ctx, ArtifactV3AuthorRunContext{Grant: g}), g.ArtifactID, g.BaseCommitOID, root); err != nil {
 			os.RemoveAll(root)
 			return nil, err
 		}
@@ -857,6 +896,14 @@ func (s *ArtifactV3AuthorService) state(ctx context.Context, p ArtifactV3AuthorP
 			return nil, loadErr
 		}
 		state.base = base
+	}
+	if draft.Project != nil {
+		for path := range state.base { if err = os.Remove(filepath.Join(root, filepath.FromSlash(path))); err != nil { os.RemoveAll(root); return nil, err } }
+		for path, body := range draft.Project {
+			clean, pathErr := artifactV3CleanPath(path, g.Limits.normalized())
+			if pathErr != nil { os.RemoveAll(root); return nil, pathErr }
+			if err = artifactV3WriteRegular(root, clean, body, true, g.Limits.normalized()); err != nil { os.RemoveAll(root); return nil, err }
+		}
 	}
 	s.turns[key] = state
 	return state, nil
@@ -1065,4 +1112,31 @@ func artifactV3Snapshot(root string, limits ArtifactV3AuthorLimits) (map[string]
 		return nil
 	})
 	return result, err
+}
+
+func (s *ArtifactV3AuthorService) persistGate(ctx context.Context, state *artifactV3TurnState, gate ArtifactV3AuthorGate) (ArtifactV3AuthorGate, error) {
+	if err := s.persist(ctx, state, &gate); err != nil { return ArtifactV3AuthorGate{}, err }
+	return *state.gate, nil
+}
+
+func (s *ArtifactV3AuthorService) persist(ctx context.Context, state *artifactV3TurnState, gate *ArtifactV3AuthorGate) error {
+	if repository, ok := s.repository.(ArtifactV3DraftRepository); ok {
+		project, err := artifactV3Snapshot(state.root, state.grant.Limits.normalized())
+		if err == nil {
+			next := state.draft
+			next.Project, next.Gate, next.Attempt = project, gate, state.attempt
+			if state.draft.Gate != nil { next.History = append(append([]ArtifactV3AuthorGate(nil), state.draft.History...), *state.draft.Gate) }
+			var saved ArtifactV3AuthorDraft
+			saved, err = repository.SaveAuthorDraft(ctx, state.principal, state.grant, next)
+			if err == nil { state.draft, state.gate = saved, saved.Gate; return nil }
+		}
+		// Invalidate even snapshot/quota failures: modified ambient bytes never
+		// survive a failed durable write as a usable gate or source of truth.
+		s.mu.Lock(); delete(s.turns, artifactV3WorkspaceKey(state.grant)); s.mu.Unlock()
+		state.gate, state.finished = nil, nil
+		if cleanupErr := os.RemoveAll(state.root); cleanupErr != nil { return errors.Join(err, cleanupErr) }
+		return err
+	}
+	state.gate = gate
+	return nil
 }
