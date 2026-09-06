@@ -3804,11 +3804,8 @@ func (s *Service) buildTaskLaunchPermissionPayload(sessionID, sessionMode string
 		if targetErr != nil {
 			return taskLaunchManifest{}, fmt.Errorf("task launches[%d] workspace target: %w", i, targetErr)
 		}
-		parsed.Launches[i].TargetWorkspacePath = targetWorkspacePath
-		launch.TargetWorkspacePath = targetWorkspacePath
-		if parsed.Program != nil && i < len(parsed.Program.Jobs) {
-			parsed.Program.Jobs[i].TargetWorkspacePath = targetWorkspacePath
-		}
+		retainTaskResolvedWorkspace(&launch, parsed.Program, i, targetWorkspacePath)
+		parsed.Launches[i] = launch
 		requested := strings.TrimSpace(launch.RequestedSubagentType)
 		if requested == "" {
 			return taskLaunchManifest{}, fmt.Errorf("task launches[%d] requires subagent_type, agent, or purpose", i)
@@ -3893,7 +3890,7 @@ func (s *Service) buildTaskLaunchPermissionPayload(sessionID, sessionMode string
 			ChildMode:             childMode,
 			DisabledTools:         launchDisabledTools,
 			ResolvedTools:         resolvedTools,
-			TargetWorkspacePath:   targetWorkspacePath,
+			TargetWorkspacePath:   launch.TargetWorkspacePath,
 			TargetWorkspaceName:   targetWorkspaceName,
 			Capabilities: map[string]any{
 				"allow_bash":            false,
