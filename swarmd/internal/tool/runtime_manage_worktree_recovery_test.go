@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -44,6 +43,8 @@ func recoveryRepo(t *testing.T) string {
 type recoveryFixture struct {
 	runtime                                                *Runtime
 	sessions                                               *sessionruntime.Service
+	workspace                                              *workspaceruntime.Service
+	primarySource                                          string
 	scope                                                  WorkspaceScope
 	source, primary, lane, goodPath, dirtyPath, base, head string
 	rows                                                   []any
@@ -96,7 +97,7 @@ func newRecoveryFixture(t *testing.T, primaryLane ...bool) recoveryFixture {
 		}
 	}
 	create("recovery-parent", primary, map[string]any{"swarm_v3_source_workspace_path": primarySource})
-	f := recoveryFixture{sessions: sessions, source: source, primary: primary.WorkspacePath, lane: lane.WorkspacePath, base: base.BaseCommit}
+	f := recoveryFixture{sessions: sessions, source: source, primarySource: primarySource, primary: primary.WorkspacePath, lane: lane.WorkspacePath, base: base.BaseCommit}
 	laneBase, err := wt.ResolveTaskBase(lane.WorkspacePath)
 	if err != nil {
 		t.Fatal(err)
@@ -135,8 +136,14 @@ func newRecoveryFixture(t *testing.T, primaryLane ...bool) recoveryFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	f.runtime = &Runtime{sessions: sessions, worktrees: wt}
-	f.scope = WorkspaceScope{PrimaryPath: primary.WorkspacePath, Roots: []string{primary.WorkspacePath, source}, SessionID: "recovery-parent", Principal: identity.Principal{Type: identity.PrincipalTypeUser, UserID: "user", AccountScopeID: "account", SessionID: "recovery-parent"}}
+	f.workspace = workspaceruntime.NewService(pebblestore.NewWorkspaceStore(store))
+	f.runtime = &Runtime{sessions: sessions, worktrees: wt, workspace: f.workspace}
+	f.scope = WorkspaceScope{PrimaryPath: primary.WorkspacePath, Roots: []string{primary.WorkspacePath, primarySource}, SessionID: "recovery-parent", Principal: identity.Principal{Type: identity.PrincipalTypeUser, UserID: "user", AccountScopeID: "account", SessionID: "recovery-parent"}}
+	for _, path := range []string{primarySource, source} {
+		if _, err := f.workspace.AddForPrincipal(f.scope.Principal, path, "Recovery fixture", "", false); err != nil {
+			t.Fatal(err)
+		}
+	}
 	return f
 }
 
@@ -228,7 +235,9 @@ func TestManageWorktreeProgramRecoveryRejectsUnsafeContext(t *testing.T) {
 				row["parent_workspace_path"] = f.source
 				updateChild(map[string]any{"target_workspace_path": f.source})
 			case "source-revoked":
-				f.scope.Roots = []string{f.primary}
+				if _, err := f.workspace.DeleteForPrincipal(f.scope.Principal, f.source); err != nil {
+					t.Fatal(err)
+				}
 			case "stale-branch":
 				recoveryGit(t, f.goodPath, "branch", "-m", "agent/stale")
 			case "stale-head":
@@ -264,7 +273,7 @@ func TestManageWorktreeProgramRecoveryRejectsUnsafeContext(t *testing.T) {
 			if _, _, err := recoveryMetadata(f.sessions, "recovery-parent", map[string]any{"task_launches": map[string]any{"mixed-wave": map[string]any{"launches": f.rows}}}); err != nil {
 				t.Fatal(err)
 			}
-			paths := []string{f.primary, f.source, f.lane, f.goodPath, f.dirtyPath}
+			paths := []string{f.primarySource, f.primary, f.source, f.lane, f.goodPath, f.dirtyPath}
 			before := map[string]string{}
 			for _, path := range paths {
 				before[path] = recoveryGit(t, path, "rev-parse", "HEAD") + recoveryGit(t, path, "status", "--porcelain")
@@ -356,49 +365,82 @@ func recoveryMetadata(sessions *sessionruntime.Service, id string, patch map[str
 	return sessions.UpdateMetadata(id, snapshot.Metadata)
 }
 
-// recoveryWorkspaceAuthority verifies the principal and captured source used for
-// saved-directory lookup; only the workspace catalog response is stubbed.
-type recoveryWorkspaceAuthority struct {
-	gitManageWorkspaceService
-	principal   identity.Principal
-	captured    string
-	directories []string
-	failure     error
-}
-
-func (s *recoveryWorkspaceAuthority) ScopeForPathForPrincipal(principal identity.Principal, path string) (workspaceruntime.Scope, error) {
-	if principal != s.principal || path != s.captured {
-		return workspaceruntime.Scope{}, errors.New("unexpected workspace authority context")
-	}
-	return workspaceruntime.Scope{WorkspacePath: s.captured, ResolvedPath: s.captured, Matched: true, Directories: s.directories}, s.failure
-}
-
-// Purpose: manageWorktreeRecoveryDestination may authorize the persisted source
-// through the authenticated captured workspace's saved directories, but must not
-// persist widened roots or accept revoked/failed authority. Real Git/Pebble and a
-// principal-checking catalog double isolate this boundary without a live daemon.
+// Purpose: manageWorktreeRecoveryDestination must authenticate the exact recorded
+// source B through workspace.ScopeForPathForPrincipal's current account catalog,
+// even when the parent scope contains only A (and its private runtime lane).
+// Legacy Directories, broader saved ancestors, revoked roots and identity drift
+// must not authorize B. Real workspace/session Pebble stores plus managed Git are
+// the narrowest boundary reproducing the flat-catalog mismatch and proving no
+// captured checkout, child bytes, durable lineage or caller scope is mutated.
 func TestManageWorktreeRecoverySavedSourceAuthority(t *testing.T) {
-	for _, mode := range []string{"linked", "captured", "revoked", "unavailable"} {
+	for _, mode := range []string{"separate", "captured", "captured-revoked", "revoked", "revoked-active-root", "foreign-catalog", "ancestor-only", "stale-source", "unavailable"} {
 		t.Run(mode, func(t *testing.T) {
-			f := newRecoveryFixture(t, mode == "captured")
-			parent, _, err := f.sessions.GetSession(f.scope.SessionID)
+			f := newRecoveryFixture(t, strings.HasPrefix(mode, "captured"))
+			if !strings.HasPrefix(mode, "captured") {
+				if _, err := resolveWorkspacePath(f.scope, f.source); err == nil {
+					t.Fatal("fixture already authorizes B through active scope")
+				}
+			}
+			a, err := f.workspace.ScopeForPathForPrincipal(f.scope.Principal, f.primarySource)
+			if err != nil || !a.Matched || len(a.Directories) != 1 || a.Directories[0] != f.primarySource {
+				t.Fatalf("fixture must use real flat catalog A: %+v %v", a, err)
+			}
+			switch mode {
+			case "captured-revoked", "revoked", "revoked-active-root", "foreign-catalog", "ancestor-only":
+				if _, err := f.workspace.DeleteForPrincipal(f.scope.Principal, f.source); err != nil {
+					t.Fatal(err)
+				}
+				if mode == "revoked-active-root" {
+					f.scope.Roots = append(f.scope.Roots, f.source)
+				}
+				if mode == "foreign-catalog" {
+					foreign := f.scope.Principal
+					foreign.AccountScopeID, foreign.UserID = "foreign-account", "foreign-user"
+					if _, err := f.workspace.AddForPrincipal(foreign, f.source, "Foreign source", "", false); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if mode == "ancestor-only" {
+					ancestor := filepath.Dir(f.source)
+					recoveryGit(t, ancestor, "init", "-b", "dev")
+					recoveryGit(t, ancestor, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "--allow-empty", "-m", "ancestor")
+					if _, err := f.workspace.AddForPrincipal(f.scope.Principal, ancestor, "Ancestor", "", false); err != nil {
+						t.Fatal(err)
+					}
+				}
+			case "stale-source":
+				// Keep Git's recorded common-directory path usable while replacing
+				// the saved root with a symlink; the catalog must reject identity drift.
+				moved := filepath.Join(t.TempDir(), "moved-source")
+				if err := os.Rename(f.source, moved); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(moved, f.source); err != nil {
+					t.Fatal(err)
+				}
+			case "unavailable":
+				f.runtime.workspace = nil
+				f.scope.Roots = append(f.scope.Roots, f.source)
+			}
+			paths := []string{f.primarySource, f.primary, f.source, f.lane, f.goodPath, f.dirtyPath}
+			before := map[string]string{}
+			for _, path := range paths {
+				before[path] = recoveryGit(t, path, "rev-parse", "HEAD") + recoveryGit(t, path, "status", "--porcelain")
+			}
+			parentBefore, found, err := f.sessions.GetSession(f.scope.SessionID)
+			if err != nil || !found {
+				t.Fatalf("read parent before recovery: %v", err)
+			}
+			lineageBefore, err := json.Marshal(parentBefore)
 			if err != nil {
 				t.Fatal(err)
 			}
-			f.scope.Roots = []string{f.primary}
-			authority := &recoveryWorkspaceAuthority{principal: f.scope.Principal, captured: asString(parent.Metadata["swarm_v3_source_workspace_path"])}
-			if mode == "linked" {
-				authority.directories = []string{f.source}
-			}
-			if mode == "unavailable" {
-				authority.failure = errors.New("catalog unavailable")
-			}
-			f.runtime.workspace = authority
-			dirtyBefore := recoveryGit(t, f.dirtyPath, "status", "--porcelain")
+			rootsBefore := strings.Join(f.scope.Roots, "\x00")
 			_, err = f.runtime.manageWorktreeIntegrate(f.scope, map[string]any{"session_ids": []string{"recovery-good"}})
-			if mode == "revoked" || mode == "unavailable" {
-				if err == nil || recoveryGit(t, f.lane, "rev-parse", "HEAD") != f.base || recoveryGit(t, f.lane, "status", "--porcelain") != "" {
-					t.Fatal("unauthorized recovery mutated lane")
+			allowed := mode == "separate" || mode == "captured"
+			if !allowed {
+				if err == nil || !strings.Contains(err.Error(), "recovery source") {
+					t.Fatalf("want source authorization rejection, got %v", err)
 				}
 			} else {
 				if err != nil {
@@ -407,9 +449,28 @@ func TestManageWorktreeRecoverySavedSourceAuthority(t *testing.T) {
 				if got, err := os.ReadFile(filepath.Join(f.lane, "change.txt")); err != nil || string(got) != "recovery-good" {
 					t.Fatalf("missing integrated bytes: %q %v", got, err)
 				}
+				if recoveryGit(t, f.lane, "status", "--porcelain") != "" {
+					t.Fatal("integration left dirty parent lane")
+				}
 			}
-			if len(f.scope.Roots) != 1 || f.scope.Roots[0] != f.primary || recoveryGit(t, f.source, "rev-parse", "HEAD") != f.base || recoveryGit(t, f.dirtyPath, "status", "--porcelain") != dirtyBefore {
-				t.Fatal("recovery changed scope, captured checkout or dirty sibling")
+			for _, path := range paths {
+				if allowed && path == f.lane {
+					continue
+				}
+				if got := recoveryGit(t, path, "rev-parse", "HEAD") + recoveryGit(t, path, "status", "--porcelain"); got != before[path] {
+					t.Fatal("recovery mutated protected repository state")
+				}
+			}
+			parentAfter, found, err := f.sessions.GetSession(f.scope.SessionID)
+			if err != nil || !found {
+				t.Fatalf("read parent after recovery: %v", err)
+			}
+			lineageAfter, err := json.Marshal(parentAfter)
+			if err != nil || string(lineageBefore) != string(lineageAfter) || rootsBefore != strings.Join(f.scope.Roots, "\x00") {
+				t.Fatal("recovery changed durable lineage or active scope")
+			}
+			if got, err := os.ReadFile(filepath.Join(f.dirtyPath, "change.txt")); err != nil || string(got) != "recovery-dirty" {
+				t.Fatal("recovery changed dirty sibling bytes")
 			}
 		})
 	}

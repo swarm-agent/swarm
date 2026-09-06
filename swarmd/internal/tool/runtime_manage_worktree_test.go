@@ -9,6 +9,7 @@ import (
 
 	"swarm/packages/swarmd/internal/identity"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
+	workspaceruntime "swarm/packages/swarmd/internal/workspace"
 	worktreeruntime "swarm/packages/swarmd/internal/worktree"
 )
 
@@ -603,10 +604,18 @@ func coderLineageRow(parentID, id string, launchIndex int, states map[string]wor
 	}
 }
 
+// Scheduling/ordering unit tests stub only the exact saved primary source;
+// real catalog authorization and revocation are exercised in recovery tests.
+type coderLineageWorkspaceService struct{ gitManageWorkspaceService }
+
+func (*coderLineageWorkspaceService) ScopeForPathForPrincipal(principal identity.Principal, path string) (workspaceruntime.Scope, error) {
+	return workspaceruntime.Scope{WorkspacePath: "/captured", ResolvedPath: path, Matched: path == "/captured" && principal.AccountScopeID == "account" && principal.UserID == "user"}, nil
+}
+
 func coderLineageRuntime(parentID, parentPath string, launches map[string]any, states map[string]worktreeruntime.TaskWorkspaceState, children map[string]pebblestore.SessionSnapshot, childIDs []string) (*Runtime, WorkspaceScope, *coderLineageWorktreeService, []string) {
 	parent := pebblestore.SessionSnapshot{ID: parentID, AccountScopeID: "account", UserID: "user", WorkspacePath: parentPath, WorktreeEnabled: true, WorktreeRootPath: parentPath, WorktreeBranch: "agent/parent-session", WorktreeBaseBranch: "dev", Metadata: map[string]any{"task_launches": launches, "swarm_v3_source_workspace_path": "/captured"}}
 	worktrees := &coderLineageWorktreeService{states: states}
-	runtime := &Runtime{sessions: &coderLineageSessionService{parent: parent, children: children}, worktrees: worktrees}
+	runtime := &Runtime{sessions: &coderLineageSessionService{parent: parent, children: children}, worktrees: worktrees, workspace: &coderLineageWorkspaceService{}}
 	scope := WorkspaceScope{PrimaryPath: parentPath, Roots: []string{parentPath, "/captured"}, SessionID: parentID, Principal: identity.Principal{Type: identity.PrincipalTypeUser, UserID: "user", AccountScopeID: "account", SessionID: parentID}}
 	return runtime, scope, worktrees, childIDs
 }

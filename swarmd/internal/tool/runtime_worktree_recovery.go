@@ -96,26 +96,19 @@ func (r *Runtime) manageWorktreeRecoveryDestination(scope WorkspaceScope, parent
 	if branch := strings.TrimSpace(asString(row["parent_branch"])); branch != "" && branch != lane.Branch {
 		return "", errors.New("child parent branch disagrees with durable destination")
 	}
-	// Source authorization is checked independently of the private destination.
-	// Saved linked directories may be absent from the active mutation lane scope.
-	sourceScope := scope
-	if r.workspace != nil {
-		captured := strings.TrimSpace(asString(parent.Metadata["swarm_v3_source_workspace_path"]))
-		saved, err := r.workspace.ScopeForPathForPrincipal(scope.Principal, captured)
-		if err != nil {
-			return "", fmt.Errorf("authorize recovery source workspace: %w", err)
-		}
-		if saved.Matched {
-			sourceScope.Roots = append(append([]string(nil), scope.Roots...), saved.Directories...)
-		}
+	// Authenticate the exact recorded source, which may be saved independently
+	// of the parent's captured workspace. The flat account catalog revalidates
+	// its canonical primary path; Directories and cached active roots are not
+	// authority here, including after revocation. Never widen the caller scope.
+	if r.workspace == nil {
+		return "", errors.New("authorize recovery source: authenticated workspace authority unavailable")
 	}
-	if _, err := resolveWorkspacePath(sourceScope, lane.SourcePath); err != nil {
-		// The exact captured account workspace remains an authorized source,
-		// but never an internal integration destination.
-		captured := strings.TrimSpace(asString(parent.Metadata["swarm_v3_source_workspace_path"]))
-		if _, capturedErr := r.manageWorktreeResolvePromotionTarget(scope, lane.SourcePath, captured); capturedErr != nil {
-			return "", fmt.Errorf("authorize recovery source: %w", errors.Join(err, capturedErr))
-		}
+	saved, err := r.workspace.ScopeForPathForPrincipal(scope.Principal, lane.SourcePath)
+	if err != nil {
+		return "", fmt.Errorf("authorize recovery source workspace: %w", err)
+	}
+	if !saved.Matched || saved.WorkspacePath != lane.SourcePath || saved.ResolvedPath != lane.SourcePath {
+		return "", errors.New("authorize recovery source: recorded source is not an exact canonical account-owned workspace")
 	}
 	validator, ok := r.worktrees.(interface {
 		ValidateTaskRepositoryLane(string, string, string, string) error
