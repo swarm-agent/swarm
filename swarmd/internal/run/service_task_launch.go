@@ -170,6 +170,9 @@ type taskSwarmSpec struct {
 }
 
 type taskLaunchSpec struct {
+	// Scheduler-only runtime destination; never parsed from model arguments.
+	ProgramRepositoryLane *pebblestore.TaskProgramRepositoryLane
+	ProgramArtifactSource *taskArtifactV3Source // authenticated dependency, never parsed
 	RequestedSubagentType string
 	TargetWorkspacePath   string
 	MetaPrompt            string
@@ -3380,6 +3383,26 @@ func taskPathWithinRoot(root, target string) bool {
 }
 
 func (s *Service) resolveTaskTargetWorkspace(parentSession pebblestore.SessionSnapshot, principal identity.Principal, launch taskLaunchSpec) (string, string, error) {
+	if launch.ProgramRepositoryLane != nil {
+		lane := launch.ProgramRepositoryLane
+		sourceLaunch := launch
+		sourceLaunch.ProgramRepositoryLane = nil
+		sourceLaunch.TargetWorkspacePath = lane.SourcePath
+		if _, _, err := s.resolveTaskTargetWorkspace(parentSession, principal, sourceLaunch); err != nil {
+			return "", "", err
+		}
+		if s.worktrees == nil {
+			return "", "", errors.New("task program worktree authority unavailable")
+		}
+		state, err := s.worktrees.InspectTaskWorkspace(lane.WorkspacePath)
+		if err != nil {
+			return "", "", err
+		}
+		if !state.Clean || state.BranchName != lane.Branch || sameTaskProgramPath(lane.SourcePath, lane.WorkspacePath) {
+			return "", "", errors.New("task program repository lane is stale or dirty")
+		}
+		return lane.WorkspacePath, filepath.Base(lane.SourcePath), nil
+	}
 	requested := strings.TrimSpace(launch.TargetWorkspacePath)
 	if requested == "" {
 		return strings.TrimSpace(firstNonEmptyString(parentSession.WorktreeRootPath, parentSession.WorkspacePath)), strings.TrimSpace(parentSession.WorkspaceName), nil
@@ -3609,7 +3632,10 @@ func parseApprovedTaskLaunchManifest(approved string, launchSpecs []taskLaunchSp
 			return taskLaunchManifest{}, fmt.Errorf("approved task manifest launch %d owned scope mismatch", i)
 		}
 		if strings.TrimSpace(row.TargetWorkspacePath) != strings.TrimSpace(launchSpecs[i].TargetWorkspacePath) {
-			return taskLaunchManifest{}, fmt.Errorf("approved task manifest launch %d workspace target mismatch", i)
+			lane := launchSpecs[i].ProgramRepositoryLane
+			if lane == nil || !sameTaskProgramPath(row.TargetWorkspacePath, lane.SourcePath) || !sameTaskProgramPath(launchSpecs[i].TargetWorkspacePath, lane.WorkspacePath) {
+				return taskLaunchManifest{}, fmt.Errorf("approved task manifest launch %d workspace target mismatch", i)
+			}
 		}
 		if agentruntime.IsImageAgentName(launchSpecs[i].RequestedSubagentType) {
 			if row.ResolvedTools == nil || len(row.ResolvedTools.AllowedTools) != 1 || !taskToolNameInSlice(row.ResolvedTools.AllowedTools, "manage_artifact") {

@@ -11,6 +11,16 @@ import (
 // was authenticated on admission; PrepareTurn rechecks owner/head/projection and
 // target membership before granting any authoring capability.
 func bindTaskNativeArtifactSelection(parsed *taskCallArguments, launches []taskLaunchSpec, selection *pebblestore.SessionArtifactSelectionReference) error {
+	// Fully declared programs use their own dependency graph, not ambient chat
+	// selections. Internal cohorts retain program_job_id after Program is cleared.
+	if parsed.Program != nil {
+		return nil
+	}
+	for _, launch := range launches {
+		if mapString(launch.SourceArguments, "program_job_id") != "" {
+			return nil
+		}
+	}
 	if selection == nil || selection.ArtifactID == "" {
 		return nil
 	}

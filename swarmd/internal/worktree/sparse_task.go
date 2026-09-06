@@ -6,65 +6,25 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
-	"path/filepath"
 	"sort"
 	"strings"
 
 	"swarm/packages/swarmd/internal/taskscope"
 )
 
-var taskSparseContextNames = []string{
-	"AGENTS.md",
-	"README",
-	"README.*",
-	"go.mod",
-	"go.sum",
-	"go.work",
-	"go.work.sum",
-	"package.json",
-	"package-lock.json",
-	"pnpm-lock.yaml",
-	"yarn.lock",
-	"bun.lockb",
-	"tsconfig.json",
-	"jsconfig.json",
-	"Cargo.toml",
-	"Cargo.lock",
-	"pyproject.toml",
-	"poetry.lock",
-	"uv.lock",
-	"requirements*.txt",
-	"Makefile",
-	"Justfile",
-	"Taskfile.yml",
-	"WORKSPACE",
-	"WORKSPACE.bazel",
-	"MODULE.bazel",
-	"BUILD",
-	"BUILD.bazel",
-	".gitignore",
-	".gitattributes",
-	".editorconfig",
-}
-
 func prepareTaskWorktreeCheckout(worktreePath string, ownedScopes []string) error {
-	scopes, wholeWorktree, err := canonicalTaskSparseScopes(ownedScopes)
-	if err != nil {
+	if _, _, err := canonicalTaskSparseScopes(ownedScopes); err != nil {
 		return err
 	}
-	if wholeWorktree {
-		if _, err := runGitAllocation(worktreePath, nil, "checkout", "--force"); err != nil {
-			return fmt.Errorf("materialize whole task worktree: %w", err)
-		}
-		return nil
-	}
-	patterns := taskSparseCheckoutPatterns(scopes)
-	stdin := []byte(strings.Join(patterns, "\n") + "\n")
-	if _, err := runGitAllocation(worktreePath, stdin, "sparse-checkout", "set", "--no-cone", "--stdin"); err != nil {
-		return fmt.Errorf("configure sparse checkout: %w", err)
+	// Ownership constrains mutations, not the committed source a job may read.
+	// Language dependencies and build inputs cannot be inferred from an owned
+	// file list. Override inherited sparse configuration in this new worktree
+	// only; tool mutation scopes and committed-diff handoff checks still apply.
+	if _, err := runGitAllocation(worktreePath, []byte("/*\n"), "sparse-checkout", "set", "--no-cone", "--stdin"); err != nil {
+		return fmt.Errorf("configure complete task checkout: %w", err)
 	}
 	if _, err := runGitAllocation(worktreePath, nil, "checkout", "--force"); err != nil {
-		return fmt.Errorf("materialize sparse task worktree: %w", err)
+		return fmt.Errorf("materialize committed task source: %w", err)
 	}
 	return nil
 }
@@ -99,43 +59,6 @@ func canonicalTaskSparseScopes(rawScopes []string) ([]string, bool, error) {
 	}
 	sort.Strings(scopes)
 	return scopes, false, nil
-}
-
-func taskSparseCheckoutPatterns(scopes []string) []string {
-	patterns := make([]string, 0, len(scopes)+len(taskSparseContextNames)*4+2)
-	seen := map[string]struct{}{}
-	appendPattern := func(pattern string) {
-		if _, ok := seen[pattern]; ok {
-			return
-		}
-		seen[pattern] = struct{}{}
-		patterns = append(patterns, pattern)
-	}
-	appendContext := func(dir string) {
-		prefix := "/"
-		if dir != "" {
-			prefix += strings.Trim(dir, "/") + "/"
-		}
-		for _, name := range taskSparseContextNames {
-			appendPattern(prefix + name)
-		}
-		if dir == "" {
-			appendPattern("/.agents/")
-		}
-	}
-	appendContext("")
-	for _, scope := range scopes {
-		appendPattern("/" + scope)
-		parent := filepath.ToSlash(filepath.Dir(filepath.FromSlash(scope)))
-		if parent == "." {
-			continue
-		}
-		parts := strings.Split(parent, "/")
-		for i := 1; i <= len(parts); i++ {
-			appendContext(strings.Join(parts[:i], "/"))
-		}
-	}
-	return patterns
 }
 
 func runGitAllocation(path string, stdin []byte, args ...string) (string, error) {

@@ -4203,6 +4203,7 @@ func marshalPlanManagePayload(payload map[string]any) (string, error) {
 }
 
 type taskExecutionRequest struct {
+	ProgramCohort        bool // internal: scheduler owns reservation finalization
 	Parsed               taskCallArguments
 	ParsedProvided       bool
 	DescriptionOverride  string
@@ -4401,7 +4402,7 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 		if definitionErr != nil {
 			return "", definitionErr
 		}
-		preflight := taskProgramScheduler{parentSession: parentSession, parsed: parsed, record: pebblestore.TaskProgramRecord{Definition: definition}}
+		preflight := taskProgramScheduler{service: s, req: req, parentSession: parentSession, parsed: parsed, record: pebblestore.TaskProgramRecord{Definition: definition}}
 		if _, laneErr := preflight.programWorkspacePath(); laneErr != nil {
 			return "", laneErr
 		}
@@ -4429,7 +4430,7 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 		return s.executeTaskProgram(ctx, sessionMode, step, call, emit, req, parentSession, parsed, programRecord, description, prompt)
 	}
 	reservationFinished := false
-	if s.permissions != nil && strings.TrimSpace(req.RunID) != "" {
+	if s.permissions != nil && strings.TrimSpace(req.RunID) != "" && !req.ProgramCohort {
 		defer func() {
 			if !reservationFinished {
 				_ = s.permissions.FinishSubagentWave(parentSession.ID, req.RunID, taskCallID, "failed")
@@ -5216,8 +5217,8 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 			}
 			outcome.ArtifactReference = taskArtifactV3Reference(grant, finished.Revision.CommitOID, 0, pebblestore.SessionArtifactStatusReady)
 			if s.sessions != nil && s.sessions.Store() != nil {
-				if repository, ok, readErr := s.sessions.Store().GetArtifactV3Repository(parentSession.AccountScopeID, parentSession.UserID, grant.ArtifactID); readErr == nil && ok {
-					outcome.ArtifactReference.ProjectionSeq = repository.EventSeq
+				if revision, ok, readErr := s.sessions.Store().GetArtifactV3Revision(parentSession.AccountScopeID, parentSession.UserID, grant.ArtifactID, finished.Revision.CommitOID); readErr == nil && ok {
+					outcome.ArtifactReference.ProjectionSeq = revision.EventSeq
 				}
 			}
 			if outcome.ArtifactReference.ProjectionSeq == 0 {
@@ -5606,7 +5607,7 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 			return "", err
 		}
 	}
-	if s.permissions != nil && strings.TrimSpace(req.RunID) != "" {
+	if s.permissions != nil && strings.TrimSpace(req.RunID) != "" && !req.ProgramCohort {
 		reservationStatus := "completed"
 		if failedCount > 0 || cancelledCount > 0 {
 			reservationStatus = "failed"

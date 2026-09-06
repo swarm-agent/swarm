@@ -53,10 +53,20 @@ func (s *Service) executeTaskProgram(ctx context.Context, sessionMode string, st
 	}
 	scheduler := taskProgramScheduler{service: s, ctx: ctx, sessionMode: sessionMode, step: step, call: call, emit: emit, req: req, parentSession: parentSession, description: description, prompt: prompt, parsed: parsed, record: record, reservationCap: reservation.ActiveCount}
 	if _, err := scheduler.programWorkspacePath(); err != nil {
-		return "", err
+		return scheduler.finishBlocked(err)
 	}
 	scheduler.emitProgramProgress("program.started", "Task Program started")
 	return scheduler.run()
+}
+
+// Failed persistence must not overwrite the scheduler's last durable snapshot
+// with a zero record; terminal diagnostics still need exact child lineage.
+func (p *taskProgramScheduler) transition(parentID, programID string, input pebblestore.TaskProgramTransition) (pebblestore.TaskProgramRecord, bool, error) {
+	record, changed, err := p.service.sessions.TransitionTaskProgram(parentID, programID, input)
+	if err != nil {
+		return p.record, false, err
+	}
+	return record, changed, nil
 }
 
 func (p *taskProgramScheduler) run() (string, error) {
@@ -222,11 +232,12 @@ func (p *taskProgramScheduler) runCohort(indexes []int) error {
 		}
 		definition := p.record.Definition.Jobs[definitionIndex]
 		if agentruntime.IsCoderAgentName(launch.RequestedSubagentType) {
-			launch.TargetWorkspacePath = programWorkspacePath
-			if launch.SourceArguments == nil {
-				launch.SourceArguments = map[string]any{}
+			if p.record.RepositoryLane != nil {
+				copy := *p.record.RepositoryLane
+				launch.ProgramRepositoryLane = &copy
+			} else {
+				launch.ProgramRepositoryLane = &pebblestore.TaskProgramRepositoryLane{SourcePath: mapString(p.parentSession.Metadata, "swarm_v3_source_workspace_path"), WorkspacePath: programWorkspacePath, Branch: p.parentSession.WorktreeBranch}
 			}
-			launch.SourceArguments["workspace_path"] = programWorkspacePath
 		}
 		launch.AnimationProfile = cloneTaskAnimationProfile(definition.AnimationProfile)
 		if launch.SourceArguments == nil {
@@ -235,7 +246,7 @@ func (p *taskProgramScheduler) runCohort(indexes []int) error {
 		if launch.AnimationProfile != nil {
 			launch.SourceArguments["animation_profile"] = cloneTaskAnimationProfile(launch.AnimationProfile)
 		}
-		if agentruntime.IsCoderAgentName(launch.RequestedSubagentType) {
+		{
 			handoffBlock, err := p.finderHandoffsForJob(index)
 			if err != nil {
 				return err
@@ -243,6 +254,39 @@ func (p *taskProgramScheduler) runCohort(indexes []int) error {
 			if handoffBlock != "" {
 				launch.MetaPrompt = strings.TrimSpace(launch.MetaPrompt + "\n\n" + handoffBlock)
 			}
+		}
+		sourceBlock, err := p.sourceHandoffsForJob(index)
+		if err != nil {
+			return err
+		}
+		if sourceBlock != "" {
+			launch.MetaPrompt = strings.TrimSpace(launch.MetaPrompt + "\n\n" + sourceBlock)
+		}
+		if taskProgramDefinitionUsesManagedDesigner(definition) {
+			var source *taskArtifactV3Source
+			for _, depID := range definition.DependsOn {
+				dep := taskProgramJobIndex(p.record, depID)
+				if dep < 0 || p.record.Jobs[dep].ArtifactRef == nil {
+					continue
+				}
+				ref := p.record.Jobs[dep].ArtifactRef
+				if source != nil {
+					return errors.New("Designer has multiple artifact dependencies; explicit source selection required")
+				}
+				repo, ok, err := p.service.sessions.Store().GetArtifactV3Repository(p.parentSession.AccountScopeID, p.parentSession.UserID, ref.ArtifactID)
+				if err != nil {
+					return err
+				}
+				if !ok || repo.OwnerSessionID != p.parentSession.ID || repo.HeadCommitOID != ref.CommitOID {
+					return errors.New("Designer dependency requires explicit selection of its exact artifact candidate")
+				}
+				source = &taskArtifactV3Source{SessionID: ref.SessionID, ArtifactID: ref.ArtifactID, CommitOID: ref.CommitOID, ProjectionSeq: repo.EventSeq}
+			}
+			launch.ProgramArtifactSource = source
+		}
+		if agentruntime.IsFinderAgentName(launch.RequestedSubagentType) && p.record.RepositoryLane != nil && (sameTaskProgramPath(firstNonEmptyString(launch.TargetWorkspacePath, p.record.RepositoryLane.SourcePath), p.record.RepositoryLane.SourcePath) || sameTaskProgramPath(launch.TargetWorkspacePath, p.record.RepositoryLane.WorkspacePath)) {
+			copy := *p.record.RepositoryLane
+			launch.ProgramRepositoryLane = &copy
 		}
 		executionLaunches[index] = launch
 	}
@@ -277,7 +321,7 @@ func (p *taskProgramScheduler) runCohort(indexes []int) error {
 		running = append(running, pebblestore.TaskProgramJobTransition{JobID: job.JobID, ExpectedState: pebblestore.TaskProgramJobDeclared, State: pebblestore.TaskProgramJobRunning, AttemptNumber: job.AttemptNumber + 1})
 	}
 	state, next := pebblestore.TaskProgramStateRunning, "await_running_jobs"
-	p.record, _, err = p.service.sessions.TransitionTaskProgram(p.parentSession.ID, p.record.ProgramID, pebblestore.TaskProgramTransition{ExpectedRevision: p.record.Revision, MutationID: fmt.Sprintf("running:%d", p.record.Revision), State: &state, NextAction: &next, Jobs: running})
+	p.record, _, err = p.transition(p.parentSession.ID, p.record.ProgramID, pebblestore.TaskProgramTransition{ExpectedRevision: p.record.Revision, MutationID: fmt.Sprintf("running:%d", p.record.Revision), State: &state, NextAction: &next, Jobs: running})
 	if err != nil {
 		return err
 	}
@@ -294,7 +338,7 @@ func (p *taskProgramScheduler) runCohort(indexes []int) error {
 	cohortReq.Parsed, cohortReq.ParsedProvided = cohort, true
 	cohortReq.ParentSession = &p.parentSession
 	cohortReq.ApprovedArguments = approved
-	cohortReq.RunID = ""
+	cohortReq.ProgramCohort = true
 	cohortEmit := func(event StreamEvent) {
 		if event.Type != StreamEventToolDelta || strings.TrimSpace(event.Output) == "" {
 			if p.emit != nil {
@@ -343,6 +387,11 @@ func (p *taskProgramScheduler) runCohort(indexes []int) error {
 		runErr = validationErr
 	}
 	updates := taskProgramOutcomeTransitions(&taskProgramSpec{Jobs: jobs}, outcomes, runErrs)
+	for _, update := range updates {
+		if runErr == nil && update.Blocker != nil {
+			runErr = errors.New(update.Blocker.Message)
+		}
+	}
 	state, next = pebblestore.TaskProgramStateRunning, "launch_ready_jobs"
 	var blocker *pebblestore.TaskProgramBlocker
 	blockedOutcome := false
@@ -355,7 +404,9 @@ func (p *taskProgramScheduler) runCohort(indexes []int) error {
 	if runErr != nil {
 		blockerCode := taskProgramErrorCode(runErr)
 		_, next = taskProgramBlockerActions(blockerCode)
-		if blockedOutcome {
+		if errors.Is(runErr, context.Canceled) {
+			state = pebblestore.TaskProgramStateCancelled
+		} else if blockedOutcome {
 			state = pebblestore.TaskProgramStateBlocked
 		} else {
 			state = pebblestore.TaskProgramStateFailed
@@ -395,7 +446,7 @@ func (p *taskProgramScheduler) runCohort(indexes []int) error {
 		p.record = originalRecord
 		blocker = &value
 	}
-	p.record, _, err = p.service.sessions.TransitionTaskProgram(p.parentSession.ID, p.record.ProgramID, pebblestore.TaskProgramTransition{ExpectedRevision: p.record.Revision, MutationID: fmt.Sprintf("cohort:%d", p.record.Revision), State: &state, NextAction: &next, Blocker: blocker, Jobs: updates})
+	p.record, _, err = p.transition(p.parentSession.ID, p.record.ProgramID, pebblestore.TaskProgramTransition{ExpectedRevision: p.record.Revision, MutationID: fmt.Sprintf("cohort:%d", p.record.Revision), State: &state, NextAction: &next, Blocker: blocker, Jobs: updates})
 	if err != nil {
 		return err
 	}
@@ -427,7 +478,7 @@ func (p *taskProgramScheduler) failUnlaunchedCohort(indexes []int, launchErr err
 	}
 	state := pebblestore.TaskProgramStateFailed
 	blocker := p.structuredBlocker(blockerCode, launchErr, next, failedJobID)
-	record, _, err := p.service.sessions.TransitionTaskProgram(p.parentSession.ID, p.record.ProgramID, pebblestore.TaskProgramTransition{
+	record, _, err := p.transition(p.parentSession.ID, p.record.ProgramID, pebblestore.TaskProgramTransition{
 		ExpectedRevision: p.record.Revision,
 		MutationID:       fmt.Sprintf("launch-rejected:%d", p.record.Revision),
 		State:            &state,
@@ -472,8 +523,10 @@ func (p *taskProgramScheduler) finderHandoffsForJob(jobIndex int) (string, error
 		}
 		return nil
 	}
-	if err := visit(jobIndex); err != nil {
-		return "", err
+	for _, dependencyID := range p.record.Definition.Jobs[jobIndex].DependsOn {
+		if err := visit(taskProgramDefinitionJobIndex(p.record, dependencyID)); err != nil {
+			return "", err
+		}
 	}
 	if len(finderIndexes) == 0 {
 		return "", nil
@@ -493,6 +546,9 @@ func (p *taskProgramScheduler) finderHandoffsForJob(jobIndex int) (string, error
 			return "", fmt.Errorf("Finder dependency %q completed without a usable durable handoff", definition.ID)
 		}
 		ref := job.HandoffRef
+		if ref.SessionID != firstNonEmptyString(job.CurrentSessionID, job.ChildSessionID) {
+			return "", fmt.Errorf("Finder dependency %q handoff producer mismatch", definition.ID)
+		}
 		message, ok, err := p.service.sessions.GetTaskProgramHandoffMessage(ref.SessionID, ref.GlobalSeq)
 		if err != nil {
 			return "", fmt.Errorf("load Finder dependency %q handoff: %w", definition.ID, err)
@@ -664,27 +720,15 @@ func (p *taskProgramScheduler) validateManagedDesignerArtifact(jobID, childSessi
 	if reference == nil {
 		return fmt.Errorf("managed Designer job %q completed without an artifact reference", jobID)
 	}
-	expected := taskProgramExpectedArtifactReference(p.record, jobID)
-	if reference.SessionID != expected.SessionID || reference.CollectionID != expected.CollectionID || reference.VariantID != expected.VariantID || reference.Status != expected.Status || reference.FailureCode != "" {
+	if reference.SessionID != p.parentSession.ID || reference.ArtifactID == "" || reference.CommitOID == "" || reference.ProjectionSeq == 0 || reference.TurnID == "" || reference.CandidateID == "" || reference.CollectionID != "" || reference.VariantID != "" || reference.Status != pebblestore.SessionArtifactStatusReady || reference.FailureCode != "" {
 		return fmt.Errorf("managed Designer job %q returned a malformed or mismatched ready artifact reference", jobID)
 	}
 	if p.service == nil || p.service.sessions == nil {
 		return errors.New("managed Designer artifact validation requires the session artifact authority")
 	}
-	variant, ok, err := p.service.sessions.GetSessionArtifactVariant(p.parentSession.AccountScopeID, p.parentSession.ID, expected.CollectionID, expected.VariantID)
-	if err != nil {
-		return fmt.Errorf("validate managed Designer job %q artifact: %w", jobID, err)
-	}
-	if !ok {
-		return fmt.Errorf("managed Designer job %q artifact is missing", jobID)
-	}
-	lineage := variant.Lineage
-	lineageSourceMatches := lineage.SourceSessionID == childSessionID || (lineage.SourceSessionID != "" && lineage.SourceCollectionID != "" && lineage.SourceVariantID != "")
-	if variant.SessionID != p.parentSession.ID || variant.AccountScopeID != p.parentSession.AccountScopeID || variant.CollectionID != expected.CollectionID || variant.Status != pebblestore.SessionArtifactStatusReady ||
-		lineage.ParentSessionID != p.parentSession.ID || !lineageSourceMatches || lineage.TaskCallID != p.record.ReservationCallID || lineage.ProgramID != p.record.ProgramID || lineage.ProgramJobID != jobID || lineage.ChildSessionID != childSessionID {
-		return fmt.Errorf("managed Designer job %q artifact lineage does not match its trusted program handoff", jobID)
-	}
-	return nil
+	return p.service.sessions.ValidateTaskProgramArtifact(p.parentSession, childSessionID, p.record.ReservationCallID, p.record.ProgramID, jobID, pebblestore.TaskProgramArtifactRef{
+		SessionID: reference.SessionID, ArtifactID: reference.ArtifactID, CommitOID: reference.CommitOID, ProjectionSeq: reference.ProjectionSeq, TurnID: reference.TurnID, CandidateID: reference.CandidateID,
+	})
 }
 
 func taskProgramLaunchRows(payload map[string]any) []map[string]any {
@@ -711,8 +755,11 @@ func taskProgramErrorsFromPayload(payload map[string]any, fallback error, count 
 				out[i] = errors.New(message)
 			}
 		}
-		if out[i] == nil && fallback != nil {
+		if out[i] == nil && (i >= len(rows) || mapString(rows[i], "phase") != "completed") {
 			out[i] = fallback
+			if out[i] == nil {
+				out[i] = errors.New("task program child has no explicit completed outcome")
+			}
 		}
 	}
 	return out
@@ -762,7 +809,19 @@ func (p *taskProgramScheduler) programWorkspacePath() (string, error) {
 		requested = sourcePath
 	}
 	if !sameTaskProgramPath(requested, sourcePath) && !sameTaskProgramPath(requested, lanePath) {
-		return "", fmt.Errorf("Task Program cross-workspace target %q lacks a session-owned repository lane", requested)
+		return p.repositoryLane(requested)
+	}
+	if p.record.Revision > 0 && p.record.RepositoryLane == nil && p.service != nil && p.service.worktrees != nil {
+		base, err := p.service.worktrees.ResolveTaskBase(lanePath)
+		if err != nil {
+			return "", err
+		}
+		lane := &pebblestore.TaskProgramRepositoryLane{SourcePath: sourcePath, WorkspacePath: lanePath, Branch: worktreeBranch, BaseCommit: base.BaseCommit}
+		record, _, err := p.transition(p.parentSession.ID, p.record.ProgramID, pebblestore.TaskProgramTransition{ExpectedRevision: p.record.Revision, MutationID: fmt.Sprintf("lane:%d", p.record.Revision), RepositoryLane: lane})
+		if err != nil {
+			return "", err
+		}
+		p.record = record
 	}
 	return lanePath, nil
 }
@@ -806,6 +865,9 @@ func (p *taskProgramScheduler) integrateStage(stageIndex int) error {
 		}
 		definition := p.record.Definition.Jobs[definitionIndex]
 		if agentruntime.IsCoderAgentName(definition.AgentType) {
+			if len(definition.OwnedScope) == 0 {
+				return errors.New("Task Program Coder integration requires explicit owned scopes")
+			}
 			if expectedBranch == "" {
 				expectedBranch = strings.TrimSpace(job.ParentBranch)
 			} else if strings.TrimSpace(job.ParentBranch) != expectedBranch {
@@ -824,7 +886,7 @@ func (p *taskProgramScheduler) integrateStage(stageIndex int) error {
 				p.expectedParentHead = expectedHead
 				return fmt.Errorf("Coder job %q immutable base %s does not match stage base %s", job.JobID, job.ImmutableStageBase, expectedHead)
 			}
-			children = append(children, worktreeruntime.TaskIntegrationChild{SessionID: firstNonEmptyString(job.CurrentSessionID, job.ChildSessionID), BaseCommit: job.ImmutableStageBase, HeadCommit: job.ChildHead})
+			children = append(children, worktreeruntime.TaskIntegrationChild{SessionID: firstNonEmptyString(job.CurrentSessionID, job.ChildSessionID), BaseCommit: job.ImmutableStageBase, HeadCommit: job.ChildHead, OwnedScopes: append([]string(nil), definition.OwnedScope...)})
 			updates = append(updates, pebblestore.TaskProgramJobTransition{JobID: job.JobID, ExpectedState: pebblestore.TaskProgramJobHandoffReady, State: pebblestore.TaskProgramJobIntegrated, IntegrationState: "integrated"})
 		}
 	}
@@ -858,7 +920,7 @@ func (p *taskProgramScheduler) integrateStage(stageIndex int) error {
 		}
 	}
 	next := "advance_stage"
-	p.record, _, err = p.service.sessions.TransitionTaskProgram(p.parentSession.ID, p.record.ProgramID, pebblestore.TaskProgramTransition{ExpectedRevision: p.record.Revision, MutationID: fmt.Sprintf("integrate:%d", p.record.Revision), ParentHead: &parentHead, NextAction: &next, Jobs: updates})
+	p.record, _, err = p.transition(p.parentSession.ID, p.record.ProgramID, pebblestore.TaskProgramTransition{ExpectedRevision: p.record.Revision, MutationID: fmt.Sprintf("integrate:%d", p.record.Revision), ParentHead: &parentHead, NextAction: &next, Jobs: updates})
 	if err != nil || len(children) == 0 {
 		return err
 	}
@@ -905,7 +967,7 @@ func (p *taskProgramScheduler) cleanupIntegratedStageWorktrees(stageID string) e
 		return nil
 	}
 	var err error
-	p.record, _, err = p.service.sessions.TransitionTaskProgram(p.parentSession.ID, p.record.ProgramID, pebblestore.TaskProgramTransition{
+	p.record, _, err = p.transition(p.parentSession.ID, p.record.ProgramID, pebblestore.TaskProgramTransition{
 		ExpectedRevision: p.record.Revision,
 		MutationID:       fmt.Sprintf("cleanup-integrated-worktrees:%d", p.record.Revision),
 		Jobs:             updates,
@@ -922,7 +984,7 @@ func (p *taskProgramScheduler) cleanupIntegratedStageWorktrees(stageID string) e
 func (p *taskProgramScheduler) advanceStage(stageIndex int) error {
 	stageID, next := p.record.Definition.Stages[stageIndex].ID, "launch_ready_jobs"
 	var err error
-	p.record, _, err = p.service.sessions.TransitionTaskProgram(p.parentSession.ID, p.record.ProgramID, pebblestore.TaskProgramTransition{ExpectedRevision: p.record.Revision, MutationID: fmt.Sprintf("stage:%d:%s", p.record.Revision, stageID), ActiveStageID: &stageID, NextAction: &next})
+	p.record, _, err = p.transition(p.parentSession.ID, p.record.ProgramID, pebblestore.TaskProgramTransition{ExpectedRevision: p.record.Revision, MutationID: fmt.Sprintf("stage:%d:%s", p.record.Revision, stageID), ActiveStageID: &stageID, NextAction: &next})
 	if err == nil {
 		p.emitProgramProgress("stage.advanced", fmt.Sprintf("Advanced to stage %s", stageID))
 	}
@@ -931,7 +993,7 @@ func (p *taskProgramScheduler) advanceStage(stageIndex int) error {
 
 func (p *taskProgramScheduler) finishCompleted() (string, error) {
 	state, next := pebblestore.TaskProgramStateCompleted, "none"
-	record, _, err := p.service.sessions.TransitionTaskProgram(p.parentSession.ID, p.record.ProgramID, pebblestore.TaskProgramTransition{ExpectedRevision: p.record.Revision, MutationID: fmt.Sprintf("complete:%d", p.record.Revision), State: &state, NextAction: &next})
+	record, _, err := p.transition(p.parentSession.ID, p.record.ProgramID, pebblestore.TaskProgramTransition{ExpectedRevision: p.record.Revision, MutationID: fmt.Sprintf("complete:%d", p.record.Revision), State: &state, NextAction: &next})
 	if err != nil {
 		return "", err
 	}
@@ -949,6 +1011,21 @@ func (p *taskProgramScheduler) finishCompleted() (string, error) {
 }
 
 func (p *taskProgramScheduler) finishFailed(runErr error) (string, error) {
+	if p.record.State != pebblestore.TaskProgramStateFailed && p.record.State != pebblestore.TaskProgramStateCancelled && p.record.State != pebblestore.TaskProgramStateBlocked {
+		state, next := pebblestore.TaskProgramStateFailed, "author_new_program_for_remaining_work"
+		blocker := p.structuredBlocker(taskProgramErrorCode(runErr), runErr, next, p.barrierJobID)
+		updates := []pebblestore.TaskProgramJobTransition{}
+		for _, job := range p.record.Jobs {
+			if job.State == pebblestore.TaskProgramJobRunning {
+				updates = append(updates, pebblestore.TaskProgramJobTransition{JobID: job.JobID, ExpectedState: job.State, State: pebblestore.TaskProgramJobFailed, Blocker: &blocker})
+			}
+		}
+		record, _, err := p.transition(p.parentSession.ID, p.record.ProgramID, pebblestore.TaskProgramTransition{ExpectedRevision: p.record.Revision, MutationID: fmt.Sprintf("failed:%d", p.record.Revision), State: &state, NextAction: &next, Blocker: &blocker, Jobs: updates})
+		if err != nil {
+			return "", errors.Join(runErr, err)
+		}
+		p.record = record
+	}
 	p.emitProgramProgress("program.failed", "Task Program failed")
 	_ = p.service.permissions.FinishSubagentWave(p.parentSession.ID, p.req.RunID, p.call.CallID, "failed")
 	status, _ := marshalTaskProgramStatus(p.record, false)
@@ -967,7 +1044,7 @@ func (p *taskProgramScheduler) finishBlocked(blockErr error) (string, error) {
 	_, next := taskProgramBlockerActions(blockerCode)
 	state := pebblestore.TaskProgramStateBlocked
 	blocker := p.structuredBlocker(blockerCode, blockErr, next, p.barrierJobID)
-	record, _, err := p.service.sessions.TransitionTaskProgram(p.parentSession.ID, p.record.ProgramID, pebblestore.TaskProgramTransition{ExpectedRevision: p.record.Revision, MutationID: fmt.Sprintf("blocked:%d", p.record.Revision), State: &state, NextAction: &next, Blocker: &blocker})
+	record, _, err := p.transition(p.parentSession.ID, p.record.ProgramID, pebblestore.TaskProgramTransition{ExpectedRevision: p.record.Revision, MutationID: fmt.Sprintf("blocked:%d", p.record.Revision), State: &state, NextAction: &next, Blocker: &blocker})
 	if err != nil {
 		return "", err
 	}

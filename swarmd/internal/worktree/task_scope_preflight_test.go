@@ -43,7 +43,7 @@ func TestTaskScopePreflightRejectsBeforeAllocation(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(allocation.WorkspacePath, "small", "owned.txt")); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(filepath.Join(allocation.WorkspacePath, "large", "unrelated.bin")); !os.IsNotExist(err) {
-		t.Fatalf("unrelated file materialized: %v", err)
+	if _, err := os.Stat(filepath.Join(allocation.WorkspacePath, "large", "unrelated.bin")); err != nil {
+		t.Fatalf("committed read source missing: %v", err)
 	}
 }

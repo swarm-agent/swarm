@@ -108,15 +108,31 @@ func (s *Service) allocateManagedDesignerArtifactV3(ctx context.Context, parent 
 		if !agentruntime.IsDesignerAgentName(spec.RequestedSubagentType) || strings.TrimSpace(spec.OutputMode) != taskOutputModeManaged {
 			continue
 		}
+		if spec.ProgramArtifactSource != nil {
+			if spec.ArtifactV3Source != nil {
+				return nil, errors.New("program artifact dependency conflicts with explicit source")
+			}
+			spec.ArtifactV3Source = cloneTaskArtifactV3Source(spec.ProgramArtifactSource)
+		}
 		targetPartIDs, err := artifactV3TargetPartIDs(spec)
 		if err != nil {
 			return nil, fmt.Errorf("parse Artifact V3 target Parts: %w", err)
+		}
+		artifactCallID := strings.TrimSpace(taskCallID)
+		if programID := mapString(spec.SourceArguments, "program_id"); programID != "" {
+			jobID := mapString(spec.SourceArguments, "program_job_id")
+			if jobID == "" {
+				return nil, errors.New("managed Designer program job identity missing")
+			}
+			// Candidate indices are cohort-local; stable program/job identity avoids
+			// accidentally reusing a previous cohort's genesis or candidate slot.
+			artifactCallID += ":program:" + programID + ":job:" + jobID
 		}
 		request := tool.ArtifactV3PrepareTurnRequest{
 			AccountScopeID: parent.AccountScopeID,
 			UserID:         parent.UserID,
 			OwnerSessionID: parent.ID,
-			TaskCallID:     strings.TrimSpace(taskCallID),
+			TaskCallID:     artifactCallID,
 			Prompt:         strings.TrimSpace(spec.MetaPrompt),
 			PolicyRevision: artifactV3PolicyRevision,
 			CandidateIndex: index + 1,

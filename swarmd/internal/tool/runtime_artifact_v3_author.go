@@ -196,6 +196,20 @@ type ArtifactV3DirectRevisionReader interface {
 	ReadArtifactV3DirectRevision(context.Context, string, string, string, string, string) (map[string][]byte, []pebblestore.ArtifactV3Part, error)
 }
 
+// ReadDependencyRevision exposes the existing authenticated immutable reader to
+// orchestration. Consumers receive bounded quoted evidence, not author grants.
+func (s *ArtifactV3AuthorService) ReadDependencyRevision(ctx context.Context, account, user, session, artifact, commit string) (map[string][]byte, error) {
+	if s == nil {
+		return nil, errors.New("native artifact dependency reader unavailable")
+	}
+	reader, ok := s.repository.(ArtifactV3DirectRevisionReader)
+	if !ok {
+		return nil, errors.New("native artifact dependency reader unavailable")
+	}
+	files, _, err := reader.ReadArtifactV3DirectRevision(ctx, account, user, session, artifact, "revision-"+commit)
+	return files, err
+}
+
 type ArtifactV3AuthorFile struct {
 	Path string `json:"path"`
 	Size int64  `json:"size"`

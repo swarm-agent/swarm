@@ -26,20 +26,26 @@ func (s *Service) resolveApprovedCheckpointTaskProgram(sessionID string, parsed 
 	if !ok || plan.Document == nil {
 		return taskCallArguments{}, errors.New("planned task program start requires an active structured plan")
 	}
+	if plan.ApprovalState != "approved" || plan.Status != "approved" {
+		return taskCallArguments{}, errors.New("planned task program requires an approved plan")
+	}
 	doc := plan.Document
 	checkpointID := strings.TrimSpace(doc.ActiveCheckpointID)
 	if checkpointID == "" {
-		checkpoint, _, found := sessionruntime.SelectNextPlanCheckpoint(doc)
-		if !found {
-			return taskCallArguments{}, errors.New("planned task program start requires a runnable active checkpoint")
-		}
-		checkpointID = strings.TrimSpace(checkpoint.ID)
+		return taskCallArguments{}, errors.New("planned task program start requires a runnable active checkpoint")
 	}
 	index := findPlanRunCheckpointIndex(doc.Checkpoints, checkpointID)
 	if index < 0 {
 		return taskCallArguments{}, fmt.Errorf("planned task program checkpoint %q was not found", checkpointID)
 	}
-	program := doc.Checkpoints[index].TaskProgram
+	if doc.Checkpoints[index].Status != "in_progress" || (doc.ExecutionState != nil && doc.ExecutionState.Status != "" && doc.ExecutionState.Status != "in_progress") {
+		return taskCallArguments{}, errors.New("planned task program start requires an in-progress active checkpoint")
+	}
+	checkpoint := doc.Checkpoints[index]
+	if doc.ExecutionState != nil && doc.ExecutionState.ActiveAttemptID != "" && checkpoint.AttemptID != doc.ExecutionState.ActiveAttemptID {
+		return taskCallArguments{}, errors.New("planned task program checkpoint attempt is stale")
+	}
+	program := checkpoint.TaskProgram
 	if program == nil {
 		return taskCallArguments{}, fmt.Errorf("active checkpoint %q has no approved task_program", checkpointID)
 	}
