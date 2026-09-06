@@ -6,6 +6,7 @@
 // Run beside the daemon; init creates owned fixtures, observe is resumable and
 // bounded to one checkpoint (<=10 minutes). Credentials are memory-only.
 import crypto from 'node:crypto'
+import { observerStopReason, createProgressWatch } from './task-program-observer-state.mjs'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
@@ -103,6 +104,7 @@ try {
     e = JSON.parse(await readFile(evidencePath, 'utf8'))
     const n = Number(opt('--checkpoint')); check(n >= 1 && n <= 10, 'checkpoint 1–10 required')
     const deadline = Date.now() + duration; let nextBeat = 0
+    const watch = createProgressWatch({ timeoutMs: duration, stallMs: 90000 })
     while (Date.now() < deadline) {
       const snapshot = await hydrate(e.parent)
       const active = await api('GET', `/v3/sessions/${e.parent}/plans/active`)
@@ -110,6 +112,11 @@ try {
       check(doc?.checkpoints?.length === 10, 'Canonical ten-checkpoint plan unavailable')
       const cp = doc.checkpoints.find(c => c.id === `cp-${n}`)
       for (const o of taskOutputs(snapshot)) if (e.programs[o.program_id]) e.programs[o.program_id].output = o
+      const programIDs = Object.keys(e.programs).filter(id => e.programs[id].checkpoint === n)
+      const stop = observerStopReason({ snapshot, sessionID: e.parent, runID: cp.run_id, programIDs, checkpoint: cp })
+      if (stop) { e.observer_stop = stop; await save(); throw Error(JSON.stringify(stop)) }
+      const stalled = watch(JSON.stringify({ cp: cp.status, run: cp.run_id, projection: snapshot.projections_by_session?.[e.parent], outputs: programIDs.map(id => e.programs[id].output?.program_state) }))
+      if (stalled) { e.observer_stop = stalled; await save(); throw Error(JSON.stringify(stalled)) }
       const bootstrap = await api('POST', '/v3/sync/bootstrap', { surface: 'desktop', selector: { kind: 'global', global: true, recent: { limit: 100 } }, history: { mode: 'none' }, resources: { current_run_state: true }, include_active: true })
       const children = Object.values(bootstrap.sessions_by_id || {}).filter(s => s.metadata?.parent_session_id === e.parent)
       e.children = Object.fromEntries([...Object.entries(e.children || {}), ...children.map(s => [s.id, { id: s.id, worktree: s.worktree_root_path, branch: s.worktree_branch, metadata: s.metadata }])])

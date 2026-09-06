@@ -5015,7 +5015,7 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 		metaPrompt := strings.TrimSpace(outcome.MetaPrompt)
 		perLaunchPrompt := prompt
 		if metaPrompt != "" && !(parsed.Mode == taskModeSwarm && agentruntime.IsIdeaAgentName(launch.RequestedSubagent)) {
-			perLaunchPrompt = "Meta-prompt:\n" + metaPrompt + "\n\nPrompt:\n" + prompt
+			perLaunchPrompt = taskChildAssignmentPrompt(metaPrompt, prompt, launch.ProgramID)
 		}
 		delegatedPrompt := perLaunchPrompt
 		if !(parsed.Mode == taskModeSwarm && agentruntime.IsIdeaAgentName(launch.RequestedSubagent)) {

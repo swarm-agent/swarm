@@ -7,6 +7,7 @@
 // workstation whose paths merely resemble remote paths. It retains failure evidence
 // and owned fixtures; it never resets a slot, deletes sessions, or changes credentials.
 import crypto from 'node:crypto'
+import { observerStopReason, createProgressWatch } from './task-program-observer-state.mjs'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { mkdtemp, mkdir, writeFile, readFile } from 'node:fs/promises'
@@ -119,6 +120,7 @@ try {
     await api('POST', `/v3/sessions/${parent.id}/messages`, { client_request_id: `${id}-start`, role: 'user', content: `Execute this explicitly requested inline mixed-agent Task Program exactly once using task action=start and a nonempty top-level prompt. Two Designer alternatives are explicitly requested. Preserve all job identities, scopes, dependencies and prompts. Do not use an attached checkpoint program or launch additional workers. After successful completion, report the result. Program definition: ${JSON.stringify(program)}` })
   }
   const deadline = Date.now() + timeout; let latest; let output; let nextBeat = 0
+  const watch = createProgressWatch({ timeoutMs: timeout, stallMs: 90000 })
   while (Date.now() < deadline) {
     latest = await hydrate(parent.id)
     const bootstrap = await api('POST', '/v3/sync/bootstrap', { surface: 'desktop', selector: { kind: 'global', global: true, recent: { limit: 100 } }, history: { mode: 'none' }, resources: { current_run_state: true }, include_active: true })
@@ -129,6 +131,8 @@ try {
     output = found.find(o => o.program_state === 'completed')
     const failed = found.find(o => ['blocked', 'failed'].includes(o.program_state))
     const intents = latest.run_intents_by_session?.[parent.id] || []
+    const stop = observerStopReason({ snapshot: latest, sessionID: parent.id, runID: intents.at(-1)?.run_id, programIDs: [program.id] }) || watch(JSON.stringify({ intents, projection: latest.projections_by_session?.[parent.id], children: evidence.children }))
+    if (stop) { evidence.observer_stop = stop; throw Error(JSON.stringify(stop)) }
     if (failed || intents.some(r => ['failed', 'cancelled', 'interrupted'].includes(r.status))) { evidence.output = failed; throw Error('Mixed program failed; retained durable evidence') }
     for (const sid of evidence.sessions) {
       const permissions = (await api('GET', `/v3/sessions/${sid}/permissions?status=pending&limit=30`)).permissions || []
@@ -144,6 +148,7 @@ try {
   }
   evidence.output = output
   assert(output, 'Mixed program did not complete within its bounded stage')
+  assert((latest.run_intents_by_session?.[parent.id] || []).length > 0 && latest.run_intents_by_session[parent.id].every(r => r.status === 'completed'), 'Parent did not settle before the deadline')
   evidence.gates.program_complete = true
   const text = await readFile(path.join(parent.worktree_root_path, 'result.txt'), 'utf8')
   assert(text === `${marker}\nNATIVE_SOURCE_CONFIRMED\n`, 'Integrated output does not match the undisclosed research marker')
