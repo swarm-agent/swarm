@@ -1426,6 +1426,9 @@ func TestCoderPromptMakesAllocatedWorktreeAuthoritativeAndBaseCheckoutReadOnly(t
 	}
 }
 
+// Purpose: allocation must resolve a real linked Git admin path while keeping
+// the Coder scope isolated, permitting source reads but rejecting source writes.
+// A directory-only allocation stub cannot prove this runtime Git boundary.
 func TestApprovedCoderAllocatesIsolatedWorktreeScope(t *testing.T) {
 	svc, parentSessionID, cleanup := newTaskLaunchPermissionTestService(t)
 	defer cleanup()
@@ -1437,8 +1440,10 @@ func TestApprovedCoderAllocatesIsolatedWorktreeScope(t *testing.T) {
 	parent.WorktreeRootPath = parent.WorkspacePath
 	parent.WorktreeBaseBranch = "dev"
 	parent.TemporaryWorkspaceRoots = []string{t.TempDir()}
-	clonePath := t.TempDir()
-	stub := &taskLaunchWorktreeStub{allocation: worktreeruntime.Allocation{WorkspacePath: clonePath, RepoRoot: filepath.Dir(clonePath), BaseBranch: "dev", BranchName: "agent/clone", WorkspaceID: "clone-workspace"}}
+	repository := programFixtureRepo(t)
+	clonePath := filepath.Join(t.TempDir(), "child")
+	programFixtureGit(t, repository, "worktree", "add", "-b", "agent/clone", clonePath, "HEAD")
+	stub := &taskLaunchWorktreeStub{allocation: worktreeruntime.Allocation{WorkspacePath: clonePath, RepoRoot: repository, BaseBranch: "dev", BranchName: "agent/clone", WorkspaceID: "clone-workspace"}}
 	svc.SetWorktreeService(stub)
 	profile, virtual, source, err := svc.resolveTaskLaunchProfile(parent, "coder")
 	if err != nil || !virtual {
@@ -1472,8 +1477,14 @@ func TestApprovedCoderAllocatesIsolatedWorktreeScope(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolve Coder scope: %v", err)
 	}
-	if _, needsExpansion, err := tool.ScopeExpansionForCall(scope, tool.Call{Name: "read", Arguments: mustJSON(t, map[string]any{"path": parent.WorkspacePath})}); err != nil || !needsExpansion {
-		t.Fatalf("parent worktree read from Coder: needed=%t err=%v scope=%#v", needsExpansion, err, scope)
+	if _, needsExpansion, err := tool.ScopeExpansionForCall(scope, tool.Call{Name: "read", Arguments: mustJSON(t, map[string]any{"path": parent.WorkspacePath})}); err != nil || needsExpansion {
+		t.Fatalf("read-only source visibility: needed=%t err=%v", needsExpansion, err)
+	}
+	if _, needsExpansion, err := tool.ScopeExpansionForCall(scope, tool.Call{Name: "write", Arguments: mustJSON(t, map[string]any{"path": filepath.Join(parent.WorkspacePath, "forbidden.txt"), "content": "must not write"})}); err == nil && !needsExpansion {
+		t.Fatal("Coder source write was not rejected")
+	}
+	if _, err := os.Stat(filepath.Join(parent.WorkspacePath, "forbidden.txt")); !os.IsNotExist(err) {
+		t.Fatalf("source file unexpectedly changed: %v", err)
 	}
 }
 

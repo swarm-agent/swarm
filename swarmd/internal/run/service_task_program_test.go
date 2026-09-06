@@ -542,7 +542,7 @@ func TestTaskProgramSchedulerRequiresSessionOwnedRepositoryLane(t *testing.T) {
 				WorktreeBaseBranch: "dev", WorktreeBranch: "agent/session-product",
 				Metadata: map[string]any{"swarm_v3_source_workspace_path": "/repos/other", "swarm_v3_runtime_workspace_path": "/lanes/session-product"},
 			},
-			err: "lacks a session-owned repository lane",
+			err: "repository lane authorities unavailable",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -584,7 +584,7 @@ func TestTaskProgramSchedulerRecordsIntegratedWorktreeCleanupOutcome(t *testing.
 			parent.WorktreeBaseBranch = "dev"
 			parent.WorktreeBranch = "agent/parent-lane"
 			parent.Metadata = map[string]any{"swarm_v3_source_workspace_path": "/captured/repo", "swarm_v3_runtime_workspace_path": "/shared/repo"}
-			stub := &taskProgramCleanupWorktreeStub{taskLaunchWorktreeStub: taskLaunchWorktreeStub{cleanupErr: tc.cleanupErr}}
+			stub := &taskProgramCleanupWorktreeStub{taskLaunchWorktreeStub: taskLaunchWorktreeStub{cleanupErr: tc.cleanupErr, taskBase: worktreeruntime.TaskBase{BaseCommit: strings.Repeat("a", 40)}}}
 			svc.SetWorktreeService(stub)
 			record, _, err := svc.sessions.CreateTaskProgram(pebblestore.TaskProgramRecord{
 				ParentSessionID: parentID, ProgramID: "cleanup-program", DefinitionHash: "cleanup-definition",
@@ -909,12 +909,18 @@ func TestTaskProgramFinderHandoffHydratesDependentCoderWithVerificationWarning(t
 			{ID: "implement", StageID: "build", AgentType: "coder", DependsOn: []string{"audit"}},
 		}},
 		Jobs: []pebblestore.TaskProgramJobRecord{
-			{JobID: "inspect", StageID: "research", State: pebblestore.TaskProgramJobCompleted, HandoffRef: &pebblestore.TaskProgramHandoffRef{SessionID: message.SessionID, MessageID: message.ID, GlobalSeq: message.GlobalSeq}},
-			{JobID: "audit", StageID: "audit", State: pebblestore.TaskProgramJobCompleted, HandoffRef: &pebblestore.TaskProgramHandoffRef{SessionID: transitiveMessage.SessionID, MessageID: transitiveMessage.ID, GlobalSeq: transitiveMessage.GlobalSeq}},
+			{JobID: "inspect", StageID: "research", State: pebblestore.TaskProgramJobCompleted, ChildSessionID: message.SessionID, HandoffRef: &pebblestore.TaskProgramHandoffRef{SessionID: message.SessionID, MessageID: message.ID, GlobalSeq: message.GlobalSeq}},
+			{JobID: "audit", StageID: "audit", State: pebblestore.TaskProgramJobCompleted, ChildSessionID: transitiveMessage.SessionID, HandoffRef: &pebblestore.TaskProgramHandoffRef{SessionID: transitiveMessage.SessionID, MessageID: transitiveMessage.ID, GlobalSeq: transitiveMessage.GlobalSeq}},
 			{JobID: "implement", StageID: "build", State: pebblestore.TaskProgramJobDeclared},
 		},
 	}
 	scheduler := taskProgramScheduler{service: svc, parentSession: pebblestore.SessionSnapshot{ID: parentID}, record: record}
+	for _, consumer := range []string{"finder", "designer", "coder"} {
+		scheduler.record.Definition.Jobs[2].AgentType = consumer
+		if text, err := scheduler.finderHandoffsForJob(2); err != nil || !strings.Contains(text, "Inspect service.go:42") {
+			t.Fatalf("%s handoff: %q %v", consumer, text, err)
+		}
+	}
 	handoff, err := scheduler.finderHandoffsForJob(2)
 	if err != nil {
 		t.Fatalf("hydrate Finder handoff: %v", err)
@@ -935,7 +941,7 @@ func TestTaskProgramFinderHandoffLookupFailsClosedForMissingV3Message(t *testing
 			{ID: "implement", StageID: "build", AgentType: "coder", DependsOn: []string{"inspect"}},
 		}},
 		Jobs: []pebblestore.TaskProgramJobRecord{
-			{JobID: "inspect", StageID: "research", State: pebblestore.TaskProgramJobCompleted, HandoffRef: &pebblestore.TaskProgramHandoffRef{SessionID: parentID, MessageID: "missing", GlobalSeq: 999}},
+			{JobID: "inspect", StageID: "research", State: pebblestore.TaskProgramJobCompleted, ChildSessionID: parentID, HandoffRef: &pebblestore.TaskProgramHandoffRef{SessionID: parentID, MessageID: "missing", GlobalSeq: 999}},
 			{JobID: "implement", StageID: "build", State: pebblestore.TaskProgramJobDeclared},
 		},
 	}
@@ -1004,7 +1010,7 @@ func TestTaskProgramManagedArtifactValidationRejectsLineageMismatch(t *testing.T
 	run := managedDesignerArtifactContext(parent, callID, spec, 1)
 	run.ChildSessionID = childID
 	svc.markManagedDesignerArtifactFailed(parent, run, childID, "managed_output_missing")
-	reference := &taskArtifactReference{SessionID: parent.ID, CollectionID: run.CollectionID, VariantID: run.VariantID, Status: pebblestore.SessionArtifactStatusReady}
+	reference := &taskArtifactReference{SessionID: parent.ID, ArtifactID: "artifact", CommitOID: strings.Repeat("a", 40), ProjectionSeq: 1, TurnID: "turn", CandidateID: "candidate", Status: pebblestore.SessionArtifactStatusReady}
 	scheduler := taskProgramScheduler{service: svc, parentSession: parent, record: pebblestore.TaskProgramRecord{ParentSessionID: parent.ID, ProgramID: programID, ReservationCallID: callID}}
 	failedReference := *reference
 	failedReference.Status = pebblestore.SessionArtifactStatusFailed
@@ -1020,7 +1026,7 @@ func TestTaskProgramStatusExposesBoundedReadyArtifactReferences(t *testing.T) {
 	record := pebblestore.TaskProgramRecord{
 		ParentSessionID: "parent", ProgramID: "managed_program", ReservationCallID: "call-managed", State: pebblestore.TaskProgramStateCompleted,
 		Definition: pebblestore.TaskProgramDefinition{Jobs: []pebblestore.TaskProgramJobSpec{{ID: "design", StageID: "variants", AgentType: "designer"}}},
-		Jobs:       []pebblestore.TaskProgramJobRecord{{JobID: "design", StageID: "variants", State: pebblestore.TaskProgramJobCompleted, IntegrationState: "artifact_ready", ChildSessionID: "child"}},
+		Jobs:       []pebblestore.TaskProgramJobRecord{{JobID: "design", StageID: "variants", State: pebblestore.TaskProgramJobCompleted, IntegrationState: "artifact_ready", ChildSessionID: "child", ArtifactRef: &pebblestore.TaskProgramArtifactRef{SessionID: "parent", ArtifactID: "artifact", CommitOID: strings.Repeat("a", 40), ProjectionSeq: 7, TurnID: "turn", CandidateID: "candidate"}}},
 	}
 	payload := taskProgramStatusPayload(record, false)
 	references, ok := payload["artifact_references"].([]*taskArtifactReference)

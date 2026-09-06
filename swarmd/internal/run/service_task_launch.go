@@ -170,6 +170,9 @@ type taskSwarmSpec struct {
 }
 
 type taskLaunchSpec struct {
+	// Scheduler-only runtime destination; never parsed from model arguments.
+	ProgramRepositoryLane *pebblestore.TaskProgramRepositoryLane
+	ProgramArtifactSource *taskArtifactV3Source // authenticated dependency, never parsed
 	RequestedSubagentType string
 	TargetWorkspacePath   string
 	MetaPrompt            string
@@ -3379,7 +3382,39 @@ func taskPathWithinRoot(root, target string) bool {
 	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
+// retainTaskResolvedWorkspace keeps implicit creative read roots out of the
+// explicit workspace selector carried into later scheduler cohorts.
+func retainTaskResolvedWorkspace(launch *taskLaunchSpec, program *taskProgramSpec, index int, target string) {
+	if !agentruntime.IsCoderAgentName(launch.RequestedSubagentType) && !agentruntime.IsFinderAgentName(launch.RequestedSubagentType) {
+		return
+	}
+	launch.TargetWorkspacePath = target
+	if program != nil && index >= 0 && index < len(program.Jobs) {
+		program.Jobs[index].TargetWorkspacePath = target
+	}
+}
+
 func (s *Service) resolveTaskTargetWorkspace(parentSession pebblestore.SessionSnapshot, principal identity.Principal, launch taskLaunchSpec) (string, string, error) {
+	if launch.ProgramRepositoryLane != nil {
+		lane := launch.ProgramRepositoryLane
+		sourceLaunch := launch
+		sourceLaunch.ProgramRepositoryLane = nil
+		sourceLaunch.TargetWorkspacePath = lane.SourcePath
+		if _, _, err := s.resolveTaskTargetWorkspace(parentSession, principal, sourceLaunch); err != nil {
+			return "", "", err
+		}
+		if s.worktrees == nil {
+			return "", "", errors.New("task program worktree authority unavailable")
+		}
+		state, err := s.worktrees.InspectTaskWorkspace(lane.WorkspacePath)
+		if err != nil {
+			return "", "", err
+		}
+		if !state.Clean || state.BranchName != lane.Branch || sameTaskProgramPath(lane.SourcePath, lane.WorkspacePath) {
+			return "", "", errors.New("task program repository lane is stale or dirty")
+		}
+		return lane.WorkspacePath, filepath.Base(lane.SourcePath), nil
+	}
 	requested := strings.TrimSpace(launch.TargetWorkspacePath)
 	if requested == "" {
 		return strings.TrimSpace(firstNonEmptyString(parentSession.WorktreeRootPath, parentSession.WorkspacePath)), strings.TrimSpace(parentSession.WorkspaceName), nil
@@ -3609,7 +3644,10 @@ func parseApprovedTaskLaunchManifest(approved string, launchSpecs []taskLaunchSp
 			return taskLaunchManifest{}, fmt.Errorf("approved task manifest launch %d owned scope mismatch", i)
 		}
 		if strings.TrimSpace(row.TargetWorkspacePath) != strings.TrimSpace(launchSpecs[i].TargetWorkspacePath) {
-			return taskLaunchManifest{}, fmt.Errorf("approved task manifest launch %d workspace target mismatch", i)
+			lane := launchSpecs[i].ProgramRepositoryLane
+			if lane == nil || !sameTaskProgramPath(row.TargetWorkspacePath, lane.SourcePath) || !sameTaskProgramPath(launchSpecs[i].TargetWorkspacePath, lane.WorkspacePath) {
+				return taskLaunchManifest{}, fmt.Errorf("approved task manifest launch %d workspace target mismatch", i)
+			}
 		}
 		if agentruntime.IsImageAgentName(launchSpecs[i].RequestedSubagentType) {
 			if row.ResolvedTools == nil || len(row.ResolvedTools.AllowedTools) != 1 || !taskToolNameInSlice(row.ResolvedTools.AllowedTools, "manage_artifact") {
@@ -3766,11 +3804,8 @@ func (s *Service) buildTaskLaunchPermissionPayload(sessionID, sessionMode string
 		if targetErr != nil {
 			return taskLaunchManifest{}, fmt.Errorf("task launches[%d] workspace target: %w", i, targetErr)
 		}
-		parsed.Launches[i].TargetWorkspacePath = targetWorkspacePath
-		launch.TargetWorkspacePath = targetWorkspacePath
-		if parsed.Program != nil && i < len(parsed.Program.Jobs) {
-			parsed.Program.Jobs[i].TargetWorkspacePath = targetWorkspacePath
-		}
+		retainTaskResolvedWorkspace(&launch, parsed.Program, i, targetWorkspacePath)
+		parsed.Launches[i] = launch
 		requested := strings.TrimSpace(launch.RequestedSubagentType)
 		if requested == "" {
 			return taskLaunchManifest{}, fmt.Errorf("task launches[%d] requires subagent_type, agent, or purpose", i)
@@ -3855,7 +3890,7 @@ func (s *Service) buildTaskLaunchPermissionPayload(sessionID, sessionMode string
 			ChildMode:             childMode,
 			DisabledTools:         launchDisabledTools,
 			ResolvedTools:         resolvedTools,
-			TargetWorkspacePath:   targetWorkspacePath,
+			TargetWorkspacePath:   launch.TargetWorkspacePath,
 			TargetWorkspaceName:   targetWorkspaceName,
 			Capabilities: map[string]any{
 				"allow_bash":            false,

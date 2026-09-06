@@ -109,6 +109,7 @@ type TaskIntegrationChild struct {
 }
 
 type TaskIntegrationEntry struct {
+	OwnedScopes              []string `json:"owned_scopes,omitempty"`
 	SessionID                string   `json:"session_id"`
 	BaseCommit               string   `json:"base_commit"`
 	HeadCommit               string   `json:"head_commit"`
@@ -537,11 +538,47 @@ func (s *Service) PrepareTaskIntegration(parentPath, expectedParentBranch, expec
 			}
 			commits = append(commits, commit)
 		}
-		fileText, err := runGit(parentPath, "diff", "--name-only", child.BaseCommit+".."+child.HeadCommit)
+		fileText, err := runGit(parentPath, "diff", "--name-only", "--no-renames", "-z", child.BaseCommit+".."+child.HeadCommit)
 		if err != nil {
 			return TaskIntegrationPlan{}, fmt.Errorf("list child %q files: %w", child.SessionID, err)
 		}
-		files := strings.Fields(fileText)
+		files := strings.Split(strings.TrimSuffix(fileText, "\x00"), "\x00")
+		if fileText == "" {
+			files = nil
+		}
+		if len(child.OwnedScopes) > 0 {
+			// Integration applies every commit, not merely the net tree diff.
+			// A reverted unowned edit must not evade ownership checks.
+			if len(childCommits) > 256 {
+				return TaskIntegrationPlan{}, errors.New("child commit range exceeds bounded scope validation")
+			}
+			ownedFiles := append([]string(nil), files...)
+			for _, commit := range childCommits {
+				changed, err := runGit(parentPath, "diff-tree", "--no-commit-id", "--name-only", "--no-renames", "-r", "-z", commit)
+				if err != nil {
+					return TaskIntegrationPlan{}, err
+				}
+				if changed != "" {
+					ownedFiles = append(ownedFiles, strings.Split(strings.TrimSuffix(changed, "\x00"), "\x00")...)
+				}
+			}
+			scopes, whole, scopeErr := canonicalTaskSparseScopes(child.OwnedScopes)
+			if scopeErr != nil {
+				return TaskIntegrationPlan{}, scopeErr
+			}
+			for _, file := range ownedFiles {
+				allowed := whole
+				for _, scope := range scopes {
+					root := strings.TrimSuffix(scope, "/**")
+					if file == root || strings.HasPrefix(file, root+"/") {
+						allowed = true
+					}
+				}
+				if !allowed {
+					return TaskIntegrationPlan{}, fmt.Errorf("child %q changed file outside owned scope: %s", child.SessionID, file)
+				}
+			}
+		}
 		for _, file := range files {
 			if owner, ok := owners[file]; ok && owner != child.SessionID {
 				plan.Overlaps = append(plan.Overlaps, fmt.Sprintf("%s: %s, %s", file, owner, child.SessionID))
@@ -550,6 +587,7 @@ func (s *Service) PrepareTaskIntegration(parentPath, expectedParentBranch, expec
 			}
 		}
 		plan.Entries = append(plan.Entries, TaskIntegrationEntry{
+			OwnedScopes:              append([]string(nil), child.OwnedScopes...),
 			SessionID:                child.SessionID,
 			BaseCommit:               child.BaseCommit,
 			HeadCommit:               child.HeadCommit,
@@ -598,6 +636,42 @@ func (s *Service) ApplyTaskIntegration(parentPath string, plan TaskIntegrationPl
 		return TaskIntegrationResult{TaskIntegrationPlan: current}, fmt.Errorf("resolve integrated HEAD: %w", err)
 	}
 	return TaskIntegrationResult{TaskIntegrationPlan: current, ResultingParentHead: head}, nil
+}
+
+// ValidateTaskRepositoryLane binds a durable lane to its deterministic owner
+// allocation and Git common repository; arbitrary paths and symlink replacements
+// cannot become trusted runtime destinations.
+func (s *Service) ValidateTaskRepositoryLane(source, lane, ownerSeed, branch string) error {
+	root, err := resolveRepositoryRoot(source)
+	if err != nil {
+		return err
+	}
+	expected, err := deterministicSessionWorktreePath(root, sessionWorkspaceID(ownerSeed))
+	if err != nil {
+		return err
+	}
+	actual, err := filepath.EvalSymlinks(lane)
+	if err != nil {
+		return err
+	}
+	if filepath.Clean(actual) != filepath.Clean(expected) || filepath.Clean(lane) != filepath.Clean(expected) {
+		return errors.New("task repository lane ownership path mismatch")
+	}
+	laneRoot, err := resolveRepositoryRoot(lane)
+	if err != nil {
+		return err
+	}
+	if laneRoot != root {
+		return errors.New("task repository lane Git repository mismatch")
+	}
+	state, err := s.InspectTaskWorkspace(lane)
+	if err != nil {
+		return err
+	}
+	if !state.Clean || state.BranchName != branch {
+		return errors.New("task repository lane is stale or dirty")
+	}
+	return nil
 }
 
 // RemoveIntegratedTaskWorkspace removes only a clean, private managed child
@@ -702,7 +776,7 @@ func acquireIntegrationLock(parentPath string) (*lock.FileLock, error) {
 func integrationChildrenFromPlan(plan TaskIntegrationPlan) []TaskIntegrationChild {
 	out := make([]TaskIntegrationChild, 0, len(plan.Entries))
 	for _, entry := range plan.Entries {
-		out = append(out, TaskIntegrationChild{SessionID: entry.SessionID, BaseCommit: entry.BaseCommit, HeadCommit: entry.HeadCommit})
+		out = append(out, TaskIntegrationChild{SessionID: entry.SessionID, BaseCommit: entry.BaseCommit, HeadCommit: entry.HeadCommit, OwnedScopes: append([]string(nil), entry.OwnedScopes...)})
 	}
 	return out
 }

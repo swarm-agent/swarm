@@ -1251,6 +1251,14 @@ func (s *Service) prepareDelegatedSubagentLaunchWithProfile(parentSession pebble
 	childWorktreeBaseBranch := strings.TrimSpace(parentSession.WorktreeBaseBranch)
 	childWorktreeBranch := strings.TrimSpace(parentSession.WorktreeBranch)
 	childTemporaryWorkspaceRoots := append([]string(nil), parentSession.TemporaryWorkspaceRoots...)
+	// A Finder targeting another authorized workspace must not retain the
+	// parent's worktree identity: runtime scope resolves that root before
+	// WorkspacePath and would silently redirect reads back to the parent.
+	if agentruntime.IsFinderAgentName(requestedSubagent) && !sameTaskProgramPath(targetWorkspacePath, firstNonEmptyString(parentSession.WorktreeRootPath, parentSession.WorkspacePath)) {
+		childWorktreeEnabled = false
+		childWorktreeRootPath, childWorktreeBaseBranch, childWorktreeBranch = "", "", ""
+		childTemporaryWorkspaceRoots = nil
+	}
 	childWorkspaceID := ""
 	childSessionID := sessionruntime.NewSessionID()
 	if logicalTaskID := strings.TrimSpace(launch.LogicalTaskID); logicalTaskID != "" && strings.TrimSpace(parentSession.AccountScopeID) != "" {
@@ -4203,6 +4211,7 @@ func marshalPlanManagePayload(payload map[string]any) (string, error) {
 }
 
 type taskExecutionRequest struct {
+	ProgramCohort        bool // internal: scheduler owns reservation finalization
 	Parsed               taskCallArguments
 	ParsedProvided       bool
 	DescriptionOverride  string
@@ -4390,10 +4399,7 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 		if targetErr != nil {
 			return "", fmt.Errorf("task launches[%d] workspace target: %w", i, targetErr)
 		}
-		launchSpecs[i].TargetWorkspacePath = targetPath
-		if parsed.Program != nil && i < len(parsed.Program.Jobs) {
-			parsed.Program.Jobs[i].TargetWorkspacePath = targetPath
-		}
+		retainTaskResolvedWorkspace(&launchSpecs[i], parsed.Program, i, targetPath)
 	}
 	parsed.Launches = append([]taskLaunchSpec(nil), launchSpecs...)
 	if parsed.Program != nil {
@@ -4401,7 +4407,7 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 		if definitionErr != nil {
 			return "", definitionErr
 		}
-		preflight := taskProgramScheduler{parentSession: parentSession, parsed: parsed, record: pebblestore.TaskProgramRecord{Definition: definition}}
+		preflight := taskProgramScheduler{service: s, req: req, parentSession: parentSession, parsed: parsed, record: pebblestore.TaskProgramRecord{Definition: definition}}
 		if _, laneErr := preflight.programWorkspacePath(); laneErr != nil {
 			return "", laneErr
 		}
@@ -4429,7 +4435,7 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 		return s.executeTaskProgram(ctx, sessionMode, step, call, emit, req, parentSession, parsed, programRecord, description, prompt)
 	}
 	reservationFinished := false
-	if s.permissions != nil && strings.TrimSpace(req.RunID) != "" {
+	if s.permissions != nil && strings.TrimSpace(req.RunID) != "" && !req.ProgramCohort {
 		defer func() {
 			if !reservationFinished {
 				_ = s.permissions.FinishSubagentWave(parentSession.ID, req.RunID, taskCallID, "failed")
@@ -5009,7 +5015,7 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 		metaPrompt := strings.TrimSpace(outcome.MetaPrompt)
 		perLaunchPrompt := prompt
 		if metaPrompt != "" && !(parsed.Mode == taskModeSwarm && agentruntime.IsIdeaAgentName(launch.RequestedSubagent)) {
-			perLaunchPrompt = "Meta-prompt:\n" + metaPrompt + "\n\nPrompt:\n" + prompt
+			perLaunchPrompt = taskChildAssignmentPrompt(metaPrompt, prompt, launch.ProgramID)
 		}
 		delegatedPrompt := perLaunchPrompt
 		if !(parsed.Mode == taskModeSwarm && agentruntime.IsIdeaAgentName(launch.RequestedSubagent)) {
@@ -5216,8 +5222,8 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 			}
 			outcome.ArtifactReference = taskArtifactV3Reference(grant, finished.Revision.CommitOID, 0, pebblestore.SessionArtifactStatusReady)
 			if s.sessions != nil && s.sessions.Store() != nil {
-				if repository, ok, readErr := s.sessions.Store().GetArtifactV3Repository(parentSession.AccountScopeID, parentSession.UserID, grant.ArtifactID); readErr == nil && ok {
-					outcome.ArtifactReference.ProjectionSeq = repository.EventSeq
+				if revision, ok, readErr := s.sessions.Store().GetArtifactV3Revision(parentSession.AccountScopeID, parentSession.UserID, grant.ArtifactID, finished.Revision.CommitOID); readErr == nil && ok {
+					outcome.ArtifactReference.ProjectionSeq = revision.EventSeq
 				}
 			}
 			if outcome.ArtifactReference.ProjectionSeq == 0 {
@@ -5606,7 +5612,7 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 			return "", err
 		}
 	}
-	if s.permissions != nil && strings.TrimSpace(req.RunID) != "" {
+	if s.permissions != nil && strings.TrimSpace(req.RunID) != "" && !req.ProgramCohort {
 		reservationStatus := "completed"
 		if failedCount > 0 || cancelledCount > 0 {
 			reservationStatus = "failed"

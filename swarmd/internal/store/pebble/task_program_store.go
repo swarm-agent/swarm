@@ -40,22 +40,23 @@ const (
 // declared program. It deliberately stores no child transcript, report, or
 // artifact content; those remain authoritative in their native stores.
 type TaskProgramRecord struct {
-	ParentSessionID   string                 `json:"parent_session_id"`
-	ProgramID         string                 `json:"program_id"`
-	DefinitionHash    string                 `json:"definition_hash"`
-	ReservationRunID  string                 `json:"reservation_run_id,omitempty"`
-	ReservationCallID string                 `json:"reservation_call_id,omitempty"`
-	Definition        TaskProgramDefinition  `json:"definition"`
-	Revision          int                    `json:"revision"`
-	ActiveStageID     string                 `json:"active_stage_id,omitempty"`
-	ParentHead        string                 `json:"parent_head,omitempty"`
-	State             string                 `json:"state"`
-	NextAction        string                 `json:"next_action"`
-	LastMutationID    string                 `json:"last_mutation_id,omitempty"`
-	Blocker           *TaskProgramBlocker    `json:"blocker,omitempty"`
-	Jobs              []TaskProgramJobRecord `json:"jobs"`
-	CreatedAt         int64                  `json:"created_at"`
-	UpdatedAt         int64                  `json:"updated_at"`
+	ParentSessionID   string                     `json:"parent_session_id"`
+	ProgramID         string                     `json:"program_id"`
+	DefinitionHash    string                     `json:"definition_hash"`
+	ReservationRunID  string                     `json:"reservation_run_id,omitempty"`
+	ReservationCallID string                     `json:"reservation_call_id,omitempty"`
+	Definition        TaskProgramDefinition      `json:"definition"`
+	Revision          int                        `json:"revision"`
+	ActiveStageID     string                     `json:"active_stage_id,omitempty"`
+	ParentHead        string                     `json:"parent_head,omitempty"`
+	RepositoryLane    *TaskProgramRepositoryLane `json:"repository_lane,omitempty"`
+	State             string                     `json:"state"`
+	NextAction        string                     `json:"next_action"`
+	LastMutationID    string                     `json:"last_mutation_id,omitempty"`
+	Blocker           *TaskProgramBlocker        `json:"blocker,omitempty"`
+	Jobs              []TaskProgramJobRecord     `json:"jobs"`
+	CreatedAt         int64                      `json:"created_at"`
+	UpdatedAt         int64                      `json:"updated_at"`
 }
 
 // TaskProgramDefinition is the canonical staged implementation graph. It can
@@ -134,8 +135,19 @@ type TaskProgramJobRecord struct {
 	ChildHead          string                     `json:"child_head,omitempty"`
 	IntegrationState   string                     `json:"integration_state,omitempty"`
 	HandoffRef         *TaskProgramHandoffRef     `json:"handoff_ref,omitempty"`
+	ArtifactRef        *TaskProgramArtifactRef    `json:"artifact_ref,omitempty"`
 	Blocker            *TaskProgramBlocker        `json:"blocker,omitempty"`
 	UpdatedAt          int64                      `json:"updated_at"`
+}
+
+// TaskProgramArtifactRef retains native Git identity; it never aliases legacy variants.
+type TaskProgramArtifactRef struct {
+	SessionID     string `json:"session_id"`
+	ArtifactID    string `json:"artifact_id"`
+	CommitOID     string `json:"commit_oid"`
+	ProjectionSeq uint64 `json:"projection_seq"`
+	TurnID        string `json:"turn_id"`
+	CandidateID   string `json:"candidate_id"`
 }
 
 type TaskProgramHandoffRef struct {
@@ -190,7 +202,17 @@ type TaskProgramPreservedChild struct {
 	ChangedFiles       []string `json:"changed_files,omitempty"`
 }
 
+// TaskProgramRepositoryLane is an immutable integration destination owned by
+// ParentSessionID. Captured source checkouts are never integration destinations.
+type TaskProgramRepositoryLane struct {
+	SourcePath    string `json:"source_path"`
+	WorkspacePath string `json:"workspace_path"`
+	Branch        string `json:"branch"`
+	BaseCommit    string `json:"base_commit"`
+}
+
 type TaskProgramTransition struct {
+	RepositoryLane   *TaskProgramRepositoryLane
 	ExpectedRevision int
 	MutationID       string
 	State            *string
@@ -219,6 +241,7 @@ type TaskProgramJobTransition struct {
 	ChildHead          string
 	IntegrationState   string
 	HandoffRef         *TaskProgramHandoffRef
+	ArtifactRef        *TaskProgramArtifactRef
 	Blocker            *TaskProgramBlocker
 	ClearBlocker       bool
 }
@@ -323,6 +346,16 @@ func (s *SessionStore) TransitionTaskProgram(parentSessionID, programID string, 
 	if record.Revision != transition.ExpectedRevision {
 		return TaskProgramRecord{}, false, fmt.Errorf("task program revision mismatch: expected %d, current %d", transition.ExpectedRevision, record.Revision)
 	}
+	if transition.RepositoryLane != nil {
+		lane := *transition.RepositoryLane
+		if record.RepositoryLane != nil && *record.RepositoryLane != lane {
+			return TaskProgramRecord{}, false, errors.New("task program repository lane is immutable")
+		}
+		if lane.SourcePath == "" || lane.WorkspacePath == "" || lane.SourcePath == lane.WorkspacePath || lane.Branch == "" || !artifactV3OIDPattern.MatchString(lane.BaseCommit) {
+			return TaskProgramRecord{}, false, errors.New("invalid task program repository lane")
+		}
+		record.RepositoryLane = &lane
+	}
 	if transition.State != nil {
 		record.State = strings.TrimSpace(*transition.State)
 	}
@@ -354,6 +387,9 @@ func (s *SessionStore) TransitionTaskProgram(parentSessionID, programID string, 
 		job := &record.Jobs[index]
 		if expected := strings.TrimSpace(update.ExpectedState); expected != "" && job.State != expected {
 			return TaskProgramRecord{}, false, fmt.Errorf("task program job %q state mismatch: expected %s, current %s", job.JobID, expected, job.State)
+		}
+		if update.ArtifactRef != nil && job.ArtifactRef != nil && *update.ArtifactRef != *job.ArtifactRef {
+			return TaskProgramRecord{}, false, errors.New("task program native artifact reference is immutable")
 		}
 		applyTaskProgramJobTransition(job, update)
 		job.UpdatedAt = now
@@ -414,6 +450,10 @@ func applyTaskProgramJobTransition(job *TaskProgramJobRecord, update TaskProgram
 		ref := normalizedTaskProgramHandoffRef(*update.HandoffRef)
 		job.HandoffRef = &ref
 	}
+	if update.ArtifactRef != nil {
+		ref := *update.ArtifactRef
+		job.ArtifactRef = &ref
+	}
 	if update.ClearBlocker {
 		job.Blocker = nil
 	} else if update.Blocker != nil {
@@ -448,6 +488,12 @@ func validateTaskProgramRecord(record TaskProgramRecord) error {
 		}
 		if len(job.GenerationHistory) > maxDelegatedChildGenerationHistory {
 			return fmt.Errorf("task program job %q exceeds bounded generation history", job.JobID)
+		}
+		if job.ArtifactRef != nil {
+			ref := job.ArtifactRef
+			if ref.SessionID != record.ParentSessionID || ref.ArtifactID == "" || !artifactV3OIDPattern.MatchString(ref.CommitOID) || ref.ProjectionSeq == 0 || ref.TurnID == "" || ref.CandidateID == "" {
+				return fmt.Errorf("task program job %q has invalid native artifact reference", job.JobID)
+			}
 		}
 		if job.HandoffRef != nil {
 			ref := normalizedTaskProgramHandoffRef(*job.HandoffRef)
