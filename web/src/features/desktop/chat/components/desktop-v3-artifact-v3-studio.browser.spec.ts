@@ -28,6 +28,8 @@ test('native Studio Part iteration and candidate decision controls', { timeout: 
     let head = base
     let ready = false
     let selected = false
+    let draftError = true
+    const draftDiagnostic = { stage: 'validation', code: 'draft_validation_failed', message: 'The artifact needs a preview or validation repair.' }
     const selections: Record<string, unknown>[] = []
     await page.route('**/*', async (route) => {
       const request = route.request()
@@ -43,6 +45,7 @@ test('native Studio Part iteration and candidate decision controls', { timeout: 
       } else if (path.endsWith('/revisions')) payload = { ok: true, revisions: [base], next_cursor: 'more' }
       else if (path.endsWith('/artifacts-v3/artifact')) payload = { ok: true, artifact: {
         id: 'artifact', owner_session_id: 'parent', label: 'Fixture', revision: 9, head, revisions: [head], parts: head.manifest.parts,
+        current_draft: { status: draftError ? 'error' : 'ready', sequence: 3, diagnostics: draftError ? [draftDiagnostic] : [], history: [{ ready: false, diagnostics: [draftDiagnostic] }] },
         turns: ready ? [{ turn_id: 'new', revision: 12, created_at: 20, status: selected ? 'selected' : 'awaiting_selection', selected_candidate_id: selected ? 'option' : '', target_part_ids: ['orbit'], candidates: [{ candidate_id: 'option', status: 'ready', revision: candidate }] }] : [],
       } }
       else return route.abort('blockedbyclient')
@@ -51,6 +54,12 @@ test('native Studio Part iteration and candidate decision controls', { timeout: 
     await page.goto('https://artifact.test/')
     await page.addScriptTag({ content: bundle.outputFiles[0]!.text })
     await page.locator('[data-artifact-v3-part="orbit"]').waitFor()
+    await page.getByRole('heading', { name: 'Current errors', exact: true }).waitFor()
+    assert.equal(await page.locator('[data-artifact-repair-history]').count(), 1)
+    draftError = false
+    await page.evaluate(() => (window as unknown as { refreshArtifacts(): Promise<void> }).refreshArtifacts())
+    await page.getByRole('heading', { name: 'Current errors', exact: true }).waitFor({ state: 'detached' })
+    assert.equal(await page.locator('[data-artifact-repair-history]').count(), 1, 'repair history remains after current errors clear')
     await page.locator('[data-artifact-v3-iterate]').click()
     const whole = await page.evaluate(() => (window as unknown as { stagedSelection: Record<string, unknown> }).stagedSelection)
     assert.equal(whole.revision_ref, base.revision_ref)

@@ -30,7 +30,7 @@ type ArtifactV3DraftProjection struct {
 	Status    string
 	ExpiresAt int64
 	Sequence  uint64
-	EventSeq uint64
+	EventSeq  uint64
 }
 
 type ArtifactV3RepositoryProjection struct {
@@ -650,6 +650,15 @@ func (s *SessionStore) ListArtifactV3Repositories(account, user, session string,
 			return nil, ErrArtifactV3Integrity
 		}
 		if value.UserID == user && value.OwnerSessionID == session {
+			// Read the private envelope for the service's safe draft projection.
+			// Draft bytes remain excluded from public JSON.
+			var envelope struct {
+				PrivateDrafts map[string]ArtifactV3DraftProjection `json:"private_drafts,omitempty"`
+			}
+			if err := json.Unmarshal(iter.Value(), &envelope); err != nil {
+				return nil, err
+			}
+			value.Drafts = envelope.PrivateDrafts
 			out = append(out, value)
 			if len(out) == limit {
 				break

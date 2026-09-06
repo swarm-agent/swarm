@@ -30,7 +30,20 @@ func (artifactV3RuntimeRenderer) Capture(_ context.Context, request htmlcapture.
 	if request.Entry == "" || len(request.Files) == 0 || request.ViewportWidth != 1440 || request.ViewportHeight != 900 {
 		return nil, htmlcapture.NewError("capture_invalid", "invalid capture")
 	}
-	return []htmlcapture.Result{{StateID: "default", PNG: []byte("real-renderer-evidence")}}, nil
+	selectors := append([]string(nil), request.RequiredSelectors...)
+	for _, selected := range request.StateRequiredSelectors {
+		selectors = append(selectors, selected...)
+	}
+	for _, selector := range selectors {
+		if strings.HasPrefix(selector, "#") && !strings.Contains(string(request.Files[request.Entry]), `id="`+strings.TrimPrefix(selector, "#")+`"`) {
+			return nil, htmlcapture.NewError("capture_required_element_missing", "capture required Part is missing or not visible")
+		}
+	}
+	results := make([]htmlcapture.Result, 0, len(request.StateIDs))
+	for _, id := range request.StateIDs {
+		results = append(results, htmlcapture.Result{StateID: id, PNG: []byte("fake-renderer-evidence")})
+	}
+	return results, nil
 }
 
 type artifactV3ConversionRenderer struct{}
@@ -451,7 +464,7 @@ func TestArtifactV3RuntimeAdapterProductionPathAndRecovery(t *testing.T) {
 		}
 	}
 	evidence, err := restarted.ReadArtifactV3PreviewEvidence(context.Background(), "account", "user", "artifact-v3-runtime", grant.ArtifactID, artifact.Head.RevisionRef)
-	if err != nil || string(evidence) != "real-renderer-evidence" {
+	if err != nil || string(evidence) != "fake-renderer-evidence" {
 		t.Fatalf("preview evidence=%q err=%v", evidence, err)
 	}
 	if _, err := restarted.ReadArtifactV3PreviewEvidence(context.Background(), "account", "foreign", "artifact-v3-runtime", grant.ArtifactID, artifact.Head.RevisionRef); err == nil {

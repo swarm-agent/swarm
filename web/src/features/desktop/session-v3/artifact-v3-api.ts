@@ -28,6 +28,7 @@ export interface DesktopV3NativeArtifactSummary {
   head: DesktopV3NativeArtifactHead | null
   partCount: number
   turnCount: number
+  currentDraft?: { status: string; sequence: number; diagnostics: DesktopV3NativeArtifactDiagnostic[]; history: { ready: boolean; diagnostics: DesktopV3NativeArtifactDiagnostic[] }[] }
   pendingTurns?: DesktopV3NativeArtifactTurn[]
   updatedAt: number
 }
@@ -191,7 +192,13 @@ export function normalizeDesktopV3NativeArtifactSummary(value: unknown, fallback
     ownerSessionId,
     label: stringValue(item.label) || stringValue(item.title) || 'Untitled artifact',
     description: stringValue(item.description),
-    status: inferredArtifactStatus(item),
+    status: inferredArtifactStatus({ ...item, status: record(item.current_draft)?.status || item.status }),
+    currentDraft: (() => {
+      const draft = record(item.current_draft)
+      if (!draft) return undefined
+      const diagnostics = (value: unknown) => Array.isArray(value) ? value.map(normalizeDiagnostic).filter((d): d is DesktopV3NativeArtifactDiagnostic => d !== null) : []
+      return { status: stringValue(draft.status), sequence: numberValue(draft.sequence), diagnostics: diagnostics(draft.diagnostics), history: (Array.isArray(draft.history) ? draft.history : []).map((entry) => { const gate = record(entry); return { ready: gate?.ready === true, diagnostics: diagnostics(gate?.diagnostics) } }) }
+    })(),
     head: (() => {
       const head = normalizeHead(item.head) || normalizeHead(field(item, 'current_revision', 'currentRevision'))
       if (!head) return null

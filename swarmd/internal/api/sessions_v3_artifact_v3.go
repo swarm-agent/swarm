@@ -46,22 +46,22 @@ type ArtifactV3Principal struct {
 // is draft-local; projection_seq orders drafts across turns. Source and grants
 // must never be serialized through this DTO.
 type ArtifactV3DraftSummary struct {
-	SessionID string `json:"session_id"`
-	ArtifactID string `json:"artifact_id"`
-	Status string `json:"status"`
-	Sequence uint64 `json:"sequence"`
-	ProjectionSeq uint64 `json:"projection_seq"`
-	Diagnostics []ArtifactV3Diagnostic `json:"diagnostics"`
-	History []ArtifactV3DraftGate `json:"history"`
+	SessionID     string                 `json:"session_id"`
+	ArtifactID    string                 `json:"artifact_id"`
+	Status        string                 `json:"status"`
+	Sequence      uint64                 `json:"sequence"`
+	ProjectionSeq uint64                 `json:"projection_seq"`
+	Diagnostics   []ArtifactV3Diagnostic `json:"diagnostics"`
+	History       []ArtifactV3DraftGate  `json:"history"`
 }
 
 type ArtifactV3DraftGate struct {
-	Ready bool `json:"ready"`
+	Ready       bool                   `json:"ready"`
 	Diagnostics []ArtifactV3Diagnostic `json:"diagnostics"`
 }
 
 type ArtifactV3Artifact struct {
-	CurrentDraft *ArtifactV3DraftSummary `json:"current_draft,omitempty"`
+	CurrentDraft    *ArtifactV3DraftSummary      `json:"current_draft,omitempty"`
 	Label           string                       `json:"label"`
 	ID              string                       `json:"id"`
 	OwnerSessionID  string                       `json:"owner_session_id"`
