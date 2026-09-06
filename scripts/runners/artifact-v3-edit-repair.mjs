@@ -127,6 +127,14 @@ export function verifyRepair(records, { sessionID, initial = true, artifactID, s
   return { kind: 'artifact_v3', ...ref, commit_oid: commit, draft_handle: handle, source_sha256: hash(after), manifest_sha256: hash(manifest.body.result.Content), part_ids: parts.map((p) => p.id) }
 }
 
+export function verifyPartAttachment(selections, source) {
+  check(Array.isArray(selections) && selections.length === 1, 'single_part_attachment_required')
+  const selection = selections[0]
+  for (const key of ['session_id', 'artifact_id', 'revision_ref']) check(selection[key] === source[key], 'composer_lost_exact_source')
+  assert.deepEqual(selection.target_part_ids, ['hero'], 'composer_lost_part_target')
+  check(selection.action === 'use', 'composer_wrong_attachment_action')
+}
+
 export function verifySidebar(observations, artifactID) {
   for (const status of ['Creating', 'Fixing', 'Ready']) check(observations.some((o) => o.id === artifactID && o.status === status && o.named && o.heading), 'missing_live_sidebar_' + status)
   check(observations.every((o) => o.id === artifactID), 'duplicate_sidebar_identity')
@@ -145,7 +153,7 @@ const instructions = `Use only primary manage_artifact, no delegation or workspa
 // Isolated ephemeral context only; no persistent profile, cookies or storage-state import.
 export async function openProofBrowser(chromium, options) {
   if (options['browser-mode'] === 'headless') {
-    const browser = await chromium.launch({ headless: true, chromiumSandbox: true, timeout: 15000 })
+    const browser = await chromium.launch({ headless: true, chromiumSandbox: true, timeout: 15000, ...(process.env.SWARM_TEST_BROWSER_CHANNEL ? { channel: process.env.SWARM_TEST_BROWSER_CHANNEL } : {}) })
     try {
       return { browser, context: await browser.newContext({ viewport: { width: 1440, height: 1000 } }) }
     } catch (error) { await browser.close(); throw error }
@@ -197,15 +205,16 @@ export async function runLive(options) {
     await page.evaluate(() => {
       window.__repairUI = []
       const observe = () => {
-        const sidebar = document.querySelector('[data-testid="desktop-session-artifact-v3-sidebar"]')
-        for (const item of sidebar?.querySelectorAll('[data-artifact-v3-sidebar-id]') || []) {
+        for (const sidebar of document.querySelectorAll('[data-testid="desktop-session-artifact-v3-sidebar"]')) {
+        for (const item of sidebar.querySelectorAll('[data-artifact-v3-sidebar-id]')) {
           const text = item.textContent || ''; const status = ['Creating', 'Fixing', 'Ready', 'Error'].find((s) => text.includes(s))
           if (!item.getClientRects().length || getComputedStyle(item).visibility === 'hidden') continue
           const row = { id: item.getAttribute('data-artifact-v3-sidebar-id'), status, named: text.includes('Fictional Orchard'), heading: sidebar.querySelector('h2')?.textContent === 'Artifacts' }
           if (status && !window.__repairUI.some((v) => v.id === row.id && v.status === row.status)) window.__repairUI.push(row)
         }
+        }
       }
-      new MutationObserver(observe).observe(document.body, { childList: true, subtree: true, characterData: true }); observe()
+      new MutationObserver(observe).observe(document.body, { childList: true, subtree: true, characterData: true, attributes: true }); observe()
     })
     const hydrate = () => api('POST', '/v3/sync/hydrate', { surface: 'desktop', session_ids: [sessionID], history: { mode: 'tail', max_messages_per_session: 200, max_events_per_session: 0, manifest_policy: 'manifest' }, resources: { messages: true, run_intents: true, current_run_state: true }, include_active: true })
     const waitRun = async (runID) => {
@@ -223,13 +232,14 @@ export async function runLive(options) {
     const sent = await api('POST', `/v3/sessions/${sessionID}/messages`, { client_request_id: randomUUID(), role: 'user', content: prompt })
     const first = verifyRepair(await waitRun(sent.run_intent?.run_id || sent.run_id), { sessionID })
     ledger.identities.push(first); ledger.stages.push('primary-incremental-repair')
-    verifySidebar(await page.evaluate(() => window.__repairUI), first.artifact_id)
+    ledger.sidebar_observations = await page.evaluate(() => window.__repairUI)
+    verifySidebar(ledger.sidebar_observations, first.artifact_id)
     ledger.stages.push('live-sidebar-creating-fixing-ready')
     const route = `/v3/sessions/${sessionID}/artifacts-v3`
     const catalog = await api('GET', route)
     check(catalog.artifacts?.length === 1 && catalog.artifacts[0].id === first.artifact_id, 'duplicate_artifact_creation')
     const open = async () => {
-      await page.locator(`[data-artifact-v3-sidebar-id=${JSON.stringify(first.artifact_id)}]`).click()
+      await page.locator(`[data-artifact-v3-sidebar-id=${JSON.stringify(first.artifact_id)}]:visible`).click()
       const studio = page.locator('[data-artifact-v3-studio]'); await studio.waitFor({ state: 'visible' })
       await studio.locator('[data-artifact-v3-complete-preview]').waitFor({ state: 'visible' })
       check(await studio.locator('[data-artifact-v3-part]').count() === 3, 'ui_parts_missing')
@@ -240,14 +250,21 @@ export async function runLive(options) {
     await preview.getByText('Orchard launch', { exact: true }).waitFor({ state: 'visible' })
     await preview.getByText('Fictional plan: 12 credits', { exact: true }).waitFor({ state: 'visible' })
     await preview.getByText('Fictional demo only', { exact: true }).waitFor({ state: 'visible' })
+    await page.screenshot({ path: path.join(outputDir, 'ready-studio.png') })
+    await studio.getByText('Previous repair errors', { exact: true }).click()
+    check(await studio.locator('[data-artifact-repair-history] p:visible').count() > 0, 'repair_history_missing')
+    check(await studio.locator('[data-artifact-v3-diagnostics]').count() === 0, 'current_errors_not_cleared')
+    await page.screenshot({ path: path.join(outputDir, 'repair-history.png') })
     await studio.locator('[data-artifact-v3-part="hero"]').click()
     await studio.locator('[data-artifact-v3-iterate]').click()
-    const composer = page.getByLabel('Continue Desktop V3 conversation'); const draft = await composer.inputValue()
-    check(draft.includes(first.revision_ref) && draft.includes('Target part IDs (intent only): hero'), 'composer_lost_exact_source')
-    await composer.fill(`${draft}\n${instructions}\nUse begin_v3 on that exact reference targeting hero. Change ONLY Orchard launch to Orchard spring launch.`)
+    const composer = page.getByLabel('Continue Desktop V3 conversation')
+    await page.getByText(/pending update/i).waitFor({ state: 'visible' })
+    await composer.fill(`${instructions}\nUse begin_v3 on the attached exact reference targeting hero. Change ONLY Orchard launch to Orchard spring launch.`)
     const responsePromise = page.waitForResponse((r) => r.request().method() === 'POST' && new URL(r.url()).pathname === `/v3/sessions/${sessionID}/messages`)
     await page.getByRole('button', { name: 'Send message', exact: true }).click()
     const response = await responsePromise; check(response.ok(), 'composer_submission_failed')
+    const submitted = response.request().postDataJSON()
+    verifyPartAttachment(submitted.artifact_selections, first)
     const secondSent = await response.json()
     const sourceRef = { session_id: sessionID, artifact_id: first.artifact_id, revision_ref: first.revision_ref }
     const second = verifyRepair(await waitRun(secondSent.run_intent?.run_id || secondSent.run_id), { sessionID, initial: false, artifactID: first.artifact_id, sourceRef })
@@ -258,12 +275,15 @@ export async function runLive(options) {
     const head = detail.artifact?.head || detail.artifact?.current_revision
     check(head?.revision_ref === first.revision_ref && head?.commit_oid === first.commit_oid, 'unselected_edit_moved_source')
     check((await api('GET', route)).artifacts?.length === 1, 'reopen_duplicate_identity')
-    check(await reopened.locator('[data-artifact-v3-candidate]').count() >= 2, 'reopen_lost_candidate')
+    check(await reopened.locator('[data-artifact-v3-candidate]').count() === 1, 'reopen_lost_candidate')
+    await reopened.locator('[data-artifact-v3-complete-preview]').contentFrame().getByText('Orchard spring launch', { exact: true }).waitFor({ state: 'visible' })
+    await page.screenshot({ path: path.join(outputDir, 'edited-candidate.png') })
     // Studio intentionally opens pending changes. Viewing HEAD is not selecting it.
     await reopened.locator(`[data-artifact-v3-revision=${JSON.stringify(first.commit_oid)}]`).click()
     await reopened.locator(`[data-artifact-v3-preview-revision=${JSON.stringify(first.commit_oid)}]`).waitFor({ state: 'visible' })
     const reopenedPreview = reopened.locator('[data-artifact-v3-complete-preview]').contentFrame()
     await reopenedPreview.getByText('Orchard launch', { exact: true }).waitFor({ state: 'visible' })
+    await page.screenshot({ path: path.join(outputDir, 'reopened-original.png') })
     ledger.stages.push('refresh-reopen-preserves-selected-source')
     // Explicit synthetic UI failure stage; never represented as a live provider failure.
     // Only this new page is intercepted; durable state and other tabs are untouched.
@@ -276,7 +296,7 @@ export async function runLive(options) {
       await intercept.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) })
     })
     await page.reload({ waitUntil: 'domcontentloaded' })
-    const errorItem = page.locator(`[data-artifact-v3-sidebar-id=${JSON.stringify(first.artifact_id)}]`)
+    const errorItem = page.locator(`[data-artifact-v3-sidebar-id=${JSON.stringify(first.artifact_id)}]:visible`)
     await errorItem.getByText('Error', { exact: true }).waitFor({ state: 'visible' })
     check((await errorItem.innerText()).includes('Fictional Orchard'), 'error_lost_meaningful_name')
     ledger.stages.push('synthetic-error-sidebar-ui')

@@ -7,7 +7,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import fs from 'node:fs/promises'
-import { allowedRequest, brokenHTML, repairedHTML, editedHTML, endpoint, noProgressFixture, openProofBrowser, parseOptions, toolRecords, verifyRepair, verifySidebar, waitStage } from '../../scripts/runners/artifact-v3-edit-repair.mjs'
+import { allowedRequest, brokenHTML, repairedHTML, editedHTML, endpoint, noProgressFixture, openProofBrowser, parseOptions, toolRecords, verifyRepair, verifyPartAttachment, verifySidebar, waitStage } from '../../scripts/runners/artifact-v3-edit-repair.mjs'
 
 const handle = { session_id: 'fixture-session', artifact_id: 'fixture-artifact', turn_id: 'fixture-turn', candidate_id: 'fixture-candidate', grant_id: 'fixture-grant' }
 const manifest = JSON.stringify({ parts: ['hero', 'pricing', 'footer'].map((id) => ({ id, label: id, locator: { kind: 'selector', path: 'index.html', value: '#' + id } })) })
@@ -114,7 +114,7 @@ test('explicit headless mode isolates browser and keeps sandbox enabled', async 
   let closed = 0; let launched = 0
   const context = {}
   const browser = { newContext: async (value) => { assert.deepEqual(value, { viewport: { width: 1440, height: 1000 } }); return context }, close: async () => { closed++ } }
-  const chromium = { launch: async (value) => { launched++; assert.deepEqual(value, { headless: true, chromiumSandbox: true, timeout: 15000 }); return browser }, connectOverCDP: () => { throw new Error('must_not_attach_operator') } }
+  const chromium = { launch: async (value) => { launched++; assert.deepEqual(value, { headless: true, chromiumSandbox: true, timeout: 15000, ...(process.env.SWARM_TEST_BROWSER_CHANNEL ? { channel: process.env.SWARM_TEST_BROWSER_CHANNEL } : {}) }); return browser }, connectOverCDP: () => { throw new Error('must_not_attach_operator') } }
   assert.deepEqual(await openProofBrowser(chromium, options), { browser, context })
   assert.equal(launched, 1); assert.equal(closed, 0)
   browser.newContext = async () => { throw new Error('context_failed') }
@@ -129,4 +129,16 @@ test('tool evidence rejects conflicting or missing run identities and accepts ex
   assert.equal(toolRecords([{ role: 'tool', run_id: 'fixture-run', content: envelope }], 'fixture-run').length, 1)
   assert.throws(() => toolRecords([{ role: 'tool', run_id: 'fixture-run', content: { ...envelope, run_id: 'foreign' } }], 'fixture-run'), /conflicting_tool_run_identity/)
   assert.throws(() => toolRecords([{ role: 'tool', content: envelope }], 'fixture-run'), /tool_run_scope_unavailable/)
+})
+
+// Requirement: Studio submits one exact native Part attachment, not prose IDs.
+// Threat: stale/foreign selection passes an obsolete composer-prefill assertion.
+// Authority: the actual message POST artifact_selections; pure request assertion.
+test('typed Part attachment rejects stale reference, wrong target and duplicate selection', () => {
+  const selection = {...firstRef, target_part_ids: ['hero'], action: 'use'}
+  verifyPartAttachment([selection], firstRef)
+  for (const field of ['session_id', 'artifact_id', 'revision_ref']) assert.throws(() => verifyPartAttachment([{...selection, [field]:'foreign'}], firstRef))
+  assert.throws(() => verifyPartAttachment([{...selection,target_part_ids:['pricing']}], firstRef))
+  assert.throws(() => verifyPartAttachment([selection,selection], firstRef))
+  assert.throws(() => verifyPartAttachment(undefined, firstRef))
 })

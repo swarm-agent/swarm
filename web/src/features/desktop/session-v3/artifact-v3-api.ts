@@ -49,8 +49,8 @@ export interface DesktopV3NativeArtifactChangedFile {
   path: string
   status: 'added' | 'modified' | 'deleted' | 'renamed'
   previousPath: string
-  additions: number
-  deletions: number
+  additions: number | null
+  deletions: number | null
   affectedPartIds: string[]
   shared: boolean
 }
@@ -242,8 +242,8 @@ function normalizeChangedFile(value: unknown): DesktopV3NativeArtifactChangedFil
     path,
     status,
     previousPath: stringValue(field(item, 'previous_path', 'previousPath')),
-    additions: numberValue(item?.additions),
-    deletions: numberValue(item?.deletions),
+    additions: typeof item?.additions === 'number' && Number.isFinite(item.additions) && item.additions >= 0 ? item.additions : null,
+    deletions: typeof item?.deletions === 'number' && Number.isFinite(item.deletions) && item.deletions >= 0 ? item.deletions : null,
     affectedPartIds: strings(field(item, 'affected_part_ids', 'affectedPartIds')),
     shared: item?.shared === true,
   }

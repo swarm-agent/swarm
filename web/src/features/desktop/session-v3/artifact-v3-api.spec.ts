@@ -137,3 +137,14 @@ test('Studio retains candidate manifests outside the history page and orders tur
     assert.deepEqual(studio.parts.map((item) => item.id), ['original'])
   } finally { globalThis.fetch = originalFetch }
 })
+
+// Requirement: path-only native diffs do not invent zero line counts.
+// Authority: normalizeDesktopV3NativeArtifactRevision; this boundary is narrower
+// than rendering and distinguishes absent evidence from measured zero counts.
+test('path-only revision changes preserve unavailable line counts', () => {
+  const revision = normalizeDesktopV3NativeArtifactRevision({revision_ref:'revision-diff',commit_oid:'a'.repeat(40),changed_files:['index.html',{path:'empty.txt',additions:0,deletions:0}]})!
+  assert.equal(revision.changedFiles[0]!.additions, null)
+  assert.equal(revision.changedFiles[0]!.deletions, null)
+  assert.equal(revision.changedFiles[1]!.additions, 0)
+  assert.equal(revision.changedFiles[1]!.deletions, 0)
+})

@@ -63,10 +63,14 @@ export function desktopV3NextSessionSidebarView(input: {
   prioritizePlan?: boolean
   prioritizeArtifact?: boolean
   hasPendingVisualSwarm?: boolean
+  nativeArtifactCount?: number
+  previousNativeArtifactCount?: number
+  planPermissionVisible?: boolean
+  previousPlanPermissionVisible?: boolean
 }): DesktopV3SessionSidebarView {
   if (input.artifactCount === 0) return 'plan'
-  if (input.hasPendingVisualSwarm || input.prioritizeArtifact) return 'artifacts'
-  if (input.prioritizePlan) return 'plan'
+  if (input.hasPendingVisualSwarm || input.prioritizeArtifact || (input.nativeArtifactCount ?? 0) > (input.previousNativeArtifactCount ?? 0)) return 'artifacts'
+  if (input.prioritizePlan || (input.planPermissionVisible && !input.previousPlanPermissionVisible)) return 'plan'
   if (input.previousArtifactCount === 0 && !input.hasPlan) return 'artifacts'
   return input.current
 }

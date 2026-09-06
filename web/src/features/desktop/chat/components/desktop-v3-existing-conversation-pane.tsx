@@ -2041,7 +2041,8 @@ export function DesktopV3ExistingConversationPane({
   const openedMobileVisualSwarmKeysRef = useRef(new Set<string>());
   const artifactSidebarSessionRef = useRef("");
   const priorSessionArtifactCountRef = useRef(0);
-  const priorSessionHasPlanRef = useRef(false);
+  const priorNativeArtifactCountRef = useRef(0);
+  const priorPlanPermissionVisibleRef = useRef(false);
   const preferredPlanSidebarMode = useMemo(loadDesktopSidebarDisplayMode, []);
   useEffect(() => {
     const element = planSidebarGridRef.current;
@@ -2095,7 +2096,8 @@ export function DesktopV3ExistingConversationPane({
   useEffect(() => {
     artifactSidebarSessionRef.current = normalizedSessionId;
     priorSessionArtifactCountRef.current = 0;
-    priorSessionHasPlanRef.current = false;
+    priorNativeArtifactCountRef.current = 0;
+    priorPlanPermissionVisibleRef.current = false;
     setSessionArtifacts([]);
     setSelectedArtifactV3(null);
     setArtifactV3StudioOpen(false);
@@ -2271,18 +2273,24 @@ export function DesktopV3ExistingConversationPane({
   useEffect(() => {
     if (artifactSidebarSessionRef.current !== normalizedSessionId) return;
     const previousCount = priorSessionArtifactCountRef.current;
-    const previousHasPlan = priorSessionHasPlanRef.current;
+    const previousNativeCount = priorNativeArtifactCountRef.current;
+    const previousPlanPermissionVisible = priorPlanPermissionVisibleRef.current;
     setSidebarView((current) => desktopV3NextSessionSidebarView({
       current,
       previousArtifactCount: previousCount,
       artifactCount: sessionArtifactV3.length + sessionArtifactV2.length + sessionArtifacts.length,
       hasPlan: showPlanSidebar,
-      prioritizePlan: Boolean(stablePlanDocument) || (showPlanSidebar && !previousHasPlan),
-      prioritizeArtifact: sessionArtifactV3.length > 0 && previousCount === 0,
+      // Hydration may replace the plan object on every tool event. Only a new
+      // permission should steal focus; legacy catalog arrival is independent.
+      planPermissionVisible: Boolean(stablePlanDocument),
+      previousPlanPermissionVisible,
+      nativeArtifactCount: sessionArtifactV3.length,
+      previousNativeArtifactCount: previousNativeCount,
       hasPendingVisualSwarm,
     }));
     priorSessionArtifactCountRef.current = sessionArtifactV3.length + sessionArtifactV2.length + sessionArtifacts.length;
-    priorSessionHasPlanRef.current = showPlanSidebar;
+    priorNativeArtifactCountRef.current = sessionArtifactV3.length;
+    priorPlanPermissionVisibleRef.current = Boolean(stablePlanDocument);
   }, [hasPendingVisualSwarm, normalizedSessionId, sessionArtifactV3.length, sessionArtifactV2.length, sessionArtifacts.length, showPlanSidebar, stablePlanDocument]);
   const activeSidebarView = desktopV3ActiveSessionSidebarView({
     selected: sidebarView,
