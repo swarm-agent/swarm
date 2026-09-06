@@ -77,7 +77,7 @@ try {
       if (n === 1) {
         program.stages.splice(1, 0, { id: 'concepts', depends_on: ['research'], dependency_evidence: 'Both requested alternatives need the exact report.' })
         program.stages.find(s => s.id === 'write').depends_on = ['concepts']
-        for (let i = 1; i <= 2; i++) program.jobs.push({ id: `concept-${i}`, stage_id: 'concepts', agent_type: 'designer', title: 'Requested Concept Alternative', output_mode: 'managed', depends_on: ['research'], meta_prompt: `Create alternative ${i} of two explicitly requested static HTML concept cards. Use the exact heading and subtitle from the Finder report. ${i === 1 ? 'Cream background and dark editorial typography.' : 'Navy background and mint technical typography.'} Fit all content legibly in 960x540. No images, animation, network or extra claims. Use semantic main with stable id. Finish a validated native V3 project.`, deliverable: 'One exact native HTML alternative', dependency_evidence: 'Finder report ready.', acceptance_criteria: ['Exact heading and subtitle in ready HTML.'] })
+        for (let i = 1; i <= 2; i++) program.jobs.push({ id: `concept-${i}`, stage_id: 'concepts', agent_type: 'designer', title: 'Requested Concept Alternative', output_mode: 'managed', depends_on: ['research'], meta_prompt: `Create alternative ${i} of two explicitly requested static HTML concept cards. Use the exact heading and subtitle from the Finder report. ${i === 1 ? 'Cream background and dark editorial typography.' : 'Navy background and mint technical typography.'} Fit all content legibly in 960x540. The heading token must remain on one line: use at most 42px type and enough available width; do not orphan its final character. Show only the exact researched heading and subtitle, without decorative labels or added copy. No images, animation, network or extra claims. Use semantic main with stable id. Finish a validated native V3 project.`, deliverable: 'One exact native HTML alternative', dependency_evidence: 'Finder report ready.', acceptance_criteria: ['Exact heading and subtitle in ready HTML.'] })
         const writer = program.jobs.find(j => j.id === 'write')
         writer.depends_on.push('concept-1'); writer.meta_prompt += ' Also verify the exact heading occurs in the authenticated first Designer source before writing. Do not select or merge the second alternative.'
         program.stages.push({ id: 'audit', depends_on: ['write'], dependency_evidence: 'Coder result integrated.' })
@@ -106,7 +106,7 @@ try {
     while (Date.now() < deadline) {
       const snapshot = await hydrate(e.parent)
       const active = await api('GET', `/v3/sessions/${e.parent}/plans/active`)
-      const doc = (active.plan || active).document
+      const doc = active.active_plan?.document
       check(doc?.checkpoints?.length === 10, 'Canonical ten-checkpoint plan unavailable')
       const cp = doc.checkpoints.find(c => c.id === `cp-${n}`)
       for (const o of taskOutputs(snapshot)) if (e.programs[o.program_id]) e.programs[o.program_id].output = o
@@ -137,10 +137,14 @@ try {
           check(p.output.jobs.length === p.definition.jobs.length && p.output.jobs.every(j => ['completed', 'integrated'].includes(j.state)), 'Missing successful job handoff')
           if (p.kind === 'attached') {
             const job = p.output.jobs.find(j => j.job_id === 'write')
-            const child = e.children[job.child_session_id]; check(child?.worktree, 'Missing Coder worktree identity')
-            check(await git(child.worktree, 'status', '--porcelain') === '', 'Dirty completed child')
-            check(await readFile(path.join(child.worktree, p.file), 'utf8') === `${e.marker}\nCHECKPOINT_${n}\n`, 'Wrong committed dependency output')
-            p.child_head = await git(child.worktree, 'rev-parse', 'HEAD')
+            const launch = p.output.launches.find(l => l.child_session_id === job.child_session_id)
+            check(launch?.worktree_clean === true && /^[a-f0-9]{40}$/.test(job.child_head), 'Missing clean committed Coder evidence')
+            check(['integrated', 'integrated_worktree_removed'].includes(job.integration_state), 'Coder was not integrated')
+            const expectedText = `${e.marker}\nCHECKPOINT_${n}`
+            check(await git(p.target, 'show', `${job.child_head}:${p.file}`) === expectedText, 'Wrong committed dependency output')
+            check(await git(p.target, 'show', `${job.parent_branch}:${p.file}`) === expectedText, 'Wrong integration destination or output')
+            await git(p.target, 'merge-base', '--is-ancestor', job.immutable_stage_base, job.child_head)
+            p.child_head = job.child_head; p.integration_head = await git(p.target, 'rev-parse', job.parent_branch)
           }
         }
         for (const repo of e.repositories) { check(await git(repo.path, 'rev-parse', 'HEAD') === repo.head, 'Captured HEAD changed'); check(await git(repo.path, 'status', '--porcelain') === '', 'Captured source dirty') }
