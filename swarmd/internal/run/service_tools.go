@@ -1251,6 +1251,14 @@ func (s *Service) prepareDelegatedSubagentLaunchWithProfile(parentSession pebble
 	childWorktreeBaseBranch := strings.TrimSpace(parentSession.WorktreeBaseBranch)
 	childWorktreeBranch := strings.TrimSpace(parentSession.WorktreeBranch)
 	childTemporaryWorkspaceRoots := append([]string(nil), parentSession.TemporaryWorkspaceRoots...)
+	// A Finder targeting another authorized workspace must not retain the
+	// parent's worktree identity: runtime scope resolves that root before
+	// WorkspacePath and would silently redirect reads back to the parent.
+	if agentruntime.IsFinderAgentName(requestedSubagent) && !sameTaskProgramPath(targetWorkspacePath, firstNonEmptyString(parentSession.WorktreeRootPath, parentSession.WorkspacePath)) {
+		childWorktreeEnabled = false
+		childWorktreeRootPath, childWorktreeBaseBranch, childWorktreeBranch = "", "", ""
+		childTemporaryWorkspaceRoots = nil
+	}
 	childWorkspaceID := ""
 	childSessionID := sessionruntime.NewSessionID()
 	if logicalTaskID := strings.TrimSpace(launch.LogicalTaskID); logicalTaskID != "" && strings.TrimSpace(parentSession.AccountScopeID) != "" {
