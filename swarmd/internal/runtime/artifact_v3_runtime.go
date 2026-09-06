@@ -1823,6 +1823,9 @@ func (a *artifactV3RuntimeAdapter) ResumeArtifactV3DirectDraft(ctx context.Conte
 	grant.ID = artifactV3StableID("resume", oldID, p.ProducerRunID, fmt.Sprint(draft.Sequence))
 	grant.ExpiresAt = time.Now().Add(30 * time.Minute).UnixMilli()
 	state.ProducerRunID = p.ProducerRunID
+	// A deliberate later-run handoff gets a new bounded repair budget. Source
+	// and diagnostic history remain intact; ordinary retries never reset it.
+	state.Attempt = 0
 	state.Gate = nil
 	draft.GrantID, draft.ExpiresAt, draft.Status = grant.ID, grant.ExpiresAt, "fixing"
 	draft.Grant, err = json.Marshal(grant)

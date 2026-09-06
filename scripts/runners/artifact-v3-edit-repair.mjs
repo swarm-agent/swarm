@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-// Attach-only proof. Never configures providers, authenticates, deploys, or selects candidates.
+// Attach-only proof. Uses Desktop's canonical session bootstrap; never copies credentials,
+// configures providers, deploys, or selects candidates. CDP must be a dedicated test browser.
 // Parent validation: node --test tests/scripts/artifact_v3_edit_repair_test.mjs
 import assert from 'node:assert/strict'
 import { createHash, randomUUID } from 'node:crypto'
@@ -25,7 +26,7 @@ export function endpoint(value) {
   return url
 }
 export function parseOptions(argv) {
-  const allowed = new Set(['desktop-url', 'cdp-url', 'workspace-path', 'workspace-name', 'binding-id', 'swarm-id', 'output', 'stage', 'stage-ms', 'stall-ms'])
+  const allowed = new Set(['desktop-url', 'cdp-url', 'browser-mode', 'workspace-path', 'workspace-name', 'binding-id', 'swarm-id', 'output', 'stage', 'stage-ms', 'stall-ms'])
   const values = {}
   for (let i = 0; i < argv.length; i += 2) {
     const key = argv[i]?.replace(/^--/, '')
@@ -38,7 +39,10 @@ export function parseOptions(argv) {
   const stallMs = Number(values['stall-ms'] || 90000)
   check(Number.isInteger(stageMs) && stageMs >= 1000 && stageMs <= 600000 && Number.isInteger(stallMs) && stallMs >= 1000 && stallMs <= stageMs, 'invalid_budget')
   if (stage === 'live') {
-    endpoint(values['desktop-url']); endpoint(values['cdp-url'])
+    endpoint(values['desktop-url'])
+    check(['headless', 'dedicated-cdp'].includes(values['browser-mode']), 'explicit_browser_mode_required')
+    if (values['browser-mode'] === 'dedicated-cdp') endpoint(values['cdp-url'])
+    else check(!values['cdp-url'], 'headless_cdp_conflict')
     for (const key of ['workspace-path', 'workspace-name', 'binding-id', 'swarm-id', 'output']) check(values[key]?.trim(), 'missing_' + key)
   }
   return { ...values, stage, stageMs, stallMs }
@@ -70,7 +74,10 @@ export function toolRecords(messages, runID) {
     if (message.role !== 'tool') continue
     let envelope
     try { envelope = decode(message.content) } catch { throw new Error('tool_evidence_not_json') }
-    if (envelope.run_id !== runID) continue
+    const evidenceRun = message.run_id || envelope.run_id
+    if (!evidenceRun && (envelope.tool_name || envelope.tool) === 'manage_artifact') throw new Error('tool_run_scope_unavailable')
+    if (evidenceRun !== runID) continue
+    check(!message.run_id || !envelope.run_id || message.run_id === envelope.run_id, 'conflicting_tool_run_identity')
     if ((envelope.tool_name || envelope.tool) !== 'manage_artifact') continue
     check(envelope.call_id && !seen.has(envelope.call_id), 'duplicate_tool_identity')
     seen.add(envelope.call_id)
@@ -135,18 +142,35 @@ export async function noProgressFixture() {
 
 const instructions = `Use only primary manage_artifact, no delegation or workspace writes. Do not alter provider settings, permissions, or other artifacts. Do not recreate after a failed create. For each retained draft use author_v3 with its EXACT draft_handle, in this order: read_file index.html; read_file swarm-artifact.json; one edit_file; read_file index.html; read_file swarm-artifact.json; build_preview; finish_turn. Preserve every unrelated byte and all Part IDs. Do not select follow-up candidates. If anything fails, report honestly and retain work.`
 
+// Isolated ephemeral context only; no persistent profile, cookies or storage-state import.
+export async function openProofBrowser(chromium, options) {
+  if (options['browser-mode'] === 'headless') {
+    const browser = await chromium.launch({ headless: true, chromiumSandbox: true, timeout: 15000 })
+    try {
+      return { browser, context: await browser.newContext({ viewport: { width: 1440, height: 1000 } }) }
+    } catch (error) { await browser.close(); throw error }
+  }
+  check(options['browser-mode'] === 'dedicated-cdp', 'explicit_browser_mode_required')
+  const browser = await chromium.connectOverCDP(options['cdp-url'], { timeout: 15000 })
+  try {
+    const origin = endpoint(options['desktop-url']).origin
+    const context = browser.contexts().find((ctx) => ctx.pages().some((page) => {
+      try { return new URL(page.url()).origin === origin } catch { return false }
+    }))
+    check(context, 'authenticated_browser_origin_required')
+    return { browser, context }
+  } catch (error) { await browser.close(); throw error }
+}
+
 export async function runLive(options) {
   const require = createRequire(new URL('../../web/package.json', import.meta.url))
   const { chromium } = require('playwright')
-  const browser = await chromium.connectOverCDP(options['cdp-url'], { timeout: 15000 })
+  const { browser, context } = await openProofBrowser(chromium, options)
   let page; let sessionID = ''; let outputDir
   const ledger = { schema: 'artifact-v3-edit-repair/v1', status: 'incomplete', stages: [], identities: [] }
   let heartbeat
   try {
-    // Operator must authenticate this already-running browser at this exact origin.
     const url = endpoint(options['desktop-url'])
-    const context = browser.contexts().find((ctx) => ctx.pages().some((p) => new URL(p.url()).origin === url.origin))
-    check(context, 'authenticated_browser_origin_required')
     outputDir = await fs.mkdtemp(path.join(path.resolve(options.output), 'artifact-edit-'))
     await fs.chmod(outputDir, 0o700)
     heartbeat = setInterval(() => process.stdout.write('artifact-edit proof active; bounded stage in progress\n'), 10000)
@@ -162,7 +186,8 @@ export async function runLive(options) {
         return JSON.parse(text)
       }, { method, route, body })
     }
-    await api('GET', '/v1/auth/desktop/session')
+    const identity = await api('GET', '/v1/auth/desktop/session')
+    check((identity.user_id || identity.userID) && (identity.account_scope_id || identity.accountScopeID), 'desktop_identity_required')
     const created = await api('POST', '/v3/sessions', { client_request_id: randomUUID(), title: 'Fictional Orchard repair proof', workspace_path: options['workspace-path'], workspace_name: options['workspace-name'], workspace_binding_id: options['binding-id'], swarm_id: options['swarm-id'], target_kind: 'host', target_relationship: 'self', mode: 'auto', agent_name: 'swarm' })
     sessionID = created.session?.id || created.session_id
     check(typeof sessionID === 'string' && sessionID, 'missing_session_identity'); ledger.session_id = sessionID
@@ -189,12 +214,12 @@ export async function runLive(options) {
         progress: (s) => hash([s.messages_by_session?.[sessionID], s.run_intents_by_session?.[sessionID]?.map((r) => [r.run_id, r.status])]),
         done: (s) => {
           const intent = s.run_intents_by_session?.[sessionID]?.find((r) => r.run_id === runID)
-          if (['failed', 'cancelled', 'blocked'].includes(intent?.status)) throw new Error('provider_run_not_completed')
+          if (['failed', 'cancelled', 'blocked', 'expired', 'interrupted'].includes(intent?.status)) throw new Error('provider_run_not_completed')
           return intent?.status === 'completed'
         } })
       return toolRecords(snapshot.messages_by_session?.[sessionID] || [], runID)
     }
-    const prompt = `${instructions}\nCreate exactly one text/html artifact titled Fictional Orchard, filename index.html, using these EXACT bytes. This intentionally hidden Hero must encounter the real validation gate before repair. Repair ONLY display:none to display:block. Do not pre-fix.\n${brokenHTML}`
+    const prompt = `${instructions}\nCreate exactly one text/html artifact with collection_name Fictional Orchard, filename index.html, using these EXACT bytes. This intentionally hidden Hero must encounter the real validation gate before repair. Repair ONLY display:none to display:block. Do not pre-fix.\n${brokenHTML}`
     const sent = await api('POST', `/v3/sessions/${sessionID}/messages`, { client_request_id: randomUUID(), role: 'user', content: prompt })
     const first = verifyRepair(await waitRun(sent.run_intent?.run_id || sent.run_id), { sessionID })
     ledger.identities.push(first); ledger.stages.push('primary-incremental-repair')
@@ -202,7 +227,7 @@ export async function runLive(options) {
     ledger.stages.push('live-sidebar-creating-fixing-ready')
     const route = `/v3/sessions/${sessionID}/artifacts-v3`
     const catalog = await api('GET', route)
-    check(catalog.artifacts?.length === 1, 'duplicate_artifact_creation')
+    check(catalog.artifacts?.length === 1 && catalog.artifacts[0].id === first.artifact_id, 'duplicate_artifact_creation')
     const open = async () => {
       await page.locator(`[data-artifact-v3-sidebar-id=${JSON.stringify(first.artifact_id)}]`).click()
       const studio = page.locator('[data-artifact-v3-studio]'); await studio.waitFor({ state: 'visible' })
@@ -234,6 +259,9 @@ export async function runLive(options) {
     check(head?.revision_ref === first.revision_ref && head?.commit_oid === first.commit_oid, 'unselected_edit_moved_source')
     check((await api('GET', route)).artifacts?.length === 1, 'reopen_duplicate_identity')
     check(await reopened.locator('[data-artifact-v3-candidate]').count() >= 2, 'reopen_lost_candidate')
+    // Studio intentionally opens pending changes. Viewing HEAD is not selecting it.
+    await reopened.locator(`[data-artifact-v3-revision=${JSON.stringify(first.commit_oid)}]`).click()
+    await reopened.locator(`[data-artifact-v3-preview-revision=${JSON.stringify(first.commit_oid)}]`).waitFor({ state: 'visible' })
     const reopenedPreview = reopened.locator('[data-artifact-v3-complete-preview]').contentFrame()
     await reopenedPreview.getByText('Orchard launch', { exact: true }).waitFor({ state: 'visible' })
     ledger.stages.push('refresh-reopen-preserves-selected-source')
@@ -244,6 +272,7 @@ export async function runLive(options) {
       if (request.method() !== 'GET') return intercept.continue()
       const body = structuredClone(catalog)
       body.artifacts[0].status = 'error'
+      body.artifacts[0].current_draft = { ...body.artifacts[0].current_draft, status: 'error' }
       await intercept.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) })
     })
     await page.reload({ waitUntil: 'domcontentloaded' })
@@ -259,9 +288,11 @@ export async function runLive(options) {
     throw new Error('proof_failed_work_retained; inspect private ledger and fictional session')
   } finally {
     clearInterval(heartbeat)
-    if (outputDir) await fs.writeFile(path.join(outputDir, 'ledger.json'), JSON.stringify(ledger, null, 2), { mode: 0o600, flag: 'wx' })
-    if (page) await page.close()
-    await browser.close() // CDP disconnect only; do not close the operator's existing tabs.
+    try {
+      if (outputDir) await fs.writeFile(path.join(outputDir, 'ledger.json'), JSON.stringify(ledger, null, 2), { mode: 0o600, flag: 'wx' })
+    } finally {
+      try { if (page) await page.close() } finally { await browser.close() }
+    } // CDP disconnects; headless mode closes only our owned ephemeral browser.
   }
 }
 

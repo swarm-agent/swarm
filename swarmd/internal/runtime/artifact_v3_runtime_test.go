@@ -1252,6 +1252,21 @@ func TestArtifactV3RuntimeDirectRepairResumeLifecycle(t *testing.T) {
 	}
 	handle := created["draft_handle"].(map[string]any)
 	artifactID := handle["artifact_id"].(string)
+	// Exhaust the same-run budget with genuinely different source, not repeated
+	// failed builds. Explicit later-run resume must permit a meaningful repair.
+	for attempt := 1; attempt < 8; attempt++ {
+		nextHTML := html + "\n"
+		if _, err := invoke(map[string]any{"action": "author_v3", "draft_handle": handle, "operation": map[string]any{"action": "edit_file", "path": "index.html", "old_string": html, "new_string": nextHTML}}); err != nil {
+			t.Fatal(err)
+		}
+		html = nextHTML
+		if _, err := invoke(map[string]any{"action": "author_v3", "draft_handle": handle, "operation": map[string]any{"action": "build_preview"}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := invoke(map[string]any{"action": "author_v3", "draft_handle": handle, "operation": map[string]any{"action": "build_preview"}}); err == nil {
+		t.Fatal("same-run repair budget was not bounded")
+	}
 	before, found, err := sessions.Store().GetArtifactV3Repository("account", "user", artifactID)
 	if err != nil || !found || before.HeadCommitOID != "" {
 		t.Fatalf("headless draft: %+v %v", before, err)
@@ -1331,7 +1346,7 @@ func TestArtifactV3RuntimeDirectRepairResumeLifecycle(t *testing.T) {
 	var oldState, nextState tool.ArtifactV3AuthorDraft
 	json.Unmarshal(old.State, &oldState)
 	json.Unmarshal(after.Drafts[handle["grant_id"].(string)].State, &nextState)
-	if !reflect.DeepEqual(oldState.Project, nextState.Project) || !reflect.DeepEqual(oldState.History, nextState.History) || nextState.Gate != nil || nextState.ProducerRunID != "second" {
+	if !reflect.DeepEqual(oldState.Project, nextState.Project) || !reflect.DeepEqual(oldState.History, nextState.History) || nextState.Gate != nil || nextState.ProducerRunID != "second" || oldState.Attempt != 8 || nextState.Attempt != 0 {
 		t.Fatal("handoff changed source/history or retained stale gate")
 	}
 	op := func(operation map[string]any) (map[string]any, error) {
@@ -1357,8 +1372,13 @@ func TestArtifactV3RuntimeDirectRepairResumeLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	renderer.fail = false
-	if _, err := op(map[string]any{"action": "build_preview"}); err != nil {
-		t.Fatal(err)
+	built, err := op(map[string]any{"action": "build_preview"})
+	if err != nil || built["result"].(map[string]any)["Ready"] != true {
+		t.Fatalf("resumed build: %v %v", built, err)
+	}
+	public, err := adapter.GetArtifact(ctx, api.ArtifactV3Principal{AccountScopeID: "account", UserID: "user"}, "owner", artifactID)
+	if err != nil || public.CurrentDraft == nil || len(public.CurrentDraft.Diagnostics) != 0 || len(public.CurrentDraft.History) == 0 {
+		t.Fatalf("current error survived repair or history lost: %+v %v", public, err)
 	}
 	finished, err := op(map[string]any{"action": "finish_turn"})
 	if err != nil || finished["status"] != "ready" {

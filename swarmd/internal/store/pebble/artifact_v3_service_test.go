@@ -245,7 +245,7 @@ func TestArtifactV3ResumeExpiredDraftPreservesEnvelope(t *testing.T) {
 		t.Fatal(err)
 	}
 	owner := ArtifactV3Owner{AccountScopeID: "account-1", UserID: "user-1", SessionID: "resume-owner"}
-	old := ArtifactV3DraftProjection{GrantID: "old", ExpiresAt: 2000, Status: "error", Digest: "source-digest", Grant: json.RawMessage(`{"ID":"old","ExpiresAt":2000,"BaseCommitOID":"","Initial":true}`), State: json.RawMessage(`{"Sequence":0,"ProducerSessionID":"resume-owner","ProducerRunID":"first","Publishing":false,"Finished":null,"Gate":{"Ready":false},"Project":{"index.html":"cHJpdmF0ZQ=="},"History":[]}`)}
+	old := ArtifactV3DraftProjection{GrantID: "old", ExpiresAt: 2000, Status: "error", Digest: "source-digest", Grant: json.RawMessage(`{"ID":"old","ExpiresAt":2000,"BaseCommitOID":"","Initial":true}`), State: json.RawMessage(`{"Sequence":0,"ProducerSessionID":"resume-owner","ProducerRunID":"first","Attempt":8,"Publishing":false,"Finished":null,"Gate":{"Ready":false},"Project":{"index.html":"cHJpdmF0ZQ=="},"History":[]}`)}
 	repository := ArtifactV3RepositoryProjection{ArtifactID: "artifact", RepositoryID: "artifact", AccountScopeID: owner.AccountScopeID, UserID: owner.UserID, OwnerSessionID: owner.SessionID}
 	_, err = sessions.ApplyV3SessionMutation(V3SessionMutationInput{SessionID: owner.SessionID, AccountScopeID: owner.AccountScopeID, UserID: owner.UserID, Kind: V3SessionMutationArtifactV3DraftSaved, IdempotencyKey: "initial-draft", PayloadHash: "initial-draft", NowUnixMs: 1000, ArtifactV3: &ArtifactV3Mutation{Repository: &repository, Draft: &old}})
 	if err != nil {
@@ -265,12 +265,17 @@ func TestArtifactV3ResumeExpiredDraftPreservesEnvelope(t *testing.T) {
 	next := old
 	next.GrantID, next.Status, next.ExpiresAt = "new", "fixing", time.Now().Add(30*time.Minute).UnixMilli()
 	next.Grant = json.RawMessage(fmt.Sprintf(`{"ID":"new","ExpiresAt":%d,"BaseCommitOID":"","Initial":true}`, next.ExpiresAt))
-	next.State = json.RawMessage(`{"Sequence":0,"ProducerSessionID":"resume-owner","ProducerRunID":"second","Publishing":false,"Finished":null,"Gate":null,"Project":{"index.html":"cHJpdmF0ZQ=="},"History":[]}`)
+	next.State = json.RawMessage(`{"Sequence":0,"ProducerSessionID":"resume-owner","ProducerRunID":"second","Attempt":0,"Publishing":false,"Finished":null,"Gate":null,"Project":{"index.html":"cHJpdmF0ZQ=="},"History":[]}`)
 	resume := ArtifactV3DraftResume{GrantID: "old", ProjectionSeq: before.EventSeq, ProducerRunID: "second"}
 	forged := next
 	forged.State = json.RawMessage(strings.Replace(string(next.State), "cHJpdmF0ZQ==", "dGFtcGVyZWQ=", 1))
 	if err := service.ResumeDraft(owner, "artifact", "forged", forged, old.Sequence, resume); err == nil {
 		t.Fatal("resume replaced source")
+	}
+	forged = next
+	forged.State = json.RawMessage(strings.Replace(string(next.State), `"Attempt":0`, `"Attempt":-1`, 1))
+	if err := service.ResumeDraft(owner, "artifact", "forged-budget", forged, old.Sequence, resume); err == nil {
+		t.Fatal("resume accepted unbounded repair budget")
 	}
 	unchanged, _, _ := sessions.GetArtifactV3Repository(owner.AccountScopeID, owner.UserID, "artifact")
 	if !reflect.DeepEqual(before, unchanged) {

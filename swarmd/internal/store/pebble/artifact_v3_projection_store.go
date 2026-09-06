@@ -735,6 +735,16 @@ func (s *SessionStore) validateArtifactV3DraftResume(input V3SessionMutationInpu
 	if json.Unmarshal(after["ProducerRunID"], &nextRun) != nil || nextRun != r.ProducerRunID || string(after["Gate"]) != "null" {
 		return ErrArtifactV3Unauthorized
 	}
+	// Only the authenticated terminal-producer handoff may renew the budget.
+	// Missing Attempt is allowed for older envelopes, but a supplied value must be zero.
+	if raw, exists := after["Attempt"]; exists {
+		var attempt int
+		if json.Unmarshal(raw, &attempt) != nil || attempt != 0 {
+			return ErrArtifactV3Conflict
+		}
+	}
+	delete(before, "Attempt")
+	delete(after, "Attempt")
 	delete(before, "ProducerRunID")
 	delete(after, "ProducerRunID")
 	delete(before, "Gate")

@@ -7,7 +7,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import fs from 'node:fs/promises'
-import { allowedRequest, brokenHTML, repairedHTML, editedHTML, endpoint, noProgressFixture, parseOptions, toolRecords, verifyRepair, verifySidebar, waitStage } from '../../scripts/runners/artifact-v3-edit-repair.mjs'
+import { allowedRequest, brokenHTML, repairedHTML, editedHTML, endpoint, noProgressFixture, openProofBrowser, parseOptions, toolRecords, verifyRepair, verifySidebar, waitStage } from '../../scripts/runners/artifact-v3-edit-repair.mjs'
 
 const handle = { session_id: 'fixture-session', artifact_id: 'fixture-artifact', turn_id: 'fixture-turn', candidate_id: 'fixture-candidate', grant_id: 'fixture-grant' }
 const manifest = JSON.stringify({ parts: ['hero', 'pricing', 'footer'].map((id) => ({ id, label: id, locator: { kind: 'selector', path: 'index.html', value: '#' + id } })) })
@@ -34,7 +34,7 @@ test('explicit endpoints and strict options reject unsafe, duplicate and setup o
   assert.equal(endpoint('http://127.0.0.1:15655').port, '15655')
   for (const args of [['--deploy', 'yes'], ['--stage'], ['--stage', 'live', '--stage', 'live'], ['--stage-ms', '600001'], ['--stage-ms', 'NaN']]) assert.throws(() => parseOptions(args))
   assert.equal(parseOptions(['--stage', 'no-progress-fixture']).stage, 'no-progress-fixture')
-  const options = parseOptions(['--desktop-url', 'http://localhost:15655', '--cdp-url', 'http://localhost:9222', '--workspace-path', '/fixture', '--workspace-name', 'fixture', '--binding-id', 'fixture-binding', '--swarm-id', 'fixture-swarm', '--output', '/fixture-evidence'])
+  const options = parseOptions(['--browser-mode', 'dedicated-cdp', '--desktop-url', 'http://localhost:15655', '--cdp-url', 'http://localhost:9222', '--workspace-path', '/fixture', '--workspace-name', 'fixture', '--binding-id', 'fixture-binding', '--swarm-id', 'fixture-swarm', '--output', '/fixture-evidence'])
   assert.equal(options.stageMs, 600000)
   assert.equal(options.stallMs, 90000)
 })
@@ -45,7 +45,7 @@ test('write allowlist excludes settings/auth/setup/reset/tunnels and foreign ses
   assert.equal(allowedRequest('POST', '/v3/sync/hydrate', 'fixture'), true)
   const source = await fs.readFile(new URL('../../scripts/runners/artifact-v3-edit-repair.mjs', import.meta.url), 'utf8')
   // Supplemental static guard, not the lifecycle or security evidence above.
-  for (const forbidden of ['node:child_process', '.storageState(', '.addCookies(', 'launchPersistentContext(', 'chromium.launch(', 'resolve_all']) assert.equal(source.includes(forbidden), false)
+  for (const forbidden of ['node:child_process', '.storageState(', '.addCookies(', 'launchPersistentContext(', 'headless: false', '--no-sandbox', 'resolve_all']) assert.equal(source.includes(forbidden), false)
 })
 
 test('exact failed draft read/edit/build/finish and second native Part edit pass', () => {
@@ -101,4 +101,32 @@ test('no-progress fixture stops with retained source and deadline bounds progres
   let clock = 0; let beats = 0
   await assert.rejects(waitStage({ sample: async () => clock, done: () => false, stageMs: 25000, stallMs: 12000, now: () => clock, pause: async (ms) => { clock += ms }, heartbeat: () => { beats++ } }), /stage_deadline_work_retained/)
   assert.equal(clock, 25000); assert.equal(beats, 3)
+})
+
+// Requirement: headless Desktop attachment owns only ephemeral browser state and
+// retains the caller's exact origin. Fake Playwright is the narrow layer proving
+// launch arguments and cleanup on failure, not authentication or rendered health.
+test('explicit headless mode isolates browser and keeps sandbox enabled', async () => {
+  const args = ['--browser-mode', 'headless', '--desktop-url', 'http://localhost:15655/demo', '--workspace-path', '/fixture', '--workspace-name', 'fixture', '--binding-id', 'fixture-binding', '--swarm-id', 'fixture-swarm', '--output', '/fixture-evidence']
+  const options = parseOptions(args)
+  assert.equal(options['desktop-url'], 'http://localhost:15655/demo')
+  assert.throws(() => parseOptions([...args, '--cdp-url', 'http://localhost:9222']), /headless_cdp_conflict/)
+  let closed = 0; let launched = 0
+  const context = {}
+  const browser = { newContext: async (value) => { assert.deepEqual(value, { viewport: { width: 1440, height: 1000 } }); return context }, close: async () => { closed++ } }
+  const chromium = { launch: async (value) => { launched++; assert.deepEqual(value, { headless: true, chromiumSandbox: true, timeout: 15000 }); return browser }, connectOverCDP: () => { throw new Error('must_not_attach_operator') } }
+  assert.deepEqual(await openProofBrowser(chromium, options), { browser, context })
+  assert.equal(launched, 1); assert.equal(closed, 0)
+  browser.newContext = async () => { throw new Error('context_failed') }
+  await assert.rejects(openProofBrowser(chromium, options), /context_failed/)
+  assert.equal(closed, 1)
+  await assert.rejects(openProofBrowser(chromium, {}), /explicit_browser_mode/)
+  assert.equal(launched, 2)
+})
+
+test('tool evidence rejects conflicting or missing run identities and accepts explicit message run scope', () => {
+  const envelope = { tool: 'manage_artifact', call_id: 'fixture-call', arguments: fixture()[0].args, output: { artifact_v3: fixture()[0].body } }
+  assert.equal(toolRecords([{ role: 'tool', run_id: 'fixture-run', content: envelope }], 'fixture-run').length, 1)
+  assert.throws(() => toolRecords([{ role: 'tool', run_id: 'fixture-run', content: { ...envelope, run_id: 'foreign' } }], 'fixture-run'), /conflicting_tool_run_identity/)
+  assert.throws(() => toolRecords([{ role: 'tool', content: envelope }], 'fixture-run'), /tool_run_scope_unavailable/)
 })
