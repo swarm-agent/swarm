@@ -30,6 +30,7 @@ type ArtifactV3DraftProjection struct {
 	Status    string
 	ExpiresAt int64
 	Sequence  uint64
+	EventSeq uint64
 }
 
 type ArtifactV3RepositoryProjection struct {
@@ -366,6 +367,7 @@ func (s *SessionStore) prepareArtifactV3Mutation(input V3SessionMutationInput, s
 				copy.Drafts[key] = value
 			}
 			d.Sequence = m.ExpectedDraftSequence + 1
+			d.EventSeq = seq
 			copy.Drafts[d.GrantID] = d
 			var storedBytes int64
 			for _, value := range copy.Drafts {

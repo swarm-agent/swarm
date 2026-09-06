@@ -336,11 +336,6 @@ func (a *artifactV3RuntimeAdapter) FailArtifactV3Turn(_ context.Context, failure
 	if err != nil {
 		return err
 	}
-	if _, ok, readErr := a.sessions.GetArtifactV3Repository(owner.Owner.AccountScopeID, owner.Owner.UserID, failure.ArtifactID); readErr != nil || !ok {
-		// Initial authoring has no durable repository/turn until a validated genesis
-		// commit exists, so a failed child leaves no partial Artifact V3 identity.
-		return nil
-	}
 	repository, found, readErr := a.sessions.GetArtifactV3Repository(owner.Owner.AccountScopeID, owner.Owner.UserID, failure.ArtifactID)
 	if readErr != nil {
 		return readErr
@@ -348,7 +343,7 @@ func (a *artifactV3RuntimeAdapter) FailArtifactV3Turn(_ context.Context, failure
 	if !found {
 		return pebblestore.ErrArtifactV3NotFound
 	}
-	if repository.HeadCommitOID == "" {
+	{
 		id := artifactV3StableID("grant", failure.ArtifactID, failure.TurnID, failure.CandidateID)
 		draft, exists := repository.Drafts[id]
 		if !exists {
@@ -368,7 +363,9 @@ func (a *artifactV3RuntimeAdapter) FailArtifactV3Turn(_ context.Context, failure
 		}
 		draft.Status = "error"
 		_, err = a.service.SaveDraft(owner.Owner, failure.ArtifactID, artifactV3StableID("failed", id, fmt.Sprint(draft.Sequence)), repository.IntentReference, draft, draft.Sequence)
-		return err
+		if err != nil || repository.HeadCommitOID == "" {
+			return err
+		}
 	}
 	_, err = a.service.RecordCandidateTerminal(owner.Owner, failure.ArtifactID, failure.TurnID, failure.CandidateID, artifactV3StableID("fail", failure.ArtifactID, failure.TurnID, failure.CandidateID), "failed", strings.TrimSpace(failure.Code), 0)
 	return err
@@ -659,8 +656,12 @@ func (a *artifactV3RuntimeAdapter) GetArtifact(ctx context.Context, principal ap
 }
 
 func (a *artifactV3RuntimeAdapter) artifact(ctx context.Context, principal api.ArtifactV3Principal, repository pebblestore.ArtifactV3RepositoryProjection) (api.ArtifactV3Artifact, error) {
+	draft, label, err := artifactV3PublicDraft(repository)
+	if err != nil {
+		return api.ArtifactV3Artifact{}, err
+	}
 	if repository.HeadCommitOID == "" {
-		return api.ArtifactV3Artifact{ID: repository.ArtifactID, Label: "Artifact", OwnerSessionID: repository.OwnerSessionID, IntentReference: repository.IntentReference, Status: repository.DraftStatus, Revision: repository.EventSeq, UpdatedAt: repository.UpdatedAt}, nil
+		return api.ArtifactV3Artifact{ID: repository.ArtifactID, Label: label, OwnerSessionID: repository.OwnerSessionID, IntentReference: repository.IntentReference, Status: repository.DraftStatus, CurrentDraft: draft, Revision: repository.EventSeq, UpdatedAt: repository.UpdatedAt}, nil
 	}
 	revision, err := a.revision(ctx, principal, repository, repository.HeadCommitOID)
 	if err != nil {
@@ -678,13 +679,16 @@ func (a *artifactV3RuntimeAdapter) artifact(ctx context.Context, principal api.A
 	if err != nil {
 		return api.ArtifactV3Artifact{}, err
 	}
-	return api.ArtifactV3Artifact{Label: artifactV3DocumentTitle(entrypoint), ID: repository.ArtifactID, OwnerSessionID: repository.OwnerSessionID, IntentReference: repository.IntentReference, ArtifactRef: artifactV3Reference(repository), Status: "ready", Revision: repository.EventSeq, PartCount: len(revision.Manifest.Parts), Parts: revision.Manifest.Parts, Head: &revision, CurrentRevision: &revision, Revisions: []api.ArtifactV3Revision{revision}, Turns: turns, UpdatedAt: repository.UpdatedAt}, nil
+	return api.ArtifactV3Artifact{CurrentDraft: draft, Label: artifactV3DocumentTitle(entrypoint), ID: repository.ArtifactID, OwnerSessionID: repository.OwnerSessionID, IntentReference: repository.IntentReference, ArtifactRef: artifactV3Reference(repository), Status: "ready", Revision: repository.EventSeq, PartCount: len(revision.Manifest.Parts), Parts: revision.Manifest.Parts, Head: &revision, CurrentRevision: &revision, Revisions: []api.ArtifactV3Revision{revision}, Turns: turns, UpdatedAt: repository.UpdatedAt}, nil
 }
 
 func (a *artifactV3RuntimeAdapter) ListRevisions(ctx context.Context, principal api.ArtifactV3Principal, sessionID, artifactID, cursor string, limit int) (api.ArtifactV3RevisionPage, error) {
 	repository, ok, err := a.sessions.GetArtifactV3Repository(principal.AccountScopeID, principal.UserID, artifactID)
 	if err != nil || !ok || repository.OwnerSessionID != sessionID {
 		return api.ArtifactV3RevisionPage{}, pebblestore.ErrArtifactV3NotFound
+	}
+	if repository.HeadCommitOID == "" {
+		return api.ArtifactV3RevisionPage{Revisions: []api.ArtifactV3Revision{}}, nil
 	}
 	repo, err := pebblestore.OpenArtifactV3Repository(ctx, a.repositoryRoot, artifactID, pebblestore.ArtifactV3Owner{AccountScopeID: principal.AccountScopeID, UserID: principal.UserID, SessionID: sessionID}, a.limits)
 	if err != nil {
@@ -1712,4 +1716,64 @@ func (a *artifactV3RuntimeAdapter) ResolveArtifactV3DirectDraft(ctx context.Cont
 		return tool.ArtifactV3AuthorGrant{}, err
 	}
 	return grant, nil
+}
+
+// artifactV3PublicDraft deliberately does not convert the private grant or raw
+// diagnostic text. Renderer/compiler errors can contain source and host paths.
+func artifactV3PublicDraft(repository pebblestore.ArtifactV3RepositoryProjection) (*api.ArtifactV3DraftSummary, string, error) {
+	label := strings.Join(strings.Fields(repository.IntentReference), " ")
+	if len([]rune(label)) > 100 {
+		label = string([]rune(label)[:100])
+	}
+	if label == "" {
+		label = "Untitled artifact"
+	}
+	var latest pebblestore.ArtifactV3DraftProjection
+	for _, draft := range repository.Drafts {
+		if latest.GrantID == "" || draft.EventSeq > latest.EventSeq || (draft.EventSeq == latest.EventSeq && draft.GrantID > latest.GrantID) {
+			latest = draft
+		}
+	}
+	if latest.GrantID == "" {
+		return nil, label, nil
+	}
+	var state tool.ArtifactV3AuthorDraft
+	if len(latest.State) != 0 && json.Unmarshal(latest.State, &state) != nil {
+		return nil, label, pebblestore.ErrArtifactV3Integrity
+	}
+	if body := state.Project["index.html"]; len(body) != 0 {
+		if title := artifactV3DocumentTitle(body); title != "Untitled artifact" && title != "" {
+			label = title
+		}
+	}
+	out := &api.ArtifactV3DraftSummary{SessionID: repository.OwnerSessionID, ArtifactID: repository.ArtifactID, Status: latest.Status, Sequence: latest.Sequence, ProjectionSeq: latest.EventSeq, Diagnostics: []api.ArtifactV3Diagnostic{}, History: []api.ArtifactV3DraftGate{}}
+	if state.Gate != nil {
+		out.Diagnostics = artifactV3PublicGateDiagnostics(*state.Gate)
+	}
+	if out.Status == "error" && len(out.Diagnostics) == 0 {
+		out.Diagnostics = []api.ArtifactV3Diagnostic{{Stage: "authoring", Code: "draft_authoring_failed", Message: "Artifact creation or repair stopped before completion."}}
+	}
+	history := state.History
+	if len(history) > 8 {
+		history = history[len(history)-8:]
+	}
+	for _, gate := range history {
+		out.History = append(out.History, api.ArtifactV3DraftGate{Ready: gate.Ready, Diagnostics: artifactV3PublicGateDiagnostics(gate)})
+	}
+	return out, label, nil
+}
+
+func artifactV3PublicGateDiagnostics(gate tool.ArtifactV3AuthorGate) []api.ArtifactV3Diagnostic {
+	out := []api.ArtifactV3Diagnostic{}
+	if gate.Ready {
+		return out
+	}
+	// Public progress uses fixed messages, never strings returned by a compiler,
+	// browser, provider, or author. Full bounded diagnostics stay capability-only.
+	if gate.Build.Status != "succeeded" && gate.Build.Status != "valid" {
+		out = append(out, api.ArtifactV3Diagnostic{Stage: "build", Code: "draft_build_failed", Message: "The artifact needs a build repair."})
+	} else {
+		out = append(out, api.ArtifactV3Diagnostic{Stage: "validation", Code: "draft_validation_failed", Message: "The artifact needs a preview or validation repair."})
+	}
+	return out
 }
