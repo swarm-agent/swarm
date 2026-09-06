@@ -14,7 +14,7 @@ test('native Studio Part iteration and candidate decision controls', { timeout: 
       import {DesktopV3ArtifactV3Studio} from './src/features/desktop/chat/components/desktop-v3-artifact-v3-studio';
       import {refreshOpenDesktopV3ArtifactCatalogs} from './src/features/desktop/session-v3/artifact-catalog-refresh';
       window.refreshArtifacts = refreshOpenDesktopV3ArtifactCatalogs;
-      createRoot(document.getElementById('root')).render(<DesktopV3ArtifactV3Studio open artifact={{artifactId:'artifact',ownerSessionId:'parent',label:'Fixture'}} onOpenChange={()=>{}} onIterate={selection=>{window.stagedSelection=selection}} />);`, resolveDir: process.cwd(), loader: 'tsx' },
+      createRoot(document.getElementById('root')).render(<DesktopV3ArtifactV3Studio open artifact={{artifactId:'artifact',ownerSessionId:'parent',label:'Fixture'}} onOpenChange={()=>{}} onRepairDraft={artifact=>{window.repairArtifact=artifact}} onIterate={selection=>{window.stagedSelection=selection}} />);`, resolveDir: process.cwd(), loader: 'tsx' },
     bundle: true, write: false, platform: 'browser', format: 'iife', jsx: 'automatic', logLevel: 'silent',
   })
   const browser = await chromium.launch({ headless: true, ...(process.env.SWARM_TEST_BROWSER_CHANNEL ? { channel: process.env.SWARM_TEST_BROWSER_CHANNEL } : {}) })
@@ -56,6 +56,9 @@ test('native Studio Part iteration and candidate decision controls', { timeout: 
     await page.locator('[data-artifact-v3-part="orbit"]').waitFor()
     await page.getByRole('heading', { name: 'Current errors', exact: true }).waitFor()
     assert.equal(await page.locator('[data-artifact-repair-history]').count(), 1)
+    await page.getByRole('button', { name: 'Ask Swarm to fix errors' }).click()
+    assert.equal(await page.evaluate(() => (window as unknown as { repairArtifact: { artifactId: string } }).repairArtifact.artifactId), 'artifact')
+    assert.equal(selections.length, 0, 'repair navigation never selects a candidate')
     draftError = false
     await page.evaluate(() => (window as unknown as { refreshArtifacts(): Promise<void> }).refreshArtifacts())
     await page.getByRole('heading', { name: 'Current errors', exact: true }).waitFor({ state: 'detached' })

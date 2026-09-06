@@ -120,14 +120,14 @@ type ArtifactV3CandidateProjection struct {
 
 // ArtifactV3DraftResume is an explicit producer handoff, checked under the session mutation lock.
 type ArtifactV3DraftResume struct {
-	GrantID string `json:"grant_id"`
+	GrantID       string `json:"grant_id"`
 	ProjectionSeq uint64 `json:"projection_seq"`
-	ExpectedHead string `json:"expected_head"`
+	ExpectedHead  string `json:"expected_head"`
 	ProducerRunID string `json:"producer_run_id"`
 }
 
 type ArtifactV3Mutation struct {
-	Resume *ArtifactV3DraftResume `json:"resume,omitempty"`
+	Resume                *ArtifactV3DraftResume          `json:"resume,omitempty"`
 	Draft                 *ArtifactV3DraftProjection      `json:"draft,omitempty"`
 	ExpectedDraftSequence uint64                          `json:"expected_draft_sequence,omitempty"`
 	Repository            *ArtifactV3RepositoryProjection `json:"repository,omitempty"`
@@ -207,7 +207,9 @@ func validateArtifactV3MutationInput(input V3SessionMutationInput) error {
 		return errors.New("artifact v3 payload requires an artifact.v3 mutation kind")
 	}
 	m := input.ArtifactV3
-	if m.Resume != nil && input.Kind != V3SessionMutationArtifactV3DraftSaved { return ErrArtifactV3Invalid }
+	if m.Resume != nil && input.Kind != V3SessionMutationArtifactV3DraftSaved {
+		return ErrArtifactV3Invalid
+	}
 	artifactID := ""
 	for _, id := range []string{artifactV3RepositoryID(m.Repository), artifactV3RevisionID(m.Revision), artifactV3TurnID(m.Turn), artifactV3CandidateID(m.Candidate)} {
 		if id == "" {
@@ -700,37 +702,71 @@ func (s *SessionStore) validateArtifactV3DraftResume(input V3SessionMutationInpu
 	if !exists || repository.HeadCommitOID != r.ExpectedHead || old.Sequence != m.ExpectedDraftSequence || repository.EventSeq != r.ProjectionSeq || next.GrantID == old.GrantID || next.Digest != old.Digest || next.ExpiresAt <= now || next.ExpiresAt > now+int64(time.Hour/time.Millisecond) {
 		return ErrArtifactV3Conflict
 	}
-	if _, exists := repository.Drafts[next.GrantID]; exists { return ErrArtifactV3Conflict }
+	if _, exists := repository.Drafts[next.GrantID]; exists {
+		return ErrArtifactV3Conflict
+	}
 	var before, after map[string]json.RawMessage
-	if json.Unmarshal(old.State, &before) != nil || json.Unmarshal(next.State, &after) != nil { return ErrArtifactV3Integrity }
+	if json.Unmarshal(old.State, &before) != nil || json.Unmarshal(next.State, &after) != nil {
+		return ErrArtifactV3Integrity
+	}
 	var producerSession, producerRun string
-	if json.Unmarshal(before["ProducerSessionID"], &producerSession) != nil || json.Unmarshal(before["ProducerRunID"], &producerRun) != nil || producerSession != input.SessionID || producerRun == "" || producerRun == r.ProducerRunID { return ErrArtifactV3Unauthorized }
+	if json.Unmarshal(before["ProducerSessionID"], &producerSession) != nil || json.Unmarshal(before["ProducerRunID"], &producerRun) != nil || producerSession != input.SessionID || producerRun == "" || producerRun == r.ProducerRunID {
+		return ErrArtifactV3Unauthorized
+	}
 	var publishing bool
-	if json.Unmarshal(before["Publishing"], &publishing) != nil || publishing || string(before["Finished"]) != "null" { return ErrArtifactV3Conflict }
+	if json.Unmarshal(before["Publishing"], &publishing) != nil || publishing || string(before["Finished"]) != "null" {
+		return ErrArtifactV3Conflict
+	}
 	previous, found, err := s.GetV3SessionRunIntent(input.SessionID, producerRun)
-	if err != nil { return err }
-	if !found || previous.UserID != input.UserID || previous.AccountScopeID != input.AccountScopeID || !isV3RunIntentTerminal(previous.Status) { return ErrArtifactV3Conflict }
+	if err != nil {
+		return err
+	}
+	if !found || previous.UserID != input.UserID || previous.AccountScopeID != input.AccountScopeID || !isV3RunIntentTerminal(previous.Status) {
+		return ErrArtifactV3Conflict
+	}
 	active, found, err := s.GetV3SessionActiveRunIntent(input.SessionID)
-	if err != nil { return err }
-	if !found || active.RunID != r.ProducerRunID || active.UserID != input.UserID || active.AccountScopeID != input.AccountScopeID { return ErrArtifactV3Unauthorized }
+	if err != nil {
+		return err
+	}
+	if !found || active.RunID != r.ProducerRunID || active.UserID != input.UserID || active.AccountScopeID != input.AccountScopeID {
+		return ErrArtifactV3Unauthorized
+	}
 	var nextRun string
-	if json.Unmarshal(after["ProducerRunID"], &nextRun) != nil || nextRun != r.ProducerRunID || string(after["Gate"]) != "null" { return ErrArtifactV3Unauthorized }
-	delete(before, "ProducerRunID"); delete(after, "ProducerRunID")
-	delete(before, "Gate"); delete(after, "Gate")
-	left, _ := json.Marshal(before); right, _ := json.Marshal(after)
-	if string(left) != string(right) { return ErrArtifactV3Conflict }
+	if json.Unmarshal(after["ProducerRunID"], &nextRun) != nil || nextRun != r.ProducerRunID || string(after["Gate"]) != "null" {
+		return ErrArtifactV3Unauthorized
+	}
+	delete(before, "ProducerRunID")
+	delete(after, "ProducerRunID")
+	delete(before, "Gate")
+	delete(after, "Gate")
+	left, _ := json.Marshal(before)
+	right, _ := json.Marshal(after)
+	if string(left) != string(right) {
+		return ErrArtifactV3Conflict
+	}
 	// Unmarshal into fresh maps so removed fields cannot survive decoding.
 	after = nil
-	if json.Unmarshal(next.Grant, &after) != nil { return ErrArtifactV3Integrity }
+	if json.Unmarshal(next.Grant, &after) != nil {
+		return ErrArtifactV3Integrity
+	}
 	var id string
 	var expiry int64
-	if json.Unmarshal(after["ID"], &id) != nil || id != next.GrantID || json.Unmarshal(after["ExpiresAt"], &expiry) != nil || expiry != next.ExpiresAt { return ErrArtifactV3Invalid }
+	if json.Unmarshal(after["ID"], &id) != nil || id != next.GrantID || json.Unmarshal(after["ExpiresAt"], &expiry) != nil || expiry != next.ExpiresAt {
+		return ErrArtifactV3Invalid
+	}
 	// Re-decode the grant into a fresh map as well.
 	before = nil
-	if json.Unmarshal(old.Grant, &before) != nil { return ErrArtifactV3Integrity }
-	delete(before, "ID"); delete(after, "ID")
-	delete(before, "ExpiresAt"); delete(after, "ExpiresAt")
-	left, _ = json.Marshal(before); right, _ = json.Marshal(after)
-	if string(left) != string(right) { return ErrArtifactV3Unauthorized }
+	if json.Unmarshal(old.Grant, &before) != nil {
+		return ErrArtifactV3Integrity
+	}
+	delete(before, "ID")
+	delete(after, "ID")
+	delete(before, "ExpiresAt")
+	delete(after, "ExpiresAt")
+	left, _ = json.Marshal(before)
+	right, _ = json.Marshal(after)
+	if string(left) != string(right) {
+		return ErrArtifactV3Unauthorized
+	}
 	return nil
 }

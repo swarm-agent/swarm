@@ -116,11 +116,11 @@ func (r *Runtime) authorDirectArtifactV3Draft(ctx context.Context, scope Workspa
 // ArtifactV3DraftResumeRequest contains only owned locators and CAS evidence.
 // Empty ExpectedHead is explicit evidence for a draft with no published revision.
 type ArtifactV3DraftResumeRequest struct {
-	SessionID string `json:"session_id"`
-	ArtifactID string `json:"artifact_id"`
-	ExpectedSequence uint64 `json:"expected_sequence"`
+	SessionID             string `json:"session_id"`
+	ArtifactID            string `json:"artifact_id"`
+	ExpectedSequence      uint64 `json:"expected_sequence"`
 	ExpectedProjectionSeq uint64 `json:"expected_projection_seq"`
-	ExpectedHead string `json:"expected_head"`
+	ExpectedHead          string `json:"expected_head"`
 }
 
 type ArtifactV3DirectDraftResumer interface {
@@ -128,23 +128,45 @@ type ArtifactV3DirectDraftResumer interface {
 }
 
 func (r *Runtime) resumeDirectArtifactV3Draft(ctx context.Context, scope WorkspaceScope, principal artifact.Principal, args map[string]any) (map[string]any, error) {
-	if r == nil || r.artifactV3Author == nil { return nil, ErrArtifactV3AuthorInvalid }
-	if err := requireOnlyArtifactV3Fields(args, "action", "resume_draft"); err != nil { return nil, err }
+	if r == nil || r.artifactV3Author == nil {
+		return nil, ErrArtifactV3AuthorInvalid
+	}
+	if err := requireOnlyArtifactV3Fields(args, "action", "resume_draft"); err != nil {
+		return nil, err
+	}
 	raw, ok := args["resume_draft"].(map[string]any)
-	if !ok { return nil, ErrArtifactV3AuthorInvalid }
-	if err := requireOnlyArtifactV3Fields(raw, "session_id", "artifact_id", "expected_sequence", "expected_projection_seq", "expected_head"); err != nil { return nil, err }
-	if _, ok := raw["expected_head"].(string); !ok { return nil, ErrArtifactV3AuthorInvalid }
+	if !ok {
+		return nil, ErrArtifactV3AuthorInvalid
+	}
+	if err := requireOnlyArtifactV3Fields(raw, "session_id", "artifact_id", "expected_sequence", "expected_projection_seq", "expected_head"); err != nil {
+		return nil, err
+	}
+	if _, ok := raw["expected_head"].(string); !ok {
+		return nil, ErrArtifactV3AuthorInvalid
+	}
 	body, err := json.Marshal(raw)
-	if err != nil { return nil, err }
+	if err != nil {
+		return nil, err
+	}
 	var request ArtifactV3DraftResumeRequest
-	if json.Unmarshal(body, &request) != nil || request.ExpectedSequence == 0 || request.ExpectedProjectionSeq == 0 { return nil, ErrArtifactV3AuthorInvalid }
-	if request.SessionID != scope.SessionID || request.SessionID != principal.SessionID || principal.RunID == "" { return nil, ErrArtifactV3AuthorUnauthorized }
+	if json.Unmarshal(body, &request) != nil || request.ExpectedSequence == 0 || request.ExpectedProjectionSeq == 0 {
+		return nil, ErrArtifactV3AuthorInvalid
+	}
+	if request.SessionID != scope.SessionID || request.SessionID != principal.SessionID || principal.RunID == "" {
+		return nil, ErrArtifactV3AuthorUnauthorized
+	}
 	resumer, ok := r.artifactV3Author.repository.(ArtifactV3DirectDraftResumer)
-	if !ok { return nil, errors.New("native artifact durable draft resumer unavailable") }
+	if !ok {
+		return nil, errors.New("native artifact durable draft resumer unavailable")
+	}
 	p := ArtifactV3AuthorPrincipal{AccountScopeID: principal.AccountScopeID, UserID: principal.UserID, ProducerSessionID: scope.SessionID, ProducerRunID: principal.RunID}
 	grant, err := resumer.ResumeArtifactV3DirectDraft(ctx, p, request)
-	if err != nil { return nil, err }
-	if grant.AccountScopeID != p.AccountScopeID || grant.UserID != p.UserID || grant.OwnerSessionID != request.SessionID || grant.ArtifactID != request.ArtifactID || grant.ProducerSessionID != p.ProducerSessionID || grant.ProducerRunID != p.ProducerRunID { return nil, ErrArtifactV3AuthorUnauthorized }
+	if err != nil {
+		return nil, err
+	}
+	if grant.AccountScopeID != p.AccountScopeID || grant.UserID != p.UserID || grant.OwnerSessionID != request.SessionID || grant.ArtifactID != request.ArtifactID || grant.ProducerSessionID != p.ProducerSessionID || grant.ProducerRunID != p.ProducerRunID {
+		return nil, ErrArtifactV3AuthorUnauthorized
+	}
 	return map[string]any{"status": "fixing", "draft_handle": directArtifactV3Handle(grant), "message": "Draft resumed in this run. Read and repair the retained source, rebuild the preview, then finish_turn. The old handle is invalid."}, nil
 }
 
@@ -152,12 +174,21 @@ func (r *Runtime) resumeDirectArtifactV3Draft(ctx context.Context, scope Workspa
 type ArtifactV3DirectDraftLocator interface {
 	LocateArtifactV3DirectDraft(context.Context, ArtifactV3AuthorPrincipal, string) (ArtifactV3DraftResumeRequest, error)
 }
+
 func (r *Runtime) locateDirectArtifactV3Draft(ctx context.Context, scope WorkspaceScope, principal artifact.Principal, args map[string]any) (map[string]any, error) {
-	if r == nil || r.artifactV3Author == nil { return nil, ErrArtifactV3AuthorInvalid }
-	if err := requireOnlyArtifactV3Fields(args, "action", "artifact_id"); err != nil { return nil, err }
+	if r == nil || r.artifactV3Author == nil {
+		return nil, ErrArtifactV3AuthorInvalid
+	}
+	if err := requireOnlyArtifactV3Fields(args, "action", "artifact_id"); err != nil {
+		return nil, err
+	}
 	locator, ok := r.artifactV3Author.repository.(ArtifactV3DirectDraftLocator)
-	if !ok { return nil, ErrArtifactV3AuthorInvalid }
+	if !ok {
+		return nil, ErrArtifactV3AuthorInvalid
+	}
 	request, err := locator.LocateArtifactV3DirectDraft(ctx, ArtifactV3AuthorPrincipal{AccountScopeID: principal.AccountScopeID, UserID: principal.UserID, ProducerSessionID: scope.SessionID, ProducerRunID: principal.RunID}, mapString(args, "artifact_id"))
-	if err != nil { return nil, err }
+	if err != nil {
+		return nil, err
+	}
 	return map[string]any{"resume_draft": request}, nil
 }

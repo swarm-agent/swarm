@@ -1615,6 +1615,7 @@ export function completeDesktopV3ExistingMessage(input: {
 }
 
 type DesktopV3ExistingComposerController = {
+  appendDraft: (draft: string) => void;
   setDraft: (draft: string) => void;
 };
 
@@ -1654,7 +1655,7 @@ export function DesktopV3ExistingConversationComposer({
   }, [draftRequest, onDraftRequestHandled]);
 
   useLayoutEffect(() => {
-    const controller: DesktopV3ExistingComposerController = { setDraft };
+    const controller: DesktopV3ExistingComposerController = { setDraft, appendDraft: (text) => setDraft((current) => current.trim() ? `${current}\n\n${text}` : text) };
     controllerRef.current = controller;
     return () => {
       if (controllerRef.current === controller) controllerRef.current = null;
@@ -3662,6 +3663,12 @@ export function DesktopV3ExistingConversationPane({
 
       <DesktopV3ArtifactV3Studio
         artifact={selectedArtifactV3}
+        onRepairDraft={(artifact) => {
+          if (artifact.ownerSessionId !== normalizedSessionId) return;
+          composerControllerRef.current?.appendDraft(`Please continue fixing the retained artifact ${JSON.stringify(artifact.label)} (artifact ID: ${artifact.artifactId}). Inspect its current draft status, resume it safely if needed, and edit its existing source until validation passes. Preserve its identity and unrelated content; do not create a replacement.`);
+          setArtifactV3StudioOpen(false);
+          setArtifactComposerFocusSignal((current) => current + 1);
+        }}
         open={artifactV3StudioOpen}
         onOpenChange={setArtifactV3StudioOpen}
         onRefresh={refreshSessionArtifacts}

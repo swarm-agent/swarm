@@ -1783,47 +1783,85 @@ func artifactV3PublicGateDiagnostics(gate tool.ArtifactV3AuthorGate) []api.Artif
 // inside the canonical session mutation, alongside the draft/head CAS.
 func (a *artifactV3RuntimeAdapter) ResumeArtifactV3DirectDraft(ctx context.Context, p tool.ArtifactV3AuthorPrincipal, request tool.ArtifactV3DraftResumeRequest) (tool.ArtifactV3AuthorGrant, error) {
 	zero := tool.ArtifactV3AuthorGrant{}
-	if ctx == nil || p.AccountScopeID == "" || p.UserID == "" || p.ProducerRunID == "" || request.SessionID != p.ProducerSessionID { return zero, tool.ErrArtifactV3AuthorUnauthorized }
-	if err := ctx.Err(); err != nil { return zero, err }
+	if ctx == nil || p.AccountScopeID == "" || p.UserID == "" || p.ProducerRunID == "" || request.SessionID != p.ProducerSessionID {
+		return zero, tool.ErrArtifactV3AuthorUnauthorized
+	}
+	if err := ctx.Err(); err != nil {
+		return zero, err
+	}
 	repository, found, err := a.sessions.GetArtifactV3Repository(p.AccountScopeID, p.UserID, request.ArtifactID)
-	if err != nil { return zero, err }
-	if !found || repository.OwnerSessionID != request.SessionID { return zero, tool.ErrArtifactV3AuthorUnauthorized }
-	if repository.EventSeq != request.ExpectedProjectionSeq || repository.HeadCommitOID != request.ExpectedHead { return zero, tool.ErrArtifactV3AuthorConflict }
+	if err != nil {
+		return zero, err
+	}
+	if !found || repository.OwnerSessionID != request.SessionID {
+		return zero, tool.ErrArtifactV3AuthorUnauthorized
+	}
+	if repository.EventSeq != request.ExpectedProjectionSeq || repository.HeadCommitOID != request.ExpectedHead {
+		return zero, tool.ErrArtifactV3AuthorConflict
+	}
 	var draft pebblestore.ArtifactV3DraftProjection
 	for _, candidate := range repository.Drafts {
-		if draft.GrantID == "" || candidate.EventSeq > draft.EventSeq || (candidate.EventSeq == draft.EventSeq && candidate.GrantID > draft.GrantID) { draft = candidate }
+		if draft.GrantID == "" || candidate.EventSeq > draft.EventSeq || (candidate.EventSeq == draft.EventSeq && candidate.GrantID > draft.GrantID) {
+			draft = candidate
+		}
 	}
-	if draft.GrantID == "" || draft.Sequence != request.ExpectedSequence { return zero, tool.ErrArtifactV3AuthorConflict }
+	if draft.GrantID == "" || draft.Sequence != request.ExpectedSequence {
+		return zero, tool.ErrArtifactV3AuthorConflict
+	}
 	var grant tool.ArtifactV3AuthorGrant
 	var state tool.ArtifactV3AuthorDraft
-	if json.Unmarshal(draft.Grant, &grant) != nil || json.Unmarshal(draft.State, &state) != nil || digestArtifactProject(state.Project) != draft.Digest { return zero, pebblestore.ErrArtifactV3Integrity }
-	if grant.AccountScopeID != p.AccountScopeID || grant.UserID != p.UserID || grant.OwnerSessionID != p.ProducerSessionID || grant.ArtifactID != request.ArtifactID || state.ProducerSessionID != p.ProducerSessionID { return zero, tool.ErrArtifactV3AuthorUnauthorized }
-	if state.Publishing || state.Finished != nil || grant.BaseCommitOID != repository.HeadCommitOID { return zero, tool.ErrArtifactV3AuthorConflict }
+	if json.Unmarshal(draft.Grant, &grant) != nil || json.Unmarshal(draft.State, &state) != nil || digestArtifactProject(state.Project) != draft.Digest {
+		return zero, pebblestore.ErrArtifactV3Integrity
+	}
+	if grant.AccountScopeID != p.AccountScopeID || grant.UserID != p.UserID || grant.OwnerSessionID != p.ProducerSessionID || grant.ArtifactID != request.ArtifactID || state.ProducerSessionID != p.ProducerSessionID {
+		return zero, tool.ErrArtifactV3AuthorUnauthorized
+	}
+	if state.Publishing || state.Finished != nil || grant.BaseCommitOID != repository.HeadCommitOID {
+		return zero, tool.ErrArtifactV3AuthorConflict
+	}
 	oldID := draft.GrantID
 	grant.ID = artifactV3StableID("resume", oldID, p.ProducerRunID, fmt.Sprint(draft.Sequence))
-	grant.ExpiresAt = time.Now().Add(30*time.Minute).UnixMilli()
+	grant.ExpiresAt = time.Now().Add(30 * time.Minute).UnixMilli()
 	state.ProducerRunID = p.ProducerRunID
 	state.Gate = nil
 	draft.GrantID, draft.ExpiresAt, draft.Status = grant.ID, grant.ExpiresAt, "fixing"
 	draft.Grant, err = json.Marshal(grant)
-	if err != nil { return zero, err }
+	if err != nil {
+		return zero, err
+	}
 	draft.State, err = json.Marshal(state)
-	if err != nil { return zero, err }
+	if err != nil {
+		return zero, err
+	}
 	err = a.service.ResumeDraft(artifactV3Owner(grant), grant.ArtifactID, grant.ID, draft, draft.Sequence, pebblestore.ArtifactV3DraftResume{GrantID: oldID, ProjectionSeq: request.ExpectedProjectionSeq, ExpectedHead: request.ExpectedHead, ProducerRunID: p.ProducerRunID})
-	if err != nil { return zero, err }
+	if err != nil {
+		return zero, err
+	}
 	grant.ProducerSessionID, grant.ProducerRunID = p.ProducerSessionID, p.ProducerRunID
 	return grant, nil
 }
 
 func (a *artifactV3RuntimeAdapter) LocateArtifactV3DirectDraft(ctx context.Context, p tool.ArtifactV3AuthorPrincipal, artifactID string) (tool.ArtifactV3DraftResumeRequest, error) {
 	zero := tool.ArtifactV3DraftResumeRequest{}
-	if ctx == nil || p.AccountScopeID == "" || p.UserID == "" || p.ProducerSessionID == "" { return zero, tool.ErrArtifactV3AuthorUnauthorized }
-	if err := ctx.Err(); err != nil { return zero, err }
+	if ctx == nil || p.AccountScopeID == "" || p.UserID == "" || p.ProducerSessionID == "" {
+		return zero, tool.ErrArtifactV3AuthorUnauthorized
+	}
+	if err := ctx.Err(); err != nil {
+		return zero, err
+	}
 	repository, found, err := a.sessions.GetArtifactV3Repository(p.AccountScopeID, p.UserID, artifactID)
-	if err != nil { return zero, err }
-	if !found || repository.OwnerSessionID != p.ProducerSessionID { return zero, tool.ErrArtifactV3AuthorUnauthorized }
+	if err != nil {
+		return zero, err
+	}
+	if !found || repository.OwnerSessionID != p.ProducerSessionID {
+		return zero, tool.ErrArtifactV3AuthorUnauthorized
+	}
 	public, _, err := artifactV3PublicDraft(repository)
-	if err != nil { return zero, err }
-	if public == nil { return zero, tool.ErrArtifactV3AuthorInvalid }
+	if err != nil {
+		return zero, err
+	}
+	if public == nil {
+		return zero, tool.ErrArtifactV3AuthorInvalid
+	}
 	return tool.ArtifactV3DraftResumeRequest{SessionID: repository.OwnerSessionID, ArtifactID: artifactID, ExpectedSequence: public.Sequence, ExpectedProjectionSeq: repository.EventSeq, ExpectedHead: repository.HeadCommitOID}, nil
 }

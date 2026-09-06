@@ -473,8 +473,12 @@ func (s *ArtifactV3Service) SaveDraft(owner ArtifactV3Owner, artifactID, request
 // ResumeDraft atomically replaces one exact draft grant without changing the head.
 func (s *ArtifactV3Service) ResumeDraft(owner ArtifactV3Owner, artifactID, requestID string, draft ArtifactV3DraftProjection, expected uint64, resume ArtifactV3DraftResume) error {
 	repository, found, err := s.sessions.GetArtifactV3Repository(owner.AccountScopeID, owner.UserID, artifactID)
-	if err != nil { return err }
-	if !found || repository.OwnerSessionID != owner.SessionID { return ErrArtifactV3Unauthorized }
+	if err != nil {
+		return err
+	}
+	if !found || repository.OwnerSessionID != owner.SessionID {
+		return ErrArtifactV3Unauthorized
+	}
 	repository.Drafts = nil
 	_, err = s.apply(owner, requestID, V3SessionMutationArtifactV3DraftSaved, ArtifactV3Mutation{Repository: &repository, Draft: &draft, ExpectedDraftSequence: expected, Resume: &resume}, 0)
 	return err
