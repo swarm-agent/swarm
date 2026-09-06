@@ -2,7 +2,7 @@
 
 Swarm is a public, launch-bound repository. Every change must be safe to review, publish, install, and ship.
 
-Use checked-in code and tests as the authority for current behavior. When this file disagrees with the implementation, verify the implementation and update this file instead of preserving stale architecture.
+Use checked-in code and tests as the authority for current behavior. When this file disagrees with the implementation, verify the implementation and update this file instead of preserving stale architecture. Safety, workflow, and launch-scope rules below are requirements, not claims that every implementation path already satisfies them. Source inspection establishes implementation behavior; only executed, revision-bound tests establish their observed results. Do not treat this file as evidence of live health or launch readiness.
 
 ## Launch Product Scope
 
@@ -59,9 +59,10 @@ Do not add session behavior to v1/v2 session handlers, legacy snapshots, fronten
 ### Plans, agents, and tools
 
 - Plans and checkpoint execution are durable V3 session state. Plan mutations, approval, attempts, and terminal outcomes must use the canonical plan/session mutation paths rather than side files or UI-only state.
-- System-agent identity and security contracts are code-owned in `swarmd/internal/agent/system_agent_registry.go`. Current launch-facing agents include Swarm, Compact, Finder, Coder, Designer, and Router; additional internal agents perform bounded system work.
+- System-agent identity and security contracts are code-owned in `swarmd/internal/agent/system_agent_registry.go`. User-visible system agents are Swarm, Compact, Finder, Coder, and Designer. Router and other internal agents perform bounded system work.
 - Agent model authority is the canonical account-scoped agent-model settings service. Do not recreate legacy per-profile model authorities or re-resolve mutable profile state in the middle of an existing session/run.
 - Delegated work is represented by durable V3 child sessions and lineage. Do not introduce an in-memory-only subagent transcript or an alternate task lifecycle.
+- **Task Program implementation gaps are not guarantees.** The current `swarmd/internal/worktree/sparse_task.go` materializes owned paths plus limited context, which can omit required read dependencies. `swarmd/internal/run/service_task_program_scheduler.go` hydrates Finder handoffs only for Coders, validates managed Designer outcomes against legacy collection/variant identities despite native V3 launch outputs, and rejects a Coder target outside the session's existing repository lane. The Task Program store persists its own revision-guarded records through `CreateTaskProgram` / `TransitionTaskProgram`; do not infer atomic session-event/outbox coupling merely from its location in the session store. These are repair/audit targets, not permission to broaden write scopes, restore legacy artifacts, bypass isolation, or claim mixed-agent/multi-workspace execution works. Reconcile this paragraph when those paths are corrected and validated.
 - Provider-specific behavior belongs in provider adapters. Generic orchestration, session durability, and tool policy must remain provider-neutral.
 - Workspace Actions are account-owned, workspace-scoped definitions with workspace-relative entrypoints and structured argv/input templates. Definition management must not execute an Action; execution requires its explicit run API/user gesture.
 - Skills are workspace instructions, not a replacement for runtime permissions or system policy.
