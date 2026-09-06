@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Outlet } from '@tanstack/react-router'
+import { StartupScreen } from '../../../../app/startup-recovery'
 import { DesktopV3RuntimeProvider } from '../../runtime/desktop-v3-runtime-provider'
-import { requestJson } from '../../../../app/api'
+import { requestStartupJson } from '../../../../app/api'
 import { DesktopVaultGate } from './desktop-vault-gate'
 import { DesktopOnboardingGate } from '../../onboarding/components/desktop-onboarding-gate'
 import type { DesktopOnboardingStatus, DesktopOnboardingStatusWire } from '../../onboarding/types'
@@ -79,22 +80,29 @@ export function DesktopVaultShell({ initialPreferredSessionId }: DesktopVaultShe
   const directLANDesktopWarning = useMemo(() => getDirectLANDesktopWarning(), [])
   const tailscaleApproval = useTailscaleOriginApproval()
 
+  const onboardingRequest = useRef<AbortController | null>(null)
   const loadOnboardingStatus = useCallback(async () => {
+    onboardingRequest.current?.abort()
+    const controller = new AbortController()
+    onboardingRequest.current = controller
     setOnboardingLoading(true)
     setOnboardingError(null)
 
     try {
       const next = mapOnboardingBootstrapStatus(
-        await requestJson<DesktopOnboardingStatusWire>('/v1/onboarding', undefined, false),
+        await requestStartupJson<DesktopOnboardingStatusWire>('/v1/onboarding', { signal: controller.signal }, false),
       )
+      if (controller.signal.aborted) return null
       setOnboardingStatus(next)
       return next
     } catch (error) {
+      if (controller.signal.aborted) return null
       setOnboardingStatus(null)
       setOnboardingError(error instanceof Error ? error.message : 'Failed to load onboarding')
       return null
     } finally {
-      setOnboardingLoading(false)
+      if (!controller.signal.aborted) setOnboardingLoading(false)
+      if (onboardingRequest.current === controller) onboardingRequest.current = null
     }
   }, [])
 
@@ -104,46 +112,20 @@ export function DesktopVaultShell({ initialPreferredSessionId }: DesktopVaultShe
       return
     }
 
-    let cancelled = false
-    setOnboardingLoading(true)
-    setOnboardingError(null)
-
-    void requestJson<DesktopOnboardingStatusWire>('/v1/onboarding', undefined, false)
-      .then(mapOnboardingBootstrapStatus)
-      .then((next) => {
-        if (cancelled) {
-          return
-        }
-        setOnboardingStatus(next)
-      })
-      .catch((error) => {
-        if (cancelled) {
-          return
-        }
-        setOnboardingStatus(null)
-        setOnboardingError(error instanceof Error ? error.message : 'Failed to load onboarding')
-      })
-      .finally(() => {
-        if (!cancelled) {
-          setOnboardingLoading(false)
-        }
-      })
-
-    return () => {
-      cancelled = true
-    }
-  }, [directLANDesktopWarning, tailscaleApproval.error, tailscaleApproval.loading, tailscaleApproval.status?.required])
+    void loadOnboardingStatus()
+    return () => { onboardingRequest.current?.abort() }
+  }, [directLANDesktopWarning, loadOnboardingStatus, tailscaleApproval.error, tailscaleApproval.loading, tailscaleApproval.status?.required])
 
   if (directLANDesktopWarning) {
-    return <DirectLANDesktopWarningScreen warning={directLANDesktopWarning} />
+    return <StartupScreen><DirectLANDesktopWarningScreen warning={directLANDesktopWarning} /></StartupScreen>
   }
 
   if (tailscaleApproval.error) {
     return (
-      <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black px-6">
-        <div className="max-w-xl rounded-2xl border border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] px-5 py-4 text-sm text-[var(--app-danger)] shadow-2xl shadow-black/40">
+      <StartupScreen><div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black px-6">
+        <div className="max-w-xl rounded-2xl border border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] px-5 py-4 text-sm text-[var(--app-text)] shadow-2xl shadow-black/40">
           <div className="font-medium">Unable to verify this desktop address.</div>
-          <div className="mt-2 text-[var(--app-danger)]/90">{tailscaleApproval.error}</div>
+          <div className="mt-2 text-[var(--app-text)]">{tailscaleApproval.error}</div>
           <button
             type="button"
             onClick={() => { void tailscaleApproval.retry() }}
@@ -153,7 +135,7 @@ export function DesktopVaultShell({ initialPreferredSessionId }: DesktopVaultShe
             {tailscaleApproval.loading ? 'Retrying…' : 'Try again'}
           </button>
         </div>
-      </div>
+      </div></StartupScreen>
     )
   }
 
@@ -166,15 +148,15 @@ export function DesktopVaultShell({ initialPreferredSessionId }: DesktopVaultShe
   }
 
   if (tailscaleApproval.status?.required) {
-    return <TailscaleOriginApprovalScreen origin={String(tailscaleApproval.status.origin ?? '')} />
+    return <StartupScreen><TailscaleOriginApprovalScreen origin={String(tailscaleApproval.status.origin ?? '')} /></StartupScreen>
   }
 
   if (onboardingError && onboardingStatus === null) {
     return (
-      <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black px-6">
-        <div className="max-w-xl rounded-2xl border border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] px-5 py-4 text-sm text-[var(--app-danger)] shadow-2xl shadow-black/40">
+      <StartupScreen><div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black px-6">
+        <div className="max-w-xl rounded-2xl border border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] px-5 py-4 text-sm text-[var(--app-text)] shadow-2xl shadow-black/40">
           <div className="font-medium">Unable to load Swarm onboarding.</div>
-          <div className="mt-2 text-[var(--app-danger)]/90">{onboardingError}</div>
+          <div className="mt-2 text-[var(--app-text)]">{onboardingError}</div>
           <button
             type="button"
             onClick={() => {
@@ -186,7 +168,7 @@ export function DesktopVaultShell({ initialPreferredSessionId }: DesktopVaultShe
             {onboardingLoading ? 'Retrying…' : 'Try again'}
           </button>
         </div>
-      </div>
+      </div></StartupScreen>
     )
   }
 
@@ -200,19 +182,19 @@ export function DesktopVaultShell({ initialPreferredSessionId }: DesktopVaultShe
 
   if (onboardingStatus !== null && (onboardingStatus.needsOnboarding || onboardingFlowRequested)) {
     return (
-      <DesktopOnboardingGate
+      <StartupScreen><DesktopOnboardingGate
         status={onboardingStatus}
         restart={onboardingFlowRequested}
-        onReload={async () => mapOnboardingBootstrapStatus(await requestJson<DesktopOnboardingStatusWire>('/v1/onboarding', undefined, false))}
+        onReload={async () => mapOnboardingBootstrapStatus(await requestStartupJson<DesktopOnboardingStatusWire>('/v1/onboarding', undefined, false))}
         onComplete={(next) => {
           setOnboardingStatus(next)
         }}
-      />
+      /></StartupScreen>
     )
   }
 
   if (onboardingStatus?.vault.enabled && !onboardingStatus.vault.unlocked) {
-    return <DesktopVaultGate />
+    return <StartupScreen><DesktopVaultGate /></StartupScreen>
   }
 
   return (

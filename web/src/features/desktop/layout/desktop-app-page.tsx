@@ -1,6 +1,7 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties, JSX, ReactNode } from 'react'
 import { createPortal } from 'react-dom'
+import { observePageActivity, startPagePolling, withPageRequest } from '../../../app/page-lifecycle'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useMatchRoute, useNavigate, useSearch, Link } from '@tanstack/react-router'
 import { Archive, Bell, Bot, Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Download, Film, Folder, GitBranch, GitCommitHorizontal, GitMerge, Keyboard, ListChecks, ListTodo, LoaderCircle, Menu, MessageSquare, Mic, MoreVertical, NotepadText, Pencil, Pin, Plus, RefreshCcw, Save, Search, Settings, X, XCircle } from 'lucide-react'
@@ -3147,10 +3148,12 @@ export function DesktopAppPage() {
     : activeGitSession
       ? desktopRouteWorkspacePathForSession(activeGitSession, workspacePathByBindingId, knownWorkspacePaths, workspacePathById)
       : ''
+  const [gitPageActive, setGitPageActive] = useState(() => document.visibilityState !== 'hidden')
+  useEffect(() => observePageActivity(setGitPageActive), [])
   const gitStatusQuery = useQuery({
     queryKey: gitStatusQueryKey(selectedGitWorkspacePath, selectedGitSessionId),
-    queryFn: () => fetchGitStatus(selectedGitWorkspacePath, 12, selectedGitSessionId),
-    enabled: selectedGitSessionId !== '' && selectedGitWorkspacePath !== '',
+    queryFn: ({ signal }) => withPageRequest((pageSignal) => fetchGitStatus(selectedGitWorkspacePath, 12, selectedGitSessionId, pageSignal), signal),
+    enabled: gitPageActive && selectedGitSessionId !== '' && selectedGitWorkspacePath !== '',
     staleTime: 0,
     refetchOnWindowFocus: true,
   })
@@ -3175,43 +3178,29 @@ export function DesktopAppPage() {
   const activeSessionIntegrateEligible = Boolean(activeSessionReviewCandidate?.integrate_eligible)
 
   useEffect(() => {
-    if (!selectedGitWorkspacePath || document.visibilityState === 'hidden') return
-    let cancelled = false
+    if (!selectedGitWorkspacePath) return
     let token = ''
-    const refresh = async () => {
+    return startPagePolling(async (signal) => {
       const startedAt = Date.now()
       const requestedToken = token
       try {
-        const response = await startGitRealtime(selectedGitWorkspacePath, selectedGitSessionId, requestedToken)
-        if (cancelled) return
+        const response = await startGitRealtime(selectedGitWorkspacePath, selectedGitSessionId, requestedToken, signal)
+        if (signal.aborted) return 5_000
         if (response.watch_token !== requestedToken) {
           token = response.watch_token
           queryClient.setQueryData(gitStatusQueryKey(selectedGitWorkspacePath, selectedGitSessionId), { ok: true, status: response.status })
-        } else {
-          // A current daemon holds this request for the long-poll window. Keep a
-          // defensive floor for stale/nonconforming daemons that ignore the token
-          // so an immediate unchanged response cannot create a hot request loop.
-          const remaining = 1_000 - (Date.now() - startedAt)
-          if (remaining > 0) await new Promise((resolve) => window.setTimeout(resolve, remaining))
         }
         setGitRealtimeErrors((current) => {
           if (!current[selectedGitWorkspacePath]) return current
           const next = { ...current }; delete next[selectedGitWorkspacePath]; return next
         })
-        return true
+        // Preserve the defensive floor for immediately unchanged responses.
+        return response.watch_token === requestedToken ? Math.max(250, 1_000 - (Date.now() - startedAt)) : 250
       } catch (error) {
-        if (!cancelled) setGitRealtimeErrors((current) => ({ ...current, [selectedGitWorkspacePath]: error instanceof Error ? error.message : String(error) }))
-        return false
+        if (!signal.aborted) setGitRealtimeErrors((current) => ({ ...current, [selectedGitWorkspacePath]: error instanceof Error ? error.message : String(error) }))
+        return 5_000
       }
-    }
-    const poll = async () => {
-      while (!cancelled) {
-        const ok = document.visibilityState === 'visible' ? await refresh() : true
-        if (!cancelled) await new Promise((resolve) => window.setTimeout(resolve, document.visibilityState !== 'visible' ? 1_000 : ok ? 250 : 5_000))
-      }
-    }
-    void poll()
-    return () => { cancelled = true }
+    })
   }, [queryClient, selectedGitSessionId, selectedGitWorkspacePath])
   const workspaceSlugByPath = useMemo(() => buildWorkspaceRouteSlugMap(
     mergedSidebarWorkspaceEntries.map((workspace) => ({
@@ -3231,8 +3220,8 @@ export function DesktopAppPage() {
     : routeWorkspaceSlug
   const topWorkspaceGitStatusQuery = useQuery({
     queryKey: gitStatusQueryKey(topWorkspacePath),
-    queryFn: () => fetchGitStatus(topWorkspacePath),
-    enabled: Boolean(topWorkspacePath),
+    queryFn: ({ signal }) => withPageRequest((pageSignal) => fetchGitStatus(topWorkspacePath, 12, '', pageSignal), signal),
+    enabled: gitPageActive && Boolean(topWorkspacePath),
     staleTime: 5_000,
     refetchOnWindowFocus: true,
   })

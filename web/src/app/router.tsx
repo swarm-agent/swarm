@@ -1,17 +1,18 @@
-import { createRootRoute, createRoute, createRouter, lazyRouteComponent, redirect, useNavigate } from '@tanstack/react-router'
-import { useEffect } from 'react'
+import { createRootRoute, createRoute, createRouter, redirect, useNavigate } from '@tanstack/react-router'
+import { lazy, useEffect } from 'react'
+import { StartupRouteError, withStartupScreen } from './startup-recovery'
 import { DesktopDocumentTitleController } from '../features/desktop/runtime/desktop-document-title-controller'
 import { DesktopVaultShell } from '../features/desktop/vault/components/desktop-vault-shell'
 import { useWorkspaceLauncher } from '../features/workspaces/launcher/state/use-workspace-launcher'
 import { workspaceRouteSlugBase } from '../features/workspaces/launcher/services/workspace-route'
 
-const WorkspaceHomePage = lazyRouteComponent(() => import('../features/workspaces/pages/workspace-home-page'), 'WorkspaceHomePage')
+const WorkspaceHomePage = withStartupScreen(lazy(() => import('../features/workspaces/pages/workspace-home-page').then((module) => ({ default: module.WorkspaceHomePage }))))
 const importDesktopAppPage = () => import('../features/desktop/layout/desktop-app-page')
-const DesktopAppPage = lazyRouteComponent(importDesktopAppPage, 'DesktopAppPage')
-const DesktopSettingsPage = lazyRouteComponent(() => import('../features/desktop/settings/components/desktop-settings-page'), 'DesktopSettingsPage')
-const IntegrationsPage = lazyRouteComponent(() => import('../features/desktop/integrations/pages/integrations-page'), 'IntegrationsPage')
-const VideoToolPage = lazyRouteComponent(() => import('../features/desktop/tools/pages/video-tool-page'), 'VideoToolPage')
-const ImageToolPage = lazyRouteComponent(() => import('../features/desktop/tools/pages/image-tool-page'), 'ImageToolPage')
+const DesktopAppPage = withStartupScreen(lazy(() => importDesktopAppPage().then((module) => ({ default: module.DesktopAppPage }))))
+const DesktopSettingsPage = withStartupScreen(lazy(() => import('../features/desktop/settings/components/desktop-settings-page').then((module) => ({ default: module.DesktopSettingsPage }))))
+const IntegrationsPage = withStartupScreen(lazy(() => import('../features/desktop/integrations/pages/integrations-page').then((module) => ({ default: module.IntegrationsPage }))))
+const VideoToolPage = withStartupScreen(lazy(() => import('../features/desktop/tools/pages/video-tool-page').then((module) => ({ default: module.VideoToolPage }))))
+const ImageToolPage = withStartupScreen(lazy(() => import('../features/desktop/tools/pages/image-tool-page').then((module) => ({ default: module.ImageToolPage }))))
 const ROOT_RESERVED_ROUTE_SEGMENTS = new Set(['settings', 'integrations', 'tools', 'agents', 'studio'])
 const WORKSPACE_RESERVED_ROUTE_SEGMENTS = new Set(['settings', 'tools', 'task', 'worktree', 'video', 'studio'])
 
@@ -31,18 +32,6 @@ function currentWorkspaceRoute(pathname: string): { sessionId?: string } | null 
     return null
   }
   return { sessionId: sessionId || undefined }
-}
-
-function currentWorkspaceSessionRoute(pathname: string): { sessionId: string } | null {
-  const route = currentWorkspaceRoute(pathname)
-  return route?.sessionId ? { sessionId: route.sessionId } : null
-}
-
-if (typeof window !== 'undefined') {
-  const route = currentWorkspaceSessionRoute(window.location.pathname)
-  if (route) {
-    void importDesktopAppPage()
-  }
 }
 
 function validateWorkspaceParams(params: Record<string, unknown>): { workspaceSlug: string } {
@@ -341,6 +330,8 @@ const routeTree = rootRoute.addChildren([
 
 export const router = createRouter({
   routeTree,
+  defaultErrorComponent: StartupRouteError,
+  defaultNotFoundComponent: StartupRouteError,
 })
 
 declare module '@tanstack/react-router' {

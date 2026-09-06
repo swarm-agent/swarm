@@ -1,3 +1,4 @@
+import { STARTUP_REQUEST_TIMEOUT_MS, throwIfAborted, waitForSignal, withRequestDeadline } from './request-lifecycle'
 
 export interface DesktopSessionIdentity {
   userId: string
@@ -39,8 +40,13 @@ async function readErrorMessage(response: Response): Promise<string> {
   return text
 }
 
-async function bootstrapDesktopSession(): Promise<DesktopSessionIdentity> {
+function bootstrapDesktopSession(): Promise<DesktopSessionIdentity> {
+  return withRequestDeadline(readDesktopSession, STARTUP_REQUEST_TIMEOUT_MS)
+}
+
+async function readDesktopSession(signal: AbortSignal): Promise<DesktopSessionIdentity> {
   const response = await fetch('/v1/auth/desktop/session', {
+    signal,
     cache: 'no-store',
     credentials: 'same-origin',
     headers: {
@@ -63,6 +69,7 @@ async function bootstrapDesktopSession(): Promise<DesktopSessionIdentity> {
     username: stringField(payload.username),
     expiresAt: stringField(payload.expires_at) || stringField(payload.expiresAt),
   }
+  throwIfAborted(signal)
   desktopSessionIdentity = identity
   desktopSessionReady = true
   return identity
@@ -104,7 +111,9 @@ function stringField(value: unknown): string | undefined {
 }
 
 export async function apiFetch(input: RequestInfo | URL, init?: RequestInit, attachAuth = true): Promise<Response> {
+  const signal = init?.signal ?? (input instanceof Request ? input.signal : undefined)
   const send = async (): Promise<Response> => {
+    throwIfAborted(signal)
     const headers = new Headers(init?.headers ?? {})
     headers.set('Accept', 'application/json')
 
@@ -116,28 +125,37 @@ export async function apiFetch(input: RequestInfo | URL, init?: RequestInit, att
     })
   }
 
-  let response = await send()
+  let response = await waitForSignal(send(), signal)
+  throwIfAborted(signal)
   if (attachAuth && response.status === 401) {
     clearDesktopSession()
     try {
-      await ensureDesktopSession()
+      await waitForSignal(ensureDesktopSession(), signal)
     } catch (error) {
+      throwIfAborted(signal)
       return response
     }
-    response = await send()
+    throwIfAborted(signal)
+    void response.body?.cancel().catch(() => undefined)
+    response = await waitForSignal(send(), signal)
   }
 
+  throwIfAborted(signal)
   return response
 }
 
-export async function requestJson<T>(input: RequestInfo | URL, init?: RequestInit, attachAuth = true): Promise<T> {
-  const response = await apiFetch(input, init, attachAuth)
+export async function requestJson<T>(input: RequestInfo | URL, init?: RequestInit, attachAuth = true, timeoutMs?: number): Promise<T> {
+  return withRequestDeadline(async (signal) => {
+    const response = await apiFetch(input, { ...init, signal }, attachAuth)
+    if (!response.ok) throw new Error(await readErrorMessage(response))
+    return response.json() as Promise<T>
+  }, timeoutMs, init?.signal ?? (input instanceof Request ? input.signal : undefined))
+}
 
-  if (!response.ok) {
-    throw new Error(await readErrorMessage(response))
-  }
-
-  return response.json() as Promise<T>
+// Explicit startup/read opt-in; mutations and streaming apiFetch calls have no
+// new global deadline.
+export function requestStartupJson<T>(input: RequestInfo | URL, init?: RequestInit, attachAuth = true): Promise<T> {
+  return requestJson<T>(input, init, attachAuth, STARTUP_REQUEST_TIMEOUT_MS)
 }
 
 export { readErrorMessage }

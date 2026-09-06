@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties, ReactNode } from 'react'
 import { createPortal } from 'react-dom'
+import { observePageActivity } from '../../../app/page-lifecycle'
 import { Archive, Bot, CheckCircle2, ChevronDown, CircleHelp, Eye, EyeOff, GitBranch, GitCommitHorizontal, GitMerge, LoaderCircle, RefreshCcw, ShieldAlert, X } from 'lucide-react'
 import { Dialog, DialogBackdrop, DialogPanel } from '../../../components/ui/dialog'
 import { cn } from '../../../lib/cn'
@@ -96,6 +97,14 @@ export function ReviewWorktreesModal({ workspacePath, onClose, onAskSwarmFix, re
   const [reviewingSelection, setReviewingSelection] = useState(false)
   const [loading, setLoading] = useState(true)
   const reviewRequestRef = useRef<AbortController | null>(null)
+  const commitStatusRequestRef = useRef<AbortController | null>(null)
+  useEffect(() => {
+    setOpeningCommit(false)
+    const release = observePageActivity((active) => {
+      if (!active) { commitStatusRequestRef.current?.abort(); setOpeningCommit(false) }
+    })
+    return () => { release(); commitStatusRequestRef.current?.abort() }
+  }, [workspacePath])
   const [archiving, setArchiving] = useState(false)
   const [commitCandidate, setCommitCandidate] = useState<ReviewWorktreeCandidate | null>(null)
   const [commitFiles, setCommitFiles] = useState<GitFileStatus[]>([])
@@ -259,10 +268,14 @@ export function ReviewWorktreesModal({ workspacePath, onClose, onAskSwarmFix, re
   }
   const openCommitReview = async (candidate: ReviewWorktreeCandidate) => {
     if (!candidate.commit_eligible || !candidate.worktree_path || openingCommit) return
+    commitStatusRequestRef.current?.abort()
+    const controller = new AbortController()
+    commitStatusRequestRef.current = controller
     setOpeningCommit(true)
     setError('')
     try {
-      const response = await fetchGitStatus(candidate.worktree_path, 0, candidate.session_id)
+      const response = await fetchGitStatus(candidate.worktree_path, 0, candidate.session_id, controller.signal)
+      if (controller.signal.aborted) return
       if (!response.status.has_git || response.status.files.length === 0) throw new Error('No committable changes were found. Recheck worktrees and try again.')
       setCommitFiles(response.status.files)
       setCommitMessage('')
@@ -270,9 +283,10 @@ export function ReviewWorktreesModal({ workspacePath, onClose, onAskSwarmFix, re
       setCommitArchiveAfter(false)
       setCommitCandidate(candidate)
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'Could not load the changed-file list.')
+      if (!controller.signal.aborted) setError(cause instanceof Error ? cause.message : 'Could not load the changed-file list.')
     } finally {
-      setOpeningCommit(false)
+      if (!controller.signal.aborted) setOpeningCommit(false)
+      if (commitStatusRequestRef.current === controller) commitStatusRequestRef.current = null
     }
   }
   const commitReviewChanges = async (integrateAfterCommit: boolean, archiveAfterIntegration = false) => {

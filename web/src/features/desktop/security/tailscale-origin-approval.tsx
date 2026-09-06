@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { ShieldCheck } from 'lucide-react'
-import { requestJson } from '../../../app/api'
+import { requestJson, requestStartupJson } from '../../../app/api'
 import { Button } from '../../../components/ui/button'
 import { Card } from '../../../components/ui/card'
 
@@ -16,22 +16,29 @@ export function useTailscaleOriginApproval() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
+  const request = useRef<AbortController | null>(null)
   const load = useCallback(async () => {
+    request.current?.abort()
+    const controller = new AbortController()
+    request.current = controller
     setLoading(true)
     setError(null)
     try {
-      const next = await requestJson<TailscaleOriginApprovalStatus>(TAILSCALE_ONBOARDING_APPROVAL_PATH, undefined, false)
-      setStatus(next)
+      const next = await requestStartupJson<TailscaleOriginApprovalStatus>(TAILSCALE_ONBOARDING_APPROVAL_PATH, { signal: controller.signal }, false)
+      if (!controller.signal.aborted) setStatus(next)
     } catch (loadError) {
+      if (controller.signal.aborted) return
       setStatus(null)
       setError(loadError instanceof Error ? loadError.message : 'Failed to check Tailscale access')
     } finally {
-      setLoading(false)
+      if (!controller.signal.aborted) setLoading(false)
+      if (request.current === controller) request.current = null
     }
   }, [])
 
   useEffect(() => {
     void load()
+    return () => { request.current?.abort() }
   }, [load])
 
   return { status, loading, error, retry: load }

@@ -1,4 +1,5 @@
-import { requestJson } from '../../../app/api'
+import { requestJson, requestStartupJson } from '../../../app/api'
+import { SharedRequestPool } from '../../../app/request-lifecycle'
 import type { GitCommitSuggestionResponse, GitRealtimeResponse, GitSnapshot, GitStatusResponse } from './types'
 
 function normalizeGitSnapshot(snapshot: GitSnapshot): GitSnapshot {
@@ -26,31 +27,28 @@ export function gitStatusQueryKey(workspacePath: string, sessionId = '') {
   return ['workspace-git-status', sessionId.trim(), workspacePath.trim()] as const
 }
 
-export async function fetchGitStatus(workspacePath: string, recentLimit = 12, sessionId = ''): Promise<GitStatusResponse> {
+export async function fetchGitStatus(workspacePath: string, recentLimit = 12, sessionId = '', signal?: AbortSignal): Promise<GitStatusResponse> {
   const params = new URLSearchParams()
   params.set('workspace_path', workspacePath)
   if (sessionId.trim()) params.set('session_id', sessionId.trim())
   params.set('recent_limit', String(recentLimit))
-  const response = await requestJson<GitStatusResponse>(`/v1/workspace/git/status?${params.toString()}`)
+  const response = await requestStartupJson<GitStatusResponse>(`/v1/workspace/git/status?${params.toString()}`, { signal })
   return { ...response, status: normalizeGitSnapshot(response.status) }
 }
 
-const gitRealtimeRequests = new Map<string, Promise<GitRealtimeResponse>>()
+// The daemon holds an unchanged token for 25s; allow transport/body overhead.
+export const GIT_REALTIME_TIMEOUT_MS = 35_000
+const gitRealtimeRequests = new SharedRequestPool<GitRealtimeResponse>()
 
-export function startGitRealtime(workspacePath: string, sessionId = '', watchToken = ''): Promise<GitRealtimeResponse> {
+export function startGitRealtime(workspacePath: string, sessionId = '', watchToken = '', signal?: AbortSignal): Promise<GitRealtimeResponse> {
   const params = new URLSearchParams()
   params.set('workspace_path', workspacePath)
   if (sessionId.trim()) params.set('session_id', sessionId.trim())
   if (watchToken.trim()) params.set('watch_token', watchToken.trim())
   const endpoint = `/v1/workspace/git/realtime?${params.toString()}`
-  const existing = gitRealtimeRequests.get(endpoint)
-  if (existing) return existing
-
-  const request = requestJson<GitRealtimeResponse>(endpoint, { method: 'POST' })
-    .then((response) => ({ ...response, status: normalizeGitSnapshot(response.status) }))
-    .finally(() => { gitRealtimeRequests.delete(endpoint) })
-  gitRealtimeRequests.set(endpoint, request)
-  return request
+  return gitRealtimeRequests.run(endpoint, (sharedSignal) =>
+    requestJson<GitRealtimeResponse>(endpoint, { method: 'POST', signal: sharedSignal }, true, GIT_REALTIME_TIMEOUT_MS)
+      .then((response) => ({ ...response, status: normalizeGitSnapshot(response.status) })), signal)
 }
 
 export async function suggestWorkspaceCommitMessage(input: {
