@@ -148,3 +148,8 @@ test('single targeted edit accepts explicit default but rejects replace-all', ()
   const records=fixture(); records[3].args.operation.replace_all=false; verify(records)
   records[3].args.operation.replace_all=true; assert.throws(()=>verify(records), /single_target_patch_required/)
 })
+
+// A successful author lifecycle cannot mask a failed required visual inspection.
+test('proof rejects non-artifact tool errors in the same run', () => {
+  assert.throws(()=>toolRecords([{role:'tool',run_id:'run',content:{tool:'media_inspect',call_id:'inspect',error:'missing evidence'}}], 'run'), /unexpected_tool_error/)
+})

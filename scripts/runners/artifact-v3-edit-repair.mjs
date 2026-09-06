@@ -78,6 +78,7 @@ export function toolRecords(messages, runID) {
     if (!evidenceRun && (envelope.tool_name || envelope.tool) === 'manage_artifact') throw new Error('tool_run_scope_unavailable')
     if (evidenceRun !== runID) continue
     check(!message.run_id || !envelope.run_id || message.run_id === envelope.run_id, 'conflicting_tool_run_identity')
+    check(!envelope.error, 'unexpected_tool_error')
     if ((envelope.tool_name || envelope.tool) !== 'manage_artifact') continue
     check(envelope.call_id && !seen.has(envelope.call_id), 'duplicate_tool_identity')
     seen.add(envelope.call_id)
@@ -150,7 +151,7 @@ export async function noProgressFixture() {
   return { kind: 'hermetic_no_progress_fixture', elapsed_ms: clock, retained: true }
 }
 
-const instructions = `This is a managed artifact-only test. Use primary manage_artifact; plan_manage is allowed only if your harness requires checkpoint bookkeeping. Never call bash, even for printf, echo, a no-op, or a claimed placeholder. Do not use workspace file tools, delegation, or workspace writes. Do not alter provider settings, permissions, or other artifacts. Do not recreate after a failed create. For each retained draft use author_v3 with its EXACT draft_handle, in this order: read_file index.html; read_file swarm-artifact.json; one edit_file; read_file index.html; read_file swarm-artifact.json; build_preview; finish_turn. Preserve every unrelated byte and all Part IDs. Do not select follow-up candidates. If anything fails, report honestly and retain work.`
+const instructions = `This is a managed artifact-only test. Use primary manage_artifact; plan_manage is allowed only if your harness requires checkpoint bookkeeping. Never call bash, even for printf, echo, a no-op, or a claimed placeholder. Do not use workspace file tools, delegation, or workspace writes. Do not alter provider settings, permissions, or other artifacts. Do not recreate after a failed create. For each retained draft use author_v3 with its EXACT draft_handle, in this order: read_file index.html; read_file swarm-artifact.json; one edit_file; read_file index.html; read_file swarm-artifact.json; build_preview; finish_turn. Preserve every unrelated byte and all Part IDs. Do not select follow-up candidates. Opaque IDs are not prose: copy each complete draft_handle or media_inspect_reference object from the latest successful tool output, never reconstruct or combine substrings. A rejected mistyped handle does not discard the draft: compare it with the returned object, correct the typo and retry the same operation without recreating. For media_inspect use the complete exact media_inspect_reference from finish_turn. If correction cannot resolve the error, report honestly and retain work.`
 
 // Isolated ephemeral context only; no persistent profile, cookies or storage-state import.
 export async function openProofBrowser(chromium, options) {
