@@ -3382,6 +3382,18 @@ func taskPathWithinRoot(root, target string) bool {
 	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
+// retainTaskResolvedWorkspace keeps implicit creative read roots out of the
+// explicit workspace selector carried into later scheduler cohorts.
+func retainTaskResolvedWorkspace(launch *taskLaunchSpec, program *taskProgramSpec, index int, target string) {
+	if !agentruntime.IsCoderAgentName(launch.RequestedSubagentType) && !agentruntime.IsFinderAgentName(launch.RequestedSubagentType) {
+		return
+	}
+	launch.TargetWorkspacePath = target
+	if program != nil && index >= 0 && index < len(program.Jobs) {
+		program.Jobs[index].TargetWorkspacePath = target
+	}
+}
+
 func (s *Service) resolveTaskTargetWorkspace(parentSession pebblestore.SessionSnapshot, principal identity.Principal, launch taskLaunchSpec) (string, string, error) {
 	if launch.ProgramRepositoryLane != nil {
 		lane := launch.ProgramRepositoryLane
