@@ -85,7 +85,9 @@ func (s *ArtifactV3Service) Create(ctx context.Context, input ArtifactV3CreateIn
 	if existenceErr != nil {
 		return ArtifactV3Projection{}, ErrArtifactV3Unauthorized
 	}
-	if existedBefore && existingRepository.OwnerSessionID != input.Owner.SessionID { return ArtifactV3Projection{}, ErrArtifactV3Unauthorized }
+	if existedBefore && existingRepository.OwnerSessionID != input.Owner.SessionID {
+		return ArtifactV3Projection{}, ErrArtifactV3Unauthorized
+	}
 	if existedBefore && existingRepository.HeadCommitOID != "" {
 		repository, openErr := s.open(ctx, input.Owner, input.ArtifactID)
 		if openErr != nil {
@@ -158,21 +160,39 @@ func (s *ArtifactV3Service) OpenTurn(ctx context.Context, input ArtifactV3OpenTu
 
 func (s *ArtifactV3Service) SubmitCandidate(ctx context.Context, input ArtifactV3SubmitCandidateInput) (ArtifactV3Projection, error) {
 	stored, found, err := s.sessions.GetArtifactV3Repository(input.Owner.AccountScopeID, input.Owner.UserID, input.ArtifactID)
-	if err != nil { return ArtifactV3Projection{}, err }
-	if !found || stored.OwnerSessionID != input.Owner.SessionID { return ArtifactV3Projection{}, ErrArtifactV3Unauthorized }
+	if err != nil {
+		return ArtifactV3Projection{}, err
+	}
+	if !found || stored.OwnerSessionID != input.Owner.SessionID {
+		return ArtifactV3Projection{}, ErrArtifactV3Unauthorized
+	}
 	if previous, found, err := s.sessions.GetArtifactV3Candidate(input.Owner.AccountScopeID, input.Owner.UserID, input.ArtifactID, input.TurnID, input.CandidateID); err != nil {
 		return ArtifactV3Projection{}, err
 	} else if found {
-		if previous.TransactionID != input.TransactionID || previous.Build != input.Build || previous.Preview != input.Preview || (previous.Status != "ready" && previous.Status != "selected") { return ArtifactV3Projection{}, ErrArtifactV3Conflict }
+		if previous.TransactionID != input.TransactionID || previous.Build != input.Build || previous.Preview != input.Preview || (previous.Status != "ready" && previous.Status != "selected") {
+			return ArtifactV3Projection{}, ErrArtifactV3Conflict
+		}
 		repo, err := s.open(ctx, input.Owner, input.ArtifactID)
-		if err != nil { return ArtifactV3Projection{}, err }
-		if _, _, err := repo.validateProject(input.Project); err != nil { return ArtifactV3Projection{}, err }
+		if err != nil {
+			return ArtifactV3Projection{}, err
+		}
+		if _, _, err := repo.validateProject(input.Project); err != nil {
+			return ArtifactV3Projection{}, err
+		}
 		commit, err := repo.commitProject(ctx, input.Project, []string{input.ExpectedHead}, input.Message)
-		if err != nil { return ArtifactV3Projection{}, err }
-		if commit != previous.CommitOID { return ArtifactV3Projection{}, ErrArtifactV3Conflict }
+		if err != nil {
+			return ArtifactV3Projection{}, err
+		}
+		if commit != previous.CommitOID {
+			return ArtifactV3Projection{}, ErrArtifactV3Conflict
+		}
 		revision, ok, err := s.sessions.GetArtifactV3Revision(input.Owner.AccountScopeID, input.Owner.UserID, input.ArtifactID, previous.CommitOID)
-		if err != nil { return ArtifactV3Projection{}, err }
-		if !ok { return ArtifactV3Projection{}, ErrArtifactV3Integrity }
+		if err != nil {
+			return ArtifactV3Projection{}, err
+		}
+		if !ok {
+			return ArtifactV3Projection{}, ErrArtifactV3Integrity
+		}
 		return ArtifactV3Projection{Repository: &stored, Revision: &revision, Candidate: &previous}, nil
 	}
 	repository, err := s.open(ctx, input.Owner, input.ArtifactID)
@@ -421,17 +441,31 @@ func firstParent(revision ArtifactV3Revision) string {
 // SaveDraft preserves the selected head and uses the canonical session CAS.
 func (s *ArtifactV3Service) SaveDraft(owner ArtifactV3Owner, artifactID, requestID, intent string, draft ArtifactV3DraftProjection, expected uint64) (ArtifactV3DraftProjection, error) {
 	repository, found, err := s.sessions.GetArtifactV3Repository(owner.AccountScopeID, owner.UserID, artifactID)
-	if err != nil { return ArtifactV3DraftProjection{}, err }
-	if found && repository.OwnerSessionID != owner.SessionID { return ArtifactV3DraftProjection{}, ErrArtifactV3Unauthorized }
-	if !found { repository = ArtifactV3RepositoryProjection{ArtifactID: artifactID, RepositoryID: artifactID, AccountScopeID: owner.AccountScopeID, UserID: owner.UserID, OwnerSessionID: owner.SessionID, IntentReference: intent} }
+	if err != nil {
+		return ArtifactV3DraftProjection{}, err
+	}
+	if found && repository.OwnerSessionID != owner.SessionID {
+		return ArtifactV3DraftProjection{}, ErrArtifactV3Unauthorized
+	}
+	if !found {
+		repository = ArtifactV3RepositoryProjection{ArtifactID: artifactID, RepositoryID: artifactID, AccountScopeID: owner.AccountScopeID, UserID: owner.UserID, OwnerSessionID: owner.SessionID, IntentReference: intent}
+	}
 	repository.Drafts = nil
 	_, err = s.apply(owner, requestID, V3SessionMutationArtifactV3DraftSaved, ArtifactV3Mutation{Repository: &repository, Draft: &draft, ExpectedDraftSequence: expected}, 0)
-	if err != nil { return ArtifactV3DraftProjection{}, err }
+	if err != nil {
+		return ArtifactV3DraftProjection{}, err
+	}
 	// Idempotency output is deliberately public; read private state separately.
 	repository, found, err = s.sessions.GetArtifactV3Repository(owner.AccountScopeID, owner.UserID, artifactID)
-	if err != nil { return ArtifactV3DraftProjection{}, err }
-	if !found { return ArtifactV3DraftProjection{}, ErrArtifactV3Integrity }
+	if err != nil {
+		return ArtifactV3DraftProjection{}, err
+	}
+	if !found {
+		return ArtifactV3DraftProjection{}, ErrArtifactV3Integrity
+	}
 	saved, ok := repository.Drafts[draft.GrantID]
-	if !ok || saved.Sequence != expected+1 || string(saved.State) != string(draft.State) { return ArtifactV3DraftProjection{}, ErrArtifactV3Conflict }
+	if !ok || saved.Sequence != expected+1 || string(saved.State) != string(draft.State) {
+		return ArtifactV3DraftProjection{}, ErrArtifactV3Conflict
+	}
 	return saved, nil
 }

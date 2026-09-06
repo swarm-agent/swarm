@@ -13,7 +13,6 @@ import (
 	"os"
 	"path"
 	"path/filepath"
-"reflect"
 	"reflect"
 	"regexp"
 	"sort"
@@ -111,8 +110,23 @@ func (a *artifactV3RuntimeAdapter) PrepareArtifactV3Turn(ctx context.Context, re
 			return tool.ArtifactV3AuthorGrant{}, pebblestore.ErrArtifactV3Invalid
 		}
 		repository, ok, err := a.sessions.GetArtifactV3Repository(owner.AccountScopeID, owner.UserID, artifactID)
-		if err != nil || !ok || repository.OwnerSessionID != owner.SessionID || repository.HeadCommitOID != strings.TrimSpace(request.BaseCommitOID) || (request.ProjectionSeq != 0 && repository.EventSeq != request.ProjectionSeq) {
+		if err != nil || !ok || repository.OwnerSessionID != owner.SessionID || repository.HeadCommitOID != strings.TrimSpace(request.BaseCommitOID) {
 			return tool.ArtifactV3AuthorGrant{}, pebblestore.ErrArtifactV3Conflict
+		}
+		if request.ProjectionSeq != 0 && repository.EventSeq != request.ProjectionSeq {
+			// A sibling allocation may follow draft events from its already-authorized
+			// exact-base turn; unrelated stale turns must still fail closed.
+			matched := false
+			for _, draft := range repository.Drafts {
+				var prior tool.ArtifactV3AuthorGrant
+				if json.Unmarshal(draft.Grant, &prior) == nil && prior.TurnID == artifactV3StableID("turn", artifactID, request.TaskCallID) && prior.BaseCommitOID == request.BaseCommitOID && prior.SourceProjectionSeq == request.ProjectionSeq && prior.OwnerSessionID == owner.SessionID && prior.ExpiresAt > time.Now().UnixMilli() {
+					matched = true
+					break
+				}
+			}
+			if !matched {
+				return tool.ArtifactV3AuthorGrant{}, pebblestore.ErrArtifactV3Conflict
+			}
 		}
 		if len(request.TargetPartIDs) != 0 {
 			revision, revisionOK, revisionErr := a.sessions.GetArtifactV3Revision(owner.AccountScopeID, owner.UserID, artifactID, repository.HeadCommitOID)
@@ -134,7 +148,8 @@ func (a *artifactV3RuntimeAdapter) PrepareArtifactV3Turn(ctx context.Context, re
 	candidateID := artifactV3StableID("candidate", turnID, fmt.Sprint(request.CandidateIndex))
 	grantID := artifactV3StableID("grant", artifactID, turnID, candidateID)
 	grant := tool.ArtifactV3AuthorGrant{
-		AccountScopeID: owner.AccountScopeID, UserID: owner.UserID,
+		SourceProjectionSeq: request.ProjectionSeq,
+		AccountScopeID:      owner.AccountScopeID, UserID: owner.UserID,
 		ID: grantID, ArtifactID: artifactID, OwnerSessionID: owner.SessionID, TurnID: turnID, CandidateID: candidateID,
 		BaseCommitOID: strings.TrimSpace(request.BaseCommitOID), Initial: request.Initial, TargetPartIDs: canonicalStrings(request.TargetPartIDs), LockedPaths: canonicalStrings(request.LockedPaths),
 		AllowedActions: []string{"inspect_context", "list_files", "read_file", "create_file", "edit_file", "rename_file", "delete_file", "diff", "build_preview", "finish_turn"},
@@ -153,15 +168,26 @@ func (a *artifactV3RuntimeAdapter) PrepareArtifactV3Turn(ctx context.Context, re
 			return tool.ArtifactV3AuthorGrant{}, err
 		}
 	}
+	// Match the author service's slice-copy representation before persisting identity.
+	grant.TargetPartIDs = append([]string(nil), grant.TargetPartIDs...)
+	grant.LockedPaths = append([]string(nil), grant.LockedPaths...)
 	raw, err := json.Marshal(grant)
-	if err != nil { return tool.ArtifactV3AuthorGrant{}, err }
+	if err != nil {
+		return tool.ArtifactV3AuthorGrant{}, err
+	}
 	existing, _, err := a.sessions.GetArtifactV3Repository(owner.AccountScopeID, owner.UserID, artifactID)
-	if err != nil { return tool.ArtifactV3AuthorGrant{}, err }
+	if err != nil {
+		return tool.ArtifactV3AuthorGrant{}, err
+	}
 	if previous, found := existing.Drafts[grantID]; found {
-		if string(previous.Grant) != string(raw) { return tool.ArtifactV3AuthorGrant{}, tool.ErrArtifactV3AuthorConflict }
+		if string(previous.Grant) != string(raw) {
+			return tool.ArtifactV3AuthorGrant{}, tool.ErrArtifactV3AuthorConflict
+		}
 	} else {
 		_, err = a.service.SaveDraft(owner, artifactID, grantID, strings.TrimSpace(request.Prompt), pebblestore.ArtifactV3DraftProjection{GrantID: grantID, Grant: raw, Status: "creating", ExpiresAt: grant.ExpiresAt}, 0)
-		if err != nil { return tool.ArtifactV3AuthorGrant{}, err }
+		if err != nil {
+			return tool.ArtifactV3AuthorGrant{}, err
+		}
 	}
 	a.mu.Lock()
 	a.grants[grantID] = artifactV3GrantOwner{Owner: owner, Prompt: strings.TrimSpace(request.Prompt)}
@@ -198,7 +224,9 @@ func (a *artifactV3RuntimeAdapter) ownerFor(artifactID, turnID, candidateID stri
 
 func (a *artifactV3RuntimeAdapter) MaterializeBase(ctx context.Context, artifactID, commitOID, destination string) error {
 	grant, ok := tool.ArtifactV3GrantFromContext(ctx)
-	if !ok || grant.ArtifactID != artifactID || grant.BaseCommitOID != commitOID { return tool.ErrArtifactV3AuthorUnauthorized }
+	if !ok || grant.ArtifactID != artifactID || grant.BaseCommitOID != commitOID {
+		return tool.ErrArtifactV3AuthorUnauthorized
+	}
 	_, err := a.LoadAuthorDraft(ctx, artifactV3AuthorPrincipal(grant), grant)
 	owner := artifactV3GrantOwner{Owner: artifactV3Owner(grant)}
 	if err != nil {
@@ -211,27 +239,40 @@ func (a *artifactV3RuntimeAdapter) MaterializeBase(ctx context.Context, artifact
 	return repository.Materialize(ctx, commitOID, destination)
 }
 
-
 func (a *artifactV3RuntimeAdapter) SubmitProject(ctx context.Context, request tool.ArtifactV3SubmitRequest) (tool.ArtifactV3Revision, error) {
 	grant, ok := tool.ArtifactV3GrantFromContext(ctx)
-	if !ok || grant.ArtifactID != request.ArtifactID || grant.TurnID != request.TurnID || grant.CandidateID != request.CandidateID || grant.BaseCommitOID != request.BaseCommitOID || grant.Initial != request.Initial || grant.PolicyRevision != request.PolicyRevision { return tool.ArtifactV3Revision{}, tool.ErrArtifactV3AuthorUnauthorized }
+	if !ok || grant.ArtifactID != request.ArtifactID || grant.TurnID != request.TurnID || grant.CandidateID != request.CandidateID || grant.BaseCommitOID != request.BaseCommitOID || grant.Initial != request.Initial || grant.PolicyRevision != request.PolicyRevision {
+		return tool.ArtifactV3Revision{}, tool.ErrArtifactV3AuthorUnauthorized
+	}
 	draft, err := a.LoadAuthorDraft(ctx, artifactV3AuthorPrincipal(grant), grant)
-	if err != nil { return tool.ArtifactV3Revision{}, err }
+	if err != nil {
+		return tool.ArtifactV3Revision{}, err
+	}
 	if draft.Finished != nil {
-		if draft.Gate == nil || draft.Gate.ProjectDigest != request.ProjectDigest || digestArtifactProject(request.Project) != request.ProjectDigest { return tool.ArtifactV3Revision{}, tool.ErrArtifactV3AuthorConflict }
+		if draft.Gate == nil || draft.Gate.ProjectDigest != request.ProjectDigest || digestArtifactProject(request.Project) != request.ProjectDigest {
+			return tool.ArtifactV3Revision{}, tool.ErrArtifactV3AuthorConflict
+		}
 		return draft.Finished.Revision, nil
 	}
-	if draft.Gate == nil || !draft.Gate.Ready || draft.Gate.ProjectDigest != request.ProjectDigest || digestArtifactProject(request.Project) != request.ProjectDigest || !reflect.DeepEqual(draft.Project, request.Project) { return tool.ArtifactV3Revision{}, tool.ErrArtifactV3AuthorConflict }
+	if draft.Gate == nil || !draft.Gate.Ready || draft.Gate.ProjectDigest != request.ProjectDigest || digestArtifactProject(request.Project) != request.ProjectDigest || !reflect.DeepEqual(draft.Project, request.Project) {
+		return tool.ArtifactV3Revision{}, tool.ErrArtifactV3AuthorConflict
+	}
 	if !draft.Publishing {
-		if draft.Sequence != request.DraftSequence { return tool.ArtifactV3Revision{}, tool.ErrArtifactV3AuthorConflict }
+		if draft.Sequence != request.DraftSequence {
+			return tool.ArtifactV3Revision{}, tool.ErrArtifactV3AuthorConflict
+		}
 		draft.Publishing = true
 		draft, err = a.saveAuthorDraft(grant, draft)
-		if err != nil { return tool.ArtifactV3Revision{}, err }
+		if err != nil {
+			return tool.ArtifactV3Revision{}, err
+		}
 	}
 	// Reservation freezes the exact validated source before Git is touched.
 	request.Build, request.Preview = draft.Gate.Build, draft.Gate.Preview
 	stored, _, err := a.sessions.GetArtifactV3Repository(grant.AccountScopeID, grant.UserID, grant.ArtifactID)
-	if err != nil { return tool.ArtifactV3Revision{}, err }
+	if err != nil {
+		return tool.ArtifactV3Revision{}, err
+	}
 	owner := artifactV3GrantOwner{Owner: artifactV3Owner(grant), Prompt: stored.IntentReference}
 	project := pebblestore.ArtifactV3Project{Files: request.Project}
 	transactionID := artifactV3StableID("tx", request.ArtifactID, request.TurnID, request.CandidateID, request.ProjectDigest)
@@ -301,16 +342,30 @@ func (a *artifactV3RuntimeAdapter) FailArtifactV3Turn(_ context.Context, failure
 		return nil
 	}
 	repository, found, readErr := a.sessions.GetArtifactV3Repository(owner.Owner.AccountScopeID, owner.Owner.UserID, failure.ArtifactID)
-	if readErr != nil { return readErr }
-	if !found { return pebblestore.ErrArtifactV3NotFound }
+	if readErr != nil {
+		return readErr
+	}
+	if !found {
+		return pebblestore.ErrArtifactV3NotFound
+	}
 	if repository.HeadCommitOID == "" {
 		id := artifactV3StableID("grant", failure.ArtifactID, failure.TurnID, failure.CandidateID)
 		draft, exists := repository.Drafts[id]
-		if !exists { return tool.ErrArtifactV3AuthorUnauthorized }
+		if !exists {
+			return tool.ErrArtifactV3AuthorUnauthorized
+		}
 		var state tool.ArtifactV3AuthorDraft
-		if len(draft.State) != 0 { if err := json.Unmarshal(draft.State, &state); err != nil { return err } }
-		if state.Publishing || state.Finished != nil { return tool.ErrArtifactV3AuthorConflict }
-		if state.ProducerSessionID != "" && (state.ProducerSessionID != failure.ProducerSessionID || state.ProducerRunID != failure.ProducerRunID) { return tool.ErrArtifactV3AuthorUnauthorized }
+		if len(draft.State) != 0 {
+			if err := json.Unmarshal(draft.State, &state); err != nil {
+				return err
+			}
+		}
+		if state.Publishing || state.Finished != nil {
+			return tool.ErrArtifactV3AuthorConflict
+		}
+		if state.ProducerSessionID != "" && (state.ProducerSessionID != failure.ProducerSessionID || state.ProducerRunID != failure.ProducerRunID) {
+			return tool.ErrArtifactV3AuthorUnauthorized
+		}
 		draft.Status = "error"
 		_, err = a.service.SaveDraft(owner.Owner, failure.ArtifactID, artifactV3StableID("failed", id, fmt.Sprint(draft.Sequence)), repository.IntentReference, draft, draft.Sequence)
 		return err
@@ -565,7 +620,9 @@ func (a *artifactV3RuntimeAdapter) ListArtifacts(ctx context.Context, principal 
 		limit = 500
 	}
 	entries, err := a.sessions.ListArtifactV3Repositories(principal.AccountScopeID, principal.UserID, sessionID, limit)
-	if err != nil { return nil, err }
+	if err != nil {
+		return nil, err
+	}
 	out := make([]api.ArtifactV3Artifact, 0, len(entries))
 	for _, repository := range entries {
 		artifact, readErr := a.artifact(ctx, principal, repository)
@@ -1432,89 +1489,167 @@ func artifactV3AuthorPrincipal(g tool.ArtifactV3AuthorGrant) tool.ArtifactV3Auth
 // compare the persisted exact producer, not just two caller-supplied strings.
 func (a *artifactV3RuntimeAdapter) LoadAuthorDraft(ctx context.Context, p tool.ArtifactV3AuthorPrincipal, g tool.ArtifactV3AuthorGrant) (tool.ArtifactV3AuthorDraft, error) {
 	zero := tool.ArtifactV3AuthorDraft{}
-	if p != artifactV3AuthorPrincipal(g) || p.AccountScopeID == "" || p.UserID == "" || p.ProducerSessionID == "" || p.ProducerRunID == "" { return zero, tool.ErrArtifactV3AuthorUnauthorized }
+	if p != artifactV3AuthorPrincipal(g) || p.AccountScopeID == "" || p.UserID == "" || p.ProducerSessionID == "" || p.ProducerRunID == "" {
+		return zero, tool.ErrArtifactV3AuthorUnauthorized
+	}
 	r, found, err := a.sessions.GetArtifactV3Repository(p.AccountScopeID, p.UserID, g.ArtifactID)
-	if err != nil || !found || r.OwnerSessionID != g.OwnerSessionID { return zero, tool.ErrArtifactV3AuthorUnauthorized }
+	if err != nil || !found || r.OwnerSessionID != g.OwnerSessionID {
+		return zero, tool.ErrArtifactV3AuthorUnauthorized
+	}
 	d, found := r.Drafts[g.ID]
-	if !found { return zero, tool.ErrArtifactV3AuthorUnauthorized }
-	if d.ExpiresAt <= time.Now().UnixMilli() { return zero, tool.ErrArtifactV3AuthorExpired }
+	if !found {
+		return zero, tool.ErrArtifactV3AuthorUnauthorized
+	}
+	if d.ExpiresAt <= time.Now().UnixMilli() {
+		return zero, tool.ErrArtifactV3AuthorExpired
+	}
 	unbound := g
 	unbound.ProducerSessionID, unbound.ProducerRunID = "", ""
 	raw, err := json.Marshal(unbound)
-	if err != nil || string(raw) != string(d.Grant) { return zero, tool.ErrArtifactV3AuthorUnauthorized }
+	if err != nil || string(raw) != string(d.Grant) {
+		return zero, tool.ErrArtifactV3AuthorUnauthorized
+	}
 	state := zero
 	if len(d.State) != 0 {
-		if err := json.Unmarshal(d.State, &state); err != nil { return zero, err }
-		if digestArtifactProject(state.Project) != d.Digest { return zero, pebblestore.ErrArtifactV3Integrity }
+		if err := json.Unmarshal(d.State, &state); err != nil {
+			return zero, err
+		}
+		if digestArtifactProject(state.Project) != d.Digest {
+			return zero, pebblestore.ErrArtifactV3Integrity
+		}
 	}
 	state.Sequence = d.Sequence
 	if state.ProducerSessionID == "" {
 		trusted, ok := tool.ArtifactV3GrantFromContext(ctx)
-		if !ok || !reflect.DeepEqual(trusted, g) { return zero, tool.ErrArtifactV3AuthorUnauthorized }
+		if !ok || !reflect.DeepEqual(trusted, g) {
+			return zero, tool.ErrArtifactV3AuthorUnauthorized
+		}
 		state.ProducerSessionID, state.ProducerRunID = p.ProducerSessionID, p.ProducerRunID
 		return a.saveAuthorDraft(g, state)
 	}
-	if state.ProducerSessionID != p.ProducerSessionID || state.ProducerRunID != p.ProducerRunID { return zero, tool.ErrArtifactV3AuthorUnauthorized }
-	if !state.Publishing && state.Finished == nil && r.HeadCommitOID != g.BaseCommitOID { return zero, tool.ErrArtifactV3AuthorConflict }
+	if state.ProducerSessionID != p.ProducerSessionID || state.ProducerRunID != p.ProducerRunID {
+		return zero, tool.ErrArtifactV3AuthorUnauthorized
+	}
+	if !state.Publishing && state.Finished == nil && r.HeadCommitOID != g.BaseCommitOID {
+		return zero, tool.ErrArtifactV3AuthorConflict
+	}
 	return state, nil
 }
 
 func (a *artifactV3RuntimeAdapter) SaveAuthorDraft(ctx context.Context, p tool.ArtifactV3AuthorPrincipal, g tool.ArtifactV3AuthorGrant, state tool.ArtifactV3AuthorDraft) (tool.ArtifactV3AuthorDraft, error) {
 	current, err := a.LoadAuthorDraft(ctx, p, g)
-	if err != nil { return tool.ArtifactV3AuthorDraft{}, err }
-	if current.Sequence != state.Sequence || current.Publishing || current.Finished != nil || state.Publishing || state.Finished != nil { return tool.ArtifactV3AuthorDraft{}, tool.ErrArtifactV3AuthorConflict }
+	if err != nil {
+		return tool.ArtifactV3AuthorDraft{}, err
+	}
+	if current.Sequence != state.Sequence || current.Publishing || current.Finished != nil || state.Publishing || state.Finished != nil {
+		return tool.ArtifactV3AuthorDraft{}, tool.ErrArtifactV3AuthorConflict
+	}
 	state.ProducerSessionID, state.ProducerRunID = current.ProducerSessionID, current.ProducerRunID
 	return a.saveAuthorDraft(g, state)
 }
 
 func (a *artifactV3RuntimeAdapter) saveAuthorDraft(g tool.ArtifactV3AuthorGrant, state tool.ArtifactV3AuthorDraft) (tool.ArtifactV3AuthorDraft, error) {
 	zero := tool.ArtifactV3AuthorDraft{}
-	if len(state.Project) > g.Limits.MaxFiles { return zero, tool.ErrArtifactV3AuthorQuota }
+	if len(state.Project) > g.Limits.MaxFiles {
+		return zero, tool.ErrArtifactV3AuthorQuota
+	}
 	var total int64
 	for path, body := range state.Project {
 		total += int64(len(body))
-		if len(path) > g.Limits.MaxPathBytes || int64(len(body)) > g.Limits.MaxFileBytes || total > g.Limits.MaxTreeBytes { return zero, tool.ErrArtifactV3AuthorQuota }
+		if len(path) > g.Limits.MaxPathBytes || int64(len(body)) > g.Limits.MaxFileBytes || total > g.Limits.MaxTreeBytes {
+			return zero, tool.ErrArtifactV3AuthorQuota
+		}
 	}
 	state.Gate = boundedArtifactV3Gate(state.Gate)
-	if len(state.History) > 8 { state.History = state.History[len(state.History)-8:] }
+	if len(state.History) > 8 {
+		state.History = state.History[len(state.History)-8:]
+	}
 	history := make([]tool.ArtifactV3AuthorGate, 0, len(state.History))
-	for _, gate := range state.History { history = append(history, *boundedArtifactV3Gate(&gate)) }
+	for _, gate := range state.History {
+		history = append(history, *boundedArtifactV3Gate(&gate))
+	}
 	state.History = history
 	r, found, err := a.sessions.GetArtifactV3Repository(g.AccountScopeID, g.UserID, g.ArtifactID)
-	if err != nil { return zero, err }
-	if !found || r.OwnerSessionID != g.OwnerSessionID { return zero, tool.ErrArtifactV3AuthorUnauthorized }
+	if err != nil {
+		return zero, err
+	}
+	if !found || r.OwnerSessionID != g.OwnerSessionID {
+		return zero, tool.ErrArtifactV3AuthorUnauthorized
+	}
 	d, found := r.Drafts[g.ID]
-	if !found || d.Sequence != state.Sequence { return zero, tool.ErrArtifactV3AuthorConflict }
+	if !found || d.Sequence != state.Sequence {
+		return zero, tool.ErrArtifactV3AuthorConflict
+	}
 	d.State, err = json.Marshal(state)
-	if err != nil { return zero, err }
+	if err != nil {
+		return zero, err
+	}
 	d.Digest = digestArtifactProject(state.Project)
 	d.Status = "fixing"
-	if state.Project == nil { d.Status = "creating" }
-	if state.Gate != nil && !state.Gate.Ready { d.Status = "error" }
-	if state.Publishing { d.Status = "publishing" }
-	if state.Finished != nil { d.Status = "ready" }
+	if state.Project == nil {
+		d.Status = "creating"
+	}
+	if state.Gate != nil && !state.Gate.Ready {
+		d.Status = "error"
+	}
+	if state.Publishing {
+		d.Status = "publishing"
+	}
+	if state.Finished != nil {
+		d.Status = "ready"
+	}
 	saved, err := a.service.SaveDraft(artifactV3Owner(g), g.ArtifactID, artifactV3StableID("draft", g.ID, fmt.Sprint(state.Sequence), sha256Hex(d.State)), r.IntentReference, d, state.Sequence)
-	if err != nil { return zero, err }
+	if err != nil {
+		return zero, err
+	}
 	state.Sequence = saved.Sequence
 	return state, nil
 }
 
 func boundedArtifactV3Gate(input *tool.ArtifactV3AuthorGate) *tool.ArtifactV3AuthorGate {
-	if input == nil { return nil }
+	if input == nil {
+		return nil
+	}
 	gate := *input
 	gate.Build.OutputFiles = nil
-	if len(gate.Preview.EvidenceDigests) > 64 { gate.Preview.EvidenceDigests = gate.Preview.EvidenceDigests[:64] }
+	if len(gate.Preview.EvidenceDigests) > 64 {
+		gate.Preview.EvidenceDigests = gate.Preview.EvidenceDigests[:64]
+	}
 	gate.Preview.EvidenceDigests = append([]string(nil), gate.Preview.EvidenceDigests...)
-	for i, digest := range gate.Preview.EvidenceDigests { if len(digest) > 256 { gate.Preview.EvidenceDigests[i] = digest[:256] } }
-	if len(gate.Build.ID) > 256 { gate.Build.ID = gate.Build.ID[:256] }
-	if len(gate.Preview.ID) > 256 { gate.Preview.ID = gate.Preview.ID[:256] }
-	if len(gate.Build.Status) > 64 { gate.Build.Status = gate.Build.Status[:64] }
-	if len(gate.Preview.Status) > 64 { gate.Preview.Status = gate.Preview.Status[:64] }
+	for i, digest := range gate.Preview.EvidenceDigests {
+		if len(digest) > 256 {
+			gate.Preview.EvidenceDigests[i] = digest[:256]
+		}
+	}
+	if len(gate.Build.ID) > 256 {
+		gate.Build.ID = gate.Build.ID[:256]
+	}
+	if len(gate.Preview.ID) > 256 {
+		gate.Preview.ID = gate.Preview.ID[:256]
+	}
+	if len(gate.Build.Status) > 64 {
+		gate.Build.Status = gate.Build.Status[:64]
+	}
+	if len(gate.Preview.Status) > 64 {
+		gate.Preview.Status = gate.Preview.Status[:64]
+	}
 	bound := func(input []tool.ArtifactV3Diagnostic) []tool.ArtifactV3Diagnostic {
-		if len(input) > 64 { input = input[:64] }
+		if len(input) > 64 {
+			input = input[:64]
+		}
 		out := append([]tool.ArtifactV3Diagnostic(nil), input...)
-		clip := func(s string, n int) string { if len(s) > n { return strings.ToValidUTF8(s[:n], "") }; return s }
-		for i := range out { out[i].Stage = clip(out[i].Stage, 64); out[i].Code = clip(out[i].Code, 128); out[i].Message = clip(out[i].Message, 2048); out[i].Path = clip(out[i].Path, 512) }
+		clip := func(s string, n int) string {
+			if len(s) > n {
+				return strings.ToValidUTF8(s[:n], "")
+			}
+			return s
+		}
+		for i := range out {
+			out[i].Stage = clip(out[i].Stage, 64)
+			out[i].Code = clip(out[i].Code, 128)
+			out[i].Message = clip(out[i].Message, 2048)
+			out[i].Path = clip(out[i].Path, 512)
+		}
 		return out
 	}
 	gate.Diagnostics = bound(gate.Diagnostics)
@@ -1526,6 +1661,8 @@ func boundedArtifactV3Gate(input *tool.ArtifactV3AuthorGate) *tool.ArtifactV3Aut
 func (a *artifactV3RuntimeAdapter) finishAuthorDraft(g tool.ArtifactV3AuthorGrant, draft tool.ArtifactV3AuthorDraft, revision tool.ArtifactV3Revision) (tool.ArtifactV3Revision, error) {
 	draft.Finished = &tool.ArtifactV3AuthorFinish{Revision: revision, Gate: *draft.Gate}
 	_, err := a.saveAuthorDraft(g, draft)
-	if err != nil { return tool.ArtifactV3Revision{}, err }
+	if err != nil {
+		return tool.ArtifactV3Revision{}, err
+	}
 	return revision, nil
 }

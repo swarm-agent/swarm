@@ -76,7 +76,8 @@ func (l ArtifactV3AuthorLimits) normalized() ArtifactV3AuthorLimits {
 }
 
 type ArtifactV3AuthorGrant struct {
-	AccountScopeID, UserID string
+	SourceProjectionSeq                                              uint64
+	AccountScopeID, UserID                                           string
 	ID, ArtifactID, OwnerSessionID, ProducerSessionID, ProducerRunID string
 	TurnID, CandidateID, BaseCommitOID, PolicyRevision               string
 	Initial                                                          bool
@@ -150,7 +151,7 @@ type ArtifactV3PreviewResult struct {
 	Diagnostics     []ArtifactV3Diagnostic
 }
 type ArtifactV3SubmitRequest struct {
-	DraftSequence uint64
+	DraftSequence                                                                 uint64
 	ArtifactID, TurnID, CandidateID, BaseCommitOID, PolicyRevision, ProjectDigest string
 	Initial                                                                       bool
 	Project                                                                       map[string][]byte
@@ -269,25 +270,25 @@ type ArtifactV3DraftRepository interface {
 }
 
 type ArtifactV3AuthorDraft struct {
-	Sequence uint64
-	Project map[string][]byte
-	Gate *ArtifactV3AuthorGate
-	History []ArtifactV3AuthorGate
-	Attempt int
+	Sequence                         uint64
+	Project                          map[string][]byte
+	Gate                             *ArtifactV3AuthorGate
+	History                          []ArtifactV3AuthorGate
+	Attempt                          int
 	ProducerSessionID, ProducerRunID string
-	Publishing bool
-	Finished *ArtifactV3AuthorFinish
+	Publishing                       bool
+	Finished                         *ArtifactV3AuthorFinish
 }
 
 type artifactV3TurnState struct {
-	draft ArtifactV3AuthorDraft
+	draft     ArtifactV3AuthorDraft
 	principal ArtifactV3AuthorPrincipal
-	grant ArtifactV3AuthorGrant
-	root     string
-	base     map[string][]byte
-	attempt  int
-	gate     *ArtifactV3AuthorGate
-	finished *ArtifactV3AuthorFinish
+	grant     ArtifactV3AuthorGrant
+	root      string
+	base      map[string][]byte
+	attempt   int
+	gate      *ArtifactV3AuthorGate
+	finished  *ArtifactV3AuthorFinish
 }
 type ArtifactV3AuthorService struct {
 	root           string
@@ -850,21 +851,29 @@ func (s *ArtifactV3AuthorService) state(ctx context.Context, p ArtifactV3AuthorP
 	if repository, ok := s.repository.(ArtifactV3DraftRepository); ok {
 		var err error
 		draft, err = repository.LoadAuthorDraft(ctx, p, g)
-		if err != nil { return nil, err }
+		if err != nil {
+			return nil, err
+		}
 	}
 	key := artifactV3WorkspaceKey(g)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if state := s.turns[key]; state != nil {
 		if state.draft.Sequence != draft.Sequence {
-			if err := os.RemoveAll(state.root); err != nil { return nil, err }
+			if err := os.RemoveAll(state.root); err != nil {
+				return nil, err
+			}
 			delete(s.turns, key)
 		} else {
-			if (state.finished != nil || draft.Publishing) && action != artifactV3ActionFinish && action != artifactV3ActionRead && action != artifactV3ActionInspect && action != artifactV3ActionList { return nil, ErrArtifactV3AuthorConflict }
+			if (state.finished != nil || draft.Publishing) && action != artifactV3ActionFinish && action != artifactV3ActionRead && action != artifactV3ActionInspect && action != artifactV3ActionList {
+				return nil, ErrArtifactV3AuthorConflict
+			}
 			return state, nil
 		}
 	}
-	if (draft.Finished != nil || draft.Publishing) && action != artifactV3ActionFinish && action != artifactV3ActionRead && action != artifactV3ActionInspect && action != artifactV3ActionList { return nil, ErrArtifactV3AuthorConflict }
+	if (draft.Finished != nil || draft.Publishing) && action != artifactV3ActionFinish && action != artifactV3ActionRead && action != artifactV3ActionInspect && action != artifactV3ActionList {
+		return nil, ErrArtifactV3AuthorConflict
+	}
 	if err := os.MkdirAll(s.root, 0o700); err != nil {
 		return nil, err
 	}
@@ -898,11 +907,22 @@ func (s *ArtifactV3AuthorService) state(ctx context.Context, p ArtifactV3AuthorP
 		state.base = base
 	}
 	if draft.Project != nil {
-		for path := range state.base { if err = os.Remove(filepath.Join(root, filepath.FromSlash(path))); err != nil { os.RemoveAll(root); return nil, err } }
+		for path := range state.base {
+			if err = os.Remove(filepath.Join(root, filepath.FromSlash(path))); err != nil {
+				os.RemoveAll(root)
+				return nil, err
+			}
+		}
 		for path, body := range draft.Project {
 			clean, pathErr := artifactV3CleanPath(path, g.Limits.normalized())
-			if pathErr != nil { os.RemoveAll(root); return nil, pathErr }
-			if err = artifactV3WriteRegular(root, clean, body, true, g.Limits.normalized()); err != nil { os.RemoveAll(root); return nil, err }
+			if pathErr != nil {
+				os.RemoveAll(root)
+				return nil, pathErr
+			}
+			if err = artifactV3WriteRegular(root, clean, body, true, g.Limits.normalized()); err != nil {
+				os.RemoveAll(root)
+				return nil, err
+			}
 		}
 	}
 	s.turns[key] = state
@@ -1115,7 +1135,9 @@ func artifactV3Snapshot(root string, limits ArtifactV3AuthorLimits) (map[string]
 }
 
 func (s *ArtifactV3AuthorService) persistGate(ctx context.Context, state *artifactV3TurnState, gate ArtifactV3AuthorGate) (ArtifactV3AuthorGate, error) {
-	if err := s.persist(ctx, state, &gate); err != nil { return ArtifactV3AuthorGate{}, err }
+	if err := s.persist(ctx, state, &gate); err != nil {
+		return ArtifactV3AuthorGate{}, err
+	}
 	return *state.gate, nil
 }
 
@@ -1125,16 +1147,25 @@ func (s *ArtifactV3AuthorService) persist(ctx context.Context, state *artifactV3
 		if err == nil {
 			next := state.draft
 			next.Project, next.Gate, next.Attempt = project, gate, state.attempt
-			if state.draft.Gate != nil { next.History = append(append([]ArtifactV3AuthorGate(nil), state.draft.History...), *state.draft.Gate) }
+			if state.draft.Gate != nil {
+				next.History = append(append([]ArtifactV3AuthorGate(nil), state.draft.History...), *state.draft.Gate)
+			}
 			var saved ArtifactV3AuthorDraft
 			saved, err = repository.SaveAuthorDraft(ctx, state.principal, state.grant, next)
-			if err == nil { state.draft, state.gate = saved, saved.Gate; return nil }
+			if err == nil {
+				state.draft, state.gate = saved, saved.Gate
+				return nil
+			}
 		}
 		// Invalidate even snapshot/quota failures: modified ambient bytes never
 		// survive a failed durable write as a usable gate or source of truth.
-		s.mu.Lock(); delete(s.turns, artifactV3WorkspaceKey(state.grant)); s.mu.Unlock()
+		s.mu.Lock()
+		delete(s.turns, artifactV3WorkspaceKey(state.grant))
+		s.mu.Unlock()
 		state.gate, state.finished = nil, nil
-		if cleanupErr := os.RemoveAll(state.root); cleanupErr != nil { return errors.Join(err, cleanupErr) }
+		if cleanupErr := os.RemoveAll(state.root); cleanupErr != nil {
+			return errors.Join(err, cleanupErr)
+		}
 		return err
 	}
 	state.gate = gate

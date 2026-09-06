@@ -11,7 +11,7 @@ import (
 )
 
 const (
-	V3SessionMutationArtifactV3DraftSaved = "artifact.v3.draft.saved"
+	V3SessionMutationArtifactV3DraftSaved         = "artifact.v3.draft.saved"
 	V3SessionMutationArtifactV3GenesisCommitted   = "artifact.v3.genesis.committed"
 	V3SessionMutationArtifactV3TurnOpened         = "artifact.v3.turn.opened"
 	V3SessionMutationArtifactV3CandidateCommitted = "artifact.v3.candidate.committed"
@@ -23,29 +23,29 @@ const (
 
 // Draft source is private storage state, never part of session/realtime JSON.
 type ArtifactV3DraftProjection struct {
-	GrantID string
-	Grant json.RawMessage
-	State json.RawMessage
-	Digest string
-	Status string
+	GrantID   string
+	Grant     json.RawMessage
+	State     json.RawMessage `json:"state,omitempty"`
+	Digest    string
+	Status    string
 	ExpiresAt int64
-	Sequence uint64
+	Sequence  uint64
 }
 
 type ArtifactV3RepositoryProjection struct {
-	Drafts map[string]ArtifactV3DraftProjection `json:"-"`
-	DraftStatus string `json:"draft_status,omitempty"`
-	Version         int    `json:"version"`
-	ArtifactID      string `json:"artifact_id"`
-	RepositoryID    string `json:"repository_id"`
-	AccountScopeID  string `json:"account_scope_id"`
-	UserID          string `json:"user_id"`
-	OwnerSessionID  string `json:"owner_session_id"`
-	IntentReference string `json:"intent_reference,omitempty"`
-	HeadCommitOID   string `json:"head_commit_oid"`
-	CreatedAt       int64  `json:"created_at"`
-	UpdatedAt       int64  `json:"updated_at"`
-	EventSeq        uint64 `json:"event_seq"`
+	Drafts          map[string]ArtifactV3DraftProjection `json:"-"`
+	DraftStatus     string                               `json:"draft_status,omitempty"`
+	Version         int                                  `json:"version"`
+	ArtifactID      string                               `json:"artifact_id"`
+	RepositoryID    string                               `json:"repository_id"`
+	AccountScopeID  string                               `json:"account_scope_id"`
+	UserID          string                               `json:"user_id"`
+	OwnerSessionID  string                               `json:"owner_session_id"`
+	IntentReference string                               `json:"intent_reference,omitempty"`
+	HeadCommitOID   string                               `json:"head_commit_oid"`
+	CreatedAt       int64                                `json:"created_at"`
+	UpdatedAt       int64                                `json:"updated_at"`
+	EventSeq        uint64                               `json:"event_seq"`
 }
 
 type ArtifactV3PartProjection struct {
@@ -117,8 +117,8 @@ type ArtifactV3CandidateProjection struct {
 }
 
 type ArtifactV3Mutation struct {
-	Draft *ArtifactV3DraftProjection `json:"draft,omitempty"`
-	ExpectedDraftSequence uint64 `json:"expected_draft_sequence,omitempty"`
+	Draft                 *ArtifactV3DraftProjection      `json:"draft,omitempty"`
+	ExpectedDraftSequence uint64                          `json:"expected_draft_sequence,omitempty"`
 	Repository            *ArtifactV3RepositoryProjection `json:"repository,omitempty"`
 	Revision              *ArtifactV3RevisionProjection   `json:"revision,omitempty"`
 	Turn                  *ArtifactV3TurnProjection       `json:"turn,omitempty"`
@@ -358,14 +358,22 @@ func (s *SessionStore) prepareArtifactV3Mutation(input V3SessionMutationInput, s
 			if copy.HeadCommitOID != current.HeadCommitOID || (found && (previous.Sequence != m.ExpectedDraftSequence || previous.ExpiresAt <= now || string(previous.Grant) != string(d.Grant) || previous.ExpiresAt != d.ExpiresAt)) || (!found && m.ExpectedDraftSequence != 0) {
 				return preparedArtifactV3Mutation{}, ErrArtifactV3Conflict
 			}
-			if !found && len(current.Drafts) >= 16 { return preparedArtifactV3Mutation{}, ErrArtifactV3Invalid }
+			if !found && len(current.Drafts) >= 16 {
+				return preparedArtifactV3Mutation{}, ErrArtifactV3Invalid
+			}
 			copy.Drafts = make(map[string]ArtifactV3DraftProjection, len(current.Drafts)+1)
-			for key, value := range current.Drafts { copy.Drafts[key] = value }
+			for key, value := range current.Drafts {
+				copy.Drafts[key] = value
+			}
 			d.Sequence = m.ExpectedDraftSequence + 1
 			copy.Drafts[d.GrantID] = d
 			var storedBytes int64
-			for _, value := range copy.Drafts { storedBytes += int64(len(value.State)+len(value.Grant)) }
-			if storedBytes > 384<<20 { return preparedArtifactV3Mutation{}, ErrArtifactV3Invalid }
+			for _, value := range copy.Drafts {
+				storedBytes += int64(len(value.State) + len(value.Grant))
+			}
+			if storedBytes > 384<<20 {
+				return preparedArtifactV3Mutation{}, ErrArtifactV3Invalid
+			}
 			copy.DraftStatus = d.Status
 		}
 		if currentOK {
@@ -597,7 +605,9 @@ func (s *SessionStore) ListArtifactV3CandidateProjections(accountScopeID, userID
 // Only this storage envelope contains private draft bytes. Public projections,
 // including canonical session events and idempotent results, omit them.
 func artifactV3StoredRepository(repository *ArtifactV3RepositoryProjection) any {
-	if repository == nil { return nil }
+	if repository == nil {
+		return nil
+	}
 	return struct {
 		*ArtifactV3RepositoryProjection
 		PrivateDrafts map[string]ArtifactV3DraftProjection `json:"private_drafts,omitempty"`
@@ -608,22 +618,41 @@ func artifactV3StoredRepository(repository *ArtifactV3RepositoryProjection) any 
 // drafts. Ambient Git directories are never the catalog authority.
 func (s *SessionStore) ListArtifactV3Repositories(account, user, session string, limit int) ([]ArtifactV3RepositoryProjection, error) {
 	owner, found, err := s.GetSession(session)
-	if err != nil { return nil, err }
-	if !found || owner.AccountScopeID != account || owner.UserID != user { return nil, ErrArtifactV3Unauthorized }
-	if limit <= 0 || limit > 500 { limit = 500 }
+	if err != nil {
+		return nil, err
+	}
+	if !found || owner.AccountScopeID != account || owner.UserID != user {
+		return nil, ErrArtifactV3Unauthorized
+	}
+	if limit <= 0 || limit > 500 {
+		limit = 500
+	}
 	prefix := fmt.Sprintf("v3/artifact/repository/%s/", keyPart(account))
-	iter, err := s.store.db.NewIter(&pebble.IterOptions{LowerBound: []byte(prefix), UpperBound: []byte(prefix+"\xff")})
-	if err != nil { return nil, err }
+	iter, err := s.store.db.NewIter(&pebble.IterOptions{LowerBound: []byte(prefix), UpperBound: []byte(prefix + "\xff")})
+	if err != nil {
+		return nil, err
+	}
 	defer iter.Close()
 	out := make([]ArtifactV3RepositoryProjection, 0)
 	scanned := 0
 	for iter.First(); iter.Valid(); iter.Next() {
 		scanned++
-		if scanned > 10000 { return nil, ErrArtifactV3Invalid }
+		if scanned > 10000 {
+			return nil, ErrArtifactV3Invalid
+		}
 		var value ArtifactV3RepositoryProjection
-		if err := json.Unmarshal(iter.Value(), &value); err != nil { return nil, err }
-		if value.AccountScopeID != account || string(iter.Key()) != KeyArtifactV3Repository(account, value.ArtifactID) { return nil, ErrArtifactV3Integrity }
-		if value.UserID == user && value.OwnerSessionID == session { out = append(out, value); if len(out) == limit { break } }
+		if err := json.Unmarshal(iter.Value(), &value); err != nil {
+			return nil, err
+		}
+		if value.AccountScopeID != account || string(iter.Key()) != KeyArtifactV3Repository(account, value.ArtifactID) {
+			return nil, ErrArtifactV3Integrity
+		}
+		if value.UserID == user && value.OwnerSessionID == session {
+			out = append(out, value)
+			if len(out) == limit {
+				break
+			}
+		}
 	}
 	return out, iter.Error()
 }
