@@ -1,4 +1,5 @@
 import type { SessionRepository, SessionRepositoriesResponse } from '../git/types'
+import type { DesktopV3CacheAction } from './desktop-v3-cache-types'
 
 export const repositoryKey = (row: SessionRepository) => JSON.stringify([row.id, row.session_id, row.workspace_path])
 export const repositoryGroupKey = (row: SessionRepository) => JSON.stringify([row.workspace_id, row.source_path])
@@ -23,7 +24,6 @@ export interface RepositoryInventoryState {
 export class SessionRepositoryInventory {
   state: RepositoryInventoryState = { items: [], selectedKey: '', loading: false, stale: true, error: '', nextCursor: '', historyCoverage: '' }
   private generation = 0
-  private pageCount = 1
   private invalidation = 0
   private controller?: AbortController
   private listeners = new Set<() => void>()
@@ -41,7 +41,6 @@ export class SessionRepositoryInventory {
   loadMore = () => this.load(true)
   private async load(append: boolean) {
     if (append && (this.state.loading || this.state.stale || !this.state.nextCursor)) return
-    if (append && this.pageCount >= 10) { this.update({ error: 'Loaded the 10-page inventory budget (at most 200 rows); open a child session for narrower history.' }); return }
     this.controller?.abort()
     const controller = new AbortController()
     this.controller = controller
@@ -50,23 +49,13 @@ export class SessionRepositoryInventory {
     const invalidation = this.invalidation
     this.update({ loading: true, error: '', ...(append ? {} : { stale: true }) })
     try {
-      let page = await this.fetchPage(cursor, controller.signal)
-      let incoming = page.items
-      let pages = 1
-      const seen = new Set<string>([cursor])
-      // Rebuild loaded pages from the first fresh cursor; never reuse old cursors.
-      while (!append && pages < this.pageCount && page.next_cursor) {
-        if (generation !== this.generation || controller.signal.aborted) return
-        if (seen.has(page.next_cursor)) throw new Error('Repository pagination did not advance; refresh required')
-        seen.add(page.next_cursor)
-        page = await this.fetchPage(page.next_cursor, controller.signal)
-        incoming = mergeRepositoryRows(incoming, page.items)
-        pages++
-      }
+      const page = await this.fetchPage(cursor, controller.signal)
       if (generation !== this.generation || controller.signal.aborted) return
       if (page.next_cursor && page.next_cursor === cursor) throw new Error('Repository pagination did not advance; refresh required')
-      const items = mergeRepositoryRows(append ? this.state.items : [], incoming)
-      this.pageCount = append ? this.pageCount + 1 : pages
+      // Continue indefinitely by replacing the full window, not accumulating history.
+      // Refresh starts at the first page; the exact selection can remain unloaded.
+      const previous = append && this.state.items.length + page.items.length <= 200 ? this.state.items : []
+      const items = mergeRepositoryRows(previous, page.items).slice(0, 200)
       // A missing selection remains unresolved, never silently replaced by a default.
       const selectedKey = this.state.selectedKey || (items[0] ? repositoryKey(items[0]) : '')
       this.update({ items, selectedKey, nextCursor: page.next_cursor || '', historyCoverage: page.history_coverage, stale: invalidation !== this.invalidation, loading: false })
@@ -85,6 +74,36 @@ export function repositoryMutationSupported(row: SessionRepository | undefined, 
 }
 
 export function repositoryEventInvalidates(type: string) {
-  return type.startsWith('realtime.') || type.startsWith('mutation.') || type === 'reconnect.applySnapshot'
-    || type === 'snapshot.apply' || type === 'hydrate.apply' || type === 'syncStream.applyBatch'
+  return repositoryInvalidationActions.has(type)
+}
+
+// Exact discriminants from DesktopV3CacheAction; live token patches and resume
+// bookkeeping do not change repository ownership or disk status.
+const repositoryInvalidationActions: ReadonlySet<string> = new Set([
+  'snapshot.apply', 'hydrate.apply', 'syncStream.applyBatch', 'reconnect.applySnapshot',
+  'realtime.applyEvent', 'realtime.worksetSessionDiscovered', 'realtime.worksetSessionUpdated',
+  'realtime.worksetSessionRemoved', 'realtime.cursorError', 'realtime.statusChanged',
+  'mutation.sessionCreateResult', 'mutation.sessionSettingsResult', 'mutation.sessionArchiveResult',
+  'liveRun.mergeRepairEvents',
+] satisfies DesktopV3CacheAction['type'][])
+
+// Fixed coalescing window rather than trailing debounce: sustained changes cannot
+// starve reads. An invalidation during a request always gets a subsequent read.
+export function scheduleRepositoryRefresh(target: { state: { loading: boolean }; invalidate(): void; refresh(): Promise<void>; dispose(): void }, visible: () => boolean, delay = 1_000) {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  let disposed = false
+  const schedule = () => {
+    if (disposed || timer || !visible()) return
+    timer = setTimeout(() => {
+      timer = undefined
+      if (!visible()) return
+      if (target.state.loading) { schedule(); return }
+      void target.refresh()
+    }, delay)
+  }
+  return {
+    invalidate() { target.invalidate(); schedule() },
+    visibilityChanged() { if (!visible()) { if (timer) clearTimeout(timer); timer = undefined; target.dispose() } else { target.invalidate(); schedule() } },
+    dispose() { disposed = true; if (timer) clearTimeout(timer); target.dispose() },
+  }
 }

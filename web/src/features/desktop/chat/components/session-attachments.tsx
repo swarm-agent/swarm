@@ -1,6 +1,7 @@
-import { useEffect, useRef } from 'react'
-import { useInfiniteQuery } from '@tanstack/react-query'
-import { fetchAttachmentPage, selectSessionAttachments, type AttachmentRepository } from '../queries/session-attachments'
+import { useEffect, useMemo, useRef, useSyncExternalStore } from 'react'
+import { fetchAttachmentPage, SessionAttachmentInventory, type AttachmentRepository } from '../queries/session-attachments'
+import { subscribeDesktopV3Cache } from '../../state/desktop-v3-cache-store'
+import { repositoryEventInvalidates, scheduleRepositoryRefresh } from '../../state/session-repositories'
 
 export interface SessionAttachmentsViewProps {
   items: AttachmentRepository[]
@@ -34,38 +35,35 @@ export function SessionAttachmentsView({ items, loading, stale, error, more, onR
         </li>)}
       </ul>
       {!defaultWorkspace && !loading ? <p className="mt-2 text-xs">No explicit default in the loaded attachments.</p> : null}
-      <div className="mt-3 flex gap-3"><button type="button" disabled={loading || stale} onClick={onRefresh}>Refresh</button>{more ? <button type="button" disabled={loading || stale} onClick={onMore}>Load more workspaces</button> : null}</div>
+      {more ? <p>Partial inventory — continue scanning for attached workspaces. Each step reads at most 80 repository rows; only 64 attachment identities are retained.</p> : null}
+      <div className="mt-3 flex gap-3"><button type="button" disabled={loading} onClick={onRefresh}>Refresh</button>{more ? <button type="button" disabled={loading || stale} onClick={onMore}>Load more workspaces</button> : null}</div>
     </dialog>
   </>
 }
 
 export function SessionAttachments({ sessionId, revision }: { sessionId: string; revision?: number }) {
-  const query = useInfiniteQuery({
-    queryKey: ['session-header-attachments', sessionId],
-    initialPageParam: '',
-    queryFn: ({ pageParam, signal }) => fetchAttachmentPage(sessionId, pageParam, signal),
-    getNextPageParam: (page, pages) => {
-      const cursor = page.next_cursor
-      if (!cursor || pages.length >= 16 || pages.slice(0, -1).some((previous) => previous.next_cursor === cursor)) return undefined
-      return cursor
-    },
-    retry: false,
-    staleTime: 15_000,
-    refetchInterval: 30_000,
-    refetchOnWindowFocus: 'always',
-    refetchOnReconnect: 'always',
-  })
-  const { refetch } = query
-  useEffect(() => { void refetch() }, [revision, refetch])
-  const pages = query.data?.pages ?? []
-  // Automatically read at most four sequential pages (80 rows, 64 attachments).
-  // Further history traversal always requires a user gesture.
+  const inventory = useMemo(() => new SessionAttachmentInventory((cursor, signal) => fetchAttachmentPage(sessionId, cursor, signal)), [sessionId])
+  const state = useSyncExternalStore(inventory.subscribe, inventory.snapshot, inventory.snapshot)
+  // revision includes token-only changes. Canonical cache actions below carry
+  // relevant invalidations instead of cancel/refetch on every projection revision.
+  void revision
   useEffect(() => {
-    if (pages.length > 0 && pages.length < 4 && query.hasNextPage && !query.isFetching && !query.isError) void query.fetchNextPage()
-  }, [pages.length, query.hasNextPage, query.isFetching, query.isError, query.fetchNextPage])
-  const items = selectSessionAttachments(pages)
-  const repeatedCursor = Boolean(pages[pages.length - 1]?.next_cursor) && !query.hasNextPage
-  return <SessionAttachmentsView items={items} loading={query.isPending || query.isFetchingNextPage}
-    stale={query.isFetching && !query.isPending && !query.isFetchingNextPage} error={query.isError || repeatedCursor}
-    more={Boolean(query.hasNextPage)} onRefresh={() => { void refetch() }} onMore={() => { void query.fetchNextPage() }} />
+    const scheduler = scheduleRepositoryRefresh(inventory, () => document.visibilityState !== 'hidden')
+    const unsubscribe = subscribeDesktopV3Cache(mutation => {
+      if (!mutation || repositoryEventInvalidates(mutation.action.type)) scheduler.invalidate()
+    })
+    const polling = setInterval(scheduler.invalidate, 30_000)
+    window.addEventListener('focus', scheduler.invalidate)
+    window.addEventListener('online', scheduler.invalidate)
+    document.addEventListener('visibilitychange', scheduler.visibilityChanged)
+    if (document.visibilityState !== 'hidden') void inventory.refresh()
+    return () => {
+      unsubscribe(); scheduler.dispose(); clearInterval(polling)
+      window.removeEventListener('focus', scheduler.invalidate)
+      window.removeEventListener('online', scheduler.invalidate)
+      document.removeEventListener('visibilitychange', scheduler.visibilityChanged)
+    }
+  }, [inventory])
+  return <SessionAttachmentsView {...state} more={Boolean(state.nextCursor)}
+    onRefresh={() => { void inventory.refresh() }} onMore={() => { void inventory.loadMore() }} />
 }

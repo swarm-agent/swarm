@@ -43,15 +43,25 @@ test('attachment dialog supports 64 identities, live removal and failed refresh 
       const cursor = url.searchParams.get('cursor') || ''
       cursors.push(cursor)
       const offset = cursor ? Number(cursor.slice('opaque-'.length)) : 0
-      const all = Array.from({ length: removed ? 63 : 64 }, (_, index) => ({ id: `row-${index}`, workspace_id: `workspace-${index}`, workspace_name: 'Same name ' + 'long-name-'.repeat(30), source_path: `/workspaces/source-${index}`, kind: 'source', attached: true, default: index === (removed ? 62 : 63), availability: 'available' }))
+      const attachments = Array.from({ length: removed ? 63 : 64 }, (_, index) => ({ id: `row-${index}`, workspace_id: `workspace-${index}`, workspace_name: 'Same name ' + 'long-name-'.repeat(30), source_path: `/workspaces/source-${index}`, kind: 'source', attached: true, default: index === (removed ? 62 : 63), availability: 'available' }))
+      const all = [...(removed ? [] : Array.from({ length: 400 }, (_, index) => ({ ...attachments[0], id: `worker-${index}`, kind: 'worker', attached: false }))), ...attachments]
       await route.fulfill({ json: { ok: true, items: all.slice(offset, offset + 20), next_cursor: offset + 20 < all.length ? `opaque-${offset + 20}` : '' } })
     })
     await page.goto('http://fixture.invalid/attachment-fixture')
     await page.addStyleTag({ content: css })
     await page.addScriptTag({ content: js, type: 'module' })
-    await page.getByRole('button', { name: 'Session workspaces: 64 workspaces', exact: true }).waitFor()
+    await page.getByRole('button', { name: 'Session workspaces: 0+ workspaces', exact: true }).waitFor()
     assert.deepEqual(cursors, ['', 'opaque-20', 'opaque-40', 'opaque-60'])
-    await page.getByRole('button', { name: 'Session workspaces: 64 workspaces', exact: true }).click()
+    await page.getByRole('button', { name: 'Session workspaces: 0+ workspaces', exact: true }).click()
+    for (let window = 0; window < 5; window++) {
+      const before = cursors.length
+      await page.getByRole('button', { name: 'Load more workspaces', exact: true }).click()
+      await page.waitForFunction(() => !document.querySelector('button[aria-haspopup="dialog"]')?.textContent?.includes('Loading'))
+      assert.equal(cursors.length - before, 4)
+      assert.ok(await page.locator('[data-workspace-id]').count() <= 64)
+    }
+    await page.getByRole('button', { name: 'Session workspaces: 64 workspaces', exact: true }).waitFor()
+    assert.equal(cursors.length, 24)
     for (const width of [375, 1440]) {
       await page.setViewportSize({ width, height: 800 })
       const bounds = await page.getByRole('dialog').evaluate((dialog) => {
@@ -66,7 +76,12 @@ test('attachment dialog supports 64 identities, live removal and failed refresh 
     assert.equal(await page.locator('[data-workspace-id]').count(), 64)
     assert.match(await page.locator('[data-workspace-id="workspace-63"]').innerText(), /Default/)
     removed = true
-    await page.evaluate(() => (window as unknown as { updateAttachments(): void }).updateAttachments())
+    // Token revisions must not refetch; canonical reconnect/focus does.
+    const beforeRevision = cursors.length
+    await page.evaluate(() => { for (let i = 0; i < 100; i++) (window as unknown as { updateAttachments(): void }).updateAttachments() })
+    await page.waitForTimeout(1_100)
+    assert.equal(cursors.length, beforeRevision)
+    await page.evaluate(() => window.dispatchEvent(new Event('online')))
     await page.waitForFunction(() => document.querySelectorAll('[data-workspace-id]').length === 63)
     assert.equal(await page.locator('[data-workspace-id="workspace-63"]').count(), 0)
     assert.match(await page.locator('[data-workspace-id="workspace-62"]').innerText(), /Default/)
@@ -74,6 +89,9 @@ test('attachment dialog supports 64 identities, live removal and failed refresh 
     await page.getByRole('button', { name: 'Refresh', exact: true }).click()
     await page.getByRole('status').filter({ hasText: 'Workspace list stale' }).waitFor()
     assert.equal(await page.locator('[data-workspace-id]').count(), 63)
+    forbidden = false
+    await page.getByRole('button', { name: 'Refresh', exact: true }).click()
+    await page.getByRole('status').filter({ hasText: /^63 workspaces$/ }).waitFor()
     await page.keyboard.press('Escape')
     assert.equal(await page.getByRole('dialog').isVisible(), false)
   } finally { await browser.close() }

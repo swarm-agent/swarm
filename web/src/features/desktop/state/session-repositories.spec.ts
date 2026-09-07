@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import type { SessionRepository, SessionRepositoriesResponse } from '../git/types'
-import { mergeRepositoryRows, repositoryKey, repositoryMutationSupported, repositoryEventInvalidates, SessionRepositoryInventory } from './session-repositories'
+import { mergeRepositoryRows, repositoryKey, repositoryMutationSupported, repositoryEventInvalidates, scheduleRepositoryRefresh, SessionRepositoryInventory } from './session-repositories'
 
 // Requirement: canonical inventory is owner/path scoped and retained history must
 // survive default changes. Threat: dedup or stale async results target another
@@ -32,7 +32,7 @@ test('repository identity preserves owner, attachment and path without default r
   assert.equal(inventory.state.selectedKey, repositoryKey(worker))
 })
 
-test('refresh cancels stale pages, rebuilds opaque cursors and retains loaded history', async () => {
+test('refresh cancels stale pages and restarts without replaying history or retargeting', async () => {
   const calls: string[] = []
   let revision = 'old'
   const inventory = new SessionRepositoryInventory(async cursor => {
@@ -43,9 +43,11 @@ test('refresh cancels stale pages, rebuilds opaque cursors and retains loaded hi
   inventory.select(repositoryKey(inventory.state.items[1]))
   revision = 'new'
   inventory.invalidate(); await inventory.refresh()
-  assert.deepEqual(calls, ['', 'old', '', 'new'])
+  assert.deepEqual(calls, ['', 'old', ''])
+  assert.equal(inventory.state.items.length, 1)
+  assert.equal(inventory.state.selectedKey, repositoryKey(repositoryFixture({ id: 'history' })))
+  await inventory.loadMore()
   assert.equal(inventory.state.items[1].lifecycle, 'new')
-  assert.equal(inventory.state.selectedKey, repositoryKey(inventory.state.items[1]))
 
   const pending: Array<(value: SessionRepositoriesResponse) => void> = []
   const signals: AbortSignal[] = []
@@ -71,7 +73,10 @@ test('failure and concurrent live invalidation preserve rows but disable operati
   }
   assert.equal(repositoryMutationSupported(repositoryFixture(), owner, true), false)
   for (const type of ['reconnect.applySnapshot', 'realtime.statusChanged', 'realtime.worksetSessionRemoved', 'mutation.sessionSettingsResult', 'syncStream.applyBatch']) assert.equal(repositoryEventInvalidates(type), true)
-  assert.equal(repositoryEventInvalidates('session.select'), false)
+  for (const type of ['session.select', 'realtime.applyLivePatchBatch', 'realtime.storeResume', 'mutation.invented']) assert.equal(repositoryEventInvalidates(type), false)
+  fail = false; await inventory.refresh()
+  assert.equal(inventory.state.stale, false)
+  assert.equal(inventory.state.error, '')
 })
 
 // Requirement: live changes during an in-flight read cannot certify fresh state;
@@ -91,4 +96,54 @@ test('in-flight invalidation and cursor loops fail closed', async () => {
   assert.equal(looping.state.stale, true)
   assert.match(looping.state.error, /did not advance/)
   assert.equal(looping.state.items.length, 1)
+})
+
+// Requirement: every retained worker is reachable without unbounded memory or
+// automatic fanout. Inventory state is the narrow owner/selection boundary.
+test('continued windows reach 460 workers and keep exact unloaded selection', async () => {
+  let calls = 0
+  const inventory = new SessionRepositoryInventory(async cursor => {
+    calls++
+    const offset = Number(cursor || 0)
+    return page(Array.from({ length: 20 }, (_, i) => repositoryFixture({ id: `worker-${offset + i}`, session_id: `owner-${offset + i}`, workspace_path: `/tree/${offset + i}` })), offset < 440 ? String(offset + 20) : '')
+  })
+  await inventory.refresh()
+  const selected = inventory.state.selectedKey
+  for (let i = 1; i < 23; i++) {
+    await inventory.loadMore()
+    assert.equal(calls, i + 1)
+    assert.ok(inventory.state.items.length <= 200)
+    assert.equal(inventory.state.selectedKey, selected)
+  }
+  assert.equal(inventory.state.items[59].id, 'worker-459')
+  assert.equal(inventory.state.items.some(row => repositoryKey(row) === selected), false)
+  assert.equal(inventory.state.nextCursor, '')
+  await inventory.refresh()
+  assert.equal(calls, 24)
+  assert.equal(inventory.state.items.length, 20)
+  assert.equal(inventory.state.selectedKey, selected)
+})
+
+// Requirement: sustained invalidations cannot cancel/starve reads; hidden views
+// pause and an in-flight invalidation schedules a later refresh. Fake clock
+// exercises the shared scheduler used by both production consumers.
+test('refresh scheduler coalesces events, follows in-flight invalidation and pauses hidden views', t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  let reads = 0; let cancels = 0; let visible = true
+  const target = { state: { loading: false }, invalidate() {}, async refresh() { reads++; target.state.loading = true }, dispose() { cancels++; target.state.loading = false } }
+  const scheduler = scheduleRepositoryRefresh(target, () => visible)
+  for (let i = 0; i < 100; i++) scheduler.invalidate()
+  t.mock.timers.tick(1_000)
+  assert.equal(reads, 1)
+  scheduler.invalidate(); t.mock.timers.tick(1_000)
+  assert.equal(reads, 1)
+  target.state.loading = false
+  t.mock.timers.tick(1_000)
+  assert.equal(reads, 2)
+  visible = false; scheduler.visibilityChanged(); scheduler.invalidate()
+  t.mock.timers.tick(10_000)
+  assert.equal(reads, 2); assert.equal(cancels, 1)
+  visible = true; scheduler.visibilityChanged(); t.mock.timers.tick(1_000)
+  assert.equal(reads, 3)
+  scheduler.dispose()
 })
