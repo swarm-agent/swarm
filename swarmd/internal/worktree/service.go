@@ -650,6 +650,40 @@ func (s *Service) ValidateTaskRepositoryLane(source, lane, ownerSeed, branch str
 	if err != nil {
 		return err
 	}
+	return s.validateRepositoryLanePath(root, lane, expected, branch)
+}
+
+// ValidateSessionRepositoryLane validates both canonical session allocators.
+// Named primary sessions use their requested branch slug; task-created sessions
+// use the owner-derived ID. Program lanes must continue using their exact seed.
+// Callers must authenticate the session and its recorded path/branch beforehand.
+func (s *Service) ValidateSessionRepositoryLane(source, lane, owner, branch string) error {
+	if strings.TrimSpace(owner) == "" {
+		return errors.New("session lane owner is required")
+	}
+	root, err := resolveRepositoryRoot(source)
+	if err != nil {
+		return err
+	}
+	ownerPath, err := deterministicSessionWorktreePath(root, sessionWorkspaceID(owner))
+	if err != nil {
+		return err
+	}
+	if filepath.Clean(lane) == filepath.Clean(ownerPath) {
+		return s.validateRepositoryLanePath(root, lane, ownerPath, branch)
+	}
+	namedID, err := WorkspaceIdentityForRequestedBranch(branch)
+	if err != nil {
+		return err
+	}
+	namedPath, err := deterministicSessionWorktreePath(root, namedID)
+	if err != nil {
+		return err
+	}
+	return s.validateRepositoryLanePath(root, lane, namedPath, branch)
+}
+
+func (s *Service) validateRepositoryLanePath(root, lane, expected, branch string) error {
 	actual, err := filepath.EvalSymlinks(lane)
 	if err != nil {
 		return err

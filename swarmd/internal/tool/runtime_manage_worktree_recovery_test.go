@@ -70,6 +70,9 @@ func newRecoveryFixture(t *testing.T, primaryLane ...bool) recoveryFixture {
 		t.Fatal(err)
 	}
 	primary, err := wt.AllocateTaskWorkspace(primarySource, primaryBase, "recovery-parent", nil)
+	if len(primaryLane) > 1 && primaryLane[1] {
+		primary, err = wt.AllocateDetachedWorkspaceRequestedForPrincipal(identity.Principal{Type: identity.PrincipalTypeUser, UserID: "user", AccountScopeID: "account"}, primarySource, "recovery-parent", "", "agent/named-recovery")
+	}
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -473,5 +476,23 @@ func TestManageWorktreeRecoverySavedSourceAuthority(t *testing.T) {
 				t.Fatal("recovery changed dirty sibling bytes")
 			}
 		})
+	}
+}
+
+// Purpose: canonical manual integration must accept the named-primary allocator
+// while preserving exact source, child and principal authority; unrelated dirty
+// child work and the captured source must remain unchanged.
+func TestManageWorktreeNamedPrimaryRecovery(t *testing.T) {
+	f := newRecoveryFixture(t, true, true)
+	before := recoveryGit(t, f.source, "rev-parse", "HEAD")
+	dirtyBefore := recoveryGit(t, f.dirtyPath, "status", "--porcelain")
+	if _, err := f.runtime.manageWorktreeIntegrate(f.scope, map[string]any{"session_ids": []string{"recovery-good"}}); err != nil {
+		t.Fatal(err)
+	}
+	if recoveryGit(t, f.source, "rev-parse", "HEAD") != before || recoveryGit(t, f.dirtyPath, "status", "--porcelain") != dirtyBefore {
+		t.Fatal("named recovery changed unrelated source or dirty child")
+	}
+	if data, err := os.ReadFile(filepath.Join(f.lane, "change.txt")); err != nil || string(data) != "recovery-good" {
+		t.Fatal("named lane missing committed change")
 	}
 }
