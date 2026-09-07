@@ -187,12 +187,16 @@ export function DesktopV3NewSessionPane({
     if (routedState.phase !== 'resolved') return
     if (activatingOperationRef.current === routedState.operation.operationId) return
     activatingOperationRef.current = routedState.operation.operationId
-    firstMessageIdentityRef.current = { messageId: routedState.result.first_message.id, renderKey: routedState.operation.operationId }
     setLocalError(null)
     let cancelled = false
     const operationId = routedState.operation.operationId
     void Promise.resolve()
-      .then(() => resolvedCallbackRef.current(routedState.result))
+      .then(() => {
+        const messageId = routedState.result.first_message.id
+        if (!messageId?.trim()) throw new Error('Routed session activation requires a first-message ID.')
+        firstMessageIdentityRef.current = { messageId, renderKey: operationId }
+        return resolvedCallbackRef.current(routedState.result)
+      })
       .then(() => {
         controller.acknowledgeResolved(operationId)
         operationAttachmentsRef.current = null
