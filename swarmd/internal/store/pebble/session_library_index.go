@@ -211,6 +211,9 @@ func v3LibraryBaseMetric(session SessionSnapshot, logicalBytes int64, archived b
 // Per-session mutation locking prevents lost byte increments; disjoint sessions
 // write disjoint keys and may enter Pebble's commit pipeline concurrently.
 func (s *SessionStore) updateV3SessionLibraryMetricInBatch(batch *pebble.Batch, session SessionSnapshot, appended *MessageSnapshot, archived, deleted bool) error {
+	if err := s.retainRepositoryHistoryInBatch(batch, session, archived, deleted); err != nil {
+		return err
+	}
 	key := keyV3SessionLibraryMetricFor(session.ID)
 	if deleted {
 		return batch.Delete([]byte(key), nil)

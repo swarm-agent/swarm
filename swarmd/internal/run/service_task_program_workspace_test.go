@@ -1,17 +1,21 @@
 package run
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	worktree "swarm/packages/swarmd/internal/worktree"
 	"testing"
+	"time"
 )
 
 func programFixtureGit(t *testing.T, path string, args ...string) string {
 	t.Helper()
-	cmd := exec.Command("git", append([]string{"-C", path}, args...)...)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", path}, args...)...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("git %v: %v %s", args, err, out)
@@ -106,5 +110,28 @@ func TestTaskProgramRepositoryLanePreflightReuseAndIsolation(t *testing.T) {
 	}
 	if _, err := p.repositoryLane(target); err == nil || !strings.Contains(err.Error(), "dirty") {
 		t.Fatalf("dirty lane: %v", err)
+	}
+	// Recovery must reject before binding a new program to dirty retained work.
+	third := initial
+	third.ProgramID = "lane-three"
+	third.Definition.ID = "lane-three"
+	third, _, err = svc.sessions.CreateTaskProgram(third)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.record = third
+	before = programFixtureGit(t, target, "worktree", "list", "--porcelain")
+	if _, err := p.repositoryLane(target); err == nil || !strings.Contains(err.Error(), "dirty") {
+		t.Fatalf("dirty recovery: %v", err)
+	}
+	saved, ok, err := svc.sessions.GetTaskProgram(parentID, third.ProgramID)
+	if err != nil || !ok || saved.RepositoryLane != nil || saved.Revision != third.Revision {
+		t.Fatalf("rejected recovery persisted binding: %+v %v", saved, err)
+	}
+	if p.record.RepositoryLane != nil || programFixtureGit(t, target, "worktree", "list", "--porcelain") != before || programFixtureGit(t, target, "rev-parse", "HEAD") != sourceHead {
+		t.Fatal("rejected recovery mutated inventory, source or scheduler binding")
+	}
+	if content, err := os.ReadFile(filepath.Join(lane, "source.txt")); err != nil || string(content) != "dirty\n" {
+		t.Fatalf("dirty work changed: %q %v", content, err)
 	}
 }

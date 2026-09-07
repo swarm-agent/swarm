@@ -23,6 +23,7 @@ import (
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/taskscope"
 	"swarm/packages/swarmd/internal/tool"
+	worktreeruntime "swarm/packages/swarmd/internal/worktree"
 )
 
 const (
@@ -3400,7 +3401,14 @@ func (s *Service) resolveTaskTargetWorkspace(parentSession pebblestore.SessionSn
 		sourceLaunch := launch
 		sourceLaunch.ProgramRepositoryLane = nil
 		sourceLaunch.TargetWorkspacePath = lane.SourcePath
-		if _, _, err := s.resolveTaskTargetWorkspace(parentSession, principal, sourceLaunch); err != nil {
+		_, _, err := s.resolveTaskTargetWorkspace(parentSession, principal, sourceLaunch)
+		if err != nil {
+			return "", "", err
+		}
+		if strings.TrimSpace(lane.SourcePath) == "" || strings.TrimSpace(lane.BaseCommit) == "" {
+			return "", "", errors.New("task program repository lane identity is incomplete")
+		}
+		if err := worktreeruntime.ValidateOwnedIdentity(lane.SourcePath, lane.WorkspacePath, lane.Branch, lane.BaseCommit); err != nil {
 			return "", "", err
 		}
 		if s.worktrees == nil {
@@ -3416,10 +3424,7 @@ func (s *Service) resolveTaskTargetWorkspace(parentSession pebblestore.SessionSn
 		return lane.WorkspacePath, filepath.Base(lane.SourcePath), nil
 	}
 	requested := strings.TrimSpace(launch.TargetWorkspacePath)
-	if requested == "" {
-		return strings.TrimSpace(firstNonEmptyString(parentSession.WorktreeRootPath, parentSession.WorkspacePath)), strings.TrimSpace(parentSession.WorkspaceName), nil
-	}
-	if !agentruntime.IsCoderAgentName(launch.RequestedSubagentType) && !agentruntime.IsFinderAgentName(launch.RequestedSubagentType) {
+	if requested != "" && !agentruntime.IsCoderAgentName(launch.RequestedSubagentType) && !agentruntime.IsFinderAgentName(launch.RequestedSubagentType) {
 		return "", "", errors.New("task workspace_path is supported only for Coder or Finder launches")
 	}
 	principal, err := principalForRunWorkspaceScope(parentSession, principal)
@@ -3430,25 +3435,46 @@ func (s *Service) resolveTaskTargetWorkspace(parentSession pebblestore.SessionSn
 	if err != nil {
 		return "", "", fmt.Errorf("resolve parent shared workspace roots: %w", err)
 	}
-	allowedRoots := append([]string(nil), scope.Roots...)
-	if s != nil && s.workspace != nil {
-		sourcePath := strings.TrimSpace(firstNonEmptyString(mapString(parentSession.Metadata, "swarm_v3_source_workspace_path"), parentSession.WorkspacePath))
-		if saved, savedErr := s.workspace.ScopeForPathForPrincipal(principal, sourcePath); savedErr == nil && saved.Matched {
-			allowedRoots = append(allowedRoots, saved.Directories...)
-		}
+	if requested == "" {
+		return scope.PrimaryPath, strings.TrimSpace(parentSession.WorkspaceName), nil
 	}
+	allowedRoots := scope.Roots
 	if !filepath.IsAbs(requested) {
-		base := strings.TrimSpace(firstNonEmptyString(mapString(parentSession.Metadata, "swarm_v3_source_workspace_path"), parentSession.WorkspacePath))
-		requested = filepath.Join(base, requested)
+		requested = filepath.Join(scope.PrimaryPath, requested)
 	}
 	target, err := normalizeRunScopePath(requested)
 	if err != nil {
 		return "", "", fmt.Errorf("resolve task workspace_path: %w", err)
 	}
+	// The captured source is an alias for the validated owned runtime lane,
+	// never a destination that may advance the captured checkout.
+	if parentSession.WorktreeEnabled {
+		source, sourceErr := normalizeRunScopePath(mapString(parentSession.Metadata, "swarm_v3_source_workspace_path"))
+		if sourceErr == nil && target == source {
+			return scope.PrimaryPath, strings.TrimSpace(parentSession.WorkspaceName), nil
+		}
+		for _, item := range sessionWorktreeHistory(parentSession.Metadata["swarm_v3_worktree_history"]) {
+			if filepath.Clean(mapString(item, "source_workspace_path")) != target {
+				continue
+			}
+			canonical, err := s.canonicalSessionWorkspace(principal, mapString(item, "workspace_id"), 0)
+			if err != nil {
+				return "", "", err
+			}
+			if canonical.SourceWorkspacePath != target {
+				return "", "", errors.New("retained task source identity changed")
+			}
+			allocation, err := s.resolveOwnedSessionWorktree(parentSession, canonical, mapString(item, "path"))
+			if err != nil {
+				return "", "", err
+			}
+			return allocation.WorkspacePath, canonical.WorkspaceName, nil
+		}
+	}
 	authorized := false
 	for _, root := range allowedRoots {
 		canonicalRoot, rootErr := normalizeRunScopePath(root)
-		if rootErr == nil && taskPathWithinRoot(canonicalRoot, target) {
+		if rootErr == nil && canonicalRoot == target {
 			authorized = true
 			break
 		}
@@ -3461,9 +3487,6 @@ func (s *Service) resolveTaskTargetWorkspace(parentSession pebblestore.SessionSn
 		resolved, scopeErr := s.workspace.ScopeForPathForPrincipal(principal, target)
 		if scopeErr != nil {
 			return "", "", fmt.Errorf("resolve task workspace identity: %w", scopeErr)
-		}
-		if strings.TrimSpace(resolved.ResolvedPath) != "" {
-			target = strings.TrimSpace(resolved.ResolvedPath)
 		}
 		if strings.TrimSpace(resolved.WorkspaceName) != "" {
 			name = strings.TrimSpace(resolved.WorkspaceName)
@@ -3943,11 +3966,11 @@ func (s *Service) buildTaskLaunchPermissionPayload(sessionID, sessionMode string
 		Program:            parsed.Program,
 	}
 	if parsed.Program != nil {
-		for _, job := range parsed.Program.Jobs {
-			if len(job.DependsOn) == 0 && len(parsed.Program.Stages) > 0 && job.StageID == parsed.Program.Stages[0].ID {
-				manifest.ProgramReadyCount++
-			}
-		}
+		// Reserve for the largest declared stage, not just the first ready wave.
+		// The scheduler retains this admitted ceiling across later barriers; a
+		// single Finder stage must not serialize two independent downstream Coders.
+		manifest.ProgramReadyCount = taskProgramReservationWidth(parsed.Program)
+
 	}
 	if parsed.Swarm != nil {
 		manifest.SwarmAgentType = parsed.Swarm.AgentType

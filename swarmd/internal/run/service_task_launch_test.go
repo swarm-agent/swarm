@@ -1415,6 +1415,26 @@ func TestApprovedCoderAllocatesFromSelectedSharedWorkspace(t *testing.T) {
 	if metadataStringForTest(launch.ChildSession.Metadata, "swarm_v3_source_workspace_path") != targetPath || metadataStringForTest(launch.ChildSession.Metadata, "swarm_v3_runtime_workspace_path") != clonePath || metadataStringForTest(launch.ChildSession.Metadata, "base_commit") != taskBase.BaseCommit {
 		t.Fatalf("shared workspace metadata = %#v", launch.ChildSession.Metadata)
 	}
+	// Requirement: retained-lane allocation records the captured saved source,
+	// not the lane as source. This preparation boundary owns child metadata.
+	captured := t.TempDir()
+	parent.Metadata = cloneGenericMap(parent.Metadata)
+	if parent.Metadata == nil {
+		parent.Metadata = map[string]any{}
+	}
+	parent.WorktreeEnabled = true
+	parent.Metadata["swarm_v3_worktree_history"] = []any{map[string]any{"path": targetPath, "owner_session_id": parent.ID, "source_workspace_path": captured}}
+	stub.allocation.WorkspacePath = t.TempDir()
+	stub.allocation.BranchName = "agent/retained"
+	retained, err := svc.prepareDelegatedSubagentLaunchWithProfile(parent, sessionruntime.ModeAuto, taskLaunchPrepared{
+		LaunchIndex: 2, RequestedSubagent: "coder", MetaPrompt: "implement", VirtualTarget: virtual, TaskBase: &taskBase, TargetWorkspacePath: targetPath, LogicalTaskID: "retained-workspace-task",
+	}, "implement", "", &profile, source, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if metadataStringForTest(retained.ChildSession.Metadata, "swarm_v3_source_workspace_path") != captured || metadataStringForTest(retained.ChildSession.Metadata, "target_workspace_path") != targetPath {
+		t.Fatal("retained source and destination conflated")
+	}
 }
 
 func TestCoderPromptMakesAllocatedWorktreeAuthoritativeAndBaseCheckoutReadOnly(t *testing.T) {

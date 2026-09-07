@@ -906,6 +906,20 @@ func (s *Service) StartRenderJob(ctx context.Context, principal identity.Princip
 						}
 					}
 				}
+				if part.ArtifactV3Source != nil || part.ArtifactV3Visual != nil || (part.AnimationCandidates != nil && (part.AnimationCandidates.V3SelectedSource != nil || part.AnimationCandidates.V3Derivative != nil)) {
+					nativePlan := pebblestore.VideoPlanProposal{Kind: pebblestore.VideoPlanKindInitial, Parts: []pebblestore.VideoPlanPart{part}}
+					if err := pebblestore.ValidateVideoPlanForIntent(pebblestore.VideoEditProposalIntentArtifactV3Convert, nativePlan); err != nil {
+						return pebblestore.VideoRenderJobSnapshot{}, fmt.Errorf("native V3 render plan: %w", err)
+					}
+					if err := s.validateArtifactV3Plan(principal, &nativePlan); err != nil {
+						return pebblestore.VideoRenderJobSnapshot{}, err
+					}
+					for _, clip := range revision.Timeline.Clips {
+						if clip.ID == part.ID && (clip.ArtifactV3Ref == nil || part.AnimationCandidates == nil || part.AnimationCandidates.V3Derivative == nil || *clip.ArtifactV3Ref != *part.AnimationCandidates.V3Derivative) {
+							return pebblestore.VideoRenderJobSnapshot{}, fmt.Errorf("native V3 animation part %q does not match its exact timeline derivative", part.ID)
+						}
+					}
+				}
 				candidates := part.AnimationCandidates
 				if candidates == nil {
 					continue
@@ -933,12 +947,17 @@ func (s *Service) StartRenderJob(ctx context.Context, principal identity.Princip
 			}
 		}
 		for _, clip := range revision.Timeline.Clips {
-			if clip.SourceKind == pebblestore.VideoClipSourceKindText || (clip.SourceKind == pebblestore.VideoClipSourceKindManagedArtifact && clip.ArtifactRef == nil) {
+			if clip.SourceKind == pebblestore.VideoClipSourceKindText {
 				return pebblestore.VideoRenderJobSnapshot{}, errors.New("accepted video plan still contains unresolved sections; replace them with renderable sources before rendering")
 			}
 		}
 	}
 
+	// Revalidate exact source authority at render time, including accepted revisions
+	// created before the current validator. Do not create jobs for stale media.
+	if err := s.validateTimelineRenderSources(principal, input.SessionID, revision.Timeline); err != nil {
+		return pebblestore.VideoRenderJobSnapshot{}, err
+	}
 	return s.sessions.CreateVideoRenderJob(pebblestore.CreateVideoRenderJobInput{
 		AccountScopeID: principal.AccountScopeID,
 		UserID:         principal.UserID,
@@ -1491,6 +1510,41 @@ func (s *Service) validateTimelineSources(principal identity.Principal, sessionI
 		}
 	}
 	return s.validateTimelineArtifacts(principal, sessionID, timeline)
+}
+
+// validateTimelineRenderSources shares exact ownership/lineage validation with
+// timeline edits, then enforces the media and timing supported by the executor.
+// Live HTML source authority alone is not an exported render input.
+func (s *Service) validateTimelineRenderSources(principal identity.Principal, sessionID string, timeline pebblestore.VideoProjectTimeline) error {
+	if err := s.validateTimelineArtifacts(principal, sessionID, timeline); err != nil {
+		return err
+	}
+	for _, clip := range timeline.Clips {
+		if clip.SourceKind != pebblestore.VideoClipSourceKindManagedArtifact {
+			continue
+		}
+		if boolCount(clip.ArtifactRef != nil, clip.ArtifactV2Ref != nil, clip.ArtifactV3Ref != nil) != 1 {
+			return fmt.Errorf("managed_artifact clip %q requires exactly one render source authority", clip.ID)
+		}
+		if ref := clip.ArtifactV3Ref; ref != nil {
+			if ref.MediaType != "video/mp4" || strings.TrimSpace(ref.DerivativeID) == "" {
+				return fmt.Errorf("managed_artifact clip %q Artifact V3 source must be an exact MP4 derivative", clip.ID)
+			}
+			if clip.SourceStartMs != 0 || clip.SourceEndMs != ref.DurationMs || clip.DurationMs != ref.DurationMs {
+				return fmt.Errorf("managed_artifact clip %q Artifact V3 source timing does not match its exact derivative", clip.ID)
+			}
+		}
+		if ref := clip.ArtifactV2Ref; ref != nil {
+			mediaType := strings.ToLower(strings.TrimSpace(ref.MediaType))
+			if !strings.HasPrefix(mediaType, "image/") && mediaType != "video/mp4" {
+				return fmt.Errorf("managed_artifact clip %q Artifact V2 source must be an image or exported MP4", clip.ID)
+			}
+			if mediaType == "video/mp4" && (clip.SourceStartMs < 0 || clip.SourceEndMs <= clip.SourceStartMs || clip.DurationMs != clip.SourceEndMs-clip.SourceStartMs || clip.SourceEndMs > ref.DurationMs) {
+				return fmt.Errorf("managed_artifact clip %q Artifact V2 MP4 source range is invalid", clip.ID)
+			}
+		}
+	}
+	return nil
 }
 
 func (s *Service) validateTimelineArtifacts(principal identity.Principal, sessionID string, timeline pebblestore.VideoProjectTimeline) error {

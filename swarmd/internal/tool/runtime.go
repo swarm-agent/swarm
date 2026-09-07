@@ -3174,6 +3174,9 @@ type searchTarget struct {
 
 func resolveSearchTargets(scope WorkspaceScope, args map[string]any) ([]searchTarget, error) {
 	requested := asStringSlice(args["paths"])
+	if len(requested) > 0 && strings.TrimSpace(asString(args["path"])) != "" {
+		return nil, errors.New("specify either path or paths, not both")
+	}
 	if len(requested) == 0 {
 		pathArg := strings.TrimSpace(asString(args["path"]))
 		if pathArg == "" {
@@ -9686,9 +9689,6 @@ func normalizeWorkspaceScope(primary string, roots []string) WorkspaceScope {
 	add(primary)
 	for _, root := range roots {
 		add(root)
-	}
-	if primary == "" && len(out) > 0 {
-		primary = out[0]
 	}
 	if primary != "" && len(out) == 0 {
 		out = []string{primary}

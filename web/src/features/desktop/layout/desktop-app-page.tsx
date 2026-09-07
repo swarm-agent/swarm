@@ -1,7 +1,7 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties, JSX, ReactNode } from 'react'
 import { createPortal } from 'react-dom'
-import { observePageActivity, startPagePolling, withPageRequest } from '../../../app/page-lifecycle'
+import { observePageActivity, withPageRequest } from '../../../app/page-lifecycle'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useMatchRoute, useNavigate, useSearch, Link } from '@tanstack/react-router'
 import { Archive, Bell, Bot, Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Download, Film, Folder, GitBranch, GitCommitHorizontal, GitMerge, Keyboard, ListChecks, ListTodo, LoaderCircle, Menu, MessageSquare, Mic, MoreVertical, NotepadText, Pencil, Pin, Plus, RefreshCcw, Save, Search, Settings, X, XCircle } from 'lucide-react'
@@ -51,7 +51,10 @@ import { preferenceFromModelProfile } from '../chat/services/model-profiles'
 import { parseDesktopNewSessionCommand, parseDesktopTaskCommand, type DesktopNewSessionCommandRequest, type DesktopSlashCommand } from '../chat/services/slash-commands'
 import { resolveDesktopTaskWorkspace } from '../chat/services/task-workspace-selection'
 import { executeDesktopTipsCommand } from '../chat/services/home-tips'
-import { commitWorkspaceChanges, fetchGitStatus, gitStatusQueryKey, startGitRealtime, suggestWorkspaceCommitMessage } from '../git/api'
+import { commitWorkspaceChanges, fetchGitStatus, gitStatusQueryKey, suggestWorkspaceCommitMessage } from '../git/api'
+import { SessionRepositoryPicker } from '../git/session-repository-picker'
+import { useSessionRepositories } from '../runtime/use-session-repositories'
+import { repositoryKey, repositoryMutationSupported } from '../state/session-repositories'
 import type { GitFileStatus, GitSnapshot } from '../git/types'
 import { AICommitButton } from '../git/ai-commit-control'
 import { DesktopWorkspaceActionPanel } from '../chat/components/desktop-workspace-action-panel'
@@ -2608,7 +2611,6 @@ export function DesktopAppPage() {
   const [newSessionEpoch, setNewSessionEpoch] = useState(0)
   const [newSessionIntent, setNewSessionIntent] = useState<(DesktopNewSessionCommandRequest & { workspacePath: string }) | null>(null)
   const [workspaceDropdownOpen, setWorkspaceDropdownOpen] = useState(false)
-  const [gitRealtimeErrors, setGitRealtimeErrors] = useState<Record<string, string>>({})
   const [todoItems, setTodoItems] = useState<Record<string, WorkspaceTodoItem[]>>({})
   const [todoSummaries, setTodoSummaries] = useState<Record<string, WorkspaceTodoSummary>>({})
   const [editingSidebarSwarmName, setEditingSidebarSwarmName] = useState(false)
@@ -3142,23 +3144,35 @@ export function DesktopAppPage() {
     [desktopStateSessions],
   )
   const activeGitSession = routeSessionId ? sessionById.get(routeSessionId) ?? null : null
-  const selectedGitSessionId = activeGitSession?.id ?? ''
-  const selectedGitWorkspacePath = activeGitSession?.worktreeEnabled
+  const repositoryInventory = useSessionRepositories(routeSessionId || '')
+  const selectedRepository = repositoryInventory.items.find(row => repositoryKey(row) === repositoryInventory.selectedKey)
+  const currentGitWorkspacePath = activeGitSession?.worktreeEnabled
     ? activeGitSession.worktreeRootPath?.trim() || ''
     : activeGitSession
       ? desktopRouteWorkspacePathForSession(activeGitSession, workspacePathByBindingId, knownWorkspacePaths, workspacePathById)
       : ''
+  const selectedGitSessionId = selectedRepository?.session_id || ''
+  const selectedGitWorkspacePath = selectedRepository?.workspace_path || ''
+  const selectedRepositoryMutable = repositoryMutationSupported(selectedRepository, {
+    id: activeGitSession?.id || '', path: currentGitWorkspacePath, worktree: Boolean(activeGitSession?.worktreeEnabled), branch: activeGitSession?.worktreeEnabled ? activeGitSession.worktreeBranch : undefined,
+  }, repositoryInventory.stale || repositoryInventory.loading)
+  const [gitDockExpanded, setGitDockExpanded] = useState(false)
+  useEffect(() => setGitDockExpanded(false), [routeSessionId])
   const [gitPageActive, setGitPageActive] = useState(() => document.visibilityState !== 'hidden')
   useEffect(() => observePageActivity(setGitPageActive), [])
   const gitStatusQuery = useQuery({
     queryKey: gitStatusQueryKey(selectedGitWorkspacePath, selectedGitSessionId),
     queryFn: ({ signal }) => withPageRequest((pageSignal) => fetchGitStatus(selectedGitWorkspacePath, 12, selectedGitSessionId, pageSignal), signal),
-    enabled: gitPageActive && selectedGitSessionId !== '' && selectedGitWorkspacePath !== '',
+    enabled: gitPageActive && selectedRepositoryMutable,
     staleTime: 0,
     refetchOnWindowFocus: true,
   })
-  const gitSnapshot = gitStatusQuery.data?.status ?? null
-  const activeSessionWorktree = Boolean(activeGitSession?.worktreeEnabled && selectedGitWorkspacePath)
+  const gitSnapshot = selectedRepository?.availability === 'available'
+    ? (selectedRepositoryMutable && gitStatusQuery.data?.status.workspace_path === selectedGitWorkspacePath ? gitStatusQuery.data.status : selectedRepository.status ?? null)
+    : null
+  const activeSessionWorktree = Boolean(selectedRepositoryMutable && activeGitSession?.worktreeEnabled)
+  const selectedRepositoryActionsEnabled = selectedRepositoryMutable && !gitStatusQuery.isError && !gitStatusQuery.isFetching
+    && gitStatusQuery.data?.status.workspace_path === selectedGitWorkspacePath
   const activeSessionCommits = activeSessionWorktree ? gitSnapshot?.session_commits ?? [] : []
   const activeSessionTargetBranch = activeGitSession?.worktreeBaseBranch?.trim() || 'target branch'
   const activeSessionTargetWorkspacePath = activeGitSession ? desktopSidebarWorkspacePathForSession(activeGitSession, workspacePathByBindingId, workspacePathById) : ''
@@ -3175,33 +3189,14 @@ export function DesktopAppPage() {
   const activeSessionReviewCandidate = activeSessionWorktree
     ? [...(gitReviewQuery.data?.retained ?? []), ...(gitReviewQuery.data?.done ?? [])].find((item) => item.session_id === selectedGitSessionId) ?? null
     : null
-  const activeSessionIntegrateEligible = Boolean(activeSessionReviewCandidate?.integrate_eligible)
+  const activeSessionIntegrateEligible = Boolean(selectedRepositoryActionsEnabled && !gitReviewQuery.isError && !gitReviewQuery.isFetching && activeSessionReviewCandidate?.integrate_eligible)
 
   useEffect(() => {
-    if (!selectedGitWorkspacePath) return
-    let token = ''
-    return startPagePolling(async (signal) => {
-      const startedAt = Date.now()
-      const requestedToken = token
-      try {
-        const response = await startGitRealtime(selectedGitWorkspacePath, selectedGitSessionId, requestedToken, signal)
-        if (signal.aborted) return 5_000
-        if (response.watch_token !== requestedToken) {
-          token = response.watch_token
-          queryClient.setQueryData(gitStatusQueryKey(selectedGitWorkspacePath, selectedGitSessionId), { ok: true, status: response.status })
-        }
-        setGitRealtimeErrors((current) => {
-          if (!current[selectedGitWorkspacePath]) return current
-          const next = { ...current }; delete next[selectedGitWorkspacePath]; return next
-        })
-        // Preserve the defensive floor for immediately unchanged responses.
-        return response.watch_token === requestedToken ? Math.max(250, 1_000 - (Date.now() - startedAt)) : 250
-      } catch (error) {
-        if (!signal.aborted) setGitRealtimeErrors((current) => ({ ...current, [selectedGitWorkspacePath]: error instanceof Error ? error.message : String(error) }))
-        return 5_000
-      }
-    })
-  }, [queryClient, selectedGitSessionId, selectedGitWorkspacePath])
+    if (!selectedRepositoryMutable || !selectedRepository?.status) return
+    // Inventory completion follows scoped durable events or an explicit refresh.
+    // Reuse that exact status instead of maintaining a second Git polling loop.
+    queryClient.setQueryData(gitStatusQueryKey(selectedGitWorkspacePath, selectedGitSessionId), { ok: true, status: selectedRepository.status })
+  }, [queryClient, selectedGitSessionId, selectedGitWorkspacePath, selectedRepositoryMutable, selectedRepository])
   const workspaceSlugByPath = useMemo(() => buildWorkspaceRouteSlugMap(
     mergedSidebarWorkspaceEntries.map((workspace) => ({
       path: workspace.path,
@@ -4754,8 +4749,7 @@ export function DesktopAppPage() {
     }
   }
 
-  const gitSidebarError = gitRealtimeErrors[selectedGitWorkspacePath]
-    || (gitStatusQuery.error instanceof Error ? gitStatusQuery.error.message : '')
+  const gitSidebarError = selectedRepositoryMutable ? (gitStatusQuery.error instanceof Error ? gitStatusQuery.error.message : '') : ''
   const gitSidebarMissingGit = isMissingGitSidebarError(gitSidebarError)
 
   const handleAskSwarmToInstallGit = async () => {
@@ -4844,15 +4838,32 @@ export function DesktopAppPage() {
     }
   }, [closeGitSidebarIntegratePopout, gitIntegrateModal?.presentation])
 
-  const planSidebarGitPanel = selectedGitSessionId && selectedGitWorkspacePath ? (
+  const planSidebarGitPanel = routeSessionId ? (
     <>
-    <section data-testid="desktop-plan-git-sidebar" className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden" data-plan-git-layout="inset-card" data-plan-section-treatment="inset-card">
+    <section data-testid="desktop-plan-git-sidebar" className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden" data-git-expanded={gitDockExpanded} data-plan-git-layout="expandable-dock" data-plan-section-treatment="inset-card">
+      <div className="flex shrink-0 items-center gap-2">
+      <button type="button" className="flex min-h-9 min-w-0 flex-1 items-center justify-between gap-2 text-left text-xs font-semibold" aria-expanded={gitDockExpanded} aria-controls="session-git-dock-details" onClick={() => setGitDockExpanded(expanded => !expanded)}>
+        <span>Session changes</span>
+        <span className="flex items-center gap-1 text-[var(--app-text-muted)]">{gitDockExpanded ? 'Collapse' : 'Expand'}<ChevronDown size={14} className={gitDockExpanded ? '' : 'rotate-180'} /></span>
+      </button>
+      <button type="button" className="min-h-9 shrink-0 px-1 text-[11px] text-[var(--app-text-muted)]" disabled={repositoryInventory.loading} onClick={() => { void repositoryInventory.refresh(); if (selectedRepositoryMutable) void gitStatusQuery.refetch(); if (activeSessionWorktree && activeSessionNeedsReview) void gitReviewQuery.refetch() }} aria-label="Refresh session Git status">Refresh</button>
+      </div>
+      <div className="shrink-0 truncate text-[11px] text-[var(--app-text-muted)]" title={selectedRepository?.workspace_name}>{selectedRepository?.workspace_name || 'Session repository'} · {gitSnapshot?.branch || selectedRepository?.branch || 'Loading branch…'}{activeSessionWorktree ? ` → ${activeSessionTargetBranch}` : ''}</div>
+      <div className="shrink-0 py-1 text-xs" role="status">
+        {repositoryInventory.stale || repositoryInventory.error || gitStatusQuery.isError ? 'Status unavailable · refresh before making changes' : gitSnapshot?.has_git ? `${gitSnapshot.dirty_count} uncommitted file${gitSnapshot.dirty_count === 1 ? '' : 's'}` : repositoryInventory.loading ? 'Loading changes…' : 'Git status unavailable'}
+        <span className="block text-[var(--app-text-muted)]">{repositoryInventory.stale || gitStatusQuery.isError || gitReviewQuery.isError ? 'Integration comparison unavailable' : gitReviewQuery.isFetching ? 'Checking integration…' : activeSessionReviewCandidate?.reason === 'commits_missing_from_target' ? `${activeSessionReviewCandidate.missing_commit_count ?? 0} commit${activeSessionReviewCandidate.missing_commit_count === 1 ? '' : 's'} not in ${activeSessionTargetBranch}` : activeSessionReviewCandidate?.reason === 'clean_and_integrated' ? `Integrated into ${activeSessionTargetBranch}` : activeSessionIntegrateEligible ? `Ready to integrate into ${activeSessionTargetBranch}` : activeSessionWorktree ? 'Integration not yet verified' : selectedRepository?.kind === 'source' ? 'Source checkout · no session integration' : 'Select this session’s branch to integrate'}</span>
+      </div>
+      <div id="session-git-dock-details" hidden={!gitDockExpanded} className={gitDockExpanded ? 'min-h-0 max-h-[60vh] flex-1 overflow-y-auto overscroll-contain pr-1' : 'hidden'}>
+      <details className="my-2 text-xs"><summary className="cursor-pointer py-2 text-[var(--app-text-muted)]">Branches &amp; repositories</summary>
+      <SessionRepositoryPicker inventory={repositoryInventory} onSelect={repositoryInventory.select} onRefresh={() => { void repositoryInventory.refresh() }} onLoadMore={() => { void repositoryInventory.loadMore() }} />
+      </details>
+      {selectedRepository && !selectedRepositoryActionsEnabled ? <p className="my-2 text-xs text-[var(--app-text-subtle)]">Inspection only. Operations require a fresh, exact current-session repository; retained workers and lanes use explicit worktree review.</p> : null}
       <div className="flex shrink-0 items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.1em] text-[var(--app-text-subtle)]" data-plan-git-header>
         <GitBranch size={13} className="shrink-0" />
         <span className="min-w-0 flex-1 truncate">{gitSnapshot?.branch || 'Git changes'}</span>
         {gitSnapshot?.has_git ? <span className="shrink-0">{gitSnapshot.dirty_count}</span> : null}
       </div>
-      {gitSnapshot?.has_git ? (
+      {gitSnapshot?.has_git && selectedRepositoryActionsEnabled ? (
         <div className="mt-2 flex min-w-0 shrink-0 items-center justify-end gap-1 normal-case tracking-normal" data-plan-git-action-row data-plan-git-commit>
           {gitSnapshot.files.length > 0 ? <>
             <button type="button" className="grid min-h-9 w-9 shrink-0 place-items-center rounded-lg border border-[var(--app-border)] bg-[var(--app-bg-alt)] text-[var(--app-text)] hover:bg-[var(--app-surface-hover)] disabled:cursor-not-allowed disabled:opacity-60" disabled={gitCommitBusy || gitAICommitPhase !== null} onClick={() => openGitCommitReview({ workspacePath: selectedGitWorkspacePath, sessionId: selectedGitSessionId, files: gitSnapshot.files, worktree: activeSessionWorktree, targetWorkspacePath: activeSessionTargetWorkspacePath, targetBranch: activeSessionTargetBranch, canIntegrate: Boolean(activeSessionReviewCandidate?.commit_eligible && activeSessionTargetWorkspacePath) })} aria-label="Commit changes" title="Commit changes"><Save size={14} aria-hidden="true" /></button>
@@ -4868,22 +4879,25 @@ export function DesktopAppPage() {
             <span className="shrink-0 normal-case tracking-normal">{activeSessionCommits.length}</span>
             <ChevronDown size={12} className="shrink-0 transition-transform group-open:rotate-180" aria-hidden="true" />
           </summary>
-          {activeSessionCommits.length > 0 ? <div className="max-h-28 overflow-y-auto border-t border-[var(--app-border)] [scrollbar-gutter:stable]" data-plan-git-session-commit-list>{activeSessionCommits.map((commit) => <div key={commit.hash} className="flex min-w-0 items-start gap-2 border-b border-[var(--app-border)] px-2 py-1.5 text-[10px] last:border-0"><span className="shrink-0 font-mono text-[var(--app-primary)]">{commit.short_hash}</span><span className="min-w-0 flex-1 truncate text-[var(--app-text-muted)]" title={commit.subject}>{commit.subject}</span></div>)}</div> : <div className="border-t border-[var(--app-border)] px-2 py-1.5 text-[10px] text-[var(--app-text-subtle)]">No commits yet.</div>}
+          {activeSessionCommits.length > 0 ? <div className="border-t border-[var(--app-border)]" data-plan-git-session-commit-list>{activeSessionCommits.map((commit) => <div key={commit.hash} className="flex min-w-0 items-start gap-2 border-b border-[var(--app-border)] px-2 py-1.5 text-[10px] last:border-0"><span className="shrink-0 font-mono text-[var(--app-primary)]">{commit.short_hash}</span><span className="min-w-0 flex-1 truncate text-[var(--app-text-muted)]" title={commit.subject}>{commit.subject}</span></div>)}</div> : <div className="border-t border-[var(--app-border)] px-2 py-1.5 text-[10px] text-[var(--app-text-subtle)]">No commits yet.</div>}
         </details>
       ) : null}
-      <div className="flex min-h-0 flex-1 flex-col overflow-hidden" data-plan-git-scroll-region>
+      <div className="flex shrink-0 flex-col" data-plan-git-scroll-region>
         {gitSidebarMissingGit ? <button type="button" className="mt-2 inline-flex min-h-9 w-full items-center justify-center gap-1.5 rounded-lg border border-[var(--app-warning)] px-2 py-1.5 text-xs font-semibold text-[var(--app-warning)] hover:bg-[var(--app-warning-bg)] disabled:cursor-not-allowed disabled:opacity-60" disabled={gitInstallHelpBusy} onClick={() => { void handleAskSwarmToInstallGit() }}>{gitInstallHelpBusy ? <LoaderCircle size={13} className="animate-spin" aria-hidden="true" /> : <Bot size={13} aria-hidden="true" />}{gitInstallHelpBusy ? 'Asking Swarm…' : "Git isn't installed, Ask Swarm to install Git?"}</button>
           : gitSidebarError ? <div className="mt-2 text-xs text-[var(--app-warning)]">{gitSidebarError}</div>
-          : gitStatusQuery.isPending ? <div className="mt-2 text-xs text-[var(--app-text-subtle)]">Loading scoped changes…</div>
+          : repositoryInventory.loading && !gitSnapshot ? <div className="mt-2 text-xs text-[var(--app-text-subtle)]">Loading scoped changes…</div>
+          : selectedRepository?.availability !== 'available' ? <div className="mt-2 text-xs text-[var(--app-warning)]">{selectedRepository?.error || 'Select an available repository to inspect changes.'}</div>
           : !gitSnapshot?.has_git ? <div className="mt-2 text-xs text-[var(--app-text-subtle)]">No Git repository for this session.</div>
           : gitSnapshot.files.length === 0 ? <div className="mt-2 text-xs text-[var(--app-text-subtle)]">Clean working tree.</div>
-          : <details className="group mt-2 min-h-0 shrink overflow-hidden rounded-xl bg-[var(--app-bg-alt)]" data-plan-git-file-details>
+          : <details open className="group mt-2 rounded-xl bg-[var(--app-bg-alt)]" data-plan-git-file-details>
               <summary className="flex min-h-8 cursor-pointer list-none items-center gap-2 px-2 text-[10px] font-semibold text-[var(--app-text-muted)] [&::-webkit-details-marker]:hidden">
                 <span className="min-w-0 flex-1 truncate">{gitSnapshot.files.length} file{gitSnapshot.files.length === 1 ? '' : 's'} changed</span>
                 <ChevronDown size={12} className="shrink-0 transition-transform group-open:rotate-180" aria-hidden="true" />
               </summary>
-              <div className="max-h-40 overflow-y-auto border-t border-[var(--app-border)] p-1 [scrollbar-gutter:stable]" data-plan-git-file-list data-plan-git-scroll="inside-disclosure">{gitSnapshot.files.map((file) => <div key={`${file.kind}:${file.path}:${file.orig_path ?? ''}`} className="flex items-center gap-2 rounded-lg px-2 py-1.5 text-[10px] hover:bg-[var(--app-surface-hover)]"><span className={cn('shrink-0 rounded px-1 py-0.5', file.untracked ? 'bg-[var(--app-warning-bg)] text-[var(--app-warning)]' : 'bg-[var(--app-surface-subtle)] text-[var(--app-text-subtle)]')}>{gitFileStatusLabel(file)}</span><span className="min-w-0 flex-1 truncate" title={file.path}>{file.path}</span></div>)}</div>
+              <div className="border-t border-[var(--app-border)] p-1" data-plan-git-file-list data-plan-git-scroll="dock">{gitSnapshot.files.map((file) => <div key={`${file.kind}:${file.path}:${file.orig_path ?? ''}`} className="flex items-center gap-2 rounded-lg px-2 py-1.5 text-[10px] hover:bg-[var(--app-surface-hover)]"><span className={cn('shrink-0 rounded px-1 py-0.5', file.untracked ? 'bg-[var(--app-warning-bg)] text-[var(--app-warning)]' : 'bg-[var(--app-surface-subtle)] text-[var(--app-text-subtle)]')}>{gitFileStatusLabel(file)}</span><span className="min-w-0 flex-1" title={file.path}><span className="block truncate text-xs">{file.path.split('/').pop()}</span><span className="block truncate text-[10px] text-[var(--app-text-muted)]">{file.path.includes('/') ? file.path.slice(0, file.path.lastIndexOf('/')) : 'Repository root'}</span></span></div>)}</div>
             </details>}
+      </div>
+      {selectedRepositoryActionsEnabled ? <WorkspaceActionsSidebarSection workspacePath={selectedGitWorkspacePath} sessionId={selectedGitSessionId} workspaceName={routeWorkspace?.workspaceName || ''} canAICommit={Boolean(gitSnapshot?.files.length) && gitAICommitPhase === null && !gitCommitBusy} onRun={openWorkspaceAction} onAICommitRun={(action) => { void runAICommitWorkspaceAction(action, selectedGitWorkspacePath, selectedGitSessionId) }} /> : null}
       </div>
       {activeSessionIntegrateEligible && activeSessionReviewCandidate ? <div ref={gitIntegrateAnchorRef} className="relative mt-2 shrink-0" data-plan-git-integrate-anchor>
         {gitIntegrateModal?.presentation === 'sidebar-popout' && typeof document !== 'undefined' ? createPortal(
@@ -4917,7 +4931,6 @@ export function DesktopAppPage() {
         }}>{gitIntegrateBusy ? <LoaderCircle size={12} className="animate-spin" /> : gitIntegrateModal?.integrationComplete ? <Archive size={12} /> : <GitMerge size={12} />}{gitIntegrateModal?.presentation === 'sidebar-popout' ? gitIntegrateModal.integrationComplete ? 'Archive session' : gitIntegrateError ? 'Review integration error' : `Confirm integration into ${activeSessionReviewCandidate.target_branch || activeSessionTargetBranch}` : `Integrate into ${activeSessionReviewCandidate.target_branch || activeSessionTargetBranch}`}</button>
       </div> : null}
     </section>
-    <WorkspaceActionsSidebarSection workspacePath={selectedGitWorkspacePath} sessionId={selectedGitSessionId} workspaceName={routeWorkspace?.workspaceName || ''} canAICommit={Boolean(gitSnapshot?.files.length) && gitAICommitPhase === null && !gitCommitBusy} onRun={openWorkspaceAction} onAICommitRun={(action) => { void runAICommitWorkspaceAction(action, selectedGitWorkspacePath, selectedGitSessionId) }} />
     </>
   ) : null
 

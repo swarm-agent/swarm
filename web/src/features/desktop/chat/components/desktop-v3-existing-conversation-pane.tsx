@@ -3215,6 +3215,8 @@ export function DesktopV3ExistingConversationPane({
       data-testid="desktop-v3-existing-conversation-pane"
     >
       <DesktopV3ChatHeader
+        sessionId={normalizedSessionId}
+        workspaceRevision={cacheSession?.updated_at}
         title={session?.title || cacheSession?.title || "Conversation"}
         workspaceName={
           session?.workspaceName || cacheSession?.workspace_name || "Workspace"

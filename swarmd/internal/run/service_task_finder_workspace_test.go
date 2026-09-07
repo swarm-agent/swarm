@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 
+	worktree "swarm/packages/swarmd/internal/worktree"
+
 	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/tool"
 )
@@ -16,6 +18,7 @@ import (
 // and rejection of a path outside the resolved roots. Same-root inheritance is
 // retained; cross-root launches must not inherit unrelated temporary grants.
 func TestTaskFinderSelectedWorkspaceDoesNotInheritParentRoot(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
 	for _, cross := range []bool{false, true} {
 		name := "same-root"
 		if cross {
@@ -28,14 +31,29 @@ func TestTaskFinderSelectedWorkspaceDoesNotInheritParentRoot(t *testing.T) {
 			if err != nil || !ok {
 				t.Fatalf("parent: %v", err)
 			}
+			sourceRepo := programFixtureRepo(t)
+			wt := &worktree.Service{}
+			base, err := wt.ResolveTaskBase(sourceRepo)
+			if err != nil {
+				t.Fatal(err)
+			}
+			lane, err := wt.AllocateTaskWorkspace(sourceRepo, base, "finder-parent-"+name, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			parent.WorkspacePath = sourceRepo
 			parent.WorktreeEnabled = true
-			parent.WorktreeRootPath = parent.WorkspacePath
-			parent.WorktreeBranch = "agent/parent"
-			parent.WorktreeBaseBranch = "dev"
+			parent.WorktreeRootPath = lane.WorkspacePath
+			parent.WorktreeBranch = lane.BranchName
+			parent.WorktreeBaseBranch = base.ParentBranch
+			parent.Metadata = map[string]any{}
+			parent.Metadata["swarm_v3_source_workspace_path"] = sourceRepo
+			parent.Metadata["swarm_v3_runtime_workspace_path"] = lane.WorkspacePath
+			parent.Metadata["swarm_v3_worktree_base_commit"] = base.BaseCommit
 			parent.TemporaryWorkspaceRoots = []string{t.TempDir()}
-			target := parent.WorkspacePath
+			target := lane.WorkspacePath
 			if cross {
-				target = t.TempDir()
+				target = programFixtureRepo(t)
 			}
 			if err := os.WriteFile(filepath.Join(target, "catalog.md"), []byte("selected research\n"), 0600); err != nil {
 				t.Fatal(err)
@@ -44,7 +62,11 @@ func TestTaskFinderSelectedWorkspaceDoesNotInheritParentRoot(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			launch, err := svc.prepareDelegatedSubagentLaunchWithProfile(parent, "auto", taskLaunchPrepared{RequestedSubagent: "finder", MetaPrompt: "Read catalog.md", TargetWorkspacePath: target, VirtualTarget: virtual, LogicalTaskID: "finder-root-" + name}, "research", "", &profile, source, nil)
+			selector := target
+			if !cross {
+				selector = ""
+			} // omitted target must use runtime, not captured source
+			launch, err := svc.prepareDelegatedSubagentLaunchWithProfile(parent, "auto", taskLaunchPrepared{RequestedSubagent: "finder", MetaPrompt: "Read catalog.md", TargetWorkspacePath: selector, VirtualTarget: virtual, LogicalTaskID: "finder-root-" + name}, "research", "", &profile, source, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -66,6 +88,12 @@ func TestTaskFinderSelectedWorkspaceDoesNotInheritParentRoot(t *testing.T) {
 			scope, err := svc.resolveRunWorkspaceScope(child, principal)
 			if err != nil {
 				t.Fatal(err)
+			}
+			if scope.PrimaryPath != target || launch.ChildWorkspacePath != target {
+				t.Fatalf("worker/tool target mismatch: %+v", scope)
+			}
+			if !cross && scope.WorktreeBaseCommit != base.BaseCommit {
+				t.Fatal("shared worker lost captured base")
 			}
 			if _, expand, err := tool.ScopeExpansionForCall(scope, tool.Call{Name: "read", Arguments: mustJSON(t, map[string]any{"path": filepath.Join(target, "catalog.md")})}); err != nil || expand {
 				t.Fatalf("selected catalog inaccessible: expand=%v err=%v", expand, err)
