@@ -651,6 +651,8 @@ func TestStartRenderJobAllowsLegacyPlansWithoutProductionState(t *testing.T) {
 	principal := identity.Principal{Type: identity.PrincipalTypeUser, AccountScopeID: "acc", UserID: "user"}
 	store.sessions["session"] = pebblestore.SessionSnapshot{ID: "session", AccountScopeID: "acc", UserID: "user"}
 	store.projects["project"] = pebblestore.VideoProjectSnapshot{ID: "project", AccountScopeID: "acc", UserID: "user", SessionID: "session", CurrentRevisionID: "legacy"}
+	// Render preflight now reauthenticates persisted media; supply the exact ready still.
+	store.artifacts["acc/session/stills/legacy"] = pebblestore.SessionArtifactVariant{ID: "legacy", Status: pebblestore.SessionArtifactStatusReady, MediaType: "image/png", EventSeq: 1}
 	ref := &pebblestore.SessionArtifactSelectionReference{SessionID: "session", CollectionID: "stills", VariantID: "legacy", EventSeq: 1}
 	plan := pebblestore.VideoPlanProposal{Kind: pebblestore.VideoPlanKindInitial, Parts: []pebblestore.VideoPlanPart{{ID: "legacy", DurationMs: 1000, Visual: ref, VisualMediaType: "image/png"}}}
 	store.revisions["project"] = map[string]pebblestore.VideoProjectRevisionSnapshot{"legacy": {ID: "legacy", ProjectID: "project", SessionID: "session", AccountScopeID: "acc", UserID: "user", Timeline: pebblestore.VideoProjectTimeline{Clips: []pebblestore.VideoTimelineClip{{ID: "legacy", SourceKind: pebblestore.VideoClipSourceKindManagedArtifact, ArtifactRef: ref, DurationMs: 1000}}, Metadata: map[string]any{"accepted_video_plan": plan}}}}
@@ -687,6 +689,8 @@ func TestStartRenderJobAllowsConfirmedLockedHTMLAnimation(t *testing.T) {
 	store.sessions["session"] = pebblestore.SessionSnapshot{ID: "session", AccountScopeID: "acc", UserID: "user"}
 	store.projects["project"] = pebblestore.VideoProjectSnapshot{ID: "project", AccountScopeID: "acc", UserID: "user", SessionID: "session", CurrentRevisionID: "working"}
 	htmlRef := &pebblestore.SessionArtifactSelectionReference{SessionID: "session", CollectionID: "motion", VariantID: "html", EventSeq: 7}
+	// Exact ready media is required at the StartRenderJob boundary, not only at edit time.
+	store.artifacts["acc/session/fallback/still"] = pebblestore.SessionArtifactVariant{ID: "still", Status: pebblestore.SessionArtifactStatusReady, MediaType: "image/png", EventSeq: 6}
 	fallback := &pebblestore.SessionArtifactSelectionReference{SessionID: "session", CollectionID: "fallback", VariantID: "still", EventSeq: 6}
 	plan := pebblestore.VideoPlanProposal{Kind: pebblestore.VideoPlanKindInitial, Parts: []pebblestore.VideoPlanPart{{
 		ID: "intro", DurationMs: 1000, Visual: fallback, VisualMediaType: "image/png", AnimationCandidates: &pebblestore.VideoAnimationCandidateSet{
@@ -709,6 +713,8 @@ func TestStartRenderJobRecoversExactLegacyLockedHTMLAuthority(t *testing.T) {
 	store.sessions["session"] = pebblestore.SessionSnapshot{ID: "session", AccountScopeID: "acc", UserID: "user"}
 	store.projects["project"] = pebblestore.VideoProjectSnapshot{ID: "project", AccountScopeID: "acc", UserID: "user", SessionID: "session", CurrentRevisionID: "accepted"}
 	htmlRef := &pebblestore.SessionArtifactSelectionReference{SessionID: "session", CollectionID: "motion", VariantID: "html", EventSeq: 7}
+	// Exact ready media is required at the StartRenderJob boundary, not only at edit time.
+	store.artifacts["acc/session/fallback/still"] = pebblestore.SessionArtifactVariant{ID: "still", Status: pebblestore.SessionArtifactStatusReady, MediaType: "image/png", EventSeq: 6}
 	fallback := &pebblestore.SessionArtifactSelectionReference{SessionID: "session", CollectionID: "fallback", VariantID: "still", EventSeq: 6}
 	unlocked := pebblestore.VideoPlanProposal{Kind: pebblestore.VideoPlanKindInitial, Parts: []pebblestore.VideoPlanPart{{ID: "signal", DurationMs: 1000, Visual: fallback, AnimationCandidates: &pebblestore.VideoAnimationCandidateSet{Status: pebblestore.VideoAnimationCandidateStatusAwaitingSelection, Candidates: []pebblestore.VideoAnimationCandidate{{ID: "orbit", Source: htmlRef}, {ID: "pulse", Source: &pebblestore.SessionArtifactSelectionReference{SessionID: "session", CollectionID: "motion", VariantID: "other", EventSeq: 8}}}}}}}
 	locked := unlocked
@@ -733,6 +739,8 @@ func TestStartRenderJobDoesNotUseProposalSelectionNewerThanRevision(t *testing.T
 	store.sessions["session"] = pebblestore.SessionSnapshot{ID: "session", AccountScopeID: "acc", UserID: "user"}
 	store.projects["project"] = pebblestore.VideoProjectSnapshot{ID: "project", AccountScopeID: "acc", UserID: "user", SessionID: "session", CurrentRevisionID: "history"}
 	htmlRef := &pebblestore.SessionArtifactSelectionReference{SessionID: "session", CollectionID: "motion", VariantID: "html", EventSeq: 7}
+	// Exact ready media is required at the StartRenderJob boundary, not only at edit time.
+	store.artifacts["acc/session/fallback/still"] = pebblestore.SessionArtifactVariant{ID: "still", Status: pebblestore.SessionArtifactStatusReady, MediaType: "image/png", EventSeq: 6}
 	fallback := &pebblestore.SessionArtifactSelectionReference{SessionID: "session", CollectionID: "fallback", VariantID: "still", EventSeq: 6}
 	unlocked := pebblestore.VideoPlanProposal{Kind: pebblestore.VideoPlanKindInitial, Parts: []pebblestore.VideoPlanPart{{ID: "signal", DurationMs: 1000, Visual: fallback, AnimationCandidates: &pebblestore.VideoAnimationCandidateSet{Status: pebblestore.VideoAnimationCandidateStatusAwaitingSelection, Candidates: []pebblestore.VideoAnimationCandidate{{ID: "orbit", Source: htmlRef}, {ID: "pulse", Source: &pebblestore.SessionArtifactSelectionReference{SessionID: "session", CollectionID: "motion", VariantID: "other", EventSeq: 8}}}}}}}
 	locked := unlocked
