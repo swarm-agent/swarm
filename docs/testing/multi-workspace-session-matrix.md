@@ -525,3 +525,81 @@ provider-backed Finder → two Coders → Designer flow, simultaneous provider t
 full create API, process-crash windows, rendered header/sidebar/reconnect/history,
 and exact running candidate proof. No deployment, browser, launch readiness or
 independent P1/P2 verdict claimed by R3. Critical runner unchanged.
+
+## G4 — Session-wide repository and attachment consumers
+
+2026-09-07. Source base `9cd2dec4ea5b088d32af651e45bd851d0d22a605`
+plus the scoped parent dirty-read/tombstone/spacing corrections recorded by this
+change. Build: local test binaries/browser bundles, **no deployment**. Earlier
+source-only Git/header gaps in section F are superseded by this implementation,
+not by a claim about the installed testbench.
+
+- Canonical read-only `GET /v3/sessions/{id}/repositories` enumerates saved source
+  attachments, parent/worker worktrees, retained contexts and program lanes.
+  Startup maintenance advances durable indexes in resumable 100-row batches;
+  reads never reconcile programs or migrate. Existing bounded worktree ownership
+  history is imported; absent historical provenance is not invented.
+- Account/user/parent ownership, current catalog generation, exact root, managed
+  allocator/common repository, branch and base are revalidated. Status/realtime
+  preserve explicit source versus lane selectors. Retained selectors are reads,
+  not commit authority. Dirty-read validators are separate from clean transition
+  validators. Archived/deleted child provenance remains inspectable; missing
+  physical lanes report unavailable rather than clean.
+- Opaque continuations authenticate complete scope, limit and meaningful parent
+  inventory revision. Unrelated/token-only updates do not invalidate traversal.
+  One request inspects at most 20 rows/contexts sequentially with bounded status
+  output and file-list truncation; no all-account scan in the read path.
+- Sidebar groups workspace/source and worker/lane identities and presents staged,
+  unstaged, untracked/conflict counts/files. It keeps at most 200 displayed rows,
+  continues through explicit replaceable windows, and preserves exact selection
+  even when unloaded. Header accumulates at most 64 actual attachment identities,
+  with a separate default marker and manual traversal past long retained history.
+  Canonical cache actions, focus/reconnect, polling and hidden-view cancellation
+  drive debounced refresh; stale/error/unavailable states remain visible.
+- Existing manual operations require fresh exact current-session identity; other
+  retained rows are inspection-only and use existing explicit worktree review.
+  No auto integration/promotion or new Git mutation authority was added.
+
+### Executed command register
+
+**G4-backend**, from `swarmd/`:
+
+```sh
+GOMAXPROCS=2 go test -p 2 ./internal/store/pebble ./internal/session ./internal/api ./internal/worktree ./internal/runtime -run '^(TestRepositoryHistory|TestSessionRepositoryHistory|TestTaskProgramRepositoryHistory|TestSessionRepositories|TestSessionRepositoryLaneNamedAllocation)' -count=2 -timeout=120s
+```
+
+Passed: store 1.276s, session 0.004s, API 1.868s, worktree 0.146s.
+Runtime compiled only (`no tests to run`), not daemon startup execution.
+Assertions include real named/task Git allocations, pre-index parent lane history,
+archived/deleted workers, dirty retained file counts, tiny-page uniqueness,
+reattachment stability, exact selectors, stale/foreign/forged rejection and
+unchanged source HEAD/staging/dirty bytes. Store tests assert restart/backfill,
+scoped cursor rejection, dedup, late program lookup and unchanged rejection state.
+
+**G4-web**, from `web/` with locked dependencies and installed Chrome:
+
+```sh
+SWARM_TEST_BROWSER_CHANNEL=chrome node --import tsx --test --test-force-exit --test-concurrency=1 --test-timeout=70000 src/features/desktop/state/session-repositories.spec.ts src/features/desktop/git/api.spec.ts src/features/desktop/git/session-repository-picker.spec.ts src/features/desktop/git/session-repository-picker.browser.spec.ts src/features/desktop/chat/queries/session-attachments.spec.ts src/features/desktop/chat/components/session-attachments.spec.tsx src/features/desktop/chat/components/session-attachments.browser.spec.ts src/features/desktop/chat/components/desktop-v3-chat-header.spec.tsx
+node node_modules/typescript/bin/tsc -b --pretty false
+```
+
+Passed 27 tests (8.641s), including three browser fixtures; typecheck passed.
+Fixtures cover 460 workers, 64 same-named attachments after 400 historical rows,
+explicit non-first default/removal, late-window access, no implicit retargeting,
+canonical events, reconnect/hidden scheduling, stale responses, cursor loops and
+failed-refresh recovery. Browser transport is fully intercepted and production
+CSS bundled in memory; no ambient daemon or credentials required. Earlier missing
+dependencies/browser runtime, inherited Vite proxy/optimizer fixture errors and
+ES target `.at()` failure were corrected; none counted as passing evidence.
+
+Four mobile/desktop fixture PNGs were pixel-inspected at 375/1440 widths. Long
+names wrap within the bounded dialog; retained rows and warnings are legible.
+A cramped scroll-region/footer boundary was corrected with explicit separation
+and re-inspected. Scroll clipping is intentional within scrollable lists; no
+horizontal overflow or capture chrome. These are component fixtures, **not the
+full running Desktop application**. Private screenshots stay ignored.
+
+Independent P1/P2 review remains pending, no curated critical test promotion.
+Full-app/deployed endpoint/realtime/provider stage proof and startup crash-window
+verification remain the separately approved integration-audit/live checkpoint.
+No Models change, host update, testbench deployment, source promotion or push.

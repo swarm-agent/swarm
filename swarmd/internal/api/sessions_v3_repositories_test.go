@@ -198,29 +198,43 @@ func TestSessionRepositoriesManagedRetainedLanes(t *testing.T) {
 	repoA, repoB := initGitCommitTestRepo(t), initGitCommitTestRepo(t)
 	server, principal, entries := newSessionRouterTestServer(t, &sessionRouterRecordingRunner{id: "recording"}, []sessionRouterWorkspace{{repoA, "A", "A"}, {repoB, "B", "B"}})
 	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "sessions"))
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	t.Cleanup(func() { _ = store.Close() })
 	sessions := pebblestore.NewSessionStore(store)
 	server.sessions = sessionruntime.NewService(sessions, nil)
 	wt := worktree.NewService(pebblestore.NewWorktreeStore(store), server.workspace, nil)
 	server.worktrees = wt
 	old, err := wt.AllocateDetachedWorkspaceRequestedForPrincipal(principal, repoA, "parent", "", "agent/old-parent")
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	current, err := wt.AllocateDetachedWorkspaceRequestedForPrincipal(principal, repoB, "parent", "", "agent/current-parent")
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	base, err := wt.ResolveTaskBase(repoA)
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	complete, err := wt.AllocateTaskWorkspace(repoA, base, "completed-child", nil)
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	failed, err := wt.AllocateTaskWorkspace(repoA, base, "failed-child", nil)
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	makeOwner := func(id, parent, source string, lane worktree.Allocation) pebblestore.SessionSnapshot {
 		return pebblestore.SessionSnapshot{ID: id, AccountScopeID: principal.AccountScopeID, UserID: principal.UserID, WorkspacePath: lane.WorkspacePath, WorktreeEnabled: true, WorktreeRootPath: lane.WorkspacePath, WorktreeBranch: lane.BranchName, WorktreeBaseBranch: lane.BaseBranch, Metadata: map[string]any{"parent_session_id": parent, "base_commit": lane.BaseCommit, "swarm_v3_source_workspace_path": source}}
 	}
 	owner := makeOwner("parent", "", repoB, current)
 	for i, entry := range entries {
 		kind := pebblestore.WorkspaceGrantAdditional
-		if i == 1 { kind = pebblestore.WorkspaceGrantPrimary }
+		if i == 1 {
+			kind = pebblestore.WorkspaceGrantPrimary
+		}
 		owner.WorkspaceGrants = append(owner.WorkspaceGrants, pebblestore.WorkspaceGrant{Kind: kind, Path: entry.Path, WorkspaceID: entry.WorkspaceID, WorkspaceGeneration: entry.WorkspaceGeneration})
 	}
 	owner.Metadata["swarm_v3_source_workspace_id"] = entries[1].WorkspaceID
@@ -229,14 +243,22 @@ func TestSessionRepositoriesManagedRetainedLanes(t *testing.T) {
 	put := func(snapshot pebblestore.SessionSnapshot, kind string, key string) {
 		t.Helper()
 		_, err := sessions.ApplyV3SessionMutation(pebblestore.V3SessionMutationInput{SessionID: snapshot.ID, AccountScopeID: principal.AccountScopeID, UserID: principal.UserID, Kind: kind, Session: &snapshot, IdempotencyKey: key, RequestHash: key, NowUnixMs: 100})
-		if err != nil { t.Fatal(err) }
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
 	put(owner, pebblestore.V3SessionMutationCreateSession, "parent")
 	put(makeOwner("completed-child", owner.ID, repoA, complete), pebblestore.V3SessionMutationCreateSession, "completed")
 	put(makeOwner("failed-child", owner.ID, repoA, failed), pebblestore.V3SessionMutationCreateSession, "failed")
-	if err := sessions.ArchiveSession("completed-child"); err != nil { t.Fatal(err) }
-	if err := sessions.DeleteSession("failed-child"); err != nil { t.Fatal(err) }
-	if err := sessions.CompleteRepositoryHistoryMaintenance(context.Background()); err != nil { t.Fatal(err) }
+	if err := sessions.ArchiveSession("completed-child"); err != nil {
+		t.Fatal(err)
+	}
+	if err := sessions.DeleteSession("failed-child"); err != nil {
+		t.Fatal(err)
+	}
+	if err := sessions.CompleteRepositoryHistoryMaintenance(context.Background()); err != nil {
+		t.Fatal(err)
+	}
 	collect := func() map[string]sessionRepositoryItem {
 		t.Helper()
 		seen := map[string]sessionRepositoryItem{}
@@ -246,16 +268,26 @@ func TestSessionRepositoriesManagedRetainedLanes(t *testing.T) {
 			r = r.WithContext(identity.ContextWithPrincipal(r.Context(), principal))
 			w := httptest.NewRecorder()
 			server.handleSessionV3PrimaryByID(w, r)
-			if w.Code != http.StatusOK { t.Fatalf("inventory %d: %s", w.Code, w.Body.String()) }
+			if w.Code != http.StatusOK {
+				t.Fatalf("inventory %d: %s", w.Code, w.Body.String())
+			}
 			var page sessionRepositoriesResponse
-			if err := json.Unmarshal(w.Body.Bytes(), &page); err != nil { t.Fatal(err) }
-			if len(page.Items) > 1 { t.Fatal("page bound exceeded") }
+			if err := json.Unmarshal(w.Body.Bytes(), &page); err != nil {
+				t.Fatal(err)
+			}
+			if len(page.Items) > 1 {
+				t.Fatal("page bound exceeded")
+			}
 			for _, item := range page.Items {
-				if _, ok := seen[item.ID]; ok { t.Fatalf("duplicate row %s", item.WorkspacePath) }
+				if _, ok := seen[item.ID]; ok {
+					t.Fatalf("duplicate row %s", item.WorkspacePath)
+				}
 				seen[item.ID] = item
 			}
 			cursor = page.NextCursor
-			if cursor == "" { return seen }
+			if cursor == "" {
+				return seen
+			}
 		}
 		t.Fatal("pagination did not terminate")
 		return nil
@@ -266,21 +298,37 @@ func TestSessionRepositoriesManagedRetainedLanes(t *testing.T) {
 		for path, allocation := range map[string]worktree.Allocation{old.WorkspacePath: old, current.WorkspacePath: current, complete.WorkspacePath: complete, failed.WorkspacePath: failed} {
 			count := 0
 			for _, item := range items {
-				if item.WorkspacePath != path { continue }
+				if item.WorkspacePath != path {
+					continue
+				}
 				count++
-				if item.Branch != allocation.BranchName || item.BaseCommit != allocation.BaseCommit || item.Status == nil || item.Availability != "available" { t.Errorf("lane provenance/status: %+v", item) }
-				if path != current.WorkspacePath && item.SourcePath != repoA { t.Error("historical source changed") }
-				if path == complete.WorkspacePath && item.Lifecycle != "archived" { t.Error("archive lost") }
-				if path == failed.WorkspacePath && item.Lifecycle != "deleted" { t.Error("delete lost") }
-				if dirty && path == old.WorkspacePath && (item.Status == nil || item.Status.UntrackedCount != 1) { t.Error("dirty retained lane status missing") }
+				if item.Branch != allocation.BranchName || item.BaseCommit != allocation.BaseCommit || item.Status == nil || item.Availability != "available" {
+					t.Errorf("lane provenance/status: %+v", item)
+				}
+				if path != current.WorkspacePath && item.SourcePath != repoA {
+					t.Error("historical source changed")
+				}
+				if path == complete.WorkspacePath && item.Lifecycle != "archived" {
+					t.Error("archive lost")
+				}
+				if path == failed.WorkspacePath && item.Lifecycle != "deleted" {
+					t.Error("delete lost")
+				}
+				if dirty && path == old.WorkspacePath && (item.Status == nil || item.Status.UntrackedCount != 1) {
+					t.Error("dirty retained lane status missing")
+				}
 			}
-			if count != 1 { t.Errorf("lane %s appears %d times", path, count) }
+			if count != 1 {
+				t.Errorf("lane %s appears %d times", path, count)
+			}
 		}
 	}
 	assertLanes(initial, false)
 	for path, lifecycle := range map[string]string{complete.WorkspacePath: "archived", failed.WorkspacePath: "deleted"} {
 		item, err := server.selectedSessionRepository(principal, owner.ID, path)
-		if err != nil || item.Lifecycle != lifecycle || item.currentAuthority { t.Errorf("retained child selector: %+v %v", item, err) }
+		if err != nil || item.Lifecycle != lifecycle || item.currentAuthority {
+			t.Errorf("retained child selector: %+v %v", item, err)
+		}
 	}
 	// Removing/readding an attachment changes presentation, not logical IDs.
 	grants := append([]pebblestore.WorkspaceGrant(nil), owner.WorkspaceGrants...)
@@ -289,35 +337,59 @@ func TestSessionRepositoriesManagedRetainedLanes(t *testing.T) {
 	owner.WorkspaceGrants = grants
 	put(owner, pebblestore.V3SessionMutationUpdateMetadata, "reattach")
 	for id, item := range collect() {
-		if _, ok := initial[id]; !ok { t.Errorf("reattach changed identity: %+v", item) }
-		if item.SessionID == owner.ID && item.Kind == "source" && (!item.Attached || item.Default != (item.WorkspacePath == repoB)) { t.Errorf("attachment/default drift: %+v", item) }
+		if _, ok := initial[id]; !ok {
+			t.Errorf("reattach changed identity: %+v", item)
+		}
+		if item.SessionID == owner.ID && item.Kind == "source" && (!item.Attached || item.Default != (item.WorkspacePath == repoB)) {
+			t.Errorf("attachment/default drift: %+v", item)
+		}
 	}
-	if err := os.WriteFile(filepath.Join(old.WorkspacePath, "dirty.txt"), []byte("retained"), 0600); err != nil { t.Fatal(err) }
+	if err := os.WriteFile(filepath.Join(old.WorkspacePath, "dirty.txt"), []byte("retained"), 0600); err != nil {
+		t.Fatal(err)
+	}
 	before := map[string]string{}
 	for _, path := range []string{repoA, repoB, old.WorkspacePath, complete.WorkspacePath, failed.WorkspacePath} {
 		before[path] = runGitCommitTestCommand(t, path, "rev-parse", "HEAD") + runGitCommitTestCommand(t, path, "diff", "--cached")
 	}
 	assertLanes(collect(), true)
 	r := httptest.NewRequest(http.MethodGet, "/?session_id=parent&workspace_path="+url.QueryEscape(old.WorkspacePath), nil)
-	if got, err := server.resolveGitStatusWorkspacePath(r, principal); err != nil || got != old.WorkspacePath { t.Errorf("old selector changed: %q %v", got, err) }
-	if got, err := server.resolveGitCommitWorkspacePath(workspaceGitCommitRequest{WorkspacePath: old.WorkspacePath}, principal, owner.ID); err == nil || got != "" { t.Error("retained lane authorized mutation") }
+	if got, err := server.resolveGitStatusWorkspacePath(r, principal); err != nil || got != old.WorkspacePath {
+		t.Errorf("old selector changed: %q %v", got, err)
+	}
+	if got, err := server.resolveGitCommitWorkspacePath(workspaceGitCommitRequest{WorkspacePath: old.WorkspacePath}, principal, owner.ID); err == nil || got != "" {
+		t.Error("retained lane authorized mutation")
+	}
 	for _, change := range []func(*identity.Principal){func(p *identity.Principal) { p.UserID = "foreign" }, func(p *identity.Principal) { p.AccountScopeID = "foreign" }} {
 		foreign := principal
 		change(&foreign)
 		w := httptest.NewRecorder()
 		server.handleSessionV3Repositories(w, httptest.NewRequest(http.MethodGet, "/", nil), foreign, owner.ID)
-		if w.Code == http.StatusOK { t.Error("foreign principal inventory accepted") }
-		if _, err := server.selectedSessionRepository(foreign, owner.ID, old.WorkspacePath); err == nil { t.Error("foreign selector accepted") }
+		if w.Code == http.StatusOK {
+			t.Error("foreign principal inventory accepted")
+		}
+		if _, err := server.selectedSessionRepository(foreign, owner.ID, old.WorkspacePath); err == nil {
+			t.Error("foreign selector accepted")
+		}
 	}
 	for _, mismatch := range []string{"branch", "source_workspace_path"} {
 		previous := history[mismatch]
-		if mismatch == "branch" { history[mismatch] = "agent/wrong" } else { history[mismatch] = repoB }
+		if mismatch == "branch" {
+			history[mismatch] = "agent/wrong"
+		} else {
+			history[mismatch] = repoB
+		}
 		put(owner, pebblestore.V3SessionMutationUpdateMetadata, "mismatch-"+mismatch)
-		if _, err := server.selectedSessionRepository(principal, owner.ID, old.WorkspacePath); err == nil { t.Error("forged lane provenance accepted") }
+		if _, err := server.selectedSessionRepository(principal, owner.ID, old.WorkspacePath); err == nil {
+			t.Error("forged lane provenance accepted")
+		}
 		history[mismatch] = previous
 	}
 	for path, state := range before {
-		if got := runGitCommitTestCommand(t, path, "rev-parse", "HEAD") + runGitCommitTestCommand(t, path, "diff", "--cached"); got != state { t.Errorf("read/rejection changed %s", path) }
+		if got := runGitCommitTestCommand(t, path, "rev-parse", "HEAD") + runGitCommitTestCommand(t, path, "diff", "--cached"); got != state {
+			t.Errorf("read/rejection changed %s", path)
+		}
 	}
-	if data, err := os.ReadFile(filepath.Join(old.WorkspacePath, "dirty.txt")); err != nil || string(data) != "retained" { t.Error("dirty bytes changed") }
+	if data, err := os.ReadFile(filepath.Join(old.WorkspacePath, "dirty.txt")); err != nil || string(data) != "retained" {
+		t.Error("dirty bytes changed")
+	}
 }

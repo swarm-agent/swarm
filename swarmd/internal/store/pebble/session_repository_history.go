@@ -39,13 +39,13 @@ type RepositoryHistoryQuery struct {
 // Snapshot metadata is evidence, never authorization to access its paths.
 // Historical rows must be independently authorized against current grants.
 type SessionRepositoryHistory struct {
-	Session   SessionSnapshot  `json:"session"`
-	Archived  bool             `json:"archived"`
-	Deleted   bool             `json:"deleted"`
-	ContextID string           `json:"context_id"`
-	Grants    []WorkspaceGrant `json:"grants,omitempty"`
-	Projected bool             `json:"projected,omitempty"`
-	HistoricalWorktree bool `json:"historical_worktree,omitempty"`
+	Session            SessionSnapshot  `json:"session"`
+	Archived           bool             `json:"archived"`
+	Deleted            bool             `json:"deleted"`
+	ContextID          string           `json:"context_id"`
+	Grants             []WorkspaceGrant `json:"grants,omitempty"`
+	Projected          bool             `json:"projected,omitempty"`
+	HistoricalWorktree bool             `json:"historical_worktree,omitempty"`
 }
 
 type RepositoryHistoryPage struct {
@@ -470,7 +470,13 @@ func (s *SessionStore) repositoryHistoryPage(q RepositoryHistoryQuery, programs 
 				}
 				current = tomb.Session
 				if found {
+					if tomb.AccountScopeID != q.AccountScopeID || tomb.UserID != q.UserID {
+						return out, errors.New("repository tombstone owner mismatch")
+					}
 					row.Archived, row.Deleted = tomb.Archived, tomb.Deleted
+					if tomb.Deleted {
+						current = row.Session
+					}
 				}
 			}
 			if found {
@@ -568,8 +574,8 @@ func repositoryHistoryPhase(session SessionSnapshot) string {
 func repositoryHistoryMeaning(row SessionRepositoryHistory) any {
 	return struct {
 		Context                                       string
-		Phase string
-		Historical bool
+		Phase                                         string
+		Historical                                    bool
 		Archived, Deleted                             bool
 		Integration, Task, SourceID, SourceGeneration string
 	}{row.ContextID, repositoryHistoryPhase(row.Session), row.HistoricalWorktree, row.Archived, row.Deleted,
@@ -612,11 +618,11 @@ func repositoryHistoricalWorktrees(owner SessionSnapshot) []SessionSnapshot {
 			{Kind: WorkspaceGrantWorktree, Path: path},
 		}
 		historical.Metadata = map[string]any{
-			"parent_session_id": owner.Metadata["parent_session_id"],
-			"base_commit": base,
-			"swarm_v3_source_workspace_id": id,
+			"parent_session_id":                    owner.Metadata["parent_session_id"],
+			"base_commit":                          base,
+			"swarm_v3_source_workspace_id":         id,
 			"swarm_v3_source_workspace_generation": strconv.FormatInt(generation, 10),
-			"swarm_v3_source_workspace_path": source,
+			"swarm_v3_source_workspace_path":       source,
 		}
 		for _, name := range []string{"integration_status", "task_status"} {
 			historical.Metadata[name] = owner.Metadata[name]
@@ -726,16 +732,26 @@ func (s *SessionStore) ExactRepositoryHistory(q RepositoryHistoryQuery, path str
 		// paginated inventory, not the stale state of the retained context.
 		var current SessionSnapshot
 		found, err := getJSONFromReader(reader, KeySession(row.Session.ID), &current)
-		if err != nil { return out, err }
+		if err != nil {
+			return out, err
+		}
 		if found {
 			row.Archived, row.Deleted = false, false
 		} else {
 			var tomb V3SessionTombstone
 			found, err = getJSONFromReader(reader, KeyV3SessionTombstone(row.Session.ID), &tomb)
-			if err != nil { return out, err }
+			if err != nil {
+				return out, err
+			}
 			if found {
+				if tomb.AccountScopeID != q.AccountScopeID || tomb.UserID != q.UserID {
+					return out, errors.New("repository tombstone owner mismatch")
+				}
 				current = tomb.Session
 				row.Archived, row.Deleted = tomb.Archived, tomb.Deleted
+				if tomb.Deleted {
+					current = row.Session
+				}
 			}
 		}
 		if found {

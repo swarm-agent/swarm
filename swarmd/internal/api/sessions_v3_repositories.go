@@ -187,18 +187,18 @@ func (s *Server) authorizeRepositoryItem(principal identity.Principal, item sess
 		return nil
 	}
 	validator, ok := s.worktrees.(interface {
-		ValidateSessionRepositoryLane(string, string, string, string) error
-		ValidateTaskRepositoryLane(string, string, string, string) error
+		ValidateSessionRepositoryLaneForRead(string, string, string, string) error
+		ValidateTaskRepositoryLaneForRead(string, string, string, string) error
 	})
 	if !ok {
 		return errors.New("repository lane validator unavailable")
 	}
 	if item.Kind == "lane" {
 		digest := sha256.Sum256([]byte(item.SessionID + "\x00" + item.SourcePath))
-		if err := validator.ValidateTaskRepositoryLane(item.SourcePath, item.WorkspacePath, "program-lane-"+hex.EncodeToString(digest[:12]), item.Branch); err != nil {
+		if err := validator.ValidateTaskRepositoryLaneForRead(item.SourcePath, item.WorkspacePath, "program-lane-"+hex.EncodeToString(digest[:12]), item.Branch); err != nil {
 			return err
 		}
-	} else if err := validator.ValidateSessionRepositoryLane(item.SourcePath, item.WorkspacePath, item.SessionID, item.Branch); err != nil {
+	} else if err := validator.ValidateSessionRepositoryLaneForRead(item.SourcePath, item.WorkspacePath, item.SessionID, item.Branch); err != nil {
 		return err
 	}
 	return worktree.ValidateOwnedIdentity(item.SourcePath, item.WorkspacePath, item.Branch, item.BaseCommit)

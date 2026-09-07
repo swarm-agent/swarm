@@ -17,7 +17,7 @@ export function SessionRepositoryPicker({ inventory, onSelect, onRefresh, onLoad
     {inventory.loading ? <p role="status">Loading repositories…</p> : null}
     {inventory.stale && inventory.items.length > 0 ? <p role="status">Stale inventory — operations disabled until refreshed.</p> : null}
     {inventory.error ? <p role="alert" className="break-words text-[var(--app-warning)]">{inventory.error}</p> : null}
-    <div className="max-h-56 overflow-y-auto">
+    <div className="mb-3 max-h-56 overflow-y-auto border-b border-[var(--app-border)] pb-2">
       {[...groups].map(([key, rows]) => <fieldset key={key} className="my-2 min-w-0 border-t border-[var(--app-border)]">
         <legend className="max-w-full break-all font-semibold">{rows[0].workspace_name || rows[0].source_path}</legend>
         <div className="break-all text-[10px] text-[var(--app-text-subtle)]">{rows[0].source_path}</div>

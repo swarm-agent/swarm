@@ -642,6 +642,16 @@ func (s *Service) ApplyTaskIntegration(parentPath string, plan TaskIntegrationPl
 // allocation and Git common repository; arbitrary paths and symlink replacements
 // cannot become trusted runtime destinations.
 func (s *Service) ValidateTaskRepositoryLane(source, lane, ownerSeed, branch string) error {
+	return s.validateTaskRepositoryLane(source, lane, ownerSeed, branch, true)
+}
+
+// ValidateTaskRepositoryLaneForRead authenticates ownership without requiring a
+// clean worktree. It grants no integration, recovery, or mutation authority.
+func (s *Service) ValidateTaskRepositoryLaneForRead(source, lane, ownerSeed, branch string) error {
+	return s.validateTaskRepositoryLane(source, lane, ownerSeed, branch, false)
+}
+
+func (s *Service) validateTaskRepositoryLane(source, lane, ownerSeed, branch string, requireClean bool) error {
 	root, err := resolveRepositoryRoot(source)
 	if err != nil {
 		return err
@@ -650,7 +660,7 @@ func (s *Service) ValidateTaskRepositoryLane(source, lane, ownerSeed, branch str
 	if err != nil {
 		return err
 	}
-	return s.validateRepositoryLanePath(root, lane, expected, branch)
+	return s.validateRepositoryLanePath(root, lane, expected, branch, requireClean)
 }
 
 // ValidateSessionRepositoryLane validates both canonical session allocators.
@@ -658,6 +668,16 @@ func (s *Service) ValidateTaskRepositoryLane(source, lane, ownerSeed, branch str
 // use the owner-derived ID. Program lanes must continue using their exact seed.
 // Callers must authenticate the session and its recorded path/branch beforehand.
 func (s *Service) ValidateSessionRepositoryLane(source, lane, owner, branch string) error {
+	return s.validateSessionRepositoryLane(source, lane, owner, branch, true)
+}
+
+// ValidateSessionRepositoryLaneForRead preserves the allocator/path/branch
+// identity checks but permits dirty retained work to be inspected.
+func (s *Service) ValidateSessionRepositoryLaneForRead(source, lane, owner, branch string) error {
+	return s.validateSessionRepositoryLane(source, lane, owner, branch, false)
+}
+
+func (s *Service) validateSessionRepositoryLane(source, lane, owner, branch string, requireClean bool) error {
 	if strings.TrimSpace(owner) == "" {
 		return errors.New("session lane owner is required")
 	}
@@ -670,7 +690,7 @@ func (s *Service) ValidateSessionRepositoryLane(source, lane, owner, branch stri
 		return err
 	}
 	if filepath.Clean(lane) == filepath.Clean(ownerPath) {
-		return s.validateRepositoryLanePath(root, lane, ownerPath, branch)
+		return s.validateRepositoryLanePath(root, lane, ownerPath, branch, requireClean)
 	}
 	namedID, err := WorkspaceIdentityForRequestedBranch(branch)
 	if err != nil {
@@ -680,10 +700,10 @@ func (s *Service) ValidateSessionRepositoryLane(source, lane, owner, branch stri
 	if err != nil {
 		return err
 	}
-	return s.validateRepositoryLanePath(root, lane, namedPath, branch)
+	return s.validateRepositoryLanePath(root, lane, namedPath, branch, requireClean)
 }
 
-func (s *Service) validateRepositoryLanePath(root, lane, expected, branch string) error {
+func (s *Service) validateRepositoryLanePath(root, lane, expected, branch string, requireClean bool) error {
 	actual, err := filepath.EvalSymlinks(lane)
 	if err != nil {
 		return err
@@ -697,6 +717,16 @@ func (s *Service) validateRepositoryLanePath(root, lane, expected, branch string
 	}
 	if laneRoot != root {
 		return errors.New("task repository lane Git repository mismatch")
+	}
+	if !requireClean {
+		actualBranch, err := runGit(lane, "symbolic-ref", "--quiet", "--short", "HEAD")
+		if err != nil {
+			return err
+		}
+		if actualBranch != branch {
+			return errors.New("task repository lane branch mismatch")
+		}
+		return nil
 	}
 	state, err := s.InspectTaskWorkspace(lane)
 	if err != nil {
