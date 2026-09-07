@@ -1129,6 +1129,17 @@ func (s *Service) resolveWorkspaceConfigPathForPrincipalOptional(principal ident
 			return "", false, fmt.Errorf("resolve workspace scope: %w", err)
 		}
 		if scope.Matched && strings.TrimSpace(scope.WorkspacePath) != "" {
+			requestedIdentity, err := RepositoryIdentity(trimmed)
+			if err != nil {
+				return "", false, err
+			}
+			savedIdentity, err := RepositoryIdentity(scope.WorkspacePath)
+			if err != nil {
+				return "", false, err
+			}
+			if requestedIdentity != savedIdentity {
+				return "", false, errors.New("requested repository differs from saved workspace authority")
+			}
 			return strings.TrimSpace(scope.WorkspacePath), true, nil
 		}
 		resolved := strings.TrimSpace(scope.ResolvedPath)

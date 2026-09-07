@@ -44,7 +44,10 @@ func (s *Service) resolveRunWorkspaceScope(session pebblestore.SessionSnapshot, 
 		return tool.WorkspaceScope{}, errors.New("workspace onboarding agent cannot run outside the dedicated pre-admission flow")
 	}
 	if session.WorktreeEnabled {
-		resolvedPath, err := normalizeRunScopePath(firstNonEmptyString(session.WorktreeRootPath, workspacePath))
+		if err := validateSessionRepositoryIdentity(session); err != nil {
+			return tool.WorkspaceScope{}, err
+		}
+		resolvedPath, err := normalizeRunScopePath(session.WorktreeRootPath)
 		if err != nil {
 			return tool.WorkspaceScope{}, err
 		}
@@ -98,27 +101,12 @@ func (s *Service) resolveRunWorkspaceScope(session pebblestore.SessionSnapshot, 
 				}
 				sourceWorkspacePath = normalizedSource
 				readOnlyRoots = append(readOnlyRoots, normalizedSource)
-				if s != nil && s.workspace != nil {
-					// A delegated Coder writes only in its isolated worktree, but it may
-					// need to inspect another directory already linked to the source
-					// workspace (for example, a sibling product repository used as
-					// source authority). Re-authenticate the account-scoped saved
-					// workspace at run time and expose its linked directories as
-					// read-only roots. Do not inherit session-only temporary roots.
-					linkedScope, linkedErr := s.workspace.ScopeForPathForPrincipal(principal, normalizedSource)
-					if linkedErr != nil {
-						return tool.WorkspaceScope{}, fmt.Errorf("resolve Coder linked read-only roots: %w", linkedErr)
-					}
-					if linkedScope.Matched {
-						readOnlyRoots = mergeSessionWorkspaceRoots(readOnlyRoots, linkedScope.Directories)
-					}
-				}
+
 			}
-			pooledReadOnlyRoots, pooledErr := s.mergeAccountSavedWorkspaceRoots(principal, nil)
-			if pooledErr != nil {
-				return tool.WorkspaceScope{}, fmt.Errorf("resolve Coder account workspace pool: %w", pooledErr)
-			}
-			readOnlyRoots = mergeSessionWorkspaceRoots(readOnlyRoots, pooledReadOnlyRoots)
+			// Explicit attachments are read-only for Coders; catalog membership alone
+			// grants nothing. Keep the owned lane as their only mutable root.
+			readOnlyRoots = mergeSessionWorkspaceRoots(readOnlyRoots, roots)
+			roots = []string{resolvedPath}
 		}
 		return tool.WorkspaceScope{
 			PrimaryPath:          resolvedPath,
@@ -145,7 +133,7 @@ func (s *Service) resolveRunWorkspaceScope(session pebblestore.SessionSnapshot, 
 			if err := validateSessionWorkspaceIdentity(session, resolved.WorkspaceID, resolved.WorkspaceGeneration); err != nil {
 				return tool.WorkspaceScope{}, err
 			}
-			roots, err := s.mergeAccountSavedWorkspaceRoots(principal, resolved.Directories)
+			roots, err := s.mergeAuthorizedSessionWorkspaceGrantRoots(principal, []string{resolved.WorkspacePath}, session.WorkspaceGrants)
 			if err != nil {
 				return tool.WorkspaceScope{}, err
 			}
@@ -172,7 +160,7 @@ func (s *Service) resolveRunWorkspaceScope(session pebblestore.SessionSnapshot, 
 	if err != nil {
 		return tool.WorkspaceScope{}, err
 	}
-	roots, err := s.mergeAccountSavedWorkspaceRoots(principal, []string{resolvedPath})
+	roots, err := s.mergeAuthorizedSessionWorkspaceGrantRoots(principal, []string{resolvedPath}, session.WorkspaceGrants)
 	if err != nil {
 		return tool.WorkspaceScope{}, err
 	}

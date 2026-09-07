@@ -65,9 +65,12 @@ func TestRunWorkspaceScopeInjectsAccountScopedLinkedAgentsInstructions(t *testin
 	}
 }
 
+// Purpose: scope/prompt identity must describe a real isolated Git lane, not fabricated paths.
 func TestRunWorkspaceScopeUsesManagedWorktreeAsPrimaryAndPromptsToolRoot(t *testing.T) {
-	source := t.TempDir()
-	worktree := t.TempDir()
+	source := programFixtureRepo(t)
+	worktree := filepath.Join(t.TempDir(), "lane")
+	runTestGit(t, source, "worktree", "add", "-b", "agent/plan-worktree", worktree)
+	base := strings.TrimSpace(runTestGit(t, source, "rev-parse", "HEAD"))
 	linked := t.TempDir()
 	writeTestFile(t, filepath.Join(worktree, "AGENTS.md"), "worktree_runtime_rule: yes")
 
@@ -86,7 +89,7 @@ func TestRunWorkspaceScopeUsesManagedWorktreeAsPrimaryAndPromptsToolRoot(t *test
 		Metadata: map[string]any{
 			"swarm_v3_source_workspace_path":  source,
 			"swarm_v3_runtime_workspace_path": worktree,
-			"base_commit":                     strings.Repeat("a", 40),
+			"base_commit":                     base,
 		},
 	}
 
@@ -94,7 +97,7 @@ func TestRunWorkspaceScopeUsesManagedWorktreeAsPrimaryAndPromptsToolRoot(t *test
 	if err != nil {
 		t.Fatalf("resolve managed worktree scope: %v", err)
 	}
-	if scope.PrimaryPath != worktree || !scope.WorktreeEnabled || scope.WorktreeRootPath != worktree || scope.WorktreeBranch != session.WorktreeBranch || scope.WorktreeBaseBranch != session.WorktreeBaseBranch || scope.WorktreeBaseCommit != strings.Repeat("a", 40) || scope.SourceWorkspacePath != source {
+	if scope.PrimaryPath != worktree || !scope.WorktreeEnabled || scope.WorktreeRootPath != worktree || scope.WorktreeBranch != session.WorktreeBranch || scope.WorktreeBaseBranch != session.WorktreeBaseBranch || scope.WorktreeBaseCommit != base || scope.SourceWorkspacePath != source {
 		t.Fatalf("managed worktree scope = %+v", scope)
 	}
 	assertStringSliceContains(t, scope.Roots, worktree)
@@ -144,8 +147,10 @@ func TestRunWorkspaceScopeCoderAllowsOnlyCanonicalLinkedWorktreeGitAdminRoot(t *
 		WorktreeBranch:     "agent/test-linked-admin",
 		WorktreeBaseBranch: "dev",
 		Metadata: map[string]any{
-			"requested_subagent": "coder",
-			"owned_scope":        []string{"src/**"},
+			"requested_subagent":             "coder",
+			"owned_scope":                    []string{"src/**"},
+			"swarm_v3_source_workspace_path": repo,
+			"base_commit":                    strings.TrimSpace(runTestGit(t, repo, "rev-parse", "HEAD")),
 		},
 	}, principal)
 	if err != nil {
@@ -202,6 +207,7 @@ func TestRunWorkspaceScopeCoderSourceWorkspaceReadDoesNotRequestPermission(t *te
 			"requested_subagent":              "coder",
 			"owned_scope":                     []string{"src/**"},
 			"swarm_v3_source_workspace_path":  repo,
+			"base_commit":                     strings.TrimSpace(runTestGit(t, repo, "rev-parse", "HEAD")),
 			"swarm_v3_runtime_workspace_path": worktree,
 		},
 	}, principal)
@@ -320,7 +326,7 @@ func TestRunExecutionContextPreservesCoderLinkedWorkspaceReadAuthorization(t *te
 	runTestGit(t, repo, "add", "tracked.txt")
 	runTestGit(t, repo, "commit", "-m", "base")
 
-	linked := t.TempDir()
+	linked := programFixtureRepo(t)
 	linkedFile := filepath.Join(linked, "web", "models.tsx")
 	writeTestFile(t, linkedFile, "Agent Setup Models serviceTier")
 	unrelated := t.TempDir()
@@ -333,13 +339,15 @@ func TestRunExecutionContextPreservesCoderLinkedWorkspaceReadAuthorization(t *te
 	if _, err := workspaceSvc.AddForPrincipal(principal, repo, "source", "", true); err != nil {
 		t.Fatalf("save source workspace: %v", err)
 	}
-	if _, err := workspaceSvc.AddDirectoryForPrincipal(principal, repo, linked); err != nil {
-		t.Fatalf("link read-only workspace: %v", err)
+	linkedEntry, err := workspaceSvc.AddForPrincipal(principal, linked, "linked", "", false)
+	if err != nil {
+		t.Fatal(err)
 	}
 
 	runSvc := NewService(nil, nil, nil, nil, nil, nil, discovery.NewService(), nil)
 	runSvc.SetWorkspaceService(workspaceSvc)
 	session := pebblestore.SessionSnapshot{
+		WorkspaceGrants:    []pebblestore.WorkspaceGrant{{Kind: pebblestore.WorkspaceGrantAdditional, WorkspaceID: linkedEntry.WorkspaceID, WorkspaceGeneration: linkedEntry.WorkspaceGeneration, Path: linked}},
 		ID:                 "session-coder-live-linked-read",
 		UserID:             principal.UserID,
 		AccountScopeID:     principal.AccountScopeID,
@@ -352,6 +360,7 @@ func TestRunExecutionContextPreservesCoderLinkedWorkspaceReadAuthorization(t *te
 			"requested_subagent":              "coder",
 			"owned_scope":                     []string{"reports/**"},
 			"swarm_v3_source_workspace_path":  repo,
+			"base_commit":                     strings.TrimSpace(runTestGit(t, repo, "rev-parse", "HEAD")),
 			"swarm_v3_runtime_workspace_path": worktree,
 		},
 	}
@@ -393,9 +402,11 @@ func TestRunExecutionContextPreservesCoderLinkedWorkspaceReadAuthorization(t *te
 // revalidated immediately before provider execution. This prevents stale or
 // client-overridden execution contexts from redirecting a write-capable run to
 // the shared source checkout after durable admission.
+// Purpose: mandatory execution must reject ownership/branch/override drift on actual Git authority.
 func TestMandatorySessionWorktreeRunRevalidation(t *testing.T) {
-	source := t.TempDir()
-	worktree := t.TempDir()
+	source := programFixtureRepo(t)
+	worktree := filepath.Join(t.TempDir(), "lane")
+	runTestGit(t, source, "worktree", "add", "-b", "agent/session-owned", worktree)
 	principal := testRunPrincipal()
 	state := worktreeruntime.TaskWorkspaceState{WorkspacePath: worktree, BranchName: "agent/session-owned", Clean: true}
 	runSvc := NewService(nil, nil, nil, nil, nil, nil, discovery.NewService(), nil)
@@ -411,6 +422,7 @@ func TestMandatorySessionWorktreeRunRevalidation(t *testing.T) {
 		Metadata: map[string]any{
 			"swarm_v3_source_workspace_path": source, "swarm_v3_runtime_workspace_path": worktree,
 			"swarm_v3_mandatory_worktree": true, "swarm_v3_worktree_owner_session_id": "session-owned",
+			"base_commit": strings.TrimSpace(runTestGit(t, source, "rev-parse", "HEAD")),
 		},
 	}
 
@@ -478,6 +490,7 @@ func TestRunExecutionContextPreservesCoderSourceWorkspaceReadAuthorization(t *te
 			"requested_subagent":              "coder",
 			"owned_scope":                     []string{"projects/output/**"},
 			"swarm_v3_source_workspace_path":  repo,
+			"base_commit":                     strings.TrimSpace(runTestGit(t, repo, "rev-parse", "HEAD")),
 			"swarm_v3_runtime_workspace_path": worktree,
 		},
 	}
@@ -645,9 +658,10 @@ func TestRunWorkspaceScopeRequiresPrincipalForPrincipalBackedRuntime(t *testing.
 // saved root entering requestWorkspaceScopePermission and interrupting the user.
 // This run-scope/gate test is the narrowest layer that proves every path-bearing
 // tool classification and the unsaved-path negative case before tool execution.
-func TestResolveRunWorkspaceScopeIncludesEveryAccountSavedWorkspaceWithoutSwitch(t *testing.T) {
-	primary := t.TempDir()
-	secondary := t.TempDir()
+// Purpose: explicit authorized attachments admit tools without changing the default; catalog-only roots do not.
+func TestResolveRunWorkspaceScopeIncludesAttachedWorkspaceWithoutSwitch(t *testing.T) {
+	primary := programFixtureRepo(t)
+	secondary := programFixtureRepo(t)
 	external := t.TempDir()
 	principal := testRunPrincipal()
 	workspaceSvc, _, _, cleanup := newTestRunWorkspaceServiceWithRawStore(t)
@@ -664,7 +678,8 @@ func TestResolveRunWorkspaceScopeIncludesEveryAccountSavedWorkspaceWithoutSwitch
 	runSvc := NewService(nil, nil, nil, nil, nil, nil, discovery.NewService(), nil)
 	runSvc.SetWorkspaceService(workspaceSvc)
 	scope, err := runSvc.resolveRunWorkspaceScope(pebblestore.SessionSnapshot{
-		ID: "session-global-saved-workspaces", UserID: principal.UserID, AccountScopeID: principal.AccountScopeID,
+		WorkspaceGrants: []pebblestore.WorkspaceGrant{{Kind: pebblestore.WorkspaceGrantAdditional, WorkspaceID: secondaryResolution.WorkspaceID, WorkspaceGeneration: secondaryResolution.WorkspaceGeneration, Path: secondary}},
+		ID:              "session-global-saved-workspaces", UserID: principal.UserID, AccountScopeID: principal.AccountScopeID,
 		WorkspacePath: primary, WorkspaceName: "primary",
 		Metadata: map[string]any{"swarm_v3_source_workspace_id": primaryResolution.WorkspaceID, "swarm_v3_source_workspace_generation": primaryResolution.WorkspaceGeneration},
 	}, principal)

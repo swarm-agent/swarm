@@ -1307,8 +1307,8 @@ func (r *Runtime) Definitions() []Definition {
 					"intent":                 map[string]any{"type": "string", "maxLength": 500, "description": "Short user-readable reason for a persistent catalog or Workspace Map change. update_map requires an explicit user request and intent. Do not include unrelated private content."},
 					"expected_revision":      map[string]any{"type": "integer", "minimum": 1, "description": "update_map only: exact current Workspace Map revision returned by inspect_map/get_map; stale revisions fail without mutation."},
 					"content":                map[string]any{"type": "string", "maxLength": 32768, "description": "update_map only: complete replacement Markdown document. It must begin with '# Workspace Map'."},
-					"workspace_ids":          map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Authorized workspace identities granted to this session."},
-					"primary_workspace_id":   map[string]any{"type": "string", "description": "Workspace identity used for navigation and sidebar grouping; it is added to workspace_ids when omitted there."},
+					"workspace_ids":          map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Exact flat attachment set for set_session (maximum 64). Omit to preserve attachments. Removal requires an explicit replacement default if the current default is removed; historical worktree ownership is retained."},
+					"primary_workspace_id":   map[string]any{"type": "string", "description": "Explicit session default identity, independent of attachment order; added to workspace_ids when omitted there. Git default changes select an owned isolated lane or fail without relabeling history."},
 					"worktree_name":          map[string]any{"type": "string", "description": "adopt_worktree only: short requested name used to allocate a new managed worktree for this same session."},
 					"worktree_path":          map[string]any{"type": "string", "description": "adopt_worktree only: exact prior managed worktree path already recorded as owned by this same session."},
 					"expected_worktree_path": map[string]any{"type": "string", "description": "adopt_worktree only: optional stale-reference guard for the session's current worktree path; use an empty omission for the first adoption."},
@@ -9599,7 +9599,7 @@ func resolveWorkspacePath(scope WorkspaceScope, requested string) (string, error
 		return "", err
 	}
 
-	if !pathWithinAllowedRoots(resolveAllowedRoots(scope), resolvedCandidate) {
+	if !workspaceGitAdminAllowed(scope, resolvedCandidate) || !pathWithinAllowedRoots(resolveAllowedRoots(scope), resolvedCandidate) {
 		return "", fmt.Errorf("path %q escapes workspace scope", requested)
 	}
 	return candidateAbs, nil
