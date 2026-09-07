@@ -1285,7 +1285,11 @@ func (r artifactV3AnimationRenderer) request(input artifactv3video.RenderRequest
 	// those timelines deterministically seekable even when author code does not
 	// own a requestAnimationFrame loop, so requiring artifact-owned rAF here would
 	// reject valid CSS-only animations after the adapter is successfully bound.
-	return htmlcapture.AnimationRequest{Entry: manifest.Entrypoint, Files: files, DurationMS: int(input.DurationMs), FPS: int(input.FPS), OutputFPS: int(input.FPS), Quality: htmlcapture.AnimationQualityStandard, RequireLivePlayback: false, AllowBooleanReady: !declared}, nil
+	// Boolean readiness asserts availability, not timing. Native historical
+	// runtimes may return true even with an authored manifest; timing above is
+	// already checked against that declaration. htmlcapture still rejects any
+	// timing-bearing acknowledgement that contradicts this exact request.
+	return htmlcapture.AnimationRequest{Entry: manifest.Entrypoint, Files: files, DurationMS: int(input.DurationMs), FPS: int(input.FPS), OutputFPS: int(input.FPS), Quality: htmlcapture.AnimationQualityStandard, RequireLivePlayback: false, AllowBooleanReady: true}, nil
 }
 
 func (r artifactV3AnimationRenderer) Preflight(ctx context.Context, input artifactv3video.RenderRequest) error {
