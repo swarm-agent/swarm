@@ -413,7 +413,8 @@ func (s *Service) allocateSessionWorkspaceWithOptions(workspacePath string, useC
 		cleanupErr := cleanupAllocatedWorktree(repoRoot, worktreePath, branchName)
 		return Allocation{}, fmt.Errorf("set worktree directory permissions: %w", allocationFailureWithCleanup(err, cleanupErr))
 	}
-	baseCommit, err := resolveRepositoryHeadCommit(workspacePath)
+	// Capture the allocated checkout, not the source's possibly different branch.
+	baseCommit, err := resolveRepositoryHeadCommit(worktreePath)
 	if err != nil {
 		cleanupErr := cleanupAllocatedWorktree(repoRoot, worktreePath, branchName)
 		return Allocation{}, fmt.Errorf("capture worktree base commit: %w", allocationFailureWithCleanup(err, cleanupErr))

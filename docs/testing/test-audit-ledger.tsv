@@ -6068,3 +6068,6 @@ ta-scope-delivery-prompt	go-test	swarmd/internal/run/service_task_owned_scope_de
 # G4 source_sha256 web/src/features/desktop/git/session-repository-picker.browser.spec.ts 8547682b0d0dddd74336e0115f00766da09f0d6e2e6d045352a7f2e07118bf2d
 # G4 source_sha256 web/src/features/desktop/git/session-repository-picker.spec.ts 7d036e5e4562f79b186f9e63d620491379588667a0f43ef5ddce86dff421dd31
 # G4 source_sha256 web/src/features/desktop/state/session-repositories.spec.ts 447e5d06609911f125246750a40e4a10890eccd61fd3612ad8b346cf80722f64
+# A5 2026-09-07 new focused regressions; independent P1/P2 unreviewed; no curated promotion. Matrix A5 records executed count=2 API and real-Git assertions and remaining live gaps.
+# A5 source_sha256 swarmd/internal/api/sessions_v3_base_identity_test.go f3d37617a27a9ea080a4339f7cfddc8231e9a3af4975df7658a298b624466ba3
+# A5 source_sha256 swarmd/internal/worktree/allocation_base_test.go 561cfd15d76dadb88619af3c1f0da08cc65b211838f9ee9f98d4fbb49a0de96e

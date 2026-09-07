@@ -603,3 +603,25 @@ Independent P1/P2 review remains pending, no curated critical test promotion.
 Full-app/deployed endpoint/realtime/provider stage proof and startup crash-window
 verification remain the separately approved integration-audit/live checkpoint.
 No Models change, host update, testbench deployment, source promotion or push.
+
+## A5 — Live audit exposed primary-create base identity gap
+
+Exact candidate `9ed08b68b59b18da31640c93e8d1bf2574a16131` passed the fast
+build gate, rebuilt successfully in the existing persistent isolated lane, and
+passed fresh authenticated browser availability checks. The first disposable
+session failed before provider execution with `session worktree base identity is
+missing`. Thus G4 source/component evidence does not establish M01/M21 live success.
+
+Audit correction: primary HTTP create now persists allocator `BaseCommit`; the
+allocator captures the allocated checkout HEAD rather than source HEAD when the
+selected base branch differs. Existing-worktree reuse checks clean branch/HEAD
+and supplies that base. New HTTP regression also exposed timestamp-sensitive
+create hashing: server model-profile `applied_at` is excluded while model choice
+and the remaining request fields remain bound. No legacy session base is guessed.
+
+Focused command on the A5 diff over that candidate:
+`cd swarmd && GOMAXPROCS=2 go test -p 2 ./internal/api ./internal/worktree -run '^(TestSessionsV3CreatePersistsAllocatorBase|TestSessionAllocationCapturesSelectedBase|TestSessionsV3PrimaryWorktreeCreateReplayDoesNotReallocate)$' -count=2 -timeout=90s`
+passed API 2.220s and worktree 0.100s. Assertions cover durable allocator base,
+forged metadata rejection before allocation/persistence, same-request replay,
+selected-branch actual Git base and unchanged source/inventory after rejection.
+Full corrected live flow remains pending; no provider or final visual success.
