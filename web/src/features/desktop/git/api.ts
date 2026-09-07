@@ -1,6 +1,6 @@
 import { requestJson, requestStartupJson } from '../../../app/api'
 import { SharedRequestPool } from '../../../app/request-lifecycle'
-import type { GitCommitSuggestionResponse, GitRealtimeResponse, GitSnapshot, GitStatusResponse } from './types'
+import type { GitCommitSuggestionResponse, GitRealtimeResponse, GitSnapshot, GitStatusResponse, SessionRepositoriesResponse } from './types'
 
 function normalizeGitSnapshot(snapshot: GitSnapshot): GitSnapshot {
   return {
@@ -93,4 +93,13 @@ export async function commitWorkspaceChanges(input: {
       all: input.all ?? true,
     }),
   })
+}
+
+export async function fetchSessionRepositories(sessionId: string, cursor = '', signal?: AbortSignal): Promise<SessionRepositoriesResponse> {
+  if (!sessionId.trim()) throw new Error('Session repository owner is required')
+  const params = new URLSearchParams({ limit: '20' })
+  if (cursor) params.set('cursor', cursor)
+  const response = await requestStartupJson<SessionRepositoriesResponse>(`/v3/sessions/${encodeURIComponent(sessionId)}/repositories?${params}`, { signal })
+  if (!response.ok || !Array.isArray(response.items)) throw new Error('Invalid session repository inventory')
+  return { ...response, items: response.items.map(row => ({ ...row, status: row.status ? normalizeGitSnapshot(row.status) : undefined })) }
 }

@@ -81,3 +81,29 @@ export interface GitRealtimeResponse {
   status: GitSnapshot
   diagnostics: GitRealtimeDiagnostics
 }
+
+export interface SessionRepository {
+  id: string
+  session_id: string
+  workspace_id: string
+  workspace_name: string
+  source_path: string
+  workspace_path: string
+  kind: string
+  attached: boolean
+  default: boolean
+  branch: string
+  base_commit: string
+  lifecycle: string
+  retained: boolean
+  availability: string
+  error?: string
+  status?: GitSnapshot
+  files_truncated: boolean
+}
+export interface SessionRepositoriesResponse {
+  ok: boolean
+  items: SessionRepository[]
+  next_cursor?: string
+  history_coverage: string
+}
