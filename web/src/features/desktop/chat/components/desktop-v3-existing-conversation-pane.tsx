@@ -182,6 +182,7 @@ import { DesktopV3ArtifactPreviewThumbnail } from "./desktop-v3-artifact-preview
 import { useDesktopV3OpenArtifactCatalogRefresh } from "../../session-v3/use-artifact-catalog-refresh";
 import {
   desktopV3ActiveSessionSidebarView,
+  desktopV3HasArtifactSidebarContent,
   effectiveDesktopSidebarDisplayMode,
   loadDesktopSidebarDisplayMode,
   type DesktopSidebarDisplayMode,
@@ -2280,7 +2281,10 @@ export function DesktopV3ExistingConversationPane({
     setResolvingPlanPermissionId("");
   }, [resolvingPlanPermissionId, showPlanExecutionSidebar]);
   const showPlanSidebar = showPlanExecutionSidebar || Boolean(stablePlanDocument);
-  const hasSessionArtifacts = sessionArtifactV3Loading || Boolean(sessionArtifactV3Error) || sessionArtifactV3.length > 0 || sessionArtifactV2.length > 0 || sessionArtifacts.length > 0;
+  const hasSessionArtifacts = desktopV3HasArtifactSidebarContent({
+    artifactCount: sessionArtifactV3.length + sessionArtifactV2.length + sessionArtifacts.length,
+    error: sessionArtifactV3Error,
+  });
   const hasPendingVisualSwarm = desktopV3HasPendingVisualSwarm(sessionArtifacts);
   const showConversationSidebar = showPlanSidebar || hasSessionArtifacts;
   const showConversationSidebarColumn = showConversationSidebar && presentation !== "sidebar";

@@ -6,6 +6,14 @@ const DESKTOP_SIDEBAR_COMPACT_EXIT_WIDTH = 1020;
 const DESKTOP_SIDEBAR_THIN_ENTER_WIDTH = 680;
 const DESKTOP_SIDEBAR_THIN_EXIT_WIDTH = 760;
 
+/** Catalog requests are background discovery, not evidence of sidebar content. */
+export function desktopV3HasArtifactSidebarContent(input: {
+  artifactCount: number;
+  error: string;
+}): boolean {
+  return input.artifactCount > 0 || Boolean(input.error);
+}
+
 export function desktopV3ActiveSessionSidebarView(input: {
   selected: DesktopV3SessionSidebarView;
   hasPlan: boolean;
