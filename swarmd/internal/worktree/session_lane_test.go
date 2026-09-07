@@ -71,6 +71,26 @@ func TestSessionRepositoryLaneNamedAllocation(t *testing.T) {
 	if err := svc.ValidateSessionRepositoryLane(source, named.WorkspacePath, "owner-one", named.BranchName); err == nil {
 		t.Fatal("dirty recovery accepted")
 	}
+	// Read-only inventory must inspect dirty owned lanes without weakening the
+	// transition validator above, or accepting aliases, foreign seeds or branches.
+	if err := svc.ValidateSessionRepositoryLaneForRead(source, named.WorkspacePath, "owner-one", named.BranchName); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.ValidateTaskRepositoryLaneForRead(source, task.WorkspacePath, "owner-two", task.BranchName); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.ValidateTaskRepositoryLaneForRead(source, task.WorkspacePath, "foreign", task.BranchName); err == nil {
+		t.Fatal("foreign read seed accepted")
+	}
+	if err := svc.ValidateSessionRepositoryLaneForRead(source, alias, "owner-one", named.BranchName); err == nil {
+		t.Fatal("read alias accepted")
+	}
+	if err := svc.ValidateSessionRepositoryLaneForRead(source, named.WorkspacePath, "owner-one", "agent/wrong"); err == nil {
+		t.Fatal("read branch mismatch accepted")
+	}
+	if before != git(source, "worktree", "list", "--porcelain") {
+		t.Fatal("read validation changed inventory")
+	}
 	if data, err := os.ReadFile(dirty); err != nil || string(data) != "preserve" {
 		t.Fatal("dirty data lost")
 	}

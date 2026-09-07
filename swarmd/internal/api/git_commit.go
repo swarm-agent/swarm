@@ -82,14 +82,22 @@ func (s *Server) writeGitCommitResponse(w http.ResponseWriter, r *http.Request, 
 }
 
 func (s *Server) resolveGitCommitWorkspacePath(req workspaceGitCommitRequest, principal identity.Principal, sessionID string) (string, error) {
-	if worktreePath, ok, err := s.resolveSessionGitWorkspacePath(principal, sessionID); err != nil {
-		return "", err
-	} else if ok {
-		return worktreePath, nil
+	if strings.TrimSpace(req.WorkspacePath) != "" && strings.TrimSpace(req.CWD) != "" && strings.TrimSpace(req.WorkspacePath) != strings.TrimSpace(req.CWD) {
+		return "", errors.New("conflicting repository selectors")
 	}
 	workspacePath := strings.TrimSpace(req.WorkspacePath)
 	if workspacePath == "" {
 		workspacePath = strings.TrimSpace(req.CWD)
+	}
+	if sessionID != "" {
+		item, err := s.selectedSessionRepository(principal, sessionID, workspacePath)
+		if err != nil {
+			return "", err
+		}
+		if !item.currentAuthority {
+			return "", errors.New("historical repository is read-only; use current owning session or canonical integration authority")
+		}
+		return item.WorkspacePath, nil
 	}
 	if workspacePath == "" && s != nil && s.workspace != nil {
 		current, ok, err := s.workspace.CurrentBindingForPrincipal(principal)

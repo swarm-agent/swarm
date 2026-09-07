@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+if [[ "${SWARM_TESTBENCH_ATTACH_ONLY:-}" == 1 || "${1:-}" == --attach-only ]]; then
+  printf 'run-testbench-runner: legacy runner is not attach-safe; use the canonical launch-prerun attach manifest\n' >&2
+  exit 2
+fi
+
 usage() {
   cat <<'USAGE'
 Usage: scripts/run-testbench-runner.sh [runner-name] [runner options...]

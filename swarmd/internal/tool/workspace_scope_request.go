@@ -31,6 +31,13 @@ func ScopeExpansionForCall(scope WorkspaceScope, call Call) (ScopeExpansionReque
 		return ScopeExpansionRequest{}, false, nil
 	}
 
+	switch strings.ToLower(strings.TrimSpace(call.Name)) {
+	case "search", "find", "agentic_search":
+		var args map[string]any
+		if json.Unmarshal([]byte(call.Arguments), &args) == nil && strings.TrimSpace(asString(args["path"])) != "" && len(asStringSlice(args["paths"])) > 0 {
+			return ScopeExpansionRequest{}, false, errors.New("specify either path or paths, not both")
+		}
+	}
 	argumentName, requestedPaths, ok := scopeExpansionArguments(call)
 	if !ok {
 		return ScopeExpansionRequest{}, false, nil
@@ -81,10 +88,7 @@ func scopeExpansionForPath(scope WorkspaceScope, toolName, argumentName, request
 
 func pathAllowedForScopeCall(scope WorkspaceScope, toolName, candidate string) bool {
 	if scopeCallMutatesWorkspace(toolName) {
-		if len(scope.MutationScopes) > 0 {
-			return workspaceMutationAllowed(scope, candidate)
-		}
-		return pathWithinAllowedRoots(resolveMutableRoots(scope), candidate)
+		return workspaceMutationAllowed(scope, candidate)
 	}
 	return pathWithinAllowedRoots(resolveAllowedRoots(scope), candidate)
 }

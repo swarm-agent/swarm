@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { afterEach, test } from 'node:test'
 
-import { GIT_REALTIME_TIMEOUT_MS, commitWorkspaceChanges, fetchGitStatus, startGitRealtime, suggestWorkspaceCommitMessage } from './api'
+import { GIT_REALTIME_TIMEOUT_MS, commitWorkspaceChanges, fetchGitStatus, fetchSessionRepositories, startGitRealtime, suggestWorkspaceCommitMessage } from './api'
 
 const originalFetch = globalThis.fetch
 
@@ -167,4 +167,19 @@ test('Git long-poll body timeout evicts coalesced state and permits retry', asyn
   assert.equal(signal.aborted, true)
   globalThis.fetch = async () => Response.json({ ok: true, watch_token: 'next', status: { files: [] } })
   assert.equal((await startGitRealtime('/workspace/project', 'session-1', 'watch')).watch_token, 'next')
+})
+
+// Requirement: inventory uses the canonical session owner and opaque cursor,
+// never a workspace fallback. This fetch boundary proves URL scope and rejection.
+test('session repositories scopes owner and forwards opaque cursor with bounded page size', async () => {
+  let url = ''
+  globalThis.fetch = (async input => {
+    url = String(input)
+    return new Response(JSON.stringify({ ok: true, items: [], history_coverage: 'retained' }), { headers: { 'Content-Type': 'application/json' } })
+  }) as typeof fetch
+  await fetchSessionRepositories('owner/a', 'opaque+/=')
+  assert.equal(url, '/v3/sessions/owner%2Fa/repositories?limit=20&cursor=opaque%2B%2F%3D')
+  await assert.rejects(fetchSessionRepositories(''), /owner is required/)
+  globalThis.fetch = (async () => new Response(JSON.stringify({ error: 'denied' }), { status: 403 })) as typeof fetch
+  await assert.rejects(fetchSessionRepositories('owner'), /denied|403/i)
 })
