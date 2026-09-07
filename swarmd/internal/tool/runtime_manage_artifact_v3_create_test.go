@@ -256,15 +256,21 @@ func TestManageArtifactCreateV3FlexiblePartCounts(t *testing.T) {
 // project and sequential Parts retain bounded midpoint samples. Reject override,
 // missing-profile and invalid-time inputs before allocating any turn.
 func TestManageArtifactCreateV3TemporalContract(t *testing.T) {
-	for _, invalid := range []string{"", "override", "missing-profile", "invalid-time"} {
+	for _, invalid := range []string{"", "override", "missing-profile", "invalid-time", "missing-manifest", "duplicate-manifest", "beyond-duration"} {
 		t.Run("case-"+invalid, func(t *testing.T) {
 			repository := &directArtifactV3RepoFake{}
 			runtime := NewRuntime(1)
 			runtime.SetArtifactV3AuthorService(NewArtifactV3AuthorService(t.TempDir(), repository, &artifactV3BuilderFake{}, &artifactV3PreviewerFake{}))
 			scope := WorkspaceScope{SessionID: "session-1", Principal: identity.Principal{Type: identity.PrincipalTypeUser, AccountScopeID: "account-1", UserID: "user-1"}}
 			ctx := WithArtifactRunContext(context.Background(), ArtifactRunContext{SessionID: "session-1", RunID: "run-1"})
-			args := map[string]any{"action": "create", "media_type": "text/html", "content": `<html><body><section id="scene">A scene</section></body></html>`, "animation_profile": map[string]any{"profile": "motion_ui"}, "parts": []map[string]any{{"id": "scene", "label": "Scene", "kind": "temporal", "start_ms": 0, "end_ms": 4000}}}
+			args := map[string]any{"action": "create", "media_type": "text/html", "content": `<html><body><section id="scene">A scene</section></body></html>` + nativeAnimationTestManifest, "animation_profile": map[string]any{"profile": "motion_ui"}, "parts": []map[string]any{{"id": "scene", "label": "Scene", "kind": "temporal", "start_ms": 0, "end_ms": 4000}}}
 			switch invalid {
+			case "missing-manifest":
+				args["content"] = strings.ReplaceAll(args["content"].(string), nativeAnimationTestManifest, "")
+			case "duplicate-manifest":
+				args["content"] = args["content"].(string) + nativeAnimationTestManifest
+			case "beyond-duration":
+				args["parts"] = []map[string]any{{"id": "scene", "label": "Scene", "kind": "temporal", "start_ms": 0, "end_ms": 5000}}
 			case "override":
 				args["animation_profile"] = map[string]any{"profile": "motion_ui", "network_allowed": true}
 			case "missing-profile":
@@ -289,6 +295,54 @@ func TestManageArtifactCreateV3TemporalContract(t *testing.T) {
 			}
 			if manifest.AnimationProfile == nil || manifest.AnimationProfile.ProfileID != "motion_ui" || manifest.AnimationProfile.Budgets.NetworkAllowed || len(manifest.Parts) != 1 || manifest.Parts[0].CaptureTimeMS == nil || *manifest.Parts[0].CaptureTimeMS != 2000 || manifest.Parts[0].Locator.Value != "#scene" {
 				t.Fatalf("temporal contract lost: %#v", manifest)
+			}
+		})
+	}
+}
+
+const nativeAnimationTestManifest = `<script id="swarm-animation-manifest" type="application/json">{"version":"swarm.animation/v1","duration_ms":4000,"fps":30}</script>`
+
+// Requirement: createDirectArtifactV3HTML must exclude capture UI before immutable
+// metadata allocation, reject explicit capture-only IDs without mutation, and
+// retain meaningful regions and canonical timing. The real author service with
+// fake renderers proves submitted bytes and allocation, not browser aesthetics.
+func TestManageArtifactCreateV3CaptureUI(t *testing.T) {
+	for _, selection := range []string{"automatic", "output", "capture-only"} {
+		t.Run(selection, func(t *testing.T) {
+			repository := &directArtifactV3RepoFake{}
+			runtime := NewRuntime(1)
+			runtime.SetArtifactV3AuthorService(NewArtifactV3AuthorService(t.TempDir(), repository, &artifactV3BuilderFake{}, &artifactV3PreviewerFake{}))
+			scope := WorkspaceScope{SessionID: "session-1", Principal: identity.Principal{Type: identity.PrincipalTypeUser, AccountScopeID: "account-1", UserID: "user-1"}}
+			ctx, cancel := context.WithTimeout(WithArtifactRunContext(context.Background(), ArtifactRunContext{SessionID: "session-1", RunID: "run-1"}), 10*time.Second)
+			defer cancel()
+			body := `<html><body><main id="announcement">Announcement</main><section id="reveal">Reveal</section><nav id="playback" data-swarm-capture-ui>Play</nav>` + nativeAnimationTestManifest + `</body></html>`
+			args := map[string]any{"action": "create", "media_type": "text/html", "content": body, "animation_profile": map[string]any{"profile": "motion_ui"}}
+			if selection == "capture-only" {
+				args["parts"] = []map[string]any{{"id": "playback", "label": "Playback", "kind": "semantic"}}
+			} else if selection == "output" {
+				args["parts"] = []map[string]any{{"id": "announcement", "label": "Announcement", "kind": "semantic"}, {"id": "reveal", "label": "Reveal", "kind": "semantic"}}
+			}
+			encoded, _ := json.Marshal(args)
+			_, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, Call{CallID: selection, Name: "manage_artifact", Arguments: string(encoded)})
+			if selection == "capture-only" {
+				if err == nil || !strings.Contains(err.Error(), "capture-only") || len(repository.turns) != 0 || len(repository.submits) != 0 || len(repository.selected) != 0 {
+					t.Fatalf("capture-only selection mutated authority: %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			project := repository.submits[0].Project
+			var manifest pebblestore.ArtifactV3Manifest
+			if err := json.Unmarshal(project[pebblestore.ArtifactV3ManifestFilename], &manifest); err != nil {
+				t.Fatal(err)
+			}
+			if string(project["index.html"]) != body || len(manifest.Parts) != 2 || manifest.Parts[0].ID != "announcement" || manifest.Parts[1].ID != "reveal" {
+				t.Fatalf("output/source lost: %#v", manifest)
+			}
+			if selection == "automatic" && (manifest.Parts[0].CaptureTimeMS == nil || *manifest.Parts[0].CaptureTimeMS != 2000 || manifest.Parts[1].CaptureTimeMS != nil) {
+				t.Fatal("whole-animation midpoint lost")
 			}
 		})
 	}

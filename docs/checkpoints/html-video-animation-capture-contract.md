@@ -37,6 +37,18 @@ globalThis.__SWARM_ANIMATION_V1__ = Object.freeze({
 
 The page may author any motion permitted by its reviewed `motion_ui`, `spatial_3d`, or `vector_playback` artifact profile. Deterministic capture must derive visible state from the supplied timestamp rather than wall time, randomness, or asynchronous external input.
 
+## Native Artifact V3 direct preview
+
+Direct `manage_artifact create` uses `media_type: text/html`, complete `content`, and `animation_profile: {"profile":"motion_ui"}`. It requires the canonical manifest above, with native duration **100–120000 ms** and FPS **1–60**. These preview limits are narrower than the export limits below.
+
+- Semantic regions marked `data-swarm-capture-ui` are not derived Parts. Controls may retain DOM IDs, but explicit Parts must target output regions only; capture-only IDs are rejected before turn allocation.
+- Omit `parts` for one whole-animation midpoint sample: the first meaningful output region receives midpoint metadata and all other meaningful regions remain required. For sequential scenes, supply explicit `kind: temporal`, stable output-region `id`, `label`, `start_ms` and `end_ms` within the canonical duration. Each scene is sampled at its midpoint; non-temporal output Parts remain required at every sample.
+- A reviewed motion preview without temporal metadata still uses one renderer-selected deterministic midpoint state, never wall-clock autoplay. The existing `ready/seek` bridge is injected into ephemeral capture bytes only. `seek(ms)` must pause every wall-clock/rAF/timer playback source before rendering and acknowledging the timestamp. Normal user controls/autoplay remain functional outside capture.
+- Missing/duplicate/malformed timing manifests, mismatched `ready()` timing, out-of-range scenes, hidden/clipped required output and genuinely changing post-seek pixels remain errors. The two-screenshot stability audit is unchanged.
+- `swarm-artifact.json` remains server-owned and locked during incremental repair. Do not rewrite it to remove a failed selector or recreate a retained draft to evade the gate.
+
+Deriving a capture-only control as a required Part, or routing profiled motion through static capture without calling `seek`, are runtime defects—not reasons to remove meaningful authored regions. Parser-time assignment of `globalThis.__SWARM_ANIMATION_V1__` is supported. A missing canonical manifest or a `seek` implementation that leaves autoplay running is instead an author-input defect. Local regression checks do not prove a retained draft works on an installed runtime: explicitly rebuild/install the correction before explicitly resuming that draft, preserving its identity and history.
+
 ## Fixed limits and security
 
 - Output is 1920×1080, 1–60 FPS, 100–600,000 ms, and at most 36,000 frames.
