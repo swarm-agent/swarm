@@ -637,16 +637,6 @@ func (s *Service) executeProviderManagedToolCall(ctx context.Context, config pro
 			config.policy = &merged
 		}
 	}
-	if videoStudioRequest && canonicalToolName(call.Name) == "manage_video" {
-		// Video Studio owns project proposal construction. The assistant can create
-		// or revise only durable pending proposals; accepting them and starting a
-		// final render remain explicit Studio UI operations.
-		trustedVideoPolicy := permission.NormalizePolicy(permission.Policy{Version: 1, Rules: []permission.PolicyRule{{
-			Kind: permission.PolicyRuleKindTool, Decision: permission.PolicyDecisionAllow, Tool: "manage_video",
-		}}})
-		merged := mergePermissionPolicies(config.policy, &trustedVideoPolicy)
-		config.policy = &merged
-	}
 
 	gatedResults := []tool.Result{{CallID: call.CallID, Name: call.Name}}
 	approvedCalls := []tool.Call{call}

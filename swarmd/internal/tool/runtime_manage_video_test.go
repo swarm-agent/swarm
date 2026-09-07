@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -198,6 +199,14 @@ func TestManageVideoListsRegisteredSourcesWithoutTriggerAttachment(t *testing.T)
 	defer store.Close()
 	principal := identity.Principal{Type: identity.PrincipalTypeUser, SessionID: "session-1", UserID: "user-1", AccountScopeID: "account-1"}
 	workspacePath, mediaPath := t.TempDir(), t.TempDir()
+	// Source discovery requires a committed workspace; media remains separately registered.
+	for _, args := range [][]string{{"init", "--quiet"}, {"-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "--quiet", "--allow-empty", "-m", "fixture"}} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = workspacePath
+		if output, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("initialize fixture: %v: %s", err, output)
+		}
+	}
 	workspaceService := workspace.NewService(pebblestore.NewWorkspaceStore(store))
 	if _, err := workspaceService.AddForPrincipal(principal, workspacePath, "workspace", "", false); err != nil {
 		t.Fatal(err)
@@ -1106,8 +1115,12 @@ func TestManageVideoStudioCreatesVisibleWorkingRevision(t *testing.T) {
 		t.Fatalf("proposal did not preserve the confirmed cut while advancing the visible working revision: %+v ok=%v err=%v", project, ok, err)
 	}
 	_, err = runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, Call{CallID: "render", Name: "manage_video", Arguments: `{"action":"start_render","project_id":"` + create.ProjectID + `"}`})
-	if err == nil || !strings.Contains(err.Error(), "cannot start final render") {
+	if err == nil || !strings.Contains(err.Error(), `Video Studio AI cannot use manage_video action "start_render"`) {
 		t.Fatalf("start render error=%v", err)
+	}
+	jobs, err := runtime.videoProjects.ListRenderJobs(principal, "studio", create.ProjectID, 10)
+	if err != nil || len(jobs) != 0 {
+		t.Fatalf("rejected AI render created jobs: %v err=%v", jobs, err)
 	}
 }
 

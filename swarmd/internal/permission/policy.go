@@ -1344,6 +1344,12 @@ func defaultPolicyDecision(mode, toolName, toolArguments string) PolicyDecision 
 		// Promotion advances a captured checkout such as dev. Keep it a distinct,
 		// explicit approval boundary even when ordinary tool permissions are bypassed.
 		return PolicyDecisionAsk
+	case "manage_video":
+		// Discovery and editing use authenticated session/source/project authority.
+		// Chat-to-Studio requests must not need a bootstrap approval before the
+		// first project exists. Runtime action validation and Studio's separate
+		// human acceptance/final-render boundary remain authoritative.
+		return PolicyDecisionAllow
 	case "manage_artifact":
 		// Image generation is a billed external provider operation. Ordinary
 		// callers must explicitly approve it; trusted delegated Image workers flow
