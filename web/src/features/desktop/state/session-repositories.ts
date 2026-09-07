@@ -57,7 +57,8 @@ export class SessionRepositoryInventory {
       const previous = append && this.state.items.length + page.items.length <= 200 ? this.state.items : []
       const items = mergeRepositoryRows(previous, page.items).slice(0, 200)
       // A missing selection remains unresolved, never silently replaced by a default.
-      const selectedKey = this.state.selectedKey || (items[0] ? repositoryKey(items[0]) : '')
+      const initial = items.find(row => row.kind === 'parent' && row.default) || items.find(row => row.kind === 'parent') || items[0]
+      const selectedKey = this.state.selectedKey || (initial ? repositoryKey(initial) : '')
       this.update({ items, selectedKey, nextCursor: page.next_cursor || '', historyCoverage: page.history_coverage, stale: invalidation !== this.invalidation, loading: false })
     } catch (error) {
       if (generation !== this.generation || controller.signal.aborted) return
@@ -73,37 +74,43 @@ export function repositoryMutationSupported(row: SessionRepository | undefined, 
     && row.kind === (owner.worktree ? 'parent' : 'source'))
 }
 
-export function repositoryEventInvalidates(type: string) {
-  return repositoryInvalidationActions.has(type)
+export function repositoryEventInvalidates(action: DesktopV3CacheAction, sessionIds: ReadonlySet<string>, attachmentsOnly = false) {
+  const relevant = (event: { sessionId: string; eventType: string }) => sessionIds.has(event.sessionId)
+    && (event.eventType === 'session.settings.updated' || event.eventType === 'session.created' || event.eventType === 'session.metadata.updated'
+      || (!attachmentsOnly && /^(session\.(tool|run)\.(completed|failed|cancelled)|session\.worktree\.)/.test(event.eventType)))
+  switch (action.type) {
+    case 'realtime.applyEvent': return relevant(action.event)
+    case 'syncStream.applyBatch':
+    case 'liveRun.mergeRepairEvents': return action.events.some(relevant)
+    case 'mutation.sessionSettingsResult': return sessionIds.has(action.raw.session_id || '')
+    case 'hydrate.apply': return action.requestedSessionIds.some(id => sessionIds.has(id))
+    case 'snapshot.apply':
+    case 'reconnect.applySnapshot':
+    case 'realtime.cursorError': return true
+    default: return false
+  }
 }
 
-// Exact discriminants from DesktopV3CacheAction; live token patches and resume
-// bookkeeping do not change repository ownership or disk status.
-const repositoryInvalidationActions: ReadonlySet<string> = new Set([
-  'snapshot.apply', 'hydrate.apply', 'syncStream.applyBatch', 'reconnect.applySnapshot',
-  'realtime.applyEvent', 'realtime.worksetSessionDiscovered', 'realtime.worksetSessionUpdated',
-  'realtime.worksetSessionRemoved', 'realtime.cursorError', 'realtime.statusChanged',
-  'mutation.sessionCreateResult', 'mutation.sessionSettingsResult', 'mutation.sessionArchiveResult',
-  'liveRun.mergeRepairEvents',
-] satisfies DesktopV3CacheAction['type'][])
-
-// Fixed coalescing window rather than trailing debounce: sustained changes cannot
-// starve reads. An invalidation during a request always gets a subsequent read.
-export function scheduleRepositoryRefresh(target: { state: { loading: boolean }; invalidate(): void; refresh(): Promise<void>; dispose(): void }, visible: () => boolean, delay = 1_000) {
-  let timer: ReturnType<typeof setTimeout> | undefined
+// Event-driven single-flight reads. A change during a read queues one follow-up;
+// completion notifications wake it without polling or repeatedly cancelling reads.
+export function scheduleRepositoryRefresh(target: { state: { loading: boolean; stale: boolean }; subscribe(listener: () => void): () => void; invalidate(): void; refresh(): Promise<void>; dispose(): void }, visible: () => boolean) {
+  let pending = false
+  let queued = false
   let disposed = false
   const schedule = () => {
-    if (disposed || timer || !visible()) return
-    timer = setTimeout(() => {
-      timer = undefined
-      if (!visible()) return
-      if (target.state.loading) { schedule(); return }
+    if (disposed || queued || !pending || !visible() || target.state.loading) return
+    queued = true
+    queueMicrotask(() => {
+      queued = false
+      if (disposed || !pending || !visible() || target.state.loading) return
+      pending = false
       void target.refresh()
-    }, delay)
+    })
   }
+  const unsubscribe = target.subscribe(schedule)
   return {
-    invalidate() { target.invalidate(); schedule() },
-    visibilityChanged() { if (!visible()) { if (timer) clearTimeout(timer); timer = undefined; target.dispose() } else { target.invalidate(); schedule() } },
-    dispose() { disposed = true; if (timer) clearTimeout(timer); target.dispose() },
+    invalidate() { pending = true; target.invalidate(); schedule() },
+    visibilityChanged() { if (visible() && target.state.stale) { pending = true; schedule() } },
+    dispose() { disposed = true; unsubscribe(); target.dispose() },
   }
 }

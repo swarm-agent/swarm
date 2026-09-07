@@ -16,7 +16,7 @@ export interface SessionAttachmentsViewProps {
 export function SessionAttachmentsView({ items, loading, stale, error, more, onRefresh, onMore }: SessionAttachmentsViewProps) {
   const dialog = useRef<HTMLDialogElement>(null)
   const defaultWorkspace = items.find((item) => item.default)
-  const stateLabel = error ? (items.length ? 'Workspace list stale' : 'Workspaces unavailable') : loading ? 'Loading workspaces' : stale ? 'Refreshing workspaces' : more ? `${items.length}+ workspaces` : `${items.length} workspaces`
+  const stateLabel = error ? (items.length ? 'Workspace list stale' : 'Workspaces unavailable') : loading && !items.length ? 'Loading workspaces' : more ? `${items.length}+ workspaces` : `${items.length} workspaces`
   return <>
     <button type="button" aria-haspopup="dialog" aria-label={`Session workspaces: ${stateLabel}`} title={defaultWorkspace ? `Default: ${defaultWorkspace.workspace_name}` : 'No default workspace reported'}
       className="max-w-40 truncate rounded px-2 py-1 text-xs text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] focus-visible:ring-2 focus-visible:ring-[var(--app-focus-ring)] sm:max-w-64"
@@ -24,7 +24,7 @@ export function SessionAttachmentsView({ items, loading, stale, error, more, onR
     <dialog ref={dialog} aria-label="Session workspaces" className="fixed m-auto max-h-[80dvh] w-[min(36rem,calc(100vw-2rem))] overflow-y-auto rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] p-4 text-sm text-[var(--app-text)] backdrop:bg-black/40">
       <div className="flex items-center justify-between gap-2"><h2 className="font-semibold">Attached workspaces</h2><button type="button" onClick={() => dialog.current?.close()} aria-label="Close workspaces">Close</button></div>
       <p className="my-2 text-xs">Source attachments only. Runtime branch is shown separately in the header; retained worker repositories remain in Git.</p>
-      <p role="status" className="my-2">{stateLabel}{stale || error ? ' — displayed entries may no longer be attached.' : ''}</p>
+      <p role="status" className="my-2">{stateLabel}{error ? ' — unable to update; retry below.' : ''}</p>
       {!loading && !error && !more && !items.length ? <p>No attached workspaces.</p> : null}
       <ul className="grid gap-2" aria-label="Attached workspace list">
         {items.map((item) => <li key={item.workspace_id} data-workspace-id={item.workspace_id} className="min-w-0 rounded border border-[var(--app-border)] p-2 [overflow-wrap:anywhere]">
@@ -50,20 +50,15 @@ export function SessionAttachments({ sessionId, revision }: { sessionId: string;
   useEffect(() => {
     const scheduler = scheduleRepositoryRefresh(inventory, () => document.visibilityState !== 'hidden')
     const unsubscribe = subscribeDesktopV3Cache(mutation => {
-      if (!mutation || repositoryEventInvalidates(mutation.action.type)) scheduler.invalidate()
+      if (!mutation || repositoryEventInvalidates(mutation.action, new Set([sessionId]), true)) scheduler.invalidate()
     })
-    const polling = setInterval(scheduler.invalidate, 30_000)
-    window.addEventListener('focus', scheduler.invalidate)
-    window.addEventListener('online', scheduler.invalidate)
     document.addEventListener('visibilitychange', scheduler.visibilityChanged)
     if (document.visibilityState !== 'hidden') void inventory.refresh()
     return () => {
-      unsubscribe(); scheduler.dispose(); clearInterval(polling)
-      window.removeEventListener('focus', scheduler.invalidate)
-      window.removeEventListener('online', scheduler.invalidate)
+      unsubscribe(); scheduler.dispose()
       document.removeEventListener('visibilitychange', scheduler.visibilityChanged)
     }
-  }, [inventory])
+  }, [inventory, sessionId])
   return <SessionAttachmentsView {...state} more={Boolean(state.nextCursor)}
     onRefresh={() => { void inventory.refresh() }} onMore={() => { void inventory.loadMore() }} />
 }

@@ -27,12 +27,11 @@ test('launcher initial refresh can avoid duplicate overview and browse waterfall
   assert.match(source, /useState\(autoRefresh && !cachedOverview\)/)
 })
 
-test('launcher polls backend state only while a workspace definition is pending', () => {
-  assert.match(source, /workspaces\.some\(\(workspace\) => workspace\.definitionStatus === 'pending'\)/)
-  assert.match(source, /window\.setInterval\(\(\) => \{\s*void listWorkspaces\(\)/s)
-  assert.match(source, /definitionStatus: updated\.definitionStatus/)
-  assert.match(source, /\}, 2_000\)/)
-  assert.match(source, /if \(!hasPendingWorkspaceDefinition\) \{\s*return\s*\}/s)
+// Requirement: pending definitions must not create background inventory polling.
+// This source guard checks hook wiring only, not runtime freshness or security.
+test('launcher uses cache updates rather than definition polling', () => {
+  assert.doesNotMatch(source, /setInterval|listWorkspaces\(/)
+  assert.match(source, /scheduleCacheSync\(syncFromOverviewCache\)/)
 })
 
 test('launcher query-cache subscription ignores observer churn and defers React state sync', () => {
