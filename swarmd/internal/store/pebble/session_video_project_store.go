@@ -806,7 +806,10 @@ func normalizeVideoTimeline(timeline *VideoProjectTimeline) {
 			clip.DesignInput.OverlayMode = strings.ToLower(strings.TrimSpace(clip.DesignInput.OverlayMode))
 		}
 	}
-	if timeline.TotalDurationMs <= 0 {
+	// A retained duration may include intentional tail padding, but it must never
+	// truncate a clip appended or extended by a working-cut proposal. Normalize
+	// older snapshots through the same boundary without rewriting their records.
+	if timeline.TotalDurationMs <= 0 || timeline.TotalDurationMs < totalDuration {
 		timeline.TotalDurationMs = totalDuration
 	}
 }
