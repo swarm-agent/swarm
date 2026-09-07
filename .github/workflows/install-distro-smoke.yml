@@ -37,6 +37,8 @@ jobs:
       - name: Set up pnpm
         run: corepack enable
       - name: Build candidate archive
+        env:
+          TMPDIR: ${{ runner.temp }}
         run: ./scripts/build-main-dist.sh --output-dir dist --version "candidate-${GITHUB_SHA::12}"
       - name: Upload exact candidate archive
         uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
