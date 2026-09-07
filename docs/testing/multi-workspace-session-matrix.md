@@ -423,3 +423,28 @@ that proves original ownership; this foundation deliberately refuses to invent
 provenance. Retained worker/lane pins reject retargeting rather than guessing
 whether pending integration is safe. No automatic cleanup, source promotion,
 provider run, browser proof or Models catalog edit was performed.
+
+## Runtime restart consumer evidence (R1)
+
+Parent-owned validation on foundation `1a4f77ca` plus the restart-consumer diff:
+
+```sh
+cd swarmd && GOMAXPROCS=2 go test -p 2 ./internal/run ./internal/api -run '^(TestProviderWorkspaceRestartRejectsStaleInvoker|TestSessionV3ToolBatchRestartBoundary|TestSessionsV3ExecutorContinuesAfterProviderManagedRestartTurn|TestMultiWorkspaceIdentityTransitions)$' -count=2 -timeout=90s
+```
+
+Passed: run 2.315s, API 1.339s. M04/M16 gain bounded evidence: the actual V3 batch
+helper executes only the prefix through restart, with no subsequent fixture write
+or manufactured result; an invalidated invoker cannot dispatch more calls. Real
+Git default transitions reject the previous captured runtime path, and accept
+newly hydrated context. The existing provider-loop fixture proves fresh structured
+history, lineage flags and no encrypted-reasoning replay. It required replacing
+obsolete mutable-system-agent setup with canonical model settings and correcting
+the exact expected composite boundary to `epoch_fresh_context+restart_after_tool`.
+These are separate tests, not a full provider-driven workspace mutation E2E.
+
+Remaining consumer work: filesystem and Task Program changes authored in isolated
+workers are retained, not integrated. Parent ran their focused tests; no worker
+executed tests. The installed recovery commit authority rejected blocked child
+status, so no failed child's work was force-committed or discarded. Exact lineage
+and recovery diagnostics stay in private checkpoint evidence. The environment
+pivot is deferred; current workspace/UI/live acceptance retains priority.
