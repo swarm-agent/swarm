@@ -77,4 +77,24 @@ func TestTaskProgramEndedOwnerPreservesCommittedSibling(t *testing.T) {
 	if err != nil || again.Revision != got.Revision {
 		t.Fatal("reconciliation repeated")
 	}
+	// A new declared program contains only unfinished work; old IDs cannot
+	// restart or overwrite the interrupted definition and committed handoff.
+	if _, err := parseTaskCallArguments(`{"action":"start","program_id":"interrupted"}`); err == nil {
+		t.Fatal("accepted existing-program restart")
+	}
+	recovery := pebblestore.TaskProgramRecord{ParentSessionID: id, ProgramID: "unfinished-recovery", DefinitionHash: "recovery-hash", State: "declared", ActiveStageID: "build", Definition: pebblestore.TaskProgramDefinition{ID: "unfinished-recovery", Stages: fixture.Definition.Stages, Jobs: []pebblestore.TaskProgramJobSpec{{ID: "unfinished", StageID: "build", AgentType: "coder"}}}, Jobs: []pebblestore.TaskProgramJobRecord{{JobID: "unfinished", StageID: "build", State: "declared"}}}
+	created, fresh, err := svc.sessions.CreateTaskProgram(recovery)
+	if err != nil || !fresh || len(created.Jobs) != 1 || created.Jobs[0].JobID != "unfinished" {
+		t.Fatalf("recovery: %+v %v", created, err)
+	}
+	if ready := taskProgramReadyJobIndexes(created, 0); len(ready) != 1 || ready[0] != 0 {
+		t.Fatalf("recovery scheduling: %v", ready)
+	}
+	if _, fresh, err := svc.sessions.CreateTaskProgram(fixture); err != nil || fresh {
+		t.Fatalf("old program overwritten: %v %v", fresh, err)
+	}
+	preserved, _, err := svc.sessions.GetTaskProgram(id, "interrupted")
+	if err != nil || preserved.Revision != got.Revision || preserved.Jobs[0].ChildHead != "committed-head" || preserved.Jobs[1].ChildSessionID != "unfinished-child" {
+		t.Fatal("new program erased old lineage")
+	}
 }

@@ -236,7 +236,7 @@ func (p *taskProgramScheduler) runCohort(indexes []int) error {
 				copy := *p.record.RepositoryLane
 				launch.ProgramRepositoryLane = &copy
 			} else {
-				launch.ProgramRepositoryLane = &pebblestore.TaskProgramRepositoryLane{SourcePath: mapString(p.parentSession.Metadata, "swarm_v3_source_workspace_path"), WorkspacePath: programWorkspacePath, Branch: p.parentSession.WorktreeBranch}
+				launch.ProgramRepositoryLane = &pebblestore.TaskProgramRepositoryLane{SourcePath: mapString(p.parentSession.Metadata, "swarm_v3_source_workspace_path"), WorkspacePath: programWorkspacePath, Branch: p.parentSession.WorktreeBranch, BaseCommit: firstNonEmptyString(mapString(p.parentSession.Metadata, "swarm_v3_worktree_base_commit"), mapString(p.parentSession.Metadata, "base_commit"))}
 			}
 		}
 		launch.AnimationProfile = cloneTaskAnimationProfile(definition.AnimationProfile)
@@ -798,7 +798,10 @@ func (p *taskProgramScheduler) programWorkspacePath() (string, error) {
 		if !agentruntime.IsCoderAgentName(definition.AgentType) {
 			continue
 		}
-		candidate := strings.TrimSpace(firstNonEmptyString(definition.WorkspacePath, p.parsed.ProgramWorkspacePath, sourcePath))
+		candidate, _, err := p.service.resolveTaskTargetWorkspace(parent, p.req.Principal, taskLaunchSpec{RequestedSubagentType: "coder", TargetWorkspacePath: firstNonEmptyString(definition.WorkspacePath, p.parsed.ProgramWorkspacePath)})
+		if err != nil {
+			return "", err
+		}
 		if requested == "" {
 			requested = candidate
 		} else if !sameTaskProgramPath(requested, candidate) {
@@ -811,12 +814,14 @@ func (p *taskProgramScheduler) programWorkspacePath() (string, error) {
 	if !sameTaskProgramPath(requested, sourcePath) && !sameTaskProgramPath(requested, lanePath) {
 		return p.repositoryLane(requested)
 	}
-	if p.record.Revision > 0 && p.record.RepositoryLane == nil && p.service != nil && p.service.worktrees != nil {
-		base, err := p.service.worktrees.ResolveTaskBase(lanePath)
-		if err != nil {
-			return "", err
-		}
-		lane := &pebblestore.TaskProgramRepositoryLane{SourcePath: sourcePath, WorkspacePath: lanePath, Branch: worktreeBranch, BaseCommit: base.BaseCommit}
+	if p.service == nil || p.service.worktrees == nil {
+		return "", errors.New("Task Program worktree authority unavailable")
+	}
+	if _, err := p.service.worktrees.ResolveTaskBase(lanePath); err != nil {
+		return "", err
+	}
+	if p.record.Revision > 0 && p.record.RepositoryLane == nil {
+		lane := &pebblestore.TaskProgramRepositoryLane{SourcePath: sourcePath, WorkspacePath: lanePath, Branch: worktreeBranch, BaseCommit: firstNonEmptyString(mapString(parent.Metadata, "swarm_v3_worktree_base_commit"), mapString(parent.Metadata, "base_commit"))}
 		record, _, err := p.transition(p.parentSession.ID, p.record.ProgramID, pebblestore.TaskProgramTransition{ExpectedRevision: p.record.Revision, MutationID: fmt.Sprintf("lane:%d", p.record.Revision), RepositoryLane: lane})
 		if err != nil {
 			return "", err

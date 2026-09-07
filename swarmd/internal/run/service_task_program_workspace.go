@@ -59,12 +59,6 @@ func (p *taskProgramScheduler) repositoryLane(requested string) (string, error) 
 			return "", errors.Join(persistErr, p.service.worktrees.RollbackAllocation(allocation))
 		}
 		p.record = record
-	} else if p.record.RepositoryLane == nil {
-		record, _, err := p.service.sessions.TransitionTaskProgram(p.parentSession.ID, p.record.ProgramID, pebblestore.TaskProgramTransition{ExpectedRevision: p.record.Revision, MutationID: fmt.Sprintf("lane:%d", p.record.Revision), RepositoryLane: lane})
-		if err != nil {
-			return "", err
-		}
-		p.record = record
 	}
 	validator, ok := p.service.worktrees.(interface {
 		ValidateTaskRepositoryLane(string, string, string, string) error
@@ -88,6 +82,15 @@ func (p *taskProgramScheduler) repositoryLane(requested string) (string, error) 
 	}
 	if !descends {
 		return "", errors.New("Task Program repository lane no longer descends from its captured base")
+	}
+	// A recovered lane must pass all ownership, cleanliness and ancestry checks
+	// before this program acquires its durable binding.
+	if p.record.RepositoryLane == nil {
+		record, _, err := p.service.sessions.TransitionTaskProgram(p.parentSession.ID, p.record.ProgramID, pebblestore.TaskProgramTransition{ExpectedRevision: p.record.Revision, MutationID: fmt.Sprintf("lane:%d", p.record.Revision), RepositoryLane: lane})
+		if err != nil {
+			return "", err
+		}
+		p.record = record
 	}
 	return lane.WorkspacePath, nil
 }
