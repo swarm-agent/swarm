@@ -76,6 +76,9 @@ func repositorySessionItems(row pebblestore.SessionRepositoryHistory, parent str
 	if lifecycle == "" {
 		lifecycle = sessionsV3MetadataString(owner.Metadata, "task_status")
 	}
+	if lifecycle == "" && owner.Lifecycle != nil {
+		lifecycle = owner.Lifecycle.Phase
+	}
 	if lifecycle == "" {
 		lifecycle = "retained"
 	}
@@ -86,6 +89,9 @@ func repositorySessionItems(row pebblestore.SessionRepositoryHistory, parent str
 		lifecycle = "deleted"
 	}
 	grants := pebblestore.NormalizeSessionWorkspaceGrants(owner)
+	if row.HistoricalWorktree && !row.Projected {
+		grants = []pebblestore.WorkspaceGrant{{Kind: pebblestore.WorkspaceGrantWorktree, Path: owner.WorktreeRootPath}}
+	}
 	if row.Projected {
 		grants = row.Grants
 	}
@@ -138,7 +144,7 @@ func repositorySessionItems(row pebblestore.SessionRepositoryHistory, parent str
 			found = true
 		}
 	}
-	if !row.Projected && source != "" && !found {
+	if !row.Projected && !row.HistoricalWorktree && source != "" && !found {
 		items = append(items, sessionRepositoryItem{ID: repositoryItemID(owner.ID, "", source), SessionID: owner.ID, SourcePath: source, WorkspacePath: source, Kind: "source", Lifecycle: lifecycle, Retained: true})
 	}
 	return items

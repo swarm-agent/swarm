@@ -326,3 +326,50 @@ func TestRepositoryHistoryClaimsAndExactLookup(t *testing.T) {
 		t.Fatal("foreign lookup returned lane")
 	}
 }
+
+// Purpose: startup migration must recover pre-index canonical owned lanes, not
+// fabricate old provenance from the current default. A raw legacy snapshot is
+// the narrowest fixture proving backfill (rather than new-write indexing),
+// bounded claim deduplication, owner rejection and unchanged source snapshots.
+func TestRepositoryHistoryPreIndexWorktreeProvenance(t *testing.T) {
+	store := openV3SessionEventTestStore(t)
+	sessions := NewSessionStore(store)
+	root := t.TempDir()
+	source, lane := filepath.Join(root, "source-a"), filepath.Join(root, "lane-a")
+	owner := SessionSnapshot{ID: "parent", AccountScopeID: "account", UserID: "user", WorkspacePath: filepath.Join(root, "source-b"), Metadata: map[string]any{}}
+	record := map[string]any{"owner_session_id": owner.ID, "path": lane, "source_workspace_path": source, "workspace_id": "a", "workspace_generation": 3, "branch": "agent/old", "base_branch": "dev", "base_commit": "original-base"}
+	foreign := map[string]any{"owner_session_id": "foreign", "path": filepath.Join(root, "foreign"), "source_workspace_path": source, "workspace_id": "a", "workspace_generation": 3, "branch": "agent/foreign", "base_commit": "foreign-base"}
+	owner.Metadata["swarm_v3_worktree_history"] = []any{record, foreign}
+	if err := store.PutJSON(KeySession(owner.ID), owner); err != nil { t.Fatal(err) }
+	before, _, err := store.GetBytes(KeySession(owner.ID))
+	if err != nil { t.Fatal(err) }
+	// An installation that completed v2 still needs the provenance migration.
+	if err := store.PutJSON("v3/repository_history/meta_v2", repositoryHistoryMeta{Ready: true, Phase: 4, Secret: make([]byte, 32)}); err != nil { t.Fatal(err) }
+	historyReady(t, sessions)
+	q := RepositoryHistoryQuery{AccountScopeID: "account", UserID: "user", ParentSessionID: owner.ID, Limit: 1}
+	page, err := sessions.ExactRepositoryHistory(q, lane)
+	if err != nil || len(page.Sessions) != 1 { t.Fatalf("missing pre-index lane: %+v %v", page, err) }
+	got := page.Sessions[0]
+	if !got.HistoricalWorktree || got.Session.WorktreeRootPath != lane || got.Session.WorktreeBranch != "agent/old" || got.Session.Metadata["base_commit"] != "original-base" || got.Session.WorkspaceGrants[0].WorkspaceID != "a" || got.Session.WorkspaceGrants[0].WorkspaceGeneration != 3 { t.Fatalf("invented provenance: %+v", got) }
+	if _, err := sessions.ExactRepositoryHistory(q, filepath.Join(root, "foreign")); err == nil { t.Fatal("foreign historical owner indexed") }
+	seen := map[string]int{}
+	for n := 0; n < 10; n++ {
+		page, err := sessions.ListSessionRepositoryHistory(q)
+		if err != nil { t.Fatal(err) }
+		for _, row := range page.Sessions { for _, grant := range row.Grants { seen[grant.Path]++ } }
+		q.Cursor = page.NextCursor
+		if q.Cursor == "" { break }
+	}
+	if q.Cursor != "" || seen[lane] != 1 || seen[owner.WorkspacePath] != 1 || len(seen) != 2 { t.Fatalf("claims: %v", seen) }
+	after, _, err := store.GetBytes(KeySession(owner.ID))
+	if err != nil || !bytes.Equal(before, after) { t.Fatal("backfill mutated canonical snapshot") }
+	// A later ordinary write must keep the same exact old-lane evidence.
+	owner.Metadata["chat_only"] = true
+	batch := store.NewBatch()
+	defer batch.Close()
+	if err := sessions.retainRepositoryHistoryInBatch(batch, owner, false, false); err != nil { t.Fatal(err) }
+	if err := batch.Commit(nil); err != nil { t.Fatal(err) }
+	q.Cursor = ""
+	page, err = sessions.ExactRepositoryHistory(q, lane)
+	if err != nil || len(page.Sessions) != 1 || page.Sessions[0].ContextID != got.ContextID { t.Fatal("ordinary write lost stable retained identity") }
+}

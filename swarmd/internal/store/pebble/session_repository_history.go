@@ -12,12 +12,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/cockroachdb/pebble"
 )
 
-const repositoryHistoryMetaKey = "v3/repository_history/meta_v2"
+const repositoryHistoryMetaKey = "v3/repository_history/meta_v3"
 const repositoryHistoryRevisionKey = "v3/repository_history/revision"
 
 var ErrRepositoryHistoryNotReady = errors.New("repository history requires explicit backfill")
@@ -43,13 +45,14 @@ type SessionRepositoryHistory struct {
 	ContextID string           `json:"context_id"`
 	Grants    []WorkspaceGrant `json:"grants,omitempty"`
 	Projected bool             `json:"projected,omitempty"`
+	HistoricalWorktree bool `json:"historical_worktree,omitempty"`
 }
 
 type RepositoryHistoryPage struct {
 	Sessions   []SessionRepositoryHistory `json:"sessions"`
 	Programs   []TaskProgramRecord        `json:"programs"`
 	NextCursor string                     `json:"next_cursor,omitempty"`
-	// Older overwritten contexts are not reconstructible from snapshots.
+	// Coverage includes canonical bounded worktree provenance retained in snapshots.
 	HistoryCoverage string `json:"history_coverage"`
 }
 
@@ -82,6 +85,17 @@ func repositoryHistoryRevision(batch *pebble.Batch, parent string) error {
 // Called in the same batch as canonical snapshot/library updates. Context keys
 // are stable across lifecycle changes but differ across default/grant changes.
 func (s *SessionStore) retainRepositoryHistoryInBatch(batch *pebble.Batch, session SessionSnapshot, archived, deleted bool) error {
+	// Import recorded lanes first; the current context wins shared source claims.
+	// These are evidence only, never new session grants or filesystem authority.
+	for _, historical := range repositoryHistoricalWorktrees(session) {
+		if err := s.retainRepositoryContextInBatch(batch, historical, archived, deleted, true); err != nil {
+			return err
+		}
+	}
+	return s.retainRepositoryContextInBatch(batch, session, archived, deleted, false)
+}
+
+func (s *SessionStore) retainRepositoryContextInBatch(batch *pebble.Batch, session SessionSnapshot, archived, deleted, historical bool) error {
 	session = normalizeSessionOwnership(session)
 	identity := struct {
 		Workspace  string
@@ -98,7 +112,7 @@ func (s *SessionStore) retainRepositoryHistoryInBatch(batch *pebble.Batch, sessi
 		return err
 	}
 	digest := sha256.Sum256(payload)
-	row := SessionRepositoryHistory{Session: session, Archived: archived, Deleted: deleted, ContextID: hex.EncodeToString(digest[:])}
+	row := SessionRepositoryHistory{Session: session, Archived: archived, Deleted: deleted, ContextID: hex.EncodeToString(digest[:]), HistoricalWorktree: historical}
 	payload, err = json.Marshal(row)
 	if err != nil {
 		return err
@@ -147,7 +161,7 @@ func (s *SessionStore) retainRepositoryHistoryInBatch(batch *pebble.Batch, sessi
 				return err
 			}
 		}
-		for _, grant := range repositoryHistoryGrants(session) {
+		for _, grant := range repositoryRowGrants(row) {
 			claim := repositoryHistoryClaimKey(prefix, session.ID, grant)
 			value, closer, err := s.store.db.Get([]byte(claim))
 			changed := errors.Is(err, pebble.ErrNotFound)
@@ -175,9 +189,8 @@ func (s *SessionStore) retainRepositoryHistoryInBatch(batch *pebble.Batch, sessi
 
 // BackfillRepositoryHistory explicitly advances at most limit durable rows.
 // It shares the canonical library repair exclusion lock; progress and rows
-// commit atomically. Reads never trigger migration. Existing overwritten
-// contexts cannot be reconstructed; retained snapshots and tombstones are the
-// migration authority, and new context changes are retained going forward.
+// commit atomically. Reads never trigger migration. Snapshots, tombstones and
+// their bounded canonical worktree history are the migration authority.
 func (s *SessionStore) BackfillRepositoryHistory(limit int) (bool, error) {
 	if limit < 1 || limit > 100 {
 		return false, errors.New("backfill limit must be 1..100")
@@ -230,7 +243,7 @@ func (s *SessionStore) BackfillRepositoryHistory(limit int) (bool, error) {
 			}
 			parentPrefix := string(iter.Key())[:strings.LastIndex(string(iter.Key()), "/")]
 			parentPrefix = parentPrefix[:strings.LastIndex(parentPrefix, "/")+1]
-			for _, grant := range repositoryHistoryGrants(row.Session) {
+			for _, grant := range repositoryRowGrants(row) {
 				if err := batch.Set([]byte(repositoryHistoryClaimKey(parentPrefix, row.Session.ID, grant)), append([]byte(nil), iter.Key()...), nil); err != nil {
 					return false, err
 				}
@@ -336,7 +349,7 @@ func (s *SessionStore) ListTaskProgramRepositoryHistory(q RepositoryHistoryQuery
 }
 
 func (s *SessionStore) repositoryHistoryPage(q RepositoryHistoryQuery, programs bool) (RepositoryHistoryPage, error) {
-	out := RepositoryHistoryPage{Sessions: []SessionRepositoryHistory{}, Programs: []TaskProgramRecord{}, HistoryCoverage: "retained_snapshots_and_contexts_since_index_install"}
+	out := RepositoryHistoryPage{Sessions: []SessionRepositoryHistory{}, Programs: []TaskProgramRecord{}, HistoryCoverage: "retained_snapshots_worktree_provenance_and_indexed_contexts"}
 	reader := s.store.db.NewSnapshot()
 	defer reader.Close()
 	if err := repositoryHistoryOwner(reader, q); err != nil {
@@ -428,7 +441,7 @@ func (s *SessionStore) repositoryHistoryPage(q RepositoryHistoryQuery, programs 
 			// Claims point to the newest context for each logical attachment. This
 			// bounds deduplication to this row's grants, never prior pages.
 			grants := []WorkspaceGrant{}
-			for _, grant := range repositoryHistoryGrants(row.Session) {
+			for _, grant := range repositoryRowGrants(row) {
 				value, closer, err := reader.Get([]byte(repositoryHistoryClaimKey(repositoryHistoryPrefix(q.AccountScopeID, q.UserID, q.ParentSessionID), row.Session.ID, grant)))
 				if err != nil {
 					return out, err
@@ -461,6 +474,7 @@ func (s *SessionStore) repositoryHistoryPage(q RepositoryHistoryQuery, programs 
 				}
 			}
 			if found {
+				row.Session.Lifecycle = current.Lifecycle
 				if current.AccountScopeID != q.AccountScopeID || current.UserID != q.UserID {
 					return out, errors.New("repository history current owner mismatch")
 				}
@@ -544,16 +558,79 @@ func (s *SessionStore) CompleteRepositoryHistoryMaintenance(ctx context.Context)
 	}
 }
 
+func repositoryHistoryPhase(session SessionSnapshot) string {
+	if session.Lifecycle != nil {
+		return session.Lifecycle.Phase
+	}
+	return ""
+}
+
 func repositoryHistoryMeaning(row SessionRepositoryHistory) any {
 	return struct {
 		Context                                       string
+		Phase string
+		Historical bool
 		Archived, Deleted                             bool
 		Integration, Task, SourceID, SourceGeneration string
-	}{row.ContextID, row.Archived, row.Deleted,
+	}{row.ContextID, repositoryHistoryPhase(row.Session), row.HistoricalWorktree, row.Archived, row.Deleted,
 		v3LibraryMetadataString(row.Session.Metadata, "integration_status"),
 		v3LibraryMetadataString(row.Session.Metadata, "task_status"),
 		v3LibraryMetadataString(row.Session.Metadata, "swarm_v3_source_workspace_id"),
 		v3LibraryMetadataString(row.Session.Metadata, "swarm_v3_source_workspace_generation")}
+}
+
+// repositoryHistoricalWorktrees projects only the provenance fields written by
+// appendSessionWorktreeHistory. It never borrows the current default's identity
+// for an old lane. Malformed/unowned entries confer no claim.
+func repositoryHistoricalWorktrees(owner SessionSnapshot) []SessionSnapshot {
+	items, _ := owner.Metadata["swarm_v3_worktree_history"].([]any)
+	if len(items) > 64 {
+		return nil
+	}
+	out := make([]SessionSnapshot, 0, len(items))
+	for _, value := range items {
+		item, ok := value.(map[string]any)
+		if !ok || v3LibraryMetadataString(item, "owner_session_id") != owner.ID {
+			continue
+		}
+		path := v3LibraryMetadataString(item, "path")
+		source := v3LibraryMetadataString(item, "source_workspace_path")
+		id := v3LibraryMetadataString(item, "workspace_id")
+		branch := v3LibraryMetadataString(item, "branch")
+		base := v3LibraryMetadataString(item, "base_commit")
+		generation, err := strconv.ParseInt(fmt.Sprint(item["workspace_generation"]), 10, 64)
+		if err != nil || generation < 1 || id == "" || branch == "" || base == "" || !filepath.IsAbs(path) || !filepath.IsAbs(source) || path == source || path == owner.WorktreeRootPath {
+			continue
+		}
+		historical := owner
+		historical.WorkspacePath, historical.WorktreeRootPath = path, path
+		historical.WorktreeEnabled = true
+		historical.WorktreeBranch = branch
+		historical.WorktreeBaseBranch = v3LibraryMetadataString(item, "base_branch")
+		historical.WorkspaceGrants = []WorkspaceGrant{
+			{Kind: WorkspaceGrantAdditional, Path: source, WorkspaceID: id, WorkspaceGeneration: generation},
+			{Kind: WorkspaceGrantWorktree, Path: path},
+		}
+		historical.Metadata = map[string]any{
+			"parent_session_id": owner.Metadata["parent_session_id"],
+			"base_commit": base,
+			"swarm_v3_source_workspace_id": id,
+			"swarm_v3_source_workspace_generation": strconv.FormatInt(generation, 10),
+			"swarm_v3_source_workspace_path": source,
+		}
+		for _, name := range []string{"integration_status", "task_status"} {
+			historical.Metadata[name] = owner.Metadata[name]
+		}
+		out = append(out, historical)
+	}
+	return out
+}
+
+func repositoryRowGrants(row SessionRepositoryHistory) []WorkspaceGrant {
+	if row.HistoricalWorktree {
+		return []WorkspaceGrant{{Kind: WorkspaceGrantWorktree, Path: row.Session.WorktreeRootPath}}
+	}
+	return repositoryHistoryGrants(row.Session)
 }
 
 func repositoryHistoryGrants(owner SessionSnapshot) []WorkspaceGrant {
@@ -644,6 +721,28 @@ func (s *SessionStore) ExactRepositoryHistory(q RepositoryHistoryQuery, path str
 		}
 		if !ok || row.Session.AccountScopeID != q.AccountScopeID || row.Session.UserID != q.UserID {
 			return out, errors.New("repository lookup owner mismatch")
+		}
+		// Exact selectors must report the same durable deletion/archive state as
+		// paginated inventory, not the stale state of the retained context.
+		var current SessionSnapshot
+		found, err := getJSONFromReader(reader, KeySession(row.Session.ID), &current)
+		if err != nil { return out, err }
+		if found {
+			row.Archived, row.Deleted = false, false
+		} else {
+			var tomb V3SessionTombstone
+			found, err = getJSONFromReader(reader, KeyV3SessionTombstone(row.Session.ID), &tomb)
+			if err != nil { return out, err }
+			if found {
+				current = tomb.Session
+				row.Archived, row.Deleted = tomb.Archived, tomb.Deleted
+			}
+		}
+		if found {
+			if current.AccountScopeID != q.AccountScopeID || current.UserID != q.UserID {
+				return out, errors.New("repository lookup current owner mismatch")
+			}
+			row.Session.Lifecycle = current.Lifecycle
 		}
 		out.Sessions = append(out.Sessions, row)
 		return out, nil
