@@ -36,7 +36,7 @@ func TestTaskProgramRealStageUsesIntegratedBase(t *testing.T) {
 	parent.WorkspacePath = lane.WorkspacePath
 	parent.WorktreeBranch = lane.BranchName
 	parent.WorktreeBaseBranch = "dev"
-	parent.Metadata = map[string]any{"swarm_v3_source_workspace_path": source, "swarm_v3_runtime_workspace_path": lane.WorkspacePath}
+	parent.Metadata = map[string]any{"swarm_v3_source_workspace_path": source, "swarm_v3_runtime_workspace_path": lane.WorkspacePath, "swarm_v3_worktree_base_commit": base.BaseCommit}
 	laneBase, err := wt.ResolveTaskBase(lane.WorkspacePath)
 	if err != nil {
 		t.Fatal(err)
