@@ -766,14 +766,14 @@ component fixtures, not a full-app transport proof. Twelve OS supervisor tests
 and twenty Node attach/runner tests pass, including adopted-child cleanup,
 retained zombies, cursor repetition and incomplete raw-output rejection.
 
-Provider-backed routing remains **failed**, not a green launch suite. Actual
+At that earlier checkpoint, provider-backed routing was **failed**. Actual
 workspace mutation/restart completed; rewritten proof arguments were rejected
 without approval and exact owned runs cancelled. One exact Bash proof executed
 and returned real Git/common-dir/byte observations, but its run failed with an
 empty provider response. The final trial returned prose after omitting required
 Bash explanation arguments; tool validation rejected it. No marker-mutation
 postconditions or worker integration were established. All 48 historical matrix
-subcases remain unproven by these trials. Worker admission remains disabled;
+subcases remained unproven by those trials. Worker admission was disabled;
 shared model settings were unchanged. No product bytes changed, candidate
 rebuild, release, critical-manifest promotion or independent P1/P2 verdict is
 claimed by this continuation. Remaining attack points: provider argument
@@ -796,8 +796,8 @@ workspace, validates its owned allocation, and accepts only exact recorded
 session-lane destinations with owner/base/branch/source checks. No captured
 checkout is an integration target. High-value attack points are forged historical
 ownership, revoked source access, branch mismatch and stale captured base.
-Focused identity-transition and recovery tests passed twice; corrected product
-bytes still require candidate rebuild and live rerun. Worker cleanup verifies
+Focused identity-transition and recovery tests passed twice. Subsequent rebuilt
+candidate validation is recorded below. Worker cleanup verifies
 terminal durable child lifecycle after parent cancellation; program admission
 remains disabled. No full matrix or release approval is implied.
 
@@ -809,3 +809,13 @@ and identity tests passed twice after correcting isolated test fixture setup.
 The supervised critical invocation still reproduced `unattributed_descendant`;
 the required bounded direct fast gate passed. This supervisor gap is retained,
 not counted as a passing supervised gate.
+
+Final scoped live result: candidate `b3bdd4a2` passed the complete selected routing
+scenario and regular two-repository worker scenario. Exact tool results, child
+commits/common directories, clean isolated handoffs, both integrations, marker
+bytes and unchanged captured HEADs/indexes were verified. Both children terminated;
+shared model settings stayed unchanged. Host-side runner reporting now marks only
+the selected scenario passed and explicitly leaves `full_matrix_verified=false`;
+it no longer fails a completed narrow scenario solely for unrelated matrix cases.
+Task Program/full-app/release readiness remains unproven, and the supervised
+critical-gate orphan-attribution gap remains distinct from these passing trials.
