@@ -55,6 +55,9 @@ func scopeExpansionForPath(scope WorkspaceScope, toolName, argumentName, request
 	if err != nil {
 		return ScopeExpansionRequest{}, false, err
 	}
+	if !workspaceGitAdminAllowed(scope, resolvedTarget) {
+		return ScopeExpansionRequest{}, false, fmt.Errorf("%w: unrelated Git administration path", ErrWorkspaceScopeExpansionRejected)
+	}
 	if pathAllowedForScopeCall(scope, toolName, resolvedTarget) {
 		return ScopeExpansionRequest{}, false, nil
 	}

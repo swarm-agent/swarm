@@ -581,6 +581,7 @@ func (s *Service) resolveRunExecutionContext(session pebblestore.SessionSnapshot
 			return resolvedRunExecutionContext{}, rootErr
 		}
 		if sessionScope.WorktreeEnabled && sessionScope.WorktreeRootPath == selectedWorktreeRoot {
+			resolvedScope.Roots = append([]string(nil), sessionScope.Roots...)
 			resolvedScope.ReadOnlyRoots = append([]string(nil), sessionScope.ReadOnlyRoots...)
 			resolvedScope.MutationScopes = append([]string(nil), sessionScope.MutationScopes...)
 			resolvedScope.RejectScopeExpansion = sessionScope.RejectScopeExpansion

@@ -76,10 +76,12 @@ func (s *sameSessionWorktreeStub) RollbackAllocation(allocation worktreeruntime.
 	return nil
 }
 
+// Purpose: adoption persists only a lane whose actual Git repository and branch match the source.
 func TestManageWorkspaceAdoptWorktreeKeepsSameSessionAndRefreshesScope(t *testing.T) {
 	principal := testRunPrincipal()
-	workspacePath := t.TempDir()
-	worktreePath := t.TempDir()
+	workspacePath := programFixtureRepo(t)
+	worktreePath := filepath.Join(t.TempDir(), "lane")
+	runTestGit(t, workspacePath, "worktree", "add", "-b", "agent/same-session", worktreePath)
 	workspaceSvc, _, rawStore, cleanup := newTestRunWorkspaceServiceWithRawStore(t)
 	defer cleanup()
 	entry, err := workspaceSvc.AddForPrincipal(principal, workspacePath, "repo", "", true)
@@ -95,7 +97,7 @@ func TestManageWorkspaceAdoptWorktreeKeepsSameSessionAndRefreshesScope(t *testin
 	}
 	sessionSvc := sessionruntime.NewService(sessionStore, nil)
 	worktrees := &sameSessionWorktreeStub{
-		allocation: worktreeruntime.Allocation{WorkspacePath: worktreePath, BaseBranch: "dev", BaseCommit: strings.Repeat("a", 40), BranchName: "agent/same-session"},
+		allocation: worktreeruntime.Allocation{WorkspacePath: worktreePath, BaseBranch: "dev", BaseCommit: strings.TrimSpace(runTestGit(t, workspacePath, "rev-parse", "HEAD")), BranchName: "agent/same-session"},
 		states:     map[string]worktreeruntime.TaskWorkspaceState{worktreePath: {WorkspacePath: worktreePath, BranchName: "agent/same-session", Clean: true}},
 	}
 	runSvc := NewService(sessionSvc, nil, nil, nil, nil, nil, nil, nil)
@@ -138,11 +140,17 @@ func TestManageWorkspaceAdoptWorktreeKeepsSameSessionAndRefreshesScope(t *testin
 	}
 }
 
+// Purpose: setSessionWorkspaces must preserve authorized grants and request a
+// restart through ApplySessionMutation. Real committed repositories satisfy the
+// current workspace admission contract; this unmanaged control does not prove
+// managed lane identity or provider restart execution (see the incident matrix).
 func TestManageWorkspaceSetSessionPreservesGlobalWorkspaceGrantsAndRestartsTurn(t *testing.T) {
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
 	principal := testRunPrincipal()
-	firstPath := t.TempDir()
-	secondPath := t.TempDir()
-	thirdPath := t.TempDir()
+	firstPath := programFixtureRepo(t)
+	secondPath := programFixtureRepo(t)
+	thirdPath := programFixtureRepo(t)
 	workspaceSvc, _, rawStore, cleanup := newTestRunWorkspaceServiceWithRawStore(t)
 	defer cleanup()
 	first, err := workspaceSvc.AddForPrincipal(principal, firstPath, "first", "", true)
@@ -821,11 +829,15 @@ func testManageWorkspaceCanonicalizer(entries ...workspaceruntime.Resolution) Se
 	}
 }
 
+// Purpose: a rejected dirty adoption rolls back its allocation and preserves durable prior identity.
 func TestManageWorkspaceAdoptWorktreeRollsBackWhenCurrentWorktreeIsDirty(t *testing.T) {
 	principal := testRunPrincipal()
-	workspacePath := t.TempDir()
-	currentPath := t.TempDir()
-	allocatedPath := t.TempDir()
+	workspacePath := programFixtureRepo(t)
+	currentPath := filepath.Join(t.TempDir(), "current")
+	allocatedPath := filepath.Join(t.TempDir(), "allocated")
+	runTestGit(t, workspacePath, "worktree", "add", "-b", "agent/current", currentPath)
+	runTestGit(t, workspacePath, "worktree", "add", "-b", "agent/next", allocatedPath)
+	base := strings.TrimSpace(runTestGit(t, workspacePath, "rev-parse", "HEAD"))
 	workspaceSvc, _, rawStore, cleanup := newTestRunWorkspaceServiceWithRawStore(t)
 	defer cleanup()
 	entry, err := workspaceSvc.AddForPrincipal(principal, workspacePath, "repo", "", true)
@@ -836,13 +848,13 @@ func TestManageWorkspaceAdoptWorktreeRollsBackWhenCurrentWorktreeIsDirty(t *test
 	sessionID := "dirty-session"
 	if err := sessionStore.CreateSessionForAccount(pebblestore.SessionSnapshot{
 		ID: sessionID, WorkspacePath: workspacePath, WorkspaceName: "repo", Title: "dirty", WorktreeEnabled: true,
-		WorktreeRootPath: currentPath, WorktreeBranch: "agent/current", Metadata: map[string]any{"swarm_v3_source_workspace_id": entry.WorkspaceID},
+		WorktreeRootPath: currentPath, WorktreeBranch: "agent/current", Metadata: map[string]any{"swarm_v3_source_workspace_id": entry.WorkspaceID, "swarm_v3_source_workspace_path": workspacePath, "base_commit": base},
 	}, principal.UserID, principal.AccountScopeID); err != nil {
 		t.Fatalf("create session: %v", err)
 	}
 	sessionSvc := sessionruntime.NewService(sessionStore, nil)
 	worktrees := &sameSessionWorktreeStub{
-		allocation: worktreeruntime.Allocation{WorkspacePath: allocatedPath, BaseBranch: "dev", BaseCommit: strings.Repeat("b", 40), BranchName: "agent/next"},
+		allocation: worktreeruntime.Allocation{WorkspacePath: allocatedPath, BaseBranch: "dev", BaseCommit: base, BranchName: "agent/next"},
 		states:     map[string]worktreeruntime.TaskWorkspaceState{currentPath: {WorkspacePath: currentPath, BranchName: "agent/current", Clean: false, Status: " M file"}},
 	}
 	runSvc := NewService(sessionSvc, nil, nil, nil, nil, nil, nil, nil)
