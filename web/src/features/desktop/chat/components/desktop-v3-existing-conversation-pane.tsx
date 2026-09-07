@@ -3317,7 +3317,10 @@ export function DesktopV3ExistingConversationPane({
             ) : null}
             <div
               ref={scrollContainerRef}
-              className="h-full min-h-0 overflow-x-hidden overflow-y-auto py-6 [scrollbar-gutter:stable_both-edges]"
+              className={cn(
+                "h-full min-h-0 overflow-x-hidden overflow-y-auto py-6 [scrollbar-gutter:stable_both-edges]",
+                Boolean(emptyPresentation) && "max-sm:overflow-y-hidden max-sm:py-0 max-sm:[scrollbar-gutter:auto]",
+              )}
               data-testid="desktop-chat-scroller"
               tabIndex={0}
             >
@@ -3327,6 +3330,9 @@ export function DesktopV3ExistingConversationPane({
                 className={cn(
                   "mx-auto flex min-h-full w-full min-w-0 max-w-[70rem] flex-col gap-5 [&>*:not(:last-child)]:[overflow-anchor:none]",
                   presentation === "sidebar" ? "px-4" : "px-8 sm:px-12",
+                  // The mobile workspace list owns its padding and scroll area;
+                  // message gutters otherwise squeeze its workspace/Task row.
+                  Boolean(emptyPresentation) && "max-sm:h-full max-sm:min-h-0 max-sm:max-w-none max-sm:gap-0 max-sm:px-0",
                 )}
               >
                 {emptyPresentation}
