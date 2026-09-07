@@ -476,3 +476,52 @@ count=2, 0.099s) and task commit `fccdcd7270aad40035c968bfb49549660bda25d9`
 (four named target/lane/stage tests, count=2, 3.845s). Canonical integration remains
 rejected by the installed old validator. Both commits and earlier dirty children
 are preserved; no raw cherry-pick or forced blocked-child commit was performed.
+
+## Consumer acceptance R3 — resumed canonical integration
+
+2026-09-07, local/no deployment. Canonical integration now succeeds after the
+named-primary validator activation: filesystem child `62515b727f2526874d433eba68ae6f56f3eb1840`
+and task child `fccdcd7270aad40035c968bfb49549660bda25d9` integrated into
+`b3737dde491a770d8dddfbc867e33d66f47546ce`. Earlier dirty children remain retained,
+untouched and uncommitted; successful children were not replayed. Parent owns all
+executed validation. No Coder command capability or environment pivot was added.
+
+Source tested: integrated SHA above plus scoped worker/dependency/test changes
+recorded by the six R3 test-file digests in the audit ledger. Exact commands:
+
+```sh
+cd swarmd
+GOMAXPROCS=2 go test -p 2 ./internal/run -run '^(TestTaskTargetCanonicalRootsAndProgramPreflight|TestTaskTargetTypedLaneIdentity|TestTaskTargetRuntimePreflightAndRegularChildren|TestTaskFinderSelectedWorkspaceDoesNotInheritParentRoot|TestTaskProgramRealStageUsesIntegratedBase|TestTaskProgramRepositoryLanePreflightReuseAndIsolation|TestTaskProgramEndedOwnerPreservesCommittedSibling|TestTaskProgramTransitionFailurePreservesSnapshot|TestTaskProgramPlannedStartRejectsNonRunnableCheckpoint|TestTaskProgramCohortErrorPreservesSuccessfulSibling|TestTaskProgramNativeReferenceRoundTrip|TestTaskProgramFinderDoesNotHydrateItself|TestTaskProgramApprovedLaneMappingDoesNotWidenScope|TestTaskProgramIgnoresAmbientArtifactSelection|TestProviderWorkspaceRestartRejectsStaleInvoker|TestMultiWorkspaceIdentityTransitions)$' -count=2 -timeout=180s
+GOMAXPROCS=2 go test -p 2 ./internal/tool -run '^(TestWorkspaceTarget|TestGenericFilesystem)' -count=2 -timeout=120s
+GOMAXPROCS=2 go test -p 2 ./internal/api -run '^(TestSessionV3ToolBatchRestartBoundary|TestSessionsV3ExecutorContinuesAfterProviderManagedRestartTurn)$' -count=2 -timeout=120s
+```
+
+Results: runtime **passed 16.659s**, filesystem **passed 0.105s**, API **passed
+1.331s**, each repeated twice. Initial Finder test failed because its inherited
+fixture fabricated a non-Git worktree; replacing it with a real allocation exposed
+missing captured source/base metadata in shared Finder children. Preparation now
+uses the runtime default and retains source/base rather than aliasing source to
+lane. A fixture nil-map failure was corrected before the successful executions.
+No identity check or negative assertion was weakened.
+
+| Matrix intersections | Executed evidence and scope |
+|---|---|
+| M04/M16 | R1 restart tests rerun with the integrated tree; stale invoker/suffix cannot continue. |
+| M12–M15/M20 | Actual read/list/write/edit preserve explicit/default roots, read-only and Coder ownership; search/find shared resolver rejects ambiguity and unauthorized Git admin; missing-primary Bash refuses before process creation. Full FFF indexing and shell filesystem sandboxing are not claimed. |
+| M21/M24 | Two disjoint real-Git sibling allocations share the exact immutable base/common-dir, integrate via the scheduler, unlock the Designer dependency, and fork the next child at the new HEAD with both files. Managed Designer receives quoted immutable integrated patch evidence, not an instruction to use inaccessible checkout tools. Dirty/stale/binary/oversized evidence rejects; source and unrelated checkout state stays unchanged. This is a scheduler fixture, not provider-backed multi-agent execution. |
+| M22 | Runtime executor preflight rejects split Coder repositories before program/session/worktree creation, with session snapshot and repository inventory equality. Existing parser rule remains unchanged. |
+| M23 | Regular Coder preparation in two authorized repositories persists independent owned worktrees, bases, common-dir identity and tool scope. Finder same/cross-root preparation is tested separately. No provider calls or cross-repository program support inferred. |
+| M25/M28 | Canonical real child integration observed; earlier dirty children remain recallable. Deterministic owner termination preserves committed sibling and unfinished child; a new unfinished-only program does not overwrite/restart the old ID. Real-Git retained lane reuse rejects dirty binding before persistence. |
+
+Source evidence is bounded to a 128 KiB committed diff (256 KiB total handoff),
+15-second Git subprocess deadline, disabled external diff/textconv, exact lane and
+HEAD checks. It describes integrated changes, not the entire repository. Binary or
+oversized prerequisites require explicitly prepared bounded input; no silent
+truncation/fallback. The patch includes committed prerequisite changes in the lane;
+it confers no checkout mutation or extra filesystem grant.
+
+Remaining acceptance belongs to the already-planned UI/audit/live work: complete
+provider-backed Finder → two Coders → Designer flow, simultaneous provider timing,
+full create API, process-crash windows, rendered header/sidebar/reconnect/history,
+and exact running candidate proof. No deployment, browser, launch readiness or
+independent P1/P2 verdict claimed by R3. Critical runner unchanged.

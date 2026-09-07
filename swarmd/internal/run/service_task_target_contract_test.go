@@ -1,8 +1,13 @@
 package run
 
 import (
+	"context"
+	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
+	"strings"
+	"swarm/packages/swarmd/internal/tool"
 	"testing"
 
 	"swarm/packages/swarmd/internal/identity"
@@ -120,5 +125,96 @@ func TestTaskTargetTypedLaneIdentity(t *testing.T) {
 	}
 	if programFixtureGit(t, source, "worktree", "list", "--porcelain") != before || programFixtureGit(t, source, "status", "--porcelain") != "" || programFixtureGit(t, foreign, "status", "--porcelain") != "" {
 		t.Fatal("typed lane validation mutated repository state")
+	}
+}
+
+// Purpose: runtime preflight (not only JSON parsing) rejects split Coder targets
+// before durable program creation, allocation or child session creation. Then
+// prepare two regular cross-repository Coders to prove that separate supported
+// assignments persist distinct repository/base identities without source writes.
+func TestTaskTargetRuntimePreflightAndRegularChildren(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	svc, id, cleanup := newTaskLaunchPermissionTestService(t)
+	defer cleanup()
+	parent, _, err := svc.sessions.GetSession(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source, other := programFixtureRepo(t), programFixtureRepo(t)
+	wt := &worktree.Service{}
+	svc.worktrees = wt
+	base, err := wt.ResolveTaskBase(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lane, err := wt.AllocateTaskWorkspace(source, base, "preflight-parent", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parent.WorkspacePath, parent.WorktreeRootPath = source, lane.WorkspacePath
+	parent.WorktreeEnabled = true
+	parent.WorktreeBranch, parent.WorktreeBaseBranch = lane.BranchName, base.ParentBranch
+	parent.TemporaryWorkspaceRoots = []string{other}
+	parent.Metadata = map[string]any{"swarm_v3_source_workspace_path": source, "swarm_v3_runtime_workspace_path": lane.WorkspacePath, "swarm_v3_worktree_base_commit": base.BaseCommit}
+	parsed := taskCallArguments{Action: "start", Prompt: "Implement scoped work", Program: &taskProgramSpec{ID: "unsupported", Stages: []taskProgramStage{{ID: "build", DependencyEvidence: "ready"}}}}
+	for i, target := range []string{source, other} {
+		jobID := fmt.Sprintf("job-%d", i)
+		parsed.Program.Jobs = append(parsed.Program.Jobs, taskProgramJob{ID: jobID, StageID: "build", RequestedSubagentType: "coder", TargetWorkspacePath: target, MetaPrompt: "Implement source.txt", AssignmentLabel: jobID, Deliverable: "commit", OwnedScope: []string{"source.txt"}, AcceptanceCriteria: []string{"done"}, DependencyEvidence: "ready"})
+		parsed.Launches = append(parsed.Launches, taskLaunchSpec{RequestedSubagentType: "coder", TargetWorkspacePath: target, OwnedScope: []string{"source.txt"}})
+	}
+	before, err := svc.sessions.ListSessionsForAccountUser(parent.AccountScopeID, parent.UserID, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inventories := []string{programFixtureGit(t, source, "worktree", "list", "--porcelain"), programFixtureGit(t, other, "worktree", "list", "--porcelain")}
+	_, err = svc.executeTaskToolWithParsed(context.Background(), id, "auto", 1, tool.Call{Name: "task", CallID: "reject-split"}, nil, taskExecutionRequest{ParentSession: &parent, Parsed: parsed, ParsedProvided: true})
+	if err == nil || !strings.Contains(err.Error(), "one repository") {
+		t.Fatalf("preflight: %v", err)
+	}
+	if _, ok, err := svc.sessions.GetTaskProgram(id, "unsupported"); err != nil || ok {
+		t.Fatalf("program persisted: %v %v", ok, err)
+	}
+	after, err := svc.sessions.ListSessionsForAccountUser(parent.AccountScopeID, parent.UserID, 100)
+	if err != nil || !reflect.DeepEqual(before, after) {
+		t.Fatal("rejection created/mutated session")
+	}
+	for i, path := range []string{source, other} {
+		if programFixtureGit(t, path, "worktree", "list", "--porcelain") != inventories[i] {
+			t.Fatal("rejection allocated worktree")
+		}
+	}
+	for i, selector := range []string{source, other} {
+		target, _, err := svc.resolveTaskTargetWorkspace(parent, identity.Principal{}, taskLaunchSpec{RequestedSubagentType: "coder", TargetWorkspacePath: selector})
+		if err != nil {
+			t.Fatal(err)
+		}
+		childBase, err := wt.ResolveTaskBase(target)
+		if err != nil {
+			t.Fatal(err)
+		}
+		profile, virtual, agentSource, err := svc.resolveTaskLaunchProfile(parent, "coder")
+		if err != nil {
+			t.Fatal(err)
+		}
+		launch, err := svc.prepareDelegatedSubagentLaunchWithProfile(parent, "auto", taskLaunchPrepared{RequestedSubagent: "coder", MetaPrompt: "Implement source.txt", TargetWorkspacePath: target, TaskBase: &childBase, OwnedScope: []string{"source.txt"}, VirtualTarget: virtual, LogicalTaskID: fmt.Sprintf("cross-%d", i)}, "scoped work", "", &profile, agentSource, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		scope, err := svc.resolveRunWorkspaceScope(launch.ChildSession, identity.Principal{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if scope.PrimaryPath != launch.ChildWorkspacePath || scope.WorktreeBaseCommit != childBase.BaseCommit || scope.PrimaryPath == target || len(scope.MutationScopes) != 1 {
+			t.Fatalf("child scope: %+v", scope)
+		}
+		if programFixtureGit(t, scope.PrimaryPath, "rev-parse", "--path-format=absolute", "--git-common-dir") != programFixtureGit(t, selector, "rev-parse", "--path-format=absolute", "--git-common-dir") {
+			t.Fatal("child in wrong repository")
+		}
+		if programFixtureGit(t, scope.PrimaryPath, "rev-parse", "HEAD") != childBase.BaseCommit {
+			t.Fatal("child base mismatch")
+		}
+		if programFixtureGit(t, selector, "status", "--porcelain") != "" || programFixtureGit(t, selector, "rev-parse", "HEAD") != childBase.BaseCommit {
+			t.Fatal("captured source mutated")
+		}
 	}
 }

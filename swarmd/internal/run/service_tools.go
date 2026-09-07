@@ -1240,7 +1240,11 @@ func (s *Service) prepareDelegatedSubagentLaunchWithProfile(parentSession pebble
 	preference := applyAgentPreferenceOverridesForMode(parentSession.Preference, subagentProfile, childMode)
 	assignmentLabel := taskAssignmentLabel(launch.AssignmentLabel, launch.MetaPrompt, description, strings.TrimSpace(subagentProfile.Name))
 	childTitle := assignmentLabel
-	targetWorkspacePath := strings.TrimSpace(firstNonEmptyString(launch.TargetWorkspacePath, parentSession.WorkspacePath))
+	defaultWorkspacePath := parentSession.WorkspacePath
+	if parentSession.WorktreeEnabled {
+		defaultWorkspacePath = parentSession.WorktreeRootPath
+	}
+	targetWorkspacePath := strings.TrimSpace(firstNonEmptyString(launch.TargetWorkspacePath, defaultWorkspacePath))
 	childWorkspacePath := targetWorkspacePath
 	childWorkspaceName := filepath.Base(targetWorkspacePath)
 	if targetWorkspacePath == strings.TrimSpace(parentSession.WorkspacePath) {
@@ -1458,6 +1462,12 @@ func (s *Service) prepareDelegatedSubagentLaunchWithProfile(parentSession pebble
 	}
 	if childWorkspacePath != "" {
 		childMetadata["swarm_v3_runtime_workspace_path"] = childWorkspacePath
+	}
+	if childWorktreeEnabled && !isCoderTarget {
+		// Read-only workers sharing the validated parent lane still need its
+		// captured base for runtime identity validation; never invent a new base.
+		childMetadata["swarm_v3_source_workspace_path"] = strings.TrimSpace(mapString(parentSession.Metadata, "swarm_v3_source_workspace_path"))
+		childMetadata["base_commit"] = strings.TrimSpace(firstNonEmptyString(mapString(parentSession.Metadata, "swarm_v3_worktree_base_commit"), mapString(parentSession.Metadata, "base_commit")))
 	}
 	if isCoderTarget {
 		childMetadata["worktree_path"] = childWorktreeRootPath
