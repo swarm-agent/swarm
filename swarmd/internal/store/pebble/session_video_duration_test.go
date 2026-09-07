@@ -61,3 +61,37 @@ func TestVideoTimelineDurationBoundsAndPadding(t *testing.T) {
 		t.Fatal("short declared duration concealed oversized clip")
 	}
 }
+
+// Old immutable snapshots already contain stale positive durations. All read
+// routes must repair their projection consistently without mutating stored bytes.
+func TestVideoRetainedDurationReadNormalization(t *testing.T) {
+	store, cleanup := newTestSessionStoreForVideoProject(t)
+	defer cleanup()
+	old := VideoProjectRevisionSnapshot{ID: "rev", ProjectID: "project", SessionID: "sess", AccountScopeID: "acc", UserID: "usr", RevisionNumber: 1, Timeline: VideoProjectTimeline{TotalDurationMs: 4000, Clips: []VideoTimelineClip{{ID: "second", SourceKind: VideoClipSourceKindColor, TimelineStartMs: 4000, TimelineEndMs: 7900, DurationMs: 3900, Visible: true}}}}
+	key := KeyVideoProjectRevision("acc", "sess", "project", "rev")
+	if err := store.store.PutJSON(key, old); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.store.PutJSON(KeyVideoProjectRevisionByNumber("acc", "sess", "project", 1), old); err != nil {
+		t.Fatal(err)
+	}
+	byID, ok, err := store.GetVideoProjectRevision("acc", "sess", "project", "rev")
+	if err != nil || !ok || byID.Timeline.TotalDurationMs != 7900 {
+		t.Fatalf("id read: %+v %v", byID, err)
+	}
+	byNumber, ok, err := store.GetVideoProjectRevisionByNumber("acc", "sess", "project", 1)
+	if err != nil || !ok || byNumber.Timeline.TotalDurationMs != 7900 {
+		t.Fatalf("number read: %+v %v", byNumber, err)
+	}
+	list, err := store.ListVideoProjectRevisions("acc", "sess", "project", 10)
+	if err != nil || len(list) != 1 || list[0].Timeline.TotalDurationMs != 7900 {
+		t.Fatalf("list: %+v %v", list, err)
+	}
+	var raw VideoProjectRevisionSnapshot
+	if ok, err := store.store.GetJSON(key, &raw); err != nil || !ok || raw.Timeline.TotalDurationMs != 4000 {
+		t.Fatalf("immutable bytes changed: %+v %v", raw, err)
+	}
+	if _, ok, err := store.GetVideoProjectRevision("foreign", "sess", "project", "rev"); err != nil || ok {
+		t.Fatal("foreign account gained access")
+	}
+}

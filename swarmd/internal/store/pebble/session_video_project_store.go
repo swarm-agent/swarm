@@ -3643,6 +3643,7 @@ func (s *SessionStore) GetVideoProjectRevision(accountScopeID, sessionID, projec
 	if err != nil || !ok {
 		return VideoProjectRevisionSnapshot{}, ok, err
 	}
+	normalizeVideoTimeline(&rev.Timeline)
 	return rev, true, nil
 }
 
@@ -3658,6 +3659,7 @@ func (s *SessionStore) GetVideoProjectRevisionByNumber(accountScopeID, sessionID
 	if err != nil || !ok {
 		return VideoProjectRevisionSnapshot{}, ok, err
 	}
+	normalizeVideoTimeline(&rev.Timeline)
 	return rev, true, nil
 }
 
@@ -3678,6 +3680,7 @@ func (s *SessionStore) ListVideoProjectRevisions(accountScopeID, sessionID, proj
 		if err := json.Unmarshal(value, &r); err != nil {
 			return err
 		}
+		normalizeVideoTimeline(&r.Timeline)
 		revisions = append(revisions, r)
 		return nil
 	})
