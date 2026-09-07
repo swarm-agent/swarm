@@ -18,7 +18,7 @@ test('Desktop new-session startup uses the Router-owned worktree transaction', a
   assert.match(pane, /agentName: 'swarm'/)
   assert.match(pane, /onRoutedSessionResolved: \(result: DesktopV3RoutedStartResult\)/)
   assert.match(app, /onRoutedSessionResolved=\{handleRoutedSessionResolved\}/)
-  assert.match(app, /applyDesktopV3RoutedStartResponse\(response\)[\s\S]*await selectAndHydrateDesktopV3Session\(response\.session_id\)/)
+  assert.match(app, /applyDesktopV3RoutedStartResponse\(response\)[\s\S]*void selectAndHydrateDesktopV3Session\(response\.session_id\)/)
   assert.doesNotMatch(pane, /createDesktopV3NewSessionOperation|startNewDesktopV3Session|worktree: \{ mode: 'off' \}/)
 })
 
@@ -30,7 +30,7 @@ test('Desktop routed activation applies the first durable user message before hy
 
   assert.ok(handlerStart >= 0 && handlerEnd > handlerStart)
   const messageResult = handler.indexOf('applyDesktopV3RoutedStartResponse(response)')
-  const hydrate = handler.indexOf('await selectAndHydrateDesktopV3Session(response.session_id)')
+  const hydrate = handler.indexOf('void selectAndHydrateDesktopV3Session(response.session_id)')
   const navigate = handler.indexOf('await handleNewSessionStarted(response.session_id)')
   assert.ok(messageResult >= 0 && hydrate > messageResult && navigate > hydrate)
 })
@@ -38,8 +38,8 @@ test('Desktop routed activation applies the first durable user message before hy
 test('Desktop ordinary startup cannot opt out of the Router-owned worktree', async () => {
   const pane = await readNewSessionPane()
 
-  assert.match(pane, /never creates a direct dev-bound session/)
-  assert.match(pane, /startPath="router"/)
+  assert.match(pane, /postDesktopV3RoutedSessionStart\(request\)/)
+  assert.doesNotMatch(pane, /startPath="direct"/)
   assert.match(pane, /desktopRoutedSessionMetadata\(\{ source: 'desktop-v3' \}\)/)
   assert.doesNotMatch(pane, /managed_worktree_requested|worktree_name|worktree_branch_name|startPath="direct"/)
 })

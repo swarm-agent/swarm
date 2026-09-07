@@ -284,7 +284,7 @@ async function allUsage(page: Page, sessionID: string, events: EventWire[]): Pro
 
 async function openNewSessionPage(context: TestContext): Promise<void> {
   await context.page.goto(`${context.appURL}${context.workspaceRoute}`, { waitUntil: 'domcontentloaded' })
-  const pane = context.page.getByTestId('desktop-v3-new-session-pane')
+  const pane = context.page.getByTestId('desktop-v3-existing-conversation-pane')
   await pane.waitFor({ state: 'visible', timeout: 30_000 })
   const composer = pane.locator('textarea').first()
   await composer.waitFor({ state: 'visible', timeout: 30_000 })
@@ -304,7 +304,24 @@ async function submitSlash(context: TestContext, command: string, endpoint: '/v3
     if (response.request().method() !== 'POST') return false
     try { return new URL(response.url()).pathname === endpoint } catch { return false }
   }, { timeout: 30_000 })
-  const composer = context.page.getByTestId('desktop-v3-new-session-pane').locator('textarea').first()
+  const composer = context.page.getByTestId('desktop-v3-existing-conversation-pane').locator('textarea').first()
+  // Requirement: Router setup and durable URL activation retain the actual
+  // transcript DOM, not just equivalent bubble markup. Hold the routed response
+  // at the network boundary to inspect the pending presentation deterministically.
+  const routedURL = '**/v3/sessions:routed'
+  if (endpoint === '/v3/sessions:routed') {
+    await context.page.route(routedURL, async (route) => {
+      const response = await route.fetch()
+      await context.page.getByTestId('desktop-chat-virtual-transcript').waitFor({ state: 'visible' })
+      await context.page.evaluate(() => {
+        const scroller = document.querySelector('[data-testid="desktop-chat-scroller"]')!
+        ;(window as unknown as { continuityScroller: Element }).continuityScroller = scroller
+        ;(window as unknown as { continuityRow: Element }).continuityRow = document.querySelector('[data-testid="desktop-chat-row"]')!
+        if (document.querySelector('[data-testid="desktop-v3-routing-status"]')) throw new Error('Separate Router presentation is visible')
+      })
+      await route.fulfill({ response })
+    })
+  }
   await composer.fill(command)
   await composer.press('Enter')
   const response = await responsePromise
@@ -315,6 +332,13 @@ async function submitSlash(context: TestContext, command: string, endpoint: '/v3
   if (endpoint === '/v3/sessions:routed') {
     await context.page.waitForURL((url) => url.pathname.endsWith(`/${launched.session_id}`), { timeout: 30_000 })
     await context.page.getByTestId('desktop-chat-scroller').waitFor({ state: 'visible', timeout: 30_000 })
+    assert.equal(await context.page.evaluate(() => {
+      const original = (window as unknown as { continuityScroller: Element }).continuityScroller
+      const row = (window as unknown as { continuityRow: Element }).continuityRow
+      return original.isConnected && original === document.querySelector('[data-testid="desktop-chat-scroller"]')
+        && row.isConnected && row === document.querySelector('[data-testid="desktop-chat-row"]')
+    }), true, 'Router activation replaced the conversation scroller')
+    await context.page.unroute(routedURL)
   }
   return launched
 }

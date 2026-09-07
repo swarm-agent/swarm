@@ -20,7 +20,7 @@ import {
   type DesktopV3RoutedStartResult,
 } from '../../session-v3/new-session-flow'
 import { DesktopV3AgenticComposer } from './desktop-v3-agentic-composer'
-import { DesktopV3ChatHeader } from './desktop-v3-chat-header'
+import { DesktopV3ExistingConversationPane, type DesktopV3ExistingConversationPaneProps } from './desktop-v3-existing-conversation-pane'
 import type { DesktopV3RunStatusModel } from './desktop-v3-run-status'
 import { DesktopV3RoutedPendingShell } from './desktop-v3-routed-pending-shell'
 import {
@@ -33,7 +33,7 @@ import type { DesktopV3ArtifactMessageSelection } from '../../session-v3/artifac
 import { postDesktopV3RoutedSessionStart } from '../../session-v3/write-api'
 import { desktopRoutedSessionMetadata } from '../services/desktop-routed-worktree-intent'
 
-export interface DesktopV3NewSessionPaneProps {
+export interface DesktopV3NewSessionPaneProps extends Partial<Omit<DesktopV3ExistingConversationPaneProps, 'onSlashCommand'>> {
   workspace: WorkspaceEntry
   workspaceAuthority: DesktopV3RoutedWorkspaceAuthority
   onRoutedSessionResolved: (result: DesktopV3RoutedStartResult) => void | Promise<void>
@@ -53,10 +53,19 @@ export interface DesktopV3NewSessionPaneProps {
   onArtifactSelectionRequestHandled?: () => void
 }
 
-/**
- * Owns only the local Router/worktree start shell. The app-level owner activates
- * the validated atomic result; this pane never creates a direct dev-bound session.
- */
+/** Retain the start owner when its one durable session is activated in place. */
+export function DesktopV3ConversationPane(props: DesktopV3NewSessionPaneProps) {
+  const [startedHere] = useState(() => !props.sessionId)
+  if (startedHere) return <DesktopV3NewSessionPane {...props} />
+  return <DesktopV3ExistingConversationPane {...props}
+    sessionId={props.sessionId ?? ''}
+    initialHydrateStatus={props.initialHydrateStatus ?? 'idle'}
+    renderedMessages={props.renderedMessages ?? { committed: [], pendingUser: [], liveRuns: [], runIntents: [] }}
+    messagesLoaded={props.messagesLoaded ?? false}
+  />
+}
+
+/** Router controls setup, not a separate page or provisional session. */
 export function DesktopV3NewSessionPane({
   workspace,
   workspaceAuthority,
@@ -75,6 +84,7 @@ export function DesktopV3NewSessionPane({
   agentSettingsInitialAgent = '',
   artifactSelectionRequest = null,
   onArtifactSelectionRequestHandled,
+  ...conversationProps
 }: DesktopV3NewSessionPaneProps) {
   const queryClient = useQueryClient()
   const agentStateQuery = useQuery(agentStateQueryOptions())
@@ -143,6 +153,7 @@ export function DesktopV3NewSessionPane({
   const [tipsSaving, setTipsSaving] = useState(false)
   const resolvedCallbackRef = useRef(onRoutedSessionResolved)
   const activatingOperationRef = useRef('')
+  const firstMessageIdentityRef = useRef<{ messageId: string; renderKey: string } | undefined>(undefined)
   const initialPromptSubmittedRef = useRef(false)
   if (operationAttachmentsRef.current === null && initialControllerState.phase === 'failed') {
     operationAttachmentsRef.current = initialStagedAttachments
@@ -176,6 +187,7 @@ export function DesktopV3NewSessionPane({
     if (routedState.phase !== 'resolved') return
     if (activatingOperationRef.current === routedState.operation.operationId) return
     activatingOperationRef.current = routedState.operation.operationId
+    firstMessageIdentityRef.current = { messageId: routedState.result.first_message.id, renderKey: routedState.operation.operationId }
     setLocalError(null)
     let cancelled = false
     const operationId = routedState.operation.operationId
@@ -273,7 +285,10 @@ export function DesktopV3NewSessionPane({
       if (routedState.phase !== 'failed' && captured.attachments.length !== stagedAttachmentsRef.current.length) {
         throw new Error('Routed composer staged attachment state changed before submit')
       }
-      if (routedState.phase === 'failed') return controller.retry()
+      if (routedState.phase === 'failed') {
+        handleRetry()
+        return Promise.resolve(controller.getState())
+      }
       setLocalError(null)
       operationAttachmentsRef.current = [...stagedAttachmentsRef.current]
       return controller.submit({
@@ -338,29 +353,47 @@ export function DesktopV3NewSessionPane({
   const activationPending = initialCommandStarting
     || routedState.phase === 'routing'
     || routedState.phase === 'resolved'
-  const pendingState = routedState.phase === 'failed' ? routedState.phase : activationPending ? 'routing' : 'draft'
   const headerStatus: DesktopV3RunStatusModel | null = activationPending
     ? {
         kind: 'starting',
-        label: routedState.phase === 'resolved' ? 'Opening…' : 'Routing…',
+        label: 'Starting…',
         active: false,
       }
     : routedState.phase === 'failed'
       ? { kind: 'failed', label: 'Start failed', active: false }
       : null
 
+  const durable = Boolean(conversationProps.sessionId)
+  const localMessages = {
+    committed: [], liveRuns: [], runIntents: [],
+    pendingUser: routedState.prompt && routedState.phase !== 'draft' ? [{
+      clientRequestId: routedState.operation.request.client_request_id,
+      messageId: routedState.operation.operationId,
+      sessionId: '', role: 'user' as const, content: routedState.prompt,
+      createdAt: routedState.operation.createdAt,
+      error: routedState.phase === 'failed' ? routedState.error : undefined,
+      status: routedState.phase === 'failed' ? 'failed' as const : 'pending' as const,
+    }] : [],
+  }
   return (
-    <div
-      className="relative flex min-h-0 flex-1 flex-col bg-[var(--app-bg)]"
-      data-desktop-chat-drop-zone
-      data-testid="desktop-v3-new-session-pane"
-      data-routed-phase={routedState.phase}
-    >
-      <DesktopV3ChatHeader
-        title="New chat"
-        workspaceName={workspace.workspaceName}
-        runStatus={headerStatus}
-      />
+    <DesktopV3ExistingConversationPane
+      {...conversationProps}
+      sessionId={conversationProps.sessionId ?? ''}
+      initialHydrateStatus={conversationProps.initialHydrateStatus ?? 'idle'}
+      renderedMessages={conversationProps.renderedMessages ?? localMessages}
+      messagesLoaded={conversationProps.messagesLoaded ?? false}
+      firstMessageIdentity={firstMessageIdentityRef.current}
+      scrollIdentity="local-conversation"
+      onSlashCommand={onSlashCommand}
+      developerMode={developerMode}
+      composerFocusSignal={composerFocusSignal}
+      agentSettingsOpenSignal={agentSettingsOpenSignal}
+      agentSettingsInitialAgent={agentSettingsInitialAgent}
+      onOpenActionSettings={onOpenActionSettings}
+      artifactSelectionRequest={artifactSelectionRequest}
+      onArtifactSelectionRequestHandled={onArtifactSelectionRequestHandled}
+      startPresentation={!durable ? { workspaceName: workspace.workspaceName, runStatus: headerStatus } : undefined}
+      emptyPresentation={!durable && !activationPending && routedState.phase === 'draft' ? <>
 
       {mobileSessionQuickMenu ? (
         <section
@@ -373,11 +406,7 @@ export function DesktopV3NewSessionPane({
       ) : null}
 
       <DesktopV3RoutedPendingShell
-        state={pendingState}
-        startPath="router"
-        pendingPrompt={routedState.prompt}
-        error={routedState.phase === 'failed' ? routedState.error : undefined}
-        onRetry={routedState.phase === 'failed' ? handleRetry : undefined}
+        state="draft"
         showTips={showTips}
         onDisableTips={tipsSaving ? undefined : () => { void handleDisableTips() }}
         workspace={workspace}
@@ -387,7 +416,8 @@ export function DesktopV3NewSessionPane({
         className={mobileSessionQuickMenu ? 'hidden sm:flex' : undefined}
       />
 
-      <DesktopV3AgenticComposer
+      </> : undefined}
+      composerOverride={!durable ? <DesktopV3AgenticComposer
           workspacePath={workspace.path}
           draft={draft}
           focusSignal={composerFocusSignal}
@@ -434,7 +464,7 @@ export function DesktopV3NewSessionPane({
           developerMode={developerMode}
           onOpenActionSettings={onOpenActionSettings}
           slashCommandContext="new-session"
-        />
-    </div>
+        /> : undefined}
+    />
   )
 }

@@ -204,16 +204,24 @@ const imageToolSessionRoute = createRoute({
   component: ImageToolPage,
 })
 
-const workspaceRoute = createRoute({
+// The chat owner survives workspace -> durable session URL activation.
+const conversationRoute = createRoute({
   getParentRoute: () => rootRoute,
-  path: '/$workspaceSlug',
-  parseParams: validateWorkspaceParams,
-  validateSearch: validateSettingsSearch,
+  id: 'conversation',
+  validateSearch: validateWorkspaceSessionSearch,
   component: DesktopAppPage,
 })
 
+const workspaceRoute = createRoute({
+  getParentRoute: () => conversationRoute,
+  path: '/$workspaceSlug',
+  parseParams: validateWorkspaceParams,
+  validateSearch: validateSettingsSearch,
+  component: () => null,
+})
+
 const workspaceSessionRoute = createRoute({
-  getParentRoute: () => rootRoute,
+  getParentRoute: () => conversationRoute,
   path: '/$workspaceSlug/$sessionId',
   parseParams: validateWorkspaceSessionParams,
   validateSearch: validateWorkspaceSessionSearch,
@@ -224,7 +232,7 @@ const workspaceSessionRoute = createRoute({
     }
     return { sessionId }
   },
-  component: DesktopAppPage,
+  component: () => null,
 })
 
 const workspaceVideoSessionRoute = createRoute({
@@ -314,8 +322,7 @@ const routeTree = rootRoute.addChildren([
   videoToolRoute,
   imageToolRoute,
   imageToolSessionRoute,
-  workspaceRoute,
-  workspaceSessionRoute,
+  conversationRoute.addChildren([workspaceRoute, workspaceSessionRoute]),
   workspaceVideoSessionRoute,
   workspaceTaskRoute,
   workspaceWorktreeRoute,

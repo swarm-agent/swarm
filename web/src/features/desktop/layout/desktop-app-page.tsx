@@ -39,8 +39,7 @@ import { normalizeShowTipsEnabled, normalizeSidebarHideInactiveHours, type UISet
 import { saveSidebarHideInactiveHours } from '../settings/swarm/mutations/save-sidebar-hide-inactive-hours'
 import { saveShowTipsSetting } from '../settings/swarm/mutations/save-show-tips-setting'
 import { fetchSwarmTargets } from '../swarm/api/swarm-targets'
-import { DesktopV3ExistingConversationPane } from '../chat/components/desktop-v3-existing-conversation-pane'
-import { DesktopV3NewSessionPane } from '../chat/components/desktop-v3-new-session-pane'
+import { DesktopV3ConversationPane as ConversationPane } from '../chat/components/desktop-v3-new-session-pane'
 import { DesktopV3ChatHeader } from '../chat/components/desktop-v3-chat-header'
 import { DesktopV3AgenticComposer } from '../chat/components/desktop-v3-agentic-composer'
 import { applyDesktopV3RoutedStartResponse, clearDesktopV3RoutedStartOperation, createDesktopV3NewSessionOperation, desktopV3RoutedWorkspaceAuthority, startNewDesktopV3Session, type DesktopV3RoutedStartResult, type DesktopV3RoutedWorkspaceAuthority } from '../session-v3/new-session-flow'
@@ -2609,6 +2608,7 @@ export function DesktopAppPage() {
     setIntegrationHelpDraft((current) => current?.id === id ? undefined : current)
   }, [])
   const [newSessionEpoch, setNewSessionEpoch] = useState(0)
+  const [activatedConversation, setActivatedConversation] = useState<{ sessionId: string; key: string } | null>(null)
   const [newSessionIntent, setNewSessionIntent] = useState<(DesktopNewSessionCommandRequest & { workspacePath: string }) | null>(null)
   const [workspaceDropdownOpen, setWorkspaceDropdownOpen] = useState(false)
   const [todoItems, setTodoItems] = useState<Record<string, WorkspaceTodoItem[]>>({})
@@ -3588,9 +3588,14 @@ export function DesktopAppPage() {
       throw new Error('Routed Desktop start returned authority for a different workspace')
     }
     applyDesktopV3RoutedStartResponse(response)
-    await selectAndHydrateDesktopV3Session(response.session_id)
+    setActivatedConversation({ sessionId: response.session_id, key: `new:${topWorkspace?.path}:${newSessionEpoch}` })
+    // The atomic response already contains the first message and session view.
+    // Hydration repairs in the background; it is not a second opening screen.
+    void selectAndHydrateDesktopV3Session(response.session_id)
     await handleNewSessionStarted(response.session_id)
-  }, [activeWorkspaceAuthority, handleNewSessionStarted])
+    setNewSessionIntent(null)
+    setNewSessionEpoch((current) => current + 1)
+  }, [activeWorkspaceAuthority, handleNewSessionStarted, topWorkspace?.path, newSessionEpoch])
 
   const handleArchivePlanSession = useCallback((sessionId: string) => {
     const normalizedSessionId = sessionId.trim()
@@ -5413,17 +5418,26 @@ export function DesktopAppPage() {
               </p>
             </Card>
           </div>
-        ) : routeSessionId ? (
+        ) : routeSessionId || (topWorkspace?.path && activeWorkspaceAuthority && (!routeWorkspaceSlug || chatWorkspacePath)) ? (
           <div className="flex min-h-0 flex-1 flex-col">
-          <DesktopV3ExistingConversationPane
-            key={`existing:${routeSessionId}`}
+          <ConversationPane
+            key={routeSessionId ? activatedConversation?.sessionId === routeSessionId ? activatedConversation.key : `existing:${routeSessionId}` : `new:${topWorkspace?.path}:${newSessionEpoch}`}
+            workspace={topWorkspace!}
+            workspaceAuthority={activeWorkspaceAuthority!}
+            onRoutedSessionResolved={handleRoutedSessionResolved}
+            initialPrompt={newSessionIntent?.workspacePath === topWorkspace?.path ? newSessionIntent?.prompt : undefined}
+            initialPlanModeRequested={newSessionIntent?.workspacePath === topWorkspace?.path ? newSessionIntent?.planModeRequested : requestedNewPlan}
+            mobileSessionQuickMenu={mobileSessionQuickMenu}
+            workspaces={mergedSidebarWorkspaceEntries}
+            onSelectWorkspace={mergedSidebarWorkspaceEntries.length > 1 ? handleSelectWorkspaceFromPicker : undefined}
+            onSetWorkspaceIcon={setWorkspaceIcon}
             sessionId={routeSessionId}
             composerFocusSignal={composerFocusSignal}
             composerDraftRequest={integrationHelpDraft?.sessionId === routeSessionId ? integrationHelpDraft : undefined}
             onComposerDraftRequestHandled={handleIntegrationHelpDraftHandled}
             initialHydrateStatus={desktopInitialHydrate.status}
-            renderedMessages={selectedDesktopV3Messages}
-            messagesLoaded={selectedDesktopV3MessagesLoaded}
+            renderedMessages={routeSessionId ? selectedDesktopV3Messages : undefined}
+            messagesLoaded={routeSessionId ? selectedDesktopV3MessagesLoaded : undefined}
             loadedMessageCount={selectedDesktopV3LoadedMessageCount}
             session={sessionById.get(routeSessionId) ?? null}
             routeOptions={sessionById.get(routeSessionId) ? (() => {
@@ -5473,7 +5487,8 @@ export function DesktopAppPage() {
             developerMode={updateDevMode}
             agentSettingsOpenSignal={agentSettingsOpenSignal}
             agentSettingsInitialAgent={requestedAgentName}
-            onOpenPlan={() => openPlanModalForSession(routeSessionId)}
+            onOpenPlan={routeSessionId ? () => openPlanModalForSession(routeSessionId) : undefined}
+            onOpenActionSettings={() => handleOpenSettingsTab('actions')}
             planSidebarBelowActions={planSidebarGitPanel}
           />
           </div>
@@ -5503,25 +5518,6 @@ export function DesktopAppPage() {
               </Card>
             </div>
           </div>
-        ) : topWorkspace?.path && activeWorkspaceAuthority ? (
-          <DesktopV3NewSessionPane
-            key={`new:${topWorkspace.path}:${newSessionEpoch}`}
-            workspace={topWorkspace}
-            workspaceAuthority={activeWorkspaceAuthority}
-            onRoutedSessionResolved={handleRoutedSessionResolved}
-            composerFocusSignal={composerFocusSignal}
-            initialPrompt={newSessionIntent?.workspacePath === topWorkspace.path ? newSessionIntent.prompt : undefined}
-            initialPlanModeRequested={newSessionIntent?.workspacePath === topWorkspace.path ? newSessionIntent.planModeRequested : requestedNewPlan}
-            agentSettingsOpenSignal={agentSettingsOpenSignal}
-            agentSettingsInitialAgent={requestedAgentName}
-            mobileSessionQuickMenu={mobileSessionQuickMenu}
-            onSlashCommand={handleSlashCommand}
-            developerMode={updateDevMode}
-            workspaces={mergedSidebarWorkspaceEntries}
-            onSelectWorkspace={mergedSidebarWorkspaceEntries.length > 1 ? handleSelectWorkspaceFromPicker : undefined}
-            onSetWorkspaceIcon={setWorkspaceIcon}
-            onOpenActionSettings={() => handleOpenSettingsTab('actions')}
-          />
         ) : (
           <div className="flex h-full flex-1 items-center justify-center px-6">
             <Card className="max-w-lg border-[var(--app-border)] bg-[var(--app-surface)] p-6 text-center">

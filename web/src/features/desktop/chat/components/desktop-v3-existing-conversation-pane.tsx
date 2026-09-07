@@ -13,7 +13,7 @@ import {
 } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { useNavigate, useParams, useSearch } from "@tanstack/react-router";
+import { useNavigate, useRouterState, useSearch } from "@tanstack/react-router";
 import {
   ArrowDown,
   ArrowRight,
@@ -1553,6 +1553,12 @@ export function resolveDesktopV3StopRunRequest(input: {
 }
 
 export interface DesktopV3ExistingConversationPaneProps {
+  /** Local start uses this same transcript; no provisional session is created. */
+  startPresentation?: { workspaceName: string; runStatus: DesktopV3RunStatusModel | null };
+  emptyPresentation?: ReactNode;
+  scrollIdentity?: string;
+  composerOverride?: ReactNode;
+  firstMessageIdentity?: { messageId: string; renderKey: string };
   /** Compatibility-only command seam; resolved routed mode is read-only here. */
   modeCommand?: "toggle-plan-auto" | null;
   onModeCommandHandled?: () => void;
@@ -1712,10 +1718,15 @@ export function DesktopV3ExistingConversationPane({
   artifactReviewPortalTarget = null,
   presentation = "page",
   onMessageSent,
+  startPresentation,
+  emptyPresentation,
+  scrollIdentity,
+  composerOverride,
+  firstMessageIdentity,
 }: DesktopV3ExistingConversationPaneProps) {
   const normalizedSessionId = sessionId.trim();
   const navigate = useNavigate();
-  const routeParams = useParams({ strict: false }) as { workspaceSlug?: unknown };
+  const routeParams = useRouterState({ select: (state) => state.matches[state.matches.length - 1]?.params }) as { workspaceSlug?: unknown };
   const artifactRouteSearch = useSearch({ strict: false }) as { artifactSession?: unknown; artifact?: unknown; collection?: unknown; artifactGroup?: unknown };
   const queryClient = useQueryClient();
   const mountedRef = useRef(true);
@@ -2152,8 +2163,11 @@ export function DesktopV3ExistingConversationPane({
     selectedModelAvailable,
   );
   const renderItems = useMemo(
-    () => buildDesktopV3ConversationRenderItems(renderedMessages),
-    [renderedMessages],
+    () => buildDesktopV3ConversationRenderItems(renderedMessages).map((item) =>
+      firstMessageIdentity && item.type === 'message' && item.message.id === firstMessageIdentity.messageId
+        ? { ...item, renderKey: firstMessageIdentity.renderKey }
+        : item),
+    [renderedMessages, firstMessageIdentity],
   );
 
   const taskChildRows = useMemo<TaskToolRow[]>(() => {
@@ -2449,7 +2463,7 @@ export function DesktopV3ExistingConversationPane({
     scrollToBottom,
     preserveScrollPositionForPrepend,
   } = useDesktopV3StickyBottomScroll({
-    resetKey: normalizedSessionId,
+    resetKey: scrollIdentity ?? normalizedSessionId,
     itemCount: renderItems.length,
     followKey: scrollFollowKey,
   });
@@ -3198,7 +3212,7 @@ export function DesktopV3ExistingConversationPane({
     [hasOpenPlan],
   );
 
-  if (!normalizedSessionId) {
+  if (!normalizedSessionId && !startPresentation) {
     return (
       <DesktopV3ChatStateCard
         title="Select a session"
@@ -3217,13 +3231,13 @@ export function DesktopV3ExistingConversationPane({
       <DesktopV3ChatHeader
         sessionId={normalizedSessionId}
         workspaceRevision={cacheSession?.updated_at}
-        title={session?.title || cacheSession?.title || "Conversation"}
+        title={session?.title || cacheSession?.title || (startPresentation ? "New chat" : "Conversation")}
         workspaceName={
-          session?.workspaceName || cacheSession?.workspace_name || "Workspace"
+          session?.workspaceName || cacheSession?.workspace_name || startPresentation?.workspaceName || "Workspace"
         }
         branchName={headerBranchLabel}
         modelLabel={canonicalHeaderModelLabel}
-        runStatus={runStatusModel}
+        runStatus={startPresentation?.runStatus ?? runStatusModel}
         onOpenChats={onOpenChats}
         onNewSession={onNewSession}
         sessionActions={headerSessionActions}
@@ -3311,7 +3325,8 @@ export function DesktopV3ExistingConversationPane({
                   presentation === "sidebar" ? "px-4" : "px-8 sm:px-12",
                 )}
               >
-                {showConversationLoading ? (
+                {emptyPresentation}
+                {showConversationLoading && !startPresentation ? (
                   <DesktopV3ConversationLoadingSpinner />
                 ) : null}
                 {initialHydrateStatus === "error" &&
@@ -3482,7 +3497,7 @@ export function DesktopV3ExistingConversationPane({
             </div>
           ) : null}
 
-          <DesktopV3ExistingConversationComposer
+          {composerOverride ?? <DesktopV3ExistingConversationComposer
             key={normalizedSessionId}
             workspacePath={session?.workspacePath?.trim() || cacheSession?.workspace_path?.trim() || metadataString(sessionMetadata, "workspace_path")}
             sessionId={normalizedSessionId}
@@ -3577,7 +3592,7 @@ export function DesktopV3ExistingConversationPane({
             onSlashCommand={onSlashCommand}
             developerMode={developerMode}
             onOpenActionSettings={onOpenActionSettings}
-          />
+          />}
         </div>
 
         {showConversationSidebarColumn ? (
