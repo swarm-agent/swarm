@@ -1267,12 +1267,25 @@ func (r artifactV3AnimationRenderer) request(input artifactv3video.RenderRequest
 		manifest.Entrypoint = input.Entrypoint
 	}
 	files := cloneArtifactProject(input.Project.Files)
-	files[manifest.Entrypoint] = injectArtifactV3AnimationAdapter(files[manifest.Entrypoint], input.DurationMs, int(input.FPS))
+	duration, fps, declared, err := htmlcapture.AnimationTiming(files[manifest.Entrypoint])
+	if err != nil {
+		return htmlcapture.AnimationRequest{}, err
+	}
+	if declared {
+		if int64(duration) != input.DurationMs || float64(fps) != input.FPS {
+			return htmlcapture.AnimationRequest{}, errors.New("render timing conflicts with authored animation manifest")
+		}
+	} else {
+		if manifest.AnimationProfile != nil {
+			return htmlcapture.AnimationRequest{}, errors.New("profiled animation requires authored timing declaration")
+		}
+		files[manifest.Entrypoint] = injectArtifactV3AnimationAdapter(files[manifest.Entrypoint], input.DurationMs, int(input.FPS))
+	}
 	// Native V3 accepts CSS/WAAPI motion. The server-owned adapter below makes
 	// those timelines deterministically seekable even when author code does not
 	// own a requestAnimationFrame loop, so requiring artifact-owned rAF here would
 	// reject valid CSS-only animations after the adapter is successfully bound.
-	return htmlcapture.AnimationRequest{Entry: manifest.Entrypoint, Files: files, DurationMS: int(input.DurationMs), FPS: int(input.FPS), OutputFPS: int(input.FPS), Quality: htmlcapture.AnimationQualityStandard, RequireLivePlayback: false, AllowBooleanReady: true}, nil
+	return htmlcapture.AnimationRequest{Entry: manifest.Entrypoint, Files: files, DurationMS: int(input.DurationMs), FPS: int(input.FPS), OutputFPS: int(input.FPS), Quality: htmlcapture.AnimationQualityStandard, RequireLivePlayback: false, AllowBooleanReady: !declared}, nil
 }
 
 func (r artifactV3AnimationRenderer) Preflight(ctx context.Context, input artifactv3video.RenderRequest) error {

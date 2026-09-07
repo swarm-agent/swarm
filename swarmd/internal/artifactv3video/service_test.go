@@ -261,7 +261,7 @@ func testSelection() Selection {
 
 func testProject() Project {
 	sel := testSelection()
-	return Project{SessionID: sel.SessionID, ArtifactID: sel.ArtifactID, RevisionID: sel.RevisionID, CommitOID: sel.CommitOID, TreeOID: sel.TreeOID, ManifestDigestSHA256: strings.Repeat("c", 64), BuildID: "build", ValidationID: "validation", EventSeq: 7, MediaType: "text/html", AnimationProfile: DefaultAnimationProfile, Files: map[string][]byte{"index.html": []byte("<html></html>")}}
+	return Project{SessionID: sel.SessionID, ArtifactID: sel.ArtifactID, RevisionID: sel.RevisionID, CommitOID: sel.CommitOID, TreeOID: sel.TreeOID, ManifestDigestSHA256: strings.Repeat("c", 64), BuildID: "build", ValidationID: "validation", EventSeq: 7, MediaType: "text/html", AnimationProfile: DefaultAnimationProfile, Files: map[string][]byte{pebblestore.ArtifactV3ManifestFilename: []byte(`{"entrypoint":"index.html"}`), "index.html": []byte("<html></html>")}}
 }
 
 type fakeAuthority struct {

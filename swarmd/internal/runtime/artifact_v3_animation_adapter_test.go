@@ -7,7 +7,9 @@ import (
 	"testing"
 	"time"
 
+	"swarm/packages/swarmd/internal/artifactv3video"
 	"swarm/packages/swarmd/internal/htmlcapture"
+	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
 // Native conversion must use an authored synchronous seek when present; the
@@ -54,5 +56,35 @@ func TestArtifactV3AnimationAdapterPreservesAuthoredSeek(t *testing.T) {
 				t.Fatal("source mutated")
 			}
 		})
+	}
+}
+
+// Requirement: request must preserve declared source bytes and exact timing,
+// withholding the CSS fallback and boolean-ready exception from declared motion.
+// This adapter-level test isolates request construction before browser/publication.
+func TestArtifactV3AnimationRequestDeclaredTiming(t *testing.T) {
+	renderer := artifactV3AnimationRenderer{renderer: htmlcapture.NewChromedpRenderer(htmlcapture.SystemChromePath, t.TempDir())}
+	body := []byte(`<script id="swarm-animation-manifest" type="application/json">{"version":"swarm.animation/v1","duration_ms":8000,"fps":60}</script>`)
+	input := artifactv3video.RenderRequest{Project: artifactv3video.Project{Files: map[string][]byte{pebblestore.ArtifactV3ManifestFilename: []byte(`{"entrypoint":"index.html"}`), "index.html": body}}, DurationMs: 8000, FPS: 60, AnimationAdapter: htmlcapture.AnimationVersion}
+	request, err := renderer.request(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(request.Files["index.html"], body) || request.DurationMS != 8000 || request.FPS != 60 || request.OutputFPS != 60 || request.AllowBooleanReady {
+		t.Fatalf("declared contract drift: %#v", request)
+	}
+	input.FPS = 30
+	if _, err := renderer.request(input); err == nil {
+		t.Fatal("conflicting timing accepted")
+	}
+	input.FPS = 60
+	input.Project.Files["index.html"] = []byte(`<script id="swarm-animation-manifest" type="application/json">{}</script>`)
+	if _, err := renderer.request(input); err == nil {
+		t.Fatal("invalid declaration received fallback")
+	}
+	input.Project.Files["index.html"] = []byte(`<html><head></head><body></body></html>`)
+	request, err = renderer.request(input)
+	if err != nil || !request.AllowBooleanReady || !bytes.Contains(request.Files["index.html"], []byte("data-swarm-artifact-v3-animation")) {
+		t.Fatalf("legacy fallback lost: %v", err)
 	}
 }
