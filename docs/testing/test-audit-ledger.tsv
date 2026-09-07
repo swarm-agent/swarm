@@ -6071,3 +6071,7 @@ ta-scope-delivery-prompt	go-test	swarmd/internal/run/service_task_owned_scope_de
 # A5 2026-09-07 new focused regressions; independent P1/P2 unreviewed; no curated promotion. Matrix A5 records executed count=2 API and real-Git assertions and remaining live gaps.
 # A5 source_sha256 swarmd/internal/api/sessions_v3_base_identity_test.go f3d37617a27a9ea080a4339f7cfddc8231e9a3af4975df7658a298b624466ba3
 # A5 source_sha256 swarmd/internal/worktree/allocation_base_test.go 561cfd15d76dadb88619af3c1f0da08cc65b211838f9ee9f98d4fbb49a0de96e
+# A5 second audit: widest-stage and exact immediate-parent provenance tests added; allocation base test reinventory supersedes previous digest. Focused count=2 passes in matrix; independent P1/P2 unreviewed, no curated promotion.
+# A5 source_sha256 swarmd/internal/api/sessions_v3_repository_parent_test.go 73f092b1dbc1fdb22628f8b852b63e2c60e97b79405aa14dedbbd2fb13fb4a99
+# A5 source_sha256 swarmd/internal/run/service_task_program_width_test.go 73afff53401e4b87881b9a1d9a884232f80f1c4d5954e1926de8632a458bd7b4
+# A5 source_sha256 swarmd/internal/worktree/allocation_base_test.go ce67c78be791cee2f9ca3ef30540d3f7dd2e0f0ae2cc9a53939f0d6d8ad5afe4

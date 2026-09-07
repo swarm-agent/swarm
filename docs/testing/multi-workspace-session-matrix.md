@@ -625,3 +625,27 @@ passed API 2.220s and worktree 0.100s. Assertions cover durable allocator base,
 forged metadata rejection before allocation/persistence, same-request replay,
 selected-branch actual Git base and unchanged source/inventory after rejection.
 Full corrected live flow remains pending; no provider or final visual success.
+
+### A5 second live audit
+
+Corrective build `b980c46d3328e010d0682e97d5af72d332120cbd` passed focused
+cross-system tests and the fast gate, then rebuilt the same persistent lane.
+A new fixture successfully changed its exact two attachments/default, restarted,
+and executed real FFF/list/read against the target-owned lane. The full four-job
+provider program completed with two integrated commits and a ready Designer
+comparison artifact containing the exact integrated patch. **Parallelism was not
+proved:** durable timing showed sequential Coders because the scheduler retained
+its initial single-Finder reservation ceiling. Inventory also rejected the actual
+transition-allocated parent lane and shared worker source provenance.
+
+Corrections reserve the largest declared stage width (still capped by permission
+policy/max_concurrency), recognize the exact existing compact transition allocator,
+and resolve read-only immediate-parent lane provenance only after principal and
+exact-path checks. Unknown/foreign ancestry is not a fallback; no mutation grant
+is created. New child preparation records captured parent source rather than
+mislabeling its lane as a saved repository. Historical missing bases remain gaps.
+
+`GOMAXPROCS=2 go test -p 2 ./internal/run ./internal/api ./internal/worktree ./internal/permission -run '^(TestTaskProgramReservationUsesWidestStage|TestReserveSubagentProgramCountsOneInvocationAndOnlyReadyCapacity|TestSessionRepositories.*|TestSessionRepositoryParentIdentityIsExactAndOwned|TestSessionAllocationCapturesSelectedBase|TestTaskTargetRuntimePreflightAndRegularChildren|TestTaskProgramRealStageUsesIntegratedBase)$' -count=2 -timeout=120s`
+from `swarmd/` passed: run 3.936s, API 2.321s, worktree 0.138s, permission 0.090s.
+Earlier command with an exact `TestSessionRepositories` selection ran no API tests;
+it is not API evidence. Corrected parallel/provider and inventory proof pending.

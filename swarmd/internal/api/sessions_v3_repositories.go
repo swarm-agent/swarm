@@ -42,6 +42,7 @@ type sessionRepositoryItem struct {
 	FilesTruncated      bool                `json:"files_truncated"`
 	grant               pebblestore.WorkspaceGrant
 	currentAuthority    bool
+	laneOwnerID         string
 }
 
 type sessionRepositoriesResponse struct {
@@ -121,7 +122,7 @@ func repositorySessionItems(row pebblestore.SessionRepositoryHistory, parent str
 		if kind != "source" {
 			item.SourcePath = source
 			item.Branch = owner.WorktreeBranch
-			item.BaseCommit = sessionsV3MetadataString(owner.Metadata, "base_commit")
+			item.BaseCommit = firstNonEmpty(sessionsV3MetadataString(owner.Metadata, "swarm_v3_worktree_base_commit"), sessionsV3MetadataString(owner.Metadata, "base_commit"))
 			item.WorkspaceID, item.WorkspaceGeneration = "", 0
 			// Worktree grants do not themselves carry source catalog identity.
 			for _, sourceGrant := range owner.WorkspaceGrants {
@@ -193,12 +194,16 @@ func (s *Server) authorizeRepositoryItem(principal identity.Principal, item sess
 	if !ok {
 		return errors.New("repository lane validator unavailable")
 	}
-	if item.Kind == "lane" {
+	laneOwner := item.SessionID
+	if item.laneOwnerID != "" {
+		laneOwner = item.laneOwnerID
+	}
+	if item.Kind == "lane" && item.laneOwnerID == "" {
 		digest := sha256.Sum256([]byte(item.SessionID + "\x00" + item.SourcePath))
 		if err := validator.ValidateTaskRepositoryLaneForRead(item.SourcePath, item.WorkspacePath, "program-lane-"+hex.EncodeToString(digest[:12]), item.Branch); err != nil {
 			return err
 		}
-	} else if err := validator.ValidateSessionRepositoryLaneForRead(item.SourcePath, item.WorkspacePath, item.SessionID, item.Branch); err != nil {
+	} else if err := validator.ValidateSessionRepositoryLaneForRead(item.SourcePath, item.WorkspacePath, laneOwner, item.Branch); err != nil {
 		return err
 	}
 	return worktree.ValidateOwnedIdentity(item.SourcePath, item.WorkspacePath, item.Branch, item.BaseCommit)
@@ -316,6 +321,7 @@ func (s *Server) handleSessionV3Repositories(w http.ResponseWriter, r *http.Requ
 				writeError(w, http.StatusRequestTimeout, err)
 				return
 			}
+			item = s.resolveRepositoryParentIdentity(principal, item)
 			if err := s.authorizeRepositoryItem(principal, item); err != nil {
 				item.Error = err.Error()
 			} else {
@@ -411,6 +417,7 @@ func (s *Server) selectedSessionRepository(principal identity.Principal, session
 			item.WorkspaceID = sessionsV3MetadataString(owner.Metadata, "swarm_v3_source_workspace_id")
 			item.WorkspaceGeneration, _ = strconv.ParseInt(sessionsV3MetadataString(owner.Metadata, "swarm_v3_source_workspace_generation"), 10, 64)
 		}
+		item = s.resolveRepositoryParentIdentity(principal, item)
 		if err := s.authorizeRepositoryItem(principal, item); err != nil {
 			return sessionRepositoryItem{}, err
 		}
@@ -436,6 +443,7 @@ func (s *Server) selectedSessionRepository(principal identity.Principal, session
 				item.WorkspaceID = sessionsV3MetadataString(row.Session.Metadata, "swarm_v3_source_workspace_id")
 				item.WorkspaceGeneration, _ = strconv.ParseInt(sessionsV3MetadataString(row.Session.Metadata, "swarm_v3_source_workspace_generation"), 10, 64)
 			}
+			item = s.resolveRepositoryParentIdentity(principal, item)
 			if err := s.authorizeRepositoryItem(principal, item); err != nil {
 				return sessionRepositoryItem{}, err
 			}
@@ -448,6 +456,7 @@ func (s *Server) selectedSessionRepository(principal identity.Principal, session
 			continue
 		}
 		item := sessionRepositoryItem{SessionID: sessionID, SourcePath: lane.SourcePath, WorkspacePath: lane.WorkspacePath, Kind: "lane", Branch: lane.Branch, BaseCommit: lane.BaseCommit}
+		item = s.resolveRepositoryParentIdentity(principal, item)
 		if err := s.authorizeRepositoryItem(principal, item); err != nil {
 			return sessionRepositoryItem{}, err
 		}

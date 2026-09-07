@@ -693,6 +693,19 @@ func (s *Service) validateSessionRepositoryLane(source, lane, owner, branch stri
 	if filepath.Clean(lane) == filepath.Clean(ownerPath) {
 		return s.validateRepositoryLanePath(root, lane, ownerPath, branch, requireClean)
 	}
+	// Session default transitions historically allocate with this exact compact
+	// session seed. Preserve that allocator identity without accepting arbitrary paths.
+	compact := strings.TrimSpace(owner)
+	if len(compact) > 12 {
+		compact = compact[:12]
+	}
+	transitionPath, err := deterministicSessionWorktreePath(root, sessionWorkspaceID("session-"+compact))
+	if err != nil {
+		return err
+	}
+	if filepath.Clean(lane) == filepath.Clean(transitionPath) {
+		return s.validateRepositoryLanePath(root, lane, transitionPath, branch, requireClean)
+	}
 	namedID, err := WorkspaceIdentityForRequestedBranch(branch)
 	if err != nil {
 		return err

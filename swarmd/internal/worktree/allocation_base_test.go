@@ -52,6 +52,17 @@ func TestSessionAllocationCapturesSelectedBase(t *testing.T) {
 	if err := ValidateOwnedIdentity(repo, a.WorkspacePath, a.BranchName, a.BaseCommit); err != nil {
 		t.Fatal(err)
 	}
+	transitionOwner := "abcdef0123456789"
+	transition, err := s.allocateSessionWorkspaceWithBranchMode(repo, true, "", "", "session-"+transitionOwner[:12], false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ValidateSessionRepositoryLaneForRead(repo, transition.WorkspacePath, transitionOwner, transition.BranchName); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ValidateSessionRepositoryLaneForRead(repo, transition.WorkspacePath, "different-owner", transition.BranchName); err == nil {
+		t.Fatal("foreign transition owner accepted")
+	}
 	inventory := git(repo, "worktree", "list", "--porcelain")
 	if _, err := s.allocateSessionWorkspaceWithBranchMode(repo, false, "missing-branch", "agent/missing", "missing", true); err == nil {
 		t.Fatal("missing branch accepted")

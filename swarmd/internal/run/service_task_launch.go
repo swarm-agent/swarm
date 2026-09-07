@@ -3949,11 +3949,11 @@ func (s *Service) buildTaskLaunchPermissionPayload(sessionID, sessionMode string
 		Program:            parsed.Program,
 	}
 	if parsed.Program != nil {
-		for _, job := range parsed.Program.Jobs {
-			if len(job.DependsOn) == 0 && len(parsed.Program.Stages) > 0 && job.StageID == parsed.Program.Stages[0].ID {
-				manifest.ProgramReadyCount++
-			}
-		}
+		// Reserve for the largest declared stage, not just the first ready wave.
+		// The scheduler retains this admitted ceiling across later barriers; a
+		// single Finder stage must not serialize two independent downstream Coders.
+		manifest.ProgramReadyCount = taskProgramReservationWidth(parsed.Program)
+
 	}
 	if parsed.Swarm != nil {
 		manifest.SwarmAgentType = parsed.Swarm.AgentType
