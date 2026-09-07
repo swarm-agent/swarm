@@ -56,7 +56,9 @@ func (s *Server) populateSessionGitCommits(ctx context.Context, principal identi
 		return nil
 	}
 	item, err := s.selectedSessionRepository(principal, sessionID, workspacePath)
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 	if item.BaseCommit != "" && item.Kind != "source" {
 		snapshot.SessionCommits = gitstatus.ListCommitsSince(ctx, workspacePath, item.BaseCommit, limit)
 	}
@@ -66,7 +68,9 @@ func (s *Server) populateSessionGitCommits(ctx context.Context, principal identi
 func (s *Server) resolveGitStatusWorkspacePath(r *http.Request, principal identity.Principal) (string, error) {
 	workspacePath := strings.TrimSpace(r.URL.Query().Get("workspace_path"))
 	cwd := strings.TrimSpace(r.URL.Query().Get("cwd"))
-	if workspacePath != "" && cwd != "" && workspacePath != cwd { return "", errors.New("conflicting repository selectors") }
+	if workspacePath != "" && cwd != "" && workspacePath != cwd {
+		return "", errors.New("conflicting repository selectors")
+	}
 	if workspacePath == "" {
 		workspacePath = strings.TrimSpace(r.URL.Query().Get("cwd"))
 	}

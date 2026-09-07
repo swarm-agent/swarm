@@ -21,7 +21,7 @@ test('browser repository selection remains explicit across default changes', { t
     }
     createRoot(document.getElementById('root')).render(<Fixture/>);
   `, resolveDir: process.cwd(), loader: 'tsx' }, bundle: true, write: false, platform: 'browser', format: 'iife', jsx: 'automatic', define: { 'process.env.NODE_ENV': '"test"' } })
-  const browser = await chromium.launch({ headless: true })
+  const browser = await chromium.launch({ headless: true, channel: process.env.SWARM_TEST_BROWSER_CHANNEL || undefined })
   try {
     const page = await browser.newPage({ viewport: { width: 360, height: 640 } })
     await page.setContent('<div id="root"></div>')

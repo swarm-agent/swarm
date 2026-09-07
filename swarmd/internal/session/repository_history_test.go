@@ -12,8 +12,14 @@ import (
 // store tests for ListSessionRepositoryHistory/ListTaskProgramRepositoryHistory.
 func TestRepositoryHistoryUnavailable(t *testing.T) {
 	for _, service := range []*Service{nil, {}} {
-		if _, err := service.RepositoryHistory(pebblestore.RepositoryHistoryQuery{}); err == nil { t.Fatal("missing repository store accepted") }
-		if _, err := service.TaskProgramRepositoryHistory(pebblestore.RepositoryHistoryQuery{}); err == nil { t.Fatal("missing program store accepted") }
-		if _, err := service.BackfillRepositoryHistory(1); err == nil { t.Fatal("missing migration store accepted") }
+		if _, err := service.RepositoryHistory(pebblestore.RepositoryHistoryQuery{}); err == nil {
+			t.Fatal("missing repository store accepted")
+		}
+		if _, err := service.TaskProgramRepositoryHistory(pebblestore.RepositoryHistoryQuery{}); err == nil {
+			t.Fatal("missing program store accepted")
+		}
+		if _, err := service.BackfillRepositoryHistory(1); err == nil {
+			t.Fatal("missing migration store accepted")
+		}
 	}
 }

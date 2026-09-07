@@ -64,7 +64,7 @@ export function SessionAttachments({ sessionId, revision }: { sessionId: string;
     if (pages.length > 0 && pages.length < 4 && query.hasNextPage && !query.isFetching && !query.isError) void query.fetchNextPage()
   }, [pages.length, query.hasNextPage, query.isFetching, query.isError, query.fetchNextPage])
   const items = selectSessionAttachments(pages)
-  const repeatedCursor = Boolean(pages.at(-1)?.next_cursor) && !query.hasNextPage
+  const repeatedCursor = Boolean(pages[pages.length - 1]?.next_cursor) && !query.hasNextPage
   return <SessionAttachmentsView items={items} loading={query.isPending || query.isFetchingNextPage}
     stale={query.isFetching && !query.isPending && !query.isFetchingNextPage} error={query.isError || repeatedCursor}
     more={Boolean(query.hasNextPage)} onRefresh={() => { void refetch() }} onMore={() => { void query.fetchNextPage() }} />

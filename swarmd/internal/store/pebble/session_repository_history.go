@@ -26,45 +26,45 @@ var ErrRepositoryHistoryCursor = errors.New("invalid or stale repository history
 // RepositoryHistoryQuery is principal-scoped. Limit must be 1..100 and must
 // remain unchanged while following an opaque cursor.
 type RepositoryHistoryQuery struct {
-	AccountScopeID string
-	UserID string
+	AccountScopeID  string
+	UserID          string
 	ParentSessionID string
-	Limit int
-	Cursor string
+	Limit           int
+	Cursor          string
 }
 
 // SessionRepositoryHistory retains each observed workspace/worktree context.
 // Snapshot metadata is evidence, never authorization to access its paths.
 // Historical rows must be independently authorized against current grants.
 type SessionRepositoryHistory struct {
-	Session SessionSnapshot `json:"session"`
-	Archived bool `json:"archived"`
-	Deleted bool `json:"deleted"`
-	ContextID string `json:"context_id"`
-	Grants []WorkspaceGrant `json:"grants,omitempty"`
-	Projected bool `json:"projected,omitempty"`
+	Session   SessionSnapshot  `json:"session"`
+	Archived  bool             `json:"archived"`
+	Deleted   bool             `json:"deleted"`
+	ContextID string           `json:"context_id"`
+	Grants    []WorkspaceGrant `json:"grants,omitempty"`
+	Projected bool             `json:"projected,omitempty"`
 }
 
 type RepositoryHistoryPage struct {
-	Sessions []SessionRepositoryHistory `json:"sessions"`
-	Programs []TaskProgramRecord `json:"programs"`
-	NextCursor string `json:"next_cursor,omitempty"`
+	Sessions   []SessionRepositoryHistory `json:"sessions"`
+	Programs   []TaskProgramRecord        `json:"programs"`
+	NextCursor string                     `json:"next_cursor,omitempty"`
 	// Older overwritten contexts are not reconstructible from snapshots.
 	HistoryCoverage string `json:"history_coverage"`
 }
 
 type repositoryHistoryMeta struct {
 	Secret []byte `json:"secret"`
-	Phase int `json:"phase"`
-	After string `json:"after"`
-	Ready bool `json:"ready"`
+	Phase  int    `json:"phase"`
+	After  string `json:"after"`
+	Ready  bool   `json:"ready"`
 }
 
 type repositoryHistoryCursor struct {
-	Scope string
+	Scope    string
 	Revision string
-	After string
-	Limit int
+	After    string
+	Limit    int
 }
 
 func repositoryHistoryPrefix(account, user, parent string) string {
@@ -73,8 +73,10 @@ func repositoryHistoryPrefix(account, user, parent string) string {
 
 func repositoryHistoryRevision(batch *pebble.Batch, parent string) error {
 	token := make([]byte, 32)
-	if _, err := rand.Read(token); err != nil { return err }
-	return batch.Set([]byte(repositoryHistoryRevisionKey + "/" + keyPart(parent)), token, nil)
+	if _, err := rand.Read(token); err != nil {
+		return err
+	}
+	return batch.Set([]byte(repositoryHistoryRevisionKey+"/"+keyPart(parent)), token, nil)
 }
 
 // Called in the same batch as canonical snapshot/library updates. Context keys
@@ -82,57 +84,90 @@ func repositoryHistoryRevision(batch *pebble.Batch, parent string) error {
 func (s *SessionStore) retainRepositoryHistoryInBatch(batch *pebble.Batch, session SessionSnapshot, archived, deleted bool) error {
 	session = normalizeSessionOwnership(session)
 	identity := struct {
-		Workspace string
-		Root string
-		Branch string
-		Base string
+		Workspace  string
+		Root       string
+		Branch     string
+		Base       string
 		BaseCommit string
-		Source string
-		Grants []WorkspaceGrant
-		Enabled bool
+		Source     string
+		Grants     []WorkspaceGrant
+		Enabled    bool
 	}{session.WorkspacePath, session.WorktreeRootPath, session.WorktreeBranch, session.WorktreeBaseBranch, v3LibraryMetadataString(session.Metadata, "base_commit"), v3LibraryMetadataString(session.Metadata, "swarm_v3_source_workspace_path"), session.WorkspaceGrants, session.WorktreeEnabled}
 	payload, err := json.Marshal(identity)
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 	digest := sha256.Sum256(payload)
 	row := SessionRepositoryHistory{Session: session, Archived: archived, Deleted: deleted, ContextID: hex.EncodeToString(digest[:])}
 	payload, err = json.Marshal(row)
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 	parents := []string{session.ID}
 	if parent := v3LibraryMetadataString(session.Metadata, "parent_session_id"); parent != "" && parent != session.ID {
 		var owner SessionSnapshot
 		found, err := getJSONFromReader(s.store.db, KeySession(parent), &owner)
-		if err != nil { return err }
+		if err != nil {
+			return err
+		}
 		if !found {
 			var tomb V3SessionTombstone
 			found, err = getJSONFromReader(s.store.db, KeyV3SessionTombstone(parent), &tomb)
-			if err != nil { return err }
+			if err != nil {
+				return err
+			}
 			owner = tomb.Session
 		}
 		owner = normalizeSessionOwnership(owner)
-		if found && owner.AccountScopeID == session.AccountScopeID && owner.UserID == session.UserID { parents = append(parents, parent) }
+		if found && owner.AccountScopeID == session.AccountScopeID && owner.UserID == session.UserID {
+			parents = append(parents, parent)
+		}
 	}
 	for _, parent := range parents {
 		prefix := repositoryHistoryPrefix(session.AccountScopeID, session.UserID, parent)
 		key := prefix + keyPart(session.ID) + "/" + row.ContextID
 		var previous SessionRepositoryHistory
 		found, err := getJSONFromReader(s.store.db, key, &previous)
-		if err != nil { return err }
+		if err != nil {
+			return err
+		}
 		_, revisionCloser, revisionErr := s.store.db.Get([]byte(repositoryHistoryRevisionKey + "/" + keyPart(parent)))
-		if revisionErr == nil { revisionCloser.Close() } else if !errors.Is(revisionErr, pebble.ErrNotFound) { return revisionErr }
+		if revisionErr == nil {
+			revisionCloser.Close()
+		} else if !errors.Is(revisionErr, pebble.ErrNotFound) {
+			return revisionErr
+		}
 		before, _ := json.Marshal(repositoryHistoryMeaning(previous))
 		after, _ := json.Marshal(repositoryHistoryMeaning(row))
 		if !found || revisionErr != nil || !bytes.Equal(before, after) {
-			if err := batch.Set([]byte(key), payload, nil); err != nil { return err }
-			if err := repositoryHistoryRevision(batch, parent); err != nil { return err }
+			if err := batch.Set([]byte(key), payload, nil); err != nil {
+				return err
+			}
+			if err := repositoryHistoryRevision(batch, parent); err != nil {
+				return err
+			}
 		}
 		for _, grant := range repositoryHistoryGrants(session) {
 			claim := repositoryHistoryClaimKey(prefix, session.ID, grant)
 			value, closer, err := s.store.db.Get([]byte(claim))
 			changed := errors.Is(err, pebble.ErrNotFound)
-			if err == nil { changed = string(value) != key; closer.Close() } else if !changed { return err }
-			if changed { if err := repositoryHistoryRevision(batch, parent); err != nil { return err } }
-			if err := batch.Set([]byte(claim), []byte(key), nil); err != nil { return err }
-			if err := batch.Set([]byte(repositoryHistoryExactKey(prefix, grant.Path)), []byte(key), nil); err != nil { return err }
+			if err == nil {
+				changed = string(value) != key
+				closer.Close()
+			} else if !changed {
+				return err
+			}
+			if changed {
+				if err := repositoryHistoryRevision(batch, parent); err != nil {
+					return err
+				}
+			}
+			if err := batch.Set([]byte(claim), []byte(key), nil); err != nil {
+				return err
+			}
+			if err := batch.Set([]byte(repositoryHistoryExactKey(prefix, grant.Path)), []byte(key), nil); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
@@ -144,85 +179,146 @@ func (s *SessionStore) retainRepositoryHistoryInBatch(batch *pebble.Batch, sessi
 // contexts cannot be reconstructed; retained snapshots and tombstones are the
 // migration authority, and new context changes are retained going forward.
 func (s *SessionStore) BackfillRepositoryHistory(limit int) (bool, error) {
-	if limit < 1 || limit > 100 { return false, errors.New("backfill limit must be 1..100") }
+	if limit < 1 || limit > 100 {
+		return false, errors.New("backfill limit must be 1..100")
+	}
 	s.store.sessionMutations.libraryRepairMu.Lock()
 	defer s.store.sessionMutations.libraryRepairMu.Unlock()
 	var meta repositoryHistoryMeta
 	_, err := s.store.GetJSON(repositoryHistoryMetaKey, &meta)
-	if err != nil { return false, err }
-	if meta.Ready { return true, nil }
+	if err != nil {
+		return false, err
+	}
+	if meta.Ready {
+		return true, nil
+	}
 	if len(meta.Secret) == 0 {
 		meta.Secret = make([]byte, 32)
-		if _, err := rand.Read(meta.Secret); err != nil { return false, err }
+		if _, err := rand.Read(meta.Secret); err != nil {
+			return false, err
+		}
 	}
 	prefix := "v3/repository_history/rows/"
-	if meta.Phase == 1 { prefix = SessionPrefix() }
-	if meta.Phase == 2 { prefix = V3SessionTombstonePrefix() }
-	if meta.Phase == 3 { prefix = "task_program/" }
+	if meta.Phase == 1 {
+		prefix = SessionPrefix()
+	}
+	if meta.Phase == 2 {
+		prefix = V3SessionTombstonePrefix()
+	}
+	if meta.Phase == 3 {
+		prefix = "task_program/"
+	}
 	iter, err := s.store.db.NewIter(&pebble.IterOptions{LowerBound: []byte(prefix), UpperBound: []byte(prefix + "\xff")})
-	if err != nil { return false, err }
+	if err != nil {
+		return false, err
+	}
 	defer iter.Close()
 	batch := s.store.NewBatch()
 	defer batch.Close()
 	valid := iter.First()
-	if meta.After != "" { valid = iter.SeekGE([]byte(meta.After)); if valid && string(iter.Key()) == meta.After { valid = iter.Next() } }
+	if meta.After != "" {
+		valid = iter.SeekGE([]byte(meta.After))
+		if valid && string(iter.Key()) == meta.After {
+			valid = iter.Next()
+		}
+	}
 	for n := 0; valid && n < limit; n++ {
 		if meta.Phase == 0 {
 			var row SessionRepositoryHistory
-			if err := json.Unmarshal(iter.Value(), &row); err != nil { return false, err }
+			if err := json.Unmarshal(iter.Value(), &row); err != nil {
+				return false, err
+			}
 			parentPrefix := string(iter.Key())[:strings.LastIndex(string(iter.Key()), "/")]
 			parentPrefix = parentPrefix[:strings.LastIndex(parentPrefix, "/")+1]
 			for _, grant := range repositoryHistoryGrants(row.Session) {
-				if err := batch.Set([]byte(repositoryHistoryClaimKey(parentPrefix, row.Session.ID, grant)), append([]byte(nil), iter.Key()...), nil); err != nil { return false, err }
-				if err := batch.Set([]byte(repositoryHistoryExactKey(parentPrefix, grant.Path)), append([]byte(nil), iter.Key()...), nil); err != nil { return false, err }
+				if err := batch.Set([]byte(repositoryHistoryClaimKey(parentPrefix, row.Session.ID, grant)), append([]byte(nil), iter.Key()...), nil); err != nil {
+					return false, err
+				}
+				if err := batch.Set([]byte(repositoryHistoryExactKey(parentPrefix, grant.Path)), append([]byte(nil), iter.Key()...), nil); err != nil {
+					return false, err
+				}
 			}
-			meta.After = string(iter.Key()); valid = iter.Next(); continue
+			meta.After = string(iter.Key())
+			valid = iter.Next()
+			continue
 		}
 		if meta.Phase == 3 {
 			var record TaskProgramRecord
-			if err := json.Unmarshal(iter.Value(), &record); err != nil { return false, err }
-			if err := s.indexRepositoryLane(batch, record); err != nil { return false, err }
+			if err := json.Unmarshal(iter.Value(), &record); err != nil {
+				return false, err
+			}
+			if err := s.indexRepositoryLane(batch, record); err != nil {
+				return false, err
+			}
 			meta.After = string(iter.Key())
 			valid = iter.Next()
 			continue
 		}
 		var session SessionSnapshot
 		archived, deleted := false, false
-		if meta.Phase == 1 { err = json.Unmarshal(iter.Value(), &session) } else {
+		if meta.Phase == 1 {
+			err = json.Unmarshal(iter.Value(), &session)
+		} else {
 			var tombstone V3SessionTombstone
 			err = json.Unmarshal(iter.Value(), &tombstone)
 			session, archived, deleted = tombstone.Session, tombstone.Archived, tombstone.Deleted
 		}
-		if err != nil { return false, err }
+		if err != nil {
+			return false, err
+		}
 		if session.ID != "" {
-			if err := s.retainRepositoryHistoryInBatch(batch, session, archived, deleted); err != nil { return false, err }
+			if err := s.retainRepositoryHistoryInBatch(batch, session, archived, deleted); err != nil {
+				return false, err
+			}
 		}
 		meta.After = string(iter.Key())
 		valid = iter.Next()
 	}
-	if err := iter.Error(); err != nil { return false, err }
-	if !valid { meta.Phase++; meta.After = ""; meta.Ready = meta.Phase == 4 }
+	if err := iter.Error(); err != nil {
+		return false, err
+	}
+	if !valid {
+		meta.Phase++
+		meta.After = ""
+		meta.Ready = meta.Phase == 4
+	}
 	payload, err := json.Marshal(meta)
-	if err != nil { return false, err }
-	if err := batch.Set([]byte(repositoryHistoryMetaKey), payload, nil); err != nil { return false, err }
-	if err := batch.Commit(pebble.Sync); err != nil { return false, err }
+	if err != nil {
+		return false, err
+	}
+	if err := batch.Set([]byte(repositoryHistoryMetaKey), payload, nil); err != nil {
+		return false, err
+	}
+	if err := batch.Commit(pebble.Sync); err != nil {
+		return false, err
+	}
 	return meta.Ready, nil
 }
 
 func repositoryHistoryOwner(reader pebble.Reader, q RepositoryHistoryQuery) error {
-	if strings.TrimSpace(q.AccountScopeID) == "" || strings.TrimSpace(q.UserID) == "" || strings.TrimSpace(q.ParentSessionID) == "" || q.Limit < 1 || q.Limit > 100 { return errors.New("repository history requires principal, parent and limit 1..100") }
+	if strings.TrimSpace(q.AccountScopeID) == "" || strings.TrimSpace(q.UserID) == "" || strings.TrimSpace(q.ParentSessionID) == "" || q.Limit < 1 || q.Limit > 100 {
+		return errors.New("repository history requires principal, parent and limit 1..100")
+	}
 	var parent SessionSnapshot
 	ok, err := getJSONFromReader(reader, KeySession(q.ParentSessionID), &parent)
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 	if !ok {
 		var tombstone V3SessionTombstone
 		ok, err = getJSONFromReader(reader, KeyV3SessionTombstone(q.ParentSessionID), &tombstone)
-		if err != nil { return err }
-		if !ok || tombstone.Deleted { return errors.New("repository history parent unavailable") }
+		if err != nil {
+			return err
+		}
+		if !ok || tombstone.Deleted {
+			return errors.New("repository history parent unavailable")
+		}
 		parent = tombstone.Session
 	}
 	parent = normalizeSessionOwnership(parent)
-	if parent.AccountScopeID != q.AccountScopeID || parent.UserID != q.UserID { return errors.New("repository history principal mismatch") }
+	if parent.AccountScopeID != q.AccountScopeID || parent.UserID != q.UserID {
+		return errors.New("repository history principal mismatch")
+	}
 	return nil
 }
 
@@ -243,78 +339,135 @@ func (s *SessionStore) repositoryHistoryPage(q RepositoryHistoryQuery, programs 
 	out := RepositoryHistoryPage{Sessions: []SessionRepositoryHistory{}, Programs: []TaskProgramRecord{}, HistoryCoverage: "retained_snapshots_and_contexts_since_index_install"}
 	reader := s.store.db.NewSnapshot()
 	defer reader.Close()
-	if err := repositoryHistoryOwner(reader, q); err != nil { return out, err }
+	if err := repositoryHistoryOwner(reader, q); err != nil {
+		return out, err
+	}
 	var meta repositoryHistoryMeta
 	ok, err := getJSONFromReader(reader, repositoryHistoryMetaKey, &meta)
-	if err != nil { return out, err }
-	if !ok || !meta.Ready { return out, ErrRepositoryHistoryNotReady }
+	if err != nil {
+		return out, err
+	}
+	if !ok || !meta.Ready {
+		return out, ErrRepositoryHistoryNotReady
+	}
 	block, err := aes.NewCipher(meta.Secret)
-	if err != nil { return out, err }
+	if err != nil {
+		return out, err
+	}
 	aead, err := cipher.NewGCM(block)
-	if err != nil { return out, err }
+	if err != nil {
+		return out, err
+	}
 	revision, closer, err := reader.Get([]byte(repositoryHistoryRevisionKey + "/" + keyPart(q.ParentSessionID)))
-	if err != nil { return out, err }
+	if err != nil {
+		return out, err
+	}
 	rev := hex.EncodeToString(revision)
 	closer.Close()
 	prefix := repositoryHistoryPrefix(q.AccountScopeID, q.UserID, q.ParentSessionID)
 	scope := prefix
-	if programs { prefix = TaskProgramSessionPrefix(q.ParentSessionID); scope += "programs" }
+	if programs {
+		prefix = TaskProgramSessionPrefix(q.ParentSessionID)
+		scope += "programs"
+	}
 	cursor := repositoryHistoryCursor{Scope: scope, Revision: rev, Limit: q.Limit}
 	if q.Cursor != "" {
-		if len(q.Cursor) > 12000 { return out, ErrRepositoryHistoryCursor }
+		if len(q.Cursor) > 12000 {
+			return out, ErrRepositoryHistoryCursor
+		}
 		data, err := base64.RawURLEncoding.DecodeString(q.Cursor)
-		if err != nil || len(data) < aead.NonceSize() || len(data) > 8192 { return out, ErrRepositoryHistoryCursor }
+		if err != nil || len(data) < aead.NonceSize() || len(data) > 8192 {
+			return out, ErrRepositoryHistoryCursor
+		}
 		plain, err := aead.Open(nil, data[:aead.NonceSize()], data[aead.NonceSize():], nil)
-		if err != nil || json.Unmarshal(plain, &cursor) != nil || cursor.Scope != scope || cursor.Revision != rev || cursor.Limit != q.Limit || !strings.HasPrefix(cursor.After, prefix) { return out, ErrRepositoryHistoryCursor }
+		if err != nil || json.Unmarshal(plain, &cursor) != nil || cursor.Scope != scope || cursor.Revision != rev || cursor.Limit != q.Limit || !strings.HasPrefix(cursor.After, prefix) {
+			return out, ErrRepositoryHistoryCursor
+		}
 	}
 	iter, err := reader.NewIter(&pebble.IterOptions{LowerBound: []byte(prefix), UpperBound: []byte(prefix + "\xff")})
-	if err != nil { return out, err }
+	if err != nil {
+		return out, err
+	}
 	defer iter.Close()
 	valid := iter.First()
-	if cursor.After != "" { valid = iter.SeekGE([]byte(cursor.After)); if valid && string(iter.Key()) == cursor.After { valid = iter.Next() } }
+	if cursor.After != "" {
+		valid = iter.SeekGE([]byte(cursor.After))
+		if valid && string(iter.Key()) == cursor.After {
+			valid = iter.Next()
+		}
+	}
 	for n := 0; valid && n < q.Limit; n++ {
 		if programs {
 			var row TaskProgramRecord
-			if err := json.Unmarshal(iter.Value(), &row); err != nil { return RepositoryHistoryPage{}, err }
-			if row.ParentSessionID != q.ParentSessionID { return RepositoryHistoryPage{}, fmt.Errorf("repository history program ownership mismatch") }
+			if err := json.Unmarshal(iter.Value(), &row); err != nil {
+				return RepositoryHistoryPage{}, err
+			}
+			if row.ParentSessionID != q.ParentSessionID {
+				return RepositoryHistoryPage{}, fmt.Errorf("repository history program ownership mismatch")
+			}
 			if row.RepositoryLane != nil {
 				value, closer, err := reader.Get([]byte(repositoryLaneKey(q.ParentSessionID, row.RepositoryLane.WorkspacePath)))
-				if err != nil { return out, err }
-				claimed := string(value) == string(iter.Key()); closer.Close()
-				if !claimed { row.RepositoryLane = nil }
+				if err != nil {
+					return out, err
+				}
+				claimed := string(value) == string(iter.Key())
+				closer.Close()
+				if !claimed {
+					row.RepositoryLane = nil
+				}
 			}
 			out.Programs = append(out.Programs, row)
 		} else {
 			var row SessionRepositoryHistory
-			if err := json.Unmarshal(iter.Value(), &row); err != nil { return RepositoryHistoryPage{}, err }
-			if row.Session.AccountScopeID != q.AccountScopeID || row.Session.UserID != q.UserID { return RepositoryHistoryPage{}, errors.New("repository history row ownership mismatch") }
+			if err := json.Unmarshal(iter.Value(), &row); err != nil {
+				return RepositoryHistoryPage{}, err
+			}
+			if row.Session.AccountScopeID != q.AccountScopeID || row.Session.UserID != q.UserID {
+				return RepositoryHistoryPage{}, errors.New("repository history row ownership mismatch")
+			}
 			// Claims point to the newest context for each logical attachment. This
 			// bounds deduplication to this row's grants, never prior pages.
 			grants := []WorkspaceGrant{}
 			for _, grant := range repositoryHistoryGrants(row.Session) {
 				value, closer, err := reader.Get([]byte(repositoryHistoryClaimKey(repositoryHistoryPrefix(q.AccountScopeID, q.UserID, q.ParentSessionID), row.Session.ID, grant)))
-				if err != nil { return out, err }
+				if err != nil {
+					return out, err
+				}
 				claimed := string(value) == string(iter.Key())
 				closer.Close()
-				if claimed { grants = append(grants, grant) }
+				if claimed {
+					grants = append(grants, grant)
+				}
 			}
 			row.Grants = grants
 			row.Projected = true
 			var current SessionSnapshot
 			found, err := getJSONFromReader(reader, KeySession(row.Session.ID), &current)
-			if err != nil { return out, err }
-			if found { row.Archived, row.Deleted = false, false }
+			if err != nil {
+				return out, err
+			}
+			if found {
+				row.Archived, row.Deleted = false, false
+			}
 			if !found {
 				var tomb V3SessionTombstone
 				found, err = getJSONFromReader(reader, KeyV3SessionTombstone(row.Session.ID), &tomb)
-				if err != nil { return out, err }
+				if err != nil {
+					return out, err
+				}
 				current = tomb.Session
-				if found { row.Archived, row.Deleted = tomb.Archived, tomb.Deleted }
+				if found {
+					row.Archived, row.Deleted = tomb.Archived, tomb.Deleted
+				}
 			}
 			if found {
-				if current.AccountScopeID != q.AccountScopeID || current.UserID != q.UserID { return out, errors.New("repository history current owner mismatch") }
+				if current.AccountScopeID != q.AccountScopeID || current.UserID != q.UserID {
+					return out, errors.New("repository history current owner mismatch")
+				}
 				for _, name := range []string{"integration_status", "task_status"} {
-					if row.Session.Metadata == nil { row.Session.Metadata = map[string]any{} }
+					if row.Session.Metadata == nil {
+						row.Session.Metadata = map[string]any{}
+					}
 					row.Session.Metadata[name] = current.Metadata[name]
 				}
 			}
@@ -323,12 +476,18 @@ func (s *SessionStore) repositoryHistoryPage(q RepositoryHistoryQuery, programs 
 		cursor.After = string(iter.Key())
 		valid = iter.Next()
 	}
-	if err := iter.Error(); err != nil { return RepositoryHistoryPage{}, err }
+	if err := iter.Error(); err != nil {
+		return RepositoryHistoryPage{}, err
+	}
 	if valid {
 		plain, err := json.Marshal(cursor)
-		if err != nil { return RepositoryHistoryPage{}, err }
+		if err != nil {
+			return RepositoryHistoryPage{}, err
+		}
 		nonce := make([]byte, aead.NonceSize())
-		if _, err := rand.Read(nonce); err != nil { return RepositoryHistoryPage{}, err }
+		if _, err := rand.Read(nonce); err != nil {
+			return RepositoryHistoryPage{}, err
+		}
 		out.NextCursor = base64.RawURLEncoding.EncodeToString(aead.Seal(nonce, nonce, plain, nil))
 	}
 	return out, nil
@@ -338,18 +497,32 @@ func (s *SessionStore) putTaskProgramHistory(record TaskProgramRecord) error {
 	batch := s.store.NewBatch()
 	defer batch.Close()
 	payload, err := json.Marshal(record)
-	if err != nil { return err }
-	if err := batch.Set([]byte(KeyTaskProgram(record.ParentSessionID, record.ProgramID)), payload, nil); err != nil { return err }
+	if err != nil {
+		return err
+	}
+	if err := batch.Set([]byte(KeyTaskProgram(record.ParentSessionID, record.ProgramID)), payload, nil); err != nil {
+		return err
+	}
 	var previous TaskProgramRecord
 	found, err := getJSONFromReader(s.store.db, KeyTaskProgram(record.ParentSessionID, record.ProgramID), &previous)
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 	before, err := json.Marshal(previous.RepositoryLane)
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 	after, err := json.Marshal(record.RepositoryLane)
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 	if !found || previous.State != record.State || !bytes.Equal(before, after) {
-		if err := s.indexRepositoryLane(batch, record); err != nil { return err }
-		if err := repositoryHistoryRevision(batch, record.ParentSessionID); err != nil { return err }
+		if err := s.indexRepositoryLane(batch, record); err != nil {
+			return err
+		}
+		if err := repositoryHistoryRevision(batch, record.ParentSessionID); err != nil {
+			return err
+		}
 	}
 	return batch.Commit(pebble.Sync)
 }
@@ -358,17 +531,23 @@ func (s *SessionStore) putTaskProgramHistory(record TaskProgramRecord) error {
 // Cancellation is checked between atomic batches of at most 100 durable rows.
 func (s *SessionStore) CompleteRepositoryHistoryMaintenance(ctx context.Context) error {
 	for {
-		if err := ctx.Err(); err != nil { return err }
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		ready, err := s.BackfillRepositoryHistory(100)
-		if err != nil { return err }
-		if ready { return nil }
+		if err != nil {
+			return err
+		}
+		if ready {
+			return nil
+		}
 	}
 }
 
 func repositoryHistoryMeaning(row SessionRepositoryHistory) any {
 	return struct {
-		Context string
-		Archived, Deleted bool
+		Context                                       string
+		Archived, Deleted                             bool
 		Integration, Task, SourceID, SourceGeneration string
 	}{row.ContextID, row.Archived, row.Deleted,
 		v3LibraryMetadataString(row.Session.Metadata, "integration_status"),
@@ -380,19 +559,32 @@ func repositoryHistoryMeaning(row SessionRepositoryHistory) any {
 func repositoryHistoryGrants(owner SessionSnapshot) []WorkspaceGrant {
 	grants := NormalizeSessionWorkspaceGrants(owner)
 	add := func(path, kind string) {
-		if path == "" { return }
-		for _, grant := range grants { if grant.Path == path { return } }
+		if path == "" {
+			return
+		}
+		for _, grant := range grants {
+			if grant.Path == path {
+				return
+			}
+		}
 		grants = append(grants, WorkspaceGrant{Path: path, Kind: kind})
 	}
-	if owner.WorktreeEnabled { add(owner.WorktreeRootPath, WorkspaceGrantWorktree) }
+	if owner.WorktreeEnabled {
+		add(owner.WorktreeRootPath, WorkspaceGrantWorktree)
+	}
 	source := v3LibraryMetadataString(owner.Metadata, "swarm_v3_source_workspace_path")
-	if source == "" { source = owner.WorkspacePath }
+	if source == "" {
+		source = owner.WorkspacePath
+	}
 	add(source, WorkspaceGrantAdditional)
 	seen := map[string]bool{}
 	out := make([]WorkspaceGrant, 0, len(grants))
 	for _, grant := range grants {
 		key := grant.WorkspaceID + "\x00" + grant.Path
-		if !seen[key] { out = append(out, grant); seen[key] = true }
+		if !seen[key] {
+			out = append(out, grant)
+			seen[key] = true
+		}
 	}
 	return out
 }
@@ -414,7 +606,9 @@ func repositoryLaneKey(parent, path string) string {
 }
 
 func (s *SessionStore) indexRepositoryLane(batch *pebble.Batch, record TaskProgramRecord) error {
-	if record.RepositoryLane == nil { return nil }
+	if record.RepositoryLane == nil {
+		return nil
+	}
 	return batch.Set([]byte(repositoryLaneKey(record.ParentSessionID, record.RepositoryLane.WorkspacePath)), []byte(KeyTaskProgram(record.ParentSessionID, record.ProgramID)), nil)
 }
 
@@ -424,33 +618,59 @@ func (s *SessionStore) ExactRepositoryHistory(q RepositoryHistoryQuery, path str
 	out := RepositoryHistoryPage{}
 	reader := s.store.db.NewSnapshot()
 	defer reader.Close()
-	if err := repositoryHistoryOwner(reader, q); err != nil { return out, err }
+	if err := repositoryHistoryOwner(reader, q); err != nil {
+		return out, err
+	}
 	var meta repositoryHistoryMeta
 	ok, err := getJSONFromReader(reader, repositoryHistoryMetaKey, &meta)
-	if err != nil { return out, err }
-	if !ok || !meta.Ready { return out, ErrRepositoryHistoryNotReady }
+	if err != nil {
+		return out, err
+	}
+	if !ok || !meta.Ready {
+		return out, ErrRepositoryHistoryNotReady
+	}
 	prefix := repositoryHistoryPrefix(q.AccountScopeID, q.UserID, q.ParentSessionID)
 	key, closer, err := reader.Get([]byte(repositoryHistoryExactKey(prefix, path)))
 	if err == nil {
-		rowKey := string(key); closer.Close()
-		if !strings.HasPrefix(rowKey, prefix) { return out, errors.New("repository lookup scope mismatch") }
+		rowKey := string(key)
+		closer.Close()
+		if !strings.HasPrefix(rowKey, prefix) {
+			return out, errors.New("repository lookup scope mismatch")
+		}
 		var row SessionRepositoryHistory
 		ok, err := getJSONFromReader(reader, rowKey, &row)
-		if err != nil { return out, err }
-		if !ok || row.Session.AccountScopeID != q.AccountScopeID || row.Session.UserID != q.UserID { return out, errors.New("repository lookup owner mismatch") }
+		if err != nil {
+			return out, err
+		}
+		if !ok || row.Session.AccountScopeID != q.AccountScopeID || row.Session.UserID != q.UserID {
+			return out, errors.New("repository lookup owner mismatch")
+		}
 		out.Sessions = append(out.Sessions, row)
 		return out, nil
 	}
-	if !errors.Is(err, pebble.ErrNotFound) { return out, err }
+	if !errors.Is(err, pebble.ErrNotFound) {
+		return out, err
+	}
 	key, closer, err = reader.Get([]byte(repositoryLaneKey(q.ParentSessionID, path)))
-	if errors.Is(err, pebble.ErrNotFound) { return out, errors.New("unknown session repository selector") }
-	if err != nil { return out, err }
-	rowKey := string(key); closer.Close()
-	if !strings.HasPrefix(rowKey, TaskProgramSessionPrefix(q.ParentSessionID)) { return out, errors.New("repository lane scope mismatch") }
+	if errors.Is(err, pebble.ErrNotFound) {
+		return out, errors.New("unknown session repository selector")
+	}
+	if err != nil {
+		return out, err
+	}
+	rowKey := string(key)
+	closer.Close()
+	if !strings.HasPrefix(rowKey, TaskProgramSessionPrefix(q.ParentSessionID)) {
+		return out, errors.New("repository lane scope mismatch")
+	}
 	var record TaskProgramRecord
 	ok, err = getJSONFromReader(reader, rowKey, &record)
-	if err != nil { return out, err }
-	if !ok || record.ParentSessionID != q.ParentSessionID || record.RepositoryLane == nil || record.RepositoryLane.WorkspacePath != path { return out, errors.New("repository lane identity mismatch") }
+	if err != nil {
+		return out, err
+	}
+	if !ok || record.ParentSessionID != q.ParentSessionID || record.RepositoryLane == nil || record.RepositoryLane.WorkspacePath != path {
+		return out, errors.New("repository lane identity mismatch")
+	}
 	out.Programs = append(out.Programs, record)
 	return out, nil
 }
@@ -459,35 +679,60 @@ func (s *SessionStore) ExactRepositoryHistory(q RepositoryHistoryQuery, path str
 // phase, inner cursor, context and offset. A supplied anchor must still match
 // the current parent revision before a next-page token can be issued.
 func (s *SessionStore) RepositoryContinuation(q RepositoryHistoryQuery, token string, payload []byte) ([]byte, string, error) {
-	if len(token) > 24000 || len(payload) > 16000 { return nil, "", ErrRepositoryHistoryCursor }
+	if len(token) > 24000 || len(payload) > 16000 {
+		return nil, "", ErrRepositoryHistoryCursor
+	}
 	reader := s.store.db.NewSnapshot()
 	defer reader.Close()
-	if err := repositoryHistoryOwner(reader, q); err != nil { return nil, "", err }
+	if err := repositoryHistoryOwner(reader, q); err != nil {
+		return nil, "", err
+	}
 	var meta repositoryHistoryMeta
 	ok, err := getJSONFromReader(reader, repositoryHistoryMetaKey, &meta)
-	if err != nil { return nil, "", err }
-	if !ok || !meta.Ready { return nil, "", ErrRepositoryHistoryNotReady }
+	if err != nil {
+		return nil, "", err
+	}
+	if !ok || !meta.Ready {
+		return nil, "", ErrRepositoryHistoryNotReady
+	}
 	block, err := aes.NewCipher(meta.Secret)
-	if err != nil { return nil, "", err }
+	if err != nil {
+		return nil, "", err
+	}
 	aead, err := cipher.NewGCM(block)
-	if err != nil { return nil, "", err }
+	if err != nil {
+		return nil, "", err
+	}
 	revision, closer, err := reader.Get([]byte(repositoryHistoryRevisionKey + "/" + keyPart(q.ParentSessionID)))
-	if err != nil { return nil, "", err }
-	rev := hex.EncodeToString(revision); closer.Close()
+	if err != nil {
+		return nil, "", err
+	}
+	rev := hex.EncodeToString(revision)
+	closer.Close()
 	scope := repositoryHistoryPrefix(q.AccountScopeID, q.UserID, q.ParentSessionID) + "http"
 	envelope := repositoryHistoryCursor{Scope: scope, Revision: rev, Limit: q.Limit}
 	var decoded []byte
 	if token != "" {
 		data, err := base64.RawURLEncoding.DecodeString(token)
-		if err != nil || len(data) < aead.NonceSize() { return nil, "", ErrRepositoryHistoryCursor }
+		if err != nil || len(data) < aead.NonceSize() {
+			return nil, "", ErrRepositoryHistoryCursor
+		}
 		plain, err := aead.Open(nil, data[:aead.NonceSize()], data[aead.NonceSize():], nil)
-		if err != nil || json.Unmarshal(plain, &envelope) != nil || envelope.Scope != scope || envelope.Revision != rev || envelope.Limit != q.Limit { return nil, "", ErrRepositoryHistoryCursor }
+		if err != nil || json.Unmarshal(plain, &envelope) != nil || envelope.Scope != scope || envelope.Revision != rev || envelope.Limit != q.Limit {
+			return nil, "", ErrRepositoryHistoryCursor
+		}
 		decoded = []byte(envelope.After)
 	}
-	if payload != nil { envelope.After = string(payload) }
+	if payload != nil {
+		envelope.After = string(payload)
+	}
 	plain, err := json.Marshal(envelope)
-	if err != nil { return nil, "", err }
+	if err != nil {
+		return nil, "", err
+	}
 	nonce := make([]byte, aead.NonceSize())
-	if _, err := rand.Read(nonce); err != nil { return nil, "", err }
+	if _, err := rand.Read(nonce); err != nil {
+		return nil, "", err
+	}
 	return decoded, base64.RawURLEncoding.EncodeToString(aead.Seal(nonce, nonce, plain, nil)), nil
 }

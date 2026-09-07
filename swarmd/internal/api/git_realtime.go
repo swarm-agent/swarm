@@ -535,7 +535,9 @@ func (s *Server) handleGitRealtime(w http.ResponseWriter, r *http.Request) {
 	// A long poll may outlive a workspace generation or attachment change.
 	resolved, err := s.resolveGitStatusWorkspacePath(r, principal)
 	if err != nil || resolved != workspacePath {
-		if err == nil { err = errors.New("repository selection changed during poll") }
+		if err == nil {
+			err = errors.New("repository selection changed during poll")
+		}
 		writeError(w, http.StatusForbidden, err)
 		return
 	}
