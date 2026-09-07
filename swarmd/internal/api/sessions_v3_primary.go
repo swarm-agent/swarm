@@ -289,6 +289,8 @@ func (s *Server) handleSessionV3PrimaryByID(w http.ResponseWriter, r *http.Reque
 			return
 		}
 		writeJSON(w, http.StatusOK, sessionsV3HydratedResponse(hydrated, gitStatusResponseForSession(hydrated.Session)))
+	case "repositories":
+		s.handleSessionV3Repositories(w, r, principal, sessionID)
 	case "archive":
 		s.handleSessionV3PrimaryArchive(w, r, principal, sessionID)
 	case "messages":

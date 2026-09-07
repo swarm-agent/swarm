@@ -532,6 +532,13 @@ func (s *Server) handleGitRealtime(w http.ResponseWriter, r *http.Request) {
 	}
 	repo.renewLease()
 	repo.waitForChange(r.Context(), r.URL.Query().Get("watch_token"), gitRealtimeLongPoll)
+	// A long poll may outlive a workspace generation or attachment change.
+	resolved, err := s.resolveGitStatusWorkspacePath(r, principal)
+	if err != nil || resolved != workspacePath {
+		if err == nil { err = errors.New("repository selection changed during poll") }
+		writeError(w, http.StatusForbidden, err)
+		return
+	}
 	snapshot, token, diagnostics := repo.current()
 	if err := s.populateSessionGitCommits(r.Context(), principal, strings.TrimSpace(r.URL.Query().Get("session_id")), workspacePath, 12, &snapshot); err != nil {
 		writeError(w, http.StatusInternalServerError, err)
