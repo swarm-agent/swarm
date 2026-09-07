@@ -3731,6 +3731,9 @@ export const DesktopV3RenderItemView = memo(function DesktopV3RenderItemView({
   onArtifactNavigate?: (artifact: DesktopV3ArtifactCatalogEntry) => void;
   onArtifactSelections?: (selections: DesktopV3ArtifactMessageSelection[]) => void;
 }) {
+  const userMessage = desktopV3UserMessageElement(item);
+  if (userMessage) return userMessage;
+
   switch (item.type) {
     case "plan-break":
       return <DesktopV3PlanExecutionBreak item={item} />;
@@ -3752,8 +3755,6 @@ export const DesktopV3RenderItemView = memo(function DesktopV3RenderItemView({
           onArtifactSelections={onArtifactSelections}
         />
       );
-    case "pending-user":
-      return <DesktopV3PendingUserMessage message={item.message} />;
     case "live-assistant":
       return (
         <DesktopV3AssistantMessage content={item.content} role="assistant" />
@@ -4695,21 +4696,29 @@ function DesktopV3UserMessage({
   );
 }
 
-function DesktopV3PendingUserMessage({
-  message,
-}: {
-  message: PendingUserMessage;
-}) {
-  return (
-    <DesktopV3UserMessage
-      content={message.content}
-      media={message.media}
-      artifactSelections={message.artifactSelections}
-      pendingLabel={
-        message.status === "failed" ? message.error || "failed" : undefined
-      }
-    />
-  );
+// Keep the same immediate React child through confirmation. Matching row keys
+// alone cannot preserve the bubble when its parent component type changes.
+export function desktopV3UserMessageElement(item: DesktopV3RenderItem) {
+  if (item.type === "pending-user") {
+    return (
+      <DesktopV3UserMessage
+        content={item.message.content}
+        media={item.message.media}
+        artifactSelections={item.message.artifactSelections}
+        pendingLabel={item.message.status === "failed" ? item.message.error || "failed" : undefined}
+      />
+    );
+  }
+  if (item.type === "message" && item.message.role === "user" && !item.message.toolMessage) {
+    return (
+      <DesktopV3UserMessage
+        content={item.message.content}
+        media={item.message.media}
+        artifactSelections={item.message.artifact_selections}
+      />
+    );
+  }
+  return null;
 }
 
 function DesktopV3CompactPendingState() {
