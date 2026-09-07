@@ -649,3 +649,23 @@ mislabeling its lane as a saved repository. Historical missing bases remain gaps
 from `swarmd/` passed: run 3.936s, API 2.321s, worktree 0.138s, permission 0.090s.
 Earlier command with an exact `TestSessionRepositories` selection ran no API tests;
 it is not API evidence. Corrected parallel/provider and inventory proof pending.
+
+### A5 corrected provider observation
+
+On exact build `b79026253574ffed2b90b7a655c9363ff8eaf181`, a new disposable
+trial completed Finder → two Coders → Designer. Coder launch timestamps differed
+by 22 ms and their 40.648s/34.332s intervals overlapped. Both shared the same base;
+parent-run Git patch-equivalence and exact newline-byte assertions passed, target
+common-directory identity matched, parent was clean, and all three captured
+repositories retained their original HEAD and clean status. Header dialog pixels
+showed exactly two attachments with explicit default. The ready artifact pixels
+showed both requested treatments, each with the exact heading and two values,
+without clipping or overlap. The earlier artifact had only one shared heading
+and is not accepted as equivalent visual evidence.
+
+Inventory now resolves the current and retained parent lanes. Integrated removed
+workers remain explicit unavailable rows rather than disappearing. Their labels
+still reflected historical running snapshots; an inventory-only exact program
+reader now supplies linked job lifecycle without invoking mutating reconciliation.
+Focused HTTP inventory/exact-parent tests passed twice, 2.128s. Rebuild/reconnect,
+retained dirty recovery and unsupported-program live negatives remain separate.

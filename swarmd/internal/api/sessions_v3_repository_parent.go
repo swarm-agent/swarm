@@ -23,6 +23,24 @@ func (s *Server) resolveRepositoryParentIdentity(principal identity.Principal, i
 	if err != nil || !ok || parent.AccountScopeID != principal.AccountScopeID || parent.UserID != principal.UserID || !parent.WorktreeEnabled {
 		return item
 	}
+	programID := sessionsV3MetadataString(owner.Metadata, "task_program_id")
+	jobID := sessionsV3MetadataString(owner.Metadata, "task_program_job_id")
+	if programID != "" && jobID != "" {
+		if program, found, err := s.sessions.InspectTaskProgram(parentID, programID); err == nil && found && program.ParentSessionID == parentID {
+			for _, job := range program.Jobs {
+				if job.JobID == jobID && job.ChildSessionID == owner.ID {
+					item.Lifecycle = job.State
+					if job.IntegrationState != "" {
+						item.Lifecycle = job.IntegrationState
+					}
+					if item.BaseCommit == "" {
+						item.BaseCommit = job.ImmutableStageBase
+					}
+					break
+				}
+			}
+		}
+	}
 	source := sessionsV3MetadataString(parent.Metadata, "swarm_v3_source_workspace_path")
 	if source == "" {
 		return item
