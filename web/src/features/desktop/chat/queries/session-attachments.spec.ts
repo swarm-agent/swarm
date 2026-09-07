@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { selectSessionAttachments, SessionAttachmentInventory, type AttachmentRepository } from './session-attachments'
+import { selectSessionAttachments, selectWorkingRepositorySources, selectWorkingWorkspaces, SessionAttachmentInventory, type AttachmentRepository } from './session-attachments'
 
 export function attachment(index: number): AttachmentRepository {
   return { id: `row-${index}`, workspace_id: `workspace-${index}`, workspace_name: 'Same name', source_path: `/workspaces/source-${index}`, kind: 'source', attached: true, default: index === 63, availability: 'available' }
 }
-// Requirement: header reflects current attached source identities, never history or
+// Requirement: available-workspace inventory reflects attached identities, never history or
 // ordering-derived defaults. selectSessionAttachments is the narrow projection
 // boundary; pure fixtures prove collision, capacity and replacement postconditions.
 test('64 same-name attachments remain distinct and default is not the first', () => {
@@ -57,4 +57,34 @@ test('manual windows reach all late attachments with bounded storage and recover
   assert.equal(inventory.state.error, false); assert.equal(inventory.state.stale, false)
   assert.equal(inventory.state.items.length, 0)
   assert.notEqual(inventory.state.nextCursor, '')
+})
+
+// Requirement: working names start with the default, not every accessible root.
+// selectWorkingRepositorySources/selectWorkingWorkspaces own this projection;
+// pure fixtures reject source dirtiness and completed history as activity evidence.
+test('working workspaces include only default and running delegated sources', () => {
+  const items = [attachment(0), attachment(1), attachment(63)]
+  const sources = selectWorkingRepositorySources([
+    { ...attachment(0), kind: 'worker', lifecycle: 'running', attached: false },
+    { ...attachment(1), kind: 'worker', lifecycle: 'completed', attached: false },
+    { ...attachment(1), kind: 'source', lifecycle: 'running' },
+    { ...attachment(0), kind: 'lane', lifecycle: 'running' },
+  ])
+  assert.deepEqual(sources, [attachment(0).source_path])
+  assert.deepEqual(selectWorkingWorkspaces(items, []).map(item => item.workspace_id), ['workspace-63'])
+  assert.deepEqual(selectWorkingWorkspaces(items, sources).map(item => item.workspace_id), ['workspace-63', 'workspace-0'])
+})
+
+// Requirement: a completed worker must disappear after refresh, including when
+// its running evidence originally arrived on a separate page from attachments.
+test('working source evidence survives pagination and is replaced on refresh', async () => {
+  let running = true
+  const inventory = new SessionAttachmentInventory(async cursor => cursor
+    ? { ok: true, items: [{ ...attachment(0), kind: 'worker', attached: false, lifecycle: running ? 'running' : 'completed' }] }
+    : { ok: true, items: [attachment(0), attachment(63)], next_cursor: 'next' })
+  await inventory.refresh()
+  assert.equal(selectWorkingWorkspaces(inventory.state.items, inventory.state.workingSources).length, 2)
+  running = false
+  await inventory.refresh()
+  assert.deepEqual(selectWorkingWorkspaces(inventory.state.items, inventory.state.workingSources).map(item => item.workspace_id), ['workspace-63'])
 })

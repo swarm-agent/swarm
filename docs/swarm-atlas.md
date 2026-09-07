@@ -848,3 +848,7 @@ the selected scenario passed and explicitly leaves `full_matrix_verified=false`;
 it no longer fails a completed narrow scenario solely for unrelated matrix cases.
 Task Program/full-app/release readiness remains unproven, and the supervised
 critical-gate orphan-attribution gap remains distinct from these passing trials.
+
+### Session working-workspace header refinement
+
+The Desktop header's `chat/queries/session-attachments.ts` projection now separates accessible source attachments from “Working on” names: the explicit default plus attached source identities matched to running worker/program-lane rows from `handleSessionV3Repositories` (`api/sessions_v3_repositories.go`). Source checkout dirtiness and completed/retained lanes are not activity evidence. `chat/components/session-attachments.tsx` keeps available inventory behind disclosure and invalidates on scoped session/known-worker repository events without polling. Reads remain bounded to four pages per gesture and 64 source/worker identities; incomplete pagination and stale reads remain explicit. This is repository-execution evidence, not per-tool tracking of arbitrary reads/writes in additional roots. Selector and refresh regression cases were authored; tests/build/browser verification were not run. Prior changed-test digests are invalidated in the audit ledger; no authority, route, or mutation changes.

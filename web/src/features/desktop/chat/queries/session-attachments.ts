@@ -7,6 +7,8 @@ export interface AttachmentRepository {
   workspace_name: string
   source_path: string
   kind: string
+  lifecycle?: string
+  session_id?: string
   attached: boolean
   default: boolean
   availability: string
@@ -39,10 +41,25 @@ export function selectSessionAttachments(pages: AttachmentRepositoryPage[]): Att
   return [...attachments.values()].slice(0, 64)
 }
 
-// Retain only attachment identities (never worker/history pages). Each gesture
+// Only live delegated execution is evidence of additional work in progress.
+// Dirty source checkouts and retained/completed lanes are not session activity.
+export function selectWorkingRepositorySources(items: AttachmentRepository[]): string[] {
+  return [...new Set(items.filter(item =>
+    (item.kind === 'worker' || item.kind === 'lane') &&
+    (item.lifecycle === 'running' || item.lifecycle === 'in_progress') && item.source_path,
+  ).map(item => item.source_path))].slice(0, 64)
+}
+
+export function selectWorkingWorkspaces(items: AttachmentRepository[], sources: string[]): AttachmentRepository[] {
+  const working = new Set(sources)
+  return items.filter(item => item.default || working.has(item.source_path))
+    .sort((a, b) => Number(b.default) - Number(a.default))
+}
+
+// Retain only attachment identities and bounded working source identities. Each gesture
 // reads at most four pages; reaching later attachments has no total-page cutoff.
 export class SessionAttachmentInventory {
-  state = { items: [] as AttachmentRepository[], loading: false, stale: true, error: false, nextCursor: '' }
+  state = { items: [] as AttachmentRepository[], workingSources: [] as string[], workingSessionIds: [] as string[], loading: false, stale: true, error: false, nextCursor: '' }
   private listeners = new Set<() => void>()
   private controller?: AbortController
   private generation = 0
@@ -63,6 +80,8 @@ export class SessionAttachmentInventory {
     const invalidation = this.invalidation
     let cursor = append ? this.state.nextCursor : ''
     let items = append ? this.state.items : []
+    let workingSources = append ? this.state.workingSources : []
+    let workingSessionIds = append ? this.state.workingSessionIds : []
     const seen = new Set<string>()
     this.update({ loading: true, error: false })
     try {
@@ -71,11 +90,13 @@ export class SessionAttachmentInventory {
         const page = await this.fetchPage(cursor, controller.signal)
         if (generation !== this.generation || controller.signal.aborted) return
         items = selectSessionAttachments([{ ok: true, items }, page])
+        workingSources = [...new Set([...workingSources, ...selectWorkingRepositorySources(page.items)])].slice(0, 64)
+        workingSessionIds = [...new Set([...workingSessionIds, ...page.items.filter(item => item.kind === 'worker' && (item.lifecycle === 'running' || item.lifecycle === 'in_progress') && item.session_id).map(item => item.session_id!)])].slice(0, 64)
         cursor = page.next_cursor || ''
         if (cursor && seen.has(cursor)) throw new Error('Workspace pagination did not advance')
         if (!cursor) break
       }
-      this.update({ items, nextCursor: cursor, loading: false, stale: invalidation !== this.invalidation })
+      this.update({ items, workingSources, workingSessionIds, nextCursor: cursor, loading: false, stale: invalidation !== this.invalidation })
     } catch {
       if (generation === this.generation && !controller.signal.aborted) this.update({ loading: false, stale: true, error: true })
     }
